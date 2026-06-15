@@ -5,3 +5,6 @@
 # Release staging / packaged MCP bundle
 /build/
 /dist/
+
+# Harness-materialized skill store (symlinks into the dev skills dir)
+/.agents/
