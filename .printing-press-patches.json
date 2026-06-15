@@ -105,6 +105,19 @@
         "internal/cli/sync.go"
       ],
       "validated_outcome": "go build/vet pass; new regression tests TestAdaptiveLimiterWaitConcurrentPacing (also under -race), TestCountResultItems, TestIsSafeJSONFieldName, TestMaskToken pass. Verified false positives left unchanged: SQL multi-statement read-only bypass (empirically: db.Query runs one statement and mode=ro blocks writes) and global cache invalidation (documented opaque-key design)."
+    },
+    {
+      "id": "zotero-glean-test-gap-coverage",
+      "summary": "Added unit-test coverage for five previously-untested generated modules flagged by glean test-gaps findings: HTTP client (do/retry/cache/sanitize/cacheKey), sync (pagination/cursor-stuck/maxPages/single-object/access-warning + pure helpers), CLI helpers (error classification/filtering/formatting/pagination), search (extractSearchResults shapes + live-filter + local fallback), and doctor (interstitial detection/fail-on policy/cache report).",
+      "reason": "glean test-gaps missions (beads pg9a, rf41, bnt5, f6yb, hcaq) flagged P0/P1 untested logic. Tests use real httptest servers, real store.Open temp DBs, and temp dirs (no mocks) and exercise real branch behavior.",
+      "files": [
+        "internal/client/client_gaps_test.go",
+        "internal/cli/sync_gaps_test.go",
+        "internal/cli/helpers_gaps_test.go",
+        "internal/cli/search_gaps_test.go",
+        "internal/cli/doctor_gaps_test.go"
+      ],
+      "validated_outcome": "32 new test functions; go build/vet and full `go test ./...` pass (fresh, -count=1)."
     }
   ]
 }
