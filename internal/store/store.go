@@ -817,6 +817,13 @@ func (s *Store) ResolveByName(resourceType string, input string, matchFields ...
 
 	var matches []string
 	for _, field := range matchFields {
+		// PATCH(glean security-audit): the json_extract path is built with
+		// Sprintf, so a field name containing a quote could break out of the
+		// '$.<field>' path and inject SQL. Callers pass literals today; reject
+		// anything that isn't a plain dotted identifier as defense in depth.
+		if !isSafeJSONFieldName(field) {
+			continue
+		}
 		query := fmt.Sprintf(
 			`SELECT id FROM resources WHERE resource_type = ? AND LOWER(json_extract(data, '$.%s')) = LOWER(?)`,
 			field,
@@ -858,4 +865,21 @@ func (s *Store) ResolveByName(resourceType string, input string, matchFields ...
 		}
 		return "", fmt.Errorf("ambiguous: %q matches %d %s entries (%s). Use the exact UUID instead", input, len(matches), resourceType, hint)
 	}
+}
+
+// isSafeJSONFieldName reports whether s is a plain, optionally dotted
+// identifier safe to interpolate into a json_extract path string.
+// PATCH(glean security-audit): guards ResolveByName's Sprintf-built query.
+func isSafeJSONFieldName(s string) bool {
+	if s == "" {
+		return false
+	}
+	for _, r := range s {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9', r == '_', r == '.':
+		default:
+			return false
+		}
+	}
+	return true
 }

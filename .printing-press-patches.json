@@ -92,6 +92,19 @@
         "internal/cli/helpers.go"
       ],
       "validated_outcome": "go build ./..., go vet ./..., and go fmt ./... pass."
+    },
+    {
+      "id": "zotero-glean-finding-fixes",
+      "summary": "Fixed correctness/security defects surfaced by glean review missions: AdaptiveLimiter.Wait pacing race, `items get` provenance always counting 0, ResolveByName json_extract field-name injection guard, maskToken short-token exposure, dead OAuth token-refresh path (Zotero is API-key auth), and concurrency-aware sync progress (\\r garble under parallel workers).",
+      "reason": "glean static-audit/security-audit missions found real bugs in generated infrastructure files. Fixed in-repo per the local patch protocol. The Wait race, provenance count, and maskToken are SYSTEMIC (affect every printed CLI) and should be pushed upstream to cli-printing-press; the token-refresh removal is Zotero-specific (no OAuth endpoint).",
+      "files": [
+        "internal/cliutil/ratelimit.go",
+        "internal/cli/items_get.go",
+        "internal/store/store.go",
+        "internal/client/client.go",
+        "internal/cli/sync.go"
+      ],
+      "validated_outcome": "go build/vet pass; new regression tests TestAdaptiveLimiterWaitConcurrentPacing (also under -race), TestCountResultItems, TestIsSafeJSONFieldName, TestMaskToken pass. Verified false positives left unchanged: SQL multi-statement read-only bypass (empirically: db.Query runs one statement and mode=ro blocks writes) and global cache invalidation (documented opaque-key design)."
     }
   ]
 }

@@ -38,12 +38,11 @@ func newItemsGetCmd(flags *rootFlags) *cobra.Command {
 			if err != nil {
 				return classifyAPIError(err, flags)
 			}
-			// Print provenance to stderr for human-facing output
-			{
-				var countItems []json.RawMessage
-				_ = json.Unmarshal(data, &countItems)
-				printProvenance(cmd, len(countItems), prov)
-			}
+			// Print provenance to stderr for human-facing output.
+			// PATCH(glean static-audit): `items get` returns a single JSON object,
+			// not an array; the old []json.RawMessage unmarshal always failed and
+			// reported "0 results (live)". Count an object as one result.
+			printProvenance(cmd, countResultItems(data), prov)
 			// For JSON output, wrap with provenance envelope before passing through flags.
 			// --select wins over --compact when both are set; --compact only runs when
 			// no explicit fields were requested.
@@ -79,4 +78,28 @@ func newItemsGetCmd(flags *rootFlags) *cobra.Command {
 	cmd.Flags().StringVar(&flagFormat, "format", "", "Response format (json, bib, bibtex, csljson, ris, etc.)")
 
 	return cmd
+}
+
+// countResultItems reports how many result objects a Zotero response body
+// holds: array length for a JSON array, 1 for a single object, 0 otherwise.
+// PATCH(glean static-audit): single-object endpoints (items get) previously
+// unmarshaled into []json.RawMessage and always counted 0.
+func countResultItems(data []byte) int {
+	for _, b := range data {
+		switch b {
+		case ' ', '\t', '\r', '\n':
+			continue
+		case '[':
+			var arr []json.RawMessage
+			if json.Unmarshal(data, &arr) == nil {
+				return len(arr)
+			}
+			return 0
+		case '{':
+			return 1
+		default:
+			return 0
+		}
+	}
+	return 0
 }

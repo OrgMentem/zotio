@@ -44,16 +44,23 @@ func (l *AdaptiveLimiter) Wait() {
 	if l == nil {
 		return
 	}
+	// PATCH(glean static-audit): reserve the next send slot while holding the
+	// lock, then sleep until it outside the lock. The previous code released the
+	// lock before sleeping and updated lastRequest after, so N concurrent callers
+	// all read the same lastRequest, computed the same delay, slept in lockstep,
+	// and fired simultaneously — defeating pacing and inviting 429s. Reserving
+	// the slot under the lock serializes callers onto distinct wake times.
 	l.mu.Lock()
 	delay := time.Duration(float64(time.Second) / l.rate)
-	elapsed := time.Since(l.lastRequest)
-	l.mu.Unlock()
-	if elapsed < delay {
-		time.Sleep(delay - elapsed)
+	next := l.lastRequest.Add(delay)
+	if now := time.Now(); next.Before(now) {
+		next = now
 	}
-	l.mu.Lock()
-	l.lastRequest = time.Now()
+	l.lastRequest = next
 	l.mu.Unlock()
+	if d := time.Until(next); d > 0 {
+		time.Sleep(d)
+	}
 }
 
 func (l *AdaptiveLimiter) OnSuccess() {

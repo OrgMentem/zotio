@@ -151,7 +151,7 @@ Exit codes & warnings:
 				go func() {
 					defer wg.Done()
 					for resource := range work {
-						res := syncResource(c, db, resource, sinceTS, full, maxPages)
+						res := syncResource(c, db, resource, sinceTS, full, maxPages, concurrency == 1)
 						results <- res
 					}
 				}()
@@ -265,7 +265,7 @@ Exit codes & warnings:
 func syncResource(c interface {
 	Get(string, map[string]string) (json.RawMessage, error)
 	RateLimit() float64
-}, db *store.Store, resource, sinceTS string, full bool, maxPages int) syncResult {
+}, db *store.Store, resource, sinceTS string, full bool, maxPages int, inlineProgress bool) syncResult {
 	started := time.Now()
 
 	if !humanFriendly {
@@ -408,10 +408,17 @@ func syncResource(c interface {
 		// Progress reporting (include rate limit info when active)
 		currentRate := c.RateLimit()
 		if humanFriendly {
-			if currentRate > 0 {
-				fmt.Fprintf(os.Stderr, "\r  %s: %d synced [%.1f req/s]", resource, atomic.LoadInt64(&progressCount), currentRate)
-			} else {
-				fmt.Fprintf(os.Stderr, "\r  %s: %d synced", resource, atomic.LoadInt64(&progressCount))
+			// PATCH(glean static-audit): \r in-place progress only works for a
+			// single writer. With concurrency>1 the workers' interleaved \r
+			// updates garble the terminal, so suppress per-page progress then and
+			// rely on the per-resource "N synced (done)" summary; single-worker
+			// runs keep the live in-place counter.
+			if inlineProgress {
+				if currentRate > 0 {
+					fmt.Fprintf(os.Stderr, "\r  %s: %d synced [%.1f req/s]", resource, atomic.LoadInt64(&progressCount), currentRate)
+				} else {
+					fmt.Fprintf(os.Stderr, "\r  %s: %d synced", resource, atomic.LoadInt64(&progressCount))
+				}
 			}
 		} else {
 			if currentRate > 0 {

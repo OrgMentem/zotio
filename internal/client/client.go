@@ -12,7 +12,6 @@ import (
 	"io"
 	"math"
 	"net/http"
-	"net/url"
 	"os"
 	"path/filepath"
 	"sort"
@@ -363,65 +362,15 @@ func (c *Client) authHeader() (string, error) {
 }
 
 func (c *Client) refreshAccessToken() error {
-	if c.Config == nil {
+	if c.Config == nil || c.Config.RefreshToken == "" {
 		return nil
 	}
-	if c.Config.RefreshToken == "" {
-		return nil
-	}
-
-	tokenURL := ""
-	if tokenURL == "" {
-		return nil
-	}
-
-	params := url.Values{
-		"grant_type":    {"refresh_token"},
-		"refresh_token": {c.Config.RefreshToken},
-		"client_id":     {c.Config.ClientID},
-	}
-	if c.Config.ClientSecret != "" {
-		params.Set("client_secret", c.Config.ClientSecret)
-	}
-
-	resp, err := c.HTTPClient.PostForm(tokenURL, params)
-	if err != nil {
-		return fmt.Errorf("refreshing access token: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode >= 400 {
-		body, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("refreshing access token: HTTP %d: %s", resp.StatusCode, truncateBody(body))
-	}
-
-	var tokenResp struct {
-		AccessToken  string `json:"access_token"`
-		RefreshToken string `json:"refresh_token"`
-		ExpiresIn    int    `json:"expires_in"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&tokenResp); err != nil {
-		return fmt.Errorf("parsing refresh response: %w", err)
-	}
-	if tokenResp.AccessToken == "" {
-		return fmt.Errorf("refreshing access token: no access token in response")
-	}
-
-	refreshToken := c.Config.RefreshToken
-	if tokenResp.RefreshToken != "" {
-		refreshToken = tokenResp.RefreshToken
-	}
-
-	expiry := time.Time{}
-	if tokenResp.ExpiresIn > 0 {
-		expiry = time.Now().Add(time.Duration(tokenResp.ExpiresIn) * time.Second)
-	}
-
-	if err := c.Config.SaveTokens(c.Config.ClientID, c.Config.ClientSecret, tokenResp.AccessToken, refreshToken, expiry); err != nil {
-		return fmt.Errorf("saving refreshed token: %w", err)
-	}
-
-	return nil
+	// PATCH(glean security-audit/static-audit): zotero-pp-cli authenticates with
+	// an API key (Zotero-API-Key header), not OAuth2. The generated scaffold left
+	// a hardcoded-empty tokenURL, so refresh silently returned nil and the HTTP
+	// block below it was dead code; a silently-stale token then 401s with no hint.
+	// There is no OAuth refresh endpoint to call here, so fail loudly instead.
+	return fmt.Errorf("token refresh is not supported: zotero-pp-cli uses API-key auth (set ZOTERO_API_KEY)")
 }
 
 // sanitizeJSONResponse strips known JSONP/XSSI prefixes and UTF-8 BOM from
@@ -449,12 +398,16 @@ func sanitizeJSONResponse(body []byte) []byte {
 	return body
 }
 
-// maskToken redacts all but the last 4 characters of a token for safe display.
+// maskToken redacts a token for safe display, revealing the last 4 characters
+// only when the token is long enough that those 4 chars are a small fraction.
+// PATCH(glean security-audit): previously revealed the last 4 chars of any
+// token longer than 4, exposing most of a short token; short tokens (<12) are
+// now fully masked.
 func maskToken(token string) string {
 	if token == "" {
 		return ""
 	}
-	if len(token) <= 4 {
+	if len(token) < 12 {
 		return "****"
 	}
 	return "****" + token[len(token)-4:]
