@@ -1,0 +1,7 @@
+# Built binaries
+/zotero-pp-cli
+/zotero-pp-mcp
+
+# Release staging / packaged MCP bundle
+/build/
+/dist/

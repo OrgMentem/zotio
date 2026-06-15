@@ -1,0 +1,483 @@
+name: zotero
+description: "Zotero reference manager CLI — every library feature in the terminal, plus offline search, annotation export, and library analytics"
+version: "0.1.0"
+base_url: "http://localhost:23119/api/users/0"
+
+auth:
+  type: api_key
+  header: "Zotero-API-Key"
+  in: header
+  env_vars:
+    - ZOTERO_API_KEY
+  no_auth_ok: true
+
+config:
+  format: toml
+  path: "~/.config/zotero-pp-cli/config.toml"
+  env_prefix: ZOTERO
+
+resources:
+  items:
+    description: "Manage items in your Zotero library"
+    endpoints:
+      list:
+        method: GET
+        path: "/items"
+        description: "List all items in the library"
+        no_auth: true
+        params:
+          - name: limit
+            type: int
+            description: "Maximum number of items to return (max 100)"
+          - name: start
+            type: int
+            description: "Pagination offset (zero-based)"
+          - name: sort
+            type: string
+            description: "Sort field (dateAdded, dateModified, title, creator, type, date, publisher, publicationTitle, journalAbbreviation, language, accessDate, libraryCatalog, callNumber, rights, addedBy)"
+          - name: direction
+            type: string
+            description: "Sort direction (asc or desc)"
+          - name: itemType
+            type: string
+            description: "Filter by item type (journalArticle, book, bookSection, conferencePaper, etc.)"
+          - name: q
+            type: string
+            flag_name: query
+            description: "Quick search across title, creator, and year"
+          - name: tag
+            type: string
+            description: "Filter by tag name"
+          - name: since
+            type: int
+            description: "Return only items modified after this library version number"
+          - name: format
+            type: string
+            description: "Response format (json, atom, bib, bibtex, bookmarks, coins, csljson, mods, refer, rdf_bibliontology, rdf_dc, rdf_zotero, ris, tei, wikipedia)"
+        response:
+          type: array
+          item: Item
+
+      top:
+        method: GET
+        path: "/items/top"
+        description: "List top-level items only (excludes attachments and notes)"
+        no_auth: true
+        params:
+          - name: limit
+            type: int
+            description: "Maximum number of items to return"
+          - name: start
+            type: int
+            description: "Pagination offset"
+          - name: sort
+            type: string
+            description: "Sort field"
+          - name: tag
+            type: string
+            description: "Filter by tag"
+          - name: itemType
+            type: string
+            description: "Filter by item type"
+          - name: q
+            type: string
+            flag_name: query
+            description: "Quick search query"
+        response:
+          type: array
+          item: Item
+
+      get:
+        method: GET
+        path: "/items/{itemKey}"
+        description: "Get a single item by key"
+        no_auth: true
+        params:
+          - name: itemKey
+            type: string
+            required: true
+            positional: true
+            description: "Zotero item key (e.g. 9UXV5R7L)"
+          - name: format
+            type: string
+            description: "Response format (json, bib, bibtex, csljson, ris, etc.)"
+        response:
+          type: object
+          item: Item
+
+      create:
+        method: POST
+        path: "/items"
+        description: "Create one or more items"
+        body:
+          - name: items
+            type: array
+            description: "Array of item objects to create (use item-types and item-type-fields for schema)"
+
+      update:
+        method: PATCH
+        path: "/items/{itemKey}"
+        description: "Update a specific item"
+        params:
+          - name: itemKey
+            type: string
+            required: true
+            positional: true
+            description: "Item key to update"
+        body:
+          - name: title
+            type: string
+            description: "Item title"
+          - name: abstractNote
+            type: string
+            description: "Abstract or summary"
+          - name: tags
+            type: array
+            description: "Tags to apply (array of {tag: string} objects)"
+          - name: collections
+            type: array
+            description: "Collection keys to assign this item to"
+          - name: extra
+            type: string
+            description: "Extra notes field (also stores Better BibTeX citation key)"
+
+      delete:
+        method: DELETE
+        path: "/items/{itemKey}"
+        description: "Delete an item (moves to trash)"
+        params:
+          - name: itemKey
+            type: string
+            required: true
+            positional: true
+            description: "Item key to delete"
+
+      trash:
+        method: GET
+        path: "/items/trash"
+        description: "List items in the trash"
+        no_auth: true
+        params:
+          - name: limit
+            type: int
+            description: "Maximum number of items to return"
+        response:
+          type: array
+          item: Item
+
+      children:
+        method: GET
+        path: "/items/{itemKey}/children"
+        description: "Get child items (attachments and notes) for an item"
+        no_auth: true
+        params:
+          - name: itemKey
+            type: string
+            required: true
+            positional: true
+            description: "Parent item key"
+          - name: itemType
+            type: string
+            description: "Filter by type (attachment or note)"
+        response:
+          type: array
+          item: Item
+
+      tags:
+        method: GET
+        path: "/items/{itemKey}/tags"
+        description: "Get tags for a specific item"
+        no_auth: true
+        params:
+          - name: itemKey
+            type: string
+            required: true
+            positional: true
+            description: "Item key"
+        response:
+          type: array
+          item: Tag
+
+  collections:
+    description: "Manage collections in your Zotero library"
+    endpoints:
+      list:
+        method: GET
+        path: "/collections"
+        description: "List all collections"
+        no_auth: true
+        params:
+          - name: limit
+            type: int
+            description: "Maximum number of collections to return"
+          - name: start
+            type: int
+            description: "Pagination offset"
+        response:
+          type: array
+          item: Collection
+
+      top:
+        method: GET
+        path: "/collections/top"
+        description: "List only top-level collections (no parents)"
+        no_auth: true
+        params:
+          - name: limit
+            type: int
+            description: "Maximum number to return"
+        response:
+          type: array
+          item: Collection
+
+      get:
+        method: GET
+        path: "/collections/{collectionKey}"
+        description: "Get a specific collection"
+        no_auth: true
+        params:
+          - name: collectionKey
+            type: string
+            required: true
+            positional: true
+            description: "Collection key (e.g. IDTUAULN)"
+        response:
+          type: object
+          item: Collection
+
+      create:
+        method: POST
+        path: "/collections"
+        description: "Create one or more collections"
+        body:
+          - name: name
+            type: string
+            required: true
+            description: "Collection name"
+          - name: parentCollection
+            type: string
+            description: "Parent collection key (omit for top-level)"
+
+      update:
+        method: PUT
+        path: "/collections/{collectionKey}"
+        description: "Update a collection"
+        params:
+          - name: collectionKey
+            type: string
+            required: true
+            positional: true
+            description: "Collection key to update"
+        body:
+          - name: name
+            type: string
+            description: "New collection name"
+          - name: parentCollection
+            type: string
+            description: "New parent collection key (false for top-level)"
+
+      delete:
+        method: DELETE
+        path: "/collections/{collectionKey}"
+        description: "Delete a collection (does not delete items)"
+        params:
+          - name: collectionKey
+            type: string
+            required: true
+            positional: true
+            description: "Collection key to delete"
+
+      items:
+        method: GET
+        path: "/collections/{collectionKey}/items"
+        description: "List all items in a collection"
+        no_auth: true
+        params:
+          - name: collectionKey
+            type: string
+            required: true
+            positional: true
+            description: "Collection key"
+          - name: limit
+            type: int
+            description: "Maximum number of items to return"
+          - name: start
+            type: int
+            description: "Pagination offset"
+          - name: format
+            type: string
+            description: "Response format (json, bibtex, ris, etc.)"
+        response:
+          type: array
+          item: Item
+
+      subcollections:
+        method: GET
+        path: "/collections/{collectionKey}/collections"
+        description: "List subcollections of a collection"
+        no_auth: true
+        params:
+          - name: collectionKey
+            type: string
+            required: true
+            positional: true
+            description: "Collection key"
+        response:
+          type: array
+          item: Collection
+
+      tags:
+        method: GET
+        path: "/collections/{collectionKey}/tags"
+        description: "List tags used within a collection"
+        no_auth: true
+        params:
+          - name: collectionKey
+            type: string
+            required: true
+            positional: true
+            description: "Collection key"
+        response:
+          type: array
+          item: Tag
+
+  tags:
+    description: "Manage tags across your Zotero library"
+    endpoints:
+      list:
+        method: GET
+        path: "/tags"
+        description: "List all tags in the library"
+        no_auth: true
+        params:
+          - name: limit
+            type: int
+            description: "Maximum number of tags to return"
+          - name: start
+            type: int
+            description: "Pagination offset"
+          - name: q
+            type: string
+            flag_name: query
+            description: "Filter tags by name substring"
+        response:
+          type: array
+          item: Tag
+
+      get:
+        method: GET
+        path: "/tags/{tagName}"
+        description: "Get a specific tag by name"
+        no_auth: true
+        params:
+          - name: tagName
+            type: string
+            required: true
+            positional: true
+            description: "Tag name (URL-encoded)"
+        response:
+          type: array
+          item: Tag
+
+  searches:
+    description: "Manage saved searches in your Zotero library"
+    endpoints:
+      list:
+        method: GET
+        path: "/searches"
+        description: "List all saved searches"
+        no_auth: true
+        params:
+          - name: limit
+            type: int
+            description: "Maximum number of searches to return"
+        response:
+          type: array
+          item: Search
+
+      get:
+        method: GET
+        path: "/searches/{searchKey}"
+        description: "Get a specific saved search"
+        no_auth: true
+        params:
+          - name: searchKey
+            type: string
+            required: true
+            positional: true
+            description: "Search key"
+        response:
+          type: object
+          item: Search
+
+  schema:
+    description: "Zotero item type and field schema"
+    endpoints:
+      item-types:
+        method: GET
+        path: "/itemTypes"
+        description: "List all available Zotero item types"
+        no_auth: true
+        response:
+          type: array
+          item: ItemType
+
+      item-fields:
+        method: GET
+        path: "/itemFields"
+        description: "List all available item fields"
+        no_auth: true
+        response:
+          type: array
+          item: ItemField
+
+      item-type-fields:
+        method: GET
+        path: "/itemTypeFields"
+        description: "List valid fields for a specific item type"
+        no_auth: true
+        params:
+          - name: itemType
+            type: string
+            required: true
+            description: "Item type (e.g. journalArticle)"
+        response:
+          type: array
+          item: ItemField
+
+      item-type-creator-types:
+        method: GET
+        path: "/itemTypeCreatorTypes"
+        description: "List valid creator types for an item type"
+        no_auth: true
+        params:
+          - name: itemType
+            type: string
+            required: true
+            description: "Item type (e.g. journalArticle)"
+        response:
+          type: array
+          item: CreatorType
+
+      creator-fields:
+        method: GET
+        path: "/creatorFields"
+        description: "List all creator fields (firstName, lastName, name)"
+        no_auth: true
+        response:
+          type: array
+          item: CreatorField
+
+      new-item-template:
+        method: GET
+        path: "/items/new"
+        description: "Get a blank template for creating a new item of a given type"
+        no_auth: true
+        params:
+          - name: itemType
+            type: string
+            required: true
+            description: "Item type to get template for (e.g. journalArticle)"
+        response:
+          type: object
+          item: Item

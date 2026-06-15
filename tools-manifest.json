@@ -1,0 +1,614 @@
+{
+  "api_name": "zotero",
+  "base_url": "http://localhost:23119/api/users/0",
+  "description": "Zotero reference manager CLI — every library feature in the terminal, plus offline search, annotation export, and library analytics",
+  "mcp_ready": "full",
+  "http_transport": "standard",
+  "auth": {
+    "type": "api_key",
+    "header": "Zotero-API-Key",
+    "in": "header",
+    "env_vars": [
+      "ZOTERO_API_KEY"
+    ],
+    "env_var_specs": [
+      {
+        "name": "ZOTERO_API_KEY",
+        "kind": "per_call",
+        "required": true,
+        "sensitive": true,
+        "inferred": true
+      }
+    ]
+  },
+  "required_headers": [],
+  "tools": [
+    {
+      "name": "collections_create",
+      "description": "Create one or more collections. Required: name. Optional: parentCollection. (requires API key)",
+      "method": "POST",
+      "path": "/collections",
+      "params": [
+        {
+          "name": "name",
+          "type": "string",
+          "location": "body",
+          "description": "Collection name",
+          "required": true
+        },
+        {
+          "name": "parentCollection",
+          "type": "string",
+          "location": "body",
+          "description": "Parent collection key (omit for top-level)"
+        }
+      ]
+    },
+    {
+      "name": "collections_delete",
+      "description": "Delete a collection (does not delete items). Required: collectionKey. Destructive. (requires API key)",
+      "method": "DELETE",
+      "path": "/collections/{collectionKey}",
+      "params": [
+        {
+          "name": "collectionKey",
+          "type": "string",
+          "location": "path",
+          "description": "Collection key to delete",
+          "required": true
+        }
+      ]
+    },
+    {
+      "name": "collections_get",
+      "description": "Get a specific collection. Required: collectionKey. Returns the Collection.",
+      "method": "GET",
+      "path": "/collections/{collectionKey}",
+      "no_auth": true,
+      "params": [
+        {
+          "name": "collectionKey",
+          "type": "string",
+          "location": "path",
+          "description": "Collection key (e.g. IDTUAULN)",
+          "required": true
+        }
+      ]
+    },
+    {
+      "name": "collections_items",
+      "description": "List all items in a collection. Required: collectionKey. Optional: limit, start, format. Returns array of Item.",
+      "method": "GET",
+      "path": "/collections/{collectionKey}/items",
+      "no_auth": true,
+      "params": [
+        {
+          "name": "collectionKey",
+          "type": "string",
+          "location": "path",
+          "description": "Collection key",
+          "required": true
+        },
+        {
+          "name": "limit",
+          "type": "int",
+          "location": "query",
+          "description": "Maximum number of items to return"
+        },
+        {
+          "name": "start",
+          "type": "int",
+          "location": "query",
+          "description": "Pagination offset"
+        },
+        {
+          "name": "format",
+          "type": "string",
+          "location": "query",
+          "description": "Response format (json, bibtex, ris, etc.)"
+        }
+      ]
+    },
+    {
+      "name": "collections_list",
+      "description": "List all collections. Optional: limit, start. Returns array of Collection.",
+      "method": "GET",
+      "path": "/collections",
+      "no_auth": true,
+      "params": [
+        {
+          "name": "limit",
+          "type": "int",
+          "location": "query",
+          "description": "Maximum number of collections to return"
+        },
+        {
+          "name": "start",
+          "type": "int",
+          "location": "query",
+          "description": "Pagination offset"
+        }
+      ]
+    },
+    {
+      "name": "collections_subcollections",
+      "description": "List subcollections of a collection. Required: collectionKey. Returns array of Collection.",
+      "method": "GET",
+      "path": "/collections/{collectionKey}/collections",
+      "no_auth": true,
+      "params": [
+        {
+          "name": "collectionKey",
+          "type": "string",
+          "location": "path",
+          "description": "Collection key",
+          "required": true
+        }
+      ]
+    },
+    {
+      "name": "collections_tags",
+      "description": "List tags used within a collection. Required: collectionKey. Returns array of Tag.",
+      "method": "GET",
+      "path": "/collections/{collectionKey}/tags",
+      "no_auth": true,
+      "params": [
+        {
+          "name": "collectionKey",
+          "type": "string",
+          "location": "path",
+          "description": "Collection key",
+          "required": true
+        }
+      ]
+    },
+    {
+      "name": "collections_top",
+      "description": "List only top-level collections (no parents). Optional: limit. Returns array of Collection.",
+      "method": "GET",
+      "path": "/collections/top",
+      "no_auth": true,
+      "params": [
+        {
+          "name": "limit",
+          "type": "int",
+          "location": "query",
+          "description": "Maximum number to return"
+        }
+      ]
+    },
+    {
+      "name": "collections_update",
+      "description": "Update a collection. Required: collectionKey. Optional: name, parentCollection. (requires API key)",
+      "method": "PUT",
+      "path": "/collections/{collectionKey}",
+      "params": [
+        {
+          "name": "collectionKey",
+          "type": "string",
+          "location": "path",
+          "description": "Collection key to update",
+          "required": true
+        },
+        {
+          "name": "name",
+          "type": "string",
+          "location": "body",
+          "description": "New collection name"
+        },
+        {
+          "name": "parentCollection",
+          "type": "string",
+          "location": "body",
+          "description": "New parent collection key (false for top-level)"
+        }
+      ]
+    },
+    {
+      "name": "items_children",
+      "description": "Get child items (attachments and notes) for an item. Required: itemKey. Optional: itemType. Returns array of Item.",
+      "method": "GET",
+      "path": "/items/{itemKey}/children",
+      "no_auth": true,
+      "params": [
+        {
+          "name": "itemKey",
+          "type": "string",
+          "location": "path",
+          "description": "Parent item key",
+          "required": true
+        },
+        {
+          "name": "itemType",
+          "type": "string",
+          "location": "query",
+          "description": "Filter by type (attachment or note)"
+        }
+      ]
+    },
+    {
+      "name": "items_create",
+      "description": "Create one or more items. Optional: items. (requires API key)",
+      "method": "POST",
+      "path": "/items",
+      "params": [
+        {
+          "name": "items",
+          "type": "array",
+          "location": "body",
+          "description": "Array of item objects to create (use item-types and item-type-fields for schema)"
+        }
+      ]
+    },
+    {
+      "name": "items_delete",
+      "description": "Delete an item (moves to trash). Required: itemKey. Destructive. (requires API key)",
+      "method": "DELETE",
+      "path": "/items/{itemKey}",
+      "params": [
+        {
+          "name": "itemKey",
+          "type": "string",
+          "location": "path",
+          "description": "Item key to delete",
+          "required": true
+        }
+      ]
+    },
+    {
+      "name": "items_get",
+      "description": "Get a single item by key. Required: itemKey. Optional: format. Returns the Item.",
+      "method": "GET",
+      "path": "/items/{itemKey}",
+      "no_auth": true,
+      "params": [
+        {
+          "name": "itemKey",
+          "type": "string",
+          "location": "path",
+          "description": "Zotero item key (e.g. 9UXV5R7L)",
+          "required": true
+        },
+        {
+          "name": "format",
+          "type": "string",
+          "location": "query",
+          "description": "Response format (json, bib, bibtex, csljson, ris, etc.)"
+        }
+      ]
+    },
+    {
+      "name": "items_list",
+      "description": "List all items in the library. Optional: limit, start, sort (plus 6 more). Returns array of Item.",
+      "method": "GET",
+      "path": "/items",
+      "no_auth": true,
+      "params": [
+        {
+          "name": "limit",
+          "type": "int",
+          "location": "query",
+          "description": "Maximum number of items to return (max 100)"
+        },
+        {
+          "name": "start",
+          "type": "int",
+          "location": "query",
+          "description": "Pagination offset (zero-based)"
+        },
+        {
+          "name": "sort",
+          "type": "string",
+          "location": "query",
+          "description": "Sort field (dateAdded, dateModified, title, creator, type, date, publisher, publicationTitle, journalAbbreviation, language, accessDate, libraryCatalog, callNumber, rights, addedBy)"
+        },
+        {
+          "name": "direction",
+          "type": "string",
+          "location": "query",
+          "description": "Sort direction (asc or desc)"
+        },
+        {
+          "name": "itemType",
+          "type": "string",
+          "location": "query",
+          "description": "Filter by item type (journalArticle, book, bookSection, conferencePaper, etc.)"
+        },
+        {
+          "name": "query",
+          "wire_name": "q",
+          "type": "string",
+          "location": "query",
+          "description": "Quick search across title, creator, and year"
+        },
+        {
+          "name": "tag",
+          "type": "string",
+          "location": "query",
+          "description": "Filter by tag name"
+        },
+        {
+          "name": "since",
+          "type": "int",
+          "location": "query",
+          "description": "Return only items modified after this library version number"
+        },
+        {
+          "name": "format",
+          "type": "string",
+          "location": "query",
+          "description": "Response format (json, atom, bib, bibtex, bookmarks, coins, csljson, mods, refer, rdf_bibliontology, rdf_dc, rdf_zotero, ris, tei, wikipedia)"
+        }
+      ]
+    },
+    {
+      "name": "items_tags",
+      "description": "Get tags for a specific item. Required: itemKey. Returns array of Tag.",
+      "method": "GET",
+      "path": "/items/{itemKey}/tags",
+      "no_auth": true,
+      "params": [
+        {
+          "name": "itemKey",
+          "type": "string",
+          "location": "path",
+          "description": "Item key",
+          "required": true
+        }
+      ]
+    },
+    {
+      "name": "items_top",
+      "description": "List top-level items only (excludes attachments and notes). Optional: limit, start, sort (plus 3 more). Returns array of Item.",
+      "method": "GET",
+      "path": "/items/top",
+      "no_auth": true,
+      "params": [
+        {
+          "name": "limit",
+          "type": "int",
+          "location": "query",
+          "description": "Maximum number of items to return"
+        },
+        {
+          "name": "start",
+          "type": "int",
+          "location": "query",
+          "description": "Pagination offset"
+        },
+        {
+          "name": "sort",
+          "type": "string",
+          "location": "query",
+          "description": "Sort field"
+        },
+        {
+          "name": "tag",
+          "type": "string",
+          "location": "query",
+          "description": "Filter by tag"
+        },
+        {
+          "name": "itemType",
+          "type": "string",
+          "location": "query",
+          "description": "Filter by item type"
+        },
+        {
+          "name": "query",
+          "wire_name": "q",
+          "type": "string",
+          "location": "query",
+          "description": "Quick search query"
+        }
+      ]
+    },
+    {
+      "name": "items_trash",
+      "description": "List items in the trash. Optional: limit. Returns array of Item.",
+      "method": "GET",
+      "path": "/items/trash",
+      "no_auth": true,
+      "params": [
+        {
+          "name": "limit",
+          "type": "int",
+          "location": "query",
+          "description": "Maximum number of items to return"
+        }
+      ]
+    },
+    {
+      "name": "items_update",
+      "description": "Update a specific item. Required: itemKey. Optional: title, abstractNote, tags (plus 2 more). Partial update. (requires API key)",
+      "method": "PATCH",
+      "path": "/items/{itemKey}",
+      "params": [
+        {
+          "name": "itemKey",
+          "type": "string",
+          "location": "path",
+          "description": "Item key to update",
+          "required": true
+        },
+        {
+          "name": "title",
+          "type": "string",
+          "location": "body",
+          "description": "Item title"
+        },
+        {
+          "name": "abstractNote",
+          "type": "string",
+          "location": "body",
+          "description": "Abstract or summary"
+        },
+        {
+          "name": "tags",
+          "type": "array",
+          "location": "body",
+          "description": "Tags to apply (array of {tag: string} objects)"
+        },
+        {
+          "name": "collections",
+          "type": "array",
+          "location": "body",
+          "description": "Collection keys to assign this item to"
+        },
+        {
+          "name": "extra",
+          "type": "string",
+          "location": "body",
+          "description": "Extra notes field (also stores Better BibTeX citation key)"
+        }
+      ]
+    },
+    {
+      "name": "schema_creator-fields",
+      "description": "List all creator fields (firstName, lastName, name). Returns array of CreatorField.",
+      "method": "GET",
+      "path": "/creatorFields",
+      "no_auth": true,
+      "params": []
+    },
+    {
+      "name": "schema_item-fields",
+      "description": "List all available item fields. Returns array of ItemField.",
+      "method": "GET",
+      "path": "/itemFields",
+      "no_auth": true,
+      "params": []
+    },
+    {
+      "name": "schema_item-type-creator-types",
+      "description": "List valid creator types for an item type. Required: itemType. Returns array of CreatorType.",
+      "method": "GET",
+      "path": "/itemTypeCreatorTypes",
+      "no_auth": true,
+      "params": [
+        {
+          "name": "itemType",
+          "type": "string",
+          "location": "query",
+          "description": "Item type (e.g. journalArticle)",
+          "required": true
+        }
+      ]
+    },
+    {
+      "name": "schema_item-type-fields",
+      "description": "List valid fields for a specific item type. Required: itemType. Returns array of ItemField.",
+      "method": "GET",
+      "path": "/itemTypeFields",
+      "no_auth": true,
+      "params": [
+        {
+          "name": "itemType",
+          "type": "string",
+          "location": "query",
+          "description": "Item type (e.g. journalArticle)",
+          "required": true
+        }
+      ]
+    },
+    {
+      "name": "schema_item-types",
+      "description": "List all available Zotero item types. Returns array of ItemType.",
+      "method": "GET",
+      "path": "/itemTypes",
+      "no_auth": true,
+      "params": []
+    },
+    {
+      "name": "schema_new-item-template",
+      "description": "Get a blank template for creating a new item of a given type. Required: itemType. Returns the Item.",
+      "method": "GET",
+      "path": "/items/new",
+      "no_auth": true,
+      "params": [
+        {
+          "name": "itemType",
+          "type": "string",
+          "location": "query",
+          "description": "Item type to get template for (e.g. journalArticle)",
+          "required": true
+        }
+      ]
+    },
+    {
+      "name": "searches_get",
+      "description": "Get a specific saved search. Required: searchKey. Returns the Search.",
+      "method": "GET",
+      "path": "/searches/{searchKey}",
+      "no_auth": true,
+      "params": [
+        {
+          "name": "searchKey",
+          "type": "string",
+          "location": "path",
+          "description": "Search key",
+          "required": true
+        }
+      ]
+    },
+    {
+      "name": "searches_list",
+      "description": "List all saved searches. Optional: limit. Returns array of Search.",
+      "method": "GET",
+      "path": "/searches",
+      "no_auth": true,
+      "params": [
+        {
+          "name": "limit",
+          "type": "int",
+          "location": "query",
+          "description": "Maximum number of searches to return"
+        }
+      ]
+    },
+    {
+      "name": "tags_get",
+      "description": "Get a specific tag by name. Required: tagName. Returns array of Tag.",
+      "method": "GET",
+      "path": "/tags/{tagName}",
+      "no_auth": true,
+      "params": [
+        {
+          "name": "tagName",
+          "type": "string",
+          "location": "path",
+          "description": "Tag name (URL-encoded)",
+          "required": true
+        }
+      ]
+    },
+    {
+      "name": "tags_list",
+      "description": "List all tags in the library. Optional: limit, start, query. Returns array of Tag.",
+      "method": "GET",
+      "path": "/tags",
+      "no_auth": true,
+      "params": [
+        {
+          "name": "limit",
+          "type": "int",
+          "location": "query",
+          "description": "Maximum number of tags to return"
+        },
+        {
+          "name": "start",
+          "type": "int",
+          "location": "query",
+          "description": "Pagination offset"
+        },
+        {
+          "name": "query",
+          "wire_name": "q",
+          "type": "string",
+          "location": "query",
+          "description": "Filter tags by name substring"
+        }
+      ]
+    }
+  ]
+}

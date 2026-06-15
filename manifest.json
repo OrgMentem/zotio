@@ -1,0 +1,39 @@
+{
+  "manifest_version": "0.3",
+  "name": "zotero-pp-mcp",
+  "display_name": "Zotero",
+  "version": "4.2.2",
+  "description": "Zotero API surface as MCP tools.",
+  "author": {
+    "name": "CLI Printing Press"
+  },
+  "license": "Apache-2.0",
+  "server": {
+    "type": "binary",
+    "entry_point": "bin/zotero-pp-mcp",
+    "mcp_config": {
+      "command": "${__dirname}/bin/zotero-pp-mcp",
+      "args": [],
+      "env": {
+        "ZOTERO_API_KEY": "${user_config.zotero_api_key}"
+      }
+    }
+  },
+  "user_config": {
+    "zotero_api_key": {
+      "type": "string",
+      "title": "ZOTERO_API_KEY",
+      "description": "Optional. Only needed for the Zotero web API at api.zotero.org (group libraries, access while desktop is closed). Leave blank when using the local Zotero desktop app at localhost:23119.",
+      "sensitive": true,
+      "required": false
+    }
+  },
+  "compatibility": {
+    "claude_desktop": ">=1.0.0",
+    "platforms": [
+      "darwin",
+      "linux",
+      "win32"
+    ]
+  }
+}
