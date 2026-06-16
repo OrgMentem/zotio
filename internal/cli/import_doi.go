@@ -56,6 +56,10 @@ func newImportDoiCmd(flags *rootFlags) *cobra.Command {
 			}
 			addImportCollection(item, flagCollection)
 
+			if flags.dryRun {
+				return printImportDryRun(cmd, item, "CrossRef (DOI "+args[0]+")", flags)
+			}
+
 			c, err := flags.newClient()
 			if err != nil {
 				return err
@@ -77,7 +81,8 @@ func fetchCrossRefItem(cmd *cobra.Command, timeout time.Duration, doi string) (m
 		return nil, fmt.Errorf("DOI is required")
 	}
 
-	req, err := http.NewRequestWithContext(cmd.Context(), http.MethodGet, "https://api.crossref.org/works/"+url.PathEscape(doi), nil)
+	// PATCH(glean 37jv): use the overridable CrossRef base (testable seam).
+	req, err := http.NewRequestWithContext(cmd.Context(), http.MethodGet, enrichCrossRefBase+"/works/"+url.PathEscape(doi), nil)
 	if err != nil {
 		return nil, fmt.Errorf("creating CrossRef request: %w", err)
 	}
@@ -126,6 +131,10 @@ func crossRefItemFromWork(work crossRefWork, fallbackDOI string) map[string]any 
 	}
 	if publicationTitle := firstCrossRefString(work.ContainerTitle, ""); publicationTitle != "" {
 		item["publicationTitle"] = publicationTitle
+	}
+	// PATCH(glean 37jv): include the abstract (CrossRef returns JATS XML).
+	if abstract := stripJATS(work.Abstract); abstract != "" {
+		item["abstractNote"] = abstract
 	}
 	return item
 }

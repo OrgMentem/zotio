@@ -4,7 +4,7 @@
 package cli
 
 import (
-	"time"
+	"net/http"
 
 	"github.com/spf13/cobra"
 )
@@ -13,21 +13,29 @@ func newImportUrlCmd(flags *rootFlags) *cobra.Command {
 	var flagCollection string
 
 	cmd := &cobra.Command{
-		Use:         "url <url>",
-		Short:       "Import a URL as a webpage item",
+		Use:   "url <url>",
+		Short: "Import a URL as a metadata-enriched item",
+		Long: `Import a URL, resolving real metadata where possible.
+
+If the URL embeds a DOI, full metadata is fetched from CrossRef. Otherwise the
+page's embedded metadata (citation_*, Open Graph, Dublin Core meta tags) is
+mapped into a typed item with title, creators, abstract, and publication venue.
+A bare webpage item is used only when no metadata is available.
+
+Use --dry-run to preview the proposed item without writing it.`,
 		Annotations: map[string]string{"pp:method": "POST", "pp:path": "/items"},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if len(args) == 0 {
 				return cmd.Help()
 			}
 
-			item := map[string]any{
-				"itemType":   "webpage",
-				"title":      args[0],
-				"url":        args[0],
-				"accessDate": time.Now().Format("2006-01-02"),
-			}
+			httpClient := &http.Client{Timeout: enrichTimeout(flags.timeout)}
+			item, source := buildImportItemFromURL(cmd.Context(), httpClient, args[0])
 			addImportCollection(item, flagCollection)
+
+			if flags.dryRun {
+				return printImportDryRun(cmd, item, source, flags)
+			}
 
 			c, err := flags.newClient()
 			if err != nil {

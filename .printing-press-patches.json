@@ -243,6 +243,18 @@
         "README.md"
       ],
       "validated_outcome": "Tests: CrossRef DOI exact-title match (and rejection of non-matching candidates), CrossRef abstract JATS stripping, Unpaywall OA-PDF resolution (and no-OA case), apply step builds a PATCH body with version+field+Extra provenance and a POST linked_url attachment (via apiMutator), store-backed work queue produces a proposal for the matching item and skips the non-matching one, dry-run preview reports unapplied proposals, and an end-to-end apply through the real client to an httptest Zotero server PATCHes DOI+version. gofmt/build/vet and full `go test ./...` green."
+    },
+    {
+      "id": "zotero-glean-37jv-import-translators",
+      "summary": "Metadata-enriched URL/DOI imports. `import url` previously created a bare webpage item whose title was the URL; it now runs a translator pipeline (internal/cli/import_translate.go): a DOI embedded in the URL resolves full metadata from CrossRef, otherwise the page's embedded citation_*/Open Graph/Dublin Core meta tags (the signals Zotero's Embedded Metadata translator reads) are mapped into a typed item (title, creators, DOI, date, publication venue, abstract, itemType), with a bare webpage item as the last-resort fallback. The CrossRef item mapper now also captures the abstract (JATS stripped), so `import doi` returns richer items. Both `import url` and `import doi` gained a --dry-run preview of the request body and preserve --collection. The CrossRef base URL is an overridable test seam.",
+      "reason": "glean bead 37jv (P2): import url/doi bypassed richer metadata and created sparse items (webpage with title == URL; DOI mapping limited to type/title/creators/year/DOI/publicationTitle), so one of the highest-frequency Zotero workflows produced references needing manual cleanup.",
+      "files": [
+        "internal/cli/import_translate.go",
+        "internal/cli/import_translate_test.go",
+        "internal/cli/import_url.go",
+        "internal/cli/import_doi.go"
+      ],
+      "validated_outcome": "Tests: DOI extraction from URLs (article/PDF/none), HTML meta parsing (repeated citation_author) + typed item mapping (title/creators/DOI/journal/abstract/itemType), nil when no usable title, buildImportItemFromURL across DOI-in-URL (CrossRef, URL preserved, abstract), embedded-metadata, and non-HTML fallback paths, plus command-level --dry-run previews for url (collection preserved) and doi (abstract included) that write nothing. gofmt/build/vet and full `go test ./...` green. Scope: provider (CrossRef) + embedded-metadata translator; the live Zotero desktop-connector translator and OpenAlex remain future sources behind the same pipeline."
     }
   ]
 }
