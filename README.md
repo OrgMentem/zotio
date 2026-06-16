@@ -109,6 +109,18 @@ These capabilities aren't available in any other tool for this API.
   ```bash
   zotero-pp-cli items audit --missing-abstract --missing-doi --json
   ```
+- **`items enrich`** — Turn those audit gaps into fixes: resolve missing DOIs and abstracts from CrossRef and attach open-access PDF links from Unpaywall, then write them back to Zotero.
+
+  _Previews a patch plan by default; pass `--yes` (or `--agent`) to apply. Field changes record provenance in the item's Extra field._
+
+  ```bash
+  # Preview proposed DOIs (safe; no writes)
+  zotero-pp-cli items enrich --missing-doi --dry-run --agent
+  # Apply DOI + abstract enrichment
+  zotero-pp-cli items enrich --missing-doi --missing-abstract --yes
+  # Attach open-access PDF links (needs a contact email for Unpaywall)
+  zotero-pp-cli items enrich --missing-pdf --email you@example.com --yes
+  ```
 - **`library stats`** — See your library broken down by item type, publication year, and top journals — a dashboard in one command.
 
   _Use this to understand the shape and bias of a library before a systematic review or citation audit._

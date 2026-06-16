@@ -24,6 +24,8 @@ func newItemsCmd(flags *rootFlags) *cobra.Command {
 	cmd.AddCommand(newItemsCitekeyConflictsCmd(flags))
 	cmd.AddCommand(newItemsCollectionsOfCmd(flags))
 	cmd.AddCommand(newItemsDuplicatesCmd(flags))
+	// PATCH(glean dk33): metadata enrichment/remediation pipeline.
+	cmd.AddCommand(newItemsEnrichCmd(flags))
 	cmd.AddCommand(newItemsFindCmd(flags))
 	cmd.AddCommand(newItemsFulltextCmd(flags))
 	cmd.AddCommand(newItemsMissingPdfCmd(flags))

@@ -25,6 +25,8 @@ type crossRefWork struct {
 	DOI            string           `json:"DOI"`
 	Type           string           `json:"type"`
 	ContainerTitle []string         `json:"container-title"`
+	// PATCH(glean dk33): CrossRef abstract (JATS XML) for enrichment.
+	Abstract string `json:"abstract"`
 }
 
 type crossRefAuthor struct {

@@ -230,6 +230,19 @@
         "README.md"
       ],
       "validated_outcome": "JSON-RPC tests through server.HandleMessage (as an MCP inspector would) confirm resources/list, resources/templates/list, and prompts/list return the new entries; resources/read zotero://context matches the context tool payload, zotero://agent-context carries schema_version+commands, zotero://status reports synced:false on an empty store; seeded-store tests confirm the collection manifest (item_count + member keys) and item bundle (annotation_count via attachment join) templates. gofmt/build/vet and full `go test ./...` green."
+    },
+    {
+      "id": "zotero-glean-dk33-metadata-enrichment",
+      "summary": "Added `items enrich`, a provider-backed remediation pipeline that turns the read-only `items audit` work queues into fixes. --missing-doi resolves a DOI from CrossRef (exact normalized-title match to avoid wrong attaches), --missing-abstract fills the abstract from CrossRef by the item's DOI (JATS markup stripped), and --missing-pdf attaches an open-access PDF link from Unpaywall. It previews a patch plan by default and applies via the existing PATCH/POST paths only with --yes (or --agent), including the item version as a conflict guard and appending enrichment provenance to the item's Extra field. Provider base URLs are overridable for testing; apply is unit-testable via a small apiMutator interface.",
+      "reason": "glean bead dk33 (P2): the CLI had strong audit/reporting (items audit: missing_pdf/abstract/doi/tags) but no path from a detected defect to a safe, provider-backed fix — users had to export TODO lists into external scripts.",
+      "files": [
+        "internal/cli/items_enrich.go",
+        "internal/cli/items_enrich_test.go",
+        "internal/cli/items.go",
+        "internal/cli/import_doi.go",
+        "README.md"
+      ],
+      "validated_outcome": "Tests: CrossRef DOI exact-title match (and rejection of non-matching candidates), CrossRef abstract JATS stripping, Unpaywall OA-PDF resolution (and no-OA case), apply step builds a PATCH body with version+field+Extra provenance and a POST linked_url attachment (via apiMutator), store-backed work queue produces a proposal for the matching item and skips the non-matching one, dry-run preview reports unapplied proposals, and an end-to-end apply through the real client to an httptest Zotero server PATCHes DOI+version. gofmt/build/vet and full `go test ./...` green."
     }
   ]
 }
