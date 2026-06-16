@@ -15,6 +15,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 	"zotero-pp-cli/internal/cliutil"
@@ -176,14 +177,14 @@ func (c *Client) PatchWithHeaders(path string, body any, headers map[string]stri
 
 // do executes an HTTP request. headerOverrides, when non-nil, override global
 // RequiredHeaders for this specific request (used for per-endpoint API versioning).
-func (c *Client) do(method, path string, params map[string]string, body any, headerOverrides map[string]string) (json.RawMessage, int, error) {
+func (c *Client) doRequest(method, path string, params map[string]string, body any, headerOverrides map[string]string) (json.RawMessage, int, http.Header, error) {
 	targetURL := c.BaseURL + path
 
 	var bodyBytes []byte
 	if body != nil {
 		b, err := json.Marshal(body)
 		if err != nil {
-			return nil, 0, fmt.Errorf("marshaling body: %w", err)
+			return nil, 0, nil, fmt.Errorf("marshaling body: %w", err)
 		}
 		bodyBytes = b
 	}
@@ -194,12 +195,13 @@ func (c *Client) do(method, path string, params map[string]string, body any, hea
 	// not during dry-run.
 	authHeader, err := c.authHeader()
 	if err != nil {
-		return nil, 0, err
+		return nil, 0, nil, err
 	}
 
 	// Build the request for dry-run display or actual execution
 	if c.DryRun {
-		return c.dryRun(method, targetURL, path, params, bodyBytes, headerOverrides, authHeader)
+		respBody, status, derr := c.dryRun(method, targetURL, path, params, bodyBytes, headerOverrides, authHeader)
+		return respBody, status, nil, derr
 	}
 
 	const maxRetries = 3
@@ -215,7 +217,7 @@ func (c *Client) do(method, path string, params map[string]string, body any, hea
 
 		req, err := http.NewRequest(method, targetURL, bodyReader)
 		if err != nil {
-			return nil, 0, fmt.Errorf("creating request: %w", err)
+			return nil, 0, nil, fmt.Errorf("creating request: %w", err)
 		}
 		if bodyBytes != nil {
 			req.Header.Set("Content-Type", "application/json")
@@ -256,7 +258,7 @@ func (c *Client) do(method, path string, params map[string]string, body any, hea
 		respBody, err := io.ReadAll(resp.Body)
 		resp.Body.Close()
 		if err != nil {
-			return nil, 0, fmt.Errorf("reading response: %w", err)
+			return nil, 0, nil, fmt.Errorf("reading response: %w", err)
 		}
 		respBody = sanitizeJSONResponse(respBody)
 
@@ -266,7 +268,7 @@ func (c *Client) do(method, path string, params map[string]string, body any, hea
 			if method != http.MethodGet && !c.DryRun {
 				c.invalidateCache()
 			}
-			return json.RawMessage(respBody), resp.StatusCode, nil
+			return json.RawMessage(respBody), resp.StatusCode, resp.Header, nil
 		}
 
 		apiErr := &APIError{
@@ -296,10 +298,43 @@ func (c *Client) do(method, path string, params map[string]string, body any, hea
 		}
 
 		// Client error or retries exhausted - return the error
-		return nil, resp.StatusCode, apiErr
+		return nil, resp.StatusCode, resp.Header, apiErr
 	}
 
-	return nil, 0, lastErr
+	return nil, 0, nil, lastErr
+}
+
+// do executes an HTTP request and discards response headers, wrapping doRequest
+// for the many callers that do not need them.
+func (c *Client) do(method, path string, params map[string]string, body any, headerOverrides map[string]string) (json.RawMessage, int, error) {
+	respBody, status, _, err := c.doRequest(method, path, params, body, headerOverrides)
+	return respBody, status, err
+}
+
+// GetWithVersion performs a GET and returns the body plus the Zotero
+// Last-Modified-Version response header parsed as an int (0 when absent or
+// unparseable). PATCH(glean static-audit): version-based incremental sync needs
+// the response header that the cached Get/do path discards. Bypasses the read
+// cache so the caller always observes a live version.
+func (c *Client) GetWithVersion(path string, params map[string]string) (json.RawMessage, int, error) {
+	respBody, _, hdr, err := c.doRequest("GET", path, params, nil, nil)
+	if err != nil {
+		return nil, 0, err
+	}
+	return respBody, parseLastModifiedVersion(hdr), nil
+}
+
+// parseLastModifiedVersion extracts the Zotero Last-Modified-Version header as
+// an int, returning 0 when missing or unparseable. PATCH(glean static-audit).
+func parseLastModifiedVersion(h http.Header) int {
+	if h == nil {
+		return 0
+	}
+	v, err := strconv.Atoi(strings.TrimSpace(h.Get("Last-Modified-Version")))
+	if err != nil {
+		return 0
+	}
+	return v
 }
 
 // dryRun prints the outgoing request exactly as the live path would send it,

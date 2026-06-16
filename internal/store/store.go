@@ -207,6 +207,9 @@ func (s *Store) backfillColumns(ctx context.Context, conn *sql.Conn) error {
 		{table: "sync_state", column: "last_cursor", decl: "TEXT"},
 		{table: "sync_state", column: "last_synced_at", decl: "DATETIME"},
 		{table: "sync_state", column: "total_count", decl: "INTEGER DEFAULT 0"},
+		// PATCH(glean static-audit): Zotero incremental sync is keyed on an
+		// integer library version (Last-Modified-Version), not a timestamp.
+		{table: "sync_state", column: "library_version", decl: "INTEGER DEFAULT 0"},
 	} {
 		if err := s.ensureColumn(ctx, conn, c.table, c.column, c.decl); err != nil {
 			return err
@@ -251,7 +254,8 @@ func (s *Store) migrate(ctx context.Context) error {
 			resource_type TEXT PRIMARY KEY,
 			last_cursor TEXT,
 			last_synced_at DATETIME,
-			total_count INTEGER DEFAULT 0
+			total_count INTEGER DEFAULT 0,
+			library_version INTEGER DEFAULT 0
 		)`,
 		`CREATE VIRTUAL TABLE IF NOT EXISTS resources_fts USING fts5(
 			id, resource_type, content, tokenize='porter unicode61'
@@ -702,6 +706,38 @@ func (s *Store) GetSyncState(resourceType string) (cursor string, lastSynced tim
 		return "", time.Time{}, 0, nil
 	}
 	return
+}
+
+// SaveLibraryVersion records the Zotero Last-Modified-Version checkpoint for a
+// resource so the next incremental sync can pass it as the integer `since`
+// parameter. PATCH(glean static-audit): version-based incremental sync.
+func (s *Store) SaveLibraryVersion(resourceType string, version int) error {
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+	_, err := s.db.Exec(
+		`INSERT INTO sync_state (resource_type, library_version)
+		 VALUES (?, ?)
+		 ON CONFLICT(resource_type) DO UPDATE SET library_version = excluded.library_version`,
+		resourceType, version,
+	)
+	return err
+}
+
+// GetLibraryVersion returns the stored Zotero library version checkpoint for a
+// resource, or 0 when none has been recorded. PATCH(glean static-audit).
+func (s *Store) GetLibraryVersion(resourceType string) (int, error) {
+	var v sql.NullInt64
+	err := s.db.QueryRow(
+		`SELECT library_version FROM sync_state WHERE resource_type = ?`,
+		resourceType,
+	).Scan(&v)
+	if err == sql.ErrNoRows {
+		return 0, nil
+	}
+	if err != nil {
+		return 0, err
+	}
+	return int(v.Int64), nil
 }
 
 // SaveSyncCursor stores the pagination cursor for a resource type.

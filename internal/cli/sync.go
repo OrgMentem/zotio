@@ -9,7 +9,6 @@ import (
 	"github.com/spf13/cobra"
 	"net/url"
 	"os"
-	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -30,7 +29,7 @@ type syncResult struct {
 func newSyncCmd(flags *rootFlags) *cobra.Command {
 	var resources []string
 	var full bool
-	var since string
+	var sinceVersion int
 	var concurrency int
 	var dbPath string
 	var maxPages int
@@ -66,8 +65,8 @@ Exit codes & warnings:
   # Full resync (ignore previous checkpoint)
   zotero-pp-cli sync --full
 
-  # Incremental sync: only records from the last 7 days
-  zotero-pp-cli sync --since 7d
+  # Incremental sync: only objects modified since a Zotero library version
+  zotero-pp-cli sync --since 4521
 
   # Parallel sync with 8 workers
   zotero-pp-cli sync --concurrency 8
@@ -110,7 +109,7 @@ Exit codes & warnings:
 			// --since: if the user set --since, that threshold still wins
 			// and we don't short-circuit historical context they asked for.
 			if latestOnly {
-				if since == "" {
+				if sinceVersion == 0 {
 					maxPages = 1
 					// Clear the cursor so we start from the head each time;
 					// the goal of --latest-only is "refresh the top" not
@@ -124,16 +123,6 @@ Exit codes & warnings:
 				} else if humanFriendly {
 					fmt.Fprintln(os.Stderr, "warning: --latest-only ignored because --since is set; --since takes precedence")
 				}
-			}
-
-			// Resolve --since into an RFC3339 timestamp
-			sinceTS := ""
-			if since != "" {
-				ts, err := parseSinceDuration(since)
-				if err != nil {
-					return fmt.Errorf("invalid --since value %q: %w", since, err)
-				}
-				sinceTS = ts.Format(time.RFC3339)
 			}
 
 			// Worker pool: produce resources, N workers consume
@@ -151,7 +140,7 @@ Exit codes & warnings:
 				go func() {
 					defer wg.Done()
 					for resource := range work {
-						res := syncResource(c, db, resource, sinceTS, full, maxPages, concurrency == 1)
+						res := syncResource(c, db, resource, sinceVersion, full, maxPages, concurrency == 1)
 						results <- res
 					}
 				}()
@@ -250,7 +239,7 @@ Exit codes & warnings:
 
 	cmd.Flags().StringSliceVar(&resources, "resources", nil, "Comma-separated resource types to sync")
 	cmd.Flags().BoolVar(&full, "full", false, "Full resync (ignore previous checkpoint)")
-	cmd.Flags().StringVar(&since, "since", "", "Incremental sync duration (e.g. 7d, 24h, 1w, 30m)")
+	cmd.Flags().IntVar(&sinceVersion, "since", 0, "Only sync objects modified since this Zotero library version (0 = use stored checkpoint). Get versions from a prior sync or 'items list --since'.")
 	cmd.Flags().IntVar(&concurrency, "concurrency", 4, "Number of parallel sync workers")
 	cmd.Flags().StringVar(&dbPath, "db", "", "Database path (default: ~/.local/share/zotero-pp-cli/data.db)")
 	cmd.Flags().IntVar(&maxPages, "max-pages", 100, "Maximum pages to fetch per resource (0 = unlimited; cap-hit emits a sync_warning event)")
@@ -261,11 +250,11 @@ Exit codes & warnings:
 }
 
 // syncResource handles the full paginated sync of a single resource.
-// It resumes from the last cursor unless sinceTS or full mode overrides it.
+// It resumes from the last cursor unless sinceVersion or full mode overrides it.
 func syncResource(c interface {
-	Get(string, map[string]string) (json.RawMessage, error)
+	GetWithVersion(string, map[string]string) (json.RawMessage, int, error)
 	RateLimit() float64
-}, db *store.Store, resource, sinceTS string, full bool, maxPages int, inlineProgress bool) syncResult {
+}, db *store.Store, resource string, sinceVersion int, full bool, maxPages int, inlineProgress bool) syncResult {
 	started := time.Now()
 
 	if !humanFriendly {
@@ -279,16 +268,21 @@ func syncResource(c interface {
 	var totalCount int
 
 	// Resume cursor from sync_state (unless --full cleared it)
-	existingCursor, lastSynced, _, _ := db.GetSyncState(resource)
+	existingCursor, _, _, _ := db.GetSyncState(resource)
 
-	// Determine the since param value:
-	// 1. Explicit --since flag takes priority
-	// 2. Otherwise use last_synced_at from sync_state for incremental sync
+	// Determine the since value: an explicit --since version wins; otherwise use
+	// the stored Last-Modified-Version checkpoint for incremental sync (skipped
+	// on --full). PATCH(glean static-audit): Zotero's `since` is an integer
+	// library version, not a timestamp — the old RFC3339 value was silently
+	// ignored by the API, so incremental sync never actually filtered.
 	sinceParam := determineSinceParam()
-	effectiveSince := sinceTS
-	if effectiveSince == "" && !lastSynced.IsZero() && !full {
-		effectiveSince = lastSynced.Format(time.RFC3339)
+	effectiveSince := sinceVersion
+	if effectiveSince == 0 && !full {
+		if v, verr := db.GetLibraryVersion(resource); verr == nil && v > 0 {
+			effectiveSince = v
+		}
 	}
+	libraryVersion := 0
 
 	cursor := existingCursor
 	pageSize := determinePaginationDefaults()
@@ -319,12 +313,17 @@ func syncResource(c interface {
 			params[pageSize.cursorParam] = cursor
 		}
 
-		// Set since filter
-		if effectiveSince != "" {
-			params[sinceParam] = effectiveSince
+		// Set since filter (integer Zotero library version)
+		if effectiveSince > 0 {
+			params[sinceParam] = strconv.Itoa(effectiveSince)
 		}
 
-		data, err := c.Get(path, params)
+		data, respVersion, err := c.GetWithVersion(path, params)
+		// Capture the library version from the first response that reports one;
+		// using the earliest avoids missing objects changed mid-sync.
+		if libraryVersion == 0 && respVersion > 0 {
+			libraryVersion = respVersion
+		}
 		if err != nil {
 			if w, ok := isSyncAccessWarning(err); ok {
 				if !humanFriendly {
@@ -472,6 +471,11 @@ func syncResource(c interface {
 
 	// Final sync state: clear cursor (sync is complete), update count
 	_ = db.SaveSyncState(resource, "", totalCount)
+	// Persist the library version checkpoint so the next run can do a true
+	// version-based incremental sync via the `since` parameter.
+	if libraryVersion > 0 {
+		_ = db.SaveLibraryVersion(resource, libraryVersion)
+	}
 
 	// F4b symptom probe: if items were consumed and successfully
 	// extracted (extractFailures < consumed) but nothing landed in
@@ -762,35 +766,6 @@ func upsertSingleObject(db *store.Store, resource string, data json.RawMessage) 
 	switch resource {
 	default:
 		return db.Upsert(resource, id, data)
-	}
-}
-
-// parseSinceDuration converts human-friendly duration strings into a time.Time.
-// Supported formats: "7d" (days), "24h" (hours), "30m" (minutes), "1w" (weeks).
-func parseSinceDuration(s string) (time.Time, error) {
-	re := regexp.MustCompile(`^(\d+)([dhwm])$`)
-	matches := re.FindStringSubmatch(strings.TrimSpace(s))
-	if matches == nil {
-		return time.Time{}, fmt.Errorf("expected format like 7d, 24h, 1w, or 30m")
-	}
-
-	n, err := strconv.Atoi(matches[1])
-	if err != nil {
-		return time.Time{}, err
-	}
-
-	now := time.Now()
-	switch matches[2] {
-	case "d":
-		return now.Add(-time.Duration(n) * 24 * time.Hour), nil
-	case "h":
-		return now.Add(-time.Duration(n) * time.Hour), nil
-	case "w":
-		return now.Add(-time.Duration(n) * 7 * 24 * time.Hour), nil
-	case "m":
-		return now.Add(-time.Duration(n) * time.Minute), nil
-	default:
-		return time.Time{}, fmt.Errorf("unknown unit %q", matches[2])
 	}
 }
 

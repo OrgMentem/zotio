@@ -9,7 +9,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
-	"strconv"
 	"testing"
 	"time"
 
@@ -18,39 +17,59 @@ import (
 	"zotero-pp-cli/internal/store"
 )
 
-func TestSyncParseSinceDuration(t *testing.T) {
-	tests := []struct {
-		name string
-		in   string
-		want time.Duration
-	}{
-		{name: "days", in: "7d", want: 7 * 24 * time.Hour},
-		{name: "hours", in: "24h", want: 24 * time.Hour},
-		{name: "minutes", in: "30m", want: 30 * time.Minute},
+func TestSyncResourceVersionBasedIncremental(t *testing.T) {
+	syncTestWithHumanFriendly(t, false)
+	db := syncTestOpenStore(t)
+	defer db.Close()
+
+	// First sync: server reports Last-Modified-Version; syncResource stores it.
+	var firstSince string
+	srv1 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		firstSince = r.URL.Query().Get("since")
+		w.Header().Set("Last-Modified-Version", "100")
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`[{"id":"a"},{"id":"b"}]`))
+	}))
+	defer srv1.Close()
+	if res := syncResource(syncTestClient(srv1.URL), db, "items", 0, false, 0, false); res.Err != nil {
+		t.Fatalf("first sync error: %v", res.Err)
+	}
+	if firstSince != "" {
+		t.Errorf("first sync sent since=%q, want empty (no checkpoint yet)", firstSince)
+	}
+	if v, err := db.GetLibraryVersion("items"); err != nil || v != 100 {
+		t.Fatalf("stored library version = %d (err %v), want 100", v, err)
 	}
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			before := time.Now()
-			got, err := parseSinceDuration(tt.in)
-			after := time.Now()
-			if err != nil {
-				t.Fatalf("parseSinceDuration(%q) error = %v", tt.in, err)
-			}
-			lower := before.Add(-tt.want).Add(-100 * time.Millisecond)
-			upper := after.Add(-tt.want).Add(100 * time.Millisecond)
-			if got.Before(lower) || got.After(upper) {
-				t.Fatalf("parseSinceDuration(%q) = %s, want between %s and %s", tt.in, got, lower, upper)
-			}
-		})
+	// Second sync: a stored checkpoint and no --full must send since=100 (int).
+	var secondSince string
+	srv2 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		secondSince = r.URL.Query().Get("since")
+		w.Header().Set("Last-Modified-Version", "150")
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`[{"id":"c"}]`))
+	}))
+	defer srv2.Close()
+	if res := syncResource(syncTestClient(srv2.URL), db, "items", 0, false, 0, false); res.Err != nil {
+		t.Fatalf("second sync error: %v", res.Err)
+	}
+	if secondSince != "100" {
+		t.Errorf("second sync sent since=%q, want \"100\" (stored checkpoint)", secondSince)
 	}
 
-	for _, in := range []string{"", "7", "1y", "d", " 4 h "} {
-		t.Run("invalid/"+strconv.Quote(in), func(t *testing.T) {
-			if got, err := parseSinceDuration(in); err == nil {
-				t.Fatalf("parseSinceDuration(%q) = %s, nil error", in, got)
-			}
-		})
+	// An explicit --since version overrides the stored checkpoint.
+	var thirdSince string
+	srv3 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		thirdSince = r.URL.Query().Get("since")
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`[{"id":"d"}]`))
+	}))
+	defer srv3.Close()
+	if res := syncResource(syncTestClient(srv3.URL), db, "items", 4521, false, 0, false); res.Err != nil {
+		t.Fatalf("third sync error: %v", res.Err)
+	}
+	if thirdSince != "4521" {
+		t.Errorf("explicit --since sent since=%q, want \"4521\"", thirdSince)
 	}
 }
 
@@ -192,7 +211,7 @@ func TestSyncResourcePaginatesMultiplePages(t *testing.T) {
 
 	db := syncTestOpenStore(t)
 	defer db.Close()
-	result := syncResource(syncTestClient(server.URL), db, "items", "", false, 0, false)
+	result := syncResource(syncTestClient(server.URL), db, "items", 0, false, 0, false)
 	if result.Err != nil || result.Warn != nil {
 		t.Fatalf("syncResource result Err = %v Warn = %v", result.Err, result.Warn)
 	}
@@ -217,7 +236,7 @@ func TestSyncResourceStopsOnStuckCursor(t *testing.T) {
 
 	db := syncTestOpenStore(t)
 	defer db.Close()
-	result := syncResource(syncTestClient(server.URL), db, "items", "", false, 0, false)
+	result := syncResource(syncTestClient(server.URL), db, "items", 0, false, 0, false)
 	if result.Err != nil || result.Warn != nil {
 		t.Fatalf("syncResource result Err = %v Warn = %v", result.Err, result.Warn)
 	}
@@ -242,7 +261,7 @@ func TestSyncResourceStopsAtMaxPages(t *testing.T) {
 
 	db := syncTestOpenStore(t)
 	defer db.Close()
-	result := syncResource(syncTestClient(server.URL), db, "items", "", false, 1, false)
+	result := syncResource(syncTestClient(server.URL), db, "items", 0, false, 1, false)
 	if result.Err != nil || result.Warn != nil {
 		t.Fatalf("syncResource result Err = %v Warn = %v", result.Err, result.Warn)
 	}
@@ -265,7 +284,7 @@ func TestSyncResourceStoresSingleObject(t *testing.T) {
 
 	db := syncTestOpenStore(t)
 	defer db.Close()
-	result := syncResource(syncTestClient(server.URL), db, "items", "", false, 0, false)
+	result := syncResource(syncTestClient(server.URL), db, "items", 0, false, 0, false)
 	if result.Err != nil || result.Warn != nil {
 		t.Fatalf("syncResource result Err = %v Warn = %v", result.Err, result.Warn)
 	}
@@ -284,7 +303,7 @@ func TestSyncResourceAccessDeniedReturnsWarning(t *testing.T) {
 
 	db := syncTestOpenStore(t)
 	defer db.Close()
-	result := syncResource(syncTestClient(server.URL), db, "items", "", false, 0, false)
+	result := syncResource(syncTestClient(server.URL), db, "items", 0, false, 0, false)
 	if result.Err != nil {
 		t.Fatalf("access denied Err = %v, want nil", result.Err)
 	}

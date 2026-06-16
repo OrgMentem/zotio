@@ -118,6 +118,19 @@
         "internal/cli/doctor_gaps_test.go"
       ],
       "validated_outcome": "32 new test functions; go build/vet and full `go test ./...` pass (fresh, -count=1)."
+    },
+    {
+      "id": "zotero-aca7-version-based-sync",
+      "summary": "Reworked incremental sync to Zotero's integer library-version model. Added a library_version column to sync_state with SaveLibraryVersion/GetLibraryVersion; surfaced the Last-Modified-Version response header via client.GetWithVersion (do() refactored to doRequest returning http.Header); syncResource now reads/sends an integer `since` and stores the checkpoint; `--since` changed from a duration string to an integer library version (matching `items list --since`); removed the dead parseSinceDuration/RFC3339 path.",
+      "reason": "glean bead aca7 (P1): sync converted --since and last_synced_at to RFC3339 timestamps and passed them to Zotero's `since` param, which expects an integer library version, so incremental sync silently never filtered. Required response-header plumbing the client did not previously expose.",
+      "files": [
+        "internal/store/store.go",
+        "internal/client/client.go",
+        "internal/cli/sync.go",
+        "internal/cli/sync_gaps_test.go",
+        "internal/client/getversion_patch_test.go"
+      ],
+      "validated_outcome": "TestSyncResourceVersionBasedIncremental (stores Last-Modified-Version, sends since=<stored> on the next run, explicit --since overrides) and TestGetWithVersion pass; go build/vet and full `go test ./...` pass (fresh)."
     }
   ]
 }
