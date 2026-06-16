@@ -321,6 +321,8 @@ claude mcp add zotero zotero-pp-mcp -e ZOTERO_API_KEY=<your-key>
 
 The `-e ZOTERO_API_KEY=<your-key>` is optional for local-desktop use; the local API at localhost:23119 needs no key. Set it only for the Zotero web API (group libraries, or while the desktop app is closed).
 
+Beyond the typed tools, the MCP server exposes Zotero context as **resources** — `zotero://context` (API taxonomy and query tips), `zotero://agent-context` (CLI command/flag/auth description), `zotero://status` (local archive sync state), `zotero://schema` (local SQLite DDL), and the templates `zotero://collections/{key}` (collection manifest) and `zotero://items/{key}` (item + annotations bundle) — plus guided **prompts** (`inspect-library`, `export-reading-notes`, `prepare-citation-export`). Hosts can discover library state and common workflows without shelling through mirrored commands.
+
 </details>
 
 ## Use with Claude Desktop

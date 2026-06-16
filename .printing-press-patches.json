@@ -216,6 +216,20 @@
         "README.md"
       ],
       "validated_outcome": "query_test (itemType/tag/collection/top/limit/start/sort + quick-search + curated FTS doc) and fixture-backed parity tests (live httptest vs --data-source local return identical key sets and ordering for itemType+sort and tag scopes; empty scope returns [] not an error) pass; gofmt/build/vet and full `go test ./...` green. Scope note: implemented as a hand-written Zotero item read model (the high-value list/get/search scopes), not a fully generic per-endpoint translator."
+    },
+    {
+      "id": "zotero-glean-qfuq-mcp-resources-prompts",
+      "summary": "Added first-class MCP resources and prompts so the server is no longer tool-only. Resources: zotero://context (durable domain taxonomy, shared with the context tool via domainContext), zotero://agent-context (CLI description via new cli.AgentContextJSON), zotero://status (local archive sync state), zotero://schema (local SQLite DDL), and templates zotero://collections/{key} (collection manifest) and zotero://items/{key} (item + annotations bundle). Prompts: inspect-library, export-reading-notes, prepare-citation-export. main.go advertises resource+prompt capabilities and calls RegisterResources/RegisterPrompts; mutations stay typed tools.",
+      "reason": "glean bead qfuq (P2): the MCP surface mirrored CLI commands only — no resource/prompt capabilities — so hosts had to shell through mirrored tools and guess command sequences to discover library state and workflows.",
+      "files": [
+        "cmd/zotero-pp-mcp/main.go",
+        "internal/mcp/resources.go",
+        "internal/mcp/resources_test.go",
+        "internal/mcp/tools.go",
+        "internal/cli/mcp_exports.go",
+        "README.md"
+      ],
+      "validated_outcome": "JSON-RPC tests through server.HandleMessage (as an MCP inspector would) confirm resources/list, resources/templates/list, and prompts/list return the new entries; resources/read zotero://context matches the context tool payload, zotero://agent-context carries schema_version+commands, zotero://status reports synced:false on an empty store; seeded-store tests confirm the collection manifest (item_count + member keys) and item bundle (annotation_count via attachment join) templates. gofmt/build/vet and full `go test ./...` green."
     }
   ]
 }

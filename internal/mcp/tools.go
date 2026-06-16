@@ -652,74 +652,9 @@ func handleSQL(ctx context.Context, req mcplib.CallToolRequest) (*mcplib.CallToo
 }
 
 func handleContext(_ context.Context, _ mcplib.CallToolRequest) (*mcplib.CallToolResult, error) {
-	ctx := map[string]any{
-		"api":         "zotero",
-		"description": "Zotero reference manager CLI — every library feature in the terminal, plus offline search, annotation export, and...",
-		"archetype":   "content",
-		"tool_count":  28,
-		// tool_surface tells agents which surface a capability lives on.
-		// PATCH(glean c4ke): command-mirror tools now run in-process, and
-		// the local desktop API needs no key.
-		"tool_surface": "MCP exposes typed endpoint tools plus a runtime mirror of user-facing CLI commands. Endpoint tools keep typed schemas; command-mirror tools run the CLI's Cobra commands in-process.",
-		"auth": map[string]any{
-			"type": "api_key",
-			"env_vars": []map[string]any{
-				{
-					"name":        "ZOTERO_API_KEY",
-					"kind":        "per_call",
-					"required":    false,
-					"sensitive":   true,
-					"description": "Only for the Zotero web API (group libraries or while the desktop app is closed); local desktop at localhost:23119 needs no key.",
-				},
-			},
-		},
-		"resources": []map[string]any{
-			{
-				"name":        "collections",
-				"description": "Manage collections in your Zotero library",
-				"endpoints":   []string{"create", "delete", "get", "items", "list", "subcollections", "tags", "top", "update"},
-				"syncable":    true,
-				"searchable":  true,
-			},
-			{
-				"name":        "items",
-				"description": "Manage items in your Zotero library",
-				"endpoints":   []string{"children", "create", "delete", "get", "list", "tags", "top", "trash", "update"},
-				"syncable":    true,
-				"searchable":  true,
-			},
-			{
-				"name":        "schema",
-				"description": "Zotero item type and field schema",
-				"endpoints":   []string{"creator-fields", "item-fields", "item-type-creator-types", "item-type-fields", "item-types", "new-item-template"},
-				"syncable":    true,
-				"searchable":  true,
-			},
-			{
-				"name":        "searches",
-				"description": "Manage saved searches in your Zotero library",
-				"endpoints":   []string{"get", "list"},
-				"syncable":    true,
-				"searchable":  true,
-			},
-			{
-				"name":        "tags",
-				"description": "Manage tags across your Zotero library",
-				"endpoints":   []string{"get", "list"},
-				"syncable":    true,
-				"searchable":  true,
-			},
-		},
-		"query_tips": []string{
-			"Pagination uses cursor-based paging. Pass after parameter for subsequent pages.",
-			"Control page size with the limit parameter (default 100).",
-			"Use since for incremental fetches (filter by modification time).",
-			"Use the sql tool for ad-hoc analysis on synced data. Run sync first to populate the local database.",
-			"Use the search tool for full-text search across all synced resources. Faster than iterating list endpoints.",
-			"Prefer sql/search over repeated API calls when the data is already synced.",
-		},
-	}
-	data, _ := json.MarshalIndent(ctx, "", "  ")
+	// PATCH(glean qfuq): single source of truth shared with the
+	// zotero://context MCP resource (see resources.go domainContext).
+	data, _ := json.MarshalIndent(domainContext(), "", "  ")
 	return mcplib.NewToolResultText(string(data)), nil
 }
 

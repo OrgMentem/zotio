@@ -12,13 +12,20 @@ import (
 )
 
 func main() {
+	// PATCH(glean qfuq): advertise resource + prompt capabilities alongside
+	// tools so hosts can discover Zotero context and guided workflows.
 	s := server.NewMCPServer(
 		"Zotero",
 		"1.0.0",
 		server.WithToolCapabilities(false),
+		server.WithResourceCapabilities(false, true),
+		server.WithPromptCapabilities(true),
 	)
 
 	mcptools.RegisterTools(s)
+	// PATCH(glean qfuq): first-class MCP resources and prompts.
+	mcptools.RegisterResources(s)
+	mcptools.RegisterPrompts(s)
 
 	if err := server.ServeStdio(s); err != nil {
 		fmt.Fprintf(os.Stderr, "MCP server error: %v\n", err)
