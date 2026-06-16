@@ -309,6 +309,36 @@ func TestHelpersCompactExtractAndFormat(t *testing.T) {
 	}
 }
 
+// PATCH(glean compact-envelope): --agent/--compact must not collapse a Zotero
+// resource envelope ({key, data:{...}}) down to {key}; it should keep the
+// nested fields minus the verbose ones.
+func TestCompactFieldsPreservesEnvelopeData(t *testing.T) {
+	in := json.RawMessage(`[{"key":"K1","version":9,"data":{"itemType":"journalArticle","title":"T","DOI":"10.1","abstractNote":"long abstract","relations":{"a":"b"}}}]`)
+	var items []map[string]any
+	if err := json.Unmarshal(compactFields(in), &items); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if len(items) != 1 {
+		t.Fatalf("want 1 item, got %d", len(items))
+	}
+	if items[0]["key"] != "K1" {
+		t.Errorf("key not preserved: %v", items[0])
+	}
+	data, ok := items[0]["data"].(map[string]any)
+	if !ok {
+		t.Fatalf("envelope collapsed, data dropped: %v", items[0])
+	}
+	if data["title"] != "T" || data["itemType"] != "journalArticle" || data["DOI"] != "10.1" {
+		t.Errorf("useful nested fields not preserved: %v", data)
+	}
+	if _, ok := data["abstractNote"]; ok {
+		t.Errorf("verbose abstractNote not stripped: %v", data)
+	}
+	if _, ok := data["relations"]; ok {
+		t.Errorf("verbose relations not stripped: %v", data)
+	}
+}
+
 func TestHelpersTruncateJSONArray(t *testing.T) {
 	helpersTestAssertJSONEqual(t, truncateJSONArray(json.RawMessage(`[1,2,3,4]`), 2), `[1,2]`)
 

@@ -617,6 +617,25 @@ func compactListFields(items []map[string]any) json.RawMessage {
 
 	filtered := make([]map[string]any, 0, len(items))
 	for _, item := range items {
+		// PATCH(glean compact-envelope; upstream cli-printing-press candidate):
+		// resource-envelope items (Zotero/JSON:API shape {key/id, data:{...}})
+		// keep nothing under the flat allowlist because their real fields are
+		// nested. Detect the envelope and compact the nested object instead, so
+		// --agent/--compact output stays useful rather than collapsing to {key}.
+		if data, ok := item["data"].(map[string]any); ok {
+			compact := map[string]any{}
+			for k, v := range item {
+				if k != "data" && keepFields[k] {
+					compact[k] = v
+				}
+			}
+			var inner map[string]any
+			if json.Unmarshal(compactObjectFields(data), &inner) == nil {
+				compact["data"] = inner
+			}
+			filtered = append(filtered, compact)
+			continue
+		}
 		compact := map[string]any{}
 		for k, v := range item {
 			if keepFields[k] {
@@ -635,6 +654,8 @@ func compactObjectFields(obj map[string]any) json.RawMessage {
 	stripFields := map[string]bool{
 		"description": true, "body": true, "content": true,
 		"comments": true, "attachments": true, "html": true, "markdown": true,
+		// PATCH(glean compact-envelope): verbose Zotero item fields.
+		"abstractNote": true, "relations": true,
 	}
 
 	compact := map[string]any{}

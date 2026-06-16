@@ -267,6 +267,17 @@
         "docs/obsidian-integration.md"
       ],
       "validated_outcome": "Tests: Obsidian note creation (citekey filename, frontmatter, zotero://select + per-annotation open-pdf backlinks, page label, comment), idempotent re-run (unchanged, byte-identical), dry-run writes nothing, the critical no-clobber merge (managed keys updated while user frontmatter keys + prose survive), managed-block replacement without duplication, Logseq creation, filename sanitization, and --out required. Verified the native local API on Zotero 10.0-beta.7 returns full item data incl. data.citationKey. gofmt/build/vet and full `go test ./...` green. Scope: Obsidian merge is the fully-featured path (user's tool); Logseq supports create + property/managed-block refresh."
+    },
+    {
+      "id": "zotero-glean-compact-envelope",
+      "summary": "Fixed --compact/--agent collapsing resource-envelope list items to {key}. compactListFields (internal/cli/helpers.go) applied a flat top-level allowlist, but Zotero items nest all real fields under data, so agent output for `items list` (and any envelope-shaped resource) reduced each item to {key}. compactListFields is now envelope-aware: when an item has a nested data object it keeps the top-level identifiers plus the data object compacted via compactObjectFields, and abstractNote/relations were added to that verbose-field blocklist.",
+      "reason": "Discovered while validating vault sync on Zotero 10.0-beta.7: `items list --agent` returned only item keys, useless to agents, because the generic compaction allowlist assumes flat objects and Zotero (like any JSON:API-style API) uses a {key, data:{...}} envelope.",
+      "files": [
+        "internal/cli/helpers.go",
+        "internal/cli/helpers_gaps_test.go"
+      ],
+      "validated_outcome": "TestCompactFieldsPreservesEnvelopeData asserts the envelope keeps key + nested title/itemType/DOI while stripping abstractNote/relations; the existing flat-object compaction test still passes; live `items list --agent` on Zotero 10-beta now returns the full useful item minus verbose fields. gofmt/build/vet and full `go test ./...` green.",
+      "upstream_issue": "Systemic across printed CLIs whose API uses resource envelopes — candidate fix for cli-printing-press compactListFields (make it envelope-aware rather than flat-allowlist-only)."
     }
   ]
 }
