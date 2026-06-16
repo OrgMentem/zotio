@@ -15,9 +15,10 @@
       {
         "name": "ZOTERO_API_KEY",
         "kind": "per_call",
-        "required": true,
+        "required": false,
         "sensitive": true,
-        "inferred": true
+        "inferred": true,
+        "description": "Only for the Zotero web API (group libraries / desktop closed); the local desktop API at localhost:23119 needs no key."
       }
     ]
   },

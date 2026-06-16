@@ -4,20 +4,27 @@
 package cli
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"os/signal"
+	"strconv"
 	"syscall"
 	"time"
 
 	"github.com/spf13/cobra"
+	"zotero-pp-cli/internal/client"
+	"zotero-pp-cli/internal/store"
 )
 
 func newTailCmd(flags *rootFlags) *cobra.Command {
 	var resource string
 	var interval time.Duration
 	var follow bool
+	// PATCH(glean a91x): tail persists a per-resource version cursor.
+	var dbPath string
 
 	cmd := &cobra.Command{
 		Use:         "tail [resource]",
@@ -52,7 +59,7 @@ native streaming instead of polling.`,
 				}, flags)
 			}
 			if resource == "" {
-				return fmt.Errorf("resource name required (e.g., 'tail messages')")
+				return fmt.Errorf("resource name required (e.g., 'tail items')")
 			}
 
 			c, err := flags.newClient()
@@ -61,7 +68,29 @@ native streaming instead of polling.`,
 			}
 			c.NoCache = true
 
-			path := "/" + resource
+			// PATCH(glean a91x): resolve the real change-feed endpoint
+			// (items -> /items, etc.); rejects non-change-feed resources.
+			path, err := syncResourcePath(resource)
+			if err != nil {
+				return err
+			}
+
+			// PATCH(glean a91x): open the local store so each poll resumes
+			// from the per-resource version cursor instead of re-fetching all.
+			if dbPath == "" {
+				dbPath = defaultDBPath("zotero-pp-cli")
+			}
+			db, err := store.OpenWithContext(cmd.Context(), dbPath)
+			if err != nil {
+				return fmt.Errorf("opening local database: %w", err)
+			}
+			defer db.Close()
+
+			// PATCH(glean a91x): tail streams live and owns delivery per
+			// cycle; nil the deliver buffer so root.go's post-run flush
+			// never fires (it would buffer the whole stream forever).
+			sink := flags.deliverSink
+			flags.deliverBuf = nil
 
 			sig := make(chan os.Signal, 1)
 			signal.Notify(sig, syscall.SIGTERM, syscall.SIGINT)
@@ -69,13 +98,16 @@ native streaming instead of polling.`,
 			ticker := time.NewTicker(interval)
 			defer ticker.Stop()
 
-			enc := json.NewEncoder(os.Stdout)
-
 			fmt.Fprintf(os.Stderr, "Tailing %s every %s (Ctrl+C to stop)\n", resource, interval)
 
-			// Initial fetch
-			if err := fetchAndEmit(c, path, enc); err != nil {
-				fmt.Fprintf(os.Stderr, "warning: initial fetch failed: %v\n", err)
+			// Initial poll
+			if err := emitChanges(c, db, resource, path, sink, os.Stdout); err != nil {
+				fmt.Fprintf(os.Stderr, "warning: initial poll failed: %v\n", err)
+			}
+
+			// PATCH(glean a91x): honor --follow=false as a single poll.
+			if !follow {
+				return nil
 			}
 
 			for {
@@ -84,7 +116,7 @@ native streaming instead of polling.`,
 					fmt.Fprintln(os.Stderr, "\nShutting down gracefully...")
 					return nil
 				case <-ticker.C:
-					if err := fetchAndEmit(c, path, enc); err != nil {
+					if err := emitChanges(c, db, resource, path, sink, os.Stdout); err != nil {
 						fmt.Fprintf(os.Stderr, "warning: poll failed: %v\n", err)
 					}
 				}
@@ -95,50 +127,117 @@ native streaming instead of polling.`,
 	cmd.Flags().StringVar(&resource, "resource", "", "Resource type to tail")
 	cmd.Flags().DurationVar(&interval, "interval", 10*time.Second, "Poll interval")
 	cmd.Flags().BoolVar(&follow, "follow", true, "Keep running (set --follow=false for single poll)")
+	// PATCH(glean a91x): cursor persistence location.
+	cmd.Flags().StringVar(&dbPath, "db", "", "Database path (default: ~/.local/share/zotero-pp-cli/data.db)")
 
 	return cmd
 }
 
-// tailKnownResources returns the resource names this CLI exposes, so the
-// no-arg JSON help envelope can list them without depending on sync's
-// defaultSyncResources (which only exists when sync is generated).
+// tailKnownResources returns the change-feed resources tail can stream.
+// PATCH(glean a91x): restricted to the four resources with a /deleted
+// bucket (schema has no change feed and is dropped).
 func tailKnownResources() []string {
 	return []string{
 		"collections",
 		"items",
-		"schema",
 		"searches",
 		"tags",
 	}
 }
 
-func fetchAndEmit(c interface {
-	Get(string, map[string]string) (json.RawMessage, error)
-}, path string, enc *json.Encoder) error {
-	data, err := c.Get(path, nil)
+// emitChanges polls one resource for changes since the stored tail cursor,
+// emits upsert/delete NDJSON events for the cycle, routes them to the deliver
+// sink, and advances the cursor. PATCH(glean a91x): tail is now a deduplicated
+// version-cursor change feed rather than a full re-fetch each poll. The cursor
+// is namespaced "tail:<resource>" in sync_state so it never collides with
+// sync's own checkpoint.
+func emitChanges(c *client.Client, db *store.Store, resource, path string, sink DeliverSink, w io.Writer) error {
+	cursorKey := "tail:" + resource
+	cursor, _ := db.GetLibraryVersion(cursorKey)
+
+	params := map[string]string{}
+	if cursor > 0 {
+		params["since"] = strconv.Itoa(cursor)
+	}
+
+	body, newVer, err := c.GetWithVersion(path, params)
 	if err != nil {
 		return err
 	}
 
-	var items []json.RawMessage
-	if err := json.Unmarshal(data, &items); err != nil {
-		event := map[string]any{
-			"event":     "data",
-			"timestamp": time.Now().UTC().Format(time.RFC3339),
-			"data":      json.RawMessage(data),
-		}
-		return enc.Encode(event)
-	}
+	var buf bytes.Buffer
+	enc := json.NewEncoder(&buf)
+	now := time.Now().UTC().Format(time.RFC3339)
 
+	items, _, _ := extractPageItems(body, "")
 	for _, item := range items {
+		var obj map[string]any
+		if err := json.Unmarshal(item, &obj); err != nil {
+			continue
+		}
 		event := map[string]any{
-			"event":     "data",
-			"timestamp": time.Now().UTC().Format(time.RFC3339),
-			"data":      item,
+			"event":     "upsert",
+			"resource":  resource,
+			"key":       fmt.Sprintf("%v", store.LookupFieldValue(obj, "key")),
+			"version":   store.LookupFieldValue(obj, "version"),
+			"timestamp": now,
+			"data":      obj,
 		}
 		if err := enc.Encode(event); err != nil {
 			return err
 		}
+	}
+
+	// Deletions only make sense once a baseline cursor exists: the first
+	// poll (cursor == 0) emits the full current set as upserts and skips
+	// /deleted, which is the intended change-feed bootstrap.
+	if cursor > 0 {
+		delBody, _, derr := c.GetWithVersion("/deleted", params)
+		if derr != nil {
+			fmt.Fprintf(os.Stderr, "warning: tail %s: fetching deletions failed: %v\n", resource, derr)
+		} else {
+			var buckets map[string][]string
+			if err := json.Unmarshal(delBody, &buckets); err == nil {
+				for _, k := range buckets[resource] {
+					event := map[string]any{
+						"event":     "delete",
+						"resource":  resource,
+						"key":       k,
+						"timestamp": now,
+					}
+					if err := enc.Encode(event); err != nil {
+						return err
+					}
+				}
+			}
+		}
+	}
+
+	out := buf.Bytes()
+	if len(out) > 0 {
+		if _, err := w.Write(out); err != nil {
+			return err
+		}
+		switch sink.Scheme {
+		case "webhook":
+			if err := deliverWebhook(sink.Target, out, true); err != nil {
+				fmt.Fprintf(os.Stderr, "warning: tail %s: webhook delivery failed: %v\n", resource, err)
+			}
+		case "file":
+			f, ferr := os.OpenFile(sink.Target, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
+			if ferr != nil {
+				fmt.Fprintf(os.Stderr, "warning: tail %s: file delivery failed: %v\n", resource, ferr)
+			} else {
+				if _, werr := f.Write(out); werr != nil {
+					fmt.Fprintf(os.Stderr, "warning: tail %s: file delivery failed: %v\n", resource, werr)
+				}
+				_ = f.Close()
+			}
+		}
+	}
+
+	if newVer > cursor {
+		_ = db.SaveLibraryVersion(cursorKey, newVer)
 	}
 	return nil
 }

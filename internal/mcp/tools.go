@@ -357,7 +357,9 @@ func RegisterTools(s *server.MCPServer) {
 
 	// Runtime Cobra-tree mirror — exposes every user-facing command that is
 	// not already covered by a typed endpoint or framework MCP tool.
-	cobratree.RegisterAll(s, cli.RootCmd(), cobratree.SiblingCLIPath)
+	// PATCH(glean c4ke): pass the RootCmd factory so each mirrored tool runs
+	// in-process against a fresh command tree instead of shelling out.
+	cobratree.RegisterAll(s, cli.RootCmd)
 }
 
 type mcpParamBinding struct {
@@ -656,16 +658,18 @@ func handleContext(_ context.Context, _ mcplib.CallToolRequest) (*mcplib.CallToo
 		"archetype":   "content",
 		"tool_count":  28,
 		// tool_surface tells agents which surface a capability lives on.
-		"tool_surface": "MCP exposes typed endpoint tools plus a runtime mirror of user-facing CLI commands. Endpoint tools keep typed schemas; command-mirror tools shell out to the companion zotero-pp-cli binary.",
+		// PATCH(glean c4ke): command-mirror tools now run in-process, and
+		// the local desktop API needs no key.
+		"tool_surface": "MCP exposes typed endpoint tools plus a runtime mirror of user-facing CLI commands. Endpoint tools keep typed schemas; command-mirror tools run the CLI's Cobra commands in-process.",
 		"auth": map[string]any{
 			"type": "api_key",
 			"env_vars": []map[string]any{
 				{
 					"name":        "ZOTERO_API_KEY",
 					"kind":        "per_call",
-					"required":    true,
+					"required":    false,
 					"sensitive":   true,
-					"description": "Set to your API credential.",
+					"description": "Only for the Zotero web API (group libraries or while the desktop app is closed); local desktop at localhost:23119 needs no key.",
 				},
 			},
 		},

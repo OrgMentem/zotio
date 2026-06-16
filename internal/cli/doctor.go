@@ -228,6 +228,13 @@ func newDoctorCmd(flags *rootFlags) *cobra.Command {
 			report["cache"] = collectCacheReport(cmd.Context(), "")
 
 			report["version"] = version
+			// PATCH(glean 9bfn): surface which library this invocation targets so
+			// "which library am I on" is answerable; db_path already reflects it.
+			if activeGroupID != "" {
+				report["library"] = "group:" + activeGroupID
+			} else {
+				report["library"] = "personal"
+			}
 
 			if flags.asJSON {
 				if err := printJSONFiltered(cmd.OutOrStdout(), report, flags); err != nil {
@@ -271,7 +278,7 @@ func newDoctorCmd(flags *rootFlags) *cobra.Command {
 				fmt.Fprintf(w, "  %s %s: %s\n", indicator, ck.label, s)
 			}
 			// Print info keys without status indicator
-			for _, key := range []string{"config_path", "base_url", "auth_source", "version"} {
+			for _, key := range []string{"config_path", "base_url", "library", "auth_source", "version"} {
 				if v, ok := report[key]; ok {
 					fmt.Fprintf(w, "  %s: %v\n", key, v)
 				}

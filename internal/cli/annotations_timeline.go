@@ -4,12 +4,14 @@
 package cli
 
 import (
+	"encoding/json"
 	"fmt"
 	"sort"
 	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
+	"zotero-pp-cli/internal/store"
 )
 
 func newAnnotationsTimelineCmd(flags *rootFlags) *cobra.Command {
@@ -17,6 +19,8 @@ func newAnnotationsTimelineCmd(flags *rootFlags) *cobra.Command {
 	var flagSince string
 	var flagItem string
 	var flagCollection string
+	// PATCH(glean hhup): prefer the local store unless --refresh.
+	var refresh bool
 
 	cmd := &cobra.Command{
 		Use:   "timeline",
@@ -35,6 +39,16 @@ func newAnnotationsTimelineCmd(flags *rootFlags) *cobra.Command {
 				return err
 			}
 
+			// PATCH(glean hhup): resolve annotations from the local store when
+			// available; --refresh or an empty store falls back to live.
+			var db *store.Store
+			if !refresh {
+				if d, _ := openStoreForRead(cmd.Context(), "zotero-pp-cli"); d != nil {
+					db = d
+					defer db.Close()
+				}
+			}
+
 			var annotations []annotationSummary
 			if flagCollection != "" {
 				items, err := fetchZoteroItems(c, "/collections/"+flagCollection+"/items", nil, 0)
@@ -49,16 +63,45 @@ func newAnnotationsTimelineCmd(flags *rootFlags) *cobra.Command {
 					if key == "" {
 						continue
 					}
-					children, err := c.Get("/items/"+key+"/children", map[string]string{"itemType": "annotation"})
-					if err != nil {
-						return classifyAPIError(err, flags)
-					}
-					childItems, err := decodeZoteroItems(children)
-					if err != nil {
-						return fmt.Errorf("parsing annotation children for %s: %w", key, err)
+					var childItems []map[string]any
+					if db != nil {
+						// PATCH(glean hhup): local annotation resolution.
+						rows, lerr := db.AnnotationsForItem(key)
+						if lerr != nil {
+							return lerr
+						}
+						for _, raw := range rows {
+							var obj map[string]any
+							if json.Unmarshal(raw, &obj) == nil {
+								childItems = append(childItems, obj)
+							}
+						}
+					} else {
+						children, err := c.Get("/items/"+key+"/children", map[string]string{"itemType": "annotation"})
+						if err != nil {
+							return classifyAPIError(err, flags)
+						}
+						childItems, err = decodeZoteroItems(children)
+						if err != nil {
+							return fmt.Errorf("parsing annotation children for %s: %w", key, err)
+						}
 					}
 					annotations = append(annotations, annotationSummariesFromItems(childItems)...)
 				}
+			} else if db != nil {
+				// PATCH(glean hhup): list annotations straight from the store.
+				rows, lerr := db.ItemsByType("annotation", 0)
+				if lerr != nil {
+					return lerr
+				}
+				items := make([]map[string]any, 0, len(rows))
+				for _, raw := range rows {
+					var obj map[string]any
+					if json.Unmarshal(raw, &obj) == nil {
+						items = append(items, obj)
+					}
+				}
+				annotations = annotationSummariesFromItems(items)
 			} else {
 				items, err := fetchZoteroItems(c, "/items", map[string]string{
 					"itemType":  "annotation",
@@ -97,6 +140,8 @@ func newAnnotationsTimelineCmd(flags *rootFlags) *cobra.Command {
 	cmd.Flags().StringVar(&flagSince, "since", "", "ISO date string; include annotations after this date")
 	cmd.Flags().StringVar(&flagItem, "item", "", "Scope to annotations of a specific parent item key")
 	cmd.Flags().StringVar(&flagCollection, "collection", "", "Scope to items in this collection key")
+	// PATCH(glean hhup): bypass the local store and fetch live.
+	cmd.Flags().BoolVar(&refresh, "refresh", false, "Fetch live from the API instead of the local store")
 
 	return cmd
 }

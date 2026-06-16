@@ -4,6 +4,7 @@
 package cli
 
 import (
+	"encoding/json"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -12,6 +13,8 @@ import (
 func newAnnotationsSearchCmd(flags *rootFlags) *cobra.Command {
 	var flagColor string
 	var flagLimit int
+	// PATCH(glean hhup): prefer the local store unless --refresh.
+	var refresh bool
 
 	cmd := &cobra.Command{
 		Use:         "search <query>",
@@ -21,11 +24,34 @@ func newAnnotationsSearchCmd(flags *rootFlags) *cobra.Command {
 			if len(args) == 0 {
 				return cmd.Help()
 			}
+			query := strings.Join(args, " ")
+
+			// PATCH(glean hhup): search the local annotation store when
+			// present; --refresh forces the live API path below. The API `q`
+			// param has no local equivalent, so text matching runs in memory.
+			if !refresh {
+				if db, _ := openStoreForRead(cmd.Context(), "zotero-pp-cli"); db != nil {
+					defer db.Close()
+					rows, lerr := db.ItemsByType("annotation", 0)
+					if lerr == nil && len(rows) > 0 {
+						items := make([]map[string]any, 0, len(rows))
+						for _, raw := range rows {
+							var obj map[string]any
+							if json.Unmarshal(raw, &obj) == nil {
+								items = append(items, obj)
+							}
+						}
+						annotations := annotationSummariesFromItems(items)
+						filtered := filterAnnotationSummaries(annotations, query, flagColor, flagLimit)
+						return printCommandJSON(cmd.OutOrStdout(), filtered, flags)
+					}
+				}
+			}
+
 			c, err := flags.newClient()
 			if err != nil {
 				return err
 			}
-			query := strings.Join(args, " ")
 			items, err := fetchZoteroItems(c, "/items", map[string]string{
 				"itemType": "annotation",
 				"q":        query,
@@ -49,8 +75,31 @@ func newAnnotationsSearchCmd(flags *rootFlags) *cobra.Command {
 	}
 	cmd.Flags().StringVar(&flagColor, "color", "", "Filter by annotation color (yellow, red, green, blue, purple, orange)")
 	cmd.Flags().IntVar(&flagLimit, "limit", 50, "Maximum number of annotations to return")
+	// PATCH(glean hhup): bypass the local store and fetch live.
+	cmd.Flags().BoolVar(&refresh, "refresh", false, "Fetch live from the API instead of the local store")
 
 	return cmd
+}
+
+// filterAnnotationSummaries applies an in-memory text + color + limit filter,
+// used for local-store annotation search where the API `q` parameter is not
+// available. An empty query matches everything. PATCH(glean hhup).
+func filterAnnotationSummaries(annotations []annotationSummary, query, color string, limit int) []annotationSummary {
+	q := strings.ToLower(strings.TrimSpace(query))
+	filtered := make([]annotationSummary, 0, len(annotations))
+	for _, a := range annotations {
+		if color != "" && !annotationColorMatches(a.Color, color) {
+			continue
+		}
+		if q != "" && !strings.Contains(strings.ToLower(a.Text), q) && !strings.Contains(strings.ToLower(a.Comment), q) {
+			continue
+		}
+		filtered = append(filtered, a)
+		if limit > 0 && len(filtered) >= limit {
+			break
+		}
+	}
+	return filtered
 }
 
 func fetchLimitForAnnotationSearch(limit int, color string) int {

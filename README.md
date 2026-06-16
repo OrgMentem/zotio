@@ -319,6 +319,8 @@ Then register it:
 claude mcp add zotero zotero-pp-mcp -e ZOTERO_API_KEY=<your-key>
 ```
 
+The `-e ZOTERO_API_KEY=<your-key>` is optional for local-desktop use; the local API at localhost:23119 needs no key. Set it only for the Zotero web API (group libraries, or while the desktop app is closed).
+
 </details>
 
 ## Use with Claude Desktop
@@ -376,7 +378,7 @@ Environment variables:
 
 | Name | Kind | Required | Description |
 | --- | --- | --- | --- |
-| `ZOTERO_API_KEY` | per_call | Yes | Set to your API credential. |
+| `ZOTERO_API_KEY` | per_call | No (web API only) | Only needed for the Zotero web API (group libraries, or while the desktop app is closed). The local desktop API at localhost:23119 needs no key. |
 
 ## Troubleshooting
 **Authentication errors (exit code 4)**

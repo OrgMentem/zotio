@@ -4,36 +4,42 @@
 package cobratree
 
 import (
+	"bytes"
 	"context"
 	"fmt"
-	"os/exec"
 	"sort"
 	"strconv"
 	"strings"
 
 	mcplib "github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
+	"github.com/spf13/cobra"
 )
 
-func shellOutToCLI(cliPath func() (string, error), commandPath []string) server.ToolHandlerFunc {
-	lookupPath, lookupErr := cliPath()
-	prefixArgs := append([]string{}, commandPath...)
+// inProcessHandler runs a mirrored Cobra command in-process. PATCH(glean c4ke):
+// replaces the previous shell-out to a companion zotero-pp-cli binary, so the
+// MCP server works without that binary on PATH. A fresh command tree is built
+// per call because cobra.Command state is single-use.
+func inProcessHandler(rootFactory func() *cobra.Command, commandPath []string) server.ToolHandlerFunc {
 	return func(ctx context.Context, req mcplib.CallToolRequest) (*mcplib.CallToolResult, error) {
-		if lookupErr != nil {
-			return mcplib.NewToolResultError(fmt.Sprintf("companion CLI binary not found: %v\nTried sibling lookup, ZOTERO_CLI_PATH env var, and PATH.", lookupErr)), nil
+		root := rootFactory()
+		if root == nil {
+			return mcplib.NewToolResultError("failed to build command tree"), nil
 		}
 		args := req.GetArguments()
-		finalArgs := append([]string{}, prefixArgs...)
+		finalArgs := append([]string{}, commandPath...)
 		finalArgs = append(finalArgs, cliArgsFromMCP(args)...)
 		if raw, _ := args["args"].(string); strings.TrimSpace(raw) != "" {
 			finalArgs = append(finalArgs, splitShellArgs(raw)...)
 		}
-		cmd := exec.CommandContext(ctx, lookupPath, finalArgs...)
-		out, err := cmd.CombinedOutput()
-		if err != nil {
-			return mcplib.NewToolResultError(string(out)), nil
+		var buf bytes.Buffer
+		root.SetOut(&buf)
+		root.SetErr(&buf)
+		root.SetArgs(finalArgs)
+		if err := root.ExecuteContext(ctx); err != nil {
+			return mcplib.NewToolResultError(buf.String() + "\n" + err.Error()), nil
 		}
-		return mcplib.NewToolResultText(string(out)), nil
+		return mcplib.NewToolResultText(buf.String()), nil
 	}
 }
 

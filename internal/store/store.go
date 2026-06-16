@@ -210,6 +210,12 @@ func (s *Store) backfillColumns(ctx context.Context, conn *sql.Conn) error {
 		// PATCH(glean static-audit): Zotero incremental sync is keyed on an
 		// integer library version (Last-Modified-Version), not a timestamp.
 		{table: "sync_state", column: "library_version", decl: "INTEGER DEFAULT 0"},
+		// PATCH(glean hhup): indexed columns for dependent-resource sync
+		// (annotations / attachments) so parent/type queries don't scan JSON.
+		{table: "resources", column: "parent_key", decl: "TEXT"},
+		{table: "resources", column: "item_type", decl: "TEXT"},
+		{table: "resources", column: "annotation_color", decl: "TEXT"},
+		{table: "resources", column: "item_date", decl: "TEXT"},
 	} {
 		if err := s.ensureColumn(ctx, conn, c.table, c.column, c.decl); err != nil {
 			return err
@@ -245,11 +251,18 @@ func (s *Store) migrate(ctx context.Context) error {
 			id TEXT PRIMARY KEY,
 			resource_type TEXT NOT NULL,
 			data JSON NOT NULL,
+			parent_key TEXT,
+			item_type TEXT,
+			annotation_color TEXT,
+			item_date TEXT,
 			synced_at DATETIME DEFAULT CURRENT_TIMESTAMP,
 			updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
-		)`,
+		)`, // PATCH(glean hhup): parent_key/item_type/annotation_color/item_date.
 		`CREATE INDEX IF NOT EXISTS idx_resources_type ON resources(resource_type)`,
 		`CREATE INDEX IF NOT EXISTS idx_resources_synced ON resources(synced_at)`,
+		// PATCH(glean hhup): index the dependent-resource lookup columns.
+		`CREATE INDEX IF NOT EXISTS idx_resources_parent_key ON resources(parent_key)`,
+		`CREATE INDEX IF NOT EXISTS idx_resources_item_type ON resources(item_type)`,
 		`CREATE TABLE IF NOT EXISTS sync_state (
 			resource_type TEXT PRIMARY KEY,
 			last_cursor TEXT,
@@ -415,11 +428,15 @@ func isSQLiteBusy(err error) bool {
 }
 
 func (s *Store) upsertGenericResourceTx(tx *sql.Tx, resourceType, id string, data json.RawMessage) error {
+	// PATCH(glean hhup): populate indexed dependent-resource columns from the
+	// payload so annotation/attachment queries avoid scanning JSON. Non-item
+	// rows (collections, tags) leave these empty, which is harmless.
+	parentKey, itemType, color, itemDate := extractIndexedColumns(data)
 	_, err := tx.Exec(
-		`INSERT INTO resources (id, resource_type, data, synced_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?)
-		 ON CONFLICT(id) DO UPDATE SET data = excluded.data, synced_at = excluded.synced_at, updated_at = excluded.updated_at`,
-		id, resourceType, string(data), time.Now(), time.Now(),
+		`INSERT INTO resources (id, resource_type, data, parent_key, item_type, annotation_color, item_date, synced_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+		 ON CONFLICT(id) DO UPDATE SET data = excluded.data, parent_key = excluded.parent_key, item_type = excluded.item_type, annotation_color = excluded.annotation_color, item_date = excluded.item_date, synced_at = excluded.synced_at, updated_at = excluded.updated_at`,
+		id, resourceType, string(data), parentKey, itemType, color, itemDate, time.Now(), time.Now(),
 	)
 	if err != nil {
 		return err
@@ -442,6 +459,34 @@ func (s *Store) upsertGenericResourceTx(tx *sql.Tx, resourceType, id string, dat
 	}
 
 	return nil
+}
+
+// extractIndexedColumns pulls the indexed dependent-resource columns out of a
+// stored item payload. Zotero item objects nest the real fields under a "data"
+// sub-object ({key, version, data:{itemType, parentItem, ...}}); this descends
+// into "data" when present and falls back to the top level otherwise. Missing
+// fields yield empty strings. PATCH(glean hhup).
+func extractIndexedColumns(data json.RawMessage) (parentKey, itemType, color, itemDate string) {
+	var obj map[string]any
+	if err := json.Unmarshal(data, &obj); err != nil {
+		return "", "", "", ""
+	}
+	fields := obj
+	if inner, ok := obj["data"].(map[string]any); ok {
+		fields = inner
+	}
+	asStr := func(v any) string {
+		s, _ := v.(string)
+		return s
+	}
+	parentKey = asStr(LookupFieldValue(fields, "parent_item"))
+	itemType = asStr(LookupFieldValue(fields, "item_type"))
+	color = asStr(LookupFieldValue(fields, "annotation_color"))
+	itemDate = asStr(LookupFieldValue(fields, "date_modified"))
+	if itemDate == "" {
+		itemDate = asStr(LookupFieldValue(fields, "date"))
+	}
+	return parentKey, itemType, color, itemDate
 }
 
 func (s *Store) Upsert(resourceType, id string, data json.RawMessage) error {
@@ -525,6 +570,77 @@ func (s *Store) Search(query string, limit int) ([]json.RawMessage, error) {
 		results = append(results, json.RawMessage(data))
 	}
 	return results, rows.Err()
+}
+
+// ItemsByType returns the stored payloads of all items with the given
+// itemType (e.g. "annotation", "attachment"). limit <= 0 means no limit.
+// PATCH(glean hhup): backs local-first annotation listing.
+func (s *Store) ItemsByType(itemType string, limit int) ([]json.RawMessage, error) {
+	query := `SELECT data FROM resources WHERE item_type = ?`
+	args := []any{itemType}
+	if limit > 0 {
+		query += ` LIMIT ?`
+		args = append(args, limit)
+	}
+	rows, err := s.db.Query(query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var results []json.RawMessage
+	for rows.Next() {
+		var data string
+		if err := rows.Scan(&data); err != nil {
+			return nil, err
+		}
+		results = append(results, json.RawMessage(data))
+	}
+	return results, rows.Err()
+}
+
+// AnnotationsForItem returns every annotation whose attachment parent's own
+// parent is topItemKey. Zotero nests annotations under attachments under the
+// top-level item, so this joins annotation -> attachment -> top item.
+// PATCH(glean hhup): backs local-first annotation export/timeline.
+func (s *Store) AnnotationsForItem(topItemKey string) ([]json.RawMessage, error) {
+	rows, err := s.db.Query(
+		`SELECT a.data FROM resources a
+		 JOIN resources att ON a.parent_key = att.id
+		 WHERE a.item_type = 'annotation' AND att.parent_key = ?`,
+		topItemKey,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var results []json.RawMessage
+	for rows.Next() {
+		var data string
+		if err := rows.Scan(&data); err != nil {
+			return nil, err
+		}
+		results = append(results, json.RawMessage(data))
+	}
+	return results, rows.Err()
+}
+
+// Fulltext returns the stored full-text payload for an attachment key, if any.
+// PATCH(glean hhup): backs local-first PDF full-text reads.
+func (s *Store) Fulltext(attachmentKey string) (json.RawMessage, bool, error) {
+	var data string
+	err := s.db.QueryRow(
+		`SELECT data FROM resources WHERE resource_type = 'fulltext' AND id = ?`,
+		attachmentKey,
+	).Scan(&data)
+	if err == sql.ErrNoRows {
+		return nil, false, nil
+	}
+	if err != nil {
+		return nil, false, err
+	}
+	return json.RawMessage(data), true, nil
 }
 
 func extractObjectID(obj map[string]any) string {

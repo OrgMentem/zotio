@@ -4,6 +4,7 @@
 package cli
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"github.com/spf13/cobra"
@@ -14,6 +15,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"zotero-pp-cli/internal/client"
+	"zotero-pp-cli/internal/cliutil"
 	"zotero-pp-cli/internal/store"
 )
 
@@ -35,6 +38,8 @@ func newSyncCmd(flags *rootFlags) *cobra.Command {
 	var maxPages int
 	var latestOnly bool
 	var strict bool
+	// PATCH(glean hhup): opt-in PDF full-text sync pass.
+	var fulltext bool
 
 	cmd := &cobra.Command{
 		Use:   "sync",
@@ -186,6 +191,12 @@ Exit codes & warnings:
 				}
 			}
 
+			// PATCH(glean hhup): opt-in full-text pass runs after the core
+			// resource sync so a fulltext failure can't fail the core sync.
+			if fulltext {
+				syncFulltext(c, db, full)
+			}
+
 			elapsed := time.Since(started)
 			totalResources := successCount + warnCount + errCount
 			if humanFriendly {
@@ -245,8 +256,67 @@ Exit codes & warnings:
 	cmd.Flags().IntVar(&maxPages, "max-pages", 100, "Maximum pages to fetch per resource (0 = unlimited; cap-hit emits a sync_warning event)")
 	cmd.Flags().BoolVar(&latestOnly, "latest-only", false, "Refresh head of each resource only; clears resume cursor and caps pages at 1. Mutually exclusive with --since (--since wins).")
 	cmd.Flags().BoolVar(&strict, "strict", false, "Exit non-zero on any per-resource failure (default: only critical failures or all-resource failure exit non-zero).")
+	// PATCH(glean hhup): opt-in PDF full-text sync.
+	cmd.Flags().BoolVar(&fulltext, "fulltext", false, "Also sync PDF full-text content (slower; one request per attachment)")
 
 	return cmd
+}
+
+// syncFulltext fetches changed PDF full-text content and stores it as
+// fulltext-typed rows so 'items fulltext' and 'search' can read it offline.
+// It is opt-in (--fulltext) because it issues one request per attachment, and
+// every failure is a non-fatal warning so a fulltext problem never fails the
+// core sync. PATCH(glean hhup).
+func syncFulltext(c *client.Client, db *store.Store, full bool) {
+	cursor := 0
+	if !full {
+		cursor, _ = db.GetLibraryVersion("fulltext")
+	}
+	// The /fulltext endpoint returns 400 without `since`, so always send it,
+	// including 0 on a full sync.
+	params := map[string]string{"since": strconv.Itoa(cursor)}
+	body, newVer, err := c.GetWithVersion("/fulltext", params)
+	if err != nil {
+		emitFulltextWarning(fmt.Sprintf("fetching fulltext index failed: %v", err))
+		return
+	}
+	var changed map[string]int
+	if err := json.Unmarshal(body, &changed); err != nil {
+		emitFulltextWarning(fmt.Sprintf("parsing fulltext index failed: %v", err))
+		return
+	}
+	if len(changed) > 0 {
+		keys := make([]string, 0, len(changed))
+		for k := range changed {
+			keys = append(keys, k)
+		}
+		_, errs := cliutil.FanoutRun(context.Background(), keys,
+			func(k string) string { return k },
+			func(_ context.Context, k string) (struct{}, error) {
+				ft, _, ferr := c.GetWithVersion("/items/"+k+"/fulltext", nil)
+				if ferr != nil {
+					return struct{}{}, ferr
+				}
+				return struct{}{}, db.Upsert("fulltext", k, ft)
+			})
+		if len(errs) > 0 {
+			emitFulltextWarning(fmt.Sprintf("%d of %d fulltext fetches failed", len(errs), len(keys)))
+		}
+	}
+	if newVer > cursor {
+		_ = db.SaveLibraryVersion("fulltext", newVer)
+	}
+}
+
+// emitFulltextWarning surfaces a non-fatal fulltext-sync problem in the same
+// shape as the rest of sync's warnings. PATCH(glean hhup).
+func emitFulltextWarning(msg string) {
+	if humanFriendly {
+		fmt.Fprintf(os.Stderr, "warning: %s\n", msg)
+	} else {
+		fmt.Fprintf(os.Stdout, `{"event":"sync_warning","reason":"fulltext","message":"%s"}`+"\n",
+			strings.ReplaceAll(msg, `"`, `\"`))
+	}
 }
 
 // syncResource handles the full paginated sync of a single resource.

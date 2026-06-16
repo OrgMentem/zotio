@@ -9,9 +9,16 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// RegisterAll walks root's user-facing Cobra commands and registers shell-out
+// RegisterAll walks the user-facing Cobra commands and registers in-process
 // MCP tools for commands that are not already covered by typed endpoint tools.
-func RegisterAll(s *server.MCPServer, root *cobra.Command, cliPath func() (string, error)) {
+// PATCH(glean c4ke): takes a factory that builds a fresh command tree, so each
+// tool invocation can execute against its own single-use cobra.Command instead
+// of shelling out to a companion binary.
+func RegisterAll(s *server.MCPServer, rootFactory func() *cobra.Command) {
+	if rootFactory == nil {
+		return
+	}
+	root := rootFactory()
 	if root == nil {
 		return
 	}
@@ -38,7 +45,7 @@ func RegisterAll(s *server.MCPServer, root *cobra.Command, cliPath func() (strin
 		if isMCPReadOnly(cmd) {
 			options = append(options, mcplib.WithReadOnlyHintAnnotation(true), mcplib.WithDestructiveHintAnnotation(false))
 		}
-		s.AddTool(mcplib.NewTool(toolName, options...), shellOutToCLI(cliPath, path))
+		s.AddTool(mcplib.NewTool(toolName, options...), inProcessHandler(rootFactory, path))
 	})
 }
 

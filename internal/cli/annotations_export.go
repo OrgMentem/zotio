@@ -16,6 +16,7 @@ import (
 
 	"zotero-pp-cli/internal/client"
 	"zotero-pp-cli/internal/cliutil"
+	"zotero-pp-cli/internal/store"
 )
 
 type annotationExportItem struct {
@@ -48,6 +49,8 @@ func newAnnotationsExportCmd(flags *rootFlags) *cobra.Command {
 	var flagOutput string
 	var flagFormat string
 	var flagLimit int
+	// PATCH(glean hhup): prefer the local store unless --refresh.
+	var refresh bool
 
 	cmd := &cobra.Command{
 		Use:         "export",
@@ -70,6 +73,17 @@ func newAnnotationsExportCmd(flags *rootFlags) *cobra.Command {
 			c, err := flags.newClient()
 			if err != nil {
 				return err
+			}
+
+			// PATCH(glean hhup): resolve per-item annotations from the local
+			// store when available (avoids one /children fetch per item);
+			// --refresh or an empty store falls back to the live fan-out.
+			var db *store.Store
+			if !refresh {
+				if d, _ := openStoreForRead(cmd.Context(), "zotero-pp-cli"); d != nil {
+					db = d
+					defer db.Close()
+				}
 			}
 
 			path := "/items/top"
@@ -101,13 +115,28 @@ func newAnnotationsExportCmd(flags *rootFlags) *cobra.Command {
 				func(item map[string]any) string { return zoteroString(item, "key") },
 				func(_ context.Context, item map[string]any) (annotationExportItem, error) {
 					key := zoteroString(item, "key")
-					children, err := c.Get("/items/"+key+"/children", map[string]string{"itemType": "annotation"})
-					if err != nil {
-						return annotationExportItem{}, err
-					}
-					childItems, err := decodeZoteroItems(children)
-					if err != nil {
-						return annotationExportItem{}, fmt.Errorf("parsing annotation children for %s: %w", key, err)
+					var childItems []map[string]any
+					if db != nil {
+						// PATCH(glean hhup): local annotation resolution.
+						rows, lerr := db.AnnotationsForItem(key)
+						if lerr != nil {
+							return annotationExportItem{}, lerr
+						}
+						for _, raw := range rows {
+							var obj map[string]any
+							if json.Unmarshal(raw, &obj) == nil {
+								childItems = append(childItems, obj)
+							}
+						}
+					} else {
+						children, err := c.Get("/items/"+key+"/children", map[string]string{"itemType": "annotation"})
+						if err != nil {
+							return annotationExportItem{}, err
+						}
+						childItems, err = decodeZoteroItems(children)
+						if err != nil {
+							return annotationExportItem{}, fmt.Errorf("parsing annotation children for %s: %w", key, err)
+						}
 					}
 					annotations := annotationSummariesFromItems(childItems)
 					if len(annotations) == 0 {
@@ -160,6 +189,8 @@ func newAnnotationsExportCmd(flags *rootFlags) *cobra.Command {
 	cmd.Flags().StringVar(&flagOutput, "output", "", "Output file path (default: stdout)")
 	cmd.Flags().StringVar(&flagFormat, "format", "markdown", "Output format (markdown or json)")
 	cmd.Flags().IntVar(&flagLimit, "limit", 50, "Maximum number of items to process")
+	// PATCH(glean hhup): bypass the local store and fetch live.
+	cmd.Flags().BoolVar(&refresh, "refresh", false, "Fetch live from the API instead of the local store")
 
 	return cmd
 }

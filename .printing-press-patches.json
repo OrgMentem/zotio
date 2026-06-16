@@ -146,6 +146,60 @@
         "internal/cliutil/classify_patch_test.go"
       ],
       "validated_outcome": "TestClassifyHTTPError + exact RetryAfter time tests pass; CLI/MCP error messages unchanged (only detection deduplicated); go build/vet and full `go test ./...` pass (fresh)."
+    },
+    {
+      "id": "zotero-glean-a91x-tail-change-feed",
+      "summary": "Reworked `tail` from a full-snapshot re-fetch into a deduplicated version-cursor change feed: per-resource cursor persisted in sync_state under tail:<resource>, ?since= delta fetch, upsert/delete NDJSON events, /deleted handling, per-cycle delivery to webhook/file sinks, and --follow=false single-poll support. Restricted tail resources to the four with a change feed (items, collections, searches, tags).",
+      "reason": "glean bead a91x (P1): tail re-emitted every object every poll with no dedup or version tracking, so consumers could not tell what actually changed.",
+      "files": [
+        "internal/cli/tail.go",
+        "internal/cli/tail_gaps_test.go"
+      ],
+      "validated_outcome": "TestEmitChanges_ChangeFeed and TestEmitChanges_WebhookDelivery pass: baseline emits upserts + records cursor; delta emits one upsert and one delete and advances the cursor; webhook sink receives the cycle NDJSON."
+    },
+    {
+      "id": "zotero-glean-hhup-dependent-resource-sync",
+      "summary": "Sync annotations and PDF full text as first-class dependent resources: indexed parent_key/item_type/annotation_color/item_date columns on resources (populated from each item's nested data sub-object), idx_resources_parent_key/idx_resources_item_type, store helpers ItemsByType/AnnotationsForItem/Fulltext, an opt-in `sync --fulltext` pass (always sends since, fans out attachment fetches, stores fulltext rows FTS-indexed for search), and local-first reworks of items fulltext / annotations search / export / timeline with a --refresh live override.",
+      "reason": "glean bead hhup (P1): annotations/attachments were stored only as opaque JSON with no indexed parent/type columns and no full text, so every annotation/fulltext consumer fetched live (N+1).",
+      "files": [
+        "internal/store/store.go",
+        "internal/store/store_hhup_test.go",
+        "internal/cli/sync.go",
+        "internal/cli/sync_hhup_test.go",
+        "internal/cli/items_fulltext.go",
+        "internal/cli/annotations_search.go",
+        "internal/cli/annotations_export.go",
+        "internal/cli/annotations_timeline.go"
+      ],
+      "validated_outcome": "store_hhup_test (indexed columns populated; ItemsByType + AnnotationsForItem join annotation->attachment->top item; Fulltext round-trip) and sync_hhup_test (syncFulltext stores ATT1, db.Search finds it, fulltext cursor advances) pass; full `go test ./...` green."
+    },
+    {
+      "id": "zotero-glean-c4ke-conditional-auth-inprocess-mcp",
+      "summary": "Made ZOTERO_API_KEY conditional in the remaining metadata (tools-manifest.json env_var_specs required=false + description, handleContext auth block required=false + description, README env-var table and `claude mcp add` note) and replaced the MCP command-mirror shell-out with in-process Cobra execution (cobratree.RegisterAll takes a *cobra.Command factory; inProcessHandler runs a fresh tree per call capturing OutOrStdout; deleted cli_path.go). Excluded the streaming `tail` command from the in-process mirror.",
+      "reason": "glean bead c4ke (P1): metadata hard-required an API key the local desktop transport never needs, and command-mirror tools shelled out to a companion zotero-pp-cli binary that fails when not on PATH.",
+      "files": [
+        "tools-manifest.json",
+        "internal/mcp/tools.go",
+        "internal/mcp/cobratree/walker.go",
+        "internal/mcp/cobratree/shellout.go",
+        "internal/mcp/cobratree/classify.go",
+        "internal/mcp/cobratree/inprocess_test.go",
+        "README.md"
+      ],
+      "validated_outcome": "cli_path.go removed (no SiblingCLIPath references remain); TestInProcessHandler_Success/_Error and RegisterAll smoke tests pass; go build ./... and full `go test ./...` green."
+    },
+    {
+      "id": "zotero-glean-9bfn-group-libraries",
+      "summary": "Added group-library support via per-library DB files: a --group <id> root flag (validated numeric) sets activeGroupID, which routes defaultDBPath to data-group-<id>.db and rewrites the API library prefix to /groups/<id> in newClient; a new `groups list` discovery command enumerates the user's groups; doctor reports the active library. Personal library is unchanged (data.db, /users/<id>).",
+      "reason": "glean bead 9bfn (P1): library scope lived entirely in config.BaseURL with no group discovery, selector, or storage isolation.",
+      "files": [
+        "internal/cli/root.go",
+        "internal/cli/helpers.go",
+        "internal/cli/groups.go",
+        "internal/cli/groups_test.go",
+        "internal/cli/doctor.go"
+      ],
+      "validated_outcome": "groups_test (rewriteLibraryPrefix for user/web/existing-group/no-segment cases; userIDFromBaseURL extraction + group-URL rejection; group-aware defaultDBPath; groups list JSON + table output; group base URL rejected) passes; full `go test ./...` green."
     }
   ]
 }

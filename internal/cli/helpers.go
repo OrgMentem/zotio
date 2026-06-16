@@ -30,6 +30,11 @@ var noColor bool
 // humanFriendly is set by the --human-friendly flag; colors are off by default (agent-safe)
 var humanFriendly bool
 
+// activeGroupID holds the numeric Zotero group ID selected via --group, or ""
+// for the personal library. PATCH(glean 9bfn): scopes both the API library
+// prefix and the on-disk DB file to a group library.
+var activeGroupID string
+
 func colorEnabled() bool {
 	if noColor {
 		return false
@@ -1285,7 +1290,50 @@ func truncateJSONArray(data json.RawMessage, n int) json.RawMessage {
 }
 
 // defaultDBPath returns the canonical path for the local SQLite database.
+// PATCH(glean 9bfn): group libraries get their own data-group-<id>.db file so
+// a group sync never mixes into the personal data.db; personal stays data.db.
 func defaultDBPath(name string) string {
 	home, _ := os.UserHomeDir()
-	return filepath.Join(home, ".local", "share", name, "data.db")
+	file := "data.db"
+	if activeGroupID != "" {
+		file = "data-group-" + activeGroupID + ".db"
+	}
+	return filepath.Join(home, ".local", "share", name, file)
+}
+
+// rewriteLibraryPrefix rewrites a Zotero API base URL's library prefix to a
+// group library. It replaces an existing /users/<id> or /groups/<id> segment
+// with /groups/<groupID>; when no such segment exists it appends /groups/<id>
+// to the URL. PATCH(glean 9bfn).
+func rewriteLibraryPrefix(baseURL, groupID string) string {
+	prefix := regexp.MustCompile(`/(users|groups)/[^/]+`)
+	if prefix.MatchString(baseURL) {
+		return prefix.ReplaceAllString(baseURL, "/groups/"+groupID)
+	}
+	return strings.TrimRight(baseURL, "/") + "/groups/" + groupID
+}
+
+// userIDFromBaseURL extracts the numeric user ID from a personal-library base
+// URL's /users/<id> segment. Returns false when the URL targets a group
+// library or has no user segment. PATCH(glean 9bfn).
+func userIDFromBaseURL(baseURL string) (string, bool) {
+	m := regexp.MustCompile(`/users/([^/]+)`).FindStringSubmatch(baseURL)
+	if len(m) != 2 || m[1] == "" {
+		return "", false
+	}
+	return m[1], true
+}
+
+// isAllDigits reports whether s is non-empty and contains only ASCII digits.
+// PATCH(glean 9bfn): guards the numeric --group value.
+func isAllDigits(s string) bool {
+	if s == "" {
+		return false
+	}
+	for _, r := range s {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
 }

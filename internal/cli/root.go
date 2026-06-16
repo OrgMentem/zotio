@@ -41,6 +41,8 @@ type rootFlags struct {
 	rateLimit     float64
 	dataSource    string
 	freshnessMeta any
+	// PATCH(glean 9bfn): numeric group ID selected via --group ("" = personal).
+	group string
 
 	// deliverBuf captures command output when --deliver is set to a
 	// non-stdout sink. Flushed to the sink after Execute returns.
@@ -132,6 +134,8 @@ See README.md or the bundled SKILL.md for recipes.`,
 	rootCmd.PersistentFlags().StringVar(&flags.profileName, "profile", "", "Apply values from a saved profile (see 'zotero-pp-cli profile list')")
 	rootCmd.PersistentFlags().StringVar(&flags.deliverSpec, "deliver", "", "Route output to a sink: stdout (default), file:<path>, webhook:<url>")
 	rootCmd.PersistentFlags().Float64Var(&flags.rateLimit, "rate-limit", 0, "Max requests per second (0 to disable)")
+	// PATCH(glean 9bfn): operate on a group library instead of the personal one.
+	rootCmd.PersistentFlags().StringVar(&flags.group, "group", "", "Operate on a Zotero group library by numeric group ID (default: personal library)")
 
 	rootCmd.PersistentPreRunE = func(cmd *cobra.Command, args []string) error {
 		if flags.deliverSpec != "" {
@@ -178,6 +182,12 @@ See README.md or the bundled SKILL.md for recipes.`,
 				noColor = true
 			}
 		}
+		// PATCH(glean 9bfn): validate --group and publish it to the package so
+		// defaultDBPath and newClient scope storage and the API prefix to it.
+		if flags.group != "" && !isAllDigits(flags.group) {
+			return usageErr(fmt.Errorf("invalid --group value %q: expected a numeric Zotero group ID", flags.group))
+		}
+		activeGroupID = flags.group
 		switch flags.dataSource {
 		case "auto", "live", "local":
 			// valid
@@ -208,6 +218,8 @@ See README.md or the bundled SKILL.md for recipes.`,
 	rootCmd.AddCommand(newTailCmd(flags))
 	rootCmd.AddCommand(newAnalyticsCmd(flags))
 	rootCmd.AddCommand(newWorkflowCmd(flags))
+	// PATCH(glean 9bfn): group-library discovery.
+	rootCmd.AddCommand(newGroupsCmd(flags))
 	rootCmd.AddCommand(newVersionCliCmd())
 
 	return rootCmd
@@ -225,6 +237,11 @@ func (f *rootFlags) newClient() (*client.Client, error) {
 	cfg, err := config.Load(f.configPath)
 	if err != nil {
 		return nil, configErr(err)
+	}
+	// PATCH(glean 9bfn): when --group is set, point the API at the group's
+	// library prefix (/groups/<id>) instead of the configured personal one.
+	if f.group != "" {
+		cfg.BaseURL = rewriteLibraryPrefix(cfg.BaseURL, f.group)
 	}
 	c := client.New(cfg, f.timeout, f.rateLimit)
 	c.DryRun = f.dryRun

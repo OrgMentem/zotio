@@ -9,10 +9,13 @@ import (
 	"strings"
 
 	"github.com/spf13/cobra"
+	"zotero-pp-cli/internal/store"
 )
 
 func newItemsFulltextCmd(flags *rootFlags) *cobra.Command {
 	var flagSearch string
+	// PATCH(glean hhup): prefer locally-synced full text unless --refresh.
+	var refresh bool
 
 	cmd := &cobra.Command{
 		Use:         "fulltext <itemKey>",
@@ -23,6 +26,24 @@ func newItemsFulltextCmd(flags *rootFlags) *cobra.Command {
 				return cmd.Help()
 			}
 			itemKey := args[0]
+
+			// PATCH(glean hhup): serve from the local store (sync --fulltext)
+			// when present; --refresh forces the live API path below.
+			if !refresh {
+				if db, _ := openStoreForRead(cmd.Context(), "zotero-pp-cli"); db != nil {
+					defer db.Close()
+					if data, ok := localPDFFulltext(db, itemKey); ok {
+						if flagSearch != "" {
+							filtered, ferr := filterFulltextLines(data, flagSearch)
+							if ferr != nil {
+								return ferr
+							}
+							data = filtered
+						}
+						return printOutputWithFlags(cmd.OutOrStdout(), data, flags)
+					}
+				}
+			}
 			c, err := flags.newClient()
 			if err != nil {
 				return err
@@ -58,8 +79,45 @@ func newItemsFulltextCmd(flags *rootFlags) *cobra.Command {
 		},
 	}
 	cmd.Flags().StringVar(&flagSearch, "search", "", "Return only full-text lines containing this string")
+	// PATCH(glean hhup): bypass the local store and fetch live.
+	cmd.Flags().BoolVar(&refresh, "refresh", false, "Fetch live from the API instead of the local store")
 
 	return cmd
+}
+
+// localPDFFulltext resolves an item's PDF full text from the local store.
+// It first treats itemKey as an attachment key directly; failing that, it
+// finds the item's PDF attachment among synced attachments and looks up its
+// stored full text. Returns false when nothing is available locally.
+// PATCH(glean hhup).
+func localPDFFulltext(db *store.Store, itemKey string) (json.RawMessage, bool) {
+	if ft, ok, _ := db.Fulltext(itemKey); ok {
+		return ft, true
+	}
+	attachments, err := db.ItemsByType("attachment", 0)
+	if err != nil {
+		return nil, false
+	}
+	for _, raw := range attachments {
+		var obj map[string]any
+		if json.Unmarshal(raw, &obj) != nil {
+			continue
+		}
+		if jsonStringFieldFromMap(obj, "parentItem") != itemKey {
+			continue
+		}
+		if jsonStringFieldFromMap(obj, "contentType") != "application/pdf" {
+			continue
+		}
+		key := jsonStringFieldFromMap(obj, "key")
+		if key == "" {
+			continue
+		}
+		if ft, ok, _ := db.Fulltext(key); ok {
+			return ft, true
+		}
+	}
+	return nil, false
 }
 
 func findPDFAttachmentKey(data json.RawMessage) (string, error) {
