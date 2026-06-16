@@ -220,6 +220,8 @@ See README.md or the bundled SKILL.md for recipes.`,
 	rootCmd.AddCommand(newWorkflowCmd(flags))
 	// PATCH(glean 9bfn): group-library discovery.
 	rootCmd.AddCommand(newGroupsCmd(flags))
+	// PATCH(glean 49r4): vault-aware Obsidian/Logseq note sync.
+	rootCmd.AddCommand(newVaultCmd(flags))
 	rootCmd.AddCommand(newVersionCliCmd())
 
 	return rootCmd

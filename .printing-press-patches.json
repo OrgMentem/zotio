@@ -255,6 +255,18 @@
         "internal/cli/import_doi.go"
       ],
       "validated_outcome": "Tests: DOI extraction from URLs (article/PDF/none), HTML meta parsing (repeated citation_author) + typed item mapping (title/creators/DOI/journal/abstract/itemType), nil when no usable title, buildImportItemFromURL across DOI-in-URL (CrossRef, URL preserved, abstract), embedded-metadata, and non-HTML fallback paths, plus command-level --dry-run previews for url (collection preserved) and doi (abstract included) that write nothing. gofmt/build/vet and full `go test ./...` green. Scope: provider (CrossRef) + embedded-metadata translator; the live Zotero desktop-connector translator and OpenAlex remain future sources behind the same pipeline."
+    },
+    {
+      "id": "zotero-glean-49r4-vault-sync",
+      "summary": "Added `vault sync`, a vault-aware Obsidian/Logseq note materializer (internal/cli/vault_sync.go). One Markdown note per regular item, filename keyed on the native/BBT citation key (data.citationKey, falling back to extra then the item key), scoped from the local store via the cvl6 query planner (--collection/--tag/--item-type/--limit, top-level items only). Notes carry zotero:// backlinks (item select in frontmatter; per-annotation open-pdf with page label, group-aware via activeGroupID) and embed current annotations (hhup AnnotationsForItem join) in a fenced managed block. Re-runs are idempotent and non-destructive: only managed frontmatter keys and the fenced block change; user prose and other frontmatter keys are preserved. --dry-run previews created/updated/unchanged. Also wrote docs/obsidian-integration.md positioning the CLI vs the Obsidian/Zotero plugin ecosystem.",
+      "reason": "glean bead 49r4 (P2): note output was stdout-only template scaffolding (items note-template) with an annotations placeholder, and the only delivery sinks were stdout/file/webhook — no stateful, non-clobbering vault integration for the documented Obsidian/Logseq workflow.",
+      "files": [
+        "internal/cli/vault_sync.go",
+        "internal/cli/vault_sync_test.go",
+        "internal/cli/root.go",
+        "docs/obsidian-integration.md"
+      ],
+      "validated_outcome": "Tests: Obsidian note creation (citekey filename, frontmatter, zotero://select + per-annotation open-pdf backlinks, page label, comment), idempotent re-run (unchanged, byte-identical), dry-run writes nothing, the critical no-clobber merge (managed keys updated while user frontmatter keys + prose survive), managed-block replacement without duplication, Logseq creation, filename sanitization, and --out required. Verified the native local API on Zotero 10.0-beta.7 returns full item data incl. data.citationKey. gofmt/build/vet and full `go test ./...` green. Scope: Obsidian merge is the fully-featured path (user's tool); Logseq supports create + property/managed-block refresh."
     }
   ]
 }
