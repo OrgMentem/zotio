@@ -278,6 +278,19 @@
       ],
       "validated_outcome": "TestCompactFieldsPreservesEnvelopeData asserts the envelope keeps key + nested title/itemType/DOI while stripping abstractNote/relations; the existing flat-object compaction test still passes; live `items list --agent` on Zotero 10-beta now returns the full useful item minus verbose fields. gofmt/build/vet and full `go test ./...` green.",
       "upstream_issue": "Systemic across printed CLIs whose API uses resource envelopes — candidate fix for cli-printing-press compactListFields (make it envelope-aware rather than flat-allowlist-only)."
+    },
+    {
+      "id": "zotero-schema-drift-probe",
+      "summary": "Added `schema drift`, a Zotero schema-currency probe (internal/cli/schema_drift.go) registered under the generated `schema` group. It fetches an order-independent fingerprint of the running Zotero's item types, item fields, and creator fields (and, under --deep, per-item-type field/creator-type validity), stores it as a baseline JSON file (~/.local/share/zotero-pp-cli/schema-baseline.json, not group-scoped because the schema is global to the install), and on later runs diffs the live schema against the baseline to report added/removed members. First run captures the baseline; --update re-baselines; --baseline overrides the path. Output is a pure function of the snapshots (no timestamps) so repeated runs are byte-identical. Added a `which` index entry for discoverability.",
+      "reason": "User asked how to detect what a Zotero beta upgrade adds; regeneration/awc7 do not discover anything (endpoints are frozen at Web API v3), but new item types/fields are the realistic between-version delta and the data is already available from the live API.",
+      "files": [
+        "internal/cli/schema_drift.go",
+        "internal/cli/schema_drift_test.go",
+        "internal/cli/schema.go",
+        "internal/cli/which.go"
+      ],
+      "validated_outcome": "Unit tests: first-run baseline capture, no-drift on identical schema, added/removed deltas (+preprint -book, +citationKey), and human output, all against a real client (client.BaseURL) pointed at an httptest schema surface. gofmt/build/vet and full `go test ./...` green. Live smoke on Zotero 10.0-beta.7: captured 40 item types / 123 item fields / 3 creator fields, no-drift on re-run, correct +item-types delta after a simulated upgrade, and --deep resolved per-type fields/creators for all 40 types. The probe strips the /users|groups/<id> library prefix because Zotero schema endpoints are global (/api/itemTypes).",
+      "upstream_issue": "Discovered pre-existing bug: the generated `schema item-types|item-fields|item-type-fields|item-type-creator-types|creator-fields` commands 404 against the local API because they prepend the /users/<id> library prefix to global schema endpoints. Systemic for any printed CLI whose spec mixes library-scoped and global endpoints under one prefixed base_url — candidate fix for cli-printing-press (per-endpoint base-path/scope override). schema drift works around it locally by stripping the prefix for its own fetches."
     }
   ]
 }

@@ -42,6 +42,8 @@ var whichIndex = []whichEntry{
 	{Command: "tags inventory", Description: "List all tags used in a collection with item counts — see which tags are local to a project vs. shared library-wide.", Group: "Library hygiene", WhyItMatters: "Use this to audit tag taxonomy consistency across sub-projects before a systematic review merge."},
 	{Command: "items venues", Description: "List every journal and publication venue in your library with item counts and year ranges — understand where your sources come from.", Group: "Library hygiene", WhyItMatters: "Use this to scope a systematic review by journal or identify over-reliance on a single venue."},
 	{Command: "items stale", Description: "Find items added long ago with no PDF and no annotations — candidates for pruning or enrichment.", Group: "Library hygiene", WhyItMatters: "Use this quarterly to identify items that were imported but never engaged with — candidates for deletion or PDF retrieval."},
+	// PATCH: schema-drift probe entry (hand-written command, not generator-seeded).
+	{Command: "schema drift", Description: "Detect what a Zotero upgrade changed: new or removed item types, fields, and creator fields vs a saved baseline.", Group: "Library hygiene", WhyItMatters: "Use this after upgrading Zotero to find item types or fields a new version added that your tooling may not model yet."},
 }
 
 // whichMatch pairs an index entry with its ranking score for a query.
