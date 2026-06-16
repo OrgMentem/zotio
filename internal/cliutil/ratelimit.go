@@ -134,6 +134,12 @@ const (
 	unixEpochMillisecondsThreshold = 1_000_000_000_000
 )
 
+// retryAfterNow is the clock RetryAfter reads. It defaults to time.Now (so
+// production behavior is unchanged) and is overridable in tests for exact,
+// non-flaky assertions on HTTP-date / epoch Retry-After parsing.
+// PATCH(glean static-audit): test seam for deterministic time-dependent tests.
+var retryAfterNow = time.Now
+
 // RetryAfter parses an HTTP Retry-After header (RFC 7231: delta-seconds or
 // HTTP-date), plus common Unix epoch seconds/milliseconds variants emitted by
 // some APIs. Waits are capped at MaxRetryWait. Returns 5s when missing or
@@ -150,7 +156,7 @@ func RetryAfter(resp *http.Response) time.Duration {
 		return retryAfterFromNumber(value)
 	}
 	if t, err := http.ParseTime(header); err == nil {
-		wait := time.Until(t)
+		wait := t.Sub(retryAfterNow())
 		if wait > MaxRetryWait {
 			return MaxRetryWait
 		}
@@ -180,9 +186,9 @@ func retryAfterFromNumber(value int64) time.Duration {
 func retryAfterEpochWait(value int64) time.Duration {
 	switch {
 	case value >= unixEpochMillisecondsThreshold:
-		return time.Until(time.UnixMilli(value))
+		return time.UnixMilli(value).Sub(retryAfterNow())
 	case value >= unixEpochSecondsThreshold:
-		return time.Until(time.Unix(value, 0))
+		return time.Unix(value, 0).Sub(retryAfterNow())
 	default:
 		return 0
 	}

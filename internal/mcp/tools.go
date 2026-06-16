@@ -448,30 +448,33 @@ func makeAPIHandler(method, pathTemplate string, bindings []mcpParamBinding, pos
 
 		if err != nil {
 			msg := err.Error()
-			switch {
-			case strings.Contains(msg, "HTTP 409"):
+			// PATCH(glean static-audit): classify via the shared cliutil helper
+			// so HTTP-status detection isn't duplicated with the CLI layer; the
+			// MCP result text stays MCP-specific.
+			switch cliutil.ClassifyHTTPError(msg) {
+			case cliutil.HTTPErrConflict:
 				return mcplib.NewToolResultText("already exists (no-op)"), nil
-			case strings.Contains(msg, "HTTP 400") && cliutil.LooksLikeAuthError(msg):
+			case cliutil.HTTPErrBadRequestAuth:
 				return mcplib.NewToolResultError("authentication error: " + cliutil.SanitizeErrorBody(msg) +
 					"\nhint: the API rejected the request — this usually means auth is missing or invalid." +
 					"\n      Set your API key: export ZOTERO_API_KEY=<your-key>" +
 					"\n      Run 'zotero-pp-cli doctor' to check auth status."), nil
-			case strings.Contains(msg, "HTTP 401"):
+			case cliutil.HTTPErrUnauthorized:
 				return mcplib.NewToolResultError("authentication failed: " + cliutil.SanitizeErrorBody(msg) +
 					"\nhint: check your API key." +
 					"\n      Set it with: export ZOTERO_API_KEY=<your-key>" +
 					"\n      Run 'zotero-pp-cli doctor' to check auth status."), nil
-			case strings.Contains(msg, "HTTP 403"):
+			case cliutil.HTTPErrForbidden:
 				return mcplib.NewToolResultError("permission denied: " + cliutil.SanitizeErrorBody(msg) +
 					"\nhint: your credentials are valid but lack access to this resource." +
 					"\n      Set it with: export ZOTERO_API_KEY=<your-key>" +
 					"\n      Run 'zotero-pp-cli doctor' to check auth status."), nil
-			case strings.Contains(msg, "HTTP 404"):
+			case cliutil.HTTPErrNotFound:
 				if method == "DELETE" {
 					return mcplib.NewToolResultText("already deleted (no-op)"), nil
 				}
 				return mcplib.NewToolResultError("not found: " + msg), nil
-			case strings.Contains(msg, "HTTP 429"):
+			case cliutil.HTTPErrRateLimited:
 				return mcplib.NewToolResultError("rate limited: " + msg), nil
 			default:
 				return mcplib.NewToolResultError(msg), nil

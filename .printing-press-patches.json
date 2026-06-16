@@ -131,6 +131,21 @@
         "internal/client/getversion_patch_test.go"
       ],
       "validated_outcome": "TestSyncResourceVersionBasedIncremental (stores Last-Modified-Version, sends since=<stored> on the next run, explicit --since overrides) and TestGetWithVersion pass; go build/vet and full `go test ./...` pass (fresh)."
+    },
+    {
+      "id": "zotero-glean-p3-cleanups",
+      "summary": "P3 cleanups from glean: (e5o8) parallelize annotations export child-fetches via cliutil.FanoutRun instead of a sequential Get-per-item loop, preserving source order and fail-fast error semantics; (zog1) extract the duplicated HTTP-status detection ladder into cliutil.ClassifyHTTPError used by both the CLI classifyAPIError and the MCP error handler, keeping each layer's hint text and result type; (3ta0) add an overridable retryAfterNow clock seam so the RetryAfter HTTP-date/epoch tests assert exact durations instead of a loose 5-8s range.",
+      "reason": "glean beads e5o8 (perf), zog1 (maintainability: brittle strings.Contains(msg,\"HTTP NNN\") ladder copy-pasted across internal/cli and internal/mcp), 3ta0 (test precision on wall-clock-dependent parsing).",
+      "files": [
+        "internal/cli/annotations_export.go",
+        "internal/cliutil/text.go",
+        "internal/cli/helpers.go",
+        "internal/mcp/tools.go",
+        "internal/cliutil/ratelimit.go",
+        "internal/cliutil/cliutil_test.go",
+        "internal/cliutil/classify_patch_test.go"
+      ],
+      "validated_outcome": "TestClassifyHTTPError + exact RetryAfter time tests pass; CLI/MCP error messages unchanged (only detection deduplicated); go build/vet and full `go test ./...` pass (fresh)."
     }
   ]
 }

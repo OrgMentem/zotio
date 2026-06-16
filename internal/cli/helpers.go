@@ -220,31 +220,34 @@ func writeAPIErrorEnvelope(flags *rootFlags, err error, code int) {
 // classifyAPIError maps API errors to structured exit codes with actionable hints.
 func classifyAPIError(err error, flags *rootFlags) error {
 	msg := err.Error()
-	switch {
-	case strings.Contains(msg, "HTTP 409"):
+	// PATCH(glean static-audit): classify via the shared cliutil helper so the
+	// HTTP-status detection isn't duplicated with the MCP layer; hint text and
+	// exit-code wrapping stay CLI-specific.
+	switch cliutil.ClassifyHTTPError(msg) {
+	case cliutil.HTTPErrConflict:
 		if flags != nil && flags.idempotent {
 			return writeNoop(flags, "already_exists", "already exists (no-op)")
 		}
 		classified := apiErr(err)
 		writeAPIErrorEnvelope(flags, classified, ExitCode(classified))
 		return classified
-	case strings.Contains(msg, "HTTP 400") && cliutil.LooksLikeAuthError(msg):
+	case cliutil.HTTPErrBadRequestAuth:
 		return authErr(fmt.Errorf("%w\nhint: the API rejected the request — this usually means auth is missing or invalid."+
 			"\n      Set your API key: export ZOTERO_API_KEY=<your-key>"+
 			"\n      Run 'zotero-pp-cli doctor' to check auth status."+
 			"\n      Response: "+cliutil.SanitizeErrorBody(msg), err))
-	case strings.Contains(msg, "HTTP 401"):
+	case cliutil.HTTPErrUnauthorized:
 		return authErr(fmt.Errorf("%w\nhint: check your API key."+
 			" Set it with: export ZOTERO_API_KEY=<your-key>"+
 			"\n      Run 'zotero-pp-cli doctor' to check auth status.", err))
-	case strings.Contains(msg, "HTTP 403"):
+	case cliutil.HTTPErrForbidden:
 		return authErr(fmt.Errorf("%w\nhint: permission denied. Your credentials are valid but lack access to this resource."+
 			"\n      Check that your API key has the required permissions."+
 			"\n      Set it with: export ZOTERO_API_KEY=<your-key>"+
 			"\n      Run 'zotero-pp-cli doctor' to check auth status.", err))
-	case strings.Contains(msg, "HTTP 404"):
+	case cliutil.HTTPErrNotFound:
 		return notFoundErr(fmt.Errorf("%w\nhint: resource not found. Run the 'list' command to see available items", err))
-	case strings.Contains(msg, "HTTP 429"):
+	case cliutil.HTTPErrRateLimited:
 		return rateLimitErr(err)
 	default:
 		return apiErr(err)

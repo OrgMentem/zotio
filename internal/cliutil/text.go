@@ -72,6 +72,45 @@ func LooksLikeAuthError(msg string) bool {
 	return false
 }
 
+// HTTPErrorKind classifies an API error by the HTTP status embedded in its
+// message, so the CLI and MCP layers detect the same statuses in one place
+// while each keeps its own user-facing hint text and result type.
+// PATCH(glean static-audit): de-duplicates the brittle strings.Contains(msg,
+// "HTTP NNN") ladder previously copy-pasted across internal/cli and internal/mcp.
+type HTTPErrorKind int
+
+const (
+	HTTPErrOther HTTPErrorKind = iota
+	HTTPErrConflict
+	HTTPErrBadRequestAuth
+	HTTPErrUnauthorized
+	HTTPErrForbidden
+	HTTPErrNotFound
+	HTTPErrRateLimited
+)
+
+// ClassifyHTTPError maps an error message to an HTTPErrorKind by the HTTP
+// status string it carries. Check order matches the historical CLI/MCP
+// switches: 409, then 400-with-auth, 401, 403, 404, 429.
+func ClassifyHTTPError(msg string) HTTPErrorKind {
+	switch {
+	case strings.Contains(msg, "HTTP 409"):
+		return HTTPErrConflict
+	case strings.Contains(msg, "HTTP 400") && LooksLikeAuthError(msg):
+		return HTTPErrBadRequestAuth
+	case strings.Contains(msg, "HTTP 401"):
+		return HTTPErrUnauthorized
+	case strings.Contains(msg, "HTTP 403"):
+		return HTTPErrForbidden
+	case strings.Contains(msg, "HTTP 404"):
+		return HTTPErrNotFound
+	case strings.Contains(msg, "HTTP 429"):
+		return HTTPErrRateLimited
+	default:
+		return HTTPErrOther
+	}
+}
+
 // SanitizeErrorBody truncates and strips credential-shaped strings from error output.
 func SanitizeErrorBody(msg string) string {
 	if len(msg) > 200 {

@@ -4,13 +4,18 @@
 package cli
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
 	"strings"
 
 	"github.com/spf13/cobra"
+
+	"zotero-pp-cli/internal/client"
+	"zotero-pp-cli/internal/cliutil"
 )
 
 type annotationExportItem struct {
@@ -81,35 +86,56 @@ func newAnnotationsExportCmd(flags *rootFlags) *cobra.Command {
 				return classifyAPIError(err, flags)
 			}
 
-			exports := make([]annotationExportItem, 0)
+			// PATCH(glean static-audit): fetch each candidate item's annotations
+			// in parallel instead of one sequential Get per item. The per-item
+			// Get goes through the client's shared (now race-safe) rate limiter,
+			// and FanoutRun returns results in source order so export ordering
+			// stays stable.
+			var candidates []map[string]any
 			for _, item := range items {
-				if !zoteroItemHasChildren(item) {
-					continue
+				if zoteroItemHasChildren(item) && zoteroString(item, "key") != "" {
+					candidates = append(candidates, item)
 				}
-				key := zoteroString(item, "key")
-				if key == "" {
-					continue
-				}
-				children, err := c.Get("/items/"+key+"/children", map[string]string{"itemType": "annotation"})
-				if err != nil {
-					return classifyAPIError(err, flags)
-				}
-				childItems, err := decodeZoteroItems(children)
-				if err != nil {
-					return fmt.Errorf("parsing annotation children for %s: %w", key, err)
-				}
-				annotations := annotationSummariesFromItems(childItems)
-				if len(annotations) == 0 {
-					continue
-				}
-				exports = append(exports, annotationExportItem{
-					Key:         key,
-					Title:       zoteroString(item, "title"),
-					Year:        zoteroItemYear(item),
-					Authors:     zoteroItemAuthors(item),
-					DOI:         zoteroString(item, "DOI"),
-					Annotations: annotations,
+			}
+			results, errs := cliutil.FanoutRun(cmd.Context(), candidates,
+				func(item map[string]any) string { return zoteroString(item, "key") },
+				func(_ context.Context, item map[string]any) (annotationExportItem, error) {
+					key := zoteroString(item, "key")
+					children, err := c.Get("/items/"+key+"/children", map[string]string{"itemType": "annotation"})
+					if err != nil {
+						return annotationExportItem{}, err
+					}
+					childItems, err := decodeZoteroItems(children)
+					if err != nil {
+						return annotationExportItem{}, fmt.Errorf("parsing annotation children for %s: %w", key, err)
+					}
+					annotations := annotationSummariesFromItems(childItems)
+					if len(annotations) == 0 {
+						return annotationExportItem{}, nil
+					}
+					return annotationExportItem{
+						Key:         key,
+						Title:       zoteroString(item, "title"),
+						Year:        zoteroItemYear(item),
+						Authors:     zoteroItemAuthors(item),
+						DOI:         zoteroString(item, "DOI"),
+						Annotations: annotations,
+					}, nil
 				})
+			if len(errs) > 0 {
+				e := errs[0].Err
+				var apiErr *client.APIError
+				if errors.As(e, &apiErr) {
+					return classifyAPIError(e, flags)
+				}
+				return e
+			}
+			exports := make([]annotationExportItem, 0, len(results))
+			for _, r := range results {
+				if len(r.Value.Annotations) == 0 {
+					continue
+				}
+				exports = append(exports, r.Value)
 			}
 
 			var out []byte

@@ -742,33 +742,39 @@ func TestRetryAfter_Seconds(t *testing.T) {
 	}
 }
 
+// PATCH(glean test-gaps 3ta0): pin a fixed reference time via the retryAfterNow
+// seam so Retry-After parsing is asserted exactly instead of with a loose 5-8s
+// tolerance range (which traded precision for wall-clock robustness).
 func TestRetryAfter_HTTPDate(t *testing.T) {
-	future := time.Now().Add(7 * time.Second).UTC().Format(http.TimeFormat)
+	base := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
+	retryAfterNow = func() time.Time { return base }
+	defer func() { retryAfterNow = time.Now }()
 	resp := &http.Response{Header: http.Header{}}
-	resp.Header.Set("Retry-After", future)
-	got := RetryAfter(resp)
-	if got < 5*time.Second || got > 8*time.Second {
-		t.Errorf("RetryAfter(http-date 7s ahead) = %v, want ~7s", got)
+	resp.Header.Set("Retry-After", base.Add(7*time.Second).UTC().Format(http.TimeFormat))
+	if got := RetryAfter(resp); got != 7*time.Second {
+		t.Errorf("RetryAfter(http-date 7s ahead) = %v, want 7s", got)
 	}
 }
 
 func TestRetryAfter_EpochSeconds(t *testing.T) {
-	future := time.Now().Add(7 * time.Second)
+	base := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
+	retryAfterNow = func() time.Time { return base }
+	defer func() { retryAfterNow = time.Now }()
 	resp := &http.Response{Header: http.Header{}}
-	resp.Header.Set("Retry-After", fmt.Sprint(future.Unix()))
-	got := RetryAfter(resp)
-	if got < 5*time.Second || got > 8*time.Second {
-		t.Errorf("RetryAfter(epoch seconds 7s ahead) = %v, want ~7s", got)
+	resp.Header.Set("Retry-After", fmt.Sprint(base.Add(7*time.Second).Unix()))
+	if got := RetryAfter(resp); got != 7*time.Second {
+		t.Errorf("RetryAfter(epoch seconds 7s ahead) = %v, want 7s", got)
 	}
 }
 
 func TestRetryAfter_EpochMilliseconds(t *testing.T) {
-	future := time.Now().Add(7 * time.Second)
+	base := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
+	retryAfterNow = func() time.Time { return base }
+	defer func() { retryAfterNow = time.Now }()
 	resp := &http.Response{Header: http.Header{}}
-	resp.Header.Set("Retry-After", fmt.Sprint(future.UnixMilli()))
-	got := RetryAfter(resp)
-	if got < 5*time.Second || got > 8*time.Second {
-		t.Errorf("RetryAfter(epoch milliseconds 7s ahead) = %v, want ~7s", got)
+	resp.Header.Set("Retry-After", fmt.Sprint(base.Add(7*time.Second).UnixMilli()))
+	if got := RetryAfter(resp); got != 7*time.Second {
+		t.Errorf("RetryAfter(epoch milliseconds 7s ahead) = %v, want 7s", got)
 	}
 }
 
