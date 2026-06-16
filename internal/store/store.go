@@ -452,7 +452,9 @@ func (s *Store) upsertGenericResourceTx(tx *sql.Tx, resourceType, id string, dat
 	if _, err = tx.Exec(
 		`INSERT INTO resources_fts (rowid, id, resource_type, content)
 		 VALUES (?, ?, ?, ?)`,
-		ftsRowid, id, resourceType, string(data),
+		// PATCH(glean cvl6): index a curated Zotero-aware document for items
+		// instead of the raw JSON blob (raw JSON retained for other types).
+		ftsRowid, id, resourceType, buildSearchDocument(resourceType, data),
 	); err != nil {
 		// FTS insert failure is non-fatal
 		fmt.Fprintf(os.Stderr, "warning: FTS index update failed: %v\n", err)

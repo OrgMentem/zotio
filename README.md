@@ -2,7 +2,7 @@
 
 **Every Zotero feature in the terminal, plus offline search, annotation export, and library analytics no existing tool offers.**
 
-This CLI connects directly to your running Zotero desktop app — no API key needed. It syncs your library to a local SQLite store for offline search and compound queries, then adds 18 features (reading queues, tag audits, annotation timelines, collection exports) that Zotero's UI and pyzotero can't do.
+This CLI connects directly to your running Zotero desktop app — no API key needed. It syncs your library to a local SQLite store for offline search and compound queries, then adds 18 features (reading queues, tag audits, annotation timelines, collection exports) that Zotero's UI and pyzotero can't do. With `--data-source local`, item reads apply the same `--item-type`, `--tag`, collection, `--sort`/`--direction`, and `--limit`/`--start` scopes as live API calls, so offline results match online ones.
 
 ## Install
 

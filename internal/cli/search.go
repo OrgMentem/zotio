@@ -146,14 +146,12 @@ In local mode: searches locally synced data only.`,
 			defer db.Close()
 
 			var results []json.RawMessage
-			switch resourceType {
-			case "":
-				// Search all FTS-enabled tables individually to avoid duplicates.
-				seen := make(map[string]bool)
-				_ = seen // prevent unused error when no FTS tables exist
-			default:
-				// Unrecognized type — fall back to generic search
+			// PATCH(glean cvl6): default local search runs cross-resource FTS
+			// (previously a no-op); --type scopes it to one resource type.
+			if resourceType == "" {
 				results, err = db.Search(query, limit)
+			} else {
+				results, err = db.SearchByType(query, resourceType, limit)
 			}
 			if err != nil {
 				return fmt.Errorf("search failed: %w", err)

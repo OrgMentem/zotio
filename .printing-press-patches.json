@@ -200,6 +200,22 @@
         "internal/cli/doctor.go"
       ],
       "validated_outcome": "groups_test (rewriteLibraryPrefix for user/web/existing-group/no-segment cases; userIDFromBaseURL extraction + group-URL rejection; group-aware defaultDBPath; groups list JSON + table output; group base URL rejected) passes; full `go test ./...` green."
+    },
+    {
+      "id": "zotero-glean-cvl6-local-query-planner",
+      "summary": "Added a Zotero-aware local query planner so --data-source local replays endpoint scoping instead of dumping all synced rows. New store query layer (internal/store/query.go): QueryItems applies itemType (indexed column), tag and collection membership (json_each), top-level filter, quick-search (FTS), sort/direction (json_extract), and limit/start; buildSearchDocument indexes a curated item document (key, bibliographic fields, creators, tags, annotation text) into resources_fts instead of the raw JSON blob; SearchByType scopes FTS to one resource type. resolveLocal routes item-list paths (/items, /items/top, /collections/{key}/items[/top]) through the planner and advertises meta.scoped; the search command's previously no-op default local branch now runs cross-resource FTS.",
+      "reason": "glean bead cvl6 (P1): the local store was a generic JSON cache with FTS bolted on — resolveLocal ignored endpoint filters/path scoping, the search command's default local branch was a placeholder that returned nothing, and FTS indexed raw JSON rather than Zotero search fields, so the headline offline mode could not match live reads.",
+      "files": [
+        "internal/store/query.go",
+        "internal/store/query_test.go",
+        "internal/store/store.go",
+        "internal/cli/data_source.go",
+        "internal/cli/data_source_cvl6_test.go",
+        "internal/cli/search.go",
+        "internal/cli/helpers.go",
+        "README.md"
+      ],
+      "validated_outcome": "query_test (itemType/tag/collection/top/limit/start/sort + quick-search + curated FTS doc) and fixture-backed parity tests (live httptest vs --data-source local return identical key sets and ordering for itemType+sort and tag scopes; empty scope returns [] not an error) pass; gofmt/build/vet and full `go test ./...` green. Scope note: implemented as a hand-written Zotero item read model (the high-value list/get/search scopes), not a fully generic per-endpoint translator."
     }
   ]
 }

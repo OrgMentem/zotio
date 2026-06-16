@@ -1194,6 +1194,9 @@ type DataProvenance struct {
 	Reason       string     `json:"reason,omitempty"`        // why local was used: "user_requested", "api_unreachable", "no_search_endpoint"
 	ResourceType string     `json:"resource_type,omitempty"` // which resource type was queried
 	Freshness    any        `json:"freshness,omitempty"`     // optional machine-owned freshness metadata for covered command paths
+	// PATCH(glean cvl6): true when a local read applied the request's scopes
+	// (itemType/tag/collection/sort/limit) rather than dumping all synced rows.
+	Scoped bool `json:"scoped,omitempty"`
 }
 
 // printProvenance writes a one-line provenance message to stderr for TTY users.
@@ -1248,6 +1251,10 @@ func wrapWithProvenance(data json.RawMessage, prov DataProvenance) (json.RawMess
 	}
 	if prov.Freshness != nil {
 		meta["freshness"] = prov.Freshness
+	}
+	// PATCH(glean cvl6): advertise that local filters were applied.
+	if prov.Scoped {
+		meta["scoped"] = true
 	}
 	var results any = json.RawMessage(data)
 	if !json.Valid(data) {

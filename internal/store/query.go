@@ -1,0 +1,236 @@
+// Copyright 2026 enieuwy. Licensed under Apache-2.0. See LICENSE.
+// PATCH(glean cvl6): Zotero-aware local query planner. Replays the scoping
+// semantics of the Zotero item list/search endpoints (itemType, tag,
+// collection, top-level, quick-search, sort, direction, limit, start) against
+// the local resources table so `--data-source local` returns the same key sets
+// and ordering as live reads. Also builds a curated FTS search document for
+// items instead of indexing the whole raw JSON blob.
+
+package store
+
+import (
+	"encoding/json"
+	"strings"
+)
+
+// ItemQuery describes a scoped local item query mirroring the parameters of the
+// Zotero item list endpoints.
+type ItemQuery struct {
+	ItemType   string // data.itemType filter (indexed column)
+	Tag        string // data.tags[].tag membership
+	Collection string // data.collections[] membership (collection key)
+	TopOnly    bool   // exclude child items (data.parentItem present)
+	Query      string // quick search routed through FTS
+	Sort       string // Zotero sort field name
+	Direction  string // "asc" | "desc"
+	Limit      int    // 0 = no limit
+	Start      int    // pagination offset
+}
+
+// itemSortColumns maps Zotero sort field names to a SQL ORDER BY expression
+// over the stored item payload. Unmapped fields fall back to the item key.
+var itemSortColumns = map[string]string{
+	"title":               "json_extract(r.data, '$.data.title')",
+	"date":                "json_extract(r.data, '$.data.date')",
+	"dateAdded":           "json_extract(r.data, '$.data.dateAdded')",
+	"dateModified":        "json_extract(r.data, '$.data.dateModified')",
+	"creator":             "json_extract(r.data, '$.data.creators[0].lastName')",
+	"type":                "r.item_type",
+	"itemType":            "r.item_type",
+	"publisher":           "json_extract(r.data, '$.data.publisher')",
+	"publicationTitle":    "json_extract(r.data, '$.data.publicationTitle')",
+	"journalAbbreviation": "json_extract(r.data, '$.data.journalAbbreviation')",
+}
+
+// QueryItems runs a scoped query over synced items (resource_type = 'items')
+// and returns the matching payloads in the requested order. An empty result is
+// not an error — it mirrors a live list that matched nothing.
+func (s *Store) QueryItems(q ItemQuery) ([]json.RawMessage, error) {
+	var sb strings.Builder
+	var args []any
+
+	sb.WriteString("SELECT r.data FROM resources r")
+	useFTS := strings.TrimSpace(q.Query) != ""
+	if useFTS {
+		sb.WriteString(" JOIN resources_fts f ON r.id = f.id")
+	}
+	sb.WriteString(" WHERE r.resource_type = 'items'")
+
+	if useFTS {
+		sb.WriteString(" AND resources_fts MATCH ?")
+		args = append(args, ftsMatchQuery(q.Query))
+	}
+	if q.ItemType != "" {
+		sb.WriteString(" AND r.item_type = ?")
+		args = append(args, q.ItemType)
+	}
+	if q.Tag != "" {
+		sb.WriteString(" AND EXISTS (SELECT 1 FROM json_each(r.data, '$.data.tags') te WHERE json_extract(te.value, '$.tag') = ?)")
+		args = append(args, q.Tag)
+	}
+	if q.Collection != "" {
+		sb.WriteString(" AND EXISTS (SELECT 1 FROM json_each(r.data, '$.data.collections') ce WHERE ce.value = ?)")
+		args = append(args, q.Collection)
+	}
+	if q.TopOnly {
+		sb.WriteString(" AND json_extract(r.data, '$.data.parentItem') IS NULL")
+	}
+
+	sb.WriteString(" ORDER BY ")
+	sb.WriteString(itemOrderBy(q.Sort, q.Direction))
+
+	if q.Limit > 0 {
+		sb.WriteString(" LIMIT ?")
+		args = append(args, q.Limit)
+		if q.Start > 0 {
+			sb.WriteString(" OFFSET ?")
+			args = append(args, q.Start)
+		}
+	} else if q.Start > 0 {
+		sb.WriteString(" LIMIT -1 OFFSET ?")
+		args = append(args, q.Start)
+	}
+
+	rows, err := s.db.Query(sb.String(), args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var results []json.RawMessage
+	for rows.Next() {
+		var data string
+		if err := rows.Scan(&data); err != nil {
+			return nil, err
+		}
+		results = append(results, json.RawMessage(data))
+	}
+	return results, rows.Err()
+}
+
+// itemOrderBy builds the ORDER BY clause for a sort field + direction, always
+// appending the item key as a deterministic tiebreaker so ordering is stable.
+func itemOrderBy(sortField, direction string) string {
+	dir := "ASC"
+	if strings.EqualFold(direction, "desc") {
+		dir = "DESC"
+	}
+	expr, ok := itemSortColumns[sortField]
+	if !ok {
+		// No (or unknown) sort field: order by the most recent modification,
+		// matching the Zotero default of dateModified-descending, then key.
+		return "json_extract(r.data, '$.data.dateModified') DESC, r.id ASC"
+	}
+	return expr + " " + dir + ", r.id ASC"
+}
+
+// itemSearchFields are the curated string fields fed into the FTS search
+// document for items, in addition to creators and tags.
+var itemSearchFields = []string{
+	"title", "shortTitle", "abstractNote", "note",
+	"publicationTitle", "bookTitle", "proceedingsTitle", "conferenceName",
+	"publisher", "journalAbbreviation", "series",
+	"date", "language", "DOI", "ISBN", "ISSN", "url",
+	"itemType", "annotationText", "annotationComment", "annotationLabel",
+}
+
+// buildSearchDocument returns the text indexed into resources_fts for a record.
+// For items it builds a curated Zotero-aware document (key, bibliographic
+// fields, creator names, tag names, annotation text) so search matches real
+// content rather than JSON structure. For every other resource type it keeps
+// the previous behavior of indexing the raw JSON. Falls back to the raw JSON
+// whenever the curated document would be empty so a row is never unindexed.
+func buildSearchDocument(resourceType string, data json.RawMessage) string {
+	if resourceType != "items" {
+		return string(data)
+	}
+	var obj map[string]any
+	if err := json.Unmarshal(data, &obj); err != nil {
+		return string(data)
+	}
+	fields := obj
+	if inner, ok := obj["data"].(map[string]any); ok {
+		fields = inner
+	}
+
+	var parts []string
+	add := func(v any) {
+		if s, ok := v.(string); ok && strings.TrimSpace(s) != "" {
+			parts = append(parts, s)
+		}
+	}
+
+	add(obj["key"])
+	for _, f := range itemSearchFields {
+		add(fields[f])
+	}
+	if creators, ok := fields["creators"].([]any); ok {
+		for _, c := range creators {
+			if cm, ok := c.(map[string]any); ok {
+				add(cm["firstName"])
+				add(cm["lastName"])
+				add(cm["name"])
+			}
+		}
+	}
+	if tags, ok := fields["tags"].([]any); ok {
+		for _, t := range tags {
+			if tm, ok := t.(map[string]any); ok {
+				add(tm["tag"])
+			}
+		}
+	}
+
+	doc := strings.Join(parts, " ")
+	if strings.TrimSpace(doc) == "" {
+		return string(data)
+	}
+	return doc
+}
+
+// ftsMatchQuery turns a quick-search string into a safe FTS5 MATCH expression:
+// each whitespace-separated term is double-quoted (escaping embedded quotes)
+// and ANDed, so user input containing FTS operators can't produce a syntax
+// error and multi-word queries match all terms.
+func ftsMatchQuery(query string) string {
+	terms := strings.Fields(query)
+	if len(terms) == 0 {
+		return query
+	}
+	quoted := make([]string, 0, len(terms))
+	for _, t := range terms {
+		quoted = append(quoted, `"`+strings.ReplaceAll(t, `"`, `""`)+`"`)
+	}
+	return strings.Join(quoted, " ")
+}
+
+// SearchByType runs an FTS search scoped to a single resource type. It mirrors
+// Search but adds a resource_type predicate so the search command's --type flag
+// genuinely narrows local results. PATCH(glean cvl6).
+func (s *Store) SearchByType(query, resourceType string, limit int) ([]json.RawMessage, error) {
+	if limit <= 0 {
+		limit = 50
+	}
+	rows, err := s.db.Query(
+		`SELECT r.data FROM resources r
+		 JOIN resources_fts f ON r.id = f.id
+		 WHERE resources_fts MATCH ? AND f.resource_type = ?
+		 ORDER BY rank
+		 LIMIT ?`,
+		ftsMatchQuery(query), resourceType, limit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var results []json.RawMessage
+	for rows.Next() {
+		var data string
+		if err := rows.Scan(&data); err != nil {
+			return nil, err
+		}
+		results = append(results, json.RawMessage(data))
+	}
+	return results, rows.Err()
+}

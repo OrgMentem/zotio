@@ -10,6 +10,7 @@ import (
 	"net"
 	"net/url"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -216,6 +217,21 @@ func resolveLocal(ctx context.Context, resourceType string, isList bool, path st
 
 	prov := localProvenance(db, resourceType, reason)
 
+	// PATCH(glean cvl6): Zotero-aware local query planner. For item-list reads
+	// (/items, /items/top, /collections/{key}/items[/top]) apply the same
+	// scopes the live endpoint would (itemType, tag, collection, top-level,
+	// quick-search, sort, direction, limit, start) instead of dumping all
+	// synced rows. Keyed on the path so it also covers the collection-items
+	// command, which labels its resource "collections".
+	if data, handled, qErr := resolveLocalItemList(db, path, params); handled {
+		if qErr != nil {
+			return nil, DataProvenance{}, qErr
+		}
+		itemProv := localProvenance(db, "items", reason)
+		itemProv.Scoped = true
+		return data, itemProv, nil
+	}
+
 	// Warn if endpoint had filters that local reads can't reproduce
 	if len(params) > 0 {
 		fmt.Fprintf(os.Stderr, "warning: local data is unfiltered — endpoint filters are not applied to cached data\n")
@@ -259,6 +275,62 @@ func resolveLocal(ctx context.Context, resourceType string, isList bool, path st
 		return nil, DataProvenance{}, fmt.Errorf("resource %q with ID %q not found in local store. Run 'zotero-pp-cli sync' first", resourceType, id)
 	}
 	return item, prov, nil
+}
+
+// resolveLocalItemList runs the Zotero-aware item query planner when the path
+// is an item-list endpoint, returning (data, true, err). It returns
+// (nil, false, nil) for non-item-list paths so the caller falls back to its
+// generic get/list handling. An empty match yields a JSON empty array, which
+// mirrors a live list that matched nothing. PATCH(glean cvl6).
+func resolveLocalItemList(db *store.Store, path string, params map[string]string) (json.RawMessage, bool, error) {
+	collectionKey, topOnly, isList := parseItemListPath(path)
+	if !isList {
+		return nil, false, nil
+	}
+	q := store.ItemQuery{
+		ItemType:   params["itemType"],
+		Tag:        params["tag"],
+		Collection: collectionKey,
+		TopOnly:    topOnly,
+		Query:      params["q"],
+		Sort:       params["sort"],
+		Direction:  params["direction"],
+	}
+	if v := params["limit"]; v != "" {
+		q.Limit, _ = strconv.Atoi(v)
+	}
+	if v := params["start"]; v != "" {
+		q.Start, _ = strconv.Atoi(v)
+	}
+	items, err := db.QueryItems(q)
+	if err != nil {
+		return nil, true, fmt.Errorf("local item query: %w", err)
+	}
+	if len(items) == 0 {
+		return json.RawMessage("[]"), true, nil
+	}
+	data, err := json.Marshal(items)
+	if err != nil {
+		return nil, true, fmt.Errorf("marshaling local items: %w", err)
+	}
+	return data, true, nil
+}
+
+// parseItemListPath classifies a Zotero API path as an item-list endpoint and
+// extracts the collection key and top-level flag. Recognizes /items,
+// /items/top, /collections/{key}/items and /collections/{key}/items/top.
+// PATCH(glean cvl6).
+func parseItemListPath(path string) (collectionKey string, topOnly, isList bool) {
+	segs := strings.Split(strings.Trim(path, "/"), "/")
+	switch {
+	case len(segs) == 1 && segs[0] == "items":
+		return "", false, true
+	case len(segs) == 2 && segs[0] == "items" && segs[1] == "top":
+		return "", true, true
+	case len(segs) >= 3 && segs[0] == "collections" && segs[2] == "items":
+		return segs[1], len(segs) >= 4 && segs[3] == "top", true
+	}
+	return "", false, false
 }
 
 // Ensure time import is used (compilation guard).
