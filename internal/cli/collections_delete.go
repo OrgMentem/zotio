@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"strconv"
 
 	"github.com/spf13/cobra"
 )
@@ -22,14 +23,21 @@ func newCollectionsDeleteCmd(flags *rootFlags) *cobra.Command {
 			if len(args) == 0 {
 				return cmd.Help()
 			}
-			c, err := flags.newClient()
+			c, err := flags.newWriteClient()
 			if err != nil {
 				return err
 			}
 
 			path := "/collections/{collectionKey}"
 			path = replacePathParam(path, "collectionKey", args[0])
-			data, statusCode, err := c.Delete(path)
+			// PATCH: Zotero requires If-Unmodified-Since-Version on DELETE (HTTP 428
+			// without it). newWriteClient points at the write target, so this version
+			// GET and the DELETE hit the same library (the Web API under hybrid routing).
+			delHeaders := map[string]string{}
+			if _, v, verr := c.GetWithVersion(path, nil); verr == nil && v > 0 {
+				delHeaders["If-Unmodified-Since-Version"] = strconv.Itoa(v)
+			}
+			data, statusCode, err := c.DeleteWithHeaders(path, delHeaders)
 			if err != nil {
 				return classifyDeleteError(err, flags)
 			}

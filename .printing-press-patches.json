@@ -390,6 +390,19 @@
       ],
       "validated_outcome": "TestItemsCreateSendsBareArray drives newItemsCreateCmd against an httptest server and asserts the request body unmarshals into a JSON array. gofmt/build/vet and full `go test ./...` green. Live round-trip on Zotero 10.0-beta: after the fix `items create` created item XTTCA27C via the Web API (auto-routed), which propagated to the local API in <1s; cleanup delete (web) propagated to a local 404 in <1s.",
       "upstream_issue": "Systemic: the generated create wraps array bodies as {\"items\": ...}; any printed CLI whose create endpoint expects a top-level array hits this. Candidate fix for cli-printing-press (emit a bare array body for array-typed request schemas)."
+    },
+    {
+      "id": "zotero-delete-version-precondition",
+      "summary": "Fixed `items delete` and `collections delete`, which 428'd ('If-Unmodified-Since-Version must be provided for delete requests') because c.Delete sent no version header. They now fetch the object's current version via GetWithVersion and send If-Unmodified-Since-Version via DeleteWithHeaders. Crucially they use a new rootFlags.newWriteClient() (root.go) whose BaseURL is the write target, so the version GET and the DELETE hit the same library (the Web API under hybrid routing) — correct even for an item just created on the web and not yet synced to the local mirror (an earlier local-version attempt 428'd in exactly that case).",
+      "reason": "Surfaced by a live write round-trip: deleting a throwaway item via the CLI failed with 428, and a first fix that read the version from the local mirror still failed because a just-created web item had not synced down yet.",
+      "files": [
+        "internal/cli/root.go",
+        "internal/cli/items_delete.go",
+        "internal/cli/collections_delete.go",
+        "internal/cli/items_delete_test.go"
+      ],
+      "validated_outcome": "TestItemsDeleteSendsVersionHeader and TestCollectionsDeleteSendsVersionHeader assert the DELETE carries If-Unmodified-Since-Version from the fetched version. gofmt/build/vet and full `go test ./...` green. Live full round-trip on Zotero 10.0-beta: `items create` then `items delete <key>` via the CLI returned 204 success (exit 0); the item is 404 on both the Web API and the local API afterward. Library left clean.",
+      "upstream_issue": "Systemic: the generated DELETE sends no precondition header; any printed CLI against an API that requires If-Unmodified-Since-Version (or similar optimistic-concurrency header) on delete hits this. Candidate fix for cli-printing-press (version-precondition handling on mutating verbs)."
     }
   ]
 }

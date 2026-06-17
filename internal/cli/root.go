@@ -259,6 +259,27 @@ func (f *rootFlags) newClient() (*client.Client, error) {
 	return c, nil
 }
 
+// newWriteClient returns a client whose base URL is the write target. Commands that
+// must read-then-write (delete needs the item's current version for the
+// If-Unmodified-Since-Version precondition) use this so the version read and the
+// write hit the same library — under hybrid routing both go to the Web API, avoiding
+// a stale 412/428 when an item created on the web hasn't synced to the local mirror.
+// PATCH: hand-written; pairs with the read-only/hybrid routing.
+func (f *rootFlags) newWriteClient() (*client.Client, error) {
+	c, err := f.newClient()
+	if err != nil {
+		return nil, err
+	}
+	if c.ResolveWriteBase != nil {
+		if base, rerr := c.ResolveWriteBase(); rerr == nil && base != "" {
+			c.BaseURL = base
+			c.ResolveWriteBase = nil
+			fmt.Fprintf(os.Stderr, "→ writing via Zotero Web API: %s\n", base)
+		}
+	}
+	return c, nil
+}
+
 func (f *rootFlags) printJSON(w *cobra.Command, v any) error {
 	enc := json.NewEncoder(w.OutOrStdout())
 	enc.SetIndent("", "  ")
