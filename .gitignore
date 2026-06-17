@@ -8,3 +8,6 @@
 
 # Harness-materialized skill store (symlinks into the dev skills dir)
 /.agents/
+
+# Vendored Printing Press dev skills (repo-local, refresh from upstream; not project source)
+.claude/skills/
