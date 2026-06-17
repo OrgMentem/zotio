@@ -123,13 +123,36 @@ are preserved. Use --dry-run to preview create/update/unchanged without writing.
 				return fmt.Errorf("querying items: %w", err)
 			}
 
-			results := make([]vaultSyncResult, 0, len(items))
+			// PATCH(glean perf-audit rj6r/mhib): select literature items first,
+			// then batch-load annotations for all of them in one query (was one
+			// AnnotationsForItem call per item), and create the vault dir once
+			// instead of inside the per-note loop.
+			metas := make([]vaultMeta, 0, len(items))
+			keys := make([]string, 0, len(items))
 			for _, raw := range items {
 				meta := vaultItemMeta(raw)
 				if !isRegularLiteratureItem(meta.ItemType) {
 					continue
 				}
-				res, werr := syncVaultNote(rawDB, meta, format, flagOut, flags.dryRun)
+				metas = append(metas, meta)
+				keys = append(keys, meta.Key)
+			}
+
+			annByKey, err := rawDB.AnnotationsForItems(keys)
+			if err != nil {
+				return fmt.Errorf("querying annotations: %w", err)
+			}
+
+			if !flags.dryRun {
+				if err := os.MkdirAll(flagOut, 0o755); err != nil {
+					return fmt.Errorf("creating vault dir: %w", err)
+				}
+			}
+
+			results := make([]vaultSyncResult, 0, len(metas))
+			for _, meta := range metas {
+				anns := annotationSummariesSorted(annByKey[meta.Key])
+				res, werr := syncVaultNote(meta, anns, format, flagOut, flags.dryRun)
 				if werr != nil {
 					return werr
 				}
@@ -152,8 +175,7 @@ are preserved. Use --dry-run to preview create/update/unchanged without writing.
 
 // syncVaultNote writes (or previews) a single item's note and reports the
 // resulting status.
-func syncVaultNote(db *store.Store, meta vaultMeta, format, outDir string, dryRun bool) (vaultSyncResult, error) {
-	anns := loadItemAnnotations(db, meta.Key)
+func syncVaultNote(meta vaultMeta, anns []annotationSummary, format, outDir string, dryRun bool) (vaultSyncResult, error) {
 	annBlock := renderAnnotationBlock(anns)
 	filename := vaultFilename(meta)
 	path := filepath.Join(outDir, filename)
@@ -176,9 +198,6 @@ func syncVaultNote(db *store.Store, meta vaultMeta, format, outDir string, dryRu
 	}
 
 	if !dryRun && status != "unchanged" {
-		if err := os.MkdirAll(outDir, 0o755); err != nil {
-			return vaultSyncResult{}, fmt.Errorf("creating vault dir: %w", err)
-		}
 		if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
 			return vaultSyncResult{}, fmt.Errorf("writing %s: %w", path, err)
 		}
@@ -253,11 +272,10 @@ func isRegularLiteratureItem(itemType string) bool {
 	}
 }
 
-func loadItemAnnotations(db *store.Store, key string) []annotationSummary {
-	rows, err := db.AnnotationsForItem(key)
-	if err != nil {
-		return nil
-	}
+// annotationSummariesSorted converts stored annotation payloads into summaries
+// sorted by page then date added. PATCH(glean perf-audit rj6r): split out of the
+// old per-item loadItemAnnotations so the caller can batch the annotation query.
+func annotationSummariesSorted(rows []json.RawMessage) []annotationSummary {
 	items := make([]map[string]any, 0, len(rows))
 	for _, r := range rows {
 		var o map[string]any

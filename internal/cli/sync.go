@@ -290,15 +290,30 @@ func syncFulltext(c *client.Client, db *store.Store, full bool) {
 		for k := range changed {
 			keys = append(keys, k)
 		}
-		_, errs := cliutil.FanoutRun(context.Background(), keys,
+		// PATCH(glean perf-audit x5lh): the API has no batch fulltext endpoint,
+		// so the per-item fetches still fan out, but persist them in a single
+		// keyed transaction instead of one writeMu-serialized Upsert per item
+		// (which caused lock contention and many tiny transactions).
+		results, errs := cliutil.FanoutRun(context.Background(), keys,
 			func(k string) string { return k },
-			func(_ context.Context, k string) (struct{}, error) {
+			func(_ context.Context, k string) (json.RawMessage, error) {
 				ft, _, ferr := c.GetWithVersion("/items/"+k+"/fulltext", nil)
 				if ferr != nil {
-					return struct{}{}, ferr
+					return nil, ferr
 				}
-				return struct{}{}, db.Upsert("fulltext", k, ft)
+				return ft, nil
 			})
+		if len(results) > 0 {
+			ids := make([]string, 0, len(results))
+			payloads := make([]json.RawMessage, 0, len(results))
+			for _, r := range results {
+				ids = append(ids, r.Source)
+				payloads = append(payloads, r.Value)
+			}
+			if uerr := db.UpsertKeyed("fulltext", ids, payloads); uerr != nil {
+				emitFulltextWarning(fmt.Sprintf("persisting fulltext failed: %v", uerr))
+			}
+		}
 		if len(errs) > 0 {
 			emitFulltextWarning(fmt.Sprintf("%d of %d fulltext fetches failed", len(errs), len(keys)))
 		}

@@ -33,6 +33,8 @@ func newCollectionsStatsCmd(flags *rootFlags) *cobra.Command {
 			defer rawDB.Close()
 			db := localQueryStore{rawDB}
 
+			// PATCH(glean perf-audit m4ku): filter on indexed item_type/parent_key
+			// columns instead of json_extract to use the resources indexes.
 			// Total items + year range
 			summaryRows, err := db.QueryRaw(`
 SELECT
@@ -43,7 +45,7 @@ SELECT
        THEN SUBSTR(json_extract(data,'$.data.date'),1,4) END) AS max_year
 FROM resources
 WHERE resource_type='items'
-  AND json_extract(data,'$.data.itemType') NOT IN ('attachment','note','annotation')
+  AND item_type NOT IN ('attachment','note','annotation')
   AND EXISTS (
     SELECT 1 FROM json_each(json_extract(data,'$.data.collections')) c
     WHERE c.value = ?
@@ -57,12 +59,12 @@ WHERE resource_type='items'
 SELECT COUNT(*) AS items_with_pdf
 FROM resources a
 WHERE a.resource_type='items'
-  AND json_extract(a.data,'$.data.itemType')='attachment'
+  AND a.item_type='attachment'
   AND json_extract(a.data,'$.data.contentType')='application/pdf'
   AND EXISTS (
     SELECT 1 FROM resources i
     WHERE i.resource_type='items'
-      AND i.id = json_extract(a.data,'$.data.parentItem')
+      AND i.id = a.parent_key
       AND EXISTS (
         SELECT 1 FROM json_each(json_extract(i.data,'$.data.collections')) c
         WHERE c.value = ?
@@ -83,7 +85,7 @@ SELECT
   COUNT(*) AS count
 FROM resources
 WHERE resource_type='items'
-  AND json_extract(data,'$.data.itemType') NOT IN ('attachment','note','annotation')
+  AND item_type NOT IN ('attachment','note','annotation')
   AND EXISTS (
     SELECT 1 FROM json_each(json_extract(data,'$.data.collections')) c
     WHERE c.value = ?

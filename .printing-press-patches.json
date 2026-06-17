@@ -313,6 +313,23 @@
         "internal/cli/schema_drift_test.go"
       ],
       "validated_outcome": "Unit tests: fast path issues only /itemTypes on an unchanged version (asserts itemFields/creatorFields are not fetched), and a version change triggers a full refetch + drift. Existing drift tests (no header) still exercise the full-fetch path. gofmt/build/vet and full `go test ./...` green. Live smoke on Zotero 10.0-beta: capture reported '(Zotero-Schema-Version 42)'; re-run reported 'Zotero-Schema-Version 42 unchanged since baseline'."
+    },
+    {
+      "id": "zotero-glean-perf-audit-batch",
+      "summary": "Performance fixes from glean perf-audit beads. m4ku: items missing-pdf and collections stats queries now filter on the indexed item_type/parent_key columns instead of json_extract, using idx_resources_item_type/idx_resources_parent_key. x5lh: full-text sync persists the parallel per-item fetches in one keyed transaction via the new store.UpsertKeyed instead of one writeMu-serialized Upsert per item. cwtg: UpsertBatch reuses its already-unmarshaled object via extractIndexedColumnsFromObj instead of parsing each payload twice. rj6r/mhib: vault sync batch-loads annotations for all items via the new store.AnnotationsForItems (was one AnnotationsForItem call per item) and creates the vault dir once instead of per note. eedc: items enrich resolves CrossRef/Unpaywall lookups through cliutil.FanoutRun instead of sequentially. 2qhf: the items audit summary folds the abstract/DOI/tags counts into one conditional-aggregation scan (PDF count keeps its attachment anti-join).",
+      "reason": "glean perf-audit beads m4ku (P1), x5lh (P1), cwtg (P2), rj6r (P2), eedc (P2), 2qhf (P3), mhib (P3): hot paths bypassed indexed columns, issued N+1 DB/network calls, unmarshaled payloads twice, and ran multiple table scans. UpsertKeyed/AnnotationsForItems/extractIndexedColumnsFromObj are SYSTEMIC store helpers and candidates for upstream cli-printing-press.",
+      "files": [
+        "internal/store/store.go",
+        "internal/store/store_hhup_test.go",
+        "internal/cli/items_missing_pdf.go",
+        "internal/cli/collections_stats.go",
+        "internal/cli/sync.go",
+        "internal/cli/vault_sync.go",
+        "internal/cli/items_enrich.go",
+        "internal/cli/items_audit.go",
+        "internal/cli/items_audit_query_test.go"
+      ],
+      "validated_outcome": "New tests TestUpsertKeyed, TestAnnotationsForItems, TestQueryMissingPDFItems_IndexedColumns, TestQueryItemsAuditSummary_SingleScan pass; existing TestSyncFulltext_StoresAndIndexes, TestBuildEnrichProposals_DOIFromStore, and TestVaultSync* (incl. idempotent + dry-run) still pass, covering the changed call sites. gofmt clean; go build/vet and full `go test ./...` green (6 packages ok). Left open as generator residue / lower-ROI: vjbx (empty profiler-populated maps are upstream), z378 (would change shared store.List semantics), anjw (1-2 opens per command, not a hot loop), 6pv1 (the unmarshal backs a real emptiness filter)."
     }
   ]
 }

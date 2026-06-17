@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
+	"zotero-pp-cli/internal/cliutil"
 )
 
 // Overridable provider base URLs (tests point them at httptest servers).
@@ -157,24 +158,41 @@ func buildEnrichProposals(ctx context.Context, db localQueryStore, httpClient *h
 		return nil, []enrichSkip{{Category: category, Reason: fmt.Sprintf("querying work queue: %v", err)}}
 	}
 
+	// PATCH(glean perf-audit eedc): each candidate triggers an independent
+	// CrossRef/Unpaywall lookup, so resolve them through a bounded fan-out
+	// instead of sequentially. FanoutRun preserves source order, so proposal
+	// ordering is unchanged; the apply step stays sequential to avoid hammering
+	// the Zotero write API.
+	type outcome struct {
+		prop    enrichProposal
+		skip    enrichSkip
+		skipped bool
+	}
+	results, _ := cliutil.FanoutRun(ctx, rows,
+		func(row map[string]any) string { return sqlStringValue(row["key"]) },
+		func(ctx context.Context, row map[string]any) (outcome, error) {
+			key := sqlStringValue(row["key"])
+			raw, gerr := db.Get("items", key)
+			if gerr != nil || raw == nil {
+				return outcome{skip: enrichSkip{Key: key, Category: category, Reason: "item not found in local store"}, skipped: true}, nil
+			}
+			version, data := enrichItemFields(raw)
+			title := stringFromMap(data, "title")
+			prop, reason := resolveEnrichment(ctx, httpClient, category, key, version, data, email)
+			if reason != "" {
+				return outcome{skip: enrichSkip{Key: key, Title: title, Category: category, Reason: reason}, skipped: true}, nil
+			}
+			return outcome{prop: prop}, nil
+		})
+
 	var proposals []enrichProposal
 	var skipped []enrichSkip
-	for _, row := range rows {
-		key := sqlStringValue(row["key"])
-		raw, gerr := db.Get("items", key)
-		if gerr != nil || raw == nil {
-			skipped = append(skipped, enrichSkip{Key: key, Category: category, Reason: "item not found in local store"})
-			continue
+	for _, r := range results {
+		if r.Value.skipped {
+			skipped = append(skipped, r.Value.skip)
+		} else {
+			proposals = append(proposals, r.Value.prop)
 		}
-		version, data := enrichItemFields(raw)
-		title := stringFromMap(data, "title")
-
-		prop, reason := resolveEnrichment(ctx, httpClient, category, key, version, data, email)
-		if reason != "" {
-			skipped = append(skipped, enrichSkip{Key: key, Title: title, Category: category, Reason: reason})
-			continue
-		}
-		proposals = append(proposals, prop)
 	}
 	return proposals, skipped
 }

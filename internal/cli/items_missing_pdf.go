@@ -53,27 +53,30 @@ func newItemsMissingPdfCmd(flags *rootFlags) *cobra.Command {
 }
 
 func queryMissingPDFItems(db localQueryStore, itemType string, limit int) ([]map[string]any, error) {
+	// PATCH(glean perf-audit m4ku): filter on the indexed item_type/parent_key
+	// columns instead of json_extract so SQLite uses idx_resources_item_type /
+	// idx_resources_parent_key rather than scanning and JSON-parsing every row.
 	query := `
 SELECT
 	i.id AS key,
 	json_extract(i.data, '$.data.title') AS title,
-	json_extract(i.data, '$.data.itemType') AS item_type,
+	i.item_type AS item_type,
 	json_extract(i.data, '$.data.DOI') AS doi,
 	json_extract(i.data, '$.data.dateAdded') AS date_added
 FROM resources i
 WHERE i.resource_type = 'items'
-	AND json_extract(i.data, '$.data.itemType') IN (` + missingPDFItemTypesSQL + `)
+	AND i.item_type IN (` + missingPDFItemTypesSQL + `)
 	AND NOT EXISTS (
 		SELECT 1 FROM resources a
 		WHERE a.resource_type = 'items'
-			AND json_extract(a.data, '$.data.itemType') = 'attachment'
+			AND a.item_type = 'attachment'
 			AND json_extract(a.data, '$.data.contentType') = 'application/pdf'
-			AND json_extract(a.data, '$.data.parentItem') = i.id
+			AND a.parent_key = i.id
 	)`
 	args := make([]any, 0, 2)
 	if itemType != "" {
 		query += `
-	AND json_extract(i.data, '$.data.itemType') = ?`
+	AND i.item_type = ?`
 		args = append(args, itemType)
 	}
 	query += `
@@ -91,13 +94,13 @@ func queryMissingPDFCount(db localQueryStore) (int, error) {
 SELECT COUNT(*) AS count
 FROM resources i
 WHERE i.resource_type = 'items'
-	AND json_extract(i.data, '$.data.itemType') IN (` + missingPDFItemTypesSQL + `)
+	AND i.item_type IN (` + missingPDFItemTypesSQL + `)
 	AND NOT EXISTS (
 		SELECT 1 FROM resources a
 		WHERE a.resource_type = 'items'
-			AND json_extract(a.data, '$.data.itemType') = 'attachment'
+			AND a.item_type = 'attachment'
 			AND json_extract(a.data, '$.data.contentType') = 'application/pdf'
-			AND json_extract(a.data, '$.data.parentItem') = i.id
+			AND a.parent_key = i.id
 	)`)
 	if err != nil {
 		return 0, err

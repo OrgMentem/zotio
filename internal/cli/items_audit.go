@@ -118,30 +118,27 @@ func queryItemsAuditSummary(db localQueryStore) (itemsAuditSummary, error) {
 	if err != nil {
 		return itemsAuditSummary{}, err
 	}
-	missingAbstract, err := queryCount(db, `
-SELECT COUNT(*) AS count
+	// PATCH(glean perf-audit 2qhf): fold the three single-row predicate counts
+	// (abstract/DOI/tags) into one table scan with conditional aggregation
+	// instead of three separate COUNT scans. The PDF count keeps its own query
+	// because it needs the attachment anti-join; the DOI predicate uses the
+	// indexed item_type column (see m4ku).
+	rows, err := db.QueryRaw(`
+SELECT
+	COUNT(CASE WHEN json_extract(data, '$.data.abstractNote') IS NULL OR TRIM(json_extract(data, '$.data.abstractNote')) = '' THEN 1 END) AS missing_abstract,
+	COUNT(CASE WHEN item_type IN ('journalArticle', 'conferencePaper', 'preprint')
+		AND (json_extract(data, '$.data.DOI') IS NULL OR TRIM(json_extract(data, '$.data.DOI')) = '') THEN 1 END) AS missing_doi,
+	COUNT(CASE WHEN COALESCE(json_array_length(json_extract(data, '$.data.tags')), 0) = 0 THEN 1 END) AS missing_tags
 FROM resources
-WHERE resource_type = 'items'
-	AND (json_extract(data, '$.data.abstractNote') IS NULL OR TRIM(json_extract(data, '$.data.abstractNote')) = '')`)
+WHERE resource_type = 'items'`)
 	if err != nil {
 		return itemsAuditSummary{}, err
 	}
-	missingDOI, err := queryCount(db, `
-SELECT COUNT(*) AS count
-FROM resources
-WHERE resource_type = 'items'
-	AND json_extract(data, '$.data.itemType') IN ('journalArticle', 'conferencePaper', 'preprint')
-	AND (json_extract(data, '$.data.DOI') IS NULL OR TRIM(json_extract(data, '$.data.DOI')) = '')`)
-	if err != nil {
-		return itemsAuditSummary{}, err
-	}
-	missingTags, err := queryCount(db, `
-SELECT COUNT(*) AS count
-FROM resources
-WHERE resource_type = 'items'
-	AND COALESCE(json_array_length(json_extract(data, '$.data.tags')), 0) = 0`)
-	if err != nil {
-		return itemsAuditSummary{}, err
+	var missingAbstract, missingDOI, missingTags int
+	if len(rows) > 0 {
+		missingAbstract = sqlIntValue(rows[0]["missing_abstract"])
+		missingDOI = sqlIntValue(rows[0]["missing_doi"])
+		missingTags = sqlIntValue(rows[0]["missing_tags"])
 	}
 	return itemsAuditSummary{
 		MissingPDF:      missingPDF,
@@ -215,14 +212,6 @@ LIMIT ?`
 		args = append(args, limit)
 	}
 	return db.QueryRaw(query, args...)
-}
-
-func queryCount(db localQueryStore, query string, args ...any) (int, error) {
-	rows, err := db.QueryRaw(query, args...)
-	if err != nil {
-		return 0, err
-	}
-	return firstCount(rows), nil
 }
 
 func firstCount(rows []map[string]any) int {

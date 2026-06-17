@@ -427,11 +427,19 @@ func isSQLiteBusy(err error) bool {
 		strings.Contains(msg, "database table is locked")
 }
 
-func (s *Store) upsertGenericResourceTx(tx *sql.Tx, resourceType, id string, data json.RawMessage) error {
+func (s *Store) upsertGenericResourceTx(tx *sql.Tx, resourceType, id string, data json.RawMessage, obj map[string]any) error {
 	// PATCH(glean hhup): populate indexed dependent-resource columns from the
 	// payload so annotation/attachment queries avoid scanning JSON. Non-item
 	// rows (collections, tags) leave these empty, which is harmless.
-	parentKey, itemType, color, itemDate := extractIndexedColumns(data)
+	// PATCH(glean perf-audit cwtg): reuse the caller's already-unmarshaled obj
+	// (batch path) instead of parsing the same payload a second time. The single
+	// Upsert path passes nil and falls back to the raw-bytes extractor.
+	var parentKey, itemType, color, itemDate string
+	if obj != nil {
+		parentKey, itemType, color, itemDate = extractIndexedColumnsFromObj(obj)
+	} else {
+		parentKey, itemType, color, itemDate = extractIndexedColumns(data)
+	}
 	_, err := tx.Exec(
 		`INSERT INTO resources (id, resource_type, data, parent_key, item_type, annotation_color, item_date, synced_at, updated_at)
 		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -473,6 +481,13 @@ func extractIndexedColumns(data json.RawMessage) (parentKey, itemType, color, it
 	if err := json.Unmarshal(data, &obj); err != nil {
 		return "", "", "", ""
 	}
+	return extractIndexedColumnsFromObj(obj)
+}
+
+// extractIndexedColumnsFromObj is the map-based core of extractIndexedColumns,
+// letting the batch upsert path reuse the object it already unmarshaled instead
+// of parsing the same payload twice. PATCH(glean perf-audit cwtg).
+func extractIndexedColumnsFromObj(obj map[string]any) (parentKey, itemType, color, itemDate string) {
 	fields := obj
 	if inner, ok := obj["data"].(map[string]any); ok {
 		fields = inner
@@ -500,10 +515,38 @@ func (s *Store) Upsert(resourceType, id string, data json.RawMessage) error {
 	}
 	defer tx.Rollback()
 
-	if err := s.upsertGenericResourceTx(tx, resourceType, id, data); err != nil {
+	if err := s.upsertGenericResourceTx(tx, resourceType, id, data, nil); err != nil {
 		return err
 	}
 
+	return tx.Commit()
+}
+
+// UpsertKeyed inserts or replaces multiple records whose primary keys come from
+// the caller (not the payload) in a single transaction. It fits resources whose
+// id is carried by the request path rather than the body — e.g. per-item
+// fulltext, where the response is {content, indexedChars, ...} with no id field.
+// PATCH(glean perf-audit x5lh): replaces one writeMu-serialized Upsert per item
+// (many tiny transactions + lock contention) with a single batched transaction.
+func (s *Store) UpsertKeyed(resourceType string, ids []string, data []json.RawMessage) error {
+	if len(ids) != len(data) {
+		return fmt.Errorf("UpsertKeyed: ids/data length mismatch (%d vs %d)", len(ids), len(data))
+	}
+	if len(ids) == 0 {
+		return nil
+	}
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+	tx, err := s.db.Begin()
+	if err != nil {
+		return fmt.Errorf("starting keyed batch transaction: %w", err)
+	}
+	defer tx.Rollback()
+	for i, id := range ids {
+		if err := s.upsertGenericResourceTx(tx, resourceType, id, data[i], nil); err != nil {
+			return fmt.Errorf("upserting %s/%s: %w", resourceType, id, err)
+		}
+	}
 	return tx.Commit()
 }
 
@@ -626,6 +669,43 @@ func (s *Store) AnnotationsForItem(topItemKey string) ([]json.RawMessage, error)
 		results = append(results, json.RawMessage(data))
 	}
 	return results, rows.Err()
+}
+
+// AnnotationsForItems returns annotations grouped by their top-level item key
+// for every key in topItemKeys, resolved with a single query. It backs callers
+// that materialize many items at once (e.g. vault sync) so they avoid an N+1
+// per-item AnnotationsForItem lookup. Keys with no annotations are simply absent
+// from the returned map. PATCH(glean perf-audit rj6r).
+func (s *Store) AnnotationsForItems(topItemKeys []string) (map[string][]json.RawMessage, error) {
+	out := make(map[string][]json.RawMessage, len(topItemKeys))
+	if len(topItemKeys) == 0 {
+		return out, nil
+	}
+	placeholders := make([]string, len(topItemKeys))
+	args := make([]any, len(topItemKeys))
+	for i, k := range topItemKeys {
+		placeholders[i] = "?"
+		args[i] = k
+	}
+	rows, err := s.db.Query(
+		`SELECT att.parent_key, a.data FROM resources a
+		 JOIN resources att ON a.parent_key = att.id
+		 WHERE a.item_type = 'annotation' AND att.parent_key IN (`+strings.Join(placeholders, ",")+`)`,
+		args...,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var top, data string
+		if err := rows.Scan(&top, &data); err != nil {
+			return nil, err
+		}
+		out[top] = append(out[top], json.RawMessage(data))
+	}
+	return out, rows.Err()
 }
 
 // Fulltext returns the stored full-text payload for an attachment key, if any.
@@ -781,7 +861,7 @@ func (s *Store) UpsertBatch(resourceType string, items []json.RawMessage) (int, 
 			continue
 		}
 
-		if err := s.upsertGenericResourceTx(tx, resourceType, id, item); err != nil {
+		if err := s.upsertGenericResourceTx(tx, resourceType, id, item, obj); err != nil {
 			return 0, extractFailures, fmt.Errorf("upserting %s/%s: %w", resourceType, id, err)
 		}
 
