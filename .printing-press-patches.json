@@ -379,6 +379,17 @@
       ],
       "validated_outcome": "TestWriteRoutingSplitsReadsAndWrites (GET->BaseURL, PATCH/POST->WriteBaseURL, resolver runs once), TestWriteRoutingFallsBackWhenResolverEmpty, TestResolveWebWriteBase (+ caching via keys/current against an httptest base), TestClassifyAPIErrorVersionConflict; gofmt/build/vet, full `go test ./...`, and -race on client+cli all green. Live on Zotero 10.0-beta with a real key: `items update <key> --dry-run` routed to https://api.zotero.org/users/5847066/items/<key> with the notice (key masked in output), while `items list --dry-run` stayed on localhost; the resolved user_id cached to a throwaway config only.",
       "upstream_issue": "The hybrid read-local/write-remote transport (lazy WriteBaseURL + resolver) is generic and a candidate for cli-printing-press; the Zotero specifics (keys/current, local-API detection) stay local."
+    },
+    {
+      "id": "zotero-items-create-array-shape",
+      "summary": "Fixed `items create` body shape. The generated command POSTed {\"items\": [...]} (and an object from stdin), but Zotero's POST /items requires a bare JSON array of item objects, so every create failed with HTTP 400 'Uploaded data must be a JSON array'. Now the array from --items is sent directly, and --stdin accepts either an array or an object.",
+      "reason": "Found during a live write round-trip test: creating a throwaway item failed with 400 until the body was sent as a bare array.",
+      "files": [
+        "internal/cli/items_create.go",
+        "internal/cli/items_create_test.go"
+      ],
+      "validated_outcome": "TestItemsCreateSendsBareArray drives newItemsCreateCmd against an httptest server and asserts the request body unmarshals into a JSON array. gofmt/build/vet and full `go test ./...` green. Live round-trip on Zotero 10.0-beta: after the fix `items create` created item XTTCA27C via the Web API (auto-routed), which propagated to the local API in <1s; cleanup delete (web) propagated to a local 404 in <1s.",
+      "upstream_issue": "Systemic: the generated create wraps array bodies as {\"items\": ...}; any printed CLI whose create endpoint expects a top-level array hits this. Candidate fix for cli-printing-press (emit a bare array body for array-typed request schemas)."
     }
   ]
 }

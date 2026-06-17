@@ -30,26 +30,27 @@ func newItemsCreateCmd(flags *rootFlags) *cobra.Command {
 			}
 
 			path := "/items"
-			var body map[string]any
+			// PATCH: Zotero's POST /items requires a bare JSON array of item objects.
+			// The generated shape wrapped it as {"items": [...]}, which the API rejects
+			// ("Uploaded data must be a JSON array"). Send the array directly, and accept
+			// either an array or an object from stdin.
+			var body any
 			if stdinBody {
 				stdinData, err := io.ReadAll(os.Stdin)
 				if err != nil {
 					return fmt.Errorf("reading stdin: %w", err)
 				}
-				var jsonBody map[string]any
+				var jsonBody any
 				if err := json.Unmarshal(stdinData, &jsonBody); err != nil {
 					return fmt.Errorf("parsing stdin JSON: %w", err)
 				}
 				body = jsonBody
-			} else {
-				body = map[string]any{}
-				if bodyItems != "" {
-					var parsedItems any
-					if err := json.Unmarshal([]byte(bodyItems), &parsedItems); err != nil {
-						return fmt.Errorf("parsing --items JSON: %w", err)
-					}
-					body["items"] = parsedItems
+			} else if bodyItems != "" {
+				var parsedItems any
+				if err := json.Unmarshal([]byte(bodyItems), &parsedItems); err != nil {
+					return fmt.Errorf("parsing --items JSON: %w", err)
 				}
+				body = parsedItems
 			}
 			data, statusCode, err := c.Post(path, body)
 			if err != nil {
