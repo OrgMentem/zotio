@@ -17,6 +17,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 	"zotero-pp-cli/internal/cliutil"
 	"zotero-pp-cli/internal/config"
@@ -30,6 +31,14 @@ type Client struct {
 	NoCache    bool
 	cacheDir   string
 	limiter    *cliutil.AdaptiveLimiter
+
+	// WriteBaseURL, when set, receives all non-GET requests while reads continue to
+	// use BaseURL — the Zotero local API is read-only, so writes route to the Web
+	// API. ResolveWriteBase lazily computes it on the first write (kept in the CLI
+	// layer so the client stays generic); writeRouteOnce guards that resolution.
+	WriteBaseURL     string
+	ResolveWriteBase func() (string, error)
+	writeRouteOnce   sync.Once
 }
 
 // APIError carries HTTP status information for structured exit codes.
@@ -178,7 +187,7 @@ func (c *Client) PatchWithHeaders(path string, body any, headers map[string]stri
 // do executes an HTTP request. headerOverrides, when non-nil, override global
 // RequiredHeaders for this specific request (used for per-endpoint API versioning).
 func (c *Client) doRequest(method, path string, params map[string]string, body any, headerOverrides map[string]string) (json.RawMessage, int, http.Header, error) {
-	targetURL := c.BaseURL + path
+	targetURL := c.baseURLFor(method) + path
 
 	var bodyBytes []byte
 	if body != nil {
@@ -304,6 +313,37 @@ func (c *Client) doRequest(method, path string, params map[string]string, body a
 	}
 
 	return nil, 0, nil, lastErr
+}
+
+// baseURLFor returns the base URL for a request: writes (non-GET) route to the
+// resolved WriteBaseURL when hybrid routing is configured; reads use BaseURL. The
+// write base is resolved lazily on first use.
+func (c *Client) baseURLFor(method string) string {
+	if method == http.MethodGet || method == http.MethodHead {
+		return c.BaseURL
+	}
+	c.resolveWriteRoute()
+	if c.WriteBaseURL != "" {
+		return c.WriteBaseURL
+	}
+	return c.BaseURL
+}
+
+// resolveWriteRoute runs the CLI-provided write-base resolver at most once. On
+// success it sets WriteBaseURL and prints a one-time notice; on failure it leaves
+// WriteBaseURL empty so the write falls through to BaseURL (and the read-only guard).
+func (c *Client) resolveWriteRoute() {
+	if c.ResolveWriteBase == nil || c.WriteBaseURL != "" {
+		return
+	}
+	c.writeRouteOnce.Do(func() {
+		base, err := c.ResolveWriteBase()
+		if err != nil || base == "" {
+			return
+		}
+		c.WriteBaseURL = base
+		fmt.Fprintf(os.Stderr, "→ writing via Zotero Web API: %s (reads stay local)\n", base)
+	})
 }
 
 // do executes an HTTP request and discards response headers, wrapping doRequest

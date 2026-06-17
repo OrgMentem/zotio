@@ -362,6 +362,23 @@
       ],
       "validated_outcome": "TestClassifyAPIErrorLocalWriteRejection (both rejection bodies -> read-only guidance) and TestClassifyAPIErrorAuthNotMisclassified (a genuine auth 400 is unchanged); TestPatchDoesNotRetry501 asserts a 501 yields exactly one request. gofmt/build/vet and full `go test ./...` green. Live on Zotero 10.0-beta: `doctor` shows 'writes: unavailable (...)'; `items restore <key>` returns the read-only guidance in 0.038s (was a ~14s 501 retry storm).",
       "upstream_issue": "Partly systemic: the 501-retry exclusion and a generic read-only-target hint are candidates for cli-printing-press (the local-API rejection strings are Zotero-specific and stay local)."
+    },
+    {
+      "id": "zotero-hybrid-write-routing",
+      "summary": "Hybrid transport: when pointed at the read-only local API, mutating commands auto-route writes to the Zotero Web API while reads stay local. client.Client gains WriteBaseURL + a lazy ResolveWriteBase func + baseURLFor(method)/resolveWriteRoute (non-GET requests use the resolved web base, resolved once with a one-time stderr notice). newClient (root.go) wires the resolver when the base URL is local. write_routing.go adds resolveWebWriteBase (build https://api.zotero.org/users/<id> or /groups/<gid>) and fetchZoteroUserID (keys/current lookup against an overridable zoteroWebAPIBase). config.go gains a user_id field (+ ZOTERO_USER_ID env + SaveUserID) to cache the resolved ID. classifyAPIError maps HTTP 412 to a version-conflict/sync hint (reads local, writes cloud can race).",
+      "reason": "User wanted 'best of what's available': fast local reads plus working writes, without manually switching ZOTERO_BASE_URL. The local API is read-only, so writes must go to the Web API; a configured key is the consent signal.",
+      "files": [
+        "internal/client/client.go",
+        "internal/cli/root.go",
+        "internal/cli/write_routing.go",
+        "internal/cli/helpers.go",
+        "internal/config/config.go",
+        "internal/client/writerouting_patch_test.go",
+        "internal/cli/write_routing_test.go",
+        "internal/cli/writeguard_test.go"
+      ],
+      "validated_outcome": "TestWriteRoutingSplitsReadsAndWrites (GET->BaseURL, PATCH/POST->WriteBaseURL, resolver runs once), TestWriteRoutingFallsBackWhenResolverEmpty, TestResolveWebWriteBase (+ caching via keys/current against an httptest base), TestClassifyAPIErrorVersionConflict; gofmt/build/vet, full `go test ./...`, and -race on client+cli all green. Live on Zotero 10.0-beta with a real key: `items update <key> --dry-run` routed to https://api.zotero.org/users/5847066/items/<key> with the notice (key masked in output), while `items list --dry-run` stayed on localhost; the resolved user_id cached to a throwaway config only.",
+      "upstream_issue": "The hybrid read-local/write-remote transport (lazy WriteBaseURL + resolver) is generic and a candidate for cli-printing-press; the Zotero specifics (keys/current, local-API detection) stay local."
     }
   ]
 }

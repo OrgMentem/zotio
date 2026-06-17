@@ -25,6 +25,7 @@ type Config struct {
 	ClientSecret  string            `toml:"client_secret"`
 	Path          string            `toml:"-"`
 	ZoteroApiKey  string            `toml:"api_key"`
+	UserID        string            `toml:"user_id"`
 }
 
 func Load(configPath string) (*Config, error) {
@@ -75,6 +76,10 @@ func Load(configPath string) (*Config, error) {
 	// Base URL override (used by printing-press verify to point at mock/test servers)
 	if v := os.Getenv("ZOTERO_BASE_URL"); v != "" {
 		cfg.BaseURL = v
+	}
+	// Web API user ID override (used to route writes without a keys/current lookup)
+	if v := os.Getenv("ZOTERO_USER_ID"); v != "" {
+		cfg.UserID = v
 	}
 	return cfg, nil
 }
@@ -134,6 +139,14 @@ func (c *Config) ClearTokens() error {
 	c.AccessToken = ""
 	c.RefreshToken = ""
 	c.TokenExpiry = time.Time{}
+	return c.save()
+}
+
+// SaveUserID persists the resolved numeric Zotero user ID so write routing can
+// skip the keys/current lookup on subsequent runs. Best-effort; callers ignore
+// the error (an unwritable config only means we resolve again next time).
+func (c *Config) SaveUserID(id string) error {
+	c.UserID = id
 	return c.save()
 }
 

@@ -29,3 +29,10 @@ func TestClassifyAPIErrorAuthNotMisclassified(t *testing.T) {
 		t.Errorf("auth 400 misclassified as a local read-only rejection: %s", got)
 	}
 }
+
+func TestClassifyAPIErrorVersionConflict(t *testing.T) {
+	got := classifyAPIError(fmt.Errorf("PATCH /items/A returned HTTP 412: Precondition Failed"), &rootFlags{}).Error()
+	if !strings.Contains(got, "version conflict") || !strings.Contains(got, "sync") {
+		t.Errorf("412 -> expected version-conflict/sync hint, got: %s", got)
+	}
+}

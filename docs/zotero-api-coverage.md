@@ -48,6 +48,17 @@ they must be added to `spec.yaml` (then regen) or written as a `// PATCH:` comma
   (`classifyAPIError`/`isLocalWriteRejection` in `helpers.go`) and prints read-only
   guidance instead of a misleading auth hint; `doctor` reports it under `writes:`.
   `501` is excluded from the HTTP retry loop so the rejection returns immediately.
+- **Writes auto-route to the Web API** when an `api_key` is configured. With the
+  default local base URL, mutating commands (`items create/update/delete/move/restore`,
+  `collections *`, `tags rename`, `import *`, `items enrich --yes`) send their non-GET
+  requests to `https://api.zotero.org/users/<id>` (or `/groups/<gid>`) while reads stay
+  local. The numeric user ID is resolved once via `keys/current` and cached to config
+  (`user_id`; override with `ZOTERO_USER_ID`). Routing is in the client (`baseURLFor`/
+  `resolveWriteRoute`) with the resolver wired in `newClient`; `resolveWebWriteBase`
+  lives in `write_routing.go`. A one-time stderr notice names the target. Web API
+  changes sync down to the desktop. With **no** key, writes hit the local API and the
+  read-only guidance fires. A `412` maps to a "version conflict — run sync" hint
+  (reads are local, writes cloud, so a stale local version can race).
 - **Schema/type endpoints are global**, served under `/api` directly, NOT under the
   `/users|groups/<id>` library prefix the configured base URL carries:
   `/api/itemTypes`, `/api/itemFields`, `/api/itemTypeFields`,
@@ -122,6 +133,7 @@ Run this when a new Zotero version ships, or periodically:
 - **2026-06-17** — against Zotero 9.0.5 (stable) and 10.0-beta; Local API doc dated
   2026-06-07. No new REST endpoints since `/fulltext` (Jan 2025). Web API v3 stable.
   Verified local API is GET-only (writes 400/501). Added this session: `schema drift`
-  (with `Zotero-Schema-Version` fast path), `items file`, and fixed the generated
-  `schema *` commands' library-prefix 404. Remaining: My Publications (niche, not
-  implemented) and `/items/new` (not served by the local API).
+  (with `Zotero-Schema-Version` fast path), `items file`, fixed the generated
+  `schema *` commands' library-prefix 404, a read-only write guard, and **hybrid write
+  routing** (writes auto-route to the Web API when a key is set; reads stay local).
+  Remaining: My Publications (niche) and `/items/new` (not served by the local API).

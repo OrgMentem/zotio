@@ -237,6 +237,13 @@ func classifyAPIError(err error, flags *rootFlags) error {
 			"\n      Changes made via the Web API sync down to your desktop Zotero."+
 			"\n      Run 'zotero-pp-cli doctor' to check writability.", err))
 	}
+	// PATCH: a 412 on a write means the item's version changed since it was read —
+	// common when reads come from the local API/store but writes go to the Web API
+	// and the desktop hasn't synced. Point at sync rather than a generic error.
+	if strings.Contains(msg, "HTTP 412") {
+		return apiErr(fmt.Errorf("%w\nhint: the item changed since it was read (version conflict)."+
+			"\n      Run 'zotero-pp-cli sync' to refresh local state, then retry.", err))
+	}
 	// PATCH(glean static-audit): classify via the shared cliutil helper so the
 	// HTTP-status detection isn't duplicated with the MCP layer; hint text and
 	// exit-code wrapping stay CLI-specific.

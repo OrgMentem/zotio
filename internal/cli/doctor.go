@@ -129,11 +129,13 @@ func newDoctorCmd(flags *rootFlags) *cobra.Command {
 				}
 			}
 
-			// Writability: the Zotero local API is read-only, so writes need the Web
-			// API + a key. Surface this so mutation commands aren't a surprise 400/501.
+			// Writability: the local API is read-only. With a key, writes auto-route to
+			// the Web API; without one they hit the read-only guard.
 			switch {
+			case localAPI && authConfigured:
+				report["writes"] = "available (auto-routed to Web API; reads stay local)"
 			case localAPI:
-				report["writes"] = "unavailable (local API is read-only; set ZOTERO_BASE_URL=https://api.zotero.org/users/<id> + ZOTERO_API_KEY to write)"
+				report["writes"] = "unavailable (local API is read-only; set ZOTERO_API_KEY to write via the Web API)"
 			case authConfigured:
 				report["writes"] = "available (Web API)"
 			default:

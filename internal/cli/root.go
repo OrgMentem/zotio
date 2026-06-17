@@ -248,6 +248,14 @@ func (f *rootFlags) newClient() (*client.Client, error) {
 	c := client.New(cfg, f.timeout, f.rateLimit)
 	c.DryRun = f.dryRun
 	c.NoCache = f.noCache
+	// PATCH: the Zotero local API is read-only, so when pointed at it, route writes
+	// to the Web API (resolved lazily on the first write) while reads stay local.
+	if isLocalZoteroAPI(cfg.BaseURL) {
+		group := f.group
+		c.ResolveWriteBase = func() (string, error) {
+			return resolveWebWriteBase(cfg, group, f.timeout)
+		}
+	}
 	return c, nil
 }
 
