@@ -59,8 +59,10 @@ they must be added to `spec.yaml` (then regen) or written as a `// PATCH:` comma
   always add *fields/data*, rarely endpoints. Use `schema drift` to catch field/type
   deltas after an upgrade.
 - **`Zotero-Schema-Version` response header** is returned on every local-API response
-  and reflects the install's schema version — a cheap one-request signal that the
-  schema changed (potential fast-path for `schema drift`).
+  and reflects the install's schema version (verified `42` on Zotero 10.0-beta). It's
+  a cheap one-request schema-change signal: `schema drift` uses it as a fast path —
+  when the live version matches the baseline's, it reports no drift after a single
+  `/itemTypes` request instead of fetching every list (a big win under `--deep`).
 - The local API must be enabled in Zotero: Settings → Advanced → "Allow other
   applications on this computer to communicate with Zotero" (else `403`). Pass user
   ID `0` or the real numeric ID; any other ID returns `400`.
@@ -115,5 +117,6 @@ Run this when a new Zotero version ships, or periodically:
 
 - **2026-06-17** — against Zotero 9.0.5 (stable) and 10.0-beta; Local API doc dated
   2026-06-07. No new REST endpoints since `/fulltext` (Jan 2025). Web API v3 stable.
-  Open gaps: attachment file-path endpoints, My Publications, generated schema-command
-  prefix bug. `schema drift` added this session to track field/type drift.
+  Verified local API is GET-only (writes 400/501). Added this session: `schema drift`
+  (with `Zotero-Schema-Version` fast path) and `items file`. Remaining gaps: My
+  Publications (niche), generated schema-command prefix bug.

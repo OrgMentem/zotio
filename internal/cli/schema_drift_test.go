@@ -12,6 +12,7 @@ import (
 	"net/http/httptest"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -191,4 +192,124 @@ func contains(s []string, v string) bool {
 		}
 	}
 	return false
+}
+
+// writeSchemaRows writes a Zotero schema array response ([{key:name,localized:name}]).
+func writeSchemaRows(w http.ResponseWriter, key string, names []string) {
+	rows := make([]map[string]string, 0, len(names))
+	for _, n := range names {
+		rows = append(rows, map[string]string{key: n, "localized": n})
+	}
+	b, _ := json.Marshal(rows)
+	w.Header().Set("Content-Type", "application/json")
+	_, _ = w.Write(b)
+}
+
+// versionedSchemaServer sets Zotero-Schema-Version on every response and counts
+// hits per path so tests can assert which endpoints the fast path skips.
+func versionedSchemaServer(version string, itemTypes []string, hits map[string]int, mu *sync.Mutex) *httptest.Server {
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		hits[r.URL.Path]++
+		mu.Unlock()
+		w.Header().Set("Zotero-Schema-Version", version)
+		switch r.URL.Path {
+		case "/itemTypes":
+			writeSchemaRows(w, "itemType", itemTypes)
+		case "/itemFields":
+			writeSchemaRows(w, "field", []string{"title"})
+		case "/creatorFields":
+			writeSchemaRows(w, "field", []string{"firstName"})
+		default:
+			http.Error(w, "unexpected "+r.URL.Path, http.StatusNotFound)
+		}
+	}))
+}
+
+func TestSchemaDriftFastPathSkipsFetchWhenVersionUnchanged(t *testing.T) {
+	var mu sync.Mutex
+	hits := map[string]int{}
+	srv := versionedSchemaServer("100", []string{"book"}, hits, &mu)
+	defer srv.Close()
+	baseline := filepath.Join(t.TempDir(), "baseline.json")
+
+	// Capture baseline (fetches all three global lists).
+	if _, err := runSchemaDrift(t, srv.URL, baseline, true); err != nil {
+		t.Fatalf("capture: %v", err)
+	}
+	mu.Lock()
+	hits["/itemTypes"], hits["/itemFields"], hits["/creatorFields"] = 0, 0, 0
+	mu.Unlock()
+
+	// Second run, same Zotero-Schema-Version: must short-circuit after /itemTypes.
+	out, err := runSchemaDrift(t, srv.URL, baseline, true)
+	if err != nil {
+		t.Fatalf("second run: %v", err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if hits["/itemTypes"] != 1 {
+		t.Errorf("/itemTypes hits = %d, want 1", hits["/itemTypes"])
+	}
+	if hits["/itemFields"] != 0 || hits["/creatorFields"] != 0 {
+		t.Errorf("fast path must skip itemFields/creatorFields, hits = %v", hits)
+	}
+	var res map[string]any
+	if err := json.Unmarshal([]byte(out), &res); err != nil {
+		t.Fatalf("decode %q: %v", out, err)
+	}
+	if res["drift"] != false {
+		t.Errorf("drift = %v, want false", res["drift"])
+	}
+	if res["schema_version"] != "100" {
+		t.Errorf("schema_version = %v, want 100", res["schema_version"])
+	}
+}
+
+func TestSchemaDriftRefetchesWhenVersionChanges(t *testing.T) {
+	var mu sync.Mutex
+	baseline := filepath.Join(t.TempDir(), "baseline.json")
+
+	s1 := versionedSchemaServer("100", []string{"book"}, map[string]int{}, &mu)
+	if _, err := runSchemaDrift(t, s1.URL, baseline, true); err != nil {
+		s1.Close()
+		t.Fatalf("capture: %v", err)
+	}
+	s1.Close()
+
+	hits := map[string]int{}
+	s2 := versionedSchemaServer("101", []string{"book", "preprint"}, hits, &mu)
+	defer s2.Close()
+	out, err := runSchemaDrift(t, s2.URL, baseline, true)
+	if err != nil {
+		t.Fatalf("drift run: %v", err)
+	}
+	mu.Lock()
+	if hits["/itemFields"] == 0 {
+		t.Errorf("version change must trigger a full refetch, hits = %v", hits)
+	}
+	mu.Unlock()
+	var res struct {
+		Drift         bool   `json:"drift"`
+		SchemaVersion string `json:"schema_version"`
+		Deltas        []struct {
+			Section string   `json:"section"`
+			Added   []string `json:"added"`
+		} `json:"deltas"`
+	}
+	if err := json.Unmarshal([]byte(out), &res); err != nil {
+		t.Fatalf("decode %q: %v", out, err)
+	}
+	if !res.Drift || res.SchemaVersion != "101" {
+		t.Fatalf("want drift with version 101, got %+v", res)
+	}
+	got := false
+	for _, d := range res.Deltas {
+		if d.Section == "item-types" && contains(d.Added, "preprint") {
+			got = true
+		}
+	}
+	if !got {
+		t.Errorf("expected +item-types preprint, got %s", out)
+	}
 }

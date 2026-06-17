@@ -27,6 +27,7 @@ import (
 // response ordering — drift output is therefore deterministic. TypeFields and
 // TypeCreators are populated only under --deep.
 type schemaSnapshot struct {
+	SchemaVersion string              `json:"schema_version,omitempty"`
 	ItemTypes     []string            `json:"item_types"`
 	ItemFields    []string            `json:"item_fields"`
 	CreatorFields []string            `json:"creator_fields"`
@@ -83,7 +84,7 @@ Zotero install.`,
 			// so the probe reaches the schema surface instead of 404ing.
 			c.BaseURL = stripLibraryPrefix(c.BaseURL)
 
-			live, err := fetchSchemaSnapshot(c, deep)
+			itemTypes, schemaVersion, err := probeSchemaVersion(c)
 			if err != nil {
 				return classifyAPIError(err, flags)
 			}
@@ -92,18 +93,36 @@ Zotero install.`,
 			if path == "" {
 				path = schemaBaselinePath()
 			}
-
 			base, ok, err := loadSchemaBaseline(path)
 			if err != nil {
 				return err
 			}
+
+			// First run: capture a full baseline.
 			if !ok {
+				live, err := completeSnapshot(c, itemTypes, schemaVersion, deep)
+				if err != nil {
+					return classifyAPIError(err, flags)
+				}
 				if err := saveSchemaBaseline(path, live); err != nil {
 					return err
 				}
 				return renderSchemaDrift(cmd, flags, true, nil, path, live)
 			}
 
+			// Fast path: the Zotero-Schema-Version header covers the whole schema
+			// (types, fields, per-type validity), so a matching version means no drift
+			// at any depth — skip the remaining fetches. Only when both sides report a
+			// version and we are not re-baselining.
+			if !update && schemaVersion != "" && base.SchemaVersion == schemaVersion {
+				base.SchemaVersion = schemaVersion
+				return renderSchemaDrift(cmd, flags, false, nil, path, base)
+			}
+
+			live, err := completeSnapshot(c, itemTypes, schemaVersion, deep)
+			if err != nil {
+				return classifyAPIError(err, flags)
+			}
 			deltas := diffSnapshots(base, live)
 			if update {
 				if err := saveSchemaBaseline(path, live); err != nil {
@@ -119,14 +138,23 @@ Zotero install.`,
 	return cmd
 }
 
-// fetchSchemaSnapshot pulls the global schema lists, and (when deep) the per-type
-// field and creator-type lists for every item type.
-func fetchSchemaSnapshot(c *client.Client, deep bool) (schemaSnapshot, error) {
-	var snap schemaSnapshot
-	var err error
-	if snap.ItemTypes, err = fetchSchemaList(c, "/itemTypes", nil, "itemType"); err != nil {
-		return snap, err
+// probeSchemaVersion fetches the item-types list plus the Zotero-Schema-Version
+// response header in a single request — enough to short-circuit a drift check when
+// the schema version is unchanged. schemaVersion is empty when the header is absent.
+func probeSchemaVersion(c *client.Client) (itemTypes []string, schemaVersion string, err error) {
+	body, version, err := c.GetWithHeader("/itemTypes", nil, "Zotero-Schema-Version")
+	if err != nil {
+		return nil, "", err
 	}
+	itemTypes, err = decodeSchemaList(body, "/itemTypes", "itemType")
+	return itemTypes, version, err
+}
+
+// completeSnapshot fills in the remaining schema lists (and, under deep, per-type
+// fields and creator types) given the already-probed item types and schema version.
+func completeSnapshot(c *client.Client, itemTypes []string, schemaVersion string, deep bool) (schemaSnapshot, error) {
+	snap := schemaSnapshot{SchemaVersion: schemaVersion, ItemTypes: itemTypes}
+	var err error
 	if snap.ItemFields, err = fetchSchemaList(c, "/itemFields", nil, "field"); err != nil {
 		return snap, err
 	}
@@ -136,9 +164,9 @@ func fetchSchemaSnapshot(c *client.Client, deep bool) (schemaSnapshot, error) {
 	if !deep {
 		return snap, nil
 	}
-	snap.TypeFields = make(map[string][]string, len(snap.ItemTypes))
-	snap.TypeCreators = make(map[string][]string, len(snap.ItemTypes))
-	for _, it := range snap.ItemTypes {
+	snap.TypeFields = make(map[string][]string, len(itemTypes))
+	snap.TypeCreators = make(map[string][]string, len(itemTypes))
+	for _, it := range itemTypes {
 		params := map[string]string{"itemType": it}
 		tf, err := fetchSchemaList(c, "/itemTypeFields", params, "field")
 		if err != nil {
@@ -161,6 +189,12 @@ func fetchSchemaList(c *client.Client, path string, params map[string]string, ke
 	if err != nil {
 		return nil, err
 	}
+	return decodeSchemaList(data, path, key)
+}
+
+// decodeSchemaList extracts the sorted, de-duplicated string values of `key` from a
+// Zotero schema array response. `path` is used only for error context.
+func decodeSchemaList(data json.RawMessage, path, key string) ([]string, error) {
 	var rows []map[string]json.RawMessage
 	if err := json.Unmarshal(data, &rows); err != nil {
 		return nil, fmt.Errorf("parsing %s response: %w", path, err)
@@ -315,6 +349,7 @@ func renderSchemaDrift(cmd *cobra.Command, flags *rootFlags, captured bool, delt
 			"drift":             len(deltas) > 0,
 			"deltas":            deltas,
 			"baseline_path":     path,
+			"schema_version":    live.SchemaVersion,
 			"item_types":        len(live.ItemTypes),
 			"item_fields":       len(live.ItemFields),
 			"creator_fields":    len(live.CreatorFields),
@@ -324,12 +359,20 @@ func renderSchemaDrift(cmd *cobra.Command, flags *rootFlags, captured bool, delt
 	w := cmd.OutOrStdout()
 	if captured {
 		fmt.Fprintf(w, "Schema baseline captured: %s\n", path)
-		fmt.Fprintf(w, "  %d item types, %d item fields, %d creator fields\n", len(live.ItemTypes), len(live.ItemFields), len(live.CreatorFields))
+		fmt.Fprintf(w, "  %d item types, %d item fields, %d creator fields", len(live.ItemTypes), len(live.ItemFields), len(live.CreatorFields))
+		if live.SchemaVersion != "" {
+			fmt.Fprintf(w, " (Zotero-Schema-Version %s)", live.SchemaVersion)
+		}
+		fmt.Fprintln(w)
 		fmt.Fprintln(w, "Re-run after upgrading Zotero to see what changed.")
 		return nil
 	}
 	if len(deltas) == 0 {
-		fmt.Fprintln(w, "No schema drift: the live Zotero schema matches the saved baseline.")
+		if live.SchemaVersion != "" {
+			fmt.Fprintf(w, "No schema drift: Zotero-Schema-Version %s unchanged since baseline.\n", live.SchemaVersion)
+		} else {
+			fmt.Fprintln(w, "No schema drift: the live Zotero schema matches the saved baseline.")
+		}
 		return nil
 	}
 	fmt.Fprintf(w, "Schema drift detected in %d section(s):\n", len(deltas))

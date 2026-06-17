@@ -324,6 +324,21 @@ func (c *Client) GetWithVersion(path string, params map[string]string) (json.Raw
 	return respBody, parseLastModifiedVersion(hdr), nil
 }
 
+// GetWithHeader performs a GET and returns the body plus the trimmed value of the
+// named response header (empty when absent). PATCH: exposes arbitrary response
+// headers (e.g. Zotero-Schema-Version) that the cached Get path discards; bypasses
+// the read cache like GetWithVersion so the caller observes a live value.
+func (c *Client) GetWithHeader(path string, params map[string]string, header string) (json.RawMessage, string, error) {
+	respBody, _, hdr, err := c.doRequest("GET", path, params, nil, nil)
+	if err != nil {
+		return nil, "", err
+	}
+	if hdr == nil {
+		return respBody, "", nil
+	}
+	return respBody, strings.TrimSpace(hdr.Get(header)), nil
+}
+
 // parseLastModifiedVersion extracts the Zotero Last-Modified-Version header as
 // an int, returning 0 when missing or unparseable. PATCH(glean static-audit).
 func parseLastModifiedVersion(h http.Header) int {

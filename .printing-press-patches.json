@@ -302,6 +302,17 @@
         "internal/cli/items.go"
       ],
       "validated_outcome": "Unit tests (real client against httptest): direct attachment key, parent-item child-PDF resolution, and the no-attachment error. gofmt/build/vet and full `go test ./...` green. Live smoke on Zotero 10.0-beta: `items file 9UXV5R7L` resolved its child PDF (RLRDANQN) to /Users/ellis/Zotero/storage/RLRDANQN/...pdf (verified the file exists on disk); direct attachment key returns the same; percent-encoding is decoded."
+    },
+    {
+      "id": "zotero-schema-drift-version-fastpath",
+      "summary": "schema drift now uses the Zotero-Schema-Version response header as a fast path: it probes /itemTypes once (capturing the header), and when the live version matches the stored baseline's version it reports no drift without fetching the remaining schema lists — a large saving under --deep (1 request vs ~80). Added client.GetWithHeader(path, params, header) to expose an arbitrary response header (mirrors GetWithVersion, cache-bypassing); schemaSnapshot gained a schema_version field; the no-drift/capture output and --json envelope now surface the version. Backward compatible: baselines without a stored version, or a Zotero that omits the header, fall back to the full fetch+diff.",
+      "reason": "Folding in a Local-API capability found while reviewing the docs: the Zotero-Schema-Version header is a single-request schema-change signal, avoiding the full multi-request fingerprint when nothing changed.",
+      "files": [
+        "internal/client/client.go",
+        "internal/cli/schema_drift.go",
+        "internal/cli/schema_drift_test.go"
+      ],
+      "validated_outcome": "Unit tests: fast path issues only /itemTypes on an unchanged version (asserts itemFields/creatorFields are not fetched), and a version change triggers a full refetch + drift. Existing drift tests (no header) still exercise the full-fetch path. gofmt/build/vet and full `go test ./...` green. Live smoke on Zotero 10.0-beta: capture reported '(Zotero-Schema-Version 42)'; re-run reported 'Zotero-Schema-Version 42 unchanged since baseline'."
     }
   ]
 }
