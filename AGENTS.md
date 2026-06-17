@@ -35,6 +35,18 @@ Use `--yes --no-input` only after the target, arguments, and side effects are cl
 
 For install, auth, examples, and longer product guidance, read `README.md` and `SKILL.md`. This file intentionally stays small so repo-local agents get invariant local guidance without duplicating the generated docs.
 
+## Zotero API Surface
+
+Missable invariants before you touch endpoints, schema, or mutations. Full coverage
+matrix, known gaps, and the **refresh procedure** live in `docs/zotero-api-coverage.md`
+— re-run it when a new Zotero version ships (releases are now every 6–10 weeks).
+
+- This CLI targets Zotero's **local API** (`http://localhost:23119/api`, base in `spec.yaml` ends `/users/0`), which mirrors Web API v3 plus local-only extras. Enable it in Zotero: Settings → Advanced → "Allow other applications…".
+- **Local API is GET-only** (writes "coming" as of 2026-06). `items create/update/delete`, `items enrich --yes` apply, and `import` writes only work against the Web API (`api.zotero.org` + key) or a community write plugin — **not** local Zotero. Don't assume local mutation works.
+- **Schema/type endpoints are global** (`/api/itemTypes`, `/itemFields`, `/itemTypeFields`, `/itemTypeCreatorTypes`, `/creatorFields`), NOT under the `/users|groups/<id>` prefix. The generated `schema *` commands keep the prefix and **404** live; `schema drift` strips it (`stripLibraryPrefix`). Mirror that if you fix them.
+- `spec.yaml` came from a community OpenAPI spec, not a live probe — coverage = that spec + hand-written commands. New endpoints never appear on their own; add them to `spec.yaml` (regen) or as a `// PATCH:` command.
+- Web API v3 is stable/versioned; the **local API is the evolving surface** (e.g. `/fulltext`, Jan 2025). New Zotero releases mostly add fields/data, rarely endpoints — run `zotero-pp-cli schema drift` to catch type/field deltas after an upgrade. The per-version "Zotero N for Developers" pages are Mozilla-migration guides, not API references; beta changelogs are unpublished (use the GitHub commit log).
+
 ## Local Customizations
 
 If you modify this CLI beyond what the generator produced, record each customization so it isn't lost on the next regen and is visible to the next reader.
