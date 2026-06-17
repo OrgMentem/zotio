@@ -38,11 +38,14 @@ they must be added to `spec.yaml` (then regen) or written as a `// PATCH:` comma
 
 ## Invariants & constraints (the gotchas)
 
-- **Local API is GET-only** (as of the Local API doc dated 2026-06-07; write support
-  is "coming"). So `items create/update/delete`, `items enrich --yes` apply, and
-  `import` writes do **not** work against `localhost:23119`. They only succeed
-  against the Web API (`api.zotero.org` + API key) or with a community local-write
-  plugin. Treat local mutation as unsupported until the docs say otherwise.
+- **Local API is GET-only** (Local API doc dated 2026-06-07; write support is
+  "coming"). **Verified 2026-06-17 against Zotero 10.0-beta:** `POST /items` → `400`
+  "Endpoint does not support method", `PUT /items/<key>` → `501` "Method not
+  implemented", while `GET` returns `200`. So `items create/update/delete`,
+  `items enrich --yes` apply, and `import` writes do **not** work against
+  `localhost:23119`. They only succeed against the Web API (`api.zotero.org` + API
+  key) or with a community local-write plugin. Treat local mutation as unsupported
+  until the docs say otherwise.
 - **Schema/type endpoints are global**, served under `/api` directly, NOT under the
   `/users|groups/<id>` library prefix the configured base URL carries:
   `/api/itemTypes`, `/api/itemFields`, `/api/itemTypeFields`,
@@ -76,21 +79,19 @@ Covered = exercised by a generated or hand-written command. Verify with
 | `/tags`, `/tags/<name>` | ✅ | tags commands |
 | `/itemTypes`, `/itemFields`, `/itemTypeFields`, `/itemTypeCreatorTypes`, `/creatorFields`, `/items/new` | ⚠️ | generated `schema *` (404 — prefix bug); `schema drift` works |
 | `/items/<key>/fulltext`, `/fulltext?since=` | ✅ | `sync --fulltext`, `items fulltext` (hhup) |
-| `/items/<key>/file`, `/file/view`, `/file/view/url` (on-disk attachment path — local-only) | ❌ | gap — see below |
+| `/items/<key>/file/view/url` (on-disk attachment path — local-only) | ✅ | `items file` |
 | `/publications/items`, `/publications/items/tags` (My Publications) | ❌ | gap (low value) |
 | `format=keys`, `format=versions` modes | ❌ | not used (we sync via `since=`) |
 | `/keys/<key>` | ❌ | n/a for local (no auth) |
 
 ### Known gaps worth considering
 
-1. **Attachment file paths** (`/items/<key>/file/view/url`) — returns the literal
-   on-disk path of an attachment as plain text. The missing complement to
-   `items open` (which launches the app): hand an agent the actual PDF path to read
-   or process. Strongest candidate. Would be a small `items file <key>` command.
-2. **My Publications** (`/publications/items`) — niche.
-3. **Generated schema commands 404** — fix them to strip the library prefix (mirror
+1. **My Publications** (`/publications/items`) — niche.
+2. **Generated schema commands 404** — fix them to strip the library prefix (mirror
    `schema drift`), or fix upstream (per-endpoint base-path/scope override in
    cli-printing-press).
+
+Resolved: attachment file paths are now covered by `items file` (`/items/<key>/file/view/url`).
 
 ## Refresh procedure
 

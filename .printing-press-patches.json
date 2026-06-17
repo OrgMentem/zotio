@@ -291,6 +291,17 @@
       ],
       "validated_outcome": "Unit tests: first-run baseline capture, no-drift on identical schema, added/removed deltas (+preprint -book, +citationKey), and human output, all against a real client (client.BaseURL) pointed at an httptest schema surface. gofmt/build/vet and full `go test ./...` green. Live smoke on Zotero 10.0-beta.7: captured 40 item types / 123 item fields / 3 creator fields, no-drift on re-run, correct +item-types delta after a simulated upgrade, and --deep resolved per-type fields/creators for all 40 types. The probe strips the /users|groups/<id> library prefix because Zotero schema endpoints are global (/api/itemTypes).",
       "upstream_issue": "Discovered pre-existing bug: the generated `schema item-types|item-fields|item-type-fields|item-type-creator-types|creator-fields` commands 404 against the local API because they prepend the /users/<id> library prefix to global schema endpoints. Systemic for any printed CLI whose spec mixes library-scoped and global endpoints under one prefixed base_url — candidate fix for cli-printing-press (per-endpoint base-path/scope override). schema drift works around it locally by stripping the prefix for its own fetches."
+    },
+    {
+      "id": "zotero-items-file",
+      "summary": "Added `items file <itemKey>` (internal/cli/items_file.go), registered under the generated items group. Resolves an attachment's on-disk location via the local-API file endpoint /items/<key>/file/view/url: treats the key as an attachment directly, else resolves the item's PDF attachment via /items/<key>/children (reusing findPDFAttachmentKey). Prints the file:// URL decoded to a filesystem path, or a JSON envelope {item_key, attachment_key, url, path}. Complements `items open` (which launches the desktop app) by handing an agent/script the actual file to read.",
+      "reason": "Coverage gap found while reviewing Zotero release notes/Local API docs: /items/<key>/file* (local-only attachment file access) was the one genuinely useful endpoint the CLI did not expose.",
+      "files": [
+        "internal/cli/items_file.go",
+        "internal/cli/items_file_test.go",
+        "internal/cli/items.go"
+      ],
+      "validated_outcome": "Unit tests (real client against httptest): direct attachment key, parent-item child-PDF resolution, and the no-attachment error. gofmt/build/vet and full `go test ./...` green. Live smoke on Zotero 10.0-beta: `items file 9UXV5R7L` resolved its child PDF (RLRDANQN) to /Users/ellis/Zotero/storage/RLRDANQN/...pdf (verified the file exists on disk); direct attachment key returns the same; percent-encoding is decoded."
     }
   ]
 }
