@@ -19,7 +19,8 @@ func newSchemaCreatorFieldsCmd(flags *rootFlags) *cobra.Command {
 		Example:     "  zotero-pp-cli schema creator-fields",
 		Annotations: map[string]string{"pp:endpoint": "schema.creator-fields", "pp:method": "GET", "pp:path": "/creatorFields", "mcp:read-only": "true"},
 		RunE: func(cmd *cobra.Command, args []string) error {
-			c, err := flags.newClient()
+			// PATCH: schema endpoints are global; use newSchemaClient (strips library prefix).
+			c, err := newSchemaClient(flags)
 			if err != nil {
 				return err
 			}

@@ -19,7 +19,8 @@ func newSchemaItemFieldsCmd(flags *rootFlags) *cobra.Command {
 		Example:     "  zotero-pp-cli schema item-fields",
 		Annotations: map[string]string{"pp:endpoint": "schema.item-fields", "pp:method": "GET", "pp:path": "/itemFields", "mcp:read-only": "true"},
 		RunE: func(cmd *cobra.Command, args []string) error {
-			c, err := flags.newClient()
+			// PATCH: schema endpoints are global; use newSchemaClient (strips library prefix).
+			c, err := newSchemaClient(flags)
 			if err != nil {
 				return err
 			}

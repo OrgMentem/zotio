@@ -73,16 +73,12 @@ Zotero install.`,
   zotero-pp-cli schema drift --update`,
 		Annotations: map[string]string{"mcp:read-only": "true"},
 		RunE: func(cmd *cobra.Command, args []string) error {
-			c, err := flags.newClient()
+			// Schema endpoints are global; newSchemaClient strips the library prefix.
+			c, err := newSchemaClient(flags)
 			if err != nil {
 				return err
 			}
 			c.NoCache = true
-			// Zotero schema endpoints (/itemTypes, /itemFields, …) are global to the
-			// install, served under /api directly — not under the /users/<id> or
-			// /groups/<id> library prefix the configured base URL carries. Strip it
-			// so the probe reaches the schema surface instead of 404ing.
-			c.BaseURL = stripLibraryPrefix(c.BaseURL)
 
 			itemTypes, schemaVersion, err := probeSchemaVersion(c)
 			if err != nil {
@@ -308,6 +304,19 @@ var libraryPrefixRE = regexp.MustCompile(`/(users|groups)/[^/]+`)
 // http://localhost:23119/api/users/0 -> http://localhost:23119/api).
 func stripLibraryPrefix(baseURL string) string {
 	return libraryPrefixRE.ReplaceAllString(baseURL, "")
+}
+
+// newSchemaClient builds a client whose base URL has the /users|groups/<id> library
+// segment stripped, because Zotero's schema/type endpoints (itemTypes, itemFields,
+// itemTypeFields, itemTypeCreatorTypes, creatorFields, items/new) are global, served
+// under /api directly. The generated `schema *` commands 404 without this.
+func newSchemaClient(flags *rootFlags) (*client.Client, error) {
+	c, err := flags.newClient()
+	if err != nil {
+		return nil, err
+	}
+	c.BaseURL = stripLibraryPrefix(c.BaseURL)
+	return c, nil
 }
 
 func loadSchemaBaseline(path string) (schemaSnapshot, bool, error) {

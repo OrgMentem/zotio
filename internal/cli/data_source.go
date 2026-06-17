@@ -162,6 +162,12 @@ func resolvePaginatedRead(ctx context.Context, c *client.Client, flags *rootFlag
 // FTS search covers everything the user has looked up — not just explicit syncs.
 // Best-effort: failures are silently ignored (the live result already succeeded).
 func writeThroughCache(ctx context.Context, resourceType string, data json.RawMessage) {
+	// PATCH: schema/type lists (itemTypes, itemFields, …) are not keyed library
+	// items; write-through caching them only triggers "no extractable ID" warnings
+	// from UpsertBatch. They are read-only reference data, so skip the cache.
+	if resourceType == "schema" {
+		return
+	}
 	db, err := store.OpenWithContext(ctx, defaultDBPath("zotero-pp-cli"))
 	if err != nil {
 		return

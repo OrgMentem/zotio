@@ -313,3 +313,37 @@ func TestSchemaDriftRefetchesWhenVersionChanges(t *testing.T) {
 		t.Errorf("expected +item-types preprint, got %s", out)
 	}
 }
+
+// TestSchemaCommandStripsLibraryPrefix proves the generated schema commands hit the
+// global /itemTypes path, not the library-prefixed /users/0/itemTypes (which 404s on
+// the live local API). The server only serves the global path, so the command can
+// succeed only when newSchemaClient has stripped the prefix.
+func TestSchemaCommandStripsLibraryPrefix(t *testing.T) {
+	t.Setenv("HOME", t.TempDir()) // isolate any store access
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/itemTypes":
+			writeSchemaRows(w, "itemType", []string{"book", "journalArticle"})
+		case "/users/0/itemTypes":
+			http.Error(w, "No endpoint found", http.StatusNotFound)
+		default:
+			http.Error(w, "unexpected "+r.URL.Path, http.StatusNotFound)
+		}
+	}))
+	defer srv.Close()
+	t.Setenv("ZOTERO_BASE_URL", srv.URL+"/users/0")
+
+	cmd := newSchemaItemTypesCmd(&rootFlags{asJSON: true})
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(io.Discard)
+	cmd.SilenceErrors = true
+	cmd.SilenceUsage = true
+	cmd.SetArgs(nil)
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("schema item-types should succeed against the global path, got: %v", err)
+	}
+	if !strings.Contains(out.String(), "journalArticle") {
+		t.Errorf("expected item types in output, got %s", out.String())
+	}
+}

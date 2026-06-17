@@ -49,11 +49,12 @@ they must be added to `spec.yaml` (then regen) or written as a `// PATCH:` comma
 - **Schema/type endpoints are global**, served under `/api` directly, NOT under the
   `/users|groups/<id>` library prefix the configured base URL carries:
   `/api/itemTypes`, `/api/itemFields`, `/api/itemTypeFields`,
-  `/api/itemTypeCreatorTypes`, `/api/creatorFields`, `/api/items/new`. The generated
-  `schema *` commands keep the prefix and therefore **404** against live Zotero;
-  `schema drift` works around it by stripping the prefix (`stripLibraryPrefix` in
-  `internal/cli/schema_drift.go`). Apply the same fix if you repair the generated
-  schema commands.
+  `/api/itemTypeCreatorTypes`, `/api/creatorFields`, `/api/items/new`. The CLI routes
+  every schema command (and `schema drift`) through `newSchemaClient`
+  (`internal/cli/schema_drift.go`), which strips the prefix via `stripLibraryPrefix`.
+  Keep using it for any new schema/type command — `flags.newClient()` alone 404s.
+  (`/items/new` is global too, but the **local API does not implement it**, so
+  `schema new-item-template` 404s against local Zotero and only works on the Web API.)
 - **Web API v3 endpoint set is stable/versioned**; the **local API is the evolving
   surface**. New Zotero releases (fast cycle: 8 → 9 → 10 …, every 6–10 weeks) almost
   always add *fields/data*, rarely endpoints. Use `schema drift` to catch field/type
@@ -79,7 +80,8 @@ Covered = exercised by a generated or hand-written command. Verify with
 | `/searches`, `/searches/<key>` | ✅ | searches commands |
 | `/searches/<key>/items` (execute saved search — local-only) | ✅ | `searches run` |
 | `/tags`, `/tags/<name>` | ✅ | tags commands |
-| `/itemTypes`, `/itemFields`, `/itemTypeFields`, `/itemTypeCreatorTypes`, `/creatorFields`, `/items/new` | ⚠️ | generated `schema *` (404 — prefix bug); `schema drift` works |
+| `/itemTypes`, `/itemFields`, `/itemTypeFields`, `/itemTypeCreatorTypes`, `/creatorFields` | ✅ | `schema *` commands + `schema drift` (prefix stripped) |
+| `/items/new` (new-item template — global) | ⚠️ | `schema new-item-template`: prefix stripped, but the local API doesn't implement it (Web API only) |
 | `/items/<key>/fulltext`, `/fulltext?since=` | ✅ | `sync --fulltext`, `items fulltext` (hhup) |
 | `/items/<key>/file/view/url` (on-disk attachment path — local-only) | ✅ | `items file` |
 | `/publications/items`, `/publications/items/tags` (My Publications) | ❌ | gap (low value) |
@@ -88,12 +90,12 @@ Covered = exercised by a generated or hand-written command. Verify with
 
 ### Known gaps worth considering
 
-1. **My Publications** (`/publications/items`) — niche.
-2. **Generated schema commands 404** — fix them to strip the library prefix (mirror
-   `schema drift`), or fix upstream (per-endpoint base-path/scope override in
-   cli-printing-press).
+1. **My Publications** (`/publications/items`) — niche; not implemented.
+2. **`/items/new`** (new-item template) — the command exists but the **local API
+   does not serve this endpoint**; it works only against the Web API.
 
-Resolved: attachment file paths are now covered by `items file` (`/items/<key>/file/view/url`).
+Resolved this session: attachment file paths (`items file`), and the generated
+`schema *` commands' library-prefix 404 (now routed through `newSchemaClient`).
 
 ## Refresh procedure
 
@@ -118,5 +120,6 @@ Run this when a new Zotero version ships, or periodically:
 - **2026-06-17** — against Zotero 9.0.5 (stable) and 10.0-beta; Local API doc dated
   2026-06-07. No new REST endpoints since `/fulltext` (Jan 2025). Web API v3 stable.
   Verified local API is GET-only (writes 400/501). Added this session: `schema drift`
-  (with `Zotero-Schema-Version` fast path) and `items file`. Remaining gaps: My
-  Publications (niche), generated schema-command prefix bug.
+  (with `Zotero-Schema-Version` fast path), `items file`, and fixed the generated
+  `schema *` commands' library-prefix 404. Remaining: My Publications (niche, not
+  implemented) and `/items/new` (not served by the local API).

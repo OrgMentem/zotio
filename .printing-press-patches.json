@@ -330,6 +330,24 @@
         "internal/cli/items_audit_query_test.go"
       ],
       "validated_outcome": "New tests TestUpsertKeyed, TestAnnotationsForItems, TestQueryMissingPDFItems_IndexedColumns, TestQueryItemsAuditSummary_SingleScan pass; existing TestSyncFulltext_StoresAndIndexes, TestBuildEnrichProposals_DOIFromStore, and TestVaultSync* (incl. idempotent + dry-run) still pass, covering the changed call sites. gofmt clean; go build/vet and full `go test ./...` green (6 packages ok). Left open as generator residue / lower-ROI: vjbx (empty profiler-populated maps are upstream), z378 (would change shared store.List semantics), anjw (1-2 opens per command, not a hot loop), 6pv1 (the unmarshal backs a real emptiness filter)."
+    },
+    {
+      "id": "zotero-schema-commands-global-prefix",
+      "summary": "Fixed the generated schema commands (item-types, item-fields, item-type-fields, item-type-creator-types, creator-fields, new-item-template) which 404'd against the local API because they prepended the /users/<id> library prefix to global schema endpoints. Added newSchemaClient(flags) in schema_drift.go (wraps flags.newClient + stripLibraryPrefix) and routed all six commands plus `schema drift` through it. Also skip write-through caching for the 'schema' resource type in data_source.go's writeThroughCache, because schema rows have no key and otherwise triggered a 'N/N schema items skipped (no extractable ID field found)' warning once the calls started succeeding.",
+      "reason": "Discovered while reviewing the Zotero Local API docs and verifying live: schema/type endpoints are global (/api/itemTypes), not under the library prefix the base URL carries, so every generated schema command had always 404'd against local Zotero.",
+      "files": [
+        "internal/cli/schema_drift.go",
+        "internal/cli/schema_item-types.go",
+        "internal/cli/schema_item-fields.go",
+        "internal/cli/schema_item-type-fields.go",
+        "internal/cli/schema_item-type-creator-types.go",
+        "internal/cli/schema_creator-fields.go",
+        "internal/cli/schema_new-item-template.go",
+        "internal/cli/data_source.go",
+        "internal/cli/schema_drift_test.go"
+      ],
+      "validated_outcome": "TestSchemaCommandStripsLibraryPrefix drives newSchemaItemTypesCmd against an httptest server that serves only the global /itemTypes and 404s /users/0/itemTypes — the command succeeds only when the prefix is stripped. gofmt/build/vet and full `go test ./...` green. Live on Zotero 10.0-beta: schema item-types/item-fields/item-type-fields/item-type-creator-types/creator-fields all return data with no warning. /items/new is global too but the local API does not implement it, so `schema new-item-template` still 404s locally (works only against the Web API).",
+      "upstream_issue": "Systemic for any printed CLI whose spec mixes library-scoped and global endpoints under one prefixed base_url — candidate fix for cli-printing-press: a per-endpoint base-path/scope override so global endpoints are generated without the library prefix."
     }
   ]
 }

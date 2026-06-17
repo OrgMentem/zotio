@@ -23,7 +23,8 @@ func newSchemaItemTypeCreatorTypesCmd(flags *rootFlags) *cobra.Command {
 			if !cmd.Flags().Changed("item-type") && !flags.dryRun {
 				return fmt.Errorf("required flag \"%s\" not set", "item-type")
 			}
-			c, err := flags.newClient()
+			// PATCH: schema endpoints are global; use newSchemaClient (strips library prefix).
+			c, err := newSchemaClient(flags)
 			if err != nil {
 				return err
 			}
