@@ -129,6 +129,17 @@ func newDoctorCmd(flags *rootFlags) *cobra.Command {
 				}
 			}
 
+			// Writability: the Zotero local API is read-only, so writes need the Web
+			// API + a key. Surface this so mutation commands aren't a surprise 400/501.
+			switch {
+			case localAPI:
+				report["writes"] = "unavailable (local API is read-only; set ZOTERO_BASE_URL=https://api.zotero.org/users/<id> + ZOTERO_API_KEY to write)"
+			case authConfigured:
+				report["writes"] = "available (Web API)"
+			default:
+				report["writes"] = "needs ZOTERO_API_KEY (Web API)"
+			}
+
 			// Check auth environment variables
 			authEnvSet := []string{}
 			authEnvRequiredMissing := []string{}
@@ -278,7 +289,7 @@ func newDoctorCmd(flags *rootFlags) *cobra.Command {
 				fmt.Fprintf(w, "  %s %s: %s\n", indicator, ck.label, s)
 			}
 			// Print info keys without status indicator
-			for _, key := range []string{"config_path", "base_url", "library", "auth_source", "version"} {
+			for _, key := range []string{"config_path", "base_url", "writes", "library", "auth_source", "version"} {
 				if v, ok := report[key]; ok {
 					fmt.Fprintf(w, "  %s: %v\n", key, v)
 				}

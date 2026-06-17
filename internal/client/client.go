@@ -288,8 +288,10 @@ func (c *Client) doRequest(method, path string, params map[string]string, body a
 			continue
 		}
 
-		// Server error - retry with backoff
-		if resp.StatusCode >= 500 && attempt < maxRetries {
+		// Server error - retry with backoff. 501 Not Implemented is never transient
+		// (e.g. writes against the read-only Zotero local API), so don't retry it.
+		// PATCH: avoid a pointless 3x backoff storm on local-API write rejections.
+		if resp.StatusCode >= 500 && resp.StatusCode != 501 && attempt < maxRetries {
 			wait := time.Duration(math.Pow(2, float64(attempt))) * time.Second
 			fmt.Fprintf(os.Stderr, "server error %d, retrying in %s (attempt %d/%d)\n", resp.StatusCode, wait, attempt+1, maxRetries)
 			time.Sleep(wait)

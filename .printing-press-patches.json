@@ -348,6 +348,20 @@
       ],
       "validated_outcome": "TestSchemaCommandStripsLibraryPrefix drives newSchemaItemTypesCmd against an httptest server that serves only the global /itemTypes and 404s /users/0/itemTypes — the command succeeds only when the prefix is stripped. gofmt/build/vet and full `go test ./...` green. Live on Zotero 10.0-beta: schema item-types/item-fields/item-type-fields/item-type-creator-types/creator-fields all return data with no warning. /items/new is global too but the local API does not implement it, so `schema new-item-template` still 404s locally (works only against the Web API).",
       "upstream_issue": "Systemic for any printed CLI whose spec mixes library-scoped and global endpoints under one prefixed base_url — candidate fix for cli-printing-press: a per-endpoint base-path/scope override so global endpoints are generated without the library prefix."
+    },
+    {
+      "id": "zotero-local-write-guard",
+      "summary": "Made local-API write rejections actionable. classifyAPIError (helpers.go) now detects the Zotero local API's verbatim write-rejection bodies via isLocalWriteRejection ('Endpoint does not support method' for POST/400, 'Method not implemented' for PUT|PATCH/501) and returns read-only guidance (point at the Web API + ZOTERO_API_KEY) instead of the misleading 'fix your auth' 400 hint. client.go excludes 501 from the 5xx retry loop so the rejection returns immediately instead of after 3 backoff attempts (~14s). doctor.go reports a new `writes:` field (unavailable for the local API; available/needs-key for the Web API).",
+      "reason": "User asked whether the repo can edit/enrich Zotero. The local API is GET-only (verified), so every mutation command failed with a cryptic, misleading error and a needless 501 retry storm; this surfaces the real cause and the path forward.",
+      "files": [
+        "internal/cli/helpers.go",
+        "internal/cli/doctor.go",
+        "internal/client/client.go",
+        "internal/cli/writeguard_test.go",
+        "internal/client/writeguard_patch_test.go"
+      ],
+      "validated_outcome": "TestClassifyAPIErrorLocalWriteRejection (both rejection bodies -> read-only guidance) and TestClassifyAPIErrorAuthNotMisclassified (a genuine auth 400 is unchanged); TestPatchDoesNotRetry501 asserts a 501 yields exactly one request. gofmt/build/vet and full `go test ./...` green. Live on Zotero 10.0-beta: `doctor` shows 'writes: unavailable (...)'; `items restore <key>` returns the read-only guidance in 0.038s (was a ~14s 501 retry storm).",
+      "upstream_issue": "Partly systemic: the 501-retry exclusion and a generic read-only-target hint are candidates for cli-printing-press (the local-API rejection strings are Zotero-specific and stay local)."
     }
   ]
 }

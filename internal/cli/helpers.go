@@ -225,6 +225,18 @@ func writeAPIErrorEnvelope(flags *rootFlags, err error, code int) {
 // classifyAPIError maps API errors to structured exit codes with actionable hints.
 func classifyAPIError(err error, flags *rootFlags) error {
 	msg := err.Error()
+	// PATCH: the Zotero local API is GET-only and rejects writes with
+	// "Endpoint does not support method" (400, POST) or "Method not implemented"
+	// (501, PUT/PATCH). Without this, those map to a misleading "fix your auth"
+	// hint. Surface the real cause and the Web API path forward instead.
+	if isLocalWriteRejection(msg) {
+		return apiErr(fmt.Errorf("%w\nhint: the Zotero local API is read-only — writes are not supported there."+
+			"\n      Point the CLI at the Web API and provide a write-capable key:"+
+			"\n        export ZOTERO_BASE_URL=\"https://api.zotero.org/users/<your-user-id>\""+
+			"\n        export ZOTERO_API_KEY=\"<key>\"   (create at https://www.zotero.org/settings/keys)"+
+			"\n      Changes made via the Web API sync down to your desktop Zotero."+
+			"\n      Run 'zotero-pp-cli doctor' to check writability.", err))
+	}
 	// PATCH(glean static-audit): classify via the shared cliutil helper so the
 	// HTTP-status detection isn't duplicated with the MCP layer; hint text and
 	// exit-code wrapping stay CLI-specific.
@@ -257,6 +269,15 @@ func classifyAPIError(err error, flags *rootFlags) error {
 	default:
 		return apiErr(err)
 	}
+}
+
+// isLocalWriteRejection detects the Zotero local API's verbatim responses to write
+// attempts — POST → "Endpoint does not support method", PUT/PATCH → "Method not
+// implemented" — which signal a read-only target, not an auth or client error. A
+// community local-write plugin returns 2xx instead, so this never fires for it.
+func isLocalWriteRejection(msg string) bool {
+	return strings.Contains(msg, "Endpoint does not support method") ||
+		strings.Contains(msg, "Method not implemented")
 }
 
 // classifyDeleteError maps DELETE errors and supports explicit idempotent no-op handling.

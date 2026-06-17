@@ -44,8 +44,10 @@ they must be added to `spec.yaml` (then regen) or written as a `// PATCH:` comma
   implemented", while `GET` returns `200`. So `items create/update/delete`,
   `items enrich --yes` apply, and `import` writes do **not** work against
   `localhost:23119`. They only succeed against the Web API (`api.zotero.org` + API
-  key) or with a community local-write plugin. Treat local mutation as unsupported
-  until the docs say otherwise.
+  key) or with a community local-write plugin. The CLI detects this rejection
+  (`classifyAPIError`/`isLocalWriteRejection` in `helpers.go`) and prints read-only
+  guidance instead of a misleading auth hint; `doctor` reports it under `writes:`.
+  `501` is excluded from the HTTP retry loop so the rejection returns immediately.
 - **Schema/type endpoints are global**, served under `/api` directly, NOT under the
   `/users|groups/<id>` library prefix the configured base URL carries:
   `/api/itemTypes`, `/api/itemFields`, `/api/itemTypeFields`,
