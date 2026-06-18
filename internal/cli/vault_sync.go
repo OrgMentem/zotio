@@ -80,6 +80,9 @@ func newVaultCmd(flags *rootFlags) *cobra.Command {
 		Short: "Sync the library into an Obsidian/Logseq Markdown vault",
 	}
 	cmd.AddCommand(newVaultSyncCmd(flags))
+	cmd.AddCommand(newVaultPushCmd(flags)) // PATCH(glean 15e0): Obsidian -> Zotero write-back
+	cmd.AddCommand(newVaultConflictsCmd(flags))
+	cmd.AddCommand(newVaultResolveCmd(flags))
 	return cmd
 }
 

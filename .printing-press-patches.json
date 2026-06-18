@@ -447,6 +447,17 @@
         "internal/cli/vault_sync_format_test.go"
       ],
       "validated_outcome": "gofmt/build/vet clean; full go test ./... -count=1 passes (config out-resolution + override, collection_names resolution, unit tests for vaultResolveOut/resolveCollectionNames). Live smoke vs Zotero: dev-vault note rendered collection_names: [Thesis] (real name for MAR7RFQN), re-sync unchanged (idempotent); a [vault] config with no --out wrote to root/notes_dir; missing config + no --out errors clearly."
+    },
+    {
+      "id": "zotero-vault-push-writeback",
+      "summary": "Commit 3 of glean 15e0: Obsidian -> Zotero note write-back. New 'vault push [--dry-run]' mirrors each note's user-owned '## Notes' region to one tool-owned Zotero child note (created via POST with a deterministic Zotero-Write-Token for retry-safety, updated via PATCH with If-Unmodified-Since-Version). Renderer is paragraph-verbatim (Markdown reproduced as readable <p> blocks, everything HTML-escaped, nothing interpreted) so wikilinks/tables/callouts are never mangled. Per-note sync baseline (note_key, note_version, source_hash, remote_hash, renderer) is stored in a hidden state comment, not in Obsidian Properties. Conflict detection compares the local region hash to the baseline and the remote note BODY (not just item version): a divergent remote is never overwritten — a conflict artifact is written under _vault-zotero-conflicts/ and reported. A locally-unchanged note whose remote body moved is reported remote_changed (honest status via a batched format=versions check). New 'vault conflicts' lists artifacts; 'vault resolve <key> --keep-vault' republishes the vault copy using the live version (and --recreate re-creates a remotely-deleted note). Library-mismatched notes are skipped; group targets print a one-time warning. Reads stay local; writes go to the Web API via newWriteClient.",
+      "reason": "glean 15e0 deliverable: close the PKM loop so research notes written in Obsidian are published to Zotero safely. Push-only (no remote->vault merge) with conflict detection keeps it non-destructive; verbatim rendering and body-hash conflict detection avoid silent corruption and false conflicts.",
+      "files": [
+        "internal/cli/vault_push.go",
+        "internal/cli/vault_push_test.go",
+        "internal/cli/vault_sync.go"
+      ],
+      "validated_outcome": "gofmt/build/vet clean; go test ./... -count=1 and 'go test ./internal/cli -race' pass (verbatim renderer no-interpretation, state round-trip, region extraction, write-token determinism, atomic state write, out-dir resolution, push-note parsing). Live round-trip vs real Zotero on a throwaway item: dry-run wrote nothing; create produced a child note with verbatim HTML (markdown/wikilinks preserved); re-push unchanged; local edit -> PATCH update (verified on the web after sync lag); a real server 412 (stale baseline) -> conflict + artifact, 'vault conflicts' listed it, 'vault resolve --keep-vault' rewrote the note and removed the artifact; throwaway item deleted (204, cascades the child note)."
     }
   ]
 }
