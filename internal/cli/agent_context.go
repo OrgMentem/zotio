@@ -138,8 +138,17 @@ func buildAgentContext(rootCmd *cobra.Command) agentContext {
 	}
 }
 
+// PATCH(glean co0m): surface the curated which-index as agent discovery hints.
 func buildAgentDiscoveryContext() *agentContextDiscovery {
-	return nil
+	cmds := make([]string, 0, len(whichIndex))
+	for _, e := range whichIndex {
+		cmds = append(cmds, e.Command)
+	}
+	return &agentContextDiscovery{
+		Source:            "which",
+		EntryCount:        len(whichIndex),
+		CandidateCommands: cmds,
+	}
 }
 
 // collectAgentCommands walks the cobra tree from the given command and

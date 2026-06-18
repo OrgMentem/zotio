@@ -130,7 +130,7 @@ func TestDoctorCollectCacheReport(t *testing.T) {
 	t.Setenv("HOME", home)
 
 	dbPath := filepath.Join(home, ".local", "share", "zotero-pp-cli", "data.db")
-	s, err := store.Open(dbPath)
+	s, err := store.OpenWithContext(context.Background(), dbPath)
 	if err != nil {
 		t.Fatalf("open store: %v", err)
 	}

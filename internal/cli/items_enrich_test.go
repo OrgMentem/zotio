@@ -175,7 +175,7 @@ func seedEnrichStore(t *testing.T) localQueryStore {
 	t.Setenv("HOME", t.TempDir())
 	t.Setenv("ZOTERO_CONFIG", filepath.Join(t.TempDir(), "missing.toml"))
 	dbPath := defaultDBPath("zotero-pp-cli")
-	db, err := store.Open(dbPath)
+	db, err := store.OpenWithContext(context.Background(), dbPath)
 	if err != nil {
 		t.Fatalf("open store: %v", err)
 	}

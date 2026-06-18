@@ -5,6 +5,7 @@ package cli
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -21,7 +22,7 @@ import (
 
 func tailTestStore(t *testing.T) *store.Store {
 	t.Helper()
-	db, err := store.Open(filepath.Join(t.TempDir(), "x.db"))
+	db, err := store.OpenWithContext(context.Background(), filepath.Join(t.TempDir(), "x.db"))
 	if err != nil {
 		t.Fatalf("opening store: %v", err)
 	}

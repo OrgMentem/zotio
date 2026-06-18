@@ -6,6 +6,7 @@
 package cli
 
 import (
+	"context"
 	"encoding/json"
 	"path/filepath"
 	"testing"
@@ -15,7 +16,7 @@ import (
 
 func seedAuditStore(t *testing.T) localQueryStore {
 	t.Helper()
-	db, err := store.Open(filepath.Join(t.TempDir(), "data.db"))
+	db, err := store.OpenWithContext(context.Background(), filepath.Join(t.TempDir(), "data.db"))
 	if err != nil {
 		t.Fatalf("open store: %v", err)
 	}

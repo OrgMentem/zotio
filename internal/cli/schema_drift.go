@@ -353,7 +353,7 @@ func saveSchemaBaseline(path string, snap schemaSnapshot) error {
 // same schema state yields the same output on repeated runs.
 func renderSchemaDrift(cmd *cobra.Command, flags *rootFlags, captured bool, deltas []schemaDelta, path string, live schemaSnapshot) error {
 	if flags.asJSON {
-		return flags.printJSON(cmd, map[string]any{
+		return printJSONFiltered(cmd.OutOrStdout(), map[string]any{
 			"baseline_captured": captured,
 			"drift":             len(deltas) > 0,
 			"deltas":            deltas,
@@ -362,7 +362,7 @@ func renderSchemaDrift(cmd *cobra.Command, flags *rootFlags, captured bool, delt
 			"item_types":        len(live.ItemTypes),
 			"item_fields":       len(live.ItemFields),
 			"creator_fields":    len(live.CreatorFields),
-		})
+		}, flags)
 	}
 
 	w := cmd.OutOrStdout()

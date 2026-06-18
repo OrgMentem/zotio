@@ -47,13 +47,6 @@ type Store struct {
 	path    string
 }
 
-// Open opens or creates the SQLite store at dbPath using the background
-// context. Prefer OpenWithContext from a Cobra command so SIGINT during
-// a slow migration interrupts the open instead of stranding the caller.
-func Open(dbPath string) (*Store, error) {
-	return OpenWithContext(context.Background(), dbPath)
-}
-
 // OpenReadOnly opens an existing SQLite store at dbPath in read-only mode.
 // mode=ro rejects direct and CTE-wrapped writes (INSERT, UPDATE, DELETE,
 // REPLACE, "WITH x AS (...) INSERT ...") at the driver level. Skips

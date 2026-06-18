@@ -103,17 +103,18 @@ func (l *AdaptiveLimiter) Rate() float64 {
 	return l.rate
 }
 
-// RateLimitError signals an upstream returned 429 after retries were
+// rateLimitError signals an upstream returned 429 after retries were
 // exhausted. Callers must surface this as a hard error rather than empty
 // results — empty-on-throttle is indistinguishable from "no data exists"
 // and silently corrupts downstream queries.
-type RateLimitError struct {
+// PATCH(glean 2kgy): unexported — only exercised by package tests today.
+type rateLimitError struct {
 	URL        string
 	RetryAfter time.Duration
 	Body       string
 }
 
-func (e *RateLimitError) Error() string {
+func (e *rateLimitError) Error() string {
 	msg := fmt.Sprintf("rate limited: HTTP 429 for %s", e.URL)
 	if e.RetryAfter > 0 {
 		msg += fmt.Sprintf("; retry after %s", e.RetryAfter)

@@ -4,6 +4,7 @@
 package cli
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -332,9 +333,9 @@ func syncTestClient(baseURL string) *client.Client {
 
 func syncTestOpenStore(t *testing.T) *store.Store {
 	t.Helper()
-	db, err := store.Open(filepath.Join(t.TempDir(), "x.db"))
+	db, err := store.OpenWithContext(context.Background(), filepath.Join(t.TempDir(), "x.db"))
 	if err != nil {
-		t.Fatalf("store.Open error = %v", err)
+		t.Fatalf("store.OpenWithContext error = %v", err)
 	}
 	return db
 }

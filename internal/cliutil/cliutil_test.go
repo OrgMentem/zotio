@@ -37,8 +37,8 @@ func TestCleanText(t *testing.T) {
 	for _, tc := range cases {
 		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
-			if got := CleanText(tc.in); got != tc.want {
-				t.Errorf("CleanText(%q) = %q, want %q", tc.in, got, tc.want)
+			if got := cleanText(tc.in); got != tc.want {
+				t.Errorf("cleanText(%q) = %q, want %q", tc.in, got, tc.want)
 			}
 		})
 	}
@@ -74,9 +74,9 @@ func TestParseStoredTime(t *testing.T) {
 	for _, tc := range cases {
 		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
-			got := ParseStoredTime(tc.in)
+			got := parseStoredTime(tc.in)
 			if !got.Equal(tc.want) {
-				t.Fatalf("ParseStoredTime(%q) = %s, want %s", tc.in, got, tc.want)
+				t.Fatalf("parseStoredTime(%q) = %s, want %s", tc.in, got, tc.want)
 			}
 		})
 	}
@@ -690,27 +690,27 @@ func TestAdaptiveLimiter_WaitEnforcesPacing(t *testing.T) {
 func TestRateLimitError_ErrorMessage(t *testing.T) {
 	cases := []struct {
 		name string
-		err  *RateLimitError
+		err  *rateLimitError
 		want string
 	}{
 		{
 			name: "with retry-after and body",
-			err:  &RateLimitError{URL: "https://api.example.com/x", RetryAfter: 5 * time.Second, Body: "slow down"},
+			err:  &rateLimitError{URL: "https://api.example.com/x", RetryAfter: 5 * time.Second, Body: "slow down"},
 			want: "rate limited: HTTP 429 for https://api.example.com/x; retry after 5s: slow down",
 		},
 		{
 			name: "with retry-after no body",
-			err:  &RateLimitError{URL: "https://api.example.com/x", RetryAfter: 2 * time.Second},
+			err:  &rateLimitError{URL: "https://api.example.com/x", RetryAfter: 2 * time.Second},
 			want: "rate limited: HTTP 429 for https://api.example.com/x; retry after 2s",
 		},
 		{
 			name: "no retry-after with body",
-			err:  &RateLimitError{URL: "https://api.example.com/x", Body: "later"},
+			err:  &rateLimitError{URL: "https://api.example.com/x", Body: "later"},
 			want: "rate limited: HTTP 429 for https://api.example.com/x: later",
 		},
 		{
 			name: "no retry-after no body",
-			err:  &RateLimitError{URL: "https://api.example.com/x"},
+			err:  &rateLimitError{URL: "https://api.example.com/x"},
 			want: "rate limited: HTTP 429 for https://api.example.com/x",
 		},
 	}
@@ -724,8 +724,8 @@ func TestRateLimitError_ErrorMessage(t *testing.T) {
 }
 
 func TestRateLimitError_ErrorsAs(t *testing.T) {
-	var err error = &RateLimitError{URL: "https://x", RetryAfter: time.Second}
-	var target *RateLimitError
+	var err error = &rateLimitError{URL: "https://x", RetryAfter: time.Second}
+	var target *rateLimitError
 	if !errors.As(err, &target) {
 		t.Fatal("errors.As should match *RateLimitError")
 	}

@@ -37,7 +37,8 @@ const (
 	ReachabilityUnreachable = "unreachable"
 )
 
-// ProbeReachable does a lightweight reachability probe against url
+// PATCH(glean u93a): unexported until a doctor/reachability command wires it in production.
+// probeReachable does a lightweight reachability probe against url
 // using client and returns a (status, code, err) triple. The probe
 // uses GET with a `Range: bytes=0-1023` header so it never pulls more
 // than ~1 KB of body, regardless of how the host responds; the body

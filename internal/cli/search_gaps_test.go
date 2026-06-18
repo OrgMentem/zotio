@@ -5,6 +5,7 @@ package cli
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -181,7 +182,7 @@ func TestSearchCommandLiveFiltersEmptyResults(t *testing.T) {
 
 func TestSearchCommandAutoFallsBackToLocalOnNetworkError(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "search.db")
-	db, err := store.Open(dbPath)
+	db, err := store.OpenWithContext(context.Background(), dbPath)
 	if err != nil {
 		t.Fatalf("open store: %v", err)
 	}

@@ -54,12 +54,12 @@ API must be enabled (Settings → Advanced → "Allow other applications…").`,
 
 			path := fileURLToPath(fileURL)
 			if flags.asJSON {
-				return flags.printJSON(cmd, map[string]any{
+				return printJSONFiltered(cmd.OutOrStdout(), map[string]any{
 					"item_key":       itemKey,
 					"attachment_key": attKey,
 					"url":            fileURL,
 					"path":           path,
-				})
+				}, flags)
 			}
 			fmt.Fprintln(cmd.OutOrStdout(), path)
 			return nil

@@ -13,7 +13,6 @@ import (
 	"github.com/spf13/cobra"
 
 	"zotero-pp-cli/internal/client"
-	"zotero-pp-cli/internal/cliutil"
 )
 
 func helpersTestAPIError(status int, body string) error {
@@ -58,7 +57,7 @@ func TestHelpersClassifyAPIError(t *testing.T) {
 		{name: "rate limited api error", err: helpersTestAPIError(429, "slow down"), want: 7},
 		{name: "server error", err: helpersTestAPIError(500, "upstream exploded"), want: 5},
 		{name: "generic error", err: errors.New("dial tcp refused"), want: 5},
-		{name: "rate limit error", err: &cliutil.RateLimitError{URL: "https://api.example.test/items"}, want: 7},
+		{name: "rate limit error", err: errors.New("rate limited: HTTP 429 for https://api.example.test/items"), want: 7},
 	}
 
 	for _, tt := range tests {

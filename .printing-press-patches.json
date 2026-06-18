@@ -204,7 +204,7 @@
     {
       "id": "zotero-glean-cvl6-local-query-planner",
       "summary": "Added a Zotero-aware local query planner so --data-source local replays endpoint scoping instead of dumping all synced rows. New store query layer (internal/store/query.go): QueryItems applies itemType (indexed column), tag and collection membership (json_each), top-level filter, quick-search (FTS), sort/direction (json_extract), and limit/start; buildSearchDocument indexes a curated item document (key, bibliographic fields, creators, tags, annotation text) into resources_fts instead of the raw JSON blob; SearchByType scopes FTS to one resource type. resolveLocal routes item-list paths (/items, /items/top, /collections/{key}/items[/top]) through the planner and advertises meta.scoped; the search command's previously no-op default local branch now runs cross-resource FTS.",
-      "reason": "glean bead cvl6 (P1): the local store was a generic JSON cache with FTS bolted on — resolveLocal ignored endpoint filters/path scoping, the search command's default local branch was a placeholder that returned nothing, and FTS indexed raw JSON rather than Zotero search fields, so the headline offline mode could not match live reads.",
+      "reason": "glean bead cvl6 (P1): the local store was a generic JSON cache with FTS bolted on \u2014 resolveLocal ignored endpoint filters/path scoping, the search command's default local branch was a placeholder that returned nothing, and FTS indexed raw JSON rather than Zotero search fields, so the headline offline mode could not match live reads.",
       "files": [
         "internal/store/query.go",
         "internal/store/query_test.go",
@@ -220,7 +220,7 @@
     {
       "id": "zotero-glean-qfuq-mcp-resources-prompts",
       "summary": "Added first-class MCP resources and prompts so the server is no longer tool-only. Resources: zotero://context (durable domain taxonomy, shared with the context tool via domainContext), zotero://agent-context (CLI description via new cli.AgentContextJSON), zotero://status (local archive sync state), zotero://schema (local SQLite DDL), and templates zotero://collections/{key} (collection manifest) and zotero://items/{key} (item + annotations bundle). Prompts: inspect-library, export-reading-notes, prepare-citation-export. main.go advertises resource+prompt capabilities and calls RegisterResources/RegisterPrompts; mutations stay typed tools.",
-      "reason": "glean bead qfuq (P2): the MCP surface mirrored CLI commands only — no resource/prompt capabilities — so hosts had to shell through mirrored tools and guess command sequences to discover library state and workflows.",
+      "reason": "glean bead qfuq (P2): the MCP surface mirrored CLI commands only \u2014 no resource/prompt capabilities \u2014 so hosts had to shell through mirrored tools and guess command sequences to discover library state and workflows.",
       "files": [
         "cmd/zotero-pp-mcp/main.go",
         "internal/mcp/resources.go",
@@ -234,7 +234,7 @@
     {
       "id": "zotero-glean-dk33-metadata-enrichment",
       "summary": "Added `items enrich`, a provider-backed remediation pipeline that turns the read-only `items audit` work queues into fixes. --missing-doi resolves a DOI from CrossRef (exact normalized-title match to avoid wrong attaches), --missing-abstract fills the abstract from CrossRef by the item's DOI (JATS markup stripped), and --missing-pdf attaches an open-access PDF link from Unpaywall. It previews a patch plan by default and applies via the existing PATCH/POST paths only with --yes (or --agent), including the item version as a conflict guard and appending enrichment provenance to the item's Extra field. Provider base URLs are overridable for testing; apply is unit-testable via a small apiMutator interface.",
-      "reason": "glean bead dk33 (P2): the CLI had strong audit/reporting (items audit: missing_pdf/abstract/doi/tags) but no path from a detected defect to a safe, provider-backed fix — users had to export TODO lists into external scripts.",
+      "reason": "glean bead dk33 (P2): the CLI had strong audit/reporting (items audit: missing_pdf/abstract/doi/tags) but no path from a detected defect to a safe, provider-backed fix \u2014 users had to export TODO lists into external scripts.",
       "files": [
         "internal/cli/items_enrich.go",
         "internal/cli/items_enrich_test.go",
@@ -259,7 +259,7 @@
     {
       "id": "zotero-glean-49r4-vault-sync",
       "summary": "Added `vault sync`, a vault-aware Obsidian/Logseq note materializer (internal/cli/vault_sync.go). One Markdown note per regular item, filename keyed on the native/BBT citation key (data.citationKey, falling back to extra then the item key), scoped from the local store via the cvl6 query planner (--collection/--tag/--item-type/--limit, top-level items only). Notes carry zotero:// backlinks (item select in frontmatter; per-annotation open-pdf with page label, group-aware via activeGroupID) and embed current annotations (hhup AnnotationsForItem join) in a fenced managed block. Re-runs are idempotent and non-destructive: only managed frontmatter keys and the fenced block change; user prose and other frontmatter keys are preserved. --dry-run previews created/updated/unchanged. Also wrote docs/obsidian-integration.md positioning the CLI vs the Obsidian/Zotero plugin ecosystem.",
-      "reason": "glean bead 49r4 (P2): note output was stdout-only template scaffolding (items note-template) with an annotations placeholder, and the only delivery sinks were stdout/file/webhook — no stateful, non-clobbering vault integration for the documented Obsidian/Logseq workflow.",
+      "reason": "glean bead 49r4 (P2): note output was stdout-only template scaffolding (items note-template) with an annotations placeholder, and the only delivery sinks were stdout/file/webhook \u2014 no stateful, non-clobbering vault integration for the documented Obsidian/Logseq workflow.",
       "files": [
         "internal/cli/vault_sync.go",
         "internal/cli/vault_sync_test.go",
@@ -277,7 +277,7 @@
         "internal/cli/helpers_gaps_test.go"
       ],
       "validated_outcome": "TestCompactFieldsPreservesEnvelopeData asserts the envelope keeps key + nested title/itemType/DOI while stripping abstractNote/relations; the existing flat-object compaction test still passes; live `items list --agent` on Zotero 10-beta now returns the full useful item minus verbose fields. gofmt/build/vet and full `go test ./...` green.",
-      "upstream_issue": "Systemic across printed CLIs whose API uses resource envelopes — candidate fix for cli-printing-press compactListFields (make it envelope-aware rather than flat-allowlist-only)."
+      "upstream_issue": "Systemic across printed CLIs whose API uses resource envelopes \u2014 candidate fix for cli-printing-press compactListFields (make it envelope-aware rather than flat-allowlist-only)."
     },
     {
       "id": "zotero-schema-drift-probe",
@@ -290,7 +290,7 @@
         "internal/cli/which.go"
       ],
       "validated_outcome": "Unit tests: first-run baseline capture, no-drift on identical schema, added/removed deltas (+preprint -book, +citationKey), and human output, all against a real client (client.BaseURL) pointed at an httptest schema surface. gofmt/build/vet and full `go test ./...` green. Live smoke on Zotero 10.0-beta.7: captured 40 item types / 123 item fields / 3 creator fields, no-drift on re-run, correct +item-types delta after a simulated upgrade, and --deep resolved per-type fields/creators for all 40 types. The probe strips the /users|groups/<id> library prefix because Zotero schema endpoints are global (/api/itemTypes).",
-      "upstream_issue": "Discovered pre-existing bug: the generated `schema item-types|item-fields|item-type-fields|item-type-creator-types|creator-fields` commands 404 against the local API because they prepend the /users/<id> library prefix to global schema endpoints. Systemic for any printed CLI whose spec mixes library-scoped and global endpoints under one prefixed base_url — candidate fix for cli-printing-press (per-endpoint base-path/scope override). schema drift works around it locally by stripping the prefix for its own fetches."
+      "upstream_issue": "Discovered pre-existing bug: the generated `schema item-types|item-fields|item-type-fields|item-type-creator-types|creator-fields` commands 404 against the local API because they prepend the /users/<id> library prefix to global schema endpoints. Systemic for any printed CLI whose spec mixes library-scoped and global endpoints under one prefixed base_url \u2014 candidate fix for cli-printing-press (per-endpoint base-path/scope override). schema drift works around it locally by stripping the prefix for its own fetches."
     },
     {
       "id": "zotero-items-file",
@@ -305,7 +305,7 @@
     },
     {
       "id": "zotero-schema-drift-version-fastpath",
-      "summary": "schema drift now uses the Zotero-Schema-Version response header as a fast path: it probes /itemTypes once (capturing the header), and when the live version matches the stored baseline's version it reports no drift without fetching the remaining schema lists — a large saving under --deep (1 request vs ~80). Added client.GetWithHeader(path, params, header) to expose an arbitrary response header (mirrors GetWithVersion, cache-bypassing); schemaSnapshot gained a schema_version field; the no-drift/capture output and --json envelope now surface the version. Backward compatible: baselines without a stored version, or a Zotero that omits the header, fall back to the full fetch+diff.",
+      "summary": "schema drift now uses the Zotero-Schema-Version response header as a fast path: it probes /itemTypes once (capturing the header), and when the live version matches the stored baseline's version it reports no drift without fetching the remaining schema lists \u2014 a large saving under --deep (1 request vs ~80). Added client.GetWithHeader(path, params, header) to expose an arbitrary response header (mirrors GetWithVersion, cache-bypassing); schemaSnapshot gained a schema_version field; the no-drift/capture output and --json envelope now surface the version. Backward compatible: baselines without a stored version, or a Zotero that omits the header, fall back to the full fetch+diff.",
       "reason": "Folding in a Local-API capability found while reviewing the docs: the Zotero-Schema-Version header is a single-request schema-change signal, avoiding the full multi-request fingerprint when nothing changed.",
       "files": [
         "internal/client/client.go",
@@ -346,8 +346,8 @@
         "internal/cli/data_source.go",
         "internal/cli/schema_drift_test.go"
       ],
-      "validated_outcome": "TestSchemaCommandStripsLibraryPrefix drives newSchemaItemTypesCmd against an httptest server that serves only the global /itemTypes and 404s /users/0/itemTypes — the command succeeds only when the prefix is stripped. gofmt/build/vet and full `go test ./...` green. Live on Zotero 10.0-beta: schema item-types/item-fields/item-type-fields/item-type-creator-types/creator-fields all return data with no warning. /items/new is global too but the local API does not implement it, so `schema new-item-template` still 404s locally (works only against the Web API).",
-      "upstream_issue": "Systemic for any printed CLI whose spec mixes library-scoped and global endpoints under one prefixed base_url — candidate fix for cli-printing-press: a per-endpoint base-path/scope override so global endpoints are generated without the library prefix."
+      "validated_outcome": "TestSchemaCommandStripsLibraryPrefix drives newSchemaItemTypesCmd against an httptest server that serves only the global /itemTypes and 404s /users/0/itemTypes \u2014 the command succeeds only when the prefix is stripped. gofmt/build/vet and full `go test ./...` green. Live on Zotero 10.0-beta: schema item-types/item-fields/item-type-fields/item-type-creator-types/creator-fields all return data with no warning. /items/new is global too but the local API does not implement it, so `schema new-item-template` still 404s locally (works only against the Web API).",
+      "upstream_issue": "Systemic for any printed CLI whose spec mixes library-scoped and global endpoints under one prefixed base_url \u2014 candidate fix for cli-printing-press: a per-endpoint base-path/scope override so global endpoints are generated without the library prefix."
     },
     {
       "id": "zotero-local-write-guard",
@@ -393,7 +393,7 @@
     },
     {
       "id": "zotero-delete-version-precondition",
-      "summary": "Fixed `items delete` and `collections delete`, which 428'd ('If-Unmodified-Since-Version must be provided for delete requests') because c.Delete sent no version header. They now fetch the object's current version via GetWithVersion and send If-Unmodified-Since-Version via DeleteWithHeaders. Crucially they use a new rootFlags.newWriteClient() (root.go) whose BaseURL is the write target, so the version GET and the DELETE hit the same library (the Web API under hybrid routing) — correct even for an item just created on the web and not yet synced to the local mirror (an earlier local-version attempt 428'd in exactly that case).",
+      "summary": "Fixed `items delete` and `collections delete`, which 428'd ('If-Unmodified-Since-Version must be provided for delete requests') because c.Delete sent no version header. They now fetch the object's current version via GetWithVersion and send If-Unmodified-Since-Version via DeleteWithHeaders. Crucially they use a new rootFlags.newWriteClient() (root.go) whose BaseURL is the write target, so the version GET and the DELETE hit the same library (the Web API under hybrid routing) \u2014 correct even for an item just created on the web and not yet synced to the local mirror (an earlier local-version attempt 428'd in exactly that case).",
       "reason": "Surfaced by a live write round-trip: deleting a throwaway item via the CLI failed with 428, and a first fix that read the version from the local mirror still failed because a just-created web item had not synced down yet.",
       "files": [
         "internal/cli/root.go",
@@ -403,6 +403,28 @@
       ],
       "validated_outcome": "TestItemsDeleteSendsVersionHeader and TestCollectionsDeleteSendsVersionHeader assert the DELETE carries If-Unmodified-Since-Version from the fetched version. gofmt/build/vet and full `go test ./...` green. Live full round-trip on Zotero 10.0-beta: `items create` then `items delete <key>` via the CLI returned 204 success (exit 0); the item is 404 on both the Web API and the local API afterward. Library left clean.",
       "upstream_issue": "Systemic: the generated DELETE sends no precondition header; any printed CLI against an API that requires If-Unmodified-Since-Version (or similar optimistic-concurrency header) on delete hits this. Candidate fix for cli-printing-press (version-precondition handling on mutating verbs)."
+    },
+    {
+      "id": "zotero-glean-dead-code-cleanup",
+      "summary": "Addressed glean dead-code beads: removed orphaned generated packages internal/cache and internal/types; removed unused applyAuthFormat and the unused rootFlags.printJSON (hand-written commands now use printJSONFiltered); unexported test-only cliutil symbols (probeReachable, cleanText, parseStoredTime, rateLimitError); removed exported store.Open in favor of OpenWithContext; wired buildAgentDiscoveryContext from the curated which index.",
+      "reason": "glean beads i30e, 564e, 77k6, oqdg, co0m, os3f, u93a, 2kgy: orphaned packages, dead generated helpers, nil discovery placeholder, and test-only exported APIs added maintenance burden without production call sites.",
+      "files": [
+        "internal/cache/cache.go",
+        "internal/types/types.go",
+        "internal/cli/root.go",
+        "internal/cli/items_file.go",
+        "internal/cli/schema_drift.go",
+        "internal/config/config.go",
+        "internal/cli/agent_context.go",
+        "internal/cli/agent_context_test.go",
+        "internal/store/store.go",
+        "internal/cliutil/probe.go",
+        "internal/cliutil/text.go",
+        "internal/cliutil/ratelimit.go",
+        "internal/cliutil/cliutil_test.go",
+        "internal/cli/helpers_gaps_test.go"
+      ],
+      "validated_outcome": "Orphaned packages deleted; agent-context discovery now lists which-index candidate commands; all former store.Open test call sites use OpenWithContext(context.Background(), ...); gofmt/build/vet and full go test ./... pass (fresh, -count=1)."
     }
   ]
 }

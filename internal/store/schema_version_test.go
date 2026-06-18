@@ -21,7 +21,7 @@ import (
 // records the version it was built under.
 func TestSchemaVersion_StampedOnFreshDB(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "data.db")
-	s, err := Open(dbPath)
+	s, err := OpenWithContext(context.Background(), dbPath)
 	if err != nil {
 		t.Fatalf("open fresh db: %v", err)
 	}
@@ -55,7 +55,7 @@ func TestSchemaVersion_StampExistingZeroDB(t *testing.T) {
 	}
 	raw.Close()
 
-	s, err := Open(dbPath)
+	s, err := OpenWithContext(context.Background(), dbPath)
 	if err != nil {
 		t.Fatalf("open pre-gate db: %v", err)
 	}
@@ -86,7 +86,7 @@ func TestSchemaVersion_RefusesNewerDB(t *testing.T) {
 	}
 	raw.Close()
 
-	_, err = Open(dbPath)
+	_, err = OpenWithContext(context.Background(), dbPath)
 	if err == nil {
 		t.Fatalf("expected open to fail on newer schema, got nil")
 	}
@@ -112,7 +112,7 @@ func TestMigrate_ConcurrentFreshDB(t *testing.T) {
 	for i := 0; i < n; i++ {
 		go func() {
 			defer wg.Done()
-			s, err := Open(dbPath)
+			s, err := OpenWithContext(context.Background(), dbPath)
 			if err != nil {
 				errs <- err
 				return
@@ -213,7 +213,7 @@ func TestMigrate_RejectsNewerDBImmediately(t *testing.T) {
 	defer holdWriteLock(t, dbPath)()
 
 	start := time.Now()
-	_, err = Open(dbPath)
+	_, err = OpenWithContext(context.Background(), dbPath)
 	elapsed := time.Since(start)
 
 	if err == nil {
@@ -233,13 +233,13 @@ func TestMigrate_RejectsNewerDBImmediately(t *testing.T) {
 func TestSchemaVersion_ReopenIsIdempotent(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "data.db")
 
-	s1, err := Open(dbPath)
+	s1, err := OpenWithContext(context.Background(), dbPath)
 	if err != nil {
 		t.Fatalf("first open: %v", err)
 	}
 	s1.Close()
 
-	s2, err := Open(dbPath)
+	s2, err := OpenWithContext(context.Background(), dbPath)
 	if err != nil {
 		t.Fatalf("second open: %v", err)
 	}
@@ -261,7 +261,7 @@ func TestSchemaVersion_ReopenIsIdempotent(t *testing.T) {
 func TestOpenReadOnly_RejectsWrites(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "data.db")
 
-	rw, err := Open(dbPath)
+	rw, err := OpenWithContext(context.Background(), dbPath)
 	if err != nil {
 		t.Fatalf("seed open: %v", err)
 	}
@@ -334,7 +334,7 @@ func TestMigrate_AddsColumnsOnUpgrade_SyncState(t *testing.T) {
 
 	// Opening with the new binary must run CREATE INDEX statements without
 	// erroring on missing generated columns.
-	s, err := Open(dbPath)
+	s, err := OpenWithContext(context.Background(), dbPath)
 	if err != nil {
 		t.Fatalf("open upgraded db: %v", err)
 	}

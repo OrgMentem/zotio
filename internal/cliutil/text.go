@@ -19,7 +19,8 @@ import (
 // Single unescape pass: "&amp;amp;" -> "&amp;" (matches html.UnescapeString
 // stdlib behavior). If you need multiple passes you almost always have a
 // deeper escaping problem upstream — fix there, not here.
-func CleanText(s string) string {
+// PATCH(glean 2kgy): unexported — only exercised by package tests today.
+func cleanText(s string) string {
 	return html.UnescapeString(strings.TrimSpace(s))
 }
 
@@ -28,7 +29,7 @@ func CleanText(s string) string {
 // time.String format, while hand-written sync code often stores RFC3339.
 // Use this helper instead of a single time.Parse(time.RFC3339, value) call
 // when scanning timestamp columns from the store.
-func ParseStoredTime(s string) time.Time {
+func parseStoredTime(s string) time.Time {
 	s = strings.TrimSpace(s)
 	if s == "" {
 		return time.Time{}

@@ -4,6 +4,7 @@
 package store
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"path/filepath"
@@ -24,7 +25,7 @@ import (
 // Run under `go test -race` to catch any data races on Store fields.
 func TestStoreWrite_NoSQLITE_BUSY_HighConcurrency(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "data.db")
-	s, err := Open(dbPath)
+	s, err := OpenWithContext(context.Background(), dbPath)
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
@@ -92,7 +93,7 @@ func TestStoreWrite_NoSQLITE_BUSY_HighConcurrency(t *testing.T) {
 // proceed. A leaked lock would deadlock the second call indefinitely.
 func TestStoreWrite_PanicReleasesLock(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "data.db")
-	s, err := Open(dbPath)
+	s, err := OpenWithContext(context.Background(), dbPath)
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
@@ -133,7 +134,7 @@ func TestStoreWrite_PanicReleasesLock(t *testing.T) {
 // override) to assert the lookup path itself works.
 func TestUpsertBatch_TemplatedIDFieldOverrideWins(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "data.db")
-	s, err := Open(dbPath)
+	s, err := OpenWithContext(context.Background(), dbPath)
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
@@ -178,7 +179,7 @@ func TestUpsertBatch_TemplatedIDFieldOverrideWins(t *testing.T) {
 // specs.
 func TestUpsertBatch_GenericFallbackList(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "data.db")
-	s, err := Open(dbPath)
+	s, err := OpenWithContext(context.Background(), dbPath)
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
@@ -234,7 +235,7 @@ func TestUpsertBatch_GenericFallbackList(t *testing.T) {
 // drops occur.
 func TestUpsertBatch_ExtractFailuresReturnedForPerItemMisses(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "data.db")
-	s, err := Open(dbPath)
+	s, err := OpenWithContext(context.Background(), dbPath)
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}

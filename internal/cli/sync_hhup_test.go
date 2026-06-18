@@ -4,6 +4,7 @@
 package cli
 
 import (
+	"context"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -33,7 +34,7 @@ func TestSyncFulltext_StoresAndIndexes(t *testing.T) {
 
 	c := client.New(&config.Config{BaseURL: srv.URL}, 5*time.Second, 0)
 	c.NoCache = true
-	db, err := store.Open(filepath.Join(t.TempDir(), "data.db"))
+	db, err := store.OpenWithContext(context.Background(), filepath.Join(t.TempDir(), "data.db"))
 	if err != nil {
 		t.Fatalf("open store: %v", err)
 	}

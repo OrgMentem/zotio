@@ -4,6 +4,7 @@
 package store
 
 import (
+	"context"
 	"encoding/json"
 	"path/filepath"
 	"testing"
@@ -11,7 +12,7 @@ import (
 
 func cvl6Store(t *testing.T) *Store {
 	t.Helper()
-	s, err := Open(filepath.Join(t.TempDir(), "q.db"))
+	s, err := OpenWithContext(context.Background(), filepath.Join(t.TempDir(), "q.db"))
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}

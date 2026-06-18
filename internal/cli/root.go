@@ -5,7 +5,6 @@ package cli
 
 import (
 	"bytes"
-	"encoding/json"
 	"fmt"
 	"io"
 	"os"
@@ -280,15 +279,10 @@ func (f *rootFlags) newWriteClient() (*client.Client, error) {
 	return c, nil
 }
 
-func (f *rootFlags) printJSON(w *cobra.Command, v any) error {
-	enc := json.NewEncoder(w.OutOrStdout())
-	enc.SetIndent("", "  ")
-	return enc.Encode(v)
-}
-
+// PATCH(glean co0m/77k6): printTable is table-only; JSON output uses command-specific encoders.
 func (f *rootFlags) printTable(w *cobra.Command, headers []string, rows [][]string) error {
 	if f.asJSON {
-		return fmt.Errorf("use printJSON for JSON output")
+		return fmt.Errorf("printTable does not support JSON output")
 	}
 	tw := tabwriter.NewWriter(w.OutOrStdout(), 2, 4, 2, ' ', 0)
 	header := ""

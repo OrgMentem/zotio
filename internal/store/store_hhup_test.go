@@ -5,6 +5,7 @@
 package store
 
 import (
+	"context"
 	"encoding/json"
 	"path/filepath"
 	"testing"
@@ -13,7 +14,7 @@ import (
 )
 
 func TestDependentResourceColumnsAndQueries(t *testing.T) {
-	s, err := Open(filepath.Join(t.TempDir(), "data.db"))
+	s, err := OpenWithContext(context.Background(), filepath.Join(t.TempDir(), "data.db"))
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
@@ -81,7 +82,7 @@ func TestDependentResourceColumnsAndQueries(t *testing.T) {
 }
 
 func TestFulltextRoundTrip(t *testing.T) {
-	s, err := Open(filepath.Join(t.TempDir(), "data.db"))
+	s, err := OpenWithContext(context.Background(), filepath.Join(t.TempDir(), "data.db"))
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
@@ -108,7 +109,7 @@ func TestFulltextRoundTrip(t *testing.T) {
 // PATCH(glean perf-audit x5lh): UpsertKeyed persists caller-keyed payloads (no
 // id in the body) in one transaction and round-trips through Fulltext.
 func TestUpsertKeyed(t *testing.T) {
-	s, err := Open(filepath.Join(t.TempDir(), "data.db"))
+	s, err := OpenWithContext(context.Background(), filepath.Join(t.TempDir(), "data.db"))
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
@@ -156,7 +157,7 @@ func TestUpsertKeyed(t *testing.T) {
 // PATCH(glean perf-audit rj6r): AnnotationsForItems returns the same rows as
 // per-item AnnotationsForItem but grouped, in a single query.
 func TestAnnotationsForItems(t *testing.T) {
-	s, err := Open(filepath.Join(t.TempDir(), "data.db"))
+	s, err := OpenWithContext(context.Background(), filepath.Join(t.TempDir(), "data.db"))
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
