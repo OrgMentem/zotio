@@ -500,6 +500,16 @@
         "internal/cli/items_audit_query_test.go"
       ],
       "validated_outcome": "gofmt/build/vet clean; go test ./internal/cli passes (complete item excluded; journalArticle missing creators/date/publicationTitle and book missing publisher detected with exact field lists; summary count matches listing). Live vs real Zotero: 'items audit' summary shows missing-citation 97; 'items audit --missing-citation' lists items with per-item missing fields (e.g. 'date, publicationTitle')."
+    },
+    {
+      "id": "zotero-verify-attachment-files",
+      "summary": "Added 'items audit --verify-files' (glean dxut, on-disk half). For each PDF attachment that should have a local file (linkMode imported_file/linked_file/imported_url; excludes linked_url web bookmarks), it resolves the on-disk path via the local API (reusing fetchAttachmentFileURL + fileURLToPath from items file) and stat-s it, reporting attachments whose file is unresolved/missing/not-a-file. Honors --limit (one local-API lookup per attachment).",
+      "reason": "glean dxut: detect orphaned attachment records and broken storage (Zotero has the attachment but the file is gone) before relying on a PDF for citation/reading.",
+      "files": [
+        "internal/cli/items_audit.go",
+        "internal/cli/items_audit_query_test.go"
+      ],
+      "validated_outcome": "gofmt/build/vet/-race clean; go test ./internal/cli passes (queryPDFAttachments selects imported_file/linked_file PDFs, excludes linked_url, non-pdf, and non-attachments). Live vs real Zotero: 'items audit --verify-files --limit 15' resolved and stat-ed 15 PDF attachments, 0 missing (healthy library)."
     }
   ]
 }

@@ -6,10 +6,13 @@ package cli
 import (
 	"encoding/json"
 	"fmt"
+	"os"
 	"strconv"
 	"strings"
 
 	"github.com/spf13/cobra"
+
+	"zotero-pp-cli/internal/client"
 )
 
 type itemsAuditSummary struct {
@@ -27,6 +30,7 @@ func newItemsAuditCmd(flags *rootFlags) *cobra.Command {
 	var flagMissingTags bool
 	var flagCitations bool
 	var flagLimit int
+	var flagVerifyFiles bool
 
 	cmd := &cobra.Command{
 		Use:         "audit",
@@ -43,6 +47,10 @@ func newItemsAuditCmd(flags *rootFlags) *cobra.Command {
 			}
 			defer rawDB.Close()
 			db := localQueryStore{rawDB}
+
+			if flagVerifyFiles {
+				return runVerifyAttachmentFiles(cmd, db, flags, flagLimit)
+			}
 
 			checks := selectedItemsAuditChecks(flagMissingPDF, flagMissingAbstract, flagMissingDOI, flagMissingTags, flagCitations)
 			if len(checks) == 0 {
@@ -88,6 +96,7 @@ func newItemsAuditCmd(flags *rootFlags) *cobra.Command {
 	cmd.Flags().BoolVar(&flagMissingTags, "missing-tags", false, "List items with no tags")
 	cmd.Flags().BoolVar(&flagCitations, "missing-citation", false, "List citeable items missing core citation fields (creators, title, date, venue)")
 	cmd.Flags().IntVar(&flagLimit, "limit", 0, "Maximum number of items per category (0 = no limit)")
+	cmd.Flags().BoolVar(&flagVerifyFiles, "verify-files", false, "Verify each PDF attachment's file exists on disk (one local-API lookup per attachment)")
 
 	return cmd
 }
@@ -333,4 +342,82 @@ func citationMissingFields(r map[string]any) []string {
 		}
 	}
 	return missing
+}
+
+// runVerifyAttachmentFiles checks that every PDF attachment's file is present on
+// disk, resolving each path via the local API and stat-ing it. PATCH(glean dxut).
+func runVerifyAttachmentFiles(cmd *cobra.Command, db localQueryStore, flags *rootFlags, limit int) error {
+	c, err := flags.newClient()
+	if err != nil {
+		return err
+	}
+	attachments, err := queryPDFAttachments(db, limit)
+	if err != nil {
+		return fmt.Errorf("querying PDF attachments: %w", err)
+	}
+	broken := make([]map[string]any, 0)
+	for _, a := range attachments {
+		key := sqlStringValue(a["key"])
+		path, reason := attachmentFileStatus(c, key)
+		if reason == "" {
+			continue
+		}
+		broken = append(broken, map[string]any{
+			"key":    key,
+			"parent": sqlStringValue(a["parent"]),
+			"name":   sqlStringValue(a["name"]),
+			"path":   path,
+			"reason": reason,
+		})
+	}
+	if flags.asJSON {
+		data, err := json.Marshal(map[string]any{"checked": len(attachments), "broken": broken})
+		if err != nil {
+			return err
+		}
+		return printOutputWithFlags(cmd.OutOrStdout(), json.RawMessage(data), flags)
+	}
+	out := cmd.OutOrStdout()
+	fmt.Fprintf(out, "Checked %d PDF attachment(s); %d missing on disk.\n", len(attachments), len(broken))
+	for _, b := range broken {
+		fmt.Fprintf(out, "  [%s] %s — %s (%s)\n", sqlStringValue(b["reason"]), sqlStringValue(b["key"]), sqlStringValue(b["name"]), sqlStringValue(b["path"]))
+	}
+	return nil
+}
+
+// attachmentFileStatus resolves an attachment's on-disk path via the local API
+// and stats it. reason is "" when the file is present, else the failure cause.
+func attachmentFileStatus(c *client.Client, key string) (path, reason string) {
+	fileURL, ok := fetchAttachmentFileURL(c, key)
+	if !ok || fileURL == "" {
+		return "", "unresolved"
+	}
+	path = fileURLToPath(fileURL)
+	info, err := os.Stat(path)
+	switch {
+	case err != nil:
+		return path, "missing"
+	case info.IsDir():
+		return path, "not-a-file"
+	default:
+		return path, ""
+	}
+}
+
+// queryPDFAttachments lists PDF attachments that should have a local file
+// (excludes linked_url web bookmarks). PATCH(glean dxut).
+func queryPDFAttachments(db localQueryStore, limit int) ([]map[string]any, error) {
+	query := `
+SELECT
+	id AS key,
+	json_extract(data, '$.data.parentItem') AS parent,
+	COALESCE(json_extract(data, '$.data.filename'), json_extract(data, '$.data.title'), '') AS name,
+	json_extract(data, '$.data.dateAdded') AS date_added
+FROM resources
+WHERE resource_type = 'items'
+	AND json_extract(data, '$.data.itemType') = 'attachment'
+	AND json_extract(data, '$.data.contentType') = 'application/pdf'
+	AND COALESCE(json_extract(data, '$.data.linkMode'), '') IN ('imported_file', 'linked_file', 'imported_url')
+ORDER BY date_added DESC`
+	return queryItemsAuditRows(db, query, limit)
 }

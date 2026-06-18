@@ -162,3 +162,38 @@ func TestCitationAudit(t *testing.T) {
 		t.Errorf("summary.MissingCitation = %d, want 2", summary.MissingCitation)
 	}
 }
+
+func TestQueryPDFAttachments(t *testing.T) {
+	db, err := store.OpenWithContext(context.Background(), filepath.Join(t.TempDir(), "data.db"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	items := []json.RawMessage{
+		json.RawMessage(`{"key":"AT1","version":1,"data":{"key":"AT1","itemType":"attachment","parentItem":"P1","contentType":"application/pdf","linkMode":"imported_file","filename":"a.pdf"}}`),
+		json.RawMessage(`{"key":"AT2","version":1,"data":{"key":"AT2","itemType":"attachment","parentItem":"P1","contentType":"application/pdf","linkMode":"linked_url"}}`),
+		json.RawMessage(`{"key":"AT3","version":1,"data":{"key":"AT3","itemType":"attachment","parentItem":"P2","contentType":"text/html","linkMode":"imported_url"}}`),
+		json.RawMessage(`{"key":"AT4","version":1,"data":{"key":"AT4","itemType":"attachment","parentItem":"P2","contentType":"application/pdf","linkMode":"linked_file","filename":"b.pdf"}}`),
+		json.RawMessage(`{"key":"IT1","version":1,"data":{"key":"IT1","itemType":"journalArticle","title":"T"}}`),
+	}
+	if _, _, err := db.UpsertBatch("items", items); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	rows, err := queryPDFAttachments(localQueryStore{db}, 0)
+	if err != nil {
+		t.Fatalf("queryPDFAttachments: %v", err)
+	}
+	got := map[string]bool{}
+	for _, r := range rows {
+		got[sqlStringValue(r["key"])] = true
+	}
+	if !got["AT1"] || !got["AT4"] {
+		t.Errorf("want AT1 (imported_file) and AT4 (linked_file), got %v", got)
+	}
+	if got["AT2"] || got["AT3"] || got["IT1"] {
+		t.Errorf("excluded a linked_url/non-pdf/non-attachment incorrectly: %v", got)
+	}
+	if len(got) != 2 {
+		t.Errorf("count = %d, want 2 (%v)", len(got), got)
+	}
+}
