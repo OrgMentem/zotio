@@ -143,3 +143,91 @@ Use it for scheduled or one-shot bulk upkeep (e.g. "refresh every note in this
 collection's annotations"); keep Zotero Integration for live, in-the-moment
 writing. They write to the same vault without fighting: the CLI owns its fenced
 block and managed keys, you own everything else.
+
+## `vault push` (the `15e0` feature) — Obsidian → Zotero note write-back
+
+`vault sync` is one-way (Zotero → vault). `vault push` adds the **opt-in reverse
+direction**: it mirrors each note's user-owned `## Notes` region back to a single
+tool-owned **Zotero child note**. It is push-only by design — it never merges
+remote note edits into the vault, and never touches bibliographic fields.
+
+- **Reads stay local; writes go to the Web API.** Like every mutation in this
+  CLI, the local API is GET-only, so `push` auto-routes writes to `api.zotero.org`
+  (an `api_key` must be configured). Personal library by default; a `--group`
+  target prints a one-time warning (members can read the note).
+- **One managed child note per item.** First push **creates** it (POST, with a
+  deterministic `Zotero-Write-Token` so an interrupted retry can't duplicate it);
+  later pushes **PATCH** the same note (`If-Unmodified-Since-Version`). The note's
+  first line is `Obsidian notes — <citekey>` so its origin is obvious in Zotero.
+- **Verbatim renderer.** The Markdown is reproduced as readable `<p>` blocks with
+  everything HTML-escaped and **nothing interpreted** — wikilinks, tables,
+  callouts, and code are preserved exactly rather than half-rendered. (A richer
+  opt-in renderer may come later; verbatim is the safe default.)
+- **Conflict-safe.** A note is pushed only when its `## Notes` region changed
+  since the last push *and* the remote note body has not diverged. If both sides
+  changed, nothing is overwritten: a conflict file is written under
+  `_vault-zotero-conflicts/` (local copy + remote HTML + the resolve command) and
+  reported. A remote-only change on an otherwise-unchanged note is reported
+  `remote_changed`, never silently hidden behind "unchanged".
+- **Recovery.** `vault conflicts` lists unresolved artifacts; `vault resolve
+  <citekey|key> --keep-vault` republishes the vault copy over the remote using the
+  live version as the precondition (`--recreate` re-creates a note deleted in
+  Zotero).
+- **Preview first.** `vault push --dry-run` reports would-create / would-update /
+  would-conflict and writes nothing — to the vault or to Zotero.
+
+> Mental model: **Obsidian is the editing surface; the Zotero child note is a
+> managed mirror.** Remote edits are detected and preserved for review, never
+> merged automatically.
+
+### Note format contract (shared by sync and push)
+
+`vault sync` establishes the structure `push` relies on, so run `sync` first:
+
+- **Stable identity in frontmatter.** `zotero_key` (and `zotero_library`) make a
+  note's item identity explicit. Re-syncs and pushes find a note by `zotero_key`,
+  so renaming the file or changing the citekey never duplicates or orphans it.
+  Notes created before `zotero_key` existed are recognized via their `zotero://`
+  link and upgraded in place.
+- **Managed vs user regions.** The tool owns the frontmatter keys, the title and
+  abstract fences (`<!-- zotero-pp-cli:title/abstract -->`), and the annotations
+  fence. You own the region between `<!-- zotero-pp-cli:notes-begin -->` and
+  `<!-- zotero-pp-cli:notes-end -->` under `## Notes` — that, and only that, is
+  what `push` sends to Zotero. A legacy single `## Notes` heading is migrated into
+  markers automatically; an ambiguous layout is reported `needs_notes_boundary`
+  and left untouched.
+- **Hidden sync state.** Push records its baseline (`note_key`, `note_version`,
+  `source_hash`, `remote_hash`, `renderer`) in a single
+  `<!-- zotero-pp-cli:state {...} -->` comment, keeping Obsidian Properties free of
+  bookkeeping.
+- **Safe writes.** Vault files are written atomically (temp file + rename) and
+  only when the on-disk bytes still match what was read, so a concurrent
+  Obsidian/iCloud edit is reported (`file_busy`) rather than clobbered.
+
+### `[vault]` config and collection names
+
+Set defaults once instead of passing `--out` every run:
+
+```toml
+[vault]
+root = "~/Vaults/dev"   # ~ is expanded
+notes_dir = "Zotero"     # notes land in <root>/<notes_dir>
+format = "obsidian"      # or "logseq"
+```
+
+`--out`/`--format` flags still override the config. Synced collections also render
+human-readable names: notes carry `collection_names` (resolved from the local
+store, falling back to the key when a collection isn't synced) alongside the
+existing `collections` keys, which stay intact for Dataview queries.
+
+### Round-trip in practice
+
+```
+zotero-pp-cli sync                       # refresh the local mirror
+zotero-pp-cli vault sync                 # Zotero -> vault (uses [vault] config)
+# ... write under "## Notes" in Obsidian ...
+zotero-pp-cli vault push --dry-run       # preview Obsidian -> Zotero
+zotero-pp-cli vault push                 # publish notes to Zotero child notes
+zotero-pp-cli vault conflicts            # if any push reported a conflict
+zotero-pp-cli vault resolve <citekey> --keep-vault
+```
