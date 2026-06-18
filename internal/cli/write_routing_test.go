@@ -19,9 +19,9 @@ func TestResolveWebWriteBase(t *testing.T) {
 	if base, err := resolveWebWriteBase(&config.Config{}, "", time.Second); err != nil || base != "" {
 		t.Errorf("no key: got (%q, %v), want (\"\", nil)", base, err)
 	}
-	// Personal with a known user id -> /users/<id>, no network.
-	got, err := resolveWebWriteBase(&config.Config{ZoteroApiKey: "k", UserID: "5847066"}, "", time.Second)
-	if err != nil || got != zoteroWebAPIBase+"/users/5847066" {
+	// PATCH(glean 61a2a8a9): synthetic user id (was a real account id).
+	got, err := resolveWebWriteBase(&config.Config{ZoteroApiKey: "k", UserID: "99999"}, "", time.Second)
+	if err != nil || got != zoteroWebAPIBase+"/users/99999" {
 		t.Errorf("personal: got (%q, %v)", got, err)
 	}
 	// Group -> /groups/<gid>, no user id needed.

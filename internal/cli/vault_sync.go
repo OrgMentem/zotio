@@ -56,7 +56,7 @@ type vaultMeta struct {
 	URL             string
 	Abstract        string
 	Collections     []string
-	Library         string // API library segment, e.g. "users/5847066" or "groups/123"
+	Library         string // PATCH(glean 61a2a8a9): synthetic ids. API library segment, e.g. "users/99999" or "groups/123".
 	CollectionNames []string
 }
 

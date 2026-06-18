@@ -198,9 +198,10 @@ func TestVaultLibraryID(t *testing.T) {
 
 	activeGroupID = ""
 	cfgPath := filepath.Join(t.TempDir(), "config.toml")
-	writeFile(t, cfgPath, "user_id = \"5847066\"\n")
-	if got := vaultLibraryID(&rootFlags{configPath: cfgPath}); got != "users/5847066" {
-		t.Errorf("personal library = %q, want users/5847066", got)
+	// PATCH(glean 61a2a8a9): synthetic user id (was a real account id).
+	writeFile(t, cfgPath, "user_id = \"99999\"\n")
+	if got := vaultLibraryID(&rootFlags{configPath: cfgPath}); got != "users/99999" {
+		t.Errorf("personal library = %q, want users/99999", got)
 	}
 
 	if got := vaultLibraryID(&rootFlags{configPath: filepath.Join(t.TempDir(), "missing.toml")}); got != "" {

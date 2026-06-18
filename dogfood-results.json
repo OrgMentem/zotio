@@ -1,6 +1,6 @@
 {
   "dir": ".",
-  "spec_path": "/Users/ellis/printing-press/.runstate/cli-printing-press-e1d92c73/runs/20260511-103605/research/zotero-spec.yaml",
+  "spec_path": "~/printing-press/.runstate/cli-printing-press-e1d92c73/runs/20260511-103605/research/zotero-spec.yaml",
   "verdict": "WARN",
   "path_check": {
     "tested": 0,

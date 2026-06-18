@@ -301,7 +301,7 @@
         "internal/cli/items_file_test.go",
         "internal/cli/items.go"
       ],
-      "validated_outcome": "Unit tests (real client against httptest): direct attachment key, parent-item child-PDF resolution, and the no-attachment error. gofmt/build/vet and full `go test ./...` green. Live smoke on Zotero 10.0-beta: `items file 9UXV5R7L` resolved its child PDF (RLRDANQN) to /Users/ellis/Zotero/storage/RLRDANQN/...pdf (verified the file exists on disk); direct attachment key returns the same; percent-encoding is decoded."
+      "validated_outcome": "Unit tests (real client against httptest): direct attachment key, parent-item child-PDF resolution, and the no-attachment error. gofmt/build/vet and full `go test ./...` green. Live smoke on Zotero 10.0-beta: `items file 9UXV5R7L` resolved its child PDF (RLRDANQN) to ~/Zotero/storage/RLRDANQN/...pdf (verified the file exists on disk); direct attachment key returns the same; percent-encoding is decoded."
     },
     {
       "id": "zotero-schema-drift-version-fastpath",
@@ -377,7 +377,7 @@
         "internal/cli/write_routing_test.go",
         "internal/cli/writeguard_test.go"
       ],
-      "validated_outcome": "TestWriteRoutingSplitsReadsAndWrites (GET->BaseURL, PATCH/POST->WriteBaseURL, resolver runs once), TestWriteRoutingFallsBackWhenResolverEmpty, TestResolveWebWriteBase (+ caching via keys/current against an httptest base), TestClassifyAPIErrorVersionConflict; gofmt/build/vet, full `go test ./...`, and -race on client+cli all green. Live on Zotero 10.0-beta with a real key: `items update <key> --dry-run` routed to https://api.zotero.org/users/5847066/items/<key> with the notice (key masked in output), while `items list --dry-run` stayed on localhost; the resolved user_id cached to a throwaway config only.",
+      "validated_outcome": "TestWriteRoutingSplitsReadsAndWrites (GET->BaseURL, PATCH/POST->WriteBaseURL, resolver runs once), TestWriteRoutingFallsBackWhenResolverEmpty, TestResolveWebWriteBase (+ caching via keys/current against an httptest base), TestClassifyAPIErrorVersionConflict; gofmt/build/vet, full `go test ./...`, and -race on client+cli all green. Live on Zotero 10.0-beta with a real key: `items update <key> --dry-run` routed to https://api.zotero.org/users/99999/items/<key> with the notice (key masked in output), while `items list --dry-run` stayed on localhost; the resolved user_id cached to a throwaway config only.",
       "upstream_issue": "The hybrid read-local/write-remote transport (lazy WriteBaseURL + resolver) is generic and a candidate for cli-printing-press; the Zotero specifics (keys/current, local-API detection) stay local."
     },
     {
@@ -568,6 +568,20 @@
         "go.sum"
       ],
       "validated_outcome": "gofmt -l internal/ clean; go build ./...; go vet ./...; go test ./... -count=1 (6 pkgs ok, incl. internal/store on sqlite v1.52.0 and internal/mcp on mcp-go v0.52.0); -race on internal/store + internal/cli clean. Live vs real Zotero: `doctor` opened the 35MB data.db under sqlite v1.52.0; FTS5 `search` and `items audit --missing-pdf` (indexed columns) executed correctly; the MCP server (cmd/zotero-pp-mcp) JSON-RPC handshake under mcp-go v0.52.0 succeeded -- tools/list=76, prompts/list=[export-reading-notes, inspect-library, prepare-citation-export, synthesize]."
+    },
+    {
+      "id": "zotero-secret-sweep-scrub",
+      "summary": "Privacy scrub of real identifiers from tracked files (glean secret-sweep beads). Replaced the maintainer's real Zotero user id 5847066 with the synthetic 99999 in the write-routing/vault-library code comment + unit tests, and replaced absolute /Users/ellis/... home paths with ~/ or repo-relative forms in generator provenance (.printing-press.json spec_path -> spec.yaml, dogfood-results.json spec_path -> ~/...) and in two prior validated_outcome notes in this catalog. Source sites carry inline // PATCH(glean 61a2a8a9) markers; JSON metadata has no comment mechanism so this entry is the record.",
+      "reason": "glean bead 61a2a8a9 (real Zotero account id 5847066 in patches + test fixtures) and 02dfb243 (OS username 'ellis' leaked via absolute home paths in tracked metadata). Privacy-hygiene only: not a credential, no rotation needed; the API key was always masked. History rewrite is intentionally out of scope (the values also sit in the import commit) -- scrubbed in the working tree per the bead's minimum recommendation. The 'enieuwy' printing-press handle is the printer identity, not an OS account, and is left as-is (outside both beads).",
+      "files": [
+        "internal/cli/vault_sync.go",
+        "internal/cli/vault_sync_format_test.go",
+        "internal/cli/write_routing_test.go",
+        ".printing-press.json",
+        "dogfood-results.json",
+        ".printing-press-patches.json"
+      ],
+      "validated_outcome": "search for 5847066 and /Users/ellis|ellis returns no matches; legitimate synthetic paths (/Users/me, /Users/x in items_file tests) untouched. gofmt -l internal/ clean; go build/vet clean; go test ./... -count=1 (6 pkgs ok) incl. TestVaultLibraryID and TestResolveWebWriteBase under the synthetic 99999 id; all three scrubbed JSON files re-validated as parseable. No runtime impact: no Go code reads the provenance JSON (verified) and the changed source site is a doc comment + test fixtures."
     }
   ]
 }
