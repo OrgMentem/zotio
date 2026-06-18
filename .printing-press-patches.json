@@ -536,6 +536,17 @@
         "README.md"
       ],
       "validated_outcome": "gofmt/build/vet clean; go test ./... -count=1 passes (pure buildItemBundle: citation/abstract/annotation mapping, annotation cap with kept/total, rune-safe fulltext truncation, gap detection incl. --no-fulltext, venue/citation/truncate helpers; MCP prompts/list includes synthesize). Live vs real Zotero: human bundle, --agent JSON (with truncated flags), and --collection mode all produced correct bundles + prompts. Fulltext excerpt path is unit-tested (no fulltext synced in the store to exercise live)."
+    },
+    {
+      "id": "zotero-import-scan",
+      "summary": "Added `import scan <dir>` (glean q1ia): a read-only, library-aware triage of a PDF folder. For each PDF it extracts a DOI (filename with slash-decoding, then the file's uncompressed embedded metadata via a head/tail byte scan — no PDF parser, no new dependency) and classifies it against the synced library: duplicate (DOI already an item), attach_candidate (matches an item missing its PDF), new (--resolve fetches a CrossRef title), or unidentified. Reuses normalizeDOI + crossRefItemFromDOI; --json for scripting.",
+      "reason": "Deliberately does NOT re-implement Zotero's 'Retrieve Metadata for PDF' (its recognizer + the Web API file-upload protocol the CLI lacks). The clear seam is the library-aware decision the GUI cannot make — which downloads are duplicates, which complete an item you already have, which are genuinely new — so the user decides what to import. Identifier->item resolution already exists (import doi/url/file).",
+      "files": [
+        "internal/cli/import_scan.go",
+        "internal/cli/import_scan_test.go",
+        "internal/cli/import.go"
+      ],
+      "validated_outcome": "gofmt/build/vet clean; go test ./... passes (filename slash-decoded + embedded-content DOI extraction + none; classify duplicate/attach_candidate/new/unidentified with httpClient nil; DOI index build with case-insensitive keys + hasPDF). Live vs real Zotero: a 4-PDF folder classified correctly — duplicate (9UXV5R7L, has PDF), attach_candidate (10.1002/job.413 -> 5AQIZVY4, missing PDF), new (fake DOI), unidentified (no DOI); doi_source reported (content/none)."
     }
   ]
 }

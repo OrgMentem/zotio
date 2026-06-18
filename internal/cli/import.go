@@ -109,6 +109,7 @@ but do not stop the import.`,
 	cmd.AddCommand(newImportDoiCmd(flags))
 	cmd.AddCommand(newImportUrlCmd(flags))
 	cmd.AddCommand(newImportFileCmd(flags))
+	cmd.AddCommand(newImportScanCmd(flags)) // PATCH(glean q1ia): read-only PDF folder triage
 
 	return cmd
 }
