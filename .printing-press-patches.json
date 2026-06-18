@@ -470,6 +470,16 @@
         "internal/cli/vault_sync.go"
       ],
       "validated_outcome": "gofmt/build/vet clean; go test ./... -count=1 and 'go test ./internal/cli -race' pass (push->pull round-trip is byte-lossless for content, managed-shape gating, tag stripping, region replacement, atomic region+state write). Live vs real Zotero on a throwaway item: push created a note; an external edit (items update --stdin with version) -> 'vault pull --dry-run' would-pull -> 'vault pull' rewrote the local region to the remote edit; re-pull unchanged; both-sides edit -> conflict + artifact listed by 'vault conflicts'; throwaway item deleted (204)."
+    },
+    {
+      "id": "zotero-vault-docs-refresh",
+      "summary": "Refreshed the generated product docs (SKILL.md, README.md) to match the shipped CLI: corrected the now-misleading 'no API key required' claims to the real model (reads need no key; writes — items create/update/delete and vault push/pull/resolve — require a Web API key configured once via auth set-token and auto-routed to api.zotero.org, with a doctor 'writes:' line); and documented the previously-undocumented commands: the vault sync/push/pull/conflicts/resolve write-back workflow, the [vault] config block, and items file/fulltext/annotations and schema drift.",
+      "reason": "The product docs predated the hybrid write-routing and the entire vault feature, so they told users no key was ever needed and never mentioned vault. Generated-doc edits are cataloged per the local PATCH convention.",
+      "files": [
+        "SKILL.md",
+        "README.md"
+      ],
+      "validated_outcome": "Both docs build no code (markdown); content cross-checked against the implementation — pull described as fast-forward-only/conflict-on-both-changed, push as conflict-safe with _vault-zotero-conflicts/ artifacts, auth as reads-local/writes-need-key. skill/SKILL.md is a symlink to SKILL.md so it tracks automatically."
     }
   ]
 }

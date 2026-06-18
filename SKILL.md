@@ -29,7 +29,7 @@ If the `npx` install fails before this CLI has a public-library category, instal
 
 If `--version` reports "command not found" after install, the install step did not put the binary on `$PATH`. Do not proceed with skill commands until verification succeeds.
 
-This CLI connects directly to your running Zotero desktop app — no API key needed. It syncs your library to a local SQLite store for offline search and compound queries, then adds 18 features (reading queues, tag audits, annotation timelines, collection exports) that Zotero's UI and pyzotero can't do.
+This CLI connects directly to your running Zotero desktop app — reads need no API key. Writes (`items create/update/delete`, `vault push`/`vault pull`) require a Zotero Web API key, configured once via `auth set-token`. It syncs your library to a local SQLite store for offline search and compound queries, then adds 18 features (reading queues, tag audits, annotation timelines, collection exports) that Zotero's UI and pyzotero can't do.
 
 ## When to Use This CLI
 
@@ -153,6 +153,53 @@ These capabilities aren't available in any other tool for this API.
   zotero-pp-cli items citekey-conflicts --missing --json
   ```
 
+### Vault sync & write-back
+
+Round-trip your library to a Markdown vault (Obsidian or Logseq) and back. Run `sync` first so the local store is populated, then push your edits to Zotero and pull remote changes back.
+
+- **`vault sync`** — Export Zotero → Obsidian/Logseq Markdown notes, one file per item. Reads from the local store and is idempotent: it refreshes a managed frontmatter block and a fenced annotations block on each run while preserving your own prose, and renders human-readable `collection_names` alongside the collection keys. Resolves the output dir and format from the `[vault]` config block, so `--out` is optional.
+
+  _Use this to keep a PKM vault in sync with your Zotero library without clobbering your notes._
+
+  ```bash
+  zotero-pp-cli vault sync
+  ```
+- **`vault push`** — Write-back: Obsidian → Zotero. Mirrors each note's user-owned `## Notes` region into one managed Zotero child note. Conflict-safe — it never overwrites a remotely-diverged note; instead it writes a conflict artifact under `_vault-zotero-conflicts/` and reports it. Reads local, writes the Web API (key required).
+
+  _Use this to push reading notes you wrote in Obsidian back into Zotero. Pass `--dry-run` to preview._
+
+  ```bash
+  zotero-pp-cli vault push --dry-run
+  ```
+- **`vault pull`** — Bring remote child-note edits into the `## Notes` region, fast-forward only: it applies only when the local region is unchanged since the last sync. If both the local region and the remote note changed, it is reported as a conflict and never merged.
+
+  _Use this to fold edits made in the Zotero app back into your vault notes. Pass `--dry-run` to preview._
+
+  ```bash
+  zotero-pp-cli vault pull --dry-run
+  ```
+- **`vault conflicts`** — List unresolved write-back conflict artifacts.
+
+  ```bash
+  zotero-pp-cli vault conflicts
+  ```
+- **`vault resolve`** — Resolve a conflict by citekey or item key. `--keep-vault` republishes the vault copy over the remote (using the live version as a precondition); `--recreate` re-creates a child note that was deleted in Zotero.
+
+  ```bash
+  zotero-pp-cli vault resolve smith2024 --keep-vault
+  ```
+
+Configure the vault location and format once in `~/.config/zotero-pp-cli/config.toml`:
+
+```toml
+[vault]
+root = "~/Vaults/dev"   # ~ is expanded; base output dir
+notes_dir = "Zotero"     # notes land in <root>/<notes_dir>
+format = "obsidian"      # or "logseq"
+```
+
+The `--out` and `--format` flags override these values.
+
 ## Command Reference
 
 **collections** — Manage collections in your Zotero library
@@ -169,9 +216,12 @@ These capabilities aren't available in any other tool for this API.
 
 **items** — Manage items in your Zotero library
 
+- `zotero-pp-cli items annotations` — List annotation children of an item
 - `zotero-pp-cli items children` — Get child items (attachments and notes) for an item
 - `zotero-pp-cli items create` — Create one or more items
 - `zotero-pp-cli items delete` — Delete an item (moves to trash)
+- `zotero-pp-cli items file` — Resolve the on-disk path (file:// URL) of an item's PDF attachment
+- `zotero-pp-cli items fulltext` — Get extracted full text from an item's PDF attachment
 - `zotero-pp-cli items get` — Get a single item by key
 - `zotero-pp-cli items list` — List all items in the library
 - `zotero-pp-cli items tags` — Get tags for a specific item
@@ -182,6 +232,7 @@ These capabilities aren't available in any other tool for this API.
 **schema** — Zotero item type and field schema
 
 - `zotero-pp-cli schema creator-fields` — List all creator fields (firstName, lastName, name)
+- `zotero-pp-cli schema drift` — Detect item-type/field/creator-field changes vs a saved baseline (run after a Zotero upgrade)
 - `zotero-pp-cli schema item-fields` — List all available item fields
 - `zotero-pp-cli schema item-type-creator-types` — List valid creator types for an item type
 - `zotero-pp-cli schema item-type-fields` — List valid fields for a specific item type
@@ -197,6 +248,14 @@ These capabilities aren't available in any other tool for this API.
 
 - `zotero-pp-cli tags get` — Get a specific tag by name
 - `zotero-pp-cli tags list` — List all tags in the library
+
+**vault** — Sync your library to a Markdown vault and write notes back
+
+- `zotero-pp-cli vault conflicts` — List unresolved write-back conflicts
+- `zotero-pp-cli vault pull` — Pull remote child-note edits into the vault's `## Notes` region (fast-forward only)
+- `zotero-pp-cli vault push` — Write the vault's `## Notes` region back to Zotero child notes
+- `zotero-pp-cli vault resolve` — Resolve a write-back conflict (`--keep-vault` / `--recreate`)
+- `zotero-pp-cli vault sync` — Export Zotero items to Obsidian/Logseq Markdown notes
 
 
 ### Finding the right command
@@ -254,9 +313,17 @@ List the top 20 journals in your library with item counts — identify source di
 
 ## Auth Setup
 
-The CLI connects to your Zotero desktop app at `localhost:23119` — no API key required when Zotero is running. The `ZOTERO_API_KEY` env var is only needed for the web API at `api.zotero.org` (group libraries, or library access while the desktop app is closed).
+**Reads** use the local Zotero desktop API at `localhost:23119` — no API key required while Zotero is running. **Writes** (`items create/update/delete`, `vault push`, `vault pull`, `vault resolve`) require a Zotero Web API key. Configure it once:
 
-Run `zotero-pp-cli doctor` to verify setup.
+```bash
+zotero-pp-cli auth set-token <key>
+```
+
+(or set the `ZOTERO_API_KEY` env var). When the configured base is the local API, writes auto-route to the Web API at `api.zotero.org` while reads stay local; a one-time stderr notice names the write target on your first write.
+
+An API key is also needed to read **group libraries** or to read while the desktop app is **closed**.
+
+Run `zotero-pp-cli doctor` to verify setup — it reports a `writes:` line (e.g. "available (auto-routed to Web API; reads stay local)", or read-only guidance when no key is set).
 
 ## Agent Mode
 
