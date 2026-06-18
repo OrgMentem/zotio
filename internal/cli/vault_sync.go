@@ -10,22 +10,38 @@
 package cli
 
 import (
+	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/spf13/cobra"
 
+	"zotero-pp-cli/internal/config"
 	"zotero-pp-cli/internal/store"
 )
 
 const (
 	vaultAnnBegin = "<!-- zotero-pp-cli:annotations (auto-generated; edits here are overwritten on sync) -->"
 	vaultAnnEnd   = "<!-- /zotero-pp-cli:annotations -->"
+
+	// PATCH(glean 15e0): managed-content fences (title/abstract) are swapped
+	// wholesale each sync; the notes fence delimits the user-owned region that
+	// commit 3 will push to a Zotero child note. Markers are matched as whole
+	// trimmed lines; keep them stable — they are persisted inside user files.
+	vaultTitleBegin    = "<!-- zotero-pp-cli:title -->"
+	vaultTitleEnd      = "<!-- /zotero-pp-cli:title -->"
+	vaultAbstractBegin = "<!-- zotero-pp-cli:abstract -->"
+	vaultAbstractEnd   = "<!-- /zotero-pp-cli:abstract -->"
+	vaultNotesBegin    = "<!-- zotero-pp-cli:notes-begin -->"
+	vaultNotesEnd      = "<!-- zotero-pp-cli:notes-end -->"
 )
 
 // vaultMeta is the per-item data rendered into a note.
@@ -40,6 +56,7 @@ type vaultMeta struct {
 	URL         string
 	Abstract    string
 	Collections []string
+	Library     string // API library segment, e.g. "users/5847066" or "groups/123"
 }
 
 // fmEntry is one frontmatter key and its rendered line(s).
@@ -52,7 +69,8 @@ type vaultSyncResult struct {
 	Key     string `json:"key"`
 	CiteKey string `json:"citekey,omitempty"`
 	File    string `json:"file"`
-	Status  string `json:"status"` // created | updated | unchanged | skipped
+	Status  string `json:"status"` // created | updated | unchanged | file_busy | needs_notes_boundary
+	Note    string `json:"note,omitempty"`
 }
 
 func newVaultCmd(flags *rootFlags) *cobra.Command {
@@ -129,11 +147,13 @@ are preserved. Use --dry-run to preview create/update/unchanged without writing.
 			// instead of inside the per-note loop.
 			metas := make([]vaultMeta, 0, len(items))
 			keys := make([]string, 0, len(items))
+			libraryID := vaultLibraryID(flags)
 			for _, raw := range items {
 				meta := vaultItemMeta(raw)
 				if !isRegularLiteratureItem(meta.ItemType) {
 					continue
 				}
+				meta.Library = libraryID
 				metas = append(metas, meta)
 				keys = append(keys, meta.Key)
 			}
@@ -149,10 +169,17 @@ are preserved. Use --dry-run to preview create/update/unchanged without writing.
 				}
 			}
 
+			// PATCH(glean 15e0): index existing managed notes by Zotero key so a
+			// re-sync updates the same file even when the citation key (and thus
+			// the default filename) changed, and new notes avoid colliding with an
+			// existing managed or foreign file.
+			idx := scanVaultIndex(flagOut)
+			claimed := make(map[string]bool, len(metas))
 			results := make([]vaultSyncResult, 0, len(metas))
 			for _, meta := range metas {
 				anns := annotationSummariesSorted(annByKey[meta.Key])
-				res, werr := syncVaultNote(meta, anns, format, flagOut, flags.dryRun)
+				filename := resolveNoteFilename(meta, flagOut, idx, claimed)
+				res, werr := syncVaultNote(meta, anns, format, flagOut, filename, flags.dryRun)
 				if werr != nil {
 					return werr
 				}
@@ -174,36 +201,331 @@ are preserved. Use --dry-run to preview create/update/unchanged without writing.
 }
 
 // syncVaultNote writes (or previews) a single item's note and reports the
-// resulting status.
-func syncVaultNote(meta vaultMeta, anns []annotationSummary, format, outDir string, dryRun bool) (vaultSyncResult, error) {
+// resulting status. PATCH(glean 15e0): a genuine read error is no longer
+// swallowed (the old `existing, _ := os.ReadFile` treated a permission/IO
+// failure as a fresh create and would truncate the file); writes go through an
+// atomic temp-file + rename that refuses to clobber a concurrent Obsidian/iCloud
+// edit, re-merging once before reporting file_busy.
+func syncVaultNote(meta vaultMeta, anns []annotationSummary, format, outDir, filename string, dryRun bool) (vaultSyncResult, error) {
 	annBlock := renderAnnotationBlock(anns)
-	filename := vaultFilename(meta)
 	path := filepath.Join(outDir, filename)
 
-	existing, _ := os.ReadFile(path)
-	var content string
-	if len(existing) == 0 {
-		content = renderVaultNote(meta, annBlock, format)
-	} else {
-		content = mergeVaultNote(string(existing), meta, annBlock, format)
+	existing, readErr := readVaultFile(path)
+	if readErr != nil {
+		return vaultSyncResult{Key: meta.Key, CiteKey: meta.CiteKey, File: filename, Status: "error", Note: readErr.Error()}, nil
 	}
 
-	status := "created"
-	if len(existing) > 0 {
-		if content == string(existing) {
-			status = "unchanged"
-		} else {
-			status = "updated"
-		}
+	content, boundary := buildVaultNote(existing, meta, annBlock, format)
+	result := vaultSyncResult{Key: meta.Key, CiteKey: meta.CiteKey, File: filename, Status: noteStatus(existing, content)}
+	if boundary {
+		result.Note = "needs_notes_boundary: add a single '## Notes' heading or notes markers to enable note sync"
 	}
 
-	if !dryRun && status != "unchanged" {
-		if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+	if dryRun || result.Status == "unchanged" {
+		return result, nil
+	}
+
+	if err := atomicReplace(path, existing, []byte(content)); err != nil {
+		if !errors.Is(err, errVaultFileBusy) {
 			return vaultSyncResult{}, fmt.Errorf("writing %s: %w", path, err)
 		}
+		// The file changed under us (Obsidian/iCloud). Re-read, re-merge once.
+		existing2, rErr := readVaultFile(path)
+		if rErr == nil {
+			content2, boundary2 := buildVaultNote(existing2, meta, annBlock, format)
+			if err2 := atomicReplace(path, existing2, []byte(content2)); err2 == nil {
+				result.Status = noteStatus(existing2, content2)
+				if boundary2 {
+					result.Note = "needs_notes_boundary: add a single '## Notes' heading or notes markers to enable note sync"
+				}
+				return result, nil
+			}
+		}
+		result.Status = "file_busy"
+		result.Note = "file changed during sync; left unmodified"
 	}
+	return result, nil
+}
 
-	return vaultSyncResult{Key: meta.Key, CiteKey: meta.CiteKey, File: filename, Status: status}, nil
+// noteStatus classifies the outcome of (re)building a note's content.
+func noteStatus(existing []byte, content string) string {
+	if len(existing) == 0 {
+		return "created"
+	}
+	if content == string(existing) {
+		return "unchanged"
+	}
+	return "updated"
+}
+
+// buildVaultNote renders a fresh note (no existing file) or merges managed
+// regions into an existing one, returning the content and whether the user notes
+// region could not be unambiguously established (needs_notes_boundary).
+func buildVaultNote(existing []byte, meta vaultMeta, annBlock, format string) (string, bool) {
+	if len(existing) == 0 {
+		return renderVaultNote(meta, annBlock, format), false
+	}
+	return mergeVaultNote(string(existing), meta, annBlock, format)
+}
+
+// readVaultFile returns nil,nil when the file does not exist, and a real error
+// for any other failure (permission, IO, a directory at the path). PATCH(glean 15e0).
+func readVaultFile(path string) ([]byte, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return data, nil
+}
+
+var errVaultFileBusy = errors.New("vault file changed during sync")
+
+// atomicReplace writes newContent via a temp file + rename, but only when the
+// file's current bytes still equal expected (compare-before-replace). This keeps
+// a concurrent Obsidian/iCloud write from being silently clobbered. PATCH(glean 15e0).
+func atomicReplace(path string, expected, newContent []byte) error {
+	cur, err := readVaultFile(path)
+	if err != nil {
+		return err
+	}
+	if !bytes.Equal(cur, expected) {
+		return errVaultFileBusy
+	}
+	mode := os.FileMode(0o644)
+	if fi, statErr := os.Stat(path); statErr == nil {
+		mode = fi.Mode().Perm()
+	}
+	tmp, err := os.CreateTemp(filepath.Dir(path), ".zpp-*.tmp")
+	if err != nil {
+		return err
+	}
+	tmpName := tmp.Name()
+	defer os.Remove(tmpName)
+	if _, err := tmp.Write(newContent); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Sync(); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	if err := os.Chmod(tmpName, mode); err != nil {
+		return err
+	}
+	return os.Rename(tmpName, path)
+}
+
+// vaultIndex maps a Zotero item key to the basename of its existing managed
+// note (and the reverse) so re-syncs update the same file and new notes avoid
+// collisions. PATCH(glean 15e0).
+type vaultIndex struct {
+	byKey  map[string]string
+	byFile map[string]string
+}
+
+func scanVaultIndex(outDir string) vaultIndex {
+	idx := vaultIndex{byKey: map[string]string{}, byFile: map[string]string{}}
+	entries, err := os.ReadDir(outDir)
+	if err != nil {
+		return idx
+	}
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".md") {
+			continue
+		}
+		data, err := os.ReadFile(filepath.Join(outDir, e.Name()))
+		if err != nil {
+			continue
+		}
+		// PATCH(glean 15e0): prefer the explicit identity key, but fall back to the
+		// item key embedded in the zotero:// select link so notes created before
+		// zotero_key existed are still recognized as managed (updated in place,
+		// gaining zotero_key) instead of being duplicated as a "foreign" file.
+		key := frontmatterKeyValue(string(data), "zotero_key")
+		if key == "" {
+			key = keyFromZoteroSelect(frontmatterKeyValue(string(data), "zotero"))
+		}
+		if key == "" {
+			continue
+		}
+		idx.byFile[e.Name()] = key
+		if _, dup := idx.byKey[key]; !dup {
+			idx.byKey[key] = e.Name() // ReadDir is sorted: first file wins, deterministically
+		}
+	}
+	return idx
+}
+
+// frontmatterKeyValue returns the unquoted value of a top-level frontmatter key.
+func frontmatterKeyValue(content, key string) string {
+	fmLines, _, has := splitObsidianFrontmatter(content)
+	if !has {
+		return ""
+	}
+	prefix := key + ":"
+	for _, ln := range fmLines {
+		if strings.HasPrefix(ln, prefix) {
+			return strings.Trim(strings.TrimSpace(ln[len(prefix):]), `"'`)
+		}
+	}
+	return ""
+}
+
+// keyFromZoteroSelect extracts the item key from a zotero://select/.../items/<KEY>
+// link (ignoring any trailing query/fragment), or "" when absent.
+func keyFromZoteroSelect(link string) string {
+	const marker = "/items/"
+	i := strings.LastIndex(link, marker)
+	if i < 0 {
+		return ""
+	}
+	key := link[i+len(marker):]
+	if j := strings.IndexAny(key, "?#/\"' "); j >= 0 {
+		key = key[:j]
+	}
+	return key
+}
+
+// resolveNoteFilename picks the target filename for an item: the existing
+// managed note for its key when present, otherwise the citation-key filename,
+// disambiguated when that name is taken by a different item or a foreign file.
+func resolveNoteFilename(meta vaultMeta, outDir string, idx vaultIndex, claimed map[string]bool) string {
+	if fn, ok := idx.byKey[meta.Key]; ok {
+		claimed[fn] = true
+		return fn
+	}
+	fn := vaultFilename(meta)
+	if filenameTaken(fn, meta.Key, outDir, idx, claimed) {
+		fn = sanitizeVaultFilename(strings.TrimSuffix(fn, ".md")+"--"+meta.Key) + ".md"
+	}
+	claimed[fn] = true
+	return fn
+}
+
+func filenameTaken(fn, key, outDir string, idx vaultIndex, claimed map[string]bool) bool {
+	if claimed[fn] {
+		return true
+	}
+	if owner, ok := idx.byFile[fn]; ok {
+		return owner != key
+	}
+	if _, err := os.Stat(filepath.Join(outDir, fn)); err == nil {
+		return true // an unmanaged/foreign file already holds this name
+	}
+	return false
+}
+
+// vaultLibraryID returns the API library segment for identity frontmatter
+// ("groups/<id>" or "users/<id>"), resolved locally with no network call. Empty
+// when the personal user ID has not been cached yet.
+func vaultLibraryID(flags *rootFlags) string {
+	if activeGroupID != "" {
+		return "groups/" + activeGroupID
+	}
+	if cfg, err := config.Load(flags.configPath); err == nil && cfg.UserID != "" {
+		return "users/" + cfg.UserID
+	}
+	return ""
+}
+
+// --- managed/user content blocks ---
+
+func managedTitleBlock(meta vaultMeta) string {
+	title := meta.Title
+	if title == "" {
+		title = meta.CiteKey
+	}
+	return vaultTitleBegin + "\n# " + title + "\n" + vaultTitleEnd
+}
+
+func managedAbstractBlock(meta vaultMeta) string {
+	abstract := meta.Abstract
+	if abstract == "" {
+		abstract = "(no abstract)"
+	}
+	var b strings.Builder
+	b.WriteString(vaultAbstractBegin)
+	b.WriteString("\n> [!abstract]\n")
+	for _, ln := range strings.Split(abstract, "\n") {
+		b.WriteString("> " + ln + "\n")
+	}
+	b.WriteString(vaultAbstractEnd)
+	return b.String()
+}
+
+func emptyNotesRegion() string {
+	return vaultNotesBegin + "\n\n" + vaultNotesEnd
+}
+
+// replaceFencedIfPresent swaps the content between begin..end markers for
+// replacement, returning whether the fence was found. Unlike replaceManagedBlock
+// it never injects a missing fence — legacy notes that predate a managed fence
+// are left untouched rather than retrofitted.
+func replaceFencedIfPresent(body, begin, end, replacement string) (string, bool) {
+	start := strings.Index(body, begin)
+	if start < 0 {
+		return body, false
+	}
+	rel := strings.Index(body[start:], end)
+	if rel < 0 {
+		return body, false
+	}
+	endAbs := start + rel + len(end)
+	return body[:start] + replacement + body[endAbs:], true
+}
+
+func wholeLineCount(s, marker string) int {
+	n := 0
+	for _, ln := range strings.Split(s, "\n") {
+		if strings.TrimSpace(ln) == marker {
+			n++
+		}
+	}
+	return n
+}
+
+// ensureNotesRegion guarantees a single, well-formed user notes region. A
+// well-formed existing region is left exactly as the user wrote it. A legacy
+// note is migrated only when it has exactly one unambiguous "## Notes" heading;
+// anything ambiguous (duplicate/partial markers, zero or multiple headings) is
+// left untouched and reported via the boolean (needs_notes_boundary).
+func ensureNotesRegion(body string) (string, bool) {
+	begin := wholeLineCount(body, vaultNotesBegin)
+	end := wholeLineCount(body, vaultNotesEnd)
+	if begin == 1 && end == 1 {
+		if strings.Index(body, vaultNotesBegin) < strings.Index(body, vaultNotesEnd) {
+			return body, false
+		}
+		return body, true
+	}
+	if begin != 0 || end != 0 {
+		return body, true
+	}
+	lines := strings.Split(body, "\n")
+	notesAt, count := -1, 0
+	for i, ln := range lines {
+		if strings.TrimSpace(ln) == "## Notes" {
+			count++
+			notesAt = i
+		}
+	}
+	if count != 1 {
+		return body, true
+	}
+	head := lines[:notesAt+1]
+	inner := strings.Trim(strings.Join(lines[notesAt+1:], "\n"), "\n")
+	region := []string{vaultNotesBegin}
+	if inner != "" {
+		region = append(region, inner)
+	}
+	region = append(region, vaultNotesEnd)
+	return strings.Join(append(head, region...), "\n") + "\n", false
 }
 
 // --- metadata extraction ---
@@ -372,7 +694,7 @@ func renderAnnotationLine(a annotationSummary) string {
 // --- managed frontmatter ---
 
 func managedObsidianFrontmatter(meta vaultMeta) []fmEntry {
-	return []fmEntry{
+	entries := []fmEntry{
 		{"title", []string{"title: " + yamlScalar(meta.Title)}},
 		{"authors", obsidianAuthorsEntry(meta.Authors)},
 		{"year", []string{"year: " + meta.Year}},
@@ -380,13 +702,21 @@ func managedObsidianFrontmatter(meta vaultMeta) []fmEntry {
 		{"DOI", []string{"DOI: " + meta.DOI}},
 		{"url", []string{"url: " + yamlScalar(meta.URL)}},
 		{"citekey", []string{"citekey: " + meta.CiteKey}},
+		{"zotero_key", []string{"zotero_key: " + meta.Key}},
 		{"zotero", []string{"zotero: " + yamlScalar(zoteroSelectLink(meta.Key))}},
 		{"collections", obsidianListEntry("collections", meta.Collections)},
 	}
+	// PATCH(glean 15e0): zotero_key is the stable identity for re-sync lookup;
+	// zotero_library scopes it and is the write target for commit 3. Library is
+	// omitted when the personal user ID has not been cached yet.
+	if meta.Library != "" {
+		entries = append(entries, fmEntry{"zotero_library", []string{"zotero_library: " + yamlScalar(meta.Library)}})
+	}
+	return entries
 }
 
 func managedLogseqProps(meta vaultMeta) []fmEntry {
-	return []fmEntry{
+	props := []fmEntry{
 		{"title", []string{"title:: " + meta.Title}},
 		{"authors", []string{"authors:: " + strings.Join(wikilinkAuthors(meta.Authors), ", ")}},
 		{"year", []string{"year:: " + meta.Year}},
@@ -394,8 +724,13 @@ func managedLogseqProps(meta vaultMeta) []fmEntry {
 		{"doi", []string{"doi:: " + meta.DOI}},
 		{"url", []string{"url:: " + meta.URL}},
 		{"citekey", []string{"citekey:: " + meta.CiteKey}},
+		{"zotero-key", []string{"zotero-key:: " + meta.Key}},
 		{"zotero", []string{"zotero:: " + zoteroSelectLink(meta.Key)}},
 	}
+	if meta.Library != "" {
+		props = append(props, fmEntry{"zotero-library", []string{"zotero-library:: " + meta.Library}})
+	}
+	return props
 }
 
 func obsidianAuthorsEntry(authors []string) []string {
@@ -415,7 +750,7 @@ func obsidianListEntry(key string, vals []string) []string {
 	}
 	lines := []string{key + ":"}
 	for _, v := range vals {
-		lines = append(lines, "  - "+v)
+		lines = append(lines, "  - "+yamlScalar(v))
 	}
 	return lines
 }
@@ -452,22 +787,14 @@ func renderObsidianNote(meta vaultMeta, annBlock string) string {
 		}
 	}
 	b.WriteString("---\n\n")
-	title := meta.Title
-	if title == "" {
-		title = meta.CiteKey
-	}
-	b.WriteString("# " + title + "\n\n")
-	abstract := meta.Abstract
-	if abstract == "" {
-		abstract = "(no abstract)"
-	}
-	b.WriteString("> [!abstract]\n")
-	for _, ln := range strings.Split(abstract, "\n") {
-		b.WriteString("> " + ln + "\n")
-	}
-	b.WriteString("\n## Annotations\n\n")
+	b.WriteString(managedTitleBlock(meta))
+	b.WriteString("\n\n")
+	b.WriteString(managedAbstractBlock(meta))
+	b.WriteString("\n\n## Annotations\n\n")
 	b.WriteString(annBlock)
 	b.WriteString("\n\n## Notes\n")
+	b.WriteString(emptyNotesRegion())
+	b.WriteString("\n")
 	return b.String()
 }
 
@@ -482,19 +809,21 @@ func renderLogseqNote(meta vaultMeta, annBlock string) string {
 	b.WriteString("\n## Annotations\n")
 	b.WriteString(annBlock)
 	b.WriteString("\n\n## Notes\n")
+	b.WriteString(emptyNotesRegion())
+	b.WriteString("\n")
 	return b.String()
 }
 
 // --- idempotent merge (existing files) ---
 
-func mergeVaultNote(existing string, meta vaultMeta, annBlock, format string) string {
+func mergeVaultNote(existing string, meta vaultMeta, annBlock, format string) (string, bool) {
 	if format == "logseq" {
 		return mergeLogseqNote(existing, managedLogseqProps(meta), annBlock)
 	}
-	return mergeObsidianNote(existing, managedObsidianFrontmatter(meta), annBlock)
+	return mergeObsidianNote(existing, meta, managedObsidianFrontmatter(meta), annBlock)
 }
 
-func mergeObsidianNote(existing string, managed []fmEntry, annBlock string) string {
+func mergeObsidianNote(existing string, meta vaultMeta, managed []fmEntry, annBlock string) (string, bool) {
 	fmLines, body, has := splitObsidianFrontmatter(existing)
 	var entries []fmEntry
 	if has {
@@ -503,6 +832,15 @@ func mergeObsidianNote(existing string, managed []fmEntry, annBlock string) stri
 		body = existing
 	}
 	merged := mergeFrontmatterEntries(entries, managed)
+
+	// Swap managed-content fences in place when present; legacy notes that
+	// predate these fences are left untouched (no retrofit). Establish the user
+	// notes region before the annotation swap so an append (foreign note with no
+	// annotation fence) lands after the region, never inside it. PATCH(glean 15e0).
+	body, _ = replaceFencedIfPresent(body, vaultTitleBegin, vaultTitleEnd, managedTitleBlock(meta))
+	body, _ = replaceFencedIfPresent(body, vaultAbstractBegin, vaultAbstractEnd, managedAbstractBlock(meta))
+	body, boundary := ensureNotesRegion(body)
+	body = replaceManagedBlock(body, annBlock)
 
 	var b strings.Builder
 	b.WriteString("---\n")
@@ -513,11 +851,11 @@ func mergeObsidianNote(existing string, managed []fmEntry, annBlock string) stri
 		}
 	}
 	b.WriteString("---\n\n")
-	b.WriteString(strings.TrimLeft(replaceManagedBlock(body, annBlock), "\n"))
-	return b.String()
+	b.WriteString(strings.TrimLeft(body, "\n"))
+	return b.String(), boundary
 }
 
-func mergeLogseqNote(existing string, managed []fmEntry, annBlock string) string {
+func mergeLogseqNote(existing string, managed []fmEntry, annBlock string) (string, bool) {
 	lines := strings.Split(existing, "\n")
 	managedByKey := make(map[string]fmEntry, len(managed))
 	order := make([]string, 0, len(managed))
@@ -548,8 +886,9 @@ func mergeLogseqNote(existing string, managed []fmEntry, annBlock string) string
 		}
 	}
 	body := strings.Join(lines[i:], "\n")
+	body, boundary := ensureNotesRegion(body)
 	body = replaceManagedBlock(body, annBlock)
-	return strings.Join(out, "\n") + "\n" + body
+	return strings.Join(out, "\n") + "\n" + body, boundary
 }
 
 // replaceManagedBlock swaps the fenced annotations block for annBlock, or
@@ -679,7 +1018,15 @@ func sanitizeVaultFilename(s string) string {
 	}, s)
 	mapped = strings.Trim(mapped, " .-")
 	if len(mapped) > 120 {
-		mapped = strings.Trim(mapped[:120], " .-")
+		// PATCH(glean 15e0): truncate on a UTF-8 rune boundary, not a byte
+		// boundary — mapped[:120] could split a multibyte rune and yield an
+		// invalid filename for non-ASCII citation keys.
+		b := []byte(mapped)
+		i := 120
+		for i > 0 && !utf8.RuneStart(b[i]) {
+			i--
+		}
+		mapped = strings.Trim(string(b[:i]), " .-")
 	}
 	if mapped == "" {
 		return "untitled"
@@ -688,7 +1035,7 @@ func sanitizeVaultFilename(s string) string {
 }
 
 func printVaultSyncReport(cmd *cobra.Command, results []vaultSyncResult, outDir, format string, flags *rootFlags) error {
-	var created, updated, unchanged int
+	var created, updated, unchanged, issues int
 	for _, r := range results {
 		switch r.Status {
 		case "created":
@@ -697,6 +1044,8 @@ func printVaultSyncReport(cmd *cobra.Command, results []vaultSyncResult, outDir,
 			updated++
 		case "unchanged":
 			unchanged++
+		default:
+			issues++ // file_busy, error
 		}
 	}
 
@@ -708,6 +1057,7 @@ func printVaultSyncReport(cmd *cobra.Command, results []vaultSyncResult, outDir,
 			"created":   created,
 			"updated":   updated,
 			"unchanged": unchanged,
+			"issues":    issues,
 			"results":   results,
 		}
 		data, err := json.Marshal(report)
@@ -722,13 +1072,21 @@ func printVaultSyncReport(cmd *cobra.Command, results []vaultSyncResult, outDir,
 	if flags.dryRun {
 		verb = "Would sync"
 	}
-	fmt.Fprintf(out, "%s %d note(s) to %s [%s]: %d created, %d updated, %d unchanged\n",
+	summary := fmt.Sprintf("%s %d note(s) to %s [%s]: %d created, %d updated, %d unchanged",
 		verb, len(results), outDir, format, created, updated, unchanged)
+	if issues > 0 {
+		summary += fmt.Sprintf(", %d issue(s)", issues)
+	}
+	fmt.Fprintln(out, summary)
 	for _, r := range results {
-		if r.Status == "unchanged" {
+		if r.Status == "unchanged" && r.Note == "" {
 			continue
 		}
-		fmt.Fprintf(out, "  [%s] %s\n", r.Status, r.File)
+		line := fmt.Sprintf("  [%s] %s", r.Status, r.File)
+		if r.Note != "" {
+			line += " — " + r.Note
+		}
+		fmt.Fprintln(out, line)
 	}
 	return nil
 }

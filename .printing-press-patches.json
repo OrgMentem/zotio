@@ -425,6 +425,17 @@
         "internal/cli/helpers_gaps_test.go"
       ],
       "validated_outcome": "Orphaned packages deleted; agent-context discovery now lists which-index candidate commands; all former store.Open test call sites use OpenWithContext(context.Background(), ...); gofmt/build/vet and full go test ./... pass (fresh, -count=1)."
+    },
+    {
+      "id": "zotero-vault-format-safety",
+      "summary": "Commit 1 of glean 15e0 (vault write-back foundation): format/safety hardening for 'vault sync' with no Zotero writes. Distinguishes real read errors from missing files and writes notes atomically (temp file + rename, compare-before-replace) so a concurrent Obsidian/iCloud edit is never clobbered; rune-safe filename truncation; quotes managed YAML list scalars; adds zotero_key/zotero_library identity frontmatter and looks notes up by key (recognizing pre-key notes via the embedded zotero:// link) so a citekey change updates in place instead of duplicating; disambiguates filename collisions against foreign files; wraps the user '## Notes' region in stable begin/end markers (migrating a single legacy heading, reporting needs_notes_boundary when ambiguous); adds managed title/abstract fences on new notes so they refresh on re-sync.",
+      "reason": "glean 15e0 needs a safe, stable note format with durable per-item identity and a precise user-owned region before Obsidian->Zotero note write-back can land. Also corrects latent bugs: a swallowed os.ReadFile error could truncate a note, byte-boundary truncation could corrupt non-ASCII filenames, and unquoted collection scalars could break YAML frontmatter.",
+      "files": [
+        "internal/cli/vault_sync.go",
+        "internal/cli/vault_sync_test.go",
+        "internal/cli/vault_sync_format_test.go"
+      ],
+      "validated_outcome": "gofmt/build/vet clean; full go test ./... -count=1 passes (20 vault tests incl. byte-identical idempotency, stable lookup by key, collision disambiguation, legacy migration, needs_notes_boundary, atomic compare-before-replace, read-error handling, rune-safe filenames). Live smoke vs Zotero: a pre-commit-1 dev-vault note was recognized via its zotero:// link and migrated in place (gained zotero_key/zotero_library + notes markers, user prose preserved); re-sync reports unchanged (idempotent); fresh notes render the new fenced layout."
     }
   ]
 }

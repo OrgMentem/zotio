@@ -157,7 +157,7 @@ func TestMergeObsidianPreservesUserContent(t *testing.T) {
 	annBlock := renderAnnotationBlock([]annotationSummary{
 		{Key: "AN1", ParentItem: "ATT1", Text: "hl", Comment: "c", Page: "3"},
 	})
-	merged := mergeObsidianNote(existing, managedObsidianFrontmatter(meta), annBlock)
+	merged, _ := mergeObsidianNote(existing, meta, managedObsidianFrontmatter(meta), annBlock)
 
 	// Managed keys updated.
 	if !strings.Contains(merged, "title: New Title") || !strings.Contains(merged, "citekey: vaswani2017") {
@@ -187,7 +187,8 @@ func TestMergeObsidianReplacesExistingBlock(t *testing.T) {
 		"", "## Notes", "kept",
 	}, "\n")
 	annBlock := renderAnnotationBlock([]annotationSummary{{Key: "A2", ParentItem: "P2", Text: "fresh", Page: "9"}})
-	merged := mergeObsidianNote(existing, managedObsidianFrontmatter(vaultMeta{Key: "K", Title: "T"}), annBlock)
+	m := vaultMeta{Key: "K", Title: "T"}
+	merged, _ := mergeObsidianNote(existing, m, managedObsidianFrontmatter(m), annBlock)
 	if strings.Contains(merged, "stale annotation") {
 		t.Errorf("stale annotation not replaced:\n%s", merged)
 	}
