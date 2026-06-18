@@ -267,7 +267,7 @@ func patchWithConflict(c *client.Client, outDir string, n *pushNote, srcHash, de
 		if werr != nil {
 			res.Note = "remote note diverged; failed to write conflict artifact: " + werr.Error()
 		} else {
-			res.Note = "remote note diverged; see " + filepath.Base(artifact) + "; resolve with 'vault resolve " + n.citekey + " --keep-vault'"
+			res.Note = "remote note diverged; see " + filepath.Base(artifact) + "; resolve with 'vault resolve " + n.citekey + " --keep-vault' or '--keep-remote'"
 		}
 		return res
 	}
@@ -343,25 +343,41 @@ func newVaultConflictsCmd(flags *rootFlags) *cobra.Command {
 
 func newVaultResolveCmd(flags *rootFlags) *cobra.Command {
 	var (
-		flagOut       string
-		flagKeepVault bool
-		flagRecreate  bool
+		flagOut        string
+		flagKeepVault  bool
+		flagKeepRemote bool
+		flagRecreate   bool
 	)
 	cmd := &cobra.Command{
-		Use:   "resolve <citekey-or-item-key> --keep-vault [--out <dir>]",
-		Short: "Resolve a note write-back conflict by republishing the vault copy",
-		Long: `Resolve a conflict (or a remotely-deleted note) by writing the vault's Notes
-region over the Zotero child note, using the live remote version as the
-precondition. --keep-vault is required so the destructive direction is explicit.
---recreate re-creates a child note that was deleted in Zotero.`,
-		Example:     "  zotero-pp-cli vault resolve smith2024 --keep-vault",
+		Use:   "resolve <citekey-or-item-key> (--keep-vault | --keep-remote) [--out <dir>]",
+		Short: "Resolve a note write-back conflict by keeping the vault or the remote copy",
+		Long: `Resolve a conflict (or a remotely-deleted note) by choosing a direction:
+
+--keep-vault writes the vault's Notes region over the Zotero child note, using
+the live remote version as the precondition. --recreate re-creates a child note
+that was deleted in Zotero.
+
+--keep-remote does the reverse: it pulls the live Zotero note body over the
+vault Notes region, discarding local edits (a forced 'vault pull'). Only notes
+in the shape this CLI writes are pulled.
+
+Exactly one direction is required so the destructive side is explicit; the
+resolved conflict artifact is removed on success.`,
+		Example: `  zotero-pp-cli vault resolve smith2024 --keep-vault
+  zotero-pp-cli vault resolve smith2024 --keep-remote`,
 		Annotations: map[string]string{"mcp:read-only": "false"},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if len(args) == 0 {
 				return cmd.Help()
 			}
-			if !flagKeepVault && !flagRecreate {
-				return fmt.Errorf("refusing to resolve without a direction: pass --keep-vault (or --recreate)")
+			if flagKeepVault && flagKeepRemote {
+				return fmt.Errorf("--keep-vault and --keep-remote are opposite directions; pass only one")
+			}
+			if flagKeepRemote && flagRecreate {
+				return fmt.Errorf("--recreate re-creates the remote note from the vault copy; not valid with --keep-remote")
+			}
+			if !flagKeepVault && !flagKeepRemote && !flagRecreate {
+				return fmt.Errorf("refusing to resolve without a direction: pass --keep-vault, --keep-remote (or --recreate)")
 			}
 			outDir, err := resolveVaultOutDir(flags, flagOut)
 			if err != nil {
@@ -391,6 +407,27 @@ precondition. --keep-vault is required so the destructive direction is explicit.
 				return err
 			}
 			c.DryRun = false
+
+			// PATCH(glean inscribi-15e0): --keep-remote — pull the remote note over
+			// the vault Notes region (discards local edits), the mirror of
+			// --keep-vault. Reads remote + writes locally; never writes to Zotero.
+			if flagKeepRemote {
+				if n.state.NoteKey == "" {
+					return fmt.Errorf("note %s has no Zotero child note to keep (nothing pushed yet)", n.citekey)
+				}
+				liveVer, liveHTML, gerr := getNote(c, n.state.NoteKey)
+				if gerr != nil {
+					if apiStatus(gerr) == 404 {
+						return fmt.Errorf("remote note %s was deleted; nothing to keep (use --keep-vault --recreate to re-create it)", n.state.NoteKey)
+					}
+					return classifyAPIError(gerr, flags)
+				}
+				if rerr := keepRemoteResolve(outDir, n, liveVer, liveHTML); rerr != nil {
+					return rerr
+				}
+				fmt.Fprintf(cmd.OutOrStdout(), "Resolved %s: remote note %s pulled into vault (local Notes changes discarded)\n", n.citekey, n.state.NoteKey)
+				return nil
+			}
 
 			region := strings.TrimSpace(n.region)
 			srcHash := sha256hex(region)
@@ -428,8 +465,35 @@ precondition. --keep-vault is required so the destructive direction is explicit.
 	}
 	cmd.Flags().StringVar(&flagOut, "out", "", "Vault directory (overrides [vault].root + notes_dir from config)")
 	cmd.Flags().BoolVar(&flagKeepVault, "keep-vault", false, "Write the vault copy over the Zotero note (required direction)")
+	cmd.Flags().BoolVar(&flagKeepRemote, "keep-remote", false, "Pull the Zotero note over the vault Notes region (discards local edits)")
 	cmd.Flags().BoolVar(&flagRecreate, "recreate", false, "Re-create a child note deleted in Zotero")
 	return cmd
+}
+
+// keepRemoteResolve pulls the live remote note body over the vault Notes region,
+// discarding local edits, refreshes the per-note baseline, and clears the
+// conflict artifact. It is the symmetric counterpart of --keep-vault: a forced
+// `vault pull` the user invokes when the remote copy should win. Foreign
+// (non-managed) HTML is refused so an arbitrary Zotero note is never imported.
+// PATCH(glean inscribi-15e0): --keep-remote conflict recovery.
+func keepRemoteResolve(outDir string, n *pushNote, liveVer int, liveHTML string) error {
+	if !isManagedNoteHTML(liveHTML) {
+		return fmt.Errorf("remote note %s is not in the managed shape; refusing to import foreign HTML — resolve by hand", n.state.NoteKey)
+	}
+	newRegion := htmlNoteToMarkdown(liveHTML)
+	st := pushState{
+		Schema:      noteStateSchema,
+		NoteKey:     n.state.NoteKey,
+		NoteVersion: liveVer,
+		SourceHash:  sha256hex(strings.TrimSpace(newRegion)),
+		RemoteHash:  sha256hex(liveHTML),
+		Renderer:    vaultRenderer,
+	}
+	if err := applyPulledRegion(n.path, newRegion, st); err != nil {
+		return err
+	}
+	removeConflictArtifacts(outDir, n)
+	return nil
 }
 
 // --- enumeration + parsing ---
@@ -552,8 +616,10 @@ func writeConflictArtifact(outDir string, n *pushNote, liveVer int, liveHTML str
 	b.WriteString("- Vault note: [[" + strings.TrimSuffix(filepath.Base(n.path), ".md") + "]]\n")
 	b.WriteString("- Zotero note: " + zoteroSelectLink(n.state.NoteKey) + "\n")
 	b.WriteString("- Baseline version: " + strconv.Itoa(n.state.NoteVersion) + " · live version: " + strconv.Itoa(liveVer) + "\n\n")
-	b.WriteString("Resolve (keep the vault copy):\n\n")
+	b.WriteString("Resolve — keep the vault copy (writes to Zotero):\n\n")
 	b.WriteString("```sh\nzotero-pp-cli vault resolve " + n.citekey + " --keep-vault\n```\n\n")
+	b.WriteString("…or keep the remote copy (overwrites the vault Notes region):\n\n")
+	b.WriteString("```sh\nzotero-pp-cli vault resolve " + n.citekey + " --keep-remote\n```\n\n")
 	b.WriteString("## Local Notes (vault)\n\n")
 	b.WriteString(n.region + "\n\n")
 	b.WriteString("## Remote note (Zotero, HTML)\n\n")

@@ -101,7 +101,7 @@ func pullOne(c *client.Client, outDir string, n *pushNote, flags *rootFlags) pus
 		if werr != nil {
 			res.Note = "local and remote both changed; failed to write conflict artifact: " + werr.Error()
 		} else {
-			res.Note = "local and remote both changed; see " + filepath.Base(artifact) + " (keep vault: 'vault resolve " + n.citekey + " --keep-vault'; keep remote: copy from the artifact)"
+			res.Note = "local and remote both changed; see " + filepath.Base(artifact) + " (keep vault: 'vault resolve " + n.citekey + " --keep-vault'; keep remote: 'vault resolve " + n.citekey + " --keep-remote')"
 		}
 		return res
 	}

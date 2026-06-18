@@ -582,6 +582,17 @@
         ".printing-press-patches.json"
       ],
       "validated_outcome": "search for 5847066 and /Users/ellis|ellis returns no matches; legitimate synthetic paths (/Users/me, /Users/x in items_file tests) untouched. gofmt -l internal/ clean; go build/vet clean; go test ./... -count=1 (6 pkgs ok) incl. TestVaultLibraryID and TestResolveWebWriteBase under the synthetic 99999 id; all three scrubbed JSON files re-validated as parseable. No runtime impact: no Go code reads the provenance JSON (verified) and the changed source site is a doc comment + test fixtures."
+    },
+    {
+      "id": "zotero-vault-resolve-keep-remote",
+      "summary": "Added `vault resolve --keep-remote` (glean inscribi-15e0 polish): the symmetric counterpart of --keep-vault. It pulls the live Zotero child-note body over the vault's `## Notes` region (discarding local edits), refreshes the per-note baseline, and clears the conflict artifact -- a forced `vault pull`. Extracted keepRemoteResolve(outDir,n,liveVer,liveHTML) reusing isManagedNoteHTML/htmlNoteToMarkdown/applyPulledRegion/removeConflictArtifacts. Resolve now requires exactly one direction (--keep-vault XOR --keep-remote; --recreate stays a keep-vault-side op) and the conflict artifact + divergence hints in vault_push.go/vault_pull.go now name both directions.",
+      "reason": "Closes a usability gap in the 15e0 bidirectional-sync feature: a conflict could only be resolved toward the vault (--keep-vault) or by hand-copying from the artifact. --keep-remote gives the discard-local direction a first-class command. Foreign (non-managed) remote HTML is refused so an arbitrary Zotero note is never imported into the managed region.",
+      "files": [
+        "internal/cli/vault_push.go",
+        "internal/cli/vault_pull.go",
+        "internal/cli/vault_resolve_test.go"
+      ],
+      "validated_outcome": "gofmt/build/vet clean; go test ./... -count=1 (6 pkgs ok) + -race on internal/cli clean. New unit tests: TestKeepRemoteResolve (remote overwrites region, baseline advances to live version, conflict artifact removed), TestKeepRemoteResolveRefusesForeignHTML (non-managed HTML refused, file untouched), TestVaultResolveDirectionValidation (keep-vault+keep-remote, keep-remote+recreate, and no-direction all rejected). Live vs real Zotero: created throwaway parent 3E8REQJF, `vault push` created child note 7QZ7HGHW, edited the local region, then `vault resolve smoketest --keep-remote` pulled the remote over it (local edit discarded, baseline refreshed); throwaway deleted (204). Auto-registered as MCP tool vault_resolve with the new flag."
     }
   ]
 }

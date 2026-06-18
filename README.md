@@ -218,11 +218,12 @@ Keep a Markdown vault (Obsidian or Logseq) in step with Zotero in both direction
   ```bash
   zotero-pp-cli vault pull --dry-run
   ```
-- **`vault conflicts`** / **`vault resolve`** — List unresolved write-back conflict artifacts, then resolve one by citekey or item key: `--keep-vault` republishes the vault copy over the remote (using the live version as a precondition), or `--recreate` re-creates a child note deleted in Zotero.
+- **`vault conflicts`** / **`vault resolve`** — List unresolved write-back conflict artifacts, then resolve one by citekey or item key, picking a direction: `--keep-vault` republishes the vault copy over the remote (using the live version as a precondition), `--keep-remote` pulls the remote note over the vault `## Notes` region (discarding local edits), or `--recreate` re-creates a child note deleted in Zotero.
 
   ```bash
   zotero-pp-cli vault conflicts
   zotero-pp-cli vault resolve smith2023 --keep-vault
+  zotero-pp-cli vault resolve smith2023 --keep-remote
   ```
 
 Configure the vault location and format once in `~/.config/zotero-pp-cli/config.toml`:
@@ -325,7 +326,7 @@ Sync your library to a Markdown vault (Obsidian/Logseq) and write notes back
 - **`zotero-pp-cli vault push`** - Mirror each note's `## Notes` region back to a Zotero child note
 - **`zotero-pp-cli vault pull`** - Bring remote child-note edits into the `## Notes` region (fast-forward only)
 - **`zotero-pp-cli vault conflicts`** - List unresolved write-back conflict artifacts
-- **`zotero-pp-cli vault resolve`** - Resolve a write-back conflict (`--keep-vault` or `--recreate`)
+- **`zotero-pp-cli vault resolve`** - Resolve a write-back conflict (`--keep-vault`, `--keep-remote`, or `--recreate`)
 
 
 ## Output Formats

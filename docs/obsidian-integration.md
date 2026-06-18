@@ -171,10 +171,11 @@ auto-merged — they surface as a conflict.
   `_vault-zotero-conflicts/` (local copy + remote HTML + the resolve command) and
   reported. A remote-only change on an otherwise-unchanged note is reported
   `remote_changed`, never silently hidden behind "unchanged".
-- **Recovery.** `vault conflicts` lists unresolved artifacts; `vault resolve
-  <citekey|key> --keep-vault` republishes the vault copy over the remote using the
-  live version as the precondition (`--recreate` re-creates a note deleted in
-  Zotero).
+- **Recovery.** `vault conflicts` lists unresolved artifacts; resolve one by
+  direction: `vault resolve <citekey|key> --keep-vault` republishes the vault
+  copy over the remote using the live version as the precondition, or
+  `--keep-remote` pulls the remote note over the vault `## Notes` region
+  (discarding local edits). `--recreate` re-creates a note deleted in Zotero.
 - **Preview first.** `vault push --dry-run` reports would-create / would-update /
   would-conflict and writes nothing — to the vault or to Zotero.
 - **`vault pull` (fast-forward).** The reverse direction: when the remote child
@@ -238,5 +239,5 @@ zotero-pp-cli vault push --dry-run       # preview Obsidian -> Zotero
 zotero-pp-cli vault push                 # publish notes to Zotero child notes
 zotero-pp-cli vault pull                 # fold edits made in the Zotero app back in
 zotero-pp-cli vault conflicts            # if any push/pull reported a conflict
-zotero-pp-cli vault resolve <citekey> --keep-vault
+zotero-pp-cli vault resolve <citekey> --keep-vault   # ...or --keep-remote to discard local edits
 ```
