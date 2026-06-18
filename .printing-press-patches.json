@@ -558,6 +558,16 @@
         "README.md"
       ],
       "validated_outcome": "gofmt/build/vet/-race clean; go test ./... passes (inverted-index reconstruction incl. repeated words; OpenAlex abstract + DOI resolvers via httptest; CrossRef->OpenAlex abstract fallback sets Source=OpenAlex and --no-openalex skips). Live vs real Zotero + real OpenAlex (preview, no writes): 'items enrich --missing-abstract --limit 120' filled 2 abstracts via OpenAlex (739 and 1023 chars) for DOI-bearing items CrossRef had no abstract for; DOI-less items skipped as expected."
+    },
+    {
+      "id": "zotero-dep-security-bumps",
+      "summary": "Security/freshness bump of the generated go.mod/go.sum pins (glean dep-risk beads). modernc.org/sqlite v1.37.0->v1.52.0 (CVE-2025-3277 concat_ws heap overflow; also clears the '15-versions-behind' chore), which transitively raised golang.org/x/sys v0.31.0->v0.46.0 (CVE-2026-39824, Windows-only), modernc.org/libc v1.62.1->v1.72.3, modernc.org/memory v1.9.1->v1.11.0, ncruces/go-strftime v0.1.9->v1.0.0; pelletier/go-toml/v2 v2.2.4->v2.3.1 (fuzz-found datetime-unmarshal panics; our Config.TokenExpiry time.Time field sits in that path); mark3labs/mcp-go v0.47.0->v0.52.0 (session/transport hardening). golang.org/x/exp was dropped entirely by `go mod tidy` (no longer imported). No source changes; no inline // PATCH (a version pin is not a code site).",
+      "reason": "A glean dep-risk run (2026-06-18) filed a P0 CVE plus a cluster of dependency-staleness findings against the generator's pinned versions. Upstream candidate: CLI Printing Press pins these versions, so the durable fix is to advance the generator's go.mod template; bumped locally for the security fix. remyoudompheng/bigfft (P2 chore, no CVE) left at its Jan-2023 commit -- `@latest` resolves to exactly that (abandoned single-purpose lib pinned via modernc.org/mathutil), so nothing is actionable there.",
+      "files": [
+        "go.mod",
+        "go.sum"
+      ],
+      "validated_outcome": "gofmt -l internal/ clean; go build ./...; go vet ./...; go test ./... -count=1 (6 pkgs ok, incl. internal/store on sqlite v1.52.0 and internal/mcp on mcp-go v0.52.0); -race on internal/store + internal/cli clean. Live vs real Zotero: `doctor` opened the 35MB data.db under sqlite v1.52.0; FTS5 `search` and `items audit --missing-pdf` (indexed columns) executed correctly; the MCP server (cmd/zotero-pp-mcp) JSON-RPC handshake under mcp-go v0.52.0 succeeded -- tools/list=76, prompts/list=[export-reading-notes, inspect-library, prepare-citation-export, synthesize]."
     }
   ]
 }
