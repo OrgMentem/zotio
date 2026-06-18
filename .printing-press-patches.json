@@ -458,6 +458,18 @@
         "internal/cli/vault_sync.go"
       ],
       "validated_outcome": "gofmt/build/vet clean; go test ./... -count=1 and 'go test ./internal/cli -race' pass (verbatim renderer no-interpretation, state round-trip, region extraction, write-token determinism, atomic state write, out-dir resolution, push-note parsing). Live round-trip vs real Zotero on a throwaway item: dry-run wrote nothing; create produced a child note with verbatim HTML (markdown/wikilinks preserved); re-push unchanged; local edit -> PATCH update (verified on the web after sync lag); a real server 412 (stale baseline) -> conflict + artifact, 'vault conflicts' listed it, 'vault resolve --keep-vault' rewrote the note and removed the artifact; throwaway item deleted (204, cascades the child note)."
+    },
+    {
+      "id": "zotero-vault-pull-fastforward",
+      "summary": "Adds 'vault pull [--dry-run]' — the safe reverse of vault push. Brings remote Zotero child-note edits into the user-owned '## Notes' region, fast-forward only: a note is updated only when its local region is unchanged since the last sync. Both-sides-changed is reported as a conflict (artifact under _vault-zotero-conflicts/) and never merged. Only notes in the managed shape this CLI writes are pulled (marker-gated); the note HTML is converted back to text conservatively (reverses the verbatim renderer; external rich formatting degrades to plain text). Refactored shared helpers out of vault_push.go (replaceOrInsertStateComment, printVaultWriteReport) for reuse.",
+      "reason": "Completes the 15e0 round-trip so edits made in the Zotero app flow back to the vault, without a risky 3-way merge: fast-forward when safe, conflict otherwise.",
+      "files": [
+        "internal/cli/vault_pull.go",
+        "internal/cli/vault_pull_test.go",
+        "internal/cli/vault_push.go",
+        "internal/cli/vault_sync.go"
+      ],
+      "validated_outcome": "gofmt/build/vet clean; go test ./... -count=1 and 'go test ./internal/cli -race' pass (push->pull round-trip is byte-lossless for content, managed-shape gating, tag stripping, region replacement, atomic region+state write). Live vs real Zotero on a throwaway item: push created a note; an external edit (items update --stdin with version) -> 'vault pull --dry-run' would-pull -> 'vault pull' rewrote the local region to the remote edit; re-pull unchanged; both-sides edit -> conflict + artifact listed by 'vault conflicts'; throwaway item deleted (204)."
     }
   ]
 }

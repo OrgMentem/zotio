@@ -116,7 +116,7 @@ Use --dry-run to preview create/update/conflict without writing anything.`,
 			for _, n := range notes {
 				results = append(results, pushOne(c, outDir, targetLib, n, versions, flags))
 			}
-			return printPushReport(cmd, results, outDir, flags)
+			return printVaultWriteReport(cmd, results, outDir, flags, "Pushed", "Would push")
 		},
 	}
 	cmd.Flags().StringVar(&flagOut, "out", "", "Vault directory (overrides [vault].root + notes_dir from config)")
@@ -516,24 +516,23 @@ func writeNoteState(path string, st pushState) error {
 	if err != nil || data == nil {
 		return fmt.Errorf("reading note for state update: %w", err)
 	}
-	body := string(data)
-	comment := stateComment(st)
+	return atomicReplace(path, data, []byte(replaceOrInsertStateComment(string(data), st)))
+}
 
+// replaceOrInsertStateComment swaps the hidden state comment in place, or inserts
+// it after the notes-end marker (outside the user region), else at EOF.
+func replaceOrInsertStateComment(body string, st pushState) string {
+	comment := stateComment(st)
 	if i := strings.Index(body, vaultStatePrefix); i >= 0 {
-		rel := strings.Index(body[i:], " -->")
-		if rel >= 0 {
-			updated := body[:i] + comment + body[i+rel+len(" -->"):]
-			return atomicReplace(path, data, []byte(updated))
+		if rel := strings.Index(body[i:], " -->"); rel >= 0 {
+			return body[:i] + comment + body[i+rel+len(" -->"):]
 		}
 	}
-	// Append after the notes-end marker (outside the user region), else at EOF.
 	if ei := strings.Index(body, vaultNotesEnd); ei >= 0 {
 		insertAt := ei + len(vaultNotesEnd)
-		updated := body[:insertAt] + "\n" + comment + body[insertAt:]
-		return atomicReplace(path, data, []byte(updated))
+		return body[:insertAt] + "\n" + comment + body[insertAt:]
 	}
-	updated := strings.TrimRight(body, "\n") + "\n" + comment + "\n"
-	return atomicReplace(path, data, []byte(updated))
+	return strings.TrimRight(body, "\n") + "\n" + comment + "\n"
 }
 
 // --- conflict artifacts ---
@@ -761,7 +760,7 @@ func resolveVaultOutDir(flags *rootFlags, flagOut string) (string, error) {
 
 // --- report ---
 
-func printPushReport(cmd *cobra.Command, results []pushResult, outDir string, flags *rootFlags) error {
+func printVaultWriteReport(cmd *cobra.Command, results []pushResult, outDir string, flags *rootFlags, doneVerb, dryVerb string) error {
 	counts := map[string]int{}
 	for _, r := range results {
 		counts[r.Status]++
@@ -779,9 +778,9 @@ func printPushReport(cmd *cobra.Command, results []pushResult, outDir string, fl
 		return printOutputWithFlags(cmd.OutOrStdout(), json.RawMessage(data), flags)
 	}
 	out := cmd.OutOrStdout()
-	verb := "Pushed"
+	verb := doneVerb
 	if flags.dryRun {
-		verb = "Would push"
+		verb = dryVerb
 	}
 	fmt.Fprintf(out, "%s notes from %s: %s\n", verb, outDir, summarizeCounts(counts))
 	for _, r := range results {

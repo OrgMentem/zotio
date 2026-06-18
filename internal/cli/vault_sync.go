@@ -83,6 +83,7 @@ func newVaultCmd(flags *rootFlags) *cobra.Command {
 	cmd.AddCommand(newVaultPushCmd(flags)) // PATCH(glean 15e0): Obsidian -> Zotero write-back
 	cmd.AddCommand(newVaultConflictsCmd(flags))
 	cmd.AddCommand(newVaultResolveCmd(flags))
+	cmd.AddCommand(newVaultPullCmd(flags))
 	return cmd
 }
 

@@ -144,12 +144,14 @@ collection's annotations"); keep Zotero Integration for live, in-the-moment
 writing. They write to the same vault without fighting: the CLI owns its fenced
 block and managed keys, you own everything else.
 
-## `vault push` (the `15e0` feature) — Obsidian → Zotero note write-back
+## `vault push` / `vault pull` (the `15e0` feature) — note write-back
 
-`vault sync` is one-way (Zotero → vault). `vault push` adds the **opt-in reverse
-direction**: it mirrors each note's user-owned `## Notes` region back to a single
-tool-owned **Zotero child note**. It is push-only by design — it never merges
-remote note edits into the vault, and never touches bibliographic fields.
+`vault sync` is one-way (Zotero → vault). `vault push` and `vault pull` add the
+**opt-in reverse direction** for the user-owned `## Notes` region only: `push`
+mirrors that region to a single tool-owned **Zotero child note**, and `pull`
+folds remote edits to that note back into the region. Neither touches
+bibliographic fields, and simultaneous edits on both sides are never
+auto-merged — they surface as a conflict.
 
 - **Reads stay local; writes go to the Web API.** Like every mutation in this
   CLI, the local API is GET-only, so `push` auto-routes writes to `api.zotero.org`
@@ -175,10 +177,16 @@ remote note edits into the vault, and never touches bibliographic fields.
   Zotero).
 - **Preview first.** `vault push --dry-run` reports would-create / would-update /
   would-conflict and writes nothing — to the vault or to Zotero.
+- **`vault pull` (fast-forward).** The reverse direction: when the remote child
+  note changed but the local region is unchanged since the last sync, `pull`
+  converts the note HTML back to text (reversing the verbatim renderer; only
+  notes in the managed shape are touched — never arbitrary HTML) and rewrites the
+  `## Notes` region. If both sides changed it reports a conflict and merges
+  nothing. `--dry-run` previews.
 
 > Mental model: **Obsidian is the editing surface; the Zotero child note is a
-> managed mirror.** Remote edits are detected and preserved for review, never
-> merged automatically.
+> managed mirror.** `vault pull` folds remote edits back on a clean fast-forward;
+> simultaneous edits on both sides surface as a conflict, never an auto-merge.
 
 ### Note format contract (shared by sync and push)
 
@@ -228,6 +236,7 @@ zotero-pp-cli vault sync                 # Zotero -> vault (uses [vault] config)
 # ... write under "## Notes" in Obsidian ...
 zotero-pp-cli vault push --dry-run       # preview Obsidian -> Zotero
 zotero-pp-cli vault push                 # publish notes to Zotero child notes
-zotero-pp-cli vault conflicts            # if any push reported a conflict
+zotero-pp-cli vault pull                 # fold edits made in the Zotero app back in
+zotero-pp-cli vault conflicts            # if any push/pull reported a conflict
 zotero-pp-cli vault resolve <citekey> --keep-vault
 ```
