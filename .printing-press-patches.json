@@ -490,6 +490,16 @@
       ],
       "upstream_issue": "cli-printing-press: generated PATCH/DELETE/PUT commands should supply Zotero's version precondition (If-Unmodified-Since-Version) or they 428 on key-based writes",
       "validated_outcome": "gofmt/build/vet clean. Live vs real Zotero: 'items update <key> --title ...' on a throwaway item returned HTTP 204 (was 428 before the fix); item deleted (204)."
+    },
+    {
+      "id": "zotero-citation-audit",
+      "summary": "Added a citation-readiness check to 'items audit' (glean dxut). 'items audit --missing-citation' lists citeable items missing a core citation field, annotating each with exactly which fields it lacks (creators, title, date, and the type-appropriate venue: publicationTitle for journalArticle/conferencePaper/preprint, publisher for book). The count is folded into the existing single-scan audit summary as missing_citation. Type checks use json_extract('$.data.itemType') rather than the indexed item_type column so the check is correct even on stores where that column was never backfilled.",
+      "reason": "glean dxut: surface items that cannot be cited cleanly before a manuscript handoff. Read-only and built on the existing audit infrastructure. Discovered while validating: the indexed item_type column is NULL for the whole local store, which silently zeroes the existing missing-pdf/missing-doi summary counts — the citation check deliberately avoids that dependency.",
+      "files": [
+        "internal/cli/items_audit.go",
+        "internal/cli/items_audit_query_test.go"
+      ],
+      "validated_outcome": "gofmt/build/vet clean; go test ./internal/cli passes (complete item excluded; journalArticle missing creators/date/publicationTitle and book missing publisher detected with exact field lists; summary count matches listing). Live vs real Zotero: 'items audit' summary shows missing-citation 97; 'items audit --missing-citation' lists items with per-item missing fields (e.g. 'date, publicationTitle')."
     }
   ]
 }

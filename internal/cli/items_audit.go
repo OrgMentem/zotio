@@ -17,6 +17,7 @@ type itemsAuditSummary struct {
 	MissingAbstract int `json:"missing_abstract"`
 	MissingDOI      int `json:"missing_doi"`
 	MissingTags     int `json:"missing_tags"`
+	MissingCitation int `json:"missing_citation"`
 }
 
 func newItemsAuditCmd(flags *rootFlags) *cobra.Command {
@@ -24,6 +25,7 @@ func newItemsAuditCmd(flags *rootFlags) *cobra.Command {
 	var flagMissingAbstract bool
 	var flagMissingDOI bool
 	var flagMissingTags bool
+	var flagCitations bool
 	var flagLimit int
 
 	cmd := &cobra.Command{
@@ -42,7 +44,7 @@ func newItemsAuditCmd(flags *rootFlags) *cobra.Command {
 			defer rawDB.Close()
 			db := localQueryStore{rawDB}
 
-			checks := selectedItemsAuditChecks(flagMissingPDF, flagMissingAbstract, flagMissingDOI, flagMissingTags)
+			checks := selectedItemsAuditChecks(flagMissingPDF, flagMissingAbstract, flagMissingDOI, flagMissingTags, flagCitations)
 			if len(checks) == 0 {
 				summary, err := queryItemsAuditSummary(db)
 				if err != nil {
@@ -84,6 +86,7 @@ func newItemsAuditCmd(flags *rootFlags) *cobra.Command {
 	cmd.Flags().BoolVar(&flagMissingAbstract, "missing-abstract", false, "List items with no abstract")
 	cmd.Flags().BoolVar(&flagMissingDOI, "missing-doi", false, "List journal articles, conference papers, and preprints with no DOI")
 	cmd.Flags().BoolVar(&flagMissingTags, "missing-tags", false, "List items with no tags")
+	cmd.Flags().BoolVar(&flagCitations, "missing-citation", false, "List citeable items missing core citation fields (creators, title, date, venue)")
 	cmd.Flags().IntVar(&flagLimit, "limit", 0, "Maximum number of items per category (0 = no limit)")
 
 	return cmd
@@ -94,8 +97,8 @@ type itemsAuditCheck struct {
 	query func(localQueryStore, int) ([]map[string]any, error)
 }
 
-func selectedItemsAuditChecks(missingPDF, missingAbstract, missingDOI, missingTags bool) []itemsAuditCheck {
-	checks := make([]itemsAuditCheck, 0, 4)
+func selectedItemsAuditChecks(missingPDF, missingAbstract, missingDOI, missingTags, missingCitation bool) []itemsAuditCheck {
+	checks := make([]itemsAuditCheck, 0, 5)
 	if missingPDF {
 		checks = append(checks, itemsAuditCheck{name: "missing_pdf", query: func(db localQueryStore, limit int) ([]map[string]any, error) {
 			return queryMissingPDFItems(db, "", limit)
@@ -109,6 +112,11 @@ func selectedItemsAuditChecks(missingPDF, missingAbstract, missingDOI, missingTa
 	}
 	if missingTags {
 		checks = append(checks, itemsAuditCheck{name: "missing_tags", query: queryMissingTagsItems})
+	}
+	// PATCH(glean dxut): citation-readiness check — items that cannot be cited
+	// because a core field is missing.
+	if missingCitation {
+		checks = append(checks, itemsAuditCheck{name: "missing_citation", query: queryCitationIncompleteItems})
 	}
 	return checks
 }
@@ -128,23 +136,26 @@ SELECT
 	COUNT(CASE WHEN json_extract(data, '$.data.abstractNote') IS NULL OR TRIM(json_extract(data, '$.data.abstractNote')) = '' THEN 1 END) AS missing_abstract,
 	COUNT(CASE WHEN item_type IN ('journalArticle', 'conferencePaper', 'preprint')
 		AND (json_extract(data, '$.data.DOI') IS NULL OR TRIM(json_extract(data, '$.data.DOI')) = '') THEN 1 END) AS missing_doi,
-	COUNT(CASE WHEN COALESCE(json_array_length(json_extract(data, '$.data.tags')), 0) = 0 THEN 1 END) AS missing_tags
+	COUNT(CASE WHEN COALESCE(json_array_length(json_extract(data, '$.data.tags')), 0) = 0 THEN 1 END) AS missing_tags,
+	COUNT(CASE WHEN json_extract(data, '$.data.itemType') NOT IN ('attachment', 'annotation', 'note') AND ` + citationIncompletePredicate + ` THEN 1 END) AS missing_citation
 FROM resources
 WHERE resource_type = 'items'`)
 	if err != nil {
 		return itemsAuditSummary{}, err
 	}
-	var missingAbstract, missingDOI, missingTags int
+	var missingAbstract, missingDOI, missingTags, missingCitation int
 	if len(rows) > 0 {
 		missingAbstract = sqlIntValue(rows[0]["missing_abstract"])
 		missingDOI = sqlIntValue(rows[0]["missing_doi"])
 		missingTags = sqlIntValue(rows[0]["missing_tags"])
+		missingCitation = sqlIntValue(rows[0]["missing_citation"])
 	}
 	return itemsAuditSummary{
 		MissingPDF:      missingPDF,
 		MissingAbstract: missingAbstract,
 		MissingDOI:      missingDOI,
 		MissingTags:     missingTags,
+		MissingCitation: missingCitation,
 	}, nil
 }
 
@@ -155,6 +166,7 @@ func printItemsAuditSummary(cmd *cobra.Command, summary itemsAuditSummary) error
 	fmt.Fprintf(tw, "%s\t%d\n", "missing-abstract", summary.MissingAbstract)
 	fmt.Fprintf(tw, "%s\t%d\n", "missing-doi", summary.MissingDOI)
 	fmt.Fprintf(tw, "%s\t%d\n", "missing-tags", summary.MissingTags)
+	fmt.Fprintf(tw, "%s\t%d\n", "missing-citation", summary.MissingCitation)
 	return tw.Flush()
 }
 
@@ -250,4 +262,75 @@ func sqlStringValue(v any) string {
 	default:
 		return fmt.Sprintf("%v", s)
 	}
+}
+
+// citationIncompletePredicate matches citeable items missing a core citation
+// field. PATCH(glean dxut): shared by the audit summary scan and the
+// --missing-citation listing so the count and the list never drift.
+const citationIncompletePredicate = `(
+	COALESCE(json_array_length(json_extract(data, '$.data.creators')), 0) = 0
+	OR TRIM(COALESCE(json_extract(data, '$.data.title'), '')) = ''
+	OR TRIM(COALESCE(json_extract(data, '$.data.date'), '')) = ''
+	OR (json_extract(data, '$.data.itemType') IN ('journalArticle', 'conferencePaper', 'preprint') AND TRIM(COALESCE(json_extract(data, '$.data.publicationTitle'), '')) = '')
+	OR (json_extract(data, '$.data.itemType') = 'book' AND TRIM(COALESCE(json_extract(data, '$.data.publisher'), '')) = '')
+)`
+
+// queryCitationIncompleteItems lists citeable items missing core citation fields,
+// annotating each row with the specific fields it lacks. PATCH(glean dxut).
+func queryCitationIncompleteItems(db localQueryStore, limit int) ([]map[string]any, error) {
+	query := `
+SELECT
+	id AS key,
+	COALESCE(json_extract(data, '$.data.title'), '') AS title,
+	json_extract(data, '$.data.itemType') AS item_type,
+	COALESCE(json_array_length(json_extract(data, '$.data.creators')), 0) AS n_creators,
+	TRIM(COALESCE(json_extract(data, '$.data.date'), '')) AS date,
+	TRIM(COALESCE(json_extract(data, '$.data.publicationTitle'), '')) AS publication_title,
+	TRIM(COALESCE(json_extract(data, '$.data.publisher'), '')) AS publisher,
+	json_extract(data, '$.data.dateAdded') AS date_added
+FROM resources
+WHERE resource_type = 'items'
+	AND json_extract(data, '$.data.itemType') NOT IN ('attachment', 'annotation', 'note')
+	AND ` + citationIncompletePredicate + `
+ORDER BY date_added DESC`
+	rows, err := queryItemsAuditRows(db, query, limit)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]map[string]any, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, map[string]any{
+			"key":       sqlStringValue(r["key"]),
+			"title":     sqlStringValue(r["title"]),
+			"item_type": sqlStringValue(r["item_type"]),
+			"missing":   strings.Join(citationMissingFields(r), ", "),
+		})
+	}
+	return out, nil
+}
+
+// citationMissingFields returns the core citation fields absent from a row
+// produced by queryCitationIncompleteItems.
+func citationMissingFields(r map[string]any) []string {
+	var missing []string
+	if sqlIntValue(r["n_creators"]) == 0 {
+		missing = append(missing, "creators")
+	}
+	if sqlStringValue(r["title"]) == "" {
+		missing = append(missing, "title")
+	}
+	if sqlStringValue(r["date"]) == "" {
+		missing = append(missing, "date")
+	}
+	switch sqlStringValue(r["item_type"]) {
+	case "journalArticle", "conferencePaper", "preprint":
+		if sqlStringValue(r["publication_title"]) == "" {
+			missing = append(missing, "publicationTitle")
+		}
+	case "book":
+		if sqlStringValue(r["publisher"]) == "" {
+			missing = append(missing, "publisher")
+		}
+	}
+	return missing
 }

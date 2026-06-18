@@ -9,6 +9,7 @@ import (
 	"context"
 	"encoding/json"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"zotero-pp-cli/internal/store"
@@ -99,5 +100,65 @@ func TestQueryItemsAuditSummary_SingleScan(t *testing.T) {
 	// P1, A2, P3 have no tags; P2 has one.
 	if summary.MissingTags != 3 {
 		t.Errorf("MissingTags = %d, want 3", summary.MissingTags)
+	}
+}
+
+func seedCitationStore(t *testing.T) localQueryStore {
+	t.Helper()
+	db, err := store.OpenWithContext(context.Background(), filepath.Join(t.TempDir(), "data.db"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	items := []json.RawMessage{
+		// C1: complete journalArticle (creators+title+date+publicationTitle).
+		json.RawMessage(`{"key":"C1","version":1,"data":{"key":"C1","itemType":"journalArticle","title":"Complete","creators":[{"lastName":"A","creatorType":"author"}],"date":"2020","publicationTitle":"J"}}`),
+		// C2: journalArticle with only a title.
+		json.RawMessage(`{"key":"C2","version":1,"data":{"key":"C2","itemType":"journalArticle","title":"OnlyTitle"}}`),
+		// C3: book with creators+title+date but no publisher.
+		json.RawMessage(`{"key":"C3","version":1,"data":{"key":"C3","itemType":"book","title":"Bk","creators":[{"lastName":"B","creatorType":"author"}],"date":"2019"}}`),
+		// C4: attachment (not citeable; excluded).
+		json.RawMessage(`{"key":"C4","version":1,"data":{"key":"C4","itemType":"attachment","parentItem":"C1","contentType":"application/pdf"}}`),
+		// C5: webpage with core fields; no type-specific venue requirement.
+		json.RawMessage(`{"key":"C5","version":1,"data":{"key":"C5","itemType":"webpage","title":"W","creators":[{"lastName":"C","creatorType":"author"}],"date":"2021"}}`),
+	}
+	if _, _, err := db.UpsertBatch("items", items); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	return localQueryStore{db}
+}
+
+func TestCitationAudit(t *testing.T) {
+	db := seedCitationStore(t)
+
+	rows, err := queryCitationIncompleteItems(db, 0)
+	if err != nil {
+		t.Fatalf("queryCitationIncompleteItems: %v", err)
+	}
+	got := map[string]string{}
+	for _, r := range rows {
+		got[sqlStringValue(r["key"])] = sqlStringValue(r["missing"])
+	}
+	for _, k := range []string{"C1", "C4", "C5"} {
+		if m, bad := got[k]; bad {
+			t.Errorf("%s should be citation-complete/excluded, got missing=%q", k, m)
+		}
+	}
+	if m := got["C2"]; !strings.Contains(m, "creators") || !strings.Contains(m, "date") || !strings.Contains(m, "publicationTitle") {
+		t.Errorf("C2 missing = %q, want creators+date+publicationTitle", m)
+	}
+	if m := got["C3"]; m != "publisher" {
+		t.Errorf("C3 missing = %q, want 'publisher'", m)
+	}
+	if len(got) != 2 {
+		t.Errorf("citation-incomplete count = %d, want 2 (%v)", len(got), got)
+	}
+
+	summary, err := queryItemsAuditSummary(db)
+	if err != nil {
+		t.Fatalf("queryItemsAuditSummary: %v", err)
+	}
+	if summary.MissingCitation != 2 {
+		t.Errorf("summary.MissingCitation = %d, want 2", summary.MissingCitation)
 	}
 }
