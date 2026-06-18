@@ -8,13 +8,18 @@
 package cli
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"unicode/utf8"
+
+	"zotero-pp-cli/internal/config"
+	"zotero-pp-cli/internal/store"
 )
 
 func TestVaultSyncWritesIdentityAndFences(t *testing.T) {
@@ -254,5 +259,91 @@ func TestVaultSyncRecognizesLegacyNoteByLink(t *testing.T) {
 	}
 	if !strings.Contains(s, "keep me") {
 		t.Errorf("legacy user prose lost:\n%s", s)
+	}
+}
+
+func TestVaultResolveOut(t *testing.T) {
+	home, _ := os.UserHomeDir()
+	cases := []struct {
+		root, notesDir, want string
+	}{
+		{"/v", "refs", "/v/refs"},
+		{"/v", "", "/v"},
+		{"", "refs", ""},
+		{"~/v", "refs", filepath.Join(home, "v", "refs")},
+	}
+	for _, c := range cases {
+		got := vaultResolveOut(&config.VaultConfig{Root: c.root, NotesDir: c.notesDir})
+		if got != c.want {
+			t.Errorf("vaultResolveOut(%q,%q) = %q, want %q", c.root, c.notesDir, got, c.want)
+		}
+	}
+}
+
+func TestResolveCollectionNames(t *testing.T) {
+	names := map[string]string{"C1": "Transformers", "C2": "Attention"}
+	got := resolveCollectionNames([]string{"C1", "CX", "C2"}, names)
+	want := []string{"Transformers", "CX", "Attention"} // unknown key falls back to the key
+	if strings.Join(got, "|") != strings.Join(want, "|") {
+		t.Errorf("resolveCollectionNames = %v, want %v", got, want)
+	}
+	if resolveCollectionNames(nil, names) != nil {
+		t.Errorf("empty keys should yield nil")
+	}
+}
+
+// TestVaultSyncCollectionNames: a synced collection's display name is rendered
+// into the managed collection_names frontmatter key.
+func TestVaultSyncCollectionNames(t *testing.T) {
+	seedVaultStore(t)
+	db, err := store.OpenWithContext(context.Background(), defaultDBPath("zotero-pp-cli"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	if _, _, err := db.UpsertBatch("collections", []json.RawMessage{
+		json.RawMessage(`{"key":"COL1","data":{"key":"COL1","name":"Transformers"}}`),
+	}); err != nil {
+		t.Fatalf("seed collection: %v", err)
+	}
+	_ = db.Close()
+
+	vault := t.TempDir()
+	runVaultSync(t, &rootFlags{asJSON: true}, []string{"--out", vault})
+	s := readNote(t, filepath.Join(vault, "vaswani2017.md"))
+	if !strings.Contains(s, "collection_names:") || !strings.Contains(s, "Transformers") {
+		t.Errorf("collection_names not resolved from store:\n%s", s)
+	}
+}
+
+// TestVaultSyncResolvesOutFromConfig: with no --out, the output dir comes from
+// [vault].root + notes_dir.
+func TestVaultSyncResolvesOutFromConfig(t *testing.T) {
+	seedVaultStore(t)
+	root := t.TempDir()
+	cfgPath := filepath.Join(t.TempDir(), "config.toml")
+	writeFile(t, cfgPath, fmt.Sprintf("[vault]\nroot = %q\nnotes_dir = \"refs\"\n", root))
+
+	runVaultSync(t, &rootFlags{asJSON: true, configPath: cfgPath}, nil)
+
+	if _, err := os.Stat(filepath.Join(root, "refs", "vaswani2017.md")); err != nil {
+		t.Errorf("note not written to config-resolved dir: %v", err)
+	}
+}
+
+// TestVaultSyncOutFlagOverridesConfig: an explicit --out wins over [vault].root.
+func TestVaultSyncOutFlagOverridesConfig(t *testing.T) {
+	seedVaultStore(t)
+	cfgRoot := t.TempDir()
+	cfgPath := filepath.Join(t.TempDir(), "config.toml")
+	writeFile(t, cfgPath, fmt.Sprintf("[vault]\nroot = %q\n", cfgRoot))
+	out := t.TempDir()
+
+	runVaultSync(t, &rootFlags{asJSON: true, configPath: cfgPath}, []string{"--out", out})
+
+	if _, err := os.Stat(filepath.Join(out, "vaswani2017.md")); err != nil {
+		t.Errorf("note not written to --out dir: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(cfgRoot, "vaswani2017.md")); !os.IsNotExist(err) {
+		t.Errorf("note wrongly written to config root despite --out override")
 	}
 }

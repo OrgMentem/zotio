@@ -46,17 +46,18 @@ const (
 
 // vaultMeta is the per-item data rendered into a note.
 type vaultMeta struct {
-	Key         string
-	CiteKey     string
-	Title       string
-	Authors     []string
-	Year        string
-	ItemType    string
-	DOI         string
-	URL         string
-	Abstract    string
-	Collections []string
-	Library     string // API library segment, e.g. "users/5847066" or "groups/123"
+	Key             string
+	CiteKey         string
+	Title           string
+	Authors         []string
+	Year            string
+	ItemType        string
+	DOI             string
+	URL             string
+	Abstract        string
+	Collections     []string
+	Library         string // API library segment, e.g. "users/5847066" or "groups/123"
+	CollectionNames []string
 }
 
 // fmEntry is one frontmatter key and its rendered line(s).
@@ -93,7 +94,7 @@ func newVaultSyncCmd(flags *rootFlags) *cobra.Command {
 	)
 
 	cmd := &cobra.Command{
-		Use:   "sync --out <dir>",
+		Use:   "sync [--out <dir>]",
 		Short: "Create/update one Markdown note per item in a vault (idempotent)",
 		Long: `Materialize literature notes into an Obsidian or Logseq vault from the local
 store (run 'sync' first). Notes are named from the citation key, carry zotero://
@@ -102,21 +103,33 @@ backlinks, and embed current annotations in a managed block.
 Re-running is idempotent and non-destructive: only the managed frontmatter keys
 and the fenced annotations block change; your prose and other frontmatter keys
 are preserved. Use --dry-run to preview create/update/unchanged without writing.`,
-		Example: `  zotero-pp-cli vault sync --out ~/vault/refs
-  zotero-pp-cli vault sync --out ~/vault/refs --collection ABCD1234 --dry-run
-  zotero-pp-cli vault sync --out ~/vault/refs --format logseq --tag to-read`,
+		Example: `  zotero-pp-cli vault sync                 # uses [vault] root/notes_dir from config
+  zotero-pp-cli vault sync --out ~/vault/refs
+  zotero-pp-cli vault sync --out ~/vault/refs --collection ABCD1234 --dry-run`,
 		Annotations: map[string]string{"mcp:read-only": "false"},
 		RunE: func(cmd *cobra.Command, args []string) error {
+			outDir := strings.TrimSpace(flagOut)
 			format := strings.ToLower(strings.TrimSpace(flagFormat))
+			// PATCH(glean 15e0): fall back to [vault] config so --out/--format are
+			// optional once configured; explicit flags always win.
+			if vc := vaultConfig(flags); vc != nil {
+				if outDir == "" {
+					outDir = vaultResolveOut(vc)
+				}
+				if !cmd.Flags().Changed("format") && strings.TrimSpace(vc.Format) != "" {
+					format = strings.ToLower(strings.TrimSpace(vc.Format))
+				}
+			}
 			if format == "" {
 				format = "obsidian"
 			}
 			if format != "obsidian" && format != "logseq" {
-				return fmt.Errorf("invalid --format value %q: must be obsidian or logseq", flagFormat)
+				return fmt.Errorf("invalid format %q: must be obsidian or logseq", format)
 			}
-			if strings.TrimSpace(flagOut) == "" {
-				return fmt.Errorf("--out <dir> is required")
+			if outDir == "" {
+				return fmt.Errorf("no output directory: pass --out <dir> or set [vault].root in config")
 			}
+			flagOut = outDir
 
 			rawDB, err := openStoreForRead(cmd.Context(), "zotero-pp-cli")
 			if err != nil {
@@ -148,12 +161,14 @@ are preserved. Use --dry-run to preview create/update/unchanged without writing.
 			metas := make([]vaultMeta, 0, len(items))
 			keys := make([]string, 0, len(items))
 			libraryID := vaultLibraryID(flags)
+			collNames := loadCollectionNames(rawDB)
 			for _, raw := range items {
 				meta := vaultItemMeta(raw)
 				if !isRegularLiteratureItem(meta.ItemType) {
 					continue
 				}
 				meta.Library = libraryID
+				meta.CollectionNames = resolveCollectionNames(meta.Collections, collNames)
 				metas = append(metas, meta)
 				keys = append(keys, meta.Key)
 			}
@@ -190,7 +205,7 @@ are preserved. Use --dry-run to preview create/update/unchanged without writing.
 		},
 	}
 
-	cmd.Flags().StringVar(&flagOut, "out", "", "Vault directory to write notes into (required)")
+	cmd.Flags().StringVar(&flagOut, "out", "", "Vault directory (overrides [vault].root + notes_dir from config)")
 	cmd.Flags().StringVar(&flagFormat, "format", "obsidian", "Note format: obsidian or logseq")
 	cmd.Flags().StringVar(&flagCollection, "collection", "", "Only sync items in this collection key")
 	cmd.Flags().StringVar(&flagTag, "tag", "", "Only sync items with this tag")
@@ -705,6 +720,7 @@ func managedObsidianFrontmatter(meta vaultMeta) []fmEntry {
 		{"zotero_key", []string{"zotero_key: " + meta.Key}},
 		{"zotero", []string{"zotero: " + yamlScalar(zoteroSelectLink(meta.Key))}},
 		{"collections", obsidianListEntry("collections", meta.Collections)},
+		{"collection_names", obsidianListEntry("collection_names", meta.CollectionNames)},
 	}
 	// PATCH(glean 15e0): zotero_key is the stable identity for re-sync lookup;
 	// zotero_library scopes it and is the write target for commit 3. Library is
@@ -726,11 +742,84 @@ func managedLogseqProps(meta vaultMeta) []fmEntry {
 		{"citekey", []string{"citekey:: " + meta.CiteKey}},
 		{"zotero-key", []string{"zotero-key:: " + meta.Key}},
 		{"zotero", []string{"zotero:: " + zoteroSelectLink(meta.Key)}},
+		{"collection-names", []string{"collection-names:: " + strings.Join(meta.CollectionNames, ", ")}},
 	}
 	if meta.Library != "" {
 		props = append(props, fmEntry{"zotero-library", []string{"zotero-library:: " + meta.Library}})
 	}
 	return props
+}
+
+// vaultConfig returns the [vault] config section, or nil when unset. PATCH(glean 15e0).
+func vaultConfig(flags *rootFlags) *config.VaultConfig {
+	cfg, err := config.Load(flags.configPath)
+	if err != nil {
+		return nil
+	}
+	return cfg.Vault
+}
+
+// vaultResolveOut builds the output dir from [vault].root (+ notes_dir), with ~
+// expansion. Empty when root is unset.
+func vaultResolveOut(vc *config.VaultConfig) string {
+	root := expandHome(strings.TrimSpace(vc.Root))
+	if root == "" {
+		return ""
+	}
+	if nd := strings.TrimSpace(vc.NotesDir); nd != "" {
+		return filepath.Join(root, nd)
+	}
+	return root
+}
+
+func expandHome(p string) string {
+	if p == "~" || strings.HasPrefix(p, "~/") {
+		if home, err := os.UserHomeDir(); err == nil {
+			return filepath.Join(home, strings.TrimPrefix(p, "~"))
+		}
+	}
+	return p
+}
+
+// loadCollectionNames maps collection key -> display name from the local store.
+func loadCollectionNames(db *store.Store) map[string]string {
+	rows, err := db.List("collections", -1)
+	if err != nil {
+		return nil
+	}
+	m := make(map[string]string, len(rows))
+	for _, r := range rows {
+		var o map[string]any
+		if json.Unmarshal(r, &o) != nil {
+			continue
+		}
+		key := zoteroString(o, "key")
+		name := ""
+		if data, ok := o["data"].(map[string]any); ok {
+			name, _ = stringValue(data["name"])
+		}
+		if key != "" && name != "" {
+			m[key] = name
+		}
+	}
+	return m
+}
+
+// resolveCollectionNames maps collection keys to names, falling back to the key
+// when the collection is not synced locally.
+func resolveCollectionNames(keys []string, names map[string]string) []string {
+	if len(keys) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(keys))
+	for _, k := range keys {
+		if n := names[k]; n != "" {
+			out = append(out, n)
+		} else {
+			out = append(out, k)
+		}
+	}
+	return out
 }
 
 func obsidianAuthorsEntry(authors []string) []string {

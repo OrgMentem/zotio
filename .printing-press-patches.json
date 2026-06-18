@@ -436,6 +436,17 @@
         "internal/cli/vault_sync_format_test.go"
       ],
       "validated_outcome": "gofmt/build/vet clean; full go test ./... -count=1 passes (20 vault tests incl. byte-identical idempotency, stable lookup by key, collision disambiguation, legacy migration, needs_notes_boundary, atomic compare-before-replace, read-error handling, rune-safe filenames). Live smoke vs Zotero: a pre-commit-1 dev-vault note was recognized via its zotero:// link and migrated in place (gained zotero_key/zotero_library + notes markers, user prose preserved); re-sync reports unchanged (idempotent); fresh notes render the new fenced layout."
+    },
+    {
+      "id": "zotero-vault-config-and-collections",
+      "summary": "Commit 2 of glean 15e0 (still pull-only): adds a [vault] config section (root, notes_dir, format) so 'vault sync' resolves its output directory and format without --out on every run (explicit flags still win; ~ expanded); and adds a managed collection_names frontmatter key (collection-names for Logseq) resolving collection keys to display names from the local store, falling back to the key when a collection is not synced. Existing 'collections' (keys) is left intact for back-compat (Dataview).",
+      "reason": "glean 15e0 UX: opaque collection keys and a mandatory --out are friction for daily use. config.VaultConfig is read in vault sync; collection names come from store.List(\"collections\", -1) so no store package change was needed.",
+      "files": [
+        "internal/config/config.go",
+        "internal/cli/vault_sync.go",
+        "internal/cli/vault_sync_format_test.go"
+      ],
+      "validated_outcome": "gofmt/build/vet clean; full go test ./... -count=1 passes (config out-resolution + override, collection_names resolution, unit tests for vaultResolveOut/resolveCollectionNames). Live smoke vs Zotero: dev-vault note rendered collection_names: [Thesis] (real name for MAR7RFQN), re-sync unchanged (idempotent); a [vault] config with no --out wrote to root/notes_dir; missing config + no --out errors clearly."
     }
   ]
 }

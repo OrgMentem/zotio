@@ -26,6 +26,17 @@ type Config struct {
 	Path          string            `toml:"-"`
 	ZoteroApiKey  string            `toml:"api_key"`
 	UserID        string            `toml:"user_id"`
+	// PATCH(glean 15e0): vault sync defaults so `vault sync` can resolve its
+	// output directory and format without --out on every run. Pointer +
+	// omitempty keeps save() from writing an empty [vault] table.
+	Vault *VaultConfig `toml:"vault,omitempty"`
+}
+
+// VaultConfig holds Obsidian/Logseq vault sync defaults.
+type VaultConfig struct {
+	Root     string `toml:"root"`
+	NotesDir string `toml:"notes_dir"`
+	Format   string `toml:"format"`
 }
 
 func Load(configPath string) (*Config, error) {
