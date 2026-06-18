@@ -547,6 +547,17 @@
         "internal/cli/import.go"
       ],
       "validated_outcome": "gofmt/build/vet clean; go test ./... passes (filename slash-decoded + embedded-content DOI extraction + none; classify duplicate/attach_candidate/new/unidentified with httpClient nil; DOI index build with case-insensitive keys + hasPDF). Live vs real Zotero: a 4-PDF folder classified correctly — duplicate (9UXV5R7L, has PDF), attach_candidate (10.1002/job.413 -> 5AQIZVY4, missing PDF), new (fake DOI), unidentified (no DOI); doi_source reported (content/none)."
+    },
+    {
+      "id": "zotero-enrich-openalex",
+      "summary": "Added OpenAlex as a fallback provider to 'items enrich' (glean mmmd) for --missing-abstract and --missing-doi only. When CrossRef misses, it queries OpenAlex (/works?filter=doi: or title.search:), reconstructs the abstract from OpenAlex's inverted index, and records the provider in the proposal Source + Extra provenance. Key-free (optional --email / polite pool). --missing-pdf is left on Unpaywall (OpenAlex's OA data is just Unpaywall re-served). New --no-openalex disables the fallback; enrichOpenAlexBase is overridable for tests.",
+      "reason": "glean mmmd: CrossRef abstracts are spotty (publisher-deposited only); OpenAlex fills many CrossRef lacks, and resolves DOIs for non-CrossRef works. Deliberately NOT used for OA PDFs to avoid duplicating Unpaywall, whose data OpenAlex aggregates.",
+      "files": [
+        "internal/cli/items_enrich.go",
+        "internal/cli/items_enrich_test.go",
+        "README.md"
+      ],
+      "validated_outcome": "gofmt/build/vet/-race clean; go test ./... passes (inverted-index reconstruction incl. repeated words; OpenAlex abstract + DOI resolvers via httptest; CrossRef->OpenAlex abstract fallback sets Source=OpenAlex and --no-openalex skips). Live vs real Zotero + real OpenAlex (preview, no writes): 'items enrich --missing-abstract --limit 120' filled 2 abstracts via OpenAlex (739 and 1023 chars) for DOI-bearing items CrossRef had no abstract for; DOI-less items skipped as expected."
     }
   ]
 }

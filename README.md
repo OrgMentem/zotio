@@ -109,7 +109,7 @@ These capabilities aren't available in any other tool for this API.
   ```bash
   zotero-pp-cli items audit --missing-abstract --missing-doi --json
   ```
-- **`items enrich`** — Turn those audit gaps into fixes: resolve missing DOIs and abstracts from CrossRef and attach open-access PDF links from Unpaywall, then write them back to Zotero.
+- **`items enrich`** — Turn those audit gaps into fixes: resolve missing DOIs and abstracts from CrossRef with an OpenAlex fallback (which fills many abstracts CrossRef lacks) and attach open-access PDF links from Unpaywall, then write them back to Zotero.
 
   _Previews a patch plan by default; pass `--yes` (or `--agent`) to apply. Field changes record provenance in the item's Extra field._
 

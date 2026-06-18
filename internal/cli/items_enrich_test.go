@@ -201,7 +201,7 @@ func TestBuildEnrichProposals_DOIFromStore(t *testing.T) {
 	withBase(t, &enrichCrossRefBase, srv.URL)
 	db := seedEnrichStore(t)
 
-	proposals, skipped := buildEnrichProposals(context.Background(), db, http.DefaultClient, "missing_doi", 25, "")
+	proposals, skipped := buildEnrichProposals(context.Background(), db, http.DefaultClient, "missing_doi", 25, "", false)
 	if len(proposals) != 1 {
 		t.Fatalf("proposals = %d, want 1: %+v", len(proposals), proposals)
 	}
@@ -295,5 +295,75 @@ func TestItemsEnrichApplyViaAPI(t *testing.T) {
 	}
 	if !report.Applied || len(report.Proposals) != 1 || report.Proposals[0].Status != "applied" {
 		t.Errorf("expected one applied proposal, got %+v", report)
+	}
+}
+
+func openAlexWorkServer(t *testing.T, body string) *httptest.Server {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(body))
+	}))
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+func TestReconstructAbstract(t *testing.T) {
+	if got := reconstructAbstract(map[string][]int{"Hello": {0}, "world": {1}, "again": {2}}); got != "Hello world again" {
+		t.Errorf("got %q, want 'Hello world again'", got)
+	}
+	// A word repeated at multiple positions.
+	if got := reconstructAbstract(map[string][]int{"the": {0, 2}, "cat": {1}, "sat": {3}}); got != "the cat the sat" {
+		t.Errorf("got %q, want 'the cat the sat'", got)
+	}
+	if reconstructAbstract(nil) != "" {
+		t.Error("nil index should reconstruct to empty")
+	}
+}
+
+func TestResolveAbstractViaOpenAlex(t *testing.T) {
+	srv := openAlexWorkServer(t, `{"results":[{"doi":"https://doi.org/10.1/x","title":"T","abstract_inverted_index":{"We":[0],"propose":[1],"Transformer":[2]}}]}`)
+	withBase(t, &enrichOpenAlexBase, srv.URL)
+	abstract, ok := resolveAbstractViaOpenAlex(context.Background(), http.DefaultClient, "10.1/x", "")
+	if !ok || abstract != "We propose Transformer" {
+		t.Errorf("abstract = %q ok=%v, want 'We propose Transformer'", abstract, ok)
+	}
+}
+
+func TestResolveDOIViaOpenAlex(t *testing.T) {
+	srv := openAlexWorkServer(t, `{"results":[{"doi":"https://doi.org/10.9/match","title":"Attention Is All You Need"}]}`)
+	withBase(t, &enrichOpenAlexBase, srv.URL)
+	data := map[string]any{"title": "attention is all you need"}
+	doi, ok := resolveDOIViaOpenAlex(context.Background(), http.DefaultClient, data, "")
+	if !ok || doi != "10.9/match" {
+		t.Errorf("doi = %q ok=%v, want 10.9/match", doi, ok)
+	}
+}
+
+// TestEnrichOpenAlexAbstractFallback: CrossRef has no abstract, so the resolver
+// falls back to OpenAlex and records the provider in Source; with the fallback
+// disabled it skips.
+func TestEnrichOpenAlexAbstractFallback(t *testing.T) {
+	cr := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"message":{}}`))
+	}))
+	t.Cleanup(cr.Close)
+	withBase(t, &enrichCrossRefBase, cr.URL)
+	oa := openAlexWorkServer(t, `{"results":[{"doi":"10.1/x","abstract_inverted_index":{"From":[0],"OpenAlex":[1]}}]}`)
+	withBase(t, &enrichOpenAlexBase, oa.URL)
+
+	data := map[string]any{"title": "T", "DOI": "10.1/x"}
+	prop, reason := resolveEnrichment(context.Background(), http.DefaultClient, "missing_abstract", "K1", float64(1), data, "", true)
+	if reason != "" {
+		t.Fatalf("unexpected skip: %s", reason)
+	}
+	if prop.Source != "OpenAlex" {
+		t.Errorf("source = %q, want OpenAlex", prop.Source)
+	}
+	if prop.Fields["abstractNote"] != "From OpenAlex" {
+		t.Errorf("abstract = %v, want 'From OpenAlex'", prop.Fields["abstractNote"])
+	}
+
+	if _, reason := resolveEnrichment(context.Background(), http.DefaultClient, "missing_abstract", "K1", float64(1), data, "", false); reason == "" {
+		t.Error("expected a skip when the OpenAlex fallback is disabled")
 	}
 }

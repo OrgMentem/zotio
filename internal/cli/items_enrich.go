@@ -28,6 +28,7 @@ import (
 var (
 	enrichCrossRefBase  = "https://api.crossref.org"
 	enrichUnpaywallBase = "https://api.unpaywall.org/v2"
+	enrichOpenAlexBase  = "https://api.openalex.org"
 )
 
 var jatsTagRE = regexp.MustCompile(`<[^>]+>`)
@@ -68,16 +69,17 @@ func newItemsEnrichCmd(flags *rootFlags) *cobra.Command {
 		flagMissingPDF      bool
 		flagLimit           int
 		flagEmail           string
+		flagNoOpenAlex      bool
 	)
 
 	cmd := &cobra.Command{
 		Use:   "enrich",
-		Short: "Fill missing item metadata (DOI, abstract, open-access PDF link) from CrossRef and Unpaywall",
+		Short: "Fill missing item metadata (DOI, abstract, open-access PDF link) from CrossRef, OpenAlex, and Unpaywall",
 		Long: `Resolve missing metadata for locally synced items and apply it back to Zotero.
 
 Work queues come from the same checks as 'items audit':
-  --missing-doi       resolve a DOI from CrossRef by title (exact title match)
-  --missing-abstract  fill the abstract from CrossRef (requires the item's DOI)
+  --missing-doi       resolve a DOI by title from CrossRef, then OpenAlex (exact title match)
+  --missing-abstract  fill the abstract from CrossRef, then OpenAlex (requires the item's DOI)
   --missing-pdf       attach an open-access PDF link from Unpaywall (requires DOI)
 
 By default this previews the proposed changes (a patch plan). Pass --yes (or
@@ -103,17 +105,18 @@ field changes record provenance in the item's Extra field.`,
 			httpClient := &http.Client{Timeout: enrichTimeout(flags.timeout)}
 			var proposals []enrichProposal
 			var skipped []enrichSkip
+			useOpenAlex := !flagNoOpenAlex
 
 			if flagMissingDOI {
-				p, s := buildEnrichProposals(cmd.Context(), db, httpClient, "missing_doi", flagLimit, flagEmail)
+				p, s := buildEnrichProposals(cmd.Context(), db, httpClient, "missing_doi", flagLimit, flagEmail, useOpenAlex)
 				proposals, skipped = append(proposals, p...), append(skipped, s...)
 			}
 			if flagMissingAbstract {
-				p, s := buildEnrichProposals(cmd.Context(), db, httpClient, "missing_abstract", flagLimit, flagEmail)
+				p, s := buildEnrichProposals(cmd.Context(), db, httpClient, "missing_abstract", flagLimit, flagEmail, useOpenAlex)
 				proposals, skipped = append(proposals, p...), append(skipped, s...)
 			}
 			if flagMissingPDF {
-				p, s := buildEnrichProposals(cmd.Context(), db, httpClient, "missing_pdf", flagLimit, flagEmail)
+				p, s := buildEnrichProposals(cmd.Context(), db, httpClient, "missing_pdf", flagLimit, flagEmail, useOpenAlex)
 				proposals, skipped = append(proposals, p...), append(skipped, s...)
 			}
 
@@ -134,10 +137,11 @@ field changes record provenance in the item's Extra field.`,
 	}
 
 	cmd.Flags().BoolVar(&flagMissingDOI, "missing-doi", false, "Resolve and add a DOI from CrossRef")
-	cmd.Flags().BoolVar(&flagMissingAbstract, "missing-abstract", false, "Fill the abstract from CrossRef (uses the item's DOI)")
+	cmd.Flags().BoolVar(&flagMissingAbstract, "missing-abstract", false, "Fill the abstract from CrossRef, then OpenAlex (uses the item's DOI)")
 	cmd.Flags().BoolVar(&flagMissingPDF, "missing-pdf", false, "Attach an open-access PDF link from Unpaywall (uses the item's DOI)")
 	cmd.Flags().IntVar(&flagLimit, "limit", 25, "Maximum items to process per category")
-	cmd.Flags().StringVar(&flagEmail, "email", "", "Contact email for the Unpaywall API (required for --missing-pdf; or set UNPAYWALL_EMAIL)")
+	cmd.Flags().StringVar(&flagEmail, "email", "", "Contact email for Unpaywall (required for --missing-pdf) and the OpenAlex polite pool (optional); or set UNPAYWALL_EMAIL")
+	cmd.Flags().BoolVar(&flagNoOpenAlex, "no-openalex", false, "Disable the OpenAlex fallback for --missing-doi/--missing-abstract")
 
 	return cmd
 }
@@ -152,7 +156,7 @@ func enrichTimeout(t time.Duration) time.Duration {
 // buildEnrichProposals resolves proposals for one category over the audit work
 // queue. It loads each candidate's full payload from the local store so the
 // provider has title/creators/DOI/version, then dispatches to the resolver.
-func buildEnrichProposals(ctx context.Context, db localQueryStore, httpClient *http.Client, category string, limit int, email string) ([]enrichProposal, []enrichSkip) {
+func buildEnrichProposals(ctx context.Context, db localQueryStore, httpClient *http.Client, category string, limit int, email string, useOpenAlex bool) ([]enrichProposal, []enrichSkip) {
 	rows, err := enrichWorkQueue(db, category, limit)
 	if err != nil {
 		return nil, []enrichSkip{{Category: category, Reason: fmt.Sprintf("querying work queue: %v", err)}}
@@ -178,7 +182,7 @@ func buildEnrichProposals(ctx context.Context, db localQueryStore, httpClient *h
 			}
 			version, data := enrichItemFields(raw)
 			title := stringFromMap(data, "title")
-			prop, reason := resolveEnrichment(ctx, httpClient, category, key, version, data, email)
+			prop, reason := resolveEnrichment(ctx, httpClient, category, key, version, data, email, useOpenAlex)
 			if reason != "" {
 				return outcome{skip: enrichSkip{Key: key, Title: title, Category: category, Reason: reason}, skipped: true}, nil
 			}
@@ -214,20 +218,26 @@ func enrichWorkQueue(db localQueryStore, category string, limit int) ([]map[stri
 
 // resolveEnrichment dispatches to the provider for a category and returns either
 // a proposal or a non-empty skip reason.
-func resolveEnrichment(ctx context.Context, httpClient *http.Client, category, key string, version any, data map[string]any, email string) (enrichProposal, string) {
+func resolveEnrichment(ctx context.Context, httpClient *http.Client, category, key string, version any, data map[string]any, email string, useOpenAlex bool) (enrichProposal, string) {
 	title := stringFromMap(data, "title")
 	switch category {
 	case "missing_doi":
 		if title == "" {
-			return enrichProposal{}, "no title to search CrossRef"
+			return enrichProposal{}, "no title to search for a DOI"
 		}
 		doi, _, ok := resolveDOIViaCrossRef(ctx, httpClient, data)
+		source := "CrossRef"
+		if !ok && useOpenAlex {
+			if d, ok2 := resolveDOIViaOpenAlex(ctx, httpClient, data, email); ok2 {
+				doi, ok, source = d, true, "OpenAlex"
+			}
+		}
 		if !ok {
-			return enrichProposal{}, "no confident CrossRef title match"
+			return enrichProposal{}, "no confident CrossRef/OpenAlex title match"
 		}
 		return enrichProposal{
 			Key: key, Title: title, Category: category, Action: enrichActionPatch,
-			Source: "CrossRef", Note: "DOI " + doi,
+			Source: source, Note: "DOI " + doi,
 			Fields:  map[string]any{"DOI": doi},
 			version: version,
 		}, ""
@@ -238,12 +248,18 @@ func resolveEnrichment(ctx context.Context, httpClient *http.Client, category, k
 			return enrichProposal{}, "no DOI to look up abstract"
 		}
 		abstract, ok := resolveAbstractViaCrossRef(ctx, httpClient, doi)
+		source := "CrossRef"
+		if !ok && useOpenAlex {
+			if a, ok2 := resolveAbstractViaOpenAlex(ctx, httpClient, doi, email); ok2 {
+				abstract, ok, source = a, true, "OpenAlex"
+			}
+		}
 		if !ok {
-			return enrichProposal{}, "CrossRef has no abstract for this DOI"
+			return enrichProposal{}, "no abstract on CrossRef or OpenAlex for this DOI"
 		}
 		return enrichProposal{
 			Key: key, Title: title, Category: category, Action: enrichActionPatch,
-			Source: "CrossRef", Note: fmt.Sprintf("abstract (%d chars)", len(abstract)),
+			Source: source, Note: fmt.Sprintf("abstract (%d chars)", len(abstract)),
 			Fields:  map[string]any{"abstractNote": abstract},
 			version: version,
 		}, ""
@@ -410,6 +426,102 @@ func resolvePDFViaUnpaywall(ctx context.Context, httpClient *http.Client, doi, e
 		return resp.BestOA.URL, true
 	}
 	return "", false
+}
+
+// --- OpenAlex (fallback for DOI + abstract; OA PDFs stay on Unpaywall, whose
+// data OpenAlex merely re-serves). PATCH(glean mmmd). ---
+
+type openAlexWork struct {
+	DOI                   string           `json:"doi"`
+	Title                 string           `json:"title"`
+	AbstractInvertedIndex map[string][]int `json:"abstract_inverted_index"`
+}
+
+type openAlexSearchResponse struct {
+	Results []openAlexWork `json:"results"`
+}
+
+func openAlexWorksURL(filter, email string) string {
+	v := url.Values{"filter": {filter}, "per_page": {"5"}}
+	if email != "" {
+		v.Set("mailto", email) // OpenAlex "polite pool"
+	}
+	return enrichOpenAlexBase + "/works?" + v.Encode()
+}
+
+// resolveDOIViaOpenAlex searches OpenAlex by title and returns the DOI of the
+// candidate whose title matches exactly (same guard as the CrossRef resolver).
+func resolveDOIViaOpenAlex(ctx context.Context, httpClient *http.Client, data map[string]any, email string) (string, bool) {
+	title := stringFromMap(data, "title")
+	if title == "" {
+		return "", false
+	}
+	var resp openAlexSearchResponse
+	if err := getJSON(ctx, httpClient, openAlexWorksURL("title.search:"+title, email), &resp); err != nil {
+		return "", false
+	}
+	want := normalizeTitleForMatch(title)
+	for _, w := range resp.Results {
+		if w.DOI == "" || w.Title == "" {
+			continue
+		}
+		if normalizeTitleForMatch(w.Title) == want {
+			return normalizeDOI(w.DOI), true
+		}
+	}
+	return "", false
+}
+
+// resolveAbstractViaOpenAlex fetches a work by DOI and reconstructs its abstract
+// from OpenAlex's inverted index.
+func resolveAbstractViaOpenAlex(ctx context.Context, httpClient *http.Client, doi, email string) (string, bool) {
+	var resp openAlexSearchResponse
+	if err := getJSON(ctx, httpClient, openAlexWorksURL("doi:"+strings.ToLower(doi), email), &resp); err != nil {
+		return "", false
+	}
+	if len(resp.Results) == 0 {
+		return "", false
+	}
+	abstract := reconstructAbstract(resp.Results[0].AbstractInvertedIndex)
+	if abstract == "" {
+		return "", false
+	}
+	return abstract, true
+}
+
+// reconstructAbstract turns OpenAlex's {word: [positions]} inverted index back
+// into running text.
+func reconstructAbstract(idx map[string][]int) string {
+	maxPos := -1
+	for _, positions := range idx {
+		for _, p := range positions {
+			if p > maxPos {
+				maxPos = p
+			}
+		}
+	}
+	if maxPos < 0 {
+		return ""
+	}
+	words := make([]string, maxPos+1)
+	for word, positions := range idx {
+		for _, p := range positions {
+			if p >= 0 && p <= maxPos {
+				words[p] = word
+			}
+		}
+	}
+	var b strings.Builder
+	for _, w := range words {
+		if w == "" {
+			continue
+		}
+		if b.Len() > 0 {
+			b.WriteByte(' ')
+		}
+		b.WriteString(w)
+	}
+	return strings.TrimSpace(b.String())
 }
 
 // getJSON performs a GET and decodes a JSON body, treating non-2xx as an error.
