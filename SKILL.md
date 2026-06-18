@@ -55,7 +55,7 @@ These capabilities aren't available in any other tool for this API.
   ```bash
   zotero-pp-cli items missing-pdf --type journalArticle --json | jq '.[].data.DOI'
   ```
-- **`items audit`** — Count and list items missing PDFs, abstracts, DOIs, or tags — one command for a complete metadata health report.
+- **`items audit`** — Count and list items missing PDFs, abstracts, DOIs, tags, or core citation fields (`--missing-citation`), and verify PDF files exist on disk (`--verify-files`) — one command for a complete metadata health report.
 
   _Use this before a systematic review export to identify items that need metadata enrichment._
 
@@ -222,6 +222,7 @@ The `--out` and `--format` flags override these values.
 - `zotero-pp-cli items delete` — Delete an item (moves to trash)
 - `zotero-pp-cli items file` — Resolve the on-disk path (file:// URL) of an item's PDF attachment
 - `zotero-pp-cli items fulltext` — Get extracted full text from an item's PDF attachment
+- `zotero-pp-cli items summarize` — Assemble a bounded, synthesis-ready context bundle (citation, abstract, annotations, capped fulltext excerpt) for an item or collection
 - `zotero-pp-cli items get` — Get a single item by key
 - `zotero-pp-cli items list` — List all items in the library
 - `zotero-pp-cli items tags` — Get tags for a specific item

@@ -185,6 +185,25 @@ func RegisterPrompts(s *server.MCPServer) {
 			), nil
 		},
 	)
+
+	// PATCH(glean nbiv): synthesize from a bounded context bundle (items summarize).
+	s.AddPrompt(
+		mcplib.NewPrompt("synthesize",
+			mcplib.WithPromptDescription("Summarize an item, or synthesize across a collection, from a bounded context bundle."),
+			mcplib.WithArgument("item", mcplib.ArgumentDescription("Item key to summarize (optional)")),
+			mcplib.WithArgument("collection", mcplib.ArgumentDescription("Collection key to synthesize across (optional)")),
+		),
+		func(_ context.Context, req mcplib.GetPromptRequest) (*mcplib.GetPromptResult, error) {
+			scope := promptScope(req.Params.Arguments, "collection", "item")
+			return promptResult("Synthesize from a context bundle",
+				"Produce a synthesis"+scope+". Call the `items_summarize` tool (pass `collection` for a whole collection, or the item key) to get a "+
+					"bounded context bundle — citation, abstract, the reader's annotations, a capped fulltext excerpt, and metadata gaps. "+
+					"Write strictly from that bundle: for an item, give the core claim/contribution, method, key findings, and limitations; "+
+					"for a collection, give shared themes, agreements, contradictions, and open gaps, citing item keys. "+
+					"Respect the bundle's `truncated` flags and never invent beyond the provided material.",
+			), nil
+		},
+	)
 }
 
 // --- handlers and helpers ---

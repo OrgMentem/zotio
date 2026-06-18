@@ -86,7 +86,7 @@ func TestMCPListResources(t *testing.T) {
 func TestMCPListPrompts(t *testing.T) {
 	s := qfuqServer(t)
 	names := collectStrings(rpc(t, s, "prompts/list", nil)["prompts"], "name")
-	for _, want := range []string{"inspect-library", "export-reading-notes", "prepare-citation-export"} {
+	for _, want := range []string{"inspect-library", "export-reading-notes", "prepare-citation-export", "synthesize"} {
 		if !names[want] {
 			t.Errorf("prompts/list missing %q (got %v)", want, names)
 		}

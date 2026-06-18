@@ -38,6 +38,7 @@ func newItemsCmd(flags *rootFlags) *cobra.Command {
 	cmd.AddCommand(newItemsRecentCmd(flags))
 	cmd.AddCommand(newItemsRestoreCmd(flags))
 	cmd.AddCommand(newItemsStaleCmd(flags))
+	cmd.AddCommand(newItemsSummarizeCmd(flags)) // PATCH(glean nbiv)
 	cmd.AddCommand(newItemsUnfiledCmd(flags))
 	cmd.AddCommand(newItemsVenuesCmd(flags))
 	cmd.AddCommand(newItemsGetCmd(flags))

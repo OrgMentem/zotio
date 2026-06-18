@@ -521,6 +521,21 @@
       ],
       "upstream_issue": "cli-printing-press: a migration that adds indexed columns derived from the payload must also backfill values for existing rows, or queries on those columns silently return wrong results until every row is re-synced",
       "validated_outcome": "gofmt/build/vet/-race clean; store test seeds NULL-column rows, reopens, and asserts they are populated from JSON (type-less rows become '' not NULL, 0 NULLs remain). Live on the real store: after one open, item_type populated for all 4067 items (0 NULL); 'items audit' now reports missing-pdf 103 and missing-doi 76 (were 0 before the fix)."
+    },
+    {
+      "id": "zotero-items-summarize",
+      "summary": "Added `items summarize` (glean nbiv): a synthesis-ready context bundler, not an embedded model. For an item (or every item in a collection via --collection) it assembles the highest-signal LOCAL context — citation, abstract, the reader's annotations, a capped fulltext excerpt, and metadata gaps — plus a synthesis prompt, and lets the host LLM do the writing. Bounded and honest: --max-chars caps the fulltext excerpt, --max-annotations caps annotations, --no-fulltext omits it, and every cut is reported via `truncated` flags. --agent/--json emits the structured bundle; otherwise a readable Markdown brief. Collection mode batches annotations and fulltext to avoid an N+1 rescan. Also adds an MCP `synthesize` prompt that drives the auto-registered `items_summarize` tool.",
+      "reason": "glean nbiv (AI research synthesis): keep the CLI key-free and provider-agnostic by doing the deterministic assembly + token budgeting the agent is bad at, and delegating generation to whatever model the host already has. Mirrors the existing MCP prompt pattern (export-reading-notes).",
+      "files": [
+        "internal/cli/items_summarize.go",
+        "internal/cli/items_summarize_test.go",
+        "internal/cli/items.go",
+        "internal/mcp/resources.go",
+        "internal/mcp/resources_test.go",
+        "SKILL.md",
+        "README.md"
+      ],
+      "validated_outcome": "gofmt/build/vet clean; go test ./... -count=1 passes (pure buildItemBundle: citation/abstract/annotation mapping, annotation cap with kept/total, rune-safe fulltext truncation, gap detection incl. --no-fulltext, venue/citation/truncate helpers; MCP prompts/list includes synthesize). Live vs real Zotero: human bundle, --agent JSON (with truncated flags), and --collection mode all produced correct bundles + prompts. Fulltext excerpt path is unit-tested (no fulltext synced in the store to exercise live)."
     }
   ]
 }
