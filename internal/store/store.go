@@ -217,6 +217,25 @@ func (s *Store) backfillColumns(ctx context.Context, conn *sql.Conn) error {
 	return nil
 }
 
+// backfillIndexedColumnValues populates the dependent-resource columns for rows
+// inserted before those columns existed. backfillColumns only ADDS the columns
+// (leaving NULL for existing rows), which silently breaks every query that
+// filters on them — e.g. `items audit` missing-pdf/missing-doi return 0 because
+// `item_type IN (...)` never matches a NULL. The `item_type IS NULL` guard makes
+// this a one-time, idempotent no-op on already-populated stores (insert writes
+// ” rather than NULL for type-less rows like collections). The json paths
+// mirror extractIndexedColumnsFromObj. PATCH(glean dxut-followup).
+func (s *Store) backfillIndexedColumnValues(ctx context.Context, conn *sql.Conn) error {
+	_, err := conn.ExecContext(ctx, `
+UPDATE resources SET
+	item_type = COALESCE(json_extract(data, '$.data.itemType'), json_extract(data, '$.itemType'), ''),
+	parent_key = COALESCE(json_extract(data, '$.data.parentItem'), json_extract(data, '$.parentItem'), ''),
+	annotation_color = COALESCE(json_extract(data, '$.data.annotationColor'), json_extract(data, '$.annotationColor'), ''),
+	item_date = COALESCE(json_extract(data, '$.data.dateModified'), json_extract(data, '$.dateModified'), json_extract(data, '$.data.date'), json_extract(data, '$.date'), '')
+WHERE item_type IS NULL`)
+	return err
+}
+
 func (s *Store) migrate(ctx context.Context) error {
 	conn, err := s.db.Conn(ctx)
 	if err != nil {
@@ -300,6 +319,12 @@ func (s *Store) migrate(ctx context.Context) error {
 			if _, err := conn.ExecContext(ctx, m); err != nil {
 				return fmt.Errorf("migration failed: %w", err)
 			}
+		}
+		// PATCH(glean dxut-followup): populate the indexed columns for rows that
+		// predate them; without this, item_type/parent_key stay NULL and break
+		// the audit/query commands that filter on them.
+		if err := s.backfillIndexedColumnValues(ctx, conn); err != nil {
+			return fmt.Errorf("backfilling indexed column values: %w", err)
 		}
 		// Stamp the schema version. On a fresh DB this writes 1; on an
 		// already-stamped DB this is a no-op write of the same value.

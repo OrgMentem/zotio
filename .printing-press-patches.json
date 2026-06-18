@@ -510,6 +510,17 @@
         "internal/cli/items_audit_query_test.go"
       ],
       "validated_outcome": "gofmt/build/vet/-race clean; go test ./internal/cli passes (queryPDFAttachments selects imported_file/linked_file PDFs, excludes linked_url, non-pdf, and non-attachments). Live vs real Zotero: 'items audit --verify-files --limit 15' resolved and stat-ed 15 PDF attachments, 0 missing (healthy library)."
+    },
+    {
+      "id": "zotero-backfill-indexed-columns",
+      "summary": "Backfill the indexed resource columns (item_type, parent_key, annotation_color, item_date) for rows that predate them. The hhup migration's backfillColumns only ADDED these columns, leaving them NULL for every previously-synced row; the store's migrate() now also runs an UPDATE (json paths mirroring extractIndexedColumnsFromObj) guarded by 'WHERE item_type IS NULL', so it's a one-time idempotent no-op on populated stores.",
+      "reason": "NULL item_type silently broke every query that filters on the indexed column — on the live store 'items audit' reported missing-pdf 0 and missing-doi 0 (wrong) because 'item_type IN (...)' never matches NULL. Surfaced while building the citation audit (dxut).",
+      "files": [
+        "internal/store/store.go",
+        "internal/store/backfill_test.go"
+      ],
+      "upstream_issue": "cli-printing-press: a migration that adds indexed columns derived from the payload must also backfill values for existing rows, or queries on those columns silently return wrong results until every row is re-synced",
+      "validated_outcome": "gofmt/build/vet/-race clean; store test seeds NULL-column rows, reopens, and asserts they are populated from JSON (type-less rows become '' not NULL, 0 NULLs remain). Live on the real store: after one open, item_type populated for all 4067 items (0 NULL); 'items audit' now reports missing-pdf 103 and missing-doi 76 (were 0 before the fix)."
     }
   ]
 }
