@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strconv"
 
 	"github.com/spf13/cobra"
 )
@@ -31,7 +32,12 @@ func newItemsUpdateCmd(flags *rootFlags) *cobra.Command {
 			}
 			if !stdinBody {
 			}
-			c, err := flags.newClient()
+			// PATCH: route through the write target and supply the version precondition
+			// Zotero requires for key-based writes (PATCH returns HTTP 428 without
+			// If-Unmodified-Since-Version). Mirrors items delete; the version GET and the
+			// PATCH hit the same library, so an item created on the web but not yet synced
+			// locally still resolves. An explicit version in a --stdin body is respected.
+			c, err := flags.newWriteClient()
 			if err != nil {
 				return err
 			}
@@ -75,7 +81,13 @@ func newItemsUpdateCmd(flags *rootFlags) *cobra.Command {
 					body["extra"] = bodyExtra
 				}
 			}
-			data, statusCode, err := c.Patch(path, body)
+			patchHeaders := map[string]string{}
+			if _, hasVersion := body["version"]; !hasVersion {
+				if _, v, verr := c.GetWithVersion(path, nil); verr == nil && v > 0 {
+					patchHeaders["If-Unmodified-Since-Version"] = strconv.Itoa(v)
+				}
+			}
+			data, statusCode, err := c.PatchWithHeaders(path, body, patchHeaders)
 			if err != nil {
 				return classifyAPIError(err, flags)
 			}

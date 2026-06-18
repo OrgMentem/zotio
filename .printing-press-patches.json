@@ -480,6 +480,16 @@
         "README.md"
       ],
       "validated_outcome": "Both docs build no code (markdown); content cross-checked against the implementation — pull described as fast-forward-only/conflict-on-both-changed, push as conflict-safe with _vault-zotero-conflicts/ artifacts, auth as reads-local/writes-need-key. skill/SKILL.md is a symlink to SKILL.md so it tracks automatically."
+    },
+    {
+      "id": "zotero-items-update-version-precondition",
+      "summary": "Fixed 'items update' to send the version precondition Zotero requires for key-based writes. The generated command issued a bare PATCH /items/<key> with no If-Unmodified-Since-Version, so every write returned HTTP 428 ('Either If-Unmodified-Since-Version or object version property must be provided'). It now routes through newWriteClient and, unless the --stdin body already specifies a version, GETs the live version and sends If-Unmodified-Since-Version (mirroring the items delete fix).",
+      "reason": "Same systemic generator gap as the delete command: the press emits mutating commands without Zotero's version-precondition handling, so they 428 against the version-checked write API. Discovered when 'items update' was used to drive a vault-pull conflict test.",
+      "files": [
+        "internal/cli/items_update.go"
+      ],
+      "upstream_issue": "cli-printing-press: generated PATCH/DELETE/PUT commands should supply Zotero's version precondition (If-Unmodified-Since-Version) or they 428 on key-based writes",
+      "validated_outcome": "gofmt/build/vet clean. Live vs real Zotero: 'items update <key> --title ...' on a throwaway item returned HTTP 204 (was 428 before the fix); item deleted (204)."
     }
   ]
 }
