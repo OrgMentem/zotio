@@ -17,7 +17,6 @@ import (
 	"zotero-pp-cli/internal/config"
 )
 
-var version = "1.0.0"
 
 type rootFlags struct {
 	asJSON        bool
