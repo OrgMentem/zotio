@@ -6,6 +6,7 @@ package cli
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	"zotero-pp-cli/internal/store"
 
@@ -41,6 +42,9 @@ func newItemsFindCmd(flags *rootFlags) *cobra.Command {
 			defer storeDB.Close()
 			db := localQueryStore{Store: storeDB}
 
+			// PATCH(glean zotero-pp-cli-513fd990b1b79758): keep PMID/citekey lookups exact by escaping SQLite LIKE wildcards.
+			escapedPMID := escapeSQLiteLikeLiteral(flagPMID)
+			escapedCitekey := escapeSQLiteLikeLiteral(flagCitekey)
 			rows, err := db.QueryRaw(`
 SELECT id, data
 FROM resources
@@ -48,10 +52,10 @@ WHERE resource_type = 'items'
 	AND (
 		(? != '' AND json_extract(data, '$.data.DOI') = ?)
 		OR (? != '' AND json_extract(data, '$.data.ISBN') = ?)
-		OR (? != '' AND json_extract(data, '$.data.extra') LIKE '%PMID: ' || ? || '%')
-		OR (? != '' AND json_extract(data, '$.data.extra') LIKE '%Citation Key: ' || ? || '%')
+		OR (? != '' AND json_extract(data, '$.data.extra') LIKE '%PMID: ' || ? || '%' ESCAPE '\')
+		OR (? != '' AND json_extract(data, '$.data.extra') LIKE '%Citation Key: ' || ? || '%' ESCAPE '\')
 	)
-ORDER BY id`, flagDOI, flagDOI, flagISBN, flagISBN, flagPMID, flagPMID, flagCitekey, flagCitekey)
+ORDER BY id`, flagDOI, flagDOI, flagISBN, flagISBN, flagPMID, escapedPMID, flagCitekey, escapedCitekey)
 			if err != nil {
 				return fmt.Errorf("querying local identifiers: %w", err)
 			}
@@ -68,6 +72,13 @@ ORDER BY id`, flagDOI, flagDOI, flagISBN, flagISBN, flagPMID, flagPMID, flagCite
 	cmd.Flags().StringVar(&flagCitekey, "citekey", "", "Find items with this Better BibTeX citation key")
 
 	return cmd
+}
+
+func escapeSQLiteLikeLiteral(value string) string {
+	value = strings.ReplaceAll(value, `\`, `\\`)
+	value = strings.ReplaceAll(value, `%`, `\%`)
+	value = strings.ReplaceAll(value, `_`, `\_`)
+	return value
 }
 
 func extractItemDataRows(rows []map[string]any) []map[string]any {

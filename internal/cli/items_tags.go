@@ -14,9 +14,10 @@ import (
 func newItemsTagsCmd(flags *rootFlags) *cobra.Command {
 
 	cmd := &cobra.Command{
-		Use:         "tags <itemKey>",
-		Short:       "Get tags for a specific item",
-		Example:     "  zotero-pp-cli items tags your-token-here",
+		Use:   "tags <itemKey>",
+		Short: "Get tags for a specific item",
+		// PATCH(glean zotero-pp-cli-76875fc8c78bd05c): use an item key placeholder, not a token.
+		Example:     "  zotero-pp-cli items tags ABC12345",
 		Annotations: map[string]string{"pp:endpoint": "items.tags", "pp:method": "GET", "pp:path": "/items/{itemKey}/tags", "mcp:read-only": "true"},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if len(args) == 0 {

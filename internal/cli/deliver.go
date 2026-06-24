@@ -7,6 +7,8 @@ import (
 	"bytes"
 	"fmt"
 	"net/http"
+	"net/netip"
+	neturl "net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -19,6 +21,8 @@ type DeliverSink struct {
 	Scheme string
 	Target string
 }
+
+var allowPrivateOutboundForTests bool
 
 // ParseDeliverSink parses a --deliver value. Supported schemes:
 //
@@ -45,8 +49,10 @@ func ParseDeliverSink(spec string) (DeliverSink, error) {
 			return DeliverSink{}, fmt.Errorf("--deliver file:<path> requires a path")
 		}
 	case "webhook":
-		if !strings.HasPrefix(target, "http://") && !strings.HasPrefix(target, "https://") {
-			return DeliverSink{}, fmt.Errorf("--deliver webhook:<url> requires an http:// or https:// URL, got %q", target)
+		// PATCH(glean zotero-pp-cli-a8f9611224e937cc): reject private/internal
+		// webhook targets before any command output can be POSTed to them.
+		if err := validateExternalHTTPURL(target, false); err != nil {
+			return DeliverSink{}, fmt.Errorf("--deliver webhook:<url> rejected: %w", err)
 		}
 	default:
 		return DeliverSink{}, fmt.Errorf("unknown --deliver scheme %q (supported: stdout, file, webhook)", scheme)
@@ -89,7 +95,55 @@ func deliverFile(path string, body []byte) error {
 	return nil
 }
 
+// validateExternalHTTPURL rejects schemes and hosts that would let optional
+// outbound integrations probe local/private networks. requireHTTPS is used for
+// background telemetry-style sends where plaintext HTTP is never needed.
+func validateExternalHTTPURL(raw string, requireHTTPS bool) error {
+	u, err := neturl.Parse(strings.TrimSpace(raw))
+	if err != nil {
+		return fmt.Errorf("invalid URL %q: %w", raw, err)
+	}
+	scheme := strings.ToLower(u.Scheme)
+	if requireHTTPS {
+		if scheme != "https" {
+			return fmt.Errorf("requires an https:// URL")
+		}
+	} else if scheme != "http" && scheme != "https" {
+		return fmt.Errorf("requires an http:// or https:// URL")
+	}
+	host := u.Hostname()
+	if host == "" {
+		return fmt.Errorf("URL must include a host")
+	}
+	if !allowPrivateOutboundForTests && outboundHostIsPrivate(host) {
+		return fmt.Errorf("host %q is local or private", host)
+	}
+	return nil
+}
+
+func outboundHostIsPrivate(host string) bool {
+	h := strings.TrimSuffix(strings.ToLower(strings.TrimSpace(host)), ".")
+	switch h {
+	case "", "localhost", "ip6-localhost", "ip6-loopback":
+		return true
+	}
+	if strings.HasSuffix(h, ".localhost") || strings.HasSuffix(h, ".local") {
+		return true
+	}
+	if addr, err := netip.ParseAddr(h); err == nil {
+		cgn := netip.MustParsePrefix("100.64.0.0/10")
+		return addr.IsLoopback() || addr.IsPrivate() || addr.IsLinkLocalUnicast() || addr.IsLinkLocalMulticast() || addr.IsMulticast() || addr.IsUnspecified() || cgn.Contains(addr)
+	}
+	// Single-label names usually resolve only inside a private DNS suffix.
+	return !strings.Contains(h, ".")
+}
+
 func deliverWebhook(url string, body []byte, compact bool) error {
+	// PATCH(glean zotero-pp-cli-a8f9611224e937cc): keep direct helper calls as
+	// constrained as the public --deliver parser.
+	if err := validateExternalHTTPURL(url, false); err != nil {
+		return err
+	}
 	contentType := "application/json"
 	if compact {
 		contentType = "application/x-ndjson"
@@ -101,7 +155,11 @@ func deliverWebhook(url string, body []byte, compact bool) error {
 	req.Header.Set("Content-Type", contentType)
 	req.Header.Set("User-Agent", "zotero-pp-cli/deliver")
 
-	client := &http.Client{Timeout: 30 * time.Second}
+	client := &http.Client{Timeout: 30 * time.Second, CheckRedirect: func(req *http.Request, via []*http.Request) error {
+		// PATCH(glean zotero-pp-cli-a8f9611224e937cc): do not follow webhook
+		// redirects; a public URL must not bounce into a private service.
+		return http.ErrUseLastResponse
+	}}
 	resp, err := client.Do(req)
 	if err != nil {
 		return fmt.Errorf("posting to webhook: %w", err)

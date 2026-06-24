@@ -20,33 +20,22 @@ func isNilOrEmpty(raw json.RawMessage) bool {
 	if err := json.Unmarshal(raw, &obj); err != nil {
 		return true
 	}
-	// Check top-level fields
-	for _, key := range []string{"title", "name", "identifier", "id"} {
-		if v, ok := obj[key]; ok {
-			if v == nil {
-				continue
-			}
-			if s, ok := v.(string); ok && strings.TrimSpace(s) != "" {
-				return false
-			}
-			// Non-string, non-nil value (e.g. numeric ID) — keep it
-			if _, ok := v.(string); !ok {
-				return false
-			}
+	// Check top-level fields. PATCH(glean zotero-pp-cli-d562d3149c5f2733):
+	// keep Zotero resource envelopes from local FTS results; they identify rows
+	// by top-level "key" and usually keep title/name under nested "data".
+	if hasSearchIdentity(obj, []string{"title", "name", "identifier", "id", "key", "slug"}) {
+		return false
+	}
+	if data, ok := obj["data"].(map[string]interface{}); ok {
+		if hasSearchIdentity(data, []string{"title", "name", "identifier", "id", "key", "slug", "itemType"}) {
+			return false
 		}
 	}
 	// Check nested "document" for search result wrappers like {score, document: {name, ...}}
 	if doc, ok := obj["document"]; ok {
 		if docMap, ok := doc.(map[string]interface{}); ok {
-			for _, key := range []string{"title", "name", "identifier", "id", "slug"} {
-				if v, ok := docMap[key]; ok && v != nil {
-					if s, ok := v.(string); ok && strings.TrimSpace(s) != "" {
-						return false
-					}
-					if _, ok := v.(string); !ok {
-						return false
-					}
-				}
+			if hasSearchIdentity(docMap, []string{"title", "name", "identifier", "id", "key", "slug"}) {
+				return false
 			}
 		}
 	}
@@ -55,6 +44,24 @@ func isNilOrEmpty(raw json.RawMessage) bool {
 		return false
 	}
 	return true
+}
+
+func hasSearchIdentity(obj map[string]interface{}, keys []string) bool {
+	for _, key := range keys {
+		if v, ok := obj[key]; ok {
+			if v == nil {
+				continue
+			}
+			if s, ok := v.(string); ok {
+				if strings.TrimSpace(s) != "" {
+					return true
+				}
+				continue
+			}
+			return true
+		}
+	}
+	return false
 }
 
 // extractSearchResults unwraps API search responses by checking common envelope paths.
@@ -176,17 +183,21 @@ In local mode: searches locally synced data only.`,
 
 // outputSearchResults filters, counts, and outputs search results with provenance.
 func outputSearchResults(cmd *cobra.Command, flags *rootFlags, results []json.RawMessage, limit int, prov DataProvenance) error {
-	// Filter out entries with nil or empty identifier fields.
-	filtered := make([]json.RawMessage, 0, len(results))
-	for _, r := range results {
-		if !isNilOrEmpty(r) {
-			filtered = append(filtered, r)
+	// PATCH(glean inscribi-6pv1): keep the defensive JSON-shape filter only
+	// for live API search wrappers. Local FTS already returns concrete rows, so
+	// it avoids the per-result unmarshal hot path.
+	if prov.Source == "live" {
+		filtered := make([]json.RawMessage, 0, len(results))
+		for _, r := range results {
+			if !isNilOrEmpty(r) {
+				filtered = append(filtered, r)
+			}
 		}
+		results = filtered
 	}
-	results = filtered
 
 	// Enforce limit across aggregated results.
-	if len(results) > limit {
+	if limit > 0 && len(results) > limit {
 		results = results[:limit]
 	}
 

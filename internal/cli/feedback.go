@@ -46,11 +46,21 @@ func feedbackFilePath() (string, error) {
 // is available. Surfaced via agent-context so introspecting agents know
 // whether their feedback will ship upstream.
 func FeedbackEndpointConfigured() bool {
-	return os.Getenv("ZOTERO_FEEDBACK_ENDPOINT") != ""
+	endpoint, err := feedbackEndpoint()
+	return err == nil && endpoint != ""
 }
 
-func feedbackEndpoint() string {
-	return os.Getenv("ZOTERO_FEEDBACK_ENDPOINT")
+func feedbackEndpoint() (string, error) {
+	endpoint := strings.TrimSpace(os.Getenv("ZOTERO_FEEDBACK_ENDPOINT"))
+	if endpoint == "" {
+		return "", nil
+	}
+	// PATCH(glean zotero-pp-cli-fe00cbd82a1524c5): feedback sends may contain
+	// private CLI context, so only HTTPS public endpoints are accepted.
+	if err := validateExternalHTTPURL(endpoint, true); err != nil {
+		return "", err
+	}
+	return endpoint, nil
 }
 
 func feedbackAutoSend() bool {
@@ -72,6 +82,11 @@ func appendFeedback(entry FeedbackEntry) error {
 }
 
 func postFeedback(url string, entry FeedbackEntry) error {
+	// PATCH(glean zotero-pp-cli-fe00cbd82a1524c5): keep direct helper calls as
+	// constrained as feedbackEndpoint().
+	if err := validateExternalHTTPURL(url, true); err != nil {
+		return err
+	}
 	body, err := json.Marshal(entry)
 	if err != nil {
 		return err
@@ -82,7 +97,11 @@ func postFeedback(url string, entry FeedbackEntry) error {
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("User-Agent", "zotero-pp-cli/feedback")
-	client := &http.Client{Timeout: 15 * time.Second}
+	client := &http.Client{Timeout: 15 * time.Second, CheckRedirect: func(req *http.Request, via []*http.Request) error {
+		// PATCH(glean zotero-pp-cli-fe00cbd82a1524c5): keep a trusted HTTPS
+		// endpoint from redirecting feedback into an internal target.
+		return http.ErrUseLastResponse
+	}}
 	resp, err := client.Do(req)
 	if err != nil {
 		return fmt.Errorf("posting feedback: %w", err)
@@ -141,14 +160,20 @@ maintainer sees it.`,
 			}
 
 			upstreamResult := map[string]any{"sent": false}
-			if endpoint := feedbackEndpoint(); endpoint != "" && (send || feedbackAutoSend()) {
-				if err := postFeedback(endpoint, entry); err != nil {
-					fmt.Fprintf(cmd.ErrOrStderr(), "warning: feedback upstream POST failed: %v\n", err)
-					upstreamResult["sent"] = false
-					upstreamResult["error"] = err.Error()
-				} else {
-					upstreamResult["sent"] = true
-					upstreamResult["endpoint"] = endpoint
+			if send || feedbackAutoSend() {
+				endpoint, endpointErr := feedbackEndpoint()
+				if endpointErr != nil {
+					fmt.Fprintf(cmd.ErrOrStderr(), "warning: feedback upstream POST disabled: %v\n", endpointErr)
+					upstreamResult["error"] = endpointErr.Error()
+				} else if endpoint != "" {
+					if err := postFeedback(endpoint, entry); err != nil {
+						fmt.Fprintf(cmd.ErrOrStderr(), "warning: feedback upstream POST failed: %v\n", err)
+						upstreamResult["sent"] = false
+						upstreamResult["error"] = err.Error()
+					} else {
+						upstreamResult["sent"] = true
+						upstreamResult["endpoint"] = endpoint
+					}
 				}
 			}
 

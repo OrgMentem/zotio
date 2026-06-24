@@ -257,7 +257,12 @@ func pdfScanBytes(path string) []byte {
 		return nil
 	}
 	if fi.Size() <= scanHeadBytes+scanTailBytes {
-		data, _ := io.ReadAll(f)
+		// PATCH(glean zotero-pp-cli-2d2f9f266e5fedac): even the small-file path
+		// reads through an explicit cap instead of unbounded io.ReadAll.
+		data, _ := io.ReadAll(io.LimitReader(f, scanHeadBytes+scanTailBytes+1))
+		if int64(len(data)) > scanHeadBytes+scanTailBytes {
+			return nil
+		}
 		return data
 	}
 	head := make([]byte, scanHeadBytes)

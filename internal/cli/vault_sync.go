@@ -456,15 +456,18 @@ func vaultLibraryID(flags *rootFlags) string {
 // --- managed/user content blocks ---
 
 func managedTitleBlock(meta vaultMeta) string {
-	title := meta.Title
+	title := sanitizeManagedFenceMarkers(meta.Title)
 	if title == "" {
-		title = meta.CiteKey
+		title = sanitizeManagedFenceMarkers(meta.CiteKey)
 	}
 	return vaultTitleBegin + "\n# " + title + "\n" + vaultTitleEnd
 }
 
 func managedAbstractBlock(meta vaultMeta) string {
-	abstract := meta.Abstract
+	// PATCH(glean zotero-pp-cli-8f7c35b43c54eb75): strip managed fence
+	// marker substrings from Zotero-derived text before embedding it inside a
+	// replaceable managed region.
+	abstract := sanitizeManagedFenceMarkers(meta.Abstract)
 	if abstract == "" {
 		abstract = "(no abstract)"
 	}
@@ -476,6 +479,22 @@ func managedAbstractBlock(meta vaultMeta) string {
 	}
 	b.WriteString(vaultAbstractEnd)
 	return b.String()
+}
+
+// PATCH(glean zotero-pp-cli-8f7c35b43c54eb75): neutralize all managed-region
+// markers before rendering Zotero-controlled strings into vault notes.
+func sanitizeManagedFenceMarkers(s string) string {
+	replacer := strings.NewReplacer(
+		vaultTitleBegin, "[zotero-pp-cli title marker removed]",
+		vaultTitleEnd, "[zotero-pp-cli title marker removed]",
+		vaultAbstractBegin, "[zotero-pp-cli abstract marker removed]",
+		vaultAbstractEnd, "[zotero-pp-cli abstract marker removed]",
+		vaultAnnBegin, "[zotero-pp-cli annotations marker removed]",
+		vaultAnnEnd, "[zotero-pp-cli annotations marker removed]",
+		vaultNotesBegin, "[zotero-pp-cli notes marker removed]",
+		vaultNotesEnd, "[zotero-pp-cli notes marker removed]",
+	)
+	return replacer.Replace(s)
 }
 
 func emptyNotesRegion() string {
@@ -682,8 +701,10 @@ func renderAnnotationBlock(anns []annotationSummary) string {
 }
 
 func renderAnnotationLine(a annotationSummary) string {
-	text := strings.TrimSpace(a.Text)
-	comment := strings.TrimSpace(a.Comment)
+	// PATCH(glean zotero-pp-cli-8f7c35b43c54eb75): annotation content is also
+	// Zotero-derived text rendered inside a managed region; neutralize markers.
+	text := strings.TrimSpace(sanitizeManagedFenceMarkers(a.Text))
+	comment := strings.TrimSpace(sanitizeManagedFenceMarkers(a.Comment))
 	main := text
 	if main == "" {
 		main = comment
@@ -713,15 +734,17 @@ func renderAnnotationLine(a annotationSummary) string {
 // --- managed frontmatter ---
 
 func managedObsidianFrontmatter(meta vaultMeta) []fmEntry {
+	// PATCH(glean zotero-pp-cli-fe4b51e5566bdb90): quote every scalar
+	// Zotero metadata value that is rendered into YAML frontmatter.
 	entries := []fmEntry{
 		{"title", []string{"title: " + yamlScalar(meta.Title)}},
 		{"authors", obsidianAuthorsEntry(meta.Authors)},
-		{"year", []string{"year: " + meta.Year}},
-		{"itemType", []string{"itemType: " + meta.ItemType}},
-		{"DOI", []string{"DOI: " + meta.DOI}},
+		{"year", []string{"year: " + yamlScalar(meta.Year)}},
+		{"itemType", []string{"itemType: " + yamlScalar(meta.ItemType)}},
+		{"DOI", []string{"DOI: " + yamlScalar(meta.DOI)}},
 		{"url", []string{"url: " + yamlScalar(meta.URL)}},
-		{"citekey", []string{"citekey: " + meta.CiteKey}},
-		{"zotero_key", []string{"zotero_key: " + meta.Key}},
+		{"citekey", []string{"citekey: " + yamlScalar(meta.CiteKey)}},
+		{"zotero_key", []string{"zotero_key: " + yamlScalar(meta.Key)}},
 		{"zotero", []string{"zotero: " + yamlScalar(zoteroSelectLink(meta.Key))}},
 		{"collections", obsidianListEntry("collections", meta.Collections)},
 		{"collection_names", obsidianListEntry("collection_names", meta.CollectionNames)},
@@ -736,20 +759,22 @@ func managedObsidianFrontmatter(meta vaultMeta) []fmEntry {
 }
 
 func managedLogseqProps(meta vaultMeta) []fmEntry {
+	// PATCH(glean zotero-pp-cli-6de19ed78e68e698): Logseq properties are
+	// line-oriented, so collapse Zotero-derived values before rendering.
 	props := []fmEntry{
-		{"title", []string{"title:: " + meta.Title}},
-		{"authors", []string{"authors:: " + strings.Join(wikilinkAuthors(meta.Authors), ", ")}},
-		{"year", []string{"year:: " + meta.Year}},
-		{"item-type", []string{"item-type:: " + meta.ItemType}},
-		{"doi", []string{"doi:: " + meta.DOI}},
-		{"url", []string{"url:: " + meta.URL}},
-		{"citekey", []string{"citekey:: " + meta.CiteKey}},
-		{"zotero-key", []string{"zotero-key:: " + meta.Key}},
-		{"zotero", []string{"zotero:: " + zoteroSelectLink(meta.Key)}},
-		{"collection-names", []string{"collection-names:: " + strings.Join(meta.CollectionNames, ", ")}},
+		{"title", []string{"title:: " + logseqPropScalar(meta.Title)}},
+		{"authors", []string{"authors:: " + logseqPropScalar(strings.Join(wikilinkAuthors(meta.Authors), ", "))}},
+		{"year", []string{"year:: " + logseqPropScalar(meta.Year)}},
+		{"item-type", []string{"item-type:: " + logseqPropScalar(meta.ItemType)}},
+		{"doi", []string{"doi:: " + logseqPropScalar(meta.DOI)}},
+		{"url", []string{"url:: " + logseqPropScalar(meta.URL)}},
+		{"citekey", []string{"citekey:: " + logseqPropScalar(meta.CiteKey)}},
+		{"zotero-key", []string{"zotero-key:: " + logseqPropScalar(meta.Key)}},
+		{"zotero", []string{"zotero:: " + logseqPropScalar(zoteroSelectLink(meta.Key))}},
+		{"collection-names", []string{"collection-names:: " + logseqPropScalar(strings.Join(meta.CollectionNames, ", "))}},
 	}
 	if meta.Library != "" {
-		props = append(props, fmEntry{"zotero-library", []string{"zotero-library:: " + meta.Library}})
+		props = append(props, fmEntry{"zotero-library", []string{"zotero-library:: " + logseqPropScalar(meta.Library)}})
 	}
 	return props
 }
@@ -850,15 +875,24 @@ func obsidianListEntry(key string, vals []string) []string {
 
 // yamlScalar renders a YAML plain scalar, double-quoting when the value would
 // otherwise be ambiguous (contains ':', quotes, brackets, leading/trailing
-// space, etc.).
+// space, line breaks, etc.).
 func yamlScalar(s string) string {
 	if s == "" {
 		return `""`
 	}
-	if strings.ContainsAny(s, ":#\"'[]{}|>*&!%@`") || strings.HasPrefix(s, " ") || strings.HasSuffix(s, " ") {
+	if strings.ContainsAny(s, "\r\n:#\"'[]{}|>*&!%@`") || strings.HasPrefix(s, " ") || strings.HasSuffix(s, " ") {
 		return strconv.Quote(s)
 	}
 	return s
+}
+
+// PATCH(glean zotero-pp-cli-6de19ed78e68e698): keep Logseq property values on
+// one physical line so metadata cannot inject sibling properties.
+func logseqPropScalar(s string) string {
+	s = strings.ReplaceAll(s, "\r\n", " ")
+	s = strings.ReplaceAll(s, "\n", " ")
+	s = strings.ReplaceAll(s, "\r", " ")
+	return strings.TrimSpace(s)
 }
 
 // --- note rendering (new files) ---

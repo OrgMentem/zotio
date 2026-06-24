@@ -377,7 +377,7 @@ func renderBundleMarkdown(b summarizeBundle, level int, withPrompt bool) string 
 	}
 
 	if b.Abstract != "" {
-		fmt.Fprintf(&sb, "\n**Abstract**\n\n%s\n", b.Abstract)
+		fmt.Fprintf(&sb, "\n**Abstract**\n\n%s\n", summarizeFence(b.Abstract))
 	}
 
 	if len(b.Annotations) > 0 {
@@ -395,10 +395,10 @@ func renderBundleMarkdown(b summarizeBundle, level int, withPrompt bool) string 
 				fmt.Fprintf(&sb, "[%s] ", a.Type)
 			}
 			if a.Text != "" {
-				fmt.Fprintf(&sb, "%q", a.Text)
+				fmt.Fprintf(&sb, "%s", summarizeInlineQuote(a.Text))
 			}
 			if a.Comment != "" {
-				sb.WriteString(" — " + a.Comment)
+				sb.WriteString(" — " + summarizeInlineQuote(a.Comment))
 			}
 			sb.WriteString("\n")
 		}
@@ -409,7 +409,7 @@ func renderBundleMarkdown(b summarizeBundle, level int, withPrompt bool) string 
 		if b.Truncated.Fulltext {
 			label = "**Fulltext excerpt** (truncated)"
 		}
-		fmt.Fprintf(&sb, "\n%s\n\n%s\n", label, b.Fulltext)
+		fmt.Fprintf(&sb, "\n%s\n\n%s\n", label, summarizeFence(b.Fulltext))
 	}
 
 	if len(b.Gaps) > 0 {
@@ -420,6 +420,32 @@ func renderBundleMarkdown(b summarizeBundle, level int, withPrompt bool) string 
 		fmt.Fprintf(&sb, "\n---\n**Synthesis prompt:** %s\n", b.Prompt)
 	}
 	return sb.String()
+}
+
+func summarizeInlineQuote(s string) string {
+	s = strings.ReplaceAll(s, "\r\n", "\n")
+	s = strings.ReplaceAll(s, "\r", "\n")
+	s = strings.ReplaceAll(s, "\n", " / ")
+	return fmt.Sprintf("%q", s)
+}
+
+func summarizeFence(s string) string {
+	// PATCH(glean zotero-pp-cli-11c71f3fa4ba67f3): Zotero document content is
+	// untrusted prompt input. Delimit it with a fence longer than any embedded
+	// backtick run so content cannot escape into the surrounding instructions.
+	maxRun, run := 0, 0
+	for _, r := range s {
+		if r == '`' {
+			run++
+			if run > maxRun {
+				maxRun = run
+			}
+			continue
+		}
+		run = 0
+	}
+	fence := strings.Repeat("`", maxRun+3)
+	return fence + "\n" + s + "\n" + fence
 }
 
 func renderCollectionMarkdown(cb summarizeCollectionBundle) string {

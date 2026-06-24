@@ -101,7 +101,7 @@ func TestBuildImportItemFromURL_DOIInURL(t *testing.T) {
 	}
 }
 
-func TestBuildImportItemFromURL_EmbeddedMeta(t *testing.T) {
+func TestBuildImportItemFromURL_PrivateHostFallsBack(t *testing.T) {
 	pagesrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		_, _ = w.Write([]byte(citationHTML))
@@ -109,10 +109,10 @@ func TestBuildImportItemFromURL_EmbeddedMeta(t *testing.T) {
 	defer pagesrv.Close()
 
 	item, source := buildImportItemFromURL(context.Background(), http.DefaultClient, pagesrv.URL+"/article")
-	if source != "embedded metadata" {
-		t.Fatalf("source = %q, want embedded metadata", source)
+	if source != "fallback (no metadata)" {
+		t.Fatalf("source = %q, want fallback for private test host", source)
 	}
-	if item["title"] != "Attention Is All You Need" || item["itemType"] != "journalArticle" {
+	if item["title"] != pagesrv.URL+"/article" || item["itemType"] != "webpage" {
 		t.Errorf("item = %v", item)
 	}
 }
@@ -159,10 +159,10 @@ func TestImportURLDryRun(t *testing.T) {
 	if err := json.Unmarshal(out.Bytes(), &env); err != nil {
 		t.Fatalf("decode %q: %v", out.String(), err)
 	}
-	if !env.DryRun || env.Source != "embedded metadata" {
+	if !env.DryRun || env.Source != "fallback (no metadata)" {
 		t.Errorf("dry_run=%v source=%q", env.DryRun, env.Source)
 	}
-	if env.Item["title"] != "Attention Is All You Need" {
+	if env.Item["title"] != pagesrv.URL+"/article" {
 		t.Errorf("item title = %v", env.Item["title"])
 	}
 	// --collection assignment preserved in the previewed body.

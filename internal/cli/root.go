@@ -83,9 +83,10 @@ func Execute() error {
 
 func newRootCmd(flags *rootFlags) *cobra.Command {
 	rootCmd := &cobra.Command{
-		Use:   "zotero-pp-cli",
-		Short: `Zotero CLI — Every Zotero feature in the terminal, plus offline search, annotation export, and library analytics no existing tool of…`,
-		Long: `Zotero CLI — Every Zotero feature in the terminal, plus offline search, annotation export, and library analytics no existing tool of…
+		Use: "zotero-pp-cli",
+		// PATCH(glean zotero-pp-cli-2ec0000a278212ab): replace truncated generated help text with a complete short description.
+		Short: `Zotero CLI for library search, annotation export, item workflows, and analytics`,
+		Long: `Zotero CLI for library search, annotation export, item workflows, analytics, and local automation.
 
 Highlights (not in the official API docs):
   • tags audit   Find and fix tag drift: groups tags that differ only by case or variant, shows item counts, and generates ready-to-run merge commands.

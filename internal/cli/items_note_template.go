@@ -165,10 +165,12 @@ func renderStandardNoteTemplate(meta itemNoteMetadata, obsidian bool, now time.T
 	if meta.Year == "" {
 		b.WriteString("year:\n")
 	} else {
-		fmt.Fprintf(&b, "year: %s\n", meta.Year)
+		fmt.Fprintf(&b, "year: %s\n", strconv.Quote(meta.Year))
 	}
-	fmt.Fprintf(&b, "doi: %s\n", meta.DOI)
-	fmt.Fprintf(&b, "cite_key: %s\n", meta.CiteKey)
+	// PATCH(glean zotero-pp-cli-e968515a01ee38b4): quote Zotero-derived
+	// frontmatter scalars so DOI/citekey punctuation cannot alter YAML.
+	fmt.Fprintf(&b, "doi: %s\n", strconv.Quote(meta.DOI))
+	fmt.Fprintf(&b, "cite_key: %s\n", strconv.Quote(meta.CiteKey))
 	b.WriteString("tags: []\n")
 	fmt.Fprintf(&b, "date_read: %s\n", now.Format("2006-01-02"))
 	b.WriteString("---\n\n")
@@ -189,15 +191,17 @@ func renderLogseqNoteTemplate(meta itemNoteMetadata, now time.Time) string {
 	authors := wikilinkAuthors(meta.Authors)
 
 	var b strings.Builder
-	fmt.Fprintf(&b, "- title:: %s\n", meta.Title)
+	// PATCH(glean zotero-pp-cli-7923fdd704227626): Logseq properties are
+	// one-line fields, so collapse Zotero-derived property values.
+	fmt.Fprintf(&b, "- title:: %s\n", logseqPropScalar(meta.Title))
 	if len(authors) > 0 {
-		fmt.Fprintf(&b, "- authors:: %s\n", strings.Join(authors, ", "))
+		fmt.Fprintf(&b, "- authors:: %s\n", logseqPropScalar(strings.Join(authors, ", ")))
 	} else {
 		b.WriteString("- authors::\n")
 	}
-	fmt.Fprintf(&b, "- year:: %s\n", meta.Year)
-	fmt.Fprintf(&b, "- doi:: %s\n", meta.DOI)
-	fmt.Fprintf(&b, "- cite_key:: %s\n", meta.CiteKey)
+	fmt.Fprintf(&b, "- year:: %s\n", logseqPropScalar(meta.Year))
+	fmt.Fprintf(&b, "- doi:: %s\n", logseqPropScalar(meta.DOI))
+	fmt.Fprintf(&b, "- cite_key:: %s\n", logseqPropScalar(meta.CiteKey))
 	b.WriteString("- tags::\n")
 	fmt.Fprintf(&b, "- date_read:: %s\n", now.Format("2006-01-02"))
 	b.WriteString("- ## Abstract\n")

@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"text/tabwriter"
 	"time"
@@ -331,6 +332,14 @@ func paginatedGet(c interface {
 	if !fetchAll {
 		return c.GetWithHeaders(path, clean, headers)
 	}
+	if cursorParam == "start" {
+		// PATCH(glean zotero-pp-cli-c12e62462b4d9228): keep Zotero's offset
+		// parameter even when it is zero; the generic zero-value scrubber above
+		// drops "0", but fetch-all needs an explicit, incrementable start value.
+		if _, ok := clean[cursorParam]; !ok {
+			clean[cursorParam] = "0"
+		}
+	}
 
 	// Fetch all pages
 	allItems := make([]json.RawMessage, 0)
@@ -385,7 +394,17 @@ func paginatedGet(c interface {
 			break
 		}
 
-		// For direct arrays, can't paginate without cursor
+		if cursorParam == "start" {
+			limit, _ := strconv.Atoi(clean["limit"])
+			if limit > 0 && len(items) == limit {
+				currentStart, _ := strconv.Atoi(clean[cursorParam])
+				clean[cursorParam] = strconv.Itoa(currentStart + len(items))
+				continue
+			}
+		}
+		// PATCH(glean zotero-pp-cli-c12e62462b4d9228): direct JSON arrays can
+		// paginate via Zotero start/limit offsets; other APIs still stop here
+		// unless they expose a cursor in an object envelope.
 		break
 	}
 
@@ -726,7 +745,7 @@ func printCSV(w io.Writer, data json.RawMessage) error {
 			if v == nil {
 				vals = append(vals, "")
 			} else {
-				s := fmt.Sprintf("%v", v)
+				s := csvSafeCell(fmt.Sprintf("%v", v))
 				if strings.ContainsAny(s, ",\"\n") {
 					s = `"` + strings.ReplaceAll(s, `"`, `""`) + `"`
 				}
@@ -736,6 +755,19 @@ func printCSV(w io.Writer, data json.RawMessage) error {
 		fmt.Fprintln(w, strings.Join(vals, ","))
 	}
 	return nil
+}
+func csvSafeCell(s string) string {
+	if s == "" {
+		return s
+	}
+	// PATCH(glean zotero-pp-cli-34937352be56489d): prevent spreadsheet formula
+	// execution when Zotero-controlled values are opened as CSV.
+	switch s[0] {
+	case '=', '+', '-', '@', '\t', '\r':
+		return "'" + s
+	default:
+		return s
+	}
 }
 
 // printOutput auto-detects arrays and renders as tables, or prints raw JSON for objects.
@@ -857,6 +889,11 @@ func printAutoTable(w io.Writer, items []map[string]any) error {
 		return nil
 	}
 
+	// PATCH(glean zotero-pp-cli-85790b2a8abd2d22): Zotero item rows are
+	// resource envelopes ({key, version, data:{...}}). Flatten nested data for
+	// human tables so users see title/type/date instead of a single opaque map.
+	items = flattenResourceEnvelopesForTable(items)
+
 	// Count scalar vs complex fields to decide format
 	scalarCount := 0
 	for _, v := range items[0] {
@@ -900,6 +937,28 @@ func printAutoTable(w io.Writer, items []map[string]any) error {
 		fmt.Fprintln(tw, strings.Join(row, "\t"))
 	}
 	return tw.Flush()
+}
+
+func flattenResourceEnvelopesForTable(items []map[string]any) []map[string]any {
+	out := make([]map[string]any, 0, len(items))
+	for _, item := range items {
+		data, ok := item["data"].(map[string]any)
+		if !ok {
+			out = append(out, item)
+			continue
+		}
+		flat := make(map[string]any, len(data)+len(item))
+		for k, v := range data {
+			flat[k] = v
+		}
+		for k, v := range item {
+			if k != "data" {
+				flat[k] = v
+			}
+		}
+		out = append(out, flat)
+	}
+	return out
 }
 
 // prioritizeHeaders orders scalar fields by importance for table display.

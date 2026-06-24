@@ -14,9 +14,10 @@ import (
 func newCollectionsGetCmd(flags *rootFlags) *cobra.Command {
 
 	cmd := &cobra.Command{
-		Use:         "get <collectionKey>",
-		Short:       "Get a specific collection",
-		Example:     "  zotero-pp-cli collections get your-token-here",
+		Use:   "get <collectionKey>",
+		Short: "Get a specific collection",
+		// PATCH(glean zotero-pp-cli-76875fc8c78bd05c): use a collection key placeholder, not a token.
+		Example:     "  zotero-pp-cli collections get COLLECTIONKEY",
 		Annotations: map[string]string{"pp:endpoint": "collections.get", "pp:method": "GET", "pp:path": "/collections/{collectionKey}", "mcp:read-only": "true"},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if len(args) == 0 {

@@ -8,7 +8,6 @@ import (
 	"encoding/json"
 	"encoding/xml"
 	"fmt"
-	"io"
 	"net/http"
 	"net/url"
 	"regexp"
@@ -207,7 +206,9 @@ func lookupArxivExternalDOI(ctx context.Context, httpClient *http.Client, arxivI
 		return "", false, fmt.Errorf("querying arXiv metadata for %s: %w", arxivID, err)
 	}
 	defer resp.Body.Close()
-	body, err := io.ReadAll(resp.Body)
+	// PATCH(glean zotero-pp-cli-fc0741de747e391d): cap external arXiv Atom
+	// responses before buffering them for XML parsing.
+	body, err := readCappedExternalBody(resp.Body, 4<<20)
 	if err != nil {
 		return "", false, fmt.Errorf("reading arXiv metadata for %s: %w", arxivID, err)
 	}
@@ -257,7 +258,9 @@ func lookupCrossrefDOI(ctx context.Context, httpClient *http.Client, doi string)
 		return crossrefMatch{}, false, fmt.Errorf("querying CrossRef for DOI %s: %w", doi, err)
 	}
 	defer resp.Body.Close()
-	body, err := io.ReadAll(resp.Body)
+	// PATCH(glean zotero-pp-cli-fc0741de747e391d): cap external CrossRef
+	// responses before buffering them for JSON parsing.
+	body, err := readCappedExternalBody(resp.Body, 4<<20)
 	if err != nil {
 		return crossrefMatch{}, false, fmt.Errorf("reading CrossRef response for DOI %s: %w", doi, err)
 	}

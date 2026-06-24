@@ -5,7 +5,9 @@ package cli
 
 import (
 	"fmt"
+	"io"
 	"os"
+	"strings"
 
 	"github.com/spf13/cobra"
 	"zotero-pp-cli/internal/config"
@@ -61,7 +63,7 @@ func newAuthStatusCmd(flags *rootFlags) *cobra.Command {
 				fmt.Fprintln(w, "")
 				fmt.Fprintln(w, "Set your token:")
 				fmt.Fprintln(w, "  export ZOTERO_API_KEY=\"your-token-here\"")
-				fmt.Fprintf(w, "  zotero-pp-cli auth set-token <token>\n")
+				fmt.Fprintf(w, "  printf %%s \"$ZOTERO_API_KEY\" | zotero-pp-cli auth set-token --stdin\n")
 				return authErr(fmt.Errorf("no credentials configured"))
 			}
 
@@ -74,15 +76,31 @@ func newAuthStatusCmd(flags *rootFlags) *cobra.Command {
 }
 
 func newAuthSetTokenCmd(flags *rootFlags) *cobra.Command {
-	return &cobra.Command{
-		Use:     "set-token <token>",
+	var fromStdin bool
+	cmd := &cobra.Command{
+		Use:     "set-token --stdin",
 		Short:   "Save an API token to the config file",
-		Example: "  zotero-pp-cli auth set-token YOUR_TOKEN_HERE",
-		Args:    cobra.ExactArgs(1),
+		Example: "  printf %s \"$ZOTERO_API_KEY\" | zotero-pp-cli auth set-token --stdin",
+		Args:    cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cfg, err := config.Load(flags.configPath)
 			if err != nil {
 				return configErr(err)
+			}
+
+			// PATCH(glean zotero-pp-cli-0109b20b09d68757): do not accept API
+			// keys as positional arguments, where they leak via shell history and
+			// process listings. Read the secret from stdin only.
+			if !fromStdin {
+				return authErr(fmt.Errorf("refusing token on command line; pipe it with --stdin"))
+			}
+			tokenBytes, readErr := io.ReadAll(cmd.InOrStdin())
+			if readErr != nil {
+				return authErr(fmt.Errorf("reading token from stdin: %w", readErr))
+			}
+			token := strings.TrimSpace(string(tokenBytes))
+			if token == "" {
+				return authErr(fmt.Errorf("empty token on stdin"))
 			}
 
 			// Clear any legacy auth_header so AuthHeader() falls through to
@@ -96,7 +114,7 @@ func newAuthSetTokenCmd(flags *rootFlags) *cobra.Command {
 			// AccessToken. Writing the token to AccessToken via SaveTokens
 			// would persist the bytes but leave doctor reporting "not
 			// configured" — the slot the header builder consults stays empty.
-			if err := cfg.SaveCredential(args[0]); err != nil {
+			if err := cfg.SaveCredential(token); err != nil {
 				return configErr(fmt.Errorf("saving token: %w", err))
 			}
 
@@ -111,6 +129,8 @@ func newAuthSetTokenCmd(flags *rootFlags) *cobra.Command {
 			return nil
 		},
 	}
+	cmd.Flags().BoolVar(&fromStdin, "stdin", false, "Read the API token from stdin")
+	return cmd
 }
 
 func newAuthLogoutCmd(flags *rootFlags) *cobra.Command {

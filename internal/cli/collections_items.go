@@ -17,9 +17,10 @@ func newCollectionsItemsCmd(flags *rootFlags) *cobra.Command {
 	var flagFormat string
 
 	cmd := &cobra.Command{
-		Use:         "items <collectionKey>",
-		Short:       "List all items in a collection",
-		Example:     "  zotero-pp-cli collections items your-token-here",
+		Use:   "items <collectionKey>",
+		Short: "List all items in a collection",
+		// PATCH(glean zotero-pp-cli-76875fc8c78bd05c): use a collection key placeholder, not a token.
+		Example:     "  zotero-pp-cli collections items COLLECTIONKEY",
 		Annotations: map[string]string{"pp:endpoint": "collections.items", "pp:method": "GET", "pp:path": "/collections/{collectionKey}/items", "mcp:read-only": "true"},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if len(args) == 0 {

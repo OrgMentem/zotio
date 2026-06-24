@@ -12,6 +12,8 @@ import (
 	"io"
 	"math"
 	"net/http"
+	"net/netip"
+	"net/url"
 	"os"
 	"path/filepath"
 	"sort"
@@ -21,6 +23,11 @@ import (
 	"time"
 	"zotero-pp-cli/internal/cliutil"
 	"zotero-pp-cli/internal/config"
+)
+
+const (
+	maxZoteroResponseBytes = 64 << 20
+	defaultZoteroBaseURL   = "http://localhost:23119/api/users/0"
 )
 
 type Client struct {
@@ -39,6 +46,8 @@ type Client struct {
 	WriteBaseURL     string
 	ResolveWriteBase func() (string, error)
 	writeRouteOnce   sync.Once
+	// PATCH(glean zotero-pp-cli-c1a988cc784f8c2f): protect lazy hybrid write-route resolution.
+	writeRouteMu sync.RWMutex
 }
 
 // APIError carries HTTP status information for structured exit codes.
@@ -54,15 +63,29 @@ func (e *APIError) Error() string {
 }
 
 func newHTTPClient(timeout time.Duration, jar http.CookieJar) *http.Client {
-	return &http.Client{Timeout: timeout, Jar: jar}
+	return &http.Client{
+		Timeout: timeout,
+		Jar:     jar,
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			if len(via) > 0 && !strings.EqualFold(req.URL.Host, via[0].URL.Host) {
+				// PATCH(glean zotero-pp-cli-343c18a699e817f9): Go's default
+				// redirect policy does not strip custom auth headers, so remove
+				// Zotero credentials when a redirect crosses origin boundaries.
+				req.Header.Del("Zotero-API-Key")
+				req.Header.Del("Authorization")
+			}
+			return nil
+		},
+	}
 }
 
 func New(cfg *config.Config, timeout time.Duration, rateLimit float64) *Client {
 	homeDir, _ := os.UserHomeDir()
 	cacheDir := filepath.Join(homeDir, ".cache", "zotero-pp-cli")
 	httpClient := newHTTPClient(timeout, nil)
+	baseURL := sanitizeClientBaseURL(cfg.BaseURL)
 	return &Client{
-		BaseURL:    strings.TrimRight(cfg.BaseURL, "/"),
+		BaseURL:    baseURL,
 		Config:     cfg,
 		HTTPClient: httpClient,
 		cacheDir:   cacheDir,
@@ -137,9 +160,14 @@ func (c *Client) readCache(path string, params map[string]string) (json.RawMessa
 }
 
 func (c *Client) writeCache(path string, params map[string]string, data json.RawMessage) {
-	os.MkdirAll(c.cacheDir, 0o755)
+	// PATCH(glean zotero-pp-cli-1b0de7a8b950a33c): cached Zotero API payloads
+	// contain private library metadata, so keep the directory and files private
+	// even when they already existed with older world-readable permissions.
+	_ = os.MkdirAll(c.cacheDir, 0o700)
+	_ = os.Chmod(c.cacheDir, 0o700)
 	cacheFile := filepath.Join(c.cacheDir, c.cacheKey(path, params)+".json")
-	os.WriteFile(cacheFile, []byte(data), 0o644)
+	_ = os.WriteFile(cacheFile, []byte(data), 0o600)
+	_ = os.Chmod(cacheFile, 0o600)
 }
 
 // invalidateCache wholesale-removes the cache directory so the next read
@@ -242,7 +270,10 @@ func (c *Client) doRequest(method, path string, params map[string]string, body a
 			req.URL.RawQuery = q.Encode()
 		}
 
-		if authHeader != "" {
+		// PATCH(glean zotero-pp-cli-a5b534f4877ea94c): only attach the Zotero API
+		// key to trusted Zotero/local API origins, so a hostile ZOTERO_BASE_URL
+		// override cannot harvest credentials.
+		if authHeader != "" && shouldSendZoteroAuth(req.URL) {
 			req.Header.Set("Zotero-API-Key", authHeader)
 		}
 		if c.Config != nil {
@@ -254,6 +285,12 @@ func (c *Client) doRequest(method, path string, params map[string]string, body a
 		for k, v := range headerOverrides {
 			req.Header.Set(k, v)
 		}
+		// PATCH(glean zotero-pp-cli-a5b534f4877ea94c): also strip any custom
+		// config/override auth headers from untrusted base URLs.
+		if !shouldSendZoteroAuth(req.URL) {
+			req.Header.Del("Zotero-API-Key")
+			req.Header.Del("Authorization")
+		}
 		if req.Header.Get("User-Agent") == "" {
 			req.Header.Set("User-Agent", "zotero-pp-cli/0.1.0")
 		}
@@ -264,10 +301,15 @@ func (c *Client) doRequest(method, path string, params map[string]string, body a
 			continue
 		}
 
-		respBody, err := io.ReadAll(resp.Body)
+		// PATCH(glean zotero-pp-cli-b40c15a8c38d8ac7): cap API response bodies
+		// before buffering them for cache/error handling.
+		respBody, err := io.ReadAll(io.LimitReader(resp.Body, maxZoteroResponseBytes+1))
 		resp.Body.Close()
 		if err != nil {
 			return nil, 0, nil, fmt.Errorf("reading response: %w", err)
+		}
+		if int64(len(respBody)) > maxZoteroResponseBytes {
+			return nil, 0, nil, fmt.Errorf("response exceeded %d bytes", maxZoteroResponseBytes)
 		}
 		respBody = sanitizeJSONResponse(respBody)
 
@@ -315,6 +357,47 @@ func (c *Client) doRequest(method, path string, params map[string]string, body a
 	return nil, 0, nil, lastErr
 }
 
+func shouldSendZoteroAuth(u *url.URL) bool {
+	if u == nil {
+		return false
+	}
+	// Local Zotero HTTP does not need the Web API key; only the canonical HTTPS
+	// Web API should receive it.
+	return u.Scheme == "https" && strings.EqualFold(u.Hostname(), "api.zotero.org")
+}
+
+func sanitizeClientBaseURL(raw string) string {
+	base := strings.TrimRight(raw, "/")
+	u, err := url.Parse(base)
+	if err == nil && trustedZoteroBaseURL(u) {
+		return base
+	}
+	// PATCH(glean zotero-pp-cli-a5b534f4877ea94c): reject hostile base URL
+	// overrides before any API traffic is routed to an attacker-controlled host.
+	fmt.Fprintf(os.Stderr, "warning: ignoring untrusted Zotero base URL %q; using %s\n", raw, defaultZoteroBaseURL)
+	return defaultZoteroBaseURL
+}
+
+func trustedZoteroBaseURL(u *url.URL) bool {
+	if u == nil {
+		return false
+	}
+	host := strings.TrimSuffix(strings.ToLower(u.Hostname()), ".")
+	if u.Scheme == "https" && host == "api.zotero.org" {
+		return true
+	}
+	if u.Scheme != "http" {
+		return false
+	}
+	if host == "localhost" {
+		return true
+	}
+	if addr, err := netip.ParseAddr(host); err == nil {
+		return addr.IsLoopback()
+	}
+	return false
+}
+
 // baseURLFor returns the base URL for a request: writes (non-GET) route to the
 // resolved WriteBaseURL when hybrid routing is configured; reads use BaseURL. The
 // write base is resolved lazily on first use.
@@ -323,8 +406,11 @@ func (c *Client) baseURLFor(method string) string {
 		return c.BaseURL
 	}
 	c.resolveWriteRoute()
-	if c.WriteBaseURL != "" {
-		return c.WriteBaseURL
+	c.writeRouteMu.RLock()
+	writeBase := c.WriteBaseURL
+	c.writeRouteMu.RUnlock()
+	if writeBase != "" {
+		return writeBase
 	}
 	return c.BaseURL
 }
@@ -333,7 +419,13 @@ func (c *Client) baseURLFor(method string) string {
 // success it sets WriteBaseURL and prints a one-time notice; on failure it leaves
 // WriteBaseURL empty so the write falls through to BaseURL (and the read-only guard).
 func (c *Client) resolveWriteRoute() {
-	if c.ResolveWriteBase == nil || c.WriteBaseURL != "" {
+	if c.ResolveWriteBase == nil {
+		return
+	}
+	c.writeRouteMu.RLock()
+	resolved := c.WriteBaseURL != ""
+	c.writeRouteMu.RUnlock()
+	if resolved {
 		return
 	}
 	c.writeRouteOnce.Do(func() {
@@ -341,7 +433,9 @@ func (c *Client) resolveWriteRoute() {
 		if err != nil || base == "" {
 			return
 		}
+		c.writeRouteMu.Lock()
 		c.WriteBaseURL = base
+		c.writeRouteMu.Unlock()
 		fmt.Fprintf(os.Stderr, "→ writing via Zotero Web API: %s (reads stay local)\n", base)
 	})
 }

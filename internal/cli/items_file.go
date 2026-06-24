@@ -7,6 +7,7 @@
 package cli
 
 import (
+	"encoding/json"
 	"fmt"
 	"net/url"
 	"strings"
@@ -78,7 +79,8 @@ func resolveAttachmentFileURL(c *client.Client, itemKey string) (string, string,
 		return itemKey, fileURL, nil
 	}
 	// Otherwise resolve the item's PDF attachment among its children.
-	childrenPath := replacePathParam("/items/{itemKey}/children", "itemKey", itemKey)
+	// PATCH(glean zotero-pp-cli-1b05b22e1aeb8dd6): encode the user-supplied key as one Zotero path segment.
+	childrenPath := replacePathParam("/items/{itemKey}/children", "itemKey", url.PathEscape(itemKey))
 	children, err := c.Get(childrenPath, nil)
 	if err != nil {
 		return "", "", err
@@ -98,7 +100,8 @@ func resolveAttachmentFileURL(c *client.Client, itemKey string) (string, string,
 // endpoint returns the file:// URL as plain text. A request error (e.g. the key
 // is a regular item with no file) reports ok=false so the caller can fall back.
 func fetchAttachmentFileURL(c *client.Client, key string) (string, bool) {
-	path := replacePathParam("/items/{key}/file/view/url", "key", key)
+	// PATCH(glean zotero-pp-cli-1b05b22e1aeb8dd6): encode the attachment key as one Zotero path segment.
+	path := replacePathParam("/items/{key}/file/view/url", "key", url.PathEscape(key))
 	data, err := c.Get(path, nil)
 	if err != nil {
 		return "", false
@@ -107,12 +110,26 @@ func fetchAttachmentFileURL(c *client.Client, key string) (string, bool) {
 	if s == "" {
 		return "", false
 	}
+	// PATCH(glean zotero-pp-cli-777199d613c05bfd): tolerate local API builds that return the URL as a quoted JSON string.
+	if strings.HasPrefix(s, `"`) {
+		var quoted string
+		if err := json.Unmarshal([]byte(s), &quoted); err == nil {
+			s = strings.TrimSpace(quoted)
+		}
+	}
 	return s, true
 }
 
 // fileURLToPath converts a file:// URL to a filesystem path, percent-decoding it.
 // Non-file URLs (e.g. a linked web attachment) are returned unchanged.
 func fileURLToPath(u string) string {
+	// PATCH(glean zotero-pp-cli-777199d613c05bfd): normalize quoted URL strings even when callers bypass fetchAttachmentFileURL.
+	if strings.HasPrefix(u, `"`) {
+		var quoted string
+		if err := json.Unmarshal([]byte(u), &quoted); err == nil {
+			u = strings.TrimSpace(quoted)
+		}
+	}
 	if !strings.HasPrefix(u, "file://") {
 		return u
 	}

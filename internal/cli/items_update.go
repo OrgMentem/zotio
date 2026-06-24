@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net/url"
 	"os"
 	"strconv"
 
@@ -22,9 +23,10 @@ func newItemsUpdateCmd(flags *rootFlags) *cobra.Command {
 	var stdinBody bool
 
 	cmd := &cobra.Command{
-		Use:         "update <itemKey>",
-		Short:       "Update a specific item",
-		Example:     "  zotero-pp-cli items update your-token-here",
+		Use:   "update <itemKey>",
+		Short: "Update a specific item",
+		// PATCH(glean zotero-pp-cli-76875fc8c78bd05c): use an item-key placeholder, not an API-token placeholder.
+		Example:     "  zotero-pp-cli items update ABCD1234 --title \"Updated title\"",
 		Annotations: map[string]string{"pp:endpoint": "items.update", "pp:method": "PATCH", "pp:path": "/items/{itemKey}"},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if len(args) == 0 {
@@ -41,9 +43,8 @@ func newItemsUpdateCmd(flags *rootFlags) *cobra.Command {
 			if err != nil {
 				return err
 			}
-
-			path := "/items/{itemKey}"
-			path = replacePathParam(path, "itemKey", args[0])
+			// PATCH(glean zotero-pp-cli-1b05b22e1aeb8dd6): encode the item key as a single Zotero path segment.
+			path := replacePathParam("/items/{itemKey}", "itemKey", url.PathEscape(args[0]))
 			var body map[string]any
 			if stdinBody {
 				stdinData, err := io.ReadAll(os.Stdin)

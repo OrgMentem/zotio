@@ -131,8 +131,8 @@ func TestSyncPageExtractionHelpers(t *testing.T) {
 
 func TestSyncDefaultAndResourceHelpers(t *testing.T) {
 	defaults := determinePaginationDefaults()
-	if defaults.cursorParam != "after" || defaults.limitParam != "limit" || defaults.limit != 100 {
-		t.Fatalf("determinePaginationDefaults = %+v, want after/limit/100", defaults)
+	if defaults.cursorParam != "start" || defaults.limitParam != "limit" || defaults.limit != 100 {
+		t.Fatalf("determinePaginationDefaults = %+v, want start/limit/100", defaults)
 	}
 	if got := determineSinceParam(); got != "since" {
 		t.Fatalf("determineSinceParam = %q, want since", got)
@@ -197,13 +197,16 @@ func TestSyncResourcePaginatesMultiplePages(t *testing.T) {
 		}
 		requests++
 		w.Header().Set("Content-Type", "application/json")
-		switch r.URL.Query().Get("after") {
-		case "":
-			fmt.Fprintf(w, `{"data":%s,"next_cursor":"page-2","has_more":true}`, syncTestItemsJSON("first", 100))
-		case "page-2":
-			fmt.Fprint(w, `{"data":[{"id":"last"}],"has_more":false}`)
+		switch r.URL.Query().Get("start") {
+		case "0":
+			if got := r.URL.Query().Get("limit"); got != "100" {
+				t.Errorf("limit = %q, want 100", got)
+			}
+			fmt.Fprint(w, syncTestItemsJSON("first", 100))
+		case "100":
+			fmt.Fprint(w, `[{"id":"last"}]`)
 		default:
-			t.Errorf("unexpected after cursor %q", r.URL.Query().Get("after"))
+			t.Errorf("unexpected start cursor %q", r.URL.Query().Get("start"))
 			http.Error(w, "unexpected cursor", http.StatusBadRequest)
 			return
 		}

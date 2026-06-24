@@ -5,6 +5,7 @@ package cli
 
 import (
 	"fmt"
+	"net/url"
 	"os/exec"
 
 	"zotero-pp-cli/internal/cliutil"
@@ -22,7 +23,8 @@ func newItemsOpenCmd(flags *rootFlags) *cobra.Command {
 			if len(args) == 0 {
 				return cmd.Help()
 			}
-			uri := "zotero://select/library/items/" + args[0]
+			// PATCH(glean zotero-pp-cli-3969059246039413): encode the item key as one URI path segment before handing it to Zotero/open.
+			uri := "zotero://select/library/items/" + url.PathEscape(args[0])
 			if !flagLaunch {
 				fmt.Fprintln(cmd.OutOrStdout(), uri)
 				return nil

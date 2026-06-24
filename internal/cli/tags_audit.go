@@ -121,8 +121,9 @@ func buildTagAuditPlans(tagRows, countRows []map[string]any) []tagAuditPlan {
 				continue
 			}
 			aliases = append(aliases, tag.name)
+			// PATCH(glean zotero-pp-cli-c4c1d3bd5ec4db5e): single-quote generated shell arguments and render line breaks inert.
 			commands = append(commands, fmt.Sprintf(
-				`zotero-pp-cli tags rename --from "%s" --to "%s"`,
+				`zotero-pp-cli tags rename --from %s --to %s`,
 				quoteTagAuditCommandArg(tag.name),
 				quoteTagAuditCommandArg(canonical),
 			))
@@ -149,8 +150,9 @@ func normalizeTagAuditName(tag string) string {
 }
 
 func quoteTagAuditCommandArg(value string) string {
-	replacer := strings.NewReplacer(`\`, `\\`, `"`, `\"`, `$`, `\$`, "`", "\\`")
-	return replacer.Replace(value)
+	value = strings.ReplaceAll(value, "\r", `\r`)
+	value = strings.ReplaceAll(value, "\n", `\n`)
+	return "'" + strings.ReplaceAll(value, "'", `'\''`) + "'"
 }
 
 func printTagAuditReport(cmd *cobra.Command, totalTags int, plans []tagAuditPlan, dryRun bool) error {

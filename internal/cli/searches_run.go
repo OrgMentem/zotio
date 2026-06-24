@@ -5,6 +5,7 @@ package cli
 
 import (
 	"encoding/json"
+	"net/url"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -26,7 +27,9 @@ func newSearchesRunCmd(flags *rootFlags) *cobra.Command {
 			if len(args) == 0 {
 				return cmd.Help()
 			}
-			searchKey := args[0]
+			// PATCH(glean zotero-pp-cli-5f36ee43091fc5be): encode the saved-search key as a single path segment.
+			rawSearchKey := args[0]
+			searchKey := url.PathEscape(rawSearchKey)
 			c, err := flags.newClient()
 			if err != nil {
 				return err
@@ -42,7 +45,7 @@ func newSearchesRunCmd(flags *rootFlags) *cobra.Command {
 				return printOutputWithFlags(cmd.OutOrStdout(), results, flags)
 			}
 
-			altResults, altErr := c.Get("/items", map[string]string{"q": "", "savedSearch": searchKey})
+			altResults, altErr := c.Get("/items", map[string]string{"q": "", "savedSearch": rawSearchKey})
 			if altErr == nil && !zoteroResultIsEmpty(altResults) {
 				return printOutputWithFlags(cmd.OutOrStdout(), altResults, flags)
 			}

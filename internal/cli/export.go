@@ -7,6 +7,7 @@ import (
 	"bufio"
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"os"
 	"strings"
 
@@ -60,9 +61,10 @@ large datasets as it has no memory pressure.`,
 				c.NoCache = true
 			}
 
+			// PATCH(glean zotero-pp-cli-1173a87dbf311c7d): encode the optional resource id as one path segment.
 			path := "/" + resource
 			if len(args) > 1 {
-				path += "/" + args[1]
+				path += "/" + url.PathEscape(args[1])
 			}
 
 			var writer *bufio.Writer

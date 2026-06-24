@@ -208,9 +208,9 @@ func writeThroughCache(ctx context.Context, resourceType string, data json.RawMe
 }
 
 // resolveLocal reads data from the local SQLite store.
-// Note: local reads return ALL synced data for the resource type. Endpoint-specific
-// filters (query params, path scoping like /teams/{id}/users) are NOT applied locally.
-// The provenance metadata includes "unscoped":true when params were present but not applied.
+// Item-list endpoints are routed through resolveLocalItemList so supported
+// Zotero filters/scopes are applied locally. Other endpoints fall back to a
+// generic resource dump and warn when request params cannot be reproduced.
 func resolveLocal(ctx context.Context, resourceType string, isList bool, path string, params map[string]string, reason string) (json.RawMessage, DataProvenance, error) {
 	db, err := openStoreForRead(ctx, "zotero-pp-cli")
 	if err != nil {
@@ -238,9 +238,11 @@ func resolveLocal(ctx context.Context, resourceType string, isList bool, path st
 		return data, itemProv, nil
 	}
 
-	// Warn if endpoint had filters that local reads can't reproduce
+	// Warn if this non-item endpoint had filters that local reads can't reproduce.
 	if len(params) > 0 {
-		fmt.Fprintf(os.Stderr, "warning: local data is unfiltered — endpoint filters are not applied to cached data\n")
+		// PATCH(glean zotero-pp-cli-2465cdde5e1cb719): keep the warning scoped
+		// to generic fallback reads; item-list filters returned above are applied.
+		fmt.Fprintf(os.Stderr, "warning: local data may be unfiltered — this endpoint's filters are not applied to cached data\n")
 	}
 
 	if isList {

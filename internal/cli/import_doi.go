@@ -6,7 +6,6 @@ package cli
 import (
 	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
 	"net/url"
 	"time"
@@ -95,7 +94,9 @@ func fetchCrossRefItem(cmd *cobra.Command, timeout time.Duration, doi string) (m
 	}
 	defer resp.Body.Close()
 
-	body, err := io.ReadAll(resp.Body)
+	// PATCH(glean zotero-pp-cli-43513a119010f6e1): cap CrossRef responses on
+	// this ad-hoc import path instead of reading an unbounded body into memory.
+	body, err := readCappedExternalBody(resp.Body, 1<<20)
 	if err != nil {
 		return nil, fmt.Errorf("reading CrossRef response: %w", err)
 	}

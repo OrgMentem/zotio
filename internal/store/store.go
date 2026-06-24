@@ -8,7 +8,9 @@ package store
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/binary"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -468,19 +470,26 @@ func (s *Store) upsertGenericResourceTx(tx *sql.Tx, resourceType, id string, dat
 		return err
 	}
 
-	ftsRowid := ftsRowID(id)
+	ftsRowid := ftsRowID(resourceType, id)
 	// Use explicit rowid for FTS5 compatibility with modernc.org/sqlite.
 	// Standard DELETE WHERE column=? may not work on FTS5 virtual tables.
 	if _, err = tx.Exec(`DELETE FROM resources_fts WHERE rowid = ?`, ftsRowid); err != nil {
 		fmt.Fprintf(os.Stderr, "warning: FTS index cleanup failed: %v\n", err)
 	}
 
+	searchDocument := buildSearchDocument(resourceType, data)
+	if obj != nil {
+		// PATCH(glean zotero-pp-cli-4be496e0fc4104d1): reuse the already
+		// unmarshaled batch object when constructing the FTS document instead of
+		// parsing every synced item a second time while the SQLite write lock is held.
+		searchDocument = buildSearchDocumentFromObj(resourceType, data, obj)
+	}
 	if _, err = tx.Exec(
 		`INSERT INTO resources_fts (rowid, id, resource_type, content)
 		 VALUES (?, ?, ?, ?)`,
 		// PATCH(glean cvl6): index a curated Zotero-aware document for items
 		// instead of the raw JSON blob (raw JSON retained for other types).
-		ftsRowid, id, resourceType, buildSearchDocument(resourceType, data),
+		ftsRowid, id, resourceType, searchDocument,
 	); err != nil {
 		// FTS insert failure is non-fatal
 		fmt.Fprintf(os.Stderr, "warning: FTS index update failed: %v\n", err)
@@ -522,6 +531,50 @@ func extractIndexedColumnsFromObj(obj map[string]any) (parentKey, itemType, colo
 		itemDate = asStr(LookupFieldValue(fields, "date"))
 	}
 	return parentKey, itemType, color, itemDate
+}
+
+func buildSearchDocumentFromObj(resourceType string, data json.RawMessage, obj map[string]any) string {
+	if resourceType != "items" {
+		return string(data)
+	}
+	fields := obj
+	if inner, ok := obj["data"].(map[string]any); ok {
+		fields = inner
+	}
+
+	var parts []string
+	add := func(v any) {
+		if s, ok := v.(string); ok && strings.TrimSpace(s) != "" {
+			parts = append(parts, s)
+		}
+	}
+
+	add(obj["key"])
+	for _, f := range itemSearchFields {
+		add(fields[f])
+	}
+	if creators, ok := fields["creators"].([]any); ok {
+		for _, c := range creators {
+			if cm, ok := c.(map[string]any); ok {
+				add(cm["firstName"])
+				add(cm["lastName"])
+				add(cm["name"])
+			}
+		}
+	}
+	if tags, ok := fields["tags"].([]any); ok {
+		for _, t := range tags {
+			if tm, ok := t.(map[string]any); ok {
+				add(tm["tag"])
+			}
+		}
+	}
+
+	doc := strings.Join(parts, " ")
+	if strings.TrimSpace(doc) == "" {
+		return string(data)
+	}
+	return doc
 }
 
 func (s *Store) Upsert(resourceType, id string, data json.RawMessage) error {
@@ -584,12 +637,17 @@ func (s *Store) Get(resourceType, id string) (json.RawMessage, error) {
 }
 
 func (s *Store) List(resourceType string, limit int) ([]json.RawMessage, error) {
-	if limit <= 0 {
-		limit = 200
+	query := `SELECT data FROM resources WHERE resource_type = ? ORDER BY updated_at DESC`
+	args := []any{resourceType}
+	if limit > 0 {
+		query += ` LIMIT ?`
+		args = append(args, limit)
 	}
 	rows, err := s.db.Query(
-		`SELECT data FROM resources WHERE resource_type = ? ORDER BY updated_at DESC LIMIT ?`,
-		resourceType, limit,
+		// PATCH(glean zotero-pp-cli-ecab50c0e678e7bc): limit <= 0 now means
+		// "all rows" for local list reads instead of silently capping at 200.
+		query,
+		args...,
 	)
 	if err != nil {
 		return nil, err
@@ -613,11 +671,13 @@ func (s *Store) Search(query string, limit int) ([]json.RawMessage, error) {
 	}
 	rows, err := s.db.Query(
 		`SELECT r.data FROM resources r
-		 JOIN resources_fts f ON r.id = f.id
+		 JOIN resources_fts f ON r.id = f.id AND r.resource_type = f.resource_type
 		 WHERE resources_fts MATCH ?
 		 ORDER BY rank
 		 LIMIT ?`,
-		query, limit,
+		// PATCH(glean zotero-pp-cli-d562d3149c5f2733): quote user terms and join on
+		// resource_type so FTS rows cannot cross-match same-id resources.
+		ftsMatchQuery(query), limit,
 	)
 	if err != nil {
 		return nil, err
@@ -752,15 +812,16 @@ func extractObjectID(obj map[string]any) string {
 	return ""
 }
 
-// ftsRowID derives a deterministic rowid from a string ID for use with FTS5.
-// modernc.org/sqlite's FTS5 implementation may not support DELETE WHERE column=?
-// on virtual tables, so we use explicit rowids and DELETE WHERE rowid=? instead.
-func ftsRowID(id string) int64 {
-	var h uint64
-	for _, c := range id {
-		h = h*31 + uint64(c)
-	}
-	return int64(h & 0x7FFFFFFFFFFFFFFF) // ensure positive
+// ftsRowID derives a deterministic rowid from a resource-qualified ID for use
+// with FTS5. modernc.org/sqlite's FTS5 implementation may not support DELETE
+// WHERE column=? on virtual tables, so we use explicit rowids and DELETE WHERE
+// rowid=? instead.
+func ftsRowID(resourceType, id string) int64 {
+	// PATCH(glean zotero-pp-cli-830779995edac891): include resourceType in the
+	// key and use a SHA-256-derived 63-bit value instead of the old small
+	// multiplier hash, reducing accidental FTS overwrite risk.
+	sum := sha256.Sum256([]byte(resourceType + "\x00" + id))
+	return int64(binary.BigEndian.Uint64(sum[:8]) & 0x7FFFFFFFFFFFFFFF)
 }
 
 // LookupFieldValue resolves a field value from a JSON object map, trying
@@ -820,6 +881,47 @@ var resourceIDFieldOverrides = map[string]string{}
 // annotations (x-resource-id), not this list.
 var genericIDFieldFallbacks = []string{"id", "ID", "name", "uuid", "slug", "key", "code", "uid"}
 
+type preparedResourceItem struct {
+	id   string
+	data json.RawMessage
+	obj  map[string]any
+}
+
+func prepareResourceItem(resourceType string, item json.RawMessage) (preparedResourceItem, bool, bool) {
+	var obj map[string]any
+	if err := json.Unmarshal(item, &obj); err != nil {
+		return preparedResourceItem{}, false, false
+	}
+
+	// Templated IDField wins; generic fallback list runs second when the
+	// override is empty OR the override field is absent on this particular item
+	// (response shape mismatches happen even when the spec declares x-resource-id).
+	var id string
+	if override, ok := resourceIDFieldOverrides[resourceType]; ok && override != "" {
+		if v := lookupFieldValue(obj, override); v != nil {
+			s := fmt.Sprintf("%v", v)
+			if s != "" && s != "<nil>" {
+				id = s
+			}
+		}
+	}
+	if id == "" {
+		for _, key := range genericIDFieldFallbacks {
+			if v := lookupFieldValue(obj, key); v != nil {
+				s := fmt.Sprintf("%v", v)
+				if s != "" && s != "<nil>" {
+					id = s
+					break
+				}
+			}
+		}
+	}
+	if id == "" {
+		return preparedResourceItem{}, false, true
+	}
+	return preparedResourceItem{id: id, data: item, obj: obj}, true, true
+}
+
 // UpsertBatch inserts or replaces multiple records in a single transaction
 // and returns (stored, extractFailures, err). stored counts rows actually
 // landed; extractFailures counts items that survived JSON unmarshal but had
@@ -834,53 +936,35 @@ var genericIDFieldFallbacks = []string{"id", "ID", "name", "uuid", "slug", "key"
 // only populate the generic resources table — typed tables (and indexed
 // columns like parent_id added by dependent-resource sync) would stay empty.
 func (s *Store) UpsertBatch(resourceType string, items []json.RawMessage) (int, int, error) {
+	// PATCH(glean zotero-pp-cli-4b561cdc31216983): parse JSON and extract
+	// primary keys before taking writeMu so concurrent sync workers are only
+	// serialized for the SQLite transaction, not CPU-heavy unmarshalling.
+	prepared := make([]preparedResourceItem, 0, len(items))
+	var skippedCount, extractFailures int
+	for _, item := range items {
+		row, ok, parsed := prepareResourceItem(resourceType, item)
+		if !ok {
+			skippedCount++
+			if parsed {
+				extractFailures++
+			}
+			continue
+		}
+		prepared = append(prepared, row)
+	}
+
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
 	tx, err := s.db.Begin()
 	if err != nil {
-		return 0, 0, fmt.Errorf("starting batch transaction: %w", err)
+		return 0, extractFailures, fmt.Errorf("starting batch transaction: %w", err)
 	}
 	defer tx.Rollback()
 
-	var stored, skippedCount, extractFailures int
-	for _, item := range items {
-		var obj map[string]any
-		if err := json.Unmarshal(item, &obj); err != nil {
-			skippedCount++
-			continue
-		}
-		// Templated IDField wins; generic fallback list runs second when
-		// the override is empty OR the override field is absent on this
-		// particular item (response shape mismatches happen even when the
-		// spec declares x-resource-id).
-		var id string
-		if override, ok := resourceIDFieldOverrides[resourceType]; ok && override != "" {
-			if v := lookupFieldValue(obj, override); v != nil {
-				s := fmt.Sprintf("%v", v)
-				if s != "" && s != "<nil>" {
-					id = s
-				}
-			}
-		}
-		if id == "" {
-			for _, key := range genericIDFieldFallbacks {
-				if v := lookupFieldValue(obj, key); v != nil {
-					s := fmt.Sprintf("%v", v)
-					if s != "" && s != "<nil>" {
-						id = s
-						break
-					}
-				}
-			}
-		}
-		if id == "" {
-			skippedCount++
-			extractFailures++
-			continue
-		}
-
-		if err := s.upsertGenericResourceTx(tx, resourceType, id, item, obj); err != nil {
-			return 0, extractFailures, fmt.Errorf("upserting %s/%s: %w", resourceType, id, err)
+	var stored int
+	for _, item := range prepared {
+		if err := s.upsertGenericResourceTx(tx, resourceType, item.id, item.data, item.obj); err != nil {
+			return 0, extractFailures, fmt.Errorf("upserting %s/%s: %w", resourceType, item.id, err)
 		}
 
 		switch resourceType {
@@ -979,18 +1063,20 @@ func (s *Store) GetSyncCursor(resourceType string) string {
 	return ""
 }
 
-// ListIDs returns all IDs from a resource's domain table, or from the generic
-// resources table if no domain table exists. Used by dependent sync to iterate parents.
+// ListIDs returns all IDs for a resource type from the generic resources table.
+// Used by dependent sync to iterate parents.
 func (s *Store) ListIDs(resourceType string) ([]string, error) {
-	// Try domain table first (tables are named after the resource type)
-	query := fmt.Sprintf("SELECT id FROM %s", resourceType)
-	rows, err := s.db.Query(query)
+	if resourceType == "" {
+		return nil, fmt.Errorf("resource type is required")
+	}
+	rows, err := s.db.Query(
+		// PATCH(glean zotero-pp-cli-748087f5ed8994a2): resourceType is data,
+		// not a SQL identifier; bind it instead of interpolating it as a table name.
+		"SELECT id FROM resources WHERE resource_type = ? ORDER BY id",
+		resourceType,
+	)
 	if err != nil {
-		// Fall back to generic resources table
-		rows, err = s.db.Query("SELECT id FROM resources WHERE resource_type = ?", resourceType)
-		if err != nil {
-			return nil, err
-		}
+		return nil, err
 	}
 	defer rows.Close()
 

@@ -63,6 +63,18 @@ func Load(configPath string) (*Config, error) {
 		}
 	}
 
+	// PATCH(glean zotero-pp-cli-5c20794db5b05db9): migrate the legacy auth_header slot into api_key so it cannot shadow newer credentials.
+	if cfg.ZoteroApiKey == "" && cfg.AuthHeaderVal != "" {
+		cfg.ZoteroApiKey = cfg.AuthHeaderVal
+	}
+	cfg.AuthHeaderVal = ""
+
+	// PATCH(glean zotero-pp-cli-79eafb44daa42785): Zotero uses API-key auth; ignore unsupported OAuth plaintext scaffolding in memory.
+	cfg.AccessToken = ""
+	cfg.RefreshToken = ""
+	cfg.TokenExpiry = time.Time{}
+	cfg.ClientSecret = ""
+
 	// Env var overrides
 	if v := os.Getenv("ZOTERO_API_KEY"); v != "" {
 		cfg.ZoteroApiKey = v
@@ -77,9 +89,6 @@ func Load(configPath string) (*Config, error) {
 	// config file path is exposed separately as report["config_path"], and
 	// embedding it in auth_source leaks the user's home directory through
 	// doctor's JSON envelope.
-	if cfg.AuthSource == "" && (cfg.AuthHeaderVal != "" || cfg.AccessToken != "") {
-		cfg.AuthSource = "config"
-	}
 	if cfg.AuthSource == "" && cfg.ZoteroApiKey != "" {
 		cfg.AuthSource = "config"
 	}
@@ -96,26 +105,11 @@ func Load(configPath string) (*Config, error) {
 }
 
 func (c *Config) AuthHeader() string {
-	if c.AuthHeaderVal != "" {
-		return c.AuthHeaderVal
-	}
-	token := c.ZoteroApiKey
-	if token == "" {
-		return ""
-	}
-	if c.ZoteroApiKey == "" {
-		return ""
-	}
-	return token
+	return c.ZoteroApiKey
 }
 
 func (c *Config) SaveTokens(clientID, clientSecret, accessToken, refreshToken string, expiry time.Time) error {
-	c.ClientID = clientID
-	c.ClientSecret = clientSecret
-	c.AccessToken = accessToken
-	c.RefreshToken = refreshToken
-	c.TokenExpiry = expiry
-	return c.save()
+	return fmt.Errorf("OAuth token persistence is not supported: zotero-pp-cli uses API-key auth")
 }
 
 // SaveCredential persists a single API credential to the field that

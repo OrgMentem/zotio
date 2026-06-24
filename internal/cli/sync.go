@@ -56,10 +56,8 @@ Exit codes & warnings:
   {"event":"sync_summary",...} aggregates the run.
 
   Exit 0 when at least one resource synced and no resource flagged in
-  the spec as critical (x-critical: true) failed; non-critical failures
-  emit {"event":"sync_warning","reason":"exit_policy_default_changed",
-  ...} so callers can detect that a partial failure was tolerated. Pass
-  --strict to exit non-zero on any per-resource failure. Exit is always
+  the spec as critical (x-critical: true) failed. Pass --strict to exit
+  non-zero on any per-resource failure. Exit is always
   non-zero when every selected resource failed, regardless of --strict.`,
 		Example: `  # Sync all resources
   zotero-pp-cli sync
@@ -135,6 +133,7 @@ Exit codes & warnings:
 				concurrency = 4
 			}
 
+			ctx := cmd.Context()
 			started := time.Now()
 			work := make(chan string, len(resources))
 			results := make(chan syncResult, len(resources))
@@ -144,16 +143,31 @@ Exit codes & warnings:
 				wg.Add(1)
 				go func() {
 					defer wg.Done()
-					for resource := range work {
-						res := syncResource(c, db, resource, sinceVersion, full, maxPages, concurrency == 1)
-						results <- res
+					for {
+						select {
+						case <-ctx.Done():
+							return
+						case resource, ok := <-work:
+							if !ok {
+								return
+							}
+							// PATCH(glean zotero-pp-cli-d3bc6aabf82d2ce9): stop
+							// workers between resources when the sync context is canceled.
+							res := syncResource(c, db, resource, sinceVersion, full, maxPages, concurrency == 1)
+							results <- res
+						}
 					}
 				}()
 			}
 
-			// Enqueue all resources
+			// Enqueue all resources, stopping promptly if the command is canceled.
+		enqueue:
 			for _, resource := range resources {
-				work <- resource
+				select {
+				case <-ctx.Done():
+					break enqueue
+				case work <- resource:
+				}
 			}
 			close(work)
 
@@ -190,6 +204,9 @@ Exit codes & warnings:
 					successCount++
 				}
 			}
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
 
 			// PATCH(glean hhup): opt-in full-text pass runs after the core
 			// resource sync so a fulltext failure can't fail the core sync.
@@ -213,14 +230,13 @@ Exit codes & warnings:
 			}
 
 			// Exit-code policy:
-			//   1. --strict + any error  -> non-zero (legacy contract)
+			//   1. --strict + any error  -> non-zero
 			//   2. any critical failure  -> non-zero regardless of --strict
 			//   3. nothing synced        -> non-zero (preserves "all-warned" / "all-errored" exit)
 			//   4. otherwise             -> exit 0 (any data synced + no critical failed)
-			// When branch 4 suppresses what branch 1 would have rejected, emit a
-			// one-shot sync_warning with reason "exit_policy_default_changed" so
-			// CI scripts that depend on $? != 0 can discover the contract change
-			// without reading the CHANGELOG.
+			// PATCH(glean zotero-pp-cli-397a5f904c8d9f12): remove the stale
+			// exit_policy_default_changed transition warning; this is now the
+			// standard sync contract, while --strict remains the opt-in hard-fail mode.
 			if strict && errCount > 0 {
 				return fmt.Errorf("%d resource(s) failed to sync", errCount)
 			}
@@ -233,15 +249,6 @@ Exit codes & warnings:
 				}
 				if errCount > 0 {
 					return fmt.Errorf("%d resource(s) failed to sync", errCount)
-				}
-			}
-			if errCount > 0 && !strict && criticalErrCount == 0 && successCount > 0 {
-				if !humanFriendly {
-					msg := fmt.Sprintf("%d resource(s) failed but exit code is 0 because the new default treats non-critical failures as warnings. Pass --strict to restore the old behavior, or annotate critical resources with x-critical: true. See CHANGELOG.", errCount)
-					fmt.Fprintf(os.Stdout, `{"event":"sync_warning","reason":"exit_policy_default_changed","errored":%d,"message":"%s"}`+"\n",
-						errCount, strings.ReplaceAll(msg, `"`, `\"`))
-				} else {
-					fmt.Fprintf(os.Stderr, "warning: %d resource(s) failed but exit code is 0 because the new default treats non-critical failures as warnings. Pass --strict to restore the old behavior, or annotate critical resources with x-critical: true.\n", errCount)
 				}
 			}
 			return nil
@@ -396,6 +403,8 @@ func syncResource(c interface {
 		// Set cursor for resume
 		if cursor != "" {
 			params[pageSize.cursorParam] = cursor
+		} else if pageSize.cursorParam == "start" {
+			params[pageSize.cursorParam] = "0"
 		}
 
 		// Set since filter (integer Zotero library version)
@@ -426,8 +435,20 @@ func syncResource(c interface {
 		// Try to extract items from the response.
 		// Strategy: try array first, then common wrapper keys.
 		items, nextCursor, hasMore := extractPageItems(data, pageSize.cursorParam)
+		if nextCursor == "" && pageSize.cursorParam == "start" && len(items) == pageSize.limit {
+			// PATCH(glean zotero-pp-cli-c12e62462b4d9228): Zotero array
+			// endpoints paginate via start/limit and put Link headers outside
+			// the JSON body, so derive the next offset when a full page arrives.
+			currentStart, _ := strconv.Atoi(params[pageSize.cursorParam])
+			nextCursor = strconv.Itoa(currentStart + len(items))
+			hasMore = true
+		}
 
 		if len(items) == 0 {
+			var emptyPage []json.RawMessage
+			if err := json.Unmarshal(data, &emptyPage); err == nil && len(emptyPage) == 0 {
+				break
+			}
 			// Single object response - try to store as-is
 			if err := upsertSingleObject(db, resource, data); err != nil {
 				if !humanFriendly {
@@ -595,7 +616,7 @@ type paginationDefaults struct {
 // Values are detected from the API spec by the profiler at generation time.
 func determinePaginationDefaults() paginationDefaults {
 	return paginationDefaults{
-		cursorParam: "after",
+		cursorParam: "start",
 		limitParam:  "limit",
 		limit:       100,
 	}
@@ -788,17 +809,18 @@ type discriminatorDispatch struct {
 var discriminatorDispatchers = map[string]discriminatorDispatch{}
 
 func upsertResourceBatch(db *store.Store, resource string, items []json.RawMessage) (int, int, error) {
+	storeResource := canonicalStoreResource(resource)
 	if _, ok := discriminatorDispatchers[resource]; !ok {
-		return db.UpsertBatch(resource, items)
+		return db.UpsertBatch(storeResource, items)
 	}
 
 	grouped := map[string][]json.RawMessage{}
 	order := []string{}
 	for _, item := range items {
-		target := resource
+		target := storeResource
 		var obj map[string]any
 		if err := json.Unmarshal(item, &obj); err == nil {
-			target = resolveDiscriminatedResource(resource, obj)
+			target = canonicalStoreResource(resolveDiscriminatedResource(resource, obj))
 		}
 		if _, ok := grouped[target]; !ok {
 			order = append(order, target)
@@ -816,6 +838,20 @@ func upsertResourceBatch(db *store.Store, resource string, items []json.RawMessa
 		extractFailures += targetExtractFailures
 	}
 	return stored, extractFailures, nil
+}
+
+func canonicalStoreResource(resource string) string {
+	// PATCH(glean zotero-pp-cli-de78b27d84fd7fa5): top-level list aliases
+	// contain the same records as their parent resource; store them under the
+	// canonical type so explicit alias syncs do not flip resource_type metadata.
+	switch resource {
+	case "items-top":
+		return "items"
+	case "collections-top":
+		return "collections"
+	default:
+		return resource
+	}
 }
 
 func resolveDiscriminatedResource(resource string, obj map[string]any) string {
@@ -838,7 +874,7 @@ func upsertSingleObject(db *store.Store, resource string, data json.RawMessage) 
 	var obj map[string]any
 	if err := json.Unmarshal(data, &obj); err != nil {
 		// Not a JSON object either - store raw under resource name
-		return db.Upsert(resource, resource, data)
+		return db.Upsert(canonicalStoreResource(resource), canonicalStoreResource(resource), data)
 	}
 
 	resource = resolveDiscriminatedResource(resource, obj)
@@ -850,16 +886,17 @@ func upsertSingleObject(db *store.Store, resource string, data json.RawMessage) 
 
 	switch resource {
 	default:
-		return db.Upsert(resource, id, data)
+		return db.Upsert(canonicalStoreResource(resource), id, data)
 	}
 }
 
 func defaultSyncResources() []string {
+	// PATCH(glean zotero-pp-cli-de78b27d84fd7fa5): default sync avoids
+	// overlapping top-level aliases because /items and /collections already
+	// cover those records; explicit --resources can still request them.
 	return []string{
 		"collections",
-		"collections-top",
 		"items",
-		"items-top",
 		"items-trash",
 		"schema",
 		"schema-creator-fields",

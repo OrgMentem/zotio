@@ -33,6 +33,19 @@ var (
 	attrPropRE    = regexp.MustCompile(`(?is)\bproperty\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))`)
 )
 
+// PATCH(glean zotero-pp-cli-43513a119010f6e1,zotero-pp-cli-fc0741de747e391d):
+// shared cap for ad-hoc external provider responses that are buffered locally.
+func readCappedExternalBody(r io.Reader, maxBytes int64) ([]byte, error) {
+	body, err := io.ReadAll(io.LimitReader(r, maxBytes+1))
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(body)) > maxBytes {
+		return nil, fmt.Errorf("external response exceeded %d bytes", maxBytes)
+	}
+	return body, nil
+}
+
 // buildImportItemFromURL resolves the richest item it can for a URL: CrossRef
 // metadata when a DOI is embedded in the URL, otherwise embedded page metadata,
 // otherwise a bare webpage item. The returned string describes the source used.
@@ -88,6 +101,12 @@ func crossRefItemFromDOI(ctx context.Context, httpClient *http.Client, doi strin
 // keyed by name/property plus the <title>. Returns ok=false for non-HTML
 // responses (e.g. a raw PDF) or transport errors.
 func fetchPageMeta(ctx context.Context, httpClient *http.Client, rawURL string) (map[string][]string, string, bool) {
+	// PATCH(glean zotero-pp-cli-357222230859d0f3): URL imports may fetch
+	// arbitrary user input, so metadata scraping is limited to public HTTP(S)
+	// endpoints and never probes loopback/private/link-local services.
+	if err := validateExternalHTTPURL(rawURL, false); err != nil {
+		return nil, "", false
+	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
 	if err != nil {
 		return nil, "", false
@@ -105,7 +124,7 @@ func fetchPageMeta(ctx context.Context, httpClient *http.Client, rawURL string) 
 	if ct := resp.Header.Get("Content-Type"); ct != "" && !strings.Contains(strings.ToLower(ct), "html") {
 		return nil, "", false
 	}
-	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	body, err := readCappedExternalBody(resp.Body, 1<<20)
 	if err != nil {
 		return nil, "", false
 	}

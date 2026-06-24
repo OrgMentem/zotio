@@ -13,6 +13,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"html"
+	"io"
 	"net/http"
 	"net/url"
 	"os"
@@ -30,6 +31,8 @@ var (
 	enrichUnpaywallBase = "https://api.unpaywall.org/v2"
 	enrichOpenAlexBase  = "https://api.openalex.org"
 )
+
+const maxEnrichProviderResponseBytes = 4 << 20
 
 var jatsTagRE = regexp.MustCompile(`<[^>]+>`)
 
@@ -420,10 +423,16 @@ func resolvePDFViaUnpaywall(ctx context.Context, httpClient *http.Client, doi, e
 		return "", false
 	}
 	if resp.BestOA.URLForPDF != "" {
-		return resp.BestOA.URLForPDF, true
+		// PATCH(glean zotero-pp-cli-ecf77ae9074377de): Unpaywall data becomes a
+		// Zotero linked-url attachment, so only HTTPS public URLs are accepted.
+		if err := validateExternalHTTPURL(resp.BestOA.URLForPDF, true); err == nil {
+			return resp.BestOA.URLForPDF, true
+		}
 	}
 	if resp.BestOA.URL != "" {
-		return resp.BestOA.URL, true
+		if err := validateExternalHTTPURL(resp.BestOA.URL, true); err == nil {
+			return resp.BestOA.URL, true
+		}
 	}
 	return "", false
 }
@@ -449,6 +458,13 @@ func openAlexWorksURL(filter, email string) string {
 	return enrichOpenAlexBase + "/works?" + v.Encode()
 }
 
+func openAlexFilterLiteral(value string) string {
+	// PATCH(glean zotero-pp-cli-0324fe29c56a35fe): OpenAlex decodes the query
+	// string before parsing comma-separated filters; preserve commas as literal
+	// value text instead of allowing a second filter predicate to be injected.
+	return strings.ReplaceAll(value, ",", "%2C")
+}
+
 // resolveDOIViaOpenAlex searches OpenAlex by title and returns the DOI of the
 // candidate whose title matches exactly (same guard as the CrossRef resolver).
 func resolveDOIViaOpenAlex(ctx context.Context, httpClient *http.Client, data map[string]any, email string) (string, bool) {
@@ -457,7 +473,7 @@ func resolveDOIViaOpenAlex(ctx context.Context, httpClient *http.Client, data ma
 		return "", false
 	}
 	var resp openAlexSearchResponse
-	if err := getJSON(ctx, httpClient, openAlexWorksURL("title.search:"+title, email), &resp); err != nil {
+	if err := getJSON(ctx, httpClient, openAlexWorksURL("title.search:"+openAlexFilterLiteral(title), email), &resp); err != nil {
 		return "", false
 	}
 	want := normalizeTitleForMatch(title)
@@ -476,7 +492,7 @@ func resolveDOIViaOpenAlex(ctx context.Context, httpClient *http.Client, data ma
 // from OpenAlex's inverted index.
 func resolveAbstractViaOpenAlex(ctx context.Context, httpClient *http.Client, doi, email string) (string, bool) {
 	var resp openAlexSearchResponse
-	if err := getJSON(ctx, httpClient, openAlexWorksURL("doi:"+strings.ToLower(doi), email), &resp); err != nil {
+	if err := getJSON(ctx, httpClient, openAlexWorksURL("doi:"+openAlexFilterLiteral(strings.ToLower(doi)), email), &resp); err != nil {
 		return "", false
 	}
 	if len(resp.Results) == 0 {
@@ -540,7 +556,17 @@ func getJSON(ctx context.Context, httpClient *http.Client, rawURL string, out an
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return fmt.Errorf("HTTP %d", resp.StatusCode)
 	}
-	return json.NewDecoder(resp.Body).Decode(out)
+	// PATCH(glean zotero-pp-cli-856054bc5801ad5a): cap provider JSON bodies
+	// before decoding so a hostile CrossRef/Unpaywall/OpenAlex-compatible server
+	// cannot stream unbounded data into the enrichment process.
+	limited := &io.LimitedReader{R: resp.Body, N: maxEnrichProviderResponseBytes + 1}
+	if err := json.NewDecoder(limited).Decode(out); err != nil {
+		return err
+	}
+	if limited.N <= 0 {
+		return fmt.Errorf("provider response exceeded %d bytes", maxEnrichProviderResponseBytes)
+	}
+	return nil
 }
 
 // --- reporting ---

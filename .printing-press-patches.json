@@ -450,7 +450,7 @@
     },
     {
       "id": "zotero-vault-push-writeback",
-      "summary": "Commit 3 of glean 15e0: Obsidian -> Zotero note write-back. New 'vault push [--dry-run]' mirrors each note's user-owned '## Notes' region to one tool-owned Zotero child note (created via POST with a deterministic Zotero-Write-Token for retry-safety, updated via PATCH with If-Unmodified-Since-Version). Renderer is paragraph-verbatim (Markdown reproduced as readable <p> blocks, everything HTML-escaped, nothing interpreted) so wikilinks/tables/callouts are never mangled. Per-note sync baseline (note_key, note_version, source_hash, remote_hash, renderer) is stored in a hidden state comment, not in Obsidian Properties. Conflict detection compares the local region hash to the baseline and the remote note BODY (not just item version): a divergent remote is never overwritten — a conflict artifact is written under _vault-zotero-conflicts/ and reported. A locally-unchanged note whose remote body moved is reported remote_changed (honest status via a batched format=versions check). New 'vault conflicts' lists artifacts; 'vault resolve <key> --keep-vault' republishes the vault copy using the live version (and --recreate re-creates a remotely-deleted note). Library-mismatched notes are skipped; group targets print a one-time warning. Reads stay local; writes go to the Web API via newWriteClient.",
+      "summary": "Commit 3 of glean 15e0: Obsidian -> Zotero note write-back. New 'vault push [--dry-run]' mirrors each note's user-owned '## Notes' region to one tool-owned Zotero child note (created via POST with a deterministic Zotero-Write-Token for retry-safety, updated via PATCH with If-Unmodified-Since-Version). Renderer is paragraph-verbatim (Markdown reproduced as readable <p> blocks, everything HTML-escaped, nothing interpreted) so wikilinks/tables/callouts are never mangled. Per-note sync baseline (note_key, note_version, source_hash, remote_hash, renderer) is stored in a hidden state comment, not in Obsidian Properties. Conflict detection compares the local region hash to the baseline and the remote note BODY (not just item version): a divergent remote is never overwritten \u2014 a conflict artifact is written under _vault-zotero-conflicts/ and reported. A locally-unchanged note whose remote body moved is reported remote_changed (honest status via a batched format=versions check). New 'vault conflicts' lists artifacts; 'vault resolve <key> --keep-vault' republishes the vault copy using the live version (and --recreate re-creates a remotely-deleted note). Library-mismatched notes are skipped; group targets print a one-time warning. Reads stay local; writes go to the Web API via newWriteClient.",
       "reason": "glean 15e0 deliverable: close the PKM loop so research notes written in Obsidian are published to Zotero safely. Push-only (no remote->vault merge) with conflict detection keeps it non-destructive; verbatim rendering and body-hash conflict detection avoid silent corruption and false conflicts.",
       "files": [
         "internal/cli/vault_push.go",
@@ -461,7 +461,7 @@
     },
     {
       "id": "zotero-vault-pull-fastforward",
-      "summary": "Adds 'vault pull [--dry-run]' — the safe reverse of vault push. Brings remote Zotero child-note edits into the user-owned '## Notes' region, fast-forward only: a note is updated only when its local region is unchanged since the last sync. Both-sides-changed is reported as a conflict (artifact under _vault-zotero-conflicts/) and never merged. Only notes in the managed shape this CLI writes are pulled (marker-gated); the note HTML is converted back to text conservatively (reverses the verbatim renderer; external rich formatting degrades to plain text). Refactored shared helpers out of vault_push.go (replaceOrInsertStateComment, printVaultWriteReport) for reuse.",
+      "summary": "Adds 'vault pull [--dry-run]' \u2014 the safe reverse of vault push. Brings remote Zotero child-note edits into the user-owned '## Notes' region, fast-forward only: a note is updated only when its local region is unchanged since the last sync. Both-sides-changed is reported as a conflict (artifact under _vault-zotero-conflicts/) and never merged. Only notes in the managed shape this CLI writes are pulled (marker-gated); the note HTML is converted back to text conservatively (reverses the verbatim renderer; external rich formatting degrades to plain text). Refactored shared helpers out of vault_push.go (replaceOrInsertStateComment, printVaultWriteReport) for reuse.",
       "reason": "Completes the 15e0 round-trip so edits made in the Zotero app flow back to the vault, without a risky 3-way merge: fast-forward when safe, conflict otherwise.",
       "files": [
         "internal/cli/vault_pull.go",
@@ -473,13 +473,13 @@
     },
     {
       "id": "zotero-vault-docs-refresh",
-      "summary": "Refreshed the generated product docs (SKILL.md, README.md) to match the shipped CLI: corrected the now-misleading 'no API key required' claims to the real model (reads need no key; writes — items create/update/delete and vault push/pull/resolve — require a Web API key configured once via auth set-token and auto-routed to api.zotero.org, with a doctor 'writes:' line); and documented the previously-undocumented commands: the vault sync/push/pull/conflicts/resolve write-back workflow, the [vault] config block, and items file/fulltext/annotations and schema drift.",
+      "summary": "Refreshed the generated product docs (SKILL.md, README.md) to match the shipped CLI: corrected the now-misleading 'no API key required' claims to the real model (reads need no key; writes \u2014 items create/update/delete and vault push/pull/resolve \u2014 require a Web API key configured once via auth set-token and auto-routed to api.zotero.org, with a doctor 'writes:' line); and documented the previously-undocumented commands: the vault sync/push/pull/conflicts/resolve write-back workflow, the [vault] config block, and items file/fulltext/annotations and schema drift.",
       "reason": "The product docs predated the hybrid write-routing and the entire vault feature, so they told users no key was ever needed and never mentioned vault. Generated-doc edits are cataloged per the local PATCH convention.",
       "files": [
         "SKILL.md",
         "README.md"
       ],
-      "validated_outcome": "Both docs build no code (markdown); content cross-checked against the implementation — pull described as fast-forward-only/conflict-on-both-changed, push as conflict-safe with _vault-zotero-conflicts/ artifacts, auth as reads-local/writes-need-key. skill/SKILL.md is a symlink to SKILL.md so it tracks automatically."
+      "validated_outcome": "Both docs build no code (markdown); content cross-checked against the implementation \u2014 pull described as fast-forward-only/conflict-on-both-changed, push as conflict-safe with _vault-zotero-conflicts/ artifacts, auth as reads-local/writes-need-key. skill/SKILL.md is a symlink to SKILL.md so it tracks automatically."
     },
     {
       "id": "zotero-items-update-version-precondition",
@@ -494,7 +494,7 @@
     {
       "id": "zotero-citation-audit",
       "summary": "Added a citation-readiness check to 'items audit' (glean dxut). 'items audit --missing-citation' lists citeable items missing a core citation field, annotating each with exactly which fields it lacks (creators, title, date, and the type-appropriate venue: publicationTitle for journalArticle/conferencePaper/preprint, publisher for book). The count is folded into the existing single-scan audit summary as missing_citation. Type checks use json_extract('$.data.itemType') rather than the indexed item_type column so the check is correct even on stores where that column was never backfilled.",
-      "reason": "glean dxut: surface items that cannot be cited cleanly before a manuscript handoff. Read-only and built on the existing audit infrastructure. Discovered while validating: the indexed item_type column is NULL for the whole local store, which silently zeroes the existing missing-pdf/missing-doi summary counts — the citation check deliberately avoids that dependency.",
+      "reason": "glean dxut: surface items that cannot be cited cleanly before a manuscript handoff. Read-only and built on the existing audit infrastructure. Discovered while validating: the indexed item_type column is NULL for the whole local store, which silently zeroes the existing missing-pdf/missing-doi summary counts \u2014 the citation check deliberately avoids that dependency.",
       "files": [
         "internal/cli/items_audit.go",
         "internal/cli/items_audit_query_test.go"
@@ -514,7 +514,7 @@
     {
       "id": "zotero-backfill-indexed-columns",
       "summary": "Backfill the indexed resource columns (item_type, parent_key, annotation_color, item_date) for rows that predate them. The hhup migration's backfillColumns only ADDED these columns, leaving them NULL for every previously-synced row; the store's migrate() now also runs an UPDATE (json paths mirroring extractIndexedColumnsFromObj) guarded by 'WHERE item_type IS NULL', so it's a one-time idempotent no-op on populated stores.",
-      "reason": "NULL item_type silently broke every query that filters on the indexed column — on the live store 'items audit' reported missing-pdf 0 and missing-doi 0 (wrong) because 'item_type IN (...)' never matches NULL. Surfaced while building the citation audit (dxut).",
+      "reason": "NULL item_type silently broke every query that filters on the indexed column \u2014 on the live store 'items audit' reported missing-pdf 0 and missing-doi 0 (wrong) because 'item_type IN (...)' never matches NULL. Surfaced while building the citation audit (dxut).",
       "files": [
         "internal/store/store.go",
         "internal/store/backfill_test.go"
@@ -524,7 +524,7 @@
     },
     {
       "id": "zotero-items-summarize",
-      "summary": "Added `items summarize` (glean nbiv): a synthesis-ready context bundler, not an embedded model. For an item (or every item in a collection via --collection) it assembles the highest-signal LOCAL context — citation, abstract, the reader's annotations, a capped fulltext excerpt, and metadata gaps — plus a synthesis prompt, and lets the host LLM do the writing. Bounded and honest: --max-chars caps the fulltext excerpt, --max-annotations caps annotations, --no-fulltext omits it, and every cut is reported via `truncated` flags. --agent/--json emits the structured bundle; otherwise a readable Markdown brief. Collection mode batches annotations and fulltext to avoid an N+1 rescan. Also adds an MCP `synthesize` prompt that drives the auto-registered `items_summarize` tool.",
+      "summary": "Added `items summarize` (glean nbiv): a synthesis-ready context bundler, not an embedded model. For an item (or every item in a collection via --collection) it assembles the highest-signal LOCAL context \u2014 citation, abstract, the reader's annotations, a capped fulltext excerpt, and metadata gaps \u2014 plus a synthesis prompt, and lets the host LLM do the writing. Bounded and honest: --max-chars caps the fulltext excerpt, --max-annotations caps annotations, --no-fulltext omits it, and every cut is reported via `truncated` flags. --agent/--json emits the structured bundle; otherwise a readable Markdown brief. Collection mode batches annotations and fulltext to avoid an N+1 rescan. Also adds an MCP `synthesize` prompt that drives the auto-registered `items_summarize` tool.",
       "reason": "glean nbiv (AI research synthesis): keep the CLI key-free and provider-agnostic by doing the deterministic assembly + token budgeting the agent is bad at, and delegating generation to whatever model the host already has. Mirrors the existing MCP prompt pattern (export-reading-notes).",
       "files": [
         "internal/cli/items_summarize.go",
@@ -539,14 +539,14 @@
     },
     {
       "id": "zotero-import-scan",
-      "summary": "Added `import scan <dir>` (glean q1ia): a read-only, library-aware triage of a PDF folder. For each PDF it extracts a DOI (filename with slash-decoding, then the file's uncompressed embedded metadata via a head/tail byte scan — no PDF parser, no new dependency) and classifies it against the synced library: duplicate (DOI already an item), attach_candidate (matches an item missing its PDF), new (--resolve fetches a CrossRef title), or unidentified. Reuses normalizeDOI + crossRefItemFromDOI; --json for scripting.",
-      "reason": "Deliberately does NOT re-implement Zotero's 'Retrieve Metadata for PDF' (its recognizer + the Web API file-upload protocol the CLI lacks). The clear seam is the library-aware decision the GUI cannot make — which downloads are duplicates, which complete an item you already have, which are genuinely new — so the user decides what to import. Identifier->item resolution already exists (import doi/url/file).",
+      "summary": "Added `import scan <dir>` (glean q1ia): a read-only, library-aware triage of a PDF folder. For each PDF it extracts a DOI (filename with slash-decoding, then the file's uncompressed embedded metadata via a head/tail byte scan \u2014 no PDF parser, no new dependency) and classifies it against the synced library: duplicate (DOI already an item), attach_candidate (matches an item missing its PDF), new (--resolve fetches a CrossRef title), or unidentified. Reuses normalizeDOI + crossRefItemFromDOI; --json for scripting.",
+      "reason": "Deliberately does NOT re-implement Zotero's 'Retrieve Metadata for PDF' (its recognizer + the Web API file-upload protocol the CLI lacks). The clear seam is the library-aware decision the GUI cannot make \u2014 which downloads are duplicates, which complete an item you already have, which are genuinely new \u2014 so the user decides what to import. Identifier->item resolution already exists (import doi/url/file).",
       "files": [
         "internal/cli/import_scan.go",
         "internal/cli/import_scan_test.go",
         "internal/cli/import.go"
       ],
-      "validated_outcome": "gofmt/build/vet clean; go test ./... passes (filename slash-decoded + embedded-content DOI extraction + none; classify duplicate/attach_candidate/new/unidentified with httpClient nil; DOI index build with case-insensitive keys + hasPDF). Live vs real Zotero: a 4-PDF folder classified correctly — duplicate (9UXV5R7L, has PDF), attach_candidate (10.1002/job.413 -> 5AQIZVY4, missing PDF), new (fake DOI), unidentified (no DOI); doi_source reported (content/none)."
+      "validated_outcome": "gofmt/build/vet clean; go test ./... passes (filename slash-decoded + embedded-content DOI extraction + none; classify duplicate/attach_candidate/new/unidentified with httpClient nil; DOI index build with case-insensitive keys + hasPDF). Live vs real Zotero: a 4-PDF folder classified correctly \u2014 duplicate (9UXV5R7L, has PDF), attach_candidate (10.1002/job.413 -> 5AQIZVY4, missing PDF), new (fake DOI), unidentified (no DOI); doi_source reported (content/none)."
     },
     {
       "id": "zotero-enrich-openalex",
@@ -571,8 +571,8 @@
     },
     {
       "id": "zotero-secret-sweep-scrub",
-      "summary": "Privacy scrub of real identifiers from tracked files (glean secret-sweep beads). Replaced the maintainer's real Zotero user id 5847066 with the synthetic 99999 in the write-routing/vault-library code comment + unit tests, and replaced absolute /Users/ellis/... home paths with ~/ or repo-relative forms in generator provenance (.printing-press.json spec_path -> spec.yaml, dogfood-results.json spec_path -> ~/...) and in two prior validated_outcome notes in this catalog. Source sites carry inline // PATCH(glean 61a2a8a9) markers; JSON metadata has no comment mechanism so this entry is the record.",
-      "reason": "glean bead 61a2a8a9 (real Zotero account id 5847066 in patches + test fixtures) and 02dfb243 (OS username 'ellis' leaked via absolute home paths in tracked metadata). Privacy-hygiene only: not a credential, no rotation needed; the API key was always masked. History rewrite is intentionally out of scope (the values also sit in the import commit) -- scrubbed in the working tree per the bead's minimum recommendation. The 'enieuwy' printing-press handle is the printer identity, not an OS account, and is left as-is (outside both beads).",
+      "summary": "Privacy scrub of real identifiers from tracked files (glean secret-sweep beads). Replaced the maintainer's real Zotero user id with the synthetic 99999 in the write-routing/vault-library code comment + unit tests, and replaced absolute home paths with ~/ or repo-relative forms in generator provenance (.printing-press.json spec_path -> spec.yaml, dogfood-results.json spec_path -> ~/...) and in two prior validated_outcome notes in this catalog. Source sites carry inline // PATCH(glean 61a2a8a9) markers; JSON metadata has no comment mechanism so this entry is the record.",
+      "reason": "glean bead 61a2a8a9 (real Zotero account id in patches + test fixtures) and 02dfb243 (OS username leaked via absolute home paths in tracked metadata). Privacy-hygiene only: not a credential, no rotation needed; the API key was always masked. History rewrite is intentionally out of scope (the values also sit in the import commit) -- scrubbed in the working tree per the bead's minimum recommendation. The 'enieuwy' printing-press handle is the printer identity, not an OS account, and is left as-is (outside both beads).",
       "files": [
         "internal/cli/vault_sync.go",
         "internal/cli/vault_sync_format_test.go",
@@ -581,7 +581,7 @@
         "dogfood-results.json",
         ".printing-press-patches.json"
       ],
-      "validated_outcome": "search for 5847066 and /Users/ellis|ellis returns no matches; legitimate synthetic paths (/Users/me, /Users/x in items_file tests) untouched. gofmt -l internal/ clean; go build/vet clean; go test ./... -count=1 (6 pkgs ok) incl. TestVaultLibraryID and TestResolveWebWriteBase under the synthetic 99999 id; all three scrubbed JSON files re-validated as parseable. No runtime impact: no Go code reads the provenance JSON (verified) and the changed source site is a doc comment + test fixtures."
+      "validated_outcome": "search for the real Zotero user id and absolute maintainer home paths returns no matches; legitimate synthetic paths (/Users/me, /Users/x in items_file tests) untouched. gofmt -l internal/ clean; go build/vet clean; go test ./... -count=1 (6 pkgs ok) incl. TestVaultLibraryID and TestResolveWebWriteBase under the synthetic 99999 id; all three scrubbed JSON files re-validated as parseable. No runtime impact: no Go code reads the provenance JSON (verified) and the changed source site is a doc comment + test fixtures."
     },
     {
       "id": "zotero-vault-resolve-keep-remote",
@@ -593,6 +593,61 @@
         "internal/cli/vault_resolve_test.go"
       ],
       "validated_outcome": "gofmt/build/vet clean; go test ./... -count=1 (6 pkgs ok) + -race on internal/cli clean. New unit tests: TestKeepRemoteResolve (remote overwrites region, baseline advances to live version, conflict artifact removed), TestKeepRemoteResolveRefusesForeignHTML (non-managed HTML refused, file untouched), TestVaultResolveDirectionValidation (keep-vault+keep-remote, keep-remote+recreate, and no-direction all rejected). Live vs real Zotero: created throwaway parent 3E8REQJF, `vault push` created child note 7QZ7HGHW, edited the local region, then `vault resolve smoketest --keep-remote` pulled the remote over it (local edit discarded, baseline refreshed); throwaway deleted (204). Auto-registered as MCP tool vault_resolve with the new flag."
+    },
+    {
+      "id": "zotero-glean-triage-hardening-20260624",
+      "summary": "Fixed non-product Glean security, correctness, dependency, and polish findings while leaving broad feature/product beads open.",
+      "reason": "The requested triage distinguished actionable defects from major product decisions. Local fixes cover dependency security bumps, URL/path escaping, private file permissions, response-size caps, Markdown/YAML/Logseq escaping, sync pagination/storage correctness, MCP prompt hardening, cache privacy, and misleading examples; broad workflow/architecture opportunities remain product decisions.",
+      "files": [
+        ".printing-press-patches.json",
+        "go.mod",
+        "go.sum",
+        "internal/cli/annotations_export.go",
+        "internal/cli/auth.go",
+        "internal/cli/collections_delete.go",
+        "internal/cli/collections_get.go",
+        "internal/cli/collections_items.go",
+        "internal/cli/collections_subcollections.go",
+        "internal/cli/collections_tags.go",
+        "internal/cli/collections_update.go",
+        "internal/cli/data_source.go",
+        "internal/cli/deliver.go",
+        "internal/cli/export.go",
+        "internal/cli/feedback.go",
+        "internal/cli/helpers.go",
+        "internal/cli/import_doi.go",
+        "internal/cli/import_scan.go",
+        "internal/cli/import_translate.go",
+        "internal/cli/import_translate_test.go",
+        "internal/cli/items_children.go",
+        "internal/cli/items_delete.go",
+        "internal/cli/items_enrich.go",
+        "internal/cli/items_file.go",
+        "internal/cli/items_find.go",
+        "internal/cli/items_get.go",
+        "internal/cli/items_note_template.go",
+        "internal/cli/items_open.go",
+        "internal/cli/items_preprint_check.go",
+        "internal/cli/items_tags.go",
+        "internal/cli/items_update.go",
+        "internal/cli/root.go",
+        "internal/cli/search.go",
+        "internal/cli/searches_get.go",
+        "internal/cli/searches_run.go",
+        "internal/cli/sync.go",
+        "internal/cli/sync_gaps_test.go",
+        "internal/cli/tags_audit.go",
+        "internal/cli/tail_gaps_test.go",
+        "internal/cli/vault_push.go",
+        "internal/cli/vault_sync.go",
+        "internal/client/client.go",
+        "internal/config/config.go",
+        "internal/mcp/cobratree/walker.go",
+        "internal/mcp/resources.go",
+        "internal/store/query.go",
+        "internal/store/store.go"
+      ],
+      "validated_outcome": "gofmt applied to edited Go files; go test ./... passed (6 packages ok, 3 no tests); go build ./... passed; targeted regression tests for private URL fallback, start/limit sync pagination, and webhook delivery passed. Runtime preflight observed ./zotero-pp-cli doctor --json with auth configured, local API unreachable, stale cache; ./zotero-pp-cli agent-context --pretty succeeded; searches for the real Zotero user id returned no matches and remaining your-token-here use is the intentional auth env-var hint only."
     }
   ]
 }

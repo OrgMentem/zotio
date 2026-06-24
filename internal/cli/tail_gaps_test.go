@@ -155,6 +155,10 @@ func TestEmitChanges_WebhookDelivery(t *testing.T) {
 	c.NoCache = true
 	db := tailTestStore(t)
 
+	oldAllowPrivateOutbound := allowPrivateOutboundForTests
+	allowPrivateOutboundForTests = true
+	t.Cleanup(func() { allowPrivateOutboundForTests = oldAllowPrivateOutbound })
+
 	var buf bytes.Buffer
 	if err := emitChanges(c, db, "items", "/items", DeliverSink{Scheme: "webhook", Target: hook.URL}, &buf); err != nil {
 		t.Fatalf("emitChanges: %v", err)

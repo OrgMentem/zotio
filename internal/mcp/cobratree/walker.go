@@ -4,9 +4,14 @@
 package cobratree
 
 import (
+	"context"
+	"fmt"
+	"strings"
+
 	mcplib "github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
 	"github.com/spf13/cobra"
+	"github.com/spf13/pflag"
 )
 
 // RegisterAll walks the user-facing Cobra commands and registers in-process
@@ -37,15 +42,18 @@ func RegisterAll(s *server.MCPServer, rootFactory func() *cobra.Command) {
 		if toolName == "" {
 			return
 		}
+		allowedFlags := safeFlagNames(cmd)
 		options := []mcplib.ToolOption{mcplib.WithDescription(descriptionFor(cmd))}
-		options = append(options, toolOptionsForFlags(cmd)...)
+		options = append(options, safeToolOptionsForFlags(cmd)...)
 		if commandTakesArgs(cmd) {
-			options = append(options, mcplib.WithString("args", mcplib.Description("Additional positional arguments or raw CLI flags to append to the command.")))
+			// PATCH(glean da7c6f88776d2f4b): keep positional arguments for
+			// mirrored commands, but do not advertise this as a raw flag escape hatch.
+			options = append(options, mcplib.WithString("args", mcplib.Description("Additional positional arguments to append to the command. Raw CLI flags are rejected.")))
 		}
 		if isMCPReadOnly(cmd) {
 			options = append(options, mcplib.WithReadOnlyHintAnnotation(true), mcplib.WithDestructiveHintAnnotation(false))
 		}
-		s.AddTool(mcplib.NewTool(toolName, options...), inProcessHandler(rootFactory, path))
+		s.AddTool(mcplib.NewTool(toolName, options...), safeInProcessHandler(rootFactory, path, allowedFlags))
 	})
 }
 
@@ -70,4 +78,93 @@ func descriptionFor(cmd *cobra.Command) string {
 		return cmd.Short
 	}
 	return "Run `" + cmd.CommandPath() + "` through the companion CLI binary."
+}
+
+// PATCH(glean da7c6f88776d2f4b): command-mirror tools run inside an MCP host,
+// so global delivery/configuration escape hatches must not be exposed as tool
+// parameters. Hosts should configure those out-of-band or use typed MCP tools.
+var unsafeMCPMirrorFlags = map[string]struct{}{
+	"config":  {},
+	"deliver": {},
+	"group":   {},
+	"profile": {},
+}
+
+// PATCH(glean da7c6f88776d2f4b): derive the same safe flag allowlist used for
+// schema exposure so forged MCP arguments cannot smuggle hidden globals.
+
+func safeFlagNames(cmd *cobra.Command) map[string]struct{} {
+	names := map[string]struct{}{}
+	addFlag := func(flag *pflag.Flag) {
+		if flag == nil || flag.Hidden || flag.Deprecated != "" {
+			return
+		}
+		if _, unsafe := unsafeMCPMirrorFlags[flag.Name]; unsafe {
+			return
+		}
+		names[flag.Name] = struct{}{}
+	}
+	cmd.InheritedFlags().VisitAll(addFlag)
+	cmd.NonInheritedFlags().VisitAll(addFlag)
+	return names
+}
+
+// PATCH(glean da7c6f88776d2f4b): expose only safe Cobra flags in mirrored MCP
+// schemas; raw delivery/config/profile/group routing stays out-of-band.
+func safeToolOptionsForFlags(cmd *cobra.Command) []mcplib.ToolOption {
+	var opts []mcplib.ToolOption
+	seen := map[string]bool{}
+	addFlag := func(flag *pflag.Flag) {
+		if flag == nil || flag.Hidden || flag.Deprecated != "" {
+			return
+		}
+		if _, unsafe := unsafeMCPMirrorFlags[flag.Name]; unsafe {
+			return
+		}
+		if seen[flag.Name] {
+			return
+		}
+		seen[flag.Name] = true
+		opts = append(opts, toolOptionForFlag(flag))
+	}
+	cmd.InheritedFlags().VisitAll(addFlag)
+	cmd.NonInheritedFlags().VisitAll(addFlag)
+	return opts
+}
+
+// PATCH(glean da7c6f88776d2f4b): validate MCP-supplied arguments before the
+// generated in-process handler converts them back to Cobra CLI flags.
+func safeInProcessHandler(rootFactory func() *cobra.Command, commandPath []string, allowedFlags map[string]struct{}) server.ToolHandlerFunc {
+	inner := inProcessHandler(rootFactory, commandPath)
+	return func(ctx context.Context, req mcplib.CallToolRequest) (*mcplib.CallToolResult, error) {
+		if err := validateMirrorArguments(req.GetArguments(), allowedFlags); err != nil {
+			return mcplib.NewToolResultError(err.Error()), nil
+		}
+		return inner(ctx, req)
+	}
+}
+
+// PATCH(glean da7c6f88776d2f4b): reject hidden globals, unknown schema
+// parameters, and raw flag tokens in positional args.
+func validateMirrorArguments(args map[string]any, allowedFlags map[string]struct{}) error {
+	for name := range unsafeMCPMirrorFlags {
+		if _, ok := args[name]; ok {
+			return fmt.Errorf("MCP command mirror does not expose --%s; use typed MCP tools or server configuration instead", name)
+		}
+	}
+	for name := range args {
+		if name == "args" {
+			continue
+		}
+		if _, ok := allowedFlags[name]; !ok {
+			return fmt.Errorf("MCP command mirror does not expose --%s for this command", name)
+		}
+	}
+	raw, _ := args["args"].(string)
+	for _, token := range splitShellArgs(raw) {
+		if strings.HasPrefix(token, "-") {
+			return fmt.Errorf("MCP command mirror args accepts positional arguments only; raw flag %q is not allowed", token)
+		}
+	}
+	return nil
 }

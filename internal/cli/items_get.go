@@ -6,6 +6,7 @@ package cli
 import (
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"os"
 
 	"github.com/spf13/cobra"
@@ -15,9 +16,10 @@ func newItemsGetCmd(flags *rootFlags) *cobra.Command {
 	var flagFormat string
 
 	cmd := &cobra.Command{
-		Use:         "get <itemKey>",
-		Short:       "Get a single item by key",
-		Example:     "  zotero-pp-cli items get your-token-here",
+		Use:   "get <itemKey>",
+		Short: "Get a single item by key",
+		// PATCH(glean zotero-pp-cli-76875fc8c78bd05c): use an item-key placeholder, not an API-token placeholder.
+		Example:     "  zotero-pp-cli items get ABCD1234",
 		Annotations: map[string]string{"pp:endpoint": "items.get", "pp:method": "GET", "pp:path": "/items/{itemKey}", "mcp:read-only": "true"},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if len(args) == 0 {
@@ -27,9 +29,8 @@ func newItemsGetCmd(flags *rootFlags) *cobra.Command {
 			if err != nil {
 				return err
 			}
-
-			path := "/items/{itemKey}"
-			path = replacePathParam(path, "itemKey", args[0])
+			// PATCH(glean zotero-pp-cli-1b05b22e1aeb8dd6): encode the item key as a single Zotero path segment.
+			path := replacePathParam("/items/{itemKey}", "itemKey", url.PathEscape(args[0]))
 			params := map[string]string{}
 			if flagFormat != "" {
 				params["format"] = fmt.Sprintf("%v", flagFormat)
