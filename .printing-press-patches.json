@@ -648,6 +648,51 @@
         "internal/store/store.go"
       ],
       "validated_outcome": "gofmt applied to edited Go files; go test ./... passed (6 packages ok, 3 no tests); go build ./... passed; targeted regression tests for private URL fallback, start/limit sync pagination, and webhook delivery passed. Runtime preflight observed ./zotero-pp-cli doctor --json with auth configured, local API unreachable, stale cache; ./zotero-pp-cli agent-context --pretty succeeded; searches for the real Zotero user id returned no matches and remaining your-token-here use is the intentional auth env-var hint only."
+    },
+    {
+      "id": "write-safety-platform",
+      "summary": "Added a shared write-safety mutation platform: one preview/apply state machine + split plan/result JSON envelope + write gates, decoupled --agent from --yes, and built selection/tag/duplicate/collection/reading-list/saved-search/workflow write features plus context cancellation.",
+      "reason": "Triage showed the CLI was strong at read but had inconsistent, ungated mutations (items move applied without --yes and reported preview as failure; enrich mislabeled previews) and --agent silently auto-applied writes. This introduces one mutation helper (apply = --yes && !--dry-run; --dry-run wins; --max-changes default 500/50-under-agent; --allow-destructive only for truly-irreversible ops; --keys-from selection; fail-fast bulk) that every new write command reuses, with per-command MCP safety annotations.",
+      "files": [
+        "internal/cli/mutate.go",
+        "internal/cli/mutate_test.go",
+        "internal/cli/root.go",
+        "internal/cli/items_move.go",
+        "internal/cli/items_move_test.go",
+        "internal/cli/items_enrich.go",
+        "internal/cli/items_enrich_test.go",
+        "internal/cli/keys_from.go",
+        "internal/cli/keys_from_test.go",
+        "internal/cli/items_tags.go",
+        "internal/cli/items_tags_write.go",
+        "internal/cli/items_tags_write_test.go",
+        "internal/cli/tags_audit.go",
+        "internal/cli/tags_rename.go",
+        "internal/cli/tags_audit_fix_test.go",
+        "internal/cli/reading_list.go",
+        "internal/cli/reading_list_state.go",
+        "internal/cli/reading_list_state_test.go",
+        "internal/cli/items_duplicates.go",
+        "internal/cli/items_duplicates_resolve.go",
+        "internal/cli/items_duplicates_resolve_test.go",
+        "internal/cli/searches.go",
+        "internal/cli/searches_materialize.go",
+        "internal/cli/searches_materialize_test.go",
+        "internal/cli/collections.go",
+        "internal/cli/collections_bundle.go",
+        "internal/cli/collections_bundle_test.go",
+        "internal/cli/channel_workflow.go",
+        "internal/cli/workflow_run.go",
+        "internal/cli/workflow_run_test.go",
+        "internal/client/client.go",
+        "internal/client/cancel_test.go",
+        "internal/cliutil/ratelimit.go",
+        "internal/cliutil/ratelimit_cancel_test.go",
+        "README.md",
+        "SKILL.md"
+      ],
+      "validated_outcome": "gofmt -l clean, go build ./..., go vet ./..., and go test ./... all pass (6 ok, 5 no-tests). Smoke: items move/tags add|remove|list, tags audit fix, items duplicates resolve, reading-list add|start|done, searches materialize, collections bundle, workflow run register and appear in agent-context + the MCP cobratree mirror; workflow run exits 1 on a failed step and 0 on success; --agent help no longer claims --yes. Synthesis was already provided by 'items summarize --collection' (no-LLM-by-design), so no redundant command was added.",
+      "upstream_issue": "Consider upstreaming the mutation state machine + gates to cli-printing-press so generated mutations preview-by-default."
     }
   ]
 }

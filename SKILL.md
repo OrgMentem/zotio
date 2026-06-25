@@ -329,7 +329,7 @@ Run `zotero-pp-cli doctor` to verify setup — it reports a `writes:` line (e.g.
 
 ## Agent Mode
 
-Add `--agent` to any command. Expands to: `--json --compact --no-input --no-color --yes`.
+Add `--agent` to any command. Expands to: `--json --compact --no-input --no-color`. It does **not** auto-apply writes — mutating commands preview by default; pass `--yes` to apply.
 
 - **Pipeable** — JSON on stdout, errors on stderr
 - **Filterable** — `--select` keeps a subset of fields. Dotted paths descend into nested structures; arrays traverse element-wise. Critical for keeping context small on verbose APIs:
