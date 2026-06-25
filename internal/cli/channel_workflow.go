@@ -19,6 +19,8 @@ func newWorkflowCmd(flags *rootFlags) *cobra.Command {
 	}
 
 	cmd.AddCommand(newWorkflowArchiveCmd(flags))
+	// PATCH(glean write-safety): register declarative in-process workflow runner.
+	cmd.AddCommand(newWorkflowRunCmd(flags))
 	cmd.AddCommand(newWorkflowStatusCmd(flags))
 
 	return cmd

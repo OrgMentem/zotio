@@ -18,7 +18,8 @@ func newCollectionsCmd(flags *rootFlags) *cobra.Command {
 	cmd.AddCommand(newCollectionsGetCmd(flags))
 	cmd.AddCommand(newCollectionsItemsCmd(flags))
 	cmd.AddCommand(newCollectionsListCmd(flags))
-	// PATCH: Register hand-written Zotero collection workflows added after generation.
+	// PATCH(glean write-safety): Register hand-written Zotero collection workflows added after generation.
+	cmd.AddCommand(newCollectionsBundleCmd(flags))
 	cmd.AddCommand(newCollectionsExportCmd(flags))
 	cmd.AddCommand(newCollectionsMoveCmd(flags))
 	cmd.AddCommand(newCollectionsStatsCmd(flags))
