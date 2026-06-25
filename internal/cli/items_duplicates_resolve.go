@@ -39,9 +39,6 @@ func newItemsDuplicatesResolveCmd(flags *rootFlags) *cobra.Command {
 		Use:   "resolve",
 		Short: "Resolve duplicate items by merging metadata onto a master and trashing duplicates",
 		Annotations: map[string]string{
-			"pp:endpoint":                   "items.duplicates.resolve",
-			"pp:method":                     "PATCH",
-			"pp:path":                       "/items/{itemKey}",
 			"mcp:read-only":                 "false",
 			"pp:destructive":                "false",
 			"pp:supports-dry-run":           "true",

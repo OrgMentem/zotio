@@ -61,9 +61,6 @@ func newTagsAuditFixCmd(flags *rootFlags) *cobra.Command {
 		Use:   "fix",
 		Short: "Apply the tag rename plan produced by tags audit",
 		Annotations: map[string]string{
-			"pp:endpoint":                   "tags.audit.fix",
-			"pp:method":                     "PATCH",
-			"pp:path":                       "/items/{itemKey}",
 			"mcp:read-only":                 "false",
 			"pp:destructive":                "false",
 			"pp:supports-dry-run":           "true",

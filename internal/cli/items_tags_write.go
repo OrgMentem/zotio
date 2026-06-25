@@ -23,9 +23,6 @@ func newItemsTagsAddCmd(flags *rootFlags) *cobra.Command {
 		Use:   "add --tag <tag> [itemKeys...]",
 		Short: "Add one or more tags to items",
 		Annotations: map[string]string{
-			"pp:endpoint":                   "items.tags.add",
-			"pp:method":                     "PATCH",
-			"pp:path":                       "/items/{itemKey}",
 			"mcp:read-only":                 "false",
 			"pp:destructive":                "false",
 			"pp:supports-dry-run":           "true",
@@ -49,9 +46,6 @@ func newItemsTagsRemoveCmd(flags *rootFlags) *cobra.Command {
 		Use:   "remove --tag <tag> [itemKeys...]",
 		Short: "Remove one or more tags from items",
 		Annotations: map[string]string{
-			"pp:endpoint":                   "items.tags.remove",
-			"pp:method":                     "PATCH",
-			"pp:path":                       "/items/{itemKey}",
 			"mcp:read-only":                 "false",
 			"pp:destructive":                "false",
 			"pp:supports-dry-run":           "true",

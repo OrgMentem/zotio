@@ -23,9 +23,6 @@ func newItemsMoveCmd(flags *rootFlags) *cobra.Command {
 		Use:   "move [itemKey...] [--to <collectionKey>] [--from <collectionKey>]",
 		Short: "Add, remove, or move item collection memberships",
 		Annotations: map[string]string{
-			"pp:endpoint":                   "items.move",
-			"pp:method":                     "PATCH",
-			"pp:path":                       "/items/{itemKey}",
 			"mcp:read-only":                 "false",
 			"pp:destructive":                "false",
 			"pp:supports-dry-run":           "true",

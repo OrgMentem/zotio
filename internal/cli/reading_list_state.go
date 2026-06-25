@@ -30,7 +30,7 @@ func newReadingListAddCmd(flags *rootFlags) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:         "add <itemKeys...|--keys-from F>",
 		Short:       "Add items to the reading queue",
-		Annotations: readingListWriteAnnotations("reading-list.add"),
+		Annotations: readingListWriteAnnotations(),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			queueTag := readingQueueDefaultTag()
 			return runReadingListTransition(cmd, flags, keysFrom, args, readingListTransition{
@@ -51,7 +51,7 @@ func newReadingListStartCmd(flags *rootFlags) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:         "start <itemKeys...|--keys-from F>",
 		Short:       "Move queued items into the reading state",
-		Annotations: readingListWriteAnnotations("reading-list.start"),
+		Annotations: readingListWriteAnnotations(),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			queueTag := readingQueueDefaultTag()
 			return runReadingListTransition(cmd, flags, keysFrom, args, readingListTransition{
@@ -72,7 +72,7 @@ func newReadingListDoneCmd(flags *rootFlags) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:         "done <itemKeys...|--keys-from F>",
 		Short:       "Mark reading items as read",
-		Annotations: readingListWriteAnnotations("reading-list.done"),
+		Annotations: readingListWriteAnnotations(),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			queueTag := readingQueueDefaultTag()
 			return runReadingListTransition(cmd, flags, keysFrom, args, readingListTransition{
@@ -87,11 +87,8 @@ func newReadingListDoneCmd(flags *rootFlags) *cobra.Command {
 	return cmd
 }
 
-func readingListWriteAnnotations(endpoint string) map[string]string {
+func readingListWriteAnnotations() map[string]string {
 	return map[string]string{
-		"pp:endpoint":                   endpoint,
-		"pp:method":                     "PATCH",
-		"pp:path":                       "/items/{itemKey}",
 		"mcp:read-only":                 "false",
 		"pp:destructive":                "false",
 		"pp:supports-dry-run":           "true",

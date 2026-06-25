@@ -19,9 +19,6 @@ func newSearchesMaterializeCmd(flags *rootFlags) *cobra.Command {
 		Use:   "materialize <searchKey> --to <collectionKey>",
 		Short: "Add items from a saved search to a collection",
 		Annotations: map[string]string{
-			"pp:endpoint":                   "searches.materialize",
-			"pp:method":                     "PATCH",
-			"pp:path":                       "/items/{itemKey}",
 			"mcp:read-only":                 "false",
 			"pp:destructive":                "false",
 			"pp:supports-dry-run":           "true",
