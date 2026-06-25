@@ -32,34 +32,13 @@ func newTagsAuditCmd(flags *rootFlags) *cobra.Command {
   zotero-pp-cli tags audit --json`,
 		Annotations: map[string]string{"mcp:read-only": "true"},
 		RunE: func(cmd *cobra.Command, args []string) error {
-			rawDB, err := openStoreForRead(cmd.Context(), "zotero-pp-cli")
+			totalTags, plans, ok, err := readTagAuditPlans(cmd)
 			if err != nil {
-				return fmt.Errorf("opening database: %w", err)
+				return err
 			}
-			if rawDB == nil {
-				fmt.Fprintln(cmd.OutOrStdout(), "Run 'zotero-pp-cli sync' first.")
+			if !ok {
 				return nil
 			}
-			defer rawDB.Close()
-			db := localQueryStore{rawDB}
-
-			tagRows, err := db.QueryRaw(`
-SELECT DISTINCT json_extract(tags.value, '$.tag') AS tag_name
-FROM resources, json_each(json_extract(data, '$.data.tags')) AS tags
-WHERE resource_type = 'items' AND tag_name IS NOT NULL AND tag_name != ''`)
-			if err != nil {
-				return fmt.Errorf("querying tags: %w", err)
-			}
-			countRows, err := db.QueryRaw(`
-SELECT json_extract(tags.value, '$.tag') AS tag_name, COUNT(*) AS item_count
-FROM resources, json_each(json_extract(data, '$.data.tags')) AS tags
-WHERE resource_type = 'items' AND tag_name IS NOT NULL AND tag_name != ''
-GROUP BY tag_name ORDER BY item_count DESC`)
-			if err != nil {
-				return fmt.Errorf("querying tag counts: %w", err)
-			}
-
-			plans := buildTagAuditPlans(tagRows, countRows)
 			if flags.asJSON {
 				data, err := json.Marshal(plans)
 				if err != nil {
@@ -69,10 +48,122 @@ GROUP BY tag_name ORDER BY item_count DESC`)
 				jsonFlags.compact = false
 				return printOutputWithFlags(cmd.OutOrStdout(), json.RawMessage(data), &jsonFlags)
 			}
-			return printTagAuditReport(cmd, len(tagRows), plans, flags.dryRun)
+			return printTagAuditReport(cmd, totalTags, plans, flags.dryRun)
+		},
+	}
+	// PATCH(glean write-safety): expose the write-capable audit remediation as an explicit child command.
+	cmd.AddCommand(newTagsAuditFixCmd(flags))
+	return cmd
+}
+
+func newTagsAuditFixCmd(flags *rootFlags) *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "fix",
+		Short: "Apply the tag rename plan produced by tags audit",
+		Annotations: map[string]string{
+			"pp:endpoint":                   "tags.audit.fix",
+			"pp:method":                     "PATCH",
+			"pp:path":                       "/items/{itemKey}",
+			"mcp:read-only":                 "false",
+			"pp:destructive":                "false",
+			"pp:supports-dry-run":           "true",
+			"pp:requires-allow-destructive": "false",
+			"pp:default-max-changes":        "500",
+		},
+		RunE: func(cmd *cobra.Command, args []string) error {
+			_, plans, ok, err := readTagAuditPlans(cmd)
+			if err != nil {
+				return err
+			}
+			if !ok {
+				return nil
+			}
+			var renameApply func(oldName, newName string) (string, any, error)
+			ops := buildTagAuditFixOps(plans, func(oldName, newName string) (string, any, error) {
+				if renameApply == nil {
+					return "failed", "write client not initialized", fmt.Errorf("write client not initialized")
+				}
+				return renameApply(oldName, newName)
+			})
+
+			if resolveMutationMode(flags).Apply && len(ops) > 0 {
+				c, err := flags.newWriteClient()
+				if err != nil {
+					return err
+				}
+				renameApply = func(oldName, newName string) (string, any, error) {
+					return renameTag(c, oldName, newName)
+				}
+			}
+
+			env, runErr := runMutation(cmd.Context(), flags, "tags.audit.fix", ops)
+			renderErr := renderMutation(cmd, flags, env, func(env mutationEnvelope) string {
+				action := "would fix"
+				if env.Mode == "apply" {
+					action = "fixed"
+				}
+				return fmt.Sprintf("%s %d tag alias(es)", action, env.Plan.Summary.Planned)
+			})
+			if renderErr != nil {
+				return renderErr
+			}
+			return runErr
 		},
 	}
 	return cmd
+}
+
+func readTagAuditPlans(cmd *cobra.Command) (int, []tagAuditPlan, bool, error) {
+	rawDB, err := openStoreForRead(cmd.Context(), "zotero-pp-cli")
+	if err != nil {
+		return 0, nil, false, fmt.Errorf("opening database: %w", err)
+	}
+	if rawDB == nil {
+		fmt.Fprintln(cmd.OutOrStdout(), "Run 'zotero-pp-cli sync' first.")
+		return 0, nil, false, nil
+	}
+	defer rawDB.Close()
+	db := localQueryStore{rawDB}
+
+	tagRows, err := db.QueryRaw(`
+SELECT DISTINCT json_extract(tags.value, '$.tag') AS tag_name
+FROM resources, json_each(json_extract(data, '$.data.tags')) AS tags
+WHERE resource_type = 'items' AND tag_name IS NOT NULL AND tag_name != ''`)
+	if err != nil {
+		return 0, nil, false, fmt.Errorf("querying tags: %w", err)
+	}
+	countRows, err := db.QueryRaw(`
+SELECT json_extract(tags.value, '$.tag') AS tag_name, COUNT(*) AS item_count
+FROM resources, json_each(json_extract(data, '$.data.tags')) AS tags
+WHERE resource_type = 'items' AND tag_name IS NOT NULL AND tag_name != ''
+GROUP BY tag_name ORDER BY item_count DESC`)
+	if err != nil {
+		return 0, nil, false, fmt.Errorf("querying tag counts: %w", err)
+	}
+
+	return len(tagRows), buildTagAuditPlans(tagRows, countRows), true, nil
+}
+
+func buildTagAuditFixOps(plans []tagAuditPlan, renameApply func(oldName, newName string) (string, any, error)) []plannedOp {
+	ops := make([]plannedOp, 0)
+	for _, plan := range plans {
+		canonical := plan.Canonical
+		for _, alias := range plan.Aliases {
+			alias := alias
+			op := plannedOp{
+				ID:          "tags.audit.fix:" + alias + "->" + canonical,
+				Key:         alias,
+				Kind:        "tag_rename",
+				Changes:     []mutationChange{{Field: "tag", Remove: alias, Add: canonical}},
+				Destructive: false,
+				apply: func() (string, any, error) {
+					return renameApply(alias, canonical)
+				},
+			}
+			ops = append(ops, op)
+		}
+	}
+	return ops
 }
 
 func buildTagAuditPlans(tagRows, countRows []map[string]any) []tagAuditPlan {

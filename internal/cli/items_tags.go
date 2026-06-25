@@ -14,65 +14,93 @@ import (
 func newItemsTagsCmd(flags *rootFlags) *cobra.Command {
 
 	cmd := &cobra.Command{
-		Use:   "tags <itemKey>",
-		Short: "Get tags for a specific item",
-		// PATCH(glean zotero-pp-cli-76875fc8c78bd05c): use an item key placeholder, not a token.
-		Example:     "  zotero-pp-cli items tags ABC12345",
+		Use:   "tags [itemKey]",
+		Short: "Get or manage tags for a specific item",
+		// PATCH(glean write-safety): keep the legacy bare read as a deprecated alias while exposing read/write subcommands.
+		Example: "  zotero-pp-cli items tags list ABC12345",
+		// PATCH(glean write-safety): ArbitraryArgs lets the bare-read alias accept an itemKey even when the group is run without its parent (subcommands still match first).
+		Args:        cobra.ArbitraryArgs,
 		Annotations: map[string]string{"pp:endpoint": "items.tags", "pp:method": "GET", "pp:path": "/items/{itemKey}/tags", "mcp:read-only": "true"},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if len(args) == 0 {
 				return cmd.Help()
 			}
-			c, err := flags.newClient()
-			if err != nil {
-				return err
+			if len(args) > 1 {
+				return fmt.Errorf("expected at most one item key")
 			}
-
-			path := "/items/{itemKey}/tags"
-			path = replacePathParam(path, "itemKey", args[0])
-			params := map[string]string{}
-			data, prov, err := resolveRead(cmd.Context(), c, flags, "items", false, path, params, nil)
-			if err != nil {
-				return classifyAPIError(err, flags)
-			}
-			// Print provenance to stderr for human-facing output
-			{
-				var countItems []json.RawMessage
-				_ = json.Unmarshal(data, &countItems)
-				printProvenance(cmd, len(countItems), prov)
-			}
-			// For JSON output, wrap with provenance envelope before passing through flags.
-			// --select wins over --compact when both are set; --compact only runs when
-			// no explicit fields were requested.
-			if flags.asJSON || !isTerminal(cmd.OutOrStdout()) {
-				filtered := data
-				if flags.selectFields != "" {
-					filtered = filterFields(filtered, flags.selectFields)
-				} else if flags.compact {
-					filtered = compactFields(filtered)
-				}
-				wrapped, wrapErr := wrapWithProvenance(filtered, prov)
-				if wrapErr != nil {
-					return wrapErr
-				}
-				return printOutput(cmd.OutOrStdout(), wrapped, true)
-			}
-			// For all other output modes (table, csv, plain, quiet), use the standard pipeline
-			if wantsHumanTable(cmd.OutOrStdout(), flags) {
-				var items []map[string]any
-				if json.Unmarshal(data, &items) == nil && len(items) > 0 {
-					if err := printAutoTable(cmd.OutOrStdout(), items); err != nil {
-						return err
-					}
-					if len(items) >= 25 {
-						fmt.Fprintf(os.Stderr, "\nShowing %d results. To narrow: add --limit, --json --select, or filter flags.\n", len(items))
-					}
-					return nil
-				}
-			}
-			return printOutputWithFlags(cmd.OutOrStdout(), data, flags)
+			fmt.Fprintln(cmd.ErrOrStderr(), `note: "items tags <key>" is deprecated; use "items tags list <key>"`)
+			return runItemTagsRead(cmd, flags, args[0])
 		},
 	}
+	// PATCH(glean write-safety): register explicit read/write tag subcommands under the generated group.
+	cmd.AddCommand(newItemsTagsListCmd(flags), newItemsTagsAddCmd(flags), newItemsTagsRemoveCmd(flags))
 
 	return cmd
+}
+
+// PATCH(glean write-safety): explicit read subcommand reuses the generated tag reader.
+func newItemsTagsListCmd(flags *rootFlags) *cobra.Command {
+	cmd := &cobra.Command{
+		Use:         "list <itemKey>",
+		Short:       "Get tags for a specific item",
+		Example:     "  zotero-pp-cli items tags list ABC12345",
+		Args:        cobra.ExactArgs(1),
+		Annotations: map[string]string{"pp:endpoint": "items.tags.list", "pp:method": "GET", "pp:path": "/items/{itemKey}/tags", "mcp:read-only": "true"},
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return runItemTagsRead(cmd, flags, args[0])
+		},
+	}
+	return cmd
+}
+
+// PATCH(glean write-safety): extracted from the generated command so list and the deprecated alias share one reader.
+func runItemTagsRead(cmd *cobra.Command, flags *rootFlags, itemKey string) error {
+	c, err := flags.newClient()
+	if err != nil {
+		return err
+	}
+
+	path := "/items/{itemKey}/tags"
+	path = replacePathParam(path, "itemKey", itemKey)
+	params := map[string]string{}
+	data, prov, err := resolveRead(cmd.Context(), c, flags, "items", false, path, params, nil)
+	if err != nil {
+		return classifyAPIError(err, flags)
+	}
+	// Print provenance to stderr for human-facing output
+	{
+		var countItems []json.RawMessage
+		_ = json.Unmarshal(data, &countItems)
+		printProvenance(cmd, len(countItems), prov)
+	}
+	// For JSON output, wrap with provenance envelope before passing through flags.
+	// --select wins over --compact when both are set; --compact only runs when
+	// no explicit fields were requested.
+	if flags.asJSON || !isTerminal(cmd.OutOrStdout()) {
+		filtered := data
+		if flags.selectFields != "" {
+			filtered = filterFields(filtered, flags.selectFields)
+		} else if flags.compact {
+			filtered = compactFields(filtered)
+		}
+		wrapped, wrapErr := wrapWithProvenance(filtered, prov)
+		if wrapErr != nil {
+			return wrapErr
+		}
+		return printOutput(cmd.OutOrStdout(), wrapped, true)
+	}
+	// For all other output modes (table, csv, plain, quiet), use the standard pipeline
+	if wantsHumanTable(cmd.OutOrStdout(), flags) {
+		var items []map[string]any
+		if json.Unmarshal(data, &items) == nil && len(items) > 0 {
+			if err := printAutoTable(cmd.OutOrStdout(), items); err != nil {
+				return err
+			}
+			if len(items) >= 25 {
+				fmt.Fprintf(os.Stderr, "\nShowing %d results. To narrow: add --limit, --json --select, or filter flags.\n", len(items))
+			}
+			return nil
+		}
+	}
+	return printOutputWithFlags(cmd.OutOrStdout(), data, flags)
 }

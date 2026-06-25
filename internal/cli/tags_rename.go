@@ -5,9 +5,12 @@ package cli
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
+	"net/http"
 
 	"github.com/spf13/cobra"
+	"zotero-pp-cli/internal/client"
 )
 
 type tagRenameUpdate struct {
@@ -29,9 +32,18 @@ func newTagsRenameCmd(flags *rootFlags) *cobra.Command {
 	var flagLimit int
 
 	cmd := &cobra.Command{
-		Use:         "rename --from <oldTag> --to <newTag>",
-		Short:       "Rename a tag across matching items",
-		Annotations: map[string]string{"mcp:read-only": "false"},
+		Use:   "rename --from <oldTag> --to <newTag>",
+		Short: "Rename a tag across matching items",
+		Annotations: map[string]string{
+			"pp:endpoint":                   "tags.rename",
+			"pp:method":                     "PATCH",
+			"pp:path":                       "/items/{itemKey}",
+			"mcp:read-only":                 "false",
+			"pp:destructive":                "false",
+			"pp:supports-dry-run":           "true",
+			"pp:requires-allow-destructive": "false",
+			"pp:default-max-changes":        "500",
+		},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if flagFrom == "" {
 				return fmt.Errorf("required flag %q not set", "from")
@@ -49,22 +61,18 @@ func newTagsRenameCmd(flags *rootFlags) *cobra.Command {
 			}
 			if flags.dryRun {
 				c.DryRun = false
-			}
+				data, err := c.Get("/items", map[string]string{
+					"tag":   flagFrom,
+					"limit": fmt.Sprintf("%d", flagLimit),
+				})
+				if err != nil {
+					return classifyAPIError(err, flags)
+				}
 
-			data, err := c.Get("/items", map[string]string{
-				"tag":   flagFrom,
-				"limit": fmt.Sprintf("%d", flagLimit),
-			})
-			if err != nil {
-				return classifyAPIError(err, flags)
-			}
-
-			updates, err := buildTagRenameUpdates(data, flagFrom, flagTo)
-			if err != nil {
-				return err
-			}
-
-			if flags.dryRun {
+				updates, err := buildTagRenameUpdates(data, flagFrom, flagTo)
+				if err != nil {
+					return err
+				}
 				results := tagRenameResults(updates, flagFrom, flagTo, "dry_run")
 				if flags.asJSON {
 					return printFullTagRenameResults(cmd, results)
@@ -82,22 +90,14 @@ func newTagsRenameCmd(flags *rootFlags) *cobra.Command {
 				return nil
 			}
 
-			results := make([]tagRenameResult, 0, len(updates))
-			for _, update := range updates {
-				path := replacePathParam("/items/{itemKey}", "itemKey", update.key)
-				_, _, err := c.Patch(path, map[string]any{
-					"version": update.version,
-					"tags":    update.tags,
-				})
-				if err != nil {
-					return classifyAPIError(err, flags)
-				}
-				results = append(results, tagRenameResult{
-					Key:    update.key,
-					OldTag: flagFrom,
-					NewTag: flagTo,
-					Status: "updated",
-				})
+			// PATCH(glean write-safety): share the live rename operation with tags audit fix.
+			status, reason, err := renameTagWithLimit(c, flagFrom, flagTo, flagLimit)
+			if err != nil {
+				return classifyAPIError(err, flags)
+			}
+			results, _ := reason.([]tagRenameResult)
+			if status == "no_op" {
+				results = []tagRenameResult{}
 			}
 
 			if flags.asJSON {
@@ -118,6 +118,51 @@ func newTagsRenameCmd(flags *rootFlags) *cobra.Command {
 	cmd.Flags().IntVar(&flagLimit, "limit", 100, "Maximum number of items to process per page")
 
 	return cmd
+}
+
+func renameTag(c *client.Client, oldName, newName string) (string, any, error) {
+	return renameTagWithLimit(c, oldName, newName, 100)
+}
+
+func renameTagWithLimit(c *client.Client, oldName, newName string, limit int) (string, any, error) {
+	data, err := c.Get("/items", map[string]string{
+		"tag":   oldName,
+		"limit": fmt.Sprintf("%d", limit),
+	})
+	if err != nil {
+		return "failed", err.Error(), err
+	}
+
+	updates, err := buildTagRenameUpdates(data, oldName, newName)
+	if err != nil {
+		return "failed", err.Error(), err
+	}
+	if len(updates) == 0 {
+		return "no_op", []tagRenameResult{}, nil
+	}
+
+	results := make([]tagRenameResult, 0, len(updates))
+	for _, update := range updates {
+		path := replacePathParam("/items/{itemKey}", "itemKey", update.key)
+		_, _, err := c.Patch(path, map[string]any{
+			"version": update.version,
+			"tags":    update.tags,
+		})
+		if err != nil {
+			var apiErr *client.APIError
+			if errors.As(err, &apiErr) && (apiErr.StatusCode == http.StatusPreconditionFailed || apiErr.StatusCode == http.StatusPreconditionRequired) {
+				return "conflict", apiErr.Body, err
+			}
+			return "failed", err.Error(), err
+		}
+		results = append(results, tagRenameResult{
+			Key:    update.key,
+			OldTag: oldName,
+			NewTag: newName,
+			Status: "updated",
+		})
+	}
+	return "applied", results, nil
 }
 
 func printFullTagRenameResults(cmd *cobra.Command, results []tagRenameResult) error {
