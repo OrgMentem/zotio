@@ -871,8 +871,12 @@ func resolveDiscriminatedResource(resource string, obj map[string]any) string {
 
 // upsertSingleObject stores a non-array API response as a single record.
 func upsertSingleObject(db *store.Store, resource string, data json.RawMessage) error {
+	// Decode with UseNumber so large integer IDs (e.g. 55043301) keep their
+	// literal form instead of being coerced to float64 ("5.5043301e+07").
+	dec := json.NewDecoder(strings.NewReader(string(data)))
+	dec.UseNumber()
 	var obj map[string]any
-	if err := json.Unmarshal(data, &obj); err != nil {
+	if err := dec.Decode(&obj); err != nil {
 		// Not a JSON object either - store raw under resource name
 		return db.Upsert(canonicalStoreResource(resource), canonicalStoreResource(resource), data)
 	}

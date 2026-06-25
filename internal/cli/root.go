@@ -17,7 +17,6 @@ import (
 	"zotero-pp-cli/internal/config"
 )
 
-
 type rootFlags struct {
 	asJSON        bool
 	compact       bool
@@ -77,7 +76,32 @@ func Execute() error {
 			return derr
 		}
 	}
+	if err != nil && isCobraUsageError(err) {
+		// Cobra/pflag pre-RunE errors (unknown flag/command, missing
+		// required flag, etc.) originate before any user RunE and never
+		// flow through usageErr(); without this wrap ExitCode() falls
+		// through to 1, clobbering the conventional code-2 for usage errors.
+		return usageErr(err)
+	}
 	return err
+}
+
+// isCobraUsageError reports whether err matches one of Cobra/pflag's
+// pre-RunE usage-error shapes (unknown flag/command, missing required
+// flag, missing flag argument, invalid argument). Detection is by
+// message prefix; neither Cobra nor pflag exports typed sentinels.
+func isCobraUsageError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	return strings.HasPrefix(msg, "unknown flag") ||
+		strings.HasPrefix(msg, "unknown shorthand flag") ||
+		strings.HasPrefix(msg, "unknown command") ||
+		strings.HasPrefix(msg, `required flag "`) ||
+		strings.HasPrefix(msg, `required flag(s) "`) ||
+		strings.HasPrefix(msg, "flag needs an argument:") ||
+		strings.HasPrefix(msg, `invalid argument "`)
 }
 
 func newRootCmd(flags *rootFlags) *cobra.Command {

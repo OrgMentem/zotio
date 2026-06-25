@@ -5,6 +5,7 @@ package client
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -36,7 +37,7 @@ func TestDoReturnsSuccessBody(t *testing.T) {
 	defer server.Close()
 
 	c := clientTestNewClient(t, server.URL)
-	got, status, err := c.do(http.MethodGet, "/ok", nil, nil, nil)
+	got, status, err := c.do(context.Background(), http.MethodGet, "/ok", nil, nil, nil)
 	if err != nil {
 		t.Fatalf("do returned error: %v", err)
 	}
@@ -57,7 +58,7 @@ func TestDoClientErrorReturnsAPIErrorWithoutRetry(t *testing.T) {
 	defer server.Close()
 
 	c := clientTestNewClient(t, server.URL)
-	_, status, err := c.do(http.MethodGet, "/missing", nil, nil, nil)
+	_, status, err := c.do(context.Background(), http.MethodGet, "/missing", nil, nil, nil)
 	if err == nil {
 		t.Fatal("do returned nil error for 404")
 	}
@@ -92,7 +93,7 @@ func TestDoRetriesServerErrorThenSucceeds(t *testing.T) {
 	defer server.Close()
 
 	c := clientTestNewClient(t, server.URL)
-	got, status, err := c.do(http.MethodGet, "/retry", nil, nil, nil)
+	got, status, err := c.do(context.Background(), http.MethodGet, "/retry", nil, nil, nil)
 	if err != nil {
 		t.Fatalf("do returned error after retry: %v", err)
 	}

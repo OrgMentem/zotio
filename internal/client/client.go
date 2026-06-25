@@ -5,6 +5,7 @@ package client
 
 import (
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -109,7 +110,7 @@ func (c *Client) GetWithHeaders(path string, params map[string]string, headers m
 			return cached, nil
 		}
 	}
-	result, _, err := c.do("GET", path, params, nil, headers)
+	result, _, err := c.do(context.Background(), "GET", path, params, nil, headers)
 	if err == nil && !c.NoCache && !c.DryRun && c.cacheDir != "" {
 		c.writeCache(path, params, result)
 	}
@@ -117,7 +118,7 @@ func (c *Client) GetWithHeaders(path string, params map[string]string, headers m
 }
 
 func (c *Client) ProbeGet(path string) (int, error) {
-	_, status, err := c.do("GET", path, nil, nil, nil)
+	_, status, err := c.do(context.Background(), "GET", path, nil, nil, nil)
 	return status, err
 }
 
@@ -181,35 +182,35 @@ func (c *Client) invalidateCache() {
 }
 
 func (c *Client) Post(path string, body any) (json.RawMessage, int, error) {
-	return c.do("POST", path, nil, body, nil)
+	return c.do(context.Background(), "POST", path, nil, body, nil)
 }
 
 func (c *Client) PostWithHeaders(path string, body any, headers map[string]string) (json.RawMessage, int, error) {
-	return c.do("POST", path, nil, body, headers)
+	return c.do(context.Background(), "POST", path, nil, body, headers)
 }
 
 func (c *Client) Delete(path string) (json.RawMessage, int, error) {
-	return c.do("DELETE", path, nil, nil, nil)
+	return c.do(context.Background(), "DELETE", path, nil, nil, nil)
 }
 
 func (c *Client) DeleteWithHeaders(path string, headers map[string]string) (json.RawMessage, int, error) {
-	return c.do("DELETE", path, nil, nil, headers)
+	return c.do(context.Background(), "DELETE", path, nil, nil, headers)
 }
 
 func (c *Client) Put(path string, body any) (json.RawMessage, int, error) {
-	return c.do("PUT", path, nil, body, nil)
+	return c.do(context.Background(), "PUT", path, nil, body, nil)
 }
 
 func (c *Client) PutWithHeaders(path string, body any, headers map[string]string) (json.RawMessage, int, error) {
-	return c.do("PUT", path, nil, body, headers)
+	return c.do(context.Background(), "PUT", path, nil, body, headers)
 }
 
 func (c *Client) Patch(path string, body any) (json.RawMessage, int, error) {
-	return c.do("PATCH", path, nil, body, nil)
+	return c.do(context.Background(), "PATCH", path, nil, body, nil)
 }
 
 func (c *Client) PatchWithHeaders(path string, body any, headers map[string]string) (json.RawMessage, int, error) {
-	return c.do("PATCH", path, nil, body, headers)
+	return c.do(context.Background(), "PATCH", path, nil, body, headers)
 }
 
 // do executes an HTTP request. headerOverrides, when non-nil, override global
@@ -442,9 +443,48 @@ func (c *Client) resolveWriteRoute() {
 
 // do executes an HTTP request and discards response headers, wrapping doRequest
 // for the many callers that do not need them.
-func (c *Client) do(method, path string, params map[string]string, body any, headerOverrides map[string]string) (json.RawMessage, int, error) {
+func (c *Client) do(ctx context.Context, method, path string, params map[string]string, body any, headerOverrides map[string]string) (json.RawMessage, int, error) {
+	// Verify-mode transport gate: under PRINTING_PRESS_VERIFY=1 (without the
+	// LIVE_HTTP=1 opt-in), a mutating verb returns a synthetic envelope and
+	// never dials, mints auth, or touches the cache.
+	if isMutatingVerb(method) && cliutil.IsVerifyEnv() && !cliutil.IsVerifyLiveHTTPEnv() {
+		return verifyShortCircuitEnvelope(method, path), http.StatusOK, nil
+	}
 	respBody, status, _, err := c.doRequest(method, path, params, body, headerOverrides)
 	return respBody, status, err
+}
+
+// doRead is do() without the verify-mode mutating-verb gate, for read-only
+// operations that ride a mutating verb on the wire (POST-based search,
+// GraphQL queries, JSON-RPC reads).
+func (c *Client) doRead(ctx context.Context, method, path string, params map[string]string, body any, headerOverrides map[string]string) (json.RawMessage, int, error) {
+	respBody, status, _, err := c.doRequest(method, path, params, body, headerOverrides)
+	return respBody, status, err
+}
+
+// isMutatingVerb reports whether the HTTP method writes server state. Used by
+// do()'s verify-mode short-circuit to gate dial-out.
+func isMutatingVerb(method string) bool {
+	switch method {
+	case "DELETE", "POST", "PUT", "PATCH":
+		return true
+	}
+	return false
+}
+
+// verifyShortCircuitEnvelope returns the synthetic JSON body that stands in
+// for a real mutating response when do() short-circuits in verify mode. The
+// __pp_verify_synthetic__ sentinel is namespace-reserved so consumers can key
+// on one obvious field.
+func verifyShortCircuitEnvelope(method, path string) json.RawMessage {
+	body, _ := json.Marshal(map[string]any{
+		"__pp_verify_synthetic__": true,
+		"status":                  "noop",
+		"reason":                  "verify_short_circuit",
+		"method":                  method,
+		"path":                    path,
+	})
+	return json.RawMessage(body)
 }
 
 // GetWithVersion performs a GET and returns the body plus the Zotero
@@ -600,9 +640,9 @@ func maskToken(token string) string {
 }
 
 func truncateBody(b []byte) string {
-	s := string(b)
-	if len(s) > 200 {
-		return s[:200] + "..."
+	const maxBytes = 4096
+	if len(b) <= maxBytes {
+		return string(b)
 	}
-	return s
+	return strings.ToValidUTF8(string(b[:maxBytes]), "") + "..."
 }
