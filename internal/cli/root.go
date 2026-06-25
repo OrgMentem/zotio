@@ -29,15 +29,20 @@ type rootFlags struct {
 	idempotent    bool
 	ignoreMissing bool
 	yes           bool
-	agent         bool
-	selectFields  string
-	configPath    string
-	profileName   string
-	deliverSpec   string
-	timeout       time.Duration
-	rateLimit     float64
-	dataSource    string
-	freshnessMeta any
+	// PATCH(glean write-safety): mutation gate flags
+	maxChanges       int
+	allowDestructive bool
+	continueOnError  bool
+	maxFailures      int
+	agent            bool
+	selectFields     string
+	configPath       string
+	profileName      string
+	deliverSpec      string
+	timeout          time.Duration
+	rateLimit        float64
+	dataSource       string
+	freshnessMeta    any
 	// PATCH(glean 9bfn): numeric group ID selected via --group ("" = personal).
 	group string
 
@@ -128,7 +133,7 @@ Highlights (not in the official API docs):
   • items venues   List every journal and publication venue in your library with item counts and year ranges — understand where your sources come from.
   • items stale   Find items added long ago with no PDF and no annotations — candidates for pruning or enrichment.
 
-Agent mode: add --agent to any command for JSON output + non-interactive mode.
+Agent mode: add --agent to any command for JSON output + non-interactive mode; mutating commands preview unless --yes is given.
 Health check: run 'zotero-pp-cli doctor' to verify auth and connectivity.
 See README.md or the bundled SKILL.md for recipes.`,
 		SilenceUsage: true,
@@ -150,9 +155,17 @@ See README.md or the bundled SKILL.md for recipes.`,
 	rootCmd.PersistentFlags().BoolVar(&flags.ignoreMissing, "ignore-missing", false, "Treat missing delete targets as a successful no-op")
 	rootCmd.PersistentFlags().StringVar(&flags.selectFields, "select", "", "Comma-separated fields to include in output (e.g. --select id,name,status)")
 	rootCmd.PersistentFlags().BoolVar(&flags.yes, "yes", false, "Skip confirmation prompts (for agents and scripts)")
+	// PATCH(glean write-safety): mutation gate flags
+	rootCmd.PersistentFlags().IntVar(&flags.maxChanges, "max-changes", -1, "Max write operations a single mutation may apply before refusing (-1 = default: 500, or 50 under --agent)")
+	// PATCH(glean write-safety): mutation gate flags
+	rootCmd.PersistentFlags().BoolVar(&flags.allowDestructive, "allow-destructive", false, "Allow irreversible operations (merge, permanent delete, empty-trash) to apply")
+	// PATCH(glean write-safety): mutation gate flags
+	rootCmd.PersistentFlags().BoolVar(&flags.continueOnError, "continue-on-error", false, "On bulk mutations, continue past per-item failures/conflicts instead of stopping at the first")
+	// PATCH(glean write-safety): mutation gate flags
+	rootCmd.PersistentFlags().IntVar(&flags.maxFailures, "max-failures", 0, "With --continue-on-error, stop after this many failures (0 = unlimited)")
 	rootCmd.PersistentFlags().BoolVar(&noColor, "no-color", false, "Disable colored output")
 	rootCmd.PersistentFlags().BoolVar(&humanFriendly, "human-friendly", false, "Enable colored output and rich formatting")
-	rootCmd.PersistentFlags().BoolVar(&flags.agent, "agent", false, "Set all agent-friendly defaults (--json --compact --no-input --no-color --yes)")
+	rootCmd.PersistentFlags().BoolVar(&flags.agent, "agent", false, "Set agent-friendly defaults (--json --compact --no-input --no-color); does NOT auto-apply writes — pass --yes to mutate")
 	rootCmd.PersistentFlags().StringVar(&flags.dataSource, "data-source", "auto", "Data source for read commands: auto (live with local fallback), live (API only), local (synced data only)")
 	rootCmd.PersistentFlags().StringVar(&flags.profileName, "profile", "", "Apply values from a saved profile (see 'zotero-pp-cli profile list')")
 	rootCmd.PersistentFlags().StringVar(&flags.deliverSpec, "deliver", "", "Route output to a sink: stdout (default), file:<path>, webhook:<url>")
@@ -198,9 +211,7 @@ See README.md or the bundled SKILL.md for recipes.`,
 			if !cmd.Flags().Changed("no-input") {
 				flags.noInput = true
 			}
-			if !cmd.Flags().Changed("yes") {
-				flags.yes = true
-			}
+			// PATCH(glean write-safety): --agent no longer implies --yes; non-interactive ≠ approval. Mutating commands preview unless --yes is passed explicitly.
 			if !cmd.Flags().Changed("no-color") {
 				noColor = true
 			}

@@ -5,9 +5,13 @@ package cli
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
+	"net/http"
+	"strconv"
 
 	"github.com/spf13/cobra"
+	"zotero-pp-cli/internal/client"
 )
 
 func newItemsMoveCmd(flags *rootFlags) *cobra.Command {
@@ -24,17 +28,14 @@ func newItemsMoveCmd(flags *rootFlags) *cobra.Command {
 			if flagTo == "" {
 				return fmt.Errorf("required flag %q not set", "to")
 			}
-			c, err := flags.newClient()
+
+			// PATCH(glean write-safety): plan first, then let the shared helper decide preview vs apply.
+			c, err := flags.newWriteClient()
 			if err != nil {
 				return err
 			}
-			if flags.dryRun {
-				c.DryRun = false
-			}
-
-			path := "/items/{itemKey}"
-			path = replacePathParam(path, "itemKey", args[0])
-			data, err := c.Get(path, nil)
+			path := replacePathParam("/items/{itemKey}", "itemKey", args[0])
+			data, version, err := c.GetWithVersion(path, nil)
 			if err != nil {
 				return classifyAPIError(err, flags)
 			}
@@ -42,47 +43,83 @@ func newItemsMoveCmd(flags *rootFlags) *cobra.Command {
 			if err != nil {
 				return err
 			}
+
+			changes := []mutationChange{{Field: "collections", Add: flagTo}}
 			for _, collection := range collections {
 				if collection == flagTo {
-					fmt.Fprintf(cmd.OutOrStdout(), "Item already in collection %s\n", flagTo)
-					return nil
+					changes = nil
+					break
 				}
-			}
-			collections = append(collections, flagTo)
-			body := map[string]any{"collections": collections}
-			if flags.dryRun {
-				envelope := map[string]any{
-					"action":   "patch",
-					"body":     body,
-					"dry_run":  true,
-					"path":     path,
-					"resource": "items",
-					"status":   0,
-					"success":  false,
-				}
-				envelopeJSON, err := json.Marshal(envelope)
-				if err != nil {
-					return err
-				}
-				return printOutput(cmd.OutOrStdout(), json.RawMessage(envelopeJSON), true)
 			}
 
-			data, statusCode, err := c.Patch(path, body)
-			if err != nil {
-				return classifyAPIError(err, flags)
+			itemKey := args[0]
+			op := plannedOp{
+				ID:              "items.move:" + itemKey,
+				Key:             itemKey,
+				Kind:            "collection_add",
+				ExpectedVersion: version,
+				Changes:         changes,
+				Destructive:     false,
+				apply: func() (string, any, error) {
+					// PATCH(glean write-safety): apply re-reads from the write target before patching.
+					currentData, currentVersion, err := c.GetWithVersion(path, nil)
+					if err != nil {
+						return "failed", err.Error(), err
+					}
+					currentCollections, err := itemCollections(currentData)
+					if err != nil {
+						return "failed", err.Error(), err
+					}
+					for _, collection := range currentCollections {
+						if collection == flagTo {
+							return "no_op", "already in target collection", nil
+						}
+					}
+					nextCollections := append(append([]string{}, currentCollections...), flagTo)
+					body := map[string]any{"collections": nextCollections}
+					headers := map[string]string{}
+					if currentVersion > 0 {
+						headers["If-Unmodified-Since-Version"] = strconv.Itoa(currentVersion)
+					}
+					_, statusCode, err := c.PatchWithHeaders(path, body, headers)
+					if err != nil {
+						var apiErr *client.APIError
+						if errors.As(err, &apiErr) && (apiErr.StatusCode == http.StatusPreconditionFailed || apiErr.StatusCode == http.StatusPreconditionRequired) {
+							return "conflict", apiErr.Body, err
+						}
+						return "failed", err.Error(), err
+					}
+					if statusCode < 200 || statusCode >= 300 {
+						return "failed", fmt.Sprintf("HTTP %d", statusCode), fmt.Errorf("patch returned HTTP %d", statusCode)
+					}
+					return "applied", nil, nil
+				},
 			}
-			envelope := map[string]any{"action": "patch", "resource": "items", "path": path, "status": statusCode, "success": statusCode >= 200 && statusCode < 300}
-			if len(data) > 0 {
-				var p any
-				if json.Unmarshal(data, &p) == nil {
-					envelope["data"] = p
+			env, runErr := runMutation(cmd.Context(), flags, "items.move", []plannedOp{op})
+			renderErr := renderMutation(cmd, flags, env, func(env mutationEnvelope) string {
+				status := "would move"
+				if env.Mode == "apply" {
+					status = "moved"
+					if env.Result != nil && len(env.Result.Items) == 1 {
+						switch env.Result.Items[0].Status {
+						case "no_op":
+							status = "already in"
+						case "conflict", "failed", "not_attempted":
+							status = env.Result.Items[0].Status
+						}
+					}
+				} else if len(env.Plan.Operations) == 1 && len(env.Plan.Operations[0].Changes) == 0 {
+					status = "already in"
 				}
+				if status == "already in" {
+					return fmt.Sprintf("%s already in %s", itemKey, flagTo)
+				}
+				return fmt.Sprintf("%s %s → %s", status, itemKey, flagTo)
+			})
+			if renderErr != nil {
+				return renderErr
 			}
-			envelopeJSON, err := json.Marshal(envelope)
-			if err != nil {
-				return err
-			}
-			return printOutput(cmd.OutOrStdout(), json.RawMessage(envelopeJSON), true)
+			return runErr
 		},
 	}
 	cmd.Flags().StringVar(&flagTo, "to", "", "Collection key to move item into")

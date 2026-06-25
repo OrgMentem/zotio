@@ -11,6 +11,7 @@ package cli
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"html"
 	"io"
@@ -18,10 +19,12 @@ import (
 	"net/url"
 	"os"
 	"regexp"
+	"sort"
 	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
+	"zotero-pp-cli/internal/client"
 	"zotero-pp-cli/internal/cliutil"
 )
 
@@ -53,8 +56,8 @@ type enrichProposal struct {
 	Note       string         `json:"note"`
 	Fields     map[string]any `json:"fields,omitempty"`     // patch: field -> new value
 	Attachment map[string]any `json:"attachment,omitempty"` // attach: child item body
-	Status     string         `json:"status,omitempty"`     // set during apply
-	version    any            // item version for the PATCH conflict guard (not serialized)
+	// PATCH(glean write-safety): statuses now live in mutationResult items, not proposal JSON.
+	version any // item version for the PATCH conflict guard (not serialized)
 }
 
 // enrichSkip records a candidate for which no confident proposal was produced.
@@ -78,6 +81,7 @@ func newItemsEnrichCmd(flags *rootFlags) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "enrich",
 		Short: "Fill missing item metadata (DOI, abstract, open-access PDF link) from CrossRef, OpenAlex, and Unpaywall",
+		// PATCH(glean write-safety): --agent no longer implies --yes; help names --yes as the apply switch.
 		Long: `Resolve missing metadata for locally synced items and apply it back to Zotero.
 
 Work queues come from the same checks as 'items audit':
@@ -85,8 +89,8 @@ Work queues come from the same checks as 'items audit':
   --missing-abstract  fill the abstract from CrossRef, then OpenAlex (requires the item's DOI)
   --missing-pdf       attach an open-access PDF link from Unpaywall (requires DOI)
 
-By default this previews the proposed changes (a patch plan). Pass --yes (or
---agent) to apply them via the Zotero API; --dry-run always previews. Applied
+By default this previews the proposed changes (a patch plan). Pass --yes to
+apply them via the Zotero API; --dry-run always previews. Applied
 field changes record provenance in the item's Extra field.`,
 		Annotations: map[string]string{"mcp:read-only": "false"},
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -123,19 +127,26 @@ field changes record provenance in the item's Extra field.`,
 				proposals, skipped = append(proposals, p...), append(skipped, s...)
 			}
 
-			applyMode := flags.yes && !flags.dryRun
-			if !applyMode {
-				return printEnrichReport(cmd, proposals, skipped, flags, false)
+			// PATCH(glean write-safety): preserve proposal building and route preview/apply through the shared mutation helper.
+			mode := resolveMutationMode(flags)
+			var mutator apiMutator
+			if mode.Apply {
+				c, err := flags.newClient()
+				if err != nil {
+					return err
+				}
+				mutator = c
 			}
-
-			c, err := flags.newClient()
-			if err != nil {
-				return err
+			ops := enrichPlannedOps(proposals, mutator, flags)
+			env, runErr := runMutation(cmd.Context(), flags, "items.enrich", ops)
+			if len(skipped) > 0 {
+				env.Journal = map[string]any{"skipped": skipped}
 			}
-			for i := range proposals {
-				proposals[i].Status = applyEnrichProposal(c, &proposals[i], flags)
+			renderErr := renderMutation(cmd, flags, env, nil)
+			if renderErr != nil {
+				return renderErr
 			}
-			return printEnrichReport(cmd, proposals, skipped, flags, true)
+			return runErr
 		},
 	}
 
@@ -297,8 +308,12 @@ func resolveEnrichment(ctx context.Context, httpClient *http.Client, category, k
 	return enrichProposal{}, "unknown category"
 }
 
-// applyEnrichProposal performs the mutation and returns a status string.
-func applyEnrichProposal(c apiMutator, p *enrichProposal, flags *rootFlags) string {
+// PATCH(glean write-safety): return typed mutation statuses; details travel as result reasons.
+func applyEnrichProposal(c apiMutator, p *enrichProposal, flags *rootFlags) (string, any, error) {
+	if c == nil {
+		err := errors.New("missing API client")
+		return "failed", err.Error(), err
+	}
 	switch p.Action {
 	case enrichActionPatch:
 		body := map[string]any{"version": p.version}
@@ -308,16 +323,16 @@ func applyEnrichProposal(c apiMutator, p *enrichProposal, flags *rootFlags) stri
 		body["extra"] = appendEnrichProvenance(p, flags)
 		path := replacePathParam("/items/{itemKey}", "itemKey", p.Key)
 		if _, _, err := c.Patch(path, body); err != nil {
-			return "error: " + err.Error()
+			return enrichErrorStatus(err)
 		}
-		return "applied"
+		return "applied", nil, nil
 	case enrichActionAttach:
 		if _, _, err := c.Post("/items", []map[string]any{p.Attachment}); err != nil {
-			return "error: " + err.Error()
+			return enrichErrorStatus(err)
 		}
-		return "applied"
+		return "applied", nil, nil
 	}
-	return "skipped"
+	return "no_op", "unknown enrichment action", nil
 }
 
 // apiMutator is the subset of *client.Client used to apply enrichments; a small
@@ -325,6 +340,72 @@ func applyEnrichProposal(c apiMutator, p *enrichProposal, flags *rootFlags) stri
 type apiMutator interface {
 	Patch(path string, body any) (json.RawMessage, int, error)
 	Post(path string, body any) (json.RawMessage, int, error)
+}
+
+// PATCH(glean write-safety): convert enrichment proposals into shared mutation operations.
+func enrichPlannedOps(proposals []enrichProposal, c apiMutator, flags *rootFlags) []plannedOp {
+	ops := make([]plannedOp, 0, len(proposals))
+	for i := range proposals {
+		proposal := proposals[i]
+		ops = append(ops, plannedOp{
+			ID:              proposal.Category + ":" + proposal.Key,
+			Key:             proposal.Key,
+			Kind:            proposal.Category,
+			ExpectedVersion: mutationExpectedVersion(proposal.version),
+			Changes:         enrichProposalChanges(proposal),
+			apply: func() (string, any, error) {
+				return applyEnrichProposal(c, &proposal, flags)
+			},
+		})
+	}
+	return ops
+}
+
+func enrichProposalChanges(p enrichProposal) []mutationChange {
+	switch p.Action {
+	case enrichActionPatch:
+		keys := make([]string, 0, len(p.Fields))
+		for key := range p.Fields {
+			keys = append(keys, key)
+		}
+		sort.Strings(keys)
+		changes := make([]mutationChange, 0, len(keys))
+		for _, key := range keys {
+			changes = append(changes, mutationChange{Field: key, Add: p.Fields[key]})
+		}
+		return changes
+	case enrichActionAttach:
+		if url, ok := p.Attachment["url"]; ok {
+			return []mutationChange{{Field: "url", Add: url}}
+		}
+		return []mutationChange{{Field: "attachment", Add: p.Attachment}}
+	default:
+		return nil
+	}
+}
+
+func enrichErrorStatus(err error) (string, any, error) {
+	var apiErr *client.APIError
+	if errors.As(err, &apiErr) && (apiErr.StatusCode == http.StatusPreconditionFailed || apiErr.StatusCode == http.StatusPreconditionRequired) {
+		return "conflict", apiErr.Body, err
+	}
+	return "failed", err.Error(), err
+}
+
+func mutationExpectedVersion(version any) int {
+	switch v := version.(type) {
+	case int:
+		return v
+	case int64:
+		return int(v)
+	case float64:
+		return int(v)
+	case json.Number:
+		n, _ := v.Int64()
+		return int(n)
+	default:
+		return 0
+	}
 }
 
 // appendEnrichProvenance returns the new Extra value: the item's existing Extra
@@ -567,53 +648,6 @@ func getJSON(ctx context.Context, httpClient *http.Client, rawURL string, out an
 		return fmt.Errorf("provider response exceeded %d bytes", maxEnrichProviderResponseBytes)
 	}
 	return nil
-}
-
-// --- reporting ---
-
-func printEnrichReport(cmd *cobra.Command, proposals []enrichProposal, skipped []enrichSkip, flags *rootFlags, applied bool) error {
-	if flags.asJSON {
-		report := map[string]any{
-			"applied":   applied,
-			"dry_run":   !applied,
-			"proposals": proposals,
-			"skipped":   skipped,
-		}
-		data, err := json.Marshal(report)
-		if err != nil {
-			return err
-		}
-		return printOutputWithFlags(cmd.OutOrStdout(), json.RawMessage(data), flags)
-	}
-
-	out := cmd.OutOrStdout()
-	verb := "Proposed"
-	if applied {
-		verb = "Applied"
-	}
-	fmt.Fprintf(out, "%s %d enrichment(s); %d skipped\n", verb, len(proposals), len(skipped))
-	for _, p := range proposals {
-		status := p.Status
-		if status == "" {
-			status = "proposed"
-		}
-		fmt.Fprintf(out, "  [%s] %s %s via %s — %s (%s)\n", status, p.Category, p.Key, p.Source, p.Note, truncateTitle(p.Title))
-	}
-	for _, s := range skipped {
-		fmt.Fprintf(out, "  [skipped] %s %s — %s\n", s.Category, s.Key, s.Reason)
-	}
-	if !applied && len(proposals) > 0 {
-		fmt.Fprintln(out, "\nRe-run with --yes to apply (or --dry-run to keep previewing).")
-	}
-	return nil
-}
-
-func truncateTitle(title string) string {
-	const max = 60
-	if len(title) <= max {
-		return title
-	}
-	return title[:max-1] + "…"
 }
 
 // --- small helpers ---

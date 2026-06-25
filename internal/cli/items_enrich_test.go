@@ -1,6 +1,6 @@
 // Copyright 2026 enieuwy. Licensed under Apache-2.0. See LICENSE.
 // PATCH(glean dk33): cover the enrichment providers, apply step, store-backed
-// work queue, and dry-run preview of `items enrich`.
+// work queue, and mutation-envelope preview of `items enrich`.
 
 package cli
 
@@ -14,6 +14,7 @@ import (
 	"strings"
 	"testing"
 
+	"zotero-pp-cli/internal/client"
 	"zotero-pp-cli/internal/store"
 )
 
@@ -109,19 +110,27 @@ func TestResolvePDFViaUnpaywall_NoOA(t *testing.T) {
 type fakeMutator struct {
 	patchPath string
 	patchBody map[string]any
+	patchErr  error
 	postPath  string
 	postBody  any
+	postErr   error
 }
 
 func (f *fakeMutator) Patch(path string, body any) (json.RawMessage, int, error) {
 	f.patchPath = path
 	f.patchBody, _ = body.(map[string]any)
+	if f.patchErr != nil {
+		return nil, http.StatusPreconditionFailed, f.patchErr
+	}
 	return json.RawMessage(`{}`), 200, nil
 }
 
 func (f *fakeMutator) Post(path string, body any) (json.RawMessage, int, error) {
 	f.postPath = path
 	f.postBody = body
+	if f.postErr != nil {
+		return nil, http.StatusInternalServerError, f.postErr
+	}
 	return json.RawMessage(`{}`), 200, nil
 }
 
@@ -131,9 +140,9 @@ func TestApplyEnrichProposal_PatchIncludesVersionAndProvenance(t *testing.T) {
 		Key: "ABC", Category: "missing_doi", Action: enrichActionPatch,
 		Source: "CrossRef", Fields: map[string]any{"DOI": "10.1/x"}, version: float64(7),
 	}
-	status := applyEnrichProposal(f, &p, &rootFlags{})
-	if status != "applied" {
-		t.Fatalf("status = %q, want applied", status)
+	status, reason, err := applyEnrichProposal(f, &p, &rootFlags{})
+	if err != nil || reason != nil || status != "applied" {
+		t.Fatalf("apply = status %q reason %v err %v, want applied without reason/error", status, reason, err)
 	}
 	if f.patchPath != "/items/ABC" {
 		t.Errorf("patch path = %q", f.patchPath)
@@ -156,8 +165,9 @@ func TestApplyEnrichProposal_AttachPostsChild(t *testing.T) {
 		Key: "ABC", Category: "missing_pdf", Action: enrichActionAttach, Source: "Unpaywall",
 		Attachment: map[string]any{"itemType": "attachment", "linkMode": "linked_url", "url": "https://oa/p.pdf", "parentItem": "ABC"},
 	}
-	if status := applyEnrichProposal(f, &p, &rootFlags{}); status != "applied" {
-		t.Fatalf("status = %q, want applied", status)
+	status, reason, err := applyEnrichProposal(f, &p, &rootFlags{})
+	if err != nil || reason != nil || status != "applied" {
+		t.Fatalf("apply = status %q reason %v err %v, want applied without reason/error", status, reason, err)
 	}
 	if f.postPath != "/items" {
 		t.Errorf("post path = %q, want /items", f.postPath)
@@ -165,6 +175,18 @@ func TestApplyEnrichProposal_AttachPostsChild(t *testing.T) {
 	arr, ok := f.postBody.([]map[string]any)
 	if !ok || len(arr) != 1 || arr[0]["linkMode"] != "linked_url" {
 		t.Errorf("post body = %v, want one linked_url attachment", f.postBody)
+	}
+}
+
+func TestApplyEnrichProposal_ConflictStatusIsTyped(t *testing.T) {
+	f := &fakeMutator{patchErr: &client.APIError{Method: http.MethodPatch, Path: "/items/ABC", StatusCode: http.StatusPreconditionFailed, Body: "stale"}}
+	p := enrichProposal{
+		Key: "ABC", Category: "missing_doi", Action: enrichActionPatch,
+		Source: "CrossRef", Fields: map[string]any{"DOI": "10.1/x"}, version: float64(7),
+	}
+	status, reason, err := applyEnrichProposal(f, &p, &rootFlags{})
+	if err == nil || status != "conflict" || reason != "stale" {
+		t.Fatalf("apply = status %q reason %v err %v, want typed conflict with API body reason", status, reason, err)
 	}
 }
 
@@ -217,7 +239,7 @@ func TestBuildEnrichProposals_DOIFromStore(t *testing.T) {
 	}
 }
 
-func TestItemsEnrichDryRunPreview(t *testing.T) {
+func TestItemsEnrichPreviewEnvelope(t *testing.T) {
 	srv := crossRefSearchServer(t, "Attention Is All You Need", "10.1/attention")
 	withBase(t, &enrichCrossRefBase, srv.URL)
 	_ = seedEnrichStore(t) // sets HOME to the seeded store
@@ -232,19 +254,18 @@ func TestItemsEnrichDryRunPreview(t *testing.T) {
 		t.Fatalf("enrich: %v", err)
 	}
 
-	var report struct {
-		Applied   bool             `json:"applied"`
-		DryRun    bool             `json:"dry_run"`
-		Proposals []enrichProposal `json:"proposals"`
-	}
-	if err := json.Unmarshal(out.Bytes(), &report); err != nil {
+	var env mutationEnvelope
+	if err := json.Unmarshal(out.Bytes(), &env); err != nil {
 		t.Fatalf("decode %q: %v", out.String(), err)
 	}
-	if report.Applied || !report.DryRun {
-		t.Errorf("expected dry-run preview, got applied=%v dry_run=%v", report.Applied, report.DryRun)
+	if !env.OK || env.Mode != "preview" || env.PreviewReason != "default" || env.Result != nil {
+		t.Errorf("expected ordinary preview envelope, got ok=%v mode=%q reason=%q result=%+v", env.OK, env.Mode, env.PreviewReason, env.Result)
 	}
-	if len(report.Proposals) != 1 || report.Proposals[0].Status != "" {
-		t.Errorf("expected 1 unapplied proposal, got %+v", report.Proposals)
+	if env.Plan.Summary.Planned != 1 || len(env.Plan.Operations) != 1 {
+		t.Fatalf("expected 1 planned proposal, got summary=%+v ops=%+v", env.Plan.Summary, env.Plan.Operations)
+	}
+	if got := env.Plan.Operations[0].Changes; len(got) != 1 || got[0].Field != "DOI" || got[0].Add != "10.1/attention" {
+		t.Errorf("proposal changes = %+v, want DOI add", got)
 	}
 }
 
@@ -266,7 +287,7 @@ func TestItemsEnrichApplyViaAPI(t *testing.T) {
 	defer zsrv.Close()
 	t.Setenv("ZOTERO_BASE_URL", zsrv.URL)
 
-	flags := &rootFlags{asJSON: true, yes: true} // apply mode
+	flags := &rootFlags{asJSON: true, yes: true, maxChanges: -1} // apply mode
 	cmd := newItemsEnrichCmd(flags)
 	cmd.SetArgs([]string{"--missing-doi"})
 	var out bytes.Buffer
@@ -286,15 +307,15 @@ func TestItemsEnrichApplyViaAPI(t *testing.T) {
 		t.Errorf("patched version = %v, want 9 (conflict guard)", gotBody["version"])
 	}
 
-	var report struct {
-		Applied   bool             `json:"applied"`
-		Proposals []enrichProposal `json:"proposals"`
-	}
-	if err := json.Unmarshal(out.Bytes(), &report); err != nil {
+	var env mutationEnvelope
+	if err := json.Unmarshal(out.Bytes(), &env); err != nil {
 		t.Fatalf("decode report: %v", err)
 	}
-	if !report.Applied || len(report.Proposals) != 1 || report.Proposals[0].Status != "applied" {
-		t.Errorf("expected one applied proposal, got %+v", report)
+	if !env.OK || env.Mode != "apply" || env.Result == nil {
+		t.Fatalf("expected successful apply envelope, got %+v", env)
+	}
+	if env.Result.Summary.Applied != 1 || len(env.Result.Items) != 1 || env.Result.Items[0].Status != "applied" {
+		t.Errorf("expected one applied result, got %+v", env.Result)
 	}
 }
 
