@@ -16,11 +16,13 @@ import (
 	"net/netip"
 	"net/url"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 	"zotero-pp-cli/internal/cliutil"
 	"zotero-pp-cli/internal/config"
@@ -31,6 +33,20 @@ const (
 	defaultZoteroBaseURL   = "http://localhost:23119/api/users/0"
 )
 
+// PATCH(glean write-safety): default client calls inherit cancellation from
+// process interrupts so Ctrl-C/SIGTERM abort in-flight HTTP work promptly.
+var (
+	interruptCtxOnce sync.Once
+	interruptCtx     context.Context
+)
+
+func sigintContext() context.Context {
+	interruptCtxOnce.Do(func() {
+		interruptCtx, _ = signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	})
+	return interruptCtx
+}
+
 type Client struct {
 	BaseURL    string
 	Config     *config.Config
@@ -39,7 +55,8 @@ type Client struct {
 	NoCache    bool
 	cacheDir   string
 	limiter    *cliutil.AdaptiveLimiter
-
+	// PATCH(glean write-safety): base context for wrapper calls; tests may replace it.
+	ctx context.Context
 	// WriteBaseURL, when set, receives all non-GET requests while reads continue to
 	// use BaseURL — the Zotero local API is read-only, so writes route to the Web
 	// API. ResolveWriteBase lazily computes it on the first write (kept in the CLI
@@ -91,7 +108,17 @@ func New(cfg *config.Config, timeout time.Duration, rateLimit float64) *Client {
 		HTTPClient: httpClient,
 		cacheDir:   cacheDir,
 		limiter:    cliutil.NewAdaptiveLimiter(rateLimit),
+		ctx:        sigintContext(),
 	}
+}
+
+func (c *Client) baseCtx() context.Context {
+	// PATCH(glean write-safety): tolerate zero-value clients while still giving
+	// normal clients a SIGINT/SIGTERM-cancellable context.
+	if c != nil && c.ctx != nil {
+		return c.ctx
+	}
+	return context.Background()
 }
 
 // RateLimit returns the current effective rate limit in req/s. Returns 0 if disabled.
@@ -99,6 +126,8 @@ func (c *Client) RateLimit() float64 {
 	return c.limiter.Rate()
 }
 
+// PATCH(glean write-safety): public wrappers keep their signatures while using
+// the client base context so interrupts cancel their HTTP work.
 func (c *Client) Get(path string, params map[string]string) (json.RawMessage, error) {
 	return c.GetWithHeaders(path, params, nil)
 }
@@ -110,7 +139,7 @@ func (c *Client) GetWithHeaders(path string, params map[string]string, headers m
 			return cached, nil
 		}
 	}
-	result, _, err := c.do(context.Background(), "GET", path, params, nil, headers)
+	result, _, err := c.do(c.baseCtx(), "GET", path, params, nil, headers)
 	if err == nil && !c.NoCache && !c.DryRun && c.cacheDir != "" {
 		c.writeCache(path, params, result)
 	}
@@ -118,7 +147,7 @@ func (c *Client) GetWithHeaders(path string, params map[string]string, headers m
 }
 
 func (c *Client) ProbeGet(path string) (int, error) {
-	_, status, err := c.do(context.Background(), "GET", path, nil, nil, nil)
+	_, status, err := c.do(c.baseCtx(), "GET", path, nil, nil, nil)
 	return status, err
 }
 
@@ -182,40 +211,45 @@ func (c *Client) invalidateCache() {
 }
 
 func (c *Client) Post(path string, body any) (json.RawMessage, int, error) {
-	return c.do(context.Background(), "POST", path, nil, body, nil)
+	return c.do(c.baseCtx(), "POST", path, nil, body, nil)
 }
 
 func (c *Client) PostWithHeaders(path string, body any, headers map[string]string) (json.RawMessage, int, error) {
-	return c.do(context.Background(), "POST", path, nil, body, headers)
+	return c.do(c.baseCtx(), "POST", path, nil, body, headers)
 }
 
 func (c *Client) Delete(path string) (json.RawMessage, int, error) {
-	return c.do(context.Background(), "DELETE", path, nil, nil, nil)
+	return c.do(c.baseCtx(), "DELETE", path, nil, nil, nil)
 }
 
 func (c *Client) DeleteWithHeaders(path string, headers map[string]string) (json.RawMessage, int, error) {
-	return c.do(context.Background(), "DELETE", path, nil, nil, headers)
+	return c.do(c.baseCtx(), "DELETE", path, nil, nil, headers)
 }
 
 func (c *Client) Put(path string, body any) (json.RawMessage, int, error) {
-	return c.do(context.Background(), "PUT", path, nil, body, nil)
+	return c.do(c.baseCtx(), "PUT", path, nil, body, nil)
 }
 
 func (c *Client) PutWithHeaders(path string, body any, headers map[string]string) (json.RawMessage, int, error) {
-	return c.do(context.Background(), "PUT", path, nil, body, headers)
+	return c.do(c.baseCtx(), "PUT", path, nil, body, headers)
 }
 
 func (c *Client) Patch(path string, body any) (json.RawMessage, int, error) {
-	return c.do(context.Background(), "PATCH", path, nil, body, nil)
+	return c.do(c.baseCtx(), "PATCH", path, nil, body, nil)
 }
 
 func (c *Client) PatchWithHeaders(path string, body any, headers map[string]string) (json.RawMessage, int, error) {
-	return c.do(context.Background(), "PATCH", path, nil, body, headers)
+	return c.do(c.baseCtx(), "PATCH", path, nil, body, headers)
 }
 
 // do executes an HTTP request. headerOverrides, when non-nil, override global
 // RequiredHeaders for this specific request (used for per-endpoint API versioning).
-func (c *Client) doRequest(method, path string, params map[string]string, body any, headerOverrides map[string]string) (json.RawMessage, int, http.Header, error) {
+func (c *Client) doRequest(ctx context.Context, method, path string, params map[string]string, body any, headerOverrides map[string]string) (json.RawMessage, int, http.Header, error) {
+	// PATCH(glean write-safety): all network construction below requires a
+	// non-nil context so callers can cancel request creation, dialing, and reads.
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	targetURL := c.baseURLFor(method) + path
 
 	var bodyBytes []byte
@@ -246,14 +280,18 @@ func (c *Client) doRequest(method, path string, params map[string]string, body a
 	var lastErr error
 
 	for attempt := 0; attempt <= maxRetries; attempt++ {
-		// Proactive rate limiting — wait before sending
-		c.limiter.Wait()
+		// PATCH(glean write-safety): proactive rate limiting must honor context
+		// cancellation before dialing.
+		c.limiter.WaitContext(ctx)
+		if err := ctx.Err(); err != nil {
+			return nil, 0, nil, err
+		}
 		var bodyReader io.Reader
 		if bodyBytes != nil {
 			bodyReader = strings.NewReader(string(bodyBytes))
 		}
 
-		req, err := http.NewRequest(method, targetURL, bodyReader)
+		req, err := http.NewRequestWithContext(ctx, method, targetURL, bodyReader)
 		if err != nil {
 			return nil, 0, nil, fmt.Errorf("creating request: %w", err)
 		}
@@ -298,6 +336,9 @@ func (c *Client) doRequest(method, path string, params map[string]string, body a
 
 		resp, err := c.HTTPClient.Do(req)
 		if err != nil {
+			if ctxErr := ctx.Err(); ctxErr != nil {
+				return nil, 0, nil, fmt.Errorf("%s %s: %w", method, path, ctxErr)
+			}
 			lastErr = fmt.Errorf("%s %s: %w", method, path, err)
 			continue
 		}
@@ -335,7 +376,9 @@ func (c *Client) doRequest(method, path string, params map[string]string, body a
 			c.limiter.OnRateLimit()
 			wait := cliutil.RetryAfter(resp)
 			fmt.Fprintf(os.Stderr, "rate limited, waiting %s (attempt %d/%d, rate adjusted to %.1f req/s)\n", wait, attempt+1, maxRetries, c.limiter.Rate())
-			time.Sleep(wait)
+			if err := sleepWithContext(ctx, wait); err != nil {
+				return nil, 0, nil, err
+			}
 			lastErr = apiErr
 			continue
 		}
@@ -346,7 +389,9 @@ func (c *Client) doRequest(method, path string, params map[string]string, body a
 		if resp.StatusCode >= 500 && resp.StatusCode != 501 && attempt < maxRetries {
 			wait := time.Duration(math.Pow(2, float64(attempt))) * time.Second
 			fmt.Fprintf(os.Stderr, "server error %d, retrying in %s (attempt %d/%d)\n", resp.StatusCode, wait, attempt+1, maxRetries)
-			time.Sleep(wait)
+			if err := sleepWithContext(ctx, wait); err != nil {
+				return nil, 0, nil, err
+			}
 			lastErr = apiErr
 			continue
 		}
@@ -356,6 +401,22 @@ func (c *Client) doRequest(method, path string, params map[string]string, body a
 	}
 
 	return nil, 0, nil, lastErr
+}
+
+func sleepWithContext(ctx context.Context, d time.Duration) error {
+	// PATCH(glean write-safety): retry and Retry-After waits must unblock when
+	// the owning request context is canceled by Ctrl-C or tests.
+	if d <= 0 {
+		return ctx.Err()
+	}
+	timer := time.NewTimer(d)
+	defer timer.Stop()
+	select {
+	case <-timer.C:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
 
 func shouldSendZoteroAuth(u *url.URL) bool {
@@ -450,7 +511,7 @@ func (c *Client) do(ctx context.Context, method, path string, params map[string]
 	if isMutatingVerb(method) && cliutil.IsVerifyEnv() && !cliutil.IsVerifyLiveHTTPEnv() {
 		return verifyShortCircuitEnvelope(method, path), http.StatusOK, nil
 	}
-	respBody, status, _, err := c.doRequest(method, path, params, body, headerOverrides)
+	respBody, status, _, err := c.doRequest(ctx, method, path, params, body, headerOverrides)
 	return respBody, status, err
 }
 
@@ -458,7 +519,7 @@ func (c *Client) do(ctx context.Context, method, path string, params map[string]
 // operations that ride a mutating verb on the wire (POST-based search,
 // GraphQL queries, JSON-RPC reads).
 func (c *Client) doRead(ctx context.Context, method, path string, params map[string]string, body any, headerOverrides map[string]string) (json.RawMessage, int, error) {
-	respBody, status, _, err := c.doRequest(method, path, params, body, headerOverrides)
+	respBody, status, _, err := c.doRequest(ctx, method, path, params, body, headerOverrides)
 	return respBody, status, err
 }
 
@@ -492,8 +553,10 @@ func verifyShortCircuitEnvelope(method, path string) json.RawMessage {
 // unparseable). PATCH(glean static-audit): version-based incremental sync needs
 // the response header that the cached Get/do path discards. Bypasses the read
 // cache so the caller always observes a live version.
+// PATCH(glean write-safety): live header-reading helpers use the same
+// cancellable base context as the public Get wrapper.
 func (c *Client) GetWithVersion(path string, params map[string]string) (json.RawMessage, int, error) {
-	respBody, _, hdr, err := c.doRequest("GET", path, params, nil, nil)
+	respBody, _, hdr, err := c.doRequest(c.baseCtx(), "GET", path, params, nil, nil)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -505,7 +568,7 @@ func (c *Client) GetWithVersion(path string, params map[string]string) (json.Raw
 // headers (e.g. Zotero-Schema-Version) that the cached Get path discards; bypasses
 // the read cache like GetWithVersion so the caller observes a live value.
 func (c *Client) GetWithHeader(path string, params map[string]string, header string) (json.RawMessage, string, error) {
-	respBody, _, hdr, err := c.doRequest("GET", path, params, nil, nil)
+	respBody, _, hdr, err := c.doRequest(c.baseCtx(), "GET", path, params, nil, nil)
 	if err != nil {
 		return nil, "", err
 	}

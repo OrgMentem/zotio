@@ -4,6 +4,7 @@
 package cliutil
 
 import (
+	"context"
 	"fmt"
 	"math"
 	"net/http"
@@ -41,7 +42,21 @@ func NewAdaptiveLimiter(ratePerSec float64) *AdaptiveLimiter {
 }
 
 func (l *AdaptiveLimiter) Wait() {
+	// PATCH(glean write-safety): preserve the existing no-arg API while routing
+	// through the cancellable implementation used by HTTP requests.
+	l.WaitContext(context.Background())
+}
+
+func (l *AdaptiveLimiter) WaitContext(ctx context.Context) {
 	if l == nil {
+		return
+	}
+	// PATCH(glean write-safety): callers may pass a request context so a
+	// rate-limit sleep exits promptly on Ctrl-C/SIGTERM cancellation.
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if ctx.Err() != nil {
 		return
 	}
 	// PATCH(glean static-audit): reserve the next send slot while holding the
@@ -59,7 +74,12 @@ func (l *AdaptiveLimiter) Wait() {
 	l.lastRequest = next
 	l.mu.Unlock()
 	if d := time.Until(next); d > 0 {
-		time.Sleep(d)
+		timer := time.NewTimer(d)
+		defer timer.Stop()
+		select {
+		case <-timer.C:
+		case <-ctx.Done():
+		}
 	}
 }
 
