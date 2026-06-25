@@ -88,6 +88,8 @@ func newReadingListCmd(flags *rootFlags) *cobra.Command {
 	}
 	cmd.Flags().IntVar(&flagLimit, "limit", 20, "Maximum number of items to show")
 	cmd.Flags().StringVar(&flagTag, "tag", defaultTag, "Override the reading queue tag")
+	// PATCH(glean write-safety): keep the bare queue view while adding state transition subcommands.
+	cmd.AddCommand(newReadingListAddCmd(flags), newReadingListStartCmd(flags), newReadingListDoneCmd(flags))
 
 	return cmd
 }

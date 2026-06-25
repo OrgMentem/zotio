@@ -112,6 +112,8 @@ func newItemsDuplicatesCmd(flags *rootFlags) *cobra.Command {
 		},
 	}
 	cmd.Flags().StringVar(&flagBy, "by", "all", "Duplicate detector to run (doi, title, all)")
+	// PATCH(glean write-safety): keep the bare duplicate report intact while adding the write-safe resolver subcommand.
+	cmd.AddCommand(newItemsDuplicatesResolveCmd(flags))
 
 	return cmd
 }
