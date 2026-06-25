@@ -41,7 +41,7 @@ func seedAuditStore(t *testing.T) localQueryStore {
 func TestQueryMissingPDFItems_IndexedColumns(t *testing.T) {
 	db := seedAuditStore(t)
 
-	rows, err := queryMissingPDFItems(db, "", 0)
+	rows, err := queryMissingPDFItems(db, "", 0, "")
 	if err != nil {
 		t.Fatalf("queryMissingPDFItems: %v", err)
 	}
@@ -69,7 +69,7 @@ func TestQueryMissingPDFItems_IndexedColumns(t *testing.T) {
 	}
 
 	// The --type filter narrows to a single item type via the indexed column.
-	books, err := queryMissingPDFItems(db, "book", 0)
+	books, err := queryMissingPDFItems(db, "book", 0, "")
 	if err != nil {
 		t.Fatalf("queryMissingPDFItems(book): %v", err)
 	}

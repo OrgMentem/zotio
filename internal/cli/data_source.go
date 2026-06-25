@@ -77,6 +77,17 @@ func attachFreshness(prov DataProvenance, flags *rootFlags) DataProvenance {
 	return prov
 }
 
+// isLocalListRead detects generated list commands that still pass isList=false.
+// PATCH(glean bugfix): base resource paths ("/collections", "/tags",
+// "/searches") contain no concrete item key, so local mode must list rows
+// instead of treating the resource name as an ID.
+func isLocalListRead(resourceType string, isList bool, path string) bool {
+	if isList {
+		return true
+	}
+	return strings.Trim(path, "/") == resourceType
+}
+
 // resolveRead dispatches a GET request to either the live API or local store
 // based on the --data-source flag. Returns the response data and provenance metadata.
 //
@@ -245,7 +256,9 @@ func resolveLocal(ctx context.Context, resourceType string, isList bool, path st
 		fmt.Fprintf(os.Stderr, "warning: local data may be unfiltered — this endpoint's filters are not applied to cached data\n")
 	}
 
-	if isList {
+	// PATCH(glean bugfix): list-shaped base paths must dump all local rows
+	// even when the generated command passed isList=false.
+	if isLocalListRead(resourceType, isList, path) {
 		raw, err := db.List(resourceType, 0) // 0 = no limit, return all synced data
 		if err != nil {
 			return nil, DataProvenance{}, fmt.Errorf("querying local store: %w", err)

@@ -162,6 +162,24 @@ func TestSyncDefaultAndResourceHelpers(t *testing.T) {
 		t.Fatalf("extractID missing = %q, want empty", got)
 	}
 
+	// PATCH(glean bugfix): Zotero tags and global schema lists use domain-name
+	// keys that are not in the generic ID fallback list.
+	idCases := []struct {
+		resource string
+		obj      map[string]any
+		want     string
+	}{
+		{"tags", map[string]any{"tag": "foo"}, "foo"},
+		{"schema", map[string]any{"itemType": "journalArticle"}, "journalArticle"},
+		{"schema-item-fields", map[string]any{"field": "title"}, "title"},
+		{"schema-creator-fields", map[string]any{"field": "firstName"}, "firstName"},
+	}
+	for _, tc := range idCases {
+		if got := extractID(tc.resource, tc.obj); got != tc.want {
+			t.Fatalf("extractID(%q, %#v) = %q, want %q", tc.resource, tc.obj, got, tc.want)
+		}
+	}
+
 	if got, err := syncResourcePath("items"); err != nil || got != "/items" {
 		t.Fatalf("syncResourcePath(items) = %q, %v; want /items, nil", got, err)
 	}
@@ -183,6 +201,45 @@ func TestSyncDefaultAndResourceHelpers(t *testing.T) {
 		if !found {
 			t.Fatalf("defaultSyncResources missing %q in %v", resource, resources)
 		}
+	}
+}
+
+// PATCH(glean bugfix): schema sync must request global Zotero endpoints and
+// still persist rows whose key field is itemType rather than id/key/name.
+func TestSyncResourceSchemaUsesGlobalBaseAndSchemaID(t *testing.T) {
+	syncTestWithHumanFriendly(t, false)
+	var globalHits, libraryHits int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/itemTypes":
+			globalHits++
+			w.Header().Set("Content-Type", "application/json")
+			fmt.Fprint(w, `[{"itemType":"book","localized":"Book"}]`)
+		case "/users/0/itemTypes":
+			libraryHits++
+			http.Error(w, "No endpoint found", http.StatusNotFound)
+		default:
+			t.Errorf("unexpected schema sync path %q", r.URL.Path)
+			http.Error(w, "unexpected path", http.StatusNotFound)
+		}
+	}))
+	defer server.Close()
+
+	db := syncTestOpenStore(t)
+	defer db.Close()
+	result := syncResource(syncTestClient(server.URL+"/users/0"), db, "schema", 0, false, 0, false)
+	if result.Err != nil || result.Warn != nil {
+		t.Fatalf("schema sync Err = %v Warn = %v", result.Err, result.Warn)
+	}
+	if result.Count != 1 {
+		t.Fatalf("schema sync count = %d, want 1", result.Count)
+	}
+	if globalHits != 1 || libraryHits != 0 {
+		t.Fatalf("schema sync hits global=%d library=%d, want global=1 library=0", globalHits, libraryHits)
+	}
+	syncTestAssertStoreCount(t, db, "schema", 1)
+	if data, err := db.Get("schema", "book"); err != nil || len(data) == 0 {
+		t.Fatalf("stored schema book = %s (err %v), want row", string(data), err)
 	}
 }
 

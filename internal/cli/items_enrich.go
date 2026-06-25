@@ -76,12 +76,14 @@ func newItemsEnrichCmd(flags *rootFlags) *cobra.Command {
 		flagLimit           int
 		flagEmail           string
 		flagNoOpenAlex      bool
+		// PATCH(glean bugfix): allow enrichment work queues to be scoped by collection key.
+		flagCollection string
 	)
 
 	cmd := &cobra.Command{
 		Use:   "enrich",
 		Short: "Fill missing item metadata (DOI, abstract, open-access PDF link) from CrossRef, OpenAlex, and Unpaywall",
-		// PATCH(glean write-safety): --agent no longer implies --yes; help names --yes as the apply switch.
+		// PATCH(glean write-safety): --agent no longer implies --yes; help names --yes as the apply switch. PATCH(glean bugfix): --collection scopes enrichment queues.
 		Long: `Resolve missing metadata for locally synced items and apply it back to Zotero.
 
 Work queues come from the same checks as 'items audit':
@@ -89,9 +91,10 @@ Work queues come from the same checks as 'items audit':
   --missing-abstract  fill the abstract from CrossRef, then OpenAlex (requires the item's DOI)
   --missing-pdf       attach an open-access PDF link from Unpaywall (requires DOI)
 
-By default this previews the proposed changes (a patch plan). Pass --yes to
-apply them via the Zotero API; --dry-run always previews. Applied
-field changes record provenance in the item's Extra field.`,
+By default this previews the proposed changes (a patch plan). Pass --collection
+to scope the work queue to items in a single collection. Pass --yes to apply
+them via the Zotero API; --dry-run always previews. Applied field changes
+record provenance in the item's Extra field.`,
 		Annotations: map[string]string{"mcp:read-only": "false"},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if !flagMissingDOI && !flagMissingAbstract && !flagMissingPDF {
@@ -114,16 +117,17 @@ field changes record provenance in the item's Extra field.`,
 			var skipped []enrichSkip
 			useOpenAlex := !flagNoOpenAlex
 
+			// PATCH(glean bugfix): thread collection scope through every selected enrichment category.
 			if flagMissingDOI {
-				p, s := buildEnrichProposals(cmd.Context(), db, httpClient, "missing_doi", flagLimit, flagEmail, useOpenAlex)
+				p, s := buildEnrichProposals(cmd.Context(), db, httpClient, "missing_doi", flagLimit, flagCollection, flagEmail, useOpenAlex)
 				proposals, skipped = append(proposals, p...), append(skipped, s...)
 			}
 			if flagMissingAbstract {
-				p, s := buildEnrichProposals(cmd.Context(), db, httpClient, "missing_abstract", flagLimit, flagEmail, useOpenAlex)
+				p, s := buildEnrichProposals(cmd.Context(), db, httpClient, "missing_abstract", flagLimit, flagCollection, flagEmail, useOpenAlex)
 				proposals, skipped = append(proposals, p...), append(skipped, s...)
 			}
 			if flagMissingPDF {
-				p, s := buildEnrichProposals(cmd.Context(), db, httpClient, "missing_pdf", flagLimit, flagEmail, useOpenAlex)
+				p, s := buildEnrichProposals(cmd.Context(), db, httpClient, "missing_pdf", flagLimit, flagCollection, flagEmail, useOpenAlex)
 				proposals, skipped = append(proposals, p...), append(skipped, s...)
 			}
 
@@ -154,6 +158,8 @@ field changes record provenance in the item's Extra field.`,
 	cmd.Flags().BoolVar(&flagMissingAbstract, "missing-abstract", false, "Fill the abstract from CrossRef, then OpenAlex (uses the item's DOI)")
 	cmd.Flags().BoolVar(&flagMissingPDF, "missing-pdf", false, "Attach an open-access PDF link from Unpaywall (uses the item's DOI)")
 	cmd.Flags().IntVar(&flagLimit, "limit", 25, "Maximum items to process per category")
+	// PATCH(glean bugfix): expose collection scoping for the local work queue.
+	cmd.Flags().StringVar(&flagCollection, "collection", "", "Scope the work queue to items in a collection key")
 	cmd.Flags().StringVar(&flagEmail, "email", "", "Contact email for Unpaywall (required for --missing-pdf) and the OpenAlex polite pool (optional); or set UNPAYWALL_EMAIL")
 	cmd.Flags().BoolVar(&flagNoOpenAlex, "no-openalex", false, "Disable the OpenAlex fallback for --missing-doi/--missing-abstract")
 
@@ -170,8 +176,9 @@ func enrichTimeout(t time.Duration) time.Duration {
 // buildEnrichProposals resolves proposals for one category over the audit work
 // queue. It loads each candidate's full payload from the local store so the
 // provider has title/creators/DOI/version, then dispatches to the resolver.
-func buildEnrichProposals(ctx context.Context, db localQueryStore, httpClient *http.Client, category string, limit int, email string, useOpenAlex bool) ([]enrichProposal, []enrichSkip) {
-	rows, err := enrichWorkQueue(db, category, limit)
+// PATCH(glean bugfix): carry collection scope from the command into the work queue.
+func buildEnrichProposals(ctx context.Context, db localQueryStore, httpClient *http.Client, category string, limit int, collection string, email string, useOpenAlex bool) ([]enrichProposal, []enrichSkip) {
+	rows, err := enrichWorkQueue(db, category, limit, collection)
 	if err != nil {
 		return nil, []enrichSkip{{Category: category, Reason: fmt.Sprintf("querying work queue: %v", err)}}
 	}
@@ -217,14 +224,15 @@ func buildEnrichProposals(ctx context.Context, db localQueryStore, httpClient *h
 
 // enrichWorkQueue returns the candidate rows for a category, reusing the audit
 // queries so enrichment and reporting share one definition of "missing".
-func enrichWorkQueue(db localQueryStore, category string, limit int) ([]map[string]any, error) {
+// PATCH(glean bugfix): pass collection scope to category-specific missing-item queries.
+func enrichWorkQueue(db localQueryStore, category string, limit int, collection string) ([]map[string]any, error) {
 	switch category {
 	case "missing_doi":
-		return queryMissingDOIItems(db, limit)
+		return queryMissingDOIItems(db, limit, collection)
 	case "missing_abstract":
-		return queryMissingAbstractItems(db, limit)
+		return queryMissingAbstractItems(db, limit, collection)
 	case "missing_pdf":
-		return queryMissingPDFItems(db, "", limit)
+		return queryMissingPDFItems(db, "", limit, collection)
 	default:
 		return nil, fmt.Errorf("unknown category %q", category)
 	}

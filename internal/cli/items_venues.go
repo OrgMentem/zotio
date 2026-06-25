@@ -51,6 +51,8 @@ func newItemsVenuesCmd(flags *rootFlags) *cobra.Command {
 }
 
 func queryItemVenues(db localQueryStore, itemType string, top int) ([]map[string]any, error) {
+	// PATCH(glean bugfix): prefer Zotero's normalized meta.parsedDate for
+	// venue years before falling back to freeform data.date.
 	query := `
 SELECT
 	COALESCE(
@@ -60,8 +62,8 @@ SELECT
 		NULLIF(TRIM(json_extract(data,'$.data.publisher')),'')
 	) AS venue,
 	json_extract(data,'$.data.itemType') AS item_type,
-	MIN(SUBSTR(COALESCE(json_extract(data,'$.data.date'),''),1,4)) AS min_year,
-	MAX(SUBSTR(COALESCE(json_extract(data,'$.data.date'),''),1,4)) AS max_year,
+	MIN(SUBSTR(COALESCE(NULLIF(json_extract(data,'$.meta.parsedDate'),''), json_extract(data,'$.data.date'),''),1,4)) AS min_year,
+	MAX(SUBSTR(COALESCE(NULLIF(json_extract(data,'$.meta.parsedDate'),''), json_extract(data,'$.data.date'),''),1,4)) AS max_year,
 	COUNT(*) AS count
 FROM resources
 WHERE resource_type='items'

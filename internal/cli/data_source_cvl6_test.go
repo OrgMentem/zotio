@@ -147,3 +147,89 @@ func TestItemsListLocalNoMatchEmptyArray(t *testing.T) {
 		t.Fatalf("expected no keys, got %v", keys)
 	}
 }
+
+// PATCH(glean bugfix): local base-resource reads must list all stored rows
+// even when generated list commands pass isList=false.
+var bug6Collections = []json.RawMessage{
+	json.RawMessage(`{"key":"COL1","version":1,"data":{"key":"COL1","name":"First"}}`),
+	json.RawMessage(`{"key":"COL2","version":1,"data":{"key":"COL2","name":"Second"}}`),
+}
+
+func bug6SeedLocalCollections(t *testing.T) *rootFlags {
+	t.Helper()
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+	t.Setenv("ZOTERO_CONFIG", filepath.Join(t.TempDir(), "missing.toml"))
+	dbPath := defaultDBPath("zotero-pp-cli")
+	if err := os.MkdirAll(filepath.Dir(dbPath), 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	db, err := store.OpenWithContext(context.Background(), dbPath)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	if _, _, err := db.UpsertBatch("collections", bug6Collections); err != nil {
+		t.Fatalf("seed collections: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close: %v", err)
+	}
+	return &rootFlags{dataSource: "local", noCache: true, timeout: time.Second}
+}
+
+func TestResolveReadLocalBaseResourcePathListsCollections(t *testing.T) {
+	flags := bug6SeedLocalCollections(t)
+
+	data, prov, err := resolveRead(context.Background(), nil, flags, "collections", false, "/collections", nil, nil)
+	if err != nil {
+		t.Fatalf("resolveRead list: %v", err)
+	}
+	if prov.Source != "local" || prov.ResourceType != "collections" {
+		t.Fatalf("provenance = %+v, want local collections", prov)
+	}
+
+	var got []struct {
+		Key  string `json:"key"`
+		Data struct {
+			Name string `json:"name"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatalf("decode list %q: %v", string(data), err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("list count = %d, want 2: %v", len(got), got)
+	}
+	namesByKey := map[string]string{}
+	for _, item := range got {
+		namesByKey[item.Key] = item.Data.Name
+	}
+	if namesByKey["COL1"] != "First" || namesByKey["COL2"] != "Second" {
+		t.Fatalf("list rows = %#v, want both seeded collections", namesByKey)
+	}
+}
+
+func TestResolveReadLocalCollectionSingleItemStillUsesID(t *testing.T) {
+	flags := bug6SeedLocalCollections(t)
+
+	data, prov, err := resolveRead(context.Background(), nil, flags, "collections", false, "/collections/COL1", nil, nil)
+	if err != nil {
+		t.Fatalf("resolveRead get: %v", err)
+	}
+	if prov.Source != "local" || prov.ResourceType != "collections" {
+		t.Fatalf("provenance = %+v, want local collections", prov)
+	}
+
+	var got struct {
+		Key  string `json:"key"`
+		Data struct {
+			Name string `json:"name"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatalf("decode single %q: %v", string(data), err)
+	}
+	if got.Key != "COL1" || got.Data.Name != "First" {
+		t.Fatalf("single item = %#v, want COL1 First", got)
+	}
+}

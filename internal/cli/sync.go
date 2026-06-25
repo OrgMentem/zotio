@@ -341,12 +341,35 @@ func emitFulltextWarning(msg string) {
 	}
 }
 
-// syncResource handles the full paginated sync of a single resource.
-// It resumes from the last cursor unless sinceVersion or full mode overrides it.
-func syncResource(c interface {
+// PATCH(glean bugfix): schema sync resources use Zotero's global schema API,
+// not the library-scoped /users|groups/<id> base used by ordinary resources.
+type syncHTTPClient interface {
 	GetWithVersion(string, map[string]string) (json.RawMessage, int, error)
 	RateLimit() float64
-}, db *store.Store, resource string, sinceVersion int, full bool, maxPages int, inlineProgress bool) syncResult {
+}
+
+func syncClientForResource(c syncHTTPClient, resource string) syncHTTPClient {
+	if !isSchemaSyncResource(resource) {
+		return c
+	}
+	if concrete, ok := c.(*client.Client); ok && concrete != nil {
+		return concrete.CloneForRead(stripLibraryPrefix(concrete.BaseURL))
+	}
+	return c
+}
+
+func isSchemaSyncResource(resource string) bool {
+	switch resource {
+	case "schema", "schema-item-fields", "schema-creator-fields":
+		return true
+	default:
+		return false
+	}
+}
+
+// syncResource handles the full paginated sync of a single resource.
+// It resumes from the last cursor unless sinceVersion or full mode overrides it.
+func syncResource(c syncHTTPClient, db *store.Store, resource string, sinceVersion int, full bool, maxPages int, inlineProgress bool) syncResult {
 	started := time.Now()
 
 	if !humanFriendly {
@@ -357,7 +380,9 @@ func syncResource(c interface {
 	if err != nil {
 		return syncResult{Resource: resource, Err: err, Duration: time.Since(started)}
 	}
-	var totalCount int
+	// PATCH(glean bugfix): schema resources are global, so their page GETs
+	// must use a client whose base URL has the library segment stripped.
+	requestClient := syncClientForResource(c, resource)
 
 	// Resume cursor from sync_state (unless --full cleared it)
 	existingCursor, _, _, _ := db.GetSyncState(resource)
@@ -392,6 +417,7 @@ func syncResource(c interface {
 	// failed extraction.
 	var extractFailureTotal int
 	var consumedTotal int
+	var totalCount int
 	anomalyEmitted := false
 
 	for {
@@ -412,7 +438,7 @@ func syncResource(c interface {
 			params[sinceParam] = strconv.Itoa(effectiveSince)
 		}
 
-		data, respVersion, err := c.GetWithVersion(path, params)
+		data, respVersion, err := requestClient.GetWithVersion(path, params)
 		// Capture the library version from the first response that reports one;
 		// using the earliest avoids missing objects changed mid-sync.
 		if libraryVersion == 0 && respVersion > 0 {
@@ -811,6 +837,12 @@ var discriminatorDispatchers = map[string]discriminatorDispatch{}
 func upsertResourceBatch(db *store.Store, resource string, items []json.RawMessage) (int, int, error) {
 	storeResource := canonicalStoreResource(resource)
 	if _, ok := discriminatorDispatchers[resource]; !ok {
+		// PATCH(glean bugfix): store.UpsertBatch has its own generated ID map;
+		// key resources with sync-local overrides here so tags and global schema
+		// rows do not drop as primary_key_unresolved.
+		if _, hasOverride := resourceIDFieldOverrides[storeResource]; hasOverride {
+			return upsertResourceBatchWithExtractedIDs(db, storeResource, items)
+		}
 		return db.UpsertBatch(storeResource, items)
 	}
 
@@ -830,7 +862,13 @@ func upsertResourceBatch(db *store.Store, resource string, items []json.RawMessa
 
 	var stored, extractFailures int
 	for _, target := range order {
-		targetStored, targetExtractFailures, err := db.UpsertBatch(target, grouped[target])
+		var targetStored, targetExtractFailures int
+		var err error
+		if _, hasOverride := resourceIDFieldOverrides[target]; hasOverride {
+			targetStored, targetExtractFailures, err = upsertResourceBatchWithExtractedIDs(db, target, grouped[target])
+		} else {
+			targetStored, targetExtractFailures, err = db.UpsertBatch(target, grouped[target])
+		}
 		if err != nil {
 			return stored, extractFailures + targetExtractFailures, err
 		}
@@ -838,6 +876,31 @@ func upsertResourceBatch(db *store.Store, resource string, items []json.RawMessa
 		extractFailures += targetExtractFailures
 	}
 	return stored, extractFailures, nil
+}
+
+// PATCH(glean bugfix): sync-owned ID overrides are applied before keyed batch
+// writes so generated store metadata drift cannot drop name-keyed Zotero rows.
+func upsertResourceBatchWithExtractedIDs(db *store.Store, resource string, items []json.RawMessage) (int, int, error) {
+	ids := make([]string, 0, len(items))
+	payloads := make([]json.RawMessage, 0, len(items))
+	var extractFailures int
+	for _, item := range items {
+		var obj map[string]any
+		if err := json.Unmarshal(item, &obj); err != nil {
+			continue
+		}
+		id := extractID(resource, obj)
+		if id == "" {
+			extractFailures++
+			continue
+		}
+		ids = append(ids, id)
+		payloads = append(payloads, item)
+	}
+	if err := db.UpsertKeyed(resource, ids, payloads); err != nil {
+		return 0, extractFailures, err
+	}
+	return len(ids), extractFailures, nil
 }
 
 func canonicalStoreResource(resource string) string {
@@ -941,7 +1004,14 @@ func syncResourcePath(resource string) (string, error) {
 // Includes both flat resources and dependent (parent-child) resources so
 // annotations on a child path-item are honored at runtime, not just on
 // flat paths.
-var resourceIDFieldOverrides = map[string]string{}
+var resourceIDFieldOverrides = map[string]string{
+	// PATCH(glean bugfix): Zotero tags and global schema lists are keyed by
+	// domain-name fields rather than generic id/name/key fields.
+	"tags":                  "tag",
+	"schema":                "itemType",
+	"schema-creator-fields": "field",
+	"schema-item-fields":    "field",
+}
 
 // genericIDFieldFallbacks is the runtime safety net for resources that did
 // NOT receive a templated IDField. API-specific names belong in spec

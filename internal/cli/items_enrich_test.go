@@ -223,7 +223,7 @@ func TestBuildEnrichProposals_DOIFromStore(t *testing.T) {
 	withBase(t, &enrichCrossRefBase, srv.URL)
 	db := seedEnrichStore(t)
 
-	proposals, skipped := buildEnrichProposals(context.Background(), db, http.DefaultClient, "missing_doi", 25, "", false)
+	proposals, skipped := buildEnrichProposals(context.Background(), db, http.DefaultClient, "missing_doi", 25, "", "", false)
 	if len(proposals) != 1 {
 		t.Fatalf("proposals = %d, want 1: %+v", len(proposals), proposals)
 	}
@@ -236,6 +236,59 @@ func TestBuildEnrichProposals_DOIFromStore(t *testing.T) {
 	// K2's title has no CrossRef match -> skipped, not silently dropped.
 	if len(skipped) != 1 || skipped[0].Key != "K2" {
 		t.Errorf("skipped = %+v, want K2", skipped)
+	}
+}
+
+// PATCH(glean bugfix): collection scoping should filter the local work queue
+// before enrichment providers are asked to resolve candidates.
+func TestItemsEnrichMissingDOICollectionScope(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"message":{"items":[` +
+			`{"title":["In Collection"],"DOI":"10.1/in"},` +
+			`{"title":["Outside Collection"],"DOI":"10.1/out"}` +
+			`]}}`))
+	}))
+	t.Cleanup(srv.Close)
+	withBase(t, &enrichCrossRefBase, srv.URL)
+
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("ZOTERO_CONFIG", filepath.Join(t.TempDir(), "collection.toml"))
+	dbPath := defaultDBPath("zotero-pp-cli")
+	db, err := store.OpenWithContext(context.Background(), dbPath)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	items := []json.RawMessage{
+		json.RawMessage(`{"key":"KCOL","version":1,"data":{"key":"KCOL","itemType":"journalArticle","title":"In Collection","collections":["COLX"]}}`),
+		json.RawMessage(`{"key":"KOUT","version":2,"data":{"key":"KOUT","itemType":"journalArticle","title":"Outside Collection"}}`),
+	}
+	if _, _, err := db.UpsertBatch("items", items); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	_ = db.Close()
+
+	flags := &rootFlags{asJSON: true}
+	cmd := newItemsEnrichCmd(flags)
+	cmd.SetArgs([]string{"--missing-doi", "--collection", "COLX"})
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&bytes.Buffer{})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("enrich: %v", err)
+	}
+
+	var env mutationEnvelope
+	if err := json.Unmarshal(out.Bytes(), &env); err != nil {
+		t.Fatalf("decode %q: %v", out.String(), err)
+	}
+	if env.Plan.Summary.Planned != 1 || len(env.Plan.Operations) != 1 {
+		t.Fatalf("expected one scoped proposal, got summary=%+v ops=%+v", env.Plan.Summary, env.Plan.Operations)
+	}
+	if env.Plan.Operations[0].Key != "KCOL" {
+		t.Errorf("proposal key = %q, want KCOL", env.Plan.Operations[0].Key)
+	}
+	if env.Journal != nil {
+		t.Errorf("unexpected skipped journal from out-of-collection item: %+v", env.Journal)
 	}
 }
 

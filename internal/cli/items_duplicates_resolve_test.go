@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"zotero-pp-cli/internal/store"
@@ -85,6 +86,12 @@ func seedDuplicateResolveStore(t *testing.T, items []json.RawMessage) {
 
 func runItemsDuplicatesResolveTestCmd(t *testing.T, srv *duplicateResolveTestServer, flags *rootFlags, args ...string) mutationEnvelope {
 	t.Helper()
+	env, _ := runItemsDuplicatesResolveTestCmdWithStderr(t, srv, flags, args...)
+	return env
+}
+
+func runItemsDuplicatesResolveTestCmdWithStderr(t *testing.T, srv *duplicateResolveTestServer, flags *rootFlags, args ...string) (mutationEnvelope, string) {
+	t.Helper()
 	t.Setenv("ZOTERO_BASE_URL", srv.server.URL+"/users/0")
 	cmd := newItemsDuplicatesCmd(flags)
 	cmd.SilenceErrors, cmd.SilenceUsage = true, true
@@ -100,7 +107,7 @@ func runItemsDuplicatesResolveTestCmd(t *testing.T, srv *duplicateResolveTestSer
 	if err := json.Unmarshal(out.Bytes(), &env); err != nil {
 		t.Fatalf("decode mutation envelope %q: %v", out.String(), err)
 	}
-	return env
+	return env, errOut.String()
 }
 
 func TestItemsDuplicatesResolvePreviewWritesNothing(t *testing.T) {
@@ -159,6 +166,42 @@ func TestItemsDuplicatesResolveApplyMergesCollectionsAndTrashesDuplicate(t *test
 	}
 }
 
+// PATCH(glean bugfix): default duplicate resolution is DOI-only, with title matching opt-in warning coverage.
+func TestItemsDuplicatesResolveDefaultsToDOIOnlyAndWarnsForTitle(t *testing.T) {
+	for _, tt := range []struct {
+		name     string
+		args     []string
+		wantKeys []string
+		wantWarn bool
+	}{
+		{name: "default", args: []string{"resolve"}, wantKeys: []string{"K2"}},
+		{name: "title", args: []string{"resolve", "--title"}, wantKeys: []string{"T2"}, wantWarn: true},
+		{name: "doi and title", args: []string{"resolve", "--doi", "--title"}, wantKeys: []string{"K2", "T2"}, wantWarn: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			seedDuplicateResolveStore(t, []json.RawMessage{
+				json.RawMessage(`{"key":"K1","version":10,"data":{"key":"K1","itemType":"journalArticle","title":"Shared DOI A","DOI":"10/example","collections":["C1"]}}`),
+				json.RawMessage(`{"key":"K2","version":11,"data":{"key":"K2","itemType":"journalArticle","title":"Shared DOI B","DOI":"10/example","collections":["C2"]}}`),
+				json.RawMessage(`{"key":"T1","version":20,"data":{"key":"T1","itemType":"journalArticle","title":"Week 3","collections":["C3"]}}`),
+				json.RawMessage(`{"key":"T2","version":21,"data":{"key":"T2","itemType":"journalArticle","title":"Week 3","collections":["C4"]}}`),
+			})
+			srv := newDuplicateResolveTestServer(t, map[string]int{}, map[string]map[string]any{})
+
+			env, stderr := runItemsDuplicatesResolveTestCmdWithStderr(t, srv, &rootFlags{asJSON: true, maxChanges: -1}, tt.args...)
+			if !env.OK || env.Mode != "preview" {
+				t.Fatalf("env = %+v, want preview", env)
+			}
+			if got := duplicateResolvePlanKeys(env.Plan.Operations); fmt.Sprint(got) != fmt.Sprint(tt.wantKeys) {
+				t.Fatalf("plan keys = %v, want %v; ops=%+v", got, tt.wantKeys, env.Plan.Operations)
+			}
+			hasWarn := strings.Contains(stderr, duplicateResolveTitleWarning)
+			if hasWarn != tt.wantWarn {
+				t.Fatalf("stderr = %q, warning presence = %v, want %v", stderr, hasWarn, tt.wantWarn)
+			}
+		})
+	}
+}
+
 func TestItemsDuplicatesResolveNoDuplicatesEmptyPlan(t *testing.T) {
 	seedDuplicateResolveStore(t, []json.RawMessage{
 		json.RawMessage(`{"key":"K1","version":1,"data":{"key":"K1","itemType":"journalArticle","title":"One","DOI":"10/one"}}`),
@@ -170,6 +213,14 @@ func TestItemsDuplicatesResolveNoDuplicatesEmptyPlan(t *testing.T) {
 	if !env.OK || env.Mode != "preview" || env.Plan.Summary.Selected != 0 || env.Plan.Summary.Planned != 0 || len(env.Plan.Operations) != 0 {
 		t.Fatalf("env = %+v, want empty preview plan", env)
 	}
+}
+
+func duplicateResolvePlanKeys(ops []plannedOp) []string {
+	keys := make([]string, 0, len(ops))
+	for _, op := range ops {
+		keys = append(keys, op.Key)
+	}
+	return keys
 }
 
 func duplicateResolvePlanHasAdd(changes []mutationChange, field string, want any) bool {

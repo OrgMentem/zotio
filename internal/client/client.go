@@ -112,6 +112,24 @@ func New(cfg *config.Config, timeout time.Duration, rateLimit float64) *Client {
 	}
 }
 
+// CloneForRead returns a read-only client targeting baseURL, sharing the config,
+// HTTP client, rate limiter, and cancellation context but with fresh
+// synchronization state. PATCH(glean bugfix): a Client must never be copied by
+// value (it holds a sync.Once and RWMutex); global schema endpoints need the
+// library prefix stripped from BaseURL, so clone explicitly instead.
+func (c *Client) CloneForRead(baseURL string) *Client {
+	return &Client{
+		BaseURL:    baseURL,
+		Config:     c.Config,
+		HTTPClient: c.HTTPClient,
+		DryRun:     c.DryRun,
+		NoCache:    c.NoCache,
+		cacheDir:   c.cacheDir,
+		limiter:    c.limiter,
+		ctx:        c.ctx,
+	}
+}
+
 func (c *Client) baseCtx() context.Context {
 	// PATCH(glean write-safety): tolerate zero-value clients while still giving
 	// normal clients a SIGINT/SIGTERM-cancellable context.

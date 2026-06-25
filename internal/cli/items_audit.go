@@ -110,14 +110,18 @@ func selectedItemsAuditChecks(missingPDF, missingAbstract, missingDOI, missingTa
 	checks := make([]itemsAuditCheck, 0, 5)
 	if missingPDF {
 		checks = append(checks, itemsAuditCheck{name: "missing_pdf", query: func(db localQueryStore, limit int) ([]map[string]any, error) {
-			return queryMissingPDFItems(db, "", limit)
+			return queryMissingPDFItems(db, "", limit, "")
 		}})
 	}
 	if missingAbstract {
-		checks = append(checks, itemsAuditCheck{name: "missing_abstract", query: queryMissingAbstractItems})
+		checks = append(checks, itemsAuditCheck{name: "missing_abstract", query: func(db localQueryStore, limit int) ([]map[string]any, error) {
+			return queryMissingAbstractItems(db, limit, "")
+		}})
 	}
 	if missingDOI {
-		checks = append(checks, itemsAuditCheck{name: "missing_doi", query: queryMissingDOIItems})
+		checks = append(checks, itemsAuditCheck{name: "missing_doi", query: func(db localQueryStore, limit int) ([]map[string]any, error) {
+			return queryMissingDOIItems(db, limit, "")
+		}})
 	}
 	if missingTags {
 		checks = append(checks, itemsAuditCheck{name: "missing_tags", query: queryMissingTagsItems})
@@ -179,7 +183,7 @@ func printItemsAuditSummary(cmd *cobra.Command, summary itemsAuditSummary) error
 	return tw.Flush()
 }
 
-func queryMissingAbstractItems(db localQueryStore, limit int) ([]map[string]any, error) {
+func queryMissingAbstractItems(db localQueryStore, limit int, collection string) ([]map[string]any, error) {
 	query := `
 SELECT
 	id AS key,
@@ -189,12 +193,15 @@ SELECT
 	json_extract(data, '$.data.dateAdded') AS date_added
 FROM resources
 WHERE resource_type = 'items'
-	AND (json_extract(data, '$.data.abstractNote') IS NULL OR TRIM(json_extract(data, '$.data.abstractNote')) = '')
+	AND (json_extract(data, '$.data.abstractNote') IS NULL OR TRIM(json_extract(data, '$.data.abstractNote')) = '')`
+	// PATCH(glean bugfix): let items enrich scope missing-abstract candidates to a collection.
+	args := enrichCollectionFilterArgs(&query, "data", collection)
+	query += `
 ORDER BY date_added DESC`
-	return queryItemsAuditRows(db, query, limit)
+	return queryItemsAuditRows(db, query, limit, args...)
 }
 
-func queryMissingDOIItems(db localQueryStore, limit int) ([]map[string]any, error) {
+func queryMissingDOIItems(db localQueryStore, limit int, collection string) ([]map[string]any, error) {
 	query := `
 SELECT
 	id AS key,
@@ -205,9 +212,12 @@ SELECT
 FROM resources
 WHERE resource_type = 'items'
 	AND json_extract(data, '$.data.itemType') IN ('journalArticle', 'conferencePaper', 'preprint')
-	AND (json_extract(data, '$.data.DOI') IS NULL OR TRIM(json_extract(data, '$.data.DOI')) = '')
+	AND (json_extract(data, '$.data.DOI') IS NULL OR TRIM(json_extract(data, '$.data.DOI')) = '')`
+	// PATCH(glean bugfix): let items enrich scope missing-DOI candidates to a collection.
+	args := enrichCollectionFilterArgs(&query, "data", collection)
+	query += `
 ORDER BY date_added DESC`
-	return queryItemsAuditRows(db, query, limit)
+	return queryItemsAuditRows(db, query, limit, args...)
 }
 
 func queryMissingTagsItems(db localQueryStore, limit int) ([]map[string]any, error) {
@@ -225,14 +235,22 @@ ORDER BY date_added DESC`
 	return queryItemsAuditRows(db, query, limit)
 }
 
-func queryItemsAuditRows(db localQueryStore, query string, limit int) ([]map[string]any, error) {
-	args := make([]any, 0, 1)
+func queryItemsAuditRows(db localQueryStore, query string, limit int, args ...any) ([]map[string]any, error) {
 	if limit > 0 {
 		query += `
 LIMIT ?`
 		args = append(args, limit)
 	}
 	return db.QueryRaw(query, args...)
+}
+
+func enrichCollectionFilterArgs(query *string, dataExpr string, collection string) []any {
+	if collection == "" {
+		return nil
+	}
+	*query += `
+	AND EXISTS (SELECT 1 FROM json_each(json_extract(` + dataExpr + `,'$.data.collections')) WHERE value = ?)`
+	return []any{collection}
 }
 
 func firstCount(rows []map[string]any) int {

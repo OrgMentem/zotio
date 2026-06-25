@@ -120,14 +120,20 @@ func TestSearchExtractSearchResultsShapes(t *testing.T) {
 
 func TestSearchCommandLiveFiltersEmptyResults(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/searches" {
-			t.Fatalf("path = %q, want /searches", r.URL.Path)
+		if r.URL.Path != "/items" {
+			t.Fatalf("path = %q, want /items", r.URL.Path)
 		}
 		if got := r.URL.Query().Get("q"); got != "paper" {
 			t.Fatalf("q = %q, want paper", got)
 		}
+		if got := r.URL.Query().Get("qmode"); got != "everything" {
+			t.Fatalf("qmode = %q, want everything", got)
+		}
+		if got := r.URL.Query().Get("limit"); got != "10" {
+			t.Fatalf("limit = %q, want 10", got)
+		}
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"data":[{}, {"title":"Paper One","id":"p1"}, {"document":{"slug":"wrapped-paper"}}]}`))
+		_, _ = w.Write([]byte(`{"data":[{}, {"key":"ITEM1","version":1,"data":{"title":"Paper One","itemType":"journalArticle"}}, {"document":{"slug":"wrapped-paper"}}]}`))
 	}))
 	defer server.Close()
 
@@ -164,7 +170,7 @@ func TestSearchCommandLiveFiltersEmptyResults(t *testing.T) {
 	if err := json.Unmarshal(got.Results[0], &r0); err != nil {
 		t.Fatalf("unmarshal first result %q: %v", string(got.Results[0]), err)
 	}
-	if r0["title"] != "Paper One" || r0["id"] != "p1" {
+	if r0["key"] != "ITEM1" {
 		t.Fatalf("first result fields = %+v", r0)
 	}
 	var r1 struct {

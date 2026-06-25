@@ -18,6 +18,9 @@ import (
 
 const duplicateResolveStrategyKeepMostComplete = "keep-most-complete"
 
+// PATCH(glean bugfix): centralize the high-risk title matcher warning for CLI output and tests.
+const duplicateResolveTitleWarning = "warning: --title matches by title and can group distinct items; review the preview carefully before applying"
+
 type duplicateResolveItem struct {
 	Key          string
 	Version      int
@@ -38,6 +41,16 @@ func newItemsDuplicatesResolveCmd(flags *rootFlags) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "resolve",
 		Short: "Resolve duplicate items by merging metadata onto a master and trashing duplicates",
+		// PATCH(glean bugfix): document DOI-only safe default and explicit risky title matching opt-in.
+		Long: `Resolve duplicate items by merging metadata onto a master and trashing duplicates.
+
+By default, resolve only matches duplicate DOI groups. Title matching can group
+distinct items that share generic titles; pass --title only when you are ready to
+review the preview carefully before applying.`,
+		Example: `  zotero-pp-cli items duplicates resolve
+  zotero-pp-cli items duplicates resolve --doi
+  zotero-pp-cli items duplicates resolve --title
+  zotero-pp-cli items duplicates resolve --doi --title --yes`,
 		Annotations: map[string]string{
 			"mcp:read-only":                 "false",
 			"pp:destructive":                "false",
@@ -49,6 +62,12 @@ func newItemsDuplicatesResolveCmd(flags *rootFlags) *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if strategy != duplicateResolveStrategyKeepMostComplete {
 				return fmt.Errorf("invalid --strategy value %q: must be %s", strategy, duplicateResolveStrategyKeepMostComplete)
+			}
+
+			// PATCH(glean bugfix): default unresolved flag state to DOI-only instead of DOI+title.
+			includeDOI, includeTitle := duplicateResolveIncludes(cmd, flagDOI, flagTitle)
+			if includeTitle {
+				fmt.Fprintln(cmd.ErrOrStderr(), duplicateResolveTitleWarning)
 			}
 
 			rawDB, err := openStoreForRead(cmd.Context(), "zotero-pp-cli")
@@ -65,7 +84,7 @@ func newItemsDuplicatesResolveCmd(flags *rootFlags) *cobra.Command {
 			}
 			defer rawDB.Close()
 
-			ops, err := buildDuplicateResolveOps(localQueryStore{Store: rawDB}, flags, flagDOI, flagTitle)
+			ops, err := buildDuplicateResolveOps(localQueryStore{Store: rawDB}, flags, includeDOI, includeTitle)
 			if err != nil {
 				return err
 			}
@@ -79,9 +98,18 @@ func newItemsDuplicatesResolveCmd(flags *rootFlags) *cobra.Command {
 	}
 	cmd.Flags().StringVar(&strategy, "strategy", duplicateResolveStrategyKeepMostComplete, "Resolution strategy (keep-most-complete)")
 	cmd.Flags().BoolVar(&flagDOI, "doi", false, "Resolve duplicate DOI groups")
-	cmd.Flags().BoolVar(&flagTitle, "title", false, "Resolve duplicate title groups")
+	// PATCH(glean bugfix): flag help names title matching as an explicit riskier opt-in.
+	cmd.Flags().BoolVar(&flagTitle, "title", false, "Opt into riskier duplicate title groups")
 
 	return cmd
+}
+
+// PATCH(glean bugfix): no explicit matcher flags means safe DOI-only matching.
+func duplicateResolveIncludes(cmd *cobra.Command, flagDOI, flagTitle bool) (bool, bool) {
+	if !cmd.Flags().Changed("doi") && !cmd.Flags().Changed("title") {
+		return true, false
+	}
+	return flagDOI, flagTitle
 }
 
 func buildDuplicateResolveOps(db localQueryStore, flags *rootFlags, includeDOI, includeTitle bool) ([]plannedOp, error) {
@@ -141,7 +169,8 @@ func buildDuplicateResolveOps(db localQueryStore, flags *rootFlags, includeDOI, 
 
 func duplicateResolveRows(db localQueryStore, includeDOI, includeTitle bool) ([]map[string]any, error) {
 	if !includeDOI && !includeTitle {
-		includeDOI, includeTitle = true, true
+		// PATCH(glean bugfix): direct callers with no selected matcher should use the same safe DOI-only default as the CLI.
+		includeDOI = true
 	}
 	rows := make([]map[string]any, 0)
 	if includeDOI {

@@ -36,7 +36,7 @@ func IsUUID(s string) bool {
 // shape — adding columns, dropping indexes, changing FTS5 tokenizers —
 // so an older binary refuses to open a newer database rather than silently
 // producing wrong results against a schema it cannot read.
-const StoreSchemaVersion = 1
+const StoreSchemaVersion = 2
 
 type Store struct {
 	db *sql.DB
@@ -245,6 +245,74 @@ WHERE item_type IS NULL`)
 	return err
 }
 
+// resourcesTablePKComposite reports whether the on-disk resources table uses the
+// composite (resource_type, id) primary key. Older binaries created the table
+// with an id-only PK, which both risks cross-resource-type id collisions (a tag
+// named "annotation" vs the "annotation" itemType) and breaks the
+// ON CONFLICT(resource_type, id) upsert. Returns (composite, exists).
+func resourcesTablePKComposite(ctx context.Context, conn *sql.Conn) (composite bool, exists bool, err error) {
+	rows, err := conn.QueryContext(ctx, `PRAGMA table_info(resources)`)
+	if err != nil {
+		return false, false, err
+	}
+	defer rows.Close()
+	pkCols := 0
+	for rows.Next() {
+		var cid, notnull, pk int
+		var name, ctype string
+		var dflt sql.NullString
+		if err := rows.Scan(&cid, &name, &ctype, &notnull, &dflt, &pk); err != nil {
+			return false, false, err
+		}
+		exists = true
+		if pk > 0 {
+			pkCols++
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return false, false, err
+	}
+	return pkCols >= 2, exists, nil
+}
+
+// rebuildResourcesPKIfNeeded upgrades a legacy id-only-PK resources table to the
+// composite (resource_type, id) PK in place, preserving rows. No-op when the
+// table is fresh or already composite. Runs inside the migration transaction
+// after backfillColumns guarantees all columns exist; the migrations slice that
+// follows recreates the (table-scoped) indexes dropped with the old table.
+func (s *Store) rebuildResourcesPKIfNeeded(ctx context.Context, conn *sql.Conn) error {
+	composite, exists, err := resourcesTablePKComposite(ctx, conn)
+	if err != nil {
+		return err
+	}
+	if !exists || composite {
+		return nil
+	}
+	for _, stmt := range []string{
+		`CREATE TABLE resources_pkfix (
+			id TEXT NOT NULL,
+			resource_type TEXT NOT NULL,
+			data JSON NOT NULL,
+			parent_key TEXT,
+			item_type TEXT,
+			annotation_color TEXT,
+			item_date TEXT,
+			synced_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+			updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+			PRIMARY KEY (resource_type, id)
+		)`,
+		`INSERT OR IGNORE INTO resources_pkfix (id, resource_type, data, parent_key, item_type, annotation_color, item_date, synced_at, updated_at)
+			SELECT id, resource_type, data, parent_key, item_type, annotation_color, item_date, synced_at, updated_at FROM resources`,
+		`DROP TABLE resources`,
+		`ALTER TABLE resources_pkfix RENAME TO resources`,
+	} {
+		if _, err := conn.ExecContext(ctx, stmt); err != nil {
+			return fmt.Errorf("rebuilding resources primary key: %w", err)
+		}
+	}
+	return nil
+}
+
 func (s *Store) migrate(ctx context.Context) error {
 	conn, err := s.db.Conn(ctx)
 	if err != nil {
@@ -269,7 +337,7 @@ func (s *Store) migrate(ctx context.Context) error {
 
 	migrations := []string{
 		`CREATE TABLE IF NOT EXISTS resources (
-			id TEXT PRIMARY KEY,
+			id TEXT NOT NULL,
 			resource_type TEXT NOT NULL,
 			data JSON NOT NULL,
 			parent_key TEXT,
@@ -277,7 +345,8 @@ func (s *Store) migrate(ctx context.Context) error {
 			annotation_color TEXT,
 			item_date TEXT,
 			synced_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-			updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+			updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+			PRIMARY KEY (resource_type, id)
 		)`, // PATCH(glean hhup): parent_key/item_type/annotation_color/item_date.
 		`CREATE INDEX IF NOT EXISTS idx_resources_type ON resources(resource_type)`,
 		`CREATE INDEX IF NOT EXISTS idx_resources_synced ON resources(synced_at)`,
@@ -323,6 +392,12 @@ func (s *Store) migrate(ctx context.Context) error {
 
 		if err := s.backfillColumns(ctx, conn); err != nil {
 			return fmt.Errorf("backfilling columns: %w", err)
+		}
+		// PATCH(glean bugfix): upgrade a legacy id-only-PK resources table to the
+		// composite (resource_type, id) PK so ON CONFLICT(resource_type, id) works
+		// and cross-type ids cannot collide. No-op on fresh/already-composite DBs.
+		if err := s.rebuildResourcesPKIfNeeded(ctx, conn); err != nil {
+			return err
 		}
 		for _, m := range migrations {
 			if _, err := conn.ExecContext(ctx, m); err != nil {
@@ -470,7 +545,7 @@ func (s *Store) upsertGenericResourceTx(tx *sql.Tx, resourceType, id string, dat
 	_, err := tx.Exec(
 		`INSERT INTO resources (id, resource_type, data, parent_key, item_type, annotation_color, item_date, synced_at, updated_at)
 		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-		 ON CONFLICT(id) DO UPDATE SET data = excluded.data, parent_key = excluded.parent_key, item_type = excluded.item_type, annotation_color = excluded.annotation_color, item_date = excluded.item_date, synced_at = excluded.synced_at, updated_at = excluded.updated_at`,
+		 ON CONFLICT(resource_type, id) DO UPDATE SET data = excluded.data, parent_key = excluded.parent_key, item_type = excluded.item_type, annotation_color = excluded.annotation_color, item_date = excluded.item_date, synced_at = excluded.synced_at, updated_at = excluded.updated_at`,
 		id, resourceType, string(data), parentKey, itemType, color, itemDate, time.Now(), time.Now(),
 	)
 	if err != nil {

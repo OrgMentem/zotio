@@ -35,7 +35,7 @@ func newItemsMissingPdfCmd(flags *rootFlags) *cobra.Command {
 			defer rawDB.Close()
 			db := localQueryStore{rawDB}
 
-			rows, err := queryMissingPDFItems(db, flagType, flagLimit)
+			rows, err := queryMissingPDFItems(db, flagType, flagLimit, "")
 			if err != nil {
 				return fmt.Errorf("querying missing PDFs: %w", err)
 			}
@@ -52,10 +52,11 @@ func newItemsMissingPdfCmd(flags *rootFlags) *cobra.Command {
 	return cmd
 }
 
-func queryMissingPDFItems(db localQueryStore, itemType string, limit int) ([]map[string]any, error) {
+func queryMissingPDFItems(db localQueryStore, itemType string, limit int, collection string) ([]map[string]any, error) {
 	// PATCH(glean perf-audit m4ku): filter on the indexed item_type/parent_key
 	// columns instead of json_extract so SQLite uses idx_resources_item_type /
 	// idx_resources_parent_key rather than scanning and JSON-parsing every row.
+	// PATCH(glean bugfix): accept an optional collection filter for items enrich.
 	query := `
 SELECT
 	i.id AS key,
@@ -73,11 +74,16 @@ WHERE i.resource_type = 'items'
 			AND json_extract(a.data, '$.data.contentType') = 'application/pdf'
 			AND a.parent_key = i.id
 	)`
-	args := make([]any, 0, 2)
+	args := make([]any, 0, 3)
 	if itemType != "" {
 		query += `
 	AND i.item_type = ?`
 		args = append(args, itemType)
+	}
+	if collection != "" {
+		query += `
+	AND EXISTS (SELECT 1 FROM json_each(json_extract(i.data,'$.data.collections')) WHERE value = ?)`
+		args = append(args, collection)
 	}
 	query += `
 ORDER BY date_added DESC`

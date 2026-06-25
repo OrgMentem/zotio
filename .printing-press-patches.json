@@ -693,6 +693,33 @@
       ],
       "validated_outcome": "gofmt -l clean, go build ./..., go vet ./..., and go test ./... all pass (6 ok, 5 no-tests). Smoke: items move/tags add|remove|list, tags audit fix, items duplicates resolve, reading-list add|start|done, searches materialize, collections bundle, workflow run register and appear in agent-context + the MCP cobratree mirror; workflow run exits 1 on a failed step and 0 on success; --agent help no longer claims --yes. Synthesis was already provided by 'items summarize --collection' (no-LLM-by-design), so no redundant command was added.",
       "upstream_issue": "Consider upstreaming the mutation state machine + gates to cli-printing-press so generated mutations preview-by-default."
+    },
+    {
+      "id": "demo-found-bugfixes",
+      "summary": "Fixed six bugs found while demoing the CLI: sync ID extraction for name-keyed resources (tags), global-schema-endpoint 404s, resources composite-PK / ON CONFLICT mismatch, title-default duplicate over-merge, missing enrich --collection scope, garbage venue years, live search hitting the wrong endpoint, and local-mode list reads.",
+      "reason": "A live run surfaced that `sync` errored on 6/8 resources and several read/write commands misbehaved. Root causes: (1a) tags/schema resources are keyed by tag/itemType/field, not id/key, so extractID dropped them; (1b) schema endpoints are global, not under /users/0, so they 404'd; (1c) the resources table uses a composite (resource_type,id) PK but the code created id-only PK + ON CONFLICT(id), breaking upserts and risking cross-type id collisions; (2) duplicate resolve defaulted to title-matching (489 false-positive-prone merges); (3) enrich could not target a collection; (4) venue years used SUBSTR of freeform date; (5) live search queried /searches (saved searches) instead of /items?q=; (6) resolveRead treated local list reads as single-object lookups.",
+      "files": [
+        "internal/store/store.go",
+        "internal/store/composite_pk_test.go",
+        "internal/client/client.go",
+        "internal/cli/sync.go",
+        "internal/cli/sync_gaps_test.go",
+        "internal/cli/items_duplicates_resolve.go",
+        "internal/cli/items_duplicates_resolve_test.go",
+        "internal/cli/items_enrich.go",
+        "internal/cli/items_audit.go",
+        "internal/cli/items_missing_pdf.go",
+        "internal/cli/items_enrich_test.go",
+        "internal/cli/items_audit_query_test.go",
+        "internal/cli/search.go",
+        "internal/cli/search_gaps_test.go",
+        "internal/cli/items_venues.go",
+        "internal/cli/items_venues_test.go",
+        "internal/cli/data_source.go",
+        "internal/cli/data_source_cvl6_test.go"
+      ],
+      "validated_outcome": "gofmt clean, go build/go vet/go test ./... all pass (6 ok, 5 no-tests). Live against the open desktop: sync errored:0 with tags(841)/schema(40)/schema-item-fields(123)/schema-creator-fields(3)/searches(1)/items-trash(5) now stored; duplicates resolve default = DOI-only (2, was 489) and --title warns; items enrich --collection scopes; venues shows real years (Safety Science 1998-2018); search returns items not saved searches; collections list --data-source local returns rows. Composite-PK migration upgrades a legacy id-only-PK table in place (no-op on the already-composite live DB) and bumps StoreSchemaVersion to 2.",
+      "upstream_issue": "Several are generator regressions (id-only PK, /searches search endpoint, missing schema-prefix stripping in sync) worth fixing in cli-printing-press."
     }
   ]
 }
