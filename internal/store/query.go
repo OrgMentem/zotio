@@ -188,20 +188,154 @@ func buildSearchDocument(resourceType string, data json.RawMessage) string {
 	return doc
 }
 
-// ftsMatchQuery turns a quick-search string into a safe FTS5 MATCH expression:
-// each whitespace-separated term is double-quoted (escaping embedded quotes)
-// and ANDed, so user input containing FTS operators can't produce a syntax
-// error and multi-word queries match all terms.
+// ftsMatchQuery turns a user quick-search string into a bounded FTS5 MATCH
+// expression. PATCH(glean field-search-or-null): preserve the documented
+// boolean operators instead of quoting them as literal tokens, while still
+// quoting ordinary terms so punctuation in titles/DOIs cannot become syntax.
 func ftsMatchQuery(query string) string {
+	tokens := scanFTSQuery(query)
+	expr := normalizeFTSQuery(tokens)
+	if expr != "" {
+		return expr
+	}
+	return quoteAllFTSTerms(query)
+}
+
+type ftsQueryToken struct {
+	text   string
+	quote  bool
+	symbol bool
+}
+
+func scanFTSQuery(query string) []ftsQueryToken {
+	var tokens []ftsQueryToken
+	for i := 0; i < len(query); {
+		if isFTSSpace(query[i]) {
+			i++
+			continue
+		}
+		switch query[i] {
+		case '(', ')':
+			tokens = append(tokens, ftsQueryToken{text: query[i : i+1], symbol: true})
+			i++
+		case '"':
+			i++
+			start := i
+			for i < len(query) && query[i] != '"' {
+				i++
+			}
+			if start < i {
+				tokens = append(tokens, ftsQueryToken{text: query[start:i], quote: true})
+			}
+			if i < len(query) && query[i] == '"' {
+				i++
+			}
+		default:
+			start := i
+			for i < len(query) && !isFTSSpace(query[i]) && query[i] != '(' && query[i] != ')' {
+				i++
+			}
+			if start < i {
+				tokens = append(tokens, ftsQueryToken{text: query[start:i]})
+			}
+		}
+	}
+	return tokens
+}
+
+func normalizeFTSQuery(tokens []ftsQueryToken) string {
+	out := make([]string, 0, len(tokens))
+	expectOperand := true
+	depth := 0
+	for _, tok := range tokens {
+		text := strings.TrimSpace(tok.text)
+		if text == "" {
+			continue
+		}
+		if tok.symbol {
+			switch text {
+			case "(":
+				if !expectOperand {
+					out = append(out, "AND")
+				}
+				out = append(out, "(")
+				depth++
+				expectOperand = true
+			case ")":
+				if depth > 0 && !expectOperand {
+					out = append(out, ")")
+					depth--
+					expectOperand = false
+				}
+			}
+			continue
+		}
+		op := strings.ToUpper(text)
+		switch op {
+		case "AND", "OR":
+			if !expectOperand {
+				out = append(out, op)
+				expectOperand = true
+			}
+		case "NOT":
+			if !expectOperand {
+				out = append(out, "AND")
+			}
+			out = append(out, "NOT")
+			expectOperand = true
+		default:
+			out = append(out, quoteFTSTerm(text))
+			expectOperand = false
+		}
+	}
+	for len(out) > 0 && trailingFTSOperator(out[len(out)-1]) {
+		if out[len(out)-1] == "(" {
+			depth--
+		}
+		out = out[:len(out)-1]
+	}
+	if len(out) == 0 {
+		return ""
+	}
+	for depth > 0 {
+		out = append(out, ")")
+		depth--
+	}
+	return strings.Join(out, " ")
+}
+
+func trailingFTSOperator(token string) bool {
+	switch token {
+	case "AND", "OR", "NOT", "(":
+		return true
+	default:
+		return false
+	}
+}
+
+func quoteAllFTSTerms(query string) string {
 	terms := strings.Fields(query)
 	if len(terms) == 0 {
 		return query
 	}
 	quoted := make([]string, 0, len(terms))
-	for _, t := range terms {
-		quoted = append(quoted, `"`+strings.ReplaceAll(t, `"`, `""`)+`"`)
+	for _, term := range terms {
+		quoted = append(quoted, quoteFTSTerm(term))
 	}
 	return strings.Join(quoted, " ")
+}
+
+func quoteFTSTerm(term string) string {
+	return `"` + strings.ReplaceAll(term, `"`, `""`) + `"`
+}
+
+func isFTSSpace(b byte) bool {
+	switch b {
+	case ' ', '\t', '\r', '\n', '\f', '\v':
+		return true
+	default:
+		return false
+	}
 }
 
 // SearchByType runs an FTS search scoped to a single resource type. It mirrors
@@ -211,9 +345,9 @@ func (s *Store) SearchByType(query, resourceType string, limit int) ([]json.RawM
 	if limit <= 0 {
 		limit = 50
 	}
-	rows, err := s.db.Query(
+	rows, err := s.queryWithBusyRetry(
 		`SELECT r.data FROM resources r
-		 JOIN resources_fts f ON r.id = f.id
+		 JOIN resources_fts f ON r.id = f.id AND r.resource_type = f.resource_type
 		 WHERE resources_fts MATCH ? AND f.resource_type = ?
 		 ORDER BY rank
 		 LIMIT ?`,
@@ -224,7 +358,7 @@ func (s *Store) SearchByType(query, resourceType string, limit int) ([]json.RawM
 	}
 	defer rows.Close()
 
-	var results []json.RawMessage
+	results := make([]json.RawMessage, 0)
 	for rows.Next() {
 		var data string
 		if err := rows.Scan(&data); err != nil {

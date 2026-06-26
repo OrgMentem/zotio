@@ -181,17 +181,28 @@ Exit codes & warnings:
 			var errCount int
 			var criticalErrCount int
 			var warnCount int
+			// PATCH(glean field-sync-opaque): keep structured per-resource
+			// failures in memory too, because MCP captures cmd output but legacy
+			// sync warnings/errors were written to process stdout/stderr.
+			var failedResources []string
+			var criticalFailedResources []string
+			var warnedResources []string
 			var successCount int
 			for res := range results {
 				if res.Err != nil {
+					detail := fmt.Sprintf("%s: %v", res.Resource, res.Err)
+					failedResources = append(failedResources, detail)
 					if humanFriendly {
 						fmt.Fprintf(os.Stderr, "  %s: error: %v\n", res.Resource, res.Err)
 					}
 					errCount++
 					if criticalResources[res.Resource] {
 						criticalErrCount++
+						criticalFailedResources = append(criticalFailedResources, detail)
 					}
 				} else if res.Warn != nil {
+					detail := fmt.Sprintf("%s: %v", res.Resource, res.Warn)
+					warnedResources = append(warnedResources, detail)
 					if humanFriendly {
 						fmt.Fprintf(os.Stderr, "  %s: warning: %v\n", res.Resource, res.Warn)
 					}
@@ -238,17 +249,17 @@ Exit codes & warnings:
 			// exit_policy_default_changed transition warning; this is now the
 			// standard sync contract, while --strict remains the opt-in hard-fail mode.
 			if strict && errCount > 0 {
-				return fmt.Errorf("%d resource(s) failed to sync", errCount)
+				return fmt.Errorf("%d resource(s) failed to sync: %s", errCount, strings.Join(failedResources, "; "))
 			}
 			if criticalErrCount > 0 {
-				return fmt.Errorf("%d critical resource(s) failed to sync", criticalErrCount)
+				return fmt.Errorf("%d critical resource(s) failed to sync: %s", criticalErrCount, strings.Join(criticalFailedResources, "; "))
 			}
 			if successCount == 0 {
 				if warnCount > 0 && errCount == 0 {
-					return fmt.Errorf("%d resource(s) skipped due to insufficient access", warnCount)
+					return fmt.Errorf("%d resource(s) skipped due to insufficient access: %s", warnCount, strings.Join(warnedResources, "; "))
 				}
 				if errCount > 0 {
-					return fmt.Errorf("%d resource(s) failed to sync", errCount)
+					return fmt.Errorf("%d resource(s) failed to sync: %s", errCount, strings.Join(failedResources, "; "))
 				}
 			}
 			return nil

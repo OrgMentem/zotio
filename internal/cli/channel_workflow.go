@@ -57,7 +57,10 @@ and full resync. After archiving, use 'search' for instant full-text search.`,
 			}
 			defer s.Close()
 
-			resources := []string{"collections", "collections-top", "items", "items-top", "items-trash", "schema", "schema-creator-fields", "schema-item-fields", "searches", "tags"}
+			// PATCH(glean field-items-top-residue): top-level alias endpoints fold
+			// into canonical items/collections storage; archiving them separately
+			// creates redundant fetches and stale-looking status rows.
+			resources := []string{"collections", "items", "items-trash", "schema", "schema-creator-fields", "schema-item-fields", "searches", "tags"}
 			totalSynced := 0
 
 			for _, resource := range resources {

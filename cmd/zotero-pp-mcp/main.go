@@ -4,8 +4,11 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"os"
+	"os/signal"
+	"syscall"
 
 	"github.com/mark3labs/mcp-go/server"
 	mcptools "zotero-pp-cli/internal/mcp"
@@ -27,7 +30,23 @@ func main() {
 	mcptools.RegisterResources(s)
 	mcptools.RegisterPrompts(s)
 
-	if err := server.ServeStdio(s); err != nil {
+	stdout := os.Stdout
+	// PATCH(glean field-mcp-transport): stdio MCP uses stdout as the JSON-RPC
+	// transport. Mirrored Cobra commands still contain legacy direct
+	// os.Stdout writes, so route accidental process-stdout chatter to stderr
+	// and pass the original stdout handle only to the MCP transport.
+	os.Stdout = os.Stderr
+	stdio := server.NewStdioServer(s)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	signals := make(chan os.Signal, 1)
+	signal.Notify(signals, syscall.SIGTERM, syscall.SIGINT)
+	defer signal.Stop(signals)
+	go func() {
+		<-signals
+		cancel()
+	}()
+	if err := stdio.Listen(ctx, os.Stdin, stdout); err != nil {
 		fmt.Fprintf(os.Stderr, "MCP server error: %v\n", err)
 		os.Exit(1)
 	}

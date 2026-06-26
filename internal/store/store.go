@@ -36,7 +36,7 @@ func IsUUID(s string) bool {
 // shape — adding columns, dropping indexes, changing FTS5 tokenizers —
 // so an older binary refuses to open a newer database rather than silently
 // producing wrong results against a schema it cannot read.
-const StoreSchemaVersion = 2
+const StoreSchemaVersion = 3
 
 type Store struct {
 	db *sql.DB
@@ -61,7 +61,7 @@ type Store struct {
 // (_journal_mode, _busy_timeout, etc.) work either way; they're parsed
 // out of the DSN by the driver before sqlite3_open_v2.
 func OpenReadOnly(dbPath string) (*Store, error) {
-	db, err := sql.Open("sqlite", "file:"+dbPath+"?mode=ro&_journal_mode=WAL&_busy_timeout=5000&_foreign_keys=ON&_temp_store=MEMORY&_mmap_size=268435456")
+	db, err := sql.Open("sqlite", "file:"+dbPath+"?mode=ro&_journal_mode=WAL&_busy_timeout=10000&_foreign_keys=ON&_temp_store=MEMORY&_mmap_size=268435456")
 	if err != nil {
 		return nil, fmt.Errorf("opening database (read-only): %w", err)
 	}
@@ -410,6 +410,14 @@ func (s *Store) migrate(ctx context.Context) error {
 		if err := s.backfillIndexedColumnValues(ctx, conn); err != nil {
 			return fmt.Errorf("backfilling indexed column values: %w", err)
 		}
+		// PATCH(glean field-items-top-residue): pre-canonicalization archive
+		// runs wrote items-top/collections-top as independent resource types.
+		// New syncs fold those aliases into items/collections, so purge the
+		// frozen alias resource/sync-state rows idempotently on open instead of
+		// surfacing stale counts in status/doctor.
+		if err := s.purgeAliasResources(ctx, conn); err != nil {
+			return fmt.Errorf("purging alias resources: %w", err)
+		}
 		// Stamp the schema version. On a fresh DB this writes 1; on an
 		// already-stamped DB this is a no-op write of the same value.
 		// An older DB with user_version = 0 and pre-existing tables
@@ -420,6 +428,69 @@ func (s *Store) migrate(ctx context.Context) error {
 		}
 		return nil
 	})
+}
+
+func (s *Store) purgeAliasResources(ctx context.Context, conn *sql.Conn) error {
+	aliases := []string{"items-top", "collections-top"}
+	hasSyncStateResourceType, err := tableHasColumn(ctx, conn, "sync_state", "resource_type")
+	if err != nil {
+		return err
+	}
+	for _, resourceType := range aliases {
+		rows, err := conn.QueryContext(ctx, `SELECT id FROM resources WHERE resource_type = ?`, resourceType)
+		if err != nil {
+			return err
+		}
+		var ids []string
+		for rows.Next() {
+			var id string
+			if err := rows.Scan(&id); err != nil {
+				rows.Close()
+				return err
+			}
+			ids = append(ids, id)
+		}
+		if err := rows.Err(); err != nil {
+			rows.Close()
+			return err
+		}
+		rows.Close()
+		for _, id := range ids {
+			if _, err := conn.ExecContext(ctx, `DELETE FROM resources_fts WHERE rowid = ?`, ftsRowID(resourceType, id)); err != nil {
+				fmt.Fprintf(os.Stderr, "warning: FTS alias cleanup failed for %s/%s: %v\n", resourceType, id, err)
+			}
+		}
+		if _, err := conn.ExecContext(ctx, `DELETE FROM resources WHERE resource_type = ?`, resourceType); err != nil {
+			return err
+		}
+		if hasSyncStateResourceType {
+			if _, err := conn.ExecContext(ctx, `DELETE FROM sync_state WHERE resource_type = ?`, resourceType); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func tableHasColumn(ctx context.Context, conn *sql.Conn, table, column string) (bool, error) {
+	rows, err := conn.QueryContext(ctx, fmt.Sprintf(`PRAGMA table_info("%s")`, table))
+	if err != nil {
+		return false, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var cid int
+		var name, typ string
+		var notnull, pk int
+		var dflt sql.NullString
+		if err := rows.Scan(&cid, &name, &typ, &notnull, &dflt, &pk); err != nil {
+			return false, err
+		}
+		if name == column {
+			return true, nil
+		}
+	}
+	return false, rows.Err()
 }
 
 const (
@@ -751,14 +822,14 @@ func (s *Store) Search(query string, limit int) ([]json.RawMessage, error) {
 	if limit <= 0 {
 		limit = 50
 	}
-	rows, err := s.db.Query(
+	rows, err := s.queryWithBusyRetry(
 		`SELECT r.data FROM resources r
 		 JOIN resources_fts f ON r.id = f.id AND r.resource_type = f.resource_type
 		 WHERE resources_fts MATCH ?
 		 ORDER BY rank
 		 LIMIT ?`,
-		// PATCH(glean zotero-pp-cli-d562d3149c5f2733): quote user terms and join on
-		// resource_type so FTS rows cannot cross-match same-id resources.
+		// PATCH(glean field-search-or-null): ftsMatchQuery now preserves
+		// documented boolean operators and phrases instead of literalizing them.
 		ftsMatchQuery(query), limit,
 	)
 	if err != nil {
@@ -766,7 +837,7 @@ func (s *Store) Search(query string, limit int) ([]json.RawMessage, error) {
 	}
 	defer rows.Close()
 
-	var results []json.RawMessage
+	results := make([]json.RawMessage, 0)
 	for rows.Next() {
 		var data string
 		if err := rows.Scan(&data); err != nil {
@@ -1194,7 +1265,18 @@ func (s *Store) ClearSyncCursors() error {
 // Query executes a raw SQL query and returns the rows.
 // Used by workflow commands that need custom queries against the local store.
 func (s *Store) Query(query string, args ...any) (*sql.Rows, error) {
-	return s.db.Query(query, args...)
+	return s.queryWithBusyRetry(query, args...)
+}
+
+func (s *Store) queryWithBusyRetry(query string, args ...any) (*sql.Rows, error) {
+	var rows *sql.Rows
+	deadline := time.Now().Add(migrationLockTimeout)
+	err := retryOnBusy(context.Background(), deadline, "querying local store", func() error {
+		var err error
+		rows, err = s.db.Query(query, args...)
+		return err
+	})
+	return rows, err
 }
 
 func (s *Store) Count(resourceType string) (int, error) {

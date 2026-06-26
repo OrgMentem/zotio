@@ -720,6 +720,20 @@
       ],
       "validated_outcome": "gofmt clean, go build/go vet/go test ./... all pass (6 ok, 5 no-tests). Live against the open desktop: sync errored:0 with tags(841)/schema(40)/schema-item-fields(123)/schema-creator-fields(3)/searches(1)/items-trash(5) now stored; duplicates resolve default = DOI-only (2, was 489) and --title warns; items enrich --collection scopes; venues shows real years (Safety Science 1998-2018); search returns items not saved searches; collections list --data-source local returns rows. Composite-PK migration upgrades a legacy id-only-PK table in place (no-op on the already-composite live DB) and bumps StoreSchemaVersion to 2.",
       "upstream_issue": "Several are generator regressions (id-only PK, /searches search endpoint, missing schema-prefix stripping in sync) worth fixing in cli-printing-press."
+    },
+    {
+      "id": "field-reported-mcp-search-sync-store-fixes",
+      "summary": "Fixed five user-reported field bugs in MCP search, sync transport/error reporting, SQLite read contention, and stale top-level alias archive rows.",
+      "reason": "Live MCP usage showed that boolean FTS queries like OR were silently literalized and empty MCP searches returned null, mirrored sync corrupted the stdio JSON-RPC transport by writing directly to process stdout and hid per-resource failure details, local read queries had no retry wrapper for SQLITE_BUSY_RECOVERY, and workflow status surfaced frozen items-top/collections-top residue from before alias canonicalization.",
+      "files": [
+        "cmd/zotero-pp-mcp/main.go",
+        "internal/cli/channel_workflow.go",
+        "internal/cli/sync.go",
+        "internal/store/query.go",
+        "internal/store/store.go",
+        "internal/store/field_bugs_test.go"
+      ],
+      "validated_outcome": "gofmt clean; go test ./internal/store, go test ./..., go vet ./..., and go build ./... passed. Smoke: /tmp/zpp search \"automation OR algorithm\" --data-source local --json returned parseable live results; /tmp/zpp search definitely-not-present-field-bug --data-source local --json returned results:[] instead of null; /tmp/zpp workflow status --json and /tmp/zpp doctor --json no longer listed items-top/collections-top after migration; sqlite3 showed PRAGMA user_version=3 and no alias rows in resources or sync_state; a real /tmp/zpp-mcp JSON-RPC stdio session returned parseable stdout for mirrored sync, included the failed resource detail, and routed legacy sync_start/sync_summary chatter to stderr instead of corrupting stdout."
     }
   ]
 }
