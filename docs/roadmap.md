@@ -243,6 +243,13 @@ P6  reproducible export  ->  P7  packaging & niceties
   <id>` group-readiness preflight (accessible/readable/writable); `watch [resource...]` watch-mode
   incremental sync (polling, `--interval`/`--once`, SIGINT-graceful); `capabilities drift` probes core
   read endpoints for API drift.
+- **Phase 8 — Read-your-writes. SHIPPED.** Surfaced during live validation: writes go to the cloud
+  while reads default to the local mirror, so a write-then-read (re-audit after a fix, multi-step
+  workflow, agent tool-then-resource) saw stale data until the next `sync`. Now an applied write is
+  replayed into the mirror immediately (`--data-source local` reads-your-own-writes, no `sync`) and the
+  post-write item state is returned in the mutation envelope (agents need no follow-up read). Best-effort
+  for the writer's own changes; cross-client staleness stays handled by the freshness contract
+  (`--require-fresh`, provenance). Creates and bulk/trash shapes reconcile on the next `sync`.
 
 ## Bead → phase mapping
 

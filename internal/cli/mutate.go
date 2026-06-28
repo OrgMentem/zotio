@@ -39,10 +39,14 @@ func resolveMutationMode(flags *rootFlags) mutation.Mode {
 }
 
 // runMutation previews or applies the operations through the shared engine, then
-// records applied runs to the journal when a recorder is installed (real CLI path).
+// (on the real CLI path) replays applied writes into the local mirror for
+// read-your-writes and records the run to the journal.
 func runMutation(ctx context.Context, flags *rootFlags, operation string, ops []mutation.Op) (mutation.Envelope, error) {
 	_ = ctx
 	env, err := mutation.Run(mutationOptions(flags), operation, ops)
+	if mirrorWriteThrough != nil {
+		mirrorWriteThrough(&env)
+	}
 	if mutationJournalRecorder != nil {
 		mutationJournalRecorder(env)
 	}

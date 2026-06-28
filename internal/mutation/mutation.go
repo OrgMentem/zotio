@@ -48,12 +48,15 @@ type PlanSummary struct {
 	Destructive int `json:"destructive"`
 }
 
-// ResultItem is the outcome of one applied operation.
+// ResultItem is the outcome of one applied operation. Item carries the post-write
+// state of the affected item when the cli adapter can compute it (read-your-writes),
+// so callers — especially MCP agents — need no follow-up read.
 type ResultItem struct {
-	OpID   string `json:"op_id"`
-	Key    string `json:"key"`
-	Status string `json:"status"`
-	Reason any    `json:"reason,omitempty"`
+	OpID   string         `json:"op_id"`
+	Key    string         `json:"key"`
+	Status string         `json:"status"`
+	Reason any            `json:"reason,omitempty"`
+	Item   map[string]any `json:"item,omitempty"`
 }
 
 // ResultSummary aggregates apply outcomes.

@@ -64,6 +64,7 @@ func Execute() error {
 	// PATCH(glean roadmap-phase3): record applied mutation runs only on the real
 	// CLI path; subcommand unit tests construct commands directly and never journal.
 	mutationJournalRecorder = recordMutationJournal
+	mirrorWriteThrough = applyMirrorWriteThrough
 	var flags rootFlags
 	rootCmd := newRootCmd(&flags)
 

@@ -1,0 +1,189 @@
+// Copyright 2026 enieuwy. Licensed under Apache-2.0. See LICENSE.
+// PATCH(glean roadmap-phase8 read-your-writes): after a write succeeds (in the
+// cloud, via the Web API), replay the just-applied changes onto the local SQLite
+// mirror so `--data-source local` reads-your-own-writes WITHOUT a `sync`, and
+// surface the resulting item state in the mutation envelope so agents need no
+// follow-up read. Best-effort: changes it can't confidently replay (merges,
+// trash, creates) are left for the next `sync` to reconcile authoritatively.
+
+package cli
+
+import (
+	"context"
+	"encoding/json"
+
+	"zotero-pp-cli/internal/mutation"
+)
+
+// mirrorWriteThrough, when non-nil, updates the local mirror from applied writes.
+// Set only on the real Execute() path so unit tests driving runMutation directly
+// don't touch the filesystem (mirrors the journal-recorder pattern).
+var mirrorWriteThrough func(env *mutation.Envelope)
+
+// applyMirrorWriteThrough replays each applied operation's changes onto the
+// cached mirror item and records the post-write state on the result item.
+func applyMirrorWriteThrough(env *mutation.Envelope) {
+	if env == nil || env.Result == nil {
+		return
+	}
+	changesByOp := make(map[string][]mutation.Change, len(env.Plan.Operations))
+	for _, op := range env.Plan.Operations {
+		changesByOp[op.ID] = op.Changes
+	}
+
+	db, err := openStoreForRead(context.Background(), "zotero-pp-cli")
+	if err != nil || db == nil {
+		return // not synced yet — nothing to update; next sync establishes the mirror
+	}
+	defer db.Close()
+	qs := localQueryStore{db}
+
+	for i := range env.Result.Items {
+		it := &env.Result.Items[i]
+		if it.Status != "applied" || it.Key == "" {
+			continue
+		}
+		item, ok := replayItemChanges(qs, it.Key, changesByOp[it.OpID])
+		if !ok {
+			continue // create / unsupported change shape — leave for sync to reconcile
+		}
+		raw, err := json.Marshal(item)
+		if err != nil {
+			continue
+		}
+		if err := db.UpsertKeyed("items", []string{it.Key}, []json.RawMessage{raw}); err != nil {
+			continue
+		}
+		it.Item = item // read-your-writes: post-write state in the envelope
+	}
+}
+
+// replayItemChanges loads the cached mirror item, applies the changes to its
+// inner data, and returns the full updated item object. ok=false when the item
+// is not in the mirror (a create) or a change can't be confidently replayed.
+func replayItemChanges(qs localQueryStore, key string, changes []mutation.Change) (map[string]any, bool) {
+	if len(changes) == 0 {
+		return nil, false
+	}
+	rows, err := qs.QueryRaw("SELECT data FROM resources WHERE resource_type='items' AND id=?", key)
+	if err != nil || len(rows) == 0 {
+		return nil, false
+	}
+	var item map[string]any
+	if err := json.Unmarshal([]byte(sqlStringValue(rows[0]["data"])), &item); err != nil {
+		return nil, false
+	}
+	data, ok := item["data"].(map[string]any)
+	if !ok {
+		return nil, false
+	}
+	for _, c := range changes {
+		if !applyChangeToItemData(data, c) {
+			return nil, false // unsupported (e.g. merge []string add, trash) — abort this item
+		}
+	}
+	item["data"] = data
+	return item, true
+}
+
+// applyChangeToItemData forward-applies one change to an item's data map. It
+// handles tag/collection membership (scalar values only) and scalar field
+// set/clear; anything else (bulk []string adds, "deleted"/trash, structural
+// edits) returns false so the caller skips write-through for that item.
+func applyChangeToItemData(data map[string]any, c mutation.Change) bool {
+	switch c.Field {
+	case "tags":
+		return applyTagChangeToData(data, c)
+	case "collections":
+		return applyCollectionChangeToData(data, c)
+	default:
+		if c.Add != nil {
+			s, ok := c.Add.(string)
+			if !ok {
+				return false
+			}
+			data[c.Field] = s
+			return true
+		}
+		if c.Remove != nil {
+			if _, ok := c.Remove.(string); !ok {
+				return false
+			}
+			data[c.Field] = ""
+			return true
+		}
+		return true
+	}
+}
+
+func applyTagChangeToData(data map[string]any, c mutation.Change) bool {
+	tags, _ := data["tags"].([]any)
+	if c.Add != nil {
+		name, ok := c.Add.(string)
+		if !ok {
+			return false
+		}
+		present := false
+		for _, t := range tags {
+			if m, ok := t.(map[string]any); ok && m["tag"] == name {
+				present = true
+				break
+			}
+		}
+		if !present {
+			tags = append(tags, map[string]any{"tag": name})
+		}
+	}
+	if c.Remove != nil {
+		name, ok := c.Remove.(string)
+		if !ok {
+			return false
+		}
+		kept := make([]any, 0, len(tags))
+		for _, t := range tags {
+			if m, ok := t.(map[string]any); ok && m["tag"] == name {
+				continue
+			}
+			kept = append(kept, t)
+		}
+		tags = kept
+	}
+	data["tags"] = tags
+	return true
+}
+
+func applyCollectionChangeToData(data map[string]any, c mutation.Change) bool {
+	cols, _ := data["collections"].([]any)
+	if c.Add != nil {
+		name, ok := c.Add.(string)
+		if !ok {
+			return false
+		}
+		present := false
+		for _, v := range cols {
+			if s, ok := v.(string); ok && s == name {
+				present = true
+				break
+			}
+		}
+		if !present {
+			cols = append(cols, name)
+		}
+	}
+	if c.Remove != nil {
+		name, ok := c.Remove.(string)
+		if !ok {
+			return false
+		}
+		kept := make([]any, 0, len(cols))
+		for _, v := range cols {
+			if s, ok := v.(string); ok && s == name {
+				continue
+			}
+			kept = append(kept, v)
+		}
+		cols = kept
+	}
+	data["collections"] = cols
+	return true
+}
