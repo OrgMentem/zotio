@@ -136,6 +136,11 @@ HAVING COUNT(*) > 1
 ORDER BY count DESC, value`)
 }
 
+// queryDuplicateTitles groups citeable items sharing a normalized title.
+// PATCH(glean roadmap-phase1-followup): exclude attachment/annotation/note rows
+// so that attachments named "PDF" / "Snapshot" / "Full Text PDF" don't dominate
+// the report as false bibliographic duplicates (and so `items duplicates resolve
+// --title` never tries to merge them).
 func queryDuplicateTitles(db localQueryStore) ([]map[string]any, error) {
 	return db.QueryRaw(`
 SELECT
@@ -152,6 +157,7 @@ FROM (
 	FROM resources
 	WHERE resource_type = 'items'
 		AND COALESCE(TRIM(json_extract(data, '$.data.title')), '') != ''
+		AND COALESCE(item_type, '') NOT IN ('attachment', 'annotation', 'note')
 )
 GROUP BY normalized_title, item_type
 HAVING COUNT(*) > 1
