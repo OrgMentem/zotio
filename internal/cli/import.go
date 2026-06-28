@@ -113,6 +113,9 @@ but do not stop the import.`,
 	cmd.AddCommand(newImportPmidCmd(flags))
 	cmd.AddCommand(newImportArxivCmd(flags))
 	cmd.AddCommand(newImportIsbnCmd(flags))
+	// PATCH(glean roadmap-phase4): reviewable-import pipeline.
+	cmd.AddCommand(newImportResolveCmd(flags))
+	cmd.AddCommand(newImportApplyCmd(flags))
 
 	return cmd
 }

@@ -865,6 +865,13 @@
       "reason": "Roadmap Phase 4 (bead mmmd): higher-fidelity enrichment + validation. Semantic Scholar chains after OpenAlex for missing_doi/missing_abstract; --validate performs no writes and emits a JSON discrepancy report. useSemanticScholar threaded through buildEnrichProposals/resolveEnrichment alongside useOpenAlex.",
       "files": ["internal/cli/items_enrich.go", "internal/cli/items_enrich_test.go"],
       "validated_outcome": "gofmt/build/vet/test ./... green; tests cover the Semantic Scholar fallback source and a --validate title discrepancy report."
+    },
+    {
+      "id": "reviewable-import-pipeline",
+      "summary": "Added the reviewable-import pipeline: `import resolve <dir|manifest>` turns a PDF scan into an editable JSON manifest (DOI-resolved items, per-entry action create/attach/skip), and `import apply <manifest> [--attach-mode none|linked-file|upload]` creates items and links files through the mutation engine (preview-first, journaled).",
+      "reason": "Roadmap Phase 4 (beads 7e799ea9 + q1ia): the write side of `import scan`. A shared manifest contract (internal/cli/import_manifest.go) decouples resolve from apply. resolve reuses the scan classifier + CrossRef; apply defers all I/O (schema-template fetch via items new's validateItemFields, item POST, linked-file attachment POST) into mutation Apply closures so previews need no network. attach-mode defaults to the safe `none`; `linked-file` creates linkMode=linked_file attachments; `upload` is refused loudly (multi-step stored-file protocol deferred). import apply is a web_api_key write in the capability registry; import resolve is read-only.",
+      "files": ["internal/cli/import_manifest.go", "internal/cli/import_resolve.go", "internal/cli/import_resolve_test.go", "internal/cli/import_apply.go", "internal/cli/import_apply_test.go", "internal/cli/import.go", "internal/cli/capability.go"],
+      "validated_outcome": "gofmt/build/vet/test ./... green (7 pkgs ok). resolve tests cover dir->manifest and manifest refresh (httptest CrossRef); apply tests cover preview plan (create+attach with linked-file), default-none attach no-op, upload refusal, and the attachment-payload/created-key helpers. Live: import resolve/apply registered; `import apply --attach-mode upload` exits 1 with the loud refusal; capabilities marks import apply op=write req=[web_api_key]."
     }
   ]
 }

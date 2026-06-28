@@ -86,6 +86,8 @@ var capabilityOverrides = map[string]capabilityEntry{
 	"import isbn":              {Operation: "write", WriteTarget: "web_api", Requires: []string{preconditionWebAPIKey}},
 	// items new validates against /items/new (Web-only) then POSTs.
 	"items new": {Operation: "write", WriteTarget: "web_api", Requires: []string{preconditionWebAPIKey}},
+	// import apply creates items / linked-file attachments via the Web API.
+	"import apply": {Operation: "write", WriteTarget: "web_api", Requires: []string{preconditionWebAPIKey}},
 	// Sync writes the local store (not a Zotero mutation).
 	"sync": {Operation: "sync"},
 	// Undo replays inverse membership changes via the Web API.

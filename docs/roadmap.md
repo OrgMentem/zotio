@@ -222,10 +222,11 @@ P6  reproducible export  ->  P7  packaging & niceties
   cli keeps a thin flags+render adapter). Every applied run is recorded to an append-only journal
   (`journal list`/`show`); `journal undo <run-id>` reverses the reversible (tag/collection
   membership) ops and loudly refuses the rest (merges, deletions, field overwrites, renames).
-- **Phase 4 — Reviewable import.** `import scan → resolve → apply` over an editable manifest;
-  DOI/PMID/arXiv/ISBN adapters; schema-valid creation via Web `/items/new` (refuses loudly offline);
-  `--attach-mode none|linked-file` now, `upload` deferred; enrich providers (Semantic Scholar /
-  OpenCitations — OpenAlex already shipped) + `--validate` discrepancy mode.
+- **Phase 4 — Reviewable import. SHIPPED.** `import scan → resolve → apply` over an editable JSON
+  manifest; DOI/PMID/arXiv/ISBN adapters (`import doi|pmid|arxiv|isbn`); schema-valid creation via
+  Web `/items/new` (`items new`, refuses loudly offline); `import apply --attach-mode none|linked-file`
+  (`upload` refused loudly, deferred); enrich gained Semantic Scholar/OpenCitations providers + a
+  read-only `--validate` discrepancy mode (OpenAlex already shipped).
 - **Phase 5 — Agent/vault trust plane.** `zotero://capabilities`, `zotero://freshness`,
   `zotero://health/{scope}`, bounded graph resources (tree/children/attachments/context with limits);
   `vault audit` preflight; guided MCP prompts (prepare-library-health, prepare-import, sync-vault-safely).
