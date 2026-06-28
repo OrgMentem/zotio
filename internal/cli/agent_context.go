@@ -22,13 +22,15 @@ const agentContextSchemaVersion = "3"
 // (2026-04-13 Wrangler post): agents can introspect the live CLI without
 // parsing --help or reading source.
 type agentContext struct {
-	SchemaVersion              string                 `json:"schema_version"`
-	CLI                        agentContextCLI        `json:"cli"`
-	Auth                       agentContextAuth       `json:"auth"`
-	Discovery                  *agentContextDiscovery `json:"discovery,omitempty"`
-	Commands                   []agentContextCommand  `json:"commands"`
-	AvailableProfiles          []string               `json:"available_profiles"`
-	FeedbackEndpointConfigured bool                   `json:"feedback_endpoint_configured"`
+	SchemaVersion string                 `json:"schema_version"`
+	CLI           agentContextCLI        `json:"cli"`
+	Auth          agentContextAuth       `json:"auth"`
+	Discovery     *agentContextDiscovery `json:"discovery,omitempty"`
+	Commands      []agentContextCommand  `json:"commands"`
+	// PATCH(glean roadmap-phase2): typed capability + preconditions registry.
+	Capabilities               []capabilityEntry `json:"capabilities,omitempty"`
+	AvailableProfiles          []string          `json:"available_profiles"`
+	FeedbackEndpointConfigured bool              `json:"feedback_endpoint_configured"`
 }
 
 type agentContextCLI struct {
@@ -133,6 +135,7 @@ func buildAgentContext(rootCmd *cobra.Command) agentContext {
 		},
 		Discovery:                  buildAgentDiscoveryContext(),
 		Commands:                   collectAgentCommands(rootCmd),
+		Capabilities:               buildCapabilityRegistry(rootCmd),
 		AvailableProfiles:          profiles,
 		FeedbackEndpointConfigured: FeedbackEndpointConfigured(),
 	}

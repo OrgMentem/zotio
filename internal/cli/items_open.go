@@ -6,7 +6,6 @@ package cli
 import (
 	"fmt"
 	"net/url"
-	"os/exec"
 
 	"zotero-pp-cli/internal/cliutil"
 
@@ -34,13 +33,13 @@ func newItemsOpenCmd(flags *rootFlags) *cobra.Command {
 				return nil
 			}
 			if flags.asJSON {
-				if err := exec.Command("open", uri).Run(); err != nil {
+				if err := launchURI(uri); err != nil {
 					return fmt.Errorf("opening Zotero item: %w", err)
 				}
 				return printJSONFiltered(cmd.OutOrStdout(), map[string]any{"uri": uri, "launched": true}, flags)
 			}
 			fmt.Fprintf(cmd.ErrOrStderr(), "Opening %s in Zotero...\n", uri)
-			if err := exec.Command("open", uri).Run(); err != nil {
+			if err := launchURI(uri); err != nil {
 				return fmt.Errorf("opening Zotero item: %w", err)
 			}
 			return nil

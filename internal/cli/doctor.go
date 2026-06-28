@@ -89,6 +89,11 @@ func looksLikeDoctorInterstitial(body []byte) string {
 
 func newDoctorCmd(flags *rootFlags) *cobra.Command {
 	var failOn string
+	// PATCH(glean roadmap-phase2): --ensure-live probes (and with --launch, starts
+	// + waits for) the Zotero desktop local API — the remediation other commands
+	// point at when a live_local_api precondition is unmet. Exits 9 if unreachable.
+	var ensureLiveFlag bool
+	var launchFlag bool
 	cmd := &cobra.Command{
 		Use:   "doctor",
 		Short: "Check CLI health",
@@ -96,6 +101,9 @@ func newDoctorCmd(flags *rootFlags) *cobra.Command {
   zotero-pp-cli doctor --json
   zotero-pp-cli doctor --fail-on warn`,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if ensureLiveFlag || launchFlag {
+				return ensureLive(cmd, flags, launchFlag)
+			}
 			report := map[string]any{}
 
 			// Check config
@@ -311,6 +319,8 @@ func newDoctorCmd(flags *rootFlags) *cobra.Command {
 		},
 	}
 	cmd.Flags().StringVar(&failOn, "fail-on", "", "Exit non-zero when a health level is reached: stale, error. Default is never.")
+	cmd.Flags().BoolVar(&ensureLiveFlag, "ensure-live", false, "Check the Zotero desktop local API is reachable; exit 9 if not")
+	cmd.Flags().BoolVar(&launchFlag, "launch", false, "With --ensure-live, launch Zotero and wait up to 15s for the local API")
 	return cmd
 }
 

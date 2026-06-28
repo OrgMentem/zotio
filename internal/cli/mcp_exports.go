@@ -14,3 +14,11 @@ func AgentContextJSON() ([]byte, error) {
 	ctx := buildAgentContext(RootCmd())
 	return json.MarshalIndent(ctx, "", "  ")
 }
+
+// CapabilitiesJSON builds the typed capability + preconditions registry from a
+// fresh command tree and returns it as indented JSON — the payload the
+// `capabilities` command emits, for use as the zotero://capabilities MCP resource.
+// PATCH(glean roadmap-phase2): expose the capability registry to MCP hosts.
+func CapabilitiesJSON() ([]byte, error) {
+	return json.MarshalIndent(buildCapabilityRegistry(RootCmd()), "", "  ")
+}

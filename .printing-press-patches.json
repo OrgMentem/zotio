@@ -749,6 +749,38 @@
       ],
       "validated_outcome": "gofmt clean; go build ./..., go vet ./..., go test ./... all pass (6 ok, 5 no-tests; new library_health_test.go covers check composition, presets, the gate, and the precondition skip). Smoke against the live 777-item library: `library health` (quick) ranks findings with a freshness header and loudly skips broken_attachment_file with remediation; `library health --for citation --fail-on high --agent` exits 11 with gate.status=failed; `library health --for quick --fail-on critical --agent` exits 9 with gate.status=indeterminate (broken-attachment precondition unmet).",
       "upstream_issue": "Roadmap Phase 1 (docs/roadmap.md). Follow-up: the composed duplicate-title check inherits attachment-title noise (e.g. 165 items titled 'PDF') from the existing `items duplicates --by title` primitive; excluding attachment/note item types from duplicate-title detection would sharpen both."
+    },
+    {
+      "id": "duplicate-titles-exclude-attachments",
+      "summary": "queryDuplicateTitles now excludes attachment/annotation/note item types so attachments named 'PDF'/'Snapshot'/'Full Text PDF' are no longer reported as bibliographic duplicates.",
+      "reason": "The title-duplicate detector grouped by title+item_type but included non-citeable rows, so the live library reported ~20 attachment-title 'duplicate' groups (165 'PDF', 85 'Snapshot', ...). This polluted `items duplicates --by title`, the write-path `items duplicates resolve --title` (which would try to merge them), and the new `library health` duplicate_candidates check. Restricting to citeable item types sharpens all three at the source.",
+      "files": [
+        "internal/cli/items_duplicates.go",
+        "internal/cli/items_duplicates_test.go"
+      ],
+      "validated_outcome": "gofmt/build/vet/test pass. Live: `items duplicates --by title` dropped from ~29 noisy groups to 9 genuine bibliographic duplicates (real titles, no attachment names)."
+    },
+    {
+      "id": "trust-contracts-phase2",
+      "summary": "Phase 2 trust contracts: a reusable scope resolver (scope.go), a typed capability+preconditions registry (capability.go, surfaced via the `capabilities` command, agent-context, and the zotero://capabilities MCP resource), and `doctor --ensure-live [--launch]` (cross-platform launch + local-API readiness poll, exit 9 when unreachable).",
+      "reason": "Phase 2 of docs/roadmap.md. scope.Spec gives one cohort vocabulary (collection:/tag:/item:/query:/saved-search:/library) reused by `library health --scope`; saved-search declares a live_local_api precondition and refuses loudly. The capability registry is the single machine-readable source of truth for operation kind / write target / destructiveness / data sources / preconditions, so agents pre-flight requirements instead of guessing. doctor --ensure-live is the launch+readiness remediation that other commands' precondition messages point at; launchURI/launchCommand generalize the old macOS-only `items open` launcher across GOOS. The precondition vocabulary (live_local_api/web_api_key/synced_store/better_bibtex) is now shared across library health, scope, the registry, and ensure-live.",
+      "files": [
+        "internal/cli/scope.go",
+        "internal/cli/scope_test.go",
+        "internal/cli/capability.go",
+        "internal/cli/ensure_live.go",
+        "internal/cli/ensure_live_test.go",
+        "internal/cli/items_open.go",
+        "internal/cli/library_health.go",
+        "internal/cli/library_health_test.go",
+        "internal/cli/mcp_exports.go",
+        "internal/cli/root.go",
+        "internal/cli/agent_context.go",
+        "internal/cli/doctor.go",
+        "internal/mcp/resources.go"
+      ],
+      "validated_outcome": "gofmt clean; go build/vet/test ./... all pass (6 ok, 5 no-tests; new scope_test.go, ensure_live_test.go, and a scoped-health test). Live smoke: `capabilities` emits 106 entries with correct preconditions (searches run/items file -> live_local_api; library health -> synced_store; items citekey-conflicts -> synced_store+better_bibtex; items create -> web_api_key; items delete -> destructive+web_api_key; schema new-item-template -> web_api_key); agent-context embeds the same 106-entry registry; `library health --scope item:<key>` filters findings to that item; `library health --scope saved-search:ABC` exits 9 with a loud live_local_api precondition message; `doctor --ensure-live` reports reachable (exit 0) against the running desktop.",
+      "upstream_issue": "Roadmap Phase 2 (docs/roadmap.md). Generated files agent_context.go and doctor.go were PATCH-edited (field + command flags), not rewritten. Follow-up: --require-fresh freshness gate and query-planner read parity remain for a later Phase-2 slice; doctor.go is generated so the --ensure-live flags are a local PATCH worth upstreaming."
     }
   ]
 }

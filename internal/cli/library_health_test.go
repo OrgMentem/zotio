@@ -65,7 +65,7 @@ func findingKinds(report healthReport) map[string]int {
 
 func TestLibraryHealthComposesAllChecks(t *testing.T) {
 	db := seedHealthStore(t)
-	report, err := assembleHealthReport(db, newHealthCtx("all", false), "all", healthPresets["all"], "")
+	report, err := assembleHealthReport(db, newHealthCtx("all", false), "all", healthPresets["all"], "", scopeResult{All: true, Expr: "library"})
 	if err != nil {
 		t.Fatalf("assembleHealthReport: %v", err)
 	}
@@ -105,7 +105,7 @@ func TestLibraryHealthComposesAllChecks(t *testing.T) {
 
 func TestLibraryHealthGateFailsExit11(t *testing.T) {
 	db := seedHealthStore(t)
-	report, err := assembleHealthReport(db, newHealthCtx("citation", false), "citation", healthPresets["citation"], sevHigh)
+	report, err := assembleHealthReport(db, newHealthCtx("citation", false), "citation", healthPresets["citation"], sevHigh, scopeResult{All: true, Expr: "library"})
 	if err != nil {
 		t.Fatalf("assembleHealthReport: %v", err)
 	}
@@ -125,7 +125,7 @@ func TestLibraryHealthGateIndeterminateExit9(t *testing.T) {
 	db := seedHealthStore(t)
 	// quick includes broken_attachment_file (critical, live). Without --verify-files
 	// it is skipped; with --fail-on critical the gate cannot be certified -> exit 9.
-	report, err := assembleHealthReport(db, newHealthCtx("quick", false), "quick", healthPresets["quick"], sevCritical)
+	report, err := assembleHealthReport(db, newHealthCtx("quick", false), "quick", healthPresets["quick"], sevCritical, scopeResult{All: true, Expr: "library"})
 	if err != nil {
 		t.Fatalf("assembleHealthReport: %v", err)
 	}
@@ -152,7 +152,7 @@ func TestLibraryHealthCleanStorePassesGate(t *testing.T) {
 	}
 	qs := localQueryStore{db}
 
-	report, err := assembleHealthReport(qs, newHealthCtx("citation", false), "citation", healthPresets["citation"], sevHigh)
+	report, err := assembleHealthReport(qs, newHealthCtx("citation", false), "citation", healthPresets["citation"], sevHigh, scopeResult{All: true, Expr: "library"})
 	if err != nil {
 		t.Fatalf("assembleHealthReport: %v", err)
 	}

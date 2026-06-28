@@ -87,6 +87,19 @@ func RegisterResources(s *server.MCPServer) {
 	)
 
 	s.AddResource(
+		mcplib.NewResource("zotero://capabilities", "Capability registry",
+			mcplib.WithResourceDescription("Typed registry of each command's operation (read/write/destructive), write target, data sources, and preconditions (live_local_api, web_api_key, synced_store, better_bibtex)."),
+			mcplib.WithMIMEType("application/json")),
+		func(_ context.Context, req mcplib.ReadResourceRequest) ([]mcplib.ResourceContents, error) {
+			data, err := cli.CapabilitiesJSON()
+			if err != nil {
+				return nil, err
+			}
+			return jsonContents(req.Params.URI, string(data)), nil
+		},
+	)
+
+	s.AddResource(
 		mcplib.NewResource("zotero://status", "Local archive status",
 			mcplib.WithResourceDescription("Sync/archive status of the local store: per-resource counts, library versions, last sync time, and schema version."),
 			mcplib.WithMIMEType("application/json")),

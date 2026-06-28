@@ -223,6 +223,7 @@ func newLibraryHealthCmd(flags *rootFlags) *cobra.Command {
 	var flagFailOn string
 	var flagLimit int
 	var flagVerifyFiles bool
+	var flagScope string
 
 	cmd := &cobra.Command{
 		Use:   "health",
@@ -291,7 +292,22 @@ precondition is unmet, the command refuses loudly (exit 9) rather than passing.`
 				flags:       flags,
 			}
 
-			report, err := assembleHealthReport(db, ctx, preset, kinds, failOn)
+			scope := scopeResult{All: true, Expr: "library"}
+			if strings.TrimSpace(flagScope) != "" {
+				spec, perr := parseScopeSpec(flagScope)
+				if perr != nil {
+					return usageErr(perr)
+				}
+				scope, err = resolveScope(db, spec)
+				if err != nil {
+					return err
+				}
+				if scope.Precondition != "" {
+					return preconditionErr(fmt.Errorf("scope %q needs the %s precondition (Zotero desktop / local API); open Zotero and enable Settings -> Advanced -> 'Allow other applications', then re-run", scope.Expr, scope.Precondition))
+				}
+			}
+
+			report, err := assembleHealthReport(db, ctx, preset, kinds, failOn, scope)
 			if err != nil {
 				return err
 			}
@@ -314,6 +330,7 @@ precondition is unmet, the command refuses loudly (exit 9) rather than passing.`
 	cmd.Flags().StringVar(&flagFailOn, "fail-on", "", "Exit 11 if findings reach this severity: critical, high, any (default: the preset's)")
 	cmd.Flags().IntVar(&flagLimit, "limit", 0, "Max findings listed per kind (0 = all); also caps the live attachment scan")
 	cmd.Flags().BoolVar(&flagVerifyFiles, "verify-files", false, "Run the live broken-attachment check (needs Zotero desktop running)")
+	cmd.Flags().StringVar(&flagScope, "scope", "", "Limit to a cohort: collection:KEY | tag:NAME | item:KEY | query:TEXT | saved-search:KEY (default: whole library)")
 	return cmd
 }
 
@@ -321,16 +338,24 @@ precondition is unmet, the command refuses loudly (exit 9) rather than passing.`
 // and records the gate verdict in report.Gate. The returned error is only a hard
 // check failure that should abort before output; the gate outcome is mapped to
 // an exit code separately by healthGateExitError after the report is rendered.
-func assembleHealthReport(db localQueryStore, ctx *healthContext, preset string, kinds []string, failOn string) (healthReport, error) {
+func assembleHealthReport(db localQueryStore, ctx *healthContext, preset string, kinds []string, failOn string, scope scopeResult) (healthReport, error) {
 	report := healthReport{
 		SchemaVersion: 1,
 		Preset:        preset,
 		Scope: healthScope{
-			Expr:     "library",
+			Expr:     scope.Expr,
 			Source:   "local",
 			SyncedAt: ctx.src.SyncedAt,
-			Items:    countCiteableItems(db),
+			Items:    scopeItemCount(db, scope),
 		},
+	}
+
+	var scopeSet map[string]bool
+	if !scope.All {
+		scopeSet = make(map[string]bool, len(scope.Keys))
+		for _, k := range scope.Keys {
+			scopeSet[k] = true
+		}
 	}
 
 	gateBlockedBySkip := false
@@ -347,6 +372,7 @@ func assembleHealthReport(db localQueryStore, ctx *healthContext, preset string,
 			}
 			continue
 		}
+		findings = filterFindingsByScope(findings, scopeSet)
 		report.Checks = append(report.Checks, healthCheckRun{Kind: chk.kind, Ran: true, Count: len(findings)})
 		report.Summary.add(chk.severity, len(findings))
 		report.Findings = append(report.Findings, truncateFindings(findings, ctx.limit)...)
@@ -369,6 +395,44 @@ func assembleHealthReport(db localQueryStore, ctx *healthContext, preset string,
 		report.Gate = gate
 	}
 	return report, nil
+}
+
+// scopeItemCount reports how many items the scope covers: the whole library
+// when unscoped, else the number of resolved keys.
+func scopeItemCount(db localQueryStore, scope scopeResult) int {
+	if scope.All {
+		return countCiteableItems(db)
+	}
+	return len(scope.Keys)
+}
+
+// filterFindingsByScope keeps only findings that reference an item in scope.
+// Per-item findings match on item_key; grouped findings (e.g. duplicate
+// candidates) match if any member key is in scope. Findings with no item keys
+// (e.g. library-wide tag drift) are dropped from a scoped run. A nil set means
+// "whole library" and returns the findings unchanged.
+func filterFindingsByScope(findings []healthFinding, scopeSet map[string]bool) []healthFinding {
+	if scopeSet == nil {
+		return findings
+	}
+	out := make([]healthFinding, 0, len(findings))
+	for _, f := range findings {
+		if f.ItemKey != "" {
+			if scopeSet[f.ItemKey] {
+				out = append(out, f)
+			}
+			continue
+		}
+		if keys, ok := f.Evidence["keys"].([]string); ok {
+			for _, k := range keys {
+				if scopeSet[k] {
+					out = append(out, f)
+					break
+				}
+			}
+		}
+	}
+	return out
 }
 
 // healthGateExitError maps a finished report's gate verdict to the process exit
