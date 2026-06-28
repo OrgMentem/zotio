@@ -143,16 +143,32 @@ type healthFreshness struct {
 	Reason                string `json:"reason,omitempty"`
 }
 
+// healthRemediationPlanStep is the actionable plan derived from findings. It is
+// intentionally preview-first: commands omit --yes and delegate to existing
+// fixers. Scoped steps carry exact keys for `--keys-from -`; broad steps say why
+// they cannot yet be scoped.
+// PATCH(glean roadmap-phase3): safe remediation plan, no new write path.
+type healthRemediationPlanStep struct {
+	Kind    string   `json:"kind"`
+	Command string   `json:"command"`
+	Keys    []string `json:"keys,omitempty"`
+	Count   int      `json:"count"`
+	Scoped  bool     `json:"scoped"`
+	Preview bool     `json:"preview"`
+	Notes   string   `json:"notes,omitempty"`
+}
+
 type healthReport struct {
-	SchemaVersion int              `json:"schema_version"`
-	Scope         healthScope      `json:"scope"`
-	Preset        string           `json:"preset"`
-	Checks        []healthCheckRun `json:"checks"`
-	Findings      []healthFinding  `json:"findings"`
-	Skipped       []healthSkip     `json:"skipped,omitempty"`
-	Summary       healthSummary    `json:"summary"`
-	Gate          *healthGate      `json:"gate,omitempty"`
-	Freshness     *healthFreshness `json:"freshness,omitempty"`
+	SchemaVersion   int                         `json:"schema_version"`
+	Scope           healthScope                 `json:"scope"`
+	Preset          string                      `json:"preset"`
+	Checks          []healthCheckRun            `json:"checks"`
+	Findings        []healthFinding             `json:"findings"`
+	Skipped         []healthSkip                `json:"skipped,omitempty"`
+	Summary         healthSummary               `json:"summary"`
+	RemediationPlan []healthRemediationPlanStep `json:"remediation_plan,omitempty"`
+	Gate            *healthGate                 `json:"gate,omitempty"`
+	Freshness       *healthFreshness            `json:"freshness,omitempty"`
 }
 
 // healthContext threads per-run state (provenance, limit, live-check opt-in) and
@@ -191,15 +207,15 @@ func healthCheckRegistry() []healthCheck {
 		{kind: "missing_doi", severity: sevHigh, run: itemCheckRunner(
 			func(db localQueryStore) ([]map[string]any, error) { return queryMissingDOIItems(db, 0, "") },
 			"missing_doi", sevHigh, true,
-			&healthRecommendedAction{Command: "zotero-pp-cli items enrich --missing-doi --yes"})},
+			&healthRecommendedAction{Command: "zotero-pp-cli items enrich --missing-doi --keys-from -"})},
 		{kind: "missing_pdf", severity: sevHigh, run: itemCheckRunner(
 			func(db localQueryStore) ([]map[string]any, error) { return queryMissingPDFItems(db, "", 0, "") },
 			"missing_pdf", sevHigh, true,
-			&healthRecommendedAction{Command: "zotero-pp-cli items enrich --missing-pdf --yes"})},
+			&healthRecommendedAction{Command: "zotero-pp-cli items enrich --missing-pdf --keys-from -"})},
 		{kind: "missing_abstract", severity: sevInfo, run: itemCheckRunner(
 			func(db localQueryStore) ([]map[string]any, error) { return queryMissingAbstractItems(db, 0, "") },
 			"missing_abstract", sevInfo, true,
-			&healthRecommendedAction{Command: "zotero-pp-cli items enrich --missing-abstract --yes"})},
+			&healthRecommendedAction{Command: "zotero-pp-cli items enrich --missing-abstract --keys-from -"})},
 		{kind: "missing_tags", severity: sevInfo, run: itemCheckRunner(
 			func(db localQueryStore) ([]map[string]any, error) { return queryMissingTagsItems(db, 0) },
 			"missing_tags", sevInfo, false, nil)},
@@ -397,6 +413,7 @@ func assembleHealthReport(db localQueryStore, ctx *healthContext, preset string,
 	}
 	report.Summary.Total = report.Summary.Critical + report.Summary.High + report.Summary.Info
 	sortHealthFindings(report.Findings)
+	report.RemediationPlan = buildHealthRemediationPlan(report.Findings)
 
 	if failOn != "" {
 		gate := &healthGate{FailOn: failOn}
@@ -777,6 +794,112 @@ func gateCrossed(summary healthSummary, failOn string) bool {
 	}
 }
 
+// buildHealthRemediationPlan groups findings into preview-first commands that
+// already exist. Exact item remediation uses `--keys-from -` and carries Keys in
+// the JSON payload so an agent can pipe them without broadening scope.
+func buildHealthRemediationPlan(findings []healthFinding) []healthRemediationPlanStep {
+	type bucket struct {
+		command string
+		keys    []string
+		seen    map[string]bool
+	}
+	exact := map[string]*bucket{
+		"missing_doi":      {command: "zotero-pp-cli items enrich --missing-doi --keys-from -", seen: map[string]bool{}},
+		"missing_abstract": {command: "zotero-pp-cli items enrich --missing-abstract --keys-from -", seen: map[string]bool{}},
+		"missing_pdf":      {command: "zotero-pp-cli items enrich --missing-pdf --keys-from -", seen: map[string]bool{}},
+	}
+	var hasDOIDups, hasTitleDups, hasTagDrift bool
+	for _, f := range findings {
+		if b, ok := exact[f.Kind]; ok && f.ItemKey != "" {
+			if !b.seen[f.ItemKey] {
+				b.seen[f.ItemKey] = true
+				b.keys = append(b.keys, f.ItemKey)
+			}
+			continue
+		}
+		switch f.Kind {
+		case "duplicate_candidates":
+			switch sqlStringValue(f.Evidence["group"]) {
+			case "doi":
+				hasDOIDups = true
+			case "title":
+				hasTitleDups = true
+			}
+		case "tag_drift":
+			hasTagDrift = true
+		}
+	}
+
+	steps := make([]healthRemediationPlanStep, 0, 6)
+	for _, kind := range []string{"missing_doi", "missing_abstract", "missing_pdf"} {
+		b := exact[kind]
+		if len(b.keys) == 0 {
+			continue
+		}
+		sort.Strings(b.keys)
+		steps = append(steps, healthRemediationPlanStep{
+			Kind:    kind,
+			Command: b.command,
+			Keys:    append([]string(nil), b.keys...),
+			Count:   len(b.keys),
+			Scoped:  true,
+			Preview: true,
+			Notes:   "Pipe keys to stdin; add --yes only after reviewing the mutation preview.",
+		})
+	}
+	if hasDOIDups {
+		steps = append(steps, healthRemediationPlanStep{
+			Kind:    "duplicate_candidates",
+			Command: "zotero-pp-cli items duplicates resolve --doi",
+			Count:   countDuplicateGroups(findings, "doi"),
+			Scoped:  false,
+			Preview: true,
+			Notes:   "Delegates to the existing duplicate resolver; preview first and add --yes only after review.",
+		})
+	}
+	if hasTitleDups {
+		steps = append(steps, healthRemediationPlanStep{
+			Kind:    "duplicate_candidates",
+			Command: "zotero-pp-cli items duplicates resolve --title",
+			Count:   countDuplicateGroups(findings, "title"),
+			Scoped:  false,
+			Preview: true,
+			Notes:   "Title groups are riskier; preview carefully before applying.",
+		})
+	}
+	if hasTagDrift {
+		steps = append(steps, healthRemediationPlanStep{
+			Kind:    "tag_drift",
+			Command: "zotero-pp-cli tags audit fix",
+			Count:   countFindingsByKind(findings, "tag_drift"),
+			Scoped:  false,
+			Preview: true,
+			Notes:   "Global tag-normalization preview; add --yes only after reviewing aliases.",
+		})
+	}
+	return steps
+}
+
+func countFindingsByKind(findings []healthFinding, kind string) int {
+	n := 0
+	for _, f := range findings {
+		if f.Kind == kind {
+			n++
+		}
+	}
+	return n
+}
+
+func countDuplicateGroups(findings []healthFinding, group string) int {
+	n := 0
+	for _, f := range findings {
+		if f.Kind == "duplicate_candidates" && sqlStringValue(f.Evidence["group"]) == group {
+			n++
+		}
+	}
+	return n
+}
+
 func printHealthReport(cmd *cobra.Command, report healthReport) {
 	out := cmd.OutOrStdout()
 	fmt.Fprintf(out, "Health: %s\n", healthStatusWord(report.Summary))
@@ -814,10 +937,17 @@ func printHealthReport(cmd *cobra.Command, report healthReport) {
 		fmt.Fprintln(out)
 	}
 
-	if steps := suggestedNextSteps(report.Findings); len(steps) > 0 {
-		fmt.Fprintln(out, "Suggested next steps")
-		for _, s := range steps {
-			fmt.Fprintf(out, "  %s\n", s)
+	if len(report.RemediationPlan) > 0 {
+		fmt.Fprintln(out, "Remediation plan (preview-first)")
+		for _, step := range report.RemediationPlan {
+			scope := "global"
+			if step.Scoped {
+				scope = fmt.Sprintf("%d exact keys via stdin", step.Count)
+			}
+			fmt.Fprintf(out, "  %s — %s (%s)\n", step.Kind, step.Command, scope)
+			if step.Notes != "" {
+				fmt.Fprintf(out, "    %s\n", step.Notes)
+			}
 		}
 		fmt.Fprintln(out)
 	}
@@ -890,22 +1020,6 @@ func formatFindingLine(f healthFinding) string {
 		}
 		return line
 	}
-}
-
-func suggestedNextSteps(findings []healthFinding) []string {
-	seen := make(map[string]bool)
-	steps := make([]string, 0)
-	for _, f := range findings {
-		if f.RecommendedAction == nil || f.RecommendedAction.Command == "" {
-			continue
-		}
-		if seen[f.RecommendedAction.Command] {
-			continue
-		}
-		seen[f.RecommendedAction.Command] = true
-		steps = append(steps, f.RecommendedAction.Command)
-	}
-	return steps
 }
 
 func durationAgo(d time.Duration) string {

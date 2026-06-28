@@ -78,6 +78,10 @@ func newItemsEnrichCmd(flags *rootFlags) *cobra.Command {
 		flagNoOpenAlex      bool
 		// PATCH(glean bugfix): allow enrichment work queues to be scoped by collection key.
 		flagCollection string
+		// PATCH(glean roadmap-phase3): exact remediation from `library health`
+		// feeds item keys to enrichment so it previews/applies only the findings
+		// it recommended, instead of broadening back out to the whole queue.
+		keysFrom string
 	)
 
 	cmd := &cobra.Command{
@@ -92,8 +96,9 @@ Work queues come from the same checks as 'items audit':
   --missing-pdf       attach an open-access PDF link from Unpaywall (requires DOI)
 
 By default this previews the proposed changes (a patch plan). Pass --collection
-to scope the work queue to items in a single collection. Pass --yes to apply
-them via the Zotero API; --dry-run always previews. Applied field changes
+to scope the work queue to items in a single collection, or --keys-from to scope
+to exact item keys produced by another command. Pass --yes to apply them via the
+Zotero API; --dry-run always previews. Applied field changes
 record provenance in the item's Extra field.`,
 		Annotations: map[string]string{"mcp:read-only": "false"},
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -112,6 +117,11 @@ record provenance in the item's Extra field.`,
 			defer rawDB.Close()
 			db := localQueryStore{rawDB}
 
+			keyFilter, err := enrichKeyFilter(keysFrom, cmd.InOrStdin())
+			if err != nil {
+				return err
+			}
+
 			httpClient := &http.Client{Timeout: enrichTimeout(flags.timeout)}
 			var proposals []enrichProposal
 			var skipped []enrichSkip
@@ -119,15 +129,15 @@ record provenance in the item's Extra field.`,
 
 			// PATCH(glean bugfix): thread collection scope through every selected enrichment category.
 			if flagMissingDOI {
-				p, s := buildEnrichProposals(cmd.Context(), db, httpClient, "missing_doi", flagLimit, flagCollection, flagEmail, useOpenAlex)
+				p, s := buildEnrichProposals(cmd.Context(), db, httpClient, "missing_doi", flagLimit, flagCollection, keyFilter, flagEmail, useOpenAlex)
 				proposals, skipped = append(proposals, p...), append(skipped, s...)
 			}
 			if flagMissingAbstract {
-				p, s := buildEnrichProposals(cmd.Context(), db, httpClient, "missing_abstract", flagLimit, flagCollection, flagEmail, useOpenAlex)
+				p, s := buildEnrichProposals(cmd.Context(), db, httpClient, "missing_abstract", flagLimit, flagCollection, keyFilter, flagEmail, useOpenAlex)
 				proposals, skipped = append(proposals, p...), append(skipped, s...)
 			}
 			if flagMissingPDF {
-				p, s := buildEnrichProposals(cmd.Context(), db, httpClient, "missing_pdf", flagLimit, flagCollection, flagEmail, useOpenAlex)
+				p, s := buildEnrichProposals(cmd.Context(), db, httpClient, "missing_pdf", flagLimit, flagCollection, keyFilter, flagEmail, useOpenAlex)
 				proposals, skipped = append(proposals, p...), append(skipped, s...)
 			}
 
@@ -160,6 +170,7 @@ record provenance in the item's Extra field.`,
 	cmd.Flags().IntVar(&flagLimit, "limit", 25, "Maximum items to process per category")
 	// PATCH(glean bugfix): expose collection scoping for the local work queue.
 	cmd.Flags().StringVar(&flagCollection, "collection", "", "Scope the work queue to items in a collection key")
+	cmd.Flags().StringVar(&keysFrom, "keys-from", "", "Read exact item keys from a file or '-' for stdin, then enrich only matching queued items")
 	cmd.Flags().StringVar(&flagEmail, "email", "", "Contact email for Unpaywall (required for --missing-pdf) and the OpenAlex polite pool (optional); or set UNPAYWALL_EMAIL")
 	cmd.Flags().BoolVar(&flagNoOpenAlex, "no-openalex", false, "Disable the OpenAlex fallback for --missing-doi/--missing-abstract")
 
@@ -173,15 +184,49 @@ func enrichTimeout(t time.Duration) time.Duration {
 	return t
 }
 
+// enrichKeyFilter parses --keys-from into an allow-set for exact remediation.
+// PATCH(glean roadmap-phase3): `library health` can now hand exact item keys to
+// `items enrich` without widening back to the whole missing-* work queue.
+func enrichKeyFilter(keysFrom string, stdin io.Reader) (map[string]bool, error) {
+	if keysFrom == "" {
+		return nil, nil
+	}
+	keys, err := resolveKeys(nil, keysFrom, stdin)
+	if err != nil {
+		return nil, err
+	}
+	allow := make(map[string]bool, len(keys))
+	for _, key := range keys {
+		allow[key] = true
+	}
+	return allow, nil
+}
+
+func filterEnrichRowsByKeys(rows []map[string]any, allow map[string]bool) []map[string]any {
+	if allow == nil {
+		return rows
+	}
+	filtered := make([]map[string]any, 0, len(rows))
+	for _, row := range rows {
+		if allow[sqlStringValue(row["key"])] {
+			filtered = append(filtered, row)
+		}
+	}
+	return filtered
+}
+
 // buildEnrichProposals resolves proposals for one category over the audit work
 // queue. It loads each candidate's full payload from the local store so the
 // provider has title/creators/DOI/version, then dispatches to the resolver.
 // PATCH(glean bugfix): carry collection scope from the command into the work queue.
-func buildEnrichProposals(ctx context.Context, db localQueryStore, httpClient *http.Client, category string, limit int, collection string, email string, useOpenAlex bool) ([]enrichProposal, []enrichSkip) {
+// PATCH(glean roadmap-phase3): carry exact key scope from --keys-from, filtering
+// before provider lookups so remediation stays bounded and cheap.
+func buildEnrichProposals(ctx context.Context, db localQueryStore, httpClient *http.Client, category string, limit int, collection string, keyFilter map[string]bool, email string, useOpenAlex bool) ([]enrichProposal, []enrichSkip) {
 	rows, err := enrichWorkQueue(db, category, limit, collection)
 	if err != nil {
 		return nil, []enrichSkip{{Category: category, Reason: fmt.Sprintf("querying work queue: %v", err)}}
 	}
+	rows = filterEnrichRowsByKeys(rows, keyFilter)
 
 	// PATCH(glean perf-audit eedc): each candidate triggers an independent
 	// CrossRef/Unpaywall lookup, so resolve them through a bounded fan-out

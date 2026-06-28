@@ -794,6 +794,20 @@
       ],
       "validated_outcome": "gofmt/build/vet/test ./... all pass (new TestLibraryHealthFreshnessGate covers stale/fresh/never-synced). Live: `library health --require-fresh 1h` on the 47d-old store exits 12 with freshness.stale=true and 'run sync and retry'; `--require-fresh 9999h` prints 'Freshness: OK' and exits 0.",
       "upstream_issue": "Roadmap Phase 2 (docs/roadmap.md), exit code 12 now adopted. Follow-up: generalize --require-fresh to other local-read commands and to gate high-risk writes; query-planner read parity still deferred."
+    },
+    {
+      "id": "health-remediation-plan-phase3",
+      "summary": "Added the first Phase-3 safe-remediation slice: `library health` now emits a preview-first `remediation_plan`, and `items enrich` accepts `--keys-from` so missing DOI/abstract/PDF remediation is exact-key scoped.",
+      "reason": "The roadmap explicitly rejected a new `library health fix` write engine: health diagnoses and existing commands treat. Before this patch, health findings could only recommend broad enrichment commands because `items enrich` lacked exact key input. `--keys-from` now filters the enrichment work queue before provider lookups, and health groups findings into remediation_plan steps that delegate to existing preview-first fixers (`items enrich --keys-from -`, `items duplicates resolve`, `tags audit fix`) without adding a new write path.",
+      "files": [
+        "internal/cli/items_enrich.go",
+        "internal/cli/items_enrich_test.go",
+        "internal/cli/library_health.go",
+        "internal/cli/library_health_test.go",
+        "docs/roadmap.md"
+      ],
+      "validated_outcome": "gofmt/build/vet/test ./... all pass; new TestItemsEnrichMissingDOIKeysFrom proves provider calls are limited to the exact key list; library-health tests assert exact scoped remediation steps. Live: `library health --for all --limit 5 --json` emits remediation_plan steps for missing_doi/missing_abstract/missing_pdf with keys and `--keys-from -`, plus broad preview steps for DOI/title duplicate resolution and tag drift.",
+      "upstream_issue": "Roadmap Phase 3 (docs/roadmap.md). Follow-up: promote mutate.go into internal/mutation, add a run-journal, and add undo only for reversible actions."
     }
   ]
 }

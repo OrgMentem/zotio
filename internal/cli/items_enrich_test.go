@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -223,7 +224,7 @@ func TestBuildEnrichProposals_DOIFromStore(t *testing.T) {
 	withBase(t, &enrichCrossRefBase, srv.URL)
 	db := seedEnrichStore(t)
 
-	proposals, skipped := buildEnrichProposals(context.Background(), db, http.DefaultClient, "missing_doi", 25, "", "", false)
+	proposals, skipped := buildEnrichProposals(context.Background(), db, http.DefaultClient, "missing_doi", 25, "", nil, "", false)
 	if len(proposals) != 1 {
 		t.Fatalf("proposals = %d, want 1: %+v", len(proposals), proposals)
 	}
@@ -289,6 +290,68 @@ func TestItemsEnrichMissingDOICollectionScope(t *testing.T) {
 	}
 	if env.Journal != nil {
 		t.Errorf("unexpected skipped journal from out-of-collection item: %+v", env.Journal)
+	}
+}
+
+// PATCH(glean roadmap-phase3): exact health remediation should be able to feed
+// the specific missing-* item keys to `items enrich`, avoiding broad provider
+// calls and broad mutation previews.
+func TestItemsEnrichMissingDOIKeysFrom(t *testing.T) {
+	var requested []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		q := r.URL.Query().Get("query.bibliographic")
+		requested = append(requested, q)
+		_, _ = w.Write([]byte(`{"message":{"items":[` +
+			`{"title":["In Selection"],"DOI":"10.1/in"},` +
+			`{"title":["Outside Selection"],"DOI":"10.1/out"}` +
+			`]}}`))
+	}))
+	t.Cleanup(srv.Close)
+	withBase(t, &enrichCrossRefBase, srv.URL)
+
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("ZOTERO_CONFIG", filepath.Join(t.TempDir(), "keys-from.toml"))
+	dbPath := defaultDBPath("zotero-pp-cli")
+	db, err := store.OpenWithContext(context.Background(), dbPath)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	items := []json.RawMessage{
+		json.RawMessage(`{"key":"KIN","version":1,"data":{"key":"KIN","itemType":"journalArticle","title":"In Selection"}}`),
+		json.RawMessage(`{"key":"KOUT","version":2,"data":{"key":"KOUT","itemType":"journalArticle","title":"Outside Selection"}}`),
+	}
+	if _, _, err := db.UpsertBatch("items", items); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	_ = db.Close()
+
+	keysPath := filepath.Join(t.TempDir(), "keys.txt")
+	if err := os.WriteFile(keysPath, []byte("KIN\n"), 0o600); err != nil {
+		t.Fatalf("write keys: %v", err)
+	}
+
+	flags := &rootFlags{asJSON: true}
+	cmd := newItemsEnrichCmd(flags)
+	cmd.SetArgs([]string{"--missing-doi", "--keys-from", keysPath})
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&bytes.Buffer{})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("enrich: %v", err)
+	}
+
+	var env mutationEnvelope
+	if err := json.Unmarshal(out.Bytes(), &env); err != nil {
+		t.Fatalf("decode %q: %v", out.String(), err)
+	}
+	if env.Plan.Summary.Planned != 1 || len(env.Plan.Operations) != 1 {
+		t.Fatalf("expected one exact-key proposal, got summary=%+v ops=%+v", env.Plan.Summary, env.Plan.Operations)
+	}
+	if env.Plan.Operations[0].Key != "KIN" {
+		t.Errorf("proposal key = %q, want KIN", env.Plan.Operations[0].Key)
+	}
+	if len(requested) != 1 || !strings.Contains(requested[0], "In Selection") {
+		t.Errorf("provider calls = %v, want only In Selection", requested)
 	}
 }
 

@@ -95,6 +95,29 @@ func TestLibraryHealthComposesAllChecks(t *testing.T) {
 		t.Error("skip must carry remediation steps")
 	}
 
+	plan := map[string]healthRemediationPlanStep{}
+	for _, step := range report.RemediationPlan {
+		plan[step.Kind] = step
+		if !step.Preview {
+			t.Errorf("remediation step %s is not preview-first: %+v", step.Kind, step)
+		}
+	}
+	if step := plan["missing_doi"]; step.Command != "zotero-pp-cli items enrich --missing-doi --keys-from -" || !step.Scoped || len(step.Keys) == 0 {
+		t.Errorf("missing_doi remediation step = %+v, want scoped keys-from command", step)
+	}
+	if step := plan["missing_abstract"]; step.Command != "zotero-pp-cli items enrich --missing-abstract --keys-from -" || !step.Scoped || len(step.Keys) == 0 {
+		t.Errorf("missing_abstract remediation step = %+v, want scoped keys-from command", step)
+	}
+	if step := plan["missing_pdf"]; step.Command != "zotero-pp-cli items enrich --missing-pdf --keys-from -" || !step.Scoped || len(step.Keys) == 0 {
+		t.Errorf("missing_pdf remediation step = %+v, want scoped keys-from command", step)
+	}
+	if step := plan["duplicate_candidates"]; step.Command == "" || step.Scoped {
+		t.Errorf("duplicate remediation step = %+v, want broad delegated preview command", step)
+	}
+	if step := plan["tag_drift"]; step.Command != "zotero-pp-cli tags audit fix" || step.Scoped {
+		t.Errorf("tag remediation step = %+v, want broad tag-audit preview", step)
+	}
+
 	// No --fail-on -> no gate, regardless of how many findings exist.
 	if report.Gate != nil {
 		t.Errorf("gate should be nil without --fail-on, got %+v", report.Gate)
