@@ -154,7 +154,10 @@ func buildDuplicateResolveOps(db localQueryStore, flags *rootFlags, includeDOI, 
 				Kind:            "duplicate_merge",
 				ExpectedVersion: item.Version,
 				Changes:         changes,
-				Destructive:     false,
+				// PATCH(glean review P1): a merge trashes the duplicate, so it is
+				// destructive — require --allow-destructive (matches the capability
+				// registry and the --allow-destructive help, which both name "merge").
+				Destructive: true,
 				Apply: func() (string, any, error) {
 					return applyDuplicateResolve(flags, masterKey, dupKey)
 				},

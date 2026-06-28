@@ -62,7 +62,6 @@ var capabilityOverrides = map[string]capabilityEntry{
 	"items update":             {Operation: "write", WriteTarget: "web_api", Requires: []string{preconditionWebAPIKey}},
 	"items move":               {Operation: "write", WriteTarget: "web_api", Requires: []string{preconditionWebAPIKey}},
 	"items restore":            {Operation: "write", WriteTarget: "web_api", Requires: []string{preconditionWebAPIKey}},
-	"items trash":              {Operation: "write", WriteTarget: "web_api", Requires: []string{preconditionWebAPIKey}},
 	"items delete":             {Operation: "write", WriteTarget: "web_api", Destructive: true, Requires: []string{preconditionWebAPIKey}},
 	"items enrich":             {Operation: "write", WriteTarget: "web_api", Requires: []string{preconditionWebAPIKey}},
 	"items tags add":           {Operation: "write", WriteTarget: "web_api", Requires: []string{preconditionWebAPIKey}},
@@ -88,6 +87,9 @@ var capabilityOverrides = map[string]capabilityEntry{
 	"items new": {Operation: "write", WriteTarget: "web_api", Requires: []string{preconditionWebAPIKey}},
 	// import apply creates items / linked-file attachments via the Web API.
 	"import apply": {Operation: "write", WriteTarget: "web_api", Requires: []string{preconditionWebAPIKey}},
+	// vault push/resolve write tool-owned child notes back to Zotero via the Web API.
+	"vault push":    {Operation: "write", WriteTarget: "web_api", Requires: []string{preconditionWebAPIKey}},
+	"vault resolve": {Operation: "write", WriteTarget: "web_api", Requires: []string{preconditionWebAPIKey}},
 	// Sync writes the local store (not a Zotero mutation).
 	"sync":  {Operation: "sync"},
 	"watch": {Operation: "sync"},

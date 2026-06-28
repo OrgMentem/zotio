@@ -42,6 +42,7 @@ func FreshnessJSON() ([]byte, error) {
 		if lastSynced.IsZero() {
 			entry["last_synced_at"] = ""
 			entry["age"] = "never"
+			entry["age_seconds"] = 0
 		}
 		entries = append(entries, entry)
 	}

@@ -113,13 +113,21 @@ func TestGroupsList(t *testing.T) {
 // PATCH(glean roadmap-phase7 groups-inspect): cover JSON readiness preflight for accessible and missing groups.
 func TestGroupsInspect_JSONReadiness(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/users/0/groups" {
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/groups"):
+			io.WriteString(w, `[{"id":12345,"data":{"name":"Lab","type":"PrivateGroup","libraryReading":"all","libraryEditing":"members"},"meta":{"numItems":10}}]`)
+		case r.URL.Path == "/keys/current":
+			io.WriteString(w, `{"userID":0,"access":{"groups":{"12345":{"library":true,"write":true}}}}`)
+		default:
 			t.Errorf("unexpected request path %q", r.URL.Path)
 		}
-		io.WriteString(w, `[{"id":12345,"data":{"name":"Lab","type":"PrivateGroup","libraryReading":"all","libraryEditing":"members"},"meta":{"numItems":10}}]`)
 	}))
 	defer srv.Close()
+	oldBase := zoteroWebAPIBase
+	zoteroWebAPIBase = srv.URL
+	defer func() { zoteroWebAPIBase = oldBase }()
 	t.Setenv("ZOTERO_BASE_URL", srv.URL+"/users/0")
+	t.Setenv("ZOTERO_API_KEY", "testkey")
 	t.Setenv("ZOTERO_CONFIG", filepath.Join(t.TempDir(), "missing.toml"))
 
 	runInspect := func(groupID string) map[string]any {

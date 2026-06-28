@@ -60,8 +60,18 @@ Scope is one of: library (default), collection:KEY, or tag:NAME.`,
 			}
 
 			checkpointFile := outputFile + ".checkpoint.json"
-			openFlags := os.O_CREATE | os.O_WRONLY
+			// PATCH(glean review P1): only append when a checkpoint for THIS scope is
+			// genuinely resumable (matching path, not done). --resume on a finished,
+			// missing, or mismatched checkpoint must truncate, else the fetch restarts
+			// at offset 0 while appending and silently duplicates the snapshot.
+			resumable := false
 			if resume {
+				if cp, ok := readExportCheckpoint(checkpointFile); ok && cp.Path == path && !cp.Done {
+					resumable = true
+				}
+			}
+			openFlags := os.O_CREATE | os.O_WRONLY
+			if resumable {
 				openFlags |= os.O_APPEND
 			} else {
 				openFlags |= os.O_TRUNC
@@ -86,7 +96,10 @@ Scope is one of: library (default), collection:KEY, or tag:NAME.`,
 						return err
 					}
 				}
-				return nil
+				// PATCH(glean review P1): flush each page to the OS before the engine
+				// advances the checkpoint, so an abrupt interrupt cannot leave the
+				// checkpoint ahead of the data file (a later --resume would skip the tail).
+				return w.Flush()
 			}
 
 			fetched, fetchErr := resumablePaginatedFetch(cmd.Context(), c, path, params, pageSize, limit, checkpointFile, onPage)

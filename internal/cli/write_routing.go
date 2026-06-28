@@ -73,3 +73,49 @@ func fetchZoteroUserID(cfg *config.Config, timeout time.Duration) (string, error
 	}
 	return meta.UserID.String(), nil
 }
+
+// keyGroupWriteAccess reports whether the configured API key can WRITE to the
+// given group, read from /keys/current access. This is the accurate writability
+// signal for `groups inspect`: the group's editing *policy* (data.libraryEditing)
+// is near-always non-empty and does not reflect the key's per-group permission.
+// known=false when there is no key or the lookup fails, so callers report
+// "unknown" rather than over-claiming write access.
+// PATCH(glean review P1): key-permission write verdict for groups inspect.
+func keyGroupWriteAccess(cfg *config.Config, timeout time.Duration, groupID string) (canWrite bool, known bool) {
+	if cfg == nil || cfg.AuthHeader() == "" {
+		return false, false
+	}
+	req, err := http.NewRequest(http.MethodGet, zoteroWebAPIBase+"/keys/current", nil)
+	if err != nil {
+		return false, false
+	}
+	req.Header.Set("Zotero-API-Key", cfg.AuthHeader())
+	if timeout <= 0 {
+		timeout = 30 * time.Second
+	}
+	resp, err := (&http.Client{Timeout: timeout}).Do(req)
+	if err != nil {
+		return false, false
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return false, false
+	}
+	var payload struct {
+		Access struct {
+			Groups map[string]struct {
+				Write bool `json:"write"`
+			} `json:"groups"`
+		} `json:"access"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+		return false, false
+	}
+	if g, ok := payload.Access.Groups[groupID]; ok {
+		return g.Write, true
+	}
+	if all, ok := payload.Access.Groups["all"]; ok {
+		return all.Write, true
+	}
+	return false, true
+}

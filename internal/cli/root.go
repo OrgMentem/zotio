@@ -180,11 +180,15 @@ See README.md or the bundled SKILL.md for recipes.`,
 		// PATCH(glean roadmap-phase7 3df91067): env fallback so MCP installs and
 		// scheduled agents (which set env, not CLI flags) honor profile/group
 		// selection. An explicit CLI flag always wins over the env value.
-		if flags.profileName == "" {
-			flags.profileName = strings.TrimSpace(os.Getenv("ZOTERO_PROFILE"))
+		if !cmd.Flags().Changed("profile") {
+			if v := strings.TrimSpace(os.Getenv("ZOTERO_PROFILE")); v != "" {
+				flags.profileName = v
+			}
 		}
-		if flags.group == "" {
-			flags.group = strings.TrimSpace(os.Getenv("ZOTERO_GROUP"))
+		if !cmd.Flags().Changed("group") {
+			if v := strings.TrimSpace(os.Getenv("ZOTERO_GROUP")); v != "" {
+				flags.group = v
+			}
 		}
 		if flags.deliverSpec != "" {
 			sink, err := ParseDeliverSink(flags.deliverSpec)

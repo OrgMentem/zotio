@@ -146,7 +146,7 @@ func TestItemsDuplicatesResolveApplyMergesCollectionsAndTrashesDuplicate(t *test
 		"K2": {"key": "K2", "itemType": "journalArticle", "title": "Same", "DOI": "10/example", "collections": []any{"C2"}, "tags": []any{map[string]any{"tag": "dup"}}},
 	})
 
-	env := runItemsDuplicatesResolveTestCmd(t, srv, &rootFlags{asJSON: true, yes: true, maxChanges: -1}, "resolve", "--doi")
+	env := runItemsDuplicatesResolveTestCmd(t, srv, &rootFlags{asJSON: true, yes: true, maxChanges: -1, allowDestructive: true}, "resolve", "--doi")
 	if !env.OK || env.Mode != "apply" || env.Result == nil || env.Result.Summary.Applied != 1 || env.Result.Items[0].Status != "applied" {
 		t.Fatalf("env = %+v, want one applied merge", env)
 	}

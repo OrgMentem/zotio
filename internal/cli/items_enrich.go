@@ -374,7 +374,7 @@ func validateEnrichItems(ctx context.Context, db localQueryStore, httpClient *ht
 				})
 			}
 		}
-		if !resolveDOIRegisteredViaOpenCitations(ctx, httpClient, doi) {
+		if registered, known := resolveDOIRegisteredViaOpenCitations(ctx, httpClient, doi); known && !registered {
 			report.UnverifiedDOIs = append(report.UnverifiedDOIs, key+":"+doi)
 		}
 	}
@@ -751,12 +751,13 @@ func fetchCrossRefWorkByDOI(ctx context.Context, httpClient *http.Client, doi st
 }
 
 // PATCH(glean roadmap-phase4 mmmd): OpenCitations registration probe for DOI validation mode.
-func resolveDOIRegisteredViaOpenCitations(ctx context.Context, httpClient *http.Client, doi string) bool {
+func resolveDOIRegisteredViaOpenCitations(ctx context.Context, httpClient *http.Client, doi string) (registered bool, known bool) {
 	var resp []map[string]any
 	if err := getJSON(ctx, httpClient, enrichOpenCitationsBase+"/metadata/"+url.PathEscape(doi), &resp); err != nil {
-		return false
+		// Transport/non-2xx failure: unverifiable, NOT a definitive "not registered".
+		return false, false
 	}
-	return len(resp) > 0
+	return len(resp) > 0, true
 }
 
 // --- OpenAlex (fallback for DOI + abstract; OA PDFs stay on Unpaywall, whose

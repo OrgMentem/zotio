@@ -9,6 +9,8 @@ import (
 	"strconv"
 
 	"github.com/spf13/cobra"
+
+	"zotero-pp-cli/internal/config"
 )
 
 func newGroupsCmd(flags *rootFlags) *cobra.Command {
@@ -109,10 +111,20 @@ func newGroupsInspectCmd(flags *rootFlags) *cobra.Command {
 					continue
 				}
 				libraryEditing := groupFieldString(g, "libraryEditing")
-				readyForWrite := libraryEditing != ""
-				note = "group is accessible for reading but not writing"
-				if readyForWrite {
+				// PATCH(glean review P1): writability comes from the API key's
+				// per-group permission (/keys/current access), not the group's
+				// editing policy, which is near-always non-empty and would
+				// over-claim write for read-only keys and admin-only groups.
+				cfg, _ := config.Load(flags.configPath)
+				canWrite, keyKnown := keyGroupWriteAccess(cfg, flags.timeout, groupID)
+				readyForWrite := keyKnown && canWrite
+				switch {
+				case !keyKnown:
+					note = "group is readable; write access could not be confirmed — configure an API key with write access to this group"
+				case readyForWrite:
 					note = "group is accessible for reading and writing"
+				default:
+					note = "group is readable; the configured API key lacks write access to this group"
 				}
 				report["found"] = true
 				report["name"] = groupFieldString(g, "name")
@@ -123,6 +135,7 @@ func newGroupsInspectCmd(flags *rootFlags) *cobra.Command {
 				report["file_editing"] = groupFieldString(g, "fileEditing")
 				report["ready_for_read"] = true
 				report["ready_for_write"] = readyForWrite
+				report["key_write_known"] = keyKnown
 				report["note"] = note
 				break
 			}

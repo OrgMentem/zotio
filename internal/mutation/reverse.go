@@ -13,12 +13,28 @@ import "fmt"
 var reversibleFields = map[string]bool{"tags": true, "collections": true}
 
 // InvertChange returns the inverse of a membership change (Add<->Remove) and
-// whether the change is reversible at all.
+// whether the change is reversible at all. Only single-value (scalar string)
+// toggles invert: a non-string Add/Remove (e.g. a []string bulk add recorded by
+// a duplicate-merge) is NOT a simple per-item toggle and must not be inverted —
+// inverting it would target the wrong item, so such ops are refused by InverseOps.
 func InvertChange(c Change) (Change, bool) {
 	if !reversibleFields[c.Field] {
 		return Change{}, false
 	}
+	if !isScalarMembershipValue(c.Add) || !isScalarMembershipValue(c.Remove) {
+		return Change{}, false
+	}
 	return Change{Field: c.Field, Add: c.Remove, Remove: c.Add}, true
+}
+
+// isScalarMembershipValue reports whether a change value is a single membership
+// toggle (a string) or absent (nil). Bulk/non-string values are not reversible.
+func isScalarMembershipValue(v any) bool {
+	if v == nil {
+		return true
+	}
+	_, ok := v.(string)
+	return ok
 }
 
 // ReversalRefusal explains why one recorded op cannot be undone.
