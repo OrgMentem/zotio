@@ -925,6 +925,14 @@
       "files": ["internal/mcp/tools.go", "internal/mcp/tools_patch_test.go"],
       "validated_outcome": "gofmt/build/vet/test ./... green; golangci-lint exits 0. New TestMCPPathValueNeutralizesInjection (5 subtests) proves '/', '../', space, and '?' are percent-encoded while a valid key is unchanged. Full-handler testing is blocked by sanitizeClientBaseURL rejecting untrusted (httptest) base URLs, so the escaping is verified at the helper boundary both call sites share.",
       "upstream_issue": "Must be fixed upstream in cli-printing-press: the generated makeAPIHandler should url.PathEscape all path-location bindings by default."
+    },
+    {
+      "id": "cross-platform-deep-links",
+      "summary": "Generalized `items open` from a macOS-only, personal-item-only launcher into a cross-platform Zotero deep-link layer: --type item|collection|attachment (PDF), group-library scope via the global --group, and an --agent JSON envelope {uri, target_type, library_scope, launched}.",
+      "reason": "glean bead inscribi-8r0o (P3). The launch primitive was already cross-platform (launchURI -> launchCommand GOOS dispatch, shared from ensure_live.go), but items open only built zotero://select/library/items/<key> and had no collection/attachment/group support, no rich JSON, and stale 'macOS open' help. Added a zoteroDeepLink helper that reuses the shared zoteroLibrarySegment() (one convention with the vault zotero:// backlinks) and url.PathEscapes the key (keeps the 3969059246039413/1b05b22e path-injection guard). Reused the existing global --group/activeGroupID instead of adding a second group flag. Collection select + open-pdf schemes match the forms already asserted in vault_sync_format_test.go.",
+      "files": ["internal/cli/items_open.go", "internal/cli/items_open_test.go", "README.md"],
+      "validated_outcome": "gofmt/build/vet/test ./... green; golangci-lint exits 0. TestZoteroDeepLink covers item/collection/attachment x personal/group + path-escaping; TestZoteroDeepLinkRejectsUnknownType; TestItemsOpenJSONEnvelope (agent envelope, launched:false); TestItemsOpenGroupScopeURI (global --group -> groups/<id> URI). Cross-platform launcher selection already covered by TestLaunchCommand (darwin/linux/windows).",
+      "upstream_issue": "Candidate to upstream as a generator capability: a cross-platform deep-link/open command with target-type + library-scope envelope."
     }
   ]
 }

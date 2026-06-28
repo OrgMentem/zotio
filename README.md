@@ -180,12 +180,14 @@ These capabilities aren't available in any other tool for this API.
   ```bash
   zotero-pp-cli annotations timeline --since 2026-05-01 --format markdown
   ```
-- **`items open`** — Jump from CLI search results directly to the item in the Zotero desktop app.
+- **`items open`** — Jump from CLI results straight to a Zotero desktop object: an item (default), a collection (`--type collection`), or a PDF attachment (`--type attachment`). Prints the `zotero://` deep link, or launches it with `--launch` via the OS handler (`open` on macOS, `xdg-open` on Linux, `rundll32` on Windows). Targets a group library when the global `--group <id>` (or `ZOTERO_GROUP`) is set; `--agent` emits `{uri, target_type, library_scope, launched}`.
 
   _Use this after finding an item via CLI search to open it for reading without leaving the terminal flow._
 
   ```bash
   zotero-pp-cli items open 9UXV5R7L --launch
+  zotero-pp-cli items open IDTUAULN --type collection --launch
+  zotero-pp-cli --group 12345 items open ABCD1234 --agent
   ```
 - **`items note-template`** — Generate a pre-filled markdown reading note (frontmatter + abstract + empty Annotations section) for any item — paste into Obsidian or Logseq.
 
