@@ -84,6 +84,7 @@ func newVaultCmd(flags *rootFlags) *cobra.Command {
 	cmd.AddCommand(newVaultConflictsCmd(flags))
 	cmd.AddCommand(newVaultResolveCmd(flags))
 	cmd.AddCommand(newVaultPullCmd(flags))
+	cmd.AddCommand(newVaultAuditCmd(flags)) // PATCH(glean roadmap-phase5 vault-audit): expose read-only vault note-health audit
 	return cmd
 }
 
