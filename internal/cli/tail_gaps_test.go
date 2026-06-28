@@ -56,10 +56,10 @@ func TestEmitChanges_ChangeFeed(t *testing.T) {
 		switch since := r.URL.Query().Get("since"); since {
 		case "":
 			w.Header().Set("Last-Modified-Version", "10")
-			io.WriteString(w, `[{"key":"A","version":5,"data":{}},{"key":"B","version":5}]`)
+			_, _ = io.WriteString(w, `[{"key":"A","version":5,"data":{}},{"key":"B","version":5}]`)
 		case "10":
 			w.Header().Set("Last-Modified-Version", "12")
-			io.WriteString(w, `[{"key":"A","version":12}]`)
+			_, _ = io.WriteString(w, `[{"key":"A","version":12}]`)
 		default:
 			t.Errorf("/items unexpected since=%q", since)
 		}
@@ -69,7 +69,7 @@ func TestEmitChanges_ChangeFeed(t *testing.T) {
 			t.Errorf("/deleted unexpected since=%q", since)
 		}
 		w.Header().Set("Last-Modified-Version", "12")
-		io.WriteString(w, `{"items":["B"],"collections":[],"searches":[],"tags":[]}`)
+		_, _ = io.WriteString(w, `{"items":["B"],"collections":[],"searches":[],"tags":[]}`)
 	})
 	srv := httptest.NewServer(mux)
 	defer srv.Close()
@@ -147,7 +147,7 @@ func TestEmitChanges_WebhookDelivery(t *testing.T) {
 
 	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Last-Modified-Version", "7")
-		io.WriteString(w, `[{"key":"Z","version":1}]`)
+		_, _ = io.WriteString(w, `[{"key":"Z","version":1}]`)
 	}))
 	defer api.Close()
 

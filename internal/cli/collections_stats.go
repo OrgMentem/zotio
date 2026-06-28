@@ -188,7 +188,7 @@ func toInt64(v any) int64 {
 		return int64(x)
 	case string:
 		var n int64
-		fmt.Sscanf(x, "%d", &n)
+		_, _ = fmt.Sscanf(x, "%d", &n)
 		return n
 	}
 	return 0

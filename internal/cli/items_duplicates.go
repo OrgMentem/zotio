@@ -85,7 +85,7 @@ func newItemsDuplicatesCmd(flags *rootFlags) *cobra.Command {
 			defer rawDB.Close()
 			db := localQueryStore{Store: rawDB}
 
-			results := make([]map[string]any, 0)
+			var results []map[string]any
 			switch flagBy {
 			case "doi":
 				results, err = queryDuplicateDOIs(db)

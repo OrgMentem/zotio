@@ -68,7 +68,7 @@ func TestGroupsList(t *testing.T) {
 		if r.URL.Path != "/users/0/groups" {
 			t.Errorf("unexpected request path %q", r.URL.Path)
 		}
-		io.WriteString(w, `[{"id":99,"version":1,"data":{"name":"Lab","type":"Private"},"meta":{"numItems":7}}]`)
+		_, _ = io.WriteString(w, `[{"id":99,"version":1,"data":{"name":"Lab","type":"Private"},"meta":{"numItems":7}}]`)
 	}))
 	defer srv.Close()
 	t.Setenv("ZOTERO_BASE_URL", srv.URL+"/users/0")
@@ -115,9 +115,9 @@ func TestGroupsInspect_JSONReadiness(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case strings.HasSuffix(r.URL.Path, "/groups"):
-			io.WriteString(w, `[{"id":12345,"data":{"name":"Lab","type":"PrivateGroup","libraryReading":"all","libraryEditing":"members"},"meta":{"numItems":10}}]`)
+			_, _ = io.WriteString(w, `[{"id":12345,"data":{"name":"Lab","type":"PrivateGroup","libraryReading":"all","libraryEditing":"members"},"meta":{"numItems":10}}]`)
 		case r.URL.Path == "/keys/current":
-			io.WriteString(w, `{"userID":0,"access":{"groups":{"12345":{"library":true,"write":true}}}}`)
+			_, _ = io.WriteString(w, `{"userID":0,"access":{"groups":{"12345":{"library":true,"write":true}}}}`)
 		default:
 			t.Errorf("unexpected request path %q", r.URL.Path)
 		}

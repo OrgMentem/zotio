@@ -33,7 +33,7 @@ func TestItemsFileDirectAttachmentKey(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/users/0/items/ATT1/file/view/url" {
 			w.Header().Set("Content-Type", "text/plain")
-			io.WriteString(w, fileURL)
+			_, _ = io.WriteString(w, fileURL)
 			return
 		}
 		http.Error(w, "unexpected "+r.URL.Path, http.StatusNotFound)
@@ -77,9 +77,9 @@ func TestItemsFileResolvesParentToChildPDF(t *testing.T) {
 			// Regular item has no file: force the child-resolution path.
 			http.Error(w, "no file", http.StatusNotFound)
 		case "/users/0/items/PARENT/children":
-			io.WriteString(w, `[{"key":"NOTE1","itemType":"note"},{"key":"PDF9","itemType":"attachment","contentType":"application/pdf"}]`)
+			_, _ = io.WriteString(w, `[{"key":"NOTE1","itemType":"note"},{"key":"PDF9","itemType":"attachment","contentType":"application/pdf"}]`)
 		case "/users/0/items/PDF9/file/view/url":
-			io.WriteString(w, fileURL)
+			_, _ = io.WriteString(w, fileURL)
 		default:
 			http.Error(w, "unexpected "+r.URL.Path, http.StatusNotFound)
 		}
@@ -108,7 +108,7 @@ func TestItemsFileNoAttachmentErrors(t *testing.T) {
 		case "/users/0/items/BARE/file/view/url":
 			http.Error(w, "no file", http.StatusNotFound)
 		case "/users/0/items/BARE/children":
-			io.WriteString(w, `[]`)
+			_, _ = io.WriteString(w, `[]`)
 		default:
 			http.Error(w, "unexpected "+r.URL.Path, http.StatusNotFound)
 		}

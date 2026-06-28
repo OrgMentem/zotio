@@ -282,7 +282,7 @@ func copyItemTag(tagObj map[string]any) map[string]any {
 
 func itemTagsSingleLine(add bool, tagNames []string) func(mutation.Envelope) string {
 	return func(env mutation.Envelope) string {
-		status := "would update"
+		var status string
 		if add {
 			status = "would add"
 		} else {

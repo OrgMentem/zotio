@@ -24,10 +24,10 @@ func TestSyncFulltext_StoresAndIndexes(t *testing.T) {
 			t.Errorf("/fulltext since=%q, want 0", since)
 		}
 		w.Header().Set("Last-Modified-Version", "3")
-		io.WriteString(w, `{"ATT1":3}`)
+		_, _ = io.WriteString(w, `{"ATT1":3}`)
 	})
 	mux.HandleFunc("/items/ATT1/fulltext", func(w http.ResponseWriter, r *http.Request) {
-		io.WriteString(w, `{"content":"hello world","indexedChars":11,"totalChars":11}`)
+		_, _ = io.WriteString(w, `{"content":"hello world","indexedChars":11,"totalChars":11}`)
 	})
 	srv := httptest.NewServer(mux)
 	defer srv.Close()

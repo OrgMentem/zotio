@@ -418,6 +418,13 @@ func (s *Store) migrate(ctx context.Context) error {
 		if err := s.purgeAliasResources(ctx, conn); err != nil {
 			return fmt.Errorf("purging alias resources: %w", err)
 		}
+		// PATCH(glean lint-extras-seam): run novel-feature auxiliary-table
+		// migrations after the generated migrations and before the version
+		// stamp, as migrateExtras documents. Currently a no-op (empty slice);
+		// wiring it makes the extension seam actually execute on every open.
+		if err := s.migrateExtras(ctx, conn); err != nil {
+			return err
+		}
 		// Stamp the schema version. On a fresh DB this writes 1; on an
 		// already-stamped DB this is a no-op write of the same value.
 		// An older DB with user_version = 0 and pre-existing tables
