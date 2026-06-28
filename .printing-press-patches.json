@@ -948,6 +948,13 @@
       "files": ["internal/mcp/bound/bound.go", "internal/mcp/bound/bound_test.go", "internal/mcp/tools.go"],
       "validated_outcome": "build/vet/test/lint green (8 pkgs ok; bound_test passes). bound.EndpointResponse serves via http tools/call path; PathEscape fix intact.",
       "upstream_issue": "Second upstream finding for cli-printing-press (alongside 1b05b22e): the v4.27 generated cobratree mirror lacks MCP arg-safety hardening (forged MCP args can smuggle hidden globals like --deliver/--profile/--group; raw flag tokens accepted in positional args). The da7c6f88 hardening in this CLI should be upstreamed into the generated walker/shellout."
+    },
+    {
+      "id": "mcp-surface-trim",
+      "summary": "Trimmed the MCP tool surface from 102 to 99 tools (~64.5K -> ~61.9K tokens for tools/list) by hiding three genuinely non-agent tools: `watch` (added to cobratree frameworkCommands), and `schema drift` + `capabilities drift` (mcp:hidden merged into their existing Annotations).",
+      "reason": "Acting on trevinsays.com '10 Principles for Agent-Native CLIs' principle 5 (the tool-description surface itself costs tokens; measured 102 tools = 258KB ~= 64.5K tokens loaded at MCP start). Hid only tools that fit classify.go's own documented case-2 (non-functional/maintenance via MCP), with zero capability regret: `watch` is a blocking periodic-sync loop that never returns as a request/response tool (identical shape to the already-excluded `tail` — arguably a latent bug it was exposed); `schema drift` and `capabilities drift` are human ops/maintenance tasks (baseline-compare after a Zotero upgrade / capability-registry drift probe). Deliberately did NOT hide functional-but-niche tools (analytics, workflow, vault, enrich, the bibliometric novel commands) because classify.go documents a breadth philosophy ('an underused tool costs far less than a broken contract') and domainContext does not enumerate the item-type/field taxonomy, so the schema-reference tools retain unique construction value. A dramatic cut would need the code-orchestration (search+execute) pattern, a separate refactor that conflicts with decoupling from Printing Press.",
+      "files": ["internal/mcp/cobratree/classify.go", "internal/cli/schema_drift.go", "internal/cli/capabilities_drift.go"],
+      "validated_outcome": "build/vet/test/lint green. Live http tools/list: 99 tools / 247418 bytes (was 102 / 257843); the 3 hidden tools absent; all core tools present (search, sql, context, items CRUD, collections, library_health, sync, vault, journal_undo, import_scan, items_open, schema_item-types, capabilities, reading_list, groups)."
     }
   ]
 }

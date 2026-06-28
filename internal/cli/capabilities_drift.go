@@ -33,13 +33,15 @@ type capabilitiesDriftProbe struct {
 
 func newCapabilitiesDriftCmd(flags *rootFlags) *cobra.Command {
 	cmd := &cobra.Command{
-		Use:   "drift",
-		Short: "Probe core read endpoints for capability/API drift",
+		Use:         "drift",
+		Short:       "Probe core read endpoints for capability/API drift",
 		Long: `Probes core Zotero read endpoints declared in the capability registry and
 reports any endpoint that now returns an API error or cannot be reached. This is
 read-only and treats every non-nil GET error as drift, including HTTP 4xx/5xx
 and network failures.`,
-		Annotations: map[string]string{"mcp:read-only": "true"},
+		// PATCH(glean mcp-surface-trim): mcp:hidden — capability drift is a
+		// maintenance/ops probe, not an agent tool.
+		Annotations: map[string]string{"mcp:read-only": "true", "mcp:hidden": "true"},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			// PATCH(glean roadmap-phase7 capabilities-drift): the capabilities parent is
 			// registered before root flags are threaded through it; hydrate the narrow

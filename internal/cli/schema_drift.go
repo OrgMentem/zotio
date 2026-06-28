@@ -48,8 +48,8 @@ func newSchemaDriftCmd(flags *rootFlags) *cobra.Command {
 	var baselinePath string
 
 	cmd := &cobra.Command{
-		Use:   "drift",
-		Short: "Detect Zotero schema changes (new/removed item types and fields) vs a saved baseline",
+		Use:         "drift",
+		Short:       "Detect Zotero schema changes (new/removed item types and fields) vs a saved baseline",
 		Long: `Capture a baseline fingerprint of the running Zotero's item-type and field
 schema, then on later runs report what changed. Use this after upgrading Zotero
 to see which item types, fields, or creator fields a new version added or removed
@@ -71,7 +71,9 @@ Zotero install.`,
 
   # Re-baseline to the current schema
   zotero-pp-cli schema drift --update`,
-		Annotations: map[string]string{"mcp:read-only": "true"},
+		// PATCH(glean mcp-surface-trim): mcp:hidden — schema drift is a
+		// maintenance/ops task (baseline + compare after a Zotero upgrade).
+		Annotations: map[string]string{"mcp:read-only": "true", "mcp:hidden": "true"},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			// Schema endpoints are global; newSchemaClient strips the library prefix.
 			c, err := newSchemaClient(flags)
