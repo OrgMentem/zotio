@@ -157,10 +157,10 @@ run-local sequence, so agents/CI can diff):
 **Exit codes** (existing `0/2/3/4/5/7/10` retained; additions slot in without collision):
 
 ```
-0   success / gates passed        9   precondition / setup required (NEW: launch app, set key, sync)
-2   usage error                   11  quality gate failed (NEW: --fail-on threshold crossed)
-3   not found                     (12 freshness-gate / 13 mutation-blocked: DEFERRED until a
-4   auth required                  consumer must branch — JSON .gate carries the sub-reason)
+0   success / gates passed        9   precondition / setup required (launch app, set key, sync)
+2   usage error                   11  quality gate failed (--fail-on threshold crossed)
+3   not found                     12  freshness gate failed (--require-fresh; remedy = sync + retry)
+4   auth required                 (13 mutation-blocked: DEFERRED until a write consumer needs it)
 5   upstream API error
 7   rate limited
 10  config error

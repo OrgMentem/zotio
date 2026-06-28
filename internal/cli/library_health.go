@@ -133,6 +133,16 @@ type healthGate struct {
 	Reason string `json:"reason,omitempty"`
 }
 
+// healthFreshness records the --require-fresh verdict: how old the local data is
+// versus the allowed maximum, and whether that makes the report uncertifiable.
+// PATCH(glean roadmap-phase2): freshness gate.
+type healthFreshness struct {
+	RequiredMaxAgeSeconds int    `json:"required_max_age_seconds"`
+	AgeSeconds            int    `json:"age_seconds,omitempty"`
+	Stale                 bool   `json:"stale"`
+	Reason                string `json:"reason,omitempty"`
+}
+
 type healthReport struct {
 	SchemaVersion int              `json:"schema_version"`
 	Scope         healthScope      `json:"scope"`
@@ -142,6 +152,7 @@ type healthReport struct {
 	Skipped       []healthSkip     `json:"skipped,omitempty"`
 	Summary       healthSummary    `json:"summary"`
 	Gate          *healthGate      `json:"gate,omitempty"`
+	Freshness     *healthFreshness `json:"freshness,omitempty"`
 }
 
 // healthContext threads per-run state (provenance, limit, live-check opt-in) and
@@ -153,6 +164,7 @@ type healthContext struct {
 	limit         int
 	verifyFiles   bool
 	flags         *rootFlags
+	requireFresh  time.Duration
 	citekeyRows   []citekeyConflictRow
 	citekeyLoaded bool
 }
@@ -224,6 +236,7 @@ func newLibraryHealthCmd(flags *rootFlags) *cobra.Command {
 	var flagLimit int
 	var flagVerifyFiles bool
 	var flagScope string
+	var flagRequireFresh time.Duration
 
 	cmd := &cobra.Command{
 		Use:   "health",
@@ -285,11 +298,12 @@ precondition is unmet, the command refuses loudly (exit 9) rather than passing.`
 				syncedAt = &ls
 			}
 			ctx := &healthContext{
-				src:         healthSource{Kind: "local", SyncedAt: syncedAt},
-				preset:      preset,
-				limit:       flagLimit,
-				verifyFiles: flagVerifyFiles,
-				flags:       flags,
+				src:          healthSource{Kind: "local", SyncedAt: syncedAt},
+				preset:       preset,
+				limit:        flagLimit,
+				verifyFiles:  flagVerifyFiles,
+				flags:        flags,
+				requireFresh: flagRequireFresh,
 			}
 
 			scope := scopeResult{All: true, Expr: "library"}
@@ -323,6 +337,9 @@ precondition is unmet, the command refuses loudly (exit 9) rather than passing.`
 			} else {
 				printHealthReport(cmd, report)
 			}
+			if ferr := healthFreshnessExitError(report); ferr != nil {
+				return ferr
+			}
 			return healthGateExitError(report)
 		},
 	}
@@ -331,6 +348,7 @@ precondition is unmet, the command refuses loudly (exit 9) rather than passing.`
 	cmd.Flags().IntVar(&flagLimit, "limit", 0, "Max findings listed per kind (0 = all); also caps the live attachment scan")
 	cmd.Flags().BoolVar(&flagVerifyFiles, "verify-files", false, "Run the live broken-attachment check (needs Zotero desktop running)")
 	cmd.Flags().StringVar(&flagScope, "scope", "", "Limit to a cohort: collection:KEY | tag:NAME | item:KEY | query:TEXT | saved-search:KEY (default: whole library)")
+	cmd.Flags().DurationVar(&flagRequireFresh, "require-fresh", 0, "Refuse (exit 12) when the local store is staler than this (e.g. 24h); 0 = disabled")
 	return cmd
 }
 
@@ -394,6 +412,23 @@ func assembleHealthReport(db localQueryStore, ctx *healthContext, preset string,
 		}
 		report.Gate = gate
 	}
+
+	if ctx.requireFresh > 0 {
+		fr := &healthFreshness{RequiredMaxAgeSeconds: int(ctx.requireFresh.Seconds())}
+		switch {
+		case ctx.src.SyncedAt == nil:
+			fr.Stale = true
+			fr.Reason = "local store has never been synced"
+		default:
+			age := time.Since(*ctx.src.SyncedAt)
+			fr.AgeSeconds = int(age.Seconds())
+			if age > ctx.requireFresh {
+				fr.Stale = true
+				fr.Reason = fmt.Sprintf("local data is %s old, older than the required %s", durationAgo(age), ctx.requireFresh)
+			}
+		}
+		report.Freshness = fr
+	}
 	return report, nil
 }
 
@@ -451,6 +486,16 @@ func healthGateExitError(report healthReport) error {
 	default:
 		return nil
 	}
+}
+
+// healthFreshnessExitError maps a stale --require-fresh verdict to exit 12. The
+// remedy is `sync` + retry, distinct from a quality gate (11) or a precondition
+// (9). Returns nil when freshness was not required or the data is fresh enough.
+func healthFreshnessExitError(report healthReport) error {
+	if report.Freshness == nil || !report.Freshness.Stale {
+		return nil
+	}
+	return freshnessErr(fmt.Errorf("library health: %s; run 'zotero-pp-cli sync' and retry", report.Freshness.Reason))
 }
 
 func selectHealthChecks(kinds []string) []healthCheck {
@@ -777,6 +822,13 @@ func printHealthReport(cmd *cobra.Command, report healthReport) {
 		fmt.Fprintln(out)
 	}
 
+	if report.Freshness != nil {
+		if report.Freshness.Stale {
+			fmt.Fprintf(out, "Freshness: STALE (%s) — run 'zotero-pp-cli sync' and retry\n", report.Freshness.Reason)
+		} else {
+			fmt.Fprintln(out, "Freshness: OK")
+		}
+	}
 	if report.Gate != nil {
 		line := fmt.Sprintf("Gate: fail-on %s -> %s", report.Gate.FailOn, strings.ToUpper(report.Gate.Status))
 		if report.Gate.Reason != "" {

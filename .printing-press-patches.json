@@ -781,6 +781,19 @@
       ],
       "validated_outcome": "gofmt clean; go build/vet/test ./... all pass (6 ok, 5 no-tests; new scope_test.go, ensure_live_test.go, and a scoped-health test). Live smoke: `capabilities` emits 106 entries with correct preconditions (searches run/items file -> live_local_api; library health -> synced_store; items citekey-conflicts -> synced_store+better_bibtex; items create -> web_api_key; items delete -> destructive+web_api_key; schema new-item-template -> web_api_key); agent-context embeds the same 106-entry registry; `library health --scope item:<key>` filters findings to that item; `library health --scope saved-search:ABC` exits 9 with a loud live_local_api precondition message; `doctor --ensure-live` reports reachable (exit 0) against the running desktop.",
       "upstream_issue": "Roadmap Phase 2 (docs/roadmap.md). Generated files agent_context.go and doctor.go were PATCH-edited (field + command flags), not rewritten. Follow-up: --require-fresh freshness gate and query-planner read parity remain for a later Phase-2 slice; doctor.go is generated so the --ensure-live flags are a local PATCH worth upstreaming."
+    },
+    {
+      "id": "freshness-gate-require-fresh",
+      "summary": "Added `library health --require-fresh <dur>`: refuses to certify the report (exit 12) when the local store is staler than the threshold, with a 'run sync + retry' remedy. Completes the Phase-2 trust-contract trio (scope + preconditions + freshness).",
+      "reason": "A stale local read should not silently pass a health gate, and CI needs to tell 'stale -> sync + retry' (retryable) apart from 'quality gate failed' (fix the library, exit 11) and 'precondition unmet -> launch/configure' (exit 9). This is the consumer that justified adopting exit code 12 (deferred in decision D3 until a real consumer existed). The report gains a `freshness` block; exit precedence is freshness (12) before gate (11). require-fresh is threaded via healthContext to avoid growing the assembleHealthReport signature.",
+      "files": [
+        "internal/cli/helpers.go",
+        "internal/cli/library_health.go",
+        "internal/cli/library_health_test.go",
+        "docs/roadmap.md"
+      ],
+      "validated_outcome": "gofmt/build/vet/test ./... all pass (new TestLibraryHealthFreshnessGate covers stale/fresh/never-synced). Live: `library health --require-fresh 1h` on the 47d-old store exits 12 with freshness.stale=true and 'run sync and retry'; `--require-fresh 9999h` prints 'Freshness: OK' and exits 0.",
+      "upstream_issue": "Roadmap Phase 2 (docs/roadmap.md), exit code 12 now adopted. Follow-up: generalize --require-fresh to other local-read commands and to gate high-risk writes; query-planner read parity still deferred."
     }
   ]
 }

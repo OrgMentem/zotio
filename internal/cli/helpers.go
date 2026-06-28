@@ -117,6 +117,11 @@ func gateErr(err error) error { return &cliError{code: 11, err: err} }
 // sync) and retry — categorically different from a content gate or a hard error.
 func preconditionErr(err error) error { return &cliError{code: 9, err: err} }
 
+// PATCH(glean roadmap-phase2): the local store is staler than --require-fresh
+// allows, so a read cannot be certified. Distinct from a precondition (9) and a
+// quality gate (11): the remedy is `sync` + retry, which CI can automate.
+func freshnessErr(err error) error { return &cliError{code: 12, err: err} }
+
 // dryRunOK reports whether the command should short-circuit without doing any
 // real work because --dry-run was set. The verify pipeline probes hand-written
 // commands with --dry-run; commands that put validation in cobra's `Args:` or

@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"zotero-pp-cli/internal/store"
 )
@@ -246,5 +247,48 @@ func TestHealthPresetsReferenceRealKinds(t *testing.T) {
 	}
 	if len(healthPresets["all"]) != len(known) {
 		t.Errorf("preset \"all\" lists %d kinds, registry has %d", len(healthPresets["all"]), len(known))
+	}
+}
+
+func TestLibraryHealthFreshnessGate(t *testing.T) {
+	db := seedHealthStore(t)
+	freshCtx := func(syncedAt *time.Time) *healthContext {
+		return &healthContext{src: healthSource{Kind: "local", SyncedAt: syncedAt}, preset: "quick", flags: &rootFlags{}, requireFresh: 24 * time.Hour}
+	}
+	all := scopeResult{All: true, Expr: "library"}
+
+	// Stale: synced 48h ago, require 24h -> exit 12.
+	old := time.Now().Add(-48 * time.Hour)
+	stale, err := assembleHealthReport(db, freshCtx(&old), "quick", healthPresets["quick"], "", all)
+	if err != nil {
+		t.Fatalf("assembleHealthReport: %v", err)
+	}
+	if stale.Freshness == nil || !stale.Freshness.Stale {
+		t.Fatalf("expected stale freshness, got %+v", stale.Freshness)
+	}
+	if code := ExitCode(healthFreshnessExitError(stale)); code != 12 {
+		t.Errorf("stale exit code = %d, want 12", code)
+	}
+
+	// Fresh: synced now -> no freshness error.
+	now := time.Now()
+	fresh, err := assembleHealthReport(db, freshCtx(&now), "quick", healthPresets["quick"], "", all)
+	if err != nil {
+		t.Fatalf("assembleHealthReport: %v", err)
+	}
+	if fresh.Freshness == nil || fresh.Freshness.Stale {
+		t.Errorf("expected fresh, got %+v", fresh.Freshness)
+	}
+	if err := healthFreshnessExitError(fresh); err != nil {
+		t.Errorf("fresh -> nil exit error, got %v", err)
+	}
+
+	// Never synced -> stale.
+	never, err := assembleHealthReport(db, freshCtx(nil), "quick", healthPresets["quick"], "", all)
+	if err != nil {
+		t.Fatalf("assembleHealthReport: %v", err)
+	}
+	if never.Freshness == nil || !never.Freshness.Stale {
+		t.Errorf("never-synced should be stale, got %+v", never.Freshness)
 	}
 }
