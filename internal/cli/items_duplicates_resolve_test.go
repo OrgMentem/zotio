@@ -14,6 +14,7 @@ import (
 	"strings"
 	"testing"
 
+	"zotero-pp-cli/internal/mutation"
 	"zotero-pp-cli/internal/store"
 )
 
@@ -84,13 +85,13 @@ func seedDuplicateResolveStore(t *testing.T, items []json.RawMessage) {
 	}
 }
 
-func runItemsDuplicatesResolveTestCmd(t *testing.T, srv *duplicateResolveTestServer, flags *rootFlags, args ...string) mutationEnvelope {
+func runItemsDuplicatesResolveTestCmd(t *testing.T, srv *duplicateResolveTestServer, flags *rootFlags, args ...string) mutation.Envelope {
 	t.Helper()
 	env, _ := runItemsDuplicatesResolveTestCmdWithStderr(t, srv, flags, args...)
 	return env
 }
 
-func runItemsDuplicatesResolveTestCmdWithStderr(t *testing.T, srv *duplicateResolveTestServer, flags *rootFlags, args ...string) (mutationEnvelope, string) {
+func runItemsDuplicatesResolveTestCmdWithStderr(t *testing.T, srv *duplicateResolveTestServer, flags *rootFlags, args ...string) (mutation.Envelope, string) {
 	t.Helper()
 	t.Setenv("ZOTERO_BASE_URL", srv.server.URL+"/users/0")
 	cmd := newItemsDuplicatesCmd(flags)
@@ -103,7 +104,7 @@ func runItemsDuplicatesResolveTestCmdWithStderr(t *testing.T, srv *duplicateReso
 	if err := cmd.Execute(); err != nil {
 		t.Fatalf("items duplicates %v: %v; stderr=%s", args, err, errOut.String())
 	}
-	var env mutationEnvelope
+	var env mutation.Envelope
 	if err := json.Unmarshal(out.Bytes(), &env); err != nil {
 		t.Fatalf("decode mutation envelope %q: %v", out.String(), err)
 	}
@@ -215,7 +216,7 @@ func TestItemsDuplicatesResolveNoDuplicatesEmptyPlan(t *testing.T) {
 	}
 }
 
-func duplicateResolvePlanKeys(ops []plannedOp) []string {
+func duplicateResolvePlanKeys(ops []mutation.Op) []string {
 	keys := make([]string, 0, len(ops))
 	for _, op := range ops {
 		keys = append(keys, op.Key)
@@ -223,7 +224,7 @@ func duplicateResolvePlanKeys(ops []plannedOp) []string {
 	return keys
 }
 
-func duplicateResolvePlanHasAdd(changes []mutationChange, field string, want any) bool {
+func duplicateResolvePlanHasAdd(changes []mutation.Change, field string, want any) bool {
 	for _, change := range changes {
 		if change.Field != field {
 			continue

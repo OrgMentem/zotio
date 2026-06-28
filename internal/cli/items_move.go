@@ -12,6 +12,7 @@ import (
 
 	"github.com/spf13/cobra"
 	"zotero-pp-cli/internal/client"
+	"zotero-pp-cli/internal/mutation"
 )
 
 func newItemsMoveCmd(flags *rootFlags) *cobra.Command {
@@ -54,7 +55,7 @@ func runItemsMoveMutation(cmd *cobra.Command, flags *rootFlags, fromCol, toCol, 
 	if err != nil {
 		return err
 	}
-	ops := make([]plannedOp, 0, len(keys))
+	ops := make([]mutation.Op, 0, len(keys))
 	for _, key := range keys {
 		path := replacePathParam("/items/{itemKey}", "itemKey", key)
 		data, version, err := c.GetWithVersion(path, nil)
@@ -70,14 +71,14 @@ func runItemsMoveMutation(cmd *cobra.Command, flags *rootFlags, fromCol, toCol, 
 		pathCopy := path
 		fromCopy := fromCol
 		toCopy := toCol
-		op := plannedOp{
+		op := mutation.Op{
 			ID:              "items.move:" + keyCopy,
 			Key:             keyCopy,
 			Kind:            itemCollectionMutationKind(fromCol, toCol),
 			ExpectedVersion: version,
 			Changes:         collectionMutationChanges(collections, fromCol, toCol),
 			Destructive:     false,
-			apply: func() (string, any, error) {
+			Apply: func() (string, any, error) {
 				return applyItemCollectionMove(c, pathCopy, fromCopy, toCopy)
 			},
 		}
@@ -102,17 +103,17 @@ func itemCollectionMutationKind(fromCol, toCol string) string {
 	return "collection_add"
 }
 
-func collectionMutationChanges(current []string, fromCol, toCol string) []mutationChange {
+func collectionMutationChanges(current []string, fromCol, toCol string) []mutation.Change {
 	next, removed, added := nextItemCollections(current, fromCol, toCol)
 	if sameStringSlice(current, next) {
 		return nil
 	}
-	changes := make([]mutationChange, 0, 2)
+	changes := make([]mutation.Change, 0, 2)
 	if removed {
-		changes = append(changes, mutationChange{Field: "collections", Remove: fromCol})
+		changes = append(changes, mutation.Change{Field: "collections", Remove: fromCol})
 	}
 	if added {
-		changes = append(changes, mutationChange{Field: "collections", Add: toCol})
+		changes = append(changes, mutation.Change{Field: "collections", Add: toCol})
 	}
 	return changes
 }
@@ -208,8 +209,8 @@ func itemCollectionNoOpReason(fromCol, toCol string) string {
 	}
 }
 
-func itemMoveSingleLine(fromCol, toCol string) func(mutationEnvelope) string {
-	return func(env mutationEnvelope) string {
+func itemMoveSingleLine(fromCol, toCol string) func(mutation.Envelope) string {
+	return func(env mutation.Envelope) string {
 		status := "would move"
 		if fromCol != "" && toCol == "" {
 			status = "would remove"
@@ -245,7 +246,7 @@ func itemMoveSingleLine(fromCol, toCol string) func(mutationEnvelope) string {
 	}
 }
 
-func itemMoveNoOpLine(env mutationEnvelope, fromCol, toCol string) string {
+func itemMoveNoOpLine(env mutation.Envelope, fromCol, toCol string) string {
 	key := "item"
 	if len(env.Plan.Operations) == 1 {
 		key = env.Plan.Operations[0].Key

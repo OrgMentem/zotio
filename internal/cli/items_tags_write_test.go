@@ -13,6 +13,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"zotero-pp-cli/internal/mutation"
 )
 
 type itemTagTestServer struct {
@@ -73,7 +75,7 @@ func mustJSON(t *testing.T, value any) string {
 	return string(data)
 }
 
-func runItemsTagsTestCmd(t *testing.T, srv *itemTagTestServer, flags *rootFlags, args ...string) (mutationEnvelope, string) {
+func runItemsTagsTestCmd(t *testing.T, srv *itemTagTestServer, flags *rootFlags, args ...string) (mutation.Envelope, string) {
 	t.Helper()
 	t.Setenv("ZOTERO_BASE_URL", srv.server.URL+"/users/0")
 	t.Setenv("ZOTERO_CONFIG", filepath.Join(t.TempDir(), "missing.toml"))
@@ -87,7 +89,7 @@ func runItemsTagsTestCmd(t *testing.T, srv *itemTagTestServer, flags *rootFlags,
 	if err := cmd.Execute(); err != nil {
 		t.Fatalf("items tags %v: %v; stderr=%s", args, err, errOut.String())
 	}
-	var env mutationEnvelope
+	var env mutation.Envelope
 	if err := json.Unmarshal(out.Bytes(), &env); err != nil {
 		t.Fatalf("decode mutation envelope %q: %v", out.String(), err)
 	}

@@ -10,6 +10,7 @@ import (
 
 	"github.com/spf13/cobra"
 	"zotero-pp-cli/internal/client"
+	"zotero-pp-cli/internal/mutation"
 )
 
 func newSearchesMaterializeCmd(flags *rootFlags) *cobra.Command {
@@ -65,18 +66,18 @@ func runSearchesMaterializeMutation(cmd *cobra.Command, flags *rootFlags, search
 		return renderEmptySearchesMaterializePlan(cmd, flags, "saved search returned no item keys")
 	}
 
-	ops := make([]plannedOp, 0, len(keys))
+	ops := make([]mutation.Op, 0, len(keys))
 	for _, key := range keys {
 		keyCopy := key
 		pathCopy := replacePathParam("/items/{itemKey}", "itemKey", keyCopy)
 		toCopy := toCollection
-		ops = append(ops, plannedOp{
+		ops = append(ops, mutation.Op{
 			ID:          "searches.materialize:" + keyCopy,
 			Key:         keyCopy,
 			Kind:        "collection_add",
-			Changes:     []mutationChange{{Field: "collections", Add: toCollection}},
+			Changes:     []mutation.Change{{Field: "collections", Add: toCollection}},
 			Destructive: false,
-			apply: func() (string, any, error) {
+			Apply: func() (string, any, error) {
 				return applySearchesMaterializeCollectionAdd(c, pathCopy, toCopy)
 			},
 		})
@@ -136,8 +137,8 @@ func applySearchesMaterializeCollectionAdd(c *client.Client, path, toCollection 
 	return patchItemCollections(c, path, currentVersion, nextCollections)
 }
 
-func searchesMaterializeSingleLine(toCollection string) func(mutationEnvelope) string {
-	return func(env mutationEnvelope) string {
+func searchesMaterializeSingleLine(toCollection string) func(mutation.Envelope) string {
+	return func(env mutation.Envelope) string {
 		key := "item"
 		if len(env.Plan.Operations) == 1 {
 			key = env.Plan.Operations[0].Key

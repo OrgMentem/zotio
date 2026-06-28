@@ -11,6 +11,8 @@ import (
 	"net/http/httptest"
 	"path/filepath"
 	"testing"
+
+	"zotero-pp-cli/internal/mutation"
 )
 
 type searchesMaterializeTestServer struct {
@@ -105,7 +107,7 @@ func searchMaterializePatchBodyCollections(t *testing.T, body map[string]any) []
 	return collections
 }
 
-func runSearchesMaterializeTestCmd(t *testing.T, srv *searchesMaterializeTestServer, flags *rootFlags, args ...string) (mutationEnvelope, string, error) {
+func runSearchesMaterializeTestCmd(t *testing.T, srv *searchesMaterializeTestServer, flags *rootFlags, args ...string) (mutation.Envelope, string, error) {
 	t.Helper()
 	t.Setenv("ZOTERO_BASE_URL", srv.server.URL+"/users/0")
 	t.Setenv("ZOTERO_CONFIG", filepath.Join(t.TempDir(), "missing.toml"))
@@ -117,7 +119,7 @@ func runSearchesMaterializeTestCmd(t *testing.T, srv *searchesMaterializeTestSer
 	cmd.SetErr(&errOut)
 	cmd.SetArgs(args)
 	err := cmd.Execute()
-	var env mutationEnvelope
+	var env mutation.Envelope
 	if out.Len() > 0 {
 		if decodeErr := json.Unmarshal(out.Bytes(), &env); decodeErr != nil {
 			t.Fatalf("decode mutation envelope %q: %v", out.String(), decodeErr)
@@ -126,7 +128,7 @@ func runSearchesMaterializeTestCmd(t *testing.T, srv *searchesMaterializeTestSer
 	return env, errOut.String(), err
 }
 
-func mustRunSearchesMaterializeTestCmd(t *testing.T, srv *searchesMaterializeTestServer, flags *rootFlags, args ...string) mutationEnvelope {
+func mustRunSearchesMaterializeTestCmd(t *testing.T, srv *searchesMaterializeTestServer, flags *rootFlags, args ...string) mutation.Envelope {
 	t.Helper()
 	env, stderr, err := runSearchesMaterializeTestCmd(t, srv, flags, args...)
 	if err != nil {

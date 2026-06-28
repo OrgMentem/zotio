@@ -14,6 +14,7 @@ import (
 
 	"github.com/spf13/cobra"
 	"zotero-pp-cli/internal/client"
+	"zotero-pp-cli/internal/mutation"
 )
 
 const duplicateResolveStrategyKeepMostComplete = "keep-most-complete"
@@ -112,7 +113,7 @@ func duplicateResolveIncludes(cmd *cobra.Command, flagDOI, flagTitle bool) (bool
 	return flagDOI, flagTitle
 }
 
-func buildDuplicateResolveOps(db localQueryStore, flags *rootFlags, includeDOI, includeTitle bool) ([]plannedOp, error) {
+func buildDuplicateResolveOps(db localQueryStore, flags *rootFlags, includeDOI, includeTitle bool) ([]mutation.Op, error) {
 	rows, err := duplicateResolveRows(db, includeDOI, includeTitle)
 	if err != nil {
 		return nil, fmt.Errorf("querying duplicates: %w", err)
@@ -122,7 +123,7 @@ func buildDuplicateResolveOps(db localQueryStore, flags *rootFlags, includeDOI, 
 		return nil, fmt.Errorf("querying duplicate child PDFs: %w", err)
 	}
 
-	ops := make([]plannedOp, 0)
+	ops := make([]mutation.Op, 0)
 	plannedDupes := map[string]struct{}{}
 	for _, row := range rows {
 		keys := duplicateResolveRowKeys(row)
@@ -147,14 +148,14 @@ func buildDuplicateResolveOps(db localQueryStore, flags *rootFlags, includeDOI, 
 			changes := duplicateResolveChanges(master, item)
 			masterKey := master.Key
 			dupKey := item.Key
-			op := plannedOp{
+			op := mutation.Op{
 				ID:              "items.duplicates.resolve:" + masterKey + ":" + dupKey,
 				Key:             dupKey,
 				Kind:            "duplicate_merge",
 				ExpectedVersion: item.Version,
 				Changes:         changes,
 				Destructive:     false,
-				apply: func() (string, any, error) {
+				Apply: func() (string, any, error) {
 					return applyDuplicateResolve(flags, masterKey, dupKey)
 				},
 			}
@@ -308,18 +309,18 @@ func duplicateResolveMaster(items []duplicateResolveItem, plannedDupes map[strin
 	return candidates[0], true
 }
 
-func duplicateResolveChanges(master, dup duplicateResolveItem) []mutationChange {
+func duplicateResolveChanges(master, dup duplicateResolveItem) []mutation.Change {
 	_, missingCollections := duplicateResolveUnionStrings(master.Collections, dup.Collections)
 	_, missingTags := duplicateResolveUnionTags(master.Tags, dup.Tags)
-	changes := make([]mutationChange, 0, 3)
+	changes := make([]mutation.Change, 0, 3)
 	if len(missingCollections) > 0 {
-		changes = append(changes, mutationChange{Field: "collections", Add: missingCollections})
+		changes = append(changes, mutation.Change{Field: "collections", Add: missingCollections})
 	}
 	if len(missingTags) > 0 {
-		changes = append(changes, mutationChange{Field: "tags", Add: duplicateResolveTagNames(missingTags)})
+		changes = append(changes, mutation.Change{Field: "tags", Add: duplicateResolveTagNames(missingTags)})
 	}
 	if !dup.Deleted {
-		changes = append(changes, mutationChange{Field: "deleted", Add: 1})
+		changes = append(changes, mutation.Change{Field: "deleted", Add: 1})
 	}
 	return changes
 }
@@ -521,7 +522,7 @@ func duplicateResolveTruthy(value any) bool {
 	}
 }
 
-func itemsDuplicatesResolveSingleLine(env mutationEnvelope) string {
+func itemsDuplicatesResolveSingleLine(env mutation.Envelope) string {
 	if env.Mode == "apply" && env.Result != nil {
 		return fmt.Sprintf("resolved %d duplicate(s); %d no-op; %d conflict(s); %d failed", env.Result.Summary.Applied, env.Result.Summary.NoOp, env.Result.Summary.Conflicts, env.Result.Summary.Failed)
 	}

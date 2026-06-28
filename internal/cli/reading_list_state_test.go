@@ -9,9 +9,11 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"zotero-pp-cli/internal/mutation"
 )
 
-func runReadingListStateTestCmd(t *testing.T, srv *itemTagTestServer, flags *rootFlags, args ...string) mutationEnvelope {
+func runReadingListStateTestCmd(t *testing.T, srv *itemTagTestServer, flags *rootFlags, args ...string) mutation.Envelope {
 	t.Helper()
 	t.Setenv("ZOTERO_BASE_URL", srv.server.URL+"/users/0")
 	t.Setenv("ZOTERO_CONFIG", filepath.Join(t.TempDir(), "missing.toml"))
@@ -26,7 +28,7 @@ func runReadingListStateTestCmd(t *testing.T, srv *itemTagTestServer, flags *roo
 	if err := cmd.Execute(); err != nil {
 		t.Fatalf("reading-list %v: %v; stderr=%s", args, err, errOut.String())
 	}
-	var env mutationEnvelope
+	var env mutation.Envelope
 	if err := json.Unmarshal(out.Bytes(), &env); err != nil {
 		t.Fatalf("decode mutation envelope %q: %v", out.String(), err)
 	}

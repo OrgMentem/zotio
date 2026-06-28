@@ -13,6 +13,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"zotero-pp-cli/internal/mutation"
 )
 
 type itemMoveTestServer struct {
@@ -64,7 +66,7 @@ func newItemMoveTestServer(t *testing.T, versions map[string]string, collections
 	return ts
 }
 
-func runItemsMoveTestCmd(t *testing.T, srv *itemMoveTestServer, flags *rootFlags, args ...string) (mutationEnvelope, string, error) {
+func runItemsMoveTestCmd(t *testing.T, srv *itemMoveTestServer, flags *rootFlags, args ...string) (mutation.Envelope, string, error) {
 	t.Helper()
 	t.Setenv("ZOTERO_BASE_URL", srv.server.URL+"/users/0")
 	t.Setenv("ZOTERO_CONFIG", filepath.Join(t.TempDir(), "missing.toml"))
@@ -76,7 +78,7 @@ func runItemsMoveTestCmd(t *testing.T, srv *itemMoveTestServer, flags *rootFlags
 	cmd.SetErr(&errOut)
 	cmd.SetArgs(args)
 	err := cmd.Execute()
-	var env mutationEnvelope
+	var env mutation.Envelope
 	if out.Len() > 0 {
 		if decodeErr := json.Unmarshal(out.Bytes(), &env); decodeErr != nil {
 			t.Fatalf("decode mutation envelope %q: %v", out.String(), decodeErr)
@@ -85,7 +87,7 @@ func runItemsMoveTestCmd(t *testing.T, srv *itemMoveTestServer, flags *rootFlags
 	return env, errOut.String(), err
 }
 
-func mustRunItemsMoveTestCmd(t *testing.T, srv *itemMoveTestServer, flags *rootFlags, args ...string) mutationEnvelope {
+func mustRunItemsMoveTestCmd(t *testing.T, srv *itemMoveTestServer, flags *rootFlags, args ...string) mutation.Envelope {
 	t.Helper()
 	env, stderr, err := runItemsMoveTestCmd(t, srv, flags, args...)
 	if err != nil {

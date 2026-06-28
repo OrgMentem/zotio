@@ -16,6 +16,7 @@ import (
 	"testing"
 
 	"zotero-pp-cli/internal/client"
+	"zotero-pp-cli/internal/mutation"
 	"zotero-pp-cli/internal/store"
 )
 
@@ -278,7 +279,7 @@ func TestItemsEnrichMissingDOICollectionScope(t *testing.T) {
 		t.Fatalf("enrich: %v", err)
 	}
 
-	var env mutationEnvelope
+	var env mutation.Envelope
 	if err := json.Unmarshal(out.Bytes(), &env); err != nil {
 		t.Fatalf("decode %q: %v", out.String(), err)
 	}
@@ -340,7 +341,7 @@ func TestItemsEnrichMissingDOIKeysFrom(t *testing.T) {
 		t.Fatalf("enrich: %v", err)
 	}
 
-	var env mutationEnvelope
+	var env mutation.Envelope
 	if err := json.Unmarshal(out.Bytes(), &env); err != nil {
 		t.Fatalf("decode %q: %v", out.String(), err)
 	}
@@ -370,7 +371,7 @@ func TestItemsEnrichPreviewEnvelope(t *testing.T) {
 		t.Fatalf("enrich: %v", err)
 	}
 
-	var env mutationEnvelope
+	var env mutation.Envelope
 	if err := json.Unmarshal(out.Bytes(), &env); err != nil {
 		t.Fatalf("decode %q: %v", out.String(), err)
 	}
@@ -423,7 +424,7 @@ func TestItemsEnrichApplyViaAPI(t *testing.T) {
 		t.Errorf("patched version = %v, want 9 (conflict guard)", gotBody["version"])
 	}
 
-	var env mutationEnvelope
+	var env mutation.Envelope
 	if err := json.Unmarshal(out.Bytes(), &env); err != nil {
 		t.Fatalf("decode report: %v", err)
 	}

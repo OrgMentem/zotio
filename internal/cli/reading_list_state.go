@@ -9,6 +9,7 @@ import (
 
 	"github.com/spf13/cobra"
 	"zotero-pp-cli/internal/client"
+	"zotero-pp-cli/internal/mutation"
 )
 
 const (
@@ -107,7 +108,7 @@ func runReadingListTransition(cmd *cobra.Command, flags *rootFlags, keysFrom str
 	if err != nil {
 		return err
 	}
-	ops := make([]plannedOp, 0, len(keys))
+	ops := make([]mutation.Op, 0, len(keys))
 	for _, key := range keys {
 		path := replacePathParam("/items/{itemKey}", "itemKey", key)
 		data, version, err := c.GetWithVersion(path, nil)
@@ -123,7 +124,7 @@ func runReadingListTransition(cmd *cobra.Command, flags *rootFlags, keysFrom str
 		pathCopy := path
 		removeCopy := append([]string(nil), transition.remove...)
 		addCopy := append([]string(nil), transition.add...)
-		op := plannedOp{
+		op := mutation.Op{
 			ID:              transition.operation + ":" + keyCopy,
 			Key:             keyCopy,
 			Kind:            transition.kind,
@@ -132,11 +133,11 @@ func runReadingListTransition(cmd *cobra.Command, flags *rootFlags, keysFrom str
 			Destructive:     false,
 		}
 		if transition.addOnly {
-			op.apply = func() (string, any, error) {
+			op.Apply = func() (string, any, error) {
 				return applyItemTagAdd(c, pathCopy, addCopy)
 			}
 		} else {
-			op.apply = func() (string, any, error) {
+			op.Apply = func() (string, any, error) {
 				return applyReadingListTagTransition(c, pathCopy, removeCopy, addCopy)
 			}
 		}
@@ -151,20 +152,20 @@ func runReadingListTransition(cmd *cobra.Command, flags *rootFlags, keysFrom str
 	return runErr
 }
 
-func readingListTagChanges(currentTags []map[string]any, removeTags []string, addTags []string) []mutationChange {
+func readingListTagChanges(currentTags []map[string]any, removeTags []string, addTags []string) []mutation.Change {
 	addSet := readingListTagSet(addTags)
-	changes := make([]mutationChange, 0, len(removeTags)+len(addTags))
+	changes := make([]mutation.Change, 0, len(removeTags)+len(addTags))
 	for _, tagName := range removeTags {
 		if _, keep := addSet[tagName]; keep {
 			continue
 		}
 		if itemHasTag(currentTags, tagName) {
-			changes = append(changes, mutationChange{Field: "tags", Remove: tagName})
+			changes = append(changes, mutation.Change{Field: "tags", Remove: tagName})
 		}
 	}
 	for _, tagName := range addTags {
 		if !itemHasTag(currentTags, tagName) {
-			changes = append(changes, mutationChange{Field: "tags", Add: tagName})
+			changes = append(changes, mutation.Change{Field: "tags", Add: tagName})
 		}
 	}
 	return changes
@@ -219,8 +220,8 @@ func readingListTagSet(tags []string) map[string]struct{} {
 	return set
 }
 
-func readingListTransitionSingleLine(transition readingListTransition) func(mutationEnvelope) string {
-	return func(env mutationEnvelope) string {
+func readingListTransitionSingleLine(transition readingListTransition) func(mutation.Envelope) string {
+	return func(env mutation.Envelope) string {
 		key := "item"
 		if len(env.Plan.Operations) == 1 {
 			key = env.Plan.Operations[0].Key

@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"zotero-pp-cli/internal/mutation"
 	"zotero-pp-cli/internal/store"
 )
 
@@ -43,7 +44,7 @@ func duplicateTagAuditItems() []json.RawMessage {
 	}
 }
 
-func runTagsAuditFixCmd(t *testing.T, flags *rootFlags, baseURL string) (mutationEnvelope, string, error) {
+func runTagsAuditFixCmd(t *testing.T, flags *rootFlags, baseURL string) (mutation.Envelope, string, error) {
 	t.Helper()
 	t.Setenv("ZOTERO_BASE_URL", baseURL+"/users/0")
 	cmd := newTagsAuditCmd(flags)
@@ -53,7 +54,7 @@ func runTagsAuditFixCmd(t *testing.T, flags *rootFlags, baseURL string) (mutatio
 	cmd.SetErr(io.Discard)
 	cmd.SetArgs([]string{"fix"})
 	err := cmd.Execute()
-	var env mutationEnvelope
+	var env mutation.Envelope
 	if out.Len() > 0 {
 		if decodeErr := json.Unmarshal(out.Bytes(), &env); decodeErr != nil {
 			t.Fatalf("decode envelope %q: %v", out.String(), decodeErr)

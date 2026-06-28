@@ -10,6 +10,8 @@ import (
 	"strings"
 
 	"github.com/spf13/cobra"
+
+	"zotero-pp-cli/internal/mutation"
 )
 
 type tagAuditPlan struct {
@@ -94,7 +96,7 @@ func newTagsAuditFixCmd(flags *rootFlags) *cobra.Command {
 			}
 
 			env, runErr := runMutation(cmd.Context(), flags, "tags.audit.fix", ops)
-			renderErr := renderMutation(cmd, flags, env, func(env mutationEnvelope) string {
+			renderErr := renderMutation(cmd, flags, env, func(env mutation.Envelope) string {
 				action := "would fix"
 				if env.Mode == "apply" {
 					action = "fixed"
@@ -148,19 +150,19 @@ func readTagAuditPlans(cmd *cobra.Command) (int, []tagAuditPlan, bool, error) {
 	return len(tagRows), buildTagAuditPlans(tagRows, countRows), true, nil
 }
 
-func buildTagAuditFixOps(plans []tagAuditPlan, renameApply func(oldName, newName string) (string, any, error)) []plannedOp {
-	ops := make([]plannedOp, 0)
+func buildTagAuditFixOps(plans []tagAuditPlan, renameApply func(oldName, newName string) (string, any, error)) []mutation.Op {
+	ops := make([]mutation.Op, 0)
 	for _, plan := range plans {
 		canonical := plan.Canonical
 		for _, alias := range plan.Aliases {
 			alias := alias
-			op := plannedOp{
+			op := mutation.Op{
 				ID:          "tags.audit.fix:" + alias + "->" + canonical,
 				Key:         alias,
 				Kind:        "tag_rename",
-				Changes:     []mutationChange{{Field: "tag", Remove: alias, Add: canonical}},
+				Changes:     []mutation.Change{{Field: "tag", Remove: alias, Add: canonical}},
 				Destructive: false,
-				apply: func() (string, any, error) {
+				Apply: func() (string, any, error) {
 					return renameApply(alias, canonical)
 				},
 			}

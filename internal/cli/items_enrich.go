@@ -26,6 +26,7 @@ import (
 	"github.com/spf13/cobra"
 	"zotero-pp-cli/internal/client"
 	"zotero-pp-cli/internal/cliutil"
+	"zotero-pp-cli/internal/mutation"
 )
 
 // Overridable provider base URLs (tests point them at httptest servers).
@@ -56,7 +57,7 @@ type enrichProposal struct {
 	Note       string         `json:"note"`
 	Fields     map[string]any `json:"fields,omitempty"`     // patch: field -> new value
 	Attachment map[string]any `json:"attachment,omitempty"` // attach: child item body
-	// PATCH(glean write-safety): statuses now live in mutationResult items, not proposal JSON.
+	// PATCH(glean write-safety): statuses now live in mutation.Result items, not proposal JSON.
 	version any // item version for the PATCH conflict guard (not serialized)
 }
 
@@ -396,17 +397,17 @@ type apiMutator interface {
 }
 
 // PATCH(glean write-safety): convert enrichment proposals into shared mutation operations.
-func enrichPlannedOps(proposals []enrichProposal, c apiMutator, flags *rootFlags) []plannedOp {
-	ops := make([]plannedOp, 0, len(proposals))
+func enrichPlannedOps(proposals []enrichProposal, c apiMutator, flags *rootFlags) []mutation.Op {
+	ops := make([]mutation.Op, 0, len(proposals))
 	for i := range proposals {
 		proposal := proposals[i]
-		ops = append(ops, plannedOp{
+		ops = append(ops, mutation.Op{
 			ID:              proposal.Category + ":" + proposal.Key,
 			Key:             proposal.Key,
 			Kind:            proposal.Category,
 			ExpectedVersion: mutationExpectedVersion(proposal.version),
 			Changes:         enrichProposalChanges(proposal),
-			apply: func() (string, any, error) {
+			Apply: func() (string, any, error) {
 				return applyEnrichProposal(c, &proposal, flags)
 			},
 		})
@@ -414,7 +415,7 @@ func enrichPlannedOps(proposals []enrichProposal, c apiMutator, flags *rootFlags
 	return ops
 }
 
-func enrichProposalChanges(p enrichProposal) []mutationChange {
+func enrichProposalChanges(p enrichProposal) []mutation.Change {
 	switch p.Action {
 	case enrichActionPatch:
 		keys := make([]string, 0, len(p.Fields))
@@ -422,16 +423,16 @@ func enrichProposalChanges(p enrichProposal) []mutationChange {
 			keys = append(keys, key)
 		}
 		sort.Strings(keys)
-		changes := make([]mutationChange, 0, len(keys))
+		changes := make([]mutation.Change, 0, len(keys))
 		for _, key := range keys {
-			changes = append(changes, mutationChange{Field: key, Add: p.Fields[key]})
+			changes = append(changes, mutation.Change{Field: key, Add: p.Fields[key]})
 		}
 		return changes
 	case enrichActionAttach:
 		if url, ok := p.Attachment["url"]; ok {
-			return []mutationChange{{Field: "url", Add: url}}
+			return []mutation.Change{{Field: "url", Add: url}}
 		}
-		return []mutationChange{{Field: "attachment", Add: p.Attachment}}
+		return []mutation.Change{{Field: "attachment", Add: p.Attachment}}
 	default:
 		return nil
 	}

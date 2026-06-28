@@ -13,6 +13,7 @@ import (
 
 	"github.com/spf13/cobra"
 	"zotero-pp-cli/internal/client"
+	"zotero-pp-cli/internal/mutation"
 )
 
 func newItemsTagsAddCmd(flags *rootFlags) *cobra.Command {
@@ -75,7 +76,7 @@ func runItemsTagsMutation(cmd *cobra.Command, flags *rootFlags, operation, kind 
 	if err != nil {
 		return err
 	}
-	ops := make([]plannedOp, 0, len(keys))
+	ops := make([]mutation.Op, 0, len(keys))
 	for _, key := range keys {
 		path := replacePathParam("/items/{itemKey}", "itemKey", key)
 		data, version, err := c.GetWithVersion(path, nil)
@@ -91,7 +92,7 @@ func runItemsTagsMutation(cmd *cobra.Command, flags *rootFlags, operation, kind 
 		keyCopy := key
 		pathCopy := path
 		tagsCopy := append([]string(nil), tagNames...)
-		op := plannedOp{
+		op := mutation.Op{
 			ID:              operation + ":" + keyCopy,
 			Key:             keyCopy,
 			Kind:            kind,
@@ -100,11 +101,11 @@ func runItemsTagsMutation(cmd *cobra.Command, flags *rootFlags, operation, kind 
 			Destructive:     false,
 		}
 		if add {
-			op.apply = func() (string, any, error) {
+			op.Apply = func() (string, any, error) {
 				return applyItemTagAdd(c, pathCopy, tagsCopy)
 			}
 		} else {
-			op.apply = func() (string, any, error) {
+			op.Apply = func() (string, any, error) {
 				return applyItemTagRemove(c, pathCopy, tagsCopy)
 			}
 		}
@@ -166,15 +167,15 @@ func itemDataTags(data json.RawMessage) ([]map[string]any, error) {
 	return tags, nil
 }
 
-func tagMutationChanges(currentTags []map[string]any, tagNames []string, add bool) []mutationChange {
-	changes := make([]mutationChange, 0, len(tagNames))
+func tagMutationChanges(currentTags []map[string]any, tagNames []string, add bool) []mutation.Change {
+	changes := make([]mutation.Change, 0, len(tagNames))
 	for _, tagName := range tagNames {
 		present := itemHasTag(currentTags, tagName)
 		if add && !present {
-			changes = append(changes, mutationChange{Field: "tags", Add: tagName})
+			changes = append(changes, mutation.Change{Field: "tags", Add: tagName})
 		}
 		if !add && present {
-			changes = append(changes, mutationChange{Field: "tags", Remove: tagName})
+			changes = append(changes, mutation.Change{Field: "tags", Remove: tagName})
 		}
 	}
 	return changes
@@ -279,8 +280,8 @@ func copyItemTag(tagObj map[string]any) map[string]any {
 	return copyObj
 }
 
-func itemTagsSingleLine(add bool, tagNames []string) func(mutationEnvelope) string {
-	return func(env mutationEnvelope) string {
+func itemTagsSingleLine(add bool, tagNames []string) func(mutation.Envelope) string {
+	return func(env mutation.Envelope) string {
 		status := "would update"
 		if add {
 			status = "would add"
