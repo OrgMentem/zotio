@@ -734,6 +734,21 @@
         "internal/store/field_bugs_test.go"
       ],
       "validated_outcome": "gofmt clean; go test ./internal/store, go test ./..., go vet ./..., and go build ./... passed. Smoke: /tmp/zpp search \"automation OR algorithm\" --data-source local --json returned parseable live results; /tmp/zpp search definitely-not-present-field-bug --data-source local --json returned results:[] instead of null; /tmp/zpp workflow status --json and /tmp/zpp doctor --json no longer listed items-top/collections-top after migration; sqlite3 showed PRAGMA user_version=3 and no alias rows in resources or sync_state; a real /tmp/zpp-mcp JSON-RPC stdio session returned parseable stdout for mirrored sync, included the failed resource detail, and routed legacy sync_start/sync_summary chatter to stderr instead of corrupting stdout."
+    },
+    {
+      "id": "library-health-flagship-phase1",
+      "summary": "Added the flagship `library health` command: a read-only composite report that ranks findings from the existing audit primitives, with --for presets, a --fail-on CI gate (exit 11), and the precondition contract (live-only checks refuse loudly, exit 9).",
+      "reason": "Phase 1 of docs/roadmap.md. The CLI had strong individual audits (citekey-conflicts, duplicates, missing-* metadata, tag drift, verify-files) but no single 'is my library ready, and for what?' answer. `library health --for citation|systematic-review|quick|all` composes them into one ranked, finding-typed report; --fail-on gates CI; the live broken-attachment check declares a live_local_api precondition and emits a loud skip with remediation rather than silently degrading. Extracted shared SQL consts (citekeyAuditQuery, tagAuditDistinctQuery, tagAuditCountQuery) so the flagship and the primitives never drift. Added exit-code constructors gateErr(11) and preconditionErr(9).",
+      "files": [
+        "internal/cli/library.go",
+        "internal/cli/library_health.go",
+        "internal/cli/library_health_test.go",
+        "internal/cli/helpers.go",
+        "internal/cli/items_citekey_conflicts.go",
+        "internal/cli/tags_audit.go"
+      ],
+      "validated_outcome": "gofmt clean; go build ./..., go vet ./..., go test ./... all pass (6 ok, 5 no-tests; new library_health_test.go covers check composition, presets, the gate, and the precondition skip). Smoke against the live 777-item library: `library health` (quick) ranks findings with a freshness header and loudly skips broken_attachment_file with remediation; `library health --for citation --fail-on high --agent` exits 11 with gate.status=failed; `library health --for quick --fail-on critical --agent` exits 9 with gate.status=indeterminate (broken-attachment precondition unmet).",
+      "upstream_issue": "Roadmap Phase 1 (docs/roadmap.md). Follow-up: the composed duplicate-title check inherits attachment-title noise (e.g. 165 items titled 'PDF') from the existing `items duplicates --by title` primitive; excluding attachment/note item types from duplicate-title detection would sharpen both."
     }
   ]
 }

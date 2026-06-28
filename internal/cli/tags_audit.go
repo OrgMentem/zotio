@@ -110,6 +110,20 @@ func newTagsAuditFixCmd(flags *rootFlags) *cobra.Command {
 	return cmd
 }
 
+// tagAuditDistinctQuery and tagAuditCountQuery enumerate library tags and their
+// item counts. PATCH(glean roadmap-phase1): shared by `tags audit` and the
+// `library health` tag-drift check so the two never drift.
+const tagAuditDistinctQuery = `
+SELECT DISTINCT json_extract(tags.value, '$.tag') AS tag_name
+FROM resources, json_each(json_extract(data, '$.data.tags')) AS tags
+WHERE resource_type = 'items' AND tag_name IS NOT NULL AND tag_name != ''`
+
+const tagAuditCountQuery = `
+SELECT json_extract(tags.value, '$.tag') AS tag_name, COUNT(*) AS item_count
+FROM resources, json_each(json_extract(data, '$.data.tags')) AS tags
+WHERE resource_type = 'items' AND tag_name IS NOT NULL AND tag_name != ''
+GROUP BY tag_name ORDER BY item_count DESC`
+
 func readTagAuditPlans(cmd *cobra.Command) (int, []tagAuditPlan, bool, error) {
 	rawDB, err := openStoreForRead(cmd.Context(), "zotero-pp-cli")
 	if err != nil {
@@ -122,18 +136,11 @@ func readTagAuditPlans(cmd *cobra.Command) (int, []tagAuditPlan, bool, error) {
 	defer rawDB.Close()
 	db := localQueryStore{rawDB}
 
-	tagRows, err := db.QueryRaw(`
-SELECT DISTINCT json_extract(tags.value, '$.tag') AS tag_name
-FROM resources, json_each(json_extract(data, '$.data.tags')) AS tags
-WHERE resource_type = 'items' AND tag_name IS NOT NULL AND tag_name != ''`)
+	tagRows, err := db.QueryRaw(tagAuditDistinctQuery)
 	if err != nil {
 		return 0, nil, false, fmt.Errorf("querying tags: %w", err)
 	}
-	countRows, err := db.QueryRaw(`
-SELECT json_extract(tags.value, '$.tag') AS tag_name, COUNT(*) AS item_count
-FROM resources, json_each(json_extract(data, '$.data.tags')) AS tags
-WHERE resource_type = 'items' AND tag_name IS NOT NULL AND tag_name != ''
-GROUP BY tag_name ORDER BY item_count DESC`)
+	countRows, err := db.QueryRaw(tagAuditCountQuery)
 	if err != nil {
 		return 0, nil, false, fmt.Errorf("querying tag counts: %w", err)
 	}

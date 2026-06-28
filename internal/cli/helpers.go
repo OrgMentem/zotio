@@ -106,6 +106,17 @@ func apiErr(err error) error       { return &cliError{code: 5, err: err} }
 func configErr(err error) error    { return &cliError{code: 10, err: err} }
 func rateLimitErr(err error) error { return &cliError{code: 7, err: err} }
 
+// PATCH(glean roadmap-phase1): library health quality gate (--fail-on) failed —
+// the tool ran fine but the library did not meet the requested bar. Distinct
+// from error codes so CI can branch on "needs fixing" vs "tool broke".
+func gateErr(err error) error { return &cliError{code: 11, err: err} }
+
+// PATCH(glean roadmap-phase1): a declared precondition was unmet (e.g. Zotero
+// desktop not running for a live-local-API capability). Loud, not silent: the
+// agent's remedy is to provision the environment (launch the app, set a key,
+// sync) and retry — categorically different from a content gate or a hard error.
+func preconditionErr(err error) error { return &cliError{code: 9, err: err} }
+
 // dryRunOK reports whether the command should short-circuit without doing any
 // real work because --dry-run was set. The verify pipeline probes hand-written
 // commands with --dry-run; commands that put validation in cobra's `Args:` or

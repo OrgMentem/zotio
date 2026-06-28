@@ -11,5 +11,6 @@ func newLibraryCmd(flags *rootFlags) *cobra.Command {
 		Short: "Library-wide analytics and reporting",
 	}
 	cmd.AddCommand(newLibraryStatsCmd(flags))
+	cmd.AddCommand(newLibraryHealthCmd(flags))
 	return cmd
 }

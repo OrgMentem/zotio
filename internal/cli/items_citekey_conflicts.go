@@ -25,6 +25,19 @@ type citekeyItem struct {
 	CiteKey string
 }
 
+// citekeyAuditQuery selects every citeable item with its Better BibTeX citation
+// key source (the `extra` field). PATCH(glean roadmap-phase1): shared by
+// `items citekey-conflicts` and the `library health` citekey checks so they
+// never drift.
+const citekeyAuditQuery = `
+SELECT
+	id AS key,
+	json_extract(data,'$.data.title') AS title,
+	COALESCE(json_extract(data,'$.data.extra'),'') AS extra
+FROM resources
+WHERE resource_type='items'
+	AND json_extract(data,'$.data.itemType') NOT IN ('attachment','note','annotation')`
+
 func newItemsCitekeyConflictsCmd(flags *rootFlags) *cobra.Command {
 	var flagMissing bool
 	var flagConflicts bool
@@ -48,14 +61,7 @@ func newItemsCitekeyConflictsCmd(flags *rootFlags) *cobra.Command {
 			defer rawDB.Close()
 			db := localQueryStore{rawDB}
 
-			rows, err := db.QueryRaw(`
-SELECT
-	id AS key,
-	json_extract(data,'$.data.title') AS title,
-	COALESCE(json_extract(data,'$.data.extra'),'') AS extra
-FROM resources
-WHERE resource_type='items'
-	AND json_extract(data,'$.data.itemType') NOT IN ('attachment','note','annotation')`)
+			rows, err := db.QueryRaw(citekeyAuditQuery)
 			if err != nil {
 				return fmt.Errorf("querying citation keys: %w", err)
 			}

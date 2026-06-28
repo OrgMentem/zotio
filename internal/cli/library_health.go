@@ -1,0 +1,806 @@
+// Copyright 2026 enieuwy. Licensed under Apache-2.0. See LICENSE.
+// PATCH(glean roadmap-phase1): flagship composite library-health report — the
+// read-only diagnostic from docs/roadmap.md. Composes the existing audit
+// primitives (citekey/duplicate/missing-*/tag-drift/broken-attachment) into one
+// ranked, finding-typed report with --for presets, a --fail-on CI gate (exit 11),
+// and the precondition contract (live-only checks refuse loudly, never silently).
+
+package cli
+
+import (
+	"encoding/json"
+	"errors"
+	"fmt"
+	"sort"
+	"strings"
+	"time"
+
+	"github.com/spf13/cobra"
+
+	"zotero-pp-cli/internal/client"
+)
+
+const (
+	sevCritical = "critical"
+	sevHigh     = "high"
+	sevInfo     = "info"
+)
+
+func severityRank(s string) int {
+	switch s {
+	case sevCritical:
+		return 3
+	case sevHigh:
+		return 2
+	case sevInfo:
+		return 1
+	default:
+		return 0
+	}
+}
+
+// failOnRank maps a --fail-on threshold to the minimum severity rank that trips
+// the gate. "any" trips on info (rank 1) and above.
+func failOnRank(failOn string) int {
+	switch failOn {
+	case sevCritical:
+		return 3
+	case sevHigh:
+		return 2
+	case "any":
+		return 1
+	default:
+		return 0
+	}
+}
+
+// healthSource records where a finding's data came from and how fresh it is, so
+// an agent can decide whether to trust it (local reads may be stale).
+type healthSource struct {
+	Kind     string     `json:"kind"`
+	SyncedAt *time.Time `json:"synced_at,omitempty"`
+}
+
+type healthRecommendedAction struct {
+	Command string `json:"command,omitempty"`
+	Text    string `json:"text,omitempty"`
+}
+
+// healthFinding is the stable finding taxonomy (docs/roadmap.md). Identity is
+// (kind, item_key) for per-item findings; grouped findings carry detail in
+// Evidence and leave ItemKey empty.
+type healthFinding struct {
+	Kind              string                   `json:"kind"`
+	Severity          string                   `json:"severity"`
+	ItemKey           string                   `json:"item_key,omitempty"`
+	Title             string                   `json:"title,omitempty"`
+	Evidence          map[string]any           `json:"evidence,omitempty"`
+	Source            healthSource             `json:"source"`
+	Autofixable       bool                     `json:"autofixable"`
+	RecommendedAction *healthRecommendedAction `json:"recommended_action,omitempty"`
+}
+
+type healthRemediation struct {
+	Action  string `json:"action"`
+	Command string `json:"command,omitempty"`
+	Text    string `json:"text,omitempty"`
+}
+
+// healthSkip is a loud, machine-actionable notice that a check did not run
+// because a precondition was unmet — never a silent omission.
+type healthSkip struct {
+	Kind         string              `json:"kind"`
+	Precondition string              `json:"precondition"`
+	Detail       string              `json:"detail"`
+	Remediation  []healthRemediation `json:"remediation"`
+}
+
+type healthCheckRun struct {
+	Kind    string `json:"kind"`
+	Ran     bool   `json:"ran"`
+	Count   int    `json:"count"`
+	Skipped bool   `json:"skipped,omitempty"`
+}
+
+type healthScope struct {
+	Expr     string     `json:"expr"`
+	Source   string     `json:"source"`
+	SyncedAt *time.Time `json:"synced_at,omitempty"`
+	Items    int        `json:"items"`
+}
+
+type healthSummary struct {
+	Critical int `json:"critical"`
+	High     int `json:"high"`
+	Info     int `json:"info"`
+	Total    int `json:"total"`
+}
+
+func (s *healthSummary) add(severity string, n int) {
+	switch severity {
+	case sevCritical:
+		s.Critical += n
+	case sevHigh:
+		s.High += n
+	case sevInfo:
+		s.Info += n
+	}
+}
+
+type healthGate struct {
+	FailOn string `json:"fail_on"`
+	Status string `json:"status"`
+	Reason string `json:"reason,omitempty"`
+}
+
+type healthReport struct {
+	SchemaVersion int              `json:"schema_version"`
+	Scope         healthScope      `json:"scope"`
+	Preset        string           `json:"preset"`
+	Checks        []healthCheckRun `json:"checks"`
+	Findings      []healthFinding  `json:"findings"`
+	Skipped       []healthSkip     `json:"skipped,omitempty"`
+	Summary       healthSummary    `json:"summary"`
+	Gate          *healthGate      `json:"gate,omitempty"`
+}
+
+// healthContext threads per-run state (provenance, limit, live-check opt-in) and
+// memoizes the shared citekey scan so it runs once even when both citekey checks
+// are in the preset.
+type healthContext struct {
+	src           healthSource
+	preset        string
+	limit         int
+	verifyFiles   bool
+	flags         *rootFlags
+	citekeyRows   []citekeyConflictRow
+	citekeyLoaded bool
+}
+
+type healthCheckRunner func(db localQueryStore, ctx *healthContext) ([]healthFinding, *healthSkip, error)
+
+type healthCheck struct {
+	kind     string
+	severity string
+	run      healthCheckRunner
+}
+
+// healthCheckRegistry is the single source of truth for the available checks,
+// their severities, and how to run them. Presets pick a subset by kind.
+func healthCheckRegistry() []healthCheck {
+	return []healthCheck{
+		{kind: "citekey_conflict", severity: sevCritical, run: runCitekeyConflict},
+		{kind: "citekey_missing", severity: sevHigh, run: runCitekeyMissing},
+		{kind: "duplicate_candidates", severity: sevHigh, run: runDuplicateCandidates},
+		{kind: "missing_citation", severity: sevHigh, run: itemCheckRunner(
+			func(db localQueryStore) ([]map[string]any, error) { return queryCitationIncompleteItems(db, 0) },
+			"missing_citation", sevHigh, false,
+			&healthRecommendedAction{Text: "Add the missing core citation fields (creators, title, date, venue) in Zotero"})},
+		{kind: "missing_doi", severity: sevHigh, run: itemCheckRunner(
+			func(db localQueryStore) ([]map[string]any, error) { return queryMissingDOIItems(db, 0, "") },
+			"missing_doi", sevHigh, true,
+			&healthRecommendedAction{Command: "zotero-pp-cli items enrich --missing-doi --yes"})},
+		{kind: "missing_pdf", severity: sevHigh, run: itemCheckRunner(
+			func(db localQueryStore) ([]map[string]any, error) { return queryMissingPDFItems(db, "", 0, "") },
+			"missing_pdf", sevHigh, true,
+			&healthRecommendedAction{Command: "zotero-pp-cli items enrich --missing-pdf --yes"})},
+		{kind: "missing_abstract", severity: sevInfo, run: itemCheckRunner(
+			func(db localQueryStore) ([]map[string]any, error) { return queryMissingAbstractItems(db, 0, "") },
+			"missing_abstract", sevInfo, true,
+			&healthRecommendedAction{Command: "zotero-pp-cli items enrich --missing-abstract --yes"})},
+		{kind: "missing_tags", severity: sevInfo, run: itemCheckRunner(
+			func(db localQueryStore) ([]map[string]any, error) { return queryMissingTagsItems(db, 0) },
+			"missing_tags", sevInfo, false, nil)},
+		{kind: "tag_drift", severity: sevHigh, run: runTagDrift},
+		{kind: "broken_attachment_file", severity: sevCritical, run: runBrokenAttachmentFile},
+	}
+}
+
+// healthPresets defines the "--for" intent selectors. They are tool-curated
+// check-sets, distinct from the user-defined --profile flag bundles.
+var healthPresets = map[string][]string{
+	"quick":             {"citekey_conflict", "duplicate_candidates", "broken_attachment_file"},
+	"citation":          {"citekey_missing", "citekey_conflict", "missing_citation", "duplicate_candidates"},
+	"systematic-review": {"duplicate_candidates", "missing_abstract", "missing_pdf", "broken_attachment_file"},
+	"all": {
+		"citekey_conflict", "citekey_missing", "duplicate_candidates", "missing_citation",
+		"missing_doi", "missing_pdf", "missing_abstract", "missing_tags", "tag_drift",
+		"broken_attachment_file",
+	},
+}
+
+// healthPresetFailOn is the default gate threshold per preset; an explicit
+// --fail-on overrides it.
+var healthPresetFailOn = map[string]string{
+	"quick":             "",
+	"citation":          sevHigh,
+	"systematic-review": sevHigh,
+	"all":               "",
+}
+
+func newLibraryHealthCmd(flags *rootFlags) *cobra.Command {
+	var flagFor string
+	var flagFailOn string
+	var flagLimit int
+	var flagVerifyFiles bool
+
+	cmd := &cobra.Command{
+		Use:   "health",
+		Short: "Composite read-only library health report with a CI gate",
+		Long: `Run a ranked, finding-typed health report over the locally synced library.
+
+Composes the existing audit primitives (citekey conflicts, duplicates, missing
+metadata, tag drift, broken attachments) into one report. Pick what "ready" means
+with --for:
+
+  --for citation           manuscript/bibliography readiness (citekeys, core fields, duplicates)
+  --for systematic-review  PRISMA screening corpus (duplicates, screenable metadata, full text)
+  --for quick   (default)  anything obviously broken (citekey conflicts, duplicates, attachments)
+  --for all                every check
+
+Gate CI with --fail-on critical|high|any (exit 11 when the bar is not met).
+
+The broken-attachment check is a live check that needs Zotero desktop running;
+pass --verify-files to run it. When a gate-relevant check can't run because its
+precondition is unmet, the command refuses loudly (exit 9) rather than passing.`,
+		Annotations: map[string]string{"mcp:read-only": "true"},
+		RunE: func(cmd *cobra.Command, args []string) error {
+			preset := strings.ToLower(strings.TrimSpace(flagFor))
+			if preset == "" {
+				preset = "quick"
+			}
+			kinds, ok := healthPresets[preset]
+			if !ok {
+				return usageErr(fmt.Errorf("invalid --for %q: must be quick, citation, systematic-review, or all", flagFor))
+			}
+
+			failOn := strings.ToLower(strings.TrimSpace(flagFailOn))
+			if flagFailOn == "" {
+				failOn = healthPresetFailOn[preset]
+			}
+			switch failOn {
+			case "", sevCritical, sevHigh, "any":
+			default:
+				return usageErr(fmt.Errorf("invalid --fail-on %q: must be critical, high, or any", flagFailOn))
+			}
+			if flagLimit < 0 {
+				return usageErr(fmt.Errorf("--limit must be zero or greater"))
+			}
+
+			rawDB, err := openStoreForRead(cmd.Context(), "zotero-pp-cli")
+			if err != nil {
+				return fmt.Errorf("opening database: %w", err)
+			}
+			if rawDB == nil {
+				fmt.Fprintln(cmd.OutOrStdout(), "Run 'zotero-pp-cli sync' first.")
+				return nil
+			}
+			defer rawDB.Close()
+			db := localQueryStore{rawDB}
+
+			var syncedAt *time.Time
+			if _, lastSynced, _, e := db.GetSyncState("items"); e == nil && !lastSynced.IsZero() {
+				ls := lastSynced
+				syncedAt = &ls
+			}
+			ctx := &healthContext{
+				src:         healthSource{Kind: "local", SyncedAt: syncedAt},
+				preset:      preset,
+				limit:       flagLimit,
+				verifyFiles: flagVerifyFiles,
+				flags:       flags,
+			}
+
+			report, err := assembleHealthReport(db, ctx, preset, kinds, failOn)
+			if err != nil {
+				return err
+			}
+
+			if flags.asJSON {
+				data, err := json.Marshal(report)
+				if err != nil {
+					return err
+				}
+				if err := printOutputWithFlags(cmd.OutOrStdout(), json.RawMessage(data), flags); err != nil {
+					return err
+				}
+			} else {
+				printHealthReport(cmd, report)
+			}
+			return healthGateExitError(report)
+		},
+	}
+	cmd.Flags().StringVar(&flagFor, "for", "quick", "Check preset: quick, citation, systematic-review, all")
+	cmd.Flags().StringVar(&flagFailOn, "fail-on", "", "Exit 11 if findings reach this severity: critical, high, any (default: the preset's)")
+	cmd.Flags().IntVar(&flagLimit, "limit", 0, "Max findings listed per kind (0 = all); also caps the live attachment scan")
+	cmd.Flags().BoolVar(&flagVerifyFiles, "verify-files", false, "Run the live broken-attachment check (needs Zotero desktop running)")
+	return cmd
+}
+
+// assembleHealthReport runs the selected checks against db, ranks the findings,
+// and records the gate verdict in report.Gate. The returned error is only a hard
+// check failure that should abort before output; the gate outcome is mapped to
+// an exit code separately by healthGateExitError after the report is rendered.
+func assembleHealthReport(db localQueryStore, ctx *healthContext, preset string, kinds []string, failOn string) (healthReport, error) {
+	report := healthReport{
+		SchemaVersion: 1,
+		Preset:        preset,
+		Scope: healthScope{
+			Expr:     "library",
+			Source:   "local",
+			SyncedAt: ctx.src.SyncedAt,
+			Items:    countCiteableItems(db),
+		},
+	}
+
+	gateBlockedBySkip := false
+	for _, chk := range selectHealthChecks(kinds) {
+		findings, skip, err := chk.run(db, ctx)
+		if err != nil {
+			return report, fmt.Errorf("health check %s: %w", chk.kind, err)
+		}
+		if skip != nil {
+			report.Skipped = append(report.Skipped, *skip)
+			report.Checks = append(report.Checks, healthCheckRun{Kind: chk.kind, Skipped: true})
+			if failOn != "" && severityRank(chk.severity) >= failOnRank(failOn) {
+				gateBlockedBySkip = true
+			}
+			continue
+		}
+		report.Checks = append(report.Checks, healthCheckRun{Kind: chk.kind, Ran: true, Count: len(findings)})
+		report.Summary.add(chk.severity, len(findings))
+		report.Findings = append(report.Findings, truncateFindings(findings, ctx.limit)...)
+	}
+	report.Summary.Total = report.Summary.Critical + report.Summary.High + report.Summary.Info
+	sortHealthFindings(report.Findings)
+
+	if failOn != "" {
+		gate := &healthGate{FailOn: failOn}
+		switch {
+		case gateBlockedBySkip:
+			gate.Status = "indeterminate"
+			gate.Reason = "a gate-relevant check was skipped (precondition unmet); cannot certify health"
+		case gateCrossed(report.Summary, failOn):
+			gate.Status = "failed"
+			gate.Reason = fmt.Sprintf("found findings at or above %q severity", failOn)
+		default:
+			gate.Status = "passed"
+		}
+		report.Gate = gate
+	}
+	return report, nil
+}
+
+// healthGateExitError maps a finished report's gate verdict to the process exit
+// error: 11 (gateErr) when the bar was not met, 9 (preconditionErr) when a
+// gate-relevant check could not run, nil otherwise. Called after the report is
+// rendered so the report still prints on a non-zero exit.
+func healthGateExitError(report healthReport) error {
+	if report.Gate == nil {
+		return nil
+	}
+	switch report.Gate.Status {
+	case "indeterminate":
+		return preconditionErr(fmt.Errorf("library health: %s", report.Gate.Reason))
+	case "failed":
+		return gateErr(fmt.Errorf("library health gate failed: %s", report.Gate.Reason))
+	default:
+		return nil
+	}
+}
+
+func selectHealthChecks(kinds []string) []healthCheck {
+	want := make(map[string]bool, len(kinds))
+	for _, k := range kinds {
+		want[k] = true
+	}
+	out := make([]healthCheck, 0, len(kinds))
+	for _, chk := range healthCheckRegistry() {
+		if want[chk.kind] {
+			out = append(out, chk)
+		}
+	}
+	return out
+}
+
+// itemCheckRunner adapts a per-item audit query into a finding producer. It runs
+// the query unlimited so counts are accurate; output truncation happens later.
+func itemCheckRunner(query func(localQueryStore) ([]map[string]any, error), kind, severity string, autofix bool, action *healthRecommendedAction) healthCheckRunner {
+	return func(db localQueryStore, ctx *healthContext) ([]healthFinding, *healthSkip, error) {
+		rows, err := query(db)
+		if err != nil {
+			return nil, nil, err
+		}
+		findings := make([]healthFinding, 0, len(rows))
+		for _, r := range rows {
+			f := healthFinding{
+				Kind:              kind,
+				Severity:          severity,
+				ItemKey:           sqlStringValue(r["key"]),
+				Title:             sqlStringValue(r["title"]),
+				Source:            ctx.src,
+				Autofixable:       autofix,
+				RecommendedAction: action,
+			}
+			ev := map[string]any{}
+			if it := sqlStringValue(r["item_type"]); it != "" {
+				ev["item_type"] = it
+			}
+			if m := sqlStringValue(r["missing"]); m != "" {
+				ev["missing"] = m
+			}
+			if len(ev) > 0 {
+				f.Evidence = ev
+			}
+			findings = append(findings, f)
+		}
+		return findings, nil, nil
+	}
+}
+
+func (ctx *healthContext) loadCitekeyRows(db localQueryStore) ([]citekeyConflictRow, error) {
+	if ctx.citekeyLoaded {
+		return ctx.citekeyRows, nil
+	}
+	rows, err := db.QueryRaw(citekeyAuditQuery)
+	if err != nil {
+		return nil, err
+	}
+	ctx.citekeyRows = buildCitekeyConflictRows(rows, false, false)
+	ctx.citekeyLoaded = true
+	return ctx.citekeyRows, nil
+}
+
+func runCitekeyConflict(db localQueryStore, ctx *healthContext) ([]healthFinding, *healthSkip, error) {
+	rows, err := ctx.loadCitekeyRows(db)
+	if err != nil {
+		return nil, nil, err
+	}
+	findings := make([]healthFinding, 0)
+	for _, r := range rows {
+		if r.Type != "conflict" {
+			continue
+		}
+		findings = append(findings, healthFinding{
+			Kind:              "citekey_conflict",
+			Severity:          sevCritical,
+			ItemKey:           r.Key,
+			Title:             r.Title,
+			Evidence:          map[string]any{"cite_key": r.CiteKey},
+			Source:            ctx.src,
+			RecommendedAction: &healthRecommendedAction{Text: "Resolve the duplicate Better BibTeX citation key in Zotero"},
+		})
+	}
+	return findings, nil, nil
+}
+
+func runCitekeyMissing(db localQueryStore, ctx *healthContext) ([]healthFinding, *healthSkip, error) {
+	rows, err := ctx.loadCitekeyRows(db)
+	if err != nil {
+		return nil, nil, err
+	}
+	findings := make([]healthFinding, 0)
+	for _, r := range rows {
+		if r.Type != "missing" {
+			continue
+		}
+		findings = append(findings, healthFinding{
+			Kind:              "citekey_missing",
+			Severity:          sevHigh,
+			ItemKey:           r.Key,
+			Title:             r.Title,
+			Source:            ctx.src,
+			RecommendedAction: &healthRecommendedAction{Text: "Install Better BibTeX and assign a citation key"},
+		})
+	}
+	return findings, nil, nil
+}
+
+func runDuplicateCandidates(db localQueryStore, ctx *healthContext) ([]healthFinding, *healthSkip, error) {
+	doiRows, err := queryDuplicateDOIs(db)
+	if err != nil {
+		return nil, nil, err
+	}
+	titleRows, err := queryDuplicateTitles(db)
+	if err != nil {
+		return nil, nil, err
+	}
+	rows := normalizeDuplicateRows(append(doiRows, titleRows...))
+	findings := make([]healthFinding, 0, len(rows))
+	for _, r := range rows {
+		group := sqlStringValue(r["group"])
+		ev := map[string]any{
+			"group": group,
+			"value": sqlStringValue(r["value"]),
+			"count": sqlIntValue(r["count"]),
+		}
+		if keys, ok := r["keys"].([]string); ok {
+			ev["keys"] = keys
+		}
+		findings = append(findings, healthFinding{
+			Kind:              "duplicate_candidates",
+			Severity:          sevHigh,
+			Evidence:          ev,
+			Source:            ctx.src,
+			Autofixable:       true,
+			RecommendedAction: &healthRecommendedAction{Command: "zotero-pp-cli items duplicates resolve"},
+		})
+	}
+	return findings, nil, nil
+}
+
+func runTagDrift(db localQueryStore, ctx *healthContext) ([]healthFinding, *healthSkip, error) {
+	tagRows, err := db.QueryRaw(tagAuditDistinctQuery)
+	if err != nil {
+		return nil, nil, err
+	}
+	countRows, err := db.QueryRaw(tagAuditCountQuery)
+	if err != nil {
+		return nil, nil, err
+	}
+	plans := buildTagAuditPlans(tagRows, countRows)
+	findings := make([]healthFinding, 0, len(plans))
+	for _, p := range plans {
+		if len(p.Aliases) == 0 {
+			continue
+		}
+		findings = append(findings, healthFinding{
+			Kind:     "tag_drift",
+			Severity: sevHigh,
+			Evidence: map[string]any{
+				"canonical":   p.Canonical,
+				"aliases":     p.Aliases,
+				"total_items": p.TotalItems,
+			},
+			Source:            ctx.src,
+			Autofixable:       true,
+			RecommendedAction: &healthRecommendedAction{Command: "zotero-pp-cli tags audit fix"},
+		})
+	}
+	return findings, nil, nil
+}
+
+// runBrokenAttachmentFile is the one live_local_api check. It runs only when
+// --verify-files is set AND Zotero desktop is reachable; otherwise it returns a
+// loud skip with remediation rather than silently omitting itself.
+func runBrokenAttachmentFile(db localQueryStore, ctx *healthContext) ([]healthFinding, *healthSkip, error) {
+	if !ctx.verifyFiles {
+		return nil, &healthSkip{
+			Kind:         "broken_attachment_file",
+			Precondition: "live_local_api",
+			Detail:       "Broken-attachment verification is a live check (needs Zotero desktop running) and is off by default.",
+			Remediation: []healthRemediation{
+				{Action: "run_verify_files", Command: "zotero-pp-cli library health --for " + ctx.preset + " --verify-files"},
+				{Action: "open_zotero", Text: "Open Zotero desktop and enable Settings -> Advanced -> 'Allow other applications to communicate with Zotero'"},
+			},
+		}, nil
+	}
+
+	c, err := ctx.flags.newClient()
+	if err != nil {
+		return nil, nil, err
+	}
+	if _, probeErr := c.Get("/", nil); probeErr != nil {
+		var apiErr *client.APIError
+		if !errors.As(probeErr, &apiErr) {
+			// Network-level failure: Zotero desktop / local API is not reachable.
+			return nil, &healthSkip{
+				Kind:         "broken_attachment_file",
+				Precondition: "live_local_api",
+				Detail:       fmt.Sprintf("Zotero desktop is not reachable on the local API (%s).", probeErr),
+				Remediation: []healthRemediation{
+					{Action: "open_zotero", Text: "Open Zotero desktop and enable Settings -> Advanced -> 'Allow other applications to communicate with Zotero', then re-run"},
+				},
+			}, nil
+		}
+	}
+
+	attachments, err := queryPDFAttachments(db, ctx.limit)
+	if err != nil {
+		return nil, nil, fmt.Errorf("querying PDF attachments: %w", err)
+	}
+	findings := make([]healthFinding, 0)
+	for _, a := range attachments {
+		key := sqlStringValue(a["key"])
+		path, reason := attachmentFileStatus(c, key)
+		if reason == "" {
+			continue
+		}
+		findings = append(findings, healthFinding{
+			Kind:     "broken_attachment_file",
+			Severity: sevCritical,
+			ItemKey:  key,
+			Title:    sqlStringValue(a["name"]),
+			Evidence: map[string]any{
+				"parent": sqlStringValue(a["parent"]),
+				"path":   path,
+				"reason": reason,
+			},
+			Source:            ctx.src,
+			RecommendedAction: &healthRecommendedAction{Text: "Re-link the file in Zotero or re-download the attachment"},
+		})
+	}
+	return findings, nil, nil
+}
+
+func countCiteableItems(db localQueryStore) int {
+	rows, err := db.QueryRaw(`
+SELECT COUNT(*) AS count
+FROM resources
+WHERE resource_type = 'items'
+	AND COALESCE(item_type, '') NOT IN ('attachment', 'annotation', 'note')`)
+	if err != nil {
+		return 0
+	}
+	return firstCount(rows)
+}
+
+func truncateFindings(findings []healthFinding, limit int) []healthFinding {
+	if limit > 0 && len(findings) > limit {
+		return findings[:limit]
+	}
+	return findings
+}
+
+func sortHealthFindings(findings []healthFinding) {
+	sort.SliceStable(findings, func(i, j int) bool {
+		ri, rj := severityRank(findings[i].Severity), severityRank(findings[j].Severity)
+		if ri != rj {
+			return ri > rj
+		}
+		if findings[i].Kind != findings[j].Kind {
+			return findings[i].Kind < findings[j].Kind
+		}
+		return findings[i].ItemKey < findings[j].ItemKey
+	})
+}
+
+func gateCrossed(summary healthSummary, failOn string) bool {
+	switch failOn {
+	case sevCritical:
+		return summary.Critical > 0
+	case sevHigh:
+		return summary.Critical+summary.High > 0
+	case "any":
+		return summary.Total > 0
+	default:
+		return false
+	}
+}
+
+func printHealthReport(cmd *cobra.Command, report healthReport) {
+	out := cmd.OutOrStdout()
+	fmt.Fprintf(out, "Health: %s\n", healthStatusWord(report.Summary))
+
+	scopeLine := fmt.Sprintf("Scope: %s · %d items · source %s", report.Scope.Expr, report.Scope.Items, report.Scope.Source)
+	if report.Scope.SyncedAt != nil {
+		scopeLine += fmt.Sprintf(" · synced %s ago", durationAgo(time.Since(*report.Scope.SyncedAt)))
+	}
+	fmt.Fprintf(out, "%s · preset %s\n\n", scopeLine, report.Preset)
+
+	for _, sev := range []string{sevCritical, sevHigh, sevInfo} {
+		group := findingsForSeverity(report.Findings, sev)
+		if len(group) == 0 {
+			continue
+		}
+		fmt.Fprintf(out, "%s (%d)\n", strings.ToUpper(sev[:1])+sev[1:], countForSeverity(report.Summary, sev))
+		for _, f := range group {
+			fmt.Fprintf(out, "  %s\n", formatFindingLine(f))
+		}
+		fmt.Fprintln(out)
+	}
+
+	if len(report.Skipped) > 0 {
+		fmt.Fprintln(out, "Skipped (precondition unmet)")
+		for _, s := range report.Skipped {
+			fmt.Fprintf(out, "  %s — %s\n", s.Kind, s.Detail)
+			for _, r := range s.Remediation {
+				if r.Command != "" {
+					fmt.Fprintf(out, "    Fix: %s\n", r.Command)
+				} else if r.Text != "" {
+					fmt.Fprintf(out, "    Fix: %s\n", r.Text)
+				}
+			}
+		}
+		fmt.Fprintln(out)
+	}
+
+	if steps := suggestedNextSteps(report.Findings); len(steps) > 0 {
+		fmt.Fprintln(out, "Suggested next steps")
+		for _, s := range steps {
+			fmt.Fprintf(out, "  %s\n", s)
+		}
+		fmt.Fprintln(out)
+	}
+
+	if report.Gate != nil {
+		line := fmt.Sprintf("Gate: fail-on %s -> %s", report.Gate.FailOn, strings.ToUpper(report.Gate.Status))
+		if report.Gate.Reason != "" {
+			line += fmt.Sprintf(" (%s)", report.Gate.Reason)
+		}
+		fmt.Fprintln(out, line)
+	}
+}
+
+func healthStatusWord(s healthSummary) string {
+	switch {
+	case s.Critical > 0:
+		return "critical"
+	case s.High > 0:
+		return "needs attention"
+	case s.Info > 0:
+		return "ok with notes"
+	default:
+		return "clean"
+	}
+}
+
+func findingsForSeverity(findings []healthFinding, severity string) []healthFinding {
+	out := make([]healthFinding, 0)
+	for _, f := range findings {
+		if f.Severity == severity {
+			out = append(out, f)
+		}
+	}
+	return out
+}
+
+func countForSeverity(s healthSummary, severity string) int {
+	switch severity {
+	case sevCritical:
+		return s.Critical
+	case sevHigh:
+		return s.High
+	case sevInfo:
+		return s.Info
+	default:
+		return 0
+	}
+}
+
+func formatFindingLine(f healthFinding) string {
+	switch f.Kind {
+	case "duplicate_candidates":
+		return fmt.Sprintf("[%s] %s=%q (%v items)", f.Kind, sqlStringValue(f.Evidence["group"]), sqlStringValue(f.Evidence["value"]), f.Evidence["count"])
+	case "tag_drift":
+		return fmt.Sprintf("[%s] %q <- %v (%v items)", f.Kind, sqlStringValue(f.Evidence["canonical"]), f.Evidence["aliases"], f.Evidence["total_items"])
+	default:
+		line := fmt.Sprintf("[%s] %s", f.Kind, f.ItemKey)
+		if f.Title != "" {
+			line += " " + f.Title
+		}
+		if m := sqlStringValue(f.Evidence["missing"]); m != "" {
+			line += " (missing: " + m + ")"
+		}
+		return line
+	}
+}
+
+func suggestedNextSteps(findings []healthFinding) []string {
+	seen := make(map[string]bool)
+	steps := make([]string, 0)
+	for _, f := range findings {
+		if f.RecommendedAction == nil || f.RecommendedAction.Command == "" {
+			continue
+		}
+		if seen[f.RecommendedAction.Command] {
+			continue
+		}
+		seen[f.RecommendedAction.Command] = true
+		steps = append(steps, f.RecommendedAction.Command)
+	}
+	return steps
+}
+
+func durationAgo(d time.Duration) string {
+	switch {
+	case d < time.Minute:
+		return "just now"
+	case d < time.Hour:
+		return fmt.Sprintf("%dm", int(d.Minutes()))
+	case d < 24*time.Hour:
+		return fmt.Sprintf("%dh", int(d.Hours()))
+	default:
+		return fmt.Sprintf("%dd", int(d.Hours()/24))
+	}
+}
