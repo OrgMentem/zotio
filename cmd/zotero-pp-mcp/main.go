@@ -30,6 +30,18 @@ func main() {
 	mcptools.RegisterResources(s)
 	mcptools.RegisterPrompts(s)
 
+	// PATCH(glean roadmap-phase7 3df91067): announce the env-selected library and
+	// profile so MCP installs (which configure these via env, not flags) are
+	// verifiable from the host's server log.
+	if g := os.Getenv("ZOTERO_GROUP"); g != "" {
+		fmt.Fprintf(os.Stderr, "Zotero MCP: group library %s\n", g)
+	} else {
+		fmt.Fprintln(os.Stderr, "Zotero MCP: personal library")
+	}
+	if p := os.Getenv("ZOTERO_PROFILE"); p != "" {
+		fmt.Fprintf(os.Stderr, "Zotero MCP: profile %s\n", p)
+	}
+
 	stdout := os.Stdout
 	// PATCH(glean field-mcp-transport): stdio MCP uses stdout as the JSON-RPC
 	// transport. Mirrored Cobra commands still contain legacy direct

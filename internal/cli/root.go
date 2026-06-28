@@ -177,6 +177,15 @@ See README.md or the bundled SKILL.md for recipes.`,
 	rootCmd.PersistentFlags().StringVar(&flags.group, "group", "", "Operate on a Zotero group library by numeric group ID (default: personal library)")
 
 	rootCmd.PersistentPreRunE = func(cmd *cobra.Command, args []string) error {
+		// PATCH(glean roadmap-phase7 3df91067): env fallback so MCP installs and
+		// scheduled agents (which set env, not CLI flags) honor profile/group
+		// selection. An explicit CLI flag always wins over the env value.
+		if flags.profileName == "" {
+			flags.profileName = strings.TrimSpace(os.Getenv("ZOTERO_PROFILE"))
+		}
+		if flags.group == "" {
+			flags.group = strings.TrimSpace(os.Getenv("ZOTERO_GROUP"))
+		}
 		if flags.deliverSpec != "" {
 			sink, err := ParseDeliverSink(flags.deliverSpec)
 			if err != nil {
@@ -255,6 +264,8 @@ See README.md or the bundled SKILL.md for recipes.`,
 	rootCmd.AddCommand(newSearchCmd(flags))
 	rootCmd.AddCommand(newSyncCmd(flags))
 	rootCmd.AddCommand(newTailCmd(flags))
+	// PATCH(glean roadmap-phase7 0cabee79): watch-mode incremental sync.
+	rootCmd.AddCommand(newWatchCmd(flags))
 	rootCmd.AddCommand(newAnalyticsCmd(flags))
 	rootCmd.AddCommand(newWorkflowCmd(flags))
 	// PATCH(glean 9bfn): group-library discovery.

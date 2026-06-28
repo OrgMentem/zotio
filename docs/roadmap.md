@@ -237,8 +237,12 @@ P6  reproducible export  ->  P7  packaging & niceties
   interrupted run continue), streams structured item JSONL, and writes a `<output>.lock.json`
   lockfile recording each item's key+version + a sort-invariant content sha256 for reproducibility/
   drift detection (never the formatted-bibliography mode that ignores limit).
-- **Phase 7 — Packaging & niceties.** MCP install honoring profiles/groups/base-url; group readiness
-  preflight; watch-mode sync (polling/incremental, not push); capability-drift detection.
+- **Phase 7 — Packaging & niceties. SHIPPED.** MCP installs honor env-selected library/profile
+  (`ZOTERO_GROUP`/`ZOTERO_PROFILE` fall back into `--group`/`--profile` in the root pre-run, so every
+  mirrored tool is scoped; the MCP server logs the active library/profile at startup); `groups inspect
+  <id>` group-readiness preflight (accessible/readable/writable); `watch [resource...]` watch-mode
+  incremental sync (polling, `--interval`/`--once`, SIGINT-graceful); `capabilities drift` probes core
+  read endpoints for API drift.
 
 ## Bead → phase mapping
 

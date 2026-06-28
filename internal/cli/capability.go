@@ -89,7 +89,8 @@ var capabilityOverrides = map[string]capabilityEntry{
 	// import apply creates items / linked-file attachments via the Web API.
 	"import apply": {Operation: "write", WriteTarget: "web_api", Requires: []string{preconditionWebAPIKey}},
 	// Sync writes the local store (not a Zotero mutation).
-	"sync": {Operation: "sync"},
+	"sync":  {Operation: "sync"},
+	"watch": {Operation: "sync"},
 	// Undo replays inverse membership changes via the Web API.
 	"journal undo": {Operation: "write", WriteTarget: "web_api", Requires: []string{preconditionWebAPIKey}},
 	// Introspection.
@@ -163,8 +164,12 @@ func buildCapabilityRegistry(rootCmd *cobra.Command) []capabilityEntry {
 // newCapabilitiesCmd emits the capability registry as JSON so agents and MCP
 // hosts have one source of truth for command safety and preconditions.
 // PATCH(glean roadmap-phase2): new introspection command.
-func newCapabilitiesCmd(rootCmd *cobra.Command) *cobra.Command {
+func newCapabilitiesCmd(rootCmd *cobra.Command, flags ...*rootFlags) *cobra.Command {
 	var pretty bool
+	driftFlags := &rootFlags{}
+	if len(flags) > 0 && flags[0] != nil {
+		driftFlags = flags[0]
+	}
 	cmd := &cobra.Command{
 		Use:         "capabilities",
 		Short:       "Emit the machine-readable capability + preconditions registry",
@@ -183,5 +188,6 @@ agents can select safe commands and pre-flight requirements without parsing
 		},
 	}
 	cmd.Flags().BoolVar(&pretty, "pretty", false, "indent JSON output for human reading")
+	cmd.AddCommand(newCapabilitiesDriftCmd(driftFlags))
 	return cmd
 }

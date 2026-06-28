@@ -18,6 +18,7 @@ func newGroupsCmd(flags *rootFlags) *cobra.Command {
 		Annotations: map[string]string{"mcp:read-only": "true"},
 	}
 	cmd.AddCommand(newGroupsListCmd(flags))
+	cmd.AddCommand(newGroupsInspectCmd(flags))
 	return cmd
 }
 
@@ -55,6 +56,96 @@ func newGroupsListCmd(flags *rootFlags) *cobra.Command {
 				return err
 			}
 			return flags.printTable(cmd, []string{"id", "name", "type", "numItems"}, rows)
+		},
+	}
+	return cmd
+}
+
+// PATCH(glean roadmap-phase7 groups-inspect): add read-only group readiness preflight.
+func newGroupsInspectCmd(flags *rootFlags) *cobra.Command {
+	cmd := &cobra.Command{
+		Use:         "inspect <group-id>",
+		Short:       "Check whether a Zotero group library is accessible and writable",
+		Args:        cobra.ExactArgs(1),
+		Annotations: map[string]string{"mcp:read-only": "true"},
+		RunE: func(cmd *cobra.Command, args []string) error {
+			groupID := args[0]
+			c, err := flags.newClient()
+			if err != nil {
+				return err
+			}
+			// Groups are enumerated under the personal-library prefix
+			// (<base>/users/<id>/groups, which c.Get reaches via "/groups").
+			// A group-scoped base URL has no user segment to list from.
+			if _, ok := userIDFromBaseURL(c.BaseURL); !ok {
+				return usageErr(fmt.Errorf("set a personal-library base URL (…/users/<id>) to inspect groups; the current base URL targets a group library"))
+			}
+			data, err := c.Get("/groups", nil)
+			if err != nil {
+				return classifyAPIError(err, flags)
+			}
+
+			var groups []map[string]any
+			if err := json.Unmarshal(data, &groups); err != nil {
+				return fmt.Errorf("parsing groups response: %w", err)
+			}
+
+			note := fmt.Sprintf("group %s is not accessible: not a member, or the API key lacks access to it", groupID)
+			report := map[string]any{
+				"group_id":        groupID,
+				"found":           false,
+				"name":            "",
+				"type":            "",
+				"num_items":       "",
+				"library_reading": "",
+				"library_editing": "",
+				"file_editing":    "",
+				"ready_for_read":  false,
+				"ready_for_write": false,
+				"note":            note,
+			}
+			for _, g := range groups {
+				if groupFieldString(g, "id") != groupID {
+					continue
+				}
+				libraryEditing := groupFieldString(g, "libraryEditing")
+				readyForWrite := libraryEditing != ""
+				note = "group is accessible for reading but not writing"
+				if readyForWrite {
+					note = "group is accessible for reading and writing"
+				}
+				report["found"] = true
+				report["name"] = groupFieldString(g, "name")
+				report["type"] = groupFieldString(g, "type")
+				report["num_items"] = groupFieldString(g, "numItems")
+				report["library_reading"] = groupFieldString(g, "libraryReading")
+				report["library_editing"] = libraryEditing
+				report["file_editing"] = groupFieldString(g, "fileEditing")
+				report["ready_for_read"] = true
+				report["ready_for_write"] = readyForWrite
+				report["note"] = note
+				break
+			}
+
+			marshaled, err := json.Marshal(report)
+			if err != nil {
+				return err
+			}
+			if flags.asJSON {
+				return printOutputWithFlags(cmd.OutOrStdout(), json.RawMessage(marshaled), flags)
+			}
+			if !report["found"].(bool) {
+				_, err = fmt.Fprintln(cmd.OutOrStdout(), report["note"])
+				return err
+			}
+			_, err = fmt.Fprintf(cmd.OutOrStdout(), "group %s %s: read=%t write=%t, %s items\n",
+				groupID,
+				report["name"],
+				report["ready_for_read"],
+				report["ready_for_write"],
+				report["num_items"],
+			)
+			return err
 		},
 	}
 	return cmd

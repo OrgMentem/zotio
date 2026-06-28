@@ -10,6 +10,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -106,6 +107,55 @@ func TestGroupsList(t *testing.T) {
 		if !strings.Contains(out, want) {
 			t.Errorf("table output missing %q: %s", want, out)
 		}
+	}
+}
+
+// PATCH(glean roadmap-phase7 groups-inspect): cover JSON readiness preflight for accessible and missing groups.
+func TestGroupsInspect_JSONReadiness(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/users/0/groups" {
+			t.Errorf("unexpected request path %q", r.URL.Path)
+		}
+		io.WriteString(w, `[{"id":12345,"data":{"name":"Lab","type":"PrivateGroup","libraryReading":"all","libraryEditing":"members"},"meta":{"numItems":10}}]`)
+	}))
+	defer srv.Close()
+	t.Setenv("ZOTERO_BASE_URL", srv.URL+"/users/0")
+	t.Setenv("ZOTERO_CONFIG", filepath.Join(t.TempDir(), "missing.toml"))
+
+	runInspect := func(groupID string) map[string]any {
+		t.Helper()
+		cmd := newGroupsCmd(&rootFlags{asJSON: true})
+		var out bytes.Buffer
+		cmd.SetOut(&out)
+		cmd.SetErr(&bytes.Buffer{})
+		cmd.SetArgs([]string{"inspect", groupID})
+		if err := cmd.Execute(); err != nil {
+			t.Fatalf("groups inspect %s --json: %v", groupID, err)
+		}
+		var report map[string]any
+		if err := json.Unmarshal(out.Bytes(), &report); err != nil {
+			t.Fatalf("decoding inspect output %q: %v", out.String(), err)
+		}
+		return report
+	}
+
+	found := runInspect("12345")
+	if found["found"] != true {
+		t.Errorf("found = %v, want true", found["found"])
+	}
+	if found["name"] != "Lab" {
+		t.Errorf("name = %v, want Lab", found["name"])
+	}
+	if found["num_items"] != "10" {
+		t.Errorf("num_items = %v, want 10", found["num_items"])
+	}
+	if found["ready_for_write"] != true {
+		t.Errorf("ready_for_write = %v, want true", found["ready_for_write"])
+	}
+
+	missing := runInspect("99999")
+	if missing["found"] != false {
+		t.Errorf("missing found = %v, want false", missing["found"])
 	}
 }
 
