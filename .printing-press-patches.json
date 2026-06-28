@@ -933,6 +933,21 @@
       "files": ["internal/cli/items_open.go", "internal/cli/items_open_test.go", "README.md"],
       "validated_outcome": "gofmt/build/vet/test ./... green; golangci-lint exits 0. TestZoteroDeepLink covers item/collection/attachment x personal/group + path-escaping; TestZoteroDeepLinkRejectsUnknownType; TestItemsOpenJSONEnvelope (agent envelope, launched:false); TestItemsOpenGroupScopeURI (global --group -> groups/<id> URI). Cross-platform launcher selection already covered by TestLaunchCommand (darwin/linux/windows).",
       "upstream_issue": "Candidate to upstream as a generator capability: a cross-platform deep-link/open command with target-type + library-scope envelope."
+    },
+    {
+      "id": "mcp-streamable-http-transport",
+      "summary": "Harvested the v4.27 machine's MCP streamable-HTTP transport into cmd/zotero-pp-mcp/main.go: one binary serves stdio locally and HTTP (server.NewStreamableHTTPServer) when hosted; transport = --transport flag, then PP_MCP_TRANSPORT env, then stdio (prior default).",
+      "reason": "One-time machine-upgrade harvest before decoupling from Printing Press (generated 4.2.2, current machine 4.27.0). The fresh main.go's stdio path uses server.ServeStdio, which does NOT redirect process stdout, so mirrored Cobra os.Stdout writes would corrupt JSON-RPC — kept the hardened NewStdioServer + os.Stdout->stderr path (field-mcp-transport) and only ADDED the http branch. Preserved RegisterResources/RegisterPrompts + capabilities (qfuq) and the Phase-7 library/profile startup notice. mcp-go v0.47.0 already provides NewStreamableHTTPServer; no dependency bump.",
+      "files": ["cmd/zotero-pp-mcp/main.go"],
+      "validated_outcome": "build/vet/test/lint green. Live: `--transport http` initialize returns 200 advertising prompts+resources+tools; tools/list=102, resources/list=6, resource templates=7, prompts/list=7 all served over HTTP. stdio path unchanged."
+    },
+    {
+      "id": "mcp-result-budget-bound",
+      "summary": "Added the v4.27 internal/mcp/bound package (MCP result-budget rendering: count-wrapped GET arrays, oversized-array/response truncation into bounded preview envelopes) and wired bound.EndpointResponse(method, data) into tools.go's success path, replacing the prior hand-rolled GET count-wrap.",
+      "reason": "Token-efficiency harvest for the 28 typed MCP tools (Zotero list payloads are large). bound is stdlib-only and standalone, so it drops in cleanly; the tools.go wiring is a one-line return change that PRESERVES the 1b05b22e url.PathEscape security fix and all other tools.go patches. DELIBERATELY SKIPPED the rest of the v4.27 cobratree harvest (walker.go/shellout.go/cli_path.go/typemap.go): fresh cobratree has NO arg-safety hardening (no validateMirrorArguments/unsafeMCPMirrorFlags/safeFlagNames equivalent) and fresh typemap depends on its reservedStructuredArgs/blockedRootFlags symbols, so adopting it would regress the da7c6f88 MCP arg-safety hardening. Kept the hardened cobratree.",
+      "files": ["internal/mcp/bound/bound.go", "internal/mcp/bound/bound_test.go", "internal/mcp/tools.go"],
+      "validated_outcome": "build/vet/test/lint green (8 pkgs ok; bound_test passes). bound.EndpointResponse serves via http tools/call path; PathEscape fix intact.",
+      "upstream_issue": "Second upstream finding for cli-printing-press (alongside 1b05b22e): the v4.27 generated cobratree mirror lacks MCP arg-safety hardening (forged MCP args can smuggle hidden globals like --deliver/--profile/--group; raw flag tokens accepted in positional args). The da7c6f88 hardening in this CLI should be upstreamed into the generated walker/shellout."
     }
   ]
 }

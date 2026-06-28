@@ -19,6 +19,7 @@ import (
 	"zotero-pp-cli/internal/client"
 	"zotero-pp-cli/internal/cliutil"
 	"zotero-pp-cli/internal/config"
+	"zotero-pp-cli/internal/mcp/bound"
 	"zotero-pp-cli/internal/mcp/cobratree"
 	"zotero-pp-cli/internal/store"
 )
@@ -494,22 +495,11 @@ func makeAPIHandler(method, pathTemplate string, bindings []mcpParamBinding, pos
 			}
 		}
 
-		// For GET responses, wrap bare arrays with count metadata
-		if method == "GET" {
-			trimmed := strings.TrimSpace(string(data))
-			if len(trimmed) > 0 && trimmed[0] == '[' {
-				var items []json.RawMessage
-				if json.Unmarshal(data, &items) == nil {
-					wrapped := map[string]any{
-						"count": len(items),
-						"items": items,
-					}
-					out, _ := json.Marshal(wrapped)
-					return mcplib.NewToolResultText(string(out)), nil
-				}
-			}
-		}
-		return mcplib.NewToolResultText(string(data)), nil
+		// PATCH(glean harvest-4.27): render within the MCP result budget — wrap GET
+		// arrays with count metadata and truncate oversized arrays/responses into
+		// bounded preview envelopes. Supersedes the prior hand-rolled count wrap;
+		// bound.EndpointResponse passes small non-GET responses through unchanged.
+		return mcplib.NewToolResultText(bound.EndpointResponse(method, data)), nil
 	}
 }
 
