@@ -38,10 +38,15 @@ func resolveMutationMode(flags *rootFlags) mutation.Mode {
 	return mutation.ResolveMode(mutationOptions(flags))
 }
 
-// runMutation previews or applies the operations through the shared engine.
+// runMutation previews or applies the operations through the shared engine, then
+// records applied runs to the journal when a recorder is installed (real CLI path).
 func runMutation(ctx context.Context, flags *rootFlags, operation string, ops []mutation.Op) (mutation.Envelope, error) {
 	_ = ctx
-	return mutation.Run(mutationOptions(flags), operation, ops)
+	env, err := mutation.Run(mutationOptions(flags), operation, ops)
+	if mutationJournalRecorder != nil {
+		mutationJournalRecorder(env)
+	}
+	return env, err
 }
 
 // renderMutation writes the envelope as JSON (under --json or non-TTY) or a

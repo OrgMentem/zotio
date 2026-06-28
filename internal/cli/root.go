@@ -61,6 +61,9 @@ func RootCmd() *cobra.Command {
 
 // Execute runs the CLI in non-interactive mode: never prompts, all values via flags or stdin.
 func Execute() error {
+	// PATCH(glean roadmap-phase3): record applied mutation runs only on the real
+	// CLI path; subcommand unit tests construct commands directly and never journal.
+	mutationJournalRecorder = recordMutationJournal
 	var flags rootFlags
 	rootCmd := newRootCmd(&flags)
 
@@ -243,6 +246,7 @@ See README.md or the bundled SKILL.md for recipes.`,
 	rootCmd.AddCommand(newAuthCmd(flags))
 	rootCmd.AddCommand(newAgentContextCmd(rootCmd))
 	rootCmd.AddCommand(newCapabilitiesCmd(rootCmd))
+	rootCmd.AddCommand(newJournalCmd(flags))
 	rootCmd.AddCommand(newProfileCmd(flags))
 	rootCmd.AddCommand(newFeedbackCmd(flags))
 	rootCmd.AddCommand(newWhichCmd(flags))
