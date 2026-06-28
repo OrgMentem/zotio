@@ -808,6 +808,42 @@
       ],
       "validated_outcome": "gofmt/build/vet/test ./... all pass; new TestItemsEnrichMissingDOIKeysFrom proves provider calls are limited to the exact key list; library-health tests assert exact scoped remediation steps. Live: `library health --for all --limit 5 --json` emits remediation_plan steps for missing_doi/missing_abstract/missing_pdf with keys and `--keys-from -`, plus broad preview steps for DOI/title duplicate resolution and tag drift.",
       "upstream_issue": "Roadmap Phase 3 (docs/roadmap.md). Follow-up: promote mutate.go into internal/mutation, add a run-journal, and add undo only for reversible actions."
+    },
+    {
+      "id": "mutation-package-extraction",
+      "summary": "Promoted the shared write-safety engine from internal/cli/mutate.go into a new flag- and transport-agnostic package internal/mutation (Options instead of *rootFlags; exported Op/Change/Envelope/Plan/Result; Run/CheckGates/Summarize/ResolveMode/Rows). internal/cli/mutate.go is now a thin adapter (flags->Options + envelope rendering).",
+      "reason": "Rule-of-three was met many times over: the mutation envelope had consumers across items enrich/move/tags/duplicates-resolve, reading-list, searches materialize, and tags audit fix. Extraction needed an Options struct to avoid a cli<->mutation import cycle (the engine read *rootFlags; rendering used cli terminal/JSON helpers). The cli adapter keeps runMutation/renderMutation/resolveMutationMode (legitimate flag+render layer, not shims); all callers migrated to mutation.* types via parallel fan-out. Envelope JSON wire format is byte-identical, so no behavior change.",
+      "files": [
+        "internal/mutation/mutation.go",
+        "internal/mutation/mutation_test.go",
+        "internal/cli/mutate.go",
+        "internal/cli/mutate_test.go",
+        "internal/cli/items_enrich.go",
+        "internal/cli/items_move.go",
+        "internal/cli/items_tags_write.go",
+        "internal/cli/items_duplicates_resolve.go",
+        "internal/cli/reading_list_state.go",
+        "internal/cli/searches_materialize.go",
+        "internal/cli/tags_audit.go"
+      ],
+      "validated_outcome": "gofmt/build/vet/test ./... all green; engine tests moved to internal/mutation, adapter tests cover the flags->Options mapping. 7 caller areas migrated in parallel with no behavior change."
+    },
+    {
+      "id": "mutation-journal-and-undo",
+      "summary": "Added an append-only mutation run-journal and undo. Every applied run (>=1 change) is recorded as one JSON line in ~/.local/share/zotero-pp-cli/journal/journal.jsonl; `journal list`/`journal show <run-id>` inspect it; `journal undo <run-id>` reverses reversible (tag/collection membership) ops and loudly refuses the rest.",
+      "reason": "Roadmap Phase 3 audit-trail + undo. Recording is wired only on the real Execute() path and is best-effort (a journal failure never fails the mutation), so subcommand unit tests never touch the filesystem. Reversibility is decided per change field (tags/collections invert cleanly via Add<->Remove); DOI/abstract overwrites, tag renames, merges, and deletions are refused because the prior value was not captured or the inverse is unsafe. Undo is preview-first and routes through the same mutation engine + Web API write path; it is registered in the capability registry as a web_api_key write.",
+      "files": [
+        "internal/mutation/journal.go",
+        "internal/mutation/journal_test.go",
+        "internal/mutation/reverse.go",
+        "internal/mutation/reverse_test.go",
+        "internal/cli/journal.go",
+        "internal/cli/journal_test.go",
+        "internal/cli/mutate.go",
+        "internal/cli/root.go",
+        "internal/cli/capability.go"
+      ],
+      "validated_outcome": "gofmt/build/vet/test ./... all green. Package tests cover build-from-envelope, write/list/read roundtrip, and reversibility (refuses merge/DOI). Cli tests cover journal list/show, the apply-time recorder hook (preview does not record), undo preview plan (inverts tag_add, refuses missing_doi to stderr), and undo apply (PATCH removes the previously-added tag). Live: journal list/show/undo registered; capabilities marks `journal undo` op=write req=[web_api_key]."
     }
   ]
 }

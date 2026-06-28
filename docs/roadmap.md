@@ -215,11 +215,13 @@ P6  reproducible export  ->  P7  packaging & niceties
 - **Phase 2 — Trust contracts (forced by P1).** Minimal `scope.Spec`; freshness gate `--require-fresh`;
   exit code `11`; **capability registry** (fills the nil `agent-context` discovery; owns `requires`
   preconditions); the **`doctor --ensure-live --launch` + readiness** primitive (exit code `9`).
-- **Phase 3 — Safe remediation.** Findings route to existing fixers (no new write engine).
-  **Shipped first slice:** `library health` emits `remediation_plan` steps and `items enrich`
-  accepts `--keys-from`, so missing DOI/abstract/PDF remediation is exact and preview-first.
-  **Next:** promote `mutate.go` into an `internal/mutation` package once ≥2 commands consume it;
-  add a mutation run-journal; add undo only where reversible.
+- **Phase 3 — Safe remediation. SHIPPED.** Findings route to existing fixers (no new write
+  engine): `library health` emits `remediation_plan` steps and `items enrich` accepts
+  `--keys-from`, so missing DOI/abstract/PDF remediation is exact and preview-first. The shared
+  write engine was promoted to the `internal/mutation` package (Options instead of `*rootFlags`;
+  cli keeps a thin flags+render adapter). Every applied run is recorded to an append-only journal
+  (`journal list`/`show`); `journal undo <run-id>` reverses the reversible (tag/collection
+  membership) ops and loudly refuses the rest (merges, deletions, field overwrites, renames).
 - **Phase 4 — Reviewable import.** `import scan → resolve → apply` over an editable manifest;
   DOI/PMID/arXiv/ISBN adapters; schema-valid creation via Web `/items/new` (refuses loudly offline);
   `--attach-mode none|linked-file` now, `upload` deferred; enrich providers (Semantic Scholar /

@@ -83,6 +83,8 @@ var capabilityOverrides = map[string]capabilityEntry{
 	"import file":              {Operation: "write", WriteTarget: "web_api", Requires: []string{preconditionWebAPIKey}},
 	// Sync writes the local store (not a Zotero mutation).
 	"sync": {Operation: "sync"},
+	// Undo replays inverse membership changes via the Web API.
+	"journal undo": {Operation: "write", WriteTarget: "web_api", Requires: []string{preconditionWebAPIKey}},
 	// Introspection.
 	"doctor":  {Operation: "introspect"},
 	"which":   {Operation: "introspect"},

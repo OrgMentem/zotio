@@ -8,6 +8,8 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -112,5 +114,96 @@ func TestRecorderWritesAppliedRun(t *testing.T) {
 	}
 	if entries, _ = mutation.ListEntries(journalDir()); len(entries) != 1 {
 		t.Errorf("preview should not record; entries = %d, want 1", len(entries))
+	}
+}
+
+func TestJournalUndoPreviewPlan(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	entry := mutation.JournalEntry{
+		RunID: "r2", Operation: "items.tags.add", Mode: "apply",
+		Ops: []mutation.JournalOp{
+			{ID: "a", Key: "K1", Kind: "tag_add", Status: "applied", Changes: []mutation.Change{{Field: "tags", Add: "ml"}}},
+			{ID: "b", Key: "K2", Kind: "missing_doi", Status: "applied", Changes: []mutation.Change{{Field: "DOI", Add: "10/x"}}},
+		},
+	}
+	if err := mutation.WriteEntry(journalDir(), entry); err != nil {
+		t.Fatalf("seed journal: %v", err)
+	}
+
+	flags := &rootFlags{asJSON: true} // preview (no --yes)
+	cmd := newJournalCmd(flags)
+	cmd.SilenceErrors, cmd.SilenceUsage = true, true
+	cmd.SetArgs([]string{"undo", "r2"})
+	var out, errOut bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&errOut)
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("undo preview: %v; stderr=%s", err, errOut.String())
+	}
+
+	var env mutation.Envelope
+	if err := json.Unmarshal(out.Bytes(), &env); err != nil {
+		t.Fatalf("decode %q: %v", out.String(), err)
+	}
+	if env.Mode != "preview" || len(env.Plan.Operations) != 1 {
+		t.Fatalf("plan = %+v, want one reversible op in preview", env.Plan)
+	}
+	op := env.Plan.Operations[0]
+	if op.Kind != "undo.tag_add" || len(op.Changes) != 1 || op.Changes[0].Field != "tags" || op.Changes[0].Remove != "ml" {
+		t.Errorf("inverse op = %+v, want undo.tag_add removing ml", op)
+	}
+	if !strings.Contains(errOut.String(), "missing_doi") {
+		t.Errorf("stderr should report the refused DOI op: %q", errOut.String())
+	}
+}
+
+func TestJournalUndoAppliesTagReversal(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	srv := newItemTagTestServer(t, map[string]string{"K1": "5"}, map[string][]map[string]any{
+		"K1": {{"tag": "ml"}, {"tag": "keep"}},
+	})
+	t.Setenv("ZOTERO_BASE_URL", srv.server.URL+"/users/0")
+	t.Setenv("ZOTERO_CONFIG", filepath.Join(t.TempDir(), "missing.toml"))
+
+	entry := mutation.JournalEntry{
+		SchemaVersion: mutation.JournalSchemaVersion, RunID: "r1", Operation: "items.tags.add", Mode: "apply", OK: true,
+		Timestamp: time.Now(), Summary: mutation.ResultSummary{Attempted: 1, Applied: 1},
+		Ops: []mutation.JournalOp{
+			{ID: "items.tags.add:K1", Key: "K1", Kind: "tag_add", Status: "applied", Changes: []mutation.Change{{Field: "tags", Add: "ml"}}},
+		},
+	}
+	if err := mutation.WriteEntry(journalDir(), entry); err != nil {
+		t.Fatalf("seed journal: %v", err)
+	}
+
+	flags := &rootFlags{asJSON: true, yes: true, maxChanges: -1}
+	cmd := newJournalCmd(flags)
+	cmd.SilenceErrors, cmd.SilenceUsage = true, true
+	cmd.SetArgs([]string{"undo", "r1"})
+	var out, errOut bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&errOut)
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("undo apply: %v; stderr=%s", err, errOut.String())
+	}
+
+	var env mutation.Envelope
+	if err := json.Unmarshal(out.Bytes(), &env); err != nil {
+		t.Fatalf("decode %q: %v", out.String(), err)
+	}
+	if !env.OK || env.Result == nil || env.Result.Summary.Applied != 1 {
+		t.Fatalf("undo env = %+v, want one applied reversal", env)
+	}
+
+	body, ok := srv.patchBodies["K1"]
+	if !ok {
+		t.Fatal("expected a PATCH to K1")
+	}
+	tags, _ := body["tags"].([]any)
+	if len(tags) != 1 {
+		t.Fatalf("patched tags = %v, want only [keep] after removing ml", tags)
+	}
+	if m, _ := tags[0].(map[string]any); m["tag"] != "keep" {
+		t.Errorf("remaining tag = %v, want keep", tags[0])
 	}
 }
