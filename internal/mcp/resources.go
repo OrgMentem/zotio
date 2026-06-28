@@ -144,6 +144,83 @@ func RegisterResources(s *server.MCPServer) {
 			return jsonContentsValue(req.Params.URI, payload), nil
 		},
 	)
+
+	// PATCH(glean roadmap-phase5 943783579): decision-ready freshness.
+	s.AddResource(
+		mcplib.NewResource("zotero://freshness", "Local freshness",
+			mcplib.WithResourceDescription("Per-resource sync ages of the local store (age_seconds + human age) so agents know whether a read is fresh enough to trust or act on."),
+			mcplib.WithMIMEType("application/json")),
+		func(_ context.Context, req mcplib.ReadResourceRequest) ([]mcplib.ResourceContents, error) {
+			data, err := cli.FreshnessJSON()
+			if err != nil {
+				return nil, err
+			}
+			return jsonContents(req.Params.URI, string(data)), nil
+		},
+	)
+
+	// PATCH(glean roadmap-phase5): library health for a scope as a resource.
+	s.AddResourceTemplate(
+		mcplib.NewResourceTemplate("zotero://health/{scope}", "Library health report",
+			mcplib.WithTemplateDescription("Ranked library-health findings (all checks) for a scope: 'library', 'collection:KEY', 'tag:NAME', 'query:TEXT', or 'item:KEY'.")),
+		func(_ context.Context, req mcplib.ReadResourceRequest) ([]mcplib.ResourceContents, error) {
+			data, err := cli.HealthJSON(templateKey(req.Params.URI, "zotero://health/"))
+			if err != nil {
+				return nil, err
+			}
+			return jsonContents(req.Params.URI, string(data)), nil
+		},
+	)
+
+	// PATCH(glean roadmap-phase5 04f41aa8): bounded graph traversal resources.
+	s.AddResourceTemplate(
+		mcplib.NewResourceTemplate("zotero://collections/{key}/tree", "Collection tree",
+			mcplib.WithTemplateDescription("A collection and its nested subcollections from the local store (bounded depth/node count).")),
+		func(_ context.Context, req mcplib.ReadResourceRequest) ([]mcplib.ResourceContents, error) {
+			key := strings.TrimSuffix(strings.TrimPrefix(req.Params.URI, "zotero://collections/"), "/tree")
+			data, err := cli.CollectionTreeJSON(key)
+			if err != nil {
+				return nil, err
+			}
+			return jsonContents(req.Params.URI, string(data)), nil
+		},
+	)
+	s.AddResourceTemplate(
+		mcplib.NewResourceTemplate("zotero://items/{key}/children", "Item children",
+			mcplib.WithTemplateDescription("An item's child items (notes and attachments) from the local store (bounded).")),
+		func(_ context.Context, req mcplib.ReadResourceRequest) ([]mcplib.ResourceContents, error) {
+			key := strings.TrimSuffix(strings.TrimPrefix(req.Params.URI, "zotero://items/"), "/children")
+			data, err := cli.ItemChildrenJSON(key)
+			if err != nil {
+				return nil, err
+			}
+			return jsonContents(req.Params.URI, string(data)), nil
+		},
+	)
+	s.AddResourceTemplate(
+		mcplib.NewResourceTemplate("zotero://items/{key}/attachments", "Item attachments",
+			mcplib.WithTemplateDescription("An item's attachments (key, title, content type, link mode) from the local store (bounded).")),
+		func(_ context.Context, req mcplib.ReadResourceRequest) ([]mcplib.ResourceContents, error) {
+			key := strings.TrimSuffix(strings.TrimPrefix(req.Params.URI, "zotero://items/"), "/attachments")
+			data, err := cli.ItemAttachmentsJSON(key)
+			if err != nil {
+				return nil, err
+			}
+			return jsonContents(req.Params.URI, string(data)), nil
+		},
+	)
+	s.AddResourceTemplate(
+		mcplib.NewResourceTemplate("zotero://items/{key}/context", "Item context",
+			mcplib.WithTemplateDescription("An item plus its parent, collections, tags, and child/attachment counts (bounded).")),
+		func(_ context.Context, req mcplib.ReadResourceRequest) ([]mcplib.ResourceContents, error) {
+			key := strings.TrimSuffix(strings.TrimPrefix(req.Params.URI, "zotero://items/"), "/context")
+			data, err := cli.ItemContextJSON(key)
+			if err != nil {
+				return nil, err
+			}
+			return jsonContents(req.Params.URI, string(data)), nil
+		},
+	)
 }
 
 // RegisterPrompts registers guided workflow prompts so hosts can offer common
@@ -217,6 +294,59 @@ func RegisterPrompts(s *server.MCPServer) {
 					"Write strictly from that bundle: for an item, give the core claim/contribution, method, key findings, and limitations; "+
 					"for a collection, give shared themes, agreements, contradictions, and open gaps, citing item keys. "+
 					"Respect the bundle's `truncated` flags and never invent beyond the provided material.",
+			), nil
+		},
+	)
+
+	// PATCH(glean roadmap-phase5): guided trust-plane workflows.
+	s.AddPrompt(
+		mcplib.NewPrompt("prepare-library-health",
+			mcplib.WithPromptDescription("Assess and safely remediate library health for a scope."),
+			mcplib.WithArgument("scope", mcplib.ArgumentDescription("Scope: library, collection:KEY, tag:NAME, query:TEXT, or item:KEY (optional)")),
+		),
+		func(_ context.Context, req mcplib.GetPromptRequest) (*mcplib.GetPromptResult, error) {
+			scope := "library"
+			if v := strings.TrimSpace(req.Params.Arguments["scope"]); v != "" {
+				scope = promptArgumentLiteral(v)
+			}
+			return promptResult("Prepare library health",
+				"Assess and remediate library health for scope "+scope+". First read `zotero://freshness`; if the store is stale or unsynced, run the `sync` tool. "+
+					"Read `zotero://health/"+scope+"` (or run the `library_health` tool with `--for citation` or `--for systematic-review`) to get ranked findings and a `remediation_plan`. "+
+					"Triage by severity (critical first). For each autofixable finding, run its `recommended_action` command (e.g. `items_enrich` with `--keys-from -`, `items_duplicates_resolve`, `tags_audit fix`) in PREVIEW first, inspect the mutation plan, then re-run with `--yes`. "+
+					"Never apply destructive fixes without review. Re-read `zotero://health/"+scope+"` to confirm the findings cleared.",
+			), nil
+		},
+	)
+
+	s.AddPrompt(
+		mcplib.NewPrompt("prepare-import",
+			mcplib.WithPromptDescription("Ingest a folder of PDFs into Zotero through the reviewable scan -> resolve -> apply pipeline."),
+			mcplib.WithArgument("dir", mcplib.ArgumentDescription("Path to the PDF folder (optional)")),
+		),
+		func(_ context.Context, req mcplib.GetPromptRequest) (*mcplib.GetPromptResult, error) {
+			dir := "the PDF folder"
+			if v := strings.TrimSpace(req.Params.Arguments["dir"]); v != "" {
+				dir = promptArgumentLiteral(v)
+			}
+			return promptResult("Prepare a reviewable import",
+				"Import "+dir+" safely. 1) Run the `import_scan` tool on the directory to triage each PDF as new, duplicate, or attach-candidate (read-only). "+
+					"2) Run `import_resolve` to turn the scan into an editable JSON manifest with DOI-resolved items and a per-entry action (create/attach/skip). "+
+					"3) Review the manifest entries. 4) Run `import_apply` on the manifest in PREVIEW first (no `--yes`), inspect the mutation plan, choose `--attach-mode none` or `linked-file`, then apply with `--yes`. "+
+					"`--attach-mode upload` is not supported. Prefer `linked-file` only when the PDFs will stay at their current paths.",
+			), nil
+		},
+	)
+
+	s.AddPrompt(
+		mcplib.NewPrompt("sync-vault-safely",
+			mcplib.WithPromptDescription("Sync the Obsidian/Logseq vault without losing edits, auditing first."),
+		),
+		func(_ context.Context, _ mcplib.GetPromptRequest) (*mcplib.GetPromptResult, error) {
+			return promptResult("Sync the vault safely",
+				"Keep the vault and Zotero in sync without clobbering edits. 1) Run the `vault_audit` tool first (read-only preflight) and resolve any orphaned or stale notes it reports. "+
+					"2) Run `vault_sync` to materialize/update notes (idempotent; only managed regions change). "+
+					"3) To push your '## Notes' edits back to Zotero, run `vault_push` in PREVIEW first, then apply; resolve any write-back conflicts with `vault_conflicts` + `vault_resolve`. "+
+					"4) Use `vault_pull` to fast-forward remote child-note edits into the notes region. Re-run `vault_audit` to confirm the vault is clean.",
 			), nil
 		},
 	)

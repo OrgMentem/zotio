@@ -227,9 +227,11 @@ P6  reproducible export  ->  P7  packaging & niceties
   Web `/items/new` (`items new`, refuses loudly offline); `import apply --attach-mode none|linked-file`
   (`upload` refused loudly, deferred); enrich gained Semantic Scholar/OpenCitations providers + a
   read-only `--validate` discrepancy mode (OpenAlex already shipped).
-- **Phase 5 — Agent/vault trust plane.** `zotero://capabilities`, `zotero://freshness`,
-  `zotero://health/{scope}`, bounded graph resources (tree/children/attachments/context with limits);
-  `vault audit` preflight; guided MCP prompts (prepare-library-health, prepare-import, sync-vault-safely).
+- **Phase 5 — Agent/vault trust plane. SHIPPED.** `zotero://freshness` (decision-ready sync ages),
+  `zotero://health/{scope}` (ranked findings per scope), and bounded graph resources
+  (`collections/{key}/tree`, `items/{key}/children|attachments|context`, depth/node-capped);
+  `vault audit` read-only preflight (orphaned/stale/needs-boundary); guided MCP prompts
+  (prepare-library-health, prepare-import, sync-vault-safely). `zotero://capabilities` shipped in Phase 2.
 - **Phase 6 — Reproducible export.** `export snapshot` lockfile (structured formats, not formatted
   bibliography which ignores `limit`); resumable pagination. *(Validate demand during Phase 1–5.)*
 - **Phase 7 — Packaging & niceties.** MCP install honoring profiles/groups/base-url; group readiness
