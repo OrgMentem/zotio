@@ -5,14 +5,18 @@ package main
 
 import (
 	"context"
+	"flag"
 	"fmt"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 
 	"github.com/mark3labs/mcp-go/server"
 	mcptools "zotero-pp-cli/internal/mcp"
 )
+
+const defaultHTTPAddr = ":7777"
 
 func main() {
 	// PATCH(glean qfuq): advertise resource + prompt capabilities alongside
@@ -42,24 +46,58 @@ func main() {
 		fmt.Fprintf(os.Stderr, "Zotero MCP: profile %s\n", p)
 	}
 
-	stdout := os.Stdout
+	// PATCH(glean harvest-4.27): adopt the v4.27 streamable-HTTP transport so one
+	// binary serves stdio locally and HTTP when hosted in a container/remote
+	// sandbox. Transport selection: --transport flag, then PP_MCP_TRANSPORT env,
+	// then stdio (preserves prior behavior). The fresh machine's stdio path uses
+	// server.ServeStdio, which does NOT redirect process stdout — kept the
+	// hardened NewStdioServer path below instead (see field-mcp-transport).
+	transport := flag.String("transport", defaultTransport(), "MCP transport: stdio | http")
+	addr := flag.String("addr", defaultHTTPAddr, "bind address for http transport (host:port or :port)")
+	flag.Parse()
+
 	// PATCH(glean field-mcp-transport): stdio MCP uses stdout as the JSON-RPC
-	// transport. Mirrored Cobra commands still contain legacy direct
-	// os.Stdout writes, so route accidental process-stdout chatter to stderr
-	// and pass the original stdout handle only to the MCP transport.
+	// transport. Mirrored Cobra commands still contain legacy direct os.Stdout
+	// writes, so route accidental process-stdout chatter to stderr and pass the
+	// original stdout handle only to the MCP transport. Harmless for HTTP (where
+	// command output is captured per-tool), so applied before the switch.
+	stdout := os.Stdout
 	os.Stdout = os.Stderr
-	stdio := server.NewStdioServer(s)
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	signals := make(chan os.Signal, 1)
-	signal.Notify(signals, syscall.SIGTERM, syscall.SIGINT)
-	defer signal.Stop(signals)
-	go func() {
-		<-signals
-		cancel()
-	}()
-	if err := stdio.Listen(ctx, os.Stdin, stdout); err != nil {
-		fmt.Fprintf(os.Stderr, "MCP server error: %v\n", err)
-		os.Exit(1)
+
+	switch strings.ToLower(*transport) {
+	case "stdio":
+		stdio := server.NewStdioServer(s)
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		signals := make(chan os.Signal, 1)
+		signal.Notify(signals, syscall.SIGTERM, syscall.SIGINT)
+		defer signal.Stop(signals)
+		go func() {
+			<-signals
+			cancel()
+		}()
+		if err := stdio.Listen(ctx, os.Stdin, stdout); err != nil {
+			fmt.Fprintf(os.Stderr, "MCP server error: %v\n", err)
+			os.Exit(1)
+		}
+	case "http":
+		httpSrv := server.NewStreamableHTTPServer(s)
+		fmt.Fprintf(os.Stderr, "zotero-pp-mcp serving MCP over streamable HTTP at %s\n", *addr)
+		if err := httpSrv.Start(*addr); err != nil {
+			fmt.Fprintf(os.Stderr, "MCP server error: %v\n", err)
+			os.Exit(1)
+		}
+	default:
+		fmt.Fprintf(os.Stderr, "unknown --transport %q (supported: stdio, http)\n", *transport)
+		os.Exit(2)
 	}
+}
+
+// defaultTransport reads PP_MCP_TRANSPORT env when set, otherwise falls back to
+// "stdio" so running the binary with no args keeps today's behavior.
+func defaultTransport() string {
+	if t := os.Getenv("PP_MCP_TRANSPORT"); t != "" {
+		return t
+	}
+	return "stdio"
 }
