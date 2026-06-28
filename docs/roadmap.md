@@ -232,8 +232,11 @@ P6  reproducible export  ->  P7  packaging & niceties
   (`collections/{key}/tree`, `items/{key}/children|attachments|context`, depth/node-capped);
   `vault audit` read-only preflight (orphaned/stale/needs-boundary); guided MCP prompts
   (prepare-library-health, prepare-import, sync-vault-safely). `zotero://capabilities` shipped in Phase 2.
-- **Phase 6 — Reproducible export.** `export snapshot` lockfile (structured formats, not formatted
-  bibliography which ignores `limit`); resumable pagination. *(Validate demand during Phase 1–5.)*
+- **Phase 6 — Reproducible export. SHIPPED.** `export snapshot [library|collection:KEY|tag:NAME]`:
+  truly paginated (start/limit across all pages), resumable (a checkpoint sidecar lets an
+  interrupted run continue), streams structured item JSONL, and writes a `<output>.lock.json`
+  lockfile recording each item's key+version + a sort-invariant content sha256 for reproducibility/
+  drift detection (never the formatted-bibliography mode that ignores limit).
 - **Phase 7 — Packaging & niceties.** MCP install honoring profiles/groups/base-url; group readiness
   preflight; watch-mode sync (polling/incremental, not push); capability-drift detection.
 
