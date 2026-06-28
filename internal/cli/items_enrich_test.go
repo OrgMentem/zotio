@@ -225,7 +225,7 @@ func TestBuildEnrichProposals_DOIFromStore(t *testing.T) {
 	withBase(t, &enrichCrossRefBase, srv.URL)
 	db := seedEnrichStore(t)
 
-	proposals, skipped := buildEnrichProposals(context.Background(), db, http.DefaultClient, "missing_doi", 25, "", nil, "", false)
+	proposals, skipped := buildEnrichProposals(context.Background(), db, http.DefaultClient, "missing_doi", 25, "", nil, "", false, false)
 	if len(proposals) != 1 {
 		t.Fatalf("proposals = %d, want 1: %+v", len(proposals), proposals)
 	}
@@ -238,6 +238,38 @@ func TestBuildEnrichProposals_DOIFromStore(t *testing.T) {
 	// K2's title has no CrossRef match -> skipped, not silently dropped.
 	if len(skipped) != 1 || skipped[0].Key != "K2" {
 		t.Errorf("skipped = %+v, want K2", skipped)
+	}
+}
+
+// PATCH(glean roadmap-phase4 mmmd): Semantic Scholar is the final exact-title DOI fallback after CrossRef and OpenAlex miss.
+func TestBuildEnrichProposals_DOIFromSemanticScholarFallback(t *testing.T) {
+	cr := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"message":{"items":[]}}`))
+	}))
+	t.Cleanup(cr.Close)
+	withBase(t, &enrichCrossRefBase, cr.URL)
+	oa := openAlexWorkServer(t, `{"results":[]}`)
+	withBase(t, &enrichOpenAlexBase, oa.URL)
+	ss := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Get("query") == "Attention Is All You Need" {
+			_, _ = w.Write([]byte(`{"data":[{"title":"Attention Is All You Need","externalIds":{"DOI":"10.555/semantic"}}]}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"data":[]}`))
+	}))
+	t.Cleanup(ss.Close)
+	withBase(t, &enrichSemanticScholarBase, ss.URL)
+	db := seedEnrichStore(t)
+
+	proposals, skipped := buildEnrichProposals(context.Background(), db, http.DefaultClient, "missing_doi", 25, "", nil, "", true, true)
+	if len(proposals) != 1 {
+		t.Fatalf("proposals = %d, want 1: %+v (skipped=%+v)", len(proposals), proposals, skipped)
+	}
+	if proposals[0].Source != "Semantic Scholar" {
+		t.Fatalf("source = %q, want Semantic Scholar", proposals[0].Source)
+	}
+	if proposals[0].Fields["DOI"] != "10.555/semantic" {
+		t.Errorf("DOI = %v, want Semantic Scholar DOI", proposals[0].Fields["DOI"])
 	}
 }
 
@@ -363,7 +395,7 @@ func TestItemsEnrichPreviewEnvelope(t *testing.T) {
 
 	flags := &rootFlags{asJSON: true} // no yes -> preview only
 	cmd := newItemsEnrichCmd(flags)
-	cmd.SetArgs([]string{"--missing-doi"})
+	cmd.SetArgs([]string{"--missing-doi", "--no-openalex", "--no-semantic-scholar"})
 	var out bytes.Buffer
 	cmd.SetOut(&out)
 	cmd.SetErr(&bytes.Buffer{})
@@ -406,7 +438,7 @@ func TestItemsEnrichApplyViaAPI(t *testing.T) {
 
 	flags := &rootFlags{asJSON: true, yes: true, maxChanges: -1} // apply mode
 	cmd := newItemsEnrichCmd(flags)
-	cmd.SetArgs([]string{"--missing-doi"})
+	cmd.SetArgs([]string{"--missing-doi", "--no-openalex", "--no-semantic-scholar"})
 	var out bytes.Buffer
 	cmd.SetOut(&out)
 	cmd.SetErr(&bytes.Buffer{})
@@ -490,7 +522,7 @@ func TestEnrichOpenAlexAbstractFallback(t *testing.T) {
 	withBase(t, &enrichOpenAlexBase, oa.URL)
 
 	data := map[string]any{"title": "T", "DOI": "10.1/x"}
-	prop, reason := resolveEnrichment(context.Background(), http.DefaultClient, "missing_abstract", "K1", float64(1), data, "", true)
+	prop, reason := resolveEnrichment(context.Background(), http.DefaultClient, "missing_abstract", "K1", float64(1), data, "", true, false)
 	if reason != "" {
 		t.Fatalf("unexpected skip: %s", reason)
 	}
@@ -501,7 +533,65 @@ func TestEnrichOpenAlexAbstractFallback(t *testing.T) {
 		t.Errorf("abstract = %v, want 'From OpenAlex'", prop.Fields["abstractNote"])
 	}
 
-	if _, reason := resolveEnrichment(context.Background(), http.DefaultClient, "missing_abstract", "K1", float64(1), data, "", false); reason == "" {
+	if _, reason := resolveEnrichment(context.Background(), http.DefaultClient, "missing_abstract", "K1", float64(1), data, "", false, false); reason == "" {
 		t.Error("expected a skip when the OpenAlex fallback is disabled")
+	}
+}
+
+// PATCH(glean roadmap-phase4 mmmd): --validate is read-only and reports CrossRef discrepancies for DOI-bearing local items.
+func TestItemsEnrichValidateReportsCrossRefTitleDiscrepancy(t *testing.T) {
+	cr := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"message":{"title":["Provider Title"],"DOI":"10.1/validate","published":{"date-parts":[[2024]]}}}`))
+	}))
+	t.Cleanup(cr.Close)
+	withBase(t, &enrichCrossRefBase, cr.URL)
+	oc := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`[{"doi":"10.1/validate"}]`))
+	}))
+	t.Cleanup(oc.Close)
+	withBase(t, &enrichOpenCitationsBase, oc.URL)
+
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("ZOTERO_CONFIG", filepath.Join(t.TempDir(), "validate.toml"))
+	dbPath := defaultDBPath("zotero-pp-cli")
+	db, err := store.OpenWithContext(context.Background(), dbPath)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	items := []json.RawMessage{
+		json.RawMessage(`{"key":"KVAL","version":1,"data":{"key":"KVAL","itemType":"journalArticle","title":"Stored Title","date":"2024","DOI":"10.1/validate"}}`),
+		json.RawMessage(`{"key":"KNODOI","version":1,"data":{"key":"KNODOI","itemType":"journalArticle","title":"No DOI"}}`),
+	}
+	if _, _, err := db.UpsertBatch("items", items); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	_ = db.Close()
+
+	flags := &rootFlags{asJSON: true}
+	cmd := newItemsEnrichCmd(flags)
+	cmd.SetArgs([]string{"--validate"})
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&bytes.Buffer{})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("validate: %v", err)
+	}
+
+	var report enrichValidationReport
+	if err := json.Unmarshal(out.Bytes(), &report); err != nil {
+		t.Fatalf("decode %q: %v", out.String(), err)
+	}
+	if report.Validated != 1 {
+		t.Fatalf("validated = %d, want 1", report.Validated)
+	}
+	if len(report.Discrepancies) != 1 {
+		t.Fatalf("discrepancies = %+v, want one title discrepancy", report.Discrepancies)
+	}
+	got := report.Discrepancies[0]
+	if got.Key != "KVAL" || got.Field != "title" || got.Stored != "Stored Title" || got.Provider != "Provider Title" || got.Source != "CrossRef" {
+		t.Errorf("discrepancy = %+v, want CrossRef title mismatch", got)
+	}
+	if len(report.UnverifiedDOIs) != 0 {
+		t.Errorf("unverified DOIs = %+v, want none", report.UnverifiedDOIs)
 	}
 }

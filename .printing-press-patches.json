@@ -844,6 +844,27 @@
         "internal/cli/capability.go"
       ],
       "validated_outcome": "gofmt/build/vet/test ./... all green. Package tests cover build-from-envelope, write/list/read roundtrip, and reversibility (refuses merge/DOI). Cli tests cover journal list/show, the apply-time recorder hook (preview does not record), undo preview plan (inverts tag_add, refuses missing_doi to stderr), and undo apply (PATCH removes the previously-added tag). Live: journal list/show/undo registered; capabilities marks `journal undo` op=write req=[web_api_key]."
+    },
+    {
+      "id": "import-identifier-adapters",
+      "summary": "Added PMID (PubMed eSummary), arXiv (Atom), and ISBN (Open Library) import adapters as `import pmid|arxiv|isbn <id>`, mirroring `import doi` (--collection, --dry-run preview, bare-array POST /items).",
+      "reason": "Roadmap Phase 4 (bead 37849fc0): identifier coverage beyond DOI/URL/file. Each adapter has a package-level base-URL seam for testing and a pure response->Zotero-item mapper (pubmedItemFromSummary/arxivItemFromEntry/openLibraryItemFromData). Registered in the capability registry as web_api_key writes.",
+      "files": ["internal/cli/import_identifiers.go", "internal/cli/import_identifiers_test.go", "internal/cli/import.go", "internal/cli/capability.go"],
+      "validated_outcome": "gofmt/build/vet/test ./... green; unit tests on each mapper plus --dry-run JSON smoke per adapter. `import --help` lists pmid/arxiv/isbn."
+    },
+    {
+      "id": "items-new-schema-builder",
+      "summary": "Added `items new --item-type <t> --field k=v... [--stdin]`: fetches Zotero's /items/new blank template, validates provided fields against the schema (rejecting unknown fields), and POSTs. Reusable fetchItemTemplate/validateItemFields helpers.",
+      "reason": "Roadmap Phase 4 (bead 748370c5): schema-valid creation. /items/new is Web-API-only, so fetchItemTemplate returns a loud preconditionErr (exit 9) when offline, and forces the template GET live even under --dry-run (the read is a validation prerequisite; only the create is previewed). import apply reuses these helpers.",
+      "files": ["internal/cli/items_new.go", "internal/cli/items_new_test.go", "internal/cli/items.go", "internal/cli/capability.go"],
+      "validated_outcome": "gofmt/build/vet/test ./... green; tests cover unknown-field rejection and --dry-run merged fields. Orchestrator fix: /items/new returns a single object (not array) and the template GET must bypass dry-run."
+    },
+    {
+      "id": "enrich-providers-and-validate",
+      "summary": "Added Semantic Scholar (DOI+abstract fallback, behind --no-semantic-scholar) and OpenCitations (DOI-registration check) providers to `items enrich`, plus a read-only `--validate` discrepancy report comparing stored title/year against CrossRef and flagging DOIs absent from OpenCitations.",
+      "reason": "Roadmap Phase 4 (bead mmmd): higher-fidelity enrichment + validation. Semantic Scholar chains after OpenAlex for missing_doi/missing_abstract; --validate performs no writes and emits a JSON discrepancy report. useSemanticScholar threaded through buildEnrichProposals/resolveEnrichment alongside useOpenAlex.",
+      "files": ["internal/cli/items_enrich.go", "internal/cli/items_enrich_test.go"],
+      "validated_outcome": "gofmt/build/vet/test ./... green; tests cover the Semantic Scholar fallback source and a --validate title discrepancy report."
     }
   ]
 }

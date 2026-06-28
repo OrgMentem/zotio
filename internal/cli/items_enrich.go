@@ -34,6 +34,9 @@ var (
 	enrichCrossRefBase  = "https://api.crossref.org"
 	enrichUnpaywallBase = "https://api.unpaywall.org/v2"
 	enrichOpenAlexBase  = "https://api.openalex.org"
+	// PATCH(glean roadmap-phase4 mmmd): provider seams for Semantic Scholar DOI/abstract fallbacks and OpenCitations DOI validation.
+	enrichSemanticScholarBase = "https://api.semanticscholar.org/graph/v1"
+	enrichOpenCitationsBase   = "https://opencitations.net/index/api/v1"
 )
 
 const maxEnrichProviderResponseBytes = 4 << 20
@@ -71,14 +74,15 @@ type enrichSkip struct {
 
 func newItemsEnrichCmd(flags *rootFlags) *cobra.Command {
 	var (
-		flagMissingDOI      bool
-		flagMissingAbstract bool
-		flagMissingPDF      bool
-		flagLimit           int
-		flagEmail           string
-		flagNoOpenAlex      bool
-		// PATCH(glean bugfix): allow enrichment work queues to be scoped by collection key.
-		flagCollection string
+		flagMissingDOI        bool
+		flagMissingAbstract   bool
+		flagMissingPDF        bool
+		flagLimit             int
+		flagEmail             string
+		flagNoOpenAlex        bool
+		flagNoSemanticScholar bool
+		flagValidate          bool
+		flagCollection        string
 		// PATCH(glean roadmap-phase3): exact remediation from `library health`
 		// feeds item keys to enrichment so it previews/applies only the findings
 		// it recommended, instead of broadening back out to the whole queue.
@@ -87,13 +91,13 @@ func newItemsEnrichCmd(flags *rootFlags) *cobra.Command {
 
 	cmd := &cobra.Command{
 		Use:   "enrich",
-		Short: "Fill missing item metadata (DOI, abstract, open-access PDF link) from CrossRef, OpenAlex, and Unpaywall",
+		Short: "Fill or validate item metadata (DOI, abstract, open-access PDF link) from CrossRef, OpenAlex, Semantic Scholar, Unpaywall, and OpenCitations",
 		// PATCH(glean write-safety): --agent no longer implies --yes; help names --yes as the apply switch. PATCH(glean bugfix): --collection scopes enrichment queues.
 		Long: `Resolve missing metadata for locally synced items and apply it back to Zotero.
 
 Work queues come from the same checks as 'items audit':
-  --missing-doi       resolve a DOI by title from CrossRef, then OpenAlex (exact title match)
-  --missing-abstract  fill the abstract from CrossRef, then OpenAlex (requires the item's DOI)
+  --missing-doi       resolve a DOI by title from CrossRef, then OpenAlex/Semantic Scholar (exact title match)
+  --missing-abstract  fill the abstract from CrossRef, then OpenAlex/Semantic Scholar (requires the item's DOI)
   --missing-pdf       attach an open-access PDF link from Unpaywall (requires DOI)
 
 By default this previews the proposed changes (a patch plan). Pass --collection
@@ -103,8 +107,8 @@ Zotero API; --dry-run always previews. Applied field changes
 record provenance in the item's Extra field.`,
 		Annotations: map[string]string{"mcp:read-only": "false"},
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if !flagMissingDOI && !flagMissingAbstract && !flagMissingPDF {
-				return fmt.Errorf("specify at least one of --missing-doi, --missing-abstract, --missing-pdf")
+			if !flagValidate && !flagMissingDOI && !flagMissingAbstract && !flagMissingPDF {
+				return fmt.Errorf("specify at least one of --missing-doi, --missing-abstract, --missing-pdf, or --validate")
 			}
 
 			rawDB, err := openStoreForRead(cmd.Context(), "zotero-pp-cli")
@@ -124,21 +128,30 @@ record provenance in the item's Extra field.`,
 			}
 
 			httpClient := &http.Client{Timeout: enrichTimeout(flags.timeout)}
+			useOpenAlex := !flagNoOpenAlex
+			useSemanticScholar := !flagNoSemanticScholar
+			if flagValidate {
+				report, err := validateEnrichItems(cmd.Context(), db, httpClient, flagLimit, flagCollection, keyFilter)
+				if err != nil {
+					return err
+				}
+				return renderEnrichValidationReport(cmd, flags, report)
+			}
+
 			var proposals []enrichProposal
 			var skipped []enrichSkip
-			useOpenAlex := !flagNoOpenAlex
 
 			// PATCH(glean bugfix): thread collection scope through every selected enrichment category.
 			if flagMissingDOI {
-				p, s := buildEnrichProposals(cmd.Context(), db, httpClient, "missing_doi", flagLimit, flagCollection, keyFilter, flagEmail, useOpenAlex)
+				p, s := buildEnrichProposals(cmd.Context(), db, httpClient, "missing_doi", flagLimit, flagCollection, keyFilter, flagEmail, useOpenAlex, useSemanticScholar)
 				proposals, skipped = append(proposals, p...), append(skipped, s...)
 			}
 			if flagMissingAbstract {
-				p, s := buildEnrichProposals(cmd.Context(), db, httpClient, "missing_abstract", flagLimit, flagCollection, keyFilter, flagEmail, useOpenAlex)
+				p, s := buildEnrichProposals(cmd.Context(), db, httpClient, "missing_abstract", flagLimit, flagCollection, keyFilter, flagEmail, useOpenAlex, useSemanticScholar)
 				proposals, skipped = append(proposals, p...), append(skipped, s...)
 			}
 			if flagMissingPDF {
-				p, s := buildEnrichProposals(cmd.Context(), db, httpClient, "missing_pdf", flagLimit, flagCollection, keyFilter, flagEmail, useOpenAlex)
+				p, s := buildEnrichProposals(cmd.Context(), db, httpClient, "missing_pdf", flagLimit, flagCollection, keyFilter, flagEmail, useOpenAlex, useSemanticScholar)
 				proposals, skipped = append(proposals, p...), append(skipped, s...)
 			}
 
@@ -165,8 +178,8 @@ record provenance in the item's Extra field.`,
 		},
 	}
 
-	cmd.Flags().BoolVar(&flagMissingDOI, "missing-doi", false, "Resolve and add a DOI from CrossRef")
-	cmd.Flags().BoolVar(&flagMissingAbstract, "missing-abstract", false, "Fill the abstract from CrossRef, then OpenAlex (uses the item's DOI)")
+	cmd.Flags().BoolVar(&flagMissingDOI, "missing-doi", false, "Resolve and add a DOI from CrossRef, OpenAlex, or Semantic Scholar")
+	cmd.Flags().BoolVar(&flagMissingAbstract, "missing-abstract", false, "Fill the abstract from CrossRef, OpenAlex, or Semantic Scholar (uses the item's DOI)")
 	cmd.Flags().BoolVar(&flagMissingPDF, "missing-pdf", false, "Attach an open-access PDF link from Unpaywall (uses the item's DOI)")
 	cmd.Flags().IntVar(&flagLimit, "limit", 25, "Maximum items to process per category")
 	// PATCH(glean bugfix): expose collection scoping for the local work queue.
@@ -174,6 +187,8 @@ record provenance in the item's Extra field.`,
 	cmd.Flags().StringVar(&keysFrom, "keys-from", "", "Read exact item keys from a file or '-' for stdin, then enrich only matching queued items")
 	cmd.Flags().StringVar(&flagEmail, "email", "", "Contact email for Unpaywall (required for --missing-pdf) and the OpenAlex polite pool (optional); or set UNPAYWALL_EMAIL")
 	cmd.Flags().BoolVar(&flagNoOpenAlex, "no-openalex", false, "Disable the OpenAlex fallback for --missing-doi/--missing-abstract")
+	cmd.Flags().BoolVar(&flagNoSemanticScholar, "no-semantic-scholar", false, "Disable the Semantic Scholar fallback for --missing-doi/--missing-abstract")
+	cmd.Flags().BoolVar(&flagValidate, "validate", false, "Read-only DOI discrepancy report against CrossRef and OpenCitations")
 
 	return cmd
 }
@@ -222,7 +237,7 @@ func filterEnrichRowsByKeys(rows []map[string]any, allow map[string]bool) []map[
 // PATCH(glean bugfix): carry collection scope from the command into the work queue.
 // PATCH(glean roadmap-phase3): carry exact key scope from --keys-from, filtering
 // before provider lookups so remediation stays bounded and cheap.
-func buildEnrichProposals(ctx context.Context, db localQueryStore, httpClient *http.Client, category string, limit int, collection string, keyFilter map[string]bool, email string, useOpenAlex bool) ([]enrichProposal, []enrichSkip) {
+func buildEnrichProposals(ctx context.Context, db localQueryStore, httpClient *http.Client, category string, limit int, collection string, keyFilter map[string]bool, email string, useOpenAlex bool, useSemanticScholar bool) ([]enrichProposal, []enrichSkip) {
 	rows, err := enrichWorkQueue(db, category, limit, collection)
 	if err != nil {
 		return nil, []enrichSkip{{Category: category, Reason: fmt.Sprintf("querying work queue: %v", err)}}
@@ -249,7 +264,7 @@ func buildEnrichProposals(ctx context.Context, db localQueryStore, httpClient *h
 			}
 			version, data := enrichItemFields(raw)
 			title := stringFromMap(data, "title")
-			prop, reason := resolveEnrichment(ctx, httpClient, category, key, version, data, email, useOpenAlex)
+			prop, reason := resolveEnrichment(ctx, httpClient, category, key, version, data, email, useOpenAlex, useSemanticScholar)
 			if reason != "" {
 				return outcome{skip: enrichSkip{Key: key, Title: title, Category: category, Reason: reason}, skipped: true}, nil
 			}
@@ -284,9 +299,104 @@ func enrichWorkQueue(db localQueryStore, category string, limit int, collection 
 	}
 }
 
+type enrichValidationDiscrepancy struct {
+	Key      string `json:"key"`
+	Field    string `json:"field"`
+	Stored   string `json:"stored"`
+	Provider string `json:"provider"`
+	Source   string `json:"source"`
+}
+
+type enrichValidationReport struct {
+	Validated      int                           `json:"validated"`
+	Discrepancies  []enrichValidationDiscrepancy `json:"discrepancies"`
+	UnverifiedDOIs []string                      `json:"unverified_dois"`
+}
+
+// PATCH(glean roadmap-phase4 mmmd): validation mode uses the local enrichment selection path but narrows it to DOI-bearing items.
+func queryEnrichValidationItems(db localQueryStore, limit int, collection string) ([]map[string]any, error) {
+	query := `
+SELECT
+	id AS key,
+	json_extract(data, '$.data.title') AS title,
+	json_extract(data, '$.data.itemType') AS item_type,
+	json_extract(data, '$.data.DOI') AS doi,
+	json_extract(data, '$.data.dateAdded') AS date_added
+FROM resources
+WHERE resource_type = 'items'
+	AND json_extract(data, '$.data.DOI') IS NOT NULL
+	AND TRIM(json_extract(data, '$.data.DOI')) != ''`
+	args := enrichCollectionFilterArgs(&query, "data", collection)
+	query += `
+ORDER BY date_added DESC`
+	return queryItemsAuditRows(db, query, limit, args...)
+}
+
+// PATCH(glean roadmap-phase4 mmmd): read-only discrepancy pass for stored DOI metadata without building mutation operations.
+func validateEnrichItems(ctx context.Context, db localQueryStore, httpClient *http.Client, limit int, collection string, keyFilter map[string]bool) (enrichValidationReport, error) {
+	report := enrichValidationReport{
+		Discrepancies:  []enrichValidationDiscrepancy{},
+		UnverifiedDOIs: []string{},
+	}
+	rows, err := queryEnrichValidationItems(db, limit, collection)
+	if err != nil {
+		return report, fmt.Errorf("querying validation work queue: %w", err)
+	}
+	rows = filterEnrichRowsByKeys(rows, keyFilter)
+	for _, row := range rows {
+		key := sqlStringValue(row["key"])
+		raw, gerr := db.Get("items", key)
+		if gerr != nil || raw == nil {
+			continue
+		}
+		_, data := enrichItemFields(raw)
+		doi := normalizeDOI(stringFromMap(data, "DOI"))
+		if doi == "" {
+			continue
+		}
+		report.Validated++
+		if work, ok := fetchCrossRefWorkByDOI(ctx, httpClient, doi); ok {
+			storedTitle := strings.TrimSpace(stringFromMap(data, "title"))
+			providerTitle := ""
+			if len(work.Title) > 0 {
+				providerTitle = strings.TrimSpace(work.Title[0])
+			}
+			if providerTitle != "" && normalizeTitleForMatch(storedTitle) != normalizeTitleForMatch(providerTitle) {
+				report.Discrepancies = append(report.Discrepancies, enrichValidationDiscrepancy{
+					Key: key, Field: "title", Stored: storedTitle, Provider: providerTitle, Source: "CrossRef",
+				})
+			}
+			storedYear := firstFourDigitYear(stringFromMap(data, "date"))
+			providerYear := crossRefYear(work.Published)
+			if providerYear != "" && storedYear != providerYear {
+				report.Discrepancies = append(report.Discrepancies, enrichValidationDiscrepancy{
+					Key: key, Field: "year", Stored: storedYear, Provider: providerYear, Source: "CrossRef",
+				})
+			}
+		}
+		if !resolveDOIRegisteredViaOpenCitations(ctx, httpClient, doi) {
+			report.UnverifiedDOIs = append(report.UnverifiedDOIs, key+":"+doi)
+		}
+	}
+	return report, nil
+}
+
+// PATCH(glean roadmap-phase4 mmmd): validation mode emits machine-readable reports in JSON mode and a compact human summary otherwise.
+func renderEnrichValidationReport(cmd *cobra.Command, flags *rootFlags, report enrichValidationReport) error {
+	if flags.asJSON {
+		data, err := json.Marshal(report)
+		if err != nil {
+			return err
+		}
+		return printOutputWithFlags(cmd.OutOrStdout(), json.RawMessage(data), flags)
+	}
+	fmt.Fprintf(cmd.OutOrStdout(), "Validated %d DOI item(s); %d discrepancy(ies); %d DOI(s) not registered in OpenCitations.\n", report.Validated, len(report.Discrepancies), len(report.UnverifiedDOIs))
+	return nil
+}
+
 // resolveEnrichment dispatches to the provider for a category and returns either
 // a proposal or a non-empty skip reason.
-func resolveEnrichment(ctx context.Context, httpClient *http.Client, category, key string, version any, data map[string]any, email string, useOpenAlex bool) (enrichProposal, string) {
+func resolveEnrichment(ctx context.Context, httpClient *http.Client, category, key string, version any, data map[string]any, email string, useOpenAlex bool, useSemanticScholar bool) (enrichProposal, string) {
 	title := stringFromMap(data, "title")
 	switch category {
 	case "missing_doi":
@@ -300,8 +410,13 @@ func resolveEnrichment(ctx context.Context, httpClient *http.Client, category, k
 				doi, ok, source = d, true, "OpenAlex"
 			}
 		}
+		if !ok && useSemanticScholar {
+			if d, ok2 := resolveDOIViaSemanticScholar(ctx, httpClient, data); ok2 {
+				doi, ok, source = d, true, "Semantic Scholar"
+			}
+		}
 		if !ok {
-			return enrichProposal{}, "no confident CrossRef/OpenAlex title match"
+			return enrichProposal{}, "no confident CrossRef/OpenAlex/Semantic Scholar title match"
 		}
 		return enrichProposal{
 			Key: key, Title: title, Category: category, Action: enrichActionPatch,
@@ -322,8 +437,13 @@ func resolveEnrichment(ctx context.Context, httpClient *http.Client, category, k
 				abstract, ok, source = a, true, "OpenAlex"
 			}
 		}
+		if !ok && useSemanticScholar {
+			if a, ok2 := resolveAbstractViaSemanticScholar(ctx, httpClient, doi); ok2 {
+				abstract, ok, source = a, true, "Semantic Scholar"
+			}
+		}
 		if !ok {
-			return enrichProposal{}, "no abstract on CrossRef or OpenAlex for this DOI"
+			return enrichProposal{}, "no abstract on CrossRef, OpenAlex, or Semantic Scholar for this DOI"
 		}
 		return enrichProposal{
 			Key: key, Title: title, Category: category, Action: enrichActionPatch,
@@ -531,12 +651,11 @@ func resolveDOIViaCrossRef(ctx context.Context, httpClient *http.Client, data ma
 // resolveAbstractViaCrossRef fetches a work by DOI and returns its abstract with
 // JATS XML markup stripped.
 func resolveAbstractViaCrossRef(ctx context.Context, httpClient *http.Client, doi string) (string, bool) {
-	u := enrichCrossRefBase + "/works/" + url.PathEscape(doi)
-	var resp crossRefWorkResponse
-	if err := getJSON(ctx, httpClient, u, &resp); err != nil {
+	work, ok := fetchCrossRefWorkByDOI(ctx, httpClient, doi)
+	if !ok {
 		return "", false
 	}
-	abstract := stripJATS(resp.Message.Abstract)
+	abstract := stripJATS(work.Abstract)
 	if abstract == "" {
 		return "", false
 	}
@@ -570,6 +689,74 @@ func resolvePDFViaUnpaywall(ctx context.Context, httpClient *http.Client, doi, e
 		}
 	}
 	return "", false
+}
+
+// --- Semantic Scholar (fallback for DOI + abstract). PATCH(glean roadmap-phase4 mmmd). ---
+
+type semanticScholarPaper struct {
+	Title       string `json:"title"`
+	ExternalIDs struct {
+		DOI string `json:"DOI"`
+	} `json:"externalIds"`
+	Abstract string `json:"abstract"`
+}
+
+type semanticScholarSearchResponse struct {
+	Data []semanticScholarPaper `json:"data"`
+}
+
+// PATCH(glean roadmap-phase4 mmmd): Semantic Scholar title-search DOI fallback with the same exact-title guard as CrossRef/OpenAlex.
+func resolveDOIViaSemanticScholar(ctx context.Context, httpClient *http.Client, data map[string]any) (string, bool) {
+	title := stringFromMap(data, "title")
+	if title == "" {
+		return "", false
+	}
+	u := enrichSemanticScholarBase + "/paper/search?fields=title,externalIds&limit=5&query=" + url.QueryEscape(title)
+	var resp semanticScholarSearchResponse
+	if err := getJSON(ctx, httpClient, u, &resp); err != nil {
+		return "", false
+	}
+	want := normalizeTitleForMatch(title)
+	for _, paper := range resp.Data {
+		if paper.Title == "" || paper.ExternalIDs.DOI == "" {
+			continue
+		}
+		if normalizeTitleForMatch(paper.Title) == want {
+			return normalizeDOI(paper.ExternalIDs.DOI), true
+		}
+	}
+	return "", false
+}
+
+// PATCH(glean roadmap-phase4 mmmd): Semantic Scholar DOI lookup fallback for abstracts.
+func resolveAbstractViaSemanticScholar(ctx context.Context, httpClient *http.Client, doi string) (string, bool) {
+	var resp semanticScholarPaper
+	if err := getJSON(ctx, httpClient, enrichSemanticScholarBase+"/paper/DOI:"+url.PathEscape(doi)+"?fields=abstract", &resp); err != nil {
+		return "", false
+	}
+	abstract := strings.TrimSpace(resp.Abstract)
+	if abstract == "" {
+		return "", false
+	}
+	return abstract, true
+}
+
+// PATCH(glean roadmap-phase4 mmmd): CrossRef DOI fetch shared by abstract enrichment and validation discrepancy checks.
+func fetchCrossRefWorkByDOI(ctx context.Context, httpClient *http.Client, doi string) (crossRefWork, bool) {
+	var resp crossRefWorkResponse
+	if err := getJSON(ctx, httpClient, enrichCrossRefBase+"/works/"+url.PathEscape(doi), &resp); err != nil {
+		return crossRefWork{}, false
+	}
+	return resp.Message, true
+}
+
+// PATCH(glean roadmap-phase4 mmmd): OpenCitations registration probe for DOI validation mode.
+func resolveDOIRegisteredViaOpenCitations(ctx context.Context, httpClient *http.Client, doi string) bool {
+	var resp []map[string]any
+	if err := getJSON(ctx, httpClient, enrichOpenCitationsBase+"/metadata/"+url.PathEscape(doi), &resp); err != nil {
+		return false
+	}
+	return len(resp) > 0
 }
 
 // --- OpenAlex (fallback for DOI + abstract; OA PDFs stay on Unpaywall, whose

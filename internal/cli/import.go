@@ -110,6 +110,9 @@ but do not stop the import.`,
 	cmd.AddCommand(newImportUrlCmd(flags))
 	cmd.AddCommand(newImportFileCmd(flags))
 	cmd.AddCommand(newImportScanCmd(flags)) // PATCH(glean q1ia): read-only PDF folder triage
+	cmd.AddCommand(newImportPmidCmd(flags))
+	cmd.AddCommand(newImportArxivCmd(flags))
+	cmd.AddCommand(newImportIsbnCmd(flags))
 
 	return cmd
 }

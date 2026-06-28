@@ -15,6 +15,7 @@ func newItemsCmd(flags *rootFlags) *cobra.Command {
 
 	cmd.AddCommand(newItemsChildrenCmd(flags))
 	cmd.AddCommand(newItemsCreateCmd(flags))
+	cmd.AddCommand(newItemsNewCmd(flags))
 	cmd.AddCommand(newItemsDeleteCmd(flags))
 	// PATCH: Register hand-written Zotero item workflows added after generation.
 	cmd.AddCommand(newItemsAnnotationsCmd(flags))

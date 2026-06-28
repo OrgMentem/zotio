@@ -81,6 +81,11 @@ var capabilityOverrides = map[string]capabilityEntry{
 	"import doi":               {Operation: "write", WriteTarget: "web_api", Requires: []string{preconditionWebAPIKey}},
 	"import url":               {Operation: "write", WriteTarget: "web_api", Requires: []string{preconditionWebAPIKey}},
 	"import file":              {Operation: "write", WriteTarget: "web_api", Requires: []string{preconditionWebAPIKey}},
+	"import pmid":              {Operation: "write", WriteTarget: "web_api", Requires: []string{preconditionWebAPIKey}},
+	"import arxiv":             {Operation: "write", WriteTarget: "web_api", Requires: []string{preconditionWebAPIKey}},
+	"import isbn":              {Operation: "write", WriteTarget: "web_api", Requires: []string{preconditionWebAPIKey}},
+	// items new validates against /items/new (Web-only) then POSTs.
+	"items new": {Operation: "write", WriteTarget: "web_api", Requires: []string{preconditionWebAPIKey}},
 	// Sync writes the local store (not a Zotero mutation).
 	"sync": {Operation: "sync"},
 	// Undo replays inverse membership changes via the Web API.
