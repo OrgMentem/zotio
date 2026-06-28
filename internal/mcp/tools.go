@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -368,6 +369,16 @@ type mcpParamBinding struct {
 	Location   string
 }
 
+// PATCH(glean 1b05b22e): percent-encode user-supplied path parameters before
+// splicing them into the API path. Raw substitution let a value containing "/"
+// (a malicious key in a shared/group library, or a prompt-injected agent)
+// re-target a different endpoint: /collections/{k} with k="ABC/items" became
+// /collections/ABC/items. url.PathEscape leaves valid Zotero keys ([A-Z0-9]{8})
+// untouched. This belongs upstream in the cli-printing-press makeAPIHandler too.
+func mcpPathValue(v any) string {
+	return url.PathEscape(fmt.Sprintf("%v", v))
+}
+
 // makeAPIHandler creates a generic MCP tool handler for an API endpoint.
 func makeAPIHandler(method, pathTemplate string, bindings []mcpParamBinding, positionalParams []string) server.ToolHandlerFunc {
 	return func(ctx context.Context, req mcplib.CallToolRequest) (*mcplib.CallToolResult, error) {
@@ -399,7 +410,7 @@ func makeAPIHandler(method, pathTemplate string, bindings []mcpParamBinding, pos
 			case "path":
 				placeholder := "{" + binding.WireName + "}"
 				pathParams[binding.PublicName] = true
-				path = strings.Replace(path, placeholder, fmt.Sprintf("%v", v), 1)
+				path = strings.Replace(path, placeholder, mcpPathValue(v), 1)
 			case "body":
 				bodyArgs[binding.WireName] = v
 			default:
@@ -413,7 +424,7 @@ func makeAPIHandler(method, pathTemplate string, bindings []mcpParamBinding, pos
 			}
 			pathParams[p] = true
 			if v, ok := args[p]; ok {
-				path = strings.Replace(path, placeholder, fmt.Sprintf("%v", v), 1)
+				path = strings.Replace(path, placeholder, mcpPathValue(v), 1)
 			}
 		}
 

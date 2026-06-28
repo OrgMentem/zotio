@@ -917,6 +917,14 @@
       "files": ["internal/store/store.go", "internal/store/extras.go", "internal/cli/collections_stats.go", "internal/cli/items_duplicates.go", "internal/cli/items_tags_write.go", "internal/cli/groups_test.go", "internal/cli/items_file_test.go", "internal/cli/sync_hhup_test.go", "internal/cli/tail_gaps_test.go"],
       "validated_outcome": "golangci-lint run ./... exits 0 (was 1, 17 findings); gofmt/build/vet/test ./... green (7 pkgs ok). The migrateExtras wiring is exercised by the existing internal/store open/migrate tests (every OpenWithContext now runs it).",
       "upstream_issue": "Generator-quality: cli-printing-press should wire migrateExtras into the migrate path by default (or drop the seam), emit errcheck-clean test scaffolding, and add golangci-lint to the printed Makefile's default verify path."
+    },
+    {
+      "id": "mcp-path-param-url-encoding",
+      "summary": "Security: percent-encode user-supplied path parameters in the generated MCP makeAPIHandler before splicing them into the API path. Added a mcpPathValue helper (url.PathEscape) and routed both path-substitution sites through it.",
+      "reason": "glean bead 1b05b22e (P2 security). makeAPIHandler substituted path params with strings.Replace(path, placeholder, fmt.Sprintf(\"%v\", v), 1) — no URL encoding — so a value containing '/' re-targeted a different endpoint (/collections/{k} with k=\"ABC/items\" became /collections/ABC/items). Exploitable via malicious keys in a shared/group library or a prompt-injected agent, and with --agent write defaults could reach mutations. tools.go is generated/DO-NOT-EDIT, but a known path-injection vuln in a deployed MCP server should not wait on a regen; AGENTS.md permits a narrow // PATCH. url.PathEscape leaves valid Zotero keys ([A-Z0-9]{8}) byte-for-byte unchanged.",
+      "files": ["internal/mcp/tools.go", "internal/mcp/tools_patch_test.go"],
+      "validated_outcome": "gofmt/build/vet/test ./... green; golangci-lint exits 0. New TestMCPPathValueNeutralizesInjection (5 subtests) proves '/', '../', space, and '?' are percent-encoded while a valid key is unchanged. Full-handler testing is blocked by sanitizeClientBaseURL rejecting untrusted (httptest) base URLs, so the escaping is verified at the helper boundary both call sites share.",
+      "upstream_issue": "Must be fixed upstream in cli-printing-press: the generated makeAPIHandler should url.PathEscape all path-location bindings by default."
     }
   ]
 }
