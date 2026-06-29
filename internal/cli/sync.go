@@ -315,7 +315,8 @@ func syncFulltext(c *client.Client, db *store.Store, full bool) {
 		results, errs := cliutil.FanoutRun(context.Background(), keys,
 			func(k string) string { return k },
 			func(_ context.Context, k string) (json.RawMessage, error) {
-				ft, _, ferr := c.GetWithVersion("/items/"+k+"/fulltext", nil)
+				// PATCH(glean pathenc-2): url-encode path param to prevent segment injection.
+				ft, _, ferr := c.GetWithVersion("/items/"+url.PathEscape(k)+"/fulltext", nil)
 				if ferr != nil {
 					return nil, ferr
 				}

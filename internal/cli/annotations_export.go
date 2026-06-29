@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/url"
 	"os"
 	"strings"
 
@@ -89,7 +90,8 @@ func newAnnotationsExportCmd(flags *rootFlags) *cobra.Command {
 			path := "/items/top"
 			params := map[string]string{}
 			if flagCollection != "" {
-				path = "/collections/" + flagCollection + "/items"
+				// PATCH(glean pathenc-2): url-encode path param to prevent segment injection.
+				path = "/collections/" + url.PathEscape(flagCollection) + "/items"
 			} else if flagTag != "" {
 				path = "/items"
 				params["tag"] = flagTag
@@ -129,7 +131,8 @@ func newAnnotationsExportCmd(flags *rootFlags) *cobra.Command {
 							}
 						}
 					} else {
-						children, err := c.Get("/items/"+key+"/children", map[string]string{"itemType": "annotation"})
+						// PATCH(glean pathenc-2): url-encode path param to prevent segment injection.
+						children, err := c.Get("/items/"+url.PathEscape(key)+"/children", map[string]string{"itemType": "annotation"})
 						if err != nil {
 							return annotationExportItem{}, err
 						}

@@ -11,6 +11,8 @@ package cli
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"os"
 
 	"zotero-pp-cli/internal/mutation"
 )
@@ -21,7 +23,9 @@ import (
 var mirrorWriteThrough func(env *mutation.Envelope)
 
 // applyMirrorWriteThrough replays each applied operation's changes onto the
-// cached mirror item and records the post-write state on the result item.
+// cached mirror item and records the post-write state on the result item. The
+// replayed item intentionally omits version fields because Zotero's advanced
+// Last-Modified-Version is not threaded through mutation.ResultItem.
 func applyMirrorWriteThrough(env *mutation.Envelope) {
 	if env == nil || env.Result == nil {
 		return
@@ -32,7 +36,13 @@ func applyMirrorWriteThrough(env *mutation.Envelope) {
 	}
 
 	db, err := openStoreForRead(context.Background(), "zotero-pp-cli")
-	if err != nil || db == nil {
+	if err != nil {
+		// PATCH(glean ryw-fix): distinguish a real mirror open failure from db==nil
+		// (not synced yet) and surface the degraded local-cache update.
+		warnMirrorOpenFailed(env, err)
+		return
+	}
+	if db == nil {
 		return // not synced yet — nothing to update; next sync establishes the mirror
 	}
 	defer db.Close()
@@ -43,15 +53,24 @@ func applyMirrorWriteThrough(env *mutation.Envelope) {
 		if it.Status != "applied" || it.Key == "" {
 			continue
 		}
-		item, ok := replayItemChanges(qs, it.Key, changesByOp[it.OpID])
+		item, ok, err := replayItemChanges(qs, it.Key, changesByOp[it.OpID])
+		if err != nil {
+			warnMirrorUpdateFailed(it.Key, err)
+			continue
+		}
 		if !ok {
 			continue // create / unsupported change shape — leave for sync to reconcile
 		}
+		// PATCH(glean ryw-fix): avoid surfacing or caching stale pre-write Zotero
+		// versions; the Web API's advanced version is not available here.
+		dropStaleItemVersion(item)
 		raw, err := json.Marshal(item)
 		if err != nil {
+			warnMirrorUpdateFailed(it.Key, err)
 			continue
 		}
 		if err := db.UpsertKeyed("items", []string{it.Key}, []json.RawMessage{raw}); err != nil {
+			warnMirrorUpdateFailed(it.Key, err)
 			continue
 		}
 		it.Item = item // read-your-writes: post-write state in the envelope
@@ -61,29 +80,57 @@ func applyMirrorWriteThrough(env *mutation.Envelope) {
 // replayItemChanges loads the cached mirror item, applies the changes to its
 // inner data, and returns the full updated item object. ok=false when the item
 // is not in the mirror (a create) or a change can't be confidently replayed.
-func replayItemChanges(qs localQueryStore, key string, changes []mutation.Change) (map[string]any, bool) {
+// Errors are reserved for real local-mirror failures/corruption that should be
+// warned about without failing the already-successful cloud write.
+func replayItemChanges(qs localQueryStore, key string, changes []mutation.Change) (map[string]any, bool, error) {
 	if len(changes) == 0 {
-		return nil, false
+		return nil, false, nil
 	}
 	rows, err := qs.QueryRaw("SELECT data FROM resources WHERE resource_type='items' AND id=?", key)
-	if err != nil || len(rows) == 0 {
-		return nil, false
+	if err != nil {
+		return nil, false, err
+	}
+	if len(rows) == 0 {
+		return nil, false, nil
 	}
 	var item map[string]any
 	if err := json.Unmarshal([]byte(sqlStringValue(rows[0]["data"])), &item); err != nil {
-		return nil, false
+		return nil, false, err
 	}
 	data, ok := item["data"].(map[string]any)
 	if !ok {
-		return nil, false
+		return nil, false, fmt.Errorf("cached item %s has no data object", key)
 	}
 	for _, c := range changes {
 		if !applyChangeToItemData(data, c) {
-			return nil, false // unsupported (e.g. merge []string add, trash) — abort this item
+			return nil, false, nil // unsupported (e.g. merge []string add, trash) — abort this item
 		}
 	}
 	item["data"] = data
-	return item, true
+	return item, true, nil
+}
+
+func warnMirrorOpenFailed(env *mutation.Envelope, err error) {
+	if env == nil || env.Result == nil {
+		return
+	}
+	for _, it := range env.Result.Items {
+		if it.Status == "applied" && it.Key != "" {
+			warnMirrorUpdateFailed(it.Key, err)
+		}
+	}
+}
+
+func warnMirrorUpdateFailed(key string, err error) {
+	fmt.Fprintf(os.Stderr, "warning: read-your-writes mirror update failed for %s: %v\n", key, err)
+}
+
+func dropStaleItemVersion(item map[string]any) {
+	delete(item, "version")
+	if data, ok := item["data"].(map[string]any); ok {
+		delete(data, "version")
+		delete(data, "dateModified")
+	}
 }
 
 // applyChangeToItemData forward-applies one change to an item's data map. It

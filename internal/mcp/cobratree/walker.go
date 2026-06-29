@@ -97,9 +97,30 @@ var unsafeMCPMirrorFlags = map[string]struct{}{
 // layer injects --agent out-of-band; see runMirroredInProcess). One shared
 // enumerator drives BOTH schema exposure and the validation allowlist so they
 // can never diverge, preserving the da7c6f88 guard.
+//
+// PATCH(glean facade-apply): F-plain dropped ALL inherited globals, including the
+// write-safety gate flags. But --agent injection does NOT imply --yes (root.go:
+// "does NOT auto-apply writes"), and the apply gate is `Yes && !DryRun`
+// (mutation.ResolveMode), so stripping them made every cobra-only mutation
+// workflow (items enrich, duplicates resolve, tags audit fix, …) preview-only
+// over MCP — a regression vs. the pre-F-plain surface. This is the F-surgical
+// design (Oracle's original pick): the write-safety gate flags stay reachable
+// for MUTATING commands only (read-only commands never need them). On the
+// default facade surface these add zero standing tokens (they appear only in
+// on-demand command_search detail), and the single-enumerator invariant keeps
+// validation==exposure intact.
+var writeGatingMCPFlags = []string{
+	"yes",
+	"dry-run",
+	"allow-destructive",
+	"max-changes",
+	"continue-on-error",
+	"max-failures",
+}
+
 func visitSafeMirrorFlags(cmd *cobra.Command, visit func(*pflag.Flag)) {
 	seen := map[string]struct{}{}
-	cmd.NonInheritedFlags().VisitAll(func(flag *pflag.Flag) {
+	emit := func(flag *pflag.Flag) {
 		if flag == nil || flag.Hidden || flag.Deprecated != "" {
 			return
 		}
@@ -111,7 +132,17 @@ func visitSafeMirrorFlags(cmd *cobra.Command, visit func(*pflag.Flag)) {
 		}
 		seen[flag.Name] = struct{}{}
 		visit(flag)
-	})
+	}
+	cmd.NonInheritedFlags().VisitAll(emit)
+	// PATCH(glean facade-apply): keep the write-safety gate flags reachable for
+	// mutating commands so applies remain possible through the MCP surface.
+	if !isMCPReadOnly(cmd) {
+		for _, name := range writeGatingMCPFlags {
+			if flag := cmd.InheritedFlags().Lookup(name); flag != nil {
+				emit(flag)
+			}
+		}
+	}
 }
 
 func safeFlagNames(cmd *cobra.Command) map[string]struct{} {

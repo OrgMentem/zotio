@@ -9,20 +9,27 @@ import (
 	"github.com/spf13/cobra"
 )
 
-var stripGlobalFlagNames = []string{
-	"agent",
+// PATCH(glean facade-apply): the write-safety gate flags stay reachable for
+// MUTATING commands (so applies work over MCP) and are stripped from read-only
+// commands. Formatting/ops globals and hidden globals stay stripped everywhere.
+var writeGatingGlobalFlagNames = []string{
 	"allow-destructive",
-	"compact",
 	"continue-on-error",
+	"dry-run",
+	"max-changes",
+	"max-failures",
+	"yes",
+}
+
+var formattingGlobalFlagNames = []string{
+	"agent",
+	"compact",
 	"csv",
 	"data-source",
-	"dry-run",
 	"human-friendly",
 	"idempotent",
 	"ignore-missing",
 	"json",
-	"max-changes",
-	"max-failures",
 	"no-cache",
 	"no-color",
 	"no-input",
@@ -31,7 +38,11 @@ var stripGlobalFlagNames = []string{
 	"rate-limit",
 	"select",
 	"timeout",
-	"yes",
+}
+
+func allGlobalFlagNames() []string {
+	out := append([]string{}, writeGatingGlobalFlagNames...)
+	return append(out, formattingGlobalFlagNames...)
 }
 
 var stripHiddenGlobalFlagNames = []string{
@@ -41,15 +52,26 @@ var stripHiddenGlobalFlagNames = []string{
 	"profile",
 }
 
-func stripNewRoot() (*cobra.Command, *cobra.Command) {
+// stripNewRoot builds a root with every global persistent flag plus a child.
+// readOnly toggles the mcp:read-only annotation that decides whether the child
+// is treated as mutating (write-gating flags exposed) or read-only (stripped).
+func stripNewRoot(readOnly bool) (*cobra.Command, *cobra.Command) {
 	root := &cobra.Command{Use: "zotero"}
-	for _, name := range stripGlobalFlagNames {
-		root.PersistentFlags().Bool(name, false, "global "+name)
+	for _, name := range allGlobalFlagNames() {
+		switch name {
+		case "max-changes", "max-failures":
+			root.PersistentFlags().Int(name, 0, "global "+name)
+		default:
+			root.PersistentFlags().Bool(name, false, "global "+name)
+		}
 	}
 
 	child := &cobra.Command{
 		Use: "child",
 		Run: func(*cobra.Command, []string) {},
+	}
+	if readOnly {
+		child.Annotations = map[string]string{ReadOnlyAnnotation: "true"}
 	}
 	child.Flags().String("limit", "", "local limit")
 	root.AddCommand(child)
@@ -57,45 +79,94 @@ func stripNewRoot() (*cobra.Command, *cobra.Command) {
 	return root, child
 }
 
-func TestStripSafeFlagNamesDropsInheritedGlobalsKeepsLocal(t *testing.T) {
-	_, child := stripNewRoot()
+func TestStripMutatingKeepsWriteGatingAndLocalDropsFormatting(t *testing.T) {
+	_, child := stripNewRoot(false)
 	allowed := safeFlagNames(child)
 
 	if _, ok := allowed["limit"]; !ok {
-		t.Fatal("safeFlagNames(child) missing local flag limit")
+		t.Fatal("safeFlagNames(mutating child) missing local flag limit")
 	}
-	for _, name := range stripGlobalFlagNames {
+	for _, name := range writeGatingGlobalFlagNames {
+		if _, ok := allowed[name]; !ok {
+			t.Errorf("safeFlagNames(mutating child) dropped write-gating flag %q", name)
+		}
+	}
+	for _, name := range formattingGlobalFlagNames {
 		if _, ok := allowed[name]; ok {
-			t.Errorf("safeFlagNames(child) exposed inherited global flag %q", name)
+			t.Errorf("safeFlagNames(mutating child) exposed formatting global %q", name)
 		}
 	}
 }
 
-func TestStripSafeToolOptionsDropsInheritedGlobals(t *testing.T) {
-	_, child := stripNewRoot()
-	opts := safeToolOptionsForFlags(child)
+func TestStripReadOnlyDropsAllInheritedGlobals(t *testing.T) {
+	_, child := stripNewRoot(true)
+	allowed := safeFlagNames(child)
 
-	if got, want := len(opts), 1; got != want {
-		t.Fatalf("safeToolOptionsForFlags(child) length = %d, want %d", got, want)
+	if _, ok := allowed["limit"]; !ok {
+		t.Fatal("safeFlagNames(read-only child) missing local flag limit")
+	}
+	for _, name := range allGlobalFlagNames() {
+		if _, ok := allowed[name]; ok {
+			t.Errorf("safeFlagNames(read-only child) exposed inherited global flag %q", name)
+		}
 	}
 }
 
-func TestStripValidateRejectsForgedInheritedGlobals(t *testing.T) {
-	_, child := stripNewRoot()
+func TestStripSafeToolOptionsCounts(t *testing.T) {
+	_, mut := stripNewRoot(false)
+	if got, want := len(safeToolOptionsForFlags(mut)), 1+len(writeGatingGlobalFlagNames); got != want {
+		t.Fatalf("safeToolOptionsForFlags(mutating) length = %d, want %d", got, want)
+	}
+	_, ro := stripNewRoot(true)
+	if got, want := len(safeToolOptionsForFlags(ro)), 1; got != want {
+		t.Fatalf("safeToolOptionsForFlags(read-only) length = %d, want %d", got, want)
+	}
+}
+
+func TestStripValidateAcceptsWriteGatingOnMutating(t *testing.T) {
+	_, child := stripNewRoot(false)
 	allowed := safeFlagNames(child)
 
-	for _, name := range stripGlobalFlagNames {
+	for _, name := range writeGatingGlobalFlagNames {
+		name := name
+		t.Run(name, func(t *testing.T) {
+			if err := validateMirrorArguments(map[string]any{name: true}, allowed); err != nil {
+				t.Fatalf("validateMirrorArguments rejected write-gating flag %q on mutating command: %v", name, err)
+			}
+		})
+	}
+}
+
+func TestStripValidateRejectsWriteGatingOnReadOnly(t *testing.T) {
+	_, child := stripNewRoot(true)
+	allowed := safeFlagNames(child)
+
+	for _, name := range writeGatingGlobalFlagNames {
 		name := name
 		t.Run(name, func(t *testing.T) {
 			if err := validateMirrorArguments(map[string]any{name: true}, allowed); err == nil {
-				t.Fatalf("validateMirrorArguments accepted forged inherited global flag %q", name)
+				t.Fatalf("validateMirrorArguments accepted write-gating flag %q on read-only command", name)
+			}
+		})
+	}
+}
+
+func TestStripValidateRejectsFormattingGlobals(t *testing.T) {
+	_, child := stripNewRoot(false)
+	allowed := safeFlagNames(child)
+
+	for _, name := range formattingGlobalFlagNames {
+		name := name
+		t.Run(name, func(t *testing.T) {
+			if err := validateMirrorArguments(map[string]any{name: true}, allowed); err == nil {
+				t.Fatalf("validateMirrorArguments accepted forged formatting global flag %q", name)
 			}
 		})
 	}
 }
 
 func TestStripValidateRejectsRawFlagTokenInArgs(t *testing.T) {
-	_, child := stripNewRoot()
+	_, child := stripNewRoot(false)
 	allowed := safeFlagNames(child)
 
 	if err := validateMirrorArguments(map[string]any{"args": "--limit"}, allowed); err == nil {
@@ -104,7 +175,7 @@ func TestStripValidateRejectsRawFlagTokenInArgs(t *testing.T) {
 }
 
 func TestStripValidateAcceptsLocalFlag(t *testing.T) {
-	_, child := stripNewRoot()
+	_, child := stripNewRoot(false)
 	allowed := safeFlagNames(child)
 
 	if err := validateMirrorArguments(map[string]any{"limit": "5"}, allowed); err != nil {
@@ -113,7 +184,7 @@ func TestStripValidateAcceptsLocalFlag(t *testing.T) {
 }
 
 func TestStripValidateRejectsUnregisteredHiddenGlobals(t *testing.T) {
-	_, child := stripNewRoot()
+	_, child := stripNewRoot(false)
 	allowed := safeFlagNames(child)
 
 	for _, name := range stripHiddenGlobalFlagNames {

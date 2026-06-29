@@ -963,6 +963,34 @@
       "files": ["internal/mcp/cobratree/walker.go", "internal/mcp/cobratree/shellout.go", "internal/mcp/cobratree/typemap.go", "internal/mcp/cobratree/orchestrate.go", "internal/mcp/cobratree/orchestrate_test.go", "internal/mcp/cobratree/flagstrip_test.go", "internal/mcp/tools.go"],
       "validated_outcome": "build/vet/test/lint green. Live http tools/list: facade (default) 33 tools / ~3.8K tokens (was 99 / ~59K, -94%); mirror (PP_MCP_SURFACE=mirror) 99 tools / ~15.1K (-75%, globals stripped). E2E: command_search lists 68 real commands; detail exposes only local flags (no globals); command_run 'library stats' returns structured JSON; forged globals + raw flag tokens rejected by validateMirrorArguments. New package tests cover all 22 globals + 4 hidden + facade behavior.",
       "upstream_issue": "Same root cause as filed issue cli-printing-press#3374: the generated cobratree mirror re-declares inherited persistent flags on every tool (~80% redundant tokens). Fix = enumerate command-local flags only; the shared-enumerator + optional facade are worth upstreaming."
+    },
+    {
+      "id": "mcp-facade-apply-gate-flags",
+      "summary": "Restored the six write-safety gate flags (yes, dry-run, allow-destructive, max-changes, continue-on-error, max-failures) to the MCP command surface for MUTATING commands only, fixing an F-plain regression that made every cobra-only mutation workflow preview-only over MCP. visitSafeMirrorFlags now also emits these inherited flags when !isMCPReadOnly(cmd); the single-enumerator invariant carries them into schema exposure, the validation allowlist, and command_search detail together.",
+      "reason": "F-plain (commit 4cb4fb9) stripped ALL inherited globals, but --agent does NOT imply --yes (root.go) and the apply gate is Yes && !DryRun (mutation.ResolveMode), so items enrich / duplicates resolve / tags audit fix / tags rename / reading-list add / library health --fix could only preview, never apply, via command_run. The ADR-0001 decision rejected this exact 'F-surgical' fix on a false premise (that --agent injection covered non-interactive needs); ADR amended 2026-06-29.",
+      "files": ["internal/mcp/cobratree/walker.go", "internal/mcp/cobratree/orchestrate.go", "internal/mcp/cobratree/flagstrip_test.go", "internal/mcp/cobratree/orchestrate_test.go", "docs/adr/0001-mcp-command-surface.md"],
+      "validated_outcome": "go test ./internal/mcp/cobratree/ green. Unit: write-gating flags accepted on mutating / rejected on read-only / formatting+hidden globals still rejected. E2E (orchestrate_test): {\"yes\": true} propagates through command_run to a mutating command (applied=true), is rejected on a read-only command, and appears in command_search detail for mutating commands only."
+    },
+    {
+      "id": "pathenc-2",
+      "summary": "Percent-encode hand-written CLI collection/item/fulltext path keys before splicing them into Zotero request paths.",
+      "reason": "The MCP handler path-encoding fix (98c744e) did not cover hand-written CLI code paths that built /collections/{key}/... or /items/{key}/... by raw string concatenation. Agent/user/API-controlled keys containing '/' or '../' could reshape request paths because internal/client concatenates baseURL+path without escaping.",
+      "files": ["internal/cli/collections_export.go", "internal/cli/annotations_export.go", "internal/cli/annotations_timeline.go", "internal/cli/sync.go", "internal/cli/pathenc_test.go"],
+      "validated_outcome": "go build ./internal/cli/ and go test ./internal/cli/ green; TestCollectionsExportEscapesCollectionPathSegments and TestAnnotationsExportEscapesCollectionPathSegment cover slash/dot-dot keys as single escaped path segments."
+    },
+    {
+      "id": "http-harden",
+      "summary": "Hardened the streamable-HTTP MCP transport: default bind is loopback-only (127.0.0.1:7777), non-loopback binds emit an explicit unauthenticated read/write surface warning, HTTP serving now installs signal-driven graceful shutdown, and POST bodies are capped via http.MaxBytesReader before mcp-go reads them into memory.",
+      "reason": "glean review found the harvested streamable-HTTP transport (20e98f1) bound all interfaces by default, offered no memory-DoS body cap before mcp-go's io.ReadAll, and lacked the stdio branch's SIGINT/SIGTERM shutdown handling.",
+      "files": ["cmd/zotero-pp-mcp/main.go", "cmd/zotero-pp-mcp/main_test.go", "go.sum"],
+      "validated_outcome": "go build ./cmd/zotero-pp-mcp/ and go test ./cmd/zotero-pp-mcp/ pass. Used verified mcp-go API: StreamableHTTPServer.Shutdown(ctx) and WithStreamableHTTPServer(*http.Server) hook (no native max-body option exists, so MaxBytesReader is applied in a custom handler). Table-driven loopback-classification tests cover 127.0.0.1/localhost/:7777/0.0.0.0/[::1]/1.2.3.4."
+    },
+    {
+      "id": "ryw-fix",
+      "summary": "Hardened read-your-writes mirror updates: real local mirror open/query/marshal/upsert failures now emit degraded-cache warnings instead of being silently swallowed (db==nil not-synced path stays silent), and stale pre-write version/dateModified fields are stripped from replayed/surfaced items.",
+      "reason": "glean read-your-writes review found applied cloud writes could report success while local reads stayed stale if the mirror update failed, and that replayed items surfaced pre-write Zotero version/dateModified even though the Web API advances Last-Modified-Version after PATCH (that new version is not present in mutation.ResultItem, so option (b)—strip the stale fields—was chosen).",
+      "files": ["internal/cli/write_through.go", "internal/cli/write_through_test.go"],
+      "validated_outcome": "go build ./internal/cli/ and go test ./internal/cli/ -run WriteThrough -count=1 green; regression tests cover non-applied statuses, dry-run result=nil, create/missing mirror skip, stale version stripping, and the mirror-open warning path."
     }
   ]
 }

@@ -29,7 +29,7 @@ func RegisterOrchestration(s *server.MCPServer, rootFactory func() *cobra.Comman
 	s.AddTool(mcplib.NewTool("command_run",
 		mcplib.WithDescription("Run one mirrorable Cobra command by its space-separated command path."),
 		mcplib.WithString("name", mcplib.Required(), mcplib.Description("Exact space-separated command path to run, such as \"items enrich\".")),
-		mcplib.WithObject("flags", mcplib.Description("Command-local safe flags to pass by name."), mcplib.AdditionalProperties(true)),
+		mcplib.WithObject("flags", mcplib.Description("Safe flags to pass by name: command-local flags plus, for mutating commands, the write-safety gate flags (yes, dry-run, allow-destructive, max-changes, continue-on-error, max-failures) — pass {\"yes\": true} to apply a write. Inspect available flags via command_search."), mcplib.AdditionalProperties(true)),
 		mcplib.WithString("args", mcplib.Description("Additional positional arguments only; raw flags rejected.")),
 		mcplib.WithDestructiveHintAnnotation(true),
 	), commandRunHandler(rootFactory))

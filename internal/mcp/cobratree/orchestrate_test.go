@@ -218,3 +218,102 @@ func TestOrchCommandRunRejectsMissingCommand(t *testing.T) {
 		t.Fatal("missing-command error result text is empty")
 	}
 }
+
+// PATCH(glean facade-apply): end-to-end proof that write-safety gate flags are
+// reachable through the facade for mutating commands (so applies fire) and
+// rejected for read-only commands.
+func orchNewRootWithGates() *cobra.Command {
+	root := &cobra.Command{Use: "zotero", SilenceUsage: true, SilenceErrors: true}
+	root.PersistentFlags().Bool("agent", false, "Run in agent mode")
+	root.PersistentFlags().Bool("yes", false, "Skip confirmation prompts")
+	root.PersistentFlags().Bool("dry-run", false, "Preview only")
+
+	items := &cobra.Command{Use: "items", Short: "Work with items"}
+	mut := &cobra.Command{
+		Use:   "enrich",
+		Short: "Enrich items (mutating)",
+		RunE: func(c *cobra.Command, _ []string) error {
+			yes, _ := c.Flags().GetBool("yes")
+			fmt.Fprintf(c.OutOrStdout(), "applied=%v", yes)
+			return nil
+		},
+	}
+	ro := &cobra.Command{
+		Use:         "list",
+		Short:       "List items (read-only)",
+		Annotations: map[string]string{ReadOnlyAnnotation: "true"},
+		RunE: func(c *cobra.Command, _ []string) error {
+			fmt.Fprint(c.OutOrStdout(), "listed")
+			return nil
+		},
+	}
+	items.AddCommand(mut, ro)
+	root.AddCommand(items)
+	return root
+}
+
+func TestOrchCommandRunAppliesWriteGatingFlagOnMutating(t *testing.T) {
+	h := commandRunHandler(orchNewRootWithGates)
+	req := mcplib.CallToolRequest{}
+	req.Params.Arguments = map[string]any{
+		"name":  "items enrich",
+		"flags": map[string]any{"yes": true},
+	}
+	res, err := h(context.Background(), req)
+	if err != nil {
+		t.Fatalf("handler returned protocol error: %v", err)
+	}
+	if res.IsError {
+		t.Fatalf("unexpected error result: %q", orchResText(res))
+	}
+	if got := orchResText(res); !strings.Contains(got, "applied=true") {
+		t.Fatalf("run result = %q, want applied=true (--yes must propagate)", got)
+	}
+}
+
+func TestOrchCommandSearchDetailExposesWriteGatingForMutating(t *testing.T) {
+	h := commandSearchHandler(orchNewRootWithGates)
+	req := mcplib.CallToolRequest{}
+	req.Params.Arguments = map[string]any{"name": "items enrich"}
+	res, err := h(context.Background(), req)
+	if err != nil {
+		t.Fatalf("handler returned protocol error: %v", err)
+	}
+	if res.IsError {
+		t.Fatalf("unexpected error result: %q", orchResText(res))
+	}
+	var got struct {
+		Flags []struct {
+			Name string `json:"name"`
+		} `json:"flags"`
+	}
+	if err := json.Unmarshal([]byte(orchResText(res)), &got); err != nil {
+		t.Fatalf("detail result is not JSON: %v; text=%q", err, orchResText(res))
+	}
+	names := map[string]bool{}
+	for _, f := range got.Flags {
+		names[f.Name] = true
+	}
+	if !names["yes"] {
+		t.Fatalf("mutating detail flags %#v missing write-gating flag yes", got.Flags)
+	}
+	if names["agent"] {
+		t.Fatal("detail exposed formatting global agent")
+	}
+}
+
+func TestOrchCommandRunRejectsWriteGatingOnReadOnly(t *testing.T) {
+	h := commandRunHandler(orchNewRootWithGates)
+	req := mcplib.CallToolRequest{}
+	req.Params.Arguments = map[string]any{
+		"name":  "items list",
+		"flags": map[string]any{"yes": true},
+	}
+	res, err := h(context.Background(), req)
+	if err != nil {
+		t.Fatalf("handler returned protocol error: %v", err)
+	}
+	if !res.IsError {
+		t.Fatalf("expected --yes rejected on read-only command, got %q", orchResText(res))
+	}
+}

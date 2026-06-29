@@ -6,6 +6,7 @@ package cli
 import (
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"sort"
 	"strings"
 	"time"
@@ -51,7 +52,8 @@ func newAnnotationsTimelineCmd(flags *rootFlags) *cobra.Command {
 
 			var annotations []annotationSummary
 			if flagCollection != "" {
-				items, err := fetchZoteroItems(c, "/collections/"+flagCollection+"/items", nil, 0)
+				// PATCH(glean pathenc-2): url-encode path param to prevent segment injection.
+				items, err := fetchZoteroItems(c, "/collections/"+url.PathEscape(flagCollection)+"/items", nil, 0)
 				if err != nil {
 					return classifyAPIError(err, flags)
 				}
@@ -77,7 +79,8 @@ func newAnnotationsTimelineCmd(flags *rootFlags) *cobra.Command {
 							}
 						}
 					} else {
-						children, err := c.Get("/items/"+key+"/children", map[string]string{"itemType": "annotation"})
+						// PATCH(glean pathenc-2): url-encode path param to prevent segment injection.
+						children, err := c.Get("/items/"+url.PathEscape(key)+"/children", map[string]string{"itemType": "annotation"})
 						if err != nil {
 							return classifyAPIError(err, flags)
 						}

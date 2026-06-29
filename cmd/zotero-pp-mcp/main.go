@@ -5,18 +5,22 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
+	"net"
+	"net/http"
 	"os"
 	"os/signal"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/mark3labs/mcp-go/server"
 	mcptools "zotero-pp-cli/internal/mcp"
 )
 
-const defaultHTTPAddr = ":7777"
+const defaultHTTPAddr = "127.0.0.1:7777" // PATCH(glean http-harden): default streamable HTTP to loopback-only.
 
 func main() {
 	// PATCH(glean qfuq): advertise resource + prompt capabilities alongside
@@ -81,11 +85,34 @@ func main() {
 			os.Exit(1)
 		}
 	case "http":
-		httpSrv := server.NewStreamableHTTPServer(s)
+		httpSrv := newHardenedStreamableHTTPServer(s, *addr)
+		if !isLoopbackHTTPAddr(*addr) { // PATCH(glean http-harden): warn when the unauthenticated MCP HTTP surface is exposed off-host.
+			fmt.Fprintf(os.Stderr, "WARNING: Zotero MCP HTTP surface at %s is reachable by other hosts; it includes unauthenticated typed tools with read+write access to the user's Zotero account, and the operator is responsible for network controls.\n", *addr)
+		}
 		fmt.Fprintf(os.Stderr, "zotero-pp-mcp serving MCP over streamable HTTP at %s\n", *addr)
-		if err := httpSrv.Start(*addr); err != nil {
-			fmt.Fprintf(os.Stderr, "MCP server error: %v\n", err)
-			os.Exit(1)
+
+		errs := make(chan error, 1)
+		go func() {
+			errs <- httpSrv.Start(*addr)
+		}()
+
+		signals := make(chan os.Signal, 1)
+		signal.Notify(signals, syscall.SIGTERM, syscall.SIGINT)
+		defer signal.Stop(signals)
+
+		select {
+		case sig := <-signals:
+			shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			if err := httpSrv.Shutdown(shutdownCtx); err != nil {
+				fmt.Fprintf(os.Stderr, "MCP server shutdown after %s failed: %v\n", sig, err)
+				os.Exit(1)
+			}
+		case err := <-errs:
+			if err != nil && !errors.Is(err, http.ErrServerClosed) {
+				fmt.Fprintf(os.Stderr, "MCP server error: %v\n", err)
+				os.Exit(1)
+			}
 		}
 	default:
 		fmt.Fprintf(os.Stderr, "unknown --transport %q (supported: stdio, http)\n", *transport)
@@ -100,4 +127,43 @@ func defaultTransport() string {
 		return t
 	}
 	return "stdio"
+}
+
+const maxMCPHTTPBodyBytes = 4 << 20 // PATCH(glean http-harden): cap POST bodies before mcp-go's io.ReadAll.
+
+// PATCH(glean http-harden): route mcp-go through a custom HTTP server so POST
+// bodies are capped and the transport can drain via StreamableHTTPServer.Shutdown.
+func newHardenedStreamableHTTPServer(mcpServer *server.MCPServer, addr string) *server.StreamableHTTPServer {
+	var httpSrv *server.StreamableHTTPServer
+	mux := http.NewServeMux()
+	mux.HandleFunc("/mcp", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost {
+			r.Body = http.MaxBytesReader(w, r.Body, maxMCPHTTPBodyBytes)
+		}
+		httpSrv.ServeHTTP(w, r)
+	})
+	httpServer := &http.Server{
+		Addr:              addr,
+		Handler:           mux,
+		ReadHeaderTimeout: 5 * time.Second,
+	}
+	httpSrv = server.NewStreamableHTTPServer(mcpServer, server.WithStreamableHTTPServer(httpServer))
+	return httpSrv
+}
+
+// PATCH(glean http-harden): classify only explicit loopback bind hosts as local.
+func isLoopbackHTTPAddr(addr string) bool {
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil || host == "" {
+		return false
+	}
+	host = strings.Trim(host, "[]")
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	ip := net.ParseIP(host)
+	if ip == nil || ip.IsUnspecified() {
+		return false
+	}
+	return ip.IsLoopback()
 }

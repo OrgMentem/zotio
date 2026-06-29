@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net/url"
 	"os"
 	"strings"
 
@@ -88,7 +89,8 @@ func exportCollection(c interface {
 		"format": format,
 		"limit":  fmt.Sprintf("%d", limit),
 	}
-	data, err := c.Get("/collections/"+collKey+"/items", params)
+	// PATCH(glean pathenc-2): url-encode path param to prevent segment injection.
+	data, err := c.Get("/collections/"+url.PathEscape(collKey)+"/items", params)
 	if err != nil {
 		return fmt.Errorf("fetching items for collection %s: %w", collKey, err)
 	}
@@ -104,7 +106,8 @@ func exportCollection(c interface {
 		return nil
 	}
 
-	subData, err := c.Get("/collections/"+collKey+"/collections", nil)
+	// PATCH(glean pathenc-2): url-encode path param to prevent segment injection.
+	subData, err := c.Get("/collections/"+url.PathEscape(collKey)+"/collections", nil)
 	if err != nil {
 		return fmt.Errorf("fetching subcollections for %s: %w", collKey, err)
 	}
