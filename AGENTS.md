@@ -81,3 +81,9 @@ If you modify this CLI beyond what the generator produced, record each customiza
     ```
 
 This file is an **index of customizations**, not a second copy of the diff. Diffs live in `git`; code lives in the source files; the inline `// PATCH:` comment carries the local semantics. Keep `summary` and `reason` short -- if you find yourself writing tables of field renames or code transformations, that detail belongs in the source comment or commit message, not here.
+
+## Architecture Decisions
+
+Non-trivial architecture/infrastructure decisions (as opposed to product sequencing, which lives in `docs/roadmap.md`) are recorded as ADRs under `docs/adr/`. Read the relevant ADR before reworking the subsystem it covers.
+
+- `docs/adr/0001-mcp-command-surface.md` — why the MCP server defaults to a command-orchestration facade (`command_search`/`command_run`) with global flags stripped from the mirror, and how to switch surfaces via `PP_MCP_SURFACE`.
