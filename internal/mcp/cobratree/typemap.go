@@ -14,24 +14,6 @@ import (
 
 var positionalPattern = regexp.MustCompile(`(?:^|\s)(?:<[^>]+>|\[[^\]]+\])`)
 
-func toolOptionsForFlags(cmd *cobra.Command) []mcplib.ToolOption {
-	var opts []mcplib.ToolOption
-	seen := map[string]bool{}
-	addFlag := func(flag *pflag.Flag) {
-		if flag == nil || flag.Hidden || flag.Deprecated != "" {
-			return
-		}
-		if seen[flag.Name] {
-			return
-		}
-		seen[flag.Name] = true
-		opts = append(opts, toolOptionForFlag(flag))
-	}
-	cmd.InheritedFlags().VisitAll(addFlag)
-	cmd.NonInheritedFlags().VisitAll(addFlag)
-	return opts
-}
-
 func toolOptionForFlag(flag *pflag.Flag) mcplib.ToolOption {
 	propOpts := []mcplib.PropertyOption{mcplib.Description(flagDescription(flag))}
 	if isRequired(flag) {

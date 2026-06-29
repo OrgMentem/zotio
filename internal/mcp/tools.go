@@ -357,11 +357,17 @@ func RegisterTools(s *server.MCPServer) {
 		handleContext,
 	)
 
-	// Runtime Cobra-tree mirror — exposes every user-facing command that is
-	// not already covered by a typed endpoint or framework MCP tool.
-	// PATCH(glean c4ke): pass the RootCmd factory so each mirrored tool runs
-	// in-process against a fresh command tree instead of shelling out.
-	cobratree.RegisterAll(s, cli.RootCmd)
+	// Command surface for the rest of the Cobra tree. PATCH(glean f-plain):
+	// PP_MCP_SURFACE selects the shape. Default "facade" collapses the command
+	// tree behind a command_search + command_run pair (~93% fewer tokens at
+	// connect, all commands reachable on demand). "mirror" registers one lean
+	// MCP tool per command (global flags stripped). Both run in-process against
+	// a fresh tree (PATCH c4ke) and share the arg-safety guard (PATCH da7c6f88).
+	if strings.EqualFold(strings.TrimSpace(os.Getenv("PP_MCP_SURFACE")), "mirror") {
+		cobratree.RegisterAll(s, cli.RootCmd)
+	} else {
+		cobratree.RegisterOrchestration(s, cli.RootCmd)
+	}
 }
 
 type mcpParamBinding struct {

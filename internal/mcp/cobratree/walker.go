@@ -90,45 +90,43 @@ var unsafeMCPMirrorFlags = map[string]struct{}{
 	"profile": {},
 }
 
-// PATCH(glean da7c6f88776d2f4b): derive the same safe flag allowlist used for
-// schema exposure so forged MCP arguments cannot smuggle hidden globals.
+// PATCH(glean f-plain): F-plain — mirror only command-LOCAL (non-inherited)
+// flags. Root/global persistent flags (--agent, --json, output formatting,
+// confirmation, ops knobs) were re-declared on every one of ~68 mirror tools,
+// costing ~80% of the cobratree token surface for zero agent value (the MCP
+// layer injects --agent out-of-band; see runMirroredInProcess). One shared
+// enumerator drives BOTH schema exposure and the validation allowlist so they
+// can never diverge, preserving the da7c6f88 guard.
+func visitSafeMirrorFlags(cmd *cobra.Command, visit func(*pflag.Flag)) {
+	seen := map[string]struct{}{}
+	cmd.NonInheritedFlags().VisitAll(func(flag *pflag.Flag) {
+		if flag == nil || flag.Hidden || flag.Deprecated != "" {
+			return
+		}
+		if _, unsafe := unsafeMCPMirrorFlags[flag.Name]; unsafe {
+			return
+		}
+		if _, ok := seen[flag.Name]; ok {
+			return
+		}
+		seen[flag.Name] = struct{}{}
+		visit(flag)
+	})
+}
 
 func safeFlagNames(cmd *cobra.Command) map[string]struct{} {
 	names := map[string]struct{}{}
-	addFlag := func(flag *pflag.Flag) {
-		if flag == nil || flag.Hidden || flag.Deprecated != "" {
-			return
-		}
-		if _, unsafe := unsafeMCPMirrorFlags[flag.Name]; unsafe {
-			return
-		}
+	visitSafeMirrorFlags(cmd, func(flag *pflag.Flag) {
 		names[flag.Name] = struct{}{}
-	}
-	cmd.InheritedFlags().VisitAll(addFlag)
-	cmd.NonInheritedFlags().VisitAll(addFlag)
+	})
 	return names
 }
 
-// PATCH(glean da7c6f88776d2f4b): expose only safe Cobra flags in mirrored MCP
-// schemas; raw delivery/config/profile/group routing stays out-of-band.
 func safeToolOptionsForFlags(cmd *cobra.Command) []mcplib.ToolOption {
 	var opts []mcplib.ToolOption
-	seen := map[string]bool{}
-	addFlag := func(flag *pflag.Flag) {
-		if flag == nil || flag.Hidden || flag.Deprecated != "" {
-			return
-		}
-		if _, unsafe := unsafeMCPMirrorFlags[flag.Name]; unsafe {
-			return
-		}
-		if seen[flag.Name] {
-			return
-		}
-		seen[flag.Name] = true
+	visitSafeMirrorFlags(cmd, func(flag *pflag.Flag) {
 		opts = append(opts, toolOptionForFlag(flag))
-	}
-	cmd.InheritedFlags().VisitAll(addFlag)
-	cmd.NonInheritedFlags().VisitAll(addFlag)
+	})
 	return opts
 }
 

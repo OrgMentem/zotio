@@ -16,31 +16,44 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// inProcessHandler runs a mirrored Cobra command in-process. PATCH(glean c4ke):
-// replaces the previous shell-out to a companion zotero-pp-cli binary, so the
-// MCP server works without that binary on PATH. A fresh command tree is built
-// per call because cobra.Command state is single-use.
+// inProcessHandler runs a mirrored Cobra command in-process via the shared
+// runMirroredInProcess core. PATCH(glean c4ke): replaces the previous shell-out
+// to a companion zotero-pp-cli binary, so the MCP server works without that
+// binary on PATH.
 func inProcessHandler(rootFactory func() *cobra.Command, commandPath []string) server.ToolHandlerFunc {
 	return func(ctx context.Context, req mcplib.CallToolRequest) (*mcplib.CallToolResult, error) {
-		root := rootFactory()
-		if root == nil {
-			return mcplib.NewToolResultError("failed to build command tree"), nil
-		}
-		args := req.GetArguments()
-		finalArgs := append([]string{}, commandPath...)
-		finalArgs = append(finalArgs, cliArgsFromMCP(args)...)
-		if raw, _ := args["args"].(string); strings.TrimSpace(raw) != "" {
-			finalArgs = append(finalArgs, splitShellArgs(raw)...)
-		}
-		var buf bytes.Buffer
-		root.SetOut(&buf)
-		root.SetErr(&buf)
-		root.SetArgs(finalArgs)
-		if err := root.ExecuteContext(ctx); err != nil {
-			return mcplib.NewToolResultError(buf.String() + "\n" + err.Error()), nil
-		}
-		return mcplib.NewToolResultText(buf.String()), nil
+		return runMirroredInProcess(ctx, rootFactory, commandPath, req.GetArguments()), nil
 	}
+}
+
+// runMirroredInProcess builds a fresh command tree (cobra.Command state is
+// single-use) and runs the mirrored command in-process. PATCH(glean f-plain):
+// inject --agent (when the root defines it) so mirror tools always return
+// structured, non-interactive output regardless of which flags the MCP schema
+// exposes. This is the out-of-band mechanism that lets the schema drop
+// --agent/--json and the other global formatting/confirmation flags. Shared by
+// the command mirror (inProcessHandler) and the orchestration facade (command_run).
+func runMirroredInProcess(ctx context.Context, rootFactory func() *cobra.Command, commandPath []string, args map[string]any) *mcplib.CallToolResult {
+	root := rootFactory()
+	if root == nil {
+		return mcplib.NewToolResultError("failed to build command tree")
+	}
+	finalArgs := append([]string{}, commandPath...)
+	if root.PersistentFlags().Lookup("agent") != nil || root.Flags().Lookup("agent") != nil {
+		finalArgs = append(finalArgs, "--agent")
+	}
+	finalArgs = append(finalArgs, cliArgsFromMCP(args)...)
+	if raw, _ := args["args"].(string); strings.TrimSpace(raw) != "" {
+		finalArgs = append(finalArgs, splitShellArgs(raw)...)
+	}
+	var buf bytes.Buffer
+	root.SetOut(&buf)
+	root.SetErr(&buf)
+	root.SetArgs(finalArgs)
+	if err := root.ExecuteContext(ctx); err != nil {
+		return mcplib.NewToolResultError(buf.String() + "\n" + err.Error())
+	}
+	return mcplib.NewToolResultText(buf.String())
 }
 
 func cliArgsFromMCP(args map[string]any) []string {
