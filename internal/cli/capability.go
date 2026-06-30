@@ -19,10 +19,11 @@ import (
 // Precondition vocabulary. These strings are the contract shared with the
 // per-command precondition_unmet envelopes (see library_health.go, ensure_live.go).
 const (
-	preconditionLiveLocalAPI = "live_local_api"
-	preconditionWebAPIKey    = "web_api_key"
-	preconditionSyncedStore  = "synced_store"
-	preconditionBetterBibTeX = "better_bibtex"
+	preconditionLiveLocalAPI     = "live_local_api"
+	preconditionWebAPIKey        = "web_api_key"
+	preconditionSyncedStore      = "synced_store"
+	preconditionBetterBibTeX     = "better_bibtex"
+	preconditionDesktopConnector = "desktop_connector"
 )
 
 type capabilityEntry struct {
@@ -83,6 +84,9 @@ var capabilityOverrides = map[string]capabilityEntry{
 	"import pmid":              {Operation: "write", WriteTarget: "web_api", Requires: []string{preconditionWebAPIKey}},
 	"import arxiv":             {Operation: "write", WriteTarget: "web_api", Requires: []string{preconditionWebAPIKey}},
 	"import isbn":              {Operation: "write", WriteTarget: "web_api", Requires: []string{preconditionWebAPIKey}},
+	"import pdf":               {Operation: "write", WriteTarget: "desktop_connector", Requires: []string{preconditionDesktopConnector}},
+	"import targets":           {Operation: "read", Requires: []string{preconditionDesktopConnector}},
+	"import translators":       {Operation: "read", Requires: []string{preconditionDesktopConnector}},
 	// items new validates against /items/new (Web-only) then POSTs.
 	"items new": {Operation: "write", WriteTarget: "web_api", Requires: []string{preconditionWebAPIKey}},
 	// import apply creates items / linked-file attachments via the Web API.
@@ -119,6 +123,8 @@ func dataSourcesForRequires(requires []string) []string {
 		return []string{"live"}
 	case has(preconditionSyncedStore):
 		return []string{"local", "live"}
+	case has(preconditionDesktopConnector):
+		return []string{"live"}
 	default:
 		return nil
 	}

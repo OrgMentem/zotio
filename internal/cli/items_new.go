@@ -80,11 +80,15 @@ func newItemsNewCmd(flags *rootFlags) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			data, _, err := c.Post("/items", []map[string]any{item})
+			// PATCH: route item creates through the desktop connector when available.
+			res, err := routeCreateItem(cmd.Context(), flags, c, item, itemCreateSourceURI(item), cmd.Flags().Changed("collection"))
 			if err != nil {
-				return classifyAPIError(err, flags)
+				return err
 			}
-			return printOutputWithFlags(cmd.OutOrStdout(), data, flags)
+			if res.Via == "connector" {
+				refreshItemsFromLocalAPI(cmd.Context(), flags)
+			}
+			return printCreateResult(cmd, flags, res, res.WebData)
 		},
 	}
 	cmd.Flags().StringVar(&flagItemType, "item-type", "", "Zotero item type to create (e.g. journalArticle)")
@@ -106,6 +110,18 @@ func fetchItemTemplate(ctx context.Context, flags *rootFlags, itemType string) (
 	c, err := newSchemaClient(flags)
 	if err != nil {
 		return nil, err
+	}
+	// PATCH(glean items-new web-routing): /items/new is a global Web API endpoint
+	// the local API does not serve. When the CLI is pointed at the local API,
+	// redirect this template fetch to the Web API using the same hybrid routing
+	// writes use (ResolveWriteBase), stripping the library prefix since the
+	// endpoint is global. With no key, ResolveWriteBase yields "" and the Get
+	// below fails into the precondition error below.
+	if c.ResolveWriteBase != nil {
+		if base, rerr := c.ResolveWriteBase(); rerr == nil && base != "" {
+			c.BaseURL = stripLibraryPrefix(base)
+		}
+		c.ResolveWriteBase = nil
 	}
 	// The template fetch is a read prerequisite for validation; it must execute
 	// even under --dry-run (which only previews the item creation, a write).

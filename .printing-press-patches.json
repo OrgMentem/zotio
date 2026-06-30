@@ -849,49 +849,96 @@
       "id": "import-identifier-adapters",
       "summary": "Added PMID (PubMed eSummary), arXiv (Atom), and ISBN (Open Library) import adapters as `import pmid|arxiv|isbn <id>`, mirroring `import doi` (--collection, --dry-run preview, bare-array POST /items).",
       "reason": "Roadmap Phase 4 (bead 37849fc0): identifier coverage beyond DOI/URL/file. Each adapter has a package-level base-URL seam for testing and a pure response->Zotero-item mapper (pubmedItemFromSummary/arxivItemFromEntry/openLibraryItemFromData). Registered in the capability registry as web_api_key writes.",
-      "files": ["internal/cli/import_identifiers.go", "internal/cli/import_identifiers_test.go", "internal/cli/import.go", "internal/cli/capability.go"],
+      "files": [
+        "internal/cli/import_identifiers.go",
+        "internal/cli/import_identifiers_test.go",
+        "internal/cli/import.go",
+        "internal/cli/capability.go"
+      ],
       "validated_outcome": "gofmt/build/vet/test ./... green; unit tests on each mapper plus --dry-run JSON smoke per adapter. `import --help` lists pmid/arxiv/isbn."
     },
     {
       "id": "items-new-schema-builder",
       "summary": "Added `items new --item-type <t> --field k=v... [--stdin]`: fetches Zotero's /items/new blank template, validates provided fields against the schema (rejecting unknown fields), and POSTs. Reusable fetchItemTemplate/validateItemFields helpers.",
       "reason": "Roadmap Phase 4 (bead 748370c5): schema-valid creation. /items/new is Web-API-only, so fetchItemTemplate returns a loud preconditionErr (exit 9) when offline, and forces the template GET live even under --dry-run (the read is a validation prerequisite; only the create is previewed). import apply reuses these helpers.",
-      "files": ["internal/cli/items_new.go", "internal/cli/items_new_test.go", "internal/cli/items.go", "internal/cli/capability.go"],
+      "files": [
+        "internal/cli/items_new.go",
+        "internal/cli/items_new_test.go",
+        "internal/cli/items.go",
+        "internal/cli/capability.go"
+      ],
       "validated_outcome": "gofmt/build/vet/test ./... green; tests cover unknown-field rejection and --dry-run merged fields. Orchestrator fix: /items/new returns a single object (not array) and the template GET must bypass dry-run."
     },
     {
       "id": "enrich-providers-and-validate",
       "summary": "Added Semantic Scholar (DOI+abstract fallback, behind --no-semantic-scholar) and OpenCitations (DOI-registration check) providers to `items enrich`, plus a read-only `--validate` discrepancy report comparing stored title/year against CrossRef and flagging DOIs absent from OpenCitations.",
       "reason": "Roadmap Phase 4 (bead mmmd): higher-fidelity enrichment + validation. Semantic Scholar chains after OpenAlex for missing_doi/missing_abstract; --validate performs no writes and emits a JSON discrepancy report. useSemanticScholar threaded through buildEnrichProposals/resolveEnrichment alongside useOpenAlex.",
-      "files": ["internal/cli/items_enrich.go", "internal/cli/items_enrich_test.go"],
+      "files": [
+        "internal/cli/items_enrich.go",
+        "internal/cli/items_enrich_test.go"
+      ],
       "validated_outcome": "gofmt/build/vet/test ./... green; tests cover the Semantic Scholar fallback source and a --validate title discrepancy report."
     },
     {
       "id": "reviewable-import-pipeline",
       "summary": "Added the reviewable-import pipeline: `import resolve <dir|manifest>` turns a PDF scan into an editable JSON manifest (DOI-resolved items, per-entry action create/attach/skip), and `import apply <manifest> [--attach-mode none|linked-file|upload]` creates items and links files through the mutation engine (preview-first, journaled).",
       "reason": "Roadmap Phase 4 (beads 7e799ea9 + q1ia): the write side of `import scan`. A shared manifest contract (internal/cli/import_manifest.go) decouples resolve from apply. resolve reuses the scan classifier + CrossRef; apply defers all I/O (schema-template fetch via items new's validateItemFields, item POST, linked-file attachment POST) into mutation Apply closures so previews need no network. attach-mode defaults to the safe `none`; `linked-file` creates linkMode=linked_file attachments; `upload` is refused loudly (multi-step stored-file protocol deferred). import apply is a web_api_key write in the capability registry; import resolve is read-only.",
-      "files": ["internal/cli/import_manifest.go", "internal/cli/import_resolve.go", "internal/cli/import_resolve_test.go", "internal/cli/import_apply.go", "internal/cli/import_apply_test.go", "internal/cli/import.go", "internal/cli/capability.go"],
+      "files": [
+        "internal/cli/import_manifest.go",
+        "internal/cli/import_resolve.go",
+        "internal/cli/import_resolve_test.go",
+        "internal/cli/import_apply.go",
+        "internal/cli/import_apply_test.go",
+        "internal/cli/import.go",
+        "internal/cli/capability.go"
+      ],
       "validated_outcome": "gofmt/build/vet/test ./... green (7 pkgs ok). resolve tests cover dir->manifest and manifest refresh (httptest CrossRef); apply tests cover preview plan (create+attach with linked-file), default-none attach no-op, upload refusal, and the attachment-payload/created-key helpers. Live: import resolve/apply registered; `import apply --attach-mode upload` exits 1 with the loud refusal; capabilities marks import apply op=write req=[web_api_key]."
     },
     {
       "id": "agent-vault-trust-plane",
       "summary": "Phase 5 trust plane: MCP resources zotero://freshness, zotero://health/{scope}, and bounded graph resources (collections/{key}/tree, items/{key}/children|attachments|context); a read-only `vault audit` preflight; and guided prompts prepare-library-health, prepare-import, sync-vault-safely.",
       "reason": "Roadmap Phase 5 (beads 943783579 freshness, 04f41aa8 bounded graph, 725cb43f vault audit, a3d0987d guided workflows). CLI exports (FreshnessJSON, HealthJSON(scope), CollectionTreeJSON/ItemChildrenJSON/ItemAttachmentsJSON/ItemContextJSON) back the MCP resources so the mcp layer stays thin; all graph reads are depth/node-capped with a truncated flag. vault audit walks the vault read-only and reports orphaned/stale/upgradeable/needs_notes_boundary notes against the synced store. Prompts compose the shipped tools (library_health remediation, import scan->resolve->apply, vault audit->sync->push/pull) preview-first. zotero://capabilities was already shipped in Phase 2.",
-      "files": ["internal/cli/mcp_freshness.go", "internal/cli/mcp_health_export.go", "internal/cli/mcp_graph.go", "internal/cli/vault_audit.go", "internal/cli/vault_sync.go", "internal/mcp/resources.go"],
+      "files": [
+        "internal/cli/mcp_freshness.go",
+        "internal/cli/mcp_health_export.go",
+        "internal/cli/mcp_graph.go",
+        "internal/cli/vault_audit.go",
+        "internal/cli/vault_sync.go",
+        "internal/mcp/resources.go"
+      ],
       "validated_outcome": "gofmt/build/vet/test ./... green (7 pkgs ok); the mcp package test exercises resource/prompt registration. New CLI helpers + vault audit have HOME-isolated tests. Live: `vault audit` registered under vault; MCP registers freshness/health/graph resources and the three guided prompts without error."
     },
     {
       "id": "reproducible-export-snapshot",
       "summary": "Added `export snapshot [library|collection:KEY|tag:NAME] --output <file> [--resume]`: a truly paginated, resumable export that streams structured item JSONL and writes a <output>.lock.json lockfile (per-item key+version + a sort-invariant content sha256).",
       "reason": "Roadmap Phase 6 (bead d27f99d4). The generated `export` does a single c.Get and never paginates; snapshot adds a header-free start/limit page loop with a checkpoint sidecar (interrupted runs resume via --resume) and a reproducibility lockfile built by reading back the complete data file (so resumed runs still fingerprint the full set). Uses structured item JSON, never the formatted-bibliography mode that ignores limit. Registered as a subcommand of the generated export parent via a one-line PATCH; read-only in the capability registry.",
-      "files": ["internal/cli/export_paginate.go", "internal/cli/export_paginate_test.go", "internal/cli/export_lockfile.go", "internal/cli/export_lockfile_test.go", "internal/cli/export_snapshot.go", "internal/cli/export_snapshot_test.go", "internal/cli/export.go"],
+      "files": [
+        "internal/cli/export_paginate.go",
+        "internal/cli/export_paginate_test.go",
+        "internal/cli/export_lockfile.go",
+        "internal/cli/export_lockfile_test.go",
+        "internal/cli/export_snapshot.go",
+        "internal/cli/export_snapshot_test.go",
+        "internal/cli/export.go"
+      ],
       "validated_outcome": "gofmt/build/vet/test ./... green (7 pkgs ok). Pagination test fetches 250 items across 3 pages and resumes from a checkpoint; lockfile test proves sort-invariant hashing; command test exports 150 items across pages of 50, writes the lockfile (count 150, sorted, hashed), and removes the checkpoint on success. Live: `export snapshot` registered; missing --output exits 2; capabilities marks it op=read."
     },
     {
       "id": "packaging-niceties-phase7",
       "summary": "Phase 7 packaging & niceties: MCP installs honor env-selected library/profile (ZOTERO_GROUP/ZOTERO_PROFILE fall back into --group/--profile; MCP server logs the active library at startup); `groups inspect <id>` readiness preflight; `watch [resource...]` watch-mode incremental sync; `capabilities drift` endpoint-drift probe.",
       "reason": "Roadmap Phase 7 (beads 3df91067 MCP profiles/groups/config, 9200a793 group readiness, 0cabee79 watch-mode sync, d130ba9e capability drift). The MCP runner executes through the root command's PersistentPreRunE (cobratree shellout root.ExecuteContext), so adding a ZOTERO_GROUP/ZOTERO_PROFILE env fallback there (explicit flags still win) makes every mirrored tool honor an MCP install's env config; base-url/config already come from env. watch reuses newSyncCmd per cycle (no edits to the generated sync.go) with an interval floor and SIGINT-graceful loop. groups inspect reuses the groups fetch to report read/write readiness. capabilities drift probes /items,/collections,/tags,/searches (limit=1) + global /itemTypes,/itemFields and reports unreachable endpoints.",
-      "files": ["internal/cli/root.go", "cmd/zotero-pp-mcp/main.go", "internal/cli/root_env_test.go", "internal/cli/groups.go", "internal/cli/groups_test.go", "internal/cli/watch.go", "internal/cli/watch_test.go", "internal/cli/capabilities_drift.go", "internal/cli/capabilities_drift_test.go", "internal/cli/capability.go"],
+      "files": [
+        "internal/cli/root.go",
+        "cmd/zotero-pp-mcp/main.go",
+        "internal/cli/root_env_test.go",
+        "internal/cli/groups.go",
+        "internal/cli/groups_test.go",
+        "internal/cli/watch.go",
+        "internal/cli/watch_test.go",
+        "internal/cli/capabilities_drift.go",
+        "internal/cli/capabilities_drift_test.go",
+        "internal/cli/capability.go"
+      ],
       "validated_outcome": "gofmt/build/vet/test ./... green (7 pkgs ok). Tests: env fallback applies ZOTERO_GROUP and an explicit --group beats it; groups inspect found/not-found JSON; watch interval-floor (exit 2) + one-shot cycle; capabilities drift checked=6 with /itemFields flagged drifted. Live: groups inspect/watch/capabilities drift registered; `watch --interval 1s` exits 2; MCP main logs the active library. Generated root.go and mcp main.go were PATCH-edited (env fallback + a startup notice), not rewritten.",
       "upstream_issue": "Roadmap Phase 7 \u2014 completes the published roadmap (Phases 1-7 all SHIPPED). The ZOTERO_GROUP/ZOTERO_PROFILE env fallback and the MCP startup notice are local PATCHes on generated files worth upstreaming to cli-printing-press."
     },
@@ -899,7 +946,22 @@
       "id": "review-remediation",
       "summary": "Fixed defects surfaced by a 5-reviewer pass over the Phase 1-7 arc: 4 P1 (export-snapshot --resume duplication + per-page flush; groups inspect over-claiming write; duplicate-resolve destructive gate bypass) and several P2/P3 (capability-registry items-trash mislabel and missing vault push/resolve writes; env-fallback explicit-empty flag; freshness age_seconds for never-synced; undo bulk-membership refusal; OpenCitations verdict; prompt backtick escaping; override-key guard test).",
       "reason": "export snapshot opened the data file append-mode for any --resume even without a usable checkpoint (duplicating the snapshot) and never flushed pages before the engine advanced the checkpoint (an interrupt could leave the checkpoint ahead of the data) \u2014 now append only on a matching, not-done checkpoint and flush each page in onPage. groups inspect derived ready_for_write from the group's editing POLICY (near-always non-empty); now from the API key's per-group permission via /keys/current (new keyGroupWriteAccess), reporting key_write_known. items duplicates resolve trashed the duplicate with Destructive:false so --allow-destructive was never enforced despite the registry+flag-help declaring it destructive \u2014 set Destructive:true. InverseOps' merge-refusal rested on the {deleted} change being present; now InvertChange only inverts scalar (string) membership toggles, so a duplicate-merge's []string bulk add is refused regardless. capability registry: dropped the items-trash write mislabel (it is a GET list), added vault push/resolve as web_api writes, and added the asserting guard test the comment promised. env fallback now uses cmd.Flags().Changed so an explicit --group ''/--profile '' wins over env. freshness zeroes age_seconds for never-synced rows. OpenCitations validation now distinguishes a fetch failure (unverifiable) from a definitive not-registered result. promptArgumentLiteral strips backticks so a user value cannot break out of a Markdown code span.",
-      "files": ["internal/cli/export_snapshot.go", "internal/cli/groups.go", "internal/cli/groups_test.go", "internal/cli/write_routing.go", "internal/cli/items_duplicates_resolve.go", "internal/cli/items_duplicates_resolve_test.go", "internal/mutation/reverse.go", "internal/mutation/reverse_test.go", "internal/cli/capability.go", "internal/cli/capability_test.go", "internal/cli/root.go", "internal/cli/mcp_freshness.go", "internal/cli/items_enrich.go", "internal/mcp/resources.go"],
+      "files": [
+        "internal/cli/export_snapshot.go",
+        "internal/cli/groups.go",
+        "internal/cli/groups_test.go",
+        "internal/cli/write_routing.go",
+        "internal/cli/items_duplicates_resolve.go",
+        "internal/cli/items_duplicates_resolve_test.go",
+        "internal/mutation/reverse.go",
+        "internal/mutation/reverse_test.go",
+        "internal/cli/capability.go",
+        "internal/cli/capability_test.go",
+        "internal/cli/root.go",
+        "internal/cli/mcp_freshness.go",
+        "internal/cli/items_enrich.go",
+        "internal/mcp/resources.go"
+      ],
       "validated_outcome": "gofmt/build/vet/test ./... green (7 pkgs ok). New/updated tests: groups inspect key-driven verdict (serves /keys/current), duplicate-resolve apply now requires --allow-destructive, reverse refuses []string bulk-membership undo, capabilityOverrides guard test asserts every key resolves to a runnable command.",
       "upstream_issue": "Post-implementation review of the reprint-4.25.0 roadmap arc; the duplicate-resolve Destructive flag and the OpenCitations/groups-inspect accuracy fixes are candidates to upstream."
     },
@@ -907,22 +969,41 @@
       "id": "read-your-writes-mirror-write-through",
       "summary": "After an applied write, replay the just-applied changes onto the local SQLite mirror so `--data-source local` reads-your-own-writes without a `sync`, and surface the post-write item state in the mutation result envelope so MCP agents need no follow-up read.",
       "reason": "Writes route to the cloud (Web API) while reads default to the local mirror, so a write-then-read in the same session (re-audit after fix, multi-step workflow, agent tool-then-resource) saw stale data until the next sync. Standard write-back-cache fix: a post-apply hook (mirrorWriteThrough, installed only on the real Execute path like the journal recorder) loads each applied item from the mirror, forward-applies the recorded changes (tag/collection membership for scalar values, scalar field set/clear), and UpsertKeyed's it back; it also sets mutation.ResultItem.Item to the post-write state. Best-effort: creates (item not yet in the mirror) and unsupported change shapes (bulk []string merges, trash/deleted) are skipped and left for the next sync to reconcile authoritatively. Item versions intentionally stay until sync (writes always re-GET a fresh version from the cloud, so write correctness is unaffected). Cross-client staleness remains handled by the freshness contract (--require-fresh, provenance).",
-      "files": ["internal/mutation/mutation.go", "internal/cli/write_through.go", "internal/cli/write_through_test.go", "internal/cli/mutate.go", "internal/cli/root.go"],
+      "files": [
+        "internal/mutation/mutation.go",
+        "internal/cli/write_through.go",
+        "internal/cli/write_through_test.go",
+        "internal/cli/mutate.go",
+        "internal/cli/root.go"
+      ],
       "validated_outcome": "gofmt/build/vet/test ./... green. TestApplyChangeToItemData covers scalar set/clear, tag/collection add/remove, and refusal of bulk/[trash] shapes; TestRunMutationReadsYourWritesLocally proves an applied DOI change is visible via the local mirror with NO sync and is surfaced in the result envelope. Discovered during live validation: a cloud write was invisible to local reads until sync (the read-after-write gap this closes for the writer's own changes)."
     },
     {
       "id": "lint-clean-golangci",
-      "summary": "Cleared all golangci-lint findings (17). Substantive: wired the migrateExtras extension seam into store.migrate — it was defined and documented but never called, so the seam never executed. Rest are behavior-preserving hygiene: errcheck (unchecked io.WriteString in test HTTP handlers; intentional fmt.Sscanf in toInt64) and ineffassign (dead `results`/`status` initializers).",
-      "reason": "`make lint` (golangci-lint) was never in the per-phase gate set (gofmt/build/vet/test only), so unused/errcheck/ineffassign nits accumulated across the roadmap arc. migrateExtras documents itself as the canonical place for novel-feature auxiliary-table migrations 'after the generated migrations and before the schema-version stamp' but was never wired in — both dead code (unused lint) and a latent gap (the seam didn't run). Wiring it into store.migrate (empty migration slice today = no-op) makes the seam real and silences the linter legitimately.",
-      "files": ["internal/store/store.go", "internal/store/extras.go", "internal/cli/collections_stats.go", "internal/cli/items_duplicates.go", "internal/cli/items_tags_write.go", "internal/cli/groups_test.go", "internal/cli/items_file_test.go", "internal/cli/sync_hhup_test.go", "internal/cli/tail_gaps_test.go"],
+      "summary": "Cleared all golangci-lint findings (17). Substantive: wired the migrateExtras extension seam into store.migrate \u2014 it was defined and documented but never called, so the seam never executed. Rest are behavior-preserving hygiene: errcheck (unchecked io.WriteString in test HTTP handlers; intentional fmt.Sscanf in toInt64) and ineffassign (dead `results`/`status` initializers).",
+      "reason": "`make lint` (golangci-lint) was never in the per-phase gate set (gofmt/build/vet/test only), so unused/errcheck/ineffassign nits accumulated across the roadmap arc. migrateExtras documents itself as the canonical place for novel-feature auxiliary-table migrations 'after the generated migrations and before the schema-version stamp' but was never wired in \u2014 both dead code (unused lint) and a latent gap (the seam didn't run). Wiring it into store.migrate (empty migration slice today = no-op) makes the seam real and silences the linter legitimately.",
+      "files": [
+        "internal/store/store.go",
+        "internal/store/extras.go",
+        "internal/cli/collections_stats.go",
+        "internal/cli/items_duplicates.go",
+        "internal/cli/items_tags_write.go",
+        "internal/cli/groups_test.go",
+        "internal/cli/items_file_test.go",
+        "internal/cli/sync_hhup_test.go",
+        "internal/cli/tail_gaps_test.go"
+      ],
       "validated_outcome": "golangci-lint run ./... exits 0 (was 1, 17 findings); gofmt/build/vet/test ./... green (7 pkgs ok). The migrateExtras wiring is exercised by the existing internal/store open/migrate tests (every OpenWithContext now runs it).",
       "upstream_issue": "Generator-quality: cli-printing-press should wire migrateExtras into the migrate path by default (or drop the seam), emit errcheck-clean test scaffolding, and add golangci-lint to the printed Makefile's default verify path."
     },
     {
       "id": "mcp-path-param-url-encoding",
       "summary": "Security: percent-encode user-supplied path parameters in the generated MCP makeAPIHandler before splicing them into the API path. Added a mcpPathValue helper (url.PathEscape) and routed both path-substitution sites through it.",
-      "reason": "glean bead 1b05b22e (P2 security). makeAPIHandler substituted path params with strings.Replace(path, placeholder, fmt.Sprintf(\"%v\", v), 1) — no URL encoding — so a value containing '/' re-targeted a different endpoint (/collections/{k} with k=\"ABC/items\" became /collections/ABC/items). Exploitable via malicious keys in a shared/group library or a prompt-injected agent, and with --agent write defaults could reach mutations. tools.go is generated/DO-NOT-EDIT, but a known path-injection vuln in a deployed MCP server should not wait on a regen; AGENTS.md permits a narrow // PATCH. url.PathEscape leaves valid Zotero keys ([A-Z0-9]{8}) byte-for-byte unchanged.",
-      "files": ["internal/mcp/tools.go", "internal/mcp/tools_patch_test.go"],
+      "reason": "glean bead 1b05b22e (P2 security). makeAPIHandler substituted path params with strings.Replace(path, placeholder, fmt.Sprintf(\"%v\", v), 1) \u2014 no URL encoding \u2014 so a value containing '/' re-targeted a different endpoint (/collections/{k} with k=\"ABC/items\" became /collections/ABC/items). Exploitable via malicious keys in a shared/group library or a prompt-injected agent, and with --agent write defaults could reach mutations. tools.go is generated/DO-NOT-EDIT, but a known path-injection vuln in a deployed MCP server should not wait on a regen; AGENTS.md permits a narrow // PATCH. url.PathEscape leaves valid Zotero keys ([A-Z0-9]{8}) byte-for-byte unchanged.",
+      "files": [
+        "internal/mcp/tools.go",
+        "internal/mcp/tools_patch_test.go"
+      ],
       "validated_outcome": "gofmt/build/vet/test ./... green; golangci-lint exits 0. New TestMCPPathValueNeutralizesInjection (5 subtests) proves '/', '../', space, and '?' are percent-encoded while a valid key is unchanged. Full-handler testing is blocked by sanitizeClientBaseURL rejecting untrusted (httptest) base URLs, so the escaping is verified at the helper boundary both call sites share.",
       "upstream_issue": "Must be fixed upstream in cli-printing-press: the generated makeAPIHandler should url.PathEscape all path-location bindings by default."
     },
@@ -930,37 +1011,59 @@
       "id": "cross-platform-deep-links",
       "summary": "Generalized `items open` from a macOS-only, personal-item-only launcher into a cross-platform Zotero deep-link layer: --type item|collection|attachment (PDF), group-library scope via the global --group, and an --agent JSON envelope {uri, target_type, library_scope, launched}.",
       "reason": "glean bead inscribi-8r0o (P3). The launch primitive was already cross-platform (launchURI -> launchCommand GOOS dispatch, shared from ensure_live.go), but items open only built zotero://select/library/items/<key> and had no collection/attachment/group support, no rich JSON, and stale 'macOS open' help. Added a zoteroDeepLink helper that reuses the shared zoteroLibrarySegment() (one convention with the vault zotero:// backlinks) and url.PathEscapes the key (keeps the 3969059246039413/1b05b22e path-injection guard). Reused the existing global --group/activeGroupID instead of adding a second group flag. Collection select + open-pdf schemes match the forms already asserted in vault_sync_format_test.go.",
-      "files": ["internal/cli/items_open.go", "internal/cli/items_open_test.go", "README.md"],
+      "files": [
+        "internal/cli/items_open.go",
+        "internal/cli/items_open_test.go",
+        "README.md"
+      ],
       "validated_outcome": "gofmt/build/vet/test ./... green; golangci-lint exits 0. TestZoteroDeepLink covers item/collection/attachment x personal/group + path-escaping; TestZoteroDeepLinkRejectsUnknownType; TestItemsOpenJSONEnvelope (agent envelope, launched:false); TestItemsOpenGroupScopeURI (global --group -> groups/<id> URI). Cross-platform launcher selection already covered by TestLaunchCommand (darwin/linux/windows).",
       "upstream_issue": "Candidate to upstream as a generator capability: a cross-platform deep-link/open command with target-type + library-scope envelope."
     },
     {
       "id": "mcp-streamable-http-transport",
       "summary": "Harvested the v4.27 machine's MCP streamable-HTTP transport into cmd/zotero-pp-mcp/main.go: one binary serves stdio locally and HTTP (server.NewStreamableHTTPServer) when hosted; transport = --transport flag, then PP_MCP_TRANSPORT env, then stdio (prior default).",
-      "reason": "One-time machine-upgrade harvest before decoupling from Printing Press (generated 4.2.2, current machine 4.27.0). The fresh main.go's stdio path uses server.ServeStdio, which does NOT redirect process stdout, so mirrored Cobra os.Stdout writes would corrupt JSON-RPC — kept the hardened NewStdioServer + os.Stdout->stderr path (field-mcp-transport) and only ADDED the http branch. Preserved RegisterResources/RegisterPrompts + capabilities (qfuq) and the Phase-7 library/profile startup notice. mcp-go v0.47.0 already provides NewStreamableHTTPServer; no dependency bump.",
-      "files": ["cmd/zotero-pp-mcp/main.go"],
+      "reason": "One-time machine-upgrade harvest before decoupling from Printing Press (generated 4.2.2, current machine 4.27.0). The fresh main.go's stdio path uses server.ServeStdio, which does NOT redirect process stdout, so mirrored Cobra os.Stdout writes would corrupt JSON-RPC \u2014 kept the hardened NewStdioServer + os.Stdout->stderr path (field-mcp-transport) and only ADDED the http branch. Preserved RegisterResources/RegisterPrompts + capabilities (qfuq) and the Phase-7 library/profile startup notice. mcp-go v0.47.0 already provides NewStreamableHTTPServer; no dependency bump.",
+      "files": [
+        "cmd/zotero-pp-mcp/main.go"
+      ],
       "validated_outcome": "build/vet/test/lint green. Live: `--transport http` initialize returns 200 advertising prompts+resources+tools; tools/list=102, resources/list=6, resource templates=7, prompts/list=7 all served over HTTP. stdio path unchanged."
     },
     {
       "id": "mcp-result-budget-bound",
       "summary": "Added the v4.27 internal/mcp/bound package (MCP result-budget rendering: count-wrapped GET arrays, oversized-array/response truncation into bounded preview envelopes) and wired bound.EndpointResponse(method, data) into tools.go's success path, replacing the prior hand-rolled GET count-wrap.",
       "reason": "Token-efficiency harvest for the 28 typed MCP tools (Zotero list payloads are large). bound is stdlib-only and standalone, so it drops in cleanly; the tools.go wiring is a one-line return change that PRESERVES the 1b05b22e url.PathEscape security fix and all other tools.go patches. DELIBERATELY SKIPPED the rest of the v4.27 cobratree harvest (walker.go/shellout.go/cli_path.go/typemap.go): fresh cobratree has NO arg-safety hardening (no validateMirrorArguments/unsafeMCPMirrorFlags/safeFlagNames equivalent) and fresh typemap depends on its reservedStructuredArgs/blockedRootFlags symbols, so adopting it would regress the da7c6f88 MCP arg-safety hardening. Kept the hardened cobratree.",
-      "files": ["internal/mcp/bound/bound.go", "internal/mcp/bound/bound_test.go", "internal/mcp/tools.go"],
+      "files": [
+        "internal/mcp/bound/bound.go",
+        "internal/mcp/bound/bound_test.go",
+        "internal/mcp/tools.go"
+      ],
       "validated_outcome": "build/vet/test/lint green (8 pkgs ok; bound_test passes). bound.EndpointResponse serves via http tools/call path; PathEscape fix intact.",
       "upstream_issue": "Second upstream finding for cli-printing-press (alongside 1b05b22e): the v4.27 generated cobratree mirror lacks MCP arg-safety hardening (forged MCP args can smuggle hidden globals like --deliver/--profile/--group; raw flag tokens accepted in positional args). The da7c6f88 hardening in this CLI should be upstreamed into the generated walker/shellout."
     },
     {
       "id": "mcp-surface-trim",
       "summary": "Trimmed the MCP tool surface from 102 to 99 tools (~64.5K -> ~61.9K tokens for tools/list) by hiding three genuinely non-agent tools: `watch` (added to cobratree frameworkCommands), and `schema drift` + `capabilities drift` (mcp:hidden merged into their existing Annotations).",
-      "reason": "Acting on trevinsays.com '10 Principles for Agent-Native CLIs' principle 5 (the tool-description surface itself costs tokens; measured 102 tools = 258KB ~= 64.5K tokens loaded at MCP start). Hid only tools that fit classify.go's own documented case-2 (non-functional/maintenance via MCP), with zero capability regret: `watch` is a blocking periodic-sync loop that never returns as a request/response tool (identical shape to the already-excluded `tail` — arguably a latent bug it was exposed); `schema drift` and `capabilities drift` are human ops/maintenance tasks (baseline-compare after a Zotero upgrade / capability-registry drift probe). Deliberately did NOT hide functional-but-niche tools (analytics, workflow, vault, enrich, the bibliometric novel commands) because classify.go documents a breadth philosophy ('an underused tool costs far less than a broken contract') and domainContext does not enumerate the item-type/field taxonomy, so the schema-reference tools retain unique construction value. A dramatic cut would need the code-orchestration (search+execute) pattern, a separate refactor that conflicts with decoupling from Printing Press.",
-      "files": ["internal/mcp/cobratree/classify.go", "internal/cli/schema_drift.go", "internal/cli/capabilities_drift.go"],
+      "reason": "Acting on trevinsays.com '10 Principles for Agent-Native CLIs' principle 5 (the tool-description surface itself costs tokens; measured 102 tools = 258KB ~= 64.5K tokens loaded at MCP start). Hid only tools that fit classify.go's own documented case-2 (non-functional/maintenance via MCP), with zero capability regret: `watch` is a blocking periodic-sync loop that never returns as a request/response tool (identical shape to the already-excluded `tail` \u2014 arguably a latent bug it was exposed); `schema drift` and `capabilities drift` are human ops/maintenance tasks (baseline-compare after a Zotero upgrade / capability-registry drift probe). Deliberately did NOT hide functional-but-niche tools (analytics, workflow, vault, enrich, the bibliometric novel commands) because classify.go documents a breadth philosophy ('an underused tool costs far less than a broken contract') and domainContext does not enumerate the item-type/field taxonomy, so the schema-reference tools retain unique construction value. A dramatic cut would need the code-orchestration (search+execute) pattern, a separate refactor that conflicts with decoupling from Printing Press.",
+      "files": [
+        "internal/mcp/cobratree/classify.go",
+        "internal/cli/schema_drift.go",
+        "internal/cli/capabilities_drift.go"
+      ],
       "validated_outcome": "build/vet/test/lint green. Live http tools/list: 99 tools / 247418 bytes (was 102 / 257843); the 3 hidden tools absent; all core tools present (search, sql, context, items CRUD, collections, library_health, sync, vault, journal_undo, import_scan, items_open, schema_item-types, capabilities, reading_list, groups)."
     },
     {
       "id": "mcp-command-surface-f-plain-and-facade",
       "summary": "Stripped inherited/global persistent flags from the cobratree command-mirror schemas (F-plain) via one shared enumerator (visitSafeMirrorFlags) driving BOTH schema exposure and the validation allowlist; injected --agent in the in-process exec core (runMirroredInProcess); deleted dead toolOptionsForFlags; and added an env-gated command-orchestration facade (command_search + command_run) registered as the default MCP command surface, with PP_MCP_SURFACE=mirror falling back to the lean per-command mirror.",
       "reason": "tools/list cost ~59K tokens for 99 tools; ~94% of the cobratree mass was 22 global flags (--agent/--json/output/confirmation/ops) re-declared on every one of 68 mirror tools, for zero agent value (the MCP layer injects --agent out-of-band). Approach validated by an oracle (GPT-5.5 Pro) consult. The facade collapses the 68 commands behind a search+run pair (reachable on demand), reusing the hardened in-process handler + validateMirrorArguments guard (da7c6f88) so MCP arg-safety is preserved. Additive design (cobratree.RegisterAll retained) makes rollback a runtime env flip.",
-      "files": ["internal/mcp/cobratree/walker.go", "internal/mcp/cobratree/shellout.go", "internal/mcp/cobratree/typemap.go", "internal/mcp/cobratree/orchestrate.go", "internal/mcp/cobratree/orchestrate_test.go", "internal/mcp/cobratree/flagstrip_test.go", "internal/mcp/tools.go"],
+      "files": [
+        "internal/mcp/cobratree/walker.go",
+        "internal/mcp/cobratree/shellout.go",
+        "internal/mcp/cobratree/typemap.go",
+        "internal/mcp/cobratree/orchestrate.go",
+        "internal/mcp/cobratree/orchestrate_test.go",
+        "internal/mcp/cobratree/flagstrip_test.go",
+        "internal/mcp/tools.go"
+      ],
       "validated_outcome": "build/vet/test/lint green. Live http tools/list: facade (default) 33 tools / ~3.8K tokens (was 99 / ~59K, -94%); mirror (PP_MCP_SURFACE=mirror) 99 tools / ~15.1K (-75%, globals stripped). E2E: command_search lists 68 real commands; detail exposes only local flags (no globals); command_run 'library stats' returns structured JSON; forged globals + raw flag tokens rejected by validateMirrorArguments. New package tests cover all 22 globals + 4 hidden + facade behavior.",
       "upstream_issue": "Same root cause as filed issue cli-printing-press#3374: the generated cobratree mirror re-declares inherited persistent flags on every tool (~80% redundant tokens). Fix = enumerate command-local flags only; the shared-enumerator + optional facade are worth upstreaming."
     },
@@ -968,29 +1071,81 @@
       "id": "mcp-facade-apply-gate-flags",
       "summary": "Restored the six write-safety gate flags (yes, dry-run, allow-destructive, max-changes, continue-on-error, max-failures) to the MCP command surface for MUTATING commands only, fixing an F-plain regression that made every cobra-only mutation workflow preview-only over MCP. visitSafeMirrorFlags now also emits these inherited flags when !isMCPReadOnly(cmd); the single-enumerator invariant carries them into schema exposure, the validation allowlist, and command_search detail together.",
       "reason": "F-plain (commit 4cb4fb9) stripped ALL inherited globals, but --agent does NOT imply --yes (root.go) and the apply gate is Yes && !DryRun (mutation.ResolveMode), so items enrich / duplicates resolve / tags audit fix / tags rename / reading-list add / library health --fix could only preview, never apply, via command_run. The ADR-0001 decision rejected this exact 'F-surgical' fix on a false premise (that --agent injection covered non-interactive needs); ADR amended 2026-06-29.",
-      "files": ["internal/mcp/cobratree/walker.go", "internal/mcp/cobratree/orchestrate.go", "internal/mcp/cobratree/flagstrip_test.go", "internal/mcp/cobratree/orchestrate_test.go", "docs/adr/0001-mcp-command-surface.md"],
+      "files": [
+        "internal/mcp/cobratree/walker.go",
+        "internal/mcp/cobratree/orchestrate.go",
+        "internal/mcp/cobratree/flagstrip_test.go",
+        "internal/mcp/cobratree/orchestrate_test.go",
+        "docs/adr/0001-mcp-command-surface.md"
+      ],
       "validated_outcome": "go test ./internal/mcp/cobratree/ green. Unit: write-gating flags accepted on mutating / rejected on read-only / formatting+hidden globals still rejected. E2E (orchestrate_test): {\"yes\": true} propagates through command_run to a mutating command (applied=true), is rejected on a read-only command, and appears in command_search detail for mutating commands only."
     },
     {
       "id": "pathenc-2",
       "summary": "Percent-encode hand-written CLI collection/item/fulltext path keys before splicing them into Zotero request paths.",
       "reason": "The MCP handler path-encoding fix (98c744e) did not cover hand-written CLI code paths that built /collections/{key}/... or /items/{key}/... by raw string concatenation. Agent/user/API-controlled keys containing '/' or '../' could reshape request paths because internal/client concatenates baseURL+path without escaping.",
-      "files": ["internal/cli/collections_export.go", "internal/cli/annotations_export.go", "internal/cli/annotations_timeline.go", "internal/cli/sync.go", "internal/cli/pathenc_test.go"],
+      "files": [
+        "internal/cli/collections_export.go",
+        "internal/cli/annotations_export.go",
+        "internal/cli/annotations_timeline.go",
+        "internal/cli/sync.go",
+        "internal/cli/pathenc_test.go"
+      ],
       "validated_outcome": "go build ./internal/cli/ and go test ./internal/cli/ green; TestCollectionsExportEscapesCollectionPathSegments and TestAnnotationsExportEscapesCollectionPathSegment cover slash/dot-dot keys as single escaped path segments."
     },
     {
       "id": "http-harden",
       "summary": "Hardened the streamable-HTTP MCP transport: default bind is loopback-only (127.0.0.1:7777), non-loopback binds emit an explicit unauthenticated read/write surface warning, HTTP serving now installs signal-driven graceful shutdown, and POST bodies are capped via http.MaxBytesReader before mcp-go reads them into memory.",
       "reason": "glean review found the harvested streamable-HTTP transport (20e98f1) bound all interfaces by default, offered no memory-DoS body cap before mcp-go's io.ReadAll, and lacked the stdio branch's SIGINT/SIGTERM shutdown handling.",
-      "files": ["cmd/zotero-pp-mcp/main.go", "cmd/zotero-pp-mcp/main_test.go", "go.sum"],
+      "files": [
+        "cmd/zotero-pp-mcp/main.go",
+        "cmd/zotero-pp-mcp/main_test.go",
+        "go.sum"
+      ],
       "validated_outcome": "go build ./cmd/zotero-pp-mcp/ and go test ./cmd/zotero-pp-mcp/ pass. Used verified mcp-go API: StreamableHTTPServer.Shutdown(ctx) and WithStreamableHTTPServer(*http.Server) hook (no native max-body option exists, so MaxBytesReader is applied in a custom handler). Table-driven loopback-classification tests cover 127.0.0.1/localhost/:7777/0.0.0.0/[::1]/1.2.3.4."
     },
     {
       "id": "ryw-fix",
       "summary": "Hardened read-your-writes mirror updates: real local mirror open/query/marshal/upsert failures now emit degraded-cache warnings instead of being silently swallowed (db==nil not-synced path stays silent), and stale pre-write version/dateModified fields are stripped from replayed/surfaced items.",
-      "reason": "glean read-your-writes review found applied cloud writes could report success while local reads stayed stale if the mirror update failed, and that replayed items surfaced pre-write Zotero version/dateModified even though the Web API advances Last-Modified-Version after PATCH (that new version is not present in mutation.ResultItem, so option (b)—strip the stale fields—was chosen).",
-      "files": ["internal/cli/write_through.go", "internal/cli/write_through_test.go"],
+      "reason": "glean read-your-writes review found applied cloud writes could report success while local reads stayed stale if the mirror update failed, and that replayed items surfaced pre-write Zotero version/dateModified even though the Web API advances Last-Modified-Version after PATCH (that new version is not present in mutation.ResultItem, so option (b)\u2014strip the stale fields\u2014was chosen).",
+      "files": [
+        "internal/cli/write_through.go",
+        "internal/cli/write_through_test.go"
+      ],
       "validated_outcome": "go build ./internal/cli/ and go test ./internal/cli/ -run WriteThrough -count=1 green; regression tests cover non-applied statuses, dry-run result=nil, create/missing mirror skip, stale version stripping, and the mirror-open warning path."
+    },
+    {
+      "id": "connector-stored-attachments",
+      "summary": "Added a Zotero desktop Connector API write path for local item creation, stored PDF attachments, standalone PDF recognition, resolver-backed OA PDF attachment, connector collection routing, desktop translator file imports, and translator diagnostics.",
+      "reason": "The Zotero Web API cannot upload stored attachment files, run Zotero desktop PDF recognition, trigger Zotero attachment resolvers, or run all desktop import translators, while the desktop connector can perform those operations, retarget same-session creates, and diagnose matching web translators.",
+      "files": [
+        "internal/connector/connector.go",
+        "internal/connector/connector_test.go",
+        "internal/cli/write_routing.go",
+        "internal/cli/write_routing_test.go",
+        "internal/cli/root.go",
+        "internal/cli/create_route.go",
+        "internal/cli/import_apply.go",
+        "internal/cli/import_apply_test.go",
+        "internal/cli/import_doi.go",
+        "internal/cli/import_identifiers.go",
+        "internal/cli/import_url.go",
+        "internal/cli/items_new.go",
+        "internal/cli/items_create.go",
+        "internal/cli/capability.go",
+        "internal/cli/doctor.go",
+        "internal/cli/import.go",
+        "internal/cli/import_pdf.go",
+        "internal/cli/import_manifest.go",
+        "internal/cli/connector_target.go",
+        "internal/cli/connector_target_test.go",
+        "internal/cli/import_targets.go",
+        "internal/cli/import_file.go",
+        "internal/cli/import_translators.go",
+        "internal/cli/import_file_connector_test.go",
+        "internal/cli/items_create_test.go"
+      ],
+      "validated_outcome": "Post-review verification: go test ./internal/connector/ ./internal/cli/ -count=1 passes after fixes for metadata header escaping, uncapped success-body reads, recognition wait timeout, --group Web routing, collection pagination, connector dry-run guards, collection membership handling, desktop_connector data_sources, and missing recognize tests. Prior live smokes: Phase E arXiv translator detection returned arXiv.org; Phase D import file connector returned key V6RCUJSE and cleaned it up (204); Phase C --collection routed N34A4HAN into P36HYBGC and cleaned it up (204); Phase B --fetch-pdf attached Full Text PDF and cleaned up XEENQXK2 (204); Phase A import pdf recognized Attention Is All You Need and cleaned up Y8IG3XTU (204)."
     }
   ]
 }

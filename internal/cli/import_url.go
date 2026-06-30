@@ -4,6 +4,7 @@
 package cli
 
 import (
+	"fmt"
 	"net/http"
 
 	"github.com/spf13/cobra"
@@ -11,6 +12,7 @@ import (
 
 func newImportUrlCmd(flags *rootFlags) *cobra.Command {
 	var flagCollection string
+	var flagFetchPDF bool
 
 	cmd := &cobra.Command{
 		Use:   "url <url>",
@@ -41,14 +43,25 @@ Use --dry-run to preview the proposed item without writing it.`,
 			if err != nil {
 				return err
 			}
-			data, _, err := c.Post("/items", []map[string]any{item})
+			// PATCH: route item creates through the desktop connector when available.
+			res, err := routeCreateItem(cmd.Context(), flags, c, item, itemCreateSourceURI(item), cmd.Flags().Changed("collection"))
 			if err != nil {
-				return classifyAPIError(err, flags)
+				return err
 			}
-			return printOutputWithFlags(cmd.OutOrStdout(), data, flags)
+			if flagFetchPDF {
+				if res.Via != "connector" {
+					return preconditionErr(fmt.Errorf("--fetch-pdf requires the desktop connector; use --via connector"))
+				}
+				attachResolverPDF(cmd.Context(), flags, &res)
+			}
+			if res.Via == "connector" {
+				refreshItemsFromLocalAPI(cmd.Context(), flags)
+			}
+			return printCreateResult(cmd, flags, res, res.WebData)
 		},
 	}
 	cmd.Flags().StringVar(&flagCollection, "collection", "", "Collection key to add the item to")
+	cmd.Flags().BoolVar(&flagFetchPDF, "fetch-pdf", false, "Attach an open-access PDF via Zotero's desktop resolver (requires --via connector)")
 
 	return cmd
 }

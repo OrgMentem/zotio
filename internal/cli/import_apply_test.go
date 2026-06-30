@@ -5,12 +5,14 @@ package cli
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	"zotero-pp-cli/internal/connector"
 	"zotero-pp-cli/internal/mutation"
 )
 
@@ -49,11 +51,81 @@ func TestImportApplyDefaultAttachModeNoneMakesAttachNoOp(t *testing.T) {
 	}
 }
 
-func TestImportApplyUploadModeRefusesLoudly(t *testing.T) {
+func TestImportApplyStoredPreviewRequiresConnector(t *testing.T) {
+	manifestPath := writeImportApplyTestManifest(t, importApplyTestManifest())
+	_, _, err := runImportApplyTestCmdWithFlags(t, &rootFlags{asJSON: true, via: "web"}, []string{"--attach-mode", "stored", manifestPath})
+	if err == nil || !strings.Contains(err.Error(), "--attach-mode stored requires the desktop connector") {
+		t.Fatalf("err = %v, want stored connector precondition error", err)
+	}
+}
+func TestManifestUnidentifiedDefaultsToRecognize(t *testing.T) {
+	if got := manifestActionForStatus("unidentified"); got != "recognize" {
+		t.Fatalf("manifestActionForStatus(unidentified) = %q, want recognize", got)
+	}
+}
+
+func TestImportApplyRecognizeRequiresConnector(t *testing.T) {
+	manifest := importApplyTestManifest()
+	manifest.Entries = []importManifestEntry{{
+		Path:   filepath.Join(string(filepath.Separator), "tmp", "unknown.pdf"),
+		Action: "recognize",
+		Status: "resolved",
+		Title:  "Unknown PDF",
+	}}
+	manifestPath := writeImportApplyTestManifest(t, manifest)
+	_, _, err := runImportApplyTestCmdWithFlags(t, &rootFlags{asJSON: true, via: "web"}, []string{manifestPath})
+	if err == nil || !strings.Contains(err.Error(), "action recognize requires the desktop connector") {
+		t.Fatalf("err = %v, want recognize connector precondition error", err)
+	}
+}
+
+func TestImportApplyRecognizePlansImportPDF(t *testing.T) {
+	oldPing := connectorPing
+	defer func() { connectorPing = oldPing }()
+	connectorPing = func(ctx context.Context, c *connector.Client) error { return nil }
+
+	manifest := importApplyTestManifest()
+	manifest.Entries = []importManifestEntry{{
+		Path:   filepath.Join(string(filepath.Separator), "tmp", "unknown.pdf"),
+		Action: "recognize",
+		Status: "resolved",
+		Title:  "Unknown PDF",
+	}}
+	manifestPath := writeImportApplyTestManifest(t, manifest)
+	flags := &rootFlags{asJSON: true, via: "connector", configPath: testConfigFile(t, "http://localhost:23119/api/users/0")}
+	env, stderr, err := runImportApplyTestCmdWithFlags(t, flags, []string{manifestPath})
+	if err != nil {
+		t.Fatalf("import apply recognize preview: %v; stderr=%s", err, stderr)
+	}
+	if !env.OK || env.Plan.Summary.Planned != 1 || len(env.Plan.Operations) != 1 || env.Plan.Operations[0].Kind != "import_pdf" {
+		t.Fatalf("env = %+v ops=%+v, want one import_pdf preview op", env, env.Plan.Operations)
+	}
+}
+
+func TestImportApplyStoredPreviewPlansConnectorCreateAndExistingAttachFailure(t *testing.T) {
+	oldPing := connectorPing
+	defer func() { connectorPing = oldPing }()
+	connectorPing = func(ctx context.Context, c *connector.Client) error { return nil }
+
+	manifestPath := writeImportApplyTestManifest(t, importApplyTestManifest())
+	flags := &rootFlags{asJSON: true, via: "connector", configPath: testConfigFile(t, "http://localhost:23119/api/users/0")}
+	env, stderr, err := runImportApplyTestCmdWithFlags(t, flags, []string{"--attach-mode", "stored", manifestPath})
+	if err != nil {
+		t.Fatalf("import apply stored preview: %v; stderr=%s", err, stderr)
+	}
+	if !env.OK || env.Mode != "preview" || env.Result != nil {
+		t.Fatalf("env = %+v, want successful stored preview", env)
+	}
+	if env.Plan.Summary.Planned != 2 || len(env.Plan.Operations) != 2 {
+		t.Fatalf("plan = %+v, ops=%+v; want create plus planned attach failure", env.Plan.Summary, env.Plan.Operations)
+	}
+}
+
+func TestImportApplyUploadModeIsInvalid(t *testing.T) {
 	manifestPath := writeImportApplyTestManifest(t, importApplyTestManifest())
 	_, _, err := runImportApplyTestCmd(t, []string{"--attach-mode", "upload", manifestPath})
-	if err == nil || !strings.Contains(err.Error(), "--attach-mode upload is not yet supported; use linked-file or none") {
-		t.Fatalf("err = %v, want upload not-supported error", err)
+	if err == nil || !strings.Contains(err.Error(), "--attach-mode must be one of none, linked-file, stored") {
+		t.Fatalf("err = %v, want upload invalid error", err)
 	}
 }
 
@@ -143,7 +215,12 @@ func writeImportApplyTestManifest(t *testing.T, m importManifest) string {
 
 func runImportApplyTestCmd(t *testing.T, args []string) (mutation.Envelope, string, error) {
 	t.Helper()
-	cmd := newImportApplyCmd(&rootFlags{asJSON: true})
+	return runImportApplyTestCmdWithFlags(t, &rootFlags{asJSON: true}, args)
+}
+
+func runImportApplyTestCmdWithFlags(t *testing.T, flags *rootFlags, args []string) (mutation.Envelope, string, error) {
+	t.Helper()
+	cmd := newImportApplyCmd(flags)
 	cmd.SilenceErrors, cmd.SilenceUsage = true, true
 	var out bytes.Buffer
 	var errOut bytes.Buffer

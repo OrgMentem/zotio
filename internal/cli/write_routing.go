@@ -7,17 +7,97 @@
 package cli
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/url"
+	"strings"
 	"time"
 
 	"zotero-pp-cli/internal/config"
+	"zotero-pp-cli/internal/connector"
 )
 
 // zoteroWebAPIBase is the Zotero Web API root. A package var so tests can point the
 // write-routing resolver at an httptest server.
 var zoteroWebAPIBase = "https://api.zotero.org"
+
+var connectorPing = func(ctx context.Context, c *connector.Client) error {
+	return c.Ping(ctx)
+}
+
+// connectorBaseFromAPIBase maps the configured local data API base
+// (http://localhost:23119/api/users/0) to the desktop Connector API root.
+func connectorBaseFromAPIBase(baseURL string) (string, bool) {
+	if !isLocalZoteroAPI(baseURL) {
+		return "", false
+	}
+	parsed, err := url.Parse(baseURL)
+	if err != nil {
+		return "", false
+	}
+	return strings.ToLower(parsed.Scheme) + "://" + parsed.Host + "/connector", true
+}
+
+// newConnector returns a desktop Connector API client for a local Zotero base URL.
+func (f *rootFlags) newConnector() (*connector.Client, error) {
+	cfg, err := config.Load(f.configPath)
+	if err != nil {
+		return nil, configErr(err)
+	}
+	if f.group != "" {
+		cfg.BaseURL = rewriteLibraryPrefix(cfg.BaseURL, f.group)
+	}
+	base, ok := connectorBaseFromAPIBase(cfg.BaseURL)
+	if !ok {
+		return nil, fmt.Errorf("the desktop connector is only available with a local Zotero base URL")
+	}
+	return connector.New(base, f.timeout), nil
+}
+
+// resolveCreateVia chooses the item-creation write route. --via affects only
+// create operations; updates/deletes/tags keep using the Web API write path.
+func (f *rootFlags) resolveCreateVia(ctx context.Context, collectionRequested bool) (string, error) {
+	switch f.via {
+	case "", "auto":
+		cfg, err := config.Load(f.configPath)
+		if err != nil {
+			return "", configErr(err)
+		}
+		if f.group != "" {
+			// PATCH: desktop connector has no group parameter; keep group writes on Web API.
+			return "web", nil
+		}
+		if !isLocalZoteroAPI(cfg.BaseURL) {
+			return "web", nil
+		}
+		conn, err := f.newConnector()
+		if err != nil {
+			return "web", nil
+		}
+		if err := connectorPing(ctx, conn); err != nil {
+			return "web", nil
+		}
+		return "connector", nil
+	case "web":
+		return "web", nil
+	case "connector":
+		if f.group != "" {
+			return "", fmt.Errorf("--via connector cannot honor --group; use --via web for group writes")
+		}
+		conn, err := f.newConnector()
+		if err != nil {
+			return "", fmt.Errorf("--via connector requires a local Zotero base URL")
+		}
+		if err := connectorPing(ctx, conn); err != nil {
+			return "", fmt.Errorf("--via connector set but desktop Zotero is not reachable on :23119: %w", err)
+		}
+		return "connector", nil
+	default:
+		return "", fmt.Errorf("invalid --via value %q: must be auto, connector, or web", f.via)
+	}
+}
 
 // resolveWebWriteBase returns the Web API base URL writes should target, or "" when
 // no key is configured (writes then hit the read-only local API and its guard). For

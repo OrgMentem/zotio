@@ -8,8 +8,12 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strings"
 
 	"github.com/spf13/cobra"
+
+	// PATCH: direct batch creates can route through the desktop connector.
+	"zotero-pp-cli/internal/connector"
 )
 
 func newItemsCreateCmd(flags *rootFlags) *cobra.Command {
@@ -51,6 +55,63 @@ func newItemsCreateCmd(flags *rootFlags) *cobra.Command {
 					return fmt.Errorf("parsing --items JSON: %w", err)
 				}
 				body = parsedItems
+			}
+			// PATCH: batch item creates use the desktop connector when the body is a JSON object array.
+			if via, err := flags.resolveCreateVia(cmd.Context(), false); err != nil {
+				return err
+			} else if via == "connector" {
+				items, ok := itemsCreateObjects(body)
+				if ok {
+					// PATCH: connector sessions have one target; preserve per-item collection arrays via Web API unless caller overrides.
+					if itemsCreateHasCollections(items) && strings.TrimSpace(flags.connectorTarget) == "" {
+						if flags.via == "connector" {
+							return fmt.Errorf("--via connector cannot honor per-item collections in items create; use --via web or --connector-target C<n>")
+						}
+						ok = false
+					}
+				}
+				if ok {
+					if flags.dryRun {
+						payload, err := json.Marshal(map[string]any{"dry_run": true, "via": "connector", "status": "planned", "count": len(items)})
+						if err != nil {
+							return err
+						}
+						return printOutput(cmd.OutOrStdout(), json.RawMessage(payload), true)
+					}
+					conn, err := flags.newConnector()
+					if err != nil {
+						return err
+					}
+					sessionID, err := connector.NewID()
+					if err != nil {
+						return err
+					}
+					for _, item := range items {
+						connectorKey, err := connector.NewID()
+						if err != nil {
+							return err
+						}
+						item["id"] = connectorKey
+					}
+					if err := conn.SaveItems(cmd.Context(), sessionID, "", items); err != nil {
+						return err
+					}
+					if target := strings.TrimSpace(flags.connectorTarget); target != "" {
+						if err := conn.UpdateSession(cmd.Context(), sessionID, target, nil, ""); err != nil {
+							return err
+						}
+					}
+					refreshItemsFromLocalAPI(cmd.Context(), flags)
+					if flags.asJSON || flags.agent {
+						payload, err := json.Marshal(map[string]any{"via": "connector", "status": "created", "key": nil, "count": len(items)})
+						if err != nil {
+							return err
+						}
+						return printOutput(cmd.OutOrStdout(), json.RawMessage(payload), true)
+					}
+					fmt.Fprintln(cmd.OutOrStdout(), "Created in desktop Zotero (key assigned on save; syncs on next sync).")
+					return nil
+				}
 			}
 			data, statusCode, err := c.Post(path, body)
 			if err != nil {
@@ -123,4 +184,30 @@ func newItemsCreateCmd(flags *rootFlags) *cobra.Command {
 	cmd.Flags().BoolVar(&stdinBody, "stdin", false, "Read request body as JSON from stdin")
 
 	return cmd
+}
+
+// PATCH: direct batch create connector routing requires object-array inspection.
+func itemsCreateObjects(body any) ([]map[string]any, bool) {
+	rawItems, ok := body.([]any)
+	if !ok || len(rawItems) == 0 {
+		return nil, false
+	}
+	items := make([]map[string]any, 0, len(rawItems))
+	for _, raw := range rawItems {
+		item, ok := raw.(map[string]any)
+		if !ok {
+			return nil, false
+		}
+		items = append(items, item)
+	}
+	return items, true
+}
+
+func itemsCreateHasCollections(items []map[string]any) bool {
+	for _, item := range items {
+		if connectorCollectionKeyFromItem(item) != "" {
+			return true
+		}
+	}
+	return false
 }

@@ -116,6 +116,10 @@ but do not stop the import.`,
 	// PATCH(glean roadmap-phase4): reviewable-import pipeline.
 	cmd.AddCommand(newImportResolveCmd(flags))
 	cmd.AddCommand(newImportApplyCmd(flags))
+	// PATCH: connector-backed PDF recognition and diagnostics.
+	cmd.AddCommand(newImportPDFCmd(flags))
+	cmd.AddCommand(newImportTargetsCmd(flags))
+	cmd.AddCommand(newImportTranslatorsCmd(flags))
 
 	return cmd
 }

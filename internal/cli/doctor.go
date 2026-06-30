@@ -149,6 +149,15 @@ func newDoctorCmd(flags *rootFlags) *cobra.Command {
 			default:
 				report["writes"] = "needs ZOTERO_API_KEY (Web API)"
 			}
+			// PATCH: surface desktop connector reachability separately from Web API writes.
+			if localAPI {
+				conn, err := flags.newConnector()
+				if err == nil && connectorPing(cmd.Context(), conn) == nil {
+					report["desktop_connector"] = "reachable (stored attachments + local-first create available)"
+				} else {
+					report["desktop_connector"] = "not running (creates use the Web API; stored attachments unavailable)"
+				}
+			}
 
 			// Check auth environment variables
 			authEnvSet := []string{}

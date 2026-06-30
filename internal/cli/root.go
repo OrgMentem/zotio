@@ -42,7 +42,10 @@ type rootFlags struct {
 	timeout          time.Duration
 	rateLimit        float64
 	dataSource       string
-	freshnessMeta    any
+	// PATCH: creation write route; auto uses the desktop connector when local.
+	via             string
+	connectorTarget string
+	freshnessMeta   any
 	// PATCH(glean 9bfn): numeric group ID selected via --group ("" = personal).
 	group string
 
@@ -176,6 +179,9 @@ See README.md or the bundled SKILL.md for recipes.`,
 	rootCmd.PersistentFlags().Float64Var(&flags.rateLimit, "rate-limit", 0, "Max requests per second (0 to disable)")
 	// PATCH(glean 9bfn): operate on a group library instead of the personal one.
 	rootCmd.PersistentFlags().StringVar(&flags.group, "group", "", "Operate on a Zotero group library by numeric group ID (default: personal library)")
+	// PATCH: route item creates through the desktop connector when local.
+	rootCmd.PersistentFlags().StringVar(&flags.via, "via", "auto", "Item-creation route: auto (connector when local+reachable), connector (desktop), or web (api.zotero.org)")
+	rootCmd.PersistentFlags().StringVar(&flags.connectorTarget, "connector-target", "", "Desktop connector save target ID (for example C78); overrides --collection target mapping")
 
 	rootCmd.PersistentPreRunE = func(cmd *cobra.Command, args []string) error {
 		// PATCH(glean roadmap-phase7 3df91067): env fallback so MCP installs and
@@ -244,6 +250,13 @@ See README.md or the bundled SKILL.md for recipes.`,
 			// valid
 		default:
 			return fmt.Errorf("invalid --data-source value %q: must be auto, live, or local", flags.dataSource)
+		}
+		// PATCH: validate connector write-route selector.
+		switch flags.via {
+		case "auto", "connector", "web":
+			// valid
+		default:
+			return fmt.Errorf("invalid --via value %q: must be auto, connector, or web", flags.via)
 		}
 		return nil
 	}

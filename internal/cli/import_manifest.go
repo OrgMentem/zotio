@@ -37,13 +37,15 @@ type importManifest struct {
 }
 
 // manifestActionForStatus maps a scan classification to its default action:
-// new -> create, attach_candidate -> attach, duplicate/unidentified -> skip.
+// new -> create, attach_candidate -> attach, unidentified -> recognize, duplicate -> skip.
 func manifestActionForStatus(status string) string {
 	switch status {
 	case "new":
 		return "create"
 	case "attach_candidate":
 		return "attach"
+	case "unidentified":
+		return "recognize"
 	default:
 		return "skip"
 	}

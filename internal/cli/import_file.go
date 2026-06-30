@@ -12,6 +12,8 @@ import (
 	"strings"
 
 	"github.com/spf13/cobra"
+
+	"zotero-pp-cli/internal/connector"
 )
 
 const importFileBatchSize = 50
@@ -43,6 +45,9 @@ func newImportFileCmd(flags *rootFlags) *cobra.Command {
 				format = detectImportFileFormat(filePath)
 			}
 
+			if flags.via == "connector" {
+				return importFileViaConnector(cmd, flags, filePath, content, format, flagCollection)
+			}
 			items, err := parseImportFileItems(string(content), format, flagCollection)
 			if err != nil {
 				return err
@@ -83,6 +88,90 @@ func newImportFileCmd(flags *rootFlags) *cobra.Command {
 	cmd.Flags().StringVar(&flagCollection, "collection", "", "Collection key to add imported items to")
 
 	return cmd
+}
+
+func importFileViaConnector(cmd *cobra.Command, flags *rootFlags, filePath string, content []byte, format, collectionKey string) error {
+	via, err := flags.resolveCreateVia(cmd.Context(), collectionKey != "" || strings.TrimSpace(flags.connectorTarget) != "")
+	if err != nil {
+		return preconditionErr(err)
+	}
+	if via != "connector" {
+		return preconditionErr(fmt.Errorf("import file --via connector requires the desktop connector (local base URL + Zotero running)"))
+	}
+	conn, err := flags.newConnector()
+	if err != nil {
+		return err
+	}
+	target := strings.TrimSpace(flags.connectorTarget)
+	if target == "" && strings.TrimSpace(collectionKey) != "" {
+		target, err = resolveConnectorTarget(cmd.Context(), flags, conn, collectionKey)
+		if err != nil {
+			return err
+		}
+	}
+	if flags.dryRun {
+		return printJSONFiltered(cmd.OutOrStdout(), map[string]any{
+			"dry_run": true,
+			"file":    filePath,
+			"via":     "connector",
+			"target":  target,
+		}, flags)
+	}
+	sessionID, err := connector.NewID()
+	if err != nil {
+		return err
+	}
+	items, err := conn.Import(cmd.Context(), sessionID, content, connectorImportContentType(format))
+	if err != nil {
+		return err
+	}
+	if target != "" {
+		if err := conn.UpdateSession(cmd.Context(), sessionID, target, nil, ""); err != nil {
+			return err
+		}
+	}
+	refreshItemsFromLocalAPI(cmd.Context(), flags)
+
+	keys := connectorImportKeys(items)
+	if flags.asJSON || flags.agent || flags.csv || flags.plain {
+		return printJSONFiltered(cmd.OutOrStdout(), map[string]any{
+			"file":     filePath,
+			"via":      "connector",
+			"session":  sessionID,
+			"imported": len(items),
+			"keys":     keys,
+			"target":   target,
+		}, flags)
+	}
+	if flags.quiet {
+		return nil
+	}
+	fmt.Fprintf(cmd.OutOrStdout(), "Imported %d items from %s via Zotero desktop\n", len(items), filePath)
+	return nil
+}
+
+func connectorImportContentType(format string) string {
+	switch strings.ToLower(strings.TrimSpace(format)) {
+	case "bibtex", "ris":
+		return "text/plain"
+	case "csljson":
+		return "application/json"
+	default:
+		return "text/plain"
+	}
+}
+
+func connectorImportKeys(items []json.RawMessage) []string {
+	keys := make([]string, 0, len(items))
+	for _, raw := range items {
+		var item struct {
+			Key string `json:"key"`
+		}
+		if err := json.Unmarshal(raw, &item); err == nil && strings.TrimSpace(item.Key) != "" {
+			keys = append(keys, strings.TrimSpace(item.Key))
+		}
+	}
+	return keys
 }
 
 func detectImportFileFormat(path string) string {

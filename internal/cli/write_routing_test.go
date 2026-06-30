@@ -5,13 +5,18 @@
 package cli
 
 import (
+	"context"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
 	"zotero-pp-cli/internal/config"
+	"zotero-pp-cli/internal/connector"
 )
 
 func TestResolveWebWriteBase(t *testing.T) {
@@ -59,4 +64,64 @@ func TestResolveWebWriteBaseResolvesAndCachesUserID(t *testing.T) {
 	if cfg.UserID != "99" {
 		t.Errorf("user id not cached on config: %q", cfg.UserID)
 	}
+}
+
+func TestConnectorBaseFromAPIBase(t *testing.T) {
+	t.Parallel()
+
+	got, ok := connectorBaseFromAPIBase("http://localhost:23119/api/users/0")
+	if !ok || got != "http://localhost:23119/connector" {
+		t.Fatalf("local base = (%q, %v), want connector base", got, ok)
+	}
+	got, ok = connectorBaseFromAPIBase("https://api.zotero.org/users/5847066")
+	if ok || got != "" {
+		t.Fatalf("web base = (%q, %v), want no connector base", got, ok)
+	}
+}
+
+func TestResolveCreateVia(t *testing.T) {
+	oldPing := connectorPing
+	defer func() { connectorPing = oldPing }()
+	connectorPing = func(ctx context.Context, c *connector.Client) error {
+		if !strings.HasSuffix(c.BaseURL, "/connector") {
+			return fmt.Errorf("unexpected connector base %q", c.BaseURL)
+		}
+		return nil
+	}
+
+	localFlags := rootFlags{configPath: testConfigFile(t, "http://localhost:23119/api/users/0"), via: "auto", timeout: time.Second}
+	got, err := localFlags.resolveCreateVia(context.Background(), false)
+	if err != nil || got != "connector" {
+		t.Fatalf("auto local reachable = (%q, %v), want connector", got, err)
+	}
+
+	got, err = localFlags.resolveCreateVia(context.Background(), true)
+	if err != nil || got != "connector" {
+		t.Fatalf("auto with collection = (%q, %v), want connector", got, err)
+	}
+
+	groupFlags := rootFlags{configPath: testConfigFile(t, "http://localhost:23119/api/users/0"), via: "auto", group: "12345", timeout: time.Second}
+	got, err = groupFlags.resolveCreateVia(context.Background(), false)
+	if err != nil || got != "web" {
+		t.Fatalf("auto group = (%q, %v), want web", got, err)
+	}
+
+	explicitGroupFlags := rootFlags{configPath: testConfigFile(t, "http://localhost:23119/api/users/0"), via: "connector", group: "12345", timeout: time.Second}
+	if got, err := explicitGroupFlags.resolveCreateVia(context.Background(), false); err == nil || got != "" {
+		t.Fatalf("explicit connector group = (%q, %v), want error", got, err)
+	}
+
+	webFlags := rootFlags{configPath: testConfigFile(t, "https://api.zotero.org/users/5847066"), via: "connector", timeout: time.Second}
+	if got, err := webFlags.resolveCreateVia(context.Background(), false); err == nil || got != "" {
+		t.Fatalf("explicit connector non-local = (%q, %v), want error", got, err)
+	}
+}
+
+func testConfigFile(t *testing.T, baseURL string) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "config.toml")
+	if err := os.WriteFile(path, []byte(fmt.Sprintf("base_url = %q\n", baseURL)), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	return path
 }
