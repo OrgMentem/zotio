@@ -1,0 +1,11 @@
+# Extends gitleaks' bundled default ruleset; adds a scoped allowlist for
+# synthetic secrets that only appear in test fixtures. These are fake tokens
+# used to exercise JWT-shape/parse logic, never real credentials.
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "Synthetic secrets in Go test fixtures"
+paths = [
+  '''.*_test\.go$''',
+]
