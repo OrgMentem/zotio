@@ -8,7 +8,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"zotero-pp-cli/internal/store"
+	"zotio/internal/store"
 )
 
 func TestSyncSingleObject_PreservesLargeIntegerResourceIDs(t *testing.T) {

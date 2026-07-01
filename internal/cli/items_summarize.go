@@ -15,7 +15,7 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"zotero-pp-cli/internal/store"
+	"zotio/internal/store"
 )
 
 type summarizeOpts struct {
@@ -82,14 +82,14 @@ capped fulltext excerpt, and known metadata gaps — plus a synthesis prompt.
 This command never calls a model: it does the assembly and budgeting the host LLM
 is bad at, then hands off. Reads are local only. With --agent/--json it emits the
 structured bundle; otherwise a readable Markdown brief you can paste into any LLM.`,
-		Example: `  zotero-pp-cli items summarize 9UXV5R7L
-  zotero-pp-cli items summarize 9UXV5R7L --agent --max-chars 6000
-  zotero-pp-cli items summarize --collection MAR7RFQN --no-fulltext`,
+		Example: `  zotio items summarize 9UXV5R7L
+  zotio items summarize 9UXV5R7L --agent --max-chars 6000
+  zotio items summarize --collection MAR7RFQN --no-fulltext`,
 		Annotations: map[string]string{"mcp:read-only": "true"},
 		RunE: func(cmd *cobra.Command, args []string) error {
-			db, _ := openStoreForRead(cmd.Context(), "zotero-pp-cli")
+			db, _ := openStoreForRead(cmd.Context(), "zotio")
 			if db == nil {
-				fmt.Fprintln(cmd.OutOrStdout(), "Run 'zotero-pp-cli sync' first.")
+				fmt.Fprintln(cmd.OutOrStdout(), "Run 'zotio sync' first.")
 				return nil
 			}
 			defer db.Close()
@@ -111,7 +111,7 @@ structured bundle; otherwise a readable Markdown brief you can paste into any LL
 				return fmt.Errorf("reading item: %w", err)
 			}
 			if raw == nil {
-				return fmt.Errorf("item %s not found locally; run 'zotero-pp-cli sync' (or check the key)", args[0])
+				return fmt.Errorf("item %s not found locally; run 'zotio sync' (or check the key)", args[0])
 			}
 
 			annByKey, _ := db.AnnotationsForItems([]string{args[0]})

@@ -153,7 +153,7 @@ func deliverWebhook(url string, body []byte, compact bool) error {
 		return fmt.Errorf("building webhook request: %w", err)
 	}
 	req.Header.Set("Content-Type", contentType)
-	req.Header.Set("User-Agent", "zotero-pp-cli/deliver")
+	req.Header.Set("User-Agent", "zotio/deliver")
 
 	client := &http.Client{Timeout: 30 * time.Second, CheckRedirect: func(req *http.Request, via []*http.Request) error {
 		// PATCH(glean zotero-pp-cli-a8f9611224e937cc): do not follow webhook

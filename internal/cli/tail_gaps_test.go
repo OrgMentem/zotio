@@ -15,9 +15,9 @@ import (
 	"testing"
 	"time"
 
-	"zotero-pp-cli/internal/client"
-	"zotero-pp-cli/internal/config"
-	"zotero-pp-cli/internal/store"
+	"zotio/internal/client"
+	"zotio/internal/config"
+	"zotio/internal/store"
 )
 
 func tailTestStore(t *testing.T) *store.Store {

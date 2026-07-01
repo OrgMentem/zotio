@@ -15,8 +15,8 @@ import (
 	"testing"
 	"time"
 
-	"zotero-pp-cli/internal/config"
-	"zotero-pp-cli/internal/connector"
+	"zotio/internal/config"
+	"zotio/internal/connector"
 )
 
 func TestResolveWebWriteBase(t *testing.T) {

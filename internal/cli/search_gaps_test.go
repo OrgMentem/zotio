@@ -13,7 +13,7 @@ import (
 	"testing"
 	"time"
 
-	"zotero-pp-cli/internal/store"
+	"zotio/internal/store"
 )
 
 func TestSearchIsNilOrEmpty(t *testing.T) {

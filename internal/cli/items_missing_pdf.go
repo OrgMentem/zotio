@@ -24,12 +24,12 @@ func newItemsMissingPdfCmd(flags *rootFlags) *cobra.Command {
 		Short:       "List items that should have an attached PDF but do not",
 		Annotations: map[string]string{"mcp:read-only": "true"},
 		RunE: func(cmd *cobra.Command, args []string) error {
-			rawDB, err := openStoreForRead(cmd.Context(), "zotero-pp-cli")
+			rawDB, err := openStoreForRead(cmd.Context(), "zotio")
 			if err != nil {
 				return fmt.Errorf("opening database: %w", err)
 			}
 			if rawDB == nil {
-				fmt.Fprintln(cmd.OutOrStdout(), "Run 'zotero-pp-cli sync' first.")
+				fmt.Fprintln(cmd.OutOrStdout(), "Run 'zotio sync' first.")
 				return nil
 			}
 			defer rawDB.Close()

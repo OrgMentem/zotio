@@ -11,7 +11,7 @@ import (
 	"time"
 
 	"github.com/pelletier/go-toml/v2"
-	"zotero-pp-cli/internal/cliutil"
+	"zotio/internal/cliutil"
 )
 
 type Config struct {
@@ -203,12 +203,18 @@ func resolveConfigPath(configPath string) (string, bool, error) {
 	return filepath.Join(dir, "config.toml"), false, nil
 }
 
+// LegacyConfigPath is the pre-relocation platform-default config location
+// (~/.config/<app>/config.toml) for the CURRENT app name. It backs the
+// read-and-scrub fallback when the active config has moved to an XDG or
+// per-kind-env location. The app-name component tracks cliutil.AppName so it
+// never drifts from the resolved config dir. (The pre-rename zotero-pp-cli
+// directory is handled separately by cliutil.MigrateLegacyDirs at startup.)
 func LegacyConfigPath() (string, error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return "", fmt.Errorf("resolve legacy config path: %w", err)
 	}
-	return filepath.Join(home, ".config", "zotero-pp-cli", "config.toml"), nil
+	return filepath.Join(home, ".config", cliutil.AppName(), "config.toml"), nil
 }
 
 func readConfigFile(path string, cfg *Config, owner string) error {

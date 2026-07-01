@@ -21,7 +21,7 @@ func newCollectionsUpdateCmd(flags *rootFlags) *cobra.Command {
 		Use:   "update <collectionKey>",
 		Short: "Update a collection",
 		// PATCH(glean zotero-pp-cli-76875fc8c78bd05c): use a collection key placeholder, not a token.
-		Example:     "  zotero-pp-cli collections update COLLECTIONKEY",
+		Example:     "  zotio collections update COLLECTIONKEY",
 		Annotations: map[string]string{"pp:endpoint": "collections.update", "pp:method": "PUT", "pp:path": "/collections/{collectionKey}"},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if len(args) == 0 {

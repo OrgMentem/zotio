@@ -8,7 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 
-	"zotero-pp-cli/internal/store"
+	"zotio/internal/store"
 
 	"github.com/spf13/cobra"
 )
@@ -74,12 +74,12 @@ func newItemsDuplicatesCmd(flags *rootFlags) *cobra.Command {
 		Short:       "Find likely duplicate items in the local store",
 		Annotations: map[string]string{"mcp:read-only": "true"},
 		RunE: func(cmd *cobra.Command, args []string) error {
-			rawDB, err := openStoreForRead(cmd.Context(), "zotero-pp-cli")
+			rawDB, err := openStoreForRead(cmd.Context(), "zotio")
 			if err != nil {
 				return fmt.Errorf("opening local database: %w", err)
 			}
 			if rawDB == nil {
-				fmt.Fprintln(cmd.OutOrStdout(), "Run 'zotero-pp-cli sync' first to enable duplicate detection.")
+				fmt.Fprintln(cmd.OutOrStdout(), "Run 'zotio sync' first to enable duplicate detection.")
 				return nil
 			}
 			defer rawDB.Close()

@@ -11,7 +11,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"zotero-pp-cli/internal/store"
+	"zotio/internal/store"
 )
 
 func writeScanFile(t *testing.T, dir, name, content string) string {

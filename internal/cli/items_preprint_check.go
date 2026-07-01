@@ -37,7 +37,7 @@ const (
 	arxivAtomQueryURL   = "https://export.arxiv.org/api/query"
 	arxivSelfDOIPrefix  = "10.48550/arxiv."
 	crossrefWorksURL    = "https://api.crossref.org/works/"
-	crossrefUserAgent   = "zotero-pp-cli/1.0 (+https://github.com/mvanhorn/cli-printing-press)"
+	crossrefUserAgent   = "zotio/1.0 (+https://github.com/mvanhorn/cli-printing-press)"
 	crossrefContentType = "application/json"
 )
 

@@ -10,7 +10,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"zotero-pp-cli/internal/store"
+	"zotio/internal/store"
 )
 
 func TestParseScopeSpec(t *testing.T) {

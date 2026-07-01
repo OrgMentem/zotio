@@ -20,7 +20,7 @@ func newCollectionsCreateCmd(flags *rootFlags) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:         "create",
 		Short:       "Create one or more collections",
-		Example:     "  zotero-pp-cli collections create --name example-resource",
+		Example:     "  zotio collections create --name example-resource",
 		Annotations: map[string]string{"pp:endpoint": "collections.create", "pp:method": "POST", "pp:path": "/collections"},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if !stdinBody {

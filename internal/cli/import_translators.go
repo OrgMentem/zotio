@@ -63,7 +63,7 @@ func fetchTranslatorHTML(ctx context.Context, pageURL string, flags *rootFlags) 
 	if err != nil {
 		return "", err
 	}
-	req.Header.Set("User-Agent", "zotero-pp-cli/1.0 translator-diagnostics")
+	req.Header.Set("User-Agent", "zotio/1.0 translator-diagnostics")
 	client := &http.Client{Timeout: flags.timeout}
 	resp, err := client.Do(req)
 	if err != nil {

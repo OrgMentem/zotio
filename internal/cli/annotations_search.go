@@ -30,7 +30,7 @@ func newAnnotationsSearchCmd(flags *rootFlags) *cobra.Command {
 			// present; --refresh forces the live API path below. The API `q`
 			// param has no local equivalent, so text matching runs in memory.
 			if !refresh {
-				if db, _ := openStoreForRead(cmd.Context(), "zotero-pp-cli"); db != nil {
+				if db, _ := openStoreForRead(cmd.Context(), "zotio"); db != nil {
 					defer db.Close()
 					rows, lerr := db.ItemsByType("annotation", 0)
 					if lerr == nil && len(rows) > 0 {

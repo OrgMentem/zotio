@@ -37,7 +37,7 @@ func TestCapabilitiesDriftReportsSchemaEndpointDrift(t *testing.T) {
 	t.Setenv("ZOTERO_CONFIG", filepath.Join(t.TempDir(), "missing.toml"))
 
 	flags := &rootFlags{asJSON: true}
-	rootForRegistry := &cobra.Command{Use: "zotero-pp-cli"}
+	rootForRegistry := &cobra.Command{Use: "zotio"}
 	cmd := newCapabilitiesCmd(rootForRegistry, flags)
 	cmd.SilenceErrors, cmd.SilenceUsage = true, true
 	cmd.SetArgs([]string{"drift"})

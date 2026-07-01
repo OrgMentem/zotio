@@ -12,7 +12,7 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"zotero-pp-cli/internal/store"
+	"zotio/internal/store"
 )
 
 type collectionBundleManifest struct {
@@ -42,12 +42,12 @@ never writes to Zotero; run sync first if local data is missing.`,
 				return usageErr(fmt.Errorf("--out is required"))
 			}
 
-			db, err := openStoreForRead(cmd.Context(), "zotero-pp-cli")
+			db, err := openStoreForRead(cmd.Context(), "zotio")
 			if err != nil {
 				return err
 			}
 			if db == nil {
-				fmt.Fprintln(cmd.OutOrStdout(), "Run 'zotero-pp-cli sync' first.")
+				fmt.Fprintln(cmd.OutOrStdout(), "Run 'zotio sync' first.")
 				return nil
 			}
 			defer db.Close()
@@ -57,7 +57,7 @@ never writes to Zotero; run sync first if local data is missing.`,
 				return fmt.Errorf("checking local item store: %w", err)
 			}
 			if itemCount == 0 {
-				fmt.Fprintln(cmd.OutOrStdout(), "Run 'zotero-pp-cli sync' first.")
+				fmt.Fprintln(cmd.OutOrStdout(), "Run 'zotio sync' first.")
 				return nil
 			}
 

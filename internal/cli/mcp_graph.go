@@ -82,7 +82,7 @@ func graphNotFoundJSON(key string) ([]byte, error) {
 // PATCH(glean roadmap-phase5 bounded-graph): cap recursion by both depth and
 // node count so malformed collection graphs cannot exhaust MCP hosts.
 func CollectionTreeJSON(key string) ([]byte, error) {
-	db, err := openStoreForRead(context.Background(), "zotero-pp-cli")
+	db, err := openStoreForRead(context.Background(), "zotio")
 	if err != nil {
 		return nil, err
 	}
@@ -180,7 +180,7 @@ LIMIT ?`, parentKey, remaining+1)
 // PATCH(glean roadmap-phase5 bounded-graph): read children through indexed
 // parent_key with an explicit cap for MCP callers.
 func ItemChildrenJSON(key string) ([]byte, error) {
-	db, err := openStoreForRead(context.Background(), "zotero-pp-cli")
+	db, err := openStoreForRead(context.Background(), "zotio")
 	if err != nil {
 		return nil, err
 	}
@@ -227,7 +227,7 @@ LIMIT ?`, key, graphNodeCap+1)
 // PATCH(glean roadmap-phase5 bounded-graph): expose attachment metadata while
 // keeping traversal local and capped.
 func ItemAttachmentsJSON(key string) ([]byte, error) {
-	db, err := openStoreForRead(context.Background(), "zotero-pp-cli")
+	db, err := openStoreForRead(context.Background(), "zotio")
 	if err != nil {
 		return nil, err
 	}
@@ -278,7 +278,7 @@ LIMIT ?`, key, graphNodeCap+1)
 // PATCH(glean roadmap-phase5 bounded-graph): summarize parent, membership, tags,
 // and dependent counts with capped JSON-list expansion.
 func ItemContextJSON(key string) ([]byte, error) {
-	db, err := openStoreForRead(context.Background(), "zotero-pp-cli")
+	db, err := openStoreForRead(context.Background(), "zotio")
 	if err != nil {
 		return nil, err
 	}

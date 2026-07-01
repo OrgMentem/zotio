@@ -12,8 +12,8 @@ import (
 	"sync"
 	"testing"
 
-	"zotero-pp-cli/internal/cliutil"
-	"zotero-pp-cli/internal/config"
+	"zotio/internal/cliutil"
+	"zotio/internal/config"
 )
 
 func resetCredentialEnv(t *testing.T) (home, configPath string) {
@@ -40,7 +40,7 @@ func resetCredentialEnv(t *testing.T) (home, configPath string) {
 	} else {
 		t.Fatalf("reset home override: %v", err)
 	}
-	return home, filepath.Join(home, ".config", "zotero-pp-cli", "config.toml")
+	return home, filepath.Join(home, ".config", "zotio", "config.toml")
 }
 
 func TestCredentialsFileWinsWhenLegacyConfigAlsoHasSecrets(t *testing.T) {
@@ -73,7 +73,7 @@ func TestCorruptCredentialsFallsBackToLegacyConfig(t *testing.T) {
 	if err := os.WriteFile(configPath, []byte("base_url = \"https://legacy.example\"\n"+legacyCredentialTOML("legacy-secret")), 0o600); err != nil {
 		t.Fatalf("write legacy config: %v", err)
 	}
-	credentialsPath := filepath.Join(home, ".local", "share", "zotero-pp-cli", "credentials.toml")
+	credentialsPath := filepath.Join(home, ".local", "share", "zotio", "credentials.toml")
 	if err := os.MkdirAll(filepath.Dir(credentialsPath), 0o700); err != nil {
 		t.Fatalf("mkdir credentials dir: %v", err)
 	}
@@ -98,7 +98,7 @@ func TestCorruptCredentialsFallsBackToLegacyConfig(t *testing.T) {
 func TestCorruptCredentialsFallsBackToEnvCredential(t *testing.T) {
 	home, _ := resetCredentialEnv(t)
 	t.Setenv("ZOTERO_API_KEY", "env-secret")
-	credentialsPath := filepath.Join(home, ".local", "share", "zotero-pp-cli", "credentials.toml")
+	credentialsPath := filepath.Join(home, ".local", "share", "zotio", "credentials.toml")
 	if err := os.MkdirAll(filepath.Dir(credentialsPath), 0o700); err != nil {
 		t.Fatalf("mkdir credentials dir: %v", err)
 	}
@@ -128,7 +128,7 @@ func TestEmptyCredentialsFileDoesNotClearLegacyConfig(t *testing.T) {
 	if err := os.WriteFile(configPath, []byte("base_url = \"https://legacy.example\"\n"+legacyCredentialTOML("legacy-secret")), 0o600); err != nil {
 		t.Fatalf("write legacy config: %v", err)
 	}
-	credentialsPath := filepath.Join(home, ".local", "share", "zotero-pp-cli", "credentials.toml")
+	credentialsPath := filepath.Join(home, ".local", "share", "zotio", "credentials.toml")
 	if err := os.MkdirAll(filepath.Dir(credentialsPath), 0o700); err != nil {
 		t.Fatalf("mkdir credentials dir: %v", err)
 	}
@@ -216,7 +216,7 @@ func TestAuthWriteScrubsLegacyConfigWhenRelocated(t *testing.T) {
 	}
 
 	// Active config at relocated path should also be secret-free.
-	activeConfigPath := filepath.Join(newConfigDir, "zotero-pp-cli", "config.toml")
+	activeConfigPath := filepath.Join(newConfigDir, "zotio", "config.toml")
 	activeData, err := os.ReadFile(activeConfigPath)
 	if err != nil {
 		t.Fatalf("read active config: %v", err)
@@ -230,7 +230,7 @@ func TestAuthWriteScrubsLegacyConfigWhenRelocated(t *testing.T) {
 	}
 
 	// Credentials file should exist in the new data dir.
-	credsPath := filepath.Join(newDataDir, "zotero-pp-cli", "credentials.toml")
+	credsPath := filepath.Join(newDataDir, "zotio", "credentials.toml")
 	if _, err := os.Stat(credsPath); err != nil {
 		t.Fatalf("credentials file not found at relocated data dir: %v", err)
 	}

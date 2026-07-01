@@ -17,7 +17,7 @@ func newCollectionsTopCmd(flags *rootFlags) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:         "top",
 		Short:       "List only top-level collections (no parents)",
-		Example:     "  zotero-pp-cli collections top",
+		Example:     "  zotio collections top",
 		Annotations: map[string]string{"pp:endpoint": "collections.top", "pp:method": "GET", "pp:path": "/collections/top", "mcp:read-only": "true"},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			c, err := flags.newClient()

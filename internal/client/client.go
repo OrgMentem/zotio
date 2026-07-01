@@ -24,8 +24,8 @@ import (
 	"sync"
 	"syscall"
 	"time"
-	"zotero-pp-cli/internal/cliutil"
-	"zotero-pp-cli/internal/config"
+	"zotio/internal/cliutil"
+	"zotio/internal/config"
 )
 
 const (
@@ -99,7 +99,7 @@ func newHTTPClient(timeout time.Duration, jar http.CookieJar) *http.Client {
 
 func New(cfg *config.Config, timeout time.Duration, rateLimit float64) *Client {
 	homeDir, _ := os.UserHomeDir()
-	cacheDir := filepath.Join(homeDir, ".cache", "zotero-pp-cli")
+	cacheDir := filepath.Join(homeDir, ".cache", "zotio")
 	httpClient := newHTTPClient(timeout, nil)
 	baseURL := sanitizeClientBaseURL(cfg.BaseURL)
 	return &Client{
@@ -349,7 +349,7 @@ func (c *Client) doRequest(ctx context.Context, method, path string, params map[
 			req.Header.Del("Authorization")
 		}
 		if req.Header.Get("User-Agent") == "" {
-			req.Header.Set("User-Agent", "zotero-pp-cli/0.1.0")
+			req.Header.Set("User-Agent", "zotio/0.1.0")
 		}
 
 		resp, err := c.HTTPClient.Do(req)
@@ -672,12 +672,12 @@ func (c *Client) refreshAccessToken() error {
 	if c.Config == nil || c.Config.RefreshToken == "" {
 		return nil
 	}
-	// PATCH(glean security-audit/static-audit): zotero-pp-cli authenticates with
+	// PATCH(glean security-audit/static-audit): zotio authenticates with
 	// an API key (Zotero-API-Key header), not OAuth2. The generated scaffold left
 	// a hardcoded-empty tokenURL, so refresh silently returned nil and the HTTP
 	// block below it was dead code; a silently-stale token then 401s with no hint.
 	// There is no OAuth refresh endpoint to call here, so fail loudly instead.
-	return fmt.Errorf("token refresh is not supported: zotero-pp-cli uses API-key auth (set ZOTERO_API_KEY)")
+	return fmt.Errorf("token refresh is not supported: zotio uses API-key auth (set ZOTERO_API_KEY)")
 }
 
 // sanitizeJSONResponse strips known JSONP/XSSI prefixes and UTF-8 BOM from

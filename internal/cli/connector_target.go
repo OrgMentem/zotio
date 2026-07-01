@@ -9,7 +9,7 @@ import (
 	"fmt"
 	"strings"
 
-	"zotero-pp-cli/internal/connector"
+	"zotio/internal/connector"
 )
 
 type connectorTargetInfo struct {
@@ -83,7 +83,7 @@ func resolveConnectorTarget(ctx context.Context, flags *rootFlags, conn *connect
 	case 1:
 		return matches[0].ID, nil
 	case 0:
-		return "", fmt.Errorf("collection %s maps to path %q, but no desktop connector target matched it; run 'zotero-pp-cli import targets --agent' and pass --connector-target C<n>", collectionKey, apiPath)
+		return "", fmt.Errorf("collection %s maps to path %q, but no desktop connector target matched it; run 'zotio import targets --agent' and pass --connector-target C<n>", collectionKey, apiPath)
 	default:
 		ids := make([]string, 0, len(matches))
 		for _, match := range matches {

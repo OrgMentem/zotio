@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"zotero-pp-cli/internal/store"
+	"zotio/internal/store"
 )
 
 func TestDoctorLooksLikeDoctorInterstitial(t *testing.T) {
@@ -129,7 +129,7 @@ func TestDoctorCollectCacheReport(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 
-	dbPath := filepath.Join(home, ".local", "share", "zotero-pp-cli", "data.db")
+	dbPath := filepath.Join(home, ".local", "share", "zotio", "data.db")
 	s, err := store.OpenWithContext(context.Background(), dbPath)
 	if err != nil {
 		t.Fatalf("open store: %v", err)
@@ -186,7 +186,7 @@ func TestDoctorCollectCacheReportMissingDatabase(t *testing.T) {
 func TestDoctorRenderCacheReport(t *testing.T) {
 	rep := map[string]any{
 		"status":         "stale",
-		"db_path":        "/tmp/zotero-pp-cli/data.db",
+		"db_path":        "/tmp/zotio/data.db",
 		"schema_version": 1,
 		"db_bytes":       int64(4096),
 		"stale_after":    "1h0m0s",
@@ -195,7 +195,7 @@ func TestDoctorRenderCacheReport(t *testing.T) {
 			{"type": "collections", "rows": int64(3), "staleness": "3h0m0s"},
 			{"type": "items", "rows": int64(12), "staleness": "5m0s"},
 		},
-		"hint": "Some resources are older than stale_after; run 'zotero-pp-cli sync' to refresh.",
+		"hint": "Some resources are older than stale_after; run 'zotio sync' to refresh.",
 	}
 
 	var buf bytes.Buffer
@@ -203,7 +203,7 @@ func TestDoctorRenderCacheReport(t *testing.T) {
 	out := buf.String()
 	for _, want := range []string{
 		"WARN Cache: stale",
-		"db_path: /tmp/zotero-pp-cli/data.db",
+		"db_path: /tmp/zotio/data.db",
 		"schema_version: 1",
 		"db_bytes: 4096",
 		"stale_after: 1h0m0s",

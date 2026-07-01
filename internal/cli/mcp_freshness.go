@@ -12,7 +12,7 @@ import (
 
 // FreshnessJSON returns per-resource local sync freshness for MCP consumers.
 func FreshnessJSON() ([]byte, error) {
-	db, err := openStoreForRead(context.Background(), "zotero-pp-cli")
+	db, err := openStoreForRead(context.Background(), "zotio")
 	if err != nil {
 		return nil, err
 	}

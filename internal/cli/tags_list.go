@@ -19,7 +19,7 @@ func newTagsListCmd(flags *rootFlags) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:         "list",
 		Short:       "List all tags in the library",
-		Example:     "  zotero-pp-cli tags list",
+		Example:     "  zotio tags list",
 		Annotations: map[string]string{"pp:endpoint": "tags.list", "pp:method": "GET", "pp:path": "/tags", "mcp:read-only": "true"},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			c, err := flags.newClient()

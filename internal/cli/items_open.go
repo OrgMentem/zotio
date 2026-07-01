@@ -7,7 +7,7 @@ import (
 	"fmt"
 	"net/url"
 
-	"zotero-pp-cli/internal/cliutil"
+	"zotio/internal/cliutil"
 
 	"github.com/spf13/cobra"
 )

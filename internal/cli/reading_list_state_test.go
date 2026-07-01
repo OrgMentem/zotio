@@ -10,7 +10,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"zotero-pp-cli/internal/mutation"
+	"zotio/internal/mutation"
 )
 
 func runReadingListStateTestCmd(t *testing.T, srv *itemTagTestServer, flags *rootFlags, args ...string) mutation.Envelope {

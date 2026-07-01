@@ -28,9 +28,9 @@ func newItemsNoteTemplateCmd(flags *rootFlags) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "note-template <itemKey>",
 		Short: "Generate a markdown reading-note template for an item",
-		Example: `  zotero-pp-cli items note-template ABCD1234
-  zotero-pp-cli items note-template ABCD1234 --format obsidian
-  zotero-pp-cli items note-template ABCD1234 --format logseq`,
+		Example: `  zotio items note-template ABCD1234
+  zotio items note-template ABCD1234 --format obsidian
+  zotio items note-template ABCD1234 --format logseq`,
 		Annotations: map[string]string{"mcp:read-only": "true"},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if len(args) == 0 {
@@ -178,7 +178,7 @@ func renderStandardNoteTemplate(meta itemNoteMetadata, obsidian bool, now time.T
 	b.WriteString(abstract)
 	b.WriteString("\n\n## Key Points\n\n-\n\n")
 	b.WriteString("## Annotations\n\n")
-	b.WriteString("<!-- Export annotations with: zotero-pp-cli items annotations <itemKey> -->\n\n")
+	b.WriteString("<!-- Export annotations with: zotio items annotations <itemKey> -->\n\n")
 	b.WriteString("## Notes\n")
 	return b.String()
 }
@@ -209,7 +209,7 @@ func renderLogseqNoteTemplate(meta itemNoteMetadata, now time.Time) string {
 	b.WriteString("- ## Key Points\n")
 	b.WriteString("  - \n")
 	b.WriteString("- ## Annotations\n")
-	b.WriteString("  - Export annotations with: zotero-pp-cli items annotations <itemKey>\n")
+	b.WriteString("  - Export annotations with: zotio items annotations <itemKey>\n")
 	b.WriteString("- ## Notes\n")
 	b.WriteString("  - \n")
 	return b.String()

@@ -16,8 +16,8 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"zotero-pp-cli/internal/client"
-	"zotero-pp-cli/internal/mutation"
+	"zotio/internal/client"
+	"zotio/internal/mutation"
 )
 
 // mutationJournalRecorder, when non-nil, records applied mutation runs. It is
@@ -28,7 +28,7 @@ var mutationJournalRecorder func(env mutation.Envelope)
 // journalDir is the per-install directory holding the append-only run journal,
 // alongside the synced store.
 func journalDir() string {
-	return filepath.Join(filepath.Dir(defaultDBPath("zotero-pp-cli")), "journal")
+	return filepath.Join(filepath.Dir(defaultDBPath("zotio")), "journal")
 }
 
 // recordMutationJournal appends an entry for any run that applied at least one

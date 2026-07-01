@@ -13,7 +13,7 @@ auth:
 
 config:
   format: toml
-  path: "~/.config/zotero-pp-cli/config.toml"
+  path: "~/.config/zotio/config.toml"
   env_prefix: ZOTERO
 
 resources:

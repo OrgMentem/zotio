@@ -16,7 +16,7 @@ import (
 	"testing"
 	"time"
 
-	"zotero-pp-cli/internal/config"
+	"zotio/internal/config"
 )
 
 func clientTestNewClient(t *testing.T, baseURL string) *Client {

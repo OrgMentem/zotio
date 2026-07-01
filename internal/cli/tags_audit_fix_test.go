@@ -12,8 +12,8 @@ import (
 	"path/filepath"
 	"testing"
 
-	"zotero-pp-cli/internal/mutation"
-	"zotero-pp-cli/internal/store"
+	"zotio/internal/mutation"
+	"zotio/internal/store"
 )
 
 func seedTagsAuditFixStore(t *testing.T, items []json.RawMessage) {
@@ -23,7 +23,7 @@ func seedTagsAuditFixStore(t *testing.T, items []json.RawMessage) {
 	t.Cleanup(func() { activeGroupID = savedGroup })
 	t.Setenv("HOME", t.TempDir())
 	t.Setenv("ZOTERO_CONFIG", filepath.Join(t.TempDir(), "missing.toml"))
-	db, err := store.OpenWithContext(context.Background(), defaultDBPath("zotero-pp-cli"))
+	db, err := store.OpenWithContext(context.Background(), defaultDBPath("zotio"))
 	if err != nil {
 		t.Fatalf("open store: %v", err)
 	}

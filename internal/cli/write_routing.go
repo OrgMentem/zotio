@@ -15,8 +15,8 @@ import (
 	"strings"
 	"time"
 
-	"zotero-pp-cli/internal/config"
-	"zotero-pp-cli/internal/connector"
+	"zotio/internal/config"
+	"zotio/internal/connector"
 )
 
 // zoteroWebAPIBase is the Zotero Web API root. A package var so tests can point the

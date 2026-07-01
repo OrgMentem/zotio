@@ -13,8 +13,9 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
-	"zotero-pp-cli/internal/client"
-	"zotero-pp-cli/internal/config"
+	"zotio/internal/client"
+	"zotio/internal/cliutil"
+	"zotio/internal/config"
 )
 
 type rootFlags struct {
@@ -64,6 +65,9 @@ func RootCmd() *cobra.Command {
 
 // Execute runs the CLI in non-interactive mode: never prompts, all values via flags or stdin.
 func Execute() error {
+	// PATCH: one-time migration of per-user dirs after the zotero-pp-cli -> zotio
+	// rename, before any command resolves config/data/state/cache paths.
+	cliutil.MigrateLegacyDirs()
 	// PATCH(glean roadmap-phase3): record applied mutation runs only on the real
 	// CLI path; subcommand unit tests construct commands directly and never journal.
 	mutationJournalRecorder = recordMutationJournal
@@ -118,7 +122,7 @@ func isCobraUsageError(err error) bool {
 
 func newRootCmd(flags *rootFlags) *cobra.Command {
 	rootCmd := &cobra.Command{
-		Use: "zotero-pp-cli",
+		Use: "zotio",
 		// PATCH(glean zotero-pp-cli-2ec0000a278212ab): replace truncated generated help text with a complete short description.
 		Short: `Zotero CLI for library search, annotation export, item workflows, and analytics`,
 		Long: `Zotero CLI for library search, annotation export, item workflows, analytics, and local automation.
@@ -141,12 +145,12 @@ Highlights (not in the official API docs):
   • items stale   Find items added long ago with no PDF and no annotations — candidates for pruning or enrichment.
 
 Agent mode: add --agent to any command for JSON output + non-interactive mode; mutating commands preview unless --yes is given.
-Health check: run 'zotero-pp-cli doctor' to verify auth and connectivity.
+Health check: run 'zotio doctor' to verify auth and connectivity.
 See README.md or the bundled SKILL.md for recipes.`,
 		SilenceUsage: true,
 		Version:      version,
 	}
-	rootCmd.SetVersionTemplate("zotero-pp-cli {{ .Version }}\n")
+	rootCmd.SetVersionTemplate("zotio {{ .Version }}\n")
 
 	rootCmd.PersistentFlags().BoolVar(&flags.asJSON, "json", false, "Output as JSON")
 	rootCmd.PersistentFlags().BoolVar(&flags.compact, "compact", false, "Return only key fields (id, name, status, timestamps) for minimal token usage")
@@ -174,7 +178,7 @@ See README.md or the bundled SKILL.md for recipes.`,
 	rootCmd.PersistentFlags().BoolVar(&humanFriendly, "human-friendly", false, "Enable colored output and rich formatting")
 	rootCmd.PersistentFlags().BoolVar(&flags.agent, "agent", false, "Set agent-friendly defaults (--json --compact --no-input --no-color); does NOT auto-apply writes — pass --yes to mutate")
 	rootCmd.PersistentFlags().StringVar(&flags.dataSource, "data-source", "auto", "Data source for read commands: auto (live with local fallback), live (API only), local (synced data only)")
-	rootCmd.PersistentFlags().StringVar(&flags.profileName, "profile", "", "Apply values from a saved profile (see 'zotero-pp-cli profile list')")
+	rootCmd.PersistentFlags().StringVar(&flags.profileName, "profile", "", "Apply values from a saved profile (see 'zotio profile list')")
 	rootCmd.PersistentFlags().StringVar(&flags.deliverSpec, "deliver", "", "Route output to a sink: stdout (default), file:<path>, webhook:<url>")
 	rootCmd.PersistentFlags().Float64Var(&flags.rateLimit, "rate-limit", 0, "Max requests per second (0 to disable)")
 	// PATCH(glean 9bfn): operate on a group library instead of the personal one.
@@ -380,7 +384,7 @@ func newVersionCliCmd() *cobra.Command {
 		Use:   "version",
 		Short: "Print version",
 		Run: func(cmd *cobra.Command, args []string) {
-			fmt.Printf("zotero-pp-cli %s\n", version)
+			fmt.Printf("zotio %s\n", version)
 		},
 	}
 }

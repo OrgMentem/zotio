@@ -14,8 +14,8 @@ import (
 	"strings"
 	"testing"
 
-	"zotero-pp-cli/internal/mutation"
-	"zotero-pp-cli/internal/store"
+	"zotio/internal/mutation"
+	"zotio/internal/store"
 )
 
 func TestApplyChangeToItemData(t *testing.T) {
@@ -64,7 +64,7 @@ func TestRunMutationReadsYourWritesLocally(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 
 	// Seed the mirror with an item whose DOI is empty.
-	db, err := store.OpenWithContext(context.Background(), defaultDBPath("zotero-pp-cli"))
+	db, err := store.OpenWithContext(context.Background(), defaultDBPath("zotio"))
 	if err != nil {
 		t.Fatalf("open store: %v", err)
 	}
@@ -113,7 +113,7 @@ func TestRunMutationReadsYourWritesLocally(t *testing.T) {
 	}
 
 	// 2) The local mirror reflects the write WITHOUT any sync.
-	db2, err := store.OpenWithContext(context.Background(), defaultDBPath("zotero-pp-cli"))
+	db2, err := store.OpenWithContext(context.Background(), defaultDBPath("zotio"))
 	if err != nil {
 		t.Fatalf("reopen store: %v", err)
 	}
@@ -178,7 +178,7 @@ func TestApplyMirrorWriteThroughDryRunNoOp(t *testing.T) {
 
 func TestApplyMirrorWriteThroughCreateSkipsMissingMirrorItem(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
-	db, err := store.OpenWithContext(context.Background(), defaultDBPath("zotero-pp-cli"))
+	db, err := store.OpenWithContext(context.Background(), defaultDBPath("zotio"))
 	if err != nil {
 		t.Fatalf("open store: %v", err)
 	}
@@ -195,7 +195,7 @@ func TestApplyMirrorWriteThroughCreateSkipsMissingMirrorItem(t *testing.T) {
 	if env.Result.Items[0].Item != nil {
 		t.Fatalf("create/missing mirror item unexpectedly surfaced item: %v", env.Result.Items[0].Item)
 	}
-	db2, err := store.OpenWithContext(context.Background(), defaultDBPath("zotero-pp-cli"))
+	db2, err := store.OpenWithContext(context.Background(), defaultDBPath("zotio"))
 	if err != nil {
 		t.Fatalf("reopen store: %v", err)
 	}
@@ -211,7 +211,7 @@ func TestApplyMirrorWriteThroughCreateSkipsMissingMirrorItem(t *testing.T) {
 
 func TestApplyMirrorWriteThroughWarnsOnMirrorOpenFailure(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
-	dbPath := defaultDBPath("zotero-pp-cli")
+	dbPath := defaultDBPath("zotio")
 	if err := os.MkdirAll(filepath.Dir(dbPath), 0o755); err != nil {
 		t.Fatalf("mkdir db dir: %v", err)
 	}
@@ -239,7 +239,7 @@ func TestApplyMirrorWriteThroughWarnsOnMirrorOpenFailure(t *testing.T) {
 
 func seedWriteThroughItem(t *testing.T, key, raw string) {
 	t.Helper()
-	db, err := store.OpenWithContext(context.Background(), defaultDBPath("zotero-pp-cli"))
+	db, err := store.OpenWithContext(context.Background(), defaultDBPath("zotio"))
 	if err != nil {
 		t.Fatalf("open store: %v", err)
 	}
@@ -254,7 +254,7 @@ func seedWriteThroughItem(t *testing.T, key, raw string) {
 
 func writeThroughItemField(t *testing.T, key, jsonPath string) string {
 	t.Helper()
-	db, err := store.OpenWithContext(context.Background(), defaultDBPath("zotero-pp-cli"))
+	db, err := store.OpenWithContext(context.Background(), defaultDBPath("zotio"))
 	if err != nil {
 		t.Fatalf("open store: %v", err)
 	}

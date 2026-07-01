@@ -15,9 +15,9 @@ import (
 	"strings"
 	"testing"
 
-	"zotero-pp-cli/internal/client"
-	"zotero-pp-cli/internal/mutation"
-	"zotero-pp-cli/internal/store"
+	"zotio/internal/client"
+	"zotio/internal/mutation"
+	"zotio/internal/store"
 )
 
 // crossRefSearchServer serves a CrossRef bibliographic search whose result set
@@ -198,7 +198,7 @@ func seedEnrichStore(t *testing.T) localQueryStore {
 	t.Helper()
 	t.Setenv("HOME", t.TempDir())
 	t.Setenv("ZOTERO_CONFIG", filepath.Join(t.TempDir(), "missing.toml"))
-	dbPath := defaultDBPath("zotero-pp-cli")
+	dbPath := defaultDBPath("zotio")
 	db, err := store.OpenWithContext(context.Background(), dbPath)
 	if err != nil {
 		t.Fatalf("open store: %v", err)
@@ -212,7 +212,7 @@ func seedEnrichStore(t *testing.T) localQueryStore {
 	}
 	_ = db.Close()
 
-	rawDB, err := openStoreForRead(context.Background(), "zotero-pp-cli")
+	rawDB, err := openStoreForRead(context.Background(), "zotio")
 	if err != nil || rawDB == nil {
 		t.Fatalf("reopen store: %v", err)
 	}
@@ -287,7 +287,7 @@ func TestItemsEnrichMissingDOICollectionScope(t *testing.T) {
 
 	t.Setenv("HOME", t.TempDir())
 	t.Setenv("ZOTERO_CONFIG", filepath.Join(t.TempDir(), "collection.toml"))
-	dbPath := defaultDBPath("zotero-pp-cli")
+	dbPath := defaultDBPath("zotio")
 	db, err := store.OpenWithContext(context.Background(), dbPath)
 	if err != nil {
 		t.Fatalf("open store: %v", err)
@@ -344,7 +344,7 @@ func TestItemsEnrichMissingDOIKeysFrom(t *testing.T) {
 
 	t.Setenv("HOME", t.TempDir())
 	t.Setenv("ZOTERO_CONFIG", filepath.Join(t.TempDir(), "keys-from.toml"))
-	dbPath := defaultDBPath("zotero-pp-cli")
+	dbPath := defaultDBPath("zotio")
 	db, err := store.OpenWithContext(context.Background(), dbPath)
 	if err != nil {
 		t.Fatalf("open store: %v", err)
@@ -553,7 +553,7 @@ func TestItemsEnrichValidateReportsCrossRefTitleDiscrepancy(t *testing.T) {
 
 	t.Setenv("HOME", t.TempDir())
 	t.Setenv("ZOTERO_CONFIG", filepath.Join(t.TempDir(), "validate.toml"))
-	dbPath := defaultDBPath("zotero-pp-cli")
+	dbPath := defaultDBPath("zotio")
 	db, err := store.OpenWithContext(context.Background(), dbPath)
 	if err != nil {
 		t.Fatalf("open store: %v", err)

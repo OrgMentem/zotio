@@ -25,12 +25,12 @@ func newItemsStaleCmd(flags *rootFlags) *cobra.Command {
 			if flagDays < 0 {
 				return fmt.Errorf("--days must be non-negative")
 			}
-			rawDB, err := openStoreForRead(cmd.Context(), "zotero-pp-cli")
+			rawDB, err := openStoreForRead(cmd.Context(), "zotio")
 			if err != nil {
 				return fmt.Errorf("opening local database: %w", err)
 			}
 			if rawDB == nil {
-				fmt.Fprintln(cmd.OutOrStdout(), "Run 'zotero-pp-cli sync' first.")
+				fmt.Fprintln(cmd.OutOrStdout(), "Run 'zotio sync' first.")
 				return nil
 			}
 			defer rawDB.Close()

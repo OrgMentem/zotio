@@ -18,7 +18,7 @@ func newCollectionsListCmd(flags *rootFlags) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:         "list",
 		Short:       "List all collections",
-		Example:     "  zotero-pp-cli collections list",
+		Example:     "  zotio collections list",
 		Annotations: map[string]string{"pp:endpoint": "collections.list", "pp:method": "GET", "pp:path": "/collections", "mcp:read-only": "true"},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			c, err := flags.newClient()

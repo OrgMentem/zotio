@@ -1,7 +1,7 @@
 # ADR 0001 — MCP command surface: strip global flags + command-orchestration facade
 
 - **Status:** Accepted — implemented in commit `4cb4fb9` (2026-06-29).
-- **Scope:** `internal/mcp/` (the `zotero-pp-mcp` server's tool surface).
+- **Scope:** `internal/mcp/` (the `zotio-mcp` server's tool surface).
 - **Deciders:** enieuwy, with a GPT-5.5 Pro consult via Oracle (session `mcp-surface-trim`).
 
 ## Context

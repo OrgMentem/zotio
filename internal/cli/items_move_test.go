@@ -14,7 +14,7 @@ import (
 	"strings"
 	"testing"
 
-	"zotero-pp-cli/internal/mutation"
+	"zotio/internal/mutation"
 )
 
 type itemMoveTestServer struct {

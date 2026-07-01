@@ -12,7 +12,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"zotero-pp-cli/internal/mutation"
+	"zotio/internal/mutation"
 )
 
 type searchesMaterializeTestServer struct {

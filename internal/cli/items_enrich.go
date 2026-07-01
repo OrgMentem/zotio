@@ -24,9 +24,9 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
-	"zotero-pp-cli/internal/client"
-	"zotero-pp-cli/internal/cliutil"
-	"zotero-pp-cli/internal/mutation"
+	"zotio/internal/client"
+	"zotio/internal/cliutil"
+	"zotio/internal/mutation"
 )
 
 // Overridable provider base URLs (tests point them at httptest servers).
@@ -111,12 +111,12 @@ record provenance in the item's Extra field.`,
 				return fmt.Errorf("specify at least one of --missing-doi, --missing-abstract, --missing-pdf, or --validate")
 			}
 
-			rawDB, err := openStoreForRead(cmd.Context(), "zotero-pp-cli")
+			rawDB, err := openStoreForRead(cmd.Context(), "zotio")
 			if err != nil {
 				return fmt.Errorf("opening database: %w", err)
 			}
 			if rawDB == nil {
-				fmt.Fprintln(cmd.OutOrStdout(), "Run 'zotero-pp-cli sync' first.")
+				fmt.Fprintln(cmd.OutOrStdout(), "Run 'zotio sync' first.")
 				return nil
 			}
 			defer rawDB.Close()
@@ -589,7 +589,7 @@ func appendEnrichProvenance(p *enrichProposal, flags *rootFlags) string {
 	if p.Category == "missing_abstract" {
 		field = "abstract"
 	}
-	line := fmt.Sprintf("zotero-pp-cli: %s added via %s on %s", field, p.Source, time.Now().UTC().Format("2006-01-02"))
+	line := fmt.Sprintf("zotio: %s added via %s on %s", field, p.Source, time.Now().UTC().Format("2006-01-02"))
 	existing := strings.TrimRight(currentExtra(p), "\n")
 	if existing == "" {
 		return line
@@ -870,7 +870,7 @@ func getJSON(ctx context.Context, httpClient *http.Client, rawURL string, out an
 		return err
 	}
 	req.Header.Set("Accept", "application/json")
-	req.Header.Set("User-Agent", "zotero-pp-cli/1.0.0")
+	req.Header.Set("User-Agent", "zotio/1.0.0")
 	resp, err := httpClient.Do(req)
 	if err != nil {
 		return err

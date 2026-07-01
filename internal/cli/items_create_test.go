@@ -13,7 +13,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"zotero-pp-cli/internal/connector"
+	"zotio/internal/connector"
 )
 
 func TestItemsCreateSendsBareArray(t *testing.T) {

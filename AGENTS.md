@@ -1,34 +1,34 @@
 # Zotero Printed CLI Agent Guide
 
-This directory is a generated `zotero-pp-cli` printed CLI. It was produced by [CLI Printing Press](https://github.com/mvanhorn/cli-printing-press), so treat systemic fixes as upstream Printing Press fixes first. Keep local edits narrow and document why a generated-tree patch belongs here.
+This directory is a generated `zotio` printed CLI. It was produced by [CLI Printing Press](https://github.com/mvanhorn/cli-printing-press), so treat systemic fixes as upstream Printing Press fixes first. Keep local edits narrow and document why a generated-tree patch belongs here.
 
 ## Local Operating Contract
 
 Start by asking the generated CLI for current runtime truth:
 
 ```bash
-zotero-pp-cli doctor --json
-zotero-pp-cli agent-context --pretty
+zotio doctor --json
+zotio agent-context --pretty
 ```
 
 Use runtime discovery instead of relying on a copied command list:
 
 ```bash
-zotero-pp-cli which "<capability>" --json
-zotero-pp-cli <command> --help
+zotio which "<capability>" --json
+zotio <command> --help
 ```
 
 Add `--agent` to command invocations for JSON, compact output, non-interactive defaults, no color, and confirmation-safe scripting:
 
 ```bash
-zotero-pp-cli <command> --agent
+zotio <command> --agent
 ```
 
 Before running an unfamiliar command that may mutate remote state, inspect its help and prefer a dry run:
 
 ```bash
-zotero-pp-cli <command> --help
-zotero-pp-cli <command> --dry-run --agent
+zotio <command> --help
+zotio <command> --dry-run --agent
 ```
 
 Use `--yes --no-input` only after the target, arguments, and side effects are clear.
@@ -45,7 +45,7 @@ matrix, known gaps, and the **refresh procedure** live in `docs/zotero-api-cover
 - **Local API is GET-only** (writes "coming" as of 2026-06). When the base URL is local, mutating commands **auto-route writes to the Web API** if an `api_key` is set (reads stay local; user ID resolved via `keys/current`, cached as `user_id`/`ZOTERO_USER_ID`); a one-time stderr notice names the target. With **no** key, writes hit the read-only guard (`classifyAPIError`/`isLocalWriteRejection`). `doctor` reports writability under `writes:`. Web API writes sync down to the desktop; nothing writes the local DB directly.
 - **Schema/type endpoints are global** (`/api/itemTypes`, `/itemFields`, `/itemTypeFields`, `/itemTypeCreatorTypes`, `/creatorFields`), NOT under the `/users|groups/<id>` prefix. The generated `schema *` commands keep the prefix and **404** live; `schema drift` strips it (`stripLibraryPrefix`). Mirror that if you fix them.
 - `spec.yaml` came from a community OpenAPI spec, not a live probe — coverage = that spec + hand-written commands. New endpoints never appear on their own; add them to `spec.yaml` (regen) or as a `// PATCH:` command.
-- Web API v3 is stable/versioned; the **local API is the evolving surface** (e.g. `/fulltext`, Jan 2025). New Zotero releases mostly add fields/data, rarely endpoints — run `zotero-pp-cli schema drift` to catch type/field deltas after an upgrade. The per-version "Zotero N for Developers" pages are Mozilla-migration guides, not API references; beta changelogs are unpublished (use the GitHub commit log).
+- Web API v3 is stable/versioned; the **local API is the evolving surface** (e.g. `/fulltext`, Jan 2025). New Zotero releases mostly add fields/data, rarely endpoints — run `zotio schema drift` to catch type/field deltas after an upgrade. The per-version "Zotero N for Developers" pages are Mozilla-migration guides, not API references; beta changelogs are unpublished (use the GitHub commit log).
 
 ## Local Customizations
 

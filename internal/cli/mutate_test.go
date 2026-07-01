@@ -9,7 +9,7 @@ import (
 	"context"
 	"testing"
 
-	"zotero-pp-cli/internal/mutation"
+	"zotio/internal/mutation"
 )
 
 func TestMutationOptionsFromFlags(t *testing.T) {

@@ -53,12 +53,12 @@ func TestDefaultDBPath_GroupAware(t *testing.T) {
 	defer func() { activeGroupID = saved }()
 
 	activeGroupID = ""
-	if got := defaultDBPath("zotero-pp-cli"); !strings.HasSuffix(got, "data.db") || strings.Contains(got, "data-group") {
+	if got := defaultDBPath("zotio"); !strings.HasSuffix(got, "data.db") || strings.Contains(got, "data-group") {
 		t.Errorf("personal defaultDBPath = %q, want .../data.db", got)
 	}
 
 	activeGroupID = "12345"
-	if got := defaultDBPath("zotero-pp-cli"); !strings.HasSuffix(got, "data-group-12345.db") {
+	if got := defaultDBPath("zotio"); !strings.HasSuffix(got, "data-group-12345.db") {
 		t.Errorf("group defaultDBPath = %q, want .../data-group-12345.db", got)
 	}
 }

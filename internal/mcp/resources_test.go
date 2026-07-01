@@ -12,7 +12,7 @@ import (
 	"testing"
 
 	"github.com/mark3labs/mcp-go/server"
-	"zotero-pp-cli/internal/store"
+	"zotio/internal/store"
 )
 
 func qfuqServer(t *testing.T) *server.MCPServer {

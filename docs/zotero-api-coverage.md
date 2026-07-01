@@ -121,7 +121,7 @@ Run this when a new Zotero version ships, or periodically:
    published — the commit log is the only source for unreleased (e.g. *-beta) changes.
 3. **Diff documented endpoints vs. what we implement**:
    `grep -nE 'path:' spec.yaml` and `grep -rn 'c\.Get\|c\.GetWithVersion' internal/cli`.
-4. **Run `zotero-pp-cli schema drift`** against live Zotero to catch new/removed item
+4. **Run `zotio schema drift`** against live Zotero to catch new/removed item
    types and fields (the realistic between-version delta). `--deep` for per-type.
 5. **For genuinely new endpoints**: add to `spec.yaml` (then regen) or implement a
    hand-written command (`// PATCH:` marker + `.printing-press-patches.json` entry,

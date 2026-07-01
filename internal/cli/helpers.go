@@ -19,8 +19,8 @@ import (
 	"text/tabwriter"
 	"time"
 	"unicode"
-	"zotero-pp-cli/internal/client"
-	"zotero-pp-cli/internal/cliutil"
+	"zotio/internal/client"
+	"zotio/internal/cliutil"
 )
 
 var As = errors.As
@@ -252,14 +252,14 @@ func classifyAPIError(err error, flags *rootFlags) error {
 			"\n        export ZOTERO_BASE_URL=\"https://api.zotero.org/users/<your-user-id>\""+
 			"\n        export ZOTERO_API_KEY=\"<key>\"   (create at https://www.zotero.org/settings/keys)"+
 			"\n      Changes made via the Web API sync down to your desktop Zotero."+
-			"\n      Run 'zotero-pp-cli doctor' to check writability.", err))
+			"\n      Run 'zotio doctor' to check writability.", err))
 	}
 	// PATCH: a 412 on a write means the item's version changed since it was read —
 	// common when reads come from the local API/store but writes go to the Web API
 	// and the desktop hasn't synced. Point at sync rather than a generic error.
 	if strings.Contains(msg, "HTTP 412") {
 		return apiErr(fmt.Errorf("%w\nhint: the item changed since it was read (version conflict)."+
-			"\n      Run 'zotero-pp-cli sync' to refresh local state, then retry.", err))
+			"\n      Run 'zotio sync' to refresh local state, then retry.", err))
 	}
 	// PATCH(glean static-audit): classify via the shared cliutil helper so the
 	// HTTP-status detection isn't duplicated with the MCP layer; hint text and
@@ -275,17 +275,17 @@ func classifyAPIError(err error, flags *rootFlags) error {
 	case cliutil.HTTPErrBadRequestAuth:
 		return authErr(fmt.Errorf("%w\nhint: the API rejected the request — this usually means auth is missing or invalid."+
 			"\n      Set your API key: export ZOTERO_API_KEY=<your-key>"+
-			"\n      Run 'zotero-pp-cli doctor' to check auth status."+
+			"\n      Run 'zotio doctor' to check auth status."+
 			"\n      Response: "+cliutil.SanitizeErrorBody(msg), err))
 	case cliutil.HTTPErrUnauthorized:
 		return authErr(fmt.Errorf("%w\nhint: check your API key."+
 			" Set it with: export ZOTERO_API_KEY=<your-key>"+
-			"\n      Run 'zotero-pp-cli doctor' to check auth status.", err))
+			"\n      Run 'zotio doctor' to check auth status.", err))
 	case cliutil.HTTPErrForbidden:
 		return authErr(fmt.Errorf("%w\nhint: permission denied. Your credentials are valid but lack access to this resource."+
 			"\n      Check that your API key has the required permissions."+
 			"\n      Set it with: export ZOTERO_API_KEY=<your-key>"+
-			"\n      Run 'zotero-pp-cli doctor' to check auth status.", err))
+			"\n      Run 'zotio doctor' to check auth status.", err))
 	case cliutil.HTTPErrNotFound:
 		return notFoundErr(fmt.Errorf("%w\nhint: resource not found. Run the 'list' command to see available items", err))
 	case cliutil.HTTPErrRateLimited:

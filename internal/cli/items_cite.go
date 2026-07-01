@@ -18,9 +18,9 @@ func newItemsCiteCmd(flags *rootFlags) *cobra.Command {
 API renders citations using your installed CSL styles. For the most common
 styles (apa, chicago, mla), use the --style flag. For others, pass the
 CSL style ID directly (e.g. "nature", "harvard-cite-them-right").`,
-		Example: `  zotero-pp-cli items cite ABCD1234
-  zotero-pp-cli items cite ABCD1234 --style apa
-  zotero-pp-cli items cite ABCD1234 --style bibtex`,
+		Example: `  zotio items cite ABCD1234
+  zotio items cite ABCD1234 --style apa
+  zotio items cite ABCD1234 --style bibtex`,
 		Annotations: map[string]string{"pp:endpoint": "items.get", "pp:method": "GET", "pp:path": "/items/{itemKey}", "mcp:read-only": "true"},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if len(args) == 0 {

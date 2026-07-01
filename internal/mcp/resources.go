@@ -19,8 +19,8 @@ import (
 	mcplib "github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
 
-	"zotero-pp-cli/internal/cli"
-	"zotero-pp-cli/internal/store"
+	"zotio/internal/cli"
+	"zotio/internal/store"
 )
 
 // domainContext is the durable Zotero domain description shared by the

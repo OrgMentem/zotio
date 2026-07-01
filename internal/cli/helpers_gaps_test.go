@@ -12,7 +12,7 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"zotero-pp-cli/internal/client"
+	"zotio/internal/client"
 )
 
 func helpersTestAPIError(status int, body string) error {

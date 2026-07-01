@@ -13,8 +13,8 @@ import (
 	"strings"
 
 	"github.com/spf13/cobra"
-	"zotero-pp-cli/internal/client"
-	"zotero-pp-cli/internal/mutation"
+	"zotio/internal/client"
+	"zotio/internal/mutation"
 )
 
 const duplicateResolveStrategyKeepMostComplete = "keep-most-complete"
@@ -48,10 +48,10 @@ func newItemsDuplicatesResolveCmd(flags *rootFlags) *cobra.Command {
 By default, resolve only matches duplicate DOI groups. Title matching can group
 distinct items that share generic titles; pass --title only when you are ready to
 review the preview carefully before applying.`,
-		Example: `  zotero-pp-cli items duplicates resolve
-  zotero-pp-cli items duplicates resolve --doi
-  zotero-pp-cli items duplicates resolve --title
-  zotero-pp-cli items duplicates resolve --doi --title --yes`,
+		Example: `  zotio items duplicates resolve
+  zotio items duplicates resolve --doi
+  zotio items duplicates resolve --title
+  zotio items duplicates resolve --doi --title --yes`,
 		Annotations: map[string]string{
 			"mcp:read-only":                 "false",
 			"pp:destructive":                "false",
@@ -71,7 +71,7 @@ review the preview carefully before applying.`,
 				fmt.Fprintln(cmd.ErrOrStderr(), duplicateResolveTitleWarning)
 			}
 
-			rawDB, err := openStoreForRead(cmd.Context(), "zotero-pp-cli")
+			rawDB, err := openStoreForRead(cmd.Context(), "zotio")
 			if err != nil {
 				return fmt.Errorf("opening local database: %w", err)
 			}

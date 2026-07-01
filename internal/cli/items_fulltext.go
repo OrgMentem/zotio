@@ -9,7 +9,7 @@ import (
 	"strings"
 
 	"github.com/spf13/cobra"
-	"zotero-pp-cli/internal/store"
+	"zotio/internal/store"
 )
 
 func newItemsFulltextCmd(flags *rootFlags) *cobra.Command {
@@ -30,7 +30,7 @@ func newItemsFulltextCmd(flags *rootFlags) *cobra.Command {
 			// PATCH(glean hhup): serve from the local store (sync --fulltext)
 			// when present; --refresh forces the live API path below.
 			if !refresh {
-				if db, _ := openStoreForRead(cmd.Context(), "zotero-pp-cli"); db != nil {
+				if db, _ := openStoreForRead(cmd.Context(), "zotio"); db != nil {
 					defer db.Close()
 					if data, ok := localPDFFulltext(db, itemKey); ok {
 						if flagSearch != "" {

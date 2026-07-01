@@ -8,7 +8,7 @@ import (
 	"fmt"
 	"strings"
 
-	"zotero-pp-cli/internal/store"
+	"zotio/internal/store"
 
 	"github.com/spf13/cobra"
 )
@@ -22,20 +22,20 @@ func newItemsFindCmd(flags *rootFlags) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "find",
 		Short: "Find locally synced items by DOI, ISBN, PMID, or citation key",
-		Example: `  zotero-pp-cli items find --doi 10.1145/3290605.3300709
-  zotero-pp-cli items find --isbn 978-0-262-03384-8
-  zotero-pp-cli items find --citekey smith2023 --json`,
+		Example: `  zotio items find --doi 10.1145/3290605.3300709
+  zotio items find --isbn 978-0-262-03384-8
+  zotio items find --citekey smith2023 --json`,
 		Annotations: map[string]string{"mcp:read-only": "true"},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if flagDOI == "" && flagISBN == "" && flagPMID == "" && flagCitekey == "" {
 				return fmt.Errorf("at least one of --doi, --isbn, --pmid, or --citekey is required")
 			}
-			rawDB, err := openStoreForRead(cmd.Context(), "zotero-pp-cli")
+			rawDB, err := openStoreForRead(cmd.Context(), "zotio")
 			if err != nil {
 				return fmt.Errorf("opening local database: %w", err)
 			}
 			if rawDB == nil {
-				fmt.Fprintln(cmd.OutOrStdout(), "Run 'zotero-pp-cli sync' first to enable identifier lookup.")
+				fmt.Fprintln(cmd.OutOrStdout(), "Run 'zotio sync' first to enable identifier lookup.")
 				return nil
 			}
 			var storeDB *store.Store = rawDB

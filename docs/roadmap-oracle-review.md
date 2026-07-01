@@ -1,8 +1,8 @@
-# Revised PRD: `zotero-pp-cli`
+# Revised PRD: `zotio`
 
 ## Product thesis
 
-`zotero-pp-cli` is **the trust-and-automation layer for Zotero**: local-fast reads for searching and auditing, preview-first Web API writes for safe change, and bounded context surfaces for humans, scripts, and MCP agents.
+`zotio` is **the trust-and-automation layer for Zotero**: local-fast reads for searching and auditing, preview-first Web API writes for safe change, and bounded context surfaces for humans, scripts, and MCP agents.
 
 The product should not be “every Zotero endpoint in the terminal.” It should be the tool researchers use when the GUI becomes too manual: **prove a library is ready, fix it safely, ingest material with review, and give agents/vaults trustworthy context.**
 
@@ -21,10 +21,10 @@ This is the north star. It absorbs `items audit`, `items missing-pdf`, `items ci
 Primary UX:
 
 ```bash
-zotero-pp-cli library health --scope collection:ABCD1234 --profile systematic-review
-zotero-pp-cli library health --scope collection:ABCD1234 --fail-on high --json
-zotero-pp-cli library health fix --scope collection:ABCD1234 --only missing_doi,tag_drift --dry-run
-zotero-pp-cli library health fix --scope collection:ABCD1234 --only missing_doi --yes
+zotio library health --scope collection:ABCD1234 --profile systematic-review
+zotio library health --scope collection:ABCD1234 --fail-on high --json
+zotio library health fix --scope collection:ABCD1234 --only missing_doi,tag_drift --dry-run
+zotio library health fix --scope collection:ABCD1234 --only missing_doi --yes
 ```
 
 This should be the product’s flagship because it delivers visible value without requiring new Zotero endpoints. Most checks are local-read/local-store work; fixes reuse existing preview-first Web API mutations.
@@ -38,10 +38,10 @@ Do **not** sell this as “Zotero Retrieve Metadata for PDF in the CLI.” There
 Primary UX:
 
 ```bash
-zotero-pp-cli import scan ~/Downloads/papers --emit import.plan.json
-zotero-pp-cli import resolve import.plan.json --providers doi,pmid,arxiv,isbn --json
-zotero-pp-cli import apply import.plan.json --attach-mode linked-file --dry-run
-zotero-pp-cli import apply import.plan.json --attach-mode upload --yes
+zotio import scan ~/Downloads/papers --emit import.plan.json
+zotio import resolve import.plan.json --providers doi,pmid,arxiv,isbn --json
+zotio import apply import.plan.json --attach-mode linked-file --dry-run
+zotio import apply import.plan.json --attach-mode upload --yes
 ```
 
 Attachment modes must be explicit:
@@ -63,10 +63,10 @@ This merges agent readiness, provenance, scope, bounded MCP resources, vault aud
 Primary UX:
 
 ```bash
-zotero-pp-cli scope preview collection:ABCD1234 --json
-zotero-pp-cli library health --scope saved-search:REVIEW_READY --require-fresh 24h
-zotero-pp-cli vault audit --scope tag:to-read
-zotero-pp-cli export snapshot --scope collection:ABCD1234 --format csljson --manifest review.lock.json
+zotio scope preview collection:ABCD1234 --json
+zotio library health --scope saved-search:REVIEW_READY --require-fresh 24h
+zotio vault audit --scope tag:to-read
+zotio export snapshot --scope collection:ABCD1234 --format csljson --manifest review.lock.json
 ```
 
 MCP resources should expose bounded, decision-ready context: `zotero://freshness`, `zotero://capabilities`, `zotero://health/{scope}`, `zotero://items/{key}/context`, and collection trees with limits. The CLI itself remains no-LLM-by-design; `items summarize` should continue producing context bundles, not summaries.
@@ -114,10 +114,10 @@ Reasoning: this prevents the roadmap from promising value the API or product phi
 Build:
 
 ```bash
-zotero-pp-cli library health
-zotero-pp-cli library health --scope collection:KEY
-zotero-pp-cli library health --profile systematic-review
-zotero-pp-cli library health --fail-on high
+zotio library health
+zotio library health --scope collection:KEY
+zotio library health --profile systematic-review
+zotio library health --fail-on high
 ```
 
 Checks to include first:
@@ -150,8 +150,8 @@ High
   21 journal articles missing DOI
 
 Suggested next steps
-  zotero-pp-cli library health fix --only missing_doi --scope collection:ABCD1234 --dry-run
-  zotero-pp-cli tags audit fix --scope collection:ABCD1234 --dry-run
+  zotio library health fix --only missing_doi --scope collection:ABCD1234 --dry-run
+  zotio tags audit fix --scope collection:ABCD1234 --dry-run
 ```
 
 Reasoning: this creates the product’s strongest “aha” without needing new Web API write surface. Broken attachment checks are feasible when Zotero desktop/local API is available because the local API exposes file path endpoints; they should degrade gracefully when desktop is closed. ([zotero.org][1])
@@ -165,10 +165,10 @@ Build the trust substrate only where it improves Phase 1.
 Commands/flags:
 
 ```bash
-zotero-pp-cli scope preview collection:KEY --json
-zotero-pp-cli scope preview tag:"to-read" --sort dateAdded --limit 50
-zotero-pp-cli library health --scope saved-search:KEY --require-fresh 24h
-zotero-pp-cli library health --fail-on high
+zotio scope preview collection:KEY --json
+zotio scope preview tag:"to-read" --sort dateAdded --limit 50
+zotio library health --scope saved-search:KEY --require-fresh 24h
+zotio library health --fail-on high
 ```
 
 Scope grammar:
@@ -207,9 +207,9 @@ Reasoning: scope and freshness are product features because local reads plus clo
 Build:
 
 ```bash
-zotero-pp-cli library health fix --only missing_doi --scope collection:KEY --dry-run
-zotero-pp-cli library health fix --only tag_drift --scope collection:KEY --dry-run
-zotero-pp-cli library health fix --plan health.plan.json --yes
+zotio library health fix --only missing_doi --scope collection:KEY --dry-run
+zotio library health fix --only tag_drift --scope collection:KEY --dry-run
+zotio library health fix --plan health.plan.json --yes
 ```
 
 Use the existing mutation envelope, but promote it from `internal/cli/mutate.go` into a reusable internal package only when multiple commands consume it. Do not make “unified mutation package” a standalone milestone.
@@ -250,10 +250,10 @@ Reasoning: this gives users a single path from finding to fix while preserving p
 Build:
 
 ```bash
-zotero-pp-cli import scan ~/PDFs --emit import.plan.json
-zotero-pp-cli import resolve import.plan.json --providers doi,pmid,arxiv,isbn
-zotero-pp-cli import apply import.plan.json --attach-mode none --dry-run
-zotero-pp-cli import apply import.plan.json --attach-mode linked-file --yes
+zotio import scan ~/PDFs --emit import.plan.json
+zotio import resolve import.plan.json --providers doi,pmid,arxiv,isbn
+zotio import apply import.plan.json --attach-mode none --dry-run
+zotio import apply import.plan.json --attach-mode linked-file --yes
 ```
 
 Phase 4A should support:
@@ -289,9 +289,9 @@ Reasoning: `/items/new` templates are the right way to create schema-valid paylo
 Build:
 
 ```bash
-zotero-pp-cli capabilities --json
-zotero-pp-cli freshness --json
-zotero-pp-cli vault audit --scope collection:KEY
+zotio capabilities --json
+zotio freshness --json
+zotio vault audit --scope collection:KEY
 ```
 
 MCP resources:
@@ -323,9 +323,9 @@ Reasoning: agents should not infer safety from command names. They need a declar
 Build:
 
 ```bash
-zotero-pp-cli export snapshot --scope collection:KEY --format csljson --manifest review.lock.json
-zotero-pp-cli export snapshot --scope saved-search:KEY --include health,versions,files
-zotero-pp-cli export resume review.lock.json
+zotio export snapshot --scope collection:KEY --format csljson --manifest review.lock.json
+zotio export snapshot --scope saved-search:KEY --include health,versions,files
+zotio export resume review.lock.json
 ```
 
 Snapshot manifest:
@@ -399,7 +399,7 @@ Health profiles:
 Example:
 
 ```bash
-zotero-pp-cli library health --profile citation-export --scope collection:THESIS
+zotio library health --profile citation-export --scope collection:THESIS
 ```
 
 Profile behavior should be transparent in JSON:
@@ -433,7 +433,7 @@ Every audit finding should look like this:
   },
   "autofixable": true,
   "recommended_action": {
-    "command": "zotero-pp-cli library health fix --only missing_doi --keys-from ..."
+    "command": "zotio library health fix --only missing_doi --keys-from ..."
   }
 }
 ```
@@ -521,7 +521,7 @@ Priority order:
 
 ## Build this first
 
-Build **`zotero-pp-cli library health` as the flagship command**, with scoped read-only checks, ranked findings, freshness metadata, and `--fail-on`.
+Build **`zotio library health` as the flagship command**, with scoped read-only checks, ranked findings, freshness metadata, and `--fail-on`.
 
 That gives every audience immediate value:
 

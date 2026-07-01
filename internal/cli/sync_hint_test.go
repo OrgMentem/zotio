@@ -12,7 +12,7 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
-	"zotero-pp-cli/internal/store"
+	"zotio/internal/store"
 )
 
 func newSyncHintTestStore(t *testing.T) *store.Store {
@@ -27,7 +27,7 @@ func newSyncHintTestStore(t *testing.T) *store.Store {
 
 func newSyncHintTestCmd() (*cobra.Command, *bytes.Buffer) {
 	var stderr bytes.Buffer
-	cmd := &cobra.Command{Use: "zotero-pp-cli"}
+	cmd := &cobra.Command{Use: "zotio"}
 	cmd.SetErr(&stderr)
 	return cmd, &stderr
 }
@@ -39,7 +39,7 @@ func TestHintIfUnsynced_EmptySyncStateWritesHintToStderr(t *testing.T) {
 	if !hintIfUnsynced(cmd, db, "") {
 		t.Fatalf("hintIfUnsynced returned false for empty sync_state")
 	}
-	if got := stderr.String(); !strings.Contains(got, "Run 'zotero-pp-cli sync'") {
+	if got := stderr.String(); !strings.Contains(got, "Run 'zotio sync'") {
 		t.Fatalf("stderr = %q, want sync hint", got)
 	}
 }
@@ -61,7 +61,7 @@ func TestHintIfStale_BackdatedSyncStateWritesHintToStderr(t *testing.T) {
 		t.Fatalf("hintIfStale returned false for stale sync_state")
 	}
 	got := stderr.String()
-	if !strings.Contains(got, "older than --max-age=30m0s") || !strings.Contains(got, "Run 'zotero-pp-cli sync'") {
+	if !strings.Contains(got, "older than --max-age=30m0s") || !strings.Contains(got, "Run 'zotio sync'") {
 		t.Fatalf("stderr = %q, want stale sync hint", got)
 	}
 }

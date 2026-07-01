@@ -12,7 +12,7 @@ import (
 	"testing"
 	"time"
 
-	"zotero-pp-cli/internal/config"
+	"zotio/internal/config"
 )
 
 // recordingRoundTripper counts how many times its RoundTrip method is

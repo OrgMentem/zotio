@@ -11,7 +11,7 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"zotero-pp-cli/internal/mutation"
+	"zotio/internal/mutation"
 )
 
 type tagAuditPlan struct {
@@ -30,8 +30,8 @@ func newTagsAuditCmd(flags *rootFlags) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "audit",
 		Short: "Audit tags for case and spacing drift",
-		Example: `  zotero-pp-cli tags audit
-  zotero-pp-cli tags audit --json`,
+		Example: `  zotio tags audit
+  zotio tags audit --json`,
 		Annotations: map[string]string{"mcp:read-only": "true"},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			totalTags, plans, ok, err := readTagAuditPlans(cmd)
@@ -127,12 +127,12 @@ WHERE resource_type = 'items' AND tag_name IS NOT NULL AND tag_name != ''
 GROUP BY tag_name ORDER BY item_count DESC`
 
 func readTagAuditPlans(cmd *cobra.Command) (int, []tagAuditPlan, bool, error) {
-	rawDB, err := openStoreForRead(cmd.Context(), "zotero-pp-cli")
+	rawDB, err := openStoreForRead(cmd.Context(), "zotio")
 	if err != nil {
 		return 0, nil, false, fmt.Errorf("opening database: %w", err)
 	}
 	if rawDB == nil {
-		fmt.Fprintln(cmd.OutOrStdout(), "Run 'zotero-pp-cli sync' first.")
+		fmt.Fprintln(cmd.OutOrStdout(), "Run 'zotio sync' first.")
 		return 0, nil, false, nil
 	}
 	defer rawDB.Close()
@@ -220,7 +220,7 @@ func buildTagAuditPlans(tagRows, countRows []map[string]any) []tagAuditPlan {
 			aliases = append(aliases, tag.name)
 			// PATCH(glean zotero-pp-cli-c4c1d3bd5ec4db5e): single-quote generated shell arguments and render line breaks inert.
 			commands = append(commands, fmt.Sprintf(
-				`zotero-pp-cli tags rename --from %s --to %s`,
+				`zotio tags rename --from %s --to %s`,
 				quoteTagAuditCommandArg(tag.name),
 				quoteTagAuditCommandArg(canonical),
 			))

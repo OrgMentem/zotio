@@ -47,7 +47,7 @@ func resolveImportManifest(cmd *cobra.Command, flags *rootFlags, arg string, lim
 
 // PATCH(glean roadmap-phase4 7e799ea9): reuse import scan classification while keeping absolute attachment paths in the manifest.
 func buildImportManifestFromDir(cmd *cobra.Command, flags *rootFlags, dir string, limit int) (importManifest, error) {
-	db, err := openStoreForRead(cmd.Context(), "zotero-pp-cli")
+	db, err := openStoreForRead(cmd.Context(), "zotio")
 	if err != nil {
 		return importManifest{}, fmt.Errorf("opening local store: %w", err)
 	}

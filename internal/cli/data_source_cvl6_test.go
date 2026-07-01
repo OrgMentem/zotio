@@ -15,7 +15,7 @@ import (
 	"testing"
 	"time"
 
-	"zotero-pp-cli/internal/store"
+	"zotio/internal/store"
 )
 
 // cvl6 seed items in arbitrary insertion order; the local planner must sort and
@@ -32,7 +32,7 @@ func cvl6SeedLocalDB(t *testing.T) {
 	t.Setenv("HOME", tmpHome)
 	t.Setenv("ZOTERO_CONFIG", filepath.Join(t.TempDir(), "missing.toml"))
 	t.Setenv("ZOTERO_BASE_URL", "http://127.0.0.1:1/api/users/0") // unused in local mode
-	dbPath := defaultDBPath("zotero-pp-cli")
+	dbPath := defaultDBPath("zotio")
 	if err := os.MkdirAll(filepath.Dir(dbPath), 0o755); err != nil {
 		t.Fatalf("mkdir: %v", err)
 	}
@@ -160,7 +160,7 @@ func bug6SeedLocalCollections(t *testing.T) *rootFlags {
 	tmpHome := t.TempDir()
 	t.Setenv("HOME", tmpHome)
 	t.Setenv("ZOTERO_CONFIG", filepath.Join(t.TempDir(), "missing.toml"))
-	dbPath := defaultDBPath("zotero-pp-cli")
+	dbPath := defaultDBPath("zotio")
 	if err := os.MkdirAll(filepath.Dir(dbPath), 0o755); err != nil {
 		t.Fatalf("mkdir: %v", err)
 	}

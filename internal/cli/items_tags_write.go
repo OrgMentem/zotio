@@ -12,8 +12,8 @@ import (
 	"strings"
 
 	"github.com/spf13/cobra"
-	"zotero-pp-cli/internal/client"
-	"zotero-pp-cli/internal/mutation"
+	"zotio/internal/client"
+	"zotio/internal/mutation"
 )
 
 func newItemsTagsAddCmd(flags *rootFlags) *cobra.Command {

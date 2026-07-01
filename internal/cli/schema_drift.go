@@ -18,7 +18,7 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"zotero-pp-cli/internal/client"
+	"zotio/internal/client"
 )
 
 // schemaSnapshot is an order-independent fingerprint of a Zotero install's
@@ -57,20 +57,20 @@ to see which item types, fields, or creator fields a new version added or remove
 
 The first run captures the baseline. Re-run after an upgrade to see drift. Pass
 --update to adopt the current live schema as the new baseline. The baseline is
-stored at ~/.local/share/zotero-pp-cli/schema-baseline.json (override with
+stored at ~/.local/share/zotio/schema-baseline.json (override with
 --baseline) and is shared across libraries because the schema is global to the
 Zotero install.`,
 		Example: `  # Capture a baseline on the current Zotero version
-  zotero-pp-cli schema drift
+  zotio schema drift
 
   # After upgrading Zotero, see what changed
-  zotero-pp-cli schema drift
+  zotio schema drift
 
   # Include per-item-type field/creator validity (many extra API calls)
-  zotero-pp-cli schema drift --deep
+  zotio schema drift --deep
 
   # Re-baseline to the current schema
-  zotero-pp-cli schema drift --update`,
+  zotio schema drift --update`,
 		// PATCH(glean mcp-surface-trim): mcp:hidden — schema drift is a
 		// maintenance/ops task (baseline + compare after a Zotero upgrade).
 		Annotations: map[string]string{"mcp:read-only": "true", "mcp:hidden": "true"},
@@ -132,7 +132,7 @@ Zotero install.`,
 	}
 	cmd.Flags().BoolVar(&deep, "deep", false, "Also diff per-item-type field and creator-type validity (many extra API calls)")
 	cmd.Flags().BoolVar(&update, "update", false, "Adopt the current live schema as the new baseline after reporting")
-	cmd.Flags().StringVar(&baselinePath, "baseline", "", "Baseline file path (default: ~/.local/share/zotero-pp-cli/schema-baseline.json)")
+	cmd.Flags().StringVar(&baselinePath, "baseline", "", "Baseline file path (default: ~/.local/share/zotio/schema-baseline.json)")
 	return cmd
 }
 
@@ -294,7 +294,7 @@ func sharedKeys(a, b map[string][]string) []string {
 // the install, identical across personal and group libraries.
 func schemaBaselinePath() string {
 	home, _ := os.UserHomeDir()
-	return filepath.Join(home, ".local", "share", "zotero-pp-cli", "schema-baseline.json")
+	return filepath.Join(home, ".local", "share", "zotio", "schema-baseline.json")
 }
 
 // libraryPrefixRE matches the /users/<id> or /groups/<id> library segment of a

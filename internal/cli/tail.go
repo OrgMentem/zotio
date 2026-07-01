@@ -15,8 +15,8 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
-	"zotero-pp-cli/internal/client"
-	"zotero-pp-cli/internal/store"
+	"zotio/internal/client"
+	"zotio/internal/store"
 )
 
 func newTailCmd(flags *rootFlags) *cobra.Command {
@@ -37,13 +37,13 @@ Gracefully shuts down on SIGTERM/SIGINT.
 Note: For APIs with WebSocket or SSE support, a future version will use
 native streaming instead of polling.`,
 		Example: `  # Tail all changes every 10 seconds
-  zotero-pp-cli tail --interval 10s
+  zotio tail --interval 10s
 
   # Tail a specific resource
-  zotero-pp-cli tail messages --interval 5s
+  zotio tail messages --interval 5s
 
   # Pipe to jq for filtering
-  zotero-pp-cli tail events --interval 30s | jq 'select(.type == "error")'`,
+  zotio tail events --interval 30s | jq 'select(.type == "error")'`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if len(args) > 0 {
 				resource = args[0]
@@ -78,7 +78,7 @@ native streaming instead of polling.`,
 			// PATCH(glean a91x): open the local store so each poll resumes
 			// from the per-resource version cursor instead of re-fetching all.
 			if dbPath == "" {
-				dbPath = defaultDBPath("zotero-pp-cli")
+				dbPath = defaultDBPath("zotio")
 			}
 			db, err := store.OpenWithContext(cmd.Context(), dbPath)
 			if err != nil {
@@ -128,7 +128,7 @@ native streaming instead of polling.`,
 	cmd.Flags().DurationVar(&interval, "interval", 10*time.Second, "Poll interval")
 	cmd.Flags().BoolVar(&follow, "follow", true, "Keep running (set --follow=false for single poll)")
 	// PATCH(glean a91x): cursor persistence location.
-	cmd.Flags().StringVar(&dbPath, "db", "", "Database path (default: ~/.local/share/zotero-pp-cli/data.db)")
+	cmd.Flags().StringVar(&dbPath, "db", "", "Database path (default: ~/.local/share/zotio/data.db)")
 
 	return cmd
 }

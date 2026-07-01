@@ -7,7 +7,7 @@ import (
 	"reflect"
 	"testing"
 
-	"zotero-pp-cli/internal/connector"
+	"zotio/internal/connector"
 )
 
 func TestConnectorTargetPaths(t *testing.T) {

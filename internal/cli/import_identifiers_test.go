@@ -93,7 +93,7 @@ func TestImportPmidDryRun(t *testing.T) {
 		if r.URL.Path != "/esummary.fcgi" || r.URL.Query().Get("id") != "314159" {
 			t.Errorf("PubMed request URL = %s", r.URL.String())
 		}
-		if r.Header.Get("Accept") != "application/json" || r.Header.Get("User-Agent") != "zotero-pp-cli/1.0.0" {
+		if r.Header.Get("Accept") != "application/json" || r.Header.Get("User-Agent") != "zotio/1.0.0" {
 			t.Errorf("PubMed headers Accept=%q User-Agent=%q", r.Header.Get("Accept"), r.Header.Get("User-Agent"))
 		}
 		w.Header().Set("Content-Type", "application/json")
@@ -128,7 +128,7 @@ func TestImportArxivDryRun(t *testing.T) {
 		if r.URL.Path != "/query" || r.URL.Query().Get("id_list") != "2401.00001" {
 			t.Errorf("arXiv request URL = %s", r.URL.String())
 		}
-		if r.Header.Get("User-Agent") != "zotero-pp-cli/1.0.0" {
+		if r.Header.Get("User-Agent") != "zotio/1.0.0" {
 			t.Errorf("arXiv User-Agent = %q", r.Header.Get("User-Agent"))
 		}
 		w.Header().Set("Content-Type", "application/atom+xml")
@@ -175,7 +175,7 @@ func TestImportIsbnDryRun(t *testing.T) {
 		if r.URL.Path != "/api/books" || r.URL.Query().Get("bibkeys") != "ISBN:9781234567890" {
 			t.Errorf("Open Library request URL = %s", r.URL.String())
 		}
-		if r.Header.Get("Accept") != "application/json" || r.Header.Get("User-Agent") != "zotero-pp-cli/1.0.0" {
+		if r.Header.Get("Accept") != "application/json" || r.Header.Get("User-Agent") != "zotio/1.0.0" {
 			t.Errorf("Open Library headers Accept=%q User-Agent=%q", r.Header.Get("Accept"), r.Header.Get("User-Agent"))
 		}
 		w.Header().Set("Content-Type", "application/json")

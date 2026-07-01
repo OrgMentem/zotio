@@ -26,13 +26,13 @@ func newCollectionsExportCmd(flags *rootFlags) *cobra.Command {
 single combined export in the requested format. Use --flat to export only
 the top-level collection without recursing into subcollections.`,
 		Example: `  # Export collection as BibTeX (default)
-  zotero-pp-cli collections export ABCD1234
+  zotio collections export ABCD1234
 
   # Export as RIS to a file
-  zotero-pp-cli collections export ABCD1234 --format ris --output refs.ris
+  zotio collections export ABCD1234 --format ris --output refs.ris
 
   # Export without descending into subcollections
-  zotero-pp-cli collections export ABCD1234 --flat`,
+  zotio collections export ABCD1234 --flat`,
 		Annotations: map[string]string{"mcp:read-only": "true"},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if len(args) == 0 {

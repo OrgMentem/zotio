@@ -11,8 +11,8 @@ import (
 	"strconv"
 
 	"github.com/spf13/cobra"
-	"zotero-pp-cli/internal/client"
-	"zotero-pp-cli/internal/mutation"
+	"zotio/internal/client"
+	"zotio/internal/mutation"
 )
 
 func newItemsMoveCmd(flags *rootFlags) *cobra.Command {

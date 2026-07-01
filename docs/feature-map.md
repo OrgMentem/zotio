@@ -1,4 +1,4 @@
-# zotero-pp-cli — feature map
+# zotio — feature map
 
 Grouping = backend / data routing. **`*` = added or changed in the write-safety platform work.**
 Core architecture: **reads stay local; writes auto-route to the Zotero Web API** (hybrid routing —
@@ -6,7 +6,7 @@ the version read happens locally, the write goes to the cloud, and only with an 
 
 ```mermaid
 flowchart TB
-  CLI(["zotero-pp-cli"])
+  CLI(["zotio"])
 
   subgraph DB["Local SQLite mirror - needs sync (READ)"]
     audit["items audit"]

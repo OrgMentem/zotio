@@ -1,6 +1,6 @@
 {
   "manifest_version": "0.3",
-  "name": "zotero-pp-mcp",
+  "name": "zotio-mcp",
   "display_name": "Zotero",
   "version": "4.2.2",
   "description": "Zotero API surface as MCP tools.",
@@ -10,9 +10,9 @@
   "license": "Apache-2.0",
   "server": {
     "type": "binary",
-    "entry_point": "bin/zotero-pp-mcp",
+    "entry_point": "bin/zotio-mcp",
     "mcp_config": {
-      "command": "${__dirname}/bin/zotero-pp-mcp",
+      "command": "${__dirname}/bin/zotio-mcp",
       "args": [],
       "env": {
         "ZOTERO_API_KEY": "${user_config.zotero_api_key}"

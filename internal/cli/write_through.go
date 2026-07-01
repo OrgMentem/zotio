@@ -14,7 +14,7 @@ import (
 	"fmt"
 	"os"
 
-	"zotero-pp-cli/internal/mutation"
+	"zotio/internal/mutation"
 )
 
 // mirrorWriteThrough, when non-nil, updates the local mirror from applied writes.
@@ -35,7 +35,7 @@ func applyMirrorWriteThrough(env *mutation.Envelope) {
 		changesByOp[op.ID] = op.Changes
 	}
 
-	db, err := openStoreForRead(context.Background(), "zotero-pp-cli")
+	db, err := openStoreForRead(context.Background(), "zotio")
 	if err != nil {
 		// PATCH(glean ryw-fix): distinguish a real mirror open failure from db==nil
 		// (not synced yet) and surface the degraded local-cache update.

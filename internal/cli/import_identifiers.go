@@ -102,7 +102,7 @@ func fetchPubMedItem(cmd *cobra.Command, timeout time.Duration, pmid string) (ma
 		return nil, fmt.Errorf("creating PubMed request: %w", err)
 	}
 	req.Header.Set("Accept", "application/json")
-	req.Header.Set("User-Agent", "zotero-pp-cli/1.0.0")
+	req.Header.Set("User-Agent", "zotio/1.0.0")
 
 	resp, err := (&http.Client{Timeout: timeout}).Do(req)
 	if err != nil {
@@ -232,7 +232,7 @@ func fetchArxivItem(cmd *cobra.Command, timeout time.Duration, id string) (map[s
 		return nil, fmt.Errorf("creating arXiv request: %w", err)
 	}
 	req.Header.Set("Accept", "application/atom+xml, application/xml;q=0.9, */*;q=0.8")
-	req.Header.Set("User-Agent", "zotero-pp-cli/1.0.0")
+	req.Header.Set("User-Agent", "zotio/1.0.0")
 
 	resp, err := (&http.Client{Timeout: timeout}).Do(req)
 	if err != nil {
@@ -354,7 +354,7 @@ func fetchOpenLibraryItem(cmd *cobra.Command, timeout time.Duration, isbn string
 		return nil, fmt.Errorf("creating Open Library request: %w", err)
 	}
 	req.Header.Set("Accept", "application/json")
-	req.Header.Set("User-Agent", "zotero-pp-cli/1.0.0")
+	req.Header.Set("User-Agent", "zotio/1.0.0")
 
 	resp, err := (&http.Client{Timeout: timeout}).Do(req)
 	if err != nil {

@@ -14,7 +14,7 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"zotero-pp-cli/internal/client"
+	"zotio/internal/client"
 )
 
 func newItemsFileCmd(flags *rootFlags) *cobra.Command {
@@ -30,10 +30,10 @@ This complements 'items open' (which launches the Zotero desktop app): 'items fi
 hands you the actual file so an agent or script can read or process it. The local
 API must be enabled (Settings → Advanced → "Allow other applications…").`,
 		Example: `  # Path of an item's PDF
-  zotero-pp-cli items file ABCD1234
+  zotio items file ABCD1234
 
   # JSON envelope (item key, resolved attachment key, url, path)
-  zotero-pp-cli items file ABCD1234 --json`,
+  zotio items file ABCD1234 --json`,
 		Annotations: map[string]string{"mcp:read-only": "true"},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if len(args) == 0 {

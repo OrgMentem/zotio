@@ -15,13 +15,13 @@ import (
 
 	mcplib "github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
-	"zotero-pp-cli/internal/cli"
-	"zotero-pp-cli/internal/client"
-	"zotero-pp-cli/internal/cliutil"
-	"zotero-pp-cli/internal/config"
-	"zotero-pp-cli/internal/mcp/bound"
-	"zotero-pp-cli/internal/mcp/cobratree"
-	"zotero-pp-cli/internal/store"
+	"zotio/internal/cli"
+	"zotio/internal/client"
+	"zotio/internal/cliutil"
+	"zotio/internal/config"
+	"zotio/internal/mcp/bound"
+	"zotio/internal/mcp/cobratree"
+	"zotio/internal/store"
 )
 
 // RegisterTools registers all API operations as MCP tools.
@@ -478,17 +478,17 @@ func makeAPIHandler(method, pathTemplate string, bindings []mcpParamBinding, pos
 				return mcplib.NewToolResultError("authentication error: " + cliutil.SanitizeErrorBody(msg) +
 					"\nhint: the API rejected the request — this usually means auth is missing or invalid." +
 					"\n      Set your API key: export ZOTERO_API_KEY=<your-key>" +
-					"\n      Run 'zotero-pp-cli doctor' to check auth status."), nil
+					"\n      Run 'zotio doctor' to check auth status."), nil
 			case cliutil.HTTPErrUnauthorized:
 				return mcplib.NewToolResultError("authentication failed: " + cliutil.SanitizeErrorBody(msg) +
 					"\nhint: check your API key." +
 					"\n      Set it with: export ZOTERO_API_KEY=<your-key>" +
-					"\n      Run 'zotero-pp-cli doctor' to check auth status."), nil
+					"\n      Run 'zotio doctor' to check auth status."), nil
 			case cliutil.HTTPErrForbidden:
 				return mcplib.NewToolResultError("permission denied: " + cliutil.SanitizeErrorBody(msg) +
 					"\nhint: your credentials are valid but lack access to this resource." +
 					"\n      Set it with: export ZOTERO_API_KEY=<your-key>" +
-					"\n      Run 'zotero-pp-cli doctor' to check auth status."), nil
+					"\n      Run 'zotio doctor' to check auth status."), nil
 			case cliutil.HTTPErrNotFound:
 				if method == "DELETE" {
 					return mcplib.NewToolResultText("already deleted (no-op)"), nil
@@ -511,7 +511,7 @@ func makeAPIHandler(method, pathTemplate string, bindings []mcpParamBinding, pos
 
 func newMCPClient() (*client.Client, error) {
 	home, _ := os.UserHomeDir()
-	cfgPath := filepath.Join(home, ".config", "zotero-pp-cli", "config.toml")
+	cfgPath := filepath.Join(home, ".config", "zotio", "config.toml")
 	cfg, err := config.Load(cfgPath)
 	if err != nil {
 		return nil, fmt.Errorf("loading config: %w", err)
@@ -528,7 +528,7 @@ func newMCPClient() (*client.Client, error) {
 
 func dbPath() string {
 	home, _ := os.UserHomeDir()
-	return filepath.Join(home, ".local", "share", "zotero-pp-cli", "data.db")
+	return filepath.Join(home, ".local", "share", "zotio", "data.db")
 }
 
 // Note: MCP tools use their own dbPath() because they are in a separate package (main, not cli).

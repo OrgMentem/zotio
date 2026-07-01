@@ -98,7 +98,7 @@ func fetchCrossRefItem(cmd *cobra.Command, timeout time.Duration, doi string) (m
 		return nil, fmt.Errorf("creating CrossRef request: %w", err)
 	}
 	req.Header.Set("Accept", "application/json")
-	req.Header.Set("User-Agent", "zotero-pp-cli/1.0.0")
+	req.Header.Set("User-Agent", "zotio/1.0.0")
 
 	resp, err := (&http.Client{Timeout: timeout}).Do(req)
 	if err != nil {

@@ -16,7 +16,7 @@ func newSchemaItemTypesCmd(flags *rootFlags) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:         "item-types",
 		Short:       "List all available Zotero item types",
-		Example:     "  zotero-pp-cli schema item-types",
+		Example:     "  zotio schema item-types",
 		Annotations: map[string]string{"pp:endpoint": "schema.item-types", "pp:method": "GET", "pp:path": "/itemTypes", "mcp:read-only": "true"},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			// PATCH: schema endpoints are global; use newSchemaClient (strips library prefix).

@@ -10,7 +10,7 @@ import (
 	"strings"
 
 	"github.com/spf13/cobra"
-	"zotero-pp-cli/internal/config"
+	"zotio/internal/config"
 )
 
 func newAuthCmd(flags *rootFlags) *cobra.Command {
@@ -30,7 +30,7 @@ func newAuthStatusCmd(flags *rootFlags) *cobra.Command {
 	return &cobra.Command{
 		Use:     "status",
 		Short:   "Show authentication status",
-		Example: "  zotero-pp-cli auth status",
+		Example: "  zotio auth status",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cfg, err := config.Load(flags.configPath)
 			if err != nil {
@@ -63,7 +63,7 @@ func newAuthStatusCmd(flags *rootFlags) *cobra.Command {
 				fmt.Fprintln(w, "")
 				fmt.Fprintln(w, "Set your token:")
 				fmt.Fprintln(w, "  export ZOTERO_API_KEY=\"your-token-here\"")
-				fmt.Fprintf(w, "  printf %%s \"$ZOTERO_API_KEY\" | zotero-pp-cli auth set-token --stdin\n")
+				fmt.Fprintf(w, "  printf %%s \"$ZOTERO_API_KEY\" | zotio auth set-token --stdin\n")
 				return authErr(fmt.Errorf("no credentials configured"))
 			}
 
@@ -80,7 +80,7 @@ func newAuthSetTokenCmd(flags *rootFlags) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:     "set-token --stdin",
 		Short:   "Save an API token to the config file",
-		Example: "  printf %s \"$ZOTERO_API_KEY\" | zotero-pp-cli auth set-token --stdin",
+		Example: "  printf %s \"$ZOTERO_API_KEY\" | zotio auth set-token --stdin",
 		Args:    cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cfg, err := config.Load(flags.configPath)
@@ -137,7 +137,7 @@ func newAuthLogoutCmd(flags *rootFlags) *cobra.Command {
 	return &cobra.Command{
 		Use:     "logout",
 		Short:   "Clear stored credentials",
-		Example: "  zotero-pp-cli auth logout",
+		Example: "  zotio auth logout",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cfg, err := config.Load(flags.configPath)
 			if err != nil {

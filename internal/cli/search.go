@@ -9,7 +9,7 @@ import (
 	"strings"
 
 	"github.com/spf13/cobra"
-	"zotero-pp-cli/internal/store"
+	"zotio/internal/store"
 )
 
 // isNilOrEmpty checks whether a JSON object has nil or empty values for
@@ -102,16 +102,16 @@ otherwise searches local data. Falls back to local on network failure.
 In live mode: uses the API search endpoint only.
 In local mode: searches locally synced data only.`,
 		Example: `  # Search (uses API endpoint if available, local FTS otherwise)
-  zotero-pp-cli search "error timeout"
+  zotio search "error timeout"
 
   # Force local search only
-  zotero-pp-cli search "payment failed" --data-source local
+  zotio search "payment failed" --data-source local
 
   # Search a specific resource type locally
-  zotero-pp-cli search "critical" --type transactions --data-source local
+  zotio search "critical" --type transactions --data-source local
 
   # JSON output for piping
-  zotero-pp-cli search "critical" --json --limit 20`,
+  zotio search "critical" --json --limit 20`,
 		Annotations: map[string]string{"mcp:hidden": "true"},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if len(args) == 0 {
@@ -146,12 +146,12 @@ In local mode: searches locally synced data only.`,
 
 			// Local FTS search
 			if dbPath == "" {
-				dbPath = defaultDBPath("zotero-pp-cli")
+				dbPath = defaultDBPath("zotio")
 			}
 
 			db, err := store.OpenWithContext(cmd.Context(), dbPath)
 			if err != nil {
-				return fmt.Errorf("opening local database: %w\nRun 'zotero-pp-cli sync' first to populate the local database.", err)
+				return fmt.Errorf("opening local database: %w\nRun 'zotio sync' first to populate the local database.", err)
 			}
 			defer db.Close()
 
@@ -179,7 +179,7 @@ In local mode: searches locally synced data only.`,
 
 	cmd.Flags().StringVar(&resourceType, "type", "", "Filter by resource type")
 	cmd.Flags().IntVar(&limit, "limit", 50, "Maximum results to return")
-	cmd.Flags().StringVar(&dbPath, "db", "", "Database path (default: ~/.local/share/zotero-pp-cli/data.db)")
+	cmd.Flags().StringVar(&dbPath, "db", "", "Database path (default: ~/.local/share/zotio/data.db)")
 
 	return cmd
 }

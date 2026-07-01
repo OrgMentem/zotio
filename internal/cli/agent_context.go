@@ -125,7 +125,7 @@ func buildAgentContext(rootCmd *cobra.Command) agentContext {
 	return agentContext{
 		SchemaVersion: agentContextSchemaVersion,
 		CLI: agentContextCLI{
-			Name:        "zotero-pp-cli",
+			Name:        "zotio",
 			Description: "Every Zotero feature in the terminal, plus offline search, annotation export, and library analytics no existing tool...",
 			Version:     rootCmd.Version,
 		},

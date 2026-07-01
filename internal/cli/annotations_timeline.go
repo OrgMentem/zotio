@@ -12,7 +12,7 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
-	"zotero-pp-cli/internal/store"
+	"zotio/internal/store"
 )
 
 func newAnnotationsTimelineCmd(flags *rootFlags) *cobra.Command {
@@ -26,9 +26,9 @@ func newAnnotationsTimelineCmd(flags *rootFlags) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "timeline",
 		Short: "List annotations sorted by creation date",
-		Example: `  zotero-pp-cli annotations timeline --limit 50
-  zotero-pp-cli annotations timeline --since 2024-01-01
-  zotero-pp-cli annotations timeline --item ABCD1234 --json`,
+		Example: `  zotio annotations timeline --limit 50
+  zotio annotations timeline --since 2024-01-01
+  zotio annotations timeline --item ABCD1234 --json`,
 		Annotations: map[string]string{"mcp:read-only": "true"},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			c, err := flags.newClient()
@@ -44,7 +44,7 @@ func newAnnotationsTimelineCmd(flags *rootFlags) *cobra.Command {
 			// available; --refresh or an empty store falls back to live.
 			var db *store.Store
 			if !refresh {
-				if d, _ := openStoreForRead(cmd.Context(), "zotero-pp-cli"); d != nil {
+				if d, _ := openStoreForRead(cmd.Context(), "zotio"); d != nil {
 					db = d
 					defer db.Close()
 				}

@@ -17,12 +17,16 @@ import (
 	"time"
 
 	"github.com/mark3labs/mcp-go/server"
-	mcptools "zotero-pp-cli/internal/mcp"
+	"zotio/internal/cliutil"
+	mcptools "zotio/internal/mcp"
 )
 
 const defaultHTTPAddr = "127.0.0.1:7777" // PATCH(glean http-harden): default streamable HTTP to loopback-only.
 
 func main() {
+	// PATCH: one-time migration of per-user dirs after the zotero-pp-cli -> zotio
+	// rename, before any resource/tool resolves config/data/state/cache paths.
+	cliutil.MigrateLegacyDirs()
 	// PATCH(glean qfuq): advertise resource + prompt capabilities alongside
 	// tools so hosts can discover Zotero context and guided workflows.
 	s := server.NewMCPServer(
@@ -89,7 +93,7 @@ func main() {
 		if !isLoopbackHTTPAddr(*addr) { // PATCH(glean http-harden): warn when the unauthenticated MCP HTTP surface is exposed off-host.
 			fmt.Fprintf(os.Stderr, "WARNING: Zotero MCP HTTP surface at %s is reachable by other hosts; it includes unauthenticated typed tools with read+write access to the user's Zotero account, and the operator is responsible for network controls.\n", *addr)
 		}
-		fmt.Fprintf(os.Stderr, "zotero-pp-mcp serving MCP over streamable HTTP at %s\n", *addr)
+		fmt.Fprintf(os.Stderr, "zotio-mcp serving MCP over streamable HTTP at %s\n", *addr)
 
 		errs := make(chan error, 1)
 		go func() {

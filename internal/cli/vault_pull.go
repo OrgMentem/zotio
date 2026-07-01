@@ -17,7 +17,7 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"zotero-pp-cli/internal/client"
+	"zotio/internal/client"
 )
 
 func newVaultPullCmd(flags *rootFlags) *cobra.Command {
@@ -33,8 +33,8 @@ overwritten (resolve by hand, or 'vault resolve --keep-vault' to keep the vault
 copy). Only notes in the shape this CLI writes are pulled.
 
 Use --dry-run to preview without writing to the vault.`,
-		Example: `  zotero-pp-cli vault pull --dry-run
-  zotero-pp-cli vault pull --out ~/vault/refs`,
+		Example: `  zotio vault pull --dry-run
+  zotio vault pull --out ~/vault/refs`,
 		Annotations: map[string]string{"mcp:read-only": "false"},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			outDir, err := resolveVaultOutDir(flags, flagOut)

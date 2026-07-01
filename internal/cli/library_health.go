@@ -17,7 +17,7 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"zotero-pp-cli/internal/client"
+	"zotio/internal/client"
 )
 
 const (
@@ -207,15 +207,15 @@ func healthCheckRegistry() []healthCheck {
 		{kind: "missing_doi", severity: sevHigh, run: itemCheckRunner(
 			func(db localQueryStore) ([]map[string]any, error) { return queryMissingDOIItems(db, 0, "") },
 			"missing_doi", sevHigh, true,
-			&healthRecommendedAction{Command: "zotero-pp-cli items enrich --missing-doi --keys-from -"})},
+			&healthRecommendedAction{Command: "zotio items enrich --missing-doi --keys-from -"})},
 		{kind: "missing_pdf", severity: sevHigh, run: itemCheckRunner(
 			func(db localQueryStore) ([]map[string]any, error) { return queryMissingPDFItems(db, "", 0, "") },
 			"missing_pdf", sevHigh, true,
-			&healthRecommendedAction{Command: "zotero-pp-cli items enrich --missing-pdf --keys-from -"})},
+			&healthRecommendedAction{Command: "zotio items enrich --missing-pdf --keys-from -"})},
 		{kind: "missing_abstract", severity: sevInfo, run: itemCheckRunner(
 			func(db localQueryStore) ([]map[string]any, error) { return queryMissingAbstractItems(db, 0, "") },
 			"missing_abstract", sevInfo, true,
-			&healthRecommendedAction{Command: "zotero-pp-cli items enrich --missing-abstract --keys-from -"})},
+			&healthRecommendedAction{Command: "zotio items enrich --missing-abstract --keys-from -"})},
 		{kind: "missing_tags", severity: sevInfo, run: itemCheckRunner(
 			func(db localQueryStore) ([]map[string]any, error) { return queryMissingTagsItems(db, 0) },
 			"missing_tags", sevInfo, false, nil)},
@@ -297,12 +297,12 @@ precondition is unmet, the command refuses loudly (exit 9) rather than passing.`
 				return usageErr(fmt.Errorf("--limit must be zero or greater"))
 			}
 
-			rawDB, err := openStoreForRead(cmd.Context(), "zotero-pp-cli")
+			rawDB, err := openStoreForRead(cmd.Context(), "zotio")
 			if err != nil {
 				return fmt.Errorf("opening database: %w", err)
 			}
 			if rawDB == nil {
-				fmt.Fprintln(cmd.OutOrStdout(), "Run 'zotero-pp-cli sync' first.")
+				fmt.Fprintln(cmd.OutOrStdout(), "Run 'zotio sync' first.")
 				return nil
 			}
 			defer rawDB.Close()
@@ -512,7 +512,7 @@ func healthFreshnessExitError(report healthReport) error {
 	if report.Freshness == nil || !report.Freshness.Stale {
 		return nil
 	}
-	return freshnessErr(fmt.Errorf("library health: %s; run 'zotero-pp-cli sync' and retry", report.Freshness.Reason))
+	return freshnessErr(fmt.Errorf("library health: %s; run 'zotio sync' and retry", report.Freshness.Reason))
 }
 
 func selectHealthChecks(kinds []string) []healthCheck {
@@ -649,7 +649,7 @@ func runDuplicateCandidates(db localQueryStore, ctx *healthContext) ([]healthFin
 			Evidence:          ev,
 			Source:            ctx.src,
 			Autofixable:       true,
-			RecommendedAction: &healthRecommendedAction{Command: "zotero-pp-cli items duplicates resolve"},
+			RecommendedAction: &healthRecommendedAction{Command: "zotio items duplicates resolve"},
 		})
 	}
 	return findings, nil, nil
@@ -680,7 +680,7 @@ func runTagDrift(db localQueryStore, ctx *healthContext) ([]healthFinding, *heal
 			},
 			Source:            ctx.src,
 			Autofixable:       true,
-			RecommendedAction: &healthRecommendedAction{Command: "zotero-pp-cli tags audit fix"},
+			RecommendedAction: &healthRecommendedAction{Command: "zotio tags audit fix"},
 		})
 	}
 	return findings, nil, nil
@@ -696,7 +696,7 @@ func runBrokenAttachmentFile(db localQueryStore, ctx *healthContext) ([]healthFi
 			Precondition: "live_local_api",
 			Detail:       "Broken-attachment verification is a live check (needs Zotero desktop running) and is off by default.",
 			Remediation: []healthRemediation{
-				{Action: "run_verify_files", Command: "zotero-pp-cli library health --for " + ctx.preset + " --verify-files"},
+				{Action: "run_verify_files", Command: "zotio library health --for " + ctx.preset + " --verify-files"},
 				{Action: "open_zotero", Text: "Open Zotero desktop and enable Settings -> Advanced -> 'Allow other applications to communicate with Zotero'"},
 			},
 		}, nil
@@ -804,9 +804,9 @@ func buildHealthRemediationPlan(findings []healthFinding) []healthRemediationPla
 		seen    map[string]bool
 	}
 	exact := map[string]*bucket{
-		"missing_doi":      {command: "zotero-pp-cli items enrich --missing-doi --keys-from -", seen: map[string]bool{}},
-		"missing_abstract": {command: "zotero-pp-cli items enrich --missing-abstract --keys-from -", seen: map[string]bool{}},
-		"missing_pdf":      {command: "zotero-pp-cli items enrich --missing-pdf --keys-from -", seen: map[string]bool{}},
+		"missing_doi":      {command: "zotio items enrich --missing-doi --keys-from -", seen: map[string]bool{}},
+		"missing_abstract": {command: "zotio items enrich --missing-abstract --keys-from -", seen: map[string]bool{}},
+		"missing_pdf":      {command: "zotio items enrich --missing-pdf --keys-from -", seen: map[string]bool{}},
 	}
 	var hasDOIDups, hasTitleDups, hasTagDrift bool
 	for _, f := range findings {
@@ -850,7 +850,7 @@ func buildHealthRemediationPlan(findings []healthFinding) []healthRemediationPla
 	if hasDOIDups {
 		steps = append(steps, healthRemediationPlanStep{
 			Kind:    "duplicate_candidates",
-			Command: "zotero-pp-cli items duplicates resolve --doi",
+			Command: "zotio items duplicates resolve --doi",
 			Count:   countDuplicateGroups(findings, "doi"),
 			Scoped:  false,
 			Preview: true,
@@ -860,7 +860,7 @@ func buildHealthRemediationPlan(findings []healthFinding) []healthRemediationPla
 	if hasTitleDups {
 		steps = append(steps, healthRemediationPlanStep{
 			Kind:    "duplicate_candidates",
-			Command: "zotero-pp-cli items duplicates resolve --title",
+			Command: "zotio items duplicates resolve --title",
 			Count:   countDuplicateGroups(findings, "title"),
 			Scoped:  false,
 			Preview: true,
@@ -870,7 +870,7 @@ func buildHealthRemediationPlan(findings []healthFinding) []healthRemediationPla
 	if hasTagDrift {
 		steps = append(steps, healthRemediationPlanStep{
 			Kind:    "tag_drift",
-			Command: "zotero-pp-cli tags audit fix",
+			Command: "zotio tags audit fix",
 			Count:   countFindingsByKind(findings, "tag_drift"),
 			Scoped:  false,
 			Preview: true,
@@ -954,7 +954,7 @@ func printHealthReport(cmd *cobra.Command, report healthReport) {
 
 	if report.Freshness != nil {
 		if report.Freshness.Stale {
-			fmt.Fprintf(out, "Freshness: STALE (%s) — run 'zotero-pp-cli sync' and retry\n", report.Freshness.Reason)
+			fmt.Fprintf(out, "Freshness: STALE (%s) — run 'zotio sync' and retry\n", report.Freshness.Reason)
 		} else {
 			fmt.Fprintln(out, "Freshness: OK")
 		}

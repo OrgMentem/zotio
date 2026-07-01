@@ -1,4 +1,4 @@
-# zotero-pp-cli — Product Roadmap
+# zotio — Product Roadmap
 
 ## Provenance & status
 
@@ -16,7 +16,7 @@
 
 ## Product thesis
 
-`zotero-pp-cli` is **the trust-and-automation layer for Zotero**: local-fast reads for searching
+`zotio` is **the trust-and-automation layer for Zotero**: local-fast reads for searching
 and auditing, preview-first Web API writes for safe change, and bounded, provenance-tagged context
 for humans, scripts, and MCP agents.
 
@@ -101,7 +101,7 @@ the agent can act on — alert the user, or launch Zotero itself, then retry.
      "precondition": "live_local_api",
      "detail": "Saved-search execution requires Zotero desktop running with the local API enabled.",
      "remediation": [
-       {"action": "launch_zotero", "command": "zotero-pp-cli doctor --ensure-live --launch"},
+       {"action": "launch_zotero", "command": "zotio doctor --ensure-live --launch"},
        {"action": "instruct_user", "text": "Open Zotero, then Settings -> Advanced -> enable 'Allow other applications...'"}
      ],
      "retry_after_remediation": true
@@ -118,7 +118,7 @@ notice** in the report — never a silent omission, never a whole-command abort:
 
 ```
 Skipped: broken_attachment_file — needs Zotero desktop (local API).
-  Fix: zotero-pp-cli doctor --ensure-live --launch, then re-run.
+  Fix: zotio doctor --ensure-live --launch, then re-run.
 ```
 
 This unifies three existing ad-hoc guards under one contract rather than inventing a mechanism:
@@ -147,7 +147,7 @@ run-local sequence, so agents/CI can diff):
   "evidence": {"field": "DOI", "current": ""},
   "source": {"kind": "local", "synced_at": "2026-06-27T02:55:00Z"},
   "autofixable": true,
-  "recommended_action": {"command": "zotero-pp-cli items enrich --missing-doi --keys-from -"}
+  "recommended_action": {"command": "zotio items enrich --missing-doi --keys-from -"}
 }
 ```
 
@@ -315,7 +315,7 @@ as plausible-but-unvalidated (Phase 6, validate demand first).
 
 ## Build first
 
-`zotero-pp-cli library health` — read-only, scoped, ranked findings, `--for` presets, `--fail-on` —
+`zotio library health` — read-only, scoped, ranked findings, `--for` presets, `--fail-on` —
 then route findings to the existing fixers. **Not** file upload (the riskiest import edge cases).
 Every audience gets value on day one: researcher "is this collection ready (for what)?", PKM "will
 vault sync be trustworthy?", agent "what's safe to act on?", CI "gate on health." The Phase-1 checks

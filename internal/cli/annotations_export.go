@@ -15,9 +15,9 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"zotero-pp-cli/internal/client"
-	"zotero-pp-cli/internal/cliutil"
-	"zotero-pp-cli/internal/store"
+	"zotio/internal/client"
+	"zotio/internal/cliutil"
+	"zotio/internal/store"
 )
 
 type annotationExportItem struct {
@@ -81,7 +81,7 @@ func newAnnotationsExportCmd(flags *rootFlags) *cobra.Command {
 			// --refresh or an empty store falls back to the live fan-out.
 			var db *store.Store
 			if !refresh {
-				if d, _ := openStoreForRead(cmd.Context(), "zotero-pp-cli"); d != nil {
+				if d, _ := openStoreForRead(cmd.Context(), "zotio"); d != nil {
 					db = d
 					defer db.Close()
 				}

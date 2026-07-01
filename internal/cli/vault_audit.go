@@ -77,7 +77,7 @@ func auditVaultNotes(outDir string) (vaultAuditReport, error) {
 		Issues: []vaultAuditIssue{},
 	}
 
-	db, err := openStoreForRead(context.Background(), "zotero-pp-cli")
+	db, err := openStoreForRead(context.Background(), "zotio")
 	if err != nil {
 		return report, fmt.Errorf("opening local store: %w", err)
 	}

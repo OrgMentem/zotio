@@ -10,7 +10,7 @@ import (
 	"os"
 	"strconv"
 
-	"zotero-pp-cli/internal/client"
+	"zotio/internal/client"
 )
 
 type exportCheckpoint struct {

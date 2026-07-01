@@ -1,6 +1,6 @@
-# Zotero, Obsidian, and `zotero-pp-cli`: how they fit together
+# Zotero, Obsidian, and `zotio`: how they fit together
 
-This note explains where `zotero-pp-cli` sits relative to the Obsidian/Zotero
+This note explains where `zotio` sits relative to the Obsidian/Zotero
 plugin ecosystem, so you (and future agents working on this repo) can decide
 what belongs in this tool and what stays in a plugin. It is positioning, not a
 feature spec.
@@ -14,7 +14,7 @@ There are **two paradigms**, and they coexist by design:
   always via Better BibTeX's local JSON-RPC) and drops a citation, link, or
   annotation at your cursor. Great for cite-as-you-write. Fragile across Zotero
   major versions because of the BBT-RPC dependency.
-- **Batch / agent (push):** `zotero-pp-cli`. It mirrors the library to a local
+- **Batch / agent (push):** `zotio`. It mirrors the library to a local
   SQLite store, then audits / dedups / enriches / searches / exports in bulk,
   scriptably, and exposes everything to LLM agents over MCP. Talks the **native
   Zotero local API** at `localhost:23119/api` — no Better BibTeX dependency.
@@ -31,7 +31,7 @@ CLI is meant to consolidate.
 2. LIVE / IN-EDITOR  Zotero Integration,           interactive, one item at a time,
    (pull, you-in-loop)  Actions & Tags links          needs the GUI, BBT-RPC-fragile
         │
-3. BATCH / AGENT     zotero-pp-cli (+ MCP)          headless, bulk, idempotent,
+3. BATCH / AGENT     zotio (+ MCP)          headless, bulk, idempotent,
    (push, automated)                                  scriptable, host-agnostic,
                                                        native localhost:23119 API
 ```
@@ -87,7 +87,7 @@ http://localhost:23119/api/users/0/items` returns full item objects — includin
 layer expect. The native API is a more stable contract than the BBT-RPC stack
 the plugins depend on.
 
-> Run `zotero-pp-cli doctor --json` to confirm reachability and the resolved
+> Run `zotio doctor --json` to confirm reachability and the resolved
 > `base_url`/`library` on your machine.
 
 ## What to consolidate vs keep
@@ -132,7 +132,7 @@ in-editor plugins — not a replacement for them:
   bulk.
 - **Idempotent, non-clobbering.** Re-running updates only the managed
   frontmatter keys and a fenced annotations block
-  (`<!-- zotero-pp-cli:annotations ... -->`). Your prose and any extra
+  (`<!-- zotio:annotations ... -->`). Your prose and any extra
   frontmatter keys are preserved verbatim.
 - **Scoped from the local store.** `--collection`, `--tag`, `--item-type`,
   `--limit` reuse the local query planner; run `sync` first.
@@ -199,15 +199,15 @@ auto-merged — they surface as a conflict.
   Notes created before `zotero_key` existed are recognized via their `zotero://`
   link and upgraded in place.
 - **Managed vs user regions.** The tool owns the frontmatter keys, the title and
-  abstract fences (`<!-- zotero-pp-cli:title/abstract -->`), and the annotations
-  fence. You own the region between `<!-- zotero-pp-cli:notes-begin -->` and
-  `<!-- zotero-pp-cli:notes-end -->` under `## Notes` — that, and only that, is
+  abstract fences (`<!-- zotio:title/abstract -->`), and the annotations
+  fence. You own the region between `<!-- zotio:notes-begin -->` and
+  `<!-- zotio:notes-end -->` under `## Notes` — that, and only that, is
   what `push` sends to Zotero. A legacy single `## Notes` heading is migrated into
   markers automatically; an ambiguous layout is reported `needs_notes_boundary`
   and left untouched.
 - **Hidden sync state.** Push records its baseline (`note_key`, `note_version`,
   `source_hash`, `remote_hash`, `renderer`) in a single
-  `<!-- zotero-pp-cli:state {...} -->` comment, keeping Obsidian Properties free of
+  `<!-- zotio:state {...} -->` comment, keeping Obsidian Properties free of
   bookkeeping.
 - **Safe writes.** Vault files are written atomically (temp file + rename) and
   only when the on-disk bytes still match what was read, so a concurrent
@@ -232,12 +232,12 @@ existing `collections` keys, which stay intact for Dataview queries.
 ### Round-trip in practice
 
 ```
-zotero-pp-cli sync                       # refresh the local mirror
-zotero-pp-cli vault sync                 # Zotero -> vault (uses [vault] config)
+zotio sync                       # refresh the local mirror
+zotio vault sync                 # Zotero -> vault (uses [vault] config)
 # ... write under "## Notes" in Obsidian ...
-zotero-pp-cli vault push --dry-run       # preview Obsidian -> Zotero
-zotero-pp-cli vault push                 # publish notes to Zotero child notes
-zotero-pp-cli vault pull                 # fold edits made in the Zotero app back in
-zotero-pp-cli vault conflicts            # if any push/pull reported a conflict
-zotero-pp-cli vault resolve <citekey> --keep-vault   # ...or --keep-remote to discard local edits
+zotio vault push --dry-run       # preview Obsidian -> Zotero
+zotio vault push                 # publish notes to Zotero child notes
+zotio vault pull                 # fold edits made in the Zotero app back in
+zotio vault conflicts            # if any push/pull reported a conflict
+zotio vault resolve <citekey> --keep-vault   # ...or --keep-remote to discard local edits
 ```

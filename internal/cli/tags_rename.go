@@ -10,7 +10,7 @@ import (
 	"net/http"
 
 	"github.com/spf13/cobra"
-	"zotero-pp-cli/internal/client"
+	"zotio/internal/client"
 )
 
 type tagRenameUpdate struct {

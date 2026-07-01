@@ -45,17 +45,17 @@ func newItemsCitekeyConflictsCmd(flags *rootFlags) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "citekey-conflicts",
 		Short: "Find missing and duplicate Better BibTeX citation keys",
-		Example: `  zotero-pp-cli items citekey-conflicts
-  zotero-pp-cli items citekey-conflicts --missing
-  zotero-pp-cli items citekey-conflicts --conflicts --json`,
+		Example: `  zotio items citekey-conflicts
+  zotio items citekey-conflicts --missing
+  zotio items citekey-conflicts --conflicts --json`,
 		Annotations: map[string]string{"mcp:read-only": "true"},
 		RunE: func(cmd *cobra.Command, args []string) error {
-			rawDB, err := openStoreForRead(cmd.Context(), "zotero-pp-cli")
+			rawDB, err := openStoreForRead(cmd.Context(), "zotio")
 			if err != nil {
 				return fmt.Errorf("opening local database: %w", err)
 			}
 			if rawDB == nil {
-				fmt.Fprintln(cmd.OutOrStdout(), "Run 'zotero-pp-cli sync' first.")
+				fmt.Fprintln(cmd.OutOrStdout(), "Run 'zotio sync' first.")
 				return nil
 			}
 			defer rawDB.Close()

@@ -22,12 +22,12 @@ func newCollectionsStatsCmd(flags *rootFlags) *cobra.Command {
 			}
 			collKey := args[0]
 
-			rawDB, err := openStoreForRead(cmd.Context(), "zotero-pp-cli")
+			rawDB, err := openStoreForRead(cmd.Context(), "zotio")
 			if err != nil {
 				return fmt.Errorf("opening database: %w", err)
 			}
 			if rawDB == nil {
-				fmt.Fprintln(cmd.OutOrStdout(), "Run 'zotero-pp-cli sync' first to enable collection analytics.")
+				fmt.Fprintln(cmd.OutOrStdout(), "Run 'zotio sync' first to enable collection analytics.")
 				return nil
 			}
 			defer rawDB.Close()

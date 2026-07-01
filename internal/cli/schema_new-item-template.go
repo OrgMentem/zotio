@@ -17,7 +17,7 @@ func newSchemaNewItemTemplateCmd(flags *rootFlags) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:         "new-item-template",
 		Short:       "Get a blank template for creating a new item of a given type",
-		Example:     "  zotero-pp-cli schema new-item-template --item-type example-value",
+		Example:     "  zotio schema new-item-template --item-type example-value",
 		Annotations: map[string]string{"pp:endpoint": "schema.new-item-template", "pp:method": "GET", "pp:path": "/items/new", "mcp:read-only": "true"},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if !cmd.Flags().Changed("item-type") && !flags.dryRun {

@@ -35,7 +35,7 @@ func feedbackFilePath() (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("resolving home dir: %w", err)
 	}
-	dir := filepath.Join(home, ".zotero-pp-cli")
+	dir := filepath.Join(home, ".zotio")
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return "", fmt.Errorf("creating state dir: %w", err)
 	}
@@ -96,7 +96,7 @@ func postFeedback(url string, entry FeedbackEntry) error {
 		return fmt.Errorf("building feedback request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("User-Agent", "zotero-pp-cli/feedback")
+	req.Header.Set("User-Agent", "zotio/feedback")
 	client := &http.Client{Timeout: 15 * time.Second, CheckRedirect: func(req *http.Request, via []*http.Request) error {
 		// PATCH(glean zotero-pp-cli-fe00cbd82a1524c5): keep a trusted HTTPS
 		// endpoint from redirecting feedback into an internal target.
@@ -119,7 +119,7 @@ func newFeedbackCmd(flags *rootFlags) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "feedback [text]",
 		Short: "Record feedback about this CLI (local by default; upstream opt-in)",
-		Long: `Feedback is captured locally first at ~/.zotero-pp-cli/feedback.jsonl.
+		Long: `Feedback is captured locally first at ~/.zotio/feedback.jsonl.
 When ` + "`ZOTERO_FEEDBACK_ENDPOINT`" + ` is set and either --send is
 passed or ` + "`ZOTERO_FEEDBACK_AUTO_SEND=true`" + `, the entry is
 POSTed as JSON after the local write.
@@ -150,7 +150,7 @@ maintainer sees it.`,
 
 			entry := FeedbackEntry{
 				Text:      text,
-				CLI:       "zotero-pp-cli",
+				CLI:       "zotio",
 				Version:   version,
 				AgentID:   os.Getenv("AGENT_ID"),
 				Timestamp: time.Now().UTC(),
@@ -209,9 +209,9 @@ func newFeedbackListCmd(flags *rootFlags) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "list",
 		Short: "List recent feedback entries",
-		Example: `  zotero-pp-cli feedback list
-  zotero-pp-cli feedback list --limit 5
-  zotero-pp-cli feedback list --json`,
+		Example: `  zotio feedback list
+  zotio feedback list --limit 5
+  zotio feedback list --json`,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			p, err := feedbackFilePath()
 			if err != nil {

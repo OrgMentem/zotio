@@ -13,7 +13,7 @@ import (
 	"github.com/spf13/cobra"
 
 	// PATCH: direct batch creates can route through the desktop connector.
-	"zotero-pp-cli/internal/connector"
+	"zotio/internal/connector"
 )
 
 func newItemsCreateCmd(flags *rootFlags) *cobra.Command {
@@ -23,7 +23,7 @@ func newItemsCreateCmd(flags *rootFlags) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:         "create",
 		Short:       "Create one or more items",
-		Example:     "  zotero-pp-cli items create",
+		Example:     "  zotio items create",
 		Annotations: map[string]string{"pp:endpoint": "items.create", "pp:method": "POST", "pp:path": "/items"},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if !stdinBody {

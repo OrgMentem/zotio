@@ -17,7 +17,7 @@ func newItemsTrashCmd(flags *rootFlags) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:         "trash",
 		Short:       "List items in the trash",
-		Example:     "  zotero-pp-cli items trash",
+		Example:     "  zotio items trash",
 		Annotations: map[string]string{"pp:endpoint": "items.trash", "pp:method": "GET", "pp:path": "/items/trash", "mcp:read-only": "true"},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			c, err := flags.newClient()

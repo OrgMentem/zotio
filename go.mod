@@ -1,4 +1,4 @@
-module zotero-pp-cli
+module zotio
 
 go 1.26
 

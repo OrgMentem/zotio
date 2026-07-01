@@ -12,7 +12,7 @@ import (
 	"strings"
 	"testing"
 
-	"zotero-pp-cli/internal/store"
+	"zotio/internal/store"
 )
 
 func seedAuditStore(t *testing.T) localQueryStore {

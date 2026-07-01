@@ -10,8 +10,8 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"zotero-pp-cli/internal/connector"
-	"zotero-pp-cli/internal/mutation"
+	"zotio/internal/connector"
+	"zotio/internal/mutation"
 )
 
 type importPDFResult struct {

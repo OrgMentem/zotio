@@ -8,7 +8,7 @@ import (
 	"encoding/json"
 	"testing"
 
-	"zotero-pp-cli/internal/cliutil"
+	"zotio/internal/cliutil"
 )
 
 func TestItemsOpenAnnotationsAreNotReadOnly(t *testing.T) {

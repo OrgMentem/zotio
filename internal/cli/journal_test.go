@@ -13,7 +13,7 @@ import (
 	"testing"
 	"time"
 
-	"zotero-pp-cli/internal/mutation"
+	"zotio/internal/mutation"
 )
 
 func runJournalCmd(t *testing.T, args ...string) string {

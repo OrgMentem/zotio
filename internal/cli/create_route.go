@@ -12,8 +12,8 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"zotero-pp-cli/internal/connector"
-	"zotero-pp-cli/internal/store"
+	"zotio/internal/connector"
+	"zotio/internal/store"
 )
 
 type itemPoster interface {
@@ -188,7 +188,7 @@ func refreshItemsFromLocalAPI(ctx context.Context, flags *rootFlags) {
 		return
 	}
 	c.NoCache = true
-	db, err := store.OpenWithContext(ctx, defaultDBPath("zotero-pp-cli"))
+	db, err := store.OpenWithContext(ctx, defaultDBPath("zotio"))
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "warning: store refresh skipped: %v\n", err)
 		return

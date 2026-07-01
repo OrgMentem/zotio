@@ -1,7 +1,7 @@
 .PHONY: build test lint vet audit secrets verify install clean build-mcp install-mcp build-all
 
 build:
-	go build -o bin/zotero-pp-cli ./cmd/zotero-pp-cli
+	go build -o bin/zotio ./cmd/zotio
 
 test:
 	go test ./...
@@ -26,15 +26,15 @@ secrets:
 verify: vet lint test audit secrets
 
 install:
-	go install ./cmd/zotero-pp-cli
+	go install ./cmd/zotio
 
 clean:
 	rm -rf bin/
 
 build-mcp:
-	go build -o bin/zotero-pp-mcp ./cmd/zotero-pp-mcp
+	go build -o bin/zotio-mcp ./cmd/zotio-mcp
 
 install-mcp:
-	go install ./cmd/zotero-pp-mcp
+	go install ./cmd/zotio-mcp
 
 build-all: build build-mcp

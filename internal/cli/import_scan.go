@@ -23,7 +23,7 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"zotero-pp-cli/internal/store"
+	"zotio/internal/store"
 )
 
 // doiScanRE matches a DOI in a filename or raw PDF bytes; tighter than the URL
@@ -69,8 +69,8 @@ attach to Zotero.
 DOI extraction is dependency-free: it reads the filename and the PDF's uncompressed
 embedded metadata (Info/XMP). It does NOT decode compressed page text, so scanned
 or text-only PDFs may report "unidentified".`,
-		Example: `  zotero-pp-cli import scan ~/Downloads/papers
-  zotero-pp-cli import scan ~/Downloads/papers --resolve --json`,
+		Example: `  zotio import scan ~/Downloads/papers
+  zotio import scan ~/Downloads/papers --resolve --json`,
 		Args:        cobra.ExactArgs(1),
 		Annotations: map[string]string{"mcp:read-only": "true"},
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -79,9 +79,9 @@ or text-only PDFs may report "unidentified".`,
 				return err
 			}
 
-			db, _ := openStoreForRead(cmd.Context(), "zotero-pp-cli")
+			db, _ := openStoreForRead(cmd.Context(), "zotio")
 			if db == nil {
-				fmt.Fprintln(cmd.OutOrStdout(), "Run 'zotero-pp-cli sync' first.")
+				fmt.Fprintln(cmd.OutOrStdout(), "Run 'zotio sync' first.")
 				return nil
 			}
 			defer db.Close()

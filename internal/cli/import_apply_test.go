@@ -12,8 +12,8 @@ import (
 	"strings"
 	"testing"
 
-	"zotero-pp-cli/internal/connector"
-	"zotero-pp-cli/internal/mutation"
+	"zotio/internal/connector"
+	"zotio/internal/mutation"
 )
 
 func TestImportApplyPreviewPlansCreateAndLinkedAttach(t *testing.T) {

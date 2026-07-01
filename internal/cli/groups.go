@@ -10,7 +10,7 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"zotero-pp-cli/internal/config"
+	"zotio/internal/config"
 )
 
 func newGroupsCmd(flags *rootFlags) *cobra.Command {
@@ -28,12 +28,12 @@ func newGroupsListCmd(flags *rootFlags) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "list",
 		Short: "List the group libraries the configured user belongs to",
-		Example: `  zotero-pp-cli groups list
-  zotero-pp-cli groups list --json
+		Example: `  zotio groups list
+  zotio groups list --json
 
   # Then sync and search a specific group:
-  zotero-pp-cli sync --group <id>
-  zotero-pp-cli search --group <id> <query>`,
+  zotio sync --group <id>
+  zotio search --group <id> <query>`,
 		Annotations: map[string]string{"mcp:read-only": "true"},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			c, err := flags.newClient()

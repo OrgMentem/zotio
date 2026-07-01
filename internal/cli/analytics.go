@@ -10,7 +10,7 @@ import (
 	"sort"
 
 	"github.com/spf13/cobra"
-	"zotero-pp-cli/internal/store"
+	"zotio/internal/store"
 )
 
 func newAnalyticsCmd(flags *rootFlags) *cobra.Command {
@@ -26,21 +26,21 @@ func newAnalyticsCmd(flags *rootFlags) *cobra.Command {
 		Long: `Analyze locally synced data with count, group-by, and summary operations.
 Data must be synced first with the sync command.`,
 		Example: `  # Count records by type
-  zotero-pp-cli analytics --type messages
+  zotio analytics --type messages
 
   # Group by a field
-  zotero-pp-cli analytics --type messages --group-by author_id
+  zotio analytics --type messages --group-by author_id
 
   # Top 10 most frequent values
-  zotero-pp-cli analytics --type messages --group-by channel_id --limit 10 --json`,
+  zotio analytics --type messages --group-by channel_id --limit 10 --json`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if dbPath == "" {
-				dbPath = defaultDBPath("zotero-pp-cli")
+				dbPath = defaultDBPath("zotio")
 			}
 
 			db, err := store.OpenWithContext(cmd.Context(), dbPath)
 			if err != nil {
-				return fmt.Errorf("opening local database: %w\nRun 'zotero-pp-cli sync' first.", err)
+				return fmt.Errorf("opening local database: %w\nRun 'zotio sync' first.", err)
 			}
 			defer db.Close()
 

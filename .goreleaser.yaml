@@ -1,15 +1,15 @@
 version: 2
-project_name: zotero-pp-cli
+project_name: zotio
 changelog:
   disable: true
 builds:
-  - id: zotero-pp-cli
-    main: ./cmd/zotero-pp-cli
-    binary: zotero-pp-cli
+  - id: zotio
+    main: ./cmd/zotio
+    binary: zotio
     env:
       - CGO_ENABLED=0
     ldflags:
-      - -s -w -X zotero-pp-cli/internal/cli.version={{ .Version }}
+      - -s -w -X zotio/internal/cli.version={{ .Version }}
     targets:
       - darwin_amd64
       - darwin_arm64
@@ -17,9 +17,9 @@ builds:
       - linux_arm64
       - windows_amd64
       - windows_arm64
-  - id: zotero-pp-mcp
-    main: ./cmd/zotero-pp-mcp
-    binary: zotero-pp-mcp
+  - id: zotio-mcp
+    main: ./cmd/zotio-mcp
+    binary: zotio-mcp
     env:
       - CGO_ENABLED=0
     ldflags:
@@ -40,12 +40,12 @@ archives:
 checksum:
   name_template: checksums.txt
 brews:
-  - name: zotero-pp-cli
+  - name: zotio
     repository:
       owner: enieuwy
       name: homebrew-tap
-    homepage: "https://github.com/enieuwy/zotero-pp-cli"
+    homepage: "https://github.com/enieuwy/zotio"
     description: "Every Zotero feature in the terminal, plus offline search, annotation export, and library analytics no existing tool..."
     install: |
-      bin.install "zotero-pp-cli"
-      bin.install "zotero-pp-mcp"
+      bin.install "zotio"
+      bin.install "zotio-mcp"

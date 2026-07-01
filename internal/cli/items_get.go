@@ -19,7 +19,7 @@ func newItemsGetCmd(flags *rootFlags) *cobra.Command {
 		Use:   "get <itemKey>",
 		Short: "Get a single item by key",
 		// PATCH(glean zotero-pp-cli-76875fc8c78bd05c): use an item-key placeholder, not an API-token placeholder.
-		Example:     "  zotero-pp-cli items get ABCD1234",
+		Example:     "  zotio items get ABCD1234",
 		Annotations: map[string]string{"pp:endpoint": "items.get", "pp:method": "GET", "pp:path": "/items/{itemKey}", "mcp:read-only": "true"},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if len(args) == 0 {

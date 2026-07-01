@@ -24,24 +24,24 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"zotero-pp-cli/internal/config"
-	"zotero-pp-cli/internal/store"
+	"zotio/internal/config"
+	"zotio/internal/store"
 )
 
 const (
-	vaultAnnBegin = "<!-- zotero-pp-cli:annotations (auto-generated; edits here are overwritten on sync) -->"
-	vaultAnnEnd   = "<!-- /zotero-pp-cli:annotations -->"
+	vaultAnnBegin = "<!-- zotio:annotations (auto-generated; edits here are overwritten on sync) -->"
+	vaultAnnEnd   = "<!-- /zotio:annotations -->"
 
 	// PATCH(glean 15e0): managed-content fences (title/abstract) are swapped
 	// wholesale each sync; the notes fence delimits the user-owned region that
 	// commit 3 will push to a Zotero child note. Markers are matched as whole
 	// trimmed lines; keep them stable — they are persisted inside user files.
-	vaultTitleBegin    = "<!-- zotero-pp-cli:title -->"
-	vaultTitleEnd      = "<!-- /zotero-pp-cli:title -->"
-	vaultAbstractBegin = "<!-- zotero-pp-cli:abstract -->"
-	vaultAbstractEnd   = "<!-- /zotero-pp-cli:abstract -->"
-	vaultNotesBegin    = "<!-- zotero-pp-cli:notes-begin -->"
-	vaultNotesEnd      = "<!-- zotero-pp-cli:notes-end -->"
+	vaultTitleBegin    = "<!-- zotio:title -->"
+	vaultTitleEnd      = "<!-- /zotio:title -->"
+	vaultAbstractBegin = "<!-- zotio:abstract -->"
+	vaultAbstractEnd   = "<!-- /zotio:abstract -->"
+	vaultNotesBegin    = "<!-- zotio:notes-begin -->"
+	vaultNotesEnd      = "<!-- zotio:notes-end -->"
 )
 
 // vaultMeta is the per-item data rendered into a note.
@@ -108,9 +108,9 @@ backlinks, and embed current annotations in a managed block.
 Re-running is idempotent and non-destructive: only the managed frontmatter keys
 and the fenced annotations block change; your prose and other frontmatter keys
 are preserved. Use --dry-run to preview create/update/unchanged without writing.`,
-		Example: `  zotero-pp-cli vault sync                 # uses [vault] root/notes_dir from config
-  zotero-pp-cli vault sync --out ~/vault/refs
-  zotero-pp-cli vault sync --out ~/vault/refs --collection ABCD1234 --dry-run`,
+		Example: `  zotio vault sync                 # uses [vault] root/notes_dir from config
+  zotio vault sync --out ~/vault/refs
+  zotio vault sync --out ~/vault/refs --collection ABCD1234 --dry-run`,
 		Annotations: map[string]string{"mcp:read-only": "false"},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			outDir := strings.TrimSpace(flagOut)
@@ -136,12 +136,12 @@ are preserved. Use --dry-run to preview create/update/unchanged without writing.
 			}
 			flagOut = outDir
 
-			rawDB, err := openStoreForRead(cmd.Context(), "zotero-pp-cli")
+			rawDB, err := openStoreForRead(cmd.Context(), "zotio")
 			if err != nil {
 				return fmt.Errorf("opening database: %w", err)
 			}
 			if rawDB == nil {
-				fmt.Fprintln(cmd.OutOrStdout(), "Run 'zotero-pp-cli sync' first.")
+				fmt.Fprintln(cmd.OutOrStdout(), "Run 'zotio sync' first.")
 				return nil
 			}
 			defer rawDB.Close()
@@ -486,14 +486,14 @@ func managedAbstractBlock(meta vaultMeta) string {
 // markers before rendering Zotero-controlled strings into vault notes.
 func sanitizeManagedFenceMarkers(s string) string {
 	replacer := strings.NewReplacer(
-		vaultTitleBegin, "[zotero-pp-cli title marker removed]",
-		vaultTitleEnd, "[zotero-pp-cli title marker removed]",
-		vaultAbstractBegin, "[zotero-pp-cli abstract marker removed]",
-		vaultAbstractEnd, "[zotero-pp-cli abstract marker removed]",
-		vaultAnnBegin, "[zotero-pp-cli annotations marker removed]",
-		vaultAnnEnd, "[zotero-pp-cli annotations marker removed]",
-		vaultNotesBegin, "[zotero-pp-cli notes marker removed]",
-		vaultNotesEnd, "[zotero-pp-cli notes marker removed]",
+		vaultTitleBegin, "[zotio title marker removed]",
+		vaultTitleEnd, "[zotio title marker removed]",
+		vaultAbstractBegin, "[zotio abstract marker removed]",
+		vaultAbstractEnd, "[zotio abstract marker removed]",
+		vaultAnnBegin, "[zotio annotations marker removed]",
+		vaultAnnEnd, "[zotio annotations marker removed]",
+		vaultNotesBegin, "[zotio notes marker removed]",
+		vaultNotesEnd, "[zotio notes marker removed]",
 	)
 	return replacer.Replace(s)
 }

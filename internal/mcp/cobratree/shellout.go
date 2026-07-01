@@ -18,7 +18,7 @@ import (
 
 // inProcessHandler runs a mirrored Cobra command in-process via the shared
 // runMirroredInProcess core. PATCH(glean c4ke): replaces the previous shell-out
-// to a companion zotero-pp-cli binary, so the MCP server works without that
+// to a companion zotio binary, so the MCP server works without that
 // binary on PATH.
 func inProcessHandler(rootFactory func() *cobra.Command, commandPath []string) server.ToolHandlerFunc {
 	return func(ctx context.Context, req mcplib.CallToolRequest) (*mcplib.CallToolResult, error) {

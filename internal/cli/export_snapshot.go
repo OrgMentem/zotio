@@ -36,9 +36,9 @@ and a content hash for reproducibility/drift detection. Resumable: an interrupte
 run can continue with --resume (a <output>.checkpoint.json sidecar tracks progress).
 
 Scope is one of: library (default), collection:KEY, or tag:NAME.`,
-		Example: `  zotero-pp-cli export snapshot --output backup.jsonl
-  zotero-pp-cli export snapshot collection:ABCD1234 --output coll.jsonl
-  zotero-pp-cli export snapshot --output backup.jsonl --resume`,
+		Example: `  zotio export snapshot --output backup.jsonl
+  zotio export snapshot collection:ABCD1234 --output coll.jsonl
+  zotio export snapshot --output backup.jsonl --resume`,
 		Args:        cobra.MaximumNArgs(1),
 		Annotations: map[string]string{"mcp:read-only": "true"},
 		RunE: func(cmd *cobra.Command, args []string) error {

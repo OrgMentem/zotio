@@ -154,10 +154,10 @@ func newWhichCmd(flags *rootFlags) *cobra.Command {
 Exit codes:
   0  at least one match found
   2  no confident match - the query did not score against any indexed capability; fall back to '--help' or 'search' if this CLI has one`,
-		Example: `  zotero-pp-cli which "stale tickets"
-  zotero-pp-cli which "bottleneck"
-  zotero-pp-cli which --limit 1 "send message"
-  zotero-pp-cli which                                # list the full capability index`,
+		Example: `  zotio which "stale tickets"
+  zotio which "bottleneck"
+  zotio which --limit 1 "send message"
+  zotio which                                # list the full capability index`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if len(whichIndex) == 0 {
 				return usageErr(fmt.Errorf("this CLI has no curated capability index; run '--help' to see every command"))

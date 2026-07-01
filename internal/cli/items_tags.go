@@ -17,7 +17,7 @@ func newItemsTagsCmd(flags *rootFlags) *cobra.Command {
 		Use:   "tags [itemKey]",
 		Short: "Get or manage tags for a specific item",
 		// PATCH(glean write-safety): keep the legacy bare read as a deprecated alias while exposing read/write subcommands.
-		Example: "  zotero-pp-cli items tags list ABC12345",
+		Example: "  zotio items tags list ABC12345",
 		// PATCH(glean write-safety): ArbitraryArgs lets the bare-read alias accept an itemKey even when the group is run without its parent (subcommands still match first).
 		Args:        cobra.ArbitraryArgs,
 		Annotations: map[string]string{"pp:endpoint": "items.tags", "pp:method": "GET", "pp:path": "/items/{itemKey}/tags", "mcp:read-only": "true"},
@@ -43,7 +43,7 @@ func newItemsTagsListCmd(flags *rootFlags) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:         "list <itemKey>",
 		Short:       "Get tags for a specific item",
-		Example:     "  zotero-pp-cli items tags list ABC12345",
+		Example:     "  zotio items tags list ABC12345",
 		Args:        cobra.ExactArgs(1),
 		Annotations: map[string]string{"pp:endpoint": "items.tags.list", "pp:method": "GET", "pp:path": "/items/{itemKey}/tags", "mcp:read-only": "true"},
 		RunE: func(cmd *cobra.Command, args []string) error {

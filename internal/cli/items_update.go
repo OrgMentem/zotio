@@ -26,7 +26,7 @@ func newItemsUpdateCmd(flags *rootFlags) *cobra.Command {
 		Use:   "update <itemKey>",
 		Short: "Update a specific item",
 		// PATCH(glean zotero-pp-cli-76875fc8c78bd05c): use an item-key placeholder, not an API-token placeholder.
-		Example:     "  zotero-pp-cli items update ABCD1234 --title \"Updated title\"",
+		Example:     "  zotio items update ABCD1234 --title \"Updated title\"",
 		Annotations: map[string]string{"pp:endpoint": "items.update", "pp:method": "PATCH", "pp:path": "/items/{itemKey}"},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if len(args) == 0 {

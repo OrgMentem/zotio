@@ -18,8 +18,8 @@ import (
 	"testing"
 	"unicode/utf8"
 
-	"zotero-pp-cli/internal/config"
-	"zotero-pp-cli/internal/store"
+	"zotio/internal/config"
+	"zotio/internal/store"
 )
 
 func TestVaultSyncWritesIdentityAndFences(t *testing.T) {
@@ -297,7 +297,7 @@ func TestResolveCollectionNames(t *testing.T) {
 // into the managed collection_names frontmatter key.
 func TestVaultSyncCollectionNames(t *testing.T) {
 	seedVaultStore(t)
-	db, err := store.OpenWithContext(context.Background(), defaultDBPath("zotero-pp-cli"))
+	db, err := store.OpenWithContext(context.Background(), defaultDBPath("zotio"))
 	if err != nil {
 		t.Fatalf("open store: %v", err)
 	}

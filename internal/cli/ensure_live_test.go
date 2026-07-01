@@ -7,7 +7,7 @@ import (
 	"reflect"
 	"testing"
 
-	"zotero-pp-cli/internal/cliutil"
+	"zotio/internal/cliutil"
 )
 
 // PATCH(glean roadmap-phase2): verify OS dispatch stays pure and stable.

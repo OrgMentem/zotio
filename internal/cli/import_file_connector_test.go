@@ -12,7 +12,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"zotero-pp-cli/internal/connector"
+	"zotio/internal/connector"
 )
 
 func TestImportFileConnectorDryRunDoesNotWrite(t *testing.T) {

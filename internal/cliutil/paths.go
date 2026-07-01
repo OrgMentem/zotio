@@ -12,7 +12,18 @@ import (
 	"sync"
 )
 
-const appName = "zotero-pp-cli"
+const appName = "zotio"
+
+// legacyAppName is the pre-rename application directory name. MigrateLegacyDirs
+// performs a one-time move from it to appName so existing config, synced data,
+// state, and cache survive the zotero-pp-cli -> zotio rename.
+const legacyAppName = "zotero-pp-cli"
+
+// AppName returns the current per-user directory name used for config, data,
+// state, and cache. Callers deriving app-scoped paths MUST use this rather than
+// hardcoding the string, so the name has a single source of truth.
+func AppName() string { return appName }
+
 const envPrefix = "ZOTERO"
 
 type PathKind int
@@ -326,5 +337,70 @@ func defaultBase(kind PathKind) (string, error) {
 		return filepath.Join(home, ".cache"), nil
 	default:
 		return "", fmt.Errorf("unknown path kind %d", kind)
+	}
+}
+
+var migrateLegacyOnce sync.Once
+
+// MigrateLegacyDirs performs a one-time, best-effort rename of the per-user
+// config, data, state, and cache directories from the pre-rename app name
+// (legacyAppName) to the current one (appName). It acts only on the two
+// resolution rungs whose directory ends in the app-name component (xdg-env and
+// platform-default); explicit overrides (--home, ZOTERO_HOME, ZOTERO_*_DIR)
+// carry their own path with no legacy twin and are left untouched. Any kind
+// whose new directory already exists is skipped, so fresh installs and
+// already-migrated machines are a no-op. Failures are reported to stderr but
+// never block startup. Safe to call repeatedly; the work runs at most once per
+// process.
+// PATCH: hand-written; supports the zotero-pp-cli -> zotio rename cutover.
+func MigrateLegacyDirs() {
+	migrateLegacyOnce.Do(migrateLegacyDirs)
+}
+
+func migrateLegacyDirs() {
+	kinds := []PathKind{PathKindConfig, PathKindData, PathKindState, PathKindCache}
+	var migrated []string
+	for _, kind := range kinds {
+		res, err := ResolveKindDir(kind)
+		if err != nil {
+			continue
+		}
+		// Only rungs that append appName have a legacy twin to migrate.
+		if res.Rung != "xdg-env" && res.Rung != "platform-default" {
+			continue
+		}
+		newDir := res.Dir
+		// Defensive: the dir must actually end in the current app name.
+		if filepath.Base(newDir) != appName {
+			continue
+		}
+		legacyDir := filepath.Join(filepath.Dir(newDir), legacyAppName)
+		if legacyDir == newDir {
+			continue
+		}
+		// New dir already present -> nothing to migrate for this kind.
+		if _, err := os.Stat(newDir); err == nil {
+			continue
+		} else if !errors.Is(err, os.ErrNotExist) {
+			continue
+		}
+		// Legacy dir must exist and be a directory to move.
+		info, err := os.Stat(legacyDir)
+		if err != nil || !info.IsDir() {
+			continue
+		}
+		if err := os.MkdirAll(filepath.Dir(newDir), 0o755); err != nil {
+			fmt.Fprintf(os.Stderr, "warning: could not prepare %s dir for migration: %v\n", kindName(kind), err)
+			continue
+		}
+		// Same parent directory, so this is an atomic same-filesystem rename.
+		if err := os.Rename(legacyDir, newDir); err != nil {
+			fmt.Fprintf(os.Stderr, "warning: could not migrate %s dir %s -> %s: %v\n", kindName(kind), legacyDir, newDir, err)
+			continue
+		}
+		migrated = append(migrated, fmt.Sprintf("%s -> %s", kindName(kind), newDir))
+	}
+	if len(migrated) > 0 {
+		fmt.Fprintf(os.Stderr, "zotio: migrated legacy zotero-pp-cli directories: %s\n", strings.Join(migrated, ", "))
 	}
 }

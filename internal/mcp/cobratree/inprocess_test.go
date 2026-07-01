@@ -16,7 +16,7 @@ import (
 )
 
 func newEchoRoot() *cobra.Command {
-	root := &cobra.Command{Use: "zotero-pp-cli", SilenceUsage: true, SilenceErrors: true}
+	root := &cobra.Command{Use: "zotio", SilenceUsage: true, SilenceErrors: true}
 	root.AddCommand(&cobra.Command{
 		Use: "echo",
 		RunE: func(cmd *cobra.Command, args []string) error {

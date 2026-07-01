@@ -12,7 +12,7 @@ import (
 	"strings"
 	"testing"
 
-	"zotero-pp-cli/internal/store"
+	"zotio/internal/store"
 )
 
 func TestCollectionsBundleWritesResearchPackage(t *testing.T) {
@@ -91,7 +91,7 @@ func seedCollectionBundleStore(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	t.Setenv("ZOTERO_CONFIG", filepath.Join(t.TempDir(), "missing.toml"))
 
-	db, err := store.OpenWithContext(context.Background(), defaultDBPath("zotero-pp-cli"))
+	db, err := store.OpenWithContext(context.Background(), defaultDBPath("zotio"))
 	if err != nil {
 		t.Fatalf("open store: %v", err)
 	}

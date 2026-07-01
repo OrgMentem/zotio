@@ -7,7 +7,7 @@ import (
 	"fmt"
 	"os"
 
-	"zotero-pp-cli/internal/cli"
+	"zotio/internal/cli"
 )
 
 func main() {

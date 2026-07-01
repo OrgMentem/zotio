@@ -27,12 +27,12 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"zotero-pp-cli/internal/client"
+	"zotio/internal/client"
 )
 
 const (
 	vaultConflictsDir = "_vault-zotero-conflicts"
-	vaultStatePrefix  = "<!-- zotero-pp-cli:state "
+	vaultStatePrefix  = "<!-- zotio:state "
 	vaultRenderer     = "verbatim-v1"
 	noteStateSchema   = 1
 )
@@ -79,8 +79,8 @@ first, and a divergent remote is never overwritten — a conflict artifact is
 written under ` + vaultConflictsDir + `/ and reported instead.
 
 Use --dry-run to preview create/update/conflict without writing anything.`,
-		Example: `  zotero-pp-cli vault push --dry-run
-  zotero-pp-cli vault push --out ~/vault/refs`,
+		Example: `  zotio vault push --dry-run
+  zotio vault push --out ~/vault/refs`,
 		Annotations: map[string]string{"mcp:read-only": "false"},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			outDir, err := resolveVaultOutDir(flags, flagOut)
@@ -372,8 +372,8 @@ in the shape this CLI writes are pulled.
 
 Exactly one direction is required so the destructive side is explicit; the
 resolved conflict artifact is removed on success.`,
-		Example: `  zotero-pp-cli vault resolve smith2024 --keep-vault
-  zotero-pp-cli vault resolve smith2024 --keep-remote`,
+		Example: `  zotio vault resolve smith2024 --keep-vault
+  zotio vault resolve smith2024 --keep-remote`,
 		Annotations: map[string]string{"mcp:read-only": "false"},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if len(args) == 0 {
@@ -633,9 +633,9 @@ func writeConflictArtifact(outDir string, n *pushNote, liveVer int, liveHTML str
 	// PATCH(glean zotero-pp-cli-3ea29a90f96660ab): quote the displayed command
 	// argument and use variable-length fences so citekeys cannot break the sh block.
 	b.WriteString("Resolve — keep the vault copy (writes to Zotero):\n\n")
-	b.WriteString(markdownFence("sh", "zotero-pp-cli vault resolve "+shellSingleQuote(n.citekey)+" --keep-vault\n") + "\n\n")
+	b.WriteString(markdownFence("sh", "zotio vault resolve "+shellSingleQuote(n.citekey)+" --keep-vault\n") + "\n\n")
 	b.WriteString("…or keep the remote copy (overwrites the vault Notes region):\n\n")
-	b.WriteString(markdownFence("sh", "zotero-pp-cli vault resolve "+shellSingleQuote(n.citekey)+" --keep-remote\n") + "\n\n")
+	b.WriteString(markdownFence("sh", "zotio vault resolve "+shellSingleQuote(n.citekey)+" --keep-remote\n") + "\n\n")
 	b.WriteString("## Local Notes (vault)\n\n")
 	b.WriteString(n.region + "\n\n")
 	b.WriteString("## Remote note (Zotero, HTML)\n\n")
@@ -842,7 +842,7 @@ func markdownToNoteHTML(citekey, md string) string {
 		title = "vault"
 	}
 	b.WriteString("<h1>Obsidian notes — " + html.EscapeString(title) + "</h1>")
-	b.WriteString("<p><em>Managed from the vault by zotero-pp-cli. Edit in Obsidian.</em></p>")
+	b.WriteString("<p><em>Managed from the vault by zotio. Edit in Obsidian.</em></p>")
 	for _, block := range splitParagraphs(md) {
 		b.WriteString("<p>")
 		for i, ln := range strings.Split(block, "\n") {

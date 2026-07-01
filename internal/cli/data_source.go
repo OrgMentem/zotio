@@ -14,8 +14,8 @@ import (
 	"strings"
 	"time"
 
-	"zotero-pp-cli/internal/client"
-	"zotero-pp-cli/internal/store"
+	"zotio/internal/client"
+	"zotio/internal/store"
 )
 
 // isNetworkError returns true for errors caused by network connectivity issues
@@ -129,7 +129,7 @@ func resolveRead(ctx context.Context, c *client.Client, flags *rootFlags, resour
 		// Network error — try local fallback
 		fallbackData, fallbackProv, fallbackErr := resolveLocal(ctx, resourceType, isList, path, params, "api_unreachable")
 		if fallbackErr != nil {
-			return nil, DataProvenance{}, fmt.Errorf("API unreachable and no local data. Run 'zotero-pp-cli sync' to enable offline access.\n\nOriginal error: %w", err)
+			return nil, DataProvenance{}, fmt.Errorf("API unreachable and no local data. Run 'zotio sync' to enable offline access.\n\nOriginal error: %w", err)
 		}
 		return fallbackData, attachFreshness(fallbackProv, flags), nil
 	}
@@ -163,7 +163,7 @@ func resolvePaginatedRead(ctx context.Context, c *client.Client, flags *rootFlag
 		}
 		fallbackData, fallbackProv, fallbackErr := resolveLocal(ctx, resourceType, true, path, params, "api_unreachable")
 		if fallbackErr != nil {
-			return nil, DataProvenance{}, fmt.Errorf("API unreachable and no local data. Run 'zotero-pp-cli sync' to enable offline access.\n\nOriginal error: %w", err)
+			return nil, DataProvenance{}, fmt.Errorf("API unreachable and no local data. Run 'zotio sync' to enable offline access.\n\nOriginal error: %w", err)
 		}
 		return fallbackData, attachFreshness(fallbackProv, flags), nil
 	}
@@ -179,7 +179,7 @@ func writeThroughCache(ctx context.Context, resourceType string, data json.RawMe
 	if resourceType == "schema" {
 		return
 	}
-	db, err := store.OpenWithContext(ctx, defaultDBPath("zotero-pp-cli"))
+	db, err := store.OpenWithContext(ctx, defaultDBPath("zotio"))
 	if err != nil {
 		return
 	}
@@ -223,12 +223,12 @@ func writeThroughCache(ctx context.Context, resourceType string, data json.RawMe
 // Zotero filters/scopes are applied locally. Other endpoints fall back to a
 // generic resource dump and warn when request params cannot be reproduced.
 func resolveLocal(ctx context.Context, resourceType string, isList bool, path string, params map[string]string, reason string) (json.RawMessage, DataProvenance, error) {
-	db, err := openStoreForRead(ctx, "zotero-pp-cli")
+	db, err := openStoreForRead(ctx, "zotio")
 	if err != nil {
-		return nil, DataProvenance{}, fmt.Errorf("opening local database: %w\nRun 'zotero-pp-cli sync' first.", err)
+		return nil, DataProvenance{}, fmt.Errorf("opening local database: %w\nRun 'zotio sync' first.", err)
 	}
 	if db == nil {
-		return nil, DataProvenance{}, fmt.Errorf("no local data. Run 'zotero-pp-cli sync' first")
+		return nil, DataProvenance{}, fmt.Errorf("no local data. Run 'zotio sync' first")
 	}
 	defer db.Close()
 
@@ -274,7 +274,7 @@ func resolveLocal(ctx context.Context, resourceType string, isList bool, path st
 			items = append(items, r)
 		}
 		if len(items) == 0 {
-			return nil, DataProvenance{}, fmt.Errorf("no local data for %q. Run 'zotero-pp-cli sync' first", resourceType)
+			return nil, DataProvenance{}, fmt.Errorf("no local data for %q. Run 'zotio sync' first", resourceType)
 		}
 		// Marshal []json.RawMessage into a single JSON array
 		data, err := json.Marshal(items)
@@ -293,7 +293,7 @@ func resolveLocal(ctx context.Context, resourceType string, isList bool, path st
 		return nil, DataProvenance{}, fmt.Errorf("querying local store: %w", err)
 	}
 	if item == nil {
-		return nil, DataProvenance{}, fmt.Errorf("resource %q with ID %q not found in local store. Run 'zotero-pp-cli sync' first", resourceType, id)
+		return nil, DataProvenance{}, fmt.Errorf("resource %q with ID %q not found in local store. Run 'zotio sync' first", resourceType, id)
 	}
 	return item, prov, nil
 }
