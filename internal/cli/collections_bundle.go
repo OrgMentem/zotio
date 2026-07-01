@@ -137,7 +137,7 @@ func writeCollectionBundle(db *store.Store, collKey, outDir string) (collectionB
 	manifestFiles := make([]string, 0, len(files))
 	for _, file := range files {
 		path := filepath.Join(outDir, file.name)
-		if err := os.WriteFile(path, file.data, 0o644); err != nil {
+		if err := os.WriteFile(path, file.data, 0o600); err != nil {
 			return collectionBundleManifest{}, fmt.Errorf("writing %s: %w", file.name, err)
 		}
 		manifestFiles = append(manifestFiles, file.name)

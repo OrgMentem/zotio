@@ -1,6 +1,9 @@
 linters:
   enable:
+    - bodyclose
+    - errcheck
     - errorlint
+    - gosec
     - govet
     - ineffassign
     - staticcheck
@@ -10,3 +13,9 @@ formatters:
   enable:
     - gofmt
     - goimports
+
+linters-settings:
+  gosec:
+    excludes:
+      # web_api_key is a config-key *name*, not a credential value (false positive).
+      - G101

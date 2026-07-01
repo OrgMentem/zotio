@@ -17,7 +17,7 @@ import (
 func TestImportResolveDirectoryBuildsManifest(t *testing.T) {
 	dir := t.TempDir()
 	pdfPath := filepath.Join(dir, "10.1234%2Fdemo.pdf")
-	if err := os.WriteFile(pdfPath, nil, 0o644); err != nil {
+	if err := os.WriteFile(pdfPath, nil, 0o600); err != nil {
 		t.Fatalf("write pdf: %v", err)
 	}
 
@@ -89,7 +89,7 @@ func TestImportResolveManifestRefreshesUnresolvedCreate(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("encode manifest: %v", err)
 	}
-	if err := os.WriteFile(manifestPath, manifest.Bytes(), 0o644); err != nil {
+	if err := os.WriteFile(manifestPath, manifest.Bytes(), 0o600); err != nil {
 		t.Fatalf("write manifest: %v", err)
 	}
 

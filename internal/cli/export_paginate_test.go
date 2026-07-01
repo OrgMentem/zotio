@@ -161,6 +161,7 @@ func TestResumablePaginatedFetchResumesFromCheckpoint(t *testing.T) {
 	if cp != (exportCheckpoint{Path: "/items", NextStart: 250, Fetched: 250, Done: true}) {
 		t.Fatalf("checkpoint = %+v, want done at 250", cp)
 	}
+	assertFileMode(t, checkpointFile, 0o600)
 }
 
 func TestReadExportCheckpointMissingFile(t *testing.T) {

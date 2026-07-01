@@ -38,7 +38,7 @@ func writeExportCheckpoint(file string, cp exportCheckpoint) error {
 		return err
 	}
 	data = append(data, '\n')
-	return os.WriteFile(file, data, 0o644)
+	return os.WriteFile(file, data, 0o600)
 }
 
 func resumablePaginatedFetch(ctx context.Context, c *client.Client, path string, params map[string]string, pageSize, limit int, checkpointFile string, onPage func(page []json.RawMessage) error) (fetched int, err error) {

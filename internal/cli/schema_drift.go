@@ -48,8 +48,8 @@ func newSchemaDriftCmd(flags *rootFlags) *cobra.Command {
 	var baselinePath string
 
 	cmd := &cobra.Command{
-		Use:         "drift",
-		Short:       "Detect Zotero schema changes (new/removed item types and fields) vs a saved baseline",
+		Use:   "drift",
+		Short: "Detect Zotero schema changes (new/removed item types and fields) vs a saved baseline",
 		Long: `Capture a baseline fingerprint of the running Zotero's item-type and field
 schema, then on later runs report what changed. Use this after upgrading Zotero
 to see which item types, fields, or creator fields a new version added or removed
@@ -344,6 +344,7 @@ func saveSchemaBaseline(path string, snap schemaSnapshot) error {
 	if err != nil {
 		return err
 	}
+	// #nosec G306 -- schema baselines are deterministic non-secret fixtures intended for review.
 	if err := os.WriteFile(path, data, 0o644); err != nil {
 		return fmt.Errorf("writing schema baseline: %w", err)
 	}

@@ -62,7 +62,8 @@ func TestAnnotationsExportEscapesCollectionPathSegment(t *testing.T) {
 	var errOut bytes.Buffer
 	cmd.SetOut(&out)
 	cmd.SetErr(&errOut)
-	cmd.SetArgs([]string{"--collection", "../COLL/A", "--format", "json", "--refresh", "--limit", "1"})
+	outputFile := filepath.Join(t.TempDir(), "annotations.json")
+	cmd.SetArgs([]string{"--collection", "../COLL/A", "--format", "json", "--refresh", "--limit", "1", "--output", outputFile})
 
 	if err := cmd.Execute(); err != nil {
 		t.Fatalf("annotations export failed: %v; stderr: %s", err, errOut.String())
@@ -73,4 +74,5 @@ func TestAnnotationsExportEscapesCollectionPathSegment(t *testing.T) {
 	if !strings.HasPrefix(requests[0], "/users/0/collections/..%2FCOLL%2FA/items?") {
 		t.Fatalf("request path = %q, want escaped collection segment", requests[0])
 	}
+	assertFileMode(t, outputFile, 0o600)
 }

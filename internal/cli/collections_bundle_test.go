@@ -51,6 +51,10 @@ func TestCollectionsBundleWritesResearchPackage(t *testing.T) {
 			t.Errorf("bibliography.json missing %q:\n%s", want, bibliography)
 		}
 	}
+
+	for _, name := range []string{"synthesis.md", "annotations.md", "bibliography.json"} {
+		assertFileMode(t, filepath.Join(outDir, name), 0o600)
+	}
 }
 
 func TestCollectionsBundleJSONManifest(t *testing.T) {
@@ -118,4 +122,15 @@ func readBundleTestFile(t *testing.T, dir, name string) string {
 		t.Fatalf("read %s: %v", name, err)
 	}
 	return string(data)
+}
+
+func assertFileMode(t *testing.T, path string, want os.FileMode) {
+	t.Helper()
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("stat %s: %v", path, err)
+	}
+	if got := info.Mode().Perm(); got != want {
+		t.Fatalf("%s mode = %o, want %o", path, got, want)
+	}
 }

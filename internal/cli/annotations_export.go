@@ -181,7 +181,7 @@ func newAnnotationsExportCmd(flags *rootFlags) *cobra.Command {
 				out = []byte(formatAnnotationExportMarkdown(exports))
 			}
 			if flagOutput != "" {
-				return os.WriteFile(flagOutput, out, 0o644)
+				return os.WriteFile(flagOutput, out, 0o600)
 			}
 			_, err = cmd.OutOrStdout().Write(out)
 			return err
