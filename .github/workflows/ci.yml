@@ -46,10 +46,16 @@ jobs:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with:
           fetch-depth: 0
-      - name: gitleaks
-        uses: gitleaks/gitleaks-action@83373cf2f8c4db6e24b41c1a9b086bb9619e9cd3 # v2
-        env:
-          GITLEAKS_ENABLE_UPLOAD_ARTIFACT: "false"
+      - name: betterleaks
+        run: |
+          set -euo pipefail
+          BL_VERSION=1.6.1
+          BL_SHA256=fbefc700a0bd4522cc952dd2a8f259cdb80526d7e60114aca19bb2d6fdc80f81
+          TMP="$(mktemp -d)"
+          curl -sSL "https://github.com/betterleaks/betterleaks/releases/download/v${BL_VERSION}/betterleaks_${BL_VERSION}_linux_x64.tar.gz" -o "$TMP/bl.tar.gz"
+          echo "${BL_SHA256}  $TMP/bl.tar.gz" | sha256sum -c -
+          tar -xzf "$TMP/bl.tar.gz" -C "$TMP" betterleaks
+          "$TMP/betterleaks" git . --no-banner --redact
 
   test:
     runs-on: ubuntu-latest
