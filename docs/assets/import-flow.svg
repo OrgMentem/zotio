@@ -1,0 +1,167 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="960" height="650" viewBox="0 0 960 650" role="img" aria-labelledby="title desc">
+  <title id="title">Reviewable import flow for zotio</title>
+  <desc id="desc">A three stage pipeline for zotio import scan, resolve, and apply over an editable manifest, with review before writes and preview by default.</desc>
+  <defs>
+    <filter id="softShadow" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="5" stdDeviation="8" flood-color="#1e2a44" flood-opacity="0.12"/>
+    </filter>
+    <marker id="arrow" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="9" markerHeight="9" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#4f46e5"/>
+    </marker>
+    <style>
+      .font { font-family: ui-sans-serif, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif; }
+      .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+      .title { font-size: 21px; font-weight: 700; fill: #1e2a44; }
+      .subtitle { font-size: 13px; fill: #64748b; }
+      .stage-title { font-size: 14px; font-weight: 700; letter-spacing: 0.8px; }
+      .label { font-size: 13px; fill: #33415c; }
+      .small { font-size: 12px; fill: #64748b; }
+      .tiny { font-size: 11px; fill: #64748b; }
+      .chip { font-size: 11px; font-weight: 700; }
+      .arrow { stroke: #4f46e5; stroke-width: 2.4; fill: none; marker-end: url(#arrow); stroke-linecap: round; }
+      .line { stroke: #94a3b8; stroke-width: 1.5; fill: none; stroke-linecap: round; }
+    </style>
+  </defs>
+
+  <rect x="0" y="0" width="960" height="650" fill="#fbfcfe"/>
+
+  <g class="font">
+    <text x="32" y="40" class="title">Reviewable import: references without making a mess</text>
+    <text x="32" y="63" class="subtitle">Nothing hits your library until you review the manifest; writes preview by default.</text>
+
+    <g transform="translate(664 29)">
+      <rect x="0" y="0" width="252" height="42" rx="10" fill="#ffffff" stroke="#e2e8f0" stroke-width="1.5"/>
+      <rect x="14" y="14" width="14" height="14" rx="3" fill="#e6f0fb" stroke="#2c6cb0" stroke-width="1.5"/>
+      <text x="34" y="25" class="tiny">read-only</text>
+      <rect x="95" y="14" width="14" height="14" rx="3" fill="#fdf3d8" stroke="#b8860b" stroke-width="1.5"/>
+      <text x="115" y="25" class="tiny">external</text>
+      <rect x="177" y="14" width="14" height="14" rx="3" fill="#fde2e2" stroke="#c0392b" stroke-width="1.5"/>
+      <text x="197" y="25" class="tiny">write</text>
+    </g>
+
+    <rect x="32" y="96" width="896" height="392" rx="18" fill="#ffffff" stroke="#e2e8f0" stroke-width="1.5" filter="url(#softShadow)"/>
+    <text x="64" y="123" class="small" font-weight="700">Three-stage pipeline over an editable manifest</text>
+
+    <path class="arrow" d="M 310 250 H 350"/>
+    <path class="arrow" d="M 610 250 H 650"/>
+
+    <!-- Stage 1: scan -->
+    <g transform="translate(58 142)">
+      <rect x="0" y="0" width="252" height="230" rx="14" fill="#e6f0fb" stroke="#2c6cb0" stroke-width="2"/>
+      <text x="18" y="28" class="stage-title" fill="#173a5e">1 · SCAN</text>
+      <text x="18" y="49" class="mono small">zotio import scan</text>
+      <rect x="160" y="17" width="73" height="26" rx="13" fill="#ffffff" stroke="#2c6cb0" stroke-width="1.4"/>
+      <text x="176" y="34" class="chip" fill="#173a5e">READ-ONLY</text>
+
+      <g transform="translate(24 74)">
+        <path d="M 6 14 H 76 Q 84 14 84 22 V 71 Q 84 79 76 79 H 8 Q 0 79 0 71 V 12 Q 0 4 8 4 H 31 L 39 14 Z" fill="#ffffff" stroke="#2c6cb0" stroke-width="1.8"/>
+        <rect x="14" y="28" width="18" height="24" rx="2" fill="#eef1f5" stroke="#64748b" stroke-width="1.2"/>
+        <rect x="38" y="28" width="18" height="24" rx="2" fill="#eef1f5" stroke="#64748b" stroke-width="1.2"/>
+        <rect x="26" y="43" width="18" height="24" rx="2" fill="#eef1f5" stroke="#64748b" stroke-width="1.2"/>
+        <text x="99" y="31" class="label" fill="#173a5e" font-weight="700">folder of PDFs</text>
+        <text x="99" y="51" class="small">triage without writes</text>
+      </g>
+
+      <text x="18" y="177" class="small" fill="#173a5e" font-weight="700">Buckets found</text>
+      <rect x="18" y="190" width="56" height="25" rx="12" fill="#d6f5e3" stroke="#0aa06e" stroke-width="1.5"/>
+      <text x="32" y="207" class="chip" fill="#0a5f43">NEW</text>
+      <rect x="82" y="190" width="91" height="25" rx="12" fill="#eef1f5" stroke="#64748b" stroke-width="1.5"/>
+      <text x="97" y="207" class="chip" fill="#33415c">DUPLICATE</text>
+      <rect x="61" y="222" width="139" height="25" rx="12" fill="#fdf3d8" stroke="#b8860b" stroke-width="1.5"/>
+      <text x="74" y="239" class="chip" fill="#6b4e0a">ATTACH-CANDIDATE</text>
+    </g>
+
+    <!-- Stage 2: resolve -->
+    <g transform="translate(354 142)">
+      <rect x="0" y="0" width="252" height="230" rx="14" fill="#fdf3d8" stroke="#b8860b" stroke-width="2"/>
+      <text x="18" y="28" class="stage-title" fill="#6b4e0a">2 · RESOLVE</text>
+      <text x="18" y="49" class="mono small">zotio import resolve</text>
+      <text x="18" y="76" class="small" fill="#6b4e0a" font-weight="700">Identifiers</text>
+      <text x="18" y="96" class="tiny">DOI · PMID · arXiv · ISBN · URL</text>
+
+      <g transform="translate(18 112)">
+        <rect x="0" y="0" width="76" height="24" rx="12" fill="#ffffff" stroke="#b8860b" stroke-width="1.3"/>
+        <text x="17" y="16" class="tiny" fill="#6b4e0a" font-weight="700">CrossRef</text>
+        <rect x="84" y="0" width="74" height="24" rx="12" fill="#ffffff" stroke="#b8860b" stroke-width="1.3"/>
+        <text x="104" y="16" class="tiny" fill="#6b4e0a" font-weight="700">PubMed</text>
+        <rect x="166" y="0" width="54" height="24" rx="12" fill="#ffffff" stroke="#b8860b" stroke-width="1.3"/>
+        <text x="180" y="16" class="tiny" fill="#6b4e0a" font-weight="700">arXiv</text>
+        <rect x="42" y="32" width="118" height="24" rx="12" fill="#ffffff" stroke="#b8860b" stroke-width="1.3"/>
+        <text x="60" y="48" class="tiny" fill="#6b4e0a" font-weight="700">Open Library</text>
+      </g>
+
+      <g transform="translate(27 164)">
+        <rect x="0" y="0" width="92" height="66" rx="8" fill="#ffffff" stroke="#b8860b" stroke-width="1.8"/>
+        <path d="M 66 0 V 20 H 92" fill="none" stroke="#b8860b" stroke-width="1.5"/>
+        <path d="M 66 0 L 92 20" fill="none" stroke="#b8860b" stroke-width="1.5"/>
+        <text x="13" y="25" class="mono tiny" fill="#6b4e0a">{ manifest }</text>
+        <text x="13" y="45" class="mono tiny" fill="#64748b">import.json</text>
+        <path d="M 106 34 H 128" class="line"/>
+        <circle cx="153" cy="16" r="11" fill="#d6f5e3" stroke="#0aa06e" stroke-width="1.5"/>
+        <path d="M 153 28 V 52" stroke="#0aa06e" stroke-width="2" stroke-linecap="round"/>
+        <path d="M 139 39 H 167" stroke="#0aa06e" stroke-width="2" stroke-linecap="round"/>
+        <path d="M 153 52 L 140 66 M 153 52 L 166 66" stroke="#0aa06e" stroke-width="2" stroke-linecap="round"/>
+        <rect x="126" y="75" width="104" height="25" rx="12" fill="#d6f5e3" stroke="#0aa06e" stroke-width="1.5"/>
+        <text x="139" y="92" class="chip" fill="#0a5f43">you review &amp; edit</text>
+      </g>
+    </g>
+
+    <!-- Stage 3: apply -->
+    <g transform="translate(650 142)">
+      <rect x="0" y="0" width="252" height="230" rx="14" fill="#fde2e2" stroke="#c0392b" stroke-width="2"/>
+      <text x="18" y="28" class="stage-title" fill="#7a1f16">3 · APPLY</text>
+      <text x="18" y="49" class="mono small">zotio import apply</text>
+      <rect x="148" y="17" width="86" height="26" rx="13" fill="#ffffff" stroke="#c0392b" stroke-width="1.4"/>
+      <text x="162" y="34" class="chip" fill="#7a1f16">PREVIEW-FIRST</text>
+
+      <g transform="translate(18 73)">
+        <rect x="0" y="0" width="91" height="58" rx="9" fill="#ffffff" stroke="#c0392b" stroke-width="1.6"/>
+        <text x="15" y="23" class="label" fill="#7a1f16" font-weight="700">plan</text>
+        <text x="15" y="42" class="tiny">preview</text>
+        <path d="M 101 29 H 130" class="arrow"/>
+        <rect x="138" y="11" width="58" height="36" rx="10" fill="#ffffff" stroke="#c0392b" stroke-width="1.6"/>
+        <text x="151" y="33" class="mono tiny" fill="#7a1f16" font-weight="700">--yes</text>
+      </g>
+
+      <g transform="translate(18 149)">
+        <rect x="0" y="0" width="216" height="72" rx="10" fill="#ffffff" stroke="#c0392b" stroke-width="1.5"/>
+        <text x="15" y="22" class="label" fill="#7a1f16" font-weight="700">schema-valid item creation</text>
+        <text x="15" y="42" class="mono tiny">--attach-mode</text>
+        <text x="15" y="56" class="mono tiny">none|linked-file</text>
+        <text x="15" y="68" class="tiny">Zotero Web API · upload deferred</text>
+      </g>
+    </g>
+
+    <!-- Editable manifest rail -->
+    <g transform="translate(78 401)">
+      <rect x="0" y="0" width="804" height="62" rx="16" fill="#eef1f5" stroke="#64748b" stroke-width="1.7"/>
+      <text x="26" y="27" class="stage-title" fill="#33415c">EDITABLE MANIFEST</text>
+      <text x="26" y="47" class="small">The manifest is the handoff: scan findings + resolved metadata + your reviewed edits.</text>
+      <rect x="604" y="13" width="174" height="36" rx="18" fill="#d6f5e3" stroke="#0aa06e" stroke-width="1.5"/>
+      <text x="622" y="36" class="chip" fill="#0a5f43">review before any write</text>
+    </g>
+
+    <!-- One-shot importers -->
+    <g transform="translate(64 527)">
+      <text x="0" y="0" class="small" fill="#33415c" font-weight="700">Individual one-shot importers</text>
+      <rect x="0" y="16" width="832" height="71" rx="16" fill="#ffffff" stroke="#e2e8f0" stroke-width="1.5"/>
+      <g class="mono">
+        <rect x="28" y="38" width="92" height="26" rx="13" fill="#fdf3d8" stroke="#b8860b" stroke-width="1.4"/>
+        <text x="43" y="55" class="tiny">import doi</text>
+        <rect x="132" y="38" width="100" height="26" rx="13" fill="#fdf3d8" stroke="#b8860b" stroke-width="1.4"/>
+        <text x="145" y="55" class="tiny">import pmid</text>
+        <rect x="244" y="38" width="104" height="26" rx="13" fill="#fdf3d8" stroke="#b8860b" stroke-width="1.4"/>
+        <text x="257" y="55" class="tiny">import arxiv</text>
+        <rect x="360" y="38" width="100" height="26" rx="13" fill="#fdf3d8" stroke="#b8860b" stroke-width="1.4"/>
+        <text x="373" y="55" class="tiny">import isbn</text>
+        <rect x="472" y="38" width="92" height="26" rx="13" fill="#fdf3d8" stroke="#b8860b" stroke-width="1.4"/>
+        <text x="487" y="55" class="tiny">import url</text>
+        <rect x="576" y="38" width="90" height="26" rx="13" fill="#e6f0fb" stroke="#2c6cb0" stroke-width="1.4"/>
+        <text x="591" y="55" class="tiny">import file</text>
+        <rect x="678" y="38" width="88" height="26" rx="13" fill="#e6f0fb" stroke="#2c6cb0" stroke-width="1.4"/>
+        <text x="694" y="55" class="tiny">import pdf</text>
+      </g>
+    </g>
+  </g>
+</svg>

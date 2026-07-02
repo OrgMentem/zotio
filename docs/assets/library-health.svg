@@ -1,0 +1,208 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="960" height="660" viewBox="0 0 960 660" role="img" aria-labelledby="title desc">
+  <title id="title">zotio library health diagnostic and CI gate</title>
+  <desc id="desc">Left-to-right flow showing scope selection, preset composition, existing read-only checks, one ranked stable-keyed report, and CI gate exits for pass, quality failure, or freshness failure.</desc>
+  <defs>
+    <filter id="softShadow" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="3" stdDeviation="4" flood-color="#1e2a44" flood-opacity="0.12"/>
+    </filter>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#4f46e5"/>
+    </marker>
+    <style>
+      .canvas { fill: #fbfcfe; }
+      .title { font-family: ui-sans-serif, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif; font-size: 22px; font-weight: 700; fill: #1e2a44; }
+      .subtitle { font-family: ui-sans-serif, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif; font-size: 13px; fill: #64748b; }
+      .card-title { font-family: ui-sans-serif, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif; font-size: 14px; font-weight: 700; fill: #1e2a44; }
+      .node-title { font-family: ui-sans-serif, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif; font-size: 13px; font-weight: 700; }
+      .body { font-family: ui-sans-serif, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif; font-size: 12px; fill: #33415c; }
+      .muted { font-family: ui-sans-serif, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif; font-size: 11.5px; fill: #64748b; }
+      .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11.5px; fill: #33415c; }
+      .mono-small { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 10.5px; fill: #64748b; }
+      .legend { font-family: ui-sans-serif, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif; font-size: 11px; fill: #64748b; }
+      .panel { fill: #ffffff; stroke: #d8e0ec; stroke-width: 1.6; filter: url(#softShadow); }
+      .read { fill: #e6f0fb; stroke: #2c6cb0; stroke-width: 1.7; }
+      .read-text { fill: #173a5e; }
+      .desktop { fill: #eef1f5; stroke: #64748b; stroke-width: 1.6; }
+      .desktop-text { fill: #33415c; }
+      .green { fill: #d6f5e3; stroke: #0aa06e; stroke-width: 1.7; }
+      .green-text { fill: #0a5f43; }
+      .coral { fill: #fde2e2; stroke: #c0392b; stroke-width: 1.7; }
+      .coral-text { fill: #7a1f16; }
+      .amber { fill: #fdf3d8; stroke: #b8860b; stroke-width: 1.7; }
+      .amber-text { fill: #6b4e0a; }
+      .connector { fill: none; stroke: #4f46e5; stroke-width: 2.2; stroke-linecap: round; stroke-linejoin: round; marker-end: url(#arrow); }
+      .thin { fill: none; stroke: #94a3b8; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
+      .label-bg { fill: #fbfcfe; stroke: #d8e0ec; stroke-width: 1; }
+    </style>
+  </defs>
+
+  <rect class="canvas" x="0" y="0" width="960" height="660"/>
+
+  <text class="title" x="28" y="34">library health: diagnostic report → CI gate</text>
+  <text class="subtitle" x="28" y="56">Read-only primitives are composed into one stable-keyed report, then gated by quality and freshness.</text>
+
+  <g aria-label="legend">
+    <rect x="692" y="22" width="14" height="14" rx="3" class="read"/>
+    <text x="712" y="33" class="legend">read/local check</text>
+    <rect x="805" y="22" width="14" height="14" rx="3" class="desktop"/>
+    <text x="825" y="33" class="legend">live desktop</text>
+    <rect x="692" y="43" width="14" height="14" rx="3" class="green"/>
+    <text x="712" y="54" class="legend">pass</text>
+    <rect x="805" y="43" width="14" height="14" rx="3" class="coral"/>
+    <text x="825" y="54" class="legend">quality fail</text>
+  </g>
+
+  <!-- 1. Scope -->
+  <g aria-label="scope inputs">
+    <rect x="28" y="112" width="165" height="190" rx="12" class="panel"/>
+    <text x="48" y="138" class="card-title">1  SCOPE</text>
+    <text x="48" y="158" class="muted">one selection grammar</text>
+
+    <rect x="48" y="176" width="115" height="25" rx="12" class="desktop"/>
+    <text x="60" y="193" class="mono">whole library</text>
+
+    <rect x="48" y="209" width="126" height="25" rx="12" class="desktop"/>
+    <text x="60" y="226" class="mono">collection:KEY</text>
+
+    <rect x="48" y="242" width="95" height="25" rx="12" class="desktop"/>
+    <text x="60" y="259" class="mono">tag:NAME</text>
+
+    <rect x="48" y="275" width="104" height="25" rx="12" class="desktop"/>
+    <text x="60" y="292" class="mono">query:TEXT</text>
+
+    <rect x="48" y="307" width="132" height="25" rx="12" class="desktop"/>
+    <text x="58" y="324" class="mono">saved-search:KEY</text>
+  </g>
+
+  <!-- 2. Preset selector -->
+  <g aria-label="for preset selector">
+    <rect x="225" y="105" width="220" height="242" rx="12" class="panel"/>
+    <text x="247" y="131" class="card-title">2  <tspan class="mono">--for</tspan> preset</text>
+    <text x="247" y="151" class="muted">declares downstream intent</text>
+
+    <rect x="247" y="168" width="176" height="34" rx="10" class="read"/>
+    <text x="260" y="181" class="node-title read-text">quick</text>
+    <text x="260" y="195" class="muted">anything broken</text>
+
+    <rect x="247" y="210" width="176" height="47" rx="10" class="read"/>
+    <text x="260" y="224" class="node-title read-text">citation</text>
+    <text x="260" y="239" class="muted">citekeys, core fields,</text>
+    <text x="260" y="252" class="muted">duplicates</text>
+
+    <rect x="247" y="265" width="176" height="58" rx="10" class="read"/>
+    <text x="260" y="279" class="node-title read-text">systematic-review</text>
+    <text x="260" y="294" class="muted">duplicates, screenable</text>
+    <text x="260" y="307" class="muted">metadata, full-text PDFs</text>
+
+    <rect x="247" y="331" width="176" height="32" rx="10" class="read"/>
+    <text x="260" y="351" class="node-title read-text">all</text>
+    <text x="300" y="351" class="muted">all checks</text>
+  </g>
+
+  <!-- 3. Composed checks -->
+  <g aria-label="composed checks">
+    <rect x="475" y="105" width="195" height="267" rx="12" class="read" filter="url(#softShadow)"/>
+    <text x="494" y="131" class="card-title read-text">3  COMPOSED CHECKS</text>
+    <text x="494" y="151" class="muted">existing primitives only</text>
+
+    <rect x="494" y="170" width="155" height="25" rx="8" fill="#ffffff" stroke="#2c6cb0" stroke-width="1.2"/>
+    <text x="506" y="187" class="mono-small">citekey conflicts</text>
+
+    <rect x="494" y="202" width="126" height="25" rx="8" fill="#ffffff" stroke="#2c6cb0" stroke-width="1.2"/>
+    <text x="506" y="219" class="mono-small">duplicates</text>
+
+    <rect x="494" y="234" width="155" height="25" rx="8" fill="#ffffff" stroke="#2c6cb0" stroke-width="1.2"/>
+    <text x="506" y="251" class="mono-small">missing DOI/abstract</text>
+
+    <rect x="494" y="266" width="105" height="25" rx="8" fill="#ffffff" stroke="#2c6cb0" stroke-width="1.2"/>
+    <text x="506" y="283" class="mono-small">missing PDF</text>
+
+    <rect x="494" y="298" width="92" height="25" rx="8" fill="#ffffff" stroke="#2c6cb0" stroke-width="1.2"/>
+    <text x="506" y="315" class="mono-small">tag drift</text>
+
+    <rect x="494" y="330" width="155" height="28" rx="8" class="desktop"/>
+    <text x="505" y="348" class="mono-small desktop-text">broken attach.</text>
+    <rect x="623" y="333" width="26" height="18" rx="9" fill="#fbfcfe" stroke="#64748b" stroke-width="1"/>
+    <text x="624" y="346" class="legend">LIVE</text>
+  </g>
+
+  <!-- 4. Report output -->
+  <g aria-label="ranked report output">
+    <rect x="705" y="112" width="225" height="143" rx="12" class="panel"/>
+    <text x="727" y="138" class="card-title">4  OUTPUT</text>
+    <rect x="727" y="157" width="190" height="30" rx="10" class="read"/>
+    <text x="739" y="177" class="body read-text" font-weight="700">ranked finding-typed report</text>
+
+    <text x="727" y="207" class="body">• severity-ranked findings</text>
+    <text x="727" y="225" class="body">• typed by check/source</text>
+    <text x="727" y="243" class="body">• one report, not fragments</text>
+
+    <rect x="680" y="258" width="232" height="36" rx="10" fill="#eef1ff" stroke="#4f46e5" stroke-width="1.5"/>
+    <text x="696" y="281" class="mono-small" fill="#1e2a44">stable finding keys • CI diffable</text>
+  </g>
+
+  <!-- Loud skipped remedy note -->
+  <g aria-label="skipped live check remedy">
+    <rect x="475" y="397" width="235" height="102" rx="12" class="amber" filter="url(#softShadow)"/>
+    <text x="494" y="423" class="node-title amber-text">LOUD SKIP, NOT SILENT</text>
+    <text x="494" y="448" class="mono-small" fill="#6b4e0a">Skipped: broken_attachment —</text>
+    <text x="494" y="466" class="body">needs Zotero desktop</text>
+    <text x="494" y="486" class="muted">Remedy: start Zotero, rerun.</text>
+  </g>
+
+  <!-- CI gate and outcomes -->
+  <g aria-label="freshness branch">
+    <rect x="826" y="306" width="104" height="50" rx="10" class="amber"/>
+    <text x="846" y="326" class="node-title amber-text">exit 12</text>
+    <text x="839" y="344" class="mono-small" fill="#6b4e0a">stale mirror</text>
+  </g>
+
+  <g aria-label="ci gate">
+    <polygon points="815,348 900,420 815,492 730,420" fill="#ffffff" stroke="#4f46e5" stroke-width="2" filter="url(#softShadow)"/>
+    <text x="815" y="397" text-anchor="middle" class="card-title">CI GATE</text>
+    <text x="815" y="417" text-anchor="middle" class="mono">--fail-on high</text>
+    <text x="815" y="437" text-anchor="middle" class="muted">finding ≥ high?</text>
+  </g>
+
+  <g aria-label="gate outcomes">
+    <rect x="688" y="535" width="108" height="56" rx="12" class="green" filter="url(#softShadow)"/>
+    <text x="742" y="558" text-anchor="middle" class="node-title green-text">exit 0</text>
+    <text x="742" y="577" text-anchor="middle" class="body green-text">pass</text>
+
+    <rect x="821" y="535" width="112" height="56" rx="12" class="coral" filter="url(#softShadow)"/>
+    <text x="877" y="558" text-anchor="middle" class="node-title coral-text">exit 11</text>
+    <text x="877" y="577" text-anchor="middle" class="body coral-text">quality fail</text>
+  </g>
+
+  <!-- connectors -->
+  <path class="connector" d="M193 207 L221 207"/>
+  <path class="connector" d="M445 207 L471 207"/>
+  <path class="connector" d="M670 207 C684 207 688 185 701 185"/>
+  <path class="connector" d="M793 294 C793 316 815 325 815 343"/>
+  <path class="connector" d="M815 326 L822 326"/>
+  <path class="connector" d="M620 358 C620 378 592 378 592 393"/>
+  <path class="connector" d="M770 458 C750 480 742 504 742 531"/>
+  <path class="connector" d="M860 458 C877 482 877 505 877 531"/>
+
+  <!-- connector labels -->
+  <g aria-label="connector labels">
+    <rect x="784" y="314" width="35" height="17" rx="5" class="label-bg"/>
+    <text x="801" y="326" text-anchor="middle" class="legend">fresh?</text>
+
+    <rect x="824" y="500" width="29" height="17" rx="5" class="label-bg"/>
+    <text x="839" y="512" text-anchor="middle" class="legend">yes</text>
+
+    <rect x="736" y="500" width="25" height="17" rx="5" class="label-bg"/>
+    <text x="749" y="512" text-anchor="middle" class="legend">no</text>
+
+    <rect x="682" y="298" width="132" height="20" rx="5" class="label-bg"/>
+    <text x="748" y="313" text-anchor="middle" class="mono-small">--require-fresh 24h</text>
+  </g>
+
+  <!-- bottom thesis -->
+  <g aria-label="composition thesis">
+    <rect x="28" y="548" width="604" height="64" rx="14" fill="#eef1ff" stroke="#4f46e5" stroke-width="1.6"/>
+    <text x="52" y="574" class="card-title">Flagship behavior</text>
+    <text x="52" y="594" class="body">Composes citekeys, duplicates, metadata gaps, tag drift, and live attachment checks into one CI-friendly report.</text>
+  </g>
+</svg>

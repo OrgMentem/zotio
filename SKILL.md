@@ -1,5 +1,5 @@
 ---
-name: pp-zotero
+name: zotio
 description: "Every Zotero feature in the terminal, plus offline search, annotation export, and library analytics no existing tool... Trigger phrases: `search my Zotero library`, `export BibTeX from Zotero`, `find papers missing PDFs`, `export annotations from Zotero`, `what did I add to Zotero this week`, `audit my Zotero tags`, `use zotero`, `open this paper in Zotero`."
 author: "enieuwy"
 license: "Apache-2.0"

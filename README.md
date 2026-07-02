@@ -1,431 +1,256 @@
-# zotio — Zotero CLI
+# zotio
 
-**Every Zotero feature in the terminal, plus offline search, annotation export, and library analytics no existing tool offers.**
+**The trust-and-automation layer for Zotero.**
 
-This CLI reads directly from your running Zotero desktop app — no API key needed for reads; write-back (creating, updating, or syncing items to Zotero) needs a Web API key configured once. It syncs your library to a local SQLite store for offline search and compound queries, then adds 18 features (reading queues, tag audits, annotation timelines, collection exports) that Zotero's UI and pyzotero can't do. With `--data-source local`, item reads apply the same `--item-type`, `--tag`, collection, `--sort`/`--direction`, and `--limit`/`--start` scopes as live API calls, so offline results match online ones.
-
-## Install
-
-The recommended path installs both the `zotio` binary and the `pp-zotero` agent skill in one shot:
+Local-fast reads, preview-first writes, and bounded, provenance-tagged context — for you, your scripts, and your AI agents. `zotio` reads straight from your running Zotero desktop app (no API key), mirrors your library to local SQLite for offline search and analytics, and routes every change through a preview-first safety envelope so nothing mutates your library by accident.
 
 ```bash
-npx -y @mvanhorn/printing-press install zotero
+zotio library health --for citation --fail-on high   # is this library fit to cite? (exit 11 if not)
+zotio search 'automation trust' --data-source local  # offline full-text search
+zotio tags audit                                      # find + fix tag drift, with ready-to-run merges
+zotio items enrich --missing-doi --dry-run            # resolve DOIs from CrossRef/OpenAlex — preview only
 ```
 
-For CLI only (no skill):
+---
+
+## Why zotio
+
+Zotero's GUI is great for reading and citing. It is painful the moment you need to *operate* on a library at scale: find every article missing a PDF, catch duplicate `\cite{}` keys before a submission, export a week of highlights, keep an Obsidian vault in sync, or hand an AI agent trustworthy context. Existing CLIs and `pyzotero` give you raw API access — then you write the glue, and you own the risk.
+
+`zotio` is the glue, hardened:
+
+- **Reads are local and free.** Point at your running desktop app — no API key, no cloud round-trip, works offline against a synced mirror.
+- **Writes are preview-first.** Every mutation shows a plan before it touches anything. Gates cap blast radius; irreversible ops require an explicit opt-in; an append-only journal lets you undo the reversible ones.
+- **Context is bounded and provenance-tagged.** Every result says where it came from and how fresh it is — so a human or an agent knows whether to trust it. `zotio` **never calls an LLM**; it does the assembly and budgeting a model is bad at, then hands off.
+
+It is not "every Zotero endpoint in a terminal." It is the tool you reach for when the GUI gets too manual: **find the problems that bite downstream, fix them safely, ingest with review, and give agents a surface they can trust.**
+
+---
+
+## How it works
+
+Reads stay on your machine. Writes split by intent: **creating a new item (with its attachments/PDFs) prefers the local desktop connector** (`localhost:23119`, no key — the same channel the browser "Save to Zotero" button uses), while **everything else — field edits, deletes, enrichment, tag ops, moves, and `collections` create/update — routes to the Zotero Web API** and needs a configured key. The connector path is a *preference, not a guarantee*: `--via auto` uses it only on a personal library with the desktop running, and falls back to the Web API otherwise (group libraries always go to the cloud). Either way it's preview-first, the version-read happens locally, and the applied change is replayed into your local mirror so a follow-up read sees it without another sync.
+
+![zotio hybrid routing architecture](docs/assets/architecture.svg)
+
+| Plane | Backend | Needs a key? |
+|---|---|---|
+| **Read** | Local Zotero API (`localhost:23119`) + synced SQLite mirror | No |
+| **Write — new item** | Local desktop connector (`localhost:23119`) when personal + desktop up; else Web API. New items, attachments, PDFs. | No (connector path) |
+| **Write — everything else** | Zotero Web API (`api.zotero.org`) — edits, deletes, enrich, tags, moves, `collections` create/update | Yes — configured once |
+| **External** | CrossRef · OpenAlex · Semantic Scholar · Unpaywall · OpenCitations | No (feeds enrich/import) |
+| **Local-only** | Files, desktop launch, vault, introspection | No |
+
+Run `zotio doctor` any time to see connectivity, cache freshness, and a `writes:` line telling you whether write-back is available or read-only.
+
+---
+
+## The flagship: `library health`
+
+One command that answers a real question — *"is this library fit for the next thing I'm going to do with it?"* — instead of making you run six separate audits and eyeball the output.
+
+![library health diagnostic and CI gate](docs/assets/library-health.svg)
+
+`library health` composes the checks that already exist (citekey conflicts, duplicates, missing metadata, tag drift, broken attachments) into **one ranked, finding-typed report**. You pick what "ready" means with `--for`:
+
+| `--for` | Prepares for | Checks |
+|---|---|---|
+| `quick` *(default)* | anything obviously broken | citekey conflicts, duplicates, broken attachments |
+| `citation` | a manuscript bibliography | missing/duplicate citekeys, citation-core fields, duplicates |
+| `systematic-review` | a PRISMA screening corpus | duplicates, screenable metadata (title/abstract), full-text PDFs |
+| `all` | a full sweep | every registered check |
+
+```console
+$ zotio library health --for quick
+Health: needs attention
+Scope: library · 846 items · source local · synced 1d ago · preset quick
+
+High (13)
+  [duplicate_candidates] doi="10.1002/bdm.2118" (2 items)
+  [duplicate_candidates] title="Social psychology" (3 items)
+  ... 11 more
+
+Skipped (precondition unmet)
+  broken_attachment_file — live check (needs Zotero desktop running); off by default.
+    Fix: zotio library health --for quick --verify-files
+
+Remediation plan (preview-first)
+  duplicate_candidates — zotio items duplicates resolve --doi (preview first; add --yes after review)
+```
+
+Three things make it trustworthy, not just convenient:
+
+- **It gates CI.** `--fail-on critical|high|any` exits **`11`** when the bar isn't met — drop it in a pre-submission hook. `--require-fresh 24h` exits **`12`** if your local mirror is stale.
+- **It never lies by omission.** A check that needs the desktop app (broken attachments) doesn't silently vanish — it becomes a **loud skip with a remedy**, and if that skip is gate-relevant the run exits **`9`** (setup required) rather than falsely passing.
+- **It points at the real fixer.** Findings carry a `recommended_action` naming the exact existing command (`items enrich`, `items duplicates resolve`, `tags audit fix`) — health *diagnoses*, dedicated commands *treat*.
+
+---
+
+## Safe by default: the write engine
+
+Every write command — `items enrich`, `tags audit fix`, `items duplicates resolve`, `items create/update/move/delete`, `import apply`, `vault push` — flows through one mutation envelope with identical, predictable semantics.
+
+![preview-first write lifecycle with journal and undo](docs/assets/write-safety.svg)
+
+- **Preview is the default.** You get a plan/result envelope with zero changes. `--yes` applies; `--dry-run` always wins.
+- **`--agent` does *not* auto-apply.** Agent mode sets JSON + non-interactive defaults, but a write still needs an explicit `--yes`.
+- **Gates cap the blast radius.** `--max-changes` defaults to 500 (50 under `--agent`); irreversible ops (merge, permanent delete, empty-trash) refuse to run without `--allow-destructive`.
+- **Read-your-writes.** An applied write is replayed into the local mirror immediately, and the post-write item state comes back in the envelope — a re-audit sees the fix with no follow-up `sync`.
+- **Journaled + reversible.** Every applied run is recorded append-only (`journal list` / `journal show`). `journal undo <run-id>` reverses the reversible ops (tag renames, collection membership) and **loudly refuses** the rest (merges, deletions, field overwrites) rather than guessing.
+
+---
+
+## Import without making a mess
+
+Bulk-import references through a review checkpoint. Nothing hits your library until you've seen — and can edit — the manifest.
+
+![reviewable import pipeline: scan, resolve, apply](docs/assets/import-flow.svg)
 
 ```bash
-npx -y @mvanhorn/printing-press install zotero --cli-only
+zotio import scan ~/Downloads/papers          # read-only: triage new vs duplicate vs attach-candidate
+zotio import resolve ~/Downloads/papers -o manifest.json   # resolve DOI/PMID/arXiv/ISBN → editable manifest
+#   ... review and edit manifest.json ...
+zotio import apply manifest.json --dry-run     # preview the writes
+zotio import apply manifest.json --yes         # schema-valid creation via the Web API
 ```
 
+- **Scan** classifies a folder of PDFs against your existing library — extracting DOIs from filenames or the PDF bytes — so you never re-import what you already have.
+- **Resolve** turns findings into an editable JSON manifest, enriching create-entries from CrossRef. This is the human touchpoint.
+- **Apply** creates schema-valid items, preview-first, with an explicit `--attach-mode none|linked-file` contract (stored-file upload is deferred, and says so).
 
-### Without Node
+One-shot importers are there too: `import doi|pmid|arxiv|isbn|url|file|pdf`.
 
-The generated install path is category-agnostic until this CLI is published. If `npx` is not available before publish, install Node or use the category-specific Go fallback from the public-library entry after publish.
+---
 
-### Pre-built binary
+## Conflict-safe vault round-trip
 
-Download a pre-built binary for your platform from the [latest release](https://github.com/mvanhorn/printing-press-library/releases/tag/zotero-current). On macOS, clear the Gatekeeper quarantine: `xattr -d com.apple.quarantine <binary>`. On Unix, mark it executable: `chmod +x <binary>`.
+Keep an Obsidian or Logseq vault in step with Zotero **in both directions** — without ever clobbering your prose.
 
-<!-- pp-hermes-install-anchor -->
-## Install for Hermes
-
-From the Hermes CLI:
+![conflict-safe Obsidian/Logseq vault round-trip](docs/assets/vault-roundtrip.svg)
 
 ```bash
-hermes skills install mvanhorn/printing-press-library/cli-skills/pp-zotero --force
+zotio vault sync              # Zotero → one Markdown note per item (idempotent)
+zotio vault push --dry-run    # your ## Notes region → a managed Zotero child note
+zotio vault pull --dry-run    # remote note edits → your ## Notes region (fast-forward only)
 ```
 
-Inside a Hermes chat session:
+Each note has a **managed region** (frontmatter + a fenced annotations block, refreshed on every sync) and **your region** (`## Notes`, prose preserved untouched). Write-back is fast-forward only: if both sides changed, `zotio` never merges blindly — it writes a **reviewable conflict artifact** under `_vault-zotero-conflicts/` and reports it, so divergence becomes something you resolve on purpose (`vault resolve --keep-vault | --keep-remote | --recreate`), never a silent overwrite. Run `vault audit` for a read-only preflight before any push.
 
-```bash
-/skills install mvanhorn/printing-press-library/cli-skills/pp-zotero --force
-```
-
-## Install for OpenClaw
-
-Tell your OpenClaw agent (copy this):
-
-```
-Install the pp-zotero skill from https://github.com/mvanhorn/printing-press-library/tree/main/cli-skills/pp-zotero. The skill defines how its required CLI can be installed.
-```
-
-## Authentication
-
-**Reads** go to your Zotero desktop app at `localhost:23119` — no API key required while Zotero is running. **Writes** (`items create`/`update`/`delete`, `vault push`/`pull`/`resolve`) require a Zotero web API key: configure it once with `zotio auth set-token <key>` (or set `ZOTERO_API_KEY`), and generate a key at https://www.zotero.org/settings/keys. When your configured base is the local API, writes auto-route to `api.zotero.org` while reads stay local — the first write prints a one-time stderr notice naming the write target. Run `zotio doctor` to see a `writes:` line reporting whether write-back is available or read-only. A web API key is also needed to read group libraries or to read while the desktop app is closed.
-
-## Quick Start
-
-```bash
-# verify Zotero is running and the local API is reachable
-zotio doctor
-
-
-# sync your library to local SQLite for offline search
-zotio sync
-
-
-# find papers by keyword (offline, against synced data)
-zotio search 'automation trust' --data-source local --json
-
-
-# see your library breakdown by type, year, and journal
-zotio library stats
-
-
-# audit metadata health: missing PDFs, abstracts, DOIs
-zotio items audit
-
-
-# export all highlights from a collection to markdown
-zotio annotations export --collection IDTUAULN --format markdown
-
-```
-
-## Unique Features
-
-These capabilities aren't available in any other tool for this API.
-
-### Library hygiene
-
-- **`tags audit`** — Find and fix tag drift: groups tags that differ only by case or variant, shows item counts, and generates ready-to-run merge commands.
-
-  _Use this before any literature review handoff to clean up tag taxonomy; dirty tags produce unreliable filtered exports._
-
-  ```bash
-  zotio tags audit --json
-  ```
-- **`items missing-pdf`** — List journal articles and book chapters that have no attached PDF — your download queue, ready to script.
-
-  _Use this to batch-generate a download list for Unpaywall or Sci-Hub scripts._
-
-  ```bash
-  zotio items missing-pdf --type journalArticle --json | jq '.[].data.DOI'
-  ```
-- **`items audit`** — Count and list items missing PDFs, abstracts, DOIs, tags, or core citation fields (`--missing-citation`), and verify PDF files exist on disk (`--verify-files`) — one command for a complete metadata health report.
-
-  _Use this before a systematic review export to identify items that need metadata enrichment._
-
-  ```bash
-  zotio items audit --missing-abstract --missing-doi --json
-  ```
-- **`items enrich`** — Turn those audit gaps into fixes: resolve missing DOIs and abstracts from CrossRef with an OpenAlex fallback (which fills many abstracts CrossRef lacks) and attach open-access PDF links from Unpaywall, then write them back to Zotero.
-
-  _Previews a patch plan by default; pass `--yes` to apply (`--agent` no longer auto-applies — pass `--yes` explicitly). Field changes record provenance in the item's Extra field._
-
-  ```bash
-  # Preview proposed DOIs (safe; no writes)
-  zotio items enrich --missing-doi --dry-run --agent
-  # Apply DOI + abstract enrichment
-  zotio items enrich --missing-doi --missing-abstract --yes
-  # Attach open-access PDF links (needs a contact email for Unpaywall)
-  zotio items enrich --missing-pdf --email you@example.com --yes
-  ```
-- **`library stats`** — See your library broken down by item type, publication year, and top journals — a dashboard in one command.
-
-  _Use this to understand the shape and bias of a library before a systematic review or citation audit._
-
-  ```bash
-  zotio library stats --json --agent
-  ```
-- **`items unfiled`** — List items sitting in the library root with no collection assignment — your organizational debt.
-
-  _Use this to identify items imported via browser connector that were never organized._
-
-  ```bash
-  zotio items unfiled --json | jq 'length'
-  ```
-- **`tags inventory`** — List all tags used in a collection with item counts — see which tags are local to a project vs. shared library-wide.
-
-  _Use this to audit tag taxonomy consistency across sub-projects before a systematic review merge._
-
-  ```bash
-  zotio tags inventory --collection IDTUAULN --json
-  ```
-- **`items venues`** — List every journal and publication venue in your library with item counts and year ranges — understand where your sources come from.
-
-  _Use this to scope a systematic review by journal or identify over-reliance on a single venue._
-
-  ```bash
-  zotio items venues --top 20 --json --agent
-  ```
-- **`items stale`** — Find items added long ago with no PDF and no annotations — candidates for pruning or enrichment.
-
-  _Use this quarterly to identify items that were imported but never engaged with — candidates for deletion or PDF retrieval._
-
-  ```bash
-  zotio items stale --days 365 --no-pdf --json
-  ```
-
-### Reading workflow
-
-- **`reading-list`** — Surface your oldest unread papers sorted by date added — your reading backlog, oldest-first, with abstract preview.
-
-  _Use this to fetch the next paper an agent should fetch fulltext for, or to triage a reading session._
-
-  ```bash
-  zotio reading-list --limit 10 --agent
-  ```
-- **`annotations export`** — Export all highlights and notes from a collection or tag set as a single markdown or JSON file, one section per paper.
-
-  _Use this to pull a week of reading annotations into a markdown document for synthesis or AI summarization._
-
-  ```bash
-  zotio annotations export --collection IDTUAULN --format markdown > reading-notes.md
-  ```
-- **`annotations timeline`** — See your annotations ordered by date — find what you were reading and highlighting in any time window.
-
-  _Use this to extract a week's reading highlights for synthesis or to reconstruct a research trail._
-
-  ```bash
-  zotio annotations timeline --since 2026-05-01 --format markdown
-  ```
-- **`items open`** — Jump from CLI results straight to a Zotero desktop object: an item (default), a collection (`--type collection`), or a PDF attachment (`--type attachment`). Prints the `zotero://` deep link, or launches it with `--launch` via the OS handler (`open` on macOS, `xdg-open` on Linux, `rundll32` on Windows). Targets a group library when the global `--group <id>` (or `ZOTERO_GROUP`) is set; `--agent` emits `{uri, target_type, library_scope, launched}`.
-
-  _Use this after finding an item via CLI search to open it for reading without leaving the terminal flow._
-
-  ```bash
-  zotio items open 9UXV5R7L --launch
-  zotio items open IDTUAULN --type collection --launch
-  zotio --group 12345 items open ABCD1234 --agent
-  ```
-- **`items note-template`** — Generate a pre-filled markdown reading note (frontmatter + abstract + empty Annotations section) for any item — paste into Obsidian or Logseq.
-
-  _Use this to initialize a reading note in a PKM system without manually copying fields from the Zotero UI._
-
-  ```bash
-  zotio items note-template 9UXV5R7L --format obsidian >> notes/reading.md
-  ```
-
-### Vault sync & write-back
-
-Keep a Markdown vault (Obsidian or Logseq) in step with Zotero in both directions: `vault sync` writes a note per item, you edit each note's user-owned `## Notes` region in your PKM, then `vault push` mirrors those edits back into Zotero and `vault pull` brings remote note edits in — all conflict-safe.
-
-- **`vault sync`** — Generate one Markdown note per item from the local store (run `sync` first), idempotent on re-run. Managed frontmatter and a fenced annotations block are refreshed each run while your own prose is preserved; human-readable `collection_names` render alongside the collection keys.
-
-  _Resolves the output directory and format from your `[vault]` config, so `--out` is optional; pass `--out`/`--format` to override._
-
-  ```bash
-  zotio vault sync
-  ```
-- **`vault push`** — Mirror each note's `## Notes` region back to one managed Zotero child note (Obsidian → Zotero). Conflict-safe: a remotely-diverged note is never overwritten — it is written as a conflict artifact under `_vault-zotero-conflicts/` and reported instead. Reads local, writes the web API.
-
-  _Pass `--dry-run` to preview the write-back before it touches Zotero._
-
-  ```bash
-  zotio vault push --dry-run
-  ```
-- **`vault pull`** — Bring remote child-note edits into the `## Notes` region (Zotero → Obsidian), fast-forward only: it applies only when your local region is unchanged since the last sync. If both the local region and the remote note changed, it is reported as a conflict and never merged.
-
-  ```bash
-  zotio vault pull --dry-run
-  ```
-- **`vault conflicts`** / **`vault resolve`** — List unresolved write-back conflict artifacts, then resolve one by citekey or item key, picking a direction: `--keep-vault` republishes the vault copy over the remote (using the live version as a precondition), `--keep-remote` pulls the remote note over the vault `## Notes` region (discarding local edits), or `--recreate` re-creates a child note deleted in Zotero.
-
-  ```bash
-  zotio vault conflicts
-  zotio vault resolve smith2023 --keep-vault
-  zotio vault resolve smith2023 --keep-remote
-  ```
-
-Configure the vault location and format once in `~/.config/zotio/config.toml`:
+Configure the vault once in `~/.config/zotio/config.toml`:
 
 ```toml
 [vault]
-root = "~/Vaults/dev"   # ~ is expanded; base output dir
+root = "~/Vaults/dev"    # ~ is expanded; base output dir
 notes_dir = "Zotero"     # notes land in <root>/<notes_dir>
 format = "obsidian"      # or "logseq"
 ```
 
-The `--out` and `--format` flags override these values. The write-back commands (`vault push`, `vault pull`, `vault resolve`) require a configured web API key — see [Authentication](#authentication).
+---
 
-### Export & citations
+## More that the GUI and `pyzotero` don't give you
 
-- **`collections export`** — Export an entire collection and all its subcollections as a single BibTeX or CSL-JSON file, preserving structure in comments.
+### Library hygiene & analytics (local, offline)
 
-  _Use this to hand a complete literature snapshot to LaTeX or to another researcher without losing the organizational hierarchy._
+- **`tags audit`** — group tags that differ only by case or variant, with item counts and **ready-to-run merge commands**. On a real 840-tag library it surfaced 53 duplicate groups in one pass.
+- **`library stats`** — a one-command dashboard: items by type and year, top venues, PDF coverage (e.g. *684/792 (86%)*).
+- **`items audit`** — count and list items missing PDFs, abstracts, DOIs, tags, or citation-core fields; `--verify-files` checks PDFs actually exist on disk.
+- **`items duplicates`** — detect likely duplicates by DOI or title (attachments/notes excluded), then `duplicates resolve` to merge safely.
+- **`items citekey-conflicts`** — find missing or duplicate Better BibTeX keys before they break a LaTeX build.
+- **`items venues` · `items authors` · `items stale` · `items unfiled` · `items missing-pdf`** — slice your library by publication, creator, staleness, filing, and PDF gaps.
 
-  ```bash
-  zotio collections export IDTUAULN --format bibtex > philosophy.bib
-  ```
-- **`items citekey-conflicts`** — Find items without a Better BibTeX citation key or with duplicate keys — prevent LaTeX compilation failures before they happen.
+### Reading & synthesis
 
-  _Use this before exporting BibTeX for a LaTeX manuscript to catch key conflicts that cause \cite{} failures._
+- **`items summarize`** — assemble a bounded, synthesis-ready bundle for an item or collection (citation + abstract + your annotations + a capped fulltext excerpt + known metadata gaps + a synthesis prompt) and hand it to any LLM. `zotio` does the budgeting; it never calls the model.
+- **`annotations export` · `annotations timeline` · `annotations search`** — pull highlights and notes as Markdown or JSON, ordered by date or searched by text.
+- **`reading-list`** — a `to-read` tag queue with an `add` → `start` → `done` lifecycle for triaging what to read next.
+- **`items note-template`** — generate a pre-filled Obsidian/Logseq reading note for an item.
+- **`items open`** — print or launch a `zotero://` deep link to an item, collection, or PDF (cross-platform).
 
-  ```bash
-  zotio items citekey-conflicts --missing --json
-  ```
+### Enrichment (reads external APIs, writes Zotero)
 
-## Usage
+- **`items enrich`** — fill missing DOIs and abstracts from **CrossRef → OpenAlex → Semantic Scholar**, attach open-access PDF links from **Unpaywall**, and record provenance in each item's Extra field. `--validate` runs a read-only DOI discrepancy report against CrossRef and OpenCitations.
+- **`items preprint-check`** — find arXiv preprints that now have a published CrossRef record.
 
-Run `zotio --help` for the full command reference and flag list.
+### Export & reproducibility
 
-## Commands
+- **`collections export`** — a whole collection and its subcollections as one BibTeX or CSL-JSON file, structure preserved in comments.
+- **`export snapshot`** — a reproducible, resumable, fully paginated JSONL export with a `<output>.lock.json` content lockfile (sorted key+version + sha256) for drift detection and clean review handoffs.
 
-### collections
+### Freshness & schema
 
-Manage collections in your Zotero library
+- **`sync` · `watch` · `tail`** — populate the mirror, keep it fresh with periodic incremental syncs, or stream live changes.
+- **`schema drift`** — after a Zotero upgrade, detect item-type / field / creator-field changes against a saved baseline.
 
-- **`zotio collections create`** - Create one or more collections
-- **`zotio collections delete`** - Delete a collection (does not delete items)
-- **`zotio collections get`** - Get a specific collection
-- **`zotio collections items`** - List all items in a collection
-- **`zotio collections list`** - List all collections
-- **`zotio collections subcollections`** - List subcollections of a collection
-- **`zotio collections tags`** - List tags used within a collection
-- **`zotio collections top`** - List only top-level collections (no parents)
-- **`zotio collections update`** - Update a collection
+---
 
-### items
+## Built for agents
 
-Manage items in your Zotero library
+`zotio` publishes a machine-readable trust model so an MCP host, CI job, or shell script can discover what's safe, fresh, and writable *before* it acts.
 
-- **`zotio items annotations`** - List annotation children of an item
-- **`zotio items children`** - Get child items (attachments and notes) for an item
-- **`zotio items create`** - Create one or more items
-- **`zotio items delete`** - Delete an item (moves to trash)
-- **`zotio items file`** - Resolve the on-disk path (file:// URL) of an item's PDF attachment
-- **`zotio items fulltext`** - Get extracted full text from an item's PDF attachment
-- **`zotio items summarize`** - Assemble a bounded, synthesis-ready context bundle (citation, abstract, annotations, capped fulltext excerpt) for an item or collection
-- **`zotio items get`** - Get a single item by key
-- **`zotio items list`** - List all items in the library
-- **`zotio items tags`** - Get tags for a specific item
-- **`zotio items top`** - List top-level items only (excludes attachments and notes)
-- **`zotio items trash`** - List items in the trash
-- **`zotio items update`** - Update a specific item
+- **`--agent`** on any command: JSON + compact + non-interactive + no color, in one flag. (It never auto-applies writes.)
+- **`capabilities`** — the full registry (122 commands), each tagged with `operation`, `data_sources`, `write_target`, `destructive`, and `requires` preconditions.
+- **`agent-context`** — a structured description of the whole CLI, embedding the registry and discovery hints.
+- **`which "<capability in your words>"`** — resolve a natural-language query to the command that does it.
+- **Stable envelopes** — one mutation plan/result shape, one finding shape, one exit-code contract. Learn the grammar once.
 
-### schema
+**Scope grammar** — one selection vocabulary across reads, audits, exports, and enrich:
 
-Zotero item type and field schema
-
-- **`zotio schema creator-fields`** - List all creator fields (firstName, lastName, name)
-- **`zotio schema drift`** - Detect item-type, field, and creator-field changes vs a saved baseline (run after a Zotero upgrade)
-- **`zotio schema item-fields`** - List all available item fields
-- **`zotio schema item-type-creator-types`** - List valid creator types for an item type
-- **`zotio schema item-type-fields`** - List valid fields for a specific item type
-- **`zotio schema item-types`** - List all available Zotero item types
-- **`zotio schema new-item-template`** - Get a blank template for creating a new item of a given type
-
-### searches
-
-Manage saved searches in your Zotero library
-
-- **`zotio searches get`** - Get a specific saved search
-- **`zotio searches list`** - List all saved searches
-
-### tags
-
-Manage tags across your Zotero library
-
-- **`zotio tags get`** - Get a specific tag by name
-- **`zotio tags list`** - List all tags in the library
-
-### vault
-
-Sync your library to a Markdown vault (Obsidian/Logseq) and write notes back
-
-- **`zotio vault sync`** - Generate Markdown notes (one per item) from the local store
-- **`zotio vault push`** - Mirror each note's `## Notes` region back to a Zotero child note
-- **`zotio vault pull`** - Bring remote child-note edits into the `## Notes` region (fast-forward only)
-- **`zotio vault conflicts`** - List unresolved write-back conflict artifacts
-- **`zotio vault resolve`** - Resolve a write-back conflict (`--keep-vault`, `--keep-remote`, or `--recreate`)
-
-
-## Output Formats
-
-```bash
-# Human-readable table (default in terminal, JSON when piped)
-zotio collections list
-
-# JSON for scripting and agents
-zotio collections list --json
-
-# Filter to specific fields
-zotio collections list --json --select id,name,status
-
-# Dry run — show the request without sending
-zotio collections list --dry-run
-
-# Agent mode — JSON + compact + no prompts in one flag
-zotio collections list --agent
+```
+collection:KEY   tag:NAME   query:TEXT   item:KEY   saved-search:KEY (needs live desktop)
 ```
 
-## Agent Usage
+**Exit codes:** `0` ok · `2` usage · `3` not-found · `4` auth · `5` API · `7` rate-limited · `9` precondition/setup · `10` config · `11` quality-gate failed · `12` freshness-gate failed.
 
-This CLI is designed for AI agent consumption:
+---
 
-- **Non-interactive** - never prompts, every input is a flag
-- **Pipeable** - `--json` output to stdout, errors to stderr
-- **Filterable** - `--select id,name` returns only fields you need
-- **Previewable** - `--dry-run` shows the request without sending
-- **Explicit retries** - add `--idempotent` to create retries and `--ignore-missing` to delete retries when a no-op success is acceptable
-- **Confirmable** - `--yes` for explicit confirmation of destructive actions
-- **Piped input** - write commands can accept structured input when their help lists `--stdin`
-- **Offline-friendly** - sync/search commands can use the local SQLite store when available
-- **Agent-safe by default** - no colors or formatting unless `--human-friendly` is set
+## Install
 
-Exit codes: `0` success, `2` usage error, `3` not found, `4` auth error, `5` API error, `7` rate limited, `10` config error.
+`zotio` comes in three pieces you can install independently: the **CLI** (the engine — everything runs through it), the **agent skill** (drives the CLI inside coding agents), and the **MCP server** (exposes the CLI to MCP hosts like Claude Desktop). Most people want the CLI; add the skill or MCP server for your agent of choice.
 
-## Use with Claude Code
+### 1. The CLI — `zotio`
 
-Install the focused skill — it auto-installs the CLI on first invocation:
+One-shot install of the binary (and the agent skill alongside it):
 
 ```bash
-npx skills add mvanhorn/printing-press-library/cli-skills/pp-zotero -g
+npx -y @mvanhorn/printing-press install zotero            # CLI + skill
+npx -y @mvanhorn/printing-press install zotero --cli-only  # CLI only
 ```
 
-Then invoke `/pp-zotero <query>` in Claude Code. The skill is the most efficient path — Claude Code drives the CLI directly without an MCP server in the middle.
+Or grab a pre-built binary for your platform from the [latest release](https://github.com/mvanhorn/printing-press-library/releases/tag/zotero-current). On macOS, clear the Gatekeeper quarantine (`xattr -d com.apple.quarantine <binary>`); on Unix, mark it executable (`chmod +x <binary>`). Verify with `zotio --version`.
 
-<details>
-<summary>Use as an MCP server in Claude Code (advanced)</summary>
+### 2. The agent skill — `zotio`
 
-If you'd rather register this CLI as an MCP server in Claude Code, install the MCP binary first:
+A focused skill that teaches a coding agent to drive the CLI. It auto-installs the CLI on first invocation.
 
+<!-- pp-hermes-install-anchor -->
 
-Install the MCP binary from this CLI's published public-library entry or pre-built release.
+- **Claude Code:** `npx skills add mvanhorn/printing-press-library/cli-skills/zotio -g`
+- **Hermes (CLI):** `hermes skills install mvanhorn/printing-press-library/cli-skills/zotio --force`
+- **Hermes (in a chat):** `/skills install mvanhorn/printing-press-library/cli-skills/zotio --force`
+- **OpenClaw:** tell your agent — *"Install the zotio skill from https://github.com/mvanhorn/printing-press-library/tree/main/cli-skills/zotio. The skill defines how its required CLI can be installed."*
 
-Then register it:
+### 3. The MCP server — `zotio-mcp`
+
+A separate binary that exposes the CLI to MCP hosts. Install it from this CLI's published public-library entry or pre-built release, then register it:
 
 ```bash
+# Claude Code
 claude mcp add zotero zotio-mcp -e ZOTERO_API_KEY=<your-key>
 ```
 
-The `-e ZOTERO_API_KEY=<your-key>` is optional for read-only local-desktop use; the local API at localhost:23119 needs no key. Set it to enable write operations (which route to the Zotero web API) and to reach group libraries or your library while the desktop app is closed.
-
-Beyond the typed tools, the MCP server exposes Zotero context as **resources** — `zotero://context` (API taxonomy and query tips), `zotero://agent-context` (CLI command/flag/auth description), `zotero://status` (local archive sync state), `zotero://schema` (local SQLite DDL), and the templates `zotero://collections/{key}` (collection manifest) and `zotero://items/{key}` (item + annotations bundle) — plus guided **prompts** (`inspect-library`, `export-reading-notes`, `prepare-citation-export`). Hosts can discover library state and common workflows without shelling through mirrored commands.
-
-</details>
-
-## Use with Claude Desktop
-
-This CLI ships an [MCPB](https://github.com/modelcontextprotocol/mcpb) bundle — Claude Desktop's standard format for one-click MCP extension installs (no JSON config required).
-
-To install:
-
-1. Download the `.mcpb` for your platform from the [latest release](https://github.com/mvanhorn/printing-press-library/releases/tag/zotero-current).
-2. Double-click the `.mcpb` file. Claude Desktop opens and walks you through the install.
-3. Fill in `ZOTERO_API_KEY` when Claude Desktop prompts you.
-
-Requires Claude Desktop 1.0.0 or later. Pre-built bundles ship for macOS Apple Silicon (`darwin-arm64`) and Windows (`amd64`, `arm64`); for other platforms, use the manual config below.
+For Claude Desktop, this CLI ships an [MCPB](https://github.com/modelcontextprotocol/mcpb) manifest (`manifest.json`) — the standard one-click extension format. When published, download the per-platform `.mcpb` from the [latest release](https://github.com/mvanhorn/printing-press-library/releases/tag/zotero-current), double-click it, and Claude Desktop walks you through the install.
 
 <details>
-<summary>Manual JSON config (advanced)</summary>
+<summary>Claude Desktop manual JSON config (advanced)</summary>
 
-If you can't use the MCPB bundle (older Claude Desktop, unsupported platform), install the MCP binary and configure it manually.
-
-
-Install the MCP binary from this CLI's published public-library entry or pre-built release.
-
-Add to your Claude Desktop config (`~/Library/Application Support/Claude/claude_desktop_config.json`):
+Install the `zotio-mcp` binary and add to `~/Library/Application Support/Claude/claude_desktop_config.json`:
 
 ```json
 {
   "mcpServers": {
     "zotero": {
       "command": "zotio-mcp",
-      "env": {
-        "ZOTERO_API_KEY": "<your-key>"
-      }
+      "env": { "ZOTERO_API_KEY": "<your-key>" }
     }
   }
 }
@@ -433,52 +258,126 @@ Add to your Claude Desktop config (`~/Library/Application Support/Claude/claude_
 
 </details>
 
-## Health Check
-
-```bash
-zotio doctor
-```
-
-Verifies configuration, credentials, and connectivity to the API.
-
-## Configuration
-
-Config file: `~/.config/zotio/config.toml`
-
-Static request headers can be configured under `headers`; per-command header overrides take precedence.
-
-Environment variables:
-
-| Name | Kind | Required | Description |
-| --- | --- | --- | --- |
-| `ZOTERO_API_KEY` | per_call | No for reads | Required for write operations (`items create`/`update`/`delete`, `vault push`/`pull`/`resolve`), which route to the Zotero web API; also needed for group libraries or while the desktop app is closed. Local desktop reads at localhost:23119 need no key. Configure once via `zotio auth set-token <key>`. |
-
-## Troubleshooting
-**Authentication errors (exit code 4)**
-- Run `zotio doctor` to check credentials
-- Verify the environment variable is set: `echo $ZOTERO_API_KEY`
-**Not found errors (exit code 3)**
-- Check the resource ID is correct
-- Run the `list` command to see available items
-
-### API-specific
-
-- **doctor: connection refused** — Open Zotero desktop and enable: Preferences → Advanced → Allow other applications to communicate with Zotero
-- **items missing-pdf returns nothing** — Run `sync` first to populate the local store from the running Zotero library
-- **annotations export outputs empty sections** — PDF annotations must be made in Zotero's built-in PDF reader, not an external app
-- **citekey-conflicts finds no keys** — Install the Better BibTeX extension for Zotero; citation keys appear in the 'extra' field
+The `ZOTERO_API_KEY` is optional for read-only local-desktop use (the local API needs no key); set it to enable writes and reach group libraries.
 
 ---
 
-## Sources & Inspiration
+## Authentication
 
-This CLI was built by studying these projects and resources:
+**Reads** go to your Zotero desktop app at `localhost:23119` — no API key required while Zotero is running. First enable the local API in Zotero: **Settings → Advanced → "Allow other applications to communicate with Zotero."**
+
+**Creating** items and saving attachments also works keyless — those go through the same local desktop connector.
+
+**Editing writes** (`items update`/`delete`/`move`, `items enrich`, `tags` mutations, `vault push`/`pull`/`resolve`, most of `import apply`) route to the Zotero Web API and need a key. Configure it once:
+
+```bash
+zotio auth set-token <key>     # or set ZOTERO_API_KEY
+```
+
+Generate a key at <https://www.zotero.org/settings/keys>. The first Web API write prints a one-time stderr notice naming the target. A key is also needed to read **group libraries** or to read while the desktop app is **closed**. Run `zotio doctor` to see a `writes:` line reporting whether write-back is available.
+
+---
+
+## Use
+
+### Use the CLI directly
+
+```bash
+# 1. Verify Zotero is running and reachable
+zotio doctor
+
+# 2. Sync your library to local SQLite for offline search + analytics
+zotio sync
+
+# 3. See the shape of your library
+zotio library stats
+
+# 4. Certify it for a citation handoff (exit 11 if it fails the bar)
+zotio library health --for citation --fail-on high
+
+# 5. Search offline
+zotio search 'automation trust' --data-source local --json
+
+# 6. Export a week of highlights for synthesis
+zotio annotations timeline --since 2026-05-01 --format markdown > this-week.md
+```
+
+### Use the skill in a coding agent
+
+Once installed (above), invoke `/zotio <query>` in Claude Code. The skill drives the CLI directly — the most efficient path, no MCP server in the middle.
+
+### Use the MCP server in an agent host
+
+Once registered (above), the MCP server exposes a **command-orchestration facade** (`command_search` / `command_run`) rather than one tool per endpoint — agents discover and drive the CLI the same way a human would (see [`docs/adr/0001-mcp-command-surface.md`](docs/adr/0001-mcp-command-surface.md); switch surfaces via `PP_MCP_SURFACE`). It also serves Zotero context as **resources** — `zotero://context`, `zotero://agent-context`, `zotero://status`, `zotero://schema`, `zotero://freshness`, `zotero://health/{scope}`, `zotero://capabilities`, and bounded graph resources (`collections/{key}/tree`, `items/{key}/children|attachments|context`) — plus guided **prompts** (prepare-library-health, prepare-import, sync-vault-safely).
+
+---
+
+## Output formats
+
+```bash
+zotio collections list                       # human table (JSON when piped)
+zotio collections list --json                # JSON for scripting and agents
+zotio collections list --json --select id,name,status   # only the fields you need
+zotio collections list --dry-run             # show the request without sending
+zotio collections list --agent               # JSON + compact + non-interactive + no color
+```
+
+Also available: `--csv`, `--plain`, `--quiet`, `--compact`, and `--deliver stdout|file:<path>|webhook:<url>`.
+
+---
+
+## Health check & troubleshooting
+
+```bash
+zotio doctor            # config, credentials, connectivity, cache freshness, writability
+```
+
+- **`doctor: connection refused`** — open Zotero desktop and enable **Settings → Advanced → "Allow other applications to communicate with Zotero."**
+- **`items missing-pdf` / analytics return nothing** — run `zotio sync` first to populate the local mirror.
+- **`annotations export` outputs empty sections** — PDF annotations must be made in Zotero's built-in PDF reader, not an external app.
+- **`citekey-conflicts` finds no keys** — install the Better BibTeX extension; citation keys live in the `extra` field.
+- **Authentication errors (exit 4)** — `zotio doctor` to check credentials; verify `echo $ZOTERO_API_KEY`.
+
+---
+
+## Configuration
+
+Config file: `~/.config/zotio/config.toml`. Static request headers can be set under `[headers]`; per-command overrides take precedence.
+
+| Variable | Required | Description |
+|---|---|---|
+| `ZOTERO_API_KEY` | No for reads | Required for writes (routed to the Zotero Web API), group libraries, and access while the desktop app is closed. Local desktop reads need no key. Configure once via `zotio auth set-token <key>`. |
+
+---
+
+## Command reference
+
+Run `zotio --help` for the full command list, or `zotio <command> --help` for any subcommand. Ask the CLI directly when you know the goal but not the command:
+
+```bash
+zotio which "export bibtex for a collection"
+```
+
+<details>
+<summary>Top-level commands</summary>
+
+`agent-context` · `analytics` · `annotations` · `auth` · `capabilities` · `collections` · `doctor` · `export` · `groups` · `import` · `items` · `journal` · `library` · `profile` · `reading-list` · `schema` · `search` · `searches` · `sync` · `tags` · `tail` · `vault` · `version` · `watch` · `which` · `workflow`
+
+</details>
+
+---
+
+## Sources & inspiration
+
+Built by studying these projects and resources:
 
 - [**cli-anything-zotero**](https://github.com/PiaoyangGuohai1/cli-anything-zotero) — TypeScript
 - [**54yyyu/zotero-mcp**](https://github.com/54yyyu/zotero-mcp) — Python
 - [**pyzotero**](https://github.com/urschrei/pyzotero) — Python
-- [**kujenga/zotero-mcp**](https://github.com/kujenga/zotero-mcp) — Python
+- [**kujenba/zotero-mcp**](https://github.com/kujenba/zotero-mcp) — Python
 - [**jbaiter/zotero-cli**](https://github.com/jbaiter/zotero-cli) — Python
 - [**dhondta/zotero-cli**](https://github.com/dhondta/zotero-cli) — Python
 
-Generated by [CLI Printing Press](https://github.com/mvanhorn/cli-printing-press)
+---
+
+Licensed under Apache-2.0. Generated by [CLI Printing Press](https://github.com/mvanhorn/cli-printing-press).

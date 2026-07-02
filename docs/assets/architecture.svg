@@ -1,0 +1,171 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="960" height="680" viewBox="0 0 960 680" role="img" aria-labelledby="title desc">
+  <title id="title">zotio hybrid routing architecture</title>
+  <desc id="desc">Hero diagram showing zotio routing reads locally without an API key, writes to Zotero Web API with a key, external metadata providers, local-only desktop commands, local version reads before writes, and replay into the SQLite mirror.</desc>
+  <defs>
+    <filter id="softShadow" x="-10%" y="-12%" width="120%" height="130%">
+      <feDropShadow dx="0" dy="4" stdDeviation="5" flood-color="#1e2a44" flood-opacity="0.10"/>
+    </filter>
+    <marker id="arrowIndigo" markerWidth="12" markerHeight="12" refX="10" refY="6" orient="auto" markerUnits="strokeWidth">
+      <path d="M2,2 L10,6 L2,10 Z" fill="#4f46e5"/>
+    </marker>
+    <marker id="arrowBlue" markerWidth="12" markerHeight="12" refX="10" refY="6" orient="auto" markerUnits="strokeWidth">
+      <path d="M2,2 L10,6 L2,10 Z" fill="#2c6cb0"/>
+    </marker>
+    <marker id="arrowCoral" markerWidth="12" markerHeight="12" refX="10" refY="6" orient="auto" markerUnits="strokeWidth">
+      <path d="M2,2 L10,6 L2,10 Z" fill="#c0392b"/>
+    </marker>
+    <marker id="arrowAmber" markerWidth="12" markerHeight="12" refX="10" refY="6" orient="auto" markerUnits="strokeWidth">
+      <path d="M2,2 L10,6 L2,10 Z" fill="#b8860b"/>
+    </marker>
+    <marker id="arrowGreen" markerWidth="12" markerHeight="12" refX="10" refY="6" orient="auto" markerUnits="strokeWidth">
+      <path d="M2,2 L10,6 L2,10 Z" fill="#0aa06e"/>
+    </marker>
+    <marker id="arrowGrey" markerWidth="12" markerHeight="12" refX="10" refY="6" orient="auto" markerUnits="strokeWidth">
+      <path d="M2,2 L10,6 L2,10 Z" fill="#64748b"/>
+    </marker>
+    <style>
+      text { font-family: ui-sans-serif, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif; }
+      .title { fill: #1e2a44; font-size: 22px; font-weight: 700; }
+      .subtitle { fill: #64748b; font-size: 13px; }
+      .node-title { font-size: 14px; font-weight: 700; }
+      .node-subtitle { font-size: 12px; font-weight: 600; }
+      .body { fill: #33415c; font-size: 12px; }
+      .muted { fill: #64748b; font-size: 12px; }
+      .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11px; }
+      .legend { fill: #33415c; font-size: 11px; }
+      .arrow-label { fill: #1e2a44; font-size: 11px; font-weight: 700; }
+      .small-label { fill: #64748b; font-size: 10px; font-weight: 700; letter-spacing: .04em; }
+    </style>
+  </defs>
+
+  <rect x="0" y="0" width="960" height="680" fill="#fbfcfe"/>
+
+  <text id="hero-title" x="28" y="34" class="title">zotio hybrid routing</text>
+  <text x="28" y="56" class="subtitle">Local-fast reads, key-gated cloud writes, and an immediately refreshed local mirror.</text>
+
+  <g id="legend" transform="translate(586 23)">
+    <rect x="0" y="0" width="346" height="54" rx="10" fill="#ffffff" stroke="#d7dee9" stroke-width="1.5"/>
+    <rect x="14" y="13" width="12" height="12" rx="3" fill="#e6f0fb" stroke="#2c6cb0" stroke-width="1.5"/>
+    <text x="32" y="23" class="legend">READ</text>
+    <rect x="86" y="13" width="12" height="12" rx="3" fill="#fde2e2" stroke="#c0392b" stroke-width="1.5"/>
+    <text x="104" y="23" class="legend">WRITE</text>
+    <rect x="166" y="13" width="12" height="12" rx="3" fill="#fdf3d8" stroke="#b8860b" stroke-width="1.5"/>
+    <text x="184" y="23" class="legend">EXTERNAL</text>
+    <rect x="268" y="13" width="12" height="12" rx="3" fill="#eef1f5" stroke="#64748b" stroke-width="1.5"/>
+    <text x="286" y="23" class="legend">LOCAL-only</text>
+    <text x="14" y="43" class="legend" fill="#64748b">Semantic colors are shared across README diagrams.</text>
+  </g>
+
+  <g id="read-plane-anchor"></g>
+
+  <g id="read-plane">
+    <rect x="38" y="132" width="310" height="314" rx="14" fill="#e6f0fb" stroke="#2c6cb0" stroke-width="2" filter="url(#softShadow)"/>
+    <text x="62" y="162" class="node-title" fill="#173a5e">READ plane</text>
+    <text x="62" y="181" class="node-subtitle" fill="#173a5e">Local-first</text>
+
+    <rect x="62" y="202" width="262" height="110" rx="10" fill="#ffffff" stroke="#2c6cb0" stroke-width="1.5"/>
+    <text x="78" y="226" class="node-title" fill="#173a5e">Local Zotero API :23119</text>
+    <text x="78" y="244" class="muted">Zotero desktop running</text>
+    <text x="78" y="267" class="mono" fill="#173a5e">items list/get</text>
+    <text x="200" y="267" class="mono" fill="#173a5e">collections</text>
+    <text x="78" y="290" class="mono" fill="#173a5e">annotations</text>
+    <text x="200" y="290" class="mono" fill="#173a5e">fulltext</text>
+
+    <rect x="62" y="326" width="262" height="96" rx="10" fill="#ffffff" stroke="#2c6cb0" stroke-width="1.5"/>
+    <text x="78" y="350" class="node-title" fill="#173a5e">Local SQLite mirror</text>
+    <text x="78" y="368" class="muted">Synced cache for compound reads</text>
+    <text x="78" y="391" class="mono" fill="#173a5e">search</text>
+    <text x="146" y="391" class="mono" fill="#173a5e">items audit</text>
+    <text x="245" y="391" class="mono" fill="#173a5e">stats</text>
+  </g>
+
+  <g id="create-connector">
+    <rect x="612" y="132" width="310" height="128" rx="14" fill="#e6f0fb" stroke="#2c6cb0" stroke-width="2" filter="url(#softShadow)"/>
+    <text x="636" y="162" class="node-title" fill="#173a5e">Desktop connector</text>
+    <text x="636" y="181" class="node-subtitle" fill="#173a5e">New-item create path</text>
+    <rect x="636" y="196" width="262" height="52" rx="10" fill="#ffffff" stroke="#2c6cb0" stroke-width="1.5"/>
+    <text x="652" y="217" class="mono" fill="#173a5e">create items · attachments · PDFs</text>
+    <text x="652" y="238" class="muted">prefers local · else Web API</text>
+  </g>
+
+  <g id="key-banner">
+    <rect x="612" y="278" width="310" height="34" rx="17" fill="#ffffff" stroke="#4f46e5" stroke-width="2" filter="url(#softShadow)"/>
+    <text x="767" y="300" text-anchor="middle" fill="#4f46e5" font-size="12" font-weight="800">local reads/creates need no key · cloud writes do</text>
+  </g>
+
+  <g id="write-plane">
+    <rect x="612" y="330" width="310" height="304" rx="14" fill="#fde2e2" stroke="#c0392b" stroke-width="2" filter="url(#softShadow)"/>
+    <text x="636" y="360" class="node-title" fill="#7a1f16">CLOUD write path</text>
+    <text x="636" y="379" class="node-subtitle" fill="#7a1f16">Zotero Web API</text>
+
+    <rect x="636" y="396" width="262" height="218" rx="10" fill="#ffffff" stroke="#c0392b" stroke-width="1.5"/>
+    <text x="652" y="420" class="node-title" fill="#7a1f16">api.zotero.org</text>
+    <text x="652" y="438" class="muted">Auto-routed mutation target</text>
+    <text x="652" y="462" class="mono" fill="#7a1f16">items update/delete</text>
+    <text x="652" y="486" class="mono" fill="#7a1f16">enrich</text>
+    <text x="724" y="486" class="mono" fill="#7a1f16">tags audit fix</text>
+    <text x="652" y="510" class="mono" fill="#7a1f16">collections create/update</text>
+    <text x="652" y="534" class="mono" fill="#7a1f16">items move</text>
+    <text x="724" y="534" class="mono" fill="#7a1f16">vault push</text>
+    <text x="652" y="558" class="mono" fill="#7a1f16">journal undo</text>
+  </g>
+
+  <g id="local-only-plane">
+    <rect x="38" y="492" width="310" height="142" rx="14" fill="#eef1f5" stroke="#64748b" stroke-width="2" filter="url(#softShadow)"/>
+    <text x="62" y="522" class="node-title" fill="#33415c">LOCAL-only plane</text>
+    <text x="62" y="541" class="node-subtitle" fill="#33415c">Files · desktop · introspection</text>
+    <rect x="62" y="558" width="262" height="58" rx="10" fill="#ffffff" stroke="#64748b" stroke-width="1.5"/>
+    <text x="78" y="583" class="mono" fill="#33415c">vault sync</text>
+    <text x="170" y="583" class="mono" fill="#33415c">items open</text>
+    <text x="264" y="583" class="mono" fill="#33415c">doctor</text>
+    <text x="78" y="604" class="mono" fill="#33415c">capabilities</text>
+  </g>
+
+  <g id="external-plane">
+    <rect x="356" y="486" width="248" height="148" rx="14" fill="#fdf3d8" stroke="#b8860b" stroke-width="2" filter="url(#softShadow)"/>
+    <text x="380" y="516" class="node-title" fill="#6b4e0a">EXTERNAL plane</text>
+    <text x="380" y="534" class="node-subtitle" fill="#6b4e0a">Metadata providers</text>
+    <rect x="372" y="550" width="216" height="74" rx="10" fill="#ffffff" stroke="#b8860b" stroke-width="1.5"/>
+    <text x="388" y="573" class="mono" fill="#6b4e0a">CrossRef · OpenAlex</text>
+    <text x="388" y="592" class="mono" fill="#6b4e0a">Semantic Scholar</text>
+    <text x="388" y="611" class="mono" fill="#6b4e0a">Unpaywall · OpenCitations</text>
+  </g>
+
+  <g id="zotio-core">
+    <rect x="400" y="278" width="160" height="104" rx="18" fill="#4f46e5" stroke="#312e81" stroke-width="2" filter="url(#softShadow)"/>
+    <text x="480" y="319" text-anchor="middle" fill="#ffffff" font-size="30" font-weight="800">zotio</text>
+    <text x="480" y="344" text-anchor="middle" fill="#eef2ff" font-size="12" font-weight="700">routing + safety layer</text>
+    <text x="480" y="363" text-anchor="middle" fill="#eef2ff" font-size="11">one CLI surface</text>
+  </g>
+
+  <g id="flows" fill="none" stroke-linecap="round" stroke-linejoin="round">
+    <g id="flow-lines">
+      <path d="M400 306 C382 302 366 300 351 300" stroke="#2c6cb0" stroke-width="3" marker-end="url(#arrowBlue)"/>
+      <path d="M534 284 C572 250 590 224 611 208" stroke="#2c6cb0" stroke-width="2.5" marker-end="url(#arrowBlue)"/>
+      <path d="M560 350 C584 356 598 366 611 372" stroke="#c0392b" stroke-width="3" marker-end="url(#arrowCoral)"/>
+      <path d="M612 442 C520 480 432 466 351 402" stroke="#0aa06e" stroke-width="3" marker-end="url(#arrowGreen)"/>
+      <path d="M515 486 L515 384" stroke="#b8860b" stroke-width="2.5" marker-end="url(#arrowAmber)"/>
+      <path d="M436 382 C400 420 330 456 262 492" stroke="#64748b" stroke-width="2.5" marker-end="url(#arrowGrey)" opacity="0.9"/>
+    </g>
+
+    <g id="flow-labels">
+      <rect x="342" y="278" width="54" height="20" rx="8" fill="#fbfcfe" stroke="#d7dee9" stroke-width="1"/>
+      <text x="369" y="292" text-anchor="middle" class="arrow-label">reads</text>
+
+      <rect x="536" y="222" width="70" height="20" rx="8" fill="#fbfcfe" stroke="#d7dee9" stroke-width="1"/>
+      <text x="571" y="236" text-anchor="middle" class="arrow-label">new items</text>
+
+      <rect x="556" y="356" width="52" height="20" rx="8" fill="#fbfcfe" stroke="#d7dee9" stroke-width="1"/>
+      <text x="582" y="370" text-anchor="middle" class="arrow-label">writes</text>
+
+      <rect x="388" y="440" width="122" height="20" rx="8" fill="#fbfcfe" stroke="#d7dee9" stroke-width="1"/>
+      <text x="449" y="454" text-anchor="middle" class="arrow-label">replay → mirror</text>
+
+      <rect x="474" y="400" width="84" height="20" rx="8" fill="#fbfcfe" stroke="#d7dee9" stroke-width="1"/>
+      <text x="516" y="414" text-anchor="middle" class="arrow-label">enrich · import</text>
+
+      <rect x="286" y="456" width="80" height="20" rx="8" fill="#fbfcfe" stroke="#d7dee9" stroke-width="1"/>
+      <text x="326" y="470" text-anchor="middle" class="arrow-label">local ops</text>
+    </g>
+  </g>
+</svg>

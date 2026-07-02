@@ -1,0 +1,170 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="960" height="680" viewBox="0 0 960 680" role="img" aria-labelledby="title desc">
+  <title id="title">zotio write-safety lifecycle</title>
+  <desc id="desc">Preview-first write command lifecycle with gates, explicit apply, Web API write, local mirror replay, append-only journal, and reversible undo.</desc>
+  <defs>
+    <filter id="shadow" x="-8%" y="-8%" width="116%" height="116%">
+      <feDropShadow dx="0" dy="2" stdDeviation="3" flood-color="#1e2a44" flood-opacity="0.12"/>
+    </filter>
+    <marker id="arrow" markerWidth="10" markerHeight="10" refX="8.5" refY="5" orient="auto" markerUnits="strokeWidth">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#4f46e5"/>
+    </marker>
+    <marker id="arrow-muted" markerWidth="10" markerHeight="10" refX="8.5" refY="5" orient="auto" markerUnits="strokeWidth">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#94a3b8"/>
+    </marker>
+    <style>
+      .title { font: 700 22px ui-sans-serif, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif; fill: #1e2a44; }
+      .subtitle { font: 13px ui-sans-serif, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif; fill: #64748b; }
+      .node-title { font: 700 14px ui-sans-serif, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif; }
+      .label { font: 13px ui-sans-serif, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif; fill: #33415c; }
+      .small { font: 12px ui-sans-serif, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif; fill: #64748b; }
+      .tiny { font: 11px ui-sans-serif, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif; fill: #64748b; }
+      .mono { font: 600 11.5px ui-monospace, SFMono-Regular, Menlo, monospace; fill: #64748b; }
+      .mono-dark { font: 700 12px ui-monospace, SFMono-Regular, Menlo, monospace; fill: #33415c; }
+      .flow { fill: none; stroke: #4f46e5; stroke-width: 2.2; stroke-linecap: round; stroke-linejoin: round; marker-end: url(#arrow); }
+      .muted-flow { fill: none; stroke: #94a3b8; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; marker-end: url(#arrow-muted); }
+      .card { rx: 12; filter: url(#shadow); }
+      .badge { rx: 9; }
+      .legend-text { font: 11px ui-sans-serif, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif; fill: #64748b; }
+    </style>
+  </defs>
+
+  <rect x="0" y="0" width="960" height="680" fill="#fbfcfe"/>
+
+  <text x="32" y="38" class="title">Safe by default: preview, gate, apply, journal, undo</text>
+  <text x="32" y="60" class="subtitle">Every zotio write command starts as a reviewable plan; nothing mutates until explicit consent passes safety gates.</text>
+
+  <g aria-label="legend">
+    <rect x="420" y="646" width="12" height="12" rx="3" fill="#e6f0fb" stroke="#2c6cb0"/>
+    <text x="438" y="656" class="legend-text">preview / local</text>
+    <rect x="528" y="646" width="12" height="12" rx="3" fill="#eef1f5" stroke="#64748b"/>
+    <text x="546" y="656" class="legend-text">gates</text>
+    <rect x="598" y="646" width="12" height="12" rx="3" fill="#fde2e2" stroke="#c0392b"/>
+    <text x="616" y="656" class="legend-text">apply / Web API</text>
+    <rect x="766" y="646" width="12" height="12" rx="3" fill="#d6f5e3" stroke="#0aa06e"/>
+    <text x="784" y="656" class="legend-text">journal / undo</text>
+  </g>
+
+  <!-- Main preview-first lifecycle -->
+  <g id="command">
+    <rect class="card" x="32" y="102" width="164" height="86" rx="12" fill="#eef1f5" stroke="#64748b" stroke-width="1.8"/>
+    <text x="52" y="129" class="node-title" fill="#33415c">1. COMMAND</text>
+    <text x="52" y="151" class="mono">tags audit fix</text>
+    <text x="52" y="171" class="mono">items enrich</text>
+    <text x="52" y="184" class="mono">--missing-doi</text>
+  </g>
+
+  <path class="flow" d="M196 145 H226"/>
+
+  <g id="plan">
+    <rect class="card" x="226" y="102" width="220" height="86" rx="12" fill="#e6f0fb" stroke="#2c6cb0" stroke-width="1.8"/>
+    <text x="248" y="129" class="node-title" fill="#173a5e">2. PLAN (preview)</text>
+    <text x="248" y="151" class="label" fill="#173a5e">plan / result envelope</text>
+    <text x="248" y="171" class="mono">default: preview only</text>
+    <text x="248" y="184" class="tiny">NO changes yet</text>
+  </g>
+
+  <path class="flow" d="M446 145 H462"/>
+
+  <g id="gates">
+    <rect class="card" x="462" y="84" width="264" height="124" rx="12" fill="#eef1f5" stroke="#64748b" stroke-width="1.8"/>
+    <text x="484" y="111" class="node-title" fill="#33415c">3. GATES</text>
+    <rect x="484" y="124" width="116" height="22" rx="8" fill="#fbfcfe" stroke="#64748b" stroke-width="1"/>
+    <text x="494" y="139" class="mono-dark">--max-changes</text>
+    <text x="604" y="139" class="tiny">500 (50 under --agent)</text>
+    <rect x="484" y="151" width="154" height="22" rx="8" fill="#fbfcfe" stroke="#64748b" stroke-width="1"/>
+    <text x="494" y="166" class="mono-dark">--allow-destructive</text>
+    <text x="642" y="166" class="tiny">irreversible ops</text>
+    <rect x="484" y="178" width="128" height="22" rx="8" fill="#fbfcfe" stroke="#64748b" stroke-width="1"/>
+    <text x="494" y="193" class="mono-dark">--require-fresh</text>
+    <text x="624" y="193" class="small">fresh mirror</text>
+  </g>
+
+  <path class="flow" d="M726 145 H754"/>
+
+  <g id="gate-refusal">
+    <path class="muted-flow" d="M594 208 V226"/>
+    <rect x="514" y="226" width="174" height="42" rx="10" fill="#fde2e2" stroke="#c0392b" stroke-width="1.6"/>
+    <text x="537" y="251" class="node-title" fill="#7a1f16">REFUSE loud</text>
+    <text x="526" y="263" class="tiny" fill="#7a1f16">failed gate = no write</text>
+  </g>
+
+  <g id="decision">
+    <polygon points="830,90 906,145 830,200 754,145" fill="#fbfcfe" stroke="#4f46e5" stroke-width="2" filter="url(#shadow)"/>
+    <text x="786" y="139" class="node-title" fill="#1e2a44">4. Decision</text>
+    <text x="786" y="160" class="mono-dark">--yes provided?</text>
+  </g>
+
+  <g id="preview-stop">
+    <path class="muted-flow" d="M830 200 V228"/>
+    <rect x="754" y="228" width="152" height="62" rx="12" fill="#eef1f5" stroke="#64748b" stroke-width="1.7"/>
+    <text x="784" y="252" class="node-title" fill="#33415c">No: STOP</text>
+    <text x="771" y="272" class="small">preview is the</text>
+    <text x="778" y="286" class="small">final output</text>
+    <rect x="836" y="206" width="28" height="18" rx="6" fill="#fbfcfe" stroke="#94a3b8" stroke-width="1"/>
+    <text x="844" y="219" class="tiny">no</text>
+  </g>
+
+  <path class="flow" d="M790 183 C728 242 656 280 611 330"/>
+  <rect x="690" y="235" width="32" height="20" rx="7" fill="#fbfcfe" stroke="#4f46e5" stroke-width="1"/>
+  <text x="699" y="249" class="tiny" fill="#4f46e5">yes</text>
+
+  <g id="apply">
+    <rect class="card" x="516" y="330" width="190" height="76" rx="12" fill="#fde2e2" stroke="#c0392b" stroke-width="1.9"/>
+    <text x="543" y="357" class="node-title" fill="#7a1f16">5. APPLY</text>
+    <text x="543" y="379" class="label" fill="#7a1f16">explicit mutation</text>
+    <text x="543" y="393" class="mono" fill="#7a1f16">writes route to cloud</text>
+  </g>
+
+  <!-- Callout chips -->
+  <g id="chips">
+    <rect x="32" y="228" width="214" height="34" rx="17" fill="#d6f5e3" stroke="#0aa06e" stroke-width="1.5"/>
+    <text x="50" y="250" class="mono-dark" fill="#0a5f43">--agent does NOT auto-apply</text>
+    <rect x="32" y="276" width="174" height="34" rx="17" fill="#fdf3d8" stroke="#b8860b" stroke-width="1.5"/>
+    <text x="50" y="298" class="mono-dark" fill="#6b4e0a">--dry-run always wins</text>
+  </g>
+
+  <!-- Apply side effects -->
+  <path class="flow" d="M706 368 H805 V480"/>
+  <path class="flow" d="M611 406 V448 H525 V480"/>
+  <path class="flow" d="M516 368 H380 V525"/>
+
+  <g id="web-api">
+    <rect class="card" x="690" y="480" width="230" height="86" rx="12" fill="#fde2e2" stroke="#c0392b" stroke-width="1.8"/>
+    <text x="713" y="508" class="node-title" fill="#7a1f16">WRITE to Zotero Web API</text>
+    <text x="713" y="531" class="small" fill="#7a1f16">create / update / delete / enrich</text>
+    <text x="713" y="549" class="tiny">with configured api_key</text>
+  </g>
+
+  <g id="mirror">
+    <rect class="card" x="420" y="480" width="210" height="86" rx="12" fill="#e6f0fb" stroke="#2c6cb0" stroke-width="1.8"/>
+    <text x="444" y="508" class="node-title" fill="#173a5e">REPLAY to local mirror</text>
+    <text x="444" y="531" class="small" fill="#173a5e">read-your-writes</text>
+    <text x="444" y="549" class="tiny">fresh re-audit without sync</text>
+  </g>
+
+  <g id="journal">
+    <rect class="card" x="32" y="424" width="348" height="196" rx="12" fill="#d6f5e3" stroke="#0aa06e" stroke-width="1.9"/>
+    <text x="56" y="452" class="node-title" fill="#0a5f43">6. RECORD append-only JOURNAL</text>
+    <text x="56" y="474" class="mono-dark" fill="#0a5f43">journal list</text>
+    <text x="168" y="474" class="mono-dark" fill="#0a5f43">journal show</text>
+    <text x="56" y="494" class="mono-dark" fill="#0a5f43">journal undo &lt;run-id&gt;</text>
+
+    <rect x="56" y="512" width="142" height="84" rx="10" fill="#fbfcfe" stroke="#0aa06e" stroke-width="1.4"/>
+    <text x="76" y="535" class="node-title" fill="#0a5f43">UNDO reverses</text>
+    <text x="76" y="557" class="small" fill="#0a5f43">tag rename</text>
+    <text x="76" y="575" class="small" fill="#0a5f43">collection</text>
+    <text x="76" y="590" class="small" fill="#0a5f43">membership</text>
+
+    <rect x="218" y="512" width="138" height="84" rx="10" fill="#fde2e2" stroke="#c0392b" stroke-width="1.4"/>
+    <text x="234" y="535" class="node-title" fill="#7a1f16">REFUSES rest</text>
+    <text x="234" y="557" class="small" fill="#7a1f16">merges, deletes</text>
+    <text x="234" y="575" class="small" fill="#7a1f16">field overwrites</text>
+    <text x="234" y="590" class="tiny" fill="#7a1f16">loud, not silent</text>
+  </g>
+
+  <g id="bottom-hook">
+    <rect x="420" y="604" width="500" height="34" rx="17" fill="#fbfcfe" stroke="#4f46e5" stroke-width="1.4"/>
+    <text x="444" y="626" class="label" fill="#1e2a44">Hook: safe by default — preview, gate, apply, journal, undo.</text>
+  </g>
+</svg>
