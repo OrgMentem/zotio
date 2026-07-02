@@ -46,6 +46,42 @@ func seedItems(t *testing.T, s *Store) {
 	}
 }
 
+func seedParentScopedItems(t *testing.T, s *Store) {
+	t.Helper()
+	items := []json.RawMessage{
+		json.RawMessage(`{"key":"P1","version":1,"data":{"key":"P1","itemType":"book","title":"Parent One"}}`),
+		json.RawMessage(`{"key":"P2","version":1,"data":{"key":"P2","itemType":"book","title":"Parent Two"}}`),
+		json.RawMessage(`{"key":"C1","version":1,"data":{"key":"C1","itemType":"attachment","title":"Alpha Attachment","parentItem":"P1"}}`),
+		json.RawMessage(`{"key":"C2","version":1,"data":{"key":"C2","itemType":"note","title":"Beta Note","parentItem":"P1"}}`),
+		json.RawMessage(`{"key":"C3","version":1,"data":{"key":"C3","itemType":"note","title":"Other Parent Note","parentItem":"P2"}}`),
+		json.RawMessage(`{"key":"T1","version":1,"data":{"key":"T1","itemType":"journalArticle","title":"Top Level"}}`),
+	}
+	if _, _, err := s.UpsertBatch("items", items); err != nil {
+		t.Fatalf("seed parent-scoped items: %v", err)
+	}
+}
+
+func TestQueryItems_ParentAndItemType(t *testing.T) {
+	s := cvl6Store(t)
+	seedParentScopedItems(t, s)
+
+	got, err := s.QueryItems(ItemQuery{Parent: "P1", Sort: "title", Direction: "asc"})
+	if err != nil {
+		t.Fatalf("QueryItems parent: %v", err)
+	}
+	if keys := itemKeys(t, got); len(keys) != 2 || keys[0] != "C1" || keys[1] != "C2" {
+		t.Fatalf("parent=P1 keys = %v, want [C1 C2]", keys)
+	}
+
+	got, err = s.QueryItems(ItemQuery{Parent: "P1", ItemType: "note", Sort: "title", Direction: "asc"})
+	if err != nil {
+		t.Fatalf("QueryItems parent+itemType: %v", err)
+	}
+	if keys := itemKeys(t, got); len(keys) != 1 || keys[0] != "C2" {
+		t.Fatalf("parent=P1 itemType=note keys = %v, want [C2]", keys)
+	}
+}
+
 func TestQueryItems_ItemTypeAndSort(t *testing.T) {
 	s := cvl6Store(t)
 	seedItems(t, s)

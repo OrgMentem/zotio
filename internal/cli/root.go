@@ -14,7 +14,6 @@ import (
 
 	"github.com/spf13/cobra"
 	"zotio/internal/client"
-	"zotio/internal/cliutil"
 	"zotio/internal/config"
 )
 
@@ -65,9 +64,6 @@ func RootCmd() *cobra.Command {
 
 // Execute runs the CLI in non-interactive mode: never prompts, all values via flags or stdin.
 func Execute() error {
-	// PATCH: one-time migration of per-user dirs after the zotero-pp-cli -> zotio
-	// rename, before any command resolves config/data/state/cache paths.
-	cliutil.MigrateLegacyDirs()
 	// PATCH(glean roadmap-phase3): record applied mutation runs only on the real
 	// CLI path; subcommand unit tests construct commands directly and never journal.
 	mutationJournalRecorder = recordMutationJournal

@@ -218,6 +218,25 @@
       "validated_outcome": "query_test (itemType/tag/collection/top/limit/start/sort + quick-search + curated FTS doc) and fixture-backed parity tests (live httptest vs --data-source local return identical key sets and ordering for itemType+sort and tag scopes; empty scope returns [] not an error) pass; gofmt/build/vet and full `go test ./...` green. Scope note: implemented as a hand-written Zotero item read model (the high-value list/get/search scopes), not a fully generic per-endpoint translator."
     },
     {
+      "id": "zotero-glean-2465cdde-children-local-scope",
+      "summary": "Generalized the cvl6 local query planner to cover item children: parseItemListPath now recognizes /items/{key}/children (3-segment) and returns a parentKey; ItemQuery gained a Parent field that QueryItems applies as `AND json_extract(r.data,'$.data.parentItem') = ?`, composing with the existing itemType/tag/sort/limit scopes. resolveLocalItemList routes children reads through the planner (meta.scoped=true) so `items children <key> --data-source local` returns the item's children instead of erroring on a get-by-id lookup of the literal 'children' segment.",
+      "reason": "glean bead zotero-pp-cli-2465cdde5e1cb719 (P3 feature-opportunity, slice A): item-list parity was path-keyed but narrow \u2014 /items/{key}/children fell through to generic get-by-id, so local children reads failed. This is the highest-value slice: it feeds offline `annotations export`/`timeline`, which fetch /items/{key}/children?itemType=annotation.",
+      "files": [
+        "internal/store/query.go",
+        "internal/cli/data_source.go"
+      ],
+      "validated_outcome": "Seeded-store test: `items children P1 --data-source local` returns only children with data.parentItem==P1 (excludes other parents' children, parent, and top-level items); itemType filter scopes children; unknown parent returns [] not an error; provenance meta.scoped=true; get-by-id path unaffected. go build green. Scope note: slices B\u2013E (collection pagination, tag filtering, saved-search results, unifying search through resolveRead) remain deferred as separate follow-ups."
+    },
+    {
+      "id": "zotero-glean-2465cdde-generic-local-pagination",
+      "summary": "Generic (non-item) local list reads now honor Zotero start/limit pagination and stop emitting a false 'unfiltered' warning for pagination-only reads. resolveLocal applies paginateLocalRows(items, params) (start offset then limit) to the generic dump, returning [] for an in-bounds-but-empty page; the warning is now gated on hasUnreproducibleParams, which treats limit/start/format as reproducible and ignores empty-valued params.",
+      "reason": "glean bead zotero-pp-cli-2465cdde5e1cb719 (P3 feature-opportunity, slice B): generic local reads silently ignored the --start offset (truncateJSONArray only caps from the front) and warned 'local data may be unfiltered' even for limit/start-only reads where limit was in fact applied, misleading offline/agent pagination.",
+      "files": [
+        "internal/cli/data_source.go"
+      ],
+      "validated_outcome": "Seeded collections store: --start skips leading rows; --start past end returns [] not an error; --limit and --start+--limit return the expected window; an empty store still errors with 'Run zotio sync'; hasUnreproducibleParams true only for real filters (tag) and false for limit/start/format and empty values. gofmt/build green. Scope note: slices C (tag/collections-tags filtering), D (saved-search results), E (unify search through resolveRead) remain deferred as separate beads."
+    },
+    {
       "id": "zotero-glean-qfuq-mcp-resources-prompts",
       "summary": "Added first-class MCP resources and prompts so the server is no longer tool-only. Resources: zotero://context (durable domain taxonomy, shared with the context tool via domainContext), zotero://agent-context (CLI description via new cli.AgentContextJSON), zotero://status (local archive sync state), zotero://schema (local SQLite DDL), and templates zotero://collections/{key} (collection manifest) and zotero://items/{key} (item + annotations bundle). Prompts: inspect-library, export-reading-notes, prepare-citation-export. main.go advertises resource+prompt capabilities and calls RegisterResources/RegisterPrompts; mutations stay typed tools.",
       "reason": "glean bead qfuq (P2): the MCP surface mirrored CLI commands only — no resource/prompt capabilities — so hosts had to shell through mirrored tools and guess command sequences to discover library state and workflows.",
@@ -1163,7 +1182,7 @@
         "AGENTS.md",
         "docs/"
       ],
-      "validated_outcome": "go build ./... and go test ./... green after rename; legacy config/data dirs auto-migrated."
+      "validated_outcome": "go build ./... and go test ./... green after rename; follow-up cleanup removed old ignored build artifacts and the temporary per-user directory migration path after local state was already cut over."
     }
   ]
 }

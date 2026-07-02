@@ -17,16 +17,12 @@ import (
 	"time"
 
 	"github.com/mark3labs/mcp-go/server"
-	"zotio/internal/cliutil"
 	mcptools "zotio/internal/mcp"
 )
 
 const defaultHTTPAddr = "127.0.0.1:7777" // PATCH(glean http-harden): default streamable HTTP to loopback-only.
 
 func main() {
-	// PATCH: one-time migration of per-user dirs after the zotero-pp-cli -> zotio
-	// rename, before any resource/tool resolves config/data/state/cache paths.
-	cliutil.MigrateLegacyDirs()
 	// PATCH(glean qfuq): advertise resource + prompt capabilities alongside
 	// tools so hosts can discover Zotero context and guided workflows.
 	s := server.NewMCPServer(

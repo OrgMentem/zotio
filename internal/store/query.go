@@ -20,6 +20,7 @@ type ItemQuery struct {
 	Tag        string // data.tags[].tag membership
 	Collection string // data.collections[] membership (collection key)
 	TopOnly    bool   // exclude child items (data.parentItem present)
+	Parent     string // data.parentItem == this key (children of an item)
 	Query      string // quick search routed through FTS
 	Sort       string // Zotero sort field name
 	Direction  string // "asc" | "desc"
@@ -74,6 +75,10 @@ func (s *Store) QueryItems(q ItemQuery) ([]json.RawMessage, error) {
 	}
 	if q.TopOnly {
 		sb.WriteString(" AND json_extract(r.data, '$.data.parentItem') IS NULL")
+	}
+	if q.Parent != "" {
+		sb.WriteString(" AND json_extract(r.data, '$.data.parentItem') = ?")
+		args = append(args, q.Parent)
 	}
 
 	sb.WriteString(" ORDER BY ")

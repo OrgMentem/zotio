@@ -33,8 +33,8 @@ type capabilitiesDriftProbe struct {
 
 func newCapabilitiesDriftCmd(flags *rootFlags) *cobra.Command {
 	cmd := &cobra.Command{
-		Use:         "drift",
-		Short:       "Probe core read endpoints for capability/API drift",
+		Use:   "drift",
+		Short: "Probe core read endpoints for capability/API drift",
 		Long: `Probes core Zotero read endpoints declared in the capability registry and
 reports any endpoint that now returns an API error or cannot be reached. This is
 read-only and treats every non-nil GET error as drift, including HTTP 4xx/5xx

@@ -207,8 +207,7 @@ func resolveConfigPath(configPath string) (string, bool, error) {
 // (~/.config/<app>/config.toml) for the CURRENT app name. It backs the
 // read-and-scrub fallback when the active config has moved to an XDG or
 // per-kind-env location. The app-name component tracks cliutil.AppName so it
-// never drifts from the resolved config dir. (The pre-rename zotero-pp-cli
-// directory is handled separately by cliutil.MigrateLegacyDirs at startup.)
+// never drifts from the resolved config dir.
 func LegacyConfigPath() (string, error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
