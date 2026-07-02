@@ -44,7 +44,7 @@
   <text x="28" y="56" class="subtitle">Local-fast reads, key-gated cloud writes, and an immediately refreshed local mirror.</text>
 
   <g id="legend" transform="translate(586 23)">
-    <rect x="0" y="0" width="346" height="54" rx="10" fill="#ffffff" stroke="#d7dee9" stroke-width="1.5"/>
+    <rect x="0" y="0" width="360" height="54" rx="10" fill="#ffffff" stroke="#d7dee9" stroke-width="1.5"/>
     <rect x="14" y="13" width="12" height="12" rx="3" fill="#e6f0fb" stroke="#2c6cb0" stroke-width="1.5"/>
     <text x="32" y="23" class="legend">READ</text>
     <rect x="86" y="13" width="12" height="12" rx="3" fill="#fde2e2" stroke="#c0392b" stroke-width="1.5"/>
@@ -137,32 +137,32 @@
 
   <g id="flows" fill="none" stroke-linecap="round" stroke-linejoin="round">
     <g id="flow-lines">
-      <path d="M400 306 C382 302 366 300 351 300" stroke="#2c6cb0" stroke-width="3" marker-end="url(#arrowBlue)"/>
-      <path d="M534 284 C572 250 590 224 611 208" stroke="#c0392b" stroke-width="2.5" marker-end="url(#arrowCoral)"/>
-      <path d="M560 350 C584 356 598 366 611 372" stroke="#c0392b" stroke-width="3" marker-end="url(#arrowCoral)"/>
-      <path d="M612 442 C520 480 432 466 351 402" stroke="#0aa06e" stroke-width="3" marker-end="url(#arrowGreen)"/>
-      <path d="M515 486 L515 384" stroke="#b8860b" stroke-width="2.5" marker-end="url(#arrowAmber)"/>
+      <path d="M400 306 C382 302 366 300 348 300" stroke="#2c6cb0" stroke-width="3" marker-end="url(#arrowBlue)"/>
+      <path d="M534 278 C572 250 590 224 612 208" stroke="#c0392b" stroke-width="2.5" marker-end="url(#arrowCoral)"/>
+      <path d="M560 350 C584 356 598 366 612 372" stroke="#c0392b" stroke-width="3" marker-end="url(#arrowCoral)"/>
+      <path d="M612 442 C520 480 432 466 348 402" stroke="#0aa06e" stroke-width="3" marker-end="url(#arrowGreen)"/>
+      <path d="M475 486 L475 382" stroke="#b8860b" stroke-width="2.5" marker-end="url(#arrowAmber)"/>
       <path d="M436 382 C400 420 330 456 262 492" stroke="#64748b" stroke-width="2.5" marker-end="url(#arrowGrey)" opacity="0.9"/>
     </g>
 
     <g id="flow-labels">
-      <rect x="342" y="278" width="54" height="20" rx="8" fill="#fbfcfe" stroke="#d7dee9" stroke-width="1"/>
-      <text x="369" y="292" text-anchor="middle" class="arrow-label">reads</text>
+      <rect x="352" y="272" width="44" height="20" rx="8" fill="#fbfcfe" stroke="#d7dee9" stroke-width="1"/>
+      <text x="374" y="286" text-anchor="middle" class="arrow-label">reads</text>
 
-      <rect x="536" y="222" width="70" height="20" rx="8" fill="#fbfcfe" stroke="#d7dee9" stroke-width="1"/>
-      <text x="571" y="236" text-anchor="middle" class="arrow-label">new items</text>
+      <rect x="500" y="216" width="66" height="20" rx="8" fill="#fbfcfe" stroke="#d7dee9" stroke-width="1"/>
+      <text x="533" y="230" text-anchor="middle" class="arrow-label">new items</text>
 
-      <rect x="556" y="356" width="52" height="20" rx="8" fill="#fbfcfe" stroke="#d7dee9" stroke-width="1"/>
-      <text x="582" y="370" text-anchor="middle" class="arrow-label">writes</text>
+      <rect x="564" y="322" width="44" height="20" rx="8" fill="#fbfcfe" stroke="#d7dee9" stroke-width="1"/>
+      <text x="586" y="336" text-anchor="middle" class="arrow-label">writes</text>
 
-      <rect x="388" y="440" width="122" height="20" rx="8" fill="#fbfcfe" stroke="#d7dee9" stroke-width="1"/>
-      <text x="449" y="454" text-anchor="middle" class="arrow-label">replay → mirror</text>
+      <rect x="486" y="420" width="108" height="20" rx="8" fill="#fbfcfe" stroke="#d7dee9" stroke-width="1"/>
+      <text x="540" y="434" text-anchor="middle" class="arrow-label">replay → mirror</text>
 
-      <rect x="474" y="400" width="84" height="20" rx="8" fill="#fbfcfe" stroke="#d7dee9" stroke-width="1"/>
-      <text x="516" y="414" text-anchor="middle" class="arrow-label">enrich · import</text>
+      <rect x="488" y="392" width="88" height="20" rx="8" fill="#fbfcfe" stroke="#d7dee9" stroke-width="1"/>
+      <text x="532" y="406" text-anchor="middle" class="arrow-label">enrich · import</text>
 
-      <rect x="286" y="456" width="80" height="20" rx="8" fill="#fbfcfe" stroke="#d7dee9" stroke-width="1"/>
-      <text x="326" y="470" text-anchor="middle" class="arrow-label">local ops</text>
+      <rect x="210" y="454" width="64" height="20" rx="8" fill="#fbfcfe" stroke="#d7dee9" stroke-width="1"/>
+      <text x="242" y="468" text-anchor="middle" class="arrow-label">local ops</text>
     </g>
   </g>
   </g>
