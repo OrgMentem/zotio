@@ -1,0 +1,57 @@
+{
+  $schema: "https://docs.renovatebot.com/renovate-schema.json",
+  // zotio (GitHub, private) is scanned by the self-hosted Renovate on nas-vm's
+  // Forgejo Actions runner (a github-platform pass in ellis/Nieuwy.com's
+  // .forgejo/workflows/renovate.yml), NOT by GitHub Actions — so scans cost no
+  // GitHub minutes. Detection-only: one PR per update, each gated by ci.yml.
+  // Three dependency surfaces: Go modules, GitHub Actions (SHA-pinned), and the
+  // betterleaks curl pin in ci.yml (the only one a custom manager can track).
+  extends: [
+    "config:recommended",
+    ":dependencyDashboard",
+    ":semanticCommits",
+  ],
+  labels: ["renovate", "dependencies"],
+  prConcurrentLimit: 10,
+  rebaseWhen: "behind-base-branch",
+  dependencyDashboardTitle: "Renovate · zotio dependencies",
+  packageRules: [
+    {
+      // One PR for all action SHA/digest bumps -> one CI run instead of N.
+      matchManagers: ["github-actions"],
+      groupName: "github-actions",
+    },
+    {
+      // Batch Go non-major bumps; majors stay individual for review.
+      matchManagers: ["gomod"],
+      matchUpdateTypes: ["minor", "patch"],
+      groupName: "go modules (non-major)",
+    },
+    {
+      matchUpdateTypes: ["major"],
+      addLabels: ["review-carefully"],
+    },
+    {
+      // betterleaks bumps: CI's secrets job WILL fail until BL_SHA256 is
+      // updated by hand (Renovate cannot compute a release-asset checksum).
+      matchDepNames: ["betterleaks/betterleaks"],
+      addLabels: ["manual-hash"],
+      prBodyNotes: [
+        "**Manual step:** update `BL_SHA256` in `.github/workflows/ci.yml` to the new release's checksum. The `secrets` job fails until then (Renovate cannot recompute a release-asset hash).",
+      ],
+    },
+  ],
+  customManagers: [
+    {
+      // betterleaks is downloaded by curl in ci.yml, pinned by BL_VERSION
+      // (e.g. BL_VERSION=1.6.1). Track the upstream github-releases tag
+      // (v1.6.1) and strip the leading "v" to match the bare pin.
+      customType: "regex",
+      managerFilePatterns: ["/^\\.github/workflows/ci\\.yml$/"],
+      matchStrings: ["BL_VERSION=(?<currentValue>\\S+)"],
+      depNameTemplate: "betterleaks/betterleaks",
+      datasourceTemplate: "github-releases",
+      extractVersionTemplate: "^v(?<version>.+)$",
+    },
+  ],
+}
