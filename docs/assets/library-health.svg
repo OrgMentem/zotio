@@ -122,8 +122,8 @@
 
     <rect x="494" y="330" width="155" height="28" rx="8" class="desktop"/>
     <text x="505" y="348" class="mono-small desktop-text">broken attach.</text>
-    <rect x="623" y="333" width="26" height="18" rx="9" fill="#fbfcfe" stroke="#64748b" stroke-width="1"/>
-    <text x="624" y="346" class="legend">LIVE</text>
+    <rect x="615" y="333" width="26" height="18" rx="9" fill="#fbfcfe" stroke="#64748b" stroke-width="1"/>
+    <text x="616" y="346" class="legend">LIVE</text>
   </g>
 
   <!-- 4. Report output -->
@@ -178,25 +178,22 @@
   <path class="connector" d="M193 207 L221 207"/>
   <path class="connector" d="M445 207 L471 207"/>
   <path class="connector" d="M670 207 C684 207 688 185 701 185"/>
-  <path class="connector" d="M793 294 C793 316 815 325 815 343"/>
-  <path class="connector" d="M815 326 L822 326"/>
+  <path class="connector" d="M800 294 C800 324 815 328 815 348"/>
+  <path class="connector" d="M806 320 C815 318 819 320 826 322"/>
   <path class="connector" d="M620 358 C620 378 592 378 592 393"/>
   <path class="connector" d="M770 458 C750 480 742 504 742 531"/>
   <path class="connector" d="M860 458 C877 482 877 505 877 531"/>
 
   <!-- connector labels -->
   <g aria-label="connector labels">
-    <rect x="784" y="314" width="35" height="17" rx="5" class="label-bg"/>
-    <text x="801" y="326" text-anchor="middle" class="legend">fresh?</text>
-
     <rect x="824" y="500" width="29" height="17" rx="5" class="label-bg"/>
     <text x="839" y="512" text-anchor="middle" class="legend">yes</text>
 
     <rect x="736" y="500" width="25" height="17" rx="5" class="label-bg"/>
     <text x="749" y="512" text-anchor="middle" class="legend">no</text>
 
-    <rect x="682" y="298" width="132" height="20" rx="5" class="label-bg"/>
-    <text x="748" y="313" text-anchor="middle" class="mono-small">--require-fresh 24h</text>
+    <rect x="668" y="300" width="132" height="20" rx="5" class="label-bg"/>
+    <text x="734" y="314" text-anchor="middle" class="mono-small">--require-fresh 24h</text>
   </g>
 
   <!-- bottom thesis -->
