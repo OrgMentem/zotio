@@ -54,7 +54,7 @@
 
   <!-- 1. Scope -->
   <g aria-label="scope inputs">
-    <rect x="28" y="112" width="165" height="190" rx="12" class="panel"/>
+    <rect x="28" y="112" width="165" height="232" rx="12" class="panel"/>
     <text x="48" y="138" class="card-title">1  SCOPE</text>
     <text x="48" y="158" class="muted">one selection grammar</text>
 
@@ -76,27 +76,27 @@
 
   <!-- 2. Preset selector -->
   <g aria-label="for preset selector">
-    <rect x="225" y="105" width="220" height="242" rx="12" class="panel"/>
+    <rect x="225" y="105" width="220" height="285" rx="12" class="panel"/>
     <text x="247" y="131" class="card-title">2  <tspan class="mono">--for</tspan> preset</text>
     <text x="247" y="151" class="muted">declares downstream intent</text>
 
-    <rect x="247" y="168" width="176" height="34" rx="10" class="read"/>
-    <text x="260" y="181" class="node-title read-text">quick</text>
-    <text x="260" y="195" class="muted">anything broken</text>
+    <rect x="247" y="166" width="176" height="40" rx="10" class="read"/>
+    <text x="260" y="184" class="node-title read-text">quick</text>
+    <text x="260" y="199" class="muted">anything broken</text>
 
-    <rect x="247" y="210" width="176" height="47" rx="10" class="read"/>
-    <text x="260" y="224" class="node-title read-text">citation</text>
-    <text x="260" y="239" class="muted">citekeys, core fields,</text>
-    <text x="260" y="252" class="muted">duplicates</text>
+    <rect x="247" y="214" width="176" height="56" rx="10" class="read"/>
+    <text x="260" y="232" class="node-title read-text">citation</text>
+    <text x="260" y="247" class="muted">citekeys, core fields,</text>
+    <text x="260" y="261" class="muted">duplicates</text>
 
-    <rect x="247" y="265" width="176" height="58" rx="10" class="read"/>
-    <text x="260" y="279" class="node-title read-text">systematic-review</text>
-    <text x="260" y="294" class="muted">duplicates, screenable</text>
-    <text x="260" y="307" class="muted">metadata, full-text PDFs</text>
+    <rect x="247" y="278" width="176" height="56" rx="10" class="read"/>
+    <text x="260" y="296" class="node-title read-text">systematic-review</text>
+    <text x="260" y="311" class="muted">duplicates, screenable</text>
+    <text x="260" y="325" class="muted">metadata, full-text PDFs</text>
 
-    <rect x="247" y="331" width="176" height="32" rx="10" class="read"/>
-    <text x="260" y="351" class="node-title read-text">all</text>
-    <text x="300" y="351" class="muted">all checks</text>
+    <rect x="247" y="342" width="176" height="34" rx="10" class="read"/>
+    <text x="260" y="362" class="node-title read-text">all</text>
+    <text x="300" y="362" class="muted">all checks</text>
   </g>
 
   <!-- 3. Composed checks -->
