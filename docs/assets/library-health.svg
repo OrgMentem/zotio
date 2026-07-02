@@ -143,9 +143,9 @@
 
   <!-- Skipped live check note -->
   <g aria-label="skipped live check note">
-    <rect x="475" y="392" width="222" height="52" rx="10" class="amber"/>
+    <rect x="475" y="392" width="246" height="52" rx="10" class="amber"/>
     <text x="494" y="416" class="mono-small" fill="#6b4e0a">missing-file check · skipped</text>
-    <text x="494" y="434" class="muted">needs desktop · still reported</text>
+    <text x="494" y="434" class="muted">needs Zotero desktop · still reported</text>
   </g>
 
   <!-- CI gate and outcomes -->
