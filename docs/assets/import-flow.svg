@@ -48,7 +48,7 @@
 
     <!-- Stage 1: scan -->
     <g transform="translate(58 142)">
-      <rect x="0" y="0" width="252" height="230" rx="14" fill="#e6f0fb" stroke="#2c6cb0" stroke-width="2"/>
+      <rect x="0" y="0" width="252" height="244" rx="14" fill="#e6f0fb" stroke="#2c6cb0" stroke-width="2"/>
       <text x="18" y="28" class="stage-title" fill="#173a5e">1 · SCAN</text>
       <text x="18" y="49" class="mono small">zotio import scan</text>
       <rect x="160" y="17" width="73" height="26" rx="13" fill="#ffffff" stroke="#2c6cb0" stroke-width="1.4"/>
@@ -63,18 +63,18 @@
         <text x="99" y="51" class="small">triage without writes</text>
       </g>
 
-      <text x="18" y="177" class="small" fill="#173a5e" font-weight="700">Buckets found</text>
-      <rect x="18" y="190" width="56" height="25" rx="12" fill="#d6f5e3" stroke="#0aa06e" stroke-width="1.5"/>
-      <text x="32" y="207" class="chip" fill="#0a5f43">NEW</text>
-      <rect x="82" y="190" width="91" height="25" rx="12" fill="#eef1f5" stroke="#64748b" stroke-width="1.5"/>
-      <text x="97" y="207" class="chip" fill="#33415c">DUPLICATE</text>
-      <rect x="61" y="222" width="139" height="25" rx="12" fill="#fdf3d8" stroke="#b8860b" stroke-width="1.5"/>
-      <text x="74" y="239" class="chip" fill="#6b4e0a">ATTACH-CANDIDATE</text>
+      <text x="18" y="172" class="small" fill="#173a5e" font-weight="700">Buckets found</text>
+      <rect x="18" y="183" width="56" height="25" rx="12" fill="#d6f5e3" stroke="#0aa06e" stroke-width="1.5"/>
+      <text x="32" y="200" class="chip" fill="#0a5f43">NEW</text>
+      <rect x="82" y="183" width="91" height="25" rx="12" fill="#eef1f5" stroke="#64748b" stroke-width="1.5"/>
+      <text x="97" y="200" class="chip" fill="#33415c">DUPLICATE</text>
+      <rect x="61" y="212" width="139" height="25" rx="12" fill="#fdf3d8" stroke="#b8860b" stroke-width="1.5"/>
+      <text x="74" y="229" class="chip" fill="#6b4e0a">ATTACH-CANDIDATE</text>
     </g>
 
     <!-- Stage 2: resolve -->
     <g transform="translate(354 142)">
-      <rect x="0" y="0" width="252" height="230" rx="14" fill="#fdf3d8" stroke="#b8860b" stroke-width="2"/>
+      <rect x="0" y="0" width="252" height="244" rx="14" fill="#fdf3d8" stroke="#b8860b" stroke-width="2"/>
       <text x="18" y="28" class="stage-title" fill="#6b4e0a">2 · RESOLVE</text>
       <text x="18" y="49" class="mono small">zotio import resolve</text>
       <text x="18" y="76" class="small" fill="#6b4e0a" font-weight="700">Identifiers</text>
@@ -95,7 +95,7 @@
         <rect x="0" y="0" width="92" height="46" rx="8" fill="#ffffff" stroke="#b8860b" stroke-width="1.8"/>
         <path d="M 66 0 V 20 H 92" fill="none" stroke="#b8860b" stroke-width="1.5"/>
         <path d="M 66 0 L 92 20" fill="none" stroke="#b8860b" stroke-width="1.5"/>
-        <text x="12" y="20" class="mono tiny" fill="#6b4e0a">{ manifest }</text>
+        <text x="12" y="20" class="mono tiny" fill="#6b4e0a">manifest</text>
         <text x="12" y="38" class="mono tiny" fill="#64748b">import.json</text>
         <path d="M 98 23 H 122" class="line"/>
         <circle cx="140" cy="11" r="8" fill="#d6f5e3" stroke="#0aa06e" stroke-width="1.5"/>
@@ -109,7 +109,7 @@
 
     <!-- Stage 3: apply -->
     <g transform="translate(650 142)">
-      <rect x="0" y="0" width="252" height="230" rx="14" fill="#fde2e2" stroke="#c0392b" stroke-width="2"/>
+      <rect x="0" y="0" width="252" height="244" rx="14" fill="#fde2e2" stroke="#c0392b" stroke-width="2"/>
       <text x="18" y="28" class="stage-title" fill="#7a1f16">3 · APPLY</text>
       <text x="18" y="49" class="mono small">zotio import apply</text>
       <rect x="148" y="17" width="86" height="26" rx="13" fill="#ffffff" stroke="#c0392b" stroke-width="1.4"/>
@@ -137,9 +137,9 @@
     <g transform="translate(78 401)">
       <rect x="0" y="0" width="804" height="62" rx="16" fill="#eef1f5" stroke="#64748b" stroke-width="1.7"/>
       <text x="26" y="27" class="stage-title" fill="#33415c">EDITABLE MANIFEST</text>
-      <text x="26" y="47" class="small">The manifest is the handoff: scan findings + resolved metadata + your reviewed edits.</text>
+      <text x="26" y="47" class="small">The manifest is the handoff: scan findings + resolved metadata + your edits.</text>
       <rect x="604" y="13" width="174" height="36" rx="18" fill="#d6f5e3" stroke="#0aa06e" stroke-width="1.5"/>
-      <text x="622" y="36" class="chip" fill="#0a5f43">review before any write</text>
+      <text x="622" y="36" class="chip" fill="#0a5f43">no writes until apply</text>
     </g>
 
     <!-- One-shot importers -->
