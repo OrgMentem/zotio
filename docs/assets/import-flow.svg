@@ -51,8 +51,8 @@
       <rect x="0" y="0" width="252" height="244" rx="14" fill="#e6f0fb" stroke="#2c6cb0" stroke-width="2"/>
       <text x="18" y="28" class="stage-title" fill="#173a5e">1 · SCAN</text>
       <text x="18" y="49" class="mono small">zotio import scan</text>
-      <rect x="146" y="17" width="92" height="26" rx="13" fill="#ffffff" stroke="#2c6cb0" stroke-width="1.4"/>
-      <text x="192" y="34" text-anchor="middle" class="chip" fill="#173a5e">READ-ONLY</text>
+      <rect x="146" y="12" width="92" height="22" rx="11" fill="#ffffff" stroke="#2c6cb0" stroke-width="1.4"/>
+      <text x="192" y="27" text-anchor="middle" class="chip" fill="#173a5e">READ-ONLY</text>
 
       <g transform="translate(24 74)">
         <path d="M 6 14 H 76 Q 84 14 84 22 V 71 Q 84 79 76 79 H 8 Q 0 79 0 71 V 12 Q 0 4 8 4 H 31 L 39 14 Z" fill="#ffffff" stroke="#2c6cb0" stroke-width="1.8"/>
@@ -92,12 +92,12 @@
       </g>
 
       <g transform="translate(18 178)">
-        <rect x="0" y="0" width="92" height="46" rx="8" fill="#ffffff" stroke="#b8860b" stroke-width="1.8"/>
-        <path d="M 74 0 V 18 H 92" fill="none" stroke="#b8860b" stroke-width="1.5"/>
-        <path d="M 74 0 L 92 18" fill="none" stroke="#b8860b" stroke-width="1.5"/>
+        <rect x="0" y="0" width="98" height="46" rx="8" fill="#ffffff" stroke="#b8860b" stroke-width="1.8"/>
+        <path d="M 80 0 V 18 H 98" fill="none" stroke="#b8860b" stroke-width="1.5"/>
+        <path d="M 80 0 L 98 18" fill="none" stroke="#b8860b" stroke-width="1.5"/>
         <text x="12" y="20" class="mono tiny" fill="#6b4e0a">manifest</text>
         <text x="12" y="38" class="mono tiny" fill="#64748b">import.json</text>
-        <path d="M 98 23 H 122" class="line"/>
+        <path d="M 104 23 H 122" class="line"/>
         <circle cx="140" cy="11" r="8" fill="#d6f5e3" stroke="#0aa06e" stroke-width="1.5"/>
         <path d="M 140 20 V 37" stroke="#0aa06e" stroke-width="2" stroke-linecap="round"/>
         <path d="M 128 28 H 152" stroke="#0aa06e" stroke-width="2" stroke-linecap="round"/>
@@ -112,8 +112,8 @@
       <rect x="0" y="0" width="252" height="244" rx="14" fill="#fde2e2" stroke="#c0392b" stroke-width="2"/>
       <text x="18" y="28" class="stage-title" fill="#7a1f16">3 · APPLY</text>
       <text x="18" y="49" class="mono small">zotio import apply</text>
-      <rect x="122" y="17" width="120" height="26" rx="13" fill="#ffffff" stroke="#c0392b" stroke-width="1.4"/>
-      <text x="182" y="34" text-anchor="middle" class="chip" fill="#7a1f16">PREVIEW-FIRST</text>
+      <rect x="122" y="12" width="120" height="22" rx="11" fill="#ffffff" stroke="#c0392b" stroke-width="1.4"/>
+      <text x="182" y="27" text-anchor="middle" class="chip" fill="#7a1f16">PREVIEW-FIRST</text>
 
       <g transform="translate(18 73)">
         <rect x="0" y="0" width="91" height="58" rx="9" fill="#ffffff" stroke="#c0392b" stroke-width="1.6"/>
@@ -139,7 +139,7 @@
       <text x="26" y="27" class="stage-title" fill="#33415c">EDITABLE MANIFEST</text>
       <text x="26" y="47" class="small">The manifest is the handoff: scan findings + resolved metadata + your edits.</text>
       <rect x="604" y="13" width="174" height="36" rx="18" fill="#d6f5e3" stroke="#0aa06e" stroke-width="1.5"/>
-      <text x="622" y="36" class="chip" fill="#0a5f43">no writes until apply</text>
+      <text x="691" y="36" text-anchor="middle" class="chip" fill="#0a5f43">no writes until apply</text>
     </g>
 
     <!-- One-shot importers -->
@@ -157,10 +157,10 @@
         <text x="373" y="55" class="tiny">import isbn</text>
         <rect x="472" y="38" width="92" height="26" rx="13" fill="#fdf3d8" stroke="#b8860b" stroke-width="1.4"/>
         <text x="487" y="55" class="tiny">import url</text>
-        <rect x="576" y="38" width="90" height="26" rx="13" fill="#e6f0fb" stroke="#2c6cb0" stroke-width="1.4"/>
+        <rect x="576" y="38" width="100" height="26" rx="13" fill="#e6f0fb" stroke="#2c6cb0" stroke-width="1.4"/>
         <text x="591" y="55" class="tiny">import file</text>
-        <rect x="678" y="38" width="88" height="26" rx="13" fill="#e6f0fb" stroke="#2c6cb0" stroke-width="1.4"/>
-        <text x="694" y="55" class="tiny">import pdf</text>
+        <rect x="688" y="38" width="92" height="26" rx="13" fill="#e6f0fb" stroke="#2c6cb0" stroke-width="1.4"/>
+        <text x="704" y="55" class="tiny">import pdf</text>
       </g>
     </g>
   </g>
