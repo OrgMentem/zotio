@@ -13,9 +13,10 @@ import (
 	"runtime"
 	"time"
 
-	"github.com/spf13/cobra"
 	"zotio/internal/client"
 	"zotio/internal/cliutil"
+
+	"github.com/spf13/cobra"
 )
 
 // PATCH(glean roadmap-phase2): centralize OS-specific desktop URI launch commands for tests and reuse.

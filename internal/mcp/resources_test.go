@@ -11,8 +11,9 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/mark3labs/mcp-go/server"
 	"zotio/internal/store"
+
+	"github.com/mark3labs/mcp-go/server"
 )
 
 func qfuqServer(t *testing.T) *server.MCPServer {

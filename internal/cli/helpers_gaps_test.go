@@ -259,7 +259,7 @@ func TestHelpersFilterFields(t *testing.T) {
 	helpersTestAssertJSONEqual(t, whole, `{"owner":{"email":"a@example.test","name":"Ada"}}`)
 
 	keepWhole := map[string]bool{"order-date": true}
-	subPaths := map[string][][]string{"owner": [][]string{{"email"}}}
+	subPaths := map[string][][]string{"owner": {{"email"}}}
 	if got := matchSelectSegment("orderDate", keepWhole, subPaths); got != "order-date" {
 		t.Fatalf("matchSelectSegment camel/kebab = %q, want order-date", got)
 	}

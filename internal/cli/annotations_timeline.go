@@ -11,8 +11,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/spf13/cobra"
 	"zotio/internal/store"
+
+	"github.com/spf13/cobra"
 )
 
 func newAnnotationsTimelineCmd(flags *rootFlags) *cobra.Command {

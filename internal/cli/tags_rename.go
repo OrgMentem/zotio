@@ -9,8 +9,9 @@ import (
 	"fmt"
 	"net/http"
 
-	"github.com/spf13/cobra"
 	"zotio/internal/client"
+
+	"github.com/spf13/cobra"
 )
 
 type tagRenameUpdate struct {

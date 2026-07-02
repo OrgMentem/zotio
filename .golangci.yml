@@ -3,16 +3,13 @@ linters:
     - bodyclose
     - errcheck
     - errorlint
+    - gofmt
+    - goimports
     - gosec
     - govet
     - ineffassign
     - staticcheck
     - unused
-
-formatters:
-  enable:
-    - gofmt
-    - goimports
 
 linters-settings:
   gosec:

@@ -8,8 +8,9 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/spf13/cobra"
 	"zotio/internal/store"
+
+	"github.com/spf13/cobra"
 )
 
 func newItemsFulltextCmd(flags *rootFlags) *cobra.Command {
