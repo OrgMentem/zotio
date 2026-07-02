@@ -55,7 +55,7 @@ the top-level collection without recursing into subcollections.`,
 				return err
 			}
 
-			var out io.Writer = cmd.OutOrStdout()
+			var out = cmd.OutOrStdout()
 			if flagOutput != "" {
 				f, err := os.Create(flagOutput)
 				if err != nil {

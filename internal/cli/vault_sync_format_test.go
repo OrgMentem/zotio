@@ -98,7 +98,7 @@ func TestVaultSyncMigratesLegacyNotes(t *testing.T) {
 	if bi < 0 || ei < 0 {
 		t.Fatalf("notes markers not injected:\n%s", s)
 	}
-	if !(bi < pi && pi < ei) {
+	if bi >= pi || pi >= ei {
 		t.Errorf("legacy prose not inside the notes region:\n%s", s)
 	}
 }

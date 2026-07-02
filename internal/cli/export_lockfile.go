@@ -52,7 +52,7 @@ func buildExportLockfile(scope, format string, items []json.RawMessage) exportLo
 
 	hash := sha256.New()
 	for _, item := range lockItems {
-		_, _ = hash.Write([]byte(fmt.Sprintf("%s:%d\n", item.Key, item.Version)))
+		_, _ = fmt.Fprintf(hash, "%s:%d\n", item.Key, item.Version)
 	}
 
 	return exportLockfile{

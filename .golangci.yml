@@ -1,18 +1,38 @@
+version: "2"
 linters:
   enable:
     - bodyclose
-    - errcheck
     - errorlint
+    - gosec
+  settings:
+    gosec:
+      excludes:
+        # web_api_key is a config-key *name*, not a credential value (false positive).
+        - G101
+  exclusions:
+    generated: lax
+    presets:
+      - comments
+      - common-false-positives
+      - legacy
+      - std-error-handling
+    rules:
+      # ST1005: this tool's errors routinely start with proper nouns ("Zotero",
+      # "Open Library"), the documented exception to the lowercase-error rule.
+      - linters:
+          - staticcheck
+        text: 'ST1005:'
+    paths:
+      - third_party$
+      - builtin$
+      - examples$
+formatters:
+  enable:
     - gofmt
     - goimports
-    - gosec
-    - govet
-    - ineffassign
-    - staticcheck
-    - unused
-
-linters-settings:
-  gosec:
-    excludes:
-      # web_api_key is a config-key *name*, not a credential value (false positive).
-      - G101
+  exclusions:
+    generated: lax
+    paths:
+      - third_party$
+      - builtin$
+      - examples$

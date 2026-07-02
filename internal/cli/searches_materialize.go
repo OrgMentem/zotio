@@ -99,7 +99,7 @@ func renderEmptySearchesMaterializePlan(cmd *cobra.Command, flags *rootFlags, me
 	if renderErr != nil {
 		return renderErr
 	}
-	if !(flags != nil && flags.asJSON) && isTerminal(cmd.OutOrStdout()) {
+	if (flags == nil || !flags.asJSON) && isTerminal(cmd.OutOrStdout()) {
 		fmt.Fprintln(cmd.OutOrStdout(), message)
 	}
 	return runErr

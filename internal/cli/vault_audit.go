@@ -108,7 +108,7 @@ func auditVaultNotes(outDir string) (vaultAuditReport, error) {
 			return filepath.SkipAll
 		}
 
-		bodyBytes, err := os.ReadFile(path)
+		bodyBytes, err := os.ReadFile(path) //nolint:gosec // G122: audits the user's own local vault; not a security boundary, symlink TOCTOU is not a threat here.
 		if err != nil {
 			return err
 		}

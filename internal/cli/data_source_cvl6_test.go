@@ -123,7 +123,7 @@ func equalKeys(a, b []string) bool {
 		return false
 	}
 	for i := range a {
-		if a[i] != b[i] {
+		if a[i] != b[i] { //nolint:gosec // G602: loop bounded by the len(a)==len(b) guard above; b[i] is always in range.
 			return false
 		}
 	}

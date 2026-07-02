@@ -8,8 +8,6 @@ import (
 	"fmt"
 	"strings"
 
-	"zotio/internal/store"
-
 	"github.com/spf13/cobra"
 )
 
@@ -38,7 +36,7 @@ func newItemsFindCmd(flags *rootFlags) *cobra.Command {
 				fmt.Fprintln(cmd.OutOrStdout(), "Run 'zotio sync' first to enable identifier lookup.")
 				return nil
 			}
-			var storeDB *store.Store = rawDB
+			var storeDB = rawDB
 			defer storeDB.Close()
 			db := localQueryStore{Store: storeDB}
 

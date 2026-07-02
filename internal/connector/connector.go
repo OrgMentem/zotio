@@ -426,7 +426,7 @@ func metadataHeaderJSON(v any) (string, error) {
 	b.Grow(len(data))
 	for _, r := range string(data) {
 		if r < utf8.RuneSelf {
-			b.WriteByte(byte(r))
+			b.WriteByte(byte(r)) //nolint:gosec // G115: guarded by r < utf8.RuneSelf, so r fits in a byte.
 			continue
 		}
 		if r <= 0xffff {

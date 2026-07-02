@@ -432,8 +432,8 @@ func assembleHealthReport(db localQueryStore, ctx *healthContext, preset string,
 
 	if ctx.requireFresh > 0 {
 		fr := &healthFreshness{RequiredMaxAgeSeconds: int(ctx.requireFresh.Seconds())}
-		switch {
-		case ctx.src.SyncedAt == nil:
+		switch ctx.src.SyncedAt {
+		case nil:
 			fr.Stale = true
 			fr.Reason = "local store has never been synced"
 		default:

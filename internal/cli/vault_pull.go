@@ -203,10 +203,10 @@ func stripHTMLTags(s string) string {
 	var b strings.Builder
 	depth := 0
 	for _, r := range s {
-		switch {
-		case r == '<':
+		switch r {
+		case '<':
 			depth++
-		case r == '>':
+		case '>':
 			if depth > 0 {
 				depth--
 			} else {
