@@ -91,19 +91,19 @@
         <text x="60" y="48" class="tiny" fill="#6b4e0a" font-weight="700">Open Library</text>
       </g>
 
-      <g transform="translate(27 164)">
-        <rect x="0" y="0" width="92" height="66" rx="8" fill="#ffffff" stroke="#b8860b" stroke-width="1.8"/>
+      <g transform="translate(18 178)">
+        <rect x="0" y="0" width="92" height="46" rx="8" fill="#ffffff" stroke="#b8860b" stroke-width="1.8"/>
         <path d="M 66 0 V 20 H 92" fill="none" stroke="#b8860b" stroke-width="1.5"/>
         <path d="M 66 0 L 92 20" fill="none" stroke="#b8860b" stroke-width="1.5"/>
-        <text x="13" y="25" class="mono tiny" fill="#6b4e0a">{ manifest }</text>
-        <text x="13" y="45" class="mono tiny" fill="#64748b">import.json</text>
-        <path d="M 106 34 H 128" class="line"/>
-        <circle cx="153" cy="16" r="11" fill="#d6f5e3" stroke="#0aa06e" stroke-width="1.5"/>
-        <path d="M 153 28 V 52" stroke="#0aa06e" stroke-width="2" stroke-linecap="round"/>
-        <path d="M 139 39 H 167" stroke="#0aa06e" stroke-width="2" stroke-linecap="round"/>
-        <path d="M 153 52 L 140 66 M 153 52 L 166 66" stroke="#0aa06e" stroke-width="2" stroke-linecap="round"/>
-        <rect x="126" y="75" width="104" height="25" rx="12" fill="#d6f5e3" stroke="#0aa06e" stroke-width="1.5"/>
-        <text x="139" y="92" class="chip" fill="#0a5f43">you review &amp; edit</text>
+        <text x="12" y="20" class="mono tiny" fill="#6b4e0a">{ manifest }</text>
+        <text x="12" y="38" class="mono tiny" fill="#64748b">import.json</text>
+        <path d="M 98 23 H 122" class="line"/>
+        <circle cx="140" cy="11" r="8" fill="#d6f5e3" stroke="#0aa06e" stroke-width="1.5"/>
+        <path d="M 140 20 V 37" stroke="#0aa06e" stroke-width="2" stroke-linecap="round"/>
+        <path d="M 128 28 H 152" stroke="#0aa06e" stroke-width="2" stroke-linecap="round"/>
+        <path d="M 140 37 L 131 46 M 140 37 L 149 46" stroke="#0aa06e" stroke-width="2" stroke-linecap="round"/>
+        <text x="162" y="20" class="chip" fill="#0a5f43">you review</text>
+        <text x="162" y="35" class="chip" fill="#0a5f43">&amp; edit</text>
       </g>
     </g>
 
