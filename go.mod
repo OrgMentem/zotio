@@ -17,7 +17,7 @@ require (
 	github.com/remyoudompheng/bigfft v0.0.0-20230129092748-24d4a6f8daec
 	github.com/spf13/cast v1.7.1
 	github.com/yosida95/uritemplate/v3 v3.0.2
-	golang.org/x/exp v0.0.0-20250305212735-054e65f0b394
+	golang.org/x/exp v0.0.0-20260611194520-c48552f49976
 	modernc.org/libc v1.62.1
 	modernc.org/mathutil v1.7.1
 	modernc.org/memory v1.9.1
