@@ -122,8 +122,8 @@
 
     <rect x="494" y="330" width="155" height="28" rx="8" class="desktop"/>
     <text x="505" y="348" class="mono-small desktop-text">missing file</text>
-    <rect x="615" y="333" width="26" height="18" rx="9" fill="#fbfcfe" stroke="#64748b" stroke-width="1"/>
-    <text x="616" y="346" class="legend">LIVE</text>
+    <rect x="614" y="333" width="30" height="18" rx="9" fill="#fbfcfe" stroke="#64748b" stroke-width="1"/>
+    <text x="629" y="346" text-anchor="middle" class="legend">LIVE</text>
   </g>
 
   <!-- 4. Report output -->
@@ -151,8 +151,8 @@
   <!-- CI gate and outcomes -->
   <g aria-label="freshness branch">
     <rect x="826" y="306" width="104" height="50" rx="10" class="amber"/>
-    <text x="846" y="326" class="node-title amber-text">exit 12</text>
-    <text x="839" y="344" class="mono-small" fill="#6b4e0a">stale mirror</text>
+    <text x="878" y="326" text-anchor="middle" class="node-title amber-text">exit 12</text>
+    <text x="878" y="344" text-anchor="middle" class="mono-small" fill="#6b4e0a">stale mirror</text>
   </g>
 
   <g aria-label="ci gate">
@@ -176,8 +176,8 @@
   <path class="connector" d="M193 207 L221 207"/>
   <path class="connector" d="M445 207 L471 207"/>
   <path class="connector" d="M670 207 C684 207 688 185 701 185"/>
-  <path class="connector" d="M800 294 C800 324 815 328 815 348"/>
-  <path class="connector" d="M806 320 C815 318 819 320 826 322"/>
+  <path class="connector" d="M810 294 C810 322 812 338 815 348"/>
+  <path class="connector" d="M810 294 C816 302 820 314 826 322"/>
   <path class="thin" d="M600 358 C600 378 560 380 545 392"/>
   <path class="connector" d="M770 458 C750 480 742 504 742 531"/>
   <path class="connector" d="M860 458 C877 482 877 505 877 531"/>
@@ -190,8 +190,8 @@
     <rect x="736" y="500" width="25" height="17" rx="5" class="label-bg"/>
     <text x="749" y="512" text-anchor="middle" class="legend">no</text>
 
-    <rect x="668" y="300" width="132" height="20" rx="5" class="label-bg"/>
-    <text x="734" y="314" text-anchor="middle" class="mono-small">--require-fresh 24h</text>
+    <rect x="672" y="300" width="132" height="20" rx="5" class="label-bg"/>
+    <text x="738" y="314" text-anchor="middle" class="mono-small">--require-fresh 24h</text>
   </g>
 
   <!-- bottom thesis -->
