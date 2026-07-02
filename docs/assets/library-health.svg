@@ -141,13 +141,11 @@
     <text x="696" y="281" class="mono-small" fill="#1e2a44">stable finding keys • CI diffable</text>
   </g>
 
-  <!-- Loud skipped remedy note -->
-  <g aria-label="skipped live check remedy">
-    <rect x="475" y="397" width="235" height="102" rx="12" class="amber" filter="url(#softShadow)"/>
-    <text x="494" y="423" class="node-title amber-text">LOUD SKIP, NOT SILENT</text>
-    <text x="494" y="448" class="mono-small" fill="#6b4e0a">Skipped: broken_attachment —</text>
-    <text x="494" y="466" class="body">needs Zotero desktop</text>
-    <text x="494" y="486" class="muted">Remedy: start Zotero, rerun.</text>
+  <!-- Skipped live check note -->
+  <g aria-label="skipped live check note">
+    <rect x="475" y="392" width="222" height="52" rx="10" class="amber"/>
+    <text x="494" y="416" class="mono-small" fill="#6b4e0a">broken_attachment · skipped</text>
+    <text x="494" y="434" class="muted">needs desktop · still reported</text>
   </g>
 
   <!-- CI gate and outcomes -->
@@ -180,7 +178,7 @@
   <path class="connector" d="M670 207 C684 207 688 185 701 185"/>
   <path class="connector" d="M800 294 C800 324 815 328 815 348"/>
   <path class="connector" d="M806 320 C815 318 819 320 826 322"/>
-  <path class="connector" d="M620 358 C620 378 592 378 592 393"/>
+  <path class="thin" d="M600 358 C600 378 560 380 545 392"/>
   <path class="connector" d="M770 458 C750 480 742 504 742 531"/>
   <path class="connector" d="M860 458 C877 482 877 505 877 531"/>
 
