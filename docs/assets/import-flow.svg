@@ -93,8 +93,8 @@
 
       <g transform="translate(18 178)">
         <rect x="0" y="0" width="92" height="46" rx="8" fill="#ffffff" stroke="#b8860b" stroke-width="1.8"/>
-        <path d="M 66 0 V 20 H 92" fill="none" stroke="#b8860b" stroke-width="1.5"/>
-        <path d="M 66 0 L 92 20" fill="none" stroke="#b8860b" stroke-width="1.5"/>
+        <path d="M 74 0 V 18 H 92" fill="none" stroke="#b8860b" stroke-width="1.5"/>
+        <path d="M 74 0 L 92 18" fill="none" stroke="#b8860b" stroke-width="1.5"/>
         <text x="12" y="20" class="mono tiny" fill="#6b4e0a">manifest</text>
         <text x="12" y="38" class="mono tiny" fill="#64748b">import.json</text>
         <path d="M 98 23 H 122" class="line"/>
