@@ -138,8 +138,8 @@
       <rect x="0" y="0" width="804" height="62" rx="16" fill="#eef1f5" stroke="#64748b" stroke-width="1.7"/>
       <text x="26" y="27" class="stage-title" fill="#33415c">EDITABLE MANIFEST</text>
       <text x="26" y="47" class="small">The manifest is the handoff: scan findings + resolved metadata + your edits.</text>
-      <rect x="604" y="13" width="174" height="36" rx="18" fill="#d6f5e3" stroke="#0aa06e" stroke-width="1.5"/>
-      <text x="691" y="36" text-anchor="middle" class="chip" fill="#0a5f43">no writes until apply</text>
+      <rect x="604" y="13" width="174" height="36" rx="18" fill="none" stroke="#0aa06e" stroke-width="1" stroke-dasharray="3 3" stroke-opacity="0.55"/>
+      <text x="691" y="36" text-anchor="middle" class="chip" fill="#0a5f43">▸ no writes until apply</text>
     </g>
 
     <!-- One-shot importers -->
