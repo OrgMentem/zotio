@@ -89,8 +89,8 @@
   </g>
 
   <g id="key-banner">
-    <rect x="612" y="278" width="310" height="34" rx="17" fill="#ffffff" stroke="#4f46e5" stroke-width="2" filter="url(#softShadow)"/>
-    <text x="767" y="300" text-anchor="middle" fill="#4f46e5" font-size="12" font-weight="800">local reads/creates need no key · cloud writes do</text>
+    <rect x="612" y="280" width="310" height="30" rx="8" fill="none" stroke="#cbd5e1" stroke-width="1" stroke-dasharray="4 3"/>
+    <text x="767" y="300" text-anchor="middle" font-size="12" font-weight="600"><tspan fill="#94a3b8" font-weight="700">▸</tspan><tspan fill="#4f46e5" dx="4">local reads/creates need no key · cloud writes do</tspan></text>
   </g>
 
   <g id="write-plane">
