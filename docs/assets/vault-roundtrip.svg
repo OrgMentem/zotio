@@ -138,7 +138,7 @@
   </g>
 
   <g aria-label="Hook">
-    <rect x="132" y="600" width="696" height="48" rx="14" fill="#d6f5e3" stroke="#0aa06e" stroke-width="1.8"/>
+    <rect x="132" y="600" width="696" height="48" rx="14" fill="#eefaf3" stroke="#0aa06e" stroke-width="1" stroke-opacity="0.45"/>
     <text x="216" y="621" class="node-title green-text">Your prose is never clobbered.</text>
     <text x="216" y="640" class="label green-text">Divergence becomes a reviewable artifact, never a silent overwrite.</text>
     <circle cx="184" cy="624" r="16" fill="#fbfcfe" stroke="#0aa06e" stroke-width="1.7"/>
