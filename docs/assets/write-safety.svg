@@ -118,10 +118,10 @@
 
   <!-- Callout chips -->
   <g id="chips">
-    <rect x="32" y="228" width="232" height="34" rx="17" fill="#d6f5e3" stroke="#0aa06e" stroke-width="1.5"/>
-    <text x="50" y="250" class="mono-dark" fill="#0a5f43">--agent does NOT auto-apply</text>
-    <rect x="32" y="276" width="188" height="34" rx="17" fill="#fdf3d8" stroke="#b8860b" stroke-width="1.5"/>
-    <text x="50" y="298" class="mono-dark" fill="#6b4e0a">--dry-run always wins</text>
+    <rect x="32" y="228" width="246" height="34" rx="17" fill="none" stroke="#0aa06e" stroke-width="1" stroke-dasharray="3 2.5" stroke-opacity="0.8"/>
+    <text x="50" y="250" class="mono-dark" fill="#0a5f43"><tspan fill="#0aa06e">▸ </tspan>--agent does NOT auto-apply</text>
+    <rect x="32" y="276" width="204" height="34" rx="17" fill="none" stroke="#b8860b" stroke-width="1" stroke-dasharray="3 2.5" stroke-opacity="0.8"/>
+    <text x="50" y="298" class="mono-dark" fill="#6b4e0a"><tspan fill="#b8860b">▸ </tspan>--dry-run always wins</text>
   </g>
 
   <!-- Apply side effects -->
@@ -164,7 +164,6 @@
   </g>
 
   <g id="bottom-hook">
-    <rect x="420" y="604" width="500" height="34" rx="17" fill="#fbfcfe" stroke="#4f46e5" stroke-width="1.4"/>
-    <text x="444" y="626" class="label" fill="#1e2a44">Hook: safe by default — preview, gate, apply, journal, undo.</text>
+    <text x="428" y="626" class="label" fill="#1e2a44"><tspan fill="#94a3b8">▸ </tspan>Hook: safe by default — preview, gate, apply, journal, undo.</text>
   </g>
 </svg>
