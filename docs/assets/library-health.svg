@@ -137,15 +137,14 @@
     <text x="727" y="225" class="body">• typed by check/source</text>
     <text x="727" y="243" class="body">• one report, not fragments</text>
 
-    <rect x="680" y="258" width="232" height="36" rx="10" fill="#eef1ff" stroke="#4f46e5" stroke-width="1.5"/>
-    <text x="696" y="281" class="mono-small" fill="#1e2a44">stable finding keys • CI diffable</text>
+    <rect x="705" y="260" width="225" height="26" rx="8" fill="#f2f4ff" stroke="#c7d2fe" stroke-width="1"/>
+    <text x="717" y="277" class="mono-small" fill="#4338ca">stable finding keys • CI diffable</text>
   </g>
 
   <!-- Skipped live check note -->
   <g aria-label="skipped live check note">
-    <rect x="475" y="392" width="246" height="52" rx="10" class="amber"/>
-    <text x="494" y="416" class="mono-small" fill="#6b4e0a">missing-file check · skipped</text>
-    <text x="494" y="434" class="muted">needs Zotero desktop · still reported</text>
+    <text x="494" y="416" class="mono-small" fill="#6b4e0a"><tspan fill="#94a3b8">▸ </tspan>missing-file check · skipped</text>
+    <text x="494" y="434" class="muted" fill="#8c6d1e">needs Zotero desktop · still reported</text>
   </g>
 
   <!-- CI gate and outcomes -->
@@ -196,8 +195,8 @@
 
   <!-- bottom thesis -->
   <g aria-label="composition thesis">
-    <rect x="28" y="548" width="604" height="64" rx="14" fill="#eef1ff" stroke="#4f46e5" stroke-width="1.6"/>
-    <text x="52" y="574" class="card-title">Flagship behavior</text>
-    <text x="52" y="594" class="body">Composes citekeys, duplicates, metadata gaps, tag drift, and live attachment checks into one CI-friendly report.</text>
+    <line x1="28" y1="556" x2="632" y2="556" stroke="#cbd5e1" stroke-width="1" stroke-dasharray="4 3"/>
+    <text x="28" y="582" class="card-title"><tspan fill="#94a3b8">▸ </tspan>Flagship behavior</text>
+    <text x="28" y="602" class="body">Composes citekeys, duplicates, metadata gaps, tag drift, and live attachment checks into one CI-friendly report.</text>
   </g>
 </svg>
