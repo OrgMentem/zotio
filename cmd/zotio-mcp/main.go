@@ -5,6 +5,9 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
+	"crypto/subtle"
+	"encoding/hex"
 	"errors"
 	"flag"
 	"fmt"
@@ -59,6 +62,8 @@ func main() {
 	// hardened NewStdioServer path below instead (see field-mcp-transport).
 	transport := flag.String("transport", defaultTransport(), "MCP transport: stdio | http")
 	addr := flag.String("addr", defaultHTTPAddr, "bind address for http transport (host:port or :port)")
+	mcpAuthToken := flag.String("mcp-auth-token", "", "bearer token required by the http transport (falls back to ZOTIO_MCP_TOKEN; auto-generated if unset)")
+	allowUnauth := flag.Bool("allow-unauthenticated", false, "disable bearer-token auth for the http transport (NOT recommended; loopback is not a per-user boundary)")
 	flag.Parse()
 
 	// PATCH(glean field-mcp-transport): stdio MCP uses stdout as the JSON-RPC
@@ -86,9 +91,26 @@ func main() {
 			os.Exit(1)
 		}
 	case "http":
-		httpSrv := newHardenedStreamableHTTPServer(s, *addr)
-		if !isLoopbackHTTPAddr(*addr) { // PATCH(glean http-harden): warn when the unauthenticated MCP HTTP surface is exposed off-host.
-			fmt.Fprintf(os.Stderr, "WARNING: Zotero MCP HTTP surface at %s is reachable by other hosts; it includes unauthenticated typed tools with read+write access to the user's Zotero account, and the operator is responsible for network controls.\n", *addr)
+		// PATCH(glean zotio-0c42fedfe1133cf4): loopback is not a per-user
+		// boundary — a co-resident local user (or a non-browser local client)
+		// can reach the port. Require a bearer token by default (auto-generated
+		// and printed once) unless --allow-unauthenticated is passed.
+		authToken, tokSource, tokGenerated, tokErr := resolveMCPAuthToken(*mcpAuthToken, *allowUnauth)
+		if tokErr != nil {
+			fmt.Fprintf(os.Stderr, "MCP server error: cannot generate auth token: %v\n", tokErr)
+			os.Exit(1)
+		}
+		httpSrv := newHardenedStreamableHTTPServer(s, *addr, authToken)
+		if !isLoopbackHTTPAddr(*addr) { // PATCH(glean http-harden): warn when the MCP HTTP surface is exposed off-host.
+			fmt.Fprintf(os.Stderr, "WARNING: Zotero MCP HTTP surface at %s is reachable by other hosts; it exposes typed tools with read+write access to the user's Zotero account, and the operator is responsible for network controls.\n", *addr)
+		}
+		switch {
+		case authToken == "":
+			fmt.Fprintln(os.Stderr, "WARNING: MCP HTTP transport is running WITHOUT authentication (--allow-unauthenticated); any local process or reachable host can invoke read+write tools.")
+		case tokGenerated:
+			fmt.Fprintf(os.Stderr, "zotio-mcp: HTTP transport requires a bearer token. Generated one for this run (pin it via --mcp-auth-token or ZOTIO_MCP_TOKEN):\n  Authorization: Bearer %s\n", authToken)
+		default:
+			fmt.Fprintf(os.Stderr, "zotio-mcp: HTTP transport requires a bearer token (source: %s).\n", tokSource)
 		}
 		fmt.Fprintf(os.Stderr, "zotio-mcp serving MCP over streamable HTTP at %s\n", *addr)
 
@@ -135,12 +157,20 @@ const maxMCPHTTPBodyBytes = 4 << 20 // PATCH(glean http-harden): cap POST bodies
 // PATCH(glean http-harden): route mcp-go through a custom HTTP server so POST
 // bodies are capped, browser-origin requests are constrained, and the transport
 // can drain via StreamableHTTPServer.Shutdown.
-func newHardenedStreamableHTTPServer(mcpServer *server.MCPServer, addr string) *server.StreamableHTTPServer {
+func newHardenedStreamableHTTPServer(mcpServer *server.MCPServer, addr, authToken string) *server.StreamableHTTPServer {
 	var httpSrv *server.StreamableHTTPServer
 	mux := http.NewServeMux()
 	mux.HandleFunc("/mcp", func(w http.ResponseWriter, r *http.Request) {
 		if err := validateMCPHTTPRequest(addr, r); err != nil {
 			http.Error(w, err.Error(), http.StatusForbidden)
+			return
+		}
+		// PATCH(glean zotio-0c42fedfe1133cf4): authenticate every request before
+		// mcp-go sees it. Empty token means auth was explicitly disabled via
+		// --allow-unauthenticated.
+		if authToken != "" && !validBearerToken(r, authToken) {
+			w.Header().Set("WWW-Authenticate", "Bearer")
+			http.Error(w, "missing or invalid bearer token", http.StatusUnauthorized)
 			return
 		}
 		if r.Method == http.MethodPost {
@@ -248,4 +278,37 @@ func isLoopbackHTTPAddr(addr string) bool {
 		return false
 	}
 	return ip.IsLoopback()
+}
+
+// validBearerToken reports whether r carries the expected bearer token, using a
+// constant-time comparison. PATCH(glean zotio-0c42fedfe1133cf4).
+func validBearerToken(r *http.Request, token string) bool {
+	const prefix = "Bearer "
+	h := r.Header.Get("Authorization")
+	if len(h) <= len(prefix) || !strings.EqualFold(h[:len(prefix)], prefix) {
+		return false
+	}
+	got := strings.TrimSpace(h[len(prefix):])
+	return subtle.ConstantTimeCompare([]byte(got), []byte(token)) == 1
+}
+
+// resolveMCPAuthToken picks the bearer token the HTTP transport enforces:
+// --mcp-auth-token, then ZOTIO_MCP_TOKEN, else a freshly generated one. It
+// returns an empty token (auth disabled) only when allowUnauth is set.
+// PATCH(glean zotio-0c42fedfe1133cf4).
+func resolveMCPAuthToken(flagToken string, allowUnauth bool) (token, source string, generated bool, err error) {
+	if allowUnauth {
+		return "", "", false, nil
+	}
+	if flagToken != "" {
+		return flagToken, "flag:--mcp-auth-token", false, nil
+	}
+	if v := os.Getenv("ZOTIO_MCP_TOKEN"); v != "" {
+		return v, "env:ZOTIO_MCP_TOKEN", false, nil
+	}
+	buf := make([]byte, 32)
+	if _, err := rand.Read(buf); err != nil {
+		return "", "", false, err
+	}
+	return hex.EncodeToString(buf), "generated", true, nil
 }
