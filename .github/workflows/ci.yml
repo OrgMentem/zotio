@@ -9,6 +9,21 @@ permissions:
   contents: read
 
 jobs:
+  # PATCH(glean zotio-eae156a8): fail CI if go.mod/go.sum drift from source (a reprint silently reverted security bumps once).
+  tidy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+      - uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6
+        with:
+          go-version: '1.26.x'
+      - name: Check module drift
+        run: |
+          go mod tidy
+          git diff --exit-code go.mod go.sum
+      - name: Verify modules
+        run: go mod verify
+
   format:
     runs-on: ubuntu-latest
     steps:
