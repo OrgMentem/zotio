@@ -62,17 +62,11 @@ func newTagsRenameCmd(flags *rootFlags) *cobra.Command {
 			}
 			if flags.dryRun {
 				c.DryRun = false
-				data, err := c.Get("/items", map[string]string{
-					"tag":   flagFrom,
-					"limit": fmt.Sprintf("%d", flagLimit),
-				})
+				// PATCH(glean tag-rename-pagination): dry-run previews the same
+				// paginated item set as apply instead of only the first API page.
+				updates, err := listTagRenameUpdates(c, flagFrom, flagTo, flagLimit)
 				if err != nil {
 					return classifyAPIError(err, flags)
-				}
-
-				updates, err := buildTagRenameUpdates(data, flagFrom, flagTo)
-				if err != nil {
-					return err
 				}
 				results := tagRenameResults(updates, flagFrom, flagTo, "dry_run")
 				if flags.asJSON {
@@ -125,16 +119,41 @@ func renameTag(c *client.Client, oldName, newName string) (string, any, error) {
 	return renameTagWithLimit(c, oldName, newName, 100)
 }
 
-func renameTagWithLimit(c *client.Client, oldName, newName string, limit int) (string, any, error) {
-	data, err := c.Get("/items", map[string]string{
-		"tag":   oldName,
-		"limit": fmt.Sprintf("%d", limit),
-	})
-	if err != nil {
-		return "failed", err.Error(), err
+func listTagRenameUpdates(c *client.Client, oldName, newName string, limit int) ([]tagRenameUpdate, error) {
+	// PATCH(glean tag-rename-pagination): Zotero caps /items?tag pages, so walk
+	// start offsets until a short page instead of reporting the first page as a
+	// complete rename.
+	if limit > 100 {
+		limit = 100
 	}
+	var all []tagRenameUpdate
+	for start := 0; ; start += limit {
+		data, err := c.Get("/items", map[string]string{
+			"tag":   oldName,
+			"limit": fmt.Sprintf("%d", limit),
+			"start": fmt.Sprintf("%d", start),
+		})
+		if err != nil {
+			return nil, err
+		}
+		updates, err := buildTagRenameUpdates(data, oldName, newName)
+		if err != nil {
+			return nil, err
+		}
+		all = append(all, updates...)
+		var page []json.RawMessage
+		if err := json.Unmarshal(data, &page); err != nil {
+			return nil, fmt.Errorf("parsing items page: %w", err)
+		}
+		if len(page) < limit {
+			break
+		}
+	}
+	return all, nil
+}
 
-	updates, err := buildTagRenameUpdates(data, oldName, newName)
+func renameTagWithLimit(c *client.Client, oldName, newName string, limit int) (string, any, error) {
+	updates, err := listTagRenameUpdates(c, oldName, newName, limit)
 	if err != nil {
 		return "failed", err.Error(), err
 	}

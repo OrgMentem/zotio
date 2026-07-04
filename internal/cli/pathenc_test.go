@@ -76,3 +76,23 @@ func TestAnnotationsExportEscapesCollectionPathSegment(t *testing.T) {
 	}
 	assertFileMode(t, outputFile, 0o600)
 }
+
+func TestReplacePathParamEscapesPathMetacharacters(t *testing.T) {
+	cases := []struct {
+		name  string
+		value string
+		want  string
+	}{
+		{name: "slash stays inside one segment", value: "ABC/items", want: "/items/ABC%2Fitems/tags"},
+		{name: "query delimiter is escaped", value: "K?format=bib", want: "/items/K%3Fformat=bib/tags"},
+		{name: "fragment delimiter is escaped", value: "K#children", want: "/items/K%23children/tags"},
+		{name: "valid zotero key unchanged", value: "ABCD1234", want: "/items/ABCD1234/tags"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := replacePathParam("/items/{itemKey}/tags", "itemKey", tc.value); got != tc.want {
+				t.Fatalf("replacePathParam escaped path = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}

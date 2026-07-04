@@ -3,7 +3,13 @@
 
 package mcp
 
-import "testing"
+import (
+	"context"
+	"strings"
+	"testing"
+
+	mcplib "github.com/mark3labs/mcp-go/mcp"
+)
 
 // TestMCPPathValueNeutralizesInjection proves the makeAPIHandler path-parameter
 // substitution can no longer be steered to a different endpoint by a value that
@@ -25,4 +31,39 @@ func TestMCPPathValueNeutralizesInjection(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestMakeAPIHandlerRejectsTypedWritesBeforeLoadingConfig(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	handler := makeAPIHandler("POST", "/collections", nil, nil)
+	req := mcplib.CallToolRequest{}
+	req.Params.Arguments = map[string]any{"name": "should not matter"}
+
+	res, err := handler(context.Background(), req)
+	if err != nil {
+		t.Fatalf("handler returned protocol error: %v", err)
+	}
+	if res == nil || !res.IsError {
+		t.Fatalf("handler result = %+v, want MCP error result", res)
+	}
+	text := mcpToolResultText(t, res)
+	if !strings.Contains(text, "typed MCP endpoint writes are disabled") {
+		t.Fatalf("error result text = %q, want typed write refusal", text)
+	}
+	if strings.Contains(text, "loading config") {
+		t.Fatalf("write refusal tried to create/load a client before rejecting: %q", text)
+	}
+}
+
+func mcpToolResultText(t *testing.T, res *mcplib.CallToolResult) string {
+	t.Helper()
+	if res == nil || len(res.Content) == 0 {
+		return ""
+	}
+	tc, ok := mcplib.AsTextContent(res.Content[0])
+	if !ok {
+		t.Fatalf("content[0] is not text: %T", res.Content[0])
+	}
+	return tc.Text
 }

@@ -117,6 +117,35 @@ func TestBuildImportItemFromURL_PrivateHostFallsBack(t *testing.T) {
 	}
 }
 
+func TestExternalHTTPClientRejectsRedirectToPrivateHost(t *testing.T) {
+	targetHit := false
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		targetHit = true
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer target.Close()
+
+	redirector := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, target.URL+"/private", http.StatusFound)
+	}))
+	defer redirector.Close()
+
+	req, err := http.NewRequest(http.MethodGet, redirector.URL+"/metadata", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err := externalHTTPClient(redirector.Client(), false).Do(req)
+	if resp != nil && resp.Body != nil {
+		_ = resp.Body.Close()
+	}
+	if err == nil {
+		t.Fatal("redirect to private host succeeded, want rejection")
+	}
+	if targetHit {
+		t.Fatal("redirect target was reached; private redirect should be blocked before follow-up request")
+	}
+}
+
 func TestBuildImportItemFromURL_Fallback(t *testing.T) {
 	pdfsrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/pdf")

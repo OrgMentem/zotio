@@ -85,6 +85,15 @@ func TestVaultSyncCreatesObsidianNote(t *testing.T) {
 	}
 }
 
+func TestVaultZoteroLinksEscapeKeys(t *testing.T) {
+	if got, want := zoteroSelectLink("K/1?x#frag"), "zotero://select/library/items/K%2F1%3Fx%23frag"; got != want {
+		t.Fatalf("zoteroSelectLink escaped key = %q, want %q", got, want)
+	}
+	if got, want := zoteroOpenPDFLink("ATT/1?x", "ANN 1&frag"), "zotero://open-pdf/library/items/ATT%2F1%3Fx?annotation=ANN+1%26frag"; got != want {
+		t.Fatalf("zoteroOpenPDFLink escaped key/query = %q, want %q", got, want)
+	}
+}
+
 func TestVaultSyncIdempotent(t *testing.T) {
 	seedVaultStore(t)
 	vault := filepath.Join(t.TempDir(), "vault")

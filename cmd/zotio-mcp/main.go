@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"os/signal"
 	"strings"
@@ -132,11 +133,16 @@ func defaultTransport() string {
 const maxMCPHTTPBodyBytes = 4 << 20 // PATCH(glean http-harden): cap POST bodies before mcp-go's io.ReadAll.
 
 // PATCH(glean http-harden): route mcp-go through a custom HTTP server so POST
-// bodies are capped and the transport can drain via StreamableHTTPServer.Shutdown.
+// bodies are capped, browser-origin requests are constrained, and the transport
+// can drain via StreamableHTTPServer.Shutdown.
 func newHardenedStreamableHTTPServer(mcpServer *server.MCPServer, addr string) *server.StreamableHTTPServer {
 	var httpSrv *server.StreamableHTTPServer
 	mux := http.NewServeMux()
 	mux.HandleFunc("/mcp", func(w http.ResponseWriter, r *http.Request) {
+		if err := validateMCPHTTPRequest(addr, r); err != nil {
+			http.Error(w, err.Error(), http.StatusForbidden)
+			return
+		}
 		if r.Method == http.MethodPost {
 			r.Body = http.MaxBytesReader(w, r.Body, maxMCPHTTPBodyBytes)
 		}
@@ -149,6 +155,82 @@ func newHardenedStreamableHTTPServer(mcpServer *server.MCPServer, addr string) *
 	}
 	httpSrv = server.NewStreamableHTTPServer(mcpServer, server.WithStreamableHTTPServer(httpServer))
 	return httpSrv
+}
+
+// PATCH(glean http-origin-host): local MCP HTTP servers are reachable from a
+// browser. Validate Host and Origin before mcp-go sees the request so loopback
+// CSRF/DNS-rebinding attempts cannot ride an ambient local server.
+func validateMCPHTTPRequest(addr string, r *http.Request) error {
+	if !hostAllowedForMCP(addr, r.Host) {
+		return fmt.Errorf("forbidden Host header")
+	}
+	origin := strings.TrimSpace(r.Header.Get("Origin"))
+	if origin == "" {
+		return nil
+	}
+	u, err := url.ParseRequestURI(origin)
+	if err != nil || u.Scheme == "" || u.Host == "" {
+		return fmt.Errorf("forbidden Origin header")
+	}
+	if u.Scheme != "http" && u.Scheme != "https" {
+		return fmt.Errorf("forbidden Origin header")
+	}
+	if !originAllowedForMCP(addr, u) {
+		return fmt.Errorf("forbidden Origin header")
+	}
+	return nil
+}
+
+func originAllowedForMCP(addr string, u *url.URL) bool {
+	hostport := u.Host
+	if u.Port() == "" {
+		hostport = net.JoinHostPort(u.Hostname(), defaultPortForScheme(u.Scheme))
+	}
+	return hostAllowedForMCP(addr, hostport)
+}
+
+func defaultPortForScheme(scheme string) string {
+	switch scheme {
+	case "http":
+		return "80"
+	case "https":
+		return "443"
+	default:
+		return ""
+	}
+}
+
+func hostAllowedForMCP(addr, hostport string) bool {
+	host, port, err := net.SplitHostPort(addr)
+	if err != nil {
+		return false
+	}
+	reqHost, reqPort, err := net.SplitHostPort(hostport)
+	if err != nil {
+		reqHost = hostport
+		reqPort = port
+	}
+	host = strings.Trim(host, "[]")
+	reqHost = strings.Trim(reqHost, "[]")
+	if port != "" && reqPort != "" && port != reqPort {
+		return false
+	}
+	if strings.EqualFold(reqHost, host) {
+		return true
+	}
+	if isLoopbackHost(host) && isLoopbackHost(reqHost) {
+		return true
+	}
+	return false
+}
+
+func isLoopbackHost(host string) bool {
+	host = strings.Trim(host, "[]")
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }
 
 // PATCH(glean http-harden): classify only explicit loopback bind hosts as local.

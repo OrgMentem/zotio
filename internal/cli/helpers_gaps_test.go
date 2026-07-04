@@ -147,8 +147,8 @@ func TestHelpersStringsAndSuggestions(t *testing.T) {
 		})
 	}
 
-	if got := replacePathParam("/users/{user}/items/{item}", "item", "a/b c?x=1"); got != "/users/{user}/items/a/b c?x=1" {
-		t.Fatalf("replacePathParam preserved raw replacement = %q", got)
+	if got := replacePathParam("/users/{user}/items/{item}", "item", "a/b c?x=1"); got != "/users/{user}/items/a%2Fb%20c%3Fx=1" {
+		t.Fatalf("replacePathParam escaped path metacharacters = %q", got)
 	}
 
 	caseTests := []struct {

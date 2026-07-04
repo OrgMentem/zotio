@@ -59,12 +59,17 @@ translators, but browser-side web translation is not run by the desktop server.`
 }
 
 func fetchTranslatorHTML(ctx context.Context, pageURL string, flags *rootFlags) (string, error) {
+	// PATCH(glean translator-ssrf): translator diagnostics fetch caller-supplied
+	// URLs, so apply the same public HTTP(S) + redirect gate as import url.
+	if err := validateExternalHTTPURL(pageURL, false); err != nil {
+		return "", err
+	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, pageURL, nil)
 	if err != nil {
 		return "", err
 	}
 	req.Header.Set("User-Agent", "zotio/1.0 translator-diagnostics")
-	client := &http.Client{Timeout: flags.timeout}
+	client := externalFetchHTTPClient(&http.Client{Timeout: flags.timeout}, false)
 	resp, err := client.Do(req)
 	if err != nil {
 		return "", fmt.Errorf("fetching %s: %w", pageURL, err)

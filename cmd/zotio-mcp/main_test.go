@@ -1,6 +1,10 @@
 package main
 
-import "testing"
+import (
+	"net/http"
+	"strings"
+	"testing"
+)
 
 func TestIsLoopbackHTTPAddr(t *testing.T) {
 	t.Parallel()
@@ -26,5 +30,52 @@ func TestIsLoopbackHTTPAddr(t *testing.T) {
 				t.Fatalf("isLoopbackHTTPAddr(%q) = %v, want %v", tt.addr, got, tt.want)
 			}
 		})
+	}
+}
+
+func TestValidateMCPHTTPRequestAllowsSameLoopbackOrigin(t *testing.T) {
+	req, err := http.NewRequest(http.MethodPost, "http://127.0.0.1:7777/mcp", strings.NewReader("{}"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Host = "localhost:7777"
+	req.Header.Set("Origin", "http://localhost:7777")
+
+	if err := validateMCPHTTPRequest("127.0.0.1:7777", req); err != nil {
+		t.Fatalf("validateMCPHTTPRequest rejected same loopback host/origin: %v", err)
+	}
+}
+
+func TestValidateMCPHTTPRequestRejectsOriginWithoutMatchingExplicitPort(t *testing.T) {
+	req, err := http.NewRequest(http.MethodPost, "http://127.0.0.1:7777/mcp", strings.NewReader("{}"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Host = "127.0.0.1:7777"
+	req.Header.Set("Origin", "http://127.0.0.1")
+
+	if err := validateMCPHTTPRequest("127.0.0.1:7777", req); err == nil || !strings.Contains(err.Error(), "Origin") {
+		t.Fatalf("origin without explicit matching port error = %v, want forbidden Origin", err)
+	}
+}
+
+func TestValidateMCPHTTPRequestRejectsForeignHostAndOrigin(t *testing.T) {
+	hostReq, err := http.NewRequest(http.MethodPost, "http://evil.example:7777/mcp", strings.NewReader("{}"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	hostReq.Host = "evil.example:7777"
+	if err := validateMCPHTTPRequest("127.0.0.1:7777", hostReq); err == nil || !strings.Contains(err.Error(), "Host") {
+		t.Fatalf("foreign Host error = %v, want forbidden Host", err)
+	}
+
+	originReq, err := http.NewRequest(http.MethodPost, "http://127.0.0.1:7777/mcp", strings.NewReader("{}"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	originReq.Host = "127.0.0.1:7777"
+	originReq.Header.Set("Origin", "https://attacker.example")
+	if err := validateMCPHTTPRequest("127.0.0.1:7777", originReq); err == nil || !strings.Contains(err.Error(), "Origin") {
+		t.Fatalf("foreign Origin error = %v, want forbidden Origin", err)
 	}
 }

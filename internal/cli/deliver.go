@@ -5,7 +5,9 @@ package cli
 
 import (
 	"bytes"
+	"context"
 	"fmt"
+	"net"
 	"net/http"
 	"net/netip"
 	neturl "net/url"
@@ -115,10 +117,101 @@ func validateExternalHTTPURL(raw string, requireHTTPS bool) error {
 	if host == "" {
 		return fmt.Errorf("URL must include a host")
 	}
-	if !allowPrivateOutboundForTests && outboundHostIsPrivate(host) {
-		return fmt.Errorf("host %q is local or private", host)
+	if !allowPrivateOutboundForTests {
+		if outboundHostIsPrivate(host) {
+			return fmt.Errorf("host %q is local or private", host)
+		}
+		if err := resolvePublicOutboundHost(host); err != nil {
+			return err
+		}
 	}
 	return nil
+}
+
+func resolvePublicOutboundHost(host string) error {
+	_, err := publicOutboundIPs(context.Background(), host)
+	if err != nil && strings.HasPrefix(err.Error(), "resolving host ") {
+		// URL validation is also used for stored links that are not fetched
+		// immediately. DNS failures are allowed there; fetches are bound to a
+		// vetted address later by publicDialContext.
+		return nil
+	}
+	return err
+}
+
+func publicOutboundIPs(ctx context.Context, host string) ([]string, error) {
+	if addr, err := netip.ParseAddr(strings.TrimSuffix(host, ".")); err == nil {
+		if outboundHostIsPrivate(addr.String()) {
+			return nil, fmt.Errorf("host %q is local or private", host)
+		}
+		return []string{addr.String()}, nil
+	}
+	addrs, err := net.DefaultResolver.LookupIPAddr(ctx, host)
+	if err != nil || len(addrs) == 0 {
+		return nil, fmt.Errorf("resolving host %q: %w", host, err)
+	}
+	ips := make([]string, 0, len(addrs))
+	for _, addr := range addrs {
+		if outboundHostIsPrivate(addr.IP.String()) {
+			// PATCH(glean ssrf-dns): reject public-looking hostnames that
+			// currently resolve to loopback/private/link-local/multicast ranges.
+			return nil, fmt.Errorf("host %q resolves to local or private address %s", host, addr.IP)
+		}
+		ips = append(ips, addr.IP.String())
+	}
+	return ips, nil
+}
+
+func externalHTTPClient(base *http.Client, requireHTTPS bool) *http.Client {
+	client := http.DefaultClient
+	if base != nil {
+		copied := *base
+		client = &copied
+	}
+	client.CheckRedirect = func(req *http.Request, via []*http.Request) error {
+		// PATCH(glean ssrf-redirect): re-run the same public-host gate on each
+		// redirect target; a safe first URL must not bounce into loopback,
+		// RFC1918/link-local, or a disallowed scheme.
+		if err := validateExternalHTTPURL(req.URL.String(), requireHTTPS); err != nil {
+			return err
+		}
+		return nil
+	}
+	return client
+}
+
+func externalFetchHTTPClient(base *http.Client, requireHTTPS bool) *http.Client {
+	client := externalHTTPClient(base, requireHTTPS)
+	if client.Transport == nil {
+		transport := http.DefaultTransport.(*http.Transport).Clone()
+		transport.DialContext = publicDialContext
+		client.Transport = transport
+	}
+	return client
+}
+
+func publicDialContext(ctx context.Context, network, address string) (net.Conn, error) {
+	host, port, err := net.SplitHostPort(address)
+	if err != nil {
+		return nil, err
+	}
+	ips, err := publicOutboundIPs(ctx, host)
+	if err != nil {
+		return nil, err
+	}
+	var lastErr error
+	var dialer net.Dialer
+	for _, ip := range ips {
+		conn, err := dialer.DialContext(ctx, network, net.JoinHostPort(ip, port))
+		if err == nil {
+			return conn, nil
+		}
+		lastErr = err
+	}
+	if lastErr != nil {
+		return nil, lastErr
+	}
+	return nil, fmt.Errorf("host %q did not resolve to a dialable public address", host)
 }
 
 func outboundHostIsPrivate(host string) bool {

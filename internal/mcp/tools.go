@@ -389,6 +389,13 @@ func mcpPathValue(v any) string {
 // makeAPIHandler creates a generic MCP tool handler for an API endpoint.
 func makeAPIHandler(method, pathTemplate string, bindings []mcpParamBinding, positionalParams []string) server.ToolHandlerFunc {
 	return func(ctx context.Context, req mcplib.CallToolRequest) (*mcplib.CallToolResult, error) {
+		// PATCH(glean mcp-write-gate): typed spec endpoint tools bypass the
+		// CLI mutation envelope (dry-run preview, --yes approval, and journal).
+		// Keep the typed surface read-only; agents must use command_run/mirror
+		// for writes so the same safety gates as the CLI apply.
+		if method != "GET" {
+			return mcplib.NewToolResultError("typed MCP endpoint writes are disabled; use command_run with the CLI mutation gate (--dry-run preview, then --yes to apply)"), nil
+		}
 		c, err := newMCPClient()
 		if err != nil {
 			return mcplib.NewToolResultError(err.Error()), nil
@@ -528,7 +535,25 @@ func newMCPClient() (*client.Client, error) {
 
 func dbPath() string {
 	home, _ := os.UserHomeDir()
-	return filepath.Join(home, ".local", "share", "zotio", "data.db")
+	file := "data.db"
+	if groupID := strings.TrimSpace(os.Getenv("ZOTERO_GROUP")); groupID != "" && isDigits(groupID) {
+		// PATCH(glean mcp-group-db): native MCP sql/search/resources must read
+		// the same group-scoped mirror selected for cobratree commands.
+		file = "data-group-" + groupID + ".db"
+	}
+	return filepath.Join(home, ".local", "share", "zotio", file)
+}
+
+func isDigits(s string) bool {
+	if s == "" {
+		return false
+	}
+	for _, r := range s {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 // Note: MCP tools use their own dbPath() because they are in a separate package (main, not cli).
@@ -581,11 +606,76 @@ func handleSearch(ctx context.Context, req mcplib.CallToolRequest) (*mcplib.Call
 // caught by OpenReadOnly's mode=ro one layer down. PRAGMA, ATTACH, VACUUM,
 // and every other DDL/DML keyword fail at this gate before reaching SQLite.
 func validateReadOnlyQuery(query string) error {
-	upper := strings.ToUpper(stripLeadingSQLNoise(query))
+	trimmed := stripLeadingSQLNoise(query)
+	upper := strings.ToUpper(trimmed)
 	if !strings.HasPrefix(upper, "SELECT") && !strings.HasPrefix(upper, "WITH") {
 		return fmt.Errorf("only SELECT queries are allowed")
 	}
+	if hasAdditionalSQLStatement(trimmed) {
+		// PATCH(glean sql-single-statement): modernc.org/sqlite executes
+		// semicolon-stacked statements in one Query call, so a SELECT prefix is
+		// insufficient. Allow one SELECT/WITH statement with trailing comments
+		// or separators only; reject any second executable statement.
+		return fmt.Errorf("only a single SELECT statement is allowed")
+	}
 	return nil
+}
+
+func hasAdditionalSQLStatement(query string) bool {
+	inSingle := false
+	inDouble := false
+	inLineComment := false
+	inBlockComment := false
+	for i := 0; i < len(query); i++ {
+		c := query[i]
+		next := byte(0)
+		if i+1 < len(query) {
+			next = query[i+1]
+		}
+		switch {
+		case inLineComment:
+			if c == '\n' {
+				inLineComment = false
+			}
+		case inBlockComment:
+			if c == '*' && next == '/' {
+				inBlockComment = false
+				i++
+			}
+		case inSingle:
+			if c == '\'' {
+				if next == '\'' {
+					i++
+				} else {
+					inSingle = false
+				}
+			}
+		case inDouble:
+			if c == '"' {
+				if next == '"' {
+					i++
+				} else {
+					inDouble = false
+				}
+			}
+		default:
+			switch {
+			case c == '-' && next == '-':
+				inLineComment = true
+				i++
+			case c == '/' && next == '*':
+				inBlockComment = true
+				i++
+			case c == '\'':
+				inSingle = true
+			case c == '"':
+				inDouble = true
+			case c == ';':
+				return stripLeadingSQLNoise(query[i+1:]) != ""
+			}
+		}
+	}
+	return false
 }
 
 // stripLeadingSQLNoise removes leading whitespace, SQL line comments

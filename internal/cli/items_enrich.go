@@ -872,7 +872,7 @@ func getJSON(ctx context.Context, httpClient *http.Client, rawURL string, out an
 	}
 	req.Header.Set("Accept", "application/json")
 	req.Header.Set("User-Agent", "zotio/1.0.0")
-	resp, err := httpClient.Do(req)
+	resp, err := externalHTTPClient(httpClient, false).Do(req)
 	if err != nil {
 		return err
 	}

@@ -4,6 +4,7 @@
 package mcp
 
 import (
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -76,6 +77,54 @@ func TestValidateReadOnlyQuery_RejectsBypassVectors(t *testing.T) {
 		if err := validateReadOnlyQuery(q); err == nil {
 			t.Errorf("validateReadOnlyQuery(%q) = nil, want error", q)
 		}
+	}
+}
+
+// TestValidateReadOnlyQueryRejectsStackedStatements pins the single-statement
+// boundary: a SELECT/WITH prefix is still read-only only when no second
+// executable SQL statement follows a semicolon. Semicolons inside strings and
+// comments remain data, not statement separators.
+func TestValidateReadOnlyQueryRejectsStackedStatements(t *testing.T) {
+	allowed := []string{
+		"SELECT ';' AS literal",
+		`SELECT "not;separator"`,
+		"SELECT 1; -- trailing comment",
+		"SELECT 1; /* trailing comment */",
+		"WITH r AS (SELECT ';') SELECT * FROM r;",
+	}
+	for _, q := range allowed {
+		if err := validateReadOnlyQuery(q); err != nil {
+			t.Errorf("validateReadOnlyQuery(%q) = %v, want nil", q, err)
+		}
+	}
+
+	rejected := []string{
+		"SELECT 1; VACUUM INTO '/tmp/exfil.db'",
+		"SELECT 1; ATTACH DATABASE '/tmp/exfil.db' AS exfil",
+		"SELECT 1; INSERT INTO resources VALUES ('x', 'items', '{}')",
+		"WITH r AS (SELECT 1) SELECT * FROM r; DELETE FROM resources",
+		"SELECT ';'; UPDATE resources SET resource_type = 'items'",
+		"SELECT 1 /* ; */; DROP TABLE resources",
+	}
+	for _, q := range rejected {
+		if err := validateReadOnlyQuery(q); err == nil {
+			t.Errorf("validateReadOnlyQuery(%q) = nil, want stacked-statement error", q)
+		}
+	}
+}
+
+func TestDBPathUsesNumericZoteroGroup(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	t.Setenv("ZOTERO_GROUP", "12345")
+	if got, want := dbPath(), filepath.Join(home, ".local", "share", "zotio", "data-group-12345.db"); got != want {
+		t.Fatalf("dbPath() with numeric group = %q, want %q", got, want)
+	}
+
+	t.Setenv("ZOTERO_GROUP", "team-alpha")
+	if got, want := dbPath(), filepath.Join(home, ".local", "share", "zotio", "data.db"); got != want {
+		t.Fatalf("dbPath() with non-numeric group = %q, want personal DB %q", got, want)
 	}
 }
 

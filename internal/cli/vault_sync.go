@@ -15,6 +15,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"net/url"
 	"os"
 	"path/filepath"
 	"sort"
@@ -677,11 +678,14 @@ func zoteroLibrarySegment() string {
 }
 
 func zoteroSelectLink(key string) string {
-	return "zotero://select/" + zoteroLibrarySegment() + "/items/" + key
+	// PATCH(glean vault-link-escape): deep-link path/query components can be
+	// rendered into Markdown/frontmatter; escape item and annotation keys before
+	// composing zotero:// URLs.
+	return "zotero://select/" + zoteroLibrarySegment() + "/items/" + url.PathEscape(key)
 }
 
 func zoteroOpenPDFLink(parentKey, annKey string) string {
-	return "zotero://open-pdf/" + zoteroLibrarySegment() + "/items/" + parentKey + "?annotation=" + annKey
+	return "zotero://open-pdf/" + zoteroLibrarySegment() + "/items/" + url.PathEscape(parentKey) + "?annotation=" + url.QueryEscape(annKey)
 }
 
 // --- annotation block (format-agnostic) ---

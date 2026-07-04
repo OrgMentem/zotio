@@ -10,6 +10,7 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
 	"io"
+	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -326,8 +327,12 @@ func truncate(s string, max int) string {
 func newTabWriter(w io.Writer) *tabwriter.Writer {
 	return tabwriter.NewWriter(w, 2, 4, 2, ' ', 0)
 }
+
+// PATCH(glean path-param-escape): percent-encode user-controlled path
+// parameters before splicing them into endpoint templates. Raw replacement let
+// "/" and "?" retarget generated commands to sibling resources.
 func replacePathParam(path, name, value string) string {
-	return strings.ReplaceAll(path, "{"+name+"}", value)
+	return strings.ReplaceAll(path, "{"+name+"}", url.PathEscape(value))
 }
 
 // paginatedGet fetches pages and concatenates array results. The headers

@@ -431,6 +431,7 @@ func syncResource(c syncHTTPClient, db *store.Store, resource string, sinceVersi
 	var consumedTotal int
 	var totalCount int
 	anomalyEmitted := false
+	completedNaturally := false
 
 	for {
 		params := map[string]string{}
@@ -485,6 +486,7 @@ func syncResource(c syncHTTPClient, db *store.Store, resource string, sinceVersi
 		if len(items) == 0 {
 			var emptyPage []json.RawMessage
 			if err := json.Unmarshal(data, &emptyPage); err == nil && len(emptyPage) == 0 {
+				completedNaturally = true
 				break
 			}
 			// Single object response - try to store as-is
@@ -579,6 +581,12 @@ func syncResource(c syncHTTPClient, db *store.Store, resource string, sinceVersi
 
 		pagesFetched++
 
+		terminalPage := !hasMore || len(items) < pageSize.limit || nextCursor == ""
+		if terminalPage {
+			completedNaturally = true
+			break
+		}
+
 		// Enforce page ceiling to prevent runaway syncs on large-catalog APIs
 		if maxPages > 0 && pagesFetched >= maxPages {
 			if humanFriendly {
@@ -592,9 +600,8 @@ func syncResource(c syncHTTPClient, db *store.Store, resource string, sinceVersi
 		// Sticky-cursor detector: if the API echoes the same next cursor across
 		// consecutive pages without advancing, abort to prevent burning the
 		// --max-pages budget on a non-terminating loop. Checked AFTER the cap
-		// guard so cap-hit takes precedence; checked BEFORE the natural-end
-		// check below because the natural-end check would not catch a sticky
-		// non-empty cursor on its own.
+		// guard so cap-hit takes precedence; terminal pages have already exited
+		// above.
 		if nextCursor != "" && nextCursor == lastNextCursor {
 			if humanFriendly {
 				fmt.Fprintf(os.Stderr, "\n  %s: API returned the same next cursor across two pages; aborting to prevent budget waste.\n", resource)
@@ -605,20 +612,18 @@ func syncResource(c syncHTTPClient, db *store.Store, resource string, sinceVersi
 		}
 		lastNextCursor = nextCursor
 
-		// Determine if there are more pages
-		if !hasMore || len(items) < pageSize.limit || nextCursor == "" {
-			break
-		}
-
 		cursor = nextCursor
 	}
 
-	// Final sync state: clear cursor (sync is complete), update count
-	_ = db.SaveSyncState(resource, "", totalCount)
-	// Persist the library version checkpoint so the next run can do a true
-	// version-based incremental sync via the `since` parameter.
-	if libraryVersion > 0 {
-		_ = db.SaveLibraryVersion(resource, libraryVersion)
+	// Final sync state only advances checkpoints after natural pagination
+	// completion. PATCH(glean sync-incomplete-checkpoint): defensive exits
+	// (--max-pages or stuck cursor) leave the resume cursor and since-version
+	// checkpoint intact so a later sync cannot skip unfetched pages.
+	if completedNaturally {
+		_ = db.SaveSyncState(resource, "", totalCount)
+		if libraryVersion > 0 {
+			_ = db.SaveLibraryVersion(resource, libraryVersion)
+		}
 	}
 
 	// F4b symptom probe: if items were consumed and successfully

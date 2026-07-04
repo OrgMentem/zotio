@@ -10,11 +10,14 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 
 	mcplib "github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
 	"github.com/spf13/cobra"
 )
+
+var mirroredCommandMu sync.Mutex
 
 // inProcessHandler runs a mirrored Cobra command in-process via the shared
 // runMirroredInProcess core. PATCH(glean c4ke): replaces the previous shell-out
@@ -34,6 +37,12 @@ func inProcessHandler(rootFactory func() *cobra.Command, commandPath []string) s
 // --agent/--json and the other global formatting/confirmation flags. Shared by
 // the command mirror (inProcessHandler) and the orchestration facade (command_run).
 func runMirroredInProcess(ctx context.Context, rootFactory func() *cobra.Command, commandPath []string, args map[string]any) *mcplib.CallToolResult {
+	// PATCH(glean mcp-active-group-race): CLI package state (notably the
+	// group-selected local DB/API prefix) is still process-global. Serialize the
+	// in-process mirror so concurrent HTTP MCP requests cannot cross-contaminate
+	// library scope while commands run.
+	mirroredCommandMu.Lock()
+	defer mirroredCommandMu.Unlock()
 	root := rootFactory()
 	if root == nil {
 		return mcplib.NewToolResultError("failed to build command tree")

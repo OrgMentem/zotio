@@ -113,7 +113,7 @@ func fetchPageMeta(ctx context.Context, httpClient *http.Client, rawURL string) 
 	}
 	req.Header.Set("User-Agent", "zotio/1.0.0")
 	req.Header.Set("Accept", "text/html,application/xhtml+xml")
-	resp, err := httpClient.Do(req)
+	resp, err := externalFetchHTTPClient(httpClient, false).Do(req)
 	if err != nil {
 		return nil, "", false
 	}
