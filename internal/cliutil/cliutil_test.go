@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -93,6 +94,93 @@ func TestAuthErrorHelpers(t *testing.T) {
 	got := SanitizeErrorBody("token sk-abcdefghi Bearer abc.def key=secretvalue")
 	if got != "token [REDACTED] [REDACTED] [REDACTED]" {
 		t.Fatalf("SanitizeErrorBody redaction = %q", got)
+	}
+}
+
+func TestSanitizeErrorBodyWithSecrets(t *testing.T) {
+	straddlingSecret := "abcd12345678xyz"
+	straddlingInput := strings.Repeat("x", 195) + straddlingSecret + " tail"
+
+	tests := []struct {
+		name            string
+		in              string
+		secrets         []string
+		want            string
+		wantContains    []string
+		wantNotContains []string
+		wantTruncated   bool
+	}{
+		{
+			name:            "zotero api key header",
+			in:              "bad Zotero-API-Key: SECRETVALUE1234 body",
+			want:            "bad [REDACTED] body",
+			wantContains:    []string{"[REDACTED]"},
+			wantNotContains: []string{"SECRETVALUE1234"},
+		},
+		{
+			name:            "explicit reflected secret without prefix",
+			in:              "reflected abcd12345678xyz here",
+			secrets:         []string{"abcd12345678xyz"},
+			want:            "reflected [REDACTED] here",
+			wantContains:    []string{"[REDACTED]"},
+			wantNotContains: []string{"abcd12345678xyz"},
+		},
+		{
+			name:            "short explicit secret is ignored",
+			in:              "reflected short12 here",
+			secrets:         []string{"short12"},
+			want:            "reflected short12 here",
+			wantNotContains: []string{"[REDACTED]"},
+		},
+		{
+			name:            "existing credential shapes",
+			in:              "token sk-abcdefghi Bearer abc.def key=secretvalue",
+			want:            "token [REDACTED] [REDACTED] [REDACTED]",
+			wantContains:    []string{"[REDACTED]"},
+			wantNotContains: []string{"sk-abcdefghi", "abc.def", "secretvalue"},
+		},
+		{
+			name:            "secret crossing truncation boundary",
+			in:              straddlingInput,
+			secrets:         []string{straddlingSecret},
+			wantNotContains: []string{straddlingSecret, straddlingSecret[:5]},
+			wantTruncated:   true,
+		},
+	}
+
+	for _, tc := range tests {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			got := SanitizeErrorBodyWithSecrets(tc.in, tc.secrets...)
+			if tc.want != "" && got != tc.want {
+				t.Fatalf("SanitizeErrorBodyWithSecrets() = %q, want %q", got, tc.want)
+			}
+			for _, needle := range tc.wantContains {
+				if !strings.Contains(got, needle) {
+					t.Fatalf("SanitizeErrorBodyWithSecrets() = %q, want substring %q", got, needle)
+				}
+			}
+			for _, needle := range tc.wantNotContains {
+				if strings.Contains(got, needle) {
+					t.Fatalf("SanitizeErrorBodyWithSecrets() = %q, did not want substring %q", got, needle)
+				}
+			}
+			if tc.wantTruncated {
+				if !strings.HasSuffix(got, "...") {
+					t.Fatalf("SanitizeErrorBodyWithSecrets() = %q, want truncation suffix", got)
+				}
+				if len(got) != 203 {
+					t.Fatalf("len(SanitizeErrorBodyWithSecrets()) = %d, want 203", len(got))
+				}
+			}
+		})
+	}
+}
+
+func TestSanitizeErrorBodyMatchesSecretAwareVariantWithoutExplicitSecrets(t *testing.T) {
+	in := "token sk-abcdefghi Bearer abc.def key=secretvalue"
+	if got, want := SanitizeErrorBody(in), SanitizeErrorBodyWithSecrets(in); got != want {
+		t.Fatalf("SanitizeErrorBody() = %q, SanitizeErrorBodyWithSecrets() = %q", got, want)
 	}
 }
 

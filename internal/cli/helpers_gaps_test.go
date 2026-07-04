@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/spf13/cobra"
@@ -64,6 +65,36 @@ func TestHelpersClassifyAPIError(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			helpersTestAssertCLIError(t, classifyAPIError(tt.err, nil), tt.want)
 		})
+	}
+}
+
+func TestHelpersClassifyAPIErrorRedactsBadRequestAuthBody(t *testing.T) {
+	const secret = "MARKER_SECRET_9f8e7d6c"
+	t.Setenv("ZOTERO_API_KEY", secret)
+
+	err := &client.APIError{
+		Method:     "POST",
+		Path:       "/items",
+		StatusCode: 400,
+		Body:       "invalid key: Zotero-API-Key MARKER_SECRET_9f8e7d6c",
+	}
+
+	got := classifyAPIError(err, nil)
+	msg := got.Error()
+	// Regression guard for glean zotio-c3c6d04bb48b7e67: a previous %w-based
+	// implementation re-rendered client.APIError.Error() and leaked this body.
+	if strings.Contains(msg, secret) {
+		t.Fatalf("classifyAPIError() leaked API key in error text: %q", msg)
+	}
+	if !strings.Contains(msg, "zotio doctor") {
+		t.Fatalf("classifyAPIError() = %q, want zotio doctor hint", msg)
+	}
+	if code := ExitCode(got); code != 4 {
+		t.Fatalf("ExitCode(classifyAPIError()) = %d, want 4", code)
+	}
+	var apiErr *client.APIError
+	if !errors.As(got, &apiErr) {
+		t.Fatalf("errors.As(classifyAPIError(), *client.APIError) = false, want true")
 	}
 }
 

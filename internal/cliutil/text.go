@@ -112,12 +112,35 @@ func ClassifyHTTPError(msg string) HTTPErrorKind {
 	}
 }
 
+// credPatterns matches credential-shaped substrings in error bodies. Beyond
+// the generic sk-/Bearer/key= shapes carried over from the generator template,
+// it now recognizes this app's own Zotero-API-Key header scheme so a reflected
+// or echoed key is redacted even though it carries no sk-/Bearer prefix.
+// PATCH(glean zotio-c3c6d04bb48b7e67): added the (zotero-api-)key[:=] and
+// Zotero-API-Key header forms; hoisted to package scope to compile once.
+var credPatterns = regexp.MustCompile(`(?i)(sk-[a-zA-Z0-9]{8,}|sk_live_[a-zA-Z0-9]+|Bearer\s+[a-zA-Z0-9._\-]+|(?:zotero-api-)?key\s*[:=]\s*[a-zA-Z0-9._\-]+|zotero-api-key\s+[a-zA-Z0-9]{16,})`)
+
 // SanitizeErrorBody truncates and strips credential-shaped strings from error output.
 func SanitizeErrorBody(msg string) string {
+	return SanitizeErrorBodyWithSecrets(msg)
+}
+
+// SanitizeErrorBodyWithSecrets redacts credential-shaped substrings and any
+// literal secret supplied (e.g. the configured Zotero API key), then truncates.
+// The explicit-secret pass runs before truncation so a key straddling the
+// length cap is still caught, and covers a reflected key that has no prefix.
+// PATCH(glean zotio-c3c6d04bb48b7e67): secret-aware redaction so the caller can
+// pass the live credential; SanitizeErrorBody was previously dead code because
+// classifyAPIError re-embedded the raw body via %w ahead of the sanitized copy.
+func SanitizeErrorBodyWithSecrets(msg string, secrets ...string) string {
+	for _, s := range secrets {
+		if len(s) >= 8 {
+			msg = strings.ReplaceAll(msg, s, "[REDACTED]")
+		}
+	}
 	if len(msg) > 200 {
 		msg = msg[:200] + "..."
 	}
-	credPatterns := regexp.MustCompile(`(?i)(sk-[a-zA-Z0-9]{8,}|sk_live_[a-zA-Z0-9]+|Bearer\s+[a-zA-Z0-9._\-]+|key=[a-zA-Z0-9._\-]+)`)
 	msg = credPatterns.ReplaceAllString(msg, "[REDACTED]")
 	return msg
 }

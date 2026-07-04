@@ -107,6 +107,18 @@ func apiErr(err error) error       { return &cliError{code: 5, err: err} }
 func configErr(err error) error    { return &cliError{code: 10, err: err} }
 func rateLimitErr(err error) error { return &cliError{code: 7, err: err} }
 
+// redactedError wraps an error so error-chain inspection (e.g. errors.As to
+// *client.APIError) keeps working while Error() returns only pre-sanitized
+// text. PATCH(glean zotio-c3c6d04bb48b7e67): stops the raw response body from
+// reaching stderr / the --json envelope via a %w-wrapped APIError.Error().
+type redactedError struct {
+	msg string
+	err error
+}
+
+func (e *redactedError) Error() string { return e.msg }
+func (e *redactedError) Unwrap() error { return e.err }
+
 // PATCH(glean roadmap-phase1): library health quality gate (--fail-on) failed —
 // the tool ran fine but the library did not meet the requested bar. Distinct
 // from error codes so CI can branch on "needs fixing" vs "tool broke".
@@ -274,10 +286,19 @@ func classifyAPIError(err error, flags *rootFlags) error {
 		writeAPIErrorEnvelope(flags, classified, ExitCode(classified))
 		return classified
 	case cliutil.HTTPErrBadRequestAuth:
-		return authErr(fmt.Errorf("%w\nhint: the API rejected the request — this usually means auth is missing or invalid."+
-			"\n      Set your API key: export ZOTERO_API_KEY=<your-key>"+
-			"\n      Run 'zotio doctor' to check auth status."+
-			"\n      Response: "+cliutil.SanitizeErrorBody(msg), err))
+		// PATCH(glean zotio-c3c6d04bb48b7e67): do NOT wrap the raw APIError with
+		// %w — its Error() is the unredacted response body, which reached stderr
+		// and the --json envelope ahead of the sanitized copy, making the
+		// SanitizeErrorBody call dead code. Build the message from the sanitized
+		// body (also redacting the live key) and keep the APIError unwrappable
+		// via redactedError without leaking its text.
+		return authErr(&redactedError{
+			err: err,
+			msg: cliutil.SanitizeErrorBodyWithSecrets(msg, os.Getenv("ZOTERO_API_KEY")) +
+				"\nhint: the API rejected the request — this usually means auth is missing or invalid." +
+				"\n      Set your API key: export ZOTERO_API_KEY=<your-key>" +
+				"\n      Run 'zotio doctor' to check auth status.",
+		})
 	case cliutil.HTTPErrUnauthorized:
 		return authErr(fmt.Errorf("%w\nhint: check your API key."+
 			" Set it with: export ZOTERO_API_KEY=<your-key>"+
