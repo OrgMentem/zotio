@@ -39,6 +39,25 @@ archives:
         formats: [zip]
 checksum:
   name_template: checksums.txt
+# PATCH(glean zotio-9131682f): Generate Syft SBOMs for released archives.
+sboms:
+  - artifacts: archive
+# PATCH(glean zotio-9131682f): Sign release checksums with cosign keyless OIDC.
+signs:
+  - cmd: cosign
+    signature: "${artifact}.sig"
+    certificate: "${artifact}.pem"
+    args:
+      - sign-blob
+      - --yes
+      - --output-signature
+      - "${signature}"
+      - --output-certificate
+      - "${certificate}"
+      - "${artifact}"
+    artifacts: checksum
+    env:
+      - COSIGN_EXPERIMENTAL=1
 brews:
   - name: zotio
     repository:
