@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "applied_at": "2026-07-01",
+  "applied_at": "2026-07-04",
   "base_run_id": "20260511-103605",
   "base_printing_press_version": "4.2.2",
   "patches": [
@@ -1246,6 +1246,56 @@
         "internal/cache/cache_test.go"
       ],
       "validated_outcome": "go test ./internal/cache ./internal/config passed as part of go test ./internal/mcp ./cmd/zotio-mcp ./internal/cli ./internal/cache ./internal/config."
+    },
+    {
+      "id": "glean-dep-rebump-after-reprint-20260704",
+      "summary": "Re-applied the security/freshness dependency bumps that the press-4.25.0 regen-merge reprint (commit f66dc96) silently reverted: modernc.org/sqlite v1.37.0->v1.52.0 (CVE-2025-3277), mark3labs/mcp-go v0.47.0->v0.55.0 (transport/session hardening), pelletier/go-toml/v2 v2.2.4->v2.3.1, spf13/cobra v1.9.1->v1.10.2, spf13/pflag v1.0.6->v1.0.10, plus modernc.org/libc, memory, ncruces/go-strftime. Ran go mod tidy; the three previously-orphaned direct deps (dlclark/regexp2, santhosh-tekuri/jsonschema/v6, golang.org/x/text) are now correct indirect deps pulled by mcp-go v0.55.0's server package.",
+      "reason": "Glean zotio-eae156a8eed868a6 (P2): go.mod pinned pre-hardening versions despite the catalog claiming them applied; the reprint clobbered the hand-bumped go.mod with the generator template. zotio-162de37b70d40bc7 (P3): the same file carried orphaned direct deps. A CI drift guard (go mod tidy + go mod verify) was added so a future reprint revert is caught.",
+      "files": [
+        "go.mod",
+        "go.sum",
+        ".github/workflows/ci.yml"
+      ],
+      "validated_outcome": "go build ./... clean at the bumped versions; go mod why confirms the three ex-orphans are now reachable via mcp-go v0.55.0; new ci.yml 'tidy' job fails on go.mod/go.sum drift.",
+      "upstream_issue": "CLI Printing Press regen-merge should carry forward hand-applied go.mod bumps instead of overwriting them."
+    },
+    {
+      "id": "glean-error-body-redaction-20260704",
+      "summary": "classifyAPIError's HTTPErrBadRequestAuth branch no longer wraps the raw *client.APIError with %w (whose Error() is the unredacted response body); it builds the message from cliutil.SanitizeErrorBodyWithSecrets only, via a new redactedError type that keeps the APIError unwrappable without leaking its text. SanitizeErrorBody was previously dead code. Extended the credential regex to the Zotero-API-Key header scheme and added secret-aware redaction (redacts the live ZOTERO_API_KEY).",
+      "reason": "Glean zotio-c3c6d04bb48b7e67 (P2): the %w re-embedded the raw body ahead of the sanitized copy, so a reflected/echoed credential in a 400 auth body reached stderr and the --json envelope unredacted.",
+      "files": [
+        "internal/cli/helpers.go",
+        "internal/cliutil/text.go"
+      ],
+      "validated_outcome": "Regression test asserts an injected marker in the raw body never appears in the classified error's .Error(), ExitCode stays 4, and errors.As to *client.APIError still succeeds."
+    },
+    {
+      "id": "glean-mcp-http-bearer-auth-20260704",
+      "summary": "The streamable-HTTP MCP transport now requires a bearer token on every /mcp request (constant-time compare, checked before mcp-go sees the request). Token source: --mcp-auth-token flag, then ZOTIO_MCP_TOKEN env, else auto-generated and printed once to stderr. --allow-unauthenticated opts out with a loud warning.",
+      "reason": "Glean zotio-0c42fedfe1133cf4 (P2/P3): loopback bind is not a per-user boundary — a co-resident local user or non-browser local client could drive the full read+write tool surface. (Host/Origin validation from patch http-origin-host already closed the browser DNS-rebinding vector; this adds authN.)",
+      "files": [
+        "cmd/zotio-mcp/main.go"
+      ],
+      "validated_outcome": "Smoke test: no token and wrong token -> HTTP 401; correct token -> mcp-go initialize handshake returns 200; --allow-unauthenticated warns and bypasses. Unit tests cover validBearerToken and resolveMCPAuthToken."
+    },
+    {
+      "id": "glean-release-provenance-20260704",
+      "summary": "Added cosign keyless (OIDC) signing of the checksums artifact and Syft SBOM generation to .goreleaser.yaml, plus a tag-triggered .github/workflows/release.yml that runs goreleaser release under CI with id-token: write, so distributed binaries have recorded provenance and verifiable signatures.",
+      "reason": "Glean zotio-9131682f (P3): release artifacts were unsigned and built off any CI-recorded pipeline; the Homebrew tap and direct downloads trusted an unsigned checksums.txt.",
+      "files": [
+        ".goreleaser.yaml",
+        ".github/workflows/release.yml"
+      ],
+      "validated_outcome": "YAML parses; release workflow is tag-triggered with contents:write + id-token:write and SHA-pinned actions. (goreleaser binary not available locally to run 'goreleaser check'.)"
+    },
+    {
+      "id": "glean-gitleaks-allowlist-narrow-20260704",
+      "summary": "Narrowed .gitleaks.toml from a blanket '.*_test\\.go$' path allowlist to a regex matching only the single synthetic JWT header fixture in jwtshape_test.go, so a real credential committed to any test file is still flagged.",
+      "reason": "Glean zotio-8b1bc32f536ba705 (P3): the whole-file path exemption blinded the secrets gate to every *_test.go file.",
+      "files": [
+        ".gitleaks.toml"
+      ],
+      "validated_outcome": "Verified with gitleaks: the synthetic JWT stays suppressed; a planted high-entropy secret in a *_test.go file is flagged under the narrowed config but suppressed under the old blanket config."
     }
   ]
 }
