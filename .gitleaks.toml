@@ -1,11 +1,17 @@
-# Extends gitleaks' bundled default ruleset; adds a scoped allowlist for
-# synthetic secrets that only appear in test fixtures. These are fake tokens
-# used to exercise JWT-shape/parse logic, never real credentials.
+# Extends gitleaks' bundled default ruleset; adds a scoped allowlist for the
+# single synthetic secret that appears in a test fixture. This is a fake JWT
+# used to exercise JWT-shape/parse logic, never a real credential.
 [extend]
 useDefault = true
 
+# PATCH(glean zotio-8b1bc32f536ba705): narrowed from a blanket `.*_test\.go$`
+# path exemption to the specific synthetic token. The old whole-file allowlist
+# blinded the secrets gate to any real credential accidentally committed to any
+# *_test.go file; this exempts only the known synthetic JWT header, so a real
+# key in a test file is still flagged.
 [[allowlists]]
-description = "Synthetic secrets in Go test fixtures"
-paths = [
-  '''.*_test\.go$''',
+description = "Synthetic JWT fixture in jwtshape_test.go (JWT-shape detection, not a credential)"
+regexTarget = "line"
+regexes = [
+  '''eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCIsImtpZCI6ImFvNi1PYzAyQlZHTF9GbnBDeE5JMiJ9''',
 ]
