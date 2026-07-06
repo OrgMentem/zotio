@@ -38,7 +38,7 @@ For install, auth, examples, and longer product guidance, read `README.md` and `
 ## Zotero API Surface
 
 Missable invariants before you touch endpoints, schema, or mutations. Full coverage
-matrix, known gaps, and the **refresh procedure** live in `docs/zotero-api-coverage.md`
+matrix, known gaps, and the **refresh procedure** live in `notes/zotero-api-coverage.md`
 — re-run it when a new Zotero version ships (releases are now every 6–10 weeks).
 
 - This CLI targets Zotero's **local API** (`http://localhost:23119/api`, base in `spec.yaml` ends `/users/0`), which mirrors Web API v3 plus local-only extras. Enable it in Zotero: Settings → Advanced → "Allow other applications…".
@@ -84,7 +84,7 @@ This file is an **index of customizations**, not a second copy of the diff. Diff
 
 ## Architecture Decisions
 
-Non-trivial architecture/infrastructure decisions (as opposed to product sequencing, which lives in `docs/roadmap.md`) are recorded as ADRs under `docs/adr/`. Read the relevant ADR before reworking the subsystem it covers.
+Non-trivial architecture/infrastructure decisions (as opposed to product sequencing, which lives in `notes/roadmap.md`) are recorded as ADRs under `docs/adr/`. Read the relevant ADR before reworking the subsystem it covers.
 
 - `docs/adr/0001-mcp-command-surface.md` — why the MCP server defaults to a command-orchestration facade (`command_search`/`command_run`) with global flags stripped from the mirror, and how to switch surfaces via `PP_MCP_SURFACE`.
 - `docs/adr/0002-local-read-parity-subsystem.md` — why Zotero-aware local read parity (`internal/store/query.go` + the `resolveLocal*` path) is a deliberate, per-resource subsystem grown on demand, NOT a generic query-planner layer; read before adding a new `--data-source local` scope.

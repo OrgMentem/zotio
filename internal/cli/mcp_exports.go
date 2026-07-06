@@ -22,3 +22,11 @@ func AgentContextJSON() ([]byte, error) {
 func CapabilitiesJSON() ([]byte, error) {
 	return json.MarshalIndent(buildCapabilityRegistry(RootCmd()), "", "  ")
 }
+
+// FeatureIndexJSON returns the curated capability ("which") index as indented
+// JSON — the hero-feature list the docs generator renders as the highlights
+// reference page, kept in one place with the other introspection exports.
+// PATCH(zensical-docs): expose the which feature index to the docs generator.
+func FeatureIndexJSON() ([]byte, error) {
+	return json.MarshalIndent(whichIndex, "", "  ")
+}

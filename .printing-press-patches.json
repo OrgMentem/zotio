@@ -1296,6 +1296,41 @@
         ".gitleaks.toml"
       ],
       "validated_outcome": "Verified with gitleaks: the synthetic JWT stays suppressed; a planted high-entropy secret in a *_test.go file is flagged under the narrowed config but suppressed under the old blanket config."
+    },
+    {
+      "id": "zensical-docs-site",
+      "summary": "Added a Zensical documentation site (reads mkdocs.yml): pinned docs/requirements.txt (zensical==0.0.47), authored index/guide/concepts pages, a code-generated reference (cmd/docs-gen -> docs/reference/*) walking the live cobra tree plus capabilities/feature-index exports, a docs-drift CI gate, and a GitHub Pages deploy workflow. Relocated internal engineering docs from docs/ to a new notes/ dir so everything under docs/ is publishable.",
+      "reason": "Requested a hostable, thorough, user-facing docs site. Reference pages are generated from the binary and drift-gated (mirroring the go.mod tidy gate) so they cannot drift. Zensical 0.0.x does not honor mkdocs exclude_docs, so rather than a post-build prune, the internal working docs (roadmap, oracle notes, feature-map, the maintainer API-coverage matrix, and the Obsidian positioning analysis) were moved to notes/ (with notes/README.md); the site keeps distilled user-facing pages instead (concepts/zotero-api.md, guide/vault.md). AGENTS.md and library_health.go references were updated to the notes/ paths; historical patch-log prose was left as an audit record.",
+      "files": [
+        "cmd/docs-gen/main.go",
+        "internal/cli/mcp_exports.go",
+        "internal/cli/library_health.go",
+        "AGENTS.md",
+        "mkdocs.yml",
+        "docs/requirements.txt",
+        "docs/index.md",
+        "docs/guide/install.md",
+        "docs/guide/authentication.md",
+        "docs/guide/vault.md",
+        "docs/guide/agent-skill.md",
+        "docs/guide/mcp-server.md",
+        "docs/concepts/zotero-api.md",
+        "docs/concepts/write-safety.md",
+        "docs/concepts/local-read-parity.md",
+        "docs/reference/commands.md",
+        "docs/reference/capabilities.md",
+        "docs/reference/highlights.md",
+        "docs/reference/mcp-tools.md",
+        "notes/README.md",
+        "notes/roadmap.md",
+        "notes/zotero-api-coverage.md",
+        "notes/obsidian-positioning.md",
+        ".github/workflows/docs.yml",
+        ".github/workflows/ci.yml",
+        "Makefile",
+        ".gitignore"
+      ],
+      "validated_outcome": "gofmt/go vet/go build clean; go run ./cmd/docs-gen deterministic (drift gate passes); zensical==0.0.47 build 'No issues found'; site has exactly the 15 nav pages, zero internal-doc leaks (no prune needed), mermaid + SVG assets render, search index clean (227 items)."
     }
   ]
 }

@@ -1,6 +1,6 @@
 // Copyright 2026 enieuwy. Licensed under Apache-2.0. See LICENSE.
 // PATCH(glean roadmap-phase1): flagship composite library-health report — the
-// read-only diagnostic from docs/roadmap.md. Composes the existing audit
+// read-only diagnostic from notes/roadmap.md. Composes the existing audit
 // primitives (citekey/duplicate/missing-*/tag-drift/broken-attachment) into one
 // ranked, finding-typed report with --for presets, a --fail-on CI gate (exit 11),
 // and the precondition contract (live-only checks refuse loudly, never silently).
@@ -66,7 +66,7 @@ type healthRecommendedAction struct {
 	Text    string `json:"text,omitempty"`
 }
 
-// healthFinding is the stable finding taxonomy (docs/roadmap.md). Identity is
+// healthFinding is the stable finding taxonomy (notes/roadmap.md). Identity is
 // (kind, item_key) for per-item findings; grouped findings carry detail in
 // Evidence and leave ItemKey empty.
 type healthFinding struct {

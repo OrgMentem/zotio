@@ -1,4 +1,4 @@
-.PHONY: build test lint vet audit secrets verify install clean build-mcp install-mcp build-all
+.PHONY: build test lint vet audit secrets verify install clean build-mcp install-mcp build-all docs-deps docs-gen docs-build docs-serve
 
 build:
 	go build -o bin/zotio ./cmd/zotio
@@ -38,3 +38,22 @@ install-mcp:
 	go install ./cmd/zotio-mcp
 
 build-all: build build-mcp
+
+# --- Documentation site (Zensical; reads mkdocs.yml) ----------------------
+
+# Install the pinned docs toolchain (Zensical). Use a venv in real setups.
+docs-deps:
+	pip install -r docs/requirements.txt
+
+# Regenerate the code-generated reference pages (docs/reference/*) from the
+# binary. Drift-gated in CI — run after any command/flag change.
+docs-gen:
+	go run ./cmd/docs-gen
+
+# Build the static site into ./site (regenerates reference first).
+docs-build: docs-gen
+	zensical build
+
+# Live-preview the site locally (regenerates reference first).
+docs-serve: docs-gen
+	zensical serve

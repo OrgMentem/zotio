@@ -13,3 +13,8 @@
 # Vendored Printing Press dev skills (repo-local, refresh from upstream; not project source)
 .claude/skills/
 skills-lock.json
+
+# Built documentation site + Python docs toolchain
+/site/
+.venv/
+__pycache__/

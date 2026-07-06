@@ -5,6 +5,10 @@ plugin ecosystem, so you (and future agents working on this repo) can decide
 what belongs in this tool and what stays in a plugin. It is positioning, not a
 feature spec.
 
+> **Internal note.** This is design positioning for contributors. The user-facing
+> vault workflow (sync / push / pull / conflicts / config) is documented at
+> `docs/guide/vault.md`.
+
 ## TL;DR
 
 There are **two paradigms**, and they coexist by design:
