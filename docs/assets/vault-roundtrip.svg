@@ -1,136 +1,193 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<svg xmlns="http://www.w3.org/2000/svg" width="960" height="660" viewBox="0 0 960 660" role="img" aria-labelledby="title desc" font-family="ui-sans-serif, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif">
-  <title id="title">zotio vault round-trip</title>
-  <desc id="desc">Conflict-safe Obsidian and Logseq markdown vault round-trip with Zotero, showing vault sync, vault push, vault pull, conflict artifacts, and resolve commands.</desc>
+<svg class="zotio-diagram" xmlns="http://www.w3.org/2000/svg" width="960" height="660" viewBox="0 0 960 660" role="img" aria-labelledby="zd4-title zd4-desc" font-family="ui-sans-serif, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif">
+  <title id="zd4-title">zotio vault round-trip</title>
+  <desc id="zd4-desc">Conflict-safe Obsidian and Logseq markdown vault round-trip with Zotero, showing vault sync, vault push, vault pull, conflict artifacts, and resolve commands.</desc>
   <defs>
-    <filter id="shadow" x="-12%" y="-12%" width="124%" height="124%">
+    <filter id="zd4-shadow" x="-12%" y="-12%" width="124%" height="124%">
       <feDropShadow dx="0" dy="4" stdDeviation="5" flood-color="#1e2a44" flood-opacity="0.10"/>
     </filter>
-    <marker id="arrow-blue" markerWidth="11" markerHeight="11" refX="10" refY="5.5" orient="auto" markerUnits="strokeWidth">
-      <path d="M 0 0 L 11 5.5 L 0 11 z" fill="#2c6cb0"/>
+    <marker id="zd4-arrow-blue" markerWidth="11" markerHeight="11" refX="10" refY="5.5" orient="auto" markerUnits="strokeWidth">
+      <path d="M 0 0 L 11 5.5 L 0 11 z" fill="var(--read-line)"/>
     </marker>
-    <marker id="arrow-coral" markerWidth="11" markerHeight="11" refX="10" refY="5.5" orient="auto" markerUnits="strokeWidth">
-      <path d="M 0 0 L 11 5.5 L 0 11 z" fill="#c0392b"/>
+    <marker id="zd4-arrow-coral" markerWidth="11" markerHeight="11" refX="10" refY="5.5" orient="auto" markerUnits="strokeWidth">
+      <path d="M 0 0 L 11 5.5 L 0 11 z" fill="var(--write-line)"/>
     </marker>
-    <marker id="arrow-grey" markerWidth="11" markerHeight="11" refX="10" refY="5.5" orient="auto" markerUnits="strokeWidth">
-      <path d="M 0 0 L 11 5.5 L 0 11 z" fill="#64748b"/>
+    <marker id="zd4-arrow-grey" markerWidth="11" markerHeight="11" refX="10" refY="5.5" orient="auto" markerUnits="strokeWidth">
+      <path d="M 0 0 L 11 5.5 L 0 11 z" fill="var(--grey)"/>
     </marker>
     <style>
-      .title { font-size: 22px; font-weight: 700; fill: #1e2a44; }
-      .subtitle { font-size: 13px; fill: #64748b; }
-      .panel-title { font-size: 14px; font-weight: 700; fill: #1e2a44; }
-      .node-title { font-size: 13px; font-weight: 700; }
-      .label { font-size: 12px; fill: #33415c; }
-      .small { font-size: 11px; fill: #64748b; }
-      .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11.5px; }
-      .mono-small { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 10.5px; }
-      .blue-text { fill: #173a5e; }
-      .coral-text { fill: #7a1f16; }
-      .green-text { fill: #0a5f43; }
-      .grey-text { fill: #33415c; }
-      .muted { fill: #64748b; }
-      .flow-label { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; font-weight: 700; }
+      .zotio-diagram {
+        --canvas: #fbfcfe;
+        --surface: #ffffff;
+        --border: #d7dee9;
+        --border-dim: #cbd5e1;
+        --text-strong: #1e2a44;
+        --text-body: #33415c;
+        --grey: #64748b;
+        --read-bg: #e6f0fb;
+        --read-line: #2c6cb0;
+        --read-text: #173a5e;
+        --write-bg: #fde2e2;
+        --write-line: #c0392b;
+        --write-text: #7a1f16;
+        --ext-bg: #fdf3d8;
+        --ext-line: #b8860b;
+        --ext-text: #6b4e0a;
+        --local-bg: #eef1f5;
+        --replay: #0aa06e;
+        --core: #4f46e5;
+        --core-stroke: #312e81;
+        --accent-text: #4f46e5;
+        --banner-mark: #94a3b8;
+        --border-2: #e2e8f0;
+        --border-3: #d8e0ec;
+        --border-4: #d8dee8;
+        --green-bg: #d6f5e3;
+        --green-bg-soft: #eefaf3;
+        --green-text: #0a5f43;
+        --indigo-text: #4338ca;
+        --indigo-bg-line: #c7d2fe;
+        --indigo-bg: #f2f4ff;
+        --amber-text2: #8c6d1e;
+      }
+      @media (prefers-color-scheme: dark) {
+        .zotio-diagram {
+          --canvas: #12161f;
+          --surface: #1b2230;
+          --border: #2c3647;
+          --border-dim: #3a4660;
+          --text-strong: #eaeef6;
+          --text-body: #c6cfdd;
+          --grey: #8b98ac;
+          --read-bg: #14273c;
+          --read-line: #5b9bd5;
+          --read-text: #cfe2f6;
+          --write-bg: #3a1c1a;
+          --write-line: #e07a6e;
+          --write-text: #f6cec9;
+          --ext-bg: #322b12;
+          --ext-line: #d9ab35;
+          --ext-text: #f0e0ad;
+          --local-bg: #1d2431;
+          --replay: #2ecb93;
+          --core: #6366f1;
+          --core-stroke: #4f46e5;
+          --accent-text: #a5b4fc;
+          --banner-mark: #8b98ac;
+          --border-2: #2c3647;
+          --border-3: #2c3647;
+          --border-4: #2c3647;
+          --green-bg: #16321f;
+          --green-bg-soft: #14251b;
+          --green-text: #a7e8c8;
+          --indigo-text: #a5b4fc;
+          --indigo-bg-line: #3a3f6e;
+          --indigo-bg: #1c2030;
+          --amber-text2: #e6c877;
+        }
+      }
+.zotio-diagram .title { font-size: 22px; font-weight: 700; fill: var(--text-strong); }.zotio-diagram .subtitle { font-size: 13px; fill: var(--grey); }.zotio-diagram .panel-title { font-size: 14px; font-weight: 700; fill: var(--text-strong); }.zotio-diagram .node-title { font-size: 13px; font-weight: 700; }.zotio-diagram .label { font-size: 12px; fill: var(--text-body); }.zotio-diagram .small { font-size: 11px; fill: var(--grey); }.zotio-diagram .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11.5px; }.zotio-diagram .mono-small { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 10.5px; }.zotio-diagram .blue-text { fill: var(--read-text); }.zotio-diagram .coral-text { fill: var(--write-text); }.zotio-diagram .green-text { fill: var(--green-text); }.zotio-diagram .grey-text { fill: var(--text-body); }.zotio-diagram .muted { fill: var(--grey); }.zotio-diagram .flow-label { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; font-weight: 700; }
     </style>
   </defs>
 
-  <rect x="0" y="0" width="960" height="660" fill="#fbfcfe"/>
+  <rect x="0" y="0" width="960" height="660" fill="var(--canvas)"/>
 
   <text x="32" y="36" class="title">Conflict-safe vault round-trip</text>
   <text x="32" y="58" class="subtitle">Obsidian / Logseq Markdown stays human-owned while Zotero data is refreshed and reconciled.</text>
 
   <g aria-label="Legend">
-    <rect x="634" y="26" width="292" height="42" rx="10" fill="#ffffff" stroke="#d8dee8" stroke-width="1.5"/>
-    <rect x="650" y="39" width="12" height="12" rx="3" fill="#e6f0fb" stroke="#2c6cb0"/>
+    <rect x="634" y="26" width="292" height="42" rx="10" fill="var(--surface)" stroke="var(--border-4)" stroke-width="1.5"/>
+    <rect x="650" y="39" width="12" height="12" rx="3" fill="var(--read-bg)" stroke="var(--read-line)"/>
     <text x="668" y="49" class="small">read</text>
-    <rect x="710" y="39" width="12" height="12" rx="3" fill="#fde2e2" stroke="#c0392b"/>
+    <rect x="710" y="39" width="12" height="12" rx="3" fill="var(--write-bg)" stroke="var(--write-line)"/>
     <text x="728" y="49" class="small">write</text>
-    <rect x="774" y="39" width="12" height="12" rx="3" fill="#eef1f5" stroke="#64748b"/>
+    <rect x="774" y="39" width="12" height="12" rx="3" fill="var(--local-bg)" stroke="var(--grey)"/>
     <text x="792" y="49" class="small">managed</text>
-    <rect x="864" y="39" width="12" height="12" rx="3" fill="#d6f5e3" stroke="#0aa06e"/>
+    <rect x="864" y="39" width="12" height="12" rx="3" fill="var(--green-bg)" stroke="var(--replay)"/>
     <text x="882" y="49" class="small">yours</text>
   </g>
 
-  <rect x="34" y="92" width="260" height="468" rx="14" fill="#ffffff" stroke="#d8dee8" stroke-width="1.8" filter="url(#shadow)"/>
-  <rect x="50" y="112" width="228" height="42" rx="10" fill="#eef1f5" stroke="#64748b" stroke-width="1.5"/>
+  <rect x="34" y="92" width="260" height="468" rx="14" fill="var(--surface)" stroke="var(--border-4)" stroke-width="1.8" filter="url(#zd4-shadow)"/>
+  <rect x="50" y="112" width="228" height="42" rx="10" fill="var(--local-bg)" stroke="var(--grey)" stroke-width="1.5"/>
   <text x="64" y="130" class="panel-title">Your Markdown vault</text>
   <text x="64" y="146" class="small">Obsidian / Logseq</text>
 
   <g aria-label="Markdown note card">
-    <rect x="60" y="174" width="214" height="324" rx="12" fill="#ffffff" stroke="#cbd5e1" stroke-width="1.8"/>
-    <rect x="60" y="174" width="214" height="34" rx="12" fill="#e6f0fb" stroke="#2c6cb0" stroke-width="1.5"/>
-    <path d="M 60 196 H 274" stroke="#2c6cb0" stroke-width="1.5"/>
+    <rect x="60" y="174" width="214" height="324" rx="12" fill="var(--surface)" stroke="var(--border-dim)" stroke-width="1.8"/>
+    <rect x="60" y="174" width="214" height="34" rx="12" fill="var(--read-bg)" stroke="var(--read-line)" stroke-width="1.5"/>
+    <path d="M 60 196 H 274" stroke="var(--read-line)" stroke-width="1.5"/>
     <text x="74" y="196" class="mono blue-text">Smith-2024.md</text>
 
-    <rect x="74" y="222" width="186" height="116" rx="10" fill="#eef1f5" stroke="#64748b" stroke-width="1.5"/>
+    <rect x="74" y="222" width="186" height="116" rx="10" fill="var(--local-bg)" stroke="var(--grey)" stroke-width="1.5"/>
     <text x="88" y="244" class="node-title grey-text">MANAGED / locked</text>
     <text x="88" y="264" class="mono-small muted">frontmatter</text>
-    <line x1="88" y1="275" x2="232" y2="275" stroke="#94a3b8" stroke-width="2" stroke-linecap="round"/>
-    <line x1="88" y1="290" x2="246" y2="290" stroke="#94a3b8" stroke-width="2" stroke-linecap="round"/>
+    <line x1="88" y1="275" x2="232" y2="275" stroke="var(--banner-mark)" stroke-width="2" stroke-linecap="round"/>
+    <line x1="88" y1="290" x2="246" y2="290" stroke="var(--banner-mark)" stroke-width="2" stroke-linecap="round"/>
     <text x="88" y="313" class="mono-small muted">fenced annotations</text>
     <text x="88" y="328" class="small">auto-refreshed</text>
 
-    <rect x="74" y="358" width="186" height="104" rx="10" fill="#d6f5e3" stroke="#0aa06e" stroke-width="1.5"/>
+    <rect x="74" y="358" width="186" height="104" rx="10" fill="var(--green-bg)" stroke="var(--replay)" stroke-width="1.5"/>
     <text x="88" y="380" class="node-title green-text">YOUR region</text>
     <text x="88" y="401" class="mono green-text">## Notes</text>
-    <line x1="88" y1="419" x2="238" y2="419" stroke="#0aa06e" stroke-width="2" stroke-linecap="round" opacity="0.65"/>
-    <line x1="88" y1="435" x2="220" y2="435" stroke="#0aa06e" stroke-width="2" stroke-linecap="round" opacity="0.65"/>
+    <line x1="88" y1="419" x2="238" y2="419" stroke="var(--replay)" stroke-width="2" stroke-linecap="round" opacity="0.65"/>
+    <line x1="88" y1="435" x2="220" y2="435" stroke="var(--replay)" stroke-width="2" stroke-linecap="round" opacity="0.65"/>
     <text x="88" y="453" class="small green-text">prose preserved</text>
   </g>
 
-  <rect x="666" y="92" width="260" height="468" rx="14" fill="#ffffff" stroke="#d8dee8" stroke-width="1.8" filter="url(#shadow)"/>
-  <rect x="682" y="112" width="228" height="42" rx="10" fill="#eef1f5" stroke="#64748b" stroke-width="1.5"/>
+  <rect x="666" y="92" width="260" height="468" rx="14" fill="var(--surface)" stroke="var(--border-4)" stroke-width="1.8" filter="url(#zd4-shadow)"/>
+  <rect x="682" y="112" width="228" height="42" rx="10" fill="var(--local-bg)" stroke="var(--grey)" stroke-width="1.5"/>
   <text x="696" y="130" class="panel-title">Zotero</text>
   <text x="696" y="146" class="small">Desktop library + child notes</text>
 
   <g aria-label="Zotero item and note">
-    <rect x="696" y="178" width="200" height="94" rx="12" fill="#e6f0fb" stroke="#2c6cb0" stroke-width="1.7"/>
+    <rect x="696" y="178" width="200" height="94" rx="12" fill="var(--read-bg)" stroke="var(--read-line)" stroke-width="1.7"/>
     <text x="714" y="203" class="node-title blue-text">Zotero item</text>
     <text x="714" y="225" class="small blue-text">metadata, tags, PDF</text>
-    <line x1="714" y1="244" x2="872" y2="244" stroke="#2c6cb0" stroke-width="2" stroke-linecap="round" opacity="0.55"/>
-    <line x1="714" y1="258" x2="844" y2="258" stroke="#2c6cb0" stroke-width="2" stroke-linecap="round" opacity="0.35"/>
+    <line x1="714" y1="244" x2="872" y2="244" stroke="var(--read-line)" stroke-width="2" stroke-linecap="round" opacity="0.55"/>
+    <line x1="714" y1="258" x2="844" y2="258" stroke="var(--read-line)" stroke-width="2" stroke-linecap="round" opacity="0.35"/>
 
-    <rect x="696" y="314" width="200" height="106" rx="12" fill="#fde2e2" stroke="#c0392b" stroke-width="1.7"/>
+    <rect x="696" y="314" width="200" height="106" rx="12" fill="var(--write-bg)" stroke="var(--write-line)" stroke-width="1.7"/>
     <text x="714" y="340" class="node-title coral-text">Managed child note</text>
     <text x="714" y="362" class="small coral-text">mirrors vault ## Notes</text>
-    <line x1="714" y1="382" x2="866" y2="382" stroke="#c0392b" stroke-width="2" stroke-linecap="round" opacity="0.55"/>
-    <line x1="714" y1="398" x2="846" y2="398" stroke="#c0392b" stroke-width="2" stroke-linecap="round" opacity="0.35"/>
+    <line x1="714" y1="382" x2="866" y2="382" stroke="var(--write-line)" stroke-width="2" stroke-linecap="round" opacity="0.55"/>
+    <line x1="714" y1="398" x2="846" y2="398" stroke="var(--write-line)" stroke-width="2" stroke-linecap="round" opacity="0.35"/>
   </g>
 
   <g aria-label="Read-only preflight">
-    <rect x="360" y="90" width="240" height="38" rx="19" fill="#eef1f5" stroke="#64748b" stroke-width="1.7"/>
+    <rect x="360" y="90" width="240" height="38" rx="19" fill="var(--local-bg)" stroke="var(--grey)" stroke-width="1.7"/>
     <text x="386" y="114" class="mono grey-text">vault audit</text>
     <text x="478" y="114" class="small">read-only preflight</text>
   </g>
 
   <g aria-label="Round trip flows">
-    <line x1="666" y1="180" x2="294" y2="180" stroke="#2c6cb0" stroke-width="3" marker-end="url(#arrow-blue)"/>
-    <rect x="405" y="158" width="150" height="42" rx="10" fill="#e6f0fb" stroke="#2c6cb0" stroke-width="1.5"/>
+    <line x1="666" y1="180" x2="294" y2="180" stroke="var(--read-line)" stroke-width="3" marker-end="url(#zd4-arrow-blue)"/>
+    <rect x="405" y="158" width="150" height="42" rx="10" fill="var(--read-bg)" stroke="var(--read-line)" stroke-width="1.5"/>
     <text x="433" y="177" class="flow-label blue-text">vault sync</text>
     <text x="425" y="193" class="small blue-text">one note per item</text>
 
-    <line x1="294" y1="302" x2="666" y2="302" stroke="#c0392b" stroke-width="3" marker-end="url(#arrow-coral)"/>
-    <rect x="401" y="280" width="158" height="44" rx="10" fill="#fde2e2" stroke="#c0392b" stroke-width="1.5"/>
+    <line x1="294" y1="302" x2="666" y2="302" stroke="var(--write-line)" stroke-width="3" marker-end="url(#zd4-arrow-coral)"/>
+    <rect x="401" y="280" width="158" height="44" rx="10" fill="var(--write-bg)" stroke="var(--write-line)" stroke-width="1.5"/>
     <text x="433" y="299" class="flow-label coral-text">vault push</text>
     <text x="417" y="316" class="small coral-text">conflict-safe mirror</text>
 
-    <line x1="666" y1="380" x2="294" y2="380" stroke="#2c6cb0" stroke-width="3" marker-end="url(#arrow-blue)"/>
-    <rect x="304" y="354" width="108" height="48" rx="10" fill="#e6f0fb" stroke="#2c6cb0" stroke-width="1.5"/>
+    <line x1="666" y1="380" x2="294" y2="380" stroke="var(--read-line)" stroke-width="3" marker-end="url(#zd4-arrow-blue)"/>
+    <rect x="304" y="354" width="108" height="48" rx="10" fill="var(--read-bg)" stroke="var(--read-line)" stroke-width="1.5"/>
     <text x="326" y="374" class="flow-label blue-text">vault pull</text>
     <text x="312" y="392" class="small blue-text">fast-forward only</text>
   </g>
 
   <g aria-label="Conflict branch">
-    <path d="M 374 302 C 430 322, 446 372, 450 409" fill="none" stroke="#c0392b" stroke-width="2.2" stroke-dasharray="6 5" marker-end="url(#arrow-coral)"/>
-    <path d="M 586 380 C 556 392, 530 402, 512 410" fill="none" stroke="#2c6cb0" stroke-width="2.2" stroke-dasharray="6 5" marker-end="url(#arrow-blue)"/>
-    <path d="M 480 388 L 538 428 L 480 468 L 422 428 Z" fill="#fdf3d8" stroke="#b8860b" stroke-width="1.8"/>
-    <text x="480" y="424" text-anchor="middle" class="node-title" fill="#6b4e0a">both sides</text>
-    <text x="480" y="442" text-anchor="middle" class="node-title" fill="#6b4e0a">changed?</text>
+    <path d="M 374 302 C 430 322, 446 372, 450 409" fill="none" stroke="var(--write-line)" stroke-width="2.2" stroke-dasharray="6 5" marker-end="url(#zd4-arrow-coral)"/>
+    <path d="M 586 380 C 556 392, 530 402, 512 410" fill="none" stroke="var(--read-line)" stroke-width="2.2" stroke-dasharray="6 5" marker-end="url(#zd4-arrow-blue)"/>
+    <path d="M 480 388 L 538 428 L 480 468 L 422 428 Z" fill="var(--ext-bg)" stroke="var(--ext-line)" stroke-width="1.8"/>
+    <text x="480" y="424" text-anchor="middle" class="node-title" fill="var(--ext-text)">both sides</text>
+    <text x="480" y="442" text-anchor="middle" class="node-title" fill="var(--ext-text)">changed?</text>
 
-    <line x1="480" y1="468" x2="480" y2="502" stroke="#64748b" stroke-width="2.4" stroke-dasharray="5 5" marker-end="url(#arrow-grey)"/>
-    <rect x="437" y="475" width="86" height="20" rx="8" fill="#ffffff" stroke="#d8dee8" stroke-width="1"/>
-    <text x="480" y="489" text-anchor="middle" class="small" fill="#64748b">not merged</text>
+    <line x1="480" y1="468" x2="480" y2="502" stroke="var(--grey)" stroke-width="2.4" stroke-dasharray="5 5" marker-end="url(#zd4-arrow-grey)"/>
+    <rect x="437" y="475" width="86" height="20" rx="8" fill="var(--surface)" stroke="var(--border-4)" stroke-width="1"/>
+    <text x="480" y="489" text-anchor="middle" class="small" fill="var(--grey)">not merged</text>
 
-    <rect x="326" y="502" width="308" height="92" rx="12" fill="#fde2e2" stroke="#c0392b" stroke-width="1.8"/>
+    <rect x="326" y="502" width="308" height="92" rx="12" fill="var(--write-bg)" stroke="var(--write-line)" stroke-width="1.8"/>
     <text x="346" y="527" class="node-title coral-text">Reviewable conflict artifact</text>
     <text x="346" y="548" class="mono coral-text">_vault-zotero-conflicts/</text>
     <text x="346" y="569" class="mono-small coral-text">vault resolve --keep-vault</text>
@@ -138,10 +195,10 @@
   </g>
 
   <g aria-label="Hook">
-    <rect x="132" y="600" width="696" height="48" rx="14" fill="#eefaf3" stroke="#0aa06e" stroke-width="1" stroke-opacity="0.45"/>
+    <rect x="132" y="600" width="696" height="48" rx="14" fill="var(--green-bg-soft)" stroke="var(--replay)" stroke-width="1" stroke-opacity="0.45"/>
     <text x="216" y="621" class="node-title green-text">Your prose is never clobbered.</text>
     <text x="216" y="640" class="label green-text">Divergence becomes a reviewable artifact, never a silent overwrite.</text>
-    <circle cx="184" cy="624" r="16" fill="#fbfcfe" stroke="#0aa06e" stroke-width="1.7"/>
-    <path d="M 176 624 L 182 630 L 194 617" fill="none" stroke="#0aa06e" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+    <circle cx="184" cy="624" r="16" fill="var(--canvas)" stroke="var(--replay)" stroke-width="1.7"/>
+    <path d="M 176 624 L 182 630 L 194 617" fill="none" stroke="var(--replay)" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
   </g>
 </svg>

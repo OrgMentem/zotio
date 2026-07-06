@@ -2,7 +2,9 @@
 
 `zotio vault` keeps a Markdown vault in step with Zotero — **one note per item**, with `zotero://` backlinks baked in, and an opt-in reverse channel for your own notes. It's the batch, idempotent counterpart to cite-as-you-write plugins: keep those for live writing, let `zotio` own bulk upkeep and note round-trip.
 
-![conflict-safe vault round-trip](../assets/vault-roundtrip.svg)
+<div class="zotio-diagram-wrap">
+--8<-- "docs/assets/vault-roundtrip.svg"
+</div>
 
 !!! tip "Two paradigms, by design"
     Live/in-editor plugins (via Better BibTeX RPC) are for writing *right now*. `zotio` is for bulk, headless, version-durable upkeep over the native local API. They write to the same vault without fighting — `zotio` owns its fenced blocks and managed keys, you own everything else.

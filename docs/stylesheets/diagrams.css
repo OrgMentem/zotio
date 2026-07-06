@@ -1,0 +1,82 @@
+/* Theme-aware inline diagrams. Generated to match docs/assets/*.svg tokens.
+   Higher specificity than each SVG's own `.zotio-diagram` rules, so the site
+   palette toggle (data-md-color-scheme on <html>) wins when the SVG is inlined
+   via `--8<--`. Standalone/README rendering still uses the SVG's embedded
+   :where light defaults + `@media (prefers-color-scheme)`. */
+
+.zotio-diagram {
+  display: block;
+  max-width: 100%;
+  height: auto;
+  margin: 1.2rem auto;
+}
+
+[data-md-color-scheme="default"] .zotio-diagram {
+  --canvas: #fbfcfe;
+  --surface: #ffffff;
+  --border: #d7dee9;
+  --border-dim: #cbd5e1;
+  --text-strong: #1e2a44;
+  --text-body: #33415c;
+  --grey: #64748b;
+  --read-bg: #e6f0fb;
+  --read-line: #2c6cb0;
+  --read-text: #173a5e;
+  --write-bg: #fde2e2;
+  --write-line: #c0392b;
+  --write-text: #7a1f16;
+  --ext-bg: #fdf3d8;
+  --ext-line: #b8860b;
+  --ext-text: #6b4e0a;
+  --local-bg: #eef1f5;
+  --replay: #0aa06e;
+  --core: #4f46e5;
+  --core-stroke: #312e81;
+  --accent-text: #4f46e5;
+  --banner-mark: #94a3b8;
+  --border-2: #e2e8f0;
+  --border-3: #d8e0ec;
+  --border-4: #d8dee8;
+  --green-bg: #d6f5e3;
+  --green-bg-soft: #eefaf3;
+  --green-text: #0a5f43;
+  --indigo-text: #4338ca;
+  --indigo-bg-line: #c7d2fe;
+  --indigo-bg: #f2f4ff;
+  --amber-text2: #8c6d1e;
+}
+
+[data-md-color-scheme="slate"] .zotio-diagram {
+  --canvas: #12161f;
+  --surface: #1b2230;
+  --border: #2c3647;
+  --border-dim: #3a4660;
+  --text-strong: #eaeef6;
+  --text-body: #c6cfdd;
+  --grey: #8b98ac;
+  --read-bg: #14273c;
+  --read-line: #5b9bd5;
+  --read-text: #cfe2f6;
+  --write-bg: #3a1c1a;
+  --write-line: #e07a6e;
+  --write-text: #f6cec9;
+  --ext-bg: #322b12;
+  --ext-line: #d9ab35;
+  --ext-text: #f0e0ad;
+  --local-bg: #1d2431;
+  --replay: #2ecb93;
+  --core: #6366f1;
+  --core-stroke: #4f46e5;
+  --accent-text: #a5b4fc;
+  --banner-mark: #8b98ac;
+  --border-2: #2c3647;
+  --border-3: #2c3647;
+  --border-4: #2c3647;
+  --green-bg: #16321f;
+  --green-bg-soft: #14251b;
+  --green-text: #a7e8c8;
+  --indigo-text: #a5b4fc;
+  --indigo-bg-line: #3a3f6e;
+  --indigo-bg: #1c2030;
+  --amber-text2: #e6c877;
+}

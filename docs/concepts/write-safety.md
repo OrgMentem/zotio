@@ -2,7 +2,9 @@
 
 Every write command — `items enrich`, `tags audit fix`, `items duplicates resolve`, `items create/update/move/delete`, `import apply`, `vault push` — flows through one mutation envelope with identical, predictable semantics. You never have to remember which command is dangerous; they all behave the same way.
 
-![preview-first write lifecycle with journal and undo](../assets/write-safety.svg)
+<div class="zotio-diagram-wrap">
+--8<-- "docs/assets/write-safety.svg"
+</div>
 
 ## The contract
 
@@ -16,7 +18,9 @@ Every write command — `items enrich`, `tags audit fix`, `items duplicates reso
 
 Writes split by intent — new items prefer the keyless local desktop connector; everything else routes to the Zotero Web API and needs a key.
 
-![zotio hybrid routing architecture](../assets/architecture.svg)
+<div class="zotio-diagram-wrap">
+--8<-- "docs/assets/architecture.svg"
+</div>
 
 The [capabilities reference](../reference/capabilities.md) lists the operation, write target, destructiveness, and requirements for every command. See [Authentication](../guide/authentication.md) for key setup.
 

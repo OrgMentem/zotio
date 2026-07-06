@@ -8,7 +8,9 @@ Zotero's GUI is great for reading and citing. It gets painful the moment you nee
 
 Reads stay on your machine. Writes split by intent: **creating a new item** (with its attachments/PDFs) prefers the local desktop connector (`localhost:23119`, no key — the same channel the browser "Save to Zotero" button uses), while **everything else** — field edits, deletes, enrichment, tag ops, moves, and `collections` create/update — routes to the Zotero Web API and needs a configured key. Every write is preview-first, the version read happens locally, and the applied change is replayed into your local mirror so a follow-up read sees it.
 
-![zotio hybrid routing architecture](assets/architecture.svg)
+<div class="zotio-diagram-wrap">
+--8<-- "docs/assets/architecture.svg"
+</div>
 
 | Plane | Backend | Needs a key? |
 |---|---|---|
