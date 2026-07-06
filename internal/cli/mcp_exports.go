@@ -1,4 +1,4 @@
-// Copyright 2026 enieuwy. Licensed under Apache-2.0. See LICENSE.
+// Copyright 2026 OrgMentem. Licensed under Apache-2.0. See LICENSE.
 // PATCH(glean qfuq): exported accessors so the MCP layer can expose CLI
 // introspection (agent-context) as an MCP resource without duplicating the
 // builder or editing the generated agent_context.go.

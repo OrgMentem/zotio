@@ -1,4 +1,4 @@
-// Copyright 2026 enieuwy. Licensed under Apache-2.0. See LICENSE.
+// Copyright 2026 OrgMentem. Licensed under Apache-2.0. See LICENSE.
 // PATCH(glean 49r4): cover vault note creation, idempotent + non-clobbering
 // merge, backlinks, dry-run, and Logseq output.
 

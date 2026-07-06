@@ -1,4 +1,4 @@
-// Copyright 2026 enieuwy. Licensed under Apache-2.0. See LICENSE.
+// Copyright 2026 OrgMentem. Licensed under Apache-2.0. See LICENSE.
 // PATCH(glean qfuq): first-class MCP resources and prompts. The MCP surface was
 // tool-only and mirrored CLI commands; this models durable Zotero context
 // (agent-context, archive status, SQL schema, domain context) as stable

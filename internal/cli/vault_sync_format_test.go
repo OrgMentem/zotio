@@ -1,4 +1,4 @@
-// Copyright 2026 enieuwy. Licensed under Apache-2.0. See LICENSE.
+// Copyright 2026 OrgMentem. Licensed under Apache-2.0. See LICENSE.
 // PATCH(glean 15e0): cover commit-1 format/safety hardening — identity keys and
 // managed/user fences on create, stable lookup by zotero_key (no duplicate on
 // citekey change), filename collision avoidance, legacy "## Notes" migration,

@@ -1,4 +1,4 @@
-// Copyright 2026 enieuwy. Licensed under Apache-2.0. See LICENSE.
+// Copyright 2026 OrgMentem. Licensed under Apache-2.0. See LICENSE.
 // PATCH: Add hand-written local library statistics report missing from the generated CLI.
 
 package cli

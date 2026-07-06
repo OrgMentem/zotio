@@ -1,4 +1,4 @@
-// Copyright 2026 enieuwy. Licensed under Apache-2.0. See LICENSE.
+// Copyright 2026 OrgMentem. Licensed under Apache-2.0. See LICENSE.
 // PATCH(glean test-gaps f6yb): covers search result extraction, empty filtering, and command API/local paths.
 
 package cli

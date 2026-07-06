@@ -1,4 +1,4 @@
-// Copyright 2026 enieuwy. Licensed under Apache-2.0. See LICENSE.
+// Copyright 2026 OrgMentem. Licensed under Apache-2.0. See LICENSE.
 // PATCH: Cover schema-drift baseline capture, no-drift, and added/removed deltas
 // against a real client pointed at an httptest Zotero schema surface.
 

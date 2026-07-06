@@ -1,4 +1,4 @@
-// Copyright 2026 enieuwy. Licensed under Apache-2.0. See LICENSE.
+// Copyright 2026 OrgMentem. Licensed under Apache-2.0. See LICENSE.
 // PATCH: Hybrid write routing. The Zotero local API is read-only, so when the CLI is
 // pointed at it, mutating commands route to the Web API (api.zotero.org) while reads
 // stay local. resolveWebWriteBase builds the Web API base for the configured key;

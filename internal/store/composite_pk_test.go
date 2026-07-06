@@ -1,4 +1,4 @@
-// Copyright 2026 enieuwy. Licensed under Apache-2.0. See LICENSE.
+// Copyright 2026 OrgMentem. Licensed under Apache-2.0. See LICENSE.
 // PATCH(glean bugfix): coverage for the resources composite (resource_type, id)
 // primary key — cross-type id coexistence and legacy id-only-PK rebuild.
 

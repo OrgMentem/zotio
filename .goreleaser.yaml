@@ -61,9 +61,9 @@ signs:
 brews:
   - name: zotio
     repository:
-      owner: enieuwy
+      owner: OrgMentem
       name: homebrew-tap
-    homepage: "https://github.com/enieuwy/zotio"
+    homepage: "https://github.com/OrgMentem/zotio"
     description: "Every Zotero feature in the terminal, plus offline search, annotation export, and library analytics no existing tool..."
     install: |
       bin.install "zotio"

@@ -1,4 +1,4 @@
-// Copyright 2026 enieuwy. Licensed under Apache-2.0. See LICENSE.
+// Copyright 2026 OrgMentem. Licensed under Apache-2.0. See LICENSE.
 // PATCH(glean roadmap-phase3): cover the journal commands and the apply-time
 // recorder hook (with HOME isolated so writes land in a temp dir).
 

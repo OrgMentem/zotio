@@ -1,4 +1,4 @@
-// Copyright 2026 enieuwy. Licensed under Apache-2.0. See LICENSE.
+// Copyright 2026 OrgMentem. Licensed under Apache-2.0. See LICENSE.
 // PATCH(glean perf-audit m4ku/2qhf): cover the indexed-column missing-PDF query
 // and the single-scan audit summary so the json_extract -> indexed-column and
 // multi-scan -> conditional-aggregation rewrites stay behavior-preserving.

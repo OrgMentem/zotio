@@ -1,4 +1,4 @@
-// Copyright 2026 enieuwy and contributors. Licensed under Apache-2.0. See LICENSE.
+// Copyright 2026 OrgMentem and contributors. Licensed under Apache-2.0. See LICENSE.
 
 package store
 

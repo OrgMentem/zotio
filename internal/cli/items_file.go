@@ -1,4 +1,4 @@
-// Copyright 2026 enieuwy. Licensed under Apache-2.0. See LICENSE.
+// Copyright 2026 OrgMentem. Licensed under Apache-2.0. See LICENSE.
 // PATCH: Hand-written `items file` (not in the generated CLI). Resolves the on-disk
 // location of an item's attachment via the Zotero local API's file endpoints
 // (/items/<key>/file/view/url), complementing `items open` (which launches the app)

@@ -1331,6 +1331,21 @@
         ".gitignore"
       ],
       "validated_outcome": "gofmt/go vet/go build clean; go run ./cmd/docs-gen deterministic (drift gate passes); zensical==0.0.47 build 'No issues found'; site has exactly the 15 nav pages, zero internal-doc leaks (no prune needed), mermaid + SVG assets render, search index clean (227 items)."
+    },
+    {
+      "id": "orgmentem-ownership",
+      "summary": "Rebranded ownership from the personal handle enieuwy to the OrgMentem organization ahead of a GitHub repo transfer: replaced the `Copyright 2026 enieuwy` header in 277 tracked files plus LICENSE, NOTICE, and the SKILL.md author; pointed docs (mkdocs.yml site_url/repo_url/repo_name/site_author/copyright) and the Homebrew tap + homepage (.goreleaser.yaml) at OrgMentem.",
+      "reason": "Owner decided to ship zotio under the OrgMentem organization. Copyright holder, docs canonical URLs (https://orgmentem.github.io/zotio/), repo links, and release plumbing must reflect the org. The printing-press printer identity in .printing-press.json and historical audit prose in this catalog were intentionally left as-is (provenance, not copyright); ADR 'Deciders' lines keep the individual as an accurate record. The GitHub transfer itself is performed by the owner in the UI.",
+      "files": [
+        "LICENSE",
+        "NOTICE",
+        "SKILL.md",
+        "mkdocs.yml",
+        ".goreleaser.yaml",
+        "cmd/**/*.go",
+        "internal/**/*.go"
+      ],
+      "validated_outcome": "gofmt/go vet/go build ./... clean after the header rewrite; no 'Copyright 2026 enieuwy' remains in tracked files; docs-gen deterministic (no drift); zensical build 'No issues found' with sitemap emitting https://orgmentem.github.io/zotio/ URLs."
     }
   ]
 }

@@ -1,4 +1,4 @@
-// Copyright 2026 enieuwy. Licensed under Apache-2.0. See LICENSE.
+// Copyright 2026 OrgMentem. Licensed under Apache-2.0. See LICENSE.
 // PATCH: cover Web API write-base resolution: no-key, cached/env user id, group, and
 // the one-time keys/current lookup (against an overridable web base).
 

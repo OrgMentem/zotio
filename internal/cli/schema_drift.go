@@ -1,4 +1,4 @@
-// Copyright 2026 enieuwy. Licensed under Apache-2.0. See LICENSE.
+// Copyright 2026 OrgMentem. Licensed under Apache-2.0. See LICENSE.
 // PATCH: Hand-written `schema drift` probe (not in the generated CLI). Captures a
 // baseline fingerprint of the running Zotero's item-type/field schema and diffs a
 // later live fetch against it, so a Zotero upgrade's new (or removed) item types,

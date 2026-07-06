@@ -1,4 +1,4 @@
-// Copyright 2026 enieuwy. Licensed under Apache-2.0. See LICENSE.
+// Copyright 2026 OrgMentem. Licensed under Apache-2.0. See LICENSE.
 // PATCH(glean roadmap-phase8 read-your-writes): after a write succeeds (in the
 // cloud, via the Web API), replay the just-applied changes onto the local SQLite
 // mirror so `--data-source local` reads-your-own-writes WITHOUT a `sync`, and

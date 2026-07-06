@@ -1,4 +1,4 @@
-// Copyright 2026 enieuwy. Licensed under Apache-2.0. See LICENSE.
+// Copyright 2026 OrgMentem. Licensed under Apache-2.0. See LICENSE.
 // PATCH(glean static-audit): regression test for provenance result counting.
 // `items get` returns a single JSON object; the prior []json.RawMessage
 // unmarshal always failed and reported "0 results". countResultItems must

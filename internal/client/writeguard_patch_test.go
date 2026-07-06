@@ -1,4 +1,4 @@
-// Copyright 2026 enieuwy. Licensed under Apache-2.0. See LICENSE.
+// Copyright 2026 OrgMentem. Licensed under Apache-2.0. See LICENSE.
 // PATCH: writes to the read-only Zotero local API return 501 (PUT/PATCH); 501 is
 // never transient, so it must not trigger the 5xx retry/backoff loop.
 

@@ -1,4 +1,4 @@
-// Copyright 2026 enieuwy. Licensed under Apache-2.0. See LICENSE.
+// Copyright 2026 OrgMentem. Licensed under Apache-2.0. See LICENSE.
 // PATCH(glean static-audit): GetWithVersion surfaces the Zotero
 // Last-Modified-Version response header (parsed as int) for version-based
 // incremental sync; missing/unparseable headers must yield 0, not an error.

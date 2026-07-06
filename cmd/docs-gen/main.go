@@ -1,4 +1,4 @@
-// Copyright 2026 enieuwy. Licensed under Apache-2.0. See LICENSE.
+// Copyright 2026 OrgMentem. Licensed under Apache-2.0. See LICENSE.
 // PATCH(zensical-docs): deterministic reference-doc generator for the Zensical
 // documentation site. Walks the live cobra command tree and the introspection
 // exports (capabilities, feature index) plus tools-manifest.json, emitting the

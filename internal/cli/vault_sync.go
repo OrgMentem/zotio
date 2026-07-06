@@ -1,4 +1,4 @@
-// Copyright 2026 enieuwy. Licensed under Apache-2.0. See LICENSE.
+// Copyright 2026 OrgMentem. Licensed under Apache-2.0. See LICENSE.
 // PATCH(glean 49r4): vault-aware Obsidian/Logseq note sync. Materializes one
 // Markdown note per item into a PKM vault, keyed on the Better BibTeX / native
 // citation key, with zotero:// backlinks (item select + per-annotation

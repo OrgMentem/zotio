@@ -1,4 +1,4 @@
-// Copyright 2026 enieuwy. Licensed under Apache-2.0. See LICENSE.
+// Copyright 2026 OrgMentem. Licensed under Apache-2.0. See LICENSE.
 // PATCH(glean nbiv): `items summarize` — assemble a bounded, synthesis-ready
 // context bundle for an item or collection. It does NOT call a model: it gathers
 // the highest-signal local context (citation, abstract, the reader's own

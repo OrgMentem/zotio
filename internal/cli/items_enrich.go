@@ -1,4 +1,4 @@
-// Copyright 2026 enieuwy. Licensed under Apache-2.0. See LICENSE.
+// Copyright 2026 OrgMentem. Licensed under Apache-2.0. See LICENSE.
 // PATCH(glean dk33): metadata enrichment/remediation pipeline. Turns the
 // read-only `items audit` work queues (missing DOI / abstract / PDF) into
 // provider-backed fixes: resolve metadata from CrossRef (DOI, abstract) and

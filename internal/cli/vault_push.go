@@ -1,4 +1,4 @@
-// Copyright 2026 enieuwy. Licensed under Apache-2.0. See LICENSE.
+// Copyright 2026 OrgMentem. Licensed under Apache-2.0. See LICENSE.
 // PATCH(glean 15e0): commit 3 — Obsidian -> Zotero note write-back ("push").
 // `vault push` mirrors each note's user-owned "## Notes" region to a single
 // tool-owned Zotero child note. Reads stay local; writes go to the Web API via

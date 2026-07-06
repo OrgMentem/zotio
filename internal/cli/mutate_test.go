@@ -1,4 +1,4 @@
-// Copyright 2026 enieuwy. Licensed under Apache-2.0. See LICENSE.
+// Copyright 2026 OrgMentem. Licensed under Apache-2.0. See LICENSE.
 // PATCH(glean roadmap-phase3): adapter tests — flags->mutation.Options mapping
 // and delegation. The engine state machine + gates are covered in
 // internal/mutation/mutation_test.go.

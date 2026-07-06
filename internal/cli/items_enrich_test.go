@@ -1,4 +1,4 @@
-// Copyright 2026 enieuwy. Licensed under Apache-2.0. See LICENSE.
+// Copyright 2026 OrgMentem. Licensed under Apache-2.0. See LICENSE.
 // PATCH(glean dk33): cover the enrichment providers, apply step, store-backed
 // work queue, and mutation-envelope preview of `items enrich`.
 

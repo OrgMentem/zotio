@@ -1,4 +1,4 @@
-// Copyright 2026 enieuwy. Licensed under Apache-2.0. See LICENSE.
+// Copyright 2026 OrgMentem. Licensed under Apache-2.0. See LICENSE.
 // PATCH(glean roadmap-phase8 read-your-writes): tests that an applied write is
 // replayed into the local mirror so --data-source local reads it WITHOUT a sync,
 // and that unsupported change shapes are left for sync to reconcile.

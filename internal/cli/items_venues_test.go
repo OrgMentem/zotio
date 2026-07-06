@@ -1,4 +1,4 @@
-// Copyright 2026 enieuwy. Licensed under Apache-2.0. See LICENSE.
+// Copyright 2026 OrgMentem. Licensed under Apache-2.0. See LICENSE.
 // PATCH(glean bugfix): cover venue year extraction from meta.parsedDate when
 // data.date is freeform and would otherwise yield garbage year columns.
 

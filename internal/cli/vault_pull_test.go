@@ -1,4 +1,4 @@
-// Copyright 2026 enieuwy. Licensed under Apache-2.0. See LICENSE.
+// Copyright 2026 OrgMentem. Licensed under Apache-2.0. See LICENSE.
 // PATCH(glean 15e0): unit coverage for vault pull — push/pull round-trip
 // losslessness, managed-shape gating, tag stripping, region replacement, and the
 // atomic region+state write.

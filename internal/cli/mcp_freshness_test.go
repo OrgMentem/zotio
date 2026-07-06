@@ -1,4 +1,4 @@
-// Copyright 2026 enieuwy. Licensed under Apache-2.0. See LICENSE.
+// Copyright 2026 OrgMentem. Licensed under Apache-2.0. See LICENSE.
 // PATCH(glean roadmap-phase5 freshness-export): pin the unsynced MCP payload so
 // agents can distinguish missing local state from command failure.
 
