@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="docs/assets/logo.svg" width="160" alt="zotio logo">
+</p>
+
 # zotio
 
 **The trust-and-automation layer for Zotero.**
@@ -84,11 +88,26 @@ Three things make it trustworthy, not just convenient:
 - **It never lies by omission.** A check that needs the desktop app (broken attachments) doesn't silently vanish — it becomes a **loud skip with a remedy**, and if that skip is gate-relevant the run exits **`9`** (setup required) rather than falsely passing.
 - **It points at the real fixer.** Findings carry a `recommended_action` naming the exact existing command (`items enrich`, `items duplicates resolve`, `tags audit fix`) — health *diagnoses*, dedicated commands *treat*.
 
+### CI for your bibliography
+
+`--badge` renders any health run as a [shields.io endpoint](https://shields.io/badges/endpoint-badge) JSON artifact — `healthy` green, findings yellow, gate-failure red, `setup required` orange:
+
+```yaml
+# .github/workflows/bibliography.yml (excerpt)
+- run: zotio sync
+- run: zotio library health --for citation --fail-on high --badge > badge.json
+  # exit 11 fails the job when the bar isn't met; badge.json says why
+# publish badge.json anywhere shields can reach (gh-pages, gist, artifact host), then:
+#   https://img.shields.io/endpoint?url=https://<you>.github.io/<repo>/badge.json
+```
+
+Your thesis or review repo gets a live `bibliography | healthy` badge — and a failing build the moment a citekey conflict or duplicate slips in.
+
 ---
 
 ## Safe by default: the write engine
 
-Every write command — `items enrich`, `tags audit fix`, `items duplicates resolve`, `items create/update/move/delete`, `import apply`, `vault push` — flows through one mutation envelope with identical, predictable semantics.
+Every write command — `items enrich`, `tags audit fix`, `items duplicates resolve`, `items preprint-check fix`, `items create/update/move/delete`, `import apply`, `vault push` — flows through one mutation envelope with identical, predictable semantics.
 
 ![preview-first write lifecycle with journal and undo](docs/assets/write-safety.svg)
 
@@ -169,7 +188,7 @@ format = "obsidian"      # or "logseq"
 ### Enrichment (reads external APIs, writes Zotero)
 
 - **`items enrich`** — fill missing DOIs and abstracts from **CrossRef → OpenAlex → Semantic Scholar**, attach open-access PDF links from **Unpaywall**, and record provenance in each item's Extra field. `--validate` runs a read-only DOI discrepancy report against CrossRef and OpenCitations.
-- **`items preprint-check`** — find arXiv preprints that now have a published CrossRef record.
+- **`items preprint-check`** — find arXiv preprints that now have a published CrossRef record; `preprint-check fix` upgrades them with the journal DOI — preview-first, journaled, and it never overwrites a conflicting DOI.
 
 ### Export & reproducibility
 

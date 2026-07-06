@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <title>zotio badge — mono</title>
+  <desc>Paper-colored zotio badge for dark or colored headers: z inside the o-ring, gold i-dot in the ring's break.</desc>
+  <g id="background"></g>
+  <g id="icon">
+    <path d="M342.2 71.1 A204 204 0 1 0 440.9 169.8" fill="none" stroke="#FBFCFE" stroke-width="46" stroke-linecap="round"/>
+    <path fill="#FBFCFE" d="M148 156 H364 V210 L240 302 H364 V356 H148 V302 L272 210 H148 Z"/>
+  </g>
+  <g id="accent">
+    <circle cx="400.2" cy="111.8" r="27" fill="#E6C877"/>
+  </g>
+</svg>

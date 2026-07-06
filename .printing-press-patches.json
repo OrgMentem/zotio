@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "applied_at": "2026-07-04",
+  "applied_at": "2026-07-06",
   "base_run_id": "20260511-103605",
   "base_printing_press_version": "4.2.2",
   "patches": [
@@ -1363,6 +1363,54 @@
         "notes/README.md"
       ],
       "validated_outcome": "zensical build 'No issues found'; site now has 14 nav pages with no adr/ pages published; summary page emits anchors #mcp-command-surface and #local-read-parity that the cross-page links resolve to; full ADRs remain in notes/adr/ for contributors."
+    },
+    {
+      "id": "preprint-check-fix",
+      "summary": "Added `items preprint-check fix`: a write child command (tags-audit-fix convention) that upgrades arXiv preprints CrossRef reports as published — sets the journal DOI when the item's type has a DOI field and the current value is empty or the arXiv self-DOI, records it in Extra otherwise, always appends Extra provenance, and skips loudly (no_arxiv_id, still_preprint, doi_conflict) instead of overwriting.",
+      "reason": "Marketing-hero feature: the detect-only preprint-check left the obvious next step manual. Fix routes through the shared internal/mutation engine (preview-first, --yes to apply, journaled, version-guarded PATCH), adding no new write path.",
+      "files": [
+        "internal/cli/items_preprint_check.go",
+        "internal/cli/items_preprint_check_fix.go",
+        "internal/cli/items_preprint_check_fix_test.go"
+      ],
+      "validated_outcome": "go build/vet clean; parent keeps mcp:read-only=true while fix carries write annotations; regression tests cover DOI-guard, Extra-append, skip reasons, version threading, and preview default."
+    },
+    {
+      "id": "health-badge",
+      "summary": "Added `library health --badge` (+ --badge-label, default 'bibliography'): emits shields.io endpoint JSON (healthy/brightgreen, N findings/yellow, severity counts/red on gate failure, setup required/orange, stale or not-synced/lightgrey) while preserving the existing exit-code contract (11/12/9); --badge with --json is a usage error; empty store emits a 'not synced' badge and exits 9 instead of publishing a lying badge.",
+      "reason": "Marketing-hero feature: 'CI for your bibliography'. The health gate already had CI exit codes; the badge makes the verdict publishable (README documents the GitHub Action + shields endpoint recipe).",
+      "files": [
+        "internal/cli/library_health.go"
+      ],
+      "validated_outcome": "go build/vet clean; empty-store badge run exits 9 with lightgrey JSON on stdout; --badge --json exits 2; badge derivation covered by regression tests."
+    },
+    {
+      "id": "marketing-heroes-highlights",
+      "summary": "Rebuilt the curated capability index (whichIndex) around the shipped roadmap flagships — library health, items duplicates, import scan/doi, items enrich, items preprint-check fix, journal undo, items summarize, export snapshot, watch, workflow run, vault sync — grouped by the product pillars; rewrote the root --help Highlights block and SKILL.md 'Hero Capabilities' to match; docs-gen now renders highlight groups in index declaration order instead of alphabetical.",
+      "reason": "The print-time index predated roadmap Phases 1-8, so `zotio which`, docs/reference/highlights.md, root help, and SKILL.md advertised only hygiene/reading primitives while the README already led with the flagships. Also removed stale SKILL.md frontmatter overclaims ('Every Zotero feature in the terminal', 'adds 18 features').",
+      "files": [
+        "internal/cli/which.go",
+        "internal/cli/root.go",
+        "SKILL.md",
+        "cmd/docs-gen/main.go",
+        "docs/reference/highlights.md",
+        "docs/reference/commands.md",
+        "docs/reference/capabilities.md"
+      ],
+      "validated_outcome": "which ranking tests pass against the new index; make docs-gen regenerates with 'Library trust & health' leading the highlights page; every advertised command path and example flag verified against the live cobra tree."
+    },
+    {
+      "id": "brand-logo",
+      "summary": "Added the zotio brand logo (z-in-o badge with gold i-dot): README header image, docs-site theme logo (paper-mono variant) and favicon.",
+      "reason": "The generated tree ships no branding; the repo and Zensical docs site needed an identity mark that works on GitHub light/dark and the indigo Material header.",
+      "files": [
+        "docs/assets/logo.svg",
+        "docs/assets/logo-mono.svg",
+        "docs/assets/favicon.png",
+        "mkdocs.yml",
+        "README.md"
+      ],
+      "validated_outcome": "zensical==0.0.47 build 'No issues found'; built site references assets/logo-mono.svg and assets/favicon.png; mono variant verified legible on indigo (light) and slate (dark) headers; color badge verified legible at 16/32px favicon sizes."
     }
   ]
 }

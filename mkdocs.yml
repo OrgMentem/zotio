@@ -18,6 +18,8 @@ edit_uri: edit/main/docs/
 
 theme:
   name: material
+  logo: assets/logo-mono.svg
+  favicon: assets/favicon.png
   palette:
     - media: "(prefers-color-scheme: light)"
       scheme: default
