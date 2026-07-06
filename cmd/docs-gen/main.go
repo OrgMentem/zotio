@@ -60,7 +60,7 @@ func run(outDir, toolsManifest string) error {
 			return fmt.Errorf("%s: %w", name, err)
 		}
 		path := filepath.Join(outDir, name)
-		if err := os.WriteFile(path, body, 0o644); err != nil {
+		if err := os.WriteFile(path, body, 0o600); err != nil {
 			return err
 		}
 		fmt.Println("wrote", path)
