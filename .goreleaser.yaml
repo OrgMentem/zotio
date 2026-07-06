@@ -63,8 +63,13 @@ brews:
     repository:
       owner: OrgMentem
       name: homebrew-tap
+    # PATCH(marketing-heroes-2): GITHUB_TOKEN cannot push cross-repo; the
+    # rendered formula (dist/homebrew/) is committed to the tap manually
+    # until a fine-grained PAT (contents:write on homebrew-tap only) is
+    # added as HOMEBREW_TAP_GITHUB_TOKEN and this is flipped to false.
+    skip_upload: true
     homepage: "https://github.com/OrgMentem/zotio"
-    description: "Every Zotero feature in the terminal, plus offline search, annotation export, and library analytics no existing tool..."
+    description: "Zotero automation CLI: local-first search, library health checks, preview-first writes, annotation export, and MCP"
     install: |
       bin.install "zotio"
       bin.install "zotio-mcp"
