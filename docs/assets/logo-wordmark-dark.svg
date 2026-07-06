@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 660">
+  <title>zotio</title>
+  <desc>zotio badge with wordmark: z inside the o-ring, gold i-dot in the break, the name zotio beneath.</desc>
+  <g id="icon" transform="translate(56.5 0) scale(0.78)">
+    <path d="M342.2 71.1 A204 204 0 1 0 440.9 169.8" fill="none" stroke="#4F46E5" stroke-width="46" stroke-linecap="round"/>
+    <path fill="#4F46E5" d="M148 156 H364 V210 L240 302 H364 V356 H148 V302 L272 210 H148 Z"/>
+    <circle cx="400.2" cy="111.8" r="27" fill="#E6C877"/>
+  </g>
+  <g id="wordmark">
+    <text x="256" y="600" text-anchor="middle" font-family="Helvetica Neue, Helvetica, Arial, sans-serif" font-size="150" font-weight="600" letter-spacing="2" fill="#FBFCFE">zotio</text>
+  </g>
+</svg>

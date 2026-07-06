@@ -1,17 +1,63 @@
 <p align="center">
-  <img src="docs/assets/logo.svg" width="160" alt="zotio logo">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/assets/logo-wordmark-dark.svg">
+    <source media="(prefers-color-scheme: light)" srcset="docs/assets/logo-wordmark.svg">
+    <img alt="zotio" src="docs/assets/logo-wordmark.svg" width="200">
+  </picture>
 </p>
 
-# zotio
+<p align="center">
+  <strong>
+    The trust-and-automation layer for
+    <a href="https://www.zotero.org/">Zotero</a>
+  </strong>
+</p>
 
-**The trust-and-automation layer for Zotero.**
+<p align="center">
+  <a href="https://github.com/OrgMentem/zotio/actions/workflows/ci.yml"><img
+    src="https://github.com/OrgMentem/zotio/actions/workflows/ci.yml/badge.svg"
+    alt="CI"
+  /></a>
+  <a href="https://github.com/OrgMentem/zotio/actions/workflows/docs.yml"><img
+    src="https://github.com/OrgMentem/zotio/actions/workflows/docs.yml/badge.svg"
+    alt="Docs"
+  /></a>
+  <a href="https://go.dev/"><img
+    src="https://img.shields.io/badge/Go-1.26-00ADD8?logo=go&logoColor=white"
+    alt="Go 1.26"
+  /></a>
+  <a href="LICENSE"><img
+    src="https://img.shields.io/badge/license-Apache--2.0-blue"
+    alt="Apache-2.0"
+  /></a>
+</p>
 
-Local-fast reads, preview-first writes, and bounded, provenance-tagged context — for you, your scripts, and your AI agents. `zotio` reads straight from your running Zotero desktop app (no API key), mirrors your library to local SQLite for offline search and analytics, and routes every change through a preview-first safety envelope so nothing mutates your library by accident.
+<p align="center">
+  <a href="https://orgmentem.github.io/zotio/"><strong>Home</strong></a>
+  &middot;
+  <a href="https://orgmentem.github.io/zotio/guide/install/"><strong>Get started</strong></a>
+  &middot;
+  <a href="https://orgmentem.github.io/zotio/reference/commands/"><strong>Commands</strong></a>
+  &middot;
+  <a href="https://orgmentem.github.io/zotio/guide/mcp-server/"><strong>MCP server</strong></a>
+  &middot;
+  <a href="https://orgmentem.github.io/zotio/guide/agent-skill/"><strong>Agent skill</strong></a>
+</p>
+
+<p align="center">
+  Local-fast reads, preview-first writes, and bounded, provenance-tagged context
+  — for you, your scripts, and your AI agents. <code>zotio</code> reads straight
+  from your running Zotero desktop app (no API key), mirrors your library to
+  local SQLite for offline search and analytics, and routes every change through
+  a preview-first safety envelope so nothing mutates your library by accident.
+</p>
 
 ```bash
+zotio init                                            # guided setup: detect Zotero, key, first sync, health check
 zotio library health --for citation --fail-on high   # is this library fit to cite? (exit 11 if not)
+zotio items retract-check                             # are you citing retracted papers?
+zotio items bibcheck thesis.tex --fail-on-unknown     # does every \cite{} resolve to your library?
 zotio search 'automation trust' --data-source local  # offline full-text search
-zotio tags audit                                      # find + fix tag drift, with ready-to-run merges
 zotio items enrich --missing-doi --dry-run            # resolve DOIs from CrossRef/OpenAlex — preview only
 ```
 
@@ -101,7 +147,7 @@ Three things make it trustworthy, not just convenient:
 #   https://img.shields.io/endpoint?url=https://<you>.github.io/<repo>/badge.json
 ```
 
-Your thesis or review repo gets a live `bibliography | healthy` badge — and a failing build the moment a citekey conflict or duplicate slips in.
+Your thesis or review repo gets a live `bibliography | healthy` badge — and a failing build the moment a citekey conflict or duplicate slips in. Add `--check-retractions` to extend the gate to **retracted papers** (Crossref's Retraction Watch data), and gate the manuscript itself with `zotio items bibcheck paper.tex --fail-on-unknown`.
 
 ---
 
@@ -168,8 +214,11 @@ format = "obsidian"      # or "logseq"
 
 ## More that the GUI and `pyzotero` don't give you
 
-### Library hygiene & analytics (local, offline)
+### Library hygiene, integrity & analytics
 
+- **`items retract-check`** — check every DOI against **Crossref's Retraction Watch data**: retractions, expressions of concern, and corrections, with notice DOIs and dates. Opt into the `library health` gate with `--check-retractions`. *(This one reads the network.)*
+- **`collections gaps`** — citation-graph gap analysis: rank the papers your collection cites most that are **missing from your library** (OpenCitations + Semantic Scholar), then `import doi` them. *(Network too.)*
+- **`items bibcheck <manuscript>`** — parse `\cite{}`/`@citekey` from `.tex` or pandoc Markdown and resolve every key against your library — unknown and ambiguous keys flagged, `--fail-on-unknown` exits 11 for CI.
 - **`tags audit`** — group tags that differ only by case or variant, with item counts and **ready-to-run merge commands**. On a real 840-tag library it surfaced 53 duplicate groups in one pass.
 - **`library stats`** — a one-command dashboard: items by type and year, top venues, PDF coverage (e.g. *684/792 (86%)*).
 - **`items audit`** — count and list items missing PDFs, abstracts, DOIs, tags, or citation-core fields; `--verify-files` checks PDFs actually exist on disk.
@@ -184,6 +233,7 @@ format = "obsidian"      # or "logseq"
 - **`reading-list`** — a `to-read` tag queue with an `add` → `start` → `done` lifecycle for triaging what to read next.
 - **`items note-template`** — generate a pre-filled Obsidian/Logseq reading note for an item.
 - **`items open`** — print or launch a `zotero://` deep link to an item, collection, or PDF (cross-platform).
+- **`library wrapped`** — your Zotero year in review: items by month and type, top venues and authors, annotation activity, PDF coverage — with a shareable SVG card (`--card wrapped.svg`).
 
 ### Enrichment (reads external APIs, writes Zotero)
 
@@ -197,7 +247,7 @@ format = "obsidian"      # or "logseq"
 
 ### Freshness & schema
 
-- **`sync` · `watch` · `tail`** — populate the mirror, keep it fresh with periodic incremental syncs, or stream live changes.
+- **`sync` · `watch` · `tail`** — populate the mirror, keep it fresh with periodic incremental syncs, or stream live changes. `watch --health` diffs `library health` between cycles and reports **new findings** to stdout or a webhook — hear about drift the cycle it appears.
 - **`schema drift`** — after a Zotero upgrade, detect item-type / field / creator-field changes against a saved baseline.
 
 ---
@@ -380,7 +430,7 @@ zotio which "export bibtex for a collection"
 <details>
 <summary>Top-level commands</summary>
 
-`agent-context` · `analytics` · `annotations` · `auth` · `capabilities` · `collections` · `doctor` · `export` · `groups` · `import` · `items` · `journal` · `library` · `profile` · `reading-list` · `schema` · `search` · `searches` · `sync` · `tags` · `tail` · `vault` · `version` · `watch` · `which` · `workflow`
+`agent-context` · `analytics` · `annotations` · `auth` · `capabilities` · `collections` · `doctor` · `export` · `groups` · `import` · `init` · `items` · `journal` · `library` · `profile` · `reading-list` · `schema` · `search` · `searches` · `sync` · `tags` · `tail` · `vault` · `version` · `watch` · `which` · `workflow`
 
 </details>
 

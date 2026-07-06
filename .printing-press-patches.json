@@ -1401,16 +1401,101 @@
     },
     {
       "id": "brand-logo",
-      "summary": "Added the zotio brand logo (z-in-o badge with gold i-dot): README header image, docs-site theme logo (paper-mono variant) and favicon.",
+      "summary": "Added the zotio brand logo (z-in-o badge with gold i-dot): Zensical-style README opening (light/dark wordmark picture, tagline, badges, docs nav links), docs-site theme logo (paper-mono variant) and favicon.",
       "reason": "The generated tree ships no branding; the repo and Zensical docs site needed an identity mark that works on GitHub light/dark and the indigo Material header.",
       "files": [
         "docs/assets/logo.svg",
         "docs/assets/logo-mono.svg",
+        "docs/assets/logo-wordmark.svg",
+        "docs/assets/logo-wordmark-dark.svg",
         "docs/assets/favicon.png",
         "mkdocs.yml",
         "README.md"
       ],
       "validated_outcome": "zensical==0.0.47 build 'No issues found'; built site references assets/logo-mono.svg and assets/favicon.png; mono variant verified legible on indigo (light) and slate (dark) headers; color badge verified legible at 16/32px favicon sizes."
+    },
+    {
+      "id": "retract-check",
+      "summary": "Added `items retract-check` (read-only): probes Crossref /works/{doi} `updated-by` metadata (Retraction Watch sourced) for every DOI-bearing local item and reports retractions, expressions of concern, and corrections with notice DOIs/dates; wired a critical `retracted_item` check into `library health` behind the `--check-retractions` opt-in (loud skip without it; the flag injects the check into any preset; it lives natively only in the `all` preset so the default citation gate stays deterministic offline).",
+      "reason": "Marketing-hero feature ('are you citing retracted papers?'). Field shape verified live against Crossref (Wakefield 1998: updated-by carries type/label/source/date). The preset placement preserves the pinned contract that `--for citation --fail-on high` passes or fails without network access.",
+      "files": [
+        "internal/cli/items_retract_check.go",
+        "internal/cli/items.go",
+        "internal/cli/library_health.go",
+        "internal/cli/items_retract_check_test.go"
+      ],
+      "validated_outcome": "Live run against the real store checked DOI items with correct summary; `--for citation` without the flag shows no retraction skip and gates deterministically; `--for all` loud-skips with remediation; regression tests cover classification, 404s, and skip/injection."
+    },
+    {
+      "id": "bibcheck",
+      "summary": "Added `items bibcheck <manuscript>` (read-only, local): parses \\cite-family commands from .tex and pandoc @citekeys from .md/.qmd (skipping code blocks), resolves each key against the library's Better BibTeX citekeys (shared loader with citekey-conflicts), reports ok/unknown/ambiguous, and exits 11 under --fail-on-unknown.",
+      "reason": "Marketing-hero feature: bridges zotio into manuscript submission — unknown citekeys are LaTeX build failures; the exit-11 gate makes it CI-able alongside library health.",
+      "files": [
+        "internal/cli/items_bibcheck.go",
+        "internal/cli/items.go",
+        "internal/cli/items_citekey_conflicts.go",
+        "internal/cli/items_bibcheck_test.go"
+      ],
+      "validated_outcome": "Scratch .tex with \\cite{a,b} + \\parencite[p.~3]{c} resolves keys a,b,c; --fail-on-unknown exits 11 after rendering; parser and resolution regression tests pass."
+    },
+    {
+      "id": "collections-gaps",
+      "summary": "Added `collections gaps <key>` (read-only): aggregates outgoing citations of a collection's DOI-bearing items via OpenCitations COCI (Semantic Scholar fallback), excludes DOIs already anywhere in the library, and ranks cited-but-missing papers by in-corpus citation count with `import doi` actions.",
+      "reason": "Marketing-hero feature: citation-graph gap analysis for literature reviews without embeddings — pure graph counting keeps the no-LLM-by-design contract.",
+      "files": [
+        "internal/cli/collections_gaps.go",
+        "internal/cli/collections.go",
+        "internal/cli/collections_gaps_test.go"
+      ],
+      "validated_outcome": "Aggregation/exclusion/ranking covered by httptest-backed regression tests; Crossref title lookups limited to top-ranked rows."
+    },
+    {
+      "id": "library-wrapped",
+      "summary": "Added `library wrapped [--year] [--card out.svg]` (read-only, local-only): year-in-review with items by month/type, top venues and authors, annotation activity, and PDF coverage; --card renders a self-contained 800x418 SVG share card with XML-escaped strings.",
+      "reason": "Marketing-hero feature: the shareable artifact. All data comes from the synced SQLite store; sections whose data the store cannot answer are omitted rather than fabricated (no read-transition timestamps, so 'finally read' was skipped).",
+      "files": [
+        "internal/cli/library_wrapped.go",
+        "internal/cli/library.go",
+        "internal/cli/library_wrapped_test.go"
+      ],
+      "validated_outcome": "Live run against the real store (2026: 7 items, 85% PDF coverage); SVG card validates with xmllint; year scoping and escaping covered by regression tests."
+    },
+    {
+      "id": "init-wizard",
+      "summary": "Added `zotio init`: guided first run composing existing seams (doctor reachability, ensure-live launch, auth credential save, syncResource first sync, in-process quick health) with a machine-readable step report; interactive by default, never prompts under --no-input/--agent, exits 9 when setup steps are unmet.",
+      "reason": "Marketing/onboarding: time-to-first-wow — one command from install to a synced, health-checked library; agent-safe probing for MCP hosts.",
+      "files": [
+        "internal/cli/init.go",
+        "internal/cli/root.go",
+        "internal/cli/init_test.go"
+      ],
+      "validated_outcome": "Live run on a configured machine reports all four steps ok and exits 0; hermetic tests cover the non-interactive step report and exit-9 classification."
+    },
+    {
+      "id": "watch-health",
+      "summary": "Added `watch --health [--health-for preset] [--health-webhook url]`: after each sync cycle runs library health in-process, diffs findings by their stable identity, prints only new findings (plus resolved count) after the first baseline, and optionally POSTs {cycle_at, preset, new, resolved_count, totals} to a webhook; health failures never abort the watch loop.",
+      "reason": "Marketing-hero feature: drift notifications for group-library admins — 'a duplicate slipped in overnight' — reusing the stable finding taxonomy instead of a new mechanism.",
+      "files": [
+        "internal/cli/watch.go",
+        "internal/cli/watch_health.go",
+        "internal/cli/watch_health_test.go"
+      ],
+      "validated_outcome": "Live `watch --once --health` produced the baseline summary against the real store; diff identity and webhook payload covered by regression tests."
+    },
+    {
+      "id": "marketing-heroes-2-highlights",
+      "summary": "Advertised the six new in-repo heroes across the curated surfaces: whichIndex entries (retract-check, gaps, bibcheck, wrapped, init, watch --health), root --help Highlights, SKILL.md hero sections + command reference, and README (quickstart, integrity section, badge recipe extension). A companion GitHub Action scaffold lives outside this repo at ../zotio-action (not published).",
+      "reason": "Same staleness failure mode as marketing-heroes: features that are not in the curated index are invisible to `zotio which`, the docs highlights page, and agents.",
+      "files": [
+        "internal/cli/which.go",
+        "internal/cli/root.go",
+        "SKILL.md",
+        "README.md",
+        "docs/reference/highlights.md",
+        "docs/reference/commands.md",
+        "docs/reference/capabilities.md"
+      ],
+      "validated_outcome": "which resolves 'retracted papers', 'check manuscript', 'year in review' queries to the new commands; make docs-gen deterministic; all advertised flags verified against the live cobra tree."
     }
   ]
 }
