@@ -84,7 +84,7 @@ This file is an **index of customizations**, not a second copy of the diff. Diff
 
 ## Architecture Decisions
 
-Non-trivial architecture/infrastructure decisions (as opposed to product sequencing, which lives in `notes/roadmap.md`) are recorded as ADRs under `docs/adr/`. Read the relevant ADR before reworking the subsystem it covers.
+Non-trivial architecture/infrastructure decisions (as opposed to product sequencing, which lives in `notes/roadmap.md`) are recorded as ADRs under `notes/adr/`. Read the relevant ADR before reworking the subsystem it covers.
 
-- `docs/adr/0001-mcp-command-surface.md` — why the MCP server defaults to a command-orchestration facade (`command_search`/`command_run`) with global flags stripped from the mirror, and how to switch surfaces via `PP_MCP_SURFACE`.
-- `docs/adr/0002-local-read-parity-subsystem.md` — why Zotero-aware local read parity (`internal/store/query.go` + the `resolveLocal*` path) is a deliberate, per-resource subsystem grown on demand, NOT a generic query-planner layer; read before adding a new `--data-source local` scope.
+- `notes/adr/0001-mcp-command-surface.md` — why the MCP server defaults to a command-orchestration facade (`command_search`/`command_run`) with global flags stripped from the mirror, and how to switch surfaces via `PP_MCP_SURFACE`.
+- `notes/adr/0002-local-read-parity-subsystem.md` — why Zotero-aware local read parity (`internal/store/query.go` + the `resolveLocal*` path) is a deliberate, per-resource subsystem grown on demand, NOT a generic query-planner layer; read before adding a new `--data-source local` scope.

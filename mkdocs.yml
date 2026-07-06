@@ -84,6 +84,5 @@ nav:
       - Highlights: reference/highlights.md
       - Capabilities & trust model: reference/capabilities.md
       - MCP tools: reference/mcp-tools.md
-  - Architecture decisions:
-      - MCP command surface: adr/0001-mcp-command-surface.md
-      - Local read parity subsystem: adr/0002-local-read-parity-subsystem.md
+  - Contributing:
+      - Architecture decisions: contributing/architecture-decisions.md

@@ -1346,6 +1346,23 @@
         "internal/**/*.go"
       ],
       "validated_outcome": "gofmt/go vet/go build ./... clean after the header rewrite; no 'Copyright 2026 enieuwy' remains in tracked files; docs-gen deterministic (no drift); zensical build 'No issues found' with sitemap emitting https://orgmentem.github.io/zotio/ URLs."
+    },
+    {
+      "id": "adr-summaries-on-site",
+      "summary": "Moved the full technical ADRs out of the published tree (docs/adr/ -> notes/adr/) and added a user-facing summary page (docs/contributing/architecture-decisions.md) under a new site 'Contributing' section, linking to the full records on GitHub.",
+      "reason": "The docs site is user-facing; full ADRs are contributor material and read as internal in a user site (consistent with moving roadmap/oracle notes to notes/). Users still get accessible summaries of the decisions that affect usage (MCP command surface / PP_MCP_SURFACE, local read parity / --data-source local). Updated all references: README.md, AGENTS.md, notes/README.md, and the two docs pages that linked the ADRs (guide/mcp-server.md, concepts/local-read-parity.md now point at the summary anchors).",
+      "files": [
+        "notes/adr/0001-mcp-command-surface.md",
+        "notes/adr/0002-local-read-parity-subsystem.md",
+        "docs/contributing/architecture-decisions.md",
+        "mkdocs.yml",
+        "docs/guide/mcp-server.md",
+        "docs/concepts/local-read-parity.md",
+        "README.md",
+        "AGENTS.md",
+        "notes/README.md"
+      ],
+      "validated_outcome": "zensical build 'No issues found'; site now has 14 nav pages with no adr/ pages published; summary page emits anchors #mcp-command-surface and #local-read-parity that the cross-page links resolve to; full ADRs remain in notes/adr/ for contributors."
     }
   ]
 }

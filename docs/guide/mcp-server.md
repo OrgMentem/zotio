@@ -6,7 +6,7 @@
 
 By default the server exposes a **command-orchestration facade** — `command_search` and `command_run` — rather than one tool per endpoint. Agents discover and drive the CLI the same way a human would: search for the right command, then run it. This keeps the tool surface small and the trust model identical to the CLI.
 
-The rationale and trade-offs are recorded in [ADR 0001 — MCP command surface](../adr/0001-mcp-command-surface.md).
+The rationale and trade-offs are summarized in [Architecture decisions › MCP command surface](../contributing/architecture-decisions.md#mcp-command-surface), with the full record in the repo.
 
 ### Switching surfaces
 

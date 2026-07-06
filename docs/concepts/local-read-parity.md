@@ -22,7 +22,7 @@ zotio watch                                  # keep the mirror fresh
 
 Local read parity is Zotero-aware and grown **on demand, per resource** (`internal/store/query.go` and the `resolveLocal*` path) — it is *not* a generic query-planner layer. A local scope is added for a resource only where users actually pass filters against it, keeping the surface small and the behavior faithful to the live API rather than a lowest-common-denominator abstraction.
 
-The reasoning, boundaries, and the rule for adding a new `--data-source local` scope are recorded in [ADR 0002 — Local read parity subsystem](../adr/0002-local-read-parity-subsystem.md). Read it before extending local reads.
+The reasoning, boundaries, and the rule for adding a new `--data-source local` scope are summarized in [Architecture decisions › Local read parity](../contributing/architecture-decisions.md#local-read-parity), with the full record in the repo. Read it before extending local reads.
 
 ## Freshness
 
