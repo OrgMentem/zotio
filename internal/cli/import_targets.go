@@ -1,4 +1,4 @@
-// Copyright 2026 OrgMentem. Licensed under Apache-2.0. See LICENSE.
+// Copyright 2026 OrgMentem. Licensed under MIT. See LICENSE.
 // PATCH: expose Zotero desktop Connector save targets for collection routing.
 
 package cli

@@ -1,4 +1,4 @@
-// Copyright 2026 OrgMentem and contributors. Licensed under Apache-2.0. See LICENSE.
+// Copyright 2026 OrgMentem and contributors. Licensed under MIT. See LICENSE.
 // PATCH(glean roadmap-phase2): share cross-platform Zotero desktop launch and local-API readiness checks.
 
 package cli

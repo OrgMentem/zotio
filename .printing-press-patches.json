@@ -1496,6 +1496,19 @@
         "docs/reference/capabilities.md"
       ],
       "validated_outcome": "which resolves 'retracted papers', 'check manuscript', 'year in review' queries to the new commands; make docs-gen deterministic; all advertised flags verified against the live cobra tree."
+    },
+    {
+      "id": "mit-relicense",
+      "summary": "Relicensed the project from Apache-2.0 to MIT: LICENSE replaced, NOTICE removed, all Go file headers rewritten to 'Licensed under MIT.', README badge/footer, mkdocs.yml copyright, and SKILL.md frontmatter updated.",
+      "reason": "Owner decision 2026-07-06, superseding the 2026-07-03 keep-Apache call: the project was quick to build and the owner values openness/simplicity over Apache's patent/trademark clauses. Sole copyright holder (OrgMentem), so relicensing needed no third-party consent; NOTICE had no Apache-mandated third-party content (Printing Press attribution lives in the README footer).",
+      "files": [
+        "LICENSE",
+        "NOTICE",
+        "SKILL.md",
+        "README.md",
+        "mkdocs.yml"
+      ],
+      "validated_outcome": "grep finds zero 'Apache' references in tracked Go files (289 headers rewritten incl. new WIP files); zensical build 'No issues found'; patches JSON valid."
     }
   ]
 }

@@ -1,4 +1,4 @@
-// Copyright 2026 OrgMentem. Licensed under Apache-2.0. See LICENSE.
+// Copyright 2026 OrgMentem. Licensed under MIT. See LICENSE.
 // PATCH(glean roadmap-phase1): tests for the composite `library health` report —
 // check composition, --for presets, the --fail-on quality gate (exit 11), and the
 // precondition contract for the live broken-attachment check (loud skip + exit 9).

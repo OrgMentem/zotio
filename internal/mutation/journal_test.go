@@ -1,4 +1,4 @@
-// Copyright 2026 OrgMentem. Licensed under Apache-2.0. See LICENSE.
+// Copyright 2026 OrgMentem. Licensed under MIT. See LICENSE.
 // PATCH(glean roadmap-phase3): journal build + append/list/read roundtrip.
 
 package mutation

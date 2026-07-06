@@ -9,7 +9,7 @@
 site_name: zotio
 site_description: The trust-and-automation layer for Zotero — search, export, analytics, and safe writes in the terminal.
 site_author: OrgMentem
-copyright: Copyright &copy; 2026 OrgMentem — Apache-2.0
+copyright: Copyright &copy; 2026 OrgMentem — MIT
 # Canonical URL (required for the sitemap that instant navigation relies on) + repo links.
 site_url: https://orgmentem.github.io/zotio/
 repo_url: https://github.com/OrgMentem/zotio

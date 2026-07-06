@@ -1,4 +1,4 @@
-// Copyright 2026 OrgMentem. Licensed under Apache-2.0. See LICENSE.
+// Copyright 2026 OrgMentem. Licensed under MIT. See LICENSE.
 // PATCH(glean q1ia): `import scan` — a read-only, library-aware triage of a PDF
 // folder. It deliberately does NOT re-implement Zotero's "Retrieve Metadata for
 // PDF" (recognizer + file upload). Instead it answers the question the Zotero GUI

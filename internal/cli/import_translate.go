@@ -1,4 +1,4 @@
-// Copyright 2026 OrgMentem. Licensed under Apache-2.0. See LICENSE.
+// Copyright 2026 OrgMentem. Licensed under MIT. See LICENSE.
 // PATCH(glean 37jv): metadata-enriched imports. URL import used to create a bare
 // webpage item whose title was the URL itself. This adds a translator-style
 // pipeline: a DOI embedded in the URL resolves full metadata from CrossRef, and

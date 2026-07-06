@@ -1,4 +1,4 @@
-// Copyright 2026 OrgMentem. Licensed under Apache-2.0. See LICENSE.
+// Copyright 2026 OrgMentem. Licensed under MIT. See LICENSE.
 // PATCH(glean roadmap-phase5 bounded-graph): cover local-store-backed MCP graph
 // exporters with HOME-isolated seeded data.
 

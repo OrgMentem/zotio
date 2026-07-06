@@ -1,4 +1,4 @@
-// Copyright 2026 OrgMentem. Licensed under Apache-2.0. See LICENSE.
+// Copyright 2026 OrgMentem. Licensed under MIT. See LICENSE.
 // PATCH(glean 15e0): unit coverage for the pull-free pieces of vault push —
 // paragraph-verbatim rendering (no Markdown interpreted, everything escaped),
 // state comment round-trip, notes-region extraction, deterministic write token,

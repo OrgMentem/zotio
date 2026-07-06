@@ -1,4 +1,4 @@
-// Copyright 2026 OrgMentem. Licensed under Apache-2.0. See LICENSE.
+// Copyright 2026 OrgMentem. Licensed under MIT. See LICENSE.
 // PATCH(glean inscribi-15e0): unit coverage for `vault resolve --keep-remote` —
 // the symmetric conflict recovery that pulls the remote note over the vault
 // Notes region, refreshes the baseline, and clears the conflict artifact.

@@ -1,4 +1,4 @@
-// Copyright 2026 OrgMentem. Licensed under Apache-2.0. See LICENSE.
+// Copyright 2026 OrgMentem. Licensed under MIT. See LICENSE.
 // PATCH: Zotero's POST /items requires a bare JSON array; items create must send the
 // array directly, not the generated {"items":[...]} wrapper (which the API rejects).
 

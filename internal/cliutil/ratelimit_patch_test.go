@@ -1,4 +1,4 @@
-// Copyright 2026 OrgMentem. Licensed under Apache-2.0. See LICENSE.
+// Copyright 2026 OrgMentem. Licensed under MIT. See LICENSE.
 // PATCH(glean static-audit): regression test for the AdaptiveLimiter.Wait race.
 // Before the fix, concurrent callers all read the same lastRequest, slept the
 // same delay, and returned together; afterward each reserves a distinct wake

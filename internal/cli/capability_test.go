@@ -1,4 +1,4 @@
-// Copyright 2026 OrgMentem. Licensed under Apache-2.0. See LICENSE.
+// Copyright 2026 OrgMentem. Licensed under MIT. See LICENSE.
 // PATCH(glean review P3): the asserting guard the capabilityOverrides comment
 // promises — every override key must resolve to a real runnable command, so a
 // typo'd/renamed key can't silently fall through to a wrong (e.g. keyless)

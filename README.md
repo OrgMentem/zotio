@@ -27,8 +27,8 @@
     alt="Go 1.26"
   /></a>
   <a href="LICENSE"><img
-    src="https://img.shields.io/badge/license-Apache--2.0-blue"
-    alt="Apache-2.0"
+    src="https://img.shields.io/badge/license-MIT-blue"
+    alt="MIT"
   /></a>
 </p>
 
@@ -449,4 +449,4 @@ Built by studying these projects and resources:
 
 ---
 
-Licensed under Apache-2.0. Bootstrapped with [CLI Printing Press](https://github.com/mvanhorn/cli-printing-press); substantially hand-written and independently developed since.
+Licensed under MIT. Bootstrapped with [CLI Printing Press](https://github.com/mvanhorn/cli-printing-press); substantially hand-written and independently developed since.

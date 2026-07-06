@@ -1,4 +1,4 @@
-// Copyright 2026 OrgMentem. Licensed under Apache-2.0. See LICENSE.
+// Copyright 2026 OrgMentem. Licensed under MIT. See LICENSE.
 // PATCH(glean 15e0): `vault pull` — the safe, fast-forward reverse of `vault push`.
 // It brings remote Zotero child-note edits into the user-owned "## Notes" region,
 // but ONLY when the local region is unchanged since the last sync (a clean

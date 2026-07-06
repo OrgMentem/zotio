@@ -1,4 +1,4 @@
-// Copyright 2026 OrgMentem. Licensed under Apache-2.0. See LICENSE.
+// Copyright 2026 OrgMentem. Licensed under MIT. See LICENSE.
 // PATCH(glean test-gaps bnt5): Cover pure CLI helper classification, filtering, formatting, pagination, and string behavior.
 
 package cli

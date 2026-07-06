@@ -1,4 +1,4 @@
-// Copyright 2026 OrgMentem. Licensed under Apache-2.0. See LICENSE.
+// Copyright 2026 OrgMentem. Licensed under MIT. See LICENSE.
 // PATCH(glean roadmap-phase3): append-only run journal. Every applied mutation
 // run is recorded as one JSON line so it can be listed, inspected, and (where
 // reversible) undone. Pure model + file I/O; the cli resolves the directory.

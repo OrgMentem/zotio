@@ -1,4 +1,4 @@
-// Copyright 2026 OrgMentem. Licensed under Apache-2.0. See LICENSE.
+// Copyright 2026 OrgMentem. Licensed under MIT. See LICENSE.
 // PATCH: Cover items file attachment-path resolution: direct attachment key,
 // parent-item child-PDF resolution, and the no-attachment error.
 

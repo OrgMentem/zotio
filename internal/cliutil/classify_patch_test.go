@@ -1,4 +1,4 @@
-// Copyright 2026 OrgMentem. Licensed under Apache-2.0. See LICENSE.
+// Copyright 2026 OrgMentem. Licensed under MIT. See LICENSE.
 // PATCH(glean static-audit): ClassifyHTTPError is the single source of HTTP
 // status detection shared by the CLI and MCP layers; pin its mapping and the
 // 409 > 400-auth > 401 > 403 > 404 > 429 precedence.

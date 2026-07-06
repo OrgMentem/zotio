@@ -1,4 +1,4 @@
-// Copyright 2026 OrgMentem. Licensed under Apache-2.0. See LICENSE.
+// Copyright 2026 OrgMentem. Licensed under MIT. See LICENSE.
 // PATCH(glean security-audit): regression test for maskToken. Short tokens must
 // be fully masked rather than revealing their last 4 characters (which for a
 // short token is most of the secret).

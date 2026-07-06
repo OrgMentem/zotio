@@ -1,4 +1,4 @@
-// Copyright 2026 OrgMentem. Licensed under Apache-2.0. See LICENSE.
+// Copyright 2026 OrgMentem. Licensed under MIT. See LICENSE.
 // PATCH: hybrid routing — non-GET requests go to the lazily-resolved WriteBaseURL
 // (the Web API) while GETs stay on BaseURL (the local API).
 

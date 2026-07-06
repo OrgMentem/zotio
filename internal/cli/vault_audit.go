@@ -1,4 +1,4 @@
-// Copyright 2026 OrgMentem. Licensed under Apache-2.0. See LICENSE.
+// Copyright 2026 OrgMentem. Licensed under MIT. See LICENSE.
 // PATCH(glean roadmap-phase5 vault-audit): add a read-only vault trust-plane audit for managed notes.
 
 package cli

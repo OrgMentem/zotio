@@ -1,4 +1,4 @@
-// Copyright 2026 OrgMentem. Licensed under Apache-2.0. See LICENSE.
+// Copyright 2026 OrgMentem. Licensed under MIT. See LICENSE.
 // PATCH(glean security-audit): regression test for the json_extract field-name
 // guard that protects ResolveByName's Sprintf-built query from injection via a
 // caller-supplied matchField containing quotes or SQL syntax.

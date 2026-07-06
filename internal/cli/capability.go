@@ -1,4 +1,4 @@
-// Copyright 2026 OrgMentem. Licensed under Apache-2.0. See LICENSE.
+// Copyright 2026 OrgMentem. Licensed under MIT. See LICENSE.
 // PATCH(glean roadmap-phase2): typed capability + preconditions registry — the
 // single machine-readable source of truth for what each command does (read/
 // write/destructive), where it writes, and what it requires (live desktop API,

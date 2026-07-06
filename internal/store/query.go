@@ -1,4 +1,4 @@
-// Copyright 2026 OrgMentem. Licensed under Apache-2.0. See LICENSE.
+// Copyright 2026 OrgMentem. Licensed under MIT. See LICENSE.
 // PATCH(glean cvl6): Zotero-aware local query planner. Replays the scoping
 // semantics of the Zotero item list/search endpoints (itemType, tag,
 // collection, top-level, quick-search, sort, direction, limit, start) against

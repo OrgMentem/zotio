@@ -1,4 +1,4 @@
-// Copyright 2026 OrgMentem. Licensed under Apache-2.0. See LICENSE.
+// Copyright 2026 OrgMentem. Licensed under MIT. See LICENSE.
 // PATCH(glean cvl6): fixture-backed parity tests proving --data-source local
 // reproduces the live endpoint's scoped key sets and ordering.
 

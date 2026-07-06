@@ -1,4 +1,4 @@
-// Copyright 2026 OrgMentem. Licensed under Apache-2.0. See LICENSE.
+// Copyright 2026 OrgMentem. Licensed under MIT. See LICENSE.
 // PATCH: Zotero requires If-Unmodified-Since-Version on DELETE; items/collections
 // delete must fetch the current version and send it (else HTTP 428).
 

@@ -1,4 +1,4 @@
-// Copyright 2026 OrgMentem. Licensed under Apache-2.0. See LICENSE.
+// Copyright 2026 OrgMentem. Licensed under MIT. See LICENSE.
 
 // Package mutation is the shared write-safety engine: a plan/apply state machine
 // with a stable JSON envelope and gates (max-changes, destructive opt-in). It is

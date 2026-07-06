@@ -1,4 +1,4 @@
-// Copyright 2026 OrgMentem. Licensed under Apache-2.0. See LICENSE.
+// Copyright 2026 OrgMentem. Licensed under MIT. See LICENSE.
 // PATCH(glean roadmap-phase5 bounded-graph): expose bounded local graph reads
 // for MCP resources without letting recursive Zotero relationships fan out
 // unboundedly.

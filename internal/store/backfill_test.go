@@ -1,4 +1,4 @@
-// Copyright 2026 OrgMentem. Licensed under Apache-2.0. See LICENSE.
+// Copyright 2026 OrgMentem. Licensed under MIT. See LICENSE.
 // PATCH(glean dxut-followup): cover the indexed-column value backfill so rows
 // that predate the parent_key/item_type/etc. columns get populated on open.
 
