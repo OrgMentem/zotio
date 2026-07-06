@@ -93,11 +93,24 @@ func newItemsPreprintCheckCmd(flags *rootFlags) *cobra.Command {
 		},
 	}
 	cmd.Flags().IntVar(&flagLimit, "limit", 20, "Maximum number of preprints to check")
+	// PATCH(marketing-heroes): expose preview-first remediation for published arXiv preprints.
+	cmd.AddCommand(newItemsPreprintCheckFixCmd(flags))
 
 	return cmd
 }
 
+// PATCH(marketing-heroes): preserve the detect path's arXiv-ID filtering after factoring shared candidate fetches.
 func fetchArxivPreprintCandidates(c zoteroGetter, limit int) ([]map[string]any, error) {
+	return fetchPreprintCheckCandidates(c, limit, true)
+}
+
+// PATCH(marketing-heroes): let the fix command see raw candidates so no_arxiv_id skips are visible without changing detect output.
+func fetchPreprintCheckFixCandidates(c zoteroGetter, limit int) ([]map[string]any, error) {
+	return fetchPreprintCheckCandidates(c, limit, false)
+}
+
+// PATCH(marketing-heroes): share candidate paging/deduping while allowing fix to report no_arxiv_id skips.
+func fetchPreprintCheckCandidates(c zoteroGetter, limit int, requireArxivID bool) ([]map[string]any, error) {
 	fetchLimit := limit
 	if fetchLimit <= 0 || fetchLimit < 100 {
 		fetchLimit = 100
@@ -118,7 +131,7 @@ func fetchArxivPreprintCandidates(c zoteroGetter, limit int) ([]map[string]any, 
 			if key == "" || seen[key] {
 				continue
 			}
-			if extractArxivID(item) == "" {
+			if requireArxivID && extractArxivID(item) == "" {
 				continue
 			}
 			seen[key] = true

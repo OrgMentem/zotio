@@ -1,6 +1,6 @@
 ---
 name: zotio
-description: "Every Zotero feature in the terminal, plus offline search, annotation export, and library analytics no existing tool... Trigger phrases: `search my Zotero library`, `export BibTeX from Zotero`, `find papers missing PDFs`, `export annotations from Zotero`, `what did I add to Zotero this week`, `audit my Zotero tags`, `use zotero`, `open this paper in Zotero`."
+description: "Zotero automation CLI: local-first library search, CI-gateable health reports, preview-first writes with undo, reviewable PDF/DOI import, annotation export, Obsidian vault sync, and an MCP server for agents. Trigger phrases: `search my Zotero library`, `check my Zotero library health`, `import this DOI into Zotero`, `export BibTeX from Zotero`, `find papers missing PDFs`, `export annotations from Zotero`, `undo that Zotero change`, `audit my Zotero tags`, `use zotero`, `open this paper in Zotero`."
 author: "OrgMentem"
 license: "MIT"
 argument-hint: "<command> [args] | install cli|mcp"
@@ -29,31 +29,55 @@ If the `npx` install fails before this CLI has a public-library category, instal
 
 If `--version` reports "command not found" after install, the install step did not put the binary on `$PATH`. Do not proceed with skill commands until verification succeeds.
 
-This CLI connects directly to your running Zotero desktop app — reads need no API key. Writes (`items create/update/delete`, `vault push`/`vault pull`) require a Zotero Web API key, configured once via `auth set-token`. It syncs your library to a local SQLite store for offline search and compound queries, then adds 18 features (reading queues, tag audits, annotation timelines, collection exports) that Zotero's UI and pyzotero can't do.
+This CLI connects directly to your running Zotero desktop app — reads need no API key. Writes (`items create/update/delete/enrich`, `import apply`, `vault push`) require a Zotero Web API key, configured once via `auth set-token`, and are preview-first: every mutation plans by default, applies only under `--yes`, and is recorded to an undoable journal. It syncs your library to a local SQLite store for offline search and compound queries, then layers on the capabilities below — health reports, reviewable import, metadata enrichment, reproducible exports, and vault sync.
 
 ## When to Use This CLI
 
 Use zotio when you need to script or automate your Zotero library: batch-export a collection's BibTeX before a deadline, find papers missing PDFs for a download script, extract this week's annotations for synthesis, or audit tag consistency before sharing a group library. It is especially useful as an MCP tool for agents that need to search or read a researcher's Zotero library.
 
-## Unique Capabilities
+## Hero Capabilities
 
-These capabilities aren't available in any other tool for this API.
+The curated feature set — the same index `zotio which "<goal>"` resolves natural-language queries against.
 
-### Library hygiene
+### Library trust & health
 
+- **`library health`** — Ranked, CI-gateable health report: citekey conflicts, duplicates, missing metadata, tag drift, broken attachments — with `--for` presets for citation or systematic-review readiness.
+
+  _Run this before any bibliography export or screening handoff; gate CI with `--fail-on` (exit 11) and publish a shields.io badge with `--badge`._
+
+  ```bash
+  zotio library health --for citation --fail-on high --json
+  zotio library health --badge > zotero-health-badge.json   # shields.io endpoint JSON
+  ```
+- **`items duplicates`** — Detect likely duplicate items by DOI or normalized title, then merge them safely with `duplicates resolve` — preview-first.
+
+  _Duplicates corrupt PRISMA counts and double-cite sources; resolve them before they reach a manuscript._
+
+  ```bash
+  zotio items duplicates --json
+  zotio items duplicates resolve --doi --dry-run
+  ```
+- **`items retract-check`** — Check every DOI-bearing item against Crossref's Retraction Watch data: retractions, expressions of concern, and corrections, with notice DOIs and dates.
+
+  _Citing a retracted paper is a career-level embarrassment; catch it before a reviewer does. Also gates `library health` via `--check-retractions`._
+
+  ```bash
+  zotio items retract-check --json
+  zotio library health --for citation --check-retractions --fail-on high
+  ```
+- **`collections gaps`** — Rank the papers your collection cites most that are missing from your library — citation-graph gap analysis via OpenCitations and Semantic Scholar.
+
+  _A reviewer will ask why you didn't cite the field's most-cited work; find the gap before they do._
+
+  ```bash
+  zotio collections gaps IDTUAULN --top 20 --json
+  ```
 - **`tags audit`** — Find and fix tag drift: groups tags that differ only by case or variant, shows item counts, and generates ready-to-run merge commands.
 
   _Use this before any literature review handoff to clean up tag taxonomy; dirty tags produce unreliable filtered exports._
 
   ```bash
   zotio tags audit --json
-  ```
-- **`items missing-pdf`** — List journal articles and book chapters that have no attached PDF — your download queue, ready to script.
-
-  _Use this to batch-generate a download list for Unpaywall or Sci-Hub scripts._
-
-  ```bash
-  zotio items missing-pdf --type journalArticle --json | jq '.[].data.DOI'
   ```
 - **`items audit`** — Count and list items missing PDFs, abstracts, DOIs, tags, or core citation fields (`--missing-citation`), and verify PDF files exist on disk (`--verify-files`) — one command for a complete metadata health report.
 
@@ -62,6 +86,13 @@ These capabilities aren't available in any other tool for this API.
   ```bash
   zotio items audit --missing-abstract --missing-doi --json
   ```
+- **`items missing-pdf`** — List journal articles and book chapters that have no attached PDF — your download queue, ready to script.
+
+  _Use this to batch-generate a download list for Unpaywall or Sci-Hub scripts._
+
+  ```bash
+  zotio items missing-pdf --type journalArticle --json | jq '.[].data.DOI'
+  ```
 - **`library stats`** — See your library broken down by item type, publication year, and top journals — a dashboard in one command.
 
   _Use this to understand the shape and bias of a library before a systematic review or citation audit._
@@ -69,34 +100,96 @@ These capabilities aren't available in any other tool for this API.
   ```bash
   zotio library stats --json --agent
   ```
-- **`items unfiled`** — List items sitting in the library root with no collection assignment — your organizational debt.
+- **`schema drift`** — Detect what a Zotero upgrade changed: new or removed item types, fields, and creator fields vs a saved baseline.
 
-  _Use this to identify items imported via browser connector that were never organized._
-
-  ```bash
-  zotio items unfiled --json | jq 'length'
-  ```
-- **`tags inventory`** — List all tags used in a collection with item counts — see which tags are local to a project vs. shared library-wide.
-
-  _Use this to audit tag taxonomy consistency across sub-projects before a systematic review merge._
+  _Use this after upgrading Zotero to find item types or fields a new version added that your tooling may not model yet._
 
   ```bash
-  zotio tags inventory --collection IDTUAULN --json
+  zotio schema drift --json
   ```
-- **`items venues`** — List every journal and publication venue in your library with item counts and year ranges — understand where your sources come from.
 
-  _Use this to scope a systematic review by journal or identify over-reliance on a single venue._
+### Safe writes & import
+
+- **`import scan`** — Reviewable ingest: triage a folder of PDFs against your library (new vs duplicate vs attach-candidate), resolve metadata, then apply schema-valid creates from an editable manifest.
+
+  _Bulk-import without making a mess — every create is previewed, deduplicated, and schema-validated before it touches your library._
 
   ```bash
-  zotio items venues --top 20 --json --agent
+  zotio import scan ~/Downloads/papers --json
+  zotio import resolve manifest.json && zotio import apply manifest.json --dry-run
   ```
-- **`items stale`** — Find items added long ago with no PDF and no annotations — candidates for pruning or enrichment.
+- **`import doi`** — Turn a DOI, PMID, arXiv ID, or ISBN into a schema-valid Zotero item — one command per identifier (`import doi|pmid|arxiv|isbn`).
 
-  _Use this quarterly to identify items that were imported but never engaged with — candidates for deletion or PDF retrieval._
+  _Add a paper from a citation you found without opening a browser or hand-typing metadata._
 
   ```bash
-  zotio items stale --days 365 --no-pdf --json
+  zotio import doi 10.1038/s41586-020-2649-2 --dry-run
   ```
+- **`items enrich`** — Fill missing DOIs, abstracts, and open-access PDF links from CrossRef, OpenAlex, Semantic Scholar, and Unpaywall — preview-first, with provenance appended to each item; `--validate` cross-checks stored DOIs read-only.
+
+  _Turn the audit's missing-metadata queue into applied fixes._
+
+  ```bash
+  zotio items enrich --missing-doi --dry-run
+  ```
+- **`items preprint-check`** — Find arXiv preprints that have since been published in a journal (via CrossRef) — and upgrade them with the published DOI using `preprint-check fix`, preview-first.
+
+  _Citing a preprint when a journal version exists undermines a bibliography; this catches and fixes it in one pass._
+
+  ```bash
+  zotio items preprint-check --json
+  zotio items preprint-check fix --dry-run
+  ```
+- **`journal undo`** — Every applied write is journaled; `journal undo <run-id>` reverses reversible runs (tag renames, collection moves) and loudly refuses the rest.
+
+  _Batch writes are only safe when you can see what ran and take it back._
+
+  ```bash
+  zotio journal list
+  zotio journal undo <run-id>
+  ```
+
+### Agent & automation surface
+
+- **`items summarize`** — Assemble a bounded, synthesis-ready context bundle for an item or collection — citation, abstract, your annotations, a capped fulltext excerpt — without ever calling a model.
+
+  _Hand an LLM exactly the high-signal context it needs for a literature synthesis, bounded and provenance-tagged._
+
+  ```bash
+  zotio items summarize 9UXV5R7L --json
+  ```
+- **`export snapshot`** — Reproducible, resumable full-library export (JSONL) with a lockfile recording each item's key, version, and content hash.
+
+  _Prove what changed between two review handoffs by diffing lockfiles instead of eyeballing exports._
+
+  ```bash
+  zotio export snapshot library -o snapshot.jsonl
+  zotio export snapshot library -o snapshot.jsonl --resume   # continue an interrupted run
+  ```
+- **`watch`** — Keep the local store fresh with periodic incremental syncs (`--interval`, `--once`); with `--health`, diff library health between cycles and report new findings to stdout or a webhook.
+
+  _Run it in the background so agents and scripts never read stale data — and hear about new problems the cycle they appear._
+
+  ```bash
+  zotio watch --interval 5m --health --health-webhook https://example.com/hook
+  ```
+- **`workflow run`** — Run a declarative multi-step workflow spec (JSON) in-process, with per-step status and continue-on-error control.
+
+  _Chain sync → audit → export into one reviewable spec instead of a brittle shell script._
+
+  ```bash
+  zotio workflow run nightly.json --json
+  ```
+- **`init`** — Guided first run: detect Zotero, enable the local API, set the Web API key, first sync, and a quick health check — one command from install to working setup.
+
+  _Idempotent, and agent-safe under `--no-input` (unmet steps exit 9 with a machine-readable step report)._
+
+  ```bash
+  zotio init            # interactive walkthrough
+  zotio init --no-input --json   # agent/CI probe
+  ```
+
+Vault sync (Obsidian/Logseq round-trip) is its own section below.
 
 ### Reading workflow
 
@@ -135,6 +228,13 @@ These capabilities aren't available in any other tool for this API.
   ```bash
   zotio items note-template 9UXV5R7L --format obsidian >> notes/reading.md
   ```
+- **`library wrapped`** — Your Zotero year in review: items added by month and type, top venues and authors, annotation activity, PDF coverage — with a shareable SVG card.
+
+  _The fun one: see (and share) what your reading year actually looked like, straight from the local store._
+
+  ```bash
+  zotio library wrapped --year 2026 --card wrapped-2026.svg
+  ```
 
 ### Export & citations
 
@@ -151,6 +251,14 @@ These capabilities aren't available in any other tool for this API.
 
   ```bash
   zotio items citekey-conflicts --missing --json
+  ```
+- **`items bibcheck`** — Check a manuscript (`.tex` or pandoc Markdown) against your library: every `\cite`/`@citekey` resolved, unknown and ambiguous keys flagged.
+
+  _Run it before submission — unknown citekeys are LaTeX build failures waiting to happen; `--fail-on-unknown` exits 11 for CI._
+
+  ```bash
+  zotio items bibcheck thesis.tex --json
+  zotio items bibcheck paper.md --fail-on-unknown
   ```
 
 ### Vault sync & write-back
@@ -203,10 +311,13 @@ The `--out` and `--format` flags override these values.
 
 ## Command Reference
 
+Partial map of the surface — run `zotio --help` (or see the docs site Reference → Commands) for the complete, always-current tree.
+
 **collections** — Manage collections in your Zotero library
 
 - `zotio collections create` — Create one or more collections
 - `zotio collections delete` — Delete a collection (does not delete items)
+- `zotio collections gaps` — Rank cited-but-missing papers for a collection (citation-graph gap analysis)
 - `zotio collections get` — Get a specific collection
 - `zotio collections items` — List all items in a collection
 - `zotio collections list` — List all collections
@@ -215,14 +326,34 @@ The `--out` and `--format` flags override these values.
 - `zotio collections top` — List only top-level collections (no parents)
 - `zotio collections update` — Update a collection
 
+**export** — Bibliography and snapshot exports
+
+- `zotio export snapshot` — Reproducible, resumable paginated export with a content lockfile
+
+**import** — Reviewable ingest of PDFs and identifiers
+
+- `zotio import scan` — Triage a folder of PDFs against your library (read-only): new vs duplicate vs attach-candidate
+- `zotio import resolve` — Resolve PDFs into an editable import manifest
+- `zotio import apply` — Apply a reviewed import manifest (preview-first)
+- `zotio import doi|pmid|arxiv|isbn` — Import one item from an identifier (CrossRef, PubMed, arXiv, Open Library)
+
 **items** — Manage items in your Zotero library
 
 - `zotio items annotations` — List annotation children of an item
+- `zotio items audit` — Count and list items missing PDFs, abstracts, DOIs, tags, or citation fields
+- `zotio items bibcheck` — Check a manuscript's `\cite`/`@citekey` references against the library (`--fail-on-unknown` exits 11)
 - `zotio items children` — Get child items (attachments and notes) for an item
+- `zotio items citekey-conflicts` — Find missing or duplicate Better BibTeX citation keys
 - `zotio items create` — Create one or more items
 - `zotio items delete` — Delete an item (moves to trash)
+- `zotio items duplicates` — Find likely duplicate items; `duplicates resolve` merges them safely
+- `zotio items enrich` — Fill or validate item metadata (DOI, abstract, OA PDF link) from external providers
 - `zotio items file` — Resolve the on-disk path (file:// URL) of an item's PDF attachment
 - `zotio items fulltext` — Get extracted full text from an item's PDF attachment
+- `zotio items retract-check` — Check DOI-bearing items against Crossref retraction/concern/correction notices
+- `zotio items missing-pdf` — List items with no attached PDF
+- `zotio items open` — Print or launch a zotero:// deep link to an item
+- `zotio items preprint-check` — Check arXiv preprints for published CrossRef records; `preprint-check fix` applies the published DOIs (preview-first)
 - `zotio items summarize` — Assemble a bounded, synthesis-ready context bundle (citation, abstract, annotations, capped fulltext excerpt) for an item or collection
 - `zotio items get` — Get a single item by key
 - `zotio items list` — List all items in the library
@@ -230,6 +361,26 @@ The `--out` and `--format` flags override these values.
 - `zotio items top` — List top-level items only (excludes attachments and notes)
 - `zotio items trash` — List items in the trash
 - `zotio items update` — Update a specific item
+
+**journal** — Append-only record of applied writes
+
+- `zotio journal list` — List recorded mutation runs
+- `zotio journal show` — Show one recorded run's operations
+- `zotio journal undo` — Reverse a recorded run's reversible (tag/collection) changes
+
+**library** — Whole-library reports
+
+- `zotio library health` — Composite read-only health report with a CI gate (`--fail-on`, `--badge`, `--check-retractions`)
+- `zotio library stats` — Items by type, year, and top venues in one dashboard
+- `zotio library wrapped` — Year in review with a shareable SVG card (`--year`, `--card`)
+
+**init** — Guided first-run setup
+
+- `zotio init` — Detect Zotero, set the key, first sync, quick health check; `--no-input --json` for agents
+
+**reading-list** — A `to-read` tag queue
+
+- `zotio reading-list` — Oldest unread papers, with an `add` → `start` → `done` lifecycle
 
 **schema** — Zotero item type and field schema
 
@@ -258,6 +409,14 @@ The `--out` and `--format` flags override these values.
 - `zotio vault push` — Write the vault's `## Notes` region back to Zotero child notes
 - `zotio vault resolve` — Resolve a write-back conflict (`--keep-vault` / `--keep-remote` / `--recreate`)
 - `zotio vault sync` — Export Zotero items to Obsidian/Logseq Markdown notes
+
+**watch** — Background freshness
+
+- `zotio watch` — Keep the local store fresh with periodic incremental syncs (`--interval`, `--once`); `--health` reports new findings per cycle
+
+**workflow** — Declarative multi-step runs
+
+- `zotio workflow run` — Run a JSON workflow spec in-process with per-step status
 
 
 ### Finding the right command

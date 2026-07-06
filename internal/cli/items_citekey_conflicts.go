@@ -61,12 +61,12 @@ func newItemsCitekeyConflictsCmd(flags *rootFlags) *cobra.Command {
 			defer rawDB.Close()
 			db := localQueryStore{rawDB}
 
-			rows, err := db.QueryRaw(citekeyAuditQuery)
+			items, err := loadCitekeyItems(db)
 			if err != nil {
-				return fmt.Errorf("querying citation keys: %w", err)
+				return err
 			}
 
-			out := buildCitekeyConflictRows(rows, flagMissing, flagConflicts)
+			out := buildCitekeyConflictRowsFromItems(items, flagMissing, flagConflicts)
 			data, err := json.Marshal(out)
 			if err != nil {
 				return err
@@ -80,25 +80,58 @@ func newItemsCitekeyConflictsCmd(flags *rootFlags) *cobra.Command {
 	return cmd
 }
 
+// PATCH(marketing-heroes-2): centralize Better BibTeX citekey loading so
+// manuscript checks, citekey conflicts, and library health share the same query
+// and Extra-field parsing.
+func loadCitekeyItems(db localQueryStore) ([]citekeyItem, error) {
+	rows, err := db.QueryRaw(citekeyAuditQuery)
+	if err != nil {
+		return nil, fmt.Errorf("querying citation keys: %w", err)
+	}
+	return buildCitekeyItems(rows), nil
+}
+
+// PATCH(marketing-heroes-2): expose the parsed citekey inventory before it is
+// reduced to only missing/conflict rows.
+func buildCitekeyItems(rows []map[string]any) []citekeyItem {
+	items := make([]citekeyItem, 0, len(rows))
+	for _, row := range rows {
+		item := citekeyItem{
+			Key:     sqlText(row["key"]),
+			Title:   sqlText(row["title"]),
+			CiteKey: betterBibTeXCiteKey(sqlText(row["extra"])),
+		}
+		items = append(items, item)
+	}
+	return items
+}
+
+// PATCH(marketing-heroes-2): keep Better BibTeX Extra parsing in one place.
+func betterBibTeXCiteKey(extra string) string {
+	for _, line := range strings.Split(extra, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "Citation Key: ") {
+			return strings.TrimSpace(strings.TrimPrefix(trimmed, "Citation Key: "))
+		}
+	}
+	return ""
+}
+
+// PATCH(marketing-heroes-2): preserve the original conflict-row API while
+// routing all citekey parsing through buildCitekeyItems.
 func buildCitekeyConflictRows(rows []map[string]any, missingOnly, conflictsOnly bool) []citekeyConflictRow {
+	return buildCitekeyConflictRowsFromItems(buildCitekeyItems(rows), missingOnly, conflictsOnly)
+}
+
+// PATCH(marketing-heroes-2): allow other manuscript tooling to reuse the parsed
+// citekey items without re-reading or re-parsing Zotero Extra fields.
+func buildCitekeyConflictRowsFromItems(items []citekeyItem, missingOnly, conflictsOnly bool) []citekeyConflictRow {
 	showMissing := missingOnly || (!missingOnly && !conflictsOnly)
 	showConflicts := conflictsOnly || (!missingOnly && !conflictsOnly)
 
 	missing := make([]citekeyConflictRow, 0)
 	byCiteKey := make(map[string][]citekeyItem)
-	for _, row := range rows {
-		item := citekeyItem{
-			Key:   sqlText(row["key"]),
-			Title: sqlText(row["title"]),
-		}
-		extra := sqlText(row["extra"])
-		for _, line := range strings.Split(extra, "\n") {
-			trimmed := strings.TrimSpace(line)
-			if strings.HasPrefix(trimmed, "Citation Key: ") {
-				item.CiteKey = strings.TrimSpace(strings.TrimPrefix(trimmed, "Citation Key: "))
-				break
-			}
-		}
+	for _, item := range items {
 		if item.CiteKey == "" {
 			if showMissing {
 				missing = append(missing, citekeyConflictRow{

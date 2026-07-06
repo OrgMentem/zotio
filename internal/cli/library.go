@@ -12,5 +12,7 @@ func newLibraryCmd(flags *rootFlags) *cobra.Command {
 	}
 	cmd.AddCommand(newLibraryStatsCmd(flags))
 	cmd.AddCommand(newLibraryHealthCmd(flags))
+	// PATCH(marketing-heroes-2): register the local-only year-in-review command.
+	cmd.AddCommand(newLibraryWrappedCmd(flags))
 	return cmd
 }

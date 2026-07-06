@@ -16,6 +16,7 @@ The machine-readable registry every command is classified against — read vs. w
 | `collections create` | write | `web_api` |  | `web_api_key` |
 | `collections delete` | write | `web_api` | yes | `web_api_key` |
 | `collections export` | read |  |  |  |
+| `collections gaps` | read |  |  |  |
 | `collections get` | read |  |  |  |
 | `collections items` | read |  |  |  |
 | `collections list` | read |  |  |  |
@@ -45,9 +46,11 @@ The machine-readable registry every command is classified against — read vs. w
 | `import targets` | read |  |  | `desktop_connector` |
 | `import translators` | read |  |  | `desktop_connector` |
 | `import url` | write | `web_api` |  | `web_api_key` |
+| `init` | other |  |  |  |
 | `items annotations` | read |  |  |  |
 | `items audit` | read |  |  | `synced_store` |
 | `items authors` | read |  |  |  |
+| `items bibcheck` | read |  |  |  |
 | `items children` | read |  |  |  |
 | `items cite` | read |  |  |  |
 | `items citekey-conflicts` | read |  |  | `synced_store`, `better_bibtex` |
@@ -68,8 +71,10 @@ The machine-readable registry every command is classified against — read vs. w
 | `items note-template` | read |  |  |  |
 | `items open` | other |  |  |  |
 | `items preprint-check` | read |  |  |  |
+| `items preprint-check fix` | other |  |  |  |
 | `items recent` | read |  |  |  |
 | `items restore` | write | `web_api` |  | `web_api_key` |
+| `items retract-check` | read |  |  |  |
 | `items stale` | read |  |  |  |
 | `items summarize` | read |  |  | `synced_store` |
 | `items tags` | read |  |  |  |
@@ -86,6 +91,7 @@ The machine-readable registry every command is classified against — read vs. w
 | `journal undo` | write | `web_api` |  | `web_api_key` |
 | `library health` | read |  |  | `synced_store` |
 | `library stats` | read |  |  | `synced_store` |
+| `library wrapped` | read |  |  |  |
 | `profile delete` | other |  |  |  |
 | `profile list` | other |  |  |  |
 | `profile save` | other |  |  |  |

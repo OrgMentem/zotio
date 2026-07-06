@@ -23,6 +23,8 @@ func newItemsCmd(flags *rootFlags) *cobra.Command {
 	cmd.AddCommand(newItemsAuthorsCmd(flags))
 	cmd.AddCommand(newItemsCiteCmd(flags))
 	cmd.AddCommand(newItemsCitekeyConflictsCmd(flags))
+	// PATCH(marketing-heroes-2): register manuscript Better BibTeX bibcheck.
+	cmd.AddCommand(newItemsBibcheckCmd(flags))
 	cmd.AddCommand(newItemsCollectionsOfCmd(flags))
 	cmd.AddCommand(newItemsDuplicatesCmd(flags))
 	// PATCH(glean dk33): metadata enrichment/remediation pipeline.
@@ -36,6 +38,8 @@ func newItemsCmd(flags *rootFlags) *cobra.Command {
 	cmd.AddCommand(newItemsNoteTemplateCmd(flags))
 	cmd.AddCommand(newItemsOpenCmd(flags))
 	cmd.AddCommand(newItemsPreprintCheckCmd(flags))
+	// PATCH(marketing-heroes-2): register CrossRef retraction notice checks.
+	cmd.AddCommand(newItemsRetractCheckCmd(flags))
 	cmd.AddCommand(newItemsRecentCmd(flags))
 	cmd.AddCommand(newItemsRestoreCmd(flags))
 	cmd.AddCommand(newItemsStaleCmd(flags))

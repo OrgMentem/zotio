@@ -323,6 +323,19 @@ Examples:
 | `--limit` | `int` | `200` | Maximum items per collection request |
 | `--output` | `string` |  | Write output to file instead of stdout |
 
+### `zotio collections gaps`
+
+Find highly cited DOI references missing from a collection's library
+
+```
+zotio collections gaps <collectionKey> [flags]
+```
+
+| Flag | Type | Default | Description |
+| --- | --- | --- | --- |
+| `--limit` | `int` | `50` | Maximum DOI-bearing collection items to scan (0 = all) |
+| `--top` | `int` | `20` | Number of citation gaps to show |
+
 ### `zotio collections get`
 
 Get a specific collection
@@ -851,6 +864,24 @@ zotio import url <url> [flags]
 | `--collection` | `string` |  | Collection key to add the item to |
 | `--fetch-pdf` | `bool` | `false` | Attach an open-access PDF via Zotero's desktop resolver (requires --via connector) |
 
+## `zotio init`
+
+Guided first-run setup using doctor, auth, sync, and health checks
+
+Guided first-run setup for Zotero automation.
+
+Checks the local Zotero API, stores an API key when one is provided interactively,
+runs the first local sync when the store is missing or empty, and finishes with the
+quick library-health preset plus suggested next commands.
+
+```
+zotio init [flags]
+```
+
+| Flag | Type | Default | Description |
+| --- | --- | --- | --- |
+| `--launch` | `bool` | `false` | Launch Zotero and wait for the local API when it is not reachable |
+
 ## `zotio items`
 
 Manage items in your Zotero library
@@ -903,6 +934,26 @@ zotio items authors [flags]
 | `--collection` | `string` |  | Filter to items in this collection key |
 | `--top` | `int` | `20` | Maximum number of authors to return |
 | `--type` | `string` |  | Filter by creatorType (for example author or editor) |
+
+### `zotio items bibcheck`
+
+Check manuscript citation keys against the synced Better BibTeX library
+
+```
+zotio items bibcheck <manuscript> [flags]
+```
+
+Examples:
+
+```bash
+zotio items bibcheck paper.tex
+  zotio items bibcheck manuscript.md --fail-on-unknown
+  zotio items bibcheck chapter.qmd --json
+```
+
+| Flag | Type | Default | Description |
+| --- | --- | --- | --- |
+| `--fail-on-unknown` | `bool` | `false` | Exit 11 when any cited key is unknown or ambiguous |
 
 ### `zotio items children`
 
@@ -1287,6 +1338,18 @@ zotio items preprint-check [flags]
 | --- | --- | --- | --- |
 | `--limit` | `int` | `20` | Maximum number of preprints to check |
 
+#### `zotio items preprint-check fix`
+
+Apply published DOIs to preprints that CrossRef reports as published
+
+```
+zotio items preprint-check fix [flags]
+```
+
+| Flag | Type | Default | Description |
+| --- | --- | --- | --- |
+| `--limit` | `int` | `20` | Maximum number of preprints to check |
+
 ### `zotio items recent`
 
 List recently added items
@@ -1308,6 +1371,24 @@ Restore a trashed item
 ```
 zotio items restore <itemKey>
 ```
+
+### `zotio items retract-check`
+
+Check DOI-bearing local items for CrossRef retraction notices
+
+Check DOI-bearing items from the locally synced store against CrossRef's
+updated-by metadata. The command reports retractions, expressions of concern,
+and corrections without writing to Zotero. Run 'zotio sync' first so the local
+store is current.
+
+```
+zotio items retract-check [flags]
+```
+
+| Flag | Type | Default | Description |
+| --- | --- | --- | --- |
+| `--collection` | `string` |  | Scope checks to items in a collection key |
+| `--limit` | `int` | `0` | Maximum DOI-bearing items to check (0 = all) |
 
 ### `zotio items stale`
 
@@ -1564,9 +1645,10 @@ with --for:
 
 Gate CI with --fail-on critical|high|any (exit 11 when the bar is not met).
 
-The broken-attachment check is a live check that needs Zotero desktop running;
-pass --verify-files to run it. When a gate-relevant check can't run because its
-precondition is unmet, the command refuses loudly (exit 9) rather than passing.
+The broken-attachment and retraction checks are live checks that need Zotero
+desktop or CrossRef network access respectively; pass --verify-files and/or
+--check-retractions to run them. When a gate-relevant check can't run because
+its precondition is unmet, the command refuses loudly (exit 9) rather than passing.
 
 ```
 zotio library health [flags]
@@ -1574,6 +1656,9 @@ zotio library health [flags]
 
 | Flag | Type | Default | Description |
 | --- | --- | --- | --- |
+| `--badge` | `bool` | `false` | Emit a shields.io endpoint JSON badge instead of the report |
+| `--badge-label` | `string` | `bibliography` | Label for the shields.io endpoint badge |
+| `--check-retractions` | `bool` | `false` | Run the live CrossRef retraction check (network; DOI-bearing items) |
 | `--fail-on` | `string` |  | Exit 11 if findings reach this severity: critical, high, any (default: the preset's) |
 | `--for` | `string` | `quick` | Check preset: quick, citation, systematic-review, all |
 | `--limit` | `int` | `0` | Max findings listed per kind (0 = all); also caps the live attachment scan |
@@ -1593,6 +1678,19 @@ zotio library stats [flags]
 | --- | --- | --- | --- |
 | `--top` | `int` | `10` | Number of venues to show |
 | `--years` | `int` | `20` | Number of years to show |
+
+### `zotio library wrapped`
+
+Show a local year-in-review for your Zotero library
+
+```
+zotio library wrapped [flags]
+```
+
+| Flag | Type | Default | Description |
+| --- | --- | --- | --- |
+| `--card` | `string` |  | Write an 800x418 SVG share card to this path |
+| `--year` | `int` | `2026` | Year to summarize |
 
 ## `zotio profile`
 
@@ -2355,6 +2453,9 @@ zotio watch [resource...] [flags]
 
 | Flag | Type | Default | Description |
 | --- | --- | --- | --- |
+| `--health` | `bool` | `false` | Run quick library health checks after each successful sync |
+| `--health-for` | `string` | `quick` | Health preset for --health: quick, citation, systematic-review, all |
+| `--health-webhook` | `string` |  | POST health drift JSON to this webhook URL |
 | `--interval` | `duration` | `5m0s` | Sync interval |
 | `--once` | `bool` | `false` | Run one sync cycle and exit |
 

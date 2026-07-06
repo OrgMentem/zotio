@@ -6,8 +6,11 @@
 package cli
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -84,15 +87,27 @@ func TestLibraryHealthComposesAllChecks(t *testing.T) {
 		t.Errorf("citekey_conflict = %d, want 2 (C1+C2 share a key)", got["citekey_conflict"])
 	}
 
-	// The live broken-attachment check must be loudly skipped, not silently dropped.
-	if len(report.Skipped) != 1 || report.Skipped[0].Kind != "broken_attachment_file" {
-		t.Fatalf("expected one broken_attachment_file skip, got %+v", report.Skipped)
+	// The live opt-in checks (broken attachments, retraction probe) must be
+	// loudly skipped, not silently dropped.
+	// PATCH(marketing-heroes-2): retracted_item joined broken_attachment_file
+	// as an opt-in live check in the "all" preset.
+	skips := map[string]healthSkip{}
+	for _, s := range report.Skipped {
+		skips[s.Kind] = s
 	}
-	if report.Skipped[0].Precondition != "live_local_api" {
-		t.Errorf("skip precondition = %q, want live_local_api", report.Skipped[0].Precondition)
+	if len(report.Skipped) != 2 {
+		t.Fatalf("expected broken_attachment_file + retracted_item skips, got %+v", report.Skipped)
 	}
-	if len(report.Skipped[0].Remediation) == 0 {
-		t.Error("skip must carry remediation steps")
+	if s, ok := skips["broken_attachment_file"]; !ok || s.Precondition != "live_local_api" {
+		t.Errorf("broken_attachment_file skip = %+v, want live_local_api precondition", s)
+	}
+	if s, ok := skips["retracted_item"]; !ok || s.Precondition == "" {
+		t.Errorf("retracted_item skip = %+v, want a named precondition", s)
+	}
+	for kind, s := range skips {
+		if len(s.Remediation) == 0 {
+			t.Errorf("%s skip must carry remediation steps", kind)
+		}
 	}
 
 	plan := map[string]healthRemediationPlanStep{}
@@ -213,6 +228,95 @@ func TestBrokenAttachmentSkipsLoudlyWithoutVerifyFiles(t *testing.T) {
 	}
 }
 
+func TestRetractedItemSkipsLoudlyWithoutCheckRetractions(t *testing.T) {
+	findings, skip, err := runRetractedItem(localQueryStore{}, &healthContext{preset: "all", flags: &rootFlags{}})
+	if err != nil {
+		t.Fatalf("runRetractedItem: %v", err)
+	}
+	if findings != nil {
+		t.Fatalf("findings = %+v, want none when live retraction check is disabled", findings)
+	}
+	if skip == nil || skip.Kind != "retracted_item" || skip.Precondition != "external_crossref" {
+		t.Fatalf("skip = %+v, want external_crossref retracted_item skip", skip)
+	}
+	if !strings.Contains(skip.Detail, "off by default") {
+		t.Fatalf("skip detail = %q, want loud opt-in explanation", skip.Detail)
+	}
+	var sawCheckRetractions bool
+	for _, r := range skip.Remediation {
+		if strings.Contains(r.Command, "--check-retractions") {
+			sawCheckRetractions = true
+		}
+	}
+	if !sawCheckRetractions {
+		t.Fatalf("skip remediation = %+v, want --check-retractions command", skip.Remediation)
+	}
+}
+
+func TestLibraryHealthCheckRetractionsInjectsIntoQuickPresetAndRunsProbe(t *testing.T) {
+	seedRetractionDefaultStore(t, []json.RawMessage{
+		json.RawMessage(`{"key":"RET","version":1,"data":{"key":"RET","itemType":"journalArticle","title":"Retracted Work","creators":[{"lastName":"Author"}],"date":"2020","publicationTitle":"Journal","DOI":"10.777/retracted","extra":"Citation Key: author2020"}}`),
+	})
+
+	var sawProbe bool
+	var sawWork bool
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/works" && r.URL.Query().Get("rows") == "0":
+			sawProbe = true
+			_, _ = w.Write([]byte(`{"message":{}}`))
+		case r.URL.EscapedPath() == "/works/10.777%2Fretracted":
+			sawWork = true
+			_, _ = w.Write([]byte(`{"message":{"updated-by":[{"DOI":"10.777/retraction-notice","type":"retraction","label":"Retracted","source":"publisher","updated":{"date-parts":[[2025,1,15]]}}]}}`))
+		default:
+			http.Error(w, "unexpected CrossRef request", http.StatusNotFound)
+			t.Errorf("unexpected CrossRef request path=%q rawQuery=%q", r.URL.Path, r.URL.RawQuery)
+		}
+	}))
+	t.Cleanup(srv.Close)
+	withBase(t, &crossrefRetractionBaseURL, srv.URL)
+
+	cmd := newLibraryHealthCmd(&rootFlags{asJSON: true, timeout: time.Second})
+	cmd.SilenceErrors, cmd.SilenceUsage = true, true
+	cmd.SetArgs([]string{"--for", "quick", "--check-retractions"})
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&bytes.Buffer{})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("library health --check-retractions: %v", err)
+	}
+	if !sawProbe || !sawWork {
+		t.Fatalf("CrossRef calls: probe=%v work=%v, want probe and work lookup", sawProbe, sawWork)
+	}
+
+	var report healthReport
+	if err := json.Unmarshal(bytes.TrimSpace(out.Bytes()), &report); err != nil {
+		t.Fatalf("decode health report %q: %v", out.String(), err)
+	}
+	var retractedCheck healthCheckRun
+	for _, check := range report.Checks {
+		if check.Kind == "retracted_item" {
+			retractedCheck = check
+		}
+	}
+	if !retractedCheck.Ran || retractedCheck.Count != 1 {
+		t.Fatalf("retracted_item check = %+v, want injected run with one finding", retractedCheck)
+	}
+	var sawFinding bool
+	for _, finding := range report.Findings {
+		if finding.Kind != "retracted_item" {
+			continue
+		}
+		sawFinding = true
+		if finding.ItemKey != "RET" || finding.Severity != sevCritical || sqlStringValue(finding.Evidence["status"]) != "retracted" {
+			t.Fatalf("retracted finding = %+v, want critical RET status=retracted", finding)
+		}
+	}
+	if !sawFinding {
+		t.Fatalf("findings = %+v, want retracted_item finding", report.Findings)
+	}
+}
+
 func TestGateCrossed(t *testing.T) {
 	cases := []struct {
 		name    string
@@ -313,5 +417,110 @@ func TestLibraryHealthFreshnessGate(t *testing.T) {
 	}
 	if never.Freshness == nil || !never.Freshness.Stale {
 		t.Errorf("never-synced should be stale, got %+v", never.Freshness)
+	}
+}
+
+func TestHealthBadgeForReportVerdicts(t *testing.T) {
+	cases := []struct {
+		name   string
+		report healthReport
+		want   healthBadge
+	}{
+		{
+			name:   "zero findings is healthy",
+			report: healthReport{},
+			want:   healthBadge{SchemaVersion: 1, Label: "bibliography", Message: "healthy", Color: "brightgreen"},
+		},
+		{
+			name: "failed gate reports nonzero severities most severe first",
+			report: healthReport{
+				Summary: healthSummary{Critical: 2, High: 1, Info: 3, Total: 6},
+				Gate:    &healthGate{Status: "failed"},
+			},
+			want: healthBadge{SchemaVersion: 1, Label: "bibliography", Message: "2 critical, 1 high, 3 info", Color: "red"},
+		},
+		{
+			name: "indeterminate gate asks for setup",
+			report: healthReport{
+				Summary: healthSummary{Critical: 1, Total: 1},
+				Gate:    &healthGate{Status: "indeterminate"},
+			},
+			want: healthBadge{SchemaVersion: 1, Label: "bibliography", Message: "setup required", Color: "orange"},
+		},
+		{
+			name: "passing gate with findings stays yellow",
+			report: healthReport{
+				Summary: healthSummary{High: 2, Total: 2},
+				Gate:    &healthGate{Status: "passed"},
+			},
+			want: healthBadge{SchemaVersion: 1, Label: "bibliography", Message: "2 findings", Color: "yellow"},
+		},
+		{
+			name: "stale freshness takes sync-needed precedence",
+			report: healthReport{
+				Summary:   healthSummary{Critical: 1, Total: 1},
+				Gate:      &healthGate{Status: "failed"},
+				Freshness: &healthFreshness{Stale: true},
+			},
+			want: healthBadge{SchemaVersion: 1, Label: "bibliography", Message: "stale — sync needed", Color: "lightgrey"},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := healthBadgeForReport(tc.report, "bibliography"); got != tc.want {
+				t.Fatalf("badge = %+v, want %+v", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestLibraryHealthBadgeRejectsJSONBeforeStoreAccess(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("ZOTERO_CONFIG", filepath.Join(t.TempDir(), "missing.toml"))
+	flags := &rootFlags{asJSON: true}
+	cmd := newLibraryHealthCmd(flags)
+	cmd.SilenceErrors, cmd.SilenceUsage = true, true
+	cmd.SetArgs([]string{"--badge"})
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&bytes.Buffer{})
+
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("expected --badge with --json to fail as a usage error")
+	}
+	if code := ExitCode(err); code != 2 {
+		t.Fatalf("exit code = %d, want 2", code)
+	}
+	if out.Len() != 0 {
+		t.Fatalf("stdout = %q, want no badge when usage is invalid", out.String())
+	}
+}
+
+func TestLibraryHealthBadgeEmptyStorePrintsNotSyncedAndPrecondition(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("ZOTERO_CONFIG", filepath.Join(t.TempDir(), "missing.toml"))
+	cmd := newLibraryHealthCmd(&rootFlags{})
+	cmd.SilenceErrors, cmd.SilenceUsage = true, true
+	cmd.SetArgs([]string{"--badge", "--badge-label", "library"})
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&bytes.Buffer{})
+
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("expected empty local store to return a precondition error in badge mode")
+	}
+	if code := ExitCode(err); code != 9 {
+		t.Fatalf("exit code = %d, want 9", code)
+	}
+	var badge healthBadge
+	if decodeErr := json.Unmarshal(bytes.TrimSpace(out.Bytes()), &badge); decodeErr != nil {
+		t.Fatalf("decode badge %q: %v", out.String(), decodeErr)
+	}
+	want := healthBadge{SchemaVersion: 1, Label: "library", Message: "not synced", Color: "lightgrey"}
+	if badge != want {
+		t.Fatalf("badge = %+v, want %+v", badge, want)
 	}
 }

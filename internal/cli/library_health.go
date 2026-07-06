@@ -8,9 +8,12 @@
 package cli
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -171,18 +174,83 @@ type healthReport struct {
 	Freshness       *healthFreshness            `json:"freshness,omitempty"`
 }
 
+// PATCH(marketing-heroes): shields.io endpoint badge payload and verdict mapping.
+type healthBadge struct {
+	SchemaVersion int    `json:"schemaVersion"`
+	Label         string `json:"label"`
+	Message       string `json:"message"`
+	Color         string `json:"color"`
+}
+
+func healthBadgeForReport(report healthReport, label string) healthBadge {
+	badge := healthBadge{SchemaVersion: 1, Label: label, Message: "healthy", Color: "brightgreen"}
+	if report.Freshness != nil && report.Freshness.Stale {
+		badge.Message = "stale — sync needed"
+		badge.Color = "lightgrey"
+		return badge
+	}
+	if report.Gate != nil {
+		switch report.Gate.Status {
+		case "failed":
+			badge.Message = healthBadgeSeverityMessage(report.Summary)
+			badge.Color = "red"
+			return badge
+		case "indeterminate":
+			badge.Message = "setup required"
+			badge.Color = "orange"
+			return badge
+		}
+	}
+	if report.Summary.Total > 0 {
+		badge.Message = fmt.Sprintf("%d findings", report.Summary.Total)
+		badge.Color = "yellow"
+	}
+	return badge
+}
+
+func healthBadgeSeverityMessage(summary healthSummary) string {
+	parts := make([]string, 0, 3)
+	for _, severity := range []struct {
+		name  string
+		count int
+	}{
+		{name: sevCritical, count: summary.Critical},
+		{name: sevHigh, count: summary.High},
+		{name: sevInfo, count: summary.Info},
+	} {
+		if severity.count > 0 {
+			parts = append(parts, fmt.Sprintf("%d %s", severity.count, severity.name))
+		}
+	}
+	if len(parts) == 0 {
+		return "gate failed"
+	}
+	return strings.Join(parts, ", ")
+}
+
+func printHealthBadge(cmd *cobra.Command, badge healthBadge) error {
+	data, err := json.Marshal(badge)
+	if err != nil {
+		return err
+	}
+	_, err = fmt.Fprintln(cmd.OutOrStdout(), string(data))
+	return err
+}
+
 // healthContext threads per-run state (provenance, limit, live-check opt-in) and
 // memoizes the shared citekey scan so it runs once even when both citekey checks
 // are in the preset.
 type healthContext struct {
-	src           healthSource
-	preset        string
-	limit         int
-	verifyFiles   bool
-	flags         *rootFlags
-	requireFresh  time.Duration
-	citekeyRows   []citekeyConflictRow
-	citekeyLoaded bool
+	src         healthSource
+	preset      string
+	limit       int
+	verifyFiles bool
+	// PATCH(marketing-heroes-2): opt-in CrossRef retraction check switch.
+	checkRetractions bool
+	flags            *rootFlags
+	requireFresh     time.Duration
+	citekeyRows      []citekeyConflictRow
+	citekeyLoaded    bool
 }
 
 type healthCheckRunner func(db localQueryStore, ctx *healthContext) ([]healthFinding, *healthSkip, error)
@@ -221,6 +289,8 @@ func healthCheckRegistry() []healthCheck {
 			"missing_tags", sevInfo, false, nil)},
 		{kind: "tag_drift", severity: sevHigh, run: runTagDrift},
 		{kind: "broken_attachment_file", severity: sevCritical, run: runBrokenAttachmentFile},
+		// PATCH(marketing-heroes-2): gate DOI-bearing items against CrossRef retraction notices.
+		{kind: "retracted_item", severity: sevCritical, run: runRetractedItem},
 	}
 }
 
@@ -233,7 +303,7 @@ var healthPresets = map[string][]string{
 	"all": {
 		"citekey_conflict", "citekey_missing", "duplicate_candidates", "missing_citation",
 		"missing_doi", "missing_pdf", "missing_abstract", "missing_tags", "tag_drift",
-		"broken_attachment_file",
+		"broken_attachment_file", "retracted_item",
 	},
 }
 
@@ -251,8 +321,13 @@ func newLibraryHealthCmd(flags *rootFlags) *cobra.Command {
 	var flagFailOn string
 	var flagLimit int
 	var flagVerifyFiles bool
+	// PATCH(marketing-heroes-2): opt in to the live CrossRef retraction health check.
+	var flagCheckRetractions bool
 	var flagScope string
 	var flagRequireFresh time.Duration
+	// PATCH(marketing-heroes): shields.io badge output controls.
+	var flagBadge bool
+	var flagBadgeLabel string
 
 	cmd := &cobra.Command{
 		Use:   "health",
@@ -270,11 +345,17 @@ with --for:
 
 Gate CI with --fail-on critical|high|any (exit 11 when the bar is not met).
 
-The broken-attachment check is a live check that needs Zotero desktop running;
-pass --verify-files to run it. When a gate-relevant check can't run because its
-precondition is unmet, the command refuses loudly (exit 9) rather than passing.`,
+The broken-attachment and retraction checks are live checks that need Zotero
+desktop or CrossRef network access respectively; pass --verify-files and/or
+--check-retractions to run them. When a gate-relevant check can't run because
+its precondition is unmet, the command refuses loudly (exit 9) rather than passing.`,
 		Annotations: map[string]string{"mcp:read-only": "true"},
 		RunE: func(cmd *cobra.Command, args []string) error {
+			// PATCH(marketing-heroes): the badge is already JSON, so refuse ambiguous output modes.
+			if flagBadge && flags.asJSON {
+				return usageErr(fmt.Errorf("--badge cannot be combined with --json"))
+			}
+
 			preset := strings.ToLower(strings.TrimSpace(flagFor))
 			if preset == "" {
 				preset = "quick"
@@ -282,6 +363,13 @@ precondition is unmet, the command refuses loudly (exit 9) rather than passing.`
 			kinds, ok := healthPresets[preset]
 			if !ok {
 				return usageErr(fmt.Errorf("invalid --for %q: must be quick, citation, systematic-review, or all", flagFor))
+			}
+			// PATCH(marketing-heroes-2): retracted_item is opt-in (network). It lives
+			// only in the "all" preset (loud skip without the flag, like
+			// broken_attachment_file); --check-retractions injects it into any other
+			// preset so the default citation gate stays deterministic offline.
+			if flagCheckRetractions && !slices.Contains(kinds, "retracted_item") {
+				kinds = append(slices.Clone(kinds), "retracted_item")
 			}
 
 			failOn := strings.ToLower(strings.TrimSpace(flagFailOn))
@@ -302,6 +390,13 @@ precondition is unmet, the command refuses loudly (exit 9) rather than passing.`
 				return fmt.Errorf("opening database: %w", err)
 			}
 			if rawDB == nil {
+				// PATCH(marketing-heroes): badge CI must fail loudly before a local sync exists.
+				if flagBadge {
+					if err := printHealthBadge(cmd, healthBadge{SchemaVersion: 1, Label: flagBadgeLabel, Message: "not synced", Color: "lightgrey"}); err != nil {
+						return err
+					}
+					return preconditionErr(fmt.Errorf("library health: local store is not synced; run 'zotio sync' first"))
+				}
 				fmt.Fprintln(cmd.OutOrStdout(), "Run 'zotio sync' first.")
 				return nil
 			}
@@ -314,12 +409,14 @@ precondition is unmet, the command refuses loudly (exit 9) rather than passing.`
 				syncedAt = &ls
 			}
 			ctx := &healthContext{
-				src:          healthSource{Kind: "local", SyncedAt: syncedAt},
-				preset:       preset,
-				limit:        flagLimit,
-				verifyFiles:  flagVerifyFiles,
-				flags:        flags,
-				requireFresh: flagRequireFresh,
+				src:         healthSource{Kind: "local", SyncedAt: syncedAt},
+				preset:      preset,
+				limit:       flagLimit,
+				verifyFiles: flagVerifyFiles,
+				// PATCH(marketing-heroes-2): thread CrossRef retraction opt-in into health runners.
+				checkRetractions: flagCheckRetractions,
+				flags:            flags,
+				requireFresh:     flagRequireFresh,
 			}
 
 			scope := scopeResult{All: true, Expr: "library"}
@@ -342,7 +439,12 @@ precondition is unmet, the command refuses loudly (exit 9) rather than passing.`
 				return err
 			}
 
-			if flags.asJSON {
+			// PATCH(marketing-heroes): badge mode renders only the shields endpoint payload; exit mapping below is unchanged.
+			if flagBadge {
+				if err := printHealthBadge(cmd, healthBadgeForReport(report, flagBadgeLabel)); err != nil {
+					return err
+				}
+			} else if flags.asJSON {
 				data, err := json.Marshal(report)
 				if err != nil {
 					return err
@@ -363,8 +465,13 @@ precondition is unmet, the command refuses loudly (exit 9) rather than passing.`
 	cmd.Flags().StringVar(&flagFailOn, "fail-on", "", "Exit 11 if findings reach this severity: critical, high, any (default: the preset's)")
 	cmd.Flags().IntVar(&flagLimit, "limit", 0, "Max findings listed per kind (0 = all); also caps the live attachment scan")
 	cmd.Flags().BoolVar(&flagVerifyFiles, "verify-files", false, "Run the live broken-attachment check (needs Zotero desktop running)")
+	// PATCH(marketing-heroes-2): expose the opt-in CrossRef retraction health check.
+	cmd.Flags().BoolVar(&flagCheckRetractions, "check-retractions", false, "Run the live CrossRef retraction check (network; DOI-bearing items)")
 	cmd.Flags().StringVar(&flagScope, "scope", "", "Limit to a cohort: collection:KEY | tag:NAME | item:KEY | query:TEXT | saved-search:KEY (default: whole library)")
 	cmd.Flags().DurationVar(&flagRequireFresh, "require-fresh", 0, "Refuse (exit 12) when the local store is staler than this (e.g. 24h); 0 = disabled")
+	// PATCH(marketing-heroes): register shields.io badge flags on the health command.
+	cmd.Flags().BoolVar(&flagBadge, "badge", false, "Emit a shields.io endpoint JSON badge instead of the report")
+	cmd.Flags().StringVar(&flagBadgeLabel, "badge-label", "bibliography", "Label for the shields.io endpoint badge")
 	return cmd
 }
 
@@ -749,6 +856,72 @@ func runBrokenAttachmentFile(db localQueryStore, ctx *healthContext) ([]healthFi
 	return findings, nil, nil
 }
 
+// PATCH(marketing-heroes-2): live CrossRef retraction health check, gated like verify-files.
+func runRetractedItem(db localQueryStore, ctx *healthContext) ([]healthFinding, *healthSkip, error) {
+	if !ctx.checkRetractions {
+		return nil, &healthSkip{
+			Kind:         "retracted_item",
+			Precondition: "external_crossref",
+			Detail:       "CrossRef retraction checking is a live network check and is off by default; re-run with --check-retractions.",
+			Remediation: []healthRemediation{
+				{Action: "run_check_retractions", Command: "zotio library health --for " + ctx.preset + " --check-retractions"},
+			},
+		}, nil
+	}
+
+	httpClient := &http.Client{Timeout: enrichTimeout(ctx.flags.timeout)}
+	if err := probeCrossrefRetractionAPI(context.Background(), httpClient); err != nil {
+		return nil, &healthSkip{
+			Kind:         "retracted_item",
+			Precondition: "external_crossref",
+			Detail:       fmt.Sprintf("CrossRef retraction checking is not reachable (%s); re-run with --check-retractions after network access is restored.", err),
+			Remediation: []healthRemediation{
+				{Action: "retry_check_retractions", Command: "zotio library health --for " + ctx.preset + " --check-retractions"},
+			},
+		}, nil
+	}
+
+	report, err := runRetractionCheck(context.Background(), db, httpClient, ctx.limit, "")
+	if err != nil {
+		return nil, nil, err
+	}
+	if report.Summary.Errors > 0 {
+		return nil, &healthSkip{
+			Kind:         "retracted_item",
+			Precondition: "external_crossref",
+			Detail:       fmt.Sprintf("CrossRef retraction checking encountered %d lookup error(s); cannot certify retractions.", report.Summary.Errors),
+			Remediation: []healthRemediation{
+				{Action: "retry_check_retractions", Command: "zotio library health --for " + ctx.preset + " --check-retractions"},
+			},
+		}, nil
+	}
+
+	findings := make([]healthFinding, 0, len(report.Findings))
+	for _, f := range report.Findings {
+		if f.Status == "correction" {
+			continue
+		}
+		findings = append(findings, healthFinding{
+			Kind:     "retracted_item",
+			Severity: sevCritical,
+			ItemKey:  f.ItemKey,
+			Title:    f.Title,
+			Evidence: map[string]any{
+				"doi":         f.DOI,
+				"status":      f.Status,
+				"update_type": f.UpdateType,
+				"notice_doi":  f.NoticeDOI,
+				"date":        f.UpdateDate,
+				"source":      f.Source,
+				"label":       f.Label,
+			},
+			Source:            ctx.src,
+			RecommendedAction: &healthRecommendedAction{Command: "zotio items retract-check --json"},
+		})
+	}
+	return findings, nil, nil
+}
+
 func countCiteableItems(db localQueryStore) int {
 	rows, err := db.QueryRaw(`
 SELECT COUNT(*) AS count
@@ -1010,6 +1183,20 @@ func formatFindingLine(f healthFinding) string {
 		return fmt.Sprintf("[%s] %s=%q (%v items)", f.Kind, sqlStringValue(f.Evidence["group"]), sqlStringValue(f.Evidence["value"]), f.Evidence["count"])
 	case "tag_drift":
 		return fmt.Sprintf("[%s] %q <- %v (%v items)", f.Kind, sqlStringValue(f.Evidence["canonical"]), f.Evidence["aliases"], f.Evidence["total_items"])
+	case "retracted_item":
+		// PATCH(marketing-heroes-2): surface CrossRef notice DOI/date in human health output.
+		line := fmt.Sprintf("[%s] %s", f.Kind, f.ItemKey)
+		if f.Title != "" {
+			line += " " + f.Title
+		}
+		if notice := sqlStringValue(f.Evidence["notice_doi"]); notice != "" {
+			line += " (notice: " + notice
+			if date := sqlStringValue(f.Evidence["date"]); date != "" {
+				line += " " + date
+			}
+			line += ")"
+		}
+		return line
 	default:
 		line := fmt.Sprintf("[%s] %s", f.Kind, f.ItemKey)
 		if f.Title != "" {

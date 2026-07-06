@@ -238,7 +238,8 @@ func renderHighlights() ([]byte, error) {
 		}
 		groups[g] = append(groups[g], e)
 	}
-	sort.Strings(order)
+	// PATCH(marketing-heroes): groups render in index declaration order so the
+	// flagship pillar leads the page; alphabetical buried it under "Agent & ...".
 
 	b := &bytes.Buffer{}
 	b.WriteString(genHeader)

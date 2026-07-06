@@ -120,28 +120,28 @@ func newRootCmd(flags *rootFlags) *cobra.Command {
 	rootCmd := &cobra.Command{
 		Use: "zotio",
 		// PATCH(glean zotero-pp-cli-2ec0000a278212ab): replace truncated generated help text with a complete short description.
-		Short: `Zotero CLI for library search, annotation export, item workflows, and analytics`,
-		Long: `Zotero CLI for library search, annotation export, item workflows, analytics, and local automation.
+		// PATCH(marketing-heroes): highlights block rebuilt around the shipped flagships; goal-to-command discovery via `zotio which`.
+		Short: `Zotero automation CLI: local-first search, library health, preview-first writes, and agent tooling`,
+		Long: `Zotero automation CLI: local-first search and audits, preview-first writes, annotation export, Obsidian vault sync, and an MCP server for agents.
 
-Highlights (not in the official API docs):
-  • tags audit   Find and fix tag drift: groups tags that differ only by case or variant, shows item counts, and generates ready-to-run merge commands.
-  • reading-list   Surface your oldest unread papers sorted by date added — your reading backlog, oldest-first, with abstract preview.
-  • items missing-pdf   List journal articles and book chapters that have no attached PDF — your download queue, ready to script.
-  • items audit   Count and list items missing PDFs, abstracts, DOIs, or tags — one command for a complete metadata health report.
-  • annotations export   Export all highlights and notes from a collection or tag set as a single markdown or JSON file, one section per paper.
-  • collections export   Export an entire collection and all its subcollections as a single BibTeX or CSL-JSON file, preserving structure in comments.
-  • library stats   See your library broken down by item type, publication year, and top journals — a dashboard in one command.
-  • items unfiled   List items sitting in the library root with no collection assignment — your organizational debt.
-  • items citekey-conflicts   Find items without a Better BibTeX citation key or with duplicate keys — prevent LaTeX compilation failures before they happen.
-  • annotations timeline   See your annotations ordered by date — find what you were reading and highlighting in any time window.
-  • items open   Jump from CLI search results directly to the item in the Zotero desktop app.
-  • items note-template   Generate a pre-filled markdown reading note (frontmatter + abstract + empty Annotations section) for any item — paste into Obsidian or Logseq.
-  • tags inventory   List all tags used in a collection with item counts — see which tags are local to a project vs. shared library-wide.
-  • items venues   List every journal and publication venue in your library with item counts and year ranges — understand where your sources come from.
-  • items stale   Find items added long ago with no PDF and no annotations — candidates for pruning or enrichment.
+Highlights (run 'zotio which "<goal>"' to resolve any goal to a command):
+  • library health   Ranked, CI-gateable health report — citekey conflicts, duplicates, missing metadata, tag drift; --badge emits a shields.io endpoint.
+  • items retract-check   Check every DOI against Crossref's Retraction Watch data — before a reviewer does.
+  • items bibcheck   Check a manuscript's \cite/@citekeys against your library; gate CI with --fail-on-unknown.
+  • import scan   Reviewable PDF ingest: triage a folder against your library, resolve identifiers, apply schema-valid creates from an editable manifest.
+  • items enrich   Fill missing DOIs, abstracts, and open-access PDF links from CrossRef/OpenAlex/Semantic Scholar/Unpaywall — preview-first, provenance-tagged.
+  • items preprint-check   Find arXiv preprints that have since been published — and upgrade them with the journal DOI via 'fix'.
+  • journal undo   Every applied write is journaled; undo reverses the reversible and loudly refuses the rest.
+  • export snapshot   Reproducible, resumable export with a key+version+content-hash lockfile.
+  • vault sync   Two-way Obsidian/Logseq sync with conflict-safe write-back.
+  • collections gaps   Rank the papers your collection cites most that you don't have — then import doi them.
+  • library wrapped   Your Zotero year in review, with a shareable SVG card.
+  • items summarize   Bounded, synthesis-ready context bundle for an LLM — the CLI never calls a model.
+  • tags audit   Find and fix tag drift with ready-to-run merge commands.
+  • reading-list   Your reading backlog as a to-read queue with add → start → done.
 
 Agent mode: add --agent to any command for JSON output + non-interactive mode; mutating commands preview unless --yes is given.
-Health check: run 'zotio doctor' to verify auth and connectivity.
+First run: 'zotio init' walks setup end to end (detect Zotero, key, first sync, health check); 'zotio doctor' verifies auth and connectivity.
 See README.md or the bundled SKILL.md for recipes.`,
 		SilenceUsage: true,
 		Version:      version,
@@ -270,6 +270,7 @@ See README.md or the bundled SKILL.md for recipes.`,
 	rootCmd.AddCommand(newSearchesCmd(flags))
 	rootCmd.AddCommand(newTagsCmd(flags))
 	rootCmd.AddCommand(newDoctorCmd(flags))
+	rootCmd.AddCommand(newInitCmd(flags)) // PATCH(marketing-heroes-2): guided first-run setup.
 	rootCmd.AddCommand(newAuthCmd(flags))
 	rootCmd.AddCommand(newAgentContextCmd(rootCmd))
 	rootCmd.AddCommand(newCapabilitiesCmd(rootCmd))
