@@ -1079,7 +1079,14 @@ func printHealthReport(cmd *cobra.Command, report healthReport) {
 
 	scopeLine := fmt.Sprintf("Scope: %s · %d items · source %s", report.Scope.Expr, report.Scope.Items, report.Scope.Source)
 	if report.Scope.SyncedAt != nil {
-		scopeLine += fmt.Sprintf(" · synced %s ago", durationAgo(time.Since(*report.Scope.SyncedAt)))
+		// PATCH(demo-mode): durationAgo returns "just now" for <1m — appending
+		// " ago" produced "synced just now ago" in the scope line.
+		age := durationAgo(time.Since(*report.Scope.SyncedAt))
+		if age == "just now" {
+			scopeLine += " · synced just now"
+		} else {
+			scopeLine += fmt.Sprintf(" · synced %s ago", age)
+		}
 	}
 	fmt.Fprintf(out, "%s · preset %s\n\n", scopeLine, report.Preset)
 
