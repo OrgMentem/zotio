@@ -1509,6 +1509,40 @@
         "mkdocs.yml"
       ],
       "validated_outcome": "grep finds zero 'Apache' references in tracked Go files (289 headers rewritten incl. new WIP files); zensical build 'No issues found'; patches JSON valid."
+    },
+    {
+      "id": "demo-mode",
+      "summary": "Added `zotio demo`: seeds an embedded sample library (34 classic papers incl. the retracted Wakefield 1998, a duplicate DOI pair, a citekey conflict, tag drift, annotations, to-read queue) into a separate ~/.local/share/zotio/demo.db; ZOTIO_DEMO=1 reroutes any command there via two seams (defaultDBPath in helpers.go, config.Load returning a pristine key-less config that ignores the config file and all ZOTERO_* env). reading-list gained --data-source local read parity (per ADR 0002) instead of a demo-gated fork.",
+      "reason": "Distribution: zero-setup trial ('brew install && zotio demo') and a deterministic fixture for recorded demos. Safety invariant: demo mode can never read or write the real store, config, or credentials — proven with poisoned env and byte-identical data.db.",
+      "files": [
+        "internal/cli/demo.go",
+        "internal/cli/testdata/demo_library.json",
+        "internal/cli/helpers.go",
+        "internal/config/config.go",
+        "internal/cli/root.go",
+        "internal/cli/reading_list.go",
+        "internal/cli/demo_test.go",
+        "internal/config/demo_config_test.go"
+      ],
+      "validated_outcome": "All tour commands verified against the seeded sandbox (health finds the planted conflict/duplicates, retract-check flags Wakefield live, wrapped/stats/search/reading-list populated); poisoned ZOTERO_* env ignored; real data.db sha256 unchanged across a full demo session."
+    },
+    {
+      "id": "vhs-demos",
+      "summary": "Added a VHS demo-recording pipeline: docs/tapes/*.tape (+ fixtures/paper.tex) render deterministic GIFs of the hero features against the demo sandbox into docs/assets/demos/ via `make demos`; GIFs embedded in README (hero tour, retract-check) and docs (index, guide/ci bibcheck).",
+      "reason": "Marketing: moving, never-stale demos recorded against the bundled sandbox — re-runnable by anyone with `brew install vhs && make demos`.",
+      "files": [
+        "docs/tapes/demo-tour.tape",
+        "docs/tapes/retract-check.tape",
+        "docs/tapes/bibcheck.tape",
+        "docs/tapes/wrapped.tape",
+        "docs/tapes/fixtures/paper.tex",
+        "docs/assets/demos/",
+        "Makefile",
+        "README.md",
+        "docs/index.md",
+        "docs/guide/ci.md"
+      ],
+      "validated_outcome": "Four GIFs rendered (58-521 KB); final frames visually QA'd — retract-check shows the real Wakefield retraction+correction notices, bibcheck shows the 3-ok/1-unknown/1-ambiguous table; retract tape needed --limit 5 + 16s to outlast the live Crossref probes."
     }
   ]
 }

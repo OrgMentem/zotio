@@ -479,6 +479,26 @@ zotio collections update COLLECTIONKEY
 | `--parent-collection` | `string` |  | New parent collection key (false for top-level) |
 | `--stdin` | `bool` | `false` | Read request body as JSON from stdin |
 
+## `zotio demo`
+
+Seed a zero-setup sample library and print a guided tour
+
+Seed a bundled sample library into a separate demo store and print a
+short tour of commands to try.
+
+The sandbox is a self-contained SQLite database (demo.db) beside your real
+store. Set ZOTIO_DEMO=1 on any command to read from it with a pristine,
+key-less config -- your real library, config, and API key are never touched.
+No Zotero desktop and no API key are required.
+
+```
+zotio demo [flags]
+```
+
+| Flag | Type | Default | Description |
+| --- | --- | --- | --- |
+| `--reset` | `bool` | `false` | Delete and re-seed the sandbox (also removes demo.db) |
+
 ## `zotio doctor`
 
 Check CLI health

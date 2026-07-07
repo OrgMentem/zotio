@@ -46,13 +46,27 @@ func newReadingListCmd(flags *rootFlags) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			items, err := fetchZoteroItems(c, "/items", map[string]string{
+			// PATCH(demo-mode): route the reading queue through the shared
+			// --data-source local parity path (ADR 0002 /
+			// internal/store.QueryItems) instead of a live-only fetch, so the
+			// queue works offline — including the ZOTIO_DEMO sandbox — via
+			// `--data-source local`, and still falls back to local in auto mode
+			// when the API is unreachable.
+			params := map[string]string{
 				"tag":       queueTag,
 				"sort":      "dateAdded",
 				"direction": "asc",
-			}, flagLimit)
+			}
+			if flagLimit > 0 {
+				params["limit"] = fmt.Sprintf("%d", flagLimit)
+			}
+			data, _, err := resolveRead(cmd.Context(), c, flags, "items", true, "/items", params, nil)
 			if err != nil {
 				return classifyAPIError(err, flags)
+			}
+			items, err := decodeZoteroItems(data)
+			if err != nil {
+				return fmt.Errorf("parsing reading queue: %w", err)
 			}
 
 			queue := make([]readingListItem, 0, len(items))

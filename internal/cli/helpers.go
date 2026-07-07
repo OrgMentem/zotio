@@ -1476,6 +1476,11 @@ func truncateJSONArray(data json.RawMessage, n int) json.RawMessage {
 // PATCH(glean 9bfn): group libraries get their own data-group-<id>.db file so
 // a group sync never mixes into the personal data.db; personal stays data.db.
 func defaultDBPath(name string) string {
+	// PATCH(demo-mode): the demo sandbox uses a separate demo.db in the same
+	// directory (group suffix is irrelevant in demo mode).
+	if demoActive() {
+		return demoDBPath(name)
+	}
 	home, _ := os.UserHomeDir()
 	file := "data.db"
 	if activeGroupID != "" {

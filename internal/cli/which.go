@@ -59,6 +59,8 @@ var whichIndex = []whichEntry{
 	{Command: "vault sync", Description: "Two-way Obsidian/Logseq vault sync: one Markdown note per item, managed blocks that never clobber your prose, conflict-safe write-back via push/pull/resolve.", Group: "Agent & automation surface", WhyItMatters: "Keep a PKM vault and Zotero in lockstep without losing hand-written notes on either side."},
 	// PATCH(marketing-heroes-2): onboarding hero.
 	{Command: "init", Description: "Guided first run: detect Zotero, enable the local API, set the Web API key, first sync, and a quick health check — one command from install to working setup.", Group: "Agent & automation surface", WhyItMatters: "From install to a synced, health-checked library in under a minute; idempotent, and agent-safe under --no-input."},
+	// PATCH(demo-mode): zero-setup trial sandbox.
+	{Command: "demo", Description: "Zero-setup trial: seed a bundled sample library (34 classic papers, one genuinely retracted) into a sandbox and try every local command with ZOTIO_DEMO=1 — no Zotero, no API key.", Group: "Agent & automation surface", WhyItMatters: "Evaluate zotio in 30 seconds before pointing it at a real library; the sandbox never touches your real store or credentials."},
 
 	// Export & citations.
 	{Command: "collections export", Description: "Export an entire collection and all its subcollections as a single BibTeX or CSL-JSON file, preserving structure in comments.", Group: "Export & citations", WhyItMatters: "Use this to hand a complete literature snapshot to LaTeX or to another researcher without losing the organizational hierarchy."},

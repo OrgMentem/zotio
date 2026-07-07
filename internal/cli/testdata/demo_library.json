@@ -1,0 +1,1705 @@
+{
+	"collections": [
+		{
+			"key": "CTRANSFRM",
+			"version": 1,
+			"data": {
+				"key": "CTRANSFRM",
+				"version": 1,
+				"name": "Transformers & Attention"
+			}
+		},
+		{
+			"key": "CDEEPFND",
+			"version": 1,
+			"data": {
+				"key": "CDEEPFND",
+				"version": 1,
+				"name": "Foundations of Deep Learning"
+			}
+		},
+		{
+			"key": "CMETHODS",
+			"version": 1,
+			"data": {
+				"key": "CMETHODS",
+				"version": 1,
+				"name": "Research Methods"
+			}
+		}
+	],
+	"items": [
+		{
+			"key": "ALEXNET01",
+			"version": 1,
+			"data": {
+				"key": "ALEXNET01",
+				"version": 1,
+				"itemType": "conferencePaper",
+				"title": "ImageNet Classification with Deep Convolutional Neural Networks",
+				"creators": [
+					{
+						"creatorType": "author",
+						"firstName": "Alex",
+						"lastName": "Krizhevsky"
+					},
+					{
+						"creatorType": "author",
+						"firstName": "Ilya",
+						"lastName": "Sutskever"
+					},
+					{
+						"creatorType": "author",
+						"firstName": "Geoffrey E.",
+						"lastName": "Hinton"
+					}
+				],
+				"date": "2012",
+				"publicationTitle": "Communications of the ACM",
+				"DOI": "10.1145/3065386",
+				"abstractNote": "A deep convolutional neural network trained on ImageNet achieves record-breaking classification accuracy.",
+				"tags": [
+					{
+						"tag": "Deep Learning"
+					},
+					{
+						"tag": "computer vision"
+					}
+				],
+				"extra": "Citation Key: krizhevsky2012imagenet",
+				"collections": [
+					"CDEEPFND"
+				],
+				"dateAdded": "2023-02-11T09:15:00Z"
+			}
+		},
+		{
+			"key": "IMAGENET09",
+			"version": 1,
+			"data": {
+				"key": "IMAGENET09",
+				"version": 1,
+				"itemType": "conferencePaper",
+				"title": "ImageNet: A Large-Scale Hierarchical Image Database",
+				"creators": [
+					{
+						"creatorType": "author",
+						"firstName": "Jia",
+						"lastName": "Deng"
+					},
+					{
+						"creatorType": "author",
+						"firstName": "Wei",
+						"lastName": "Dong"
+					},
+					{
+						"creatorType": "author",
+						"firstName": "Li",
+						"lastName": "Fei-Fei"
+					}
+				],
+				"date": "2009",
+				"publicationTitle": "2009 IEEE Conference on Computer Vision and Pattern Recognition",
+				"DOI": "10.1109/CVPR.2009.5206848",
+				"abstractNote": "A large-scale ontology of images built upon the WordNet structure.",
+				"tags": [
+					{
+						"tag": "computer vision"
+					},
+					{
+						"tag": "dataset"
+					}
+				],
+				"extra": "Citation Key: deng2009imagenet",
+				"dateAdded": "2023-03-02T14:00:00Z"
+			}
+		},
+		{
+			"key": "LSTM000097",
+			"version": 1,
+			"data": {
+				"key": "LSTM000097",
+				"version": 1,
+				"itemType": "journalArticle",
+				"title": "Long Short-Term Memory",
+				"creators": [
+					{
+						"creatorType": "author",
+						"firstName": "Sepp",
+						"lastName": "Hochreiter"
+					},
+					{
+						"creatorType": "author",
+						"firstName": "Jürgen",
+						"lastName": "Schmidhuber"
+					}
+				],
+				"date": "1997",
+				"publicationTitle": "Neural Computation",
+				"DOI": "10.1162/neco.1997.9.8.1735",
+				"abstractNote": "A recurrent network architecture with gated memory cells that learns long-range dependencies.",
+				"tags": [
+					{
+						"tag": "Deep Learning"
+					}
+				],
+				"extra": "Citation Key: hochreiter1997lstm",
+				"collections": [
+					"CDEEPFND"
+				],
+				"dateAdded": "2023-04-18T08:30:00Z"
+			}
+		},
+		{
+			"key": "PAGERANK99",
+			"version": 1,
+			"data": {
+				"key": "PAGERANK99",
+				"version": 1,
+				"itemType": "report",
+				"title": "The PageRank Citation Ranking: Bringing Order to the Web",
+				"creators": [
+					{
+						"creatorType": "author",
+						"firstName": "Larry",
+						"lastName": "Page"
+					},
+					{
+						"creatorType": "author",
+						"firstName": "Sergey",
+						"lastName": "Brin"
+					},
+					{
+						"creatorType": "author",
+						"firstName": "Rajeev",
+						"lastName": "Motwani"
+					},
+					{
+						"creatorType": "author",
+						"firstName": "Terry",
+						"lastName": "Winograd"
+					}
+				],
+				"date": "1999",
+				"publisher": "Stanford InfoLab",
+				"url": "http://ilpubs.stanford.edu:8090/422/",
+				"abstractNote": "A method for rating web pages objectively and mechanically using the link structure of the web.",
+				"tags": [
+					{
+						"tag": "systems"
+					}
+				],
+				"dateAdded": "2023-05-20T11:45:00Z"
+			}
+		},
+		{
+			"key": "BITCOIN008",
+			"version": 1,
+			"data": {
+				"key": "BITCOIN008",
+				"version": 1,
+				"itemType": "report",
+				"title": "Bitcoin: A Peer-to-Peer Electronic Cash System",
+				"creators": [
+					{
+						"creatorType": "author",
+						"firstName": "Satoshi",
+						"lastName": "Nakamoto"
+					}
+				],
+				"date": "2008",
+				"publisher": "bitcoin.org",
+				"url": "https://bitcoin.org/bitcoin.pdf",
+				"abstractNote": "A purely peer-to-peer version of electronic cash allowing online payments without a trusted third party.",
+				"tags": [
+					{
+						"tag": "systems"
+					},
+					{
+						"tag": "cryptography"
+					}
+				],
+				"dateAdded": "2023-07-09T16:20:00Z"
+			}
+		},
+		{
+			"key": "MAPREDUCE4",
+			"version": 1,
+			"data": {
+				"key": "MAPREDUCE4",
+				"version": 1,
+				"itemType": "journalArticle",
+				"title": "MapReduce: Simplified Data Processing on Large Clusters",
+				"creators": [
+					{
+						"creatorType": "author",
+						"firstName": "Jeffrey",
+						"lastName": "Dean"
+					},
+					{
+						"creatorType": "author",
+						"firstName": "Sanjay",
+						"lastName": "Ghemawat"
+					}
+				],
+				"date": "2008",
+				"publicationTitle": "Communications of the ACM",
+				"DOI": "10.1145/1327452.1327492",
+				"abstractNote": "A programming model and implementation for processing large data sets on commodity clusters.",
+				"tags": [
+					{
+						"tag": "systems"
+					},
+					{
+						"tag": "distributed systems"
+					}
+				],
+				"extra": "Citation Key: dean2008mapreduce",
+				"dateAdded": "2023-09-01T10:05:00Z"
+			}
+		},
+		{
+			"key": "ATTENTION1",
+			"version": 1,
+			"data": {
+				"key": "ATTENTION1",
+				"version": 1,
+				"itemType": "conferencePaper",
+				"title": "Attention Is All You Need",
+				"creators": [
+					{
+						"creatorType": "author",
+						"firstName": "Ashish",
+						"lastName": "Vaswani"
+					},
+					{
+						"creatorType": "author",
+						"firstName": "Noam",
+						"lastName": "Shazeer"
+					},
+					{
+						"creatorType": "author",
+						"firstName": "Niki",
+						"lastName": "Parmar"
+					},
+					{
+						"creatorType": "author",
+						"firstName": "Jakob",
+						"lastName": "Uszkoreit"
+					}
+				],
+				"date": "2017",
+				"publicationTitle": "Advances in Neural Information Processing Systems",
+				"url": "https://arxiv.org/abs/1706.03762",
+				"abstractNote": "The Transformer, a sequence transduction model based solely on attention mechanisms, dispensing with recurrence and convolutions entirely.",
+				"tags": [
+					{
+						"tag": "Machine Learning"
+					},
+					{
+						"tag": "attention"
+					},
+					{
+						"tag": "to-read"
+					}
+				],
+				"extra": "Citation Key: vaswani2017attention\narXiv: 1706.03762",
+				"collections": [
+					"CTRANSFRM"
+				],
+				"dateAdded": "2024-01-12T13:30:00Z"
+			}
+		},
+		{
+			"key": "BERT000019",
+			"version": 1,
+			"data": {
+				"key": "BERT000019",
+				"version": 1,
+				"itemType": "conferencePaper",
+				"title": "BERT: Pre-training of Deep Bidirectional Transformers for Language Understanding",
+				"creators": [
+					{
+						"creatorType": "author",
+						"firstName": "Jacob",
+						"lastName": "Devlin"
+					},
+					{
+						"creatorType": "author",
+						"firstName": "Ming-Wei",
+						"lastName": "Chang"
+					},
+					{
+						"creatorType": "author",
+						"firstName": "Kenton",
+						"lastName": "Lee"
+					},
+					{
+						"creatorType": "author",
+						"firstName": "Kristina",
+						"lastName": "Toutanova"
+					}
+				],
+				"date": "2019",
+				"publicationTitle": "Proceedings of NAACL-HLT 2019",
+				"DOI": "10.18653/v1/N19-1423",
+				"abstractNote": "A masked-language-model pre-training objective that yields bidirectional transformer representations for language understanding.",
+				"tags": [
+					{
+						"tag": "Machine Learning"
+					},
+					{
+						"tag": "NLP"
+					},
+					{
+						"tag": "attention"
+					}
+				],
+				"extra": "Citation Key: devlin2019bert",
+				"collections": [
+					"CTRANSFRM"
+				],
+				"dateAdded": "2024-02-03T09:00:00Z"
+			}
+		},
+		{
+			"key": "RESNET0016",
+			"version": 1,
+			"data": {
+				"key": "RESNET0016",
+				"version": 1,
+				"itemType": "conferencePaper",
+				"title": "Deep Residual Learning for Image Recognition",
+				"creators": [
+					{
+						"creatorType": "author",
+						"firstName": "Kaiming",
+						"lastName": "He"
+					},
+					{
+						"creatorType": "author",
+						"firstName": "Xiangyu",
+						"lastName": "Zhang"
+					},
+					{
+						"creatorType": "author",
+						"firstName": "Shaoqing",
+						"lastName": "Ren"
+					},
+					{
+						"creatorType": "author",
+						"firstName": "Jian",
+						"lastName": "Sun"
+					}
+				],
+				"date": "2016",
+				"publicationTitle": "2016 IEEE Conference on Computer Vision and Pattern Recognition (CVPR)",
+				"DOI": "10.1109/CVPR.2016.90",
+				"abstractNote": "Residual connections ease the training of substantially deeper networks and win the ImageNet 2015 classification task.",
+				"tags": [
+					{
+						"tag": "Deep Learning"
+					},
+					{
+						"tag": "Computer Vision"
+					}
+				],
+				"extra": "Citation Key: he2016resnet",
+				"collections": [
+					"CDEEPFND"
+				],
+				"dateAdded": "2024-03-21T15:10:00Z"
+			}
+		},
+		{
+			"key": "TRANSXL019",
+			"version": 1,
+			"data": {
+				"key": "TRANSXL019",
+				"version": 1,
+				"itemType": "conferencePaper",
+				"title": "Transformer-XL: Attentive Language Models beyond a Fixed-Length Context",
+				"creators": [
+					{
+						"creatorType": "author",
+						"firstName": "Zihang",
+						"lastName": "Dai"
+					},
+					{
+						"creatorType": "author",
+						"firstName": "Zhilin",
+						"lastName": "Yang"
+					},
+					{
+						"creatorType": "author",
+						"firstName": "Yiming",
+						"lastName": "Yang"
+					}
+				],
+				"date": "2019",
+				"publicationTitle": "Proceedings of ACL 2019",
+				"DOI": "10.18653/v1/P19-1285",
+				"abstractNote": "A recurrence mechanism and relative positional encoding extend the attention span of Transformer language models beyond a fixed context window.",
+				"tags": [
+					{
+						"tag": "NLP"
+					},
+					{
+						"tag": "attention"
+					}
+				],
+				"extra": "Citation Key: dai2019transformerxl",
+				"collections": [
+					"CTRANSFRM"
+				],
+				"dateAdded": "2024-04-15T12:00:00Z"
+			}
+		},
+		{
+			"key": "WORD2VEC13",
+			"version": 1,
+			"data": {
+				"key": "WORD2VEC13",
+				"version": 1,
+				"itemType": "conferencePaper",
+				"title": "Efficient Estimation of Word Representations in Vector Space",
+				"creators": [
+					{
+						"creatorType": "author",
+						"firstName": "Tomas",
+						"lastName": "Mikolov"
+					},
+					{
+						"creatorType": "author",
+						"firstName": "Kai",
+						"lastName": "Chen"
+					},
+					{
+						"creatorType": "author",
+						"firstName": "Greg",
+						"lastName": "Corrado"
+					},
+					{
+						"creatorType": "author",
+						"firstName": "Jeffrey",
+						"lastName": "Dean"
+					}
+				],
+				"date": "2013",
+				"publicationTitle": "Workshop at ICLR 2013",
+				"url": "https://arxiv.org/abs/1301.3781",
+				"abstractNote": "Two novel architectures for computing continuous vector representations of words from very large data sets.",
+				"tags": [
+					{
+						"tag": "NLP"
+					},
+					{
+						"tag": "machine learning"
+					}
+				],
+				"extra": "arXiv: 1301.3781",
+				"dateAdded": "2024-05-06T10:40:00Z"
+			}
+		},
+		{
+			"key": "GLOVE00014",
+			"version": 1,
+			"data": {
+				"key": "GLOVE00014",
+				"version": 1,
+				"itemType": "conferencePaper",
+				"title": "GloVe: Global Vectors for Word Representation",
+				"creators": [
+					{
+						"creatorType": "author",
+						"firstName": "Jeffrey",
+						"lastName": "Pennington"
+					},
+					{
+						"creatorType": "author",
+						"firstName": "Richard",
+						"lastName": "Socher"
+					},
+					{
+						"creatorType": "author",
+						"firstName": "Christopher D.",
+						"lastName": "Manning"
+					}
+				],
+				"date": "2014",
+				"publicationTitle": "Proceedings of EMNLP 2014",
+				"DOI": "10.3115/v1/D14-1162",
+				"abstractNote": "A global log-bilinear regression model that combines matrix factorization and local context windows for word vectors.",
+				"tags": [
+					{
+						"tag": "NLP"
+					}
+				],
+				"dateAdded": "2024-06-19T14:25:00Z"
+			}
+		},
+		{
+			"key": "DROPOUT014",
+			"version": 1,
+			"data": {
+				"key": "DROPOUT014",
+				"version": 1,
+				"itemType": "journalArticle",
+				"title": "Dropout: A Simple Way to Prevent Neural Networks from Overfitting",
+				"creators": [
+					{
+						"creatorType": "author",
+						"firstName": "Nitish",
+						"lastName": "Srivastava"
+					},
+					{
+						"creatorType": "author",
+						"firstName": "Geoffrey",
+						"lastName": "Hinton"
+					},
+					{
+						"creatorType": "author",
+						"firstName": "Alex",
+						"lastName": "Krizhevsky"
+					}
+				],
+				"date": "2014",
+				"publicationTitle": "Journal of Machine Learning Research",
+				"abstractNote": "Randomly dropping units during training prevents co-adaptation and reduces overfitting in neural networks.",
+				"tags": [
+					{
+						"tag": "Deep Learning"
+					}
+				],
+				"extra": "Citation Key: srivastava2014dropout",
+				"collections": [
+					"CDEEPFND"
+				],
+				"dateAdded": "2024-08-08T09:50:00Z"
+			}
+		},
+		{
+			"key": "BATCHNORM5",
+			"version": 1,
+			"data": {
+				"key": "BATCHNORM5",
+				"version": 1,
+				"itemType": "conferencePaper",
+				"title": "Batch Normalization: Accelerating Deep Network Training by Reducing Internal Covariate Shift",
+				"creators": [
+					{
+						"creatorType": "author",
+						"firstName": "Sergey",
+						"lastName": "Ioffe"
+					},
+					{
+						"creatorType": "author",
+						"firstName": "Christian",
+						"lastName": "Szegedy"
+					}
+				],
+				"date": "2015",
+				"publicationTitle": "Proceedings of ICML 2015",
+				"url": "https://arxiv.org/abs/1502.03167",
+				"abstractNote": "Normalizing layer inputs per mini-batch accelerates training and allows higher learning rates.",
+				"tags": [
+					{
+						"tag": "Deep Learning"
+					}
+				],
+				"extra": "arXiv: 1502.03167",
+				"collections": [
+					"CDEEPFND"
+				],
+				"dateAdded": "2024-10-02T11:15:00Z"
+			}
+		},
+		{
+			"key": "GANORIG014",
+			"version": 1,
+			"data": {
+				"key": "GANORIG014",
+				"version": 1,
+				"itemType": "conferencePaper",
+				"title": "Generative Adversarial Networks",
+				"creators": [
+					{
+						"creatorType": "author",
+						"firstName": "Ian",
+						"lastName": "Goodfellow"
+					},
+					{
+						"creatorType": "author",
+						"firstName": "Jean",
+						"lastName": "Pouget-Abadie"
+					},
+					{
+						"creatorType": "author",
+						"firstName": "Mehdi",
+						"lastName": "Mirza"
+					}
+				],
+				"date": "2014",
+				"publicationTitle": "Advances in Neural Information Processing Systems",
+				"DOI": "10.48550/arXiv.1406.2661",
+				"url": "https://arxiv.org/abs/1406.2661",
+				"abstractNote": "A framework for estimating generative models via an adversarial process pitting a generator against a discriminator.",
+				"tags": [
+					{
+						"tag": "Machine Learning"
+					},
+					{
+						"tag": "generative models"
+					}
+				],
+				"extra": "Citation Key: goodfellow2014gan",
+				"dateAdded": "2025-01-14T10:00:00Z"
+			}
+		},
+		{
+			"key": "GANDUP0014",
+			"version": 1,
+			"data": {
+				"key": "GANDUP0014",
+				"version": 1,
+				"itemType": "conferencePaper",
+				"title": "Generative Adversarial Networks",
+				"creators": [
+					{
+						"creatorType": "author",
+						"firstName": "Ian J.",
+						"lastName": "Goodfellow"
+					},
+					{
+						"creatorType": "author",
+						"firstName": "Jean",
+						"lastName": "Pouget-Abadie"
+					}
+				],
+				"date": "2014",
+				"publicationTitle": "NeurIPS",
+				"DOI": "10.48550/arXiv.1406.2661",
+				"abstractNote": "Adversarial nets: a generator and discriminator trained simultaneously in a minimax game.",
+				"tags": [
+					{
+						"tag": "Machine Learning"
+					}
+				],
+				"dateAdded": "2025-01-14T10:05:00Z"
+			}
+		},
+		{
+			"key": "DQNATARI13",
+			"version": 1,
+			"data": {
+				"key": "DQNATARI13",
+				"version": 1,
+				"itemType": "preprint",
+				"title": "Playing Atari with Deep Reinforcement Learning",
+				"creators": [
+					{
+						"creatorType": "author",
+						"firstName": "Volodymyr",
+						"lastName": "Mnih"
+					},
+					{
+						"creatorType": "author",
+						"firstName": "Koray",
+						"lastName": "Kavukcuoglu"
+					},
+					{
+						"creatorType": "author",
+						"firstName": "David",
+						"lastName": "Silver"
+					}
+				],
+				"date": "2013",
+				"publisher": "arXiv",
+				"url": "https://arxiv.org/abs/1312.5602",
+				"abstractNote": "A convolutional network trained with Q-learning learns control policies directly from raw Atari pixels.",
+				"tags": [
+					{
+						"tag": "Machine Learning"
+					},
+					{
+						"tag": "reinforcement learning"
+					},
+					{
+						"tag": "to-read"
+					}
+				],
+				"extra": "Citation Key: mnih2013atari\narXiv: 1312.5602",
+				"dateAdded": "2025-02-27T13:20:00Z"
+			}
+		},
+		{
+			"key": "DDPM002020",
+			"version": 1,
+			"data": {
+				"key": "DDPM002020",
+				"version": 1,
+				"itemType": "preprint",
+				"title": "Denoising Diffusion Probabilistic Models",
+				"creators": [
+					{
+						"creatorType": "author",
+						"firstName": "Jonathan",
+						"lastName": "Ho"
+					},
+					{
+						"creatorType": "author",
+						"firstName": "Ajay",
+						"lastName": "Jain"
+					},
+					{
+						"creatorType": "author",
+						"firstName": "Pieter",
+						"lastName": "Abbeel"
+					}
+				],
+				"date": "2020",
+				"publisher": "arXiv",
+				"url": "https://arxiv.org/abs/2006.11239",
+				"abstractNote": "A class of latent variable diffusion models producing high-quality image synthesis.",
+				"tags": [
+					{
+						"tag": "Deep Learning"
+					},
+					{
+						"tag": "generative models"
+					},
+					{
+						"tag": "to-read"
+					}
+				],
+				"extra": "arXiv: 2006.11239",
+				"dateAdded": "2025-04-11T09:30:00Z"
+			}
+		},
+		{
+			"key": "GPT3002020",
+			"version": 1,
+			"data": {
+				"key": "GPT3002020",
+				"version": 1,
+				"itemType": "conferencePaper",
+				"title": "Language Models are Few-Shot Learners",
+				"creators": [
+					{
+						"creatorType": "author",
+						"firstName": "Tom B.",
+						"lastName": "Brown"
+					},
+					{
+						"creatorType": "author",
+						"firstName": "Benjamin",
+						"lastName": "Mann"
+					},
+					{
+						"creatorType": "author",
+						"firstName": "Nick",
+						"lastName": "Ryder"
+					}
+				],
+				"date": "2020",
+				"publicationTitle": "Advances in Neural Information Processing Systems",
+				"url": "https://arxiv.org/abs/2005.14165",
+				"abstractNote": "Scaling an autoregressive language model to 175 billion parameters yields strong few-shot performance without gradient updates.",
+				"tags": [
+					{
+						"tag": "NLP"
+					},
+					{
+						"tag": "machine-learning"
+					}
+				],
+				"extra": "Citation Key: brown2020gpt3\narXiv: 2005.14165",
+				"collections": [
+					"CTRANSFRM"
+				],
+				"dateAdded": "2025-06-08T15:45:00Z"
+			}
+		},
+		{
+			"key": "ADAM002015",
+			"version": 1,
+			"data": {
+				"key": "ADAM002015",
+				"version": 1,
+				"itemType": "conferencePaper",
+				"title": "Adam: A Method for Stochastic Optimization",
+				"creators": [
+					{
+						"creatorType": "author",
+						"firstName": "Diederik P.",
+						"lastName": "Kingma"
+					},
+					{
+						"creatorType": "author",
+						"firstName": "Jimmy",
+						"lastName": "Ba"
+					}
+				],
+				"date": "2015",
+				"publicationTitle": "Proceedings of ICLR 2015",
+				"url": "https://arxiv.org/abs/1412.6980",
+				"abstractNote": "An algorithm for first-order gradient-based optimization of stochastic objectives using adaptive moment estimation.",
+				"tags": [
+					{
+						"tag": "Machine Learning"
+					},
+					{
+						"tag": "optimization"
+					},
+					{
+						"tag": "methods"
+					}
+				],
+				"extra": "Citation Key: kingma2015adam\narXiv: 1412.6980",
+				"collections": [
+					"CMETHODS"
+				],
+				"dateAdded": "2025-08-22T11:00:00Z"
+			}
+		},
+		{
+			"key": "ALPHAGO016",
+			"version": 1,
+			"data": {
+				"key": "ALPHAGO016",
+				"version": 1,
+				"itemType": "journalArticle",
+				"title": "Mastering the Game of Go with Deep Neural Networks and Tree Search",
+				"creators": [
+					{
+						"creatorType": "author",
+						"firstName": "David",
+						"lastName": "Silver"
+					},
+					{
+						"creatorType": "author",
+						"firstName": "Aja",
+						"lastName": "Huang"
+					},
+					{
+						"creatorType": "author",
+						"firstName": "Chris J.",
+						"lastName": "Maddison"
+					}
+				],
+				"date": "2016",
+				"publicationTitle": "Nature",
+				"DOI": "10.1038/nature16961",
+				"abstractNote": "A program combining deep neural networks with Monte Carlo tree search defeats a human professional Go player.",
+				"tags": [
+					{
+						"tag": "Deep Learning"
+					},
+					{
+						"tag": "reinforcement learning"
+					}
+				],
+				"dateAdded": "2025-10-30T14:15:00Z"
+			}
+		},
+		{
+			"key": "HUMANRL015",
+			"version": 1,
+			"data": {
+				"key": "HUMANRL015",
+				"version": 1,
+				"itemType": "journalArticle",
+				"title": "Human-Level Control through Deep Reinforcement Learning",
+				"creators": [
+					{
+						"creatorType": "author",
+						"firstName": "Volodymyr",
+						"lastName": "Mnih"
+					},
+					{
+						"creatorType": "author",
+						"firstName": "Koray",
+						"lastName": "Kavukcuoglu"
+					},
+					{
+						"creatorType": "author",
+						"firstName": "David",
+						"lastName": "Silver"
+					}
+				],
+				"date": "2015",
+				"publicationTitle": "Nature",
+				"DOI": "10.1038/nature14236",
+				"abstractNote": "A deep Q-network learns to play Atari games at a level comparable to a professional human tester.",
+				"tags": [
+					{
+						"tag": "reinforcement learning"
+					}
+				],
+				"dateAdded": "2025-12-05T10:20:00Z"
+			}
+		},
+		{
+			"key": "CRISPRJ012",
+			"version": 1,
+			"data": {
+				"key": "CRISPRJ012",
+				"version": 1,
+				"itemType": "journalArticle",
+				"title": "A Programmable Dual-RNA–Guided DNA Endonuclease in Adaptive Bacterial Immunity",
+				"creators": [
+					{
+						"creatorType": "author",
+						"firstName": "Martin",
+						"lastName": "Jinek"
+					},
+					{
+						"creatorType": "author",
+						"firstName": "Krzysztof",
+						"lastName": "Chylinski"
+					},
+					{
+						"creatorType": "author",
+						"firstName": "Jennifer A.",
+						"lastName": "Doudna"
+					}
+				],
+				"date": "2012",
+				"publicationTitle": "Science",
+				"DOI": "10.1126/science.1225829",
+				"abstractNote": "Cas9 is a dual-RNA-guided DNA endonuclease that can be programmed to cleave specific DNA sequences.",
+				"tags": [
+					{
+						"tag": "methods"
+					},
+					{
+						"tag": "medicine"
+					},
+					{
+						"tag": "genomics"
+					}
+				],
+				"extra": "Citation Key: jinek2012crispr",
+				"collections": [
+					"CMETHODS"
+				],
+				"dateAdded": "2026-01-09T09:00:00Z"
+			}
+		},
+		{
+			"key": "CRISPRC013",
+			"version": 1,
+			"data": {
+				"key": "CRISPRC013",
+				"version": 1,
+				"itemType": "journalArticle",
+				"title": "Multiplex Genome Engineering Using CRISPR/Cas Systems",
+				"creators": [
+					{
+						"creatorType": "author",
+						"firstName": "Le",
+						"lastName": "Cong"
+					},
+					{
+						"creatorType": "author",
+						"firstName": "F. Ann",
+						"lastName": "Ran"
+					},
+					{
+						"creatorType": "author",
+						"firstName": "Feng",
+						"lastName": "Zhang"
+					}
+				],
+				"date": "2013",
+				"publicationTitle": "Science",
+				"DOI": "10.1126/science.1231143",
+				"abstractNote": "CRISPR/Cas systems are engineered to enable multiplexed genome editing in mammalian cells.",
+				"tags": [
+					{
+						"tag": "methods"
+					},
+					{
+						"tag": "genomics"
+					}
+				],
+				"extra": "Citation Key: cong2013crispr",
+				"collections": [
+					"CMETHODS"
+				],
+				"dateAdded": "2026-02-14T11:30:00Z"
+			}
+		},
+		{
+			"key": "DLNATURE15",
+			"version": 1,
+			"data": {
+				"key": "DLNATURE15",
+				"version": 1,
+				"itemType": "journalArticle",
+				"title": "Deep Learning",
+				"creators": [
+					{
+						"creatorType": "author",
+						"firstName": "Yann",
+						"lastName": "LeCun"
+					},
+					{
+						"creatorType": "author",
+						"firstName": "Yoshua",
+						"lastName": "Bengio"
+					},
+					{
+						"creatorType": "author",
+						"firstName": "Geoffrey",
+						"lastName": "Hinton"
+					}
+				],
+				"date": "2015",
+				"publicationTitle": "Nature",
+				"DOI": "10.1038/nature14539",
+				"abstractNote": "A review of deep learning: representation learning with multiple levels of abstraction.",
+				"tags": [
+					{
+						"tag": "Deep Learning"
+					},
+					{
+						"tag": "review"
+					}
+				],
+				"extra": "Citation Key: lecun2015deeplearning",
+				"collections": [
+					"CDEEPFND"
+				],
+				"dateAdded": "2026-02-28T13:00:00Z"
+			}
+		},
+		{
+			"key": "FAIR002016",
+			"version": 1,
+			"data": {
+				"key": "FAIR002016",
+				"version": 1,
+				"itemType": "journalArticle",
+				"title": "The FAIR Guiding Principles for Scientific Data Management and Stewardship",
+				"creators": [
+					{
+						"creatorType": "author",
+						"firstName": "Mark D.",
+						"lastName": "Wilkinson"
+					},
+					{
+						"creatorType": "author",
+						"firstName": "Michel",
+						"lastName": "Dumontier"
+					},
+					{
+						"creatorType": "author",
+						"firstName": "IJsbrand Jan",
+						"lastName": "Aalbersberg"
+					}
+				],
+				"date": "2016",
+				"publicationTitle": "Scientific Data",
+				"DOI": "10.1038/sdata.2016.18",
+				"abstractNote": "Guiding principles to make data Findable, Accessible, Interoperable, and Reusable.",
+				"tags": [
+					{
+						"tag": "methods"
+					},
+					{
+						"tag": "data"
+					}
+				],
+				"extra": "Citation Key: smith2020data",
+				"collections": [
+					"CMETHODS"
+				],
+				"dateAdded": "2026-03-17T10:15:00Z"
+			}
+		},
+		{
+			"key": "TIDYDATA14",
+			"version": 1,
+			"data": {
+				"key": "TIDYDATA14",
+				"version": 1,
+				"itemType": "journalArticle",
+				"title": "Tidy Data",
+				"creators": [
+					{
+						"creatorType": "author",
+						"firstName": "Hadley",
+						"lastName": "Wickham"
+					}
+				],
+				"date": "2014",
+				"publicationTitle": "Journal of Statistical Software",
+				"DOI": "10.18637/jss.v059.i10",
+				"abstractNote": "A standard way to organize data values within a dataset to ease analysis.",
+				"tags": [
+					{
+						"tag": "methods"
+					},
+					{
+						"tag": "data"
+					}
+				],
+				"extra": "Citation Key: smith2020data",
+				"collections": [
+					"CMETHODS"
+				],
+				"dateAdded": "2026-04-01T09:45:00Z"
+			}
+		},
+		{
+			"key": "ILSVRC0015",
+			"version": 1,
+			"data": {
+				"key": "ILSVRC0015",
+				"version": 1,
+				"itemType": "journalArticle",
+				"title": "ImageNet Large Scale Visual Recognition Challenge",
+				"creators": [
+					{
+						"creatorType": "author",
+						"firstName": "Olga",
+						"lastName": "Russakovsky"
+					},
+					{
+						"creatorType": "author",
+						"firstName": "Jia",
+						"lastName": "Deng"
+					},
+					{
+						"creatorType": "author",
+						"firstName": "Hao",
+						"lastName": "Su"
+					}
+				],
+				"date": "2015",
+				"publicationTitle": "International Journal of Computer Vision",
+				"DOI": "10.1007/s11263-015-0816-y",
+				"abstractNote": "A benchmark and analysis of five years of object recognition progress on ImageNet.",
+				"tags": [
+					{
+						"tag": "Computer Vision"
+					},
+					{
+						"tag": "dataset"
+					}
+				],
+				"dateAdded": "2026-04-22T14:30:00Z"
+			}
+		},
+		{
+			"key": "DOMINGOS12",
+			"version": 1,
+			"data": {
+				"key": "DOMINGOS12",
+				"version": 1,
+				"itemType": "journalArticle",
+				"title": "A Few Useful Things to Know about Machine Learning",
+				"creators": [
+					{
+						"creatorType": "author",
+						"firstName": "Pedro",
+						"lastName": "Domingos"
+					}
+				],
+				"date": "2012",
+				"publicationTitle": "Communications of the ACM",
+				"DOI": "10.1145/2347736.2347755",
+				"abstractNote": "Practical folk wisdom about building successful machine learning applications.",
+				"tags": [
+					{
+						"tag": "machine-learning"
+					},
+					{
+						"tag": "review"
+					},
+					{
+						"tag": "to-read"
+					}
+				],
+				"dateAdded": "2026-05-10T08:20:00Z"
+			}
+		},
+		{
+			"key": "ELEMSTAT09",
+			"version": 1,
+			"data": {
+				"key": "ELEMSTAT09",
+				"version": 1,
+				"itemType": "book",
+				"title": "The Elements of Statistical Learning: Data Mining, Inference, and Prediction",
+				"creators": [
+					{
+						"creatorType": "author",
+						"firstName": "Trevor",
+						"lastName": "Hastie"
+					},
+					{
+						"creatorType": "author",
+						"firstName": "Robert",
+						"lastName": "Tibshirani"
+					},
+					{
+						"creatorType": "author",
+						"firstName": "Jerome",
+						"lastName": "Friedman"
+					}
+				],
+				"date": "2009",
+				"publisher": "Springer",
+				"DOI": "10.1007/978-0-387-84858-7",
+				"abstractNote": "A comprehensive treatment of statistical learning methods.",
+				"tags": [
+					{
+						"tag": "methods"
+					},
+					{
+						"tag": "statistics"
+					},
+					{
+						"tag": "to-read"
+					}
+				],
+				"extra": "Citation Key: hastie2009elements",
+				"collections": [
+					"CMETHODS"
+				],
+				"dateAdded": "2026-05-28T16:00:00Z"
+			}
+		},
+		{
+			"key": "DLBOOK0016",
+			"version": 1,
+			"data": {
+				"key": "DLBOOK0016",
+				"version": 1,
+				"itemType": "book",
+				"title": "Deep Learning",
+				"creators": [
+					{
+						"creatorType": "author",
+						"firstName": "Ian",
+						"lastName": "Goodfellow"
+					},
+					{
+						"creatorType": "author",
+						"firstName": "Yoshua",
+						"lastName": "Bengio"
+					},
+					{
+						"creatorType": "author",
+						"firstName": "Aaron",
+						"lastName": "Courville"
+					}
+				],
+				"date": "2016",
+				"publisher": "MIT Press",
+				"abstractNote": "A textbook covering the mathematics and practice of deep neural networks.",
+				"tags": [
+					{
+						"tag": "Deep Learning"
+					},
+					{
+						"tag": "textbook"
+					}
+				],
+				"collections": [
+					"CDEEPFND"
+				],
+				"dateAdded": "2026-06-11T10:00:00Z"
+			}
+		},
+		{
+			"key": "DISTILL015",
+			"version": 1,
+			"data": {
+				"key": "DISTILL015",
+				"version": 1,
+				"itemType": "conferencePaper",
+				"title": "Distilling the Knowledge in a Neural Network",
+				"creators": [
+					{
+						"creatorType": "author",
+						"firstName": "Geoffrey",
+						"lastName": "Hinton"
+					},
+					{
+						"creatorType": "author",
+						"firstName": "Oriol",
+						"lastName": "Vinyals"
+					},
+					{
+						"creatorType": "author",
+						"firstName": "Jeff",
+						"lastName": "Dean"
+					}
+				],
+				"date": "2015",
+				"publicationTitle": "NeurIPS Deep Learning Workshop",
+				"url": "https://arxiv.org/abs/1503.02531",
+				"abstractNote": "Compressing an ensemble into a single model by training on softened output distributions.",
+				"tags": [
+					{
+						"tag": "deep learning"
+					}
+				],
+				"extra": "arXiv: 1503.02531",
+				"dateAdded": "2026-06-20T12:30:00Z"
+			}
+		},
+		{
+			"key": "GPT2002019",
+			"version": 1,
+			"data": {
+				"key": "GPT2002019",
+				"version": 1,
+				"itemType": "report",
+				"title": "Language Models are Unsupervised Multitask Learners",
+				"creators": [
+					{
+						"creatorType": "author",
+						"firstName": "Alec",
+						"lastName": "Radford"
+					},
+					{
+						"creatorType": "author",
+						"firstName": "Jeffrey",
+						"lastName": "Wu"
+					},
+					{
+						"creatorType": "author",
+						"firstName": "Rewon",
+						"lastName": "Child"
+					}
+				],
+				"date": "2019",
+				"publisher": "OpenAI",
+				"url": "https://cdn.openai.com/better-language-models/language_models_are_unsupervised_multitask_learners.pdf",
+				"abstractNote": "A large language model trained on WebText performs many NLP tasks without task-specific training.",
+				"tags": [
+					{
+						"tag": "NLP"
+					}
+				],
+				"dateAdded": "2026-06-30T09:10:00Z"
+			}
+		},
+		{
+			"key": "WAKEFLD98",
+			"version": 1,
+			"data": {
+				"key": "WAKEFLD98",
+				"version": 1,
+				"itemType": "journalArticle",
+				"title": "Ileal-Lymphoid-Nodular Hyperplasia, Non-Specific Colitis, and Pervasive Developmental Disorder in Children",
+				"creators": [
+					{
+						"creatorType": "author",
+						"firstName": "A. J.",
+						"lastName": "Wakefield"
+					},
+					{
+						"creatorType": "author",
+						"firstName": "S. H.",
+						"lastName": "Murch"
+					},
+					{
+						"creatorType": "author",
+						"firstName": "A.",
+						"lastName": "Anthony"
+					}
+				],
+				"date": "1998",
+				"publicationTitle": "The Lancet",
+				"DOI": "10.1016/S0140-6736(97)11096-0",
+				"abstractNote": "A now-retracted case series that falsely suggested a link between the MMR vaccine and developmental disorders.",
+				"tags": [
+					{
+						"tag": "medicine"
+					}
+				],
+				"extra": "Citation Key: wakefield1998mmr",
+				"dateAdded": "2026-07-02T08:00:00Z"
+			}
+		},
+		{
+			"key": "PDFATTN01",
+			"version": 1,
+			"data": {
+				"key": "PDFATTN01",
+				"version": 1,
+				"itemType": "attachment",
+				"parentItem": "ATTENTION1",
+				"title": "Full Text PDF",
+				"contentType": "application/pdf",
+				"linkMode": "imported_file",
+				"filename": "Full_Text_PDF.pdf",
+				"dateAdded": "2024-01-12T13:31:00Z"
+			}
+		},
+		{
+			"key": "PDFBERT01",
+			"version": 1,
+			"data": {
+				"key": "PDFBERT01",
+				"version": 1,
+				"itemType": "attachment",
+				"parentItem": "BERT000019",
+				"title": "Full Text PDF",
+				"contentType": "application/pdf",
+				"linkMode": "imported_file",
+				"filename": "Full_Text_PDF.pdf",
+				"dateAdded": "2024-02-03T09:01:00Z"
+			}
+		},
+		{
+			"key": "PDFRESN01",
+			"version": 1,
+			"data": {
+				"key": "PDFRESN01",
+				"version": 1,
+				"itemType": "attachment",
+				"parentItem": "RESNET0016",
+				"title": "Full Text PDF",
+				"contentType": "application/pdf",
+				"linkMode": "imported_file",
+				"filename": "Full_Text_PDF.pdf",
+				"dateAdded": "2024-03-21T15:11:00Z"
+			}
+		},
+		{
+			"key": "PDFCRIS01",
+			"version": 1,
+			"data": {
+				"key": "PDFCRIS01",
+				"version": 1,
+				"itemType": "attachment",
+				"parentItem": "CRISPRJ012",
+				"title": "Full Text PDF",
+				"contentType": "application/pdf",
+				"linkMode": "imported_file",
+				"filename": "Full_Text_PDF.pdf",
+				"dateAdded": "2026-01-09T09:01:00Z"
+			}
+		},
+		{
+			"key": "PDFWAKE01",
+			"version": 1,
+			"data": {
+				"key": "PDFWAKE01",
+				"version": 1,
+				"itemType": "attachment",
+				"parentItem": "WAKEFLD98",
+				"title": "Full Text PDF",
+				"contentType": "application/pdf",
+				"linkMode": "imported_file",
+				"filename": "Full_Text_PDF.pdf",
+				"dateAdded": "2026-07-02T08:01:00Z"
+			}
+		},
+		{
+			"key": "PDFDLNA01",
+			"version": 1,
+			"data": {
+				"key": "PDFDLNA01",
+				"version": 1,
+				"itemType": "attachment",
+				"parentItem": "DLNATURE15",
+				"title": "Full Text PDF",
+				"contentType": "application/pdf",
+				"linkMode": "imported_file",
+				"filename": "Full_Text_PDF.pdf",
+				"dateAdded": "2026-02-28T13:01:00Z"
+			}
+		},
+		{
+			"key": "PDFALPH01",
+			"version": 1,
+			"data": {
+				"key": "PDFALPH01",
+				"version": 1,
+				"itemType": "attachment",
+				"parentItem": "ALPHAGO016",
+				"title": "Full Text PDF",
+				"contentType": "application/pdf",
+				"linkMode": "imported_file",
+				"filename": "Full_Text_PDF.pdf",
+				"dateAdded": "2025-10-30T14:16:00Z"
+			}
+		},
+		{
+			"key": "PDFMAPR01",
+			"version": 1,
+			"data": {
+				"key": "PDFMAPR01",
+				"version": 1,
+				"itemType": "attachment",
+				"parentItem": "MAPREDUCE4",
+				"title": "Full Text PDF",
+				"contentType": "application/pdf",
+				"linkMode": "imported_file",
+				"filename": "Full_Text_PDF.pdf",
+				"dateAdded": "2023-09-01T10:06:00Z"
+			}
+		},
+		{
+			"key": "ANNOATT1",
+			"version": 1,
+			"data": {
+				"key": "ANNOATT1",
+				"version": 1,
+				"itemType": "annotation",
+				"parentItem": "PDFATTN01",
+				"annotationType": "highlight",
+				"annotationText": "The Transformer allows for significantly more parallelization than recurrent models.",
+				"annotationColor": "#ffd400",
+				"annotationComment": "Core motivation.",
+				"annotationPageLabel": "2",
+				"dateAdded": "2026-01-15T10:00:00Z"
+			}
+		},
+		{
+			"key": "ANNOATT2",
+			"version": 1,
+			"data": {
+				"key": "ANNOATT2",
+				"version": 1,
+				"itemType": "annotation",
+				"parentItem": "PDFATTN01",
+				"annotationType": "highlight",
+				"annotationText": "Self-attention connects all positions with a constant number of operations.",
+				"annotationColor": "#ffd400",
+				"annotationPageLabel": "4",
+				"dateAdded": "2026-02-20T11:30:00Z"
+			}
+		},
+		{
+			"key": "ANNOATT3",
+			"version": 1,
+			"data": {
+				"key": "ANNOATT3",
+				"version": 1,
+				"itemType": "annotation",
+				"parentItem": "PDFATTN01",
+				"annotationType": "highlight",
+				"annotationText": "We propose multi-head attention to jointly attend to information from different representation subspaces.",
+				"annotationColor": "#a28ae5",
+				"annotationPageLabel": "5",
+				"dateAdded": "2026-03-05T09:15:00Z"
+			}
+		},
+		{
+			"key": "ANNOBERT1",
+			"version": 1,
+			"data": {
+				"key": "ANNOBERT1",
+				"version": 1,
+				"itemType": "annotation",
+				"parentItem": "PDFBERT01",
+				"annotationType": "highlight",
+				"annotationText": "BERT is designed to pre-train deep bidirectional representations from unlabeled text.",
+				"annotationColor": "#ffd400",
+				"annotationComment": "Key contribution.",
+				"annotationPageLabel": "1",
+				"dateAdded": "2026-02-11T14:20:00Z"
+			}
+		},
+		{
+			"key": "ANNOBERT2",
+			"version": 1,
+			"data": {
+				"key": "ANNOBERT2",
+				"version": 1,
+				"itemType": "annotation",
+				"parentItem": "PDFBERT01",
+				"annotationType": "highlight",
+				"annotationText": "The masked language model randomly masks tokens and predicts the original vocabulary id.",
+				"annotationColor": "#5fb236",
+				"annotationPageLabel": "4",
+				"dateAdded": "2026-04-18T16:45:00Z"
+			}
+		},
+		{
+			"key": "ANNORESN1",
+			"version": 1,
+			"data": {
+				"key": "ANNORESN1",
+				"version": 1,
+				"itemType": "annotation",
+				"parentItem": "PDFRESN01",
+				"annotationType": "highlight",
+				"annotationText": "We explicitly reformulate the layers as learning residual functions with reference to the layer inputs.",
+				"annotationColor": "#ffd400",
+				"annotationPageLabel": "1",
+				"dateAdded": "2026-03-22T08:40:00Z"
+			}
+		},
+		{
+			"key": "ANNORESN2",
+			"version": 1,
+			"data": {
+				"key": "ANNORESN2",
+				"version": 1,
+				"itemType": "annotation",
+				"parentItem": "PDFRESN01",
+				"annotationType": "highlight",
+				"annotationText": "Deep residual nets are easy to optimize, but plain nets exhibit higher training error when depth increases.",
+				"annotationColor": "#ff6666",
+				"annotationPageLabel": "1",
+				"dateAdded": "2026-05-02T13:10:00Z"
+			}
+		},
+		{
+			"key": "ANNOCRIS1",
+			"version": 1,
+			"data": {
+				"key": "ANNOCRIS1",
+				"version": 1,
+				"itemType": "annotation",
+				"parentItem": "PDFCRIS01",
+				"annotationType": "highlight",
+				"annotationText": "Cas9 can be programmed with a single guide RNA to introduce site-specific double-stranded breaks.",
+				"annotationColor": "#ffd400",
+				"annotationComment": "Mechanism.",
+				"annotationPageLabel": "1",
+				"dateAdded": "2026-04-27T10:05:00Z"
+			}
+		},
+		{
+			"key": "ANNOCRIS2",
+			"version": 1,
+			"data": {
+				"key": "ANNOCRIS2",
+				"version": 1,
+				"itemType": "annotation",
+				"parentItem": "PDFCRIS01",
+				"annotationType": "highlight",
+				"annotationText": "Dual-tracrRNA:crRNA can be engineered as a single guide RNA.",
+				"annotationColor": "#2ea8e5",
+				"annotationPageLabel": "2",
+				"dateAdded": "2026-06-14T15:30:00Z"
+			}
+		},
+		{
+			"key": "ANNOWAKE1",
+			"version": 1,
+			"data": {
+				"key": "ANNOWAKE1",
+				"version": 1,
+				"itemType": "annotation",
+				"parentItem": "PDFWAKE01",
+				"annotationType": "highlight",
+				"annotationText": "The paper's conclusions were later found to be fraudulent and the article was fully retracted.",
+				"annotationColor": "#ffd400",
+				"annotationComment": "Retraction context for demo.",
+				"annotationPageLabel": "1",
+				"dateAdded": "2026-07-03T09:00:00Z"
+			}
+		}
+	]
+}

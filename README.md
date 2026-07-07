@@ -66,6 +66,17 @@ zotio search 'automation trust' --data-source local  # offline full-text search
 zotio items enrich --missing-doi --dry-run            # resolve DOIs from CrossRef/OpenAlex — preview only
 ```
 
+**No Zotero yet? Try the sandbox** — a bundled sample library (34 classic papers, one genuinely retracted) that needs no desktop app and no API key:
+
+```bash
+zotio demo          # seed the sandbox + print a tour
+ZOTIO_DEMO=1 zotio library health --for citation
+```
+
+<p align="center">
+  <img src="docs/assets/demos/demo-tour.gif" alt="zotio demo tour: sandbox, library health verdict, goal-to-command resolution" width="740">
+</p>
+
 ---
 
 ## Why zotio
@@ -220,6 +231,11 @@ format = "obsidian"      # or "logseq"
 ## More that the GUI and `pyzotero` don't give you
 
 ### Library hygiene, integrity & analytics
+
+
+<p align="center">
+  <img src="docs/assets/demos/retract-check.gif" alt="zotio items retract-check catching the retracted Wakefield 1998 paper via Crossref's Retraction Watch data" width="740">
+</p>
 
 - **`items retract-check`** — check every DOI against **Crossref's Retraction Watch data**: retractions, expressions of concern, and corrections, with notice DOIs and dates. Opt into the `library health` gate with `--check-retractions`. *(This one reads the network.)*
 - **`collections gaps`** — citation-graph gap analysis: rank the papers your collection cites most that are **missing from your library** (OpenCitations + Semantic Scholar), then `import doi` them. *(Network too.)*

@@ -129,6 +129,12 @@ Guided first run: detect Zotero, enable the local API, set the Web API key, firs
 
 > **Why it matters** — From install to a synced, health-checked library in under a minute; idempotent, and agent-safe under --no-input.
 
+### `demo`
+
+Zero-setup trial: seed a bundled sample library (34 classic papers, one genuinely retracted) into a sandbox and try every local command with ZOTIO_DEMO=1 — no Zotero, no API key.
+
+> **Why it matters** — Evaluate zotio in 30 seconds before pointing it at a real library; the sandbox never touches your real store or credentials.
+
 ## Export & citations
 
 ### `collections export`

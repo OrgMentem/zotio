@@ -26,6 +26,7 @@ The machine-readable registry every command is classified against — read vs. w
 | `collections tags` | read |  |  |  |
 | `collections top` | read |  |  |  |
 | `collections update` | write | `web_api` |  | `web_api_key` |
+| `demo` | read |  |  |  |
 | `doctor` | introspect |  |  |  |
 | `export` | other |  |  |  |
 | `export snapshot` | read |  |  |  |

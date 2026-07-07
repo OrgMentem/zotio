@@ -45,6 +45,8 @@ The library gate catches bad references; `items bibcheck` catches references you
       - run: zotio items bibcheck thesis.tex --fail-on-unknown   # exit 11 on unknown/ambiguous citekeys
 ```
 
+![zotio items bibcheck resolving manuscript citekeys](../assets/demos/bibcheck.gif)
+
 ## Publish the badge
 
 `badge-path` writes shields endpoint JSON — even when the gate fails, so the badge never lies. Publish it anywhere shields can reach (GitHub Pages, a gist, any static host) and embed:

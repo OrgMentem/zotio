@@ -378,6 +378,10 @@ Partial map of the surface — run `zotio --help` (or see the docs site Referenc
 
 - `zotio init` — Detect Zotero, set the key, first sync, quick health check; `--no-input --json` for agents
 
+**demo** — Zero-setup trial sandbox
+
+- `zotio demo` — Seed a bundled sample library into a sandbox (`--reset` re-seeds); `ZOTIO_DEMO=1 zotio <command>` runs any command against it, never touching the real store or credentials
+
 **reading-list** — A `to-read` tag queue
 
 - `zotio reading-list` — Oldest unread papers, with an `add` → `start` → `done` lifecycle

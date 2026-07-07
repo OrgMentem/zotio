@@ -141,7 +141,7 @@ Highlights (run 'zotio which "<goal>"' to resolve any goal to a command):
   • reading-list   Your reading backlog as a to-read queue with add → start → done.
 
 Agent mode: add --agent to any command for JSON output + non-interactive mode; mutating commands preview unless --yes is given.
-First run: 'zotio init' walks setup end to end (detect Zotero, key, first sync, health check); 'zotio doctor' verifies auth and connectivity.
+First run: 'zotio init' walks setup end to end (detect Zotero, key, first sync, health check); 'zotio demo' seeds a no-setup trial sandbox; 'zotio doctor' verifies auth and connectivity.
 See README.md or the bundled SKILL.md for recipes.`,
 		SilenceUsage: true,
 		Version:      version,
@@ -271,6 +271,7 @@ See README.md or the bundled SKILL.md for recipes.`,
 	rootCmd.AddCommand(newTagsCmd(flags))
 	rootCmd.AddCommand(newDoctorCmd(flags))
 	rootCmd.AddCommand(newInitCmd(flags)) // PATCH(marketing-heroes-2): guided first-run setup.
+	rootCmd.AddCommand(newDemoCmd(flags)) // PATCH(demo-mode): zero-setup sample library + guided tour.
 	rootCmd.AddCommand(newAuthCmd(flags))
 	rootCmd.AddCommand(newAgentContextCmd(rootCmd))
 	rootCmd.AddCommand(newCapabilitiesCmd(rootCmd))

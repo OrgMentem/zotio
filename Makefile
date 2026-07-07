@@ -1,4 +1,4 @@
-.PHONY: build test lint vet audit secrets verify install clean build-mcp install-mcp build-all docs-deps docs-gen docs-build docs-serve
+.PHONY: build test lint vet audit secrets verify install clean build-mcp install-mcp build-all docs-deps docs-gen docs-build docs-serve demos
 
 build:
 	go build -o bin/zotio ./cmd/zotio
@@ -57,3 +57,12 @@ docs-build: docs-gen
 # Live-preview the site locally (regenerates reference first).
 docs-serve: docs-gen
 	zensical serve
+
+# --- Demo GIFs (VHS; https://github.com/charmbracelet/vhs) -----------------
+
+# Re-record the demo GIFs against the deterministic demo sandbox.
+# Requires `vhs` (brew install vhs) and network for the retract-check tape.
+demos: build
+	ZOTIO_DEMO=1 ./bin/zotio demo --reset > /dev/null
+	mkdir -p docs/assets/demos
+	cd docs/tapes && for t in *.tape; do vhs $$t; done

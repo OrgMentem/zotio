@@ -2,6 +2,15 @@
 
 Notable changes to zotio. Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow [SemVer](https://semver.org/).
 
+## [0.2.0] — 2026-07-07
+
+### Added
+- **`zotio demo` — zero-setup trial sandbox.** Seeds a bundled sample library (34 classic papers — including one genuinely retracted — with duplicates, citekey conflicts, tag drift, annotations, and a reading queue) into a separate `demo.db`; `ZOTIO_DEMO=1` reroutes any command to the sandbox with a pristine, key-less config that never touches the real store, config file, or credentials.
+- **Recorded demos** — VHS tapes (`docs/tapes/`, `make demos`) render deterministic GIFs of the hero features against the demo sandbox; embedded in the README and docs site.
+
+### Changed
+- `reading-list` now supports `--data-source local` read parity (works offline from the synced store — and in the demo sandbox).
+
 ## [0.1.2] — 2026-07-07
 
 ### Added
@@ -38,6 +47,7 @@ First tagged release: the trust-and-automation layer for Zotero.
 - **Onboarding** — `zotio init` guided setup (Zotero detection, local API, key, first sync, health check).
 - Release engineering: goreleaser builds for 6 platforms, cosign-signed checksums, SBOMs, Homebrew tap.
 
+[0.2.0]: https://github.com/OrgMentem/zotio/compare/v0.1.2...v0.2.0
 [0.1.2]: https://github.com/OrgMentem/zotio/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/OrgMentem/zotio/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/OrgMentem/zotio/releases/tag/v0.1.0

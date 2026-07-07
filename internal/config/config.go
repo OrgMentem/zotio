@@ -53,7 +53,32 @@ type VaultConfig struct {
 	Format   string `toml:"format"`
 }
 
+// PATCH(demo-mode): demoModeFromEnv mirrors cli.demoActive. The config package
+// cannot import cli (import cycle), so it reads ZOTIO_DEMO directly. Demo mode
+// is on when ZOTIO_DEMO is set to a non-empty value other than "0".
+func demoModeFromEnv() bool {
+	v := os.Getenv("ZOTIO_DEMO")
+	return v != "" && v != "0"
+}
+
+// PATCH(demo-mode): demoConfig is the sandbox configuration — no api key, no
+// user ID, the default local base URL, and AuthSource "demo". It is not backed
+// by any file, so a write attempt fails like an unconfigured install.
+func demoConfig() *Config {
+	return &Config{
+		BaseURL:    "http://localhost:23119/api/users/0",
+		AuthSource: "demo",
+	}
+}
+
 func Load(configPath string) (*Config, error) {
+	// PATCH(demo-mode): in the demo sandbox, return a pristine, key-less config
+	// before touching any config file or ZOTERO_* env override, so no command
+	// can read the user's real config, credentials, or base URL.
+	if demoModeFromEnv() {
+		return demoConfig(), nil
+	}
+
 	cfg := &Config{
 		BaseURL: "http://localhost:23119/api/users/0",
 	}

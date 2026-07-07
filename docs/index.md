@@ -32,6 +32,10 @@ zotio search 'automation trust' --data-source local --json
 zotio annotations timeline --since 2026-05-01 --format markdown > this-week.md
 ```
 
+**No Zotero yet?** `zotio demo` seeds a sandboxed sample library — 34 classic papers, one genuinely retracted — so every command above works with no desktop app and no API key (`ZOTIO_DEMO=1` activates it):
+
+![zotio demo tour](assets/demos/demo-tour.gif)
+
 New here? [Install the CLI](guide/install.md), then [authenticate](guide/authentication.md) if you need writes.
 
 ## Where to go next
