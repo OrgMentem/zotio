@@ -9,7 +9,7 @@
 site_name: zotio
 site_description: The trust-and-automation layer for Zotero — search, export, analytics, and safe writes in the terminal.
 site_author: OrgMentem
-copyright: Copyright &copy; 2026 OrgMentem — MIT
+copyright: Copyright &copy; 2026 OrgMentem — MIT. Zotero is a registered trademark of the Corporation for Digital Scholarship; zotio is an independent project, not affiliated with or endorsed by Zotero.
 # Canonical URL (required for the sitemap that instant navigation relies on) + repo links.
 site_url: https://orgmentem.github.io/zotio/
 repo_url: https://github.com/OrgMentem/zotio
@@ -80,6 +80,7 @@ nav:
       - Install: guide/install.md
       - Authentication: guide/authentication.md
       - Obsidian / Logseq vault: guide/vault.md
+      - CI for your bibliography: guide/ci.md
       - Use in a coding agent: guide/agent-skill.md
       - MCP server: guide/mcp-server.md
   - Concepts:

@@ -57,6 +57,7 @@
 </p>
 
 ```bash
+brew install orgmentem/tap/zotio                      # or grab a signed binary from Releases
 zotio init                                            # guided setup: detect Zotero, key, first sync, health check
 zotio library health --for citation --fail-on high   # is this library fit to cite? (exit 11 if not)
 zotio items retract-check                             # are you citing retracted papers?
@@ -282,36 +283,45 @@ collection:KEY   tag:NAME   query:TEXT   item:KEY   saved-search:KEY (needs live
 
 ### 1. The CLI — `zotio`
 
-One-shot install of the binary (and the agent skill alongside it):
+**Homebrew (macOS / Linux):**
 
 ```bash
-npx -y @mvanhorn/printing-press install zotero            # CLI + skill
-npx -y @mvanhorn/printing-press install zotero --cli-only  # CLI only
+brew install orgmentem/tap/zotio
 ```
 
-Or grab a pre-built binary for your platform from the [latest release](https://github.com/mvanhorn/printing-press-library/releases/tag/zotero-current). On macOS, clear the Gatekeeper quarantine (`xattr -d com.apple.quarantine <binary>`); on Unix, mark it executable (`chmod +x <binary>`). Verify with `zotio --version`.
+This installs both `zotio` and the `zotio-mcp` MCP server; `brew upgrade` tracks new releases.
 
-### 2. The agent skill — `zotio`
+**Prebuilt binaries:** every [GitHub release](https://github.com/OrgMentem/zotio/releases) ships archives for macOS, Linux, and Windows (amd64/arm64) with cosign-signed checksums and SBOMs. Unpack and put `zotio` on your `PATH`; on macOS clear the Gatekeeper quarantine (`xattr -d com.apple.quarantine zotio`), on Unix `chmod +x zotio`.
 
-A focused skill that teaches a coding agent to drive the CLI. It auto-installs the CLI on first invocation.
+**From source:**
 
-<!-- pp-hermes-install-anchor -->
+```bash
+git clone https://github.com/OrgMentem/zotio && cd zotio && go build -o zotio ./cmd/zotio
+```
 
-- **Claude Code:** `npx skills add mvanhorn/printing-press-library/cli-skills/zotio -g`
-- **Hermes (CLI):** `hermes skills install mvanhorn/printing-press-library/cli-skills/zotio --force`
-- **Hermes (in a chat):** `/skills install mvanhorn/printing-press-library/cli-skills/zotio --force`
-- **OpenClaw:** tell your agent — *"Install the zotio skill from https://github.com/mvanhorn/printing-press-library/tree/main/cli-skills/zotio. The skill defines how its required CLI can be installed."*
+Then let the CLI walk you through setup — Zotero detection, the local-API toggle, an optional Web API key, first sync, and a health check:
+
+```bash
+zotio init
+```
+
+### 2. The agent skill
+
+A focused skill — bundled in this repo as [`SKILL.md`](SKILL.md) — that teaches a coding agent to drive the CLI directly (the most efficient path; no MCP server in the middle).
+
+- **Claude Code:** copy `SKILL.md` into `~/.claude/skills/zotio/SKILL.md` (or your project's `.claude/skills/zotio/`).
+- **Any other agent:** point it at the raw file — `https://raw.githubusercontent.com/OrgMentem/zotio/main/SKILL.md` — or paste it into your agent's skill store.
 
 ### 3. The MCP server — `zotio-mcp`
 
-A separate binary that exposes the CLI to MCP hosts. Install it from this CLI's published public-library entry or pre-built release, then register it:
+`zotio-mcp` ships alongside the CLI — the Homebrew formula and every release archive include both binaries. Register it:
 
 ```bash
 # Claude Code
 claude mcp add zotero zotio-mcp -e ZOTERO_API_KEY=<your-key>
 ```
 
-For Claude Desktop, this CLI ships an [MCPB](https://github.com/modelcontextprotocol/mcpb) manifest (`manifest.json`) — the standard one-click extension format. When published, download the per-platform `.mcpb` from the [latest release](https://github.com/mvanhorn/printing-press-library/releases/tag/zotero-current), double-click it, and Claude Desktop walks you through the install.
+For Claude Desktop, this CLI ships an [MCPB](https://github.com/modelcontextprotocol/mcpb) manifest (`manifest.json`) — the standard one-click extension format; `.mcpb` bundles are produced at publish time.
 
 <details>
 <summary>Claude Desktop manual JSON config (advanced)</summary>
