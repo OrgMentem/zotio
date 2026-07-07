@@ -48,7 +48,7 @@ See [Use in a coding agent](agent-skill.md) for how to drive it.
 claude mcp add zotero zotio-mcp -e ZOTERO_API_KEY=<your-key>
 ```
 
-For Claude Desktop, `zotio` ships an [MCPB](https://github.com/modelcontextprotocol/mcpb) manifest (`manifest.json`) — the standard one-click extension format; `.mcpb` bundles are produced at publish time.
+For Claude Desktop, every [release](https://github.com/OrgMentem/zotio/releases) ships per-platform [MCPB](https://github.com/modelcontextprotocol/mcpb) bundles — download the `.mcpb` for your platform, double-click it, and Claude Desktop walks you through the install.
 
 The `ZOTERO_API_KEY` is optional for read-only local-desktop use; set it to enable writes and reach group libraries. Full details in [MCP server](mcp-server.md).
 

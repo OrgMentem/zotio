@@ -1,7 +1,37 @@
 version: 2
 project_name: zotio
+# PATCH(marketing-heroes-2): grouped conventional-commit release notes
+# (was disable: true — raw commit lists read as noise on release pages).
 changelog:
-  disable: true
+  use: github
+  sort: asc
+  filters:
+    exclude:
+      - "^style"
+      - "^test"
+  groups:
+    - title: Features
+      regexp: '^.*?feat(\(.+\))??!?:.+$'
+      order: 0
+    - title: Fixes
+      regexp: '^.*?fix(\(.+\))??!?:.+$'
+      order: 1
+    - title: Documentation
+      regexp: '^.*?docs(\(.+\))??!?:.+$'
+      order: 2
+    - title: Build & CI
+      regexp: '^.*?(ci|chore|brand)(\(.+\))??!?:.+$'
+      order: 3
+    - title: Other
+      order: 999
+release:
+  footer: |
+    ---
+    **Curated history:** [CHANGELOG.md](https://github.com/OrgMentem/zotio/blob/main/CHANGELOG.md) · **Install:** `brew install orgmentem/tap/zotio`
+  extra_files:
+    # PATCH(marketing-heroes-2): per-platform MCPB bundles for Claude Desktop,
+    # packed by scripts/mcpb_pack.py as a zotio-mcp post-build hook.
+    - glob: dist/mcpb/*.mcpb
 builds:
   - id: zotio
     main: ./cmd/zotio
@@ -31,6 +61,9 @@ builds:
       - linux_arm64
       - windows_amd64
       - windows_arm64
+    hooks:
+      post:
+        - cmd: python3 scripts/mcpb_pack.py "{{ .Path }}" {{ .Os }} {{ .Arch }} {{ .Version }}
 archives:
   - formats: [tar.gz]
     name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"

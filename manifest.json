@@ -1,13 +1,14 @@
 {
   "manifest_version": "0.3",
   "name": "zotio-mcp",
-  "display_name": "Zotero",
-  "version": "4.2.2",
-  "description": "Zotero API surface as MCP tools.",
+  "display_name": "zotio (Zotero)",
+  "version": "0.0.0-dev",
+  "description": "Your Zotero library as MCP tools: local-first search, library health, annotation export, and preview-first writes via the zotio CLI.",
   "author": {
-    "name": "CLI Printing Press"
+    "name": "OrgMentem",
+    "url": "https://github.com/OrgMentem/zotio"
   },
-  "license": "Apache-2.0",
+  "license": "MIT",
   "server": {
     "type": "binary",
     "entry_point": "bin/zotio-mcp",
