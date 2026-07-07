@@ -16,6 +16,8 @@ on:
   pull_request:
   push:
     branches: [main]
+  schedule:
+    - cron: "0 6 * * *"   # your library drifts outside git — check daily
 
 permissions:
   contents: read
@@ -32,6 +34,8 @@ jobs:
           check-retractions: "true"
           badge-path: badge.json
 ```
+
+**Why the cron matters:** a normal CI gate runs when the repo changes — but your Zotero library changes when you import a paper, with no push and no PR. The schedule catches library drift (and freshly issued retractions) within a day instead of at submission time. The action also writes a verdict table to the job's step summary and exposes `exit-code`/`message`/`color` outputs for downstream steps.
 
 Create a Zotero API key with **read access** at [zotero.org/settings/keys](https://www.zotero.org/settings/keys) and store it as the `ZOTERO_API_KEY` repository secret — CI runners have no Zotero desktop, so the Web API key is required there. The action verifies the key up front, masks it in logs, and resolves your user ID automatically.
 
