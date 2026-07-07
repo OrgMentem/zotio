@@ -26,6 +26,10 @@
     src="https://img.shields.io/badge/Go-1.26-00ADD8?logo=go&logoColor=white"
     alt="Go 1.26"
   /></a>
+  <a href="https://orgmentem.github.io/zotio/reference/highlights/"><img
+    src="https://img.shields.io/endpoint?url=https%3A%2F%2Forgmentem.github.io%2Fzotio%2Fbibliography-badge.json"
+    alt="Live bibliography health of the maintainer's own Zotero library"
+  /></a>
   <a href="LICENSE"><img
     src="https://img.shields.io/badge/license-MIT-blue"
     alt="MIT"

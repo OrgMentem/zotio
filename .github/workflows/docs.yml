@@ -9,6 +9,10 @@ on:
       - "cmd/docs-gen/**"
       - ".github/workflows/docs.yml"
   workflow_dispatch:
+  schedule:
+    # Weekly badge refresh — the live bibliography badge is built into the
+    # Pages artifact and would otherwise go stale between docs changes.
+    - cron: "0 3 * * 1"
 
 permissions:
   contents: read
@@ -29,6 +33,25 @@ jobs:
         run: pip install -r docs/requirements.txt
       - name: Build site
         run: zensical build
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Generate live bibliography badge
+        env:
+          ZOTERO_API_KEY: ${{ secrets.ZOTERO_API_KEY }}
+        run: |
+          set -euo pipefail
+          if [ -z "${ZOTERO_API_KEY}" ]; then
+            echo "ZOTERO_API_KEY not set; skipping badge generation" >&2
+            exit 0
+          fi
+          user_id="$(curl -fsSL -H "Zotero-API-Key: ${ZOTERO_API_KEY}" https://api.zotero.org/keys/current | python3 -c 'import json,sys; print(json.load(sys.stdin)["userID"])')"
+          export ZOTERO_BASE_URL="https://api.zotero.org/users/${user_id}"
+          go run ./cmd/zotio sync
+          # quick preset, no --fail-on: the badge reports findings but a docs
+          # deploy never fails on library state.
+          go run ./cmd/zotio library health --for quick --badge > site/bibliography-badge.json
+          cat site/bibliography-badge.json
       - uses: actions/upload-pages-artifact@v3
         with:
           path: site
