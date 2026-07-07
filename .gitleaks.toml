@@ -15,3 +15,15 @@ regexTarget = "line"
 regexes = [
   '''eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCIsImtpZCI6ImFvNi1PYzAyQlZHTF9GbnBDeE5JMiJ9''',
 ]
+
+# PATCH(demo-mode): Better BibTeX citation keys in the demo fixture
+# (internal/cli/testdata/demo_library.json) look like `Citation Key:
+# hochreiter1997lstm` and trip generic-api-key. A citation-key declaration
+# line is bibliographic metadata, not a credential; scoped to the exact
+# line shape so real keys elsewhere on other line shapes are still flagged.
+[[allowlists]]
+description = "Better BibTeX 'Citation Key:' lines in bibliographic fixtures"
+regexTarget = "line"
+regexes = [
+  '''Citation Key: [A-Za-z][A-Za-z0-9:._-]*''',
+]
