@@ -73,10 +73,6 @@ zotio demo          # seed the sandbox + print a tour
 ZOTIO_DEMO=1 zotio library health --for citation
 ```
 
-<p align="center">
-  <img src="docs/assets/demos/demo-tour.gif" alt="zotio demo tour: sandbox, library health verdict, goal-to-command resolution" width="740">
-</p>
-
 ---
 
 ## Why zotio
@@ -254,7 +250,11 @@ format = "obsidian"      # or "logseq"
 - **`reading-list`** — a `to-read` tag queue with an `add` → `start` → `done` lifecycle for triaging what to read next.
 - **`items note-template`** — generate a pre-filled Obsidian/Logseq reading note for an item.
 - **`items open`** — print or launch a `zotero://` deep link to an item, collection, or PDF (cross-platform).
-- **`library wrapped`** — your Zotero year in review: items by month and type, top venues and authors, annotation activity, PDF coverage — with a shareable SVG card (`--card wrapped.svg`).
+- **`library wrapped`** — your Zotero year in review: items by month and type, top venues and authors, annotation activity, PDF coverage — with a shareable SVG card:
+
+<p align="center">
+  <img src="docs/assets/demos/wrapped-card.svg" alt="zotio library wrapped share card rendered from the demo library" width="560">
+</p>
 
 ### Enrichment (reads external APIs, writes Zotero)
 

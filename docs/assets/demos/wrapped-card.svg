@@ -1,0 +1,45 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="800" height="418" viewBox="0 0 800 418" role="img" aria-labelledby="title desc">
+  <title id="title">zotio wrapped 2026</title>
+  <desc id="desc">A local Zotero year in review: 12 items added in 2026.</desc>
+  <rect width="800" height="418" rx="28" fill="#101827"/>
+  <circle cx="680" cy="62" r="116" fill="#24324b" opacity="0.62"/>
+  <circle cx="104" cy="360" r="142" fill="#1f3a4d" opacity="0.52"/>
+  <text x="54" y="64" fill="#e5edf7" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="30" font-weight="700">zotio</text>
+  <text x="54" y="101" fill="#8fb4d9" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="18">Wrapped 2026</text>
+  <text x="54" y="172" fill="#ffffff" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="72" font-weight="800">12</text>
+  <text x="54" y="205" fill="#c7d7ea" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="24">items added locally</text>
+  <text x="54" y="260" fill="#e5edf7" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="20" font-weight="700">Top venue</text>
+  <text x="54" y="289" fill="#9fb7d3" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="18">Science (2)</text>
+  <text x="54" y="331" fill="#e5edf7" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="20" font-weight="700">Top first creator</text>
+  <text x="54" y="360" fill="#9fb7d3" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="18">Cong (1)</text>
+  <rect x="450" y="118" width="296" height="224" rx="22" fill="#172338" stroke="#2e4566"/>
+  <text x="480" y="158" fill="#e5edf7" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="20" font-weight="700">Monthly rhythm</text>
+    <rect x="480" y="233" width="12" height="35" rx="4" fill="#6bc7ff"/>
+  <text x="479" y="286" fill="#6f89a8" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="9">J</text>
+  <rect x="501" y="205" width="12" height="63" rx="4" fill="#6bc7ff"/>
+  <text x="500" y="286" fill="#6f89a8" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="9">F</text>
+  <rect x="522" y="233" width="12" height="35" rx="4" fill="#6bc7ff"/>
+  <text x="521" y="286" fill="#6f89a8" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="9">M</text>
+  <rect x="543" y="205" width="12" height="63" rx="4" fill="#6bc7ff"/>
+  <text x="542" y="286" fill="#6f89a8" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="9">A</text>
+  <rect x="564" y="205" width="12" height="63" rx="4" fill="#6bc7ff"/>
+  <text x="563" y="286" fill="#6f89a8" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="9">M</text>
+  <rect x="585" y="178" width="12" height="90" rx="4" fill="#6bc7ff"/>
+  <text x="584" y="286" fill="#6f89a8" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="9">J</text>
+  <rect x="606" y="233" width="12" height="35" rx="4" fill="#6bc7ff"/>
+  <text x="605" y="286" fill="#6f89a8" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="9">J</text>
+  <rect x="627" y="260" width="12" height="8" rx="4" fill="#6bc7ff"/>
+  <text x="626" y="286" fill="#6f89a8" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="9">A</text>
+  <rect x="648" y="260" width="12" height="8" rx="4" fill="#6bc7ff"/>
+  <text x="647" y="286" fill="#6f89a8" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="9">S</text>
+  <rect x="669" y="260" width="12" height="8" rx="4" fill="#6bc7ff"/>
+  <text x="668" y="286" fill="#6f89a8" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="9">O</text>
+  <rect x="690" y="260" width="12" height="8" rx="4" fill="#6bc7ff"/>
+  <text x="689" y="286" fill="#6f89a8" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="9">N</text>
+  <rect x="711" y="260" width="12" height="8" rx="4" fill="#6bc7ff"/>
+  <text x="710" y="286" fill="#6f89a8" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="9">D</text>
+
+  <text x="480" y="306" fill="#9fb7d3" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="16">3/12 with PDFs</text>
+  <text x="480" y="331" fill="#9fb7d3" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="16">10 annotations, busiest in Feb</text>
+</svg>

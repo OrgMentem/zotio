@@ -60,9 +60,11 @@ docs-serve: docs-gen
 
 # --- Demo GIFs (VHS; https://github.com/charmbracelet/vhs) -----------------
 
-# Re-record the demo GIFs against the deterministic demo sandbox.
-# Requires `vhs` (brew install vhs) and network for the retract-check tape.
+# Re-record the demo GIFs and the wrapped share card against the
+# deterministic demo sandbox. Requires `vhs` (brew install vhs) and network
+# for the retract-check tape. Card year pinned to the fixture's data spread.
 demos: build
 	ZOTIO_DEMO=1 ./bin/zotio demo --reset > /dev/null
 	mkdir -p docs/assets/demos
+	ZOTIO_DEMO=1 ./bin/zotio library wrapped --year 2026 --card docs/assets/demos/wrapped-card.svg > /dev/null
 	cd docs/tapes && for t in *.tape; do vhs $$t; done
