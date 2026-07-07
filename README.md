@@ -454,3 +454,5 @@ Built by studying these projects and resources:
 ---
 
 Licensed under MIT. Bootstrapped with [CLI Printing Press](https://github.com/mvanhorn/cli-printing-press); substantially hand-written and independently developed since.
+
+Zotero is a registered trademark of the [Corporation for Digital Scholarship](https://digitalscholar.org/). zotio is an independent project and is not affiliated with or endorsed by Zotero or the Corporation for Digital Scholarship.
