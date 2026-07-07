@@ -68,6 +68,8 @@ brews:
       # homebrew-tap only.
       token: "{{ .Env.HOMEBREW_TAP_GITHUB_TOKEN }}"
     commit_msg_template: "zotio {{ .Tag }}"
+    # goreleaser writes to the tap root unless told otherwise; brew expects Formula/.
+    directory: Formula
     homepage: "https://github.com/OrgMentem/zotio"
     description: "Zotero automation CLI: local-first search, library health checks, preview-first writes, annotation export, and MCP"
     install: |
