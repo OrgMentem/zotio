@@ -37,6 +37,16 @@ zotio init
 
 A focused skill — bundled in the repo as [`SKILL.md`](https://github.com/OrgMentem/zotio/blob/main/SKILL.md) — that teaches a coding agent to drive the CLI directly (the most efficient path; no MCP server in the middle).
 
+**Recommended — the [`skills` CLI](https://skills.sh)** (works across Claude Code, Cursor, Codex, Cline, opencode, and 40+ agents):
+
+```bash
+npx skills add OrgMentem/zotio          # detect your agents and install
+npx skills add OrgMentem/zotio --list   # preview without installing
+npx skills add OrgMentem/zotio -g       # install globally (all projects)
+```
+
+**Manual:**
+
 - **Claude Code:** copy `SKILL.md` into `~/.claude/skills/zotio/SKILL.md` (or your project's `.claude/skills/zotio/`).
 - **Any other agent:** point it at the raw file — `https://raw.githubusercontent.com/OrgMentem/zotio/main/SKILL.md` — or paste it into your agent's skill store.
 

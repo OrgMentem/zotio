@@ -1584,6 +1584,16 @@
         "references/commands.md"
       ],
       "validated_outcome": "SKILL.md is single-file (references/ removed), 297 lines / ~4.5k tokens; no relative bundled-file links remain; MCP-add command matches README.md:337 and the docs site; `zotio version` and `zotio --version` both verified working against zotio 0.3.0."
+    },
+    {
+      "id": "docs-npx-skills-add",
+      "summary": "Documented `npx skills add OrgMentem/zotio` (the skills.sh CLI) as the recommended agent-skill install method in README.md and docs/guide/install.md section 2, keeping the manual copy / raw-URL steps as a fallback.",
+      "reason": "skills.sh listing is driven entirely by `npx skills add` install telemetry (no crawler/self-submit, per vercel-labs/skills#1315), so a documented install command is the only lever for that directory; the skills CLI is also a better default than hand-copying SKILL.md across the 40+ agents it supports. Verified `npx skills add OrgMentem/zotio` discovers the root SKILL.md (Found 1 skill) and installs it single-file.",
+      "files": [
+        "README.md",
+        "docs/guide/install.md"
+      ],
+      "validated_outcome": "npx skills add OrgMentem/zotio --list reports 'Found 1 skill: zotio'; a real install placed ./.claude/skills/zotio/SKILL.md (single file). Markdown fences balanced in both files."
     }
   ]
 }
