@@ -1564,6 +1564,16 @@
         "SKILL.md"
       ],
       "validated_outcome": "grep for printing-press/mvanhorn/npx/public-library in SKILL.md returns only the inline PATCH marker; install instructions now match README.md."
+    },
+    {
+      "id": "skill-agentskills-conformance",
+      "summary": "Restructured SKILL.md for agentskills.io best-practices/spec conformance: spec-clean frontmatter (added compatibility, moved author under metadata, kept argument-hint/openclaw client extensions), added a ## Gotchas section (local-API GET-only + write auto-routing, --agent does not auto-apply writes, provenance envelope, doctor), reframed the description to imperative + pushy triggering, extracted the full command tree to references/commands.md with a runtime-discovery pointer, and compressed Hero Capabilities to a one-line-per-command catalog.",
+      "reason": "SKILL.md was 601 lines / ~7.2k tokens, over the spec's 500-line/5k-token progressive-disclosure budget, with 66% of the file (Hero Capabilities + Command Reference) duplicating runtime discovery (zotio which/--help/agent-context). Frontmatter also carried a non-spec top-level author field and lacked the compatibility declaration for its hard runtime requirement.",
+      "files": [
+        "SKILL.md",
+        "references/commands.md"
+      ],
+      "validated_outcome": "SKILL.md now 297 lines / ~4.4k tokens (under budget); YAML frontmatter parses with spec fields only at top level; description 549 chars (<1024); references/commands.md link resolves; markdown code fences balanced (24)."
     }
   ]
 }
