@@ -43,14 +43,14 @@ func severityRank(s string) int {
 }
 
 // failOnRank maps a --fail-on threshold to the minimum severity rank that trips
-// the gate. "any" trips on info (rank 1) and above.
+// the gate. "info" and legacy "any" trip on info (rank 1) and above.
 func failOnRank(failOn string) int {
 	switch failOn {
 	case sevCritical:
 		return 3
 	case sevHigh:
 		return 2
-	case "any":
+	case sevInfo, "any":
 		return 1
 	default:
 		return 0
@@ -172,6 +172,12 @@ type healthReport struct {
 	RemediationPlan []healthRemediationPlanStep `json:"remediation_plan,omitempty"`
 	Gate            *healthGate                 `json:"gate,omitempty"`
 	Freshness       *healthFreshness            `json:"freshness,omitempty"`
+	// PATCH(action-arc): baseline diff metadata is emitted only when --baseline is supplied.
+	Baseline *healthBaselineReport `json:"baseline,omitempty"`
+
+	// PATCH(action-arc): keep untruncated findings and the new-finding gate threshold out of JSON.
+	allFindings  []healthFinding
+	baselineGate string
 }
 
 // PATCH(marketing-heroes): shields.io endpoint badge payload and verdict mapping.
@@ -187,6 +193,27 @@ func healthBadgeForReport(report healthReport, label string) healthBadge {
 	if report.Freshness != nil && report.Freshness.Stale {
 		badge.Message = "stale — sync needed"
 		badge.Color = "lightgrey"
+		return badge
+	}
+	if report.Gate != nil && report.Gate.Status == "indeterminate" {
+		badge.Message = "setup required"
+		badge.Color = "orange"
+		return badge
+	}
+	// PATCH(action-arc): baseline badges tell the delta story once an existing baseline was read.
+	if report.Baseline != nil && report.Baseline.Established {
+		newSummary := healthSummaryForFindings(report.Baseline.New)
+		switch {
+		case newSummary.Total == 0:
+			badge.Message = "no new findings"
+			badge.Color = "brightgreen"
+		case report.baselineGate != "" && gateCrossed(newSummary, report.baselineGate):
+			badge.Message = healthBadgeSeverityMessage(newSummary)
+			badge.Color = "red"
+		default:
+			badge.Message = fmt.Sprintf("%d new findings", newSummary.Total)
+			badge.Color = "yellow"
+		}
 		return badge
 	}
 	if report.Gate != nil {
@@ -328,6 +355,11 @@ func newLibraryHealthCmd(flags *rootFlags) *cobra.Command {
 	// PATCH(marketing-heroes): shields.io badge output controls.
 	var flagBadge bool
 	var flagBadgeLabel string
+	// PATCH(action-arc): baseline-diff gating and report sidecar output for CI actions.
+	var flagBaseline string
+	var flagWriteBaseline string
+	var flagFailOnNew string
+	var flagReport string
 
 	cmd := &cobra.Command{
 		Use:   "health",
@@ -343,7 +375,7 @@ with --for:
   --for quick   (default)  anything obviously broken (citekey conflicts, duplicates, attachments)
   --for all                every check
 
-Gate CI with --fail-on critical|high|any (exit 11 when the bar is not met).
+Gate CI with --fail-on critical|high|info (or legacy any) (exit 11 when the bar is not met).
 
 The broken-attachment and retraction checks are live checks that need Zotero
 desktop or CrossRef network access respectively; pass --verify-files and/or
@@ -376,10 +408,34 @@ its precondition is unmet, the command refuses loudly (exit 9) rather than passi
 			if flagFailOn == "" {
 				failOn = healthPresetFailOn[preset]
 			}
+			// PATCH(action-arc): "none" disables the absolute gate (overrides the
+			// preset default) so baseline mode can gate on new findings only.
+			if failOn == "none" {
+				failOn = ""
+			}
 			switch failOn {
-			case "", sevCritical, sevHigh, "any":
+			case "", sevCritical, sevHigh, sevInfo, "any":
 			default:
-				return usageErr(fmt.Errorf("invalid --fail-on %q: must be critical, high, or any", flagFailOn))
+				return usageErr(fmt.Errorf("invalid --fail-on %q: must be critical, high, info, any, or none", flagFailOn))
+			}
+			// PATCH(action-arc): --fail-on-new shares the health gate threshold vocabulary.
+			failOnNew := strings.ToLower(strings.TrimSpace(flagFailOnNew))
+			switch failOnNew {
+			case "", sevCritical, sevHigh, sevInfo, "any":
+			default:
+				return usageErr(fmt.Errorf("invalid --fail-on-new %q: must be critical, high, info, or any", flagFailOnNew))
+			}
+			baselinePath := strings.TrimSpace(flagBaseline)
+			if failOnNew != "" && baselinePath == "" {
+				return usageErr(fmt.Errorf("--fail-on-new requires --baseline"))
+			}
+			reportPath := strings.TrimSpace(flagReport)
+			if cmd.Flags().Changed("report") && reportPath == "" {
+				return usageErr(fmt.Errorf("--report requires a non-empty path"))
+			}
+			writeBaselinePath := strings.TrimSpace(flagWriteBaseline)
+			if cmd.Flags().Changed("write-baseline") && writeBaselinePath == "" {
+				return usageErr(fmt.Errorf("--write-baseline requires a non-empty path"))
 			}
 			if flagLimit < 0 {
 				return usageErr(fmt.Errorf("--limit must be zero or greater"))
@@ -438,6 +494,23 @@ its precondition is unmet, the command refuses loudly (exit 9) rather than passi
 			if err != nil {
 				return err
 			}
+			// PATCH(action-arc): apply baseline diff before any output mode or report sidecar is rendered.
+			report.baselineGate = failOnNew
+			if baselinePath != "" {
+				if err := applyHealthBaseline(&report, baselinePath); err != nil {
+					return err
+				}
+			}
+			if writeBaselinePath != "" {
+				if err := writeHealthBaseline(writeBaselinePath, preset, healthCurrentFindings(report)); err != nil {
+					return err
+				}
+			}
+			if reportPath != "" {
+				if err := writeHealthReportFile(reportPath, report); err != nil {
+					return err
+				}
+			}
 
 			// PATCH(marketing-heroes): badge mode renders only the shields endpoint payload; exit mapping below is unchanged.
 			if flagBadge {
@@ -458,11 +531,14 @@ its precondition is unmet, the command refuses loudly (exit 9) rather than passi
 			if ferr := healthFreshnessExitError(report); ferr != nil {
 				return ferr
 			}
-			return healthGateExitError(report)
+			if gerr := healthGateExitError(report); gerr != nil {
+				return gerr
+			}
+			return healthNewGateExitError(report)
 		},
 	}
 	cmd.Flags().StringVar(&flagFor, "for", "quick", "Check preset: quick, citation, systematic-review, all")
-	cmd.Flags().StringVar(&flagFailOn, "fail-on", "", "Exit 11 if findings reach this severity: critical, high, any (default: the preset's)")
+	cmd.Flags().StringVar(&flagFailOn, "fail-on", "", "Exit 11 if findings reach this severity: critical, high, info/any; none disables the gate (default: the preset's)")
 	cmd.Flags().IntVar(&flagLimit, "limit", 0, "Max findings listed per kind (0 = all); also caps the live attachment scan")
 	cmd.Flags().BoolVar(&flagVerifyFiles, "verify-files", false, "Run the live broken-attachment check (needs Zotero desktop running)")
 	// PATCH(marketing-heroes-2): expose the opt-in CrossRef retraction health check.
@@ -472,6 +548,11 @@ its precondition is unmet, the command refuses loudly (exit 9) rather than passi
 	// PATCH(marketing-heroes): register shields.io badge flags on the health command.
 	cmd.Flags().BoolVar(&flagBadge, "badge", false, "Emit a shields.io endpoint JSON badge instead of the report")
 	cmd.Flags().StringVar(&flagBadgeLabel, "badge-label", "bibliography", "Label for the shields.io endpoint badge")
+	// PATCH(action-arc): register baseline diff, baseline persistence, and report output flags.
+	cmd.Flags().StringVar(&flagBaseline, "baseline", "", "Read health finding identities from this baseline JSON; missing file establishes a baseline")
+	cmd.Flags().StringVar(&flagWriteBaseline, "write-baseline", "", "Write current health finding identities to this baseline JSON after checks")
+	cmd.Flags().StringVar(&flagFailOnNew, "fail-on-new", "", "Exit 11 if new baseline-diff findings reach this severity: critical, high, info/any (requires --baseline)")
+	cmd.Flags().StringVar(&flagReport, "report", "", "Write the full JSON health report to this file in addition to stdout/badge output")
 	return cmd
 }
 
@@ -515,10 +596,13 @@ func assembleHealthReport(db localQueryStore, ctx *healthContext, preset string,
 		}
 		findings = filterFindingsByScope(findings, scopeSet)
 		report.Checks = append(report.Checks, healthCheckRun{Kind: chk.kind, Ran: true, Count: len(findings)})
+		// PATCH(action-arc): baseline writes use the complete finding identity set, not the display limit.
 		report.Summary.add(chk.severity, len(findings))
+		report.allFindings = append(report.allFindings, findings...)
 		report.Findings = append(report.Findings, truncateFindings(findings, ctx.limit)...)
 	}
 	report.Summary.Total = report.Summary.Critical + report.Summary.High + report.Summary.Info
+	sortHealthFindings(report.allFindings)
 	sortHealthFindings(report.Findings)
 	report.RemediationPlan = buildHealthRemediationPlan(report.Findings)
 
@@ -610,6 +694,18 @@ func healthGateExitError(report healthReport) error {
 	default:
 		return nil
 	}
+}
+
+// PATCH(action-arc): map --fail-on-new to the same quality-gate exit constructor as --fail-on.
+func healthNewGateExitError(report healthReport) error {
+	if report.Baseline == nil || report.baselineGate == "" {
+		return nil
+	}
+	newSummary := healthSummaryForFindings(report.Baseline.New)
+	if !gateCrossed(newSummary, report.baselineGate) {
+		return nil
+	}
+	return gateErr(fmt.Errorf("library health gate failed: found new findings at or above %q severity", report.baselineGate))
 }
 
 // healthFreshnessExitError maps a stale --require-fresh verdict to exit 12. The
@@ -960,7 +1056,7 @@ func gateCrossed(summary healthSummary, failOn string) bool {
 		return summary.Critical > 0
 	case sevHigh:
 		return summary.Critical+summary.High > 0
-	case "any":
+	case sevInfo, "any":
 		return summary.Total > 0
 	default:
 		return false
@@ -1076,6 +1172,14 @@ func countDuplicateGroups(findings []healthFinding, group string) int {
 func printHealthReport(cmd *cobra.Command, report healthReport) {
 	out := cmd.OutOrStdout()
 	fmt.Fprintf(out, "Health: %s\n", healthStatusWord(report.Summary))
+	// PATCH(action-arc): surface the baseline delta immediately after the summary line.
+	if report.Baseline != nil {
+		if report.Baseline.Established {
+			fmt.Fprintf(out, "New since baseline: %d (resolved %d)\n", len(report.Baseline.New), report.Baseline.ResolvedCount)
+		} else {
+			fmt.Fprintf(out, "Baseline established (%d findings recorded)\n", report.Baseline.RecordedCount)
+		}
+	}
 
 	scopeLine := fmt.Sprintf("Scope: %s · %d items · source %s", report.Scope.Expr, report.Scope.Items, report.Scope.Source)
 	if report.Scope.SyncedAt != nil {
@@ -1097,7 +1201,11 @@ func printHealthReport(cmd *cobra.Command, report healthReport) {
 		}
 		fmt.Fprintf(out, "%s (%d)\n", strings.ToUpper(sev[:1])+sev[1:], countForSeverity(report.Summary, sev))
 		for _, f := range group {
-			fmt.Fprintf(out, "  %s\n", formatFindingLine(f))
+			prefix := ""
+			if healthFindingIsNew(report, f) {
+				prefix = "NEW "
+			}
+			fmt.Fprintf(out, "  %s%s\n", prefix, formatFindingLine(f))
 		}
 		fmt.Fprintln(out)
 	}
