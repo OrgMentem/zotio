@@ -111,6 +111,8 @@ native streaming instead of polling.`,
 
 			for {
 				select {
+				case <-cmd.Context().Done():
+					return cmd.Context().Err()
 				case <-sig:
 					fmt.Fprintln(os.Stderr, "\nShutting down gracefully...")
 					return nil

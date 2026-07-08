@@ -6,11 +6,13 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -170,5 +172,84 @@ func TestEmitChanges_WebhookDelivery(t *testing.T) {
 	}
 	if !strings.Contains(buf.String(), `"key":"Z"`) {
 		t.Errorf("stdout missing event: %s", buf.String())
+	}
+}
+
+func TestTailFollowReturnsOnContextCancelAndStopsPolling(t *testing.T) {
+	var requests atomic.Int64
+	firstPollDone := make(chan struct{})
+	var firstPollClosed atomic.Bool
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/items", func(w http.ResponseWriter, r *http.Request) {
+		requests.Add(1)
+		w.Header().Set("Last-Modified-Version", "1")
+		_, _ = io.WriteString(w, `[]`)
+		if firstPollClosed.CompareAndSwap(false, true) {
+			close(firstPollDone)
+		}
+	})
+	mux.HandleFunc("/deleted", func(w http.ResponseWriter, r *http.Request) {
+		requests.Add(1)
+		w.Header().Set("Last-Modified-Version", "1")
+		_, _ = io.WriteString(w, `{"items":[],"collections":[],"searches":[],"tags":[]}`)
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("ZOTERO_BASE_URL", srv.URL)
+	t.Setenv("ZOTERO_CONFIG", filepath.Join(t.TempDir(), "missing.toml"))
+
+	savedGroup := activeGroupID
+	activeGroupID = ""
+	t.Cleanup(func() { activeGroupID = savedGroup })
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	cmd := RootCmd()
+	cmd.SilenceErrors = true
+	cmd.SilenceUsage = true
+	var out, errOut bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&errOut)
+	cmd.SetContext(ctx)
+	cmd.SetArgs([]string{
+		"tail",
+		"items",
+		"--follow=true",
+		"--interval=20ms",
+		"--db", filepath.Join(t.TempDir(), "tail.db"),
+	})
+
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- cmd.Execute()
+	}()
+
+	select {
+	case <-firstPollDone:
+	case err := <-errCh:
+		t.Fatalf("tail returned before first poll: %v", err)
+	case <-time.After(time.Second):
+		t.Fatal("tail did not perform initial poll")
+	}
+
+	cancel()
+
+	select {
+	case err := <-errCh:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("tail error = %v, want context.Canceled", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("tail did not return promptly after context cancellation")
+	}
+
+	afterCancel := requests.Load()
+	time.Sleep(3 * 20 * time.Millisecond)
+	if got := requests.Load(); got != afterCancel {
+		t.Fatalf("requests after cancellation = %d, want unchanged from %d", got, afterCancel)
 	}
 }

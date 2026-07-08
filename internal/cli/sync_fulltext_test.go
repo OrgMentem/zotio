@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -40,7 +41,7 @@ func TestSyncFulltext_StoresAndIndexes(t *testing.T) {
 	defer db.Close()
 
 	// full=true -> cursor 0, since=0 always sent.
-	syncFulltext(c, db, true)
+	syncFulltext(context.Background(), c, db, true)
 
 	data, ok, err := db.Fulltext("ATT1")
 	if err != nil {
@@ -64,5 +65,47 @@ func TestSyncFulltext_StoresAndIndexes(t *testing.T) {
 
 	if v, _ := db.GetLibraryVersion("fulltext"); v != 3 {
 		t.Errorf("fulltext cursor = %d, want 3", v)
+	}
+}
+
+func TestSyncFulltext_PreCanceledContextSkipsPerItemFetches(t *testing.T) {
+	var indexRequests atomic.Int64
+	var perItemRequests atomic.Int64
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/fulltext", func(w http.ResponseWriter, r *http.Request) {
+		indexRequests.Add(1)
+		w.Header().Set("Last-Modified-Version", "9")
+		_, _ = io.WriteString(w, `{"ATT1":3,"ATT2":4}`)
+	})
+	mux.HandleFunc("/items/ATT1/fulltext", func(w http.ResponseWriter, r *http.Request) {
+		perItemRequests.Add(1)
+		_, _ = io.WriteString(w, `{"content":"should not be fetched"}`)
+	})
+	mux.HandleFunc("/items/ATT2/fulltext", func(w http.ResponseWriter, r *http.Request) {
+		perItemRequests.Add(1)
+		_, _ = io.WriteString(w, `{"content":"should not be fetched"}`)
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	c := client.New(&config.Config{BaseURL: srv.URL}, 5*time.Second, 0)
+	c.NoCache = true
+	db, err := store.OpenWithContext(context.Background(), filepath.Join(t.TempDir(), "data.db"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer db.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	syncFulltext(ctx, c, db, true)
+
+	if got := indexRequests.Load(); got != 1 {
+		t.Fatalf("/fulltext index requests = %d, want 1 to exercise canceled per-item fanout", got)
+	}
+	if got := perItemRequests.Load(); got != 0 {
+		t.Fatalf("per-item fulltext requests = %d, want 0 after pre-cancelled context", got)
 	}
 }

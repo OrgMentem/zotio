@@ -124,3 +124,37 @@ func TestWorkflowRunRejectsWorkflowStep(t *testing.T) {
 		t.Fatalf("error = %v, want workflow recursion rejection", err)
 	}
 }
+
+func TestExecuteWorkflowRunStepDoesNotRaceWithConcurrentStdoutWriter(t *testing.T) {
+	started := make(chan struct{})
+	stop := make(chan struct{})
+	done := make(chan struct{})
+
+	go func() {
+		defer close(done)
+		close(started)
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+				_, _ = os.Stdout.Write(nil)
+			}
+		}
+	}()
+	<-started
+	defer func() {
+		close(stop)
+		<-done
+	}()
+
+	for range 25 {
+		output, err := executeWorkflowRunStep([]string{"--help"})
+		if err != nil {
+			t.Fatalf("executeWorkflowRunStep --help: %v", err)
+		}
+		if !strings.Contains(output, "Zotero automation CLI") {
+			t.Fatalf("workflow step output = %q, want root help in Cobra buffer", output)
+		}
+	}
+}

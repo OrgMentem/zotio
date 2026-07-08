@@ -220,7 +220,7 @@ Exit codes & warnings:
 			// The full-text pass runs after the core resource sync so a fulltext
 			// failure cannot fail the core sync.
 			if fulltext {
-				syncFulltext(c, db, full)
+				syncFulltext(cmd.Context(), c, db, full)
 			}
 
 			elapsed := time.Since(started)
@@ -279,7 +279,7 @@ Exit codes & warnings:
 // It is opt-in (--fulltext) because it issues one request per attachment, and
 // every failure is a non-fatal warning so a fulltext problem never fails the
 // core sync.
-func syncFulltext(c *client.Client, db *store.Store, full bool) {
+func syncFulltext(ctx context.Context, c *client.Client, db *store.Store, full bool) {
 	cursor := 0
 	if !full {
 		cursor, _ = db.GetLibraryVersion("fulltext")
@@ -306,7 +306,7 @@ func syncFulltext(c *client.Client, db *store.Store, full bool) {
 		// so the per-item fetches still fan out, but persist them in a single
 		// keyed transaction instead of one writeMu-serialized Upsert per item
 		// (which caused lock contention and many tiny transactions).
-		results, errs := cliutil.FanoutRun(context.Background(), keys,
+		results, errs := cliutil.FanoutRun(ctx, keys,
 			func(k string) string { return k },
 			func(_ context.Context, k string) (json.RawMessage, error) {
 				// url-encode path param to prevent segment injection.

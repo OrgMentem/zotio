@@ -6,7 +6,6 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
-	"io"
 	"os"
 	"strings"
 
@@ -161,35 +160,14 @@ func executeWorkflowRunStep(args []string) (string, error) {
 	savedNoColor := noColor
 	savedHumanFriendly := humanFriendly
 	savedGroup := activeGroupID
-	savedStdout := os.Stdout
-	savedStderr := os.Stderr
-
-	reader, writer, pipeErr := os.Pipe()
-	var processBuf bytes.Buffer
-	done := make(chan struct{})
-	if pipeErr == nil {
-		go func() {
-			_, _ = io.Copy(&processBuf, reader)
-			close(done)
-		}()
-		os.Stdout = writer
-		os.Stderr = writer
-	}
 
 	err := root.Execute()
 
-	if pipeErr == nil {
-		os.Stdout = savedStdout
-		os.Stderr = savedStderr
-		_ = writer.Close()
-		<-done
-		_ = reader.Close()
-	}
 	noColor = savedNoColor
 	humanFriendly = savedHumanFriendly
 	activeGroupID = savedGroup
 
-	return buf.String() + processBuf.String(), err
+	return buf.String(), err
 }
 
 func capWorkflowRunOutput(output string) string {
