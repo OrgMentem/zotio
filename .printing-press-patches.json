@@ -1574,6 +1574,16 @@
         "references/commands.md"
       ],
       "validated_outcome": "SKILL.md now 297 lines / ~4.4k tokens (under budget); YAML frontmatter parses with spec fields only at top level; description 549 chars (<1024); references/commands.md link resolves; markdown code fences balanced (24)."
+    },
+    {
+      "id": "skill-single-file-install-alignment",
+      "summary": "Reverted the references/commands.md extraction (deleted the file) and moved the full command tree to runtime discovery (zotio --help / agent-context) in SKILL.md, keeping the skill single-file. Also aligned install commands to the canonical docs: `zotio --version` -> `zotio version`, source build -> `go build -o zotio ./cmd/zotio`, and MCP registration -> `claude mcp add zotero zotio-mcp -e ZOTERO_API_KEY=<your-key>`.",
+      "reason": "The docs site (guide/install #2 The agent skill) distributes the skill as a lone SKILL.md (copy into ~/.claude/skills/zotio/SKILL.md or fetch the raw URL). The previous patch's references/commands.md was never shipped by either method, so the `read references/commands.md` pointer dangled. Runtime discovery is also the source AGENTS.md prefers over a copied list, and keeps SKILL.md under the 500-line/5k-token budget without a bundled file.",
+      "files": [
+        "SKILL.md",
+        "references/commands.md"
+      ],
+      "validated_outcome": "SKILL.md is single-file (references/ removed), 297 lines / ~4.5k tokens; no relative bundled-file links remain; MCP-add command matches README.md:337 and the docs site; `zotio version` and `zotio --version` both verified working against zotio 0.3.0."
     }
   ]
 }

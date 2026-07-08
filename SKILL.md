@@ -15,9 +15,9 @@ metadata:
 
 # zotio — Zotero automation CLI
 
-<!-- PATCH: (1) retitled (was "Zotero Printing Press CLI") + Homebrew/release install path, not the Printing Press npx installer. (2) agentskills.io conformance: spec-clean frontmatter (added `compatibility`, moved `author` under `metadata`), added a `## Gotchas` section, and cut the file from 601→295 lines / ~7.2k→~4.4k tokens (under the 500-line/5k-token budget) by extracting the full command tree to references/commands.md and compressing Hero Capabilities. -->
+<!-- PATCH: (1) retitled (was "Zotero Printing Press CLI") + Homebrew/release install path, not the Printing Press npx installer. (2) agentskills.io conformance: spec-clean frontmatter (added compatibility, moved author under metadata), added a ## Gotchas section, and cut the file to ~295 lines / ~4.4k tokens (under the 500-line/5k-token budget) by compressing Hero Capabilities and deferring the full command tree to runtime discovery. Kept single-file — the docs distribute the skill as a lone SKILL.md (copy or raw URL), so no bundled reference files. -->
 
-> Full command tree: [`references/commands.md`](references/commands.md). Detailed usage lives in `README.md` and the docs site.
+> Full command tree: ask the CLI at runtime — `zotio --help`, `zotio <command> --help`, or `zotio agent-context --pretty`. Installation, auth, and longer usage live in `README.md` and the [docs site](https://orgmentem.github.io/zotio/).
 
 ## Prerequisites: Install the CLI
 
@@ -28,10 +28,10 @@ This skill drives the `zotio` binary. **You must verify the CLI is installed bef
    brew install orgmentem/tap/zotio
    ```
    Or download a signed binary from the [releases page](https://github.com/OrgMentem/zotio/releases) and put it on your `$PATH`.
-2. Verify: `zotio --version`
-3. If you installed from source with `go install`, ensure `$GOPATH/bin` (or `$HOME/go/bin`) is on `$PATH`.
+2. Verify: `zotio version`
+3. From source: `go build -o zotio ./cmd/zotio`, then put the binary on your `$PATH`.
 
-If `--version` reports "command not found" after install, the install step did not put the binary on `$PATH`. Do not proceed with skill commands until verification succeeds.
+If `zotio version` reports "command not found" after install, the install step did not put the binary on `$PATH`. Do not proceed with skill commands until verification succeeds.
 
 This CLI connects directly to your running Zotero desktop app — reads need no API key. Writes (`items create/update/delete/enrich`, `import apply`, `vault push`) require a Zotero Web API key, configured once via `auth set-token`, and are preview-first: every mutation plans by default, applies only under `--yes`, and is recorded to an undoable journal. It syncs your library to a local SQLite store for offline search and compound queries, then layers on the capabilities below — health reports, reviewable import, metadata enrichment, reproducible exports, and vault sync.
 
@@ -117,7 +117,7 @@ format = "obsidian"      # or "logseq"
 
 ## Command Reference
 
-For the full grouped command tree, read [`references/commands.md`](references/commands.md). For the always-current surface, ask the CLI at runtime: `zotio --help`, `zotio <command> --help`, or `zotio agent-context --pretty`.
+For the full command tree, ask the CLI at runtime — `zotio --help`, `zotio <command> --help`, or `zotio agent-context --pretty` (always current) — or see the docs site's Reference → Commands.
 
 
 ### Finding the right command
@@ -280,7 +280,7 @@ Parse `$ARGUMENTS`:
 The `zotio-mcp` binary ships alongside the CLI — the Homebrew formula (`brew install orgmentem/tap/zotio`) and every [release](https://github.com/OrgMentem/zotio/releases) archive include both binaries. Once `zotio-mcp` is on your `$PATH`, register it:
 
 ```bash
-claude mcp add zotio-mcp -- zotio-mcp
+claude mcp add zotero zotio-mcp -e ZOTERO_API_KEY=<your-key>
 ```
 
 Verify: `claude mcp list`
