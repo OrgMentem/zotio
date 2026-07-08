@@ -61,3 +61,5 @@ The `ZOTERO_API_KEY` is optional for read-only local-desktop use; set it to enab
 zotio version
 zotio doctor      # config, credentials, connectivity, cache freshness, writability
 ```
+
+Next: gate a paper or thesis repo on library health in [CI](ci.md).
