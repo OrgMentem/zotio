@@ -69,3 +69,7 @@ Concretely:
 - Bead `zotero-pp-cli-2465cdde5e1cb719` (parent, deferred) and children `zotio-53nl1` / `zotio-eomzv` / `zotio-azose`.
 - `.printing-press-patches.json` entries: `zotero-glean-cvl6-local-query-planner`, `zotero-glean-2465cdde-children-local-scope`, `zotero-glean-2465cdde-generic-local-pagination`.
 - AGENTS.md — "Local Customizations" (patch-catalog contract) and "Zotero API Surface" (local API is GET-only / evolving surface).
+
+## Amendments
+
+- **2026-07-08:** The `.printing-press-patches.json` catalog entries cited above now live in git history only; the catalog was removed as part of retiring the CLI Printing Press generator.

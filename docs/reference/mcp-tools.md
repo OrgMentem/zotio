@@ -3,7 +3,7 @@
 
 Zotero reference manager CLI — every library feature in the terminal, plus offline search, annotation export, and library analytics
 
-The default MCP surface is a command-orchestration facade (`command_search` / `command_run`) — see [the MCP server guide](../guide/mcp-server.md). The full one-tool-per-endpoint mirror below is available via `PP_MCP_SURFACE`.
+The default MCP surface is a command-orchestration facade (`command_search` / `command_run`) — see [the MCP server guide](../guide/mcp-server.md). The full one-tool-per-endpoint mirror below is available via `ZOTIO_MCP_SURFACE`.
 
 **Auth:** `api_key` (header `Zotero-API-Key`)
 

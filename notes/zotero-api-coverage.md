@@ -27,14 +27,14 @@ Mozilla-platform migration guides for plugin authors, tied to big Firefox jumps
 (7 = FF115, 8 = FF140). They do not document REST endpoints. Don't rely on their
 presence/absence to judge API changes.
 
-## How the CLI is generated (why coverage can lag)
+## How initial coverage was bootstrapped (why coverage can lag)
 
 `spec.yaml` was derived (by the build agent) from a community OpenAPI spec
 (bitowl/zotero-openapi, ~25 Web API v3 endpoints), **not** a live probe of a running
 Zotero — the press's sniff gate skipped because Zotero wasn't running at build time.
 Endpoint coverage is therefore exactly: what that community spec described, plus the
 hand-written commands in `internal/cli/`. New endpoints never appear on their own;
-they must be added to `spec.yaml` (then regen) or written as a `// PATCH:` command.
+they must be implemented as hand-written commands. `spec.yaml` remains coverage-reference data; update it when the Zotero API surface itself changes.
 
 ## Invariants & constraints (the gotchas)
 
@@ -83,7 +83,7 @@ they must be added to `spec.yaml` (then regen) or written as a `// PATCH:` comma
 
 ## Endpoint coverage matrix
 
-Covered = exercised by a generated or hand-written command. Verify with
+Covered = exercised by an implemented command. Verify with
 `grep -nE 'path:' spec.yaml` and `grep -rn 'c.Get' internal/cli`.
 
 | Endpoint(s) | Covered | Where |
@@ -123,9 +123,9 @@ Run this when a new Zotero version ships, or periodically:
    `grep -nE 'path:' spec.yaml` and `grep -rn 'c\.Get\|c\.GetWithVersion' internal/cli`.
 4. **Run `zotio schema drift`** against live Zotero to catch new/removed item
    types and fields (the realistic between-version delta). `--deep` for per-type.
-5. **For genuinely new endpoints**: add to `spec.yaml` (then regen) or implement a
-   hand-written command (`// PATCH:` marker + `.printing-press-patches.json` entry,
-   per AGENTS.md). Add a `which` index entry if it's a hero feature.
+5. **For genuinely new endpoints**: implement a hand-written command. The generator
+   was retired on 2026-07-08; `spec.yaml` remains coverage-reference data only, so
+   update it when the API surface itself changes. Add a `which` index entry if it's a hero feature.
 6. **Update this doc**: the matrix + the "Last reviewed" line below.
 
 ## Last reviewed

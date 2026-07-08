@@ -305,7 +305,7 @@ func renderMCPTools(path string) ([]byte, error) {
 	if d := strings.TrimSpace(m.Description); d != "" {
 		fmt.Fprintf(b, "%s\n\n", d)
 	}
-	b.WriteString("The default MCP surface is a command-orchestration facade (`command_search` / `command_run`) — see [the MCP server guide](../guide/mcp-server.md). The full one-tool-per-endpoint mirror below is available via `PP_MCP_SURFACE`.\n\n")
+	b.WriteString("The default MCP surface is a command-orchestration facade (`command_search` / `command_run`) — see [the MCP server guide](../guide/mcp-server.md). The full one-tool-per-endpoint mirror below is available via `ZOTIO_MCP_SURFACE`.\n\n")
 	if m.Auth.Type != "" {
 		fmt.Fprintf(b, "**Auth:** `%s`", m.Auth.Type)
 		if m.Auth.Header != "" {

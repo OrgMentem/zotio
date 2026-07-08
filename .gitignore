@@ -8,19 +8,8 @@
 /build/
 /dist/
 
-# Transient Printing Press run artifacts (dogfood report + generation proofs)
-/dogfood-results.json
-/.manuscripts/
-
 # Harness-materialized skill store (symlinks into the dev skills dir)
 /.agents/
-
-# Printing Press skill dev-home (skill/SKILL.md symlinks to the root SKILL.md; local dev only)
-/skill/
-
-# Vendored Printing Press dev skills (repo-local, refresh from upstream; not project source)
-.claude/skills/
-skills-lock.json
 
 # Built documentation site + Python docs toolchain
 /site/
