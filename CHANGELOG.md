@@ -2,7 +2,7 @@
 
 Notable changes to zotio. Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow [SemVer](https://semver.org/).
 
-## [Unreleased]
+## [0.3.0] — 2026-07-08
 
 ### Added
 - `library health --baseline <path>` compares the current findings with a saved baseline; a missing file is treated as an establishing run with zero new findings, and baseline-mode human output reports `New since baseline: N (resolved M)` or `Baseline established (N findings recorded)`.
@@ -56,6 +56,7 @@ First tagged release: the trust-and-automation layer for Zotero.
 - **Onboarding** — `zotio init` guided setup (Zotero detection, local API, key, first sync, health check).
 - Release engineering: goreleaser builds for 6 platforms, cosign-signed checksums, SBOMs, Homebrew tap.
 
+[0.3.0]: https://github.com/OrgMentem/zotio/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/OrgMentem/zotio/compare/v0.1.2...v0.2.0
 [0.1.2]: https://github.com/OrgMentem/zotio/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/OrgMentem/zotio/compare/v0.1.0...v0.1.1
