@@ -14,9 +14,7 @@ func newSearchesCmd(flags *rootFlags) *cobra.Command {
 
 	cmd.AddCommand(newSearchesGetCmd(flags))
 	cmd.AddCommand(newSearchesListCmd(flags))
-	// PATCH: Register hand-written saved-search execution fallback added after generation.
 	cmd.AddCommand(newSearchesRunCmd(flags))
-	// PATCH(glean write-safety): register saved-search materialization mutation.
 	cmd.AddCommand(newSearchesMaterializeCmd(flags))
 	return cmd
 }

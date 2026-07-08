@@ -1,5 +1,5 @@
 // Copyright 2026 OrgMentem. Licensed under MIT. See LICENSE.
-// PATCH(glean review P3): the asserting guard the capabilityOverrides comment
+// the asserting guard the capabilityOverrides comment
 // promises — every override key must resolve to a real runnable command, so a
 // typo'd/renamed key can't silently fall through to a wrong (e.g. keyless)
 // classification in the agent-facing capability registry.

@@ -11,7 +11,6 @@ import (
 
 // HealthJSON runs the local library-health report for scopeExpr and returns its
 // indented JSON form for MCP callers.
-// PATCH(glean roadmap-phase5 mcp-health-export): expose scoped library-health output to the MCP trust plane.
 func HealthJSON(scopeExpr string) ([]byte, error) {
 	db, err := openStoreForRead(context.Background(), "zotio")
 	if err != nil {

@@ -1,7 +1,4 @@
 // Copyright 2026 OrgMentem. Licensed under MIT. See LICENSE.
-// PATCH(glean roadmap-phase3): adapter tests — flags->mutation.Options mapping
-// and delegation. The engine state machine + gates are covered in
-// internal/mutation/mutation_test.go.
 
 package cli
 

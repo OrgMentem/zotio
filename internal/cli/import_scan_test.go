@@ -1,5 +1,4 @@
 // Copyright 2026 OrgMentem. Licensed under MIT. See LICENSE.
-// PATCH(glean q1ia): cover DOI extraction (filename slash-decoding + embedded
 // content), library-aware classification, and the DOI index build.
 
 package cli

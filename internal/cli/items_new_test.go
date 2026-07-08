@@ -1,5 +1,4 @@
 // Copyright 2026 OrgMentem. Licensed under MIT. See LICENSE.
-// PATCH(glean roadmap-phase4 items-new): coverage for schema-backed item creation.
 
 package cli
 
@@ -13,7 +12,7 @@ import (
 	"testing"
 )
 
-// PATCH(glean roadmap-phase4 items-new): serve the schema template endpoint used by items new.
+// newItemsNewTemplateServer serves the schema template endpoint used by items new.
 func newItemsNewTemplateServer(t *testing.T) *httptest.Server {
 	t.Helper()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -28,7 +27,7 @@ func newItemsNewTemplateServer(t *testing.T) *httptest.Server {
 	return srv
 }
 
-// PATCH(glean roadmap-phase4 items-new): exercise the registered root command with schema client env seams.
+// runItemsNewTestCmd exercises the registered root command with schema client env seams.
 func runItemsNewTestCmd(t *testing.T, srv *httptest.Server, args ...string) (string, error) {
 	t.Helper()
 	t.Setenv("ZOTERO_BASE_URL", srv.URL+"/users/0")
@@ -45,7 +44,7 @@ func runItemsNewTestCmd(t *testing.T, srv *httptest.Server, args ...string) (str
 	return out.String(), err
 }
 
-// PATCH(glean roadmap-phase4 items-new): unknown fields must fail loudly before create.
+// Unknown fields must fail loudly before create.
 func TestItemsNewRejectsUnknownField(t *testing.T) {
 	srv := newItemsNewTemplateServer(t)
 
@@ -55,7 +54,7 @@ func TestItemsNewRejectsUnknownField(t *testing.T) {
 	}
 }
 
-// PATCH(glean roadmap-phase4 items-new): dry-run output must include merged schema-backed fields.
+// Dry-run output must include merged schema-backed fields.
 func TestItemsNewDryRunJSONIncludesAppliedFields(t *testing.T) {
 	srv := newItemsNewTemplateServer(t)
 

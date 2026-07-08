@@ -60,7 +60,7 @@ large datasets as it has no memory pressure.`,
 				c.NoCache = true
 			}
 
-			// PATCH(glean zotero-pp-cli-1173a87dbf311c7d): encode the optional resource id as one path segment.
+			// encode the optional resource id as one path segment.
 			path := "/" + resource
 			if len(args) > 1 {
 				path += "/" + url.PathEscape(args[1])
@@ -121,7 +121,7 @@ large datasets as it has no memory pressure.`,
 	cmd.Flags().IntVar(&limit, "limit", 0, "Maximum records to export (0 = unlimited)")
 	cmd.Flags().BoolVar(&noCache, "no-cache", false, "Bypass response cache for fresh data")
 
-	// PATCH(glean roadmap-phase6 d27f99d4): paginated/resumable snapshot subcommand.
+	// paginated/resumable snapshot subcommand.
 	cmd.AddCommand(newExportSnapshotCmd(flags))
 
 	return cmd

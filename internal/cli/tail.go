@@ -22,7 +22,7 @@ func newTailCmd(flags *rootFlags) *cobra.Command {
 	var resource string
 	var interval time.Duration
 	var follow bool
-	// PATCH(glean a91x): tail persists a per-resource version cursor.
+	// dbPath stores the per-resource version cursor.
 	var dbPath string
 
 	cmd := &cobra.Command{
@@ -67,15 +67,15 @@ native streaming instead of polling.`,
 			}
 			c.NoCache = true
 
-			// PATCH(glean a91x): resolve the real change-feed endpoint
-			// (items -> /items, etc.); rejects non-change-feed resources.
+			// Resolve the real change-feed endpoint (items -> /items, etc.)
+			// and reject non-change-feed resources.
 			path, err := syncResourcePath(resource)
 			if err != nil {
 				return err
 			}
 
-			// PATCH(glean a91x): open the local store so each poll resumes
-			// from the per-resource version cursor instead of re-fetching all.
+			// Open the local store so each poll resumes from the per-resource
+			// version cursor instead of re-fetching all.
 			if dbPath == "" {
 				dbPath = defaultDBPath("zotio")
 			}
@@ -85,9 +85,9 @@ native streaming instead of polling.`,
 			}
 			defer db.Close()
 
-			// PATCH(glean a91x): tail streams live and owns delivery per
-			// cycle; nil the deliver buffer so root.go's post-run flush
-			// never fires (it would buffer the whole stream forever).
+			// Tail streams live and owns delivery per cycle; nil the deliver
+			// buffer so root.go's post-run flush never fires (it would buffer
+			// the whole stream forever).
 			sink := flags.deliverSink
 			flags.deliverBuf = nil
 
@@ -104,7 +104,7 @@ native streaming instead of polling.`,
 				fmt.Fprintf(os.Stderr, "warning: initial poll failed: %v\n", err)
 			}
 
-			// PATCH(glean a91x): honor --follow=false as a single poll.
+			// Honor --follow=false as a single poll.
 			if !follow {
 				return nil
 			}
@@ -126,15 +126,15 @@ native streaming instead of polling.`,
 	cmd.Flags().StringVar(&resource, "resource", "", "Resource type to tail")
 	cmd.Flags().DurationVar(&interval, "interval", 10*time.Second, "Poll interval")
 	cmd.Flags().BoolVar(&follow, "follow", true, "Keep running (set --follow=false for single poll)")
-	// PATCH(glean a91x): cursor persistence location.
+	// Cursor persistence location.
 	cmd.Flags().StringVar(&dbPath, "db", "", "Database path (default: ~/.local/share/zotio/data.db)")
 
 	return cmd
 }
 
-// tailKnownResources returns the change-feed resources tail can stream.
-// PATCH(glean a91x): restricted to the four resources with a /deleted
-// bucket (schema has no change feed and is dropped).
+// tailKnownResources returns the change-feed resources tail can stream: the
+// four resources with a /deleted bucket. Schema has no change feed and is
+// omitted.
 func tailKnownResources() []string {
 	return []string{
 		"collections",
@@ -146,10 +146,10 @@ func tailKnownResources() []string {
 
 // emitChanges polls one resource for changes since the stored tail cursor,
 // emits upsert/delete NDJSON events for the cycle, routes them to the deliver
-// sink, and advances the cursor. PATCH(glean a91x): tail is now a deduplicated
-// version-cursor change feed rather than a full re-fetch each poll. The cursor
-// is namespaced "tail:<resource>" in sync_state so it never collides with
-// sync's own checkpoint.
+// sink, and advances the cursor. Tail is a deduplicated version-cursor change
+// feed rather than a full re-fetch each poll. The cursor is namespaced
+// "tail:<resource>" in sync_state so it never collides with sync's own
+// checkpoint.
 func emitChanges(c *client.Client, db *store.Store, resource, path string, sink DeliverSink, w io.Writer) error {
 	cursorKey := "tail:" + resource
 	cursor, _ := db.GetLibraryVersion(cursorKey)

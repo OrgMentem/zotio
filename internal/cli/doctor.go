@@ -88,7 +88,7 @@ func looksLikeDoctorInterstitial(body []byte) string {
 
 func newDoctorCmd(flags *rootFlags) *cobra.Command {
 	var failOn string
-	// PATCH(glean roadmap-phase2): --ensure-live probes (and with --launch, starts
+	// --ensure-live probes (and with --launch, starts
 	// + waits for) the Zotero desktop local API — the remediation other commands
 	// point at when a live_local_api precondition is unmet. Exits 9 if unreachable.
 	var ensureLiveFlag bool
@@ -148,7 +148,7 @@ func newDoctorCmd(flags *rootFlags) *cobra.Command {
 			default:
 				report["writes"] = "needs ZOTERO_API_KEY (Web API)"
 			}
-			// PATCH: surface desktop connector reachability separately from Web API writes.
+			// surface desktop connector reachability separately from Web API writes.
 			if localAPI {
 				conn, err := flags.newConnector()
 				if err == nil && connectorPing(cmd.Context(), conn) == nil {
@@ -257,7 +257,7 @@ func newDoctorCmd(flags *rootFlags) *cobra.Command {
 			report["cache"] = collectCacheReport(cmd.Context(), "")
 
 			report["version"] = version
-			// PATCH(glean 9bfn): surface which library this invocation targets so
+			// surface which library this invocation targets so
 			// "which library am I on" is answerable; db_path already reflects it.
 			if activeGroupID != "" {
 				report["library"] = "group:" + activeGroupID

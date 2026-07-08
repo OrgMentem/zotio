@@ -1,5 +1,5 @@
 // Copyright 2026 OrgMentem. Licensed under MIT. See LICENSE.
-// PATCH(glean roadmap-phase1): flagship composite library-health report — the
+// flagship composite library-health report — the
 // read-only diagnostic from notes/roadmap.md. Composes the existing audit
 // primitives (citekey/duplicate/missing-*/tag-drift/broken-attachment) into one
 // ranked, finding-typed report with --for presets, a --fail-on CI gate (exit 11),
@@ -138,7 +138,6 @@ type healthGate struct {
 
 // healthFreshness records the --require-fresh verdict: how old the local data is
 // versus the allowed maximum, and whether that makes the report uncertifiable.
-// PATCH(glean roadmap-phase2): freshness gate.
 type healthFreshness struct {
 	RequiredMaxAgeSeconds int    `json:"required_max_age_seconds"`
 	AgeSeconds            int    `json:"age_seconds,omitempty"`
@@ -150,7 +149,6 @@ type healthFreshness struct {
 // intentionally preview-first: commands omit --yes and delegate to existing
 // fixers. Scoped steps carry exact keys for `--keys-from -`; broad steps say why
 // they cannot yet be scoped.
-// PATCH(glean roadmap-phase3): safe remediation plan, no new write path.
 type healthRemediationPlanStep struct {
 	Kind    string   `json:"kind"`
 	Command string   `json:"command"`
@@ -172,15 +170,15 @@ type healthReport struct {
 	RemediationPlan []healthRemediationPlanStep `json:"remediation_plan,omitempty"`
 	Gate            *healthGate                 `json:"gate,omitempty"`
 	Freshness       *healthFreshness            `json:"freshness,omitempty"`
-	// PATCH(action-arc): baseline diff metadata is emitted only when --baseline is supplied.
+	// baseline diff metadata is emitted only when --baseline is supplied.
 	Baseline *healthBaselineReport `json:"baseline,omitempty"`
 
-	// PATCH(action-arc): keep untruncated findings and the new-finding gate threshold out of JSON.
+	// keep untruncated findings and the new-finding gate threshold out of JSON.
 	allFindings  []healthFinding
 	baselineGate string
 }
 
-// PATCH(marketing-heroes): shields.io endpoint badge payload and verdict mapping.
+// shields.io endpoint badge payload and verdict mapping.
 type healthBadge struct {
 	SchemaVersion int    `json:"schemaVersion"`
 	Label         string `json:"label"`
@@ -200,7 +198,7 @@ func healthBadgeForReport(report healthReport, label string) healthBadge {
 		badge.Color = "orange"
 		return badge
 	}
-	// PATCH(action-arc): baseline badges tell the delta story once an existing baseline was read.
+	// baseline badges tell the delta story once an existing baseline was read.
 	if report.Baseline != nil && report.Baseline.Established {
 		newSummary := healthSummaryForFindings(report.Baseline.New)
 		switch {
@@ -268,11 +266,10 @@ func printHealthBadge(cmd *cobra.Command, badge healthBadge) error {
 // memoizes the shared citekey scan so it runs once even when both citekey checks
 // are in the preset.
 type healthContext struct {
-	src         healthSource
-	preset      string
-	limit       int
-	verifyFiles bool
-	// PATCH(marketing-heroes-2): opt-in CrossRef retraction check switch.
+	src              healthSource
+	preset           string
+	limit            int
+	verifyFiles      bool
 	checkRetractions bool
 	flags            *rootFlags
 	requireFresh     time.Duration
@@ -316,7 +313,7 @@ func healthCheckRegistry() []healthCheck {
 			"missing_tags", sevInfo, false, nil)},
 		{kind: "tag_drift", severity: sevHigh, run: runTagDrift},
 		{kind: "broken_attachment_file", severity: sevCritical, run: runBrokenAttachmentFile},
-		// PATCH(marketing-heroes-2): gate DOI-bearing items against CrossRef retraction notices.
+		// gate DOI-bearing items against CrossRef retraction notices.
 		{kind: "retracted_item", severity: sevCritical, run: runRetractedItem},
 	}
 }
@@ -348,14 +345,14 @@ func newLibraryHealthCmd(flags *rootFlags) *cobra.Command {
 	var flagFailOn string
 	var flagLimit int
 	var flagVerifyFiles bool
-	// PATCH(marketing-heroes-2): opt in to the live CrossRef retraction health check.
+	// opt in to the live CrossRef retraction health check.
 	var flagCheckRetractions bool
 	var flagScope string
 	var flagRequireFresh time.Duration
-	// PATCH(marketing-heroes): shields.io badge output controls.
+	// shields.io badge output controls.
 	var flagBadge bool
 	var flagBadgeLabel string
-	// PATCH(action-arc): baseline-diff gating and report sidecar output for CI actions.
+	// baseline-diff gating and report sidecar output for CI actions.
 	var flagBaseline string
 	var flagWriteBaseline string
 	var flagFailOnNew string
@@ -383,7 +380,7 @@ desktop or CrossRef network access respectively; pass --verify-files and/or
 its precondition is unmet, the command refuses loudly (exit 9) rather than passing.`,
 		Annotations: map[string]string{"mcp:read-only": "true"},
 		RunE: func(cmd *cobra.Command, args []string) error {
-			// PATCH(marketing-heroes): the badge is already JSON, so refuse ambiguous output modes.
+			// the badge is already JSON, so refuse ambiguous output modes.
 			if flagBadge && flags.asJSON {
 				return usageErr(fmt.Errorf("--badge cannot be combined with --json"))
 			}
@@ -396,7 +393,7 @@ its precondition is unmet, the command refuses loudly (exit 9) rather than passi
 			if !ok {
 				return usageErr(fmt.Errorf("invalid --for %q: must be quick, citation, systematic-review, or all", flagFor))
 			}
-			// PATCH(marketing-heroes-2): retracted_item is opt-in (network). It lives
+			// retracted_item is opt-in (network). It lives
 			// only in the "all" preset (loud skip without the flag, like
 			// broken_attachment_file); --check-retractions injects it into any other
 			// preset so the default citation gate stays deterministic offline.
@@ -408,7 +405,7 @@ its precondition is unmet, the command refuses loudly (exit 9) rather than passi
 			if flagFailOn == "" {
 				failOn = healthPresetFailOn[preset]
 			}
-			// PATCH(action-arc): "none" disables the absolute gate (overrides the
+			// "none" disables the absolute gate (overrides the
 			// preset default) so baseline mode can gate on new findings only.
 			if failOn == "none" {
 				failOn = ""
@@ -418,7 +415,7 @@ its precondition is unmet, the command refuses loudly (exit 9) rather than passi
 			default:
 				return usageErr(fmt.Errorf("invalid --fail-on %q: must be critical, high, info, any, or none", flagFailOn))
 			}
-			// PATCH(action-arc): --fail-on-new shares the health gate threshold vocabulary.
+			// --fail-on-new shares the health gate threshold vocabulary.
 			failOnNew := strings.ToLower(strings.TrimSpace(flagFailOnNew))
 			switch failOnNew {
 			case "", sevCritical, sevHigh, sevInfo, "any":
@@ -446,7 +443,7 @@ its precondition is unmet, the command refuses loudly (exit 9) rather than passi
 				return fmt.Errorf("opening database: %w", err)
 			}
 			if rawDB == nil {
-				// PATCH(marketing-heroes): badge CI must fail loudly before a local sync exists.
+				// badge CI must fail loudly before a local sync exists.
 				if flagBadge {
 					if err := printHealthBadge(cmd, healthBadge{SchemaVersion: 1, Label: flagBadgeLabel, Message: "not synced", Color: "lightgrey"}); err != nil {
 						return err
@@ -465,11 +462,10 @@ its precondition is unmet, the command refuses loudly (exit 9) rather than passi
 				syncedAt = &ls
 			}
 			ctx := &healthContext{
-				src:         healthSource{Kind: "local", SyncedAt: syncedAt},
-				preset:      preset,
-				limit:       flagLimit,
-				verifyFiles: flagVerifyFiles,
-				// PATCH(marketing-heroes-2): thread CrossRef retraction opt-in into health runners.
+				src:              healthSource{Kind: "local", SyncedAt: syncedAt},
+				preset:           preset,
+				limit:            flagLimit,
+				verifyFiles:      flagVerifyFiles,
 				checkRetractions: flagCheckRetractions,
 				flags:            flags,
 				requireFresh:     flagRequireFresh,
@@ -494,7 +490,7 @@ its precondition is unmet, the command refuses loudly (exit 9) rather than passi
 			if err != nil {
 				return err
 			}
-			// PATCH(action-arc): apply baseline diff before any output mode or report sidecar is rendered.
+			// apply baseline diff before any output mode or report sidecar is rendered.
 			report.baselineGate = failOnNew
 			if baselinePath != "" {
 				if err := applyHealthBaseline(&report, baselinePath); err != nil {
@@ -512,7 +508,7 @@ its precondition is unmet, the command refuses loudly (exit 9) rather than passi
 				}
 			}
 
-			// PATCH(marketing-heroes): badge mode renders only the shields endpoint payload; exit mapping below is unchanged.
+			// badge mode renders only the shields endpoint payload; exit mapping below is unchanged.
 			if flagBadge {
 				if err := printHealthBadge(cmd, healthBadgeForReport(report, flagBadgeLabel)); err != nil {
 					return err
@@ -541,14 +537,11 @@ its precondition is unmet, the command refuses loudly (exit 9) rather than passi
 	cmd.Flags().StringVar(&flagFailOn, "fail-on", "", "Exit 11 if findings reach this severity: critical, high, info/any; none disables the gate (default: the preset's)")
 	cmd.Flags().IntVar(&flagLimit, "limit", 0, "Max findings listed per kind (0 = all); also caps the live attachment scan")
 	cmd.Flags().BoolVar(&flagVerifyFiles, "verify-files", false, "Run the live broken-attachment check (needs Zotero desktop running)")
-	// PATCH(marketing-heroes-2): expose the opt-in CrossRef retraction health check.
 	cmd.Flags().BoolVar(&flagCheckRetractions, "check-retractions", false, "Run the live CrossRef retraction check (network; DOI-bearing items)")
 	cmd.Flags().StringVar(&flagScope, "scope", "", "Limit to a cohort: collection:KEY | tag:NAME | item:KEY | query:TEXT | saved-search:KEY (default: whole library)")
 	cmd.Flags().DurationVar(&flagRequireFresh, "require-fresh", 0, "Refuse (exit 12) when the local store is staler than this (e.g. 24h); 0 = disabled")
-	// PATCH(marketing-heroes): register shields.io badge flags on the health command.
 	cmd.Flags().BoolVar(&flagBadge, "badge", false, "Emit a shields.io endpoint JSON badge instead of the report")
 	cmd.Flags().StringVar(&flagBadgeLabel, "badge-label", "bibliography", "Label for the shields.io endpoint badge")
-	// PATCH(action-arc): register baseline diff, baseline persistence, and report output flags.
 	cmd.Flags().StringVar(&flagBaseline, "baseline", "", "Read health finding identities from this baseline JSON; missing file establishes a baseline")
 	cmd.Flags().StringVar(&flagWriteBaseline, "write-baseline", "", "Write current health finding identities to this baseline JSON after checks")
 	cmd.Flags().StringVar(&flagFailOnNew, "fail-on-new", "", "Exit 11 if new baseline-diff findings reach this severity: critical, high, info/any (requires --baseline)")
@@ -596,7 +589,7 @@ func assembleHealthReport(db localQueryStore, ctx *healthContext, preset string,
 		}
 		findings = filterFindingsByScope(findings, scopeSet)
 		report.Checks = append(report.Checks, healthCheckRun{Kind: chk.kind, Ran: true, Count: len(findings)})
-		// PATCH(action-arc): baseline writes use the complete finding identity set, not the display limit.
+		// baseline writes use the complete finding identity set, not the display limit.
 		report.Summary.add(chk.severity, len(findings))
 		report.allFindings = append(report.allFindings, findings...)
 		report.Findings = append(report.Findings, truncateFindings(findings, ctx.limit)...)
@@ -696,7 +689,7 @@ func healthGateExitError(report healthReport) error {
 	}
 }
 
-// PATCH(action-arc): map --fail-on-new to the same quality-gate exit constructor as --fail-on.
+// map --fail-on-new to the same quality-gate exit constructor as --fail-on.
 func healthNewGateExitError(report healthReport) error {
 	if report.Baseline == nil || report.baselineGate == "" {
 		return nil
@@ -952,7 +945,7 @@ func runBrokenAttachmentFile(db localQueryStore, ctx *healthContext) ([]healthFi
 	return findings, nil, nil
 }
 
-// PATCH(marketing-heroes-2): live CrossRef retraction health check, gated like verify-files.
+// live CrossRef retraction health check, gated like verify-files.
 func runRetractedItem(db localQueryStore, ctx *healthContext) ([]healthFinding, *healthSkip, error) {
 	if !ctx.checkRetractions {
 		return nil, &healthSkip{
@@ -1172,7 +1165,7 @@ func countDuplicateGroups(findings []healthFinding, group string) int {
 func printHealthReport(cmd *cobra.Command, report healthReport) {
 	out := cmd.OutOrStdout()
 	fmt.Fprintf(out, "Health: %s\n", healthStatusWord(report.Summary))
-	// PATCH(action-arc): surface the baseline delta immediately after the summary line.
+	// surface the baseline delta immediately after the summary line.
 	if report.Baseline != nil {
 		if report.Baseline.Established {
 			fmt.Fprintf(out, "New since baseline: %d (resolved %d)\n", len(report.Baseline.New), report.Baseline.ResolvedCount)
@@ -1183,7 +1176,7 @@ func printHealthReport(cmd *cobra.Command, report healthReport) {
 
 	scopeLine := fmt.Sprintf("Scope: %s · %d items · source %s", report.Scope.Expr, report.Scope.Items, report.Scope.Source)
 	if report.Scope.SyncedAt != nil {
-		// PATCH(demo-mode): durationAgo returns "just now" for <1m — appending
+		// durationAgo returns "just now" for <1m — appending
 		// " ago" produced "synced just now ago" in the scope line.
 		age := durationAgo(time.Since(*report.Scope.SyncedAt))
 		if age == "just now" {
@@ -1299,7 +1292,7 @@ func formatFindingLine(f healthFinding) string {
 	case "tag_drift":
 		return fmt.Sprintf("[%s] %q <- %v (%v items)", f.Kind, sqlStringValue(f.Evidence["canonical"]), f.Evidence["aliases"], f.Evidence["total_items"])
 	case "retracted_item":
-		// PATCH(marketing-heroes-2): surface CrossRef notice DOI/date in human health output.
+		// surface CrossRef notice DOI/date in human health output.
 		line := fmt.Sprintf("[%s] %s", f.Kind, f.ItemKey)
 		if f.Title != "" {
 			line += " " + f.Title

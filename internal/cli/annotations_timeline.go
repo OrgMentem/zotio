@@ -1,5 +1,4 @@
 // Copyright 2026 OrgMentem. Licensed under MIT. See LICENSE.
-// PATCH: Add hand-written Zotero annotation timeline workflow missing from the generated CLI.
 
 package cli
 
@@ -21,7 +20,7 @@ func newAnnotationsTimelineCmd(flags *rootFlags) *cobra.Command {
 	var flagSince string
 	var flagItem string
 	var flagCollection string
-	// PATCH(glean hhup): prefer the local store unless --refresh.
+	// prefer the local store unless --refresh.
 	var refresh bool
 
 	cmd := &cobra.Command{
@@ -41,7 +40,7 @@ func newAnnotationsTimelineCmd(flags *rootFlags) *cobra.Command {
 				return err
 			}
 
-			// PATCH(glean hhup): resolve annotations from the local store when
+			// resolve annotations from the local store when
 			// available; --refresh or an empty store falls back to live.
 			var db *store.Store
 			if !refresh {
@@ -53,7 +52,7 @@ func newAnnotationsTimelineCmd(flags *rootFlags) *cobra.Command {
 
 			var annotations []annotationSummary
 			if flagCollection != "" {
-				// PATCH(glean pathenc-2): url-encode path param to prevent segment injection.
+				// url-encode path param to prevent segment injection.
 				items, err := fetchZoteroItems(c, "/collections/"+url.PathEscape(flagCollection)+"/items", nil, 0)
 				if err != nil {
 					return classifyAPIError(err, flags)
@@ -68,7 +67,7 @@ func newAnnotationsTimelineCmd(flags *rootFlags) *cobra.Command {
 					}
 					var childItems []map[string]any
 					if db != nil {
-						// PATCH(glean hhup): local annotation resolution.
+						// local annotation resolution.
 						rows, lerr := db.AnnotationsForItem(key)
 						if lerr != nil {
 							return lerr
@@ -80,7 +79,7 @@ func newAnnotationsTimelineCmd(flags *rootFlags) *cobra.Command {
 							}
 						}
 					} else {
-						// PATCH(glean pathenc-2): url-encode path param to prevent segment injection.
+						// url-encode path param to prevent segment injection.
 						children, err := c.Get("/items/"+url.PathEscape(key)+"/children", map[string]string{"itemType": "annotation"})
 						if err != nil {
 							return classifyAPIError(err, flags)
@@ -93,7 +92,7 @@ func newAnnotationsTimelineCmd(flags *rootFlags) *cobra.Command {
 					annotations = append(annotations, annotationSummariesFromItems(childItems)...)
 				}
 			} else if db != nil {
-				// PATCH(glean hhup): list annotations straight from the store.
+				// list annotations straight from the store.
 				rows, lerr := db.ItemsByType("annotation", 0)
 				if lerr != nil {
 					return lerr
@@ -144,7 +143,7 @@ func newAnnotationsTimelineCmd(flags *rootFlags) *cobra.Command {
 	cmd.Flags().StringVar(&flagSince, "since", "", "ISO date string; include annotations after this date")
 	cmd.Flags().StringVar(&flagItem, "item", "", "Scope to annotations of a specific parent item key")
 	cmd.Flags().StringVar(&flagCollection, "collection", "", "Scope to items in this collection key")
-	// PATCH(glean hhup): bypass the local store and fetch live.
+	// bypass the local store and fetch live.
 	cmd.Flags().BoolVar(&refresh, "refresh", false, "Fetch live from the API instead of the local store")
 
 	return cmd

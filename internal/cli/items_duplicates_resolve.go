@@ -1,5 +1,5 @@
 // Copyright 2026 OrgMentem. Licensed under MIT. See LICENSE.
-// PATCH(glean write-safety): duplicate resolution mutation command.
+// Duplicate resolution mutation command.
 
 package cli
 
@@ -20,7 +20,7 @@ import (
 
 const duplicateResolveStrategyKeepMostComplete = "keep-most-complete"
 
-// PATCH(glean bugfix): centralize the high-risk title matcher warning for CLI output and tests.
+// Centralize the high-risk title matcher warning for CLI output and tests.
 const duplicateResolveTitleWarning = "warning: --title matches by title and can group distinct items; review the preview carefully before applying"
 
 type duplicateResolveItem struct {
@@ -43,7 +43,7 @@ func newItemsDuplicatesResolveCmd(flags *rootFlags) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "resolve",
 		Short: "Resolve duplicate items by merging metadata onto a master and trashing duplicates",
-		// PATCH(glean bugfix): document DOI-only safe default and explicit risky title matching opt-in.
+		// Document DOI-only safe default and explicit risky title matching opt-in.
 		Long: `Resolve duplicate items by merging metadata onto a master and trashing duplicates.
 
 By default, resolve only matches duplicate DOI groups. Title matching can group
@@ -66,7 +66,7 @@ review the preview carefully before applying.`,
 				return fmt.Errorf("invalid --strategy value %q: must be %s", strategy, duplicateResolveStrategyKeepMostComplete)
 			}
 
-			// PATCH(glean bugfix): default unresolved flag state to DOI-only instead of DOI+title.
+			// Default unresolved flag state to DOI-only instead of DOI+title.
 			includeDOI, includeTitle := duplicateResolveIncludes(cmd, flagDOI, flagTitle)
 			if includeTitle {
 				fmt.Fprintln(cmd.ErrOrStderr(), duplicateResolveTitleWarning)
@@ -100,13 +100,13 @@ review the preview carefully before applying.`,
 	}
 	cmd.Flags().StringVar(&strategy, "strategy", duplicateResolveStrategyKeepMostComplete, "Resolution strategy (keep-most-complete)")
 	cmd.Flags().BoolVar(&flagDOI, "doi", false, "Resolve duplicate DOI groups")
-	// PATCH(glean bugfix): flag help names title matching as an explicit riskier opt-in.
+	// Flag help names title matching as an explicit riskier opt-in.
 	cmd.Flags().BoolVar(&flagTitle, "title", false, "Opt into riskier duplicate title groups")
 
 	return cmd
 }
 
-// PATCH(glean bugfix): no explicit matcher flags means safe DOI-only matching.
+// No explicit matcher flags means safe DOI-only matching.
 func duplicateResolveIncludes(cmd *cobra.Command, flagDOI, flagTitle bool) (bool, bool) {
 	if !cmd.Flags().Changed("doi") && !cmd.Flags().Changed("title") {
 		return true, false
@@ -155,7 +155,7 @@ func buildDuplicateResolveOps(db localQueryStore, flags *rootFlags, includeDOI, 
 				Kind:            "duplicate_merge",
 				ExpectedVersion: item.Version,
 				Changes:         changes,
-				// PATCH(glean review P1): a merge trashes the duplicate, so it is
+				// A merge trashes the duplicate, so it is
 				// destructive — require --allow-destructive (matches the capability
 				// registry and the --allow-destructive help, which both name "merge").
 				Destructive: true,
@@ -174,7 +174,7 @@ func buildDuplicateResolveOps(db localQueryStore, flags *rootFlags, includeDOI, 
 
 func duplicateResolveRows(db localQueryStore, includeDOI, includeTitle bool) ([]map[string]any, error) {
 	if !includeDOI && !includeTitle {
-		// PATCH(glean bugfix): direct callers with no selected matcher should use the same safe DOI-only default as the CLI.
+		// Direct callers with no selected matcher should use the same safe DOI-only default as the CLI.
 		includeDOI = true
 	}
 	rows := make([]map[string]any, 0)

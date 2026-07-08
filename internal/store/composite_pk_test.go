@@ -1,6 +1,6 @@
 // Copyright 2026 OrgMentem. Licensed under MIT. See LICENSE.
-// PATCH(glean bugfix): coverage for the resources composite (resource_type, id)
-// primary key — cross-type id coexistence and legacy id-only-PK rebuild.
+// Exercises the resources composite (resource_type, id) primary key:
+// cross-type id coexistence and legacy id-only-PK rebuild.
 
 package store
 

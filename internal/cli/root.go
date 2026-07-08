@@ -17,18 +17,17 @@ import (
 )
 
 type rootFlags struct {
-	asJSON        bool
-	compact       bool
-	csv           bool
-	plain         bool
-	quiet         bool
-	dryRun        bool
-	noCache       bool
-	noInput       bool
-	idempotent    bool
-	ignoreMissing bool
-	yes           bool
-	// PATCH(glean write-safety): mutation gate flags
+	asJSON           bool
+	compact          bool
+	csv              bool
+	plain            bool
+	quiet            bool
+	dryRun           bool
+	noCache          bool
+	noInput          bool
+	idempotent       bool
+	ignoreMissing    bool
+	yes              bool
 	maxChanges       int
 	allowDestructive bool
 	continueOnError  bool
@@ -41,11 +40,11 @@ type rootFlags struct {
 	timeout          time.Duration
 	rateLimit        float64
 	dataSource       string
-	// PATCH: creation write route; auto uses the desktop connector when local.
+	// creation write route; auto uses the desktop connector when local.
 	via             string
 	connectorTarget string
 	freshnessMeta   any
-	// PATCH(glean 9bfn): numeric group ID selected via --group ("" = personal).
+	// numeric group ID selected via --group ("" = personal).
 	group string
 
 	// deliverBuf captures command output when --deliver is set to a
@@ -63,7 +62,7 @@ func RootCmd() *cobra.Command {
 
 // Execute runs the CLI in non-interactive mode: never prompts, all values via flags or stdin.
 func Execute() error {
-	// PATCH(glean roadmap-phase3): record applied mutation runs only on the real
+	// record applied mutation runs only on the real
 	// CLI path; subcommand unit tests construct commands directly and never journal.
 	mutationJournalRecorder = recordMutationJournal
 	mirrorWriteThrough = applyMirrorWriteThrough
@@ -117,9 +116,7 @@ func isCobraUsageError(err error) bool {
 
 func newRootCmd(flags *rootFlags) *cobra.Command {
 	rootCmd := &cobra.Command{
-		Use: "zotio",
-		// PATCH(glean zotero-pp-cli-2ec0000a278212ab): replace truncated generated help text with a complete short description.
-		// PATCH(marketing-heroes): highlights block rebuilt around the shipped flagships; goal-to-command discovery via `zotio which`.
+		Use:   "zotio",
 		Short: `Zotero automation CLI: local-first search, library health, preview-first writes, and agent tooling`,
 		Long: `Zotero automation CLI: local-first search and audits, preview-first writes, annotation export, Obsidian vault sync, and an MCP server for agents.
 
@@ -161,13 +158,9 @@ See README.md or the bundled SKILL.md for recipes.`,
 	rootCmd.PersistentFlags().BoolVar(&flags.ignoreMissing, "ignore-missing", false, "Treat missing delete targets as a successful no-op")
 	rootCmd.PersistentFlags().StringVar(&flags.selectFields, "select", "", "Comma-separated fields to include in output (e.g. --select id,name,status)")
 	rootCmd.PersistentFlags().BoolVar(&flags.yes, "yes", false, "Skip confirmation prompts (for agents and scripts)")
-	// PATCH(glean write-safety): mutation gate flags
 	rootCmd.PersistentFlags().IntVar(&flags.maxChanges, "max-changes", -1, "Max write operations a single mutation may apply before refusing (-1 = default: 500, or 50 under --agent)")
-	// PATCH(glean write-safety): mutation gate flags
 	rootCmd.PersistentFlags().BoolVar(&flags.allowDestructive, "allow-destructive", false, "Allow irreversible operations (merge, permanent delete, empty-trash) to apply")
-	// PATCH(glean write-safety): mutation gate flags
 	rootCmd.PersistentFlags().BoolVar(&flags.continueOnError, "continue-on-error", false, "On bulk mutations, continue past per-item failures/conflicts instead of stopping at the first")
-	// PATCH(glean write-safety): mutation gate flags
 	rootCmd.PersistentFlags().IntVar(&flags.maxFailures, "max-failures", 0, "With --continue-on-error, stop after this many failures (0 = unlimited)")
 	rootCmd.PersistentFlags().BoolVar(&noColor, "no-color", false, "Disable colored output")
 	rootCmd.PersistentFlags().BoolVar(&humanFriendly, "human-friendly", false, "Enable colored output and rich formatting")
@@ -176,14 +169,14 @@ See README.md or the bundled SKILL.md for recipes.`,
 	rootCmd.PersistentFlags().StringVar(&flags.profileName, "profile", "", "Apply values from a saved profile (see 'zotio profile list')")
 	rootCmd.PersistentFlags().StringVar(&flags.deliverSpec, "deliver", "", "Route output to a sink: stdout (default), file:<path>, webhook:<url>")
 	rootCmd.PersistentFlags().Float64Var(&flags.rateLimit, "rate-limit", 0, "Max requests per second (0 to disable)")
-	// PATCH(glean 9bfn): operate on a group library instead of the personal one.
+	// operate on a group library instead of the personal one.
 	rootCmd.PersistentFlags().StringVar(&flags.group, "group", "", "Operate on a Zotero group library by numeric group ID (default: personal library)")
-	// PATCH: route item creates through the desktop connector when local.
+	// route item creates through the desktop connector when local.
 	rootCmd.PersistentFlags().StringVar(&flags.via, "via", "auto", "Item-creation route: auto (connector when local+reachable), connector (desktop), or web (api.zotero.org)")
 	rootCmd.PersistentFlags().StringVar(&flags.connectorTarget, "connector-target", "", "Desktop connector save target ID (for example C78); overrides --collection target mapping")
 
 	rootCmd.PersistentPreRunE = func(cmd *cobra.Command, args []string) error {
-		// PATCH(glean roadmap-phase7 3df91067): env fallback so MCP installs and
+		// env fallback so MCP installs and
 		// scheduled agents (which set env, not CLI flags) honor profile/group
 		// selection. An explicit CLI flag always wins over the env value.
 		if !cmd.Flags().Changed("profile") {
@@ -233,12 +226,12 @@ See README.md or the bundled SKILL.md for recipes.`,
 			if !cmd.Flags().Changed("no-input") {
 				flags.noInput = true
 			}
-			// PATCH(glean write-safety): --agent no longer implies --yes; non-interactive ≠ approval. Mutating commands preview unless --yes is passed explicitly.
+			// --agent no longer implies --yes; non-interactive ≠ approval. Mutating commands preview unless --yes is passed explicitly.
 			if !cmd.Flags().Changed("no-color") {
 				noColor = true
 			}
 		}
-		// PATCH(glean 9bfn): validate --group and publish it to the package so
+		// validate --group and publish it to the package so
 		// defaultDBPath and newClient scope storage and the API prefix to it.
 		if flags.group != "" && !isAllDigits(flags.group) {
 			return usageErr(fmt.Errorf("invalid --group value %q: expected a numeric Zotero group ID", flags.group))
@@ -250,7 +243,7 @@ See README.md or the bundled SKILL.md for recipes.`,
 		default:
 			return fmt.Errorf("invalid --data-source value %q: must be auto, live, or local", flags.dataSource)
 		}
-		// PATCH: validate connector write-route selector.
+		// validate connector write-route selector.
 		switch flags.via {
 		case "auto", "connector", "web":
 			// valid
@@ -261,7 +254,6 @@ See README.md or the bundled SKILL.md for recipes.`,
 	}
 	rootCmd.AddCommand(newCollectionsCmd(flags))
 	rootCmd.AddCommand(newItemsCmd(flags))
-	// PATCH: Register hand-written annotation, reading-list, and library workflows added after generation.
 	rootCmd.AddCommand(newAnnotationsCmd(flags))
 	rootCmd.AddCommand(newReadingListCmd(flags))
 	rootCmd.AddCommand(newLibraryCmd(flags))
@@ -269,8 +261,8 @@ See README.md or the bundled SKILL.md for recipes.`,
 	rootCmd.AddCommand(newSearchesCmd(flags))
 	rootCmd.AddCommand(newTagsCmd(flags))
 	rootCmd.AddCommand(newDoctorCmd(flags))
-	rootCmd.AddCommand(newInitCmd(flags)) // PATCH(marketing-heroes-2): guided first-run setup.
-	rootCmd.AddCommand(newDemoCmd(flags)) // PATCH(demo-mode): zero-setup sample library + guided tour.
+	rootCmd.AddCommand(newInitCmd(flags))
+	rootCmd.AddCommand(newDemoCmd(flags))
 	rootCmd.AddCommand(newAuthCmd(flags))
 	rootCmd.AddCommand(newAgentContextCmd(rootCmd))
 	rootCmd.AddCommand(newCapabilitiesCmd(rootCmd))
@@ -283,13 +275,10 @@ See README.md or the bundled SKILL.md for recipes.`,
 	rootCmd.AddCommand(newSearchCmd(flags))
 	rootCmd.AddCommand(newSyncCmd(flags))
 	rootCmd.AddCommand(newTailCmd(flags))
-	// PATCH(glean roadmap-phase7 0cabee79): watch-mode incremental sync.
 	rootCmd.AddCommand(newWatchCmd(flags))
 	rootCmd.AddCommand(newAnalyticsCmd(flags))
 	rootCmd.AddCommand(newWorkflowCmd(flags))
-	// PATCH(glean 9bfn): group-library discovery.
 	rootCmd.AddCommand(newGroupsCmd(flags))
-	// PATCH(glean 49r4): vault-aware Obsidian/Logseq note sync.
 	rootCmd.AddCommand(newVaultCmd(flags))
 	rootCmd.AddCommand(newVersionCliCmd())
 
@@ -309,7 +298,7 @@ func (f *rootFlags) newClient() (*client.Client, error) {
 	if err != nil {
 		return nil, configErr(err)
 	}
-	// PATCH(glean 9bfn): when --group is set, point the API at the group's
+	// when --group is set, point the API at the group's
 	// library prefix (/groups/<id>) instead of the configured personal one.
 	if f.group != "" {
 		cfg.BaseURL = rewriteLibraryPrefix(cfg.BaseURL, f.group)
@@ -317,7 +306,7 @@ func (f *rootFlags) newClient() (*client.Client, error) {
 	c := client.New(cfg, f.timeout, f.rateLimit)
 	c.DryRun = f.dryRun
 	c.NoCache = f.noCache
-	// PATCH: the Zotero local API is read-only, so when pointed at it, route writes
+	// the Zotero local API is read-only, so when pointed at it, route writes
 	// to the Web API (resolved lazily on the first write) while reads stay local.
 	if isLocalZoteroAPI(cfg.BaseURL) {
 		group := f.group
@@ -333,7 +322,6 @@ func (f *rootFlags) newClient() (*client.Client, error) {
 // If-Unmodified-Since-Version precondition) use this so the version read and the
 // write hit the same library — under hybrid routing both go to the Web API, avoiding
 // a stale 412/428 when an item created on the web hasn't synced to the local mirror.
-// PATCH: hand-written; pairs with the read-only/hybrid routing.
 func (f *rootFlags) newWriteClient() (*client.Client, error) {
 	c, err := f.newClient()
 	if err != nil {
@@ -349,7 +337,7 @@ func (f *rootFlags) newWriteClient() (*client.Client, error) {
 	return c, nil
 }
 
-// PATCH(glean co0m/77k6): printTable is table-only; JSON output uses command-specific encoders.
+// printTable is table-only; JSON output uses command-specific encoders.
 func (f *rootFlags) printTable(w *cobra.Command, headers []string, rows [][]string) error {
 	if f.asJSON {
 		return fmt.Errorf("printTable does not support JSON output")

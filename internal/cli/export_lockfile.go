@@ -1,5 +1,5 @@
 // Copyright 2026 OrgMentem. Licensed under MIT. See LICENSE.
-// PATCH(glean roadmap-phase6 d27f99d4): capture canonical item versions for reproducible exports.
+// capture canonical item versions for reproducible exports.
 
 package cli
 

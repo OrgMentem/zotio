@@ -37,7 +37,6 @@ func newSyncCmd(flags *rootFlags) *cobra.Command {
 	var maxPages int
 	var latestOnly bool
 	var strict bool
-	// PATCH(glean hhup): opt-in PDF full-text sync pass.
 	var fulltext bool
 
 	cmd := &cobra.Command{
@@ -150,7 +149,7 @@ Exit codes & warnings:
 							if !ok {
 								return
 							}
-							// PATCH(glean zotero-pp-cli-d3bc6aabf82d2ce9): stop
+							// stop
 							// workers between resources when the sync context is canceled.
 							res := syncResource(c, db, resource, sinceVersion, full, maxPages, concurrency == 1)
 							results <- res
@@ -180,7 +179,7 @@ Exit codes & warnings:
 			var errCount int
 			var criticalErrCount int
 			var warnCount int
-			// PATCH(glean field-sync-opaque): keep structured per-resource
+			// keep structured per-resource
 			// failures in memory too, because MCP captures cmd output but legacy
 			// sync warnings/errors were written to process stdout/stderr.
 			var failedResources []string
@@ -218,8 +217,8 @@ Exit codes & warnings:
 				return ctx.Err()
 			}
 
-			// PATCH(glean hhup): opt-in full-text pass runs after the core
-			// resource sync so a fulltext failure can't fail the core sync.
+			// The full-text pass runs after the core resource sync so a fulltext
+			// failure cannot fail the core sync.
 			if fulltext {
 				syncFulltext(c, db, full)
 			}
@@ -244,9 +243,6 @@ Exit codes & warnings:
 			//   2. any critical failure  -> non-zero regardless of --strict
 			//   3. nothing synced        -> non-zero (preserves "all-warned" / "all-errored" exit)
 			//   4. otherwise             -> exit 0 (any data synced + no critical failed)
-			// PATCH(glean zotero-pp-cli-397a5f904c8d9f12): remove the stale
-			// exit_policy_default_changed transition warning; this is now the
-			// standard sync contract, while --strict remains the opt-in hard-fail mode.
 			if strict && errCount > 0 {
 				return fmt.Errorf("%d resource(s) failed to sync: %s", errCount, strings.Join(failedResources, "; "))
 			}
@@ -273,7 +269,6 @@ Exit codes & warnings:
 	cmd.Flags().IntVar(&maxPages, "max-pages", 100, "Maximum pages to fetch per resource (0 = unlimited; cap-hit emits a sync_warning event)")
 	cmd.Flags().BoolVar(&latestOnly, "latest-only", false, "Refresh head of each resource only; clears resume cursor and caps pages at 1. Mutually exclusive with --since (--since wins).")
 	cmd.Flags().BoolVar(&strict, "strict", false, "Exit non-zero on any per-resource failure (default: only critical failures or all-resource failure exit non-zero).")
-	// PATCH(glean hhup): opt-in PDF full-text sync.
 	cmd.Flags().BoolVar(&fulltext, "fulltext", false, "Also sync PDF full-text content (slower; one request per attachment)")
 
 	return cmd
@@ -283,7 +278,7 @@ Exit codes & warnings:
 // fulltext-typed rows so 'items fulltext' and 'search' can read it offline.
 // It is opt-in (--fulltext) because it issues one request per attachment, and
 // every failure is a non-fatal warning so a fulltext problem never fails the
-// core sync. PATCH(glean hhup).
+// core sync.
 func syncFulltext(c *client.Client, db *store.Store, full bool) {
 	cursor := 0
 	if !full {
@@ -307,14 +302,14 @@ func syncFulltext(c *client.Client, db *store.Store, full bool) {
 		for k := range changed {
 			keys = append(keys, k)
 		}
-		// PATCH(glean perf-audit x5lh): the API has no batch fulltext endpoint,
+		// the API has no batch fulltext endpoint,
 		// so the per-item fetches still fan out, but persist them in a single
 		// keyed transaction instead of one writeMu-serialized Upsert per item
 		// (which caused lock contention and many tiny transactions).
 		results, errs := cliutil.FanoutRun(context.Background(), keys,
 			func(k string) string { return k },
 			func(_ context.Context, k string) (json.RawMessage, error) {
-				// PATCH(glean pathenc-2): url-encode path param to prevent segment injection.
+				// url-encode path param to prevent segment injection.
 				ft, _, ferr := c.GetWithVersion("/items/"+url.PathEscape(k)+"/fulltext", nil)
 				if ferr != nil {
 					return nil, ferr
@@ -342,7 +337,7 @@ func syncFulltext(c *client.Client, db *store.Store, full bool) {
 }
 
 // emitFulltextWarning surfaces a non-fatal fulltext-sync problem in the same
-// shape as the rest of sync's warnings. PATCH(glean hhup).
+// shape as the rest of sync's warnings.
 func emitFulltextWarning(msg string) {
 	if humanFriendly {
 		fmt.Fprintf(os.Stderr, "warning: %s\n", msg)
@@ -352,7 +347,7 @@ func emitFulltextWarning(msg string) {
 	}
 }
 
-// PATCH(glean bugfix): schema sync resources use Zotero's global schema API,
+// schema sync resources use Zotero's global schema API,
 // not the library-scoped /users|groups/<id> base used by ordinary resources.
 type syncHTTPClient interface {
 	GetWithVersion(string, map[string]string) (json.RawMessage, int, error)
@@ -391,7 +386,7 @@ func syncResource(c syncHTTPClient, db *store.Store, resource string, sinceVersi
 	if err != nil {
 		return syncResult{Resource: resource, Err: err, Duration: time.Since(started)}
 	}
-	// PATCH(glean bugfix): schema resources are global, so their page GETs
+	// schema resources are global, so their page GETs
 	// must use a client whose base URL has the library segment stripped.
 	requestClient := syncClientForResource(c, resource)
 
@@ -400,7 +395,7 @@ func syncResource(c syncHTTPClient, db *store.Store, resource string, sinceVersi
 
 	// Determine the since value: an explicit --since version wins; otherwise use
 	// the stored Last-Modified-Version checkpoint for incremental sync (skipped
-	// on --full). PATCH(glean static-audit): Zotero's `since` is an integer
+	// on --full).: Zotero's `since` is an integer
 	// library version, not a timestamp — the old RFC3339 value was silently
 	// ignored by the API, so incremental sync never actually filtered.
 	sinceParam := determineSinceParam()
@@ -474,7 +469,7 @@ func syncResource(c syncHTTPClient, db *store.Store, resource string, sinceVersi
 		// Strategy: try array first, then common wrapper keys.
 		items, nextCursor, hasMore := extractPageItems(data, pageSize.cursorParam)
 		if nextCursor == "" && pageSize.cursorParam == "start" && len(items) == pageSize.limit {
-			// PATCH(glean zotero-pp-cli-c12e62462b4d9228): Zotero array
+			// Zotero array
 			// endpoints paginate via start/limit and put Link headers outside
 			// the JSON body, so derive the next offset when a full page arrives.
 			currentStart, _ := strconv.Atoi(params[pageSize.cursorParam])
@@ -552,7 +547,7 @@ func syncResource(c syncHTTPClient, db *store.Store, resource string, sinceVersi
 		// Progress reporting (include rate limit info when active)
 		currentRate := c.RateLimit()
 		if humanFriendly {
-			// PATCH(glean static-audit): \r in-place progress only works for a
+			// \r in-place progress only works for a
 			// single writer. With concurrency>1 the workers' interleaved \r
 			// updates garble the terminal, so suppress per-page progress then and
 			// rely on the per-resource "N synced (done)" summary; single-worker
@@ -615,7 +610,7 @@ func syncResource(c syncHTTPClient, db *store.Store, resource string, sinceVersi
 	}
 
 	// Final sync state only advances checkpoints after natural pagination
-	// completion. PATCH(glean sync-incomplete-checkpoint): defensive exits
+	// completion.: defensive exits
 	// (--max-pages or stuck cursor) leave the resume cursor and since-version
 	// checkpoint intact so a later sync cannot skip unfetched pages.
 	if completedNaturally {
@@ -853,7 +848,7 @@ var discriminatorDispatchers = map[string]discriminatorDispatch{}
 func upsertResourceBatch(db *store.Store, resource string, items []json.RawMessage) (int, int, error) {
 	storeResource := canonicalStoreResource(resource)
 	if _, ok := discriminatorDispatchers[resource]; !ok {
-		// PATCH(glean bugfix): store.UpsertBatch has its own generated ID map;
+		// store.UpsertBatch has its own generated ID map;
 		// key resources with sync-local overrides here so tags and global schema
 		// rows do not drop as primary_key_unresolved.
 		if _, hasOverride := resourceIDFieldOverrides[storeResource]; hasOverride {
@@ -894,7 +889,7 @@ func upsertResourceBatch(db *store.Store, resource string, items []json.RawMessa
 	return stored, extractFailures, nil
 }
 
-// PATCH(glean bugfix): sync-owned ID overrides are applied before keyed batch
+// sync-owned ID overrides are applied before keyed batch
 // writes so generated store metadata drift cannot drop name-keyed Zotero rows.
 func upsertResourceBatchWithExtractedIDs(db *store.Store, resource string, items []json.RawMessage) (int, int, error) {
 	ids := make([]string, 0, len(items))
@@ -920,7 +915,7 @@ func upsertResourceBatchWithExtractedIDs(db *store.Store, resource string, items
 }
 
 func canonicalStoreResource(resource string) string {
-	// PATCH(glean zotero-pp-cli-de78b27d84fd7fa5): top-level list aliases
+	// top-level list aliases
 	// contain the same records as their parent resource; store them under the
 	// canonical type so explicit alias syncs do not flip resource_type metadata.
 	switch resource {
@@ -974,9 +969,8 @@ func upsertSingleObject(db *store.Store, resource string, data json.RawMessage) 
 }
 
 func defaultSyncResources() []string {
-	// PATCH(glean zotero-pp-cli-de78b27d84fd7fa5): default sync avoids
+	// default sync avoids
 	// overlapping top-level aliases because /items and /collections already
-	// cover those records; explicit --resources can still request them.
 	return []string{
 		"collections",
 		"items",
@@ -1021,7 +1015,7 @@ func syncResourcePath(resource string) (string, error) {
 // annotations on a child path-item are honored at runtime, not just on
 // flat paths.
 var resourceIDFieldOverrides = map[string]string{
-	// PATCH(glean bugfix): Zotero tags and global schema lists are keyed by
+	// Zotero tags and global schema lists are keyed by
 	// domain-name fields rather than generic id/name/key fields.
 	"tags":                  "tag",
 	"schema":                "itemType",

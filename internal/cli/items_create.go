@@ -11,7 +11,7 @@ import (
 
 	"github.com/spf13/cobra"
 
-	// PATCH: direct batch creates can route through the desktop connector.
+	// Direct batch creates can route through the desktop connector.
 	"zotio/internal/connector"
 )
 
@@ -33,7 +33,7 @@ func newItemsCreateCmd(flags *rootFlags) *cobra.Command {
 			}
 
 			path := "/items"
-			// PATCH: Zotero's POST /items requires a bare JSON array of item objects.
+			// Zotero's POST /items requires a bare JSON array of item objects.
 			// The generated shape wrapped it as {"items": [...]}, which the API rejects
 			// ("Uploaded data must be a JSON array"). Send the array directly, and accept
 			// either an array or an object from stdin.
@@ -55,13 +55,13 @@ func newItemsCreateCmd(flags *rootFlags) *cobra.Command {
 				}
 				body = parsedItems
 			}
-			// PATCH: batch item creates use the desktop connector when the body is a JSON object array.
+			// Batch item creates use the desktop connector when the body is a JSON object array.
 			if via, err := flags.resolveCreateVia(cmd.Context(), false); err != nil {
 				return err
 			} else if via == "connector" {
 				items, ok := itemsCreateObjects(body)
 				if ok {
-					// PATCH: connector sessions have one target; preserve per-item collection arrays via Web API unless caller overrides.
+					// Connector sessions have one target; preserve per-item collection arrays via Web API unless caller overrides.
 					if itemsCreateHasCollections(items) && strings.TrimSpace(flags.connectorTarget) == "" {
 						if flags.via == "connector" {
 							return fmt.Errorf("--via connector cannot honor per-item collections in items create; use --via web or --connector-target C<n>")
@@ -185,7 +185,7 @@ func newItemsCreateCmd(flags *rootFlags) *cobra.Command {
 	return cmd
 }
 
-// PATCH: direct batch create connector routing requires object-array inspection.
+// Direct batch create connector routing requires object-array inspection.
 func itemsCreateObjects(body any) ([]map[string]any, bool) {
 	rawItems, ok := body.([]any)
 	if !ok || len(rawItems) == 0 {

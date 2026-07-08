@@ -33,7 +33,7 @@ func newCollectionsStatsCmd(flags *rootFlags) *cobra.Command {
 			defer rawDB.Close()
 			db := localQueryStore{rawDB}
 
-			// PATCH(glean perf-audit m4ku): filter on indexed item_type/parent_key
+			// filter on indexed item_type/parent_key
 			// columns instead of json_extract to use the resources indexes.
 			// Total items + year range
 			summaryRows, err := db.QueryRaw(`

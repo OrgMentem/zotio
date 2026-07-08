@@ -1,5 +1,4 @@
 // Copyright 2026 OrgMentem. Licensed under MIT. See LICENSE.
-// PATCH(glean tag-rename-pagination): cover multi-page tag rename candidate fetches.
 
 package cli
 

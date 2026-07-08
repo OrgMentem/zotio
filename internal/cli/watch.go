@@ -16,7 +16,6 @@ import (
 func newWatchCmd(flags *rootFlags) *cobra.Command {
 	var interval time.Duration
 	var once bool
-	// PATCH(marketing-heroes-2): configure optional library-health drift checks after successful watch sync cycles.
 	var health bool
 	var healthFor string
 	var healthWebhook string
@@ -34,7 +33,6 @@ status line per cycle to stderr, and exits gracefully on SIGINT or SIGTERM.`,
 				return usageErr(fmt.Errorf("--interval must be at least 10s"))
 			}
 
-			// PATCH(marketing-heroes-2): validate health drift options before entering the watch loop.
 			healthMonitor, err := newWatchHealthMonitor(flags, health, healthFor, healthWebhook)
 			if err != nil {
 				return err
@@ -43,9 +41,9 @@ status line per cycle to stderr, and exits gracefully on SIGINT or SIGTERM.`,
 				return usageErr(fmt.Errorf("--health-for and --health-webhook require --health"))
 			}
 
-			// PATCH(glean roadmap-phase7 watch-sync): isolate each watch tick by
-			// constructing a fresh sync command, matching the one-shot CLI path while
-			// keeping watch-mode cancellation and logging local to this wrapper.
+			// Isolate each watch tick by constructing a fresh sync command, matching
+			// the one-shot CLI path while keeping watch-mode cancellation and logging
+			// local to this wrapper.
 			runCycle := func(ctx context.Context) error {
 				syncCmd := newSyncCmd(flags)
 				syncCmd.SetArgs(args)
@@ -59,7 +57,6 @@ status line per cycle to stderr, and exits gracefully on SIGINT or SIGTERM.`,
 					return err
 				}
 				fmt.Fprintf(cmd.ErrOrStderr(), "[watch] %s cycle complete\n", now.Format(time.RFC3339))
-				// PATCH(marketing-heroes-2): run health drift checks only after a successful sync cycle.
 				healthMonitor.run(ctx, cmd, now)
 				return nil
 			}
@@ -101,7 +98,6 @@ status line per cycle to stderr, and exits gracefully on SIGINT or SIGTERM.`,
 
 	cmd.Flags().DurationVar(&interval, "interval", 5*time.Minute, "Sync interval")
 	cmd.Flags().BoolVar(&once, "once", false, "Run one sync cycle and exit")
-	// PATCH(marketing-heroes-2): expose health drift notifications for watch mode.
 	cmd.Flags().BoolVar(&health, "health", false, "Run quick library health checks after each successful sync")
 	cmd.Flags().StringVar(&healthFor, "health-for", "quick", "Health preset for --health: quick, citation, systematic-review, all")
 	cmd.Flags().StringVar(&healthWebhook, "health-webhook", "", "POST health drift JSON to this webhook URL")

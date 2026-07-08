@@ -18,7 +18,6 @@ func newWorkflowCmd(flags *rootFlags) *cobra.Command {
 	}
 
 	cmd.AddCommand(newWorkflowArchiveCmd(flags))
-	// PATCH(glean write-safety): register declarative in-process workflow runner.
 	cmd.AddCommand(newWorkflowRunCmd(flags))
 	cmd.AddCommand(newWorkflowStatusCmd(flags))
 
@@ -56,7 +55,7 @@ and full resync. After archiving, use 'search' for instant full-text search.`,
 			}
 			defer s.Close()
 
-			// PATCH(glean field-items-top-residue): top-level alias endpoints fold
+			// top-level alias endpoints fold
 			// into canonical items/collections storage; archiving them separately
 			// creates redundant fetches and stale-looking status rows.
 			resources := []string{"collections", "items", "items-trash", "schema", "schema-creator-fields", "schema-item-fields", "searches", "tags"}

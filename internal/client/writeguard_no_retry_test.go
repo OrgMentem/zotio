@@ -1,5 +1,5 @@
 // Copyright 2026 OrgMentem. Licensed under MIT. See LICENSE.
-// PATCH: writes to the read-only Zotero local API return 501 (PUT/PATCH); 501 is
+// writes to the read-only Zotero local API return 501 (PUT/PATCH); 501 is
 // never transient, so it must not trigger the 5xx retry/backoff loop.
 
 package client
@@ -14,7 +14,7 @@ import (
 	"zotio/internal/config"
 )
 
-func TestPatchDoesNotRetry501(t *testing.T) {
+func TestNonTransient501DoesNotRetry(t *testing.T) {
 	var hits int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		atomic.AddInt32(&hits, 1)

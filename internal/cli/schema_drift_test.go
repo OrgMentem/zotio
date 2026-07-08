@@ -1,6 +1,4 @@
 // Copyright 2026 OrgMentem. Licensed under MIT. See LICENSE.
-// PATCH: Cover schema-drift baseline capture, no-drift, and added/removed deltas
-// against a real client pointed at an httptest Zotero schema surface.
 
 package cli
 

@@ -1,6 +1,5 @@
 // Copyright 2026 OrgMentem. Licensed under MIT. See LICENSE.
-// PATCH(glean roadmap-phase3): engine tests for the promoted mutation package
-// (state machine + gates), relocated from internal/cli/mutate_test.go.
+// Exercises mutation engine state-machine behavior and gates.
 
 package mutation
 

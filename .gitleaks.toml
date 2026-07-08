@@ -4,11 +4,10 @@
 [extend]
 useDefault = true
 
-# PATCH(glean zotio-8b1bc32f536ba705): narrowed from a blanket `.*_test\.go$`
-# path exemption to the specific synthetic token. The old whole-file allowlist
-# blinded the secrets gate to any real credential accidentally committed to any
-# *_test.go file; this exempts only the known synthetic JWT header, so a real
-# key in a test file is still flagged.
+# The synthetic JWT allowlist is scoped to the exact token. The old whole-file
+# path exemption blinded the secrets gate to any real credential accidentally
+# committed to any *_test.go file; this exempts only the known synthetic JWT
+# header, so a real key in a test file is still flagged.
 [[allowlists]]
 description = "Synthetic JWT fixture in jwtshape_test.go (JWT-shape detection, not a credential)"
 regexTarget = "line"
@@ -16,7 +15,7 @@ regexes = [
   '''eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCIsImtpZCI6ImFvNi1PYzAyQlZHTF9GbnBDeE5JMiJ9''',
 ]
 
-# PATCH(demo-mode): Better BibTeX citation keys in the demo fixture
+# Better BibTeX citation keys in the demo fixture
 # (internal/cli/testdata/demo_library.json) look like `Citation Key:
 # hochreiter1997lstm` and trip generic-api-key. A citation-key declaration
 # line is bibliographic metadata, not a credential; scoped to the exact

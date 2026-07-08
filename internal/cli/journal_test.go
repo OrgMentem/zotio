@@ -1,6 +1,4 @@
 // Copyright 2026 OrgMentem. Licensed under MIT. See LICENSE.
-// PATCH(glean roadmap-phase3): cover the journal commands and the apply-time
-// recorder hook (with HOME isolated so writes land in a temp dir).
 
 package cli
 

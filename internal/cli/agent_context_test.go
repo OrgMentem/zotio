@@ -1,5 +1,3 @@
-// PATCH(glean co0m): regression guard for agent-context discovery wiring.
-
 package cli
 
 import "testing"

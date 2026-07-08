@@ -1,5 +1,5 @@
 // Copyright 2026 OrgMentem. Licensed under MIT. See LICENSE.
-// PATCH: expose Zotero desktop Connector save targets for collection routing.
+// Expose Zotero desktop Connector save targets for collection routing.
 
 package cli
 

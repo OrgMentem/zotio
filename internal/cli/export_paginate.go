@@ -1,5 +1,5 @@
 // Copyright 2026 OrgMentem. Licensed under MIT. See LICENSE.
-// PATCH(glean roadmap-phase6 d27f99d4): support resumable header-free paginated snapshot exports.
+// support resumable header-free paginated snapshot exports.
 
 package cli
 

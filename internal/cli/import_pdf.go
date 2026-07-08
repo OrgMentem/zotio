@@ -1,5 +1,5 @@
 // Copyright 2026 OrgMentem. Licensed under MIT. See LICENSE.
-// PATCH: recognize local PDFs through Zotero's desktop Connector API.
+// Recognize local PDFs through Zotero's desktop Connector API.
 
 package cli
 
@@ -23,7 +23,7 @@ type importPDFResult struct {
 	ItemType     string `json:"item_type,omitempty"`
 }
 
-// PATCH: import pdf is connector-only because PDF recognition exists only in Zotero desktop.
+// Import pdf is connector-only because PDF recognition exists only in Zotero desktop.
 func newImportPDFCmd(flags *rootFlags) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "pdf <path...>",

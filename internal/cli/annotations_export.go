@@ -1,5 +1,4 @@
 // Copyright 2026 OrgMentem. Licensed under MIT. See LICENSE.
-// PATCH: Add hand-written Zotero annotation markdown/JSON export workflow missing from the generated CLI.
 
 package cli
 
@@ -50,7 +49,7 @@ func newAnnotationsExportCmd(flags *rootFlags) *cobra.Command {
 	var flagOutput string
 	var flagFormat string
 	var flagLimit int
-	// PATCH(glean hhup): prefer the local store unless --refresh.
+	// prefer the local store unless --refresh.
 	var refresh bool
 
 	cmd := &cobra.Command{
@@ -76,7 +75,7 @@ func newAnnotationsExportCmd(flags *rootFlags) *cobra.Command {
 				return err
 			}
 
-			// PATCH(glean hhup): resolve per-item annotations from the local
+			// resolve per-item annotations from the local
 			// store when available (avoids one /children fetch per item);
 			// --refresh or an empty store falls back to the live fan-out.
 			var db *store.Store
@@ -90,7 +89,7 @@ func newAnnotationsExportCmd(flags *rootFlags) *cobra.Command {
 			path := "/items/top"
 			params := map[string]string{}
 			if flagCollection != "" {
-				// PATCH(glean pathenc-2): url-encode path param to prevent segment injection.
+				// url-encode path param to prevent segment injection.
 				path = "/collections/" + url.PathEscape(flagCollection) + "/items"
 			} else if flagTag != "" {
 				path = "/items"
@@ -102,7 +101,7 @@ func newAnnotationsExportCmd(flags *rootFlags) *cobra.Command {
 				return classifyAPIError(err, flags)
 			}
 
-			// PATCH(glean static-audit): fetch each candidate item's annotations
+			// fetch each candidate item's annotations
 			// in parallel instead of one sequential Get per item. The per-item
 			// Get goes through the client's shared (now race-safe) rate limiter,
 			// and FanoutRun returns results in source order so export ordering
@@ -119,7 +118,7 @@ func newAnnotationsExportCmd(flags *rootFlags) *cobra.Command {
 					key := zoteroString(item, "key")
 					var childItems []map[string]any
 					if db != nil {
-						// PATCH(glean hhup): local annotation resolution.
+						// local annotation resolution.
 						rows, lerr := db.AnnotationsForItem(key)
 						if lerr != nil {
 							return annotationExportItem{}, lerr
@@ -131,7 +130,7 @@ func newAnnotationsExportCmd(flags *rootFlags) *cobra.Command {
 							}
 						}
 					} else {
-						// PATCH(glean pathenc-2): url-encode path param to prevent segment injection.
+						// url-encode path param to prevent segment injection.
 						children, err := c.Get("/items/"+url.PathEscape(key)+"/children", map[string]string{"itemType": "annotation"})
 						if err != nil {
 							return annotationExportItem{}, err
@@ -192,7 +191,7 @@ func newAnnotationsExportCmd(flags *rootFlags) *cobra.Command {
 	cmd.Flags().StringVar(&flagOutput, "output", "", "Output file path (default: stdout)")
 	cmd.Flags().StringVar(&flagFormat, "format", "markdown", "Output format (markdown or json)")
 	cmd.Flags().IntVar(&flagLimit, "limit", 50, "Maximum number of items to process")
-	// PATCH(glean hhup): bypass the local store and fetch live.
+	// bypass the local store and fetch live.
 	cmd.Flags().BoolVar(&refresh, "refresh", false, "Fetch live from the API instead of the local store")
 
 	return cmd
@@ -404,7 +403,7 @@ func formatAnnotationExportMarkdown(items []annotationExportItem) string {
 		if item.DOI != "" {
 			fmt.Fprintf(&b, "**DOI:** %s\n", annotationMarkdownInline(item.DOI))
 		}
-		// PATCH(glean zotero-pp-cli-b91715b7e6a10d6a): annotation text and
+		// annotation text and
 		// comments are untrusted Zotero data; delimit them for LLM consumers and
 		// keep their Markdown representation from escaping local structure.
 		b.WriteString("\n## Annotations\n\n")

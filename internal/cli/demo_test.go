@@ -1,5 +1,4 @@
 // Copyright 2026 OrgMentem. Licensed under MIT. See LICENSE.
-// PATCH(demo-mode): regression coverage for the zero-setup demo sandbox — the
 // store-path seam (defaultDBPath), the `zotio demo` seeding lifecycle, the
 // bundled fixture's research-integrity data, and the local-read hero commands
 // (including reading-list --data-source local parity) reading the sandbox.

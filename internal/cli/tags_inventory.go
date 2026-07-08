@@ -1,5 +1,4 @@
 // Copyright 2026 OrgMentem. Licensed under MIT. See LICENSE.
-// PATCH: Add hand-written local tag inventory report missing from the generated CLI.
 
 package cli
 

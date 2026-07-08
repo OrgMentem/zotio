@@ -15,7 +15,7 @@ metadata:
 
 # zotio — Zotero automation CLI
 
-<!-- PATCH: agentskills.io conformance: spec-clean frontmatter (added compatibility, moved author under metadata), a ## Gotchas section, and a ~295-line / ~5k-token budget by compressing Hero Capabilities and deferring the full command tree to runtime discovery. Kept single-file distribution: the docs distribute the skill as a lone SKILL.md (copy or raw URL), so no bundled reference files. -->
+<!-- Maintenance note: agentskills.io conformance: spec-clean frontmatter (compatibility set, author under metadata), a ## Gotchas section, and a ~295-line / ~5k-token budget by compressing Hero Capabilities and deferring the full command tree to runtime discovery. Kept single-file distribution: the docs distribute the skill as a lone SKILL.md (copy or raw URL), so no bundled reference files. -->
 
 > Full command tree: ask the CLI at runtime — `zotio --help`, `zotio <command> --help`, or `zotio agent-context --pretty`. Installation, auth, and longer usage live in `README.md` and the [docs site](https://orgmentem.github.io/zotio/).
 

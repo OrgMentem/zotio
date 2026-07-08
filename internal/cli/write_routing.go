@@ -1,5 +1,5 @@
 // Copyright 2026 OrgMentem. Licensed under MIT. See LICENSE.
-// PATCH: Hybrid write routing. The Zotero local API is read-only, so when the CLI is
+// Hybrid write routing. The Zotero local API is read-only, so when the CLI is
 // pointed at it, mutating commands route to the Web API (api.zotero.org) while reads
 // stay local. resolveWebWriteBase builds the Web API base for the configured key;
 // fetchZoteroUserID resolves the numeric user ID once (cached to config).
@@ -66,7 +66,7 @@ func (f *rootFlags) resolveCreateVia(ctx context.Context, collectionRequested bo
 			return "", configErr(err)
 		}
 		if f.group != "" {
-			// PATCH: desktop connector has no group parameter; keep group writes on Web API.
+			// The desktop connector has no group parameter; keep group writes on Web API.
 			return "web", nil
 		}
 		if !isLocalZoteroAPI(cfg.BaseURL) {
@@ -160,7 +160,6 @@ func fetchZoteroUserID(cfg *config.Config, timeout time.Duration) (string, error
 // is near-always non-empty and does not reflect the key's per-group permission.
 // known=false when there is no key or the lookup fails, so callers report
 // "unknown" rather than over-claiming write access.
-// PATCH(glean review P1): key-permission write verdict for groups inspect.
 func keyGroupWriteAccess(cfg *config.Config, timeout time.Duration, groupID string) (canWrite bool, known bool) {
 	if cfg == nil || cfg.AuthHeader() == "" {
 		return false, false

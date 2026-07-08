@@ -1,5 +1,5 @@
 // Copyright 2026 OrgMentem. Licensed under MIT. See LICENSE.
-// PATCH(glean q1ia): `import scan` — a read-only, library-aware triage of a PDF
+// `import scan` — a read-only, library-aware triage of a PDF
 // folder. It deliberately does NOT re-implement Zotero's "Retrieve Metadata for
 // PDF" (recognizer + file upload). Instead it answers the question the Zotero GUI
 // cannot: which of these PDFs are duplicates of items I already have, which match
@@ -257,7 +257,7 @@ func pdfScanBytes(path string) []byte {
 		return nil
 	}
 	if fi.Size() <= scanHeadBytes+scanTailBytes {
-		// PATCH(glean zotero-pp-cli-2d2f9f266e5fedac): even the small-file path
+		// Even the small-file path
 		// reads through an explicit cap instead of unbounded io.ReadAll.
 		data, _ := io.ReadAll(io.LimitReader(f, scanHeadBytes+scanTailBytes+1))
 		if int64(len(data)) > scanHeadBytes+scanTailBytes {

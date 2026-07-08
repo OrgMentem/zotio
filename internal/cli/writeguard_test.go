@@ -1,5 +1,5 @@
 // Copyright 2026 OrgMentem. Licensed under MIT. See LICENSE.
-// PATCH: the Zotero local API rejects writes with distinctive bodies; classifyAPIError
+// The Zotero local API rejects writes with distinctive bodies; classifyAPIError
 // must turn those into read-only guidance, while leaving genuine auth errors alone.
 
 package cli

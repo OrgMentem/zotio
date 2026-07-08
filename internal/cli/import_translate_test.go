@@ -1,5 +1,4 @@
 // Copyright 2026 OrgMentem. Licensed under MIT. See LICENSE.
-// PATCH(glean 37jv): cover URL/DOI import metadata translation and dry-run.
 
 package cli
 

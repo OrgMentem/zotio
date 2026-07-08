@@ -1,5 +1,5 @@
 // Copyright 2026 OrgMentem. Licensed under MIT. See LICENSE.
-// PATCH(glean roadmap-phase5 freshness-export): pin the unsynced MCP payload so
+// pin the unsynced MCP payload so
 // agents can distinguish missing local state from command failure.
 
 package cli

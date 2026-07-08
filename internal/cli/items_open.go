@@ -1,5 +1,4 @@
 // Copyright 2026 OrgMentem. Licensed under MIT. See LICENSE.
-// PATCH: Add hand-written Zotero desktop URI opener missing from the generated CLI.
 
 package cli
 
@@ -17,12 +16,10 @@ import (
 // group library when the global --group <id> (or ZOTERO_GROUP) is set. It returns
 // the URI, the normalized target type, and a human-readable library scope.
 //
-// PATCH(glean 8r0o): generalize the macOS-only, personal-item-only opener into a
-// cross-platform deep-link layer (item/collection/attachment x personal/group).
-// The library segment is the shared zoteroLibrarySegment() (one convention with
-// the vault backlinks). The key is percent-encoded as one path segment (see glean
-// 3969059246039413 / 1b05b22e) so a key containing "/" cannot re-target a
-// different desktop object.
+// The deep-link layer handles item/collection/attachment targets across personal
+// and group libraries. The library segment is the shared zoteroLibrarySegment()
+// convention used by vault backlinks. The key is percent-encoded as one path
+// segment so a key containing "/" cannot re-target a different desktop object.
 func zoteroDeepLink(targetType, key string) (uri, normType, libScope string, err error) {
 	libScope = "personal"
 	if activeGroupID != "" {

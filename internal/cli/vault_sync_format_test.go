@@ -1,9 +1,4 @@
 // Copyright 2026 OrgMentem. Licensed under MIT. See LICENSE.
-// PATCH(glean 15e0): cover commit-1 format/safety hardening — identity keys and
-// managed/user fences on create, stable lookup by zotero_key (no duplicate on
-// citekey change), filename collision avoidance, legacy "## Notes" migration,
-// needs_notes_boundary, compare-before-replace writes, read-error handling,
-// rune-safe filenames, and library identity resolution.
 
 package cli
 
@@ -198,7 +193,6 @@ func TestVaultLibraryID(t *testing.T) {
 
 	activeGroupID = ""
 	cfgPath := filepath.Join(t.TempDir(), "config.toml")
-	// PATCH(glean 61a2a8a9): synthetic user id (was a real account id).
 	writeFile(t, cfgPath, "user_id = \"99999\"\n")
 	if got := vaultLibraryID(&rootFlags{configPath: cfgPath}); got != "users/99999" {
 		t.Errorf("personal library = %q, want users/99999", got)

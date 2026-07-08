@@ -1,5 +1,4 @@
 // Copyright 2026 OrgMentem. Licensed under MIT. See LICENSE.
-// PATCH: Add hand-written item collection membership lookup missing from the generated CLI.
 
 package cli
 

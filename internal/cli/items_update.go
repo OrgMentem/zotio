@@ -24,7 +24,7 @@ func newItemsUpdateCmd(flags *rootFlags) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "update <itemKey>",
 		Short: "Update a specific item",
-		// PATCH(glean zotero-pp-cli-76875fc8c78bd05c): use an item-key placeholder, not an API-token placeholder.
+		// Use an item-key placeholder, not an API-token placeholder.
 		Example:     "  zotio items update ABCD1234 --title \"Updated title\"",
 		Annotations: map[string]string{"zotio:endpoint": "items.update", "zotio:method": "PATCH", "zotio:path": "/items/{itemKey}"},
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -33,16 +33,16 @@ func newItemsUpdateCmd(flags *rootFlags) *cobra.Command {
 			}
 			if !stdinBody {
 			}
-			// PATCH: route through the write target and supply the version precondition
-			// Zotero requires for key-based writes (PATCH returns HTTP 428 without
-			// If-Unmodified-Since-Version). Mirrors items delete; the version GET and the
-			// PATCH hit the same library, so an item created on the web but not yet synced
-			// locally still resolves. An explicit version in a --stdin body is respected.
+			// Route through the write target and supply the version precondition Zotero
+			// requires for key-based writes (PATCH returns HTTP 428 without
+			// If-Unmodified-Since-Version). Mirrors items delete; the version GET and
+			// the PATCH hit the same library, so an item created on the web but not yet
+			// synced locally still resolves. An explicit version in a --stdin body is respected.
 			c, err := flags.newWriteClient()
 			if err != nil {
 				return err
 			}
-			// PATCH(glean zotero-pp-cli-1b05b22e1aeb8dd6): encode the item key as a single Zotero path segment.
+			// Encode the item key as a single Zotero path segment.
 			path := replacePathParam("/items/{itemKey}", "itemKey", url.PathEscape(args[0]))
 			var body map[string]any
 			if stdinBody {

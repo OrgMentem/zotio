@@ -14,7 +14,6 @@ func newTagsCmd(flags *rootFlags) *cobra.Command {
 
 	cmd.AddCommand(newTagsGetCmd(flags))
 	cmd.AddCommand(newTagsListCmd(flags))
-	// PATCH: Register hand-written Zotero tag workflows added after generation.
 	cmd.AddCommand(newTagsAuditCmd(flags))
 	cmd.AddCommand(newTagsInventoryCmd(flags))
 	cmd.AddCommand(newTagsRenameCmd(flags))

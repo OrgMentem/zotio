@@ -1,5 +1,5 @@
 // Copyright 2026 OrgMentem. Licensed under MIT. See LICENSE.
-// PATCH(glean roadmap-phase6 d27f99d4): `export snapshot` — a truly paginated,
+// `export snapshot` — a truly paginated,
 // resumable, reproducible export. Unlike the generated single-page `export`, it
 // walks every page (start/limit) of a structured item set, streams JSONL to a
 // data file (append-resumable via a checkpoint sidecar), and writes a lockfile
@@ -60,7 +60,7 @@ Scope is one of: library (default), collection:KEY, or tag:NAME.`,
 			}
 
 			checkpointFile := outputFile + ".checkpoint.json"
-			// PATCH(glean review P1): only append when a checkpoint for THIS scope is
+			// only append when a checkpoint for THIS scope is
 			// genuinely resumable (matching path, not done). --resume on a finished,
 			// missing, or mismatched checkpoint must truncate, else the fetch restarts
 			// at offset 0 while appending and silently duplicates the snapshot.
@@ -96,7 +96,7 @@ Scope is one of: library (default), collection:KEY, or tag:NAME.`,
 						return err
 					}
 				}
-				// PATCH(glean review P1): flush each page to the OS before the engine
+				// flush each page to the OS before the engine
 				// advances the checkpoint, so an abrupt interrupt cannot leave the
 				// checkpoint ahead of the data file (a later --resume would skip the tail).
 				return w.Flush()

@@ -1,5 +1,5 @@
 // Copyright 2026 OrgMentem. Licensed under MIT. See LICENSE.
-// PATCH(marketing-heroes-2): add manuscript bibliography citekey checking.
+// Add manuscript bibliography citekey checking.
 
 package cli
 
@@ -15,10 +15,10 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// PATCH(marketing-heroes-2): TeX citation commands accepted by items bibcheck.
+// TeX citation commands accepted by items bibcheck.
 var latexCitationRE = regexp.MustCompile(`\\(?:citeauthor|citeyear|parencite|textcite|autocite|citep|citet|cite|nocite)\*?(?:\s*\[[^\]\n]*\]){0,2}\s*\{([^}]*)\}`)
 
-// PATCH(marketing-heroes-2): Pandoc citekey token finder; code spans/blocks are stripped before this runs.
+// Pandoc citekey token finder; code spans/blocks are stripped before this runs.
 var pandocCitationRE = regexp.MustCompile(`(^|[^\\A-Za-z0-9_])-?@([A-Za-z0-9_][A-Za-z0-9_:.#$%&+?<>~/.-]*)`)
 
 type bibcheckSummary struct {
@@ -106,7 +106,7 @@ func newItemsBibcheckCmd(flags *rootFlags) *cobra.Command {
 	return cmd
 }
 
-// PATCH(marketing-heroes-2): dispatch manuscript parsing by supported extension only.
+// Dispatch manuscript parsing by supported extension only.
 func parseManuscriptCiteKeys(path string) ([]string, string, error) {
 	ext := strings.ToLower(filepath.Ext(path))
 	var format string
@@ -132,7 +132,7 @@ func parseManuscriptCiteKeys(path string) ([]string, string, error) {
 	return parsePandocMarkdownCiteKeys(string(data)), format, nil
 }
 
-// PATCH(marketing-heroes-2): parse LaTeX cite/nocite command key lists, including starred and optional-argument variants.
+// Parse LaTeX cite/nocite command key lists, including starred and optional-argument variants.
 func parseLatexCiteKeys(content string) []string {
 	matches := latexCitationRE.FindAllStringSubmatch(content, -1)
 	keys := make([]string, 0, len(matches))
@@ -145,7 +145,7 @@ func parseLatexCiteKeys(content string) []string {
 	return keys
 }
 
-// PATCH(marketing-heroes-2): parse Pandoc @citekey tokens after removing fenced and inline code.
+// Parse Pandoc @citekey tokens after removing fenced and inline code.
 func parsePandocMarkdownCiteKeys(content string) []string {
 	content = markdownWithoutCode(content)
 	matches := pandocCitationRE.FindAllStringSubmatch(content, -1)
@@ -265,7 +265,7 @@ func findClosingBackticks(s string, start, n int) int {
 	return start + idx
 }
 
-// PATCH(marketing-heroes-2): cross-reference manuscript keys against the shared Better BibTeX citekey inventory.
+// Cross-reference manuscript keys against the shared Better BibTeX citekey inventory.
 func buildBibcheckReport(manuscript, format string, keys []string, items []citekeyItem) bibcheckReport {
 	order := make([]string, 0, len(keys))
 	counts := make(map[string]int, len(keys))

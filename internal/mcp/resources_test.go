@@ -1,6 +1,6 @@
 // Copyright 2026 OrgMentem. Licensed under MIT. See LICENSE.
-// PATCH(glean qfuq): drive resources/prompts through the MCP server's JSON-RPC
-// dispatch (as an inspector/client would) and check payloads.
+// Drive resources/prompts through the MCP server's JSON-RPC dispatch
+// (as an inspector/client would) and check payloads.
 
 package mcp
 

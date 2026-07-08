@@ -1,5 +1,5 @@
 // Copyright 2026 OrgMentem. Licensed under MIT. See LICENSE.
-// PATCH: Hand-written `schema drift` probe (not in the generated CLI). Captures a
+// The `schema drift` probe captures a
 // baseline fingerprint of the running Zotero's item-type/field schema and diffs a
 // later live fetch against it, so a Zotero upgrade's new (or removed) item types,
 // fields, and creator fields are surfaced. The schema is global to a Zotero install,
@@ -71,8 +71,6 @@ Zotero install.`,
 
   # Re-baseline to the current schema
   zotio schema drift --update`,
-		// PATCH(glean mcp-surface-trim): mcp:hidden — schema drift is a
-		// maintenance/ops task (baseline + compare after a Zotero upgrade).
 		Annotations: map[string]string{"mcp:read-only": "true", "mcp:hidden": "true"},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			// Schema endpoints are global; newSchemaClient strips the library prefix.

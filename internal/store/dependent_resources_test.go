@@ -1,6 +1,6 @@
 // Copyright 2026 OrgMentem. Licensed under MIT. See LICENSE.
-// PATCH(glean hhup): cover dependent-resource columns and the annotation/
-// fulltext query helpers added for dependent-resource sync.
+// Exercises dependent-resource columns and the annotation/fulltext
+// query helpers used by dependent-resource sync.
 
 package store
 
@@ -106,7 +106,7 @@ func TestFulltextRoundTrip(t *testing.T) {
 	}
 }
 
-// PATCH(glean perf-audit x5lh): UpsertKeyed persists caller-keyed payloads (no
+// UpsertKeyed persists caller-keyed payloads (no
 // id in the body) in one transaction and round-trips through Fulltext.
 func TestUpsertKeyed(t *testing.T) {
 	s, err := OpenWithContext(context.Background(), filepath.Join(t.TempDir(), "data.db"))
@@ -154,7 +154,7 @@ func TestUpsertKeyed(t *testing.T) {
 	}
 }
 
-// PATCH(glean perf-audit rj6r): AnnotationsForItems returns the same rows as
+// AnnotationsForItems returns the same rows as
 // per-item AnnotationsForItem but grouped, in a single query.
 func TestAnnotationsForItems(t *testing.T) {
 	s, err := OpenWithContext(context.Background(), filepath.Join(t.TempDir(), "data.db"))

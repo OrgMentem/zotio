@@ -1,5 +1,4 @@
 // Copyright 2026 OrgMentem. Licensed under MIT. See LICENSE.
-// PATCH(glean write-safety): coverage for item collection add/remove/move mutations.
 
 package cli
 

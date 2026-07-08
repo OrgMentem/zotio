@@ -32,8 +32,8 @@ var noColor bool
 var humanFriendly bool
 
 // activeGroupID holds the numeric Zotero group ID selected via --group, or ""
-// for the personal library. PATCH(glean 9bfn): scopes both the API library
-// prefix and the on-disk DB file to a group library.
+// for the personal library. It scopes both the API library prefix and the
+// on-disk DB file to a group library.
 var activeGroupID string
 
 func colorEnabled() bool {
@@ -108,8 +108,8 @@ func rateLimitErr(err error) error { return &cliError{code: 7, err: err} }
 
 // redactedError wraps an error so error-chain inspection (e.g. errors.As to
 // *client.APIError) keeps working while Error() returns only pre-sanitized
-// text. PATCH(glean zotio-c3c6d04bb48b7e67): stops the raw response body from
-// reaching stderr / the --json envelope via a %w-wrapped APIError.Error().
+// text. This stops the raw response body from reaching stderr / the --json
+// envelope via a %w-wrapped APIError.Error().
 type redactedError struct {
 	msg string
 	err error
@@ -118,18 +118,18 @@ type redactedError struct {
 func (e *redactedError) Error() string { return e.msg }
 func (e *redactedError) Unwrap() error { return e.err }
 
-// PATCH(glean roadmap-phase1): library health quality gate (--fail-on) failed —
+// library health quality gate (--fail-on) failed —
 // the tool ran fine but the library did not meet the requested bar. Distinct
 // from error codes so CI can branch on "needs fixing" vs "tool broke".
 func gateErr(err error) error { return &cliError{code: 11, err: err} }
 
-// PATCH(glean roadmap-phase1): a declared precondition was unmet (e.g. Zotero
+// a declared precondition was unmet (e.g. Zotero
 // desktop not running for a live-local-API capability). Loud, not silent: the
 // agent's remedy is to provision the environment (launch the app, set a key,
 // sync) and retry — categorically different from a content gate or a hard error.
 func preconditionErr(err error) error { return &cliError{code: 9, err: err} }
 
-// PATCH(glean roadmap-phase2): the local store is staler than --require-fresh
+// the local store is staler than --require-fresh
 // allows, so a read cannot be certified. Distinct from a precondition (9) and a
 // quality gate (11): the remedy is `sync` + retry, which CI can automate.
 func freshnessErr(err error) error { return &cliError{code: 12, err: err} }
@@ -254,7 +254,7 @@ func writeAPIErrorEnvelope(flags *rootFlags, err error, code int) {
 // classifyAPIError maps API errors to structured exit codes with actionable hints.
 func classifyAPIError(err error, flags *rootFlags) error {
 	msg := err.Error()
-	// PATCH: the Zotero local API is GET-only and rejects writes with
+	// the Zotero local API is GET-only and rejects writes with
 	// "Endpoint does not support method" (400, POST) or "Method not implemented"
 	// (501, PUT/PATCH). Without this, those map to a misleading "fix your auth"
 	// hint. Surface the real cause and the Web API path forward instead.
@@ -266,14 +266,14 @@ func classifyAPIError(err error, flags *rootFlags) error {
 			"\n      Changes made via the Web API sync down to your desktop Zotero."+
 			"\n      Run 'zotio doctor' to check writability.", err))
 	}
-	// PATCH: a 412 on a write means the item's version changed since it was read —
+	// a 412 on a write means the item's version changed since it was read —
 	// common when reads come from the local API/store but writes go to the Web API
 	// and the desktop hasn't synced. Point at sync rather than a generic error.
 	if strings.Contains(msg, "HTTP 412") {
 		return apiErr(fmt.Errorf("%w\nhint: the item changed since it was read (version conflict)."+
 			"\n      Run 'zotio sync' to refresh local state, then retry.", err))
 	}
-	// PATCH(glean static-audit): classify via the shared cliutil helper so the
+	// classify via the shared cliutil helper so the
 	// HTTP-status detection isn't duplicated with the MCP layer; hint text and
 	// exit-code wrapping stay CLI-specific.
 	switch cliutil.ClassifyHTTPError(msg) {
@@ -285,7 +285,7 @@ func classifyAPIError(err error, flags *rootFlags) error {
 		writeAPIErrorEnvelope(flags, classified, ExitCode(classified))
 		return classified
 	case cliutil.HTTPErrBadRequestAuth:
-		// PATCH(glean zotio-c3c6d04bb48b7e67): do NOT wrap the raw APIError with
+		// do NOT wrap the raw APIError with
 		// %w — its Error() is the unredacted response body, which reached stderr
 		// and the --json envelope ahead of the sanitized copy, making the
 		// SanitizeErrorBody call dead code. Build the message from the sanitized
@@ -348,7 +348,7 @@ func newTabWriter(w io.Writer) *tabwriter.Writer {
 	return tabwriter.NewWriter(w, 2, 4, 2, ' ', 0)
 }
 
-// PATCH(glean path-param-escape): percent-encode user-controlled path
+// percent-encode user-controlled path
 // parameters before splicing them into endpoint templates. Raw replacement let
 // "/" and "?" retarget generated commands to sibling resources.
 func replacePathParam(path, name, value string) string {
@@ -374,7 +374,7 @@ func paginatedGet(c interface {
 		return c.GetWithHeaders(path, clean, headers)
 	}
 	if cursorParam == "start" {
-		// PATCH(glean zotero-pp-cli-c12e62462b4d9228): keep Zotero's offset
+		// keep Zotero's offset
 		// parameter even when it is zero; the generic zero-value scrubber above
 		// drops "0", but fetch-all needs an explicit, incrementable start value.
 		if _, ok := clean[cursorParam]; !ok {
@@ -443,7 +443,7 @@ func paginatedGet(c interface {
 				continue
 			}
 		}
-		// PATCH(glean zotero-pp-cli-c12e62462b4d9228): direct JSON arrays can
+		// direct JSON arrays can
 		// paginate via Zotero start/limit offsets; other APIs still stop here
 		// unless they expose a cursor in an object envelope.
 		break
@@ -719,7 +719,7 @@ func compactListFields(items []map[string]any) json.RawMessage {
 		"status": true, "state": true, "type": true, "priority": true,
 		"url": true, "email": true, "key": true,
 		"created_at": true, "updated_at": true, "createdAt": true, "updatedAt": true,
-		// PATCH: Preserve hand-written Zotero analytics fields under --agent compact output.
+		// Preserve hand-written Zotero analytics fields under --agent compact output.
 		"cite_key": true, "display_name": true, "creator_type": true, "item_count": true,
 		"venue": true, "item_type": true, "min_year": true, "max_year": true,
 		"count": true, "date_added": true, "uri": true, "launched": true,
@@ -731,7 +731,7 @@ func compactListFields(items []map[string]any) json.RawMessage {
 
 	filtered := make([]map[string]any, 0, len(items))
 	for _, item := range items {
-		// PATCH(glean compact-envelope; upstream cli-printing-press candidate):
+		//
 		// resource-envelope items (Zotero/JSON:API shape {key/id, data:{...}})
 		// keep nothing under the flat allowlist because their real fields are
 		// nested. Detect the envelope and compact the nested object instead, so
@@ -768,7 +768,7 @@ func compactObjectFields(obj map[string]any) json.RawMessage {
 	stripFields := map[string]bool{
 		"description": true, "body": true, "content": true,
 		"comments": true, "attachments": true, "html": true, "markdown": true,
-		// PATCH(glean compact-envelope): verbose Zotero item fields.
+		// verbose Zotero item fields.
 		"abstractNote": true, "relations": true,
 	}
 
@@ -827,7 +827,7 @@ func csvSafeCell(s string) string {
 	if s == "" {
 		return s
 	}
-	// PATCH(glean zotero-pp-cli-34937352be56489d): prevent spreadsheet formula
+	// prevent spreadsheet formula
 	// execution when Zotero-controlled values are opened as CSV.
 	switch s[0] {
 	case '=', '+', '-', '@', '\t', '\r':
@@ -956,7 +956,7 @@ func printAutoTable(w io.Writer, items []map[string]any) error {
 		return nil
 	}
 
-	// PATCH(glean zotero-pp-cli-85790b2a8abd2d22): Zotero item rows are
+	// Zotero item rows are
 	// resource envelopes ({key, version, data:{...}}). Flatten nested data for
 	// human tables so users see title/type/date instead of a single opaque map.
 	items = flattenResourceEnvelopesForTable(items)
@@ -1369,7 +1369,7 @@ type DataProvenance struct {
 	Reason       string     `json:"reason,omitempty"`        // why local was used: "user_requested", "api_unreachable", "no_search_endpoint"
 	ResourceType string     `json:"resource_type,omitempty"` // which resource type was queried
 	Freshness    any        `json:"freshness,omitempty"`     // optional machine-owned freshness metadata for covered command paths
-	// PATCH(glean cvl6): true when a local read applied the request's scopes
+	// true when a local read applied the request's scopes
 	// (itemType/tag/collection/sort/limit) rather than dumping all synced rows.
 	Scoped bool `json:"scoped,omitempty"`
 }
@@ -1427,7 +1427,7 @@ func wrapWithProvenance(data json.RawMessage, prov DataProvenance) (json.RawMess
 	if prov.Freshness != nil {
 		meta["freshness"] = prov.Freshness
 	}
-	// PATCH(glean cvl6): advertise that local filters were applied.
+	// advertise that local filters were applied.
 	if prov.Scoped {
 		meta["scoped"] = true
 	}
@@ -1472,10 +1472,10 @@ func truncateJSONArray(data json.RawMessage, n int) json.RawMessage {
 }
 
 // defaultDBPath returns the canonical path for the local SQLite database.
-// PATCH(glean 9bfn): group libraries get their own data-group-<id>.db file so
+// group libraries get their own data-group-<id>.db file so
 // a group sync never mixes into the personal data.db; personal stays data.db.
 func defaultDBPath(name string) string {
-	// PATCH(demo-mode): the demo sandbox uses a separate demo.db in the same
+	// the demo sandbox uses a separate demo.db in the same
 	// directory (group suffix is irrelevant in demo mode).
 	if demoActive() {
 		return demoDBPath(name)
@@ -1491,7 +1491,7 @@ func defaultDBPath(name string) string {
 // rewriteLibraryPrefix rewrites a Zotero API base URL's library prefix to a
 // group library. It replaces an existing /users/<id> or /groups/<id> segment
 // with /groups/<groupID>; when no such segment exists it appends /groups/<id>
-// to the URL. PATCH(glean 9bfn).
+// to the URL.
 func rewriteLibraryPrefix(baseURL, groupID string) string {
 	prefix := regexp.MustCompile(`/(users|groups)/[^/]+`)
 	if prefix.MatchString(baseURL) {
@@ -1502,7 +1502,7 @@ func rewriteLibraryPrefix(baseURL, groupID string) string {
 
 // userIDFromBaseURL extracts the numeric user ID from a personal-library base
 // URL's /users/<id> segment. Returns false when the URL targets a group
-// library or has no user segment. PATCH(glean 9bfn).
+// library or has no user segment.
 func userIDFromBaseURL(baseURL string) (string, bool) {
 	m := regexp.MustCompile(`/users/([^/]+)`).FindStringSubmatch(baseURL)
 	if len(m) != 2 || m[1] == "" {
@@ -1512,7 +1512,7 @@ func userIDFromBaseURL(baseURL string) (string, bool) {
 }
 
 // isAllDigits reports whether s is non-empty and contains only ASCII digits.
-// PATCH(glean 9bfn): guards the numeric --group value.
+// guards the numeric --group value.
 func isAllDigits(s string) bool {
 	if s == "" {
 		return false

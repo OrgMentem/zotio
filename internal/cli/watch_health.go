@@ -12,7 +12,7 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// PATCH(marketing-heroes-2): watchHealthMonitor tracks health findings across successful watch sync cycles.
+// watchHealthMonitor tracks health findings across successful watch sync cycles.
 type watchHealthMonitor struct {
 	enabled  bool
 	preset   string
@@ -23,7 +23,7 @@ type watchHealthMonitor struct {
 	baseline bool
 }
 
-// PATCH(marketing-heroes-2): watchHealthWebhookPayload is the drift notification contract for --health-webhook.
+// watchHealthWebhookPayload is the drift notification contract for --health-webhook.
 type watchHealthWebhookPayload struct {
 	CycleAt       time.Time       `json:"cycle_at"`
 	Preset        string          `json:"preset"`
@@ -32,7 +32,7 @@ type watchHealthWebhookPayload struct {
 	Totals        healthSummary   `json:"totals"`
 }
 
-// PATCH(marketing-heroes-2): normalize watch health flags against the library-health preset registry.
+// newWatchHealthMonitor normalizes watch health flags against the library-health preset registry.
 func newWatchHealthMonitor(flags *rootFlags, enabled bool, presetRaw string, webhook string) (*watchHealthMonitor, error) {
 	preset := strings.ToLower(strings.TrimSpace(presetRaw))
 	if preset == "" {
@@ -58,7 +58,7 @@ func newWatchHealthMonitor(flags *rootFlags, enabled bool, presetRaw string, web
 	}, nil
 }
 
-// PATCH(marketing-heroes-2): run performs best-effort health reporting without affecting watch sync liveness.
+// run performs best-effort health reporting without affecting watch sync liveness.
 func (m *watchHealthMonitor) run(ctx context.Context, cmd *cobra.Command, cycleAt time.Time) {
 	if m == nil || !m.enabled || ctx.Err() != nil {
 		return
@@ -96,7 +96,7 @@ func (m *watchHealthMonitor) run(ctx context.Context, cmd *cobra.Command, cycleA
 	}
 }
 
-// PATCH(marketing-heroes-2): report reuses library-health internals over the local synced store.
+// report reuses library-health internals over the local synced store.
 func (m *watchHealthMonitor) report(ctx context.Context) (healthReport, error) {
 	rawDB, err := openStoreForRead(ctx, "zotio")
 	if err != nil {
@@ -121,7 +121,7 @@ func (m *watchHealthMonitor) report(ctx context.Context) (healthReport, error) {
 	return assembleHealthReport(db, healthCtx, m.preset, m.kinds, "", scopeResult{All: true, Expr: "library"})
 }
 
-// PATCH(marketing-heroes-2): deliverWebhook posts the compact drift payload using the shared delivery webhook conventions.
+// deliverWebhook posts the compact drift payload using the shared delivery webhook conventions.
 func (m *watchHealthMonitor) deliverWebhook(cmd *cobra.Command, cycleAt time.Time, newFindings []healthFinding, resolvedCount int, totals healthSummary) {
 	payload := watchHealthWebhookPayload{
 		CycleAt:       cycleAt,
@@ -140,7 +140,7 @@ func (m *watchHealthMonitor) deliverWebhook(cmd *cobra.Command, cycleAt time.Tim
 	}
 }
 
-// PATCH(marketing-heroes-2): watchHealthFindingSet indexes findings by the stable health taxonomy identity.
+// watchHealthFindingSet indexes findings by the stable health taxonomy identity.
 func watchHealthFindingSet(findings []healthFinding) map[string]healthFinding {
 	out := make(map[string]healthFinding, len(findings))
 	for _, f := range findings {
@@ -149,7 +149,7 @@ func watchHealthFindingSet(findings []healthFinding) map[string]healthFinding {
 	return out
 }
 
-// PATCH(marketing-heroes-2): watchHealthFindingKey preserves (kind,item_key), with grouped evidence keys for aggregate findings.
+// watchHealthFindingKey preserves (kind,item_key), with grouped evidence keys for aggregate findings.
 func watchHealthFindingKey(f healthFinding) string {
 	if f.ItemKey != "" {
 		return f.Kind + "\x00item\x00" + f.ItemKey
@@ -170,7 +170,7 @@ func watchHealthFindingKey(f healthFinding) string {
 	return f.Kind
 }
 
-// PATCH(marketing-heroes-2): watchHealthFindingDisplayKey turns the diff identity into a concise human token.
+// watchHealthFindingDisplayKey turns the diff identity into a concise human token.
 func watchHealthFindingDisplayKey(f healthFinding) string {
 	if f.ItemKey != "" {
 		return f.ItemKey
@@ -192,7 +192,7 @@ func watchHealthFindingDisplayKey(f healthFinding) string {
 	return "-"
 }
 
-// PATCH(marketing-heroes-2): watchHealthFindingTitle supplies a quoted label for item and grouped health lines.
+// watchHealthFindingTitle supplies a quoted label for item and grouped health lines.
 func watchHealthFindingTitle(f healthFinding) string {
 	if f.Title != "" {
 		return f.Title

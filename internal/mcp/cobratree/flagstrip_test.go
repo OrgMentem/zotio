@@ -8,7 +8,7 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// PATCH(glean facade-apply): the write-safety gate flags stay reachable for
+// The write-safety gate flags stay reachable for
 // MUTATING commands (so applies work over MCP) and are stripped from read-only
 // commands. Formatting/ops globals and hidden globals stay stripped everywhere.
 var writeGatingGlobalFlagNames = []string{

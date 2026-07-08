@@ -1,5 +1,5 @@
 // Copyright 2026 OrgMentem. Licensed under MIT. See LICENSE.
-// PATCH(glean roadmap-phase7 3df91067): env fallback for profile/group so MCP
+// env fallback for profile/group so MCP
 // installs and scheduled agents (env, not flags) honor library/profile selection.
 
 package cli

@@ -1,7 +1,6 @@
 // Copyright 2026 OrgMentem. Licensed under MIT. See LICENSE.
-// PATCH(glean roadmap-phase5 bounded-graph): expose bounded local graph reads
-// for MCP resources without letting recursive Zotero relationships fan out
-// unboundedly.
+// MCP graph exporters keep local relationship traversal bounded so recursive
+// Zotero relationships cannot fan out unboundedly.
 
 package cli
 
@@ -79,7 +78,7 @@ func graphNotFoundJSON(key string) ([]byte, error) {
 
 // CollectionTreeJSON returns the named collection and bounded nested
 // subcollections for MCP graph resources.
-// PATCH(glean roadmap-phase5 bounded-graph): cap recursion by both depth and
+// cap recursion by both depth and
 // node count so malformed collection graphs cannot exhaust MCP hosts.
 func CollectionTreeJSON(key string) ([]byte, error) {
 	db, err := openStoreForRead(context.Background(), "zotio")
@@ -177,7 +176,7 @@ LIMIT ?`, parentKey, remaining+1)
 }
 
 // ItemChildrenJSON returns bounded child items for a parent item key.
-// PATCH(glean roadmap-phase5 bounded-graph): read children through indexed
+// read children through indexed
 // parent_key with an explicit cap for MCP callers.
 func ItemChildrenJSON(key string) ([]byte, error) {
 	db, err := openStoreForRead(context.Background(), "zotio")
@@ -223,8 +222,7 @@ LIMIT ?`, key, graphNodeCap+1)
 	return json.MarshalIndent(out, "", "  ")
 }
 
-// ItemAttachmentsJSON returns bounded attachment children for a parent item key.
-// PATCH(glean roadmap-phase5 bounded-graph): expose attachment metadata while
+// ItemAttachmentsJSON returns bounded attachment metadata for a parent item key,
 // keeping traversal local and capped.
 func ItemAttachmentsJSON(key string) ([]byte, error) {
 	db, err := openStoreForRead(context.Background(), "zotio")
@@ -275,7 +273,7 @@ LIMIT ?`, key, graphNodeCap+1)
 }
 
 // ItemContextJSON returns bounded local graph context for an item key.
-// PATCH(glean roadmap-phase5 bounded-graph): summarize parent, membership, tags,
+// summarize parent, membership, tags,
 // and dependent counts with capped JSON-list expansion.
 func ItemContextJSON(key string) ([]byte, error) {
 	db, err := openStoreForRead(context.Background(), "zotio")

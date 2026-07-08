@@ -18,7 +18,7 @@ func newCollectionsItemsCmd(flags *rootFlags) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "items <collectionKey>",
 		Short: "List all items in a collection",
-		// PATCH(glean zotero-pp-cli-76875fc8c78bd05c): use a collection key placeholder, not a token.
+		// use a collection key placeholder, not a token.
 		Example:     "  zotio collections items COLLECTIONKEY",
 		Annotations: map[string]string{"zotio:endpoint": "collections.items", "zotio:method": "GET", "zotio:path": "/collections/{collectionKey}/items", "mcp:read-only": "true"},
 		RunE: func(cmd *cobra.Command, args []string) error {

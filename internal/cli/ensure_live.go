@@ -1,5 +1,5 @@
 // Copyright 2026 OrgMentem and contributors. Licensed under MIT. See LICENSE.
-// PATCH(glean roadmap-phase2): share cross-platform Zotero desktop launch and local-API readiness checks.
+// share cross-platform Zotero desktop launch and local-API readiness checks.
 
 package cli
 
@@ -19,7 +19,7 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// PATCH(glean roadmap-phase2): centralize OS-specific desktop URI launch commands for tests and reuse.
+// centralize OS-specific desktop URI launch commands for tests and reuse.
 func launchCommand(goos, uri string) (name string, args []string) {
 	switch goos {
 	case "darwin":
@@ -33,7 +33,7 @@ func launchCommand(goos, uri string) (name string, args []string) {
 	}
 }
 
-// PATCH(glean roadmap-phase2): provide one side-effect-gated URI launcher for desktop integrations.
+// provide one side-effect-gated URI launcher for desktop integrations.
 func launchURI(uri string) error {
 	if cliutil.IsVerifyEnv() {
 		fmt.Fprintf(os.Stdout, "would open: %s\n", uri)
@@ -46,7 +46,7 @@ func launchURI(uri string) error {
 	return nil
 }
 
-// PATCH(glean roadmap-phase2): classify Zotero local API reachability by transport success, not HTTP status.
+// classify Zotero local API reachability by transport success, not HTTP status.
 func localAPIReachable(c *client.Client) bool {
 	_, err := c.Get("/", nil)
 	if err == nil {
@@ -56,7 +56,7 @@ func localAPIReachable(c *client.Client) bool {
 	return errors.As(err, &apiErr)
 }
 
-// PATCH(glean roadmap-phase2): implement the doctor --ensure-live precondition remediation primitive.
+// implement the doctor --ensure-live precondition remediation primitive.
 func ensureLive(cmd *cobra.Command, flags *rootFlags, launch bool) error {
 	c, err := flags.newClient()
 	if err != nil {

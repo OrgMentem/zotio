@@ -1,5 +1,5 @@
 // Copyright 2026 OrgMentem. Licensed under MIT. See LICENSE.
-// PATCH(glean cvl6): Zotero-aware local query planner. Replays the scoping
+// Zotero-aware local query planner. Replays the scoping
 // semantics of the Zotero item list/search endpoints (itemType, tag,
 // collection, top-level, quick-search, sort, direction, limit, start) against
 // the local resources table so `--data-source local` returns the same key sets
@@ -194,9 +194,9 @@ func buildSearchDocument(resourceType string, data json.RawMessage) string {
 }
 
 // ftsMatchQuery turns a user quick-search string into a bounded FTS5 MATCH
-// expression. PATCH(glean field-search-or-null): preserve the documented
-// boolean operators instead of quoting them as literal tokens, while still
-// quoting ordinary terms so punctuation in titles/DOIs cannot become syntax.
+// expression. It preserves documented boolean operators instead of quoting them
+// as literal tokens, while still quoting ordinary terms so punctuation in
+// titles/DOIs cannot become syntax.
 func ftsMatchQuery(query string) string {
 	tokens := scanFTSQuery(query)
 	expr := normalizeFTSQuery(tokens)
@@ -345,7 +345,7 @@ func isFTSSpace(b byte) bool {
 
 // SearchByType runs an FTS search scoped to a single resource type. It mirrors
 // Search but adds a resource_type predicate so the search command's --type flag
-// genuinely narrows local results. PATCH(glean cvl6).
+// genuinely narrows local results.
 func (s *Store) SearchByType(query, resourceType string, limit int) ([]json.RawMessage, error) {
 	if limit <= 0 {
 		limit = 50

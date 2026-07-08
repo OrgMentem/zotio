@@ -1,5 +1,4 @@
 // Copyright 2026 OrgMentem. Licensed under MIT. See LICENSE.
-// PATCH(glean hhup): cover the opt-in PDF full-text sync pass.
 
 package cli
 

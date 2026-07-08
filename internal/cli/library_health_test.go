@@ -1,7 +1,4 @@
 // Copyright 2026 OrgMentem. Licensed under MIT. See LICENSE.
-// PATCH(glean roadmap-phase1): tests for the composite `library health` report —
-// check composition, --for presets, the --fail-on quality gate (exit 11), and the
-// precondition contract for the live broken-attachment check (loud skip + exit 9).
 
 package cli
 
@@ -89,8 +86,6 @@ func TestLibraryHealthComposesAllChecks(t *testing.T) {
 
 	// The live opt-in checks (broken attachments, retraction probe) must be
 	// loudly skipped, not silently dropped.
-	// PATCH(marketing-heroes-2): retracted_item joined broken_attachment_file
-	// as an opt-in live check in the "all" preset.
 	skips := map[string]healthSkip{}
 	for _, s := range report.Skipped {
 		skips[s.Kind] = s

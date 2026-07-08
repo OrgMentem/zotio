@@ -1,5 +1,4 @@
 // Copyright 2026 OrgMentem. Licensed under MIT. See LICENSE.
-// PATCH: Add hand-written local tag drift audit missing from the generated CLI.
 
 package cli
 
@@ -53,7 +52,6 @@ func newTagsAuditCmd(flags *rootFlags) *cobra.Command {
 			return printTagAuditReport(cmd, totalTags, plans, flags.dryRun)
 		},
 	}
-	// PATCH(glean write-safety): expose the write-capable audit remediation as an explicit child command.
 	cmd.AddCommand(newTagsAuditFixCmd(flags))
 	return cmd
 }
@@ -113,8 +111,8 @@ func newTagsAuditFixCmd(flags *rootFlags) *cobra.Command {
 }
 
 // tagAuditDistinctQuery and tagAuditCountQuery enumerate library tags and their
-// item counts. PATCH(glean roadmap-phase1): shared by `tags audit` and the
-// `library health` tag-drift check so the two never drift.
+// item counts. They are shared by `tags audit` and the `library health`
+// tag-drift check so the two never drift.
 const tagAuditDistinctQuery = `
 SELECT DISTINCT json_extract(tags.value, '$.tag') AS tag_name
 FROM resources, json_each(json_extract(data, '$.data.tags')) AS tags
@@ -218,7 +216,7 @@ func buildTagAuditPlans(tagRows, countRows []map[string]any) []tagAuditPlan {
 				continue
 			}
 			aliases = append(aliases, tag.name)
-			// PATCH(glean zotero-pp-cli-c4c1d3bd5ec4db5e): single-quote generated shell arguments and render line breaks inert.
+			// Single-quote generated shell arguments and render line breaks inert.
 			commands = append(commands, fmt.Sprintf(
 				`zotio tags rename --from %s --to %s`,
 				quoteTagAuditCommandArg(tag.name),

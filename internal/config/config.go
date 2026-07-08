@@ -39,7 +39,7 @@ type Config struct {
 	fileConfig       *Config         `toml:"-"`
 	ZoteroApiKey     string          `toml:"api_key"`
 	UserID           string          `toml:"user_id,omitempty"`
-	// PATCH(glean 15e0): vault sync defaults so `vault sync` can resolve its
+	// vault sync defaults so `vault sync` can resolve its
 	// output directory and format without --out on every run. Pointer +
 	// omitempty keeps save() from writing an empty [vault] table.
 	Vault *VaultConfig `toml:"vault,omitempty"`
@@ -52,7 +52,7 @@ type VaultConfig struct {
 	Format   string `toml:"format"`
 }
 
-// PATCH(demo-mode): demoModeFromEnv mirrors cli.demoActive. The config package
+// demoModeFromEnv mirrors cli.demoActive. The config package
 // cannot import cli (import cycle), so it reads ZOTIO_DEMO directly. Demo mode
 // is on when ZOTIO_DEMO is set to a non-empty value other than "0".
 func demoModeFromEnv() bool {
@@ -60,7 +60,7 @@ func demoModeFromEnv() bool {
 	return v != "" && v != "0"
 }
 
-// PATCH(demo-mode): demoConfig is the sandbox configuration — no api key, no
+// demoConfig is the sandbox configuration — no api key, no
 // user ID, the default local base URL, and AuthSource "demo". It is not backed
 // by any file, so a write attempt fails like an unconfigured install.
 func demoConfig() *Config {
@@ -71,7 +71,7 @@ func demoConfig() *Config {
 }
 
 func Load(configPath string) (*Config, error) {
-	// PATCH(demo-mode): in the demo sandbox, return a pristine, key-less config
+	// in the demo sandbox, return a pristine, key-less config
 	// before touching any config file or ZOTERO_* env override, so no command
 	// can read the user's real config, credentials, or base URL.
 	if demoModeFromEnv() {

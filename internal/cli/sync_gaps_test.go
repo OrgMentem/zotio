@@ -1,5 +1,4 @@
 // Copyright 2026 OrgMentem. Licensed under MIT. See LICENSE.
-// PATCH(glean test-gaps pg9a): Covers sync helpers and paginated syncResource behavior.
 
 package cli
 
@@ -162,7 +161,7 @@ func TestSyncDefaultAndResourceHelpers(t *testing.T) {
 		t.Fatalf("extractID missing = %q, want empty", got)
 	}
 
-	// PATCH(glean bugfix): Zotero tags and global schema lists use domain-name
+	// Zotero tags and global schema lists use domain-name
 	// keys that are not in the generic ID fallback list.
 	idCases := []struct {
 		resource string
@@ -204,7 +203,7 @@ func TestSyncDefaultAndResourceHelpers(t *testing.T) {
 	}
 }
 
-// PATCH(glean bugfix): schema sync must request global Zotero endpoints and
+// schema sync must request global Zotero endpoints and
 // still persist rows whose key field is itemType rather than id/key/name.
 func TestSyncResourceSchemaUsesGlobalBaseAndSchemaID(t *testing.T) {
 	syncTestWithHumanFriendly(t, false)

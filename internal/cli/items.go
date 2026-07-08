@@ -16,19 +16,17 @@ func newItemsCmd(flags *rootFlags) *cobra.Command {
 	cmd.AddCommand(newItemsCreateCmd(flags))
 	cmd.AddCommand(newItemsNewCmd(flags))
 	cmd.AddCommand(newItemsDeleteCmd(flags))
-	// PATCH: Register hand-written Zotero item workflows added after generation.
 	cmd.AddCommand(newItemsAnnotationsCmd(flags))
 	cmd.AddCommand(newItemsAuditCmd(flags))
 	cmd.AddCommand(newItemsAuthorsCmd(flags))
 	cmd.AddCommand(newItemsCiteCmd(flags))
 	cmd.AddCommand(newItemsCitekeyConflictsCmd(flags))
-	// PATCH(marketing-heroes-2): register manuscript Better BibTeX bibcheck.
 	cmd.AddCommand(newItemsBibcheckCmd(flags))
 	cmd.AddCommand(newItemsCollectionsOfCmd(flags))
 	cmd.AddCommand(newItemsDuplicatesCmd(flags))
-	// PATCH(glean dk33): metadata enrichment/remediation pipeline.
+	// Metadata enrichment/remediation pipeline.
 	cmd.AddCommand(newItemsEnrichCmd(flags))
-	// PATCH: attachment on-disk file-path resolver (local-API file endpoints).
+	// Attachment on-disk file-path resolver (local-API file endpoints).
 	cmd.AddCommand(newItemsFileCmd(flags))
 	cmd.AddCommand(newItemsFindCmd(flags))
 	cmd.AddCommand(newItemsFulltextCmd(flags))
@@ -37,12 +35,11 @@ func newItemsCmd(flags *rootFlags) *cobra.Command {
 	cmd.AddCommand(newItemsNoteTemplateCmd(flags))
 	cmd.AddCommand(newItemsOpenCmd(flags))
 	cmd.AddCommand(newItemsPreprintCheckCmd(flags))
-	// PATCH(marketing-heroes-2): register CrossRef retraction notice checks.
 	cmd.AddCommand(newItemsRetractCheckCmd(flags))
 	cmd.AddCommand(newItemsRecentCmd(flags))
 	cmd.AddCommand(newItemsRestoreCmd(flags))
 	cmd.AddCommand(newItemsStaleCmd(flags))
-	cmd.AddCommand(newItemsSummarizeCmd(flags)) // PATCH(glean nbiv)
+	cmd.AddCommand(newItemsSummarizeCmd(flags))
 	cmd.AddCommand(newItemsUnfiledCmd(flags))
 	cmd.AddCommand(newItemsVenuesCmd(flags))
 	cmd.AddCommand(newItemsGetCmd(flags))

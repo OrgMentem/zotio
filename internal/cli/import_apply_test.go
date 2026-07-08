@@ -1,5 +1,4 @@
 // Copyright 2026 OrgMentem. Licensed under MIT. See LICENSE.
-// PATCH(glean roadmap-phase4 import-apply): preview-only tests for applying reviewed import manifests.
 
 package cli
 

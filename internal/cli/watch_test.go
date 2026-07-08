@@ -1,5 +1,4 @@
 // Copyright 2026 OrgMentem. Licensed under MIT. See LICENSE.
-// PATCH(glean roadmap-phase7 watch-sync): cover watch-mode interval validation and bounded one-shot sync.
 
 package cli
 

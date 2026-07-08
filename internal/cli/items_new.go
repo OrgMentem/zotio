@@ -1,5 +1,4 @@
 // Copyright 2026 OrgMentem. Licensed under MIT. See LICENSE.
-// PATCH(glean roadmap-phase4 items-new): add schema-backed item creation.
 
 package cli
 
@@ -14,7 +13,7 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// PATCH(glean roadmap-phase4 items-new): schema-backed interactive item creation from /items/new.
+// newItemsNewCmd creates schema-backed items from /items/new.
 func newItemsNewCmd(flags *rootFlags) *cobra.Command {
 	var flagItemType string
 	var flagFields []string
@@ -80,7 +79,7 @@ func newItemsNewCmd(flags *rootFlags) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			// PATCH: route item creates through the desktop connector when available.
+			// Route item creates through the desktop connector when available.
 			res, err := routeCreateItem(cmd.Context(), flags, c, item, itemCreateSourceURI(item), cmd.Flags().Changed("collection"))
 			if err != nil {
 				return err
@@ -99,7 +98,7 @@ func newItemsNewCmd(flags *rootFlags) *cobra.Command {
 	return cmd
 }
 
-// PATCH(glean roadmap-phase4 items-new): fetch Zotero Web API's schema-backed blank item template.
+// fetchItemTemplate retrieves Zotero Web API's schema-backed blank item template.
 func fetchItemTemplate(ctx context.Context, flags *rootFlags, itemType string) (map[string]any, error) {
 	select {
 	case <-ctx.Done():
@@ -111,12 +110,12 @@ func fetchItemTemplate(ctx context.Context, flags *rootFlags, itemType string) (
 	if err != nil {
 		return nil, err
 	}
-	// PATCH(glean items-new web-routing): /items/new is a global Web API endpoint
-	// the local API does not serve. When the CLI is pointed at the local API,
-	// redirect this template fetch to the Web API using the same hybrid routing
-	// writes use (ResolveWriteBase), stripping the library prefix since the
-	// endpoint is global. With no key, ResolveWriteBase yields "" and the Get
-	// below fails into the precondition error below.
+	// The /items/new endpoint is global; the local API does not serve it. When
+	// the CLI is pointed at the local API, redirect this template fetch to the Web
+	// API using the same hybrid routing writes use (ResolveWriteBase), stripping
+	// the library prefix since the endpoint is global. With no key,
+	// ResolveWriteBase yields "" and the Get below fails into the precondition
+	// error below.
 	if c.ResolveWriteBase != nil {
 		if base, rerr := c.ResolveWriteBase(); rerr == nil && base != "" {
 			c.BaseURL = stripLibraryPrefix(base)
@@ -141,7 +140,7 @@ func fetchItemTemplate(ctx context.Context, flags *rootFlags, itemType string) (
 	return template, nil
 }
 
-// PATCH(glean roadmap-phase4 items-new): reject fields absent from the schema template before POSTing.
+// validateItemFields rejects fields absent from the schema template before POSTing.
 func validateItemFields(template, item map[string]any) error {
 	allowedSpecial := map[string]bool{
 		"itemType":    true,

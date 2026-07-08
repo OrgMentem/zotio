@@ -829,7 +829,7 @@ func TestRetryAfter_Seconds(t *testing.T) {
 	}
 }
 
-// PATCH(glean test-gaps 3ta0): pin a fixed reference time via the retryAfterNow
+// pin a fixed reference time via the retryAfterNow
 // seam so Retry-After parsing is asserted exactly instead of with a loose 5-8s
 // tolerance range (which traded precision for wall-clock robustness).
 func TestRetryAfter_HTTPDate(t *testing.T) {

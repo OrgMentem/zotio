@@ -67,11 +67,11 @@ var frameworkCommands = map[string]bool{
 	"sql":           true,
 	"version":       true,
 	"which":         true,
-	// PATCH(glean c4ke): tail is a long-running streaming command that writes
+	// tail is a long-running streaming command that writes
 	// to os.Stdout and never returns under --follow; it cannot run in-process
 	// as a request/response MCP tool, so exclude it from the mirror.
 	"tail": true,
-	// PATCH(glean mcp-surface-trim): watch runs periodic incremental sync cycles
+	// watch runs periodic incremental sync cycles
 	// and blocks (same shape as tail); it cannot serve as a request/response MCP
 	// tool, so exclude it from the mirror.
 	"watch": true,

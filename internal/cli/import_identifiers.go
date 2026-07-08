@@ -1,5 +1,5 @@
 // Copyright 2026 OrgMentem. Licensed under MIT. See LICENSE.
-// PATCH(glean roadmap-phase4 identifier-imports): Add PMID, arXiv, and ISBN import adapters.
+// Add PMID, arXiv, and ISBN import adapters.
 
 package cli
 
@@ -36,7 +36,7 @@ type arxivAuthor struct {
 	Name string `xml:"name"`
 }
 
-// PATCH(glean roadmap-phase4 identifier-imports): Register PubMed ID import as a reviewable Zotero item create.
+// Register PubMed ID import as a reviewable Zotero item create.
 func newImportPmidCmd(flags *rootFlags) *cobra.Command {
 	var flagCollection string
 	var flagDryRun bool
@@ -66,7 +66,7 @@ func newImportPmidCmd(flags *rootFlags) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			// PATCH: route item creates through the desktop connector when available.
+			// Route item creates through the desktop connector when available.
 			res, err := routeCreateItem(cmd.Context(), flags, c, item, itemCreateSourceURI(item), cmd.Flags().Changed("collection"))
 			if err != nil {
 				return err
@@ -90,7 +90,7 @@ func newImportPmidCmd(flags *rootFlags) *cobra.Command {
 	return cmd
 }
 
-// PATCH(glean roadmap-phase4 identifier-imports): Fetch PubMed eSummary JSON and map it to a Zotero journalArticle.
+// Fetch PubMed eSummary JSON and map it to a Zotero journalArticle.
 func fetchPubMedItem(cmd *cobra.Command, timeout time.Duration, pmid string) (map[string]any, error) {
 	if pmid == "" {
 		return nil, fmt.Errorf("PubMed ID is required")
@@ -134,7 +134,7 @@ func fetchPubMedItem(cmd *cobra.Command, timeout time.Duration, pmid string) (ma
 	return pubmedItemFromSummary(rec), nil
 }
 
-// PATCH(glean roadmap-phase4 identifier-imports): Convert a PubMed eSummary record into a Zotero journalArticle map.
+// Convert a PubMed eSummary record into a Zotero journalArticle map.
 func pubmedItemFromSummary(rec map[string]any) map[string]any {
 	item := map[string]any{"itemType": "journalArticle"}
 	if title := importIdentifierString(rec["title"]); title != "" {
@@ -166,7 +166,7 @@ func pubmedItemFromSummary(rec map[string]any) map[string]any {
 	return item
 }
 
-// PATCH(glean roadmap-phase4 identifier-imports): Register arXiv import as a reviewable Zotero item create.
+// Register arXiv import as a reviewable Zotero item create.
 func newImportArxivCmd(flags *rootFlags) *cobra.Command {
 	var flagCollection string
 	var flagDryRun bool
@@ -196,7 +196,7 @@ func newImportArxivCmd(flags *rootFlags) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			// PATCH: route item creates through the desktop connector when available.
+			// Route item creates through the desktop connector when available.
 			res, err := routeCreateItem(cmd.Context(), flags, c, item, itemCreateSourceURI(item), cmd.Flags().Changed("collection"))
 			if err != nil {
 				return err
@@ -220,7 +220,7 @@ func newImportArxivCmd(flags *rootFlags) *cobra.Command {
 	return cmd
 }
 
-// PATCH(glean roadmap-phase4 identifier-imports): Fetch arXiv Atom XML and map the first matching entry to a Zotero preprint.
+// Fetch arXiv Atom XML and map the first matching entry to a Zotero preprint.
 func fetchArxivItem(cmd *cobra.Command, timeout time.Duration, id string) (map[string]any, error) {
 	if id == "" {
 		return nil, fmt.Errorf("arXiv ID is required")
@@ -261,7 +261,7 @@ func fetchArxivItem(cmd *cobra.Command, timeout time.Duration, id string) (map[s
 	return arxivItemFromEntry(feed.Entries[0], id), nil
 }
 
-// PATCH(glean roadmap-phase4 identifier-imports): Convert an arXiv Atom entry into a Zotero preprint map.
+// Convert an arXiv Atom entry into a Zotero preprint map.
 func arxivItemFromEntry(entry arxivEntry, id string) map[string]any {
 	item := map[string]any{"itemType": "preprint"}
 	if title := strings.Join(strings.Fields(entry.Title), " "); title != "" {
@@ -287,7 +287,7 @@ func arxivItemFromEntry(entry arxivEntry, id string) map[string]any {
 	return item
 }
 
-// PATCH(glean roadmap-phase4 identifier-imports): Register ISBN import as a reviewable Zotero item create.
+// Register ISBN import as a reviewable Zotero item create.
 func newImportIsbnCmd(flags *rootFlags) *cobra.Command {
 	var flagCollection string
 	var flagDryRun bool
@@ -317,7 +317,7 @@ func newImportIsbnCmd(flags *rootFlags) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			// PATCH: route item creates through the desktop connector when available.
+			// Route item creates through the desktop connector when available.
 			res, err := routeCreateItem(cmd.Context(), flags, c, item, itemCreateSourceURI(item), cmd.Flags().Changed("collection"))
 			if err != nil {
 				return err
@@ -341,7 +341,7 @@ func newImportIsbnCmd(flags *rootFlags) *cobra.Command {
 	return cmd
 }
 
-// PATCH(glean roadmap-phase4 identifier-imports): Fetch Open Library ISBN JSON and map it to a Zotero book.
+// Fetch Open Library ISBN JSON and map it to a Zotero book.
 func fetchOpenLibraryItem(cmd *cobra.Command, timeout time.Duration, isbn string) (map[string]any, error) {
 	if isbn == "" {
 		return nil, fmt.Errorf("ISBN is required")
@@ -384,7 +384,7 @@ func fetchOpenLibraryItem(cmd *cobra.Command, timeout time.Duration, isbn string
 	return openLibraryItemFromData(rec, isbn), nil
 }
 
-// PATCH(glean roadmap-phase4 identifier-imports): Convert an Open Library book record into a Zotero book map.
+// Convert an Open Library book record into a Zotero book map.
 func openLibraryItemFromData(rec map[string]any, isbn string) map[string]any {
 	item := map[string]any{"itemType": "book", "ISBN": isbn}
 	if title := importIdentifierString(rec["title"]); title != "" {
@@ -405,7 +405,7 @@ func openLibraryItemFromData(rec map[string]any, isbn string) map[string]any {
 	return item
 }
 
-// PATCH(glean roadmap-phase4 identifier-imports): Parse PubMed's "Last FM" author names through the existing creator parser.
+// Parse PubMed's "Last FM" author names through the existing creator parser.
 func pubmedCreators(raw any) []map[string]any {
 	entries, ok := raw.([]any)
 	if !ok {
@@ -424,7 +424,7 @@ func pubmedCreators(raw any) []map[string]any {
 	return creators
 }
 
-// PATCH(glean roadmap-phase4 identifier-imports): Normalize PubMed surname-initial author strings before parsing.
+// Normalize PubMed surname-initial author strings before parsing.
 func pubmedCreatorName(name string) string {
 	fields := strings.Fields(name)
 	if len(fields) < 2 || !pubmedInitials(fields[len(fields)-1]) {
@@ -433,7 +433,7 @@ func pubmedCreatorName(name string) string {
 	return strings.Join(fields[:len(fields)-1], " ") + ", " + fields[len(fields)-1]
 }
 
-// PATCH(glean roadmap-phase4 identifier-imports): Detect PubMed compact initial tokens such as "FM" or "F.M.".
+// Detect PubMed compact initial tokens such as "FM" or "F.M.".
 func pubmedInitials(value string) bool {
 	clean := strings.ReplaceAll(strings.ReplaceAll(value, ".", ""), "-", "")
 	if clean == "" {
@@ -442,7 +442,7 @@ func pubmedInitials(value string) bool {
 	return clean == strings.ToUpper(clean)
 }
 
-// PATCH(glean roadmap-phase4 identifier-imports): Extract creator maps from identifier provider arrays without introducing a second name convention.
+// Extract creator maps from identifier provider arrays without introducing a second name convention.
 func importIdentifierCreators(raw any) []map[string]any {
 	entries, ok := raw.([]any)
 	if !ok {
@@ -461,7 +461,7 @@ func importIdentifierCreators(raw any) []map[string]any {
 	return creators
 }
 
-// PATCH(glean roadmap-phase4 identifier-imports): Extract DOI values from PubMed articleids arrays.
+// Extract DOI values from PubMed articleids arrays.
 func pubmedDOI(raw any) string {
 	entries, ok := raw.([]any)
 	if !ok {
@@ -482,7 +482,7 @@ func pubmedDOI(raw any) string {
 	return ""
 }
 
-// PATCH(glean roadmap-phase4 identifier-imports): Convert arXiv author elements through the existing Zotero creator parser.
+// Convert arXiv author elements through the existing Zotero creator parser.
 func arxivCreators(authors []arxivAuthor) []map[string]any {
 	creators := make([]map[string]any, 0, len(authors))
 	for _, author := range authors {
@@ -493,7 +493,7 @@ func arxivCreators(authors []arxivAuthor) []map[string]any {
 	return creators
 }
 
-// PATCH(glean roadmap-phase4 identifier-imports): Normalize arXiv timestamps to Zotero date strings.
+// Normalize arXiv timestamps to Zotero date strings.
 func arxivDate(published string) string {
 	published = strings.TrimSpace(published)
 	if len(published) >= 10 {
@@ -502,7 +502,7 @@ func arxivDate(published string) string {
 	return published
 }
 
-// PATCH(glean roadmap-phase4 identifier-imports): Extract the first Open Library-style name value from provider arrays.
+// Extract the first Open Library-style name value from provider arrays.
 func importIdentifierFirstName(raw any) string {
 	entries, ok := raw.([]any)
 	if !ok {
@@ -520,7 +520,7 @@ func importIdentifierFirstName(raw any) string {
 	return ""
 }
 
-// PATCH(glean roadmap-phase4 identifier-imports): Read string fields from decoded provider JSON maps.
+// Read string fields from decoded provider JSON maps.
 func importIdentifierString(raw any) string {
 	value, ok := raw.(string)
 	if !ok {

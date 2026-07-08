@@ -32,7 +32,7 @@ const (
 	defaultZoteroBaseURL   = "http://localhost:23119/api/users/0"
 )
 
-// PATCH(glean write-safety): default client calls inherit cancellation from
+// default client calls inherit cancellation from
 // process interrupts so Ctrl-C/SIGTERM abort in-flight HTTP work promptly.
 var (
 	interruptCtxOnce sync.Once
@@ -54,7 +54,7 @@ type Client struct {
 	NoCache    bool
 	cacheDir   string
 	limiter    *cliutil.AdaptiveLimiter
-	// PATCH(glean write-safety): base context for wrapper calls; tests may replace it.
+	// base context for wrapper calls; tests may replace it.
 	ctx context.Context
 	// WriteBaseURL, when set, receives all non-GET requests while reads continue to
 	// use BaseURL — the Zotero local API is read-only, so writes route to the Web
@@ -63,7 +63,7 @@ type Client struct {
 	WriteBaseURL     string
 	ResolveWriteBase func() (string, error)
 	writeRouteOnce   sync.Once
-	// PATCH(glean zotero-pp-cli-c1a988cc784f8c2f): protect lazy hybrid write-route resolution.
+	// protect lazy hybrid write-route resolution.
 	writeRouteMu sync.RWMutex
 }
 
@@ -85,7 +85,7 @@ func newHTTPClient(timeout time.Duration, jar http.CookieJar) *http.Client {
 		Jar:     jar,
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {
 			if len(via) > 0 && !strings.EqualFold(req.URL.Host, via[0].URL.Host) {
-				// PATCH(glean zotero-pp-cli-343c18a699e817f9): Go's default
+				// Go's default
 				// redirect policy does not strip custom auth headers, so remove
 				// Zotero credentials when a redirect crosses origin boundaries.
 				req.Header.Del("Zotero-API-Key")
@@ -113,9 +113,9 @@ func New(cfg *config.Config, timeout time.Duration, rateLimit float64) *Client {
 
 // CloneForRead returns a read-only client targeting baseURL, sharing the config,
 // HTTP client, rate limiter, and cancellation context but with fresh
-// synchronization state. PATCH(glean bugfix): a Client must never be copied by
-// value (it holds a sync.Once and RWMutex); global schema endpoints need the
-// library prefix stripped from BaseURL, so clone explicitly instead.
+// synchronization state. A Client must never be copied by value because it holds
+// a sync.Once and RWMutex; global schema endpoints need the library prefix
+// stripped from BaseURL, so clone explicitly instead.
 func (c *Client) CloneForRead(baseURL string) *Client {
 	return &Client{
 		BaseURL:    baseURL,
@@ -130,7 +130,7 @@ func (c *Client) CloneForRead(baseURL string) *Client {
 }
 
 func (c *Client) baseCtx() context.Context {
-	// PATCH(glean write-safety): tolerate zero-value clients while still giving
+	// tolerate zero-value clients while still giving
 	// normal clients a SIGINT/SIGTERM-cancellable context.
 	if c != nil && c.ctx != nil {
 		return c.ctx
@@ -143,7 +143,7 @@ func (c *Client) RateLimit() float64 {
 	return c.limiter.Rate()
 }
 
-// PATCH(glean write-safety): public wrappers keep their signatures while using
+// public wrappers keep their signatures while using
 // the client base context so interrupts cancel their HTTP work.
 func (c *Client) Get(path string, params map[string]string) (json.RawMessage, error) {
 	return c.GetWithHeaders(path, params, nil)
@@ -207,7 +207,7 @@ func (c *Client) readCache(path string, params map[string]string) (json.RawMessa
 }
 
 func (c *Client) writeCache(path string, params map[string]string, data json.RawMessage) {
-	// PATCH(glean zotero-pp-cli-1b0de7a8b950a33c): cached Zotero API payloads
+	// cached Zotero API payloads
 	// contain private library metadata, so keep the directory and files private
 	// even when they already existed with older world-readable permissions.
 	_ = os.MkdirAll(c.cacheDir, 0o700)
@@ -262,7 +262,7 @@ func (c *Client) PatchWithHeaders(path string, body any, headers map[string]stri
 // do executes an HTTP request. headerOverrides, when non-nil, override global
 // RequiredHeaders for this specific request (used for per-endpoint API versioning).
 func (c *Client) doRequest(ctx context.Context, method, path string, params map[string]string, body any, headerOverrides map[string]string) (json.RawMessage, int, http.Header, error) {
-	// PATCH(glean write-safety): all network construction below requires a
+	// all network construction below requires a
 	// non-nil context so callers can cancel request creation, dialing, and reads.
 	if ctx == nil {
 		ctx = context.Background()
@@ -297,7 +297,7 @@ func (c *Client) doRequest(ctx context.Context, method, path string, params map[
 	var lastErr error
 
 	for attempt := 0; attempt <= maxRetries; attempt++ {
-		// PATCH(glean write-safety): proactive rate limiting must honor context
+		// proactive rate limiting must honor context
 		// cancellation before dialing.
 		c.limiter.WaitContext(ctx)
 		if err := ctx.Err(); err != nil {
@@ -326,7 +326,7 @@ func (c *Client) doRequest(ctx context.Context, method, path string, params map[
 			req.URL.RawQuery = q.Encode()
 		}
 
-		// PATCH(glean zotero-pp-cli-a5b534f4877ea94c): only attach the Zotero API
+		// only attach the Zotero API
 		// key to trusted Zotero/local API origins, so a hostile ZOTERO_BASE_URL
 		// override cannot harvest credentials.
 		if authHeader != "" && shouldSendZoteroAuth(req.URL) {
@@ -341,7 +341,7 @@ func (c *Client) doRequest(ctx context.Context, method, path string, params map[
 		for k, v := range headerOverrides {
 			req.Header.Set(k, v)
 		}
-		// PATCH(glean zotero-pp-cli-a5b534f4877ea94c): also strip any custom
+		// also strip any custom
 		// config/override auth headers from untrusted base URLs.
 		if !shouldSendZoteroAuth(req.URL) {
 			req.Header.Del("Zotero-API-Key")
@@ -360,7 +360,7 @@ func (c *Client) doRequest(ctx context.Context, method, path string, params map[
 			continue
 		}
 
-		// PATCH(glean zotero-pp-cli-b40c15a8c38d8ac7): cap API response bodies
+		// cap API response bodies
 		// before buffering them for cache/error handling.
 		respBody, err := io.ReadAll(io.LimitReader(resp.Body, maxZoteroResponseBytes+1))
 		resp.Body.Close()
@@ -402,7 +402,7 @@ func (c *Client) doRequest(ctx context.Context, method, path string, params map[
 
 		// Server error - retry with backoff. 501 Not Implemented is never transient
 		// (e.g. writes against the read-only Zotero local API), so don't retry it.
-		// PATCH: avoid a pointless 3x backoff storm on local-API write rejections.
+		// avoid a pointless 3x backoff storm on local-API write rejections.
 		if resp.StatusCode >= 500 && resp.StatusCode != 501 && attempt < maxRetries {
 			wait := time.Duration(math.Pow(2, float64(attempt))) * time.Second
 			fmt.Fprintf(os.Stderr, "server error %d, retrying in %s (attempt %d/%d)\n", resp.StatusCode, wait, attempt+1, maxRetries)
@@ -421,7 +421,7 @@ func (c *Client) doRequest(ctx context.Context, method, path string, params map[
 }
 
 func sleepWithContext(ctx context.Context, d time.Duration) error {
-	// PATCH(glean write-safety): retry and Retry-After waits must unblock when
+	// retry and Retry-After waits must unblock when
 	// the owning request context is canceled by Ctrl-C or tests.
 	if d <= 0 {
 		return ctx.Err()
@@ -451,7 +451,7 @@ func sanitizeClientBaseURL(raw string) string {
 	if err == nil && trustedZoteroBaseURL(u) {
 		return base
 	}
-	// PATCH(glean zotero-pp-cli-a5b534f4877ea94c): reject hostile base URL
+	// reject hostile base URL
 	// overrides before any API traffic is routed to an attacker-controlled host.
 	fmt.Fprintf(os.Stderr, "warning: ignoring untrusted Zotero base URL %q; using %s\n", raw, defaultZoteroBaseURL)
 	return defaultZoteroBaseURL
@@ -567,11 +567,10 @@ func verifyShortCircuitEnvelope(method, path string) json.RawMessage {
 
 // GetWithVersion performs a GET and returns the body plus the Zotero
 // Last-Modified-Version response header parsed as an int (0 when absent or
-// unparseable). PATCH(glean static-audit): version-based incremental sync needs
-// the response header that the cached Get/do path discards. Bypasses the read
-// cache so the caller always observes a live version.
-// PATCH(glean write-safety): live header-reading helpers use the same
-// cancellable base context as the public Get wrapper.
+// unparseable). Version-based incremental sync needs the response header that
+// the cached Get/do path discards. Bypasses the read cache so the caller always
+// observes a live value. Live header-reading helpers use the same cancellable
+// base context as the public Get wrapper.
 func (c *Client) GetWithVersion(path string, params map[string]string) (json.RawMessage, int, error) {
 	respBody, _, hdr, err := c.doRequest(c.baseCtx(), "GET", path, params, nil, nil)
 	if err != nil {
@@ -581,7 +580,7 @@ func (c *Client) GetWithVersion(path string, params map[string]string) (json.Raw
 }
 
 // GetWithHeader performs a GET and returns the body plus the trimmed value of the
-// named response header (empty when absent). PATCH: exposes arbitrary response
+// named response header (empty when absent). exposes arbitrary response
 // headers (e.g. Zotero-Schema-Version) that the cached Get path discards; bypasses
 // the read cache like GetWithVersion so the caller observes a live value.
 func (c *Client) GetWithHeader(path string, params map[string]string, header string) (json.RawMessage, string, error) {
@@ -596,7 +595,7 @@ func (c *Client) GetWithHeader(path string, params map[string]string, header str
 }
 
 // parseLastModifiedVersion extracts the Zotero Last-Modified-Version header as
-// an int, returning 0 when missing or unparseable. PATCH(glean static-audit).
+// an int, returning 0 when missing or unparseable.
 func parseLastModifiedVersion(h http.Header) int {
 	if h == nil {
 		return 0
@@ -671,11 +670,9 @@ func (c *Client) refreshAccessToken() error {
 	if c.Config == nil || c.Config.RefreshToken == "" {
 		return nil
 	}
-	// PATCH(glean security-audit/static-audit): zotio authenticates with
-	// an API key (Zotero-API-Key header), not OAuth2. The generated scaffold left
-	// a hardcoded-empty tokenURL, so refresh silently returned nil and the HTTP
-	// block below it was dead code; a silently-stale token then 401s with no hint.
-	// There is no OAuth refresh endpoint to call here, so fail loudly instead.
+	// zotio authenticates with an API key (Zotero-API-Key header), not OAuth2.
+	// There is no OAuth refresh endpoint to call here, so fail loudly instead of
+	// silently letting a stale token cause an unexplained 401.
 	return fmt.Errorf("token refresh is not supported: zotio uses API-key auth (set ZOTERO_API_KEY)")
 }
 
@@ -706,9 +703,8 @@ func sanitizeJSONResponse(body []byte) []byte {
 
 // maskToken redacts a token for safe display, revealing the last 4 characters
 // only when the token is long enough that those 4 chars are a small fraction.
-// PATCH(glean security-audit): previously revealed the last 4 chars of any
-// token longer than 4, exposing most of a short token; short tokens (<12) are
-// now fully masked.
+// Short tokens (<12) are fully masked so the visible suffix cannot expose most
+// of the secret.
 func maskToken(token string) string {
 	if token == "" {
 		return ""

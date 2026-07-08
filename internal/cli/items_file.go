@@ -1,5 +1,5 @@
 // Copyright 2026 OrgMentem. Licensed under MIT. See LICENSE.
-// PATCH: Hand-written `items file` (not in the generated CLI). Resolves the on-disk
+// Hand-written `items file` (not in the generated CLI). Resolves the on-disk
 // location of an item's attachment via the Zotero local API's file endpoints
 // (/items/<key>/file/view/url), complementing `items open` (which launches the app)
 // by handing an agent/script the actual file path to read or process.
@@ -79,7 +79,7 @@ func resolveAttachmentFileURL(c *client.Client, itemKey string) (string, string,
 		return itemKey, fileURL, nil
 	}
 	// Otherwise resolve the item's PDF attachment among its children.
-	// PATCH(glean zotero-pp-cli-1b05b22e1aeb8dd6): encode the user-supplied key as one Zotero path segment.
+	// Encode the user-supplied key as one Zotero path segment.
 	childrenPath := replacePathParam("/items/{itemKey}/children", "itemKey", url.PathEscape(itemKey))
 	children, err := c.Get(childrenPath, nil)
 	if err != nil {
@@ -100,7 +100,7 @@ func resolveAttachmentFileURL(c *client.Client, itemKey string) (string, string,
 // endpoint returns the file:// URL as plain text. A request error (e.g. the key
 // is a regular item with no file) reports ok=false so the caller can fall back.
 func fetchAttachmentFileURL(c *client.Client, key string) (string, bool) {
-	// PATCH(glean zotero-pp-cli-1b05b22e1aeb8dd6): encode the attachment key as one Zotero path segment.
+	// Encode the attachment key as one Zotero path segment.
 	path := replacePathParam("/items/{key}/file/view/url", "key", url.PathEscape(key))
 	data, err := c.Get(path, nil)
 	if err != nil {
@@ -110,7 +110,7 @@ func fetchAttachmentFileURL(c *client.Client, key string) (string, bool) {
 	if s == "" {
 		return "", false
 	}
-	// PATCH(glean zotero-pp-cli-777199d613c05bfd): tolerate local API builds that return the URL as a quoted JSON string.
+	// Tolerate local API builds that return the URL as a quoted JSON string.
 	if strings.HasPrefix(s, `"`) {
 		var quoted string
 		if err := json.Unmarshal([]byte(s), &quoted); err == nil {
@@ -123,7 +123,7 @@ func fetchAttachmentFileURL(c *client.Client, key string) (string, bool) {
 // fileURLToPath converts a file:// URL to a filesystem path, percent-decoding it.
 // Non-file URLs (e.g. a linked web attachment) are returned unchanged.
 func fileURLToPath(u string) string {
-	// PATCH(glean zotero-pp-cli-777199d613c05bfd): normalize quoted URL strings even when callers bypass fetchAttachmentFileURL.
+	// Normalize quoted URL strings even when callers bypass fetchAttachmentFileURL.
 	if strings.HasPrefix(u, `"`) {
 		var quoted string
 		if err := json.Unmarshal([]byte(u), &quoted); err == nil {

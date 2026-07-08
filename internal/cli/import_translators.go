@@ -1,5 +1,5 @@
 // Copyright 2026 OrgMentem. Licensed under MIT. See LICENSE.
-// PATCH: expose read-only Zotero desktop translator diagnostics.
+// Expose read-only Zotero desktop translator diagnostics.
 
 package cli
 
@@ -59,7 +59,7 @@ translators, but browser-side web translation is not run by the desktop server.`
 }
 
 func fetchTranslatorHTML(ctx context.Context, pageURL string, flags *rootFlags) (string, error) {
-	// PATCH(glean translator-ssrf): translator diagnostics fetch caller-supplied
+	// Translator diagnostics fetch caller-supplied
 	// URLs, so apply the same public HTTP(S) + redirect gate as import url.
 	if err := validateExternalHTTPURL(pageURL, false); err != nil {
 		return "", err

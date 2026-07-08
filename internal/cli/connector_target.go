@@ -1,5 +1,5 @@
 // Copyright 2026 OrgMentem. Licensed under MIT. See LICENSE.
-// PATCH: map Zotero Web API collection keys to desktop Connector tree targets.
+// map Zotero Web API collection keys to desktop Connector tree targets.
 
 package cli
 

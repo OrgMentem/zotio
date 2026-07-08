@@ -16,7 +16,7 @@ func newCollectionsDeleteCmd(flags *rootFlags) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "delete <collectionKey>",
 		Short: "Delete a collection (does not delete items)",
-		// PATCH(glean zotero-pp-cli-76875fc8c78bd05c): use a collection key placeholder, not a token.
+		// use a collection key placeholder, not a token.
 		Example:     "  zotio collections delete COLLECTIONKEY",
 		Annotations: map[string]string{"zotio:endpoint": "collections.delete", "zotio:method": "DELETE", "zotio:path": "/collections/{collectionKey}"},
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -30,9 +30,9 @@ func newCollectionsDeleteCmd(flags *rootFlags) *cobra.Command {
 
 			path := "/collections/{collectionKey}"
 			path = replacePathParam(path, "collectionKey", args[0])
-			// PATCH: Zotero requires If-Unmodified-Since-Version on DELETE (HTTP 428
-			// without it). newWriteClient points at the write target, so this version
-			// GET and the DELETE hit the same library (the Web API under hybrid routing).
+			// Zotero requires If-Unmodified-Since-Version on DELETE (HTTP 428
+			// without it). newWriteClient points at the write target, so this
+			// version GET and the DELETE hit the same library (the Web API under hybrid routing).
 			delHeaders := map[string]string{}
 			if _, v, verr := c.GetWithVersion(path, nil); verr == nil && v > 0 {
 				delHeaders["If-Unmodified-Since-Version"] = strconv.Itoa(v)

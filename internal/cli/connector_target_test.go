@@ -1,5 +1,4 @@
 // Copyright 2026 OrgMentem. Licensed under MIT. See LICENSE.
-// PATCH: cover connector target path mapping without live Zotero.
 
 package cli
 

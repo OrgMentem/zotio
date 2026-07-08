@@ -11,7 +11,7 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// PATCH(glean roadmap-phase4 7e799ea9): import resolve materializes the editable scan manifest without mutating Zotero.
+// Import resolve materializes the editable scan manifest without mutating Zotero.
 func newImportResolveCmd(flags *rootFlags) *cobra.Command {
 	var flagLimit int
 
@@ -32,7 +32,7 @@ func newImportResolveCmd(flags *rootFlags) *cobra.Command {
 	return cmd
 }
 
-// PATCH(glean roadmap-phase4 7e799ea9): dispatch between fresh directory scans and editable manifest refreshes.
+// Dispatch between fresh directory scans and editable manifest refreshes.
 func resolveImportManifest(cmd *cobra.Command, flags *rootFlags, arg string, limit int) (importManifest, error) {
 	if info, err := os.Stat(arg); err == nil && info.IsDir() {
 		return buildImportManifestFromDir(cmd, flags, arg, limit)
@@ -45,7 +45,7 @@ func resolveImportManifest(cmd *cobra.Command, flags *rootFlags, arg string, lim
 	return refreshImportManifestCreates(cmd, flags, m), nil
 }
 
-// PATCH(glean roadmap-phase4 7e799ea9): reuse import scan classification while keeping absolute attachment paths in the manifest.
+// Reuse import scan classification while keeping absolute attachment paths in the manifest.
 func buildImportManifestFromDir(cmd *cobra.Command, flags *rootFlags, dir string, limit int) (importManifest, error) {
 	db, err := openStoreForRead(cmd.Context(), "zotio")
 	if err != nil {
@@ -105,7 +105,7 @@ func buildImportManifestFromDir(cmd *cobra.Command, flags *rootFlags, dir string
 	return m, nil
 }
 
-// PATCH(glean roadmap-phase4 7e799ea9): let users re-run metadata resolution for unresolved DOI create entries.
+// Let users re-run metadata resolution for unresolved DOI create entries.
 func refreshImportManifestCreates(cmd *cobra.Command, flags *rootFlags, m importManifest) importManifest {
 	for i := range m.Entries {
 		entry := &m.Entries[i]

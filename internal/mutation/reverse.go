@@ -1,5 +1,5 @@
 // Copyright 2026 OrgMentem. Licensed under MIT. See LICENSE.
-// PATCH(glean roadmap-phase3): journal undo. Reversibility is decided per change
+// journal undo. Reversibility is decided per change
 // field: tag/collection membership inverts cleanly (Add<->Remove); field
 // overwrites (DOI, abstract), renames, merges, and deletions are refused because
 // the prior value was not (or cannot be) captured.

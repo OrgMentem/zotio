@@ -54,7 +54,7 @@ func feedbackEndpoint() (string, error) {
 	if endpoint == "" {
 		return "", nil
 	}
-	// PATCH(glean zotero-pp-cli-fe00cbd82a1524c5): feedback sends may contain
+	// feedback sends may contain
 	// private CLI context, so only HTTPS public endpoints are accepted.
 	if err := validateExternalHTTPURL(endpoint, true); err != nil {
 		return "", err
@@ -81,7 +81,7 @@ func appendFeedback(entry FeedbackEntry) error {
 }
 
 func postFeedback(url string, entry FeedbackEntry) error {
-	// PATCH(glean zotero-pp-cli-fe00cbd82a1524c5): keep direct helper calls as
+	// keep direct helper calls as
 	// constrained as feedbackEndpoint().
 	if err := validateExternalHTTPURL(url, true); err != nil {
 		return err
@@ -97,7 +97,7 @@ func postFeedback(url string, entry FeedbackEntry) error {
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("User-Agent", "zotio/feedback")
 	client := &http.Client{Timeout: 15 * time.Second, CheckRedirect: func(req *http.Request, via []*http.Request) error {
-		// PATCH(glean zotero-pp-cli-fe00cbd82a1524c5): keep a trusted HTTPS
+		// keep a trusted HTTPS
 		// endpoint from redirecting feedback into an internal target.
 		return http.ErrUseLastResponse
 	}}

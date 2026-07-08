@@ -1,5 +1,4 @@
 // Copyright 2026 OrgMentem. Licensed under MIT. See LICENSE.
-// PATCH(glean roadmap-phase4 identifier-imports): Cover PMID, arXiv, and ISBN import adapters.
 
 package cli
 
@@ -12,7 +11,7 @@ import (
 	"time"
 )
 
-// PATCH(glean roadmap-phase4 identifier-imports): Verify PubMed eSummary records map to Zotero journalArticle fields.
+// Verify PubMed eSummary records map to Zotero journalArticle fields.
 func TestPubMedItemFromSummary(t *testing.T) {
 	item := pubmedItemFromSummary(map[string]any{
 		"title":           "PubMed Title",
@@ -40,7 +39,7 @@ func TestPubMedItemFromSummary(t *testing.T) {
 	}
 }
 
-// PATCH(glean roadmap-phase4 identifier-imports): Verify arXiv Atom entries map to Zotero preprint fields.
+// Verify arXiv Atom entries map to Zotero preprint fields.
 func TestArxivItemFromEntry(t *testing.T) {
 	item := arxivItemFromEntry(arxivEntry{
 		Title:     "\n  ArXiv   Title  \n",
@@ -65,7 +64,7 @@ func TestArxivItemFromEntry(t *testing.T) {
 	}
 }
 
-// PATCH(glean roadmap-phase4 identifier-imports): Verify Open Library records map to Zotero book fields.
+// Verify Open Library records map to Zotero book fields.
 func TestOpenLibraryItemFromData(t *testing.T) {
 	item := openLibraryItemFromData(map[string]any{
 		"title":           "Book Title",
@@ -87,7 +86,7 @@ func TestOpenLibraryItemFromData(t *testing.T) {
 	}
 }
 
-// PATCH(glean roadmap-phase4 identifier-imports): Smoke-test PubMed import --dry-run against a capped httptest response.
+// Smoke-test PubMed import --dry-run against a capped httptest response.
 func TestImportPmidDryRun(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/esummary.fcgi" || r.URL.Query().Get("id") != "314159" {
@@ -122,7 +121,7 @@ func TestImportPmidDryRun(t *testing.T) {
 	assertIdentifierDryRunCreator(t, env.Item)
 }
 
-// PATCH(glean roadmap-phase4 identifier-imports): Smoke-test arXiv import --dry-run against a capped httptest response.
+// Smoke-test arXiv import --dry-run against a capped httptest response.
 func TestImportArxivDryRun(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/query" || r.URL.Query().Get("id_list") != "2401.00001" {
@@ -169,7 +168,7 @@ func TestImportArxivDryRun(t *testing.T) {
 	assertIdentifierDryRunCreator(t, env.Item)
 }
 
-// PATCH(glean roadmap-phase4 identifier-imports): Smoke-test ISBN import --dry-run against a capped httptest response.
+// Smoke-test ISBN import --dry-run against a capped httptest response.
 func TestImportIsbnDryRun(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/api/books" || r.URL.Query().Get("bibkeys") != "ISBN:9781234567890" {
@@ -210,7 +209,7 @@ type identifierDryRunEnvelope struct {
 	Item   map[string]any `json:"item"`
 }
 
-// PATCH(glean roadmap-phase4 identifier-imports): Decode shared dry-run envelopes emitted by identifier import commands.
+// Decode shared dry-run envelopes emitted by identifier import commands.
 func decodeIdentifierDryRun(t *testing.T, data []byte) identifierDryRunEnvelope {
 	t.Helper()
 	var env identifierDryRunEnvelope
@@ -220,7 +219,7 @@ func decodeIdentifierDryRun(t *testing.T, data []byte) identifierDryRunEnvelope 
 	return env
 }
 
-// PATCH(glean roadmap-phase4 identifier-imports): Assert dry-run JSON preserved at least one mapped Zotero creator.
+// Assert dry-run JSON preserved at least one mapped Zotero creator.
 func assertIdentifierDryRunCreator(t *testing.T, item map[string]any) {
 	t.Helper()
 	creators, ok := item["creators"].([]any)

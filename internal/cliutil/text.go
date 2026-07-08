@@ -18,7 +18,7 @@ import (
 // Single unescape pass: "&amp;amp;" -> "&amp;" (matches html.UnescapeString
 // stdlib behavior). If you need multiple passes you almost always have a
 // deeper escaping problem upstream — fix there, not here.
-// PATCH(glean 2kgy): unexported — only exercised by package tests today.
+// unexported — only exercised by package tests today.
 func cleanText(s string) string {
 	return html.UnescapeString(strings.TrimSpace(s))
 }
@@ -75,7 +75,7 @@ func LooksLikeAuthError(msg string) bool {
 // HTTPErrorKind classifies an API error by the HTTP status embedded in its
 // message, so the CLI and MCP layers detect the same statuses in one place
 // while each keeps its own user-facing hint text and result type.
-// PATCH(glean static-audit): de-duplicates the brittle strings.Contains(msg,
+// de-duplicates the brittle strings.Contains(msg,
 // "HTTP NNN") ladder previously copy-pasted across internal/cli and internal/mcp.
 type HTTPErrorKind int
 
@@ -115,8 +115,8 @@ func ClassifyHTTPError(msg string) HTTPErrorKind {
 // the generic sk-/Bearer/key= shapes carried over from the generator template,
 // it now recognizes this app's own Zotero-API-Key header scheme so a reflected
 // or echoed key is redacted even though it carries no sk-/Bearer prefix.
-// PATCH(glean zotio-c3c6d04bb48b7e67): added the (zotero-api-)key[:=] and
-// Zotero-API-Key header forms; hoisted to package scope to compile once.
+// Match common API key forms and keep the regexp at package scope so it
+// compiles once.
 var credPatterns = regexp.MustCompile(`(?i)(sk-[a-zA-Z0-9]{8,}|sk_live_[a-zA-Z0-9]+|Bearer\s+[a-zA-Z0-9._\-]+|(?:zotero-api-)?key\s*[:=]\s*[a-zA-Z0-9._\-]+|zotero-api-key\s+[a-zA-Z0-9]{16,})`)
 
 // SanitizeErrorBody truncates and strips credential-shaped strings from error output.
@@ -128,9 +128,8 @@ func SanitizeErrorBody(msg string) string {
 // literal secret supplied (e.g. the configured Zotero API key), then truncates.
 // The explicit-secret pass runs before truncation so a key straddling the
 // length cap is still caught, and covers a reflected key that has no prefix.
-// PATCH(glean zotio-c3c6d04bb48b7e67): secret-aware redaction so the caller can
-// pass the live credential; SanitizeErrorBody was previously dead code because
-// classifyAPIError re-embedded the raw body via %w ahead of the sanitized copy.
+// Secret-aware redaction lets the caller pass the live credential so reflected
+// secrets are masked even when they do not match a generic token pattern.
 func SanitizeErrorBodyWithSecrets(msg string, secrets ...string) string {
 	for _, s := range secrets {
 		if len(s) >= 8 {

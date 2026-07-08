@@ -1,5 +1,4 @@
 // Copyright 2026 OrgMentem. Licensed under MIT. See LICENSE.
-// PATCH(glean write-safety): cover duplicate resolve preview/apply plans.
 
 package cli
 
@@ -167,7 +166,7 @@ func TestItemsDuplicatesResolveApplyMergesCollectionsAndTrashesDuplicate(t *test
 	}
 }
 
-// PATCH(glean bugfix): default duplicate resolution is DOI-only, with title matching opt-in warning coverage.
+// Default duplicate resolution is DOI-only, with title matching opt-in warning coverage.
 func TestItemsDuplicatesResolveDefaultsToDOIOnlyAndWarnsForTitle(t *testing.T) {
 	for _, tt := range []struct {
 		name     string

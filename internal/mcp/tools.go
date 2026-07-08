@@ -356,12 +356,12 @@ func RegisterTools(s *server.MCPServer) {
 		handleContext,
 	)
 
-	// Command surface for the rest of the Cobra tree. PATCH(glean f-plain):
-	// ZOTIO_MCP_SURFACE selects the shape. Default "facade" collapses the command
-	// tree behind a command_search + command_run pair (~93% fewer tokens at
-	// connect, all commands reachable on demand). "mirror" registers one lean
-	// MCP tool per command (global flags stripped). Both run in-process against
-	// a fresh tree (PATCH c4ke) and share the arg-safety guard (PATCH da7c6f88).
+	// Command surface for the rest of the Cobra tree. ZOTIO_MCP_SURFACE selects
+	// the shape. Default "facade" collapses the command tree behind a
+	// command_search + command_run pair (~93% fewer tokens at connect, all
+	// commands reachable on demand). "mirror" registers one lean MCP tool per
+	// command (global flags stripped). Both run in-process against a fresh tree
+	// and share the arg-safety guard.
 	surface := os.Getenv("ZOTIO_MCP_SURFACE")
 	if strings.EqualFold(strings.TrimSpace(surface), "mirror") {
 		cobratree.RegisterAll(s, cli.RootCmd)
@@ -376,8 +376,8 @@ type mcpParamBinding struct {
 	Location   string
 }
 
-// PATCH(glean 1b05b22e): percent-encode user-supplied path parameters before
-// splicing them into the API path. Raw substitution let a value containing "/"
+// Percent-encode user-supplied path parameters before splicing them into the
+// API path. Raw substitution let a value containing "/"
 // (a malicious key in a shared/group library, or a prompt-injected agent)
 // re-target a different endpoint: /collections/{k} with k="ABC/items" became
 // /collections/ABC/items. url.PathEscape leaves valid Zotero keys ([A-Z0-9]{8})
@@ -389,8 +389,8 @@ func mcpPathValue(v any) string {
 // makeAPIHandler creates a generic MCP tool handler for an API endpoint.
 func makeAPIHandler(method, pathTemplate string, bindings []mcpParamBinding, positionalParams []string) server.ToolHandlerFunc {
 	return func(ctx context.Context, req mcplib.CallToolRequest) (*mcplib.CallToolResult, error) {
-		// PATCH(glean mcp-write-gate): typed spec endpoint tools bypass the
-		// CLI mutation envelope (dry-run preview, --yes approval, and journal).
+		// Typed spec endpoint tools bypass the CLI mutation envelope (dry-run
+		// preview, --yes approval, and journal).
 		// Keep the typed surface read-only; agents must use command_run/mirror
 		// for writes so the same safety gates as the CLI apply.
 		if method != "GET" {
@@ -475,8 +475,8 @@ func makeAPIHandler(method, pathTemplate string, bindings []mcpParamBinding, pos
 
 		if err != nil {
 			msg := err.Error()
-			// PATCH(glean static-audit): classify via the shared cliutil helper
-			// so HTTP-status detection isn't duplicated with the CLI layer; the
+			// Classify via the shared cliutil helper so HTTP-status detection isn't
+			// duplicated with the CLI layer; the
 			// MCP result text stays MCP-specific.
 			switch cliutil.ClassifyHTTPError(msg) {
 			case cliutil.HTTPErrConflict:
@@ -508,9 +508,8 @@ func makeAPIHandler(method, pathTemplate string, bindings []mcpParamBinding, pos
 			}
 		}
 
-		// PATCH(glean harvest-4.27): render within the MCP result budget — wrap GET
-		// arrays with count metadata and truncate oversized arrays/responses into
-		// bounded preview envelopes. Supersedes the prior hand-rolled count wrap;
+		// Render within the MCP result budget: wrap GET arrays with count metadata
+		// and truncate oversized arrays/responses into bounded preview envelopes.
 		// bound.EndpointResponse passes small non-GET responses through unchanged.
 		return mcplib.NewToolResultText(bound.EndpointResponse(method, data)), nil
 	}
@@ -537,8 +536,8 @@ func dbPath() string {
 	home, _ := os.UserHomeDir()
 	file := "data.db"
 	if groupID := strings.TrimSpace(os.Getenv("ZOTERO_GROUP")); groupID != "" && isDigits(groupID) {
-		// PATCH(glean mcp-group-db): native MCP sql/search/resources must read
-		// the same group-scoped mirror selected for cobratree commands.
+		// Native MCP sql/search/resources must read the same group-scoped mirror
+		// selected for cobratree commands.
 		file = "data-group-" + groupID + ".db"
 	}
 	return filepath.Join(home, ".local", "share", "zotio", file)
@@ -612,8 +611,8 @@ func validateReadOnlyQuery(query string) error {
 		return fmt.Errorf("only SELECT queries are allowed")
 	}
 	if hasAdditionalSQLStatement(trimmed) {
-		// PATCH(glean sql-single-statement): modernc.org/sqlite executes
-		// semicolon-stacked statements in one Query call, so a SELECT prefix is
+		// modernc.org/sqlite executes semicolon-stacked statements in one Query
+		// call, so a SELECT prefix is
 		// insufficient. Allow one SELECT/WITH statement with trailing comments
 		// or separators only; reject any second executable statement.
 		return fmt.Errorf("only a single SELECT statement is allowed")
@@ -749,8 +748,8 @@ func handleSQL(ctx context.Context, req mcplib.CallToolRequest) (*mcplib.CallToo
 }
 
 func handleContext(_ context.Context, _ mcplib.CallToolRequest) (*mcplib.CallToolResult, error) {
-	// PATCH(glean qfuq): single source of truth shared with the
-	// zotero://context MCP resource (see resources.go domainContext).
+	// Single source of truth shared with the zotero://context MCP resource
+	// (see resources.go domainContext).
 	data, _ := json.MarshalIndent(domainContext(), "", "  ")
 	return mcplib.NewToolResultText(string(data)), nil
 }

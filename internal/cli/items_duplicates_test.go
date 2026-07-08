@@ -1,5 +1,4 @@
 // Copyright 2026 OrgMentem. Licensed under MIT. See LICENSE.
-// PATCH(glean roadmap-phase1-followup): cover the duplicate-title attachment
 // exclusion so attachments sharing a generic name ("PDF", "Snapshot") are never
 // reported as bibliographic duplicates.
 

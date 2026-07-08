@@ -1,5 +1,5 @@
 // Copyright 2026 OrgMentem. Licensed under MIT. See LICENSE.
-// PATCH: connector-backed import file routing must preserve dry-run safety.
+// Connector-backed import file routing must preserve dry-run safety.
 
 package cli
 

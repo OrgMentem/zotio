@@ -26,7 +26,7 @@ type agentContext struct {
 	Auth          agentContextAuth       `json:"auth"`
 	Discovery     *agentContextDiscovery `json:"discovery,omitempty"`
 	Commands      []agentContextCommand  `json:"commands"`
-	// PATCH(glean roadmap-phase2): typed capability + preconditions registry.
+	// typed capability + preconditions registry.
 	Capabilities               []capabilityEntry `json:"capabilities,omitempty"`
 	AvailableProfiles          []string          `json:"available_profiles"`
 	FeedbackEndpointConfigured bool              `json:"feedback_endpoint_configured"`
@@ -140,7 +140,7 @@ func buildAgentContext(rootCmd *cobra.Command) agentContext {
 	}
 }
 
-// PATCH(glean co0m): surface the curated which-index as agent discovery hints.
+// surface the curated which-index as agent discovery hints.
 func buildAgentDiscoveryContext() *agentContextDiscovery {
 	cmds := make([]string, 0, len(whichIndex))
 	for _, e := range whichIndex {

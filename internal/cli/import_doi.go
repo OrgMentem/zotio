@@ -1,5 +1,4 @@
 // Copyright 2026 OrgMentem. Licensed under MIT. See LICENSE.
-// PATCH: Add hand-written DOI import workflow missing from the generated CLI.
 
 package cli
 
@@ -24,7 +23,7 @@ type crossRefWork struct {
 	DOI            string           `json:"DOI"`
 	Type           string           `json:"type"`
 	ContainerTitle []string         `json:"container-title"`
-	// PATCH(glean dk33): CrossRef abstract (JATS XML) for enrichment.
+	// CrossRef abstract (JATS XML) for enrichment.
 	Abstract string `json:"abstract"`
 }
 
@@ -64,7 +63,7 @@ func newImportDoiCmd(flags *rootFlags) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			// PATCH: route item creates through the desktop connector when available.
+			// Route item creates through the desktop connector when available.
 			res, err := routeCreateItem(cmd.Context(), flags, c, item, itemCreateSourceURI(item), cmd.Flags().Changed("collection"))
 			if err != nil {
 				return err
@@ -92,7 +91,7 @@ func fetchCrossRefItem(cmd *cobra.Command, timeout time.Duration, doi string) (m
 		return nil, fmt.Errorf("DOI is required")
 	}
 
-	// PATCH(glean 37jv): use the overridable CrossRef base (testable seam).
+	// Use the overridable CrossRef base (testable seam).
 	req, err := http.NewRequestWithContext(cmd.Context(), http.MethodGet, enrichCrossRefBase+"/works/"+url.PathEscape(doi), nil)
 	if err != nil {
 		return nil, fmt.Errorf("creating CrossRef request: %w", err)
@@ -106,7 +105,7 @@ func fetchCrossRefItem(cmd *cobra.Command, timeout time.Duration, doi string) (m
 	}
 	defer resp.Body.Close()
 
-	// PATCH(glean zotero-pp-cli-43513a119010f6e1): cap CrossRef responses on
+	// Cap CrossRef responses on
 	// this ad-hoc import path instead of reading an unbounded body into memory.
 	body, err := readCappedExternalBody(resp.Body, 1<<20)
 	if err != nil {
@@ -145,7 +144,7 @@ func crossRefItemFromWork(work crossRefWork, fallbackDOI string) map[string]any 
 	if publicationTitle := firstCrossRefString(work.ContainerTitle, ""); publicationTitle != "" {
 		item["publicationTitle"] = publicationTitle
 	}
-	// PATCH(glean 37jv): include the abstract (CrossRef returns JATS XML).
+	// Include the abstract (CrossRef returns JATS XML).
 	if abstract := stripJATS(work.Abstract); abstract != "" {
 		item["abstractNote"] = abstract
 	}

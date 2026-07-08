@@ -1,7 +1,4 @@
 // Copyright 2026 OrgMentem. Licensed under MIT. See LICENSE.
-// PATCH(glean roadmap-phase8 read-your-writes): tests that an applied write is
-// replayed into the local mirror so --data-source local reads it WITHOUT a sync,
-// and that unsupported change shapes are left for sync to reconcile.
 
 package cli
 
@@ -100,8 +97,8 @@ func TestRunMutationReadsYourWritesLocally(t *testing.T) {
 		t.Errorf("envelope item DOI = %v, want 10.1/applied", gotData["DOI"])
 	}
 
-	// PATCH(glean ryw-fix): the advanced Web API version is not available here,
-	// so write-through must strip stale pre-write version metadata.
+	// The advanced Web API version is not available here, so write-through must
+	// strip stale pre-write version metadata.
 	if _, ok := env.Result.Items[0].Item["version"]; ok {
 		t.Errorf("envelope item still exposes stale top-level version: %v", env.Result.Items[0].Item["version"])
 	}
@@ -127,8 +124,8 @@ func TestRunMutationReadsYourWritesLocally(t *testing.T) {
 	}
 }
 
-// PATCH(glean ryw-fix): regression coverage for degraded mirror updates and
-// branches that must not mutate/surface replayed items.
+// TestApplyMirrorWriteThroughSkipsNonAppliedStatuses covers degraded mirror
+// updates and branches that must not mutate or surface replayed items.
 func TestApplyMirrorWriteThroughSkipsNonAppliedStatuses(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	seedWriteThroughItem(t, "P1", `{"key":"P1","version":1,"data":{"key":"P1","itemType":"journalArticle","title":"Paper","DOI":""}}`)

@@ -1,5 +1,4 @@
 // Copyright 2026 OrgMentem. Licensed under MIT. See LICENSE.
-// PATCH: Add hand-written local duplicate detection missing from the generated CLI.
 
 package cli
 
@@ -112,7 +111,7 @@ func newItemsDuplicatesCmd(flags *rootFlags) *cobra.Command {
 		},
 	}
 	cmd.Flags().StringVar(&flagBy, "by", "all", "Duplicate detector to run (doi, title, all)")
-	// PATCH(glean write-safety): keep the bare duplicate report intact while adding the write-safe resolver subcommand.
+	// Keep the bare duplicate report intact while adding the write-safe resolver subcommand.
 	cmd.AddCommand(newItemsDuplicatesResolveCmd(flags))
 
 	return cmd
@@ -137,7 +136,7 @@ ORDER BY count DESC, value`)
 }
 
 // queryDuplicateTitles groups citeable items sharing a normalized title.
-// PATCH(glean roadmap-phase1-followup): exclude attachment/annotation/note rows
+// Exclude attachment/annotation/note rows
 // so that attachments named "PDF" / "Snapshot" / "Full Text PDF" don't dominate
 // the report as false bibliographic duplicates (and so `items duplicates resolve
 // --title` never tries to merge them).

@@ -1,5 +1,4 @@
 // Copyright 2026 OrgMentem and contributors. Licensed under MIT. See LICENSE.
-// PATCH(glean roadmap-phase2): cover cross-platform launch dispatch and verify-mode launch suppression.
 
 package cli
 
@@ -10,7 +9,7 @@ import (
 	"zotio/internal/cliutil"
 )
 
-// PATCH(glean roadmap-phase2): verify OS dispatch stays pure and stable.
+// verify OS dispatch stays pure and stable.
 func TestLaunchCommand(t *testing.T) {
 	uri := "zotero://select/library"
 	tests := []struct {
@@ -36,7 +35,7 @@ func TestLaunchCommand(t *testing.T) {
 	}
 }
 
-// PATCH(glean roadmap-phase2): verify-mode launch must not invoke desktop handlers.
+// verify-mode launch must not invoke desktop handlers.
 func TestLaunchURIVerifyEnv(t *testing.T) {
 	t.Setenv(cliutil.VerifyEnvVar, "1")
 

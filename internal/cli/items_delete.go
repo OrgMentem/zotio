@@ -16,7 +16,7 @@ func newItemsDeleteCmd(flags *rootFlags) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "delete <itemKey>",
 		Short: "Delete an item (moves to trash)",
-		// PATCH(glean zotero-pp-cli-76875fc8c78bd05c): use an item key placeholder, not a token.
+		// Use an item key placeholder, not a token.
 		Example:     "  zotio items delete ABC12345",
 		Annotations: map[string]string{"zotio:endpoint": "items.delete", "zotio:method": "DELETE", "zotio:path": "/items/{itemKey}"},
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -30,7 +30,7 @@ func newItemsDeleteCmd(flags *rootFlags) *cobra.Command {
 
 			path := "/items/{itemKey}"
 			path = replacePathParam(path, "itemKey", args[0])
-			// PATCH: Zotero requires If-Unmodified-Since-Version on DELETE (HTTP 428
+			// Zotero requires If-Unmodified-Since-Version on DELETE (HTTP 428
 			// without it). newWriteClient points at the write target, so this version
 			// GET and the DELETE hit the same library (the Web API under hybrid routing)
 			// — correct even for an item just created on the web and not yet synced local.

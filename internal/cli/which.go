@@ -25,22 +25,16 @@ type whichEntry struct {
 // its hero features. Endpoint-level commands are discoverable via
 // `--help`; `which` exists to resolve a natural-language capability
 // query to one of the commands the skill says matter most.
-// PATCH(marketing-heroes): rebuilt around the shipped roadmap flagships
-// (library health, reviewable import, enrich, journal undo, export
-// snapshot, vault sync, summarize, preprint-check fix) — the print-time
-// seed predated Phases 1-8 and advertised only hygiene/reading primitives.
 var whichIndex = []whichEntry{
 	// Library trust & health — catch the reference problems that break downstream.
 	{Command: "library health", Description: "Ranked, CI-gateable health report: citekey conflicts, duplicates, missing metadata, tag drift, broken attachments — with --for presets for citation or systematic-review readiness.", Group: "Library trust & health", WhyItMatters: "Run this before any bibliography export or screening handoff; gate CI with --fail-on (exit 11) and publish a shields.io badge with --badge."},
 	{Command: "items duplicates", Description: "Detect likely duplicate items by DOI or normalized title, then merge them safely with `duplicates resolve` — preview-first.", Group: "Library trust & health", WhyItMatters: "Duplicates corrupt PRISMA counts and double-cite sources; resolve them before they reach a manuscript."},
-	// PATCH(marketing-heroes-2): research-integrity + gap-analysis heroes.
 	{Command: "items retract-check", Description: "Find retracted papers in your library: checks every DOI-bearing item against Crossref's Retraction Watch data — retractions, expressions of concern, and corrections, with notice DOIs and dates.", Group: "Library trust & health", WhyItMatters: "Citing a retracted paper is a career-level embarrassment; catch it before a reviewer does (also gates library health via --check-retractions)."},
 	{Command: "collections gaps", Description: "Rank the papers your collection cites most that are missing from your library — citation-graph gap analysis via OpenCitations and Semantic Scholar.", Group: "Library trust & health", WhyItMatters: "A reviewer will ask why you didn't cite the field's most-cited work; find the gap before they do, then import doi it."},
 	{Command: "tags audit", Description: "Find and fix tag drift: groups tags that differ only by case or variant, shows item counts, and generates ready-to-run merge commands.", Group: "Library trust & health", WhyItMatters: "Use this before any literature review handoff to clean up tag taxonomy; dirty tags produce unreliable filtered exports."},
 	{Command: "items audit", Description: "Count and list items missing PDFs, abstracts, DOIs, or tags — one command for a complete metadata health report.", Group: "Library trust & health", WhyItMatters: "Use this before a systematic review export to identify items that need metadata enrichment."},
 	{Command: "items missing-pdf", Description: "List journal articles and book chapters that have no attached PDF — your download queue, ready to script.", Group: "Library trust & health", WhyItMatters: "Use this to batch-generate a download list for Unpaywall or Sci-Hub scripts."},
 	{Command: "library stats", Description: "See your library broken down by item type, publication year, and top journals — a dashboard in one command.", Group: "Library trust & health", WhyItMatters: "Use this to understand the shape and bias of a library before a systematic review or citation audit."},
-	// PATCH: schema-drift probe entry (hand-written command, not generator-seeded).
 	{Command: "schema drift", Description: "Detect what a Zotero upgrade changed: new or removed item types, fields, and creator fields vs a saved baseline.", Group: "Library trust & health", WhyItMatters: "Use this after upgrading Zotero to find item types or fields a new version added that your tooling may not model yet."},
 
 	// Safe writes & import — preview-first change with an undo trail.
@@ -56,15 +50,12 @@ var whichIndex = []whichEntry{
 	{Command: "watch", Description: "Keep the local store fresh with periodic incremental syncs (--interval, --once); --health diffs library health between cycles and reports new findings to stdout or a webhook.", Group: "Agent & automation surface", WhyItMatters: "Run it in the background so agents and scripts never read stale data — and hear about new problems the cycle they appear."},
 	{Command: "workflow run", Description: "Run a declarative multi-step workflow spec (JSON) in-process, with per-step status and continue-on-error control.", Group: "Agent & automation surface", WhyItMatters: "Chain sync → audit → export into one reviewable spec instead of a brittle shell script."},
 	{Command: "vault sync", Description: "Two-way Obsidian/Logseq vault sync: one Markdown note per item, managed blocks that never clobber your prose, conflict-safe write-back via push/pull/resolve.", Group: "Agent & automation surface", WhyItMatters: "Keep a PKM vault and Zotero in lockstep without losing hand-written notes on either side."},
-	// PATCH(marketing-heroes-2): onboarding hero.
 	{Command: "init", Description: "Guided first run: detect Zotero, enable the local API, set the Web API key, first sync, and a quick health check — one command from install to working setup.", Group: "Agent & automation surface", WhyItMatters: "From install to a synced, health-checked library in under a minute; idempotent, and agent-safe under --no-input."},
-	// PATCH(demo-mode): zero-setup trial sandbox.
 	{Command: "demo", Description: "Zero-setup trial: seed a bundled sample library (34 classic papers, one genuinely retracted) into a sandbox and try every local command with ZOTIO_DEMO=1 — no Zotero, no API key.", Group: "Agent & automation surface", WhyItMatters: "Evaluate zotio in 30 seconds before pointing it at a real library; the sandbox never touches your real store or credentials."},
 
 	// Export & citations.
 	{Command: "collections export", Description: "Export an entire collection and all its subcollections as a single BibTeX or CSL-JSON file, preserving structure in comments.", Group: "Export & citations", WhyItMatters: "Use this to hand a complete literature snapshot to LaTeX or to another researcher without losing the organizational hierarchy."},
 	{Command: "items citekey-conflicts", Description: "Find items without a Better BibTeX citation key or with duplicate keys — prevent LaTeX compilation failures before they happen.", Group: "Export & citations", WhyItMatters: "Use this before exporting BibTeX for a LaTeX manuscript to catch key conflicts that cause \\cite{} failures."},
-	// PATCH(marketing-heroes-2): manuscript-side citation checking.
 	{Command: "items bibcheck", Description: "Check a manuscript (.tex or pandoc Markdown) against your library: every \\cite and @citekey resolved, unknown and ambiguous keys flagged.", Group: "Export & citations", WhyItMatters: "Run it before submission — unknown citekeys are LaTeX build failures waiting to happen; gate CI with --fail-on-unknown (exit 11)."},
 
 	// Reading workflow.
@@ -73,7 +64,6 @@ var whichIndex = []whichEntry{
 	{Command: "annotations timeline", Description: "See your annotations ordered by date — find what you were reading and highlighting in any time window.", Group: "Reading workflow", WhyItMatters: "Use this to extract a week's reading highlights for synthesis or to reconstruct a research trail."},
 	{Command: "items note-template", Description: "Generate a pre-filled markdown reading note (frontmatter + abstract + empty Annotations section) for any item — paste into Obsidian or Logseq.", Group: "Reading workflow", WhyItMatters: "Use this to initialize a reading note in a PKM system without manually copying fields from the Zotero UI."},
 	{Command: "items open", Description: "Jump from CLI search results directly to the item in the Zotero desktop app.", Group: "Reading workflow", WhyItMatters: "Use this after finding an item via CLI search to open it for reading without leaving the terminal flow."},
-	// PATCH(marketing-heroes-2): the shareable one.
 	{Command: "library wrapped", Description: "Your Zotero year in review — items added by month and type, top venues and authors, annotation activity, PDF coverage — with a shareable SVG card (--card).", Group: "Reading workflow", WhyItMatters: "The fun one: see (and share) what your reading year actually looked like, straight from the local store."},
 }
 
@@ -96,9 +86,9 @@ type whichMatch struct {
 //	+1  per meaningful query token found in why-it-matters
 //	+1  group tag contains a query token
 //
-// PATCH(marketing-heroes-2): per-token scoring over description and
-// why-it-matters — goal-phrase queries ("retracted papers", "check
-// manuscript") scored zero under whole-phrase-only matching.
+// The ranker scores each meaningful query token over the description and
+// why-it-matters so goal-phrase queries like "retracted papers" and
+// "check manuscript" can match.
 //
 // Ties break on declaration order in the index. An empty query returns
 // every entry at score 0 in declaration order - this is the "list all"
@@ -174,8 +164,7 @@ func whichScoreEntry(e whichEntry, query string, qTokens []string) int {
 	if strings.Contains(desc, query) {
 		score += 2
 	}
-	// Per-token substring scoring over command, description, and
-	// why-it-matters. PATCH(marketing-heroes-2): see rankWhich doc.
+	// Per-token substring scoring over command, description, and why-it-matters.
 	for _, qt := range qTokens {
 		if len(qt) < 3 || whichStopwords[qt] {
 			continue

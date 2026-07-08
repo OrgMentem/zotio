@@ -1,5 +1,4 @@
 // Copyright 2026 OrgMentem. Licensed under MIT. See LICENSE.
-// PATCH: Cover safe Zotero desktop URI opening behavior.
 
 package cli
 
@@ -49,8 +48,8 @@ func TestItemsOpenVerifyEnvLaunchPrintsWouldOpen(t *testing.T) {
 	}
 }
 
-// PATCH(glean 8r0o): URI construction for every target type x library scope,
-// plus path-segment escaping and invalid-type rejection.
+// URI construction covers every target type x library scope, plus path-segment
+// escaping and invalid-type rejection.
 func TestZoteroDeepLink(t *testing.T) {
 	cases := []struct {
 		name, typ, group             string
@@ -94,7 +93,7 @@ func TestZoteroDeepLinkRejectsUnknownType(t *testing.T) {
 	}
 }
 
-// PATCH(glean 8r0o): --agent/--json emits the {uri,target_type,library_scope,launched} envelope.
+// --agent/--json emits the {uri,target_type,library_scope,launched} envelope.
 func TestItemsOpenJSONEnvelope(t *testing.T) {
 	stdout, _, err := executeItemsOpenWith(&rootFlags{asJSON: true}, "--type", "collection", "COLL1")
 	if err != nil {
@@ -118,7 +117,7 @@ func TestItemsOpenJSONEnvelope(t *testing.T) {
 	}
 }
 
-// PATCH(glean 8r0o): the global --group / activeGroupID scopes the deep link to a group library.
+// The global --group / activeGroupID scopes the deep link to a group library.
 func TestItemsOpenGroupScopeURI(t *testing.T) {
 	saved := activeGroupID
 	t.Cleanup(func() { activeGroupID = saved })

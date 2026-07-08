@@ -1,5 +1,4 @@
 // Copyright 2026 OrgMentem. Licensed under MIT. See LICENSE.
-// PATCH: Add hand-written local item metadata health audit missing from the generated CLI.
 
 package cli
 
@@ -126,7 +125,7 @@ func selectedItemsAuditChecks(missingPDF, missingAbstract, missingDOI, missingTa
 	if missingTags {
 		checks = append(checks, itemsAuditCheck{name: "missing_tags", query: queryMissingTagsItems})
 	}
-	// PATCH(glean dxut): citation-readiness check — items that cannot be cited
+	// Citation-readiness check — items that cannot be cited
 	// because a core field is missing.
 	if missingCitation {
 		checks = append(checks, itemsAuditCheck{name: "missing_citation", query: queryCitationIncompleteItems})
@@ -139,11 +138,11 @@ func queryItemsAuditSummary(db localQueryStore) (itemsAuditSummary, error) {
 	if err != nil {
 		return itemsAuditSummary{}, err
 	}
-	// PATCH(glean perf-audit 2qhf): fold the three single-row predicate counts
+	// Fold the three single-row predicate counts
 	// (abstract/DOI/tags) into one table scan with conditional aggregation
 	// instead of three separate COUNT scans. The PDF count keeps its own query
 	// because it needs the attachment anti-join; the DOI predicate uses the
-	// indexed item_type column (see m4ku).
+	// indexed item_type column.
 	rows, err := db.QueryRaw(`
 SELECT
 	COUNT(CASE WHEN json_extract(data, '$.data.abstractNote') IS NULL OR TRIM(json_extract(data, '$.data.abstractNote')) = '' THEN 1 END) AS missing_abstract,
@@ -194,7 +193,7 @@ SELECT
 FROM resources
 WHERE resource_type = 'items'
 	AND (json_extract(data, '$.data.abstractNote') IS NULL OR TRIM(json_extract(data, '$.data.abstractNote')) = '')`
-	// PATCH(glean bugfix): let items enrich scope missing-abstract candidates to a collection.
+	// Let items enrich scope missing-abstract candidates to a collection.
 	args := enrichCollectionFilterArgs(&query, "data", collection)
 	query += `
 ORDER BY date_added DESC`
@@ -213,7 +212,7 @@ FROM resources
 WHERE resource_type = 'items'
 	AND json_extract(data, '$.data.itemType') IN ('journalArticle', 'conferencePaper', 'preprint')
 	AND (json_extract(data, '$.data.DOI') IS NULL OR TRIM(json_extract(data, '$.data.DOI')) = '')`
-	// PATCH(glean bugfix): let items enrich scope missing-DOI candidates to a collection.
+	// Let items enrich scope missing-DOI candidates to a collection.
 	args := enrichCollectionFilterArgs(&query, "data", collection)
 	query += `
 ORDER BY date_added DESC`
@@ -292,7 +291,7 @@ func sqlStringValue(v any) string {
 }
 
 // citationIncompletePredicate matches citeable items missing a core citation
-// field. PATCH(glean dxut): shared by the audit summary scan and the
+// field. Shared by the audit summary scan and the
 // --missing-citation listing so the count and the list never drift.
 const citationIncompletePredicate = `(
 	COALESCE(json_array_length(json_extract(data, '$.data.creators')), 0) = 0
@@ -303,7 +302,7 @@ const citationIncompletePredicate = `(
 )`
 
 // queryCitationIncompleteItems lists citeable items missing core citation fields,
-// annotating each row with the specific fields it lacks. PATCH(glean dxut).
+// annotating each row with the specific fields it lacks.
 func queryCitationIncompleteItems(db localQueryStore, limit int) ([]map[string]any, error) {
 	query := `
 SELECT
@@ -363,7 +362,7 @@ func citationMissingFields(r map[string]any) []string {
 }
 
 // runVerifyAttachmentFiles checks that every PDF attachment's file is present on
-// disk, resolving each path via the local API and stat-ing it. PATCH(glean dxut).
+// disk, resolving each path via the local API and stat-ing it.
 func runVerifyAttachmentFiles(cmd *cobra.Command, db localQueryStore, flags *rootFlags, limit int) error {
 	c, err := flags.newClient()
 	if err != nil {
@@ -423,7 +422,7 @@ func attachmentFileStatus(c *client.Client, key string) (path, reason string) {
 }
 
 // queryPDFAttachments lists PDF attachments that should have a local file
-// (excludes linked_url web bookmarks). PATCH(glean dxut).
+// (excludes linked_url web bookmarks).
 func queryPDFAttachments(db localQueryStore, limit int) ([]map[string]any, error) {
 	query := `
 SELECT

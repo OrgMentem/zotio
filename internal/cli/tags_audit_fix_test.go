@@ -1,5 +1,4 @@
 // Copyright 2026 OrgMentem. Licensed under MIT. See LICENSE.
-// PATCH(glean write-safety): cover tags audit fix preview/apply mutation envelopes.
 package cli
 
 import (

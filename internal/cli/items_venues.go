@@ -1,5 +1,4 @@
 // Copyright 2026 OrgMentem. Licensed under MIT. See LICENSE.
-// PATCH: Add hand-written local venue-count report missing from the generated CLI.
 
 package cli
 
@@ -51,8 +50,8 @@ func newItemsVenuesCmd(flags *rootFlags) *cobra.Command {
 }
 
 func queryItemVenues(db localQueryStore, itemType string, top int) ([]map[string]any, error) {
-	// PATCH(glean bugfix): prefer Zotero's normalized meta.parsedDate for
-	// venue years before falling back to freeform data.date.
+	// Prefer Zotero's normalized meta.parsedDate for venue years before falling
+	// back to freeform data.date.
 	query := `
 SELECT
 	COALESCE(

@@ -1,5 +1,4 @@
 // Copyright 2026 OrgMentem. Licensed under MIT. See LICENSE.
-// PATCH(glean roadmap-phase5 vault-audit): add a read-only vault trust-plane audit for managed notes.
 
 package cli
 
@@ -67,7 +66,7 @@ func newVaultAuditCmd(flags *rootFlags) *cobra.Command {
 	return cmd
 }
 
-// PATCH(glean roadmap-phase5 vault-audit): keep vault audit read-only and bounded for agent-facing use.
+// auditVaultNotes keeps the vault audit read-only and bounded for agent-facing use.
 func auditVaultNotes(outDir string) (vaultAuditReport, error) {
 	report := vaultAuditReport{
 		Vault:  outDir,

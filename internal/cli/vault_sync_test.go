@@ -1,6 +1,4 @@
 // Copyright 2026 OrgMentem. Licensed under MIT. See LICENSE.
-// PATCH(glean 49r4): cover vault note creation, idempotent + non-clobbering
-// merge, backlinks, dry-run, and Logseq output.
 
 package cli
 

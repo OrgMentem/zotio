@@ -1,5 +1,5 @@
 // Copyright 2026 OrgMentem. Licensed under MIT. See LICENSE.
-// PATCH: Zotero's POST /items requires a bare JSON array; items create must send the
+// Zotero's POST /items requires a bare JSON array; items create must send the
 // array directly, not the generated {"items":[...]} wrapper (which the API rejects).
 
 package cli

@@ -1,5 +1,5 @@
 // Copyright 2026 OrgMentem. Licensed under MIT. See LICENSE.
-// PATCH: Zotero desktop connector write client for local-first creates and stored attachments.
+// Zotero desktop connector write client for local-first creates and stored attachments.
 
 package connector
 

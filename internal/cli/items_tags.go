@@ -15,9 +15,9 @@ func newItemsTagsCmd(flags *rootFlags) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "tags [itemKey]",
 		Short: "Get or manage tags for a specific item",
-		// PATCH(glean write-safety): keep the legacy bare read as a deprecated alias while exposing read/write subcommands.
+		// Keep the legacy bare read as a deprecated alias while exposing read/write subcommands.
 		Example: "  zotio items tags list ABC12345",
-		// PATCH(glean write-safety): ArbitraryArgs lets the bare-read alias accept an itemKey even when the group is run without its parent (subcommands still match first).
+		// ArbitraryArgs lets the bare-read alias accept an itemKey even when the group is run without its parent (subcommands still match first).
 		Args:        cobra.ArbitraryArgs,
 		Annotations: map[string]string{"zotio:endpoint": "items.tags", "zotio:method": "GET", "zotio:path": "/items/{itemKey}/tags", "mcp:read-only": "true"},
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -31,13 +31,13 @@ func newItemsTagsCmd(flags *rootFlags) *cobra.Command {
 			return runItemTagsRead(cmd, flags, args[0])
 		},
 	}
-	// PATCH(glean write-safety): register explicit read/write tag subcommands under the generated group.
+	// Register explicit read/write tag subcommands under the generated group.
 	cmd.AddCommand(newItemsTagsListCmd(flags), newItemsTagsAddCmd(flags), newItemsTagsRemoveCmd(flags))
 
 	return cmd
 }
 
-// PATCH(glean write-safety): explicit read subcommand reuses the generated tag reader.
+// newItemsTagsListCmd is an explicit read subcommand that reuses the generated tag reader.
 func newItemsTagsListCmd(flags *rootFlags) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:         "list <itemKey>",
@@ -52,7 +52,7 @@ func newItemsTagsListCmd(flags *rootFlags) *cobra.Command {
 	return cmd
 }
 
-// PATCH(glean write-safety): extracted from the generated command so list and the deprecated alias share one reader.
+// runItemTagsRead is extracted from the generated command so list and the deprecated alias share one reader.
 func runItemTagsRead(cmd *cobra.Command, flags *rootFlags, itemKey string) error {
 	c, err := flags.newClient()
 	if err != nil {

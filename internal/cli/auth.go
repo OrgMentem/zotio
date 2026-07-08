@@ -87,7 +87,7 @@ func newAuthSetTokenCmd(flags *rootFlags) *cobra.Command {
 				return configErr(err)
 			}
 
-			// PATCH(glean zotero-pp-cli-0109b20b09d68757): do not accept API
+			// do not accept API
 			// keys as positional arguments, where they leak via shell history and
 			// process listings. Read the secret from stdin only.
 			if !fromStdin {

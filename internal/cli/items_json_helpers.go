@@ -1,5 +1,5 @@
 // Copyright 2026 OrgMentem. Licensed under MIT. See LICENSE.
-// PATCH: Share JSON field extraction for hand-written item workflow commands.
+// Share JSON field extraction for hand-written item workflow commands.
 
 package cli
 

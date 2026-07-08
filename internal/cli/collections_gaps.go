@@ -1,5 +1,4 @@
 // Copyright 2026 OrgMentem. Licensed under MIT. See LICENSE.
-// PATCH(marketing-heroes-2): add collection citation-gap discovery from local DOI items.
 
 package cli
 
@@ -16,7 +15,7 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// PATCH(marketing-heroes-2): expose an overridable COCI references base URL for tests and provider swaps.
+// expose an overridable COCI references base URL for tests and provider swaps.
 var collectionGapsOpenCitationsBase = "https://opencitations.net/index/coci/api/v1"
 
 type collectionGapItem struct {
@@ -47,7 +46,6 @@ type collectionGapsReport struct {
 	Rows          []collectionGapRow    `json:"rows"`
 }
 
-// PATCH(marketing-heroes-2): register read-only `collections gaps` with bounded scan/top flags.
 func newCollectionsGapsCmd(flags *rootFlags) *cobra.Command {
 	var flagLimit int
 	var flagTop int
@@ -91,7 +89,7 @@ func newCollectionsGapsCmd(flags *rootFlags) *cobra.Command {
 	return cmd
 }
 
-// PATCH(marketing-heroes-2): aggregate references, exclude whole-library DOI holdings, and rank missing cited DOIs.
+// aggregate references, exclude whole-library DOI holdings, and rank missing cited DOIs.
 func buildCollectionGapsReport(ctx context.Context, db localQueryStore, httpClient *http.Client, collectionKey string, limit int, top int) (collectionGapsReport, error) {
 	items, err := queryCollectionGapItems(db, collectionKey, limit)
 	if err != nil {
@@ -221,7 +219,7 @@ WHERE resource_type = 'items'
 	return out, nil
 }
 
-// PATCH(marketing-heroes-2): prefer OpenCitations COCI references and fall back to Semantic Scholar when COCI is empty or unavailable.
+// prefer OpenCitations COCI references and fall back to Semantic Scholar when COCI is empty or unavailable.
 func fetchOutgoingReferenceDOIs(ctx context.Context, httpClient *http.Client, doi string) ([]string, map[string]string, error) {
 	refs, err := fetchCOCIReferenceDOIs(ctx, httpClient, doi)
 	if err == nil && len(refs) > 0 {

@@ -1,5 +1,4 @@
 // Copyright 2026 OrgMentem. Licensed under MIT. See LICENSE.
-// PATCH: Add hand-written URL import workflow missing from the generated CLI.
 
 package cli
 
@@ -43,7 +42,7 @@ Use --dry-run to preview the proposed item without writing it.`,
 			if err != nil {
 				return err
 			}
-			// PATCH: route item creates through the desktop connector when available.
+			// Route item creates through the desktop connector when available.
 			res, err := routeCreateItem(cmd.Context(), flags, c, item, itemCreateSourceURI(item), cmd.Flags().Changed("collection"))
 			if err != nil {
 				return err

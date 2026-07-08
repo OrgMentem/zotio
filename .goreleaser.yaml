@@ -1,7 +1,7 @@
 version: 2
 project_name: zotio
-# PATCH(marketing-heroes-2): grouped conventional-commit release notes
-# (was disable: true — raw commit lists read as noise on release pages).
+# Group conventional-commit release notes; raw commit lists read as noise on
+# release pages.
 changelog:
   use: github
   sort: asc
@@ -29,8 +29,8 @@ release:
     ---
     **Curated history:** [CHANGELOG.md](https://github.com/OrgMentem/zotio/blob/main/CHANGELOG.md) · **Install:** `brew install orgmentem/tap/zotio`
   extra_files:
-    # PATCH(marketing-heroes-2): per-platform MCPB bundles for Claude Desktop,
-    # packed by scripts/mcpb_pack.py as a zotio-mcp post-build hook.
+    # Per-platform MCPB bundles for Claude Desktop, packed by
+    # scripts/mcpb_pack.py as a zotio-mcp post-build hook.
     - glob: dist/mcpb/*.mcpb
 builds:
   - id: zotio
@@ -72,10 +72,10 @@ archives:
         formats: [zip]
 checksum:
   name_template: checksums.txt
-# PATCH(glean zotio-9131682f): Generate Syft SBOMs for released archives.
+# Generate Syft SBOMs for released archives.
 sboms:
   - artifacts: archive
-# PATCH(glean zotio-9131682f): Sign release checksums with cosign keyless OIDC.
+# Sign release checksums with cosign keyless OIDC.
 signs:
   - cmd: cosign
     signature: "${artifact}.sig"
@@ -96,9 +96,8 @@ brews:
     repository:
       owner: OrgMentem
       name: homebrew-tap
-      # PATCH(marketing-heroes-2): the default GITHUB_TOKEN cannot push
-      # cross-repo; this fine-grained PAT has contents:write on
-      # homebrew-tap only.
+      # The default GITHUB_TOKEN cannot push cross-repo; this fine-grained PAT
+      # has contents:write on homebrew-tap only.
       token: "{{ .Env.HOMEBREW_TAP_GITHUB_TOKEN }}"
     commit_msg_template: "zotio {{ .Tag }}"
     # goreleaser writes to the tap root unless told otherwise; brew expects Formula/.

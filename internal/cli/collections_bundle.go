@@ -1,5 +1,4 @@
 // Copyright 2026 OrgMentem. Licensed under MIT. See LICENSE.
-// PATCH(glean write-safety): add a read-only local research-package exporter for collections.
 
 package cli
 
@@ -147,8 +146,8 @@ func writeCollectionBundle(db *store.Store, collKey, outDir string) (collectionB
 }
 
 // collectionBundleAnnotationItems adapts local store rows into the reusable
-// annotations-export Markdown formatter. PATCH(glean write-safety): keep bundle
-// annotation rendering byte-for-byte aligned with `annotations export`.
+// annotations-export Markdown formatter, keeping bundle annotation rendering
+// byte-for-byte aligned with `annotations export`.
 func collectionBundleAnnotationItems(items []json.RawMessage, annByKey map[string][]json.RawMessage) []annotationExportItem {
 	exports := make([]annotationExportItem, 0, len(items))
 	for _, raw := range items {

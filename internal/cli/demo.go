@@ -1,5 +1,5 @@
 // Copyright 2026 OrgMentem. Licensed under MIT. See LICENSE.
-// PATCH(demo-mode): zero-setup demo sandbox. `zotio demo` seeds a bundled
+// zero-setup demo sandbox. `zotio demo` seeds a bundled
 // sample library into a separate SQLite store; ZOTIO_DEMO=1 reroutes every
 // zotio read to that sandbox with a pristine, key-less config, so anyone can
 // try the local-read hero commands with no Zotero desktop and no API key.
@@ -19,7 +19,7 @@ import (
 	"zotio/internal/store"
 )
 
-// PATCH(demo-mode): the bundled sample library. Real public bibliographic
+// the bundled sample library. Real public bibliographic
 // metadata (classic ML/NLP/systems/medicine papers with real DOIs/venues)
 // plus attachments, annotations, and collections, crafted so every tour
 // command produces interesting, non-empty output offline.
@@ -96,7 +96,7 @@ No Zotero desktop and no API key are required.`,
 		Args:        cobra.NoArgs,
 		Annotations: map[string]string{"mcp:read-only": "true"},
 		RunE: func(cmd *cobra.Command, args []string) error {
-			// PATCH(demo-mode): force demo routing on for this process so any
+			// force demo routing on for this process so any
 			// indirect store/config resolution during seeding can never touch
 			// the real data.db or config. The path is also threaded explicitly
 			// below as a belt-and-suspenders guard.

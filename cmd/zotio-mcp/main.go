@@ -23,11 +23,11 @@ import (
 	mcptools "zotio/internal/mcp"
 )
 
-const defaultHTTPAddr = "127.0.0.1:7777" // PATCH(glean http-harden): default streamable HTTP to loopback-only.
+const defaultHTTPAddr = "127.0.0.1:7777" // Default streamable HTTP to loopback-only.
 
 func main() {
-	// PATCH(glean qfuq): advertise resource + prompt capabilities alongside
-	// tools so hosts can discover Zotero context and guided workflows.
+	// Advertise resource + prompt capabilities alongside tools so hosts can
+	// discover Zotero context and guided workflows.
 	s := server.NewMCPServer(
 		"Zotero",
 		"1.0.0",
@@ -37,12 +37,12 @@ func main() {
 	)
 
 	mcptools.RegisterTools(s)
-	// PATCH(glean qfuq): first-class MCP resources and prompts.
+	// First-class MCP resources and prompts.
 	mcptools.RegisterResources(s)
 	mcptools.RegisterPrompts(s)
 
-	// PATCH(glean roadmap-phase7 3df91067): announce the env-selected library and
-	// profile so MCP installs (which configure these via env, not flags) are
+	// Announce the env-selected library and profile so MCP installs (which
+	// configure these via env, not flags) are
 	// verifiable from the host's server log.
 	if g := os.Getenv("ZOTERO_GROUP"); g != "" {
 		fmt.Fprintf(os.Stderr, "Zotero MCP: group library %s\n", g)
@@ -53,20 +53,19 @@ func main() {
 		fmt.Fprintf(os.Stderr, "Zotero MCP: profile %s\n", p)
 	}
 
-	// PATCH(glean harvest-4.27): adopt the v4.27 streamable-HTTP transport so one
-	// binary serves stdio locally and HTTP when hosted in a container/remote
-	// sandbox. Transport selection: --transport flag, then ZOTIO_MCP_TRANSPORT env,
-	// then stdio (preserves prior behavior). The fresh machine's stdio path uses
-	// server.ServeStdio, which does NOT redirect process stdout — kept the
-	// hardened NewStdioServer path below instead (see field-mcp-transport).
+	// The streamable-HTTP transport lets one binary serve stdio locally and HTTP
+	// when hosted in a container/remote sandbox. Transport selection:
+	// --transport flag, then ZOTIO_MCP_TRANSPORT env, then stdio (preserves prior
+	// behavior). The stdio path uses the hardened NewStdioServer path below so
+	// process stdout can be redirected away from the JSON-RPC stream.
 	transport := flag.String("transport", defaultTransport(), "MCP transport: stdio | http")
 	addr := flag.String("addr", defaultHTTPAddr, "bind address for http transport (host:port or :port)")
 	mcpAuthToken := flag.String("mcp-auth-token", "", "bearer token required by the http transport (falls back to ZOTIO_MCP_TOKEN; auto-generated if unset)")
 	allowUnauth := flag.Bool("allow-unauthenticated", false, "disable bearer-token auth for the http transport (NOT recommended; loopback is not a per-user boundary)")
 	flag.Parse()
 
-	// PATCH(glean field-mcp-transport): stdio MCP uses stdout as the JSON-RPC
-	// transport. Mirrored Cobra commands still contain legacy direct os.Stdout
+	// Stdio MCP uses stdout as the JSON-RPC transport. Mirrored Cobra commands
+	// still contain legacy direct os.Stdout
 	// writes, so route accidental process-stdout chatter to stderr and pass the
 	// original stdout handle only to the MCP transport. Harmless for HTTP (where
 	// command output is captured per-tool), so applied before the switch.
@@ -90,8 +89,8 @@ func main() {
 			os.Exit(1)
 		}
 	case "http":
-		// PATCH(glean zotio-0c42fedfe1133cf4): loopback is not a per-user
-		// boundary — a co-resident local user (or a non-browser local client)
+		// Loopback is not a per-user boundary: a co-resident local user (or a
+		// non-browser local client)
 		// can reach the port. Require a bearer token by default (auto-generated
 		// and printed once) unless --allow-unauthenticated is passed.
 		authToken, tokSource, tokGenerated, tokErr := resolveMCPAuthToken(*mcpAuthToken, *allowUnauth)
@@ -100,7 +99,7 @@ func main() {
 			os.Exit(1)
 		}
 		httpSrv := newHardenedStreamableHTTPServer(s, *addr, authToken)
-		if !isLoopbackHTTPAddr(*addr) { // PATCH(glean http-harden): warn when the MCP HTTP surface is exposed off-host.
+		if !isLoopbackHTTPAddr(*addr) { // Warn when the MCP HTTP surface is exposed off-host.
 			fmt.Fprintf(os.Stderr, "WARNING: Zotero MCP HTTP surface at %s is reachable by other hosts; it exposes typed tools with read+write access to the user's Zotero account, and the operator is responsible for network controls.\n", *addr)
 		}
 		switch {
@@ -151,11 +150,11 @@ func defaultTransport() string {
 	return "stdio"
 }
 
-const maxMCPHTTPBodyBytes = 4 << 20 // PATCH(glean http-harden): cap POST bodies before mcp-go's io.ReadAll.
+const maxMCPHTTPBodyBytes = 4 << 20 // Cap POST bodies before mcp-go's io.ReadAll.
 
-// PATCH(glean http-harden): route mcp-go through a custom HTTP server so POST
-// bodies are capped, browser-origin requests are constrained, and the transport
-// can drain via StreamableHTTPServer.Shutdown.
+// Route mcp-go through a custom HTTP server so POST bodies are capped,
+// browser-origin requests are constrained, and the transport can drain via
+// StreamableHTTPServer.Shutdown.
 func newHardenedStreamableHTTPServer(mcpServer *server.MCPServer, addr, authToken string) *server.StreamableHTTPServer {
 	var httpSrv *server.StreamableHTTPServer
 	mux := http.NewServeMux()
@@ -164,8 +163,8 @@ func newHardenedStreamableHTTPServer(mcpServer *server.MCPServer, addr, authToke
 			http.Error(w, err.Error(), http.StatusForbidden)
 			return
 		}
-		// PATCH(glean zotio-0c42fedfe1133cf4): authenticate every request before
-		// mcp-go sees it. Empty token means auth was explicitly disabled via
+		// Authenticate every request before mcp-go sees it. Empty token means auth
+		// was explicitly disabled via
 		// --allow-unauthenticated.
 		if authToken != "" && !validBearerToken(r, authToken) {
 			w.Header().Set("WWW-Authenticate", "Bearer")
@@ -186,8 +185,8 @@ func newHardenedStreamableHTTPServer(mcpServer *server.MCPServer, addr, authToke
 	return httpSrv
 }
 
-// PATCH(glean http-origin-host): local MCP HTTP servers are reachable from a
-// browser. Validate Host and Origin before mcp-go sees the request so loopback
+// Local MCP HTTP servers are reachable from a browser. Validate Host and
+// Origin before mcp-go sees the request so loopback
 // CSRF/DNS-rebinding attempts cannot ride an ambient local server.
 func validateMCPHTTPRequest(addr string, r *http.Request) error {
 	if !hostAllowedForMCP(addr, r.Host) {
@@ -262,7 +261,7 @@ func isLoopbackHost(host string) bool {
 	return ip != nil && ip.IsLoopback()
 }
 
-// PATCH(glean http-harden): classify only explicit loopback bind hosts as local.
+// Classify only explicit loopback bind hosts as local.
 func isLoopbackHTTPAddr(addr string) bool {
 	host, _, err := net.SplitHostPort(addr)
 	if err != nil || host == "" {
@@ -280,7 +279,7 @@ func isLoopbackHTTPAddr(addr string) bool {
 }
 
 // validBearerToken reports whether r carries the expected bearer token, using a
-// constant-time comparison. PATCH(glean zotio-0c42fedfe1133cf4).
+// constant-time comparison.
 func validBearerToken(r *http.Request, token string) bool {
 	const prefix = "Bearer "
 	h := r.Header.Get("Authorization")
@@ -294,7 +293,6 @@ func validBearerToken(r *http.Request, token string) bool {
 // resolveMCPAuthToken picks the bearer token the HTTP transport enforces:
 // --mcp-auth-token, then ZOTIO_MCP_TOKEN, else a freshly generated one. It
 // returns an empty token (auth disabled) only when allowUnauth is set.
-// PATCH(glean zotio-0c42fedfe1133cf4).
 func resolveMCPAuthToken(flagToken string, allowUnauth bool) (token, source string, generated bool, err error) {
 	if allowUnauth {
 		return "", "", false, nil

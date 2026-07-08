@@ -19,8 +19,7 @@ import (
 var mirroredCommandMu sync.Mutex
 
 // inProcessHandler runs a mirrored Cobra command in-process via the shared
-// runMirroredInProcess core. PATCH(glean c4ke): replaces the previous shell-out
-// to a companion zotio binary, so the MCP server works without that
+// runMirroredInProcess core, so the MCP server works without a companion zotio
 // binary on PATH.
 func inProcessHandler(rootFactory func() *cobra.Command, commandPath []string) server.ToolHandlerFunc {
 	return func(ctx context.Context, req mcplib.CallToolRequest) (*mcplib.CallToolResult, error) {
@@ -29,15 +28,15 @@ func inProcessHandler(rootFactory func() *cobra.Command, commandPath []string) s
 }
 
 // runMirroredInProcess builds a fresh command tree (cobra.Command state is
-// single-use) and runs the mirrored command in-process. PATCH(glean f-plain):
-// inject --agent (when the root defines it) so mirror tools always return
+// single-use) and runs the mirrored command in-process. Inject --agent (when
+// the root defines it) so mirror tools always return
 // structured, non-interactive output regardless of which flags the MCP schema
 // exposes. This is the out-of-band mechanism that lets the schema drop
 // --agent/--json and the other global formatting/confirmation flags. Shared by
 // the command mirror (inProcessHandler) and the orchestration facade (command_run).
 func runMirroredInProcess(ctx context.Context, rootFactory func() *cobra.Command, commandPath []string, args map[string]any) *mcplib.CallToolResult {
-	// PATCH(glean mcp-active-group-race): CLI package state (notably the
-	// group-selected local DB/API prefix) is still process-global. Serialize the
+	// CLI package state (notably the group-selected local DB/API prefix) is still
+	// process-global. Serialize the
 	// in-process mirror so concurrent HTTP MCP requests cannot cross-contaminate
 	// library scope while commands run.
 	mirroredCommandMu.Lock()

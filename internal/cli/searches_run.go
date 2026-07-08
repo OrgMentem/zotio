@@ -1,5 +1,4 @@
 // Copyright 2026 OrgMentem. Licensed under MIT. See LICENSE.
-// PATCH: Add hand-written saved-search run fallback workflow missing from the generated CLI.
 
 package cli
 
@@ -27,7 +26,7 @@ func newSearchesRunCmd(flags *rootFlags) *cobra.Command {
 			if len(args) == 0 {
 				return cmd.Help()
 			}
-			// PATCH(glean zotero-pp-cli-5f36ee43091fc5be): encode the saved-search key as a single path segment.
+			// encode the saved-search key as a single path segment.
 			rawSearchKey := args[0]
 			searchKey := url.PathEscape(rawSearchKey)
 			c, err := flags.newClient()

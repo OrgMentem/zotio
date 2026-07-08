@@ -1,5 +1,5 @@
 // Copyright 2026 OrgMentem. Licensed under MIT. See LICENSE.
-// PATCH(glean roadmap-phase3): cli adapter for the internal/mutation engine.
+// cli adapter for the internal/mutation engine.
 // Binds *rootFlags -> mutation.Options and renders mutation.Envelope with the
 // cli's terminal/JSON helpers. The state machine and gates live in the package
 // so it stays free of cobra/cli dependencies.

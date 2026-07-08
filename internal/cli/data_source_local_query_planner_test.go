@@ -1,5 +1,5 @@
 // Copyright 2026 OrgMentem. Licensed under MIT. See LICENSE.
-// PATCH(glean cvl6): fixture-backed parity tests proving --data-source local
+// fixture-backed parity tests proving --data-source local
 // reproduces the live endpoint's scoped key sets and ordering.
 
 package cli
@@ -18,15 +18,15 @@ import (
 	"zotio/internal/store"
 )
 
-// cvl6 seed items in arbitrary insertion order; the local planner must sort and
+// local query planner seed items in arbitrary insertion order; the local planner must sort and
 // filter them independently to match the live (pre-sorted) fixtures.
-var cvl6Items = []json.RawMessage{
+var localQueryPlannerItems = []json.RawMessage{
 	json.RawMessage(`{"key":"A","version":1,"data":{"key":"A","itemType":"journalArticle","title":"Beta","date":"2020","collections":["COL1"],"tags":[{"tag":"ml"}],"creators":[{"lastName":"Zhang"}]}}`),
 	json.RawMessage(`{"key":"B","version":1,"data":{"key":"B","itemType":"journalArticle","title":"Alpha","date":"2022","collections":["COL1","COL2"],"tags":[{"tag":"nlp"}]}}`),
 	json.RawMessage(`{"key":"C","version":1,"data":{"key":"C","itemType":"book","title":"Gamma","date":"2019","collections":["COL2"],"tags":[{"tag":"ml"}]}}`),
 }
 
-func cvl6SeedLocalDB(t *testing.T) {
+func seedLocalQueryPlannerDB(t *testing.T) {
 	t.Helper()
 	tmpHome := t.TempDir()
 	t.Setenv("HOME", tmpHome)
@@ -40,7 +40,7 @@ func cvl6SeedLocalDB(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open store: %v", err)
 	}
-	if _, _, err := db.UpsertBatch("items", cvl6Items); err != nil {
+	if _, _, err := db.UpsertBatch("items", localQueryPlannerItems); err != nil {
 		t.Fatalf("seed: %v", err)
 	}
 	if err := db.Close(); err != nil {
@@ -135,7 +135,7 @@ func equalKeys(a, b []string) bool {
 func TestItemsListLocalParity_ItemTypeSort(t *testing.T) {
 	// Live fixture returns the API's already-filtered+sorted truth: [B, A].
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_, _ = w.Write([]byte(`[` + string(cvl6Items[1]) + `,` + string(cvl6Items[0]) + `]`))
+		_, _ = w.Write([]byte(`[` + string(localQueryPlannerItems[1]) + `,` + string(localQueryPlannerItems[0]) + `]`))
 	}))
 	defer srv.Close()
 
@@ -149,7 +149,7 @@ func TestItemsListLocalParity_ItemTypeSort(t *testing.T) {
 		t.Fatalf("live keys = %v, want %v", liveKeys, want)
 	}
 
-	cvl6SeedLocalDB(t)
+	seedLocalQueryPlannerDB(t)
 	localFlags := &rootFlags{asJSON: true, dataSource: "local", noCache: true, timeout: time.Second}
 	localKeys := runItemsListKeys(t, localFlags, args)
 
@@ -162,7 +162,7 @@ func TestItemsListLocalParity_ItemTypeSort(t *testing.T) {
 // truth (tag=ml, title asc -> [A, C]).
 func TestItemsListLocalParity_Tag(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_, _ = w.Write([]byte(`[` + string(cvl6Items[0]) + `,` + string(cvl6Items[2]) + `]`))
+		_, _ = w.Write([]byte(`[` + string(localQueryPlannerItems[0]) + `,` + string(localQueryPlannerItems[2]) + `]`))
 	}))
 	defer srv.Close()
 
@@ -176,7 +176,7 @@ func TestItemsListLocalParity_Tag(t *testing.T) {
 		t.Fatalf("live keys = %v, want %v", liveKeys, want)
 	}
 
-	cvl6SeedLocalDB(t)
+	seedLocalQueryPlannerDB(t)
 	localFlags := &rootFlags{asJSON: true, dataSource: "local", noCache: true, timeout: time.Second}
 	localKeys := runItemsListKeys(t, localFlags, args)
 	if !equalKeys(localKeys, liveKeys) {
@@ -187,7 +187,7 @@ func TestItemsListLocalParity_Tag(t *testing.T) {
 // TestItemsListLocalNoMatchEmptyArray confirms an unmatched local scope returns
 // an empty array, not an error (matching a live empty list).
 func TestItemsListLocalNoMatchEmptyArray(t *testing.T) {
-	cvl6SeedLocalDB(t)
+	seedLocalQueryPlannerDB(t)
 	flags := &rootFlags{asJSON: true, dataSource: "local", noCache: true, timeout: time.Second}
 	keys := runItemsListKeys(t, flags, []string{"--tag", "doesnotexist"})
 	if len(keys) != 0 {
@@ -257,14 +257,14 @@ func TestResolveReadLocalItemsSingleGetStillUsesID(t *testing.T) {
 	}
 }
 
-// PATCH(glean bugfix): local base-resource reads must list all stored rows
+// local base-resource reads must list all stored rows
 // even when generated list commands pass isList=false.
-var bug6Collections = []json.RawMessage{
+var localBaseResourceCollections = []json.RawMessage{
 	json.RawMessage(`{"key":"COL1","version":1,"data":{"key":"COL1","name":"First"}}`),
 	json.RawMessage(`{"key":"COL2","version":1,"data":{"key":"COL2","name":"Second"}}`),
 }
 
-func bug6SeedLocalCollections(t *testing.T) *rootFlags {
+func seedLocalBaseResourceCollections(t *testing.T) *rootFlags {
 	t.Helper()
 	tmpHome := t.TempDir()
 	t.Setenv("HOME", tmpHome)
@@ -277,7 +277,7 @@ func bug6SeedLocalCollections(t *testing.T) *rootFlags {
 	if err != nil {
 		t.Fatalf("open store: %v", err)
 	}
-	if _, _, err := db.UpsertBatch("collections", bug6Collections); err != nil {
+	if _, _, err := db.UpsertBatch("collections", localBaseResourceCollections); err != nil {
 		t.Fatalf("seed collections: %v", err)
 	}
 	if err := db.Close(); err != nil {
@@ -287,7 +287,7 @@ func bug6SeedLocalCollections(t *testing.T) *rootFlags {
 }
 
 func TestResolveReadLocalBaseResourcePathListsCollections(t *testing.T) {
-	flags := bug6SeedLocalCollections(t)
+	flags := seedLocalBaseResourceCollections(t)
 
 	data, prov, err := resolveRead(context.Background(), nil, flags, "collections", false, "/collections", nil, nil)
 	if err != nil {
@@ -319,7 +319,7 @@ func TestResolveReadLocalBaseResourcePathListsCollections(t *testing.T) {
 }
 
 func TestResolveReadLocalCollectionSingleItemStillUsesID(t *testing.T) {
-	flags := bug6SeedLocalCollections(t)
+	flags := seedLocalBaseResourceCollections(t)
 
 	data, prov, err := resolveRead(context.Background(), nil, flags, "collections", false, "/collections/COL1", nil, nil)
 	if err != nil {
@@ -343,14 +343,14 @@ func TestResolveReadLocalCollectionSingleItemStillUsesID(t *testing.T) {
 	}
 }
 
-var sliceBCollections = []json.RawMessage{
+var localPaginationCollections = []json.RawMessage{
 	json.RawMessage(`{"key":"C1","version":1,"data":{"key":"C1","name":"First"}}`),
 	json.RawMessage(`{"key":"C2","version":1,"data":{"key":"C2","name":"Second"}}`),
 	json.RawMessage(`{"key":"C3","version":1,"data":{"key":"C3","name":"Third"}}`),
 	json.RawMessage(`{"key":"C4","version":1,"data":{"key":"C4","name":"Fourth"}}`),
 }
 
-func sliceBSeedLocalCollections(t *testing.T, rows []json.RawMessage) *rootFlags {
+func seedLocalPaginationCollections(t *testing.T, rows []json.RawMessage) *rootFlags {
 	t.Helper()
 	tmpHome := t.TempDir()
 	t.Setenv("HOME", tmpHome)
@@ -413,7 +413,7 @@ func assertStringSlicesEqual(t *testing.T, got, want []string) {
 }
 
 func TestResolveReadLocalCollectionsAppliesStartPagination(t *testing.T) {
-	flags := sliceBSeedLocalCollections(t, sliceBCollections)
+	flags := seedLocalPaginationCollections(t, localPaginationCollections)
 
 	allData, _, err := resolveRead(context.Background(), nil, flags, "collections", false, "/collections", nil, nil)
 	if err != nil {
@@ -444,7 +444,7 @@ func TestResolveReadLocalCollectionsAppliesStartPagination(t *testing.T) {
 }
 
 func TestResolveReadLocalCollectionsStartPastEndReturnsEmptyArray(t *testing.T) {
-	flags := sliceBSeedLocalCollections(t, sliceBCollections)
+	flags := seedLocalPaginationCollections(t, localPaginationCollections)
 
 	data, _, err := resolveRead(context.Background(), nil, flags, "collections", false, "/collections", map[string]string{"start": "99"}, nil)
 	if err != nil {
@@ -456,7 +456,7 @@ func TestResolveReadLocalCollectionsStartPastEndReturnsEmptyArray(t *testing.T) 
 }
 
 func TestResolveReadLocalCollectionsAppliesLimitPagination(t *testing.T) {
-	flags := sliceBSeedLocalCollections(t, sliceBCollections)
+	flags := seedLocalPaginationCollections(t, localPaginationCollections)
 
 	allData, _, err := resolveRead(context.Background(), nil, flags, "collections", false, "/collections", nil, nil)
 	if err != nil {
@@ -476,7 +476,7 @@ func TestResolveReadLocalCollectionsAppliesLimitPagination(t *testing.T) {
 }
 
 func TestResolveReadLocalCollectionsAppliesStartBeforeLimit(t *testing.T) {
-	flags := sliceBSeedLocalCollections(t, sliceBCollections)
+	flags := seedLocalPaginationCollections(t, localPaginationCollections)
 
 	allData, _, err := resolveRead(context.Background(), nil, flags, "collections", false, "/collections", nil, nil)
 	if err != nil {
@@ -496,7 +496,7 @@ func TestResolveReadLocalCollectionsAppliesStartBeforeLimit(t *testing.T) {
 }
 
 func TestResolveReadLocalCollectionsEmptyStoreStillErrors(t *testing.T) {
-	flags := sliceBSeedLocalCollections(t, nil)
+	flags := seedLocalPaginationCollections(t, nil)
 
 	data, _, err := resolveRead(context.Background(), nil, flags, "collections", false, "/collections", nil, nil)
 	if err == nil {

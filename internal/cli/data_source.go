@@ -77,7 +77,7 @@ func attachFreshness(prov DataProvenance, flags *rootFlags) DataProvenance {
 }
 
 // isLocalListRead detects generated list commands that still pass isList=false.
-// PATCH(glean bugfix): base resource paths ("/collections", "/tags",
+// base resource paths ("/collections", "/tags",
 // "/searches") contain no concrete item key, so local mode must list rows
 // instead of treating the resource name as an ID.
 func isLocalListRead(resourceType string, isList bool, path string) bool {
@@ -172,7 +172,7 @@ func resolvePaginatedRead(ctx context.Context, c *client.Client, flags *rootFlag
 // FTS search covers everything the user has looked up — not just explicit syncs.
 // Best-effort: failures are silently ignored (the live result already succeeded).
 func writeThroughCache(ctx context.Context, resourceType string, data json.RawMessage) {
-	// PATCH: schema/type lists (itemTypes, itemFields, …) are not keyed library
+	// schema/type lists (itemTypes, itemFields, …) are not keyed library
 	// items; write-through caching them only triggers "no extractable ID" warnings
 	// from UpsertBatch. They are read-only reference data, so skip the cache.
 	if resourceType == "schema" {
@@ -233,7 +233,7 @@ func resolveLocal(ctx context.Context, resourceType string, isList bool, path st
 
 	prov := localProvenance(db, resourceType, reason)
 
-	// PATCH(glean cvl6): Zotero-aware local query planner. For item-list reads
+	// Zotero-aware local query planner. For item-list reads
 	// (/items, /items/top, /collections/{key}/items[/top]) apply the same
 	// scopes the live endpoint would (itemType, tag, collection, top-level,
 	// quick-search, sort, direction, limit, start) instead of dumping all
@@ -250,14 +250,13 @@ func resolveLocal(ctx context.Context, resourceType string, isList bool, path st
 
 	// Warn only when this generic read carries filters local data can't
 	// reproduce. limit/start are applied below, so they never warrant a warning.
-	// PATCH(glean zotero-pp-cli-2465cdde5e1cb719, slice B): keep the warning
-	// scoped to genuinely unreproducible filters; item-list filters returned
-	// above are already applied.
+	// The warning stays scoped to genuinely unreproducible filters; item-list
+	// filters returned above are already applied.
 	if hasUnreproducibleParams(params) {
 		fmt.Fprintf(os.Stderr, "warning: local data may be unfiltered — this endpoint's filters are not applied to cached data\n")
 	}
 
-	// PATCH(glean bugfix): list-shaped base paths must dump all local rows
+	// list-shaped base paths must dump all local rows
 	// even when the generated command passed isList=false.
 	if isLocalListRead(resourceType, isList, path) {
 		raw, err := db.List(resourceType, 0) // 0 = no limit, return all synced data
@@ -277,7 +276,7 @@ func resolveLocal(ctx context.Context, resourceType string, isList bool, path st
 		if len(items) == 0 {
 			return nil, DataProvenance{}, fmt.Errorf("no local data for %q. Run 'zotio sync' first", resourceType)
 		}
-		// PATCH(glean zotero-pp-cli-2465cdde5e1cb719, slice B): apply start
+		// apply start
 		// offset then limit so paginated local list reads mirror the live API
 		// (limit is also re-applied by the caller's truncateJSONArray).
 		items = paginateLocalRows(items, params)
@@ -308,8 +307,7 @@ func resolveLocal(ctx context.Context, resourceType string, isList bool, path st
 
 // reproducibleLocalParams are request params a generic local list read can
 // honor (pagination) or that don't filter the row set (output format), so they
-// must not trigger the "local data may be unfiltered" warning. PATCH(glean
-// zotero-pp-cli-2465cdde5e1cb719, slice B).
+// must not trigger the "local data may be unfiltered" warning..
 var reproducibleLocalParams = map[string]bool{"limit": true, "start": true, "format": true}
 
 // hasUnreproducibleParams reports whether params contains any filter a generic
@@ -328,8 +326,7 @@ func hasUnreproducibleParams(params map[string]string) bool {
 
 // paginateLocalRows applies the Zotero start offset then limit to a generic
 // local list result so paginated reads mirror the live API. An out-of-range
-// start yields an empty slice (a live page past the end). PATCH(glean
-// zotero-pp-cli-2465cdde5e1cb719, slice B).
+// start yields an empty slice (a live page past the end)..
 func paginateLocalRows(rows []json.RawMessage, params map[string]string) []json.RawMessage {
 	if start, _ := strconv.Atoi(params["start"]); start > 0 {
 		if start >= len(rows) {
@@ -347,7 +344,7 @@ func paginateLocalRows(rows []json.RawMessage, params map[string]string) []json.
 // is an item-list endpoint, returning (data, true, err). It returns
 // (nil, false, nil) for non-item-list paths so the caller falls back to its
 // generic get/list handling. An empty match yields a JSON empty array, which
-// mirrors a live list that matched nothing. PATCH(glean cvl6).
+// mirrors a live list that matched nothing.
 func resolveLocalItemList(db *store.Store, path string, params map[string]string) (json.RawMessage, bool, error) {
 	collectionKey, parentKey, topOnly, isList := parseItemListPath(path)
 	if !isList {
@@ -386,8 +383,7 @@ func resolveLocalItemList(db *store.Store, path string, params map[string]string
 // parseItemListPath classifies a Zotero API path as an item-list endpoint and
 // extracts the collection key, parent key, and top-level flag. Recognizes
 // /items, /items/top, /collections/{key}/items[/top], and
-// /items/{key}/children (scoped to a parent's child items). PATCH(glean cvl6,
-// glean zotero-pp-cli-2465cdde5e1cb719).
+// /items/{key}/children (scoped to a parent's child items)..
 func parseItemListPath(path string) (collectionKey, parentKey string, topOnly, isList bool) {
 	segs := strings.Split(strings.Trim(path, "/"), "/")
 	switch {

@@ -1,5 +1,4 @@
 // Copyright 2026 OrgMentem. Licensed under MIT. See LICENSE.
-// PATCH(glean static-audit): regression test for provenance result counting.
 // `items get` returns a single JSON object; the prior []json.RawMessage
 // unmarshal always failed and reported "0 results". countResultItems must
 // count an object as one result and an array by length.

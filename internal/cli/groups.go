@@ -1,5 +1,4 @@
 // Copyright 2026 OrgMentem. Licensed under MIT. See LICENSE.
-// PATCH(glean 9bfn): group-library discovery command (not in the generated CLI).
 
 package cli
 
@@ -63,7 +62,6 @@ func newGroupsListCmd(flags *rootFlags) *cobra.Command {
 	return cmd
 }
 
-// PATCH(glean roadmap-phase7 groups-inspect): add read-only group readiness preflight.
 func newGroupsInspectCmd(flags *rootFlags) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:         "inspect <group-id>",
@@ -111,7 +109,7 @@ func newGroupsInspectCmd(flags *rootFlags) *cobra.Command {
 					continue
 				}
 				libraryEditing := groupFieldString(g, "libraryEditing")
-				// PATCH(glean review P1): writability comes from the API key's
+				// writability comes from the API key's
 				// per-group permission (/keys/current access), not the group's
 				// editing policy, which is near-always non-empty and would
 				// over-claim write for read-only keys and admin-only groups.

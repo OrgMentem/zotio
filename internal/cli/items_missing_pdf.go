@@ -1,5 +1,4 @@
 // Copyright 2026 OrgMentem. Licensed under MIT. See LICENSE.
-// PATCH: Add hand-written local missing-PDF audit workflow missing from the generated CLI.
 
 package cli
 
@@ -53,10 +52,10 @@ func newItemsMissingPdfCmd(flags *rootFlags) *cobra.Command {
 }
 
 func queryMissingPDFItems(db localQueryStore, itemType string, limit int, collection string) ([]map[string]any, error) {
-	// PATCH(glean perf-audit m4ku): filter on the indexed item_type/parent_key
-	// columns instead of json_extract so SQLite uses idx_resources_item_type /
-	// idx_resources_parent_key rather than scanning and JSON-parsing every row.
-	// PATCH(glean bugfix): accept an optional collection filter for items enrich.
+	// Filter on the indexed item_type/parent_key columns instead of json_extract so
+	// SQLite uses idx_resources_item_type / idx_resources_parent_key rather than
+	// scanning and JSON-parsing every row. Accept an optional collection filter for
+	// items enrich.
 	query := `
 SELECT
 	i.id AS key,

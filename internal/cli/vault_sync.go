@@ -1,11 +1,10 @@
 // Copyright 2026 OrgMentem. Licensed under MIT. See LICENSE.
-// PATCH(glean 49r4): vault-aware Obsidian/Logseq note sync. Materializes one
-// Markdown note per item into a PKM vault, keyed on the Better BibTeX / native
-// citation key, with zotero:// backlinks (item select + per-annotation
-// open-pdf). Re-runs are idempotent: only the managed frontmatter keys and a
-// fenced annotations block are updated; user prose and any other frontmatter
-// keys are preserved verbatim. Reads the local store (run `sync` first); the
-// stdout note-template generator remains for one-off scripting.
+// Vault sync materializes one Markdown note per item into a PKM vault, keyed on
+// the Better BibTeX / native citation key, with zotero:// backlinks (item
+// select + per-annotation open-pdf). Re-runs are idempotent: only the managed
+// frontmatter keys and fenced annotations block are updated; user prose and any
+// other frontmatter keys are preserved verbatim. Reads the local store (run
+// `sync` first); the stdout note-template generator remains for one-off scripting.
 
 package cli
 
@@ -33,10 +32,10 @@ const (
 	vaultAnnBegin = "<!-- zotio:annotations (auto-generated; edits here are overwritten on sync) -->"
 	vaultAnnEnd   = "<!-- /zotio:annotations -->"
 
-	// PATCH(glean 15e0): managed-content fences (title/abstract) are swapped
-	// wholesale each sync; the notes fence delimits the user-owned region that
-	// commit 3 will push to a Zotero child note. Markers are matched as whole
-	// trimmed lines; keep them stable — they are persisted inside user files.
+	// Managed-content fences (title/abstract) are swapped wholesale each sync;
+	// the notes fence delimits the user-owned region that push sends to a Zotero
+	// child note. Markers are matched as whole trimmed lines; keep them stable
+	// because they are persisted inside user files.
 	vaultTitleBegin    = "<!-- zotio:title -->"
 	vaultTitleEnd      = "<!-- /zotio:title -->"
 	vaultAbstractBegin = "<!-- zotio:abstract -->"
@@ -57,7 +56,7 @@ type vaultMeta struct {
 	URL             string
 	Abstract        string
 	Collections     []string
-	Library         string // PATCH(glean 61a2a8a9): synthetic ids. API library segment, e.g. "users/99999" or "groups/123".
+	Library         string // API library segment, e.g. "users/99999" or "groups/123".
 	CollectionNames []string
 }
 
@@ -81,11 +80,11 @@ func newVaultCmd(flags *rootFlags) *cobra.Command {
 		Short: "Sync the library into an Obsidian/Logseq Markdown vault",
 	}
 	cmd.AddCommand(newVaultSyncCmd(flags))
-	cmd.AddCommand(newVaultPushCmd(flags)) // PATCH(glean 15e0): Obsidian -> Zotero write-back
+	cmd.AddCommand(newVaultPushCmd(flags))
 	cmd.AddCommand(newVaultConflictsCmd(flags))
 	cmd.AddCommand(newVaultResolveCmd(flags))
 	cmd.AddCommand(newVaultPullCmd(flags))
-	cmd.AddCommand(newVaultAuditCmd(flags)) // PATCH(glean roadmap-phase5 vault-audit): expose read-only vault note-health audit
+	cmd.AddCommand(newVaultAuditCmd(flags))
 	return cmd
 }
 
@@ -116,8 +115,8 @@ are preserved. Use --dry-run to preview create/update/unchanged without writing.
 		RunE: func(cmd *cobra.Command, args []string) error {
 			outDir := strings.TrimSpace(flagOut)
 			format := strings.ToLower(strings.TrimSpace(flagFormat))
-			// PATCH(glean 15e0): fall back to [vault] config so --out/--format are
-			// optional once configured; explicit flags always win.
+			// Fall back to [vault] config so --out/--format are optional once
+			// configured; explicit flags always win.
 			if vc := vaultConfig(flags); vc != nil {
 				if outDir == "" {
 					outDir = vaultResolveOut(vc)
@@ -160,10 +159,9 @@ are preserved. Use --dry-run to preview create/update/unchanged without writing.
 				return fmt.Errorf("querying items: %w", err)
 			}
 
-			// PATCH(glean perf-audit rj6r/mhib): select literature items first,
-			// then batch-load annotations for all of them in one query (was one
-			// AnnotationsForItem call per item), and create the vault dir once
-			// instead of inside the per-note loop.
+			// Select literature items first, then batch-load annotations for all of
+			// them in one query, and create the vault dir once instead of inside the
+			// per-note loop.
 			metas := make([]vaultMeta, 0, len(items))
 			keys := make([]string, 0, len(items))
 			libraryID := vaultLibraryID(flags)
@@ -190,10 +188,9 @@ are preserved. Use --dry-run to preview create/update/unchanged without writing.
 				}
 			}
 
-			// PATCH(glean 15e0): index existing managed notes by Zotero key so a
-			// re-sync updates the same file even when the citation key (and thus
-			// the default filename) changed, and new notes avoid colliding with an
-			// existing managed or foreign file.
+			// Index existing managed notes by Zotero key so a re-sync updates the
+			// same file even when the citation key changed, and new notes avoid
+			// colliding with an existing managed or foreign file.
 			idx := scanVaultIndex(flagOut)
 			claimed := make(map[string]bool, len(metas))
 			results := make([]vaultSyncResult, 0, len(metas))
@@ -222,11 +219,9 @@ are preserved. Use --dry-run to preview create/update/unchanged without writing.
 }
 
 // syncVaultNote writes (or previews) a single item's note and reports the
-// resulting status. PATCH(glean 15e0): a genuine read error is no longer
-// swallowed (the old `existing, _ := os.ReadFile` treated a permission/IO
-// failure as a fresh create and would truncate the file); writes go through an
-// atomic temp-file + rename that refuses to clobber a concurrent Obsidian/iCloud
-// edit, re-merging once before reporting file_busy.
+// resulting status. A genuine read error is no longer swallowed; writes go
+// through an atomic temp-file + rename that refuses to clobber a concurrent
+// Obsidian/iCloud edit, re-merging once before reporting file_busy.
 func syncVaultNote(meta vaultMeta, anns []annotationSummary, format, outDir, filename string, dryRun bool) (vaultSyncResult, error) {
 	annBlock := renderAnnotationBlock(anns)
 	path := filepath.Join(outDir, filename)
@@ -290,7 +285,7 @@ func buildVaultNote(existing []byte, meta vaultMeta, annBlock, format string) (s
 }
 
 // readVaultFile returns nil,nil when the file does not exist, and a real error
-// for any other failure (permission, IO, a directory at the path). PATCH(glean 15e0).
+// for any other failure (permission, IO, a directory at the path).
 func readVaultFile(path string) ([]byte, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -306,7 +301,7 @@ var errVaultFileBusy = errors.New("vault file changed during sync")
 
 // atomicReplace writes newContent via a temp file + rename, but only when the
 // file's current bytes still equal expected (compare-before-replace). This keeps
-// a concurrent Obsidian/iCloud write from being silently clobbered. PATCH(glean 15e0).
+// a concurrent Obsidian/iCloud write from being silently clobbered.
 func atomicReplace(path string, expected, newContent []byte) error {
 	cur, err := readVaultFile(path)
 	if err != nil {
@@ -344,7 +339,7 @@ func atomicReplace(path string, expected, newContent []byte) error {
 
 // vaultIndex maps a Zotero item key to the basename of its existing managed
 // note (and the reverse) so re-syncs update the same file and new notes avoid
-// collisions. PATCH(glean 15e0).
+// collisions.
 type vaultIndex struct {
 	byKey  map[string]string
 	byFile map[string]string
@@ -364,10 +359,9 @@ func scanVaultIndex(outDir string) vaultIndex {
 		if err != nil {
 			continue
 		}
-		// PATCH(glean 15e0): prefer the explicit identity key, but fall back to the
-		// item key embedded in the zotero:// select link so notes created before
-		// zotero_key existed are still recognized as managed (updated in place,
-		// gaining zotero_key) instead of being duplicated as a "foreign" file.
+		// Prefer the explicit identity key, but fall back to the item key embedded
+		// in the zotero:// select link so older managed notes are updated in place
+		// instead of duplicated as "foreign" files.
 		key := frontmatterKeyValue(string(data), "zotero_key")
 		if key == "" {
 			key = keyFromZoteroSelect(frontmatterKeyValue(string(data), "zotero"))
@@ -466,9 +460,8 @@ func managedTitleBlock(meta vaultMeta) string {
 }
 
 func managedAbstractBlock(meta vaultMeta) string {
-	// PATCH(glean zotero-pp-cli-8f7c35b43c54eb75): strip managed fence
-	// marker substrings from Zotero-derived text before embedding it inside a
-	// replaceable managed region.
+	// Strip managed fence marker substrings from Zotero-derived text before
+	// embedding it inside a replaceable managed region.
 	abstract := sanitizeManagedFenceMarkers(meta.Abstract)
 	if abstract == "" {
 		abstract = "(no abstract)"
@@ -483,8 +476,8 @@ func managedAbstractBlock(meta vaultMeta) string {
 	return b.String()
 }
 
-// PATCH(glean zotero-pp-cli-8f7c35b43c54eb75): neutralize all managed-region
-// markers before rendering Zotero-controlled strings into vault notes.
+// sanitizeManagedFenceMarkers neutralizes all managed-region markers before
+// rendering Zotero-controlled strings into vault notes.
 func sanitizeManagedFenceMarkers(s string) string {
 	replacer := strings.NewReplacer(
 		vaultTitleBegin, "[zotio title marker removed]",
@@ -635,8 +628,8 @@ func isRegularLiteratureItem(itemType string) bool {
 }
 
 // annotationSummariesSorted converts stored annotation payloads into summaries
-// sorted by page then date added. PATCH(glean perf-audit rj6r): split out of the
-// old per-item loadItemAnnotations so the caller can batch the annotation query.
+// sorted by page then date added. The caller batch-loads annotation rows and
+// passes the rows for each item here.
 func annotationSummariesSorted(rows []json.RawMessage) []annotationSummary {
 	items := make([]map[string]any, 0, len(rows))
 	for _, r := range rows {
@@ -678,9 +671,8 @@ func zoteroLibrarySegment() string {
 }
 
 func zoteroSelectLink(key string) string {
-	// PATCH(glean vault-link-escape): deep-link path/query components can be
-	// rendered into Markdown/frontmatter; escape item and annotation keys before
-	// composing zotero:// URLs.
+	// Deep-link path/query components can be rendered into Markdown/frontmatter;
+	// escape item and annotation keys before composing zotero:// URLs.
 	return "zotero://select/" + zoteroLibrarySegment() + "/items/" + url.PathEscape(key)
 }
 
@@ -706,8 +698,8 @@ func renderAnnotationBlock(anns []annotationSummary) string {
 }
 
 func renderAnnotationLine(a annotationSummary) string {
-	// PATCH(glean zotero-pp-cli-8f7c35b43c54eb75): annotation content is also
-	// Zotero-derived text rendered inside a managed region; neutralize markers.
+	// Annotation content is Zotero-derived text rendered inside a managed region;
+	// neutralize markers.
 	text := strings.TrimSpace(sanitizeManagedFenceMarkers(a.Text))
 	comment := strings.TrimSpace(sanitizeManagedFenceMarkers(a.Comment))
 	main := text
@@ -739,8 +731,7 @@ func renderAnnotationLine(a annotationSummary) string {
 // --- managed frontmatter ---
 
 func managedObsidianFrontmatter(meta vaultMeta) []fmEntry {
-	// PATCH(glean zotero-pp-cli-fe4b51e5566bdb90): quote every scalar
-	// Zotero metadata value that is rendered into YAML frontmatter.
+	// Quote every scalar Zotero metadata value rendered into YAML frontmatter.
 	entries := []fmEntry{
 		{"title", []string{"title: " + yamlScalar(meta.Title)}},
 		{"authors", obsidianAuthorsEntry(meta.Authors)},
@@ -754,9 +745,9 @@ func managedObsidianFrontmatter(meta vaultMeta) []fmEntry {
 		{"collections", obsidianListEntry("collections", meta.Collections)},
 		{"collection_names", obsidianListEntry("collection_names", meta.CollectionNames)},
 	}
-	// PATCH(glean 15e0): zotero_key is the stable identity for re-sync lookup;
-	// zotero_library scopes it and is the write target for commit 3. Library is
-	// omitted when the personal user ID has not been cached yet.
+	// zotero_key is the stable identity for re-sync lookup; zotero_library scopes
+	// it and is the write target. Library is omitted when the personal user ID has
+	// not been cached yet.
 	if meta.Library != "" {
 		entries = append(entries, fmEntry{"zotero_library", []string{"zotero_library: " + yamlScalar(meta.Library)}})
 	}
@@ -764,8 +755,8 @@ func managedObsidianFrontmatter(meta vaultMeta) []fmEntry {
 }
 
 func managedLogseqProps(meta vaultMeta) []fmEntry {
-	// PATCH(glean zotero-pp-cli-6de19ed78e68e698): Logseq properties are
-	// line-oriented, so collapse Zotero-derived values before rendering.
+	// Logseq properties are line-oriented, so collapse Zotero-derived values
+	// before rendering.
 	props := []fmEntry{
 		{"title", []string{"title:: " + logseqPropScalar(meta.Title)}},
 		{"authors", []string{"authors:: " + logseqPropScalar(strings.Join(wikilinkAuthors(meta.Authors), ", "))}},
@@ -784,7 +775,7 @@ func managedLogseqProps(meta vaultMeta) []fmEntry {
 	return props
 }
 
-// vaultConfig returns the [vault] config section, or nil when unset. PATCH(glean 15e0).
+// vaultConfig returns the [vault] config section, or nil when unset.
 func vaultConfig(flags *rootFlags) *config.VaultConfig {
 	cfg, err := config.Load(flags.configPath)
 	if err != nil {
@@ -891,8 +882,8 @@ func yamlScalar(s string) string {
 	return s
 }
 
-// PATCH(glean zotero-pp-cli-6de19ed78e68e698): keep Logseq property values on
-// one physical line so metadata cannot inject sibling properties.
+// logseqPropScalar keeps Logseq property values on one physical line so metadata
+// cannot inject sibling properties.
 func logseqPropScalar(s string) string {
 	s = strings.ReplaceAll(s, "\r\n", " ")
 	s = strings.ReplaceAll(s, "\n", " ")
@@ -968,7 +959,7 @@ func mergeObsidianNote(existing string, meta vaultMeta, managed []fmEntry, annBl
 	// Swap managed-content fences in place when present; legacy notes that
 	// predate these fences are left untouched (no retrofit). Establish the user
 	// notes region before the annotation swap so an append (foreign note with no
-	// annotation fence) lands after the region, never inside it. PATCH(glean 15e0).
+	// annotation fence) lands after the region, never inside it.
 	body, _ = replaceFencedIfPresent(body, vaultTitleBegin, vaultTitleEnd, managedTitleBlock(meta))
 	body, _ = replaceFencedIfPresent(body, vaultAbstractBegin, vaultAbstractEnd, managedAbstractBlock(meta))
 	body, boundary := ensureNotesRegion(body)
@@ -1150,9 +1141,9 @@ func sanitizeVaultFilename(s string) string {
 	}, s)
 	mapped = strings.Trim(mapped, " .-")
 	if len(mapped) > 120 {
-		// PATCH(glean 15e0): truncate on a UTF-8 rune boundary, not a byte
-		// boundary — mapped[:120] could split a multibyte rune and yield an
-		// invalid filename for non-ASCII citation keys.
+		// Truncate on a UTF-8 rune boundary, not a byte boundary: mapped[:120]
+		// could split a multibyte rune and yield an invalid filename for
+		// non-ASCII citation keys.
 		b := []byte(mapped)
 		i := 120
 		for i > 0 && !utf8.RuneStart(b[i]) {

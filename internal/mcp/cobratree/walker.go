@@ -15,9 +15,9 @@ import (
 
 // RegisterAll walks the user-facing Cobra commands and registers in-process
 // MCP tools for commands that are not already covered by typed endpoint tools.
-// PATCH(glean c4ke): takes a factory that builds a fresh command tree, so each
-// tool invocation can execute against its own single-use cobra.Command instead
-// of shelling out to a companion binary.
+// Takes a factory that builds a fresh command tree, so each tool invocation can
+// execute against its own single-use cobra.Command instead of shelling out to a
+// companion binary.
 func RegisterAll(s *server.MCPServer, rootFactory func() *cobra.Command) {
 	if rootFactory == nil {
 		return
@@ -45,8 +45,8 @@ func RegisterAll(s *server.MCPServer, rootFactory func() *cobra.Command) {
 		options := []mcplib.ToolOption{mcplib.WithDescription(descriptionFor(cmd))}
 		options = append(options, safeToolOptionsForFlags(cmd)...)
 		if commandTakesArgs(cmd) {
-			// PATCH(glean da7c6f88776d2f4b): keep positional arguments for
-			// mirrored commands, but do not advertise this as a raw flag escape hatch.
+			// Keep positional arguments for mirrored commands, but do not advertise this
+			// as a raw flag escape hatch.
 			options = append(options, mcplib.WithString("args", mcplib.Description("Additional positional arguments to append to the command. Raw CLI flags are rejected.")))
 		}
 		if isMCPReadOnly(cmd) {
@@ -79,9 +79,9 @@ func descriptionFor(cmd *cobra.Command) string {
 	return "Run `" + cmd.CommandPath() + "` through the companion CLI binary."
 }
 
-// PATCH(glean da7c6f88776d2f4b): command-mirror tools run inside an MCP host,
-// so global delivery/configuration escape hatches must not be exposed as tool
-// parameters. Hosts should configure those out-of-band or use typed MCP tools.
+// Command-mirror tools run inside an MCP host, so global
+// delivery/configuration escape hatches must not be exposed as tool parameters.
+// Hosts should configure those out-of-band or use typed MCP tools.
 var unsafeMCPMirrorFlags = map[string]struct{}{
 	"config":  {},
 	"deliver": {},
@@ -89,16 +89,16 @@ var unsafeMCPMirrorFlags = map[string]struct{}{
 	"profile": {},
 }
 
-// PATCH(glean f-plain): F-plain — mirror only command-LOCAL (non-inherited)
-// flags. Root/global persistent flags (--agent, --json, output formatting,
+// Mirror only command-local (non-inherited) flags. Root/global persistent
+// flags (--agent, --json, output formatting,
 // confirmation, ops knobs) were re-declared on every one of ~68 mirror tools,
 // costing ~80% of the cobratree token surface for zero agent value (the MCP
 // layer injects --agent out-of-band; see runMirroredInProcess). One shared
 // enumerator drives BOTH schema exposure and the validation allowlist so they
-// can never diverge, preserving the da7c6f88 guard.
+// can never diverge, preserving the argument-safety guard.
 //
-// PATCH(glean facade-apply): F-plain dropped ALL inherited globals, including the
-// write-safety gate flags. But --agent injection does NOT imply --yes (root.go:
+// Dropping all inherited globals also dropped the write-safety gate flags. But
+// --agent injection does NOT imply --yes (root.go:
 // "does NOT auto-apply writes"), and the apply gate is `Yes && !DryRun`
 // (mutation.ResolveMode), so stripping them made every cobra-only mutation
 // workflow (items enrich, duplicates resolve, tags audit fix, …) preview-only
@@ -133,8 +133,8 @@ func visitSafeMirrorFlags(cmd *cobra.Command, visit func(*pflag.Flag)) {
 		visit(flag)
 	}
 	cmd.NonInheritedFlags().VisitAll(emit)
-	// PATCH(glean facade-apply): keep the write-safety gate flags reachable for
-	// mutating commands so applies remain possible through the MCP surface.
+	// Keep the write-safety gate flags reachable for mutating commands so applies
+	// remain possible through the MCP surface.
 	if !isMCPReadOnly(cmd) {
 		for _, name := range writeGatingMCPFlags {
 			if flag := cmd.InheritedFlags().Lookup(name); flag != nil {
@@ -160,8 +160,8 @@ func safeToolOptionsForFlags(cmd *cobra.Command) []mcplib.ToolOption {
 	return opts
 }
 
-// PATCH(glean da7c6f88776d2f4b): validate MCP-supplied arguments before the
-// generated in-process handler converts them back to Cobra CLI flags.
+// Validate MCP-supplied arguments before the generated in-process handler
+// converts them back to Cobra CLI flags.
 func safeInProcessHandler(rootFactory func() *cobra.Command, commandPath []string, allowedFlags map[string]struct{}) server.ToolHandlerFunc {
 	inner := inProcessHandler(rootFactory, commandPath)
 	return func(ctx context.Context, req mcplib.CallToolRequest) (*mcplib.CallToolResult, error) {
@@ -172,8 +172,8 @@ func safeInProcessHandler(rootFactory func() *cobra.Command, commandPath []strin
 	}
 }
 
-// PATCH(glean da7c6f88776d2f4b): reject hidden globals, unknown schema
-// parameters, and raw flag tokens in positional args.
+// Reject hidden globals, unknown schema parameters, and raw flag tokens in
+// positional args.
 func validateMirrorArguments(args map[string]any, allowedFlags map[string]struct{}) error {
 	for name := range unsafeMCPMirrorFlags {
 		if _, ok := args[name]; ok {

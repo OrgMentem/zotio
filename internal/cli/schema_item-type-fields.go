@@ -22,7 +22,7 @@ func newSchemaItemTypeFieldsCmd(flags *rootFlags) *cobra.Command {
 			if !cmd.Flags().Changed("item-type") && !flags.dryRun {
 				return fmt.Errorf("required flag \"%s\" not set", "item-type")
 			}
-			// PATCH: schema endpoints are global; use newSchemaClient (strips library prefix).
+			// schema endpoints are global; use newSchemaClient (strips library prefix).
 			c, err := newSchemaClient(flags)
 			if err != nil {
 				return err

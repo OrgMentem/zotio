@@ -17,7 +17,7 @@ func newItemsGetCmd(flags *rootFlags) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "get <itemKey>",
 		Short: "Get a single item by key",
-		// PATCH(glean zotero-pp-cli-76875fc8c78bd05c): use an item-key placeholder, not an API-token placeholder.
+		// Use an item-key placeholder, not an API-token placeholder.
 		Example:     "  zotio items get ABCD1234",
 		Annotations: map[string]string{"zotio:endpoint": "items.get", "zotio:method": "GET", "zotio:path": "/items/{itemKey}", "mcp:read-only": "true"},
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -28,7 +28,7 @@ func newItemsGetCmd(flags *rootFlags) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			// PATCH(glean zotero-pp-cli-1b05b22e1aeb8dd6): encode the item key as a single Zotero path segment.
+			// Encode the item key as a single Zotero path segment.
 			path := replacePathParam("/items/{itemKey}", "itemKey", url.PathEscape(args[0]))
 			params := map[string]string{}
 			if flagFormat != "" {
@@ -39,7 +39,7 @@ func newItemsGetCmd(flags *rootFlags) *cobra.Command {
 				return classifyAPIError(err, flags)
 			}
 			// Print provenance to stderr for human-facing output.
-			// PATCH(glean static-audit): `items get` returns a single JSON object,
+			// `items get` returns a single JSON object,
 			// not an array; the old []json.RawMessage unmarshal always failed and
 			// reported "0 results (live)". Count an object as one result.
 			printProvenance(cmd, countResultItems(data), prov)
@@ -82,7 +82,7 @@ func newItemsGetCmd(flags *rootFlags) *cobra.Command {
 
 // countResultItems reports how many result objects a Zotero response body
 // holds: array length for a JSON array, 1 for a single object, 0 otherwise.
-// PATCH(glean static-audit): single-object endpoints (items get) previously
+// Single-object endpoints (items get) previously
 // unmarshaled into []json.RawMessage and always counted 0.
 func countResultItems(data []byte) int {
 	for _, b := range data {

@@ -1,5 +1,4 @@
 // Copyright 2026 OrgMentem. Licensed under MIT. See LICENSE.
-// PATCH(glean test-gaps hcaq): Cover doctor interstitial detection, fail-on policy, and cache report rendering.
 
 package cli
 

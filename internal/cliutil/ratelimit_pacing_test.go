@@ -1,9 +1,7 @@
 // Copyright 2026 OrgMentem. Licensed under MIT. See LICENSE.
-// PATCH(glean static-audit): regression test for the AdaptiveLimiter.Wait race.
-// Before the fix, concurrent callers all read the same lastRequest, slept the
-// same delay, and returned together; afterward each reserves a distinct wake
-// time under the lock. Assert that concurrent completions are spread out by
-// roughly (N-1)*delay rather than collapsing into a single delay window.
+// AdaptiveLimiter.Wait must reserve a distinct wake time for each concurrent
+// caller. Assert that completions are spread out by roughly (N-1)*delay rather
+// than collapsing into a single delay window.
 
 package cliutil
 

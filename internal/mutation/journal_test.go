@@ -1,5 +1,5 @@
 // Copyright 2026 OrgMentem. Licensed under MIT. See LICENSE.
-// PATCH(glean roadmap-phase3): journal build + append/list/read roundtrip.
+// journal build + append/list/read roundtrip.
 
 package mutation
 

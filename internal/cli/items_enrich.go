@@ -1,5 +1,5 @@
 // Copyright 2026 OrgMentem. Licensed under MIT. See LICENSE.
-// PATCH(glean dk33): metadata enrichment/remediation pipeline. Turns the
+// Metadata enrichment/remediation pipeline. Turns the
 // read-only `items audit` work queues (missing DOI / abstract / PDF) into
 // provider-backed fixes: resolve metadata from CrossRef (DOI, abstract) and
 // Unpaywall (open-access PDF), build a proposed patch plan, preview it by
@@ -35,7 +35,7 @@ var (
 	enrichCrossRefBase  = "https://api.crossref.org"
 	enrichUnpaywallBase = "https://api.unpaywall.org/v2"
 	enrichOpenAlexBase  = "https://api.openalex.org"
-	// PATCH(glean roadmap-phase4 mmmd): provider seams for Semantic Scholar DOI/abstract fallbacks and OpenCitations DOI validation.
+	// Provider seams for Semantic Scholar DOI/abstract fallbacks and OpenCitations DOI validation.
 	enrichSemanticScholarBase = "https://api.semanticscholar.org/graph/v1"
 	enrichOpenCitationsBase   = "https://opencitations.net/index/api/v1"
 )
@@ -59,9 +59,9 @@ type enrichProposal struct {
 	Action     enrichAction   `json:"action"`
 	Source     string         `json:"source"`
 	Note       string         `json:"note"`
-	Fields     map[string]any `json:"fields,omitempty"`     // patch: field -> new value
+	Fields     map[string]any `json:"fields,omitempty"`     // fields: field -> new value
 	Attachment map[string]any `json:"attachment,omitempty"` // attach: child item body
-	// PATCH(glean write-safety): statuses now live in mutation.Result items, not proposal JSON.
+	// Statuses now live in mutation.Result items, not proposal JSON.
 	version any // item version for the PATCH conflict guard (not serialized)
 }
 
@@ -84,7 +84,7 @@ func newItemsEnrichCmd(flags *rootFlags) *cobra.Command {
 		flagNoSemanticScholar bool
 		flagValidate          bool
 		flagCollection        string
-		// PATCH(glean roadmap-phase3): exact remediation from `library health`
+		// Exact remediation from `library health`
 		// feeds item keys to enrichment so it previews/applies only the findings
 		// it recommended, instead of broadening back out to the whole queue.
 		keysFrom string
@@ -93,7 +93,7 @@ func newItemsEnrichCmd(flags *rootFlags) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "enrich",
 		Short: "Fill or validate item metadata (DOI, abstract, open-access PDF link) from CrossRef, OpenAlex, Semantic Scholar, Unpaywall, and OpenCitations",
-		// PATCH(glean write-safety): --agent no longer implies --yes; help names --yes as the apply switch. PATCH(glean bugfix): --collection scopes enrichment queues.
+		// --agent no longer implies --yes; help names --yes as the apply switch. --collection scopes enrichment queues.
 		Long: `Resolve missing metadata for locally synced items and apply it back to Zotero.
 
 Work queues come from the same checks as 'items audit':
@@ -142,7 +142,7 @@ record provenance in the item's Extra field.`,
 			var proposals []enrichProposal
 			var skipped []enrichSkip
 
-			// PATCH(glean bugfix): thread collection scope through every selected enrichment category.
+			// Thread collection scope through every selected enrichment category.
 			if flagMissingDOI {
 				p, s := buildEnrichProposals(cmd.Context(), db, httpClient, "missing_doi", flagLimit, flagCollection, keyFilter, flagEmail, useOpenAlex, useSemanticScholar)
 				proposals, skipped = append(proposals, p...), append(skipped, s...)
@@ -156,7 +156,7 @@ record provenance in the item's Extra field.`,
 				proposals, skipped = append(proposals, p...), append(skipped, s...)
 			}
 
-			// PATCH(glean write-safety): preserve proposal building and route preview/apply through the shared mutation helper.
+			// Preserve proposal building and route preview/apply through the shared mutation helper.
 			mode := resolveMutationMode(flags)
 			var mutator apiMutator
 			if mode.Apply {
@@ -183,7 +183,7 @@ record provenance in the item's Extra field.`,
 	cmd.Flags().BoolVar(&flagMissingAbstract, "missing-abstract", false, "Fill the abstract from CrossRef, OpenAlex, or Semantic Scholar (uses the item's DOI)")
 	cmd.Flags().BoolVar(&flagMissingPDF, "missing-pdf", false, "Attach an open-access PDF link from Unpaywall (uses the item's DOI)")
 	cmd.Flags().IntVar(&flagLimit, "limit", 25, "Maximum items to process per category")
-	// PATCH(glean bugfix): expose collection scoping for the local work queue.
+	// Expose collection scoping for the local work queue.
 	cmd.Flags().StringVar(&flagCollection, "collection", "", "Scope the work queue to items in a collection key")
 	cmd.Flags().StringVar(&keysFrom, "keys-from", "", "Read exact item keys from a file or '-' for stdin, then enrich only matching queued items")
 	cmd.Flags().StringVar(&flagEmail, "email", "", "Contact email for Unpaywall (required for --missing-pdf) and the OpenAlex polite pool (optional); or set UNPAYWALL_EMAIL")
@@ -202,7 +202,7 @@ func enrichTimeout(t time.Duration) time.Duration {
 }
 
 // enrichKeyFilter parses --keys-from into an allow-set for exact remediation.
-// PATCH(glean roadmap-phase3): `library health` can now hand exact item keys to
+// `library health` can now hand exact item keys to
 // `items enrich` without widening back to the whole missing-* work queue.
 func enrichKeyFilter(keysFrom string, stdin io.Reader) (map[string]bool, error) {
 	if keysFrom == "" {
@@ -235,8 +235,8 @@ func filterEnrichRowsByKeys(rows []map[string]any, allow map[string]bool) []map[
 // buildEnrichProposals resolves proposals for one category over the audit work
 // queue. It loads each candidate's full payload from the local store so the
 // provider has title/creators/DOI/version, then dispatches to the resolver.
-// PATCH(glean bugfix): carry collection scope from the command into the work queue.
-// PATCH(glean roadmap-phase3): carry exact key scope from --keys-from, filtering
+// Carry collection scope from the command into the work queue.
+// Carry exact key scope from --keys-from, filtering
 // before provider lookups so remediation stays bounded and cheap.
 func buildEnrichProposals(ctx context.Context, db localQueryStore, httpClient *http.Client, category string, limit int, collection string, keyFilter map[string]bool, email string, useOpenAlex bool, useSemanticScholar bool) ([]enrichProposal, []enrichSkip) {
 	rows, err := enrichWorkQueue(db, category, limit, collection)
@@ -245,7 +245,7 @@ func buildEnrichProposals(ctx context.Context, db localQueryStore, httpClient *h
 	}
 	rows = filterEnrichRowsByKeys(rows, keyFilter)
 
-	// PATCH(glean perf-audit eedc): each candidate triggers an independent
+	// Each candidate triggers an independent
 	// CrossRef/Unpaywall lookup, so resolve them through a bounded fan-out
 	// instead of sequentially. FanoutRun preserves source order, so proposal
 	// ordering is unchanged; the apply step stays sequential to avoid hammering
@@ -286,7 +286,7 @@ func buildEnrichProposals(ctx context.Context, db localQueryStore, httpClient *h
 
 // enrichWorkQueue returns the candidate rows for a category, reusing the audit
 // queries so enrichment and reporting share one definition of "missing".
-// PATCH(glean bugfix): pass collection scope to category-specific missing-item queries.
+// Pass collection scope to category-specific missing-item queries.
 func enrichWorkQueue(db localQueryStore, category string, limit int, collection string) ([]map[string]any, error) {
 	switch category {
 	case "missing_doi":
@@ -314,7 +314,7 @@ type enrichValidationReport struct {
 	UnverifiedDOIs []string                      `json:"unverified_dois"`
 }
 
-// PATCH(glean roadmap-phase4 mmmd): validation mode uses the local enrichment selection path but narrows it to DOI-bearing items.
+// Validation mode uses the local enrichment selection path but narrows it to DOI-bearing items.
 func queryEnrichValidationItems(db localQueryStore, limit int, collection string) ([]map[string]any, error) {
 	query := `
 SELECT
@@ -333,7 +333,7 @@ ORDER BY date_added DESC`
 	return queryItemsAuditRows(db, query, limit, args...)
 }
 
-// PATCH(glean roadmap-phase4 mmmd): read-only discrepancy pass for stored DOI metadata without building mutation operations.
+// Read-only discrepancy pass for stored DOI metadata without building mutation operations.
 func validateEnrichItems(ctx context.Context, db localQueryStore, httpClient *http.Client, limit int, collection string, keyFilter map[string]bool) (enrichValidationReport, error) {
 	report := enrichValidationReport{
 		Discrepancies:  []enrichValidationDiscrepancy{},
@@ -382,7 +382,7 @@ func validateEnrichItems(ctx context.Context, db localQueryStore, httpClient *ht
 	return report, nil
 }
 
-// PATCH(glean roadmap-phase4 mmmd): validation mode emits machine-readable reports in JSON mode and a compact human summary otherwise.
+// Validation mode emits machine-readable reports in JSON mode and a compact human summary otherwise.
 func renderEnrichValidationReport(cmd *cobra.Command, flags *rootFlags, report enrichValidationReport) error {
 	if flags.asJSON {
 		data, err := json.Marshal(report)
@@ -483,7 +483,7 @@ func resolveEnrichment(ctx context.Context, httpClient *http.Client, category, k
 	return enrichProposal{}, "unknown category"
 }
 
-// PATCH(glean write-safety): return typed mutation statuses; details travel as result reasons.
+// Return typed mutation statuses; details travel as result reasons.
 func applyEnrichProposal(c apiMutator, p *enrichProposal, flags *rootFlags) (string, any, error) {
 	if c == nil {
 		err := errors.New("missing API client")
@@ -517,7 +517,7 @@ type apiMutator interface {
 	Post(path string, body any) (json.RawMessage, int, error)
 }
 
-// PATCH(glean write-safety): convert enrichment proposals into shared mutation operations.
+// Convert enrichment proposals into shared mutation operations.
 func enrichPlannedOps(proposals []enrichProposal, c apiMutator, flags *rootFlags) []mutation.Op {
 	ops := make([]mutation.Op, 0, len(proposals))
 	for i := range proposals {
@@ -678,7 +678,7 @@ func resolvePDFViaUnpaywall(ctx context.Context, httpClient *http.Client, doi, e
 		return "", false
 	}
 	if resp.BestOA.URLForPDF != "" {
-		// PATCH(glean zotero-pp-cli-ecf77ae9074377de): Unpaywall data becomes a
+		// Unpaywall data becomes a
 		// Zotero linked-url attachment, so only HTTPS public URLs are accepted.
 		if err := validateExternalHTTPURL(resp.BestOA.URLForPDF, true); err == nil {
 			return resp.BestOA.URLForPDF, true
@@ -692,7 +692,7 @@ func resolvePDFViaUnpaywall(ctx context.Context, httpClient *http.Client, doi, e
 	return "", false
 }
 
-// --- Semantic Scholar (fallback for DOI + abstract). PATCH(glean roadmap-phase4 mmmd). ---
+// --- Semantic Scholar (fallback for DOI + abstract). ---
 
 type semanticScholarPaper struct {
 	Title       string `json:"title"`
@@ -706,7 +706,7 @@ type semanticScholarSearchResponse struct {
 	Data []semanticScholarPaper `json:"data"`
 }
 
-// PATCH(glean roadmap-phase4 mmmd): Semantic Scholar title-search DOI fallback with the same exact-title guard as CrossRef/OpenAlex.
+// Semantic Scholar title-search DOI fallback with the same exact-title guard as CrossRef/OpenAlex.
 func resolveDOIViaSemanticScholar(ctx context.Context, httpClient *http.Client, data map[string]any) (string, bool) {
 	title := stringFromMap(data, "title")
 	if title == "" {
@@ -729,7 +729,7 @@ func resolveDOIViaSemanticScholar(ctx context.Context, httpClient *http.Client, 
 	return "", false
 }
 
-// PATCH(glean roadmap-phase4 mmmd): Semantic Scholar DOI lookup fallback for abstracts.
+// Semantic Scholar DOI lookup fallback for abstracts.
 func resolveAbstractViaSemanticScholar(ctx context.Context, httpClient *http.Client, doi string) (string, bool) {
 	var resp semanticScholarPaper
 	if err := getJSON(ctx, httpClient, enrichSemanticScholarBase+"/paper/DOI:"+url.PathEscape(doi)+"?fields=abstract", &resp); err != nil {
@@ -742,7 +742,7 @@ func resolveAbstractViaSemanticScholar(ctx context.Context, httpClient *http.Cli
 	return abstract, true
 }
 
-// PATCH(glean roadmap-phase4 mmmd): CrossRef DOI fetch shared by abstract enrichment and validation discrepancy checks.
+// CrossRef DOI fetch shared by abstract enrichment and validation discrepancy checks.
 func fetchCrossRefWorkByDOI(ctx context.Context, httpClient *http.Client, doi string) (crossRefWork, bool) {
 	var resp crossRefWorkResponse
 	if err := getJSON(ctx, httpClient, enrichCrossRefBase+"/works/"+url.PathEscape(doi), &resp); err != nil {
@@ -751,7 +751,7 @@ func fetchCrossRefWorkByDOI(ctx context.Context, httpClient *http.Client, doi st
 	return resp.Message, true
 }
 
-// PATCH(glean roadmap-phase4 mmmd): OpenCitations registration probe for DOI validation mode.
+// OpenCitations registration probe for DOI validation mode.
 func resolveDOIRegisteredViaOpenCitations(ctx context.Context, httpClient *http.Client, doi string) (registered bool, known bool) {
 	var resp []map[string]any
 	if err := getJSON(ctx, httpClient, enrichOpenCitationsBase+"/metadata/"+url.PathEscape(doi), &resp); err != nil {
@@ -762,7 +762,7 @@ func resolveDOIRegisteredViaOpenCitations(ctx context.Context, httpClient *http.
 }
 
 // --- OpenAlex (fallback for DOI + abstract; OA PDFs stay on Unpaywall, whose
-// data OpenAlex merely re-serves). PATCH(glean mmmd). ---
+// data OpenAlex merely re-serves). ---
 
 type openAlexWork struct {
 	DOI                   string           `json:"doi"`
@@ -783,7 +783,7 @@ func openAlexWorksURL(filter, email string) string {
 }
 
 func openAlexFilterLiteral(value string) string {
-	// PATCH(glean zotero-pp-cli-0324fe29c56a35fe): OpenAlex decodes the query
+	// OpenAlex decodes the query
 	// string before parsing comma-separated filters; preserve commas as literal
 	// value text instead of allowing a second filter predicate to be injected.
 	return strings.ReplaceAll(value, ",", "%2C")
@@ -880,7 +880,7 @@ func getJSON(ctx context.Context, httpClient *http.Client, rawURL string, out an
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return fmt.Errorf("HTTP %d", resp.StatusCode)
 	}
-	// PATCH(glean zotero-pp-cli-856054bc5801ad5a): cap provider JSON bodies
+	// Cap provider JSON bodies
 	// before decoding so a hostile CrossRef/Unpaywall/OpenAlex-compatible server
 	// cannot stream unbounded data into the enrichment process.
 	limited := &io.LimitedReader{R: resp.Body, N: maxEnrichProviderResponseBytes + 1}

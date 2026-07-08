@@ -1,5 +1,4 @@
 // Copyright 2026 OrgMentem. Licensed under MIT. See LICENSE.
-// PATCH: Add hand-written local identifier lookup missing from the generated CLI.
 
 package cli
 
@@ -40,7 +39,7 @@ func newItemsFindCmd(flags *rootFlags) *cobra.Command {
 			defer storeDB.Close()
 			db := localQueryStore{Store: storeDB}
 
-			// PATCH(glean zotero-pp-cli-513fd990b1b79758): keep PMID/citekey lookups exact by escaping SQLite LIKE wildcards.
+			// Keep PMID/citekey lookups exact by escaping SQLite LIKE wildcards.
 			escapedPMID := escapeSQLiteLikeLiteral(flagPMID)
 			escapedCitekey := escapeSQLiteLikeLiteral(flagCitekey)
 			rows, err := db.QueryRaw(`

@@ -1,5 +1,4 @@
 // Copyright 2026 OrgMentem. Licensed under MIT. See LICENSE.
-// PATCH: Add hand-written Zotero annotation text search workflow missing from the generated CLI.
 
 package cli
 
@@ -13,7 +12,7 @@ import (
 func newAnnotationsSearchCmd(flags *rootFlags) *cobra.Command {
 	var flagColor string
 	var flagLimit int
-	// PATCH(glean hhup): prefer the local store unless --refresh.
+	// prefer the local store unless --refresh.
 	var refresh bool
 
 	cmd := &cobra.Command{
@@ -26,7 +25,7 @@ func newAnnotationsSearchCmd(flags *rootFlags) *cobra.Command {
 			}
 			query := strings.Join(args, " ")
 
-			// PATCH(glean hhup): search the local annotation store when
+			// search the local annotation store when
 			// present; --refresh forces the live API path below. The API `q`
 			// param has no local equivalent, so text matching runs in memory.
 			if !refresh {
@@ -75,7 +74,7 @@ func newAnnotationsSearchCmd(flags *rootFlags) *cobra.Command {
 	}
 	cmd.Flags().StringVar(&flagColor, "color", "", "Filter by annotation color (yellow, red, green, blue, purple, orange)")
 	cmd.Flags().IntVar(&flagLimit, "limit", 50, "Maximum number of annotations to return")
-	// PATCH(glean hhup): bypass the local store and fetch live.
+	// bypass the local store and fetch live.
 	cmd.Flags().BoolVar(&refresh, "refresh", false, "Fetch live from the API instead of the local store")
 
 	return cmd
@@ -83,7 +82,7 @@ func newAnnotationsSearchCmd(flags *rootFlags) *cobra.Command {
 
 // filterAnnotationSummaries applies an in-memory text + color + limit filter,
 // used for local-store annotation search where the API `q` parameter is not
-// available. An empty query matches everything. PATCH(glean hhup).
+// available. An empty query matches everything.
 func filterAnnotationSummaries(annotations []annotationSummary, query, color string, limit int) []annotationSummary {
 	q := strings.ToLower(strings.TrimSpace(query))
 	filtered := make([]annotationSummary, 0, len(annotations))

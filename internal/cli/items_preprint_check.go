@@ -1,5 +1,4 @@
 // Copyright 2026 OrgMentem. Licensed under MIT. See LICENSE.
-// PATCH: Add hand-written arXiv preprint publication check workflow missing from the generated CLI.
 
 package cli
 
@@ -93,23 +92,23 @@ func newItemsPreprintCheckCmd(flags *rootFlags) *cobra.Command {
 		},
 	}
 	cmd.Flags().IntVar(&flagLimit, "limit", 20, "Maximum number of preprints to check")
-	// PATCH(marketing-heroes): expose preview-first remediation for published arXiv preprints.
+	// Expose preview-first remediation for published arXiv preprints.
 	cmd.AddCommand(newItemsPreprintCheckFixCmd(flags))
 
 	return cmd
 }
 
-// PATCH(marketing-heroes): preserve the detect path's arXiv-ID filtering after factoring shared candidate fetches.
+// fetchArxivPreprintCandidates preserves arXiv-ID filtering for detection.
 func fetchArxivPreprintCandidates(c zoteroGetter, limit int) ([]map[string]any, error) {
 	return fetchPreprintCheckCandidates(c, limit, true)
 }
 
-// PATCH(marketing-heroes): let the fix command see raw candidates so no_arxiv_id skips are visible without changing detect output.
+// fetchPreprintCheckFixCandidates returns raw candidates so no_arxiv_id skips are visible without changing detect output.
 func fetchPreprintCheckFixCandidates(c zoteroGetter, limit int) ([]map[string]any, error) {
 	return fetchPreprintCheckCandidates(c, limit, false)
 }
 
-// PATCH(marketing-heroes): share candidate paging/deduping while allowing fix to report no_arxiv_id skips.
+// fetchPreprintCheckCandidates shares paging/deduping while allowing fix to report no_arxiv_id skips.
 func fetchPreprintCheckCandidates(c zoteroGetter, limit int, requireArxivID bool) ([]map[string]any, error) {
 	fetchLimit := limit
 	if fetchLimit <= 0 || fetchLimit < 100 {
@@ -219,8 +218,7 @@ func lookupArxivExternalDOI(ctx context.Context, httpClient *http.Client, arxivI
 		return "", false, fmt.Errorf("querying arXiv metadata for %s: %w", arxivID, err)
 	}
 	defer resp.Body.Close()
-	// PATCH(glean zotero-pp-cli-fc0741de747e391d): cap external arXiv Atom
-	// responses before buffering them for XML parsing.
+	// Cap external arXiv Atom responses before buffering them for XML parsing.
 	body, err := readCappedExternalBody(resp.Body, 4<<20)
 	if err != nil {
 		return "", false, fmt.Errorf("reading arXiv metadata for %s: %w", arxivID, err)
@@ -271,8 +269,7 @@ func lookupCrossrefDOI(ctx context.Context, httpClient *http.Client, doi string)
 		return crossrefMatch{}, false, fmt.Errorf("querying CrossRef for DOI %s: %w", doi, err)
 	}
 	defer resp.Body.Close()
-	// PATCH(glean zotero-pp-cli-fc0741de747e391d): cap external CrossRef
-	// responses before buffering them for JSON parsing.
+	// Cap external CrossRef responses before buffering them for JSON parsing.
 	body, err := readCappedExternalBody(resp.Body, 4<<20)
 	if err != nil {
 		return crossrefMatch{}, false, fmt.Errorf("reading CrossRef response for DOI %s: %w", doi, err)

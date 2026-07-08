@@ -1,5 +1,4 @@
 // Copyright 2026 OrgMentem. Licensed under MIT. See LICENSE.
-// PATCH(glean a91x): cover the deduplicated tail change feed (emitChanges).
 
 package cli
 

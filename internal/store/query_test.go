@@ -1,5 +1,5 @@
 // Copyright 2026 OrgMentem. Licensed under MIT. See LICENSE.
-// PATCH(glean cvl6): cover the local item query planner and FTS document.
+// Exercises the local item query planner and FTS document.
 
 package store
 
@@ -10,7 +10,7 @@ import (
 	"testing"
 )
 
-func cvl6Store(t *testing.T) *Store {
+func queryTestStore(t *testing.T) *Store {
 	t.Helper()
 	s, err := OpenWithContext(context.Background(), filepath.Join(t.TempDir(), "q.db"))
 	if err != nil {
@@ -62,7 +62,7 @@ func seedParentScopedItems(t *testing.T, s *Store) {
 }
 
 func TestQueryItems_ParentAndItemType(t *testing.T) {
-	s := cvl6Store(t)
+	s := queryTestStore(t)
 	seedParentScopedItems(t, s)
 
 	got, err := s.QueryItems(ItemQuery{Parent: "P1", Sort: "title", Direction: "asc"})
@@ -83,7 +83,7 @@ func TestQueryItems_ParentAndItemType(t *testing.T) {
 }
 
 func TestQueryItems_ItemTypeAndSort(t *testing.T) {
-	s := cvl6Store(t)
+	s := queryTestStore(t)
 	seedItems(t, s)
 
 	// itemType filter + title ascending.
@@ -108,7 +108,7 @@ func TestQueryItems_ItemTypeAndSort(t *testing.T) {
 }
 
 func TestQueryItems_TagCollectionTopLimit(t *testing.T) {
-	s := cvl6Store(t)
+	s := queryTestStore(t)
 	seedItems(t, s)
 
 	// Tag membership.
@@ -142,7 +142,7 @@ func TestQueryItems_TagCollectionTopLimit(t *testing.T) {
 }
 
 func TestQueryItems_QuickSearch(t *testing.T) {
-	s := cvl6Store(t)
+	s := queryTestStore(t)
 	seedItems(t, s)
 
 	// Quick search hits the curated FTS doc (abstractNote of B).

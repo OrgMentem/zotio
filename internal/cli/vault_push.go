@@ -1,5 +1,4 @@
 // Copyright 2026 OrgMentem. Licensed under MIT. See LICENSE.
-// PATCH(glean 15e0): commit 3 — Obsidian -> Zotero note write-back ("push").
 // `vault push` mirrors each note's user-owned "## Notes" region to a single
 // tool-owned Zotero child note. Reads stay local; writes go to the Web API via
 // newWriteClient (hybrid routing). Conflicts are detected, never overwritten:
@@ -187,8 +186,8 @@ func pushOne(c *client.Client, outDir, targetLib string, n *pushNote, versions m
 	liveVer, alive := versions[n.state.NoteKey]
 	if !alive {
 		res.Status = "remote_deleted"
-		// PATCH(glean zotero-pp-cli-3ea29a90f96660ab): shell-quote citekeys in
-		// displayed resolve commands, including terminal output.
+		// Shell-quote citekeys in displayed resolve commands, including
+		// terminal output.
 		res.Note = "child note missing remotely; run vault resolve " + shellSingleQuote(n.citekey) + " --recreate to re-create"
 		return res
 	}
@@ -417,9 +416,9 @@ resolved conflict artifact is removed on success.`,
 			}
 			c.DryRun = false
 
-			// PATCH(glean inscribi-15e0): --keep-remote — pull the remote note over
-			// the vault Notes region (discards local edits), the mirror of
-			// --keep-vault. Reads remote + writes locally; never writes to Zotero.
+			// --keep-remote pulls the remote note over the vault Notes region
+			// (discards local edits), the mirror of --keep-vault. Reads remote
+			// and writes locally; never writes to Zotero.
 			if flagKeepRemote {
 				if n.state.NoteKey == "" {
 					return fmt.Errorf("note %s has no Zotero child note to keep (nothing pushed yet)", n.citekey)
@@ -484,7 +483,6 @@ resolved conflict artifact is removed on success.`,
 // conflict artifact. It is the symmetric counterpart of --keep-vault: a forced
 // `vault pull` the user invokes when the remote copy should win. Foreign
 // (non-managed) HTML is refused so an arbitrary Zotero note is never imported.
-// PATCH(glean inscribi-15e0): --keep-remote conflict recovery.
 func keepRemoteResolve(outDir string, n *pushNote, liveVer int, liveHTML string) error {
 	if !isManagedNoteHTML(liveHTML) {
 		return fmt.Errorf("remote note %s is not in the managed shape; refusing to import foreign HTML — resolve by hand", n.state.NoteKey)
@@ -612,8 +610,8 @@ func replaceOrInsertStateComment(body string, st pushState) string {
 
 func writeConflictArtifact(outDir string, n *pushNote, liveVer int, liveHTML string) (string, error) {
 	dir := filepath.Join(outDir, vaultConflictsDir)
-	// PATCH(glean zotero-pp-cli-1af870381ca29739): conflict artifacts contain
-	// personal vault notes and remote Zotero HTML, so keep the directory private.
+	// Conflict artifacts contain personal vault notes and remote Zotero HTML,
+	// so keep the directory private.
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return "", err
 	}
@@ -630,8 +628,8 @@ func writeConflictArtifact(outDir string, n *pushNote, liveVer int, liveHTML str
 	b.WriteString("- Vault note: [[" + markdownInlineText(strings.TrimSuffix(filepath.Base(n.path), ".md")) + "]]\n")
 	b.WriteString("- Zotero note: " + markdownInlineText(zoteroSelectLink(n.state.NoteKey)) + "\n")
 	b.WriteString("- Baseline version: " + strconv.Itoa(n.state.NoteVersion) + " · live version: " + strconv.Itoa(liveVer) + "\n\n")
-	// PATCH(glean zotero-pp-cli-3ea29a90f96660ab): quote the displayed command
-	// argument and use variable-length fences so citekeys cannot break the sh block.
+	// Quote the displayed command argument and use variable-length fences so
+	// citekeys cannot break the sh block.
 	b.WriteString("Resolve — keep the vault copy (writes to Zotero):\n\n")
 	b.WriteString(markdownFence("sh", "zotio vault resolve "+shellSingleQuote(n.citekey)+" --keep-vault\n") + "\n\n")
 	b.WriteString("…or keep the remote copy (overwrites the vault Notes region):\n\n")
@@ -639,15 +637,15 @@ func writeConflictArtifact(outDir string, n *pushNote, liveVer int, liveHTML str
 	b.WriteString("## Local Notes (vault)\n\n")
 	b.WriteString(n.region + "\n\n")
 	b.WriteString("## Remote note (Zotero, HTML)\n\n")
-	// PATCH(glean zotero-pp-cli-54425572e5a31569): choose a fence longer than any
-	// backtick run in remote HTML so Zotero content cannot escape into Markdown.
+	// Choose a fence longer than any backtick run in remote HTML so Zotero
+	// content cannot escape into Markdown.
 	b.WriteString(markdownFence("html", liveHTML+"\n"))
 
 	return path, writePrivateFile(path, []byte(b.String()))
 }
 
-// PATCH(glean zotero-pp-cli-1af870381ca29739): artifact writes carry private
-// note content, so centralize the 0600 temp-file write.
+// writePrivateFile centralizes the 0600 temp-file write for private note
+// content.
 func writePrivateFile(path string, body []byte) error {
 	tmp, err := os.CreateTemp(filepath.Dir(path), ".zpp-conflict-*.tmp")
 	if err != nil {
@@ -655,8 +653,8 @@ func writePrivateFile(path string, body []byte) error {
 	}
 	tmpName := tmp.Name()
 	defer os.Remove(tmpName)
-	// PATCH(glean zotero-pp-cli-1af870381ca29739): force 0600 even if the
-	// process umask or an existing artifact would otherwise leave user notes readable.
+	// Force 0600 even if the process umask or an existing artifact would
+	// otherwise leave user notes readable.
 	if err := tmp.Chmod(0o600); err != nil {
 		tmp.Close()
 		return err
@@ -671,8 +669,8 @@ func writePrivateFile(path string, body []byte) error {
 	return os.Rename(tmpName, path)
 }
 
-// PATCH(glean zotero-pp-cli-54425572e5a31569): fences must outgrow untrusted
-// remote HTML; also protects command fences that contain untrusted citekeys.
+// markdownFence returns a fence that outgrows untrusted remote HTML, and also
+// protects command fences that contain untrusted citekeys.
 func markdownFence(lang, body string) string {
 	fence := "```"
 	for strings.Contains(body, fence) {
@@ -681,15 +679,15 @@ func markdownFence(lang, body string) string {
 	return fence + lang + "\n" + body + fence + "\n"
 }
 
-// PATCH(glean zotero-pp-cli-3ea29a90f96660ab): inline Markdown labels must not
-// inherit raw frontmatter control characters or backticks from citekeys.
+// markdownInlineText keeps inline Markdown labels from inheriting raw
+// frontmatter control characters or backticks from citekeys.
 func markdownInlineText(s string) string {
 	replacer := strings.NewReplacer("\r", " ", "\n", " ", "[", "\\[", "]", "\\]", "`", "\\`")
 	return replacer.Replace(s)
 }
 
-// PATCH(glean zotero-pp-cli-3ea29a90f96660ab): displayed shell commands use
-// single-quote semantics so citekeys cannot add flags or commands.
+// shellSingleQuote formats displayed shell commands with single-quote semantics
+// so citekeys cannot add flags or commands.
 func shellSingleQuote(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", "'\"'\"'") + "'"
 }
@@ -740,8 +738,8 @@ func createChildNote(c *client.Client, parentKey, noteHTML string) (string, erro
 	return key, nil
 }
 
-// PATCH(glean zotero-pp-cli-f5c700ddd1262fc6): reject state-derived note keys
-// that cannot be Zotero item-key path segments before any API path is built.
+// validateZoteroKey rejects state-derived note keys that cannot be Zotero item-key
+// path segments before any API path is built.
 func validateZoteroKey(key string) error {
 	if len(key) != 8 {
 		return fmt.Errorf("invalid Zotero item key %q", key)
@@ -755,8 +753,8 @@ func validateZoteroKey(key string) error {
 }
 
 func patchNote(c *client.Client, noteKey, noteHTML string, version int) error {
-	// PATCH(glean zotero-pp-cli-f5c700ddd1262fc6): note keys come from vault
-	// state comments; encode the path segment before building the Zotero API path.
+	// Note keys come from vault state comments; encode the path segment before
+	// building the Zotero API path.
 	if err := validateZoteroKey(noteKey); err != nil {
 		return err
 	}
@@ -768,8 +766,8 @@ func patchNote(c *client.Client, noteKey, noteHTML string, version int) error {
 }
 
 func getNote(c *client.Client, noteKey string) (int, string, error) {
-	// PATCH(glean zotero-pp-cli-f5c700ddd1262fc6): encode the state-derived note
-	// key as one path segment rather than allowing slashes/dots to reshape the URL.
+	// Encode the state-derived note key as one path segment rather than allowing
+	// slashes/dots to reshape the URL.
 	if err := validateZoteroKey(noteKey); err != nil {
 		return 0, "", err
 	}
@@ -813,8 +811,8 @@ func fetchNoteVersions(c *client.Client, keys []string) (map[string]int, error) 
 		}
 		data, err := c.Get("/items", params)
 		if err != nil {
-			// PATCH(glean zotero-pp-cli-1d3346037da91c68): a failed version fetch
-			// is unknown state, not absence; propagating prevents false remote_deleted.
+			// A failed version fetch is unknown state, not absence; propagating
+			// prevents false remote_deleted.
 			return nil, fmt.Errorf("fetching Zotero note versions: %w", err)
 		}
 		var m map[string]int

@@ -15,7 +15,7 @@ func newCollectionsTagsCmd(flags *rootFlags) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "tags <collectionKey>",
 		Short: "List tags used within a collection",
-		// PATCH(glean zotero-pp-cli-76875fc8c78bd05c): use a collection key placeholder, not a token.
+		// use a collection key placeholder, not a token.
 		Example:     "  zotio collections tags COLLECTIONKEY",
 		Annotations: map[string]string{"zotio:endpoint": "collections.tags", "zotio:method": "GET", "zotio:path": "/collections/{collectionKey}/tags", "mcp:read-only": "true"},
 		RunE: func(cmd *cobra.Command, args []string) error {

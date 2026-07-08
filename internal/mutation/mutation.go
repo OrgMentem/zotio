@@ -6,9 +6,8 @@
 // provide each operation's apply closure. Rendering and flag binding live in the
 // cli adapter (internal/cli/mutate.go) so this package has no cobra/cli dependency.
 //
-// PATCH(glean roadmap-phase3): promoted from internal/cli/mutate.go once the
-// shared envelope had many consumers (items enrich/move/tags/duplicates,
-// reading-list, searches materialize, tags audit fix).
+// The shared mutation envelope is used by item enrichment, moves, tags,
+// duplicate handling, reading lists, materialized searches, and tag audits.
 package mutation
 
 import (

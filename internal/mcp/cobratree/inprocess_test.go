@@ -1,6 +1,5 @@
 // Copyright 2026 OrgMentem. Licensed under MIT. See LICENSE.
-// PATCH(glean c4ke): cover the in-process Cobra mirror handler that replaced
-// the companion-binary shell-out.
+// Cover the in-process Cobra mirror handler.
 
 package cobratree
 

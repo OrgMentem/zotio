@@ -1,5 +1,5 @@
 // Copyright 2026 OrgMentem. Licensed under MIT. See LICENSE.
-// PATCH(glean field-bugs): regression tests for user-reported MCP/search/archive edge cases.
+// Exercises user-reported MCP/search/archive edge cases.
 
 package store
 

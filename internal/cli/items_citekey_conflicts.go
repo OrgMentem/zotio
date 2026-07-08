@@ -1,5 +1,4 @@
 // Copyright 2026 OrgMentem. Licensed under MIT. See LICENSE.
-// PATCH: Add hand-written Better BibTeX citation-key audit missing from the generated CLI.
 
 package cli
 
@@ -26,7 +25,7 @@ type citekeyItem struct {
 }
 
 // citekeyAuditQuery selects every citeable item with its Better BibTeX citation
-// key source (the `extra` field). PATCH(glean roadmap-phase1): shared by
+// key source (the `extra` field). Shared by
 // `items citekey-conflicts` and the `library health` citekey checks so they
 // never drift.
 const citekeyAuditQuery = `
@@ -80,7 +79,7 @@ func newItemsCitekeyConflictsCmd(flags *rootFlags) *cobra.Command {
 	return cmd
 }
 
-// PATCH(marketing-heroes-2): centralize Better BibTeX citekey loading so
+// Centralize Better BibTeX citekey loading so
 // manuscript checks, citekey conflicts, and library health share the same query
 // and Extra-field parsing.
 func loadCitekeyItems(db localQueryStore) ([]citekeyItem, error) {
@@ -91,7 +90,7 @@ func loadCitekeyItems(db localQueryStore) ([]citekeyItem, error) {
 	return buildCitekeyItems(rows), nil
 }
 
-// PATCH(marketing-heroes-2): expose the parsed citekey inventory before it is
+// Expose the parsed citekey inventory before it is
 // reduced to only missing/conflict rows.
 func buildCitekeyItems(rows []map[string]any) []citekeyItem {
 	items := make([]citekeyItem, 0, len(rows))
@@ -106,7 +105,7 @@ func buildCitekeyItems(rows []map[string]any) []citekeyItem {
 	return items
 }
 
-// PATCH(marketing-heroes-2): keep Better BibTeX Extra parsing in one place.
+// Keep Better BibTeX Extra parsing in one place.
 func betterBibTeXCiteKey(extra string) string {
 	for _, line := range strings.Split(extra, "\n") {
 		trimmed := strings.TrimSpace(line)
@@ -117,13 +116,13 @@ func betterBibTeXCiteKey(extra string) string {
 	return ""
 }
 
-// PATCH(marketing-heroes-2): preserve the original conflict-row API while
+// Preserve the original conflict-row API while
 // routing all citekey parsing through buildCitekeyItems.
 func buildCitekeyConflictRows(rows []map[string]any, missingOnly, conflictsOnly bool) []citekeyConflictRow {
 	return buildCitekeyConflictRowsFromItems(buildCitekeyItems(rows), missingOnly, conflictsOnly)
 }
 
-// PATCH(marketing-heroes-2): allow other manuscript tooling to reuse the parsed
+// Allow other manuscript tooling to reuse the parsed
 // citekey items without re-reading or re-parsing Zotero Extra fields.
 func buildCitekeyConflictRowsFromItems(items []citekeyItem, missingOnly, conflictsOnly bool) []citekeyConflictRow {
 	showMissing := missingOnly || (!missingOnly && !conflictsOnly)

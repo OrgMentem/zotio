@@ -1,5 +1,4 @@
 // Copyright 2026 OrgMentem. Licensed under MIT. See LICENSE.
-// PATCH(glean roadmap-phase6 d27f99d4): cover canonical lockfile fingerprint stability.
 
 package cli
 

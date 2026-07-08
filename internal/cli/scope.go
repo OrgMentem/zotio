@@ -1,5 +1,5 @@
 // Copyright 2026 OrgMentem. Licensed under MIT. See LICENSE.
-// PATCH(glean roadmap-phase2): shared local scope resolver for trust-contract commands.
+// shared local scope resolver for trust-contract commands.
 
 package cli
 
@@ -9,13 +9,13 @@ import (
 	"strings"
 )
 
-// PATCH(glean roadmap-phase2): captures one parsed item-cohort scope expression before store resolution.
+// captures one parsed item-cohort scope expression before store resolution.
 type scopeSpec struct {
 	Type  string
 	Value string
 }
 
-// PATCH(glean roadmap-phase2): parses the shared scope grammar without losing colons inside query text.
+// parses the shared scope grammar without losing colons inside query text.
 func parseScopeSpec(expr string) (scopeSpec, error) {
 	expr = strings.TrimSpace(expr)
 	if expr == "library" {
@@ -40,7 +40,7 @@ func parseScopeSpec(expr string) (scopeSpec, error) {
 	}
 }
 
-// PATCH(glean roadmap-phase2): describes a resolved local item cohort plus any unmet live precondition.
+// describes a resolved local item cohort plus any unmet live precondition.
 type scopeResult struct {
 	Expr         string
 	Type         string
@@ -49,7 +49,7 @@ type scopeResult struct {
 	Precondition string
 }
 
-// PATCH(glean roadmap-phase2): resolves the shared scope grammar against the synced local store.
+// resolves the shared scope grammar against the synced local store.
 func resolveScope(db localQueryStore, spec scopeSpec) (scopeResult, error) {
 	result := scopeResult{
 		Type: spec.Type,

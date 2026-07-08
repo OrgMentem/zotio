@@ -1,5 +1,4 @@
 // Copyright 2026 OrgMentem. Licensed under MIT. See LICENSE.
-// PATCH(glean perf-audit m4ku/2qhf): cover the indexed-column missing-PDF query
 // and the single-scan audit summary so the json_extract -> indexed-column and
 // multi-scan -> conditional-aggregation rewrites stay behavior-preserving.
 

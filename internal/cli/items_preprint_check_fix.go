@@ -1,5 +1,4 @@
 // Copyright 2026 OrgMentem. Licensed under MIT. See LICENSE.
-// PATCH(marketing-heroes): preview-first remediation for arXiv preprints that now have published DOIs.
 
 package cli
 
@@ -15,7 +14,7 @@ import (
 	"zotio/internal/mutation"
 )
 
-// PATCH(marketing-heroes): shape the fix command's visible skip records after enrich skips.
+// preprintCheckFixSkip shapes the fix command's visible skip records after enrich skips.
 type preprintCheckFixSkip struct {
 	Key      string `json:"key"`
 	Title    string `json:"title"`
@@ -23,7 +22,7 @@ type preprintCheckFixSkip struct {
 	Reason   string `json:"reason"`
 }
 
-// PATCH(marketing-heroes): carry a single schema-aware PATCH proposal into the mutation engine.
+// preprintCheckFixProposal carries a single schema-aware item update into the mutation engine.
 type preprintCheckFixProposal struct {
 	Key     string         `json:"key"`
 	Title   string         `json:"title"`
@@ -34,7 +33,7 @@ type preprintCheckFixProposal struct {
 	version any
 }
 
-// PATCH(marketing-heroes): add the write-capable child while preserving preview-by-default mutation semantics.
+// newItemsPreprintCheckFixCmd adds the write-capable child while preserving preview-by-default mutation semantics.
 func newItemsPreprintCheckFixCmd(flags *rootFlags) *cobra.Command {
 	var flagLimit int
 
@@ -52,10 +51,9 @@ func newItemsPreprintCheckFixCmd(flags *rootFlags) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			// PATCH(marketing-heroes): detection reads must execute even under
-			// --dry-run, which only previews the write (same convention as
-			// items new's /items/new fetch); otherwise the client prints the
-			// GET instead of running it and the plan can never be built.
+			// Detection reads must execute even under --dry-run, which only previews the
+			// write (same convention as items new's /items/new fetch); otherwise the
+			// client prints the GET instead of running it and the plan can never be built.
 			readClient.DryRun = false
 
 			var writeClient apiMutator
@@ -84,7 +82,7 @@ func newItemsPreprintCheckFixCmd(flags *rootFlags) *cobra.Command {
 	return cmd
 }
 
-// PATCH(marketing-heroes): reuse the detection flow and convert published matches into mutation ops.
+// buildPreprintCheckFixOps reuses the detection flow and converts published matches into mutation ops.
 func buildPreprintCheckFixOps(cmd *cobra.Command, flags *rootFlags, readClient zoteroGetter, writeClient func() apiMutator, limit int) ([]mutation.Op, []preprintCheckFixSkip, error) {
 	candidates, err := fetchPreprintCheckFixCandidates(readClient, limit)
 	if err != nil {
@@ -126,7 +124,7 @@ func buildPreprintCheckFixOps(cmd *cobra.Command, flags *rootFlags, readClient z
 	return preprintCheckFixPlannedOps(proposals, writeClient), skipped, nil
 }
 
-// PATCH(marketing-heroes): decide DOI-vs-Extra field changes without promoting the Zotero item type.
+// preprintCheckFixProposalForItem decides DOI-vs-Extra field changes without promoting the Zotero item type.
 func preprintCheckFixProposalForItem(item map[string]any, match crossrefMatch) (preprintCheckFixProposal, preprintCheckFixSkip, bool) {
 	key := zoteroString(item, "key")
 	title := zoteroString(item, "title")
@@ -153,7 +151,7 @@ func preprintCheckFixProposalForItem(item map[string]any, match crossrefMatch) (
 	}, preprintCheckFixSkip{}, true
 }
 
-// PATCH(marketing-heroes): preserve existing Extra content while adding a dated publication provenance line.
+// appendPreprintCheckFixProvenance preserves existing Extra content while adding a dated publication provenance line.
 func appendPreprintCheckFixProvenance(existing string, match crossrefMatch) string {
 	line := fmt.Sprintf("zotio preprint-check: published as doi:%s%s on %s", match.DOI, preprintCheckPublicationSuffix(match), time.Now().UTC().Format("2006-01-02"))
 	existing = strings.TrimRight(existing, "\n")
@@ -163,7 +161,7 @@ func appendPreprintCheckFixProvenance(existing string, match crossrefMatch) stri
 	return existing + "\n" + line
 }
 
-// PATCH(marketing-heroes): format optional CrossRef venue/year details in the provenance line.
+// preprintCheckPublicationSuffix formats optional CrossRef venue/year details in the provenance line.
 func preprintCheckPublicationSuffix(match crossrefMatch) string {
 	venue := strings.TrimSpace(match.Venue)
 	switch {
@@ -178,7 +176,7 @@ func preprintCheckPublicationSuffix(match crossrefMatch) string {
 	}
 }
 
-// PATCH(marketing-heroes): keep the Zotero version on each planned op for 412-safe PATCHes.
+// preprintCheckItemVersion keeps the Zotero version on each planned op for 412-safe PATCHes.
 func preprintCheckItemVersion(item map[string]any) any {
 	if version, ok := item["version"]; ok {
 		return version
@@ -189,7 +187,7 @@ func preprintCheckItemVersion(item map[string]any) any {
 	return nil
 }
 
-// PATCH(marketing-heroes): convert proposals into shared mutation-engine operations.
+// preprintCheckFixPlannedOps converts proposals into shared mutation-engine operations.
 func preprintCheckFixPlannedOps(proposals []preprintCheckFixProposal, writeClient func() apiMutator) []mutation.Op {
 	ops := make([]mutation.Op, 0, len(proposals))
 	for i := range proposals {
@@ -208,7 +206,7 @@ func preprintCheckFixPlannedOps(proposals []preprintCheckFixProposal, writeClien
 	return ops
 }
 
-// PATCH(marketing-heroes): expose field-level DOI/Extra changes in preview output.
+// preprintCheckFixChanges exposes field-level DOI/Extra changes in preview output.
 func preprintCheckFixChanges(proposal preprintCheckFixProposal) []mutation.Change {
 	changes := make([]mutation.Change, 0, len(proposal.Fields))
 	if doi, ok := proposal.Fields["DOI"]; ok {
@@ -220,7 +218,7 @@ func preprintCheckFixChanges(proposal preprintCheckFixProposal) []mutation.Chang
 	return changes
 }
 
-// PATCH(marketing-heroes): apply the item PATCH using enrich's typed API-error statuses.
+// applyPreprintCheckFixProposal applies the item PATCH using enrich's typed API-error statuses.
 func applyPreprintCheckFixProposal(c apiMutator, proposal preprintCheckFixProposal) (string, any, error) {
 	if c == nil {
 		err := errors.New("write client not initialized")
@@ -237,7 +235,7 @@ func applyPreprintCheckFixProposal(c apiMutator, proposal preprintCheckFixPropos
 	return "applied", nil, nil
 }
 
-// PATCH(marketing-heroes): keep skips visible in JSON/non-TTY envelopes and human terminal output.
+// renderPreprintCheckFixMutation keeps skips visible in JSON/non-TTY envelopes and human terminal output.
 func renderPreprintCheckFixMutation(cmd *cobra.Command, flags *rootFlags, env mutation.Envelope, skipped []preprintCheckFixSkip) error {
 	if len(skipped) > 0 {
 		env.Journal = map[string]any{"skipped": skipped}

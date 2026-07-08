@@ -1,5 +1,5 @@
 // Copyright 2026 OrgMentem. Licensed under MIT. See LICENSE.
-// PATCH(glean roadmap-phase4 import-apply): apply reviewed import manifests via the mutation engine.
+// Apply reviewed import manifests via the mutation engine.
 
 package cli
 
@@ -15,12 +15,12 @@ import (
 	"zotio/internal/mutation"
 )
 
-// PATCH(glean roadmap-phase4 import-apply): keep preview tests independent from concrete HTTP clients.
+// Keep preview tests independent from concrete HTTP clients.
 type importApplyPoster interface {
 	Post(path string, body any) (json.RawMessage, int, error)
 }
 
-// PATCH(glean roadmap-phase4 import-apply): add reviewable manifest application with opt-in file attachment.
+// Add reviewable manifest application with opt-in file attachment.
 func newImportApplyCmd(flags *rootFlags) *cobra.Command {
 	var attachMode string
 	var fetchPDF bool
@@ -44,7 +44,7 @@ func newImportApplyCmd(flags *rootFlags) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			// PATCH: stored attachments, PDF recognition, and resolver fetches require the desktop Connector API.
+			// Stored attachments, PDF recognition, and resolver fetches require the desktop Connector API.
 			if fetchPDF {
 				via, err := flags.resolveCreateVia(cmd.Context(), false)
 				if err != nil || via != "connector" {
@@ -99,7 +99,7 @@ func manifestHasRecognize(m importManifest) bool {
 	return false
 }
 
-// PATCH(glean roadmap-phase4 import-apply): build mutation ops without network or disk I/O.
+// Build mutation ops without network or disk I/O.
 func importApplyOps(cmd *cobra.Command, flags *rootFlags, writeClient importApplyPoster, m importManifest, attachMode string, fetchPDF bool) []mutation.Op {
 	ops := make([]mutation.Op, 0, len(m.Entries))
 	for i := range m.Entries {
@@ -123,7 +123,7 @@ func importApplyOps(cmd *cobra.Command, flags *rootFlags, writeClient importAppl
 					if itemType == "" {
 						return "failed", nil, fmt.Errorf("manifest entry %d item missing itemType", entryNumber)
 					}
-					// PATCH: create the parent and stored PDF in one connector session.
+					// Create the parent and stored PDF in one connector session.
 					if attachMode == "stored" {
 						res, err := routeCreateItem(cmd.Context(), flags, nil, item, importEntrySourceURL(entry, item), connectorCollectionKeyFromItem(item) != "" || strings.TrimSpace(flags.connectorTarget) != "")
 						if err != nil {
@@ -195,7 +195,7 @@ func importApplyOps(cmd *cobra.Command, flags *rootFlags, writeClient importAppl
 			}
 			entryPath := entry.Path
 			entryNumber := i + 1
-			// PATCH: recognize unidentified PDFs through Zotero's desktop Connector API.
+			// Recognize unidentified PDFs through Zotero's desktop Connector API.
 			ops = append(ops, importPDFOp(cmd, flags, nil, entryPath, filepath.Base(entryPath), entryNumber))
 		case "attach":
 			if entry.MatchedKey == "" {
@@ -235,7 +235,7 @@ func importApplyOps(cmd *cobra.Command, flags *rootFlags, writeClient importAppl
 	return ops
 }
 
-// PATCH(glean roadmap-phase4 import-apply): isolate manifest item maps before closure capture.
+// Isolate manifest item maps before closure capture.
 func copyImportApplyItem(item map[string]any) map[string]any {
 	copy := make(map[string]any, len(item))
 	for key, value := range item {
@@ -244,7 +244,7 @@ func copyImportApplyItem(item map[string]any) map[string]any {
 	return copy
 }
 
-// PATCH(glean roadmap-phase4 import-apply): choose stable human-readable mutation preview labels.
+// Choose stable human-readable mutation preview labels.
 func importApplyEntryTitle(entry importManifestEntry, item map[string]any) string {
 	if strings.TrimSpace(entry.Title) != "" {
 		return entry.Title
@@ -258,9 +258,9 @@ func importApplyEntryTitle(entry importManifestEntry, item map[string]any) strin
 	return "item"
 }
 
-// PATCH(glean roadmap-phase4 import-apply): post linked-file attachment children through the write client.
+// Post linked-file attachment children through the write client.
 func postLinkedFileAttachment(c importApplyPoster, parentKey, absPath string, flags *rootFlags) error {
-	// PATCH(glean items-new web-routing): child items are created by POSTing the
+	// Child items are created by POSTing the
 	// attachment (with parentItem set) to /items. /items/{key}/children is
 	// GET-only on the Web API and rejects POST with HTTP 405.
 	data, _, err := c.Post("/items", []map[string]any{linkedFileAttachmentItem(parentKey, absPath)})
@@ -273,7 +273,7 @@ func postLinkedFileAttachment(c importApplyPoster, parentKey, absPath string, fl
 	return nil
 }
 
-// PATCH(glean roadmap-phase4 import-apply): construct Zotero's linked-file attachment child payload.
+// Construct Zotero's linked-file attachment child payload.
 func linkedFileAttachmentItem(parentKey, absPath string) map[string]any {
 	return map[string]any{
 		"itemType":    "attachment",
@@ -285,7 +285,7 @@ func linkedFileAttachmentItem(parentKey, absPath string) map[string]any {
 	}
 }
 
-// PATCH(glean roadmap-phase4 import-apply): extract the created item key from Zotero batch-create responses.
+// Extract the created item key from Zotero batch-create responses.
 func createdItemKey(resp json.RawMessage) (string, bool) {
 	var body struct {
 		Success    map[string]string `json:"success"`

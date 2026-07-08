@@ -1,5 +1,5 @@
 // Copyright 2026 OrgMentem and contributors. Licensed under MIT. See LICENSE.
-// PATCH(demo-mode): cover the config seam that isolates the ZOTIO_DEMO sandbox.
+// cover the config seam that isolates the ZOTIO_DEMO sandbox.
 // The safety contract is that with ZOTIO_DEMO active, Load returns a pristine,
 // key-less config BEFORE it ever reads a config file or a ZOTERO_* override —
 // and that with demo mode off, those same overrides are honored exactly.

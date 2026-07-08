@@ -9,7 +9,7 @@ permissions:
   contents: read
 
 jobs:
-  # PATCH(glean zotio-eae156a8): fail CI if go.mod/go.sum drift from source (a reprint silently reverted security bumps once).
+  # Fail CI if go.mod/go.sum drift from source.
   tidy:
     runs-on: ubuntu-latest
     steps:

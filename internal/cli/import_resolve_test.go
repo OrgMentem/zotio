@@ -13,7 +13,7 @@ import (
 	"time"
 )
 
-// PATCH(glean roadmap-phase4 7e799ea9): directory resolve emits a reviewable create manifest with CrossRef item data.
+// Directory resolve emits a reviewable create manifest with CrossRef item data.
 func TestImportResolveDirectoryBuildsManifest(t *testing.T) {
 	dir := t.TempDir()
 	pdfPath := filepath.Join(dir, "10.1234%2Fdemo.pdf")
@@ -68,7 +68,7 @@ func TestImportResolveDirectoryBuildsManifest(t *testing.T) {
 	}
 }
 
-// PATCH(glean roadmap-phase4 7e799ea9): manifest resolve refreshes unresolved DOI create entries in-place on stdout.
+// Manifest resolve refreshes unresolved DOI create entries in-place on stdout.
 func TestImportResolveManifestRefreshesUnresolvedCreate(t *testing.T) {
 	srv := importResolveCrossRefWorkServer(t, "Refreshed DOI Title", "10.1234/demo")
 	withBase(t, &enrichCrossRefBase, srv.URL)

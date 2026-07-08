@@ -1,5 +1,5 @@
 // Copyright 2026 OrgMentem. Licensed under MIT. See LICENSE.
-// PATCH: connector client request-contract tests.
+// connector client request-contract tests.
 
 package connector
 

@@ -1,5 +1,4 @@
 // Copyright 2026 OrgMentem. Licensed under MIT. See LICENSE.
-// PATCH: Add hand-written tag rename workflow missing from the generated CLI.
 
 package cli
 
@@ -62,8 +61,8 @@ func newTagsRenameCmd(flags *rootFlags) *cobra.Command {
 			}
 			if flags.dryRun {
 				c.DryRun = false
-				// PATCH(glean tag-rename-pagination): dry-run previews the same
-				// paginated item set as apply instead of only the first API page.
+				// Dry-run previews the same paginated item set as apply instead of
+				// only the first API page.
 				updates, err := listTagRenameUpdates(c, flagFrom, flagTo, flagLimit)
 				if err != nil {
 					return classifyAPIError(err, flags)
@@ -85,7 +84,6 @@ func newTagsRenameCmd(flags *rootFlags) *cobra.Command {
 				return nil
 			}
 
-			// PATCH(glean write-safety): share the live rename operation with tags audit fix.
 			status, reason, err := renameTagWithLimit(c, flagFrom, flagTo, flagLimit)
 			if err != nil {
 				return classifyAPIError(err, flags)
@@ -120,9 +118,8 @@ func renameTag(c *client.Client, oldName, newName string) (string, any, error) {
 }
 
 func listTagRenameUpdates(c *client.Client, oldName, newName string, limit int) ([]tagRenameUpdate, error) {
-	// PATCH(glean tag-rename-pagination): Zotero caps /items?tag pages, so walk
-	// start offsets until a short page instead of reporting the first page as a
-	// complete rename.
+	// Zotero caps /items?tag pages, so walk start offsets until a short page
+	// instead of reporting the first page as a complete rename.
 	if limit > 100 {
 		limit = 100
 	}

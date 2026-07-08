@@ -50,7 +50,7 @@ func ParseDeliverSink(spec string) (DeliverSink, error) {
 			return DeliverSink{}, fmt.Errorf("--deliver file:<path> requires a path")
 		}
 	case "webhook":
-		// PATCH(glean zotero-pp-cli-a8f9611224e937cc): reject private/internal
+		// reject private/internal
 		// webhook targets before any command output can be POSTed to them.
 		if err := validateExternalHTTPURL(target, false); err != nil {
 			return DeliverSink{}, fmt.Errorf("--deliver webhook:<url> rejected: %w", err)
@@ -152,7 +152,7 @@ func publicOutboundIPs(ctx context.Context, host string) ([]string, error) {
 	ips := make([]string, 0, len(addrs))
 	for _, addr := range addrs {
 		if outboundHostIsPrivate(addr.IP.String()) {
-			// PATCH(glean ssrf-dns): reject public-looking hostnames that
+			// reject public-looking hostnames that
 			// currently resolve to loopback/private/link-local/multicast ranges.
 			return nil, fmt.Errorf("host %q resolves to local or private address %s", host, addr.IP)
 		}
@@ -168,7 +168,7 @@ func externalHTTPClient(base *http.Client, requireHTTPS bool) *http.Client {
 		client = &copied
 	}
 	client.CheckRedirect = func(req *http.Request, via []*http.Request) error {
-		// PATCH(glean ssrf-redirect): re-run the same public-host gate on each
+		// re-run the same public-host gate on each
 		// redirect target; a safe first URL must not bounce into loopback,
 		// RFC1918/link-local, or a disallowed scheme.
 		if err := validateExternalHTTPURL(req.URL.String(), requireHTTPS); err != nil {
@@ -231,7 +231,7 @@ func outboundHostIsPrivate(host string) bool {
 }
 
 func deliverWebhook(url string, body []byte, compact bool) error {
-	// PATCH(glean zotero-pp-cli-a8f9611224e937cc): keep direct helper calls as
+	// keep direct helper calls as
 	// constrained as the public --deliver parser.
 	if err := validateExternalHTTPURL(url, false); err != nil {
 		return err
@@ -248,7 +248,7 @@ func deliverWebhook(url string, body []byte, compact bool) error {
 	req.Header.Set("User-Agent", "zotio/deliver")
 
 	client := &http.Client{Timeout: 30 * time.Second, CheckRedirect: func(req *http.Request, via []*http.Request) error {
-		// PATCH(glean zotero-pp-cli-a8f9611224e937cc): do not follow webhook
+		// do not follow webhook
 		// redirects; a public URL must not bounce into a private service.
 		return http.ErrUseLastResponse
 	}}

@@ -1,5 +1,5 @@
 // Copyright 2026 OrgMentem. Licensed under MIT. See LICENSE.
-// PATCH(glean test-gaps rf41): covers client do, retry, cache, sanitization, and cache-key behavior.
+// covers client do, retry, cache, sanitization, and cache-key behavior.
 
 package client
 

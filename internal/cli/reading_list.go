@@ -1,5 +1,4 @@
 // Copyright 2026 OrgMentem. Licensed under MIT. See LICENSE.
-// PATCH: Add hand-written Zotero reading queue workflow missing from the generated CLI.
 
 package cli
 
@@ -46,7 +45,7 @@ func newReadingListCmd(flags *rootFlags) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			// PATCH(demo-mode): route the reading queue through the shared
+			// route the reading queue through the shared
 			// --data-source local parity path (ADR 0002 /
 			// internal/store.QueryItems) instead of a live-only fetch, so the
 			// queue works offline — including the ZOTIO_DEMO sandbox — via
@@ -102,7 +101,7 @@ func newReadingListCmd(flags *rootFlags) *cobra.Command {
 	}
 	cmd.Flags().IntVar(&flagLimit, "limit", 20, "Maximum number of items to show")
 	cmd.Flags().StringVar(&flagTag, "tag", defaultTag, "Override the reading queue tag")
-	// PATCH(glean write-safety): keep the bare queue view while adding state transition subcommands.
+	// keep the bare queue view while adding state transition subcommands.
 	cmd.AddCommand(newReadingListAddCmd(flags), newReadingListStartCmd(flags), newReadingListDoneCmd(flags))
 
 	return cmd

@@ -1,5 +1,4 @@
 // Copyright 2026 OrgMentem. Licensed under MIT. See LICENSE.
-// PATCH(marketing-heroes-2): add a local-only year-in-review command for library marketing heroes.
 
 package cli
 
@@ -110,7 +109,7 @@ func newLibraryWrappedCmd(flags *rootFlags) *cobra.Command {
 	return cmd
 }
 
-// PATCH(marketing-heroes-2): keep all year-in-review reads local and scoped to top-level Zotero items.
+// keep all year-in-review reads local and scoped to top-level Zotero items.
 func queryLibraryWrappedReport(db localQueryStore, year int) (libraryWrappedReport, error) {
 	items, err := queryLibraryWrappedItems(db, year)
 	if err != nil {
@@ -327,7 +326,7 @@ func rankedRows(rows []map[string]any) []libraryWrappedRankedCount {
 	return out
 }
 
-// PATCH(marketing-heroes-2): render an honest local-data summary without implying unavailable sections exist.
+// render an honest local-data summary without implying unavailable sections exist.
 func printLibraryWrapped(cmd *cobra.Command, report libraryWrappedReport) error {
 	w := cmd.OutOrStdout()
 	fmt.Fprintf(w, "Zotio Wrapped %d\n", report.Year)
@@ -439,7 +438,7 @@ func shortMonthName(month int) string {
 	return time.Month(month).String()[:3]
 }
 
-// PATCH(marketing-heroes-2): generate a dependency-free SVG card with escaped local metadata.
+// generate a dependency-free SVG card with escaped local metadata.
 func writeLibraryWrappedCard(path string, report libraryWrappedReport) error {
 	dir := filepath.Dir(path)
 	if dir != "." && dir != "" {

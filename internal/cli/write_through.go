@@ -1,10 +1,10 @@
 // Copyright 2026 OrgMentem. Licensed under MIT. See LICENSE.
-// PATCH(glean roadmap-phase8 read-your-writes): after a write succeeds (in the
-// cloud, via the Web API), replay the just-applied changes onto the local SQLite
-// mirror so `--data-source local` reads-your-own-writes WITHOUT a `sync`, and
-// surface the resulting item state in the mutation envelope so agents need no
-// follow-up read. Best-effort: changes it can't confidently replay (merges,
-// trash, creates) are left for the next `sync` to reconcile authoritatively.
+// After a write succeeds in the cloud via the Web API, write-through replays the
+// just-applied changes onto the local SQLite mirror so `--data-source local`
+// reads-your-own-writes WITHOUT a `sync`, and surfaces the resulting item state
+// in the mutation envelope so agents need no follow-up read. Best-effort: changes
+// it can't confidently replay (merges, trash, creates) are left for the next
+// `sync` to reconcile authoritatively.
 
 package cli
 
@@ -37,8 +37,8 @@ func applyMirrorWriteThrough(env *mutation.Envelope) {
 
 	db, err := openStoreForRead(context.Background(), "zotio")
 	if err != nil {
-		// PATCH(glean ryw-fix): distinguish a real mirror open failure from db==nil
-		// (not synced yet) and surface the degraded local-cache update.
+		// Distinguish a real mirror open failure from db==nil (not synced yet)
+		// and surface the degraded local-cache update.
 		warnMirrorOpenFailed(env, err)
 		return
 	}
@@ -61,8 +61,8 @@ func applyMirrorWriteThrough(env *mutation.Envelope) {
 		if !ok {
 			continue // create / unsupported change shape — leave for sync to reconcile
 		}
-		// PATCH(glean ryw-fix): avoid surfacing or caching stale pre-write Zotero
-		// versions; the Web API's advanced version is not available here.
+		// Avoid surfacing or caching stale pre-write Zotero versions; the Web
+		// API's advanced version is not available here.
 		dropStaleItemVersion(item)
 		raw, err := json.Marshal(item)
 		if err != nil {

@@ -46,12 +46,9 @@ matrix, known gaps, and the **refresh procedure** live in `notes/zotero-api-cove
 - This CLI targets Zotero's **local API** (`http://localhost:23119/api`, base in `spec.yaml` ends `/users/0`), which mirrors Web API v3 plus local-only extras. Enable it in Zotero: Settings → Advanced → "Allow other applications…".
 - **Local API is GET-only** (writes "coming" as of 2026-06). When the base URL is local, mutating commands **auto-route writes to the Web API** if an `api_key` is set (reads stay local; user ID resolved via `keys/current`, cached as `user_id`/`ZOTERO_USER_ID`); a one-time stderr notice names the target. With **no** key, writes hit the read-only guard (`classifyAPIError`/`isLocalWriteRejection`). `doctor` reports writability under `writes:`. Web API writes sync down to the desktop; nothing writes the local DB directly.
 - **Schema/type endpoints are global** (`/api/itemTypes`, `/itemFields`, `/itemTypeFields`, `/itemTypeCreatorTypes`, `/creatorFields`), NOT under the `/users|groups/<id>` prefix. The generated `schema *` commands keep the prefix and **404** live; `schema drift` strips it (`stripLibraryPrefix`). Mirror that if you fix them.
-- `spec.yaml` is retained as API-coverage reference data only. New endpoints are implemented as hand-written commands; no regeneration step or `// PATCH:` marker is required.
+- `spec.yaml` is retained as API-coverage reference data only. New endpoints are implemented as hand-written commands.
 - Web API v3 is stable/versioned; the **local API is the evolving surface** (e.g. `/fulltext`, Jan 2025). New Zotero releases mostly add fields/data, rarely endpoints — run `zotio schema drift` to catch type/field deltas after an upgrade. The per-version "Zotero N for Developers" pages are Mozilla-migration guides, not API references; beta changelogs are unpublished (use the GitHub commit log).
 
-## Historical `// PATCH:` markers
-
-Historical `// PATCH(...)` comments in source mark deviations from the original generated baseline and stay as context; many reference glean bead IDs. The machine-readable patch catalog (`.printing-press-patches.json`) was removed with the CLI Printing Press retirement, and its history lives in git. New changes need ordinary comments and CHANGELOG entries only.
 
 ## Architecture Decisions
 

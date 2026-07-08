@@ -1,5 +1,5 @@
 // Copyright 2026 OrgMentem. Licensed under MIT. See LICENSE.
-// PATCH(marketing-heroes-2): guided first-run initializer composed from existing doctor/auth/sync/health seams.
+// Guided first-run initializer composed from existing doctor/auth/sync/health seams.
 
 package cli
 
@@ -48,7 +48,6 @@ type initReport struct {
 	SuggestedCommands []string                 `json:"suggested_commands,omitempty"`
 }
 
-// PATCH(marketing-heroes-2): register the guided initializer command without adding new setup primitives.
 func newInitCmd(flags *rootFlags) *cobra.Command {
 	var launch bool
 	cmd := &cobra.Command{
@@ -73,7 +72,7 @@ quick library-health preset plus suggested next commands.`,
 	return cmd
 }
 
-// PATCH(marketing-heroes-2): orchestrate first-run setup through existing local API, auth, sync, and health seams.
+// Orchestrate first-run setup through existing local API, auth, sync, and health seams.
 func runInit(cmd *cobra.Command, flags *rootFlags, launch bool) (initReport, error) {
 	report := initReport{
 		OK: true,
@@ -134,7 +133,7 @@ func runInit(cmd *cobra.Command, flags *rootFlags, launch bool) (initReport, err
 	return report, nil
 }
 
-// PATCH(marketing-heroes-2): reuse doctor's local API reachability check and ensure-live launch primitive.
+// Reuse doctor's local API reachability check and ensure-live launch primitive.
 func runInitLocalAPIStep(cmd *cobra.Command, flags *rootFlags, launch bool) (bool, initStepReport) {
 	c, err := flags.newClient()
 	if err != nil {
@@ -154,7 +153,7 @@ func runInitLocalAPIStep(cmd *cobra.Command, flags *rootFlags, launch bool) (boo
 	return false, initStepReport{Step: initStepLocalAPI, OK: false, Status: "unreachable", Remediation: initLocalAPIRemediation}
 }
 
-// PATCH(marketing-heroes-2): call ensureLive without letting its standalone renderer corrupt init's single report.
+// Call ensureLive without letting its standalone renderer corrupt init's single report.
 func runEnsureLiveForInit(cmd *cobra.Command, flags *rootFlags) error {
 	quietFlags := *flags
 	quietFlags.asJSON = false
@@ -165,7 +164,7 @@ func runEnsureLiveForInit(cmd *cobra.Command, flags *rootFlags) error {
 	return ensureLive(quietCmd, &quietFlags, true)
 }
 
-// PATCH(marketing-heroes-2): store prompted API keys through the same Config.SaveCredential path as auth set-token.
+// Store prompted API keys through the same Config.SaveCredential path as auth set-token.
 func runInitAPIKeyStep(cmd *cobra.Command, flags *rootFlags, cfg *config.Config) (bool, initStepReport) {
 	if cfg.AuthHeader() != "" {
 		return true, initStepReport{Step: initStepAPIKey, OK: true, Status: "configured"}
@@ -195,7 +194,7 @@ func runInitAPIKeyStep(cmd *cobra.Command, flags *rootFlags, cfg *config.Config)
 	return true, initStepReport{Step: initStepAPIKey, OK: true, Status: "saved"}
 }
 
-// PATCH(marketing-heroes-2): detect empty local stores and run the syncResource core path for first syncs.
+// Detect empty local stores and run the syncResource core path for first syncs.
 func runInitSyncStep(cmd *cobra.Command, flags *rootFlags, localAPIOK bool) (bool, initStepReport, []initSyncResourceReport, error) {
 	empty, err := localStoreNeedsFirstSync(cmd, "zotio")
 	if err != nil {
@@ -215,7 +214,7 @@ func runInitSyncStep(cmd *cobra.Command, flags *rootFlags, localAPIOK bool) (boo
 	return true, initStepReport{Step: initStepSync, OK: true, Status: "synced"}, resources, nil
 }
 
-// PATCH(marketing-heroes-2): consider a missing DB or zero synced items as needing the first sync.
+// Consider a missing DB or zero synced items as needing the first sync.
 func localStoreNeedsFirstSync(cmd *cobra.Command, cliName string) (bool, error) {
 	rawDB, err := openStoreForRead(cmd.Context(), cliName)
 	if err != nil {
@@ -232,7 +231,7 @@ func localStoreNeedsFirstSync(cmd *cobra.Command, cliName string) (bool, error) 
 	return count == 0, nil
 }
 
-// PATCH(marketing-heroes-2): reuse syncResource/defaultSyncResources while forcing progress away from JSON stdout.
+// Reuse syncResource/defaultSyncResources while forcing progress away from JSON stdout.
 func runInitialSync(cmd *cobra.Command, flags *rootFlags) ([]initSyncResourceReport, error) {
 	c, err := flags.newClient()
 	if err != nil {
@@ -276,7 +275,7 @@ func runInitialSync(cmd *cobra.Command, flags *rootFlags) ([]initSyncResourceRep
 	return reports, nil
 }
 
-// PATCH(marketing-heroes-2): run the library health quick preset in-process and reduce it to a first-run verdict.
+// Run the library health quick preset in-process and reduce it to a first-run verdict.
 func runInitHealthStep(cmd *cobra.Command, flags *rootFlags) (bool, initStepReport, string, error) {
 	rawDB, err := openStoreForRead(cmd.Context(), "zotio")
 	if err != nil {
@@ -307,7 +306,7 @@ func runInitHealthStep(cmd *cobra.Command, flags *rootFlags) (bool, initStepRepo
 	return true, initStepReport{Step: initStepHealth, OK: true, Status: verdict}, verdict, nil
 }
 
-// PATCH(marketing-heroes-2): keep init's finale to the requested one-line health verdict.
+// Keep init's finale to the requested one-line health verdict.
 func initHealthVerdict(report healthReport) string {
 	if report.Summary.Total == 0 {
 		if len(report.Skipped) > 0 {
@@ -328,7 +327,7 @@ func initHealthVerdict(report healthReport) string {
 	return fmt.Sprintf("quick health: %d finding(s): %s", report.Summary.Total, strings.Join(parts, ", "))
 }
 
-// PATCH(marketing-heroes-2): render either a machine step report or the guided human checklist.
+// Render either a machine step report or the guided human checklist.
 func renderInitReport(cmd *cobra.Command, flags *rootFlags, report initReport) error {
 	if flags.asJSON || flags.agent {
 		return printJSONFiltered(cmd.OutOrStdout(), report, flags)

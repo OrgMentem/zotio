@@ -1,5 +1,4 @@
 // Copyright 2026 OrgMentem. Licensed under MIT. See LICENSE.
-// PATCH(glean test-gaps f6yb): covers search result extraction, empty filtering, and command API/local paths.
 
 package cli
 

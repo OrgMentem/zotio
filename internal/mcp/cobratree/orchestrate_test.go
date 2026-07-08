@@ -218,9 +218,9 @@ func TestOrchCommandRunRejectsMissingCommand(t *testing.T) {
 	}
 }
 
-// PATCH(glean facade-apply): end-to-end proof that write-safety gate flags are
-// reachable through the facade for mutating commands (so applies fire) and
-// rejected for read-only commands.
+// End-to-end proof that write-safety gate flags are reachable through the
+// facade for mutating commands (so applies fire) and rejected for read-only
+// commands.
 func orchNewRootWithGates() *cobra.Command {
 	root := &cobra.Command{Use: "zotero", SilenceUsage: true, SilenceErrors: true}
 	root.PersistentFlags().Bool("agent", false, "Run in agent mode")

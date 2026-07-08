@@ -1,5 +1,4 @@
 // Copyright 2026 OrgMentem. Licensed under MIT. See LICENSE.
-// PATCH(glean test-gaps bnt5): Cover pure CLI helper classification, filtering, formatting, pagination, and string behavior.
 
 package cli
 
@@ -81,7 +80,7 @@ func TestHelpersClassifyAPIErrorRedactsBadRequestAuthBody(t *testing.T) {
 
 	got := classifyAPIError(err, nil)
 	msg := got.Error()
-	// Regression guard for glean zotio-c3c6d04bb48b7e67: a previous %w-based
+	// Regression guard: a previous %w-based
 	// implementation re-rendered client.APIError.Error() and leaked this body.
 	if strings.Contains(msg, secret) {
 		t.Fatalf("classifyAPIError() leaked API key in error text: %q", msg)
@@ -339,7 +338,7 @@ func TestHelpersCompactExtractAndFormat(t *testing.T) {
 	}
 }
 
-// PATCH(glean compact-envelope): --agent/--compact must not collapse a Zotero
+// --agent/--compact must not collapse a Zotero
 // resource envelope ({key, data:{...}}) down to {key}; it should keep the
 // nested fields minus the verbose ones.
 func TestCompactFieldsPreservesEnvelopeData(t *testing.T) {

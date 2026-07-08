@@ -18,7 +18,7 @@ func newSchemaItemFieldsCmd(flags *rootFlags) *cobra.Command {
 		Example:     "  zotio schema item-fields",
 		Annotations: map[string]string{"zotio:endpoint": "schema.item-fields", "zotio:method": "GET", "zotio:path": "/itemFields", "mcp:read-only": "true"},
 		RunE: func(cmd *cobra.Command, args []string) error {
-			// PATCH: schema endpoints are global; use newSchemaClient (strips library prefix).
+			// schema endpoints are global; use newSchemaClient (strips library prefix).
 			c, err := newSchemaClient(flags)
 			if err != nil {
 				return err

@@ -1,9 +1,9 @@
 // Copyright 2026 OrgMentem. Licensed under MIT. See LICENSE.
-// PATCH(glean nbiv): `items summarize` — assemble a bounded, synthesis-ready
-// context bundle for an item or collection. It does NOT call a model: it gathers
-// the highest-signal local context (citation, abstract, the reader's own
-// annotations, a capped fulltext excerpt, metadata gaps) plus a synthesis prompt,
-// and lets the host LLM do the writing. Reads are local only; nothing is written.
+// items summarize assembles a bounded, synthesis-ready context bundle for an item
+// or collection. It does not call a model: it gathers the highest-signal local
+// context (citation, abstract, the reader's own annotations, a capped fulltext
+// excerpt, metadata gaps) plus a synthesis prompt, and lets the host LLM do the
+// writing. Reads are local only; nothing is written.
 
 package cli
 
@@ -158,7 +158,7 @@ func runSummarizeCollection(cmd *cobra.Command, db *store.Store, collKey string,
 	}
 	annByKey, _ := db.AnnotationsForItems(keys)
 	// Batch fulltext once (parent item key -> content) so a collection does not
-	// re-scan the attachment table per item. PATCH(glean nbiv).
+	// re-scan the attachment table per item.
 	var ftByItem map[string]string
 	if !opts.noFulltext {
 		ftByItem = fulltextByParentItem(db)
@@ -244,8 +244,7 @@ func itemGaps(meta vaultMeta, hasFulltext, fulltextSkipped bool) []string {
 }
 
 // fulltextByParentItem scans the attachment table once and maps each parent item
-// key to its PDF's stored full text, avoiding a per-item rescan in collection
-// mode. PATCH(glean nbiv).
+// key to its PDF's stored full text, avoiding a per-item rescan in collection mode.
 func fulltextByParentItem(db *store.Store) map[string]string {
 	attachments, err := db.ItemsByType("attachment", 0)
 	if err != nil {
@@ -430,9 +429,9 @@ func summarizeInlineQuote(s string) string {
 }
 
 func summarizeFence(s string) string {
-	// PATCH(glean zotero-pp-cli-11c71f3fa4ba67f3): Zotero document content is
-	// untrusted prompt input. Delimit it with a fence longer than any embedded
-	// backtick run so content cannot escape into the surrounding instructions.
+	// Zotero document content is untrusted prompt input. Delimit it with a fence
+	// longer than any embedded backtick run so content cannot escape into the
+	// surrounding instructions.
 	maxRun, run := 0, 0
 	for _, r := range s {
 		if r == '`' {

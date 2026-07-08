@@ -22,7 +22,7 @@ func newSchemaNewItemTemplateCmd(flags *rootFlags) *cobra.Command {
 			if !cmd.Flags().Changed("item-type") && !flags.dryRun {
 				return fmt.Errorf("required flag \"%s\" not set", "item-type")
 			}
-			// PATCH: /items/new is global (Web API); strip the library prefix. Note the
+			// /items/new is global (Web API); strip the library prefix. Note the
 			// local API does not implement this endpoint, so it 404s against local Zotero.
 			c, err := newSchemaClient(flags)
 			if err != nil {

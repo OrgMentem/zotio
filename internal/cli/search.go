@@ -19,7 +19,7 @@ func isNilOrEmpty(raw json.RawMessage) bool {
 	if err := json.Unmarshal(raw, &obj); err != nil {
 		return true
 	}
-	// Check top-level fields. PATCH(glean zotero-pp-cli-d562d3149c5f2733):
+	// Check top-level fields.:
 	// keep Zotero resource envelopes from local FTS results; they identify rows
 	// by top-level "key" and usually keep title/name under nested "data".
 	if hasSearchIdentity(obj, []string{"title", "name", "identifier", "id", "key", "slug"}) {
@@ -117,7 +117,7 @@ In local mode: searches locally synced data only.`,
 				return cmd.Help()
 			}
 			query := args[0]
-			// PATCH(glean bugfix): Zotero item full-text search is GET /items
+			// Zotero item full-text search is GET /items
 			// with qmode=everything; /searches returns saved-search definitions.
 			if flags.dataSource != "local" {
 				c, err := flags.newClient()
@@ -155,7 +155,7 @@ In local mode: searches locally synced data only.`,
 			defer db.Close()
 
 			var results []json.RawMessage
-			// PATCH(glean cvl6): default local search runs cross-resource FTS
+			// default local search runs cross-resource FTS
 			// (previously a no-op); --type scopes it to one resource type.
 			if resourceType == "" {
 				results, err = db.Search(query, limit)
@@ -185,7 +185,7 @@ In local mode: searches locally synced data only.`,
 
 // outputSearchResults filters, counts, and outputs search results with provenance.
 func outputSearchResults(cmd *cobra.Command, flags *rootFlags, results []json.RawMessage, limit int, prov DataProvenance) error {
-	// PATCH(glean inscribi-6pv1): keep the defensive JSON-shape filter only
+	// keep the defensive JSON-shape filter only
 	// for live API search wrappers. Local FTS already returns concrete rows, so
 	// it avoids the per-result unmarshal hot path.
 	if prov.Source == "live" {

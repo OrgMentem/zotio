@@ -12,7 +12,6 @@ func newSchemaCmd(flags *rootFlags) *cobra.Command {
 		Short: "Zotero item type and field schema",
 	}
 
-	// PATCH: register hand-written schema-drift probe (not in the generated CLI).
 	cmd.AddCommand(newSchemaDriftCmd(flags))
 	cmd.AddCommand(newSchemaCreatorFieldsCmd(flags))
 	cmd.AddCommand(newSchemaItemFieldsCmd(flags))

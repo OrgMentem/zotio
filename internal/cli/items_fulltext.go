@@ -1,5 +1,4 @@
 // Copyright 2026 OrgMentem. Licensed under MIT. See LICENSE.
-// PATCH: Add hand-written PDF full-text retrieval workflow missing from the generated CLI.
 
 package cli
 
@@ -15,7 +14,7 @@ import (
 
 func newItemsFulltextCmd(flags *rootFlags) *cobra.Command {
 	var flagSearch string
-	// PATCH(glean hhup): prefer locally-synced full text unless --refresh.
+	// Prefer locally-synced full text unless --refresh.
 	var refresh bool
 
 	cmd := &cobra.Command{
@@ -28,7 +27,7 @@ func newItemsFulltextCmd(flags *rootFlags) *cobra.Command {
 			}
 			itemKey := args[0]
 
-			// PATCH(glean hhup): serve from the local store (sync --fulltext)
+			// Serve from the local store (sync --fulltext)
 			// when present; --refresh forces the live API path below.
 			if !refresh {
 				if db, _ := openStoreForRead(cmd.Context(), "zotio"); db != nil {
@@ -80,7 +79,7 @@ func newItemsFulltextCmd(flags *rootFlags) *cobra.Command {
 		},
 	}
 	cmd.Flags().StringVar(&flagSearch, "search", "", "Return only full-text lines containing this string")
-	// PATCH(glean hhup): bypass the local store and fetch live.
+	// Bypass the local store and fetch live.
 	cmd.Flags().BoolVar(&refresh, "refresh", false, "Fetch live from the API instead of the local store")
 
 	return cmd
@@ -90,7 +89,6 @@ func newItemsFulltextCmd(flags *rootFlags) *cobra.Command {
 // It first treats itemKey as an attachment key directly; failing that, it
 // finds the item's PDF attachment among synced attachments and looks up its
 // stored full text. Returns false when nothing is available locally.
-// PATCH(glean hhup).
 func localPDFFulltext(db *store.Store, itemKey string) (json.RawMessage, bool) {
 	if ft, ok, _ := db.Fulltext(itemKey); ok {
 		return ft, true

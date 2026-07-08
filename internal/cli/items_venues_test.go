@@ -1,6 +1,6 @@
 // Copyright 2026 OrgMentem. Licensed under MIT. See LICENSE.
-// PATCH(glean bugfix): cover venue year extraction from meta.parsedDate when
-// data.date is freeform and would otherwise yield garbage year columns.
+// Venue year extraction should use meta.parsedDate when data.date is freeform and
+// would otherwise yield garbage year columns.
 
 package cli
 

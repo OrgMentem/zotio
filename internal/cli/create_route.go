@@ -1,5 +1,5 @@
 // Copyright 2026 OrgMentem. Licensed under MIT. See LICENSE.
-// PATCH: shared connector/Web API route for item creation.
+// shared connector/Web API route for item creation.
 
 package cli
 

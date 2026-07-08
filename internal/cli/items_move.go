@@ -1,5 +1,4 @@
 // Copyright 2026 OrgMentem. Licensed under MIT. See LICENSE.
-// PATCH(glean write-safety): support item collection add/remove/move mutations.
 
 package cli
 
@@ -51,7 +50,7 @@ func runItemsMoveMutation(cmd *cobra.Command, flags *rootFlags, fromCol, toCol, 
 		return err
 	}
 
-	// PATCH(glean write-safety): plan all selected item collection changes before apply.
+	// Plan all selected item collection changes before apply.
 	c, err := flags.newWriteClient()
 	if err != nil {
 		return err
@@ -120,7 +119,7 @@ func collectionMutationChanges(current []string, fromCol, toCol string) []mutati
 }
 
 func applyItemCollectionMove(c *client.Client, path, fromCol, toCol string) (string, any, error) {
-	// PATCH(glean write-safety): apply re-reads memberships and patches with version precondition.
+	// Apply by re-reading memberships and using a version precondition.
 	currentData, currentVersion, err := c.GetWithVersion(path, nil)
 	if err != nil {
 		return "failed", err.Error(), err

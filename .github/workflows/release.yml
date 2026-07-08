@@ -1,4 +1,4 @@
-# PATCH(glean zotio-9131682f): CI-recorded, cosign-signed releases.
+# CI-recorded, cosign-signed releases.
 name: release
 
 on:

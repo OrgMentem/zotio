@@ -12,7 +12,7 @@ import (
 	"time"
 )
 
-// PATCH(action-arc): healthBaselineFile is the persisted baseline identity schema used by CI delta gates.
+// healthBaselineFile is the persisted baseline identity schema used by CI delta gates.
 type healthBaselineFile struct {
 	SchemaVersion int      `json:"schema_version"`
 	GeneratedAt   string   `json:"generated_at"`
@@ -20,7 +20,7 @@ type healthBaselineFile struct {
 	Identities    []string `json:"identities"`
 }
 
-// PATCH(action-arc): healthBaselineReport is the JSON report block for baseline-aware health runs.
+// healthBaselineReport is the JSON report block for baseline-aware health runs.
 type healthBaselineReport struct {
 	Established   bool            `json:"established"`
 	New           []healthFinding `json:"new"`
@@ -31,7 +31,7 @@ type healthBaselineReport struct {
 	RecordedCount int                 `json:"-"`
 }
 
-// PATCH(action-arc): applyHealthBaseline diffs current findings against the watch --health stable identity key.
+// applyHealthBaseline diffs current findings against the watch --health stable identity key.
 func applyHealthBaseline(report *healthReport, path string) error {
 	baseline, established, err := readHealthBaseline(path)
 	if err != nil {
@@ -102,7 +102,7 @@ func readHealthBaseline(path string) (healthBaselineFile, bool, error) {
 	return baseline, true, nil
 }
 
-// PATCH(action-arc): writeHealthBaseline atomically persists current watch-health identities for future deltas.
+// writeHealthBaseline atomically persists current watch-health identities for future deltas.
 func writeHealthBaseline(path string, preset string, findings []healthFinding) error {
 	identities := healthFindingIdentities(findings)
 	payload := healthBaselineFile{
@@ -119,7 +119,7 @@ func writeHealthBaseline(path string, preset string, findings []healthFinding) e
 	return writeFileAtomic(path, data)
 }
 
-// PATCH(action-arc): write --report JSON sidecars in human and badge modes without changing stdout.
+// write --report JSON sidecars in human and badge modes without changing stdout.
 func writeHealthReportFile(path string, report healthReport) error {
 	data, err := json.Marshal(report)
 	if err != nil {
@@ -156,7 +156,7 @@ func writeFileAtomic(path string, data []byte) error {
 	return nil
 }
 
-// PATCH(action-arc): baseline identity helpers reuse watch --health finding keys.
+// baseline identity helpers reuse watch --health finding keys.
 func healthCurrentFindings(report healthReport) []healthFinding {
 	if len(report.allFindings) > 0 || report.Summary.Total == 0 {
 		return report.allFindings

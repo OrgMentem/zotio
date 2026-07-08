@@ -1,5 +1,5 @@
 // Copyright 2026 OrgMentem. Licensed under MIT. See LICENSE.
-// PATCH(glean 37jv): metadata-enriched imports. URL import used to create a bare
+// Metadata-enriched imports. URL import used to create a bare
 // webpage item whose title was the URL itself. This adds a translator-style
 // pipeline: a DOI embedded in the URL resolves full metadata from CrossRef, and
 // otherwise the page's embedded "citation_*"/Open Graph/Dublin Core meta tags
@@ -33,7 +33,6 @@ var (
 	attrPropRE    = regexp.MustCompile(`(?is)\bproperty\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))`)
 )
 
-// PATCH(glean zotero-pp-cli-43513a119010f6e1,zotero-pp-cli-fc0741de747e391d):
 // shared cap for ad-hoc external provider responses that are buffered locally.
 func readCappedExternalBody(r io.Reader, maxBytes int64) ([]byte, error) {
 	body, err := io.ReadAll(io.LimitReader(r, maxBytes+1))
@@ -101,7 +100,7 @@ func crossRefItemFromDOI(ctx context.Context, httpClient *http.Client, doi strin
 // keyed by name/property plus the <title>. Returns ok=false for non-HTML
 // responses (e.g. a raw PDF) or transport errors.
 func fetchPageMeta(ctx context.Context, httpClient *http.Client, rawURL string) (map[string][]string, string, bool) {
-	// PATCH(glean zotero-pp-cli-357222230859d0f3): URL imports may fetch
+	// URL imports may fetch
 	// arbitrary user input, so metadata scraping is limited to public HTTP(S)
 	// endpoints and never probes loopback/private/link-local services.
 	if err := validateExternalHTTPURL(rawURL, false); err != nil {

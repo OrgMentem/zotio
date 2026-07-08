@@ -104,18 +104,17 @@ but do not stop the import.`,
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "Preview import without sending requests")
 	cmd.Flags().IntVar(&batchSize, "batch-size", 1, "Records per batch (future: batch API support)")
 
-	// PATCH: Register hand-written Zotero import workflows added after generation.
 	cmd.AddCommand(newImportDoiCmd(flags))
 	cmd.AddCommand(newImportUrlCmd(flags))
 	cmd.AddCommand(newImportFileCmd(flags))
-	cmd.AddCommand(newImportScanCmd(flags)) // PATCH(glean q1ia): read-only PDF folder triage
+	cmd.AddCommand(newImportScanCmd(flags))
 	cmd.AddCommand(newImportPmidCmd(flags))
 	cmd.AddCommand(newImportArxivCmd(flags))
 	cmd.AddCommand(newImportIsbnCmd(flags))
-	// PATCH(glean roadmap-phase4): reviewable-import pipeline.
+	// Reviewable-import pipeline.
 	cmd.AddCommand(newImportResolveCmd(flags))
 	cmd.AddCommand(newImportApplyCmd(flags))
-	// PATCH: connector-backed PDF recognition and diagnostics.
+	// Connector-backed PDF recognition and diagnostics.
 	cmd.AddCommand(newImportPDFCmd(flags))
 	cmd.AddCommand(newImportTargetsCmd(flags))
 	cmd.AddCommand(newImportTranslatorsCmd(flags))

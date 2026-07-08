@@ -15,7 +15,8 @@ import (
 	"github.com/spf13/pflag"
 )
 
-// PATCH(glean f-plain): command-orchestration facade — search+run over the Cobra tree, an alternative to RegisterAll selected by ZOTIO_MCP_SURFACE.
+// Command-orchestration facade: search+run over the Cobra tree, an alternative
+// to RegisterAll selected by ZOTIO_MCP_SURFACE.
 func RegisterOrchestration(s *server.MCPServer, rootFactory func() *cobra.Command) {
 	s.AddTool(mcplib.NewTool("command_search",
 		mcplib.WithDescription("Search and inspect mirrorable Cobra commands exposed through the command orchestration facade."),

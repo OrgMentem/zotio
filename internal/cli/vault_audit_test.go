@@ -1,5 +1,4 @@
 // Copyright 2026 OrgMentem. Licensed under MIT. See LICENSE.
-// PATCH(glean roadmap-phase5 vault-audit): cover read-only vault audit orphan detection.
 
 package cli
 

@@ -3,12 +3,12 @@
 ## Provenance & status
 
 - **Date:** 2026-06-27 · **Branch:** `reprint-4.25.0` (HEAD `97775bb`).
-- **How this was derived:** reviewed the 26 open Glean feature-opportunity beads → drafted a
+- **How this was derived:** reviewed 26 feature-opportunity records → drafted a
   value-first PRD → had it improved by a second model (GPT-5.5 Pro via Oracle, session
   `zotero-roadmap-pdr-4`; reattach: `oracle session zotero-roadmap-pdr-4 --render`) → reconciled
   every recommendation against the live codebase and `docs/zotero-api-coverage.md`.
 - **Intent:** maximize end-user value and UX, **not** match the issue tracker. This document is
-  the source of truth for sequencing; the beads are raw material, not a checklist.
+  the source of truth for sequencing; the source records are raw material, not a checklist.
 - **Grounding rule:** every item here is feasible against Zotero's *actual* API. The hard
   constraints (local API is GET-only; writes route to the Web API with a key; stale local reads
   vs. cloud writes race to `412`; schema endpoints are global; `/items/new` is Web-only; fast
@@ -251,38 +251,38 @@ P6  reproducible export  ->  P7  packaging & niceties
   for the writer's own changes; cross-client staleness stays handled by the freshness contract
   (`--require-fresh`, provenance). Creates and bulk/trash shapes reconcile on the next `sync`.
 
-## Bead → phase mapping
+## Opportunity → phase mapping
 
-All 26 open beads as of 2026-06-27:
+All 26 open feature opportunities as of 2026-06-27:
 
-| Bead | Title | Disposition |
-|---|---|---|
-| `cdd5b64b` (P1) | Capability/routing registry | **Phase 2** — owns preconditions; fills nil discovery |
-| `2465cdde` (P1) | Query-planner / local read parity | **Phase 2** minimal; *full parity deferred* |
-| `58a31bf6` (P1) | Unified `mutation.Plan` package | **Phase 3** — promote at rule-of-three |
-| `3df91067` (P1) | MCP honors profiles/groups/config | **Phase 7** |
-| `3f0b8763` (P2) | `--fail-on` audit exit codes | **Phase 1/2** — exit `11` under `library health` |
-| `dxut` (P2) | Systematic-review health + citation audit | **Largely SHIPPED** (`--missing-citation`, `--verify-files`); absorbed into `library health`; style-specific **cut** → close |
-| `725cb43f` (P2) | Vault audit/repair preflight | **Phase 5** |
-| `04f41aa8` (P2) | Bounded MCP graph resources | **Phase 5** |
-| `943783579` (P2) | Freshness/provenance to agents | **Phase 2** |
-| `556c94b6` (P2) | Reusable `scope.Spec` | **Phase 2** |
-| `q1ia` (P2) | PDF→item ingest | **Phase 4** — write side of `import scan`, attach-mode |
-| `37849fc0` (P2) | PMID/arXiv/ISBN adapters | **Phase 4** |
-| `7e799ea9` (P2) | Bulk-import review + apply manifest | **Phase 4** |
-| `748370c5` (P2) | Schema-backed `items new` builders | **Phase 4** |
-| `mmmd` (P2) | Enrich providers + `--validate` | **Phase 4** — partial (OpenAlex shipped); add Semantic Scholar/OpenCitations |
-| `d27f99d4` (P2) | Paginated/resumable export | **Phase 6** — folds into `export snapshot` |
-| `0cabee79` (P2) | Watch-mode sync | **Phase 7** |
-| `860e00b7` (P2) | `--deliver` adapter registry | **CUT** |
-| `d130ba9e` (P2) | API capability-drift detection | **Phase 7** |
-| `1b05b22` (P2, security) | MCP path-param URL-encoding | **Upstream** (generated `makeAPIHandler`); out of scope here |
-| `a3d0987d` (P2) | MCP-guided cleanup workflows | **Phase 5** |
-| `awc7` (P2) | Generator extension layer | **Upstream** (cli-printing-press) |
-| `a05b9f86` (P3) | Mutation run-journal + undo | **Phase 3** — journal yes; undo only where reversible |
-| `9200a793` (P3) | Group readiness preflight | **Phase 7** |
-| `rlvp` (P3) | Local semantic/RAG search | **CUT** — revisit only as host-provided vectors |
-| `8r0o` (P3) | Cross-platform desktop deep links | **Phase 2/3** (launch+readiness slice); *richness deferred* |
+| Title | Disposition |
+|---|---|
+| Capability/routing registry | **Phase 2** — owns preconditions; fills nil discovery |
+| Query-planner / local read parity | **Phase 2** minimal; *full parity deferred* |
+| Unified `mutation.Plan` package | **Phase 3** — promote at rule-of-three |
+| MCP honors profiles/groups/config | **Phase 7** |
+| `--fail-on` audit exit codes | **Phase 1/2** — exit `11` under `library health` |
+| Systematic-review health + citation audit | **Largely SHIPPED** (`--missing-citation`, `--verify-files`); absorbed into `library health`; style-specific **cut** → close |
+| Vault audit/repair preflight | **Phase 5** |
+| Bounded MCP graph resources | **Phase 5** |
+| Freshness/provenance to agents | **Phase 2** |
+| Reusable `scope.Spec` | **Phase 2** |
+| PDF→item ingest | **Phase 4** — write side of `import scan`, attach-mode |
+| PMID/arXiv/ISBN adapters | **Phase 4** |
+| Bulk-import review + apply manifest | **Phase 4** |
+| Schema-backed `items new` builders | **Phase 4** |
+| Enrich providers + `--validate` | **Phase 4** — partial (OpenAlex shipped); add Semantic Scholar/OpenCitations |
+| Paginated/resumable export | **Phase 6** — folds into `export snapshot` |
+| Watch-mode sync | **Phase 7** |
+| `--deliver` adapter registry | **CUT** |
+| API capability-drift detection | **Phase 7** |
+| MCP path-param URL-encoding | **Upstream** (generated `makeAPIHandler`); out of scope here |
+| MCP-guided cleanup workflows | **Phase 5** |
+| Generator extension layer | **Upstream** (cli-printing-press) |
+| Mutation run-journal + undo | **Phase 3** — journal yes; undo only where reversible |
+| Group readiness preflight | **Phase 7** |
+| Local semantic/RAG search | **CUT** — revisit only as host-provided vectors |
+| Cross-platform desktop deep links | **Phase 2/3** (launch+readiness slice); *richness deferred* |
 
 ## Where we diverged from the oracle (recorded decisions)
 

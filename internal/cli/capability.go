@@ -1,5 +1,5 @@
 // Copyright 2026 OrgMentem. Licensed under MIT. See LICENSE.
-// PATCH(glean roadmap-phase2): typed capability + preconditions registry — the
+// typed capability + preconditions registry — the
 // single machine-readable source of truth for what each command does (read/
 // write/destructive), where it writes, and what it requires (live desktop API,
 // a Web API key, a synced store, Better BibTeX). Agents select safe commands and
@@ -171,7 +171,6 @@ func buildCapabilityRegistry(rootCmd *cobra.Command) []capabilityEntry {
 
 // newCapabilitiesCmd emits the capability registry as JSON so agents and MCP
 // hosts have one source of truth for command safety and preconditions.
-// PATCH(glean roadmap-phase2): new introspection command.
 func newCapabilitiesCmd(rootCmd *cobra.Command, flags ...*rootFlags) *cobra.Command {
 	var pretty bool
 	driftFlags := &rootFlags{}

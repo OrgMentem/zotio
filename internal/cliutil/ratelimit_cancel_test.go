@@ -1,5 +1,5 @@
 // Copyright 2026 OrgMentem. Licensed under MIT. See LICENSE.
-// PATCH(glean write-safety): verifies adaptive limiter sleeps are context-cancellable.
+// verifies adaptive limiter sleeps are context-cancellable.
 
 package cliutil
 

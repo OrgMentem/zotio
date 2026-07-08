@@ -208,10 +208,10 @@ func (s *Store) backfillColumns(ctx context.Context, conn *sql.Conn) error {
 		{table: "sync_state", column: "last_cursor", decl: "TEXT"},
 		{table: "sync_state", column: "last_synced_at", decl: "DATETIME"},
 		{table: "sync_state", column: "total_count", decl: "INTEGER DEFAULT 0"},
-		// PATCH(glean static-audit): Zotero incremental sync is keyed on an
+		// Zotero incremental sync is keyed on an
 		// integer library version (Last-Modified-Version), not a timestamp.
 		{table: "sync_state", column: "library_version", decl: "INTEGER DEFAULT 0"},
-		// PATCH(glean hhup): indexed columns for dependent-resource sync
+		// indexed columns for dependent-resource sync
 		// (annotations / attachments) so parent/type queries don't scan JSON.
 		{table: "resources", column: "parent_key", decl: "TEXT"},
 		{table: "resources", column: "item_type", decl: "TEXT"},
@@ -232,7 +232,7 @@ func (s *Store) backfillColumns(ctx context.Context, conn *sql.Conn) error {
 // `item_type IN (...)` never matches a NULL. The `item_type IS NULL` guard makes
 // this a one-time, idempotent no-op on already-populated stores (insert writes
 // ” rather than NULL for type-less rows like collections). The json paths
-// mirror extractIndexedColumnsFromObj. PATCH(glean dxut-followup).
+// mirror extractIndexedColumnsFromObj.
 func (s *Store) backfillIndexedColumnValues(ctx context.Context, conn *sql.Conn) error {
 	_, err := conn.ExecContext(ctx, `
 UPDATE resources SET
@@ -346,10 +346,10 @@ func (s *Store) migrate(ctx context.Context) error {
 			synced_at DATETIME DEFAULT CURRENT_TIMESTAMP,
 			updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
 			PRIMARY KEY (resource_type, id)
-		)`, // PATCH(glean hhup): parent_key/item_type/annotation_color/item_date.
+		)`, // parent_key/item_type/annotation_color/item_date.
 		`CREATE INDEX IF NOT EXISTS idx_resources_type ON resources(resource_type)`,
 		`CREATE INDEX IF NOT EXISTS idx_resources_synced ON resources(synced_at)`,
-		// PATCH(glean hhup): index the dependent-resource lookup columns.
+		// index the dependent-resource lookup columns.
 		`CREATE INDEX IF NOT EXISTS idx_resources_parent_key ON resources(parent_key)`,
 		`CREATE INDEX IF NOT EXISTS idx_resources_item_type ON resources(item_type)`,
 		`CREATE TABLE IF NOT EXISTS sync_state (
@@ -392,7 +392,7 @@ func (s *Store) migrate(ctx context.Context) error {
 		if err := s.backfillColumns(ctx, conn); err != nil {
 			return fmt.Errorf("backfilling columns: %w", err)
 		}
-		// PATCH(glean bugfix): upgrade a legacy id-only-PK resources table to the
+		// upgrade a legacy id-only-PK resources table to the
 		// composite (resource_type, id) PK so ON CONFLICT(resource_type, id) works
 		// and cross-type ids cannot collide. No-op on fresh/already-composite DBs.
 		if err := s.rebuildResourcesPKIfNeeded(ctx, conn); err != nil {
@@ -403,13 +403,13 @@ func (s *Store) migrate(ctx context.Context) error {
 				return fmt.Errorf("migration failed: %w", err)
 			}
 		}
-		// PATCH(glean dxut-followup): populate the indexed columns for rows that
+		// populate the indexed columns for rows that
 		// predate them; without this, item_type/parent_key stay NULL and break
 		// the audit/query commands that filter on them.
 		if err := s.backfillIndexedColumnValues(ctx, conn); err != nil {
 			return fmt.Errorf("backfilling indexed column values: %w", err)
 		}
-		// PATCH(glean field-items-top-residue): pre-canonicalization archive
+		// pre-canonicalization archive
 		// runs wrote items-top/collections-top as independent resource types.
 		// New syncs fold those aliases into items/collections, so purge the
 		// frozen alias resource/sync-state rows idempotently on open instead of
@@ -417,7 +417,7 @@ func (s *Store) migrate(ctx context.Context) error {
 		if err := s.purgeAliasResources(ctx, conn); err != nil {
 			return fmt.Errorf("purging alias resources: %w", err)
 		}
-		// PATCH(glean lint-extras-seam): run novel-feature auxiliary-table
+		// run novel-feature auxiliary-table
 		// migrations after the generated migrations and before the version
 		// stamp, as migrateExtras documents. Currently a no-op (empty slice);
 		// wiring it makes the extension seam actually execute on every open.
@@ -607,10 +607,10 @@ func isSQLiteBusy(err error) bool {
 }
 
 func (s *Store) upsertGenericResourceTx(tx *sql.Tx, resourceType, id string, data json.RawMessage, obj map[string]any) error {
-	// PATCH(glean hhup): populate indexed dependent-resource columns from the
+	// populate indexed dependent-resource columns from the
 	// payload so annotation/attachment queries avoid scanning JSON. Non-item
 	// rows (collections, tags) leave these empty, which is harmless.
-	// PATCH(glean perf-audit cwtg): reuse the caller's already-unmarshaled obj
+	// reuse the caller's already-unmarshaled obj
 	// (batch path) instead of parsing the same payload a second time. The single
 	// Upsert path passes nil and falls back to the raw-bytes extractor.
 	var parentKey, itemType, color, itemDate string
@@ -638,7 +638,7 @@ func (s *Store) upsertGenericResourceTx(tx *sql.Tx, resourceType, id string, dat
 
 	searchDocument := buildSearchDocument(resourceType, data)
 	if obj != nil {
-		// PATCH(glean zotero-pp-cli-4be496e0fc4104d1): reuse the already
+		// reuse the already
 		// unmarshaled batch object when constructing the FTS document instead of
 		// parsing every synced item a second time while the SQLite write lock is held.
 		searchDocument = buildSearchDocumentFromObj(resourceType, data, obj)
@@ -646,7 +646,7 @@ func (s *Store) upsertGenericResourceTx(tx *sql.Tx, resourceType, id string, dat
 	if _, err = tx.Exec(
 		`INSERT INTO resources_fts (rowid, id, resource_type, content)
 		 VALUES (?, ?, ?, ?)`,
-		// PATCH(glean cvl6): index a curated Zotero-aware document for items
+		// index a curated Zotero-aware document for items
 		// instead of the raw JSON blob (raw JSON retained for other types).
 		ftsRowid, id, resourceType, searchDocument,
 	); err != nil {
@@ -661,7 +661,7 @@ func (s *Store) upsertGenericResourceTx(tx *sql.Tx, resourceType, id string, dat
 // stored item payload. Zotero item objects nest the real fields under a "data"
 // sub-object ({key, version, data:{itemType, parentItem, ...}}); this descends
 // into "data" when present and falls back to the top level otherwise. Missing
-// fields yield empty strings. PATCH(glean hhup).
+// fields yield empty strings.
 func extractIndexedColumns(data json.RawMessage) (parentKey, itemType, color, itemDate string) {
 	var obj map[string]any
 	if err := json.Unmarshal(data, &obj); err != nil {
@@ -672,7 +672,7 @@ func extractIndexedColumns(data json.RawMessage) (parentKey, itemType, color, it
 
 // extractIndexedColumnsFromObj is the map-based core of extractIndexedColumns,
 // letting the batch upsert path reuse the object it already unmarshaled instead
-// of parsing the same payload twice. PATCH(glean perf-audit cwtg).
+// of parsing the same payload twice.
 func extractIndexedColumnsFromObj(obj map[string]any) (parentKey, itemType, color, itemDate string) {
 	fields := obj
 	if inner, ok := obj["data"].(map[string]any); ok {
@@ -756,8 +756,8 @@ func (s *Store) Upsert(resourceType, id string, data json.RawMessage) error {
 // the caller (not the payload) in a single transaction. It fits resources whose
 // id is carried by the request path rather than the body — e.g. per-item
 // fulltext, where the response is {content, indexedChars, ...} with no id field.
-// PATCH(glean perf-audit x5lh): replaces one writeMu-serialized Upsert per item
-// (many tiny transactions + lock contention) with a single batched transaction.
+// Uses a single batched transaction instead of one writeMu-serialized Upsert
+// per item, avoiding many tiny transactions and lock contention.
 func (s *Store) UpsertKeyed(resourceType string, ids []string, data []json.RawMessage) error {
 	if len(ids) != len(data) {
 		return fmt.Errorf("UpsertKeyed: ids/data length mismatch (%d vs %d)", len(ids), len(data))
@@ -803,8 +803,7 @@ func (s *Store) List(resourceType string, limit int) ([]json.RawMessage, error) 
 		args = append(args, limit)
 	}
 	rows, err := s.db.Query(
-		// PATCH(glean zotero-pp-cli-ecab50c0e678e7bc): limit <= 0 now means
-		// "all rows" for local list reads instead of silently capping at 200.
+		// limit <= 0 means "all rows" for local list reads.
 		query,
 		args...,
 	)
@@ -834,8 +833,7 @@ func (s *Store) Search(query string, limit int) ([]json.RawMessage, error) {
 		 WHERE resources_fts MATCH ?
 		 ORDER BY rank
 		 LIMIT ?`,
-		// PATCH(glean field-search-or-null): ftsMatchQuery now preserves
-		// documented boolean operators and phrases instead of literalizing them.
+		// ftsMatchQuery preserves documented boolean operators and phrases.
 		ftsMatchQuery(query), limit,
 	)
 	if err != nil {
@@ -856,7 +854,7 @@ func (s *Store) Search(query string, limit int) ([]json.RawMessage, error) {
 
 // ItemsByType returns the stored payloads of all items with the given
 // itemType (e.g. "annotation", "attachment"). limit <= 0 means no limit.
-// PATCH(glean hhup): backs local-first annotation listing.
+// backs local-first annotation listing.
 func (s *Store) ItemsByType(itemType string, limit int) ([]json.RawMessage, error) {
 	query := `SELECT data FROM resources WHERE item_type = ?`
 	args := []any{itemType}
@@ -884,7 +882,7 @@ func (s *Store) ItemsByType(itemType string, limit int) ([]json.RawMessage, erro
 // AnnotationsForItem returns every annotation whose attachment parent's own
 // parent is topItemKey. Zotero nests annotations under attachments under the
 // top-level item, so this joins annotation -> attachment -> top item.
-// PATCH(glean hhup): backs local-first annotation export/timeline.
+// backs local-first annotation export/timeline.
 func (s *Store) AnnotationsForItem(topItemKey string) ([]json.RawMessage, error) {
 	rows, err := s.db.Query(
 		`SELECT a.data FROM resources a
@@ -912,7 +910,7 @@ func (s *Store) AnnotationsForItem(topItemKey string) ([]json.RawMessage, error)
 // for every key in topItemKeys, resolved with a single query. It backs callers
 // that materialize many items at once (e.g. vault sync) so they avoid an N+1
 // per-item AnnotationsForItem lookup. Keys with no annotations are simply absent
-// from the returned map. PATCH(glean perf-audit rj6r).
+// from the returned map.
 func (s *Store) AnnotationsForItems(topItemKeys []string) (map[string][]json.RawMessage, error) {
 	out := make(map[string][]json.RawMessage, len(topItemKeys))
 	if len(topItemKeys) == 0 {
@@ -946,7 +944,7 @@ func (s *Store) AnnotationsForItems(topItemKeys []string) (map[string][]json.Raw
 }
 
 // Fulltext returns the stored full-text payload for an attachment key, if any.
-// PATCH(glean hhup): backs local-first PDF full-text reads.
+// backs local-first PDF full-text reads.
 func (s *Store) Fulltext(attachmentKey string) (json.RawMessage, bool, error) {
 	var data string
 	err := s.db.QueryRow(
@@ -976,7 +974,7 @@ func extractObjectID(obj map[string]any) string {
 // WHERE column=? on virtual tables, so we use explicit rowids and DELETE WHERE
 // rowid=? instead.
 func ftsRowID(resourceType, id string) int64 {
-	// PATCH(glean zotero-pp-cli-830779995edac891): include resourceType in the
+	// include resourceType in the
 	// key and use a SHA-256-derived 63-bit value instead of the old small
 	// multiplier hash, reducing accidental FTS overwrite risk.
 	sum := sha256.Sum256([]byte(resourceType + "\x00" + id))
@@ -1095,7 +1093,7 @@ func prepareResourceItem(resourceType string, item json.RawMessage) (preparedRes
 // only populate the generic resources table — typed tables (and indexed
 // columns like parent_id added by dependent-resource sync) would stay empty.
 func (s *Store) UpsertBatch(resourceType string, items []json.RawMessage) (int, int, error) {
-	// PATCH(glean zotero-pp-cli-4b561cdc31216983): parse JSON and extract
+	// parse JSON and extract
 	// primary keys before taking writeMu so concurrent sync workers are only
 	// serialized for the SQLite transaction, not CPU-heavy unmarshalling.
 	prepared := make([]preparedResourceItem, 0, len(items))
@@ -1169,7 +1167,7 @@ func (s *Store) GetSyncState(resourceType string) (cursor string, lastSynced tim
 
 // SaveLibraryVersion records the Zotero Last-Modified-Version checkpoint for a
 // resource so the next incremental sync can pass it as the integer `since`
-// parameter. PATCH(glean static-audit): version-based incremental sync.
+// parameter.
 func (s *Store) SaveLibraryVersion(resourceType string, version int) error {
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
@@ -1183,7 +1181,7 @@ func (s *Store) SaveLibraryVersion(resourceType string, version int) error {
 }
 
 // GetLibraryVersion returns the stored Zotero library version checkpoint for a
-// resource, or 0 when none has been recorded. PATCH(glean static-audit).
+// resource, or 0 when none has been recorded.
 func (s *Store) GetLibraryVersion(resourceType string) (int, error) {
 	var v sql.NullInt64
 	err := s.db.QueryRow(
@@ -1229,7 +1227,7 @@ func (s *Store) ListIDs(resourceType string) ([]string, error) {
 		return nil, fmt.Errorf("resource type is required")
 	}
 	rows, err := s.db.Query(
-		// PATCH(glean zotero-pp-cli-748087f5ed8994a2): resourceType is data,
+		// resourceType is data,
 		// not a SQL identifier; bind it instead of interpolating it as a table name.
 		"SELECT id FROM resources WHERE resource_type = ? ORDER BY id",
 		resourceType,
@@ -1325,7 +1323,7 @@ func (s *Store) ResolveByName(resourceType string, input string, matchFields ...
 
 	var matches []string
 	for _, field := range matchFields {
-		// PATCH(glean security-audit): the json_extract path is built with
+		// the json_extract path is built with
 		// Sprintf, so a field name containing a quote could break out of the
 		// '$.<field>' path and inject SQL. Callers pass literals today; reject
 		// anything that isn't a plain dotted identifier as defense in depth.
@@ -1377,7 +1375,7 @@ func (s *Store) ResolveByName(resourceType string, input string, matchFields ...
 
 // isSafeJSONFieldName reports whether s is a plain, optionally dotted
 // identifier safe to interpolate into a json_extract path string.
-// PATCH(glean security-audit): guards ResolveByName's Sprintf-built query.
+// guards ResolveByName's Sprintf-built query.
 func isSafeJSONFieldName(s string) bool {
 	if s == "" {
 		return false

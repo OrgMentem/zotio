@@ -1,5 +1,5 @@
 // Copyright 2026 OrgMentem. Licensed under MIT. See LICENSE.
-// PATCH(glean static-audit): GetWithVersion surfaces the Zotero
+// GetWithVersion surfaces the Zotero
 // Last-Modified-Version response header (parsed as int) for version-based
 // incremental sync; missing/unparseable headers must yield 0, not an error.
 

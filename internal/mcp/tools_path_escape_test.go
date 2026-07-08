@@ -1,5 +1,5 @@
 // Copyright 2026 OrgMentem. Licensed under MIT. See LICENSE.
-// PATCH(glean 1b05b22e): verify path-parameter percent-encoding blocks path-segment injection.
+// Verify path-parameter percent-encoding blocks path-segment injection.
 
 package mcp
 
@@ -11,10 +11,10 @@ import (
 	mcplib "github.com/mark3labs/mcp-go/mcp"
 )
 
-// TestMCPPathValueNeutralizesInjection proves the makeAPIHandler path-parameter
+// TestMCPPathValueEscapesPathSegments proves the makeAPIHandler path-parameter
 // substitution can no longer be steered to a different endpoint by a value that
 // contains URL path metacharacters, while valid Zotero keys pass through byte-for-byte.
-func TestMCPPathValueNeutralizesInjection(t *testing.T) {
+func TestMCPPathValueEscapesPathSegments(t *testing.T) {
 	cases := []struct {
 		name, in, want string
 	}{

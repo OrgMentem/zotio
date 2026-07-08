@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# PATCH(marketing-heroes-2): package zotio-mcp as per-platform MCPB bundles.
+# Package zotio-mcp as per-platform MCPB bundles.
 #
 # Invoked by goreleaser as a post-build hook for the zotio-mcp build:
 #   python3 scripts/mcpb_pack.py <binary_path> <goos> <goarch> <version>

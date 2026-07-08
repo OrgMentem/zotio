@@ -1,5 +1,5 @@
 // Copyright 2026 OrgMentem. Licensed under MIT. See LICENSE.
-// PATCH(glean roadmap-phase4 7e799ea9): the reviewable-import manifest — the
+// The reviewable-import manifest — the
 // editable contract between `import resolve` (scan -> resolved proposals) and
 // `import apply` (create items / attach files through the mutation engine).
 

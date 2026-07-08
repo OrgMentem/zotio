@@ -1,5 +1,4 @@
 // Copyright 2026 OrgMentem. Licensed under MIT. See LICENSE.
-// PATCH: Add hand-written markdown reading-note template generator missing from the generated CLI.
 
 package cli
 
@@ -167,8 +166,8 @@ func renderStandardNoteTemplate(meta itemNoteMetadata, obsidian bool, now time.T
 	} else {
 		fmt.Fprintf(&b, "year: %s\n", strconv.Quote(meta.Year))
 	}
-	// PATCH(glean zotero-pp-cli-e968515a01ee38b4): quote Zotero-derived
-	// frontmatter scalars so DOI/citekey punctuation cannot alter YAML.
+	// Quote Zotero-derived frontmatter scalars so DOI/citekey punctuation cannot
+	// alter YAML.
 	fmt.Fprintf(&b, "doi: %s\n", strconv.Quote(meta.DOI))
 	fmt.Fprintf(&b, "cite_key: %s\n", strconv.Quote(meta.CiteKey))
 	b.WriteString("tags: []\n")
@@ -191,8 +190,8 @@ func renderLogseqNoteTemplate(meta itemNoteMetadata, now time.Time) string {
 	authors := wikilinkAuthors(meta.Authors)
 
 	var b strings.Builder
-	// PATCH(glean zotero-pp-cli-7923fdd704227626): Logseq properties are
-	// one-line fields, so collapse Zotero-derived property values.
+	// Logseq properties are one-line fields, so collapse Zotero-derived property
+	// values.
 	fmt.Fprintf(&b, "- title:: %s\n", logseqPropScalar(meta.Title))
 	if len(authors) > 0 {
 		fmt.Fprintf(&b, "- authors:: %s\n", logseqPropScalar(strings.Join(authors, ", ")))

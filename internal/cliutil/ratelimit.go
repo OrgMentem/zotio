@@ -41,7 +41,7 @@ func NewAdaptiveLimiter(ratePerSec float64) *AdaptiveLimiter {
 }
 
 func (l *AdaptiveLimiter) Wait() {
-	// PATCH(glean write-safety): preserve the existing no-arg API while routing
+	// preserve the existing no-arg API while routing
 	// through the cancellable implementation used by HTTP requests.
 	l.WaitContext(context.Background())
 }
@@ -50,7 +50,7 @@ func (l *AdaptiveLimiter) WaitContext(ctx context.Context) {
 	if l == nil {
 		return
 	}
-	// PATCH(glean write-safety): callers may pass a request context so a
+	// callers may pass a request context so a
 	// rate-limit sleep exits promptly on Ctrl-C/SIGTERM cancellation.
 	if ctx == nil {
 		ctx = context.Background()
@@ -58,12 +58,9 @@ func (l *AdaptiveLimiter) WaitContext(ctx context.Context) {
 	if ctx.Err() != nil {
 		return
 	}
-	// PATCH(glean static-audit): reserve the next send slot while holding the
-	// lock, then sleep until it outside the lock. The previous code released the
-	// lock before sleeping and updated lastRequest after, so N concurrent callers
-	// all read the same lastRequest, computed the same delay, slept in lockstep,
-	// and fired simultaneously — defeating pacing and inviting 429s. Reserving
-	// the slot under the lock serializes callers onto distinct wake times.
+	// Reserve the next send slot while holding the lock, then sleep outside the
+	// lock. Reserving the slot under the lock serializes callers onto distinct
+	// wake times.
 	l.mu.Lock()
 	delay := time.Duration(float64(time.Second) / l.rate)
 	next := l.lastRequest.Add(delay)
@@ -126,7 +123,7 @@ func (l *AdaptiveLimiter) Rate() float64 {
 // exhausted. Callers must surface this as a hard error rather than empty
 // results — empty-on-throttle is indistinguishable from "no data exists"
 // and silently corrupts downstream queries.
-// PATCH(glean 2kgy): unexported — only exercised by package tests today.
+// unexported — only exercised by package tests today.
 type rateLimitError struct {
 	URL        string
 	RetryAfter time.Duration
@@ -157,7 +154,7 @@ const (
 // retryAfterNow is the clock RetryAfter reads. It defaults to time.Now (so
 // production behavior is unchanged) and is overridable in tests for exact,
 // non-flaky assertions on HTTP-date / epoch Retry-After parsing.
-// PATCH(glean static-audit): test seam for deterministic time-dependent tests.
+// test seam for deterministic time-dependent tests.
 var retryAfterNow = time.Now
 
 // RetryAfter parses an HTTP Retry-After header (RFC 7231: delta-seconds or

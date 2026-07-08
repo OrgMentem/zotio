@@ -1,5 +1,4 @@
 // Copyright 2026 OrgMentem. Licensed under MIT. See LICENSE.
-// PATCH(marketing-heroes-2): add local-store CrossRef retraction checking.
 
 package cli
 
@@ -17,7 +16,7 @@ import (
 
 const maxRetractionProviderResponseBytes = 4 << 20
 
-// PATCH(marketing-heroes-2): overridable CrossRef base URL for retraction lookups.
+// crossrefRetractionBaseURL is overridable for retraction lookups.
 var crossrefRetractionBaseURL = "https://api.crossref.org"
 
 type retractionCheckFinding struct {
@@ -67,7 +66,7 @@ type crossrefUpdateNotice struct {
 	} `json:"updated"`
 }
 
-// PATCH(marketing-heroes-2): register read-only DOI retraction checking under items.
+// newItemsRetractCheckCmd registers read-only DOI retraction checking under items.
 func newItemsRetractCheckCmd(flags *rootFlags) *cobra.Command {
 	var flagLimit int
 	var flagCollection string
@@ -104,12 +103,12 @@ store is current.`,
 	return cmd
 }
 
-// PATCH(marketing-heroes-2): reuse the enrichment validation selector for DOI-bearing local items.
+// queryRetractionCheckItems reuses the enrichment validation selector for DOI-bearing local items.
 func queryRetractionCheckItems(db localQueryStore, limit int, collection string) ([]map[string]any, error) {
 	return queryEnrichValidationItems(db, limit, collection)
 }
 
-// PATCH(marketing-heroes-2): scan DOI-bearing rows while preserving the report-only exit contract.
+// runRetractionCheck scans DOI-bearing rows while preserving the report-only exit contract.
 func runRetractionCheck(ctx context.Context, db localQueryStore, httpClient *http.Client, limit int, collection string) (retractionCheckReport, error) {
 	report := retractionCheckReport{Findings: []retractionCheckFinding{}}
 	rows, err := queryRetractionCheckItems(db, limit, collection)
@@ -161,7 +160,7 @@ func runRetractionCheck(ctx context.Context, db localQueryStore, httpClient *htt
 	return report, nil
 }
 
-// PATCH(marketing-heroes-2): make CrossRef DOI lookups context-aware, capped, and testable by base URL.
+// lookupCrossrefRetractionNotices makes CrossRef DOI lookups context-aware, capped, and testable by base URL.
 func lookupCrossrefRetractionNotices(ctx context.Context, httpClient *http.Client, doi string) ([]crossrefUpdateNotice, bool, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, crossrefRetractionWorksURL(doi), nil)
 	if err != nil {
@@ -193,7 +192,7 @@ func lookupCrossrefRetractionNotices(ctx context.Context, httpClient *http.Clien
 	return decoded.Message.UpdatedBy, true, nil
 }
 
-// PATCH(marketing-heroes-2): probe CrossRef separately so health skips loudly on network preconditions.
+// probeCrossrefRetractionAPI probes CrossRef separately so health skips loudly on network preconditions.
 func probeCrossrefRetractionAPI(ctx context.Context, httpClient *http.Client) error {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, strings.TrimRight(crossrefRetractionBaseURL, "/")+"/works?rows=0", nil)
 	if err != nil {
@@ -216,12 +215,12 @@ func probeCrossrefRetractionAPI(ctx context.Context, httpClient *http.Client) er
 	return nil
 }
 
-// PATCH(marketing-heroes-2): build CrossRef work URLs from the overridable base.
+// crossrefRetractionWorksURL builds CrossRef work URLs from the overridable base.
 func crossrefRetractionWorksURL(doi string) string {
 	return strings.TrimRight(crossrefRetractionBaseURL, "/") + "/works/" + url.PathEscape(doi)
 }
 
-// PATCH(marketing-heroes-2): collapse CrossRef update types into user-facing statuses.
+// classifyCrossrefUpdateStatus collapses CrossRef update types into user-facing statuses.
 func classifyCrossrefUpdateStatus(updateType string) string {
 	lower := strings.ToLower(strings.TrimSpace(updateType))
 	switch {
@@ -234,7 +233,7 @@ func classifyCrossrefUpdateStatus(updateType string) string {
 	}
 }
 
-// PATCH(marketing-heroes-2): render CrossRef date-parts without inventing missing precision.
+// crossrefDatePartsString renders CrossRef date-parts without inventing missing precision.
 func crossrefDatePartsString(parts [][]int) string {
 	if len(parts) == 0 || len(parts[0]) == 0 {
 		return ""
@@ -250,7 +249,7 @@ func crossrefDatePartsString(parts [][]int) string {
 	}
 }
 
-// PATCH(marketing-heroes-2): keep the mandated CrossRef pacing cancellable.
+// sleepWithContext keeps the mandated CrossRef pacing cancellable.
 func sleepWithContext(ctx context.Context, d time.Duration) error {
 	timer := time.NewTimer(d)
 	defer timer.Stop()
@@ -262,7 +261,7 @@ func sleepWithContext(ctx context.Context, d time.Duration) error {
 	}
 }
 
-// PATCH(marketing-heroes-2): render table output for humans and JSON for machine modes.
+// renderRetractionCheckReport renders table output for humans and JSON for machine modes.
 func renderRetractionCheckReport(cmd *cobra.Command, flags *rootFlags, report retractionCheckReport) error {
 	if wantsHumanTable(cmd.OutOrStdout(), flags) {
 		if len(report.Findings) > 0 {

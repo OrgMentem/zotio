@@ -22,7 +22,7 @@ secrets:
 	@if command -v betterleaks >/dev/null 2>&1; then betterleaks git . --no-banner --redact; \
 	else echo "betterleaks not installed; skipping (CI still checks)"; fi
 
-# One reproducible quality gate shared by humans, CI, and glean's verify gate.
+# One reproducible quality gate shared by humans and CI.
 verify: vet lint test audit secrets
 
 install:

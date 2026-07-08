@@ -1,5 +1,4 @@
 // Copyright 2026 OrgMentem. Licensed under MIT. See LICENSE.
-// PATCH(glean dk33): cover the enrichment providers, apply step, store-backed
 // work queue, and mutation-envelope preview of `items enrich`.
 
 package cli
@@ -241,7 +240,7 @@ func TestBuildEnrichProposals_DOIFromStore(t *testing.T) {
 	}
 }
 
-// PATCH(glean roadmap-phase4 mmmd): Semantic Scholar is the final exact-title DOI fallback after CrossRef and OpenAlex miss.
+// Semantic Scholar is the final exact-title DOI fallback after CrossRef and OpenAlex miss.
 func TestBuildEnrichProposals_DOIFromSemanticScholarFallback(t *testing.T) {
 	cr := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte(`{"message":{"items":[]}}`))
@@ -273,7 +272,7 @@ func TestBuildEnrichProposals_DOIFromSemanticScholarFallback(t *testing.T) {
 	}
 }
 
-// PATCH(glean bugfix): collection scoping should filter the local work queue
+// Collection scoping should filter the local work queue
 // before enrichment providers are asked to resolve candidates.
 func TestItemsEnrichMissingDOICollectionScope(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -326,7 +325,7 @@ func TestItemsEnrichMissingDOICollectionScope(t *testing.T) {
 	}
 }
 
-// PATCH(glean roadmap-phase3): exact health remediation should be able to feed
+// Exact health remediation should be able to feed
 // the specific missing-* item keys to `items enrich`, avoiding broad provider
 // calls and broad mutation previews.
 func TestItemsEnrichMissingDOIKeysFrom(t *testing.T) {
@@ -538,7 +537,7 @@ func TestEnrichOpenAlexAbstractFallback(t *testing.T) {
 	}
 }
 
-// PATCH(glean roadmap-phase4 mmmd): --validate is read-only and reports CrossRef discrepancies for DOI-bearing local items.
+// --validate is read-only and reports CrossRef discrepancies for DOI-bearing local items.
 func TestItemsEnrichValidateReportsCrossRefTitleDiscrepancy(t *testing.T) {
 	cr := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte(`{"message":{"title":["Provider Title"],"DOI":"10.1/validate","published":{"date-parts":[[2024]]}}}`))

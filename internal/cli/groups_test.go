@@ -1,5 +1,4 @@
 // Copyright 2026 OrgMentem. Licensed under MIT. See LICENSE.
-// PATCH(glean 9bfn): cover group-library prefix rewriting, the group-aware DB
 // path, and the groups list command.
 
 package cli
@@ -110,7 +109,6 @@ func TestGroupsList(t *testing.T) {
 	}
 }
 
-// PATCH(glean roadmap-phase7 groups-inspect): cover JSON readiness preflight for accessible and missing groups.
 func TestGroupsInspect_JSONReadiness(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
