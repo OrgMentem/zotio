@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "applied_at": "2026-07-06",
+  "applied_at": "2026-07-08",
   "base_run_id": "20260511-103605",
   "base_printing_press_version": "4.2.2",
   "patches": [
@@ -1555,6 +1555,15 @@
         "docs/guide/ci.md"
       ],
       "validated_outcome": "Delta-only gating verified against the demo sandbox: dirty library with zero new findings produced a brightgreen badge, reported no new findings, and exited 0."
+    },
+    {
+      "id": "skill-drop-printing-press-branding",
+      "summary": "SKILL.md: retitled '# zotio - Zotero Printing Press CLI' to '# zotio - Zotero automation CLI'; replaced the Printing Press npx installer ('npx -y @mvanhorn/printing-press install zotero --cli-only', which carried a 'public-library category' caveat) with Homebrew (orgmentem/tap/zotio) plus release binaries, and updated the MCP-install source line the same way.",
+      "reason": "SKILL.md is the user-facing agent skill; Printing Press is a build-time generator, not a user dependency. The generated install path leaked internal tooling and hedged that it might fail before publish, contradicting README.md's actual Homebrew/release install story.",
+      "files": [
+        "SKILL.md"
+      ],
+      "validated_outcome": "grep for printing-press/mvanhorn/npx/public-library in SKILL.md returns only the inline PATCH marker; install instructions now match README.md."
     }
   ]
 }

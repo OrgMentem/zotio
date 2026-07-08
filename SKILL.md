@@ -12,20 +12,21 @@ metadata:
         - zotio
 ---
 
-# zotio — Zotero Printing Press CLI
+# zotio — Zotero automation CLI
+
+<!-- PATCH: retitled (was "Zotero Printing Press CLI") and switched the install path from the Printing Press npx installer to Homebrew/release binaries, matching README.md. Printing Press is a build-time detail, not a user-facing dependency. -->
 
 ## Prerequisites: Install the CLI
 
 This skill drives the `zotio` binary. **You must verify the CLI is installed before invoking any command from this skill.** If it is missing, install it first:
 
-1. Install via the Printing Press installer:
+1. Install via Homebrew (macOS / Linux):
    ```bash
-   npx -y @mvanhorn/printing-press install zotero --cli-only
+   brew install orgmentem/tap/zotio
    ```
+   Or download a signed binary from the [releases page](https://github.com/OrgMentem/zotio/releases) and put it on your `$PATH`.
 2. Verify: `zotio --version`
-3. Ensure `$GOPATH/bin` (or `$HOME/go/bin`) is on `$PATH`.
-
-If the `npx` install fails before this CLI has a public-library category, install Node or use the category-specific Go fallback after publish.
+3. If you installed from source with `go install`, ensure `$GOPATH/bin` (or `$HOME/go/bin`) is on `$PATH`.
 
 If `--version` reports "command not found" after install, the install step did not put the binary on `$PATH`. Do not proceed with skill commands until verification succeeds.
 
@@ -580,7 +581,7 @@ Parse `$ARGUMENTS`:
 
 ## MCP Server Installation
 
-Install the MCP binary from this CLI's published public-library entry or pre-built release, then register it:
+The `zotio-mcp` binary ships alongside the CLI — the Homebrew formula (`brew install orgmentem/tap/zotio`) and every [release](https://github.com/OrgMentem/zotio/releases) archive include both binaries. Once `zotio-mcp` is on your `$PATH`, register it:
 
 ```bash
 claude mcp add zotio-mcp -- zotio-mcp
