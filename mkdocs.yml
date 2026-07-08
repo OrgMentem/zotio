@@ -54,6 +54,12 @@ theme:
 extra_css:
   - stylesheets/diagrams.css
 
+extra:
+  # Suppress the "Made with Zensical/Material for MkDocs" footer notice.
+  # License-clean (not an attribution requirement); honored by Material,
+  # and by Zensical where wired (pre-1.0 — verify on deploy).
+  generator: false
+
 markdown_extensions:
   - admonition
   - attr_list

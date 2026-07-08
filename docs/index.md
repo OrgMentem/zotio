@@ -47,6 +47,7 @@ New here? [Install the CLI](guide/install.md), then [authenticate](guide/authent
 - **[Obsidian / Logseq vault](guide/vault.md)** — conflict-safe, two-way note round-trip.
 - **[Command reference](reference/commands.md)** — every command, generated from the binary.
 - **[CI for your bibliography](guide/ci.md)** — gate a paper or thesis repo on library health, with a live badge.
+- **[Use in a coding agent](guide/agent-skill.md)** — drive the CLI from Claude Code or any agent (or via MCP).
 - **[Highlights](reference/highlights.md)** — the hero features `zotio which` resolves against.
 - **[Capabilities & trust model](reference/capabilities.md)** — read/write classification for every command.
 - **[Zotero API behavior](concepts/zotero-api.md)** — local vs. Web API, GET-only, schema.
