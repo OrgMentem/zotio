@@ -52,6 +52,10 @@ jobs:
           # deploy never fails on library state.
           go run ./cmd/zotio library health --for quick --badge > site/bibliography-badge.json
           cat site/bibliography-badge.json
+      - name: Generate agent docs (llms.txt, llms-full.txt)
+        run: |
+          go run ./cmd/docs-gen -llms-out site
+          head -12 site/llms.txt
       - uses: actions/upload-pages-artifact@v3
         with:
           path: site
