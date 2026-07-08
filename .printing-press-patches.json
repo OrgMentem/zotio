@@ -1543,6 +1543,18 @@
         "docs/guide/ci.md"
       ],
       "validated_outcome": "Four GIFs rendered (58-521 KB); final frames visually QA'd — retract-check shows the real Wakefield retraction+correction notices, bibcheck shows the 3-ok/1-unknown/1-ambiguous table; retract tape needed --limit 5 + 16s to outlast the live Crossref probes."
+    },
+    {
+      "id": "baseline-diff-gating",
+      "summary": "Added baseline-diff gating for `library health`: --baseline loads a saved finding identity set (missing file establishes the run with zero new findings), --write-baseline atomically writes schema_version/generated_at/preset/sorted identities, --fail-on-new gates only new findings at the requested severity, --report writes a full JSON sidecar in human and badge modes, and --fail-on none disables the absolute gate for delta-only CI.",
+      "reason": "CI/automation: legacy libraries need a quiet, trustworthy gate that ignores known debt but goes loud on newly introduced critical/high/info findings; the same stable identity used by watch --health keeps badge, human, JSON, and Action behavior aligned.",
+      "files": [
+        "internal/cli/library_health.go",
+        "internal/cli/library_health_baseline.go",
+        "internal/cli/library_health_baseline_test.go",
+        "docs/guide/ci.md"
+      ],
+      "validated_outcome": "Delta-only gating verified against the demo sandbox: dirty library with zero new findings produced a brightgreen badge, reported no new findings, and exited 0."
     }
   ]
 }

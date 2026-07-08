@@ -41,6 +41,25 @@ Create a Zotero API key with **read access** at [zotero.org/settings/keys](https
 
 `check-retractions: "true"` extends the gate to **retracted papers**, via Crossref's Retraction Watch data.
 
+## Gate on what changed
+
+Legacy libraries often have standing findings that take time to unwind. An absolute `fail-on: high` gate is useful for greenfield repositories, but on older libraries it trains everyone to ignore a permanently red banner while new problems slip in beside known debt.
+
+Use a cached baseline instead: the first run records today's library, and later runs fail only when the PR or overnight library drift introduces new high-or-worse findings.
+
+```yaml
+      - uses: OrgMentem/zotio-action@v1
+        with:
+          api-key: ${{ secrets.ZOTERO_API_KEY }}
+          for: citation
+          fail-on: none
+          fail-on-new: high
+          baseline: "true"
+```
+
+With the default cache enabled, that recipe is quiet when nothing changed and loud when a new finding appears; the badge reads `no new findings` in bright green even if the legacy library still has old findings below the baseline. The action can also post the sticky PR comment, open a deduplicated issue on new retractions, check a manuscript via `manuscript`, publish a shields endpoint to a gist, and persist the zotio store cache between runs.
+
+
 ## Gate the manuscript too
 
 The library gate catches bad references; `items bibcheck` catches references your manuscript uses that the library can't back:
@@ -78,5 +97,12 @@ Any CI system works — the action is convenience, not magic:
 brew install orgmentem/tap/zotio          # or download a release binary
 export ZOTERO_API_KEY=...                 # and ZOTERO_BASE_URL=https://api.zotero.org/users/<id>
 zotio sync
-zotio library health --for citation --fail-on high --badge > badge.json
+baseline="${HOME}/.local/share/zotio/health-baseline.json"
+zotio library health --for citation \
+  --fail-on none \
+  --baseline "$baseline" \
+  --write-baseline "$baseline" \
+  --fail-on-new high \
+  --report health-report.json \
+  --badge > badge.json
 ```

@@ -1663,7 +1663,7 @@ with --for:
   --for quick   (default)  anything obviously broken (citekey conflicts, duplicates, attachments)
   --for all                every check
 
-Gate CI with --fail-on critical|high|any (exit 11 when the bar is not met).
+Gate CI with --fail-on critical|high|info (or legacy any) (exit 11 when the bar is not met).
 
 The broken-attachment and retraction checks are live checks that need Zotero
 desktop or CrossRef network access respectively; pass --verify-files and/or
@@ -1678,13 +1678,17 @@ zotio library health [flags]
 | --- | --- | --- | --- |
 | `--badge` | `bool` | `false` | Emit a shields.io endpoint JSON badge instead of the report |
 | `--badge-label` | `string` | `bibliography` | Label for the shields.io endpoint badge |
+| `--baseline` | `string` |  | Read health finding identities from this baseline JSON; missing file establishes a baseline |
 | `--check-retractions` | `bool` | `false` | Run the live CrossRef retraction check (network; DOI-bearing items) |
-| `--fail-on` | `string` |  | Exit 11 if findings reach this severity: critical, high, any (default: the preset's) |
+| `--fail-on` | `string` |  | Exit 11 if findings reach this severity: critical, high, info/any; none disables the gate (default: the preset's) |
+| `--fail-on-new` | `string` |  | Exit 11 if new baseline-diff findings reach this severity: critical, high, info/any (requires --baseline) |
 | `--for` | `string` | `quick` | Check preset: quick, citation, systematic-review, all |
 | `--limit` | `int` | `0` | Max findings listed per kind (0 = all); also caps the live attachment scan |
+| `--report` | `string` |  | Write the full JSON health report to this file in addition to stdout/badge output |
 | `--require-fresh` | `duration` | `0s` | Refuse (exit 12) when the local store is staler than this (e.g. 24h); 0 = disabled |
 | `--scope` | `string` |  | Limit to a cohort: collection:KEY \| tag:NAME \| item:KEY \| query:TEXT \| saved-search:KEY (default: whole library) |
 | `--verify-files` | `bool` | `false` | Run the live broken-attachment check (needs Zotero desktop running) |
+| `--write-baseline` | `string` |  | Write current health finding identities to this baseline JSON after checks |
 
 ### `zotio library stats`
 
