@@ -403,10 +403,10 @@ func generateLLMS(srcDir, outDir string) error {
 	if err := os.MkdirAll(outDir, 0o755); err != nil {
 		return err
 	}
-	if err := os.WriteFile(filepath.Join(outDir, "llms.txt"), []byte(renderLLMSIndex(pages)), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(outDir, "llms.txt"), []byte(renderLLMSIndex(pages)), 0o600); err != nil {
 		return err
 	}
-	if err := os.WriteFile(filepath.Join(outDir, "llms-full.txt"), []byte(renderLLMSFull(pages)), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(outDir, "llms-full.txt"), []byte(renderLLMSFull(pages)), 0o600); err != nil {
 		return err
 	}
 	fmt.Println("wrote", filepath.Join(outDir, "llms.txt"), "and llms-full.txt")
