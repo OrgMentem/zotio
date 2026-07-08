@@ -17,7 +17,7 @@ func newSearchesListCmd(flags *rootFlags) *cobra.Command {
 		Use:         "list",
 		Short:       "List all saved searches",
 		Example:     "  zotio searches list",
-		Annotations: map[string]string{"pp:endpoint": "searches.list", "pp:method": "GET", "pp:path": "/searches", "mcp:read-only": "true"},
+		Annotations: map[string]string{"zotio:endpoint": "searches.list", "zotio:method": "GET", "zotio:path": "/searches", "mcp:read-only": "true"},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			c, err := flags.newClient()
 			if err != nil {

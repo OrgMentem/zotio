@@ -18,7 +18,7 @@ func newCollectionsDeleteCmd(flags *rootFlags) *cobra.Command {
 		Short: "Delete a collection (does not delete items)",
 		// PATCH(glean zotero-pp-cli-76875fc8c78bd05c): use a collection key placeholder, not a token.
 		Example:     "  zotio collections delete COLLECTIONKEY",
-		Annotations: map[string]string{"pp:endpoint": "collections.delete", "pp:method": "DELETE", "pp:path": "/collections/{collectionKey}"},
+		Annotations: map[string]string{"zotio:endpoint": "collections.delete", "zotio:method": "DELETE", "zotio:path": "/collections/{collectionKey}"},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if len(args) == 0 {
 				return cmd.Help()

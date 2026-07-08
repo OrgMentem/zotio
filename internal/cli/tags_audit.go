@@ -63,11 +63,11 @@ func newTagsAuditFixCmd(flags *rootFlags) *cobra.Command {
 		Use:   "fix",
 		Short: "Apply the tag rename plan produced by tags audit",
 		Annotations: map[string]string{
-			"mcp:read-only":                 "false",
-			"pp:destructive":                "false",
-			"pp:supports-dry-run":           "true",
-			"pp:requires-allow-destructive": "false",
-			"pp:default-max-changes":        "500",
+			"mcp:read-only":                    "false",
+			"zotio:destructive":                "false",
+			"zotio:supports-dry-run":           "true",
+			"zotio:requires-allow-destructive": "false",
+			"zotio:default-max-changes":        "500",
 		},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			_, plans, ok, err := readTagAuditPlans(cmd)

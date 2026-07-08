@@ -30,8 +30,8 @@ func newImportApplyCmd(flags *rootFlags) *cobra.Command {
 		Short: "Apply a reviewed import manifest",
 		Args:  cobra.ExactArgs(1),
 		Annotations: map[string]string{
-			"pp:method": "POST",
-			"pp:path":   "/items",
+			"zotio:method": "POST",
+			"zotio:path":   "/items",
 		},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			switch attachMode {

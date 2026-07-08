@@ -24,7 +24,7 @@ func newItemsNewCmd(flags *rootFlags) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:         "new --item-type <type>",
 		Short:       "Create a schema-validated item from Zotero's blank item template",
-		Annotations: map[string]string{"pp:method": "POST", "pp:path": "/items"},
+		Annotations: map[string]string{"zotio:method": "POST", "zotio:path": "/items"},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			itemType := strings.TrimSpace(flagItemType)
 			if itemType == "" {

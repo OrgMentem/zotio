@@ -20,7 +20,7 @@ func newItemsRecentCmd(flags *rootFlags) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:         "recent",
 		Short:       "List recently added items",
-		Annotations: map[string]string{"pp:endpoint": "items.recent", "pp:method": "GET", "pp:path": "/items", "mcp:read-only": "true"},
+		Annotations: map[string]string{"zotio:endpoint": "items.recent", "zotio:method": "GET", "zotio:path": "/items", "mcp:read-only": "true"},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			c, err := flags.newClient()
 			if err != nil {

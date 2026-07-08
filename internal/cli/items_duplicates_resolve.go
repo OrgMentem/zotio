@@ -54,11 +54,11 @@ review the preview carefully before applying.`,
   zotio items duplicates resolve --title
   zotio items duplicates resolve --doi --title --yes`,
 		Annotations: map[string]string{
-			"mcp:read-only":                 "false",
-			"pp:destructive":                "false",
-			"pp:supports-dry-run":           "true",
-			"pp:requires-allow-destructive": "false",
-			"pp:default-max-changes":        "500",
+			"mcp:read-only":                    "false",
+			"zotio:destructive":                "false",
+			"zotio:supports-dry-run":           "true",
+			"zotio:requires-allow-destructive": "false",
+			"zotio:default-max-changes":        "500",
 		},
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {

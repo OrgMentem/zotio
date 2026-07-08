@@ -47,11 +47,11 @@ func newWorkflowRunCmd(flags *rootFlags) *cobra.Command {
 		Short: "Run a declarative workflow spec in-process",
 		Args:  cobra.ExactArgs(1),
 		Annotations: map[string]string{
-			"mcp:read-only":                 "false",
-			"pp:destructive":                "false",
-			"pp:supports-dry-run":           "true",
-			"pp:requires-allow-destructive": "false",
-			"pp:default-max-changes":        "500",
+			"mcp:read-only":                    "false",
+			"zotio:destructive":                "false",
+			"zotio:supports-dry-run":           "true",
+			"zotio:requires-allow-destructive": "false",
+			"zotio:default-max-changes":        "500",
 		},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			spec, err := readWorkflowRunSpec(args[0])

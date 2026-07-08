@@ -21,11 +21,11 @@ func newSearchesMaterializeCmd(flags *rootFlags) *cobra.Command {
 		Use:   "materialize <searchKey> --to <collectionKey>",
 		Short: "Add items from a saved search to a collection",
 		Annotations: map[string]string{
-			"mcp:read-only":                 "false",
-			"pp:destructive":                "false",
-			"pp:supports-dry-run":           "true",
-			"pp:requires-allow-destructive": "false",
-			"pp:default-max-changes":        "500",
+			"mcp:read-only":                    "false",
+			"zotio:destructive":                "false",
+			"zotio:supports-dry-run":           "true",
+			"zotio:requires-allow-destructive": "false",
+			"zotio:default-max-changes":        "500",
 		},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if len(args) == 0 {

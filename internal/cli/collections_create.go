@@ -20,7 +20,7 @@ func newCollectionsCreateCmd(flags *rootFlags) *cobra.Command {
 		Use:         "create",
 		Short:       "Create one or more collections",
 		Example:     "  zotio collections create --name example-resource",
-		Annotations: map[string]string{"pp:endpoint": "collections.create", "pp:method": "POST", "pp:path": "/collections"},
+		Annotations: map[string]string{"zotio:endpoint": "collections.create", "zotio:method": "POST", "zotio:path": "/collections"},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if !stdinBody {
 				if !cmd.Flags().Changed("name") && !flags.dryRun {

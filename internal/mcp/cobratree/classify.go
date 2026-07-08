@@ -9,7 +9,7 @@ import (
 )
 
 const (
-	EndpointAnnotation = "pp:endpoint"
+	EndpointAnnotation = "zotio:endpoint"
 	HiddenAnnotation   = "mcp:hidden"
 	// ReadOnlyAnnotation, when set on a Cobra command to "true"/"1"/"yes",
 	// causes the runtime walker to register the resulting MCP tool with

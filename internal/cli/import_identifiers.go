@@ -45,7 +45,7 @@ func newImportPmidCmd(flags *rootFlags) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:         "pmid <pmid>",
 		Short:       "Import a journal article from PubMed metadata",
-		Annotations: map[string]string{"pp:method": "POST", "pp:path": "/items"},
+		Annotations: map[string]string{"zotio:method": "POST", "zotio:path": "/items"},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if len(args) == 0 {
 				return cmd.Help()
@@ -175,7 +175,7 @@ func newImportArxivCmd(flags *rootFlags) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:         "arxiv <id>",
 		Short:       "Import a preprint from arXiv metadata",
-		Annotations: map[string]string{"pp:method": "POST", "pp:path": "/items"},
+		Annotations: map[string]string{"zotio:method": "POST", "zotio:path": "/items"},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if len(args) == 0 {
 				return cmd.Help()
@@ -296,7 +296,7 @@ func newImportIsbnCmd(flags *rootFlags) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:         "isbn <isbn>",
 		Short:       "Import a book from Open Library ISBN metadata",
-		Annotations: map[string]string{"pp:method": "POST", "pp:path": "/items"},
+		Annotations: map[string]string{"zotio:method": "POST", "zotio:path": "/items"},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if len(args) == 0 {
 				return cmd.Help()

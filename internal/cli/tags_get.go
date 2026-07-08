@@ -16,7 +16,7 @@ func newTagsGetCmd(flags *rootFlags) *cobra.Command {
 		Use:         "get <tagName>",
 		Short:       "Get a specific tag by name",
 		Example:     "  zotio tags get example-resource",
-		Annotations: map[string]string{"pp:endpoint": "tags.get", "pp:method": "GET", "pp:path": "/tags/{tagName}", "mcp:read-only": "true"},
+		Annotations: map[string]string{"zotio:endpoint": "tags.get", "zotio:method": "GET", "zotio:path": "/tags/{tagName}", "mcp:read-only": "true"},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if len(args) == 0 {
 				return cmd.Help()

@@ -18,7 +18,7 @@ func newItemsChildrenCmd(flags *rootFlags) *cobra.Command {
 		Short: "Get child items (attachments and notes) for an item",
 		// PATCH(glean zotero-pp-cli-76875fc8c78bd05c): use an item key placeholder, not a token.
 		Example:     "  zotio items children ABC12345",
-		Annotations: map[string]string{"pp:endpoint": "items.children", "pp:method": "GET", "pp:path": "/items/{itemKey}/children", "mcp:read-only": "true"},
+		Annotations: map[string]string{"zotio:endpoint": "items.children", "zotio:method": "GET", "zotio:path": "/items/{itemKey}/children", "mcp:read-only": "true"},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if len(args) == 0 {
 				return cmd.Help()

@@ -10,7 +10,7 @@ The rationale and trade-offs are summarized in [Architecture decisions › MCP c
 
 ### Switching surfaces
 
-Set `ZOTIO_MCP_SURFACE` to switch to the full one-tool-per-endpoint mirror (global flags stripped). The legacy `PP_MCP_SURFACE` name is still honored as a deprecated fallback. The complete tool list for that surface is in the [MCP tools reference](../reference/mcp-tools.md).
+Set `ZOTIO_MCP_SURFACE` to switch to the full one-tool-per-endpoint mirror (global flags stripped). The complete tool list for that surface is in the [MCP tools reference](../reference/mcp-tools.md).
 
 ## Context resources
 

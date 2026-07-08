@@ -25,7 +25,7 @@ mapped into a typed item with title, creators, abstract, and publication venue.
 A bare webpage item is used only when no metadata is available.
 
 Use --dry-run to preview the proposed item without writing it.`,
-		Annotations: map[string]string{"pp:method": "POST", "pp:path": "/items"},
+		Annotations: map[string]string{"zotio:method": "POST", "zotio:path": "/items"},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if len(args) == 0 {
 				return cmd.Help()

@@ -143,5 +143,5 @@ Two coordinated changes, plus a runtime switch:
 
 ## Amendments
 
-- **2026-07-08:** `PP_MCP_SURFACE` was renamed to `ZOTIO_MCP_SURFACE` as part of retiring the CLI Printing Press generator. The legacy `PP_MCP_SURFACE` name is still honored as a deprecated fallback.
+- **2026-07-08:** `PP_MCP_SURFACE` was renamed to `ZOTIO_MCP_SURFACE` as part of retiring the CLI Printing Press generator; the old name was dropped outright the same day (pre-adoption, no fallback kept).
 - **2026-07-08:** The `.printing-press-patches.json` catalog referenced above was removed with the generator retirement; the cited entries live in git history.

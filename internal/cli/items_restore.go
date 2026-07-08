@@ -9,7 +9,7 @@ func newItemsRestoreCmd(flags *rootFlags) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:         "restore <itemKey>",
 		Short:       "Restore a trashed item",
-		Annotations: map[string]string{"pp:method": "PATCH", "pp:path": "/items/{itemKey}"},
+		Annotations: map[string]string{"zotio:method": "PATCH", "zotio:path": "/items/{itemKey}"},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if len(args) == 0 {
 				return cmd.Help()

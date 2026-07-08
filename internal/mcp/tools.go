@@ -357,16 +357,12 @@ func RegisterTools(s *server.MCPServer) {
 	)
 
 	// Command surface for the rest of the Cobra tree. PATCH(glean f-plain):
-	// ZOTIO_MCP_SURFACE selects the shape. Legacy PP_MCP_SURFACE is still
-	// honored as a deprecated fallback. Default "facade" collapses the command
+	// ZOTIO_MCP_SURFACE selects the shape. Default "facade" collapses the command
 	// tree behind a command_search + command_run pair (~93% fewer tokens at
 	// connect, all commands reachable on demand). "mirror" registers one lean
 	// MCP tool per command (global flags stripped). Both run in-process against
 	// a fresh tree (PATCH c4ke) and share the arg-safety guard (PATCH da7c6f88).
 	surface := os.Getenv("ZOTIO_MCP_SURFACE")
-	if surface == "" {
-		surface = os.Getenv("PP_MCP_SURFACE")
-	}
 	if strings.EqualFold(strings.TrimSpace(surface), "mirror") {
 		cobratree.RegisterAll(s, cli.RootCmd)
 	} else {

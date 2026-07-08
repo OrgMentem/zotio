@@ -42,10 +42,10 @@ func newItemsPreprintCheckFixCmd(flags *rootFlags) *cobra.Command {
 		Use:   "fix",
 		Short: "Apply published DOIs to preprints that CrossRef reports as published",
 		Annotations: map[string]string{
-			"mcp:read-only":                 "false",
-			"pp:destructive":                "false",
-			"pp:supports-dry-run":           "true",
-			"pp:requires-allow-destructive": "false",
+			"mcp:read-only":                    "false",
+			"zotio:destructive":                "false",
+			"zotio:supports-dry-run":           "true",
+			"zotio:requires-allow-destructive": "false",
 		},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			readClient, err := flags.newClient()

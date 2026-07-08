@@ -16,7 +16,7 @@ func newCollectionsMoveCmd(flags *rootFlags) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:         "move <collectionKey> --to <parentKey>",
 		Short:       "Move a collection under a new parent",
-		Annotations: map[string]string{"pp:method": "PUT", "pp:path": "/collections/{collectionKey}"},
+		Annotations: map[string]string{"zotio:method": "PUT", "zotio:path": "/collections/{collectionKey}"},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if len(args) == 0 {
 				return cmd.Help()

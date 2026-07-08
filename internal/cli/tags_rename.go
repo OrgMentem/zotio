@@ -36,14 +36,14 @@ func newTagsRenameCmd(flags *rootFlags) *cobra.Command {
 		Use:   "rename --from <oldTag> --to <newTag>",
 		Short: "Rename a tag across matching items",
 		Annotations: map[string]string{
-			"pp:endpoint":                   "tags.rename",
-			"pp:method":                     "PATCH",
-			"pp:path":                       "/items/{itemKey}",
-			"mcp:read-only":                 "false",
-			"pp:destructive":                "false",
-			"pp:supports-dry-run":           "true",
-			"pp:requires-allow-destructive": "false",
-			"pp:default-max-changes":        "500",
+			"zotio:endpoint":                   "tags.rename",
+			"zotio:method":                     "PATCH",
+			"zotio:path":                       "/items/{itemKey}",
+			"mcp:read-only":                    "false",
+			"zotio:destructive":                "false",
+			"zotio:supports-dry-run":           "true",
+			"zotio:requires-allow-destructive": "false",
+			"zotio:default-max-changes":        "500",
 		},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if flagFrom == "" {

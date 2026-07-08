@@ -21,7 +21,7 @@ CSL style ID directly (e.g. "nature", "harvard-cite-them-right").`,
 		Example: `  zotio items cite ABCD1234
   zotio items cite ABCD1234 --style apa
   zotio items cite ABCD1234 --style bibtex`,
-		Annotations: map[string]string{"pp:endpoint": "items.get", "pp:method": "GET", "pp:path": "/items/{itemKey}", "mcp:read-only": "true"},
+		Annotations: map[string]string{"zotio:endpoint": "items.get", "zotio:method": "GET", "zotio:path": "/items/{itemKey}", "mcp:read-only": "true"},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if len(args) == 0 {
 				return cmd.Help()

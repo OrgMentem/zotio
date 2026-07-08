@@ -28,7 +28,7 @@ func newImportFileCmd(flags *rootFlags) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:         "file <path>",
 		Short:       "Import items from BibTeX, RIS, or CSL JSON",
-		Annotations: map[string]string{"pp:method": "POST", "pp:path": "/items"},
+		Annotations: map[string]string{"zotio:method": "POST", "zotio:path": "/items"},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if len(args) == 0 {
 				return cmd.Help()

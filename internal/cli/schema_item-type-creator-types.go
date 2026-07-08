@@ -17,7 +17,7 @@ func newSchemaItemTypeCreatorTypesCmd(flags *rootFlags) *cobra.Command {
 		Use:         "item-type-creator-types",
 		Short:       "List valid creator types for an item type",
 		Example:     "  zotio schema item-type-creator-types --item-type example-value",
-		Annotations: map[string]string{"pp:endpoint": "schema.item-type-creator-types", "pp:method": "GET", "pp:path": "/itemTypeCreatorTypes", "mcp:read-only": "true"},
+		Annotations: map[string]string{"zotio:endpoint": "schema.item-type-creator-types", "zotio:method": "GET", "zotio:path": "/itemTypeCreatorTypes", "mcp:read-only": "true"},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if !cmd.Flags().Changed("item-type") && !flags.dryRun {
 				return fmt.Errorf("required flag \"%s\" not set", "item-type")

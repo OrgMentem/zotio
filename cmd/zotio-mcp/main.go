@@ -142,14 +142,10 @@ func main() {
 	}
 }
 
-// defaultTransport reads ZOTIO_MCP_TRANSPORT env when set, then legacy
-// PP_MCP_TRANSPORT, otherwise falls back to "stdio" so running the binary with
-// no args keeps today's behavior.
+// defaultTransport reads ZOTIO_MCP_TRANSPORT env when set, otherwise falls
+// back to "stdio" so running the binary with no args keeps today's behavior.
 func defaultTransport() string {
 	if t := os.Getenv("ZOTIO_MCP_TRANSPORT"); t != "" {
-		return t
-	}
-	if t := os.Getenv("PP_MCP_TRANSPORT"); t != "" {
 		return t
 	}
 	return "stdio"

@@ -17,7 +17,7 @@ func newSearchesGetCmd(flags *rootFlags) *cobra.Command {
 		Short: "Get a specific saved search",
 		// PATCH(glean zotero-pp-cli-76875fc8c78bd05c): use a saved-search key placeholder, not a token.
 		Example:     "  zotio searches get SEARCHKEY",
-		Annotations: map[string]string{"pp:endpoint": "searches.get", "pp:method": "GET", "pp:path": "/searches/{searchKey}", "mcp:read-only": "true"},
+		Annotations: map[string]string{"zotio:endpoint": "searches.get", "zotio:method": "GET", "zotio:path": "/searches/{searchKey}", "mcp:read-only": "true"},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if len(args) == 0 {
 				return cmd.Help()

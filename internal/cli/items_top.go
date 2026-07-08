@@ -22,7 +22,7 @@ func newItemsTopCmd(flags *rootFlags) *cobra.Command {
 		Use:         "top",
 		Short:       "List top-level items only (excludes attachments and notes)",
 		Example:     "  zotio items top",
-		Annotations: map[string]string{"pp:endpoint": "items.top", "pp:method": "GET", "pp:path": "/items/top", "mcp:read-only": "true"},
+		Annotations: map[string]string{"zotio:endpoint": "items.top", "zotio:method": "GET", "zotio:path": "/items/top", "mcp:read-only": "true"},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			c, err := flags.newClient()
 			if err != nil {

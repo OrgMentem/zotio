@@ -172,7 +172,7 @@ func collectAgentCommands(c *cobra.Command) []agentContextCommand {
 			Use:   sub.Use,
 			Short: sub.Short,
 		}
-		// Surface Cobra annotations (e.g., pp:endpoint, mcp:read-only) so
+		// Surface Cobra annotations (e.g., zotio:endpoint, mcp:read-only) so
 		// agents and tooling can detect destructive-at-auth
 		// endpoints without parsing source. Empty maps are stripped via
 		// omitempty in the struct tag.

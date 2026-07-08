@@ -19,7 +19,7 @@ func newItemsTagsCmd(flags *rootFlags) *cobra.Command {
 		Example: "  zotio items tags list ABC12345",
 		// PATCH(glean write-safety): ArbitraryArgs lets the bare-read alias accept an itemKey even when the group is run without its parent (subcommands still match first).
 		Args:        cobra.ArbitraryArgs,
-		Annotations: map[string]string{"pp:endpoint": "items.tags", "pp:method": "GET", "pp:path": "/items/{itemKey}/tags", "mcp:read-only": "true"},
+		Annotations: map[string]string{"zotio:endpoint": "items.tags", "zotio:method": "GET", "zotio:path": "/items/{itemKey}/tags", "mcp:read-only": "true"},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if len(args) == 0 {
 				return cmd.Help()
@@ -44,7 +44,7 @@ func newItemsTagsListCmd(flags *rootFlags) *cobra.Command {
 		Short:       "Get tags for a specific item",
 		Example:     "  zotio items tags list ABC12345",
 		Args:        cobra.ExactArgs(1),
-		Annotations: map[string]string{"pp:endpoint": "items.tags.list", "pp:method": "GET", "pp:path": "/items/{itemKey}/tags", "mcp:read-only": "true"},
+		Annotations: map[string]string{"zotio:endpoint": "items.tags.list", "zotio:method": "GET", "zotio:path": "/items/{itemKey}/tags", "mcp:read-only": "true"},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runItemTagsRead(cmd, flags, args[0])
 		},

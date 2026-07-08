@@ -17,7 +17,7 @@ func newCollectionsSubcollectionsCmd(flags *rootFlags) *cobra.Command {
 		Short: "List subcollections of a collection",
 		// PATCH(glean zotero-pp-cli-76875fc8c78bd05c): use a collection key placeholder, not a token.
 		Example:     "  zotio collections subcollections COLLECTIONKEY",
-		Annotations: map[string]string{"pp:endpoint": "collections.subcollections", "pp:method": "GET", "pp:path": "/collections/{collectionKey}/collections", "mcp:read-only": "true"},
+		Annotations: map[string]string{"zotio:endpoint": "collections.subcollections", "zotio:method": "GET", "zotio:path": "/collections/{collectionKey}/collections", "mcp:read-only": "true"},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if len(args) == 0 {
 				return cmd.Help()

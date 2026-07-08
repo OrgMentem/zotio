@@ -25,11 +25,11 @@ func newItemsTagsAddCmd(flags *rootFlags) *cobra.Command {
 		Use:   "add --tag <tag> [itemKeys...]",
 		Short: "Add one or more tags to items",
 		Annotations: map[string]string{
-			"mcp:read-only":                 "false",
-			"pp:destructive":                "false",
-			"pp:supports-dry-run":           "true",
-			"pp:requires-allow-destructive": "false",
-			"pp:default-max-changes":        "500",
+			"mcp:read-only":                    "false",
+			"zotio:destructive":                "false",
+			"zotio:supports-dry-run":           "true",
+			"zotio:requires-allow-destructive": "false",
+			"zotio:default-max-changes":        "500",
 		},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runItemsTagsMutation(cmd, flags, "items.tags.add", "tag_add", tagNames, keysFrom, args, true)
@@ -48,11 +48,11 @@ func newItemsTagsRemoveCmd(flags *rootFlags) *cobra.Command {
 		Use:   "remove --tag <tag> [itemKeys...]",
 		Short: "Remove one or more tags from items",
 		Annotations: map[string]string{
-			"mcp:read-only":                 "false",
-			"pp:destructive":                "false",
-			"pp:supports-dry-run":           "true",
-			"pp:requires-allow-destructive": "false",
-			"pp:default-max-changes":        "500",
+			"mcp:read-only":                    "false",
+			"zotio:destructive":                "false",
+			"zotio:supports-dry-run":           "true",
+			"zotio:requires-allow-destructive": "false",
+			"zotio:default-max-changes":        "500",
 		},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runItemsTagsMutation(cmd, flags, "items.tags.remove", "tag_remove", tagNames, keysFrom, args, false)

@@ -23,7 +23,7 @@ func newItemsCreateCmd(flags *rootFlags) *cobra.Command {
 		Use:         "create",
 		Short:       "Create one or more items",
 		Example:     "  zotio items create",
-		Annotations: map[string]string{"pp:endpoint": "items.create", "pp:method": "POST", "pp:path": "/items"},
+		Annotations: map[string]string{"zotio:endpoint": "items.create", "zotio:method": "POST", "zotio:path": "/items"},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if !stdinBody {
 			}

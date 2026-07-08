@@ -25,11 +25,11 @@ func newItemsMoveCmd(flags *rootFlags) *cobra.Command {
 		Use:   "move [itemKey...] [--to <collectionKey>] [--from <collectionKey>]",
 		Short: "Add, remove, or move item collection memberships",
 		Annotations: map[string]string{
-			"mcp:read-only":                 "false",
-			"pp:destructive":                "false",
-			"pp:supports-dry-run":           "true",
-			"pp:requires-allow-destructive": "false",
-			"pp:default-max-changes":        "500",
+			"mcp:read-only":                    "false",
+			"zotio:destructive":                "false",
+			"zotio:supports-dry-run":           "true",
+			"zotio:requires-allow-destructive": "false",
+			"zotio:default-max-changes":        "500",
 		},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runItemsMoveMutation(cmd, flags, flagFrom, flagTo, keysFrom, args)

@@ -44,7 +44,7 @@ func newImportDoiCmd(flags *rootFlags) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:         "doi <doi>",
 		Short:       "Import an item from CrossRef DOI metadata",
-		Annotations: map[string]string{"pp:method": "POST", "pp:path": "/items"},
+		Annotations: map[string]string{"zotio:method": "POST", "zotio:path": "/items"},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if len(args) == 0 {
 				return cmd.Help()

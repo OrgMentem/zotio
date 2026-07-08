@@ -18,7 +18,7 @@ func newItemsDeleteCmd(flags *rootFlags) *cobra.Command {
 		Short: "Delete an item (moves to trash)",
 		// PATCH(glean zotero-pp-cli-76875fc8c78bd05c): use an item key placeholder, not a token.
 		Example:     "  zotio items delete ABC12345",
-		Annotations: map[string]string{"pp:endpoint": "items.delete", "pp:method": "DELETE", "pp:path": "/items/{itemKey}"},
+		Annotations: map[string]string{"zotio:endpoint": "items.delete", "zotio:method": "DELETE", "zotio:path": "/items/{itemKey}"},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if len(args) == 0 {
 				return cmd.Help()

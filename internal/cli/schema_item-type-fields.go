@@ -17,7 +17,7 @@ func newSchemaItemTypeFieldsCmd(flags *rootFlags) *cobra.Command {
 		Use:         "item-type-fields",
 		Short:       "List valid fields for a specific item type",
 		Example:     "  zotio schema item-type-fields --item-type example-value",
-		Annotations: map[string]string{"pp:endpoint": "schema.item-type-fields", "pp:method": "GET", "pp:path": "/itemTypeFields", "mcp:read-only": "true"},
+		Annotations: map[string]string{"zotio:endpoint": "schema.item-type-fields", "zotio:method": "GET", "zotio:path": "/itemTypeFields", "mcp:read-only": "true"},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if !cmd.Flags().Changed("item-type") && !flags.dryRun {
 				return fmt.Errorf("required flag \"%s\" not set", "item-type")

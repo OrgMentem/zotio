@@ -36,8 +36,8 @@ preference enabled. Recognition failures are reported as unrecognized standalone
 attachments instead of hard errors.`,
 		Args: cobra.MinimumNArgs(1),
 		Annotations: map[string]string{
-			"pp:method": "POST",
-			"pp:path":   "/connector/saveStandaloneAttachment",
+			"zotio:method": "POST",
+			"zotio:path":   "/connector/saveStandaloneAttachment",
 		},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if via, err := flags.resolveCreateVia(cmd.Context(), false); err != nil || via != "connector" {
