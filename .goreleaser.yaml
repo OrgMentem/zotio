@@ -75,22 +75,19 @@ checksum:
 # Generate Syft SBOMs for released archives.
 sboms:
   - artifacts: archive
-# Sign release checksums with cosign keyless OIDC.
+# Sign release checksums with cosign keyless OIDC. Cosign v3 (installed by
+# cosign-installer v4) requires bundle output for sign-blob: one
+# .sigstore.json replaces the old .sig/.pem pair.
 signs:
   - cmd: cosign
-    signature: "${artifact}.sig"
-    certificate: "${artifact}.pem"
+    signature: "${artifact}.sigstore.json"
     args:
       - sign-blob
       - --yes
-      - --output-signature
+      - --bundle
       - "${signature}"
-      - --output-certificate
-      - "${certificate}"
       - "${artifact}"
     artifacts: checksum
-    env:
-      - COSIGN_EXPERIMENTAL=1
 brews:
   - name: zotio
     repository:
