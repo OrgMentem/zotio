@@ -7,8 +7,10 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strconv"
 
 	"zotio/internal/client"
+	"zotio/internal/mutation"
 
 	"github.com/spf13/cobra"
 )
@@ -59,51 +61,38 @@ func newTagsRenameCmd(flags *rootFlags) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			if flags.dryRun {
-				c.DryRun = false
-				// Dry-run previews the same paginated item set as apply instead of
-				// only the first API page.
-				updates, err := listTagRenameUpdates(c, flagFrom, flagTo, flagLimit)
-				if err != nil {
-					return classifyAPIError(err, flags)
-				}
-				results := tagRenameResults(updates, flagFrom, flagTo, "dry_run")
-				if flags.asJSON {
-					return printFullTagRenameResults(cmd, results)
-				}
-				if flags.csv || flags.plain {
-					return printJSONFiltered(cmd.OutOrStdout(), results, flags)
-				}
-				if flags.quiet {
-					return nil
-				}
-				fmt.Fprintf(cmd.OutOrStdout(), "Would update %d items: rename tag %s -> %s\n", len(updates), flagFrom, flagTo)
-				for _, update := range updates {
-					fmt.Fprintln(cmd.OutOrStdout(), update.key)
-				}
-				return nil
-			}
-
-			status, reason, err := renameTagWithLimit(c, flagFrom, flagTo, flagLimit)
+			// Planning a rename always has to read the real matching item set;
+			// --dry-run controls the mutation engine, not the discovery GETs.
+			c.DryRun = false
+			updates, err := listTagRenameUpdates(c, flagFrom, flagTo, flagLimit)
 			if err != nil {
 				return classifyAPIError(err, flags)
 			}
-			results, _ := reason.([]tagRenameResult)
-			if status == "no_op" {
-				results = []tagRenameResult{}
+
+			var renameApply func(tagRenameUpdate) (string, any, error)
+			ops := buildTagRenameOps(updates, flagFrom, flagTo, func(update tagRenameUpdate) (string, any, error) {
+				if renameApply == nil {
+					err := errors.New("write client not initialized")
+					return "failed", err.Error(), err
+				}
+				return renameApply(update)
+			})
+			if resolveMutationMode(flags).Apply && len(ops) > 0 {
+				writeClient, err := flags.newWriteClient()
+				if err != nil {
+					return err
+				}
+				renameApply = func(update tagRenameUpdate) (string, any, error) {
+					return applyTagRenameUpdate(writeClient, update)
+				}
 			}
 
-			if flags.asJSON {
-				return printFullTagRenameResults(cmd, results)
+			env, runErr := runMutation(cmd.Context(), flags, "tags.rename", ops)
+			renderErr := renderMutation(cmd, flags, env, tagRenameSingleLine(flagFrom, flagTo))
+			if renderErr != nil {
+				return renderErr
 			}
-			if flags.csv || flags.plain {
-				return printJSONFiltered(cmd.OutOrStdout(), results, flags)
-			}
-			if flags.quiet {
-				return nil
-			}
-			fmt.Fprintf(cmd.OutOrStdout(), "Renamed tag '%s' to '%s' in %d items\n", flagFrom, flagTo, len(results))
-			return nil
+			return runErr
 		},
 	}
 	cmd.Flags().StringVar(&flagFrom, "from", "", "Old tag name")
@@ -115,6 +104,57 @@ func newTagsRenameCmd(flags *rootFlags) *cobra.Command {
 
 func renameTag(c *client.Client, oldName, newName string) (string, any, error) {
 	return renameTagWithLimit(c, oldName, newName, 100)
+}
+
+func buildTagRenameOps(updates []tagRenameUpdate, oldName, newName string, apply func(tagRenameUpdate) (string, any, error)) []mutation.Op {
+	ops := make([]mutation.Op, 0, len(updates))
+	for _, update := range updates {
+		update := update
+		ops = append(ops, mutation.Op{
+			ID:              "tags.rename:" + update.key,
+			Key:             update.key,
+			Kind:            "tag_rename",
+			ExpectedVersion: mutationExpectedVersion(update.version),
+			Changes:         []mutation.Change{{Field: "tag", Remove: oldName, Add: newName}},
+			Destructive:     false,
+			Apply: func() (string, any, error) {
+				return apply(update)
+			},
+		})
+	}
+	return ops
+}
+
+func applyTagRenameUpdate(c *client.Client, update tagRenameUpdate) (string, any, error) {
+	path := replacePathParam("/items/{itemKey}", "itemKey", update.key)
+	headers := map[string]string{}
+	if version := mutationExpectedVersion(update.version); version > 0 {
+		headers["If-Unmodified-Since-Version"] = strconv.Itoa(version)
+	}
+	_, statusCode, err := c.PatchWithHeaders(path, map[string]any{
+		"tags": update.tags,
+	}, headers)
+	if err != nil {
+		var apiErr *client.APIError
+		if errors.As(err, &apiErr) && (apiErr.StatusCode == http.StatusPreconditionFailed || apiErr.StatusCode == http.StatusPreconditionRequired) {
+			return "conflict", apiErr.Body, err
+		}
+		return "failed", err.Error(), err
+	}
+	if statusCode < 200 || statusCode >= 300 {
+		return "failed", fmt.Sprintf("HTTP %d", statusCode), fmt.Errorf("patch returned HTTP %d", statusCode)
+	}
+	return "applied", nil, nil
+}
+
+func tagRenameSingleLine(oldName, newName string) func(mutation.Envelope) string {
+	return func(env mutation.Envelope) string {
+		action := "would rename"
+		if env.Mode == "apply" {
+			action = "renamed"
+		}
+		return fmt.Sprintf("%s tag %s -> %s in %d item(s)", action, oldName, newName, env.Plan.Summary.Planned)
+	}
 }
 
 func listTagRenameUpdates(c *client.Client, oldName, newName string, limit int) ([]tagRenameUpdate, error) {
