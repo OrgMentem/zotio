@@ -1,11 +1,16 @@
 # Built binaries
 /zotio
 /zotio-mcp
+/docs-gen
 /bin/
 
 # Release staging / packaged MCP bundle
 /build/
 /dist/
+
+# Transient Printing Press run artifacts (dogfood report + generation proofs)
+/dogfood-results.json
+/.manuscripts/
 
 # Harness-materialized skill store (symlinks into the dev skills dir)
 /.agents/
