@@ -35,6 +35,8 @@ Use `--yes --no-input` only after the target, arguments, and side effects are cl
 
 For install, auth, examples, and longer product guidance, read `README.md` and `SKILL.md`. This file intentionally stays small so repo-local agents get invariant local guidance without duplicating the generated docs.
 
+For CI, the [zotio-action](https://github.com/OrgMentem/zotio-action) GitHub Action ([marketplace](https://github.com/marketplace/actions/zotio-bibliography-health-for-zotero)) packages install → sync → gate on `library health` exit codes; see `docs/guide/ci.md`.
+
 ## Zotero API Surface
 
 Missable invariants before you touch endpoints, schema, or mutations. Full coverage
