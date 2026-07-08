@@ -78,6 +78,9 @@ func TestJournalListAndShow(t *testing.T) {
 	if len(listed) != 2 || listed[0].RunID != "run-B" {
 		t.Fatalf("list = %+v, want newest-first [run-B, run-A]", listed)
 	}
+	if listed[0].Library != "user" || listed[1].Library != "user" {
+		t.Fatalf("list libraries = %q/%q, want user/user", listed[0].Library, listed[1].Library)
+	}
 
 	var shown mutation.JournalEntry
 	if err := json.Unmarshal([]byte(runJournalCmd(t, "show", "run-A")), &shown); err != nil {
@@ -85,6 +88,33 @@ func TestJournalListAndShow(t *testing.T) {
 	}
 	if shown.Operation != "items.tags.add" || len(shown.Ops) != 1 || shown.Ops[0].Status != "applied" {
 		t.Errorf("show run-A = %+v", shown)
+	}
+	if shown.Library != "user" {
+		t.Errorf("show library = %q, want user", shown.Library)
+	}
+
+	humanListCmd := newJournalCmd(&rootFlags{})
+	humanListCmd.SetArgs([]string{"list"})
+	var humanList bytes.Buffer
+	humanListCmd.SetOut(&humanList)
+	humanListCmd.SetErr(&bytes.Buffer{})
+	if err := humanListCmd.Execute(); err != nil {
+		t.Fatalf("human journal list: %v", err)
+	}
+	if !strings.Contains(humanList.String(), "user") {
+		t.Fatalf("human list = %q, want library column value", humanList.String())
+	}
+
+	humanShowCmd := newJournalCmd(&rootFlags{})
+	humanShowCmd.SetArgs([]string{"show", "run-A"})
+	var humanShow bytes.Buffer
+	humanShowCmd.SetOut(&humanShow)
+	humanShowCmd.SetErr(&bytes.Buffer{})
+	if err := humanShowCmd.Execute(); err != nil {
+		t.Fatalf("human journal show: %v", err)
+	}
+	if !strings.Contains(humanShow.String(), "user") {
+		t.Fatalf("human show = %q, want library value", humanShow.String())
 	}
 }
 
@@ -104,6 +134,9 @@ func TestRecorderWritesAppliedRun(t *testing.T) {
 	}
 	if len(entries) != 1 || entries[0].Operation != "items.tags.add" || entries[0].Summary.Applied != 1 {
 		t.Fatalf("recorded entries = %+v, want one applied items.tags.add run", entries)
+	}
+	if entries[0].Library != "user" {
+		t.Fatalf("recorded library = %q, want user", entries[0].Library)
 	}
 
 	// A preview (no --yes) must not record.
@@ -152,6 +185,91 @@ func TestJournalUndoPreviewPlan(t *testing.T) {
 	}
 	if !strings.Contains(errOut.String(), "missing_doi") {
 		t.Errorf("stderr should report the refused DOI op: %q", errOut.String())
+	}
+}
+
+func TestJournalUndoRefusesLibraryMismatchAndAllowsMatchingScope(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	saved := activeGroupID
+	defer func() { activeGroupID = saved }()
+
+	activeGroupID = ""
+	personal := journalTestEntry(t, "personal-run", "items.tags.add")
+	personal.Library = "" // pre-fix entries had no library field and are personal.
+	if err := mutation.WriteEntry(journalDir(), personal); err != nil {
+		t.Fatalf("seed personal journal: %v", err)
+	}
+
+	activeGroupID = "12345"
+	groupCmd := newJournalCmd(&rootFlags{asJSON: true})
+	groupCmd.SilenceErrors, groupCmd.SilenceUsage = true, true
+	groupCmd.SetArgs([]string{"undo", "personal-run"})
+	var groupOut, groupErr bytes.Buffer
+	groupCmd.SetOut(&groupOut)
+	groupCmd.SetErr(&groupErr)
+	err := groupCmd.Execute()
+	if err == nil {
+		t.Fatalf("group undo of personal entry succeeded; output=%s stderr=%s", groupOut.String(), groupErr.String())
+	}
+	if msg := err.Error(); !strings.Contains(msg, "journal library mismatch") || !strings.Contains(msg, "user") || !strings.Contains(msg, "group 12345") {
+		t.Fatalf("group mismatch error = %q, want user/group mismatch", msg)
+	}
+
+	activeGroupID = ""
+	personalCmd := newJournalCmd(&rootFlags{asJSON: true})
+	personalCmd.SilenceErrors, personalCmd.SilenceUsage = true, true
+	personalCmd.SetArgs([]string{"undo", "personal-run"})
+	var personalOut bytes.Buffer
+	personalCmd.SetOut(&personalOut)
+	personalCmd.SetErr(&bytes.Buffer{})
+	if err := personalCmd.Execute(); err != nil {
+		t.Fatalf("personal undo preview: %v", err)
+	}
+	var personalEnv mutation.Envelope
+	if err := json.Unmarshal(personalOut.Bytes(), &personalEnv); err != nil {
+		t.Fatalf("decode personal undo %q: %v", personalOut.String(), err)
+	}
+	if personalEnv.Mode != "preview" || len(personalEnv.Plan.Operations) != 1 {
+		t.Fatalf("personal undo env = %+v, want one preview op", personalEnv)
+	}
+
+	groupEntry := journalTestEntry(t, "group-run", "items.tags.add")
+	groupEntry.Library = "group:12345"
+	if err := mutation.WriteEntry(journalDir(), groupEntry); err != nil {
+		t.Fatalf("seed personal dir with group journal entry: %v", err)
+	}
+	personalMismatchCmd := newJournalCmd(&rootFlags{asJSON: true})
+	personalMismatchCmd.SilenceErrors, personalMismatchCmd.SilenceUsage = true, true
+	personalMismatchCmd.SetArgs([]string{"undo", "group-run"})
+	personalMismatchCmd.SetOut(&bytes.Buffer{})
+	personalMismatchCmd.SetErr(&bytes.Buffer{})
+	err = personalMismatchCmd.Execute()
+	if err == nil {
+		t.Fatal("personal undo of group entry succeeded")
+	}
+	if msg := err.Error(); !strings.Contains(msg, "journal library mismatch") || !strings.Contains(msg, "group 12345") || !strings.Contains(msg, "user") {
+		t.Fatalf("personal mismatch error = %q, want group/user mismatch", msg)
+	}
+
+	activeGroupID = "12345"
+	if err := mutation.WriteEntry(journalDir(), groupEntry); err != nil {
+		t.Fatalf("seed group journal: %v", err)
+	}
+	matchingGroupCmd := newJournalCmd(&rootFlags{asJSON: true})
+	matchingGroupCmd.SilenceErrors, matchingGroupCmd.SilenceUsage = true, true
+	matchingGroupCmd.SetArgs([]string{"undo", "group-run"})
+	var matchingGroupOut bytes.Buffer
+	matchingGroupCmd.SetOut(&matchingGroupOut)
+	matchingGroupCmd.SetErr(&bytes.Buffer{})
+	if err := matchingGroupCmd.Execute(); err != nil {
+		t.Fatalf("group undo preview: %v", err)
+	}
+	var groupEnv mutation.Envelope
+	if err := json.Unmarshal(matchingGroupOut.Bytes(), &groupEnv); err != nil {
+		t.Fatalf("decode group undo %q: %v", matchingGroupOut.String(), err)
+	}
+	if groupEnv.Mode != "preview" || len(groupEnv.Plan.Operations) != 1 {
+		t.Fatalf("group undo env = %+v, want one preview op", groupEnv)
 	}
 }
 

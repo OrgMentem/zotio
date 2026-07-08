@@ -45,6 +45,9 @@ func TestBuildJournalEntryJoinsStatus(t *testing.T) {
 	if e.RunID == "" || e.Operation != "items.tags.add" || !e.OK {
 		t.Fatalf("entry header = %+v", e)
 	}
+	if e.Library != "user" {
+		t.Fatalf("entry library = %q, want user", e.Library)
+	}
 	if len(e.Ops) != 2 {
 		t.Fatalf("ops = %d, want 2", len(e.Ops))
 	}

@@ -5,6 +5,11 @@ package mcp
 
 import (
 	"context"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -66,4 +71,62 @@ func mcpToolResultText(t *testing.T, res *mcplib.CallToolResult) string {
 		t.Fatalf("content[0] is not text: %T", res.Content[0])
 	}
 	return tc.Text
+}
+
+func TestMakeAPIHandlerRedactsConfiguredAPIKeyInErrorResults(t *testing.T) {
+	for _, status := range []int{400, 401, 403, 404, 429, 418} {
+		t.Run(fmt.Sprintf("status_%d", status), func(t *testing.T) {
+			home := mcpTestIsolateConfigEnv(t)
+			key := fmt.Sprintf("BAREKEY%d9f8e7d6c", status)
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if status == http.StatusTooManyRequests {
+					w.Header().Set("Retry-After", "1")
+				}
+				http.Error(w, "upstream reflected credential "+key, status)
+			}))
+			t.Cleanup(srv.Close)
+
+			configPath := filepath.Join(home, ".config", "zotio", "config.toml")
+			if err := os.MkdirAll(filepath.Dir(configPath), 0o700); err != nil {
+				t.Fatalf("mkdir config dir: %v", err)
+			}
+			body := fmt.Sprintf("base_url = %q\napi_key = %q\n", srv.URL, key)
+			if err := os.WriteFile(configPath, []byte(body), 0o600); err != nil {
+				t.Fatalf("write config: %v", err)
+			}
+
+			handler := makeAPIHandler("GET", "/items", nil, nil)
+			req := mcplib.CallToolRequest{}
+			res, err := handler(context.Background(), req)
+			if err != nil {
+				t.Fatalf("handler returned protocol error: %v", err)
+			}
+			if res == nil || !res.IsError {
+				t.Fatalf("handler result = %+v, want MCP error result", res)
+			}
+			text := mcpToolResultText(t, res)
+			if strings.Contains(text, key) {
+				t.Fatalf("tool result leaked API key for HTTP %d: %q", status, text)
+			}
+		})
+	}
+}
+
+func mcpTestIsolateConfigEnv(t *testing.T) string {
+	t.Helper()
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	for _, name := range []string{
+		"ZOTERO_API_KEY",
+		"ZOTERO_CONFIG",
+		"ZOTERO_HOME",
+		"ZOTERO_CONFIG_DIR",
+		"ZOTERO_DATA_DIR",
+		"XDG_CONFIG_HOME",
+		"XDG_DATA_HOME",
+		"ZOTIO_DEMO",
+	} {
+		t.Setenv(name, "")
+	}
+	return home
 }

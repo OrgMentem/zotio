@@ -38,6 +38,7 @@ type JournalEntry struct {
 	SchemaVersion int           `json:"schema_version"`
 	RunID         string        `json:"run_id"`
 	Operation     string        `json:"operation"`
+	Library       string        `json:"library"`
 	Mode          string        `json:"mode"`
 	Timestamp     time.Time     `json:"timestamp"`
 	OK            bool          `json:"ok"`
@@ -70,6 +71,7 @@ func BuildJournalEntry(env Envelope, now time.Time) (JournalEntry, bool) {
 	return JournalEntry{
 		SchemaVersion: JournalSchemaVersion,
 		RunID:         newRunID(now),
+		Library:       "user",
 		Operation:     env.Operation,
 		Mode:          env.Mode,
 		Timestamp:     now.UTC(),

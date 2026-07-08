@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net/url"
 	"os"
+	"regexp"
 	"path/filepath"
 	"strings"
 	"time"
@@ -400,6 +401,10 @@ func makeAPIHandler(method, pathTemplate string, bindings []mcpParamBinding, pos
 		if err != nil {
 			return mcplib.NewToolResultError(err.Error()), nil
 		}
+		apiKey := ""
+		if c.Config != nil {
+			apiKey = c.Config.AuthHeader()
+		}
 
 		// mcp-go v0.47+ made CallToolParams.Arguments an `any` to support
 		// non-map payloads; GetArguments() returns the map[string]any shape
@@ -475,6 +480,7 @@ func makeAPIHandler(method, pathTemplate string, bindings []mcpParamBinding, pos
 
 		if err != nil {
 			msg := err.Error()
+			redacted := cliutil.SanitizeErrorBodyWithSecrets(msg, apiKey)
 			// Classify via the shared cliutil helper so HTTP-status detection isn't
 			// duplicated with the CLI layer; the
 			// MCP result text stays MCP-specific.
@@ -482,17 +488,17 @@ func makeAPIHandler(method, pathTemplate string, bindings []mcpParamBinding, pos
 			case cliutil.HTTPErrConflict:
 				return mcplib.NewToolResultText("already exists (no-op)"), nil
 			case cliutil.HTTPErrBadRequestAuth:
-				return mcplib.NewToolResultError("authentication error: " + cliutil.SanitizeErrorBody(msg) +
+				return mcplib.NewToolResultError("authentication error: " + redacted +
 					"\nhint: the API rejected the request — this usually means auth is missing or invalid." +
 					"\n      Set your API key: export ZOTERO_API_KEY=<your-key>" +
 					"\n      Run 'zotio doctor' to check auth status."), nil
 			case cliutil.HTTPErrUnauthorized:
-				return mcplib.NewToolResultError("authentication failed: " + cliutil.SanitizeErrorBody(msg) +
+				return mcplib.NewToolResultError("authentication failed: " + redacted +
 					"\nhint: check your API key." +
 					"\n      Set it with: export ZOTERO_API_KEY=<your-key>" +
 					"\n      Run 'zotio doctor' to check auth status."), nil
 			case cliutil.HTTPErrForbidden:
-				return mcplib.NewToolResultError("permission denied: " + cliutil.SanitizeErrorBody(msg) +
+				return mcplib.NewToolResultError("permission denied: " + redacted +
 					"\nhint: your credentials are valid but lack access to this resource." +
 					"\n      Set it with: export ZOTERO_API_KEY=<your-key>" +
 					"\n      Run 'zotio doctor' to check auth status."), nil
@@ -500,11 +506,11 @@ func makeAPIHandler(method, pathTemplate string, bindings []mcpParamBinding, pos
 				if method == "DELETE" {
 					return mcplib.NewToolResultText("already deleted (no-op)"), nil
 				}
-				return mcplib.NewToolResultError("not found: " + msg), nil
+				return mcplib.NewToolResultError("not found: " + redacted), nil
 			case cliutil.HTTPErrRateLimited:
-				return mcplib.NewToolResultError("rate limited: " + msg), nil
+				return mcplib.NewToolResultError("rate limited: " + redacted), nil
 			default:
-				return mcplib.NewToolResultError(msg), nil
+				return mcplib.NewToolResultError(redacted), nil
 			}
 		}
 
@@ -516,11 +522,12 @@ func makeAPIHandler(method, pathTemplate string, bindings []mcpParamBinding, pos
 }
 
 func newMCPClient() (*client.Client, error) {
-	home, _ := os.UserHomeDir()
-	cfgPath := filepath.Join(home, ".config", "zotio", "config.toml")
-	cfg, err := config.Load(cfgPath)
+	cfg, err := config.Load("")
 	if err != nil {
 		return nil, fmt.Errorf("loading config: %w", err)
+	}
+	if groupID := strings.TrimSpace(os.Getenv("ZOTERO_GROUP")); groupID != "" && isDigits(groupID) {
+		cfg.BaseURL = mcpRewriteLibraryPrefix(cfg.BaseURL, groupID)
 	}
 	c := client.New(cfg, 30*time.Second, 0)
 	// Agents calling through MCP need fresh data every call. The on-disk
@@ -533,14 +540,18 @@ func newMCPClient() (*client.Client, error) {
 }
 
 func dbPath() string {
-	home, _ := os.UserHomeDir()
+	dataDir, err := cliutil.KindDir(cliutil.PathKindData)
+	if err != nil {
+		home, _ := os.UserHomeDir()
+		dataDir = filepath.Join(home, ".local", "share", cliutil.AppName())
+	}
 	file := "data.db"
 	if groupID := strings.TrimSpace(os.Getenv("ZOTERO_GROUP")); groupID != "" && isDigits(groupID) {
 		// Native MCP sql/search/resources must read the same group-scoped mirror
 		// selected for cobratree commands.
 		file = "data-group-" + groupID + ".db"
 	}
-	return filepath.Join(home, ".local", "share", "zotio", file)
+	return filepath.Join(dataDir, file)
 }
 
 func isDigits(s string) bool {
@@ -553,6 +564,16 @@ func isDigits(s string) bool {
 		}
 	}
 	return true
+}
+
+// mcpRewriteLibraryPrefix mirrors cli.rewriteLibraryPrefix; keep it local so
+// newMCPClient can honor ZOTERO_GROUP without changing the CLI package surface.
+func mcpRewriteLibraryPrefix(baseURL, groupID string) string {
+	prefix := regexp.MustCompile(`/(users|groups)/[^/]+`)
+	if prefix.MatchString(baseURL) {
+		return prefix.ReplaceAllString(baseURL, "/groups/"+groupID)
+	}
+	return strings.TrimRight(baseURL, "/") + "/groups/" + groupID
 }
 
 // Note: MCP tools use their own dbPath() because they are in a separate package (main, not cli).

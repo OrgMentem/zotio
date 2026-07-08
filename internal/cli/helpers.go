@@ -21,6 +21,7 @@ import (
 	"unicode"
 	"zotio/internal/client"
 	"zotio/internal/cliutil"
+	"zotio/internal/config"
 )
 
 var As = errors.As
@@ -117,6 +118,38 @@ type redactedError struct {
 
 func (e *redactedError) Error() string { return e.msg }
 func (e *redactedError) Unwrap() error { return e.err }
+
+func liveSecrets(flags *rootFlags) []string {
+	envKey := os.Getenv("ZOTERO_API_KEY")
+	secrets := make([]string, 0, 2)
+	configPath := ""
+	if flags != nil {
+		configPath = flags.configPath
+	}
+	if cfg, err := config.Load(configPath); err == nil && cfg != nil {
+		secrets = appendUniqueSecret(secrets, cfg.AuthHeader())
+	}
+	return appendUniqueSecret(secrets, envKey)
+}
+
+func appendUniqueSecret(secrets []string, secret string) []string {
+	if secret == "" {
+		return secrets
+	}
+	for _, existing := range secrets {
+		if existing == secret {
+			return secrets
+		}
+	}
+	return append(secrets, secret)
+}
+
+func redactedAPIError(err error, msg string, secrets []string, suffix string) *redactedError {
+	return &redactedError{
+		err: err,
+		msg: cliutil.SanitizeErrorBodyWithSecrets(msg, secrets...) + suffix,
+	}
+}
 
 // library health quality gate (--fail-on) failed —
 // the tool ran fine but the library did not meet the requested bar. Distinct
@@ -254,24 +287,25 @@ func writeAPIErrorEnvelope(flags *rootFlags, err error, code int) {
 // classifyAPIError maps API errors to structured exit codes with actionable hints.
 func classifyAPIError(err error, flags *rootFlags) error {
 	msg := err.Error()
+	secrets := liveSecrets(flags)
 	// the Zotero local API is GET-only and rejects writes with
 	// "Endpoint does not support method" (400, POST) or "Method not implemented"
 	// (501, PUT/PATCH). Without this, those map to a misleading "fix your auth"
 	// hint. Surface the real cause and the Web API path forward instead.
 	if isLocalWriteRejection(msg) {
-		return apiErr(fmt.Errorf("%w\nhint: the Zotero local API is read-only — writes are not supported there."+
+		return apiErr(redactedAPIError(err, msg, secrets, "\nhint: the Zotero local API is read-only — writes are not supported there."+
 			"\n      Point the CLI at the Web API and provide a write-capable key:"+
 			"\n        export ZOTERO_BASE_URL=\"https://api.zotero.org/users/<your-user-id>\""+
 			"\n        export ZOTERO_API_KEY=\"<key>\"   (create at https://www.zotero.org/settings/keys)"+
 			"\n      Changes made via the Web API sync down to your desktop Zotero."+
-			"\n      Run 'zotio doctor' to check writability.", err))
+			"\n      Run 'zotio doctor' to check writability."))
 	}
 	// a 412 on a write means the item's version changed since it was read —
 	// common when reads come from the local API/store but writes go to the Web API
 	// and the desktop hasn't synced. Point at sync rather than a generic error.
 	if strings.Contains(msg, "HTTP 412") {
-		return apiErr(fmt.Errorf("%w\nhint: the item changed since it was read (version conflict)."+
-			"\n      Run 'zotio sync' to refresh local state, then retry.", err))
+		return apiErr(redactedAPIError(err, msg, secrets, "\nhint: the item changed since it was read (version conflict)."+
+			"\n      Run 'zotio sync' to refresh local state, then retry."))
 	}
 	// classify via the shared cliutil helper so the
 	// HTTP-status detection isn't duplicated with the MCP layer; hint text and
@@ -281,38 +315,28 @@ func classifyAPIError(err error, flags *rootFlags) error {
 		if flags != nil && flags.idempotent {
 			return writeNoop(flags, "already_exists", "already exists (no-op)")
 		}
-		classified := apiErr(err)
+		classified := apiErr(redactedAPIError(err, msg, secrets, ""))
 		writeAPIErrorEnvelope(flags, classified, ExitCode(classified))
 		return classified
 	case cliutil.HTTPErrBadRequestAuth:
-		// do NOT wrap the raw APIError with
-		// %w — its Error() is the unredacted response body, which reached stderr
-		// and the --json envelope ahead of the sanitized copy, making the
-		// SanitizeErrorBody call dead code. Build the message from the sanitized
-		// body (also redacting the live key) and keep the APIError unwrappable
-		// via redactedError without leaking its text.
-		return authErr(&redactedError{
-			err: err,
-			msg: cliutil.SanitizeErrorBodyWithSecrets(msg, os.Getenv("ZOTERO_API_KEY")) +
-				"\nhint: the API rejected the request — this usually means auth is missing or invalid." +
-				"\n      Set your API key: export ZOTERO_API_KEY=<your-key>" +
-				"\n      Run 'zotio doctor' to check auth status.",
-		})
+		return authErr(redactedAPIError(err, msg, secrets, "\nhint: the API rejected the request — this usually means auth is missing or invalid."+
+			"\n      Set your API key: export ZOTERO_API_KEY=<your-key>"+
+			"\n      Run 'zotio doctor' to check auth status."))
 	case cliutil.HTTPErrUnauthorized:
-		return authErr(fmt.Errorf("%w\nhint: check your API key."+
+		return authErr(redactedAPIError(err, msg, secrets, "\nhint: check your API key."+
 			" Set it with: export ZOTERO_API_KEY=<your-key>"+
-			"\n      Run 'zotio doctor' to check auth status.", err))
+			"\n      Run 'zotio doctor' to check auth status."))
 	case cliutil.HTTPErrForbidden:
-		return authErr(fmt.Errorf("%w\nhint: permission denied. Your credentials are valid but lack access to this resource."+
+		return authErr(redactedAPIError(err, msg, secrets, "\nhint: permission denied. Your credentials are valid but lack access to this resource."+
 			"\n      Check that your API key has the required permissions."+
 			"\n      Set it with: export ZOTERO_API_KEY=<your-key>"+
-			"\n      Run 'zotio doctor' to check auth status.", err))
+			"\n      Run 'zotio doctor' to check auth status."))
 	case cliutil.HTTPErrNotFound:
-		return notFoundErr(fmt.Errorf("%w\nhint: resource not found. Run the 'list' command to see available items", err))
+		return notFoundErr(redactedAPIError(err, msg, secrets, "\nhint: resource not found. Run the 'list' command to see available items"))
 	case cliutil.HTTPErrRateLimited:
-		return rateLimitErr(err)
+		return rateLimitErr(redactedAPIError(err, msg, secrets, ""))
 	default:
-		return apiErr(err)
+		return apiErr(redactedAPIError(err, msg, secrets, ""))
 	}
 }
 
@@ -1480,12 +1504,16 @@ func defaultDBPath(name string) string {
 	if demoActive() {
 		return demoDBPath(name)
 	}
-	home, _ := os.UserHomeDir()
+	dataDir, err := cliutil.KindDir(cliutil.PathKindData)
+	if err != nil {
+		home, _ := os.UserHomeDir()
+		dataDir = filepath.Join(home, ".local", "share", name)
+	}
 	file := "data.db"
 	if activeGroupID != "" {
 		file = "data-group-" + activeGroupID + ".db"
 	}
-	return filepath.Join(home, ".local", "share", name, file)
+	return filepath.Join(dataDir, file)
 }
 
 // rewriteLibraryPrefix rewrites a Zotero API base URL's library prefix to a

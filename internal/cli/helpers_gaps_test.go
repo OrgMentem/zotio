@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -13,10 +15,42 @@ import (
 	"github.com/spf13/cobra"
 
 	"zotio/internal/client"
+	"zotio/internal/cliutil"
 )
 
 func helpersTestAPIError(status int, body string) error {
 	return &client.APIError{Method: "GET", Path: "/items", StatusCode: status, Body: body}
+}
+
+func helpersTestIsolateConfigEnv(t *testing.T) {
+	t.Helper()
+	t.Setenv("HOME", t.TempDir())
+	for _, name := range []string{
+		"ZOTERO_API_KEY",
+		"ZOTERO_CONFIG",
+		"ZOTERO_HOME",
+		"ZOTERO_CONFIG_DIR",
+		"ZOTERO_DATA_DIR",
+		"XDG_CONFIG_HOME",
+		"XDG_DATA_HOME",
+		"ZOTIO_DEMO",
+	} {
+		t.Setenv(name, "")
+	}
+}
+
+func helpersTestWriteCredentialsAPIKey(t *testing.T, key string) {
+	t.Helper()
+	path, err := cliutil.CredentialsFilePath()
+	if err != nil {
+		t.Fatalf("CredentialsFilePath: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatalf("mkdir credentials dir: %v", err)
+	}
+	if err := os.WriteFile(path, []byte("api_key = \""+key+"\"\n"), 0o600); err != nil {
+		t.Fatalf("write credentials.toml: %v", err)
+	}
 }
 
 func helpersTestAssertCLIError(t *testing.T, got error, wantCode int) {
@@ -68,33 +102,92 @@ func TestHelpersClassifyAPIError(t *testing.T) {
 }
 
 func TestHelpersClassifyAPIErrorRedactsBadRequestAuthBody(t *testing.T) {
-	const secret = "MARKER_SECRET_9f8e7d6c"
-	t.Setenv("ZOTERO_API_KEY", secret)
-
-	err := &client.APIError{
-		Method:     "POST",
-		Path:       "/items",
-		StatusCode: 400,
-		Body:       "invalid key: Zotero-API-Key MARKER_SECRET_9f8e7d6c",
+	tests := []struct {
+		name        string
+		status      int
+		wantCode    int
+		credentials bool
+	}{
+		{name: "bad_request_auth_env", status: 400, wantCode: 4},
+		{name: "unauthorized_env", status: 401, wantCode: 4},
+		{name: "forbidden_env", status: 403, wantCode: 4},
+		{name: "not_found_env", status: 404, wantCode: 3},
+		{name: "rate_limited_env", status: 429, wantCode: 7},
+		{name: "default_credentials_file", status: 418, wantCode: 5, credentials: true},
 	}
 
-	got := classifyAPIError(err, nil)
-	msg := got.Error()
-	// Regression guard: a previous %w-based
-	// implementation re-rendered client.APIError.Error() and leaked this body.
-	if strings.Contains(msg, secret) {
-		t.Fatalf("classifyAPIError() leaked API key in error text: %q", msg)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			helpersTestIsolateConfigEnv(t)
+			secret := fmt.Sprintf("MARKER_SECRET_%d_9f8e7d6c", tt.status)
+			if tt.credentials {
+				helpersTestWriteCredentialsAPIKey(t, secret)
+			} else {
+				t.Setenv("ZOTERO_API_KEY", secret)
+			}
+
+			err := &client.APIError{
+				Method:     "GET",
+				Path:       "/items",
+				StatusCode: tt.status,
+				Body:       "upstream reflected credential " + secret,
+			}
+
+			got := classifyAPIError(err, nil)
+			msg := got.Error()
+			// Regression guard: previous %w-based implementations re-rendered
+			// client.APIError.Error() and leaked reflected response bodies.
+			if strings.Contains(msg, secret) {
+				t.Fatalf("classifyAPIError() leaked API key in error text: %q", msg)
+			}
+			if code := ExitCode(got); code != tt.wantCode {
+				t.Fatalf("ExitCode(classifyAPIError()) = %d, want %d", code, tt.wantCode)
+			}
+			var apiErr *client.APIError
+			if !errors.As(got, &apiErr) {
+				t.Fatalf("errors.As(classifyAPIError(), *client.APIError) = false, want true")
+			}
+			if tt.status == 400 && !strings.Contains(msg, "zotio doctor") {
+				t.Fatalf("classifyAPIError() = %q, want zotio doctor hint", msg)
+			}
+		})
 	}
-	if !strings.Contains(msg, "zotio doctor") {
-		t.Fatalf("classifyAPIError() = %q, want zotio doctor hint", msg)
-	}
-	if code := ExitCode(got); code != 4 {
-		t.Fatalf("ExitCode(classifyAPIError()) = %d, want 4", code)
-	}
-	var apiErr *client.APIError
-	if !errors.As(got, &apiErr) {
-		t.Fatalf("errors.As(classifyAPIError(), *client.APIError) = false, want true")
-	}
+
+	t.Run("local_write_rejection", func(t *testing.T) {
+		helpersTestIsolateConfigEnv(t)
+		const secret = "MARKER_SECRET_local_9f8e7d6c"
+		t.Setenv("ZOTERO_API_KEY", secret)
+		err := &client.APIError{Method: "POST", Path: "/items", StatusCode: 400, Body: "Endpoint does not support method " + secret}
+		got := classifyAPIError(err, nil)
+		if msg := got.Error(); strings.Contains(msg, secret) {
+			t.Fatalf("classifyAPIError() leaked API key in local write error text: %q", msg)
+		}
+		if code := ExitCode(got); code != 5 {
+			t.Fatalf("ExitCode(classifyAPIError()) = %d, want 5", code)
+		}
+		var apiErr *client.APIError
+		if !errors.As(got, &apiErr) {
+			t.Fatalf("errors.As(classifyAPIError(), *client.APIError) = false, want true")
+		}
+	})
+
+	t.Run("precondition_failed", func(t *testing.T) {
+		helpersTestIsolateConfigEnv(t)
+		const secret = "MARKER_SECRET_412_9f8e7d6c"
+		t.Setenv("ZOTERO_API_KEY", secret)
+		err := &client.APIError{Method: "PATCH", Path: "/items/abc", StatusCode: 412, Body: "version conflict " + secret}
+		got := classifyAPIError(err, nil)
+		if msg := got.Error(); strings.Contains(msg, secret) {
+			t.Fatalf("classifyAPIError() leaked API key in 412 error text: %q", msg)
+		}
+		if code := ExitCode(got); code != 5 {
+			t.Fatalf("ExitCode(classifyAPIError()) = %d, want 5", code)
+		}
+		var apiErr *client.APIError
+		if !errors.As(got, &apiErr) {
+			t.Fatalf("errors.As(classifyAPIError(), *client.APIError) = false, want true")
+		}
+	})
 }
 
 func TestHelpersClassifyDeleteError(t *testing.T) {

@@ -62,6 +62,26 @@ func TestDefaultDBPath_GroupAware(t *testing.T) {
 	}
 }
 
+func TestDefaultDBPathUsesDataDirOverride(t *testing.T) {
+	saved := activeGroupID
+	defer func() { activeGroupID = saved }()
+
+	dataDir := t.TempDir()
+	t.Setenv("ZOTERO_DATA_DIR", dataDir)
+	t.Setenv("ZOTERO_HOME", "")
+	t.Setenv("XDG_DATA_HOME", "")
+
+	activeGroupID = ""
+	if got, want := defaultDBPath("zotio"), filepath.Join(dataDir, "data.db"); got != want {
+		t.Fatalf("personal defaultDBPath = %q, want %q", got, want)
+	}
+
+	activeGroupID = "12345"
+	if got, want := defaultDBPath("zotio"), filepath.Join(dataDir, "data-group-12345.db"); got != want {
+		t.Fatalf("group defaultDBPath = %q, want %q", got, want)
+	}
+}
+
 func TestGroupsList(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/users/0/groups" {

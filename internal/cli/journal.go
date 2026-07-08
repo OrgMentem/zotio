@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -28,7 +29,74 @@ var mutationJournalRecorder func(env mutation.Envelope)
 // journalDir is the per-install directory holding the append-only run journal,
 // alongside the synced store.
 func journalDir() string {
+	name := "journal"
+	if activeGroupID != "" {
+		name = "journal-group-" + activeGroupID
+	}
+	return filepath.Join(filepath.Dir(defaultDBPath("zotio")), name)
+}
+
+func personalJournalDir() string {
 	return filepath.Join(filepath.Dir(defaultDBPath("zotio")), "journal")
+}
+
+func currentJournalLibrary() string {
+	if activeGroupID != "" {
+		return "group:" + activeGroupID
+	}
+	return "user"
+}
+
+func normalizedJournalLibrary(library string) string {
+	if library == "" {
+		return "user"
+	}
+	return library
+}
+
+func normalizeJournalEntry(entry mutation.JournalEntry) mutation.JournalEntry {
+	entry.Library = normalizedJournalLibrary(entry.Library)
+	return entry
+}
+
+func normalizeJournalEntries(entries []mutation.JournalEntry) {
+	for i := range entries {
+		entries[i] = normalizeJournalEntry(entries[i])
+	}
+}
+
+func humanJournalLibrary(library string) string {
+	library = normalizedJournalLibrary(library)
+	if library == "user" {
+		return "user"
+	}
+	if groupID, ok := strings.CutPrefix(library, "group:"); ok {
+		return "group " + groupID
+	}
+	return library
+}
+
+func readJournalEntryForUndo(runID string) (mutation.JournalEntry, error) {
+	entry, err := mutation.ReadEntry(journalDir(), runID)
+	if err == nil {
+		return normalizeJournalEntry(entry), nil
+	}
+	if activeGroupID != "" {
+		legacyEntry, legacyErr := mutation.ReadEntry(personalJournalDir(), runID)
+		if legacyErr == nil {
+			return normalizeJournalEntry(legacyEntry), nil
+		}
+	}
+	return mutation.JournalEntry{}, err
+}
+
+func ensureJournalLibraryMatches(entry mutation.JournalEntry) error {
+	entryLibrary := normalizedJournalLibrary(entry.Library)
+	currentLibrary := currentJournalLibrary()
+	if entryLibrary == currentLibrary {
+		return nil
+	}
+	return fmt.Errorf("journal library mismatch for run %s: entry belongs to %s, current scope is %s", entry.RunID, humanJournalLibrary(entryLibrary), humanJournalLibrary(currentLibrary))
 }
 
 // recordMutationJournal appends an entry for any run that applied at least one
@@ -41,6 +109,7 @@ func recordMutationJournal(env mutation.Envelope) {
 	if !ok {
 		return
 	}
+	entry.Library = currentJournalLibrary()
 	if err := mutation.WriteEntry(journalDir(), entry); err != nil {
 		fmt.Fprintf(os.Stderr, "warning: could not record mutation journal: %v\n", err)
 	}
@@ -68,6 +137,7 @@ func newJournalListCmd(flags *rootFlags) *cobra.Command {
 			if err != nil {
 				return fmt.Errorf("reading journal: %w", err)
 			}
+			normalizeJournalEntries(entries)
 			if flags.asJSON {
 				data, err := json.Marshal(entries)
 				if err != nil {
@@ -85,8 +155,8 @@ func newJournalListCmd(flags *rootFlags) *cobra.Command {
 				if !e.OK {
 					ok = "incomplete"
 				}
-				fmt.Fprintf(out, "%s  %s  %-24s  applied=%d  %s\n",
-					e.RunID, e.Timestamp.Format("2006-01-02 15:04"), e.Operation, e.Summary.Applied, ok)
+				fmt.Fprintf(out, "%s  %s  %-10s  %-24s  applied=%d  %s\n",
+					e.RunID, e.Timestamp.Format("2006-01-02 15:04"), humanJournalLibrary(e.Library), e.Operation, e.Summary.Applied, ok)
 			}
 			return nil
 		},
@@ -104,6 +174,7 @@ func newJournalShowCmd(flags *rootFlags) *cobra.Command {
 			if err != nil {
 				return notFoundErr(err)
 			}
+			entry = normalizeJournalEntry(entry)
 			if flags.asJSON {
 				data, err := json.Marshal(entry)
 				if err != nil {
@@ -112,7 +183,7 @@ func newJournalShowCmd(flags *rootFlags) *cobra.Command {
 				return printOutputWithFlags(cmd.OutOrStdout(), json.RawMessage(data), flags)
 			}
 			out := cmd.OutOrStdout()
-			fmt.Fprintf(out, "Run %s · %s · %s · applied=%d\n", entry.RunID, entry.Timestamp.Format("2006-01-02 15:04:05"), entry.Operation, entry.Summary.Applied)
+			fmt.Fprintf(out, "Run %s · %s · %s · %s · applied=%d\n", entry.RunID, entry.Timestamp.Format("2006-01-02 15:04:05"), humanJournalLibrary(entry.Library), entry.Operation, entry.Summary.Applied)
 			for _, op := range entry.Ops {
 				fmt.Fprintf(out, "  [%s] %s %s", op.Status, op.Kind, op.Key)
 				if op.Destructive {
@@ -136,9 +207,12 @@ func newJournalUndoCmd(flags *rootFlags) *cobra.Command {
 		Args:        cobra.ExactArgs(1),
 		Annotations: map[string]string{"mcp:read-only": "false"},
 		RunE: func(cmd *cobra.Command, args []string) error {
-			entry, err := mutation.ReadEntry(journalDir(), args[0])
+			entry, err := readJournalEntryForUndo(args[0])
 			if err != nil {
 				return notFoundErr(err)
+			}
+			if err := ensureJournalLibraryMatches(entry); err != nil {
+				return err
 			}
 			inverse, refused := mutation.InverseOps(entry)
 			for _, r := range refused {
