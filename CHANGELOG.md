@@ -4,18 +4,24 @@ Notable changes to zotio. Format follows [Keep a Changelog](https://keepachangel
 
 ## [Unreleased]
 
+## [0.5.0] — 2026-07-09
+
 ### Added
 - `items bibliography` renders a scope-wide formatted bibliography in any CSL style, server-side via the Web API (`--scope`, `--style`, chunked at 50 keys per request).
 - `items bibcheck` accepts multiple manuscripts, flags cited items missing citation-core fields (`incomplete_citation` findings with file:line evidence), emits the canonical findings envelope in JSON, and gains `--fail-on <high|any|none>` (exit `11`) alongside the existing `--fail-on-unknown`.
 - `export snapshot verify <lockfile>` classifies drift against the current library as added/removed/changed/touched by comparing the recorded content SHA-256 — version-only churn is `touched`, never drift; `--fail-on-drift` exits `11`.
 - Diagnostics (`library health`, `items audit`, `vault audit`, `items citekey-conflicts`, `items duplicates`, `items enrich --validate`, `items preprint-check`) emit a shared `findings` array (kind/severity/item_key envelope), and `--keys-from` ingests it: `zotio library health --json | zotio items enrich --missing-doi --keys-from -` now composes directly.
-- Declared capability preconditions are enforced centrally: a command whose `requires` (synced store, live local API, Better BibTeX, desktop connector) is unmet refuses with a structured `precondition_unmet` envelope and exit `9` instead of returning empty results. MCP `command_search`/`command_run` command detail now carries `operation`/`requires`/`destructive`.
+- **Package distribution expanded** — tagged releases now publish a Scoop manifest to `OrgMentem/scoop-bucket` (`scoop bucket add zotio https://github.com/OrgMentem/scoop-bucket && scoop install zotio`), open a WinGet manifest PR (`winget install OrgMentem.zotio`), and attach Linux `.deb`/`.rpm`/`.apk` packages; Homebrew (`brew install orgmentem/tap/zotio`) covers macOS and Linux.
 
 ### Changed
-- `items cite --style <csl-id>` renders named CSL styles through the Web API instead of silently falling back to Zotero's default style; without an API key it refuses with exit `9`.
 - `--deliver` now delivers rendered reports when a quality or freshness gate fails (exit `11`/`12`) — previously the report was dropped exactly when a CI consumer needed it. Usage and config errors still skip delivery, and a delivery failure never masks the command's exit code.
-- Diagnostic JSON shapes for `items citekey-conflicts`, `vault audit`, `items enrich --validate`, and `items preprint-check` were replaced by the canonical findings envelope; `items audit` and `items duplicates` keep their existing fields and add `findings` alongside.
 - Export snapshot lockfiles record each item's title and normalized content SHA-256.
+
+### Changed — breaking
+zotio is pre-1.0, so these ship in a minor release without a major-version signal. Scripted and agent consumers should review before upgrading:
+- **Precondition enforcement replaces silent empty-success.** A command whose declared `requires` (synced store, live local API, Better BibTeX, desktop connector) is unmet now refuses with a structured `precondition_unmet` envelope and **exit `9`** instead of returning empty results with exit `0`. Scripts that treated an empty result as success will now observe a non-zero exit. MCP `command_search`/`command_run` command detail now carries `operation`/`requires`/`destructive`.
+- **Diagnostic JSON shapes replaced by the canonical findings envelope** for `items citekey-conflicts`, `vault audit`, `items enrich --validate`, and `items preprint-check`. Consumers parsing the old per-command shapes must switch to the shared `findings` array. (`items audit` and `items duplicates` keep their existing fields and add `findings` alongside — non-breaking.)
+- **`items cite --style <csl-id>` renders named CSL styles through the Web API** instead of silently falling back to Zotero's default style, and **refuses with exit `9` without an API key**. Scripts relying on the silent default-style fallback now fail loudly rather than emitting wrong-style output.
 
 ## [0.4.0] — 2026-07-09
 
@@ -101,7 +107,8 @@ First tagged release: the trust-and-automation layer for Zotero.
 - **Onboarding** — `zotio init` guided setup (Zotero detection, local API, key, first sync, health check).
 - Release engineering: goreleaser builds for 6 platforms, cosign-signed checksums, SBOMs, Homebrew tap.
 
-[Unreleased]: https://github.com/OrgMentem/zotio/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/OrgMentem/zotio/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/OrgMentem/zotio/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/OrgMentem/zotio/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/OrgMentem/zotio/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/OrgMentem/zotio/compare/v0.1.2...v0.2.0

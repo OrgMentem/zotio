@@ -104,3 +104,53 @@ brews:
     install: |
       bin.install "zotio"
       bin.install "zotio-mcp"
+# Windows: self-owned Scoop bucket (mirrors the homebrew-tap pattern). Packages
+# the windows zip archives, which already contain both zotio and zotio-mcp.
+scoops:
+  - repository:
+      owner: OrgMentem
+      name: scoop-bucket
+      # Same cross-repo constraint as the tap: default GITHUB_TOKEN can't push
+      # to another repo. Fine-grained PAT with contents:write on scoop-bucket.
+      token: "{{ .Env.SCOOP_BUCKET_GITHUB_TOKEN }}"
+    directory: bucket
+    commit_msg_template: "zotio {{ .Tag }}"
+    homepage: "https://github.com/OrgMentem/zotio"
+    description: "Zotero automation CLI: local-first search, library health checks, preview-first writes, annotation export, and MCP"
+    license: MIT
+# Windows: WinGet manifests, PR'd from a fork into microsoft/winget-pkgs.
+winget:
+  - name: zotio
+    publisher: OrgMentem
+    license: MIT
+    homepage: "https://github.com/OrgMentem/zotio"
+    short_description: "Zotero automation CLI: library health, preview-first writes, annotation export, MCP"
+    repository:
+      owner: OrgMentem
+      # A fork of microsoft/winget-pkgs; goreleaser commits here, then opens a PR upstream.
+      name: winget-pkgs
+      branch: "zotio-{{ .Version }}"
+      token: "{{ .Env.WINGET_GITHUB_TOKEN }}"
+      pull_request:
+        enabled: true
+        draft: false
+        base:
+          owner: microsoft
+          name: winget-pkgs
+          branch: master
+# Linux distro packages attached to each GitHub release (both binaries in one package).
+nfpms:
+  - id: zotio
+    package_name: zotio
+    ids:
+      - zotio
+      - zotio-mcp
+    formats:
+      - deb
+      - rpm
+      - apk
+    maintainer: "OrgMentem <zotio@orgmentem.com>"
+    homepage: "https://github.com/OrgMentem/zotio"
+    description: "Zotero automation CLI: local-first search, library health checks, preview-first writes, annotation export, and MCP"
+    license: MIT
+    bindir: /usr/bin
