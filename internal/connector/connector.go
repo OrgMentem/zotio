@@ -21,6 +21,8 @@ import (
 
 const defaultAPIVersion = "3"
 
+const connectorSuccessBodyLimit = 32 << 20 // Connector success payloads are JSON metadata; 32 MiB leaves headroom for large imports while bounding spoofed local endpoints.
+
 // Client speaks Zotero's desktop Connector API at /connector/*.
 type Client struct {
 	BaseURL    string
@@ -177,9 +179,9 @@ func (c *Client) GetRecognizedItem(ctx context.Context, sessionID string) (Recog
 	}
 	c.setVersion(req)
 	req.Header.Set("Content-Type", "application/json")
-	httpClient := c.httpClient()
-	httpClient.Timeout = 0
-	resp, err := httpClient.Do(req)
+	hc := *c.httpClient()
+	hc.Timeout = 0
+	resp, err := hc.Do(req)
 	if err != nil {
 		return RecognizedItem{}, false, fmt.Errorf("connector getRecognizedItem: %w", err)
 	}
@@ -447,12 +449,26 @@ func (c *Client) expectStatus(req *http.Request, endpoint string, want int) ([]b
 	defer resp.Body.Close()
 	var body []byte
 	if resp.StatusCode == want {
-		body, _ = io.ReadAll(resp.Body)
+		body, err = readConnectorSuccessBody(resp.Body)
+		if err != nil {
+			return nil, fmt.Errorf("connector %s: %w", endpoint, err)
+		}
 	} else {
 		body, _ = io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	}
 	if resp.StatusCode != want {
 		return nil, fmt.Errorf("connector %s: HTTP %d: %s", endpoint, resp.StatusCode, strings.TrimSpace(string(body)))
+	}
+	return body, nil
+}
+
+func readConnectorSuccessBody(r io.Reader) ([]byte, error) {
+	body, err := io.ReadAll(io.LimitReader(r, connectorSuccessBodyLimit+1))
+	if err != nil {
+		return nil, err
+	}
+	if len(body) > connectorSuccessBodyLimit {
+		return nil, fmt.Errorf("response body exceeds %d bytes", connectorSuccessBodyLimit)
 	}
 	return body, nil
 }

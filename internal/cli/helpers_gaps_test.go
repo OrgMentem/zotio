@@ -431,6 +431,59 @@ func TestHelpersCompactExtractAndFormat(t *testing.T) {
 	}
 }
 
+func TestFormatCellValueSanitizesTerminalControls(t *testing.T) {
+	got := formatCellValue("safe \x1b]0;pwned\x07 title")
+	if strings.Contains(got, "\x1b") || strings.Contains(got, "\x07") {
+		t.Fatalf("formatCellValue left raw terminal controls in %q", got)
+	}
+}
+
+func TestPrintAutoTableSanitizesTerminalControls(t *testing.T) {
+	oldNoColor, oldHumanFriendly := noColor, humanFriendly
+	noColor = true
+	humanFriendly = false
+	t.Cleanup(func() {
+		noColor = oldNoColor
+		humanFriendly = oldHumanFriendly
+	})
+
+	var out strings.Builder
+	err := printAutoTable(&out, []map[string]any{
+		{"key": "K1", "title": "safe \x1b]0;pwned\x07 title"},
+	})
+	if err != nil {
+		t.Fatalf("printAutoTable returned error: %v", err)
+	}
+	if strings.Contains(out.String(), "\x1b") {
+		t.Fatalf("printAutoTable left raw ESC in %q", out.String())
+	}
+}
+
+func TestPrintReadingListSanitizesTerminalControls(t *testing.T) {
+	var out strings.Builder
+	cmd := &cobra.Command{}
+	cmd.SetOut(&out)
+
+	err := printReadingList(cmd, readingListResult{
+		Count:  1,
+		Oldest: "2026-07-09",
+		Items: []readingListItem{{
+			Key:       "K1",
+			Title:     "title \x1b]0;pwned\x07",
+			Author:    "author \x1b[31m",
+			Year:      "2026\x07",
+			DateAdded: "2026-07-09\x1b",
+			ItemType:  "journalArticle\x07",
+		}},
+	})
+	if err != nil {
+		t.Fatalf("printReadingList returned error: %v", err)
+	}
+	if strings.Contains(out.String(), "\x1b") || strings.Contains(out.String(), "\x07") {
+		t.Fatalf("printReadingList left raw terminal controls in %q", out.String())
+	}
+}
+
 // --agent/--compact must not collapse a Zotero
 // resource envelope ({key, data:{...}}) down to {key}; it should keep the
 // nested fields minus the verbose ones.

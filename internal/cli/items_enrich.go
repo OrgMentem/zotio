@@ -829,12 +829,25 @@ func resolveAbstractViaOpenAlex(ctx context.Context, httpClient *http.Client, do
 	return abstract, true
 }
 
+const (
+	maxOpenAlexAbstractPosition = 50000
+	maxOpenAlexAbstractPairs    = maxOpenAlexAbstractPosition + 1
+)
+
 // reconstructAbstract turns OpenAlex's {word: [positions]} inverted index back
 // into running text.
 func reconstructAbstract(idx map[string][]int) string {
 	maxPos := -1
+	pairs := 0
 	for _, positions := range idx {
 		for _, p := range positions {
+			pairs++
+			if pairs > maxOpenAlexAbstractPairs || p > maxOpenAlexAbstractPosition {
+				return ""
+			}
+			if p < 0 {
+				continue
+			}
 			if p > maxPos {
 				maxPos = p
 			}

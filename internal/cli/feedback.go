@@ -96,11 +96,12 @@ func postFeedback(url string, entry FeedbackEntry) error {
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("User-Agent", "zotio/feedback")
-	client := &http.Client{Timeout: 15 * time.Second, CheckRedirect: func(req *http.Request, via []*http.Request) error {
+	client := externalFetchHTTPClient(&http.Client{Timeout: 15 * time.Second}, true)
+	client.CheckRedirect = func(req *http.Request, via []*http.Request) error {
 		// keep a trusted HTTPS
 		// endpoint from redirecting feedback into an internal target.
 		return http.ErrUseLastResponse
-	}}
+	}
 	resp, err := client.Do(req)
 	if err != nil {
 		return fmt.Errorf("posting feedback: %w", err)

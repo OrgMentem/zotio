@@ -4,11 +4,13 @@ package cli
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strconv"
 	"syscall"
 	"time"
@@ -101,7 +103,7 @@ native streaming instead of polling.`,
 			fmt.Fprintf(os.Stderr, "Tailing %s every %s (Ctrl+C to stop)\n", resource, interval)
 
 			// Initial poll
-			if err := emitChanges(c, db, resource, path, sink, os.Stdout); err != nil {
+			if err := emitChanges(cmd.Context(), c, db, resource, path, sink, os.Stdout); err != nil {
 				fmt.Fprintf(os.Stderr, "warning: initial poll failed: %v\n", err)
 			}
 
@@ -118,7 +120,7 @@ native streaming instead of polling.`,
 					fmt.Fprintln(os.Stderr, "\nShutting down gracefully...")
 					return nil
 				case <-ticker.C:
-					if err := emitChanges(c, db, resource, path, sink, os.Stdout); err != nil {
+					if err := emitChanges(cmd.Context(), c, db, resource, path, sink, os.Stdout); err != nil {
 						fmt.Fprintf(os.Stderr, "warning: poll failed: %v\n", err)
 					}
 				}
@@ -153,7 +155,7 @@ func tailKnownResources() []string {
 // feed rather than a full re-fetch each poll. The cursor is namespaced
 // "tail:<resource>" in sync_state so it never collides with sync's own
 // checkpoint.
-func emitChanges(c *client.Client, db *store.Store, resource, path string, sink DeliverSink, w io.Writer) error {
+func emitChanges(ctx context.Context, c *client.Client, db *store.Store, resource, path string, sink DeliverSink, w io.Writer) error {
 	cursorKey := "tail:" + resource
 	cursor, _ := db.GetLibraryVersion(cursorKey)
 
@@ -222,10 +224,17 @@ func emitChanges(c *client.Client, db *store.Store, resource, path string, sink 
 		}
 		switch sink.Scheme {
 		case "webhook":
-			if err := deliverWebhook(sink.Target, out, true); err != nil {
+			if err := deliverWebhook(ctx, sink.Target, out, true); err != nil {
 				fmt.Fprintf(os.Stderr, "warning: tail %s: webhook delivery failed: %v\n", resource, err)
 			}
 		case "file":
+			dir := filepath.Dir(sink.Target)
+			if dir != "" && dir != "." {
+				if err := os.MkdirAll(dir, 0o700); err != nil {
+					fmt.Fprintf(os.Stderr, "warning: tail %s: file delivery failed: %v\n", resource, err)
+					break
+				}
+			}
 			f, ferr := os.OpenFile(sink.Target, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
 			if ferr != nil {
 				fmt.Fprintf(os.Stderr, "warning: tail %s: file delivery failed: %v\n", resource, ferr)

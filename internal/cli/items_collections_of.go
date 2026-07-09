@@ -67,7 +67,7 @@ func printItemCollectionsTable(cmd *cobra.Command, rows []itemCollectionRow) err
 	tw := newTabWriter(cmd.OutOrStdout())
 	fmt.Fprintln(tw, strings.Join([]string{bold("KEY"), bold("NAME")}, "\t"))
 	for _, row := range rows {
-		fmt.Fprintf(tw, "%s\t%s\n", row.Key, row.Name)
+		fmt.Fprintf(tw, "%s\t%s\n", row.Key, sanitizeForTerminal(row.Name))
 	}
 	return tw.Flush()
 }

@@ -4,12 +4,17 @@ package mcp
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"zotio/internal/mcp/bound"
+	"zotio/internal/store"
 
 	mcplib "github.com/mark3labs/mcp-go/mcp"
 )
@@ -192,4 +197,123 @@ func TestStripLeadingSQLNoise(t *testing.T) {
 			t.Errorf("stripLeadingSQLNoise(%q) = %q, want %q", c.in, got, c.want)
 		}
 	}
+}
+
+func TestHandleSQLRecursiveCTEIsRowLimited(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("ZOTERO_DATA_DIR", t.TempDir())
+
+	db, err := store.OpenWithContext(context.Background(), dbPath())
+	if err != nil {
+		t.Fatalf("open writable db: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close writable db: %v", err)
+	}
+
+	req := mcplib.CallToolRequest{}
+	req.Params.Arguments = map[string]any{
+		"query": "WITH RECURSIVE cnt(x) AS (SELECT 1 UNION ALL SELECT x+1 FROM cnt LIMIT 100000) SELECT x FROM cnt",
+	}
+	res, err := handleSQL(context.Background(), req)
+	if err != nil {
+		t.Fatalf("handleSQL protocol error: %v", err)
+	}
+	if res == nil || res.IsError {
+		t.Fatalf("handleSQL result = %+v, want success", res)
+	}
+
+	var got struct {
+		Rows      []map[string]any `json:"rows"`
+		Truncated bool             `json:"truncated"`
+		RowLimit  int              `json:"row_limit"`
+	}
+	text := toolResultText(t, res)
+	if err := json.Unmarshal([]byte(text), &got); err != nil {
+		t.Fatalf("decode SQL result %q: %v", text, err)
+	}
+	if !got.Truncated {
+		t.Fatalf("truncated = false, want true")
+	}
+	if got.RowLimit != sqlRowLimit {
+		t.Fatalf("row_limit = %d, want %d", got.RowLimit, sqlRowLimit)
+	}
+	if len(got.Rows) > sqlRowLimit {
+		t.Fatalf("rows returned = %d, want <= %d", len(got.Rows), sqlRowLimit)
+	}
+	if len(got.Rows) == 0 {
+		t.Fatalf("rows returned = 0, want bounded preview rows")
+	}
+}
+
+func TestHandleSearchBoundsLargeResult(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("ZOTERO_DATA_DIR", t.TempDir())
+
+	db, err := store.OpenWithContext(context.Background(), dbPath())
+	if err != nil {
+		t.Fatalf("open writable db: %v", err)
+	}
+	bigNote := strings.Repeat("x", 2000)
+	items := make([]json.RawMessage, 120)
+	for i := range items {
+		items[i] = json.RawMessage(fmt.Sprintf(
+			`{"key":"B%03d","version":1,"data":{"key":"B%03d","itemType":"journalArticle","title":"Budget needle %03d","abstractNote":"budgetneedle %s"}}`,
+			i, i, i, bigNote,
+		))
+	}
+	if _, _, err := db.UpsertBatch("items", items); err != nil {
+		t.Fatalf("seed items: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close writable db: %v", err)
+	}
+
+	req := mcplib.CallToolRequest{}
+	req.Params.Arguments = map[string]any{"query": "budgetneedle", "limit": float64(len(items))}
+	res, err := handleSearch(context.Background(), req)
+	if err != nil {
+		t.Fatalf("handleSearch protocol error: %v", err)
+	}
+	if res == nil || res.IsError {
+		t.Fatalf("handleSearch result = %+v, want success", res)
+	}
+
+	text := toolResultText(t, res)
+	if len(text) > bound.MaxBytes {
+		t.Fatalf("bounded response bytes = %d, want <= %d", len(text), bound.MaxBytes)
+	}
+	var got struct {
+		Count     int               `json:"count"`
+		Items     []json.RawMessage `json:"items"`
+		Truncated bool              `json:"truncated"`
+		MaxBytes  int               `json:"max_bytes"`
+	}
+	if err := json.Unmarshal([]byte(text), &got); err != nil {
+		t.Fatalf("decode bounded search result %q: %v", text, err)
+	}
+	if got.Count != len(items) {
+		t.Fatalf("count = %d, want %d", got.Count, len(items))
+	}
+	if !got.Truncated {
+		t.Fatalf("truncated = false, want true")
+	}
+	if got.MaxBytes != bound.MaxBytes {
+		t.Fatalf("max_bytes = %d, want %d", got.MaxBytes, bound.MaxBytes)
+	}
+	if len(got.Items) > bound.MaxItems {
+		t.Fatalf("items returned = %d, want <= %d", len(got.Items), bound.MaxItems)
+	}
+}
+
+func toolResultText(t *testing.T, res *mcplib.CallToolResult) string {
+	t.Helper()
+	if res == nil || len(res.Content) != 1 {
+		t.Fatalf("content = %#v, want one text content", res)
+	}
+	text, ok := res.Content[0].(mcplib.TextContent)
+	if !ok {
+		t.Fatalf("content[0] = %T, want mcp.TextContent", res.Content[0])
+	}
+	return text.Text
 }

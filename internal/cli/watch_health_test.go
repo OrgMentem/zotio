@@ -162,7 +162,7 @@ func TestWatchHealthWebhookPostsDriftPayload(t *testing.T) {
 	var errOut bytes.Buffer
 	cmd.SetErr(&errOut)
 	cycleAt := time.Date(2026, 7, 6, 12, 30, 0, 0, time.UTC)
-	monitor.deliverWebhook(cmd, cycleAt, []healthFinding{{Kind: "missing_citation", Severity: sevHigh, ItemKey: "K1", Title: "Missing"}}, 2, healthSummary{High: 1, Total: 1})
+	monitor.deliverWebhook(context.Background(), cmd, cycleAt, []healthFinding{{Kind: "missing_citation", Severity: sevHigh, ItemKey: "K1", Title: "Missing"}}, 2, healthSummary{High: 1, Total: 1})
 	if errOut.Len() != 0 {
 		t.Fatalf("webhook stderr = %q, want none", errOut.String())
 	}

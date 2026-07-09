@@ -64,14 +64,17 @@ func ParseDeliverSink(spec string) (DeliverSink, error) {
 // Deliver routes a captured output buffer to the configured sink. stdout
 // is a no-op because the buffer has already been streamed to stdout via
 // the MultiWriter set up in root.go.
-func Deliver(sink DeliverSink, body []byte, compact bool) error {
+func Deliver(ctx context.Context, sink DeliverSink, body []byte, compact bool) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	switch sink.Scheme {
 	case "", "stdout":
 		return nil
 	case "file":
 		return deliverFile(sink.Target, body)
 	case "webhook":
-		return deliverWebhook(sink.Target, body, compact)
+		return deliverWebhook(ctx, sink.Target, body, compact)
 	default:
 		return fmt.Errorf("unsupported deliver sink %q", sink.Scheme)
 	}
@@ -128,7 +131,7 @@ func validateExternalHTTPURL(raw string, requireHTTPS bool) error {
 }
 
 func resolvePublicOutboundHost(host string) error {
-	_, err := publicOutboundIPs(context.Background(), host)
+	_, err := publicOutboundIPLookup(context.Background(), host)
 	if err != nil && strings.HasPrefix(err.Error(), "resolving host ") {
 		// URL validation is also used for stored links that are not fetched
 		// immediately. DNS failures are allowed there; fetches are bound to a
@@ -138,9 +141,11 @@ func resolvePublicOutboundHost(host string) error {
 	return err
 }
 
+var publicOutboundIPLookup = publicOutboundIPs
+
 func publicOutboundIPs(ctx context.Context, host string) ([]string, error) {
 	if addr, err := netip.ParseAddr(strings.TrimSuffix(host, ".")); err == nil {
-		if outboundHostIsPrivate(addr.String()) {
+		if !allowPrivateOutboundForTests && outboundHostIsPrivate(addr.String()) {
 			return nil, fmt.Errorf("host %q is local or private", host)
 		}
 		return []string{addr.String()}, nil
@@ -151,7 +156,7 @@ func publicOutboundIPs(ctx context.Context, host string) ([]string, error) {
 	}
 	ips := make([]string, 0, len(addrs))
 	for _, addr := range addrs {
-		if outboundHostIsPrivate(addr.IP.String()) {
+		if !allowPrivateOutboundForTests && outboundHostIsPrivate(addr.IP.String()) {
 			// reject public-looking hostnames that
 			// currently resolve to loopback/private/link-local/multicast ranges.
 			return nil, fmt.Errorf("host %q resolves to local or private address %s", host, addr.IP)
@@ -181,8 +186,14 @@ func externalHTTPClient(base *http.Client, requireHTTPS bool) *http.Client {
 
 func externalFetchHTTPClient(base *http.Client, requireHTTPS bool) *http.Client {
 	client := externalHTTPClient(base, requireHTTPS)
+	var transport *http.Transport
 	if client.Transport == nil {
-		transport := http.DefaultTransport.(*http.Transport).Clone()
+		transport = http.DefaultTransport.(*http.Transport).Clone()
+	} else if existing, ok := client.Transport.(*http.Transport); ok {
+		transport = existing.Clone()
+	}
+	if transport != nil {
+		transport.Proxy = nil
 		transport.DialContext = publicDialContext
 		client.Transport = transport
 	}
@@ -194,7 +205,7 @@ func publicDialContext(ctx context.Context, network, address string) (net.Conn, 
 	if err != nil {
 		return nil, err
 	}
-	ips, err := publicOutboundIPs(ctx, host)
+	ips, err := publicOutboundIPLookup(ctx, host)
 	if err != nil {
 		return nil, err
 	}
@@ -230,7 +241,10 @@ func outboundHostIsPrivate(host string) bool {
 	return !strings.Contains(h, ".")
 }
 
-func deliverWebhook(url string, body []byte, compact bool) error {
+func deliverWebhook(ctx context.Context, url string, body []byte, compact bool) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	// keep direct helper calls as
 	// constrained as the public --deliver parser.
 	if err := validateExternalHTTPURL(url, false); err != nil {
@@ -240,18 +254,19 @@ func deliverWebhook(url string, body []byte, compact bool) error {
 	if compact {
 		contentType = "application/x-ndjson"
 	}
-	req, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
 	if err != nil {
 		return fmt.Errorf("building webhook request: %w", err)
 	}
 	req.Header.Set("Content-Type", contentType)
 	req.Header.Set("User-Agent", "zotio/deliver")
 
-	client := &http.Client{Timeout: 30 * time.Second, CheckRedirect: func(req *http.Request, via []*http.Request) error {
+	client := externalFetchHTTPClient(&http.Client{Timeout: 30 * time.Second}, false)
+	client.CheckRedirect = func(req *http.Request, via []*http.Request) error {
 		// do not follow webhook
 		// redirects; a public URL must not bounce into a private service.
 		return http.ErrUseLastResponse
-	}}
+	}
 	resp, err := client.Do(req)
 	if err != nil {
 		return fmt.Errorf("posting to webhook: %w", err)

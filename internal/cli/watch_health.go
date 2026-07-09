@@ -92,7 +92,7 @@ func (m *watchHealthMonitor) run(ctx context.Context, cmd *cobra.Command, cycleA
 	m.previous = current
 
 	if m.webhook != "" {
-		m.deliverWebhook(cmd, cycleAt, newFindings, resolvedCount, report.Summary)
+		m.deliverWebhook(ctx, cmd, cycleAt, newFindings, resolvedCount, report.Summary)
 	}
 }
 
@@ -122,7 +122,7 @@ func (m *watchHealthMonitor) report(ctx context.Context) (healthReport, error) {
 }
 
 // deliverWebhook posts the compact drift payload using the shared delivery webhook conventions.
-func (m *watchHealthMonitor) deliverWebhook(cmd *cobra.Command, cycleAt time.Time, newFindings []healthFinding, resolvedCount int, totals healthSummary) {
+func (m *watchHealthMonitor) deliverWebhook(ctx context.Context, cmd *cobra.Command, cycleAt time.Time, newFindings []healthFinding, resolvedCount int, totals healthSummary) {
 	payload := watchHealthWebhookPayload{
 		CycleAt:       cycleAt,
 		Preset:        m.preset,
@@ -135,7 +135,7 @@ func (m *watchHealthMonitor) deliverWebhook(cmd *cobra.Command, cycleAt time.Tim
 		fmt.Fprintf(cmd.ErrOrStderr(), "[health] %s webhook payload error: %v\n", cycleAt.Format(time.RFC3339), err)
 		return
 	}
-	if err := deliverWebhook(m.webhook, body, false); err != nil {
+	if err := deliverWebhook(ctx, m.webhook, body, false); err != nil {
 		fmt.Fprintf(cmd.ErrOrStderr(), "[health] %s webhook delivery error: %v\n", cycleAt.Format(time.RFC3339), err)
 	}
 }

@@ -217,7 +217,7 @@ func printLibraryStats(cmd *cobra.Command, stats libraryStats, years int) error 
 	fmt.Fprintln(w, "Items by Type")
 	tw := newTabWriter(w)
 	for _, row := range stats.ItemsByType {
-		fmt.Fprintf(tw, "%s\t%d\n", row.ItemType, row.Count)
+		fmt.Fprintf(tw, "%s\t%d\n", sanitizeForTerminal(row.ItemType), row.Count)
 	}
 	if err := tw.Flush(); err != nil {
 		return err
@@ -227,7 +227,7 @@ func printLibraryStats(cmd *cobra.Command, stats libraryStats, years int) error 
 	fmt.Fprintf(w, "Items by Year (last %d years)\n", years)
 	tw = newTabWriter(w)
 	for _, row := range stats.ItemsByYear {
-		fmt.Fprintf(tw, "%s\t%d\n", row.Year, row.Count)
+		fmt.Fprintf(tw, "%s\t%d\n", sanitizeForTerminal(row.Year), row.Count)
 	}
 	if err := tw.Flush(); err != nil {
 		return err
@@ -237,7 +237,7 @@ func printLibraryStats(cmd *cobra.Command, stats libraryStats, years int) error 
 	fmt.Fprintln(w, "Top Venues")
 	tw = newTabWriter(w)
 	for _, row := range stats.TopVenues {
-		fmt.Fprintf(tw, "%s\t%d\n", row.Venue, row.Count)
+		fmt.Fprintf(tw, "%s\t%d\n", sanitizeForTerminal(row.Venue), row.Count)
 	}
 	if err := tw.Flush(); err != nil {
 		return err

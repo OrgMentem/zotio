@@ -20,6 +20,20 @@ func queryTestStore(t *testing.T) *Store {
 	return s
 }
 
+func TestQueryContextPreCanceledContextReturnsError(t *testing.T) {
+	s := queryTestStore(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	rows, err := s.QueryContext(ctx, "SELECT 1")
+	if rows != nil {
+		_ = rows.Close()
+	}
+	if err == nil {
+		t.Fatalf("QueryContext with canceled context returned nil error")
+	}
+}
+
 func itemKeys(t *testing.T, rows []json.RawMessage) []string {
 	t.Helper()
 	keys := make([]string, 0, len(rows))

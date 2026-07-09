@@ -368,6 +368,28 @@ func truncate(s string, max int) string {
 	return s[:max-3] + "..."
 }
 
+func sanitizeForTerminal(s string) string {
+	for i := range len(s) {
+		b := s[i]
+		if (b < 0x20 && b != '\t') || b == 0x7f {
+			var out strings.Builder
+			out.Grow(len(s))
+			out.WriteString(s[:i])
+			out.WriteRune('\uFFFD')
+			for j := i + 1; j < len(s); j++ {
+				b = s[j]
+				if (b < 0x20 && b != '\t') || b == 0x7f {
+					out.WriteRune('\uFFFD')
+					continue
+				}
+				out.WriteByte(b)
+			}
+			return out.String()
+		}
+	}
+	return s
+}
+
 func newTabWriter(w io.Writer) *tabwriter.Writer {
 	return tabwriter.NewWriter(w, 2, 4, 2, ' ', 0)
 }
@@ -1141,11 +1163,12 @@ func printAutoCards(w io.Writer, items []map[string]any) error {
 func formatCellValue(v any) string {
 	switch val := v.(type) {
 	case string:
+		safe := sanitizeForTerminal(val)
 		// Format ISO dates as just the date portion
-		if len(val) >= 19 && val[4] == '-' && val[7] == '-' && val[10] == 'T' {
-			return val[:10]
+		if len(safe) >= 19 && safe[4] == '-' && safe[7] == '-' && safe[10] == 'T' {
+			return safe[:10]
 		}
-		return truncate(val, 60)
+		return truncate(safe, 60)
 	case float64:
 		if val == float64(int64(val)) {
 			return fmt.Sprintf("%d", int64(val))
@@ -1168,7 +1191,7 @@ func formatCellValue(v any) string {
 		parts := make([]string, 0, len(val))
 		for _, item := range val {
 			if s, ok := item.(string); ok {
-				parts = append(parts, s)
+				parts = append(parts, sanitizeForTerminal(s))
 			} else {
 				b, _ := json.Marshal(item)
 				parts = append(parts, string(b))

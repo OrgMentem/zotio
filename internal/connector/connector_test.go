@@ -175,13 +175,17 @@ func TestConnectorGetRecognizedItem(t *testing.T) {
 	}))
 	defer server.Close()
 
-	c := New(server.URL+"/connector", time.Second)
+	timeout := time.Second
+	c := New(server.URL+"/connector", timeout)
 	item, recognized, err := c.GetRecognizedItem(context.Background(), "session")
 	if err != nil {
 		t.Fatalf("GetRecognizedItem returned error: %v", err)
 	}
 	if !recognized || item.Title != "Attention Is All You Need" || item.ItemType != "preprint" {
 		t.Fatalf("recognized item = %+v recognized=%v", item, recognized)
+	}
+	if c.HTTP.Timeout != timeout {
+		t.Fatalf("client timeout changed to %s", c.HTTP.Timeout)
 	}
 }
 
@@ -387,4 +391,32 @@ func TestConnectorNonCreatedErrors(t *testing.T) {
 	if err := c.SaveAttachment(context.Background(), "session", "id", "PDF", "", "application/pdf", nil); err == nil {
 		t.Fatal("SaveAttachment returned nil error for HTTP 400")
 	}
+}
+
+func TestConnectorSuccessBodyLimitExceeded(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusCreated)
+		_, _ = io.CopyN(w, repeatedByteReader('x'), connectorSuccessBodyLimit+1)
+	}))
+	defer server.Close()
+
+	c := New(server.URL+"/connector", time.Second)
+	err := c.SaveItems(context.Background(), "session", "", []map[string]any{{"id": "id"}})
+	if err == nil {
+		t.Fatal("SaveItems returned nil error for oversized success body")
+	}
+	if !strings.Contains(err.Error(), "response body exceeds") {
+		t.Fatalf("SaveItems error = %v", err)
+	}
+}
+
+type repeatedByteReader byte
+
+func (r repeatedByteReader) Read(p []byte) (int, error) {
+	for i := range p {
+		p[i] = byte(r)
+	}
+	return len(p), nil
 }

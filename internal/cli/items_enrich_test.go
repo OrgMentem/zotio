@@ -489,6 +489,25 @@ func TestReconstructAbstract(t *testing.T) {
 	}
 }
 
+func TestReconstructAbstractRejectsHugePosition(t *testing.T) {
+	if got := reconstructAbstract(map[string][]int{"x": {2_000_000_000}}); got != "" {
+		t.Fatalf("got %q, want empty abstract", got)
+	}
+}
+
+func TestReconstructAbstractIgnoresNegativePositions(t *testing.T) {
+	if got := reconstructAbstract(map[string][]int{"drop": {-1}, "Hello": {0}, "world": {1}}); got != "Hello world" {
+		t.Fatalf("got %q, want 'Hello world'", got)
+	}
+}
+
+func TestReconstructAbstractRejectsTooManyPositions(t *testing.T) {
+	positions := make([]int, maxOpenAlexAbstractPairs+1)
+	if got := reconstructAbstract(map[string][]int{"x": positions}); got != "" {
+		t.Fatalf("got %q, want empty abstract", got)
+	}
+}
+
 func TestResolveAbstractViaOpenAlex(t *testing.T) {
 	srv := openAlexWorkServer(t, `{"results":[{"doi":"https://doi.org/10.1/x","title":"T","abstract_inverted_index":{"We":[0],"propose":[1],"Transformer":[2]}}]}`)
 	withBase(t, &enrichOpenAlexBase, srv.URL)

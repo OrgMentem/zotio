@@ -10,6 +10,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync/atomic"
@@ -81,7 +82,7 @@ func TestEmitChanges_ChangeFeed(t *testing.T) {
 
 	// Baseline poll: no cursor yet -> full set as upserts, no deletions.
 	var buf bytes.Buffer
-	if err := emitChanges(c, db, "items", "/items", DeliverSink{Scheme: "stdout"}, &buf); err != nil {
+	if err := emitChanges(context.Background(), c, db, "items", "/items", DeliverSink{Scheme: "stdout"}, &buf); err != nil {
 		t.Fatalf("baseline emitChanges: %v", err)
 	}
 	events := ndjsonEvents(t, buf.String())
@@ -104,7 +105,7 @@ func TestEmitChanges_ChangeFeed(t *testing.T) {
 
 	// Delta poll: since=10 -> one upsert (A) plus one delete (B).
 	buf.Reset()
-	if err := emitChanges(c, db, "items", "/items", DeliverSink{Scheme: "stdout"}, &buf); err != nil {
+	if err := emitChanges(context.Background(), c, db, "items", "/items", DeliverSink{Scheme: "stdout"}, &buf); err != nil {
 		t.Fatalf("delta emitChanges: %v", err)
 	}
 	events = ndjsonEvents(t, buf.String())
@@ -161,7 +162,7 @@ func TestEmitChanges_WebhookDelivery(t *testing.T) {
 	t.Cleanup(func() { allowPrivateOutboundForTests = oldAllowPrivateOutbound })
 
 	var buf bytes.Buffer
-	if err := emitChanges(c, db, "items", "/items", DeliverSink{Scheme: "webhook", Target: hook.URL}, &buf); err != nil {
+	if err := emitChanges(context.Background(), c, db, "items", "/items", DeliverSink{Scheme: "webhook", Target: hook.URL}, &buf); err != nil {
 		t.Fatalf("emitChanges: %v", err)
 	}
 	if len(received) != 1 {
@@ -172,6 +173,39 @@ func TestEmitChanges_WebhookDelivery(t *testing.T) {
 	}
 	if !strings.Contains(buf.String(), `"key":"Z"`) {
 		t.Errorf("stdout missing event: %s", buf.String())
+	}
+}
+
+func TestEmitChangesFileSinkCreatesNestedParentDirs(t *testing.T) {
+	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Last-Modified-Version", "9")
+		_, _ = io.WriteString(w, `[{"key":"NESTED","version":9}]`)
+	}))
+	defer api.Close()
+
+	c := client.New(&config.Config{BaseURL: api.URL}, 5*time.Second, 0)
+	c.NoCache = true
+	db := tailTestStore(t)
+	target := filepath.Join(t.TempDir(), "nested", "private", "events.ndjson")
+
+	var buf bytes.Buffer
+	if err := emitChanges(context.Background(), c, db, "items", "/items", DeliverSink{Scheme: "file", Target: target}, &buf); err != nil {
+		t.Fatalf("emitChanges: %v", err)
+	}
+
+	data, err := os.ReadFile(target)
+	if err != nil {
+		t.Fatalf("reading file sink: %v", err)
+	}
+	if !strings.Contains(string(data), `"key":"NESTED"`) {
+		t.Fatalf("file sink data missing event: %s", data)
+	}
+	info, err := os.Stat(filepath.Dir(target))
+	if err != nil {
+		t.Fatalf("stat file sink parent: %v", err)
+	}
+	if got := info.Mode().Perm(); got != 0o700 {
+		t.Fatalf("file sink parent mode = %o, want 700", got)
 	}
 }
 

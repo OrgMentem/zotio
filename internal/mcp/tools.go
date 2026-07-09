@@ -328,7 +328,7 @@ func RegisterTools(s *server.MCPServer) {
 	// Search tool — faster than iterating list endpoints for finding specific items
 	s.AddTool(
 		mcplib.NewTool("search",
-			mcplib.WithDescription("Full-text search across all synced data. Faster than paginating list endpoints. Requires sync first."),
+			mcplib.WithDescription("Full-text search across all synced data. Faster than paginating list endpoints. Requires sync first. Large responses are bounded to the MCP tool-result budget."),
 			mcplib.WithString("query", mcplib.Required(), mcplib.Description("Search query (supports FTS5 syntax: AND, OR, NOT, quotes for phrases)")),
 			mcplib.WithNumber("limit", mcplib.Description("Max results (default 25)")),
 			mcplib.WithReadOnlyHintAnnotation(true),
@@ -339,7 +339,7 @@ func RegisterTools(s *server.MCPServer) {
 	// SQL tool — ad-hoc analysis on synced data without API calls
 	s.AddTool(
 		mcplib.NewTool("sql",
-			mcplib.WithDescription("Run read-only SQL against local database. Use for ad-hoc analysis, aggregations, and joins across synced resources. Requires sync first."),
+			mcplib.WithDescription("Run read-only SQL against local database. Use for ad-hoc analysis, aggregations, and joins across synced resources. Requires sync first. Returns a JSON object with rows, truncated, and row_limit; large responses are bounded to the MCP tool-result budget."),
 			mcplib.WithString("query", mcplib.Required(), mcplib.Description("SQL query (SELECT or WITH...SELECT). Tables match resource names.")),
 			mcplib.WithReadOnlyHintAnnotation(true),
 			mcplib.WithDestructiveHintAnnotation(false),
@@ -603,8 +603,11 @@ func handleSearch(ctx context.Context, req mcplib.CallToolRequest) (*mcplib.Call
 		return mcplib.NewToolResultError(fmt.Sprintf("search failed: %v", err)), nil
 	}
 
-	data, _ := json.MarshalIndent(results, "", "  ")
-	return mcplib.NewToolResultText(string(data)), nil
+	data, err := json.MarshalIndent(results, "", "  ")
+	if err != nil {
+		return mcplib.NewToolResultError(fmt.Sprintf("encoding search results: %v", err)), nil
+	}
+	return mcplib.NewToolResultText(bound.EndpointResponse("GET", data)), nil
 }
 
 // validateReadOnlyQuery gates the MCP sql tool. The agent contract advertised
@@ -726,6 +729,17 @@ func stripLeadingSQLNoise(query string) string {
 	}
 }
 
+const (
+	sqlQueryTimeout = 15 * time.Second
+	sqlRowLimit     = 5000
+)
+
+type sqlResultEnvelope struct {
+	Rows      []map[string]any `json:"rows"`
+	Truncated bool             `json:"truncated"`
+	RowLimit  int              `json:"row_limit"`
+}
+
 func handleSQL(ctx context.Context, req mcplib.CallToolRequest) (*mcplib.CallToolResult, error) {
 	args := req.GetArguments()
 	query, ok := args["query"].(string)
@@ -743,15 +757,23 @@ func handleSQL(ctx context.Context, req mcplib.CallToolRequest) (*mcplib.CallToo
 	}
 	defer db.Close()
 
-	rows, err := db.Query(query)
+	queryCtx, cancel := context.WithTimeout(ctx, sqlQueryTimeout)
+	defer cancel()
+
+	rows, err := db.QueryContext(queryCtx, query)
 	if err != nil {
 		return mcplib.NewToolResultError(fmt.Sprintf("query failed: %v", err)), nil
 	}
 	defer rows.Close()
 
 	cols, _ := rows.Columns()
-	var results []map[string]any
+	results := make([]map[string]any, 0)
+	truncated := false
 	for rows.Next() {
+		if len(results) >= sqlRowLimit {
+			truncated = true
+			break
+		}
 		values := make([]any, len(cols))
 		ptrs := make([]any, len(cols))
 		for i := range values {
@@ -766,9 +788,22 @@ func handleSQL(ctx context.Context, req mcplib.CallToolRequest) (*mcplib.CallToo
 		}
 		results = append(results, row)
 	}
+	if !truncated {
+		if err := rows.Err(); err != nil {
+			return mcplib.NewToolResultError(fmt.Sprintf("query failed: %v", err)), nil
+		}
+	}
 
-	data, _ := json.MarshalIndent(results, "", "  ")
-	return mcplib.NewToolResultText(string(data)), nil
+	payload := sqlResultEnvelope{
+		Rows:      results,
+		Truncated: truncated,
+		RowLimit:  sqlRowLimit,
+	}
+	data, err := json.MarshalIndent(payload, "", "  ")
+	if err != nil {
+		return mcplib.NewToolResultError(fmt.Sprintf("encoding query results: %v", err)), nil
+	}
+	return mcplib.NewToolResultText(bound.EndpointResponse("GET", data)), nil
 }
 
 func handleContext(_ context.Context, _ mcplib.CallToolRequest) (*mcplib.CallToolResult, error) {

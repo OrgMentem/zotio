@@ -128,11 +128,11 @@ func printReadingList(cmd *cobra.Command, result readingListResult) error {
 	for _, item := range result.Items {
 		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\n",
 			item.Key,
-			truncate(item.Title, 80),
-			item.Author,
-			item.Year,
-			item.DateAdded,
-			item.ItemType,
+			sanitizeForTerminal(truncate(item.Title, 80)),
+			sanitizeForTerminal(item.Author),
+			sanitizeForTerminal(item.Year),
+			sanitizeForTerminal(item.DateAdded),
+			sanitizeForTerminal(item.ItemType),
 		)
 	}
 	return tw.Flush()
