@@ -21,13 +21,6 @@ type tagRenameUpdate struct {
 	tags    []any
 }
 
-type tagRenameResult struct {
-	Key    string `json:"key"`
-	OldTag string `json:"old_tag"`
-	NewTag string `json:"new_tag"`
-	Status string `json:"status"`
-}
-
 func newTagsRenameCmd(flags *rootFlags) *cobra.Command {
 	var flagFrom string
 	var flagTo string
@@ -100,10 +93,6 @@ func newTagsRenameCmd(flags *rootFlags) *cobra.Command {
 	cmd.Flags().IntVar(&flagLimit, "limit", 100, "Maximum number of items to process per page")
 
 	return cmd
-}
-
-func renameTag(c *client.Client, oldName, newName string) (string, any, error) {
-	return renameTagWithLimit(c, oldName, newName, 100)
 }
 
 func buildTagRenameOps(updates []tagRenameUpdate, oldName, newName string, apply func(tagRenameUpdate) (string, any, error)) []mutation.Op {
@@ -187,39 +176,6 @@ func listTagRenameUpdates(c *client.Client, oldName, newName string, limit int) 
 		}
 	}
 	return all, nil
-}
-
-func renameTagWithLimit(c *client.Client, oldName, newName string, limit int) (string, any, error) {
-	updates, err := listTagRenameUpdates(c, oldName, newName, limit)
-	if err != nil {
-		return "failed", err.Error(), err
-	}
-	if len(updates) == 0 {
-		return "no_op", []tagRenameResult{}, nil
-	}
-
-	results := make([]tagRenameResult, 0, len(updates))
-	for _, update := range updates {
-		path := replacePathParam("/items/{itemKey}", "itemKey", update.key)
-		_, _, err := c.Patch(path, map[string]any{
-			"version": update.version,
-			"tags":    update.tags,
-		})
-		if err != nil {
-			var apiErr *client.APIError
-			if errors.As(err, &apiErr) && (apiErr.StatusCode == http.StatusPreconditionFailed || apiErr.StatusCode == http.StatusPreconditionRequired) {
-				return "conflict", apiErr.Body, err
-			}
-			return "failed", err.Error(), err
-		}
-		results = append(results, tagRenameResult{
-			Key:    update.key,
-			OldTag: oldName,
-			NewTag: newName,
-			Status: "updated",
-		})
-	}
-	return "applied", results, nil
 }
 
 func buildTagRenameUpdates(data json.RawMessage, oldTag, newTag string) ([]tagRenameUpdate, error) {

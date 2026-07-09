@@ -75,21 +75,34 @@ func newTagsAuditFixCmd(flags *rootFlags) *cobra.Command {
 			if !ok {
 				return nil
 			}
-			var renameApply func(oldName, newName string) (string, any, error)
-			ops := buildTagAuditFixOps(plans, func(oldName, newName string) (string, any, error) {
+			var renameApply func(tagRenameUpdate) (string, any, error)
+			rawDB, err := openStoreForRead(cmd.Context(), "zotio")
+			if err != nil {
+				return fmt.Errorf("opening database: %w", err)
+			}
+			if rawDB == nil {
+				fmt.Fprintln(cmd.OutOrStdout(), "Run 'zotio sync' first.")
+				return nil
+			}
+			defer rawDB.Close()
+			ops, err := buildTagAuditFixOps(localQueryStore{rawDB}, plans, func(update tagRenameUpdate) (string, any, error) {
 				if renameApply == nil {
-					return "failed", "write client not initialized", fmt.Errorf("write client not initialized")
+					err := fmt.Errorf("write client not initialized")
+					return "failed", err.Error(), err
 				}
-				return renameApply(oldName, newName)
+				return renameApply(update)
 			})
+			if err != nil {
+				return err
+			}
 
 			if resolveMutationMode(flags).Apply && len(ops) > 0 {
 				c, err := flags.newWriteClient()
 				if err != nil {
 					return err
 				}
-				renameApply = func(oldName, newName string) (string, any, error) {
-					return renameTag(c, oldName, newName)
+				renameApply = func(update tagRenameUpdate) (string, any, error) {
+					return applyTagRenameUpdate(c, update)
 				}
 			}
 
@@ -99,7 +112,7 @@ func newTagsAuditFixCmd(flags *rootFlags) *cobra.Command {
 				if env.Mode == "apply" {
 					action = "fixed"
 				}
-				return fmt.Sprintf("%s %d tag alias(es)", action, env.Plan.Summary.Planned)
+				return fmt.Sprintf("%s %d tag item write(s)", action, env.Plan.Summary.Planned)
 			})
 			if renderErr != nil {
 				return renderErr
@@ -148,26 +161,65 @@ func readTagAuditPlans(cmd *cobra.Command) (int, []tagAuditPlan, bool, error) {
 	return len(tagRows), buildTagAuditPlans(tagRows, countRows), true, nil
 }
 
-func buildTagAuditFixOps(plans []tagAuditPlan, renameApply func(oldName, newName string) (string, any, error)) []mutation.Op {
+const tagAuditAliasItemsQuery = `
+SELECT data
+FROM resources r
+WHERE r.resource_type = 'items'
+	AND EXISTS (
+		SELECT 1
+		FROM json_each(json_extract(r.data, '$.data.tags')) AS tags
+		WHERE json_extract(tags.value, '$.tag') = ?
+	)
+ORDER BY r.id ASC`
+
+func buildTagAuditFixOps(db localQueryStore, plans []tagAuditPlan, apply func(tagRenameUpdate) (string, any, error)) ([]mutation.Op, error) {
 	ops := make([]mutation.Op, 0)
 	for _, plan := range plans {
 		canonical := plan.Canonical
 		for _, alias := range plan.Aliases {
-			alias := alias
-			op := mutation.Op{
-				ID:          "tags.audit.fix:" + alias + "->" + canonical,
-				Key:         alias,
-				Kind:        "tag_rename",
-				Changes:     []mutation.Change{{Field: "tag", Remove: alias, Add: canonical}},
-				Destructive: false,
-				Apply: func() (string, any, error) {
-					return renameApply(alias, canonical)
-				},
+			updates, err := tagAuditFixUpdates(db, alias, canonical)
+			if err != nil {
+				return nil, fmt.Errorf("planning tag audit fix for %q: %w", alias, err)
 			}
-			ops = append(ops, op)
+			for _, update := range updates {
+				update := update
+				alias := alias
+				op := mutation.Op{
+					ID:              "tags.audit.fix:" + alias + ":" + update.key,
+					Key:             update.key,
+					Kind:            "tag_rename",
+					ExpectedVersion: mutationExpectedVersion(update.version),
+					Changes:         []mutation.Change{{Field: "tag", Remove: alias, Add: canonical}},
+					Destructive:     false,
+					Apply: func() (string, any, error) {
+						return apply(update)
+					},
+				}
+				ops = append(ops, op)
+			}
 		}
 	}
-	return ops
+	return ops, nil
+}
+
+func tagAuditFixUpdates(db localQueryStore, alias, canonical string) ([]tagRenameUpdate, error) {
+	rows, err := db.QueryRaw(tagAuditAliasItemsQuery, alias)
+	if err != nil {
+		return nil, err
+	}
+	items := make([]json.RawMessage, 0, len(rows))
+	for _, row := range rows {
+		raw := sqlStringValue(row["data"])
+		if raw == "" {
+			continue
+		}
+		items = append(items, json.RawMessage(raw))
+	}
+	data, err := json.Marshal(items)
+	if err != nil {
+		return nil, err
+	}
+	return buildTagRenameUpdates(data, alias, canonical)
 }
 
 func buildTagAuditPlans(tagRows, countRows []map[string]any) []tagAuditPlan {

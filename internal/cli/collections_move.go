@@ -5,6 +5,7 @@ package cli
 import (
 	"encoding/json"
 	"fmt"
+	"strconv"
 
 	"github.com/spf13/cobra"
 )
@@ -24,7 +25,13 @@ func newCollectionsMoveCmd(flags *rootFlags) *cobra.Command {
 				return fmt.Errorf("required flag %q not set", "to")
 			}
 
-			if flags.dryRun {
+			parentCollection := any(flagTo)
+			if flagTo == "" || flagTo == "root" {
+				parentCollection = false
+			}
+			path := replacePathParam("/collections/{collectionKey}", "collectionKey", args[0])
+
+			if !resolveMutationMode(flags).Apply {
 				if flags.quiet {
 					return nil
 				}
@@ -32,17 +39,20 @@ func newCollectionsMoveCmd(flags *rootFlags) *cobra.Command {
 				return nil
 			}
 
-			c, err := flags.newClient()
+			c, err := flags.newWriteClient()
 			if err != nil {
 				return err
 			}
 
-			parentCollection := any(flagTo)
-			if flagTo == "" || flagTo == "root" {
-				parentCollection = false
+			_, version, err := c.GetWithVersion(path, nil)
+			if err != nil {
+				return classifyAPIError(err, flags)
 			}
-			path := replacePathParam("/collections/{collectionKey}", "collectionKey", args[0])
-			data, statusCode, err := c.Put(path, map[string]any{"parentCollection": parentCollection})
+			headers := map[string]string{}
+			if version > 0 {
+				headers["If-Unmodified-Since-Version"] = strconv.Itoa(version)
+			}
+			data, statusCode, err := c.PutWithHeaders(path, map[string]any{"parentCollection": parentCollection}, headers)
 			if err != nil {
 				return classifyAPIError(err, flags)
 			}

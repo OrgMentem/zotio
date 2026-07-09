@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -96,24 +97,9 @@ func TestTagsAuditFixPreviewPlansRenamesWithoutWrites(t *testing.T) {
 
 func TestTagsAuditFixApplyRenamesEachAlias(t *testing.T) {
 	seedTagsAuditFixStore(t, duplicateTagAuditItems())
-	getCount := 0
 	patches := map[string]map[string]any{}
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.Method {
-		case http.MethodGet:
-			getCount++
-			if r.URL.Path != "/users/0/items" {
-				http.NotFound(w, r)
-				return
-			}
-			switch r.URL.Query().Get("tag") {
-			case "Data  Science":
-				_, _ = w.Write([]byte(`[{"key":"K3","version":7,"data":{"key":"K3","tags":[{"tag":"Data  Science","type":0},{"tag":"other","type":0}]}}]`))
-			case "data science":
-				_, _ = w.Write([]byte(`[{"key":"K2","version":8,"data":{"key":"K2","tags":[{"tag":"Data Science","type":0},{"tag":"data science","type":0}]}}]`))
-			default:
-				http.Error(w, "unexpected tag query", http.StatusBadRequest)
-			}
 		case http.MethodPatch:
 			var body map[string]any
 			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
@@ -132,8 +118,8 @@ func TestTagsAuditFixApplyRenamesEachAlias(t *testing.T) {
 	if err != nil {
 		t.Fatalf("tags audit fix apply: %v", err)
 	}
-	if getCount != 2 || len(patches) != 2 {
-		t.Fatalf("GETs=%d patches=%d, want 2 each", getCount, len(patches))
+	if len(patches) != 2 {
+		t.Fatalf("patches=%d, want 2", len(patches))
 	}
 	for _, path := range []string{"/users/0/items/K2", "/users/0/items/K3"} {
 		body, ok := patches[path]
@@ -164,6 +150,66 @@ func TestTagsAuditFixApplyRenamesEachAlias(t *testing.T) {
 		if item.Status != "applied" {
 			t.Errorf("result item = %+v, want applied", item)
 		}
+	}
+}
+
+func largeTagAuditItems() []json.RawMessage {
+	items := make([]json.RawMessage, 0, 901)
+	for i := range 301 {
+		key := fmt.Sprintf("C%03d", i)
+		items = append(items, json.RawMessage(fmt.Sprintf(`{"key":%q,"version":1,"data":{"key":%q,"tags":[{"tag":"Data Science","type":0}]}}`, key, key)))
+	}
+	for i := range 300 {
+		key := fmt.Sprintf("A%03d", i)
+		items = append(items, json.RawMessage(fmt.Sprintf(`{"key":%q,"version":2,"data":{"key":%q,"tags":[{"tag":"data science","type":0}]}}`, key, key)))
+	}
+	for i := range 300 {
+		key := fmt.Sprintf("B%03d", i)
+		items = append(items, json.RawMessage(fmt.Sprintf(`{"key":%q,"version":3,"data":{"key":%q,"tags":[{"tag":"Data  Science","type":0}]}}`, key, key)))
+	}
+	return items
+}
+
+func TestTagsAuditFixMaxChangesCountsItemWrites(t *testing.T) {
+	seedTagsAuditFixStore(t, largeTagAuditItems())
+	patches := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPatch {
+			http.Error(w, "unexpected request", http.StatusMethodNotAllowed)
+			return
+		}
+		patches++
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer srv.Close()
+
+	refused, refusedJSON, err := runTagsAuditFixCmd(t, &rootFlags{asJSON: true, yes: true, maxChanges: 500}, srv.URL)
+	if err == nil {
+		t.Fatal("tags audit fix apply succeeded, want max_changes_exceeded error")
+	}
+	if refused.OK || refused.Error == nil || refused.Error.Code != "max_changes_exceeded" {
+		t.Fatalf("refused envelope = %+v, want max_changes_exceeded", refused)
+	}
+	if refused.Plan.Summary.Planned != 600 || len(refused.Plan.Operations) != 600 {
+		t.Fatalf("refused plan = summary %+v len %d, want 600 item writes", refused.Plan.Summary, len(refused.Plan.Operations))
+	}
+	if !bytes.Contains([]byte(refusedJSON), []byte(`"planned": 600`)) {
+		t.Fatalf("preview JSON %q does not include planned item-write count 600", refusedJSON)
+	}
+	if patches != 0 {
+		t.Fatalf("refused apply made %d PATCH request(s), want 0", patches)
+	}
+
+	seedTagsAuditFixStore(t, largeTagAuditItems())
+	applied, _, err := runTagsAuditFixCmd(t, &rootFlags{asJSON: true, yes: true, maxChanges: 600}, srv.URL)
+	if err != nil {
+		t.Fatalf("tags audit fix apply at cap: %v", err)
+	}
+	if !applied.OK || applied.Result == nil || applied.Plan.Summary.Planned != 600 || applied.Result.Summary.Applied != 600 {
+		t.Fatalf("applied envelope = %+v, want 600 planned/applied item writes", applied)
+	}
+	if patches != 600 {
+		t.Fatalf("PATCH requests after allowed apply = %d, want 600", patches)
 	}
 }
 
