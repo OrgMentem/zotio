@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -193,7 +194,7 @@ func TestApplyEnrichProposal_ConflictStatusIsTyped(t *testing.T) {
 
 // seedEnrichStore writes one missing-DOI item to the canonical dbPath under the
 // test-isolated HOME.
-func seedEnrichStore(t *testing.T) localQueryStore {
+func seedEnrichStore(t *testing.T, extra ...string) localQueryStore {
 	t.Helper()
 	t.Setenv("HOME", t.TempDir())
 	t.Setenv("ZOTERO_CONFIG", filepath.Join(t.TempDir(), "missing.toml"))
@@ -202,8 +203,21 @@ func seedEnrichStore(t *testing.T) localQueryStore {
 	if err != nil {
 		t.Fatalf("open store: %v", err)
 	}
+	k1Data := map[string]any{
+		"key":      "K1",
+		"itemType": "journalArticle",
+		"title":    "Attention Is All You Need",
+		"creators": []any{map[string]any{"lastName": "Vaswani"}},
+	}
+	if len(extra) > 0 {
+		k1Data["extra"] = extra[0]
+	}
+	k1, err := json.Marshal(map[string]any{"key": "K1", "version": 9, "data": k1Data})
+	if err != nil {
+		t.Fatalf("marshal seed item: %v", err)
+	}
 	items := []json.RawMessage{
-		json.RawMessage(`{"key":"K1","version":9,"data":{"key":"K1","itemType":"journalArticle","title":"Attention Is All You Need","creators":[{"lastName":"Vaswani"}]}}`),
+		json.RawMessage(k1),
 		json.RawMessage(`{"key":"K2","version":3,"data":{"key":"K2","itemType":"journalArticle","title":"No Match In CrossRef Here"}}`),
 	}
 	if _, _, err := db.UpsertBatch("items", items); err != nil {
@@ -412,8 +426,12 @@ func TestItemsEnrichPreviewEnvelope(t *testing.T) {
 	if env.Plan.Summary.Planned != 1 || len(env.Plan.Operations) != 1 {
 		t.Fatalf("expected 1 planned proposal, got summary=%+v ops=%+v", env.Plan.Summary, env.Plan.Operations)
 	}
-	if got := env.Plan.Operations[0].Changes; len(got) != 1 || got[0].Field != "DOI" || got[0].Add != "10.1/attention" {
-		t.Errorf("proposal changes = %+v, want DOI add", got)
+	got := env.Plan.Operations[0].Changes
+	if len(got) != 2 || got[0].Field != "DOI" || got[0].Add != "10.1/attention" {
+		t.Errorf("proposal changes = %+v, want DOI add + extra provenance", got)
+	}
+	if got[1].Field != "extra" || !strings.Contains(fmt.Sprint(got[1].Add), "zotio: DOI added via") {
+		t.Errorf("second change = %+v, want extra provenance line in the preview", got[1])
 	}
 }
 
@@ -464,6 +482,72 @@ func TestItemsEnrichApplyViaAPI(t *testing.T) {
 	}
 	if env.Result.Summary.Applied != 1 || len(env.Result.Items) != 1 || env.Result.Items[0].Status != "applied" {
 		t.Errorf("expected one applied result, got %+v", env.Result)
+	}
+}
+
+func captureItemsEnrichApplyPatch(t *testing.T, extra ...string) map[string]any {
+	t.Helper()
+	crsrv := crossRefSearchServer(t, "Attention Is All You Need", "10.1/attention")
+	withBase(t, &enrichCrossRefBase, crsrv.URL)
+	_ = seedEnrichStore(t, extra...)
+
+	var gotBody map[string]any
+	zsrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPatch && r.URL.Path == "/items/K1" {
+			_ = json.NewDecoder(r.Body).Decode(&gotBody)
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("{}"))
+	}))
+	t.Cleanup(zsrv.Close)
+	t.Setenv("ZOTERO_BASE_URL", zsrv.URL)
+
+	flags := &rootFlags{asJSON: true, yes: true, maxChanges: -1}
+	cmd := newItemsEnrichCmd(flags)
+	cmd.SetArgs([]string{"--missing-doi", "--no-openalex", "--no-semantic-scholar"})
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetErr(&bytes.Buffer{})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("enrich apply: %v", err)
+	}
+	if gotBody == nil {
+		t.Fatal("Zotero server never received the PATCH")
+	}
+	return gotBody
+}
+
+func TestItemsEnrichApplyPreservesExistingExtra(t *testing.T) {
+	existingExtra := "Citation Key: smith2020\nsome user note"
+	gotBody := captureItemsEnrichApplyPatch(t, existingExtra)
+
+	want := existingExtra + "\n" + enrichProvenanceLine(&enrichProposal{Category: "missing_doi", Source: "CrossRef"})
+	if gotBody["extra"] != want {
+		t.Fatalf("patched extra = %q, want %q", gotBody["extra"], want)
+	}
+}
+
+func TestItemsEnrichApplyEmptyExtraWritesOnlyProvenance(t *testing.T) {
+	gotBody := captureItemsEnrichApplyPatch(t)
+
+	want := enrichProvenanceLine(&enrichProposal{Category: "missing_doi", Source: "CrossRef"})
+	if gotBody["extra"] != want {
+		t.Fatalf("patched extra = %q, want %q", gotBody["extra"], want)
+	}
+}
+
+func TestAppendEnrichProvenanceSameDayIdempotent(t *testing.T) {
+	p := enrichProposal{Category: "missing_doi", Source: "CrossRef"}
+	existing := "Citation Key: smith2020\n" + enrichProvenanceLine(&p)
+	p.extra = existing
+
+	got := appendEnrichProvenance(&p, &rootFlags{})
+	if got != existing {
+		t.Fatalf("appendEnrichProvenance duplicated same-day provenance: got %q, want %q", got, existing)
+	}
+	if strings.Count(got, enrichProvenanceLine(&p)) != 1 {
+		t.Fatalf("provenance count = %d, want 1 in %q", strings.Count(got, enrichProvenanceLine(&p)), got)
 	}
 }
 

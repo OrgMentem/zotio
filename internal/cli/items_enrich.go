@@ -62,7 +62,8 @@ type enrichProposal struct {
 	Fields     map[string]any `json:"fields,omitempty"`     // fields: field -> new value
 	Attachment map[string]any `json:"attachment,omitempty"` // attach: child item body
 	// Statuses now live in mutation.Result items, not proposal JSON.
-	version any // item version for the PATCH conflict guard (not serialized)
+	version any    // item version for the PATCH conflict guard (not serialized)
+	extra   string // item's current Extra so provenance appends instead of replacing (not serialized)
 }
 
 // enrichSkip records a candidate for which no confident proposal was produced.
@@ -429,6 +430,7 @@ func resolveEnrichment(ctx context.Context, httpClient *http.Client, category, k
 			Source: source, Note: "DOI " + doi,
 			Fields:  map[string]any{"DOI": doi},
 			version: version,
+			extra:   stringFromMap(data, "extra"),
 		}, ""
 
 	case "missing_abstract":
@@ -456,6 +458,7 @@ func resolveEnrichment(ctx context.Context, httpClient *http.Client, category, k
 			Source: source, Note: fmt.Sprintf("abstract (%d chars)", len(abstract)),
 			Fields:  map[string]any{"abstractNote": abstract},
 			version: version,
+			extra:   stringFromMap(data, "extra"),
 		}, ""
 
 	case "missing_pdf":
@@ -553,6 +556,9 @@ func enrichProposalChanges(p enrichProposal) []mutation.Change {
 		for _, key := range keys {
 			changes = append(changes, mutation.Change{Field: key, Add: p.Fields[key]})
 		}
+		// The PATCH also rewrites Extra to append the provenance line; surface
+		// that in the preview so consent covers every field the apply touches.
+		changes = append(changes, mutation.Change{Field: "extra", Add: enrichProvenanceLine(&p)})
 		return changes
 	case enrichActionAttach:
 		if url, ok := p.Attachment["url"]; ok {
@@ -588,29 +594,31 @@ func mutationExpectedVersion(version any) int {
 	}
 }
 
-// appendEnrichProvenance returns the new Extra value: the item's existing Extra
-// with a provenance line appended (so re-runs leave an audit trail).
-func appendEnrichProvenance(p *enrichProposal, flags *rootFlags) string {
+// enrichProvenanceLine is the audit-trail line appended to Extra on apply.
+func enrichProvenanceLine(p *enrichProposal) string {
 	field := "DOI"
 	if p.Category == "missing_abstract" {
 		field = "abstract"
 	}
-	line := fmt.Sprintf("zotio: %s added via %s on %s", field, p.Source, time.Now().UTC().Format("2006-01-02"))
-	existing := strings.TrimRight(currentExtra(p), "\n")
+	return fmt.Sprintf("zotio: %s added via %s on %s", field, p.Source, time.Now().UTC().Format("2006-01-02"))
+}
+
+// appendEnrichProvenance returns the new Extra value: the item's existing Extra
+// with the provenance line appended (so re-runs leave an audit trail). The
+// existing content is always preserved — Extra carries user data such as Better
+// BibTeX "Citation Key:" lines that a wholesale PATCH replace would destroy.
+func appendEnrichProvenance(p *enrichProposal, _ *rootFlags) string {
+	line := enrichProvenanceLine(p)
+	existing := strings.TrimRight(p.extra, "\n")
 	if existing == "" {
 		return line
 	}
-	return existing + "\n" + line
-}
-
-// currentExtra is set on the proposal's fields when known; enrichment patches
-// never include the original Extra, so this is a placeholder hook that returns
-// any Extra carried on the proposal (empty for field patches today).
-func currentExtra(p *enrichProposal) string {
-	if v, ok := p.Fields["extra"].(string); ok {
-		return v
+	for _, l := range strings.Split(existing, "\n") {
+		if l == line {
+			return existing // identical provenance already recorded (same-day re-run)
+		}
 	}
-	return ""
+	return existing + "\n" + line
 }
 
 // --- providers ---
