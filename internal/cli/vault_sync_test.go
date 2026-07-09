@@ -207,6 +207,93 @@ func TestMergeObsidianReplacesExistingBlock(t *testing.T) {
 	}
 }
 
+func TestMergeObsidianCRLFFrontmatterParsesAndStaysIdempotent(t *testing.T) {
+	existing := strings.Join([]string{
+		"---",
+		"zotero_key: K1",
+		"status: reading",
+		"---",
+		"",
+		"# Old Title",
+		"",
+		"## Annotations",
+		"",
+		vaultAnnBegin,
+		"- stale annotation",
+		vaultAnnEnd,
+		"",
+		"## Notes",
+		vaultNotesBegin,
+		"kept",
+		vaultNotesEnd,
+		"",
+	}, "\r\n")
+
+	fmLines, body, has := splitObsidianFrontmatter(existing)
+	if !has {
+		t.Fatalf("CRLF frontmatter not detected")
+	}
+	if len(fmLines) != 2 {
+		t.Fatalf("frontmatter lines = %d, want 2: %#v", len(fmLines), fmLines)
+	}
+	if got := frontmatterKeyValue(existing, "zotero_key"); got != "K1" {
+		t.Fatalf("zotero_key = %q, want K1", got)
+	}
+	if !strings.Contains(body, "\r\n## Annotations\r\n") {
+		t.Fatalf("body did not preserve CRLF prose region: %q", body)
+	}
+
+	meta := vaultMeta{Key: "K1", CiteKey: "vaswani2017", Title: "New Title"}
+	annBlock := renderAnnotationBlock([]annotationSummary{{Key: "AN1", ParentItem: "ATT1", Text: "fresh", Page: "5"}})
+	first, _ := mergeObsidianNote(existing, meta, managedObsidianFrontmatter(meta), annBlock)
+	second, _ := mergeObsidianNote(first, meta, managedObsidianFrontmatter(meta), annBlock)
+
+	if first != second {
+		t.Fatalf("CRLF note changed on second merge\nfirst:\n%s\nsecond:\n%s", first, second)
+	}
+	if strings.Count(second, vaultAnnBegin) != 1 || strings.Count(second, vaultAnnEnd) != 1 {
+		t.Fatalf("annotation region duplicated after second merge:\n%s", second)
+	}
+	if strings.Count(second, "zotero_key:") != 1 {
+		t.Fatalf("zotero_key duplicated after second merge:\n%s", second)
+	}
+	if !strings.Contains(second, "status: reading\r\n") {
+		t.Fatalf("user frontmatter line ending was not preserved:\n%s", second)
+	}
+}
+
+func TestSplitObsidianFrontmatterLFUnchanged(t *testing.T) {
+	existing := strings.Join([]string{
+		"---",
+		"title: T",
+		"zotero_key: K1",
+		"tags:",
+		"  - mytag",
+		"---",
+		"",
+		"# T",
+		"",
+		"Body.",
+		"",
+	}, "\n")
+
+	fmLines, body, has := splitObsidianFrontmatter(existing)
+	if !has {
+		t.Fatalf("LF frontmatter not detected")
+	}
+	wantFM := strings.Join([]string{"title: T", "zotero_key: K1", "tags:", "  - mytag"}, "\n")
+	if got := strings.Join(fmLines, "\n"); got != wantFM {
+		t.Fatalf("frontmatter lines = %q, want %q", got, wantFM)
+	}
+	wantBody := "# T\n\nBody.\n"
+	if body != wantBody {
+		t.Fatalf("body = %q, want %q", body, wantBody)
+	}
+	if got := frontmatterKeyValue(existing, "zotero_key"); got != "K1" {
+		t.Fatalf("LF zotero_key = %q, want K1", got)
+	}
+}
+
 func TestVaultSyncLogseqCreate(t *testing.T) {
 	seedVaultStore(t)
 	vault := filepath.Join(t.TempDir(), "vault")

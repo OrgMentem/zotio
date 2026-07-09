@@ -1034,11 +1034,11 @@ func replaceManagedBlock(body, annBlock string) string {
 
 func splitObsidianFrontmatter(s string) (fmLines []string, body string, has bool) {
 	lines := strings.Split(s, "\n")
-	if len(lines) == 0 || strings.TrimRight(lines[0], " \t") != "---" {
+	if len(lines) == 0 || strings.TrimRight(lines[0], " \t\r") != "---" {
 		return nil, s, false
 	}
 	for i := 1; i < len(lines); i++ {
-		if strings.TrimRight(lines[i], " \t") == "---" {
+		if strings.TrimRight(lines[i], " \t\r") == "---" {
 			body = strings.Join(lines[i+1:], "\n")
 			return lines[1:i], strings.TrimPrefix(body, "\n"), true
 		}

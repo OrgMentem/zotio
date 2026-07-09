@@ -29,6 +29,39 @@ type syncResult struct {
 	Duration time.Duration
 }
 
+func emitSyncEvent(v any) {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return
+	}
+	_, _ = os.Stdout.Write(append(b, '\n'))
+}
+
+func processDequeuedSyncResource(ctx context.Context, resource string, results chan<- syncResult, syncOne func(string) syncResult) bool {
+	if ctx.Err() != nil {
+		return false
+	}
+	results <- syncOne(resource)
+	return true
+}
+
+func runSyncWorker(ctx context.Context, work <-chan string, results chan<- syncResult, syncOne func(string) syncResult) {
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case resource, ok := <-work:
+			if !ok {
+				return
+			}
+			// Stop workers between resources when the sync context is canceled.
+			if !processDequeuedSyncResource(ctx, resource, results, syncOne) {
+				return
+			}
+		}
+	}
+}
+
 func newSyncCmd(flags *rootFlags) *cobra.Command {
 	var resources []string
 	var full bool
@@ -142,20 +175,9 @@ Exit codes & warnings:
 				wg.Add(1)
 				go func() {
 					defer wg.Done()
-					for {
-						select {
-						case <-ctx.Done():
-							return
-						case resource, ok := <-work:
-							if !ok {
-								return
-							}
-							// stop
-							// workers between resources when the sync context is canceled.
-							res := syncResource(c, db, resource, sinceVersion, full, maxPages, concurrency == 1)
-							results <- res
-						}
-					}
+					runSyncWorker(ctx, work, results, func(resource string) syncResult {
+						return syncResource(c, db, resource, sinceVersion, full, maxPages, concurrency == 1)
+					})
 				}()
 			}
 
@@ -235,8 +257,23 @@ Exit codes & warnings:
 						totalSynced, totalResources, elapsed.Seconds())
 				}
 			} else {
-				fmt.Fprintf(os.Stdout, `{"event":"sync_summary","total_records":%d,"resources":%d,"success":%d,"warned":%d,"errored":%d,"duration_ms":%d}`+"\n",
-					totalSynced, totalResources, successCount, warnCount, errCount, elapsed.Milliseconds())
+				emitSyncEvent(struct {
+					Event        string `json:"event"`
+					TotalRecords int    `json:"total_records"`
+					Resources    int    `json:"resources"`
+					Success      int    `json:"success"`
+					Warned       int    `json:"warned"`
+					Errored      int    `json:"errored"`
+					DurationMS   int64  `json:"duration_ms"`
+				}{
+					Event:        "sync_summary",
+					TotalRecords: totalSynced,
+					Resources:    totalResources,
+					Success:      successCount,
+					Warned:       warnCount,
+					Errored:      errCount,
+					DurationMS:   elapsed.Milliseconds(),
+				})
 			}
 
 			// Exit-code policy:
@@ -343,8 +380,15 @@ func emitFulltextWarning(msg string) {
 	if humanFriendly {
 		fmt.Fprintf(os.Stderr, "warning: %s\n", msg)
 	} else {
-		fmt.Fprintf(os.Stdout, `{"event":"sync_warning","reason":"fulltext","message":"%s"}`+"\n",
-			strings.ReplaceAll(msg, `"`, `\"`))
+		emitSyncEvent(struct {
+			Event   string `json:"event"`
+			Reason  string `json:"reason"`
+			Message string `json:"message"`
+		}{
+			Event:   "sync_warning",
+			Reason:  "fulltext",
+			Message: msg,
+		})
 	}
 }
 
@@ -380,7 +424,13 @@ func syncResource(c syncHTTPClient, db *store.Store, resource string, sinceVersi
 	started := time.Now()
 
 	if !humanFriendly {
-		fmt.Fprintf(os.Stdout, `{"event":"sync_start","resource":"%s"}`+"\n", resource)
+		emitSyncEvent(struct {
+			Event    string `json:"event"`
+			Resource string `json:"resource"`
+		}{
+			Event:    "sync_start",
+			Resource: resource,
+		})
 	}
 
 	path, err := syncResourcePath(resource)
@@ -455,13 +505,32 @@ func syncResource(c syncHTTPClient, db *store.Store, resource string, sinceVersi
 		if err != nil {
 			if w, ok := isSyncAccessWarning(err); ok {
 				if !humanFriendly {
-					fmt.Fprintf(os.Stdout, `{"event":"sync_warning","resource":"%s","status":%d,"reason":"%s","message":"%s"}`+"\n",
-						resource, w.Status, w.Reason, strings.ReplaceAll(w.Message, `"`, `\"`))
+					emitSyncEvent(struct {
+						Event    string `json:"event"`
+						Resource string `json:"resource"`
+						Status   int    `json:"status"`
+						Reason   string `json:"reason"`
+						Message  string `json:"message"`
+					}{
+						Event:    "sync_warning",
+						Resource: resource,
+						Status:   w.Status,
+						Reason:   w.Reason,
+						Message:  w.Message,
+					})
 				}
 				return syncResult{Resource: resource, Count: totalCount, Warn: fmt.Errorf("skipped %s: %s", resource, w.Reason), Duration: time.Since(started)}
 			}
 			if !humanFriendly {
-				fmt.Fprintf(os.Stdout, `{"event":"sync_error","resource":"%s","error":"%s"}`+"\n", resource, strings.ReplaceAll(err.Error(), `"`, `\"`))
+				emitSyncEvent(struct {
+					Event    string `json:"event"`
+					Resource string `json:"resource"`
+					Error    string `json:"error"`
+				}{
+					Event:    "sync_error",
+					Resource: resource,
+					Error:    err.Error(),
+				})
 			}
 			return syncResult{Resource: resource, Count: totalCount, Err: fmt.Errorf("fetching %s: %w", resource, err), Duration: time.Since(started)}
 		}
@@ -487,7 +556,15 @@ func syncResource(c syncHTTPClient, db *store.Store, resource string, sinceVersi
 			// Single object response - try to store as-is
 			if err := upsertSingleObject(db, resource, data); err != nil {
 				if !humanFriendly {
-					fmt.Fprintf(os.Stdout, `{"event":"sync_error","resource":"%s","error":"%s"}`+"\n", resource, strings.ReplaceAll(err.Error(), `"`, `\"`))
+					emitSyncEvent(struct {
+						Event    string `json:"event"`
+						Resource string `json:"resource"`
+						Error    string `json:"error"`
+					}{
+						Event:    "sync_error",
+						Resource: resource,
+						Error:    err.Error(),
+					})
 				}
 				return syncResult{Resource: resource, Err: err, Duration: time.Since(started)}
 			}
@@ -509,7 +586,15 @@ func syncResource(c syncHTTPClient, db *store.Store, resource string, sinceVersi
 		stored, extractFailures, err := upsertResourceBatch(db, resource, items)
 		if err != nil {
 			if !humanFriendly {
-				fmt.Fprintf(os.Stdout, `{"event":"sync_error","resource":"%s","error":"%s"}`+"\n", resource, strings.ReplaceAll(err.Error(), `"`, `\"`))
+				emitSyncEvent(struct {
+					Event    string `json:"event"`
+					Resource string `json:"resource"`
+					Error    string `json:"error"`
+				}{
+					Event:    "sync_error",
+					Resource: resource,
+					Error:    err.Error(),
+				})
 			}
 			return syncResult{Resource: resource, Count: totalCount, Err: fmt.Errorf("upserting batch for %s: %w", resource, err), Duration: time.Since(started)}
 		}
@@ -526,7 +611,19 @@ func syncResource(c syncHTTPClient, db *store.Store, resource string, sinceVersi
 			if humanFriendly {
 				fmt.Fprintf(os.Stderr, "warning: %s returned %d items but stored 0 — the local store will be empty for this resource. Likely cause: scalar item shape rather than objects with extractable IDs.\n", resource, len(items))
 			} else {
-				fmt.Fprintf(os.Stdout, `{"event":"sync_anomaly","resource":"%s","consumed":%d,"stored":0,"reason":"all_items_failed_id_extraction"}`+"\n", resource, len(items))
+				emitSyncEvent(struct {
+					Event    string `json:"event"`
+					Resource string `json:"resource"`
+					Consumed int    `json:"consumed"`
+					Stored   int    `json:"stored"`
+					Reason   string `json:"reason"`
+				}{
+					Event:    "sync_anomaly",
+					Resource: resource,
+					Consumed: len(items),
+					Stored:   0,
+					Reason:   "all_items_failed_id_extraction",
+				})
 			}
 			anomalyEmitted = true
 		} else if extractFailures > 0 && !anomalyEmitted {
@@ -537,7 +634,21 @@ func syncResource(c syncHTTPClient, db *store.Store, resource string, sinceVersi
 			if humanFriendly {
 				fmt.Fprintf(os.Stderr, "\nwarning: %s had %d item(s) on this page with no extractable primary key — those rows were dropped silently. Annotate the spec with x-resource-id to fix.\n", resource, extractFailures)
 			} else {
-				fmt.Fprintf(os.Stdout, `{"event":"sync_anomaly","resource":"%s","consumed":%d,"stored":%d,"count":%d,"reason":"primary_key_unresolved"}`+"\n", resource, len(items), stored, extractFailures)
+				emitSyncEvent(struct {
+					Event    string `json:"event"`
+					Resource string `json:"resource"`
+					Consumed int    `json:"consumed"`
+					Stored   int    `json:"stored"`
+					Count    int    `json:"count"`
+					Reason   string `json:"reason"`
+				}{
+					Event:    "sync_anomaly",
+					Resource: resource,
+					Consumed: len(items),
+					Stored:   stored,
+					Count:    extractFailures,
+					Reason:   "primary_key_unresolved",
+				})
 			}
 			anomalyEmitted = true
 		}
@@ -562,9 +673,27 @@ func syncResource(c syncHTTPClient, db *store.Store, resource string, sinceVersi
 			}
 		} else {
 			if currentRate > 0 {
-				fmt.Fprintf(os.Stdout, `{"event":"sync_progress","resource":"%s","fetched":%d,"rate_rps":%.1f}`+"\n", resource, atomic.LoadInt64(&progressCount), currentRate)
+				emitSyncEvent(struct {
+					Event    string  `json:"event"`
+					Resource string  `json:"resource"`
+					Fetched  int64   `json:"fetched"`
+					RateRPS  float64 `json:"rate_rps"`
+				}{
+					Event:    "sync_progress",
+					Resource: resource,
+					Fetched:  atomic.LoadInt64(&progressCount),
+					RateRPS:  currentRate,
+				})
 			} else {
-				fmt.Fprintf(os.Stdout, `{"event":"sync_progress","resource":"%s","fetched":%d}`+"\n", resource, atomic.LoadInt64(&progressCount))
+				emitSyncEvent(struct {
+					Event    string `json:"event"`
+					Resource string `json:"resource"`
+					Fetched  int64  `json:"fetched"`
+				}{
+					Event:    "sync_progress",
+					Resource: resource,
+					Fetched:  atomic.LoadInt64(&progressCount),
+				})
 			}
 		}
 
@@ -587,7 +716,17 @@ func syncResource(c syncHTTPClient, db *store.Store, resource string, sinceVersi
 			if humanFriendly {
 				fmt.Fprintf(os.Stderr, "\n  %s: reached --max-pages limit (%d pages, %d items)\n", resource, maxPages, totalCount)
 			} else {
-				fmt.Fprintf(os.Stdout, `{"event":"sync_warning","resource":"%s","reason":"max_pages_cap_hit","message":"reached --max-pages cap of %d; data may be truncated. Re-run with --max-pages 0 (unlimited) or higher to verify."}`+"\n", resource, maxPages)
+				emitSyncEvent(struct {
+					Event    string `json:"event"`
+					Resource string `json:"resource"`
+					Reason   string `json:"reason"`
+					Message  string `json:"message"`
+				}{
+					Event:    "sync_warning",
+					Resource: resource,
+					Reason:   "max_pages_cap_hit",
+					Message:  fmt.Sprintf("reached --max-pages cap of %d; data may be truncated. Re-run with --max-pages 0 (unlimited) or higher to verify.", maxPages),
+				})
 			}
 			break
 		}
@@ -601,7 +740,17 @@ func syncResource(c syncHTTPClient, db *store.Store, resource string, sinceVersi
 			if humanFriendly {
 				fmt.Fprintf(os.Stderr, "\n  %s: API returned the same next cursor across two pages; aborting to prevent budget waste.\n", resource)
 			} else {
-				fmt.Fprintf(os.Stdout, `{"event":"sync_warning","resource":"%s","reason":"stuck_pagination","message":"API returned the same next cursor across two pages for resource %s; aborting to prevent budget waste."}`+"\n", resource, resource)
+				emitSyncEvent(struct {
+					Event    string `json:"event"`
+					Resource string `json:"resource"`
+					Reason   string `json:"reason"`
+					Message  string `json:"message"`
+				}{
+					Event:    "sync_warning",
+					Resource: resource,
+					Reason:   "stuck_pagination",
+					Message:  fmt.Sprintf("API returned the same next cursor across two pages for resource %s; aborting to prevent budget waste.", resource),
+				})
 			}
 			break
 		}
@@ -632,12 +781,36 @@ func syncResource(c syncHTTPClient, db *store.Store, resource string, sinceVersi
 		if humanFriendly {
 			fmt.Fprintf(os.Stderr, "\nwarning: %s consumed %d items, extracted %d primary keys, but stored 0 rows — extraction succeeded yet nothing landed. Investigate FTS triggers / transaction rollback / encoding.\n", resource, consumedTotal, consumedTotal-extractFailureTotal)
 		} else {
-			fmt.Fprintf(os.Stdout, `{"event":"sync_anomaly","resource":"%s","consumed":%d,"stored":0,"extract_failures":%d,"reason":"stored_count_zero_after_extraction"}`+"\n", resource, consumedTotal, extractFailureTotal)
+			emitSyncEvent(struct {
+				Event           string `json:"event"`
+				Resource        string `json:"resource"`
+				Consumed        int    `json:"consumed"`
+				Stored          int    `json:"stored"`
+				ExtractFailures int    `json:"extract_failures"`
+				Reason          string `json:"reason"`
+			}{
+				Event:           "sync_anomaly",
+				Resource:        resource,
+				Consumed:        consumedTotal,
+				Stored:          0,
+				ExtractFailures: extractFailureTotal,
+				Reason:          "stored_count_zero_after_extraction",
+			})
 		}
 	}
 
 	if !humanFriendly {
-		fmt.Fprintf(os.Stdout, `{"event":"sync_complete","resource":"%s","total":%d,"duration_ms":%d}`+"\n", resource, totalCount, time.Since(started).Milliseconds())
+		emitSyncEvent(struct {
+			Event      string `json:"event"`
+			Resource   string `json:"resource"`
+			Total      int    `json:"total"`
+			DurationMS int64  `json:"duration_ms"`
+		}{
+			Event:      "sync_complete",
+			Resource:   resource,
+			Total:      totalCount,
+			DurationMS: time.Since(started).Milliseconds(),
+		})
 	}
 
 	return syncResult{Resource: resource, Count: totalCount, Duration: time.Since(started)}

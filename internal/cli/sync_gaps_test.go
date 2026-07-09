@@ -3,11 +3,14 @@
 package cli
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -374,6 +377,104 @@ func TestSyncResourceAccessDeniedReturnsWarning(t *testing.T) {
 		t.Fatalf("access denied count = %d, want 0", result.Count)
 	}
 	syncTestAssertStoreCount(t, db, "items", 0)
+}
+
+func TestSyncResourceErrorEventEscapesControlCharacters(t *testing.T) {
+	syncTestWithHumanFriendly(t, false)
+	wantErr := "failed with backslash \\\nraw escape \x1b byte"
+	db := syncTestOpenStore(t)
+	defer db.Close()
+
+	lines := captureSyncStdoutLines(t, func() {
+		result := syncResource(syncTestErrorClient{err: fmt.Errorf("%s", wantErr)}, db, "items", 0, false, 0, false)
+		if result.Err == nil {
+			t.Fatal("syncResource Err = nil, want error")
+		}
+	})
+	if len(lines) != 2 {
+		t.Fatalf("stdout lines = %d (%q), want sync_start and one sync_error line", len(lines), bytes.Join(lines, []byte("|")))
+	}
+
+	var event struct {
+		Event    string `json:"event"`
+		Resource string `json:"resource"`
+		Error    string `json:"error"`
+	}
+	if err := json.Unmarshal(lines[1], &event); err != nil {
+		t.Fatalf("sync_error line is not valid JSON: %v; line=%q", err, lines[1])
+	}
+	if event.Event != "sync_error" || event.Resource != "items" || event.Error != wantErr {
+		t.Fatalf("sync_error event = %#v, want event sync_error resource items error %q", event, wantErr)
+	}
+}
+
+func TestProcessDequeuedSyncResourceStopsAfterCancellation(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	results := make(chan syncResult, 1)
+	called := false
+
+	if processDequeuedSyncResource(ctx, "items", results, func(resource string) syncResult {
+		called = true
+		return syncResult{Resource: resource, Count: 1}
+	}) {
+		t.Fatal("processDequeuedSyncResource returned true for canceled context")
+	}
+	if called {
+		t.Fatal("sync function was called after context cancellation")
+	}
+	select {
+	case result := <-results:
+		t.Fatalf("unexpected sync result after cancellation: %#v", result)
+	default:
+	}
+
+	activeResults := make(chan syncResult, 1)
+	if !processDequeuedSyncResource(context.Background(), "items", activeResults, func(resource string) syncResult {
+		return syncResult{Resource: resource, Count: 1}
+	}) {
+		t.Fatal("processDequeuedSyncResource returned false for active context")
+	}
+	if got := <-activeResults; got.Resource != "items" || got.Count != 1 {
+		t.Fatalf("active sync result = %#v, want items count 1", got)
+	}
+}
+
+type syncTestErrorClient struct {
+	err error
+}
+
+func (c syncTestErrorClient) GetWithVersion(string, map[string]string) (json.RawMessage, int, error) {
+	return nil, 0, c.err
+}
+
+func (c syncTestErrorClient) RateLimit() float64 {
+	return 0
+}
+
+func captureSyncStdoutLines(t *testing.T, fn func()) [][]byte {
+	t.Helper()
+	oldStdout := os.Stdout
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("pipe stdout: %v", err)
+	}
+	os.Stdout = w
+	defer func() { os.Stdout = oldStdout }()
+
+	fn()
+
+	if err := w.Close(); err != nil {
+		t.Fatalf("close stdout writer: %v", err)
+	}
+	out, err := io.ReadAll(r)
+	if err != nil {
+		t.Fatalf("read stdout: %v", err)
+	}
+	if err := r.Close(); err != nil {
+		t.Fatalf("close stdout reader: %v", err)
+	}
+	return bytes.Split(bytes.TrimSuffix(out, []byte("\n")), []byte("\n"))
 }
 
 func syncTestWithHumanFriendly(t *testing.T, value bool) {
