@@ -4,6 +4,28 @@ Notable changes to zotio. Format follows [Keep a Changelog](https://keepachangel
 
 ## [Unreleased]
 
+## [0.4.0] — 2026-07-09
+
+### Security
+- Redirect handling now strips the Zotero API key/Authorization header on any scheme-or-host change (previously an https→http downgrade on the same host kept the credential).
+- Webhook delivery (`workflow run`, `watch --health`) and feedback submission now validate and dial the destination IP together, closing a DNS-rebinding SSRF gap where the resolved address could change between validation and the request.
+- The local SQLite mirror and the mutation journal are now created with private permissions (`0700` directories, `0600` files, with a defensive `chmod` on pre-existing paths), matching the existing API response cache.
+- `zotio-mcp --mcp-auth-token <value>` now refuses a literal token (visible in `ps`/shell history) with guidance; use the new `--mcp-auth-token-file` or `ZOTIO_MCP_TOKEN` instead.
+- `zotio doctor` redacts userinfo passwords and token-like query parameters (`token`, `key`, `api_key`, `secret`, `password`, `auth`) from the reported base URL.
+- OpenAlex abstract reconstruction (`items enrich`) rejects out-of-range word positions instead of sizing an allocation directly from provider-controlled input.
+- Terminal table/card output strips C0 control bytes and DEL from synced item metadata, closing an ANSI/OSC terminal-escape injection path.
+- The MCP `sql` tool now runs under a 15s deadline with a 5000-row cap (`{rows, truncated, row_limit}` response envelope); `sql` and `search` results are now clamped through the same response-budget limit as typed MCP tools.
+
+### Fixed
+- The API response cache key now includes request headers, so header-varying `GetWithHeaders` calls no longer collide.
+- `collections move` now requires `--yes` to apply (preview makes no HTTP call) and sends a version-checked write, matching `items move`.
+- `tags audit fix --max-changes` now counts actual per-item writes instead of tag aliases, so a popular alias can no longer slip thousands of writes past a small approved cap.
+- The `sync` worker pool now checks for cancellation immediately after dequeuing a resource, so a canceled sync can no longer start another long resource pass.
+- `sync` NDJSON events are now built with `encoding/json` instead of hand-escaped strings; control characters or backslashes in error messages no longer corrupt the event stream.
+- `vault` sync now recognizes CRLF frontmatter delimiters, fixing key extraction and duplicate notes on Windows-synced vaults.
+- `tail`'s file sink now creates missing parent directories instead of silently dropping events.
+- The connector client no longer disables the shared HTTP client's timeout as a side effect of a single recognition request; its 2xx response reads are now capped instead of unbounded.
+
 ### Changed
 - MCP server environment variables were renamed: `PP_MCP_SURFACE` → `ZOTIO_MCP_SURFACE` and `PP_MCP_TRANSPORT` → `ZOTIO_MCP_TRANSPORT`. The old `PP_*` names are no longer recognized.
 - Cobra command annotation keys surfaced through `agent-context` were renamed from the `pp:` prefix to `zotio:` (e.g. `zotio:endpoint`, `zotio:method`, `zotio:path`, `zotio:destructive`).
@@ -66,7 +88,8 @@ First tagged release: the trust-and-automation layer for Zotero.
 - **Onboarding** — `zotio init` guided setup (Zotero detection, local API, key, first sync, health check).
 - Release engineering: goreleaser builds for 6 platforms, cosign-signed checksums, SBOMs, Homebrew tap.
 
-[Unreleased]: https://github.com/OrgMentem/zotio/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/OrgMentem/zotio/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/OrgMentem/zotio/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/OrgMentem/zotio/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/OrgMentem/zotio/compare/v0.1.2...v0.2.0
 [0.1.2]: https://github.com/OrgMentem/zotio/compare/v0.1.1...v0.1.2
