@@ -221,6 +221,18 @@ func RegisterResources(s *server.MCPServer) {
 			return jsonContents(req.Params.URI, string(data)), nil
 		},
 	)
+	s.AddResourceTemplate(
+		mcplib.NewResourceTemplate("zotero://items/{key}/related", "Item related",
+			mcplib.WithTemplateDescription("An item's outgoing and incoming related-item edges from the local store (bounded).")),
+		func(_ context.Context, req mcplib.ReadResourceRequest) ([]mcplib.ResourceContents, error) {
+			key := strings.TrimSuffix(strings.TrimPrefix(req.Params.URI, "zotero://items/"), "/related")
+			data, err := cli.ItemRelatedJSON(key)
+			if err != nil {
+				return nil, err
+			}
+			return jsonContents(req.Params.URI, string(data)), nil
+		},
+	)
 }
 
 // RegisterPrompts registers guided workflow prompts so hosts can offer common

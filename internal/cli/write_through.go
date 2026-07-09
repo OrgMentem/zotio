@@ -134,15 +134,18 @@ func dropStaleItemVersion(item map[string]any) {
 }
 
 // applyChangeToItemData forward-applies one change to an item's data map. It
-// handles tag/collection membership (scalar values only) and scalar field
-// set/clear; anything else (bulk []string adds, "deleted"/trash, structural
-// edits) returns false so the caller skips write-through for that item.
+// handles tag/collection membership (scalar values only), creator display-name
+// renames over the ordered creators array, and scalar field set/clear; anything
+// else (bulk []string adds, "deleted"/trash, structural edits) returns false so
+// the caller skips write-through for that item.
 func applyChangeToItemData(data map[string]any, c mutation.Change) bool {
 	switch c.Field {
 	case "tags":
 		return applyTagChangeToData(data, c)
 	case "collections":
 		return applyCollectionChangeToData(data, c)
+	case "creators":
+		return applyCreatorRenameChangeToData(data, c)
 	default:
 		if c.Add != nil {
 			s, ok := c.Add.(string)
@@ -196,6 +199,38 @@ func applyTagChangeToData(data map[string]any, c mutation.Change) bool {
 		tags = kept
 	}
 	data["tags"] = tags
+	return true
+}
+
+func applyCreatorRenameChangeToData(data map[string]any, c mutation.Change) bool {
+	oldName, ok := c.Remove.(string)
+	if !ok || oldName == "" {
+		return false
+	}
+	newName, ok := c.Add.(string)
+	if !ok || newName == "" {
+		return false
+	}
+	rawCreators, _ := data["creators"].([]any)
+	renamed := make([]any, 0, len(rawCreators))
+	changed := false
+	for _, rawCreator := range rawCreators {
+		creator, ok := rawCreator.(map[string]any)
+		if !ok {
+			renamed = append(renamed, rawCreator)
+			continue
+		}
+		copied := copyCreatorObject(creator)
+		if creatorDisplayNameFromObject(copied) == oldName {
+			rewriteCreatorDisplayName(copied, newName)
+			changed = true
+		}
+		renamed = append(renamed, copied)
+	}
+	if !changed {
+		return false
+	}
+	data["creators"] = renamed
 	return true
 }
 

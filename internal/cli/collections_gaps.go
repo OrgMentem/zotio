@@ -4,13 +4,10 @@ package cli
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/url"
-	"sort"
 	"strings"
-	"time"
 
 	"github.com/spf13/cobra"
 )
@@ -74,7 +71,7 @@ func newCollectionsGapsCmd(flags *rootFlags) *cobra.Command {
 			}
 			defer rawDB.Close()
 
-			report, err := buildCollectionGapsReport(cmd.Context(), localQueryStore{rawDB}, &http.Client{Timeout: enrichTimeout(flags.timeout)}, args[0], flagLimit, flagTop)
+			report, err := buildCollectionGapsReportWithCache(cmd.Context(), localQueryStore{rawDB}, &http.Client{Timeout: enrichTimeout(flags.timeout)}, newProviderJSONCache(flags.noCache), args[0], flagLimit, flagTop)
 			if err != nil {
 				return err
 			}
@@ -91,6 +88,11 @@ func newCollectionsGapsCmd(flags *rootFlags) *cobra.Command {
 
 // aggregate references, exclude whole-library DOI holdings, and rank missing cited DOIs.
 func buildCollectionGapsReport(ctx context.Context, db localQueryStore, httpClient *http.Client, collectionKey string, limit int, top int) (collectionGapsReport, error) {
+	return buildCollectionGapsReportWithCache(ctx, db, httpClient, nil, collectionKey, limit, top)
+}
+
+// aggregate references, exclude whole-library DOI holdings, and rank missing cited DOIs.
+func buildCollectionGapsReportWithCache(ctx context.Context, db localQueryStore, httpClient *http.Client, providerCache *providerJSONCache, collectionKey string, limit int, top int) (collectionGapsReport, error) {
 	items, err := queryCollectionGapItems(db, collectionKey, limit)
 	if err != nil {
 		return collectionGapsReport{}, fmt.Errorf("querying collection DOI items: %w", err)
@@ -100,45 +102,24 @@ func buildCollectionGapsReport(ctx context.Context, db localQueryStore, httpClie
 		return collectionGapsReport{}, fmt.Errorf("querying library DOIs: %w", err)
 	}
 
-	counts := map[string]int{}
-	titles := map[string]string{}
-	for i, item := range items {
-		if i > 0 {
-			if err := sleepWithContext(ctx, 200*time.Millisecond); err != nil {
-				return collectionGapsReport{}, err
-			}
-		}
-		refs, refTitles, err := fetchOutgoingReferenceDOIs(ctx, httpClient, item.DOI)
-		if err != nil {
-			return collectionGapsReport{}, apiErr(fmt.Errorf("fetching references for DOI %s: %w", item.DOI, err))
-		}
-		for _, ref := range refs {
-			doi := normalizedGapDOI(ref)
-			if doi == "" {
-				continue
-			}
-			counts[doi]++
-			if title := strings.TrimSpace(refTitles[doi]); title != "" && titles[doi] == "" {
-				titles[doi] = title
-			}
-		}
+	sources := make([]referenceSourceItem, 0, len(items))
+	for _, item := range items {
+		sources = append(sources, referenceSourceItem(item))
+	}
+	agg, err := buildReferenceAggregate(ctx, httpClient, sources, referenceFetchOptions{Cache: providerCache})
+	if err != nil {
+		return collectionGapsReport{}, err
 	}
 
 	alreadyInLibrary := 0
-	candidates := make([]collectionGapRow, 0, len(counts))
-	for doi, count := range counts {
-		if libraryDOIs[doi] {
+	candidates := make([]collectionGapRow, 0, len(agg.Candidates))
+	for _, candidate := range agg.Candidates {
+		if libraryDOIs[candidate.DOI] {
 			alreadyInLibrary++
 			continue
 		}
-		candidates = append(candidates, collectionGapRow{Count: count, DOI: doi, Title: titles[doi], Action: "zotio import doi " + doi})
+		candidates = append(candidates, collectionGapRow{Count: candidate.Count, DOI: candidate.DOI, Title: candidate.Title, Action: "zotio import doi " + candidate.DOI})
 	}
-	sort.Slice(candidates, func(i, j int) bool {
-		if candidates[i].Count != candidates[j].Count {
-			return candidates[i].Count > candidates[j].Count
-		}
-		return candidates[i].DOI < candidates[j].DOI
-	})
 	if top > len(candidates) {
 		top = len(candidates)
 	}
@@ -146,20 +127,16 @@ func buildCollectionGapsReport(ctx context.Context, db localQueryStore, httpClie
 	for i := range rows {
 		rows[i].Rank = i + 1
 		if rows[i].Title == "" {
-			rows[i].Title = fetchGapTitleFromCrossRef(ctx, httpClient, rows[i].DOI)
+			rows[i].Title = fetchGapTitleFromCrossRef(ctx, httpClient, rows[i].DOI, providerCache)
 		}
 	}
 
-	referencesSeen := 0
-	for _, count := range counts {
-		referencesSeen += count
-	}
 	return collectionGapsReport{
 		CollectionKey: collectionKey,
 		Summary: collectionGapsSummary{
 			ItemsScanned:     len(items),
-			ReferencesSeen:   referencesSeen,
-			UniqueCitedDOIs:  len(counts),
+			ReferencesSeen:   agg.ReferencesSeen,
+			UniqueCitedDOIs:  agg.UniqueCitedDOIs,
 			AlreadyInLibrary: alreadyInLibrary,
 			Gaps:             len(candidates),
 		},
@@ -221,20 +198,20 @@ WHERE resource_type = 'items'
 
 // prefer OpenCitations COCI references and fall back to Semantic Scholar when COCI is empty or unavailable.
 func fetchOutgoingReferenceDOIs(ctx context.Context, httpClient *http.Client, doi string) ([]string, map[string]string, error) {
-	refs, err := fetchCOCIReferenceDOIs(ctx, httpClient, doi)
-	if err == nil && len(refs) > 0 {
-		return refs, map[string]string{}, nil
+	refs, err := fetchOutgoingReferences(ctx, httpClient, doi, referenceFetchOptions{})
+	if err != nil {
+		return nil, nil, err
 	}
-	return fetchSemanticScholarReferenceDOIs(ctx, httpClient, doi)
+	return refs.DOIs, refs.Titles, nil
 }
 
 type cociReference struct {
 	Cited string `json:"cited"`
 }
 
-func fetchCOCIReferenceDOIs(ctx context.Context, httpClient *http.Client, doi string) ([]string, error) {
+func fetchCOCIReferenceDOIs(ctx context.Context, httpClient *http.Client, doi string, providerCache *providerJSONCache) ([]string, error) {
 	var refs []cociReference
-	if err := getCappedProviderJSON(ctx, httpClient, collectionGapsOpenCitationsBase+"/references/"+url.PathEscape(doi), &refs); err != nil {
+	if err := getCappedProviderJSON(ctx, httpClient, providerCOCI, collectionGapsOpenCitationsBase+"/references/"+url.PathEscape(doi), providerCache, &refs); err != nil {
 		return nil, err
 	}
 	out := make([]string, 0, len(refs))
@@ -248,6 +225,7 @@ func fetchCOCIReferenceDOIs(ctx context.Context, httpClient *http.Client, doi st
 
 type semanticScholarReferencesResponse struct {
 	Data []semanticScholarReference `json:"data"`
+	Next int                        `json:"next,omitempty"`
 }
 
 type semanticScholarReference struct {
@@ -259,14 +237,14 @@ type semanticScholarReferencePaper struct {
 	Title       string            `json:"title"`
 }
 
-func fetchSemanticScholarReferenceDOIs(ctx context.Context, httpClient *http.Client, doi string) ([]string, map[string]string, error) {
+func fetchSemanticScholarReferenceDOIs(ctx context.Context, httpClient *http.Client, doi string, providerCache *providerJSONCache) ([]string, map[string]string, bool, error) {
 	u := enrichSemanticScholarBase + "/paper/DOI:" + url.PathEscape(doi) + "/references?" + url.Values{
 		"fields": {"externalIds,title"},
 		"limit":  {"1000"},
 	}.Encode()
 	var resp semanticScholarReferencesResponse
-	if err := getCappedProviderJSON(ctx, httpClient, u, &resp); err != nil {
-		return nil, nil, err
+	if err := getCappedProviderJSON(ctx, httpClient, providerSemanticScholar, u, providerCache, &resp); err != nil {
+		return nil, nil, false, err
 	}
 	refs := make([]string, 0, len(resp.Data))
 	titles := map[string]string{}
@@ -280,34 +258,12 @@ func fetchSemanticScholarReferenceDOIs(ctx context.Context, httpClient *http.Cli
 			titles[doi] = title
 		}
 	}
-	return refs, titles, nil
+	return refs, titles, resp.Next != 0 || len(resp.Data) >= 1000, nil
 }
 
-func getCappedProviderJSON(ctx context.Context, httpClient *http.Client, rawURL string, out any) error {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
-	if err != nil {
-		return err
-	}
-	req.Header.Set("Accept", crossrefContentType)
-	req.Header.Set("User-Agent", crossrefUserAgent)
-	resp, err := externalHTTPClient(httpClient, false).Do(req)
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-	body, err := readCappedExternalBody(resp.Body, 4<<20)
-	if err != nil {
-		return err
-	}
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return fmt.Errorf("HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
-	}
-	return json.Unmarshal(body, out)
-}
-
-func fetchGapTitleFromCrossRef(ctx context.Context, httpClient *http.Client, doi string) string {
+func fetchGapTitleFromCrossRef(ctx context.Context, httpClient *http.Client, doi string, providerCache *providerJSONCache) string {
 	var resp crossRefWorkResponse
-	if err := getCappedProviderJSON(ctx, httpClient, enrichCrossRefBase+"/works/"+url.PathEscape(doi), &resp); err != nil {
+	if err := getCappedProviderJSON(ctx, httpClient, providerCrossRef, enrichCrossRefBase+"/works/"+url.PathEscape(doi), providerCache, &resp); err != nil {
 		return ""
 	}
 	if len(resp.Message.Title) == 0 {

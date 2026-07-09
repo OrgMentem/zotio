@@ -479,6 +479,80 @@ zotio collections update COLLECTIONKEY
 | `--parent-collection` | `string` |  | New parent collection key (false for top-level) |
 | `--stdin` | `bool` | `false` | Read request body as JSON from stdin |
 
+## `zotio creators`
+
+Audit creator names across your Zotero library
+
+```
+zotio creators
+```
+
+### `zotio creators audit`
+
+Audit synced creator names for variant candidates
+
+Audit synced creator names for variant candidates without mutating Zotero.
+
+The audit reads item creators from the local synced store and groups likely name
+variants into three confidence tiers: exact-after-normalization, initial/full-name
+compatibility, and ambiguous same-surname diagnostics. Use --orcid to fetch
+CrossRef author ORCIDs for DOI-bearing tier-2/3 candidates and store them in the
+local creator_orcids sidecar table as corroboration evidence. That sidecar is
+local-only evidence; zotio never writes ORCIDs back to Zotero because Zotero has
+no creator ORCID field.
+
+```
+zotio creators audit [flags]
+```
+
+Examples:
+
+```bash
+zotio creators audit
+  zotio creators audit --scope collection:ABCD1234
+  zotio creators audit --orcid --json
+```
+
+| Flag | Type | Default | Description |
+| --- | --- | --- | --- |
+| `--orcid` | `bool` | `false` | Fetch CrossRef author ORCIDs into the local-only sidecar table; never writes ORCIDs to Zotero |
+| `--scope` | `string` | `library` | Item scope: library, collection:<key>, tag:<tag>, item:<key>, or query:<text> |
+
+#### `zotio creators audit fix`
+
+Apply safe creator variant renames from creators audit
+
+Apply safe creator variant renames from creators audit through the shared
+mutation preview/apply envelope.
+
+By default this previews item writes without sending network mutations. Pass --yes
+to apply. Tier-1 exact-normalized groups are planned automatically. Tier-2
+initial/full-name groups are planned only for explicit repeatable mappings such
+as --map "J. Smith=John Smith". Tier-3 ambiguous groups are never planned.
+
+Creator renames PATCH each affected item with its full creators array and a
+version precondition, preserving creatorType, creator order, and unrelated
+creators. Applied creator renames are journaled for audit history, but journal
+undo does not reverse them because ordered creator-array inverses are not
+supported.
+
+```
+zotio creators audit fix [flags]
+```
+
+Examples:
+
+```bash
+zotio creators audit fix
+  zotio creators audit fix --map "J. Smith=John Smith"
+  zotio creators audit fix --scope collection:ABCD1234 --yes
+```
+
+| Flag | Type | Default | Description |
+| --- | --- | --- | --- |
+| `--map` | `stringArray` | `[]` | Tier-2 alias mapping alias=canonical; repeatable |
+| `--scope` | `string` | `library` | Item scope: library, collection:<key>, tag:<tag>, item:<key>, or query:<text> |
+
 ## `zotio demo`
 
 Seed a zero-setup sample library and print a guided tour
@@ -744,6 +818,22 @@ zotio import arxiv <id> [flags]
 | `--collection` | `string` |  | Collection key to add the item to |
 | `--dry-run` | `bool` | `false` | Preview import without sending requests |
 | `--fetch-pdf` | `bool` | `false` | Attach an open-access PDF via Zotero's desktop resolver (requires --via connector) |
+
+### `zotio import discover`
+
+Discover missing references and write a reviewable import manifest
+
+```
+zotio import discover [flags]
+```
+
+| Flag | Type | Default | Description |
+| --- | --- | --- | --- |
+| `--direction` | `string` | `backward` | Citation chase direction: backward, forward, or both |
+| `--limit` | `int` | `25` | Maximum manifest entries to emit |
+| `--min-count` | `int` | `2` | Minimum number of source items citing a DOI |
+| `--out` | `string` |  | Path to write the reviewable import manifest |
+| `--scope` | `string` |  | Scope expression to discover from (required; e.g. collection:<key>, tag:<tag>, item:<key>, query:<text>, library) |
 
 ### `zotio import doi`
 
@@ -1440,6 +1530,21 @@ zotio items recent [flags]
 | `--days` | `int` | `0` | Return only items added in the last N days |
 | `--limit` | `int` | `20` | Maximum number of items to return |
 | `--type` | `string` |  | Filter by item type |
+
+### `zotio items related`
+
+Show outgoing and incoming Zotero related-item edges
+
+```
+zotio items related <itemKey>
+```
+
+Examples:
+
+```bash
+zotio items related ABC12345
+  zotio items related ABC12345 --json
+```
 
 ### `zotio items restore`
 

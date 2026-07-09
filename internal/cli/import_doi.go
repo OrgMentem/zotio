@@ -3,7 +3,7 @@
 package cli
 
 import (
-	"encoding/json"
+	"context"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -17,19 +17,25 @@ type crossRefWorkResponse struct {
 }
 
 type crossRefWork struct {
-	Title          []string         `json:"title"`
-	Author         []crossRefAuthor `json:"author"`
-	Published      crossRefDate     `json:"published"`
-	DOI            string           `json:"DOI"`
-	Type           string           `json:"type"`
-	ContainerTitle []string         `json:"container-title"`
+	Title          []string            `json:"title"`
+	Author         []crossRefAuthor    `json:"author"`
+	Published      crossRefDate        `json:"published"`
+	DOI            string              `json:"DOI"`
+	Type           string              `json:"type"`
+	ContainerTitle []string            `json:"container-title"`
+	Reference      []crossRefReference `json:"reference"`
 	// CrossRef abstract (JATS XML) for enrichment.
 	Abstract string `json:"abstract"`
+}
+
+type crossRefReference struct {
+	DOI string `json:"DOI"`
 }
 
 type crossRefAuthor struct {
 	Family string `json:"family"`
 	Given  string `json:"given"`
+	ORCID  string `json:"ORCID"`
 }
 
 type crossRefDate struct {
@@ -87,42 +93,41 @@ func newImportDoiCmd(flags *rootFlags) *cobra.Command {
 }
 
 func fetchCrossRefItem(cmd *cobra.Command, timeout time.Duration, doi string) (map[string]any, error) {
+	return fetchCrossRefItemWithCache(cmd.Context(), &http.Client{Timeout: timeout}, doi, nil)
+}
+
+func fetchCrossRefItemWithCache(ctx context.Context, httpClient *http.Client, doi string, providerCache *providerJSONCache) (map[string]any, error) {
+	work, err := fetchCrossRefWork(ctx, httpClient, doi, providerCache)
+	if err != nil {
+		return nil, err
+	}
+	return crossRefItemFromWork(work, doi), nil
+}
+
+func fetchCrossRefWork(ctx context.Context, httpClient *http.Client, doi string, providerCache *providerJSONCache) (crossRefWork, error) {
 	if doi == "" {
-		return nil, fmt.Errorf("DOI is required")
+		return crossRefWork{}, fmt.Errorf("DOI is required")
 	}
-
-	// Use the overridable CrossRef base (testable seam).
-	req, err := http.NewRequestWithContext(cmd.Context(), http.MethodGet, enrichCrossRefBase+"/works/"+url.PathEscape(doi), nil)
-	if err != nil {
-		return nil, fmt.Errorf("creating CrossRef request: %w", err)
-	}
-	req.Header.Set("Accept", "application/json")
-	req.Header.Set("User-Agent", "zotio/1.0.0")
-
-	resp, err := (&http.Client{Timeout: timeout}).Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("fetching CrossRef metadata: %w", err)
-	}
-	defer resp.Body.Close()
-
-	// Cap CrossRef responses on
-	// this ad-hoc import path instead of reading an unbounded body into memory.
-	body, err := readCappedExternalBody(resp.Body, 1<<20)
-	if err != nil {
-		return nil, fmt.Errorf("reading CrossRef response: %w", err)
-	}
-	if resp.StatusCode == http.StatusNotFound {
-		return nil, fmt.Errorf("DOI not found: %s", doi)
-	}
-	if resp.StatusCode >= 400 {
-		return nil, fmt.Errorf("CrossRef request failed: HTTP %d", resp.StatusCode)
-	}
-
 	var decoded crossRefWorkResponse
-	if err := json.Unmarshal(body, &decoded); err != nil {
-		return nil, fmt.Errorf("parsing CrossRef response: %w", err)
+	rawURL := enrichCrossRefBase + "/works/" + url.PathEscape(doi)
+	if err := getCappedProviderJSON(ctx, httpClient, providerCrossRef, rawURL, providerCache, &decoded); err != nil {
+		return crossRefWork{}, fmt.Errorf("fetching CrossRef metadata: %w", err)
 	}
-	return crossRefItemFromWork(decoded.Message, doi), nil
+	return decoded.Message, nil
+}
+
+func fetchCrossRefReferenceDOIs(ctx context.Context, httpClient *http.Client, doi string, providerCache *providerJSONCache) ([]string, error) {
+	work, err := fetchCrossRefWork(ctx, httpClient, doi, providerCache)
+	if err != nil {
+		return nil, err
+	}
+	refs := make([]string, 0, len(work.Reference))
+	for _, ref := range work.Reference {
+		if ref.DOI != "" {
+			refs = append(refs, ref.DOI)
+		}
+	}
+	return refs, nil
 }
 
 func crossRefItemFromWork(work crossRefWork, fallbackDOI string) map[string]any {

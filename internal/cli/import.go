@@ -113,6 +113,7 @@ but do not stop the import.`,
 	cmd.AddCommand(newImportIsbnCmd(flags))
 	// Reviewable-import pipeline.
 	cmd.AddCommand(newImportResolveCmd(flags))
+	cmd.AddCommand(newImportDiscoverCmd(flags))
 	cmd.AddCommand(newImportApplyCmd(flags))
 	// Connector-backed PDF recognition and diagnostics.
 	cmd.AddCommand(newImportPDFCmd(flags))

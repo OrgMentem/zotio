@@ -345,6 +345,21 @@ WHERE resource_type='items' AND parent_key=? AND item_type='attachment'`, key)
 	return json.MarshalIndent(out, "", "  ")
 }
 
+// ItemRelatedJSON returns outgoing and incoming related-item edges for MCP graph resources.
+func ItemRelatedJSON(key string) ([]byte, error) {
+	report, found, synced, err := itemRelatedReportFromLocalStore(context.Background(), key)
+	if err != nil {
+		return nil, err
+	}
+	if !synced {
+		return graphUnsyncedJSON()
+	}
+	if !found {
+		return graphNotFoundJSON(key)
+	}
+	return json.MarshalIndent(report, "", "  ")
+}
+
 func graphItemExists(qs localQueryStore, key string) (bool, error) {
 	rows, err := qs.QueryRaw(`
 SELECT id

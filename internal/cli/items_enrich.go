@@ -757,11 +757,11 @@ func resolveAbstractViaSemanticScholar(ctx context.Context, httpClient *http.Cli
 
 // CrossRef DOI fetch shared by abstract enrichment and validation discrepancy checks.
 func fetchCrossRefWorkByDOI(ctx context.Context, httpClient *http.Client, doi string) (crossRefWork, bool) {
-	var resp crossRefWorkResponse
-	if err := getJSON(ctx, httpClient, enrichCrossRefBase+"/works/"+url.PathEscape(doi), &resp); err != nil {
+	work, err := fetchCrossRefWork(ctx, httpClient, doi, nil)
+	if err != nil {
 		return crossRefWork{}, false
 	}
-	return resp.Message, true
+	return work, true
 }
 
 // OpenCitations registration probe for DOI validation mode.
@@ -778,9 +778,20 @@ func resolveDOIRegisteredViaOpenCitations(ctx context.Context, httpClient *http.
 // data OpenAlex merely re-serves). ---
 
 type openAlexWork struct {
-	DOI                   string           `json:"doi"`
-	Title                 string           `json:"title"`
-	AbstractInvertedIndex map[string][]int `json:"abstract_inverted_index"`
+	ID                    string               `json:"id"`
+	DOI                   string               `json:"doi"`
+	Title                 string               `json:"title"`
+	AbstractInvertedIndex map[string][]int     `json:"abstract_inverted_index"`
+	Authorships           []openAlexAuthorship `json:"authorships"`
+}
+
+type openAlexAuthorship struct {
+	Author openAlexAuthor `json:"author"`
+}
+
+type openAlexAuthor struct {
+	DisplayName string `json:"display_name"`
+	ORCID       string `json:"orcid"`
 }
 
 type openAlexSearchResponse struct {

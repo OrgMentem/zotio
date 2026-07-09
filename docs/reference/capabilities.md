@@ -26,6 +26,8 @@ The machine-readable registry every command is classified against — read vs. w
 | `collections tags` | read |  |  |  |
 | `collections top` | read |  |  |  |
 | `collections update` | write | `web_api` |  | `web_api_key` |
+| `creators audit` | read |  |  | `synced_store` |
+| `creators audit fix` | write | `web_api` |  | `synced_store` |
 | `demo` | read |  |  |  |
 | `doctor` | introspect |  |  |  |
 | `export` | other |  |  |  |
@@ -38,6 +40,7 @@ The machine-readable registry every command is classified against — read vs. w
 | `import` | other |  |  |  |
 | `import apply` | write | `web_api` |  | `web_api_key` |
 | `import arxiv` | write | `web_api` |  | `web_api_key` |
+| `import discover` | read |  |  | `synced_store` |
 | `import doi` | write | `web_api` |  | `web_api_key` |
 | `import file` | write | `web_api` |  | `web_api_key` |
 | `import isbn` | write | `web_api` |  | `web_api_key` |
@@ -76,6 +79,7 @@ The machine-readable registry every command is classified against — read vs. w
 | `items preprint-check` | read |  |  |  |
 | `items preprint-check fix` | other |  |  |  |
 | `items recent` | read |  |  |  |
+| `items related` | read |  |  | `synced_store` |
 | `items restore` | write | `web_api` |  | `web_api_key` |
 | `items retract-check` | read |  |  |  |
 | `items stale` | read |  |  |  |

@@ -17,7 +17,17 @@ import (
 // every store open can safely re-run them.
 func (s *Store) migrateExtras(ctx context.Context, conn *sql.Conn) error {
 	migrations := []string{
-		// Add CREATE TABLE IF NOT EXISTS statements here.
+		`CREATE TABLE IF NOT EXISTS creator_orcids (
+			item_key TEXT NOT NULL,
+			creator_index INTEGER NOT NULL,
+			name_hash TEXT NOT NULL,
+			orcid TEXT NOT NULL,
+			source TEXT NOT NULL,
+			captured_at DATETIME NOT NULL,
+			PRIMARY KEY(item_key, creator_index, source)
+		)`,
+		`CREATE INDEX IF NOT EXISTS creator_orcids_name_hash_idx ON creator_orcids(name_hash)`,
+		`CREATE INDEX IF NOT EXISTS creator_orcids_orcid_idx ON creator_orcids(orcid)`,
 	}
 	for _, m := range migrations {
 		if _, err := conn.ExecContext(ctx, m); err != nil {

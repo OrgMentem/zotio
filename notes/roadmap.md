@@ -289,10 +289,13 @@ Every item is a shipped contract whose last mile is missing; no new subsystems.
 - **Rolling convention:** every command touched here adopts the shared scope grammar
   (`scope.Spec`) instead of growing bespoke selection flags.
 
-### Phase 10 — Research-workflow depth (validated 2026-07-09)
+### Phase 10 — Research-workflow depth (validated 2026-07-09; items 1–5 SHIPPED 2026-07-09)
 
 Validated pre-build from dev and user perspectives; full evidence and reshaped contracts in
-`notes/phase-10-validation.md`. Ordered by slice size:
+`notes/phase-10-validation.md`. Items 1–5 shipped as `items related`, `creators audit`,
+`creators audit fix`, and `import discover` (backward/forward/both + manifest v2 provenance +
+provider cache). Item 6 (PRISMA-input reporting) remains gated on an outreach demand signal.
+Ordered by slice size:
 
 1. **`items related`** — relations already persist in synced raw item JSON (unindexed, not
    "discarded"); MVP is a URI parser + `json_each` read, no schema migration. Outgoing +

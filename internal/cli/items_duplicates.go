@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	"zotio/internal/store"
 
@@ -47,6 +48,10 @@ func (s localQueryStore) QueryRaw(query string, args ...any) ([]map[string]any, 
 		return nil, err
 	}
 	return out, nil
+}
+
+func normalizeDuplicateTitle(title string) string {
+	return strings.ToLower(strings.TrimSpace(title))
 }
 
 func normalizeSQLValue(v any) any {

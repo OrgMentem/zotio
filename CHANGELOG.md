@@ -4,6 +4,14 @@ Notable changes to zotio. Format follows [Keep a Changelog](https://keepachangel
 
 ## [Unreleased]
 
+### Added
+- `items related <itemKey>` lists an item's relation edges from the synced store — outgoing and incoming, predicate-tagged (`dc:relation`, `owl:sameAs`, …), preserving cross-library and off-store targets as external edges; also exposed as the MCP resource `zotero://items/{key}/related`.
+- `creators audit` inventories creator-name variants in three confidence tiers (exact-after-normalization, compatible initials, ambiguous surnames) with canonical candidates and the shared findings envelope; `--orcid` corroborates variants against Crossref author ORCIDs, persisted in a local-only sidecar (never written to Zotero).
+- `creators audit fix` renames creator variants preview-first: exact-normalization variants are auto-planned, initial-vs-full variants only via explicit `--map "J. Smith=John Smith"`, ambiguous variants never; applies as full-creators-array PATCHes with version preconditions (journaled; not undoable).
+- `import discover --scope <expr>` chases citations backward (`--direction backward`, default), forward, or `both` via OpenCitations/Semantic Scholar/Crossref/OpenAlex, dedupes against the library (DOI and normalized title) before emitting, and writes ranked, provenance-tagged entries (`discovery.direction/provider/count/cited_by_keys`) into a reviewable import manifest for `import apply`.
+- Import manifests are now schema v2 (optional per-entry `discovery` provenance); v1 manifests remain readable.
+- External metadata-provider requests (OpenCitations, Semantic Scholar, Crossref, OpenAlex) used by `import discover` and `collections gaps` are cached for 7 days under the user cache dir; `--no-cache` bypasses.
+
 ### Fixed
 - `items enrich --yes` no longer replaces the item's entire Extra field with the provenance line — existing Extra content (Better BibTeX `Citation Key:` lines, user notes) is preserved and the provenance line is appended; the mutation preview now shows the Extra change, and same-day re-runs do not duplicate the line.
 

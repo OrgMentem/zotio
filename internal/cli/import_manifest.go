@@ -12,21 +12,29 @@ import (
 	"os"
 )
 
-const importManifestSchemaVersion = 1
+const importManifestSchemaVersion = 2
+
+type importDiscovery struct {
+	Direction   string   `json:"direction,omitempty"`
+	Provider    string   `json:"provider,omitempty"`
+	CitedByKeys []string `json:"cited_by_keys,omitempty"`
+	Count       int      `json:"count,omitempty"`
+}
 
 // importManifestEntry is one proposed import action a user can review and edit
 // before applying.
 type importManifestEntry struct {
-	Path           string         `json:"path"`                      // absolute PDF path (for attach)
-	Classification string         `json:"classification"`            // new|duplicate|attach_candidate|unidentified
-	Action         string         `json:"action"`                    // create|attach|skip
-	IdentifierType string         `json:"identifier_type,omitempty"` // e.g. doi
-	Identifier     string         `json:"identifier,omitempty"`
-	MatchedKey     string         `json:"matched_key,omitempty"` // existing item key for attach
-	Title          string         `json:"title,omitempty"`
-	Item           map[string]any `json:"item,omitempty"` // resolved item to create
-	Status         string         `json:"status"`         // resolved|unresolved
-	Note           string         `json:"note,omitempty"`
+	Path           string           `json:"path"`                      // absolute PDF path (for attach)
+	Classification string           `json:"classification"`            // new|duplicate|attach_candidate|unidentified
+	Action         string           `json:"action"`                    // create|attach|skip
+	IdentifierType string           `json:"identifier_type,omitempty"` // e.g. doi
+	Identifier     string           `json:"identifier,omitempty"`
+	MatchedKey     string           `json:"matched_key,omitempty"` // existing item key for attach
+	Title          string           `json:"title,omitempty"`
+	Item           map[string]any   `json:"item,omitempty"` // resolved item to create
+	Status         string           `json:"status"`         // resolved|unresolved
+	Note           string           `json:"note,omitempty"`
+	Discovery      *importDiscovery `json:"discovery,omitempty"`
 }
 
 // importManifest is the full reviewable plan.
@@ -73,8 +81,8 @@ func readImportManifest(path string) (importManifest, error) {
 	if err := json.Unmarshal(data, &m); err != nil {
 		return importManifest{}, fmt.Errorf("parsing manifest: %w", err)
 	}
-	if m.SchemaVersion != importManifestSchemaVersion {
-		return importManifest{}, fmt.Errorf("unsupported manifest schema_version %d (want %d)", m.SchemaVersion, importManifestSchemaVersion)
+	if m.SchemaVersion != 1 && m.SchemaVersion != importManifestSchemaVersion {
+		return importManifest{}, fmt.Errorf("unsupported manifest schema_version %d (want 1 or %d)", m.SchemaVersion, importManifestSchemaVersion)
 	}
 	return m, nil
 }
