@@ -13,10 +13,11 @@ import (
 	"strings"
 	"time"
 
-	"github.com/spf13/cobra"
 	"zotio/internal/client"
 	"zotio/internal/config"
 	"zotio/internal/store"
+
+	"github.com/spf13/cobra"
 )
 
 // isLocalZoteroAPI reports whether baseURL points at the Zotero desktop app's

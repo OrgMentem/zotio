@@ -13,9 +13,10 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/spf13/cobra"
 	"zotio/internal/client"
 	"zotio/internal/store"
+
+	"github.com/spf13/cobra"
 )
 
 func newTailCmd(flags *rootFlags) *cobra.Command {

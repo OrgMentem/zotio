@@ -6,7 +6,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"github.com/spf13/cobra"
 	"net/url"
 	"os"
 	"strconv"
@@ -17,6 +16,8 @@ import (
 	"zotio/internal/client"
 	"zotio/internal/cliutil"
 	"zotio/internal/store"
+
+	"github.com/spf13/cobra"
 )
 
 // syncResult holds the outcome of syncing a single resource.

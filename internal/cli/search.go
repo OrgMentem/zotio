@@ -7,8 +7,9 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/spf13/cobra"
 	"zotio/internal/store"
+
+	"github.com/spf13/cobra"
 )
 
 // isNilOrEmpty checks whether a JSON object has nil or empty values for

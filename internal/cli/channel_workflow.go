@@ -7,8 +7,9 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/spf13/cobra"
 	"zotio/internal/store"
+
+	"github.com/spf13/cobra"
 )
 
 func newWorkflowCmd(flags *rootFlags) *cobra.Command {
@@ -100,7 +101,9 @@ and full resync. After archiving, use 'search' for instant full-text search.`,
 						var obj struct {
 							ID string `json:"id"`
 						}
-						json.Unmarshal(item, &obj)
+						if err := json.Unmarshal(item, &obj); err != nil {
+							fmt.Fprintf(cmd.ErrOrStderr(), "  warning: unmarshalling item: %v\n", err)
+						}
 						id := obj.ID
 						if id == "" {
 							id = fmt.Sprintf("%s-%d", resource, count)
@@ -118,7 +121,9 @@ and full resync. After archiving, use 'search' for instant full-text search.`,
 				}
 
 				if count > 0 {
-					s.SaveSyncState(resource, cursor, count)
+					if err := s.SaveSyncState(resource, cursor, count); err != nil {
+						fmt.Fprintf(cmd.ErrOrStderr(), "  warning: saving sync state: %v\n", err)
+					}
 				}
 				totalSynced += count
 				fmt.Fprintf(cmd.ErrOrStderr(), "  %s: %d items\n", resource, count)

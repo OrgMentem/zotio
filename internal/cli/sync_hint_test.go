@@ -10,8 +10,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/spf13/cobra"
 	"zotio/internal/store"
+
+	"github.com/spf13/cobra"
 )
 
 func newSyncHintTestStore(t *testing.T) *store.Store {

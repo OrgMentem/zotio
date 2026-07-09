@@ -207,8 +207,8 @@ func TestListTagRenameUpdatesWalksMultiplePages(t *testing.T) {
 
 func TestTagsRenamePreviewsWithoutPatching(t *testing.T) {
 	for _, tc := range []struct {
-		name string
-		flags rootFlags
+		name       string
+		flags      rootFlags
 		wantReason string
 	}{
 		{name: "default", flags: rootFlags{maxChanges: -1}, wantReason: "default"},

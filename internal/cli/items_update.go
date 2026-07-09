@@ -31,8 +31,7 @@ func newItemsUpdateCmd(flags *rootFlags) *cobra.Command {
 			if len(args) == 0 {
 				return cmd.Help()
 			}
-			if !stdinBody {
-			}
+
 			// Route through the write target and supply the version precondition Zotero
 			// requires for key-based writes (PATCH returns HTTP 428 without
 			// If-Unmodified-Since-Version). Mirrors items delete; the version GET and

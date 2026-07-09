@@ -134,40 +134,6 @@ func resolveRead(ctx context.Context, c *client.Client, flags *rootFlags, resour
 	}
 }
 
-// resolvePaginatedRead dispatches a paginated GET request to either the live API
-// or local store. When local, skips pagination and returns all synced data. The
-// headers argument carries per-endpoint required headers; pass nil when the
-// endpoint declares no overrides.
-func resolvePaginatedRead(ctx context.Context, c *client.Client, flags *rootFlags, resourceType string, path string, params map[string]string, headers map[string]string, fetchAll bool, cursorParam, nextCursorPath, hasMoreField string) (json.RawMessage, DataProvenance, error) {
-	switch flags.dataSource {
-	case "local":
-		data, prov, err := resolveLocal(ctx, resourceType, true, path, params, "user_requested")
-		return data, attachFreshness(prov, flags), err
-
-	case "live":
-		data, err := paginatedGet(c, path, params, headers, fetchAll, cursorParam, nextCursorPath, hasMoreField)
-		if err != nil {
-			return nil, DataProvenance{}, err
-		}
-		return data, attachFreshness(DataProvenance{Source: "live"}, flags), nil
-
-	default: // "auto"
-		data, err := paginatedGet(c, path, params, headers, fetchAll, cursorParam, nextCursorPath, hasMoreField)
-		if err == nil {
-			writeThroughCache(ctx, resourceType, data)
-			return data, attachFreshness(DataProvenance{Source: "live"}, flags), nil
-		}
-		if !isNetworkError(err) {
-			return nil, DataProvenance{}, err
-		}
-		fallbackData, fallbackProv, fallbackErr := resolveLocal(ctx, resourceType, true, path, params, "api_unreachable")
-		if fallbackErr != nil {
-			return nil, DataProvenance{}, fmt.Errorf("API unreachable and no local data. Run 'zotio sync' to enable offline access.\n\nOriginal error: %w", err)
-		}
-		return fallbackData, attachFreshness(fallbackProv, flags), nil
-	}
-}
-
 // writeThroughCache upserts live API results into the local SQLite store so
 // FTS search covers everything the user has looked up — not just explicit syncs.
 // Best-effort: failures are silently ignored (the live result already succeeded).

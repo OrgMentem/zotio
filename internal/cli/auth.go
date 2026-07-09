@@ -8,8 +8,9 @@ import (
 	"os"
 	"strings"
 
-	"github.com/spf13/cobra"
 	"zotio/internal/config"
+
+	"github.com/spf13/cobra"
 )
 
 func newAuthCmd(flags *rootFlags) *cobra.Command {

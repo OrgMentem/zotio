@@ -6,15 +6,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/spf13/cobra"
-	"github.com/spf13/pflag"
 	"io"
 	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
 	"sort"
-	"strconv"
 	"strings"
 	"text/tabwriter"
 	"time"
@@ -22,6 +19,9 @@ import (
 	"zotio/internal/client"
 	"zotio/internal/cliutil"
 	"zotio/internal/config"
+
+	"github.com/spf13/cobra"
+	"github.com/spf13/pflag"
 )
 
 var As = errors.As
@@ -377,109 +377,6 @@ func newTabWriter(w io.Writer) *tabwriter.Writer {
 // "/" and "?" retarget generated commands to sibling resources.
 func replacePathParam(path, name, value string) string {
 	return strings.ReplaceAll(path, "{"+name+"}", url.PathEscape(value))
-}
-
-// paginatedGet fetches pages and concatenates array results. The headers
-// argument carries per-endpoint required headers (e.g. cal-api-version) that
-// must be sent on every page request, including the first; pass nil when the
-// endpoint has no per-endpoint header overrides.
-func paginatedGet(c interface {
-	GetWithHeaders(path string, params map[string]string, headers map[string]string) (json.RawMessage, error)
-}, path string, params map[string]string, headers map[string]string, fetchAll bool, cursorParam, nextCursorPath, hasMoreField string) (json.RawMessage, error) {
-	// Clean zero-value params
-	clean := map[string]string{}
-	for k, v := range params {
-		if v != "" && v != "0" && v != "false" {
-			clean[k] = v
-		}
-	}
-
-	if !fetchAll {
-		return c.GetWithHeaders(path, clean, headers)
-	}
-	if cursorParam == "start" {
-		// keep Zotero's offset
-		// parameter even when it is zero; the generic zero-value scrubber above
-		// drops "0", but fetch-all needs an explicit, incrementable start value.
-		if _, ok := clean[cursorParam]; !ok {
-			clean[cursorParam] = "0"
-		}
-	}
-
-	// Fetch all pages
-	allItems := make([]json.RawMessage, 0)
-	page := 0
-	for {
-		page++
-		if humanFriendly {
-			fmt.Fprintf(os.Stderr, "fetching page %d...\n", page)
-		} else {
-			fmt.Fprintf(os.Stderr, `{"event":"page_fetch","page":%d}`+"\n", page)
-		}
-
-		data, err := c.GetWithHeaders(path, clean, headers)
-		if err != nil {
-			return nil, err
-		}
-
-		// Try to extract items array
-		var items []json.RawMessage
-		if json.Unmarshal(data, &items) == nil {
-			allItems = append(allItems, items...)
-		} else {
-			// Response is an object - look for array inside
-			var obj map[string]json.RawMessage
-			if json.Unmarshal(data, &obj) == nil {
-				if nested, ok := extractPaginatedItems(obj); ok {
-					allItems = append(allItems, nested...)
-				}
-
-				// Check for next cursor
-				if nextCursorPath != "" {
-					if tokenRaw, ok := rawAtPath(obj, nextCursorPath); ok {
-						var token string
-						if json.Unmarshal(tokenRaw, &token) == nil && token != "" {
-							clean[cursorParam] = token
-							continue
-						}
-					}
-				}
-
-				// Check has_more
-				if hasMoreField != "" {
-					if moreRaw, ok := rawAtPath(obj, hasMoreField); ok {
-						var more bool
-						if json.Unmarshal(moreRaw, &more) == nil && more {
-							continue
-						}
-					}
-				}
-			}
-			// No more pages
-			break
-		}
-
-		if cursorParam == "start" {
-			limit, _ := strconv.Atoi(clean["limit"])
-			if limit > 0 && len(items) == limit {
-				currentStart, _ := strconv.Atoi(clean[cursorParam])
-				clean[cursorParam] = strconv.Itoa(currentStart + len(items))
-				continue
-			}
-		}
-		// direct JSON arrays can
-		// paginate via Zotero start/limit offsets; other APIs still stop here
-		// unless they expose a cursor in an object envelope.
-		break
-	}
-
-	if humanFriendly {
-		fmt.Fprintf(os.Stderr, "fetched %d items across %d pages\n", len(allItems), page)
-	} else {
-		fmt.Fprintf(os.Stderr, `{"event":"complete","total":%d,"pages":%d}`+"\n", len(allItems), page)
-	}
-	result, _ := json.Marshal(allItems)
-	return json.RawMessage(result), nil
 }
 
 func extractPaginatedItems(obj map[string]json.RawMessage) ([]json.RawMessage, bool) {
@@ -1075,10 +972,7 @@ func prioritizeFields(item map[string]any, includeComplex bool) []string {
 	// "BuildingName" → last segment "name" → tier 0... but we want to avoid this.
 	// Solution: exact match on the full lowered name OR suffix segment match,
 	// with a penalty for compound names that have a non-identity prefix.
-	type pattern struct {
-		word string
-		tier int
-	}
+
 	// Exact matches (full field name, case-insensitive) — highest confidence
 	exactMatches := map[string]int{
 		"id": 0, "name": 0, "title": 0, "slug": 0, "key": 0,

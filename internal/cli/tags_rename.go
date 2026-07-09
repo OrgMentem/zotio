@@ -222,14 +222,6 @@ func renameTagWithLimit(c *client.Client, oldName, newName string, limit int) (s
 	return "applied", results, nil
 }
 
-func printFullTagRenameResults(cmd *cobra.Command, results []tagRenameResult) error {
-	data, err := json.Marshal(results)
-	if err != nil {
-		return err
-	}
-	return printOutput(cmd.OutOrStdout(), json.RawMessage(data), true)
-}
-
 func buildTagRenameUpdates(data json.RawMessage, oldTag, newTag string) ([]tagRenameUpdate, error) {
 	var items []map[string]any
 	if err := json.Unmarshal(data, &items); err != nil {
@@ -291,17 +283,4 @@ func renamedItemTags(item map[string]any, oldTag, newTag string) ([]any, bool, e
 		renamed = append(renamed, copied)
 	}
 	return renamed, changed, nil
-}
-
-func tagRenameResults(updates []tagRenameUpdate, oldTag, newTag, status string) []tagRenameResult {
-	results := make([]tagRenameResult, 0, len(updates))
-	for _, update := range updates {
-		results = append(results, tagRenameResult{
-			Key:    update.key,
-			OldTag: oldTag,
-			NewTag: newTag,
-			Status: status,
-		})
-	}
-	return results
 }

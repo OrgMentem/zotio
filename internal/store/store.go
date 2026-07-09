@@ -11,6 +11,7 @@ import (
 	"database/sql"
 	"encoding/binary"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -148,7 +149,7 @@ func (s *Store) ensureColumn(ctx context.Context, conn *sql.Conn, table, column,
 	err := conn.QueryRowContext(ctx,
 		`SELECT name FROM sqlite_master WHERE type='table' AND name=?`, table,
 	).Scan(&name)
-	if err == sql.ErrNoRows {
+	if errors.Is(err, sql.ErrNoRows) {
 		return nil
 	}
 	if err != nil {
@@ -743,7 +744,7 @@ func (s *Store) Upsert(resourceType, id string, data json.RawMessage) error {
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 
 	if err := s.upsertGenericResourceTx(tx, resourceType, id, data, nil); err != nil {
 		return err
@@ -771,7 +772,7 @@ func (s *Store) UpsertKeyed(resourceType string, ids []string, data []json.RawMe
 	if err != nil {
 		return fmt.Errorf("starting keyed batch transaction: %w", err)
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 	for i, id := range ids {
 		if err := s.upsertGenericResourceTx(tx, resourceType, id, data[i], nil); err != nil {
 			return fmt.Errorf("upserting %s/%s: %w", resourceType, id, err)
@@ -922,6 +923,7 @@ func (s *Store) AnnotationsForItems(topItemKeys []string) (map[string][]json.Raw
 		placeholders[i] = "?"
 		args[i] = k
 	}
+	// #nosec G202 -- placeholder count is dynamic but values are safe questions marks
 	rows, err := s.db.Query(
 		`SELECT att.parent_key, a.data FROM resources a
 		 JOIN resources att ON a.parent_key = att.id
@@ -958,15 +960,6 @@ func (s *Store) Fulltext(attachmentKey string) (json.RawMessage, bool, error) {
 		return nil, false, err
 	}
 	return json.RawMessage(data), true, nil
-}
-
-func extractObjectID(obj map[string]any) string {
-	for _, key := range []string{"id", "ID", "uuid", "slug", "name"} {
-		if v, ok := obj[key]; ok {
-			return fmt.Sprintf("%v", v)
-		}
-	}
-	return ""
 }
 
 // ftsRowID derives a deterministic rowid from a resource-qualified ID for use
@@ -1116,7 +1109,7 @@ func (s *Store) UpsertBatch(resourceType string, items []json.RawMessage) (int, 
 	if err != nil {
 		return 0, extractFailures, fmt.Errorf("starting batch transaction: %w", err)
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 
 	var stored int
 	for _, item := range prepared {
@@ -1213,7 +1206,7 @@ func (s *Store) SaveSyncCursor(resourceType, cursor string) error {
 // GetSyncCursor returns the last pagination cursor for a resource type.
 func (s *Store) GetSyncCursor(resourceType string) string {
 	var cursor sql.NullString
-	s.db.QueryRow("SELECT last_cursor FROM sync_state WHERE resource_type = ?", resourceType).Scan(&cursor)
+	_ = s.db.QueryRow("SELECT last_cursor FROM sync_state WHERE resource_type = ?", resourceType).Scan(&cursor)
 	if cursor.Valid {
 		return cursor.String
 	}
@@ -1251,7 +1244,7 @@ func (s *Store) ListIDs(resourceType string) ([]string, error) {
 // GetLastSyncedAt returns the last sync timestamp for a resource type.
 func (s *Store) GetLastSyncedAt(resourceType string) string {
 	var ts sql.NullString
-	s.db.QueryRow("SELECT last_synced_at FROM sync_state WHERE resource_type = ?", resourceType).Scan(&ts)
+	_ = s.db.QueryRow("SELECT last_synced_at FROM sync_state WHERE resource_type = ?", resourceType).Scan(&ts)
 	if ts.Valid {
 		return ts.String
 	}
@@ -1330,6 +1323,7 @@ func (s *Store) ResolveByName(resourceType string, input string, matchFields ...
 		if !isSafeJSONFieldName(field) {
 			continue
 		}
+		// #nosec G201 -- field name is pre-validated with isSafeJSONFieldName
 		query := fmt.Sprintf(
 			`SELECT id FROM resources WHERE resource_type = ? AND LOWER(json_extract(data, '$.%s')) = LOWER(?)`,
 			field,
@@ -1363,7 +1357,7 @@ func (s *Store) ResolveByName(resourceType string, input string, matchFields ...
 	case 1:
 		return matches[0], nil
 	default:
-		hint := matches[0]
+		var hint string
 		if len(matches) > 5 {
 			hint = strings.Join(matches[:5], ", ") + "..."
 		} else {

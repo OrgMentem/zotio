@@ -19,8 +19,9 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/mark3labs/mcp-go/server"
 	mcptools "zotio/internal/mcp"
+
+	"github.com/mark3labs/mcp-go/server"
 )
 
 const defaultHTTPAddr = "127.0.0.1:7777" // Default streamable HTTP to loopback-only.

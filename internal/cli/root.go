@@ -11,9 +11,10 @@ import (
 	"text/tabwriter"
 	"time"
 
-	"github.com/spf13/cobra"
 	"zotio/internal/client"
 	"zotio/internal/config"
+
+	"github.com/spf13/cobra"
 )
 
 type rootFlags struct {

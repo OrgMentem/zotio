@@ -9,8 +9,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/pelletier/go-toml/v2"
 	"zotio/internal/cliutil"
+
+	"github.com/pelletier/go-toml/v2"
 )
 
 type Config struct {
@@ -265,19 +266,6 @@ func FileHasCredentialFields(path string) (bool, error) {
 
 func (c *Config) AuthHeader() string {
 	return c.ZoteroApiKey
-}
-
-func applyAuthFormat(format string, replacements map[string]string) string {
-	if format == "" {
-		return ""
-	}
-	for key, value := range replacements {
-		format = strings.ReplaceAll(format, "{"+key+"}", value)
-	}
-	if strings.Contains(format, "{") {
-		return ""
-	}
-	return format
 }
 
 func (c *Config) AgentcookieManagedByExternalStore() bool {

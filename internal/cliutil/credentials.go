@@ -99,6 +99,7 @@ func SaveCredentials(creds *Credentials) error {
 	if err != nil {
 		return err
 	}
+	// #nosec G117
 	data, err := toml.Marshal(creds)
 	if err != nil {
 		return fmt.Errorf("marshaling credentials: %w", err)

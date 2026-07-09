@@ -637,7 +637,7 @@ func (c *Client) dryRun(method, targetURL, path string, params map[string]string
 			enc := json.NewEncoder(os.Stderr)
 			enc.SetIndent("  ", "  ")
 			fmt.Fprintf(os.Stderr, "  Body:\n")
-			enc.Encode(pretty)
+			_ = enc.Encode(pretty)
 		}
 	}
 	if authHeader != "" {

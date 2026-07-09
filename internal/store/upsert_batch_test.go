@@ -106,7 +106,7 @@ func TestStoreWrite_PanicReleasesLock(t *testing.T) {
 	// unlocking, then assert subsequent calls succeed.
 	func() {
 		defer func() {
-			recover()
+			_ = recover()
 		}()
 		s.writeMu.Lock()
 		defer s.writeMu.Unlock()
