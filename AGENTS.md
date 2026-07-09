@@ -37,7 +37,7 @@ For install, auth, examples, and longer product guidance, read `README.md` and `
 
 For CI, the [zotio-action](https://github.com/OrgMentem/zotio-action) GitHub Action ([marketplace](https://github.com/marketplace/actions/zotio-bibliography-health-for-zotero)) packages install → sync → gate on `library health` exit codes; see `docs/guide/ci.md`.
 
-Before cutting a release (tagging `v*`), read `notes/releasing.md` — the release runbook covering the tag→GoReleaser flow, the version/breaking-change decisions, the post-publish validation checklist, and the footguns that have bitten us (WinGet requires a classic PAT, a cosign signing failure is usually a GitHub OIDC outage rather than a config bug, and release notes must be *prepended* not replaced).
+Before cutting a release (tagging `v*`), read `notes/releasing.md` — release flow, version/breaking-change decisions, validation checklist, and footguns.
 
 ## Zotero API Surface
 
