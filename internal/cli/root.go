@@ -4,6 +4,7 @@ package cli
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"io"
 	"os"
@@ -82,7 +83,7 @@ func Execute() error {
 		}
 	}
 	if err == nil && flags.deliverBuf != nil {
-		if derr := Deliver(flags.deliverSink, flags.deliverBuf.Bytes(), flags.compact); derr != nil {
+		if derr := Deliver(rootCmd.Context(), flags.deliverSink, flags.deliverBuf.Bytes(), flags.compact); derr != nil {
 			fmt.Fprintf(os.Stderr, "warning: deliver to %s:%s failed: %v\n", flags.deliverSink.Scheme, flags.deliverSink.Target, derr)
 			return derr
 		}
@@ -311,8 +312,8 @@ func (f *rootFlags) newClient() (*client.Client, error) {
 	// to the Web API (resolved lazily on the first write) while reads stay local.
 	if isLocalZoteroAPI(cfg.BaseURL) {
 		group := f.group
-		c.ResolveWriteBase = func() (string, error) {
-			return resolveWebWriteBase(cfg, group, f.timeout)
+		c.ResolveWriteBase = func(ctx context.Context) (string, error) {
+			return resolveWebWriteBase(ctx, cfg, group, f.timeout)
 		}
 	}
 	return c, nil
@@ -329,7 +330,7 @@ func (f *rootFlags) newWriteClient() (*client.Client, error) {
 		return nil, err
 	}
 	if c.ResolveWriteBase != nil {
-		if base, rerr := c.ResolveWriteBase(); rerr == nil && base != "" {
+		if base, rerr := c.ResolveWriteBase(context.Background()); rerr == nil && base != "" {
 			c.BaseURL = base
 			c.ResolveWriteBase = nil
 			fmt.Fprintf(os.Stderr, "→ writing via Zotero Web API: %s\n", base)

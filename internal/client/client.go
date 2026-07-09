@@ -61,7 +61,7 @@ type Client struct {
 	// API. ResolveWriteBase lazily computes it on the first write (kept in the CLI
 	// layer so the client stays generic); writeRouteOnce guards that resolution.
 	WriteBaseURL     string
-	ResolveWriteBase func() (string, error)
+	ResolveWriteBase func(context.Context) (string, error)
 	writeRouteOnce   sync.Once
 	// protect lazy hybrid write-route resolution.
 	writeRouteMu sync.RWMutex
@@ -79,20 +79,21 @@ func (e *APIError) Error() string {
 	return fmt.Sprintf("%s %s returned HTTP %d: %s", e.Method, e.Path, e.StatusCode, e.Body)
 }
 
+func checkRedirect(req *http.Request, via []*http.Request) error {
+	if len(via) > 0 && (!strings.EqualFold(req.URL.Scheme, via[0].URL.Scheme) || !strings.EqualFold(req.URL.Host, via[0].URL.Host)) {
+		// Go's default redirect policy does not strip custom auth headers, so
+		// remove Zotero credentials when a redirect crosses origin boundaries.
+		req.Header.Del("Zotero-API-Key")
+		req.Header.Del("Authorization")
+	}
+	return nil
+}
+
 func newHTTPClient(timeout time.Duration, jar http.CookieJar) *http.Client {
 	return &http.Client{
-		Timeout: timeout,
-		Jar:     jar,
-		CheckRedirect: func(req *http.Request, via []*http.Request) error {
-			if len(via) > 0 && !strings.EqualFold(req.URL.Host, via[0].URL.Host) {
-				// Go's default
-				// redirect policy does not strip custom auth headers, so remove
-				// Zotero credentials when a redirect crosses origin boundaries.
-				req.Header.Del("Zotero-API-Key")
-				req.Header.Del("Authorization")
-			}
-			return nil
-		},
+		Timeout:       timeout,
+		Jar:           jar,
+		CheckRedirect: checkRedirect,
 	}
 }
 
@@ -152,13 +153,13 @@ func (c *Client) Get(path string, params map[string]string) (json.RawMessage, er
 func (c *Client) GetWithHeaders(path string, params map[string]string, headers map[string]string) (json.RawMessage, error) {
 	// Check cache for GET requests
 	if !c.NoCache && !c.DryRun && c.cacheDir != "" {
-		if cached, ok := c.readCache(path, params); ok {
+		if cached, ok := c.readCache(path, params, headers); ok {
 			return cached, nil
 		}
 	}
 	result, _, err := c.do(c.baseCtx(), "GET", path, params, nil, headers)
 	if err == nil && !c.NoCache && !c.DryRun && c.cacheDir != "" {
-		c.writeCache(path, params, result)
+		c.writeCache(path, params, headers, result)
 	}
 	return result, err
 }
@@ -168,7 +169,7 @@ func (c *Client) ProbeGet(path string) (int, error) {
 	return status, err
 }
 
-func (c *Client) cacheKey(path string, params map[string]string) string {
+func (c *Client) cacheKey(path string, params map[string]string, headers map[string]string) string {
 	key := path
 	key += "|base_url=" + c.BaseURL
 	if c.Config != nil {
@@ -189,12 +190,20 @@ func (c *Client) cacheKey(path string, params map[string]string) string {
 	for _, k := range paramKeys {
 		key += k + "=" + params[k]
 	}
+	headerKeys := make([]string, 0, len(headers))
+	for k := range headers {
+		headerKeys = append(headerKeys, k)
+	}
+	sort.Strings(headerKeys)
+	for _, k := range headerKeys {
+		key += "|header:" + k + "=" + headers[k]
+	}
 	h := sha256.Sum256([]byte(key))
 	return hex.EncodeToString(h[:8])
 }
 
-func (c *Client) readCache(path string, params map[string]string) (json.RawMessage, bool) {
-	cacheFile := filepath.Join(c.cacheDir, c.cacheKey(path, params)+".json")
+func (c *Client) readCache(path string, params map[string]string, headers map[string]string) (json.RawMessage, bool) {
+	cacheFile := filepath.Join(c.cacheDir, c.cacheKey(path, params, headers)+".json")
 	info, err := os.Stat(cacheFile)
 	if err != nil || time.Since(info.ModTime()) > 5*time.Minute {
 		return nil, false
@@ -206,13 +215,13 @@ func (c *Client) readCache(path string, params map[string]string) (json.RawMessa
 	return json.RawMessage(data), true
 }
 
-func (c *Client) writeCache(path string, params map[string]string, data json.RawMessage) {
+func (c *Client) writeCache(path string, params map[string]string, headers map[string]string, data json.RawMessage) {
 	// cached Zotero API payloads
 	// contain private library metadata, so keep the directory and files private
 	// even when they already existed with older world-readable permissions.
 	_ = os.MkdirAll(c.cacheDir, 0o700)
 	_ = os.Chmod(c.cacheDir, 0o700)
-	cacheFile := filepath.Join(c.cacheDir, c.cacheKey(path, params)+".json")
+	cacheFile := filepath.Join(c.cacheDir, c.cacheKey(path, params, headers)+".json")
 	_ = os.WriteFile(cacheFile, []byte(data), 0o600)
 	_ = os.Chmod(cacheFile, 0o600)
 }
@@ -267,7 +276,7 @@ func (c *Client) doRequest(ctx context.Context, method, path string, params map[
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	targetURL := c.baseURLFor(method) + path
+	targetURL := c.baseURLFor(ctx, method) + path
 
 	var bodyBytes []byte
 	if body != nil {
@@ -480,11 +489,11 @@ func trustedZoteroBaseURL(u *url.URL) bool {
 // baseURLFor returns the base URL for a request: writes (non-GET) route to the
 // resolved WriteBaseURL when hybrid routing is configured; reads use BaseURL. The
 // write base is resolved lazily on first use.
-func (c *Client) baseURLFor(method string) string {
+func (c *Client) baseURLFor(ctx context.Context, method string) string {
 	if method == http.MethodGet || method == http.MethodHead {
 		return c.BaseURL
 	}
-	c.resolveWriteRoute()
+	c.resolveWriteRoute(ctx)
 	c.writeRouteMu.RLock()
 	writeBase := c.WriteBaseURL
 	c.writeRouteMu.RUnlock()
@@ -497,9 +506,12 @@ func (c *Client) baseURLFor(method string) string {
 // resolveWriteRoute runs the CLI-provided write-base resolver at most once. On
 // success it sets WriteBaseURL and prints a one-time notice; on failure it leaves
 // WriteBaseURL empty so the write falls through to BaseURL (and the read-only guard).
-func (c *Client) resolveWriteRoute() {
+func (c *Client) resolveWriteRoute(ctx context.Context) {
 	if c.ResolveWriteBase == nil {
 		return
+	}
+	if ctx == nil {
+		ctx = context.Background()
 	}
 	c.writeRouteMu.RLock()
 	resolved := c.WriteBaseURL != ""
@@ -508,7 +520,7 @@ func (c *Client) resolveWriteRoute() {
 		return
 	}
 	c.writeRouteOnce.Do(func() {
-		base, err := c.ResolveWriteBase()
+		base, err := c.ResolveWriteBase(ctx)
 		if err != nil || base == "" {
 			return
 		}

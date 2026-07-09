@@ -6,9 +6,11 @@ package client
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -198,18 +200,30 @@ func TestCacheKeyDeterministicAndVaries(t *testing.T) {
 	params := map[string]string{"b": "2", "a": "1"}
 	reordered := map[string]string{"a": "1", "b": "2"}
 
-	first := c.cacheKey("/items", params)
-	if second := c.cacheKey("/items", params); second != first {
+	first := c.cacheKey("/items", params, nil)
+	if second := c.cacheKey("/items", params, nil); second != first {
 		t.Fatalf("cacheKey is not deterministic: %q then %q", first, second)
 	}
-	if got := c.cacheKey("/items", reordered); got != first {
+	if got := c.cacheKey("/items", reordered, nil); got != first {
 		t.Fatalf("cacheKey depends on map iteration/order: %q vs %q", got, first)
 	}
-	if got := c.cacheKey("/other", params); got == first {
+	if got := c.cacheKey("/other", params, nil); got == first {
 		t.Fatal("cacheKey did not change when path changed")
 	}
-	if got := c.cacheKey("/items", map[string]string{"a": "1", "b": "3"}); got == first {
+	if got := c.cacheKey("/items", map[string]string{"a": "1", "b": "3"}, nil); got == first {
 		t.Fatal("cacheKey did not change when params changed")
+	}
+	headers := map[string]string{"X-B": "2", "X-A": "1"}
+	reorderedHeaders := map[string]string{"X-A": "1", "X-B": "2"}
+	withHeaders := c.cacheKey("/items", params, headers)
+	if got := c.cacheKey("/items", params, reorderedHeaders); got != withHeaders {
+		t.Fatalf("cacheKey depends on header map iteration/order: %q vs %q", got, withHeaders)
+	}
+	if withHeaders == first {
+		t.Fatal("cacheKey did not change when headers were added")
+	}
+	if got := c.cacheKey("/items", params, map[string]string{"X-A": "changed", "X-B": "2"}); got == withHeaders {
+		t.Fatal("cacheKey did not change when header value changed")
 	}
 }
 
@@ -219,8 +233,8 @@ func TestReadWriteCacheHonorsFreshness(t *testing.T) {
 	params := map[string]string{"q": "cache"}
 	want := []byte(`{"cached":true}`)
 
-	c.writeCache("/items", params, want)
-	got, ok := c.readCache("/items", params)
+	c.writeCache("/items", params, nil, want)
+	got, ok := c.readCache("/items", params, nil)
 	if !ok {
 		t.Fatal("readCache missed immediately after writeCache")
 	}
@@ -228,12 +242,81 @@ func TestReadWriteCacheHonorsFreshness(t *testing.T) {
 		t.Fatalf("cached body = %s, want %s", got, want)
 	}
 
-	cacheFile := filepath.Join(c.cacheDir, c.cacheKey("/items", params)+".json")
+	cacheFile := filepath.Join(c.cacheDir, c.cacheKey("/items", params, nil)+".json")
 	old := time.Now().Add(-6 * time.Minute)
 	if err := os.Chtimes(cacheFile, old, old); err != nil {
 		t.Fatalf("aging cache file: %v", err)
 	}
-	if got, ok := c.readCache("/items", params); ok {
+	if got, ok := c.readCache("/items", params, nil); ok {
 		t.Fatalf("readCache hit expired cache with body %s", got)
+	}
+}
+
+func TestCheckRedirectStripsZoteroCredentialsOnSchemeChange(t *testing.T) {
+	req := &http.Request{
+		URL:    &url.URL{Scheme: "http", Host: "example.test"},
+		Header: make(http.Header),
+	}
+	req.Header.Set("Zotero-API-Key", "secret")
+	req.Header.Set("Authorization", "Bearer secret")
+	via := []*http.Request{{URL: &url.URL{Scheme: "https", Host: "example.test"}}}
+
+	if err := checkRedirect(req, via); err != nil {
+		t.Fatalf("checkRedirect returned error: %v", err)
+	}
+	if got := req.Header.Get("Zotero-API-Key"); got != "" {
+		t.Fatalf("Zotero-API-Key after scheme downgrade = %q, want stripped", got)
+	}
+	if got := req.Header.Get("Authorization"); got != "" {
+		t.Fatalf("Authorization after scheme downgrade = %q, want stripped", got)
+	}
+}
+
+func TestCheckRedirectKeepsZoteroCredentialsOnSameOrigin(t *testing.T) {
+	req := &http.Request{
+		URL:    &url.URL{Scheme: "HTTPS", Host: "Example.test"},
+		Header: make(http.Header),
+	}
+	req.Header.Set("Zotero-API-Key", "secret")
+	req.Header.Set("Authorization", "Bearer secret")
+	via := []*http.Request{{URL: &url.URL{Scheme: "https", Host: "example.test"}}}
+
+	if err := checkRedirect(req, via); err != nil {
+		t.Fatalf("checkRedirect returned error: %v", err)
+	}
+	if got := req.Header.Get("Zotero-API-Key"); got != "secret" {
+		t.Fatalf("Zotero-API-Key same-origin redirect = %q, want kept", got)
+	}
+	if got := req.Header.Get("Authorization"); got != "Bearer secret" {
+		t.Fatalf("Authorization same-origin redirect = %q, want kept", got)
+	}
+}
+
+func TestGetWithHeadersCacheKeyIncludesHeaders(t *testing.T) {
+	var hits int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hit := atomic.AddInt32(&hits, 1)
+		payload, _ := json.Marshal(map[string]any{"variant": r.Header.Get("X-Zotio-Variant"), "hit": hit})
+		_, _ = w.Write(payload)
+	}))
+	defer server.Close()
+
+	c := clientTestNewClient(t, server.URL)
+	c.cacheDir = t.TempDir()
+	params := map[string]string{"q": "same"}
+
+	first, err := c.GetWithHeaders("/items", params, map[string]string{"X-Zotio-Variant": "one"})
+	if err != nil {
+		t.Fatalf("first GetWithHeaders returned error: %v", err)
+	}
+	second, err := c.GetWithHeaders("/items", params, map[string]string{"X-Zotio-Variant": "two"})
+	if err != nil {
+		t.Fatalf("second GetWithHeaders returned error: %v", err)
+	}
+	if bytes.Equal(first, second) {
+		t.Fatalf("second response = %s, want distinct response for different request headers", second)
+	}
+	if got := atomic.LoadInt32(&hits); got != 2 {
+		t.Fatalf("server hits = %d, want 2 for different request headers", got)
 	}
 }

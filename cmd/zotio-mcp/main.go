@@ -61,7 +61,8 @@ func main() {
 	// process stdout can be redirected away from the JSON-RPC stream.
 	transport := flag.String("transport", defaultTransport(), "MCP transport: stdio | http")
 	addr := flag.String("addr", defaultHTTPAddr, "bind address for http transport (host:port or :port)")
-	mcpAuthToken := flag.String("mcp-auth-token", "", "bearer token required by the http transport (falls back to ZOTIO_MCP_TOKEN; auto-generated if unset)")
+	mcpAuthToken := flag.String("mcp-auth-token", "", "refuse bearer tokens on the command line; use ZOTIO_MCP_TOKEN or --mcp-auth-token-file")
+	mcpAuthTokenFile := flag.String("mcp-auth-token-file", "", "path to a file containing the bearer token required by the http transport (falls back to ZOTIO_MCP_TOKEN; auto-generated if unset)")
 	allowUnauth := flag.Bool("allow-unauthenticated", false, "disable bearer-token auth for the http transport (NOT recommended; loopback is not a per-user boundary)")
 	flag.Parse()
 
@@ -94,9 +95,9 @@ func main() {
 		// non-browser local client)
 		// can reach the port. Require a bearer token by default (auto-generated
 		// and printed once) unless --allow-unauthenticated is passed.
-		authToken, tokSource, tokGenerated, tokErr := resolveMCPAuthToken(*mcpAuthToken, *allowUnauth)
+		authToken, tokSource, tokGenerated, tokErr := resolveMCPAuthToken(*mcpAuthToken, *mcpAuthTokenFile, *allowUnauth)
 		if tokErr != nil {
-			fmt.Fprintf(os.Stderr, "MCP server error: cannot generate auth token: %v\n", tokErr)
+			fmt.Fprintf(os.Stderr, "MCP server error: cannot resolve auth token: %v\n", tokErr)
 			os.Exit(1)
 		}
 		httpSrv := newHardenedStreamableHTTPServer(s, *addr, authToken)
@@ -107,7 +108,7 @@ func main() {
 		case authToken == "":
 			fmt.Fprintln(os.Stderr, "WARNING: MCP HTTP transport is running WITHOUT authentication (--allow-unauthenticated); any local process or reachable host can invoke read+write tools.")
 		case tokGenerated:
-			fmt.Fprintf(os.Stderr, "zotio-mcp: HTTP transport requires a bearer token. Generated one for this run (pin it via --mcp-auth-token or ZOTIO_MCP_TOKEN):\n  Authorization: Bearer %s\n", authToken)
+			fmt.Fprintf(os.Stderr, "zotio-mcp: HTTP transport requires a bearer token. Generated one for this run (pin it via ZOTIO_MCP_TOKEN or --mcp-auth-token-file):\n  Authorization: Bearer %s\n", authToken)
 		default:
 			fmt.Fprintf(os.Stderr, "zotio-mcp: HTTP transport requires a bearer token (source: %s).\n", tokSource)
 		}
@@ -292,14 +293,25 @@ func validBearerToken(r *http.Request, token string) bool {
 }
 
 // resolveMCPAuthToken picks the bearer token the HTTP transport enforces:
-// --mcp-auth-token, then ZOTIO_MCP_TOKEN, else a freshly generated one. It
-// returns an empty token (auth disabled) only when allowUnauth is set.
-func resolveMCPAuthToken(flagToken string, allowUnauth bool) (token, source string, generated bool, err error) {
+// --mcp-auth-token-file, then ZOTIO_MCP_TOKEN, else a freshly generated one.
+// It returns an empty token (auth disabled) only when allowUnauth is set.
+func resolveMCPAuthToken(flagToken, tokenFile string, allowUnauth bool) (token, source string, generated bool, err error) {
 	if allowUnauth {
 		return "", "", false, nil
 	}
 	if flagToken != "" {
-		return flagToken, "flag:--mcp-auth-token", false, nil
+		return "", "", false, errors.New("refusing token on command line; use ZOTIO_MCP_TOKEN or --mcp-auth-token-file")
+	}
+	if tokenFile != "" {
+		tokenBytes, err := os.ReadFile(tokenFile)
+		if err != nil {
+			return "", "", false, err
+		}
+		token := strings.TrimRight(string(tokenBytes), "\r\n")
+		if token == "" {
+			return "", "", false, errors.New("token file is empty")
+		}
+		return token, "flag:--mcp-auth-token-file", false, nil
 	}
 	if v := os.Getenv("ZOTIO_MCP_TOKEN"); v != "" {
 		return v, "env:ZOTIO_MCP_TOKEN", false, nil

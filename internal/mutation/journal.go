@@ -96,16 +96,24 @@ func WriteEntry(dir string, e JournalEntry) error {
 	if dir == "" {
 		return fmt.Errorf("empty journal directory")
 	}
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return fmt.Errorf("creating journal dir: %w", err)
+	}
+	if err := os.Chmod(dir, 0o700); err != nil {
+		return fmt.Errorf("securing journal dir: %w", err)
 	}
 	line, err := json.Marshal(e)
 	if err != nil {
 		return fmt.Errorf("encoding journal entry: %w", err)
 	}
-	f, err := os.OpenFile(filepath.Join(dir, JournalFileName), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+	journalPath := filepath.Join(dir, JournalFileName)
+	f, err := os.OpenFile(journalPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
 	if err != nil {
 		return fmt.Errorf("opening journal: %w", err)
+	}
+	if err := os.Chmod(journalPath, 0o600); err != nil {
+		_ = f.Close()
+		return fmt.Errorf("securing journal: %w", err)
 	}
 	defer f.Close()
 	if _, err := f.Write(append(line, '\n')); err != nil {

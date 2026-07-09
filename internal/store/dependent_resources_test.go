@@ -7,7 +7,10 @@ package store
 import (
 	"context"
 	"encoding/json"
+	"os"
 	"path/filepath"
+	"runtime"
+	"strconv"
 	"testing"
 
 	_ "modernc.org/sqlite"
@@ -197,5 +200,96 @@ func TestAnnotationsForItems(t *testing.T) {
 	}
 	if empty == nil || len(empty) != 0 {
 		t.Errorf("AnnotationsForItems(nil) = %v, want empty map", empty)
+	}
+}
+
+func TestOpenWithContextPrivateFileModes(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("permission bits are not portable on windows")
+	}
+	dir := filepath.Join(t.TempDir(), "store")
+	dbPath := filepath.Join(dir, "data.db")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.Chmod(dir, 0o755); err != nil {
+		t.Fatalf("chmod dir setup: %v", err)
+	}
+	if err := os.WriteFile(dbPath, nil, 0o644); err != nil { // #nosec G306 -- deliberately lax pre-existing file; the test asserts OpenWithContext re-chmods it to 0600
+		t.Fatalf("write db setup: %v", err)
+	}
+	if err := os.Chmod(dbPath, 0o644); err != nil {
+		t.Fatalf("chmod db setup: %v", err)
+	}
+	s, err := OpenWithContext(context.Background(), dbPath)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	if err := s.Close(); err != nil {
+		t.Fatalf("close: %v", err)
+	}
+
+	assertMode(t, dir, 0o700)
+	assertMode(t, dbPath, 0o600)
+}
+
+func TestAnnotationsForItemsChunksSQLiteVariables(t *testing.T) {
+	s, err := OpenWithContext(context.Background(), filepath.Join(t.TempDir(), "data.db"))
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer s.Close()
+
+	const itemCount = 1500
+	items := make([]json.RawMessage, 0, itemCount*3)
+	keys := make([]string, 0, itemCount)
+	for i := range itemCount {
+		suffix := strconv.Itoa(i)
+		top := "TOP" + suffix
+		att := "ATT" + suffix
+		ann := "ANN" + suffix
+		keys = append(keys, top)
+		items = append(items,
+			json.RawMessage(`{"key":"`+top+`","version":1,"data":{"key":"`+top+`","itemType":"journalArticle","title":"Paper `+suffix+`"}}`),
+			json.RawMessage(`{"key":"`+att+`","version":1,"data":{"key":"`+att+`","itemType":"attachment","parentItem":"`+top+`","contentType":"application/pdf"}}`),
+			json.RawMessage(`{"key":"`+ann+`","version":1,"data":{"key":"`+ann+`","itemType":"annotation","parentItem":"`+att+`"}}`),
+		)
+	}
+	if stored, _, err := s.UpsertBatch("items", items); err != nil {
+		t.Fatalf("UpsertBatch: %v", err)
+	} else if stored != len(items) {
+		t.Fatalf("stored = %d, want %d", stored, len(items))
+	}
+
+	grouped, err := s.AnnotationsForItems(keys)
+	if err != nil {
+		t.Fatalf("AnnotationsForItems(%d keys): %v", len(keys), err)
+	}
+	if len(grouped) != itemCount {
+		t.Fatalf("grouped keys = %d, want %d", len(grouped), itemCount)
+	}
+	for i, key := range keys {
+		rows := grouped[key]
+		if len(rows) != 1 {
+			t.Fatalf("%s annotations = %d, want 1", key, len(rows))
+		}
+		var got map[string]any
+		if err := json.Unmarshal(rows[0], &got); err != nil {
+			t.Fatalf("decode %s annotation: %v", key, err)
+		}
+		if want := "ANN" + strconv.Itoa(i); got["key"] != want {
+			t.Fatalf("%s annotation key = %v, want %s", key, got["key"], want)
+		}
+	}
+}
+
+func assertMode(t *testing.T, path string, want os.FileMode) {
+	t.Helper()
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("stat %s: %v", path, err)
+	}
+	if got := info.Mode() & os.ModePerm; got != want {
+		t.Fatalf("%s mode = %04o, want %04o", path, got, want)
 	}
 }

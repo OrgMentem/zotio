@@ -3,6 +3,7 @@ package main
 import (
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"regexp"
 	"strings"
 	"testing"
@@ -119,58 +120,117 @@ func TestValidBearerToken(t *testing.T) {
 }
 
 func TestResolveMCPAuthToken(t *testing.T) {
-	tests := []struct {
-		name        string
-		flagToken   string
-		envToken    string
-		allowUnauth bool
-		wantToken   string
-		wantSource  string
-		wantGen     bool
-	}{
-		{name: "allow unauthenticated disables token", envToken: "env-token", allowUnauth: true},
-		{name: "flag token wins", flagToken: "flag-token", envToken: "env-token", wantToken: "flag-token", wantSource: "flag:--mcp-auth-token"},
-		{name: "environment token used without flag", envToken: "env-token", wantToken: "env-token", wantSource: "env:ZOTIO_MCP_TOKEN"},
-		{name: "missing configured token generates random token", wantSource: "generated", wantGen: true},
+	t.Run("allow unauthenticated disables token", func(t *testing.T) {
+		t.Setenv("ZOTIO_MCP_TOKEN", "env-token")
+
+		gotToken, gotSource, gotGen, err := resolveMCPAuthToken("literal-token", "", true)
+		if err != nil {
+			t.Fatalf("resolveMCPAuthToken returned error: %v", err)
+		}
+		if gotToken != "" || gotSource != "" || gotGen {
+			t.Fatalf("resolveMCPAuthToken() = token %q source %q generated %v, want disabled auth", gotToken, gotSource, gotGen)
+		}
+	})
+
+	t.Run("token file wins over environment", func(t *testing.T) {
+		t.Setenv("ZOTIO_MCP_TOKEN", "env-token")
+		tokenFile := writeMCPTokenFile(t, "file-token\n")
+
+		gotToken, gotSource, gotGen, err := resolveMCPAuthToken("", tokenFile, false)
+		if err != nil {
+			t.Fatalf("resolveMCPAuthToken returned error: %v", err)
+		}
+		if gotToken != "file-token" {
+			t.Fatalf("token = %q, want %q", gotToken, "file-token")
+		}
+		if gotSource != "flag:--mcp-auth-token-file" {
+			t.Fatalf("source = %q, want %q", gotSource, "flag:--mcp-auth-token-file")
+		}
+		if gotGen {
+			t.Fatal("generated = true, want false")
+		}
+	})
+
+	t.Run("literal flag value is refused", func(t *testing.T) {
+		t.Setenv("ZOTIO_MCP_TOKEN", "")
+
+		gotToken, gotSource, gotGen, err := resolveMCPAuthToken("literal-token", "", false)
+		if err == nil {
+			t.Fatal("resolveMCPAuthToken returned nil error, want refusal")
+		}
+		if gotToken != "" || gotSource != "" || gotGen {
+			t.Fatalf("resolveMCPAuthToken() = token %q source %q generated %v, want empty result on error", gotToken, gotSource, gotGen)
+		}
+		if !strings.Contains(err.Error(), "refusing token on command line; use ZOTIO_MCP_TOKEN or --mcp-auth-token-file") {
+			t.Fatalf("error = %q, want command-line token guidance", err)
+		}
+	})
+
+	t.Run("environment token used without file", func(t *testing.T) {
+		t.Setenv("ZOTIO_MCP_TOKEN", "env-token")
+
+		gotToken, gotSource, gotGen, err := resolveMCPAuthToken("", "", false)
+		if err != nil {
+			t.Fatalf("resolveMCPAuthToken returned error: %v", err)
+		}
+		if gotToken != "env-token" {
+			t.Fatalf("token = %q, want %q", gotToken, "env-token")
+		}
+		if gotSource != "env:ZOTIO_MCP_TOKEN" {
+			t.Fatalf("source = %q, want %q", gotSource, "env:ZOTIO_MCP_TOKEN")
+		}
+		if gotGen {
+			t.Fatal("generated = true, want false")
+		}
+	})
+
+	t.Run("empty token file is refused", func(t *testing.T) {
+		t.Setenv("ZOTIO_MCP_TOKEN", "env-token")
+		tokenFile := writeMCPTokenFile(t, "\n")
+
+		_, _, _, err := resolveMCPAuthToken("", tokenFile, false)
+		if err == nil {
+			t.Fatal("resolveMCPAuthToken returned nil error, want empty file error")
+		}
+		if !strings.Contains(err.Error(), "token file is empty") {
+			t.Fatalf("error = %q, want empty token file error", err)
+		}
+	})
+
+	t.Run("missing configured token generates random token", func(t *testing.T) {
+		t.Setenv("ZOTIO_MCP_TOKEN", "")
+
+		gotToken, gotSource, gotGen, err := resolveMCPAuthToken("", "", false)
+		if err != nil {
+			t.Fatalf("resolveMCPAuthToken returned error: %v", err)
+		}
+		if gotSource != "generated" || !gotGen {
+			t.Fatalf("generated result source=%q generated=%v, want source=%q generated=true", gotSource, gotGen, "generated")
+		}
+		assertGeneratedMCPToken(t, gotToken)
+
+		nextToken, nextSource, nextGen, err := resolveMCPAuthToken("", "", false)
+		if err != nil {
+			t.Fatalf("second resolveMCPAuthToken returned error: %v", err)
+		}
+		if nextSource != "generated" || !nextGen {
+			t.Fatalf("second generated result source=%q generated=%v, want source=%q generated=true", nextSource, nextGen, "generated")
+		}
+		assertGeneratedMCPToken(t, nextToken)
+		if nextToken == gotToken {
+			t.Fatalf("two generated tokens matched: %q", gotToken)
+		}
+	})
+}
+
+func writeMCPTokenFile(t *testing.T, token string) string {
+	t.Helper()
+
+	path := t.TempDir() + "/token"
+	if err := os.WriteFile(path, []byte(token), 0o600); err != nil {
+		t.Fatalf("write token file: %v", err)
 	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Setenv("ZOTIO_MCP_TOKEN", tt.envToken)
-
-			gotToken, gotSource, gotGen, err := resolveMCPAuthToken(tt.flagToken, tt.allowUnauth)
-			if err != nil {
-				t.Fatalf("resolveMCPAuthToken returned error: %v", err)
-			}
-			if gotSource != tt.wantSource {
-				t.Fatalf("source = %q, want %q", gotSource, tt.wantSource)
-			}
-			if gotGen != tt.wantGen {
-				t.Fatalf("generated = %v, want %v", gotGen, tt.wantGen)
-			}
-
-			if tt.wantGen {
-				assertGeneratedMCPToken(t, gotToken)
-
-				nextToken, nextSource, nextGen, err := resolveMCPAuthToken(tt.flagToken, tt.allowUnauth)
-				if err != nil {
-					t.Fatalf("second resolveMCPAuthToken returned error: %v", err)
-				}
-				if nextSource != "generated" || !nextGen {
-					t.Fatalf("second generated result source=%q generated=%v, want source=%q generated=true", nextSource, nextGen, "generated")
-				}
-				assertGeneratedMCPToken(t, nextToken)
-				if nextToken == gotToken {
-					t.Fatalf("two generated tokens matched: %q", gotToken)
-				}
-				return
-			}
-
-			if gotToken != tt.wantToken {
-				t.Fatalf("token = %q, want %q", gotToken, tt.wantToken)
-			}
-		})
-	}
+	return path
 }
 
 func assertGeneratedMCPToken(t *testing.T, token string) {

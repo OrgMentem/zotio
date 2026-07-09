@@ -2,7 +2,20 @@
 
 package cli
 
-import "testing"
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"errors"
+	"os"
+	"path/filepath"
+	"strconv"
+	"strings"
+	"testing"
+	"time"
+
+	"zotio/internal/connector"
+)
 
 func TestIsLocalZoteroAPI(t *testing.T) {
 	tests := []struct {
@@ -28,4 +41,93 @@ func TestIsLocalZoteroAPI(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestRedactURL(t *testing.T) {
+	tests := []struct {
+		name string
+		raw  string
+		want string
+	}{
+		{
+			name: "password and query token",
+			raw:  "https://u:sekret@example.com/api?token=abc&x=1",
+			want: "https://u:***@example.com/api?token=***&x=1",
+		},
+		{
+			name: "plain local URL",
+			raw:  "http://localhost:23119/api/users/0",
+			want: "http://localhost:23119/api/users/0",
+		},
+		{
+			name: "malformed",
+			raw:  "http://[::1/api/users/0?token=abc",
+			want: "http://[::1/api/users/0?token=abc",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := redactURL(tt.raw); got != tt.want {
+				t.Fatalf("redactURL(%q): want %q, got %q", tt.raw, tt.want, got)
+			}
+		})
+	}
+}
+
+func TestDoctorReportRedactsBaseURL(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("ZOTIO_DEMO", "0")
+	t.Setenv("ZOTERO_API_KEY", "")
+	t.Setenv("ZOTERO_BASE_URL", "")
+
+	oldConnectorPing := connectorPing
+	connectorPing = func(context.Context, *connector.Client) error {
+		return errors.New("connector ping disabled")
+	}
+	t.Cleanup(func() { connectorPing = oldConnectorPing })
+
+	rawBaseURL := "http://u:sekret@localhost:23119/api/users/0?token=abc&x=1"
+	flags := &rootFlags{
+		asJSON:     true,
+		configPath: doctorTestConfigFile(t, rawBaseURL),
+		timeout:    50 * time.Millisecond,
+	}
+	cmd := newDoctorCmd(flags)
+	cmd.SilenceErrors = true
+	cmd.SilenceUsage = true
+
+	var out bytes.Buffer
+	var errOut bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&errOut)
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("doctor: %v; stderr=%s", err, errOut.String())
+	}
+
+	var report map[string]any
+	if err := json.Unmarshal(out.Bytes(), &report); err != nil {
+		t.Fatalf("decode doctor report: %v; stdout=%s", err, out.String())
+	}
+
+	wantBaseURL := "http://u:***@localhost:23119/api/users/0?token=***&x=1"
+	if got := report["base_url"]; got != wantBaseURL {
+		t.Fatalf("report base_url: want %q, got %v", wantBaseURL, got)
+	}
+	hint, _ := report["auth_hint"].(string)
+	if !strings.Contains(hint, wantBaseURL) {
+		t.Fatalf("auth_hint = %q, want redacted base URL %q", hint, wantBaseURL)
+	}
+	if strings.Contains(hint, "sekret") || strings.Contains(hint, "token=abc") {
+		t.Fatalf("auth_hint leaked raw base URL secret: %q", hint)
+	}
+}
+
+func doctorTestConfigFile(t *testing.T, baseURL string) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "config.toml")
+	if err := os.WriteFile(path, []byte("base_url = "+strconv.Quote(baseURL)+"\n"), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	return path
 }

@@ -117,7 +117,7 @@ func fetchItemTemplate(ctx context.Context, flags *rootFlags, itemType string) (
 	// ResolveWriteBase yields "" and the Get below fails into the precondition
 	// error below.
 	if c.ResolveWriteBase != nil {
-		if base, rerr := c.ResolveWriteBase(); rerr == nil && base != "" {
+		if base, rerr := c.ResolveWriteBase(ctx); rerr == nil && base != "" {
 			c.BaseURL = stripLibraryPrefix(base)
 		}
 		c.ResolveWriteBase = nil

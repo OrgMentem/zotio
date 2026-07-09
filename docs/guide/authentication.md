@@ -23,7 +23,7 @@ Editing writes route to the Zotero Web API and need a key:
 Configure it once:
 
 ```bash
-zotio auth set-token <key>     # or export ZOTERO_API_KEY=<key>
+printf %s "$ZOTERO_API_KEY" | zotio auth set-token --stdin     # or export ZOTERO_API_KEY=<key>
 ```
 
 Generate a key at <https://www.zotero.org/settings/keys>. The first Web API write prints a one-time stderr notice naming the target. A key is also required to read **group libraries** or to read while the desktop app is **closed**.

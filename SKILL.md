@@ -33,7 +33,7 @@ This skill drives the `zotio` binary. **You must verify the CLI is installed bef
 
 If `zotio version` reports "command not found" after install, the install step did not put the binary on `$PATH`. Do not proceed with skill commands until verification succeeds.
 
-This CLI connects directly to your running Zotero desktop app — reads need no API key. Writes (`items create/update/delete/enrich`, `import apply`, `vault push`) require a Zotero Web API key, configured once via `auth set-token`, and are preview-first: every mutation plans by default, applies only under `--yes`, and is recorded to an undoable journal. It syncs your library to a local SQLite store for offline search and compound queries, then layers on the capabilities below — health reports, reviewable import, metadata enrichment, reproducible exports, and vault sync.
+This CLI connects directly to your running Zotero desktop app — reads need no API key. Writes (`items create/update/delete/enrich`, `import apply`, `vault push`) require a Zotero Web API key, configured once via `auth set-token --stdin`, and are preview-first: every mutation plans by default, applies only under `--yes`, and is recorded to an undoable journal. It syncs your library to a local SQLite store for offline search and compound queries, then layers on the capabilities below — health reports, reviewable import, metadata enrichment, reproducible exports, and vault sync.
 
 ## When to Use This CLI
 
@@ -44,7 +44,7 @@ Use zotio when you need to script or automate your Zotero library: batch-export 
 Non-obvious facts that defy reasonable assumptions — read before running commands:
 
 - **Reads are local and keyless; writes are not.** Reads hit the Zotero desktop local API (`localhost:23119`) and need no key, but only while the app is running. **Group libraries** and reads while Zotero is **closed** require a Web API key.
-- **The local API is GET-only.** Mutating commands against a local base **auto-route to the Web API** (`api.zotero.org`) and require a key set via `auth set-token`; with no key they fail the read-only guard. A one-time stderr notice names the write target on the first write. Web API writes sync back down to the desktop.
+- **The local API is GET-only.** Mutating commands against a local base **auto-route to the Web API** (`api.zotero.org`) and require a key set via `auth set-token --stdin`; with no key they fail the read-only guard. A one-time stderr notice names the write target on the first write. Web API writes sync back down to the desktop.
 - **`--agent` does NOT auto-apply writes.** It expands to `--json --compact --no-input --no-color` only; mutating commands still preview by default — pass `--yes` to apply.
 - **`--agent`/piped output is a provenance envelope**, not bare data: parse `.results` for the payload and `.meta.source` (`live` vs `local`) for freshness.
 - **Verify setup with `zotio doctor`** — its `writes:` line reports whether writes are available (key present / auto-routed) or read-only.
@@ -178,7 +178,7 @@ List the top 20 journals in your library with item counts — identify source di
 **Reads** use the local Zotero desktop API at `localhost:23119` — no API key required while Zotero is running. **Writes** (`items create/update/delete`, `vault push`, `vault pull`, `vault resolve`) require a Zotero Web API key. Configure it once:
 
 ```bash
-zotio auth set-token <key>
+printf %s "$ZOTERO_API_KEY" | zotio auth set-token --stdin
 ```
 
 (or set the `ZOTERO_API_KEY` env var). When the configured base is the local API, writes auto-route to the Web API at `api.zotero.org` while reads stay local; a one-time stderr notice names the write target on your first write.

@@ -81,8 +81,12 @@ func Open(dbPath string) (*Store, error) {
 // retry-on-SQLITE_BUSY loop and propagates ctx.Err() back to the caller
 // instead of waiting out the full migrationLockTimeout.
 func OpenWithContext(ctx context.Context, dbPath string) (*Store, error) {
-	if err := os.MkdirAll(filepath.Dir(dbPath), 0o755); err != nil {
+	dbDir := filepath.Dir(dbPath)
+	if err := os.MkdirAll(dbDir, 0o700); err != nil {
 		return nil, fmt.Errorf("creating db directory: %w", err)
+	}
+	if err := os.Chmod(dbDir, 0o700); err != nil {
+		return nil, fmt.Errorf("securing db directory: %w", err)
 	}
 
 	db, err := sql.Open("sqlite", dbPath+"?_journal_mode=WAL&_synchronous=NORMAL&_busy_timeout=5000&_foreign_keys=ON&_temp_store=MEMORY&_mmap_size=268435456")
@@ -99,6 +103,10 @@ func OpenWithContext(ctx context.Context, dbPath string) (*Store, error) {
 	if err := s.migrate(ctx); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("running migrations: %w", err)
+	}
+	if err := os.Chmod(dbPath, 0o600); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("securing database file: %w", err)
 	}
 
 	return s, nil
@@ -908,41 +916,55 @@ func (s *Store) AnnotationsForItem(topItemKey string) ([]json.RawMessage, error)
 }
 
 // AnnotationsForItems returns annotations grouped by their top-level item key
-// for every key in topItemKeys, resolved with a single query. It backs callers
-// that materialize many items at once (e.g. vault sync) so they avoid an N+1
-// per-item AnnotationsForItem lookup. Keys with no annotations are simply absent
-// from the returned map.
+// for every key in topItemKeys. It batches the lookup to stay below SQLite's
+// variable limit while still avoiding a per-item AnnotationsForItem query. Keys
+// with no annotations are simply absent from the returned map.
 func (s *Store) AnnotationsForItems(topItemKeys []string) (map[string][]json.RawMessage, error) {
 	out := make(map[string][]json.RawMessage, len(topItemKeys))
 	if len(topItemKeys) == 0 {
 		return out, nil
 	}
-	placeholders := make([]string, len(topItemKeys))
-	args := make([]any, len(topItemKeys))
-	for i, k := range topItemKeys {
-		placeholders[i] = "?"
-		args[i] = k
-	}
-	// #nosec G202 -- placeholder count is dynamic but values are safe questions marks
-	rows, err := s.db.Query(
-		`SELECT att.parent_key, a.data FROM resources a
-		 JOIN resources att ON a.parent_key = att.id
-		 WHERE a.item_type = 'annotation' AND att.parent_key IN (`+strings.Join(placeholders, ",")+`)`,
-		args...,
-	)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	for rows.Next() {
-		var top, data string
-		if err := rows.Scan(&top, &data); err != nil {
+	const batchSize = 500
+	for start := 0; start < len(topItemKeys); start += batchSize {
+		end := start + batchSize
+		if end > len(topItemKeys) {
+			end = len(topItemKeys)
+		}
+		batch := topItemKeys[start:end]
+		placeholders := make([]string, len(batch))
+		args := make([]any, len(batch))
+		for i, k := range batch {
+			placeholders[i] = "?"
+			args[i] = k
+		}
+		// #nosec G202 -- placeholder count is dynamic but values are safe questions marks
+		rows, err := s.db.Query(
+			`SELECT att.parent_key, a.data FROM resources a
+			 JOIN resources att ON a.parent_key = att.id
+			 WHERE a.item_type = 'annotation' AND att.parent_key IN (`+strings.Join(placeholders, ",")+`)`,
+			args...,
+		)
+		if err != nil {
 			return nil, err
 		}
-		out[top] = append(out[top], json.RawMessage(data))
+
+		for rows.Next() {
+			var top, data string
+			if err := rows.Scan(&top, &data); err != nil {
+				_ = rows.Close()
+				return nil, err
+			}
+			out[top] = append(out[top], json.RawMessage(data))
+		}
+		if err := rows.Err(); err != nil {
+			_ = rows.Close()
+			return nil, err
+		}
+		if err := rows.Close(); err != nil {
+			return nil, err
+		}
 	}
-	return out, rows.Err()
+	return out, nil
 }
 
 // Fulltext returns the stored full-text payload for an attachment key, if any.

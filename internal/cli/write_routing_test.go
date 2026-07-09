@@ -19,15 +19,15 @@ import (
 
 func TestResolveWebWriteBase(t *testing.T) {
 	// No key -> no routing (writes hit the local read-only guard).
-	if base, err := resolveWebWriteBase(&config.Config{}, "", time.Second); err != nil || base != "" {
+	if base, err := resolveWebWriteBase(context.Background(), &config.Config{}, "", time.Second); err != nil || base != "" {
 		t.Errorf("no key: got (%q, %v), want (\"\", nil)", base, err)
 	}
-	got, err := resolveWebWriteBase(&config.Config{ZoteroApiKey: "k", UserID: "99999"}, "", time.Second)
+	got, err := resolveWebWriteBase(context.Background(), &config.Config{ZoteroApiKey: "k", UserID: "99999"}, "", time.Second)
 	if err != nil || got != zoteroWebAPIBase+"/users/99999" {
 		t.Errorf("personal: got (%q, %v)", got, err)
 	}
 	// Group -> /groups/<gid>, no user id needed.
-	got, err = resolveWebWriteBase(&config.Config{ZoteroApiKey: "k"}, "12345", time.Second)
+	got, err = resolveWebWriteBase(context.Background(), &config.Config{ZoteroApiKey: "k"}, "12345", time.Second)
 	if err != nil || got != zoteroWebAPIBase+"/groups/12345" {
 		t.Errorf("group: got (%q, %v)", got, err)
 	}
@@ -51,7 +51,7 @@ func TestResolveWebWriteBaseResolvesAndCachesUserID(t *testing.T) {
 	defer func() { zoteroWebAPIBase = old }()
 
 	cfg := &config.Config{ZoteroApiKey: "k", Path: filepath.Join(t.TempDir(), "config.toml")}
-	got, err := resolveWebWriteBase(cfg, "", time.Second)
+	got, err := resolveWebWriteBase(context.Background(), cfg, "", time.Second)
 	if err != nil {
 		t.Fatalf("resolve: %v", err)
 	}
@@ -60,6 +60,49 @@ func TestResolveWebWriteBaseResolvesAndCachesUserID(t *testing.T) {
 	}
 	if cfg.UserID != "99" {
 		t.Errorf("user id not cached on config: %q", cfg.UserID)
+	}
+}
+
+func TestFetchZoteroUserIDHonorsCanceledContext(t *testing.T) {
+	var hits int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits++
+		_, _ = w.Write([]byte(`{"userID":99}`))
+	}))
+	defer srv.Close()
+	old := zoteroWebAPIBase
+	zoteroWebAPIBase = srv.URL
+	defer func() { zoteroWebAPIBase = old }()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := fetchZoteroUserID(ctx, &config.Config{ZoteroApiKey: "k"}, time.Second); err == nil {
+		t.Fatal("fetchZoteroUserID returned nil error for canceled context")
+	}
+	if hits != 0 {
+		t.Fatalf("server hits = %d, want 0 for pre-canceled context", hits)
+	}
+}
+
+func TestKeyGroupWriteAccessHonorsCanceledContext(t *testing.T) {
+	var hits int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits++
+		_, _ = w.Write([]byte(`{"access":{"groups":{"123":{"write":true}}}}`))
+	}))
+	defer srv.Close()
+	old := zoteroWebAPIBase
+	zoteroWebAPIBase = srv.URL
+	defer func() { zoteroWebAPIBase = old }()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	canWrite, known := keyGroupWriteAccess(ctx, &config.Config{ZoteroApiKey: "k"}, time.Second, "123")
+	if canWrite || known {
+		t.Fatalf("keyGroupWriteAccess = (%v, %v), want (false, false) for canceled context", canWrite, known)
+	}
+	if hits != 0 {
+		t.Fatalf("server hits = %d, want 0 for pre-canceled context", hits)
 	}
 }
 

@@ -43,6 +43,68 @@ func isLocalZoteroAPI(baseURL string) bool {
 	}
 }
 
+func redactURL(raw string) string {
+	parsed, err := url.Parse(raw)
+	if err != nil {
+		return raw
+	}
+	redacted := false
+	redactedPassword := false
+	if parsed.User != nil {
+		if _, ok := parsed.User.Password(); ok {
+			parsed.User = url.UserPassword(parsed.User.Username(), "***")
+			redacted = true
+			redactedPassword = true
+		}
+	}
+	if parsed.RawQuery != "" {
+		if rawQuery, ok := redactSensitiveURLQuery(parsed.RawQuery); ok {
+			parsed.RawQuery = rawQuery
+			redacted = true
+		}
+	}
+	if !redacted {
+		return raw
+	}
+	out := parsed.String()
+	if redactedPassword {
+		out = strings.Replace(out, ":%2A%2A%2A@", ":***@", 1)
+	}
+	return out
+}
+
+func redactSensitiveURLQuery(rawQuery string) (string, bool) {
+	parts := strings.Split(rawQuery, "&")
+	redacted := false
+	for i, part := range parts {
+		key := part
+		if eq := strings.IndexByte(part, '='); eq >= 0 {
+			key = part[:eq]
+		}
+		decodedKey, err := url.QueryUnescape(key)
+		if err != nil {
+			decodedKey = key
+		}
+		if sensitiveURLQueryKey(decodedKey) {
+			parts[i] = key + "=***"
+			redacted = true
+		}
+	}
+	if !redacted {
+		return rawQuery, false
+	}
+	return strings.Join(parts, "&"), true
+}
+
+func sensitiveURLQueryKey(key string) bool {
+	switch strings.ToLower(key) {
+	case "token", "key", "api_key", "apikey", "secret", "password", "auth":
+		return true
+	default:
+		return false
+	}
+}
+
 // looksLikeDoctorInterstitial reports whether the response body matches a known
 // bot-detection challenge page (Cloudflare, Akamai, Vercel, AWS WAF, DataDome,
 // PerimeterX). Only fires on the doctor probe — used to distinguish "transport
@@ -107,13 +169,15 @@ func newDoctorCmd(flags *rootFlags) *cobra.Command {
 			report := map[string]any{}
 
 			// Check config
+			redactedBaseURL := ""
 			cfg, err := config.Load(flags.configPath)
 			if err != nil {
 				report["config"] = fmt.Sprintf("error: %s", err)
 			} else {
 				report["config"] = "ok"
+				redactedBaseURL = redactURL(cfg.BaseURL)
 				report["config_path"] = cfg.Path
-				report["base_url"] = cfg.BaseURL
+				report["base_url"] = redactedBaseURL
 			}
 
 			// Check auth. Zotero's local desktop API (localhost:23119) does not
@@ -125,7 +189,7 @@ func newDoctorCmd(flags *rootFlags) *cobra.Command {
 				if header == "" {
 					if localAPI {
 						report["auth"] = "not required"
-						report["auth_hint"] = "local Zotero API at " + cfg.BaseURL + " accepts requests without a key"
+						report["auth_hint"] = "local Zotero API at " + redactedBaseURL + " accepts requests without a key"
 					} else {
 						report["auth"] = "not configured"
 						report["auth_hint"] = "export ZOTERO_API_KEY=<your-key> (only needed for the web API at api.zotero.org)"

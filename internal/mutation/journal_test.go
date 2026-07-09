@@ -4,6 +4,9 @@
 package mutation
 
 import (
+	"os"
+	"path/filepath"
+	"runtime"
 	"testing"
 	"time"
 )
@@ -91,5 +94,42 @@ func TestJournalWriteListReadRoundtrip(t *testing.T) {
 	}
 	if _, err := ReadEntry(dir, "missing"); err == nil {
 		t.Error("read missing run id should error")
+	}
+}
+
+func TestWriteEntryPrivateFileModes(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("permission bits are not portable on windows")
+	}
+	dir := filepath.Join(t.TempDir(), "journal")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.Chmod(dir, 0o755); err != nil {
+		t.Fatalf("chmod dir setup: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, JournalFileName), nil, 0o644); err != nil { // #nosec G306 -- deliberately lax pre-existing file; the test asserts WriteEntry re-chmods it to 0600
+		t.Fatalf("write journal setup: %v", err)
+	}
+	if err := os.Chmod(filepath.Join(dir, JournalFileName), 0o644); err != nil {
+		t.Fatalf("chmod journal setup: %v", err)
+	}
+	e, _ := BuildJournalEntry(appliedEnvelope(), time.Date(2026, 6, 28, 9, 0, 0, 0, time.UTC))
+	if err := WriteEntry(dir, e); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	assertMode(t, dir, 0o700)
+	assertMode(t, filepath.Join(dir, JournalFileName), 0o600)
+}
+
+func assertMode(t *testing.T, path string, want os.FileMode) {
+	t.Helper()
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("stat %s: %v", path, err)
+	}
+	if got := info.Mode() & os.ModePerm; got != want {
+		t.Fatalf("%s mode = %04o, want %04o", path, got, want)
 	}
 }

@@ -114,7 +114,7 @@ func newGroupsInspectCmd(flags *rootFlags) *cobra.Command {
 				// editing policy, which is near-always non-empty and would
 				// over-claim write for read-only keys and admin-only groups.
 				cfg, _ := config.Load(flags.configPath)
-				canWrite, keyKnown := keyGroupWriteAccess(cfg, flags.timeout, groupID)
+				canWrite, keyKnown := keyGroupWriteAccess(cmd.Context(), cfg, flags.timeout, groupID)
 				readyForWrite := keyKnown && canWrite
 				switch {
 				case !keyKnown:

@@ -380,7 +380,7 @@ The `ZOTERO_API_KEY` is optional for read-only local-desktop use (the local API 
 **Editing writes** (`items update`/`delete`/`move`, `items enrich`, `tags` mutations, `vault push`/`pull`/`resolve`, most of `import apply`) route to the Zotero Web API and need a key. Configure it once:
 
 ```bash
-zotio auth set-token <key>     # or set ZOTERO_API_KEY
+printf %s "$ZOTERO_API_KEY" | zotio auth set-token --stdin     # or export ZOTERO_API_KEY=<key>
 ```
 
 Generate a key at <https://www.zotero.org/settings/keys>. The first Web API write prints a one-time stderr notice naming the target. A key is also needed to read **group libraries** or to read while the desktop app is **closed**. Run `zotio doctor` to see a `writes:` line reporting whether write-back is available.
@@ -455,7 +455,7 @@ Config file: `~/.config/zotio/config.toml`. Static request headers can be set un
 
 | Variable | Required | Description |
 |---|---|---|
-| `ZOTERO_API_KEY` | No for reads | Required for writes (routed to the Zotero Web API), group libraries, and access while the desktop app is closed. Local desktop reads need no key. Configure once via `zotio auth set-token <key>`. |
+| `ZOTERO_API_KEY` | No for reads | Required for writes (routed to the Zotero Web API), group libraries, and access while the desktop app is closed. Local desktop reads need no key. Configure once by piping the token into `zotio auth set-token --stdin`. |
 
 ---
 

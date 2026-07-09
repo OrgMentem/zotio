@@ -5,6 +5,7 @@
 package client
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"sync/atomic"
@@ -29,7 +30,7 @@ func TestWriteRoutingSplitsReadsAndWrites(t *testing.T) {
 
 	c := New(&config.Config{BaseURL: readSrv.URL}, 5*time.Second, 0)
 	c.NoCache = true
-	c.ResolveWriteBase = func() (string, error) {
+	c.ResolveWriteBase = func(ctx context.Context) (string, error) {
 		atomic.AddInt32(&resolveCalls, 1)
 		return writeSrv.URL, nil
 	}
@@ -65,7 +66,7 @@ func TestWriteRoutingFallsBackWhenResolverEmpty(t *testing.T) {
 
 	c := New(&config.Config{BaseURL: srv.URL}, 5*time.Second, 0)
 	c.NoCache = true
-	c.ResolveWriteBase = func() (string, error) { return "", nil } // nothing to route to
+	c.ResolveWriteBase = func(ctx context.Context) (string, error) { return "", nil } // nothing to route to
 
 	if _, _, err := c.Post("/items", []any{}); err != nil {
 		t.Fatalf("POST: %v", err)

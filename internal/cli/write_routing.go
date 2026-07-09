@@ -104,7 +104,7 @@ func (f *rootFlags) resolveCreateVia(ctx context.Context, collectionRequested bo
 // a group the path needs only the group ID; for a personal library it needs the
 // numeric user ID, taken from config/ZOTERO_USER_ID or a one-time keys/current
 // lookup that is persisted to config.
-func resolveWebWriteBase(cfg *config.Config, group string, timeout time.Duration) (string, error) {
+func resolveWebWriteBase(ctx context.Context, cfg *config.Config, group string, timeout time.Duration) (string, error) {
 	if cfg == nil || cfg.AuthHeader() == "" {
 		return "", nil
 	}
@@ -113,7 +113,7 @@ func resolveWebWriteBase(cfg *config.Config, group string, timeout time.Duration
 	}
 	id := cfg.UserID
 	if id == "" {
-		resolved, err := fetchZoteroUserID(cfg, timeout)
+		resolved, err := fetchZoteroUserID(ctx, cfg, timeout)
 		if err != nil {
 			return "", err
 		}
@@ -125,8 +125,11 @@ func resolveWebWriteBase(cfg *config.Config, group string, timeout time.Duration
 
 // fetchZoteroUserID resolves the numeric Zotero user ID for the configured key via
 // the Web API keys/current endpoint.
-func fetchZoteroUserID(cfg *config.Config, timeout time.Duration) (string, error) {
-	req, err := http.NewRequest(http.MethodGet, zoteroWebAPIBase+"/keys/current", nil)
+func fetchZoteroUserID(ctx context.Context, cfg *config.Config, timeout time.Duration) (string, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, zoteroWebAPIBase+"/keys/current", nil)
 	if err != nil {
 		return "", err
 	}
@@ -160,11 +163,14 @@ func fetchZoteroUserID(cfg *config.Config, timeout time.Duration) (string, error
 // is near-always non-empty and does not reflect the key's per-group permission.
 // known=false when there is no key or the lookup fails, so callers report
 // "unknown" rather than over-claiming write access.
-func keyGroupWriteAccess(cfg *config.Config, timeout time.Duration, groupID string) (canWrite bool, known bool) {
+func keyGroupWriteAccess(ctx context.Context, cfg *config.Config, timeout time.Duration, groupID string) (canWrite bool, known bool) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	if cfg == nil || cfg.AuthHeader() == "" {
 		return false, false
 	}
-	req, err := http.NewRequest(http.MethodGet, zoteroWebAPIBase+"/keys/current", nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, zoteroWebAPIBase+"/keys/current", nil)
 	if err != nil {
 		return false, false
 	}
