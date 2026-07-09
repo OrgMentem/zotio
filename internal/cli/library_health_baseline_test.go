@@ -339,7 +339,7 @@ func expectedHealthBaselineIdentities(t *testing.T, preset string) []string {
 	if err != nil {
 		t.Fatalf("assemble expected report: %v", err)
 	}
-	return healthFindingIdentities(healthCurrentFindings(report))
+	return FindingIdentities(healthCurrentFindings(report))
 }
 
 func readHealthBaselineReportFile(t *testing.T, path string) healthReport {

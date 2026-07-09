@@ -602,12 +602,12 @@ func TestItemsEnrichValidateReportsCrossRefTitleDiscrepancy(t *testing.T) {
 	if report.Validated != 1 {
 		t.Fatalf("validated = %d, want 1", report.Validated)
 	}
-	if len(report.Discrepancies) != 1 {
-		t.Fatalf("discrepancies = %+v, want one title discrepancy", report.Discrepancies)
+	if len(report.Findings) != 1 {
+		t.Fatalf("findings = %+v, want one title discrepancy", report.Findings)
 	}
-	got := report.Discrepancies[0]
-	if got.Key != "KVAL" || got.Field != "title" || got.Stored != "Stored Title" || got.Provider != "Provider Title" || got.Source != "CrossRef" {
-		t.Errorf("discrepancy = %+v, want CrossRef title mismatch", got)
+	got := report.Findings[0]
+	if got.ItemKey != "KVAL" || got.Evidence["field"] != "title" || got.Evidence["stored"] != "Stored Title" || got.Evidence["provider"] != "Provider Title" || got.Source.Kind != "crossref" {
+		t.Errorf("finding = %+v, want CrossRef title mismatch", got)
 	}
 	if len(report.UnverifiedDOIs) != 0 {
 		t.Errorf("unverified DOIs = %+v, want none", report.UnverifiedDOIs)

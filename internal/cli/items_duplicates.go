@@ -103,7 +103,18 @@ func newItemsDuplicatesCmd(flags *rootFlags) *cobra.Command {
 			if err != nil {
 				return fmt.Errorf("querying duplicates: %w", err)
 			}
-			data, err := json.Marshal(normalizeDuplicateRows(results))
+			groups := normalizeDuplicateRows(results)
+			if flags.asJSON {
+				data, err := json.Marshal(map[string]any{
+					"groups":   groups,
+					"findings": duplicateItemFindings(groups),
+				})
+				if err != nil {
+					return err
+				}
+				return printOutputWithFlags(cmd.OutOrStdout(), data, flags)
+			}
+			data, err := json.Marshal(groups)
 			if err != nil {
 				return err
 			}
@@ -179,4 +190,32 @@ func normalizeDuplicateRows(rows []map[string]any) []map[string]any {
 		out = append(out, normalized)
 	}
 	return out
+}
+
+func duplicateItemFindings(groups []map[string]any) []Finding {
+	findings := make([]Finding, 0)
+	for _, group := range groups {
+		keys, ok := group["keys"].([]string)
+		if !ok {
+			continue
+		}
+		evidence := map[string]any{
+			"group": sqlStringValue(group["group"]),
+			"value": sqlStringValue(group["value"]),
+			"count": sqlIntValue(group["count"]),
+			"keys":  keys,
+		}
+		for _, key := range keys {
+			findings = append(findings, Finding{
+				Kind:              "duplicate_item",
+				Severity:          sevHigh,
+				ItemKey:           key,
+				Evidence:          evidence,
+				Source:            FindingSource{Kind: "local"},
+				Autofixable:       true,
+				RecommendedAction: &RecommendedAction{Command: "zotio items duplicates resolve"},
+			})
+		}
+	}
+	return findings
 }

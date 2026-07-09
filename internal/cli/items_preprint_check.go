@@ -88,7 +88,7 @@ func newItemsPreprintCheckCmd(flags *rootFlags) *cobra.Command {
 				}
 				results = append(results, result)
 			}
-			return printCommandJSON(cmd.OutOrStdout(), results, flags)
+			return printCommandJSON(cmd.OutOrStdout(), FindingsReport{Findings: preprintCheckFindings(results)}, flags)
 		},
 	}
 	cmd.Flags().IntVar(&flagLimit, "limit", 20, "Maximum number of preprints to check")
@@ -96,6 +96,37 @@ func newItemsPreprintCheckCmd(flags *rootFlags) *cobra.Command {
 	cmd.AddCommand(newItemsPreprintCheckFixCmd(flags))
 
 	return cmd
+}
+
+func preprintCheckFindings(results []preprintCheckResult) []Finding {
+	findings := make([]Finding, 0)
+	for _, result := range results {
+		if result.Status != "published" {
+			continue
+		}
+		evidence := map[string]any{
+			"arxiv_id": result.ArxivID,
+			"doi":      result.DOI,
+			"status":   result.Status,
+		}
+		if result.Venue != "" {
+			evidence["venue"] = result.Venue
+		}
+		if result.Year > 0 {
+			evidence["year"] = result.Year
+		}
+		findings = append(findings, Finding{
+			Kind:              "preprint_published",
+			Severity:          sevInfo,
+			ItemKey:           result.Key,
+			Title:             result.Title,
+			Evidence:          evidence,
+			Source:            FindingSource{Kind: "crossref"},
+			Autofixable:       true,
+			RecommendedAction: &RecommendedAction{Command: "zotio items preprint-check fix"},
+		})
+	}
+	return findings
 }
 
 // fetchArxivPreprintCandidates preserves arXiv-ID filtering for detection.

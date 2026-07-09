@@ -6,6 +6,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -75,6 +79,157 @@ func TestExitCode_UsageError_WrappedAsCode2(t *testing.T) {
 	if got := ExitCode(wrapped); got != 2 {
 		t.Errorf("ExitCode(usageErr(...)) = %d, want 2 (POSIX usage convention)", got)
 	}
+}
+
+func TestExecuteDeliverRoutesQualityGateFailureReport(t *testing.T) {
+	home := seedBaselineHealthCommandStore(t)
+	target := filepath.Join(home, "deliver-health-gate.json")
+
+	stdout, _, err := executeRootForDeliverTest(t,
+		"--json",
+		"--deliver", "file:"+target,
+		"library", "health",
+		"--for", "citation",
+	)
+	if code := ExitCode(err); code != 11 {
+		t.Fatalf("ExitCode(err) = %d (%v), want quality gate exit 11", code, err)
+	}
+	if !strings.Contains(err.Error(), "library health gate failed") {
+		t.Fatalf("err = %v, want original health gate error", err)
+	}
+	delivered, readErr := os.ReadFile(target)
+	if readErr != nil {
+		t.Fatalf("read delivered report: %v", readErr)
+	}
+	if string(delivered) != stdout {
+		t.Fatalf("delivered report differs from stdout\nstdout=%q\ndelivered=%q", stdout, delivered)
+	}
+	var report healthReport
+	if err := json.Unmarshal(delivered, &report); err != nil {
+		t.Fatalf("decode delivered health report %q: %v", delivered, err)
+	}
+	if report.Gate == nil || report.Gate.Status != "failed" {
+		t.Fatalf("delivered gate = %+v, want failed gate report", report.Gate)
+	}
+}
+
+func TestExecuteDeliverRoutesFreshnessGateFailureReport(t *testing.T) {
+	home := seedBaselineHealthCommandStore(t)
+	target := filepath.Join(home, "deliver-health-freshness.json")
+
+	stdout, _, err := executeRootForDeliverTest(t,
+		"--json",
+		"--deliver", "file:"+target,
+		"library", "health",
+		"--for", "citation",
+		"--require-fresh", "1ns",
+	)
+	if code := ExitCode(err); code != 12 {
+		t.Fatalf("ExitCode(err) = %d (%v), want freshness exit 12", code, err)
+	}
+	if !strings.Contains(err.Error(), "run 'zotio sync' and retry") {
+		t.Fatalf("err = %v, want original freshness remediation", err)
+	}
+	delivered, readErr := os.ReadFile(target)
+	if readErr != nil {
+		t.Fatalf("read delivered report: %v", readErr)
+	}
+	if string(delivered) != stdout {
+		t.Fatalf("delivered report differs from stdout\nstdout=%q\ndelivered=%q", stdout, delivered)
+	}
+	var report healthReport
+	if err := json.Unmarshal(delivered, &report); err != nil {
+		t.Fatalf("decode delivered health report %q: %v", delivered, err)
+	}
+	if report.Freshness == nil || !report.Freshness.Stale {
+		t.Fatalf("delivered freshness = %+v, want stale freshness report", report.Freshness)
+	}
+}
+
+func TestExecuteDeliverSkipsUsageErrors(t *testing.T) {
+	target := filepath.Join(t.TempDir(), "should-not-exist.json")
+
+	_, _, err := executeRootForDeliverTest(t,
+		"--deliver", "file:"+target,
+		"--definitely-not-a-zotio-flag",
+	)
+	if code := ExitCode(err); code != 2 {
+		t.Fatalf("ExitCode(err) = %d (%v), want usage exit 2", code, err)
+	}
+	if _, statErr := os.Stat(target); !os.IsNotExist(statErr) {
+		t.Fatalf("delivered file stat err = %v, want file absent", statErr)
+	}
+}
+
+func TestExecuteDeliverFailureWarnsAndPreservesCommandOutcome(t *testing.T) {
+	home := seedBaselineHealthCommandStore(t)
+	targetDir := filepath.Join(home, "deliver-target-dir")
+	if err := os.Mkdir(targetDir, 0o755); err != nil {
+		t.Fatalf("mkdir deliver target: %v", err)
+	}
+
+	_, stderr, err := executeRootForDeliverTest(t,
+		"--json",
+		"--deliver", "file:"+targetDir,
+		"library", "health",
+		"--for", "citation",
+	)
+	if code := ExitCode(err); code != 11 {
+		t.Fatalf("ExitCode(err) = %d (%v), want original quality gate exit 11 despite delivery failure", code, err)
+	}
+	if !strings.Contains(err.Error(), "library health gate failed") {
+		t.Fatalf("err = %v, want original health gate error", err)
+	}
+	if !strings.Contains(stderr, "warning: deliver to file:"+targetDir+" failed:") {
+		t.Fatalf("stderr = %q, want delivery failure warning", stderr)
+	}
+}
+
+func executeRootForDeliverTest(t *testing.T, args ...string) (string, string, error) {
+	t.Helper()
+
+	oldArgs := os.Args
+	oldStdout := os.Stdout
+	oldStderr := os.Stderr
+
+	stdoutR, stdoutW, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("stdout pipe: %v", err)
+	}
+	stderrR, stderrW, err := os.Pipe()
+	if err != nil {
+		_ = stdoutR.Close()
+		_ = stdoutW.Close()
+		t.Fatalf("stderr pipe: %v", err)
+	}
+
+	stdoutCh := make(chan string, 1)
+	stderrCh := make(chan string, 1)
+	go func() {
+		b, _ := io.ReadAll(stdoutR)
+		stdoutCh <- string(b)
+	}()
+	go func() {
+		b, _ := io.ReadAll(stderrR)
+		stderrCh <- string(b)
+	}()
+
+	os.Args = append([]string{"zotio"}, args...)
+	os.Stdout = stdoutW
+	os.Stderr = stderrW
+	execErr := Execute()
+	os.Args = oldArgs
+	os.Stdout = oldStdout
+	os.Stderr = oldStderr
+
+	_ = stdoutW.Close()
+	_ = stderrW.Close()
+	stdout := <-stdoutCh
+	stderr := <-stderrCh
+	_ = stdoutR.Close()
+	_ = stderrR.Close()
+
+	return stdout, stderr, execErr
 }
 
 // TestFilterFields covers --select projection against the four payload

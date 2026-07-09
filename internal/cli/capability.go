@@ -45,19 +45,22 @@ var capabilityOverrides = map[string]capabilityEntry{
 	"searches run":   {Requires: []string{preconditionLiveLocalAPI}},
 	"items file":     {Requires: []string{preconditionLiveLocalAPI}},
 	"items fulltext": {Requires: []string{preconditionLiveLocalAPI}},
-	// Reads backed by the synced local store (degrade with a "run sync" hint).
-	"library health":    {Requires: []string{preconditionSyncedStore}},
-	"library stats":     {Requires: []string{preconditionSyncedStore}},
-	"items audit":       {Requires: []string{preconditionSyncedStore}},
-	"items missing-pdf": {Requires: []string{preconditionSyncedStore}},
-	"items duplicates":  {Requires: []string{preconditionSyncedStore}},
-	"items summarize":   {Requires: []string{preconditionSyncedStore}},
-	"tags audit":        {Requires: []string{preconditionSyncedStore}},
-	"tags inventory":    {Requires: []string{preconditionSyncedStore}},
+	// Reads backed by the synced local store.
+	"library health":         {Requires: []string{preconditionSyncedStore}},
+	"library stats":          {Requires: []string{preconditionSyncedStore}},
+	"items audit":            {Requires: []string{preconditionSyncedStore}},
+	"items missing-pdf":      {Requires: []string{preconditionSyncedStore}},
+	"items duplicates":       {Requires: []string{preconditionSyncedStore}},
+	"items summarize":        {Requires: []string{preconditionSyncedStore}},
+	"tags audit":             {Requires: []string{preconditionSyncedStore}},
+	"tags inventory":         {Requires: []string{preconditionSyncedStore}},
+	"export snapshot verify": {Requires: []string{preconditionSyncedStore}},
 	// Citation keys live in Better BibTeX's `extra` field.
 	"items citekey-conflicts": {Requires: []string{preconditionSyncedStore, preconditionBetterBibTeX}},
+	"items bibcheck":          {Requires: []string{preconditionSyncedStore, preconditionBetterBibTeX}},
 	// Global /items/new template is served by the Web API only (not local).
 	"schema new-item-template": {Requires: []string{preconditionWebAPIKey}},
+	"items bibliography":       {Operation: "read", Requires: []string{preconditionWebAPIKey}},
 	// Mutations: auto-routed to the Web API, so they need a key.
 	"items create":             {Operation: "write", WriteTarget: "web_api", Requires: []string{preconditionWebAPIKey}},
 	"items update":             {Operation: "write", WriteTarget: "web_api", Requires: []string{preconditionWebAPIKey}},

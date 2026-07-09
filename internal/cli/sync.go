@@ -76,6 +76,8 @@ func newSyncCmd(flags *rootFlags) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "sync",
 		Short: "Sync API data to local SQLite for offline search and analysis",
+		// Sync populates the store; it must never be gated by a synced-store preflight.
+		Annotations: map[string]string{"zotio:preflight": "skip"},
 		Long: `Sync data from the API into a local SQLite database. Supports resumable
 incremental sync (only fetches new data since last sync) and full resync.
 Once synced, use the 'search' command for instant full-text search.

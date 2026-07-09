@@ -30,6 +30,7 @@ The machine-readable registry every command is classified against — read vs. w
 | `doctor` | introspect |  |  |  |
 | `export` | other |  |  |  |
 | `export snapshot` | read |  |  |  |
+| `export snapshot verify` | read |  |  | `synced_store` |
 | `feedback` | other |  |  |  |
 | `feedback list` | other |  |  |  |
 | `groups inspect` | read |  |  |  |
@@ -51,7 +52,8 @@ The machine-readable registry every command is classified against — read vs. w
 | `items annotations` | read |  |  |  |
 | `items audit` | read |  |  | `synced_store` |
 | `items authors` | read |  |  |  |
-| `items bibcheck` | read |  |  |  |
+| `items bibcheck` | read |  |  | `synced_store`, `better_bibtex` |
+| `items bibliography` | read |  |  | `web_api_key` |
 | `items children` | read |  |  |  |
 | `items cite` | read |  |  |  |
 | `items citekey-conflicts` | read |  |  | `synced_store`, `better_bibtex` |

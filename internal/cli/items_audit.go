@@ -15,11 +15,12 @@ import (
 )
 
 type itemsAuditSummary struct {
-	MissingPDF      int `json:"missing_pdf"`
-	MissingAbstract int `json:"missing_abstract"`
-	MissingDOI      int `json:"missing_doi"`
-	MissingTags     int `json:"missing_tags"`
-	MissingCitation int `json:"missing_citation"`
+	MissingPDF      int       `json:"missing_pdf"`
+	MissingAbstract int       `json:"missing_abstract"`
+	MissingDOI      int       `json:"missing_doi"`
+	MissingTags     int       `json:"missing_tags"`
+	MissingCitation int       `json:"missing_citation"`
+	Findings        []Finding `json:"findings"`
 }
 
 func newItemsAuditCmd(flags *rootFlags) *cobra.Command {
@@ -58,6 +59,7 @@ func newItemsAuditCmd(flags *rootFlags) *cobra.Command {
 					return fmt.Errorf("querying item audit summary: %w", err)
 				}
 				if flags.asJSON {
+					summary.Findings = []Finding{}
 					data, err := json.Marshal(summary)
 					if err != nil {
 						return err
@@ -74,6 +76,18 @@ func newItemsAuditCmd(flags *rootFlags) *cobra.Command {
 					return fmt.Errorf("querying %s: %w", check.name, err)
 				}
 				results[check.name] = rows
+			}
+			if flags.asJSON {
+				out := make(map[string]any, len(results)+1)
+				for _, check := range checks {
+					out[check.name] = results[check.name]
+				}
+				out["findings"] = itemsAuditFindingsForChecks(checks, results)
+				data, err := json.Marshal(out)
+				if err != nil {
+					return err
+				}
+				return printOutputWithFlags(cmd.OutOrStdout(), json.RawMessage(data), flags)
 			}
 			if len(checks) == 1 {
 				data, err := json.Marshal(results[checks[0].name])
@@ -131,6 +145,69 @@ func selectedItemsAuditChecks(missingPDF, missingAbstract, missingDOI, missingTa
 		checks = append(checks, itemsAuditCheck{name: "missing_citation", query: queryCitationIncompleteItems})
 	}
 	return checks
+}
+
+func itemsAuditFindingsForChecks(checks []itemsAuditCheck, results map[string][]map[string]any) []Finding {
+	findings := make([]Finding, 0)
+	for _, check := range checks {
+		for _, row := range results[check.name] {
+			finding := Finding{
+				Kind:        check.name,
+				Severity:    itemsAuditFindingSeverity(check.name),
+				ItemKey:     sqlStringValue(row["key"]),
+				Title:       sqlStringValue(row["title"]),
+				Source:      FindingSource{Kind: "local"},
+				Autofixable: itemsAuditFindingAutofixable(check.name),
+			}
+			if action := itemsAuditFindingAction(check.name); action != nil {
+				finding.RecommendedAction = action
+			}
+			evidence := map[string]any{}
+			for _, field := range []string{"item_type", "doi", "date_added", "missing"} {
+				if value := sqlStringValue(row[field]); value != "" {
+					evidence[field] = value
+				}
+			}
+			if len(evidence) > 0 {
+				finding.Evidence = evidence
+			}
+			findings = append(findings, finding)
+		}
+	}
+	return findings
+}
+
+func itemsAuditFindingSeverity(kind string) string {
+	switch kind {
+	case "missing_doi", "missing_pdf", "missing_citation":
+		return sevHigh
+	default:
+		return sevInfo
+	}
+}
+
+func itemsAuditFindingAutofixable(kind string) bool {
+	switch kind {
+	case "missing_doi", "missing_pdf", "missing_abstract":
+		return true
+	default:
+		return false
+	}
+}
+
+func itemsAuditFindingAction(kind string) *RecommendedAction {
+	switch kind {
+	case "missing_doi":
+		return &RecommendedAction{Command: "zotio items enrich --missing-doi --keys-from -"}
+	case "missing_pdf":
+		return &RecommendedAction{Command: "zotio items enrich --missing-pdf --keys-from -"}
+	case "missing_abstract":
+		return &RecommendedAction{Command: "zotio items enrich --missing-abstract --keys-from -"}
+	case "missing_citation":
+		return &RecommendedAction{Text: "Add the missing core citation fields (creators, title, date, venue) in Zotero"}
+	default:
+		return nil
+	}
 }
 
 func queryItemsAuditSummary(db localQueryStore) (itemsAuditSummary, error) {
@@ -388,7 +465,11 @@ func runVerifyAttachmentFiles(cmd *cobra.Command, db localQueryStore, flags *roo
 		})
 	}
 	if flags.asJSON {
-		data, err := json.Marshal(map[string]any{"checked": len(attachments), "broken": broken})
+		data, err := json.Marshal(map[string]any{
+			"checked":  len(attachments),
+			"broken":   broken,
+			"findings": brokenAttachmentFindings(broken),
+		})
 		if err != nil {
 			return err
 		}
@@ -400,6 +481,26 @@ func runVerifyAttachmentFiles(cmd *cobra.Command, db localQueryStore, flags *roo
 		fmt.Fprintf(out, "  [%s] %s — %s (%s)\n", sqlStringValue(b["reason"]), sqlStringValue(b["key"]), sqlStringValue(b["name"]), sqlStringValue(b["path"]))
 	}
 	return nil
+}
+
+func brokenAttachmentFindings(broken []map[string]any) []Finding {
+	findings := make([]Finding, 0, len(broken))
+	for _, b := range broken {
+		findings = append(findings, Finding{
+			Kind:     "broken_attachment_file",
+			Severity: sevCritical,
+			ItemKey:  sqlStringValue(b["key"]),
+			Title:    sqlStringValue(b["name"]),
+			Evidence: map[string]any{
+				"parent": sqlStringValue(b["parent"]),
+				"path":   sqlStringValue(b["path"]),
+				"reason": sqlStringValue(b["reason"]),
+			},
+			Source:            FindingSource{Kind: "local"},
+			RecommendedAction: &RecommendedAction{Text: "Re-link the file in Zotero or re-download the attachment"},
+		})
+	}
+	return findings
 }
 
 // attachmentFileStatus resolves an attachment's on-disk path via the local API

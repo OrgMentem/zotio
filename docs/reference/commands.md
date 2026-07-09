@@ -583,6 +583,33 @@ zotio export snapshot --output backup.jsonl
 | `--resume` | `bool` | `false` | Resume an interrupted snapshot from its checkpoint sidecar |
 | `-o, --output` | `string` |  | Output JSONL data file (required); the lockfile is written to <output>.lock.json |
 
+#### `zotio export snapshot verify`
+
+Verify a snapshot lockfile against the current library
+
+Verify a snapshot lockfile against the current Zotero library.
+
+The verifier re-resolves the lockfile scope when possible, recomputes the same
+content hash as export snapshot, and separates semantic drift (added, removed,
+changed) from Zotero version churn (touched). Touched items have a newer version
+but identical normalized content and never fail --fail-on-drift.
+
+```
+zotio export snapshot verify <lockfile.lock.json> [flags]
+```
+
+Examples:
+
+```bash
+zotio export snapshot verify backup.jsonl.lock.json
+  zotio export snapshot verify backup.jsonl.lock.json --fail-on-drift
+  zotio export snapshot verify backup.jsonl.lock.json --json
+```
+
+| Flag | Type | Default | Description |
+| --- | --- | --- | --- |
+| `--fail-on-drift` | `bool` | `false` | Exit 11 when added, removed, or changed items are detected (touched never fails) |
+
 ## `zotio feedback`
 
 Record feedback about this CLI (local by default; upstream opt-in)
@@ -960,7 +987,7 @@ zotio items authors [flags]
 Check manuscript citation keys against the synced Better BibTeX library
 
 ```
-zotio items bibcheck <manuscript> [flags]
+zotio items bibcheck <manuscript...> [flags]
 ```
 
 Examples:
@@ -968,12 +995,42 @@ Examples:
 ```bash
 zotio items bibcheck paper.tex
   zotio items bibcheck manuscript.md --fail-on-unknown
-  zotio items bibcheck chapter.qmd --json
+  zotio items bibcheck paper.tex chapter.md --json
+  zotio items bibcheck chapter.qmd --fail-on high
 ```
 
 | Flag | Type | Default | Description |
 | --- | --- | --- | --- |
+| `--fail-on` | `string` |  | Exit 11 when findings reach this severity: high, any, or none |
 | `--fail-on-unknown` | `bool` | `false` | Exit 11 when any cited key is unknown or ambiguous |
+
+### `zotio items bibliography`
+
+Render a formatted bibliography for a scoped item selection
+
+Render a formatted bibliography for items selected with the shared scope grammar.
+
+The bibliography is rendered by Zotero's Web API CSL renderer so named styles
+such as apa, chicago, mla, nature, and journal-specific CSL IDs are honored.
+The Web API limits itemKey batches, so large scopes are fetched in stable
+50-key chunks and concatenated in scope order.
+
+```
+zotio items bibliography [flags]
+```
+
+Examples:
+
+```bash
+zotio items bibliography --scope collection:ABCD1234 --style apa
+  zotio items bibliography --scope tag:to-submit --style nature
+  zotio items bibliography --scope item:ABCD1234 --json
+```
+
+| Flag | Type | Default | Description |
+| --- | --- | --- | --- |
+| `--scope` | `string` | `library` | Shared scope expression (library, collection:KEY, tag:NAME, item:KEY, query:TEXT) |
+| `--style` | `string` |  | CSL style ID (default uses Zotero's default bibliography style) |
 
 ### `zotio items children`
 

@@ -28,3 +28,17 @@ func CapabilitiesJSON() ([]byte, error) {
 func FeatureIndexJSON() ([]byte, error) {
 	return json.MarshalIndent(whichIndex, "", "  ")
 }
+
+// CommandOverrideCapability returns the safety-critical registry metadata for a
+// command path (root name stripped): the declared operation kind, required
+// preconditions, and destructiveness. ok is false when no override is declared
+// for that path. Consumed by the MCP command-orchestration facade so
+// command_search / command_run detail is capability- and safety-aware without
+// re-deriving the registry or importing unexported state.
+func CommandOverrideCapability(path string) (operation string, requires []string, destructive bool, ok bool) {
+	entry, found := capabilityOverrides[path]
+	if !found {
+		return "", nil, false, false
+	}
+	return entry.Operation, entry.Requires, entry.Destructive, true
+}

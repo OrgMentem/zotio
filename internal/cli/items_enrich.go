@@ -300,18 +300,10 @@ func enrichWorkQueue(db localQueryStore, category string, limit int, collection 
 	}
 }
 
-type enrichValidationDiscrepancy struct {
-	Key      string `json:"key"`
-	Field    string `json:"field"`
-	Stored   string `json:"stored"`
-	Provider string `json:"provider"`
-	Source   string `json:"source"`
-}
-
 type enrichValidationReport struct {
-	Validated      int                           `json:"validated"`
-	Discrepancies  []enrichValidationDiscrepancy `json:"discrepancies"`
-	UnverifiedDOIs []string                      `json:"unverified_dois"`
+	Validated      int       `json:"validated"`
+	Findings       []Finding `json:"findings"`
+	UnverifiedDOIs []string  `json:"unverified_dois"`
 }
 
 // Validation mode uses the local enrichment selection path but narrows it to DOI-bearing items.
@@ -336,7 +328,7 @@ ORDER BY date_added DESC`
 // Read-only discrepancy pass for stored DOI metadata without building mutation operations.
 func validateEnrichItems(ctx context.Context, db localQueryStore, httpClient *http.Client, limit int, collection string, keyFilter map[string]bool) (enrichValidationReport, error) {
 	report := enrichValidationReport{
-		Discrepancies:  []enrichValidationDiscrepancy{},
+		Findings:       []Finding{},
 		UnverifiedDOIs: []string{},
 	}
 	rows, err := queryEnrichValidationItems(db, limit, collection)
@@ -363,23 +355,36 @@ func validateEnrichItems(ctx context.Context, db localQueryStore, httpClient *ht
 				providerTitle = strings.TrimSpace(work.Title[0])
 			}
 			if providerTitle != "" && normalizeTitleForMatch(storedTitle) != normalizeTitleForMatch(providerTitle) {
-				report.Discrepancies = append(report.Discrepancies, enrichValidationDiscrepancy{
-					Key: key, Field: "title", Stored: storedTitle, Provider: providerTitle, Source: "CrossRef",
-				})
+				report.Findings = append(report.Findings, enrichValidationFinding(key, storedTitle, "title", storedTitle, providerTitle, "crossref"))
 			}
 			storedYear := firstFourDigitYear(stringFromMap(data, "date"))
 			providerYear := crossRefYear(work.Published)
 			if providerYear != "" && storedYear != providerYear {
-				report.Discrepancies = append(report.Discrepancies, enrichValidationDiscrepancy{
-					Key: key, Field: "year", Stored: storedYear, Provider: providerYear, Source: "CrossRef",
-				})
+				report.Findings = append(report.Findings, enrichValidationFinding(key, stringFromMap(data, "title"), "year", storedYear, providerYear, "crossref"))
 			}
 		}
 		if registered, known := resolveDOIRegisteredViaOpenCitations(ctx, httpClient, doi); known && !registered {
 			report.UnverifiedDOIs = append(report.UnverifiedDOIs, key+":"+doi)
+			report.Findings = append(report.Findings, enrichValidationFinding(key, stringFromMap(data, "title"), "doi_registration", doi, "not_registered", "opencitations"))
 		}
 	}
 	return report, nil
+}
+
+func enrichValidationFinding(key, title, field, stored, provider, source string) Finding {
+	return Finding{
+		Kind:     "validation_discrepancy",
+		Severity: sevInfo,
+		ItemKey:  key,
+		Title:    strings.TrimSpace(title),
+		Evidence: map[string]any{
+			"field":    field,
+			"stored":   stored,
+			"provider": provider,
+		},
+		Source:            FindingSource{Kind: source},
+		RecommendedAction: &RecommendedAction{Text: "Review the stored metadata in Zotero against the provider record"},
+	}
 }
 
 // Validation mode emits machine-readable reports in JSON mode and a compact human summary otherwise.
@@ -391,7 +396,7 @@ func renderEnrichValidationReport(cmd *cobra.Command, flags *rootFlags, report e
 		}
 		return printOutputWithFlags(cmd.OutOrStdout(), json.RawMessage(data), flags)
 	}
-	fmt.Fprintf(cmd.OutOrStdout(), "Validated %d DOI item(s); %d discrepancy(ies); %d DOI(s) not registered in OpenCitations.\n", report.Validated, len(report.Discrepancies), len(report.UnverifiedDOIs))
+	fmt.Fprintf(cmd.OutOrStdout(), "Validated %d DOI item(s); %d finding(s); %d DOI(s) not registered in OpenCitations.\n", report.Validated, len(report.Findings), len(report.UnverifiedDOIs))
 	return nil
 }
 

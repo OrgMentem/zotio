@@ -66,6 +66,13 @@ func newItemsCitekeyConflictsCmd(flags *rootFlags) *cobra.Command {
 			}
 
 			out := buildCitekeyConflictRowsFromItems(items, flagMissing, flagConflicts)
+			if flags.asJSON {
+				data, err := json.Marshal(FindingsReport{Findings: citekeyConflictFindings(out)})
+				if err != nil {
+					return err
+				}
+				return printOutputWithFlags(cmd.OutOrStdout(), json.RawMessage(data), flags)
+			}
 			data, err := json.Marshal(out)
 			if err != nil {
 				return err
@@ -180,6 +187,30 @@ func buildCitekeyConflictRowsFromItems(items []citekeyItem, missingOnly, conflic
 		}
 	}
 	return out
+}
+
+func citekeyConflictFindings(rows []citekeyConflictRow) []Finding {
+	findings := make([]Finding, 0, len(rows))
+	for _, row := range rows {
+		finding := Finding{
+			ItemKey: row.Key,
+			Title:   row.Title,
+			Source:  FindingSource{Kind: "local"},
+		}
+		switch row.Type {
+		case "conflict":
+			finding.Kind = "citekey_conflict"
+			finding.Severity = sevCritical
+			finding.Evidence = map[string]any{"cite_key": row.CiteKey}
+			finding.RecommendedAction = &RecommendedAction{Text: "Resolve the duplicate Better BibTeX citation key in Zotero"}
+		default:
+			finding.Kind = "citekey_missing"
+			finding.Severity = sevHigh
+			finding.RecommendedAction = &RecommendedAction{Text: "Install Better BibTeX and assign a citation key"}
+		}
+		findings = append(findings, finding)
+	}
+	return findings
 }
 
 func citekeyItemLess(a, b citekeyItem) bool {

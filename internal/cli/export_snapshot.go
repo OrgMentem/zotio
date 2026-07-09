@@ -151,6 +151,7 @@ Scope is one of: library (default), collection:KEY, or tag:NAME.`,
 	cmd.Flags().IntVar(&pageSize, "page-size", 100, "Items per API page (1-100)")
 	cmd.Flags().IntVar(&limit, "limit", 0, "Maximum items to export (0 = all)")
 	cmd.Flags().BoolVar(&resume, "resume", false, "Resume an interrupted snapshot from its checkpoint sidecar")
+	cmd.AddCommand(newExportSnapshotVerifyCmd(flags))
 	return cmd
 }
 

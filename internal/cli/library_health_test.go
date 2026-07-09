@@ -49,7 +49,7 @@ func seedHealthStore(t *testing.T) localQueryStore {
 
 func newHealthCtx(preset string, verifyFiles bool) *healthContext {
 	return &healthContext{
-		src:         healthSource{Kind: "local"},
+		src:         FindingSource{Kind: "local"},
 		preset:      preset,
 		verifyFiles: verifyFiles,
 		flags:       &rootFlags{},
@@ -375,7 +375,7 @@ func TestHealthPresetsReferenceRealKinds(t *testing.T) {
 func TestLibraryHealthFreshnessGate(t *testing.T) {
 	db := seedHealthStore(t)
 	freshCtx := func(syncedAt *time.Time) *healthContext {
-		return &healthContext{src: healthSource{Kind: "local", SyncedAt: syncedAt}, preset: "quick", flags: &rootFlags{}, requireFresh: 24 * time.Hour}
+		return &healthContext{src: FindingSource{Kind: "local", SyncedAt: syncedAt}, preset: "quick", flags: &rootFlags{}, requireFresh: 24 * time.Hour}
 	}
 	all := scopeResult{All: true, Expr: "library"}
 

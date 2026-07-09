@@ -2,11 +2,7 @@
 
 package cli
 
-import (
-	"fmt"
-
-	"github.com/spf13/cobra"
-)
+import "github.com/spf13/cobra"
 
 func newItemsCiteCmd(flags *rootFlags) *cobra.Command {
 	var flagStyle string
@@ -45,19 +41,27 @@ CSL style ID directly (e.g. "nature", "harvard-cite-them-right").`,
 			case "":
 				params["format"] = "bib"
 			default:
-				// Pass the style name as the format parameter — Zotero local API
-				// accepts format=bib which uses the default citation style.
-				// For named CSL styles, use format=bib (the local API doesn't support
-				// per-request style selection in the same way as the remote API).
-				fmt.Fprintf(cmd.ErrOrStderr(), "Note: Zotero local API uses the default citation style; --style %q not applied.\n", flagStyle)
+				wc, err := webAPIReadClient(cmd, flags, "items cite --style")
+				if err != nil {
+					return err
+				}
 				params["format"] = "bib"
+				params["style"] = flagStyle
+				data, err := wc.Get(path, params)
+				if err != nil {
+					return classifyAPIError(err, flags)
+				}
+				return printRawTextOutput(cmd, flags, string(data))
 			}
 
 			data, err := c.Get(path, params)
 			if err != nil {
 				return classifyAPIError(err, flags)
 			}
-			return printOutput(cmd.OutOrStdout(), data, false)
+			if params["format"] == "csljson" {
+				return printOutput(cmd.OutOrStdout(), data, false)
+			}
+			return printRawTextOutput(cmd, flags, string(data))
 		},
 	}
 	cmd.Flags().StringVar(&flagStyle, "style", "", "Citation style (apa, mla, chicago, bibtex, ris, csljson) — default uses Zotero's current default style")

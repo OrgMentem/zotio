@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"unicode"
 
@@ -16,16 +17,29 @@ import (
 )
 
 // TeX citation commands accepted by items bibcheck.
-var latexCitationRE = regexp.MustCompile(`\\(?:citeauthor|citeyear|parencite|textcite|autocite|citep|citet|cite|nocite)\*?(?:\s*\[[^\]\n]*\]){0,2}\s*\{([^}]*)\}`)
+var latexCitationRE = regexp.MustCompile(`\\(?:citeauthor|citeyear|parencite|textcite|autocite|footcite|fullcite|citep|citet|cite|nocite)\*?(?:\s*\[[^\]\n]*\]){0,2}\s*\{([^}]*)\}`)
 
 // Pandoc citekey token finder; code spans/blocks are stripped before this runs.
-var pandocCitationRE = regexp.MustCompile(`(^|[^\\A-Za-z0-9_])-?@([A-Za-z0-9_][A-Za-z0-9_:.#$%&+?<>~/.-]*)`)
+var pandocCitationRE = regexp.MustCompile(`(^|[^\\A-Za-z0-9_])-?@([A-Za-z0-9][A-Za-z0-9_:.#$%&+?<>~/.-]*)`)
 
 type bibcheckSummary struct {
-	Total     int `json:"total"`
-	OK        int `json:"ok"`
-	Unknown   int `json:"unknown"`
-	Ambiguous int `json:"ambiguous"`
+	Total      int `json:"total"`
+	OK         int `json:"ok"`
+	Unknown    int `json:"unknown"`
+	Ambiguous  int `json:"ambiguous"`
+	Incomplete int `json:"incomplete,omitempty"`
+}
+
+type bibcheckLocation struct {
+	File string `json:"file"`
+	Line int    `json:"line"`
+}
+
+type bibcheckOccurrence struct {
+	CiteKey string
+	File    string
+	Line    int
+	Format  string
 }
 
 type bibcheckMatch struct {
@@ -42,37 +56,58 @@ type bibcheckKeyResult struct {
 	Matches     []bibcheckMatch `json:"matches,omitempty"`
 }
 
+type bibcheckFileReport struct {
+	File    string              `json:"file"`
+	Format  string              `json:"format"`
+	Summary bibcheckSummary     `json:"summary"`
+	Keys    []bibcheckKeyResult `json:"keys"`
+}
+
 type bibcheckReport struct {
-	Manuscript string              `json:"manuscript"`
-	Format     string              `json:"format"`
-	Summary    bibcheckSummary     `json:"summary"`
-	Keys       []bibcheckKeyResult `json:"keys"`
+	Manuscript string               `json:"manuscript,omitempty"`
+	Format     string               `json:"format,omitempty"`
+	Summary    bibcheckSummary      `json:"summary"`
+	Keys       []bibcheckKeyResult  `json:"keys"`
+	Files      []bibcheckFileReport `json:"files,omitempty"`
+	Findings   []Finding            `json:"findings"`
 }
 
 func newItemsBibcheckCmd(flags *rootFlags) *cobra.Command {
 	var failOnUnknown bool
+	var failOn string
 
 	cmd := &cobra.Command{
-		Use:   "bibcheck <manuscript>",
+		Use:   "bibcheck <manuscript...>",
 		Short: "Check manuscript citation keys against the synced Better BibTeX library",
 		Example: `  zotio items bibcheck paper.tex
   zotio items bibcheck manuscript.md --fail-on-unknown
-  zotio items bibcheck chapter.qmd --json`,
+  zotio items bibcheck paper.tex chapter.md --json
+  zotio items bibcheck chapter.qmd --fail-on high`,
 		Annotations: map[string]string{"mcp:read-only": "true"},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if len(args) == 0 {
 				return cmd.Help()
 			}
-			if len(args) != 1 {
-				return usageErr(fmt.Errorf("items bibcheck expects exactly one manuscript path"))
-			}
 			if dryRunOK(flags) {
 				return nil
 			}
 
-			keys, format, err := parseManuscriptCiteKeys(args[0])
-			if err != nil {
-				return err
+			gate := strings.ToLower(strings.TrimSpace(failOn))
+			switch gate {
+			case "", "none", sevHigh, "any":
+			default:
+				return usageErr(fmt.Errorf("invalid --fail-on %q: must be high, any, or none", failOn))
+			}
+
+			occurrences := make([]bibcheckOccurrence, 0)
+			formats := make(map[string]string, len(args))
+			for _, path := range args {
+				parsed, format, err := parseManuscriptCitationOccurrences(path)
+				if err != nil {
+					return err
+				}
+				formats[path] = format
+				occurrences = append(occurrences, parsed...)
 			}
 
 			rawDB, err := openStoreForRead(cmd.Context(), "zotio")
@@ -90,24 +125,47 @@ func newItemsBibcheckCmd(flags *rootFlags) *cobra.Command {
 			if err != nil {
 				return err
 			}
+			incompleteRows, err := queryCitationIncompleteItems(db, 0)
+			if err != nil {
+				return fmt.Errorf("querying incomplete citation items: %w", err)
+			}
 
-			report := buildBibcheckReport(args[0], format, keys, items)
+			var source FindingSource
+			source.Kind = "local"
+			if _, lastSynced, _, err := db.GetSyncState("items"); err == nil && !lastSynced.IsZero() {
+				syncedAt := lastSynced
+				source.SyncedAt = &syncedAt
+			}
+
+			report := buildBibcheckReportFromOccurrences(args, formats, occurrences, items, incompleteRows, source)
 			if err := printBibcheckReport(cmd, flags, report); err != nil {
 				return err
 			}
 			if failOnUnknown && (report.Summary.Unknown > 0 || report.Summary.Ambiguous > 0) {
 				return gateErr(fmt.Errorf("bibcheck found %d unknown and %d ambiguous citation key(s)", report.Summary.Unknown, report.Summary.Ambiguous))
 			}
+			if bibcheckGateTriggered(gate, report.Findings) {
+				return gateErr(fmt.Errorf("bibcheck found %d finding(s) at or above %s", len(report.Findings), gate))
+			}
 			return nil
 		},
 	}
 	cmd.Flags().BoolVar(&failOnUnknown, "fail-on-unknown", false, "Exit 11 when any cited key is unknown or ambiguous")
+	cmd.Flags().StringVar(&failOn, "fail-on", "", "Exit 11 when findings reach this severity: high, any, or none")
 
 	return cmd
 }
 
 // Dispatch manuscript parsing by supported extension only.
 func parseManuscriptCiteKeys(path string) ([]string, string, error) {
+	occurrences, format, err := parseManuscriptCitationOccurrences(path)
+	if err != nil {
+		return nil, "", err
+	}
+	return citeKeysFromOccurrences(occurrences), format, nil
+}
+
+func parseManuscriptCitationOccurrences(path string) ([]bibcheckOccurrence, string, error) {
 	ext := strings.ToLower(filepath.Ext(path))
 	var format string
 	switch ext {
@@ -126,40 +184,83 @@ func parseManuscriptCiteKeys(path string) ([]string, string, error) {
 	if err != nil {
 		return nil, "", fmt.Errorf("reading manuscript %q: %w", path, err)
 	}
+	content := string(data)
 	if format == "tex" {
-		return parseLatexCiteKeys(string(data)), format, nil
+		return parseLatexCitationOccurrences(path, content), format, nil
 	}
-	return parsePandocMarkdownCiteKeys(string(data)), format, nil
+	return parsePandocMarkdownCitationOccurrences(path, content), format, nil
+}
+
+func citeKeysFromOccurrences(occurrences []bibcheckOccurrence) []string {
+	keys := make([]string, 0, len(occurrences))
+	for _, occurrence := range occurrences {
+		keys = append(keys, occurrence.CiteKey)
+	}
+	return keys
 }
 
 // Parse LaTeX cite/nocite command key lists, including starred and optional-argument variants.
 func parseLatexCiteKeys(content string) []string {
-	matches := latexCitationRE.FindAllStringSubmatch(content, -1)
-	keys := make([]string, 0, len(matches))
+	return citeKeysFromOccurrences(parseLatexCitationOccurrences("", content))
+}
+
+func parseLatexCitationOccurrences(path, content string) []bibcheckOccurrence {
+	matches := latexCitationRE.FindAllStringSubmatchIndex(content, -1)
+	lines := lineStartOffsets(content)
+	out := make([]bibcheckOccurrence, 0, len(matches))
 	for _, match := range matches {
-		if len(match) < 2 {
+		if len(match) < 4 || match[2] < 0 || match[3] < 0 {
 			continue
 		}
-		keys = appendCiteKeyList(keys, match[1])
+		line := lineNumberForOffset(lines, match[0])
+		for _, key := range appendCiteKeyList(nil, content[match[2]:match[3]]) {
+			out = append(out, bibcheckOccurrence{CiteKey: key, File: path, Line: line, Format: "tex"})
+		}
 	}
-	return keys
+	return out
 }
 
 // Parse Pandoc @citekey tokens after removing fenced and inline code.
 func parsePandocMarkdownCiteKeys(content string) []string {
+	return citeKeysFromOccurrences(parsePandocMarkdownCitationOccurrences("", content))
+}
+
+func parsePandocMarkdownCitationOccurrences(path, content string) []bibcheckOccurrence {
 	content = markdownWithoutCode(content)
-	matches := pandocCitationRE.FindAllStringSubmatch(content, -1)
-	keys := make([]string, 0, len(matches))
-	for _, match := range matches {
-		if len(match) < 3 {
-			continue
-		}
-		key := trimPandocCiteKey(match[2])
-		if key != "" && key != "*" {
-			keys = append(keys, key)
+	lines := strings.Split(content, "\n")
+	out := make([]bibcheckOccurrence, 0)
+	for i, line := range lines {
+		matches := pandocCitationRE.FindAllStringSubmatch(line, -1)
+		for _, match := range matches {
+			if len(match) < 3 {
+				continue
+			}
+			key := trimPandocCiteKey(match[2])
+			if key == "" || key == "*" {
+				continue
+			}
+			out = append(out, bibcheckOccurrence{CiteKey: key, File: path, Line: i + 1, Format: "pandoc-markdown"})
 		}
 	}
-	return keys
+	return out
+}
+
+func lineStartOffsets(content string) []int {
+	starts := []int{0}
+	for i, ch := range content {
+		if ch == '\n' {
+			starts = append(starts, i+1)
+		}
+	}
+	return starts
+}
+
+func lineNumberForOffset(starts []int, offset int) int {
+	line := sort.Search(len(starts), func(i int) bool { return starts[i] > offset })
+	if line == 0 {
+		return 1
+	}
+	return line
 }
 
 func appendCiteKeyList(keys []string, raw string) []string {
@@ -266,19 +367,44 @@ func findClosingBackticks(s string, start, n int) int {
 }
 
 // Cross-reference manuscript keys against the shared Better BibTeX citekey inventory.
-func buildBibcheckReport(manuscript, format string, keys []string, items []citekeyItem) bibcheckReport {
-	order := make([]string, 0, len(keys))
-	counts := make(map[string]int, len(keys))
-	for _, key := range keys {
-		if key == "" {
-			continue
+func buildBibcheckReportFromOccurrences(paths []string, formats map[string]string, occurrences []bibcheckOccurrence, items []citekeyItem, incompleteRows []map[string]any, source FindingSource) bibcheckReport {
+	byCiteKey := bibcheckItemsByCiteKey(items)
+	order, counts, locationsByCiteKey, occurrencesByFile := summarizeBibcheckOccurrences(occurrences)
+	keys, summary := buildBibcheckKeyResults(order, counts, byCiteKey)
+	findings, incompleteByFile := buildBibcheckFindings(order, locationsByCiteKey, byCiteKey, incompleteRows, source)
+	for _, finding := range findings {
+		if finding.Kind == "incomplete_citation" {
+			summary.Incomplete++
 		}
-		if counts[key] == 0 {
-			order = append(order, key)
-		}
-		counts[key]++
 	}
 
+	report := bibcheckReport{
+		Summary:  summary,
+		Keys:     keys,
+		Findings: findings,
+	}
+	if len(paths) == 1 {
+		report.Manuscript = paths[0]
+		report.Format = formats[paths[0]]
+		return report
+	}
+
+	report.Files = make([]bibcheckFileReport, 0, len(paths))
+	for _, path := range paths {
+		fileOrder, fileCounts, _, _ := summarizeBibcheckOccurrences(occurrencesByFile[path])
+		fileKeys, fileSummary := buildBibcheckKeyResults(fileOrder, fileCounts, byCiteKey)
+		fileSummary.Incomplete = incompleteByFile[path]
+		report.Files = append(report.Files, bibcheckFileReport{
+			File:    path,
+			Format:  formats[path],
+			Summary: fileSummary,
+			Keys:    fileKeys,
+		})
+	}
+	return report
+}
+
+func bibcheckItemsByCiteKey(items []citekeyItem) map[string][]citekeyItem {
 	byCiteKey := make(map[string][]citekeyItem, len(items))
 	for _, item := range items {
 		if item.CiteKey == "" {
@@ -291,12 +417,33 @@ func buildBibcheckReport(manuscript, format string, keys []string, items []citek
 		sort.Slice(matches, func(i, j int) bool { return citekeyItemLess(matches[i], matches[j]) })
 		byCiteKey[citeKey] = matches
 	}
+	return byCiteKey
+}
 
-	report := bibcheckReport{
-		Manuscript: manuscript,
-		Format:     format,
-		Keys:       make([]bibcheckKeyResult, 0, len(order)),
+func summarizeBibcheckOccurrences(occurrences []bibcheckOccurrence) ([]string, map[string]int, map[string][]bibcheckLocation, map[string][]bibcheckOccurrence) {
+	order := make([]string, 0, len(occurrences))
+	counts := make(map[string]int, len(occurrences))
+	locationsByCiteKey := make(map[string][]bibcheckLocation, len(occurrences))
+	occurrencesByFile := make(map[string][]bibcheckOccurrence)
+	for _, occurrence := range occurrences {
+		if occurrence.CiteKey == "" {
+			continue
+		}
+		if counts[occurrence.CiteKey] == 0 {
+			order = append(order, occurrence.CiteKey)
+		}
+		counts[occurrence.CiteKey]++
+		if occurrence.File != "" {
+			locationsByCiteKey[occurrence.CiteKey] = append(locationsByCiteKey[occurrence.CiteKey], bibcheckLocation{File: occurrence.File, Line: occurrence.Line})
+			occurrencesByFile[occurrence.File] = append(occurrencesByFile[occurrence.File], occurrence)
+		}
 	}
+	return order, counts, locationsByCiteKey, occurrencesByFile
+}
+
+func buildBibcheckKeyResults(order []string, counts map[string]int, byCiteKey map[string][]citekeyItem) ([]bibcheckKeyResult, bibcheckSummary) {
+	keys := make([]bibcheckKeyResult, 0, len(order))
+	var summary bibcheckSummary
 	for _, key := range order {
 		matches := byCiteKey[key]
 		result := bibcheckKeyResult{
@@ -306,24 +453,153 @@ func buildBibcheckReport(manuscript, format string, keys []string, items []citek
 		switch len(matches) {
 		case 0:
 			result.Status = "unknown"
-			report.Summary.Unknown++
+			summary.Unknown++
 		case 1:
 			result.Status = "ok"
 			result.ItemKey = matches[0].Key
 			result.Title = matches[0].Title
-			report.Summary.OK++
+			summary.OK++
 		default:
 			result.Status = "ambiguous"
 			result.Matches = make([]bibcheckMatch, 0, len(matches))
 			for _, match := range matches {
 				result.Matches = append(result.Matches, bibcheckMatch{ItemKey: match.Key, Title: match.Title})
 			}
-			report.Summary.Ambiguous++
+			summary.Ambiguous++
 		}
-		report.Keys = append(report.Keys, result)
+		keys = append(keys, result)
 	}
-	report.Summary.Total = len(report.Keys)
-	return report
+	summary.Total = len(keys)
+	return keys, summary
+}
+
+func buildBibcheckFindings(order []string, locationsByCiteKey map[string][]bibcheckLocation, byCiteKey map[string][]citekeyItem, incompleteRows []map[string]any, source FindingSource) ([]Finding, map[string]int) {
+	incompleteByItem := make(map[string]map[string]any, len(incompleteRows))
+	for _, row := range incompleteRows {
+		key := sqlStringValue(row["key"])
+		if key != "" {
+			incompleteByItem[key] = row
+		}
+	}
+
+	undefinedAction := &RecommendedAction{Text: "Add or correct the Better BibTeX key in Zotero, or fix the manuscript citation key"}
+	incompleteAction := &RecommendedAction{Text: "Add the missing core citation fields (creators, title, date, venue) in Zotero"}
+	findings := make([]Finding, 0)
+	incompleteByFile := make(map[string]int)
+	for _, citeKey := range order {
+		matches := byCiteKey[citeKey]
+		locations := locationsByCiteKey[citeKey]
+		if len(matches) == 0 {
+			findings = append(findings, Finding{
+				Kind:              "undefined_citekey",
+				Severity:          sevHigh,
+				Title:             fmt.Sprintf("Undefined citekey %s", citeKey),
+				Evidence:          bibcheckEvidence(citeKey, locations, nil, ""),
+				Source:            source,
+				Autofixable:       false,
+				RecommendedAction: undefinedAction,
+			})
+			continue
+		}
+
+		for _, item := range matches {
+			row, incomplete := incompleteByItem[item.Key]
+			if !incomplete {
+				continue
+			}
+			for _, file := range bibcheckLocationFiles(locations) {
+				incompleteByFile[file]++
+			}
+			findings = append(findings, Finding{
+				Kind:              "incomplete_citation",
+				Severity:          sevHigh,
+				ItemKey:           item.Key,
+				Title:             item.Title,
+				Evidence:          bibcheckEvidence(citeKey, locations, bibcheckMissingFields(sqlStringValue(row["missing"])), sqlStringValue(row["item_type"])),
+				Source:            source,
+				Autofixable:       false,
+				RecommendedAction: incompleteAction,
+			})
+		}
+	}
+	return findings, incompleteByFile
+}
+
+func bibcheckEvidence(citeKey string, locations []bibcheckLocation, missingFields []string, itemType string) map[string]any {
+	evidence := map[string]any{
+		"citekey":    citeKey,
+		"locations":  locations,
+		"file_lines": bibcheckFileLines(locations),
+	}
+	if len(locations) > 0 {
+		evidence["file"] = locations[0].File
+		evidence["line"] = locations[0].Line
+		evidence["file_line"] = bibcheckLocationString(locations[0])
+	}
+	if len(missingFields) > 0 {
+		evidence["missing"] = strings.Join(missingFields, ", ")
+		evidence["missing_fields"] = missingFields
+	}
+	if itemType != "" {
+		evidence["item_type"] = itemType
+	}
+	return evidence
+}
+
+func bibcheckMissingFields(raw string) []string {
+	if raw == "" {
+		return nil
+	}
+	parts := strings.Split(raw, ",")
+	fields := make([]string, 0, len(parts))
+	for _, part := range parts {
+		field := strings.TrimSpace(part)
+		if field != "" {
+			fields = append(fields, field)
+		}
+	}
+	return fields
+}
+
+func bibcheckLocationFiles(locations []bibcheckLocation) []string {
+	seen := make(map[string]bool, len(locations))
+	files := make([]string, 0)
+	for _, loc := range locations {
+		if loc.File == "" || seen[loc.File] {
+			continue
+		}
+		seen[loc.File] = true
+		files = append(files, loc.File)
+	}
+	return files
+}
+
+func bibcheckFileLines(locations []bibcheckLocation) []string {
+	lines := make([]string, 0, len(locations))
+	for _, loc := range locations {
+		lines = append(lines, bibcheckLocationString(loc))
+	}
+	return lines
+}
+
+func bibcheckLocationString(loc bibcheckLocation) string {
+	if loc.Line <= 0 {
+		return loc.File
+	}
+	return loc.File + ":" + strconv.Itoa(loc.Line)
+}
+
+func bibcheckGateTriggered(failOn string, findings []Finding) bool {
+	threshold := failOnRank(failOn)
+	if threshold == 0 {
+		return false
+	}
+	for _, finding := range findings {
+		if severityRank(finding.Severity) >= threshold {
+			return true
+		}
+	}
+	return false
 }
 
 func printBibcheckReport(cmd *cobra.Command, flags *rootFlags, report bibcheckReport) error {
@@ -334,10 +610,21 @@ func printBibcheckReport(cmd *cobra.Command, flags *rootFlags, report bibcheckRe
 		return nil
 	}
 
-	fmt.Fprintf(cmd.OutOrStdout(), "Manuscript: %s (%s)\n", report.Manuscript, report.Format)
-	fmt.Fprintf(cmd.OutOrStdout(), "Summary: %d ok, %d unknown, %d ambiguous (%d cited keys)\n\n", report.Summary.OK, report.Summary.Unknown, report.Summary.Ambiguous, report.Summary.Total)
+	out := cmd.OutOrStdout()
+	if len(report.Files) == 0 {
+		fmt.Fprintf(out, "Manuscript: %s (%s)\n", report.Manuscript, report.Format)
+	} else {
+		fmt.Fprintf(out, "Manuscripts: %d files\n", len(report.Files))
+	}
+	fmt.Fprintf(out, "Summary: %d ok, %d unknown, %d ambiguous, %d incomplete (%d cited keys)\n\n", report.Summary.OK, report.Summary.Unknown, report.Summary.Ambiguous, report.Summary.Incomplete, report.Summary.Total)
+	for _, file := range report.Files {
+		fmt.Fprintf(out, "  %s (%s): %d ok, %d unknown, %d ambiguous, %d incomplete (%d cited keys)\n", file.File, file.Format, file.Summary.OK, file.Summary.Unknown, file.Summary.Ambiguous, file.Summary.Incomplete, file.Summary.Total)
+	}
+	if len(report.Files) > 0 {
+		fmt.Fprintln(out)
+	}
 	if len(report.Keys) == 0 {
-		fmt.Fprintln(cmd.OutOrStdout(), "No citation keys found.")
+		fmt.Fprintln(out, "No citation keys found.")
 		return nil
 	}
 
@@ -350,7 +637,39 @@ func printBibcheckReport(cmd *cobra.Command, flags *rootFlags, report bibcheckRe
 		}
 		rows = append(rows, []string{key.CiteKey, key.Status, itemKey, title})
 	}
-	return flags.printTable(cmd, []string{"CITEKEY", "STATUS", "ITEM", "TITLE"}, rows)
+	if err := flags.printTable(cmd, []string{"CITEKEY", "STATUS", "ITEM", "TITLE"}, rows); err != nil {
+		return err
+	}
+	if len(report.Findings) == 0 {
+		return nil
+	}
+
+	fmt.Fprintln(out)
+	fmt.Fprintln(out, "Findings:")
+	for _, finding := range report.Findings {
+		citeKey, _ := finding.Evidence["citekey"].(string)
+		locationText := formatBibcheckLocations(finding.Evidence["locations"])
+		switch finding.Kind {
+		case "undefined_citekey":
+			fmt.Fprintf(out, "  undefined_citekey high %s — %s\n", citeKey, locationText)
+		case "incomplete_citation":
+			missing, _ := finding.Evidence["missing"].(string)
+			if missing != "" {
+				fmt.Fprintf(out, "  incomplete_citation high %s (%s) missing %s — %s\n", citeKey, finding.ItemKey, missing, locationText)
+			} else {
+				fmt.Fprintf(out, "  incomplete_citation high %s (%s) — %s\n", citeKey, finding.ItemKey, locationText)
+			}
+		}
+	}
+	return nil
+}
+
+func formatBibcheckLocations(raw any) string {
+	locations, ok := raw.([]bibcheckLocation)
+	if !ok || len(locations) == 0 {
+		return "no manuscript location"
+	}
+	return strings.Join(bibcheckFileLines(locations), ", ")
 }
 
 func summarizeBibcheckMatches(matches []bibcheckMatch) (string, string) {

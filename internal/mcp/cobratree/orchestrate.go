@@ -13,6 +13,8 @@ import (
 	"github.com/mark3labs/mcp-go/server"
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
+
+	"zotio/internal/cli"
 )
 
 // Command-orchestration facade: search+run over the Cobra tree, an alternative
@@ -43,10 +45,14 @@ func commandSearchHandler(rootFactory func() *cobra.Command) server.ToolHandlerF
 			if !ok {
 				return mcplib.NewToolResultError("mirrorable command not found: " + name), nil
 			}
+			operation, requires, destructive := orchestrationCapability(cmd, name)
 			out := orchestrationCommandDetail{
 				Name:        name,
 				Description: descriptionFor(cmd),
 				TakesArgs:   commandTakesArgs(cmd),
+				Operation:   operation,
+				Requires:    requires,
+				Destructive: destructive,
 				Flags:       []orchestrationFlagDetail{},
 			}
 			visitSafeMirrorFlags(cmd, func(flag *pflag.Flag) {
@@ -118,14 +124,20 @@ func commandRunHandler(rootFactory func() *cobra.Command) server.ToolHandlerFunc
 }
 
 type orchestrationCommandSummary struct {
-	Name    string `json:"name"`
-	Summary string `json:"summary"`
+	Name        string   `json:"name"`
+	Summary     string   `json:"summary"`
+	Operation   string   `json:"operation"`
+	Requires    []string `json:"requires,omitempty"`
+	Destructive bool     `json:"destructive"`
 }
 
 type orchestrationCommandDetail struct {
 	Name        string                    `json:"name"`
 	Description string                    `json:"description"`
 	TakesArgs   bool                      `json:"takesArgs"`
+	Operation   string                    `json:"operation"`
+	Requires    []string                  `json:"requires,omitempty"`
+	Destructive bool                      `json:"destructive"`
 	Flags       []orchestrationFlagDetail `json:"flags"`
 }
 
@@ -146,12 +158,37 @@ func listMirrorableCommands(rootFactory func() *cobra.Command) []orchestrationCo
 		if !isMirrorableCommand(cmd) {
 			return
 		}
+		joined := strings.Join(path, " ")
+		operation, requires, destructive := orchestrationCapability(cmd, joined)
 		out = append(out, orchestrationCommandSummary{
-			Name:    strings.Join(path, " "),
-			Summary: firstLine(descriptionFor(cmd)),
+			Name:        joined,
+			Summary:     firstLine(descriptionFor(cmd)),
+			Operation:   operation,
+			Requires:    requires,
+			Destructive: destructive,
 		})
 	})
 	return out
+}
+
+// orchestrationCapability derives the command's operation kind, declared
+// preconditions, and destructiveness the same way the capability registry does:
+// operation comes from the mcp:read-only annotation unless a registry override
+// names one explicitly; requires/destructive come from the override. Keeping
+// this in lockstep with cli.buildCapabilityRegistry keeps the facade honest.
+func orchestrationCapability(cmd *cobra.Command, path string) (operation string, requires []string, destructive bool) {
+	operation = "other"
+	if isMCPReadOnly(cmd) {
+		operation = "read"
+	}
+	if ov, reqs, d, ok := cli.CommandOverrideCapability(path); ok {
+		if ov != "" {
+			operation = ov
+		}
+		requires = reqs
+		destructive = d
+	}
+	return operation, requires, destructive
 }
 
 func findMirrorableCommand(rootFactory func() *cobra.Command, name string) (*cobra.Command, []string, bool) {

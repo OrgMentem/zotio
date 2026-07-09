@@ -162,6 +162,8 @@ func newDoctorCmd(flags *rootFlags) *cobra.Command {
 		Example: `  zotio doctor
   zotio doctor --json
   zotio doctor --fail-on warn`,
+		// Diagnostics/setup: never gated by registry preflight preconditions.
+		Annotations: map[string]string{"zotio:preflight": "skip"},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if ensureLiveFlag || launchFlag {
 				return ensureLive(cmd, flags, launchFlag)

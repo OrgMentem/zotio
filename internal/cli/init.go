@@ -59,7 +59,7 @@ Checks the local Zotero API, stores an API key when one is provided interactivel
 runs the first local sync when the store is missing or empty, and finishes with the
 quick library-health preset plus suggested next commands.`,
 		Args:        cobra.NoArgs,
-		Annotations: map[string]string{"mcp:read-only": "false"},
+		Annotations: map[string]string{"mcp:read-only": "false", "zotio:preflight": "skip"},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			report, exitErr := runInit(cmd, flags, launch)
 			if renderErr := renderInitReport(cmd, flags, report); renderErr != nil {
@@ -293,7 +293,7 @@ func runInitHealthStep(cmd *cobra.Command, flags *rootFlags) (bool, initStepRepo
 		syncedAt = &ls
 	}
 	healthCtx := &healthContext{
-		src:         healthSource{Kind: "local", SyncedAt: syncedAt},
+		src:         FindingSource{Kind: "local", SyncedAt: syncedAt},
 		preset:      "quick",
 		flags:       flags,
 		verifyFiles: false,

@@ -32,18 +32,6 @@ func newSyncHintTestCmd() (*cobra.Command, *bytes.Buffer) {
 	return cmd, &stderr
 }
 
-func TestHintIfUnsynced_EmptySyncStateWritesHintToStderr(t *testing.T) {
-	db := newSyncHintTestStore(t)
-	cmd, stderr := newSyncHintTestCmd()
-
-	if !hintIfUnsynced(cmd, db, "") {
-		t.Fatalf("hintIfUnsynced returned false for empty sync_state")
-	}
-	if got := stderr.String(); !strings.Contains(got, "Run 'zotio sync'") {
-		t.Fatalf("stderr = %q, want sync hint", got)
-	}
-}
-
 func TestHintIfStale_BackdatedSyncStateWritesHintToStderr(t *testing.T) {
 	db := newSyncHintTestStore(t)
 	if _, err := db.DB().Exec(
@@ -54,9 +42,6 @@ func TestHintIfStale_BackdatedSyncStateWritesHintToStderr(t *testing.T) {
 	}
 	cmd, stderr := newSyncHintTestCmd()
 
-	if hintIfUnsynced(cmd, db, "") {
-		t.Fatalf("hintIfUnsynced returned true after sync_state was seeded")
-	}
 	if !hintIfStale(cmd, db, "", 30*time.Minute) {
 		t.Fatalf("hintIfStale returned false for stale sync_state")
 	}
@@ -84,24 +69,6 @@ func TestHintIfStale_MaxAgeZeroDisablesHint(t *testing.T) {
 	}
 }
 
-func TestHintIfUnsynced_NullTimestampWritesHint(t *testing.T) {
-	db := newSyncHintTestStore(t)
-	if _, err := db.DB().Exec(
-		`INSERT INTO sync_state(resource_type, last_synced_at, total_count) VALUES (?, ?, ?)`,
-		"issues", nil, 1,
-	); err != nil {
-		t.Fatalf("seed sync_state: %v", err)
-	}
-	cmd, stderr := newSyncHintTestCmd()
-
-	if !hintIfUnsynced(cmd, db, "issues") {
-		t.Fatalf("hintIfUnsynced returned false for null last_synced_at")
-	}
-	if got := stderr.String(); !strings.Contains(got, "has not been synced yet") {
-		t.Fatalf("stderr = %q, want unsynced hint", got)
-	}
-}
-
 func TestHintIfStale_AllResourcesIgnoresNullTimestampRows(t *testing.T) {
 	db := newSyncHintTestStore(t)
 	now := time.Now()
@@ -121,9 +88,6 @@ func TestHintIfStale_AllResourcesIgnoresNullTimestampRows(t *testing.T) {
 	}
 
 	cmd, stderr := newSyncHintTestCmd()
-	if hintIfUnsynced(cmd, db, "") {
-		t.Fatalf("hintIfUnsynced returned true when a valid sync timestamp exists")
-	}
 	if !hintIfStale(cmd, db, "", 30*time.Minute) {
 		t.Fatalf("hintIfStale returned false for oldest valid all-resource timestamp")
 	}
@@ -163,13 +127,5 @@ func TestHintIfStale_ResourceFilterUsesRequestedResource(t *testing.T) {
 	}
 	if got := stderr.String(); !strings.Contains(got, "older than --max-age=30m0s") {
 		t.Fatalf("stderr = %q, want stale issues hint", got)
-	}
-
-	cmd, stderr = newSyncHintTestCmd()
-	if !hintIfUnsynced(cmd, db, "comments") {
-		t.Fatalf("hintIfUnsynced returned false for unsynced comments resource")
-	}
-	if got := stderr.String(); !strings.Contains(got, "has not been synced yet") {
-		t.Fatalf("stderr = %q, want unsynced comments hint", got)
 	}
 }

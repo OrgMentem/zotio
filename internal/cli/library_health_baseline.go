@@ -22,10 +22,10 @@ type healthBaselineFile struct {
 
 // healthBaselineReport is the JSON report block for baseline-aware health runs.
 type healthBaselineReport struct {
-	Established   bool            `json:"established"`
-	New           []healthFinding `json:"new"`
-	ResolvedCount int             `json:"resolved_count"`
-	BaselinePath  string          `json:"baseline_path"`
+	Established   bool      `json:"established"`
+	New           []Finding `json:"new"`
+	ResolvedCount int       `json:"resolved_count"`
+	BaselinePath  string    `json:"baseline_path"`
 
 	NewIDs        map[string]struct{} `json:"-"`
 	RecordedCount int                 `json:"-"`
@@ -46,7 +46,7 @@ func applyHealthBaseline(report *healthReport, path string) error {
 
 	out := &healthBaselineReport{
 		Established:   established,
-		New:           make([]healthFinding, 0),
+		New:           make([]Finding, 0),
 		BaselinePath:  path,
 		NewIDs:        make(map[string]struct{}),
 		RecordedCount: len(currentIDs),
@@ -103,8 +103,8 @@ func readHealthBaseline(path string) (healthBaselineFile, bool, error) {
 }
 
 // writeHealthBaseline atomically persists current watch-health identities for future deltas.
-func writeHealthBaseline(path string, preset string, findings []healthFinding) error {
-	identities := healthFindingIdentities(findings)
+func writeHealthBaseline(path string, preset string, findings []Finding) error {
+	identities := FindingIdentities(findings)
 	payload := healthBaselineFile{
 		SchemaVersion: 1,
 		GeneratedAt:   time.Now().UTC().Format(time.RFC3339),
@@ -157,14 +157,14 @@ func writeFileAtomic(path string, data []byte) error {
 }
 
 // baseline identity helpers reuse watch --health finding keys.
-func healthCurrentFindings(report healthReport) []healthFinding {
+func healthCurrentFindings(report healthReport) []Finding {
 	if len(report.allFindings) > 0 || report.Summary.Total == 0 {
 		return report.allFindings
 	}
 	return report.Findings
 }
 
-func healthFindingIdentities(findings []healthFinding) []string {
+func FindingIdentities(findings []Finding) []string {
 	set := make(map[string]struct{}, len(findings))
 	for _, finding := range findings {
 		set[watchHealthFindingKey(finding)] = struct{}{}
@@ -177,7 +177,7 @@ func healthFindingIdentities(findings []healthFinding) []string {
 	return identities
 }
 
-func healthSummaryForFindings(findings []healthFinding) healthSummary {
+func healthSummaryForFindings(findings []Finding) healthSummary {
 	var summary healthSummary
 	for _, finding := range findings {
 		summary.add(finding.Severity, 1)
@@ -186,7 +186,7 @@ func healthSummaryForFindings(findings []healthFinding) healthSummary {
 	return summary
 }
 
-func healthFindingIsNew(report healthReport, finding healthFinding) bool {
+func FindingIsNew(report healthReport, finding Finding) bool {
 	if report.Baseline == nil || len(report.Baseline.NewIDs) == 0 {
 		return false
 	}

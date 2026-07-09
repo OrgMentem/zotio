@@ -24,23 +24,17 @@ const (
 	vaultAuditIssueNeedsNotesBoundary = "needs_notes_boundary"
 )
 
-type vaultAuditIssue struct {
-	Path  string `json:"path"`
-	Key   string `json:"key,omitempty"`
-	Issue string `json:"issue"`
-}
-
 type vaultAuditReport struct {
-	Vault     string            `json:"vault"`
-	Status    string            `json:"status"`
-	Synced    bool              `json:"synced"`
-	Note      string            `json:"note,omitempty"`
-	Scanned   int               `json:"scanned"`
-	Managed   int               `json:"managed"`
-	Unmanaged int               `json:"unmanaged"`
-	Truncated bool              `json:"truncated"`
-	Counts    map[string]int    `json:"counts"`
-	Issues    []vaultAuditIssue `json:"issues"`
+	Vault     string         `json:"vault"`
+	Status    string         `json:"status"`
+	Synced    bool           `json:"synced"`
+	Note      string         `json:"note,omitempty"`
+	Scanned   int            `json:"scanned"`
+	Managed   int            `json:"managed"`
+	Unmanaged int            `json:"unmanaged"`
+	Truncated bool           `json:"truncated"`
+	Counts    map[string]int `json:"counts"`
+	Findings  []Finding      `json:"findings"`
 }
 
 func newVaultAuditCmd(flags *rootFlags) *cobra.Command {
@@ -69,11 +63,11 @@ func newVaultAuditCmd(flags *rootFlags) *cobra.Command {
 // auditVaultNotes keeps the vault audit read-only and bounded for agent-facing use.
 func auditVaultNotes(outDir string) (vaultAuditReport, error) {
 	report := vaultAuditReport{
-		Vault:  outDir,
-		Status: "ok",
-		Synced: true,
-		Counts: newVaultAuditCounts(),
-		Issues: []vaultAuditIssue{},
+		Vault:    outDir,
+		Status:   "ok",
+		Synced:   true,
+		Counts:   newVaultAuditCounts(),
+		Findings: []Finding{},
 	}
 
 	db, err := openStoreForRead(context.Background(), "zotio")
@@ -168,7 +162,60 @@ func newVaultAuditCounts() map[string]int {
 
 func addVaultAuditIssue(report *vaultAuditReport, path, key, issue string) {
 	report.Counts[issue]++
-	report.Issues = append(report.Issues, vaultAuditIssue{Path: path, Key: key, Issue: issue})
+	report.Findings = append(report.Findings, vaultAuditFinding(path, key, issue))
+}
+
+func vaultAuditFinding(path, key, issue string) Finding {
+	finding := Finding{
+		Kind:     vaultAuditFindingKind(issue),
+		Severity: vaultAuditFindingSeverity(issue),
+		ItemKey:  key,
+		Title:    path,
+		Evidence: map[string]any{
+			"path":  path,
+			"issue": issue,
+		},
+		Source:            FindingSource{Kind: "local"},
+		RecommendedAction: vaultAuditRecommendedAction(issue),
+	}
+	return finding
+}
+
+func vaultAuditFindingKind(issue string) string {
+	switch issue {
+	case vaultAuditIssueOrphaned:
+		return "vault_orphan"
+	case vaultAuditIssueStale:
+		return "vault_stale"
+	case vaultAuditIssueUpgradeable:
+		return "vault_upgradeable"
+	case vaultAuditIssueNeedsNotesBoundary:
+		return "vault_needs_notes_boundary"
+	default:
+		return "vault_issue"
+	}
+}
+
+func vaultAuditFindingSeverity(issue string) string {
+	switch issue {
+	case vaultAuditIssueOrphaned, vaultAuditIssueStale:
+		return sevHigh
+	default:
+		return sevInfo
+	}
+}
+
+func vaultAuditRecommendedAction(issue string) *RecommendedAction {
+	switch issue {
+	case vaultAuditIssueOrphaned:
+		return &RecommendedAction{Text: "Confirm whether the Zotero item was deleted or re-sync the vault note from a live item"}
+	case vaultAuditIssueStale:
+		return &RecommendedAction{Command: "zotio vault sync"}
+	case vaultAuditIssueUpgradeable, vaultAuditIssueNeedsNotesBoundary:
+		return &RecommendedAction{Command: "zotio vault sync"}
+	default:
+		return nil
+	}
 }
 
 func vaultAuditRelPath(outDir, path string) string {
@@ -191,10 +238,12 @@ func printVaultAuditReport(cmd *cobra.Command, report vaultAuditReport, flags *r
 	out := cmd.OutOrStdout()
 	fmt.Fprintf(out, "Vault audit %s: status %s, scanned %d, managed %d, unmanaged %d, %s\n",
 		report.Vault, report.Status, report.Scanned, report.Managed, report.Unmanaged, summarizeCounts(report.Counts))
-	for _, issue := range report.Issues {
-		line := fmt.Sprintf("  [%s] %s", issue.Issue, issue.Path)
-		if issue.Key != "" {
-			line += " — " + issue.Key
+	for _, finding := range report.Findings {
+		issue := sqlStringValue(finding.Evidence["issue"])
+		path := sqlStringValue(finding.Evidence["path"])
+		line := fmt.Sprintf("  [%s] %s", issue, path)
+		if finding.ItemKey != "" {
+			line += " — " + finding.ItemKey
 		}
 		fmt.Fprintln(out, line)
 	}

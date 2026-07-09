@@ -317,18 +317,18 @@ func TestDemoCommandsReadSeededSandboxEndToEnd(t *testing.T) {
 
 	t.Run("items_citekey_conflicts", func(t *testing.T) {
 		out := runReadCmd(t, newItemsCitekeyConflictsCmd(&rootFlags{asJSON: true}), []string{"--conflicts"})
-		var rows []citekeyConflictRow
-		if err := json.Unmarshal(out, &rows); err != nil {
+		var report FindingsReport
+		if err := json.Unmarshal(out, &report); err != nil {
 			t.Fatalf("decode conflicts %q: %v", out, err)
 		}
 		n := 0
-		for _, r := range rows {
-			if r.Type == "conflict" && r.CiteKey == "smith2020data" {
+		for _, f := range report.Findings {
+			if f.Kind == "citekey_conflict" && f.Evidence["cite_key"] == "smith2020data" {
 				n++
 			}
 		}
 		if n != 2 {
-			t.Errorf("citekey-conflicts --conflicts reported smith2020data on %d items, want 2; rows=%v", n, rows)
+			t.Errorf("citekey-conflicts --conflicts reported smith2020data on %d items, want 2; findings=%v", n, report.Findings)
 		}
 	})
 

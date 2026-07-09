@@ -51,7 +51,7 @@ func HealthJSON(scopeExpr string) ([]byte, error) {
 		syncedAt = &v
 	}
 	ctx := &healthContext{
-		src:    healthSource{Kind: "local", SyncedAt: syncedAt},
+		src:    FindingSource{Kind: "local", SyncedAt: syncedAt},
 		preset: "all",
 		limit:  0,
 	}

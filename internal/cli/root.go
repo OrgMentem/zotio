@@ -5,6 +5,7 @@ package cli
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -55,6 +56,8 @@ type rootFlags struct {
 	deliverSink DeliverSink
 }
 
+var errWebAPIKeyRequired = errors.New("web_api_key required")
+
 // RootCmd returns the Cobra command tree without executing it. The MCP server
 // uses this to mirror every user-facing command as an agent tool.
 func RootCmd() *cobra.Command {
@@ -78,14 +81,8 @@ func Execute() error {
 		if idx := strings.Index(msg, "unknown flag: "); idx >= 0 {
 			flagStr := strings.TrimSpace(msg[idx+len("unknown flag: "):])
 			if suggestion := suggestFlag(flagStr, rootCmd); suggestion != "" {
-				return fmt.Errorf("%w\nhint: did you mean --%s?", err, suggestion)
+				err = fmt.Errorf("%w\nhint: did you mean --%s?", err, suggestion)
 			}
-		}
-	}
-	if err == nil && flags.deliverBuf != nil {
-		if derr := Deliver(rootCmd.Context(), flags.deliverSink, flags.deliverBuf.Bytes(), flags.compact); derr != nil {
-			fmt.Fprintf(os.Stderr, "warning: deliver to %s:%s failed: %v\n", flags.deliverSink.Scheme, flags.deliverSink.Target, derr)
-			return derr
 		}
 	}
 	if err != nil && isCobraUsageError(err) {
@@ -93,9 +90,29 @@ func Execute() error {
 		// required flag, etc.) originate before any user RunE and never
 		// flow through usageErr(); without this wrap ExitCode() falls
 		// through to 1, clobbering the conventional code-2 for usage errors.
-		return usageErr(err)
+		err = usageErr(err)
+	}
+	if shouldDeliverCapturedOutput(err, flags.deliverBuf) {
+		if derr := Deliver(rootCmd.Context(), flags.deliverSink, flags.deliverBuf.Bytes(), flags.compact); derr != nil {
+			fmt.Fprintf(os.Stderr, "warning: deliver to %s:%s failed: %v\n", flags.deliverSink.Scheme, flags.deliverSink.Target, derr)
+		}
 	}
 	return err
+}
+
+func shouldDeliverCapturedOutput(err error, buf *bytes.Buffer) bool {
+	if buf == nil || buf.Len() == 0 {
+		return false
+	}
+	if err == nil {
+		return true
+	}
+	switch ExitCode(err) {
+	case 2, 10:
+		return false
+	default:
+		return true
+	}
 }
 
 // isCobraUsageError reports whether err matches one of Cobra/pflag's
@@ -252,7 +269,10 @@ See README.md or the bundled SKILL.md for recipes.`,
 		default:
 			return fmt.Errorf("invalid --via value %q: must be auto, connector, or web", flags.via)
 		}
-		return nil
+		// Registry-driven preflight: refuse loudly (exit 9, precondition_unmet)
+		// when the running command declares a precondition the environment does
+		// not satisfy. Opt out per command via Annotations["zotio:preflight"]="skip".
+		return runCapabilityPreflight(cmd, flags)
 	}
 	rootCmd.AddCommand(newCollectionsCmd(flags))
 	rootCmd.AddCommand(newItemsCmd(flags))
@@ -335,6 +355,37 @@ func (f *rootFlags) newWriteClient() (*client.Client, error) {
 			c.ResolveWriteBase = nil
 			fmt.Fprintf(os.Stderr, "→ writing via Zotero Web API: %s\n", base)
 		}
+	}
+	return c, nil
+}
+
+// newWebReadClient returns a read client pinned to the Zotero Web API library
+// for read-only endpoints whose semantics differ from the local API (for
+// example, server-side CSL style rendering). Unlike newWriteClient, it never
+// prints a write-route notice and it fails loudly when the Web API key is absent.
+func (f *rootFlags) newWebReadClient(ctx context.Context) (*client.Client, error) {
+	cfg, err := config.Load(f.configPath)
+	if err != nil {
+		return nil, configErr(err)
+	}
+	if cfg.AuthHeader() == "" {
+		return nil, errWebAPIKeyRequired
+	}
+	if f.group != "" {
+		cfg.BaseURL = rewriteLibraryPrefix(cfg.BaseURL, f.group)
+	}
+	c := client.New(cfg, f.timeout, f.rateLimit)
+	c.DryRun = f.dryRun
+	c.NoCache = f.noCache
+	if isLocalZoteroAPI(cfg.BaseURL) {
+		base, err := resolveWebWriteBase(ctx, cfg, f.group, f.timeout)
+		if err != nil {
+			return nil, err
+		}
+		if base == "" {
+			return nil, errWebAPIKeyRequired
+		}
+		c.BaseURL = base
 	}
 	return c, nil
 }

@@ -4,6 +4,19 @@ Notable changes to zotio. Format follows [Keep a Changelog](https://keepachangel
 
 ## [Unreleased]
 
+### Added
+- `items bibliography` renders a scope-wide formatted bibliography in any CSL style, server-side via the Web API (`--scope`, `--style`, chunked at 50 keys per request).
+- `items bibcheck` accepts multiple manuscripts, flags cited items missing citation-core fields (`incomplete_citation` findings with file:line evidence), emits the canonical findings envelope in JSON, and gains `--fail-on <high|any|none>` (exit `11`) alongside the existing `--fail-on-unknown`.
+- `export snapshot verify <lockfile>` classifies drift against the current library as added/removed/changed/touched by comparing the recorded content SHA-256 — version-only churn is `touched`, never drift; `--fail-on-drift` exits `11`.
+- Diagnostics (`library health`, `items audit`, `vault audit`, `items citekey-conflicts`, `items duplicates`, `items enrich --validate`, `items preprint-check`) emit a shared `findings` array (kind/severity/item_key envelope), and `--keys-from` ingests it: `zotio library health --json | zotio items enrich --missing-doi --keys-from -` now composes directly.
+- Declared capability preconditions are enforced centrally: a command whose `requires` (synced store, live local API, Better BibTeX, desktop connector) is unmet refuses with a structured `precondition_unmet` envelope and exit `9` instead of returning empty results. MCP `command_search`/`command_run` command detail now carries `operation`/`requires`/`destructive`.
+
+### Changed
+- `items cite --style <csl-id>` renders named CSL styles through the Web API instead of silently falling back to Zotero's default style; without an API key it refuses with exit `9`.
+- `--deliver` now delivers rendered reports when a quality or freshness gate fails (exit `11`/`12`) — previously the report was dropped exactly when a CI consumer needed it. Usage and config errors still skip delivery, and a delivery failure never masks the command's exit code.
+- Diagnostic JSON shapes for `items citekey-conflicts`, `vault audit`, `items enrich --validate`, and `items preprint-check` were replaced by the canonical findings envelope; `items audit` and `items duplicates` keep their existing fields and add `findings` alongside.
+- Export snapshot lockfiles record each item's title and normalized content SHA-256.
+
 ## [0.4.0] — 2026-07-09
 
 ### Security

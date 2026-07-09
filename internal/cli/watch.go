@@ -22,7 +22,7 @@ func newWatchCmd(flags *rootFlags) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:         "watch [resource...]",
 		Short:       "Keep the local store fresh with periodic incremental syncs",
-		Annotations: map[string]string{"zotio:method": "GET"},
+		Annotations: map[string]string{"zotio:method": "GET", "zotio:preflight": "skip"},
 		Long: `Watch keeps the local store fresh by running incremental sync cycles on
 
 a configurable interval. It starts with an immediate sync, logs one concise

@@ -42,8 +42,8 @@ func upsertWatchHealthDefaultStore(t *testing.T, items []json.RawMessage) {
 }
 
 func TestWatchHealthFindingKeyUsesStableTaxonomyIdentity(t *testing.T) {
-	itemBefore := healthFinding{Kind: "missing_citation", ItemKey: "ITEM1", Title: "Before", Evidence: map[string]any{"missing": "date"}}
-	itemAfter := healthFinding{Kind: "missing_citation", ItemKey: "ITEM1", Title: "After", Evidence: map[string]any{"missing": "creators,date"}}
+	itemBefore := Finding{Kind: "missing_citation", ItemKey: "ITEM1", Title: "Before", Evidence: map[string]any{"missing": "date"}}
+	itemAfter := Finding{Kind: "missing_citation", ItemKey: "ITEM1", Title: "After", Evidence: map[string]any{"missing": "creators,date"}}
 	if watchHealthFindingKey(itemBefore) != watchHealthFindingKey(itemAfter) {
 		t.Fatalf("same kind+item_key should be a stable identity across evidence changes")
 	}
@@ -51,8 +51,8 @@ func TestWatchHealthFindingKeyUsesStableTaxonomyIdentity(t *testing.T) {
 		t.Fatalf("item display key = %q, want ITEM1", got)
 	}
 
-	groupBefore := healthFinding{Kind: "duplicate_candidates", Evidence: map[string]any{"group": "doi", "value": "10/example", "count": 2}}
-	groupAfter := healthFinding{Kind: "duplicate_candidates", Evidence: map[string]any{"group": "doi", "value": "10/example", "count": 3}}
+	groupBefore := Finding{Kind: "duplicate_candidates", Evidence: map[string]any{"group": "doi", "value": "10/example", "count": 2}}
+	groupAfter := Finding{Kind: "duplicate_candidates", Evidence: map[string]any{"group": "doi", "value": "10/example", "count": 3}}
 	if watchHealthFindingKey(groupBefore) != watchHealthFindingKey(groupAfter) {
 		t.Fatalf("same grouped duplicate should remain stable when its count changes")
 	}
@@ -63,7 +63,7 @@ func TestWatchHealthFindingKeyUsesStableTaxonomyIdentity(t *testing.T) {
 		t.Fatalf("group title = %q, want doi=10/example", got)
 	}
 
-	canonical := healthFinding{Kind: "tag_drift", Evidence: map[string]any{"canonical": "ai"}}
+	canonical := Finding{Kind: "tag_drift", Evidence: map[string]any{"canonical": "ai"}}
 	if got := watchHealthFindingDisplayKey(canonical); got != "ai" {
 		t.Fatalf("canonical display key = %q, want ai", got)
 	}
@@ -81,7 +81,7 @@ func TestWatchHealthRunReportsBaselineThenOnlyNewAndResolvedFindings(t *testing.
 		preset:   "citation",
 		kinds:    []string{"missing_citation"},
 		flags:    &rootFlags{},
-		previous: map[string]healthFinding{},
+		previous: map[string]Finding{},
 	}
 	cmd := &cobra.Command{}
 	var out bytes.Buffer
@@ -123,7 +123,7 @@ func TestWatchHealthRunReportsBaselineThenOnlyNewAndResolvedFindings(t *testing.
 func TestWatchHealthRunLogsHealthErrorsWithoutAborting(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	t.Setenv("ZOTERO_CONFIG", filepath.Join(t.TempDir(), "missing.toml"))
-	monitor := &watchHealthMonitor{enabled: true, preset: "quick", kinds: []string{"missing_citation"}, flags: &rootFlags{}, previous: map[string]healthFinding{}}
+	monitor := &watchHealthMonitor{enabled: true, preset: "quick", kinds: []string{"missing_citation"}, flags: &rootFlags{}, previous: map[string]Finding{}}
 	cmd := &cobra.Command{}
 	var out bytes.Buffer
 	var errOut bytes.Buffer
@@ -162,7 +162,7 @@ func TestWatchHealthWebhookPostsDriftPayload(t *testing.T) {
 	var errOut bytes.Buffer
 	cmd.SetErr(&errOut)
 	cycleAt := time.Date(2026, 7, 6, 12, 30, 0, 0, time.UTC)
-	monitor.deliverWebhook(context.Background(), cmd, cycleAt, []healthFinding{{Kind: "missing_citation", Severity: sevHigh, ItemKey: "K1", Title: "Missing"}}, 2, healthSummary{High: 1, Total: 1})
+	monitor.deliverWebhook(context.Background(), cmd, cycleAt, []Finding{{Kind: "missing_citation", Severity: sevHigh, ItemKey: "K1", Title: "Missing"}}, 2, healthSummary{High: 1, Total: 1})
 	if errOut.Len() != 0 {
 		t.Fatalf("webhook stderr = %q, want none", errOut.String())
 	}

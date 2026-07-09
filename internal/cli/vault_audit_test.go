@@ -47,14 +47,10 @@ func TestVaultAuditReportsOrphanedManagedNote(t *testing.T) {
 	}
 
 	var report struct {
-		Scanned int            `json:"scanned"`
-		Managed int            `json:"managed"`
-		Counts  map[string]int `json:"counts"`
-		Issues  []struct {
-			Path  string `json:"path"`
-			Key   string `json:"key"`
-			Issue string `json:"issue"`
-		} `json:"issues"`
+		Scanned  int            `json:"scanned"`
+		Managed  int            `json:"managed"`
+		Counts   map[string]int `json:"counts"`
+		Findings []Finding      `json:"findings"`
 	}
 	if err := json.Unmarshal(out.Bytes(), &report); err != nil {
 		t.Fatalf("decode audit JSON: %v\n%s", err, out.String())
@@ -68,10 +64,10 @@ func TestVaultAuditReportsOrphanedManagedNote(t *testing.T) {
 	if report.Counts[vaultAuditIssueOrphaned] != 1 {
 		t.Fatalf("orphaned count = %d, want 1 (report=%+v)", report.Counts[vaultAuditIssueOrphaned], report)
 	}
-	for _, issue := range report.Issues {
-		if issue.Issue == vaultAuditIssueOrphaned && issue.Key == "GHOST" {
+	for _, finding := range report.Findings {
+		if finding.Kind == "vault_orphan" && finding.ItemKey == "GHOST" {
 			return
 		}
 	}
-	t.Fatalf("missing orphaned GHOST issue: %+v", report.Issues)
+	t.Fatalf("missing orphaned GHOST finding: %+v", report.Findings)
 }

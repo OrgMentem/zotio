@@ -57,32 +57,6 @@ func failOnRank(failOn string) int {
 	}
 }
 
-// healthSource records where a finding's data came from and how fresh it is, so
-// an agent can decide whether to trust it (local reads may be stale).
-type healthSource struct {
-	Kind     string     `json:"kind"`
-	SyncedAt *time.Time `json:"synced_at,omitempty"`
-}
-
-type healthRecommendedAction struct {
-	Command string `json:"command,omitempty"`
-	Text    string `json:"text,omitempty"`
-}
-
-// healthFinding is the stable finding taxonomy (notes/roadmap.md). Identity is
-// (kind, item_key) for per-item findings; grouped findings carry detail in
-// Evidence and leave ItemKey empty.
-type healthFinding struct {
-	Kind              string                   `json:"kind"`
-	Severity          string                   `json:"severity"`
-	ItemKey           string                   `json:"item_key,omitempty"`
-	Title             string                   `json:"title,omitempty"`
-	Evidence          map[string]any           `json:"evidence,omitempty"`
-	Source            healthSource             `json:"source"`
-	Autofixable       bool                     `json:"autofixable"`
-	RecommendedAction *healthRecommendedAction `json:"recommended_action,omitempty"`
-}
-
 type healthRemediation struct {
 	Action  string `json:"action"`
 	Command string `json:"command,omitempty"`
@@ -164,7 +138,7 @@ type healthReport struct {
 	Scope           healthScope                 `json:"scope"`
 	Preset          string                      `json:"preset"`
 	Checks          []healthCheckRun            `json:"checks"`
-	Findings        []healthFinding             `json:"findings"`
+	Findings        []Finding                   `json:"findings"`
 	Skipped         []healthSkip                `json:"skipped,omitempty"`
 	Summary         healthSummary               `json:"summary"`
 	RemediationPlan []healthRemediationPlanStep `json:"remediation_plan,omitempty"`
@@ -174,7 +148,7 @@ type healthReport struct {
 	Baseline *healthBaselineReport `json:"baseline,omitempty"`
 
 	// keep untruncated findings and the new-finding gate threshold out of JSON.
-	allFindings  []healthFinding
+	allFindings  []Finding
 	baselineGate string
 }
 
@@ -266,7 +240,7 @@ func printHealthBadge(cmd *cobra.Command, badge healthBadge) error {
 // memoizes the shared citekey scan so it runs once even when both citekey checks
 // are in the preset.
 type healthContext struct {
-	src              healthSource
+	src              FindingSource
 	preset           string
 	limit            int
 	verifyFiles      bool
@@ -277,7 +251,7 @@ type healthContext struct {
 	citekeyLoaded    bool
 }
 
-type healthCheckRunner func(db localQueryStore, ctx *healthContext) ([]healthFinding, *healthSkip, error)
+type healthCheckRunner func(db localQueryStore, ctx *healthContext) ([]Finding, *healthSkip, error)
 
 type healthCheck struct {
 	kind     string
@@ -295,19 +269,19 @@ func healthCheckRegistry() []healthCheck {
 		{kind: "missing_citation", severity: sevHigh, run: itemCheckRunner(
 			func(db localQueryStore) ([]map[string]any, error) { return queryCitationIncompleteItems(db, 0) },
 			"missing_citation", sevHigh, false,
-			&healthRecommendedAction{Text: "Add the missing core citation fields (creators, title, date, venue) in Zotero"})},
+			&RecommendedAction{Text: "Add the missing core citation fields (creators, title, date, venue) in Zotero"})},
 		{kind: "missing_doi", severity: sevHigh, run: itemCheckRunner(
 			func(db localQueryStore) ([]map[string]any, error) { return queryMissingDOIItems(db, 0, "") },
 			"missing_doi", sevHigh, true,
-			&healthRecommendedAction{Command: "zotio items enrich --missing-doi --keys-from -"})},
+			&RecommendedAction{Command: "zotio items enrich --missing-doi --keys-from -"})},
 		{kind: "missing_pdf", severity: sevHigh, run: itemCheckRunner(
 			func(db localQueryStore) ([]map[string]any, error) { return queryMissingPDFItems(db, "", 0, "") },
 			"missing_pdf", sevHigh, true,
-			&healthRecommendedAction{Command: "zotio items enrich --missing-pdf --keys-from -"})},
+			&RecommendedAction{Command: "zotio items enrich --missing-pdf --keys-from -"})},
 		{kind: "missing_abstract", severity: sevInfo, run: itemCheckRunner(
 			func(db localQueryStore) ([]map[string]any, error) { return queryMissingAbstractItems(db, 0, "") },
 			"missing_abstract", sevInfo, true,
-			&healthRecommendedAction{Command: "zotio items enrich --missing-abstract --keys-from -"})},
+			&RecommendedAction{Command: "zotio items enrich --missing-abstract --keys-from -"})},
 		{kind: "missing_tags", severity: sevInfo, run: itemCheckRunner(
 			func(db localQueryStore) ([]map[string]any, error) { return queryMissingTagsItems(db, 0) },
 			"missing_tags", sevInfo, false, nil)},
@@ -462,7 +436,7 @@ its precondition is unmet, the command refuses loudly (exit 9) rather than passi
 				syncedAt = &ls
 			}
 			ctx := &healthContext{
-				src:              healthSource{Kind: "local", SyncedAt: syncedAt},
+				src:              FindingSource{Kind: "local", SyncedAt: syncedAt},
 				preset:           preset,
 				limit:            flagLimit,
 				verifyFiles:      flagVerifyFiles,
@@ -647,11 +621,11 @@ func scopeItemCount(db localQueryStore, scope scopeResult) int {
 // candidates) match if any member key is in scope. Findings with no item keys
 // (e.g. library-wide tag drift) are dropped from a scoped run. A nil set means
 // "whole library" and returns the findings unchanged.
-func filterFindingsByScope(findings []healthFinding, scopeSet map[string]bool) []healthFinding {
+func filterFindingsByScope(findings []Finding, scopeSet map[string]bool) []Finding {
 	if scopeSet == nil {
 		return findings
 	}
-	out := make([]healthFinding, 0, len(findings))
+	out := make([]Finding, 0, len(findings))
 	for _, f := range findings {
 		if f.ItemKey != "" {
 			if scopeSet[f.ItemKey] {
@@ -727,15 +701,15 @@ func selectHealthChecks(kinds []string) []healthCheck {
 
 // itemCheckRunner adapts a per-item audit query into a finding producer. It runs
 // the query unlimited so counts are accurate; output truncation happens later.
-func itemCheckRunner(query func(localQueryStore) ([]map[string]any, error), kind, severity string, autofix bool, action *healthRecommendedAction) healthCheckRunner {
-	return func(db localQueryStore, ctx *healthContext) ([]healthFinding, *healthSkip, error) {
+func itemCheckRunner(query func(localQueryStore) ([]map[string]any, error), kind, severity string, autofix bool, action *RecommendedAction) healthCheckRunner {
+	return func(db localQueryStore, ctx *healthContext) ([]Finding, *healthSkip, error) {
 		rows, err := query(db)
 		if err != nil {
 			return nil, nil, err
 		}
-		findings := make([]healthFinding, 0, len(rows))
+		findings := make([]Finding, 0, len(rows))
 		for _, r := range rows {
-			f := healthFinding{
+			f := Finding{
 				Kind:              kind,
 				Severity:          severity,
 				ItemKey:           sqlStringValue(r["key"]),
@@ -773,52 +747,52 @@ func (ctx *healthContext) loadCitekeyRows(db localQueryStore) ([]citekeyConflict
 	return ctx.citekeyRows, nil
 }
 
-func runCitekeyConflict(db localQueryStore, ctx *healthContext) ([]healthFinding, *healthSkip, error) {
+func runCitekeyConflict(db localQueryStore, ctx *healthContext) ([]Finding, *healthSkip, error) {
 	rows, err := ctx.loadCitekeyRows(db)
 	if err != nil {
 		return nil, nil, err
 	}
-	findings := make([]healthFinding, 0)
+	findings := make([]Finding, 0)
 	for _, r := range rows {
 		if r.Type != "conflict" {
 			continue
 		}
-		findings = append(findings, healthFinding{
+		findings = append(findings, Finding{
 			Kind:              "citekey_conflict",
 			Severity:          sevCritical,
 			ItemKey:           r.Key,
 			Title:             r.Title,
 			Evidence:          map[string]any{"cite_key": r.CiteKey},
 			Source:            ctx.src,
-			RecommendedAction: &healthRecommendedAction{Text: "Resolve the duplicate Better BibTeX citation key in Zotero"},
+			RecommendedAction: &RecommendedAction{Text: "Resolve the duplicate Better BibTeX citation key in Zotero"},
 		})
 	}
 	return findings, nil, nil
 }
 
-func runCitekeyMissing(db localQueryStore, ctx *healthContext) ([]healthFinding, *healthSkip, error) {
+func runCitekeyMissing(db localQueryStore, ctx *healthContext) ([]Finding, *healthSkip, error) {
 	rows, err := ctx.loadCitekeyRows(db)
 	if err != nil {
 		return nil, nil, err
 	}
-	findings := make([]healthFinding, 0)
+	findings := make([]Finding, 0)
 	for _, r := range rows {
 		if r.Type != "missing" {
 			continue
 		}
-		findings = append(findings, healthFinding{
+		findings = append(findings, Finding{
 			Kind:              "citekey_missing",
 			Severity:          sevHigh,
 			ItemKey:           r.Key,
 			Title:             r.Title,
 			Source:            ctx.src,
-			RecommendedAction: &healthRecommendedAction{Text: "Install Better BibTeX and assign a citation key"},
+			RecommendedAction: &RecommendedAction{Text: "Install Better BibTeX and assign a citation key"},
 		})
 	}
 	return findings, nil, nil
 }
 
-func runDuplicateCandidates(db localQueryStore, ctx *healthContext) ([]healthFinding, *healthSkip, error) {
+func runDuplicateCandidates(db localQueryStore, ctx *healthContext) ([]Finding, *healthSkip, error) {
 	doiRows, err := queryDuplicateDOIs(db)
 	if err != nil {
 		return nil, nil, err
@@ -828,7 +802,7 @@ func runDuplicateCandidates(db localQueryStore, ctx *healthContext) ([]healthFin
 		return nil, nil, err
 	}
 	rows := normalizeDuplicateRows(append(doiRows, titleRows...))
-	findings := make([]healthFinding, 0, len(rows))
+	findings := make([]Finding, 0, len(rows))
 	for _, r := range rows {
 		group := sqlStringValue(r["group"])
 		ev := map[string]any{
@@ -839,19 +813,19 @@ func runDuplicateCandidates(db localQueryStore, ctx *healthContext) ([]healthFin
 		if keys, ok := r["keys"].([]string); ok {
 			ev["keys"] = keys
 		}
-		findings = append(findings, healthFinding{
+		findings = append(findings, Finding{
 			Kind:              "duplicate_candidates",
 			Severity:          sevHigh,
 			Evidence:          ev,
 			Source:            ctx.src,
 			Autofixable:       true,
-			RecommendedAction: &healthRecommendedAction{Command: "zotio items duplicates resolve"},
+			RecommendedAction: &RecommendedAction{Command: "zotio items duplicates resolve"},
 		})
 	}
 	return findings, nil, nil
 }
 
-func runTagDrift(db localQueryStore, ctx *healthContext) ([]healthFinding, *healthSkip, error) {
+func runTagDrift(db localQueryStore, ctx *healthContext) ([]Finding, *healthSkip, error) {
 	tagRows, err := db.QueryRaw(tagAuditDistinctQuery)
 	if err != nil {
 		return nil, nil, err
@@ -861,12 +835,12 @@ func runTagDrift(db localQueryStore, ctx *healthContext) ([]healthFinding, *heal
 		return nil, nil, err
 	}
 	plans := buildTagAuditPlans(tagRows, countRows)
-	findings := make([]healthFinding, 0, len(plans))
+	findings := make([]Finding, 0, len(plans))
 	for _, p := range plans {
 		if len(p.Aliases) == 0 {
 			continue
 		}
-		findings = append(findings, healthFinding{
+		findings = append(findings, Finding{
 			Kind:     "tag_drift",
 			Severity: sevHigh,
 			Evidence: map[string]any{
@@ -876,7 +850,7 @@ func runTagDrift(db localQueryStore, ctx *healthContext) ([]healthFinding, *heal
 			},
 			Source:            ctx.src,
 			Autofixable:       true,
-			RecommendedAction: &healthRecommendedAction{Command: "zotio tags audit fix"},
+			RecommendedAction: &RecommendedAction{Command: "zotio tags audit fix"},
 		})
 	}
 	return findings, nil, nil
@@ -885,7 +859,7 @@ func runTagDrift(db localQueryStore, ctx *healthContext) ([]healthFinding, *heal
 // runBrokenAttachmentFile is the one live_local_api check. It runs only when
 // --verify-files is set AND Zotero desktop is reachable; otherwise it returns a
 // loud skip with remediation rather than silently omitting itself.
-func runBrokenAttachmentFile(db localQueryStore, ctx *healthContext) ([]healthFinding, *healthSkip, error) {
+func runBrokenAttachmentFile(db localQueryStore, ctx *healthContext) ([]Finding, *healthSkip, error) {
 	if !ctx.verifyFiles {
 		return nil, &healthSkip{
 			Kind:         "broken_attachment_file",
@@ -921,14 +895,14 @@ func runBrokenAttachmentFile(db localQueryStore, ctx *healthContext) ([]healthFi
 	if err != nil {
 		return nil, nil, fmt.Errorf("querying PDF attachments: %w", err)
 	}
-	findings := make([]healthFinding, 0)
+	findings := make([]Finding, 0)
 	for _, a := range attachments {
 		key := sqlStringValue(a["key"])
 		path, reason := attachmentFileStatus(c, key)
 		if reason == "" {
 			continue
 		}
-		findings = append(findings, healthFinding{
+		findings = append(findings, Finding{
 			Kind:     "broken_attachment_file",
 			Severity: sevCritical,
 			ItemKey:  key,
@@ -939,14 +913,14 @@ func runBrokenAttachmentFile(db localQueryStore, ctx *healthContext) ([]healthFi
 				"reason": reason,
 			},
 			Source:            ctx.src,
-			RecommendedAction: &healthRecommendedAction{Text: "Re-link the file in Zotero or re-download the attachment"},
+			RecommendedAction: &RecommendedAction{Text: "Re-link the file in Zotero or re-download the attachment"},
 		})
 	}
 	return findings, nil, nil
 }
 
 // live CrossRef retraction health check, gated like verify-files.
-func runRetractedItem(db localQueryStore, ctx *healthContext) ([]healthFinding, *healthSkip, error) {
+func runRetractedItem(db localQueryStore, ctx *healthContext) ([]Finding, *healthSkip, error) {
 	if !ctx.checkRetractions {
 		return nil, &healthSkip{
 			Kind:         "retracted_item",
@@ -985,12 +959,12 @@ func runRetractedItem(db localQueryStore, ctx *healthContext) ([]healthFinding, 
 		}, nil
 	}
 
-	findings := make([]healthFinding, 0, len(report.Findings))
+	findings := make([]Finding, 0, len(report.Findings))
 	for _, f := range report.Findings {
 		if f.Status == "correction" {
 			continue
 		}
-		findings = append(findings, healthFinding{
+		findings = append(findings, Finding{
 			Kind:     "retracted_item",
 			Severity: sevCritical,
 			ItemKey:  f.ItemKey,
@@ -1005,7 +979,7 @@ func runRetractedItem(db localQueryStore, ctx *healthContext) ([]healthFinding, 
 				"label":       f.Label,
 			},
 			Source:            ctx.src,
-			RecommendedAction: &healthRecommendedAction{Command: "zotio items retract-check --json"},
+			RecommendedAction: &RecommendedAction{Command: "zotio items retract-check --json"},
 		})
 	}
 	return findings, nil, nil
@@ -1023,14 +997,14 @@ WHERE resource_type = 'items'
 	return firstCount(rows)
 }
 
-func truncateFindings(findings []healthFinding, limit int) []healthFinding {
+func truncateFindings(findings []Finding, limit int) []Finding {
 	if limit > 0 && len(findings) > limit {
 		return findings[:limit]
 	}
 	return findings
 }
 
-func sortHealthFindings(findings []healthFinding) {
+func sortHealthFindings(findings []Finding) {
 	sort.SliceStable(findings, func(i, j int) bool {
 		ri, rj := severityRank(findings[i].Severity), severityRank(findings[j].Severity)
 		if ri != rj {
@@ -1059,7 +1033,7 @@ func gateCrossed(summary healthSummary, failOn string) bool {
 // buildHealthRemediationPlan groups findings into preview-first commands that
 // already exist. Exact item remediation uses `--keys-from -` and carries Keys in
 // the JSON payload so an agent can pipe them without broadening scope.
-func buildHealthRemediationPlan(findings []healthFinding) []healthRemediationPlanStep {
+func buildHealthRemediationPlan(findings []Finding) []healthRemediationPlanStep {
 	type bucket struct {
 		command string
 		keys    []string
@@ -1142,7 +1116,7 @@ func buildHealthRemediationPlan(findings []healthFinding) []healthRemediationPla
 	return steps
 }
 
-func countFindingsByKind(findings []healthFinding, kind string) int {
+func countFindingsByKind(findings []Finding, kind string) int {
 	n := 0
 	for _, f := range findings {
 		if f.Kind == kind {
@@ -1152,7 +1126,7 @@ func countFindingsByKind(findings []healthFinding, kind string) int {
 	return n
 }
 
-func countDuplicateGroups(findings []healthFinding, group string) int {
+func countDuplicateGroups(findings []Finding, group string) int {
 	n := 0
 	for _, f := range findings {
 		if f.Kind == "duplicate_candidates" && sqlStringValue(f.Evidence["group"]) == group {
@@ -1195,7 +1169,7 @@ func printHealthReport(cmd *cobra.Command, report healthReport) {
 		fmt.Fprintf(out, "%s (%d)\n", strings.ToUpper(sev[:1])+sev[1:], countForSeverity(report.Summary, sev))
 		for _, f := range group {
 			prefix := ""
-			if healthFindingIsNew(report, f) {
+			if FindingIsNew(report, f) {
 				prefix = "NEW "
 			}
 			fmt.Fprintf(out, "  %s%s\n", prefix, formatFindingLine(f))
@@ -1262,8 +1236,8 @@ func healthStatusWord(s healthSummary) string {
 	}
 }
 
-func findingsForSeverity(findings []healthFinding, severity string) []healthFinding {
-	out := make([]healthFinding, 0)
+func findingsForSeverity(findings []Finding, severity string) []Finding {
+	out := make([]Finding, 0)
 	for _, f := range findings {
 		if f.Severity == severity {
 			out = append(out, f)
@@ -1285,7 +1259,7 @@ func countForSeverity(s healthSummary, severity string) int {
 	}
 }
 
-func formatFindingLine(f healthFinding) string {
+func formatFindingLine(f Finding) string {
 	switch f.Kind {
 	case "duplicate_candidates":
 		return fmt.Sprintf("[%s] %s=%q (%v items)", f.Kind, sqlStringValue(f.Evidence["group"]), sqlStringValue(f.Evidence["value"]), f.Evidence["count"])

@@ -19,18 +19,6 @@ type syncHintState struct {
 	lastSynced time.Time
 }
 
-func hintIfUnsynced(cmd *cobra.Command, db *store.Store, resourceType string) bool {
-	if cmd == nil || db == nil {
-		return false
-	}
-	state, err := readSyncHintState(db, resourceType)
-	if err != nil || state.hasState {
-		return false
-	}
-	fmt.Fprintf(cmd.ErrOrStderr(), "hint: local store has not been synced yet. Run 'zotio sync' before trusting local results.\n")
-	return true
-}
-
 func hintIfStale(cmd *cobra.Command, db *store.Store, resourceType string, maxAge time.Duration) bool {
 	if cmd == nil || db == nil || maxAge <= 0 {
 		return false

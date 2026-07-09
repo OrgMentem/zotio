@@ -19,17 +19,17 @@ type watchHealthMonitor struct {
 	kinds    []string
 	webhook  string
 	flags    *rootFlags
-	previous map[string]healthFinding
+	previous map[string]Finding
 	baseline bool
 }
 
 // watchHealthWebhookPayload is the drift notification contract for --health-webhook.
 type watchHealthWebhookPayload struct {
-	CycleAt       time.Time       `json:"cycle_at"`
-	Preset        string          `json:"preset"`
-	New           []healthFinding `json:"new"`
-	ResolvedCount int             `json:"resolved_count"`
-	Totals        healthSummary   `json:"totals"`
+	CycleAt       time.Time     `json:"cycle_at"`
+	Preset        string        `json:"preset"`
+	New           []Finding     `json:"new"`
+	ResolvedCount int           `json:"resolved_count"`
+	Totals        healthSummary `json:"totals"`
 }
 
 // newWatchHealthMonitor normalizes watch health flags against the library-health preset registry.
@@ -54,7 +54,7 @@ func newWatchHealthMonitor(flags *rootFlags, enabled bool, presetRaw string, web
 		kinds:    kinds,
 		webhook:  webhook,
 		flags:    flags,
-		previous: map[string]healthFinding{},
+		previous: map[string]Finding{},
 	}, nil
 }
 
@@ -70,7 +70,7 @@ func (m *watchHealthMonitor) run(ctx context.Context, cmd *cobra.Command, cycleA
 	}
 
 	current := watchHealthFindingSet(report.Findings)
-	newFindings := make([]healthFinding, 0)
+	newFindings := make([]Finding, 0)
 	resolvedCount := 0
 	if !m.baseline {
 		m.baseline = true
@@ -114,7 +114,7 @@ func (m *watchHealthMonitor) report(ctx context.Context) (healthReport, error) {
 		syncedAt = &ls
 	}
 	healthCtx := &healthContext{
-		src:    healthSource{Kind: "local", SyncedAt: syncedAt},
+		src:    FindingSource{Kind: "local", SyncedAt: syncedAt},
 		preset: m.preset,
 		flags:  m.flags,
 	}
@@ -122,7 +122,7 @@ func (m *watchHealthMonitor) report(ctx context.Context) (healthReport, error) {
 }
 
 // deliverWebhook posts the compact drift payload using the shared delivery webhook conventions.
-func (m *watchHealthMonitor) deliverWebhook(ctx context.Context, cmd *cobra.Command, cycleAt time.Time, newFindings []healthFinding, resolvedCount int, totals healthSummary) {
+func (m *watchHealthMonitor) deliverWebhook(ctx context.Context, cmd *cobra.Command, cycleAt time.Time, newFindings []Finding, resolvedCount int, totals healthSummary) {
 	payload := watchHealthWebhookPayload{
 		CycleAt:       cycleAt,
 		Preset:        m.preset,
@@ -141,8 +141,8 @@ func (m *watchHealthMonitor) deliverWebhook(ctx context.Context, cmd *cobra.Comm
 }
 
 // watchHealthFindingSet indexes findings by the stable health taxonomy identity.
-func watchHealthFindingSet(findings []healthFinding) map[string]healthFinding {
-	out := make(map[string]healthFinding, len(findings))
+func watchHealthFindingSet(findings []Finding) map[string]Finding {
+	out := make(map[string]Finding, len(findings))
 	for _, f := range findings {
 		out[watchHealthFindingKey(f)] = f
 	}
@@ -150,7 +150,7 @@ func watchHealthFindingSet(findings []healthFinding) map[string]healthFinding {
 }
 
 // watchHealthFindingKey preserves (kind,item_key), with grouped evidence keys for aggregate findings.
-func watchHealthFindingKey(f healthFinding) string {
+func watchHealthFindingKey(f Finding) string {
 	if f.ItemKey != "" {
 		return f.Kind + "\x00item\x00" + f.ItemKey
 	}
@@ -171,7 +171,7 @@ func watchHealthFindingKey(f healthFinding) string {
 }
 
 // watchHealthFindingDisplayKey turns the diff identity into a concise human token.
-func watchHealthFindingDisplayKey(f healthFinding) string {
+func watchHealthFindingDisplayKey(f Finding) string {
 	if f.ItemKey != "" {
 		return f.ItemKey
 	}
@@ -193,7 +193,7 @@ func watchHealthFindingDisplayKey(f healthFinding) string {
 }
 
 // watchHealthFindingTitle supplies a quoted label for item and grouped health lines.
-func watchHealthFindingTitle(f healthFinding) string {
+func watchHealthFindingTitle(f Finding) string {
 	if f.Title != "" {
 		return f.Title
 	}

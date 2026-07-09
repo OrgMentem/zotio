@@ -94,7 +94,7 @@ store. Set ZOTIO_DEMO=1 on any command to read from it with a pristine,
 key-less config -- your real library, config, and API key are never touched.
 No Zotero desktop and no API key are required.`,
 		Args:        cobra.NoArgs,
-		Annotations: map[string]string{"mcp:read-only": "true"},
+		Annotations: map[string]string{"mcp:read-only": "true", "zotio:preflight": "skip"},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			// force demo routing on for this process so any
 			// indirect store/config resolution during seeding can never touch

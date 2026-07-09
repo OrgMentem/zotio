@@ -20,6 +20,7 @@ func newItemsCmd(flags *rootFlags) *cobra.Command {
 	cmd.AddCommand(newItemsAuditCmd(flags))
 	cmd.AddCommand(newItemsAuthorsCmd(flags))
 	cmd.AddCommand(newItemsCiteCmd(flags))
+	cmd.AddCommand(newItemsBibliographyCmd(flags))
 	cmd.AddCommand(newItemsCitekeyConflictsCmd(flags))
 	cmd.AddCommand(newItemsBibcheckCmd(flags))
 	cmd.AddCommand(newItemsCollectionsOfCmd(flags))
