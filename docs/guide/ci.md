@@ -62,13 +62,25 @@ With the default cache enabled, that recipe is quiet when nothing changed and lo
 
 ## Gate the manuscript too
 
-The library gate catches bad references; `items bibcheck` catches references your manuscript uses that the library can't back:
+The library gate catches bad references; `items bibcheck` catches the reverse — citekeys a manuscript cites that the library can't back (unknown or ambiguous keys), plus cited items missing citation-core fields. Pass one or more LaTeX or Pandoc files:
 
 ```yaml
-      - run: zotio items bibcheck thesis.tex --fail-on-unknown   # exit 11 on unknown/ambiguous citekeys
+      - run: zotio items bibcheck thesis.tex chapters/*.md --fail-on-unknown   # exit 11 on unknown/ambiguous citekeys
+      # --fail-on high gates on finding severity instead, and also flags incomplete citations
 ```
 
 ![zotio items bibcheck resolving manuscript citekeys](../assets/demos/bibcheck.gif)
+
+## Gate on drift from a committed snapshot
+
+`export snapshot` writes your data plus a sidecar lockfile (`<output>.lock.json`) that pins each item by key and a normalized content hash. Commit that lockfile next to a curated reading list or systematic-review corpus, and CI can fail when the live library diverges from the pinned set:
+
+```bash
+zotio export snapshot collection:ABCD1234 --output corpus.jsonl      # regenerate and commit intentionally
+zotio export snapshot verify corpus.jsonl.lock.json --fail-on-drift  # exit 11 on added/removed/changed items
+```
+
+Because `verify` compares content hashes rather than Zotero version integers, an item whose version bumped with no content change is reported as `touched` and never trips the gate — only genuine additions, removals, and content edits do.
 
 ## Publish the badge
 
