@@ -289,16 +289,34 @@ Every item is a shipped contract whose last mile is missing; no new subsystems.
 - **Rolling convention:** every command touched here adopts the shared scope grammar
   (`scope.Spec`) instead of growing bespoke selection flags.
 
-### Phase 10 — Research-workflow depth
+### Phase 10 — Research-workflow depth (validated 2026-07-09)
 
-1. Citation-graph discovery (backward/forward snowballing via already-integrated providers)
-   feeding the reviewable-import manifest; wire `internal/cache` into the provider path with
-   it, not before.
-2. Related-items graph — synced today, discarded; read-only; extends Phase-5 graph resources.
-3. Creator audit → fix, mirroring tags audit (merges stay outside undo).
-4. ORCID persistence during enrich — nearly free, feeds creator disambiguation.
-5. Systematic-review screening + PRISMA counts — the one product expansion; validate demand
-   via the outreach channels before building.
+Validated pre-build from dev and user perspectives; full evidence and reshaped contracts in
+`notes/phase-10-validation.md`. Ordered by slice size:
+
+1. **`items related`** — relations already persist in synced raw item JSON (unindexed, not
+   "discarded"); MVP is a URI parser + `json_each` read, no schema migration. Outgoing +
+   capped incoming edges, external targets preserved; extends the Phase-5 MCP graph resources.
+2. **`creators audit`** (read-only) with confidence tiers — exact-normalization variants /
+   initial-vs-full variants / ambiguous surnames — plus ORCID *capture* from provider payloads
+   into a local sidecar as corroboration evidence. ORCID persistence to Zotero is off the
+   table: Zotero has no creator ORCID field (the "nearly free" claim held only for parsing).
+3. **`creators audit fix`** — tier 1 auto-fixable, tier 2 only via explicit mappings;
+   journaled but not undoable (documented); never decides the style-correct form of a name.
+4. **Discovery producer, backward chase** — extract from `collections gaps` (COCI +
+   Semantic Scholar already implemented there), emit a provenance-extended import manifest,
+   dedupe against the library (DOI + normalized title) BEFORE emitting, wire `internal/cache`
+   into the provider path with it. `collections gaps` becomes a consumer.
+5. **Forward chase** — new work (OpenAlex `cites:` needs work IDs we currently drop; COCI v2
+   `/citations`); bounded, truncation-visible.
+6. **PRISMA-input reporting** — identification-stage counts (identified / duplicates removed /
+   after dedupe) from existing dedupe machinery, feeding PRISMA 2020 flow diagrams. Gated on
+   a demand signal from the SR Toolbox / evidence-synthesis outreach. Screening itself is
+   explicitly out: Rayyan/ASReview own it, and it is not a no-LLM strength. The wedge is
+   "arrive at the screening tool with a certified, deduped, counted corpus."
+
+Prerequisite fix, independent of Phase 10: `items enrich` Extra clobber (P1, destroys Better
+BibTeX citation keys on apply — found during validation).
 
 (`items retract-check`, originally slotted here, shipped ahead of plan.)
 
