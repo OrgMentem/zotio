@@ -7,6 +7,7 @@ maintenance procedures, and design analysis rather than user-facing guidance.
 | File | What it is |
 | --- | --- |
 | `roadmap.md` | Product sequencing and the source of truth for what ships next. |
+| `releasing.md` | Release runbook: the tag→GoReleaser flow, version/breaking-change decisions, validation checklist, and footguns (WinGet classic-PAT, OIDC-outage triage, prepend-don't-replace notes). See `AGENTS.md`. |
 | `roadmap-oracle-review.md` | Oracle review of the roadmap. |
 | `oracle-ingestion-consult.md` | Oracle consult on ingestion design. |
 | `feature-map.md` | Internal feature-to-command mapping. |
