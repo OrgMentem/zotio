@@ -251,6 +251,76 @@ P6  reproducible export  ->  P7  packaging & niceties
   for the writer's own changes; cross-client staleness stays handled by the freshness contract
   (`--require-fresh`, provenance). Creates and bulk/trash shapes reconcile on the next `sync`.
 
+## Phase 9–11 (added 2026-07-09)
+
+Derived from a full review of the open feature-opportunity ledger (78 findings triaged:
+duplicates merged, already-shipped items closed) against the shipped Phase 0–8 surface.
+Grounding rules and product thesis unchanged. The review's structural observation: nearly
+every high-value opportunity extends an existing contract (health checks, import manifest,
+scope grammar, journal, capability registry) rather than demanding a new subsystem — the
+two exceptions (screening/PRISMA, translation-server capture) are gated on demand evidence.
+
+### Phase 9 — Finish the loops already sold
+
+Every item is a shipped contract whose last mile is missing; no new subsystems.
+
+- **Scope-wide CSL bibliographies via the hybrid Web-API seam.** `items cite --style` today
+  prints a stderr note and silently renders the default style — a live silent-degradation
+  violation of UX principle 6. Route styled rendering through the Web API (`format=bib&style=`,
+  server-side rendering; embedding citeproc stays cut per D5) and render whole scopes,
+  producing the submission-ready artifact hero capability #1 stops short of.
+- **Manuscript cite-check.** Validate a manuscript's actual `\cite{}`/`[@key]` usage against
+  the library's citekeys: undefined/renamed keys, plus cited items missing citation-core
+  fields. CI-gateable.
+- **One finding envelope, consumable by `--keys-from`.** Diagnostics emit heterogeneous
+  result shapes; `--keys-from` cannot parse the very report whose `recommended_action`
+  points at it. Standardize diagnostics on the finding taxonomy and teach `--keys-from`
+  to ingest it — diagnose → fix becomes a single pipe (the loop D2 promised).
+- **`export snapshot verify`/`diff`.** The Phase 6 lockfile finally gets its consumer.
+  Verification prefers the recorded content sha256 over Zotero version ints (edit-tolerant
+  drift, resolving the Phase 6 dampening note).
+- **Registry-driven preflight.** `Requires` preconditions are declared and exported but not
+  enforced: the same unmet precondition is an empty-success on some commands and exit 9 on
+  others. One central preflight (exit 9, `precondition_unmet` envelope) consumed by the CLI
+  and MCP `command_run`, making the Phase 2 precondition contract real; the MCP facade gains
+  per-command operation/requires/destructive annotations.
+- **Deliver on gate failure.** `--deliver` drops the report exactly when a gate fails — the
+  one moment a CI/agent consumer needs it. Outcome-aware delivery routing.
+- **Rolling convention:** every command touched here adopts the shared scope grammar
+  (`scope.Spec`) instead of growing bespoke selection flags.
+
+### Phase 10 — Research-workflow depth
+
+1. Citation-graph discovery (backward/forward snowballing via already-integrated providers)
+   feeding the reviewable-import manifest; wire `internal/cache` into the provider path with
+   it, not before.
+2. Related-items graph — synced today, discarded; read-only; extends Phase-5 graph resources.
+3. Creator audit → fix, mirroring tags audit (merges stay outside undo).
+4. ORCID persistence during enrich — nearly free, feeds creator disambiguation.
+5. Systematic-review screening + PRISMA counts — the one product expansion; validate demand
+   via the outreach channels before building.
+
+(`items retract-check`, originally slotted here, shipped ahead of plan.)
+
+### Phase 11 — Automation substrate (strict order)
+
+Transactional `workflow run` (one plan, one approval, one journal run-id, resume) → workflow
+expressiveness (inter-step data-flow, variables, conditionals) → event triggers (`tail`/`watch`
+bridge) + MCP inline workflow submission. Rationale: triggers and agent-submitted execution
+multiply whatever safety model the runner has — make the envelope transactional before making
+it expressive, expressive before wiring triggers. Triggered runs stay preview-only unless `--yes`.
+
+### Cut / defer (2026-07-09)
+
+| Decision | Item | Rationale |
+|---|---|---|
+| **Defer** | Journal before-images / broader undo | Relitigates the recorded "defer universal undo"; no demand evidence. Before-images are the principled path *if* demand shows. |
+| **Defer** | Stored-file upload protocol | Still the riskiest import edge; the attach-mode contract already reserves `upload`. Revisit on group-library demand. |
+| **Decline** | Multi-library workspace model | `--group all` read/diagnostic fan-out is the cheap 80%; a workspace registry is architecture without a user. |
+| **Decline** | Beacon recurring scheduler | `watch --interval` + OS schedulers/CI cover it; a resident daemon is a large operational surface against the composability thesis. |
+| **Park** | BYO-vector seam | The sanctioned form of the semantic-search cut, but build nothing until a host actually shows up with vectors. |
+| **Park** | P3 long tail (analytics, digests, ZotFile-style renaming, notes, collaboration) | Promote individual items only on user signal from the outreach channels. |
+
 ## Opportunity → phase mapping
 
 All 26 open feature opportunities as of 2026-06-27:
