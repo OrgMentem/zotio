@@ -26,10 +26,6 @@
     src="https://img.shields.io/badge/Go-1.26-00ADD8?logo=go&logoColor=white"
     alt="Go 1.26"
   /></a>
-  <a href="https://orgmentem.github.io/zotio/guide/ci/"><img
-    src="https://img.shields.io/endpoint?url=https%3A%2F%2Forgmentem.github.io%2Fzotio%2Fbibliography-badge.json"
-    alt="Live bibliography health of the maintainer's own Zotero library"
-  /></a>
   <a href="LICENSE"><img
     src="https://img.shields.io/badge/license-MIT-blue"
     alt="MIT"
@@ -160,6 +156,8 @@ Three things make it trustworthy, not just convenient:
 ```
 
 Your thesis or review repo gets a live `bibliography | healthy` badge — and a failing build the moment a citekey conflict or duplicate slips in. Add `--check-retractions` to extend the gate to **retracted papers** (Crossref's Retraction Watch data), and gate the manuscript itself with `zotio items bibcheck paper.tex --fail-on-unknown`. The [zotio-action](https://github.com/marketplace/actions/zotio-bibliography-health-for-zotero) packages this — install, sync, gate, and diff against a baseline so it fails only on *new* problems ([guide](https://orgmentem.github.io/zotio/guide/ci/)).
+
+See it running for real: zotio's own docs deploy publishes a [live badge](https://orgmentem.github.io/zotio/bibliography-badge.json) off the maintainer's real Zotero library ([workflow](https://github.com/OrgMentem/zotio/blob/main/.github/workflows/docs.yml), [guide](https://orgmentem.github.io/zotio/guide/ci/)).
 
 ---
 
