@@ -254,6 +254,86 @@ func TestImportDiscoverSemanticScholarTruncationInJSONSummary(t *testing.T) {
 	}
 }
 
+func TestBuildReferenceAggregateForDirectionsDegradesPerSourceProviderError(t *testing.T) {
+	coci := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		decoded, err := url.PathUnescape(r.URL.EscapedPath())
+		if err != nil {
+			t.Errorf("COCI path = %q: %v", r.URL.EscapedPath(), err)
+			http.Error(w, "bad path", http.StatusBadRequest)
+			return
+		}
+		switch decoded {
+		case "/references/10.9100/failing":
+			http.Error(w, "oversized provider response", http.StatusInternalServerError)
+		case "/references/10.9100/success":
+			_, _ = w.Write([]byte(`[{"cited":"10.9100/candidate"}]`))
+		default:
+			t.Errorf("COCI unexpected path %q", decoded)
+			http.Error(w, "unexpected path", http.StatusNotFound)
+		}
+	}))
+	t.Cleanup(coci.Close)
+	withBase(t, &collectionGapsOpenCitationsBase, coci.URL)
+
+	semanticScholar := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "semantic scholar also unavailable", http.StatusInternalServerError)
+	}))
+	t.Cleanup(semanticScholar.Close)
+	withBase(t, &enrichSemanticScholarBase, semanticScholar.URL)
+
+	agg, err := buildReferenceAggregateForDirections(context.Background(), http.DefaultClient, []referenceSourceItem{
+		{Key: "SRC_FAIL", Title: "Failing Source", DOI: "10.9100/failing"},
+		{Key: "SRC_OK", Title: "Successful Source", DOI: "10.9100/success"},
+	}, []string{importDiscoverDirectionBackward}, referenceFetchOptions{CountUniquePerSource: true, Cache: newProviderJSONCache(true)})
+	if err != nil {
+		t.Fatalf("buildReferenceAggregateForDirections returned error for one failed source: %v", err)
+	}
+	if len(agg.Sources) != 2 {
+		t.Fatalf("sources = %+v, want failed and successful source summaries", agg.Sources)
+	}
+	if agg.Sources[0].Key != "SRC_FAIL" || agg.Sources[0].Error == "" {
+		t.Fatalf("first source summary = %+v, want recorded provider error", agg.Sources[0])
+	}
+	if agg.Sources[1].Key != "SRC_OK" || agg.Sources[1].Error != "" || agg.Sources[1].Refs != 1 {
+		t.Fatalf("second source summary = %+v, want successful one-ref source", agg.Sources[1])
+	}
+	if len(agg.Candidates) != 1 {
+		t.Fatalf("candidates = %+v, want only source-two candidate", agg.Candidates)
+	}
+	candidate := agg.Candidates[0]
+	if candidate.DOI != "10.9100/candidate" || candidate.Count != 1 || !reflect.DeepEqual(candidate.CitedByKeys, []string{"SRC_OK"}) {
+		t.Fatalf("candidate = %+v, want 10.9100/candidate cited by SRC_OK", candidate)
+	}
+}
+
+func TestImportDiscoverCommandErrorsWhenAllSourcesFail(t *testing.T) {
+	seedImportDiscoverStore(t, []json.RawMessage{
+		json.RawMessage(`{"key":"SRC_FAIL1","version":1,"data":{"key":"SRC_FAIL1","itemType":"journalArticle","title":"Failing Source One","DOI":"10.9200/failing-one","collections":["FAIL"],"dateModified":"2026-01-03T00:00:00Z"}}`),
+		json.RawMessage(`{"key":"SRC_FAIL2","version":1,"data":{"key":"SRC_FAIL2","itemType":"journalArticle","title":"Failing Source Two","DOI":"10.9200/failing-two","collections":["FAIL"],"dateModified":"2026-01-02T00:00:00Z"}}`),
+	})
+
+	coci := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "provider outage", http.StatusInternalServerError)
+	}))
+	t.Cleanup(coci.Close)
+	withBase(t, &collectionGapsOpenCitationsBase, coci.URL)
+
+	semanticScholar := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "provider outage", http.StatusInternalServerError)
+	}))
+	t.Cleanup(semanticScholar.Close)
+	withBase(t, &enrichSemanticScholarBase, semanticScholar.URL)
+
+	cmd := newImportDiscoverCmd(&rootFlags{asJSON: true, noCache: true, timeout: time.Second})
+	cmd.SilenceErrors, cmd.SilenceUsage = true, true
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetErr(&bytes.Buffer{})
+	cmd.SetArgs([]string{"--scope", "collection:FAIL", "--out", filepath.Join(t.TempDir(), "manifest.json"), "--limit", "10", "--min-count", "1"})
+	if err := cmd.Execute(); err == nil {
+		t.Fatal("import discover succeeded when every source provider fetch failed")
+	}
+}
+
 type importDiscoverProviderCounters struct {
 	coci            atomic.Int64
 	crossref        atomic.Int64

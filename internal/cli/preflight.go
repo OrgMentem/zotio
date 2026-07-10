@@ -245,7 +245,8 @@ func checkBetterBibTeXPrecondition(ctx context.Context, _ *rootFlags, _ *cobra.C
 	err = s.DB().QueryRowContext(ctx, `
 SELECT
 	COUNT(*) AS citeable,
-	COUNT(CASE WHEN instr(COALESCE(json_extract(data,'$.data.extra'), ''), 'Citation Key: ') > 0 THEN 1 END) AS keyed
+	COUNT(CASE WHEN instr(COALESCE(json_extract(data,'$.data.extra'), ''), 'Citation Key: ') > 0
+		OR COALESCE(json_extract(data,'$.data.citationKey'), '') != '' THEN 1 END) AS keyed
 FROM resources
 WHERE resource_type='items'
 	AND json_extract(data,'$.data.itemType') NOT IN ('attachment','note','annotation')`).Scan(&citeable, &keyed)
@@ -259,7 +260,7 @@ WHERE resource_type='items'
 		return false, "the synced store has no citeable items for Better BibTeX inspection", nil
 	}
 	if keyed == 0 {
-		return false, "no Better BibTeX 'Citation Key:' values were found in synced item Extra fields", nil
+		return false, "no Better BibTeX citation keys were found in synced items (neither citationKey fields nor 'Citation Key:' Extra lines)", nil
 	}
 	return true, "", nil
 }

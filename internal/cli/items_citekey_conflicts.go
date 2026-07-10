@@ -32,7 +32,8 @@ const citekeyAuditQuery = `
 SELECT
 	id AS key,
 	json_extract(data,'$.data.title') AS title,
-	COALESCE(json_extract(data,'$.data.extra'),'') AS extra
+	COALESCE(json_extract(data,'$.data.extra'),'') AS extra,
+	COALESCE(json_extract(data,'$.data.citationKey'),'') AS citation_key
 FROM resources
 WHERE resource_type='items'
 	AND json_extract(data,'$.data.itemType') NOT IN ('attachment','note','annotation')`
@@ -105,15 +106,21 @@ func buildCitekeyItems(rows []map[string]any) []citekeyItem {
 		item := citekeyItem{
 			Key:     sqlText(row["key"]),
 			Title:   sqlText(row["title"]),
-			CiteKey: betterBibTeXCiteKey(sqlText(row["extra"])),
+			CiteKey: resolveCiteKey(sqlText(row["citation_key"]), sqlText(row["extra"])),
 		}
 		items = append(items, item)
 	}
 	return items
 }
 
-// Keep Better BibTeX Extra parsing in one place.
-func betterBibTeXCiteKey(extra string) string {
+// Keep Better BibTeX citekey resolution in one place. Better BibTeX exposes
+// dynamic (unpinned) keys as a top-level citationKey data field via the local
+// API; only pinned keys live as "Citation Key:" lines in Extra. Prefer the
+// field, fall back to Extra so libraries without pinned keys still resolve.
+func resolveCiteKey(citationKey, extra string) string {
+	if key := strings.TrimSpace(citationKey); key != "" {
+		return key
+	}
 	for _, line := range strings.Split(extra, "\n") {
 		trimmed := strings.TrimSpace(line)
 		if strings.HasPrefix(trimmed, "Citation Key: ") {

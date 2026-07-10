@@ -51,8 +51,9 @@ WHERE resource_type = 'items'
 		OR (? != '' AND json_extract(data, '$.data.ISBN') = ?)
 		OR (? != '' AND json_extract(data, '$.data.extra') LIKE '%PMID: ' || ? || '%' ESCAPE '\')
 		OR (? != '' AND json_extract(data, '$.data.extra') LIKE '%Citation Key: ' || ? || '%' ESCAPE '\')
+		OR (? != '' AND json_extract(data, '$.data.citationKey') = ?)
 	)
-ORDER BY id`, flagDOI, flagDOI, flagISBN, flagISBN, flagPMID, escapedPMID, flagCitekey, escapedCitekey)
+ORDER BY id`, flagDOI, flagDOI, flagISBN, flagISBN, flagPMID, escapedPMID, flagCitekey, escapedCitekey, flagCitekey, flagCitekey)
 			if err != nil {
 				return fmt.Errorf("querying local identifiers: %w", err)
 			}

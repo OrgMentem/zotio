@@ -50,6 +50,7 @@ type referenceSourceSummary struct {
 	Direction string `json:"direction,omitempty"`
 	Refs      int    `json:"refs"`
 	Truncated bool   `json:"truncated"`
+	Error     string `json:"error,omitempty"`
 }
 
 type referenceFetchOptions struct {
@@ -382,13 +383,15 @@ func buildReferenceAggregateForDirections(ctx context.Context, httpClient *http.
 				return citedDOIAggregate{}, usageErr(fmt.Errorf("--direction must be backward, forward, or both"))
 			}
 			if err != nil {
-				return citedDOIAggregate{}, apiErr(fmt.Errorf("fetching %s citations for DOI %s: %w", direction, item.DOI, err))
+				// Degrade per source: a single oversized or failing provider
+				// response must not abort the whole chase. The failure stays
+				// visible in the source summary; the aggregate only fails when
+				// no source could be fetched at all.
+				out.Sources = append(out.Sources, referenceSourceSummary{Key: item.Key, DOI: item.DOI, Direction: sourceDirectionLabel(directions, direction), Error: err.Error()})
+				continue
 			}
 
-			sourceDirection := ""
-			if len(directions) > 1 || direction != importDiscoverDirectionBackward {
-				sourceDirection = direction
-			}
+			sourceDirection := sourceDirectionLabel(directions, direction)
 			out.Sources = append(out.Sources, referenceSourceSummary{Key: item.Key, DOI: item.DOI, Direction: sourceDirection, Refs: len(refs.DOIs), Truncated: refs.Truncated})
 			out.ReferencesSeen += len(refs.DOIs)
 			seenForSource := map[string]bool{}
@@ -436,7 +439,26 @@ func buildReferenceAggregateForDirections(ctx context.Context, httpClient *http.
 	})
 	out.UniqueCitedDOIs = len(counts)
 	out.Candidates = candidates
+	if len(items) > 0 && len(out.Candidates) == 0 && allSourcesFailed(out.Sources) {
+		return citedDOIAggregate{}, apiErr(fmt.Errorf("fetching citations failed for every source item; first error: %s", out.Sources[0].Error))
+	}
 	return out, nil
+}
+
+func sourceDirectionLabel(directions []string, direction string) string {
+	if len(directions) > 1 || direction != importDiscoverDirectionBackward {
+		return direction
+	}
+	return ""
+}
+
+func allSourcesFailed(sources []referenceSourceSummary) bool {
+	for _, source := range sources {
+		if source.Error == "" {
+			return false
+		}
+	}
+	return len(sources) > 0
 }
 
 func fetchOutgoingReferences(ctx context.Context, httpClient *http.Client, doi string, opts referenceFetchOptions) (referenceFetchResult, error) {
@@ -543,6 +565,9 @@ func fetchOpenAlexCitingWorkDOIs(ctx context.Context, httpClient *http.Client, w
 			"cursor":   {cursor},
 			"filter":   {"cites:" + workID},
 			"per-page": {fmt.Sprintf("%d", openAlexForwardPageSize)},
+			// Trim pages to the two fields we consume; full work objects
+			// (abstracts, authorships) overflow the provider response cap.
+			"select": {"id,doi"},
 		}
 		rawURL := enrichOpenAlexBase + "/works?" + v.Encode()
 		if err := getCappedProviderJSON(ctx, httpClient, providerOpenAlex, rawURL, providerCache, &page); err != nil {

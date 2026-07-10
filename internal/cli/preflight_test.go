@@ -183,6 +183,72 @@ func TestCapabilityPreflightSyncedStoreCommandRunsWithHealthyFixture(t *testing.
 	}
 }
 
+func TestCapabilityPreflightBetterBibTeXPassesWithCitationKeyFieldOnlyItems(t *testing.T) {
+	root, _, _, _ := newPreflightTestRoot(t)
+	seedSyncedBibcheckItems(t, []json.RawMessage{
+		json.RawMessage(`{"key":"FIELD1","version":1,"data":{"key":"FIELD1","itemType":"journalArticle","title":"Field Key Only","citationKey":"fieldonly"}}`),
+	})
+
+	citekeys := mustFindPreflightCommand(t, root, "items", "citekey-conflicts")
+	runExecuted := false
+	citekeys.RunE = func(cmd *cobra.Command, args []string) error {
+		runExecuted = true
+		return nil
+	}
+
+	root.SetArgs([]string{"--json", "items", "citekey-conflicts"})
+	if err := root.Execute(); err != nil {
+		t.Fatalf("Better BibTeX preflight rejected citationKey-field-only item: %v", err)
+	}
+	if !runExecuted {
+		t.Fatal("items citekey-conflicts RunE did not execute after citationKey-field-only preflight")
+	}
+}
+
+func TestCapabilityPreflightBetterBibTeXFailsEnvelopeWhenNoCitationKeySourceExists(t *testing.T) {
+	root, _, out, _ := newPreflightTestRoot(t)
+	seedSyncedBibcheckItems(t, []json.RawMessage{
+		json.RawMessage(`{"key":"NOKEY1","version":1,"data":{"key":"NOKEY1","itemType":"journalArticle","title":"No Better BibTeX Key","extra":"ordinary notes"}}`),
+	})
+
+	citekeys := mustFindPreflightCommand(t, root, "items", "citekey-conflicts")
+	runExecuted := false
+	citekeys.RunE = func(cmd *cobra.Command, args []string) error {
+		runExecuted = true
+		return nil
+	}
+
+	root.SetArgs([]string{"--json", "items", "citekey-conflicts"})
+	err := root.Execute()
+	if err == nil {
+		t.Fatal("Better BibTeX preflight succeeded without citationKey fields or Citation Key Extra lines")
+	}
+	if runExecuted {
+		t.Fatal("items citekey-conflicts RunE executed after Better BibTeX preflight failed")
+	}
+	assertPreconditionExitCode(t, err, 9)
+
+	var env preconditionUnmetEnvelope
+	if decodeErr := json.Unmarshal(out.Bytes(), &env); decodeErr != nil {
+		t.Fatalf("decode precondition envelope: %v; output=%q", decodeErr, out.String())
+	}
+	if env.Kind != "precondition_unmet" {
+		t.Fatalf("kind = %q, want precondition_unmet", env.Kind)
+	}
+	if env.Capability != "items citekey-conflicts" {
+		t.Fatalf("capability = %q, want items citekey-conflicts", env.Capability)
+	}
+	if env.Precondition != preconditionBetterBibTeX {
+		t.Fatalf("precondition = %q, want %s", env.Precondition, preconditionBetterBibTeX)
+	}
+	if env.Detail == "" {
+		t.Fatal("detail is empty")
+	}
+	if len(env.Remediation) == 0 {
+		t.Fatal("remediation is empty")
+	}
+}
+
 func newPreflightTestRoot(t *testing.T) (*cobra.Command, *rootFlags, *bytes.Buffer, *bytes.Buffer) {
 	t.Helper()
 	isolateDemoEnv(t, "0")

@@ -4,6 +4,10 @@ Notable changes to zotio. Format follows [Keep a Changelog](https://keepachangel
 
 ## [Unreleased]
 
+### Fixed
+- Better BibTeX citekeys are now also read from the `citationKey` data field the BBT plugin exposes via the local API — previously only pinned `Citation Key:` Extra lines were recognized, so libraries with dynamic (unpinned) keys got a false `better_bibtex` precondition refusal from `items bibcheck` and empty results from `items citekey-conflicts`; `items find --citekey` matches the field too.
+- `import discover` no longer aborts the whole chase when one source item's provider fetch fails (for example OpenCitations returning an oversized response for a heavily-cited paper): the failure is recorded per source in the summary and the remaining sources proceed; the run only errors when every source fails. OpenAlex forward pagination now requests only `id,doi`, keeping pages of heavily-cited works under the response cap.
+
 ## [0.6.0] — 2026-07-10
 
 ### Added

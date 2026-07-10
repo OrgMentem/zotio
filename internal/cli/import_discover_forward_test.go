@@ -297,6 +297,9 @@ func TestFetchIncomingReferencesOpenAlexFallbackPaginatesAndTruncatesAtCap(t *te
 					if got := r.URL.Query().Get("per-page"); got != fmt.Sprintf("%d", openAlexForwardPageSize) {
 						t.Errorf("OpenAlex per-page = %q, want %d", got, openAlexForwardPageSize)
 					}
+					if got := r.URL.Query().Get("select"); got != "id,doi" {
+						t.Errorf("OpenAlex select = %q, want id,doi", got)
+					}
 					cursor := r.URL.Query().Get("cursor")
 					gotCursors = append(gotCursors, cursor)
 					page, ok := tc.pages[cursor]
@@ -340,6 +343,44 @@ func TestFetchIncomingReferencesOpenAlexFallbackPaginatesAndTruncatesAtCap(t *te
 				t.Fatalf("OpenAlex cursors = %v, want %v", gotCursors, tc.wantCursors)
 			}
 		})
+	}
+}
+
+func TestFetchOpenAlexCitingWorkDOIsRequestsOnlyIDAndDOI(t *testing.T) {
+	var sawWorksPage bool
+	openAlex := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/works" {
+			t.Errorf("OpenAlex unexpected path %s", r.URL.String())
+			http.Error(w, "unexpected path", http.StatusNotFound)
+			return
+		}
+		sawWorksPage = true
+		if got := r.URL.Query().Get("filter"); got != "cites:W-SOURCE" {
+			t.Errorf("OpenAlex filter = %q, want cites:W-SOURCE", got)
+		}
+		if got := r.URL.Query().Get("select"); got != "id,doi" {
+			t.Errorf("OpenAlex select = %q, want id,doi", got)
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"meta":    map[string]any{"next_cursor": ""},
+			"results": []map[string]string{{"id": "W-CITING", "doi": "https://doi.org/10.4400/citing"}},
+		})
+	}))
+	t.Cleanup(openAlex.Close)
+	withBase(t, &enrichOpenAlexBase, openAlex.URL)
+
+	dois, truncated, err := fetchOpenAlexCitingWorkDOIs(context.Background(), http.DefaultClient, "W-SOURCE", newProviderJSONCache(true))
+	if err != nil {
+		t.Fatalf("fetchOpenAlexCitingWorkDOIs: %v", err)
+	}
+	if truncated {
+		t.Fatal("truncated = true, want false for one-page response")
+	}
+	if !sawWorksPage {
+		t.Fatal("OpenAlex /works page was not requested")
+	}
+	if !reflect.DeepEqual(dois, []string{"10.4400/citing"}) {
+		t.Fatalf("dois = %v, want normalized citing DOI", dois)
 	}
 }
 
