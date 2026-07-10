@@ -51,6 +51,9 @@ matrix, known gaps, and the **refresh procedure** live in `notes/zotero-api-cove
 - `spec.yaml` is retained as API-coverage reference data only. New endpoints are implemented as hand-written commands.
 - Web API v3 is stable/versioned; the **local API is the evolving surface** (e.g. `/fulltext`, Jan 2025). New Zotero releases mostly add fields/data, rarely endpoints — run `zotio schema drift` to catch type/field deltas after an upgrade. The per-version "Zotero N for Developers" pages are Mozilla-migration guides, not API references; beta changelogs are unpublished (use the GitHub commit log).
 
+## MCP Surface
+
+The MCP surface **is** the CLI tree: `zotio-mcp` runs Cobra commands in-process via the `command_search`/`command_run` facade (or per-command mirror, `ZOTIO_MCP_SURFACE=mirror`). New functionality = a CLI command; it is auto-exposed over MCP with the same behavior and write gates. **Never add spec-derived typed MCP tools** — that parallel surface was retired for drifting behind CLI fixes (ADR-0003). The only hand-written MCP tools are the framework trio `context`/`search`/`sql`, plus resources and prompts.
 
 ## Architecture Decisions
 

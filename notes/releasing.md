@@ -82,6 +82,10 @@ local uncommitted changes never enter a release.
 **Validate distribution** (post-publish, from a mac/linux box)
 7. GitHub release: `gh release view vX.Y.Z --repo OrgMentem/zotio --json isDraft,assets`
    (expect not-draft, `.deb`/`.rpm`/`.apk`, `checksums.txt.sigstore.json`).
+   The release workflow's "Smoke-test version stamp" step already gated this,
+   but spot-check anyway: download one archive and confirm `zotio version` and
+   `zotio-mcp --version` both print `X.Y.Z` (guards the `-X zotio/internal/cli.version`
+   ldflag both builds share in `.goreleaser.yaml`).
 8. Scoop: read `https://raw.githubusercontent.com/OrgMentem/scoop-bucket/master/bucket/zotio.json`
    — version matches, both arches, both binaries.
 9. Homebrew: read `https://raw.githubusercontent.com/OrgMentem/homebrew-tap/main/Formula/zotio.rb`
