@@ -4,6 +4,8 @@ Notable changes to zotio. Format follows [Keep a Changelog](https://keepachangel
 
 ## [Unreleased]
 
+## [0.6.0] — 2026-07-10
+
 ### Added
 - `items related <itemKey>` lists an item's relation edges from the synced store — outgoing and incoming, predicate-tagged (`dc:relation`, `owl:sameAs`, …), preserving cross-library and off-store targets as external edges; also exposed as the MCP resource `zotero://items/{key}/related`.
 - `creators audit` inventories creator-name variants in three confidence tiers (exact-after-normalization, compatible initials, ambiguous surnames) with canonical candidates and the shared findings envelope; `--orcid` corroborates variants against Crossref author ORCIDs, persisted in a local-only sidecar (never written to Zotero).
@@ -118,7 +120,8 @@ First tagged release: the trust-and-automation layer for Zotero.
 - **Onboarding** — `zotio init` guided setup (Zotero detection, local API, key, first sync, health check).
 - Release engineering: goreleaser builds for 6 platforms, cosign-signed checksums, SBOMs, Homebrew tap.
 
-[Unreleased]: https://github.com/OrgMentem/zotio/compare/v0.5.0...HEAD
+[Unreleased]: https://github.com/OrgMentem/zotio/compare/v0.6.0...HEAD
+[0.6.0]: https://github.com/OrgMentem/zotio/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/OrgMentem/zotio/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/OrgMentem/zotio/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/OrgMentem/zotio/compare/v0.2.0...v0.3.0
