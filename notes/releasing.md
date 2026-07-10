@@ -50,6 +50,12 @@ local uncommitted changes never enter a release.
 ## Checklist
 
 **Pre-tag**
+
+> **Tag only a commit whose `ci` workflow is already green.** `release` does NOT
+> re-run `tidy`/`docs-drift`/`format`/`lint`/`test`, so a `go mod tidy` drift or
+> lint failure sails straight into a tagged release (this bit us on v0.6.0 — the
+> tag pointed at a commit with an untidy `go.mod`). Check the commit's CI first.
+
 1. `git log vLAST..HEAD` — confirm the changeset and that unrelated sibling WIP
    is *not* included. Stage only your files if the tree has others' work.
 2. Update `CHANGELOG.md`: rename `[Unreleased]` → `[X.Y.Z] — DATE`, add the
