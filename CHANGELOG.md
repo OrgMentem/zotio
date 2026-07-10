@@ -4,9 +4,17 @@ Notable changes to zotio. Format follows [Keep a Changelog](https://keepachangel
 
 ## [Unreleased]
 
+## [0.7.0] — 2026-07-10
+
+### Added
+- `zotio-mcp` now reports its build version via `--version`, the MCP server's version field, and the startup banner (previously unversioned); the release workflow fails if either binary stops reporting the tag.
+
 ### Fixed
 - Better BibTeX citekeys are now also read from the `citationKey` data field the BBT plugin exposes via the local API — previously only pinned `Citation Key:` Extra lines were recognized, so libraries with dynamic (unpinned) keys got a false `better_bibtex` precondition refusal from `items bibcheck` and empty results from `items citekey-conflicts`; `items find --citekey` matches the field too.
 - `import discover` no longer aborts the whole chase when one source item's provider fetch fails (for example OpenCitations returning an oversized response for a heavily-cited paper): the failure is recorded per source in the summary and the remaining sources proceed; the run only errors when every source fails. OpenAlex forward pagination now requests only `id,doi`, keeping pages of heavily-cited works under the response cap.
+
+### Changed — breaking
+- **Removed the 28 typed spec-derived MCP endpoint tools** (`collections_*`, `items_get/list`, `schema_*`, `tags_*`, …). They were frozen at generator retirement, bypassed the CLI's mutation gates and fixes (e.g. the `schema` library-prefix 404), and already rejected writes. The CLI command tree is now the single MCP source of truth: the `zotio-mcp` server exposes framework tools (`context`/`search`/`sql`) plus the `command_search`/`command_run` facade by default, or the per-command mirror via `ZOTIO_MCP_SURFACE=mirror`. **Hosts pinned to the old typed tool names must switch to `command_run`** (facade) or the mirror surface. See `notes/adr/0003-retire-typed-mcp-endpoint-tools.md`.
 
 ## [0.6.0] — 2026-07-10
 
@@ -124,7 +132,8 @@ First tagged release: the trust-and-automation layer for Zotero.
 - **Onboarding** — `zotio init` guided setup (Zotero detection, local API, key, first sync, health check).
 - Release engineering: goreleaser builds for 6 platforms, cosign-signed checksums, SBOMs, Homebrew tap.
 
-[Unreleased]: https://github.com/OrgMentem/zotio/compare/v0.6.0...HEAD
+[Unreleased]: https://github.com/OrgMentem/zotio/compare/v0.7.0...HEAD
+[0.7.0]: https://github.com/OrgMentem/zotio/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/OrgMentem/zotio/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/OrgMentem/zotio/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/OrgMentem/zotio/compare/v0.3.0...v0.4.0
