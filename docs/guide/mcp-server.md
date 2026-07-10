@@ -4,13 +4,13 @@
 
 ## Command-orchestration facade (default)
 
-By default the server exposes a **command-orchestration facade** — `command_search` and `command_run` — rather than one tool per endpoint. Agents discover and drive the CLI the same way a human would: search for the right command, then run it. This keeps the tool surface small and the trust model identical to the CLI.
+By default the server exposes three framework tools — `context`, `search`, and `sql` — plus a **command-orchestration facade**: `command_search` and `command_run`. Agents can read domain context, search/query the synced local store directly, and drive the CLI the same way a human would: search for the right command, then run it. This keeps the tool surface small and the trust model identical to the CLI.
 
-The rationale and trade-offs are summarized in [Architecture decisions › MCP command surface](../contributing/architecture-decisions.md#mcp-command-surface), with the full record in the repo.
+The rationale and trade-offs are summarized in [Architecture decisions › MCP command surface](../contributing/architecture-decisions.md#mcp-command-surface), with the full records in the repo.
 
 ### Switching surfaces
 
-Set `ZOTIO_MCP_SURFACE` to switch to the full one-tool-per-endpoint mirror (global flags stripped). The complete tool list for that surface is in the [MCP tools reference](../reference/mcp-tools.md).
+Set `ZOTIO_MCP_SURFACE=mirror` to expose the CLI tree as one lean MCP tool per command (global flags stripped). The retired spec-derived typed endpoint tools (`collections_*`, `items_*`, `schema_*`, `tags_*`, …) are no longer part of either surface; use `command_run` or the mirror for those workflows.
 
 ## Context resources
 

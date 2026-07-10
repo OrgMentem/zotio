@@ -144,3 +144,4 @@ Two coordinated changes, plus a runtime switch:
 
 - **2026-07-08:** `PP_MCP_SURFACE` was renamed to `ZOTIO_MCP_SURFACE` as part of retiring the CLI Printing Press generator; the old name was dropped outright the same day (pre-adoption, no fallback kept).
 - **2026-07-08:** The generator was retired; this ADR is the carry-forward record for the local MCP surface decision.
+- **2026-07-10:** ADR-0003 retired the 28 spec-derived typed MCP endpoint tools; the current MCP surface is framework tools plus the facade/mirror CLI command surface.

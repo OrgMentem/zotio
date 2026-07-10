@@ -1,10 +1,10 @@
 // Copyright 2026 OrgMentem. Licensed under MIT. See LICENSE.
-// First-class MCP resources and prompts. The MCP surface was
-// tool-only and mirrored CLI commands; this models durable Zotero context
+// First-class MCP resources and prompts. The MCP surface exposes framework
+// tools plus the CLI command facade/mirror; this models durable Zotero context
 // (agent-context, archive status, SQL schema, domain context) as stable
 // resources, library objects (collection manifests, item bundles) as resource
 // templates, and common workflows (inspect-library, export-reading-notes,
-// prepare-citation-export) as guided prompts. Mutations stay typed tools.
+// prepare-citation-export) as guided prompts.
 
 package mcp
 
@@ -31,8 +31,8 @@ func domainContext() map[string]any {
 		"api":          "zotero",
 		"description":  "Zotero reference manager CLI — every library feature in the terminal, plus offline search, annotation export, and library analytics.",
 		"archetype":    "content",
-		"tool_count":   28,
-		"tool_surface": "MCP exposes typed endpoint tools plus a runtime mirror of user-facing CLI commands. Endpoint tools keep typed schemas; command-mirror tools run the CLI's Cobra commands in-process.",
+		"tool_count":   5,
+		"tool_surface": "MCP exposes framework tools (context, search, sql) plus the CLI command surface. By default command_search and command_run provide a compact facade; ZOTIO_MCP_SURFACE=mirror exposes one lean tool per CLI command.",
 		"auth": map[string]any{
 			"type": "api_key",
 			"env_vars": []map[string]any{
@@ -245,8 +245,8 @@ func RegisterPrompts(s *server.MCPServer) {
 		func(_ context.Context, _ mcplib.GetPromptRequest) (*mcplib.GetPromptResult, error) {
 			return promptResult("Inspect the Zotero library",
 				"Read the `zotero://status` resource to see whether the local store is synced and how many items/collections it holds. "+
-					"If it looks stale or empty, run the `sync` tool first. Then read `zotero://context` for the resource taxonomy, "+
-					"list collections with the `collections_list` tool, and summarize: total items, item types breakdown (use the `sql` tool), "+
+					"If it looks stale or empty, run `sync` through `command_run` first. Then read `zotero://context` for the resource taxonomy, "+
+					"list collections with `command_run` on `collections list`, and summarize: total items, item types breakdown (use the `sql` tool), "+
 					"largest collections, and any obvious gaps (items missing DOIs or attachments).",
 			), nil
 		},
@@ -283,8 +283,8 @@ func RegisterPrompts(s *server.MCPServer) {
 				return nil, err
 			}
 			return promptResult("Prepare citation export",
-				"Prepare a citation export"+scope+" in "+format+". Read `zotero://context` for available endpoints, confirm the target "+
-					"collection via `zotero://collections/{key}`, then use the `collections_items` tool with a `format` argument to fetch the "+
+				"Prepare a citation export"+scope+" in "+format+". Read `zotero://context` for available resources and commands, confirm the target "+
+					"collection via `zotero://collections/{key}`, then use `command_run` on `collections export` with the requested format to fetch the "+
 					"formatted bibliography. Validate that every item has the fields the format requires and flag any incomplete records.",
 			), nil
 		},
@@ -321,9 +321,9 @@ func RegisterPrompts(s *server.MCPServer) {
 				scope = promptArgumentLiteral(v)
 			}
 			return promptResult("Prepare library health",
-				"Assess and remediate library health for scope "+scope+". First read `zotero://freshness`; if the store is stale or unsynced, run the `sync` tool. "+
-					"Read `zotero://health/"+scope+"` (or run the `library_health` tool with `--for citation` or `--for systematic-review`) to get ranked findings and a `remediation_plan`. "+
-					"Triage by severity (critical first). For each autofixable finding, run its `recommended_action` command (e.g. `items_enrich` with `--keys-from -`, `items_duplicates_resolve`, `tags_audit fix`) in PREVIEW first, inspect the mutation plan, then re-run with `--yes`. "+
+				"Assess and remediate library health for scope "+scope+". First read `zotero://freshness`; if the store is stale or unsynced, run `sync` through `command_run`. "+
+					"Read `zotero://health/"+scope+"` (or run `library health` through `command_run` with `--for citation` or `--for systematic-review`) to get ranked findings and a `remediation_plan`. "+
+					"Triage by severity (critical first). For each autofixable finding, run its `recommended_action` command through `command_run` in PREVIEW first, inspect the mutation plan, then re-run with `--yes`. "+
 					"Never apply destructive fixes without review. Re-read `zotero://health/"+scope+"` to confirm the findings cleared.",
 			), nil
 		},

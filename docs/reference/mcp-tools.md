@@ -3,37 +3,16 @@
 
 Zotero reference manager CLI — every library feature in the terminal, plus offline search, annotation export, and library analytics
 
-The default MCP surface is a command-orchestration facade (`command_search` / `command_run`) — see [the MCP server guide](../guide/mcp-server.md). The full one-tool-per-endpoint mirror below is available via `ZOTIO_MCP_SURFACE`.
+The MCP surface contains three framework tools (`context`, `search`, `sql`) plus the command-orchestration facade (`command_search` / `command_run`) by default. Set `ZOTIO_MCP_SURFACE=mirror` to expose the same CLI tree as one lean tool per command. See [the MCP server guide](../guide/mcp-server.md).
 
 **Auth:** `api_key` (header `Zotero-API-Key`)
 
+## Tools
+
 | Tool | Description |
 | --- | --- |
-| `collections_create` | Create one or more collections. Required: name. Optional: parentCollection. (requires API key) |
-| `collections_delete` | Delete a collection (does not delete items). Required: collectionKey. Destructive. (requires API key) |
-| `collections_get` | Get a specific collection. Required: collectionKey. Returns the Collection. |
-| `collections_items` | List all items in a collection. Required: collectionKey. Optional: limit, start, format. Returns array of Item. |
-| `collections_list` | List all collections. Optional: limit, start. Returns array of Collection. |
-| `collections_subcollections` | List subcollections of a collection. Required: collectionKey. Returns array of Collection. |
-| `collections_tags` | List tags used within a collection. Required: collectionKey. Returns array of Tag. |
-| `collections_top` | List only top-level collections (no parents). Optional: limit. Returns array of Collection. |
-| `collections_update` | Update a collection. Required: collectionKey. Optional: name, parentCollection. (requires API key) |
-| `items_children` | Get child items (attachments and notes) for an item. Required: itemKey. Optional: itemType. Returns array of Item. |
-| `items_create` | Create one or more items. Optional: items. (requires API key) |
-| `items_delete` | Delete an item (moves to trash). Required: itemKey. Destructive. (requires API key) |
-| `items_get` | Get a single item by key. Required: itemKey. Optional: format. Returns the Item. |
-| `items_list` | List all items in the library. Optional: limit, start, sort (plus 6 more). Returns array of Item. |
-| `items_tags` | Get tags for a specific item. Required: itemKey. Returns array of Tag. |
-| `items_top` | List top-level items only (excludes attachments and notes). Optional: limit, start, sort (plus 3 more). Returns array of Item. |
-| `items_trash` | List items in the trash. Optional: limit. Returns array of Item. |
-| `items_update` | Update a specific item. Required: itemKey. Optional: title, abstractNote, tags (plus 2 more). Partial update. (requires API key) |
-| `schema_creator-fields` | List all creator fields (firstName, lastName, name). Returns array of CreatorField. |
-| `schema_item-fields` | List all available item fields. Returns array of ItemField. |
-| `schema_item-type-creator-types` | List valid creator types for an item type. Required: itemType. Returns array of CreatorType. |
-| `schema_item-type-fields` | List valid fields for a specific item type. Required: itemType. Returns array of ItemField. |
-| `schema_item-types` | List all available Zotero item types. Returns array of ItemType. |
-| `schema_new-item-template` | Get a blank template for creating a new item of a given type. Required: itemType. Returns the Item. |
-| `searches_get` | Get a specific saved search. Required: searchKey. Returns the Search. |
-| `searches_list` | List all saved searches. Optional: limit. Returns array of Search. |
-| `tags_get` | Get a specific tag by name. Required: tagName. Returns array of Tag. |
-| `tags_list` | List all tags in the library. Optional: limit, start, query. Returns array of Tag. |
+| `context` | Get API domain context: resource taxonomy, auth requirements, query tips, and capabilities. |
+| `search` | Full-text search across all synced local data. |
+| `sql` | Run read-only SQL against the synced local database. |
+| `command_search` | Discover CLI commands and fetch command-specific argument details. |
+| `command_run` | Execute a discovered CLI command through the same in-process guard used by the mirror. |

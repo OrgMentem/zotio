@@ -6,9 +6,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
-	"net/http"
-	"net/http/httptest"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -137,35 +134,6 @@ func TestDBPathUsesNumericZoteroGroup(t *testing.T) {
 	t.Setenv("ZOTERO_GROUP", "team-alpha")
 	if got, want := dbPath(), filepath.Join(dataDir, "data.db"); got != want {
 		t.Fatalf("dbPath() with non-numeric group = %q, want personal DB %q", got, want)
-	}
-}
-
-func TestMCPHandlerUsesZoteroGroupLibraryPrefix(t *testing.T) {
-	var gotPath string
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		gotPath = r.URL.Path
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = io.WriteString(w, `[]`)
-	}))
-	defer srv.Close()
-
-	t.Setenv("HOME", t.TempDir())
-	t.Setenv("ZOTERO_CONFIG", filepath.Join(t.TempDir(), "missing.toml"))
-	t.Setenv("ZOTERO_BASE_URL", srv.URL+"/users/0")
-	t.Setenv("ZOTERO_GROUP", "12345")
-
-	handler := makeAPIHandler("GET", "/items/{itemKey}", []mcpParamBinding{{PublicName: "itemKey", WireName: "itemKey", Location: "path"}}, []string{"itemKey"})
-	req := mcplib.CallToolRequest{}
-	req.Params.Arguments = map[string]any{"itemKey": "ABCD1234"}
-	res, err := handler(context.Background(), req)
-	if err != nil {
-		t.Fatalf("handler returned protocol error: %v", err)
-	}
-	if res == nil || res.IsError {
-		t.Fatalf("handler result = %+v, want success", res)
-	}
-	if want := "/groups/12345/items/ABCD1234"; gotPath != want {
-		t.Fatalf("request path = %q, want %q", gotPath, want)
 	}
 }
 

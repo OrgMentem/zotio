@@ -296,8 +296,6 @@ func renderMCPTools(path string) ([]byte, error) {
 	if err := json.Unmarshal(raw, &m); err != nil {
 		return nil, err
 	}
-	tools := m.Tools
-	sort.Slice(tools, func(i, j int) bool { return tools[i].Name < tools[j].Name })
 
 	b := &bytes.Buffer{}
 	b.WriteString(genHeader)
@@ -305,7 +303,7 @@ func renderMCPTools(path string) ([]byte, error) {
 	if d := strings.TrimSpace(m.Description); d != "" {
 		fmt.Fprintf(b, "%s\n\n", d)
 	}
-	b.WriteString("The default MCP surface is a command-orchestration facade (`command_search` / `command_run`) — see [the MCP server guide](../guide/mcp-server.md). The full one-tool-per-endpoint mirror below is available via `ZOTIO_MCP_SURFACE`.\n\n")
+	b.WriteString("The MCP surface contains three framework tools (`context`, `search`, `sql`) plus the command-orchestration facade (`command_search` / `command_run`) by default. Set `ZOTIO_MCP_SURFACE=mirror` to expose the same CLI tree as one lean tool per command. See [the MCP server guide](../guide/mcp-server.md).\n\n")
 	if m.Auth.Type != "" {
 		fmt.Fprintf(b, "**Auth:** `%s`", m.Auth.Type)
 		if m.Auth.Header != "" {
@@ -313,10 +311,13 @@ func renderMCPTools(path string) ([]byte, error) {
 		}
 		b.WriteString("\n\n")
 	}
-	fmt.Fprintf(b, "| Tool | Description |\n| --- | --- |\n")
-	for _, t := range tools {
-		fmt.Fprintf(b, "| `%s` | %s |\n", t.Name, strings.ReplaceAll(t.Description, "|", "\\|"))
-	}
+	b.WriteString("## Tools\n\n")
+	b.WriteString("| Tool | Description |\n| --- | --- |\n")
+	b.WriteString("| `context` | Get API domain context: resource taxonomy, auth requirements, query tips, and capabilities. |\n")
+	b.WriteString("| `search` | Full-text search across all synced local data. |\n")
+	b.WriteString("| `sql` | Run read-only SQL against the synced local database. |\n")
+	b.WriteString("| `command_search` | Discover CLI commands and fetch command-specific argument details. |\n")
+	b.WriteString("| `command_run` | Execute a discovered CLI command through the same in-process guard used by the mirror. |\n")
 	return b.Bytes(), nil
 }
 
