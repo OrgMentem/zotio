@@ -10,6 +10,8 @@ require (
 	modernc.org/sqlite v1.52.0 // CVE-2025-3277 concat_ws heap overflow fix
 )
 
+require golang.org/x/text v0.38.0
+
 require (
 	github.com/dlclark/regexp2 v1.11.5 // indirect
 	github.com/dustin/go-humanize v1.0.1 // indirect
@@ -23,7 +25,6 @@ require (
 	github.com/spf13/cast v1.7.1 // indirect
 	github.com/yosida95/uritemplate/v3 v3.0.2 // indirect
 	golang.org/x/sys v0.46.0 // indirect
-	golang.org/x/text v0.38.0 // indirect
 	golang.org/x/tools v0.46.0 // indirect
 	modernc.org/libc v1.72.3 // indirect
 	modernc.org/mathutil v1.7.1 // indirect
