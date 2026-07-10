@@ -30,6 +30,10 @@
     src="https://img.shields.io/badge/license-MIT-blue"
     alt="MIT"
   /></a>
+  <a href="https://glama.ai/mcp/servers/OrgMentem/zotio"><img
+    src="https://glama.ai/mcp/servers/OrgMentem/zotio/badges/score.svg"
+    alt="Glama score"
+  /></a>
 </p>
 
 <p align="center">
