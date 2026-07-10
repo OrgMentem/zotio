@@ -49,3 +49,18 @@ jobs:
           HOMEBREW_TAP_GITHUB_TOKEN: ${{ secrets.HOMEBREW_TAP_GITHUB_TOKEN }}
           SCOOP_BUCKET_GITHUB_TOKEN: ${{ secrets.SCOOP_BUCKET_GITHUB_TOKEN }}
           WINGET_GITHUB_TOKEN: ${{ secrets.WINGET_GITHUB_TOKEN }}
+      # Publish the MCP server to the Official MCP Registry, which auto-feeds
+      # PulseMCP and Smithery. Runs after GoReleaser so dist/mcpb/*.mcpb exist;
+      # gen_server_json.py stamps the version and each bundle's real sha256, so
+      # the registry entry always matches the assets that just shipped.
+      # Auth is OIDC (no stored token): the workflow's id-token maps to the
+      # io.github.OrgMentem/* namespace because it runs in OrgMentem/zotio.
+      - name: Publish to MCP Registry
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME#v}"
+          curl -fsSL "https://github.com/modelcontextprotocol/registry/releases/download/v1.7.9/mcp-publisher_linux_amd64.tar.gz" \
+            | tar -xz mcp-publisher
+          python3 scripts/gen_server_json.py "$version"
+          ./mcp-publisher login github-oidc
+          ./mcp-publisher publish server.json
