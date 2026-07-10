@@ -125,6 +125,11 @@ winget:
     license: MIT
     homepage: "https://github.com/OrgMentem/zotio"
     short_description: "Zotero automation CLI: library health, preview-first writes, annotation export, MCP"
+    # Author winget commits as the CLA-signed account (not goreleaserbot), so
+    # Microsoft's per-PR CLA check matches and doesn't re-flag Needs-CLA.
+    commit_author:
+      name: enieuwy
+      email: 121954036+enieuwy@users.noreply.github.com
     repository:
       owner: OrgMentem
       # A fork of microsoft/winget-pkgs; goreleaser commits here, then opens a PR upstream.
