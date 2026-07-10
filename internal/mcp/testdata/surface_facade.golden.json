@@ -1,0 +1,91 @@
+[
+  {
+    "name": "command_run",
+    "description": "Run one mirrorable Cobra command by its space-separated command path.",
+    "inputSchema": {
+      "properties": {
+        "args": {
+          "description": "Additional positional arguments only; raw flags rejected.",
+          "type": "string"
+        },
+        "flags": {
+          "additionalProperties": true,
+          "description": "Safe flags to pass by name: command-local flags plus, for mutating commands, the write-safety gate flags (yes, dry-run, allow-destructive, max-changes, continue-on-error, max-failures) — pass {\"yes\": true} to apply a write. Inspect available flags via command_search.",
+          "properties": {},
+          "type": "object"
+        },
+        "name": {
+          "description": "Exact space-separated command path to run, such as \"items enrich\".",
+          "type": "string"
+        }
+      },
+      "required": [
+        "name"
+      ],
+      "type": "object"
+    }
+  },
+  {
+    "name": "command_search",
+    "description": "Search and inspect mirrorable Cobra commands exposed through the command orchestration facade.",
+    "inputSchema": {
+      "properties": {
+        "name": {
+          "description": "Exact space-separated command path to inspect, such as \"items enrich\".",
+          "type": "string"
+        },
+        "query": {
+          "description": "Case-insensitive text to match against command names and summaries.",
+          "type": "string"
+        }
+      },
+      "required": [],
+      "type": "object"
+    }
+  },
+  {
+    "name": "context",
+    "description": "Get API domain context: resource taxonomy, auth requirements, query tips, and unique capabilities. Call this first.",
+    "inputSchema": {
+      "properties": {},
+      "required": [],
+      "type": "object"
+    }
+  },
+  {
+    "name": "search",
+    "description": "Full-text search across all synced data. Faster than paginating list endpoints. Requires sync first. Large responses are bounded to the MCP tool-result budget.",
+    "inputSchema": {
+      "properties": {
+        "limit": {
+          "description": "Max results (default 25)",
+          "type": "number"
+        },
+        "query": {
+          "description": "Search query (supports FTS5 syntax: AND, OR, NOT, quotes for phrases)",
+          "type": "string"
+        }
+      },
+      "required": [
+        "query"
+      ],
+      "type": "object"
+    }
+  },
+  {
+    "name": "sql",
+    "description": "Run read-only SQL against local database. Use for ad-hoc analysis, aggregations, and joins across synced resources. Requires sync first. Returns a JSON object with rows, truncated, and row_limit; large responses are bounded to the MCP tool-result budget.",
+    "inputSchema": {
+      "properties": {
+        "query": {
+          "description": "SQL query (SELECT or WITH...SELECT). Tables match resource names.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "query"
+      ],
+      "type": "object"
+    }
+  }
+]

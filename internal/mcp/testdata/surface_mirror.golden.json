@@ -1,0 +1,2578 @@
+[
+  {
+    "name": "analytics",
+    "description": "Analyze locally synced data with count, group-by, and summary operations.\nData must be synced first with the sync command.",
+    "inputSchema": {
+      "properties": {
+        "db": {
+          "description": "Database path",
+          "type": "string"
+        },
+        "group-by": {
+          "description": "Field to group by",
+          "type": "string"
+        },
+        "limit": {
+          "description": "Max groups to show (default: 25)",
+          "type": "number"
+        },
+        "type": {
+          "description": "Resource type to analyze",
+          "type": "string"
+        }
+      },
+      "required": [],
+      "type": "object"
+    }
+  },
+  {
+    "name": "annotations_export",
+    "description": "Export annotations as markdown or JSON",
+    "inputSchema": {
+      "properties": {
+        "collection": {
+          "description": "Scope to items in this collection key",
+          "type": "string"
+        },
+        "format": {
+          "description": "Output format (markdown or json) (default: markdown)",
+          "type": "string"
+        },
+        "limit": {
+          "description": "Maximum number of items to process (default: 50)",
+          "type": "number"
+        },
+        "output": {
+          "description": "Output file path (default: stdout)",
+          "type": "string"
+        },
+        "refresh": {
+          "description": "Fetch live from the API instead of the local store (default: false)",
+          "type": "boolean"
+        },
+        "tag": {
+          "description": "Scope to items with this tag",
+          "type": "string"
+        }
+      },
+      "required": [],
+      "type": "object"
+    }
+  },
+  {
+    "name": "annotations_timeline",
+    "description": "List annotations sorted by creation date",
+    "inputSchema": {
+      "properties": {
+        "collection": {
+          "description": "Scope to items in this collection key",
+          "type": "string"
+        },
+        "item": {
+          "description": "Scope to annotations of a specific parent item key",
+          "type": "string"
+        },
+        "limit": {
+          "description": "Maximum number of annotations to return (default: 50)",
+          "type": "number"
+        },
+        "refresh": {
+          "description": "Fetch live from the API instead of the local store (default: false)",
+          "type": "boolean"
+        },
+        "since": {
+          "description": "ISO date string; include annotations after this date",
+          "type": "string"
+        }
+      },
+      "required": [],
+      "type": "object"
+    }
+  },
+  {
+    "name": "capabilities",
+    "description": "Outputs a typed registry describing each command's operation kind\n(read/write/destructive), write target, supported data sources, and\npreconditions (live_local_api, web_api_key, synced_store, better_bibtex) so\nagents can select safe commands and pre-flight requirements without parsing\n--help or guessing from names.",
+    "inputSchema": {
+      "properties": {
+        "pretty": {
+          "description": "indent JSON output for human reading (default: false)",
+          "type": "boolean"
+        }
+      },
+      "required": [],
+      "type": "object"
+    }
+  },
+  {
+    "name": "collections_bundle",
+    "description": "Assemble a self-contained research package from the local store for a\ncollection: synthesis context, annotations, and compact bibliography. This command\nnever writes to Zotero; run sync first if local data is missing.",
+    "inputSchema": {
+      "properties": {
+        "args": {
+          "description": "Additional positional arguments to append to the command. Raw CLI flags are rejected.",
+          "type": "string"
+        },
+        "out": {
+          "description": "Output directory for the research package",
+          "type": "string"
+        }
+      },
+      "required": [
+        "out"
+      ],
+      "type": "object"
+    }
+  },
+  {
+    "name": "collections_export",
+    "description": "Recursively walks a collection and all its subcollections, then emits a\nsingle combined export in the requested format. Use --flat to export only\nthe top-level collection without recursing into subcollections.",
+    "inputSchema": {
+      "properties": {
+        "args": {
+          "description": "Additional positional arguments to append to the command. Raw CLI flags are rejected.",
+          "type": "string"
+        },
+        "flat": {
+          "description": "Export only the top-level collection, skip subcollections (default: false)",
+          "type": "boolean"
+        },
+        "format": {
+          "description": "Export format: bibtex, ris, csljson (default: bibtex)",
+          "type": "string"
+        },
+        "limit": {
+          "description": "Maximum items per collection request (default: 200)",
+          "type": "number"
+        },
+        "output": {
+          "description": "Write output to file instead of stdout",
+          "type": "string"
+        }
+      },
+      "required": [],
+      "type": "object"
+    }
+  },
+  {
+    "name": "collections_gaps",
+    "description": "Find highly cited DOI references missing from a collection's library",
+    "inputSchema": {
+      "properties": {
+        "args": {
+          "description": "Additional positional arguments to append to the command. Raw CLI flags are rejected.",
+          "type": "string"
+        },
+        "limit": {
+          "description": "Maximum DOI-bearing collection items to scan (0 = all) (default: 50)",
+          "type": "number"
+        },
+        "top": {
+          "description": "Number of citation gaps to show (default: 20)",
+          "type": "number"
+        }
+      },
+      "required": [],
+      "type": "object"
+    }
+  },
+  {
+    "name": "collections_move",
+    "description": "Move a collection under a new parent",
+    "inputSchema": {
+      "properties": {
+        "allow-destructive": {
+          "description": "Allow irreversible operations (merge, permanent delete, empty-trash) to apply (default: false)",
+          "type": "boolean"
+        },
+        "args": {
+          "description": "Additional positional arguments to append to the command. Raw CLI flags are rejected.",
+          "type": "string"
+        },
+        "continue-on-error": {
+          "description": "On bulk mutations, continue past per-item failures/conflicts instead of stopping at the first (default: false)",
+          "type": "boolean"
+        },
+        "dry-run": {
+          "description": "Show request without sending (default: false)",
+          "type": "boolean"
+        },
+        "max-changes": {
+          "description": "Max write operations a single mutation may apply before refusing (-1 = default: 500, or 50 under --agent) (default: -1)",
+          "type": "number"
+        },
+        "max-failures": {
+          "description": "With --continue-on-error, stop after this many failures (0 = unlimited) (default: 0)",
+          "type": "number"
+        },
+        "to": {
+          "description": "New parent collection key (use root or empty string for top-level)",
+          "type": "string"
+        },
+        "yes": {
+          "description": "Skip confirmation prompts (for agents and scripts) (default: false)",
+          "type": "boolean"
+        }
+      },
+      "required": [],
+      "type": "object"
+    }
+  },
+  {
+    "name": "collections_stats",
+    "description": "Show analytics for a collection (item count, PDF coverage, year range, top journals)",
+    "inputSchema": {
+      "properties": {
+        "args": {
+          "description": "Additional positional arguments to append to the command. Raw CLI flags are rejected.",
+          "type": "string"
+        },
+        "top": {
+          "description": "Number of top venues to show (default: 5)",
+          "type": "number"
+        }
+      },
+      "required": [],
+      "type": "object"
+    }
+  },
+  {
+    "name": "context",
+    "description": "Get API domain context: resource taxonomy, auth requirements, query tips, and unique capabilities. Call this first.",
+    "inputSchema": {
+      "properties": {},
+      "required": [],
+      "type": "object"
+    }
+  },
+  {
+    "name": "creators_audit",
+    "description": "Audit synced creator names for variant candidates without mutating Zotero.\n\nThe audit reads item creators from the local synced store and groups likely name\nvariants into three confidence tiers: exact-after-normalization, initial/full-name\ncompatibility, and ambiguous same-surname diagnostics. Use --orcid to fetch\nCrossRef author ORCIDs for DOI-bearing tier-2/3 candidates and store them in the\nlocal creator_orcids sidecar table as corroboration evidence. That sidecar is\nlocal-only evidence; zotio never writes ORCIDs back to Zotero because Zotero has\nno creator ORCID field.",
+    "inputSchema": {
+      "properties": {
+        "orcid": {
+          "description": "Fetch CrossRef author ORCIDs into the local-only sidecar table; never writes ORCIDs to Zotero (default: false)",
+          "type": "boolean"
+        },
+        "scope": {
+          "description": "Item scope: library, collection:\u003ckey\u003e, tag:\u003ctag\u003e, item:\u003ckey\u003e, or query:\u003ctext\u003e (default: library)",
+          "type": "string"
+        }
+      },
+      "required": [],
+      "type": "object"
+    }
+  },
+  {
+    "name": "demo",
+    "description": "Seed a bundled sample library into a separate demo store and print a\nshort tour of commands to try.\n\nThe sandbox is a self-contained SQLite database (demo.db) beside your real\nstore. Set ZOTIO_DEMO=1 on any command to read from it with a pristine,\nkey-less config -- your real library, config, and API key are never touched.\nNo Zotero desktop and no API key are required.",
+    "inputSchema": {
+      "properties": {
+        "reset": {
+          "description": "Delete and re-seed the sandbox (also removes demo.db) (default: false)",
+          "type": "boolean"
+        }
+      },
+      "required": [],
+      "type": "object"
+    }
+  },
+  {
+    "name": "export",
+    "description": "Export paginated API data to a local file. Supports JSONL (one JSON object\nper line, streaming-friendly) and JSON (array). JSONL is recommended for\nlarge datasets as it has no memory pressure.",
+    "inputSchema": {
+      "properties": {
+        "allow-destructive": {
+          "description": "Allow irreversible operations (merge, permanent delete, empty-trash) to apply (default: false)",
+          "type": "boolean"
+        },
+        "args": {
+          "description": "Additional positional arguments to append to the command. Raw CLI flags are rejected.",
+          "type": "string"
+        },
+        "continue-on-error": {
+          "description": "On bulk mutations, continue past per-item failures/conflicts instead of stopping at the first (default: false)",
+          "type": "boolean"
+        },
+        "dry-run": {
+          "description": "Show request without sending (default: false)",
+          "type": "boolean"
+        },
+        "format": {
+          "description": "Output format: jsonl or json (default: jsonl)",
+          "type": "string"
+        },
+        "limit": {
+          "description": "Maximum records to export (0 = unlimited) (default: 0)",
+          "type": "number"
+        },
+        "max-changes": {
+          "description": "Max write operations a single mutation may apply before refusing (-1 = default: 500, or 50 under --agent) (default: -1)",
+          "type": "number"
+        },
+        "max-failures": {
+          "description": "With --continue-on-error, stop after this many failures (0 = unlimited) (default: 0)",
+          "type": "number"
+        },
+        "no-cache": {
+          "description": "Bypass response cache for fresh data (default: false)",
+          "type": "boolean"
+        },
+        "output": {
+          "description": "Output file path (default: stdout)",
+          "type": "string"
+        },
+        "yes": {
+          "description": "Skip confirmation prompts (for agents and scripts) (default: false)",
+          "type": "boolean"
+        }
+      },
+      "required": [],
+      "type": "object"
+    }
+  },
+  {
+    "name": "export_snapshot",
+    "description": "Export a structured item set (JSONL) across all pages into a data file,\nplus a sidecar lockfile (\u003coutput\u003e.lock.json) recording each item's key+version\nand a content hash for reproducibility/drift detection. Resumable: an interrupted\nrun can continue with --resume (a \u003coutput\u003e.checkpoint.json sidecar tracks progress).\n\nScope is one of: library (default), collection:KEY, or tag:NAME.",
+    "inputSchema": {
+      "properties": {
+        "args": {
+          "description": "Additional positional arguments to append to the command. Raw CLI flags are rejected.",
+          "type": "string"
+        },
+        "limit": {
+          "description": "Maximum items to export (0 = all) (default: 0)",
+          "type": "number"
+        },
+        "output": {
+          "description": "Output JSONL data file (required); the lockfile is written to \u003coutput\u003e.lock.json",
+          "type": "string"
+        },
+        "page-size": {
+          "description": "Items per API page (1-100) (default: 100)",
+          "type": "number"
+        },
+        "resume": {
+          "description": "Resume an interrupted snapshot from its checkpoint sidecar (default: false)",
+          "type": "boolean"
+        }
+      },
+      "required": [],
+      "type": "object"
+    }
+  },
+  {
+    "name": "export_snapshot_verify",
+    "description": "Verify a snapshot lockfile against the current Zotero library.\n\nThe verifier re-resolves the lockfile scope when possible, recomputes the same\ncontent hash as export snapshot, and separates semantic drift (added, removed,\nchanged) from Zotero version churn (touched). Touched items have a newer version\nbut identical normalized content and never fail --fail-on-drift.",
+    "inputSchema": {
+      "properties": {
+        "args": {
+          "description": "Additional positional arguments to append to the command. Raw CLI flags are rejected.",
+          "type": "string"
+        },
+        "fail-on-drift": {
+          "description": "Exit 11 when added, removed, or changed items are detected (touched never fails) (default: false)",
+          "type": "boolean"
+        }
+      },
+      "required": [],
+      "type": "object"
+    }
+  },
+  {
+    "name": "groups_inspect",
+    "description": "Check whether a Zotero group library is accessible and writable",
+    "inputSchema": {
+      "properties": {
+        "args": {
+          "description": "Additional positional arguments to append to the command. Raw CLI flags are rejected.",
+          "type": "string"
+        }
+      },
+      "required": [],
+      "type": "object"
+    }
+  },
+  {
+    "name": "groups_list",
+    "description": "List the group libraries the configured user belongs to",
+    "inputSchema": {
+      "properties": {},
+      "required": [],
+      "type": "object"
+    }
+  },
+  {
+    "name": "import",
+    "description": "Import data from a JSONL file by issuing POST requests for each record.\nEach line must be a valid JSON object. Failed records are logged to stderr\nbut do not stop the import.",
+    "inputSchema": {
+      "properties": {
+        "allow-destructive": {
+          "description": "Allow irreversible operations (merge, permanent delete, empty-trash) to apply (default: false)",
+          "type": "boolean"
+        },
+        "args": {
+          "description": "Additional positional arguments to append to the command. Raw CLI flags are rejected.",
+          "type": "string"
+        },
+        "batch-size": {
+          "description": "Records per batch (future: batch API support) (default: 1)",
+          "type": "number"
+        },
+        "continue-on-error": {
+          "description": "On bulk mutations, continue past per-item failures/conflicts instead of stopping at the first (default: false)",
+          "type": "boolean"
+        },
+        "dry-run": {
+          "description": "Preview import without sending requests (default: false)",
+          "type": "boolean"
+        },
+        "input": {
+          "description": "Input JSONL file path (use - for stdin)",
+          "type": "string"
+        },
+        "max-changes": {
+          "description": "Max write operations a single mutation may apply before refusing (-1 = default: 500, or 50 under --agent) (default: -1)",
+          "type": "number"
+        },
+        "max-failures": {
+          "description": "With --continue-on-error, stop after this many failures (0 = unlimited) (default: 0)",
+          "type": "number"
+        },
+        "yes": {
+          "description": "Skip confirmation prompts (for agents and scripts) (default: false)",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "input"
+      ],
+      "type": "object"
+    }
+  },
+  {
+    "name": "import_apply",
+    "description": "Apply a reviewed import manifest",
+    "inputSchema": {
+      "properties": {
+        "allow-destructive": {
+          "description": "Allow irreversible operations (merge, permanent delete, empty-trash) to apply (default: false)",
+          "type": "boolean"
+        },
+        "args": {
+          "description": "Additional positional arguments to append to the command. Raw CLI flags are rejected.",
+          "type": "string"
+        },
+        "attach-mode": {
+          "description": "Attachment handling: none, linked-file, or stored (default: none)",
+          "type": "string"
+        },
+        "continue-on-error": {
+          "description": "On bulk mutations, continue past per-item failures/conflicts instead of stopping at the first (default: false)",
+          "type": "boolean"
+        },
+        "dry-run": {
+          "description": "Show request without sending (default: false)",
+          "type": "boolean"
+        },
+        "fetch-pdf": {
+          "description": "Attach an open-access PDF via Zotero's desktop resolver (requires --via connector) (default: false)",
+          "type": "boolean"
+        },
+        "max-changes": {
+          "description": "Max write operations a single mutation may apply before refusing (-1 = default: 500, or 50 under --agent) (default: -1)",
+          "type": "number"
+        },
+        "max-failures": {
+          "description": "With --continue-on-error, stop after this many failures (0 = unlimited) (default: 0)",
+          "type": "number"
+        },
+        "yes": {
+          "description": "Skip confirmation prompts (for agents and scripts) (default: false)",
+          "type": "boolean"
+        }
+      },
+      "required": [],
+      "type": "object"
+    }
+  },
+  {
+    "name": "import_arxiv",
+    "description": "Import a preprint from arXiv metadata",
+    "inputSchema": {
+      "properties": {
+        "allow-destructive": {
+          "description": "Allow irreversible operations (merge, permanent delete, empty-trash) to apply (default: false)",
+          "type": "boolean"
+        },
+        "args": {
+          "description": "Additional positional arguments to append to the command. Raw CLI flags are rejected.",
+          "type": "string"
+        },
+        "collection": {
+          "description": "Collection key to add the item to",
+          "type": "string"
+        },
+        "continue-on-error": {
+          "description": "On bulk mutations, continue past per-item failures/conflicts instead of stopping at the first (default: false)",
+          "type": "boolean"
+        },
+        "dry-run": {
+          "description": "Preview import without sending requests (default: false)",
+          "type": "boolean"
+        },
+        "fetch-pdf": {
+          "description": "Attach an open-access PDF via Zotero's desktop resolver (requires --via connector) (default: false)",
+          "type": "boolean"
+        },
+        "max-changes": {
+          "description": "Max write operations a single mutation may apply before refusing (-1 = default: 500, or 50 under --agent) (default: -1)",
+          "type": "number"
+        },
+        "max-failures": {
+          "description": "With --continue-on-error, stop after this many failures (0 = unlimited) (default: 0)",
+          "type": "number"
+        },
+        "yes": {
+          "description": "Skip confirmation prompts (for agents and scripts) (default: false)",
+          "type": "boolean"
+        }
+      },
+      "required": [],
+      "type": "object"
+    }
+  },
+  {
+    "name": "import_discover",
+    "description": "Discover missing references and write a reviewable import manifest",
+    "inputSchema": {
+      "properties": {
+        "direction": {
+          "description": "Citation chase direction: backward, forward, or both (default: backward)",
+          "type": "string"
+        },
+        "limit": {
+          "description": "Maximum manifest entries to emit (default: 25)",
+          "type": "number"
+        },
+        "min-count": {
+          "description": "Minimum number of source items citing a DOI (default: 2)",
+          "type": "number"
+        },
+        "out": {
+          "description": "Path to write the reviewable import manifest",
+          "type": "string"
+        },
+        "scope": {
+          "description": "Scope expression to discover from (required; e.g. collection:\u003ckey\u003e, tag:\u003ctag\u003e, item:\u003ckey\u003e, query:\u003ctext\u003e, library)",
+          "type": "string"
+        }
+      },
+      "required": [
+        "out",
+        "scope"
+      ],
+      "type": "object"
+    }
+  },
+  {
+    "name": "import_doi",
+    "description": "Import an item from CrossRef DOI metadata",
+    "inputSchema": {
+      "properties": {
+        "allow-destructive": {
+          "description": "Allow irreversible operations (merge, permanent delete, empty-trash) to apply (default: false)",
+          "type": "boolean"
+        },
+        "args": {
+          "description": "Additional positional arguments to append to the command. Raw CLI flags are rejected.",
+          "type": "string"
+        },
+        "collection": {
+          "description": "Collection key to add the item to",
+          "type": "string"
+        },
+        "continue-on-error": {
+          "description": "On bulk mutations, continue past per-item failures/conflicts instead of stopping at the first (default: false)",
+          "type": "boolean"
+        },
+        "dry-run": {
+          "description": "Show request without sending (default: false)",
+          "type": "boolean"
+        },
+        "fetch-pdf": {
+          "description": "Attach an open-access PDF via Zotero's desktop resolver (requires --via connector) (default: false)",
+          "type": "boolean"
+        },
+        "max-changes": {
+          "description": "Max write operations a single mutation may apply before refusing (-1 = default: 500, or 50 under --agent) (default: -1)",
+          "type": "number"
+        },
+        "max-failures": {
+          "description": "With --continue-on-error, stop after this many failures (0 = unlimited) (default: 0)",
+          "type": "number"
+        },
+        "yes": {
+          "description": "Skip confirmation prompts (for agents and scripts) (default: false)",
+          "type": "boolean"
+        }
+      },
+      "required": [],
+      "type": "object"
+    }
+  },
+  {
+    "name": "import_file",
+    "description": "Import items from BibTeX, RIS, or CSL JSON",
+    "inputSchema": {
+      "properties": {
+        "allow-destructive": {
+          "description": "Allow irreversible operations (merge, permanent delete, empty-trash) to apply (default: false)",
+          "type": "boolean"
+        },
+        "args": {
+          "description": "Additional positional arguments to append to the command. Raw CLI flags are rejected.",
+          "type": "string"
+        },
+        "collection": {
+          "description": "Collection key to add imported items to",
+          "type": "string"
+        },
+        "continue-on-error": {
+          "description": "On bulk mutations, continue past per-item failures/conflicts instead of stopping at the first (default: false)",
+          "type": "boolean"
+        },
+        "dry-run": {
+          "description": "Show request without sending (default: false)",
+          "type": "boolean"
+        },
+        "format": {
+          "description": "Input format (bibtex, ris, csljson)",
+          "type": "string"
+        },
+        "max-changes": {
+          "description": "Max write operations a single mutation may apply before refusing (-1 = default: 500, or 50 under --agent) (default: -1)",
+          "type": "number"
+        },
+        "max-failures": {
+          "description": "With --continue-on-error, stop after this many failures (0 = unlimited) (default: 0)",
+          "type": "number"
+        },
+        "yes": {
+          "description": "Skip confirmation prompts (for agents and scripts) (default: false)",
+          "type": "boolean"
+        }
+      },
+      "required": [],
+      "type": "object"
+    }
+  },
+  {
+    "name": "import_isbn",
+    "description": "Import a book from Open Library ISBN metadata",
+    "inputSchema": {
+      "properties": {
+        "allow-destructive": {
+          "description": "Allow irreversible operations (merge, permanent delete, empty-trash) to apply (default: false)",
+          "type": "boolean"
+        },
+        "args": {
+          "description": "Additional positional arguments to append to the command. Raw CLI flags are rejected.",
+          "type": "string"
+        },
+        "collection": {
+          "description": "Collection key to add the item to",
+          "type": "string"
+        },
+        "continue-on-error": {
+          "description": "On bulk mutations, continue past per-item failures/conflicts instead of stopping at the first (default: false)",
+          "type": "boolean"
+        },
+        "dry-run": {
+          "description": "Preview import without sending requests (default: false)",
+          "type": "boolean"
+        },
+        "fetch-pdf": {
+          "description": "Attach an open-access PDF via Zotero's desktop resolver (requires --via connector) (default: false)",
+          "type": "boolean"
+        },
+        "max-changes": {
+          "description": "Max write operations a single mutation may apply before refusing (-1 = default: 500, or 50 under --agent) (default: -1)",
+          "type": "number"
+        },
+        "max-failures": {
+          "description": "With --continue-on-error, stop after this many failures (0 = unlimited) (default: 0)",
+          "type": "number"
+        },
+        "yes": {
+          "description": "Skip confirmation prompts (for agents and scripts) (default: false)",
+          "type": "boolean"
+        }
+      },
+      "required": [],
+      "type": "object"
+    }
+  },
+  {
+    "name": "import_pdf",
+    "description": "Create Zotero items from local PDF files by asking the Zotero desktop Connector\nAPI to save each PDF as a standalone attachment and run Zotero's metadata recognizer.\n\nThis command requires a local Zotero base URL, Zotero running, and Zotero's local API\npreference enabled. Recognition failures are reported as unrecognized standalone PDF\nattachments instead of hard errors.",
+    "inputSchema": {
+      "properties": {
+        "allow-destructive": {
+          "description": "Allow irreversible operations (merge, permanent delete, empty-trash) to apply (default: false)",
+          "type": "boolean"
+        },
+        "args": {
+          "description": "Additional positional arguments to append to the command. Raw CLI flags are rejected.",
+          "type": "string"
+        },
+        "continue-on-error": {
+          "description": "On bulk mutations, continue past per-item failures/conflicts instead of stopping at the first (default: false)",
+          "type": "boolean"
+        },
+        "dry-run": {
+          "description": "Show request without sending (default: false)",
+          "type": "boolean"
+        },
+        "max-changes": {
+          "description": "Max write operations a single mutation may apply before refusing (-1 = default: 500, or 50 under --agent) (default: -1)",
+          "type": "number"
+        },
+        "max-failures": {
+          "description": "With --continue-on-error, stop after this many failures (0 = unlimited) (default: 0)",
+          "type": "number"
+        },
+        "yes": {
+          "description": "Skip confirmation prompts (for agents and scripts) (default: false)",
+          "type": "boolean"
+        }
+      },
+      "required": [],
+      "type": "object"
+    }
+  },
+  {
+    "name": "import_pmid",
+    "description": "Import a journal article from PubMed metadata",
+    "inputSchema": {
+      "properties": {
+        "allow-destructive": {
+          "description": "Allow irreversible operations (merge, permanent delete, empty-trash) to apply (default: false)",
+          "type": "boolean"
+        },
+        "args": {
+          "description": "Additional positional arguments to append to the command. Raw CLI flags are rejected.",
+          "type": "string"
+        },
+        "collection": {
+          "description": "Collection key to add the item to",
+          "type": "string"
+        },
+        "continue-on-error": {
+          "description": "On bulk mutations, continue past per-item failures/conflicts instead of stopping at the first (default: false)",
+          "type": "boolean"
+        },
+        "dry-run": {
+          "description": "Preview import without sending requests (default: false)",
+          "type": "boolean"
+        },
+        "fetch-pdf": {
+          "description": "Attach an open-access PDF via Zotero's desktop resolver (requires --via connector) (default: false)",
+          "type": "boolean"
+        },
+        "max-changes": {
+          "description": "Max write operations a single mutation may apply before refusing (-1 = default: 500, or 50 under --agent) (default: -1)",
+          "type": "number"
+        },
+        "max-failures": {
+          "description": "With --continue-on-error, stop after this many failures (0 = unlimited) (default: 0)",
+          "type": "number"
+        },
+        "yes": {
+          "description": "Skip confirmation prompts (for agents and scripts) (default: false)",
+          "type": "boolean"
+        }
+      },
+      "required": [],
+      "type": "object"
+    }
+  },
+  {
+    "name": "import_resolve",
+    "description": "Resolve PDFs into an editable import manifest",
+    "inputSchema": {
+      "properties": {
+        "args": {
+          "description": "Additional positional arguments to append to the command. Raw CLI flags are rejected.",
+          "type": "string"
+        },
+        "limit": {
+          "description": "Scan at most N PDFs when resolving a directory (default: 200)",
+          "type": "number"
+        }
+      },
+      "required": [],
+      "type": "object"
+    }
+  },
+  {
+    "name": "import_scan",
+    "description": "Scan a directory of PDFs and classify each against your synced library WITHOUT\nimporting anything. For each PDF it extracts a DOI (from the filename, then the\nfile's embedded metadata) and reports:\n\n  duplicate         the DOI already belongs to an item in your library\n  attach_candidate  matches an item you have that is missing its PDF\n  new               not in your library (use 'import doi \u003cDOI\u003e' to add it)\n  unidentified      no DOI found (rename the file with its DOI, or add it in Zotero)\n\nThis complements Zotero's \"Retrieve Metadata for PDF\": it makes the library-aware\ndecision the GUI does not — which PDFs to import, which are duplicates, and which\ncomplete items you already have. It never writes; hand the actual import and file\nattach to Zotero.\n\nDOI extraction is dependency-free: it reads the filename and the PDF's uncompressed\nembedded metadata (Info/XMP). It does NOT decode compressed page text, so scanned\nor text-only PDFs may report \"unidentified\".",
+    "inputSchema": {
+      "properties": {
+        "args": {
+          "description": "Additional positional arguments to append to the command. Raw CLI flags are rejected.",
+          "type": "string"
+        },
+        "limit": {
+          "description": "Scan at most N PDFs (0 = all) (default: 0)",
+          "type": "number"
+        },
+        "resolve": {
+          "description": "Fetch CrossRef titles for 'new' PDFs (network) (default: false)",
+          "type": "boolean"
+        }
+      },
+      "required": [],
+      "type": "object"
+    }
+  },
+  {
+    "name": "import_targets",
+    "description": "List Zotero desktop Connector save targets for connector-backed imports.\nUse the id column (for example C78) with --connector-target when --collection is\nambiguous or the local Web API collection key cannot be mapped automatically.",
+    "inputSchema": {
+      "properties": {},
+      "required": [],
+      "type": "object"
+    }
+  },
+  {
+    "name": "import_translators",
+    "description": "Fetch a page and ask Zotero desktop which web translators match it.\n\nThis is diagnostic-only: Zotero's desktop connector can detect matching web\ntranslators, but browser-side web translation is not run by the desktop server.",
+    "inputSchema": {
+      "properties": {
+        "args": {
+          "description": "Additional positional arguments to append to the command. Raw CLI flags are rejected.",
+          "type": "string"
+        }
+      },
+      "required": [],
+      "type": "object"
+    }
+  },
+  {
+    "name": "import_url",
+    "description": "Import a URL, resolving real metadata where possible.\n\nIf the URL embeds a DOI, full metadata is fetched from CrossRef. Otherwise the\npage's embedded metadata (citation_*, Open Graph, Dublin Core meta tags) is\nmapped into a typed item with title, creators, abstract, and publication venue.\nA bare webpage item is used only when no metadata is available.\n\nUse --dry-run to preview the proposed item without writing it.",
+    "inputSchema": {
+      "properties": {
+        "allow-destructive": {
+          "description": "Allow irreversible operations (merge, permanent delete, empty-trash) to apply (default: false)",
+          "type": "boolean"
+        },
+        "args": {
+          "description": "Additional positional arguments to append to the command. Raw CLI flags are rejected.",
+          "type": "string"
+        },
+        "collection": {
+          "description": "Collection key to add the item to",
+          "type": "string"
+        },
+        "continue-on-error": {
+          "description": "On bulk mutations, continue past per-item failures/conflicts instead of stopping at the first (default: false)",
+          "type": "boolean"
+        },
+        "dry-run": {
+          "description": "Show request without sending (default: false)",
+          "type": "boolean"
+        },
+        "fetch-pdf": {
+          "description": "Attach an open-access PDF via Zotero's desktop resolver (requires --via connector) (default: false)",
+          "type": "boolean"
+        },
+        "max-changes": {
+          "description": "Max write operations a single mutation may apply before refusing (-1 = default: 500, or 50 under --agent) (default: -1)",
+          "type": "number"
+        },
+        "max-failures": {
+          "description": "With --continue-on-error, stop after this many failures (0 = unlimited) (default: 0)",
+          "type": "number"
+        },
+        "yes": {
+          "description": "Skip confirmation prompts (for agents and scripts) (default: false)",
+          "type": "boolean"
+        }
+      },
+      "required": [],
+      "type": "object"
+    }
+  },
+  {
+    "name": "init",
+    "description": "Guided first-run setup for Zotero automation.\n\nChecks the local Zotero API, stores an API key when one is provided interactively,\nruns the first local sync when the store is missing or empty, and finishes with the\nquick library-health preset plus suggested next commands.",
+    "inputSchema": {
+      "properties": {
+        "allow-destructive": {
+          "description": "Allow irreversible operations (merge, permanent delete, empty-trash) to apply (default: false)",
+          "type": "boolean"
+        },
+        "continue-on-error": {
+          "description": "On bulk mutations, continue past per-item failures/conflicts instead of stopping at the first (default: false)",
+          "type": "boolean"
+        },
+        "dry-run": {
+          "description": "Show request without sending (default: false)",
+          "type": "boolean"
+        },
+        "launch": {
+          "description": "Launch Zotero and wait for the local API when it is not reachable (default: false)",
+          "type": "boolean"
+        },
+        "max-changes": {
+          "description": "Max write operations a single mutation may apply before refusing (-1 = default: 500, or 50 under --agent) (default: -1)",
+          "type": "number"
+        },
+        "max-failures": {
+          "description": "With --continue-on-error, stop after this many failures (0 = unlimited) (default: 0)",
+          "type": "number"
+        },
+        "yes": {
+          "description": "Skip confirmation prompts (for agents and scripts) (default: false)",
+          "type": "boolean"
+        }
+      },
+      "required": [],
+      "type": "object"
+    }
+  },
+  {
+    "name": "items_audit",
+    "description": "Audit locally synced items for missing metadata and PDFs",
+    "inputSchema": {
+      "properties": {
+        "limit": {
+          "description": "Maximum number of items per category (0 = no limit) (default: 0)",
+          "type": "number"
+        },
+        "missing-abstract": {
+          "description": "List items with no abstract (default: false)",
+          "type": "boolean"
+        },
+        "missing-citation": {
+          "description": "List citeable items missing core citation fields (creators, title, date, venue) (default: false)",
+          "type": "boolean"
+        },
+        "missing-doi": {
+          "description": "List journal articles, conference papers, and preprints with no DOI (default: false)",
+          "type": "boolean"
+        },
+        "missing-pdf": {
+          "description": "List items that should have an attached PDF but do not (default: false)",
+          "type": "boolean"
+        },
+        "missing-tags": {
+          "description": "List items with no tags (default: false)",
+          "type": "boolean"
+        },
+        "verify-files": {
+          "description": "Verify each PDF attachment's file exists on disk (one local-API lookup per attachment) (default: false)",
+          "type": "boolean"
+        }
+      },
+      "required": [],
+      "type": "object"
+    }
+  },
+  {
+    "name": "items_authors",
+    "description": "Count synced items per creator",
+    "inputSchema": {
+      "properties": {
+        "collection": {
+          "description": "Filter to items in this collection key",
+          "type": "string"
+        },
+        "top": {
+          "description": "Maximum number of authors to return (default: 20)",
+          "type": "number"
+        },
+        "type": {
+          "description": "Filter by creatorType (for example author or editor)",
+          "type": "string"
+        }
+      },
+      "required": [],
+      "type": "object"
+    }
+  },
+  {
+    "name": "items_bibcheck",
+    "description": "Check manuscript citation keys against the synced Better BibTeX library",
+    "inputSchema": {
+      "properties": {
+        "args": {
+          "description": "Additional positional arguments to append to the command. Raw CLI flags are rejected.",
+          "type": "string"
+        },
+        "fail-on": {
+          "description": "Exit 11 when findings reach this severity: high, any, or none",
+          "type": "string"
+        },
+        "fail-on-unknown": {
+          "description": "Exit 11 when any cited key is unknown or ambiguous (default: false)",
+          "type": "boolean"
+        }
+      },
+      "required": [],
+      "type": "object"
+    }
+  },
+  {
+    "name": "items_citekey_conflicts",
+    "description": "Find missing and duplicate Better BibTeX citation keys",
+    "inputSchema": {
+      "properties": {
+        "conflicts": {
+          "description": "Show only items with duplicate citation keys (default: false)",
+          "type": "boolean"
+        },
+        "missing": {
+          "description": "Show only items without a citation key (default: false)",
+          "type": "boolean"
+        }
+      },
+      "required": [],
+      "type": "object"
+    }
+  },
+  {
+    "name": "items_collections_of",
+    "description": "Show collections containing an item",
+    "inputSchema": {
+      "properties": {
+        "args": {
+          "description": "Additional positional arguments to append to the command. Raw CLI flags are rejected.",
+          "type": "string"
+        }
+      },
+      "required": [],
+      "type": "object"
+    }
+  },
+  {
+    "name": "items_duplicates",
+    "description": "Find likely duplicate items in the local store",
+    "inputSchema": {
+      "properties": {
+        "by": {
+          "description": "Duplicate detector to run (doi, title, all) (default: all)",
+          "type": "string"
+        }
+      },
+      "required": [],
+      "type": "object"
+    }
+  },
+  {
+    "name": "items_duplicates_resolve",
+    "description": "Resolve duplicate items by merging metadata onto a master and trashing duplicates.\n\nBy default, resolve only matches duplicate DOI groups. Title matching can group\ndistinct items that share generic titles; pass --title only when you are ready to\nreview the preview carefully before applying.",
+    "inputSchema": {
+      "properties": {
+        "allow-destructive": {
+          "description": "Allow irreversible operations (merge, permanent delete, empty-trash) to apply (default: false)",
+          "type": "boolean"
+        },
+        "continue-on-error": {
+          "description": "On bulk mutations, continue past per-item failures/conflicts instead of stopping at the first (default: false)",
+          "type": "boolean"
+        },
+        "doi": {
+          "description": "Resolve duplicate DOI groups (default: false)",
+          "type": "boolean"
+        },
+        "dry-run": {
+          "description": "Show request without sending (default: false)",
+          "type": "boolean"
+        },
+        "max-changes": {
+          "description": "Max write operations a single mutation may apply before refusing (-1 = default: 500, or 50 under --agent) (default: -1)",
+          "type": "number"
+        },
+        "max-failures": {
+          "description": "With --continue-on-error, stop after this many failures (0 = unlimited) (default: 0)",
+          "type": "number"
+        },
+        "strategy": {
+          "description": "Resolution strategy (keep-most-complete) (default: keep-most-complete)",
+          "type": "string"
+        },
+        "title": {
+          "description": "Opt into riskier duplicate title groups (default: false)",
+          "type": "boolean"
+        },
+        "yes": {
+          "description": "Skip confirmation prompts (for agents and scripts) (default: false)",
+          "type": "boolean"
+        }
+      },
+      "required": [],
+      "type": "object"
+    }
+  },
+  {
+    "name": "items_enrich",
+    "description": "Resolve missing metadata for locally synced items and apply it back to Zotero.\n\nWork queues come from the same checks as 'items audit':\n  --missing-doi       resolve a DOI by title from CrossRef, then OpenAlex/Semantic Scholar (exact title match)\n  --missing-abstract  fill the abstract from CrossRef, then OpenAlex/Semantic Scholar (requires the item's DOI)\n  --missing-pdf       attach an open-access PDF link from Unpaywall (requires DOI)\n\nBy default this previews the proposed changes (a patch plan). Pass --collection\nto scope the work queue to items in a single collection, or --keys-from to scope\nto exact item keys produced by another command. Pass --yes to apply them via the\nZotero API; --dry-run always previews. Applied field changes\nrecord provenance in the item's Extra field.",
+    "inputSchema": {
+      "properties": {
+        "allow-destructive": {
+          "description": "Allow irreversible operations (merge, permanent delete, empty-trash) to apply (default: false)",
+          "type": "boolean"
+        },
+        "collection": {
+          "description": "Scope the work queue to items in a collection key",
+          "type": "string"
+        },
+        "continue-on-error": {
+          "description": "On bulk mutations, continue past per-item failures/conflicts instead of stopping at the first (default: false)",
+          "type": "boolean"
+        },
+        "dry-run": {
+          "description": "Show request without sending (default: false)",
+          "type": "boolean"
+        },
+        "email": {
+          "description": "Contact email for Unpaywall (required for --missing-pdf) and the OpenAlex polite pool (optional); or set UNPAYWALL_EMAIL",
+          "type": "string"
+        },
+        "keys-from": {
+          "description": "Read exact item keys from a file or '-' for stdin, then enrich only matching queued items",
+          "type": "string"
+        },
+        "limit": {
+          "description": "Maximum items to process per category (default: 25)",
+          "type": "number"
+        },
+        "max-changes": {
+          "description": "Max write operations a single mutation may apply before refusing (-1 = default: 500, or 50 under --agent) (default: -1)",
+          "type": "number"
+        },
+        "max-failures": {
+          "description": "With --continue-on-error, stop after this many failures (0 = unlimited) (default: 0)",
+          "type": "number"
+        },
+        "missing-abstract": {
+          "description": "Fill the abstract from CrossRef, OpenAlex, or Semantic Scholar (uses the item's DOI) (default: false)",
+          "type": "boolean"
+        },
+        "missing-doi": {
+          "description": "Resolve and add a DOI from CrossRef, OpenAlex, or Semantic Scholar (default: false)",
+          "type": "boolean"
+        },
+        "missing-pdf": {
+          "description": "Attach an open-access PDF link from Unpaywall (uses the item's DOI) (default: false)",
+          "type": "boolean"
+        },
+        "no-openalex": {
+          "description": "Disable the OpenAlex fallback for --missing-doi/--missing-abstract (default: false)",
+          "type": "boolean"
+        },
+        "no-semantic-scholar": {
+          "description": "Disable the Semantic Scholar fallback for --missing-doi/--missing-abstract (default: false)",
+          "type": "boolean"
+        },
+        "validate": {
+          "description": "Read-only DOI discrepancy report against CrossRef and OpenCitations (default: false)",
+          "type": "boolean"
+        },
+        "yes": {
+          "description": "Skip confirmation prompts (for agents and scripts) (default: false)",
+          "type": "boolean"
+        }
+      },
+      "required": [],
+      "type": "object"
+    }
+  },
+  {
+    "name": "items_file",
+    "description": "Return the local filesystem location of an item's attachment via the Zotero\nlocal API (/items/\u003ckey\u003e/file/view/url). Accepts an attachment key directly, or a\nregular item key whose PDF attachment is resolved automatically through its child\nitems.\n\nThis complements 'items open' (which launches the Zotero desktop app): 'items file'\nhands you the actual file so an agent or script can read or process it. The local\nAPI must be enabled (Settings → Advanced → \"Allow other applications…\").",
+    "inputSchema": {
+      "properties": {
+        "args": {
+          "description": "Additional positional arguments to append to the command. Raw CLI flags are rejected.",
+          "type": "string"
+        }
+      },
+      "required": [],
+      "type": "object"
+    }
+  },
+  {
+    "name": "items_find",
+    "description": "Find locally synced items by DOI, ISBN, PMID, or citation key",
+    "inputSchema": {
+      "properties": {
+        "citekey": {
+          "description": "Find items with this Better BibTeX citation key",
+          "type": "string"
+        },
+        "doi": {
+          "description": "Find items with this DOI",
+          "type": "string"
+        },
+        "isbn": {
+          "description": "Find items with this ISBN",
+          "type": "string"
+        },
+        "pmid": {
+          "description": "Find items with this PMID in Extra",
+          "type": "string"
+        }
+      },
+      "required": [],
+      "type": "object"
+    }
+  },
+  {
+    "name": "items_missing_pdf",
+    "description": "List items that should have an attached PDF but do not",
+    "inputSchema": {
+      "properties": {
+        "limit": {
+          "description": "Maximum number of items to return (0 = no limit) (default: 0)",
+          "type": "number"
+        },
+        "type": {
+          "description": "Filter to a specific Zotero item type",
+          "type": "string"
+        }
+      },
+      "required": [],
+      "type": "object"
+    }
+  },
+  {
+    "name": "items_move",
+    "description": "Add, remove, or move item collection memberships",
+    "inputSchema": {
+      "properties": {
+        "allow-destructive": {
+          "description": "Allow irreversible operations (merge, permanent delete, empty-trash) to apply (default: false)",
+          "type": "boolean"
+        },
+        "args": {
+          "description": "Additional positional arguments to append to the command. Raw CLI flags are rejected.",
+          "type": "string"
+        },
+        "continue-on-error": {
+          "description": "On bulk mutations, continue past per-item failures/conflicts instead of stopping at the first (default: false)",
+          "type": "boolean"
+        },
+        "dry-run": {
+          "description": "Show request without sending (default: false)",
+          "type": "boolean"
+        },
+        "from": {
+          "description": "Collection key to remove item from",
+          "type": "string"
+        },
+        "keys-from": {
+          "description": "Read item keys from a file, '-' for stdin, or positional args when omitted",
+          "type": "string"
+        },
+        "max-changes": {
+          "description": "Max write operations a single mutation may apply before refusing (-1 = default: 500, or 50 under --agent) (default: -1)",
+          "type": "number"
+        },
+        "max-failures": {
+          "description": "With --continue-on-error, stop after this many failures (0 = unlimited) (default: 0)",
+          "type": "number"
+        },
+        "to": {
+          "description": "Collection key to add item into",
+          "type": "string"
+        },
+        "yes": {
+          "description": "Skip confirmation prompts (for agents and scripts) (default: false)",
+          "type": "boolean"
+        }
+      },
+      "required": [],
+      "type": "object"
+    }
+  },
+  {
+    "name": "items_new",
+    "description": "Create a schema-validated item from Zotero's blank item template",
+    "inputSchema": {
+      "properties": {
+        "allow-destructive": {
+          "description": "Allow irreversible operations (merge, permanent delete, empty-trash) to apply (default: false)",
+          "type": "boolean"
+        },
+        "args": {
+          "description": "Additional positional arguments to append to the command. Raw CLI flags are rejected.",
+          "type": "string"
+        },
+        "collection": {
+          "description": "Collection key to add the item to",
+          "type": "string"
+        },
+        "continue-on-error": {
+          "description": "On bulk mutations, continue past per-item failures/conflicts instead of stopping at the first (default: false)",
+          "type": "boolean"
+        },
+        "dry-run": {
+          "description": "Show request without sending (default: false)",
+          "type": "boolean"
+        },
+        "field": {
+          "description": "Item field assignment name=value (repeatable)",
+          "type": "string"
+        },
+        "item-type": {
+          "description": "Zotero item type to create (e.g. journalArticle)",
+          "type": "string"
+        },
+        "max-changes": {
+          "description": "Max write operations a single mutation may apply before refusing (-1 = default: 500, or 50 under --agent) (default: -1)",
+          "type": "number"
+        },
+        "max-failures": {
+          "description": "With --continue-on-error, stop after this many failures (0 = unlimited) (default: 0)",
+          "type": "number"
+        },
+        "stdin": {
+          "description": "Read a JSON object of item fields from stdin (default: false)",
+          "type": "boolean"
+        },
+        "yes": {
+          "description": "Skip confirmation prompts (for agents and scripts) (default: false)",
+          "type": "boolean"
+        }
+      },
+      "required": [],
+      "type": "object"
+    }
+  },
+  {
+    "name": "items_note_template",
+    "description": "Generate a markdown reading-note template for an item",
+    "inputSchema": {
+      "properties": {
+        "args": {
+          "description": "Additional positional arguments to append to the command. Raw CLI flags are rejected.",
+          "type": "string"
+        },
+        "format": {
+          "description": "Template format: standard, obsidian, or logseq (default: standard)",
+          "type": "string"
+        }
+      },
+      "required": [],
+      "type": "object"
+    }
+  },
+  {
+    "name": "items_open",
+    "description": "Build a zotero:// desktop deep link for an item (default), a collection\n(--type collection), or a PDF attachment (--type attachment), then print it or\nlaunch it (--launch) via the OS handler (open on macOS, xdg-open on Linux,\nrundll32 on Windows).\n\nThe link targets the personal library by default, or a group library when the\nglobal --group \u003cid\u003e flag (or ZOTERO_GROUP) is set. With --agent/--json the\ncommand emits {uri, target_type, library_scope, launched}.",
+    "inputSchema": {
+      "properties": {
+        "allow-destructive": {
+          "description": "Allow irreversible operations (merge, permanent delete, empty-trash) to apply (default: false)",
+          "type": "boolean"
+        },
+        "args": {
+          "description": "Additional positional arguments to append to the command. Raw CLI flags are rejected.",
+          "type": "string"
+        },
+        "continue-on-error": {
+          "description": "On bulk mutations, continue past per-item failures/conflicts instead of stopping at the first (default: false)",
+          "type": "boolean"
+        },
+        "dry-run": {
+          "description": "Show request without sending (default: false)",
+          "type": "boolean"
+        },
+        "launch": {
+          "description": "Launch the deep link via the OS handler (open/xdg-open/rundll32) (default: false)",
+          "type": "boolean"
+        },
+        "max-changes": {
+          "description": "Max write operations a single mutation may apply before refusing (-1 = default: 500, or 50 under --agent) (default: -1)",
+          "type": "number"
+        },
+        "max-failures": {
+          "description": "With --continue-on-error, stop after this many failures (0 = unlimited) (default: 0)",
+          "type": "number"
+        },
+        "type": {
+          "description": "Target type: item, collection, or attachment (PDF) (default: item)",
+          "type": "string"
+        },
+        "yes": {
+          "description": "Skip confirmation prompts (for agents and scripts) (default: false)",
+          "type": "boolean"
+        }
+      },
+      "required": [],
+      "type": "object"
+    }
+  },
+  {
+    "name": "items_preprint_check",
+    "description": "Check arXiv preprints for published CrossRef records",
+    "inputSchema": {
+      "properties": {
+        "limit": {
+          "description": "Maximum number of preprints to check (default: 20)",
+          "type": "number"
+        }
+      },
+      "required": [],
+      "type": "object"
+    }
+  },
+  {
+    "name": "items_preprint_check_fix",
+    "description": "Apply published DOIs to preprints that CrossRef reports as published",
+    "inputSchema": {
+      "properties": {
+        "allow-destructive": {
+          "description": "Allow irreversible operations (merge, permanent delete, empty-trash) to apply (default: false)",
+          "type": "boolean"
+        },
+        "continue-on-error": {
+          "description": "On bulk mutations, continue past per-item failures/conflicts instead of stopping at the first (default: false)",
+          "type": "boolean"
+        },
+        "dry-run": {
+          "description": "Show request without sending (default: false)",
+          "type": "boolean"
+        },
+        "limit": {
+          "description": "Maximum number of preprints to check (default: 20)",
+          "type": "number"
+        },
+        "max-changes": {
+          "description": "Max write operations a single mutation may apply before refusing (-1 = default: 500, or 50 under --agent) (default: -1)",
+          "type": "number"
+        },
+        "max-failures": {
+          "description": "With --continue-on-error, stop after this many failures (0 = unlimited) (default: 0)",
+          "type": "number"
+        },
+        "yes": {
+          "description": "Skip confirmation prompts (for agents and scripts) (default: false)",
+          "type": "boolean"
+        }
+      },
+      "required": [],
+      "type": "object"
+    }
+  },
+  {
+    "name": "items_related",
+    "description": "Show outgoing and incoming Zotero related-item edges",
+    "inputSchema": {
+      "properties": {
+        "args": {
+          "description": "Additional positional arguments to append to the command. Raw CLI flags are rejected.",
+          "type": "string"
+        }
+      },
+      "required": [],
+      "type": "object"
+    }
+  },
+  {
+    "name": "items_restore",
+    "description": "Restore a trashed item",
+    "inputSchema": {
+      "properties": {
+        "allow-destructive": {
+          "description": "Allow irreversible operations (merge, permanent delete, empty-trash) to apply (default: false)",
+          "type": "boolean"
+        },
+        "args": {
+          "description": "Additional positional arguments to append to the command. Raw CLI flags are rejected.",
+          "type": "string"
+        },
+        "continue-on-error": {
+          "description": "On bulk mutations, continue past per-item failures/conflicts instead of stopping at the first (default: false)",
+          "type": "boolean"
+        },
+        "dry-run": {
+          "description": "Show request without sending (default: false)",
+          "type": "boolean"
+        },
+        "max-changes": {
+          "description": "Max write operations a single mutation may apply before refusing (-1 = default: 500, or 50 under --agent) (default: -1)",
+          "type": "number"
+        },
+        "max-failures": {
+          "description": "With --continue-on-error, stop after this many failures (0 = unlimited) (default: 0)",
+          "type": "number"
+        },
+        "yes": {
+          "description": "Skip confirmation prompts (for agents and scripts) (default: false)",
+          "type": "boolean"
+        }
+      },
+      "required": [],
+      "type": "object"
+    }
+  },
+  {
+    "name": "items_retract_check",
+    "description": "Check DOI-bearing items from the locally synced store against CrossRef's\nupdated-by metadata. The command reports retractions, expressions of concern,\nand corrections without writing to Zotero. Run 'zotio sync' first so the local\nstore is current.",
+    "inputSchema": {
+      "properties": {
+        "collection": {
+          "description": "Scope checks to items in a collection key",
+          "type": "string"
+        },
+        "limit": {
+          "description": "Maximum DOI-bearing items to check (0 = all) (default: 0)",
+          "type": "number"
+        }
+      },
+      "required": [],
+      "type": "object"
+    }
+  },
+  {
+    "name": "items_stale",
+    "description": "Find old items without PDFs or annotations",
+    "inputSchema": {
+      "properties": {
+        "days": {
+          "description": "Items added more than this many days ago (default: 365)",
+          "type": "number"
+        },
+        "limit": {
+          "description": "Maximum number of items to return (default: 50)",
+          "type": "number"
+        },
+        "no-annotations": {
+          "description": "Include only items without annotation children (default: false)",
+          "type": "boolean"
+        },
+        "no-pdf": {
+          "description": "Include only items without a PDF attachment (default: false)",
+          "type": "boolean"
+        }
+      },
+      "required": [],
+      "type": "object"
+    }
+  },
+  {
+    "name": "items_summarize",
+    "description": "Gather the highest-signal local context for an item (or every item in a\ncollection) into one bounded bundle — citation, abstract, your annotations, a\ncapped fulltext excerpt, and known metadata gaps — plus a synthesis prompt.\n\nThis command never calls a model: it does the assembly and budgeting the host LLM\nis bad at, then hands off. Reads are local only. With --agent/--json it emits the\nstructured bundle; otherwise a readable Markdown brief you can paste into any LLM.",
+    "inputSchema": {
+      "properties": {
+        "args": {
+          "description": "Additional positional arguments to append to the command. Raw CLI flags are rejected.",
+          "type": "string"
+        },
+        "collection": {
+          "description": "Summarize every item in this collection key",
+          "type": "string"
+        },
+        "max-annotations": {
+          "description": "Max annotations included per item (default: 40)",
+          "type": "number"
+        },
+        "max-chars": {
+          "description": "Max characters of fulltext excerpt per item (default: 8000)",
+          "type": "number"
+        },
+        "no-fulltext": {
+          "description": "Omit the fulltext excerpt (abstract + annotations only) (default: false)",
+          "type": "boolean"
+        }
+      },
+      "required": [],
+      "type": "object"
+    }
+  },
+  {
+    "name": "items_tags_add",
+    "description": "Add one or more tags to items",
+    "inputSchema": {
+      "properties": {
+        "allow-destructive": {
+          "description": "Allow irreversible operations (merge, permanent delete, empty-trash) to apply (default: false)",
+          "type": "boolean"
+        },
+        "args": {
+          "description": "Additional positional arguments to append to the command. Raw CLI flags are rejected.",
+          "type": "string"
+        },
+        "continue-on-error": {
+          "description": "On bulk mutations, continue past per-item failures/conflicts instead of stopping at the first (default: false)",
+          "type": "boolean"
+        },
+        "dry-run": {
+          "description": "Show request without sending (default: false)",
+          "type": "boolean"
+        },
+        "keys-from": {
+          "description": "Read item keys from a file, '-' for stdin, or positional args when omitted",
+          "type": "string"
+        },
+        "max-changes": {
+          "description": "Max write operations a single mutation may apply before refusing (-1 = default: 500, or 50 under --agent) (default: -1)",
+          "type": "number"
+        },
+        "max-failures": {
+          "description": "With --continue-on-error, stop after this many failures (0 = unlimited) (default: 0)",
+          "type": "number"
+        },
+        "tag": {
+          "description": "Tag to add (repeatable)",
+          "type": "string"
+        },
+        "yes": {
+          "description": "Skip confirmation prompts (for agents and scripts) (default: false)",
+          "type": "boolean"
+        }
+      },
+      "required": [],
+      "type": "object"
+    }
+  },
+  {
+    "name": "items_tags_remove",
+    "description": "Remove one or more tags from items",
+    "inputSchema": {
+      "properties": {
+        "allow-destructive": {
+          "description": "Allow irreversible operations (merge, permanent delete, empty-trash) to apply (default: false)",
+          "type": "boolean"
+        },
+        "args": {
+          "description": "Additional positional arguments to append to the command. Raw CLI flags are rejected.",
+          "type": "string"
+        },
+        "continue-on-error": {
+          "description": "On bulk mutations, continue past per-item failures/conflicts instead of stopping at the first (default: false)",
+          "type": "boolean"
+        },
+        "dry-run": {
+          "description": "Show request without sending (default: false)",
+          "type": "boolean"
+        },
+        "keys-from": {
+          "description": "Read item keys from a file, '-' for stdin, or positional args when omitted",
+          "type": "string"
+        },
+        "max-changes": {
+          "description": "Max write operations a single mutation may apply before refusing (-1 = default: 500, or 50 under --agent) (default: -1)",
+          "type": "number"
+        },
+        "max-failures": {
+          "description": "With --continue-on-error, stop after this many failures (0 = unlimited) (default: 0)",
+          "type": "number"
+        },
+        "tag": {
+          "description": "Tag to remove (repeatable)",
+          "type": "string"
+        },
+        "yes": {
+          "description": "Skip confirmation prompts (for agents and scripts) (default: false)",
+          "type": "boolean"
+        }
+      },
+      "required": [],
+      "type": "object"
+    }
+  },
+  {
+    "name": "items_unfiled",
+    "description": "List top-level items not assigned to any collection",
+    "inputSchema": {
+      "properties": {
+        "limit": {
+          "description": "Maximum number of items to return (0 = no limit) (default: 0)",
+          "type": "number"
+        },
+        "type": {
+          "description": "Filter by Zotero item type",
+          "type": "string"
+        }
+      },
+      "required": [],
+      "type": "object"
+    }
+  },
+  {
+    "name": "items_venues",
+    "description": "Count synced items by publication venue",
+    "inputSchema": {
+      "properties": {
+        "top": {
+          "description": "Maximum number of venues to return (default: 20)",
+          "type": "number"
+        },
+        "type": {
+          "description": "Filter by Zotero itemType",
+          "type": "string"
+        }
+      },
+      "required": [],
+      "type": "object"
+    }
+  },
+  {
+    "name": "journal_list",
+    "description": "List recorded mutation runs, newest first",
+    "inputSchema": {
+      "properties": {},
+      "required": [],
+      "type": "object"
+    }
+  },
+  {
+    "name": "journal_show",
+    "description": "Show the operations recorded for one mutation run",
+    "inputSchema": {
+      "properties": {
+        "args": {
+          "description": "Additional positional arguments to append to the command. Raw CLI flags are rejected.",
+          "type": "string"
+        }
+      },
+      "required": [],
+      "type": "object"
+    }
+  },
+  {
+    "name": "journal_undo",
+    "description": "Reverse a recorded run's reversible (tag/collection) changes",
+    "inputSchema": {
+      "properties": {
+        "allow-destructive": {
+          "description": "Allow irreversible operations (merge, permanent delete, empty-trash) to apply (default: false)",
+          "type": "boolean"
+        },
+        "args": {
+          "description": "Additional positional arguments to append to the command. Raw CLI flags are rejected.",
+          "type": "string"
+        },
+        "continue-on-error": {
+          "description": "On bulk mutations, continue past per-item failures/conflicts instead of stopping at the first (default: false)",
+          "type": "boolean"
+        },
+        "dry-run": {
+          "description": "Show request without sending (default: false)",
+          "type": "boolean"
+        },
+        "max-changes": {
+          "description": "Max write operations a single mutation may apply before refusing (-1 = default: 500, or 50 under --agent) (default: -1)",
+          "type": "number"
+        },
+        "max-failures": {
+          "description": "With --continue-on-error, stop after this many failures (0 = unlimited) (default: 0)",
+          "type": "number"
+        },
+        "yes": {
+          "description": "Skip confirmation prompts (for agents and scripts) (default: false)",
+          "type": "boolean"
+        }
+      },
+      "required": [],
+      "type": "object"
+    }
+  },
+  {
+    "name": "library_health",
+    "description": "Run a ranked, finding-typed health report over the locally synced library.\n\nComposes the existing audit primitives (citekey conflicts, duplicates, missing\nmetadata, tag drift, broken attachments) into one report. Pick what \"ready\" means\nwith --for:\n\n  --for citation           manuscript/bibliography readiness (citekeys, core fields, duplicates)\n  --for systematic-review  PRISMA screening corpus (duplicates, screenable metadata, full text)\n  --for quick   (default)  anything obviously broken (citekey conflicts, duplicates, attachments)\n  --for all                every check\n\nGate CI with --fail-on critical|high|info (or legacy any) (exit 11 when the bar is not met).\n\nThe broken-attachment and retraction checks are live checks that need Zotero\ndesktop or CrossRef network access respectively; pass --verify-files and/or\n--check-retractions to run them. When a gate-relevant check can't run because\nits precondition is unmet, the command refuses loudly (exit 9) rather than passing.",
+    "inputSchema": {
+      "properties": {
+        "badge": {
+          "description": "Emit a shields.io endpoint JSON badge instead of the report (default: false)",
+          "type": "boolean"
+        },
+        "badge-label": {
+          "description": "Label for the shields.io endpoint badge (default: bibliography)",
+          "type": "string"
+        },
+        "baseline": {
+          "description": "Read health finding identities from this baseline JSON; missing file establishes a baseline",
+          "type": "string"
+        },
+        "check-retractions": {
+          "description": "Run the live CrossRef retraction check (network; DOI-bearing items) (default: false)",
+          "type": "boolean"
+        },
+        "fail-on": {
+          "description": "Exit 11 if findings reach this severity: critical, high, info/any; none disables the gate (default: the preset's)",
+          "type": "string"
+        },
+        "fail-on-new": {
+          "description": "Exit 11 if new baseline-diff findings reach this severity: critical, high, info/any (requires --baseline)",
+          "type": "string"
+        },
+        "for": {
+          "description": "Check preset: quick, citation, systematic-review, all (default: quick)",
+          "type": "string"
+        },
+        "limit": {
+          "description": "Max findings listed per kind (0 = all); also caps the live attachment scan (default: 0)",
+          "type": "number"
+        },
+        "report": {
+          "description": "Write the full JSON health report to this file in addition to stdout/badge output",
+          "type": "string"
+        },
+        "require-fresh": {
+          "description": "Refuse (exit 12) when the local store is staler than this (e.g. 24h); 0 = disabled (default: 0s)",
+          "type": "string"
+        },
+        "scope": {
+          "description": "Limit to a cohort: collection:KEY | tag:NAME | item:KEY | query:TEXT | saved-search:KEY (default: whole library)",
+          "type": "string"
+        },
+        "verify-files": {
+          "description": "Run the live broken-attachment check (needs Zotero desktop running) (default: false)",
+          "type": "boolean"
+        },
+        "write-baseline": {
+          "description": "Write current health finding identities to this baseline JSON after checks",
+          "type": "string"
+        }
+      },
+      "required": [],
+      "type": "object"
+    }
+  },
+  {
+    "name": "library_stats",
+    "description": "Show library-wide local statistics",
+    "inputSchema": {
+      "properties": {
+        "top": {
+          "description": "Number of venues to show (default: 10)",
+          "type": "number"
+        },
+        "years": {
+          "description": "Number of years to show (default: 20)",
+          "type": "number"
+        }
+      },
+      "required": [],
+      "type": "object"
+    }
+  },
+  {
+    "name": "library_wrapped",
+    "description": "Show a local year-in-review for your Zotero library",
+    "inputSchema": {
+      "properties": {
+        "card": {
+          "description": "Write an 800x418 SVG share card to this path",
+          "type": "string"
+        },
+        "year": {
+          "description": "Year to summarize (default: 2026)",
+          "type": "number"
+        }
+      },
+      "required": [],
+      "type": "object"
+    }
+  },
+  {
+    "name": "reading_list",
+    "description": "Show the Zotero reading queue",
+    "inputSchema": {
+      "properties": {
+        "limit": {
+          "description": "Maximum number of items to show (default: 20)",
+          "type": "number"
+        },
+        "tag": {
+          "description": "Override the reading queue tag (default: to-read)",
+          "type": "string"
+        }
+      },
+      "required": [],
+      "type": "object"
+    }
+  },
+  {
+    "name": "reading_list_add",
+    "description": "Add items to the reading queue",
+    "inputSchema": {
+      "properties": {
+        "allow-destructive": {
+          "description": "Allow irreversible operations (merge, permanent delete, empty-trash) to apply (default: false)",
+          "type": "boolean"
+        },
+        "args": {
+          "description": "Additional positional arguments to append to the command. Raw CLI flags are rejected.",
+          "type": "string"
+        },
+        "continue-on-error": {
+          "description": "On bulk mutations, continue past per-item failures/conflicts instead of stopping at the first (default: false)",
+          "type": "boolean"
+        },
+        "dry-run": {
+          "description": "Show request without sending (default: false)",
+          "type": "boolean"
+        },
+        "keys-from": {
+          "description": "Read item keys from a file, '-' for stdin, or positional args when omitted",
+          "type": "string"
+        },
+        "max-changes": {
+          "description": "Max write operations a single mutation may apply before refusing (-1 = default: 500, or 50 under --agent) (default: -1)",
+          "type": "number"
+        },
+        "max-failures": {
+          "description": "With --continue-on-error, stop after this many failures (0 = unlimited) (default: 0)",
+          "type": "number"
+        },
+        "yes": {
+          "description": "Skip confirmation prompts (for agents and scripts) (default: false)",
+          "type": "boolean"
+        }
+      },
+      "required": [],
+      "type": "object"
+    }
+  },
+  {
+    "name": "reading_list_done",
+    "description": "Mark reading items as read",
+    "inputSchema": {
+      "properties": {
+        "allow-destructive": {
+          "description": "Allow irreversible operations (merge, permanent delete, empty-trash) to apply (default: false)",
+          "type": "boolean"
+        },
+        "args": {
+          "description": "Additional positional arguments to append to the command. Raw CLI flags are rejected.",
+          "type": "string"
+        },
+        "continue-on-error": {
+          "description": "On bulk mutations, continue past per-item failures/conflicts instead of stopping at the first (default: false)",
+          "type": "boolean"
+        },
+        "dry-run": {
+          "description": "Show request without sending (default: false)",
+          "type": "boolean"
+        },
+        "keys-from": {
+          "description": "Read item keys from a file, '-' for stdin, or positional args when omitted",
+          "type": "string"
+        },
+        "max-changes": {
+          "description": "Max write operations a single mutation may apply before refusing (-1 = default: 500, or 50 under --agent) (default: -1)",
+          "type": "number"
+        },
+        "max-failures": {
+          "description": "With --continue-on-error, stop after this many failures (0 = unlimited) (default: 0)",
+          "type": "number"
+        },
+        "yes": {
+          "description": "Skip confirmation prompts (for agents and scripts) (default: false)",
+          "type": "boolean"
+        }
+      },
+      "required": [],
+      "type": "object"
+    }
+  },
+  {
+    "name": "reading_list_start",
+    "description": "Move queued items into the reading state",
+    "inputSchema": {
+      "properties": {
+        "allow-destructive": {
+          "description": "Allow irreversible operations (merge, permanent delete, empty-trash) to apply (default: false)",
+          "type": "boolean"
+        },
+        "args": {
+          "description": "Additional positional arguments to append to the command. Raw CLI flags are rejected.",
+          "type": "string"
+        },
+        "continue-on-error": {
+          "description": "On bulk mutations, continue past per-item failures/conflicts instead of stopping at the first (default: false)",
+          "type": "boolean"
+        },
+        "dry-run": {
+          "description": "Show request without sending (default: false)",
+          "type": "boolean"
+        },
+        "keys-from": {
+          "description": "Read item keys from a file, '-' for stdin, or positional args when omitted",
+          "type": "string"
+        },
+        "max-changes": {
+          "description": "Max write operations a single mutation may apply before refusing (-1 = default: 500, or 50 under --agent) (default: -1)",
+          "type": "number"
+        },
+        "max-failures": {
+          "description": "With --continue-on-error, stop after this many failures (0 = unlimited) (default: 0)",
+          "type": "number"
+        },
+        "yes": {
+          "description": "Skip confirmation prompts (for agents and scripts) (default: false)",
+          "type": "boolean"
+        }
+      },
+      "required": [],
+      "type": "object"
+    }
+  },
+  {
+    "name": "search",
+    "description": "Full-text search across all synced data. Faster than paginating list endpoints. Requires sync first. Large responses are bounded to the MCP tool-result budget.",
+    "inputSchema": {
+      "properties": {
+        "limit": {
+          "description": "Max results (default 25)",
+          "type": "number"
+        },
+        "query": {
+          "description": "Search query (supports FTS5 syntax: AND, OR, NOT, quotes for phrases)",
+          "type": "string"
+        }
+      },
+      "required": [
+        "query"
+      ],
+      "type": "object"
+    }
+  },
+  {
+    "name": "searches_materialize",
+    "description": "Add items from a saved search to a collection",
+    "inputSchema": {
+      "properties": {
+        "allow-destructive": {
+          "description": "Allow irreversible operations (merge, permanent delete, empty-trash) to apply (default: false)",
+          "type": "boolean"
+        },
+        "args": {
+          "description": "Additional positional arguments to append to the command. Raw CLI flags are rejected.",
+          "type": "string"
+        },
+        "continue-on-error": {
+          "description": "On bulk mutations, continue past per-item failures/conflicts instead of stopping at the first (default: false)",
+          "type": "boolean"
+        },
+        "dry-run": {
+          "description": "Show request without sending (default: false)",
+          "type": "boolean"
+        },
+        "max-changes": {
+          "description": "Max write operations a single mutation may apply before refusing (-1 = default: 500, or 50 under --agent) (default: -1)",
+          "type": "number"
+        },
+        "max-failures": {
+          "description": "With --continue-on-error, stop after this many failures (0 = unlimited) (default: 0)",
+          "type": "number"
+        },
+        "to": {
+          "description": "Collection key to add saved-search items into",
+          "type": "string"
+        },
+        "yes": {
+          "description": "Skip confirmation prompts (for agents and scripts) (default: false)",
+          "type": "boolean"
+        }
+      },
+      "required": [],
+      "type": "object"
+    }
+  },
+  {
+    "name": "searches_run",
+    "description": "Run a saved Zotero search when the API exposes results",
+    "inputSchema": {
+      "properties": {
+        "args": {
+          "description": "Additional positional arguments to append to the command. Raw CLI flags are rejected.",
+          "type": "string"
+        }
+      },
+      "required": [],
+      "type": "object"
+    }
+  },
+  {
+    "name": "sql",
+    "description": "Run read-only SQL against local database. Use for ad-hoc analysis, aggregations, and joins across synced resources. Requires sync first. Returns a JSON object with rows, truncated, and row_limit; large responses are bounded to the MCP tool-result budget.",
+    "inputSchema": {
+      "properties": {
+        "query": {
+          "description": "SQL query (SELECT or WITH...SELECT). Tables match resource names.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "query"
+      ],
+      "type": "object"
+    }
+  },
+  {
+    "name": "sync",
+    "description": "Sync data from the API into a local SQLite database. Supports resumable\nincremental sync (only fetches new data since last sync) and full resync.\nOnce synced, use the 'search' command for instant full-text search.\n\nExit codes \u0026 warnings:\n  Resources the API denies access to (HTTP 403, or HTTP 400 with an\n  access-policy body) are reported as warnings rather than failing the\n  run. In --json mode each is emitted as a {\"event\":\"sync_warning\",...}\n  line carrying status, reason, and message fields, and a final\n  {\"event\":\"sync_summary\",...} aggregates the run.\n\n  Exit 0 when at least one resource synced and no resource flagged in\n  the spec as critical (x-critical: true) failed. Pass --strict to exit\n  non-zero on any per-resource failure. Exit is always\n  non-zero when every selected resource failed, regardless of --strict.",
+    "inputSchema": {
+      "properties": {
+        "allow-destructive": {
+          "description": "Allow irreversible operations (merge, permanent delete, empty-trash) to apply (default: false)",
+          "type": "boolean"
+        },
+        "concurrency": {
+          "description": "Number of parallel sync workers (default: 4)",
+          "type": "number"
+        },
+        "continue-on-error": {
+          "description": "On bulk mutations, continue past per-item failures/conflicts instead of stopping at the first (default: false)",
+          "type": "boolean"
+        },
+        "db": {
+          "description": "Database path (default: ~/.local/share/zotio/data.db)",
+          "type": "string"
+        },
+        "dry-run": {
+          "description": "Show request without sending (default: false)",
+          "type": "boolean"
+        },
+        "full": {
+          "description": "Full resync (ignore previous checkpoint) (default: false)",
+          "type": "boolean"
+        },
+        "fulltext": {
+          "description": "Also sync PDF full-text content (slower; one request per attachment) (default: false)",
+          "type": "boolean"
+        },
+        "latest-only": {
+          "description": "Refresh head of each resource only; clears resume cursor and caps pages at 1. Mutually exclusive with --since (--since wins). (default: false)",
+          "type": "boolean"
+        },
+        "max-changes": {
+          "description": "Max write operations a single mutation may apply before refusing (-1 = default: 500, or 50 under --agent) (default: -1)",
+          "type": "number"
+        },
+        "max-failures": {
+          "description": "With --continue-on-error, stop after this many failures (0 = unlimited) (default: 0)",
+          "type": "number"
+        },
+        "max-pages": {
+          "description": "Maximum pages to fetch per resource (0 = unlimited; cap-hit emits a sync_warning event) (default: 100)",
+          "type": "number"
+        },
+        "resources": {
+          "description": "Comma-separated resource types to sync",
+          "type": "string"
+        },
+        "since": {
+          "description": "Only sync objects modified since this Zotero library version (0 = use stored checkpoint). Get versions from a prior sync or 'items list --since'. (default: 0)",
+          "type": "number"
+        },
+        "strict": {
+          "description": "Exit non-zero on any per-resource failure (default: only critical failures or all-resource failure exit non-zero). (default: false)",
+          "type": "boolean"
+        },
+        "yes": {
+          "description": "Skip confirmation prompts (for agents and scripts) (default: false)",
+          "type": "boolean"
+        }
+      },
+      "required": [],
+      "type": "object"
+    }
+  },
+  {
+    "name": "tags_audit",
+    "description": "Audit tags for case and spacing drift",
+    "inputSchema": {
+      "properties": {},
+      "required": [],
+      "type": "object"
+    }
+  },
+  {
+    "name": "tags_audit_fix",
+    "description": "Apply the tag rename plan produced by tags audit",
+    "inputSchema": {
+      "properties": {
+        "allow-destructive": {
+          "description": "Allow irreversible operations (merge, permanent delete, empty-trash) to apply (default: false)",
+          "type": "boolean"
+        },
+        "continue-on-error": {
+          "description": "On bulk mutations, continue past per-item failures/conflicts instead of stopping at the first (default: false)",
+          "type": "boolean"
+        },
+        "dry-run": {
+          "description": "Show request without sending (default: false)",
+          "type": "boolean"
+        },
+        "max-changes": {
+          "description": "Max write operations a single mutation may apply before refusing (-1 = default: 500, or 50 under --agent) (default: -1)",
+          "type": "number"
+        },
+        "max-failures": {
+          "description": "With --continue-on-error, stop after this many failures (0 = unlimited) (default: 0)",
+          "type": "number"
+        },
+        "yes": {
+          "description": "Skip confirmation prompts (for agents and scripts) (default: false)",
+          "type": "boolean"
+        }
+      },
+      "required": [],
+      "type": "object"
+    }
+  },
+  {
+    "name": "tags_inventory",
+    "description": "Show tag usage within collections and across the library",
+    "inputSchema": {
+      "properties": {
+        "collection": {
+          "description": "Show only tags within this collection key",
+          "type": "string"
+        }
+      },
+      "required": [],
+      "type": "object"
+    }
+  },
+  {
+    "name": "vault_audit",
+    "description": "Audit managed vault notes without writing",
+    "inputSchema": {
+      "properties": {
+        "args": {
+          "description": "Additional positional arguments to append to the command. Raw CLI flags are rejected.",
+          "type": "string"
+        },
+        "out": {
+          "description": "Vault directory (overrides [vault].root + notes_dir from config)",
+          "type": "string"
+        }
+      },
+      "required": [],
+      "type": "object"
+    }
+  },
+  {
+    "name": "vault_conflicts",
+    "description": "List unresolved Zotero note write-back conflicts",
+    "inputSchema": {
+      "properties": {
+        "args": {
+          "description": "Additional positional arguments to append to the command. Raw CLI flags are rejected.",
+          "type": "string"
+        },
+        "out": {
+          "description": "Vault directory (overrides [vault].root + notes_dir from config)",
+          "type": "string"
+        }
+      },
+      "required": [],
+      "type": "object"
+    }
+  },
+  {
+    "name": "vault_pull",
+    "description": "Pull edits made to a managed Zotero child note back into the vault note's\n\"## Notes\" region. This is fast-forward only: a note is updated only when its\nlocal region is unchanged since the last sync. If both the local region and the\nremote note changed, it is reported as a conflict and nothing is merged or\noverwritten (resolve by hand, or 'vault resolve --keep-vault' to keep the vault\ncopy). Only notes in the shape this CLI writes are pulled.\n\nUse --dry-run to preview without writing to the vault.",
+    "inputSchema": {
+      "properties": {
+        "allow-destructive": {
+          "description": "Allow irreversible operations (merge, permanent delete, empty-trash) to apply (default: false)",
+          "type": "boolean"
+        },
+        "args": {
+          "description": "Additional positional arguments to append to the command. Raw CLI flags are rejected.",
+          "type": "string"
+        },
+        "continue-on-error": {
+          "description": "On bulk mutations, continue past per-item failures/conflicts instead of stopping at the first (default: false)",
+          "type": "boolean"
+        },
+        "dry-run": {
+          "description": "Show request without sending (default: false)",
+          "type": "boolean"
+        },
+        "max-changes": {
+          "description": "Max write operations a single mutation may apply before refusing (-1 = default: 500, or 50 under --agent) (default: -1)",
+          "type": "number"
+        },
+        "max-failures": {
+          "description": "With --continue-on-error, stop after this many failures (0 = unlimited) (default: 0)",
+          "type": "number"
+        },
+        "out": {
+          "description": "Vault directory (overrides [vault].root + notes_dir from config)",
+          "type": "string"
+        },
+        "yes": {
+          "description": "Skip confirmation prompts (for agents and scripts) (default: false)",
+          "type": "boolean"
+        }
+      },
+      "required": [],
+      "type": "object"
+    }
+  },
+  {
+    "name": "vault_push",
+    "description": "Push the user-owned Notes region of each vault note to a single managed Zotero\nchild note (Obsidian -\u003e Zotero). Reads stay local; writes go to the Web API (an\napi_key must be configured). Idempotent and conflict-safe: a note is only written\nwhen its Notes region changed since the last push, the remote note body is checked\nfirst, and a divergent remote is never overwritten — a conflict artifact is\nwritten under _vault-zotero-conflicts/ and reported instead.\n\nUse --dry-run to preview create/update/conflict without writing anything.",
+    "inputSchema": {
+      "properties": {
+        "allow-destructive": {
+          "description": "Allow irreversible operations (merge, permanent delete, empty-trash) to apply (default: false)",
+          "type": "boolean"
+        },
+        "args": {
+          "description": "Additional positional arguments to append to the command. Raw CLI flags are rejected.",
+          "type": "string"
+        },
+        "continue-on-error": {
+          "description": "On bulk mutations, continue past per-item failures/conflicts instead of stopping at the first (default: false)",
+          "type": "boolean"
+        },
+        "dry-run": {
+          "description": "Show request without sending (default: false)",
+          "type": "boolean"
+        },
+        "max-changes": {
+          "description": "Max write operations a single mutation may apply before refusing (-1 = default: 500, or 50 under --agent) (default: -1)",
+          "type": "number"
+        },
+        "max-failures": {
+          "description": "With --continue-on-error, stop after this many failures (0 = unlimited) (default: 0)",
+          "type": "number"
+        },
+        "out": {
+          "description": "Vault directory (overrides [vault].root + notes_dir from config)",
+          "type": "string"
+        },
+        "yes": {
+          "description": "Skip confirmation prompts (for agents and scripts) (default: false)",
+          "type": "boolean"
+        }
+      },
+      "required": [],
+      "type": "object"
+    }
+  },
+  {
+    "name": "vault_resolve",
+    "description": "Resolve a conflict (or a remotely-deleted note) by choosing a direction:\n\n--keep-vault writes the vault's Notes region over the Zotero child note, using\nthe live remote version as the precondition. --recreate re-creates a child note\nthat was deleted in Zotero.\n\n--keep-remote does the reverse: it pulls the live Zotero note body over the\nvault Notes region, discarding local edits (a forced 'vault pull'). Only notes\nin the shape this CLI writes are pulled.\n\nExactly one direction is required so the destructive side is explicit; the\nresolved conflict artifact is removed on success.",
+    "inputSchema": {
+      "properties": {
+        "allow-destructive": {
+          "description": "Allow irreversible operations (merge, permanent delete, empty-trash) to apply (default: false)",
+          "type": "boolean"
+        },
+        "args": {
+          "description": "Additional positional arguments to append to the command. Raw CLI flags are rejected.",
+          "type": "string"
+        },
+        "continue-on-error": {
+          "description": "On bulk mutations, continue past per-item failures/conflicts instead of stopping at the first (default: false)",
+          "type": "boolean"
+        },
+        "dry-run": {
+          "description": "Show request without sending (default: false)",
+          "type": "boolean"
+        },
+        "keep-remote": {
+          "description": "Pull the Zotero note over the vault Notes region (discards local edits) (default: false)",
+          "type": "boolean"
+        },
+        "keep-vault": {
+          "description": "Write the vault copy over the Zotero note (required direction) (default: false)",
+          "type": "boolean"
+        },
+        "max-changes": {
+          "description": "Max write operations a single mutation may apply before refusing (-1 = default: 500, or 50 under --agent) (default: -1)",
+          "type": "number"
+        },
+        "max-failures": {
+          "description": "With --continue-on-error, stop after this many failures (0 = unlimited) (default: 0)",
+          "type": "number"
+        },
+        "out": {
+          "description": "Vault directory (overrides [vault].root + notes_dir from config)",
+          "type": "string"
+        },
+        "recreate": {
+          "description": "Re-create a child note deleted in Zotero (default: false)",
+          "type": "boolean"
+        },
+        "yes": {
+          "description": "Skip confirmation prompts (for agents and scripts) (default: false)",
+          "type": "boolean"
+        }
+      },
+      "required": [],
+      "type": "object"
+    }
+  },
+  {
+    "name": "vault_sync",
+    "description": "Materialize literature notes into an Obsidian or Logseq vault from the local\nstore (run 'sync' first). Notes are named from the citation key, carry zotero://\nbacklinks, and embed current annotations in a managed block.\n\nRe-running is idempotent and non-destructive: only the managed frontmatter keys\nand the fenced annotations block change; your prose and other frontmatter keys\nare preserved. Use --dry-run to preview create/update/unchanged without writing.",
+    "inputSchema": {
+      "properties": {
+        "allow-destructive": {
+          "description": "Allow irreversible operations (merge, permanent delete, empty-trash) to apply (default: false)",
+          "type": "boolean"
+        },
+        "args": {
+          "description": "Additional positional arguments to append to the command. Raw CLI flags are rejected.",
+          "type": "string"
+        },
+        "collection": {
+          "description": "Only sync items in this collection key",
+          "type": "string"
+        },
+        "continue-on-error": {
+          "description": "On bulk mutations, continue past per-item failures/conflicts instead of stopping at the first (default: false)",
+          "type": "boolean"
+        },
+        "dry-run": {
+          "description": "Show request without sending (default: false)",
+          "type": "boolean"
+        },
+        "format": {
+          "description": "Note format: obsidian or logseq (default: obsidian)",
+          "type": "string"
+        },
+        "item-type": {
+          "description": "Only sync items of this type",
+          "type": "string"
+        },
+        "limit": {
+          "description": "Maximum items to sync (0 = all) (default: 0)",
+          "type": "number"
+        },
+        "max-changes": {
+          "description": "Max write operations a single mutation may apply before refusing (-1 = default: 500, or 50 under --agent) (default: -1)",
+          "type": "number"
+        },
+        "max-failures": {
+          "description": "With --continue-on-error, stop after this many failures (0 = unlimited) (default: 0)",
+          "type": "number"
+        },
+        "out": {
+          "description": "Vault directory (overrides [vault].root + notes_dir from config)",
+          "type": "string"
+        },
+        "tag": {
+          "description": "Only sync items with this tag",
+          "type": "string"
+        },
+        "yes": {
+          "description": "Skip confirmation prompts (for agents and scripts) (default: false)",
+          "type": "boolean"
+        }
+      },
+      "required": [],
+      "type": "object"
+    }
+  },
+  {
+    "name": "workflow_archive",
+    "description": "Archive fetches all syncable resources from the API and stores them in a\nlocal SQLite database. Supports incremental sync (only new data since last run)\nand full resync. After archiving, use 'search' for instant full-text search.",
+    "inputSchema": {
+      "properties": {
+        "allow-destructive": {
+          "description": "Allow irreversible operations (merge, permanent delete, empty-trash) to apply (default: false)",
+          "type": "boolean"
+        },
+        "continue-on-error": {
+          "description": "On bulk mutations, continue past per-item failures/conflicts instead of stopping at the first (default: false)",
+          "type": "boolean"
+        },
+        "db": {
+          "description": "Database path (default: ~/.local/share/zotio/data.db)",
+          "type": "string"
+        },
+        "dry-run": {
+          "description": "Show request without sending (default: false)",
+          "type": "boolean"
+        },
+        "full": {
+          "description": "Full re-archive (ignore previous sync state) (default: false)",
+          "type": "boolean"
+        },
+        "max-changes": {
+          "description": "Max write operations a single mutation may apply before refusing (-1 = default: 500, or 50 under --agent) (default: -1)",
+          "type": "number"
+        },
+        "max-failures": {
+          "description": "With --continue-on-error, stop after this many failures (0 = unlimited) (default: 0)",
+          "type": "number"
+        },
+        "yes": {
+          "description": "Skip confirmation prompts (for agents and scripts) (default: false)",
+          "type": "boolean"
+        }
+      },
+      "required": [],
+      "type": "object"
+    }
+  },
+  {
+    "name": "workflow_run",
+    "description": "Run a declarative workflow spec in-process",
+    "inputSchema": {
+      "properties": {
+        "allow-destructive": {
+          "description": "Allow irreversible operations (merge, permanent delete, empty-trash) to apply (default: false)",
+          "type": "boolean"
+        },
+        "args": {
+          "description": "Additional positional arguments to append to the command. Raw CLI flags are rejected.",
+          "type": "string"
+        },
+        "continue-on-error": {
+          "description": "On bulk mutations, continue past per-item failures/conflicts instead of stopping at the first (default: false)",
+          "type": "boolean"
+        },
+        "dry-run": {
+          "description": "Show request without sending (default: false)",
+          "type": "boolean"
+        },
+        "max-changes": {
+          "description": "Max write operations a single mutation may apply before refusing (-1 = default: 500, or 50 under --agent) (default: -1)",
+          "type": "number"
+        },
+        "max-failures": {
+          "description": "With --continue-on-error, stop after this many failures (0 = unlimited) (default: 0)",
+          "type": "number"
+        },
+        "yes": {
+          "description": "Skip confirmation prompts (for agents and scripts) (default: false)",
+          "type": "boolean"
+        }
+      },
+      "required": [],
+      "type": "object"
+    }
+  },
+  {
+    "name": "workflow_status",
+    "description": "Show local archive status and sync state for all resources",
+    "inputSchema": {
+      "properties": {
+        "db": {
+          "description": "Database path",
+          "type": "string"
+        }
+      },
+      "required": [],
+      "type": "object"
+    }
+  }
+]
