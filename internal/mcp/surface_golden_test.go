@@ -79,7 +79,7 @@ func TestMCPSurfaceGolden(t *testing.T) {
 				if err := os.MkdirAll(filepath.Dir(goldenPath), 0o755); err != nil {
 					t.Fatalf("create testdata: %v", err)
 				}
-				if err := os.WriteFile(goldenPath, actual, 0o644); err != nil {
+				if err := os.WriteFile(goldenPath, actual, 0o600); err != nil {
 					t.Fatalf("update golden %s: %v", goldenPath, err)
 				}
 				return
