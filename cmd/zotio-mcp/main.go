@@ -19,6 +19,7 @@ import (
 	"syscall"
 	"time"
 
+	"zotio/internal/cli"
 	mcptools "zotio/internal/mcp"
 
 	"github.com/mark3labs/mcp-go/server"
@@ -31,7 +32,7 @@ func main() {
 	// discover Zotero context and guided workflows.
 	s := server.NewMCPServer(
 		"Zotero",
-		"1.0.0",
+		cli.Version(),
 		server.WithToolCapabilities(false),
 		server.WithResourceCapabilities(false, true),
 		server.WithPromptCapabilities(true),
@@ -41,18 +42,6 @@ func main() {
 	// First-class MCP resources and prompts.
 	mcptools.RegisterResources(s)
 	mcptools.RegisterPrompts(s)
-
-	// Announce the env-selected library and profile so MCP installs (which
-	// configure these via env, not flags) are
-	// verifiable from the host's server log.
-	if g := os.Getenv("ZOTERO_GROUP"); g != "" {
-		fmt.Fprintf(os.Stderr, "Zotero MCP: group library %s\n", g)
-	} else {
-		fmt.Fprintln(os.Stderr, "Zotero MCP: personal library")
-	}
-	if p := os.Getenv("ZOTERO_PROFILE"); p != "" {
-		fmt.Fprintf(os.Stderr, "Zotero MCP: profile %s\n", p)
-	}
 
 	// The streamable-HTTP transport lets one binary serve stdio locally and HTTP
 	// when hosted in a container/remote sandbox. Transport selection:
@@ -64,7 +53,25 @@ func main() {
 	mcpAuthToken := flag.String("mcp-auth-token", "", "refuse bearer tokens on the command line; use ZOTIO_MCP_TOKEN or --mcp-auth-token-file")
 	mcpAuthTokenFile := flag.String("mcp-auth-token-file", "", "path to a file containing the bearer token required by the http transport (falls back to ZOTIO_MCP_TOKEN; auto-generated if unset)")
 	allowUnauth := flag.Bool("allow-unauthenticated", false, "disable bearer-token auth for the http transport (NOT recommended; loopback is not a per-user boundary)")
+	showVersion := flag.Bool("version", false, "print version and exit")
 	flag.Parse()
+	if *showVersion {
+		fmt.Printf("zotio-mcp %s\n", cli.Version())
+		return
+	}
+
+	// Announce the env-selected library and profile so MCP installs (which
+	// configure these via env, not flags) are
+	// verifiable from the host's server log.
+	fmt.Fprintf(os.Stderr, "zotio-mcp %s\n", cli.Version())
+	if g := os.Getenv("ZOTERO_GROUP"); g != "" {
+		fmt.Fprintf(os.Stderr, "Zotero MCP: group library %s\n", g)
+	} else {
+		fmt.Fprintln(os.Stderr, "Zotero MCP: personal library")
+	}
+	if p := os.Getenv("ZOTERO_PROFILE"); p != "" {
+		fmt.Fprintf(os.Stderr, "Zotero MCP: profile %s\n", p)
+	}
 
 	// Stdio MCP uses stdout as the JSON-RPC transport. Mirrored Cobra commands
 	// still contain legacy direct os.Stdout
