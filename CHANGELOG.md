@@ -54,6 +54,9 @@ Notable changes to zotio. Format follows [Keep a Changelog](https://keepachangel
 - **Package distribution expanded** — tagged releases now publish a Scoop manifest to `OrgMentem/scoop-bucket` (`scoop bucket add zotio https://github.com/OrgMentem/scoop-bucket && scoop install zotio`), open a WinGet manifest PR (`winget install OrgMentem.zotio`), and attach Linux `.deb`/`.rpm`/`.apk` packages; Homebrew (`brew install orgmentem/tap/zotio`) covers macOS and Linux.
 
 ### Changed
+- `library stats` renders proportional bar charts with aligned counts instead of bare tabwriter columns.
+- `printTable` commands (`retract-check`, `bibcheck`, `groups`, `which`, importer listings) render through the width-aware styler: bold headers, dim keys/dates, severity-colored STATUS cells (red retracted, yellow correction, green ok), and cells clipped to 48 columns so rows stay terminal-sized (JSON output keeps full values).
+- Demo GIFs re-recorded against the styled output; the docs/README tour now walks search, duplicate detection, stats, and goal resolution.
 - `--deliver` now delivers rendered reports when a quality or freshness gate fails (exit `11`/`12`) — previously the report was dropped exactly when a CI consumer needed it. Usage and config errors still skip delivery, and a delivery failure never masks the command's exit code.
 - Export snapshot lockfiles record each item's title and normalized content SHA-256.
 

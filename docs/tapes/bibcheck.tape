@@ -1,8 +1,8 @@
 # Manuscript gate: resolve \cite{} keys against the library, catch the bad ones.
 Output ../assets/demos/bibcheck.gif
 
-Set FontSize 15
-Set Width 920
+Set FontSize 14
+Set Width 1400
 Set Height 500
 Set Padding 12
 Set TypingSpeed 30ms

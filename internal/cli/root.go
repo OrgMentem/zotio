@@ -10,7 +10,6 @@ import (
 	"io"
 	"os"
 	"strings"
-	"text/tabwriter"
 	"time"
 
 	"zotio/internal/client"
@@ -392,30 +391,21 @@ func (f *rootFlags) newWebReadClient(ctx context.Context) (*client.Client, error
 }
 
 // printTable is table-only; JSON output uses command-specific encoders.
+// Rendering goes through renderColumns: bold headers, per-column styling,
+// display-width alignment. Cells are truncated to keep rows terminal-sized.
 func (f *rootFlags) printTable(w *cobra.Command, headers []string, rows [][]string) error {
 	if f.asJSON {
 		return fmt.Errorf("printTable does not support JSON output")
 	}
-	tw := tabwriter.NewWriter(w.OutOrStdout(), 2, 4, 2, ' ', 0)
-	header := ""
-	for i, h := range headers {
-		if i > 0 {
-			header += "\t"
+	clipped := make([][]string, len(rows))
+	for i, row := range rows {
+		cells := make([]string, len(row))
+		for j, cell := range row {
+			cells[j] = truncate(sanitizeForTerminal(cell), 48)
 		}
-		header += h
+		clipped[i] = cells
 	}
-	fmt.Fprintln(tw, header)
-	for _, row := range rows {
-		line := ""
-		for i, cell := range row {
-			if i > 0 {
-				line += "\t"
-			}
-			line += cell
-		}
-		fmt.Fprintln(tw, line)
-	}
-	return tw.Flush()
+	return renderColumns(w.OutOrStdout(), headers, clipped)
 }
 
 func newVersionCliCmd() *cobra.Command {

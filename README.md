@@ -73,6 +73,10 @@ zotio demo          # seed the sandbox + print a tour
 ZOTIO_DEMO=1 zotio library health --for citation
 ```
 
+<p align="center">
+  <img src="docs/assets/demos/demo-tour.gif" alt="zotio demo tour: seeding the sandbox, full-text search cards, duplicate detection, library stats with bar charts, and resolving the goal 'retracted papers' to a command" width="740">
+</p>
+
 ---
 
 ## Why zotio

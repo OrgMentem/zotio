@@ -5,6 +5,9 @@ package cli
 import (
 	"encoding/json"
 	"fmt"
+	"io"
+	"strconv"
+	"strings"
 
 	"github.com/spf13/cobra"
 )
@@ -210,40 +213,77 @@ WHERE i.resource_type='items'
 
 func printLibraryStats(cmd *cobra.Command, stats libraryStats, years int) error {
 	w := cmd.OutOrStdout()
-	fmt.Fprintln(w, "Library Statistics")
-	fmt.Fprintln(w, "==================")
+	fmt.Fprintln(w, bold("Library Statistics"))
 	fmt.Fprintln(w)
 
-	fmt.Fprintln(w, "Items by Type")
-	tw := newTabWriter(w)
+	typeRows := make([]statRow, 0, len(stats.ItemsByType))
 	for _, row := range stats.ItemsByType {
-		fmt.Fprintf(tw, "%s\t%d\n", sanitizeForTerminal(row.ItemType), row.Count)
+		typeRows = append(typeRows, statRow{label: row.ItemType, count: row.Count})
 	}
-	if err := tw.Flush(); err != nil {
-		return err
-	}
-	fmt.Fprintln(w)
+	printStatSection(w, "Items by Type", typeRows)
 
-	fmt.Fprintf(w, "Items by Year (last %d years)\n", years)
-	tw = newTabWriter(w)
+	yearRows := make([]statRow, 0, len(stats.ItemsByYear))
 	for _, row := range stats.ItemsByYear {
-		fmt.Fprintf(tw, "%s\t%d\n", sanitizeForTerminal(row.Year), row.Count)
+		yearRows = append(yearRows, statRow{label: row.Year, count: row.Count})
 	}
-	if err := tw.Flush(); err != nil {
-		return err
-	}
-	fmt.Fprintln(w)
+	printStatSection(w, fmt.Sprintf("Items by Year (last %d years)", years), yearRows)
 
-	fmt.Fprintln(w, "Top Venues")
-	tw = newTabWriter(w)
+	venueRows := make([]statRow, 0, len(stats.TopVenues))
 	for _, row := range stats.TopVenues {
-		fmt.Fprintf(tw, "%s\t%d\n", sanitizeForTerminal(row.Venue), row.Count)
+		venueRows = append(venueRows, statRow{label: row.Venue, count: row.Count})
 	}
-	if err := tw.Flush(); err != nil {
-		return err
+	printStatSection(w, "Top Venues", venueRows)
+
+	cov := stats.PDFCoverage
+	fmt.Fprintf(w, "%s  %d/%d (%d%%)  %s\n",
+		bold("PDF Coverage"), cov.ItemsWithPDF, cov.TotalItems, cov.Pct, statBar(cov.Pct, 100))
+	return nil
+}
+
+type statRow struct {
+	label string
+	count int
+}
+
+// printStatSection renders one aligned stats block: label column, right-aligned
+// count, and a bar proportional to the section's largest count.
+func printStatSection(w io.Writer, title string, rows []statRow) {
+	if len(rows) == 0 {
+		return
+	}
+	fmt.Fprintln(w, bold(title))
+	labelW, countW, maxCount := 0, 0, 0
+	counts := make([]string, len(rows))
+	for i, r := range rows {
+		r.label = sanitizeForTerminal(r.label)
+		rows[i] = r
+		if lw := displayWidth(r.label); lw > labelW {
+			labelW = lw
+		}
+		counts[i] = strconv.Itoa(r.count)
+		if cw := len(counts[i]); cw > countW {
+			countW = cw
+		}
+		if r.count > maxCount {
+			maxCount = r.count
+		}
+	}
+	for i, r := range rows {
+		fmt.Fprintf(w, "%s  %*s  %s\n", padRight(r.label, labelW), countW, counts[i], statBar(r.count, maxCount))
 	}
 	fmt.Fprintln(w)
+}
 
-	fmt.Fprintf(w, "PDF Coverage: %d/%d (%d%%)\n", stats.PDFCoverage.ItemsWithPDF, stats.PDFCoverage.TotalItems, stats.PDFCoverage.Pct)
-	return nil
+// statBar renders a bar of up to 24 cells proportional to count/max.
+// Non-zero counts always get at least one cell.
+func statBar(count, max int) string {
+	if max <= 0 || count <= 0 {
+		return ""
+	}
+	const cells = 24
+	n := count * cells / max
+	if n < 1 {
+		n = 1
+	}
+	return cyan(strings.Repeat("▆", n))
 }

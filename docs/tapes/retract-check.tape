@@ -2,9 +2,9 @@
 # Hits the live Crossref API (Retraction Watch data) — record with network.
 Output ../assets/demos/retract-check.gif
 
-Set FontSize 15
-Set Width 920
-Set Height 460
+Set FontSize 14
+Set Width 1400
+Set Height 300
 Set Padding 12
 Set TypingSpeed 30ms
 Set Shell "bash"
@@ -18,3 +18,4 @@ Show
 Type "zotio items retract-check --limit 5"
 Enter
 Sleep 16s
+Sleep 3s

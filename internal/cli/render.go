@@ -94,8 +94,25 @@ func columnStyle(header string) func(string) string {
 		return dim
 	case h == "itemtype" || h == "type" || h == "kind":
 		return cyan
+	case h == "status":
+		return statusStyle
 	}
 	return func(s string) string { return s }
+}
+
+// statusStyle colors a status cell by severity: red for retraction-grade
+// findings, yellow for cautionary ones, green for healthy states. Unknown
+// statuses pass through unstyled.
+func statusStyle(v string) string {
+	switch strings.ToLower(v) {
+	case "retracted", "error", "failed", "missing":
+		return red(v)
+	case "correction", "concern", "expression of concern", "warning", "stale":
+		return yellow(v)
+	case "ok", "clear", "active", "healthy":
+		return green(v)
+	}
+	return v
 }
 
 // renderColumns writes an aligned table: bold uppercase headers, per-column
