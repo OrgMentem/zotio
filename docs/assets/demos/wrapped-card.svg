@@ -2,45 +2,67 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="800" height="418" viewBox="0 0 800 418" role="img" aria-labelledby="title desc">
   <title id="title">zotio wrapped 2026</title>
   <desc id="desc">A local Zotero year in review: 12 items added in 2026.</desc>
-  <rect width="800" height="418" rx="28" fill="#101827"/>
-  <circle cx="680" cy="62" r="116" fill="#24324b" opacity="0.62"/>
-  <circle cx="104" cy="360" r="142" fill="#1f3a4d" opacity="0.52"/>
-  <text x="54" y="64" fill="#e5edf7" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="30" font-weight="700">zotio</text>
-  <text x="54" y="101" fill="#8fb4d9" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="18">Wrapped 2026</text>
-  <text x="54" y="172" fill="#ffffff" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="72" font-weight="800">12</text>
-  <text x="54" y="205" fill="#c7d7ea" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="24">items added locally</text>
-  <text x="54" y="260" fill="#e5edf7" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="20" font-weight="700">Top venue</text>
-  <text x="54" y="289" fill="#9fb7d3" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="18">Science (2)</text>
-  <text x="54" y="331" fill="#e5edf7" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="20" font-weight="700">Top first creator</text>
-  <text x="54" y="360" fill="#9fb7d3" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="18">Cong, Le (1)</text>
-  <rect x="450" y="118" width="296" height="224" rx="22" fill="#172338" stroke="#2e4566"/>
-  <text x="480" y="158" fill="#e5edf7" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="20" font-weight="700">Monthly rhythm</text>
-    <rect x="480" y="233" width="12" height="35" rx="4" fill="#6bc7ff"/>
-  <text x="479" y="286" fill="#6f89a8" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="9">J</text>
-  <rect x="501" y="205" width="12" height="63" rx="4" fill="#6bc7ff"/>
-  <text x="500" y="286" fill="#6f89a8" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="9">F</text>
-  <rect x="522" y="233" width="12" height="35" rx="4" fill="#6bc7ff"/>
-  <text x="521" y="286" fill="#6f89a8" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="9">M</text>
-  <rect x="543" y="205" width="12" height="63" rx="4" fill="#6bc7ff"/>
-  <text x="542" y="286" fill="#6f89a8" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="9">A</text>
-  <rect x="564" y="205" width="12" height="63" rx="4" fill="#6bc7ff"/>
-  <text x="563" y="286" fill="#6f89a8" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="9">M</text>
-  <rect x="585" y="178" width="12" height="90" rx="4" fill="#6bc7ff"/>
-  <text x="584" y="286" fill="#6f89a8" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="9">J</text>
-  <rect x="606" y="233" width="12" height="35" rx="4" fill="#6bc7ff"/>
-  <text x="605" y="286" fill="#6f89a8" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="9">J</text>
-  <rect x="627" y="260" width="12" height="8" rx="4" fill="#6bc7ff"/>
-  <text x="626" y="286" fill="#6f89a8" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="9">A</text>
-  <rect x="648" y="260" width="12" height="8" rx="4" fill="#6bc7ff"/>
-  <text x="647" y="286" fill="#6f89a8" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="9">S</text>
-  <rect x="669" y="260" width="12" height="8" rx="4" fill="#6bc7ff"/>
-  <text x="668" y="286" fill="#6f89a8" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="9">O</text>
-  <rect x="690" y="260" width="12" height="8" rx="4" fill="#6bc7ff"/>
-  <text x="689" y="286" fill="#6f89a8" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="9">N</text>
-  <rect x="711" y="260" width="12" height="8" rx="4" fill="#6bc7ff"/>
-  <text x="710" y="286" fill="#6f89a8" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="9">D</text>
-
-  <text x="480" y="306" fill="#9fb7d3" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="16">3/12 with PDFs</text>
-  <text x="480" y="331" fill="#9fb7d3" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="16">10 annotations, busiest in Feb</text>
-  <text x="54" y="395" fill="#6f89a8" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="15"></text>
+  <defs>
+    <linearGradient id="zw-bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#0c111f"/>
+      <stop offset="1" stop-color="#141b30"/>
+    </linearGradient>
+  </defs>
+  <rect width="800" height="418" rx="24" fill="url(#zw-bg)"/>
+  <rect x="24" y="0" width="752" height="3" rx="1.5" fill="#4cc2ff" opacity="0.85"/>
+  <text x="54" y="58" fill="#e8eef7" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="24" font-weight="800">zotio</text>
+  <text x="746" y="58" text-anchor="end" fill="#8fa3bd" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="17" font-weight="600" letter-spacing="4">WRAPPED 2026</text>
+  <text x="54" y="128" fill="#ffffff" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="62" font-weight="800">12</text>
+  <text x="146" y="128" fill="#8fa3bd" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="21">items added</text>
+  <rect x="568" y="104" width="178" height="30" rx="15" fill="#1b2740" stroke="#2e4566"/>
+  <text x="580" y="124" fill="#bcd2ea" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="15">10 annotations</text>
+  <clipPath id="zw-mix"><rect x="54" y="156" width="692" height="14" rx="7"/></clipPath>
+  <g clip-path="url(#zw-mix)">
+    <rect x="54" y="156" width="461" height="14" fill="#4cc2ff"/>
+    <rect x="515" y="156" width="115" height="14" fill="#3ddc97"/>
+    <rect x="630" y="156" width="57" height="14" fill="#ffd166"/>
+    <rect x="687" y="156" width="57" height="14" fill="#ef6da8"/>
+    <rect x="744" y="156" width="2" height="14" fill="#ef6da8"/>
+  </g>
+  <text x="54" y="190" fill="#8fa3bd" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="14"><tspan fill="#4cc2ff">●</tspan> journalArticle 8&#160;&#160;&#160;<tspan fill="#3ddc97">●</tspan> book 2&#160;&#160;&#160;<tspan fill="#ffd166">●</tspan> conferencePaper 1&#160;&#160;&#160;<tspan fill="#ef6da8">●</tspan> report 1</text>
+  <text x="54" y="236" fill="#e8eef7" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="16" font-weight="700">Highlights</text>
+  <circle cx="59" cy="259" r="4" fill="#ffd166"/>
+  <text x="74" y="264" fill="#8fa3bd" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="14">Deep cut</text>
+  <text x="194" y="264" fill="#d5e2f2" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="14">Ileal-Lymphoid-Nodular Hype... (1998)</text>
+  <circle cx="59" cy="285" r="4" fill="#4cc2ff"/>
+  <text x="74" y="290" fill="#8fa3bd" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="14">Most annotated</text>
+  <text x="194" y="290" fill="#d5e2f2" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="14">Attention Is All You Need (3)</text>
+  <circle cx="59" cy="311" r="4" fill="#ef6da8"/>
+  <text x="74" y="316" fill="#8fa3bd" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="14">Top tag</text>
+  <text x="194" y="316" fill="#d5e2f2" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="14">methods (5)</text>
+  <text x="440" y="236" fill="#e8eef7" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="16" font-weight="700">Monthly rhythm</text>
+  <rect x="440" y="305" width="16" height="31" rx="5" fill="#4cc2ff" opacity="1"/>
+  <text x="444" y="352" fill="#5c7089" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="10">J</text>
+  <rect x="466" y="281" width="16" height="55" rx="5" fill="#4cc2ff" opacity="1"/>
+  <text x="470" y="352" fill="#5c7089" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="10">F</text>
+  <rect x="492" y="305" width="16" height="31" rx="5" fill="#4cc2ff" opacity="1"/>
+  <text x="496" y="352" fill="#5c7089" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="10">M</text>
+  <rect x="518" y="281" width="16" height="55" rx="5" fill="#4cc2ff" opacity="1"/>
+  <text x="522" y="352" fill="#5c7089" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="10">A</text>
+  <rect x="544" y="281" width="16" height="55" rx="5" fill="#4cc2ff" opacity="1"/>
+  <text x="548" y="352" fill="#5c7089" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="10">M</text>
+  <rect x="570" y="256" width="16" height="80" rx="5" fill="#3ddc97" opacity="1"/>
+  <text x="574" y="352" fill="#5c7089" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="10">J</text>
+  <rect x="596" y="305" width="16" height="31" rx="5" fill="#4cc2ff" opacity="1"/>
+  <text x="600" y="352" fill="#5c7089" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="10">J</text>
+  <rect x="622" y="332" width="16" height="4" rx="5" fill="#4cc2ff" opacity="0.35"/>
+  <text x="626" y="352" fill="#5c7089" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="10">A</text>
+  <rect x="648" y="332" width="16" height="4" rx="5" fill="#4cc2ff" opacity="0.35"/>
+  <text x="652" y="352" fill="#5c7089" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="10">S</text>
+  <rect x="674" y="332" width="16" height="4" rx="5" fill="#4cc2ff" opacity="0.35"/>
+  <text x="678" y="352" fill="#5c7089" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="10">O</text>
+  <rect x="700" y="332" width="16" height="4" rx="5" fill="#4cc2ff" opacity="0.35"/>
+  <text x="704" y="352" fill="#5c7089" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="10">N</text>
+  <rect x="726" y="332" width="16" height="4" rx="5" fill="#4cc2ff" opacity="0.35"/>
+  <text x="730" y="352" fill="#5c7089" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="10">D</text>
+  <text x="54" y="381" fill="#9fb7d3" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="15">Top venue: Science (2)   ·   Top author: Cong, Le (1)</text>
+  <rect x="560" y="371" width="120" height="8" rx="4" fill="#1b2740"/>
+  <rect x="560" y="371" width="30" height="8" rx="4" fill="#ff6b6b"/>
+  <text x="690" y="381" fill="#9fb7d3" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="14">25% PDFs</text>
+  <text x="746" y="404" text-anchor="end" fill="#5c7089" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="12">computed locally by zotio — no data leaves your machine</text>
 </svg>

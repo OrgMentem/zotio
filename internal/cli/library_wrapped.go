@@ -9,6 +9,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -576,74 +577,224 @@ func writeLibraryWrappedCard(path string, report libraryWrappedReport) error {
 	return nil
 }
 
+// Card palette; mirrors the terminal palette so the shareable artifact and
+// the terminal experience read as one product.
+var wrappedCardPalette = []string{"#4cc2ff", "#3ddc97", "#ffd166", "#ef6da8", "#6a8dff", "#ff6b6b"}
+
+const wrappedCardFont = `font-family="Inter, ui-sans-serif, system-ui, sans-serif"`
+
 func renderLibraryWrappedSVG(report libraryWrappedReport) string {
-	topVenue := "No venue data"
-	if len(report.TopVenues) > 0 {
-		topVenue = fmt.Sprintf("%s (%d)", report.TopVenues[0].Name, report.TopVenues[0].Count)
-	}
-	topAuthor := "No creator data"
-	if len(report.TopAuthors) > 0 {
-		topAuthor = fmt.Sprintf("%s (%d)", report.TopAuthors[0].Name, report.TopAuthors[0].Count)
-	}
-	pdfLine := "PDF coverage not available"
-	if report.PDFCoverage != nil {
-		pdfLine = fmt.Sprintf("%d/%d with PDFs", report.PDFCoverage.WithAttachment, report.PDFCoverage.Total)
-	}
-	annotationLine := "Annotations not synced locally"
-	if report.Annotations != nil {
-		annotationLine = fmt.Sprintf("%d annotations", report.Annotations.Count)
-		if report.Annotations.BusiestMonth != nil {
-			annotationLine += fmt.Sprintf(", busiest in %s", report.Annotations.BusiestMonth.Name)
-		}
-	}
-	streakLine := ""
-	if s := report.Highlights.LongestStreak; s != nil {
-		streakLine = fmt.Sprintf("%d-day streak (%s – %s)", s.Days, s.Start, s.End)
-	}
-	if d := report.Highlights.BusiestDay; d != nil {
-		if streakLine != "" {
-			streakLine += " · "
-		}
-		streakLine += fmt.Sprintf("busiest: %s (%d)", d.Date, d.Count)
-	}
-	monthBars := wrappedSVGMonthBars(report.Items.ByMonth)
-	return fmt.Sprintf(`<?xml version="1.0" encoding="UTF-8"?>
+	var b strings.Builder
+	year := report.Year
+
+	fmt.Fprintf(&b, `<?xml version="1.0" encoding="UTF-8"?>
 <svg xmlns="http://www.w3.org/2000/svg" width="800" height="418" viewBox="0 0 800 418" role="img" aria-labelledby="title desc">
   <title id="title">zotio wrapped %d</title>
   <desc id="desc">A local Zotero year in review: %d items added in %d.</desc>
-  <rect width="800" height="418" rx="28" fill="#101827"/>
-  <circle cx="680" cy="62" r="116" fill="#24324b" opacity="0.62"/>
-  <circle cx="104" cy="360" r="142" fill="#1f3a4d" opacity="0.52"/>
-  <text x="54" y="64" fill="#e5edf7" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="30" font-weight="700">zotio</text>
-  <text x="54" y="101" fill="#8fb4d9" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="18">Wrapped %d</text>
-  <text x="54" y="172" fill="#ffffff" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="72" font-weight="800">%d</text>
-  <text x="54" y="205" fill="#c7d7ea" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="24">items added locally</text>
-  <text x="54" y="260" fill="#e5edf7" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="20" font-weight="700">Top venue</text>
-  <text x="54" y="289" fill="#9fb7d3" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="18">%s</text>
-  <text x="54" y="331" fill="#e5edf7" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="20" font-weight="700">Top first creator</text>
-  <text x="54" y="360" fill="#9fb7d3" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="18">%s</text>
-  <rect x="450" y="118" width="296" height="224" rx="22" fill="#172338" stroke="#2e4566"/>
-  <text x="480" y="158" fill="#e5edf7" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="20" font-weight="700">Monthly rhythm</text>
-  %s
-  <text x="480" y="306" fill="#9fb7d3" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="16">%s</text>
-  <text x="480" y="331" fill="#9fb7d3" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="16">%s</text>
-  <text x="54" y="395" fill="#6f89a8" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="15">%s</text>
+  <defs>
+    <linearGradient id="zw-bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#0c111f"/>
+      <stop offset="1" stop-color="#141b30"/>
+    </linearGradient>
+  </defs>
+  <rect width="800" height="418" rx="24" fill="url(#zw-bg)"/>
+  <rect x="24" y="0" width="752" height="3" rx="1.5" fill="#4cc2ff" opacity="0.85"/>
+`, year, report.Items.Total, year)
+
+	// Header
+	fmt.Fprintf(&b, `  <text x="54" y="58" fill="#e8eef7" %s font-size="24" font-weight="800">zotio</text>
+  <text x="746" y="58" text-anchor="end" fill="#8fa3bd" %s font-size="17" font-weight="600" letter-spacing="4">WRAPPED %d</text>
+`, wrappedCardFont, wrappedCardFont, year)
+
+	// Hero: big count + chips
+	fmt.Fprintf(&b, `  <text x="54" y="128" fill="#ffffff" %s font-size="62" font-weight="800">%d</text>
+`, wrappedCardFont, report.Items.Total)
+	heroLabelX := 54 + heroDigitsWidth(report.Items.Total)
+	fmt.Fprintf(&b, `  <text x="%d" y="128" fill="#8fa3bd" %s font-size="21">items added</text>
+`, heroLabelX, wrappedCardFont)
+	chips := make([]string, 0, 2)
+	if report.Annotations != nil && report.Annotations.Count > 0 {
+		chips = append(chips, pluralCount(report.Annotations.Count, "annotation", "annotations"))
+	}
+	if s := report.Highlights.LongestStreak; s != nil {
+		chips = append(chips, fmt.Sprintf("%d-day streak", s.Days))
+	}
+	chipX := 746
+	for i := len(chips) - 1; i >= 0; i-- { // right-aligned row of pills
+		w := 11*len(chips[i]) + 24
+		chipX -= w
+		fmt.Fprintf(&b, `  <rect x="%d" y="104" width="%d" height="30" rx="15" fill="#1b2740" stroke="#2e4566"/>
+  <text x="%d" y="124" fill="#bcd2ea" %s font-size="15">%s</text>
+`, chipX, w, chipX+12, wrappedCardFont, svgText(chips[i]))
+		chipX -= 12
+	}
+
+	// Type mix: full-width stacked ratio bar + legend
+	b.WriteString(wrappedSVGTypeMix(report.Items.ByItemType, 54, 156, 692, 14))
+
+	// Left column: highlights
+	b.WriteString(wrappedSVGHighlights(report, 54, 236))
+
+	// Right column: monthly rhythm
+	fmt.Fprintf(&b, `  <text x="440" y="236" fill="#e8eef7" %s font-size="16" font-weight="700">Monthly rhythm</text>
+`, wrappedCardFont)
+	b.WriteString(wrappedSVGMonthBars(report.Items.ByMonth, 440, 336))
+
+	// Footer: venue/author left, coverage right, trust line
+	footer := make([]string, 0, 2)
+	if len(report.TopVenues) > 0 {
+		footer = append(footer, fmt.Sprintf("Top venue: %s (%d)", report.TopVenues[0].Name, report.TopVenues[0].Count))
+	}
+	if len(report.TopAuthors) > 0 {
+		footer = append(footer, fmt.Sprintf("Top author: %s (%d)", report.TopAuthors[0].Name, report.TopAuthors[0].Count))
+	}
+	if len(footer) > 0 {
+		fmt.Fprintf(&b, `  <text x="54" y="381" fill="#9fb7d3" %s font-size="15">%s</text>
+`, wrappedCardFont, svgText(strings.Join(footer, "   ·   ")))
+	}
+	if c := report.PDFCoverage; c != nil {
+		fill := c.Percent * 120 / 100
+		fmt.Fprintf(&b, `  <rect x="560" y="371" width="120" height="8" rx="4" fill="#1b2740"/>
+  <rect x="560" y="371" width="%d" height="8" rx="4" fill="%s"/>
+  <text x="690" y="381" fill="#9fb7d3" %s font-size="14">%d%% PDFs</text>
+`, fill, coverageFill(c.Percent), wrappedCardFont, c.Percent)
+	}
+	fmt.Fprintf(&b, `  <text x="746" y="404" text-anchor="end" fill="#5c7089" %s font-size="12">computed locally by zotio — no data leaves your machine</text>
 </svg>
-`, report.Year, report.Items.Total, report.Year, report.Year, report.Items.Total, svgText(topVenue), svgText(topAuthor), monthBars, svgText(pdfLine), svgText(annotationLine), svgText(streakLine))
+`, wrappedCardFont)
+	return b.String()
 }
 
-func wrappedSVGMonthBars(months []libraryWrappedMonthCount) string {
+// heroDigitsWidth approximates the rendered width of the hero counter so the
+// unit label sits next to it regardless of magnitude.
+func heroDigitsWidth(n int) int {
+	return 16 + len(strconv.Itoa(n))*38
+}
+
+func coverageFill(pct int) string {
+	switch {
+	case pct >= 80:
+		return "#3ddc97"
+	case pct >= 50:
+		return "#ffd166"
+	}
+	return "#ff6b6b"
+}
+
+// wrappedSVGTypeMix renders the stacked ratio bar with a compact legend for
+// up to four types (the rest fold into "other").
+func wrappedSVGTypeMix(rows []libraryWrappedRankedCount, x, y, w, h int) string {
+	total := 0
+	for _, r := range rows {
+		total += r.Count
+	}
+	if total == 0 {
+		return ""
+	}
+	shares := rows
+	other := 0
+	if len(shares) > 4 {
+		for _, r := range shares[4:] {
+			other += r.Count
+		}
+		shares = shares[:4]
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, `  <clipPath id="zw-mix"><rect x="%d" y="%d" width="%d" height="%d" rx="7"/></clipPath>
+  <g clip-path="url(#zw-mix)">
+`, x, y, w, h)
+	cx := x
+	legendParts := make([]string, 0, 5)
+	emit := func(name string, count, idx int) {
+		sw := count * w / total
+		if sw < 6 {
+			sw = 6
+		}
+		if cx+sw > x+w || idx == len(shares) && other == 0 {
+			sw = x + w - cx
+		}
+		color := wrappedCardPalette[idx%len(wrappedCardPalette)]
+		fmt.Fprintf(&b, `    <rect x="%d" y="%d" width="%d" height="%d" fill="%s"/>
+`, cx, y, sw, h, color)
+		cx += sw
+		legendParts = append(legendParts, fmt.Sprintf(`<tspan fill="%s">●</tspan> %s %d`, color, svgText(name), count))
+	}
+	for i, r := range shares {
+		emit(r.Name, r.Count, i)
+	}
+	if other > 0 {
+		emit("other", other, len(shares))
+	}
+	// close any rounding gap with the last color
+	if cx < x+w {
+		fmt.Fprintf(&b, `    <rect x="%d" y="%d" width="%d" height="%d" fill="%s"/>
+`, cx, y, x+w-cx, h, wrappedCardPalette[(len(legendParts)-1)%len(wrappedCardPalette)])
+	}
+	b.WriteString("  </g>\n")
+	fmt.Fprintf(&b, `  <text x="%d" y="%d" fill="#8fa3bd" %s font-size="14">%s</text>
+`, x, y+34, wrappedCardFont, strings.Join(legendParts, "&#160;&#160;&#160;"))
+	return b.String()
+}
+
+// wrappedSVGHighlights renders up to four superlative rows with colored dots;
+// missing signals are skipped and remaining rows shift up.
+func wrappedSVGHighlights(report libraryWrappedReport, x, startY int) string {
+	h := report.Highlights
+	type hl struct{ color, label, value string }
+	var rows []hl
+	if h.DeepCut != nil {
+		rows = append(rows, hl{"#ffd166", "Deep cut", fmt.Sprintf("%s (%d)", truncate(h.DeepCut.Title, 30), h.DeepCut.Year)})
+	}
+	if h.MostAnnotated != nil {
+		rows = append(rows, hl{"#4cc2ff", "Most annotated", fmt.Sprintf("%s (%d)", truncate(h.MostAnnotated.Title, 26), h.MostAnnotated.Count)})
+	}
+	if h.BusiestDay != nil {
+		rows = append(rows, hl{"#3ddc97", "Busiest day", fmt.Sprintf("%s — %d items", h.BusiestDay.Date, h.BusiestDay.Count)})
+	}
+	if h.TopTag != nil {
+		rows = append(rows, hl{"#ef6da8", "Top tag", fmt.Sprintf("%s (%d)", truncate(h.TopTag.Name, 24), h.TopTag.Count)})
+	}
+	if len(rows) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, `  <text x="%d" y="%d" fill="#e8eef7" %s font-size="16" font-weight="700">Highlights</text>
+`, x, startY, wrappedCardFont)
+	y := startY + 28
+	for _, r := range rows {
+		fmt.Fprintf(&b, `  <circle cx="%d" cy="%d" r="4" fill="%s"/>
+  <text x="%d" y="%d" fill="#8fa3bd" %s font-size="14">%s</text>
+  <text x="%d" y="%d" fill="#d5e2f2" %s font-size="14">%s</text>
+`, x+5, y-5, r.color, x+20, y, wrappedCardFont, svgText(r.label), x+140, y, wrappedCardFont, svgText(r.value))
+		y += 26
+	}
+	return b.String()
+}
+
+// wrappedSVGMonthBars renders the 12-month chart with the peak highlighted.
+func wrappedSVGMonthBars(months []libraryWrappedMonthCount, x, baseline int) string {
 	maxCount := wrappedMaxMonthCount(months)
 	if len(months) == 0 || maxCount == 0 {
-		return `<text x="480" y="214" fill="#9fb7d3" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="16">No monthly items for this year</text>`
+		return fmt.Sprintf(`  <text x="%d" y="%d" fill="#8fa3bd" %s font-size="14">No monthly items for this year</text>
+`, x, baseline-40, wrappedCardFont)
 	}
 	var b strings.Builder
 	for i, month := range months {
-		x := 480 + i*21
-		height := 8 + int(math.Round(float64(month.Count)/float64(maxCount)*82))
-		y := 268 - height
-		fmt.Fprintf(&b, `  <rect x="%d" y="%d" width="12" height="%d" rx="4" fill="#6bc7ff"/>`+"\n", x, y, height)
-		fmt.Fprintf(&b, `  <text x="%d" y="286" fill="#6f89a8" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="9">%s</text>`+"\n", x-1, svgText(month.Name[:1]))
+		bx := x + i*26
+		height := 6 + int(math.Round(float64(month.Count)/float64(maxCount)*74))
+		fill := "#4cc2ff"
+		opacity := "1"
+		if month.Count == 0 {
+			height = 4
+			opacity = "0.35"
+		}
+		if month.Count == maxCount {
+			fill = "#3ddc97"
+		}
+		fmt.Fprintf(&b, `  <rect x="%d" y="%d" width="16" height="%d" rx="5" fill="%s" opacity="%s"/>
+`, bx, baseline-height, height, fill, opacity)
+		fmt.Fprintf(&b, `  <text x="%d" y="%d" fill="#5c7089" %s font-size="10">%s</text>
+`, bx+4, baseline+16, wrappedCardFont, svgText(month.Name[:1]))
 	}
 	return b.String()
 }
