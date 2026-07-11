@@ -2,7 +2,7 @@
 // Metadata enrichment/remediation pipeline. Turns the
 // read-only `items audit` work queues (missing DOI / abstract / PDF) into
 // provider-backed fixes: resolve metadata from CrossRef (DOI, abstract) and
-// Unpaywall (open-access PDF), build a proposed patch plan, preview it by
+// Unpaywall (open-access PDF attachments), build a proposed patch plan, preview it by
 // default, and apply via the existing PATCH/POST paths when --yes is set.
 // Enrichment provenance is appended to each item's Extra field.
 
@@ -15,9 +15,12 @@ import (
 	"fmt"
 	"html"
 	"io"
+	"mime"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
+	"path/filepath"
 	"regexp"
 	"sort"
 	"strings"
@@ -41,6 +44,10 @@ var (
 )
 
 const maxEnrichProviderResponseBytes = 4 << 20
+const maxEnrichPDFBytes int64 = 100 << 20
+
+var enrichPDFURLSafetyCheck = rejectLocalPDFURL
+var enrichPDFDownloaderFactory = newEnrichPDFDownloader
 
 var jatsTagRE = regexp.MustCompile(`<[^>]+>`)
 
@@ -53,14 +60,17 @@ const (
 
 // enrichProposal is one proposed remediation for one item.
 type enrichProposal struct {
-	Key        string         `json:"key"`
-	Title      string         `json:"title"`
-	Category   string         `json:"category"`
-	Action     enrichAction   `json:"action"`
-	Source     string         `json:"source"`
-	Note       string         `json:"note"`
-	Fields     map[string]any `json:"fields,omitempty"`     // fields: field -> new value
-	Attachment map[string]any `json:"attachment,omitempty"` // attach: child item body
+	Key         string         `json:"key"`
+	Title       string         `json:"title"`
+	Category    string         `json:"category"`
+	Action      enrichAction   `json:"action"`
+	Source      string         `json:"source"`
+	Note        string         `json:"note"`
+	Fields      map[string]any `json:"fields,omitempty"`      // fields: field -> new value
+	Attachment  map[string]any `json:"attachment,omitempty"`  // linked_url attach: child item body
+	AttachMode  string         `json:"attach_mode,omitempty"` // missing-pdf: linked-url or linked-file
+	DownloadURL string         `json:"download_url,omitempty"`
+	PDFPath     string         `json:"pdf_path,omitempty"`
 	// Statuses now live in mutation.Result items, not proposal JSON.
 	version any    // item version for the PATCH conflict guard (not serialized)
 	extra   string // item's current Extra so provenance appends instead of replacing (not serialized)
@@ -85,6 +95,8 @@ func newItemsEnrichCmd(flags *rootFlags) *cobra.Command {
 		flagNoSemanticScholar bool
 		flagValidate          bool
 		flagCollection        string
+		flagAttachMode        string
+		flagPDFDir            string
 		// Exact remediation from `library health`
 		// feeds item keys to enrichment so it previews/applies only the findings
 		// it recommended, instead of broadening back out to the whole queue.
@@ -93,24 +105,59 @@ func newItemsEnrichCmd(flags *rootFlags) *cobra.Command {
 
 	cmd := &cobra.Command{
 		Use:   "enrich",
-		Short: "Fill or validate item metadata (DOI, abstract, open-access PDF link) from CrossRef, OpenAlex, Semantic Scholar, Unpaywall, and OpenCitations",
+		Short: "Fill or validate item metadata (DOI, abstract, open-access PDF attachment) from CrossRef, OpenAlex, Semantic Scholar, Unpaywall, and OpenCitations",
 		// --agent no longer implies --yes; help names --yes as the apply switch. --collection scopes enrichment queues.
 		Long: `Resolve missing metadata for locally synced items and apply it back to Zotero.
 
 Work queues come from the same checks as 'items audit':
   --missing-doi       resolve a DOI by title from CrossRef, then OpenAlex/Semantic Scholar (exact title match)
   --missing-abstract  fill the abstract from CrossRef, then OpenAlex/Semantic Scholar (requires the item's DOI)
-  --missing-pdf       attach an open-access PDF link from Unpaywall (requires DOI)
+  --missing-pdf       attach an open-access PDF from Unpaywall (requires DOI)
 
-By default this previews the proposed changes (a patch plan). Pass --collection
-to scope the work queue to items in a single collection, or --keys-from to scope
-to exact item keys produced by another command. Pass --yes to apply them via the
-Zotero API; --dry-run always previews. Applied field changes
-record provenance in the item's Extra field.`,
+PDF attachment modes:
+  linked-url   create a linked_url attachment (default; no download)
+  linked-file  download the PDF to --pdf-dir and create a linked_file child item; linked files do not sync to other devices
+
+Downloaded PDFs accept application/pdf, application/octet-stream, or an absent
+Content-Type, then must pass a %PDF- magic check. Stored (imported-file)
+retro-attachment waits on the Zotero Web API stored-upload protocol, which is
+deliberately deferred.
+
+By default this previews the proposed changes (a patch plan) and never downloads
+PDF bytes. Pass --collection to scope the work queue to items in a single
+collection, or --keys-from to scope to exact item keys produced by another
+command. Pass --yes to apply via the Zotero API; --dry-run always previews.
+Applied field changes record provenance in the item's Extra field.`,
 		Annotations: map[string]string{"mcp:read-only": "false"},
 		RunE: func(cmd *cobra.Command, args []string) error {
+			attachMode := strings.TrimSpace(flagAttachMode)
+			switch attachMode {
+			case "linked-url", "linked-file":
+			case "stored":
+				return usageErr(fmt.Errorf("--attach-mode stored is unavailable: stored (imported-file) retro-attachment waits on the Zotero Web API stored-upload protocol, which is deliberately deferred"))
+			default:
+				return usageErr(fmt.Errorf("--attach-mode must be one of linked-url, linked-file"))
+			}
+			if cmd.Flags().Changed("attach-mode") && !flagMissingPDF {
+				return usageErr(fmt.Errorf("--attach-mode is only valid with --missing-pdf"))
+			}
+			if cmd.Flags().Changed("pdf-dir") && !flagMissingPDF {
+				return usageErr(fmt.Errorf("--pdf-dir is only valid with --missing-pdf"))
+			}
+			if flagMissingPDF && attachMode == "linked-file" && strings.TrimSpace(flagPDFDir) == "" {
+				return usageErr(fmt.Errorf("--pdf-dir is required with --missing-pdf --attach-mode linked-file"))
+			}
 			if !flagValidate && !flagMissingDOI && !flagMissingAbstract && !flagMissingPDF {
 				return fmt.Errorf("specify at least one of --missing-doi, --missing-abstract, --missing-pdf, or --validate")
+			}
+
+			pdfDir := ""
+			if flagMissingPDF && attachMode == "linked-file" {
+				abs, err := filepath.Abs(flagPDFDir)
+				if err != nil {
+					return usageErr(fmt.Errorf("resolving --pdf-dir: %w", err))
+				}
+				pdfDir = abs
 			}
 
 			rawDB, err := openStoreForRead(cmd.Context(), "zotio")
@@ -145,29 +192,34 @@ record provenance in the item's Extra field.`,
 
 			// Thread collection scope through every selected enrichment category.
 			if flagMissingDOI {
-				p, s := buildEnrichProposals(cmd.Context(), db, httpClient, "missing_doi", flagLimit, flagCollection, keyFilter, flagEmail, useOpenAlex, useSemanticScholar)
+				p, s := buildEnrichProposals(cmd.Context(), db, httpClient, "missing_doi", flagLimit, flagCollection, keyFilter, flagEmail, useOpenAlex, useSemanticScholar, "linked-url", "")
 				proposals, skipped = append(proposals, p...), append(skipped, s...)
 			}
 			if flagMissingAbstract {
-				p, s := buildEnrichProposals(cmd.Context(), db, httpClient, "missing_abstract", flagLimit, flagCollection, keyFilter, flagEmail, useOpenAlex, useSemanticScholar)
+				p, s := buildEnrichProposals(cmd.Context(), db, httpClient, "missing_abstract", flagLimit, flagCollection, keyFilter, flagEmail, useOpenAlex, useSemanticScholar, "linked-url", "")
 				proposals, skipped = append(proposals, p...), append(skipped, s...)
 			}
 			if flagMissingPDF {
-				p, s := buildEnrichProposals(cmd.Context(), db, httpClient, "missing_pdf", flagLimit, flagCollection, keyFilter, flagEmail, useOpenAlex, useSemanticScholar)
+				p, s := buildEnrichProposals(cmd.Context(), db, httpClient, "missing_pdf", flagLimit, flagCollection, keyFilter, flagEmail, useOpenAlex, useSemanticScholar, attachMode, pdfDir)
 				proposals, skipped = append(proposals, p...), append(skipped, s...)
 			}
 
 			// Preserve proposal building and route preview/apply through the shared mutation helper.
 			mode := resolveMutationMode(flags)
 			var mutator apiMutator
-			if mode.Apply {
+			if mode.Apply && enrichNeedsAPIMutator(proposals) {
 				c, err := flags.newClient()
 				if err != nil {
 					return err
 				}
 				mutator = c
 			}
-			ops := enrichPlannedOps(proposals, mutator, flags)
+			ops := enrichPlannedOps(cmd.Context(), proposals, mutator, flags, httpClient)
+			restoreContinue := flags.continueOnError
+			if flagMissingPDF && attachMode != "linked-url" {
+				flags.continueOnError = true
+				defer func() { flags.continueOnError = restoreContinue }()
+			}
 			env, runErr := runMutation(cmd.Context(), flags, "items.enrich", ops)
 			if len(skipped) > 0 {
 				env.Journal = map[string]any{"skipped": skipped}
@@ -182,7 +234,9 @@ record provenance in the item's Extra field.`,
 
 	cmd.Flags().BoolVar(&flagMissingDOI, "missing-doi", false, "Resolve and add a DOI from CrossRef, OpenAlex, or Semantic Scholar")
 	cmd.Flags().BoolVar(&flagMissingAbstract, "missing-abstract", false, "Fill the abstract from CrossRef, OpenAlex, or Semantic Scholar (uses the item's DOI)")
-	cmd.Flags().BoolVar(&flagMissingPDF, "missing-pdf", false, "Attach an open-access PDF link from Unpaywall (uses the item's DOI)")
+	cmd.Flags().BoolVar(&flagMissingPDF, "missing-pdf", false, "Attach an open-access PDF from Unpaywall as a link or download (uses the item's DOI)")
+	cmd.Flags().StringVar(&flagAttachMode, "attach-mode", "linked-url", "PDF attachment handling: linked-url or linked-file; stored uploads await the deliberately deferred Zotero Web API stored-upload protocol")
+	cmd.Flags().StringVar(&flagPDFDir, "pdf-dir", "", "Directory for linked-file PDF downloads; responses must be PDF/octet-stream/unspecified Content-Type plus %PDF- magic")
 	cmd.Flags().IntVar(&flagLimit, "limit", 25, "Maximum items to process per category")
 	// Expose collection scoping for the local work queue.
 	cmd.Flags().StringVar(&flagCollection, "collection", "", "Scope the work queue to items in a collection key")
@@ -239,7 +293,7 @@ func filterEnrichRowsByKeys(rows []map[string]any, allow map[string]bool) []map[
 // Carry collection scope from the command into the work queue.
 // Carry exact key scope from --keys-from, filtering
 // before provider lookups so remediation stays bounded and cheap.
-func buildEnrichProposals(ctx context.Context, db localQueryStore, httpClient *http.Client, category string, limit int, collection string, keyFilter map[string]bool, email string, useOpenAlex bool, useSemanticScholar bool) ([]enrichProposal, []enrichSkip) {
+func buildEnrichProposals(ctx context.Context, db localQueryStore, httpClient *http.Client, category string, limit int, collection string, keyFilter map[string]bool, email string, useOpenAlex bool, useSemanticScholar bool, attachMode string, pdfDir string) ([]enrichProposal, []enrichSkip) {
 	rows, err := enrichWorkQueue(db, category, limit, collection)
 	if err != nil {
 		return nil, []enrichSkip{{Category: category, Reason: fmt.Sprintf("querying work queue: %v", err)}}
@@ -266,7 +320,7 @@ func buildEnrichProposals(ctx context.Context, db localQueryStore, httpClient *h
 			}
 			version, data := enrichItemFields(raw)
 			title := stringFromMap(data, "title")
-			prop, reason := resolveEnrichment(ctx, httpClient, category, key, version, data, email, useOpenAlex, useSemanticScholar)
+			prop, reason := resolveEnrichment(ctx, httpClient, category, key, version, data, email, useOpenAlex, useSemanticScholar, attachMode, pdfDir)
 			if reason != "" {
 				return outcome{skip: enrichSkip{Key: key, Title: title, Category: category, Reason: reason}, skipped: true}, nil
 			}
@@ -403,7 +457,7 @@ func renderEnrichValidationReport(cmd *cobra.Command, flags *rootFlags, report e
 
 // resolveEnrichment dispatches to the provider for a category and returns either
 // a proposal or a non-empty skip reason.
-func resolveEnrichment(ctx context.Context, httpClient *http.Client, category, key string, version any, data map[string]any, email string, useOpenAlex bool, useSemanticScholar bool) (enrichProposal, string) {
+func resolveEnrichment(ctx context.Context, httpClient *http.Client, category, key string, version any, data map[string]any, email string, useOpenAlex bool, useSemanticScholar bool, attachMode string, pdfDir string) (enrichProposal, string) {
 	title := stringFromMap(data, "title")
 	switch category {
 	case "missing_doi":
@@ -472,33 +526,52 @@ func resolveEnrichment(ctx context.Context, httpClient *http.Client, category, k
 		if email == "" {
 			return enrichProposal{}, "Unpaywall requires a contact email (--email or UNPAYWALL_EMAIL)"
 		}
-		pdfURL, ok := resolvePDFViaUnpaywall(ctx, httpClient, doi, email)
+		var pdfURL string
+		var ok bool
+		if attachMode == "linked-file" {
+			pdfURL, ok = resolveDownloadPDFViaUnpaywall(ctx, httpClient, doi, email)
+		} else {
+			pdfURL, ok = resolvePDFViaUnpaywall(ctx, httpClient, doi, email)
+		}
 		if !ok {
 			return enrichProposal{}, "no open-access PDF found on Unpaywall"
 		}
-		return enrichProposal{
+		p := enrichProposal{
 			Key: key, Title: title, Category: category, Action: enrichActionAttach,
-			Source: "Unpaywall", Note: pdfURL,
-			Attachment: map[string]any{
+			Source: "Unpaywall", Note: pdfURL, AttachMode: attachMode, DownloadURL: pdfURL,
+		}
+		switch attachMode {
+		case "linked-file":
+			p.PDFPath = filepath.Join(pdfDir, key+".pdf")
+			p.Note = fmt.Sprintf("linked-file -> %s (download %q)", p.PDFPath, pdfURL)
+			return p, ""
+		default:
+			p.AttachMode = "linked-url"
+			p.Attachment = map[string]any{
 				"itemType":   "attachment",
 				"linkMode":   "linked_url",
 				"title":      "Open-access PDF (Unpaywall)",
 				"url":        pdfURL,
 				"parentItem": key,
-			},
-		}, ""
+			}
+			return p, ""
+		}
 	}
 	return enrichProposal{}, "unknown category"
 }
 
 // Return typed mutation statuses; details travel as result reasons.
 func applyEnrichProposal(c apiMutator, p *enrichProposal, flags *rootFlags) (string, any, error) {
-	if c == nil {
-		err := errors.New("missing API client")
-		return "failed", err.Error(), err
-	}
+	return applyEnrichProposalWithContext(context.Background(), enrichPDFDownloaderFactory(http.DefaultClient), c, p, flags)
+}
+
+func applyEnrichProposalWithContext(ctx context.Context, downloader enrichPDFDownloader, c apiMutator, p *enrichProposal, flags *rootFlags) (string, any, error) {
 	switch p.Action {
 	case enrichActionPatch:
+		if c == nil {
+			err := errors.New("missing API client")
+			return "failed", err.Error(), err
+		}
 		body := map[string]any{"version": p.version}
 		for k, v := range p.Fields {
 			body[k] = v
@@ -510,10 +583,45 @@ func applyEnrichProposal(c apiMutator, p *enrichProposal, flags *rootFlags) (str
 		}
 		return "applied", nil, nil
 	case enrichActionAttach:
-		if _, _, err := c.Post("/items", []map[string]any{p.Attachment}); err != nil {
-			return enrichErrorStatus(err)
+		switch p.AttachMode {
+		case "", "linked-url":
+			if c == nil {
+				err := errors.New("missing API client")
+				return "failed", err.Error(), err
+			}
+			if _, _, err := c.Post("/items", []map[string]any{p.Attachment}); err != nil {
+				return enrichErrorStatus(err)
+			}
+			return "applied", nil, nil
+		case "linked-file":
+			if c == nil {
+				err := errors.New("missing API client")
+				return "failed", err.Error(), err
+			}
+			if strings.TrimSpace(p.PDFPath) == "" {
+				err := errors.New("missing PDF destination path")
+				return "failed", err.Error(), err
+			}
+			if err := os.MkdirAll(filepath.Dir(p.PDFPath), 0o755); err != nil {
+				return "failed", err.Error(), err
+			}
+			if err := downloader.download(ctx, p.DownloadURL, p.PDFPath, maxEnrichPDFBytes); err != nil {
+				return "failed", err.Error(), err
+			}
+			if err := postLinkedFileAttachment(c, p.Key, p.PDFPath, flags); err != nil {
+				cleanupErr := os.Remove(p.PDFPath)
+				if cleanupErr != nil && !errors.Is(cleanupErr, os.ErrNotExist) {
+					err = fmt.Errorf("creating linked-file attachment: %w; could not remove downloaded file %s: %v", err, p.PDFPath, cleanupErr)
+				} else {
+					err = fmt.Errorf("creating linked-file attachment: %w; removed downloaded file %s so the operation can be retried", err, p.PDFPath)
+				}
+				return "failed", err.Error(), err
+			}
+			return "applied", map[string]any{"path": p.PDFPath}, nil
+		default:
+			err := fmt.Errorf("unsupported PDF attach mode %q", p.AttachMode)
+			return "failed", err.Error(), err
 		}
-		return "applied", nil, nil
 	}
 	return "no_op", "unknown enrichment action", nil
 }
@@ -525,9 +633,19 @@ type apiMutator interface {
 	Post(path string, body any) (json.RawMessage, int, error)
 }
 
+func enrichNeedsAPIMutator(proposals []enrichProposal) bool {
+	for _, proposal := range proposals {
+		if proposal.Action == enrichActionPatch || proposal.Action == enrichActionAttach {
+			return true
+		}
+	}
+	return false
+}
+
 // Convert enrichment proposals into shared mutation operations.
-func enrichPlannedOps(proposals []enrichProposal, c apiMutator, flags *rootFlags) []mutation.Op {
+func enrichPlannedOps(ctx context.Context, proposals []enrichProposal, c apiMutator, flags *rootFlags, httpClient *http.Client) []mutation.Op {
 	ops := make([]mutation.Op, 0, len(proposals))
+	downloader := enrichPDFDownloaderFactory(httpClient)
 	for i := range proposals {
 		proposal := proposals[i]
 		ops = append(ops, mutation.Op{
@@ -537,7 +655,7 @@ func enrichPlannedOps(proposals []enrichProposal, c apiMutator, flags *rootFlags
 			ExpectedVersion: mutationExpectedVersion(proposal.version),
 			Changes:         enrichProposalChanges(proposal),
 			Apply: func() (string, any, error) {
-				return applyEnrichProposal(c, &proposal, flags)
+				return applyEnrichProposalWithContext(ctx, downloader, c, &proposal, flags)
 			},
 		})
 	}
@@ -561,10 +679,15 @@ func enrichProposalChanges(p enrichProposal) []mutation.Change {
 		changes = append(changes, mutation.Change{Field: "extra", Add: enrichProvenanceLine(&p)})
 		return changes
 	case enrichActionAttach:
-		if url, ok := p.Attachment["url"]; ok {
-			return []mutation.Change{{Field: "url", Add: url}}
+		switch p.AttachMode {
+		case "linked-file":
+			return []mutation.Change{{Field: "attachment", Add: fmt.Sprintf("linked-file -> %s (download %q)", p.PDFPath, p.DownloadURL)}}
+		default:
+			if url, ok := p.Attachment["url"]; ok {
+				return []mutation.Change{{Field: "url", Add: url}}
+			}
+			return []mutation.Change{{Field: "attachment", Add: p.Attachment}}
 		}
-		return []mutation.Change{{Field: "attachment", Add: p.Attachment}}
 	default:
 		return nil
 	}
@@ -619,6 +742,236 @@ func appendEnrichProvenance(p *enrichProposal, _ *rootFlags) string {
 		}
 	}
 	return existing + "\n" + line
+}
+
+type enrichPDFResolver interface {
+	LookupIPAddr(context.Context, string) ([]net.IPAddr, error)
+}
+
+type enrichPDFDownloader struct {
+	client    *http.Client
+	resolver  enrichPDFResolver
+	dialGuard func(net.IP) error
+}
+
+func newEnrichPDFDownloader(client *http.Client) enrichPDFDownloader {
+	return enrichPDFDownloader{
+		client:    client,
+		resolver:  net.DefaultResolver,
+		dialGuard: rejectNonPublicPDFIP,
+	}
+}
+
+func (d enrichPDFDownloader) download(ctx context.Context, rawURL, destPath string, maxBytes int64) error {
+	u, err := url.Parse(strings.TrimSpace(rawURL))
+	if err != nil {
+		return fmt.Errorf("invalid PDF URL: %w", err)
+	}
+	if _, err := os.Stat(destPath); err == nil {
+		return fmt.Errorf("refusing to clobber existing file %s", destPath)
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("checking %s: %w", destPath, err)
+	}
+	if enrichPDFURLSafetyCheck != nil {
+		if err := enrichPDFURLSafetyCheck(ctx, u); err != nil {
+			return err
+		}
+	}
+	clientCopy, err := d.guardedClient()
+	if err != nil {
+		return err
+	}
+	clientCopy.CheckRedirect = func(req *http.Request, via []*http.Request) error {
+		if len(via) >= 10 {
+			return fmt.Errorf("stopped after 10 redirects")
+		}
+		if enrichPDFURLSafetyCheck != nil {
+			return enrichPDFURLSafetyCheck(req.Context(), req.URL)
+		}
+		return nil
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
+	if err != nil {
+		return err
+	}
+	resp, err := clientCopy.Do(req)
+	if err != nil {
+		return fmt.Errorf("downloading PDF: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return fmt.Errorf("downloading PDF: HTTP %d", resp.StatusCode)
+	}
+	if err := validateEnrichPDFContentType(resp.Header.Get("Content-Type")); err != nil {
+		return err
+	}
+	return writePDFResponse(resp.Body, destPath, maxBytes)
+}
+
+func (d enrichPDFDownloader) guardedClient() (*http.Client, error) {
+	base := d.client
+	if base == nil {
+		base = http.DefaultClient
+	}
+	clientCopy := *base
+	if d.dialGuard == nil {
+		return &clientCopy, nil
+	}
+	var transport *http.Transport
+	switch t := base.Transport.(type) {
+	case nil:
+		transport = http.DefaultTransport.(*http.Transport).Clone()
+	case *http.Transport:
+		transport = t.Clone()
+	default:
+		return nil, fmt.Errorf("guarding PDF download: unsupported HTTP transport %T", base.Transport)
+	}
+	// A proxy would resolve the destination outside this process and bypass the
+	// destination-address guard, so PDF fetches always connect directly.
+	transport.Proxy = nil
+	transport.DialContext = d.dialContext
+	clientCopy.Transport = transport
+	return &clientCopy, nil
+}
+
+func (d enrichPDFDownloader) dialContext(ctx context.Context, network, address string) (net.Conn, error) {
+	host, port, err := net.SplitHostPort(address)
+	if err != nil {
+		return nil, fmt.Errorf("parsing PDF destination %q: %w", address, err)
+	}
+	resolver := d.resolver
+	if resolver == nil {
+		resolver = net.DefaultResolver
+	}
+	addrs, err := resolver.LookupIPAddr(ctx, host)
+	if err != nil {
+		return nil, fmt.Errorf("resolving PDF destination %s: %w", host, err)
+	}
+	if len(addrs) == 0 {
+		return nil, fmt.Errorf("resolving PDF destination %s: no addresses", host)
+	}
+	for _, addr := range addrs {
+		if err := d.dialGuard(addr.IP); err != nil {
+			return nil, fmt.Errorf("refusing PDF destination %s (%s): %w", host, addr.IP, err)
+		}
+	}
+	var lastErr error
+	dialer := &net.Dialer{}
+	for _, addr := range addrs {
+		target := net.JoinHostPort(addr.IP.String(), port)
+		conn, err := dialer.DialContext(ctx, network, target)
+		if err == nil {
+			return conn, nil
+		}
+		lastErr = err
+	}
+	return nil, fmt.Errorf("dialing PDF destination %s: %w", host, lastErr)
+}
+
+func rejectNonPublicPDFIP(ip net.IP) error {
+	if ip == nil {
+		return fmt.Errorf("invalid IP address")
+	}
+	if ip.IsPrivate() || ip.IsLoopback() || ip.IsLinkLocalUnicast() ||
+		ip.IsLinkLocalMulticast() || ip.IsUnspecified() || ip.IsMulticast() ||
+		(ip.To4() == nil && len(ip) == net.IPv6len && ip[0]&0xfe == 0xfc) {
+		return fmt.Errorf("non-public address")
+	}
+	return nil
+}
+
+// validateEnrichPDFContentType is the first file-type gate: PDF downloads may
+// identify as PDF, generic binary, or omit Content-Type. Other media types are
+// rejected before a destination file is created; writePDFResponse then enforces
+// the %PDF- magic prefix as the second gate.
+func validateEnrichPDFContentType(raw string) error {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return nil
+	}
+	mediaType, _, err := mime.ParseMediaType(raw)
+	if err != nil {
+		return fmt.Errorf("downloaded PDF has invalid Content-Type %q: %w", raw, err)
+	}
+	switch strings.ToLower(mediaType) {
+	case "application/pdf", "application/octet-stream":
+		return nil
+	default:
+		return fmt.Errorf("refusing downloaded PDF with Content-Type %q", mediaType)
+	}
+}
+
+func downloadEnrichPDF(ctx context.Context, httpClient *http.Client, rawURL, destPath string, maxBytes int64) error {
+	return enrichPDFDownloaderFactory(httpClient).download(ctx, rawURL, destPath, maxBytes)
+}
+
+func writePDFResponse(body io.Reader, destPath string, maxBytes int64) error {
+	if maxBytes < 5 {
+		return fmt.Errorf("PDF size cap must be at least 5 bytes")
+	}
+	f, err := os.OpenFile(destPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
+	if err != nil {
+		if errors.Is(err, os.ErrExist) {
+			return fmt.Errorf("refusing to clobber existing file %s", destPath)
+		}
+		return fmt.Errorf("creating %s: %w", destPath, err)
+	}
+	keep := false
+	defer func() {
+		_ = f.Close()
+		if !keep {
+			_ = os.Remove(destPath)
+		}
+	}()
+
+	header := make([]byte, 5)
+	n, err := io.ReadFull(body, header)
+	if err != nil {
+		return fmt.Errorf("downloaded file is not a PDF: missing %%PDF- header")
+	}
+	if string(header) != "%PDF-" {
+		return fmt.Errorf("downloaded file is not a PDF: missing %%PDF- header")
+	}
+	written, err := f.Write(header[:n])
+	if err != nil {
+		return fmt.Errorf("writing %s: %w", destPath, err)
+	}
+	remaining := maxBytes - int64(written)
+	limited := &io.LimitedReader{R: body, N: remaining + 1}
+	copied, err := io.Copy(f, limited)
+	if err != nil {
+		return fmt.Errorf("writing %s: %w", destPath, err)
+	}
+	if int64(written)+copied > maxBytes {
+		return fmt.Errorf("downloaded PDF exceeds size cap of %d bytes", maxBytes)
+	}
+	if err := f.Close(); err != nil {
+		return fmt.Errorf("writing %s: %w", destPath, err)
+	}
+	keep = true
+	return nil
+}
+
+func rejectLocalPDFURL(_ context.Context, u *url.URL) error {
+	if u == nil {
+		return fmt.Errorf("invalid PDF URL")
+	}
+	if u.Scheme != "http" && u.Scheme != "https" {
+		return fmt.Errorf("PDF URL must use http or https")
+	}
+	host := strings.TrimSpace(u.Hostname())
+	if host == "" {
+		return fmt.Errorf("PDF URL host is empty")
+	}
+	if strings.EqualFold(host, "localhost") {
+		return fmt.Errorf("refusing to download PDF from localhost")
+	}
+	if ip := net.ParseIP(host); ip != nil {
+		if err := rejectNonPublicPDFIP(ip); err != nil {
+			return fmt.Errorf("refusing to download PDF from non-public address %s", host)
+		}
+	}
+	return nil
 }
 
 // --- providers ---
@@ -700,6 +1053,21 @@ func resolvePDFViaUnpaywall(ctx context.Context, httpClient *http.Client, doi, e
 	if resp.BestOA.URL != "" {
 		if err := validateExternalHTTPURL(resp.BestOA.URL, true); err == nil {
 			return resp.BestOA.URL, true
+		}
+	}
+	return "", false
+}
+
+func resolveDownloadPDFViaUnpaywall(ctx context.Context, httpClient *http.Client, doi, email string) (string, bool) {
+	u := enrichUnpaywallBase + "/" + url.PathEscape(doi) + "?" + url.Values{"email": {email}}.Encode()
+	var resp unpaywallResponse
+	if err := getJSON(ctx, httpClient, u, &resp); err != nil {
+		return "", false
+	}
+	for _, candidate := range []string{resp.BestOA.URLForPDF, resp.BestOA.URL} {
+		parsed, err := url.Parse(strings.TrimSpace(candidate))
+		if err == nil && (parsed.Scheme == "http" || parsed.Scheme == "https") && parsed.Hostname() != "" {
+			return candidate, true
 		}
 	}
 	return "", false

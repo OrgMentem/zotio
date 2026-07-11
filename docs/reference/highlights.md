@@ -75,7 +75,7 @@ Turn a DOI, PMID, arXiv ID, or ISBN into a schema-valid Zotero item — one comm
 
 ### `items enrich`
 
-Fill missing DOIs, abstracts, and open-access PDF links from CrossRef, OpenAlex, Semantic Scholar, and Unpaywall — preview-first, with provenance appended to each item.
+Fill missing DOIs and abstracts, and attach open-access PDFs as links or downloaded files from CrossRef, OpenAlex, Semantic Scholar, and Unpaywall — preview-first, with provenance appended to each item.
 
 > **Why it matters** — Turn the audit's missing-metadata queue into applied fixes; --validate cross-checks stored DOIs read-only.
 
@@ -98,6 +98,12 @@ Every applied write is journaled; `journal undo <run-id>` reverses reversible ru
 Assemble a bounded, synthesis-ready context bundle for an item or collection — citation, abstract, your annotations, a capped fulltext excerpt — without ever calling a model.
 
 > **Why it matters** — Hand an LLM exactly the high-signal context it needs for a literature synthesis, bounded and provenance-tagged.
+
+### `items similar`
+
+Rank locally similar papers with explainable signals: shared collections, tags, creators, publication venue, and rare-word fulltext overlap — no embeddings or network calls.
+
+> **Why it matters** — Find nearby papers for literature synthesis from the synced mirror, with human-readable reasons for every recommendation.
 
 ### `export snapshot`
 

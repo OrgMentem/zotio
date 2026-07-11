@@ -210,3 +210,69 @@ func indexOf(s, sub string) int {
 	}
 	return -1
 }
+
+func TestQuerySimilarityCandidatesExcludesChildrenAndTrashCoexistence(t *testing.T) {
+	s := queryTestStore(t)
+	items := []json.RawMessage{
+		json.RawMessage(`{"key":"KEEP","data":{"key":"KEEP","itemType":"journalArticle","title":"Keep"}}`),
+		json.RawMessage(`{"key":"TRASHED","data":{"key":"TRASHED","itemType":"book","title":"Stale live row"}}`),
+		json.RawMessage(`{"key":"ATT","data":{"key":"ATT","itemType":"attachment","parentItem":"KEEP"}}`),
+		json.RawMessage(`{"key":"NOTE","data":{"key":"NOTE","itemType":"note"}}`),
+	}
+	if _, _, err := s.UpsertBatch("items", items); err != nil {
+		t.Fatalf("seed similarity items: %v", err)
+	}
+	if _, _, err := s.UpsertBatch("items-trash", []json.RawMessage{
+		json.RawMessage(`{"key":"TRASHED","data":{"key":"TRASHED","itemType":"book","title":"Trash copy"}}`),
+	}); err != nil {
+		t.Fatalf("seed trash coexistence: %v", err)
+	}
+
+	got, err := s.QuerySimilarityCandidates()
+	if err != nil {
+		t.Fatalf("QuerySimilarityCandidates: %v", err)
+	}
+	if len(got) != 1 || got[0].Key != "KEEP" {
+		t.Fatalf("candidate keys = %+v, want only KEEP", got)
+	}
+}
+
+func TestVisitSimilarityFulltextDocumentsExcludesTrashedParents(t *testing.T) {
+	s := queryTestStore(t)
+	items := []json.RawMessage{
+		json.RawMessage(`{"key":"KEEP","data":{"key":"KEEP","itemType":"journalArticle"}}`),
+		json.RawMessage(`{"key":"TRASHED","data":{"key":"TRASHED","itemType":"journalArticle"}}`),
+		json.RawMessage(`{"key":"AKEEP","data":{"key":"AKEEP","itemType":"attachment","parentItem":"KEEP"}}`),
+		json.RawMessage(`{"key":"ATRASH","data":{"key":"ATRASH","itemType":"attachment","parentItem":"TRASHED"}}`),
+	}
+	if _, _, err := s.UpsertBatch("items", items); err != nil {
+		t.Fatalf("seed fulltext parents: %v", err)
+	}
+	if _, _, err := s.UpsertBatch("items-trash", []json.RawMessage{
+		json.RawMessage(`{"key":"TRASHED","data":{"key":"TRASHED","itemType":"journalArticle"}}`),
+	}); err != nil {
+		t.Fatalf("seed trashed parent: %v", err)
+	}
+	if err := s.UpsertKeyed(
+		"fulltext",
+		[]string{"ATRASH", "AKEEP"},
+		[]json.RawMessage{
+			json.RawMessage(`{"content":"excluded"}`),
+			json.RawMessage(`{"content":"included"}`),
+		},
+	); err != nil {
+		t.Fatalf("seed fulltext documents: %v", err)
+	}
+
+	var got []SimilarityFulltextDocument
+	err := s.VisitSimilarityFulltextDocuments(func(doc SimilarityFulltextDocument) error {
+		got = append(got, doc)
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("VisitSimilarityFulltextDocuments: %v", err)
+	}
+	if len(got) != 1 || got[0].AttachmentKey != "AKEEP" || got[0].ParentItemKey != "KEEP" {
+		t.Fatalf("fulltext documents = %+v, want only AKEEP under KEEP", got)
+	}
+}

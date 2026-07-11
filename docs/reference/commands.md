@@ -1270,20 +1270,29 @@ zotio items duplicates resolve
 
 ### `zotio items enrich`
 
-Fill or validate item metadata (DOI, abstract, open-access PDF link) from CrossRef, OpenAlex, Semantic Scholar, Unpaywall, and OpenCitations
+Fill or validate item metadata (DOI, abstract, open-access PDF attachment) from CrossRef, OpenAlex, Semantic Scholar, Unpaywall, and OpenCitations
 
 Resolve missing metadata for locally synced items and apply it back to Zotero.
 
 Work queues come from the same checks as 'items audit':
   --missing-doi       resolve a DOI by title from CrossRef, then OpenAlex/Semantic Scholar (exact title match)
   --missing-abstract  fill the abstract from CrossRef, then OpenAlex/Semantic Scholar (requires the item's DOI)
-  --missing-pdf       attach an open-access PDF link from Unpaywall (requires DOI)
+  --missing-pdf       attach an open-access PDF from Unpaywall (requires DOI)
 
-By default this previews the proposed changes (a patch plan). Pass --collection
-to scope the work queue to items in a single collection, or --keys-from to scope
-to exact item keys produced by another command. Pass --yes to apply them via the
-Zotero API; --dry-run always previews. Applied field changes
-record provenance in the item's Extra field.
+PDF attachment modes:
+  linked-url   create a linked_url attachment (default; no download)
+  linked-file  download the PDF to --pdf-dir and create a linked_file child item; linked files do not sync to other devices
+
+Downloaded PDFs accept application/pdf, application/octet-stream, or an absent
+Content-Type, then must pass a %PDF- magic check. Stored (imported-file)
+retro-attachment waits on the Zotero Web API stored-upload protocol, which is
+deliberately deferred.
+
+By default this previews the proposed changes (a patch plan) and never downloads
+PDF bytes. Pass --collection to scope the work queue to items in a single
+collection, or --keys-from to scope to exact item keys produced by another
+command. Pass --yes to apply via the Zotero API; --dry-run always previews.
+Applied field changes record provenance in the item's Extra field.
 
 ```
 zotio items enrich [flags]
@@ -1291,15 +1300,17 @@ zotio items enrich [flags]
 
 | Flag | Type | Default | Description |
 | --- | --- | --- | --- |
+| `--attach-mode` | `string` | `linked-url` | PDF attachment handling: linked-url or linked-file; stored uploads await the deliberately deferred Zotero Web API stored-upload protocol |
 | `--collection` | `string` |  | Scope the work queue to items in a collection key |
 | `--email` | `string` |  | Contact email for Unpaywall (required for --missing-pdf) and the OpenAlex polite pool (optional); or set UNPAYWALL_EMAIL |
 | `--keys-from` | `string` |  | Read exact item keys from a file or '-' for stdin, then enrich only matching queued items |
 | `--limit` | `int` | `25` | Maximum items to process per category |
 | `--missing-abstract` | `bool` | `false` | Fill the abstract from CrossRef, OpenAlex, or Semantic Scholar (uses the item's DOI) |
 | `--missing-doi` | `bool` | `false` | Resolve and add a DOI from CrossRef, OpenAlex, or Semantic Scholar |
-| `--missing-pdf` | `bool` | `false` | Attach an open-access PDF link from Unpaywall (uses the item's DOI) |
+| `--missing-pdf` | `bool` | `false` | Attach an open-access PDF from Unpaywall as a link or download (uses the item's DOI) |
 | `--no-openalex` | `bool` | `false` | Disable the OpenAlex fallback for --missing-doi/--missing-abstract |
 | `--no-semantic-scholar` | `bool` | `false` | Disable the Semantic Scholar fallback for --missing-doi/--missing-abstract |
+| `--pdf-dir` | `string` |  | Directory for linked-file PDF downloads; responses must be PDF/octet-stream/unspecified Content-Type plus %PDF- magic |
 | `--validate` | `bool` | `false` | Read-only DOI discrepancy report against CrossRef and OpenCitations |
 
 ### `zotio items file`
@@ -1571,6 +1582,28 @@ zotio items retract-check [flags]
 | --- | --- | --- | --- |
 | `--collection` | `string` |  | Scope checks to items in a collection key |
 | `--limit` | `int` | `0` | Maximum DOI-bearing items to check (0 = all) |
+
+### `zotio items similar`
+
+Rank locally similar items with explainable signals
+
+Rank locally similar items using five weighted signals: collections (0.30), tags (0.25), fulltext rare-word overlap (0.25), creators (0.10), and an exact, binary venue match (0.10). Run 'zotio sync' first to populate the local mirror and 'zotio sync --fulltext' to include the fulltext signal. --min-score filters the resulting weighted composite score.
+
+```
+zotio items similar <itemKey> [flags]
+```
+
+Examples:
+
+```bash
+zotio items similar ABC12345
+  zotio items similar ABC12345 --limit 5 --min-score 0.2 --json
+```
+
+| Flag | Type | Default | Description |
+| --- | --- | --- | --- |
+| `--limit` | `int` | `10` | Maximum number of similar items to return |
+| `--min-score` | `float64` | `0` | Minimum composite similarity score to include |
 
 ### `zotio items stale`
 

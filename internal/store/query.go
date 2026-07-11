@@ -113,6 +113,88 @@ func (s *Store) QueryItems(q ItemQuery) ([]json.RawMessage, error) {
 	return results, rows.Err()
 }
 
+// SimilarityCandidate is a top-level bibliographic item eligible for local
+// similarity scoring.
+type SimilarityCandidate struct {
+	Key  string
+	Data json.RawMessage
+}
+
+// QuerySimilarityCandidates returns top-level bibliographic items, excluding
+// child-only item types and any key that also exists in the trash mirror.
+func (s *Store) QuerySimilarityCandidates() ([]SimilarityCandidate, error) {
+	rows, err := s.db.Query(`
+SELECT r.id, r.data
+FROM resources r
+WHERE r.resource_type = 'items'
+	AND COALESCE(r.parent_key, '') = ''
+	AND COALESCE(r.item_type, '') NOT IN ('attachment', 'note', 'annotation')
+	AND NOT EXISTS (
+		SELECT 1 FROM resources t
+		WHERE t.resource_type = 'items-trash' AND t.id = r.id
+	)
+ORDER BY r.id`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var results []SimilarityCandidate
+	for rows.Next() {
+		var candidate SimilarityCandidate
+		var data string
+		if err := rows.Scan(&candidate.Key, &data); err != nil {
+			return nil, err
+		}
+		candidate.Data = json.RawMessage(data)
+		results = append(results, candidate)
+	}
+	return results, rows.Err()
+}
+
+// SimilarityFulltextDocument is one synced attachment fulltext payload and its
+// parent bibliographic item.
+type SimilarityFulltextDocument struct {
+	AttachmentKey string
+	ParentItemKey string
+	Data          json.RawMessage
+}
+
+// VisitSimilarityFulltextDocuments streams synced fulltext documents in parent
+// order. Streaming lets callers make bounded-memory passes over a large corpus.
+// Documents without a known parent and documents under trashed parents are
+// excluded.
+func (s *Store) VisitSimilarityFulltextDocuments(visit func(SimilarityFulltextDocument) error) error {
+	rows, err := s.db.Query(`
+SELECT ft.id, att.parent_key, ft.data
+FROM resources ft
+JOIN resources att ON att.resource_type = 'items' AND att.id = ft.id
+WHERE ft.resource_type = 'fulltext'
+	AND COALESCE(att.parent_key, '') <> ''
+	AND NOT EXISTS (
+		SELECT 1 FROM resources t
+		WHERE t.resource_type = 'items-trash' AND t.id = att.parent_key
+	)
+ORDER BY att.parent_key, ft.id`)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var doc SimilarityFulltextDocument
+		var data string
+		if err := rows.Scan(&doc.AttachmentKey, &doc.ParentItemKey, &data); err != nil {
+			return err
+		}
+		doc.Data = json.RawMessage(data)
+		if err := visit(doc); err != nil {
+			return err
+		}
+	}
+	return rows.Err()
+}
+
 // itemOrderBy builds the ORDER BY clause for a sort field + direction, always
 // appending the item key as a deterministic tiebreaker so ordering is stable.
 func itemOrderBy(sortField, direction string) string {

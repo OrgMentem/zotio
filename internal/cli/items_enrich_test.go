@@ -7,9 +7,13 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -109,6 +113,215 @@ func TestResolvePDFViaUnpaywall_NoOA(t *testing.T) {
 	}
 }
 
+type enrichRoundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f enrichRoundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) { return f(req) }
+
+func withPDFSafety(t *testing.T, check func(context.Context, *url.URL) error) {
+	t.Helper()
+	oldCheck := enrichPDFURLSafetyCheck
+	oldFactory := enrichPDFDownloaderFactory
+	enrichPDFURLSafetyCheck = check
+	enrichPDFDownloaderFactory = func(client *http.Client) enrichPDFDownloader {
+		downloader := newEnrichPDFDownloader(client)
+		downloader.dialGuard = nil
+		return downloader
+	}
+	t.Cleanup(func() {
+		enrichPDFURLSafetyCheck = oldCheck
+		enrichPDFDownloaderFactory = oldFactory
+	})
+}
+
+func TestDownloadEnrichPDFWritesMagicPDF(t *testing.T) {
+	withPDFSafety(t, nil)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/pdf")
+		_, _ = w.Write([]byte("%PDF-1.7\nbody"))
+	}))
+	t.Cleanup(srv.Close)
+
+	dest := filepath.Join(t.TempDir(), "paper.pdf")
+	if err := downloadEnrichPDF(context.Background(), srv.Client(), srv.URL+"/paper.pdf", dest, 1024); err != nil {
+		t.Fatalf("downloadEnrichPDF: %v", err)
+	}
+	got, err := os.ReadFile(dest)
+	if err != nil {
+		t.Fatalf("read downloaded PDF: %v", err)
+	}
+	if string(got) != "%PDF-1.7\nbody" {
+		t.Fatalf("downloaded body = %q", got)
+	}
+}
+
+func TestDownloadEnrichPDFRejectsNonPDFBody(t *testing.T) {
+	withPDFSafety(t, nil)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/octet-stream")
+		_, _ = w.Write([]byte("not a PDF"))
+	}))
+	t.Cleanup(srv.Close)
+
+	dest := filepath.Join(t.TempDir(), "paper.pdf")
+	err := downloadEnrichPDF(context.Background(), srv.Client(), srv.URL+"/paper.pdf", dest, 1024)
+	if err == nil || !strings.Contains(err.Error(), "not a PDF") {
+		t.Fatalf("err = %v, want non-PDF rejection", err)
+	}
+	if _, statErr := os.Stat(dest); !os.IsNotExist(statErr) {
+		t.Fatalf("dest exists after rejected download: %v", statErr)
+	}
+}
+
+func TestDownloadEnrichPDFRejectsOversize(t *testing.T) {
+	withPDFSafety(t, nil)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte("%PDF-1234567890"))
+	}))
+	t.Cleanup(srv.Close)
+
+	dest := filepath.Join(t.TempDir(), "paper.pdf")
+	err := downloadEnrichPDF(context.Background(), srv.Client(), srv.URL+"/paper.pdf", dest, 7)
+	if err == nil || !strings.Contains(err.Error(), "exceeds size cap") {
+		t.Fatalf("err = %v, want oversize rejection", err)
+	}
+	if _, statErr := os.Stat(dest); !os.IsNotExist(statErr) {
+		t.Fatalf("dest exists after oversize download: %v", statErr)
+	}
+}
+
+func TestDownloadEnrichPDFRejectsRedirectToLocalhost(t *testing.T) {
+	withPDFSafety(t, func(_ context.Context, u *url.URL) error {
+		if u.Hostname() == "localhost" {
+			return fmt.Errorf("refusing localhost")
+		}
+		return nil
+	})
+	client := &http.Client{Transport: enrichRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+		if req.URL.Host == "example.test" {
+			return &http.Response{
+				StatusCode: http.StatusFound,
+				Header:     http.Header{"Location": []string{"http://localhost/paper.pdf"}},
+				Body:       io.NopCloser(strings.NewReader("")),
+				Request:    req,
+			}, nil
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Body:       io.NopCloser(strings.NewReader("%PDF-1.7")),
+			Request:    req,
+		}, nil
+	})}
+
+	dest := filepath.Join(t.TempDir(), "paper.pdf")
+	err := downloadEnrichPDF(context.Background(), client, "http://example.test/paper.pdf", dest, 1024)
+	if err == nil || !strings.Contains(err.Error(), "localhost") {
+		t.Fatalf("err = %v, want localhost redirect rejection", err)
+	}
+}
+
+func TestDownloadEnrichPDFNoClobber(t *testing.T) {
+	withPDFSafety(t, nil)
+	requests := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		_, _ = w.Write([]byte("%PDF-1.7"))
+	}))
+	t.Cleanup(srv.Close)
+
+	dest := filepath.Join(t.TempDir(), "paper.pdf")
+	if err := os.WriteFile(dest, []byte("existing"), 0o644); err != nil {
+		t.Fatalf("seed existing file: %v", err)
+	}
+	err := downloadEnrichPDF(context.Background(), srv.Client(), srv.URL+"/paper.pdf", dest, 1024)
+	if err == nil || !strings.Contains(err.Error(), "refusing to clobber") {
+		t.Fatalf("err = %v, want no-clobber rejection", err)
+	}
+	if requests != 0 {
+		t.Fatalf("download server saw %d request(s), want 0 before clobber refusal", requests)
+	}
+	got, _ := os.ReadFile(dest)
+	if string(got) != "existing" {
+		t.Fatalf("existing file changed to %q", got)
+	}
+}
+
+type fakePDFResolver struct {
+	addrs []net.IPAddr
+}
+
+func (r fakePDFResolver) LookupIPAddr(context.Context, string) ([]net.IPAddr, error) {
+	return r.addrs, nil
+}
+
+func TestRejectLocalPDFURLRejectsNonPublicLiterals(t *testing.T) {
+	for _, rawURL := range []string{
+		"http://127.0.0.1/paper.pdf",
+		"http://10.20.30.40/paper.pdf",
+		"http://169.254.169.254/latest/meta-data",
+	} {
+		t.Run(rawURL, func(t *testing.T) {
+			u, err := url.Parse(rawURL)
+			if err != nil {
+				t.Fatal(err)
+			}
+			err = rejectLocalPDFURL(context.Background(), u)
+			if err == nil || !strings.Contains(err.Error(), "non-public") {
+				t.Fatalf("rejectLocalPDFURL(%q) = %v, want non-public rejection", rawURL, err)
+			}
+		})
+	}
+}
+
+func TestEnrichPDFDialRejectsHostnameResolvingToLoopback(t *testing.T) {
+	downloader := newEnrichPDFDownloader(http.DefaultClient)
+	downloader.resolver = fakePDFResolver{addrs: []net.IPAddr{{IP: net.ParseIP("127.0.0.1")}}}
+	dest := filepath.Join(t.TempDir(), "paper.pdf")
+	err := downloader.download(context.Background(), "http://papers.example:8080/paper.pdf", dest, 1024)
+	if err == nil || !strings.Contains(err.Error(), "non-public address") {
+		t.Fatalf("download error = %v, want dial-time loopback rejection", err)
+	}
+	if _, statErr := os.Stat(dest); !os.IsNotExist(statErr) {
+		t.Fatalf("dest exists after dial rejection: %v", statErr)
+	}
+}
+
+func TestDownloadEnrichPDFRejectsHTMLContentTypeBeforeCreatingFile(t *testing.T) {
+	withPDFSafety(t, nil)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		_, _ = w.Write([]byte("%PDF-1.7\nbody"))
+	}))
+	t.Cleanup(srv.Close)
+
+	dest := filepath.Join(t.TempDir(), "paper.pdf")
+	err := downloadEnrichPDF(context.Background(), srv.Client(), srv.URL, dest, 1024)
+	if err == nil || !strings.Contains(err.Error(), `Content-Type "text/html"`) {
+		t.Fatalf("download error = %v, want HTML Content-Type rejection", err)
+	}
+	if _, statErr := os.Stat(dest); !os.IsNotExist(statErr) {
+		t.Fatalf("dest exists after Content-Type rejection: %v", statErr)
+	}
+}
+
+func TestDownloadEnrichPDFAcceptsMissingContentType(t *testing.T) {
+	withPDFSafety(t, nil)
+	client := &http.Client{Transport: enrichRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{},
+			Body:       io.NopCloser(strings.NewReader("%PDF-1.7\nbody")),
+			Request:    req,
+		}, nil
+	})}
+	dest := filepath.Join(t.TempDir(), "paper.pdf")
+	if err := downloadEnrichPDF(context.Background(), client, "https://papers.example/paper.pdf", dest, 1024); err != nil {
+		t.Fatalf("download with missing Content-Type: %v", err)
+	}
+	if got, err := os.ReadFile(dest); err != nil || string(got) != "%PDF-1.7\nbody" {
+		t.Fatalf("downloaded body = %q, err = %v", got, err)
+	}
+}
+
 type fakeMutator struct {
 	patchPath string
 	patchBody map[string]any
@@ -134,6 +347,36 @@ func (f *fakeMutator) Post(path string, body any) (json.RawMessage, int, error) 
 		return nil, http.StatusInternalServerError, f.postErr
 	}
 	return json.RawMessage(`{}`), 200, nil
+}
+
+func TestApplyEnrichProposalLinkedFilePostFailureRemovesDownload(t *testing.T) {
+	withPDFSafety(t, nil)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/pdf")
+		_, _ = w.Write([]byte("%PDF-1.7\nbody"))
+	}))
+	t.Cleanup(srv.Close)
+
+	dest := filepath.Join(t.TempDir(), "paper.pdf")
+	downloader := newEnrichPDFDownloader(srv.Client())
+	downloader.dialGuard = nil
+	p := enrichProposal{
+		Key:         "ABC",
+		Category:    "missing_pdf",
+		Action:      enrichActionAttach,
+		Source:      "Unpaywall",
+		AttachMode:  "linked-file",
+		DownloadURL: srv.URL + "/paper.pdf",
+		PDFPath:     dest,
+	}
+	f := &fakeMutator{postErr: errors.New("Zotero API returned HTTP 500")}
+	status, reason, err := applyEnrichProposalWithContext(context.Background(), downloader, f, &p, &rootFlags{})
+	if err == nil || status != "failed" || !strings.Contains(fmt.Sprint(reason), "removed downloaded file") {
+		t.Fatalf("apply = status %q reason %v err %v, want failed with cleanup detail", status, reason, err)
+	}
+	if _, statErr := os.Stat(dest); !os.IsNotExist(statErr) {
+		t.Fatalf("download remains after attachment POST failure: %v", statErr)
+	}
 }
 
 func TestApplyEnrichProposal_PatchIncludesVersionAndProvenance(t *testing.T) {
@@ -233,12 +476,30 @@ func seedEnrichStore(t *testing.T, extra ...string) localQueryStore {
 	return localQueryStore{rawDB}
 }
 
+func seedEnrichPDFStore(t *testing.T) {
+	t.Helper()
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("ZOTERO_CONFIG", filepath.Join(t.TempDir(), "missing.toml"))
+	dbPath := defaultDBPath("zotio")
+	db, err := store.OpenWithContext(context.Background(), dbPath)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	item := json.RawMessage(`{"key":"KPDF","version":4,"data":{"key":"KPDF","itemType":"journalArticle","title":"PDF Paper","DOI":"10.1/pdf"}}`)
+	if _, _, err := db.UpsertBatch("items", []json.RawMessage{item}); err != nil {
+		t.Fatalf("seed PDF item: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close store: %v", err)
+	}
+}
+
 func TestBuildEnrichProposals_DOIFromStore(t *testing.T) {
 	srv := crossRefSearchServer(t, "Attention Is All You Need", "10.1/attention")
 	withBase(t, &enrichCrossRefBase, srv.URL)
 	db := seedEnrichStore(t)
 
-	proposals, skipped := buildEnrichProposals(context.Background(), db, http.DefaultClient, "missing_doi", 25, "", nil, "", false, false)
+	proposals, skipped := buildEnrichProposals(context.Background(), db, http.DefaultClient, "missing_doi", 25, "", nil, "", false, false, "linked-url", "")
 	if len(proposals) != 1 {
 		t.Fatalf("proposals = %d, want 1: %+v", len(proposals), proposals)
 	}
@@ -274,7 +535,7 @@ func TestBuildEnrichProposals_DOIFromSemanticScholarFallback(t *testing.T) {
 	withBase(t, &enrichSemanticScholarBase, ss.URL)
 	db := seedEnrichStore(t)
 
-	proposals, skipped := buildEnrichProposals(context.Background(), db, http.DefaultClient, "missing_doi", 25, "", nil, "", true, true)
+	proposals, skipped := buildEnrichProposals(context.Background(), db, http.DefaultClient, "missing_doi", 25, "", nil, "", true, true, "linked-url", "")
 	if len(proposals) != 1 {
 		t.Fatalf("proposals = %d, want 1: %+v (skipped=%+v)", len(proposals), proposals, skipped)
 	}
@@ -432,6 +693,133 @@ func TestItemsEnrichPreviewEnvelope(t *testing.T) {
 	}
 	if got[1].Field != "extra" || !strings.Contains(fmt.Sprint(got[1].Add), "zotio: DOI added via") {
 		t.Errorf("second change = %+v, want extra provenance line in the preview", got[1])
+	}
+}
+
+func TestItemsEnrichAttachModeRequiresMissingPDF(t *testing.T) {
+	cmd := newItemsEnrichCmd(&rootFlags{asJSON: true})
+	cmd.SetArgs([]string{"--missing-doi", "--attach-mode", "linked-file"})
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetErr(&bytes.Buffer{})
+	err := cmd.Execute()
+	if err == nil || ExitCode(err) != 2 || !strings.Contains(err.Error(), "--attach-mode is only valid with --missing-pdf") {
+		t.Fatalf("err = %v, code=%d; want usage error for --attach-mode without --missing-pdf", err, ExitCode(err))
+	}
+}
+
+func TestItemsEnrichLinkedFileRequiresPDFDir(t *testing.T) {
+	cmd := newItemsEnrichCmd(&rootFlags{asJSON: true})
+	cmd.SetArgs([]string{"--missing-pdf", "--attach-mode", "linked-file"})
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetErr(&bytes.Buffer{})
+	err := cmd.Execute()
+	if err == nil || ExitCode(err) != 2 || !strings.Contains(err.Error(), "--pdf-dir is required") {
+		t.Fatalf("err = %v, code=%d; want usage error for linked-file without --pdf-dir", err, ExitCode(err))
+	}
+}
+
+func TestItemsEnrichStoredModeExplainsDeferral(t *testing.T) {
+	cmd := newItemsEnrichCmd(&rootFlags{asJSON: true, via: "web"})
+	cmd.SetArgs([]string{"--missing-pdf", "--attach-mode", "stored"})
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetErr(&bytes.Buffer{})
+	err := cmd.Execute()
+	if err == nil || ExitCode(err) != 2 || !strings.Contains(err.Error(), "Zotero Web API stored-upload protocol") || !strings.Contains(err.Error(), "deliberately deferred") {
+		t.Fatalf("err = %v, code=%d; want usage error explaining stored-upload deferral", err, ExitCode(err))
+	}
+}
+
+func TestItemsEnrichLinkedFilePreviewDoesNotDownload(t *testing.T) {
+	seedEnrichPDFStore(t)
+	pdfRequests := 0
+	pdfSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		pdfRequests++
+		_, _ = w.Write([]byte("%PDF-1.7"))
+	}))
+	t.Cleanup(pdfSrv.Close)
+	upw := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"best_oa_location":{"url_for_pdf":"` + pdfSrv.URL + `/paper.pdf"}}`))
+	}))
+	t.Cleanup(upw.Close)
+	withBase(t, &enrichUnpaywallBase, upw.URL)
+
+	destDir := filepath.Join(t.TempDir(), "pdfs")
+	flags := &rootFlags{asJSON: true}
+	cmd := newItemsEnrichCmd(flags)
+	cmd.SetArgs([]string{"--missing-pdf", "--email", "me@example.com", "--attach-mode", "linked-file", "--pdf-dir", destDir})
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&bytes.Buffer{})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("enrich preview: %v", err)
+	}
+	if pdfRequests != 0 {
+		t.Fatalf("preview downloaded PDF %d time(s), want 0", pdfRequests)
+	}
+	var env mutation.Envelope
+	if err := json.Unmarshal(out.Bytes(), &env); err != nil {
+		t.Fatalf("decode preview: %v", err)
+	}
+	if env.Plan.Summary.Planned != 1 || len(env.Plan.Operations) != 1 {
+		t.Fatalf("plan = %+v ops=%+v, want one PDF proposal", env.Plan.Summary, env.Plan.Operations)
+	}
+	got := fmt.Sprint(env.Plan.Operations[0].Changes[0].Add)
+	if !strings.Contains(got, "linked-file ->") || !strings.Contains(got, filepath.Join(destDir, "KPDF.pdf")) || !strings.Contains(got, pdfSrv.URL+"/paper.pdf") {
+		t.Fatalf("preview change = %q, want mode, destination, and download URL", got)
+	}
+}
+
+func TestItemsEnrichLinkedFileApplyDownloadsAndPostsAttachment(t *testing.T) {
+	withPDFSafety(t, nil)
+	seedEnrichPDFStore(t)
+	pdfSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte("%PDF-1.7\nbody"))
+	}))
+	t.Cleanup(pdfSrv.Close)
+	upw := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"best_oa_location":{"url_for_pdf":"` + pdfSrv.URL + `/paper.pdf"}}`))
+	}))
+	t.Cleanup(upw.Close)
+	withBase(t, &enrichUnpaywallBase, upw.URL)
+
+	var gotBody []map[string]any
+	zsrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost && r.URL.Path == "/items" {
+			_ = json.NewDecoder(r.Body).Decode(&gotBody)
+			_, _ = w.Write([]byte(`{"success":{"0":"ATTACH1"}}`))
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("{}"))
+	}))
+	t.Cleanup(zsrv.Close)
+	t.Setenv("ZOTERO_BASE_URL", zsrv.URL)
+
+	destDir := filepath.Join(t.TempDir(), "pdfs")
+	flags := &rootFlags{asJSON: true, yes: true, maxChanges: -1}
+	cmd := newItemsEnrichCmd(flags)
+	cmd.SetArgs([]string{"--missing-pdf", "--email", "me@example.com", "--attach-mode", "linked-file", "--pdf-dir", destDir})
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&bytes.Buffer{})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("enrich linked-file apply: %v; out=%s", err, out.String())
+	}
+
+	wantPath := filepath.Join(destDir, "KPDF.pdf")
+	gotPDF, err := os.ReadFile(wantPath)
+	if err != nil {
+		t.Fatalf("read linked PDF: %v", err)
+	}
+	if string(gotPDF) != "%PDF-1.7\nbody" {
+		t.Fatalf("downloaded PDF = %q", gotPDF)
+	}
+	if len(gotBody) != 1 {
+		t.Fatalf("attachment POST body = %+v, want one item", gotBody)
+	}
+	att := gotBody[0]
+	if att["linkMode"] != "linked_file" || att["parentItem"] != "KPDF" || att["path"] != wantPath || att["contentType"] != "application/pdf" {
+		t.Fatalf("attachment = %+v, want linked_file child pointing at downloaded path", att)
 	}
 }
 
@@ -624,7 +1012,7 @@ func TestEnrichOpenAlexAbstractFallback(t *testing.T) {
 	withBase(t, &enrichOpenAlexBase, oa.URL)
 
 	data := map[string]any{"title": "T", "DOI": "10.1/x"}
-	prop, reason := resolveEnrichment(context.Background(), http.DefaultClient, "missing_abstract", "K1", float64(1), data, "", true, false)
+	prop, reason := resolveEnrichment(context.Background(), http.DefaultClient, "missing_abstract", "K1", float64(1), data, "", true, false, "linked-url", "")
 	if reason != "" {
 		t.Fatalf("unexpected skip: %s", reason)
 	}
@@ -635,7 +1023,7 @@ func TestEnrichOpenAlexAbstractFallback(t *testing.T) {
 		t.Errorf("abstract = %v, want 'From OpenAlex'", prop.Fields["abstractNote"])
 	}
 
-	if _, reason := resolveEnrichment(context.Background(), http.DefaultClient, "missing_abstract", "K1", float64(1), data, "", false, false); reason == "" {
+	if _, reason := resolveEnrichment(context.Background(), http.DefaultClient, "missing_abstract", "K1", float64(1), data, "", false, false, "linked-url", ""); reason == "" {
 		t.Error("expected a skip when the OpenAlex fallback is disabled")
 	}
 }

@@ -52,6 +52,7 @@ var capabilityOverrides = map[string]capabilityEntry{
 	"items missing-pdf":      {Requires: []string{preconditionSyncedStore}},
 	"items duplicates":       {Requires: []string{preconditionSyncedStore}},
 	"items related":          {Requires: []string{preconditionSyncedStore}},
+	"items similar":          {Requires: []string{preconditionSyncedStore}},
 	"items summarize":        {Requires: []string{preconditionSyncedStore}},
 	"creators audit":         {Operation: "read", Requires: []string{preconditionSyncedStore}},
 	"creators audit fix":     {Operation: "write", WriteTarget: "web_api", Requires: []string{preconditionSyncedStore}},

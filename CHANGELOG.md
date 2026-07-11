@@ -4,6 +4,10 @@ Notable changes to zotio. Format follows [Keep a Changelog](https://keepachangel
 
 ## [Unreleased]
 
+### Added
+- `items similar <itemKey>` ranks locally similar items with explainable signals — Jaccard overlap on shared collections (0.30), tags (0.25), and creators (0.10), an exact-match venue signal (0.10), plus synced-fulltext rare-word overlap (0.25). Deterministic, offline, no embeddings; every hit carries human-readable "why" reasons, per-signal scores in `--json`, and `--limit`/`--min-score` filters. Complements `items related` (explicit relation edges) with discovered similarity. Requires a synced local store (`zotio sync`; text signal needs `zotio sync --fulltext`).
+- `items enrich --missing-pdf` can now download the open-access PDF instead of only linking it: `--attach-mode linked-url|linked-file` (default `linked-url`, unchanged behavior). `linked-file` downloads the Unpaywall-resolved PDF to `--pdf-dir` — content-type check (`application/pdf`, `application/octet-stream`, or absent), `%PDF-` magic-header validation, 100 MiB streaming cap, non-public destination addresses rejected at dial time, never clobbers an existing file — and creates a `linked_file` child attachment. Downloads happen only at apply time; preview names the mode and destination. Stored (imported-file) retro-attachment waits on the deferred Web API upload protocol and is refused with that reason.
+
 ## [0.7.0] — 2026-07-10
 
 ### Added

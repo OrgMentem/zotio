@@ -26,6 +26,7 @@ func newItemsCmd(flags *rootFlags) *cobra.Command {
 	cmd.AddCommand(newItemsCollectionsOfCmd(flags))
 	cmd.AddCommand(newItemsDuplicatesCmd(flags))
 	cmd.AddCommand(newItemsRelatedCmd(flags))
+	cmd.AddCommand(newItemsSimilarCmd(flags))
 	// Metadata enrichment/remediation pipeline.
 	cmd.AddCommand(newItemsEnrichCmd(flags))
 	// Attachment on-disk file-path resolver (local-API file endpoints).

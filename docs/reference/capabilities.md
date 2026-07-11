@@ -82,6 +82,7 @@ The machine-readable registry every command is classified against — read vs. w
 | `items related` | read |  |  | `synced_store` |
 | `items restore` | write | `web_api` |  | `web_api_key` |
 | `items retract-check` | read |  |  |  |
+| `items similar` | read |  |  | `synced_store` |
 | `items stale` | read |  |  |  |
 | `items summarize` | read |  |  | `synced_store` |
 | `items tags` | read |  |  |  |
