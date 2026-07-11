@@ -249,14 +249,14 @@ WHERE resource_type = 'items'`)
 }
 
 func printItemsAuditSummary(cmd *cobra.Command, summary itemsAuditSummary) error {
-	tw := newTabWriter(cmd.OutOrStdout())
-	fmt.Fprintln(tw, "Check\tCount")
-	fmt.Fprintf(tw, "%s\t%d\n", "missing-pdf", summary.MissingPDF)
-	fmt.Fprintf(tw, "%s\t%d\n", "missing-abstract", summary.MissingAbstract)
-	fmt.Fprintf(tw, "%s\t%d\n", "missing-doi", summary.MissingDOI)
-	fmt.Fprintf(tw, "%s\t%d\n", "missing-tags", summary.MissingTags)
-	fmt.Fprintf(tw, "%s\t%d\n", "missing-citation", summary.MissingCitation)
-	return tw.Flush()
+	rows := [][]string{
+		{"missing-pdf", strconv.Itoa(summary.MissingPDF)},
+		{"missing-abstract", strconv.Itoa(summary.MissingAbstract)},
+		{"missing-doi", strconv.Itoa(summary.MissingDOI)},
+		{"missing-tags", strconv.Itoa(summary.MissingTags)},
+		{"missing-citation", strconv.Itoa(summary.MissingCitation)},
+	}
+	return renderColumns(cmd.OutOrStdout(), []string{"check", "count"}, rows)
 }
 
 func queryMissingAbstractItems(db localQueryStore, limit int, collection string) ([]map[string]any, error) {

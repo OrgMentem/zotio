@@ -1148,7 +1148,7 @@ func printAutoCards(w io.Writer, items []map[string]any) error {
 		// Remaining fields indented — skip empty, zero, and false values
 		for _, h := range headers[2:] {
 			v := formatCellValue(item[h])
-			if v == "" || v == "false" || v == "0" || v == "[]" || v == "null" {
+			if t := strings.TrimSpace(v); t == "" || t == "false" || t == "0" || t == "[]" || t == "null" {
 				continue
 			}
 			label := dim(padRight(h+":", maxLen))
@@ -1304,8 +1304,12 @@ func printProvenance(cmd *cobra.Command, count int, prov DataProvenance) {
 	if !isTerminal(cmd.OutOrStdout()) {
 		return
 	}
+	noun := "results"
+	if count == 1 {
+		noun = "result"
+	}
 	if prov.Source == "live" {
-		fmt.Fprintf(cmd.ErrOrStderr(), "%d results (live)\n", count)
+		fmt.Fprintln(cmd.ErrOrStderr(), dim(fmt.Sprintf("%d %s (live)", count, noun)))
 		return
 	}
 	age := "unknown"
@@ -1326,7 +1330,7 @@ func printProvenance(cmd *cobra.Command, count int, prov DataProvenance) {
 	if prov.Reason == "api_unreachable" {
 		prefix = "API unreachable. "
 	}
-	fmt.Fprintf(cmd.ErrOrStderr(), "%s%d results (cached, synced %s)\n", prefix, count, age)
+	fmt.Fprintln(cmd.ErrOrStderr(), dim(fmt.Sprintf("%s%d %s (cached, synced %s)", prefix, count, noun, age)))
 }
 
 // wrapWithProvenance wraps response data in a provenance envelope:

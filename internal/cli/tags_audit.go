@@ -303,14 +303,14 @@ func quoteTagAuditCommandArg(value string) string {
 }
 
 func printTagAuditReport(cmd *cobra.Command, totalTags int, plans []tagAuditPlan, dryRun bool) error {
-	summaryTitle := "## Summary"
+	summaryTitle := "Summary"
 	if dryRun {
 		summaryTitle += " (dry run)"
 	}
-	fmt.Fprintln(cmd.OutOrStdout(), summaryTitle)
-	fmt.Fprintf(cmd.OutOrStdout(), "Total tags: %d\n", totalTags)
-	fmt.Fprintf(cmd.OutOrStdout(), "Duplicate groups: %d\n\n", len(plans))
-	fmt.Fprintln(cmd.OutOrStdout(), "## Merge plan")
+	fmt.Fprintln(cmd.OutOrStdout(), bold(summaryTitle))
+	fmt.Fprintf(cmd.OutOrStdout(), "%s  %d\n", dim("total tags:"), totalTags)
+	fmt.Fprintf(cmd.OutOrStdout(), "%s  %d\n\n", dim("duplicate groups:"), len(plans))
+	fmt.Fprintln(cmd.OutOrStdout(), bold("Merge plan"))
 	if len(plans) == 0 {
 		fmt.Fprintln(cmd.OutOrStdout(), "No duplicate tag groups found.")
 		return nil

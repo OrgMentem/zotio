@@ -12,7 +12,7 @@
   <text x="54" y="260" fill="#e5edf7" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="20" font-weight="700">Top venue</text>
   <text x="54" y="289" fill="#9fb7d3" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="18">Science (2)</text>
   <text x="54" y="331" fill="#e5edf7" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="20" font-weight="700">Top first creator</text>
-  <text x="54" y="360" fill="#9fb7d3" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="18">Cong (1)</text>
+  <text x="54" y="360" fill="#9fb7d3" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="18">Cong, Le (1)</text>
   <rect x="450" y="118" width="296" height="224" rx="22" fill="#172338" stroke="#2e4566"/>
   <text x="480" y="158" fill="#e5edf7" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="20" font-weight="700">Monthly rhythm</text>
     <rect x="480" y="233" width="12" height="35" rx="4" fill="#6bc7ff"/>
@@ -42,4 +42,5 @@
 
   <text x="480" y="306" fill="#9fb7d3" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="16">3/12 with PDFs</text>
   <text x="480" y="331" fill="#9fb7d3" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="16">10 annotations, busiest in Feb</text>
+  <text x="54" y="395" fill="#6f89a8" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="15"></text>
 </svg>

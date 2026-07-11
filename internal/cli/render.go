@@ -86,7 +86,7 @@ func truncate(s string, max int) string {
 // identity keys and timestamps recede (dim), type-ish fields get an accent.
 // Values stay untouched — styling only ever wraps, never rewrites.
 func columnStyle(header string) func(string) string {
-	h := strings.ToLower(header)
+	h := strings.ReplaceAll(strings.ToLower(header), "_", "")
 	switch {
 	case h == "key" || h == "version":
 		return dim
@@ -133,7 +133,7 @@ func renderColumns(w io.Writer, headers []string, rows [][]string) error {
 
 	var b strings.Builder
 	for i, h := range headers {
-		cell := bold(strings.ToUpper(h))
+		cell := bold(strings.ToUpper(strings.ReplaceAll(h, "_", " ")))
 		if i < len(headers)-1 {
 			cell = padRight(cell, widths[i]) + "  "
 		}

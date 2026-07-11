@@ -54,6 +54,9 @@ Notable changes to zotio. Format follows [Keep a Changelog](https://keepachangel
 - **Package distribution expanded** — tagged releases now publish a Scoop manifest to `OrgMentem/scoop-bucket` (`scoop bucket add zotio https://github.com/OrgMentem/scoop-bucket && scoop install zotio`), open a WinGet manifest PR (`winget install OrgMentem.zotio`), and attach Linux `.deb`/`.rpm`/`.apk` packages; Homebrew (`brew install orgmentem/tap/zotio`) covers macOS and Linux.
 
 ### Changed
+- `library wrapped` redesigned: hero counters, monthly bars with a highlighted peak, a stacked type-mix ratio bar with color legend, a Highlights block (busiest day, favorite weekday, longest streak, deep cut, hot-off-the-press count, most-annotated item, top tag), full first-author names ("LeCun, Yann"), severity-colored PDF-coverage bar, and a share-card hint. The SVG card gains a streak/busiest-day footer. JSON output is additive (`highlights` object); existing fields unchanged.
+- `items audit` and `tags audit` summaries render through the styled table path instead of raw tabwriter/markdown headings; table headers show `DATE ADDED` instead of `DATE_ADDED`; provenance lines are dim and pluralize correctly ("1 result").
+- The write-safety diagram's flow arrows are consistent and orthogonal (no more bezier that appeared to route REFUSE into APPLY); gate annotations no longer clip.
 - `library stats` renders proportional bar charts with aligned counts instead of bare tabwriter columns.
 - `printTable` commands (`retract-check`, `bibcheck`, `groups`, `which`, importer listings) render through the width-aware styler: bold headers, dim keys/dates, severity-colored STATUS cells (red retracted, yellow correction, green ok), and cells clipped to 48 columns so rows stay terminal-sized (JSON output keeps full values).
 - Demo GIFs re-recorded against the styled output; the docs/README tour now walks search, duplicate detection, stats, and goal resolution.
