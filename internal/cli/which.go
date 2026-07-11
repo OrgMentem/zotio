@@ -5,6 +5,7 @@ package cli
 import (
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -268,9 +269,9 @@ func renderWhich(cmd *cobra.Command, flags *rootFlags, matches []whichMatch) err
 		}
 		return printJSONFiltered(w, map[string]any{"matches": matches}, flags)
 	}
-	fmt.Fprintf(w, "%-24s  %-8s  %s\n", "COMMAND", "SCORE", "DESCRIPTION")
+	rows := make([][]string, 0, len(matches))
 	for _, m := range matches {
-		fmt.Fprintf(w, "%-24s  %-8d  %s\n", m.Entry.Command, m.Score, m.Entry.Description)
+		rows = append(rows, []string{m.Entry.Command, strconv.Itoa(m.Score), m.Entry.Description})
 	}
-	return nil
+	return flags.printTable(cmd, []string{"command", "score", "description"}, rows)
 }

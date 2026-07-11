@@ -37,6 +37,6 @@ Sleep 5s
 Hide
 Type "clear" Enter
 Show
-Type "zotio which 'retracted papers'"
+Type "zotio which 'undo a bad edit'"
 Enter
 Sleep 5s
