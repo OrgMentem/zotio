@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -98,8 +99,10 @@ func extractPublicationYear(s string) int {
 	if m == "" {
 		return 0
 	}
-	var year int
-	fmt.Sscanf(m, "%d", &year)
+	year, err := strconv.Atoi(m)
+	if err != nil {
+		return 0
+	}
 	return year
 }
 

@@ -120,7 +120,13 @@ scoops:
     license: MIT
 # Windows: WinGet manifests, PR'd from a fork into microsoft/winget-pkgs.
 winget:
-  - name: zotio
+  - # TEMPORARY (remove after the first winget merge): microsoft/winget-pkgs
+    # PR #400391 (v0.7.0) is Validation-Completed and awaiting a New-Package
+    # moderator review. Opening another new-package PR per release stacks
+    # parallel PRs on the moderators and slows the first merge. Once any
+    # version is merged, delete skip_upload — version bumps are the fast path.
+    skip_upload: true
+    name: zotio
     publisher: OrgMentem
     license: MIT
     homepage: "https://github.com/OrgMentem/zotio"

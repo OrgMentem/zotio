@@ -541,17 +541,6 @@ func barCells(count, max int) int {
 	return n
 }
 
-func wrappedBar(count, maxCount, width int) string {
-	if count <= 0 || maxCount <= 0 || width <= 0 {
-		return ""
-	}
-	n := int(math.Round(float64(count) / float64(maxCount) * float64(width)))
-	if n < 1 {
-		n = 1
-	}
-	return strings.Repeat("█", n)
-}
-
 func wrappedMaxMonthCount(months []libraryWrappedMonthCount) int {
 	maxCount := 0
 	for _, month := range months {
