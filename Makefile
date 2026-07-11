@@ -66,5 +66,5 @@ docs-serve: docs-gen
 demos: build
 	ZOTIO_DEMO=1 ./bin/zotio demo --reset > /dev/null
 	mkdir -p docs/assets/demos
-	ZOTIO_DEMO=1 ./bin/zotio library wrapped --year 2026 --card docs/assets/demos/wrapped-card.svg > /dev/null
+	ZOTIO_DEMO=1 ./bin/zotio library wrapped --year 2026 --card docs/assets/demos/wrapped-card.svg --card-style cycle > /dev/null
 	cd docs/tapes && for t in *.tape; do vhs $$t; done

@@ -58,6 +58,7 @@ type libraryWrappedPDFCoverage struct {
 func newLibraryWrappedCmd(flags *rootFlags) *cobra.Command {
 	flagYear := time.Now().Year()
 	var flagCard string
+	var flagCardStyle string
 
 	cmd := &cobra.Command{
 		Use:         "wrapped",
@@ -69,6 +70,12 @@ func newLibraryWrappedCmd(flags *rootFlags) *cobra.Command {
 			}
 			if strings.TrimSpace(flagCard) == "" && cmd.Flags().Changed("card") {
 				return usageErr(fmt.Errorf("--card requires a non-empty path"))
+			}
+			if !validWrappedCardStyles[flagCardStyle] {
+				return usageErr(fmt.Errorf("--card-style must be one of: overview, rhythm, picks, cycle"))
+			}
+			if cmd.Flags().Changed("card-style") && !cmd.Flags().Changed("card") {
+				return usageErr(fmt.Errorf("--card-style requires --card"))
 			}
 
 			rawDB, err := openStoreForRead(cmd.Context(), "zotio")
@@ -96,7 +103,7 @@ func newLibraryWrappedCmd(flags *rootFlags) *cobra.Command {
 				return fmt.Errorf("querying wrapped report: %w", err)
 			}
 			if flagCard != "" {
-				if err := writeLibraryWrappedCard(flagCard, report); err != nil {
+				if err := writeLibraryWrappedCard(flagCard, report, flagCardStyle); err != nil {
 					return err
 				}
 				report.CardPath = flagCard
@@ -109,6 +116,7 @@ func newLibraryWrappedCmd(flags *rootFlags) *cobra.Command {
 	}
 	cmd.Flags().IntVar(&flagYear, "year", flagYear, "Year to summarize")
 	cmd.Flags().StringVar(&flagCard, "card", "", "Write an 800x418 SVG share card to this path")
+	cmd.Flags().StringVar(&flagCardStyle, "card-style", "overview", "Card layout: overview, rhythm, picks, or cycle (animated crossfade through all three)")
 	return cmd
 }
 
@@ -414,7 +422,7 @@ func printLibraryWrapped(cmd *cobra.Command, report libraryWrappedReport) error 
 	if report.CardPath != "" {
 		fmt.Fprintf(w, "SVG card written: %s\n", report.CardPath)
 	} else {
-		fmt.Fprintln(w, dim("Share it: zotio library wrapped --card wrapped.svg"))
+		fmt.Fprintln(w, dim("Share it: zotio library wrapped --card wrapped.svg (--card-style overview|rhythm|picks|cycle)"))
 	}
 	return nil
 }
@@ -561,15 +569,17 @@ func shortMonthName(month int) string {
 	return time.Month(month).String()[:3]
 }
 
+var validWrappedCardStyles = map[string]bool{"overview": true, "rhythm": true, "picks": true, "cycle": true}
+
 // generate a dependency-free SVG card with escaped local metadata.
-func writeLibraryWrappedCard(path string, report libraryWrappedReport) error {
+func writeLibraryWrappedCard(path string, report libraryWrappedReport, style string) error {
 	dir := filepath.Dir(path)
 	if dir != "." && dir != "" {
 		if err := os.MkdirAll(dir, 0o755); err != nil {
 			return fmt.Errorf("creating card directory: %w", err)
 		}
 	}
-	svg := renderLibraryWrappedSVG(report)
+	svg := renderLibraryWrappedSVG(report, style)
 	// #nosec G306 -- the SVG card is a user-requested shareable artifact, not a secret.
 	if err := os.WriteFile(path, []byte(svg), 0o644); err != nil {
 		return fmt.Errorf("writing SVG card: %w", err)
@@ -583,10 +593,46 @@ var wrappedCardPalette = []string{"#4cc2ff", "#3ddc97", "#ffd166", "#ef6da8", "#
 
 const wrappedCardFont = `font-family="Inter, ui-sans-serif, system-ui, sans-serif"`
 
-func renderLibraryWrappedSVG(report libraryWrappedReport) string {
+// renderLibraryWrappedSVG renders one card layout, or — for style "cycle" —
+// an animated card that crossfades through all three layouts with CSS
+// keyframes (works inside GitHub's <img> sandbox; honors reduced motion).
+func renderLibraryWrappedSVG(report libraryWrappedReport, style string) string {
+	var body string
+	switch style {
+	case "rhythm":
+		body = wrappedCardRhythmBody(report)
+	case "picks":
+		body = wrappedCardPicksBody(report)
+	case "cycle":
+		return wrappedCardShell(report, fmt.Sprintf(`  <style>
+    .zw-slide{opacity:0;animation:zw-rest 18s linear infinite}
+    .zw-first{animation-name:zw-lead}
+    .zw-s2{animation-delay:6s}
+    .zw-s3{animation-delay:12s}
+    @keyframes zw-lead{0%%,33.3%%{opacity:1}36.3%%,96%%{opacity:0}100%%{opacity:1}}
+    @keyframes zw-rest{0%%{opacity:0}3%%,33.3%%{opacity:1}36.3%%,100%%{opacity:0}}
+    @media (prefers-reduced-motion: reduce){.zw-slide{animation:none}.zw-first{opacity:1}}
+  </style>
+  <g class="zw-slide zw-first">
+%s  </g>
+  <g class="zw-slide zw-s2">
+  <rect width="800" height="418" rx="24" fill="url(#zw-bg)"/>
+%s  </g>
+  <g class="zw-slide zw-s3">
+  <rect width="800" height="418" rx="24" fill="url(#zw-bg)"/>
+%s  </g>
+`, wrappedCardOverviewBody(report), wrappedCardRhythmBody(report), wrappedCardPicksBody(report)))
+	default:
+		body = wrappedCardOverviewBody(report)
+	}
+	return wrappedCardShell(report, body)
+}
+
+// wrappedCardShell wraps a card body with the SVG document, background,
+// accent strip, header, and the computed-locally footer.
+func wrappedCardShell(report libraryWrappedReport, body string) string {
 	var b strings.Builder
 	year := report.Year
-
 	fmt.Fprintf(&b, `<?xml version="1.0" encoding="UTF-8"?>
 <svg xmlns="http://www.w3.org/2000/svg" width="800" height="418" viewBox="0 0 800 418" role="img" aria-labelledby="title desc">
   <title id="title">zotio wrapped %d</title>
@@ -598,14 +644,19 @@ func renderLibraryWrappedSVG(report libraryWrappedReport) string {
     </linearGradient>
   </defs>
   <rect width="800" height="418" rx="24" fill="url(#zw-bg)"/>
-  <rect x="24" y="0" width="752" height="3" rx="1.5" fill="#4cc2ff" opacity="0.85"/>
-`, year, report.Items.Total, year)
-
-	// Header
-	fmt.Fprintf(&b, `  <text x="54" y="58" fill="#e8eef7" %s font-size="24" font-weight="800">zotio</text>
+%s  <rect x="24" y="0" width="752" height="3" rx="1.5" fill="#4cc2ff" opacity="0.85"/>
+  <text x="54" y="58" fill="#e8eef7" %s font-size="24" font-weight="800">zotio</text>
   <text x="746" y="58" text-anchor="end" fill="#8fa3bd" %s font-size="17" font-weight="600" letter-spacing="4">WRAPPED %d</text>
-`, wrappedCardFont, wrappedCardFont, year)
+  <text x="746" y="404" text-anchor="end" fill="#5c7089" %s font-size="12">computed locally by zotio — no data leaves your machine</text>
+</svg>
+`, year, report.Items.Total, year, body, wrappedCardFont, wrappedCardFont, year, wrappedCardFont)
+	return b.String()
+}
 
+// wrappedCardOverviewBody is the default layout: hero counter, type mix,
+// highlights, monthly rhythm, venue/author footer, coverage meter.
+func wrappedCardOverviewBody(report libraryWrappedReport) string {
+	var b strings.Builder
 	// Hero: big count + chips
 	fmt.Fprintf(&b, `  <text x="54" y="128" fill="#ffffff" %s font-size="62" font-weight="800">%d</text>
 `, wrappedCardFont, report.Items.Total)
@@ -630,7 +681,7 @@ func renderLibraryWrappedSVG(report libraryWrappedReport) string {
 	}
 
 	// Type mix: full-width stacked ratio bar + legend
-	b.WriteString(wrappedSVGTypeMix(report.Items.ByItemType, 54, 156, 692, 14))
+	b.WriteString(wrappedSVGTypeMix(report.Items.ByItemType, "zw-mix-ov", 54, 156, 692, 14))
 
 	// Left column: highlights
 	b.WriteString(wrappedSVGHighlights(report, 54, 236))
@@ -659,9 +710,112 @@ func renderLibraryWrappedSVG(report libraryWrappedReport) string {
   <text x="690" y="381" fill="#9fb7d3" %s font-size="14">%d%% PDFs</text>
 `, fill, coverageFill(c.Percent), wrappedCardFont, c.Percent)
 	}
-	fmt.Fprintf(&b, `  <text x="746" y="404" text-anchor="end" fill="#5c7089" %s font-size="12">computed locally by zotio — no data leaves your machine</text>
-</svg>
+	return b.String()
+}
+
+// wrappedCardRhythmBody is the time-focused layout: stat blocks for streak,
+// busiest day, and favorite weekday next to a large month chart.
+func wrappedCardRhythmBody(report libraryWrappedReport) string {
+	var b strings.Builder
+	h := report.Highlights
+	type stat struct{ big, label, color string }
+	var stats []stat
+	if s := h.LongestStreak; s != nil {
+		stats = append(stats, stat{fmt.Sprintf("%d days", s.Days), fmt.Sprintf("longest streak (%s – %s)", s.Start, s.End), "#3ddc97"})
+	}
+	if d := h.BusiestDay; d != nil {
+		stats = append(stats, stat{pluralCount(d.Count, "item", "items"), fmt.Sprintf("busiest day (%s)", d.Date), "#4cc2ff"})
+	}
+	if wd := h.TopWeekday; wd != nil {
+		stats = append(stats, stat{wd.Name + "s", fmt.Sprintf("favorite weekday (%d additions)", wd.Count), "#ffd166"})
+	}
+	if len(stats) == 0 {
+		stats = append(stats, stat{pluralCount(report.Items.Total, "item", "items"), fmt.Sprintf("added in %d", report.Year), "#4cc2ff"})
+	}
+	y := 132
+	for _, s := range stats {
+		fmt.Fprintf(&b, `  <text x="54" y="%d" fill="%s" %s font-size="30" font-weight="800">%s</text>
+  <text x="54" y="%d" fill="#8fa3bd" %s font-size="14">%s</text>
+`, y, s.color, wrappedCardFont, svgText(s.big), y+22, wrappedCardFont, svgText(s.label))
+		y += 74
+	}
+	// Large month chart on the right
+	fmt.Fprintf(&b, `  <text x="410" y="110" fill="#e8eef7" %s font-size="16" font-weight="700">Monthly rhythm</text>
 `, wrappedCardFont)
+	b.WriteString(wrappedSVGMonthBarsSized(report.Items.ByMonth, 410, 320, 24, 6, 160))
+	if a := report.Annotations; a != nil && a.Count > 0 {
+		line := pluralCount(a.Count, "annotation", "annotations")
+		if a.BusiestMonth != nil {
+			line += fmt.Sprintf(", busiest in %s", a.BusiestMonth.Name)
+		}
+		fmt.Fprintf(&b, `  <text x="410" y="374" fill="#9fb7d3" %s font-size="14">%s</text>
+`, wrappedCardFont, svgText(line))
+	}
+	if h.SameYearCount > 0 {
+		fmt.Fprintf(&b, `  <text x="54" y="374" fill="#9fb7d3" %s font-size="14">%s published in %d itself</text>
+`, wrappedCardFont, svgText(pluralCount(h.SameYearCount, "item", "items")), report.Year)
+	}
+	return b.String()
+}
+
+// wrappedCardPicksBody is the content-focused layout: the standout papers
+// and tags, plus top venues and authors as ranked mini-bars.
+func wrappedCardPicksBody(report libraryWrappedReport) string {
+	var b strings.Builder
+	h := report.Highlights
+	type pick struct{ color, label, value string }
+	var picks []pick
+	if h.DeepCut != nil {
+		picks = append(picks, pick{"#ffd166", "Deep cut", fmt.Sprintf("%s (%d) — %d years after publication", truncate(h.DeepCut.Title, 40), h.DeepCut.Year, report.Year-h.DeepCut.Year)})
+	}
+	if h.MostAnnotated != nil {
+		picks = append(picks, pick{"#4cc2ff", "Most annotated", fmt.Sprintf("%s (%d annotations)", truncate(h.MostAnnotated.Title, 40), h.MostAnnotated.Count)})
+	}
+	if h.TopTag != nil {
+		picks = append(picks, pick{"#ef6da8", "Top tag", fmt.Sprintf("%s (%d items)", truncate(h.TopTag.Name, 32), h.TopTag.Count)})
+	}
+	y := 108
+	for _, p := range picks {
+		fmt.Fprintf(&b, `  <circle cx="59" cy="%d" r="5" fill="%s"/>
+  <text x="78" y="%d" fill="#8fa3bd" %s font-size="14">%s</text>
+  <text x="78" y="%d" fill="#e8eef7" %s font-size="17" font-weight="600">%s</text>
+`, y-6, p.color, y, wrappedCardFont, svgText(p.label), y+24, wrappedCardFont, svgText(p.value))
+		y += 62
+	}
+	if len(picks) == 0 {
+		fmt.Fprintf(&b, `  <text x="54" y="120" fill="#8fa3bd" %s font-size="16">Not enough data for picks this year — see the overview card.</text>
+`, wrappedCardFont)
+	}
+	// Ranked columns
+	b.WriteString(wrappedSVGRankedColumn("Top venues", report.TopVenues, 54, 312))
+	b.WriteString(wrappedSVGRankedColumn("Top authors", report.TopAuthors, 420, 312))
+	return b.String()
+}
+
+// wrappedSVGRankedColumn renders up to three ranked rows with proportional
+// mini-bars.
+func wrappedSVGRankedColumn(title string, rows []libraryWrappedRankedCount, x, startY int) string {
+	if len(rows) == 0 {
+		return ""
+	}
+	if len(rows) > 3 {
+		rows = rows[:3]
+	}
+	maxCount := rows[0].Count
+	var b strings.Builder
+	fmt.Fprintf(&b, `  <text x="%d" y="%d" fill="#e8eef7" %s font-size="15" font-weight="700">%s</text>
+`, x, startY, wrappedCardFont, svgText(title))
+	y := startY + 20
+	for _, r := range rows {
+		barW := 12
+		if maxCount > 0 {
+			barW = 12 + r.Count*100/maxCount
+		}
+		fmt.Fprintf(&b, `  <rect x="%d" y="%d" width="%d" height="8" rx="4" fill="#4cc2ff" opacity="0.8"/>
+  <text x="%d" y="%d" fill="#9fb7d3" %s font-size="13">%s (%d)</text>
+`, x, y-8, barW, x+barW+10, y, wrappedCardFont, svgText(truncate(r.Name, 26)), r.Count)
+		y += 24
+	}
 	return b.String()
 }
 
@@ -683,7 +837,7 @@ func coverageFill(pct int) string {
 
 // wrappedSVGTypeMix renders the stacked ratio bar with a compact legend for
 // up to four types (the rest fold into "other").
-func wrappedSVGTypeMix(rows []libraryWrappedRankedCount, x, y, w, h int) string {
+func wrappedSVGTypeMix(rows []libraryWrappedRankedCount, clipID string, x, y, w, h int) string {
 	total := 0
 	for _, r := range rows {
 		total += r.Count
@@ -700,9 +854,9 @@ func wrappedSVGTypeMix(rows []libraryWrappedRankedCount, x, y, w, h int) string 
 		shares = shares[:4]
 	}
 	var b strings.Builder
-	fmt.Fprintf(&b, `  <clipPath id="zw-mix"><rect x="%d" y="%d" width="%d" height="%d" rx="7"/></clipPath>
-  <g clip-path="url(#zw-mix)">
-`, x, y, w, h)
+	fmt.Fprintf(&b, `  <clipPath id="%s"><rect x="%d" y="%d" width="%d" height="%d" rx="7"/></clipPath>
+  <g clip-path="url(#%s)">
+`, clipID, x, y, w, h, clipID)
 	cx := x
 	legendParts := make([]string, 0, 5)
 	emit := func(name string, count, idx int) {
@@ -773,6 +927,12 @@ func wrappedSVGHighlights(report libraryWrappedReport, x, startY int) string {
 
 // wrappedSVGMonthBars renders the 12-month chart with the peak highlighted.
 func wrappedSVGMonthBars(months []libraryWrappedMonthCount, x, baseline int) string {
+	return wrappedSVGMonthBarsSized(months, x, baseline, 16, 10, 74)
+}
+
+// wrappedSVGMonthBarsSized renders the month chart with configurable bar
+// width, gap, and maximum bar height; the peak month is highlighted.
+func wrappedSVGMonthBarsSized(months []libraryWrappedMonthCount, x, baseline, barW, gap, maxH int) string {
 	maxCount := wrappedMaxMonthCount(months)
 	if len(months) == 0 || maxCount == 0 {
 		return fmt.Sprintf(`  <text x="%d" y="%d" fill="#8fa3bd" %s font-size="14">No monthly items for this year</text>
@@ -780,8 +940,8 @@ func wrappedSVGMonthBars(months []libraryWrappedMonthCount, x, baseline int) str
 	}
 	var b strings.Builder
 	for i, month := range months {
-		bx := x + i*26
-		height := 6 + int(math.Round(float64(month.Count)/float64(maxCount)*74))
+		bx := x + i*(barW+gap)
+		height := 6 + int(math.Round(float64(month.Count)/float64(maxCount)*float64(maxH)))
 		fill := "#4cc2ff"
 		opacity := "1"
 		if month.Count == 0 {
@@ -790,11 +950,14 @@ func wrappedSVGMonthBars(months []libraryWrappedMonthCount, x, baseline int) str
 		}
 		if month.Count == maxCount {
 			fill = "#3ddc97"
+			// label the peak with its count
+			fmt.Fprintf(&b, `  <text x="%d" y="%d" text-anchor="middle" fill="#3ddc97" %s font-size="12" font-weight="700">%d</text>
+`, bx+barW/2, baseline-height-8, wrappedCardFont, month.Count)
 		}
-		fmt.Fprintf(&b, `  <rect x="%d" y="%d" width="16" height="%d" rx="5" fill="%s" opacity="%s"/>
-`, bx, baseline-height, height, fill, opacity)
-		fmt.Fprintf(&b, `  <text x="%d" y="%d" fill="#5c7089" %s font-size="10">%s</text>
-`, bx+4, baseline+16, wrappedCardFont, svgText(month.Name[:1]))
+		fmt.Fprintf(&b, `  <rect x="%d" y="%d" width="%d" height="%d" rx="5" fill="%s" opacity="%s"/>
+`, bx, baseline-height, barW, height, fill, opacity)
+		fmt.Fprintf(&b, `  <text x="%d" y="%d" text-anchor="middle" fill="#5c7089" %s font-size="10">%s</text>
+`, bx+barW/2, baseline+16, wrappedCardFont, svgText(month.Name[:1]))
 	}
 	return b.String()
 }

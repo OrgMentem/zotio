@@ -1903,6 +1903,10 @@
           "description": "Write an 800x418 SVG share card to this path",
           "type": "string"
         },
+        "card-style": {
+          "description": "Card layout: overview, rhythm, picks, or cycle (animated crossfade through all three) (default: overview)",
+          "type": "string"
+        },
         "year": {
           "description": "Year to summarize (default: 2026)",
           "type": "number"

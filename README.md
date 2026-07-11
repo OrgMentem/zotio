@@ -256,13 +256,10 @@ format = "obsidian"      # or "logseq"
 - **`reading-list`** — a `to-read` tag queue with an `add` → `start` → `done` lifecycle for triaging what to read next.
 - **`items note-template`** — generate a pre-filled Obsidian/Logseq reading note for an item.
 - **`items open`** — print or launch a `zotero://` deep link to an item, collection, or PDF (cross-platform).
-- **`library wrapped`** — your Zotero year in review: hero counts, monthly rhythm with peak highlight, a type-mix ratio bar, highlights (busiest day, longest streak, deep cut, most-annotated paper, top tag), top venues and full author names, PDF coverage — with a shareable SVG card:
+- **`library wrapped`** — your Zotero year in review: hero counts, monthly rhythm with peak highlight, a type-mix ratio bar, highlights (busiest day, longest streak, deep cut, most-annotated paper, top tag), top venues and full author names, PDF coverage — plus a shareable SVG card in four layouts via `--card-style overview|rhythm|picks|cycle` (the card below is `cycle`, crossfading through all three):
 
 <p align="center">
-  <img src="docs/assets/demos/wrapped.gif" alt="zotio library wrapped in a terminal: hero counts, monthly bars with peak marker, stacked type-mix bar, highlights, and severity-colored PDF coverage" width="700">
-</p>
-<p align="center">
-  <img src="docs/assets/demos/wrapped-card.svg" alt="zotio library wrapped share card rendered from the demo library" width="560">
+  <img src="docs/assets/demos/wrapped-card.svg" alt="zotio library wrapped share card, animated: crossfades between an overview layout (hero count, type mix, highlights, monthly rhythm), a rhythm layout (streak, busiest day, favorite weekday, large month chart), and a picks layout (deep cut, most annotated, top tag, top venues and authors)" width="640">
 </p>
 
 ### Enrichment (reads external APIs, writes Zotero)
