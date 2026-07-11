@@ -488,6 +488,11 @@ Built by studying these projects and resources:
 - [**kujenba/zotero-mcp**](https://github.com/kujenba/zotero-mcp) — Python
 - [**jbaiter/zotero-cli**](https://github.com/jbaiter/zotero-cli) — Python
 - [**dhondta/zotero-cli**](https://github.com/dhondta/zotero-cli) — Python
+- [**Combjellyshen/ZoteroBridge**](https://github.com/Combjellyshen/ZoteroBridge) — TypeScript
+- [**RaulSimpetru/zotero-library-mcp**](https://github.com/RaulSimpetru/zotero-library-mcp) — Python
+- [**introfini/mcp-server-zotero-dev**](https://github.com/introfini/mcp-server-zotero-dev) — TypeScript
+- [**piiinpiiins/zotero-mcp-local**](https://github.com/piiinpiiins/Zotero-MCP-lite) — Python
+- [**mcp-for-zotero**](https://mcpforzotero.alejandroarnaud.dev) — hosted service
 
 ---
 

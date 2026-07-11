@@ -342,6 +342,29 @@ it expressive, expressive before wiring triggers. Triggered runs stay preview-on
 | **Park** | BYO-vector seam | The sanctioned form of the semantic-search cut, but build nothing until a host actually shows up with vectors. |
 | **Park** | P3 long tail (analytics, digests, ZotFile-style renaming, notes, collaboration) | Promote individual items only on user signal from the outreach channels. |
 
+### Competitive scan — MCP-registry Zotero servers (2026-07-11)
+
+Five registry servers never studied as prior art were probed at source level:
+`AlejandroArnaud/mcp-for-zotero` (hosted Web-API proxy SaaS, no public source),
+`Combjellyshen/ZoteroBridge` (direct-SQLite read/write, TypeScript),
+`RaulSimpetru/zotero-library-mcp` (pyzotero identifier ingest, Python),
+`introfini/mcp-server-zotero-dev` (plugin-dev RDP control plane, TypeScript),
+`piiinpiiins/zotero-mcp-local` (SQLite temp-copy reads + local similarity, Python).
+Nearly their whole combined surface is already covered (identifier ingest incl. batch,
+annotations, fulltext, collections/tags/notes, bibliography export, groups, identifier
+lookup). The genuine deltas and their dispositions:
+
+| Decision | Item | Rationale |
+|---|---|---|
+| **Build — SHIPPED 2026-07-11** | `items similar` — explainable local relatedness | zotero-mcp-local ranks library items by composite similarity over shared collections/tags/creators/venue plus fulltext rare-word overlap. Shipped: Jaccard on collections/tags/creators (0.30/0.25/0.10), exact-match venue (0.10), rare-term overlap over synced fulltext rows (0.25; DF-based, two-pass, memory-bounded). Deterministic, no-LLM, no network — does **not** relitigate the semantic-search cut (no embeddings). Every signal lives in zotio's mirror via typed store reads (ADR-0002). Complements shipped `items related` (explicit edges) with *discovered* similarity, with human-readable "why" reasons per hit. |
+| **Build (bounded) — SHIPPED 2026-07-11** | Close the OA-PDF loop: download, not just link | zotero-library-mcp downloads Unpaywall/arXiv PDFs (size cap, content-type/PDF-header validation) and attaches the file; zotio's `items enrich --missing-pdf` only attached a `linked_url`. Shipped as `items enrich --attach-mode linked-url\|linked-file` (default linked-url, unchanged): linked-file downloads to `--pdf-dir` (content-type + `%PDF-` magic validation, 100 MiB streaming cap, non-public destinations rejected at dial time, no clobber) and creates a `linked_file` child via the import-apply seam. Downloads happen at apply time only; preview names mode and destination. A `stored` mode was built then removed in review: the desktop Connector can only parent attachments to same-session connector-created items, so stored retro-attach waits on the Web API stored-file *upload protocol*, which stays deferred. |
+| **Decline** | Tag colors (`/settings/tagColors` PUT) | Cosmetic desktop-UI state, not trust/automation. Cheap (one settings endpoint) but no thesis fit; revisit only on user demand. |
+| **Decline** | Programmatic annotation *creation* | zotero-library-mcp computes highlight rects via PyMuPDF and writes Zotero annotation items. Requires a PDF geometry engine in Go — heavy dependency for a write-risky niche. Reading annotations (shipped) is the trust surface; authoring them is not. |
+| **Decline** | In-CLI PDF byte-level text extraction | zotio serves Zotero's own fulltext index (`sync --fulltext`, `items fulltext`); `items file` + `pdftotext` composes the fallback. A PDF parser dependency is not justified (composability thesis). |
+| **Decline** | Direct `zotero.sqlite` access mode | ADR-0002 stands, now with evidence: ZoteroBridge ships default-writable whole-file `writeFileSync` overwrites of a live `zotero.sqlite` with no WAL handling — corruption-grade anti-prior-art. zotero-mcp-local's temp-copy read is the safe variant of what zotio's mirror already provides, minus sync provenance. |
+| **Decline** | Hosted/remote MCP + OAuth token surface | mcp-for-zotero is a SaaS credential-custody product. zotio is local-first; the MCPB manifest covers desktop distribution. Different product, not a feature gap. |
+| **Decline** | Plugin-dev tooling (RDP bridge, UI automation, log tailing) | mcp-server-zotero-dev is "DevTools for Zotero plugin authors" — zero overlap with library management. Prior art only if zotio ever wants a desktop QA harness. |
+
 ## Opportunity → phase mapping
 
 All 26 open feature opportunities as of 2026-06-27:
