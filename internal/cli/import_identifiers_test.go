@@ -4,11 +4,14 @@ package cli
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 	"time"
+
+	"github.com/spf13/cobra"
 )
 
 // Verify PubMed eSummary records map to Zotero journalArticle fields.
@@ -88,6 +91,7 @@ func TestOpenLibraryItemFromData(t *testing.T) {
 
 // Smoke-test PubMed import --dry-run against a capped httptest response.
 func TestImportPmidDryRun(t *testing.T) {
+	allowPrivateMetadataProviderServers(t)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/esummary.fcgi" || r.URL.Query().Get("id") != "314159" {
 			t.Errorf("PubMed request URL = %s", r.URL.String())
@@ -123,6 +127,7 @@ func TestImportPmidDryRun(t *testing.T) {
 
 // Smoke-test arXiv import --dry-run against a capped httptest response.
 func TestImportArxivDryRun(t *testing.T) {
+	allowPrivateMetadataProviderServers(t)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/query" || r.URL.Query().Get("id_list") != "2401.00001" {
 			t.Errorf("arXiv request URL = %s", r.URL.String())
@@ -170,6 +175,7 @@ func TestImportArxivDryRun(t *testing.T) {
 
 // Smoke-test ISBN import --dry-run against a capped httptest response.
 func TestImportIsbnDryRun(t *testing.T) {
+	allowPrivateMetadataProviderServers(t)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/api/books" || r.URL.Query().Get("bibkeys") != "ISBN:9781234567890" {
 			t.Errorf("Open Library request URL = %s", r.URL.String())
@@ -201,6 +207,108 @@ func TestImportIsbnDryRun(t *testing.T) {
 		t.Errorf("isbn dry-run ISBN = %v", env.Item["ISBN"])
 	}
 	assertIdentifierDryRunCreator(t, env.Item)
+}
+
+func TestIdentifierProvidersRedirectPolicy(t *testing.T) {
+	allowPrivateMetadataProviderServers(t)
+
+	type providerCase struct {
+		name     string
+		base     *string
+		path     string
+		response string
+		fetch    func(*cobra.Command) error
+	}
+	providers := []providerCase{
+		{
+			name:     "PubMed",
+			base:     &importPubMedBase,
+			path:     "/esummary.fcgi",
+			response: `{"result":{"123":{"title":"Redirected PubMed"}}}`,
+			fetch: func(cmd *cobra.Command) error {
+				_, err := fetchPubMedItem(cmd, time.Second, "123")
+				return err
+			},
+		},
+		{
+			name:     "arXiv",
+			base:     &importArxivBase,
+			path:     "/query",
+			response: `<feed xmlns="http://www.w3.org/2005/Atom"><entry><title>Redirected arXiv</title></entry></feed>`,
+			fetch: func(cmd *cobra.Command) error {
+				_, err := fetchArxivItem(cmd, time.Second, "2401.00001")
+				return err
+			},
+		},
+		{
+			name:     "OpenLibrary",
+			base:     &importOpenLibraryBase,
+			path:     "/api/books",
+			response: `{"ISBN:9781234567890":{"title":"Redirected Book"}}`,
+			fetch: func(cmd *cobra.Command) error {
+				_, err := fetchOpenLibraryItem(cmd, time.Second, "9781234567890")
+				return err
+			},
+		},
+	}
+
+	for _, provider := range providers {
+		provider := provider
+		t.Run(provider.name+"/same-origin", func(t *testing.T) {
+			var srv *httptest.Server
+			srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path == provider.path {
+					http.Redirect(w, r, srv.URL+"/redirected", http.StatusFound)
+					return
+				}
+				if r.URL.Path != "/redirected" {
+					t.Errorf("redirected path = %q", r.URL.Path)
+				}
+				_, _ = w.Write([]byte(provider.response))
+			}))
+			defer srv.Close()
+			withBase(t, provider.base, srv.URL)
+
+			cmd := &cobra.Command{}
+			cmd.SetContext(context.Background())
+			if err := provider.fetch(cmd); err != nil {
+				t.Fatalf("same-origin redirect failed: %v", err)
+			}
+		})
+
+		for _, status := range []int{http.StatusFound, http.StatusTemporaryRedirect} {
+			status := status
+			t.Run(provider.name+"/cross-origin/"+http.StatusText(status), func(t *testing.T) {
+				targetHits := 0
+				target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					targetHits++
+					_, _ = w.Write([]byte(provider.response))
+				}))
+				defer target.Close()
+				source := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					http.Redirect(w, r, target.URL+"/metadata", status)
+				}))
+				defer source.Close()
+				withBase(t, provider.base, source.URL)
+
+				cmd := &cobra.Command{}
+				cmd.SetContext(context.Background())
+				if err := provider.fetch(cmd); err == nil {
+					t.Fatal("cross-origin redirect succeeded")
+				}
+				if targetHits != 0 {
+					t.Fatalf("cross-origin redirect hit target %d times", targetHits)
+				}
+			})
+		}
+	}
+}
+
+func allowPrivateMetadataProviderServers(t *testing.T) {
+	t.Helper()
+	old := allowPrivateOutboundForTests
+	allowPrivateOutboundForTests = true
+	t.Cleanup(func() { allowPrivateOutboundForTests = old })
 }
 
 type identifierDryRunEnvelope struct {

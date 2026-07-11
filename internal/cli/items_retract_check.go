@@ -169,7 +169,7 @@ func lookupCrossrefRetractionNotices(ctx context.Context, httpClient *http.Clien
 	req.Header.Set("Accept", crossrefContentType)
 	req.Header.Set("User-Agent", crossrefUserAgent)
 
-	resp, err := externalHTTPClient(httpClient, false).Do(req)
+	resp, err := sameOriginExternalFetchHTTPClient(httpClient, false).Do(req)
 	if err != nil {
 		return nil, false, fmt.Errorf("querying CrossRef for DOI %s: %w", doi, err)
 	}
@@ -200,7 +200,7 @@ func probeCrossrefRetractionAPI(ctx context.Context, httpClient *http.Client) er
 	}
 	req.Header.Set("Accept", crossrefContentType)
 	req.Header.Set("User-Agent", crossrefUserAgent)
-	resp, err := externalHTTPClient(httpClient, false).Do(req)
+	resp, err := sameOriginExternalFetchHTTPClient(httpClient, false).Do(req)
 	if err != nil {
 		return err
 	}

@@ -115,3 +115,89 @@ func TestLookupCrossrefRetractionNoticesTreats404AsUnregistered(t *testing.T) {
 		t.Fatalf("registered=%v notices=%+v, want unregistered with no findings", registered, notices)
 	}
 }
+
+func TestLookupCrossrefRetractionNoticesRedirectPolicy(t *testing.T) {
+	t.Run("refuses cross-origin 307 before target request", func(t *testing.T) {
+		targetContact := make(chan struct{}, 1)
+		target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			targetContact <- struct{}{}
+			_, _ = w.Write([]byte(`{"message":{"updated-by":[]}}`))
+		}))
+		t.Cleanup(target.Close)
+		source := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			http.Redirect(w, r, target.URL+"/result", http.StatusTemporaryRedirect)
+		}))
+		t.Cleanup(source.Close)
+		withBase(t, &crossrefRetractionBaseURL, source.URL)
+
+		if _, _, err := lookupCrossrefRetractionNotices(context.Background(), http.DefaultClient, "10.1/redirect"); err == nil {
+			t.Fatal("expected cross-origin redirect error")
+		}
+		select {
+		case <-targetContact:
+			t.Fatal("cross-origin redirect target was contacted")
+		default:
+		}
+	})
+
+	t.Run("allows same-origin redirect", func(t *testing.T) {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path != "/result" {
+				http.Redirect(w, r, "/result", http.StatusTemporaryRedirect)
+				return
+			}
+			_, _ = w.Write([]byte(`{"message":{"updated-by":[]}}`))
+		}))
+		t.Cleanup(srv.Close)
+		withBase(t, &crossrefRetractionBaseURL, srv.URL)
+
+		notices, registered, err := lookupCrossrefRetractionNotices(context.Background(), http.DefaultClient, "10.1/redirect")
+		if err != nil {
+			t.Fatalf("lookup: %v", err)
+		}
+		if !registered || len(notices) != 0 {
+			t.Fatalf("registered=%v notices=%+v, want registered with no notices", registered, notices)
+		}
+	})
+}
+
+func TestProbeCrossrefRetractionAPIRedirectPolicy(t *testing.T) {
+	t.Run("refuses cross-origin redirect before target request", func(t *testing.T) {
+		targetContact := make(chan struct{}, 1)
+		target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			targetContact <- struct{}{}
+			_, _ = w.Write([]byte(`{}`))
+		}))
+		t.Cleanup(target.Close)
+		source := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			http.Redirect(w, r, target.URL+"/result", http.StatusFound)
+		}))
+		t.Cleanup(source.Close)
+		withBase(t, &crossrefRetractionBaseURL, source.URL)
+
+		if err := probeCrossrefRetractionAPI(context.Background(), http.DefaultClient); err == nil {
+			t.Fatal("expected cross-origin redirect error")
+		}
+		select {
+		case <-targetContact:
+			t.Fatal("cross-origin redirect target was contacted")
+		default:
+		}
+	})
+
+	t.Run("allows same-origin redirect", func(t *testing.T) {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path != "/result" {
+				http.Redirect(w, r, "/result", http.StatusFound)
+				return
+			}
+			_, _ = w.Write([]byte(`{}`))
+		}))
+		t.Cleanup(srv.Close)
+		withBase(t, &crossrefRetractionBaseURL, srv.URL)
+
+		if err := probeCrossrefRetractionAPI(context.Background(), http.DefaultClient); err != nil {
+			t.Fatalf("probe: %v", err)
+		}
+	})
+}

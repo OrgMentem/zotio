@@ -42,8 +42,61 @@ func crossRefSearchServer(t *testing.T, matchTitle, matchDOI string) *httptest.S
 func withBase(t *testing.T, target *string, value string) {
 	t.Helper()
 	saved := *target
+	oldAllowPrivateOutbound := allowPrivateOutboundForTests
 	*target = value
-	t.Cleanup(func() { *target = saved })
+	allowPrivateOutboundForTests = true
+	t.Cleanup(func() {
+		*target = saved
+		allowPrivateOutboundForTests = oldAllowPrivateOutbound
+	})
+}
+
+func TestGetJSONRedirectPolicy(t *testing.T) {
+	oldAllowPrivateOutbound := allowPrivateOutboundForTests
+	allowPrivateOutboundForTests = true
+	t.Cleanup(func() { allowPrivateOutboundForTests = oldAllowPrivateOutbound })
+
+	t.Run("refuses cross-origin 307 before target request", func(t *testing.T) {
+		targetContact := make(chan struct{}, 1)
+		target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			targetContact <- struct{}{}
+			_, _ = w.Write([]byte(`{"ok":true}`))
+		}))
+		t.Cleanup(target.Close)
+		source := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			http.Redirect(w, r, target.URL+"/json", http.StatusTemporaryRedirect)
+		}))
+		t.Cleanup(source.Close)
+
+		var decoded map[string]bool
+		if err := getJSON(context.Background(), http.DefaultClient, source.URL, &decoded); err == nil {
+			t.Fatal("expected cross-origin redirect error")
+		}
+		select {
+		case <-targetContact:
+			t.Fatal("cross-origin redirect target was contacted")
+		default:
+		}
+	})
+
+	t.Run("allows same-origin redirect", func(t *testing.T) {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path == "/start" {
+				http.Redirect(w, r, "/json", http.StatusFound)
+				return
+			}
+			_, _ = w.Write([]byte(`{"ok":true}`))
+		}))
+		t.Cleanup(srv.Close)
+
+		var decoded map[string]bool
+		if err := getJSON(context.Background(), http.DefaultClient, srv.URL+"/start", &decoded); err != nil {
+			t.Fatalf("getJSON: %v", err)
+		}
+		if !decoded["ok"] {
+			t.Fatalf("decoded = %#v, want ok", decoded)
+		}
+	})
 }
 
 func TestResolveDOIViaCrossRef_ExactTitleMatch(t *testing.T) {
@@ -229,7 +282,7 @@ func TestDownloadEnrichPDFNoClobber(t *testing.T) {
 	t.Cleanup(srv.Close)
 
 	dest := filepath.Join(t.TempDir(), "paper.pdf")
-	if err := os.WriteFile(dest, []byte("existing"), 0o644); err != nil {
+	if err := os.WriteFile(dest, []byte("existing"), 0o600); err != nil {
 		t.Fatalf("seed existing file: %v", err)
 	}
 	err := downloadEnrichPDF(context.Background(), srv.Client(), srv.URL+"/paper.pdf", dest, 1024)

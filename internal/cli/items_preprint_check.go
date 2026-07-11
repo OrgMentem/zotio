@@ -244,7 +244,7 @@ func lookupArxivExternalDOI(ctx context.Context, httpClient *http.Client, arxivI
 	req.URL.RawQuery = q.Encode()
 	req.Header.Set("User-Agent", crossrefUserAgent)
 
-	resp, err := httpClient.Do(req)
+	resp, err := sameOriginExternalFetchHTTPClient(httpClient, false).Do(req)
 	if err != nil {
 		return "", false, fmt.Errorf("querying arXiv metadata for %s: %w", arxivID, err)
 	}
@@ -295,7 +295,7 @@ func lookupCrossrefDOI(ctx context.Context, httpClient *http.Client, doi string)
 	req.Header.Set("Accept", crossrefContentType)
 	req.Header.Set("User-Agent", crossrefUserAgent)
 
-	resp, err := httpClient.Do(req)
+	resp, err := sameOriginExternalFetchHTTPClient(httpClient, false).Do(req)
 	if err != nil {
 		return crossrefMatch{}, false, fmt.Errorf("querying CrossRef for DOI %s: %w", doi, err)
 	}

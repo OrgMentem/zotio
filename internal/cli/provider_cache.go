@@ -67,7 +67,7 @@ func getCappedProviderJSON(ctx context.Context, httpClient *http.Client, provide
 	}
 	req.Header.Set("Accept", crossrefContentType)
 	req.Header.Set("User-Agent", crossrefUserAgent)
-	resp, err := externalHTTPClient(httpClient, false).Do(req)
+	resp, err := sameOriginExternalFetchHTTPClient(httpClient, false).Do(req)
 	if err != nil {
 		return err
 	}

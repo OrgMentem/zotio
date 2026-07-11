@@ -611,7 +611,7 @@ func applyEnrichProposalWithContext(ctx context.Context, downloader enrichPDFDow
 			if err := postLinkedFileAttachment(c, p.Key, p.PDFPath, flags); err != nil {
 				cleanupErr := os.Remove(p.PDFPath)
 				if cleanupErr != nil && !errors.Is(cleanupErr, os.ErrNotExist) {
-					err = fmt.Errorf("creating linked-file attachment: %w; could not remove downloaded file %s: %v", err, p.PDFPath, cleanupErr)
+					err = fmt.Errorf("creating linked-file attachment: %w; could not remove downloaded file %s: %w", err, p.PDFPath, cleanupErr)
 				} else {
 					err = fmt.Errorf("creating linked-file attachment: %w; removed downloaded file %s so the operation can be retried", err, p.PDFPath)
 				}
@@ -1277,7 +1277,7 @@ func getJSON(ctx context.Context, httpClient *http.Client, rawURL string, out an
 	}
 	req.Header.Set("Accept", "application/json")
 	req.Header.Set("User-Agent", "zotio/1.0.0")
-	resp, err := externalHTTPClient(httpClient, false).Do(req)
+	resp, err := sameOriginExternalFetchHTTPClient(httpClient, false).Do(req)
 	if err != nil {
 		return err
 	}

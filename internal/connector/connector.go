@@ -37,8 +37,11 @@ func New(baseURL string, timeout time.Duration) *Client {
 		timeout = 30 * time.Second
 	}
 	return &Client{
-		BaseURL:    strings.TrimRight(baseURL, "/"),
-		HTTP:       &http.Client{Timeout: timeout},
+		BaseURL: strings.TrimRight(baseURL, "/"),
+		HTTP: &http.Client{
+			Timeout:       timeout,
+			CheckRedirect: refuseConnectorRedirect,
+		},
 		APIVersion: defaultAPIVersion,
 	}
 }
@@ -179,7 +182,7 @@ func (c *Client) GetRecognizedItem(ctx context.Context, sessionID string) (Recog
 	}
 	c.setVersion(req)
 	req.Header.Set("Content-Type", "application/json")
-	hc := *c.httpClient()
+	hc := c.httpClient()
 	hc.Timeout = 0
 	resp, err := hc.Do(req)
 	if err != nil {
@@ -395,15 +398,22 @@ func (c *Client) DetectTranslators(ctx context.Context, pageURL, html string) ([
 	return translators, nil
 }
 
+func refuseConnectorRedirect(_ *http.Request, _ []*http.Request) error {
+	return fmt.Errorf("connector redirects are disabled")
+}
+
 func (c *Client) endpoint(path string) string {
 	return strings.TrimRight(c.BaseURL, "/") + path
 }
 
 func (c *Client) httpClient() *http.Client {
-	if c.HTTP != nil {
-		return c.HTTP
+	selected := c.HTTP
+	if selected == nil {
+		selected = http.DefaultClient
 	}
-	return http.DefaultClient
+	client := *selected
+	client.CheckRedirect = refuseConnectorRedirect
+	return &client
 }
 
 func (c *Client) setVersion(req *http.Request) {

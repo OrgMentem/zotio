@@ -123,32 +123,47 @@ func resolveWebWriteBase(ctx context.Context, cfg *config.Config, group string, 
 	return zoteroWebAPIBase + "/users/" + id, nil
 }
 
-// fetchZoteroUserID resolves the numeric Zotero user ID for the configured key via
-// the Web API keys/current endpoint.
-func fetchZoteroUserID(ctx context.Context, cfg *config.Config, timeout time.Duration) (string, error) {
+const maxKeyMetadataResponseBytes int64 = 1 << 20
+
+func fetchCurrentKeyMetadata(ctx context.Context, cfg *config.Config, timeout time.Duration) ([]byte, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, zoteroWebAPIBase+"/keys/current", nil)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 	req.Header.Set("Zotero-API-Key", cfg.AuthHeader())
 	if timeout <= 0 {
 		timeout = 30 * time.Second
 	}
-	resp, err := (&http.Client{Timeout: timeout}).Do(req)
+	client := sameOriginExternalFetchHTTPClient(&http.Client{Timeout: timeout}, false)
+	resp, err := client.Do(req)
 	if err != nil {
-		return "", fmt.Errorf("resolving Zotero user ID: %w", err)
+		return nil, err
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("resolving Zotero user ID: keys/current returned HTTP %d", resp.StatusCode)
+		return nil, fmt.Errorf("keys/current returned HTTP %d", resp.StatusCode)
+	}
+	body, err := readCappedExternalBody(resp.Body, maxKeyMetadataResponseBytes)
+	if err != nil {
+		return nil, fmt.Errorf("reading keys/current response: %w", err)
+	}
+	return body, nil
+}
+
+// fetchZoteroUserID resolves the numeric Zotero user ID for the configured key via
+// the Web API keys/current endpoint.
+func fetchZoteroUserID(ctx context.Context, cfg *config.Config, timeout time.Duration) (string, error) {
+	body, err := fetchCurrentKeyMetadata(ctx, cfg, timeout)
+	if err != nil {
+		return "", fmt.Errorf("resolving Zotero user ID: %w", err)
 	}
 	var meta struct {
 		UserID json.Number `json:"userID"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&meta); err != nil {
+	if err := json.Unmarshal(body, &meta); err != nil {
 		return "", fmt.Errorf("parsing keys/current response: %w", err)
 	}
 	if meta.UserID.String() == "" {
@@ -164,26 +179,11 @@ func fetchZoteroUserID(ctx context.Context, cfg *config.Config, timeout time.Dur
 // known=false when there is no key or the lookup fails, so callers report
 // "unknown" rather than over-claiming write access.
 func keyGroupWriteAccess(ctx context.Context, cfg *config.Config, timeout time.Duration, groupID string) (canWrite bool, known bool) {
-	if ctx == nil {
-		ctx = context.Background()
-	}
 	if cfg == nil || cfg.AuthHeader() == "" {
 		return false, false
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, zoteroWebAPIBase+"/keys/current", nil)
+	body, err := fetchCurrentKeyMetadata(ctx, cfg, timeout)
 	if err != nil {
-		return false, false
-	}
-	req.Header.Set("Zotero-API-Key", cfg.AuthHeader())
-	if timeout <= 0 {
-		timeout = 30 * time.Second
-	}
-	resp, err := (&http.Client{Timeout: timeout}).Do(req)
-	if err != nil {
-		return false, false
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
 		return false, false
 	}
 	var payload struct {
@@ -193,7 +193,7 @@ func keyGroupWriteAccess(ctx context.Context, cfg *config.Config, timeout time.D
 			} `json:"groups"`
 		} `json:"access"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+	if err := json.Unmarshal(body, &payload); err != nil {
 		return false, false
 	}
 	if g, ok := payload.Access.Groups[groupID]; ok {

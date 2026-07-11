@@ -145,6 +145,7 @@ var publicOutboundIPLookup = publicOutboundIPs
 
 func publicOutboundIPs(ctx context.Context, host string) ([]string, error) {
 	if addr, err := netip.ParseAddr(strings.TrimSuffix(host, ".")); err == nil {
+		addr = addr.Unmap()
 		if !allowPrivateOutboundForTests && outboundHostIsPrivate(addr.String()) {
 			return nil, fmt.Errorf("host %q is local or private", host)
 		}
@@ -155,13 +156,18 @@ func publicOutboundIPs(ctx context.Context, host string) ([]string, error) {
 		return nil, fmt.Errorf("resolving host %q: %w", host, err)
 	}
 	ips := make([]string, 0, len(addrs))
-	for _, addr := range addrs {
-		if !allowPrivateOutboundForTests && outboundHostIsPrivate(addr.IP.String()) {
+	for _, resolved := range addrs {
+		addr, ok := netip.AddrFromSlice(resolved.IP)
+		if !ok {
+			return nil, fmt.Errorf("host %q resolved to invalid address %q", host, resolved.IP)
+		}
+		addr = addr.Unmap()
+		if !allowPrivateOutboundForTests && outboundHostIsPrivate(addr.String()) {
 			// reject public-looking hostnames that
 			// currently resolve to loopback/private/link-local/multicast ranges.
-			return nil, fmt.Errorf("host %q resolves to local or private address %s", host, addr.IP)
+			return nil, fmt.Errorf("host %q resolves to local or private address %s", host, addr)
 		}
-		ips = append(ips, addr.IP.String())
+		ips = append(ips, addr.String())
 	}
 	return ips, nil
 }
@@ -186,18 +192,57 @@ func externalHTTPClient(base *http.Client, requireHTTPS bool) *http.Client {
 
 func externalFetchHTTPClient(base *http.Client, requireHTTPS bool) *http.Client {
 	client := externalHTTPClient(base, requireHTTPS)
-	var transport *http.Transport
-	if client.Transport == nil {
-		transport = http.DefaultTransport.(*http.Transport).Clone()
-	} else if existing, ok := client.Transport.(*http.Transport); ok {
-		transport = existing.Clone()
+	effectiveTransport := client.Transport
+	if effectiveTransport == nil {
+		effectiveTransport = http.DefaultTransport
 	}
-	if transport != nil {
+	transport, ok := effectiveTransport.(*http.Transport)
+	if ok {
+		transport = transport.Clone()
+	}
+	if ok {
 		transport.Proxy = nil
 		transport.DialContext = publicDialContext
 		client.Transport = transport
 	}
 	return client
+}
+
+func sameOriginExternalFetchHTTPClient(base *http.Client, requireHTTPS bool) *http.Client {
+	client := externalFetchHTTPClient(base, requireHTTPS)
+	client.CheckRedirect = func(req *http.Request, via []*http.Request) error {
+		if err := validateExternalHTTPURL(req.URL.String(), requireHTTPS); err != nil {
+			return err
+		}
+		if len(via) >= 10 {
+			return fmt.Errorf("stopped after 10 redirects")
+		}
+		if len(via) == 0 {
+			return fmt.Errorf("refusing redirect without an initial request")
+		}
+		initialScheme, initialHost, initialPort := normalizedExternalHTTPOrigin(via[0].URL)
+		redirectScheme, redirectHost, redirectPort := normalizedExternalHTTPOrigin(req.URL)
+		if redirectScheme != initialScheme || redirectHost != initialHost || redirectPort != initialPort {
+			return fmt.Errorf("refusing cross-origin redirect from %s to %s", via[0].URL, req.URL)
+		}
+		return nil
+	}
+	return client
+}
+
+func normalizedExternalHTTPOrigin(u *neturl.URL) (scheme, hostname, port string) {
+	scheme = strings.ToLower(u.Scheme)
+	hostname = strings.TrimSuffix(strings.ToLower(u.Hostname()), ".")
+	port = u.Port()
+	if port == "" {
+		switch scheme {
+		case "http":
+			port = "80"
+		case "https":
+			port = "443"
+		}
+	}
+	return scheme, hostname, port
 }
 
 func publicDialContext(ctx context.Context, network, address string) (net.Conn, error) {
@@ -234,6 +279,7 @@ func outboundHostIsPrivate(host string) bool {
 		return true
 	}
 	if addr, err := netip.ParseAddr(h); err == nil {
+		addr = addr.Unmap()
 		cgn := netip.MustParsePrefix("100.64.0.0/10")
 		return addr.IsLoopback() || addr.IsPrivate() || addr.IsLinkLocalUnicast() || addr.IsLinkLocalMulticast() || addr.IsMulticast() || addr.IsUnspecified() || cgn.Contains(addr)
 	}

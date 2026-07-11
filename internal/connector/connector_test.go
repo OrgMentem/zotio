@@ -8,8 +8,10 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"net/http/cookiejar"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -56,6 +58,217 @@ func TestConnectorSaveItemsRequest(t *testing.T) {
 	}
 	if !seen {
 		t.Fatal("server did not receive request")
+	}
+}
+
+func TestConnectorRefusesRedirects(t *testing.T) {
+	t.Parallel()
+
+	var targetRequests atomic.Int32
+	target := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		targetRequests.Add(1)
+	}))
+	defer target.Close()
+
+	connector := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/connector/ping":
+			if r.Method != http.MethodGet {
+				t.Errorf("ping method = %s", r.Method)
+			}
+			http.Redirect(w, r, target.URL+"/get-target", http.StatusFound)
+		case "/connector/saveItems":
+			if r.Method != http.MethodPost {
+				t.Errorf("saveItems method = %s", r.Method)
+			}
+			if got := r.Header.Get("X-Zotero-Connector-API-Version"); got != defaultAPIVersion {
+				t.Errorf("api version = %q", got)
+			}
+			body, err := io.ReadAll(r.Body)
+			if err != nil {
+				t.Errorf("read saveItems body: %v", err)
+			} else if !strings.Contains(string(body), `"sessionID":"session"`) {
+				t.Errorf("saveItems body = %q", body)
+			}
+			http.Redirect(w, r, target.URL+"/post-target", http.StatusTemporaryRedirect)
+		default:
+			t.Errorf("unexpected connector path %q", r.URL.Path)
+			http.NotFound(w, r)
+		}
+	}))
+	defer connector.Close()
+
+	timeout := 2 * time.Second
+	client := New(connector.URL+"/connector", timeout)
+	if client.HTTP.Timeout != timeout {
+		t.Fatalf("client timeout = %s", client.HTTP.Timeout)
+	}
+
+	if err := client.Ping(context.Background()); err == nil || !strings.Contains(err.Error(), "redirects are disabled") {
+		t.Fatalf("Ping redirect error = %v", err)
+	}
+	if got := targetRequests.Load(); got != 0 {
+		t.Fatalf("target requests after GET redirect = %d", got)
+	}
+
+	err := client.SaveItems(context.Background(), "session", "https://example.test/item", []map[string]any{{"id": "connector-key"}})
+	if err == nil || !strings.Contains(err.Error(), "redirects are disabled") {
+		t.Fatalf("SaveItems redirect error = %v", err)
+	}
+	if got := targetRequests.Load(); got != 0 {
+		t.Fatalf("target requests after 307 POST redirect = %d", got)
+	}
+}
+
+func TestConnectorInjectedClientRefusesRedirects(t *testing.T) {
+	t.Parallel()
+
+	var targetRequests atomic.Int32
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		targetRequests.Add(1)
+		w.WriteHeader(http.StatusCreated)
+	}))
+	defer target.Close()
+
+	connector := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/connector/ping":
+			http.Redirect(w, r, target.URL+"/get-target", http.StatusFound)
+		case "/connector/saveItems", "/connector/getRecognizedItem":
+			http.Redirect(w, r, target.URL+"/post-target", http.StatusTemporaryRedirect)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer connector.Close()
+
+	var injectedRedirectChecks atomic.Int32
+	injected := &http.Client{
+		Timeout: 2 * time.Second,
+		CheckRedirect: func(_ *http.Request, _ []*http.Request) error {
+			injectedRedirectChecks.Add(1)
+			return nil
+		},
+	}
+	client := New(connector.URL+"/connector", time.Second)
+	client.HTTP = injected
+
+	if err := client.Ping(context.Background()); err == nil ||
+		!strings.Contains(err.Error(), "connector ping") ||
+		!strings.Contains(err.Error(), "redirects are disabled") {
+		t.Fatalf("Ping redirect error = %v", err)
+	}
+	if got := targetRequests.Load(); got != 0 {
+		t.Fatalf("target requests after injected-client GET redirect = %d", got)
+	}
+
+	err := client.SaveItems(context.Background(), "session", "https://example.test/item", []map[string]any{{"id": "connector-key"}})
+	if err == nil ||
+		!strings.Contains(err.Error(), "connector saveItems") ||
+		!strings.Contains(err.Error(), "redirects are disabled") {
+		t.Fatalf("SaveItems redirect error = %v", err)
+	}
+	if got := targetRequests.Load(); got != 0 {
+		t.Fatalf("target requests after injected-client 307 POST redirect = %d", got)
+	}
+
+	_, _, err = client.GetRecognizedItem(context.Background(), "session")
+	if err == nil ||
+		!strings.Contains(err.Error(), "connector getRecognizedItem") ||
+		!strings.Contains(err.Error(), "redirects are disabled") {
+		t.Fatalf("GetRecognizedItem redirect error = %v", err)
+	}
+	if got := targetRequests.Load(); got != 0 {
+		t.Fatalf("target requests after long-poll 307 redirect = %d", got)
+	}
+	if got := injectedRedirectChecks.Load(); got != 0 {
+		t.Fatalf("injected redirect policy called %d times", got)
+	}
+}
+
+func TestConnectorNilHTTPRefusesRedirects(t *testing.T) {
+	t.Parallel()
+
+	var targetRequests atomic.Int32
+	target := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		targetRequests.Add(1)
+	}))
+	defer target.Close()
+
+	connector := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, target.URL, http.StatusFound)
+	}))
+	defer connector.Close()
+
+	client := &Client{BaseURL: connector.URL + "/connector"}
+	err := client.Ping(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "redirects are disabled") {
+		t.Fatalf("Ping redirect error with nil HTTP client = %v", err)
+	}
+	if got := targetRequests.Load(); got != 0 {
+		t.Fatalf("target requests with nil HTTP client = %d", got)
+	}
+}
+
+func TestConnectorHTTPClientClonesAndPreservesConfiguration(t *testing.T) {
+	t.Parallel()
+
+	transport := &http.Transport{}
+	jar, err := cookiejar.New(nil)
+	if err != nil {
+		t.Fatalf("create cookie jar: %v", err)
+	}
+	var injectedRedirectChecks atomic.Int32
+	injected := &http.Client{
+		Transport: transport,
+		CheckRedirect: func(_ *http.Request, _ []*http.Request) error {
+			injectedRedirectChecks.Add(1)
+			return nil
+		},
+		Jar:     jar,
+		Timeout: 17 * time.Second,
+	}
+
+	client := &Client{HTTP: injected}
+	got := client.httpClient()
+	if got == injected {
+		t.Fatal("httpClient returned the injected client instead of a clone")
+	}
+	if got.Transport != injected.Transport {
+		t.Fatal("httpClient did not preserve transport")
+	}
+	if got.Jar != injected.Jar {
+		t.Fatal("httpClient did not preserve cookie jar")
+	}
+	if got.Timeout != injected.Timeout {
+		t.Fatalf("httpClient timeout = %s, want %s", got.Timeout, injected.Timeout)
+	}
+	if err := got.CheckRedirect(nil, nil); err == nil || !strings.Contains(err.Error(), "redirects are disabled") {
+		t.Fatalf("cloned redirect policy error = %v", err)
+	}
+	if got := injectedRedirectChecks.Load(); got != 0 {
+		t.Fatalf("injected redirect policy called %d times", got)
+	}
+	got.Timeout = 0
+	if injected.Timeout != 17*time.Second {
+		t.Fatalf("mutating clone changed injected timeout to %s", injected.Timeout)
+	}
+	if err := injected.CheckRedirect(nil, nil); err != nil {
+		t.Fatalf("injected redirect policy changed: %v", err)
+	}
+
+	client.HTTP = nil
+	defaultClone := client.httpClient()
+	if defaultClone == http.DefaultClient {
+		t.Fatal("httpClient returned http.DefaultClient instead of a clone")
+	}
+	if defaultClone.Transport != http.DefaultClient.Transport ||
+		defaultClone.Jar != http.DefaultClient.Jar ||
+		defaultClone.Timeout != http.DefaultClient.Timeout {
+		t.Fatal("httpClient did not preserve default client configuration")
+	}
+	if err := defaultClone.CheckRedirect(nil, nil); err == nil || !strings.Contains(err.Error(), "redirects are disabled") {
+		t.Fatalf("default clone redirect policy error = %v", err)
 	}
 }
 

@@ -80,13 +80,36 @@ func (e *APIError) Error() string {
 }
 
 func checkRedirect(req *http.Request, via []*http.Request) error {
-	if len(via) > 0 && (!strings.EqualFold(req.URL.Scheme, via[0].URL.Scheme) || !strings.EqualFold(req.URL.Host, via[0].URL.Host)) {
-		// Go's default redirect policy does not strip custom auth headers, so
-		// remove Zotero credentials when a redirect crosses origin boundaries.
-		req.Header.Del("Zotero-API-Key")
-		req.Header.Del("Authorization")
+	if len(via) == 0 {
+		return nil
+	}
+	if !sameOrigin(req.URL, via[0].URL) {
+		return fmt.Errorf("refusing cross-origin redirect")
 	}
 	return nil
+}
+
+func sameOrigin(a, b *url.URL) bool {
+	if a == nil || b == nil {
+		return false
+	}
+	return strings.EqualFold(a.Scheme, b.Scheme) &&
+		strings.EqualFold(a.Hostname(), b.Hostname()) &&
+		effectivePort(a) == effectivePort(b)
+}
+
+func effectivePort(u *url.URL) string {
+	if port := u.Port(); port != "" {
+		return port
+	}
+	switch strings.ToLower(u.Scheme) {
+	case "http":
+		return "80"
+	case "https":
+		return "443"
+	default:
+		return ""
+	}
 }
 
 func newHTTPClient(timeout time.Duration, jar http.CookieJar) *http.Client {
@@ -95,6 +118,38 @@ func newHTTPClient(timeout time.Duration, jar http.CookieJar) *http.Client {
 		Jar:           jar,
 		CheckRedirect: checkRedirect,
 	}
+}
+
+func (c *Client) requestHTTPClient() *http.Client {
+	selected := c.HTTPClient
+	if selected == nil {
+		selected = http.DefaultClient
+	}
+
+	client := *selected
+	callerCheckRedirect := selected.CheckRedirect
+	client.CheckRedirect = func(req *http.Request, via []*http.Request) error {
+		if len(via) == 0 {
+			return nil
+		}
+		if len(via) >= 10 {
+			return fmt.Errorf("stopped after 10 redirects")
+		}
+		initialURL := *via[0].URL
+		if !sameOrigin(req.URL, &initialURL) {
+			return fmt.Errorf("refusing cross-origin redirect")
+		}
+		if callerCheckRedirect != nil {
+			if err := callerCheckRedirect(req, via); err != nil {
+				return err
+			}
+			if !sameOrigin(req.URL, &initialURL) {
+				return fmt.Errorf("refusing cross-origin redirect")
+			}
+		}
+		return nil
+	}
+	return &client
 }
 
 func New(cfg *config.Config, timeout time.Duration, rateLimit float64) *Client {
@@ -360,7 +415,7 @@ func (c *Client) doRequest(ctx context.Context, method, path string, params map[
 			req.Header.Set("User-Agent", "zotio/0.1.0")
 		}
 
-		resp, err := c.HTTPClient.Do(req)
+		resp, err := c.requestHTTPClient().Do(req)
 		if err != nil {
 			if ctxErr := ctx.Err(); ctxErr != nil {
 				return nil, 0, nil, fmt.Errorf("%s %s: %w", method, path, ctxErr)
@@ -381,8 +436,9 @@ func (c *Client) doRequest(ctx context.Context, method, path string, params map[
 		}
 		respBody = sanitizeJSONResponse(respBody)
 
-		// Success
-		if resp.StatusCode < 400 {
+		// Only 2xx responses are successful. In particular, a caller's
+		// ErrUseLastResponse must not turn a refused redirect into success.
+		if resp.StatusCode >= 200 && resp.StatusCode < 300 {
 			c.limiter.OnSuccess()
 			if method != http.MethodGet && !c.DryRun {
 				c.invalidateCache()

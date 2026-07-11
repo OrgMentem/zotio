@@ -16,7 +16,7 @@ import (
 )
 
 var importPubMedBase = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils"
-var importArxivBase = "http://export.arxiv.org/api"
+var importArxivBase = "https://export.arxiv.org/api"
 var importOpenLibraryBase = "https://openlibrary.org"
 
 type arxivFeed struct {
@@ -104,7 +104,7 @@ func fetchPubMedItem(cmd *cobra.Command, timeout time.Duration, pmid string) (ma
 	req.Header.Set("Accept", "application/json")
 	req.Header.Set("User-Agent", "zotio/1.0.0")
 
-	resp, err := (&http.Client{Timeout: timeout}).Do(req)
+	resp, err := sameOriginExternalFetchHTTPClient(&http.Client{Timeout: timeout}, false).Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("fetching PubMed metadata: %w", err)
 	}
@@ -234,7 +234,7 @@ func fetchArxivItem(cmd *cobra.Command, timeout time.Duration, id string) (map[s
 	req.Header.Set("Accept", "application/atom+xml, application/xml;q=0.9, */*;q=0.8")
 	req.Header.Set("User-Agent", "zotio/1.0.0")
 
-	resp, err := (&http.Client{Timeout: timeout}).Do(req)
+	resp, err := sameOriginExternalFetchHTTPClient(&http.Client{Timeout: timeout}, false).Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("fetching arXiv metadata: %w", err)
 	}
@@ -356,7 +356,7 @@ func fetchOpenLibraryItem(cmd *cobra.Command, timeout time.Duration, isbn string
 	req.Header.Set("Accept", "application/json")
 	req.Header.Set("User-Agent", "zotio/1.0.0")
 
-	resp, err := (&http.Client{Timeout: timeout}).Do(req)
+	resp, err := sameOriginExternalFetchHTTPClient(&http.Client{Timeout: timeout}, false).Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("fetching Open Library metadata: %w", err)
 	}

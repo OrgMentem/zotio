@@ -25,6 +25,12 @@ func testHTTPResponse(status int, body string) *http.Response {
 	}
 }
 
+func testRedirectHTTPResponse(status int, location string) *http.Response {
+	resp := testHTTPResponse(status, "")
+	resp.Header.Set("Location", location)
+	return resp
+}
+
 func arxivAtomFeedXML(content string) string {
 	return `<?xml version="1.0" encoding="UTF-8"?>
 <feed xmlns="http://www.w3.org/2005/Atom" xmlns:arxiv="http://arxiv.org/schemas/atom">
@@ -151,5 +157,88 @@ func TestLookupCrossrefArxiv_IgnoresArxivSelfDOI(t *testing.T) {
 	}
 	if found {
 		t.Fatalf("arXiv DataCite DOI should not mark the preprint as externally published")
+	}
+}
+
+func TestPreprintMetadataProvidersRedirectPolicy(t *testing.T) {
+	allowPrivateMetadataProviderServers(t)
+
+	type providerCase struct {
+		name        string
+		initialHost string
+		fetch       func(*http.Client) error
+		response    func() *http.Response
+	}
+	providers := []providerCase{
+		{
+			name:        "arXiv",
+			initialHost: "export.arxiv.org",
+			fetch: func(client *http.Client) error {
+				_, _, err := lookupArxivExternalDOI(context.Background(), client, "2301.00006")
+				return err
+			},
+			response: func() *http.Response {
+				return testHTTPResponse(http.StatusOK, arxivAtomFeedXML(`<arxiv:doi>10.5555/redirected.paper</arxiv:doi>`))
+			},
+		},
+		{
+			name:        "CrossRef",
+			initialHost: "api.crossref.org",
+			fetch: func(client *http.Client) error {
+				_, _, err := lookupCrossrefDOI(context.Background(), client, "10.5555/redirected.paper")
+				return err
+			},
+			response: func() *http.Response {
+				return testHTTPResponse(http.StatusOK, crossrefWorkJSON("10.5555/redirected.paper", "Redirect Journal", 2026))
+			},
+		},
+	}
+
+	for _, provider := range providers {
+		provider := provider
+		t.Run(provider.name+"/same-origin", func(t *testing.T) {
+			requests := 0
+			client := &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+				requests++
+				if req.URL.Hostname() != provider.initialHost {
+					t.Fatalf("request host = %q", req.URL.Hostname())
+				}
+				if requests == 1 {
+					return testRedirectHTTPResponse(http.StatusFound, "/redirected"), nil
+				}
+				if req.URL.Path != "/redirected" {
+					t.Fatalf("redirected path = %q", req.URL.Path)
+				}
+				return provider.response(), nil
+			})}
+
+			if err := provider.fetch(client); err != nil {
+				t.Fatalf("same-origin redirect failed: %v", err)
+			}
+			if requests != 2 {
+				t.Fatalf("request count = %d, want 2", requests)
+			}
+		})
+
+		for _, status := range []int{http.StatusFound, http.StatusTemporaryRedirect} {
+			status := status
+			t.Run(provider.name+"/cross-origin/"+http.StatusText(status), func(t *testing.T) {
+				targetHits := 0
+				client := &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+					if req.URL.Hostname() == "redirect.invalid" {
+						targetHits++
+						return provider.response(), nil
+					}
+					return testRedirectHTTPResponse(status, "https://redirect.invalid/metadata"), nil
+				})}
+
+				if err := provider.fetch(client); err == nil {
+					t.Fatal("cross-origin redirect succeeded")
+				}
+				if targetHits != 0 {
+					t.Fatalf("cross-origin redirect hit target %d times", targetHits)
+				}
+			})
+		}
 	}
 }

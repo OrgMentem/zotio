@@ -8,18 +8,27 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
+	"net/http/cookiejar"
 	"net/http/httptest"
 	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"zotio/internal/config"
 )
+
+type clientRoundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f clientRoundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
+	return f(req)
+}
 
 func clientTestNewClient(t *testing.T, baseURL string) *Client {
 	t.Helper()
@@ -252,43 +261,368 @@ func TestReadWriteCacheHonorsFreshness(t *testing.T) {
 	}
 }
 
-func TestCheckRedirectStripsZoteroCredentialsOnSchemeChange(t *testing.T) {
-	req := &http.Request{
-		URL:    &url.URL{Scheme: "http", Host: "example.test"},
-		Header: make(http.Header),
+func TestCheckRedirectRequiresSameOrigin(t *testing.T) {
+	initial := &http.Request{URL: &url.URL{Scheme: "https", Host: "example.test"}}
+	tests := []struct {
+		name    string
+		target  *url.URL
+		wantErr bool
+	}{
+		{name: "same origin", target: &url.URL{Scheme: "HTTPS", Host: "Example.test:443"}},
+		{name: "scheme change", target: &url.URL{Scheme: "http", Host: "example.test:443"}, wantErr: true},
+		{name: "hostname change", target: &url.URL{Scheme: "https", Host: "other.test"}, wantErr: true},
+		{name: "effective port change", target: &url.URL{Scheme: "https", Host: "example.test:444"}, wantErr: true},
 	}
-	req.Header.Set("Zotero-API-Key", "secret")
-	req.Header.Set("Authorization", "Bearer secret")
-	via := []*http.Request{{URL: &url.URL{Scheme: "https", Host: "example.test"}}}
 
-	if err := checkRedirect(req, via); err != nil {
-		t.Fatalf("checkRedirect returned error: %v", err)
-	}
-	if got := req.Header.Get("Zotero-API-Key"); got != "" {
-		t.Fatalf("Zotero-API-Key after scheme downgrade = %q, want stripped", got)
-	}
-	if got := req.Header.Get("Authorization"); got != "" {
-		t.Fatalf("Authorization after scheme downgrade = %q, want stripped", got)
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			req := &http.Request{URL: tc.target, Header: make(http.Header)}
+			req.Header.Set("Zotero-API-Key", "secret")
+			req.Header.Set("Zotero-API-Version", "3")
+
+			err := checkRedirect(req, []*http.Request{initial})
+			if tc.wantErr && err == nil {
+				t.Fatal("checkRedirect returned nil, want cross-origin rejection")
+			}
+			if !tc.wantErr && err != nil {
+				t.Fatalf("checkRedirect returned error: %v", err)
+			}
+			if !tc.wantErr {
+				if got := req.Header.Get("Zotero-API-Key"); got != "secret" {
+					t.Fatalf("Zotero-API-Key = %q, want retained", got)
+				}
+				if got := req.Header.Get("Zotero-API-Version"); got != "3" {
+					t.Fatalf("Zotero-API-Version = %q, want retained", got)
+				}
+			}
+		})
 	}
 }
 
-func TestCheckRedirectKeepsZoteroCredentialsOnSameOrigin(t *testing.T) {
-	req := &http.Request{
-		URL:    &url.URL{Scheme: "HTTPS", Host: "Example.test"},
-		Header: make(http.Header),
+func TestSameOriginRedirectsRetainHeadersAndMutationBodies(t *testing.T) {
+	tests := []struct {
+		name   string
+		method string
+		status int
+		body   any
+	}{
+		{name: "GET", method: http.MethodGet, status: http.StatusFound},
+		{name: "POST 307", method: http.MethodPost, status: http.StatusTemporaryRedirect, body: map[string]string{"title": "redirect-safe"}},
+		{name: "POST 308", method: http.MethodPost, status: http.StatusPermanentRedirect, body: map[string]string{"title": "redirect-safe"}},
 	}
-	req.Header.Set("Zotero-API-Key", "secret")
-	req.Header.Set("Authorization", "Bearer secret")
-	via := []*http.Request{{URL: &url.URL{Scheme: "https", Host: "example.test"}}}
 
-	if err := checkRedirect(req, via); err != nil {
-		t.Fatalf("checkRedirect returned error: %v", err)
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			var callerRedirects int32
+			var server *httptest.Server
+			server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				switch r.URL.Path {
+				case "/start":
+					http.Redirect(w, r, server.URL+"/target", tc.status)
+				case "/target":
+					if r.Method != tc.method {
+						t.Errorf("redirected method = %s, want %s", r.Method, tc.method)
+					}
+					if got := r.Header.Get("Zotero-API-Version"); got != "3" {
+						t.Errorf("redirected Zotero-API-Version = %q, want 3", got)
+					}
+					if tc.body != nil {
+						var got map[string]string
+						if err := json.NewDecoder(r.Body).Decode(&got); err != nil {
+							t.Errorf("decoding redirected body: %v", err)
+						} else if got["title"] != "redirect-safe" {
+							t.Errorf("redirected body title = %q, want redirect-safe", got["title"])
+						}
+					}
+					_, _ = w.Write([]byte(`{"ok":true}`))
+				default:
+					http.NotFound(w, r)
+				}
+			}))
+			defer server.Close()
+
+			c := clientTestNewClient(t, server.URL)
+			c.HTTPClient = &http.Client{
+				Timeout: 5 * time.Second,
+				CheckRedirect: func(_ *http.Request, _ []*http.Request) error {
+					atomic.AddInt32(&callerRedirects, 1)
+					return nil
+				},
+			}
+			c.NoCache = true
+			c.Config.Headers = map[string]string{"Zotero-API-Version": "3"}
+			got, status, _, err := c.doRequest(context.Background(), tc.method, "/start", nil, tc.body, nil)
+			if err != nil {
+				t.Fatalf("doRequest returned error: %v", err)
+			}
+			if status != http.StatusOK {
+				t.Fatalf("status = %d, want %d", status, http.StatusOK)
+			}
+			if !bytes.Equal(got, []byte(`{"ok":true}`)) {
+				t.Fatalf("body = %s, want redirect success body", got)
+			}
+			if got := atomic.LoadInt32(&callerRedirects); got != 1 {
+				t.Fatalf("caller redirect callback calls = %d, want 1", got)
+			}
+		})
 	}
-	if got := req.Header.Get("Zotero-API-Key"); got != "secret" {
-		t.Fatalf("Zotero-API-Key same-origin redirect = %q, want kept", got)
+}
+
+func TestCrossOriginRedirectsNeverReachTarget(t *testing.T) {
+	tests := []struct {
+		name   string
+		method string
+		status int
+		body   any
+	}{
+		{name: "GET", method: http.MethodGet, status: http.StatusFound},
+		{name: "POST 307", method: http.MethodPost, status: http.StatusTemporaryRedirect, body: map[string]string{"title": "must-not-leak"}},
+		{name: "POST 308", method: http.MethodPost, status: http.StatusPermanentRedirect, body: map[string]string{"title": "must-not-leak"}},
 	}
-	if got := req.Header.Get("Authorization"); got != "Bearer secret" {
-		t.Fatalf("Authorization same-origin redirect = %q, want kept", got)
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			var targetHits int32
+			var callerRedirects int32
+			target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				atomic.AddInt32(&targetHits, 1)
+				_, _ = w.Write([]byte(`{"leaked":true}`))
+			}))
+			defer target.Close()
+
+			source := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				http.Redirect(w, r, target.URL+"/connector", tc.status)
+			}))
+			defer source.Close()
+
+			c := clientTestNewClient(t, source.URL)
+			c.HTTPClient = &http.Client{
+				CheckRedirect: func(_ *http.Request, _ []*http.Request) error {
+					atomic.AddInt32(&callerRedirects, 1)
+					return nil
+				},
+			}
+			c.NoCache = true
+			_, _, _, err := c.doRequest(context.Background(), tc.method, "/start", nil, tc.body, nil)
+			if err == nil {
+				t.Fatal("doRequest returned nil, want cross-origin redirect rejection")
+			}
+			if got := atomic.LoadInt32(&targetHits); got != 0 {
+				t.Fatalf("cross-origin target requests = %d, want 0", got)
+			}
+			if got := atomic.LoadInt32(&callerRedirects); got != 0 {
+				t.Fatalf("caller redirect callback calls = %d, want 0 before mandatory rejection", got)
+			}
+		})
+	}
+}
+
+func TestCallerRedirectURLMutationRechecksSameOrigin(t *testing.T) {
+	t.Run("cross-origin mutation rejected", func(t *testing.T) {
+		var targetHits int32
+		var targetBody string
+		target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			atomic.AddInt32(&targetHits, 1)
+			body, _ := io.ReadAll(r.Body)
+			targetBody = string(body)
+			_, _ = w.Write([]byte(`{"leaked":true}`))
+		}))
+		defer target.Close()
+
+		var source *httptest.Server
+		source = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			http.Redirect(w, r, source.URL+"/original-target", http.StatusTemporaryRedirect)
+		}))
+		defer source.Close()
+
+		mutatedURL, err := url.Parse(target.URL + "/escaped")
+		if err != nil {
+			t.Fatalf("parsing cross-origin mutation URL: %v", err)
+		}
+		var callerRedirects int32
+		c := clientTestNewClient(t, source.URL)
+		c.NoCache = true
+		c.HTTPClient = &http.Client{
+			CheckRedirect: func(req *http.Request, via []*http.Request) error {
+				atomic.AddInt32(&callerRedirects, 1)
+				req.URL = mutatedURL
+				via[0].URL = mutatedURL
+				return nil
+			},
+		}
+
+		_, _, _, err = c.doRequest(context.Background(), http.MethodPost, "/start", nil, map[string]string{"title": "must-not-leave-origin"}, nil)
+		if err == nil {
+			t.Fatal("doRequest returned nil, want mutated cross-origin redirect rejection")
+		}
+		if got := atomic.LoadInt32(&callerRedirects); got == 0 {
+			t.Fatal("caller redirect callback was not invoked")
+		}
+		if got := atomic.LoadInt32(&targetHits); got != 0 {
+			t.Fatalf("mutated cross-origin target requests = %d, want 0", got)
+		}
+		if targetBody != "" {
+			t.Fatalf("mutation body left origin: %q", targetBody)
+		}
+	})
+
+	t.Run("same-origin mutation allowed", func(t *testing.T) {
+		var targetHits int32
+		var receivedTitle string
+		var source *httptest.Server
+		source = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			switch r.URL.Path {
+			case "/start":
+				http.Redirect(w, r, source.URL+"/original-target", http.StatusTemporaryRedirect)
+			case "/mutated-target":
+				atomic.AddInt32(&targetHits, 1)
+				var body map[string]string
+				if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+					t.Errorf("decoding same-origin mutation body: %v", err)
+				}
+				receivedTitle = body["title"]
+				_, _ = w.Write([]byte(`{"ok":true}`))
+			default:
+				http.NotFound(w, r)
+			}
+		}))
+		defer source.Close()
+
+		mutatedURL, err := url.Parse(source.URL + "/mutated-target")
+		if err != nil {
+			t.Fatalf("parsing same-origin mutation URL: %v", err)
+		}
+		var callerRedirects int32
+		c := clientTestNewClient(t, source.URL)
+		c.NoCache = true
+		c.HTTPClient = &http.Client{
+			CheckRedirect: func(req *http.Request, _ []*http.Request) error {
+				atomic.AddInt32(&callerRedirects, 1)
+				req.URL = mutatedURL
+				return nil
+			},
+		}
+
+		got, status, _, err := c.doRequest(context.Background(), http.MethodPost, "/start", nil, map[string]string{"title": "same-origin-body"}, nil)
+		if err != nil {
+			t.Fatalf("doRequest returned error: %v", err)
+		}
+		if status != http.StatusOK {
+			t.Fatalf("status = %d, want %d", status, http.StatusOK)
+		}
+		if !bytes.Equal(got, []byte(`{"ok":true}`)) {
+			t.Fatalf("body = %s, want same-origin mutation response", got)
+		}
+		if got := atomic.LoadInt32(&callerRedirects); got != 1 {
+			t.Fatalf("caller redirect callback calls = %d, want 1", got)
+		}
+		if got := atomic.LoadInt32(&targetHits); got != 1 {
+			t.Fatalf("same-origin mutated target requests = %d, want 1", got)
+		}
+		if receivedTitle != "same-origin-body" {
+			t.Fatalf("same-origin mutation body title = %q, want same-origin-body", receivedTitle)
+		}
+	})
+}
+
+func TestCallerErrUseLastResponseStillRejectsFinalRedirect(t *testing.T) {
+	var targetHits int32
+	var callerRedirects int32
+	var server *httptest.Server
+	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/start":
+			http.Redirect(w, r, server.URL+"/target", http.StatusTemporaryRedirect)
+		case "/target":
+			atomic.AddInt32(&targetHits, 1)
+			_, _ = w.Write([]byte(`{"unexpected":true}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	c := clientTestNewClient(t, server.URL)
+	c.NoCache = true
+	c.HTTPClient = &http.Client{
+		CheckRedirect: func(_ *http.Request, _ []*http.Request) error {
+			atomic.AddInt32(&callerRedirects, 1)
+			return http.ErrUseLastResponse
+		},
+	}
+
+	_, status, _, err := c.doRequest(context.Background(), http.MethodPost, "/start", nil, map[string]string{"title": "stay"}, nil)
+	if err == nil {
+		t.Fatal("doRequest returned nil for final 307 response")
+	}
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) {
+		t.Fatalf("error type = %T, want *APIError", err)
+	}
+	if status != http.StatusTemporaryRedirect || apiErr.StatusCode != http.StatusTemporaryRedirect {
+		t.Fatalf("redirect status = %d (APIError %d), want 307", status, apiErr.StatusCode)
+	}
+	if got := atomic.LoadInt32(&callerRedirects); got != 1 {
+		t.Fatalf("caller redirect callback calls = %d, want 1", got)
+	}
+	if got := atomic.LoadInt32(&targetHits); got != 0 {
+		t.Fatalf("redirect target requests = %d, want 0", got)
+	}
+}
+
+func TestRequestBoundaryPreservesInjectedTransportTimeoutAndJar(t *testing.T) {
+	baseURL, err := url.Parse("https://example.test")
+	if err != nil {
+		t.Fatalf("parsing base URL: %v", err)
+	}
+	jar, err := cookiejar.New(nil)
+	if err != nil {
+		t.Fatalf("creating cookie jar: %v", err)
+	}
+	jar.SetCookies(baseURL, []*http.Cookie{{
+		Name:     "session",
+		Value:    "preserved",
+		Secure:   true,
+		HttpOnly: true,
+		SameSite: http.SameSiteStrictMode,
+	}})
+
+	var transportCalls int32
+	transport := clientRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+		atomic.AddInt32(&transportCalls, 1)
+		if got := req.Header.Get("Cookie"); got != "session=preserved" {
+			t.Errorf("Cookie header = %q, want injected jar cookie", got)
+		}
+		deadline, ok := req.Context().Deadline()
+		if !ok {
+			t.Error("request context has no deadline from injected client timeout")
+		} else if remaining := time.Until(deadline); remaining <= 0 || remaining > 2*time.Second {
+			t.Errorf("request deadline remaining = %s, want within injected 2s timeout", remaining)
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     make(http.Header),
+			Body:       io.NopCloser(strings.NewReader(`{"ok":true}`)),
+			Request:    req,
+		}, nil
+	})
+
+	injected := &http.Client{Transport: transport, Timeout: 2 * time.Second, Jar: jar}
+	c := clientTestNewClient(t, baseURL.String())
+	c.NoCache = true
+	c.HTTPClient = injected
+	got, status, _, err := c.doRequest(context.Background(), http.MethodGet, "/items", nil, nil, nil)
+	if err != nil {
+		t.Fatalf("doRequest returned error: %v", err)
+	}
+	if status != http.StatusOK || !bytes.Equal(got, []byte(`{"ok":true}`)) {
+		t.Fatalf("response = status %d body %s, want 200 success", status, got)
+	}
+	if got := atomic.LoadInt32(&transportCalls); got != 1 {
+		t.Fatalf("injected transport calls = %d, want 1", got)
+	}
+	if c.HTTPClient != injected || injected.Timeout != 2*time.Second || injected.Jar != jar {
+		t.Fatal("request boundary mutated the injected HTTP client")
 	}
 }
 

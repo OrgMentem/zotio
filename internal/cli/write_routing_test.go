@@ -34,6 +34,10 @@ func TestResolveWebWriteBase(t *testing.T) {
 }
 
 func TestResolveWebWriteBaseResolvesAndCachesUserID(t *testing.T) {
+	oldAllowPrivateOutbound := allowPrivateOutboundForTests
+	allowPrivateOutboundForTests = true
+	t.Cleanup(func() { allowPrivateOutboundForTests = oldAllowPrivateOutbound })
+
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/keys/current" {
 			http.Error(w, "unexpected "+r.URL.Path, http.StatusNotFound)
@@ -103,6 +107,152 @@ func TestKeyGroupWriteAccessHonorsCanceledContext(t *testing.T) {
 	}
 	if hits != 0 {
 		t.Fatalf("server hits = %d, want 0 for pre-canceled context", hits)
+	}
+}
+
+func TestKeyMetadataReadersRefuseCrossOriginRedirects(t *testing.T) {
+	oldAllowPrivateOutbound := allowPrivateOutboundForTests
+	allowPrivateOutboundForTests = true
+	t.Cleanup(func() { allowPrivateOutboundForTests = oldAllowPrivateOutbound })
+
+	readers := []struct {
+		name string
+		read func() bool
+	}{
+		{
+			name: "user_id",
+			read: func() bool {
+				_, err := fetchZoteroUserID(context.Background(), &config.Config{ZoteroApiKey: "k"}, time.Second)
+				return err == nil
+			},
+		},
+		{
+			name: "group_access",
+			read: func() bool {
+				canWrite, known := keyGroupWriteAccess(context.Background(), &config.Config{ZoteroApiKey: "k"}, time.Second, "123")
+				return canWrite || known
+			},
+		},
+	}
+	redirects := []struct {
+		name   string
+		status int
+	}{
+		{name: "302", status: http.StatusFound},
+		{name: "307_body_preserving", status: http.StatusTemporaryRedirect},
+	}
+
+	for _, reader := range readers {
+		for _, redirect := range redirects {
+			t.Run(reader.name+"/"+redirect.name, func(t *testing.T) {
+				targetHits := 0
+				target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					targetHits++
+					_, _ = w.Write([]byte(`{"userID":99,"access":{"groups":{"123":{"write":true}}}}`))
+				}))
+				defer target.Close()
+
+				source := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					http.Redirect(w, r, target.URL+"/keys/current", redirect.status)
+				}))
+				defer source.Close()
+
+				oldBase := zoteroWebAPIBase
+				zoteroWebAPIBase = source.URL
+				defer func() { zoteroWebAPIBase = oldBase }()
+
+				if reader.read() {
+					t.Fatal("cross-origin redirect unexpectedly succeeded")
+				}
+				if targetHits != 0 {
+					t.Fatalf("redirect target hits = %d, want 0", targetHits)
+				}
+			})
+		}
+	}
+}
+
+func TestKeyMetadataReadersFollowSameOriginRedirect(t *testing.T) {
+	oldAllowPrivateOutbound := allowPrivateOutboundForTests
+	allowPrivateOutboundForTests = true
+	t.Cleanup(func() { allowPrivateOutboundForTests = oldAllowPrivateOutbound })
+
+	redirectHits := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/keys/current":
+			http.Redirect(w, r, "/keys/redirected", http.StatusFound)
+		case "/keys/redirected":
+			redirectHits++
+			if got := r.Header.Get("Zotero-API-Key"); got != "k" {
+				http.Error(w, "missing key", http.StatusForbidden)
+				return
+			}
+			_, _ = w.Write([]byte(`{"userID":99,"access":{"groups":{"123":{"write":true}}}}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+	oldBase := zoteroWebAPIBase
+	zoteroWebAPIBase = srv.URL
+	defer func() { zoteroWebAPIBase = oldBase }()
+
+	userID, err := fetchZoteroUserID(context.Background(), &config.Config{ZoteroApiKey: "k"}, time.Second)
+	if err != nil || userID != "99" {
+		t.Fatalf("fetchZoteroUserID = (%q, %v), want (99, nil)", userID, err)
+	}
+	canWrite, known := keyGroupWriteAccess(context.Background(), &config.Config{ZoteroApiKey: "k"}, time.Second, "123")
+	if !canWrite || !known {
+		t.Fatalf("keyGroupWriteAccess = (%v, %v), want (true, true)", canWrite, known)
+	}
+	if redirectHits != 2 {
+		t.Fatalf("same-origin redirect hits = %d, want 2", redirectHits)
+	}
+}
+
+func TestKeyMetadataReadersBoundAndValidateResponse(t *testing.T) {
+	oldAllowPrivateOutbound := allowPrivateOutboundForTests
+	allowPrivateOutboundForTests = true
+	t.Cleanup(func() { allowPrivateOutboundForTests = oldAllowPrivateOutbound })
+
+	valid := `{"userID":99,"access":{"groups":{"123":{"write":true}}}}`
+	atLimit := valid + strings.Repeat(" ", int(maxKeyMetadataResponseBytes)-len(valid))
+	cases := []struct {
+		name   string
+		body   string
+		wantOK bool
+	}{
+		{name: "exactly_at_limit", body: atLimit, wantOK: true},
+		{name: "over_limit", body: atLimit + " ", wantOK: false},
+		{name: "malformed_within_limit", body: `{"userID":99`, wantOK: false},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				_, _ = w.Write([]byte(tc.body))
+			}))
+			defer srv.Close()
+			oldBase := zoteroWebAPIBase
+			zoteroWebAPIBase = srv.URL
+			defer func() { zoteroWebAPIBase = oldBase }()
+
+			userID, err := fetchZoteroUserID(context.Background(), &config.Config{ZoteroApiKey: "k"}, time.Second)
+			userOK := err == nil && userID == "99"
+			if userOK != tc.wantOK {
+				t.Fatalf("fetchZoteroUserID = (%q, %v), success = %v, want %v", userID, err, userOK, tc.wantOK)
+			}
+
+			canWrite, known := keyGroupWriteAccess(context.Background(), &config.Config{ZoteroApiKey: "k"}, time.Second, "123")
+			groupOK := canWrite && known
+			if groupOK != tc.wantOK {
+				t.Fatalf("keyGroupWriteAccess = (%v, %v), success = %v, want %v", canWrite, known, groupOK, tc.wantOK)
+			}
+			if !tc.wantOK && (canWrite || known) {
+				t.Fatalf("failed group access read = (%v, %v), want (false, false)", canWrite, known)
+			}
+		})
 	}
 }
 
