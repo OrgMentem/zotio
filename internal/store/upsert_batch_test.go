@@ -127,7 +127,7 @@ func TestStoreWrite_PanicReleasesLock(t *testing.T) {
 // TestUpsertBatch_TemplatedIDFieldOverrideWins exercises the
 // per-resource ID-field override. When the spec author annotates a
 // path-item with x-resource-id, the profiler emits SyncableResource.IDField,
-// the generator templates this into resourceIDFieldOverrides, and
+// the generator templates this into ResourceIDFieldOverrides, and
 // UpsertBatch consults that map first. This test seeds the override map
 // at runtime (since the generated table here may or may not declare any
 // override) to assert the lookup path itself works.
@@ -143,13 +143,13 @@ func TestUpsertBatch_TemplatedIDFieldOverrideWins(t *testing.T) {
 	// no generic-fallback field (no id/name/uuid/...) — only a custom
 	// "ticker" field. Without the override, all 3 items would be
 	// dropped as PK-unresolved; with it, all 3 land.
-	prev, hadPrev := resourceIDFieldOverrides["overrideTest"]
-	resourceIDFieldOverrides["overrideTest"] = "ticker"
+	prev, hadPrev := ResourceIDFieldOverrides["overrideTest"]
+	ResourceIDFieldOverrides["overrideTest"] = "ticker"
 	defer func() {
 		if hadPrev {
-			resourceIDFieldOverrides["overrideTest"] = prev
+			ResourceIDFieldOverrides["overrideTest"] = prev
 		} else {
-			delete(resourceIDFieldOverrides, "overrideTest")
+			delete(ResourceIDFieldOverrides, "overrideTest")
 		}
 	}()
 

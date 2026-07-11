@@ -1210,23 +1210,9 @@ func syncResourcePath(resource string) (string, error) {
 	return "", fmt.Errorf("unknown sync resource %q", resource)
 }
 
-// resourceIDFieldOverrides projects per-resource IDField (set by the profiler
-// from x-resource-id or the response-schema fallback chain) into a runtime
-// lookup map. extractID consults this first so the templated path wins over
-// the generic fallback list; the generic list applies only when the override
-// is empty or the override field is absent on a given item.
-//
-// Includes both flat resources and dependent (parent-child) resources so
-// annotations on a child path-item are honored at runtime, not just on
-// flat paths.
-var resourceIDFieldOverrides = map[string]string{
-	// Zotero tags and global schema lists are keyed by
-	// domain-name fields rather than generic id/name/key fields.
-	"tags":                  "tag",
-	"schema":                "itemType",
-	"schema-creator-fields": "field",
-	"schema-item-fields":    "field",
-}
+// resourceIDFieldOverrides is the store's shared map: both sync and the
+// store's UpsertBatch must key rows identically, so there is one definition.
+var resourceIDFieldOverrides = store.ResourceIDFieldOverrides
 
 // genericIDFieldFallbacks is the runtime safety net for resources that did
 // NOT receive a templated IDField. API-specific names belong in spec

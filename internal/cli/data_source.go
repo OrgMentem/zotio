@@ -138,9 +138,9 @@ func resolveRead(ctx context.Context, c *client.Client, flags *rootFlags, resour
 // FTS search covers everything the user has looked up — not just explicit syncs.
 // Best-effort: failures are silently ignored (the live result already succeeded).
 func writeThroughCache(ctx context.Context, resourceType string, data json.RawMessage) {
-	// schema/type lists (itemTypes, itemFields, …) are not keyed library
-	// items; write-through caching them only triggers "no extractable ID" warnings
-	// from UpsertBatch. They are read-only reference data, so skip the cache.
+	// schema/type lists (itemTypes, itemFields, …) are read-only reference
+	// data, not library content — skip the cache. Tags flow through: the
+	// store's ResourceIDFieldOverrides keys them by tag name.
 	if resourceType == "schema" {
 		return
 	}

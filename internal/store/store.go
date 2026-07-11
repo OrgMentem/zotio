@@ -1176,16 +1176,17 @@ func lookupFieldValue(obj map[string]any, snakeKey string) any {
 	return LookupFieldValue(obj, snakeKey)
 }
 
-// resourceIDFieldOverrides projects per-resource IDField (set by the profiler
-// from x-resource-id or response-schema fallback) into a runtime lookup map.
-// UpsertBatch consults this first so the templated path wins over the
-// generic fallback list. Empty when no resource declared an override; the
-// runtime fallback list still applies.
-//
-// Includes both flat resources and dependent (parent-child) resources so a
-// child path-item annotated with x-resource-id resolves the same as a flat
-// path-item.
-var resourceIDFieldOverrides = map[string]string{}
+// ResourceIDFieldOverrides maps resources whose primary key is a domain-name
+// field rather than a generic id/name/key field. prepareResourceItem consults
+// this first so the domain field wins over the generic fallback list; sync
+// shares it so both ingest paths key rows identically.
+var ResourceIDFieldOverrides = map[string]string{
+	// Zotero tags and global schema lists are keyed by domain-name fields.
+	"tags":                  "tag",
+	"schema":                "itemType",
+	"schema-creator-fields": "field",
+	"schema-item-fields":    "field",
+}
 
 // genericIDFieldFallbacks is the runtime safety net for resources that did
 // NOT receive a templated IDField. API-specific names belong in spec
@@ -1208,7 +1209,7 @@ func prepareResourceItem(resourceType string, item json.RawMessage) (preparedRes
 	// override is empty OR the override field is absent on this particular item
 	// (response shape mismatches happen even when the spec declares x-resource-id).
 	var id string
-	if override, ok := resourceIDFieldOverrides[resourceType]; ok && override != "" {
+	if override, ok := ResourceIDFieldOverrides[resourceType]; ok && override != "" {
 		if v := lookupFieldValue(obj, override); v != nil {
 			s := fmt.Sprintf("%v", v)
 			if s != "" && s != "<nil>" {
