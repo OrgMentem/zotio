@@ -20,7 +20,7 @@ These flags are available on every command.
 | `--deliver` | `string` |  | Route output to a sink: stdout (default), file:<path>, webhook:<url> |
 | `--dry-run` | `bool` | `false` | Show request without sending |
 | `--group` | `string` |  | Operate on a Zotero group library by numeric group ID (default: personal library) |
-| `--human-friendly` | `bool` | `false` | Enable colored output and rich formatting |
+| `--human-friendly` | `bool` | `false` | Force colored output (auto-enabled on terminals; NO_COLOR and --no-color still win) |
 | `--idempotent` | `bool` | `false` | Treat already-existing create results as a successful no-op |
 | `--ignore-missing` | `bool` | `false` | Treat missing delete targets as a successful no-op |
 | `--json` | `bool` | `false` | Output as JSON |
@@ -1910,6 +1910,7 @@ zotio library wrapped [flags]
 | Flag | Type | Default | Description |
 | --- | --- | --- | --- |
 | `--card` | `string` |  | Write an 800x418 SVG share card to this path |
+| `--card-style` | `string` | `overview` | Card layout: overview, rhythm, picks, or cycle (animated crossfade through all three) |
 | `--year` | `int` | `2026` | Year to summarize |
 
 ## `zotio profile`
