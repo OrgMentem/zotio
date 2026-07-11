@@ -224,11 +224,11 @@ func TestBuildItemSimilarFulltextCorpusCountsEmptyDocuments(t *testing.T) {
 	}
 }
 
-func TestBuildItemSimilarReportRejectsTrashedSourceCoexistence(t *testing.T) {
+func TestBuildItemSimilarReportRejectsNewerTrashedSource(t *testing.T) {
 	db := seedItemsSimilarFixture(t, filepath.Join(t.TempDir(), "trash-source.db"))
 	defer db.Close()
 	if _, _, err := db.UpsertBatch("items-trash", []json.RawMessage{
-		json.RawMessage(`{"key":"SRC","data":{"key":"SRC","itemType":"journalArticle"}}`),
+		json.RawMessage(`{"key":"SRC","version":2,"data":{"key":"SRC","version":2,"itemType":"journalArticle"}}`),
 	}); err != nil {
 		t.Fatalf("seed trash source: %v", err)
 	}

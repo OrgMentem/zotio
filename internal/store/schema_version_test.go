@@ -37,8 +37,8 @@ func TestSchemaVersion_StampedOnFreshDB(t *testing.T) {
 
 // TestSchemaVersion_StampExistingZeroDB verifies the stamp-and-continue
 // rule for existing deployed databases. A DB that predates the gate has
-// user_version = 0; opening it with this binary should stamp the version
-// to 1 without touching any data.
+// user_version = 0; opening it with this binary should run migrations and
+// stamp the current version.
 func TestSchemaVersion_StampExistingZeroDB(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "data.db")
 
@@ -370,4 +370,97 @@ func TestMigrate_AddsColumnsOnUpgrade_SyncState(t *testing.T) {
 			t.Fatalf("%s column missing from sync_state after migrate", want)
 		}
 	}
+}
+
+func TestMigrate_ItemLifecycleCanonicalizesPreVersion4DB(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "data.db")
+	raw, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("open raw: %v", err)
+	}
+	if _, err := raw.Exec(`CREATE TABLE resources (
+		id TEXT NOT NULL,
+		resource_type TEXT NOT NULL,
+		data JSON NOT NULL,
+		synced_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+		updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+		PRIMARY KEY (resource_type, id)
+	)`); err != nil {
+		raw.Close()
+		t.Fatalf("create pre-version-4 resources: %v", err)
+	}
+	if _, err := raw.Exec(`CREATE VIRTUAL TABLE resources_fts USING fts5(
+		id, resource_type, content, tokenize='porter unicode61'
+	)`); err != nil {
+		raw.Close()
+		t.Fatalf("create pre-version-4 FTS: %v", err)
+	}
+	insert := func(resourceType, id, payload, content string) {
+		t.Helper()
+		if _, err := raw.Exec(
+			`INSERT INTO resources (id, resource_type, data) VALUES (?, ?, ?)`,
+			id, resourceType, payload,
+		); err != nil {
+			t.Fatalf("seed %s/%s: %v", resourceType, id, err)
+		}
+		if _, err := raw.Exec(
+			`INSERT INTO resources_fts (rowid, id, resource_type, content) VALUES (?, ?, ?, ?)`,
+			ftsRowID(resourceType, id), id, resourceType, content,
+		); err != nil {
+			t.Fatalf("seed FTS %s/%s: %v", resourceType, id, err)
+		}
+	}
+	insert("items", "LIVE-WINS", `{"key":"LIVE-WINS","version":9,"data":{"title":"canonical live"}}`, "canonical live")
+	insert("items-trash", "LIVE-WINS", `{"key":"LIVE-WINS","version":8,"data":{"title":"obsolete trash"}}`, "obsolete trash")
+	insert("items", "TRASH-TIE", `{"key":"TRASH-TIE","data":{"version":3,"title":"obsolete live"}}`, "obsolete live")
+	insert("items-trash", "TRASH-TIE", `{"key":"TRASH-TIE","version":3,"data":{"title":"canonical trash"}}`, "canonical trash")
+	insert("items", "INVALID-VERSION", `{"key":"INVALID-VERSION","version":"not-a-number","data":{"version":99,"title":"invalid live"}}`, "invalid live")
+	insert("items-trash", "INVALID-VERSION", `{"key":"INVALID-VERSION","data":{"title":"zero trash"}}`, "zero trash")
+	insert("collections", "TRASH-TIE", `{"key":"TRASH-TIE","name":"unrelated collection"}`, "unrelated collection")
+	if _, err := raw.Exec(`PRAGMA user_version = 3`); err != nil {
+		raw.Close()
+		t.Fatalf("stamp pre-version-4 schema: %v", err)
+	}
+	if err := raw.Close(); err != nil {
+		t.Fatalf("close raw: %v", err)
+	}
+
+	s, err := OpenWithContext(context.Background(), dbPath)
+	if err != nil {
+		t.Fatalf("open and migrate pre-version-4 db: %v", err)
+	}
+	if version, err := s.SchemaVersion(); err != nil {
+		s.Close()
+		t.Fatalf("read migrated schema version: %v", err)
+	} else if version != StoreSchemaVersion {
+		s.Close()
+		t.Fatalf("migrated schema version = %d, want %d", version, StoreSchemaVersion)
+	}
+	assertCanonicalItemState(t, s, "LIVE-WINS", "items", "items-trash")
+	assertCanonicalItemState(t, s, "TRASH-TIE", "items-trash", "items")
+	assertCanonicalItemState(t, s, "INVALID-VERSION", "items-trash", "items")
+	var collectionCount int
+	if err := s.DB().QueryRow(
+		`SELECT count(*) FROM resources WHERE resource_type = 'collections' AND id = 'TRASH-TIE'`,
+	).Scan(&collectionCount); err != nil {
+		s.Close()
+		t.Fatalf("count unrelated collection: %v", err)
+	}
+	if collectionCount != 1 {
+		s.Close()
+		t.Fatalf("unrelated collection count = %d, want 1", collectionCount)
+	}
+	if err := s.Close(); err != nil {
+		t.Fatalf("close migrated store: %v", err)
+	}
+
+	// Reopening the now-current database must not change the canonical rows.
+	reopened, err := OpenWithContext(context.Background(), dbPath)
+	if err != nil {
+		t.Fatalf("reopen migrated db: %v", err)
+	}
+	defer reopened.Close()
+	assertCanonicalItemState(t, reopened, "LIVE-WINS", "items", "items-trash")
+	assertCanonicalItemState(t, reopened, "TRASH-TIE", "items-trash", "items")
+	assertCanonicalItemState(t, reopened, "INVALID-VERSION", "items-trash", "items")
 }

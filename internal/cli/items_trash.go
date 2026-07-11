@@ -11,7 +11,7 @@ import (
 )
 
 func newItemsTrashCmd(flags *rootFlags) *cobra.Command {
-	var flagLimit int
+	var flagLimit, flagStart int
 
 	cmd := &cobra.Command{
 		Use:         "trash",
@@ -29,7 +29,10 @@ func newItemsTrashCmd(flags *rootFlags) *cobra.Command {
 			if flagLimit != 0 {
 				params["limit"] = fmt.Sprintf("%v", flagLimit)
 			}
-			data, prov, err := resolveRead(cmd.Context(), c, flags, "items", false, path, params, nil)
+			if flagStart != 0 {
+				params["start"] = fmt.Sprintf("%v", flagStart)
+			}
+			data, prov, err := resolveRead(cmd.Context(), c, flags, "items-trash", true, path, params, nil)
 			if err != nil {
 				return classifyAPIError(err, flags)
 			}
@@ -74,6 +77,7 @@ func newItemsTrashCmd(flags *rootFlags) *cobra.Command {
 		},
 	}
 	cmd.Flags().IntVar(&flagLimit, "limit", 0, "Maximum number of items to return")
+	cmd.Flags().IntVar(&flagStart, "start", 0, "Pagination offset (zero-based)")
 
 	return cmd
 }

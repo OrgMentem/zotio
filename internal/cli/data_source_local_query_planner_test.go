@@ -580,3 +580,172 @@ func TestPaginateLocalRowsAppliesOffsetBeforeLimit(t *testing.T) {
 		})
 	}
 }
+
+var localTrashFixture = []json.RawMessage{
+	json.RawMessage(`{"key":"TRASH1","version":3,"data":{"key":"TRASH1","itemType":"book","title":"Discarded Book","dateModified":"2026-07-01T10:00:00Z"}}`),
+	json.RawMessage(`{"key":"TRASH2","version":4,"data":{"key":"TRASH2","itemType":"journalArticle","title":"Discarded Article","dateModified":"2026-07-03T10:00:00Z"}}`),
+	json.RawMessage(`{"key":"TRASH3","version":5,"itemType":"note","title":"Discarded Note","dateModified":"2026-07-02T10:00:00Z"}`),
+}
+
+var (
+	localItemsSyncedAt = time.Date(2026, time.July, 9, 12, 30, 0, 0, time.UTC)
+	localTrashSyncedAt = time.Date(2026, time.July, 10, 15, 45, 0, 0, time.UTC)
+)
+
+func seedLocalTrashDB(t *testing.T, trash []json.RawMessage, trashSynced bool) (*rootFlags, time.Time) {
+	t.Helper()
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+	t.Setenv("ZOTERO_CONFIG", filepath.Join(t.TempDir(), "missing.toml"))
+	t.Setenv("ZOTERO_BASE_URL", "http://127.0.0.1:1/api/users/0")
+	dbPath := defaultDBPath("zotio")
+	if err := os.MkdirAll(filepath.Dir(dbPath), 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	db, err := store.OpenWithContext(context.Background(), dbPath)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	trashSyncedAt := localTrashSyncedAt
+	// This live-items row is a regression sentinel: the old route interpreted
+	// /items/trash as Get("items", "trash") and returned this payload.
+	if _, _, err := db.UpsertBatch("items", []json.RawMessage{
+		json.RawMessage(`{"key":"trash","version":99,"data":{"key":"trash","itemType":"book","title":"Wrong live-items row"}}`),
+	}); err != nil {
+		t.Fatalf("seed items sentinel: %v", err)
+	}
+	if len(trash) > 0 {
+		if _, _, err := db.UpsertBatch("items-trash", trash); err != nil {
+			t.Fatalf("seed items-trash: %v", err)
+		}
+	}
+	if _, err := db.DB().Exec(
+		`INSERT OR REPLACE INTO sync_state(resource_type, last_cursor, last_synced_at, total_count) VALUES (?, ?, ?, ?)`,
+		"items", "", localItemsSyncedAt, 1,
+	); err != nil {
+		t.Fatalf("seed items sync state: %v", err)
+	}
+	if trashSynced {
+		if _, err := db.DB().Exec(
+			`INSERT OR REPLACE INTO sync_state(resource_type, last_cursor, last_synced_at, total_count) VALUES (?, ?, ?, ?)`,
+			"items-trash", "", trashSyncedAt, len(trash),
+		); err != nil {
+			t.Fatalf("seed items-trash sync state: %v", err)
+		}
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close: %v", err)
+	}
+	return &rootFlags{asJSON: true, dataSource: "local", noCache: true, timeout: time.Second}, trashSyncedAt
+}
+
+type localTrashEnvelope struct {
+	Results []json.RawMessage `json:"results"`
+	Meta    struct {
+		Source       string `json:"source"`
+		ResourceType string `json:"resource_type"`
+		SyncedAt     string `json:"synced_at"`
+	} `json:"meta"`
+}
+
+func runLocalTrash(t *testing.T, flags *rootFlags, args ...string) (localTrashEnvelope, error) {
+	t.Helper()
+	cmd := newItemsTrashCmd(flags)
+	cmd.SetArgs(args)
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&bytes.Buffer{})
+	err := cmd.Execute()
+	if err != nil {
+		return localTrashEnvelope{}, err
+	}
+	var env localTrashEnvelope
+	if err := json.Unmarshal(out.Bytes(), &env); err != nil {
+		t.Fatalf("decode trash output %q: %v", out.String(), err)
+	}
+	return env, nil
+}
+
+func TestItemsTrashLocalListsTrashResourceWithProvenance(t *testing.T) {
+	flags, wantSyncedAt := seedLocalTrashDB(t, localTrashFixture, true)
+
+	env, err := runLocalTrash(t, flags)
+	if err != nil {
+		t.Fatalf("items trash: %v", err)
+	}
+	keys := rawMessageKeys(t, env.Results)
+	if !equalKeys(keys, []string{"TRASH2", "TRASH3", "TRASH1"}) {
+		t.Fatalf("trash keys = %v, want [TRASH2 TRASH3 TRASH1]", keys)
+	}
+	if env.Meta.Source != "local" || env.Meta.ResourceType != "items-trash" {
+		t.Fatalf("provenance = %+v, want local items-trash", env.Meta)
+	}
+	syncedAt, err := time.Parse(time.RFC3339, env.Meta.SyncedAt)
+	if err != nil {
+		t.Fatalf("parse synced_at %q: %v", env.Meta.SyncedAt, err)
+	}
+	if !syncedAt.Equal(wantSyncedAt) {
+		t.Fatalf("synced_at = %v, want items-trash timestamp %v", syncedAt, wantSyncedAt)
+	}
+}
+
+func TestItemsTrashLocalAppliesStartBeforeLimit(t *testing.T) {
+	flags, _ := seedLocalTrashDB(t, localTrashFixture, true)
+
+	page, err := runLocalTrash(t, flags, "--start", "1", "--limit", "1")
+	if err != nil {
+		t.Fatalf("items trash page: %v", err)
+	}
+	if got := rawMessageKeys(t, page.Results); !equalKeys(got, []string{"TRASH3"}) {
+		t.Fatalf("paginated trash keys = %v, want [TRASH3]", got)
+	}
+}
+
+func TestItemsTrashLocalPastEndWriteThroughCacheReturnsArrayWithProvenance(t *testing.T) {
+	flags, _ := seedLocalTrashDB(t, localTrashFixture[:1], false)
+
+	env, err := runLocalTrash(t, flags, "--start", "10")
+	if err != nil {
+		t.Fatalf("items trash past-end page: %v", err)
+	}
+	if env.Results == nil || len(env.Results) != 0 {
+		t.Fatalf("past-end items-trash results = %q, want []", env.Results)
+	}
+	if env.Meta.Source != "local" || env.Meta.ResourceType != "items-trash" {
+		t.Fatalf("past-end provenance = %+v, want local items-trash", env.Meta)
+	}
+}
+
+func TestItemsTrashLocalEmptyStoreReturnsSyncRemediation(t *testing.T) {
+	flags, _ := seedLocalTrashDB(t, nil, false)
+
+	env, err := runLocalTrash(t, flags)
+	if err == nil {
+		t.Fatalf("items trash empty store results = %q, want error", env.Results)
+	}
+	if got, want := err.Error(), `no local data for "items-trash". Run 'zotio sync' first`; got != want {
+		t.Fatalf("empty items-trash error = %q, want %q", got, want)
+	}
+}
+
+func TestItemsTrashLocalSyncedEmptyReturnsArrayWithProvenance(t *testing.T) {
+	flags, wantSyncedAt := seedLocalTrashDB(t, nil, true)
+
+	env, err := runLocalTrash(t, flags)
+	if err != nil {
+		t.Fatalf("items trash synced empty: %v", err)
+	}
+	if env.Results == nil || len(env.Results) != 0 {
+		t.Fatalf("synced-empty items-trash results = %q, want []", env.Results)
+	}
+	if env.Meta.Source != "local" || env.Meta.ResourceType != "items-trash" {
+		t.Fatalf("synced-empty provenance = %+v, want local items-trash", env.Meta)
+	}
+	syncedAt, err := time.Parse(time.RFC3339, env.Meta.SyncedAt)
+	if err != nil {
+		t.Fatalf("parse synced_at %q: %v", env.Meta.SyncedAt, err)
+	}
+	if !syncedAt.Equal(wantSyncedAt) {
+		t.Fatalf("synced_at = %v, want items-trash timestamp %v", syncedAt, wantSyncedAt)
+	}
+}

@@ -214,6 +214,15 @@ func resolveLocal(ctx context.Context, resourceType string, isList bool, path st
 		return data, itemProv, nil
 	}
 
+	if data, handled, qErr := resolveLocalTrashList(db, resourceType, isList, path, params); handled {
+		if qErr != nil {
+			return nil, DataProvenance{}, qErr
+		}
+		trashProv := localProvenance(db, "items-trash", reason)
+		trashProv.Scoped = true
+		return data, trashProv, nil
+	}
+
 	// Warn only when this generic read carries filters local data can't
 	// reproduce. limit/start are applied below, so they never warrant a warning.
 	// The warning stays scoped to genuinely unreproducible filters; item-list
@@ -304,6 +313,44 @@ func paginateLocalRows(rows []json.RawMessage, params map[string]string) []json.
 		rows = rows[:limit]
 	}
 	return rows
+}
+
+// resolveLocalTrashList reproduces the live /items/trash list's default order
+// and SQL pagination. A completed empty sync is valid local data; the absence
+// of both rows and a sync timestamp remains a loud hydration error.
+func resolveLocalTrashList(db *store.Store, resourceType string, isList bool, path string, params map[string]string) (json.RawMessage, bool, error) {
+	if resourceType != "items-trash" || !isLocalListRead(resourceType, isList, path) {
+		return nil, false, nil
+	}
+
+	limit, _ := strconv.Atoi(params["limit"])
+	start, _ := strconv.Atoi(params["start"])
+	rows, err := db.QueryTrash(store.TrashQuery{Limit: limit, Start: start})
+	if err != nil {
+		return nil, true, fmt.Errorf("querying local trash: %w", err)
+	}
+	if len(rows) == 0 {
+		totalRows, countErr := db.Count("items-trash")
+		if countErr != nil {
+			return nil, true, fmt.Errorf("counting local trash: %w", countErr)
+		}
+		if totalRows == 0 {
+			_, lastSynced, _, stateErr := db.GetSyncState("items-trash")
+			if stateErr != nil {
+				return nil, true, fmt.Errorf("querying local trash sync state: %w", stateErr)
+			}
+			if lastSynced.IsZero() {
+				return nil, true, fmt.Errorf("no local data for %q. Run 'zotio sync' first", resourceType)
+			}
+		}
+		return json.RawMessage("[]"), true, nil
+	}
+
+	data, err := json.Marshal(rows)
+	if err != nil {
+		return nil, true, fmt.Errorf("marshaling local trash: %w", err)
+	}
+	return data, true, nil
 }
 
 // resolveLocalItemList runs the Zotero-aware item query planner when the path

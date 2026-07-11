@@ -113,6 +113,57 @@ func (s *Store) QueryItems(q ItemQuery) ([]json.RawMessage, error) {
 	return results, rows.Err()
 }
 
+// TrashQuery describes pagination for the Zotero trash item list.
+type TrashQuery struct {
+	Limit int // 0 = no limit
+	Start int // pagination offset
+}
+
+// QueryTrash returns only synced trash item payloads in Zotero's default
+// order: dateModified descending, then key ascending for deterministic ties.
+// Zotero payloads normally nest fields under data, while older/local payloads
+// may be flat, so the ordering expression supports both shapes.
+func (s *Store) QueryTrash(q TrashQuery) ([]json.RawMessage, error) {
+	var sb strings.Builder
+	args := make([]any, 0, 2)
+	sb.WriteString(`
+SELECT r.data
+FROM resources r
+WHERE r.resource_type = 'items-trash'
+ORDER BY COALESCE(
+	json_extract(r.data, '$.data.dateModified'),
+	json_extract(r.data, '$.dateModified')
+) DESC, r.id ASC`)
+
+	if q.Limit > 0 {
+		sb.WriteString(" LIMIT ?")
+		args = append(args, q.Limit)
+		if q.Start > 0 {
+			sb.WriteString(" OFFSET ?")
+			args = append(args, q.Start)
+		}
+	} else if q.Start > 0 {
+		sb.WriteString(" LIMIT -1 OFFSET ?")
+		args = append(args, q.Start)
+	}
+
+	rows, err := s.db.Query(sb.String(), args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var results []json.RawMessage
+	for rows.Next() {
+		var data string
+		if err := rows.Scan(&data); err != nil {
+			return nil, err
+		}
+		results = append(results, json.RawMessage(data))
+	}
+	return results, rows.Err()
+}
+
 // SimilarityCandidate is a top-level bibliographic item eligible for local
 // similarity scoring.
 type SimilarityCandidate struct {

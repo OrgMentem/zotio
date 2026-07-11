@@ -1745,6 +1745,7 @@ zotio items trash
 | Flag | Type | Default | Description |
 | --- | --- | --- | --- |
 | `--limit` | `int` | `0` | Maximum number of items to return |
+| `--start` | `int` | `0` | Pagination offset (zero-based) |
 
 ### `zotio items unfiled`
 
@@ -2363,7 +2364,7 @@ Examples:
 | `--fulltext` | `bool` | `false` | Also sync PDF full-text content (slower; one request per attachment) |
 | `--latest-only` | `bool` | `false` | Refresh head of each resource only; clears resume cursor and caps pages at 1. Mutually exclusive with --since (--since wins). |
 | `--max-pages` | `int` | `100` | Maximum pages to fetch per resource (0 = unlimited; cap-hit emits a sync_warning event) |
-| `--resources` | `stringSlice` | `[]` | Comma-separated resource types to sync |
+| `--resources` | `stringSlice` | `[]` | Comma-separated resource types to sync (selecting items also syncs items-trash) |
 | `--since` | `int` | `0` | Only sync objects modified since this Zotero library version (0 = use stored checkpoint). Get versions from a prior sync or 'items list --since'. |
 | `--strict` | `bool` | `false` | Exit non-zero on any per-resource failure (default: only critical failures or all-resource failure exit non-zero). |
 

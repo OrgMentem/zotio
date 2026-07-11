@@ -257,3 +257,128 @@ func TestUpsertBatch_ExtractFailuresReturnedForPerItemMisses(t *testing.T) {
 		t.Fatalf("extractFailures = %d, want 2 (two items have no extractable PK)", extractFailures)
 	}
 }
+
+func TestUpsert_ItemLifecycleTransitions(t *testing.T) {
+	s, err := OpenWithContext(context.Background(), filepath.Join(t.TempDir(), "data.db"))
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer s.Close()
+
+	const id = "ITEM-LIFECYCLE"
+	if err := s.Upsert("items", id, json.RawMessage(`{"key":"ITEM-LIFECYCLE","version":1,"data":{"title":"initial live token"}}`)); err != nil {
+		t.Fatalf("upsert initial live: %v", err)
+	}
+	assertCanonicalItemState(t, s, id, "items", "items-trash")
+
+	if err := s.Upsert("items-trash", id, json.RawMessage(`{"key":"ITEM-LIFECYCLE","version":2,"data":{"title":"deleted trash token"}}`)); err != nil {
+		t.Fatalf("upsert trash: %v", err)
+	}
+	assertCanonicalItemState(t, s, id, "items-trash", "items")
+
+	// Nested data.version is the fallback when the top-level version is absent.
+	if err := s.Upsert("items", id, json.RawMessage(`{"key":"ITEM-LIFECYCLE","data":{"version":3,"title":"restored live token"}}`)); err != nil {
+		t.Fatalf("upsert restored live: %v", err)
+	}
+	assertCanonicalItemState(t, s, id, "items", "items-trash")
+
+	if err := s.Upsert("items-trash", id, json.RawMessage(`{"key":"ITEM-LIFECYCLE","version":5,"data":{"title":"newer trash token"}}`)); err != nil {
+		t.Fatalf("upsert newer trash: %v", err)
+	}
+	if err := s.Upsert("items", id, json.RawMessage(`{"key":"ITEM-LIFECYCLE","version":4,"data":{"title":"stale late live token"}}`)); err != nil {
+		t.Fatalf("upsert stale late live: %v", err)
+	}
+	assertCanonicalItemState(t, s, id, "items-trash", "items")
+
+	if err := s.Upsert("items", id, json.RawMessage(`{"key":"ITEM-LIFECYCLE","version":8,"data":{"title":"equal live token"}}`)); err != nil {
+		t.Fatalf("upsert equal-version live: %v", err)
+	}
+	if err := s.Upsert("items-trash", id, json.RawMessage(`{"key":"ITEM-LIFECYCLE","version":8,"data":{"title":"equal trash token"}}`)); err != nil {
+		t.Fatalf("upsert equal-version trash: %v", err)
+	}
+	assertCanonicalItemState(t, s, id, "items-trash", "items")
+
+	// The lifecycle rule is scoped to the two item resource types.
+	if err := s.Upsert("collections", id, json.RawMessage(`{"key":"ITEM-LIFECYCLE","version":99,"name":"same key collection"}`)); err != nil {
+		t.Fatalf("upsert unrelated resource: %v", err)
+	}
+	var unrelated int
+	if err := s.DB().QueryRow(
+		`SELECT count(*) FROM resources WHERE id = ? AND resource_type = 'collections'`,
+		id,
+	).Scan(&unrelated); err != nil {
+		t.Fatalf("count unrelated resource: %v", err)
+	}
+	if unrelated != 1 {
+		t.Fatalf("unrelated resource count = %d, want 1", unrelated)
+	}
+	assertCanonicalItemState(t, s, id, "items-trash", "items")
+}
+
+func TestUpsertBatch_ItemLifecycleReconciliation(t *testing.T) {
+	s, err := OpenWithContext(context.Background(), filepath.Join(t.TempDir(), "data.db"))
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer s.Close()
+
+	const id = "BATCH-LIFECYCLE"
+	upsert := func(resourceType, payload string) {
+		t.Helper()
+		stored, failures, err := s.UpsertBatch(resourceType, []json.RawMessage{json.RawMessage(payload)})
+		if err != nil {
+			t.Fatalf("UpsertBatch %s: %v", resourceType, err)
+		}
+		if stored != 1 || failures != 0 {
+			t.Fatalf("UpsertBatch %s = (%d stored, %d failures), want (1, 0)", resourceType, stored, failures)
+		}
+	}
+
+	upsert("items", `{"key":"BATCH-LIFECYCLE","version":10,"data":{"title":"batch live token"}}`)
+	upsert("items-trash", `{"key":"BATCH-LIFECYCLE","version":11,"data":{"title":"batch trash token"}}`)
+	assertCanonicalItemState(t, s, id, "items-trash", "items")
+
+	// The top-level numeric version takes precedence over a larger nested value.
+	upsert("items", `{"key":"BATCH-LIFECYCLE","version":12,"data":{"version":1,"title":"batch restored token"}}`)
+	assertCanonicalItemState(t, s, id, "items", "items-trash")
+}
+
+func assertCanonicalItemState(t *testing.T, s *Store, id, winnerType, loserType string) {
+	t.Helper()
+	var total, winners, losers int
+	if err := s.DB().QueryRow(
+		`SELECT count(*),
+		        sum(CASE WHEN resource_type = ? THEN 1 ELSE 0 END),
+		        sum(CASE WHEN resource_type = ? THEN 1 ELSE 0 END)
+		   FROM resources
+		  WHERE id = ? AND resource_type IN ('items', 'items-trash')`,
+		winnerType, loserType, id,
+	).Scan(&total, &winners, &losers); err != nil {
+		t.Fatalf("query canonical state for %s: %v", id, err)
+	}
+	if total != 1 || winners != 1 || losers != 0 {
+		t.Fatalf("canonical state for %s = total %d, winner %d, loser %d; want 1, 1, 0", id, total, winners, losers)
+	}
+
+	var winnerFTS int
+	if err := s.DB().QueryRow(
+		`SELECT count(*) FROM resources_fts WHERE rowid = ?`,
+		ftsRowID(winnerType, id),
+	).Scan(&winnerFTS); err != nil {
+		t.Fatalf("query winner FTS row for %s/%s: %v", winnerType, id, err)
+	}
+	if winnerFTS != 1 {
+		t.Fatalf("winner FTS rows for %s/%s = %d, want 1", winnerType, id, winnerFTS)
+	}
+
+	var loserFTS int
+	if err := s.DB().QueryRow(
+		`SELECT count(*) FROM resources_fts WHERE rowid = ?`,
+		ftsRowID(loserType, id),
+	).Scan(&loserFTS); err != nil {
+		t.Fatalf("query loser FTS row for %s/%s: %v", loserType, id, err)
+	}
+	if loserFTS != 0 {
+		t.Fatalf("loser FTS rows for %s/%s = %d, want 0", loserType, id, loserFTS)
+	}
+}

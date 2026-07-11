@@ -36,7 +36,7 @@ func IsUUID(s string) bool {
 // shape — adding columns, dropping indexes, changing FTS5 tokenizers —
 // so an older binary refuses to open a newer database rather than silently
 // producing wrong results against a schema it cannot read.
-const StoreSchemaVersion = 3
+const StoreSchemaVersion = 4
 
 type Store struct {
 	db *sql.DB
@@ -412,6 +412,11 @@ func (s *Store) migrate(ctx context.Context) error {
 				return fmt.Errorf("migration failed: %w", err)
 			}
 		}
+		if current < 4 {
+			if err := reconcileExistingItemLifecycle(ctx, conn); err != nil {
+				return fmt.Errorf("reconciling item lifecycle: %w", err)
+			}
+		}
 		// populate the indexed columns for rows that
 		// predate them; without this, item_type/parent_key stay NULL and break
 		// the audit/query commands that filter on them.
@@ -433,11 +438,9 @@ func (s *Store) migrate(ctx context.Context) error {
 		if err := s.migrateExtras(ctx, conn); err != nil {
 			return err
 		}
-		// Stamp the schema version. On a fresh DB this writes 1; on an
-		// already-stamped DB this is a no-op write of the same value.
-		// An older DB with user_version = 0 and pre-existing tables
-		// gets stamped here without any data rewrites because the
-		// migrations above are idempotent via CREATE TABLE IF NOT EXISTS.
+		// Stamp the current schema version only after all schema and data
+		// migrations succeed. On an already-current DB this is a no-op write;
+		// older and pre-gate databases are upgraded transactionally above.
 		if _, err := conn.ExecContext(ctx, fmt.Sprintf(`PRAGMA user_version = %d`, StoreSchemaVersion)); err != nil {
 			return fmt.Errorf("stamp user_version: %w", err)
 		}
@@ -482,6 +485,67 @@ func (s *Store) purgeAliasResources(ctx context.Context, conn *sql.Conn) error {
 			if _, err := conn.ExecContext(ctx, `DELETE FROM sync_state WHERE resource_type = ?`, resourceType); err != nil {
 				return err
 			}
+		}
+	}
+	return nil
+}
+
+// reconcileExistingItemLifecycle is the version-4 data migration. It runs on
+// the pinned connection while migrate holds BEGIN IMMEDIATE, so each losing
+// resource and its deterministic FTS row disappear in the same migration
+// transaction. Reading all conflicts before deleting also keeps cursor
+// lifetimes separate from writes for SQLite driver portability.
+func reconcileExistingItemLifecycle(ctx context.Context, conn *sql.Conn) error {
+	rows, err := conn.QueryContext(ctx, `
+SELECT live.id, live.data, trash.data
+FROM resources AS live
+JOIN resources AS trash ON trash.id = live.id
+WHERE live.resource_type = 'items'
+  AND trash.resource_type = 'items-trash'`)
+	if err != nil {
+		return err
+	}
+	type conflict struct {
+		id        string
+		liveData  string
+		trashData string
+	}
+	var conflicts []conflict
+	for rows.Next() {
+		var item conflict
+		if err := rows.Scan(&item.id, &item.liveData, &item.trashData); err != nil {
+			rows.Close()
+			return err
+		}
+		conflicts = append(conflicts, item)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return err
+	}
+	if err := rows.Close(); err != nil {
+		return err
+	}
+
+	for _, item := range conflicts {
+		var live, trash map[string]any
+		_ = json.Unmarshal([]byte(item.liveData), &live)
+		_ = json.Unmarshal([]byte(item.trashData), &trash)
+		loserType := "items"
+		if zoteroObjectVersion(live) > zoteroObjectVersion(trash) {
+			loserType = "items-trash"
+		}
+		if _, err := conn.ExecContext(ctx,
+			`DELETE FROM resources WHERE resource_type = ? AND id = ?`,
+			loserType, item.id,
+		); err != nil {
+			return err
+		}
+		if _, err := conn.ExecContext(ctx,
+			`DELETE FROM resources_fts WHERE rowid = ?`,
+			ftsRowID(loserType, item.id),
+		); err != nil {
+			return err
 		}
 	}
 	return nil
@@ -666,6 +730,74 @@ func (s *Store) upsertGenericResourceTx(tx *sql.Tx, resourceType, id string, dat
 	return nil
 }
 
+// reconcileItemLifecycleTx enforces the single canonical item state after an
+// items or items-trash row has been written. Zotero versions are compared with
+// the top-level field taking precedence over the nested data.version fallback;
+// absent and non-numeric versions compare as zero. Trash wins equal versions so
+// a late live page cannot resurrect a deletion.
+func reconcileItemLifecycleTx(tx *sql.Tx, resourceType, id string, incoming map[string]any) error {
+	if resourceType != "items" && resourceType != "items-trash" {
+		return nil
+	}
+	oppositeType := "items"
+	if resourceType == "items" {
+		oppositeType = "items-trash"
+	}
+
+	var oppositeData string
+	err := tx.QueryRow(
+		`SELECT data FROM resources WHERE resource_type = ? AND id = ?`,
+		oppositeType, id,
+	).Scan(&oppositeData)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("reading opposite item state %s/%s: %w", oppositeType, id, err)
+	}
+
+	var opposite map[string]any
+	if err := json.Unmarshal([]byte(oppositeData), &opposite); err != nil {
+		// A malformed legacy payload has no usable Zotero version.
+		opposite = nil
+	}
+	incomingVersion := zoteroObjectVersion(incoming)
+	oppositeVersion := zoteroObjectVersion(opposite)
+	loserType := resourceType
+	if incomingVersion > oppositeVersion ||
+		(incomingVersion == oppositeVersion && resourceType == "items-trash") {
+		loserType = oppositeType
+	}
+	if _, err := tx.Exec(
+		`DELETE FROM resources WHERE resource_type = ? AND id = ?`,
+		loserType, id,
+	); err != nil {
+		return fmt.Errorf("deleting losing item state %s/%s: %w", loserType, id, err)
+	}
+	if _, err := tx.Exec(
+		`DELETE FROM resources_fts WHERE rowid = ?`,
+		ftsRowID(loserType, id),
+	); err != nil {
+		return fmt.Errorf("deleting losing item FTS row %s/%s: %w", loserType, id, err)
+	}
+	return nil
+}
+
+func zoteroObjectVersion(obj map[string]any) float64 {
+	if obj == nil {
+		return 0
+	}
+	if version, ok := obj["version"]; ok {
+		value, _ := version.(float64)
+		return value
+	}
+	if data, ok := obj["data"].(map[string]any); ok {
+		value, _ := data["version"].(float64)
+		return value
+	}
+	return 0
+}
+
 // extractIndexedColumns pulls the indexed dependent-resource columns out of a
 // stored item payload. Zotero item objects nest the real fields under a "data"
 // sub-object ({key, version, data:{itemType, parentItem, ...}}); this descends
@@ -754,7 +886,14 @@ func (s *Store) Upsert(resourceType, id string, data json.RawMessage) error {
 	}
 	defer func() { _ = tx.Rollback() }()
 
-	if err := s.upsertGenericResourceTx(tx, resourceType, id, data, nil); err != nil {
+	var obj map[string]any
+	if resourceType == "items" || resourceType == "items-trash" {
+		_ = json.Unmarshal(data, &obj)
+	}
+	if err := s.upsertGenericResourceTx(tx, resourceType, id, data, obj); err != nil {
+		return err
+	}
+	if err := reconcileItemLifecycleTx(tx, resourceType, id, obj); err != nil {
 		return err
 	}
 
@@ -1137,6 +1276,9 @@ func (s *Store) UpsertBatch(resourceType string, items []json.RawMessage) (int, 
 	for _, item := range prepared {
 		if err := s.upsertGenericResourceTx(tx, resourceType, item.id, item.data, item.obj); err != nil {
 			return 0, extractFailures, fmt.Errorf("upserting %s/%s: %w", resourceType, item.id, err)
+		}
+		if err := reconcileItemLifecycleTx(tx, resourceType, item.id, item.obj); err != nil {
+			return 0, extractFailures, fmt.Errorf("reconciling %s/%s: %w", resourceType, item.id, err)
 		}
 
 		switch resourceType {

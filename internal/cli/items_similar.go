@@ -223,7 +223,7 @@ func buildItemSimilarReport(db localQueryStore, key string, opts itemSimilarOpti
 }
 
 func queryItemSimilarCandidates(db localQueryStore) ([]itemSimilarRecord, error) {
-	rows, err := db.Store.QuerySimilarityCandidates()
+	rows, err := db.QuerySimilarityCandidates()
 	if err != nil {
 		return nil, fmt.Errorf("querying candidate items: %w", err)
 	}

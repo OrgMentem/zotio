@@ -12,6 +12,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"testing"
 	"time"
 
@@ -128,6 +129,54 @@ func TestSyncPageExtractionHelpers(t *testing.T) {
 	cursor = findCursorInMap(map[string]json.RawMessage{"after": json.RawMessage(`""`)}, []string{"after"})
 	if cursor != "" {
 		t.Fatalf("findCursorInMap empty string = %q, want empty", cursor)
+	}
+}
+
+func TestNormalizeSyncResources(t *testing.T) {
+	defaults := defaultSyncResources()
+	tests := []struct {
+		name string
+		in   []string
+		want []string
+	}{
+		{
+			name: "items only adds trash",
+			in:   []string{"items"},
+			want: []string{"items", "items-trash"},
+		},
+		{
+			name: "items with trash stays ordered",
+			in:   []string{"items", "items-trash"},
+			want: []string{"items", "items-trash"},
+		},
+		{
+			name: "duplicate inputs do not duplicate work",
+			in:   []string{"collections", "items", "items", "items-trash", "items-trash", "collections"},
+			want: []string{"collections", "items", "items-trash"},
+		},
+		{
+			name: "trash only remains independent",
+			in:   []string{"items-trash"},
+			want: []string{"items-trash"},
+		},
+		{
+			name: "unrelated resources stay unchanged",
+			in:   []string{"collections", "tags"},
+			want: []string{"collections", "tags"},
+		},
+		{
+			name: "defaults stay unchanged",
+			in:   defaults,
+			want: defaults,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := normalizeSyncResources(tt.in); !slices.Equal(got, tt.want) {
+				t.Fatalf("normalizeSyncResources(%v) = %v, want %v", tt.in, got, tt.want)
+			}
+		})
 	}
 }
 

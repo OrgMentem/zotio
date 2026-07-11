@@ -131,6 +131,9 @@ Exit codes & warnings:
 			if len(resources) == 0 {
 				resources = defaultSyncResources()
 			}
+			// Keep live and trashed item state coupled before any cursor mutation
+			// or worker scheduling so an items sync can provide local parity.
+			resources = normalizeSyncResources(resources)
 
 			// --full: clear all sync cursors before starting
 			if full {
@@ -301,7 +304,7 @@ Exit codes & warnings:
 		},
 	}
 
-	cmd.Flags().StringSliceVar(&resources, "resources", nil, "Comma-separated resource types to sync")
+	cmd.Flags().StringSliceVar(&resources, "resources", nil, "Comma-separated resource types to sync (selecting items also syncs items-trash)")
 	cmd.Flags().BoolVar(&full, "full", false, "Full resync (ignore previous checkpoint)")
 	cmd.Flags().IntVar(&sinceVersion, "since", 0, "Only sync objects modified since this Zotero library version (0 = use stored checkpoint). Get versions from a prior sync or 'items list --since'.")
 	cmd.Flags().IntVar(&concurrency, "concurrency", 4, "Number of parallel sync workers")
@@ -1142,6 +1145,32 @@ func upsertSingleObject(db *store.Store, resource string, data json.RawMessage) 
 	default:
 		return db.Upsert(canonicalStoreResource(resource), id, data)
 	}
+}
+
+// normalizeSyncResources preserves the caller's resource order while removing
+// duplicate work. An items sync always includes the trash feed so the local
+// store can discover item deletions; a trash-only sync remains independent.
+func normalizeSyncResources(resources []string) []string {
+	normalized := make([]string, 0, len(resources)+1)
+	seen := make(map[string]struct{}, len(resources)+1)
+	hasItems := false
+
+	for _, resource := range resources {
+		if _, exists := seen[resource]; exists {
+			continue
+		}
+		seen[resource] = struct{}{}
+		normalized = append(normalized, resource)
+		hasItems = hasItems || resource == "items"
+	}
+
+	if hasItems {
+		if _, hasTrash := seen["items-trash"]; !hasTrash {
+			normalized = append(normalized, "items-trash")
+		}
+	}
+
+	return normalized
 }
 
 func defaultSyncResources() []string {

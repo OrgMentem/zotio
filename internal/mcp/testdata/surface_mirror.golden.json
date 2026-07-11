@@ -2198,7 +2198,7 @@
           "type": "number"
         },
         "resources": {
-          "description": "Comma-separated resource types to sync",
+          "description": "Comma-separated resource types to sync (selecting items also syncs items-trash)",
           "type": "string"
         },
         "since": {

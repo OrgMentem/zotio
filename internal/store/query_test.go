@@ -184,6 +184,100 @@ func TestQueryItems_QuickSearch(t *testing.T) {
 	}
 }
 
+func TestQueryTrash_DefaultOrderSupportsNestedAndFlatPayloads(t *testing.T) {
+	s := queryTestStore(t)
+	trash := []json.RawMessage{
+		json.RawMessage(`{"key":"NESTED_OLD","data":{"key":"NESTED_OLD","dateModified":"2026-07-01T10:00:00Z"}}`),
+		json.RawMessage(`{"key":"FLAT_NEW","dateModified":"2026-07-03T10:00:00Z"}`),
+		json.RawMessage(`{"key":"TIE_B","data":{"key":"TIE_B","dateModified":"2026-07-02T10:00:00Z"}}`),
+		json.RawMessage(`{"key":"TIE_A","dateModified":"2026-07-02T10:00:00Z"}`),
+	}
+	if _, _, err := s.UpsertBatch("items-trash", trash); err != nil {
+		t.Fatalf("seed trash: %v", err)
+	}
+	if _, _, err := s.UpsertBatch("items", []json.RawMessage{
+		json.RawMessage(`{"key":"LIVE_NEWER","data":{"key":"LIVE_NEWER","dateModified":"2026-07-04T10:00:00Z"}}`),
+	}); err != nil {
+		t.Fatalf("seed live item isolation sentinel: %v", err)
+	}
+
+	got, err := s.QueryTrash(TrashQuery{})
+	if err != nil {
+		t.Fatalf("QueryTrash: %v", err)
+	}
+	if keys := itemKeys(t, got); !equalItemKeys(keys, []string{"FLAT_NEW", "TIE_A", "TIE_B", "NESTED_OLD"}) {
+		t.Fatalf("trash keys = %v, want [FLAT_NEW TIE_A TIE_B NESTED_OLD]", keys)
+	}
+}
+
+func TestQueryTrash_AppliesOffsetAndLimitAfterDefaultOrder(t *testing.T) {
+	s := queryTestStore(t)
+	trash := []json.RawMessage{
+		json.RawMessage(`{"key":"A","data":{"key":"A","dateModified":"2026-07-01T10:00:00Z"}}`),
+		json.RawMessage(`{"key":"B","data":{"key":"B","dateModified":"2026-07-04T10:00:00Z"}}`),
+		json.RawMessage(`{"key":"C","data":{"key":"C","dateModified":"2026-07-03T10:00:00Z"}}`),
+		json.RawMessage(`{"key":"D","data":{"key":"D","dateModified":"2026-07-02T10:00:00Z"}}`),
+	}
+	if _, _, err := s.UpsertBatch("items-trash", trash); err != nil {
+		t.Fatalf("seed trash: %v", err)
+	}
+
+	got, err := s.QueryTrash(TrashQuery{Start: 1, Limit: 2})
+	if err != nil {
+		t.Fatalf("QueryTrash page: %v", err)
+	}
+	if keys := itemKeys(t, got); !equalItemKeys(keys, []string{"C", "D"}) {
+		t.Fatalf("trash page keys = %v, want [C D]", keys)
+	}
+}
+
+func TestQueryTrash_EmptyRegardlessOfSyncState(t *testing.T) {
+	t.Run("synced empty", func(t *testing.T) {
+		s := queryTestStore(t)
+		if err := s.SaveSyncState("items-trash", "", 0); err != nil {
+			t.Fatalf("save trash sync state: %v", err)
+		}
+		got, err := s.QueryTrash(TrashQuery{})
+		if err != nil {
+			t.Fatalf("QueryTrash synced empty: %v", err)
+		}
+		if len(got) != 0 {
+			t.Fatalf("QueryTrash synced empty returned %d rows, want 0", len(got))
+		}
+		_, syncedAt, _, err := s.GetSyncState("items-trash")
+		if err != nil || syncedAt.IsZero() {
+			t.Fatalf("items-trash sync state = %v, %v; want non-zero timestamp", syncedAt, err)
+		}
+	})
+
+	t.Run("unsynced empty", func(t *testing.T) {
+		s := queryTestStore(t)
+		got, err := s.QueryTrash(TrashQuery{})
+		if err != nil {
+			t.Fatalf("QueryTrash unsynced empty: %v", err)
+		}
+		if len(got) != 0 {
+			t.Fatalf("QueryTrash unsynced empty returned %d rows, want 0", len(got))
+		}
+		_, syncedAt, _, err := s.GetSyncState("items-trash")
+		if err != nil || !syncedAt.IsZero() {
+			t.Fatalf("items-trash sync state = %v, %v; want zero timestamp", syncedAt, err)
+		}
+	})
+}
+
+func equalItemKeys(got, want []string) bool {
+	if len(got) != len(want) {
+		return false
+	}
+	for i := range got {
+		if got[i] != want[i] {
+			return false
+		}
+	}
+	return true
+}
+
 func TestBuildSearchDocument(t *testing.T) {
 	doc := buildSearchDocument("items", json.RawMessage(`{"key":"K1","data":{"title":"Deep Learning","creators":[{"lastName":"LeCun"}],"tags":[{"tag":"ai"}],"abstractNote":"neural nets"}}`))
 	for _, want := range []string{"K1", "Deep Learning", "LeCun", "ai", "neural nets"} {
