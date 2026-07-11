@@ -1,0 +1,46 @@
+# Version-control metadata
+.git/
+.gitignore
+.gitattributes
+
+# Generated and packaged output
+/dist/
+/site/
+/build/
+
+# Local binaries, coverage, and temporary files
+/bin/
+/zotio
+/zotio-mcp
+/docs-gen
+/coverage.out
+/cover.out
+*.cover
+*.coverprofile
+*.test
+/tmp/
+/.tmp/
+*.tmp
+
+# Editor and OS metadata
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Local environment and credential material
+.env
+.env.*
+.envrc
+.direnv/
+.netrc
+.npmrc
+/config.toml
+/credentials.*
+/secrets.*
+*.pem
+*.key
+*.p12
+*.pfx

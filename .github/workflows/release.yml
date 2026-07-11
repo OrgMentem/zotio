@@ -6,13 +6,12 @@ on:
     tags:
       - 'v*'
 
-permissions:
-  contents: write
-  id-token: write
-
 jobs:
   release:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      id-token: write
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
         with:
@@ -49,18 +48,47 @@ jobs:
           HOMEBREW_TAP_GITHUB_TOKEN: ${{ secrets.HOMEBREW_TAP_GITHUB_TOKEN }}
           SCOOP_BUCKET_GITHUB_TOKEN: ${{ secrets.SCOOP_BUCKET_GITHUB_TOKEN }}
           WINGET_GITHUB_TOKEN: ${{ secrets.WINGET_GITHUB_TOKEN }}
-      # Publish the MCP server to the Official MCP Registry, which auto-feeds
-      # PulseMCP and Smithery. Runs after GoReleaser so dist/mcpb/*.mcpb exist;
-      # gen_server_json.py stamps the version and each bundle's real sha256, so
-      # the registry entry always matches the assets that just shipped.
-      # Auth is OIDC (no stored token): the workflow's id-token maps to the
-      # io.github.OrgMentem/* namespace because it runs in OrgMentem/zotio.
+
+  publish_registry:
+    name: Publish to Official MCP Registry
+    needs: release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+      # Download the release assets rather than passing unverified build output
+      # between jobs. This also makes "Re-run failed jobs" a safe recovery
+      # boundary when GitHub publication succeeds but registry publication fails.
+      - name: Download published MCPB assets
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          mkdir -p dist/mcpb
+          gh release download "$GITHUB_REF_NAME" \
+            --repo "$GITHUB_REPOSITORY" \
+            --pattern '*.mcpb' \
+            --dir dist/mcpb
+      # Auth is OIDC (no stored token): this workflow's identity proves control
+      # of OrgMentem/zotio and therefore the io.github.OrgMentem/* namespace.
       - name: Publish to MCP Registry
         run: |
           set -euo pipefail
           version="${GITHUB_REF_NAME#v}"
-          curl -fsSL "https://github.com/modelcontextprotocol/registry/releases/download/v1.7.9/mcp-publisher_linux_amd64.tar.gz" \
-            | tar -xz mcp-publisher
+          publisher_version="1.7.9"
+          publisher_sha256="ab128162b0616090b47cf245afe0a23f3ef08936fdce19074f5ba0a4469281ac"
+          publisher_archive="${RUNNER_TEMP}/mcp-publisher_linux_amd64.tar.gz"
+          publisher_dir="${RUNNER_TEMP}/mcp-publisher-${publisher_version}"
+
+          curl -fsSL \
+            "https://github.com/modelcontextprotocol/registry/releases/download/v${publisher_version}/mcp-publisher_linux_amd64.tar.gz" \
+            -o "$publisher_archive"
+          printf '%s  %s\n' "$publisher_sha256" "$publisher_archive" | sha256sum -c -
+          mkdir -p "$publisher_dir"
+          tar -xzf "$publisher_archive" -C "$publisher_dir" mcp-publisher
+
           python3 scripts/gen_server_json.py "$version"
-          ./mcp-publisher login github-oidc
-          ./mcp-publisher publish server.json
+          "$publisher_dir/mcp-publisher" login github-oidc
+          "$publisher_dir/mcp-publisher" publish server.json
