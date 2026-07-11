@@ -4,8 +4,6 @@ package cli
 
 import (
 	"encoding/json"
-	"fmt"
-	"strings"
 
 	"github.com/spf13/cobra"
 )
@@ -64,10 +62,9 @@ func newItemsCollectionsOfCmd(flags *rootFlags) *cobra.Command {
 }
 
 func printItemCollectionsTable(cmd *cobra.Command, rows []itemCollectionRow) error {
-	tw := newTabWriter(cmd.OutOrStdout())
-	fmt.Fprintln(tw, strings.Join([]string{bold("KEY"), bold("NAME")}, "\t"))
+	tableRows := make([][]string, 0, len(rows))
 	for _, row := range rows {
-		fmt.Fprintf(tw, "%s\t%s\n", row.Key, sanitizeForTerminal(row.Name))
+		tableRows = append(tableRows, []string{row.Key, sanitizeForTerminal(row.Name)})
 	}
-	return tw.Flush()
+	return renderColumns(cmd.OutOrStdout(), []string{"key", "name"}, tableRows)
 }

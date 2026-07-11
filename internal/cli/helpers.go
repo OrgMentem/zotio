@@ -29,7 +29,8 @@ var As = errors.As
 // noColor is set by the --no-color flag
 var noColor bool
 
-// humanFriendly is set by the --human-friendly flag; colors are off by default (agent-safe)
+// humanFriendly is set by the --human-friendly flag; it forces colored output
+// on even when stdout is not a terminal (e.g. when piping into a renderer).
 var humanFriendly bool
 
 // activeGroupID holds the numeric Zotero group ID selected via --group, or ""
@@ -37,11 +38,13 @@ var humanFriendly bool
 // on-disk DB file to a group library.
 var activeGroupID string
 
+// colorEnabled reports whether output should carry ANSI styling.
+// Kill switches (--no-color, NO_COLOR, TERM=dumb) always win; --human-friendly
+// forces color on; otherwise color follows terminal auto-detection. Piped
+// output already switches to JSON via wantsHumanTable, so agents never see
+// styled tables unless they allocate a pty on purpose.
 func colorEnabled() bool {
 	if noColor {
-		return false
-	}
-	if !humanFriendly {
 		return false
 	}
 	if os.Getenv("NO_COLOR") != "" {
@@ -49,6 +52,9 @@ func colorEnabled() bool {
 	}
 	if os.Getenv("TERM") == "dumb" {
 		return false
+	}
+	if humanFriendly {
+		return true
 	}
 	return isTerminal(os.Stdout)
 }
@@ -90,6 +96,20 @@ func yellow(s string) string {
 		return s
 	}
 	return "\033[33m" + s + "\033[0m"
+}
+
+func dim(s string) string {
+	if !colorEnabled() {
+		return s
+	}
+	return "\033[2m" + s + "\033[0m"
+}
+
+func cyan(s string) string {
+	if !colorEnabled() {
+		return s
+	}
+	return "\033[36m" + s + "\033[0m"
 }
 
 type cliError struct {
@@ -358,16 +378,6 @@ func classifyDeleteError(err error, flags *rootFlags) error {
 	return classifyAPIError(err, flags)
 }
 
-func truncate(s string, max int) string {
-	if len(s) <= max {
-		return s
-	}
-	if max <= 3 {
-		return s[:max]
-	}
-	return s[:max-3] + "..."
-}
-
 func sanitizeForTerminal(s string) string {
 	for i := range len(s) {
 		b := s[i]
@@ -390,6 +400,10 @@ func sanitizeForTerminal(s string) string {
 	return s
 }
 
+// newTabWriter returns a tabwriter for plain (unstyled) tab-separated output.
+// NEVER feed it cells containing ANSI codes or East Asian wide runes — it
+// counts bytes, so styled cells skew every column. Styled or wide-rune tables
+// go through renderColumns (render.go) instead.
 func newTabWriter(w io.Writer) *tabwriter.Writer {
 	return tabwriter.NewWriter(w, 2, 4, 2, ' ', 0)
 }
@@ -935,18 +949,8 @@ func printAutoTable(w io.Writer, items []map[string]any) error {
 		rows = append(rows, row)
 	}
 
-	// Print with tab alignment using tabwriter
-	tw := newTabWriter(w)
-	upperHeaders := make([]string, len(headers))
-	for i, h := range headers {
-		upperHeaders[i] = bold(strings.ToUpper(h))
-	}
-
-	fmt.Fprintln(tw, strings.Join(upperHeaders, "\t"))
-	for _, row := range rows {
-		fmt.Fprintln(tw, strings.Join(row, "\t"))
-	}
-	return tw.Flush()
+	// Aligned by display width (ANSI- and wide-rune-aware); see render.go.
+	return renderColumns(w, headers, rows)
 }
 
 func flattenResourceEnvelopesForTable(items []map[string]any) []map[string]any {
@@ -1017,13 +1021,11 @@ func prioritizeFields(item map[string]any, includeComplex bool) []string {
 	numTiers := 5
 
 	type scored struct {
-		name  string
-		tier  int
-		index int
+		name string
+		tier int
 	}
 
 	var all []scored
-	idx := 0
 	for k, v := range item {
 		if !includeComplex {
 			switch v.(type) {
@@ -1066,15 +1068,16 @@ func prioritizeFields(item map[string]any, includeComplex bool) []string {
 		if _, ok := v.(bool); ok && tier >= numTiers {
 			tier = numTiers + 1
 		}
-		all = append(all, scored{name: k, tier: tier, index: idx})
-		idx++
+		all = append(all, scored{name: k, tier: tier})
 	}
 
 	sort.Slice(all, func(i, j int) bool {
 		if all[i].tier != all[j].tier {
 			return all[i].tier < all[j].tier
 		}
-		return all[i].index < all[j].index
+		// Alphabetical within a tier: the source is map iteration, so the
+		// insertion index is random per run — names keep output stable.
+		return all[i].name < all[j].name
 	})
 
 	headers := make([]string, len(all))
@@ -1117,11 +1120,12 @@ func splitCamelCase(s string) []string {
 func printAutoCards(w io.Writer, items []map[string]any) error {
 	headers := prioritizeAllHeaders(items[0])
 
-	// Find the longest header for alignment (from fields we'll actually show)
+	// Longest label ("header:") among the fields shown in card bodies,
+	// so every value starts at the same column.
 	maxLen := 0
 	for _, h := range headers {
-		if len(h) > maxLen {
-			maxLen = len(h)
+		if l := len(h) + 1; l > maxLen {
+			maxLen = l
 		}
 	}
 
@@ -1130,18 +1134,16 @@ func printAutoCards(w io.Writer, items []map[string]any) error {
 			fmt.Fprintln(w)
 		}
 
-		// Card header: use first priority field as the card title
+		// Card header: identity label + key recede, the human-readable
+		// second field (usually the title) is the anchor.
 		titleVal := formatCellValue(item[headers[0]])
+		head := bold(strings.ToUpper(headers[0])) + " " + titleVal
 		if len(headers) > 1 {
-			secondVal := formatCellValue(item[headers[1]])
-			if secondVal != "" {
-				fmt.Fprintf(w, "%s %s — %s\n", bold(strings.ToUpper(headers[0])), titleVal, secondVal)
-			} else {
-				fmt.Fprintf(w, "%s %s\n", bold(strings.ToUpper(headers[0])), titleVal)
+			if secondVal := formatCellValue(item[headers[1]]); secondVal != "" {
+				head += dim(" — ") + bold(secondVal)
 			}
-		} else {
-			fmt.Fprintf(w, "%s %s\n", bold(strings.ToUpper(headers[0])), titleVal)
 		}
+		fmt.Fprintln(w, head)
 
 		// Remaining fields indented — skip empty, zero, and false values
 		for _, h := range headers[2:] {
@@ -1149,11 +1151,13 @@ func printAutoCards(w io.Writer, items []map[string]any) error {
 			if v == "" || v == "false" || v == "0" || v == "[]" || v == "null" {
 				continue
 			}
+			label := dim(padRight(h+":", maxLen))
+			v = columnStyle(h)(v)
 			// Multi-line values (nested arrays) start with \n
 			if strings.HasPrefix(v, "\n") {
-				fmt.Fprintf(w, "  %s:%s\n", h, v)
+				fmt.Fprintf(w, "  %s%s\n", dim(h+":"), strings.ReplaceAll(v, "\n", "\n    "))
 			} else {
-				fmt.Fprintf(w, "  %-*s  %s\n", maxLen, h+":", v)
+				fmt.Fprintf(w, "  %s  %s\n", label, v)
 			}
 		}
 	}
@@ -1224,58 +1228,35 @@ func formatObjectArray(items []any) string {
 	return "\n" + strings.Join(lines, "\n")
 }
 
-// formatObjectSummary extracts the most useful fields from an object into a one-line summary.
-// Looks for: qty/count → name/title → size → price, in that order.
+// formatObjectSummary renders one nested object as a one-line summary using
+// the shapes that actually occur in Zotero payloads: tags ({tag, type}),
+// creators ({creatorType, firstName, lastName} or {creatorType, name}), and
+// generic named objects. Unknown shapes fall back to compact JSON.
 func formatObjectSummary(obj map[string]any) string {
-	var parts []string
-
-	// Quantity
-	qty := findField(obj, "qty", "count", "quantity")
-	if qty != "" && qty != "1" && qty != "0" {
-		parts = append(parts, qty+"x")
-	} else if qty == "1" {
-		parts = append(parts, "1x")
+	// Tag: {"tag": "/unread", "type": 1}
+	if tag := findField(obj, "tag"); tag != "" {
+		return tag
 	}
 
-	// Name — check nested objects too (e.g., Side1.Name)
-	name := findField(obj, "name", "title", "label", "description")
+	// Creator: {"creatorType": "author", "firstName": "…", "lastName": "…"}
+	first := findField(obj, "firstName")
+	last := findField(obj, "lastName")
+	name := strings.TrimSpace(strings.TrimSpace(first) + " " + strings.TrimSpace(last))
 	if name == "" {
-		// Check nested objects for name
-		for _, key := range []string{"Side1", "side1", "Item", "item", "Product", "product"} {
-			if nested, ok := obj[key].(map[string]any); ok {
-				name = findField(nested, "name", "title", "label")
-				if name != "" {
-					break
-				}
-			}
-		}
+		name = findField(obj, "name", "title", "label", "description")
 	}
 	if name != "" {
-		parts = append(parts, name)
+		// Annotate non-author roles (editor, translator, …); "author" is the
+		// overwhelming default and would only add noise.
+		if role := findField(obj, "creatorType"); role != "" && role != "author" {
+			return name + " (" + role + ")"
+		}
+		return name
 	}
 
-	// Size
-	size := findField(obj, "sizename", "size_name")
-	if size == "" {
-		size = findField(obj, "catname", "cat_name", "category")
-	}
-	if size != "" {
-		parts = append(parts, "—")
-		parts = append(parts, size)
-	}
-
-	// Price
-	price := findField(obj, "extprice", "price", "amount", "total")
-	if price != "" && price != "0" {
-		parts = append(parts, fmt.Sprintf("($%s)", price))
-	}
-
-	if len(parts) == 0 {
-		// Fallback: JSON summary
-		b, _ := json.Marshal(obj)
-		return truncate(string(b), 80)
-	}
-	return "    " + strings.Join(parts, " ")
+	// Fallback: compact JSON summary
+	b, _ := json.Marshal(obj)
+	return truncate(string(b), 80)
 }
 
 // formatSingleObject renders a single object by its most descriptive fields.
