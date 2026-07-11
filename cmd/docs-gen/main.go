@@ -303,7 +303,7 @@ func renderMCPTools(path string) ([]byte, error) {
 	if d := strings.TrimSpace(m.Description); d != "" {
 		fmt.Fprintf(b, "%s\n\n", d)
 	}
-	b.WriteString("The MCP surface contains three framework tools (`context`, `search`, `sql`) plus the command-orchestration facade (`command_search` / `command_run`) by default. Set `ZOTIO_MCP_SURFACE=mirror` to expose the same CLI tree as one lean tool per command. See [the MCP server guide](../guide/mcp-server.md).\n\n")
+	b.WriteString("The MCP surface contains three framework tools (`context`, `search`, `sql`) plus the command-orchestration facade (`command_search` / `command_run`) by default. Set `ZOTIO_MCP_SURFACE=mirror` to expose each MCP-eligible CLI command as one lean tool. Commands annotated `mcp:hidden` remain CLI-only. See [the MCP server guide](../guide/mcp-server.md).\n\n")
 	if m.Auth.Type != "" {
 		fmt.Fprintf(b, "**Auth:** `%s`", m.Auth.Type)
 		if m.Auth.Header != "" {

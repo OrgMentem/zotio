@@ -10,7 +10,7 @@ The rationale and trade-offs are summarized in [Architecture decisions › MCP c
 
 ### Switching surfaces
 
-Set `ZOTIO_MCP_SURFACE=mirror` to expose the CLI tree as one lean MCP tool per command (global flags stripped). The retired spec-derived typed endpoint tools (`collections_*`, `items_*`, `schema_*`, `tags_*`, …) are no longer part of either surface; use `command_run` or the mirror for those workflows.
+Set `ZOTIO_MCP_SURFACE=mirror` to expose each MCP-eligible CLI command as one lean tool (global flags stripped). Commands annotated `mcp:hidden`, including the arbitrary-argument local-file `workflow run` runner, remain CLI-only. The retired spec-derived typed endpoint tools (`collections_*`, `items_*`, `schema_*`, `tags_*`, …) are no longer part of either surface; use `command_run` or the mirror for those workflows.
 
 ## Context resources
 

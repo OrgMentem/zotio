@@ -3,10 +3,12 @@
 package config
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestSaveCredentialPersistsAPIKeyWhereAuthHeaderReadsAndScrubsConfigFile(t *testing.T) {
@@ -78,5 +80,59 @@ func TestSaveScrubsLegacyCredentialsWhenConfigRelocates(t *testing.T) {
 	}
 	if !strings.Contains(string(data), "base_url") {
 		t.Fatalf("legacy scrub removed non-credential config data:\n%s", data)
+	}
+}
+
+func TestConfigJSONOmitsCredentialBearingFields(t *testing.T) {
+	cfg := &Config{
+		BaseURL:       "https://api.example.test/users/1",
+		AuthHeaderVal: "legacy-auth-secret",
+		Headers:       map[string]string{"Authorization": "header-secret"},
+		AccessToken:   "access-secret",
+		RefreshToken:  "refresh-secret",
+		TokenExpiry:   time.Unix(1_700_000_000, 0).UTC(),
+		ClientID:      "client-identifier",
+		ClientSecret:  "client-secret",
+		ZoteroApiKey:  "zotero-api-secret",
+	}
+
+	data, err := json.Marshal(cfg)
+	if err != nil {
+		t.Fatalf("json.Marshal: %v", err)
+	}
+
+	var got map[string]any
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatalf("json.Unmarshal: %v", err)
+	}
+	for _, field := range []string{
+		"AuthHeaderVal",
+		"Headers",
+		"AccessToken",
+		"RefreshToken",
+		"TokenExpiry",
+		"ClientID",
+		"ClientSecret",
+		"ZoteroApiKey",
+	} {
+		if _, ok := got[field]; ok {
+			t.Errorf("json output contains credential-bearing field %q: %s", field, data)
+		}
+	}
+	for _, secret := range []string{
+		"legacy-auth-secret",
+		"header-secret",
+		"access-secret",
+		"refresh-secret",
+		"client-identifier",
+		"client-secret",
+		"zotero-api-secret",
+	} {
+		if strings.Contains(string(data), secret) {
+			t.Errorf("json output contains credential-bearing value %q: %s", secret, data)
+		}
+	}
+	if got["BaseURL"] != cfg.BaseURL {
+		t.Errorf("json output BaseURL = %#v, want %q", got["BaseURL"], cfg.BaseURL)
 	}
 }

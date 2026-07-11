@@ -145,3 +145,4 @@ Two coordinated changes, plus a runtime switch:
 - **2026-07-08:** `PP_MCP_SURFACE` was renamed to `ZOTIO_MCP_SURFACE` as part of retiring the CLI Printing Press generator; the old name was dropped outright the same day (pre-adoption, no fallback kept).
 - **2026-07-08:** The generator was retired; this ADR is the carry-forward record for the local MCP surface decision.
 - **2026-07-10:** ADR-0003 retired the 28 spec-derived typed MCP endpoint tools; the current MCP surface is framework tools plus the facade/mirror CLI command surface.
+- **2026-07-11:** `workflow run` became CLI-only via `mcp:hidden`. Its file format contains raw nested CLI argument vectors, so exposing it through `command_run` let those nested commands bypass the facade's per-command safe-flag allowlist. `workflow archive` and `workflow status` remain MCP-visible; any future agent-submittable workflow surface needs a dedicated validated schema rather than arbitrary CLI arguments.

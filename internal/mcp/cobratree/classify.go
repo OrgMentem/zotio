@@ -42,11 +42,13 @@ const (
 //
 // Commands that DO have agent value — `sync` (populates the store that `sql`
 // and `search` query), `stale`/`orphans`/`reconcile`/`load` (store
-// diagnostics), `export`/`import` (data movement), `workflow`
-// (compound operations), `analytics` (aggregations) — must NOT be in this
-// list. Excluding `sync` while exposing `sql` is a broken contract because
-// the typed `sql` tool returns empty results until something populates the
-// store. See AGENTS.md "Agent-Native Surface" for the principle.
+// diagnostics), `export`/`import` (data movement), safe `workflow`
+// subcommands (compound operations), `analytics` (aggregations) — must NOT be
+// in this list. The arbitrary-argument local-file `workflow run` command is
+// separately annotated `mcp:hidden`.
+// Excluding `sync` while exposing `sql` is a broken contract because the typed
+// `sql` tool returns empty results until something populates the store. See
+// AGENTS.md "Agent-Native Surface" for the principle.
 //
 // Adding a new generator-emitted command means deciding which of the two
 // cases above applies. When in doubt, leave it out — the walker registers

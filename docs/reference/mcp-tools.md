@@ -3,7 +3,7 @@
 
 Zotero reference manager CLI — every library feature in the terminal, plus offline search, annotation export, and library analytics
 
-The MCP surface contains three framework tools (`context`, `search`, `sql`) plus the command-orchestration facade (`command_search` / `command_run`) by default. Set `ZOTIO_MCP_SURFACE=mirror` to expose the same CLI tree as one lean tool per command. See [the MCP server guide](../guide/mcp-server.md).
+The MCP surface contains three framework tools (`context`, `search`, `sql`) plus the command-orchestration facade (`command_search` / `command_run`) by default. Set `ZOTIO_MCP_SURFACE=mirror` to expose each MCP-eligible CLI command as one lean tool. Commands annotated `mcp:hidden` remain CLI-only. See [the MCP server guide](../guide/mcp-server.md).
 
 **Auth:** `api_key` (header `Zotero-API-Key`)
 

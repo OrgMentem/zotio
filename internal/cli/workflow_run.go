@@ -44,7 +44,11 @@ func newWorkflowRunCmd(flags *rootFlags) *cobra.Command {
 		Use:   "run <file.json>",
 		Short: "Run a declarative workflow spec in-process",
 		Args:  cobra.ExactArgs(1),
+		// Workflow specs can execute arbitrary CLI argument vectors. Keep this
+		// local-file runner off the MCP command surface rather than bypassing its
+		// per-command flag allowlist.
 		Annotations: map[string]string{
+			"mcp:hidden":                       "true",
 			"mcp:read-only":                    "false",
 			"zotio:destructive":                "false",
 			"zotio:supports-dry-run":           "true",

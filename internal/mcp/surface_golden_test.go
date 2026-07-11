@@ -101,6 +101,45 @@ func TestMCPSurfaceGolden(t *testing.T) {
 	}
 }
 
+func TestMCPFacadeRejectsWorkflowRun(t *testing.T) {
+	t.Setenv("ZOTIO_MCP_SURFACE", "")
+	s := server.NewMCPServer(
+		"Zotero",
+		cli.Version(),
+		server.WithToolCapabilities(false),
+		server.WithResourceCapabilities(false, true),
+		server.WithPromptCapabilities(true),
+	)
+	RegisterTools(s)
+	rpc(t, s, "initialize", map[string]any{
+		"protocolVersion": "2025-06-18",
+		"capabilities":    map[string]any{},
+		"clientInfo": map[string]any{
+			"name":    "zotio-workflow-surface-test",
+			"version": "0.0.0",
+		},
+	})
+
+	result := rpc(t, s, "tools/call", map[string]any{
+		"name": "command_run",
+		"arguments": map[string]any{
+			"name": "workflow run",
+			"args": "/tmp/workflow.json",
+		},
+	})
+	if isError, _ := result["isError"].(bool); !isError {
+		t.Fatalf("command_run workflow run result = %#v, want an MCP tool error", result)
+	}
+	content, ok := result["content"].([]any)
+	if !ok || len(content) != 1 {
+		t.Fatalf("command_run workflow run content = %#v, want one error message", result["content"])
+	}
+	message, ok := content[0].(map[string]any)["text"].(string)
+	if !ok || !strings.Contains(message, "mirrorable command not found: workflow run") {
+		t.Fatalf("command_run workflow run message = %q, want mirrorability rejection", message)
+	}
+}
+
 func collectSurfaceTools(t *testing.T, s *server.MCPServer) []goldenSurfaceTool {
 	t.Helper()
 
@@ -179,6 +218,9 @@ func assertMirrorSurface(t *testing.T, tools []goldenSurfaceTool) {
 	}
 	if set["command_run"] {
 		t.Fatalf("mirror surface unexpectedly contains command_run")
+	}
+	if set["workflow_run"] {
+		t.Fatal("mirror surface unexpectedly exposes the arbitrary-argument workflow runner")
 	}
 	for _, want := range []string{"context", "search", "sql"} {
 		if !set[want] {

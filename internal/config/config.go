@@ -15,9 +15,11 @@ import (
 )
 
 type Config struct {
-	BaseURL            string            `toml:"base_url"`
-	AuthHeaderVal      string            `toml:"auth_header"`
-	Headers            map[string]string `toml:"headers,omitempty"`
+	BaseURL string `toml:"base_url"`
+	// Credential-bearing values and arbitrary request headers must fail closed
+	// if a caller serializes the live config with encoding/json.
+	AuthHeaderVal      string            `toml:"auth_header" json:"-"`
+	Headers            map[string]string `toml:"headers,omitempty" json:"-"`
 	AuthSource         string            `toml:"-"`
 	CredentialSource   string            `toml:"-"`
 	AgentcookieManaged bool              `toml:"-"`
@@ -30,15 +32,15 @@ type Config struct {
 	// back to it. Used by save() to scrub credential fields from the
 	// old location after relocation. Unexported: never persisted.
 	legacySourcePath string
-	AccessToken      string          `toml:"access_token"`
-	RefreshToken     string          `toml:"refresh_token"`
-	TokenExpiry      time.Time       `toml:"token_expiry"`
-	ClientID         string          `toml:"client_id"`
-	ClientSecret     string          `toml:"client_secret"`
+	AccessToken      string          `toml:"access_token" json:"-"`
+	RefreshToken     string          `toml:"refresh_token" json:"-"`
+	TokenExpiry      time.Time       `toml:"token_expiry" json:"-"`
+	ClientID         string          `toml:"client_id" json:"-"`
+	ClientSecret     string          `toml:"client_secret" json:"-"`
 	Path             string          `toml:"-"`
 	envOverrides     map[string]bool `toml:"-"`
 	fileConfig       *Config         `toml:"-"`
-	ZoteroApiKey     string          `toml:"api_key"`
+	ZoteroApiKey     string          `toml:"api_key" json:"-"`
 	UserID           string          `toml:"user_id,omitempty"`
 	// vault sync defaults so `vault sync` can resolve its
 	// output directory and format without --out on every run. Pointer +
