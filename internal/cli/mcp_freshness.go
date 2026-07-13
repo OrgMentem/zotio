@@ -9,8 +9,8 @@ import (
 )
 
 // FreshnessJSON returns per-resource local sync freshness for MCP consumers.
-func FreshnessJSON() ([]byte, error) {
-	db, err := openStoreForRead(context.Background(), "zotio")
+func FreshnessJSON(ctx context.Context) ([]byte, error) {
+	db, err := openStoreForRead(ctx, "zotio")
 	if err != nil {
 		return nil, err
 	}
@@ -20,7 +20,7 @@ func FreshnessJSON() ([]byte, error) {
 	defer db.Close()
 
 	qs := localQueryStore{db}
-	rows, err := qs.QueryRaw("SELECT resource_type FROM sync_state ORDER BY resource_type")
+	rows, err := qs.QueryRawContext(ctx, "SELECT resource_type FROM sync_state ORDER BY resource_type")
 	if err != nil {
 		return nil, err
 	}

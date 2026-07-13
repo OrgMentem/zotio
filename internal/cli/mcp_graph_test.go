@@ -5,6 +5,7 @@ package cli
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"path/filepath"
 	"testing"
 
@@ -53,7 +54,7 @@ type graphContextTestPayload struct {
 func TestMCPGraphExports(t *testing.T) {
 	seedMCPGraphStore(t)
 
-	treeJSON, err := CollectionTreeJSON("COLL1")
+	treeJSON, err := CollectionTreeJSON(context.Background(), "COLL1")
 	if err != nil {
 		t.Fatalf("CollectionTreeJSON: %v", err)
 	}
@@ -68,7 +69,7 @@ func TestMCPGraphExports(t *testing.T) {
 		t.Fatalf("collection children = %#v, want nested COLL2", tree.Subcollections)
 	}
 
-	childrenJSON, err := ItemChildrenJSON("P1")
+	childrenJSON, err := ItemChildrenJSON(context.Background(), "P1")
 	if err != nil {
 		t.Fatalf("ItemChildrenJSON: %v", err)
 	}
@@ -80,7 +81,7 @@ func TestMCPGraphExports(t *testing.T) {
 		t.Fatalf("item children = %#v, want A1 attachment", children.Children)
 	}
 
-	attachmentsJSON, err := ItemAttachmentsJSON("P1")
+	attachmentsJSON, err := ItemAttachmentsJSON(context.Background(), "P1")
 	if err != nil {
 		t.Fatalf("ItemAttachmentsJSON: %v", err)
 	}
@@ -92,7 +93,7 @@ func TestMCPGraphExports(t *testing.T) {
 		t.Fatalf("item attachments = %#v, want A1 application/pdf", attachments.Attachments)
 	}
 
-	contextJSON, err := ItemContextJSON("P1")
+	contextJSON, err := ItemContextJSON(context.Background(), "P1")
 	if err != nil {
 		t.Fatalf("ItemContextJSON: %v", err)
 	}
@@ -105,6 +106,17 @@ func TestMCPGraphExports(t *testing.T) {
 	}
 	if itemContext.AttachmentCount < 1 {
 		t.Fatalf("attachment_count = %d, want >= 1", itemContext.AttachmentCount)
+	}
+}
+
+func TestMCPGraphExportHonorsCanceledContext(t *testing.T) {
+	seedMCPGraphStore(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	_, err := CollectionTreeJSON(ctx, "COLL1")
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("CollectionTreeJSON error = %v, want context.Canceled", err)
 	}
 }
 

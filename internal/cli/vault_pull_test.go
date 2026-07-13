@@ -8,21 +8,45 @@ import (
 	"testing"
 )
 
-// TestRenderPullRoundTrip is the core guarantee: content this CLI pushes survives
-// a pull byte-for-byte (verbatim renderer + conservative HTML->text reverse).
-func TestRenderPullRoundTrip(t *testing.T) {
-	cases := []string{
-		"First line one\nline two\n\nSecond **bold** [[wiki]] <x> & y",
-		"single paragraph",
-		"a & b < c > d \"quoted\" 'apos'",
-		"- not a list, just text\n- still text\n\n| table | row |",
+// TestRenderPullRoundTripPreservesTextSafely pins the renderer's contract:
+// source text remains readable after a pull, while text that looks like HTML
+// remains inert in the resulting Markdown.
+func TestRenderPullRoundTripPreservesTextSafely(t *testing.T) {
+	cases := []struct {
+		md   string
+		want string
+	}{
+		{
+			md:   "First line one\nline two\n\nSecond **bold** [[wiki]] <x> & y",
+			want: "First line one\nline two\n\nSecond **bold** [[wiki]] &lt;x&gt; &amp; y",
+		},
+		{md: "single paragraph", want: "single paragraph"},
+		{md: "a & b < c > d \"quoted\" 'apos'", want: "a &amp; b &lt; c &gt; d \"quoted\" 'apos'"},
+		{md: "- not a list, just text\n- still text\n\n| table | row |", want: "- not a list, just text\n- still text\n\n| table | row |"},
 	}
-	for _, md := range cases {
-		htmlOut := markdownToNoteHTML("smith2024", md)
-		got := htmlNoteToMarkdown(htmlOut)
-		if got != md {
-			t.Errorf("round-trip mismatch:\n in  %q\n got %q", md, got)
+	for _, tc := range cases {
+		got := htmlNoteToMarkdown(markdownToNoteHTML("smith2024", tc.md))
+		if got != tc.want {
+			t.Errorf("round-trip mismatch:\n in   %q\n got  %q\n want %q", tc.md, got, tc.want)
 		}
+	}
+}
+
+func TestHTMLNoteToMarkdownEscapesDecodedRemoteMarkup(t *testing.T) {
+	noteHTML := "<h1>Obsidian notes — paper</h1>" +
+		"<p>&lt;script&gt;alert(1)&lt;/script&gt;</p>" +
+		"<p>&lt;img src=x onerror=alert(1)&gt;</p>" +
+		"<p>&amp;lt;iframe src=evil&amp;gt;</p>"
+
+	got := htmlNoteToMarkdown(noteHTML)
+	want := "&lt;script&gt;alert(1)&lt;/script&gt;\n\n" +
+		"&lt;img src=x onerror=alert(1)&gt;\n\n" +
+		"&amp;lt;iframe src=evil&amp;gt;"
+	if got != want {
+		t.Fatalf("htmlNoteToMarkdown() = %q, want %q", got, want)
+	}
+	if strings.Contains(got, "<") {
+		t.Fatalf("htmlNoteToMarkdown emitted raw markup: %q", got)
 	}
 }
 

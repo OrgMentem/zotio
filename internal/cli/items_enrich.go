@@ -909,7 +909,7 @@ func writePDFResponse(body io.Reader, destPath string, maxBytes int64) error {
 	if maxBytes < 5 {
 		return fmt.Errorf("PDF size cap must be at least 5 bytes")
 	}
-	f, err := os.OpenFile(destPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
+	f, err := os.OpenFile(destPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
 	if err != nil {
 		if errors.Is(err, os.ErrExist) {
 			return fmt.Errorf("refusing to clobber existing file %s", destPath)

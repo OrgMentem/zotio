@@ -92,7 +92,7 @@ func TestItemsRelatedJSONReportsOutgoingExternalAndIncomingEdges(t *testing.T) {
 		t.Fatalf("incoming source summary = title %q type %q, want Source Paper/journalArticle", incoming.Title, incoming.ItemType)
 	}
 
-	mcpJSON, err := ItemRelatedJSON("K1")
+	mcpJSON, err := ItemRelatedJSON(context.Background(), "K1")
 	if err != nil {
 		t.Fatalf("ItemRelatedJSON: %v", err)
 	}
@@ -185,7 +185,7 @@ func TestItemsRelatedNotFoundJSONUsesGraphConvention(t *testing.T) {
 		t.Fatalf("not-found payload = %#v, want error=not found key=MISSING", got)
 	}
 
-	mcpJSON, err := ItemRelatedJSON("MISSING")
+	mcpJSON, err := ItemRelatedJSON(context.Background(), "MISSING")
 	if err != nil {
 		t.Fatalf("ItemRelatedJSON missing: %v", err)
 	}

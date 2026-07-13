@@ -11,8 +11,8 @@ import (
 
 // HealthJSON runs the local library-health report for scopeExpr and returns its
 // indented JSON form for MCP callers.
-func HealthJSON(scopeExpr string) ([]byte, error) {
-	db, err := openStoreForRead(context.Background(), "zotio")
+func HealthJSON(ctx context.Context, scopeExpr string) ([]byte, error) {
+	db, err := openStoreForRead(ctx, "zotio")
 	if err != nil {
 		return nil, err
 	}
@@ -50,13 +50,13 @@ func HealthJSON(scopeExpr string) ([]byte, error) {
 		v := lastSynced
 		syncedAt = &v
 	}
-	ctx := &healthContext{
+	healthCtx := &healthContext{
 		src:    FindingSource{Kind: "local", SyncedAt: syncedAt},
 		preset: "all",
 		limit:  0,
 	}
 
-	report, err := assembleHealthReport(qs, ctx, "all", healthPresets["all"], "", scope)
+	report, err := assembleHealthReport(qs, healthCtx, "all", healthPresets["all"], "", scope)
 	if err != nil {
 		return nil, err
 	}

@@ -205,6 +205,7 @@ func TestDownloadEnrichPDFWritesMagicPDF(t *testing.T) {
 	if string(got) != "%PDF-1.7\nbody" {
 		t.Fatalf("downloaded body = %q", got)
 	}
+	assertFileMode(t, dest, 0o600)
 }
 
 func TestDownloadEnrichPDFRejectsNonPDFBody(t *testing.T) {

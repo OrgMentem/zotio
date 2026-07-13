@@ -150,8 +150,8 @@ func RegisterResources(s *server.MCPServer) {
 		mcplib.NewResource("zotero://freshness", "Local freshness",
 			mcplib.WithResourceDescription("Per-resource sync ages of the local store (age_seconds + human age) so agents know whether a read is fresh enough to trust or act on."),
 			mcplib.WithMIMEType("application/json")),
-		func(_ context.Context, req mcplib.ReadResourceRequest) ([]mcplib.ResourceContents, error) {
-			data, err := cli.FreshnessJSON()
+		func(ctx context.Context, req mcplib.ReadResourceRequest) ([]mcplib.ResourceContents, error) {
+			data, err := cli.FreshnessJSON(ctx)
 			if err != nil {
 				return nil, err
 			}
@@ -163,8 +163,8 @@ func RegisterResources(s *server.MCPServer) {
 	s.AddResourceTemplate(
 		mcplib.NewResourceTemplate("zotero://health/{scope}", "Library health report",
 			mcplib.WithTemplateDescription("Ranked library-health findings (all checks) for a scope: 'library', 'collection:KEY', 'tag:NAME', 'query:TEXT', or 'item:KEY'.")),
-		func(_ context.Context, req mcplib.ReadResourceRequest) ([]mcplib.ResourceContents, error) {
-			data, err := cli.HealthJSON(templateKey(req.Params.URI, "zotero://health/"))
+		func(ctx context.Context, req mcplib.ReadResourceRequest) ([]mcplib.ResourceContents, error) {
+			data, err := cli.HealthJSON(ctx, templateKey(req.Params.URI, "zotero://health/"))
 			if err != nil {
 				return nil, err
 			}
@@ -176,9 +176,9 @@ func RegisterResources(s *server.MCPServer) {
 	s.AddResourceTemplate(
 		mcplib.NewResourceTemplate("zotero://collections/{key}/tree", "Collection tree",
 			mcplib.WithTemplateDescription("A collection and its nested subcollections from the local store (bounded depth/node count).")),
-		func(_ context.Context, req mcplib.ReadResourceRequest) ([]mcplib.ResourceContents, error) {
+		func(ctx context.Context, req mcplib.ReadResourceRequest) ([]mcplib.ResourceContents, error) {
 			key := strings.TrimSuffix(strings.TrimPrefix(req.Params.URI, "zotero://collections/"), "/tree")
-			data, err := cli.CollectionTreeJSON(key)
+			data, err := cli.CollectionTreeJSON(ctx, key)
 			if err != nil {
 				return nil, err
 			}
@@ -188,9 +188,9 @@ func RegisterResources(s *server.MCPServer) {
 	s.AddResourceTemplate(
 		mcplib.NewResourceTemplate("zotero://items/{key}/children", "Item children",
 			mcplib.WithTemplateDescription("An item's child items (notes and attachments) from the local store (bounded).")),
-		func(_ context.Context, req mcplib.ReadResourceRequest) ([]mcplib.ResourceContents, error) {
+		func(ctx context.Context, req mcplib.ReadResourceRequest) ([]mcplib.ResourceContents, error) {
 			key := strings.TrimSuffix(strings.TrimPrefix(req.Params.URI, "zotero://items/"), "/children")
-			data, err := cli.ItemChildrenJSON(key)
+			data, err := cli.ItemChildrenJSON(ctx, key)
 			if err != nil {
 				return nil, err
 			}
@@ -200,9 +200,9 @@ func RegisterResources(s *server.MCPServer) {
 	s.AddResourceTemplate(
 		mcplib.NewResourceTemplate("zotero://items/{key}/attachments", "Item attachments",
 			mcplib.WithTemplateDescription("An item's attachments (key, title, content type, link mode) from the local store (bounded).")),
-		func(_ context.Context, req mcplib.ReadResourceRequest) ([]mcplib.ResourceContents, error) {
+		func(ctx context.Context, req mcplib.ReadResourceRequest) ([]mcplib.ResourceContents, error) {
 			key := strings.TrimSuffix(strings.TrimPrefix(req.Params.URI, "zotero://items/"), "/attachments")
-			data, err := cli.ItemAttachmentsJSON(key)
+			data, err := cli.ItemAttachmentsJSON(ctx, key)
 			if err != nil {
 				return nil, err
 			}
@@ -212,9 +212,9 @@ func RegisterResources(s *server.MCPServer) {
 	s.AddResourceTemplate(
 		mcplib.NewResourceTemplate("zotero://items/{key}/context", "Item context",
 			mcplib.WithTemplateDescription("An item plus its parent, collections, tags, and child/attachment counts (bounded).")),
-		func(_ context.Context, req mcplib.ReadResourceRequest) ([]mcplib.ResourceContents, error) {
+		func(ctx context.Context, req mcplib.ReadResourceRequest) ([]mcplib.ResourceContents, error) {
 			key := strings.TrimSuffix(strings.TrimPrefix(req.Params.URI, "zotero://items/"), "/context")
-			data, err := cli.ItemContextJSON(key)
+			data, err := cli.ItemContextJSON(ctx, key)
 			if err != nil {
 				return nil, err
 			}
@@ -224,9 +224,9 @@ func RegisterResources(s *server.MCPServer) {
 	s.AddResourceTemplate(
 		mcplib.NewResourceTemplate("zotero://items/{key}/related", "Item related",
 			mcplib.WithTemplateDescription("An item's outgoing and incoming related-item edges from the local store (bounded).")),
-		func(_ context.Context, req mcplib.ReadResourceRequest) ([]mcplib.ResourceContents, error) {
+		func(ctx context.Context, req mcplib.ReadResourceRequest) ([]mcplib.ResourceContents, error) {
 			key := strings.TrimSuffix(strings.TrimPrefix(req.Params.URI, "zotero://items/"), "/related")
-			data, err := cli.ItemRelatedJSON(key)
+			data, err := cli.ItemRelatedJSON(ctx, key)
 			if err != nil {
 				return nil, err
 			}

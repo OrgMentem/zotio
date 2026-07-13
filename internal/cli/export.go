@@ -13,6 +13,21 @@ import (
 	"github.com/spf13/cobra"
 )
 
+// openPrivateOutputFile opens an export artifact with owner-only permissions.
+// Chmod also repairs an existing output file created by an earlier zotio
+// version with a less restrictive mode.
+func openPrivateOutputFile(path string, flags int) (*os.File, error) {
+	f, err := os.OpenFile(path, flags, 0o600)
+	if err != nil {
+		return nil, err
+	}
+	if err := f.Chmod(0o600); err != nil {
+		_ = f.Close()
+		return nil, err
+	}
+	return f, nil
+}
+
 func newExportCmd(flags *rootFlags) *cobra.Command {
 	var format string
 	var outputFile string
@@ -68,7 +83,7 @@ large datasets as it has no memory pressure.`,
 
 			var writer *bufio.Writer
 			if outputFile != "" {
-				f, err := os.Create(outputFile)
+				f, err := openPrivateOutputFile(outputFile, os.O_WRONLY|os.O_CREATE|os.O_TRUNC)
 				if err != nil {
 					return fmt.Errorf("creating output file: %w", err)
 				}

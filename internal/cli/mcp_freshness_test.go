@@ -5,6 +5,7 @@
 package cli
 
 import (
+	"context"
 	"encoding/json"
 	"testing"
 )
@@ -12,7 +13,7 @@ import (
 func TestFreshnessJSONUnsynced(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 
-	got, err := FreshnessJSON()
+	got, err := FreshnessJSON(context.Background())
 	if err != nil {
 		t.Fatalf("FreshnessJSON: %v", err)
 	}

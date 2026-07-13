@@ -3,6 +3,7 @@
 package cli
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"fmt"
@@ -22,6 +23,21 @@ func (s localQueryStore) QueryRaw(query string, args ...any) ([]map[string]any, 
 	if err != nil {
 		return nil, err
 	}
+	return rawSQLRows(rows)
+}
+
+// QueryRawContext runs a local SQL query using the caller's cancellation
+// boundary. MCP resource handlers use it so an abandoned request cannot keep a
+// SQLite query running until the busy timeout expires.
+func (s localQueryStore) QueryRawContext(ctx context.Context, query string, args ...any) ([]map[string]any, error) {
+	rows, err := s.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	return rawSQLRows(rows)
+}
+
+func rawSQLRows(rows *sql.Rows) ([]map[string]any, error) {
 	defer rows.Close()
 
 	columns, err := rows.Columns()

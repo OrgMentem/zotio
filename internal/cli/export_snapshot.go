@@ -77,7 +77,7 @@ Scope is one of: library (default), collection:KEY, or tag:NAME.`,
 				openFlags |= os.O_TRUNC
 				_ = os.Remove(checkpointFile)
 			}
-			f, err := os.OpenFile(outputFile, openFlags, 0o644)
+			f, err := openPrivateOutputFile(outputFile, openFlags)
 			if err != nil {
 				return fmt.Errorf("opening output: %w", err)
 			}
@@ -123,7 +123,7 @@ Scope is one of: library (default), collection:KEY, or tag:NAME.`,
 			}
 			lf := buildExportLockfile(scopeLabel, "jsonl", items)
 			lockPath := outputFile + ".lock.json"
-			lockFile, err := os.Create(lockPath)
+			lockFile, err := openPrivateOutputFile(lockPath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC)
 			if err != nil {
 				return fmt.Errorf("writing lockfile: %w", err)
 			}

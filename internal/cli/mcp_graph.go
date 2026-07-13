@@ -80,8 +80,8 @@ func graphNotFoundJSON(key string) ([]byte, error) {
 // subcollections for MCP graph resources.
 // cap recursion by both depth and
 // node count so malformed collection graphs cannot exhaust MCP hosts.
-func CollectionTreeJSON(key string) ([]byte, error) {
-	db, err := openStoreForRead(context.Background(), "zotio")
+func CollectionTreeJSON(ctx context.Context, key string) ([]byte, error) {
+	db, err := openStoreForRead(ctx, "zotio")
 	if err != nil {
 		return nil, err
 	}
@@ -91,7 +91,7 @@ func CollectionTreeJSON(key string) ([]byte, error) {
 	defer db.Close()
 
 	qs := localQueryStore{db}
-	rows, err := qs.QueryRaw(`
+	rows, err := qs.QueryRawContext(ctx, `
 SELECT json_extract(data,'$.data.name') AS name
 FROM resources
 WHERE resource_type='collections' AND id=?`, key)
@@ -109,7 +109,7 @@ WHERE resource_type='collections' AND id=?`, key)
 		Name:           sqlStringValue(rows[0]["name"]),
 		Subcollections: []graphCollectionNode{},
 	}
-	children, err := graphCollectionChildren(qs, key, 1, &total, &truncated)
+	children, err := graphCollectionChildren(ctx, qs, key, 1, &total, &truncated)
 	if err != nil {
 		return nil, err
 	}
@@ -118,13 +118,13 @@ WHERE resource_type='collections' AND id=?`, key)
 	return json.MarshalIndent(root, "", "  ")
 }
 
-func graphCollectionChildren(qs localQueryStore, parentKey string, depth int, total *int, truncated *bool) ([]graphCollectionNode, error) {
+func graphCollectionChildren(ctx context.Context, qs localQueryStore, parentKey string, depth int, total *int, truncated *bool) ([]graphCollectionNode, error) {
 	if *total >= graphNodeCap {
 		*truncated = true
 		return []graphCollectionNode{}, nil
 	}
 	if depth > graphMaxDepth {
-		rows, err := qs.QueryRaw(`
+		rows, err := qs.QueryRawContext(ctx, `
 SELECT id AS key
 FROM resources
 WHERE resource_type='collections' AND json_extract(data,'$.data.parentCollection')=?
@@ -139,7 +139,7 @@ LIMIT 1`, parentKey)
 	}
 
 	remaining := graphNodeCap - *total
-	rows, err := qs.QueryRaw(`
+	rows, err := qs.QueryRawContext(ctx, `
 SELECT id AS key, json_extract(data,'$.data.name') AS name
 FROM resources
 WHERE resource_type='collections' AND json_extract(data,'$.data.parentCollection')=?
@@ -161,7 +161,7 @@ LIMIT ?`, parentKey, remaining+1)
 			Name:           sqlStringValue(row["name"]),
 			Subcollections: []graphCollectionNode{},
 		}
-		grandchildren, err := graphCollectionChildren(qs, child.Key, depth+1, total, truncated)
+		grandchildren, err := graphCollectionChildren(ctx, qs, child.Key, depth+1, total, truncated)
 		if err != nil {
 			return nil, err
 		}
@@ -178,8 +178,8 @@ LIMIT ?`, parentKey, remaining+1)
 // ItemChildrenJSON returns bounded child items for a parent item key.
 // read children through indexed
 // parent_key with an explicit cap for MCP callers.
-func ItemChildrenJSON(key string) ([]byte, error) {
-	db, err := openStoreForRead(context.Background(), "zotio")
+func ItemChildrenJSON(ctx context.Context, key string) ([]byte, error) {
+	db, err := openStoreForRead(ctx, "zotio")
 	if err != nil {
 		return nil, err
 	}
@@ -189,7 +189,7 @@ func ItemChildrenJSON(key string) ([]byte, error) {
 	defer db.Close()
 
 	qs := localQueryStore{db}
-	found, err := graphItemExists(qs, key)
+	found, err := graphItemExists(ctx, qs, key)
 	if err != nil {
 		return nil, err
 	}
@@ -197,7 +197,7 @@ func ItemChildrenJSON(key string) ([]byte, error) {
 		return graphNotFoundJSON(key)
 	}
 
-	rows, err := qs.QueryRaw(`
+	rows, err := qs.QueryRawContext(ctx, `
 SELECT id AS key, item_type, json_extract(data,'$.data.title') AS title
 FROM resources
 WHERE resource_type='items' AND parent_key=?
@@ -224,8 +224,8 @@ LIMIT ?`, key, graphNodeCap+1)
 
 // ItemAttachmentsJSON returns bounded attachment metadata for a parent item key,
 // keeping traversal local and capped.
-func ItemAttachmentsJSON(key string) ([]byte, error) {
-	db, err := openStoreForRead(context.Background(), "zotio")
+func ItemAttachmentsJSON(ctx context.Context, key string) ([]byte, error) {
+	db, err := openStoreForRead(ctx, "zotio")
 	if err != nil {
 		return nil, err
 	}
@@ -235,7 +235,7 @@ func ItemAttachmentsJSON(key string) ([]byte, error) {
 	defer db.Close()
 
 	qs := localQueryStore{db}
-	found, err := graphItemExists(qs, key)
+	found, err := graphItemExists(ctx, qs, key)
 	if err != nil {
 		return nil, err
 	}
@@ -243,7 +243,7 @@ func ItemAttachmentsJSON(key string) ([]byte, error) {
 		return graphNotFoundJSON(key)
 	}
 
-	rows, err := qs.QueryRaw(`
+	rows, err := qs.QueryRawContext(ctx, `
 SELECT id AS key,
        json_extract(data,'$.data.title') AS title,
        json_extract(data,'$.data.contentType') AS content_type,
@@ -275,8 +275,8 @@ LIMIT ?`, key, graphNodeCap+1)
 // ItemContextJSON returns bounded local graph context for an item key.
 // summarize parent, membership, tags,
 // and dependent counts with capped JSON-list expansion.
-func ItemContextJSON(key string) ([]byte, error) {
-	db, err := openStoreForRead(context.Background(), "zotio")
+func ItemContextJSON(ctx context.Context, key string) ([]byte, error) {
+	db, err := openStoreForRead(ctx, "zotio")
 	if err != nil {
 		return nil, err
 	}
@@ -286,7 +286,7 @@ func ItemContextJSON(key string) ([]byte, error) {
 	defer db.Close()
 
 	qs := localQueryStore{db}
-	rows, err := qs.QueryRaw(`
+	rows, err := qs.QueryRawContext(ctx, `
 SELECT id AS key,
        item_type,
        json_extract(data,'$.data.title') AS title,
@@ -300,7 +300,7 @@ WHERE resource_type='items' AND id=?`, key)
 		return graphNotFoundJSON(key)
 	}
 
-	collections, collectionsTruncated, err := graphStringList(qs, `
+	collections, collectionsTruncated, err := graphStringList(ctx, qs, `
 SELECT collection.value AS value
 FROM resources r, json_each(json_extract(r.data,'$.data.collections')) AS collection
 WHERE r.resource_type='items' AND r.id=?
@@ -308,7 +308,7 @@ LIMIT ?`, key)
 	if err != nil {
 		return nil, err
 	}
-	tags, tagsTruncated, err := graphStringList(qs, `
+	tags, tagsTruncated, err := graphStringList(ctx, qs, `
 SELECT json_extract(tag.value,'$.tag') AS value
 FROM resources r, json_each(json_extract(r.data,'$.data.tags')) AS tag
 WHERE r.resource_type='items' AND r.id=?
@@ -316,14 +316,14 @@ LIMIT ?`, key)
 	if err != nil {
 		return nil, err
 	}
-	childCount, err := graphCount(qs, `
+	childCount, err := graphCount(ctx, qs, `
 SELECT COUNT(*) AS count
 FROM resources
 WHERE resource_type='items' AND parent_key=?`, key)
 	if err != nil {
 		return nil, err
 	}
-	attachmentCount, err := graphCount(qs, `
+	attachmentCount, err := graphCount(ctx, qs, `
 SELECT COUNT(*) AS count
 FROM resources
 WHERE resource_type='items' AND parent_key=? AND item_type='attachment'`, key)
@@ -346,8 +346,8 @@ WHERE resource_type='items' AND parent_key=? AND item_type='attachment'`, key)
 }
 
 // ItemRelatedJSON returns outgoing and incoming related-item edges for MCP graph resources.
-func ItemRelatedJSON(key string) ([]byte, error) {
-	report, found, synced, err := itemRelatedReportFromLocalStore(context.Background(), key)
+func ItemRelatedJSON(ctx context.Context, key string) ([]byte, error) {
+	report, found, synced, err := itemRelatedReportFromLocalStore(ctx, key)
 	if err != nil {
 		return nil, err
 	}
@@ -360,8 +360,8 @@ func ItemRelatedJSON(key string) ([]byte, error) {
 	return json.MarshalIndent(report, "", "  ")
 }
 
-func graphItemExists(qs localQueryStore, key string) (bool, error) {
-	rows, err := qs.QueryRaw(`
+func graphItemExists(ctx context.Context, qs localQueryStore, key string) (bool, error) {
+	rows, err := qs.QueryRawContext(ctx, `
 SELECT id
 FROM resources
 WHERE resource_type='items' AND id=?
@@ -372,8 +372,8 @@ LIMIT 1`, key)
 	return len(rows) > 0, nil
 }
 
-func graphStringList(qs localQueryStore, query string, key string) ([]string, bool, error) {
-	rows, err := qs.QueryRaw(query, key, graphNodeCap+1)
+func graphStringList(ctx context.Context, qs localQueryStore, query string, key string) ([]string, bool, error) {
+	rows, err := qs.QueryRawContext(ctx, query, key, graphNodeCap+1)
 	if err != nil {
 		return nil, false, err
 	}
@@ -391,8 +391,8 @@ func graphStringList(qs localQueryStore, query string, key string) ([]string, bo
 	return values, truncated, nil
 }
 
-func graphCount(qs localQueryStore, query string, key string) (int, error) {
-	rows, err := qs.QueryRaw(query, key)
+func graphCount(ctx context.Context, qs localQueryStore, query string, key string) (int, error) {
+	rows, err := qs.QueryRawContext(ctx, query, key)
 	if err != nil {
 		return 0, err
 	}

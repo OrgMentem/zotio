@@ -3,6 +3,7 @@
 package cli
 
 import (
+	"context"
 	"encoding/json"
 	"testing"
 )
@@ -13,7 +14,7 @@ func TestHealthJSONNoStore(t *testing.T) {
 	t.Cleanup(func() { activeGroupID = savedGroup })
 	t.Setenv("HOME", t.TempDir())
 
-	data, err := HealthJSON("")
+	data, err := HealthJSON(context.Background(), "")
 	if err != nil {
 		t.Fatalf("HealthJSON returned error: %v", err)
 	}

@@ -57,7 +57,7 @@ the top-level collection without recursing into subcollections.`,
 
 			var out = cmd.OutOrStdout()
 			if flagOutput != "" {
-				f, err := os.Create(flagOutput)
+				f, err := openPrivateOutputFile(flagOutput, os.O_WRONLY|os.O_CREATE|os.O_TRUNC)
 				if err != nil {
 					return fmt.Errorf("creating output file: %w", err)
 				}

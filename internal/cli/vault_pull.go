@@ -171,11 +171,12 @@ func replaceNotesRegion(body, newRegion string) (string, bool) {
 	return body[:after] + "\n" + strings.Trim(newRegion, "\n") + "\n" + body[endAbs:], true
 }
 
-// htmlNoteToMarkdown converts a managed Zotero note's HTML back to the user's
+// htmlNoteToMarkdown converts a managed Zotero note's HTML back to safe
 // Markdown text. It reverses the paragraph-verbatim renderer (block tags ->
-// blank lines, <br> -> newline, entities unescaped, other tags stripped to their
-// text) and drops the managed title/ownership prefix lines. Lossless for content
-// this CLI wrote; externally-added rich formatting degrades to plain text.
+// blank lines, <br> -> newline, other tags stripped to their text) and drops
+// the managed title/ownership prefix lines. Every decoded text character that
+// could start HTML or an entity is re-escaped for Markdown: remote Zotero note
+// content is never trusted to supply executable Markdown HTML.
 func htmlNoteToMarkdown(noteHTML string) string {
 	r := strings.NewReplacer(
 		"<br>", "\n", "<br/>", "\n", "<br />", "\n",
@@ -183,7 +184,7 @@ func htmlNoteToMarkdown(noteHTML string) string {
 		"</h4>", "\n\n", "</h5>", "\n\n", "</h6>", "\n\n",
 		"</li>", "\n", "</blockquote>", "\n\n", "</div>", "\n\n",
 	)
-	text := html.UnescapeString(stripHTMLTags(r.Replace(noteHTML)))
+	text := escapeMarkdownHTML(html.UnescapeString(stripHTMLTags(r.Replace(noteHTML))))
 
 	blocks := splitParagraphs(text)
 	for len(blocks) > 0 {
@@ -195,6 +196,12 @@ func htmlNoteToMarkdown(noteHTML string) string {
 		break
 	}
 	return strings.Join(blocks, "\n\n")
+}
+
+// escapeMarkdownHTML prevents text decoded from remote HTML from becoming an
+// HTML tag or entity when Obsidian parses the resulting Markdown.
+func escapeMarkdownHTML(s string) string {
+	return strings.NewReplacer("&", "&amp;", "<", "&lt;", ">", "&gt;").Replace(s)
 }
 
 // stripHTMLTags removes <...> spans. Safe on Zotero-sanitized note HTML, where

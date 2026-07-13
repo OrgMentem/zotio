@@ -74,6 +74,12 @@ func TestExportSnapshotPaginatesAndLocks(t *testing.T) {
 	t.Setenv("ZOTERO_CONFIG", filepath.Join(t.TempDir(), "missing.toml"))
 
 	out := filepath.Join(t.TempDir(), "snap.jsonl")
+	if err := os.WriteFile(out, []byte("old snapshot"), 0o644); err != nil {
+		t.Fatalf("seed snapshot: %v", err)
+	}
+	if err := os.Chmod(out, 0o644); err != nil {
+		t.Fatalf("set snapshot mode: %v", err)
+	}
 	flags := &rootFlags{asJSON: true}
 	cmd := newExportSnapshotCmd(flags)
 	cmd.SilenceErrors, cmd.SilenceUsage = true, true
@@ -113,6 +119,8 @@ func TestExportSnapshotPaginatesAndLocks(t *testing.T) {
 	if lf.Items[0].Key != "K000" {
 		t.Errorf("lockfile items not sorted: first = %q, want K000", lf.Items[0].Key)
 	}
+	assertFileMode(t, out, 0o600)
+	assertFileMode(t, out+".lock.json", 0o600)
 	if _, err := os.Stat(out + ".checkpoint.json"); !os.IsNotExist(err) {
 		t.Errorf("checkpoint sidecar should be removed on success, stat err = %v", err)
 	}
