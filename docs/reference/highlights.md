@@ -79,6 +79,12 @@ Fill missing DOIs and abstracts, and attach open-access PDFs as links or downloa
 
 > **Why it matters** — Turn the audit's missing-metadata queue into applied fixes; --validate cross-checks stored DOIs read-only.
 
+### `attachments add`
+
+Attach a local PDF (or any file) to an existing item as a synced stored attachment via the Zotero Web API upload protocol — preview-first and retry-safe (an identical retry no-ops instead of duplicating).
+
+> **Why it matters** — Close the missing-PDF loop: a file you already hold becomes a proper synced attachment without touching the desktop client.
+
 ### `items preprint-check`
 
 Find arXiv preprints that have since been published in a journal (via CrossRef) — and upgrade them with the published DOI using `preprint-check fix`, preview-first.

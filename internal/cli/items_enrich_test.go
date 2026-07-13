@@ -771,14 +771,14 @@ func TestItemsEnrichLinkedFileRequiresPDFDir(t *testing.T) {
 	}
 }
 
-func TestItemsEnrichStoredModeExplainsDeferral(t *testing.T) {
+func TestItemsEnrichStoredModePointsAtAttachmentsAdd(t *testing.T) {
 	cmd := newItemsEnrichCmd(&rootFlags{asJSON: true, via: "web"})
 	cmd.SetArgs([]string{"--missing-pdf", "--attach-mode", "stored"})
 	cmd.SetOut(&bytes.Buffer{})
 	cmd.SetErr(&bytes.Buffer{})
 	err := cmd.Execute()
-	if err == nil || ExitCode(err) != 2 || !strings.Contains(err.Error(), "Zotero Web API stored-upload protocol") || !strings.Contains(err.Error(), "deliberately deferred") {
-		t.Fatalf("err = %v, code=%d; want usage error explaining stored-upload deferral", err, ExitCode(err))
+	if err == nil || ExitCode(err) != 2 || !strings.Contains(err.Error(), "not supported by items enrich") || !strings.Contains(err.Error(), "zotio attachments add") {
+		t.Fatalf("err = %v, code=%d; want usage error routing stored mode to attachments add", err, ExitCode(err))
 	}
 }
 

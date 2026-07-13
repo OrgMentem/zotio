@@ -120,8 +120,8 @@ PDF attachment modes:
 
 Downloaded PDFs accept application/pdf, application/octet-stream, or an absent
 Content-Type, then must pass a %PDF- magic check. Stored (imported-file)
-retro-attachment waits on the Zotero Web API stored-upload protocol, which is
-deliberately deferred.
+retro-attachment is handled by 'zotio attachments add <item-key> <file>', which
+uploads through the Zotero Web API file-upload protocol.
 
 By default this previews the proposed changes (a patch plan) and never downloads
 PDF bytes. Pass --collection to scope the work queue to items in a single
@@ -134,7 +134,7 @@ Applied field changes record provenance in the item's Extra field.`,
 			switch attachMode {
 			case "linked-url", "linked-file":
 			case "stored":
-				return usageErr(fmt.Errorf("--attach-mode stored is unavailable: stored (imported-file) retro-attachment waits on the Zotero Web API stored-upload protocol, which is deliberately deferred"))
+				return usageErr(fmt.Errorf("--attach-mode stored is not supported by items enrich; retro-attach a stored file with `zotio attachments add <item-key> <file>` (or use linked-url/linked-file here)"))
 			default:
 				return usageErr(fmt.Errorf("--attach-mode must be one of linked-url, linked-file"))
 			}
@@ -235,7 +235,7 @@ Applied field changes record provenance in the item's Extra field.`,
 	cmd.Flags().BoolVar(&flagMissingDOI, "missing-doi", false, "Resolve and add a DOI from CrossRef, OpenAlex, or Semantic Scholar")
 	cmd.Flags().BoolVar(&flagMissingAbstract, "missing-abstract", false, "Fill the abstract from CrossRef, OpenAlex, or Semantic Scholar (uses the item's DOI)")
 	cmd.Flags().BoolVar(&flagMissingPDF, "missing-pdf", false, "Attach an open-access PDF from Unpaywall as a link or download (uses the item's DOI)")
-	cmd.Flags().StringVar(&flagAttachMode, "attach-mode", "linked-url", "PDF attachment handling: linked-url or linked-file; stored uploads await the deliberately deferred Zotero Web API stored-upload protocol")
+	cmd.Flags().StringVar(&flagAttachMode, "attach-mode", "linked-url", "PDF attachment handling: linked-url or linked-file; stored retro-attachment is handled by `zotio attachments add`")
 	cmd.Flags().StringVar(&flagPDFDir, "pdf-dir", "", "Directory for linked-file PDF downloads; responses must be PDF/octet-stream/unspecified Content-Type plus %PDF- magic")
 	cmd.Flags().IntVar(&flagLimit, "limit", 25, "Maximum items to process per category")
 	// Expose collection scoping for the local work queue.

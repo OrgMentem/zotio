@@ -90,6 +90,52 @@
     }
   },
   {
+    "name": "attachments_add",
+    "description": "Upload a local file (typically a PDF) as a stored (imported_file) child of an\nexisting item through the Zotero Web API file-upload protocol. Stored\nattachments sync to all devices, unlike linked-file children.\n\nRetry-safe: if the parent already has an imported_file child with the same\nfilename and identical content, the command no-ops; a child left behind by an\ninterrupted run is resumed; same filename with different content is reported\nas a conflict for manual review instead of being duplicated or overwritten.\n\nBy default this previews the planned upload; apply with --yes.",
+    "inputSchema": {
+      "properties": {
+        "allow-destructive": {
+          "description": "Allow irreversible operations (merge, permanent delete, empty-trash) to apply (default: false)",
+          "type": "boolean"
+        },
+        "args": {
+          "description": "Additional positional arguments to append to the command. Raw CLI flags are rejected.",
+          "type": "string"
+        },
+        "continue-on-error": {
+          "description": "On bulk mutations, continue past per-item failures/conflicts instead of stopping at the first (default: false)",
+          "type": "boolean"
+        },
+        "dry-run": {
+          "description": "Show request without sending (default: false)",
+          "type": "boolean"
+        },
+        "max-changes": {
+          "description": "Max write operations a single mutation may apply before refusing (-1 = default: 500, or 50 under --agent) (default: -1)",
+          "type": "number"
+        },
+        "max-failures": {
+          "description": "With --continue-on-error, stop after this many failures (0 = unlimited) (default: 0)",
+          "type": "number"
+        },
+        "mode": {
+          "description": "Attachment handling: stored (synced imported_file upload) (default: stored)",
+          "type": "string"
+        },
+        "title": {
+          "description": "Attachment title (default: the file name)",
+          "type": "string"
+        },
+        "yes": {
+          "description": "Skip confirmation prompts (for agents and scripts) (default: false)",
+          "type": "boolean"
+        }
+      },
+      "required": [],
+      "type": "object"
+    }
+  },
+  {
     "name": "capabilities",
     "description": "Outputs a typed registry describing each command's operation kind\n(read/write/destructive), write target, supported data sources, and\npreconditions (live_local_api, web_api_key, synced_store, better_bibtex) so\nagents can select safe commands and pre-flight requirements without parsing\n--help or guessing from names.",
     "inputSchema": {
@@ -1119,7 +1165,7 @@
   },
   {
     "name": "items_enrich",
-    "description": "Resolve missing metadata for locally synced items and apply it back to Zotero.\n\nWork queues come from the same checks as 'items audit':\n  --missing-doi       resolve a DOI by title from CrossRef, then OpenAlex/Semantic Scholar (exact title match)\n  --missing-abstract  fill the abstract from CrossRef, then OpenAlex/Semantic Scholar (requires the item's DOI)\n  --missing-pdf       attach an open-access PDF from Unpaywall (requires DOI)\n\nPDF attachment modes:\n  linked-url   create a linked_url attachment (default; no download)\n  linked-file  download the PDF to --pdf-dir and create a linked_file child item; linked files do not sync to other devices\n\nDownloaded PDFs accept application/pdf, application/octet-stream, or an absent\nContent-Type, then must pass a %PDF- magic check. Stored (imported-file)\nretro-attachment waits on the Zotero Web API stored-upload protocol, which is\ndeliberately deferred.\n\nBy default this previews the proposed changes (a patch plan) and never downloads\nPDF bytes. Pass --collection to scope the work queue to items in a single\ncollection, or --keys-from to scope to exact item keys produced by another\ncommand. Pass --yes to apply via the Zotero API; --dry-run always previews.\nApplied field changes record provenance in the item's Extra field.",
+    "description": "Resolve missing metadata for locally synced items and apply it back to Zotero.\n\nWork queues come from the same checks as 'items audit':\n  --missing-doi       resolve a DOI by title from CrossRef, then OpenAlex/Semantic Scholar (exact title match)\n  --missing-abstract  fill the abstract from CrossRef, then OpenAlex/Semantic Scholar (requires the item's DOI)\n  --missing-pdf       attach an open-access PDF from Unpaywall (requires DOI)\n\nPDF attachment modes:\n  linked-url   create a linked_url attachment (default; no download)\n  linked-file  download the PDF to --pdf-dir and create a linked_file child item; linked files do not sync to other devices\n\nDownloaded PDFs accept application/pdf, application/octet-stream, or an absent\nContent-Type, then must pass a %PDF- magic check. Stored (imported-file)\nretro-attachment is handled by 'zotio attachments add \u003citem-key\u003e \u003cfile\u003e', which\nuploads through the Zotero Web API file-upload protocol.\n\nBy default this previews the proposed changes (a patch plan) and never downloads\nPDF bytes. Pass --collection to scope the work queue to items in a single\ncollection, or --keys-from to scope to exact item keys produced by another\ncommand. Pass --yes to apply via the Zotero API; --dry-run always previews.\nApplied field changes record provenance in the item's Extra field.",
     "inputSchema": {
       "properties": {
         "allow-destructive": {
@@ -1127,7 +1173,7 @@
           "type": "boolean"
         },
         "attach-mode": {
-          "description": "PDF attachment handling: linked-url or linked-file; stored uploads await the deliberately deferred Zotero Web API stored-upload protocol (default: linked-url)",
+          "description": "PDF attachment handling: linked-url or linked-file; stored retro-attachment is handled by `zotio attachments add` (default: linked-url)",
           "type": "string"
         },
         "collection": {

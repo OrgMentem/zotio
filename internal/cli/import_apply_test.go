@@ -50,11 +50,31 @@ func TestImportApplyDefaultAttachModeNoneMakesAttachNoOp(t *testing.T) {
 	}
 }
 
-func TestImportApplyStoredPreviewRequiresConnector(t *testing.T) {
+func TestImportApplyStoredPreviewRequiresConnectorForCreates(t *testing.T) {
 	manifestPath := writeImportApplyTestManifest(t, importApplyTestManifest())
 	_, _, err := runImportApplyTestCmdWithFlags(t, &rootFlags{asJSON: true, via: "web"}, []string{"--attach-mode", "stored", manifestPath})
-	if err == nil || !strings.Contains(err.Error(), "--attach-mode stored requires the desktop connector") {
-		t.Fatalf("err = %v, want stored connector precondition error", err)
+	if err == nil || !strings.Contains(err.Error(), "--attach-mode stored with create entries requires the desktop connector") {
+		t.Fatalf("err = %v, want stored-create connector precondition error", err)
+	}
+}
+
+// A stored manifest with only attach entries needs the Web API, not the connector.
+func TestImportApplyStoredAttachOnlyManifestSkipsConnector(t *testing.T) {
+	manifest := importApplyTestManifest()
+	entries := manifest.Entries[:0]
+	for _, entry := range manifest.Entries {
+		if entry.Action == "attach" {
+			entries = append(entries, entry)
+		}
+	}
+	manifest.Entries = entries
+	manifestPath := writeImportApplyTestManifest(t, manifest)
+	env, stderr, err := runImportApplyTestCmdWithFlags(t, &rootFlags{asJSON: true, via: "web"}, []string{"--attach-mode", "stored", manifestPath})
+	if err != nil {
+		t.Fatalf("stored attach-only preview: %v; stderr=%s", err, stderr)
+	}
+	if !env.OK || env.Mode != "preview" || len(env.Plan.Operations) != 1 || env.Plan.Operations[0].Kind != "import_attach" {
+		t.Fatalf("env = %+v ops=%+v, want one previewed import_attach op", env, env.Plan.Operations)
 	}
 }
 func TestManifestUnidentifiedDefaultsToRecognize(t *testing.T) {
@@ -101,7 +121,7 @@ func TestImportApplyRecognizePlansImportPDF(t *testing.T) {
 	}
 }
 
-func TestImportApplyStoredPreviewPlansConnectorCreateAndExistingAttachFailure(t *testing.T) {
+func TestImportApplyStoredPreviewPlansConnectorCreateAndWebAttach(t *testing.T) {
 	oldPing := connectorPing
 	defer func() { connectorPing = oldPing }()
 	connectorPing = func(ctx context.Context, c *connector.Client) error { return nil }
@@ -116,7 +136,7 @@ func TestImportApplyStoredPreviewPlansConnectorCreateAndExistingAttachFailure(t 
 		t.Fatalf("env = %+v, want successful stored preview", env)
 	}
 	if env.Plan.Summary.Planned != 2 || len(env.Plan.Operations) != 2 {
-		t.Fatalf("plan = %+v, ops=%+v; want create plus planned attach failure", env.Plan.Summary, env.Plan.Operations)
+		t.Fatalf("plan = %+v, ops=%+v; want connector create plus web-upload attach", env.Plan.Summary, env.Plan.Operations)
 	}
 }
 

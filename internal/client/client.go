@@ -291,8 +291,23 @@ func (c *Client) invalidateCache() {
 	_ = os.RemoveAll(c.cacheDir)
 }
 
+// RawBody carries a pre-encoded request payload with an explicit content type.
+// doRequest sends it verbatim instead of JSON-marshaling it, for endpoints that
+// consume non-JSON bodies (e.g. Zotero's form-encoded file-upload protocol).
+type RawBody struct {
+	ContentType string
+	Data        []byte
+}
+
 func (c *Client) Post(path string, body any) (json.RawMessage, int, error) {
 	return c.do(c.baseCtx(), "POST", path, nil, body, nil)
+}
+
+// PostFormWithHeaders sends application/x-www-form-urlencoded values, for the
+// Zotero file-upload protocol endpoints that reject JSON bodies.
+func (c *Client) PostFormWithHeaders(path string, form url.Values, headers map[string]string) (json.RawMessage, int, error) {
+	body := RawBody{ContentType: "application/x-www-form-urlencoded", Data: []byte(form.Encode())}
+	return c.do(c.baseCtx(), "POST", path, nil, body, headers)
 }
 
 func (c *Client) PostWithHeaders(path string, body any, headers map[string]string) (json.RawMessage, int, error) {
@@ -334,12 +349,20 @@ func (c *Client) doRequest(ctx context.Context, method, path string, params map[
 	targetURL := c.baseURLFor(ctx, method) + path
 
 	var bodyBytes []byte
+	bodyContentType := "application/json"
 	if body != nil {
-		b, err := json.Marshal(body)
-		if err != nil {
-			return nil, 0, nil, fmt.Errorf("marshaling body: %w", err)
+		if raw, ok := body.(RawBody); ok {
+			bodyBytes = raw.Data
+			if raw.ContentType != "" {
+				bodyContentType = raw.ContentType
+			}
+		} else {
+			b, err := json.Marshal(body)
+			if err != nil {
+				return nil, 0, nil, fmt.Errorf("marshaling body: %w", err)
+			}
+			bodyBytes = b
 		}
-		bodyBytes = b
 	}
 
 	// Resolve auth material before the dry-run branch so --dry-run can preview
@@ -377,7 +400,7 @@ func (c *Client) doRequest(ctx context.Context, method, path string, params map[
 			return nil, 0, nil, fmt.Errorf("creating request: %w", err)
 		}
 		if bodyBytes != nil {
-			req.Header.Set("Content-Type", "application/json")
+			req.Header.Set("Content-Type", bodyContentType)
 		}
 
 		if params != nil {

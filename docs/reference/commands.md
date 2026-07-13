@@ -148,6 +148,44 @@ zotio annotations timeline --limit 50
 | `--refresh` | `bool` | `false` | Fetch live from the API instead of the local store |
 | `--since` | `string` |  | ISO date string; include annotations after this date |
 
+## `zotio attachments`
+
+Attachment file operations
+
+```
+zotio attachments
+```
+
+### `zotio attachments add`
+
+Attach a local file to an existing item as a synced stored attachment
+
+Upload a local file (typically a PDF) as a stored (imported_file) child of an
+existing item through the Zotero Web API file-upload protocol. Stored
+attachments sync to all devices, unlike linked-file children.
+
+Retry-safe: if the parent already has an imported_file child with the same
+filename and identical content, the command no-ops; a child left behind by an
+interrupted run is resumed; same filename with different content is reported
+as a conflict for manual review instead of being duplicated or overwritten.
+
+By default this previews the planned upload; apply with --yes.
+
+```
+zotio attachments add <parent-key> <file> [flags]
+```
+
+Examples:
+
+```bash
+zotio attachments add AB3DE6F8 ./paper.pdf --yes
+```
+
+| Flag | Type | Default | Description |
+| --- | --- | --- | --- |
+| `--mode` | `string` | `stored` | Attachment handling: stored (synced imported_file upload) |
+| `--title` | `string` |  | Attachment title (default: the file name) |
+
 ## `zotio auth`
 
 Manage authentication for Zotero
@@ -1285,8 +1323,8 @@ PDF attachment modes:
 
 Downloaded PDFs accept application/pdf, application/octet-stream, or an absent
 Content-Type, then must pass a %PDF- magic check. Stored (imported-file)
-retro-attachment waits on the Zotero Web API stored-upload protocol, which is
-deliberately deferred.
+retro-attachment is handled by 'zotio attachments add <item-key> <file>', which
+uploads through the Zotero Web API file-upload protocol.
 
 By default this previews the proposed changes (a patch plan) and never downloads
 PDF bytes. Pass --collection to scope the work queue to items in a single
@@ -1300,7 +1338,7 @@ zotio items enrich [flags]
 
 | Flag | Type | Default | Description |
 | --- | --- | --- | --- |
-| `--attach-mode` | `string` | `linked-url` | PDF attachment handling: linked-url or linked-file; stored uploads await the deliberately deferred Zotero Web API stored-upload protocol |
+| `--attach-mode` | `string` | `linked-url` | PDF attachment handling: linked-url or linked-file; stored retro-attachment is handled by `zotio attachments add` |
 | `--collection` | `string` |  | Scope the work queue to items in a collection key |
 | `--email` | `string` |  | Contact email for Unpaywall (required for --missing-pdf) and the OpenAlex polite pool (optional); or set UNPAYWALL_EMAIL |
 | `--keys-from` | `string` |  | Read exact item keys from a file or '-' for stdin, then enrich only matching queued items |

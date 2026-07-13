@@ -9,6 +9,7 @@ The machine-readable registry every command is classified against — read vs. w
 | `annotations export` | read |  |  |  |
 | `annotations search` | read |  |  |  |
 | `annotations timeline` | read |  |  |  |
+| `attachments add` | write | `web_api` |  | `web_api_key` |
 | `auth logout` | other |  |  |  |
 | `auth set-token` | other |  |  |  |
 | `auth status` | other |  |  |  |

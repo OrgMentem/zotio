@@ -12,6 +12,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"zotio/internal/client"
 	"zotio/internal/mutation"
 )
 
@@ -44,17 +45,19 @@ func newImportApplyCmd(flags *rootFlags) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			// Stored attachments, PDF recognition, and resolver fetches require the desktop Connector API.
+			// Stored CREATES, PDF recognition, and resolver fetches require the desktop
+			// Connector API; stored attach to an EXISTING item uses the Web API
+			// file-upload protocol instead (shared with `attachments add`).
 			if fetchPDF {
 				via, err := flags.resolveCreateVia(cmd.Context(), false)
 				if err != nil || via != "connector" {
 					return preconditionErr(fmt.Errorf("--fetch-pdf requires the desktop connector (local base URL + Zotero running)"))
 				}
 			}
-			if attachMode == "stored" {
+			if attachMode == "stored" && manifestHasResolvedCreate(m) {
 				via, err := flags.resolveCreateVia(cmd.Context(), false)
 				if err != nil || via != "connector" {
-					return preconditionErr(fmt.Errorf("--attach-mode stored requires the desktop connector (local base URL + Zotero running)"))
+					return preconditionErr(fmt.Errorf("--attach-mode stored with create entries requires the desktop connector (local base URL + Zotero running)"))
 				}
 			}
 			if manifestHasRecognize(m) {
@@ -72,8 +75,17 @@ func newImportApplyCmd(flags *rootFlags) *cobra.Command {
 				}
 				writeClient = c
 			}
+			// Stored attach to existing items uploads through the Web API.
+			var storedClient *client.Client
+			if resolveMutationMode(flags).Apply && attachMode == "stored" && manifestHasAttachEntries(m) {
+				c, err := flags.newWriteClient()
+				if err != nil {
+					return err
+				}
+				storedClient = c
+			}
 
-			ops := importApplyOps(cmd, flags, writeClient, m, attachMode, fetchPDF)
+			ops := importApplyOps(cmd, flags, writeClient, storedClient, m, attachMode, fetchPDF)
 			env, runErr := runMutation(cmd.Context(), flags, "import.apply", ops)
 			if renderErr := renderMutation(cmd, flags, env, nil); renderErr != nil {
 				return renderErr
@@ -99,8 +111,29 @@ func manifestHasRecognize(m importManifest) bool {
 	return false
 }
 
+// manifestHasResolvedCreate reports whether any manifest entry would run the
+// connector-backed stored-create path (mirrors the create filter in importApplyOps).
+func manifestHasResolvedCreate(m importManifest) bool {
+	for _, entry := range m.Entries {
+		if entry.Action == "create" && entry.Status == "resolved" && entry.Item != nil {
+			return true
+		}
+	}
+	return false
+}
+
+// manifestHasAttachEntries reports whether any entry attaches to an existing item.
+func manifestHasAttachEntries(m importManifest) bool {
+	for _, entry := range m.Entries {
+		if entry.Action == "attach" && entry.MatchedKey != "" {
+			return true
+		}
+	}
+	return false
+}
+
 // Build mutation ops without network or disk I/O.
-func importApplyOps(cmd *cobra.Command, flags *rootFlags, writeClient importApplyPoster, m importManifest, attachMode string, fetchPDF bool) []mutation.Op {
+func importApplyOps(cmd *cobra.Command, flags *rootFlags, writeClient importApplyPoster, storedClient *client.Client, m importManifest, attachMode string, fetchPDF bool) []mutation.Op {
 	ops := make([]mutation.Op, 0, len(m.Entries))
 	for i := range m.Entries {
 		entry := m.Entries[i]
@@ -215,14 +248,18 @@ func importApplyOps(cmd *cobra.Command, flags *rootFlags, writeClient importAppl
 			}
 			op.Changes = []mutation.Change{{Field: "attachment", Add: filepath.Base(entryPath)}}
 			op.Apply = func() (string, any, error) {
+				if entryPath == "" {
+					return "failed", nil, fmt.Errorf("manifest entry %d attachment path is empty", entryNumber)
+				}
 				if attachMode == "stored" {
-					return "failed", map[string]any{"error": "stored attach cannot target an existing item via the connector; use --attach-mode linked-file"}, nil
+					req, err := newStoredUploadRequest(matchedKey, entryPath, "")
+					if err != nil {
+						return "failed", nil, err
+					}
+					return applyStoredUpload(cmd.Context(), storedClient, req, flags)
 				}
 				if writeClient == nil {
 					return "failed", nil, fmt.Errorf("missing write client")
-				}
-				if entryPath == "" {
-					return "failed", nil, fmt.Errorf("manifest entry %d attachment path is empty", entryNumber)
 				}
 				if err := postLinkedFileAttachment(writeClient, matchedKey, entryPath, flags); err != nil {
 					return "failed", nil, err
