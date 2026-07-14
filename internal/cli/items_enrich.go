@@ -294,11 +294,21 @@ func filterEnrichRowsByKeys(rows []map[string]any, allow map[string]bool) []map[
 // Carry exact key scope from --keys-from, filtering
 // before provider lookups so remediation stays bounded and cheap.
 func buildEnrichProposals(ctx context.Context, db localQueryStore, httpClient *http.Client, category string, limit int, collection string, keyFilter map[string]bool, email string, useOpenAlex bool, useSemanticScholar bool, attachMode string, pdfDir string) ([]enrichProposal, []enrichSkip) {
-	rows, err := enrichWorkQueue(db, category, limit, collection)
+	queryLimit := limit
+	if keyFilter != nil {
+		// --keys-from identifies exact remediation targets. Fetch the complete
+		// queue before filtering so the SQL limit cannot hide an older
+		// requested key, then retain the requested limit below.
+		queryLimit = 0
+	}
+	rows, err := enrichWorkQueue(db, category, queryLimit, collection)
 	if err != nil {
 		return nil, []enrichSkip{{Category: category, Reason: fmt.Sprintf("querying work queue: %v", err)}}
 	}
 	rows = filterEnrichRowsByKeys(rows, keyFilter)
+	if keyFilter != nil && limit > 0 && len(rows) > limit {
+		rows = rows[:limit]
+	}
 
 	// Each candidate triggers an independent
 	// CrossRef/Unpaywall lookup, so resolve them through a bounded fan-out
@@ -310,7 +320,7 @@ func buildEnrichProposals(ctx context.Context, db localQueryStore, httpClient *h
 		skip    enrichSkip
 		skipped bool
 	}
-	results, _ := cliutil.FanoutRun(ctx, rows,
+	results, fanoutErrs := cliutil.FanoutRun(ctx, rows,
 		func(row map[string]any) string { return sqlStringValue(row["key"]) },
 		func(ctx context.Context, row map[string]any) (outcome, error) {
 			key := sqlStringValue(row["key"])
@@ -335,6 +345,13 @@ func buildEnrichProposals(ctx context.Context, db localQueryStore, httpClient *h
 		} else {
 			proposals = append(proposals, r.Value.prop)
 		}
+	}
+	for _, fanoutErr := range fanoutErrs {
+		skipped = append(skipped, enrichSkip{
+			Key:      fanoutErr.Source,
+			Category: category,
+			Reason:   fmt.Sprintf("resolving enrichment: %v", fanoutErr.Err),
+		})
 	}
 	return proposals, skipped
 }
@@ -608,7 +625,7 @@ func applyEnrichProposalWithContext(ctx context.Context, downloader enrichPDFDow
 			if err := downloader.download(ctx, p.DownloadURL, p.PDFPath, maxEnrichPDFBytes); err != nil {
 				return "failed", err.Error(), err
 			}
-			if err := postLinkedFileAttachment(c, p.Key, p.PDFPath, flags); err != nil {
+			if _, err := postLinkedFileAttachment(c, p.Key, p.PDFPath, flags); err != nil {
 				cleanupErr := os.Remove(p.PDFPath)
 				if cleanupErr != nil && !errors.Is(cleanupErr, os.ErrNotExist) {
 					err = fmt.Errorf("creating linked-file attachment: %w; could not remove downloaded file %s: %w", err, p.PDFPath, cleanupErr)

@@ -26,10 +26,10 @@ func seedAuditStore(t *testing.T) localQueryStore {
 	// P2: journalArticle WITH a PDF attachment, DOI, abstract, and a tag.
 	// P3: book, no PDF, no abstract, no tags (a missing-PDF candidate type).
 	items := []json.RawMessage{
-		json.RawMessage(`{"key":"P1","version":1,"data":{"key":"P1","itemType":"journalArticle","title":"P1"}}`),
-		json.RawMessage(`{"key":"P2","version":1,"data":{"key":"P2","itemType":"journalArticle","title":"P2","DOI":"10/x","abstractNote":"abs","tags":[{"tag":"t"}]}}`),
+		json.RawMessage(`{"key":"P1","version":1,"data":{"key":"P1","itemType":"journalArticle","title":"P1","collections":["COL1"]}}`),
+		json.RawMessage(`{"key":"P2","version":1,"data":{"key":"P2","itemType":"journalArticle","title":"P2","DOI":"10/x","abstractNote":"abs","tags":[{"tag":"t"}],"collections":["COL1"]}}`),
 		json.RawMessage(`{"key":"A2","version":1,"data":{"key":"A2","itemType":"attachment","parentItem":"P2","contentType":"application/pdf"}}`),
-		json.RawMessage(`{"key":"P3","version":1,"data":{"key":"P3","itemType":"book","title":"P3"}}`),
+		json.RawMessage(`{"key":"P3","version":1,"data":{"key":"P3","itemType":"book","title":"P3","collections":["COL2"]}}`),
 	}
 	if _, _, err := db.UpsertBatch("items", items); err != nil {
 		t.Fatalf("seed: %v", err)
@@ -74,6 +74,14 @@ func TestQueryMissingPDFItems_IndexedColumns(t *testing.T) {
 	}
 	if len(books) != 1 || sqlStringValue(books[0]["key"]) != "P3" {
 		t.Errorf("missing-PDF books = %v, want [P3]", books)
+	}
+
+	collection, err := queryMissingPDFItems(db, "", 0, "COL1")
+	if err != nil {
+		t.Fatalf("queryMissingPDFItems(collection): %v", err)
+	}
+	if len(collection) != 1 || sqlStringValue(collection[0]["key"]) != "P1" {
+		t.Errorf("missing-PDF COL1 items = %v, want [P1]", collection)
 	}
 }
 

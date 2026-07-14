@@ -1290,6 +1290,10 @@
     "description": "List items that should have an attached PDF but do not",
     "inputSchema": {
       "properties": {
+        "collection": {
+          "description": "Filter to an exact Zotero collection key",
+          "type": "string"
+        },
         "limit": {
           "description": "Maximum number of items to return (0 = no limit) (default: 0)",
           "type": "number"

@@ -15,7 +15,7 @@ const missingPDFItemTypesSQL = `
 `
 
 func newItemsMissingPdfCmd(flags *rootFlags) *cobra.Command {
-	var flagType string
+	var flagType, flagCollection string
 	var flagLimit int
 
 	cmd := &cobra.Command{
@@ -34,7 +34,7 @@ func newItemsMissingPdfCmd(flags *rootFlags) *cobra.Command {
 			defer rawDB.Close()
 			db := localQueryStore{rawDB}
 
-			rows, err := queryMissingPDFItems(db, flagType, flagLimit, "")
+			rows, err := queryMissingPDFItems(db, flagType, flagLimit, flagCollection)
 			if err != nil {
 				return fmt.Errorf("querying missing PDFs: %w", err)
 			}
@@ -46,6 +46,7 @@ func newItemsMissingPdfCmd(flags *rootFlags) *cobra.Command {
 		},
 	}
 	cmd.Flags().StringVar(&flagType, "type", "", "Filter to a specific Zotero item type")
+	cmd.Flags().StringVar(&flagCollection, "collection", "", "Filter to an exact Zotero collection key")
 	cmd.Flags().IntVar(&flagLimit, "limit", 0, "Maximum number of items to return (0 = no limit)")
 
 	return cmd

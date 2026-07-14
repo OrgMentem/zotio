@@ -716,6 +716,98 @@ func TestItemsEnrichMissingDOIKeysFrom(t *testing.T) {
 	}
 }
 
+func TestItemsEnrichMissingDOIKeysFromOutsideDefaultLimit(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		title := r.URL.Query().Get("query.bibliographic")
+		_, _ = fmt.Fprintf(w, `{"message":{"items":[{"title":[%q],"DOI":"10.1/selected"}]}}`, title)
+	}))
+	t.Cleanup(srv.Close)
+	withBase(t, &enrichCrossRefBase, srv.URL)
+
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("ZOTERO_CONFIG", filepath.Join(t.TempDir(), "keys-from-limit.toml"))
+	dbPath := defaultDBPath("zotio")
+	db, err := store.OpenWithContext(context.Background(), dbPath)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	items := make([]json.RawMessage, 0, 26)
+	for i := range 26 {
+		key := fmt.Sprintf("K%02d", i)
+		title := fmt.Sprintf("Candidate %02d", i)
+		item, err := json.Marshal(map[string]any{
+			"key":     key,
+			"version": 1,
+			"data": map[string]any{
+				"key":       key,
+				"itemType":  "journalArticle",
+				"title":     title,
+				"dateAdded": fmt.Sprintf("2026-01-%02dT00:00:00Z", i+1),
+			},
+		})
+		if err != nil {
+			t.Fatalf("marshal %s: %v", key, err)
+		}
+		items = append(items, item)
+	}
+	if _, _, err := db.UpsertBatch("items", items); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close store: %v", err)
+	}
+
+	keysPath := filepath.Join(t.TempDir(), "keys.txt")
+	if err := os.WriteFile(keysPath, []byte("K00\n"), 0o600); err != nil {
+		t.Fatalf("write keys: %v", err)
+	}
+	flags := &rootFlags{asJSON: true}
+	cmd := newItemsEnrichCmd(flags)
+	cmd.SetArgs([]string{"--missing-doi", "--no-openalex", "--no-semantic-scholar", "--keys-from", keysPath})
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&bytes.Buffer{})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("enrich: %v", err)
+	}
+
+	var env mutation.Envelope
+	if err := json.Unmarshal(out.Bytes(), &env); err != nil {
+		t.Fatalf("decode %q: %v", out.String(), err)
+	}
+	if env.Plan.Summary.Planned != 1 || len(env.Plan.Operations) != 1 {
+		t.Fatalf("expected oldest requested item in plan, got summary=%+v ops=%+v", env.Plan.Summary, env.Plan.Operations)
+	}
+	if env.Plan.Operations[0].Key != "K00" {
+		t.Errorf("proposal key = %q, want oldest requested key K00", env.Plan.Operations[0].Key)
+	}
+}
+
+func TestBuildEnrichProposalsReportsCancelledFanoutItems(t *testing.T) {
+	db := seedEnrichStore(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	proposals, skipped := buildEnrichProposals(ctx, db, http.DefaultClient, "missing_doi", 25, "", nil, "", false, false, "linked-url", "")
+	if len(proposals) != 0 {
+		t.Fatalf("proposals = %+v, want none after cancellation", proposals)
+	}
+	if len(skipped) != 2 {
+		t.Fatalf("skipped = %+v, want one cancellation skip per queued item", skipped)
+	}
+	for _, skip := range skipped {
+		if skip.Key != "K1" && skip.Key != "K2" {
+			t.Errorf("skip key = %q, want K1 or K2", skip.Key)
+		}
+		if skip.Category != "missing_doi" {
+			t.Errorf("skip category = %q, want missing_doi", skip.Category)
+		}
+		if !strings.Contains(skip.Reason, context.Canceled.Error()) {
+			t.Errorf("skip reason = %q, want cancellation error", skip.Reason)
+		}
+	}
+}
+
 func TestItemsEnrichPreviewEnvelope(t *testing.T) {
 	srv := crossRefSearchServer(t, "Attention Is All You Need", "10.1/attention")
 	withBase(t, &enrichCrossRefBase, srv.URL)
