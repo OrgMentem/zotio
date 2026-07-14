@@ -54,12 +54,6 @@ func newImportApplyCmd(flags *rootFlags) *cobra.Command {
 					return preconditionErr(fmt.Errorf("--fetch-pdf requires the desktop connector (local base URL + Zotero running)"))
 				}
 			}
-			if attachMode == "stored" && manifestHasResolvedCreate(m) {
-				via, err := flags.resolveCreateVia(cmd.Context(), false)
-				if err != nil || via != "connector" {
-					return preconditionErr(fmt.Errorf("--attach-mode stored with create entries requires the desktop connector (local base URL + Zotero running)"))
-				}
-			}
 			if manifestHasRecognize(m) {
 				via, err := flags.resolveCreateVia(cmd.Context(), false)
 				if err != nil || via != "connector" {
@@ -68,21 +62,31 @@ func newImportApplyCmd(flags *rootFlags) *cobra.Command {
 			}
 
 			var writeClient importApplyPoster
-			if resolveMutationMode(flags).Apply && attachMode != "stored" && !fetchPDF {
-				c, err := flags.newWriteClient()
-				if err != nil {
-					return err
-				}
-				writeClient = c
-			}
-			// Stored attach to existing items uploads through the Web API.
 			var storedClient *client.Client
-			if resolveMutationMode(flags).Apply && attachMode == "stored" && manifestHasAttachEntries(m) {
-				c, err := flags.newWriteClient()
-				if err != nil {
-					return err
+			if resolveMutationMode(flags).Apply {
+				storedCreateVia := ""
+				if attachMode == "stored" && manifestHasResolvedCreate(m) {
+					storedCreateVia, err = flags.resolveCreateVia(cmd.Context(), false)
+					if err != nil {
+						return err
+					}
 				}
-				storedClient = c
+				needsStoredWeb := attachMode == "stored" &&
+					(manifestHasAttachEntries(m) || storedCreateVia == "web")
+				if needsStoredWeb {
+					c, err := flags.newWriteClient()
+					if err != nil {
+						return err
+					}
+					storedClient = c
+					writeClient = c
+				} else if attachMode != "stored" && !fetchPDF {
+					c, err := flags.newWriteClient()
+					if err != nil {
+						return err
+					}
+					writeClient = c
+				}
 			}
 
 			ops := importApplyOps(cmd, flags, writeClient, storedClient, m, attachMode, fetchPDF)
@@ -156,33 +160,59 @@ func importApplyOps(cmd *cobra.Command, flags *rootFlags, writeClient importAppl
 					if itemType == "" {
 						return "failed", nil, fmt.Errorf("manifest entry %d item missing itemType", entryNumber)
 					}
-					// Create the parent and stored PDF in one connector session.
+					// Stored creates use the selected route for the parent. The
+					// connector can save both objects in one desktop session; the
+					// Web route creates the parent, then delegates the child bytes
+					// to the same exactly-once uploader as `attachments add`.
 					if attachMode == "stored" {
-						res, err := routeCreateItem(cmd.Context(), flags, nil, item, importEntrySourceURL(entry, item), connectorCollectionKeyFromItem(item) != "" || strings.TrimSpace(flags.connectorTarget) != "")
-						if err != nil {
-							return "failed", nil, err
-						}
-						if res.Via != "connector" {
-							return "failed", nil, fmt.Errorf("--attach-mode stored requires the desktop connector")
-						}
 						if entryPath == "" {
 							return "failed", nil, fmt.Errorf("manifest entry %d attachment path is empty", entryNumber)
 						}
-						data, err := os.ReadFile(entryPath)
-						if err != nil {
-							return "failed", nil, fmt.Errorf("reading attachment %s: %w", entryPath, err)
-						}
-						conn, err := flags.newConnector()
+						res, err := routeCreateItem(cmd.Context(), flags, writeClient, item, importEntrySourceURL(entry, item), connectorCollectionKeyFromItem(item) != "" || strings.TrimSpace(flags.connectorTarget) != "")
 						if err != nil {
 							return "failed", nil, err
 						}
-						if err := conn.SaveAttachment(cmd.Context(), res.Session, res.ConnKey, "Full Text PDF", importEntrySourceURL(entry, item), "application/pdf", data); err != nil {
-							return "failed", nil, err
+						switch res.Via {
+						case "connector":
+							data, err := os.ReadFile(entryPath)
+							if err != nil {
+								return "failed", nil, fmt.Errorf("reading attachment %s: %w", entryPath, err)
+							}
+							conn, err := flags.newConnector()
+							if err != nil {
+								return "failed", nil, err
+							}
+							if err := conn.SaveAttachment(cmd.Context(), res.Session, res.ConnKey, "Full Text PDF", importEntrySourceURL(entry, item), "application/pdf", data); err != nil {
+								return "failed", nil, err
+							}
+							if fetchPDF {
+								attachResolverPDF(cmd.Context(), flags, &res)
+							}
+							return "applied", map[string]any{"via": "connector"}, nil
+						case "web":
+							req, err := newStoredUploadRequest(res.WebKey, entryPath, "")
+							if err != nil {
+								return "failed", map[string]any{"parent_key": res.WebKey}, err
+							}
+							status, reason, err := applyStoredUpload(cmd.Context(), storedClient, req, flags)
+							if err != nil {
+								return "failed", map[string]any{"parent_key": res.WebKey}, err
+							}
+							detail := map[string]any{
+								"via":               "web",
+								"parent_key":        res.WebKey,
+								"attachment_result": reason,
+							}
+							if upload, ok := reason.(map[string]any); ok {
+								detail["attachment_key"] = upload["item_key"]
+							}
+							if status == "conflict" || status == "failed" {
+								return status, detail, nil
+							}
+							return "applied", detail, nil
+						default:
+							return "failed", nil, fmt.Errorf("unsupported stored-create route %q", res.Via)
 						}
-						if fetchPDF {
-							attachResolverPDF(cmd.Context(), flags, &res)
-						}
-						return "applied", map[string]any{"via": "connector"}, nil
 					}
 					if fetchPDF {
 						res, err := routeCreateItem(cmd.Context(), flags, nil, item, importEntrySourceURL(entry, item), connectorCollectionKeyFromItem(item) != "" || strings.TrimSpace(flags.connectorTarget) != "")
@@ -214,12 +244,16 @@ func importApplyOps(cmd *cobra.Command, flags *rootFlags, writeClient importAppl
 					if !ok {
 						return "failed", nil, fmt.Errorf("could not read created item key from /items response")
 					}
+					detail := map[string]any{"parent_key": createdKey}
 					if attachMode == "linked-file" && entryPath != "" {
-						if err := postLinkedFileAttachment(writeClient, createdKey, entryPath, flags); err != nil {
-							return "applied", map[string]any{"item_key": createdKey, "attachment_error": err.Error()}, nil
+						attachmentKey, err := postLinkedFileAttachment(writeClient, createdKey, entryPath, flags)
+						if err != nil {
+							detail["attachment_error"] = err.Error()
+							return "applied", detail, nil
 						}
+						detail["attachment_key"] = attachmentKey
 					}
-					return "applied", nil, nil
+					return "applied", detail, nil
 				},
 			})
 		case "recognize":
@@ -261,12 +295,22 @@ func importApplyOps(cmd *cobra.Command, flags *rootFlags, writeClient importAppl
 				if writeClient == nil {
 					return "failed", nil, fmt.Errorf("missing write client")
 				}
-				if err := postLinkedFileAttachment(writeClient, matchedKey, entryPath, flags); err != nil {
+				attachmentKey, err := postLinkedFileAttachment(writeClient, matchedKey, entryPath, flags)
+				if err != nil {
 					return "failed", nil, err
 				}
-				return "applied", nil, nil
+				return "applied", map[string]any{"parent_key": matchedKey, "attachment_key": attachmentKey}, nil
 			}
 			ops = append(ops, op)
+		case "skip":
+			if entry.Classification != "duplicate" || entry.MatchedKey == "" {
+				continue
+			}
+			ops = append(ops, mutation.Op{
+				ID:   fmt.Sprintf("import.apply:%03d:duplicate", i+1),
+				Key:  entry.MatchedKey,
+				Kind: "import_duplicate",
+			})
 		}
 	}
 	return ops
@@ -296,18 +340,19 @@ func importApplyEntryTitle(entry importManifestEntry, item map[string]any) strin
 }
 
 // Post linked-file attachment children through the write client.
-func postLinkedFileAttachment(c importApplyPoster, parentKey, absPath string, flags *rootFlags) error {
-	// Child items are created by POSTing the
-	// attachment (with parentItem set) to /items. /items/{key}/children is
-	// GET-only on the Web API and rejects POST with HTTP 405.
+func postLinkedFileAttachment(c importApplyPoster, parentKey, absPath string, flags *rootFlags) (string, error) {
+	// Child items are created by POSTing the attachment (with parentItem set)
+	// to /items. /items/{key}/children is GET-only on the Web API and rejects
+	// POST with HTTP 405.
 	data, _, err := c.Post("/items", []map[string]any{linkedFileAttachmentItem(parentKey, absPath)})
 	if err != nil {
-		return classifyAPIError(err, flags)
+		return "", classifyAPIError(err, flags)
 	}
-	if _, ok := createdItemKey(data); !ok {
-		return fmt.Errorf("could not read created attachment key from /items response")
+	key, ok := createdItemKey(data)
+	if !ok {
+		return "", fmt.Errorf("could not read created attachment key from /items response")
 	}
-	return nil
+	return key, nil
 }
 
 // Construct Zotero's linked-file attachment child payload.

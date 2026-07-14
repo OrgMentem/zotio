@@ -24,7 +24,9 @@ import (
 
 type fakeUploadChild struct {
 	Key      string
+	LinkMode string
 	Filename string
+	Path     string
 	MD5      string
 }
 
@@ -45,11 +47,12 @@ type fakeZoteroUpload struct {
 	existsOnAuth  bool // respond {exists:1} instead of an upload target
 
 	// observed traffic
-	creates      int
-	createTokens []string
-	authForms    []map[string]string
-	uploads      int
-	registers    int
+	creates       int
+	createTokens  []string
+	parentCreates int
+	authForms     []map[string]string
+	uploads       int
+	registers     int
 
 	authorizedMD5 map[string]string // attachment key -> md5 pending registration
 	srv           *httptest.Server
@@ -81,17 +84,26 @@ func (f *fakeZoteroUpload) handle(w http.ResponseWriter, r *http.Request) {
 			if c.MD5 != "" {
 				md5Val = c.MD5
 			}
+			linkMode := c.LinkMode
+			if linkMode == "" {
+				linkMode = "imported_file"
+			}
 			rows = append(rows, map[string]any{
 				"key": c.Key,
 				"data": map[string]any{
 					"itemType": "attachment",
-					"linkMode": "imported_file",
+					"linkMode": linkMode,
 					"filename": c.Filename,
+					"path":     c.Path,
 					"md5":      md5Val,
 				},
 			})
 		}
 		_ = json.NewEncoder(w).Encode(rows)
+
+	case r.Method == http.MethodGet && path == "/items/new":
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprint(w, `{"itemType":"journalArticle","title":"","creators":[],"date":"","DOI":"","publicationTitle":""}`)
 
 	case r.Method == http.MethodPost && path == "/items":
 		token := r.Header.Get("Zotero-Write-Token")
@@ -105,7 +117,14 @@ func (f *fakeZoteroUpload) handle(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		item := items[0]
-		if item["itemType"] != "attachment" || item["linkMode"] != "imported_file" || item["parentItem"] != f.parentKey {
+		if item["itemType"] != "attachment" {
+			f.parentCreates++
+			f.parentKey = "PARENT1"
+			_, _ = fmt.Fprint(w, `{"success":{"0":"PARENT1"}}`)
+			return
+		}
+		linkMode, _ := item["linkMode"].(string)
+		if (linkMode != "imported_file" && linkMode != "linked_file") || item["parentItem"] != f.parentKey {
 			http.Error(w, `{"error":"unexpected item"}`, http.StatusBadRequest)
 			return
 		}
@@ -114,7 +133,8 @@ func (f *fakeZoteroUpload) handle(w http.ResponseWriter, r *http.Request) {
 		f.nextKey++
 		key := fmt.Sprintf("ATT%d", f.nextKey)
 		filename, _ := item["filename"].(string)
-		f.children = append(f.children, fakeUploadChild{Key: key, Filename: filename})
+		path, _ := item["path"].(string)
+		f.children = append(f.children, fakeUploadChild{Key: key, LinkMode: linkMode, Filename: filename, Path: path})
 		_, _ = fmt.Fprintf(w, `{"success":{"0":%q}}`, key)
 
 	case r.Method == http.MethodPost && strings.HasPrefix(path, "/items/") && strings.HasSuffix(path, "/file"):
@@ -216,6 +236,12 @@ func (f *fakeZoteroUpload) snapshot() (creates, uploads, registers int) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.creates, f.uploads, f.registers
+}
+
+func (f *fakeZoteroUpload) parentSnapshot() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.parentCreates
 }
 
 func writeUploadFixture(t *testing.T, name string, data []byte) string {
@@ -489,13 +515,42 @@ func TestAttachmentsAddMissingParentFailsWithNotFound(t *testing.T) {
 	}
 }
 
+func TestAttachmentsAddLinkedFileIsRetrySafeWithoutStorageUpload(t *testing.T) {
+	f := newFakeZoteroUpload(t, "PARENT1")
+	setUploadTestEnv(t, f)
+	path := writeUploadFixture(t, "paper.pdf", []byte(uploadFixturePDF))
+
+	env, stderr, err := runAttachmentsAdd(t, applyFlags(), []string{"add", "PARENT1", path, "--mode", "linked-file"})
+	if err != nil {
+		t.Fatalf("linked apply: %v; stderr=%s", err, stderr)
+	}
+	item := env.Result.Items[0]
+	reason, _ := item.Reason.(map[string]any)
+	if item.Status != "applied" || reason["item_key"] != "ATT1" || reason["path"] != path {
+		t.Fatalf("linked result = %+v", item)
+	}
+
+	retry, retryStderr, retryErr := runAttachmentsAdd(t, applyFlags(), []string{"add", "PARENT1", path, "--mode", "linked-file"})
+	if retryErr != nil {
+		t.Fatalf("linked retry: %v; stderr=%s", retryErr, retryStderr)
+	}
+	retryItem := retry.Result.Items[0]
+	if retryItem.Status != "no_op" {
+		t.Fatalf("linked retry result = %+v", retryItem)
+	}
+	creates, uploads, registers := f.snapshot()
+	if creates != 1 || uploads != 0 || registers != 0 || len(f.createTokens) != 1 || f.createTokens[0] == "" {
+		t.Fatalf("traffic creates=%d uploads=%d registers=%d tokens=%v", creates, uploads, registers, f.createTokens)
+	}
+}
+
 func TestAttachmentsAddUsageValidation(t *testing.T) {
 	f := newFakeZoteroUpload(t, "PARENT1")
 	setUploadTestEnv(t, f)
 	path := writeUploadFixture(t, "paper.pdf", []byte(uploadFixturePDF))
 
-	if _, _, err := runAttachmentsAdd(t, &rootFlags{asJSON: true}, []string{"add", "PARENT1", path, "--mode", "linked-file"}); err == nil || ExitCode(err) != 2 || !strings.Contains(err.Error(), "--mode must be stored") {
-		t.Fatalf("mode err = %v, want stored-only usage error", err)
+	if _, _, err := runAttachmentsAdd(t, &rootFlags{asJSON: true}, []string{"add", "PARENT1", path, "--mode", "copy"}); err == nil || ExitCode(err) != 2 || !strings.Contains(err.Error(), "--mode must be stored or linked-file") {
+		t.Fatalf("mode err = %v, want mode usage error", err)
 	}
 	if _, _, err := runAttachmentsAdd(t, &rootFlags{asJSON: true}, []string{"add", "../etc", path}); err == nil || ExitCode(err) != 2 || !strings.Contains(err.Error(), "invalid parent item key") {
 		t.Fatalf("key err = %v, want invalid-key usage error", err)

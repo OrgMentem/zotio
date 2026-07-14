@@ -54,26 +54,27 @@ func newAttachmentsAddCmd(flags *rootFlags) *cobra.Command {
 
 	cmd := &cobra.Command{
 		Use:   "add <parent-key> <file>",
-		Short: "Attach a local file to an existing item as a synced stored attachment",
-		Long: `Upload a local file (typically a PDF) as a stored (imported_file) child of an
-existing item through the Zotero Web API file-upload protocol. Stored
-attachments sync to all devices, unlike linked-file children.
+		Short: "Attach a local file to an existing item",
+		Long: `Attach a local file (typically a PDF) to an existing item through the
+Zotero Web API. Mode "stored" uploads an imported_file child that syncs to all
+devices. Mode "linked-file" records the absolute local path without consuming
+Zotero storage quota; the bytes remain local to this machine.
 
-Retry-safe: if the parent already has an imported_file child with the same
-filename and identical content, the command no-ops; a child left behind by an
-interrupted run is resumed; same filename with different content is reported
-as a conflict for manual review instead of being duplicated or overwritten.
+Both modes are retry-safe. Stored files reconcile by filename and registered
+MD5. Linked files reconcile by absolute path. An identical retry no-ops instead
+of creating another child.
 
-By default this previews the planned upload; apply with --yes.`,
-		Example: "  zotio attachments add AB3DE6F8 ./paper.pdf --yes",
+By default this previews the planned attachment; apply with --yes.`,
+		Example: "  zotio attachments add AB3DE6F8 ./paper.pdf --mode stored --yes",
 		Args:    cobra.ExactArgs(2),
 		Annotations: map[string]string{
 			"zotio:method": "POST",
 			"zotio:path":   "/items/{key}/file",
 		},
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if mode != "stored" {
-				return usageErr(fmt.Errorf("--mode must be stored (linked-file children are created by `import apply --attach-mode linked-file`)"))
+			mode = strings.TrimSpace(mode)
+			if mode != "stored" && mode != "linked-file" {
+				return usageErr(fmt.Errorf("--mode must be stored or linked-file"))
 			}
 			parentKey := strings.TrimSpace(args[0])
 			if !zoteroItemKeyRE.MatchString(parentKey) {
@@ -92,15 +93,21 @@ By default this previews the planned upload; apply with --yes.`,
 				}
 			}
 
+			kind := "attachment_upload"
+			change := fmt.Sprintf("stored -> %s (%d bytes, md5 %s)", req.Filename, len(req.Data), req.MD5[:8])
+			if mode == "linked-file" {
+				kind = "attachment_link"
+				change = "linked-file -> " + req.Path
+			}
 			op := mutation.Op{
-				ID:   "attachments.add:001:stored",
-				Key:  parentKey,
-				Kind: "attachment_upload",
-				Changes: []mutation.Change{{
-					Field: "attachment",
-					Add:   fmt.Sprintf("stored -> %s (%d bytes, md5 %s)", req.Filename, len(req.Data), req.MD5[:8]),
-				}},
+				ID:      "attachments.add:001:" + mode,
+				Key:     parentKey,
+				Kind:    kind,
+				Changes: []mutation.Change{{Field: "attachment", Add: change}},
 				Apply: func() (string, any, error) {
+					if mode == "linked-file" {
+						return applyLinkedAttachment(c, req, flags)
+					}
 					return applyStoredUpload(cmd.Context(), c, req, flags)
 				},
 			}
@@ -111,7 +118,7 @@ By default this previews the planned upload; apply with --yes.`,
 			return runErr
 		},
 	}
-	cmd.Flags().StringVar(&mode, "mode", "stored", "Attachment handling: stored (synced imported_file upload)")
+	cmd.Flags().StringVar(&mode, "mode", "stored", "Attachment handling: stored (synced) or linked-file (local path)")
 	cmd.Flags().StringVar(&title, "title", "", "Attachment title (default: the file name)")
 	return cmd
 }
@@ -134,6 +141,86 @@ func applyStoredUpload(ctx context.Context, c *client.Client, req storedUploadRe
 		return "no_op", map[string]any{"item_key": outcome.Key, "note": "identical stored attachment already present"}, nil
 	}
 	return "applied", map[string]any{"item_key": outcome.Key, "upload": outcome.Status}, nil
+}
+
+func applyLinkedAttachment(c *client.Client, req storedUploadRequest, flags *rootFlags) (string, any, error) {
+	if c == nil {
+		return "failed", nil, fmt.Errorf("missing write client")
+	}
+	key, created, err := ensureLinkedAttachment(c, req, flags)
+	var conflict *storedConflictError
+	if errors.As(err, &conflict) {
+		return "conflict", conflict.Error(), nil
+	}
+	if err != nil {
+		return "failed", nil, err
+	}
+	detail := map[string]any{"item_key": key, "path": req.Path}
+	if !created {
+		detail["note"] = "identical linked-file attachment already present"
+		return "no_op", detail, nil
+	}
+	return "applied", detail, nil
+}
+
+func ensureLinkedAttachment(c *client.Client, req storedUploadRequest, flags *rootFlags) (string, bool, error) {
+	if key, err := findLinkedAttachment(c, req.ParentKey, req.Path); err != nil {
+		return "", false, err
+	} else if key != "" {
+		return key, false, nil
+	}
+	tokenHash := sha256.Sum256([]byte("zotio.attachments.add.linked\x00" + req.ParentKey + "\x00" + req.Path))
+	token := hex.EncodeToString(tokenHash[:16])
+	item := map[string]any{
+		"itemType": "attachment", "linkMode": "linked_file", "parentItem": req.ParentKey,
+		"title": req.Title, "path": req.Path, "contentType": req.ContentType,
+	}
+	resp, _, err := c.PostWithHeaders("/items", []map[string]any{item}, map[string]string{"Zotero-Write-Token": token})
+	if err != nil {
+		var respErr *client.APIError
+		if errors.As(err, &respErr) && respErr.StatusCode == http.StatusPreconditionFailed {
+			if key, reconcileErr := findLinkedAttachment(c, req.ParentKey, req.Path); reconcileErr == nil && key != "" {
+				return key, false, nil
+			}
+			return "", false, &storedConflictError{fmt.Sprintf(
+				"write token for linked file %q under %s was already submitted but no matching attachment was found; review the item manually",
+				req.Path, req.ParentKey)}
+		}
+		return "", false, classifyAPIError(err, flags)
+	}
+	key, ok := createdItemKey(resp)
+	if !ok {
+		return "", false, fmt.Errorf("could not read created linked-file attachment key from /items response")
+	}
+	return key, true, nil
+}
+
+func findLinkedAttachment(c *client.Client, parentKey, path string) (string, error) {
+	data, _, err := c.GetWithVersion("/items/"+parentKey+"/children", map[string]string{"itemType": "attachment"})
+	if err != nil {
+		var respErr *client.APIError
+		if errors.As(err, &respErr) && respErr.StatusCode == http.StatusNotFound {
+			return "", notFoundErr(fmt.Errorf("parent item %s not found", parentKey))
+		}
+		return "", fmt.Errorf("listing children of %s: %w", parentKey, err)
+	}
+	var rows []struct {
+		Key  string `json:"key"`
+		Data struct {
+			ItemType string `json:"itemType"`
+			LinkMode string `json:"linkMode"`
+			Path     string `json:"path"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(data, &rows); err != nil {
+		return "", fmt.Errorf("parsing children of %s: %w", parentKey, err)
+	}
+	for _, row := range rows {
+		if row.Data.ItemType == "attachment" && row.Data.LinkMode == "linked_file" && row.Data.Path == path {
+			return row.Key, nil
+		}
+	}
+	return "", nil
 }
 
 // storedUploadRequest carries everything the upload protocol needs for one file.

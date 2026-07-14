@@ -91,7 +91,7 @@
   },
   {
     "name": "attachments_add",
-    "description": "Upload a local file (typically a PDF) as a stored (imported_file) child of an\nexisting item through the Zotero Web API file-upload protocol. Stored\nattachments sync to all devices, unlike linked-file children.\n\nRetry-safe: if the parent already has an imported_file child with the same\nfilename and identical content, the command no-ops; a child left behind by an\ninterrupted run is resumed; same filename with different content is reported\nas a conflict for manual review instead of being duplicated or overwritten.\n\nBy default this previews the planned upload; apply with --yes.",
+    "description": "Attach a local file (typically a PDF) to an existing item through the\nZotero Web API. Mode \"stored\" uploads an imported_file child that syncs to all\ndevices. Mode \"linked-file\" records the absolute local path without consuming\nZotero storage quota; the bytes remain local to this machine.\n\nBoth modes are retry-safe. Stored files reconcile by filename and registered\nMD5. Linked files reconcile by absolute path. An identical retry no-ops instead\nof creating another child.\n\nBy default this previews the planned attachment; apply with --yes.",
     "inputSchema": {
       "properties": {
         "allow-destructive": {
@@ -119,7 +119,7 @@
           "type": "number"
         },
         "mode": {
-          "description": "Attachment handling: stored (synced imported_file upload) (default: stored)",
+          "description": "Attachment handling: stored (synced) or linked-file (local path) (default: stored)",
           "type": "string"
         },
         "title": {
