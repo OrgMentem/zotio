@@ -146,8 +146,8 @@ func crossRefItemFromWork(work crossRefWork, fallbackDOI string) map[string]any 
 	} else {
 		item["DOI"] = fallbackDOI
 	}
-	if publicationTitle := firstCrossRefString(work.ContainerTitle, ""); publicationTitle != "" {
-		item["publicationTitle"] = publicationTitle
+	if containerTitle := firstCrossRefString(work.ContainerTitle, ""); containerTitle != "" {
+		setCrossRefContainerTitle(item, containerTitle)
 	}
 	// Include the abstract (CrossRef returns JATS XML).
 	if abstract := stripJATS(work.Abstract); abstract != "" {
@@ -156,10 +156,41 @@ func crossRefItemFromWork(work crossRefWork, fallbackDOI string) map[string]any 
 	return item
 }
 
+// setCrossRefContainerTitle places CrossRef's container title in the field
+// supported by the resolved Zotero item type. A CrossRef container is not
+// necessarily a thesis university, so thesis items deliberately omit it.
+// Types without a matching container field retain it in Extra rather than
+// making the import invalid.
+func setCrossRefContainerTitle(item map[string]any, containerTitle string) {
+	itemType, _ := item["itemType"].(string)
+	switch itemType {
+	case "journalArticle", "magazineArticle", "newspaperArticle":
+		item["publicationTitle"] = containerTitle
+	case "conferencePaper":
+		item["proceedingsTitle"] = containerTitle
+	case "bookSection":
+		item["bookTitle"] = containerTitle
+	case "thesis":
+		// CrossRef's container title does not establish a university.
+	default:
+		item["extra"] = "Container: " + containerTitle
+	}
+}
+
 func crossRefItemType(crossRefType string) string {
 	switch crossRefType {
 	case "journal-article":
 		return "journalArticle"
+	case "proceedings-article":
+		return "conferencePaper"
+	case "book-chapter":
+		return "bookSection"
+	case "dissertation":
+		return "thesis"
+	case "report":
+		return "report"
+	case "posted-content":
+		return "preprint"
 	case "book":
 		return "book"
 	default:
