@@ -13,7 +13,9 @@ func TestStoreSetGetClear(t *testing.T) {
 	store := New(t.TempDir(), time.Hour)
 	value := json.RawMessage(`{"ok":true,"n":2}`)
 
-	store.Set("GET /items?limit=1", value)
+	if err := store.Set("GET /items?limit=1", value); err != nil {
+		t.Fatalf("Set: %v", err)
+	}
 	got, ok := store.Get("GET /items?limit=1")
 	if !ok {
 		t.Fatal("Get did not find value written by Set")
@@ -36,7 +38,9 @@ func TestStoreSetGetClear(t *testing.T) {
 func TestStoreGetRespectsTTL(t *testing.T) {
 	store := New(t.TempDir(), time.Minute)
 	key := "GET /items/K1"
-	store.Set(key, json.RawMessage(`{"key":"K1"}`))
+	if err := store.Set(key, json.RawMessage(`{"key":"K1"}`)); err != nil {
+		t.Fatalf("Set: %v", err)
+	}
 
 	expired := time.Now().Add(-2 * time.Minute)
 	if err := os.Chtimes(store.path(key), expired, expired); err != nil {

@@ -11,6 +11,7 @@ package mcp
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"sort"
 	"strconv"
@@ -459,21 +460,23 @@ func archiveStatus() map[string]any {
 	defer db.Close()
 
 	counts := map[string]int{}
-	if rows, qerr := db.DB().Query(`SELECT resource_type, COUNT(*) FROM resources GROUP BY resource_type`); qerr == nil {
+	rows, qerr := db.DB().Query(`SELECT resource_type, COUNT(*) FROM resources GROUP BY resource_type`)
+	if qerr == nil {
 		for rows.Next() {
 			var rt string
 			var n int
-			if rows.Scan(&rt, &n) == nil {
+			if serr := rows.Scan(&rt, &n); serr == nil {
 				counts[rt] = n
 			}
 		}
+		qerr = rows.Err()
 		rows.Close()
 	}
 
 	resources := map[string]any{}
 	for _, t := range []string{"items", "collections", "searches", "tags"} {
-		_, lastSynced, _, _ := db.GetSyncState(t)
-		ver, _ := db.GetLibraryVersion(t)
+		_, lastSynced, _, syncErr := db.GetSyncState(t)
+		ver, verErr := db.GetLibraryVersion(t)
 		entry := map[string]any{
 			"count":           counts[t],
 			"library_version": ver,
@@ -481,15 +484,28 @@ func archiveStatus() map[string]any {
 		if !lastSynced.IsZero() {
 			entry["last_synced_at"] = lastSynced.UTC().Format("2006-01-02T15:04:05Z07:00")
 		}
+		// Surface persistence read errors instead of silently reporting
+		// zero/empty state, which would hide local DB corruption or
+		// permission problems.
+		if readErr := errors.Join(syncErr, verErr); readErr != nil {
+			entry["error"] = readErr.Error()
+		}
 		resources[t] = entry
 	}
-	schemaVer, _ := db.SchemaVersion()
-	return map[string]any{
+	schemaVer, schemaErr := db.SchemaVersion()
+	status := map[string]any{
 		"db_path":        dbPath(),
 		"synced":         len(counts) > 0,
 		"schema_version": schemaVer,
 		"resources":      resources,
 	}
+	if qerr != nil {
+		status["counts_error"] = qerr.Error()
+	}
+	if schemaErr != nil {
+		status["schema_version_error"] = schemaErr.Error()
+	}
+	return status
 }
 
 // localSchemaDDL returns the DDL of the local store's tables and indexes.

@@ -114,7 +114,7 @@ func newAnnotationsExportCmd(flags *rootFlags) *cobra.Command {
 			}
 			results, errs := cliutil.FanoutRun(cmd.Context(), candidates,
 				func(item map[string]any) string { return zoteroString(item, "key") },
-				func(_ context.Context, item map[string]any) (annotationExportItem, error) {
+				func(fctx context.Context, item map[string]any) (annotationExportItem, error) {
 					key := zoteroString(item, "key")
 					var childItems []map[string]any
 					if db != nil {
@@ -131,7 +131,7 @@ func newAnnotationsExportCmd(flags *rootFlags) *cobra.Command {
 						}
 					} else {
 						// url-encode path param to prevent segment injection.
-						children, err := c.Get("/items/"+url.PathEscape(key)+"/children", map[string]string{"itemType": "annotation"})
+						children, err := c.GetContext(fctx, "/items/"+url.PathEscape(key)+"/children", map[string]string{"itemType": "annotation"})
 						if err != nil {
 							return annotationExportItem{}, err
 						}

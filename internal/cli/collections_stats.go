@@ -103,7 +103,11 @@ LIMIT ?`, collKey, flagTop)
 			var minYear, maxYear string
 			if len(summaryRows) > 0 {
 				if v, ok := summaryRows[0]["total"]; ok {
-					total = int(toInt64(v))
+					n, err := toInt64(v)
+					if err != nil {
+						return fmt.Errorf("parsing total item count: %w", err)
+					}
+					total = int(n)
 				}
 				if v, ok := summaryRows[0]["min_year"]; ok && v != nil {
 					minYear, _ = v.(string)
@@ -114,7 +118,11 @@ LIMIT ?`, collKey, flagTop)
 			}
 			if len(pdfRows) > 0 {
 				if v, ok := pdfRows[0]["items_with_pdf"]; ok {
-					pdfCount = int(toInt64(v))
+					n, err := toInt64(v)
+					if err != nil {
+						return fmt.Errorf("parsing PDF item count: %w", err)
+					}
+					pdfCount = int(n)
 				}
 			}
 
@@ -166,7 +174,10 @@ LIMIT ?`, collKey, flagTop)
 				fmt.Fprintf(cmd.OutOrStdout(), "\nTop Venues:\n")
 				for _, v := range venueRows {
 					venue, _ := v["venue"].(string)
-					count := toInt64(v["count"])
+					count, err := toInt64(v["count"])
+					if err != nil {
+						return fmt.Errorf("parsing venue count for %q: %w", venue, err)
+					}
 					fmt.Fprintf(cmd.OutOrStdout(), "  %-40s %d\n", venue, count)
 				}
 			}
@@ -178,18 +189,20 @@ LIMIT ?`, collKey, flagTop)
 	return cmd
 }
 
-func toInt64(v any) int64 {
+func toInt64(v any) (int64, error) {
 	switch x := v.(type) {
 	case int64:
-		return x
+		return x, nil
 	case float64:
-		return int64(x)
+		return int64(x), nil
 	case int:
-		return int64(x)
+		return int64(x), nil
 	case string:
 		var n int64
-		_, _ = fmt.Sscanf(x, "%d", &n)
-		return n
+		if _, err := fmt.Sscanf(x, "%d", &n); err != nil {
+			return 0, fmt.Errorf("parsing integer %q: %w", x, err)
+		}
+		return n, nil
 	}
-	return 0
+	return 0, nil
 }

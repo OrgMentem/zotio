@@ -46,12 +46,26 @@ func TestSplitParagraphs(t *testing.T) {
 func TestStateCommentRoundTrip(t *testing.T) {
 	st := pushState{Schema: 1, NoteKey: "N8K2QX7M", NoteVersion: 481, SourceHash: "aaa", RemoteHash: "bbb", Renderer: vaultRenderer}
 	body := "intro\n" + stateComment(st) + "\ntail"
-	got := parseStateComment(body)
+	got, err := parseStateComment(body)
+	if err != nil {
+		t.Fatalf("round-trip parse error: %v", err)
+	}
 	if got != st {
 		t.Errorf("round-trip mismatch:\n got %+v\nwant %+v", got, st)
 	}
-	if (parseStateComment("no state here") != pushState{}) {
-		t.Errorf("absent state should be the zero value")
+	if absent, err := parseStateComment("no state here"); err != nil || absent != (pushState{}) {
+		t.Errorf("absent state should be the zero value with no error, got %+v err=%v", absent, err)
+	}
+}
+
+func TestStateCommentMalformedSurfacesError(t *testing.T) {
+	body := "intro\n" + vaultStatePrefix + "{not valid json" + " -->" + "\ntail"
+	got, err := parseStateComment(body)
+	if err == nil {
+		t.Fatalf("malformed state comment should surface a parse error, got silent %+v", got)
+	}
+	if got != (pushState{}) {
+		t.Errorf("malformed state should yield zero value alongside error, got %+v", got)
 	}
 }
 
@@ -88,8 +102,8 @@ func TestWriteNoteStateAppendThenReplace(t *testing.T) {
 		t.Fatalf("append state: %v", err)
 	}
 	s := readNote(t, path)
-	if !strings.Contains(s, vaultStatePrefix) || parseStateComment(s) != st {
-		t.Fatalf("state not appended/parseable:\n%s", s)
+	if got, err := parseStateComment(s); !strings.Contains(s, vaultStatePrefix) || err != nil || got != st {
+		t.Fatalf("state not appended/parseable (err=%v):\n%s", err, s)
 	}
 	if !strings.Contains(s, "mine") {
 		t.Errorf("user region lost on state append")
@@ -104,8 +118,8 @@ func TestWriteNoteStateAppendThenReplace(t *testing.T) {
 	if c := strings.Count(s, vaultStatePrefix); c != 1 {
 		t.Errorf("state comment duplicated (%d):\n%s", c, s)
 	}
-	if parseStateComment(s) != st {
-		t.Errorf("state not updated in place")
+	if got, err := parseStateComment(s); err != nil || got != st {
+		t.Errorf("state not updated in place (err=%v)", err)
 	}
 }
 

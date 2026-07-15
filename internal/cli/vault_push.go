@@ -536,6 +536,10 @@ func parsePushNote(path string) (*pushNote, error) {
 		key = keyFromZoteroSelect(frontmatterKeyValue(body, "zotero"))
 	}
 	region, has := extractNotesRegion(body)
+	st, serr := parseStateComment(body)
+	if serr != nil {
+		fmt.Fprintf(os.Stderr, "warning: %s: %v; treating note as unsynced\n", path, serr)
+	}
 	return &pushNote{
 		path:      path,
 		citekey:   frontmatterKeyValue(body, "citekey"),
@@ -543,7 +547,7 @@ func parsePushNote(path string) (*pushNote, error) {
 		library:   frontmatterKeyValue(body, "zotero_library"),
 		region:    region,
 		hasRegion: has,
-		state:     parseStateComment(body),
+		state:     st,
 	}, nil
 }
 
@@ -560,19 +564,21 @@ func extractNotesRegion(body string) (string, bool) {
 	return strings.Trim(body[after:after+rel], "\n"), true
 }
 
-func parseStateComment(body string) pushState {
+func parseStateComment(body string) (pushState, error) {
 	var st pushState
 	i := strings.Index(body, vaultStatePrefix)
 	if i < 0 {
-		return st
+		return st, nil
 	}
 	rest := body[i+len(vaultStatePrefix):]
 	end := strings.Index(rest, " -->")
 	if end < 0 {
-		return st
+		return st, nil
 	}
-	_ = json.Unmarshal([]byte(strings.TrimSpace(rest[:end])), &st)
-	return st
+	if err := json.Unmarshal([]byte(strings.TrimSpace(rest[:end])), &st); err != nil {
+		return pushState{}, fmt.Errorf("parsing vault state comment: %w", err)
+	}
+	return st, nil
 }
 
 func stateComment(st pushState) string {

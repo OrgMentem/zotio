@@ -41,7 +41,10 @@ func newItemsAuthorsCmd(flags *rootFlags) *cobra.Command {
 			if err != nil {
 				return fmt.Errorf("querying authors: %w", err)
 			}
-			out := normalizeItemAuthorRows(rows)
+			out, err := normalizeItemAuthorRows(rows)
+			if err != nil {
+				return err
+			}
 			data, err := json.Marshal(out)
 			if err != nil {
 				return err
@@ -92,17 +95,21 @@ LIMIT ?`
 	return db.QueryRaw(query, args...)
 }
 
-func normalizeItemAuthorRows(rows []map[string]any) []itemAuthorRow {
+func normalizeItemAuthorRows(rows []map[string]any) ([]itemAuthorRow, error) {
 	out := make([]itemAuthorRow, 0, len(rows))
 	for _, row := range rows {
 		displayName := formatCreatorDisplayName(sqlText(row["last_name"]), sqlText(row["first_name"]), sqlText(row["name"]))
+		itemCount, err := toInt64(row["item_count"])
+		if err != nil {
+			return nil, fmt.Errorf("parsing item count for %q: %w", displayName, err)
+		}
 		out = append(out, itemAuthorRow{
 			DisplayName: displayName,
 			CreatorType: sqlText(row["creator_type"]),
-			ItemCount:   toInt64(row["item_count"]),
+			ItemCount:   itemCount,
 		})
 	}
-	return out
+	return out, nil
 }
 
 func formatCreatorDisplayName(lastName, firstName, name string) string {

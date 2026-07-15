@@ -68,7 +68,10 @@ func (c *Client) Ping(ctx context.Context) error {
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		body, readErr := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		if readErr != nil {
+			return fmt.Errorf("connector ping: HTTP %d: reading response body: %w", resp.StatusCode, readErr)
+		}
 		return fmt.Errorf("connector ping: HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
 	}
 	return nil
@@ -464,7 +467,10 @@ func (c *Client) expectStatus(req *http.Request, endpoint string, want int) ([]b
 			return nil, fmt.Errorf("connector %s: %w", endpoint, err)
 		}
 	} else {
-		body, _ = io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+		body, err = io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+		if err != nil {
+			return nil, fmt.Errorf("connector %s: HTTP %d: reading response body: %w", endpoint, resp.StatusCode, err)
+		}
 	}
 	if resp.StatusCode != want {
 		return nil, fmt.Errorf("connector %s: HTTP %d: %s", endpoint, resp.StatusCode, strings.TrimSpace(string(body)))

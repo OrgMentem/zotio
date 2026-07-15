@@ -49,7 +49,10 @@ func TestKeepRemoteResolve(t *testing.T) {
 	if strings.Contains(s, "local stale edit") {
 		t.Errorf("local edit not discarded:\n%s", s)
 	}
-	got := parseStateComment(s)
+	got, perr := parseStateComment(s)
+	if perr != nil {
+		t.Fatalf("parse state: %v", perr)
+	}
 	want := pushState{Schema: noteStateSchema, NoteKey: "N1", NoteVersion: liveVer, SourceHash: sha256hex(remoteMD), RemoteHash: sha256hex(liveHTML), Renderer: vaultRenderer}
 	if got != want {
 		t.Errorf("baseline not refreshed:\n got %+v\nwant %+v", got, want)

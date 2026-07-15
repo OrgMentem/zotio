@@ -12,6 +12,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -747,5 +748,39 @@ func TestItemsTrashLocalSyncedEmptyReturnsArrayWithProvenance(t *testing.T) {
 	}
 	if !syncedAt.Equal(wantSyncedAt) {
 		t.Fatalf("synced_at = %v, want items-trash timestamp %v", syncedAt, wantSyncedAt)
+	}
+}
+
+// TestResolveLocalItemListRejectsNonNumericPagination asserts malformed start/limit
+// query params surface a validation error instead of being silently clamped to 0.
+func TestResolveLocalItemListRejectsNonNumericPagination(t *testing.T) {
+	seedLocalQueryPlannerDB(t)
+	db, err := store.OpenWithContext(context.Background(), defaultDBPath("zotio"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer db.Close()
+
+	cases := []struct {
+		name   string
+		params map[string]string
+		want   string
+	}{
+		{"non-numeric start", map[string]string{"start": "abc"}, "invalid start"},
+		{"non-numeric limit", map[string]string{"limit": "xyz"}, "invalid limit"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			data, handled, err := resolveLocalItemList(db, "/items", tc.params)
+			if !handled {
+				t.Fatalf("handled = false, want true for item-list path")
+			}
+			if err == nil {
+				t.Fatalf("err = nil, want validation error (data=%q)", data)
+			}
+			if !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("err = %q, want it to contain %q", err.Error(), tc.want)
+			}
+		})
 	}
 }

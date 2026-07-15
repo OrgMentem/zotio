@@ -87,8 +87,13 @@ func ProbeReachable(ctx context.Context, client *http.Client, url string) (statu
 	}
 	defer resp.Body.Close()
 	// Drain up to 2 KiB so the connection can be reused. We read past
-	// the 1024-byte Range hint to cover hosts that ignored it.
-	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 2048))
+	// the 1024-byte Range hint to cover hosts that ignored it. A drain
+	// error here means the read failed mid-body — a transient
+	// network/proxy failure — so the host is not cleanly reachable
+	// even though headers came back.
+	if _, copyErr := io.Copy(io.Discard, io.LimitReader(resp.Body, 2048)); copyErr != nil {
+		return ReachabilityUnreachable, resp.StatusCode, fmt.Errorf("draining body: %w", copyErr)
+	}
 	switch {
 	case resp.StatusCode >= 200 && resp.StatusCode < 300:
 		return ReachabilityReachable, resp.StatusCode, nil

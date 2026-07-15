@@ -114,8 +114,8 @@ func TestApplyPulledRegion(t *testing.T) {
 	if !ok || region != "new pulled\ncontent" {
 		t.Errorf("region = (%q,%v)", region, ok)
 	}
-	if parseStateComment(s) != st {
-		t.Errorf("state not written in same pass: %+v", parseStateComment(s))
+	if got, err := parseStateComment(s); err != nil || got != st {
+		t.Errorf("state not written in same pass: %+v (err=%v)", got, err)
 	}
 	if strings.Contains(s, "old local") {
 		t.Errorf("old region not replaced:\n%s", s)

@@ -136,7 +136,8 @@ func resolveRead(ctx context.Context, c *client.Client, flags *rootFlags, resour
 
 // writeThroughCache upserts live API results into the local SQLite store so
 // FTS search covers everything the user has looked up — not just explicit syncs.
-// Best-effort: failures are silently ignored (the live result already succeeded).
+// Best-effort: the live result already succeeded, so a cache write failure is
+// non-fatal and only emits a stderr warning (it never fails the read path).
 func writeThroughCache(ctx context.Context, resourceType string, data json.RawMessage) {
 	// schema/type lists (itemTypes, itemFields, …) are read-only reference
 	// data, not library content — skip the cache. Tags flow through: the
@@ -171,7 +172,9 @@ func writeThroughCache(ctx context.Context, resourceType string, data json.RawMe
 			// Single object with an id field (e.g., detail response)
 			if items == nil {
 				if _, ok := envelope["id"]; ok {
-					_, _, _ = db.UpsertBatch(resourceType, []json.RawMessage{data})
+					if _, _, err := db.UpsertBatch(resourceType, []json.RawMessage{data}); err != nil {
+						fmt.Fprintf(os.Stderr, "warning: write-through cache failed for %q: %v\n", resourceType, err)
+					}
 					return
 				}
 			}
@@ -179,7 +182,9 @@ func writeThroughCache(ctx context.Context, resourceType string, data json.RawMe
 	}
 
 	if len(items) > 0 {
-		_, _, _ = db.UpsertBatch(resourceType, items)
+		if _, _, err := db.UpsertBatch(resourceType, items); err != nil {
+			fmt.Fprintf(os.Stderr, "warning: write-through cache failed for %q: %v\n", resourceType, err)
+		}
 	}
 }
 
@@ -374,10 +379,18 @@ func resolveLocalItemList(db *store.Store, path string, params map[string]string
 		Direction:  params["direction"],
 	}
 	if v := params["limit"]; v != "" {
-		q.Limit, _ = strconv.Atoi(v)
+		n, err := strconv.Atoi(v)
+		if err != nil {
+			return nil, true, fmt.Errorf("invalid limit %q: must be an integer", v)
+		}
+		q.Limit = n
 	}
 	if v := params["start"]; v != "" {
-		q.Start, _ = strconv.Atoi(v)
+		n, err := strconv.Atoi(v)
+		if err != nil {
+			return nil, true, fmt.Errorf("invalid start %q: must be an integer", v)
+		}
+		q.Start = n
 	}
 	items, err := db.QueryItems(q)
 	if err != nil {

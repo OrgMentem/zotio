@@ -315,6 +315,85 @@ func TestUpsert_ItemLifecycleTransitions(t *testing.T) {
 	assertCanonicalItemState(t, s, id, "items-trash", "items")
 }
 
+// TestUpsert_MalformedItemPayloadReturnsErrorAndPreservesOpposite is the
+// regression test for finding zotio-1c4ff2c94de16f19: a JSON decode failure in
+// lifecycle reconciliation must surface as an explicit error and roll back the
+// transaction, never silently reconciling against a zero-value struct and
+// deleting the valid opposite row.
+func TestUpsert_MalformedItemPayloadReturnsErrorAndPreservesOpposite(t *testing.T) {
+	// Site: Upsert incoming-payload decode. A malformed items-trash payload
+	// decodes to a zero-value (version 0). On a version-0 tie the trash would
+	// win and delete the valid live row unless the decode failure is fatal.
+	t.Run("malformed incoming payload aborts before deleting valid opposite", func(t *testing.T) {
+		s, err := OpenWithContext(context.Background(), filepath.Join(t.TempDir(), "data.db"))
+		if err != nil {
+			t.Fatalf("open: %v", err)
+		}
+		defer s.Close()
+
+		const id = "MALFORMED-INCOMING"
+		if err := s.Upsert("items", id, json.RawMessage(`{"key":"MALFORMED-INCOMING","data":{"title":"valid live"}}`)); err != nil {
+			t.Fatalf("seed valid live: %v", err)
+		}
+
+		err = s.Upsert("items-trash", id, json.RawMessage(`{"key":"MALFORMED-INCOMING",`))
+		if err == nil {
+			t.Fatal("Upsert with malformed items-trash payload returned nil; want decode error")
+		}
+		if !strings.Contains(err.Error(), "unmarshal") {
+			t.Fatalf("error = %q; want it to mention the unmarshal failure", err)
+		}
+		// Rolled back: the valid live row survives and no trash row was written.
+		assertCanonicalItemState(t, s, id, "items", "items-trash")
+	})
+
+	// Site: reconcileItemLifecycleTx opposite-state decode. A corrupt stored
+	// opposite must abort reconciliation instead of tying at version 0 and
+	// deleting the just-written valid incoming row.
+	t.Run("malformed stored opposite aborts reconciliation", func(t *testing.T) {
+		s, err := OpenWithContext(context.Background(), filepath.Join(t.TempDir(), "data.db"))
+		if err != nil {
+			t.Fatalf("open: %v", err)
+		}
+		defer s.Close()
+
+		const id = "MALFORMED-OPPOSITE"
+		// Seed a corrupt items-trash row directly, bypassing Upsert's reconcile.
+		if _, err := s.DB().Exec(
+			`INSERT INTO resources (id, resource_type, data) VALUES (?, 'items-trash', ?)`,
+			id, `{"key":"MALFORMED-OPPOSITE",`,
+		); err != nil {
+			t.Fatalf("seed malformed opposite: %v", err)
+		}
+
+		err = s.Upsert("items", id, json.RawMessage(`{"key":"MALFORMED-OPPOSITE","data":{"title":"valid live"}}`))
+		if err == nil {
+			t.Fatal("Upsert against malformed stored opposite returned nil; want reconcile decode error")
+		}
+		if !strings.Contains(err.Error(), "unmarshal") {
+			t.Fatalf("error = %q; want it to mention the unmarshal failure", err)
+		}
+		// The corrupt opposite must remain and the live row must not be committed.
+		var trashCount, liveCount int
+		if err := s.DB().QueryRow(
+			`SELECT count(*) FROM resources WHERE id = ? AND resource_type = 'items-trash'`, id,
+		).Scan(&trashCount); err != nil {
+			t.Fatalf("count trash: %v", err)
+		}
+		if trashCount != 1 {
+			t.Fatalf("malformed opposite trash rows = %d, want 1 (must not be silently deleted)", trashCount)
+		}
+		if err := s.DB().QueryRow(
+			`SELECT count(*) FROM resources WHERE id = ? AND resource_type = 'items'`, id,
+		).Scan(&liveCount); err != nil {
+			t.Fatalf("count live: %v", err)
+		}
+		if liveCount != 0 {
+			t.Fatalf("live rows after aborted upsert = %d, want 0 (transaction must roll back)", liveCount)
+		}
+	})
+}
+
 func TestUpsertBatch_ItemLifecycleReconciliation(t *testing.T) {
 	s, err := OpenWithContext(context.Background(), filepath.Join(t.TempDir(), "data.db"))
 	if err != nil {

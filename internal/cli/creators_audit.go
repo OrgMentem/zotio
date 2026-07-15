@@ -183,7 +183,10 @@ func runCreatorsAudit(ctx context.Context, flags *rootFlags, scopeExpr string, w
 		summary.ORCID = &orcidSummary
 	}
 
-	_, syncedAt, _, _ := rawDB.GetSyncState("items")
+	_, syncedAt, _, err := rawDB.GetSyncState("items")
+	if err != nil {
+		return creatorsAuditReport{}, false, fmt.Errorf("querying sync state: %w", err)
+	}
 	source := FindingSource{Kind: "local"}
 	if !syncedAt.IsZero() {
 		source.SyncedAt = &syncedAt

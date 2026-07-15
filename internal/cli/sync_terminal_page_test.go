@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -36,7 +37,7 @@ func TestSyncResourceTerminalEmptyPageClearsCursorAndStoresCheckpoint(t *testing
 	db := syncTestOpenStore(t)
 	defer db.Close()
 
-	result := syncResource(syncTestClient(server.URL), db, "items", 0, false, 0, false)
+	result := syncResource(context.Background(), syncTestClient(server.URL), db, "items", 0, false, 0, false)
 	if result.Err != nil || result.Warn != nil {
 		t.Fatalf("syncResource result Err = %v Warn = %v", result.Err, result.Warn)
 	}

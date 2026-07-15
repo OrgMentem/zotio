@@ -224,3 +224,42 @@ func TestMCPItemBundleResource(t *testing.T) {
 		t.Errorf("bundle missing item payload")
 	}
 }
+
+// A local store that opens but has a corrupt/missing sync_state table must
+// surface the per-resource read error instead of silently reporting empty
+// state (which would hide DB corruption or permission problems).
+func TestArchiveStatusSurfacesReadErrors(t *testing.T) {
+	t.Setenv("HOME", t.TempDir()) // isolate dbPath() from the real store
+	if err := os.MkdirAll(filepath.Dir(dbPath()), 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	db, err := store.OpenWithContext(context.Background(), dbPath())
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	if err := db.Upsert("items", "TOP1", json.RawMessage(`{"key":"TOP1","version":1,"data":{"key":"TOP1","itemType":"book","title":"X"}}`)); err != nil {
+		t.Fatalf("seed item: %v", err)
+	}
+	// Drop sync_state so GetSyncState/GetLibraryVersion fail with a real
+	// error (not sql.ErrNoRows) while the resources table still counts.
+	if _, err := db.DB().Exec(`DROP TABLE sync_state`); err != nil {
+		t.Fatalf("drop sync_state: %v", err)
+	}
+	db.Close()
+
+	status := archiveStatus()
+	if status["synced"] != true {
+		t.Fatalf("synced = %v, want true (resources still counted)", status["synced"])
+	}
+	resources, ok := status["resources"].(map[string]any)
+	if !ok {
+		t.Fatalf("resources payload missing or wrong type: %#v", status)
+	}
+	entry, ok := resources["items"].(map[string]any)
+	if !ok {
+		t.Fatalf("items entry missing or wrong type: %#v", resources)
+	}
+	if msg, _ := entry["error"].(string); msg == "" {
+		t.Errorf("items entry must surface a persistence read error, got %#v", entry)
+	}
+}

@@ -6,6 +6,7 @@ package connector
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/cookiejar"
@@ -632,4 +633,68 @@ func (r repeatedByteReader) Read(p []byte) (int, error) {
 		p[i] = byte(r)
 	}
 	return len(p), nil
+}
+
+type stubRoundTripper struct{ resp *http.Response }
+
+func (s stubRoundTripper) RoundTrip(*http.Request) (*http.Response, error) { return s.resp, nil }
+
+type errAfterPartialReadCloser struct {
+	data []byte
+	off  int
+	err  error
+}
+
+func (e *errAfterPartialReadCloser) Read(p []byte) (int, error) {
+	if e.off < len(e.data) {
+		n := copy(p, e.data[e.off:])
+		e.off += n
+		return n, nil
+	}
+	return 0, e.err
+}
+
+func (e *errAfterPartialReadCloser) Close() error { return nil }
+
+func TestConnectorNonOKBodyReadFailurePreservesDetail(t *testing.T) {
+	t.Parallel()
+
+	errBoom := errors.New("boom-read-failure")
+	newClient := func() *Client {
+		return &Client{
+			BaseURL: "http://example.invalid/connector",
+			HTTP: &http.Client{
+				Transport: stubRoundTripper{resp: &http.Response{
+					StatusCode: http.StatusBadRequest,
+					Header:     make(http.Header),
+					Body:       &errAfterPartialReadCloser{data: []byte("partial"), err: errBoom},
+				}},
+			},
+			APIVersion: defaultAPIVersion,
+		}
+	}
+
+	// expectStatus path (SaveItems -> expectCreated -> expectStatus).
+	err := newClient().SaveItems(context.Background(), "session", "", []map[string]any{{"id": "id"}})
+	if err == nil {
+		t.Fatal("SaveItems returned nil error for HTTP 400 with unreadable body")
+	}
+	if !errors.Is(err, errBoom) {
+		t.Fatalf("SaveItems error chain lost read failure: %v", err)
+	}
+	if !strings.Contains(err.Error(), "HTTP 400") {
+		t.Fatalf("SaveItems error missing status code: %v", err)
+	}
+
+	// Ping path.
+	perr := newClient().Ping(context.Background())
+	if perr == nil {
+		t.Fatal("Ping returned nil error for HTTP 400 with unreadable body")
+	}
+	if !errors.Is(perr, errBoom) {
+		t.Fatalf("Ping error chain lost read failure: %v", perr)
+	}
+	if !strings.Contains(perr.Error(), "HTTP 400") {
+		t.Fatalf("Ping error missing status code: %v", perr)
+	}
 }

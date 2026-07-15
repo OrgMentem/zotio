@@ -197,7 +197,7 @@ func refreshItemsFromLocalAPI(ctx context.Context, flags *rootFlags) {
 	oldHumanFriendly := humanFriendly
 	humanFriendly = true
 	defer func() { humanFriendly = oldHumanFriendly }()
-	res := syncResource(c, db, "items", 0, false, 1000, false)
+	res := syncResource(ctx, c, db, "items", 0, false, 1000, false)
 	if res.Err != nil {
 		fmt.Fprintf(os.Stderr, "warning: store refresh skipped: %v\n", res.Err)
 	} else if res.Warn != nil {

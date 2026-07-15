@@ -35,7 +35,7 @@ func TestSyncResourceVersionBasedIncremental(t *testing.T) {
 		_, _ = w.Write([]byte(`[{"id":"a"},{"id":"b"}]`))
 	}))
 	defer srv1.Close()
-	if res := syncResource(syncTestClient(srv1.URL), db, "items", 0, false, 0, false); res.Err != nil {
+	if res := syncResource(context.Background(), syncTestClient(srv1.URL), db, "items", 0, false, 0, false); res.Err != nil {
 		t.Fatalf("first sync error: %v", res.Err)
 	}
 	if firstSince != "" {
@@ -54,7 +54,7 @@ func TestSyncResourceVersionBasedIncremental(t *testing.T) {
 		_, _ = w.Write([]byte(`[{"id":"c"}]`))
 	}))
 	defer srv2.Close()
-	if res := syncResource(syncTestClient(srv2.URL), db, "items", 0, false, 0, false); res.Err != nil {
+	if res := syncResource(context.Background(), syncTestClient(srv2.URL), db, "items", 0, false, 0, false); res.Err != nil {
 		t.Fatalf("second sync error: %v", res.Err)
 	}
 	if secondSince != "100" {
@@ -69,7 +69,7 @@ func TestSyncResourceVersionBasedIncremental(t *testing.T) {
 		_, _ = w.Write([]byte(`[{"id":"d"}]`))
 	}))
 	defer srv3.Close()
-	if res := syncResource(syncTestClient(srv3.URL), db, "items", 4521, false, 0, false); res.Err != nil {
+	if res := syncResource(context.Background(), syncTestClient(srv3.URL), db, "items", 4521, false, 0, false); res.Err != nil {
 		t.Fatalf("third sync error: %v", res.Err)
 	}
 	if thirdSince != "4521" {
@@ -278,7 +278,7 @@ func TestSyncResourceSchemaUsesGlobalBaseAndSchemaID(t *testing.T) {
 
 	db := syncTestOpenStore(t)
 	defer db.Close()
-	result := syncResource(syncTestClient(server.URL+"/users/0"), db, "schema", 0, false, 0, false)
+	result := syncResource(context.Background(), syncTestClient(server.URL+"/users/0"), db, "schema", 0, false, 0, false)
 	if result.Err != nil || result.Warn != nil {
 		t.Fatalf("schema sync Err = %v Warn = %v", result.Err, result.Warn)
 	}
@@ -323,7 +323,7 @@ func TestSyncResourcePaginatesMultiplePages(t *testing.T) {
 
 	db := syncTestOpenStore(t)
 	defer db.Close()
-	result := syncResource(syncTestClient(server.URL), db, "items", 0, false, 0, false)
+	result := syncResource(context.Background(), syncTestClient(server.URL), db, "items", 0, false, 0, false)
 	if result.Err != nil || result.Warn != nil {
 		t.Fatalf("syncResource result Err = %v Warn = %v", result.Err, result.Warn)
 	}
@@ -348,7 +348,7 @@ func TestSyncResourceStopsOnStuckCursor(t *testing.T) {
 
 	db := syncTestOpenStore(t)
 	defer db.Close()
-	result := syncResource(syncTestClient(server.URL), db, "items", 0, false, 0, false)
+	result := syncResource(context.Background(), syncTestClient(server.URL), db, "items", 0, false, 0, false)
 	if result.Err != nil || result.Warn != nil {
 		t.Fatalf("syncResource result Err = %v Warn = %v", result.Err, result.Warn)
 	}
@@ -373,7 +373,7 @@ func TestSyncResourceStopsAtMaxPages(t *testing.T) {
 
 	db := syncTestOpenStore(t)
 	defer db.Close()
-	result := syncResource(syncTestClient(server.URL), db, "items", 0, false, 1, false)
+	result := syncResource(context.Background(), syncTestClient(server.URL), db, "items", 0, false, 1, false)
 	if result.Err != nil || result.Warn != nil {
 		t.Fatalf("syncResource result Err = %v Warn = %v", result.Err, result.Warn)
 	}
@@ -396,7 +396,7 @@ func TestSyncResourceStoresSingleObject(t *testing.T) {
 
 	db := syncTestOpenStore(t)
 	defer db.Close()
-	result := syncResource(syncTestClient(server.URL), db, "items", 0, false, 0, false)
+	result := syncResource(context.Background(), syncTestClient(server.URL), db, "items", 0, false, 0, false)
 	if result.Err != nil || result.Warn != nil {
 		t.Fatalf("syncResource result Err = %v Warn = %v", result.Err, result.Warn)
 	}
@@ -415,7 +415,7 @@ func TestSyncResourceAccessDeniedReturnsWarning(t *testing.T) {
 
 	db := syncTestOpenStore(t)
 	defer db.Close()
-	result := syncResource(syncTestClient(server.URL), db, "items", 0, false, 0, false)
+	result := syncResource(context.Background(), syncTestClient(server.URL), db, "items", 0, false, 0, false)
 	if result.Err != nil {
 		t.Fatalf("access denied Err = %v, want nil", result.Err)
 	}
@@ -435,7 +435,7 @@ func TestSyncResourceErrorEventEscapesControlCharacters(t *testing.T) {
 	defer db.Close()
 
 	lines := captureSyncStdoutLines(t, func() {
-		result := syncResource(syncTestErrorClient{err: fmt.Errorf("%s", wantErr)}, db, "items", 0, false, 0, false)
+		result := syncResource(context.Background(), syncTestErrorClient{err: fmt.Errorf("%s", wantErr)}, db, "items", 0, false, 0, false)
 		if result.Err == nil {
 			t.Fatal("syncResource Err = nil, want error")
 		}
@@ -494,6 +494,10 @@ type syncTestErrorClient struct {
 }
 
 func (c syncTestErrorClient) GetWithVersion(string, map[string]string) (json.RawMessage, int, error) {
+	return nil, 0, c.err
+}
+
+func (c syncTestErrorClient) GetWithVersionContext(context.Context, string, map[string]string) (json.RawMessage, int, error) {
 	return nil, 0, c.err
 }
 

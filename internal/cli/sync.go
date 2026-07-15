@@ -138,7 +138,9 @@ Exit codes & warnings:
 			// --full: clear all sync cursors before starting
 			if full {
 				for _, resource := range resources {
-					_ = db.SaveSyncState(resource, "", 0)
+					if err := db.SaveSyncState(resource, "", 0); err != nil {
+						return fmt.Errorf("clearing sync cursor for %s (--full): %w", resource, err)
+					}
 				}
 			}
 
@@ -155,9 +157,14 @@ Exit codes & warnings:
 					// the goal of --latest-only is "refresh the top" not
 					// "resume from wherever I left off".
 					for _, resource := range resources {
-						existing, _, _, _ := db.GetSyncState(resource)
+						existing, _, _, gerr := db.GetSyncState(resource)
+						if gerr != nil {
+							return fmt.Errorf("reading sync cursor for %s (--latest-only): %w", resource, gerr)
+						}
 						if existing != "" {
-							_ = db.SaveSyncState(resource, "", 0)
+							if err := db.SaveSyncState(resource, "", 0); err != nil {
+								return fmt.Errorf("clearing sync cursor for %s (--latest-only): %w", resource, err)
+							}
 						}
 					}
 				} else if humanFriendly {
@@ -181,7 +188,7 @@ Exit codes & warnings:
 				go func() {
 					defer wg.Done()
 					runSyncWorker(ctx, work, results, func(resource string) syncResult {
-						return syncResource(c, db, resource, sinceVersion, full, maxPages, concurrency == 1)
+						return syncResource(ctx, c, db, resource, sinceVersion, full, maxPages, concurrency == 1)
 					})
 				}()
 			}
@@ -325,7 +332,11 @@ Exit codes & warnings:
 func syncFulltext(ctx context.Context, c *client.Client, db *store.Store, full bool) {
 	cursor := 0
 	if !full {
-		cursor, _ = db.GetLibraryVersion("fulltext")
+		v, gerr := db.GetLibraryVersion("fulltext")
+		if gerr != nil {
+			emitFulltextWarning(fmt.Sprintf("reading fulltext checkpoint failed: %v", gerr))
+		}
+		cursor = v
 	}
 	// The /fulltext endpoint returns 400 without `since`, so always send it,
 	// including 0 on a full sync.
@@ -351,9 +362,9 @@ func syncFulltext(ctx context.Context, c *client.Client, db *store.Store, full b
 		// (which caused lock contention and many tiny transactions).
 		results, errs := cliutil.FanoutRun(ctx, keys,
 			func(k string) string { return k },
-			func(_ context.Context, k string) (json.RawMessage, error) {
+			func(fctx context.Context, k string) (json.RawMessage, error) {
 				// url-encode path param to prevent segment injection.
-				ft, _, ferr := c.GetWithVersion("/items/"+url.PathEscape(k)+"/fulltext", nil)
+				ft, _, ferr := c.GetWithVersionContext(fctx, "/items/"+url.PathEscape(k)+"/fulltext", nil)
 				if ferr != nil {
 					return nil, ferr
 				}
@@ -375,7 +386,9 @@ func syncFulltext(ctx context.Context, c *client.Client, db *store.Store, full b
 		}
 	}
 	if newVer > cursor {
-		_ = db.SaveLibraryVersion("fulltext", newVer)
+		if err := db.SaveLibraryVersion("fulltext", newVer); err != nil {
+			emitFulltextWarning(fmt.Sprintf("persisting fulltext checkpoint failed: %v", err))
+		}
 	}
 }
 
@@ -401,6 +414,7 @@ func emitFulltextWarning(msg string) {
 // not the library-scoped /users|groups/<id> base used by ordinary resources.
 type syncHTTPClient interface {
 	GetWithVersion(string, map[string]string) (json.RawMessage, int, error)
+	GetWithVersionContext(context.Context, string, map[string]string) (json.RawMessage, int, error)
 	RateLimit() float64
 }
 
@@ -425,7 +439,7 @@ func isSchemaSyncResource(resource string) bool {
 
 // syncResource handles the full paginated sync of a single resource.
 // It resumes from the last cursor unless sinceVersion or full mode overrides it.
-func syncResource(c syncHTTPClient, db *store.Store, resource string, sinceVersion int, full bool, maxPages int, inlineProgress bool) syncResult {
+func syncResource(ctx context.Context, c syncHTTPClient, db *store.Store, resource string, sinceVersion int, full bool, maxPages int, inlineProgress bool) syncResult {
 	started := time.Now()
 
 	if !humanFriendly {
@@ -501,7 +515,7 @@ func syncResource(c syncHTTPClient, db *store.Store, resource string, sinceVersi
 			params[sinceParam] = strconv.Itoa(effectiveSince)
 		}
 
-		data, respVersion, err := requestClient.GetWithVersion(path, params)
+		data, respVersion, err := requestClient.GetWithVersionContext(ctx, path, params)
 		// Capture the library version from the first response that reports one;
 		// using the earliest avoids missing objects changed mid-sync.
 		if libraryVersion == 0 && respVersion > 0 {
@@ -769,9 +783,13 @@ func syncResource(c syncHTTPClient, db *store.Store, resource string, sinceVersi
 	// (--max-pages or stuck cursor) leave the resume cursor and since-version
 	// checkpoint intact so a later sync cannot skip unfetched pages.
 	if completedNaturally {
-		_ = db.SaveSyncState(resource, "", totalCount)
+		if serr := db.SaveSyncState(resource, "", totalCount); serr != nil {
+			return syncResult{Resource: resource, Count: totalCount, Err: fmt.Errorf("persisting sync checkpoint: %w", serr), Duration: time.Since(started)}
+		}
 		if libraryVersion > 0 {
-			_ = db.SaveLibraryVersion(resource, libraryVersion)
+			if serr := db.SaveLibraryVersion(resource, libraryVersion); serr != nil {
+				return syncResult{Resource: resource, Count: totalCount, Err: fmt.Errorf("persisting library-version checkpoint: %w", serr), Duration: time.Since(started)}
+			}
 		}
 	}
 

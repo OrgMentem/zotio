@@ -75,3 +75,46 @@ func TestWriteRoutingFallsBackWhenResolverEmpty(t *testing.T) {
 		t.Errorf("base server hits = %d, want 1 (write falls back to BaseURL)", n)
 	}
 }
+
+func TestWriteRoutingRetriesAfterTransientResolveFailure(t *testing.T) {
+	var baseHits, writeHits, resolveCalls int32
+	baseSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&baseHits, 1)
+		_, _ = w.Write([]byte(`{}`))
+	}))
+	defer baseSrv.Close()
+	writeSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&writeHits, 1)
+		_, _ = w.Write([]byte(`{}`))
+	}))
+	defer writeSrv.Close()
+
+	c := New(&config.Config{BaseURL: baseSrv.URL}, 5*time.Second, 0)
+	c.NoCache = true
+	// First resolution fails transiently (e.g. network timeout); the second
+	// succeeds. A sync.Once would consume the single attempt and latch the
+	// read-only fallback forever; resolution must instead retry until it wins.
+	c.ResolveWriteBase = func(ctx context.Context) (string, error) {
+		if atomic.AddInt32(&resolveCalls, 1) == 1 {
+			return "", context.DeadlineExceeded
+		}
+		return writeSrv.URL, nil
+	}
+
+	if _, _, err := c.Post("/items", []any{}); err != nil {
+		t.Fatalf("first POST: %v", err)
+	}
+	if _, _, err := c.Post("/items", []any{}); err != nil {
+		t.Fatalf("second POST: %v", err)
+	}
+
+	if n := atomic.LoadInt32(&resolveCalls); n != 2 {
+		t.Errorf("resolver calls = %d, want 2 (transient failure must be retried, not latched)", n)
+	}
+	if n := atomic.LoadInt32(&baseHits); n != 1 {
+		t.Errorf("base server hits = %d, want 1 (only the first write falls back)", n)
+	}
+	if n := atomic.LoadInt32(&writeHits); n != 1 {
+		t.Errorf("write server hits = %d, want 1 (second write routes after retry succeeds)", n)
+	}
+}

@@ -51,7 +51,9 @@ func (pc *providerJSONCache) set(provider, rawURL string, body json.RawMessage) 
 	if pc == nil || pc.bypass || pc.store == nil {
 		return
 	}
-	pc.store.Set(provider+"|"+rawURL, body)
+	if err := pc.store.Set(provider+"|"+rawURL, body); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: caching %s provider response failed: %v\n", provider, err)
+	}
 }
 
 func getCappedProviderJSON(ctx context.Context, httpClient *http.Client, provider string, rawURL string, pc *providerJSONCache, out any) error {

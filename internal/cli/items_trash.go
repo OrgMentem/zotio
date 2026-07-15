@@ -39,11 +39,7 @@ func newItemsTrashCmd(flags *rootFlags) *cobra.Command {
 			// Honor --limit when the API accepts but ignores ?limit=N.
 			data = truncateJSONArray(data, flagLimit)
 			// Print provenance to stderr for human-facing output
-			{
-				var countItems []json.RawMessage
-				_ = json.Unmarshal(data, &countItems)
-				printProvenance(cmd, len(countItems), prov)
-			}
+			printProvenance(cmd, countResultItems(data), prov)
 			// For JSON output, wrap with provenance envelope before passing through flags.
 			// --select wins over --compact when both are set; --compact only runs when
 			// no explicit fields were requested.

@@ -142,8 +142,8 @@ func auditVaultNotes(outDir string) (vaultAuditReport, error) {
 			return nil
 		}
 		storeVersion := sqlIntValue(rows[0]["version"])
-		recorded := parseStateComment(body).NoteVersion
-		if recorded > 0 && storeVersion > recorded {
+		st, _ := parseStateComment(body)
+		if st.NoteVersion > 0 && storeVersion > st.NoteVersion {
 			addVaultAuditIssue(&report, rel, key, vaultAuditIssueStale)
 		}
 		return nil

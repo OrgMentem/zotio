@@ -41,10 +41,14 @@ func (s *Store) Get(key string) (json.RawMessage, bool) {
 	return json.RawMessage(data), true
 }
 
-// Set stores a value in the cache.
-func (s *Store) Set(key string, value json.RawMessage) {
-	_ = os.MkdirAll(s.Dir, 0o700)
-	_ = os.WriteFile(s.path(key), []byte(value), 0o600)
+// Set stores a value in the cache. It returns any filesystem error so callers
+// can surface cache-write failures (disk full, permissions) instead of silently
+// degrading to a perpetual cache miss.
+func (s *Store) Set(key string, value json.RawMessage) error {
+	if err := os.MkdirAll(s.Dir, 0o700); err != nil {
+		return err
+	}
+	return os.WriteFile(s.path(key), []byte(value), 0o600)
 }
 
 // Clear removes all cached entries.

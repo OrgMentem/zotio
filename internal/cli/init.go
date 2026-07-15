@@ -254,7 +254,7 @@ func runInitialSync(cmd *cobra.Command, flags *rootFlags) ([]initSyncResourceRep
 
 	var failures []string
 	for _, resource := range resources {
-		res := syncResource(c, db, resource, 0, false, 100, true)
+		res := syncResource(cmd.Context(), c, db, resource, 0, false, 100, true)
 		r := initSyncResourceReport{Resource: res.Resource, Count: res.Count, Status: "ok"}
 		switch {
 		case res.Err != nil:

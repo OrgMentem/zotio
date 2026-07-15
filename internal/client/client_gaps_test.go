@@ -242,7 +242,9 @@ func TestReadWriteCacheHonorsFreshness(t *testing.T) {
 	params := map[string]string{"q": "cache"}
 	want := []byte(`{"cached":true}`)
 
-	c.writeCache("/items", params, nil, want)
+	if err := c.writeCache("/items", params, nil, want); err != nil {
+		t.Fatalf("writeCache: %v", err)
+	}
 	got, ok := c.readCache("/items", params, nil)
 	if !ok {
 		t.Fatal("readCache missed immediately after writeCache")

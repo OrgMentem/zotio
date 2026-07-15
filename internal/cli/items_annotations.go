@@ -41,11 +41,7 @@ func newItemsAnnotationsCmd(flags *rootFlags) *cobra.Command {
 					return err
 				}
 			}
-			{
-				var items []json.RawMessage
-				_ = json.Unmarshal(data, &items)
-				printProvenance(cmd, len(items), prov)
-			}
+			printProvenance(cmd, countResultItems(data), prov)
 			if flags.asJSON || !isTerminal(cmd.OutOrStdout()) {
 				filtered := data
 				if flags.selectFields != "" {

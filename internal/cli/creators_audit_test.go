@@ -255,6 +255,48 @@ func TestCreatorsAuditScopeLimitsInventory(t *testing.T) {
 	}
 }
 
+func TestCreatorsAuditSurfacesSyncStateReadFailure(t *testing.T) {
+	dbPath := creatorAuditSeedCommandStore(t,
+		creatorAuditTestItem("SS1", "Sync State", "", nil, creatorAuditNameCreator("Ada Lovelace")),
+	)
+
+	// Poison sync-state metadata so GetSyncState("items") returns a genuine
+	// read error (an unparseable last_synced_at fails the scan into
+	// time.Time) rather than the ErrNoRows "never synced" case. Migrations
+	// recreate the table/columns on open, but leave row data untouched.
+	db, err := store.OpenWithContext(context.Background(), dbPath)
+	if err != nil {
+		t.Fatalf("reopen store: %v", err)
+	}
+	if _, err := db.DB().ExecContext(context.Background(),
+		`INSERT INTO sync_state (resource_type, last_synced_at) VALUES ('items', 'not-a-timestamp')
+		 ON CONFLICT(resource_type) DO UPDATE SET last_synced_at = excluded.last_synced_at`,
+	); err != nil {
+		_ = db.Close()
+		t.Fatalf("poison sync_state: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close store: %v", err)
+	}
+
+	flags := &rootFlags{asJSON: true, timeout: time.Second}
+	cmd := newCreatorsAuditCmd(flags)
+	cmd.SilenceErrors = true
+	cmd.SilenceUsage = true
+	var out, errOut bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&errOut)
+	cmd.SetArgs(nil)
+
+	err = cmd.Execute()
+	if err == nil {
+		t.Fatalf("expected sync-state read failure to surface, got success: stdout=%s", out.String())
+	}
+	if !strings.Contains(err.Error(), "sync state") {
+		t.Fatalf("error = %v, want it to reference the sync state failure", err)
+	}
+}
+
 func creatorAuditTestOccurrence(name, itemKey string) *creatorOccurrence {
 	display, first, last := creatorDisplayParts("", "", name)
 	normFirst := normalizeCreatorAuditText(first)

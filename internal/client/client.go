@@ -59,12 +59,14 @@ type Client struct {
 	// WriteBaseURL, when set, receives all non-GET requests while reads continue to
 	// use BaseURL — the Zotero local API is read-only, so writes route to the Web
 	// API. ResolveWriteBase lazily computes it on the first write (kept in the CLI
-	// layer so the client stays generic); writeRouteOnce guards that resolution.
+	// layer so the client stays generic); writeRouteMu serializes that resolution.
 	WriteBaseURL     string
 	ResolveWriteBase func(context.Context) (string, error)
-	writeRouteOnce   sync.Once
 	// protect lazy hybrid write-route resolution.
 	writeRouteMu sync.RWMutex
+	// cacheWarnOnce ensures a failing response cache warns at most once per
+	// client instead of once per uncached GET.
+	cacheWarnOnce sync.Once
 }
 
 // APIError carries HTTP status information for structured exit codes.
@@ -206,15 +208,33 @@ func (c *Client) Get(path string, params map[string]string) (json.RawMessage, er
 }
 
 func (c *Client) GetWithHeaders(path string, params map[string]string, headers map[string]string) (json.RawMessage, error) {
+	return c.getWithHeadersContext(c.baseCtx(), path, params, headers)
+}
+
+// GetContext is Get honoring a caller-provided context, for callers fanning out
+// under a cancellable context (e.g. FanoutRun) that must abort in-flight fetches
+// on cancellation. A nil ctx falls back to the client base context.
+func (c *Client) GetContext(ctx context.Context, path string, params map[string]string) (json.RawMessage, error) {
+	return c.getWithHeadersContext(ctx, path, params, nil)
+}
+
+func (c *Client) getWithHeadersContext(ctx context.Context, path string, params map[string]string, headers map[string]string) (json.RawMessage, error) {
+	if ctx == nil {
+		ctx = c.baseCtx()
+	}
 	// Check cache for GET requests
 	if !c.NoCache && !c.DryRun && c.cacheDir != "" {
 		if cached, ok := c.readCache(path, params, headers); ok {
 			return cached, nil
 		}
 	}
-	result, _, err := c.do(c.baseCtx(), "GET", path, params, nil, headers)
+	result, _, err := c.do(ctx, "GET", path, params, nil, headers)
 	if err == nil && !c.NoCache && !c.DryRun && c.cacheDir != "" {
-		c.writeCache(path, params, headers, result)
+		if werr := c.writeCache(path, params, headers, result); werr != nil {
+			c.cacheWarnOnce.Do(func() {
+				fmt.Fprintf(os.Stderr, "warning: caching response failed (%v); continuing without response cache\n", werr)
+			})
+		}
 	}
 	return result, err
 }
@@ -270,15 +290,21 @@ func (c *Client) readCache(path string, params map[string]string, headers map[st
 	return json.RawMessage(data), true
 }
 
-func (c *Client) writeCache(path string, params map[string]string, headers map[string]string, data json.RawMessage) {
+func (c *Client) writeCache(path string, params map[string]string, headers map[string]string, data json.RawMessage) error {
 	// cached Zotero API payloads
 	// contain private library metadata, so keep the directory and files private
 	// even when they already existed with older world-readable permissions.
-	_ = os.MkdirAll(c.cacheDir, 0o700)
-	_ = os.Chmod(c.cacheDir, 0o700)
+	if err := os.MkdirAll(c.cacheDir, 0o700); err != nil {
+		return err
+	}
+	if err := os.Chmod(c.cacheDir, 0o700); err != nil {
+		return err
+	}
 	cacheFile := filepath.Join(c.cacheDir, c.cacheKey(path, params, headers)+".json")
-	_ = os.WriteFile(cacheFile, []byte(data), 0o600)
-	_ = os.Chmod(cacheFile, 0o600)
+	if err := os.WriteFile(cacheFile, []byte(data), 0o600); err != nil {
+		return err
+	}
+	return os.Chmod(cacheFile, 0o600)
 }
 
 // invalidateCache wholesale-removes the cache directory so the next read
@@ -592,9 +618,10 @@ func (c *Client) baseURLFor(ctx context.Context, method string) string {
 	return c.BaseURL
 }
 
-// resolveWriteRoute runs the CLI-provided write-base resolver at most once. On
-// success it sets WriteBaseURL and prints a one-time notice; on failure it leaves
-// WriteBaseURL empty so the write falls through to BaseURL (and the read-only guard).
+// resolveWriteRoute runs the CLI-provided write-base resolver until it succeeds.
+// On success it sets WriteBaseURL and prints a one-time notice; on failure it
+// leaves WriteBaseURL empty so a later write retries resolution instead of
+// permanently latching the read-only fallback.
 func (c *Client) resolveWriteRoute(ctx context.Context) {
 	if c.ResolveWriteBase == nil {
 		return
@@ -602,22 +629,30 @@ func (c *Client) resolveWriteRoute(ctx context.Context) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	// Fast path: already resolved.
 	c.writeRouteMu.RLock()
 	resolved := c.WriteBaseURL != ""
 	c.writeRouteMu.RUnlock()
 	if resolved {
 		return
 	}
-	c.writeRouteOnce.Do(func() {
-		base, err := c.ResolveWriteBase(ctx)
-		if err != nil || base == "" {
-			return
-		}
-		c.writeRouteMu.Lock()
-		c.WriteBaseURL = base
-		c.writeRouteMu.Unlock()
-		fmt.Fprintf(os.Stderr, "→ writing via Zotero Web API: %s (reads stay local)\n", base)
-	})
+	// Slow path: serialize resolution under the write lock. Unlike sync.Once,
+	// a transient failure (network timeout, empty result) does not consume the
+	// one-and-only attempt — only a successful, non-empty result is recorded,
+	// so the next write retries. Reads never reach here (baseURLFor short-
+	// circuits GET/HEAD), so holding the lock during the resolver only
+	// serializes concurrent writes, which is the intended behavior.
+	c.writeRouteMu.Lock()
+	defer c.writeRouteMu.Unlock()
+	if c.WriteBaseURL != "" {
+		return
+	}
+	base, err := c.ResolveWriteBase(ctx)
+	if err != nil || base == "" {
+		return
+	}
+	c.WriteBaseURL = base
+	fmt.Fprintf(os.Stderr, "→ writing via Zotero Web API: %s (reads stay local)\n", base)
 }
 
 // do executes an HTTP request and discards response headers, wrapping doRequest
@@ -673,7 +708,18 @@ func verifyShortCircuitEnvelope(method, path string) json.RawMessage {
 // observes a live value. Live header-reading helpers use the same cancellable
 // base context as the public Get wrapper.
 func (c *Client) GetWithVersion(path string, params map[string]string) (json.RawMessage, int, error) {
-	respBody, _, hdr, err := c.doRequest(c.baseCtx(), "GET", path, params, nil, nil)
+	return c.GetWithVersionContext(c.baseCtx(), path, params)
+}
+
+// GetWithVersionContext is GetWithVersion honoring a caller-provided context, so
+// callers fanning out under a cancellable context (sync workers, FanoutRun)
+// abort in-flight requests promptly on cancellation instead of only on process
+// SIGINT. A nil ctx falls back to the client base context.
+func (c *Client) GetWithVersionContext(ctx context.Context, path string, params map[string]string) (json.RawMessage, int, error) {
+	if ctx == nil {
+		ctx = c.baseCtx()
+	}
+	respBody, _, hdr, err := c.doRequest(ctx, "GET", path, params, nil, nil)
 	if err != nil {
 		return nil, 0, err
 	}

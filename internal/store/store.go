@@ -529,8 +529,12 @@ WHERE live.resource_type = 'items'
 
 	for _, item := range conflicts {
 		var live, trash map[string]any
-		_ = json.Unmarshal([]byte(item.liveData), &live)
-		_ = json.Unmarshal([]byte(item.trashData), &trash)
+		if err := json.Unmarshal([]byte(item.liveData), &live); err != nil {
+			return fmt.Errorf("reconcile lifecycle: unmarshal live item %s: %w", item.id, err)
+		}
+		if err := json.Unmarshal([]byte(item.trashData), &trash); err != nil {
+			return fmt.Errorf("reconcile lifecycle: unmarshal trash item %s: %w", item.id, err)
+		}
 		loserType := "items"
 		if zoteroObjectVersion(live) > zoteroObjectVersion(trash) {
 			loserType = "items-trash"
@@ -758,8 +762,7 @@ func reconcileItemLifecycleTx(tx *sql.Tx, resourceType, id string, incoming map[
 
 	var opposite map[string]any
 	if err := json.Unmarshal([]byte(oppositeData), &opposite); err != nil {
-		// A malformed legacy payload has no usable Zotero version.
-		opposite = nil
+		return fmt.Errorf("reconcile lifecycle: unmarshal opposite item state %s/%s: %w", oppositeType, id, err)
 	}
 	incomingVersion := zoteroObjectVersion(incoming)
 	oppositeVersion := zoteroObjectVersion(opposite)
@@ -888,7 +891,9 @@ func (s *Store) Upsert(resourceType, id string, data json.RawMessage) error {
 
 	var obj map[string]any
 	if resourceType == "items" || resourceType == "items-trash" {
-		_ = json.Unmarshal(data, &obj)
+		if err := json.Unmarshal(data, &obj); err != nil {
+			return fmt.Errorf("upsert %s/%s: unmarshal item payload: %w", resourceType, id, err)
+		}
 	}
 	if err := s.upsertGenericResourceTx(tx, resourceType, id, data, obj); err != nil {
 		return err
