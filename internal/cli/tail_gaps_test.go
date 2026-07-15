@@ -82,7 +82,7 @@ func TestEmitChanges_ChangeFeed(t *testing.T) {
 
 	// Baseline poll: no cursor yet -> full set as upserts, no deletions.
 	var buf bytes.Buffer
-	if err := emitChanges(context.Background(), c, db, "items", "/items", DeliverSink{Scheme: "stdout"}, &buf); err != nil {
+	if _, err := emitChanges(context.Background(), c, db, "items", "/items", DeliverSink{Scheme: "stdout"}, &buf); err != nil {
 		t.Fatalf("baseline emitChanges: %v", err)
 	}
 	events := ndjsonEvents(t, buf.String())
@@ -105,7 +105,7 @@ func TestEmitChanges_ChangeFeed(t *testing.T) {
 
 	// Delta poll: since=10 -> one upsert (A) plus one delete (B).
 	buf.Reset()
-	if err := emitChanges(context.Background(), c, db, "items", "/items", DeliverSink{Scheme: "stdout"}, &buf); err != nil {
+	if _, err := emitChanges(context.Background(), c, db, "items", "/items", DeliverSink{Scheme: "stdout"}, &buf); err != nil {
 		t.Fatalf("delta emitChanges: %v", err)
 	}
 	events = ndjsonEvents(t, buf.String())
@@ -162,7 +162,7 @@ func TestEmitChanges_WebhookDelivery(t *testing.T) {
 	t.Cleanup(func() { allowPrivateOutboundForTests = oldAllowPrivateOutbound })
 
 	var buf bytes.Buffer
-	if err := emitChanges(context.Background(), c, db, "items", "/items", DeliverSink{Scheme: "webhook", Target: hook.URL}, &buf); err != nil {
+	if _, err := emitChanges(context.Background(), c, db, "items", "/items", DeliverSink{Scheme: "webhook", Target: hook.URL}, &buf); err != nil {
 		t.Fatalf("emitChanges: %v", err)
 	}
 	if len(received) != 1 {
@@ -189,7 +189,7 @@ func TestEmitChangesFileSinkCreatesNestedParentDirs(t *testing.T) {
 	target := filepath.Join(t.TempDir(), "nested", "private", "events.ndjson")
 
 	var buf bytes.Buffer
-	if err := emitChanges(context.Background(), c, db, "items", "/items", DeliverSink{Scheme: "file", Target: target}, &buf); err != nil {
+	if _, err := emitChanges(context.Background(), c, db, "items", "/items", DeliverSink{Scheme: "file", Target: target}, &buf); err != nil {
 		t.Fatalf("emitChanges: %v", err)
 	}
 

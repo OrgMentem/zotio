@@ -310,6 +310,54 @@ func TestWorkflowRunApplyRemovesCheckpointAfterSuccess(t *testing.T) {
 	}
 }
 
+func TestRunWorkflowRunFilePreviewDoesNotCheckpoint(t *testing.T) {
+	path := writeWorkflowRunTestSpec(t, workflowRunSpec{Steps: []workflowRunStepSpec{
+		{Args: []string{"version"}},
+	}})
+
+	report, err := runWorkflowRunFile(path, workflowRunInvocation{})
+	if err != nil {
+		t.Fatalf("preview workflow: %v", err)
+	}
+	if !report.OK || report.Mode != workflowRunModePreview {
+		t.Fatalf("preview report = %+v, want successful preview", report)
+	}
+	if _, err := os.Stat(workflowRunCheckpointPath(path)); !os.IsNotExist(err) {
+		t.Fatalf("checkpoint stat error = %v, want no checkpoint", err)
+	}
+}
+
+func TestRunWorkflowRunFileApplyFailureReturnsReportAndKeepsCheckpoint(t *testing.T) {
+	path := writeWorkflowRunTestSpec(t, workflowRunSpec{Steps: []workflowRunStepSpec{
+		{Args: []string{"definitely-not-a-command"}},
+	}})
+
+	report, err := runWorkflowRunFile(path, workflowRunInvocation{Yes: true})
+	if err == nil {
+		t.Fatal("apply workflow succeeded, want failure")
+	}
+	if report.OK || report.Mode != workflowRunModeApply || report.RunID == "" || len(report.Steps) != 1 {
+		t.Fatalf("apply report = %+v, want failed apply report with run ID", report)
+	}
+	if _, err := os.Stat(workflowRunCheckpointPath(path)); err != nil {
+		t.Fatalf("checkpoint stat error = %v, want checkpoint", err)
+	}
+}
+
+func TestRunWorkflowRunFileResumeWithoutApprovalReturnsUsageError(t *testing.T) {
+	path := writeWorkflowRunTestSpec(t, workflowRunSpec{Steps: []workflowRunStepSpec{
+		{Args: []string{"version"}},
+	}})
+
+	_, err := runWorkflowRunFile(path, workflowRunInvocation{Resume: true})
+	if err == nil {
+		t.Fatal("preview resume succeeded, want usage error")
+	}
+	if ExitCode(err) != 2 || !strings.Contains(err.Error(), "requires --yes") {
+		t.Fatalf("error = %v, want --resume usage error requiring --yes", err)
+	}
+}
+
 func TestWorkflowRunResumeRequiresApplyMode(t *testing.T) {
 	path := writeWorkflowRunTestSpec(t, workflowRunSpec{Steps: []workflowRunStepSpec{
 		{Args: []string{"version"}},

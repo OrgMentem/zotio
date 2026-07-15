@@ -2526,6 +2526,11 @@ Tail streams live data changes by polling the API at configurable intervals.
 Events are emitted as NDJSON to stdout for piping to other tools.
 Gracefully shuts down on SIGTERM/SIGINT.
 
+When --workflow <spec.json> is set, tail runs the workflow once after a poll
+cycle that emits events. It previews unless this tail invocation carries --yes.
+A failed applied run leaves its checkpoint: subsequent applied triggers refuse
+until it is resumed or deleted with zotio workflow run <spec> --yes --resume.
+
 Note: For APIs with WebSocket or SSE support, a future version will use
 native streaming instead of polling.
 
@@ -2552,6 +2557,7 @@ Examples:
 | `--follow` | `bool` | `true` | Keep running (set --follow=false for single poll) |
 | `--interval` | `duration` | `10s` | Poll interval |
 | `--resource` | `string` |  | Resource type to tail |
+| `--workflow` | `string` |  | Run this workflow once after an event-bearing poll; previews unless --yes, and failed applied runs require zotio workflow run <spec> --yes --resume |
 
 ## `zotio vault`
 
@@ -2726,6 +2732,11 @@ Watch keeps the local store fresh by running incremental sync cycles on
 a configurable interval. It starts with an immediate sync, logs one concise
 status line per cycle to stderr, and exits gracefully on SIGINT or SIGTERM.
 
+When --workflow <spec.json> is set, watch runs the workflow after every
+successful sync cycle. It previews unless this watch invocation carries --yes.
+A failed applied run leaves its checkpoint: subsequent applied triggers refuse
+until it is resumed or deleted with zotio workflow run <spec> --yes --resume.
+
 ```
 zotio watch [resource...] [flags]
 ```
@@ -2737,6 +2748,7 @@ zotio watch [resource...] [flags]
 | `--health-webhook` | `string` |  | POST health drift JSON to this webhook URL |
 | `--interval` | `duration` | `5m0s` | Sync interval |
 | `--once` | `bool` | `false` | Run one sync cycle and exit |
+| `--workflow` | `string` |  | Run this workflow after every successful sync; previews unless --yes, and failed applied runs require zotio workflow run <spec> --yes --resume |
 
 ## `zotio which`
 

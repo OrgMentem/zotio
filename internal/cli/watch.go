@@ -19,6 +19,7 @@ func newWatchCmd(flags *rootFlags) *cobra.Command {
 	var health bool
 	var healthFor string
 	var healthWebhook string
+	var workflowPath string
 	cmd := &cobra.Command{
 		Use:         "watch [resource...]",
 		Short:       "Keep the local store fresh with periodic incremental syncs",
@@ -26,11 +27,21 @@ func newWatchCmd(flags *rootFlags) *cobra.Command {
 		Long: `Watch keeps the local store fresh by running incremental sync cycles on
 
 a configurable interval. It starts with an immediate sync, logs one concise
-status line per cycle to stderr, and exits gracefully on SIGINT or SIGTERM.`,
+status line per cycle to stderr, and exits gracefully on SIGINT or SIGTERM.
+
+When --workflow <spec.json> is set, watch runs the workflow after every
+successful sync cycle. It previews unless this watch invocation carries --yes.
+A failed applied run leaves its checkpoint: subsequent applied triggers refuse
+until it is resumed or deleted with zotio workflow run <spec> --yes --resume.`,
 		Args: cobra.ArbitraryArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if interval < 10*time.Second {
 				return usageErr(fmt.Errorf("--interval must be at least 10s"))
+			}
+			if workflowPath != "" {
+				if _, err := readWorkflowRunSpec(workflowPath); err != nil {
+					return err
+				}
 			}
 
 			healthMonitor, err := newWatchHealthMonitor(flags, health, healthFor, healthWebhook)
@@ -58,6 +69,9 @@ status line per cycle to stderr, and exits gracefully on SIGINT or SIGTERM.`,
 				}
 				fmt.Fprintf(cmd.ErrOrStderr(), "[watch] %s cycle complete\n", now.Format(time.RFC3339))
 				healthMonitor.run(ctx, cmd, now)
+				if workflowPath != "" {
+					runTriggeredWorkflow(cmd, "watch", workflowPath, flags.yes)
+				}
 				return nil
 			}
 
@@ -101,6 +115,29 @@ status line per cycle to stderr, and exits gracefully on SIGINT or SIGTERM.`,
 	cmd.Flags().BoolVar(&health, "health", false, "Run quick library health checks after each successful sync")
 	cmd.Flags().StringVar(&healthFor, "health-for", "quick", "Health preset for --health: quick, citation, systematic-review, all")
 	cmd.Flags().StringVar(&healthWebhook, "health-webhook", "", "POST health drift JSON to this webhook URL")
+	cmd.Flags().StringVar(&workflowPath, "workflow", "", "Run this workflow after every successful sync; previews unless --yes, and failed applied runs require zotio workflow run <spec> --yes --resume")
 
 	return cmd
+}
+
+// runTriggeredWorkflow reports workflow failures without disrupting its caller.
+func runTriggeredWorkflow(cmd *cobra.Command, source, specPath string, yes bool) {
+	report, err := runWorkflowRunFile(specPath, workflowRunInvocation{Yes: yes})
+	mode := report.Mode
+	if mode == "" {
+		mode = workflowRunModePreview
+		if yes {
+			mode = workflowRunModeApply
+		}
+	}
+	now := time.Now().UTC().Format(time.RFC3339)
+	if err != nil {
+		fmt.Fprintf(cmd.ErrOrStderr(), "[%s] %s workflow %s failed: %v\n", source, now, mode, err)
+		return
+	}
+	if report.RunID != "" {
+		fmt.Fprintf(cmd.ErrOrStderr(), "[%s] %s workflow %s ok run_id=%s\n", source, now, mode, report.RunID)
+		return
+	}
+	fmt.Fprintf(cmd.ErrOrStderr(), "[%s] %s workflow %s ok\n", source, now, mode)
 }

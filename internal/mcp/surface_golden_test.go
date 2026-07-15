@@ -199,7 +199,7 @@ func collectSurfaceTools(t *testing.T, s *server.MCPServer) []goldenSurfaceTool 
 
 func assertFacadeSurface(t *testing.T, tools []goldenSurfaceTool) {
 	t.Helper()
-	want := []string{"command_run", "command_search", "context", "search", "sql"}
+	want := []string{"command_run", "command_search", "context", "search", "sql", "workflow_submit"}
 	got := surfaceToolNames(tools)
 	if strings.Join(got, ",") != strings.Join(want, ",") {
 		t.Fatalf("facade tools = %v, want exactly %v", got, want)
@@ -222,7 +222,7 @@ func assertMirrorSurface(t *testing.T, tools []goldenSurfaceTool) {
 	if set["workflow_run"] {
 		t.Fatal("mirror surface unexpectedly exposes the arbitrary-argument workflow runner")
 	}
-	for _, want := range []string{"context", "search", "sql"} {
+	for _, want := range []string{"context", "search", "sql", "workflow_submit"} {
 		if !set[want] {
 			t.Fatalf("mirror surface missing %q (got %v)", want, got)
 		}

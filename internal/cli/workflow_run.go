@@ -53,6 +53,13 @@ type workflowRunReport struct {
 	RunID string                  `json:"run_id,omitempty"`
 }
 
+// workflowRunInvocation carries the caller-owned approval and resume knobs.
+type workflowRunInvocation struct {
+	Yes          bool
+	Resume       bool
+	VarOverrides []string // NAME=value, same syntax as --var
+}
+
 type workflowRunStepReport struct {
 	Index  int      `json:"index"`
 	Name   string   `json:"name,omitempty"`
@@ -102,95 +109,107 @@ one journal run ID. If an applied workflow is interrupted, continue it with
 			"zotio:default-max-changes":        "500",
 		},
 		RunE: func(cmd *cobra.Command, args []string) error {
-			spec, rawSpec, err := readWorkflowRunSpecFile(args[0])
-			if err != nil {
-				return err
-			}
-			resolvedVars, err := resolveWorkflowRunVars(spec.Vars, varOverrides)
-			if err != nil {
-				return usageErr(err)
-			}
-			if resume && !flags.yes {
-				return usageErr(fmt.Errorf("--resume requires --yes; resume continues an already-approved run"))
-			}
-
-			execution := workflowRunExecution{
-				Mode: workflowRunModePreview,
-				Vars: resolvedVars,
-			}
-			if flags.yes {
-				checkpointPath := workflowRunCheckpointPath(args[0])
-				specSHA256 := workflowRunSpecSHA256(rawSpec)
-				checkpoint := workflowRunCheckpoint{
-					SchemaVersion: workflowRunCheckpointSchemaVersion,
-					SpecSHA256:    specSHA256,
-					Vars:          cloneWorkflowRunVars(resolvedVars),
-				}
-
-				if resume {
-					checkpoint, err = readWorkflowRunCheckpoint(checkpointPath)
-					if err != nil {
-						if errors.Is(err, os.ErrNotExist) {
-							return fmt.Errorf("--resume requires an existing checkpoint at %q", checkpointPath)
-						}
-						return err
-					}
-					completed, err := validateWorkflowRunCheckpoint(checkpoint, specSHA256, checkpointPath, len(spec.Steps), resolvedVars)
-					if err != nil {
-						return err
-					}
-					execution.Completed = completed
-				} else {
-					exists, err := workflowRunCheckpointExists(checkpointPath)
-					if err != nil {
-						return err
-					}
-					if exists {
-						return fmt.Errorf("an interrupted workflow run exists at %q; pass --resume to continue or delete %q to start over", checkpointPath, checkpointPath)
-					}
-					checkpoint.RunID = mutation.NewRunID(time.Now())
-					if err := writeWorkflowRunCheckpoint(checkpointPath, checkpoint); err != nil {
-						return err
-					}
-				}
-
-				execution = workflowRunExecution{
-					Mode:           workflowRunModeApply,
-					RunID:          checkpoint.RunID,
-					Vars:           resolvedVars,
-					Completed:      execution.Completed,
-					Checkpoint:     &checkpoint,
-					CheckpointPath: checkpointPath,
+			report, err := runWorkflowRunFile(args[0], workflowRunInvocation{
+				Yes:          flags.yes,
+				Resume:       resume,
+				VarOverrides: varOverrides,
+			})
+			if len(report.Steps) > 0 {
+				if renderErr := renderWorkflowRunReport(cmd, flags, report); renderErr != nil {
+					return renderErr
 				}
 			}
-
-			var report workflowRunReport
-			var executionErr error
-			if execution.Mode == workflowRunModeApply {
-				report, executionErr = executeWorkflowRunSpecWithRunID(spec, execution)
-			} else {
-				report, executionErr = executeWorkflowRunSpecWithOptions(spec, execution)
-			}
-			if executionErr == nil && execution.Mode == workflowRunModeApply && report.OK {
-				if err := os.Remove(execution.CheckpointPath); err != nil && !os.IsNotExist(err) {
-					executionErr = fmt.Errorf("remove workflow checkpoint %q: %w", execution.CheckpointPath, err)
-				}
-			}
-			if err := renderWorkflowRunReport(cmd, flags, report); err != nil {
-				return err
-			}
-			if executionErr != nil {
-				return executionErr
-			}
-			if !report.OK {
-				return fmt.Errorf("workflow failed: %d step(s) failed", workflowRunFailureCount(report))
-			}
-			return nil
+			return err
 		},
 	}
 	cmd.Flags().BoolVar(&resume, "resume", false, "Resume an interrupted applied workflow from its checkpoint sidecar")
 	cmd.Flags().StringArrayVar(&varOverrides, "var", nil, "Override a declared workflow variable (NAME=value)")
 	return cmd
+}
+
+// runWorkflowRunFile executes the full workflow lifecycle without rendering.
+func runWorkflowRunFile(specPath string, inv workflowRunInvocation) (workflowRunReport, error) {
+	spec, rawSpec, err := readWorkflowRunSpecFile(specPath)
+	if err != nil {
+		return workflowRunReport{}, err
+	}
+	resolvedVars, err := resolveWorkflowRunVars(spec.Vars, inv.VarOverrides)
+	if err != nil {
+		return workflowRunReport{}, usageErr(err)
+	}
+	if inv.Resume && !inv.Yes {
+		return workflowRunReport{}, usageErr(fmt.Errorf("--resume requires --yes; resume continues an already-approved run"))
+	}
+
+	execution := workflowRunExecution{
+		Mode: workflowRunModePreview,
+		Vars: resolvedVars,
+	}
+	if inv.Yes {
+		checkpointPath := workflowRunCheckpointPath(specPath)
+		specSHA256 := workflowRunSpecSHA256(rawSpec)
+		checkpoint := workflowRunCheckpoint{
+			SchemaVersion: workflowRunCheckpointSchemaVersion,
+			SpecSHA256:    specSHA256,
+			Vars:          cloneWorkflowRunVars(resolvedVars),
+		}
+
+		if inv.Resume {
+			checkpoint, err = readWorkflowRunCheckpoint(checkpointPath)
+			if err != nil {
+				if errors.Is(err, os.ErrNotExist) {
+					return workflowRunReport{}, fmt.Errorf("--resume requires an existing checkpoint at %q", checkpointPath)
+				}
+				return workflowRunReport{}, err
+			}
+			completed, err := validateWorkflowRunCheckpoint(checkpoint, specSHA256, checkpointPath, len(spec.Steps), resolvedVars)
+			if err != nil {
+				return workflowRunReport{}, err
+			}
+			execution.Completed = completed
+		} else {
+			exists, err := workflowRunCheckpointExists(checkpointPath)
+			if err != nil {
+				return workflowRunReport{}, err
+			}
+			if exists {
+				return workflowRunReport{}, fmt.Errorf("an interrupted workflow run exists at %q; pass --resume to continue or delete %q to start over", checkpointPath, checkpointPath)
+			}
+			checkpoint.RunID = mutation.NewRunID(time.Now())
+			if err := writeWorkflowRunCheckpoint(checkpointPath, checkpoint); err != nil {
+				return workflowRunReport{}, err
+			}
+		}
+
+		execution = workflowRunExecution{
+			Mode:           workflowRunModeApply,
+			RunID:          checkpoint.RunID,
+			Vars:           resolvedVars,
+			Completed:      execution.Completed,
+			Checkpoint:     &checkpoint,
+			CheckpointPath: checkpointPath,
+		}
+	}
+
+	var report workflowRunReport
+	var executionErr error
+	if execution.Mode == workflowRunModeApply {
+		report, executionErr = executeWorkflowRunSpecWithRunID(spec, execution)
+	} else {
+		report, executionErr = executeWorkflowRunSpecWithOptions(spec, execution)
+	}
+	if executionErr == nil && execution.Mode == workflowRunModeApply && report.OK {
+		if err := os.Remove(execution.CheckpointPath); err != nil && !os.IsNotExist(err) {
+			executionErr = fmt.Errorf("remove workflow checkpoint %q: %w", execution.CheckpointPath, err)
+		}
+	}
+	if executionErr != nil {
+		return report, executionErr
+	}
+	if !report.OK {
+		return report, fmt.Errorf("workflow failed: %d step(s) failed", workflowRunFailureCount(report))
+	}
+	return report, nil
 }
 
 func readWorkflowRunSpec(path string) (workflowRunSpec, error) {

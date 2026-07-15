@@ -25,6 +25,7 @@ func newTailCmd(flags *rootFlags) *cobra.Command {
 	var resource string
 	var interval time.Duration
 	var follow bool
+	var workflowPath string
 	// dbPath stores the per-resource version cursor.
 	var dbPath string
 
@@ -35,6 +36,11 @@ func newTailCmd(flags *rootFlags) *cobra.Command {
 		Long: `Tail streams live data changes by polling the API at configurable intervals.
 Events are emitted as NDJSON to stdout for piping to other tools.
 Gracefully shuts down on SIGTERM/SIGINT.
+
+When --workflow <spec.json> is set, tail runs the workflow once after a poll
+cycle that emits events. It previews unless this tail invocation carries --yes.
+A failed applied run leaves its checkpoint: subsequent applied triggers refuse
+until it is resumed or deleted with zotio workflow run <spec> --yes --resume.
 
 Note: For APIs with WebSocket or SSE support, a future version will use
 native streaming instead of polling.`,
@@ -47,6 +53,12 @@ native streaming instead of polling.`,
   # Pipe to jq for filtering
   zotio tail events --interval 30s | jq 'select(.type == "error")'`,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if workflowPath != "" {
+				if _, err := readWorkflowRunSpec(workflowPath); err != nil {
+					return err
+				}
+			}
+
 			if len(args) > 0 {
 				resource = args[0]
 			}
@@ -103,8 +115,10 @@ native streaming instead of polling.`,
 			fmt.Fprintf(os.Stderr, "Tailing %s every %s (Ctrl+C to stop)\n", resource, interval)
 
 			// Initial poll
-			if err := emitChanges(cmd.Context(), c, db, resource, path, sink, os.Stdout); err != nil {
+			if events, err := emitChanges(cmd.Context(), c, db, resource, path, sink, os.Stdout); err != nil {
 				fmt.Fprintf(os.Stderr, "warning: initial poll failed: %v\n", err)
+			} else if events >= 1 && workflowPath != "" {
+				runTriggeredWorkflow(cmd, "tail", workflowPath, flags.yes)
 			}
 
 			// Honor --follow=false as a single poll.
@@ -120,8 +134,10 @@ native streaming instead of polling.`,
 					fmt.Fprintln(os.Stderr, "\nShutting down gracefully...")
 					return nil
 				case <-ticker.C:
-					if err := emitChanges(cmd.Context(), c, db, resource, path, sink, os.Stdout); err != nil {
+					if events, err := emitChanges(cmd.Context(), c, db, resource, path, sink, os.Stdout); err != nil {
 						fmt.Fprintf(os.Stderr, "warning: poll failed: %v\n", err)
+					} else if events >= 1 && workflowPath != "" {
+						runTriggeredWorkflow(cmd, "tail", workflowPath, flags.yes)
 					}
 				}
 			}
@@ -133,6 +149,7 @@ native streaming instead of polling.`,
 	cmd.Flags().BoolVar(&follow, "follow", true, "Keep running (set --follow=false for single poll)")
 	// Cursor persistence location.
 	cmd.Flags().StringVar(&dbPath, "db", "", "Database path (default: ~/.local/share/zotio/data.db)")
+	cmd.Flags().StringVar(&workflowPath, "workflow", "", "Run this workflow once after an event-bearing poll; previews unless --yes, and failed applied runs require zotio workflow run <spec> --yes --resume")
 
 	return cmd
 }
@@ -151,11 +168,11 @@ func tailKnownResources() []string {
 
 // emitChanges polls one resource for changes since the stored tail cursor,
 // emits upsert/delete NDJSON events for the cycle, routes them to the deliver
-// sink, and advances the cursor. Tail is a deduplicated version-cursor change
-// feed rather than a full re-fetch each poll. The cursor is namespaced
-// "tail:<resource>" in sync_state so it never collides with sync's own
-// checkpoint.
-func emitChanges(ctx context.Context, c *client.Client, db *store.Store, resource, path string, sink DeliverSink, w io.Writer) error {
+// sink, and advances the cursor. It returns the number of emitted events.
+// Tail is a deduplicated version-cursor change feed rather than a full
+// re-fetch each poll. The cursor is namespaced "tail:<resource>" in
+// sync_state so it never collides with sync's own checkpoint.
+func emitChanges(ctx context.Context, c *client.Client, db *store.Store, resource, path string, sink DeliverSink, w io.Writer) (int, error) {
 	cursorKey := "tail:" + resource
 	cursor, _ := db.GetLibraryVersion(cursorKey)
 
@@ -166,12 +183,13 @@ func emitChanges(ctx context.Context, c *client.Client, db *store.Store, resourc
 
 	body, newVer, err := c.GetWithVersion(path, params)
 	if err != nil {
-		return err
+		return 0, err
 	}
 
 	var buf bytes.Buffer
 	enc := json.NewEncoder(&buf)
 	now := time.Now().UTC().Format(time.RFC3339)
+	emitted := 0
 
 	items, _, _ := extractPageItems(body, "")
 	for _, item := range items {
@@ -188,8 +206,9 @@ func emitChanges(ctx context.Context, c *client.Client, db *store.Store, resourc
 			"data":      obj,
 		}
 		if err := enc.Encode(event); err != nil {
-			return err
+			return emitted, err
 		}
+		emitted++
 	}
 
 	// Deletions only make sense once a baseline cursor exists: the first
@@ -210,8 +229,9 @@ func emitChanges(ctx context.Context, c *client.Client, db *store.Store, resourc
 						"timestamp": now,
 					}
 					if err := enc.Encode(event); err != nil {
-						return err
+						return emitted, err
 					}
+					emitted++
 				}
 			}
 		}
@@ -220,7 +240,7 @@ func emitChanges(ctx context.Context, c *client.Client, db *store.Store, resourc
 	out := buf.Bytes()
 	if len(out) > 0 {
 		if _, err := w.Write(out); err != nil {
-			return err
+			return emitted, err
 		}
 		switch sink.Scheme {
 		case "webhook":
@@ -250,5 +270,5 @@ func emitChanges(ctx context.Context, c *client.Client, db *store.Store, resourc
 	if newVer > cursor {
 		_ = db.SaveLibraryVersion(cursorKey, newVer)
 	}
-	return nil
+	return emitted, nil
 }

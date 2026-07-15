@@ -2679,5 +2679,83 @@
       "required": [],
       "type": "object"
     }
+  },
+  {
+    "name": "workflow_submit",
+    "description": "Submit an inline multi-step workflow executed by zotio's transactional runner — previews unless yes; one approval, one journal run id; steps validated per-command exactly like command_run.",
+    "inputSchema": {
+      "properties": {
+        "continue_on_error": {
+          "description": "Continue executing later steps after a step fails.",
+          "type": "boolean"
+        },
+        "steps": {
+          "description": "Validated workflow steps.",
+          "items": {
+            "additionalProperties": false,
+            "properties": {
+              "args": {
+                "description": "Positional arguments only.",
+                "type": "string"
+              },
+              "command": {
+                "description": "Mirrorable command path, such as items enrich.",
+                "type": "string"
+              },
+              "flags": {
+                "additionalProperties": true,
+                "description": "Safe command flags by name.",
+                "type": "object"
+              },
+              "name": {
+                "description": "Optional step name.",
+                "type": "string"
+              },
+              "stdin_from": {
+                "description": "Name of an earlier step whose output becomes stdin.",
+                "type": "string"
+              },
+              "when": {
+                "additionalProperties": false,
+                "properties": {
+                  "is": {
+                    "type": "string"
+                  },
+                  "step": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "step",
+                  "is"
+                ],
+                "type": "object"
+              }
+            },
+            "required": [
+              "command"
+            ],
+            "type": "object"
+          },
+          "type": "array"
+        },
+        "vars": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "description": "Workflow variable values.",
+          "properties": {},
+          "type": "object"
+        },
+        "yes": {
+          "description": "Apply the full workflow once instead of previewing it.",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "steps"
+      ],
+      "type": "object"
+    }
   }
 ]

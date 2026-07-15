@@ -67,6 +67,7 @@ func RegisterTools(s *server.MCPServer) {
 	} else {
 		cobratree.RegisterOrchestration(s, cli.RootCmd)
 	}
+	cobratree.RegisterWorkflowSubmit(s, cli.RootCmd)
 }
 
 func dbPath() string {
