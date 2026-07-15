@@ -414,7 +414,7 @@ func newVersionCliCmd() *cobra.Command {
 		Use:   "version",
 		Short: "Print version",
 		Run: func(cmd *cobra.Command, args []string) {
-			fmt.Printf("zotio %s\n", version)
+			fmt.Fprintf(cmd.OutOrStdout(), "zotio %s\n", version)
 		},
 	}
 }

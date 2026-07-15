@@ -330,7 +330,7 @@ Transactional `workflow run` (one plan, one approval, one journal run-id, resume
 expressiveness (inter-step data-flow, variables, conditionals) → event triggers (`tail`/`watch`
 bridge) + MCP inline workflow submission. Rationale: triggers and agent-submitted execution
 multiply whatever safety model the runner has — make the envelope transactional before making
-it expressive, expressive before wiring triggers. Triggered runs stay preview-only unless `--yes`. Stage 1 SHIPPED (transactional runner: preview-by-default plan, one `--yes` approval, shared journal workflow_run_id, checkpoint-sidecar resume); expressiveness and triggers remain.
+it expressive, expressive before wiring triggers. Triggered runs stay preview-only unless `--yes`. Stage 1 SHIPPED (transactional runner: preview-by-default plan, one `--yes` approval, shared journal workflow_run_id, checkpoint-sidecar resume). Stage 2 SHIPPED (expressiveness: spec vars + --var overrides, ${steps.NAME.output} data-flow with stdin_from piping, when-conditionals; load-time reference validation; checkpoint v2 carries vars + step outputs across resume). Triggers remain.
 
 ### Cut / defer (2026-07-09)
 

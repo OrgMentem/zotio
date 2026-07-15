@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"regexp"
 	"strings"
 	"time"
 
@@ -22,19 +23,27 @@ const (
 	workflowRunOutputLimit             = 64 * 1024
 	workflowRunModePreview             = "preview"
 	workflowRunModeApply               = "apply"
-	workflowRunCheckpointSchemaVersion = 1
+	workflowRunCheckpointSchemaVersion = 2
 )
 
 var activeWorkflowRunID string
 
 type workflowRunSpec struct {
 	Steps           []workflowRunStepSpec `json:"steps"`
+	Vars            map[string]string     `json:"vars,omitempty"`
 	ContinueOnError bool                  `json:"continue_on_error"`
 }
 
 type workflowRunStepSpec struct {
-	Name string   `json:"name,omitempty"`
-	Args []string `json:"args"`
+	Name      string               `json:"name,omitempty"`
+	Args      []string             `json:"args"`
+	StdinFrom string               `json:"stdin_from,omitempty"`
+	When      *workflowRunStepWhen `json:"when,omitempty"`
+}
+
+type workflowRunStepWhen struct {
+	Step string `json:"step"`
+	Is   string `json:"is"`
 }
 
 type workflowRunReport struct {
@@ -50,12 +59,14 @@ type workflowRunStepReport struct {
 	Args   []string `json:"args"`
 	OK     bool     `json:"ok"`
 	Status string   `json:"status"`
+	Reason string   `json:"reason,omitempty"`
 	Error  string   `json:"error,omitempty"`
 	Output string   `json:"output"`
 }
 
 func newWorkflowRunCmd(flags *rootFlags) *cobra.Command {
 	var resume bool
+	var varOverrides []string
 
 	cmd := &cobra.Command{
 		Use:   "run <file.json>",
@@ -63,12 +74,21 @@ func newWorkflowRunCmd(flags *rootFlags) *cobra.Command {
 		Long: `Runs a declarative workflow spec in process. By default, mutating steps
 are previewed with --dry-run while read-only steps run normally.
 
+Specs may declare top-level "vars" and use ${vars.NAME} in step arguments.
+Override declared values with repeatable --var NAME=value. Arguments may also
+use ${steps.NAME.output}, the trimmed output of an earlier named step. A step
+can pipe an earlier step's raw output with "stdin_from", and "when" can run a
+step only when an earlier step is ok, failed, or skipped. In preview mode,
+substituted step outputs are preview outputs.
+
 Pass --yes once to apply the whole workflow. Every mutation from that run shares
 one journal run ID. If an applied workflow is interrupted, continue it with
 --yes --resume; completed steps are skipped from its checkpoint sidecar.`,
 		Example: `  zotio workflow run workflow.json
+  zotio workflow run workflow.json --var PROJECT=demo
   zotio workflow run workflow.json --yes
-  zotio workflow run workflow.json --yes --resume`,
+  zotio workflow run workflow.json --yes --resume
+  {"steps":[{"name":"diagnose","args":["library","health","--json"]},{"name":"fix","args":["items","enrich","--keys-from","-"],"stdin_from":"diagnose"}]}`,
 		Args: cobra.ExactArgs(1),
 		// Workflow specs can execute arbitrary CLI argument vectors. Keep this
 		// local-file runner off the MCP command surface rather than bypassing its
@@ -86,17 +106,25 @@ one journal run ID. If an applied workflow is interrupted, continue it with
 			if err != nil {
 				return err
 			}
+			resolvedVars, err := resolveWorkflowRunVars(spec.Vars, varOverrides)
+			if err != nil {
+				return usageErr(err)
+			}
 			if resume && !flags.yes {
 				return usageErr(fmt.Errorf("--resume requires --yes; resume continues an already-approved run"))
 			}
 
-			execution := workflowRunExecution{Mode: workflowRunModePreview}
+			execution := workflowRunExecution{
+				Mode: workflowRunModePreview,
+				Vars: resolvedVars,
+			}
 			if flags.yes {
 				checkpointPath := workflowRunCheckpointPath(args[0])
 				specSHA256 := workflowRunSpecSHA256(rawSpec)
 				checkpoint := workflowRunCheckpoint{
 					SchemaVersion: workflowRunCheckpointSchemaVersion,
 					SpecSHA256:    specSHA256,
+					Vars:          cloneWorkflowRunVars(resolvedVars),
 				}
 
 				if resume {
@@ -107,7 +135,7 @@ one journal run ID. If an applied workflow is interrupted, continue it with
 						}
 						return err
 					}
-					completed, err := validateWorkflowRunCheckpoint(checkpoint, specSHA256, checkpointPath, len(spec.Steps))
+					completed, err := validateWorkflowRunCheckpoint(checkpoint, specSHA256, checkpointPath, len(spec.Steps), resolvedVars)
 					if err != nil {
 						return err
 					}
@@ -129,6 +157,7 @@ one journal run ID. If an applied workflow is interrupted, continue it with
 				execution = workflowRunExecution{
 					Mode:           workflowRunModeApply,
 					RunID:          checkpoint.RunID,
+					Vars:           resolvedVars,
 					Completed:      execution.Completed,
 					Checkpoint:     &checkpoint,
 					CheckpointPath: checkpointPath,
@@ -160,6 +189,7 @@ one journal run ID. If an applied workflow is interrupted, continue it with
 		},
 	}
 	cmd.Flags().BoolVar(&resume, "resume", false, "Resume an interrupted applied workflow from its checkpoint sidecar")
+	cmd.Flags().StringArrayVar(&varOverrides, "var", nil, "Override a declared workflow variable (NAME=value)")
 	return cmd
 }
 
@@ -184,17 +214,141 @@ func readWorkflowRunSpecFile(path string) (workflowRunSpec, []byte, error) {
 	if len(spec.Steps) == 0 {
 		return workflowRunSpec{}, nil, fmt.Errorf("workflow spec %q must contain at least one step", path)
 	}
+	if err := validateWorkflowRunSpec(spec); err != nil {
+		return workflowRunSpec{}, nil, err
+	}
+	return spec, data, nil
+}
+
+var workflowRunVariableName = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_-]*$`)
+
+func validateWorkflowRunSpec(spec workflowRunSpec) error {
+	for name := range spec.Vars {
+		if !workflowRunVariableName.MatchString(name) {
+			return fmt.Errorf("workflow variable %q has an invalid name", name)
+		}
+	}
+
+	earlierStepNames := make(map[string]struct{}, len(spec.Steps))
 	for i, step := range spec.Steps {
+		stepIndex := i + 1
+		if step.Name != "" {
+			if _, exists := earlierStepNames[step.Name]; exists {
+				return fmt.Errorf("workflow step %d has duplicate name %q", stepIndex, step.Name)
+			}
+		}
 		if workflowRunStepInvokesWorkflow(step.Args) {
-			return workflowRunSpec{}, nil, fmt.Errorf("workflow step %d invokes %q; workflow run cannot invoke workflow commands", i+1, "workflow")
+			return fmt.Errorf("workflow step %d invokes %q; workflow run cannot invoke workflow commands", stepIndex, "workflow")
 		}
 		for _, arg := range step.Args {
 			if workflowRunStepOwnsFlag(arg) {
-				return workflowRunSpec{}, nil, fmt.Errorf("workflow step %d includes %q; the workflow owns approval: pass --yes to zotio workflow run itself", i+1, arg)
+				return fmt.Errorf("workflow step %d includes %q; the workflow owns approval: pass --yes to zotio workflow run itself", stepIndex, arg)
 			}
 		}
+		if step.StdinFrom != "" {
+			if _, exists := earlierStepNames[step.StdinFrom]; !exists {
+				return fmt.Errorf("workflow step %d stdin_from %q must name an earlier step", stepIndex, step.StdinFrom)
+			}
+		}
+		if step.When != nil {
+			if _, exists := earlierStepNames[step.When.Step]; !exists {
+				return fmt.Errorf("workflow step %d when.step %q must name an earlier step", stepIndex, step.When.Step)
+			}
+			if step.When.Is != "ok" && step.When.Is != "failed" && step.When.Is != "skipped" {
+				return fmt.Errorf("workflow step %d when.is %q must be one of ok, failed, skipped", stepIndex, step.When.Is)
+			}
+		}
+		for _, arg := range step.Args {
+			if err := validateWorkflowRunStepArgPlaceholders(arg, stepIndex, spec.Vars, earlierStepNames); err != nil {
+				return err
+			}
+		}
+		if step.Name != "" {
+			earlierStepNames[step.Name] = struct{}{}
+		}
 	}
-	return spec, data, nil
+	return nil
+}
+
+func validateWorkflowRunStepArgPlaceholders(arg string, stepIndex int, vars map[string]string, earlierStepNames map[string]struct{}) error {
+	for offset := 0; offset < len(arg); {
+		start := strings.Index(arg[offset:], "${")
+		if start == -1 {
+			return nil
+		}
+		start += offset
+		end := strings.IndexByte(arg[start+2:], '}')
+		if end == -1 {
+			return workflowRunInvalidPlaceholderError(stepIndex, arg[start:])
+		}
+		end += start + 2
+		placeholder := arg[start : end+1]
+		kind, name, ok := workflowRunParsePlaceholder(placeholder)
+		if !ok {
+			return workflowRunInvalidPlaceholderError(stepIndex, placeholder)
+		}
+		switch kind {
+		case "vars":
+			if _, exists := vars[name]; !exists {
+				return workflowRunInvalidPlaceholderError(stepIndex, placeholder)
+			}
+		case "steps":
+			if _, exists := earlierStepNames[name]; !exists {
+				return workflowRunInvalidPlaceholderError(stepIndex, placeholder)
+			}
+		}
+		offset = end + 1
+	}
+	return nil
+}
+
+func workflowRunInvalidPlaceholderError(stepIndex int, placeholder string) error {
+	return fmt.Errorf("workflow step %d has invalid placeholder %q", stepIndex, placeholder)
+}
+
+func workflowRunParsePlaceholder(placeholder string) (kind, name string, ok bool) {
+	if !strings.HasPrefix(placeholder, "${") || !strings.HasSuffix(placeholder, "}") {
+		return "", "", false
+	}
+	value := placeholder[2 : len(placeholder)-1]
+	if strings.HasPrefix(value, "vars.") {
+		name = strings.TrimPrefix(value, "vars.")
+		return "vars", name, name != ""
+	}
+	if strings.HasPrefix(value, "steps.") && strings.HasSuffix(value, ".output") {
+		name = strings.TrimSuffix(strings.TrimPrefix(value, "steps."), ".output")
+		return "steps", name, name != ""
+	}
+	return "", "", false
+}
+
+func resolveWorkflowRunVars(specVars map[string]string, overrides []string) (map[string]string, error) {
+	resolved := cloneWorkflowRunVars(specVars)
+	for _, override := range overrides {
+		name, value, ok := strings.Cut(override, "=")
+		if !ok || name == "" {
+			return nil, fmt.Errorf("--var %q must be NAME=value", override)
+		}
+		if _, declared := specVars[name]; !declared {
+			return nil, fmt.Errorf("--var %q names a variable not declared in the workflow spec", name)
+		}
+		if resolved == nil {
+			resolved = make(map[string]string, len(specVars))
+		}
+		resolved[name] = value
+	}
+	return resolved, nil
+}
+
+func cloneWorkflowRunVars(vars map[string]string) map[string]string {
+	if len(vars) == 0 {
+		return nil
+	}
+	cloned := make(map[string]string, len(vars))
+	for name, value := range vars {
+		cloned[name] = value
+	}
+	return cloned
 }
 
 func workflowRunStepOwnsFlag(arg string) bool {
@@ -289,16 +443,25 @@ func executeWorkflowRunSpec(spec workflowRunSpec) workflowRunReport {
 }
 
 type workflowRunCheckpoint struct {
-	SchemaVersion int    `json:"schema_version"`
-	RunID         string `json:"run_id"`
-	SpecSHA256    string `json:"spec_sha256"`
-	Completed     []int  `json:"completed"`
+	SchemaVersion int                         `json:"schema_version"`
+	RunID         string                      `json:"run_id"`
+	SpecSHA256    string                      `json:"spec_sha256"`
+	Vars          map[string]string           `json:"vars,omitempty"`
+	Completed     []workflowRunCheckpointStep `json:"completed"`
+}
+
+type workflowRunCheckpointStep struct {
+	Index  int    `json:"index"`
+	Name   string `json:"name,omitempty"`
+	Status string `json:"status"`
+	Output string `json:"output"`
 }
 
 type workflowRunExecution struct {
 	Mode           string
 	RunID          string
-	Completed      map[int]bool
+	Vars           map[string]string
+	Completed      []workflowRunCheckpointStep
 	Checkpoint     *workflowRunCheckpoint
 	CheckpointPath string
 }
@@ -323,6 +486,15 @@ func readWorkflowRunCheckpoint(path string) (workflowRunCheckpoint, error) {
 	if err != nil {
 		return workflowRunCheckpoint{}, fmt.Errorf("read workflow checkpoint %q: %w", path, err)
 	}
+	var header struct {
+		SchemaVersion int `json:"schema_version"`
+	}
+	if err := json.Unmarshal(data, &header); err != nil {
+		return workflowRunCheckpoint{}, fmt.Errorf("parse workflow checkpoint %q: %w", path, err)
+	}
+	if header.SchemaVersion != workflowRunCheckpointSchemaVersion {
+		return workflowRunCheckpoint{SchemaVersion: header.SchemaVersion}, nil
+	}
 	var checkpoint workflowRunCheckpoint
 	if err := json.Unmarshal(data, &checkpoint); err != nil {
 		return workflowRunCheckpoint{}, fmt.Errorf("parse workflow checkpoint %q: %w", path, err)
@@ -332,7 +504,7 @@ func readWorkflowRunCheckpoint(path string) (workflowRunCheckpoint, error) {
 
 func writeWorkflowRunCheckpoint(path string, checkpoint workflowRunCheckpoint) error {
 	if checkpoint.Completed == nil {
-		checkpoint.Completed = make([]int, 0)
+		checkpoint.Completed = make([]workflowRunCheckpointStep, 0)
 	}
 	data, err := json.MarshalIndent(checkpoint, "", "  ")
 	if err != nil {
@@ -345,9 +517,9 @@ func writeWorkflowRunCheckpoint(path string, checkpoint workflowRunCheckpoint) e
 	return nil
 }
 
-func validateWorkflowRunCheckpoint(checkpoint workflowRunCheckpoint, specSHA256, path string, stepCount int) (map[int]bool, error) {
+func validateWorkflowRunCheckpoint(checkpoint workflowRunCheckpoint, specSHA256, path string, stepCount int, vars map[string]string) ([]workflowRunCheckpointStep, error) {
 	if checkpoint.SchemaVersion != workflowRunCheckpointSchemaVersion {
-		return nil, fmt.Errorf("workflow checkpoint %q has unsupported schema version %d", path, checkpoint.SchemaVersion)
+		return nil, fmt.Errorf("workflow checkpoint %q has unsupported schema version %d; delete it to start over", path, checkpoint.SchemaVersion)
 	}
 	if checkpoint.RunID == "" {
 		return nil, fmt.Errorf("workflow checkpoint %q has no run_id", path)
@@ -355,15 +527,35 @@ func validateWorkflowRunCheckpoint(checkpoint workflowRunCheckpoint, specSHA256,
 	if checkpoint.SpecSHA256 != specSHA256 {
 		return nil, fmt.Errorf("workflow spec changed since the checkpoint; delete %q to start over", path)
 	}
+	if !workflowRunVarsEqual(checkpoint.Vars, vars) {
+		return nil, fmt.Errorf("workflow checkpoint %q was approved with different variables; delete the checkpoint to start over", path)
+	}
 
-	completed := make(map[int]bool, len(checkpoint.Completed))
-	for _, index := range checkpoint.Completed {
-		if index < 1 || index > stepCount || completed[index] {
-			return nil, fmt.Errorf("workflow checkpoint %q has invalid completed step %d", path, index)
+	seen := make(map[int]struct{}, len(checkpoint.Completed))
+	completed := make([]workflowRunCheckpointStep, 0, len(checkpoint.Completed))
+	for _, step := range checkpoint.Completed {
+		if step.Index < 1 || step.Index > stepCount {
+			return nil, fmt.Errorf("workflow checkpoint %q has invalid completed step %d", path, step.Index)
 		}
-		completed[index] = true
+		if _, exists := seen[step.Index]; exists {
+			return nil, fmt.Errorf("workflow checkpoint %q has invalid completed step %d", path, step.Index)
+		}
+		seen[step.Index] = struct{}{}
+		completed = append(completed, step)
 	}
 	return completed, nil
+}
+
+func workflowRunVarsEqual(left, right map[string]string) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	for name, leftValue := range left {
+		if rightValue, exists := right[name]; !exists || rightValue != leftValue {
+			return false
+		}
+	}
+	return true
 }
 
 func executeWorkflowRunSpecWithRunID(spec workflowRunSpec, execution workflowRunExecution) (workflowRunReport, error) {
@@ -374,6 +566,12 @@ func executeWorkflowRunSpecWithRunID(spec workflowRunSpec, execution workflowRun
 	return executeWorkflowRunSpecWithOptions(spec, execution)
 }
 
+type workflowRunStepResult struct {
+	Status     string
+	Output     string
+	FromResume bool
+}
+
 func executeWorkflowRunSpecWithOptions(spec workflowRunSpec, execution workflowRunExecution) (workflowRunReport, error) {
 	report := workflowRunReport{
 		Steps: make([]workflowRunStepReport, 0, len(spec.Steps)),
@@ -381,9 +579,26 @@ func executeWorkflowRunSpecWithOptions(spec workflowRunSpec, execution workflowR
 		Mode:  execution.Mode,
 		RunID: execution.RunID,
 	}
+	resolvedVars := execution.Vars
+	if resolvedVars == nil {
+		resolvedVars = cloneWorkflowRunVars(spec.Vars)
+	}
+	completedByIndex := make(map[int]workflowRunCheckpointStep, len(execution.Completed))
+	stepResults := make(map[string]workflowRunStepResult, len(execution.Completed))
+	for _, completed := range execution.Completed {
+		completedByIndex[completed.Index] = completed
+		if completed.Index < 1 || completed.Index > len(spec.Steps) {
+			continue
+		}
+		name := spec.Steps[completed.Index-1].Name
+		if name == "" {
+			name = completed.Name
+		}
+		workflowRunRememberStepResult(stepResults, name, completed.Status, completed.Output, true)
+	}
+
 	stopped := false
 	var executionErr error
-
 	for i, step := range spec.Steps {
 		stepReport := workflowRunStepReport{
 			Index:  i + 1,
@@ -396,15 +611,78 @@ func executeWorkflowRunSpecWithOptions(spec workflowRunSpec, execution workflowR
 			report.Steps = append(report.Steps, stepReport)
 			continue
 		}
-		if execution.Completed[stepReport.Index] {
+		if completed, exists := completedByIndex[stepReport.Index]; exists {
 			stepReport.OK = true
 			stepReport.Status = "skipped"
+			stepReport.Reason = "resume"
+			stepReport.Output = completed.Output
 			report.Steps = append(report.Steps, stepReport)
 			continue
 		}
+		if step.When != nil {
+			actual := "not_attempted"
+			if result, exists := stepResults[step.When.Step]; exists {
+				actual = result.Status
+			}
+			if actual != step.When.Is {
+				stepReport.OK = true
+				stepReport.Status = "skipped"
+				stepReport.Reason = fmt.Sprintf("when: %s is %s, want %s", step.When.Step, actual, step.When.Is)
+				if err := checkpointWorkflowRunStep(execution, stepReport); err != nil {
+					stepReport.OK = false
+					stepReport.Status = "failed"
+					stepReport.Reason = ""
+					stepReport.Error = err.Error()
+					report.OK = false
+					stopped = true
+					executionErr = err
+				} else {
+					completedByIndex[stepReport.Index] = workflowRunCheckpointStep{
+						Index:  stepReport.Index,
+						Name:   stepReport.Name,
+						Status: stepReport.Status,
+						Output: stepReport.Output,
+					}
+				}
+				workflowRunRememberStepResult(stepResults, step.Name, stepReport.Status, stepReport.Output, false)
+				report.Steps = append(report.Steps, stepReport)
+				continue
+			}
+		}
 
-		args := workflowRunStepArgs(execution.Mode, workflowRunStepIsReadOnly(step.Args), step.Args)
-		output, err := executeWorkflowRunStep(args)
+		resolvedArgs, err := substituteWorkflowRunStepArgs(step.Args, resolvedVars, stepResults)
+		if err != nil {
+			stepReport.Status = "failed"
+			stepReport.Error = err.Error()
+			report.OK = false
+			if !spec.ContinueOnError {
+				stopped = true
+			}
+			workflowRunRememberStepResult(stepResults, step.Name, stepReport.Status, stepReport.Output, false)
+			report.Steps = append(report.Steps, stepReport)
+			continue
+		}
+		stepReport.Args = resolvedArgs
+
+		var stdin *string
+		if step.StdinFrom != "" {
+			piped, err := workflowRunAvailableStepOutput(step.StdinFrom, stepResults)
+			if err != nil {
+				stepReport.Status = "failed"
+				stepReport.Error = err.Error()
+				report.OK = false
+				if !spec.ContinueOnError {
+					stopped = true
+				}
+				workflowRunRememberStepResult(stepResults, step.Name, stepReport.Status, stepReport.Output, false)
+				report.Steps = append(report.Steps, stepReport)
+				continue
+			}
+			stdin = &piped
+		}
+
+		args := workflowRunStepArgs(execution.Mode, workflowRunStepIsReadOnly(resolvedArgs), resolvedArgs)
+		output, err := executeWorkflowRunStep(args, stdin)
 		stepReport.Output = capWorkflowRunOutput(output)
 		if err != nil {
 			stepReport.Status = "failed"
@@ -416,30 +694,133 @@ func executeWorkflowRunSpecWithOptions(spec workflowRunSpec, execution workflowR
 		} else {
 			stepReport.OK = true
 			stepReport.Status = "ok"
-			if execution.Checkpoint != nil {
-				execution.Checkpoint.Completed = append(execution.Checkpoint.Completed, stepReport.Index)
-				if err := writeWorkflowRunCheckpoint(execution.CheckpointPath, *execution.Checkpoint); err != nil {
-					execution.Checkpoint.Completed = execution.Checkpoint.Completed[:len(execution.Checkpoint.Completed)-1]
-					stepReport.OK = false
-					stepReport.Status = "failed"
-					stepReport.Error = err.Error()
-					report.OK = false
-					stopped = true
-					executionErr = fmt.Errorf("checkpoint workflow step %d: %w", stepReport.Index, err)
-				} else if execution.Completed != nil {
-					execution.Completed[stepReport.Index] = true
+			if err := checkpointWorkflowRunStep(execution, stepReport); err != nil {
+				stepReport.OK = false
+				stepReport.Status = "failed"
+				stepReport.Error = err.Error()
+				report.OK = false
+				stopped = true
+				executionErr = err
+			} else {
+				completedByIndex[stepReport.Index] = workflowRunCheckpointStep{
+					Index:  stepReport.Index,
+					Name:   stepReport.Name,
+					Status: stepReport.Status,
+					Output: stepReport.Output,
 				}
 			}
 		}
+		workflowRunRememberStepResult(stepResults, step.Name, stepReport.Status, stepReport.Output, false)
 		report.Steps = append(report.Steps, stepReport)
 	}
 
 	return report, executionErr
 }
 
-func executeWorkflowRunStep(args []string) (string, error) {
-	root := RootCmd()
+func checkpointWorkflowRunStep(execution workflowRunExecution, report workflowRunStepReport) error {
+	if execution.Checkpoint == nil {
+		return nil
+	}
+	checkpointStep := workflowRunCheckpointStep{
+		Index:  report.Index,
+		Name:   report.Name,
+		Status: report.Status,
+		Output: report.Output,
+	}
+	execution.Checkpoint.Completed = append(execution.Checkpoint.Completed, checkpointStep)
+	if err := writeWorkflowRunCheckpoint(execution.CheckpointPath, *execution.Checkpoint); err != nil {
+		execution.Checkpoint.Completed = execution.Checkpoint.Completed[:len(execution.Checkpoint.Completed)-1]
+		return fmt.Errorf("checkpoint workflow step %d: %w", report.Index, err)
+	}
+	return nil
+}
+
+func workflowRunRememberStepResult(results map[string]workflowRunStepResult, name, status, output string, fromResume bool) {
+	if name == "" {
+		return
+	}
+	results[name] = workflowRunStepResult{
+		Status:     status,
+		Output:     output,
+		FromResume: fromResume,
+	}
+}
+
+func workflowRunAvailableStepOutput(name string, results map[string]workflowRunStepResult) (string, error) {
+	result, exists := results[name]
+	if !exists {
+		return "", fmt.Errorf("workflow output from step %q is unavailable (status %q)", name, "not_attempted")
+	}
+	if result.Status != "ok" && !(result.Status == "skipped" && result.FromResume) {
+		return "", fmt.Errorf("workflow output from step %q is unavailable (status %q)", name, result.Status)
+	}
+	return result.Output, nil
+}
+
+func substituteWorkflowRunStepArgs(args []string, vars map[string]string, results map[string]workflowRunStepResult) ([]string, error) {
+	substituted := make([]string, len(args))
+	for i, arg := range args {
+		value, err := substituteWorkflowRunStepArg(arg, vars, results)
+		if err != nil {
+			return nil, err
+		}
+		substituted[i] = value
+	}
+	return substituted, nil
+}
+
+func substituteWorkflowRunStepArg(arg string, vars map[string]string, results map[string]workflowRunStepResult) (string, error) {
+	var substituted strings.Builder
+	substituted.Grow(len(arg))
+	for offset := 0; offset < len(arg); {
+		start := strings.Index(arg[offset:], "${")
+		if start == -1 {
+			substituted.WriteString(arg[offset:])
+			break
+		}
+		start += offset
+		substituted.WriteString(arg[offset:start])
+		end := strings.IndexByte(arg[start+2:], '}')
+		if end == -1 {
+			return "", fmt.Errorf("invalid workflow placeholder %q", arg[start:])
+		}
+		end += start + 2
+		placeholder := arg[start : end+1]
+		kind, name, ok := workflowRunParsePlaceholder(placeholder)
+		if !ok {
+			return "", fmt.Errorf("invalid workflow placeholder %q", placeholder)
+		}
+		switch kind {
+		case "vars":
+			value, exists := vars[name]
+			if !exists {
+				return "", fmt.Errorf("workflow variable %q is unavailable", name)
+			}
+			substituted.WriteString(value)
+		case "steps":
+			output, err := workflowRunAvailableStepOutput(name, results)
+			if err != nil {
+				return "", err
+			}
+			substituted.WriteString(strings.TrimSpace(output))
+		}
+		offset = end + 1
+	}
+	return substituted.String(), nil
+}
+
+// executeWorkflowRunStep runs one argv in-process. A nil stdin inherits the
+// process stdin; a non-nil stdin (even empty) replaces it, so a step piped an
+// empty upstream output can never block on the terminal.
+func executeWorkflowRunStep(args []string, stdin *string) (string, error) {
+	return executeWorkflowRunStepWithRoot(RootCmd(), args, stdin)
+}
+
+func executeWorkflowRunStepWithRoot(root *cobra.Command, args []string, stdin *string) (string, error) {
 	root.SetArgs(args)
+	if stdin != nil {
+		root.SetIn(strings.NewReader(*stdin))
+	}
 	var buf bytes.Buffer
 	root.SetOut(&buf)
 	root.SetErr(&buf)

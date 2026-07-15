@@ -2807,6 +2807,13 @@ Preview or transactionally apply a declarative workflow
 Runs a declarative workflow spec in process. By default, mutating steps
 are previewed with --dry-run while read-only steps run normally.
 
+Specs may declare top-level "vars" and use ${vars.NAME} in step arguments.
+Override declared values with repeatable --var NAME=value. Arguments may also
+use ${steps.NAME.output}, the trimmed output of an earlier named step. A step
+can pipe an earlier step's raw output with "stdin_from", and "when" can run a
+step only when an earlier step is ok, failed, or skipped. In preview mode,
+substituted step outputs are preview outputs.
+
 Pass --yes once to apply the whole workflow. Every mutation from that run shares
 one journal run ID. If an applied workflow is interrupted, continue it with
 --yes --resume; completed steps are skipped from its checkpoint sidecar.
@@ -2819,13 +2826,16 @@ Examples:
 
 ```bash
 zotio workflow run workflow.json
+  zotio workflow run workflow.json --var PROJECT=demo
   zotio workflow run workflow.json --yes
   zotio workflow run workflow.json --yes --resume
+  {"steps":[{"name":"diagnose","args":["library","health","--json"]},{"name":"fix","args":["items","enrich","--keys-from","-"],"stdin_from":"diagnose"}]}
 ```
 
 | Flag | Type | Default | Description |
 | --- | --- | --- | --- |
 | `--resume` | `bool` | `false` | Resume an interrupted applied workflow from its checkpoint sidecar |
+| `--var` | `stringArray` | `[]` | Override a declared workflow variable (NAME=value) |
 
 ### `zotio workflow status`
 
