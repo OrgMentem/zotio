@@ -82,6 +82,9 @@ zotio export snapshot verify corpus.jsonl.lock.json --fail-on-drift  # exit 11 o
 
 Because `verify` compares content hashes rather than Zotero version integers, an item whose version bumped with no content change is reported as `touched` and never trips the gate — only genuine additions, removals, and content edits do.
 
+!!! tip "Systematic-review corpora"
+    For a screening corpus, `zotio library prisma <scope>` reports PRISMA 2020 identification-stage counts — records identified (broken down per source database), duplicate records removed, and records after deduplication — the numbers that drop straight into a flow diagram.
+
 ## Publish the badge
 
 `badge-path` writes shields endpoint JSON — even when the gate fails, so the badge never lies. Publish it anywhere shields can reach (GitHub Pages, a gist, any static host) and embed:

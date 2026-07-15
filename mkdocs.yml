@@ -87,6 +87,7 @@ nav:
       - Authentication: guide/authentication.md
       - Obsidian / Logseq vault: guide/vault.md
       - CI for your bibliography: guide/ci.md
+      - Workflows & triggers: guide/workflows.md
       - Use in a coding agent: guide/agent-skill.md
       - MCP server: guide/mcp-server.md
   - Concepts:

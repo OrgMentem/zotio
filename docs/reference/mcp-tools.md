@@ -3,7 +3,7 @@
 
 Zotero reference manager CLI — every library feature in the terminal, plus offline search, annotation export, and library analytics
 
-The MCP surface contains three framework tools (`context`, `search`, `sql`) plus the command-orchestration facade (`command_search` / `command_run`) by default. Set `ZOTIO_MCP_SURFACE=mirror` to expose each MCP-eligible CLI command as one lean tool. Commands annotated `mcp:hidden` remain CLI-only. See [the MCP server guide](../guide/mcp-server.md).
+The MCP surface contains three framework tools (`context`, `search`, `sql`), the command-orchestration facade (`command_search` / `command_run`), and `workflow_submit` by default. Set `ZOTIO_MCP_SURFACE=mirror` to expose each MCP-eligible CLI command as one lean tool. Commands annotated `mcp:hidden` (including the local-file `workflow run` runner) remain CLI-only. See [the MCP server guide](../guide/mcp-server.md).
 
 **Auth:** `api_key` (header `Zotero-API-Key`)
 
@@ -16,3 +16,4 @@ The MCP surface contains three framework tools (`context`, `search`, `sql`) plus
 | `sql` | Run read-only SQL against the synced local database. |
 | `command_search` | Discover CLI commands and fetch command-specific argument details. |
 | `command_run` | Execute a discovered CLI command through the same in-process guard used by the mirror. |
+| `workflow_submit` | Submit an inline, validated multi-step workflow to the transactional runner; previews unless `yes`. Each step is checked against the same per-command allowlist as `command_run`. |

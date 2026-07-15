@@ -1,6 +1,6 @@
 # Safe-by-default writes
 
-Every write command — `items enrich`, `tags audit fix`, `items duplicates resolve`, `items create/update/move/delete`, `import apply`, `vault push` — flows through one mutation envelope with identical, predictable semantics. You never have to remember which command is dangerous; they all behave the same way.
+Every write command — `items enrich`, `tags audit fix`, `items duplicates resolve`, `items create/update/move/delete`, `import apply`, `vault push` — flows through one mutation envelope with identical, predictable semantics. You never have to remember which command is dangerous; they all behave the same way, and `workflow run` extends that same contract across a multi-step plan.
 
 <div class="zotio-diagram-wrap">
 --8<-- "docs/assets/write-safety.svg"
@@ -13,6 +13,10 @@ Every write command — `items enrich`, `tags audit fix`, `items duplicates reso
 - **Gates cap the blast radius.** `--max-changes` defaults to 500 (50 under `--agent`); irreversible ops (merge, permanent delete, empty-trash) refuse to run without `--allow-destructive`.
 - **Read-your-writes.** An applied write is replayed into the local mirror immediately, and the post-write item state comes back in the envelope — a re-audit sees the fix with no follow-up `sync`.
 - **Journaled + reversible.** Every applied run is recorded append-only (`journal list` / `journal show`). `journal undo <run-id>` reverses the reversible ops (tag renames, collection membership) and **loudly refuses** the rest (merges, deletions, field overwrites) rather than guessing.
+
+## Across a whole workflow
+
+The contract scales from one command to a plan. `zotio workflow run` previews every mutating step by default and applies the whole plan on a single `--yes`; every mutation in the run shares one journal run ID (`journal list --workflow <id>`), and an interrupted run resumes from a checkpoint without replaying a write whose outcome is uncertain. See [Workflows & triggers](../guide/workflows.md).
 
 ## Where writes land
 

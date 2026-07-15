@@ -303,7 +303,7 @@ func renderMCPTools(path string) ([]byte, error) {
 	if d := strings.TrimSpace(m.Description); d != "" {
 		fmt.Fprintf(b, "%s\n\n", d)
 	}
-	b.WriteString("The MCP surface contains three framework tools (`context`, `search`, `sql`) plus the command-orchestration facade (`command_search` / `command_run`) by default. Set `ZOTIO_MCP_SURFACE=mirror` to expose each MCP-eligible CLI command as one lean tool. Commands annotated `mcp:hidden` remain CLI-only. See [the MCP server guide](../guide/mcp-server.md).\n\n")
+	b.WriteString("The MCP surface contains three framework tools (`context`, `search`, `sql`), the command-orchestration facade (`command_search` / `command_run`), and `workflow_submit` by default. Set `ZOTIO_MCP_SURFACE=mirror` to expose each MCP-eligible CLI command as one lean tool. Commands annotated `mcp:hidden` (including the local-file `workflow run` runner) remain CLI-only. See [the MCP server guide](../guide/mcp-server.md).\n\n")
 	if m.Auth.Type != "" {
 		fmt.Fprintf(b, "**Auth:** `%s`", m.Auth.Type)
 		if m.Auth.Header != "" {
@@ -318,6 +318,7 @@ func renderMCPTools(path string) ([]byte, error) {
 	b.WriteString("| `sql` | Run read-only SQL against the synced local database. |\n")
 	b.WriteString("| `command_search` | Discover CLI commands and fetch command-specific argument details. |\n")
 	b.WriteString("| `command_run` | Execute a discovered CLI command through the same in-process guard used by the mirror. |\n")
+	b.WriteString("| `workflow_submit` | Submit an inline, validated multi-step workflow to the transactional runner; previews unless `yes`. Each step is checked against the same per-command allowlist as `command_run`. |\n")
 	return b.Bytes(), nil
 }
 
