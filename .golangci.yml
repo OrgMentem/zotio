@@ -22,6 +22,12 @@ linters:
       - linters:
           - staticcheck
         text: 'ST1005:'
+      # gosec targets the production security surface; test files legitimately
+      # write 0644 temp fixtures and mock taint-y HTTP responses (G306/G705
+      # false positives), so scope gosec out of tests.
+      - linters:
+          - gosec
+        path: '_test\.go'
     paths:
       - third_party$
       - builtin$

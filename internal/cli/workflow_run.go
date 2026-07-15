@@ -456,11 +456,6 @@ func workflowRunSpecSHA256(data []byte) string {
 	return hex.EncodeToString(sum[:])
 }
 
-func executeWorkflowRunSpec(spec workflowRunSpec) workflowRunReport {
-	report, _ := executeWorkflowRunSpecWithOptions(spec, workflowRunExecution{Mode: workflowRunModePreview})
-	return report
-}
-
 type workflowRunCheckpoint struct {
 	SchemaVersion int                         `json:"schema_version"`
 	RunID         string                      `json:"run_id"`
@@ -770,7 +765,7 @@ func workflowRunAvailableStepOutput(name string, results map[string]workflowRunS
 	if !exists {
 		return "", fmt.Errorf("workflow output from step %q is unavailable (status %q)", name, "not_attempted")
 	}
-	if result.Status != "ok" && !(result.Status == "skipped" && result.FromResume) {
+	if result.Status != "ok" && (result.Status != "skipped" || !result.FromResume) {
 		return "", fmt.Errorf("workflow output from step %q is unavailable (status %q)", name, result.Status)
 	}
 	return result.Output, nil
