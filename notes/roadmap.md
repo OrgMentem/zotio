@@ -260,9 +260,10 @@ every high-value opportunity extends an existing contract (health checks, import
 scope grammar, journal, capability registry) rather than demanding a new subsystem — the
 two exceptions (screening/PRISMA, translation-server capture) are gated on demand evidence.
 
-### Phase 9 — Finish the loops already sold
+### Phase 9 — Finish the loops already sold. SHIPPED.
+Every item shipped — styled scope-wide rendering (`items cite --style` Web-API routing + `items bibliography` with chunked `format=bib`), `items bibcheck`, the finding-envelope `--keys-from` pipe, `export snapshot verify`, registry-driven preflight (exit 9), and outcome-aware `--deliver`.
 
-Every item is a shipped contract whose last mile is missing; no new subsystems.
+Every item was a shipped contract whose last mile was missing; no new subsystems.
 
 - **Scope-wide CSL bibliographies via the hybrid Web-API seam.** `items cite --style` today
   prints a stderr note and silently renders the default style — a live silent-degradation
@@ -329,7 +330,7 @@ Transactional `workflow run` (one plan, one approval, one journal run-id, resume
 expressiveness (inter-step data-flow, variables, conditionals) → event triggers (`tail`/`watch`
 bridge) + MCP inline workflow submission. Rationale: triggers and agent-submitted execution
 multiply whatever safety model the runner has — make the envelope transactional before making
-it expressive, expressive before wiring triggers. Triggered runs stay preview-only unless `--yes`.
+it expressive, expressive before wiring triggers. Triggered runs stay preview-only unless `--yes`. Stage 1 SHIPPED (transactional runner: preview-by-default plan, one `--yes` approval, shared journal workflow_run_id, checkpoint-sidecar resume); expressiveness and triggers remain.
 
 ### Cut / defer (2026-07-09)
 

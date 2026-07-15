@@ -109,6 +109,7 @@ func recordMutationJournal(env mutation.Envelope) {
 	if !ok {
 		return
 	}
+	entry.WorkflowRunID = activeWorkflowRunID
 	entry.Library = currentJournalLibrary()
 	if err := mutation.WriteEntry(journalDir(), entry); err != nil {
 		fmt.Fprintf(os.Stderr, "warning: could not record mutation journal: %v\n", err)
@@ -118,7 +119,7 @@ func recordMutationJournal(env mutation.Envelope) {
 func newJournalCmd(flags *rootFlags) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:         "journal",
-		Short:       "Inspect the mutation run journal (applied write history)",
+		Short:       "Inspect the mutation run journal; workflow run --yes steps share an ID filterable with list --workflow",
 		Annotations: map[string]string{"mcp:read-only": "true"},
 	}
 	cmd.AddCommand(newJournalListCmd(flags))
@@ -128,7 +129,8 @@ func newJournalCmd(flags *rootFlags) *cobra.Command {
 }
 
 func newJournalListCmd(flags *rootFlags) *cobra.Command {
-	return &cobra.Command{
+	var workflowRunID string
+	cmd := &cobra.Command{
 		Use:         "list",
 		Short:       "List recorded mutation runs, newest first",
 		Annotations: map[string]string{"mcp:read-only": "true"},
@@ -138,6 +140,15 @@ func newJournalListCmd(flags *rootFlags) *cobra.Command {
 				return fmt.Errorf("reading journal: %w", err)
 			}
 			normalizeJournalEntries(entries)
+			if workflowRunID != "" {
+				filtered := entries[:0]
+				for _, entry := range entries {
+					if entry.WorkflowRunID == workflowRunID {
+						filtered = append(filtered, entry)
+					}
+				}
+				entries = filtered
+			}
 			if flags.asJSON {
 				data, err := json.Marshal(entries)
 				if err != nil {
@@ -155,12 +166,18 @@ func newJournalListCmd(flags *rootFlags) *cobra.Command {
 				if !e.OK {
 					ok = "incomplete"
 				}
-				fmt.Fprintf(out, "%s  %s  %-10s  %-24s  applied=%d  %s\n",
+				fmt.Fprintf(out, "%s  %s  %-10s  %-24s  applied=%d  %s",
 					e.RunID, e.Timestamp.Format("2006-01-02 15:04"), humanJournalLibrary(e.Library), e.Operation, e.Summary.Applied, ok)
+				if e.WorkflowRunID != "" {
+					fmt.Fprintf(out, "  workflow=%s", e.WorkflowRunID)
+				}
+				fmt.Fprintln(out)
 			}
 			return nil
 		},
 	}
+	cmd.Flags().StringVar(&workflowRunID, "workflow", "", "Filter entries by workflow run ID")
+	return cmd
 }
 
 func newJournalShowCmd(flags *rootFlags) *cobra.Command {
@@ -183,7 +200,11 @@ func newJournalShowCmd(flags *rootFlags) *cobra.Command {
 				return printOutputWithFlags(cmd.OutOrStdout(), json.RawMessage(data), flags)
 			}
 			out := cmd.OutOrStdout()
-			fmt.Fprintf(out, "Run %s · %s · %s · %s · applied=%d\n", entry.RunID, entry.Timestamp.Format("2006-01-02 15:04:05"), humanJournalLibrary(entry.Library), entry.Operation, entry.Summary.Applied)
+			fmt.Fprintf(out, "Run %s · %s · %s · %s · applied=%d", entry.RunID, entry.Timestamp.Format("2006-01-02 15:04:05"), humanJournalLibrary(entry.Library), entry.Operation, entry.Summary.Applied)
+			if entry.WorkflowRunID != "" {
+				fmt.Fprintf(out, " · workflow=%s", entry.WorkflowRunID)
+			}
+			fmt.Fprintln(out)
 			for _, op := range entry.Ops {
 				fmt.Fprintf(out, "  [%s] %s %s", op.Status, op.Kind, op.Key)
 				if op.Destructive {

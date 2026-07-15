@@ -62,10 +62,10 @@ func TestJournalListEmpty(t *testing.T) {
 func TestJournalListAndShow(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 
-	for _, e := range []mutation.JournalEntry{
-		journalTestEntry(t, "run-A", "items.tags.add"),
-		journalTestEntry(t, "run-B", "items.move"),
-	} {
+	runA := journalTestEntry(t, "run-A", "items.tags.add")
+	runA.WorkflowRunID = "workflow-1"
+	runB := journalTestEntry(t, "run-B", "items.move")
+	for _, e := range []mutation.JournalEntry{runA, runB} {
 		if err := mutation.WriteEntry(journalDir(), e); err != nil {
 			t.Fatalf("seed journal: %v", err)
 		}
@@ -92,6 +92,9 @@ func TestJournalListAndShow(t *testing.T) {
 	if shown.Library != "user" {
 		t.Errorf("show library = %q, want user", shown.Library)
 	}
+	if shown.WorkflowRunID != "workflow-1" {
+		t.Errorf("show workflow run ID = %q, want workflow-1", shown.WorkflowRunID)
+	}
 
 	humanListCmd := newJournalCmd(&rootFlags{})
 	humanListCmd.SetArgs([]string{"list"})
@@ -104,6 +107,9 @@ func TestJournalListAndShow(t *testing.T) {
 	if !strings.Contains(humanList.String(), "user") {
 		t.Fatalf("human list = %q, want library column value", humanList.String())
 	}
+	if !strings.Contains(humanList.String(), "workflow-1") {
+		t.Fatalf("human list = %q, want workflow run ID", humanList.String())
+	}
 
 	humanShowCmd := newJournalCmd(&rootFlags{})
 	humanShowCmd.SetArgs([]string{"show", "run-A"})
@@ -115,6 +121,39 @@ func TestJournalListAndShow(t *testing.T) {
 	}
 	if !strings.Contains(humanShow.String(), "user") {
 		t.Fatalf("human show = %q, want library value", humanShow.String())
+	}
+	if !strings.Contains(humanShow.String(), "workflow-1") {
+		t.Fatalf("human show = %q, want workflow run ID", humanShow.String())
+	}
+}
+
+func TestJournalListFiltersWorkflow(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	matching := journalTestEntry(t, "workflow-match", "items.tags.add")
+	matching.WorkflowRunID = "workflow-1"
+	other := journalTestEntry(t, "workflow-other", "items.move")
+	other.WorkflowRunID = "workflow-2"
+	for _, entry := range []mutation.JournalEntry{matching, other} {
+		if err := mutation.WriteEntry(journalDir(), entry); err != nil {
+			t.Fatalf("seed journal: %v", err)
+		}
+	}
+
+	var filtered []mutation.JournalEntry
+	if err := json.Unmarshal([]byte(runJournalCmd(t, "list", "--workflow", "workflow-1")), &filtered); err != nil {
+		t.Fatalf("decode filtered list: %v", err)
+	}
+	if len(filtered) != 1 || filtered[0].RunID != "workflow-match" {
+		t.Fatalf("filtered list = %+v, want only workflow-match", filtered)
+	}
+
+	var none []mutation.JournalEntry
+	if err := json.Unmarshal([]byte(runJournalCmd(t, "list", "--workflow", "workflow-missing")), &none); err != nil {
+		t.Fatalf("decode non-matching list: %v", err)
+	}
+	if len(none) != 0 {
+		t.Fatalf("non-matching filtered list = %+v, want none", none)
 	}
 }
 
@@ -145,6 +184,34 @@ func TestRecorderWritesAppliedRun(t *testing.T) {
 	}
 	if entries, _ = mutation.ListEntries(journalDir()); len(entries) != 1 {
 		t.Errorf("preview should not record; entries = %d, want 1", len(entries))
+	}
+}
+
+func TestRecorderStampsWorkflowRunID(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	savedWorkflowRunID := activeWorkflowRunID
+	activeWorkflowRunID = "workflow-1"
+	t.Cleanup(func() { activeWorkflowRunID = savedWorkflowRunID })
+
+	recordMutationJournal(mutation.Envelope{
+		Operation: "items.tags.add",
+		Mode:      "apply",
+		OK:        true,
+		Plan: mutation.Plan{Operations: []mutation.Op{
+			{ID: "o1", Key: "K1", Kind: "tag_add", Changes: []mutation.Change{{Field: "tags", Add: "ml"}}},
+		}},
+		Result: &mutation.Result{
+			Summary: mutation.ResultSummary{Attempted: 1, Applied: 1},
+			Items:   []mutation.ResultItem{{OpID: "o1", Key: "K1", Status: "applied"}},
+		},
+	})
+
+	entries, err := mutation.ListEntries(journalDir())
+	if err != nil {
+		t.Fatalf("list recorded workflow run: %v", err)
+	}
+	if len(entries) != 1 || entries[0].WorkflowRunID != "workflow-1" {
+		t.Fatalf("recorded entries = %+v, want workflow run ID workflow-1", entries)
 	}
 }
 

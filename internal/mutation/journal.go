@@ -33,10 +33,12 @@ type JournalOp struct {
 	Changes     []Change `json:"changes"`
 }
 
-// JournalEntry records one applied mutation run.
+// JournalEntry records one applied mutation run. WorkflowRunID groups the
+// entries applied under one transactional `workflow run` approval.
 type JournalEntry struct {
 	SchemaVersion int           `json:"schema_version"`
 	RunID         string        `json:"run_id"`
+	WorkflowRunID string        `json:"workflow_run_id,omitempty"`
 	Operation     string        `json:"operation"`
 	Library       string        `json:"library"`
 	Mode          string        `json:"mode"`
@@ -70,7 +72,7 @@ func BuildJournalEntry(env Envelope, now time.Time) (JournalEntry, bool) {
 	}
 	return JournalEntry{
 		SchemaVersion: JournalSchemaVersion,
-		RunID:         newRunID(now),
+		RunID:         NewRunID(now),
 		Library:       "user",
 		Operation:     env.Operation,
 		Mode:          env.Mode,
@@ -81,7 +83,10 @@ func BuildJournalEntry(env Envelope, now time.Time) (JournalEntry, bool) {
 	}, true
 }
 
-func newRunID(now time.Time) string {
+// NewRunID mints a journal run identifier: a UTC second timestamp plus a random
+// suffix. Exported so `workflow run` can mint one transaction-level id shared
+// by every step entry.
+func NewRunID(now time.Time) string {
 	var b [4]byte
 	suffix := "0000"
 	if _, err := rand.Read(b[:]); err == nil {

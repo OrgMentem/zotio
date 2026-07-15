@@ -53,6 +53,7 @@ The machine-readable registry every command is classified against — read vs. w
 | `import translators` | read |  |  | `desktop_connector` |
 | `import url` | write | `web_api` |  | `web_api_key` |
 | `init` | other |  |  |  |
+| `items add-to-collection` | write | `web_api` |  | `web_api_key` |
 | `items annotations` | read |  |  |  |
 | `items audit` | read |  |  | `synced_store` |
 | `items authors` | read |  |  |  |

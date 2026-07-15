@@ -1861,7 +1861,12 @@
     "name": "journal_list",
     "description": "List recorded mutation runs, newest first",
     "inputSchema": {
-      "properties": {},
+      "properties": {
+        "workflow": {
+          "description": "Filter entries by workflow run ID",
+          "type": "string"
+        }
+      },
       "required": [],
       "type": "object"
     }

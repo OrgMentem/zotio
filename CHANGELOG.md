@@ -3,6 +3,8 @@
 Notable changes to zotio. Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow [SemVer](https://semver.org/).
 
 ## [Unreleased]
+### Added
+- `workflow run` is now transactional: without `--yes` it renders one consolidated preview (mutating steps are forced to `--dry-run`; read-only steps run normally), a single `--yes` on `workflow run` is the one approval for every step (specs that embed their own `--yes`/`--dry-run` are rejected), every step applied under that approval records its journal entry with a shared `workflow_run_id` (`journal list --workflow <id>` filters to one run), and an interrupted apply leaves a `<spec>.checkpoint.json` sidecar so `workflow run --yes --resume` continues where it stopped (spec-hash-verified, succeeded steps skipped, same run id) — re-running without `--resume` while a checkpoint exists is refused.
 
 ## [0.8.0] — 2026-07-12
 

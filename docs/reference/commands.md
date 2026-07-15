@@ -158,18 +158,18 @@ zotio attachments
 
 ### `zotio attachments add`
 
-Attach a local file to an existing item as a synced stored attachment
+Attach a local file to an existing item
 
-Upload a local file (typically a PDF) as a stored (imported_file) child of an
-existing item through the Zotero Web API file-upload protocol. Stored
-attachments sync to all devices, unlike linked-file children.
+Attach a local file (typically a PDF) to an existing item through the
+Zotero Web API. Mode "stored" uploads an imported_file child that syncs to all
+devices. Mode "linked-file" records the absolute local path without consuming
+Zotero storage quota; the bytes remain local to this machine.
 
-Retry-safe: if the parent already has an imported_file child with the same
-filename and identical content, the command no-ops; a child left behind by an
-interrupted run is resumed; same filename with different content is reported
-as a conflict for manual review instead of being duplicated or overwritten.
+Both modes are retry-safe. Stored files reconcile by filename and registered
+MD5. Linked files reconcile by absolute path. An identical retry no-ops instead
+of creating another child.
 
-By default this previews the planned upload; apply with --yes.
+By default this previews the planned attachment; apply with --yes.
 
 ```
 zotio attachments add <parent-key> <file> [flags]
@@ -178,12 +178,12 @@ zotio attachments add <parent-key> <file> [flags]
 Examples:
 
 ```bash
-zotio attachments add AB3DE6F8 ./paper.pdf --yes
+zotio attachments add AB3DE6F8 ./paper.pdf --mode stored --yes
 ```
 
 | Flag | Type | Default | Description |
 | --- | --- | --- | --- |
-| `--mode` | `string` | `stored` | Attachment handling: stored (synced imported_file upload) |
+| `--mode` | `string` | `stored` | Attachment handling: stored (synced) or linked-file (local path) |
 | `--title` | `string` |  | Attachment title (default: the file name) |
 
 ## `zotio auth`
@@ -1065,6 +1065,18 @@ Manage items in your Zotero library
 zotio items
 ```
 
+### `zotio items add-to-collection`
+
+Add an item to a named collection, creating it when needed
+
+```
+zotio items add-to-collection <itemKey> [flags]
+```
+
+| Flag | Type | Default | Description |
+| --- | --- | --- | --- |
+| `--collection-name` | `string` |  | Exact collection name; create it when absent |
+
 ### `zotio items annotations`
 
 List annotation children for an item
@@ -1328,8 +1340,8 @@ uploads through the Zotero Web API file-upload protocol.
 
 By default this previews the proposed changes (a patch plan) and never downloads
 PDF bytes. Pass --collection to scope the work queue to items in a single
-collection, or --keys-from to scope to exact item keys produced by another
-command. Pass --yes to apply via the Zotero API; --dry-run always previews.
+collection, or --keys/--keys-from to scope to exact item keys. Pass --yes to
+apply via the Zotero API; --dry-run always previews.
 Applied field changes record provenance in the item's Extra field.
 
 ```
@@ -1341,6 +1353,7 @@ zotio items enrich [flags]
 | `--attach-mode` | `string` | `linked-url` | PDF attachment handling: linked-url or linked-file; stored retro-attachment is handled by `zotio attachments add` |
 | `--collection` | `string` |  | Scope the work queue to items in a collection key |
 | `--email` | `string` |  | Contact email for Unpaywall (required for --missing-pdf) and the OpenAlex polite pool (optional); or set UNPAYWALL_EMAIL |
+| `--keys` | `string` |  | Comma-separated exact item keys to enrich |
 | `--keys-from` | `string` |  | Read exact item keys from a file or '-' for stdin, then enrich only matching queued items |
 | `--limit` | `int` | `25` | Maximum items to process per category |
 | `--missing-abstract` | `bool` | `false` | Fill the abstract from CrossRef, OpenAlex, or Semantic Scholar (uses the item's DOI) |
@@ -1396,6 +1409,7 @@ zotio items find --doi 10.1145/3290605.3300709
 
 | Flag | Type | Default | Description |
 | --- | --- | --- | --- |
+| `--arxiv` | `string` |  | Find items with this arXiv ID |
 | `--citekey` | `string` |  | Find items with this Better BibTeX citation key |
 | `--doi` | `string` |  | Find items with this DOI |
 | `--isbn` | `string` |  | Find items with this ISBN |
@@ -1468,6 +1482,8 @@ zotio items missing-pdf [flags]
 
 | Flag | Type | Default | Description |
 | --- | --- | --- | --- |
+| `--collection` | `string` |  | Filter to an exact Zotero collection key |
+| `--keys` | `string` |  | Comma-separated exact parent item keys |
 | `--limit` | `int` | `0` | Maximum number of items to return (0 = no limit) |
 | `--type` | `string` |  | Filter to a specific Zotero item type |
 
@@ -1844,7 +1860,7 @@ zotio items venues
 
 ## `zotio journal`
 
-Inspect the mutation run journal (applied write history)
+Inspect the mutation run journal; workflow run --yes steps share an ID filterable with list --workflow
 
 ```
 zotio journal
@@ -1855,8 +1871,12 @@ zotio journal
 List recorded mutation runs, newest first
 
 ```
-zotio journal list
+zotio journal list [flags]
 ```
+
+| Flag | Type | Default | Description |
+| --- | --- | --- | --- |
+| `--workflow` | `string` |  | Filter entries by workflow run ID |
 
 ### `zotio journal show`
 
@@ -2782,11 +2802,30 @@ Examples:
 
 ### `zotio workflow run`
 
-Run a declarative workflow spec in-process
+Preview or transactionally apply a declarative workflow
+
+Runs a declarative workflow spec in process. By default, mutating steps
+are previewed with --dry-run while read-only steps run normally.
+
+Pass --yes once to apply the whole workflow. Every mutation from that run shares
+one journal run ID. If an applied workflow is interrupted, continue it with
+--yes --resume; completed steps are skipped from its checkpoint sidecar.
 
 ```
-zotio workflow run <file.json>
+zotio workflow run <file.json> [flags]
 ```
+
+Examples:
+
+```bash
+zotio workflow run workflow.json
+  zotio workflow run workflow.json --yes
+  zotio workflow run workflow.json --yes --resume
+```
+
+| Flag | Type | Default | Description |
+| --- | --- | --- | --- |
+| `--resume` | `bool` | `false` | Resume an interrupted applied workflow from its checkpoint sidecar |
 
 ### `zotio workflow status`
 
