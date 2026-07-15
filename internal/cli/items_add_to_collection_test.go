@@ -36,14 +36,22 @@ func newCollectionFilingTestServer(t *testing.T) *collectionFilingTestServer {
 				}
 				_, _ = fmt.Fprintf(w, `[{"key":%q,"data":{"name":%q}}]`, ts.collectionKey, ts.collectionName)
 			case http.MethodPost:
-				var body map[string]any
+				// The live Zotero write API rejects non-array payloads with
+				// HTTP 400 "Uploaded data must be a JSON array" and answers
+				// with the array-write envelope; enforce both here.
+				var body []map[string]any
 				if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-					t.Errorf("decode collection create: %v", err)
+					http.Error(w, "Uploaded data must be a JSON array", http.StatusBadRequest)
+					return
 				}
-				name, _ := body["name"].(string)
+				if len(body) != 1 {
+					http.Error(w, "expected exactly one collection", http.StatusBadRequest)
+					return
+				}
+				name, _ := body[0]["name"].(string)
 				ts.collectionCreates++
 				ts.collectionKey, ts.collectionName = "COLL0001", name
-				_, _ = fmt.Fprint(w, `{"successful":{"0":"COLL0001"}}`)
+				_, _ = fmt.Fprint(w, `{"success":{"0":"COLL0001"},"successful":{"0":{"key":"COLL0001"}}}`)
 			default:
 				http.Error(w, "unexpected collection method", http.StatusMethodNotAllowed)
 			}

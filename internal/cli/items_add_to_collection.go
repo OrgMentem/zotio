@@ -61,7 +61,7 @@ func findOrCreateCollectionByName(c *client.Client, name string) (string, error)
 		return key, nil
 	}
 
-	created, _, err := c.Post("/collections", map[string]any{"name": name})
+	created, _, err := c.Post("/collections", []map[string]any{{"name": name}})
 	if err != nil {
 		return "", err
 	}
@@ -120,8 +120,11 @@ func collectionsByName(c *client.Client) (map[string]string, error) {
 
 func createdCollectionKey(raw json.RawMessage) string {
 	var response struct {
-		Successful map[string]string `json:"successful"`
-		Key        string            `json:"key"`
+		// Zotero array-write envelope: keys live in "success"; "successful"
+		// maps indices to full collection objects.
+		Success    map[string]string          `json:"success"`
+		Successful map[string]json.RawMessage `json:"successful"`
+		Key        string                     `json:"key"`
 		Data       struct {
 			Key string `json:"key"`
 		} `json:"data"`
@@ -135,13 +138,18 @@ func createdCollectionKey(raw json.RawMessage) string {
 	if response.Data.Key != "" {
 		return response.Data.Key
 	}
-	if len(response.Successful) == 0 {
-		return ""
-	}
-	keys := make([]string, 0, len(response.Successful))
-	for _, key := range response.Successful {
+	var keys []string
+	for _, key := range response.Success {
 		if key = strings.TrimSpace(key); key != "" {
 			keys = append(keys, key)
+		}
+	}
+	for _, rawObj := range response.Successful {
+		var obj struct {
+			Key string `json:"key"`
+		}
+		if json.Unmarshal(rawObj, &obj) == nil && strings.TrimSpace(obj.Key) != "" {
+			keys = append(keys, strings.TrimSpace(obj.Key))
 		}
 	}
 	if len(keys) == 0 {
