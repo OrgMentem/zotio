@@ -14,12 +14,12 @@ import (
 )
 
 type collectionFilingTestServer struct {
-	server           *httptest.Server
-	collectionKey    string
-	collectionName   string
+	server            *httptest.Server
+	collectionKey     string
+	collectionName    string
 	collectionCreates int
-	itemCollections  []string
-	itemPatchCount   int
+	itemCollections   []string
+	itemPatchCount    int
 }
 
 func newCollectionFilingTestServer(t *testing.T) *collectionFilingTestServer {

@@ -4,8 +4,8 @@ package cli
 
 import (
 	"encoding/json"
-	"strings"
 	"fmt"
+	"strings"
 
 	"github.com/spf13/cobra"
 )
