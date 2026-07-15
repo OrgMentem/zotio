@@ -4,10 +4,12 @@ package cli
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -119,5 +121,23 @@ func TestWatchOnceWorkflowFailureDoesNotFailCycle(t *testing.T) {
 	}
 	if !strings.Contains(stderr, "workflow preview failed:") {
 		t.Fatalf("stderr = %q, want workflow failure summary", stderr)
+	}
+}
+
+func TestTriggeredWorkflowDryRunWinsOverYes(t *testing.T) {
+	specPath := writeWorkflowRunTestSpec(t, workflowRunSpec{Steps: []workflowRunStepSpec{
+		{Args: []string{"version"}},
+	}})
+	cmd := newWatchCmd(&rootFlags{})
+	var stderr bytes.Buffer
+	cmd.SetErr(&stderr)
+
+	runTriggeredWorkflow(context.Background(), cmd, "watch", specPath, workflowRunInvocation{Yes: true, DryRun: true})
+
+	if !strings.Contains(stderr.String(), "workflow preview ok") {
+		t.Fatalf("trigger stderr = %q, want preview success", stderr.String())
+	}
+	if _, err := os.Stat(workflowRunCheckpointPath(specPath)); !os.IsNotExist(err) {
+		t.Fatalf("checkpoint stat error = %v, want no dry-run checkpoint", err)
 	}
 }

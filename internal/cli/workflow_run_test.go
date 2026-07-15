@@ -4,6 +4,7 @@ package cli
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"io"
 	"os"
@@ -39,10 +40,19 @@ func runWorkflowRunApplyTestCmd(t *testing.T, spec workflowRunSpec) (workflowRun
 
 func runWorkflowRunTestCmdAtPath(t *testing.T, path string, apply, resume bool) (workflowRunReport, string, error) {
 	t.Helper()
-	return runWorkflowRunTestCmdAtPathWithVars(t, path, apply, resume, nil)
+	return runWorkflowRunTestCmdAtPathWithInvocation(t, path, workflowRunInvocation{Yes: apply, Resume: resume})
 }
 
 func runWorkflowRunTestCmdAtPathWithVars(t *testing.T, path string, apply, resume bool, vars []string) (workflowRunReport, string, error) {
+	t.Helper()
+	return runWorkflowRunTestCmdAtPathWithInvocation(t, path, workflowRunInvocation{
+		Yes:          apply,
+		Resume:       resume,
+		VarOverrides: vars,
+	})
+}
+
+func runWorkflowRunTestCmdAtPathWithInvocation(t *testing.T, path string, inv workflowRunInvocation) (workflowRunReport, string, error) {
 	t.Helper()
 	cmd := RootCmd()
 	cmd.SilenceErrors = true
@@ -52,14 +62,23 @@ func runWorkflowRunTestCmdAtPathWithVars(t *testing.T, path string, apply, resum
 	cmd.SetOut(&out)
 	cmd.SetErr(&errOut)
 	args := []string{"--json"}
-	if apply {
+	if inv.Yes {
 		args = append(args, "--yes")
 	}
+	if inv.DryRun {
+		args = append(args, "--dry-run")
+	}
+	if inv.Agent {
+		args = append(args, "--agent")
+	}
+	if inv.NoInput {
+		args = append(args, "--no-input")
+	}
 	args = append(args, "workflow", "run")
-	if resume {
+	if inv.Resume {
 		args = append(args, "--resume")
 	}
-	for _, variable := range vars {
+	for _, variable := range inv.VarOverrides {
 		args = append(args, "--var", variable)
 	}
 	args = append(args, path)
@@ -283,12 +302,16 @@ func TestWorkflowRunApplyLeavesCheckpointAfterFailure(t *testing.T) {
 	if checkpoint.Vars["CONFIG"] != "override" {
 		t.Fatalf("checkpoint vars = %v, want resolved override", checkpoint.Vars)
 	}
-	if len(checkpoint.Completed) != 1 {
-		t.Fatalf("checkpoint completed = %v, want one step", checkpoint.Completed)
+	if len(checkpoint.Completed) != 2 {
+		t.Fatalf("checkpoint completed = %v, want completed source and in-progress failed step", checkpoint.Completed)
 	}
 	completed := checkpoint.Completed[0]
 	if completed.Index != 1 || completed.Name != "source" || completed.Status != "ok" || completed.Output != report.Steps[0].Output {
 		t.Fatalf("checkpoint completed step = %+v, want captured successful source step", completed)
+	}
+	inProgress := checkpoint.Completed[1]
+	if inProgress.Index != 2 || inProgress.Status != "in_progress" {
+		t.Fatalf("checkpoint second step = %+v, want in-progress failed step", inProgress)
 	}
 }
 
@@ -315,11 +338,11 @@ func TestRunWorkflowRunFilePreviewDoesNotCheckpoint(t *testing.T) {
 		{Args: []string{"version"}},
 	}})
 
-	report, err := runWorkflowRunFile(path, workflowRunInvocation{})
+	report, err := runWorkflowRunFile(context.Background(), path, workflowRunInvocation{})
 	if err != nil {
 		t.Fatalf("preview workflow: %v", err)
 	}
-	if !report.OK || report.Mode != workflowRunModePreview {
+	if !report.OK || report.Mode != workflowRunModePreview || report.RunID != "" {
 		t.Fatalf("preview report = %+v, want successful preview", report)
 	}
 	if _, err := os.Stat(workflowRunCheckpointPath(path)); !os.IsNotExist(err) {
@@ -332,11 +355,11 @@ func TestRunWorkflowRunFileApplyFailureReturnsReportAndKeepsCheckpoint(t *testin
 		{Args: []string{"definitely-not-a-command"}},
 	}})
 
-	report, err := runWorkflowRunFile(path, workflowRunInvocation{Yes: true})
+	report, err := runWorkflowRunFile(context.Background(), path, workflowRunInvocation{Yes: true})
 	if err == nil {
 		t.Fatal("apply workflow succeeded, want failure")
 	}
-	if report.OK || report.Mode != workflowRunModeApply || report.RunID == "" || len(report.Steps) != 1 {
+	if report.OK || report.Mode != workflowRunModeApply || report.RunID == "" || len(report.Steps) != 1 || report.Steps[0].Status != "failed" {
 		t.Fatalf("apply report = %+v, want failed apply report with run ID", report)
 	}
 	if _, err := os.Stat(workflowRunCheckpointPath(path)); err != nil {
@@ -349,7 +372,7 @@ func TestRunWorkflowRunFileResumeWithoutApprovalReturnsUsageError(t *testing.T) 
 		{Args: []string{"version"}},
 	}})
 
-	_, err := runWorkflowRunFile(path, workflowRunInvocation{Resume: true})
+	_, err := runWorkflowRunFile(context.Background(), path, workflowRunInvocation{Resume: true})
 	if err == nil {
 		t.Fatal("preview resume succeeded, want usage error")
 	}
@@ -684,7 +707,7 @@ func TestExecuteWorkflowRunStepPassesStdin(t *testing.T) {
 	if err != nil {
 		t.Fatalf("resolve workflow stdin: %v", err)
 	}
-	output, err := executeWorkflowRunStepWithRoot(root, nil, &stdin)
+	output, _, err := executeWorkflowRunStepWithRoot(context.Background(), root, nil, &stdin)
 	if err != nil {
 		t.Fatalf("execute workflow step: %v", err)
 	}
@@ -825,7 +848,7 @@ func TestWorkflowRunResumeHydratesCompletedOutput(t *testing.T) {
 	}
 }
 
-func TestWorkflowRunConditionSkipIsCheckpointedAndResumed(t *testing.T) {
+func TestWorkflowRunConditionSkipIsCheckpointedBesideInProgressFailure(t *testing.T) {
 	spec := workflowRunSpec{
 		ContinueOnError: true,
 		Steps: []workflowRunStepSpec{
@@ -845,16 +868,15 @@ func TestWorkflowRunConditionSkipIsCheckpointedAndResumed(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read workflow checkpoint: %v", err)
 	}
-	if len(checkpoint.Completed) != 1 || checkpoint.Completed[0].Index != 2 || checkpoint.Completed[0].Status != "skipped" {
-		t.Fatalf("checkpoint completed = %+v, want condition-skipped step", checkpoint.Completed)
+	if len(checkpoint.Completed) != 2 ||
+		checkpoint.Completed[0].Index != 1 || checkpoint.Completed[0].Status != "in_progress" ||
+		checkpoint.Completed[1].Index != 2 || checkpoint.Completed[1].Status != "skipped" {
+		t.Fatalf("checkpoint completed = %+v, want in-progress source and condition-skipped step", checkpoint.Completed)
 	}
 
-	resumed, _, err := runWorkflowRunTestCmdAtPath(t, path, true, true)
-	if err == nil {
-		t.Fatal("resumed workflow succeeded, want source failure")
-	}
-	if resumed.Steps[1].Status != "skipped" || resumed.Steps[1].Reason != "resume" {
-		t.Fatalf("resumed conditional step = %+v, want resume skip without reevaluation", resumed.Steps[1])
+	_, err = runWorkflowRunFile(context.Background(), path, workflowRunInvocation{Yes: true, Resume: true})
+	if err == nil || !strings.Contains(err.Error(), "in progress") {
+		t.Fatalf("resume error = %v, want in-progress reconciliation refusal", err)
 	}
 }
 
@@ -905,12 +927,267 @@ func TestExecuteWorkflowRunStepDoesNotRaceWithConcurrentStdoutWriter(t *testing.
 	}()
 
 	for range 25 {
-		output, err := executeWorkflowRunStep([]string{"--help"}, nil)
+		output, _, err := executeWorkflowRunStep(context.Background(), []string{"--help"}, nil)
 		if err != nil {
 			t.Fatalf("executeWorkflowRunStep --help: %v", err)
 		}
 		if !strings.Contains(output, "Zotero automation CLI") {
 			t.Fatalf("workflow step output = %q, want root help in Cobra buffer", output)
 		}
+	}
+}
+
+func TestWorkflowRunDryRunWinsOverYes(t *testing.T) {
+	path := writeWorkflowRunTestSpec(t, workflowRunSpec{Steps: []workflowRunStepSpec{
+		{Args: []string{"version"}},
+	}})
+
+	report, stderr, err := runWorkflowRunTestCmdAtPathWithInvocation(t, path, workflowRunInvocation{Yes: true, DryRun: true})
+	if err != nil {
+		t.Fatalf("workflow --yes --dry-run: %v; stderr=%s", err, stderr)
+	}
+	if !report.OK || report.Mode != workflowRunModePreview || report.RunID != "" {
+		t.Fatalf("report = %+v, want successful preview without run ID", report)
+	}
+	if _, err := os.Stat(workflowRunCheckpointPath(path)); !os.IsNotExist(err) {
+		t.Fatalf("checkpoint stat error = %v, want no checkpoint for dry-run", err)
+	}
+}
+
+func TestWorkflowRunRejectsFlagsResolvedFromSubstitution(t *testing.T) {
+	tests := []struct {
+		name string
+		spec workflowRunSpec
+		want string
+	}{
+		{
+			name: "flag",
+			spec: workflowRunSpec{
+				Vars:  map[string]string{"VALUE": "--yes"},
+				Steps: []workflowRunStepSpec{{Args: []string{"version", "${vars.VALUE}"}}},
+			},
+			want: "--yes",
+		},
+		{
+			name: "nested workflow",
+			spec: workflowRunSpec{
+				Vars:  map[string]string{"COMMAND": "workflow"},
+				Steps: []workflowRunStepSpec{{Args: []string{"${vars.COMMAND}", "run", "nested.json"}}},
+			},
+			want: "workflow",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			path := writeWorkflowRunTestSpec(t, test.spec)
+			report, _, err := runWorkflowRunTestCmdAtPathWithInvocation(t, path, workflowRunInvocation{})
+			if err == nil {
+				t.Fatal("workflow run succeeded, want resolved argument rejection")
+			}
+			if len(report.Steps) != 1 || report.Steps[0].Status != "failed" {
+				t.Fatalf("report = %+v, want one failed step", report)
+			}
+			if !strings.Contains(report.Steps[0].Error, "workflow step 1") || !strings.Contains(report.Steps[0].Error, test.want) {
+				t.Fatalf("step error = %q, want step and offending token %q", report.Steps[0].Error, test.want)
+			}
+		})
+	}
+}
+
+func TestWorkflowRunDataflowUsesFullStdoutWithoutStderr(t *testing.T) {
+	payload := strings.Repeat("x", workflowRunOutputLimit+1)
+	newRoot := func() *cobra.Command {
+		root := &cobra.Command{Use: "test"}
+		root.PersistentFlags().Bool("yes", false, "accept")
+		root.AddCommand(
+			&cobra.Command{
+				Use:         "producer",
+				Annotations: map[string]string{"mcp:read-only": "true"},
+				RunE: func(cmd *cobra.Command, _ []string) error {
+					if _, err := cmd.OutOrStdout().Write([]byte(payload)); err != nil {
+						return err
+					}
+					_, err := cmd.ErrOrStderr().Write([]byte("producer diagnostic"))
+					return err
+				},
+			},
+			&cobra.Command{
+				Use:         "consumer <output>",
+				Args:        cobra.ExactArgs(1),
+				Annotations: map[string]string{"mcp:read-only": "true"},
+				RunE: func(cmd *cobra.Command, args []string) error {
+					if args[0] != payload {
+						t.Errorf("consumer argument length = %d, want full producer output length %d", len(args[0]), len(payload))
+					}
+					stdin, err := io.ReadAll(cmd.InOrStdin())
+					if err != nil {
+						return err
+					}
+					if string(stdin) != payload {
+						t.Errorf("consumer stdin length = %d, want stdout-only producer output length %d", len(stdin), len(payload))
+					}
+					_, err = cmd.OutOrStdout().Write([]byte("consumed"))
+					return err
+				},
+			},
+		)
+		return root
+	}
+	checkpoint := workflowRunCheckpoint{}
+	execution := workflowRunExecution{
+		Mode:           workflowRunModeApply,
+		Checkpoint:     &checkpoint,
+		CheckpointPath: filepath.Join(t.TempDir(), "workflow.checkpoint.json"),
+	}
+	report, err := executeWorkflowRunSpecWithRootFactory(context.Background(), workflowRunSpec{Steps: []workflowRunStepSpec{
+		{Name: "source", Args: []string{"producer"}},
+		{Name: "consumer", Args: []string{"consumer", "${steps.source.output}"}, StdinFrom: "source"},
+	}}, execution, newRoot)
+	if err != nil {
+		t.Fatalf("execute workflow dataflow: %v", err)
+	}
+	if !report.OK || len(report.Steps) != 2 {
+		t.Fatalf("report = %+v, want two successful steps", report)
+	}
+	if len(report.Steps[0].Output) != workflowRunOutputLimit || !strings.Contains(report.Steps[0].Output, "[workflow output truncated]") {
+		t.Fatalf("rendered source output length = %d, want capped output", len(report.Steps[0].Output))
+	}
+	if len(checkpoint.Completed) != 2 || checkpoint.Completed[0].Output != payload {
+		t.Fatalf("checkpoint source output length = %d, want full output length %d", len(checkpoint.Completed[0].Output), len(payload))
+	}
+}
+
+func TestWorkflowRunResumeRefusesInProgressStep(t *testing.T) {
+	spec := workflowRunSpec{Steps: []workflowRunStepSpec{
+		{Name: "mutate", Args: []string{"version"}},
+	}}
+	path := writeWorkflowRunTestSpec(t, spec)
+	_, rawSpec, err := readWorkflowRunSpecFile(path)
+	if err != nil {
+		t.Fatalf("read workflow spec: %v", err)
+	}
+	checkpoint := workflowRunCheckpoint{
+		SchemaVersion: workflowRunCheckpointSchemaVersion,
+		RunID:         "workflow-run-id",
+		SpecSHA256:    workflowRunSpecSHA256(rawSpec),
+		Completed: []workflowRunCheckpointStep{{
+			Index:  1,
+			Name:   "mutate",
+			Status: "in_progress",
+		}},
+	}
+	if err := writeWorkflowRunCheckpoint(workflowRunCheckpointPath(path), checkpoint); err != nil {
+		t.Fatalf("write workflow checkpoint: %v", err)
+	}
+
+	_, err = runWorkflowRunFile(context.Background(), path, workflowRunInvocation{Yes: true, Resume: true})
+	if err == nil {
+		t.Fatal("resume succeeded with an in-progress step")
+	}
+	if !strings.Contains(err.Error(), "step 1") || !strings.Contains(err.Error(), "inspect or reconcile") || !strings.Contains(err.Error(), "delete") {
+		t.Fatalf("resume error = %v, want reconciliation and restart guidance", err)
+	}
+}
+
+func TestWorkflowRunResumeKeepsConditionallySkippedOutputUnavailable(t *testing.T) {
+	spec := workflowRunSpec{Steps: []workflowRunStepSpec{
+		{Name: "source", Args: []string{"version"}},
+		{Name: "conditional", Args: []string{"version"}, When: &workflowRunStepWhen{Step: "source", Is: "failed"}},
+		{Name: "consumer", Args: []string{"version", "--config=${steps.conditional.output}"}},
+	}}
+	path := writeWorkflowRunTestSpec(t, spec)
+	_, rawSpec, err := readWorkflowRunSpecFile(path)
+	if err != nil {
+		t.Fatalf("read workflow spec: %v", err)
+	}
+	checkpoint := workflowRunCheckpoint{
+		SchemaVersion: workflowRunCheckpointSchemaVersion,
+		RunID:         "workflow-run-id",
+		SpecSHA256:    workflowRunSpecSHA256(rawSpec),
+		Completed: []workflowRunCheckpointStep{
+			{Index: 1, Name: "source", Status: "ok", Output: "source output"},
+			{Index: 2, Name: "conditional", Status: "skipped"},
+		},
+	}
+	if err := writeWorkflowRunCheckpoint(workflowRunCheckpointPath(path), checkpoint); err != nil {
+		t.Fatalf("write workflow checkpoint: %v", err)
+	}
+
+	report, err := runWorkflowRunFile(context.Background(), path, workflowRunInvocation{Yes: true, Resume: true})
+	if err == nil {
+		t.Fatal("resume succeeded with unavailable conditional output")
+	}
+	if len(report.Steps) != 3 || report.Steps[2].Status != "failed" || !strings.Contains(report.Steps[2].Error, `unavailable (status "skipped")`) {
+		t.Fatalf("report = %+v, want consumer failure for skipped output", report)
+	}
+}
+
+func TestExecuteWorkflowRunSpecWithRunIDRestoresOuterRunID(t *testing.T) {
+	previousRunID := activeWorkflowRunID
+	activeWorkflowRunID = "outer-run-id"
+	t.Cleanup(func() {
+		activeWorkflowRunID = previousRunID
+	})
+
+	_, err := executeWorkflowRunSpecWithRunID(context.Background(), workflowRunSpec{Steps: []workflowRunStepSpec{
+		{Args: []string{"version"}},
+	}}, workflowRunExecution{Mode: workflowRunModePreview, RunID: "inner-run-id"})
+	if err != nil {
+		t.Fatalf("execute nested workflow: %v", err)
+	}
+	if activeWorkflowRunID != "outer-run-id" {
+		t.Fatalf("active workflow run ID = %q, want outer run ID restored", activeWorkflowRunID)
+	}
+}
+
+func TestWorkflowRunPropagatesAgentAndNoInputToSteps(t *testing.T) {
+	newRoot := func() *cobra.Command {
+		var agent bool
+		var noInput bool
+		root := &cobra.Command{Use: "test"}
+		root.PersistentFlags().BoolVar(&agent, "agent", false, "agent")
+		root.PersistentFlags().BoolVar(&noInput, "no-input", false, "no input")
+		root.AddCommand(&cobra.Command{
+			Use:         "step",
+			Annotations: map[string]string{"mcp:read-only": "true"},
+			RunE: func(_ *cobra.Command, _ []string) error {
+				if !agent || !noInput {
+					t.Errorf("step flags agent=%t noInput=%t, want both true", agent, noInput)
+				}
+				return nil
+			},
+		})
+		return root
+	}
+	report, err := executeWorkflowRunSpecWithRootFactory(context.Background(), workflowRunSpec{Steps: []workflowRunStepSpec{
+		{Args: []string{"step"}},
+	}}, workflowRunExecution{
+		Mode:    workflowRunModePreview,
+		Agent:   true,
+		NoInput: true,
+	}, newRoot)
+	if err != nil {
+		t.Fatalf("execute agent workflow: %v", err)
+	}
+	if !report.OK || report.Steps[0].Status != "ok" {
+		t.Fatalf("report = %+v, want successful propagated step", report)
+	}
+}
+
+func TestInstallRuntimeHooksInstallsProductionHooks(t *testing.T) {
+	previousRecorder := mutationJournalRecorder
+	previousMirror := mirrorWriteThrough
+	t.Cleanup(func() {
+		mutationJournalRecorder = previousRecorder
+		mirrorWriteThrough = previousMirror
+	})
+	mutationJournalRecorder = nil
+	mirrorWriteThrough = nil
+
+	InstallRuntimeHooks()
+	InstallRuntimeHooks()
+
+	if mutationJournalRecorder == nil || mirrorWriteThrough == nil {
+		t.Fatal("runtime hooks were not installed")
 	}
 }

@@ -12,6 +12,9 @@ Notable changes to zotio. Format follows [Keep a Changelog](https://keepachangel
 ### Changed — breaking
 - **`workflow run` is now preview-by-default.** In 0.8.0 `zotio workflow run <spec>` executed every step immediately; it now renders one consolidated dry-run preview and applies only with an explicit `--yes` on the `workflow run` command. Specs that embed their own per-step `--yes`/`--dry-run` are rejected at load — the workflow owns approval. Scripts or agents that relied on `workflow run` applying without `--yes`, or on step-level approval flags inside a spec, must pass `--yes` to `workflow run` and drop the step-level flags.
 
+### Fixed
+- MCP-applied mutations now record journal entries and write through to the local mirror. Since the `command_run` facade shipped (0.7.0) the `zotio-mcp` server never installed the journal/mirror hooks (only `cli.Execute` did), so writes applied over MCP left no audit trail and could leave the `search`/`sql` tools reading stale local state until the next sync; the server now installs them at startup, covering both `command_run` and `workflow_submit`.
+
 ## [0.8.0] — 2026-07-12
 
 ### Added

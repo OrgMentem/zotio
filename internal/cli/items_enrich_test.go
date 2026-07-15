@@ -7,7 +7,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -403,16 +402,39 @@ func (f *fakeMutator) Post(path string, body any) (json.RawMessage, int, error) 
 	return json.RawMessage(`{}`), 200, nil
 }
 
-func TestApplyEnrichProposalLinkedFilePostFailureRemovesDownload(t *testing.T) {
+func newEnrichWriteClient(t *testing.T, baseURL string) *client.Client {
+	t.Helper()
+	t.Setenv("ZOTERO_BASE_URL", baseURL)
+	t.Setenv("ZOTERO_API_KEY", "")
+	t.Setenv("ZOTERO_CONFIG", filepath.Join(t.TempDir(), "missing.toml"))
+	c, err := (&rootFlags{}).newClient()
+	if err != nil {
+		t.Fatalf("new write client: %v", err)
+	}
+	return c
+}
+
+func TestApplyEnrichProposalLinkedFileAmbiguousFailureKeepsDownload(t *testing.T) {
 	withPDFSafety(t, nil)
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	pdfSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/pdf")
 		_, _ = w.Write([]byte("%PDF-1.7\nbody"))
 	}))
-	t.Cleanup(srv.Close)
+	t.Cleanup(pdfSrv.Close)
+	zoteroSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/items/ABC/children":
+			_, _ = w.Write([]byte(`[]`))
+		case r.Method == http.MethodPost && r.URL.Path == "/items":
+			http.Error(w, `{"error":"temporary failure"}`, http.StatusInternalServerError)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(zoteroSrv.Close)
 
 	dest := filepath.Join(t.TempDir(), "paper.pdf")
-	downloader := newEnrichPDFDownloader(srv.Client())
+	downloader := newEnrichPDFDownloader(pdfSrv.Client())
 	downloader.dialGuard = nil
 	p := enrichProposal{
 		Key:         "ABC",
@@ -420,16 +442,119 @@ func TestApplyEnrichProposalLinkedFilePostFailureRemovesDownload(t *testing.T) {
 		Action:      enrichActionAttach,
 		Source:      "Unpaywall",
 		AttachMode:  "linked-file",
-		DownloadURL: srv.URL + "/paper.pdf",
+		DownloadURL: pdfSrv.URL + "/paper.pdf",
 		PDFPath:     dest,
 	}
-	f := &fakeMutator{postErr: errors.New("Zotero API returned HTTP 500")}
-	status, reason, err := applyEnrichProposalWithContext(context.Background(), downloader, f, &p, &rootFlags{})
+	status, reason, err := applyEnrichProposalWithContext(context.Background(), downloader, newEnrichWriteClient(t, zoteroSrv.URL), &p, &rootFlags{})
+	if err == nil || status != "failed" || !strings.Contains(fmt.Sprint(reason), "kept downloaded file") {
+		t.Fatalf("apply = status %q reason %v err %v, want failed with retained-download detail", status, reason, err)
+	}
+	if _, statErr := os.Stat(dest); statErr != nil {
+		t.Fatalf("download missing after ambiguous attachment create failure: %v", statErr)
+	}
+}
+
+func TestApplyEnrichProposalLinkedFileConfirmedFailureRemovesDownload(t *testing.T) {
+	withPDFSafety(t, nil)
+	pdfSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/pdf")
+		_, _ = w.Write([]byte("%PDF-1.7\nbody"))
+	}))
+	t.Cleanup(pdfSrv.Close)
+	zoteroSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/items/ABC/children":
+			_, _ = w.Write([]byte(`[]`))
+		case r.Method == http.MethodPost && r.URL.Path == "/items":
+			http.Error(w, `{"error":"invalid attachment"}`, http.StatusBadRequest)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(zoteroSrv.Close)
+
+	dest := filepath.Join(t.TempDir(), "paper.pdf")
+	downloader := newEnrichPDFDownloader(pdfSrv.Client())
+	downloader.dialGuard = nil
+	p := enrichProposal{
+		Key:         "ABC",
+		Category:    "missing_pdf",
+		Action:      enrichActionAttach,
+		Source:      "Unpaywall",
+		AttachMode:  "linked-file",
+		DownloadURL: pdfSrv.URL + "/paper.pdf",
+		PDFPath:     dest,
+	}
+	status, reason, err := applyEnrichProposalWithContext(context.Background(), downloader, newEnrichWriteClient(t, zoteroSrv.URL), &p, &rootFlags{})
 	if err == nil || status != "failed" || !strings.Contains(fmt.Sprint(reason), "removed downloaded file") {
-		t.Fatalf("apply = status %q reason %v err %v, want failed with cleanup detail", status, reason, err)
+		t.Fatalf("apply = status %q reason %v err %v, want failed with confirmed-cleanup detail", status, reason, err)
 	}
 	if _, statErr := os.Stat(dest); !os.IsNotExist(statErr) {
-		t.Fatalf("download remains after attachment POST failure: %v", statErr)
+		t.Fatalf("download remains after confirmed attachment create failure: %v", statErr)
+	}
+}
+
+func TestApplyEnrichProposalLinkedFileReconcilesLostCreateResponse(t *testing.T) {
+	withPDFSafety(t, nil)
+	pdfSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/pdf")
+		_, _ = w.Write([]byte("%PDF-1.7\nbody"))
+	}))
+	t.Cleanup(pdfSrv.Close)
+
+	var child map[string]any
+	postCount := 0
+	zoteroSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/items/ABC/children":
+			if child == nil {
+				_, _ = w.Write([]byte(`[]`))
+				return
+			}
+			_ = json.NewEncoder(w).Encode([]map[string]any{{"key": "ATTACH1", "data": child}})
+		case r.Method == http.MethodPost && r.URL.Path == "/items":
+			if r.Header.Get("Zotero-Write-Token") == "" {
+				http.Error(w, `{"error":"missing write token"}`, http.StatusBadRequest)
+				return
+			}
+			var items []map[string]any
+			if err := json.NewDecoder(r.Body).Decode(&items); err != nil || len(items) != 1 {
+				http.Error(w, `{"error":"bad body"}`, http.StatusBadRequest)
+				return
+			}
+			child = items[0] // Zotero committed the child before its response was lost.
+			postCount++
+			http.Error(w, `{"error":"write token already submitted"}`, http.StatusPreconditionFailed)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(zoteroSrv.Close)
+
+	dest := filepath.Join(t.TempDir(), "paper.pdf")
+	downloader := newEnrichPDFDownloader(pdfSrv.Client())
+	downloader.dialGuard = nil
+	p := enrichProposal{
+		Key:         "ABC",
+		Category:    "missing_pdf",
+		Action:      enrichActionAttach,
+		Source:      "Unpaywall",
+		AttachMode:  "linked-file",
+		DownloadURL: pdfSrv.URL + "/paper.pdf",
+		PDFPath:     dest,
+	}
+	status, reason, err := applyEnrichProposalWithContext(context.Background(), downloader, newEnrichWriteClient(t, zoteroSrv.URL), &p, &rootFlags{})
+	if err != nil || status != "applied" {
+		t.Fatalf("apply = status %q reason %v err %v, want reconciled apply", status, reason, err)
+	}
+	if postCount != 1 {
+		t.Fatalf("create requests = %d, want 1", postCount)
+	}
+	if _, statErr := os.Stat(dest); statErr != nil {
+		t.Fatalf("download missing after reconciled create: %v", statErr)
+	}
+	if child["path"] != dest {
+		t.Fatalf("reconciled child path = %v, want existing downloaded file %q", child["path"], dest)
 	}
 }
 
@@ -924,6 +1049,10 @@ func TestItemsEnrichLinkedFileApplyDownloadsAndPostsAttachment(t *testing.T) {
 
 	var gotBody []map[string]any
 	zsrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet && r.URL.Path == "/items/KPDF/children" {
+			_, _ = w.Write([]byte(`[]`))
+			return
+		}
 		if r.Method == http.MethodPost && r.URL.Path == "/items" {
 			_ = json.NewDecoder(r.Body).Decode(&gotBody)
 			_, _ = w.Write([]byte(`{"success":{"0":"ATTACH1"}}`))

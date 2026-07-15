@@ -204,6 +204,15 @@ func escapeMarkdownHTML(s string) string {
 	return strings.NewReplacer("&", "&amp;", "<", "&lt;", ">", "&gt;").Replace(s)
 }
 
+var markdownHTMLEntityUnescaper = strings.NewReplacer("&amp;", "&", "&lt;", "<", "&gt;", ">")
+
+// unescapeMarkdownHTML reverses exactly the entity transport form emitted by
+// escapeMarkdownHTML. It intentionally leaves other named entities untouched:
+// a vault author who wrote "&copy;" means those literal characters.
+func unescapeMarkdownHTML(s string) string {
+	return markdownHTMLEntityUnescaper.Replace(s)
+}
+
 // stripHTMLTags removes <...> spans. Safe on Zotero-sanitized note HTML, where
 // any literal '<' in content is entity-escaped (so the only raw '<' are tags).
 func stripHTMLTags(s string) string {

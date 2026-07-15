@@ -3,7 +3,9 @@ package cli
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
+	"net/http"
 	"sort"
 	"strings"
 
@@ -41,6 +43,14 @@ func newItemsAddToCollectionCmd(flags *rootFlags) *cobra.Command {
 			if err != nil {
 				return err
 			}
+			itemPath := replacePathParam("/items/{itemKey}", "itemKey", args[0])
+			itemData, _, err := c.GetWithVersion(itemPath, nil)
+			if err != nil {
+				return classifyAPIError(err, flags)
+			}
+			if _, err := itemCollections(itemData); err != nil {
+				return err
+			}
 			collectionKey, err := findOrCreateCollectionByName(c, name)
 			if err != nil {
 				return classifyAPIError(err, flags)
@@ -60,9 +70,27 @@ func findOrCreateCollectionByName(c *client.Client, name string) (string, error)
 	if key := collections[name]; key != "" {
 		return key, nil
 	}
-
-	created, _, err := c.Post("/collections", []map[string]any{{"name": name}})
+	created, _, err := c.PostWithHeaders(
+		"/collections",
+		[]map[string]any{{"name": name}},
+		map[string]string{"Zotero-Write-Token": writeToken("zotio.items.add-to-collection", name)},
+	)
 	if err != nil {
+		var apiErr *client.APIError
+		if !errors.As(err, &apiErr) || apiErr.StatusCode != http.StatusPreconditionFailed {
+			return "", err
+		}
+
+		// A precondition failure can mean the client retried after the server
+		// accepted the create but lost its response. Reconcile the write token
+		// replay against the collection list instead of attempting another POST.
+		collections, readErr := collectionsByName(c)
+		if readErr != nil {
+			return "", readErr
+		}
+		if key := collections[name]; key != "" {
+			return key, nil
+		}
 		return "", err
 	}
 	if key := createdCollectionKey(created); key != "" {
@@ -82,32 +110,39 @@ func findOrCreateCollectionByName(c *client.Client, name string) (string, error)
 }
 
 func collectionsByName(c *client.Client) (map[string]string, error) {
-	raw, err := c.Get("/collections", nil)
-	if err != nil {
-		return nil, err
-	}
-	var rows []struct {
+	type collectionRow struct {
 		Key  string `json:"key"`
 		Name string `json:"name"`
 		Data struct {
 			Name string `json:"name"`
 		} `json:"data"`
 	}
-	if err := json.Unmarshal(raw, &rows); err != nil {
-		return nil, fmt.Errorf("decoding collections: %w", err)
-	}
 
-	// A duplicate name is possible in Zotero. Choose the lexicographically first
-	// key so repeated filings remain deterministic instead of creating another.
-	byName := make(map[string][]string, len(rows))
-	for _, row := range rows {
-		name := strings.TrimSpace(row.Data.Name)
-		if name == "" {
-			name = strings.TrimSpace(row.Name)
+	// Zotero caps collection listings. Read every page before deciding that a
+	// same-named collection is absent, otherwise a later-page match can create
+	// a duplicate.
+	byName := make(map[string][]string)
+	for start := 0; ; start += 100 {
+		raw, err := c.Get("/collections", map[string]string{"limit": "100", "start": fmt.Sprintf("%d", start)})
+		if err != nil {
+			return nil, err
 		}
-		key := strings.TrimSpace(row.Key)
-		if name != "" && key != "" {
-			byName[name] = append(byName[name], key)
+		var rows []collectionRow
+		if err := json.Unmarshal(raw, &rows); err != nil {
+			return nil, fmt.Errorf("decoding collections: %w", err)
+		}
+		for _, row := range rows {
+			name := strings.TrimSpace(row.Data.Name)
+			if name == "" {
+				name = strings.TrimSpace(row.Name)
+			}
+			key := strings.TrimSpace(row.Key)
+			if name != "" && key != "" {
+				byName[name] = append(byName[name], key)
+			}
+		}
+		if len(rows) < 100 {
+			break
 		}
 	}
 	result := make(map[string]string, len(byName))

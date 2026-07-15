@@ -633,15 +633,35 @@ func applyEnrichProposalWithContext(ctx context.Context, downloader enrichPDFDow
 			if err := os.MkdirAll(filepath.Dir(p.PDFPath), 0o755); err != nil {
 				return "failed", err.Error(), err
 			}
-			if err := downloader.download(ctx, p.DownloadURL, p.PDFPath, maxEnrichPDFBytes); err != nil {
+			// Reuse a PDF left by a prior attempt (e.g. an ambiguous create
+			// whose response was lost): ensureLinkedAttachment reconciles the
+			// write token idempotently, while re-downloading would abort on the
+			// no-clobber guard and block every retry.
+			if _, statErr := os.Stat(p.PDFPath); statErr == nil {
+				if err := enrichPDFHasMagic(p.PDFPath); err != nil {
+					return "failed", err.Error(), err
+				}
+			} else if err := downloader.download(ctx, p.DownloadURL, p.PDFPath, maxEnrichPDFBytes); err != nil {
 				return "failed", err.Error(), err
 			}
-			if _, err := postLinkedFileAttachment(c, p.Key, p.PDFPath, flags); err != nil {
-				cleanupErr := os.Remove(p.PDFPath)
-				if cleanupErr != nil && !errors.Is(cleanupErr, os.ErrNotExist) {
-					err = fmt.Errorf("creating linked-file attachment: %w; could not remove downloaded file %s: %w", err, p.PDFPath, cleanupErr)
+			writeClient, ok := c.(*client.Client)
+			if !ok {
+				err := errors.New("linked-file attachment requires a Zotero write client")
+				return "failed", err.Error(), err
+			}
+			req, err := newLinkedFileRequest(p.Key, p.PDFPath, filepath.Base(p.PDFPath))
+			if err != nil {
+				return "failed", err.Error(), err
+			}
+			if _, _, err := ensureLinkedAttachment(writeClient, req, flags); err != nil {
+				if linkedAttachmentCreationConfirmedAbsent(err) {
+					if cleanupErr := os.Remove(p.PDFPath); cleanupErr != nil && !errors.Is(cleanupErr, os.ErrNotExist) {
+						err = fmt.Errorf("creating linked-file attachment: %w; could not remove downloaded file %s: %w", err, p.PDFPath, cleanupErr)
+					} else {
+						err = fmt.Errorf("creating linked-file attachment: %w; removed downloaded file %s after Zotero confirmed no attachment was created", err, p.PDFPath)
+					}
 				} else {
-					err = fmt.Errorf("creating linked-file attachment: %w; removed downloaded file %s so the operation can be retried", err, p.PDFPath)
+					err = fmt.Errorf("creating linked-file attachment: %w; kept downloaded file %s because attachment creation may have succeeded", err, p.PDFPath)
 				}
 				return "failed", err.Error(), err
 			}
@@ -652,6 +672,44 @@ func applyEnrichProposalWithContext(ctx context.Context, downloader enrichPDFDow
 		}
 	}
 	return "no_op", "unknown enrichment action", nil
+}
+
+// enrichPDFHasMagic validates a retained PDF before it is reused on retry,
+// reading only the 5-byte header so a large file is never buffered.
+func enrichPDFHasMagic(path string) error {
+	f, err := os.Open(path)
+	if err != nil {
+		return fmt.Errorf("reopening downloaded PDF: %w", err)
+	}
+	defer f.Close()
+	magic := make([]byte, 5)
+	if _, err := io.ReadFull(f, magic); err != nil {
+		return fmt.Errorf("reading %s: %w", path, err)
+	}
+	if string(magic) != "%PDF-" {
+		return fmt.Errorf("existing file %s is not a PDF (missing %%PDF- header)", path)
+	}
+	return nil
+}
+
+// linkedAttachmentCreationConfirmedAbsent reports the API outcomes for which
+// Zotero definitively rejected the create before creating a child. Every other
+// outcome (including timeouts, 5xx, 409, 412, and 429) is ambiguous and must
+// retain the local PDF because it may already be a linked attachment target.
+func linkedAttachmentCreationConfirmedAbsent(err error) bool {
+	var apiErr *client.APIError
+	if !errors.As(err, &apiErr) {
+		return false
+	}
+	switch apiErr.StatusCode {
+	case http.StatusBadRequest, http.StatusUnauthorized, http.StatusForbidden,
+		http.StatusNotFound, http.StatusMethodNotAllowed, http.StatusNotAcceptable,
+		http.StatusRequestEntityTooLarge, http.StatusUnsupportedMediaType,
+		http.StatusUnprocessableEntity:
+		return true
+	default:
+		return false
+	}
 }
 
 // apiMutator is the subset of *client.Client used to apply enrichments; a small

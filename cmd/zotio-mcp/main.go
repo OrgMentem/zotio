@@ -28,6 +28,10 @@ import (
 const defaultHTTPAddr = "127.0.0.1:7777" // Default streamable HTTP to loopback-only.
 
 func main() {
+	// MCP mirrors execute Cobra commands in-process, so install the same
+	// mutation journal and local-mirror hooks used by the CLI before serving.
+	cli.InstallRuntimeHooks()
+
 	// Advertise resource + prompt capabilities alongside tools so hosts can
 	// discover Zotero context and guided workflows.
 	s := server.NewMCPServer(

@@ -12,6 +12,7 @@
 package cli
 
 import (
+	"bytes"
 	"context"
 	"crypto/md5" //nolint:gosec // G501: Zotero's upload protocol identifies file content by MD5; not a security primitive here.
 	"crypto/sha256"
@@ -19,6 +20,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/netip"
 	"net/url"
@@ -80,7 +82,13 @@ By default this previews the planned attachment; apply with --yes.`,
 			if !zoteroItemKeyRE.MatchString(parentKey) {
 				return usageErr(fmt.Errorf("invalid parent item key %q", parentKey))
 			}
-			req, err := newStoredUploadRequest(parentKey, args[1], title)
+			var req storedUploadRequest
+			var err error
+			if mode == "linked-file" {
+				req, err = newLinkedFileRequest(parentKey, args[1], title)
+			} else {
+				req, err = newStoredUploadRequest(parentKey, args[1], title)
+			}
 			if err != nil {
 				return err
 			}
@@ -94,10 +102,12 @@ By default this previews the planned attachment; apply with --yes.`,
 			}
 
 			kind := "attachment_upload"
-			change := fmt.Sprintf("stored -> %s (%d bytes, md5 %s)", req.Filename, len(req.Data), req.MD5[:8])
+			var change string
 			if mode == "linked-file" {
 				kind = "attachment_link"
 				change = "linked-file -> " + req.Path
+			} else {
+				change = fmt.Sprintf("stored -> %s (%d bytes, md5 %s)", req.Filename, len(req.Data), req.MD5[:8])
 			}
 			op := mutation.Op{
 				ID:      "attachments.add:001:" + mode,
@@ -259,19 +269,9 @@ func (e *storedConflictError) Error() string { return e.msg }
 // inputs (MD5, mtime, content type, deterministic write token). Reading the
 // file here keeps preview network-free while showing real plan evidence.
 func newStoredUploadRequest(parentKey, path, title string) (storedUploadRequest, error) {
-	absPath, err := filepath.Abs(path)
+	absPath, info, filename, title, err := attachmentFileDetails(path, title)
 	if err != nil {
-		return storedUploadRequest{}, usageErr(fmt.Errorf("resolving attachment path: %w", err))
-	}
-	info, err := os.Stat(absPath)
-	if err != nil {
-		return storedUploadRequest{}, usageErr(fmt.Errorf("attachment file: %w", err))
-	}
-	if !info.Mode().IsRegular() {
-		return storedUploadRequest{}, usageErr(fmt.Errorf("attachment %s is not a regular file", absPath))
-	}
-	if info.Size() == 0 {
-		return storedUploadRequest{}, usageErr(fmt.Errorf("attachment %s is empty", absPath))
+		return storedUploadRequest{}, err
 	}
 	data, err := os.ReadFile(absPath) //nolint:gosec // G304: uploading a user-named local file is the command's purpose.
 	if err != nil {
@@ -279,10 +279,6 @@ func newStoredUploadRequest(parentKey, path, title string) (storedUploadRequest,
 	}
 	sum := md5.Sum(data) //nolint:gosec // G401: Zotero's upload authorization is keyed by MD5.
 	md5hex := hex.EncodeToString(sum[:])
-	filename := filepath.Base(absPath)
-	if strings.TrimSpace(title) == "" {
-		title = filename
-	}
 	// Deterministic write token: an identical retry replays the same token, so
 	// Zotero rejects a duplicate create (412) instead of making a second child.
 	tok := sha256.Sum256([]byte("zotio.attachments.add\x00" + parentKey + "\x00" + filename + "\x00" + md5hex))
@@ -291,7 +287,7 @@ func newStoredUploadRequest(parentKey, path, title string) (storedUploadRequest,
 		Path:        absPath,
 		Filename:    filename,
 		Title:       title,
-		ContentType: storedAttachmentContentType(filename, data),
+		ContentType: storedAttachmentContentType(filename, attachmentContentProbe(data)),
 		Data:        data,
 		MD5:         md5hex,
 		MtimeMS:     info.ModTime().UnixMilli(),
@@ -299,11 +295,72 @@ func newStoredUploadRequest(parentKey, path, title string) (storedUploadRequest,
 	}, nil
 }
 
-func storedAttachmentContentType(filename string, data []byte) string {
-	if strings.EqualFold(filepath.Ext(filename), ".pdf") {
+// newLinkedFileRequest records only file metadata. Linked files are never
+// uploaded, so do not read or retain their full contents.
+func newLinkedFileRequest(parentKey, path, title string) (storedUploadRequest, error) {
+	absPath, info, filename, title, err := attachmentFileDetails(path, title)
+	if err != nil {
+		return storedUploadRequest{}, err
+	}
+	probe, err := readAttachmentContentProbe(absPath)
+	if err != nil {
+		return storedUploadRequest{}, fmt.Errorf("reading attachment: %w", err)
+	}
+	return storedUploadRequest{
+		ParentKey:   parentKey,
+		Path:        absPath,
+		Filename:    filename,
+		Title:       title,
+		ContentType: storedAttachmentContentType(filename, probe),
+		MtimeMS:     info.ModTime().UnixMilli(),
+	}, nil
+}
+
+func attachmentFileDetails(path, title string) (string, os.FileInfo, string, string, error) {
+	absPath, err := filepath.Abs(path)
+	if err != nil {
+		return "", nil, "", "", usageErr(fmt.Errorf("resolving attachment path: %w", err))
+	}
+	info, err := os.Stat(absPath)
+	if err != nil {
+		return "", nil, "", "", usageErr(fmt.Errorf("attachment file: %w", err))
+	}
+	if !info.Mode().IsRegular() {
+		return "", nil, "", "", usageErr(fmt.Errorf("attachment %s is not a regular file", absPath))
+	}
+	if info.Size() == 0 {
+		return "", nil, "", "", usageErr(fmt.Errorf("attachment %s is empty", absPath))
+	}
+	filename := filepath.Base(absPath)
+	if strings.TrimSpace(title) == "" {
+		title = filename
+	}
+	return absPath, info, filename, title, nil
+}
+
+const attachmentContentProbeBytes = 512
+
+func attachmentContentProbe(data []byte) []byte {
+	if len(data) > attachmentContentProbeBytes {
+		return data[:attachmentContentProbeBytes]
+	}
+	return data
+}
+
+func readAttachmentContentProbe(path string) ([]byte, error) {
+	file, err := os.Open(path) //nolint:gosec // G304: reading a user-named local file is the command's purpose.
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = file.Close() }()
+	return io.ReadAll(io.LimitReader(file, attachmentContentProbeBytes))
+}
+
+func storedAttachmentContentType(filename string, probe []byte) string {
+	if strings.EqualFold(filepath.Ext(filename), ".pdf") && bytes.HasPrefix(probe, []byte("%PDF-")) {
 		return "application/pdf"
 	}
-	return http.DetectContentType(data)
+	return http.DetectContentType(probe)
 }
 
 // uploadStoredAttachment runs the full reconcile-create-authorize-upload-register
@@ -483,17 +540,16 @@ func postUploadPayload(ctx context.Context, c *client.Client, uploadURL, content
 	body = append(body, prefix...)
 	body = append(body, data...)
 	body = append(body, suffix...)
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, uploadURL, strings.NewReader(string(body)))
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, uploadURL, bytes.NewReader(body))
 	if err != nil {
 		return fmt.Errorf("building upload request: %w", err)
 	}
 	if contentType != "" {
 		httpReq.Header.Set("Content-Type", contentType)
 	}
-	httpClient := c.HTTPClient
-	if httpClient == nil {
-		httpClient = http.DefaultClient
-	}
+	// Re-resolve and vet the storage host at dial time so a signed HTTPS URL
+	// cannot reach a private address through DNS rebinding.
+	httpClient := externalFetchHTTPClient(c.HTTPClient, false)
 	resp, err := httpClient.Do(httpReq)
 	if err != nil {
 		return fmt.Errorf("uploading file payload: %w", err)

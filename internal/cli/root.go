@@ -66,10 +66,9 @@ func RootCmd() *cobra.Command {
 
 // Execute runs the CLI in non-interactive mode: never prompts, all values via flags or stdin.
 func Execute() error {
-	// record applied mutation runs only on the real
-	// CLI path; subcommand unit tests construct commands directly and never journal.
-	mutationJournalRecorder = recordMutationJournal
-	mirrorWriteThrough = applyMirrorWriteThrough
+	// Record applied mutation runs only on the real CLI path; subcommand unit
+	// tests construct commands directly and never install these hooks.
+	InstallRuntimeHooks()
 	var flags rootFlags
 	rootCmd := newRootCmd(&flags)
 

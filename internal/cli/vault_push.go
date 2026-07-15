@@ -847,7 +847,10 @@ func markdownToNoteHTML(citekey, md string) string {
 			if i > 0 {
 				b.WriteString("<br>")
 			}
-			b.WriteString(html.EscapeString(ln))
+			// Pull preserves characters that can form Markdown HTML/entities as
+			// entities. Decode that transport form before the single canonical
+			// HTML escape so repeated pull/push cycles cannot compound escapes.
+			b.WriteString(html.EscapeString(unescapeMarkdownHTML(ln)))
 		}
 		b.WriteString("</p>")
 	}

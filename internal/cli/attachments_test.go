@@ -7,6 +7,7 @@ package cli
 
 import (
 	"bytes"
+	"context"
 	"crypto/md5" //nolint:gosec // G501: mirrors the Zotero upload protocol's MD5 addressing.
 	"encoding/hex"
 	"encoding/json"
@@ -19,6 +20,7 @@ import (
 	"sync"
 	"testing"
 
+	"zotio/internal/client"
 	"zotio/internal/mutation"
 )
 
@@ -60,6 +62,11 @@ type fakeZoteroUpload struct {
 
 func newFakeZoteroUpload(t *testing.T, parentKey string) *fakeZoteroUpload {
 	t.Helper()
+	// The upload payload POST now goes through the public-IP dial guard; the
+	// fake server is on loopback, so enable the sanctioned test escape.
+	oldAllowPrivateOutbound := allowPrivateOutboundForTests
+	allowPrivateOutboundForTests = true
+	t.Cleanup(func() { allowPrivateOutboundForTests = oldAllowPrivateOutbound })
 	f := &fakeZoteroUpload{t: t, parentKey: parentKey, authorizedMD5: map[string]string{}}
 	f.srv = httptest.NewServer(http.HandlerFunc(f.handle))
 	t.Cleanup(f.srv.Close)
@@ -258,6 +265,9 @@ func setUploadTestEnv(t *testing.T, f *fakeZoteroUpload) {
 	t.Setenv("ZOTERO_BASE_URL", f.srv.URL+"/users/0")
 	t.Setenv("ZOTERO_API_KEY", "")
 	t.Setenv("ZOTERO_CONFIG", filepath.Join(t.TempDir(), "missing.toml"))
+	oldAllowPrivateOutbound := allowPrivateOutboundForTests
+	allowPrivateOutboundForTests = true
+	t.Cleanup(func() { allowPrivateOutboundForTests = oldAllowPrivateOutbound })
 }
 
 func runAttachmentsAdd(t *testing.T, flags *rootFlags, args []string) (mutation.Envelope, string, error) {
@@ -541,6 +551,66 @@ func TestAttachmentsAddLinkedFileIsRetrySafeWithoutStorageUpload(t *testing.T) {
 	creates, uploads, registers := f.snapshot()
 	if creates != 1 || uploads != 0 || registers != 0 || len(f.createTokens) != 1 || f.createTokens[0] == "" {
 		t.Fatalf("traffic creates=%d uploads=%d registers=%d tokens=%v", creates, uploads, registers, f.createTokens)
+	}
+}
+
+func TestNewLinkedFileRequestDoesNotBufferWholeFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "large.pdf")
+	file, err := os.Create(path)
+	if err != nil {
+		t.Fatalf("create large attachment: %v", err)
+	}
+	if err := file.Truncate(64 << 20); err != nil {
+		_ = file.Close()
+		t.Fatalf("truncate large attachment: %v", err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatalf("close large attachment: %v", err)
+	}
+
+	req, err := newLinkedFileRequest("PARENT1", path, "")
+	if err != nil {
+		t.Fatalf("new linked request: %v", err)
+	}
+	if req.Data != nil || req.MD5 != "" {
+		t.Fatalf("linked request buffered upload data: data=%d bytes md5=%q", len(req.Data), req.MD5)
+	}
+}
+
+func TestStoredAttachmentContentTypeRequiresPDFMagic(t *testing.T) {
+	if got := storedAttachmentContentType("paper.pdf", []byte("<html>not a PDF</html>")); got == "application/pdf" {
+		t.Fatalf("content type = %q, want non-PDF for a .pdf name without PDF magic", got)
+	}
+	if got := storedAttachmentContentType("paper.pdf", []byte("%PDF-1.7\nbody")); got != "application/pdf" {
+		t.Fatalf("content type = %q, want application/pdf for PDF magic", got)
+	}
+}
+
+func TestPostUploadPayloadGuardsPrivateDials(t *testing.T) {
+	oldAllowPrivateOutbound := allowPrivateOutboundForTests
+	allowPrivateOutboundForTests = false
+	t.Cleanup(func() { allowPrivateOutboundForTests = oldAllowPrivateOutbound })
+
+	err := postUploadPayload(context.Background(), &client.Client{}, "https://127.0.0.1:1/upload", "", "", "", []byte("payload"))
+	if err == nil || !strings.Contains(err.Error(), "local or private") {
+		t.Fatalf("private upload error = %v, want dial-time local/private rejection", err)
+	}
+}
+
+func TestPostUploadPayloadAllowsLoopbackTestEscape(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			t.Errorf("method = %s, want POST", r.Method)
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	t.Cleanup(srv.Close)
+	oldAllowPrivateOutbound := allowPrivateOutboundForTests
+	allowPrivateOutboundForTests = true
+	t.Cleanup(func() { allowPrivateOutboundForTests = oldAllowPrivateOutbound })
+
+	if err := postUploadPayload(context.Background(), &client.Client{HTTPClient: srv.Client()}, srv.URL+"/upload", "", "", "", []byte("payload")); err != nil {
+		t.Fatalf("loopback upload with test escape: %v", err)
 	}
 }
 

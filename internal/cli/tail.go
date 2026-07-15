@@ -118,7 +118,12 @@ native streaming instead of polling.`,
 			if events, err := emitChanges(cmd.Context(), c, db, resource, path, sink, os.Stdout); err != nil {
 				fmt.Fprintf(os.Stderr, "warning: initial poll failed: %v\n", err)
 			} else if events >= 1 && workflowPath != "" {
-				runTriggeredWorkflow(cmd, "tail", workflowPath, flags.yes)
+				runTriggeredWorkflow(cmd.Context(), cmd, "tail", workflowPath, workflowRunInvocation{
+					Yes:     flags.yes,
+					DryRun:  flags.dryRun,
+					Agent:   flags.agent,
+					NoInput: flags.noInput,
+				})
 			}
 
 			// Honor --follow=false as a single poll.
@@ -137,7 +142,12 @@ native streaming instead of polling.`,
 					if events, err := emitChanges(cmd.Context(), c, db, resource, path, sink, os.Stdout); err != nil {
 						fmt.Fprintf(os.Stderr, "warning: poll failed: %v\n", err)
 					} else if events >= 1 && workflowPath != "" {
-						runTriggeredWorkflow(cmd, "tail", workflowPath, flags.yes)
+						runTriggeredWorkflow(cmd.Context(), cmd, "tail", workflowPath, workflowRunInvocation{
+							Yes:     flags.yes,
+							DryRun:  flags.dryRun,
+							Agent:   flags.agent,
+							NoInput: flags.noInput,
+						})
 					}
 				}
 			}

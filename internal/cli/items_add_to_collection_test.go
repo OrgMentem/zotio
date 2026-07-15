@@ -8,18 +8,22 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strconv"
 	"testing"
 
 	"zotio/internal/mutation"
 )
 
 type collectionFilingTestServer struct {
-	server            *httptest.Server
-	collectionKey     string
-	collectionName    string
-	collectionCreates int
-	itemCollections   []string
-	itemPatchCount    int
+	server                    *httptest.Server
+	collectionKey             string
+	collectionName            string
+	collectionCreates         int
+	collectionWriteTokens     []string
+	ambiguousCollectionCreate bool
+	collectionsGet            func(http.ResponseWriter, *http.Request)
+	itemCollections           []string
+	itemPatchCount            int
 }
 
 func newCollectionFilingTestServer(t *testing.T) *collectionFilingTestServer {
@@ -30,6 +34,10 @@ func newCollectionFilingTestServer(t *testing.T) *collectionFilingTestServer {
 		case "/users/0/collections":
 			switch r.Method {
 			case http.MethodGet:
+				if ts.collectionsGet != nil {
+					ts.collectionsGet(w, r)
+					return
+				}
 				if ts.collectionKey == "" {
 					_, _ = fmt.Fprint(w, "[]")
 					return
@@ -49,8 +57,17 @@ func newCollectionFilingTestServer(t *testing.T) *collectionFilingTestServer {
 					return
 				}
 				name, _ := body[0]["name"].(string)
+				ts.collectionWriteTokens = append(ts.collectionWriteTokens, r.Header.Get("Zotero-Write-Token"))
+				if ts.ambiguousCollectionCreate && ts.collectionCreates > 0 {
+					http.Error(w, `{"error":"write token already submitted"}`, http.StatusPreconditionFailed)
+					return
+				}
 				ts.collectionCreates++
 				ts.collectionKey, ts.collectionName = "COLL0001", name
+				if ts.ambiguousCollectionCreate {
+					http.Error(w, "response lost after create", http.StatusInternalServerError)
+					return
+				}
 				_, _ = fmt.Fprint(w, `{"success":{"0":"COLL0001"},"successful":{"0":{"key":"COLL0001"}}}`)
 			default:
 				http.Error(w, "unexpected collection method", http.StatusMethodNotAllowed)
@@ -83,6 +100,15 @@ func newCollectionFilingTestServer(t *testing.T) *collectionFilingTestServer {
 
 func runItemsAddToCollectionTestCmd(t *testing.T, srv *collectionFilingTestServer, args ...string) mutation.Envelope {
 	t.Helper()
+	env, err := executeItemsAddToCollectionTestCmd(t, srv, args...)
+	if err != nil {
+		t.Fatalf("items add-to-collection %v: %v", args, err)
+	}
+	return env
+}
+
+func executeItemsAddToCollectionTestCmd(t *testing.T, srv *collectionFilingTestServer, args ...string) (mutation.Envelope, error) {
+	t.Helper()
 	t.Setenv("ZOTERO_BASE_URL", srv.server.URL+"/users/0")
 	t.Setenv("ZOTERO_CONFIG", filepath.Join(t.TempDir(), "missing.toml"))
 	cmd := newItemsAddToCollectionCmd(&rootFlags{asJSON: true, yes: true, maxChanges: -1})
@@ -91,13 +117,13 @@ func runItemsAddToCollectionTestCmd(t *testing.T, srv *collectionFilingTestServe
 	cmd.SetOut(&out)
 	cmd.SetArgs(args)
 	if err := cmd.Execute(); err != nil {
-		t.Fatalf("items add-to-collection %v: %v", args, err)
+		return mutation.Envelope{}, err
 	}
 	var env mutation.Envelope
 	if err := json.Unmarshal(out.Bytes(), &env); err != nil {
-		t.Fatalf("decode mutation envelope %q: %v", out.String(), err)
+		return mutation.Envelope{}, fmt.Errorf("decoding mutation envelope %q: %w", out.String(), err)
 	}
-	return env
+	return env, nil
 }
 
 func TestItemsAddToCollectionCreatesOnceAndIsIdempotent(t *testing.T) {
@@ -120,5 +146,80 @@ func TestItemsAddToCollectionCreatesOnceAndIsIdempotent(t *testing.T) {
 	}
 	if srv.collectionCreates != 1 || srv.itemPatchCount != 1 {
 		t.Fatalf("idempotent calls: creates=%d patches=%d", srv.collectionCreates, srv.itemPatchCount)
+	}
+}
+
+func TestItemsAddToCollectionFindsCollectionOnLaterPage(t *testing.T) {
+	srv := newCollectionFilingTestServer(t)
+	srv.collectionsGet = func(w http.ResponseWriter, r *http.Request) {
+		start, err := strconv.Atoi(r.URL.Query().Get("start"))
+		if err != nil {
+			t.Errorf("invalid start %q: %v", r.URL.Query().Get("start"), err)
+			http.Error(w, "invalid start", http.StatusBadRequest)
+			return
+		}
+		if got := r.URL.Query().Get("limit"); got != "100" {
+			t.Errorf("limit = %q, want 100", got)
+			http.Error(w, "invalid limit", http.StatusBadRequest)
+			return
+		}
+		switch start {
+		case 0:
+			rows := make([]map[string]any, 100)
+			for i := range rows {
+				rows[i] = map[string]any{
+					"key":  fmt.Sprintf("OTHER%04d", i),
+					"data": map[string]string{"name": fmt.Sprintf("Other %d", i)},
+				}
+			}
+			if err := json.NewEncoder(w).Encode(rows); err != nil {
+				t.Errorf("encoding first collection page: %v", err)
+			}
+		case 100:
+			_, _ = fmt.Fprint(w, `[{"key":"COLL0002","data":{"name":"Inbox"}}]`)
+		default:
+			http.Error(w, "unexpected collection page", http.StatusBadRequest)
+		}
+	}
+
+	env := runItemsAddToCollectionTestCmd(t, srv, "ITEM0001", "--collection-name", "Inbox")
+	if !env.OK || env.Result == nil || env.Result.Summary.Applied != 1 {
+		t.Fatalf("filing = %+v", env)
+	}
+	if srv.collectionCreates != 0 || srv.itemPatchCount != 1 {
+		t.Fatalf("calls: creates=%d patches=%d", srv.collectionCreates, srv.itemPatchCount)
+	}
+	if !stringSliceContains(srv.itemCollections, "COLL0002") {
+		t.Fatalf("item collections = %v", srv.itemCollections)
+	}
+}
+
+func TestItemsAddToCollectionDoesNotCreateForInvalidItem(t *testing.T) {
+	srv := newCollectionFilingTestServer(t)
+
+	if _, err := executeItemsAddToCollectionTestCmd(t, srv, "MISSING", "--collection-name", "Inbox"); err == nil {
+		t.Fatal("expected invalid item error")
+	}
+	if srv.collectionCreates != 0 {
+		t.Fatalf("created %d collection(s) for an invalid item", srv.collectionCreates)
+	}
+}
+
+func TestItemsAddToCollectionReconcilesWriteTokenRetry(t *testing.T) {
+	srv := newCollectionFilingTestServer(t)
+	srv.ambiguousCollectionCreate = true
+
+	env := runItemsAddToCollectionTestCmd(t, srv, "ITEM0001", "--collection-name", "Inbox")
+	if !env.OK || env.Result == nil || env.Result.Summary.Applied != 1 {
+		t.Fatalf("filing = %+v", env)
+	}
+	if srv.collectionCreates != 1 || srv.itemPatchCount != 1 {
+		t.Fatalf("calls: creates=%d patches=%d", srv.collectionCreates, srv.itemPatchCount)
+	}
+	if len(srv.collectionWriteTokens) != 2 {
+		t.Fatalf("write tokens = %v, want retry with same token", srv.collectionWriteTokens)
+	}
+	if srv.collectionWriteTokens[0] == "" || srv.collectionWriteTokens[0] != srv.collectionWriteTokens[1] {
+		t.Fatalf("write tokens = %v, want non-empty deterministic token", srv.collectionWriteTokens)
 	}
 }

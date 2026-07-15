@@ -70,7 +70,12 @@ until it is resumed or deleted with zotio workflow run <spec> --yes --resume.`,
 				fmt.Fprintf(cmd.ErrOrStderr(), "[watch] %s cycle complete\n", now.Format(time.RFC3339))
 				healthMonitor.run(ctx, cmd, now)
 				if workflowPath != "" {
-					runTriggeredWorkflow(cmd, "watch", workflowPath, flags.yes)
+					runTriggeredWorkflow(ctx, cmd, "watch", workflowPath, workflowRunInvocation{
+						Yes:     flags.yes,
+						DryRun:  flags.dryRun,
+						Agent:   flags.agent,
+						NoInput: flags.noInput,
+					})
 				}
 				return nil
 			}
@@ -121,12 +126,12 @@ until it is resumed or deleted with zotio workflow run <spec> --yes --resume.`,
 }
 
 // runTriggeredWorkflow reports workflow failures without disrupting its caller.
-func runTriggeredWorkflow(cmd *cobra.Command, source, specPath string, yes bool) {
-	report, err := runWorkflowRunFile(specPath, workflowRunInvocation{Yes: yes})
+func runTriggeredWorkflow(ctx context.Context, cmd *cobra.Command, source, specPath string, inv workflowRunInvocation) {
+	report, err := runWorkflowRunFile(ctx, specPath, inv)
 	mode := report.Mode
 	if mode == "" {
 		mode = workflowRunModePreview
-		if yes {
+		if inv.Yes && !inv.DryRun {
 			mode = workflowRunModeApply
 		}
 	}

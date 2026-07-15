@@ -340,12 +340,22 @@ func (c *Client) PatchWithHeaders(path string, body any, headers map[string]stri
 
 // do executes an HTTP request. headerOverrides, when non-nil, override global
 // RequiredHeaders for this specific request (used for per-endpoint API versioning).
-func (c *Client) doRequest(ctx context.Context, method, path string, params map[string]string, body any, headerOverrides map[string]string) (json.RawMessage, int, http.Header, error) {
+func (c *Client) doRequest(ctx context.Context, method, path string, params map[string]string, body any, headerOverrides map[string]string) (_ json.RawMessage, _ int, _ http.Header, retErr error) {
 	// all network construction below requires a
 	// non-nil context so callers can cancel request creation, dialing, and reads.
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	// A mutating request that fails after dispatch may still have committed
+	// server-side (a retried 5xx whose success response was lost, a write-token
+	// replay 412, or a dropped response), so drop cached reads on any error:
+	// reconciliation re-reads must observe fresh state. Harmless on the rare
+	// pre-dispatch failure — it only forces a cache miss on the next read.
+	defer func() {
+		if retErr != nil && method != http.MethodGet && !c.DryRun {
+			c.invalidateCache()
+		}
+	}()
 	targetURL := c.baseURLFor(ctx, method) + path
 
 	var bodyBytes []byte
@@ -501,7 +511,7 @@ func (c *Client) doRequest(ctx context.Context, method, path string, params map[
 			continue
 		}
 
-		// Client error or retries exhausted - return the error
+		// Client error or retries exhausted - return the error.
 		return nil, resp.StatusCode, resp.Header, apiErr
 	}
 

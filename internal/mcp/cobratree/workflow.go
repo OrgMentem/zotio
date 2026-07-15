@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"strings"
 
 	mcplib "github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
@@ -107,7 +108,11 @@ func workflowSubmitHandler(rootFactory func() *cobra.Command) server.ToolHandler
 			return mcplib.NewToolResultError(fmt.Sprintf("close workflow spec: %v", err)), nil
 		}
 
-		execArgs := map[string]any{"args": specPath}
+		execArgs := map[string]any{
+			"args":     specPath,
+			"agent":    true,
+			"no-input": true,
+		}
 		if yes {
 			execArgs["yes"] = true
 		}
@@ -145,10 +150,14 @@ func workflowSubmitSteps(rootFactory func() *cobra.Command, raw any) ([]workflow
 				execArgs[key] = value
 			}
 		}
-		if rawArgs, ok := stepArgs["args"].(string); ok && rawArgs != "" {
-			execArgs["args"] = rawArgs
-		} else if rawArgs, exists := stepArgs["args"]; exists && rawArgs != nil {
-			return nil, workflowSubmitStepError(index, "args must be a string")
+		if rawArgs, exists := stepArgs["args"]; exists && rawArgs != nil {
+			positionalArgs, ok := rawArgs.(string)
+			if !ok {
+				return nil, workflowSubmitStepError(index, "args must be a string")
+			}
+			if positionalArgs != "" {
+				execArgs["args"] = positionalArgs
+			}
 		}
 
 		allowed := safeFlagNames(cmd)
@@ -169,11 +178,18 @@ func workflowSubmitSteps(rootFactory func() *cobra.Command, raw any) ([]workflow
 			return nil, workflowSubmitStepError(index, err.Error())
 		}
 
+		positionalPath := append([]string{}, path...)
 		argv := append([]string{}, path...)
 		argv = append(argv, cliArgsFromMCP(execArgs)...)
 		if positionalArgs, _ := execArgs["args"].(string); positionalArgs != "" {
-			argv = append(argv, splitShellArgs(positionalArgs)...)
+			positionals := splitShellArgs(positionalArgs)
+			positionalPath = append(positionalPath, positionals...)
+			argv = append(argv, positionals...)
 		}
+		if !workflowSubmitBindsCommand(rootFactory, path, positionalPath) {
+			return nil, workflowSubmitStepError(index, "positional args resolve to a different or hidden command")
+		}
+
 		steps = append(steps, workflowSubmitStep{
 			Name:      name,
 			Args:      argv,
@@ -182,6 +198,24 @@ func workflowSubmitSteps(rootFactory func() *cobra.Command, raw any) ([]workflow
 		})
 	}
 	return steps, nil
+}
+
+// workflowSubmitBindsCommand prevents positional arguments from descending
+// into a different command than the mirrorable command initially validated.
+func workflowSubmitBindsCommand(rootFactory func() *cobra.Command, expectedPath, positionalPath []string) bool {
+	if rootFactory == nil {
+		return false
+	}
+	root := rootFactory()
+	if root == nil {
+		return false
+	}
+	resolved, _, err := root.Find(positionalPath)
+	if err != nil || !isMirrorableCommand(resolved) {
+		return false
+	}
+	expected, _, ok := findMirrorableCommand(func() *cobra.Command { return root }, strings.Join(expectedPath, " "))
+	return ok && resolved == expected
 }
 
 func workflowSubmitVars(raw any) (map[string]string, error) {

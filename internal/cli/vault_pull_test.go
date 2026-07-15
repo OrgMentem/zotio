@@ -32,6 +32,24 @@ func TestRenderPullRoundTripPreservesTextSafely(t *testing.T) {
 	}
 }
 
+func TestVaultPullPushEntityRoundTripIsIdempotent(t *testing.T) {
+	original := "<h1>Obsidian notes — paper</h1><p><em>Managed from the vault by zotio. Edit in Obsidian.</em></p>" +
+		"<p>A &amp; B</p><p>x &lt; y &gt; z</p><p>literal &amp;amp;</p>"
+	pulled := htmlNoteToMarkdown(original)
+	wantPulled := "A &amp; B\n\nx &lt; y &gt; z\n\nliteral &amp;amp;"
+	if pulled != wantPulled {
+		t.Fatalf("pulled Markdown = %q, want %q", pulled, wantPulled)
+	}
+
+	pushed := markdownToNoteHTML("paper", pulled)
+	if pushed != original {
+		t.Fatalf("pushed HTML = %q, want original %q", pushed, original)
+	}
+	if pulledAgain := htmlNoteToMarkdown(pushed); pulledAgain != pulled {
+		t.Fatalf("second pull = %q, want %q", pulledAgain, pulled)
+	}
+}
+
 func TestHTMLNoteToMarkdownEscapesDecodedRemoteMarkup(t *testing.T) {
 	noteHTML := "<h1>Obsidian notes — paper</h1>" +
 		"<p>&lt;script&gt;alert(1)&lt;/script&gt;</p>" +
