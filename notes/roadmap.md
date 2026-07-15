@@ -295,7 +295,7 @@ Every item was a shipped contract whose last mile was missing; no new subsystems
 Validated pre-build from dev and user perspectives; full evidence and reshaped contracts in
 `notes/phase-10-validation.md`. Items 1–5 shipped as `items related`, `creators audit`,
 `creators audit fix`, and `import discover` (backward/forward/both + manifest v2 provenance +
-provider cache). Item 6 (PRISMA-input reporting) remains gated on an outreach demand signal.
+provider cache). Item 6 (PRISMA-input reporting) SHIPPED as library prisma — the demand gate was re-examined and dropped: it reflected missing evidence (the planning session's demand research died mid-run), not negative evidence, and the slice extends existing dedupe machinery with no new subsystem.
 Ordered by slice size:
 
 1. **`items related`** — relations already persist in synced raw item JSON (unindexed, not
@@ -313,7 +313,7 @@ Ordered by slice size:
    into the provider path with it. `collections gaps` becomes a consumer.
 5. **Forward chase** — new work (OpenAlex `cites:` needs work IDs we currently drop; COCI v2
    `/citations`); bounded, truncation-visible.
-6. **PRISMA-input reporting** — identification-stage counts (identified / duplicates removed /
+6. **PRISMA-input reporting** — SHIPPED 2026-07-15 as `library prisma`. — identification-stage counts (identified / duplicates removed /
    after dedupe) from existing dedupe machinery, feeding PRISMA 2020 flow diagrams. Gated on
    a demand signal from the SR Toolbox / evidence-synthesis outreach. Screening itself is
    explicitly out: Rayyan/ASReview own it, and it is not a no-LLM strength. The wedge is

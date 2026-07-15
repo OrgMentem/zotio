@@ -100,6 +100,7 @@ The machine-readable registry every command is classified against — read vs. w
 | `journal show` | read |  |  |  |
 | `journal undo` | write | `web_api` |  | `web_api_key` |
 | `library health` | read |  |  | `synced_store` |
+| `library prisma` | read |  |  | `synced_store` |
 | `library stats` | read |  |  | `synced_store` |
 | `library wrapped` | read |  |  |  |
 | `profile delete` | other |  |  |  |

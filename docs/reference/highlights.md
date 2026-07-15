@@ -11,6 +11,12 @@ Ranked, CI-gateable health report: citekey conflicts, duplicates, missing metada
 
 > **Why it matters** — Run this before any bibliography export or screening handoff; gate CI with --fail-on (exit 11) and publish a shields.io badge with --badge.
 
+### `library prisma`
+
+PRISMA 2020 identification-stage counts for a screening corpus: records identified (per source database), duplicate records removed, records after deduplication — scoped to a collection or tag.
+
+> **Why it matters** — Arrive at Rayyan or ASReview with certified counts for the PRISMA 2020 flow diagram.
+
 ### `items duplicates`
 
 Detect likely duplicate items by DOI or normalized title, then merge them safely with `duplicates resolve` — preview-first.

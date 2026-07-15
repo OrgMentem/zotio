@@ -149,8 +149,12 @@ func newItemsDuplicatesCmd(flags *rootFlags) *cobra.Command {
 	return cmd
 }
 
-func queryDuplicateDOIs(db localQueryStore) ([]map[string]any, error) {
-	return db.QueryRaw(`
+func queryDuplicateDOIs(db localQueryStore, scopes ...map[string]struct{}) ([]map[string]any, error) {
+	clause, args, err := duplicateQueryScopeClause(scopes)
+	if err != nil {
+		return nil, err
+	}
+	return db.QueryRaw(fmt.Sprintf(`
 SELECT
 	'doi' AS "group",
 	value,
@@ -160,11 +164,11 @@ FROM (
 	SELECT id, LOWER(TRIM(json_extract(data, '$.data.DOI'))) AS value
 	FROM resources
 	WHERE resource_type = 'items'
-		AND COALESCE(TRIM(json_extract(data, '$.data.DOI')), '') != ''
+		AND COALESCE(TRIM(json_extract(data, '$.data.DOI')), '') != ''%s
 )
 GROUP BY value
 HAVING COUNT(*) > 1
-ORDER BY count DESC, value`)
+ORDER BY count DESC, value`, clause), args...)
 }
 
 // queryDuplicateTitles groups citeable items sharing a normalized title.
@@ -172,8 +176,12 @@ ORDER BY count DESC, value`)
 // so that attachments named "PDF" / "Snapshot" / "Full Text PDF" don't dominate
 // the report as false bibliographic duplicates (and so `items duplicates resolve
 // --title` never tries to merge them).
-func queryDuplicateTitles(db localQueryStore) ([]map[string]any, error) {
-	return db.QueryRaw(`
+func queryDuplicateTitles(db localQueryStore, scopes ...map[string]struct{}) ([]map[string]any, error) {
+	clause, args, err := duplicateQueryScopeClause(scopes)
+	if err != nil {
+		return nil, err
+	}
+	return db.QueryRaw(fmt.Sprintf(`
 SELECT
 	'title' AS "group",
 	MIN(title) AS value,
@@ -187,12 +195,37 @@ FROM (
 		COALESCE(json_extract(data, '$.data.itemType'), '') AS item_type
 	FROM resources
 	WHERE resource_type = 'items'
-		AND COALESCE(TRIM(json_extract(data, '$.data.title')), '') != ''
+		AND COALESCE(TRIM(json_extract(data, '$.data.title')), '') != ''%s
 		AND COALESCE(item_type, '') NOT IN ('attachment', 'annotation', 'note')
 )
 GROUP BY normalized_title, item_type
 HAVING COUNT(*) > 1
-ORDER BY count DESC, value`)
+ORDER BY count DESC, value`, clause), args...)
+}
+
+// duplicateQueryScopeClause keeps legacy duplicate calls unscoped while letting
+// reports restrict the shared SQL to one resolved item cohort.
+func duplicateQueryScopeClause(scopes []map[string]struct{}) (string, []any, error) {
+	if len(scopes) == 0 || scopes[0] == nil {
+		return "", nil, nil
+	}
+	keys := make([]string, 0, len(scopes[0]))
+	for key := range scopes[0] {
+		keys = append(keys, key)
+	}
+	return duplicateKeyScopeClause(keys)
+}
+
+func duplicateKeyScopeClause(keys []string) (string, []any, error) {
+	if len(keys) == 0 {
+		return "\n\t\tAND 1=0", nil, nil
+	}
+	encoded, err := json.Marshal(keys)
+	if err != nil {
+		return "", nil, fmt.Errorf("encoding scoped item keys: %w", err)
+	}
+	// json_each carries an arbitrarily large key set through one SQLite bind.
+	return "\n\t\tAND id IN (SELECT value FROM json_each(?))", []any{string(encoded)}, nil
 }
 
 func normalizeDuplicateRows(rows []map[string]any) []map[string]any {

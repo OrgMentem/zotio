@@ -1944,6 +1944,27 @@ zotio library health [flags]
 | `--verify-files` | `bool` | `false` | Run the live broken-attachment check (needs Zotero desktop running) |
 | `--write-baseline` | `string` |  | Write current health finding identities to this baseline JSON after checks |
 
+### `zotio library prisma`
+
+Report PRISMA 2020 identification-stage counts from the local store
+
+Report the PRISMA 2020 identification-stage counts for a locally synced screening corpus.
+
+The report counts records identified (including their source databases), duplicate
+records removed, and the records-after-deduplication input to screening. Screening
+itself is deliberately out of scope: use Rayyan, ASReview, or another screening tool
+for that stage. Run 'zotio items duplicates resolve' to actually remove duplicates
+before exporting the certified corpus.
+
+```
+zotio library prisma [flags]
+```
+
+| Flag | Type | Default | Description |
+| --- | --- | --- | --- |
+| `--by` | `string` | `all` | Duplicate detector to run (doi, title, all) |
+| `--scope` | `string` |  | Limit to library, collection:<key>, tag:<name>, item:<key>, or query:<text> |
+
 ### `zotio library stats`
 
 Show library-wide local statistics

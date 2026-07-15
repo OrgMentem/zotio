@@ -1986,6 +1986,24 @@
     }
   },
   {
+    "name": "library_prisma",
+    "description": "Report the PRISMA 2020 identification-stage counts for a locally synced screening corpus.\n\nThe report counts records identified (including their source databases), duplicate\nrecords removed, and the records-after-deduplication input to screening. Screening\nitself is deliberately out of scope: use Rayyan, ASReview, or another screening tool\nfor that stage. Run 'zotio items duplicates resolve' to actually remove duplicates\nbefore exporting the certified corpus.",
+    "inputSchema": {
+      "properties": {
+        "by": {
+          "description": "Duplicate detector to run (doi, title, all) (default: all)",
+          "type": "string"
+        },
+        "scope": {
+          "description": "Limit to library, collection:\u003ckey\u003e, tag:\u003cname\u003e, item:\u003ckey\u003e, or query:\u003ctext\u003e",
+          "type": "string"
+        }
+      },
+      "required": [],
+      "type": "object"
+    }
+  },
+  {
     "name": "library_stats",
     "description": "Show library-wide local statistics",
     "inputSchema": {

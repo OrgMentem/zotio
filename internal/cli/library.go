@@ -11,6 +11,7 @@ func newLibraryCmd(flags *rootFlags) *cobra.Command {
 	}
 	cmd.AddCommand(newLibraryStatsCmd(flags))
 	cmd.AddCommand(newLibraryHealthCmd(flags))
+	cmd.AddCommand(newLibraryPrismaCmd(flags))
 	cmd.AddCommand(newLibraryWrappedCmd(flags))
 	return cmd
 }

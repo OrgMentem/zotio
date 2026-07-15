@@ -51,6 +51,7 @@ var capabilityOverrides = map[string]capabilityEntry{
 	"items audit":            {Requires: []string{preconditionSyncedStore}},
 	"items missing-pdf":      {Requires: []string{preconditionSyncedStore}},
 	"items duplicates":       {Requires: []string{preconditionSyncedStore}},
+	"library prisma":         {Requires: []string{preconditionSyncedStore}},
 	"items related":          {Requires: []string{preconditionSyncedStore}},
 	"items similar":          {Requires: []string{preconditionSyncedStore}},
 	"items summarize":        {Requires: []string{preconditionSyncedStore}},
