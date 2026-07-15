@@ -1207,7 +1207,7 @@
   },
   {
     "name": "items_enrich",
-    "description": "Resolve missing metadata for locally synced items and apply it back to Zotero.\n\nWork queues come from the same checks as 'items audit':\n  --missing-doi       resolve a DOI by title from CrossRef, then OpenAlex/Semantic Scholar (exact title match)\n  --missing-abstract  fill the abstract from CrossRef, then OpenAlex/Semantic Scholar (requires the item's DOI)\n  --missing-pdf       attach an open-access PDF from Unpaywall (requires DOI)\n\nPDF attachment modes:\n  linked-url   create a linked_url attachment (default; no download)\n  linked-file  download the PDF to --pdf-dir and create a linked_file child item; linked files do not sync to other devices\n\nDownloaded PDFs accept application/pdf, application/octet-stream, or an absent\nContent-Type, then must pass a %PDF- magic check. Stored (imported-file)\nretro-attachment is handled by 'zotio attachments add \u003citem-key\u003e \u003cfile\u003e', which\nuploads through the Zotero Web API file-upload protocol.\n\nBy default this previews the proposed changes (a patch plan) and never downloads\nPDF bytes. Pass --collection to scope the work queue to items in a single\ncollection, or --keys-from to scope to exact item keys produced by another\ncommand. Pass --yes to apply via the Zotero API; --dry-run always previews.\nApplied field changes record provenance in the item's Extra field.",
+    "description": "Resolve missing metadata for locally synced items and apply it back to Zotero.\n\nWork queues come from the same checks as 'items audit':\n  --missing-doi       resolve a DOI by title from CrossRef, then OpenAlex/Semantic Scholar (exact title match)\n  --missing-abstract  fill the abstract from CrossRef, then OpenAlex/Semantic Scholar (requires the item's DOI)\n  --missing-pdf       attach an open-access PDF from Unpaywall (requires DOI)\n\nPDF attachment modes:\n  linked-url   create a linked_url attachment (default; no download)\n  linked-file  download the PDF to --pdf-dir and create a linked_file child item; linked files do not sync to other devices\n\nDownloaded PDFs accept application/pdf, application/octet-stream, or an absent\nContent-Type, then must pass a %PDF- magic check. Stored (imported-file)\nretro-attachment is handled by 'zotio attachments add \u003citem-key\u003e \u003cfile\u003e', which\nuploads through the Zotero Web API file-upload protocol.\n\nBy default this previews the proposed changes (a patch plan) and never downloads\nPDF bytes. Pass --collection to scope the work queue to items in a single\ncollection, or --keys/--keys-from to scope to exact item keys. Pass --yes to\napply via the Zotero API; --dry-run always previews.\nApplied field changes record provenance in the item's Extra field.",
     "inputSchema": {
       "properties": {
         "allow-destructive": {
@@ -1232,6 +1232,10 @@
         },
         "email": {
           "description": "Contact email for Unpaywall (required for --missing-pdf) and the OpenAlex polite pool (optional); or set UNPAYWALL_EMAIL",
+          "type": "string"
+        },
+        "keys": {
+          "description": "Comma-separated exact item keys to enrich",
           "type": "string"
         },
         "keys-from": {

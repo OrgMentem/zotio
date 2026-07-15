@@ -101,6 +101,7 @@ func newItemsEnrichCmd(flags *rootFlags) *cobra.Command {
 		// feeds item keys to enrichment so it previews/applies only the findings
 		// it recommended, instead of broadening back out to the whole queue.
 		keysFrom string
+		keys     string
 	)
 
 	cmd := &cobra.Command{
@@ -125,8 +126,8 @@ uploads through the Zotero Web API file-upload protocol.
 
 By default this previews the proposed changes (a patch plan) and never downloads
 PDF bytes. Pass --collection to scope the work queue to items in a single
-collection, or --keys-from to scope to exact item keys produced by another
-command. Pass --yes to apply via the Zotero API; --dry-run always previews.
+collection, or --keys/--keys-from to scope to exact item keys. Pass --yes to
+apply via the Zotero API; --dry-run always previews.
 Applied field changes record provenance in the item's Extra field.`,
 		Annotations: map[string]string{"mcp:read-only": "false"},
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -171,7 +172,10 @@ Applied field changes record provenance in the item's Extra field.`,
 			defer rawDB.Close()
 			db := localQueryStore{rawDB}
 
-			keyFilter, err := enrichKeyFilter(keysFrom, cmd.InOrStdin())
+			if strings.TrimSpace(keys) != "" && strings.TrimSpace(keysFrom) != "" {
+				return usageErr(fmt.Errorf("--keys cannot be combined with --keys-from"))
+			}
+			keyFilter, err := enrichKeyFilter(keys, keysFrom, cmd.InOrStdin())
 			if err != nil {
 				return err
 			}
@@ -240,6 +244,7 @@ Applied field changes record provenance in the item's Extra field.`,
 	cmd.Flags().IntVar(&flagLimit, "limit", 25, "Maximum items to process per category")
 	// Expose collection scoping for the local work queue.
 	cmd.Flags().StringVar(&flagCollection, "collection", "", "Scope the work queue to items in a collection key")
+	cmd.Flags().StringVar(&keys, "keys", "", "Comma-separated exact item keys to enrich")
 	cmd.Flags().StringVar(&keysFrom, "keys-from", "", "Read exact item keys from a file or '-' for stdin, then enrich only matching queued items")
 	cmd.Flags().StringVar(&flagEmail, "email", "", "Contact email for Unpaywall (required for --missing-pdf) and the OpenAlex polite pool (optional); or set UNPAYWALL_EMAIL")
 	cmd.Flags().BoolVar(&flagNoOpenAlex, "no-openalex", false, "Disable the OpenAlex fallback for --missing-doi/--missing-abstract")
@@ -256,19 +261,26 @@ func enrichTimeout(t time.Duration) time.Duration {
 	return t
 }
 
-// enrichKeyFilter parses --keys-from into an allow-set for exact remediation.
-// `library health` can now hand exact item keys to
-// `items enrich` without widening back to the whole missing-* work queue.
-func enrichKeyFilter(keysFrom string, stdin io.Reader) (map[string]bool, error) {
-	if keysFrom == "" {
-		return nil, nil
+// enrichKeyFilter parses direct or file-provided keys into an allow-set for
+// exact remediation without widening back to the whole missing-* work queue.
+func enrichKeyFilter(keys, keysFrom string, stdin io.Reader) (map[string]bool, error) {
+	var (
+		selected []string
+		err      error
+	)
+	if strings.TrimSpace(keys) != "" {
+		selected, err = parseMissingPDFKeys(keys)
+	} else if keysFrom != "" {
+		selected, err = resolveKeys(nil, keysFrom, stdin)
 	}
-	keys, err := resolveKeys(nil, keysFrom, stdin)
 	if err != nil {
 		return nil, err
 	}
-	allow := make(map[string]bool, len(keys))
-	for _, key := range keys {
+	if len(selected) == 0 {
+		return nil, nil
+	}
+	allow := make(map[string]bool, len(selected))
+	for _, key := range selected {
 		allow[key] = true
 	}
 	return allow, nil
@@ -290,15 +302,14 @@ func filterEnrichRowsByKeys(rows []map[string]any, allow map[string]bool) []map[
 // buildEnrichProposals resolves proposals for one category over the audit work
 // queue. It loads each candidate's full payload from the local store so the
 // provider has title/creators/DOI/version, then dispatches to the resolver.
-// Carry collection scope from the command into the work queue.
-// Carry exact key scope from --keys-from, filtering
-// before provider lookups so remediation stays bounded and cheap.
+// Carry collection and exact key scopes into the work queue, filtering before
+// provider lookups so remediation stays bounded and cheap.
 func buildEnrichProposals(ctx context.Context, db localQueryStore, httpClient *http.Client, category string, limit int, collection string, keyFilter map[string]bool, email string, useOpenAlex bool, useSemanticScholar bool, attachMode string, pdfDir string) ([]enrichProposal, []enrichSkip) {
 	queryLimit := limit
 	if keyFilter != nil {
-		// --keys-from identifies exact remediation targets. Fetch the complete
-		// queue before filtering so the SQL limit cannot hide an older
-		// requested key, then retain the requested limit below.
+		// Exact keys identify remediation targets. Fetch the complete queue
+		// before filtering so the SQL limit cannot hide an older requested key,
+		// then retain the requested limit below.
 		queryLimit = 0
 	}
 	rows, err := enrichWorkQueue(db, category, queryLimit, collection)

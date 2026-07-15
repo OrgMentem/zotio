@@ -654,10 +654,9 @@ func TestItemsEnrichMissingDOICollectionScope(t *testing.T) {
 	}
 }
 
-// Exact health remediation should be able to feed
-// the specific missing-* item keys to `items enrich`, avoiding broad provider
-// calls and broad mutation previews.
-func TestItemsEnrichMissingDOIKeysFrom(t *testing.T) {
+// A direct key scope keeps one-shot automation from creating a temporary
+// --keys-from file and avoids widening into the general work queue.
+func TestItemsEnrichMissingDOIKeys(t *testing.T) {
 	var requested []string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		q := r.URL.Query().Get("query.bibliographic")
@@ -686,14 +685,9 @@ func TestItemsEnrichMissingDOIKeysFrom(t *testing.T) {
 	}
 	_ = db.Close()
 
-	keysPath := filepath.Join(t.TempDir(), "keys.txt")
-	if err := os.WriteFile(keysPath, []byte("KIN\n"), 0o600); err != nil {
-		t.Fatalf("write keys: %v", err)
-	}
-
 	flags := &rootFlags{asJSON: true}
 	cmd := newItemsEnrichCmd(flags)
-	cmd.SetArgs([]string{"--missing-doi", "--keys-from", keysPath})
+	cmd.SetArgs([]string{"--missing-doi", "--keys", "KIN"})
 	var out bytes.Buffer
 	cmd.SetOut(&out)
 	cmd.SetErr(&bytes.Buffer{})
