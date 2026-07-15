@@ -4,6 +4,7 @@ package cli
 
 import (
 	"encoding/json"
+	"strings"
 	"fmt"
 
 	"github.com/spf13/cobra"
@@ -15,9 +16,8 @@ const missingPDFItemTypesSQL = `
 `
 
 func newItemsMissingPdfCmd(flags *rootFlags) *cobra.Command {
-	var flagType, flagCollection string
+	var flagType, flagCollection, flagKeys string
 	var flagLimit int
-
 	cmd := &cobra.Command{
 		Use:         "missing-pdf",
 		Short:       "List items that should have an attached PDF but do not",
@@ -34,7 +34,11 @@ func newItemsMissingPdfCmd(flags *rootFlags) *cobra.Command {
 			defer rawDB.Close()
 			db := localQueryStore{rawDB}
 
-			rows, err := queryMissingPDFItems(db, flagType, flagLimit, flagCollection)
+			keys, err := parseMissingPDFKeys(flagKeys)
+			if err != nil {
+				return err
+			}
+			rows, err := queryMissingPDFItemsForKeys(db, flagType, flagLimit, flagCollection, keys)
 			if err != nil {
 				return fmt.Errorf("querying missing PDFs: %w", err)
 			}
@@ -47,12 +51,16 @@ func newItemsMissingPdfCmd(flags *rootFlags) *cobra.Command {
 	}
 	cmd.Flags().StringVar(&flagType, "type", "", "Filter to a specific Zotero item type")
 	cmd.Flags().StringVar(&flagCollection, "collection", "", "Filter to an exact Zotero collection key")
+	cmd.Flags().StringVar(&flagKeys, "keys", "", "Comma-separated exact parent item keys")
 	cmd.Flags().IntVar(&flagLimit, "limit", 0, "Maximum number of items to return (0 = no limit)")
-
 	return cmd
 }
 
 func queryMissingPDFItems(db localQueryStore, itemType string, limit int, collection string) ([]map[string]any, error) {
+	return queryMissingPDFItemsForKeys(db, itemType, limit, collection, nil)
+}
+
+func queryMissingPDFItemsForKeys(db localQueryStore, itemType string, limit int, collection string, keys []string) ([]map[string]any, error) {
 	// Filter on the indexed item_type/parent_key columns instead of json_extract so
 	// SQLite uses idx_resources_item_type / idx_resources_parent_key rather than
 	// scanning and JSON-parsing every row. Accept an optional collection filter for
@@ -85,6 +93,13 @@ WHERE i.resource_type = 'items'
 	AND EXISTS (SELECT 1 FROM json_each(json_extract(i.data,'$.data.collections')) WHERE value = ?)`
 		args = append(args, collection)
 	}
+	if len(keys) > 0 {
+		query += `
+	AND i.id IN (` + strings.TrimSuffix(strings.Repeat("?,", len(keys)), ",") + `)`
+		for _, key := range keys {
+			args = append(args, key)
+		}
+	}
 	query += `
 ORDER BY date_added DESC`
 	if limit > 0 {
@@ -112,4 +127,26 @@ WHERE i.resource_type = 'items'
 		return 0, err
 	}
 	return firstCount(rows), nil
+}
+
+func parseMissingPDFKeys(value string) ([]string, error) {
+	if strings.TrimSpace(value) == "" {
+		return nil, nil
+	}
+	seen := make(map[string]bool)
+	keys := make([]string, 0, 8)
+	for _, key := range strings.Split(value, ",") {
+		key = strings.TrimSpace(key)
+		if !zoteroItemKeyRE.MatchString(key) {
+			return nil, fmt.Errorf("invalid item key %q", key)
+		}
+		if !seen[key] {
+			seen[key] = true
+			keys = append(keys, key)
+		}
+	}
+	if len(keys) > 50 {
+		return nil, fmt.Errorf("--keys supports at most 50 item keys")
+	}
+	return keys, nil
 }

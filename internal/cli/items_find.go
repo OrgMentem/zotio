@@ -12,10 +12,10 @@ import (
 
 func newItemsFindCmd(flags *rootFlags) *cobra.Command {
 	var flagDOI string
+	var flagArXiv string
 	var flagISBN string
 	var flagPMID string
 	var flagCitekey string
-
 	cmd := &cobra.Command{
 		Use:   "find",
 		Short: "Find locally synced items by DOI, ISBN, PMID, or citation key",
@@ -24,8 +24,8 @@ func newItemsFindCmd(flags *rootFlags) *cobra.Command {
   zotio items find --citekey smith2023 --json`,
 		Annotations: map[string]string{"mcp:read-only": "true"},
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if flagDOI == "" && flagISBN == "" && flagPMID == "" && flagCitekey == "" {
-				return fmt.Errorf("at least one of --doi, --isbn, --pmid, or --citekey is required")
+			if flagDOI == "" && flagArXiv == "" && flagISBN == "" && flagPMID == "" && flagCitekey == "" {
+				return fmt.Errorf("at least one of --doi, --arxiv, --isbn, --pmid, or --citekey is required")
 			}
 			rawDB, err := openStoreForRead(cmd.Context(), "zotio")
 			if err != nil {
@@ -39,21 +39,30 @@ func newItemsFindCmd(flags *rootFlags) *cobra.Command {
 			defer storeDB.Close()
 			db := localQueryStore{Store: storeDB}
 
-			// Keep PMID/citekey lookups exact by escaping SQLite LIKE wildcards.
+			// Keep arXiv/PMID/citekey lookups exact by escaping SQLite LIKE
+			// wildcards. arXiv records are normally stored as archiveID, with
+			// Extra retained as a compatibility fallback for existing libraries.
+			escapedArXiv := escapeSQLiteLikeLiteral(flagArXiv)
 			escapedPMID := escapeSQLiteLikeLiteral(flagPMID)
 			escapedCitekey := escapeSQLiteLikeLiteral(flagCitekey)
 			rows, err := db.QueryRaw(`
 SELECT id, data
 FROM resources
 WHERE resource_type = 'items'
+	AND (parent_key IS NULL OR parent_key = '')
 	AND (
 		(? != '' AND json_extract(data, '$.data.DOI') = ?)
+		OR (? != '' AND (
+			json_extract(data, '$.data.archiveID') = 'arXiv:' || ?
+			OR json_extract(data, '$.data.archiveID') = ?
+			OR json_extract(data, '$.data.extra') LIKE '%arXiv: ' || ? || '%' ESCAPE '\'
+		))
 		OR (? != '' AND json_extract(data, '$.data.ISBN') = ?)
 		OR (? != '' AND json_extract(data, '$.data.extra') LIKE '%PMID: ' || ? || '%' ESCAPE '\')
 		OR (? != '' AND json_extract(data, '$.data.extra') LIKE '%Citation Key: ' || ? || '%' ESCAPE '\')
 		OR (? != '' AND json_extract(data, '$.data.citationKey') = ?)
 	)
-ORDER BY id`, flagDOI, flagDOI, flagISBN, flagISBN, flagPMID, escapedPMID, flagCitekey, escapedCitekey, flagCitekey, flagCitekey)
+ORDER BY id`, flagDOI, flagDOI, flagArXiv, escapedArXiv, flagArXiv, escapedArXiv, flagISBN, flagISBN, flagPMID, escapedPMID, flagCitekey, escapedCitekey, flagCitekey, flagCitekey)
 			if err != nil {
 				return fmt.Errorf("querying local identifiers: %w", err)
 			}
@@ -65,6 +74,7 @@ ORDER BY id`, flagDOI, flagDOI, flagISBN, flagISBN, flagPMID, escapedPMID, flagC
 		},
 	}
 	cmd.Flags().StringVar(&flagDOI, "doi", "", "Find items with this DOI")
+	cmd.Flags().StringVar(&flagArXiv, "arxiv", "", "Find items with this arXiv ID")
 	cmd.Flags().StringVar(&flagISBN, "isbn", "", "Find items with this ISBN")
 	cmd.Flags().StringVar(&flagPMID, "pmid", "", "Find items with this PMID in Extra")
 	cmd.Flags().StringVar(&flagCitekey, "citekey", "", "Find items with this Better BibTeX citation key")

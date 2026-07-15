@@ -69,6 +69,7 @@ var capabilityOverrides = map[string]capabilityEntry{
 	"items create":             {Operation: "write", WriteTarget: "web_api", Requires: []string{preconditionWebAPIKey}},
 	"items update":             {Operation: "write", WriteTarget: "web_api", Requires: []string{preconditionWebAPIKey}},
 	"items move":               {Operation: "write", WriteTarget: "web_api", Requires: []string{preconditionWebAPIKey}},
+	"items add-to-collection":  {Operation: "write", WriteTarget: "web_api", Requires: []string{preconditionWebAPIKey}},
 	"items restore":            {Operation: "write", WriteTarget: "web_api", Requires: []string{preconditionWebAPIKey}},
 	"items delete":             {Operation: "write", WriteTarget: "web_api", Destructive: true, Requires: []string{preconditionWebAPIKey}},
 	"items enrich":             {Operation: "write", WriteTarget: "web_api", Requires: []string{preconditionWebAPIKey}},

@@ -990,6 +990,48 @@
     }
   },
   {
+    "name": "items_add_to_collection",
+    "description": "Add an item to a named collection, creating it when needed",
+    "inputSchema": {
+      "properties": {
+        "allow-destructive": {
+          "description": "Allow irreversible operations (merge, permanent delete, empty-trash) to apply (default: false)",
+          "type": "boolean"
+        },
+        "args": {
+          "description": "Additional positional arguments to append to the command. Raw CLI flags are rejected.",
+          "type": "string"
+        },
+        "collection-name": {
+          "description": "Exact collection name; create it when absent",
+          "type": "string"
+        },
+        "continue-on-error": {
+          "description": "On bulk mutations, continue past per-item failures/conflicts instead of stopping at the first (default: false)",
+          "type": "boolean"
+        },
+        "dry-run": {
+          "description": "Show request without sending (default: false)",
+          "type": "boolean"
+        },
+        "max-changes": {
+          "description": "Max write operations a single mutation may apply before refusing (-1 = default: 500, or 50 under --agent) (default: -1)",
+          "type": "number"
+        },
+        "max-failures": {
+          "description": "With --continue-on-error, stop after this many failures (0 = unlimited) (default: 0)",
+          "type": "number"
+        },
+        "yes": {
+          "description": "Skip confirmation prompts (for agents and scripts) (default: false)",
+          "type": "boolean"
+        }
+      },
+      "required": [],
+      "type": "object"
+    }
+  },
+  {
     "name": "items_audit",
     "description": "Audit locally synced items for missing metadata and PDFs",
     "inputSchema": {
@@ -1264,6 +1306,10 @@
     "description": "Find locally synced items by DOI, ISBN, PMID, or citation key",
     "inputSchema": {
       "properties": {
+        "arxiv": {
+          "description": "Find items with this arXiv ID",
+          "type": "string"
+        },
         "citekey": {
           "description": "Find items with this Better BibTeX citation key",
           "type": "string"
@@ -1292,6 +1338,10 @@
       "properties": {
         "collection": {
           "description": "Filter to an exact Zotero collection key",
+          "type": "string"
+        },
+        "keys": {
+          "description": "Comma-separated exact parent item keys",
           "type": "string"
         },
         "limit": {

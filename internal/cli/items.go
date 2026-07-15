@@ -13,6 +13,7 @@ func newItemsCmd(flags *rootFlags) *cobra.Command {
 	}
 
 	cmd.AddCommand(newItemsChildrenCmd(flags))
+	cmd.AddCommand(newItemsAddToCollectionCmd(flags))
 	cmd.AddCommand(newItemsCreateCmd(flags))
 	cmd.AddCommand(newItemsNewCmd(flags))
 	cmd.AddCommand(newItemsDeleteCmd(flags))

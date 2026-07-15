@@ -83,6 +83,18 @@ func TestQueryMissingPDFItems_IndexedColumns(t *testing.T) {
 	if len(collection) != 1 || sqlStringValue(collection[0]["key"]) != "P1" {
 		t.Errorf("missing-PDF COL1 items = %v, want [P1]", collection)
 	}
+
+	keys, err := parseMissingPDFKeys("P3,P3")
+	if err != nil {
+		t.Fatal(err)
+	}
+	exact, err := queryMissingPDFItemsForKeys(db, "", 0, "", keys)
+	if err != nil {
+		t.Fatalf("queryMissingPDFItemsForKeys: %v", err)
+	}
+	if len(exact) != 1 || sqlStringValue(exact[0]["key"]) != "P3" {
+		t.Errorf("exact missing-PDF keys = %v, want [P3]", exact)
+	}
 }
 
 func TestQueryItemsAuditSummary_SingleScan(t *testing.T) {
