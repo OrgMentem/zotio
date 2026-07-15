@@ -2,12 +2,15 @@
 
 Notable changes to zotio. Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow [SemVer](https://semver.org/).
 
-## [Unreleased]
+## [0.9.0] — 2026-07-15
 ### Added
 - `workflow run` is now transactional: without `--yes` it renders one consolidated preview (mutating steps are forced to `--dry-run`; read-only steps run normally), a single `--yes` on `workflow run` is the one approval for every step (specs that embed their own `--yes`/`--dry-run` are rejected), every step applied under that approval records its journal entry with a shared `workflow_run_id` (`journal list --workflow <id>` filters to one run), and an interrupted apply leaves a `<spec>.checkpoint.json` sidecar so `workflow run --yes --resume` continues where it stopped (spec-hash-verified, succeeded steps skipped, same run id) — re-running without `--resume` while a checkpoint exists is refused.
 - `workflow run` specs are now expressive: top-level `vars` with `${vars.NAME}` placeholders in step args (overridable per run with repeatable `--var NAME=value`; undeclared names are refused), inter-step data-flow — a named step's captured output is addressable as `${steps.NAME.output}` in later args and pipeable into a later step's stdin with `"stdin_from"` (so `library health --json` can feed `items enrich --keys-from -` as one workflow) — and per-step conditionals via `"when": {"step": ..., "is": "ok"|"failed"|"skipped"}`. All references are validated at load time (unknown/forward references and malformed placeholders are rejected loudly); the resume checkpoint (schema v2) records resolved variables and completed-step outputs, so `--resume` refuses a changed `--var` set and cross-interruption data-flow keeps working.
 - Workflows can now be triggered and agent-submitted: `watch --workflow <spec.json>` runs a workflow after every successful sync cycle and `tail --workflow <spec.json>` runs one only after a poll cycle that emitted change events (quiet when nothing changed) — triggered runs preview unless the invocation carries `--yes`, a trigger failure never stops the loop, and a failed applied run leaves its checkpoint so later applied triggers refuse loudly until resumed; the MCP server gains a dedicated `workflow_submit` tool (both facade and mirror surfaces) that accepts an inline validated step schema — each step names a mirrorable command and is checked against the same per-command safe-flag allowlist as `command_run`, closing the bypass that kept `workflow run` MCP-hidden — then executes through the transactional runner (preview unless `yes`, one journal run id, temp spec and checkpoint always cleaned up; failed applies are re-submittable, not resumable).
 - New `library prisma` reports PRISMA 2020 identification-stage counts for a screening corpus from the synced local store: records identified with a per-source-database breakdown (Zotero's libraryCatalog provenance), duplicate records removed (DOI + normalized-title detectors with cross-detector cluster merging so double-flagged pairs count once), and records after deduplication — the input to screening — scoped to a collection or tag via `--scope`, with a `prisma` JSON block that maps one-to-one onto the flow-diagram boxes; screening itself stays out of scope by design (Rayyan/ASReview own it — the wedge is arriving there with a certified, deduped, counted corpus).
+
+### Changed — breaking
+- **`workflow run` is now preview-by-default.** In 0.8.0 `zotio workflow run <spec>` executed every step immediately; it now renders one consolidated dry-run preview and applies only with an explicit `--yes` on the `workflow run` command. Specs that embed their own per-step `--yes`/`--dry-run` are rejected at load — the workflow owns approval. Scripts or agents that relied on `workflow run` applying without `--yes`, or on step-level approval flags inside a spec, must pass `--yes` to `workflow run` and drop the step-level flags.
 
 ## [0.8.0] — 2026-07-12
 
@@ -164,7 +167,8 @@ First tagged release: the trust-and-automation layer for Zotero.
 - **Onboarding** — `zotio init` guided setup (Zotero detection, local API, key, first sync, health check).
 - Release engineering: goreleaser builds for 6 platforms, cosign-signed checksums, SBOMs, Homebrew tap.
 
-[Unreleased]: https://github.com/OrgMentem/zotio/compare/v0.8.0...HEAD
+[Unreleased]: https://github.com/OrgMentem/zotio/compare/v0.9.0...HEAD
+[0.9.0]: https://github.com/OrgMentem/zotio/compare/v0.8.0...v0.9.0
 [0.8.0]: https://github.com/OrgMentem/zotio/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/OrgMentem/zotio/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/OrgMentem/zotio/compare/v0.5.0...v0.6.0
