@@ -301,10 +301,31 @@ func (c *Client) writeCache(path string, params map[string]string, headers map[s
 		return err
 	}
 	cacheFile := filepath.Join(c.cacheDir, c.cacheKey(path, params, headers)+".json")
-	if err := os.WriteFile(cacheFile, []byte(data), 0o600); err != nil {
+	// Write to a unique temp file then atomically rename so a concurrent GET's
+	// readCache (os.ReadFile) never observes a partially written entry.
+	tmp, err := os.CreateTemp(c.cacheDir, ".tmp-*")
+	if err != nil {
 		return err
 	}
-	return os.Chmod(cacheFile, 0o600)
+	tmpName := tmp.Name()
+	if _, err := tmp.Write([]byte(data)); err != nil {
+		tmp.Close()
+		os.Remove(tmpName)
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		os.Remove(tmpName)
+		return err
+	}
+	if err := os.Chmod(tmpName, 0o600); err != nil {
+		os.Remove(tmpName)
+		return err
+	}
+	if err := os.Rename(tmpName, cacheFile); err != nil {
+		os.Remove(tmpName)
+		return err
+	}
+	return nil
 }
 
 // invalidateCache wholesale-removes the cache directory so the next read

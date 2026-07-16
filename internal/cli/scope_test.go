@@ -5,6 +5,7 @@ package cli
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"path/filepath"
 	"testing"
 
@@ -145,5 +146,35 @@ func TestLibraryHealthScopeFiltersToCohort(t *testing.T) {
 		if f.Kind == "citekey_conflict" {
 			t.Errorf("citekey_conflict (C1/C2) should be filtered out of an item:P1 scope")
 		}
+	}
+}
+
+// resolveScope's query path must enumerate the full match cohort, not the
+// interactive Store.Search default of 50. Regression for the limit-convention
+// collision (limit 0 meant "no limit" to resolveScope but 50 to Store.Search).
+func TestResolveScopeQueryReturnsAllMatches(t *testing.T) {
+	db, err := store.OpenWithContext(context.Background(), filepath.Join(t.TempDir(), "data.db"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+
+	const want = 60
+	items := make([]json.RawMessage, 0, want)
+	for i := range want {
+		key := fmt.Sprintf("Q%03d", i)
+		items = append(items, json.RawMessage(fmt.Sprintf(
+			`{"key":%q,"version":1,"data":{"key":%q,"itemType":"journalArticle","title":"zqzquux corpus paper"}}`, key, key)))
+	}
+	if _, _, err := db.UpsertBatch("items", items); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	r, err := resolveScope(localQueryStore{db}, scopeSpec{Type: "query", Value: "zqzquux"})
+	if err != nil {
+		t.Fatalf("resolveScope: %v", err)
+	}
+	if len(r.Keys) != want {
+		t.Errorf("query scope resolved %d keys, want %d (cohort must not be capped at 50)", len(r.Keys), want)
 	}
 }

@@ -108,6 +108,7 @@ native streaming instead of polling.`,
 
 			sig := make(chan os.Signal, 1)
 			signal.Notify(sig, syscall.SIGTERM, syscall.SIGINT)
+			defer signal.Stop(sig)
 
 			ticker := time.NewTicker(interval)
 			defer ticker.Stop()

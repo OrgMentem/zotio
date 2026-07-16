@@ -206,7 +206,7 @@ func workflowSubmitBindsCommand(rootFactory func() *cobra.Command, expectedPath,
 	if rootFactory == nil {
 		return false
 	}
-	root := rootFactory()
+	root := orchestrationRoot(rootFactory)
 	if root == nil {
 		return false
 	}

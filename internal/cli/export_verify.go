@@ -107,6 +107,9 @@ func resolveExportVerifyCurrentItems(ctx context.Context, c *client.Client, flag
 
 	items := make([]json.RawMessage, 0, len(lf.Items))
 	for _, lockItem := range lf.Items {
+		if err := ctx.Err(); err != nil {
+			return nil, "skipped", "", err
+		}
 		if strings.TrimSpace(lockItem.Key) == "" {
 			continue
 		}

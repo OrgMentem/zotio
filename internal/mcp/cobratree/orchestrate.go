@@ -212,6 +212,13 @@ func orchestrationRoot(rootFactory func() *cobra.Command) *cobra.Command {
 	if rootFactory == nil {
 		return nil
 	}
+	// rootFactory() registers flags that mutate package-global output state
+	// (humanFriendly/noColor). Serialize the build under the same lock
+	// runMirroredInProcess holds during execution so a command_search tree build
+	// cannot race an in-flight command_run's render. Callers never hold the lock
+	// when invoking this, so the non-reentrant mutex is safe.
+	mirroredCommandMu.Lock()
+	defer mirroredCommandMu.Unlock()
 	return rootFactory()
 }
 

@@ -103,7 +103,7 @@ func resolveScope(db localQueryStore, spec scopeSpec) (scopeResult, error) {
 			return scopeResult{}, fmt.Errorf("scope %q requires a value", spec.Type)
 		}
 		result.Expr = "query:" + spec.Value
-		items, err := db.Search(spec.Value, 0)
+		items, err := db.Search(spec.Value, -1)
 		if err != nil {
 			return scopeResult{}, fmt.Errorf("resolving query scope: %w", err)
 		}

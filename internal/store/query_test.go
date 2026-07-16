@@ -184,6 +184,39 @@ func TestQueryItems_QuickSearch(t *testing.T) {
 	}
 }
 
+// QueryItems' FTS join must scope to resource_type: an items row must never be
+// returned because a same-keyed foreign resource (collection/tag/search) FTS
+// row matches the search text. Regression for the join omitting
+// `AND r.resource_type = f.resource_type`.
+func TestQueryItems_QuickSearchIgnoresForeignResourceTypeMatches(t *testing.T) {
+	s := queryTestStore(t)
+	const key = "SHARED01"
+	if err := s.Upsert("items", key, json.RawMessage(`{"key":"SHARED01","version":1,"data":{"key":"SHARED01","itemType":"journalArticle","title":"itemtitleonly"}}`)); err != nil {
+		t.Fatalf("seed item: %v", err)
+	}
+	if err := s.Upsert("collections", key, json.RawMessage(`{"key":"SHARED01","version":1,"data":{"key":"SHARED01","name":"collnamematch"}}`)); err != nil {
+		t.Fatalf("seed collection: %v", err)
+	}
+
+	// A term present only in the same-keyed collection must not surface the item.
+	got, err := s.QueryItems(ItemQuery{Query: "collnamematch"})
+	if err != nil {
+		t.Fatalf("QueryItems collnamematch: %v", err)
+	}
+	if len(got) != 0 {
+		t.Fatalf("q=collnamematch returned %v, want none (FTS join must scope to resource_type)", itemKeys(t, got))
+	}
+
+	// The item's own text still matches.
+	got, err = s.QueryItems(ItemQuery{Query: "itemtitleonly"})
+	if err != nil {
+		t.Fatalf("QueryItems itemtitleonly: %v", err)
+	}
+	if keys := itemKeys(t, got); len(keys) != 1 || keys[0] != key {
+		t.Fatalf("q=itemtitleonly keys = %v, want [%s]", keys, key)
+	}
+}
+
 func TestQueryTrash_DefaultOrderSupportsNestedAndFlatPayloads(t *testing.T) {
 	s := queryTestStore(t)
 	trash := []json.RawMessage{

@@ -864,7 +864,7 @@ func matchCrossRefCreatorORCIDs(authors []crossRefAuthor, occurrences []*creator
 }
 
 func upsertCreatorORCID(ctx context.Context, db localQueryStore, match creatorORCIDMatch, capturedAt time.Time) error {
-	_, err := db.DB().ExecContext(ctx, `
+	_, err := db.ExecWrite(ctx, `
 INSERT INTO creator_orcids(item_key, creator_index, name_hash, orcid, source, captured_at)
 VALUES (?, ?, ?, ?, ?, ?)
 ON CONFLICT(item_key, creator_index, source) DO UPDATE SET

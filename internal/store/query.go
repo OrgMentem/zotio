@@ -53,7 +53,7 @@ func (s *Store) QueryItems(q ItemQuery) ([]json.RawMessage, error) {
 	sb.WriteString("SELECT r.data FROM resources r")
 	useFTS := strings.TrimSpace(q.Query) != ""
 	if useFTS {
-		sb.WriteString(" JOIN resources_fts f ON r.id = f.id")
+		sb.WriteString(" JOIN resources_fts f ON r.id = f.id AND r.resource_type = f.resource_type")
 	}
 	sb.WriteString(" WHERE r.resource_type = 'items'")
 

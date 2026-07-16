@@ -976,8 +976,11 @@ func (s *Store) List(resourceType string, limit int) ([]json.RawMessage, error) 
 	return results, rows.Err()
 }
 
+// Search runs an FTS search over all resource types. A limit of 0 applies the
+// interactive default of 50; a negative limit means no limit (SQLite LIMIT -1),
+// letting callers such as resolveScope enumerate the full match cohort.
 func (s *Store) Search(query string, limit int) ([]json.RawMessage, error) {
-	if limit <= 0 {
+	if limit == 0 {
 		limit = 50
 	}
 	rows, err := s.queryWithBusyRetry(
@@ -1427,6 +1430,16 @@ func (s *Store) ClearSyncCursors() error {
 	defer s.writeMu.Unlock()
 	_, err := s.db.Exec("DELETE FROM sync_state")
 	return err
+}
+
+// ExecWrite runs a write statement under the store's write serialization lock,
+// so auxiliary writers (e.g. creators-audit ORCID evidence) share the same
+// in-process serialization as sync's batch writers instead of racing them via
+// a raw DB().ExecContext that bypasses writeMu.
+func (s *Store) ExecWrite(ctx context.Context, query string, args ...any) (sql.Result, error) {
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+	return s.db.ExecContext(ctx, query, args...)
 }
 
 // Query executes a raw SQL query and returns the rows.

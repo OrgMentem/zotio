@@ -48,7 +48,31 @@ func (s *Store) Set(key string, value json.RawMessage) error {
 	if err := os.MkdirAll(s.Dir, 0o700); err != nil {
 		return err
 	}
-	return os.WriteFile(s.path(key), []byte(value), 0o600)
+	// Write to a unique temp file then atomically rename so a concurrent Get
+	// (os.ReadFile) never observes a partially written entry.
+	tmp, err := os.CreateTemp(s.Dir, ".tmp-*")
+	if err != nil {
+		return err
+	}
+	tmpName := tmp.Name()
+	if _, err := tmp.Write([]byte(value)); err != nil {
+		tmp.Close()
+		os.Remove(tmpName)
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		os.Remove(tmpName)
+		return err
+	}
+	if err := os.Chmod(tmpName, 0o600); err != nil {
+		os.Remove(tmpName)
+		return err
+	}
+	if err := os.Rename(tmpName, s.path(key)); err != nil {
+		os.Remove(tmpName)
+		return err
+	}
+	return nil
 }
 
 // Clear removes all cached entries.

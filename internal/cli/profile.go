@@ -70,11 +70,32 @@ func saveProfileStore(s *profileStore) error {
 	if err != nil {
 		return fmt.Errorf("marshaling profiles: %w", err)
 	}
-	tmp := p + ".tmp"
-	if err := os.WriteFile(tmp, data, 0o600); err != nil {
+	// Use a unique temp file (not a fixed .tmp path) then atomically rename so
+	// concurrent saves cannot interleave writes into one shared temp and publish
+	// a partial/unparsable profiles.json.
+	tmp, err := os.CreateTemp(filepath.Dir(p), ".profiles-*.tmp")
+	if err != nil {
 		return fmt.Errorf("writing profiles: %w", err)
 	}
-	return os.Rename(tmp, p)
+	tmpName := tmp.Name()
+	if _, err := tmp.Write(data); err != nil {
+		tmp.Close()
+		os.Remove(tmpName)
+		return fmt.Errorf("writing profiles: %w", err)
+	}
+	if err := tmp.Close(); err != nil {
+		os.Remove(tmpName)
+		return fmt.Errorf("writing profiles: %w", err)
+	}
+	if err := os.Chmod(tmpName, 0o600); err != nil {
+		os.Remove(tmpName)
+		return fmt.Errorf("writing profiles: %w", err)
+	}
+	if err := os.Rename(tmpName, p); err != nil {
+		os.Remove(tmpName)
+		return fmt.Errorf("writing profiles: %w", err)
+	}
+	return nil
 }
 
 // GetProfile returns a profile by name, or (nil, nil) if not found.
