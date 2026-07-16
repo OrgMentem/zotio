@@ -53,6 +53,9 @@ type rootFlags struct {
 	// non-stdout sink. Flushed to the sink after Execute returns.
 	deliverBuf  *bytes.Buffer
 	deliverSink DeliverSink
+	// ctx is the command context, set in PersistentPreRunE, so newClient can
+	// seed the client base context and propagate cancellation to HTTP work.
+	ctx context.Context
 }
 
 var errWebAPIKeyRequired = errors.New("web_api_key required")
@@ -72,7 +75,9 @@ func Execute() error {
 	var flags rootFlags
 	rootCmd := newRootCmd(&flags)
 
-	err := rootCmd.Execute()
+	// Run under the interrupt context so cmd.Context() is Ctrl-C/SIGTERM-cancellable
+	// on the CLI path; newClient seeds the client base context from it.
+	err := rootCmd.ExecuteContext(client.InterruptContext())
 	if err != nil && strings.Contains(err.Error(), "unknown flag") {
 		msg := err.Error()
 		// Extract the flag name from the error message (e.g., "unknown flag: --foob")
@@ -193,6 +198,9 @@ See README.md or the bundled SKILL.md for recipes.`,
 	rootCmd.PersistentFlags().StringVar(&flags.connectorTarget, "connector-target", "", "Desktop connector save target ID (for example C78); overrides --collection target mapping")
 
 	rootCmd.PersistentPreRunE = func(cmd *cobra.Command, args []string) error {
+		// Capture the command context so newClient can propagate per-command
+		// deadlines and MCP request cancellation into client HTTP work.
+		flags.ctx = cmd.Context()
 		// env fallback so MCP installs and
 		// scheduled agents (which set env, not CLI flags) honor profile/group
 		// selection. An explicit CLI flag always wins over the env value.
@@ -326,6 +334,9 @@ func (f *rootFlags) newClient() (*client.Client, error) {
 		cfg.BaseURL = rewriteLibraryPrefix(cfg.BaseURL, f.group)
 	}
 	c := client.New(cfg, f.timeout, f.rateLimit)
+	// seed the base context from the command context (nil-safe: falls back to the
+	// interrupt context) so cancellation reaches the signature-stable wrappers.
+	c.SetContext(f.ctx)
 	c.DryRun = f.dryRun
 	c.NoCache = f.noCache
 	// the Zotero local API is read-only, so when pointed at it, route writes

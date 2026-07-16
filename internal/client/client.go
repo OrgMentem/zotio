@@ -46,6 +46,13 @@ func sigintContext() context.Context {
 	return interruptCtx
 }
 
+// InterruptContext returns the process-wide context cancelled on Ctrl-C/SIGTERM.
+// CLI and MCP entry points use it as the root command context so cancellation
+// propagates to client HTTP work through cmd.Context().
+func InterruptContext() context.Context {
+	return sigintContext()
+}
+
 type Client struct {
 	BaseURL    string
 	Config     *config.Config
@@ -196,13 +203,25 @@ func (c *Client) baseCtx() context.Context {
 	return context.Background()
 }
 
+// SetContext replaces the client's base context used by the signature-stable
+// wrappers (Get/Post/...). Entry points pass cmd.Context() so per-command
+// deadlines and MCP request cancellation abort in-flight HTTP work, not only
+// process interrupts. A nil ctx is ignored, preserving the interrupt default.
+func (c *Client) SetContext(ctx context.Context) {
+	if c == nil || ctx == nil {
+		return
+	}
+	c.ctx = ctx
+}
+
 // RateLimit returns the current effective rate limit in req/s. Returns 0 if disabled.
 func (c *Client) RateLimit() float64 {
 	return c.limiter.Rate()
 }
 
-// public wrappers keep their signatures while using
-// the client base context so interrupts cancel their HTTP work.
+// public wrappers keep their signatures while using the client base context
+// (seeded from cmd.Context() via SetContext) so interrupts, per-command
+// deadlines, and MCP request cancellation all cancel their HTTP work.
 func (c *Client) Get(path string, params map[string]string) (json.RawMessage, error) {
 	return c.GetWithHeaders(path, params, nil)
 }
