@@ -696,14 +696,28 @@ func (s *Store) upsertGenericResourceTx(tx *sql.Tx, resourceType, id string, dat
 	} else {
 		parentKey, itemType, color, itemDate = extractIndexedColumns(data)
 	}
-	_, err := tx.Exec(
+	// Same-resource writes are version-monotonic: an out-of-order or concurrent
+	// write carrying an OLDER Zotero version must not clobber a newer row that is
+	// already persisted. The guard is evaluated atomically inside the statement,
+	// so it holds across concurrent processes (which each open their own Store
+	// and share no in-process writeMu). Rows lacking a version (or equal
+	// versions) still update, preserving the prior always-overwrite behavior.
+	res, err := tx.Exec(
 		`INSERT INTO resources (id, resource_type, data, parent_key, item_type, annotation_color, item_date, synced_at, updated_at)
 		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-		 ON CONFLICT(resource_type, id) DO UPDATE SET data = excluded.data, parent_key = excluded.parent_key, item_type = excluded.item_type, annotation_color = excluded.annotation_color, item_date = excluded.item_date, synced_at = excluded.synced_at, updated_at = excluded.updated_at`,
+		 ON CONFLICT(resource_type, id) DO UPDATE SET data = excluded.data, parent_key = excluded.parent_key, item_type = excluded.item_type, annotation_color = excluded.annotation_color, item_date = excluded.item_date, synced_at = excluded.synced_at, updated_at = excluded.updated_at
+		 WHERE json_extract(excluded.data, '$.version') IS NULL
+		    OR json_extract(resources.data, '$.version') IS NULL
+		    OR CAST(json_extract(excluded.data, '$.version') AS INTEGER) >= CAST(json_extract(resources.data, '$.version') AS INTEGER)`,
 		id, resourceType, string(data), parentKey, itemType, color, itemDate, time.Now(), time.Now(),
 	)
 	if err != nil {
 		return err
+	}
+	// A retained older version is a no-op update (0 rows affected); leave the
+	// existing FTS document in place so it stays consistent with the kept row.
+	if affected, aerr := res.RowsAffected(); aerr == nil && affected == 0 {
+		return nil
 	}
 
 	ftsRowid := ftsRowID(resourceType, id)
@@ -1337,10 +1351,13 @@ func (s *Store) GetSyncState(resourceType string) (cursor string, lastSynced tim
 func (s *Store) SaveLibraryVersion(resourceType string, version int) error {
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
+	// Monotonic checkpoint: a slower concurrent sync/tail run completing with an
+	// older Last-Modified-Version must not regress the stored checkpoint, or the
+	// next incremental pass would re-fetch or replay already-seen changes.
 	_, err := s.db.Exec(
 		`INSERT INTO sync_state (resource_type, library_version)
 		 VALUES (?, ?)
-		 ON CONFLICT(resource_type) DO UPDATE SET library_version = excluded.library_version`,
+		 ON CONFLICT(resource_type) DO UPDATE SET library_version = MAX(COALESCE(sync_state.library_version, 0), excluded.library_version)`,
 		resourceType, version,
 	)
 	return err
