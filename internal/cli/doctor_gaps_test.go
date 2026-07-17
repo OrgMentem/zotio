@@ -5,6 +5,7 @@ package cli
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -179,6 +180,90 @@ func TestDoctorCollectCacheReportMissingDatabase(t *testing.T) {
 	}
 	if !strings.Contains(rep["hint"].(string), "sync") {
 		t.Fatalf("hint should tell the user how to hydrate the cache, got %v", rep["hint"])
+	}
+}
+
+func TestDoctorCacheScanFailureDegradesReportAndExit(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("ZOTERO_CONFIG", filepath.Join(t.TempDir(), "missing.toml"))
+
+	dbPath := filepath.Join(home, ".local", "share", "zotio", "data.db")
+	s, err := store.OpenWithContext(context.Background(), dbPath)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	if err := s.SaveSyncState("items", "cursor", 1); err != nil {
+		t.Fatalf("save sync state: %v", err)
+	}
+	if _, err := s.DB().Exec(`UPDATE sync_state SET total_count = 'not-a-count' WHERE resource_type = 'items'`); err != nil {
+		t.Fatalf("make malformed sync state: %v", err)
+	}
+	if err := s.Close(); err != nil {
+		t.Fatalf("close store: %v", err)
+	}
+
+	rep := collectCacheReport(context.Background(), "1h")
+	if got := rep["status"]; got != "error" {
+		t.Fatalf("status: want error, got %v", got)
+	}
+	if warnings, _ := rep["warnings"].([]string); len(warnings) != 1 {
+		t.Fatalf("warnings = %#v, want one scan failure", rep["warnings"])
+	}
+
+	cmd := newDoctorCmd(&rootFlags{asJSON: true})
+	cmd.SilenceErrors, cmd.SilenceUsage = true, true
+	var stdout, stderr bytes.Buffer
+	cmd.SetOut(&stdout)
+	cmd.SetErr(&stderr)
+	err = cmd.Execute()
+	if code := ExitCode(err); code != 13 {
+		t.Fatalf("doctor exit code = %d, want 13 (err=%v)", code, err)
+	}
+	var report map[string]any
+	if err := json.Unmarshal(stdout.Bytes(), &report); err != nil {
+		t.Fatalf("decode doctor report: %v\n%s", err, stdout.String())
+	}
+	cache, _ := report["cache"].(map[string]any)
+	if cache["status"] == "fresh" {
+		t.Fatalf("cache report incorrectly fresh after scan failure: %#v", cache)
+	}
+	if stderr.Len() != 0 {
+		t.Fatalf("JSON mode should not print cache warnings to stderr: %s", stderr.String())
+	}
+}
+
+func TestDoctorCleanCacheReportsFreshAndExitsZero(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("ZOTERO_CONFIG", filepath.Join(t.TempDir(), "missing.toml"))
+
+	dbPath := filepath.Join(home, ".local", "share", "zotio", "data.db")
+	s, err := store.OpenWithContext(context.Background(), dbPath)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	if err := s.SaveSyncState("items", "cursor", 1); err != nil {
+		t.Fatalf("save sync state: %v", err)
+	}
+	if err := s.Close(); err != nil {
+		t.Fatalf("close store: %v", err)
+	}
+
+	cmd := newDoctorCmd(&rootFlags{asJSON: true})
+	var stdout bytes.Buffer
+	cmd.SetOut(&stdout)
+	cmd.SetErr(&bytes.Buffer{})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("doctor with a fresh cache: %v", err)
+	}
+	var report map[string]any
+	if err := json.Unmarshal(stdout.Bytes(), &report); err != nil {
+		t.Fatalf("decode doctor report: %v\n%s", err, stdout.String())
+	}
+	cache, _ := report["cache"].(map[string]any)
+	if got := cache["status"]; got != "fresh" {
+		t.Fatalf("status: want fresh, got %v", got)
 	}
 }
 

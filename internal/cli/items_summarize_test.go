@@ -3,10 +3,16 @@
 package cli
 
 import (
+	"bytes"
+	"context"
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"unicode/utf8"
+
+	"zotio/internal/store"
 )
 
 func TestBuildItemBundle(t *testing.T) {
@@ -113,5 +119,91 @@ func TestTruncateRunes(t *testing.T) {
 	}
 	if out2, cut2 := truncateRunes("abc", 10); cut2 || out2 != "abc" {
 		t.Errorf("short input should be untouched, got %q cut=%v", out2, cut2)
+	}
+}
+
+func TestFulltextReadersPropagateStoreFailures(t *testing.T) {
+	db, err := store.OpenWithContext(context.Background(), filepath.Join(t.TempDir(), "data.db"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close store: %v", err)
+	}
+	if _, err := fulltextByParentItemWithErr(db); err == nil {
+		t.Fatal("fulltextByParentItem error = nil, want closed-store read error")
+	}
+	if _, err := fulltextForItem(db, "ITEM"); err == nil {
+		t.Fatal("fulltextForItem error = nil, want closed-store read error")
+	}
+}
+
+func TestSummaryWarningsEmitResultThenDegrade(t *testing.T) {
+	cmd := newItemsSummarizeCmd(&rootFlags{asJSON: true})
+	var out, errOut bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&errOut)
+	bundle := summarizeBundle{Key: "K1", Citation: "Citation", Warnings: []string{"reading annotations for item K1: database is locked"}}
+	err := finishItemSummary(cmd, bundle, &rootFlags{asJSON: true})
+	if ExitCode(err) != 13 {
+		t.Fatalf("ExitCode(%v) = %d, want 13", err, ExitCode(err))
+	}
+	var got summarizeBundle
+	if err := json.Unmarshal(out.Bytes(), &got); err != nil {
+		t.Fatalf("decode summary %q: %v", out.String(), err)
+	}
+	if len(got.Warnings) != 1 || !strings.Contains(got.Warnings[0], "annotations") {
+		t.Fatalf("warnings = %v, want read failure", got.Warnings)
+	}
+	if errOut.Len() != 0 {
+		t.Fatalf("JSON stderr = %q, want warnings only in result", errOut.String())
+	}
+
+	humanCmd := newItemsSummarizeCmd(&rootFlags{})
+	var humanOut, humanErr bytes.Buffer
+	humanCmd.SetOut(&humanOut)
+	humanCmd.SetErr(&humanErr)
+	err = finishItemSummary(humanCmd, bundle, &rootFlags{})
+	if ExitCode(err) != 13 {
+		t.Fatalf("human ExitCode(%v) = %d, want 13", err, ExitCode(err))
+	}
+	if !strings.Contains(humanOut.String(), "Citation") || !strings.Contains(humanErr.String(), "warning: reading annotations for item K1") {
+		t.Fatalf("human output=%q stderr=%q, want bundle and warning", humanOut.String(), humanErr.String())
+	}
+}
+
+func TestItemsSummarizeMissingStoreGuidesSync(t *testing.T) {
+	isolateDemoEnv(t, "0")
+	cmd := newItemsSummarizeCmd(&rootFlags{})
+	cmd.SilenceErrors, cmd.SilenceUsage = true, true
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("summarize with missing store: %v", err)
+	}
+	if got := out.String(); got != "Run 'zotio sync' first.\n" {
+		t.Fatalf("stdout = %q, want sync guidance", got)
+	}
+}
+
+func TestItemsSummarizeStoreOpenFailureDoesNotLookMissing(t *testing.T) {
+	isolateDemoEnv(t, "0")
+	dbPath := defaultDBPath("zotio")
+	if err := os.MkdirAll(filepath.Dir(dbPath), 0o700); err != nil {
+		t.Fatalf("mkdir db dir: %v", err)
+	}
+	if err := os.WriteFile(dbPath, []byte("not a SQLite database"), 0o600); err != nil {
+		t.Fatalf("write corrupt db: %v", err)
+	}
+	cmd := newItemsSummarizeCmd(&rootFlags{})
+	cmd.SilenceErrors, cmd.SilenceUsage = true, true
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	err := cmd.Execute()
+	if err == nil || !strings.Contains(err.Error(), "opening local database") {
+		t.Fatalf("summarize error = %v, want contextual store-open failure", err)
+	}
+	if strings.Contains(out.String(), "Run 'zotio sync' first.") {
+		t.Fatalf("stdout = %q, must not misclassify corrupt store as missing", out.String())
 	}
 }

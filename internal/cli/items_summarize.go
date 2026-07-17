@@ -48,6 +48,7 @@ type summarizeBundle struct {
 	Annotations []summarizeAnnot    `json:"annotations,omitempty"`
 	Fulltext    string              `json:"fulltext_excerpt,omitempty"`
 	Gaps        []string            `json:"gaps,omitempty"`
+	Warnings    []string            `json:"warnings,omitempty"`
 	Truncated   summarizeTruncation `json:"truncated"`
 	Prompt      string              `json:"prompt,omitempty"`
 }
@@ -57,6 +58,7 @@ type summarizeCollectionBundle struct {
 	ItemCount  int               `json:"item_count"`
 	Items      []summarizeBundle `json:"items"`
 	Prompt     string            `json:"prompt"`
+	Warnings   []string          `json:"warnings,omitempty"`
 }
 
 const itemSynthesisPrompt = "Summarize this work for a literature review: core claim/contribution, method, key findings, and limitations. Ground every point in the abstract, annotations, and excerpt above — do not invent."
@@ -87,7 +89,10 @@ structured bundle; otherwise a readable Markdown brief you can paste into any LL
   zotio items summarize --collection MAR7RFQN --no-fulltext`,
 		Annotations: map[string]string{"mcp:read-only": "true"},
 		RunE: func(cmd *cobra.Command, args []string) error {
-			db, _ := openStoreForRead(cmd.Context(), "zotio")
+			db, err := openStoreForRead(cmd.Context(), "zotio")
+			if err != nil {
+				return fmt.Errorf("opening local database: %w", err)
+			}
 			if db == nil {
 				fmt.Fprintln(cmd.OutOrStdout(), "Run 'zotio sync' first.")
 				return nil
@@ -114,24 +119,21 @@ structured bundle; otherwise a readable Markdown brief you can paste into any LL
 				return fmt.Errorf("item %s not found locally; run 'zotio sync' (or check the key)", args[0])
 			}
 
-			annByKey, _ := db.AnnotationsForItems([]string{args[0]})
+			var warnings []string
+			annByKey, err := db.AnnotationsForItems([]string{args[0]})
+			if err != nil {
+				warnings = append(warnings, fmt.Sprintf("reading annotations for item %s: %v", args[0], err))
+			}
 			fulltext := ""
 			if !opts.noFulltext {
-				if ft, ok := localPDFFulltext(db, args[0]); ok {
-					fulltext = fulltextContent(ft)
+				fulltext, err = fulltextForItem(db, args[0])
+				if err != nil {
+					warnings = append(warnings, fmt.Sprintf("reading fulltext for item %s: %v", args[0], err))
 				}
 			}
 			bundle := buildItemBundle(raw, annByKey[args[0]], fulltext, opts)
-
-			if flags.asJSON {
-				data, merr := json.Marshal(bundle)
-				if merr != nil {
-					return merr
-				}
-				return printOutputWithFlags(cmd.OutOrStdout(), json.RawMessage(data), flags)
-			}
-			fmt.Fprint(cmd.OutOrStdout(), renderBundleMarkdown(bundle, 1, true))
-			return nil
+			bundle.Warnings = warnings
+			return finishItemSummary(cmd, bundle, flags)
 		},
 	}
 	cmd.Flags().StringVar(&flagCollection, "collection", "", "Summarize every item in this collection key")
@@ -156,30 +158,69 @@ func runSummarizeCollection(cmd *cobra.Command, db *store.Store, collKey string,
 	for _, raw := range items {
 		keys = append(keys, vaultItemMeta(raw).Key)
 	}
-	annByKey, _ := db.AnnotationsForItems(keys)
+	var warnings []string
+	annByKey, err := db.AnnotationsForItems(keys)
+	if err != nil {
+		warnings = append(warnings, fmt.Sprintf("reading annotations for collection %s: %v", collKey, err))
+	}
 	// Batch fulltext once (parent item key -> content) so a collection does not
 	// re-scan the attachment table per item.
 	var ftByItem map[string]string
 	if !opts.noFulltext {
-		ftByItem = fulltextByParentItem(db)
+		ftByItem, err = fulltextByParentItemWithErr(db)
+		if err != nil {
+			warnings = append(warnings, fmt.Sprintf("reading fulltext for collection %s: %v", collKey, err))
+		}
 	}
 
-	cb := summarizeCollectionBundle{Collection: collKey, ItemCount: len(items)}
+	cb := summarizeCollectionBundle{Collection: collKey, ItemCount: len(items), Warnings: warnings}
 	for _, raw := range items {
 		key := vaultItemMeta(raw).Key
 		cb.Items = append(cb.Items, buildItemBundle(raw, annByKey[key], ftByItem[key], opts))
 	}
 	cb.Prompt = collectionSynthesisPrompt(len(items))
-
+	return finishCollectionSummary(cmd, cb, flags)
+}
+func finishItemSummary(cmd *cobra.Command, bundle summarizeBundle, flags *rootFlags) error {
 	if flags.asJSON {
-		data, merr := json.Marshal(cb)
-		if merr != nil {
-			return merr
+		data, err := json.Marshal(bundle)
+		if err != nil {
+			return err
 		}
-		return printOutputWithFlags(cmd.OutOrStdout(), json.RawMessage(data), flags)
+		if err := printOutputWithFlags(cmd.OutOrStdout(), json.RawMessage(data), flags); err != nil {
+			return err
+		}
+	} else {
+		fmt.Fprint(cmd.OutOrStdout(), renderBundleMarkdown(bundle, 1, true))
 	}
-	fmt.Fprint(cmd.OutOrStdout(), renderCollectionMarkdown(cb))
-	return nil
+	return summarizeWarnings(cmd, "items summarize", bundle.Warnings, flags)
+}
+
+func finishCollectionSummary(cmd *cobra.Command, bundle summarizeCollectionBundle, flags *rootFlags) error {
+	if flags.asJSON {
+		data, err := json.Marshal(bundle)
+		if err != nil {
+			return err
+		}
+		if err := printOutputWithFlags(cmd.OutOrStdout(), json.RawMessage(data), flags); err != nil {
+			return err
+		}
+	} else {
+		fmt.Fprint(cmd.OutOrStdout(), renderCollectionMarkdown(bundle))
+	}
+	return summarizeWarnings(cmd, "items summarize", bundle.Warnings, flags)
+}
+
+func summarizeWarnings(cmd *cobra.Command, command string, warnings []string, flags *rootFlags) error {
+	if len(warnings) == 0 {
+		return nil
+	}
+	if !flags.asJSON {
+		for _, warning := range warnings {
+			fmt.Fprintf(cmd.ErrOrStderr(), "warning: %s\n", warning)
+		}
+	}
+	return degradedErr(fmt.Errorf("%s: %d warnings; results incomplete", command, len(warnings)))
 }
 
 // buildItemBundle assembles the bounded bundle from already-fetched inputs (pure;
@@ -246,9 +287,14 @@ func itemGaps(meta vaultMeta, hasFulltext, fulltextSkipped bool) []string {
 // fulltextByParentItem scans the attachment table once and maps each parent item
 // key to its PDF's stored full text, avoiding a per-item rescan in collection mode.
 func fulltextByParentItem(db *store.Store) map[string]string {
+	fulltext, _ := fulltextByParentItemWithErr(db)
+	return fulltext
+}
+
+func fulltextByParentItemWithErr(db *store.Store) (map[string]string, error) {
 	attachments, err := db.ItemsByType("attachment", 0)
 	if err != nil {
-		return nil
+		return nil, err
 	}
 	out := make(map[string]string, len(attachments))
 	for _, raw := range attachments {
@@ -271,13 +317,52 @@ func fulltextByParentItem(db *store.Store) map[string]string {
 		if parent == "" || akey == "" {
 			continue
 		}
-		if ft, ok, _ := db.Fulltext(akey); ok {
+		ft, ok, err := db.Fulltext(akey)
+		if err != nil {
+			return out, fmt.Errorf("reading attachment %s: %w", akey, err)
+		}
+		if ok {
 			if c := strings.TrimSpace(fulltextContent(ft)); c != "" {
 				out[parent] = c
 			}
 		}
 	}
-	return out
+	return out, nil
+}
+
+func fulltextForItem(db *store.Store, itemKey string) (string, error) {
+	ft, ok, err := db.Fulltext(itemKey)
+	if err != nil {
+		return "", fmt.Errorf("reading item %s: %w", itemKey, err)
+	}
+	if ok {
+		return fulltextContent(ft), nil
+	}
+	attachments, err := db.ItemsByType("attachment", 0)
+	if err != nil {
+		return "", fmt.Errorf("listing PDF attachments: %w", err)
+	}
+	for _, raw := range attachments {
+		var obj map[string]any
+		if json.Unmarshal(raw, &obj) != nil {
+			continue
+		}
+		if jsonStringFieldFromMap(obj, "parentItem") != itemKey || jsonStringFieldFromMap(obj, "contentType") != "application/pdf" {
+			continue
+		}
+		key := jsonStringFieldFromMap(obj, "key")
+		if key == "" {
+			continue
+		}
+		ft, ok, err := db.Fulltext(key)
+		if err != nil {
+			return "", fmt.Errorf("reading attachment %s: %w", key, err)
+		}
+		if ok {
+			return fulltextContent(ft), nil
+		}
+	}
+	return "", nil
 }
 
 func fulltextContent(raw json.RawMessage) string {

@@ -252,16 +252,20 @@ Exit codes & warnings:
 				return ctx.Err()
 			}
 
-			// The full-text pass runs after the core resource sync so a fulltext
-			// failure cannot fail the core sync.
+			// The full-text pass runs after the core resource sync. It keeps a
+			// separate checkpoint, so an incomplete fulltext pass must retain
+			// that checkpoint for retry without invalidating the core data.
+			var fulltextErr error
 			if fulltext {
-				syncFulltext(cmd.Context(), c, db, full)
+				fulltextErr = syncFulltext(cmd.Context(), c, db, full)
 			}
 
 			elapsed := time.Since(started)
 			totalResources := successCount + warnCount + errCount
 			if humanFriendly {
-				if warnCount > 0 {
+				if fulltextErr != nil {
+					fmt.Fprintf(os.Stderr, "Sync incomplete: fulltext: %v\n", fulltextErr)
+				} else if warnCount > 0 {
 					fmt.Fprintf(os.Stderr, "Sync complete: %d records across %d resources (%d warned, %.1fs)\n",
 						totalSynced, totalResources, warnCount, elapsed.Seconds())
 				} else {
@@ -276,6 +280,7 @@ Exit codes & warnings:
 					Success      int    `json:"success"`
 					Warned       int    `json:"warned"`
 					Errored      int    `json:"errored"`
+					FulltextOK   bool   `json:"fulltext_ok"`
 					DurationMS   int64  `json:"duration_ms"`
 				}{
 					Event:        "sync_summary",
@@ -284,6 +289,7 @@ Exit codes & warnings:
 					Success:      successCount,
 					Warned:       warnCount,
 					Errored:      errCount,
+					FulltextOK:   fulltextErr == nil,
 					DurationMS:   elapsed.Milliseconds(),
 				})
 			}
@@ -293,6 +299,9 @@ Exit codes & warnings:
 			//   2. any critical failure  -> non-zero regardless of --strict
 			//   3. nothing synced        -> non-zero (preserves "all-warned" / "all-errored" exit)
 			//   4. otherwise             -> exit 0 (any data synced + no critical failed)
+			if fulltextErr != nil {
+				return degradedErr(fmt.Errorf("fulltext sync incomplete: %w", fulltextErr))
+			}
 			if strict && errCount > 0 {
 				return fmt.Errorf("%d resource(s) failed to sync: %s", errCount, strings.Join(failedResources, "; "))
 			}
@@ -326,15 +335,14 @@ Exit codes & warnings:
 
 // syncFulltext fetches changed PDF full-text content and stores it as
 // fulltext-typed rows so 'items fulltext' and 'search' can read it offline.
-// It is opt-in (--fulltext) because it issues one request per attachment, and
-// every failure is a non-fatal warning so a fulltext problem never fails the
-// core sync.
-func syncFulltext(ctx context.Context, c *client.Client, db *store.Store, full bool) {
+// It advances its checkpoint only after every changed attachment has been
+// fetched and durably persisted, so a failed pass is retried on the next run.
+func syncFulltext(ctx context.Context, c *client.Client, db *store.Store, full bool) error {
 	cursor := 0
 	if !full {
 		v, gerr := db.GetLibraryVersion("fulltext")
 		if gerr != nil {
-			emitFulltextWarning(fmt.Sprintf("reading fulltext checkpoint failed: %v", gerr))
+			return fmt.Errorf("reading fulltext checkpoint: %w", gerr)
 		}
 		cursor = v
 	}
@@ -343,13 +351,11 @@ func syncFulltext(ctx context.Context, c *client.Client, db *store.Store, full b
 	params := map[string]string{"since": strconv.Itoa(cursor)}
 	body, newVer, err := c.GetWithVersion("/fulltext", params)
 	if err != nil {
-		emitFulltextWarning(fmt.Sprintf("fetching fulltext index failed: %v", err))
-		return
+		return fmt.Errorf("fetching fulltext index: %w", err)
 	}
 	var changed map[string]int
 	if err := json.Unmarshal(body, &changed); err != nil {
-		emitFulltextWarning(fmt.Sprintf("parsing fulltext index failed: %v", err))
-		return
+		return fmt.Errorf("parsing fulltext index: %w", err)
 	}
 	if len(changed) > 0 {
 		keys := make([]string, 0, len(changed))
@@ -378,36 +384,19 @@ func syncFulltext(ctx context.Context, c *client.Client, db *store.Store, full b
 				payloads = append(payloads, r.Value)
 			}
 			if uerr := db.UpsertKeyed("fulltext", ids, payloads); uerr != nil {
-				emitFulltextWarning(fmt.Sprintf("persisting fulltext failed: %v", uerr))
+				return fmt.Errorf("persisting fulltext: %w", uerr)
 			}
 		}
 		if len(errs) > 0 {
-			emitFulltextWarning(fmt.Sprintf("%d of %d fulltext fetches failed", len(errs), len(keys)))
+			return fmt.Errorf("%d of %d fulltext fetches failed", len(errs), len(keys))
 		}
 	}
 	if newVer > cursor {
 		if err := db.SaveLibraryVersion("fulltext", newVer); err != nil {
-			emitFulltextWarning(fmt.Sprintf("persisting fulltext checkpoint failed: %v", err))
+			return fmt.Errorf("persisting fulltext checkpoint: %w", err)
 		}
 	}
-}
-
-// emitFulltextWarning surfaces a non-fatal fulltext-sync problem in the same
-// shape as the rest of sync's warnings.
-func emitFulltextWarning(msg string) {
-	if humanFriendly {
-		fmt.Fprintf(os.Stderr, "warning: %s\n", msg)
-	} else {
-		emitSyncEvent(struct {
-			Event   string `json:"event"`
-			Reason  string `json:"reason"`
-			Message string `json:"message"`
-		}{
-			Event:   "sync_warning",
-			Reason:  "fulltext",
-			Message: msg,
-		})
-	}
+	return nil
 }
 
 // schema sync resources use Zotero's global schema API,

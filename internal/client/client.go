@@ -74,6 +74,9 @@ type Client struct {
 	// cacheWarnOnce ensures a failing response cache warns at most once per
 	// client instead of once per uncached GET.
 	cacheWarnOnce sync.Once
+	// cacheInvalidateWarnOnce warns at most once when post-mutation cache
+	// invalidation fails; the mutation still succeeded, so this is not an error.
+	cacheInvalidateWarnOnce sync.Once
 }
 
 // APIError carries HTTP status information for structured exit codes.
@@ -350,11 +353,11 @@ func (c *Client) writeCache(path string, params map[string]string, headers map[s
 // invalidateCache wholesale-removes the cache directory so the next read
 // after a mutation cannot return a stale snapshot. Selective per-resource
 // invalidation rejected: cache keys are opaque sha256 hashes.
-func (c *Client) invalidateCache() {
+func (c *Client) invalidateCache() error {
 	if c.cacheDir == "" {
-		return
+		return nil
 	}
-	_ = os.RemoveAll(c.cacheDir)
+	return os.RemoveAll(c.cacheDir)
 }
 
 // RawBody carries a pre-encoded request payload with an explicit content type.
@@ -417,9 +420,10 @@ func (c *Client) doRequest(ctx context.Context, method, path string, params map[
 	// replay 412, or a dropped response), so drop cached reads on any error:
 	// reconciliation re-reads must observe fresh state. Harmless on the rare
 	// pre-dispatch failure — it only forces a cache miss on the next read.
+	mutationSucceeded := false
 	defer func() {
-		if retErr != nil && method != http.MethodGet && !c.DryRun {
-			c.invalidateCache()
+		if retErr != nil && !mutationSucceeded && method != http.MethodGet && !c.DryRun {
+			_ = c.invalidateCache()
 		}
 	}()
 	targetURL := c.baseURLFor(ctx, method) + path
@@ -540,7 +544,17 @@ func (c *Client) doRequest(ctx context.Context, method, path string, params map[
 		if resp.StatusCode >= 200 && resp.StatusCode < 300 {
 			c.limiter.OnSuccess()
 			if method != http.MethodGet && !c.DryRun {
-				c.invalidateCache()
+				mutationSucceeded = true
+				if ierr := c.invalidateCache(); ierr != nil {
+					// The mutation applied. A failed cache invalidation must NOT
+					// be returned as an error: callers check err before status and
+					// would treat the successful write as failed, risking a retry
+					// that duplicates a create. Warn once (de-silencing the stale-
+					// cache risk) and return success.
+					c.cacheInvalidateWarnOnce.Do(func() {
+						fmt.Fprintf(os.Stderr, "warning: cache invalidation after successful %s %s failed (%v); a later read may return stale data until the cache at %s is cleared\n", method, path, ierr, c.cacheDir)
+					})
+				}
 			}
 			return json.RawMessage(respBody), resp.StatusCode, resp.Header, nil
 		}

@@ -4,11 +4,15 @@ package cli
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
+	"net/http"
 	"os"
 	"strconv"
 
 	"github.com/spf13/cobra"
+
+	"zotio/internal/client"
 )
 
 func newItemsDeleteCmd(flags *rootFlags) *cobra.Command {
@@ -35,9 +39,18 @@ func newItemsDeleteCmd(flags *rootFlags) *cobra.Command {
 			// GET and the DELETE hit the same library (the Web API under hybrid routing)
 			// — correct even for an item just created on the web and not yet synced local.
 			delHeaders := map[string]string{}
-			if _, v, verr := c.GetWithVersion(path, nil); verr == nil && v > 0 {
-				delHeaders["If-Unmodified-Since-Version"] = strconv.Itoa(v)
+			_, version, err := c.GetWithVersion(path, nil)
+			if err != nil {
+				var apiErr *client.APIError
+				if errors.As(err, &apiErr) && apiErr.StatusCode == http.StatusNotFound {
+					return writeNoop(flags, "already_deleted", "already deleted (no-op)")
+				}
+				return classifyAPIError(err, flags)
 			}
+			if version <= 0 {
+				return apiErr(fmt.Errorf("reading item version for %s: response did not include a version", args[0]))
+			}
+			delHeaders["If-Unmodified-Since-Version"] = strconv.Itoa(version)
 			data, statusCode, err := c.DeleteWithHeaders(path, delHeaders)
 			if err != nil {
 				return classifyDeleteError(err, flags)

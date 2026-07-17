@@ -1438,7 +1438,10 @@
         },
         "field": {
           "description": "Item field assignment name=value (repeatable)",
-          "type": "string"
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
         },
         "item-type": {
           "description": "Zotero item type to create (e.g. journalArticle)",
@@ -1764,7 +1767,10 @@
         },
         "tag": {
           "description": "Tag to add (repeatable)",
-          "type": "string"
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
         },
         "yes": {
           "description": "Skip confirmation prompts (for agents and scripts) (default: false)",
@@ -1810,7 +1816,10 @@
         },
         "tag": {
           "description": "Tag to remove (repeatable)",
-          "type": "string"
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
         },
         "yes": {
           "description": "Skip confirmation prompts (for agents and scripts) (default: false)",
@@ -2330,7 +2339,10 @@
         },
         "resources": {
           "description": "Comma-separated resource types to sync (selecting items also syncs items-trash)",
-          "type": "string"
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
         },
         "since": {
           "description": "Only sync objects modified since this Zotero library version (0 = use stored checkpoint). Get versions from a prior sync or 'items list --since'. (default: 0)",

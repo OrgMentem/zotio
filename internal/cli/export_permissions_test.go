@@ -4,6 +4,7 @@ package cli
 
 import (
 	"bytes"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -65,4 +66,49 @@ func TestCollectionsExportOutputFileIsPrivate(t *testing.T) {
 		t.Fatalf("collections export: %v", err)
 	}
 	assertFileMode(t, out, 0o600)
+}
+
+type exportFailingWriter struct {
+	err error
+}
+
+func (w exportFailingWriter) Write([]byte) (int, error) {
+	return 0, w.err
+}
+
+func TestWriteExportReturnsWriterErrors(t *testing.T) {
+	writeErr := errors.New("output unavailable")
+	for _, format := range []string{"jsonl", "json"} {
+		t.Run(format, func(t *testing.T) {
+			_, err := writeExport(exportFailingWriter{err: writeErr}, format, []byte(`[{"key":"K1"}]`), 0)
+			if !errors.Is(err, writeErr) {
+				t.Fatalf("writeExport error = %v, want %v", err, writeErr)
+			}
+		})
+	}
+}
+
+func TestExportReturnsFlushErrors(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`[{"key":"K1"}]`))
+	}))
+	t.Cleanup(srv.Close)
+	t.Setenv("ZOTERO_BASE_URL", srv.URL+"/users/0")
+	t.Setenv("ZOTERO_CONFIG", filepath.Join(t.TempDir(), "missing.toml"))
+
+	flushErr := errors.New("flush failed")
+	for _, format := range []string{"jsonl", "json"} {
+		t.Run(format, func(t *testing.T) {
+			cmd := newExportCmd(&rootFlags{asJSON: true})
+			cmd.SilenceErrors, cmd.SilenceUsage = true, true
+			cmd.SetArgs([]string{"items", "--format", format})
+			cmd.SetOut(exportFailingWriter{err: flushErr})
+			cmd.SetErr(&bytes.Buffer{})
+			err := cmd.Execute()
+			if !errors.Is(err, flushErr) {
+				t.Fatalf("export error = %v, want flush error %v", err, flushErr)
+			}
+		})
+	}
 }

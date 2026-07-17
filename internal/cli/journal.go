@@ -9,7 +9,6 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -24,7 +23,7 @@ import (
 // mutationJournalRecorder, when non-nil, records applied mutation runs. It is
 // set only on the real CLI entry (Execute), so unit tests that drive
 // subcommands directly never write to the filesystem.
-var mutationJournalRecorder func(env mutation.Envelope)
+var mutationJournalRecorder func(env mutation.Envelope) error
 
 // journalDir is the per-install directory holding the append-only run journal,
 // alongside the synced store.
@@ -100,20 +99,21 @@ func ensureJournalLibraryMatches(entry mutation.JournalEntry) error {
 }
 
 // recordMutationJournal appends an entry for any run that applied at least one
-// change. Best-effort: a journal failure never fails the mutation.
-func recordMutationJournal(env mutation.Envelope) {
+// change.
+func recordMutationJournal(env mutation.Envelope) error {
 	if env.Result == nil || env.Result.Summary.Applied == 0 {
-		return
+		return nil
 	}
 	entry, ok := mutation.BuildJournalEntry(env, time.Now())
 	if !ok {
-		return
+		return nil
 	}
 	entry.WorkflowRunID = activeWorkflowRunID
 	entry.Library = currentJournalLibrary()
 	if err := mutation.WriteEntry(journalDir(), entry); err != nil {
-		fmt.Fprintf(os.Stderr, "warning: could not record mutation journal: %v\n", err)
+		return err
 	}
+	return nil
 }
 
 func newJournalCmd(flags *rootFlags) *cobra.Command {

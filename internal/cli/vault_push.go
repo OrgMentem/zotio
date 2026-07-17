@@ -86,9 +86,12 @@ Use --dry-run to preview create/update/conflict without writing anything.`,
 			if err != nil {
 				return err
 			}
-			notes, err := loadPushNotes(outDir)
+			notes, warnings, err := loadPushNotesWithWarnings(outDir)
 			if err != nil {
 				return err
+			}
+			if len(notes) == 0 && len(warnings) > 0 {
+				return printVaultWriteReport(cmd, nil, outDir, flags, "Pushed", "Would push", warnings)
 			}
 
 			targetLib := vaultLibraryID(flags)
@@ -122,7 +125,7 @@ Use --dry-run to preview create/update/conflict without writing anything.`,
 			for _, n := range notes {
 				results = append(results, pushOne(c, outDir, targetLib, n, versions, flags))
 			}
-			return printVaultWriteReport(cmd, results, outDir, flags, "Pushed", "Would push")
+			return printVaultWriteReport(cmd, results, outDir, flags, "Pushed", "Would push", warnings)
 		},
 	}
 	cmd.Flags().StringVar(&flagOut, "out", "", "Vault directory (overrides [vault].root + notes_dir from config)")
@@ -505,24 +508,34 @@ func keepRemoteResolve(outDir string, n *pushNote, liveVer int, liveHTML string)
 
 // --- enumeration + parsing ---
 
-func loadPushNotes(outDir string) ([]*pushNote, error) {
+func loadPushNotesWithWarnings(outDir string) ([]*pushNote, []string, error) {
 	entries, err := os.ReadDir(outDir)
 	if err != nil {
-		return nil, fmt.Errorf("reading vault dir: %w", err)
+		return nil, nil, fmt.Errorf("reading vault dir: %w", err)
 	}
 	notes := make([]*pushNote, 0, len(entries))
+	var warnings []string
 	for _, e := range entries {
 		if e.IsDir() || !strings.HasSuffix(e.Name(), ".md") {
 			continue
 		}
 		pn, perr := parsePushNote(filepath.Join(outDir, e.Name()))
-		if perr != nil || pn == nil {
+		if perr != nil {
+			warnings = append(warnings, fmt.Sprintf("reading vault note %s: %v", e.Name(), perr))
+			continue
+		}
+		if pn == nil {
 			continue
 		}
 		notes = append(notes, pn)
 	}
 	sort.Slice(notes, func(i, j int) bool { return notes[i].path < notes[j].path })
-	return notes, nil
+	return notes, warnings, nil
+}
+
+func loadPushNotes(outDir string) ([]*pushNote, error) {
+	notes, _, err := loadPushNotesWithWarnings(outDir)
+	return notes, err
 }
 
 func parsePushNote(path string) (*pushNote, error) {
@@ -931,38 +944,60 @@ func resolveVaultOutDir(flags *rootFlags, flagOut string) (string, error) {
 
 // --- report ---
 
-func printVaultWriteReport(cmd *cobra.Command, results []pushResult, outDir string, flags *rootFlags, doneVerb, dryVerb string) error {
+type vaultWriteReport struct {
+	Out      string         `json:"out"`
+	DryRun   bool           `json:"dry_run"`
+	Counts   map[string]int `json:"counts"`
+	Results  []pushResult   `json:"results"`
+	Warnings []string       `json:"warnings,omitempty"`
+}
+
+func printVaultWriteReport(cmd *cobra.Command, results []pushResult, outDir string, flags *rootFlags, doneVerb, dryVerb string, warningSlices ...[]string) error {
+	var warnings []string
+	for _, slice := range warningSlices {
+		warnings = append(warnings, slice...)
+	}
 	counts := map[string]int{}
 	for _, r := range results {
 		counts[r.Status]++
 	}
 	if flags.asJSON {
-		data, err := json.Marshal(map[string]any{
-			"out":     outDir,
-			"dry_run": flags.dryRun,
-			"counts":  counts,
-			"results": results,
+		data, err := json.Marshal(vaultWriteReport{
+			Out:      outDir,
+			DryRun:   flags.dryRun,
+			Counts:   counts,
+			Results:  results,
+			Warnings: warnings,
 		})
 		if err != nil {
 			return err
 		}
-		return printOutputWithFlags(cmd.OutOrStdout(), json.RawMessage(data), flags)
-	}
-	out := cmd.OutOrStdout()
-	verb := doneVerb
-	if flags.dryRun {
-		verb = dryVerb
-	}
-	fmt.Fprintf(out, "%s notes from %s: %s\n", verb, outDir, summarizeCounts(counts))
-	for _, r := range results {
-		if r.Status == "unchanged" {
-			continue
+		if err := printOutputWithFlags(cmd.OutOrStdout(), json.RawMessage(data), flags); err != nil {
+			return err
 		}
-		line := fmt.Sprintf("  [%s] %s", r.Status, r.File)
-		if r.Note != "" {
-			line += " — " + r.Note
+	} else {
+		out := cmd.OutOrStdout()
+		verb := doneVerb
+		if flags.dryRun {
+			verb = dryVerb
 		}
-		fmt.Fprintln(out, line)
+		fmt.Fprintf(out, "%s notes from %s: %s\n", verb, outDir, summarizeCounts(counts))
+		for _, r := range results {
+			if r.Status == "unchanged" {
+				continue
+			}
+			line := fmt.Sprintf("  [%s] %s", r.Status, r.File)
+			if r.Note != "" {
+				line += " — " + r.Note
+			}
+			fmt.Fprintln(out, line)
+		}
+		for _, warning := range warnings {
+			fmt.Fprintf(cmd.ErrOrStderr(), "warning: %s\n", warning)
+		}
+	}
+	if len(warnings) > 0 {
+		return degradedErr(fmt.Errorf("vault push: %d warnings; results incomplete", len(warnings)))
 	}
 	return nil
 }

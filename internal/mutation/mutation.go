@@ -89,15 +89,16 @@ type Result struct {
 
 // Envelope is the stable preview/apply contract returned to callers.
 type Envelope struct {
-	SchemaVersion int     `json:"schema_version"`
-	OK            bool    `json:"ok"`
-	Operation     string  `json:"operation"`
-	Mode          string  `json:"mode"`
-	PreviewReason string  `json:"preview_reason,omitempty"`
-	Plan          Plan    `json:"plan"`
-	Result        *Result `json:"result"`
-	Journal       any     `json:"journal"`
-	Error         *Error  `json:"error,omitempty"`
+	SchemaVersion int      `json:"schema_version"`
+	OK            bool     `json:"ok"`
+	Operation     string   `json:"operation"`
+	Mode          string   `json:"mode"`
+	PreviewReason string   `json:"preview_reason,omitempty"`
+	Plan          Plan     `json:"plan"`
+	Result        *Result  `json:"result"`
+	Journal       any      `json:"journal"`
+	Warnings      []string `json:"warnings,omitempty"`
+	Error         *Error   `json:"error,omitempty"`
 }
 
 // Options carries the resolved write-safety knobs, decoupled from any flag type.

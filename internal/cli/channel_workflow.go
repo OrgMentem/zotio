@@ -5,6 +5,7 @@ package cli
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	"zotio/internal/store"
@@ -61,14 +62,20 @@ and full resync. After archiving, use 'search' for instant full-text search.`,
 			// creates redundant fetches and stale-looking status rows.
 			resources := []string{"collections", "items", "items-trash", "schema", "schema-creator-fields", "schema-item-fields", "searches", "tags"}
 			totalSynced := 0
+			var failures []string
+			var accessWarnings []string
 
 			for _, resource := range resources {
 				cursor := ""
 				if !full {
-					existing, _, _, err := s.GetSyncState(resource)
-					if err == nil && existing != "" {
-						cursor = existing
+					existing, _, _, stateErr := s.GetSyncState(resource)
+					if stateErr != nil {
+						detail := fmt.Sprintf("%s: reading sync state: %v", resource, stateErr)
+						failures = append(failures, detail)
+						fmt.Fprintf(cmd.ErrOrStderr(), "  error: %s\n", detail)
+						continue
 					}
+					cursor = existing
 				}
 
 				fmt.Fprintf(cmd.ErrOrStderr(), "Syncing %s...\n", resource)
@@ -79,17 +86,41 @@ and full resync. After archiving, use 'search' for instant full-text search.`,
 				}
 
 				count := 0
+				resourceIncomplete := false
 				for {
 					data, fetchErr := c.Get("/"+resource, params)
 					if fetchErr != nil {
-						fmt.Fprintf(cmd.ErrOrStderr(), "  warning: %s: %v\n", resource, fetchErr)
+						resourceIncomplete = true
+						if warning, ok := isSyncAccessWarning(fetchErr); ok {
+							detail := fmt.Sprintf("%s: access denied (%s)", resource, warning.Reason)
+							accessWarnings = append(accessWarnings, detail)
+							fmt.Fprintf(cmd.ErrOrStderr(), "  warning: %s\n", detail)
+						} else {
+							detail := fmt.Sprintf("%s: fetching: %v", resource, fetchErr)
+							failures = append(failures, detail)
+							fmt.Fprintf(cmd.ErrOrStderr(), "  error: %s\n", detail)
+						}
 						break
 					}
+
 					var items []json.RawMessage
 					if err := json.Unmarshal(data, &items); err != nil {
-						// Might be a single object, not array
+						// Some schema endpoints return one object. A malformed
+						// response is an incomplete archive, not a singleton.
+						var singleton map[string]json.RawMessage
+						if err := json.Unmarshal(data, &singleton); err != nil {
+							resourceIncomplete = true
+							detail := fmt.Sprintf("%s: parsing response: %v", resource, err)
+							failures = append(failures, detail)
+							fmt.Fprintf(cmd.ErrOrStderr(), "  error: %s\n", detail)
+							break
+						}
 						if err := s.Upsert(resource, resource+"-singleton", data); err != nil {
-							fmt.Fprintf(cmd.ErrOrStderr(), "  warning: store %s: %v\n", resource, err)
+							resourceIncomplete = true
+							detail := fmt.Sprintf("%s: storing singleton: %v", resource, err)
+							failures = append(failures, detail)
+							fmt.Fprintf(cmd.ErrOrStderr(), "  error: %s\n", detail)
+							break
 						}
 						count++
 						break
@@ -102,19 +133,27 @@ and full resync. After archiving, use 'search' for instant full-text search.`,
 							ID string `json:"id"`
 						}
 						if err := json.Unmarshal(item, &obj); err != nil {
-							fmt.Fprintf(cmd.ErrOrStderr(), "  warning: unmarshalling item: %v\n", err)
+							resourceIncomplete = true
+							detail := fmt.Sprintf("%s: parsing item: %v", resource, err)
+							failures = append(failures, detail)
+							fmt.Fprintf(cmd.ErrOrStderr(), "  error: %s\n", detail)
+							break
 						}
 						id := obj.ID
 						if id == "" {
 							id = fmt.Sprintf("%s-%d", resource, count)
 						}
 						if err := s.Upsert(resource, id, item); err != nil {
-							fmt.Fprintf(cmd.ErrOrStderr(), "  warning: store %s/%s: %v\n", resource, id, err)
+							resourceIncomplete = true
+							detail := fmt.Sprintf("%s: storing %s: %v", resource, id, err)
+							failures = append(failures, detail)
+							fmt.Fprintf(cmd.ErrOrStderr(), "  error: %s\n", detail)
+							break
 						}
 						cursor = id
 						count++
 					}
-					if len(items) < 100 {
+					if resourceIncomplete || len(items) < 100 {
 						break
 					}
 					params["after"] = cursor
@@ -122,25 +161,50 @@ and full resync. After archiving, use 'search' for instant full-text search.`,
 
 				if count > 0 {
 					if err := s.SaveSyncState(resource, cursor, count); err != nil {
-						fmt.Fprintf(cmd.ErrOrStderr(), "  warning: saving sync state: %v\n", err)
+						detail := fmt.Sprintf("%s: saving sync state: %v", resource, err)
+						failures = append(failures, detail)
+						resourceIncomplete = true
+						fmt.Fprintf(cmd.ErrOrStderr(), "  error: %s\n", detail)
 					}
 				}
 				totalSynced += count
-				fmt.Fprintf(cmd.ErrOrStderr(), "  %s: %d items\n", resource, count)
+				if resourceIncomplete {
+					fmt.Fprintf(cmd.ErrOrStderr(), "  %s: incomplete after %d items\n", resource, count)
+				} else {
+					fmt.Fprintf(cmd.ErrOrStderr(), "  %s: %d items\n", resource, count)
+				}
 			}
 
+			status := "complete"
+			if len(failures) > 0 {
+				status = "incomplete"
+			} else if len(accessWarnings) > 0 {
+				status = "complete_with_access_warnings"
+			}
 			if flags.asJSON {
 				enc := json.NewEncoder(cmd.OutOrStdout())
 				enc.SetIndent("", "  ")
-				return enc.Encode(map[string]any{
+				if err := enc.Encode(map[string]any{
+					"status":           status,
 					"resources_synced": len(resources),
 					"total_items":      totalSynced,
 					"store_path":       dbPath,
+					"access_warnings":  accessWarnings,
+					"failures":         failures,
 					"timestamp":        time.Now().UTC().Format(time.RFC3339),
-				})
+				}); err != nil {
+					return err
+				}
+			} else if len(failures) > 0 {
+				fmt.Fprintf(cmd.OutOrStdout(), "Archive incomplete: %d items stored across %d resources to %s\n", totalSynced, len(resources), dbPath)
+			} else if len(accessWarnings) > 0 {
+				fmt.Fprintf(cmd.OutOrStdout(), "Archive completed with %d access warnings: %d items across %d resources to %s\n", len(accessWarnings), totalSynced, len(resources), dbPath)
+			} else {
+				fmt.Fprintf(cmd.OutOrStdout(), "Archived %d items across %d resources to %s\n", totalSynced, len(resources), dbPath)
 			}
-
-			fmt.Fprintf(cmd.OutOrStdout(), "Archived %d items across %d resources to %s\n", totalSynced, len(resources), dbPath)
+			if len(failures) > 0 {
+				return degradedErr(fmt.Errorf("archive incomplete: %s", strings.Join(failures, "; ")))
+			}
 			return nil
 		},
 	}

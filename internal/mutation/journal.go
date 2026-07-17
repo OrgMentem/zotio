@@ -120,9 +120,16 @@ func WriteEntry(dir string, e JournalEntry) error {
 		_ = f.Close()
 		return fmt.Errorf("securing journal: %w", err)
 	}
-	defer f.Close()
 	if _, err := f.Write(append(line, '\n')); err != nil {
+		_ = f.Close()
 		return fmt.Errorf("writing journal entry: %w", err)
+	}
+	if err := f.Sync(); err != nil {
+		_ = f.Close()
+		return fmt.Errorf("syncing journal entry: %w", err)
+	}
+	if err := f.Close(); err != nil {
+		return fmt.Errorf("closing journal entry: %w", err)
 	}
 	return nil
 }

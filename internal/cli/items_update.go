@@ -82,9 +82,14 @@ func newItemsUpdateCmd(flags *rootFlags) *cobra.Command {
 			}
 			patchHeaders := map[string]string{}
 			if _, hasVersion := body["version"]; !hasVersion {
-				if _, v, verr := c.GetWithVersion(path, nil); verr == nil && v > 0 {
-					patchHeaders["If-Unmodified-Since-Version"] = strconv.Itoa(v)
+				_, version, err := c.GetWithVersion(path, nil)
+				if err != nil {
+					return classifyAPIError(err, flags)
 				}
+				if version <= 0 {
+					return apiErr(fmt.Errorf("reading item version for %s: response did not include a version", args[0]))
+				}
+				patchHeaders["If-Unmodified-Since-Version"] = strconv.Itoa(version)
 			}
 			data, statusCode, err := c.PatchWithHeaders(path, body, patchHeaders)
 			if err != nil {

@@ -187,6 +187,14 @@ func preconditionErr(err error) error { return &cliError{code: 9, err: err} }
 // quality gate (11): the remedy is `sync` + retry, which CI can automate.
 func freshnessErr(err error) error { return &cliError{code: 12, err: err} }
 
+// a read/report command produced output but could not read part of its inputs
+// (permission/corruption/transport failure on a note, row, attachment, or
+// subtree). The partial result and a machine-readable `warnings` list are still
+// emitted; a non-zero exit lets automation detect the incompleteness instead of
+// mistaking a degraded run for a complete one. Distinct from a hard error (no
+// output), a quality gate (11), a precondition (9), and freshness (12).
+func degradedErr(err error) error { return &cliError{code: 13, err: err} }
+
 // dryRunOK reports whether the command should short-circuit without doing any
 // real work because --dry-run was set. The verify pipeline probes hand-written
 // commands with --dry-run; commands that put validation in cobra's `Args:` or

@@ -321,7 +321,8 @@ func newDoctorCmd(flags *rootFlags) *cobra.Command {
 			// Surfaces rows + last_synced_at per resource, schema version,
 			// and a fresh/stale/unknown verdict so agents can introspect
 			// whether to trust the cached data before issuing queries.
-			report["cache"] = collectCacheReport(cmd.Context(), "")
+			cacheReport := collectCacheReport(cmd.Context(), "")
+			report["cache"] = cacheReport
 
 			report["version"] = version
 			// surface which library this invocation targets so
@@ -334,6 +335,9 @@ func newDoctorCmd(flags *rootFlags) *cobra.Command {
 
 			if flags.asJSON {
 				if err := printJSONFiltered(cmd.OutOrStdout(), report, flags); err != nil {
+					return err
+				}
+				if err := cacheReportDegradedError(cacheReport); err != nil {
 					return err
 				}
 				return doctorExitForFailOn(failOn, report)
@@ -388,7 +392,15 @@ func newDoctorCmd(flags *rootFlags) *cobra.Command {
 			if cacheAny, ok := report["cache"]; ok {
 				if cacheRep, ok := cacheAny.(map[string]any); ok {
 					renderCacheReport(w, cacheRep)
+					if warnings, ok := cacheRep["warnings"].([]string); ok {
+						for _, warning := range warnings {
+							fmt.Fprintf(cmd.ErrOrStderr(), "warning: %s\n", warning)
+						}
+					}
 				}
+			}
+			if err := cacheReportDegradedError(cacheReport); err != nil {
+				return err
 			}
 			return doctorExitForFailOn(failOn, report)
 		},
@@ -437,6 +449,14 @@ func doctorExitForFailOn(failOn string, report map[string]any) error {
 		return fmt.Errorf("doctor: unknown --fail-on value %q (valid: stale, error)", failOn)
 	}
 	return nil
+}
+
+func cacheReportDegradedError(report map[string]any) error {
+	warnings, _ := report["warnings"].([]string)
+	if len(warnings) == 0 {
+		return nil
+	}
+	return degradedErr(fmt.Errorf("doctor: %d warnings; results incomplete", len(warnings)))
 }
 
 // collectCacheReport opens the local store, reads per-resource sync state,
@@ -495,6 +515,7 @@ func collectCacheReport(ctx context.Context, staleAfterSpec string) map[string]a
 	defer rows.Close()
 
 	var resources []map[string]any
+	var warnings []string
 	fresh := true
 	haveAny := false
 	oldest := time.Duration(0)
@@ -503,6 +524,7 @@ func collectCacheReport(ctx context.Context, staleAfterSpec string) map[string]a
 		var count int64
 		var lastSynced sql.NullTime
 		if err := rows.Scan(&rtype, &count, &lastSynced); err != nil {
+			warnings = append(warnings, fmt.Sprintf("reading sync_state row: %v", err))
 			continue
 		}
 		r := map[string]any{"type": rtype, "rows": count}
@@ -523,8 +545,17 @@ func collectCacheReport(ctx context.Context, staleAfterSpec string) map[string]a
 		}
 		resources = append(resources, r)
 	}
+	if err := rows.Err(); err != nil {
+		warnings = append(warnings, fmt.Sprintf("reading sync_state rows: %v", err))
+	}
 	report["resources"] = resources
 	report["stale_after"] = staleAfter.String()
+	if len(warnings) > 0 {
+		report["status"] = "error"
+		report["warnings"] = warnings
+		report["hint"] = "Some sync state could not be read; results are incomplete."
+		return report
+	}
 
 	switch {
 	case !haveAny && len(resources) == 0:

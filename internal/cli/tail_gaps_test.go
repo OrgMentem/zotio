@@ -176,6 +176,35 @@ func TestEmitChanges_WebhookDelivery(t *testing.T) {
 	}
 }
 
+func TestEmitChanges_WebhookFailureRetainsCursor(t *testing.T) {
+	hook := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "temporary failure", http.StatusServiceUnavailable)
+	}))
+	defer hook.Close()
+
+	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Last-Modified-Version", "7")
+		_, _ = io.WriteString(w, `[{"key":"Z","version":7}]`)
+	}))
+	defer api.Close()
+
+	c := client.New(&config.Config{BaseURL: api.URL}, 5*time.Second, 0)
+	c.NoCache = true
+	db := tailTestStore(t)
+
+	oldAllowPrivateOutbound := allowPrivateOutboundForTests
+	allowPrivateOutboundForTests = true
+	t.Cleanup(func() { allowPrivateOutboundForTests = oldAllowPrivateOutbound })
+
+	var buf bytes.Buffer
+	if _, err := emitChanges(context.Background(), c, db, "items", "/items", DeliverSink{Scheme: "webhook", Target: hook.URL}, &buf); err == nil {
+		t.Fatal("emitChanges succeeded despite webhook delivery failure")
+	}
+	if got, err := db.GetLibraryVersion("tail:items"); err != nil || got != 0 {
+		t.Fatalf("tail cursor = %d, %v; want unchanged 0", got, err)
+	}
+}
+
 func TestEmitChangesFileSinkCreatesNestedParentDirs(t *testing.T) {
 	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Last-Modified-Version", "9")

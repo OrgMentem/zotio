@@ -721,10 +721,15 @@ func (s *Store) upsertGenericResourceTx(tx *sql.Tx, resourceType, id string, dat
 	}
 
 	ftsRowid := ftsRowID(resourceType, id)
-	// Use explicit rowid for FTS5 compatibility with modernc.org/sqlite.
-	// Standard DELETE WHERE column=? may not work on FTS5 virtual tables.
+	// FTS maintenance is part of the row's write contract: Store.Search joins
+	// resources_fts, so a row committed without its index entry is silently
+	// unsearchable. Fail the enclosing transaction on any FTS error instead of
+	// logging and continuing — resource row and FTS document are all-or-nothing.
+	// A DELETE that matches no rowid is not an error in SQLite, so this only
+	// fires on genuine corruption/lock. Explicit rowid is used for FTS5
+	// compatibility with modernc.org/sqlite (DELETE WHERE column=? may not work).
 	if _, err = tx.Exec(`DELETE FROM resources_fts WHERE rowid = ?`, ftsRowid); err != nil {
-		fmt.Fprintf(os.Stderr, "warning: FTS index cleanup failed: %v\n", err)
+		return fmt.Errorf("fts index cleanup for %s/%s: %w", resourceType, id, err)
 	}
 
 	searchDocument := buildSearchDocument(resourceType, data)
@@ -741,8 +746,7 @@ func (s *Store) upsertGenericResourceTx(tx *sql.Tx, resourceType, id string, dat
 		// instead of the raw JSON blob (raw JSON retained for other types).
 		ftsRowid, id, resourceType, searchDocument,
 	); err != nil {
-		// FTS insert failure is non-fatal
-		fmt.Fprintf(os.Stderr, "warning: FTS index update failed: %v\n", err)
+		return fmt.Errorf("fts index update for %s/%s: %w", resourceType, id, err)
 	}
 
 	return nil

@@ -123,6 +123,17 @@ func TestWriteEntryPrivateFileModes(t *testing.T) {
 	assertMode(t, filepath.Join(dir, JournalFileName), 0o600)
 }
 
+func TestWriteEntryReturnsJournalPathFailure(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.Mkdir(filepath.Join(dir, JournalFileName), 0o700); err != nil {
+		t.Fatalf("creating journal path directory: %v", err)
+	}
+	entry, _ := BuildJournalEntry(appliedEnvelope(), time.Now())
+	if err := WriteEntry(dir, entry); err == nil {
+		t.Fatal("WriteEntry succeeded with a directory at the journal path")
+	}
+}
+
 func assertMode(t *testing.T, path string, want os.FileMode) {
 	t.Helper()
 	info, err := os.Stat(path)

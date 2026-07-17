@@ -292,7 +292,7 @@ func handleSQL(ctx context.Context, req mcplib.CallToolRequest) (*mcplib.CallToo
 	for rows.Next() {
 		if len(results) >= sqlRowLimit {
 			truncated = true
-			break
+			continue
 		}
 		values := make([]any, len(cols))
 		ptrs := make([]any, len(cols))
@@ -308,10 +308,8 @@ func handleSQL(ctx context.Context, req mcplib.CallToolRequest) (*mcplib.CallToo
 		}
 		results = append(results, row)
 	}
-	if !truncated {
-		if err := rows.Err(); err != nil {
-			return mcplib.NewToolResultError(fmt.Sprintf("query failed: %v", err)), nil
-		}
+	if err := rows.Err(); err != nil {
+		return mcplib.NewToolResultError(fmt.Sprintf("query failed: %v", err)), nil
 	}
 
 	payload := sqlResultEnvelope{

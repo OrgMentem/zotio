@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -186,6 +187,47 @@ func TestRecorderWritesAppliedRun(t *testing.T) {
 		t.Errorf("preview should not record; entries = %d, want 1", len(entries))
 	}
 }
+func TestRecorderJournalFailureDegradesAppliedRun(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+	if err := os.MkdirAll(filepath.Dir(journalDir()), 0o700); err != nil {
+		t.Fatalf("creating journal parent: %v", err)
+	}
+	if err := os.WriteFile(journalDir(), []byte("not a directory"), 0o600); err != nil {
+		t.Fatalf("blocking journal directory: %v", err)
+	}
+
+	mutationJournalRecorder = recordMutationJournal
+	t.Cleanup(func() { mutationJournalRecorder = nil })
+	ops := []mutation.Op{{ID: "op", Key: "K", Kind: "tag_add", Changes: []mutation.Change{{Field: "tags", Add: "x"}}, Apply: func() (string, any, error) {
+		return "applied", nil, nil
+	}}}
+	env, err := runMutation(context.Background(), &rootFlags{yes: true, maxChanges: -1}, "items.tags.add", ops)
+	if ExitCode(err) != 13 {
+		t.Fatalf("ExitCode(runMutation error) = %d, want 13; err = %v", ExitCode(err), err)
+	}
+	if env.Result == nil || env.Result.Summary.Applied != 1 {
+		t.Fatalf("applied result = %+v, want one applied operation", env.Result)
+	}
+	if len(env.Warnings) != 1 || !strings.Contains(env.Warnings[0], "applied but not journaled") || !strings.Contains(env.Warnings[0], "creating journal dir") {
+		t.Fatalf("warnings = %#v, want journal failure warning", env.Warnings)
+	}
+
+	flags := &rootFlags{asJSON: true}
+	cmd := newJournalCmd(flags)
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	if err := renderMutation(cmd, flags, env, nil); err != nil {
+		t.Fatalf("render mutation: %v", err)
+	}
+	var rendered mutation.Envelope
+	if err := json.Unmarshal(out.Bytes(), &rendered); err != nil {
+		t.Fatalf("decode rendered mutation: %v", err)
+	}
+	if len(rendered.Warnings) != 1 || rendered.Result == nil || rendered.Result.Summary.Applied != 1 {
+		t.Fatalf("rendered mutation = %+v, want applied result with warning", rendered)
+	}
+}
 
 func TestRecorderStampsWorkflowRunID(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
@@ -193,7 +235,7 @@ func TestRecorderStampsWorkflowRunID(t *testing.T) {
 	activeWorkflowRunID = "workflow-1"
 	t.Cleanup(func() { activeWorkflowRunID = savedWorkflowRunID })
 
-	recordMutationJournal(mutation.Envelope{
+	if err := recordMutationJournal(mutation.Envelope{
 		Operation: "items.tags.add",
 		Mode:      "apply",
 		OK:        true,
@@ -204,7 +246,9 @@ func TestRecorderStampsWorkflowRunID(t *testing.T) {
 			Summary: mutation.ResultSummary{Attempted: 1, Applied: 1},
 			Items:   []mutation.ResultItem{{OpID: "o1", Key: "K1", Status: "applied"}},
 		},
-	})
+	}); err != nil {
+		t.Fatalf("record workflow run: %v", err)
+	}
 
 	entries, err := mutation.ListEntries(journalDir())
 	if err != nil {

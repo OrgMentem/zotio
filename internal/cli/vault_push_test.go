@@ -3,7 +3,12 @@
 package cli
 
 import (
+	"bytes"
+	"encoding/json"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -170,5 +175,82 @@ func TestLoadPushNotesParsesStateAndRegion(t *testing.T) {
 	}
 	if a.state != st {
 		t.Errorf("state mismatch: got %+v want %+v", a.state, st)
+	}
+}
+
+func TestVaultPushReportsUnreadableNotes(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("chmod(0000) is not enforced for root; unreadable-note path cannot be exercised")
+	}
+	// No note is pushable (one is unreadable, the other unmanaged), so any
+	// outbound request is a bug.
+	srv := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {
+		t.Fatalf("unexpected request while all notes are unreadable/unmanaged")
+	}))
+	t.Cleanup(srv.Close)
+	t.Setenv("ZOTERO_BASE_URL", srv.URL+"/users/0")
+	t.Setenv("ZOTERO_CONFIG", filepath.Join(t.TempDir(), "missing.toml"))
+
+	dir := t.TempDir()
+	// A real managed note made unreadable (permission denied) — distinct from a
+	// MISSING file, which readVaultFile legitimately treats as absent. This is
+	// the swallowed-read-failure the fix must surface.
+	unreadable := filepath.Join(dir, "unreadable.md")
+	writeFile(t, unreadable, "---\nzotero_key: ABCD1234\n---\nbody")
+	if err := os.Chmod(unreadable, 0o000); err != nil {
+		t.Fatalf("chmod unreadable note: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(unreadable, 0o644) })
+	writeFile(t, filepath.Join(dir, "plain.md"), "not a managed note")
+
+	notes, warnings, err := loadPushNotesWithWarnings(dir)
+	if err != nil {
+		t.Fatalf("loadPushNotesWithWarnings: %v", err)
+	}
+	if len(notes) != 1 || len(warnings) != 1 {
+		t.Fatalf("got %d notes and %d warnings, want 1 note and 1 warning", len(notes), len(warnings))
+	}
+	if !strings.Contains(warnings[0], "unreadable.md") {
+		t.Fatalf("warning does not name unreadable note: %q", warnings[0])
+	}
+
+	cmd := newVaultPushCmd(&rootFlags{asJSON: true})
+	cmd.SilenceErrors, cmd.SilenceUsage = true, true
+	var stdout, stderr bytes.Buffer
+	cmd.SetOut(&stdout)
+	cmd.SetErr(&stderr)
+	cmd.SetArgs([]string{"--out", dir})
+	err = cmd.Execute()
+	if code := ExitCode(err); code != 13 {
+		t.Fatalf("vault push exit code = %d, want 13 (err=%v)", code, err)
+	}
+	var report vaultWriteReport
+	if err := json.Unmarshal(stdout.Bytes(), &report); err != nil {
+		t.Fatalf("decode report: %v\n%s", err, stdout.String())
+	}
+	if len(report.Warnings) != 1 || !strings.Contains(report.Warnings[0], "unreadable.md") {
+		t.Fatalf("report warnings = %#v", report.Warnings)
+	}
+	if stderr.Len() != 0 {
+		t.Fatalf("JSON mode should not print warnings to stderr: %s", stderr.String())
+	}
+}
+
+func TestVaultPushAllReadableNotesExitZero(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		t.Fatalf("unexpected request for an unbound note")
+	}))
+	t.Cleanup(srv.Close)
+	t.Setenv("ZOTERO_BASE_URL", srv.URL+"/users/0")
+	t.Setenv("ZOTERO_CONFIG", filepath.Join(t.TempDir(), "missing.toml"))
+
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, "plain.md"), "not a managed note")
+	cmd := newVaultPushCmd(&rootFlags{asJSON: true})
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetErr(&bytes.Buffer{})
+	cmd.SetArgs([]string{"--out", dir})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("vault push with readable note: %v", err)
 	}
 }

@@ -79,7 +79,10 @@ or text-only PDFs may report "unidentified".`,
 				return err
 			}
 
-			db, _ := openStoreForRead(cmd.Context(), "zotio")
+			db, err := openStoreForRead(cmd.Context(), "zotio")
+			if err != nil {
+				return fmt.Errorf("opening local database: %w", err)
+			}
 			if db == nil {
 				fmt.Fprintln(cmd.OutOrStdout(), "Run 'zotio sync' first.")
 				return nil
@@ -88,7 +91,7 @@ or text-only PDFs may report "unidentified".`,
 
 			idx, err := buildLibraryDOIIndex(db)
 			if err != nil {
-				return fmt.Errorf("indexing library DOIs: %w", err)
+				return finishScanReport(cmd, nil, 0, args[0], []string{fmt.Sprintf("indexing library DOI and PDF attachments: %v", err)}, flags)
 			}
 
 			var httpClient *http.Client
@@ -97,10 +100,16 @@ or text-only PDFs may report "unidentified".`,
 			}
 
 			results := make([]scanResult, 0, len(pdfs))
+			var warnings []string
 			for _, path := range pdfs {
-				results = append(results, classifyPDF(cmd.Context(), path, idx, httpClient))
+				result, err := classifyPDFWithErr(cmd.Context(), path, idx, httpClient)
+				if err != nil {
+					warnings = append(warnings, fmt.Sprintf("reading PDF %s: %v", path, err))
+					continue
+				}
+				results = append(results, result)
 			}
-			return printScanReport(cmd, results, args[0], flags)
+			return finishScanReport(cmd, results, len(pdfs), args[0], warnings, flags)
 		},
 	}
 	cmd.Flags().BoolVar(&flagResolve, "resolve", false, "Fetch CrossRef titles for 'new' PDFs (network)")
@@ -142,7 +151,10 @@ func buildLibraryDOIIndex(db *store.Store) (libraryDOIIndex, error) {
 	if err != nil {
 		return idx, err
 	}
-	withPDF := itemsWithPDFSet(db)
+	withPDF, err := itemsWithPDFSet(db)
+	if err != nil {
+		return idx, fmt.Errorf("indexing PDF attachments: %w", err)
+	}
 	for _, raw := range items {
 		var obj map[string]any
 		if json.Unmarshal(raw, &obj) != nil {
@@ -168,11 +180,11 @@ func buildLibraryDOIIndex(db *store.Store) (libraryDOIIndex, error) {
 }
 
 // itemsWithPDFSet returns the set of parent item keys that have a PDF attachment.
-func itemsWithPDFSet(db *store.Store) map[string]bool {
+func itemsWithPDFSet(db *store.Store) (map[string]bool, error) {
 	set := map[string]bool{}
 	atts, err := db.ItemsByType("attachment", 0)
 	if err != nil {
-		return set
+		return nil, err
 	}
 	for _, raw := range atts {
 		var obj map[string]any
@@ -190,15 +202,27 @@ func itemsWithPDFSet(db *store.Store) map[string]bool {
 			set[parent] = true
 		}
 	}
-	return set
+	return set, nil
 }
 
 func classifyPDF(ctx context.Context, path string, idx libraryDOIIndex, httpClient *http.Client) scanResult {
+	res, err := classifyPDFWithErr(ctx, path, idx, httpClient)
+	if err != nil {
+		return scanResult{File: filepath.Base(path), DOISource: "none", Status: "unidentified"}
+	}
+	return res
+}
+
+func classifyPDFWithErr(ctx context.Context, path string, idx libraryDOIIndex, httpClient *http.Client) (scanResult, error) {
 	res := scanResult{File: filepath.Base(path)}
-	res.DOI, res.DOISource = extractPDFDOI(path)
+	var err error
+	res.DOI, res.DOISource, err = extractPDFDOI(path)
+	if err != nil {
+		return res, err
+	}
 	if res.DOI == "" {
 		res.Status = "unidentified"
-		return res
+		return res, nil
 	}
 	if li, ok := idx.byDOI[strings.ToLower(res.DOI)]; ok {
 		res.ItemKey = li.key
@@ -208,7 +232,7 @@ func classifyPDF(ctx context.Context, path string, idx libraryDOIIndex, httpClie
 		} else {
 			res.Status = "attach_candidate"
 		}
-		return res
+		return res, nil
 	}
 	res.Status = "new"
 	if httpClient != nil {
@@ -218,12 +242,12 @@ func classifyPDF(ctx context.Context, path string, idx libraryDOIIndex, httpClie
 			}
 		}
 	}
-	return res
+	return res, nil
 }
 
 // extractPDFDOI finds a DOI in the filename, then in the PDF's uncompressed
 // embedded metadata. It never decodes compressed page text (no PDF parser).
-func extractPDFDOI(path string) (doi, source string) {
+func extractPDFDOI(path string) (doi, source string, err error) {
 	base := strings.TrimSuffix(filepath.Base(path), filepath.Ext(path))
 	// A filename cannot contain '/', so a DOI saved into one is slash-encoded.
 	// Decode the common, unambiguous encodings before matching (skip '_' — DOIs
@@ -231,62 +255,97 @@ func extractPDFDOI(path string) (doi, source string) {
 	decoded := strings.NewReplacer("%2F", "/", "%2f", "/", "\u2044", "/", "\u2215", "/").Replace(base)
 	if m := doiScanRE.FindString(decoded); m != "" {
 		if d := normalizeDOI(m); d != "" {
-			return d, "filename"
+			return d, "filename", nil
 		}
 	}
-	if bytes := pdfScanBytes(path); len(bytes) > 0 {
-		if m := doiScanRE.FindString(string(bytes)); m != "" {
-			if d := normalizeDOI(m); d != "" {
-				return d, "content"
-			}
+	bytes, err := pdfScanBytes(path)
+	if err != nil {
+		return "", "none", err
+	}
+	if m := doiScanRE.FindString(string(bytes)); m != "" {
+		if d := normalizeDOI(m); d != "" {
+			return d, "content", nil
 		}
 	}
-	return "", "none"
+	return "", "none", nil
 }
 
 // pdfScanBytes returns the head and tail bytes of a file (where PDF XMP/Info
 // metadata typically lives) without reading a potentially huge body into memory.
-func pdfScanBytes(path string) []byte {
+func pdfScanBytes(path string) ([]byte, error) {
 	f, err := os.Open(path)
 	if err != nil {
-		return nil
+		return nil, fmt.Errorf("opening: %w", err)
 	}
 	defer f.Close()
 	fi, err := f.Stat()
 	if err != nil {
-		return nil
+		return nil, fmt.Errorf("stating: %w", err)
 	}
 	if fi.Size() <= scanHeadBytes+scanTailBytes {
 		// Even the small-file path
 		// reads through an explicit cap instead of unbounded io.ReadAll.
-		data, _ := io.ReadAll(io.LimitReader(f, scanHeadBytes+scanTailBytes+1))
-		if int64(len(data)) > scanHeadBytes+scanTailBytes {
-			return nil
+		data, err := io.ReadAll(io.LimitReader(f, scanHeadBytes+scanTailBytes+1))
+		if err != nil {
+			return nil, fmt.Errorf("reading: %w", err)
 		}
-		return data
+		if int64(len(data)) > scanHeadBytes+scanTailBytes {
+			return nil, fmt.Errorf("reading: file grew beyond scan cap")
+		}
+		return data, nil
 	}
 	head := make([]byte, scanHeadBytes)
-	n, _ := io.ReadFull(f, head)
+	n, err := io.ReadFull(f, head)
+	if err != nil {
+		return nil, fmt.Errorf("reading head: %w", err)
+	}
 	out := head[:n]
 	tail := make([]byte, scanTailBytes)
-	if _, err := f.Seek(-scanTailBytes, io.SeekEnd); err == nil {
-		m, _ := io.ReadFull(f, tail)
-		out = append(out, tail[:m]...)
+	if _, err := f.Seek(-scanTailBytes, io.SeekEnd); err != nil {
+		return nil, fmt.Errorf("seeking tail: %w", err)
 	}
-	return out
+	m, err := io.ReadFull(f, tail)
+	if err != nil {
+		return nil, fmt.Errorf("reading tail: %w", err)
+	}
+	return append(out, tail[:m]...), nil
 }
 
-func printScanReport(cmd *cobra.Command, results []scanResult, dir string, flags *rootFlags) error {
+type scanReport struct {
+	Dir      string         `json:"dir"`
+	Scanned  int            `json:"scanned"`
+	Counts   map[string]int `json:"counts"`
+	Results  []scanResult   `json:"results"`
+	Warnings []string       `json:"warnings,omitempty"`
+}
+
+func finishScanReport(cmd *cobra.Command, results []scanResult, scanned int, dir string, warnings []string, flags *rootFlags) error {
+	if err := printScanReport(cmd, results, scanned, dir, warnings, flags); err != nil {
+		return err
+	}
+	if len(warnings) == 0 {
+		return nil
+	}
+	if !flags.asJSON {
+		for _, warning := range warnings {
+			fmt.Fprintf(cmd.ErrOrStderr(), "warning: %s\n", warning)
+		}
+	}
+	return degradedErr(fmt.Errorf("import scan: %d warnings; results incomplete", len(warnings)))
+}
+
+func printScanReport(cmd *cobra.Command, results []scanResult, scanned int, dir string, warnings []string, flags *rootFlags) error {
 	counts := map[string]int{}
 	for _, r := range results {
 		counts[r.Status]++
 	}
 	if flags.asJSON {
-		data, err := json.Marshal(map[string]any{
-			"dir":     dir,
-			"scanned": len(results),
-			"counts":  counts,
-			"results": results,
+		data, err := json.Marshal(scanReport{
+			Dir:      dir,
+			Scanned:  scanned,
+			Counts:   counts,
+			Results:  results,
+			Warnings: warnings,
 		})
 		if err != nil {
 			return err
@@ -294,7 +353,7 @@ func printScanReport(cmd *cobra.Command, results []scanResult, dir string, flags
 		return printOutputWithFlags(cmd.OutOrStdout(), json.RawMessage(data), flags)
 	}
 	out := cmd.OutOrStdout()
-	fmt.Fprintf(out, "Scanned %d PDF(s) in %s: %s\n", len(results), dir, summarizeCounts(counts))
+	fmt.Fprintf(out, "Scanned %d PDF(s) in %s: %s\n", scanned, dir, summarizeCounts(counts))
 	for _, r := range results {
 		line := fmt.Sprintf("  [%s] %s", r.Status, r.File)
 		switch r.Status {

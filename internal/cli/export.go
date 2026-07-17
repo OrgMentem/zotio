@@ -6,6 +6,7 @@ import (
 	"bufio"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/url"
 	"os"
 	"strings"
@@ -26,6 +27,54 @@ func openPrivateOutputFile(path string, flags int) (*os.File, error) {
 		return nil, err
 	}
 	return f, nil
+}
+
+func finishExport(writer *bufio.Writer, file *os.File, primary error) error {
+	flushErr := writer.Flush()
+	var closeErr error
+	if file != nil {
+		closeErr = file.Close()
+	}
+	if primary != nil {
+		return primary
+	}
+	if flushErr != nil {
+		return fmt.Errorf("flushing export: %w", flushErr)
+	}
+	if closeErr != nil {
+		return fmt.Errorf("closing export: %w", closeErr)
+	}
+	return nil
+}
+
+func writeExport(writer io.Writer, format string, data []byte, limit int) (int, error) {
+	switch format {
+	case "jsonl":
+		var items []json.RawMessage
+		if err := json.Unmarshal(data, &items); err != nil {
+			_, err := fmt.Fprintln(writer, string(data))
+			return 0, err
+		}
+		count := 0
+		for _, item := range items {
+			if limit > 0 && count >= limit {
+				break
+			}
+			if _, err := fmt.Fprintln(writer, string(item)); err != nil {
+				return count, err
+			}
+			count++
+		}
+		return count, nil
+	default:
+		var parsed any
+		if err := json.Unmarshal(data, &parsed); err != nil {
+			return 0, err
+		}
+		enc := json.NewEncoder(writer)
+		enc.SetIndent("", "  ")
+		return 0, enc.Encode(parsed)
+	}
 }
 
 func newExportCmd(flags *rootFlags) *cobra.Command {
@@ -81,51 +130,28 @@ large datasets as it has no memory pressure.`,
 				path += "/" + url.PathEscape(args[1])
 			}
 
-			var writer *bufio.Writer
+			var file *os.File
+			var output io.Writer = cmd.OutOrStdout()
 			if outputFile != "" {
-				f, err := openPrivateOutputFile(outputFile, os.O_WRONLY|os.O_CREATE|os.O_TRUNC)
+				file, err = openPrivateOutputFile(outputFile, os.O_WRONLY|os.O_CREATE|os.O_TRUNC)
 				if err != nil {
 					return fmt.Errorf("creating output file: %w", err)
 				}
-				defer f.Close()
-				writer = bufio.NewWriter(f)
-				defer writer.Flush()
-			} else {
-				writer = bufio.NewWriter(os.Stdout)
-				defer writer.Flush()
+				output = file
 			}
+			writer := bufio.NewWriter(output)
 
 			data, err := c.Get(path, nil)
 			if err != nil {
-				return classifyAPIError(err, flags)
+				return finishExport(writer, file, classifyAPIError(err, flags))
 			}
 
-			switch format {
-			case "jsonl":
-				var items []json.RawMessage
-				if err := json.Unmarshal(data, &items); err != nil {
-					fmt.Fprintln(writer, string(data))
-					return nil
-				}
-				count := 0
-				for _, item := range items {
-					if limit > 0 && count >= limit {
-						break
-					}
-					fmt.Fprintln(writer, string(item))
-					count++
-				}
-				if outputFile != "" {
-					fmt.Fprintf(os.Stderr, "Exported %d records to %s\n", count, outputFile)
-				}
-			default:
-				enc := json.NewEncoder(writer)
-				enc.SetIndent("", "  ")
-				var parsed any
-				if err := json.Unmarshal(data, &parsed); err != nil {
-					return err
-				}
-				return enc.Encode(parsed)
+			count, exportErr := writeExport(writer, format, data, limit)
+			if err := finishExport(writer, file, exportErr); err != nil {
+				return err
+			}
+			if outputFile != "" && format == "jsonl" {
+				fmt.Fprintf(cmd.ErrOrStderr(), "Exported %d records to %s\n", count, outputFile)
 			}
 			return nil
 		},

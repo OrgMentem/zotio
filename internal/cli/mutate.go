@@ -48,7 +48,10 @@ func runMutation(ctx context.Context, flags *rootFlags, operation string, ops []
 		mirrorWriteThrough(&env)
 	}
 	if mutationJournalRecorder != nil {
-		mutationJournalRecorder(env)
+		if journalErr := mutationJournalRecorder(env); journalErr != nil {
+			env.Warnings = append(env.Warnings, fmt.Sprintf("applied but not journaled: %v (journal undo unavailable for this run)", journalErr))
+			err = degradedErr(fmt.Errorf("%s: %d warnings; results incomplete", operation, len(env.Warnings)))
+		}
 	}
 	return env, err
 }
@@ -63,6 +66,9 @@ func renderMutation(cmd *cobra.Command, flags *rootFlags, env mutation.Envelope,
 			return err
 		}
 		return printOutput(out, json.RawMessage(data), true)
+	}
+	for _, warning := range env.Warnings {
+		fmt.Fprintf(cmd.ErrOrStderr(), "warning: %s\n", warning)
 	}
 
 	if env.Error == nil && singleLine != nil && len(env.Plan.Operations) == 1 {

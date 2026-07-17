@@ -117,7 +117,7 @@ native streaming instead of polling.`,
 
 			// Initial poll
 			if events, err := emitChanges(cmd.Context(), c, db, resource, path, sink, os.Stdout); err != nil {
-				fmt.Fprintf(os.Stderr, "warning: initial poll failed: %v\n", err)
+				return fmt.Errorf("initial tail poll: %w", err)
 			} else if events >= 1 && workflowPath != "" {
 				runTriggeredWorkflow(cmd.Context(), cmd, "tail", workflowPath, workflowRunInvocation{
 					Yes:     flags.yes,
@@ -141,7 +141,7 @@ native streaming instead of polling.`,
 					return nil
 				case <-ticker.C:
 					if events, err := emitChanges(cmd.Context(), c, db, resource, path, sink, os.Stdout); err != nil {
-						fmt.Fprintf(os.Stderr, "warning: poll failed: %v\n", err)
+						return fmt.Errorf("tail poll: %w", err)
 					} else if events >= 1 && workflowPath != "" {
 						runTriggeredWorkflow(cmd.Context(), cmd, "tail", workflowPath, workflowRunInvocation{
 							Yes:     flags.yes,
@@ -256,30 +256,33 @@ func emitChanges(ctx context.Context, c *client.Client, db *store.Store, resourc
 		switch sink.Scheme {
 		case "webhook":
 			if err := deliverWebhook(ctx, sink.Target, out, true); err != nil {
-				fmt.Fprintf(os.Stderr, "warning: tail %s: webhook delivery failed: %v\n", resource, err)
+				return emitted, fmt.Errorf("tail %s: delivering webhook: %w", resource, err)
 			}
 		case "file":
 			dir := filepath.Dir(sink.Target)
 			if dir != "" && dir != "." {
 				if err := os.MkdirAll(dir, 0o700); err != nil {
-					fmt.Fprintf(os.Stderr, "warning: tail %s: file delivery failed: %v\n", resource, err)
-					break
+					return emitted, fmt.Errorf("tail %s: creating delivery directory: %w", resource, err)
 				}
 			}
-			f, ferr := os.OpenFile(sink.Target, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
-			if ferr != nil {
-				fmt.Fprintf(os.Stderr, "warning: tail %s: file delivery failed: %v\n", resource, ferr)
-			} else {
-				if _, werr := f.Write(out); werr != nil {
-					fmt.Fprintf(os.Stderr, "warning: tail %s: file delivery failed: %v\n", resource, werr)
-				}
+			f, err := os.OpenFile(sink.Target, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
+			if err != nil {
+				return emitted, fmt.Errorf("tail %s: opening delivery file: %w", resource, err)
+			}
+			if _, err := f.Write(out); err != nil {
 				_ = f.Close()
+				return emitted, fmt.Errorf("tail %s: writing delivery file: %w", resource, err)
+			}
+			if err := f.Close(); err != nil {
+				return emitted, fmt.Errorf("tail %s: closing delivery file: %w", resource, err)
 			}
 		}
 	}
 
 	if newVer > cursor {
-		_ = db.SaveLibraryVersion(cursorKey, newVer)
+		if err := db.SaveLibraryVersion(cursorKey, newVer); err != nil {
+			return emitted, fmt.Errorf("tail %s: saving cursor: %w", resource, err)
+		}
 	}
 	return emitted, nil
 }

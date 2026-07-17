@@ -114,7 +114,7 @@ func exportCollection(c interface {
 
 	var subcols []map[string]any
 	if err := json.Unmarshal(subData, &subcols); err != nil {
-		return nil
+		return fmt.Errorf("decoding subcollections for %s: %w", collKey, err)
 	}
 	for _, sub := range subcols {
 		key, _ := sub["key"].(string)
@@ -127,7 +127,7 @@ func exportCollection(c interface {
 			continue
 		}
 		if err := exportCollection(c, out, key, format, flat, limit, visited); err != nil {
-			fmt.Fprintf(os.Stderr, "warning: error exporting subcollection %s: %v\n", key, err)
+			return fmt.Errorf("exporting subcollection %s: %w", key, err)
 		}
 	}
 	return nil

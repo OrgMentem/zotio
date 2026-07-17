@@ -285,3 +285,31 @@ func toolResultText(t *testing.T, res *mcplib.CallToolResult) string {
 	}
 	return text.Text
 }
+
+func TestHandleSQLSurfacesIteratorErrorAfterRowLimit(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("ZOTERO_DATA_DIR", t.TempDir())
+
+	db, err := store.OpenWithContext(context.Background(), dbPath())
+	if err != nil {
+		t.Fatalf("open writable db: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close writable db: %v", err)
+	}
+
+	req := mcplib.CallToolRequest{}
+	req.Params.Arguments = map[string]any{
+		"query": "WITH RECURSIVE cnt(x) AS (VALUES(1) UNION ALL SELECT x+1 FROM cnt WHERE x < 5002) SELECT CASE WHEN x = 5002 THEN abs(-9223372036854775808) ELSE x END AS x FROM cnt",
+	}
+	res, err := handleSQL(context.Background(), req)
+	if err != nil {
+		t.Fatalf("handleSQL protocol error: %v", err)
+	}
+	if res == nil || !res.IsError {
+		t.Fatalf("handleSQL result = %+v, want iterator error after row limit", res)
+	}
+	if got := toolResultText(t, res); !strings.Contains(got, "query failed") {
+		t.Fatalf("error result = %q, want query failure", got)
+	}
+}

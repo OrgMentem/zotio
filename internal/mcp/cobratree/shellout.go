@@ -79,6 +79,8 @@ func cliArgsFromMCP(args map[string]any) []string {
 		case bool:
 			if tv {
 				out = append(out, "--"+k)
+			} else {
+				out = append(out, "--"+k+"=false")
 			}
 		case float64:
 			out = append(out, "--"+k, strconv.FormatFloat(tv, 'f', -1, 64))
@@ -87,12 +89,8 @@ func cliArgsFromMCP(args map[string]any) []string {
 				out = append(out, "--"+k, tv)
 			}
 		case []any:
-			if len(tv) > 0 {
-				parts := make([]string, 0, len(tv))
-				for _, item := range tv {
-					parts = append(parts, fmt.Sprintf("%v", item))
-				}
-				out = append(out, "--"+k, strings.Join(parts, ","))
+			for _, item := range tv {
+				out = append(out, "--"+k, fmt.Sprintf("%v", item))
 			}
 		default:
 			if v != nil {
@@ -103,25 +101,46 @@ func cliArgsFromMCP(args map[string]any) []string {
 	return out
 }
 
-// splitShellArgs whitespace-splits with double-quoted-token preservation.
+// splitShellArgs whitespace-splits with shell-safe double- and single-quoted
+// token preservation and backslash escapes.
 func splitShellArgs(s string) []string {
 	var tokens []string
 	var cur []rune
-	inQuote := false
+	inSingleQuote := false
+	inDoubleQuote := false
+	escaped := false
+	hasToken := false
+
 	for _, r := range s {
 		switch {
-		case r == '"':
-			inQuote = !inQuote
-		case (r == ' ' || r == '\t') && !inQuote:
-			if len(cur) > 0 {
+		case escaped:
+			cur = append(cur, r)
+			hasToken = true
+			escaped = false
+		case r == '\\' && !inSingleQuote:
+			escaped = true
+			hasToken = true
+		case r == '\'' && !inDoubleQuote:
+			inSingleQuote = !inSingleQuote
+			hasToken = true
+		case r == '"' && !inSingleQuote:
+			inDoubleQuote = !inDoubleQuote
+			hasToken = true
+		case (r == ' ' || r == '\t') && !inSingleQuote && !inDoubleQuote:
+			if hasToken {
 				tokens = append(tokens, string(cur))
 				cur = cur[:0]
+				hasToken = false
 			}
 		default:
 			cur = append(cur, r)
+			hasToken = true
 		}
 	}
-	if len(cur) > 0 {
+	if escaped {
+		cur = append(cur, '\\')
+	}
+	if hasToken {
 		tokens = append(tokens, string(cur))
 	}
 	return tokens
