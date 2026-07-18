@@ -37,7 +37,7 @@ For install, auth, examples, and longer product guidance, read `README.md` and `
 
 For CI, the [zotio-action](https://github.com/OrgMentem/zotio-action) GitHub Action ([marketplace](https://github.com/marketplace/actions/zotio-bibliography-health-for-zotero)) packages install → sync → gate on `library health` exit codes; see `docs/guide/ci.md`.
 
-Before cutting a release (tagging `v*`), read `notes/releasing.md` — release flow, version/breaking-change decisions, validation checklist, and footguns.
+Before cutting a release (tagging `v*`), read `notes/releasing.md` — release flow, version/breaking-change decisions, validation checklist, and footguns. When the release coordinates with papio (the acquisition-side sister project), also read `~/@dev/papio/.agents/skills/papio-release/SKILL.md`: papio enforces a minimum-zotio-version floor and its release order depends on whether that floor moved.
 
 ## Zotero API Surface
 
