@@ -2,6 +2,10 @@
 
 Notable changes to zotio. Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow [SemVer](https://semver.org/).
 
+## [Unreleased]
+### Added
+- Brand: the README header wordmark (`logo-wordmark.svg`, `logo-wordmark-dark.svg`) is now an animated SVG. On a calm ~10s loop the indigo ring draws on, the z snaps into place, the wordmark rises in, and the gold i-dot rolls along the ring rim, wakes up, realises it is off its mark, leaps into the break with a squash landing, blinks, and gives a little left-eye wink before settling. Pure CSS keyframes inside the SVG (no scripts or SMIL, safe for GitHub's `<img>` rendering); the resting state is identical to the prior static logo and `prefers-reduced-motion: reduce` shows it with no animation.
+
 ## [0.9.0] — 2026-07-15
 ### Added
 - `workflow run` is now transactional: without `--yes` it renders one consolidated preview (mutating steps are forced to `--dry-run`; read-only steps run normally), a single `--yes` on `workflow run` is the one approval for every step (specs that embed their own `--yes`/`--dry-run` are rejected), every step applied under that approval records its journal entry with a shared `workflow_run_id` (`journal list --workflow <id>` filters to one run), and an interrupted apply leaves a `<spec>.checkpoint.json` sidecar so `workflow run --yes --resume` continues where it stopped (spec-hash-verified, succeeded steps skipped, same run id) — re-running without `--resume` while a checkpoint exists is refused.
