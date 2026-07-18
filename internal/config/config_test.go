@@ -136,3 +136,26 @@ func TestConfigJSONOmitsCredentialBearingFields(t *testing.T) {
 		t.Errorf("json output BaseURL = %#v, want %q", got["BaseURL"], cfg.BaseURL)
 	}
 }
+
+func TestConfigUpdateChecksAreOptIn(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.toml")
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load absent config: %v", err)
+	}
+	if cfg.UpdateChecksEnabled() {
+		t.Fatal("absent [updates] config enabled checks")
+	}
+
+	if err := os.WriteFile(path, []byte("[updates]\ncheck = true\n"), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	cfg, err = Load(path)
+	if err != nil {
+		t.Fatalf("Load opted-in config: %v", err)
+	}
+	if !cfg.UpdateChecksEnabled() {
+		t.Fatal("[updates].check = true did not enable checks")
+	}
+}

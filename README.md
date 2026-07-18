@@ -480,9 +480,9 @@ zotio which "export bibtex for a collection"
 
 </details>
 
-## Sister project: papio
+## Sister project: *papio*
 
-zotio manages and safeguards your Zotero library. [papio](https://github.com/orgmentem/papio) is the acquisition side: it finds and downloads validated, provenance-tracked PDFs from open access and your own institutional subscriptions through your normal browser, then hands them to zotio for preview-first import. If your library has items without PDFs, papio fills them.
+zotio manages and safeguards your Zotero library. [*papio*](https://github.com/orgmentem/papio) is the acquisition side: it finds and downloads validated, provenance-tracked PDFs from open access and your own institutional subscriptions through your normal browser, then hands them to zotio for preview-first import. If your library has items without PDFs, *papio* fills them.
 
 ---
 

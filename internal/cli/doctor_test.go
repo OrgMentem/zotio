@@ -7,6 +7,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -14,7 +16,9 @@ import (
 	"testing"
 	"time"
 
+	"zotio/internal/config"
 	"zotio/internal/connector"
+	"zotio/internal/update"
 )
 
 func TestIsLocalZoteroAPI(t *testing.T) {
@@ -130,4 +134,35 @@ func doctorTestConfigFile(t *testing.T, baseURL string) string {
 		t.Fatalf("write config: %v", err)
 	}
 	return path
+}
+
+func TestDoctorUpdateRows(t *testing.T) {
+	now := time.Date(2026, 7, 18, 12, 0, 0, 0, time.UTC)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"tag_name":"v1.2.3","html_url":"https://github.com/OrgMentem/zotio/releases/tag/v1.2.3"}`))
+	}))
+	defer server.Close()
+
+	enabled := &config.Config{Updates: &config.UpdatesConfig{Check: true}}
+	newChecker := func() *update.Checker {
+		return update.NewWithOptions(update.Options{
+			DataDir:     t.TempDir(),
+			ReleasesURL: server.URL,
+			Client:      server.Client(),
+			Now:         func() time.Time { return now },
+		})
+	}
+
+	if got := updateReport(context.Background(), &config.Config{}, nil, "1.2.3", ""); !strings.HasPrefix(got, "INFO disabled") {
+		t.Fatalf("disabled row = %q", got)
+	}
+	if got := updateReport(context.Background(), enabled, newChecker(), "1.2.3", ""); got != "OK current (1.2.3)" {
+		t.Fatalf("current row = %q", got)
+	}
+	if got := updateReport(context.Background(), enabled, newChecker(), "1.2.2", "/opt/homebrew/bin/zotio"); got != "WARN 1.2.3 available — brew upgrade zotio" {
+		t.Fatalf("behind row = %q", got)
+	}
+	if got := updateReport(context.Background(), enabled, nil, "dev", ""); got != "INFO skipped (development build)" {
+		t.Fatalf("development row = %q", got)
+	}
 }

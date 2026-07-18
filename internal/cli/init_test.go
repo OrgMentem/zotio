@@ -11,6 +11,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"zotio/internal/config"
 )
 
 func TestInitNoInputJSONReportsSetupRequiredWithoutPrompt(t *testing.T) {
@@ -111,5 +113,33 @@ func assertInitStep(t *testing.T, got initStepReport, wantStep string, wantOK bo
 	}
 	if remediationSubstring != "" && !strings.Contains(got.Remediation, remediationSubstring) {
 		t.Fatalf("%s remediation = %q, want to contain %q", wantStep, got.Remediation, remediationSubstring)
+	}
+}
+
+func TestInitUpdateCheckConsentDefaultsToYes(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.toml")
+	cfg, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+
+	cmd := newInitCmd(&rootFlags{})
+	cmd.SetIn(strings.NewReader("\n"))
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+
+	ok, step := runInitUpdateCheckStep(cmd, cfg)
+	if !ok || step.Step != initStepUpdates || step.Status != "enabled" {
+		t.Fatalf("update step = %+v, want enabled", step)
+	}
+	if !strings.Contains(out.String(), "Check for zotio updates once a day? Queries GitHub releases only; nothing else is sent.") {
+		t.Fatalf("prompt = %q", out.String())
+	}
+	reloaded, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("reload config: %v", err)
+	}
+	if !reloaded.UpdateChecksEnabled() {
+		t.Fatal("default consent was not persisted")
 	}
 }

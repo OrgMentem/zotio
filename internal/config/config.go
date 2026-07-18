@@ -46,6 +46,8 @@ type Config struct {
 	// output directory and format without --out on every run. Pointer +
 	// omitempty keeps save() from writing an empty [vault] table.
 	Vault *VaultConfig `toml:"vault,omitempty"`
+	// Updates is deliberately opt-in: a nil section means release checks are disabled.
+	Updates *UpdatesConfig `toml:"updates,omitempty"`
 }
 
 // VaultConfig holds Obsidian/Logseq vault sync defaults.
@@ -53,6 +55,25 @@ type VaultConfig struct {
 	Root     string `toml:"root"`
 	NotesDir string `toml:"notes_dir"`
 	Format   string `toml:"format"`
+}
+
+// UpdatesConfig holds the optional public-release update-check preference.
+type UpdatesConfig struct {
+	Check bool `toml:"check"`
+}
+
+// UpdateChecksEnabled reports whether the user opted into release checks.
+func (c *Config) UpdateChecksEnabled() bool {
+	return c != nil && c.Updates != nil && c.Updates.Check
+}
+
+// SetUpdateChecksEnabled persists the user's update-check preference.
+func (c *Config) SetUpdateChecksEnabled(enabled bool) error {
+	if c == nil {
+		return fmt.Errorf("saving update-check preference: nil config")
+	}
+	c.Updates = &UpdatesConfig{Check: enabled}
+	return c.save()
 }
 
 // demoModeFromEnv mirrors cli.demoActive. The config package
@@ -481,6 +502,14 @@ func cloneVaultConfig(v *VaultConfig) *VaultConfig {
 	return &out
 }
 
+func cloneUpdatesConfig(v *UpdatesConfig) *UpdatesConfig {
+	if v == nil {
+		return nil
+	}
+	out := *v
+	return &out
+}
+
 func (c *Config) snapshotFileConfig() {
 	snapshot := *c
 	snapshot.envOverrides = nil
@@ -490,6 +519,7 @@ func (c *Config) snapshotFileConfig() {
 	// isolation this snapshot exists to provide. Clone them.
 	snapshot.Headers = cloneStringMap(c.Headers)
 	snapshot.Vault = cloneVaultConfig(c.Vault)
+	snapshot.Updates = cloneUpdatesConfig(c.Updates)
 	c.fileConfig = &snapshot
 }
 
@@ -557,6 +587,7 @@ func (c *Config) save() error {
 	// otherwise later mutations to c's maps leak into the on-disk snapshot.
 	c.fileConfig.Headers = cloneStringMap(c.fileConfig.Headers)
 	c.fileConfig.Vault = cloneVaultConfig(c.fileConfig.Vault)
+	c.fileConfig.Updates = cloneUpdatesConfig(c.fileConfig.Updates)
 	return nil
 }
 func (c *Config) scrubLegacyCredentials() {
@@ -595,6 +626,7 @@ type persistedConfig struct {
 	Headers map[string]string `toml:"headers,omitempty"`
 	UserID  string            `toml:"user_id,omitempty"`
 	Vault   *VaultConfig      `toml:"vault,omitempty"`
+	Updates *UpdatesConfig    `toml:"updates,omitempty"`
 }
 
 func (c *Config) persisted() persistedConfig {
@@ -603,6 +635,7 @@ func (c *Config) persisted() persistedConfig {
 		Headers: c.Headers,
 		UserID:  c.UserID,
 		Vault:   cloneVaultConfig(c.Vault),
+		Updates: cloneUpdatesConfig(c.Updates),
 	}
 }
 

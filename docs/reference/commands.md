@@ -38,6 +38,21 @@ These flags are available on every command.
 | `--via` | `string` | `auto` | Item-creation route: auto (connector when local+reachable), connector (desktop), or web (api.zotero.org) |
 | `--yes` | `bool` | `false` | Skip confirmation prompts (for agents and scripts) |
 
+## Configuration
+
+zotio loads its configuration from the platform configuration directory, or from the path supplied with `--config`. `zotio doctor` reports the active path.
+
+### Update checks
+
+Release discovery is off by default. To opt in to one anonymous GitHub releases request per day, add:
+
+```toml
+[updates]
+check = true
+```
+
+The request reads only the public zotio releases feed; it sends no identifying payload, never installs anything, and failures are ignored. `zotio doctor` reports whether a newer version is available.
+
 ## `zotio agent-context`
 
 Emit structured JSON describing this CLI for agents
@@ -615,6 +630,11 @@ zotio demo [flags]
 
 Check CLI health
 
+Check CLI health.
+
+When [updates].check is enabled, doctor also checks zotio's public GitHub
+releases feed at most once a day.
+
 ```
 zotio doctor [flags]
 ```
@@ -1046,8 +1066,9 @@ Guided first-run setup using doctor, auth, sync, and health checks
 Guided first-run setup for Zotero automation.
 
 Checks the local Zotero API, stores an API key when one is provided interactively,
-runs the first local sync when the store is missing or empty, and finishes with the
-quick library-health preset plus suggested next commands.
+runs the first local sync when the store is missing or empty, finishes with the quick
+library-health preset, and offers an opt-in daily check for public zotio releases.
+The check sends only a GitHub releases request and no identifying payload.
 
 ```
 zotio init [flags]

@@ -20,6 +20,7 @@ const (
 	initStepLocalAPI = "local_api"
 	initStepAPIKey   = "api_key"
 	initStepSync     = "sync"
+	initStepUpdates  = "updates"
 	initStepHealth   = "health"
 
 	initLocalAPIRemediation = "open Zotero → Settings → Advanced → 'Allow other applications…'"
@@ -56,8 +57,9 @@ func newInitCmd(flags *rootFlags) *cobra.Command {
 		Long: `Guided first-run setup for Zotero automation.
 
 Checks the local Zotero API, stores an API key when one is provided interactively,
-runs the first local sync when the store is missing or empty, and finishes with the
-quick library-health preset plus suggested next commands.`,
+runs the first local sync when the store is missing or empty, finishes with the quick
+library-health preset, and offers an opt-in daily check for public zotio releases.
+The check sends only a GitHub releases request and no identifying payload.`,
 		Args:        cobra.NoArgs,
 		Annotations: map[string]string{"mcp:read-only": "false", "zotio:preflight": "skip"},
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -91,6 +93,14 @@ func runInit(cmd *cobra.Command, flags *rootFlags, launch bool) (initReport, err
 		return report, configErr(err)
 	}
 
+	if cfg.Updates == nil && !flags.noInput && !flags.agent && cfg.Path != "" {
+		updatesOK, updatesStep := runInitUpdateCheckStep(cmd, cfg)
+		report.Steps = append(report.Steps, updatesStep)
+		if !updatesOK {
+			report.OK = false
+			return report, configErr(fmt.Errorf("zotio init: %s", updatesStep.Detail))
+		}
+	}
 	localOK, localStep := runInitLocalAPIStep(cmd, flags, launch)
 	report.Steps = append(report.Steps, localStep)
 	if !localOK {
@@ -131,6 +141,33 @@ func runInit(cmd *cobra.Command, flags *rootFlags, launch bool) (initReport, err
 	}
 	report.OK = true
 	return report, nil
+}
+
+func runInitUpdateCheckStep(cmd *cobra.Command, cfg *config.Config) (bool, initStepReport) {
+	const question = "Check for zotio updates once a day? Queries GitHub releases only; nothing else is sent. [Y/n]: "
+
+	reader := bufio.NewReader(cmd.InOrStdin())
+	for {
+		fmt.Fprint(cmd.OutOrStdout(), question)
+		answer, err := reader.ReadString('\n')
+		if err != nil && err != io.EOF {
+			return false, initStepReport{Step: initStepUpdates, OK: false, Status: "read_error", Detail: err.Error()}
+		}
+		if err == io.EOF && answer == "" {
+			return true, initStepReport{Step: initStepUpdates, OK: true, Status: "skipped"}
+		}
+		switch strings.ToLower(strings.TrimSpace(answer)) {
+		case "", "y", "yes":
+			if err := cfg.SetUpdateChecksEnabled(true); err != nil {
+				return false, initStepReport{Step: initStepUpdates, OK: false, Status: "save_error", Detail: err.Error()}
+			}
+			return true, initStepReport{Step: initStepUpdates, OK: true, Status: "enabled"}
+		case "n", "no":
+			return true, initStepReport{Step: initStepUpdates, OK: true, Status: "disabled"}
+		default:
+			fmt.Fprintln(cmd.OutOrStdout(), "Please answer yes or no.")
+		}
+	}
 }
 
 // Reuse doctor's local API reachability check and ensure-live launch primitive.

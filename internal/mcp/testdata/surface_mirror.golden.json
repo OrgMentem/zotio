@@ -953,7 +953,7 @@
   },
   {
     "name": "init",
-    "description": "Guided first-run setup for Zotero automation.\n\nChecks the local Zotero API, stores an API key when one is provided interactively,\nruns the first local sync when the store is missing or empty, and finishes with the\nquick library-health preset plus suggested next commands.",
+    "description": "Guided first-run setup for Zotero automation.\n\nChecks the local Zotero API, stores an API key when one is provided interactively,\nruns the first local sync when the store is missing or empty, finishes with the quick\nlibrary-health preset, and offers an opt-in daily check for public zotio releases.\nThe check sends only a GitHub releases request and no identifying payload.",
     "inputSchema": {
       "properties": {
         "allow-destructive": {

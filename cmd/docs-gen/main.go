@@ -95,11 +95,21 @@ func renderCommands(root *cobra.Command) []byte {
 		writeFlagTable(&b, gf)
 		b.WriteString("\n")
 	}
+	writeConfigurationReference(&b)
 
 	for _, c := range visibleSubcommands(root) {
 		writeCommand(&b, c, 2)
 	}
 	return b.Bytes()
+}
+
+func writeConfigurationReference(b *bytes.Buffer) {
+	b.WriteString("## Configuration\n\n")
+	b.WriteString("zotio loads its configuration from the platform configuration directory, or from the path supplied with `--config`. `zotio doctor` reports the active path.\n\n")
+	b.WriteString("### Update checks\n\n")
+	b.WriteString("Release discovery is off by default. To opt in to one anonymous GitHub releases request per day, add:\n\n")
+	b.WriteString("```toml\n[updates]\ncheck = true\n```\n\n")
+	b.WriteString("The request reads only the public zotio releases feed; it sends no identifying payload, never installs anything, and failures are ignored. `zotio doctor` reports whether a newer version is available.\n\n")
 }
 
 func writeCommand(b *bytes.Buffer, c *cobra.Command, level int) {

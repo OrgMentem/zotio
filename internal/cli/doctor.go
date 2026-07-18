@@ -14,8 +14,10 @@ import (
 	"time"
 
 	"zotio/internal/client"
+	"zotio/internal/cliutil"
 	"zotio/internal/config"
 	"zotio/internal/store"
+	"zotio/internal/update"
 
 	"github.com/spf13/cobra"
 )
@@ -159,6 +161,10 @@ func newDoctorCmd(flags *rootFlags) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "doctor",
 		Short: "Check CLI health",
+		Long: `Check CLI health.
+
+When [updates].check is enabled, doctor also checks zotio's public GitHub
+releases feed at most once a day.`,
 		Example: `  zotio doctor
   zotio doctor --json
   zotio doctor --fail-on warn`,
@@ -323,6 +329,7 @@ func newDoctorCmd(flags *rootFlags) *cobra.Command {
 			// whether to trust the cached data before issuing queries.
 			cacheReport := collectCacheReport(cmd.Context(), "")
 			report["cache"] = cacheReport
+			report["updates"] = collectUpdateReport(cmd.Context(), cfg)
 
 			report["version"] = version
 			// surface which library this invocation targets so
@@ -351,6 +358,7 @@ func newDoctorCmd(flags *rootFlags) *cobra.Command {
 				{"env_vars", "Env Vars"},
 				{"api", "API"},
 				{"credentials", "Credentials"},
+				{"updates", "Updates"},
 			}
 			for _, ck := range checkKeys {
 				v, ok := report[ck.key]
@@ -362,6 +370,8 @@ func newDoctorCmd(flags *rootFlags) *cobra.Command {
 				switch {
 				case strings.HasPrefix(s, "INFO"):
 					indicator = yellow("INFO")
+				case strings.HasPrefix(s, "WARN"):
+					indicator = yellow("WARN")
 				case strings.HasPrefix(s, "ERROR"):
 					indicator = red("FAIL")
 				case strings.HasPrefix(s, "optional"):
@@ -409,6 +419,42 @@ func newDoctorCmd(flags *rootFlags) *cobra.Command {
 	cmd.Flags().BoolVar(&ensureLiveFlag, "ensure-live", false, "Check the Zotero desktop local API is reachable; exit 9 if not")
 	cmd.Flags().BoolVar(&launchFlag, "launch", false, "With --ensure-live, launch Zotero and wait up to 15s for the local API")
 	return cmd
+}
+
+func collectUpdateReport(ctx context.Context, cfg *config.Config) string {
+	currentVersion := Version()
+	if cfg == nil || !cfg.UpdateChecksEnabled() || update.IsDevelopmentVersion(currentVersion) {
+		return updateReport(ctx, cfg, nil, currentVersion, "")
+	}
+	cacheDir, err := cliutil.CacheDir()
+	if err != nil {
+		return "INFO unavailable (could not resolve the update cache directory)"
+	}
+	executable, _ := os.Executable()
+	return updateReport(ctx, cfg, update.New(cacheDir), currentVersion, executable)
+}
+
+func updateReport(ctx context.Context, cfg *config.Config, checker *update.Checker, currentVersion, executable string) string {
+	if cfg == nil {
+		return "INFO skipped (configuration unavailable)"
+	}
+	if !cfg.UpdateChecksEnabled() {
+		return "INFO disabled (set [updates].check = true to enable)"
+	}
+	if update.IsDevelopmentVersion(currentVersion) {
+		return "INFO skipped (development build)"
+	}
+	if checker == nil {
+		return "INFO unavailable (release check skipped)"
+	}
+	latest, _ := checker.Check(ctx)
+	if latest == nil {
+		return "INFO unavailable (release check failed; try again later)"
+	}
+	if update.IsNewer(latest.LatestVersion, currentVersion) {
+		return fmt.Sprintf("WARN %s available — %s", latest.LatestVersion, update.UpgradeHint(executable, latest.URL))
+	}
+	return fmt.Sprintf("OK current (%s)", currentVersion)
 }
 
 // doctorExitForFailOn returns a non-nil error when the report's worst
