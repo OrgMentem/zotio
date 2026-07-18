@@ -2,9 +2,20 @@
 
 Notable changes to zotio. Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow [SemVer](https://semver.org/).
 
-## [Unreleased]
+## [0.10.0] — 2026-07-18
 ### Added
+- Opt-in release-update discovery, surfaced in `zotio doctor`. Disabled by default — a nil `[updates]` config section means no checks; `zotio init` offers to enable it, and `doctor` then reports when a newer public release is available with a channel-appropriate upgrade hint (Homebrew vs. source build). The check is one anonymous GET to the public GitHub releases endpoint, cached in the data dir and rate-limited to once a day; it collects no user data, and every network/cache/decoding failure is soft (you get the last cached result or nothing, never a surfaced error).
+- Per-command context propagation on the CLI path: the root command runs under the interrupt context and each command's `cmd.Context()` is seeded into the HTTP client (`Client.SetContext`), so per-command deadlines and MCP request cancellation now abort in-flight Zotero/provider requests — previously only process-level Ctrl-C/SIGTERM did.
 - Brand: the README header wordmark (`logo-wordmark.svg`, `logo-wordmark-dark.svg`) is now an animated SVG. On a calm ~10s loop the ring draws on, the z snaps into place, the wordmark rises in, and the gold i-dot rolls along the ring rim, wakes up, realises it is off its mark, leaps into the break with a squash landing, blinks, and gives a little left-eye wink before settling. The ring now tracks the wordmark's ink/paper text color per theme (ink on light, paper on dark) while the z keeps a fixed indigo identity (a lighter `#6366F1` in the dark variant, matching the docs' own dark-mode indigo token, since the light-mode hex reads too flat against a dark background) — mirroring sister project *papio*'s ring-tracks-text / letterform-carries-the-brand-hue split. Pure CSS keyframes inside the SVG (no scripts or SMIL, safe for GitHub's `<img>` rendering); the resting state is identical to the prior static logo and `prefers-reduced-motion: reduce` shows it with no animation. The static standalone icon (`logo.svg`) gets the same ink-ring/indigo-z split; `logo-mono.svg` (the flat header-bar mark, always rendered on `mkdocs.yml`'s indigo `primary` background) intentionally keeps its single flat color.
+
+### Changed — breaking
+- **Read/report commands now exit non-zero (13, "degraded") with a machine-readable `warnings[]` instead of silently succeeding while dropping errors.** `vault push`, the `doctor` cache report, `import scan`, `items summarize`, `export`, and `collections export` previously omitted unreadable notes/rows/attachments/PDFs (or a truncated write) and still exited `0`; they now surface the failure and exit `13`. Scripts and agents that keyed on a `0` exit from these commands must treat `13` as "completed with warnings" (inspect `warnings[]`) rather than a hard failure.
+
+### Fixed
+- Swallowed errors are now surfaced across the read, write, sync, and MCP paths (35 static-audit findings over two passes). Writes fail closed: `items update`/`delete` abort on a failed version read instead of masking it behind a later 428 (delete keeps the 404 idempotent no-op); `workflow archive` stops advancing its cursor and exits non-zero on per-resource failures; fulltext sync and `tail` no longer advance the checkpoint past a fetch/persist/delivery failure; a store upsert fails its transaction on an FTS-index error so a committed row is always searchable; and an applied mutation whose journal write fails reports degraded rather than claiming reversibility. MCP argument serialization is fixed too: array flags serialize as repeated `--flag` pairs (facade, mirror, and `workflow_submit`), explicit `false` bools render `--flag=false`, the shell arg parser handles backslash escapes and single quotes, and the `sql` tool always checks `rows.Err()`.
+- Local-mirror writes are now version-monotonic: a strictly-older Zotero version can no longer clobber a newer local row (the FTS rebuild is skipped when the row is retained, keeping the index consistent), and the library-version checkpoint takes `MAX(existing, incoming)` so a slower concurrent `sync`/`tail` cannot regress it. Closes an out-of-order live-read regression, a `tail` cursor regression, and a data-loss vector under concurrent sync; equal/newer and versionless payloads still update, preserving idempotent re-sync.
+- Assorted correctness and concurrency-safety fixes: the `QueryItems` FTS join is scoped by `resource_type` so a same-keyed collection/tag/search row can no longer surface or duplicate an item; a `query:` scope now enumerates the full cohort (a negative limit means unlimited) instead of capping at 50; ORCID sidecar upserts route through a write-serialized path; cache and profile writes use a unique temp file plus atomic rename so a concurrent reader never observes truncated JSON; and the MCP orchestration tree builds under the same lock command execution holds, so `command_search` cannot race `command_run` on package-global output flags.
+- MCP `capabilities` and `analytics` now return their output through the command writer instead of `os.Stdout`, so in-process MCP execution captures the payload (previously empty) and no longer leaks it to the server process stdout.
 
 ## [0.9.0] — 2026-07-15
 ### Added
@@ -174,7 +185,7 @@ First tagged release: the trust-and-automation layer for Zotero.
 - **Onboarding** — `zotio init` guided setup (Zotero detection, local API, key, first sync, health check).
 - Release engineering: goreleaser builds for 6 platforms, cosign-signed checksums, SBOMs, Homebrew tap.
 
-[Unreleased]: https://github.com/OrgMentem/zotio/compare/v0.9.0...HEAD
+[0.10.0]: https://github.com/OrgMentem/zotio/compare/v0.9.0...v0.10.0
 [0.9.0]: https://github.com/OrgMentem/zotio/compare/v0.8.0...v0.9.0
 [0.8.0]: https://github.com/OrgMentem/zotio/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/OrgMentem/zotio/compare/v0.6.0...v0.7.0
