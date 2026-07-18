@@ -81,7 +81,7 @@ def main() -> None:
     doc = {
         "$schema": SCHEMA,
         "name": NAMESPACE,
-        "title": "Zotio",
+        "title": "zotio",
         "description": "Zotero MCP server: preview-first, journaled writes and keyless local reads for AI agents.",
         "websiteUrl": REPO_URL,
         "repository": {"url": REPO_URL, "source": "github"},

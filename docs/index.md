@@ -40,7 +40,7 @@ New here? [Install the CLI](guide/install.md), then [authenticate](guide/authent
 
 ## Missing PDFs?
 
-If your library has items without PDFs, [papio](https://github.com/orgmentem/papio) finds and downloads validated, provenance-tracked PDFs from open access and your own institutional subscriptions through your normal browser, then hands them to zotio for preview-first import.
+If your library has items without PDFs, [*papio*](https://github.com/orgmentem/papio) finds and downloads validated, provenance-tracked PDFs from open access and your own institutional subscriptions through your normal browser, then hands them to zotio for preview-first import.
 
 ## Where to go next
 
