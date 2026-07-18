@@ -131,7 +131,7 @@ large datasets as it has no memory pressure.`,
 			}
 
 			var file *os.File
-			var output io.Writer = cmd.OutOrStdout()
+			output := cmd.OutOrStdout()
 			if outputFile != "" {
 				file, err = openPrivateOutputFile(outputFile, os.O_WRONLY|os.O_CREATE|os.O_TRUNC)
 				if err != nil {

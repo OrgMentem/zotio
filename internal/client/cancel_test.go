@@ -128,7 +128,7 @@ func TestSetContextCancelsWrapperRequest(t *testing.T) {
 func TestSetContextNilPreservesBase(t *testing.T) {
 	c := New(&config.Config{BaseURL: "http://localhost:23119/api/users/0"}, time.Second, 0)
 	base := c.baseCtx()
-	c.SetContext(nil)
+	c.SetContext(nil) //nolint:staticcheck // SA1012: intentionally passing nil to verify a nil ctx is ignored and the base context is preserved.
 	if c.baseCtx() != base {
 		t.Fatal("SetContext(nil) replaced the base context")
 	}
