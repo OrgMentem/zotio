@@ -1,9 +1,9 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
   <title>zotio badge — z inside o, i in the break</title>
-  <desc>An indigo ring (the o) broken at the upper right where a dot (the i) sits in the gap, with a clean geometric z centered inside: zotio in one mark.</desc>
+  <desc>A dark ink ring (the o) broken at the upper right where a gold dot (the i) sits in the gap, with a fixed indigo z centered inside: zotio in one mark.</desc>
   <g id="background"></g>
   <g id="icon">
-    <path d="M342.2 71.1 A204 204 0 1 0 440.9 169.8" fill="none" stroke="#4F46E5" stroke-width="46" stroke-linecap="round"/>
+    <path d="M342.2 71.1 A204 204 0 1 0 440.9 169.8" fill="none" stroke="#1E2A44" stroke-width="46" stroke-linecap="round"/>
     <path fill="#4F46E5" d="M148 156 H364 V210 L240 302 H364 V356 H148 V302 L272 210 H148 Z"/>
   </g>
   <g id="accent">

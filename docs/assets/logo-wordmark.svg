@@ -11,7 +11,7 @@
     }
 
     .logo-ring {
-      stroke: var(--brand);
+      stroke: var(--mark);
       stroke-dasharray: 1150;
       animation: ring-build var(--cycle) var(--ease-out) infinite;
     }

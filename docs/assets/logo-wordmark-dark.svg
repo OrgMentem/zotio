@@ -4,14 +4,14 @@
   <style>
     :root {
       --mark: #FBFCFE;
-      --brand: #4F46E5;
+      --brand: #6366F1;
       --gold: #E6C877;
       --cycle: 10s;
       --ease-out: cubic-bezier(.22, 1, .36, 1);
     }
 
     .logo-ring {
-      stroke: var(--brand);
+      stroke: var(--mark);
       stroke-dasharray: 1150;
       animation: ring-build var(--cycle) var(--ease-out) infinite;
     }
