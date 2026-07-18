@@ -9,7 +9,6 @@ package cli
 
 import (
 	"encoding/json"
-	"os"
 	"sort"
 	"strings"
 
@@ -199,7 +198,7 @@ preconditions (live_local_api, web_api_key, synced_store, better_bibtex) so
 agents can select safe commands and pre-flight requirements without parsing
 --help or guessing from names.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			enc := json.NewEncoder(os.Stdout)
+			enc := json.NewEncoder(cmd.OutOrStdout())
 			if pretty {
 				enc.SetIndent("", "  ")
 			}
