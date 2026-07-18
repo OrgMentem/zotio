@@ -45,7 +45,7 @@
   &middot;
   <a href="https://orgmentem.github.io/zotio/guide/mcp-server/"><strong>MCP server</strong></a>
   &middot;
-  <a href="https://orgmentem.github.io/zotio/guide/agent-skill/"><strong>Agent skill</strong></a>
+  <a href="https://orgmentem.github.io/zotio/"><strong>Documentation</strong></a>
 </p>
 
 <p align="center">
