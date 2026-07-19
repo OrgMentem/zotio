@@ -1,0 +1,7 @@
+#!/bin/sh
+# Committed git hooks — enable once per clone with: make hooks
+# Pre-push budget: <15s. Full tests stay in CI on purpose — a slow hook
+# trains you to --no-verify, which loses the whole layer.
+set -eu
+
+go vet ./...

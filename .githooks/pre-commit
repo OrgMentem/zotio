@@ -1,0 +1,42 @@
+#!/bin/sh
+# Committed git hooks — enable once per clone with: make hooks
+# Layering: pre-commit holds only near-instant checks (<1s). CI is the
+# authority; these exist to kill the push -> red -> fix -> push round-trip.
+set -eu
+
+# --- Identity guard -----------------------------------------------------
+# Commits must be authored AND committed with a GitHub noreply address, so
+# no personal email ever lands in public commit metadata. That class of leak
+# is unscrubbable once pushed (GH Archive records push events verbatim).
+for ident in "$(git var GIT_AUTHOR_IDENT)" "$(git var GIT_COMMITTER_IDENT)"; do
+  case "$ident" in
+    *"@users.noreply.github.com>"*) ;;
+    *)
+      echo "pre-commit: identity is not a GitHub noreply address:" >&2
+      echo "  $ident" >&2
+      echo "fix: git config user.email '<id>+<login>@users.noreply.github.com'" >&2
+      exit 1
+      ;;
+  esac
+done
+
+# --- gofmt on staged Go files -------------------------------------------
+# Checks the worktree version of staged files: close enough for a fast gate,
+# and the CI format job remains the exact authority.
+staged_go=$(git diff --cached --name-only --diff-filter=ACMR -- '*.go')
+if [ -n "$staged_go" ]; then
+  unformatted=$(gofmt -l $staged_go)
+  if [ -n "$unformatted" ]; then
+    echo "pre-commit: gofmt needed:" >&2
+    echo "$unformatted" >&2
+    echo "fix: gofmt -w <files>" >&2
+    exit 1
+  fi
+fi
+
+# --- Secrets in staged content ------------------------------------------
+if command -v betterleaks >/dev/null 2>&1; then
+  betterleaks git . --pre-commit --staged --no-banner --redact
+else
+  echo "pre-commit: betterleaks not installed; skipping (CI still scans)" >&2
+fi

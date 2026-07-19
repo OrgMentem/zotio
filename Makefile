@@ -1,4 +1,4 @@
-.PHONY: build test lint vet audit secrets verify install clean build-mcp install-mcp build-all docs-deps docs-gen docs-build docs-serve demos
+.PHONY: build test lint vet audit secrets verify install clean build-mcp install-mcp build-all docs-deps docs-gen docs-build docs-serve demos hooks
 
 build:
 	go build -o bin/zotio ./cmd/zotio
@@ -24,6 +24,12 @@ secrets:
 
 # One reproducible quality gate shared by humans and CI.
 verify: vet lint test audit secrets
+
+# Enable the committed git hooks (.githooks/) for this clone. One-time setup;
+# pre-commit = identity guard + gofmt + staged secret scan, pre-push = vet.
+# CI remains the authority.
+hooks:
+	git config core.hooksPath .githooks
 
 install:
 	go install ./cmd/zotio

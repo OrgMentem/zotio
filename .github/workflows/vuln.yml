@@ -1,0 +1,23 @@
+# Dependency vulnerability scan. Lives outside ci.yml so it can also run on a
+# weekly schedule: released binaries need CVE signal even when the repo is
+# quiet — a push-only scan goes silent exactly when nobody is looking.
+name: vuln
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+  schedule:
+    - cron: '0 6 * * 1'
+
+permissions:
+  contents: read
+
+jobs:
+  govulncheck:
+    runs-on: ubuntu-latest
+    steps:
+      - name: govulncheck
+        uses: golang/govulncheck-action@032d45514ae346b1db93c04b0c90b841c370344f # v1
+        with:
+          go-version-input: '1.26.x'
