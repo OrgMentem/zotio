@@ -17,12 +17,6 @@
 
 === "Linux"
 
-    **Homebrew** (Linuxbrew) — installs both `zotio` and `zotio-mcp`; `brew upgrade` tracks new releases:
-
-    ```bash
-    brew install orgmentem/tap/zotio
-    ```
-
     **Distro packages** — every [GitHub release](https://github.com/OrgMentem/zotio/releases) ships `.deb`, `.rpm`, and `.apk` for amd64/arm64, each bundling both `zotio` and `zotio-mcp`. Download the file for your arch, then:
 
     ```bash
