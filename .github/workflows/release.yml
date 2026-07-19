@@ -52,6 +52,25 @@ jobs:
           HOMEBREW_TAP_GITHUB_TOKEN: ${{ secrets.HOMEBREW_TAP_GITHUB_TOKEN }}
           SCOOP_BUCKET_GITHUB_TOKEN: ${{ secrets.SCOOP_BUCKET_GITHUB_TOKEN }}
           WINGET_GITHUB_TOKEN: ${{ secrets.WINGET_GITHUB_TOKEN }}
+      # The Homebrew formula was migrated to a cask (Casks/zotio.rb, since
+      # 82189ca). GoReleaser publishes the cask but cannot delete the superseded
+      # Formula/zotio.rb, so `brew install orgmentem/tap/zotio` would keep
+      # resolving the frozen formula and ignore the cask. Remove it once the
+      # cask is published. Idempotent: a no-op after the first cask release.
+      - name: Drop stale Homebrew formula (superseded by cask)
+        env:
+          GH_TOKEN: ${{ secrets.HOMEBREW_TAP_GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          sha="$(gh api repos/OrgMentem/homebrew-tap/contents/Formula/zotio.rb --jq .sha 2>/dev/null || true)"
+          if [ -n "$sha" ]; then
+            gh api -X DELETE repos/OrgMentem/homebrew-tap/contents/Formula/zotio.rb \
+              -f message="zotio: drop formula superseded by cask" \
+              -f sha="$sha"
+            echo "Deleted stale Formula/zotio.rb ($sha)"
+          else
+            echo "No stale formula to remove."
+          fi
 
   publish_registry:
     name: Publish to Official MCP Registry
