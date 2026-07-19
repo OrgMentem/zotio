@@ -227,6 +227,11 @@ func resolveLocal(ctx context.Context, resourceType string, isList bool, path st
 		trashProv.Scoped = true
 		return data, trashProv, nil
 	}
+	// /collections/top is a scoped endpoint, not a collection keyed "top".
+	// Local parity for top-level collection filtering is not implemented.
+	if resourceType == "collections" && strings.Trim(path, "/") == "collections/top" {
+		return nil, DataProvenance{}, fmt.Errorf("unsupported local scope %q: top-level collections are not implemented", path)
+	}
 
 	// Warn only when this generic read carries filters local data can't
 	// reproduce. limit/start are applied below, so they never warrant a warning.
@@ -271,9 +276,13 @@ func resolveLocal(ctx context.Context, resourceType string, isList bool, path st
 		return data, prov, nil
 	}
 
-	// Get by ID — extract the last path segment as the ID
+	// Get by ID — extract and unescape the final path segment as the ID.
 	parts := strings.Split(strings.TrimRight(path, "/"), "/")
-	id := parts[len(parts)-1]
+	encodedID := parts[len(parts)-1]
+	id, err := url.PathUnescape(encodedID)
+	if err != nil {
+		return nil, DataProvenance{}, fmt.Errorf("unescaping local resource ID %q: %w", encodedID, err)
+	}
 
 	item, err := db.Get(resourceType, id)
 	if err != nil {

@@ -343,6 +343,64 @@ func TestResolveReadLocalCollectionSingleItemStillUsesID(t *testing.T) {
 		t.Fatalf("single item = %#v, want COL1 First", got)
 	}
 }
+func TestResolveReadLocalTagGetUnescapesPathSegment(t *testing.T) {
+	flags := seedLocalBaseResourceCollections(t)
+	const tagName = "needs/review"
+
+	db, err := openStoreForRead(context.Background(), "zotio")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	if _, _, err := db.UpsertBatch("tags", []json.RawMessage{
+		json.RawMessage(`{"tag":"needs/review","type":0}`),
+	}); err != nil {
+		_ = db.Close()
+		t.Fatalf("seed tag: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close store: %v", err)
+	}
+
+	path := replacePathParam("/tags/{tagName}", "tagName", tagName)
+	data, _, err := resolveRead(context.Background(), nil, flags, "tags", false, path, nil, nil)
+	if err != nil {
+		t.Fatalf("resolveRead tag get: %v", err)
+	}
+
+	var got struct {
+		Tag string `json:"tag"`
+	}
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatalf("decode tag %q: %v", string(data), err)
+	}
+	if got.Tag != tagName {
+		t.Fatalf("tag = %q, want %q", got.Tag, tagName)
+	}
+}
+
+func TestResolveReadLocalGetRejectsMalformedEscapedPathSegment(t *testing.T) {
+	flags := seedLocalBaseResourceCollections(t)
+
+	_, _, err := resolveRead(context.Background(), nil, flags, "tags", false, "/tags/bad%2", nil, nil)
+	if err == nil {
+		t.Fatal("resolveRead malformed tag path returned nil error")
+	}
+	if !strings.Contains(err.Error(), `unescaping local resource ID "bad%2"`) {
+		t.Fatalf("malformed tag path error = %q, want wrapped unescape error", err)
+	}
+}
+
+func TestResolveReadLocalCollectionsTopReportsUnsupportedScope(t *testing.T) {
+	flags := seedLocalBaseResourceCollections(t)
+
+	data, _, err := resolveRead(context.Background(), nil, flags, "collections", false, "/collections/top", nil, nil)
+	if err == nil {
+		t.Fatalf("resolveRead collections top data = %q, want unsupported-scope error", string(data))
+	}
+	if !strings.Contains(err.Error(), `unsupported local scope "/collections/top"`) {
+		t.Fatalf("collections top error = %q, want explicit unsupported-local-scope error", err)
+	}
+}
 
 var localPaginationCollections = []json.RawMessage{
 	json.RawMessage(`{"key":"C1","version":1,"data":{"key":"C1","name":"First"}}`),
