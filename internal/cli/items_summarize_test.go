@@ -188,7 +188,7 @@ func TestItemsSummarizeMissingStoreGuidesSync(t *testing.T) {
 
 func TestItemsSummarizeStoreOpenFailureDoesNotLookMissing(t *testing.T) {
 	isolateDemoEnv(t, "0")
-	dbPath := defaultDBPath("zotio")
+	dbPath := helpersTestDefaultDBPath(t, "zotio")
 	if err := os.MkdirAll(filepath.Dir(dbPath), 0o700); err != nil {
 		t.Fatalf("mkdir db dir: %v", err)
 	}

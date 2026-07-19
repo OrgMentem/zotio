@@ -33,7 +33,7 @@ func seedLocalQueryPlannerDB(t *testing.T) {
 	t.Setenv("HOME", tmpHome)
 	t.Setenv("ZOTERO_CONFIG", filepath.Join(t.TempDir(), "missing.toml"))
 	t.Setenv("ZOTERO_BASE_URL", "http://127.0.0.1:1/api/users/0") // unused in local mode
-	dbPath := defaultDBPath("zotio")
+	dbPath := helpersTestDefaultDBPath(t, "zotio")
 	if err := os.MkdirAll(filepath.Dir(dbPath), 0o755); err != nil {
 		t.Fatalf("mkdir: %v", err)
 	}
@@ -64,7 +64,7 @@ func childrenParitySeedLocalDB(t *testing.T) *rootFlags {
 	t.Setenv("HOME", tmpHome)
 	t.Setenv("ZOTERO_CONFIG", filepath.Join(t.TempDir(), "missing.toml"))
 	t.Setenv("ZOTERO_BASE_URL", "http://127.0.0.1:1/api/users/0") // unused in local mode
-	dbPath := defaultDBPath("zotio")
+	dbPath := helpersTestDefaultDBPath(t, "zotio")
 	if err := os.MkdirAll(filepath.Dir(dbPath), 0o755); err != nil {
 		t.Fatalf("mkdir: %v", err)
 	}
@@ -270,7 +270,7 @@ func seedLocalBaseResourceCollections(t *testing.T) *rootFlags {
 	tmpHome := t.TempDir()
 	t.Setenv("HOME", tmpHome)
 	t.Setenv("ZOTERO_CONFIG", filepath.Join(t.TempDir(), "missing.toml"))
-	dbPath := defaultDBPath("zotio")
+	dbPath := helpersTestDefaultDBPath(t, "zotio")
 	if err := os.MkdirAll(filepath.Dir(dbPath), 0o755); err != nil {
 		t.Fatalf("mkdir: %v", err)
 	}
@@ -347,7 +347,7 @@ func TestResolveReadLocalTagGetUnescapesPathSegment(t *testing.T) {
 	flags := seedLocalBaseResourceCollections(t)
 	const tagName = "needs/review"
 
-	db, err := store.OpenWithContext(context.Background(), defaultDBPath("zotio"))
+	db, err := store.OpenWithContext(context.Background(), helpersTestDefaultDBPath(t, "zotio"))
 	if err != nil {
 		t.Fatalf("open store: %v", err)
 	}
@@ -415,7 +415,7 @@ func seedLocalPaginationCollections(t *testing.T, rows []json.RawMessage) *rootF
 	t.Setenv("HOME", tmpHome)
 	t.Setenv("ZOTERO_CONFIG", filepath.Join(t.TempDir(), "missing.toml"))
 	t.Setenv("ZOTERO_BASE_URL", "http://127.0.0.1:1/api/users/0") // unused in local mode
-	dbPath := defaultDBPath("zotio")
+	dbPath := helpersTestDefaultDBPath(t, "zotio")
 	if err := os.MkdirAll(filepath.Dir(dbPath), 0o755); err != nil {
 		t.Fatalf("mkdir: %v", err)
 	}
@@ -657,7 +657,7 @@ func seedLocalTrashDB(t *testing.T, trash []json.RawMessage, trashSynced bool) (
 	t.Setenv("HOME", tmpHome)
 	t.Setenv("ZOTERO_CONFIG", filepath.Join(t.TempDir(), "missing.toml"))
 	t.Setenv("ZOTERO_BASE_URL", "http://127.0.0.1:1/api/users/0")
-	dbPath := defaultDBPath("zotio")
+	dbPath := helpersTestDefaultDBPath(t, "zotio")
 	if err := os.MkdirAll(filepath.Dir(dbPath), 0o755); err != nil {
 		t.Fatalf("mkdir: %v", err)
 	}
@@ -813,7 +813,7 @@ func TestItemsTrashLocalSyncedEmptyReturnsArrayWithProvenance(t *testing.T) {
 // out-of-domain start/limit params surface validation errors.
 func TestResolveLocalItemListRejectsInvalidPagination(t *testing.T) {
 	seedLocalQueryPlannerDB(t)
-	db, err := store.OpenWithContext(context.Background(), defaultDBPath("zotio"))
+	db, err := store.OpenWithContext(context.Background(), helpersTestDefaultDBPath(t, "zotio"))
 	if err != nil {
 		t.Fatalf("open store: %v", err)
 	}
@@ -847,7 +847,7 @@ func TestResolveLocalItemListRejectsInvalidPagination(t *testing.T) {
 
 func TestResolveReadLocalCollectionsSyncedEmptyReturnsArray(t *testing.T) {
 	flags := seedLocalPaginationCollections(t, nil)
-	db, err := store.OpenWithContext(context.Background(), defaultDBPath("zotio"))
+	db, err := store.OpenWithContext(context.Background(), helpersTestDefaultDBPath(t, "zotio"))
 	if err != nil {
 		t.Fatalf("open store: %v", err)
 	}
@@ -879,7 +879,7 @@ func TestWriteThroughCacheStoresKeyedDetailResponse(t *testing.T) {
 
 	writeThroughCache(context.Background(), "items", payload)
 
-	db, err := store.OpenReadOnly(defaultDBPath("zotio"))
+	db, err := store.OpenReadOnly(helpersTestDefaultDBPath(t, "zotio"))
 	if err != nil {
 		t.Fatalf("open cached store: %v", err)
 	}

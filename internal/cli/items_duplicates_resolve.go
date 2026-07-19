@@ -127,7 +127,10 @@ func buildDuplicateResolveOps(db localQueryStore, flags *rootFlags, includeDOI, 
 	ops := make([]mutation.Op, 0)
 	plannedDupes := map[string]struct{}{}
 	for _, row := range rows {
-		keys := duplicateResolveRowKeys(row)
+		keys, err := duplicateResolveRowKeys(row)
+		if err != nil {
+			return nil, err
+		}
 		if len(keys) < 2 {
 			continue
 		}
@@ -215,12 +218,14 @@ WHERE resource_type = 'items'
 	return out, nil
 }
 
-func duplicateResolveRowKeys(row map[string]any) []string {
+func duplicateResolveRowKeys(row map[string]any) ([]string, error) {
 	raw := normalizeSQLValue(row["keys"])
 	keys := []string{}
 	switch v := raw.(type) {
 	case string:
-		_ = json.Unmarshal([]byte(v), &keys)
+		if err := json.Unmarshal([]byte(v), &keys); err != nil {
+			return nil, fmt.Errorf("parsing duplicate keys payload %q: %w", v, err)
+		}
 	case []string:
 		keys = append(keys, v...)
 	case []any:
@@ -231,7 +236,7 @@ func duplicateResolveRowKeys(row map[string]any) []string {
 		}
 	}
 	sort.Strings(keys)
-	return keys
+	return keys, nil
 }
 
 func duplicateResolveItemsForKeys(db localQueryStore, keys []string, pdfByParent map[string]bool) ([]duplicateResolveItem, error) {

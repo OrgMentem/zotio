@@ -73,7 +73,10 @@ func buildImportManifestFromDir(cmd *cobra.Command, flags *rootFlags, dir string
 	}
 	for _, path := range paths {
 		res := classifyPDF(cmd.Context(), path, idx, httpClient)
-		abs, _ := filepath.Abs(path)
+		abs, err := filepath.Abs(path)
+		if err != nil {
+			return importManifest{}, fmt.Errorf("resolving absolute path for %q: %w", path, err)
+		}
 		entry := importManifestEntry{
 			Path:           abs,
 			Classification: res.Status,

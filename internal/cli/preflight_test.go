@@ -161,7 +161,7 @@ func TestCapabilityPreflightOverrideRequiresKnownPreconditions(t *testing.T) {
 
 func TestCapabilityPreflightSyncedStoreCommandRunsWithHealthyFixture(t *testing.T) {
 	root, _, _, _ := newPreflightTestRoot(t)
-	if count, err := seedDemoStore(context.Background(), defaultDBPath("zotio")); err != nil {
+	if count, err := seedDemoStore(context.Background(), helpersTestDefaultDBPath(t, "zotio")); err != nil {
 		t.Fatalf("seed healthy store fixture: %v", err)
 	} else if count == 0 {
 		t.Fatal("seed healthy store fixture produced zero items")

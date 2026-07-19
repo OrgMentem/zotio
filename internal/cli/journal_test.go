@@ -67,7 +67,7 @@ func TestJournalListAndShow(t *testing.T) {
 	runA.WorkflowRunID = "workflow-1"
 	runB := journalTestEntry(t, "run-B", "items.move")
 	for _, e := range []mutation.JournalEntry{runA, runB} {
-		if err := mutation.WriteEntry(journalDir(), e); err != nil {
+		if err := mutation.WriteEntry(helpersTestJournalDir(t), e); err != nil {
 			t.Fatalf("seed journal: %v", err)
 		}
 	}
@@ -136,7 +136,7 @@ func TestJournalListFiltersWorkflow(t *testing.T) {
 	other := journalTestEntry(t, "workflow-other", "items.move")
 	other.WorkflowRunID = "workflow-2"
 	for _, entry := range []mutation.JournalEntry{matching, other} {
-		if err := mutation.WriteEntry(journalDir(), entry); err != nil {
+		if err := mutation.WriteEntry(helpersTestJournalDir(t), entry); err != nil {
 			t.Fatalf("seed journal: %v", err)
 		}
 	}
@@ -168,7 +168,7 @@ func TestRecorderWritesAppliedRun(t *testing.T) {
 		t.Fatalf("runMutation: %v", err)
 	}
 
-	entries, err := mutation.ListEntries(journalDir())
+	entries, err := mutation.ListEntries(helpersTestJournalDir(t))
 	if err != nil {
 		t.Fatalf("list: %v", err)
 	}
@@ -183,17 +183,17 @@ func TestRecorderWritesAppliedRun(t *testing.T) {
 	if _, err := runMutation(context.Background(), &rootFlags{maxChanges: -1}, "items.tags.add", ops); err != nil {
 		t.Fatalf("preview runMutation: %v", err)
 	}
-	if entries, _ = mutation.ListEntries(journalDir()); len(entries) != 1 {
+	if entries, _ = mutation.ListEntries(helpersTestJournalDir(t)); len(entries) != 1 {
 		t.Errorf("preview should not record; entries = %d, want 1", len(entries))
 	}
 }
 func TestRecorderJournalFailureDegradesAppliedRun(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	t.Setenv("XDG_DATA_HOME", t.TempDir())
-	if err := os.MkdirAll(filepath.Dir(journalDir()), 0o700); err != nil {
+	if err := os.MkdirAll(filepath.Dir(helpersTestJournalDir(t)), 0o700); err != nil {
 		t.Fatalf("creating journal parent: %v", err)
 	}
-	if err := os.WriteFile(journalDir(), []byte("not a directory"), 0o600); err != nil {
+	if err := os.WriteFile(helpersTestJournalDir(t), []byte("not a directory"), 0o600); err != nil {
 		t.Fatalf("blocking journal directory: %v", err)
 	}
 
@@ -250,7 +250,7 @@ func TestRecorderStampsWorkflowRunID(t *testing.T) {
 		t.Fatalf("record workflow run: %v", err)
 	}
 
-	entries, err := mutation.ListEntries(journalDir())
+	entries, err := mutation.ListEntries(helpersTestJournalDir(t))
 	if err != nil {
 		t.Fatalf("list recorded workflow run: %v", err)
 	}
@@ -268,7 +268,7 @@ func TestJournalUndoPreviewPlan(t *testing.T) {
 			{ID: "b", Key: "K2", Kind: "missing_doi", Status: "applied", Changes: []mutation.Change{{Field: "DOI", Add: "10/x"}}},
 		},
 	}
-	if err := mutation.WriteEntry(journalDir(), entry); err != nil {
+	if err := mutation.WriteEntry(helpersTestJournalDir(t), entry); err != nil {
 		t.Fatalf("seed journal: %v", err)
 	}
 
@@ -307,7 +307,7 @@ func TestJournalUndoRefusesLibraryMismatchAndAllowsMatchingScope(t *testing.T) {
 	activeGroupID = ""
 	personal := journalTestEntry(t, "personal-run", "items.tags.add")
 	personal.Library = "" // pre-fix entries had no library field and are personal.
-	if err := mutation.WriteEntry(journalDir(), personal); err != nil {
+	if err := mutation.WriteEntry(helpersTestJournalDir(t), personal); err != nil {
 		t.Fatalf("seed personal journal: %v", err)
 	}
 
@@ -346,7 +346,7 @@ func TestJournalUndoRefusesLibraryMismatchAndAllowsMatchingScope(t *testing.T) {
 
 	groupEntry := journalTestEntry(t, "group-run", "items.tags.add")
 	groupEntry.Library = "group:12345"
-	if err := mutation.WriteEntry(journalDir(), groupEntry); err != nil {
+	if err := mutation.WriteEntry(helpersTestJournalDir(t), groupEntry); err != nil {
 		t.Fatalf("seed personal dir with group journal entry: %v", err)
 	}
 	personalMismatchCmd := newJournalCmd(&rootFlags{asJSON: true})
@@ -363,7 +363,7 @@ func TestJournalUndoRefusesLibraryMismatchAndAllowsMatchingScope(t *testing.T) {
 	}
 
 	activeGroupID = "12345"
-	if err := mutation.WriteEntry(journalDir(), groupEntry); err != nil {
+	if err := mutation.WriteEntry(helpersTestJournalDir(t), groupEntry); err != nil {
 		t.Fatalf("seed group journal: %v", err)
 	}
 	matchingGroupCmd := newJournalCmd(&rootFlags{asJSON: true})
@@ -399,7 +399,7 @@ func TestJournalUndoAppliesTagReversal(t *testing.T) {
 			{ID: "items.tags.add:K1", Key: "K1", Kind: "tag_add", Status: "applied", Changes: []mutation.Change{{Field: "tags", Add: "ml"}}},
 		},
 	}
-	if err := mutation.WriteEntry(journalDir(), entry); err != nil {
+	if err := mutation.WriteEntry(helpersTestJournalDir(t), entry); err != nil {
 		t.Fatalf("seed journal: %v", err)
 	}
 

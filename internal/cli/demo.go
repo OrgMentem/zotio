@@ -43,9 +43,12 @@ func demoActive() bool {
 // demoDBPath returns the sandbox database path: the same directory as the
 // real store but a distinct demo.db file, so the two never collide. The
 // group-suffix logic in defaultDBPath is irrelevant in demo mode.
-func demoDBPath(name string) string {
-	home, _ := os.UserHomeDir()
-	return filepath.Join(home, ".local", "share", name, "demo.db")
+func demoDBPath(name string) (string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", fmt.Errorf("resolving home directory for demo db: %w", err)
+	}
+	return filepath.Join(home, ".local", "share", name, "demo.db"), nil
 }
 
 // demoFixture is the on-disk shape of the embedded sample library.
@@ -102,7 +105,10 @@ No Zotero desktop and no API key are required.`,
 			// below as a belt-and-suspenders guard.
 			_ = os.Setenv(demoEnvVar, "1")
 
-			dbPath := demoDBPath("zotio")
+			dbPath, err := demoDBPath("zotio")
+			if err != nil {
+				return err
+			}
 			if err := os.MkdirAll(filepath.Dir(dbPath), 0o755); err != nil {
 				return fmt.Errorf("creating sandbox directory: %w", err)
 			}

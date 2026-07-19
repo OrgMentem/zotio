@@ -72,7 +72,7 @@ func seedDuplicateResolveStore(t *testing.T, items []json.RawMessage) {
 	t.Helper()
 	t.Setenv("HOME", t.TempDir())
 	t.Setenv("ZOTERO_CONFIG", filepath.Join(t.TempDir(), "missing.toml"))
-	db, err := store.OpenWithContext(context.Background(), defaultDBPath("zotio"))
+	db, err := store.OpenWithContext(context.Background(), helpersTestDefaultDBPath(t, "zotio"))
 	if err != nil {
 		t.Fatalf("open store: %v", err)
 	}
@@ -213,6 +213,24 @@ func TestItemsDuplicatesResolveNoDuplicatesEmptyPlan(t *testing.T) {
 	if !env.OK || env.Mode != "preview" || env.Plan.Summary.Selected != 0 || env.Plan.Summary.Planned != 0 || len(env.Plan.Operations) != 0 {
 		t.Fatalf("env = %+v, want empty preview plan", env)
 	}
+}
+
+func TestDuplicateResolveRowKeysJSONPayload(t *testing.T) {
+	t.Run("malformed", func(t *testing.T) {
+		if _, err := duplicateResolveRowKeys(map[string]any{"keys": `["K1",`}); err == nil {
+			t.Fatal("duplicateResolveRowKeys() error = nil, want malformed JSON error")
+		}
+	})
+
+	t.Run("sorted", func(t *testing.T) {
+		got, err := duplicateResolveRowKeys(map[string]any{"keys": `["K2","K1"]`})
+		if err != nil {
+			t.Fatalf("duplicateResolveRowKeys() error = %v", err)
+		}
+		if fmt.Sprint(got) != "[K1 K2]" {
+			t.Fatalf("duplicateResolveRowKeys() = %v, want [K1 K2]", got)
+		}
+	})
 }
 
 func duplicateResolvePlanKeys(ops []mutation.Op) []string {

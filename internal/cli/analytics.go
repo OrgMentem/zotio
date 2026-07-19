@@ -34,8 +34,12 @@ Data must be synced first with the sync command.`,
   # Top 10 most frequent values
   zotio analytics --type messages --group-by channel_id --limit 10 --json`,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			var err error
 			if dbPath == "" {
-				dbPath = defaultDBPath("zotio")
+				dbPath, err = defaultDBPath("zotio")
+				if err != nil {
+					return err
+				}
 			}
 
 			db, err := store.OpenWithContext(cmd.Context(), dbPath)

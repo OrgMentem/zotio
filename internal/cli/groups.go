@@ -104,6 +104,10 @@ func newGroupsInspectCmd(flags *rootFlags) *cobra.Command {
 				"ready_for_write": false,
 				"note":            note,
 			}
+			cfg, err := config.Load(flags.configPath)
+			if err != nil {
+				return fmt.Errorf("loading config: %w", err)
+			}
 			for _, g := range groups {
 				if groupFieldString(g, "id") != groupID {
 					continue
@@ -113,7 +117,6 @@ func newGroupsInspectCmd(flags *rootFlags) *cobra.Command {
 				// per-group permission (/keys/current access), not the group's
 				// editing policy, which is near-always non-empty and would
 				// over-claim write for read-only keys and admin-only groups.
-				cfg, _ := config.Load(flags.configPath)
 				canWrite, keyKnown := keyGroupWriteAccess(cmd.Context(), cfg, flags.timeout, groupID)
 				readyForWrite := keyKnown && canWrite
 				switch {

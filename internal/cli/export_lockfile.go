@@ -33,16 +33,16 @@ type exportLockfile struct {
 	Items         []exportLockItem `json:"items"`
 }
 
-func buildExportLockfile(scope, format string, items []json.RawMessage) exportLockfile {
+func buildExportLockfile(scope, format string, items []json.RawMessage) (exportLockfile, error) {
 	lockItems := make([]exportLockItem, 0, len(items))
-	for _, raw := range items {
+	for i, raw := range items {
 		key := exportItemKey(raw)
 		if key == "" {
-			continue
+			return exportLockfile{}, fmt.Errorf("export lockfile: item %d has no key", i)
 		}
 		contentSHA, err := exportItemContentSHA256(raw)
 		if err != nil {
-			continue
+			return exportLockfile{}, fmt.Errorf("export lockfile: hashing item %q: %w", key, err)
 		}
 		lockItems = append(lockItems, exportLockItem{
 			Key:           key,
@@ -73,7 +73,7 @@ func buildExportLockfile(scope, format string, items []json.RawMessage) exportLo
 		Count:         len(lockItems),
 		ContentSHA256: hex.EncodeToString(hash.Sum(nil)),
 		Items:         lockItems,
-	}
+	}, nil
 }
 
 func writeExportLockfile(w io.Writer, lf exportLockfile) error {

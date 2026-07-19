@@ -202,7 +202,10 @@ func (c *Client) GetRecognizedItem(ctx context.Context, sessionID string) (Recog
 	case http.StatusNoContent:
 		return RecognizedItem{}, false, nil
 	default:
-		body, _ := io.ReadAll(io.LimitReader(resp.Body, 8192))
+		body, readErr := io.ReadAll(io.LimitReader(resp.Body, 8192))
+		if readErr != nil {
+			return RecognizedItem{}, false, fmt.Errorf("connector getRecognizedItem: HTTP %d (reading response body: %w)", resp.StatusCode, readErr)
+		}
 		return RecognizedItem{}, false, fmt.Errorf("connector getRecognizedItem: HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
 	}
 }

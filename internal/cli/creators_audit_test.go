@@ -342,7 +342,7 @@ func creatorAuditRequireAlias(t *testing.T, group creatorVariantGroup, name stri
 func creatorAuditSeedCommandStore(t *testing.T, items ...json.RawMessage) string {
 	t.Helper()
 	creatorAuditIsolateEnv(t)
-	dbPath := defaultDBPath("zotio")
+	dbPath := helpersTestDefaultDBPath(t, "zotio")
 	db, err := store.OpenWithContext(context.Background(), dbPath)
 	if err != nil {
 		t.Fatalf("open store: %v", err)

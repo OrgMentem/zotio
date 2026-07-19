@@ -81,7 +81,10 @@ but identical normalized content and never fail --fail-on-drift.`,
 				return err
 			}
 
-			report := buildExportVerifyReport(lockPath, lf, currentItems, addedDetection, addedReason)
+			report, err := buildExportVerifyReport(lockPath, lf, currentItems, addedDetection, addedReason)
+			if err != nil {
+				return err
+			}
 			if err := renderExportVerifyReport(cmd.OutOrStdout(), report, flags); err != nil {
 				return err
 			}
@@ -155,8 +158,11 @@ func fetchSnapshotItemsForVerify(ctx context.Context, c *client.Client, path str
 	}
 }
 
-func buildExportVerifyReport(lockPath string, lf exportLockfile, currentRaw []json.RawMessage, addedDetection, addedReason string) exportVerifyReport {
-	currentLock := buildExportLockfile(lf.Scope, lf.Format, currentRaw)
+func buildExportVerifyReport(lockPath string, lf exportLockfile, currentRaw []json.RawMessage, addedDetection, addedReason string) (exportVerifyReport, error) {
+	currentLock, err := buildExportLockfile(lf.Scope, lf.Format, currentRaw)
+	if err != nil {
+		return exportVerifyReport{}, err
+	}
 	currentByKey := make(map[string]exportLockItem, len(currentLock.Items))
 	for _, item := range currentLock.Items {
 		currentByKey[item.Key] = item
@@ -228,7 +234,7 @@ func buildExportVerifyReport(lockPath string, lf exportLockfile, currentRaw []js
 	}
 
 	sortExportVerifyItems(report.Items)
-	return report
+	return report, nil
 }
 
 func currentTitle(currentItem, lockItem exportLockItem) string {

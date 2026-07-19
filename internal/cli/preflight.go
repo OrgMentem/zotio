@@ -168,7 +168,10 @@ func preconditionRemediation(precondition string) []string {
 }
 
 func checkSyncedStorePrecondition(ctx context.Context, _ *rootFlags, _ *cobra.Command, _ capabilityEntry) (bool, string, error) {
-	db := defaultDBPath("zotio")
+	db, err := defaultDBPath("zotio")
+	if err != nil {
+		return false, fmt.Sprintf("resolving local store path: %v", err), nil
+	}
 	s, err := openStoreForRead(ctx, "zotio")
 	if err != nil {
 		return false, fmt.Sprintf("local store at %s cannot be opened: %v", db, err), nil

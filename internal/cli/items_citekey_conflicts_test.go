@@ -15,7 +15,7 @@ import (
 func seedSyncedBibcheckItems(t *testing.T, items []json.RawMessage) {
 	t.Helper()
 	seedBibcheckItems(t, items)
-	db, err := store.OpenWithContext(context.Background(), defaultDBPath("zotio"))
+	db, err := store.OpenWithContext(context.Background(), helpersTestDefaultDBPath(t, "zotio"))
 	if err != nil {
 		t.Fatalf("open store to save sync state: %v", err)
 	}

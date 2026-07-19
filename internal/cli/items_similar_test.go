@@ -97,7 +97,7 @@ func TestBuildItemSimilarReportLimitAndMinScore(t *testing.T) {
 
 func TestItemsSimilarCommandJSONIsStable(t *testing.T) {
 	isolateItemsSimilarStore(t)
-	db := seedItemsSimilarFixture(t, defaultDBPath("zotio"))
+	db := seedItemsSimilarFixture(t, helpersTestDefaultDBPath(t, "zotio"))
 	if err := db.Close(); err != nil {
 		t.Fatalf("close store: %v", err)
 	}
@@ -123,7 +123,7 @@ func TestItemsSimilarCommandJSONIsStable(t *testing.T) {
 
 func TestItemsSimilarCommandTextOutputExplainsWhy(t *testing.T) {
 	isolateItemsSimilarStore(t)
-	db := seedItemsSimilarFixture(t, defaultDBPath("zotio"))
+	db := seedItemsSimilarFixture(t, helpersTestDefaultDBPath(t, "zotio"))
 	if err := db.Close(); err != nil {
 		t.Fatalf("close store: %v", err)
 	}

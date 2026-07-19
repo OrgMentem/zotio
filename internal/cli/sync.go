@@ -140,7 +140,10 @@ Exit codes & warnings:
 			c.NoCache = true
 
 			if dbPath == "" {
-				dbPath = defaultDBPath("zotio")
+				dbPath, err = defaultDBPath("zotio")
+				if err != nil {
+					return err
+				}
 			}
 
 			db, err := store.OpenWithContext(cmd.Context(), dbPath)

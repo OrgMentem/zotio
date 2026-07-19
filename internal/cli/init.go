@@ -275,7 +275,11 @@ func runInitialSync(cmd *cobra.Command, flags *rootFlags) ([]initSyncResourceRep
 		return nil, err
 	}
 	c.NoCache = true
-	db, err := store.OpenWithContext(cmd.Context(), defaultDBPath("zotio"))
+	dbPath, err := defaultDBPath("zotio")
+	if err != nil {
+		return nil, err
+	}
+	db, err := store.OpenWithContext(cmd.Context(), dbPath)
 	if err != nil {
 		return nil, fmt.Errorf("opening local database: %w", err)
 	}

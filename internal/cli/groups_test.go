@@ -52,12 +52,12 @@ func TestDefaultDBPath_GroupAware(t *testing.T) {
 	defer func() { activeGroupID = saved }()
 
 	activeGroupID = ""
-	if got := defaultDBPath("zotio"); !strings.HasSuffix(got, "data.db") || strings.Contains(got, "data-group") {
+	if got := helpersTestDefaultDBPath(t, "zotio"); !strings.HasSuffix(got, "data.db") || strings.Contains(got, "data-group") {
 		t.Errorf("personal defaultDBPath = %q, want .../data.db", got)
 	}
 
 	activeGroupID = "12345"
-	if got := defaultDBPath("zotio"); !strings.HasSuffix(got, "data-group-12345.db") {
+	if got := helpersTestDefaultDBPath(t, "zotio"); !strings.HasSuffix(got, "data-group-12345.db") {
 		t.Errorf("group defaultDBPath = %q, want .../data-group-12345.db", got)
 	}
 }
@@ -72,12 +72,12 @@ func TestDefaultDBPathUsesDataDirOverride(t *testing.T) {
 	t.Setenv("XDG_DATA_HOME", "")
 
 	activeGroupID = ""
-	if got, want := defaultDBPath("zotio"), filepath.Join(dataDir, "data.db"); got != want {
+	if got, want := helpersTestDefaultDBPath(t, "zotio"), filepath.Join(dataDir, "data.db"); got != want {
 		t.Fatalf("personal defaultDBPath = %q, want %q", got, want)
 	}
 
 	activeGroupID = "12345"
-	if got, want := defaultDBPath("zotio"), filepath.Join(dataDir, "data-group-12345.db"); got != want {
+	if got, want := helpersTestDefaultDBPath(t, "zotio"), filepath.Join(dataDir, "data-group-12345.db"); got != want {
 		t.Fatalf("group defaultDBPath = %q, want %q", got, want)
 	}
 }

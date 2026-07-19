@@ -285,7 +285,7 @@ func runLibraryHealthBaselineCmd(t *testing.T, flags *rootFlags, args ...string)
 
 func upsertBaselineHealthItems(t *testing.T, items ...json.RawMessage) {
 	t.Helper()
-	db, err := store.OpenWithContext(context.Background(), defaultDBPath("zotio"))
+	db, err := store.OpenWithContext(context.Background(), helpersTestDefaultDBPath(t, "zotio"))
 	if err != nil {
 		t.Fatalf("open store: %v", err)
 	}
@@ -326,7 +326,7 @@ func baselineCompleteP1Item() json.RawMessage {
 
 func expectedHealthBaselineIdentities(t *testing.T, preset string) []string {
 	t.Helper()
-	db, err := store.OpenWithContext(context.Background(), defaultDBPath("zotio"))
+	db, err := store.OpenWithContext(context.Background(), helpersTestDefaultDBPath(t, "zotio"))
 	if err != nil {
 		t.Fatalf("open store for expected identities: %v", err)
 	}

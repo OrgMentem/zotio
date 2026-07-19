@@ -27,16 +27,24 @@ var mutationJournalRecorder func(env mutation.Envelope) error
 
 // journalDir is the per-install directory holding the append-only run journal,
 // alongside the synced store.
-func journalDir() string {
+func journalDir() (string, error) {
 	name := "journal"
 	if activeGroupID != "" {
 		name = "journal-group-" + activeGroupID
 	}
-	return filepath.Join(filepath.Dir(defaultDBPath("zotio")), name)
+	dbPath, err := defaultDBPath("zotio")
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(filepath.Dir(dbPath), name), nil
 }
 
-func personalJournalDir() string {
-	return filepath.Join(filepath.Dir(defaultDBPath("zotio")), "journal")
+func personalJournalDir() (string, error) {
+	dbPath, err := defaultDBPath("zotio")
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(filepath.Dir(dbPath), "journal"), nil
 }
 
 func currentJournalLibrary() string {
@@ -76,12 +84,20 @@ func humanJournalLibrary(library string) string {
 }
 
 func readJournalEntryForUndo(runID string) (mutation.JournalEntry, error) {
-	entry, err := mutation.ReadEntry(journalDir(), runID)
+	dir, err := journalDir()
+	if err != nil {
+		return mutation.JournalEntry{}, err
+	}
+	entry, err := mutation.ReadEntry(dir, runID)
 	if err == nil {
 		return normalizeJournalEntry(entry), nil
 	}
 	if activeGroupID != "" {
-		legacyEntry, legacyErr := mutation.ReadEntry(personalJournalDir(), runID)
+		legacyDir, err := personalJournalDir()
+		if err != nil {
+			return mutation.JournalEntry{}, err
+		}
+		legacyEntry, legacyErr := mutation.ReadEntry(legacyDir, runID)
 		if legacyErr == nil {
 			return normalizeJournalEntry(legacyEntry), nil
 		}
@@ -110,7 +126,11 @@ func recordMutationJournal(env mutation.Envelope) error {
 	}
 	entry.WorkflowRunID = activeWorkflowRunID
 	entry.Library = currentJournalLibrary()
-	if err := mutation.WriteEntry(journalDir(), entry); err != nil {
+	dir, err := journalDir()
+	if err != nil {
+		return err
+	}
+	if err := mutation.WriteEntry(dir, entry); err != nil {
 		return err
 	}
 	return nil
@@ -135,7 +155,11 @@ func newJournalListCmd(flags *rootFlags) *cobra.Command {
 		Short:       "List recorded mutation runs, newest first",
 		Annotations: map[string]string{"mcp:read-only": "true"},
 		RunE: func(cmd *cobra.Command, args []string) error {
-			entries, err := mutation.ListEntries(journalDir())
+			dir, err := journalDir()
+			if err != nil {
+				return err
+			}
+			entries, err := mutation.ListEntries(dir)
 			if err != nil {
 				return fmt.Errorf("reading journal: %w", err)
 			}
@@ -187,7 +211,11 @@ func newJournalShowCmd(flags *rootFlags) *cobra.Command {
 		Args:        cobra.ExactArgs(1),
 		Annotations: map[string]string{"mcp:read-only": "true"},
 		RunE: func(cmd *cobra.Command, args []string) error {
-			entry, err := mutation.ReadEntry(journalDir(), args[0])
+			dir, err := journalDir()
+			if err != nil {
+				return err
+			}
+			entry, err := mutation.ReadEntry(dir, args[0])
 			if err != nil {
 				return notFoundErr(err)
 			}

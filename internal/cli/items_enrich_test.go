@@ -639,7 +639,7 @@ func seedEnrichStore(t *testing.T, extra ...string) localQueryStore {
 	t.Helper()
 	t.Setenv("HOME", t.TempDir())
 	t.Setenv("ZOTERO_CONFIG", filepath.Join(t.TempDir(), "missing.toml"))
-	dbPath := defaultDBPath("zotio")
+	dbPath := helpersTestDefaultDBPath(t, "zotio")
 	db, err := store.OpenWithContext(context.Background(), dbPath)
 	if err != nil {
 		t.Fatalf("open store: %v", err)
@@ -678,7 +678,7 @@ func seedEnrichPDFStore(t *testing.T) {
 	t.Helper()
 	t.Setenv("HOME", t.TempDir())
 	t.Setenv("ZOTERO_CONFIG", filepath.Join(t.TempDir(), "missing.toml"))
-	dbPath := defaultDBPath("zotio")
+	dbPath := helpersTestDefaultDBPath(t, "zotio")
 	db, err := store.OpenWithContext(context.Background(), dbPath)
 	if err != nil {
 		t.Fatalf("open store: %v", err)
@@ -765,7 +765,7 @@ func TestItemsEnrichMissingDOICollectionScope(t *testing.T) {
 
 	t.Setenv("HOME", t.TempDir())
 	t.Setenv("ZOTERO_CONFIG", filepath.Join(t.TempDir(), "collection.toml"))
-	dbPath := defaultDBPath("zotio")
+	dbPath := helpersTestDefaultDBPath(t, "zotio")
 	db, err := store.OpenWithContext(context.Background(), dbPath)
 	if err != nil {
 		t.Fatalf("open store: %v", err)
@@ -821,7 +821,7 @@ func TestItemsEnrichMissingDOIKeys(t *testing.T) {
 
 	t.Setenv("HOME", t.TempDir())
 	t.Setenv("ZOTERO_CONFIG", filepath.Join(t.TempDir(), "keys-from.toml"))
-	dbPath := defaultDBPath("zotio")
+	dbPath := helpersTestDefaultDBPath(t, "zotio")
 	db, err := store.OpenWithContext(context.Background(), dbPath)
 	if err != nil {
 		t.Fatalf("open store: %v", err)
@@ -870,7 +870,7 @@ func TestItemsEnrichMissingDOIKeysFromOutsideDefaultLimit(t *testing.T) {
 
 	t.Setenv("HOME", t.TempDir())
 	t.Setenv("ZOTERO_CONFIG", filepath.Join(t.TempDir(), "keys-from-limit.toml"))
-	dbPath := defaultDBPath("zotio")
+	dbPath := helpersTestDefaultDBPath(t, "zotio")
 	db, err := store.OpenWithContext(context.Background(), dbPath)
 	if err != nil {
 		t.Fatalf("open store: %v", err)
@@ -1340,7 +1340,7 @@ func TestItemsEnrichValidateReportsCrossRefTitleDiscrepancy(t *testing.T) {
 
 	t.Setenv("HOME", t.TempDir())
 	t.Setenv("ZOTERO_CONFIG", filepath.Join(t.TempDir(), "validate.toml"))
-	dbPath := defaultDBPath("zotio")
+	dbPath := helpersTestDefaultDBPath(t, "zotio")
 	db, err := store.OpenWithContext(context.Background(), dbPath)
 	if err != nil {
 		t.Fatalf("open store: %v", err)

@@ -18,7 +18,7 @@ func seedItemsRelatedStore(t *testing.T, items []json.RawMessage) {
 	t.Setenv("HOME", t.TempDir())
 	t.Setenv("ZOTERO_CONFIG", filepath.Join(t.TempDir(), "missing.toml"))
 
-	db, err := store.OpenWithContext(context.Background(), defaultDBPath("zotio"))
+	db, err := store.OpenWithContext(context.Background(), helpersTestDefaultDBPath(t, "zotio"))
 	if err != nil {
 		t.Fatalf("open store: %v", err)
 	}

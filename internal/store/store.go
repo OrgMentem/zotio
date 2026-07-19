@@ -43,7 +43,7 @@ type Store struct {
 	// writeMu serializes all DB writes. Read paths bypass the lock and run
 	// concurrently against WAL. Resource-level concurrency in sync.go.tmpl
 	// is 1 (one goroutine per resource via len(resources)-sized work channel)
-	// — read-then-write sequences (e.g., GetSyncCursor → SaveSyncState) are
+	// — read-then-write sequences (e.g., GetSyncState → SaveSyncState) are
 	// race-free by construction within a resource.
 	writeMu sync.Mutex
 	path    string
@@ -1397,16 +1397,6 @@ func (s *Store) SaveSyncCursor(resourceType, cursor string) error {
 	return err
 }
 
-// GetSyncCursor returns the last pagination cursor for a resource type.
-func (s *Store) GetSyncCursor(resourceType string) string {
-	var cursor sql.NullString
-	_ = s.db.QueryRow("SELECT last_cursor FROM sync_state WHERE resource_type = ?", resourceType).Scan(&cursor)
-	if cursor.Valid {
-		return cursor.String
-	}
-	return ""
-}
-
 // ListIDs returns all IDs for a resource type from the generic resources table.
 // Used by dependent sync to iterate parents.
 func (s *Store) ListIDs(resourceType string) ([]string, error) {
@@ -1436,16 +1426,6 @@ func (s *Store) ListIDs(resourceType string) ([]string, error) {
 		return nil, fmt.Errorf("iterating %s IDs: %w", resourceType, err)
 	}
 	return ids, nil
-}
-
-// GetLastSyncedAt returns the last sync timestamp for a resource type.
-func (s *Store) GetLastSyncedAt(resourceType string) string {
-	var ts sql.NullString
-	_ = s.db.QueryRow("SELECT last_synced_at FROM sync_state WHERE resource_type = ?", resourceType).Scan(&ts)
-	if ts.Valid {
-		return ts.String
-	}
-	return ""
 }
 
 // ClearSyncCursors resets all sync state for a full resync.

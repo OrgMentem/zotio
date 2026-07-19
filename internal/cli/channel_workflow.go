@@ -51,7 +51,10 @@ and full resync. After archiving, use 'search' for instant full-text search.`,
 			c.NoCache = true
 
 			if dbPath == "" {
-				dbPath = defaultDBPath("zotio")
+				dbPath, err = defaultDBPath("zotio")
+				if err != nil {
+					return err
+				}
 			}
 			s, err := store.OpenWithContext(cmd.Context(), dbPath)
 			if err != nil {
@@ -257,7 +260,11 @@ func newWorkflowStatusCmd(flags *rootFlags) *cobra.Command {
   zotio workflow status --json`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if dbPath == "" {
-				dbPath = defaultDBPath("zotio")
+				var err error
+				dbPath, err = defaultDBPath("zotio")
+				if err != nil {
+					return err
+				}
 			}
 			s, err := store.OpenWithContext(cmd.Context(), dbPath)
 			if err != nil {

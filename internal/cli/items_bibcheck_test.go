@@ -83,7 +83,7 @@ func TestBibcheckUnsupportedExtensionIsUsageError(t *testing.T) {
 
 func TestBibcheckCommandResolvesStatusesAndFailGate(t *testing.T) {
 	home := bibcheckIsolatedHome(t)
-	db, err := store.OpenWithContext(context.Background(), defaultDBPath("zotio"))
+	db, err := store.OpenWithContext(context.Background(), helpersTestDefaultDBPath(t, "zotio"))
 	if err != nil {
 		t.Fatalf("open store: %v", err)
 	}
@@ -303,7 +303,7 @@ func TestBibcheckSingleFileJSONFieldsSurviveFindingsEnvelope(t *testing.T) {
 
 func seedBibcheckItems(t *testing.T, items []json.RawMessage) {
 	t.Helper()
-	db, err := store.OpenWithContext(context.Background(), defaultDBPath("zotio"))
+	db, err := store.OpenWithContext(context.Background(), helpersTestDefaultDBPath(t, "zotio"))
 	if err != nil {
 		t.Fatalf("open store: %v", err)
 	}

@@ -121,7 +121,10 @@ Scope is one of: library (default), collection:KEY, or tag:NAME.`,
 			if err != nil {
 				return err
 			}
-			lf := buildExportLockfile(scopeLabel, "jsonl", items)
+			lf, err := buildExportLockfile(scopeLabel, "jsonl", items)
+			if err != nil {
+				return err
+			}
 			lockPath := outputFile + ".lock.json"
 			lockFile, err := openPrivateOutputFile(lockPath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC)
 			if err != nil {

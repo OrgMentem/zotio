@@ -175,7 +175,12 @@ func writeExportVerifyTestLockfile(t *testing.T, scope string, items []json.RawM
 	if err != nil {
 		t.Fatalf("create lockfile: %v", err)
 	}
-	if err := writeExportLockfile(file, buildExportLockfile(scope, "jsonl", items)); err != nil {
+	lockfile, err := buildExportLockfile(scope, "jsonl", items)
+	if err != nil {
+		_ = file.Close()
+		t.Fatalf("build lockfile: %v", err)
+	}
+	if err := writeExportLockfile(file, lockfile); err != nil {
 		_ = file.Close()
 		t.Fatalf("write lockfile: %v", err)
 	}

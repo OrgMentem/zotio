@@ -161,8 +161,12 @@ In local mode: searches locally synced data only.`,
 			}
 
 			// Local FTS search
+			var err error
 			if dbPath == "" {
-				dbPath = defaultDBPath("zotio")
+				dbPath, err = defaultDBPath("zotio")
+				if err != nil {
+					return err
+				}
 			}
 
 			db, err := store.OpenWithContext(cmd.Context(), dbPath)

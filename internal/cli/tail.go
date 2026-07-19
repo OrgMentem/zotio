@@ -92,7 +92,10 @@ native streaming instead of polling.`,
 			// Open the local store so each poll resumes from the per-resource
 			// version cursor instead of re-fetching all.
 			if dbPath == "" {
-				dbPath = defaultDBPath("zotio")
+				dbPath, err = defaultDBPath("zotio")
+				if err != nil {
+					return err
+				}
 			}
 			db, err := store.OpenWithContext(cmd.Context(), dbPath)
 			if err != nil {

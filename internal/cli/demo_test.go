@@ -103,7 +103,7 @@ func TestDefaultDBPathRoutesToDemoDBWhenActive(t *testing.T) {
 		t.Run(c.name, func(t *testing.T) {
 			t.Setenv("ZOTIO_DEMO", c.demo)
 			activeGroupID = c.group
-			got := defaultDBPath("zotio")
+			got := helpersTestDefaultDBPath(t, "zotio")
 			base := filepath.Base(got)
 			if c.wantDemo {
 				if base != "demo.db" {
@@ -389,7 +389,7 @@ func TestDemoCommandsReadSeededSandboxEndToEnd(t *testing.T) {
 func TestReadingListLocalParityAgainstNormalSeededStore(t *testing.T) {
 	isolateDemoEnv(t, "0") // normal store, not the sandbox
 
-	dataDB := defaultDBPath("zotio") // demo off + no group => data.db
+	dataDB := helpersTestDefaultDBPath(t, "zotio") // demo off + no group => data.db
 	if filepath.Base(dataDB) != "data.db" {
 		t.Fatalf("precondition: defaultDBPath = %q, want data.db", dataDB)
 	}

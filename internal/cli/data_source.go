@@ -48,7 +48,10 @@ func isNetworkError(err error) bool {
 // openStoreForRead opens the local SQLite store for reading.
 // Returns nil, nil if the database file does not exist (no sync has been run).
 func openStoreForRead(ctx context.Context, cliName string) (*store.Store, error) {
-	dbPath := defaultDBPath(cliName)
+	dbPath, err := defaultDBPath(cliName)
+	if err != nil {
+		return nil, err
+	}
 	if _, err := os.Stat(dbPath); os.IsNotExist(err) {
 		return nil, nil
 	}
@@ -58,14 +61,21 @@ func openStoreForRead(ctx context.Context, cliName string) (*store.Store, error)
 // openStoreForWrite opens the local SQLite store for a path that intentionally
 // updates the local mirror or its sidecar evidence.
 func openStoreForWrite(ctx context.Context, cliName string) (*store.Store, error) {
-	return store.OpenWithContext(ctx, defaultDBPath(cliName))
+	dbPath, err := defaultDBPath(cliName)
+	if err != nil {
+		return nil, err
+	}
+	return store.OpenWithContext(ctx, dbPath)
 }
 
 // openExistingStoreForWrite opens an already-synced local store for an
 // intentional write without creating a mirror for libraries that have not been
 // synced yet.
 func openExistingStoreForWrite(ctx context.Context, cliName string) (*store.Store, error) {
-	dbPath := defaultDBPath(cliName)
+	dbPath, err := defaultDBPath(cliName)
+	if err != nil {
+		return nil, err
+	}
 	if _, err := os.Stat(dbPath); os.IsNotExist(err) {
 		return nil, nil
 	}
@@ -162,7 +172,11 @@ func writeThroughCache(ctx context.Context, resourceType string, data json.RawMe
 	if resourceType == "schema" {
 		return
 	}
-	db, err := store.OpenWithContext(ctx, defaultDBPath("zotio"))
+	dbPath, err := defaultDBPath("zotio")
+	if err != nil {
+		return
+	}
+	db, err := store.OpenWithContext(ctx, dbPath)
 	if err != nil {
 		return
 	}

@@ -515,7 +515,12 @@ func cacheReportDegradedError(report map[string]any) error {
 // because the alternative is no freshness story at all.
 func collectCacheReport(ctx context.Context, staleAfterSpec string) map[string]any {
 	report := map[string]any{}
-	dbPath := defaultDBPath("zotio")
+	dbPath, err := defaultDBPath("zotio")
+	if err != nil {
+		report["status"] = "error"
+		report["error"] = err.Error()
+		return report
+	}
 	report["db_path"] = dbPath
 
 	fi, err := os.Stat(dbPath)

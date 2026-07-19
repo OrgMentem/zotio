@@ -286,7 +286,10 @@ func handleSQL(ctx context.Context, req mcplib.CallToolRequest) (*mcplib.CallToo
 	}
 	defer rows.Close()
 
-	cols, _ := rows.Columns()
+	cols, err := rows.Columns()
+	if err != nil {
+		return mcplib.NewToolResultError(fmt.Sprintf("reading result columns: %v", err)), nil
+	}
 	results := make([]map[string]any, 0)
 	truncated := false
 	for rows.Next() {
@@ -327,7 +330,10 @@ func handleSQL(ctx context.Context, req mcplib.CallToolRequest) (*mcplib.CallToo
 func handleContext(_ context.Context, _ mcplib.CallToolRequest) (*mcplib.CallToolResult, error) {
 	// Single source of truth shared with the zotero://context MCP resource
 	// (see resources.go domainContext).
-	data, _ := json.MarshalIndent(domainContext(), "", "  ")
+	data, err := json.MarshalIndent(domainContext(), "", "  ")
+	if err != nil {
+		return mcplib.NewToolResultError(fmt.Sprintf("encoding context: %v", err)), nil
+	}
 	return mcplib.NewToolResultText(string(data)), nil
 }
 

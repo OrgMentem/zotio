@@ -28,7 +28,7 @@ func seedWatchHealthDefaultStore(t *testing.T, items []json.RawMessage) {
 
 func upsertWatchHealthDefaultStore(t *testing.T, items []json.RawMessage) {
 	t.Helper()
-	db, err := store.OpenWithContext(context.Background(), defaultDBPath("zotio"))
+	db, err := store.OpenWithContext(context.Background(), helpersTestDefaultDBPath(t, "zotio"))
 	if err != nil {
 		t.Fatalf("open store: %v", err)
 	}

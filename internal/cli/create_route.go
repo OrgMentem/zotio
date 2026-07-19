@@ -188,7 +188,12 @@ func refreshItemsFromLocalAPI(ctx context.Context, flags *rootFlags) {
 		return
 	}
 	c.NoCache = true
-	db, err := store.OpenWithContext(ctx, defaultDBPath("zotio"))
+	dbPath, err := defaultDBPath("zotio")
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "warning: store refresh skipped: %v\n", err)
+		return
+	}
+	db, err := store.OpenWithContext(ctx, dbPath)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "warning: store refresh skipped: %v\n", err)
 		return

@@ -140,7 +140,7 @@ func TestItemsWithPDFSetPropagatesReadError(t *testing.T) {
 
 func TestImportScanUnreadablePDFProducesWarning(t *testing.T) {
 	isolateDemoEnv(t, "0")
-	dbPath := defaultDBPath("zotio")
+	dbPath := helpersTestDefaultDBPath(t, "zotio")
 	if err := os.MkdirAll(filepath.Dir(dbPath), 0o700); err != nil {
 		t.Fatalf("mkdir db dir: %v", err)
 	}
@@ -208,7 +208,7 @@ func TestImportScanMissingStoreGuidesSync(t *testing.T) {
 
 func TestImportScanStoreOpenFailureDoesNotLookMissing(t *testing.T) {
 	isolateDemoEnv(t, "0")
-	dbPath := defaultDBPath("zotio")
+	dbPath := helpersTestDefaultDBPath(t, "zotio")
 	if err := os.MkdirAll(filepath.Dir(dbPath), 0o700); err != nil {
 		t.Fatalf("mkdir db dir: %v", err)
 	}

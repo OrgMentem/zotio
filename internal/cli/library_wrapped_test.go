@@ -122,7 +122,7 @@ func TestLibraryWrappedZeroItemYearPrintsMessage(t *testing.T) {
 
 func seedWrappedStore(t *testing.T) {
 	t.Helper()
-	db, err := store.OpenWithContext(context.Background(), defaultDBPath("zotio"))
+	db, err := store.OpenWithContext(context.Background(), helpersTestDefaultDBPath(t, "zotio"))
 	if err != nil {
 		t.Fatalf("open store: %v", err)
 	}

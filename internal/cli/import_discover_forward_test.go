@@ -39,7 +39,7 @@ func seedImportDiscoverForwardStore(t *testing.T, items []importDiscoverForwardS
 	activeGroupID = ""
 	t.Cleanup(func() { activeGroupID = savedGroup })
 
-	dbPath := defaultDBPath("zotio")
+	dbPath := helpersTestDefaultDBPath(t, "zotio")
 	if err := os.MkdirAll(filepath.Dir(dbPath), 0o755); err != nil {
 		t.Fatalf("mkdir store dir: %v", err)
 	}

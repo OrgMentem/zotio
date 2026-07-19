@@ -291,7 +291,7 @@ func TestResolveCollectionNames(t *testing.T) {
 // into the managed collection_names frontmatter key.
 func TestVaultSyncCollectionNames(t *testing.T) {
 	seedVaultStore(t)
-	db, err := store.OpenWithContext(context.Background(), defaultDBPath("zotio"))
+	db, err := store.OpenWithContext(context.Background(), helpersTestDefaultDBPath(t, "zotio"))
 	if err != nil {
 		t.Fatalf("open store: %v", err)
 	}

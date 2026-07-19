@@ -39,6 +39,24 @@ func helpersTestIsolateConfigEnv(t *testing.T) {
 	}
 }
 
+func helpersTestDefaultDBPath(t *testing.T, name string) string {
+	t.Helper()
+	path, err := defaultDBPath(name)
+	if err != nil {
+		t.Fatalf("default database path: %v", err)
+	}
+	return path
+}
+
+func helpersTestJournalDir(t *testing.T) string {
+	t.Helper()
+	dir, err := journalDir()
+	if err != nil {
+		t.Fatalf("journal directory: %v", err)
+	}
+	return dir
+}
+
 func helpersTestWriteCredentialsAPIKey(t *testing.T, key string) {
 	t.Helper()
 	path, err := cliutil.CredentialsFilePath()
