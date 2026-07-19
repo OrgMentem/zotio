@@ -3,7 +3,7 @@
 #
 # Zensical is pre-1.0 (alpha) and reads mkdocs.yml natively. Pin it hard and bump
 # deliberately. uv users: `uv pip install -r docs/requirements.txt`.
-zensical==0.0.50
+zensical==0.0.51
 
 # Fallback engine — same mkdocs.yml also builds with Material for MkDocs.
 # Uncomment to build with `mkdocs build` instead of `zensical build`.
