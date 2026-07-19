@@ -52,6 +52,23 @@ func openStoreForRead(ctx context.Context, cliName string) (*store.Store, error)
 	if _, err := os.Stat(dbPath); os.IsNotExist(err) {
 		return nil, nil
 	}
+	return store.OpenReadOnly(dbPath)
+}
+
+// openStoreForWrite opens the local SQLite store for a path that intentionally
+// updates the local mirror or its sidecar evidence.
+func openStoreForWrite(ctx context.Context, cliName string) (*store.Store, error) {
+	return store.OpenWithContext(ctx, defaultDBPath(cliName))
+}
+
+// openExistingStoreForWrite opens an already-synced local store for an
+// intentional write without creating a mirror for libraries that have not been
+// synced yet.
+func openExistingStoreForWrite(ctx context.Context, cliName string) (*store.Store, error) {
+	dbPath := defaultDBPath(cliName)
+	if _, err := os.Stat(dbPath); os.IsNotExist(err) {
+		return nil, nil
+	}
 	return store.OpenWithContext(ctx, dbPath)
 }
 
@@ -169,14 +186,18 @@ func writeThroughCache(ctx context.Context, resourceType string, data json.RawMe
 					}
 				}
 			}
-			// Single object with an id field (e.g., detail response)
+			// Single-object Zotero detail responses are keyed by "key";
+			// some non-Zotero resources still use "id".
 			if items == nil {
-				if _, ok := envelope["id"]; ok {
-					if _, _, err := db.UpsertBatch(resourceType, []json.RawMessage{data}); err != nil {
-						fmt.Fprintf(os.Stderr, "warning: write-through cache failed for %q: %v\n", resourceType, err)
+				if _, ok := envelope["id"]; !ok {
+					if _, ok := envelope["key"]; !ok {
+						return
 					}
-					return
 				}
+				if _, _, err := db.UpsertBatch(resourceType, []json.RawMessage{data}); err != nil {
+					fmt.Fprintf(os.Stderr, "warning: write-through cache failed for %q: %v\n", resourceType, err)
+				}
+				return
 			}
 		}
 	}
@@ -244,6 +265,9 @@ func resolveLocal(ctx context.Context, resourceType string, isList bool, path st
 	// list-shaped base paths must dump all local rows
 	// even when the generated command passed isList=false.
 	if isLocalListRead(resourceType, isList, path) {
+		if _, _, err := parseLocalPagination(params); err != nil {
+			return nil, DataProvenance{}, err
+		}
 		raw, err := db.List(resourceType, 0) // 0 = no limit, return all synced data
 		if err != nil {
 			return nil, DataProvenance{}, fmt.Errorf("querying local store: %w", err)
@@ -259,7 +283,14 @@ func resolveLocal(ctx context.Context, resourceType string, isList bool, path st
 			items = append(items, r)
 		}
 		if len(items) == 0 {
-			return nil, DataProvenance{}, fmt.Errorf("no local data for %q. Run 'zotio sync' first", resourceType)
+			_, lastSynced, _, err := db.GetSyncState(resourceType)
+			if err != nil {
+				return nil, DataProvenance{}, fmt.Errorf("querying local %q sync state: %w", resourceType, err)
+			}
+			if lastSynced.IsZero() {
+				return nil, DataProvenance{}, fmt.Errorf("no local data for %q. Run 'zotio sync' first", resourceType)
+			}
+			return json.RawMessage("[]"), prov, nil
 		}
 		// apply start
 		// offset then limit so paginated local list reads mirror the live API
@@ -313,6 +344,32 @@ func hasUnreproducibleParams(params map[string]string) bool {
 	return false
 }
 
+// parseLocalPagination validates the shared Zotero list pagination domain.
+// Zero preserves the CLI's unbounded/no-offset semantics.
+func parseLocalPagination(params map[string]string) (limit, start int, err error) {
+	for _, param := range []struct {
+		name string
+		dest *int
+	}{
+		{name: "limit", dest: &limit},
+		{name: "start", dest: &start},
+	} {
+		v := params[param.name]
+		if v == "" {
+			continue
+		}
+		n, parseErr := strconv.Atoi(v)
+		if parseErr != nil {
+			return 0, 0, fmt.Errorf("invalid %s %q: must be an integer", param.name, v)
+		}
+		if n < 0 {
+			return 0, 0, fmt.Errorf("invalid %s %q: must be non-negative", param.name, v)
+		}
+		*param.dest = n
+	}
+	return limit, start, nil
+}
+
 // paginateLocalRows applies the Zotero start offset then limit to a generic
 // local list result so paginated reads mirror the live API. An out-of-range
 // start yields an empty slice (a live page past the end)..
@@ -337,8 +394,10 @@ func resolveLocalTrashList(db *store.Store, resourceType string, isList bool, pa
 		return nil, false, nil
 	}
 
-	limit, _ := strconv.Atoi(params["limit"])
-	start, _ := strconv.Atoi(params["start"])
+	limit, start, err := parseLocalPagination(params)
+	if err != nil {
+		return nil, true, err
+	}
 	rows, err := db.QueryTrash(store.TrashQuery{Limit: limit, Start: start})
 	if err != nil {
 		return nil, true, fmt.Errorf("querying local trash: %w", err)
@@ -387,20 +446,12 @@ func resolveLocalItemList(db *store.Store, path string, params map[string]string
 		Sort:       params["sort"],
 		Direction:  params["direction"],
 	}
-	if v := params["limit"]; v != "" {
-		n, err := strconv.Atoi(v)
-		if err != nil {
-			return nil, true, fmt.Errorf("invalid limit %q: must be an integer", v)
-		}
-		q.Limit = n
+	limit, start, err := parseLocalPagination(params)
+	if err != nil {
+		return nil, true, err
 	}
-	if v := params["start"]; v != "" {
-		n, err := strconv.Atoi(v)
-		if err != nil {
-			return nil, true, fmt.Errorf("invalid start %q: must be an integer", v)
-		}
-		q.Start = n
-	}
+	q.Limit = limit
+	q.Start = start
 	items, err := db.QueryItems(q)
 	if err != nil {
 		return nil, true, fmt.Errorf("local item query: %w", err)

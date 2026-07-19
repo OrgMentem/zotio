@@ -5,7 +5,6 @@ package cli
 import (
 	"encoding/json"
 	"fmt"
-	"net/url"
 	"os"
 
 	"github.com/spf13/cobra"
@@ -28,8 +27,8 @@ func newItemsGetCmd(flags *rootFlags) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			// Encode the item key as a single Zotero path segment.
-			path := replacePathParam("/items/{itemKey}", "itemKey", url.PathEscape(args[0]))
+			// replacePathParam encodes the item key as one Zotero path segment.
+			path := replacePathParam("/items/{itemKey}", "itemKey", args[0])
 			params := map[string]string{}
 			if flagFormat != "" {
 				params["format"] = fmt.Sprintf("%v", flagFormat)

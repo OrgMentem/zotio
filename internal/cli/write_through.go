@@ -35,7 +35,7 @@ func applyMirrorWriteThrough(env *mutation.Envelope) {
 		changesByOp[op.ID] = op.Changes
 	}
 
-	db, err := openStoreForRead(context.Background(), "zotio")
+	db, err := openExistingStoreForWrite(context.Background(), "zotio")
 	if err != nil {
 		// Distinguish a real mirror open failure from db==nil (not synced yet)
 		// and surface the degraded local-cache update.

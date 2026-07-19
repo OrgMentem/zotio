@@ -54,6 +54,17 @@ func newImportFileCmd(flags *rootFlags) *cobra.Command {
 			if len(items) == 0 {
 				return fmt.Errorf("no items found in %s", filePath)
 			}
+			if flags.dryRun {
+				return printJSONFiltered(cmd.OutOrStdout(), map[string]any{
+					"action":   "import",
+					"resource": "items",
+					"file":     filePath,
+					"planned":  len(items),
+					"status":   0,
+					"success":  false,
+					"dry_run":  true,
+				}, flags)
+			}
 
 			c, err := flags.newClient()
 			if err != nil {

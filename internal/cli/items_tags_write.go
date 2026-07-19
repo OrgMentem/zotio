@@ -71,6 +71,32 @@ func runItemsTagsMutation(cmd *cobra.Command, flags *rootFlags, operation, kind 
 	if err != nil {
 		return err
 	}
+	if flags.dryRun {
+		ops := make([]mutation.Op, 0, len(keys))
+		for _, key := range keys {
+			changes := make([]mutation.Change, 0, len(tagNames))
+			for _, tagName := range tagNames {
+				change := mutation.Change{Field: "tags"}
+				if add {
+					change.Add = tagName
+				} else {
+					change.Remove = tagName
+				}
+				changes = append(changes, change)
+			}
+			ops = append(ops, mutation.Op{
+				ID:      operation + ":" + key,
+				Key:     key,
+				Kind:    kind,
+				Changes: changes,
+			})
+		}
+		env, runErr := runMutation(cmd.Context(), flags, operation, ops)
+		if renderErr := renderMutation(cmd, flags, env, itemTagsSingleLine(add, tagNames)); renderErr != nil {
+			return renderErr
+		}
+		return runErr
+	}
 
 	c, err := flags.newWriteClient()
 	if err != nil {

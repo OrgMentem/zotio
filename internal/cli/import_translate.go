@@ -52,7 +52,7 @@ func buildImportItemFromURL(ctx context.Context, httpClient *http.Client, rawURL
 	accessDate := time.Now().Format("2006-01-02")
 
 	if doi := extractDOIFromURL(rawURL); doi != "" {
-		if item, ok := crossRefItemFromDOI(ctx, httpClient, doi); ok {
+		if item, err := crossRefItemFromDOI(ctx, httpClient, doi); err == nil {
 			item["url"] = rawURL
 			item["accessDate"] = accessDate
 			return item, "CrossRef (DOI " + doi + ")"
@@ -88,12 +88,15 @@ func extractDOIFromURL(rawURL string) string {
 
 // crossRefItemFromDOI fetches a work by DOI and maps it to a Zotero item,
 // including a stripped abstract when present. Reuses the import_doi mapper.
-func crossRefItemFromDOI(ctx context.Context, httpClient *http.Client, doi string) (map[string]any, bool) {
+func crossRefItemFromDOI(ctx context.Context, httpClient *http.Client, doi string) (map[string]any, error) {
 	var resp crossRefWorkResponse
 	if err := getJSON(ctx, httpClient, enrichCrossRefBase+"/works/"+url.PathEscape(doi), &resp); err != nil {
-		return nil, false
+		return nil, fmt.Errorf("fetching CrossRef metadata: %w", err)
 	}
-	return crossRefItemFromWork(resp.Message, doi), true
+	if strings.TrimSpace(firstCrossRefString(resp.Message.Title, "")) == "" {
+		return nil, fmt.Errorf("invalid CrossRef response for DOI %q: missing message title", doi)
+	}
+	return crossRefItemFromWork(resp.Message, doi), nil
 }
 
 // fetchPageMeta downloads an HTML page (size-capped) and returns its meta tags

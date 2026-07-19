@@ -208,6 +208,20 @@ func TestExternalFetchHTTPClientInstallsProductionDialGuard(t *testing.T) {
 	}
 }
 
+func TestExternalFetchHTTPClientReusesGuardedTransport(t *testing.T) {
+	baseTransport := &http.Transport{}
+	baseClient := &http.Client{Transport: baseTransport}
+
+	first := externalFetchHTTPClient(baseClient, false)
+	second := externalFetchHTTPClient(baseClient, false)
+	if first.Transport == baseTransport {
+		t.Fatal("external fetch client mutated the base transport")
+	}
+	if first.Transport != second.Transport {
+		t.Fatal("external fetch clients did not reuse their guarded transport")
+	}
+}
+
 func TestDeliverWebhookRejectsPrivateLiteralTarget(t *testing.T) {
 	err := deliverWebhook(context.Background(), "http://127.0.0.1:1/hook", []byte(`{"ok":true}`), false)
 	if err == nil {

@@ -95,3 +95,55 @@ func TestReplacePathParamEscapesPathMetacharacters(t *testing.T) {
 		})
 	}
 }
+
+func TestItemsGetAndFileEscapePathSegmentsOnce(t *testing.T) {
+	var requests []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests = append(requests, r.RequestURI)
+		switch r.RequestURI {
+		case "/users/0/items/A%2FB":
+			_, _ = w.Write([]byte(`{"key":"A/B"}`))
+		case "/users/0/items/PARENT%2FKEY/file/view/url":
+			http.NotFound(w, r)
+		case "/users/0/items/PARENT%2FKEY/children":
+			_, _ = w.Write([]byte(`[{"key":"ATTACH/KEY","itemType":"attachment","contentType":"application/pdf"}]`))
+		case "/users/0/items/ATTACH%2FKEY/file/view/url":
+			_, _ = w.Write([]byte(`file:///tmp/attachment.pdf`))
+		default:
+			http.Error(w, "unexpected request", http.StatusNotFound)
+		}
+	}))
+	t.Cleanup(srv.Close)
+	t.Setenv("ZOTERO_BASE_URL", srv.URL+"/users/0")
+	t.Setenv("ZOTERO_CONFIG", filepath.Join(t.TempDir(), "missing.toml"))
+
+	get := newItemsGetCmd(&rootFlags{asJSON: true, dataSource: "live", noCache: true})
+	get.SilenceErrors, get.SilenceUsage = true, true
+	get.SetOut(&bytes.Buffer{})
+	get.SetArgs([]string{"A/B"})
+	if err := get.Execute(); err != nil {
+		t.Fatalf("items get: %v", err)
+	}
+
+	c, err := (&rootFlags{}).newClient()
+	if err != nil {
+		t.Fatalf("new client: %v", err)
+	}
+	attachmentKey, fileURL, err := resolveAttachmentFileURL(c, "PARENT/KEY")
+	if err != nil {
+		t.Fatalf("resolve attachment file URL: %v", err)
+	}
+	if attachmentKey != "ATTACH/KEY" || fileURL != "file:///tmp/attachment.pdf" {
+		t.Fatalf("attachment = (%q, %q), want (ATTACH/KEY, file:///tmp/attachment.pdf)", attachmentKey, fileURL)
+	}
+
+	want := []string{
+		"/users/0/items/A%2FB",
+		"/users/0/items/PARENT%2FKEY/file/view/url",
+		"/users/0/items/PARENT%2FKEY/children",
+		"/users/0/items/ATTACH%2FKEY/file/view/url",
+	}
+	if !reflect.DeepEqual(requests, want) {
+		t.Fatalf("request paths = %#v, want %#v", requests, want)
+	}
+}

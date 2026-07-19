@@ -347,7 +347,7 @@ func TestResolveReadLocalTagGetUnescapesPathSegment(t *testing.T) {
 	flags := seedLocalBaseResourceCollections(t)
 	const tagName = "needs/review"
 
-	db, err := openStoreForRead(context.Background(), "zotio")
+	db, err := store.OpenWithContext(context.Background(), defaultDBPath("zotio"))
 	if err != nil {
 		t.Fatalf("open store: %v", err)
 	}
@@ -809,9 +809,9 @@ func TestItemsTrashLocalSyncedEmptyReturnsArrayWithProvenance(t *testing.T) {
 	}
 }
 
-// TestResolveLocalItemListRejectsNonNumericPagination asserts malformed start/limit
-// query params surface a validation error instead of being silently clamped to 0.
-func TestResolveLocalItemListRejectsNonNumericPagination(t *testing.T) {
+// TestResolveLocalItemListRejectsInvalidPagination asserts malformed and
+// out-of-domain start/limit params surface validation errors.
+func TestResolveLocalItemListRejectsInvalidPagination(t *testing.T) {
 	seedLocalQueryPlannerDB(t)
 	db, err := store.OpenWithContext(context.Background(), defaultDBPath("zotio"))
 	if err != nil {
@@ -826,6 +826,8 @@ func TestResolveLocalItemListRejectsNonNumericPagination(t *testing.T) {
 	}{
 		{"non-numeric start", map[string]string{"start": "abc"}, "invalid start"},
 		{"non-numeric limit", map[string]string{"limit": "xyz"}, "invalid limit"},
+		{"negative start", map[string]string{"start": "-1"}, `invalid start "-1": must be non-negative`},
+		{"negative limit", map[string]string{"limit": "-1"}, `invalid limit "-1": must be non-negative`},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -840,5 +842,53 @@ func TestResolveLocalItemListRejectsNonNumericPagination(t *testing.T) {
 				t.Fatalf("err = %q, want it to contain %q", err.Error(), tc.want)
 			}
 		})
+	}
+}
+
+func TestResolveReadLocalCollectionsSyncedEmptyReturnsArray(t *testing.T) {
+	flags := seedLocalPaginationCollections(t, nil)
+	db, err := store.OpenWithContext(context.Background(), defaultDBPath("zotio"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	if err := db.SaveSyncState("collections", "", 0); err != nil {
+		_ = db.Close()
+		t.Fatalf("save completed empty sync state: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close store: %v", err)
+	}
+
+	data, prov, err := resolveRead(context.Background(), nil, flags, "collections", false, "/collections", nil, nil)
+	if err != nil {
+		t.Fatalf("resolveRead synced-empty collections: %v", err)
+	}
+	if string(data) != "[]" {
+		t.Fatalf("synced-empty collections data = %q, want []", string(data))
+	}
+	if prov.Source != "local" || prov.ResourceType != "collections" || prov.SyncedAt == nil {
+		t.Fatalf("synced-empty provenance = %+v, want synchronized local collections", prov)
+	}
+}
+
+func TestWriteThroughCacheStoresKeyedDetailResponse(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("ZOTERO_CONFIG", filepath.Join(t.TempDir(), "missing.toml"))
+	const key = "DETAIL1"
+	payload := json.RawMessage(`{"key":"DETAIL1","version":1,"data":{"key":"DETAIL1","itemType":"book","title":"Cached detail"}}`)
+
+	writeThroughCache(context.Background(), "items", payload)
+
+	db, err := store.OpenReadOnly(defaultDBPath("zotio"))
+	if err != nil {
+		t.Fatalf("open cached store: %v", err)
+	}
+	defer db.Close()
+	got, err := db.Get("items", key)
+	if err != nil {
+		t.Fatalf("read cached detail: %v", err)
+	}
+	if string(got) != string(payload) {
+		t.Fatalf("cached detail = %q, want %q", string(got), string(payload))
 	}
 }

@@ -100,6 +100,32 @@ func TestBuildImportItemFromURL_DOIInURL(t *testing.T) {
 	}
 }
 
+func TestBuildImportItemFromURL_EmptyCrossRefFallsBack(t *testing.T) {
+	crsrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"message":{}}`))
+	}))
+	defer crsrv.Close()
+	withBase(t, &enrichCrossRefBase, crsrv.URL)
+
+	pagesrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		_, _ = w.Write([]byte(citationHTML))
+	}))
+	defer pagesrv.Close()
+
+	rawURL := pagesrv.URL + "/doi/10.1234/abc"
+	if _, err := crossRefItemFromDOI(context.Background(), http.DefaultClient, "10.1234/abc"); err == nil || err.Error() != `invalid CrossRef response for DOI "10.1234/abc": missing message title` {
+		t.Fatalf("crossRefItemFromDOI error = %v, want missing-title error", err)
+	}
+	item, source := buildImportItemFromURL(context.Background(), http.DefaultClient, rawURL)
+	if source != "embedded metadata" {
+		t.Fatalf("source = %q, want embedded metadata", source)
+	}
+	if item["title"] != "Attention Is All You Need" {
+		t.Errorf("title = %v, want embedded metadata title", item["title"])
+	}
+}
+
 func TestBuildImportItemFromURL_PrivateHostFallsBack(t *testing.T) {
 	pagesrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")

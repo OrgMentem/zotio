@@ -403,6 +403,37 @@ func TestReadingListLocalParityAgainstNormalSeededStore(t *testing.T) {
 	assertToReadQueue(t, runReadingListLocal(t))
 }
 
+func TestSeedDemoStoreReturnsSyncStatePersistenceError(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "demo.db")
+	if _, err := seedDemoStore(context.Background(), dbPath); err != nil {
+		t.Fatalf("initial seedDemoStore: %v", err)
+	}
+	db, err := store.OpenWithContext(context.Background(), dbPath)
+	if err != nil {
+		t.Fatalf("open seeded store: %v", err)
+	}
+	if _, err := db.DB().Exec(`
+CREATE TRIGGER reject_sync_state
+BEFORE INSERT ON sync_state
+BEGIN
+	SELECT RAISE(ABORT, 'sync state unavailable');
+END`); err != nil {
+		_ = db.Close()
+		t.Fatalf("create sync state failure trigger: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close seeded store: %v", err)
+	}
+
+	_, err = seedDemoStore(context.Background(), dbPath)
+	if err == nil {
+		t.Fatal("seedDemoStore succeeded despite sync-state persistence failure")
+	}
+	if !strings.Contains(err.Error(), "recording collections sync state") || !strings.Contains(err.Error(), "sync state unavailable") {
+		t.Errorf("seedDemoStore error = %v, want wrapped sync-state persistence failure", err)
+	}
+}
+
 // --- shared helpers ---
 
 func seedFixtureStore(t *testing.T) localQueryStore {

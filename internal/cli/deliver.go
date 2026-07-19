@@ -13,6 +13,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -23,7 +24,10 @@ type DeliverSink struct {
 	Target string
 }
 
-var allowPrivateOutboundForTests bool
+var (
+	allowPrivateOutboundForTests bool
+	guardedExternalTransports    sync.Map // map[*http.Transport]*http.Transport
+)
 
 // ParseDeliverSink parses a --deliver value. Supported schemes:
 //
@@ -196,16 +200,23 @@ func externalFetchHTTPClient(base *http.Client, requireHTTPS bool) *http.Client 
 	if effectiveTransport == nil {
 		effectiveTransport = http.DefaultTransport
 	}
-	transport, ok := effectiveTransport.(*http.Transport)
-	if ok {
-		transport = transport.Clone()
-	}
-	if ok {
-		transport.Proxy = nil
-		transport.DialContext = publicDialContext
-		client.Transport = transport
+	if transport, ok := effectiveTransport.(*http.Transport); ok {
+		client.Transport = guardedExternalTransport(transport)
 	}
 	return client
+}
+
+func guardedExternalTransport(base *http.Transport) *http.Transport {
+	if cached, ok := guardedExternalTransports.Load(base); ok {
+		return cached.(*http.Transport)
+	}
+	transport := base.Clone()
+	// A proxy would resolve the destination outside this process and bypass the
+	// destination-address guard, so external fetches always connect directly.
+	transport.Proxy = nil
+	transport.DialContext = publicDialContext
+	actual, _ := guardedExternalTransports.LoadOrStore(base, transport)
+	return actual.(*http.Transport)
 }
 
 func sameOriginExternalFetchHTTPClient(base *http.Client, requireHTTPS bool) *http.Client {

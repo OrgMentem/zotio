@@ -22,6 +22,7 @@ type itemMoveTestServer struct {
 	collections  map[string][]string
 	patchBodies  map[string]map[string]any
 	patchHeaders map[string]string
+	getCounts    map[string]int
 	patchCounts  map[string]int
 }
 
@@ -32,6 +33,7 @@ func newItemMoveTestServer(t *testing.T, versions map[string]string, collections
 		collections:  collections,
 		patchBodies:  map[string]map[string]any{},
 		patchHeaders: map[string]string{},
+		getCounts:    map[string]int{},
 		patchCounts:  map[string]int{},
 	}
 	ts.server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -42,6 +44,7 @@ func newItemMoveTestServer(t *testing.T, versions map[string]string, collections
 			}
 			switch r.Method {
 			case http.MethodGet:
+				ts.getCounts[key]++
 				version := ts.versions[key]
 				w.Header().Set("Last-Modified-Version", version)
 				_, _ = fmt.Fprintf(w, `{"key":%q,"version":%s,"data":{"collections":%s}}`, key, version, mustJSON(t, ts.collections[key]))
@@ -212,6 +215,20 @@ func TestItemsMovePreviewWritesNothing(t *testing.T) {
 	}
 	if srv.patchCounts["K1"] != 0 {
 		t.Fatalf("PATCH count = %d, want 0", srv.patchCounts["K1"])
+	}
+}
+
+func TestItemsMoveDryRunAvoidsVersionFetch(t *testing.T) {
+	srv := newItemMoveTestServer(t, map[string]string{"K1": "42"}, map[string][]string{
+		"K1": {"SOURCE"},
+	})
+
+	env := mustRunItemsMoveTestCmd(t, srv, &rootFlags{asJSON: true, dryRun: true, maxChanges: -1}, "--to", "TARGET", "K1")
+	if !env.OK || env.Mode != "preview" || env.PreviewReason != "dry_run" || env.Result != nil || env.Plan.Summary.Planned != 1 {
+		t.Fatalf("env = %+v, want dry-run preview with one planned change", env)
+	}
+	if srv.getCounts["K1"] != 0 || srv.patchCounts["K1"] != 0 {
+		t.Fatalf("requests: GET=%d PATCH=%d, want none", srv.getCounts["K1"], srv.patchCounts["K1"])
 	}
 }
 

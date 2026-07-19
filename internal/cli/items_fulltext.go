@@ -104,36 +104,14 @@ func newItemsFulltextCmd(flags *rootFlags) *cobra.Command {
 
 // localPDFFulltext resolves an item's PDF full text from the local store.
 // It first treats itemKey as an attachment key directly; failing that, it
-// finds the item's PDF attachment among synced attachments and looks up its
-// stored full text. Returns false when nothing is available locally.
+// queries only the item's PDF children for stored full text. Returns false when
+// nothing is available locally.
 func localPDFFulltext(db *store.Store, itemKey string) (json.RawMessage, bool) {
 	if ft, ok, _ := db.Fulltext(itemKey); ok {
 		return ft, true
 	}
-	attachments, err := db.ItemsByType("attachment", 0)
-	if err != nil {
-		return nil, false
-	}
-	for _, raw := range attachments {
-		var obj map[string]any
-		if json.Unmarshal(raw, &obj) != nil {
-			continue
-		}
-		if jsonStringFieldFromMap(obj, "parentItem") != itemKey {
-			continue
-		}
-		if jsonStringFieldFromMap(obj, "contentType") != "application/pdf" {
-			continue
-		}
-		key := jsonStringFieldFromMap(obj, "key")
-		if key == "" {
-			continue
-		}
-		if ft, ok, _ := db.Fulltext(key); ok {
-			return ft, true
-		}
-	}
-	return nil, false
+	ft, ok, _ := fulltextForPDFAttachment(db, itemKey)
+	return ft, ok
 }
 
 func findPDFAttachmentKey(data json.RawMessage) (string, error) {

@@ -17,6 +17,11 @@ import (
 // Starts at a floor rate, ramps up after consecutive successes, halves on 429
 // and records a ceiling. Per-session only — not persisted. Methods are safe
 // to call on a nil receiver.
+type adaptiveLimiterWaiter struct {
+	at   time.Time
+	wake chan struct{}
+}
+
 type AdaptiveLimiter struct {
 	mu          sync.Mutex
 	rate        float64
@@ -25,6 +30,7 @@ type AdaptiveLimiter struct {
 	successes   int
 	rampAfter   int
 	lastRequest time.Time // zero-value: first Wait() returns immediately
+	waiters     []*adaptiveLimiterWaiter
 }
 
 // NewAdaptiveLimiter returns a limiter starting at ratePerSec, or nil when
@@ -59,22 +65,84 @@ func (l *AdaptiveLimiter) WaitContext(ctx context.Context) {
 		return
 	}
 	// Reserve the next send slot while holding the lock, then sleep outside the
-	// lock. Reserving the slot under the lock serializes callers onto distinct
-	// wake times.
+	// lock. Each reservation remains cancellable: cancelling a waiter compacts
+	// later reservations and wakes them to recalculate their deadline.
 	l.mu.Lock()
 	delay := time.Duration(float64(time.Second) / l.rate)
-	next := l.lastRequest.Add(delay)
+	last := l.lastRequest
+	if n := len(l.waiters); n > 0 && l.waiters[n-1].at.After(last) {
+		last = l.waiters[n-1].at
+	}
+	next := last.Add(delay)
 	if now := time.Now(); next.Before(now) {
 		next = now
 	}
-	l.lastRequest = next
+	waiter := &adaptiveLimiterWaiter{at: next, wake: make(chan struct{}, 1)}
+	l.waiters = append(l.waiters, waiter)
 	l.mu.Unlock()
-	if d := time.Until(next); d > 0 {
-		timer := time.NewTimer(d)
-		defer timer.Stop()
+
+	for {
+		if d := time.Until(waiter.at); d > 0 {
+			timer := time.NewTimer(d)
+			select {
+			case <-timer.C:
+			case <-waiter.wake:
+				if !timer.Stop() {
+					select {
+					case <-timer.C:
+					default:
+					}
+				}
+				continue
+			case <-ctx.Done():
+				if !timer.Stop() {
+					select {
+					case <-timer.C:
+					default:
+					}
+				}
+				l.mu.Lock()
+				l.refundWaiter(waiter, delay)
+				l.mu.Unlock()
+				return
+			}
+		}
+
+		l.mu.Lock()
+		if ctx.Err() != nil {
+			l.refundWaiter(waiter, delay)
+			l.mu.Unlock()
+			return
+		}
+		l.removeWaiter(waiter)
+		if waiter.at.After(l.lastRequest) {
+			l.lastRequest = waiter.at
+		}
+		l.mu.Unlock()
+		return
+	}
+}
+
+func (l *AdaptiveLimiter) removeWaiter(waiter *adaptiveLimiterWaiter) int {
+	for i, queued := range l.waiters {
+		if queued == waiter {
+			l.waiters = append(l.waiters[:i], l.waiters[i+1:]...)
+			return i
+		}
+	}
+	return -1
+}
+
+func (l *AdaptiveLimiter) refundWaiter(waiter *adaptiveLimiterWaiter, delay time.Duration) {
+	index := l.removeWaiter(waiter)
+	if index < 0 {
+		return
+	}
+	for _, queued := range l.waiters[index:] {
+		queued.at = queued.at.Add(-delay)
 		select {
-		case <-timer.C:
-		case <-ctx.Done():
+		case queued.wake <- struct{}{}:
+		default:
 		}
 	}
 }

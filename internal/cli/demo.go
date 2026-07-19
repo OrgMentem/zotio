@@ -178,13 +178,17 @@ func seedDemoStore(ctx context.Context, dbPath string) (int, error) {
 		if _, _, err := db.UpsertBatch("collections", fx.Collections); err != nil {
 			return 0, fmt.Errorf("seeding collections: %w", err)
 		}
-		_ = db.SaveSyncState("collections", "", len(fx.Collections))
+		if err := db.SaveSyncState("collections", "", len(fx.Collections)); err != nil {
+			return 0, fmt.Errorf("recording collections sync state: %w", err)
+		}
 	}
 	stored, _, err := db.UpsertBatch("items", fx.Items)
 	if err != nil {
 		return 0, fmt.Errorf("seeding items: %w", err)
 	}
-	_ = db.SaveSyncState("items", "", stored)
+	if err := db.SaveSyncState("items", "", stored); err != nil {
+		return 0, fmt.Errorf("recording items sync state: %w", err)
+	}
 
 	return topLevelItemCount(localQueryStore{db})
 }

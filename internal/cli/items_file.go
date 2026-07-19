@@ -79,8 +79,8 @@ func resolveAttachmentFileURL(c *client.Client, itemKey string) (string, string,
 		return itemKey, fileURL, nil
 	}
 	// Otherwise resolve the item's PDF attachment among its children.
-	// Encode the user-supplied key as one Zotero path segment.
-	childrenPath := replacePathParam("/items/{itemKey}/children", "itemKey", url.PathEscape(itemKey))
+	// replacePathParam encodes the user-supplied key as one Zotero path segment.
+	childrenPath := replacePathParam("/items/{itemKey}/children", "itemKey", itemKey)
 	children, err := c.Get(childrenPath, nil)
 	if err != nil {
 		return "", "", err
@@ -100,8 +100,8 @@ func resolveAttachmentFileURL(c *client.Client, itemKey string) (string, string,
 // endpoint returns the file:// URL as plain text. A request error (e.g. the key
 // is a regular item with no file) reports ok=false so the caller can fall back.
 func fetchAttachmentFileURL(c *client.Client, key string) (string, bool) {
-	// Encode the attachment key as one Zotero path segment.
-	path := replacePathParam("/items/{key}/file/view/url", "key", url.PathEscape(key))
+	// replacePathParam encodes the attachment key as one Zotero path segment.
+	path := replacePathParam("/items/{key}/file/view/url", "key", key)
 	data, err := c.Get(path, nil)
 	if err != nil {
 		return "", false

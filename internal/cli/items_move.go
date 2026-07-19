@@ -49,6 +49,29 @@ func runItemsMoveMutation(cmd *cobra.Command, flags *rootFlags, fromCol, toCol, 
 	if err != nil {
 		return err
 	}
+	if flags.dryRun {
+		ops := make([]mutation.Op, 0, len(keys))
+		for _, key := range keys {
+			changes := make([]mutation.Change, 0, 2)
+			if fromCol != "" {
+				changes = append(changes, mutation.Change{Field: "collections", Remove: fromCol})
+			}
+			if toCol != "" {
+				changes = append(changes, mutation.Change{Field: "collections", Add: toCol})
+			}
+			ops = append(ops, mutation.Op{
+				ID:      "items.move:" + key,
+				Key:     key,
+				Kind:    itemCollectionMutationKind(fromCol, toCol),
+				Changes: changes,
+			})
+		}
+		env, runErr := runMutation(cmd.Context(), flags, "items.move", ops)
+		if renderErr := renderMutation(cmd, flags, env, itemMoveSingleLine(fromCol, toCol)); renderErr != nil {
+			return renderErr
+		}
+		return runErr
+	}
 
 	// Plan all selected item collection changes before apply.
 	c, err := flags.newWriteClient()

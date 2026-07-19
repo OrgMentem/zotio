@@ -464,12 +464,18 @@ func archiveStatus() map[string]any {
 		for rows.Next() {
 			var rt string
 			var n int
-			if serr := rows.Scan(&rt, &n); serr == nil {
-				counts[rt] = n
+			if err := rows.Scan(&rt, &n); err != nil {
+				qerr = fmt.Errorf("scanning resource count: %w", err)
+				break
 			}
+			counts[rt] = n
 		}
-		qerr = rows.Err()
-		rows.Close()
+		if err := rows.Err(); err != nil && qerr == nil {
+			qerr = fmt.Errorf("iterating resource counts: %w", err)
+		}
+		if err := rows.Close(); err != nil && qerr == nil {
+			qerr = fmt.Errorf("closing resource counts: %w", err)
+		}
 	}
 
 	resources := map[string]any{}
@@ -494,7 +500,7 @@ func archiveStatus() map[string]any {
 	schemaVer, schemaErr := db.SchemaVersion()
 	status := map[string]any{
 		"db_path":        dbPath(),
-		"synced":         len(counts) > 0,
+		"synced":         qerr == nil && len(counts) > 0,
 		"schema_version": schemaVer,
 		"resources":      resources,
 	}

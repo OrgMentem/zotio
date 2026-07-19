@@ -315,3 +315,38 @@ func testConfigFile(t *testing.T, baseURL string) string {
 	}
 	return path
 }
+
+func TestNewWriteClientDryRunSkipsHybridRouteResolution(t *testing.T) {
+	oldAllowPrivateOutbound := allowPrivateOutboundForTests
+	allowPrivateOutboundForTests = true
+	t.Cleanup(func() { allowPrivateOutboundForTests = oldAllowPrivateOutbound })
+
+	var keyMetadataRequests int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		keyMetadataRequests++
+		http.Error(w, "dry-run must not resolve the write route", http.StatusInternalServerError)
+	}))
+	defer srv.Close()
+	oldBase := zoteroWebAPIBase
+	zoteroWebAPIBase = srv.URL
+	t.Cleanup(func() { zoteroWebAPIBase = oldBase })
+
+	configPath := filepath.Join(t.TempDir(), "config.toml")
+	if err := os.WriteFile(configPath, []byte("base_url = \"http://localhost:23119/api/users/0\"\napi_key = \"k\"\n"), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	flags := rootFlags{configPath: configPath, dryRun: true, timeout: time.Second, ctx: context.Background()}
+	c, err := flags.newWriteClient()
+	if err != nil {
+		t.Fatalf("new dry-run write client: %v", err)
+	}
+	if c.ResolveWriteBase != nil {
+		t.Fatal("dry-run write client retained a lazy write-route resolver")
+	}
+	if _, _, err := c.Post("/items", map[string]string{"itemType": "book"}); err != nil {
+		t.Fatalf("dry-run post: %v", err)
+	}
+	if keyMetadataRequests != 0 {
+		t.Fatalf("key metadata requests = %d, want 0 during dry-run", keyMetadataRequests)
+	}
+}

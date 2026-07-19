@@ -151,6 +151,15 @@ func runCreatorsAudit(ctx context.Context, flags *rootFlags, scopeExpr string, w
 	if rawDB == nil {
 		return creatorsAuditReport{}, false, nil
 	}
+	if withORCID {
+		if err := rawDB.Close(); err != nil {
+			return creatorsAuditReport{}, false, fmt.Errorf("closing local database: %w", err)
+		}
+		rawDB, err = openStoreForWrite(ctx, "zotio")
+		if err != nil {
+			return creatorsAuditReport{}, false, fmt.Errorf("opening local database for ORCID evidence: %w", err)
+		}
+	}
 	defer rawDB.Close()
 
 	db := localQueryStore{rawDB}

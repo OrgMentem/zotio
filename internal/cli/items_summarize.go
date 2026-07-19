@@ -97,6 +97,13 @@ structured bundle; otherwise a readable Markdown brief you can paste into any LL
 				fmt.Fprintln(cmd.OutOrStdout(), "Run 'zotio sync' first.")
 				return nil
 			}
+			// database/sql opens SQLite lazily. Force the read-only connection now
+			// so a corrupt existing database is reported as an open failure rather
+			// than being mistaken for a missing local mirror when no item query is
+			// needed (for example, `items summarize` with no arguments).
+			if _, err := db.Get("items", ""); err != nil {
+				return fmt.Errorf("opening local database: %w", err)
+			}
 			defer db.Close()
 
 			opts := summarizeOpts{
@@ -284,48 +291,24 @@ func itemGaps(meta vaultMeta, hasFulltext, fulltextSkipped bool) []string {
 	return gaps
 }
 
-// fulltextByParentItem scans the attachment table once and maps each parent item
-// key to its PDF's stored full text, avoiding a per-item rescan in collection mode.
+// fulltextByParentItem streams stored attachment full text once and maps each
+// parent item key to its PDF's stored full text, avoiding a per-item rescan in
+// collection mode.
 func fulltextByParentItem(db *store.Store) map[string]string {
 	fulltext, _ := fulltextByParentItemWithErr(db)
 	return fulltext
 }
 
 func fulltextByParentItemWithErr(db *store.Store) (map[string]string, error) {
-	attachments, err := db.ItemsByType("attachment", 0)
+	out := make(map[string]string)
+	err := db.VisitSimilarityFulltextDocuments(func(doc store.SimilarityFulltextDocument) error {
+		if c := strings.TrimSpace(fulltextContent(doc.Data)); c != "" {
+			out[doc.ParentItemKey] = c
+		}
+		return nil
+	})
 	if err != nil {
-		return nil, err
-	}
-	out := make(map[string]string, len(attachments))
-	for _, raw := range attachments {
-		var obj map[string]any
-		if json.Unmarshal(raw, &obj) != nil {
-			continue
-		}
-		data, ok := obj["data"].(map[string]any)
-		if !ok {
-			continue
-		}
-		if ct, _ := stringValue(data["contentType"]); ct != "application/pdf" {
-			continue
-		}
-		parent, _ := stringValue(data["parentItem"])
-		akey, _ := stringValue(data["key"])
-		if akey == "" {
-			akey, _ = stringValue(obj["key"])
-		}
-		if parent == "" || akey == "" {
-			continue
-		}
-		ft, ok, err := db.Fulltext(akey)
-		if err != nil {
-			return out, fmt.Errorf("reading attachment %s: %w", akey, err)
-		}
-		if ok {
-			if c := strings.TrimSpace(fulltextContent(ft)); c != "" {
-				out[parent] = c
-			}
-		}
+		return out, fmt.Errorf("listing stored attachment full text: %w", err)
 	}
 	return out, nil
 }
@@ -338,31 +321,44 @@ func fulltextForItem(db *store.Store, itemKey string) (string, error) {
 	if ok {
 		return fulltextContent(ft), nil
 	}
-	attachments, err := db.ItemsByType("attachment", 0)
+	ft, ok, err = fulltextForPDFAttachment(db, itemKey)
 	if err != nil {
-		return "", fmt.Errorf("listing PDF attachments: %w", err)
+		return "", err
+	}
+	if ok {
+		return fulltextContent(ft), nil
+	}
+	return "", nil
+}
+
+// fulltextForPDFAttachment finds the first PDF child with stored full text.
+// QueryItems scopes the attachment scan to one parent rather than loading every
+// attachment in the local mirror.
+func fulltextForPDFAttachment(db *store.Store, itemKey string) (json.RawMessage, bool, error) {
+	attachments, err := db.QueryItems(store.ItemQuery{
+		ItemType: "attachment",
+		Parent:   itemKey,
+	})
+	if err != nil {
+		return nil, false, fmt.Errorf("listing PDF attachments: %w", err)
 	}
 	for _, raw := range attachments {
-		var obj map[string]any
-		if json.Unmarshal(raw, &obj) != nil {
+		if jsonStringField(raw, "contentType") != "application/pdf" {
 			continue
 		}
-		if jsonStringFieldFromMap(obj, "parentItem") != itemKey || jsonStringFieldFromMap(obj, "contentType") != "application/pdf" {
-			continue
-		}
-		key := jsonStringFieldFromMap(obj, "key")
+		key := jsonStringField(raw, "key")
 		if key == "" {
 			continue
 		}
 		ft, ok, err := db.Fulltext(key)
 		if err != nil {
-			return "", fmt.Errorf("reading attachment %s: %w", key, err)
+			return nil, false, fmt.Errorf("reading attachment %s: %w", key, err)
 		}
 		if ok {
-			return fulltextContent(ft), nil
+			return ft, true, nil
 		}
 	}
-	return "", nil
+	return nil, false, nil
 }
 
 func fulltextContent(raw json.RawMessage) string {

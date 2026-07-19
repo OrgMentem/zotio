@@ -96,6 +96,29 @@ func TestBuildLibraryDOIIndex(t *testing.T) {
 	}
 }
 
+func TestItemsWithPDFSetExcludesTrashedAttachments(t *testing.T) {
+	db, err := store.OpenWithContext(context.Background(), filepath.Join(t.TempDir(), "data.db"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+
+	if err := db.Upsert("items", "I1", json.RawMessage(`{"key":"I1","data":{"key":"I1","itemType":"journalArticle","title":"Live parent","DOI":"10.1/live"}}`)); err != nil {
+		t.Fatalf("seed live parent: %v", err)
+	}
+	if err := db.Upsert("items-trash", "ATT", json.RawMessage(`{"key":"ATT","data":{"key":"ATT","itemType":"attachment","parentItem":"I1","contentType":"application/pdf"}}`)); err != nil {
+		t.Fatalf("seed trashed attachment: %v", err)
+	}
+
+	withPDF, err := itemsWithPDFSet(db)
+	if err != nil {
+		t.Fatalf("itemsWithPDFSet: %v", err)
+	}
+	if withPDF["I1"] {
+		t.Errorf("trashed attachment marked I1 as having a PDF: %v", withPDF)
+	}
+}
+
 func TestExtractPDFDOIReadError(t *testing.T) {
 	if _, _, err := extractPDFDOI(t.TempDir()); err == nil {
 		t.Fatal("extractPDFDOI directory error = nil, want read error")

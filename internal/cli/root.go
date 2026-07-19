@@ -360,8 +360,20 @@ func (f *rootFlags) newWriteClient() (*client.Client, error) {
 	if err != nil {
 		return nil, err
 	}
+	// A preview must not resolve the hybrid write route: that can fetch
+	// /keys/current and persist a user ID before the dry-run request is rendered.
+	// Clear the lazy resolver as well, since the client otherwise resolves it
+	// while constructing any mutating dry-run URL.
+	if f.dryRun {
+		c.ResolveWriteBase = nil
+		return c, nil
+	}
 	if c.ResolveWriteBase != nil {
-		if base, rerr := c.ResolveWriteBase(context.Background()); rerr == nil && base != "" {
+		ctx := f.ctx
+		if ctx == nil {
+			ctx = context.Background()
+		}
+		if base, rerr := c.ResolveWriteBase(ctx); rerr == nil && base != "" {
 			c.BaseURL = base
 			c.ResolveWriteBase = nil
 			fmt.Fprintf(os.Stderr, "→ writing via Zotero Web API: %s\n", base)

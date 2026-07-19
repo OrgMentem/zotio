@@ -87,6 +87,10 @@ or text-only PDFs may report "unidentified".`,
 				fmt.Fprintln(cmd.OutOrStdout(), "Run 'zotio sync' first.")
 				return nil
 			}
+			if err := db.DB().PingContext(cmd.Context()); err != nil {
+				_ = db.Close()
+				return fmt.Errorf("opening local database: %w", err)
+			}
 			defer db.Close()
 
 			idx, err := buildLibraryDOIIndex(db)
@@ -179,10 +183,10 @@ func buildLibraryDOIIndex(db *store.Store) (libraryDOIIndex, error) {
 	return idx, nil
 }
 
-// itemsWithPDFSet returns the set of parent item keys that have a PDF attachment.
+// itemsWithPDFSet returns the set of parent item keys that have a live PDF attachment.
 func itemsWithPDFSet(db *store.Store) (map[string]bool, error) {
 	set := map[string]bool{}
-	atts, err := db.ItemsByType("attachment", 0)
+	atts, err := db.QueryItems(store.ItemQuery{ItemType: "attachment"})
 	if err != nil {
 		return nil, err
 	}
@@ -236,7 +240,7 @@ func classifyPDFWithErr(ctx context.Context, path string, idx libraryDOIIndex, h
 	}
 	res.Status = "new"
 	if httpClient != nil {
-		if item, ok := crossRefItemFromDOI(ctx, httpClient, res.DOI); ok {
+		if item, err := crossRefItemFromDOI(ctx, httpClient, res.DOI); err == nil {
 			if t, _ := stringValue(item["title"]); t != "" {
 				res.Title = t
 			}

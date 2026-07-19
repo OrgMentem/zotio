@@ -204,6 +204,11 @@ maintainer sees it.`,
 	return cmd
 }
 
+type feedbackListResult struct {
+	Entries             []FeedbackEntry `json:"entries"`
+	SkippedCorruptLines int             `json:"skipped_corrupt_lines"`
+}
+
 func newFeedbackListCmd(flags *rootFlags) *cobra.Command {
 	var limit int
 	cmd := &cobra.Command{
@@ -228,6 +233,7 @@ func newFeedbackListCmd(flags *rootFlags) *cobra.Command {
 				return err
 			}
 			var entries []FeedbackEntry
+			skippedCorruptLines := 0
 			for _, line := range strings.Split(string(data), "\n") {
 				line = strings.TrimSpace(line)
 				if line == "" {
@@ -235,12 +241,22 @@ func newFeedbackListCmd(flags *rootFlags) *cobra.Command {
 				}
 				var e FeedbackEntry
 				if err := json.Unmarshal([]byte(line), &e); err != nil {
+					skippedCorruptLines++
 					continue
 				}
 				entries = append(entries, e)
 			}
 			if limit > 0 && limit < len(entries) {
 				entries = entries[len(entries)-limit:]
+			}
+			if skippedCorruptLines > 0 {
+				fmt.Fprintf(cmd.ErrOrStderr(), "warning: skipped %d corrupt feedback journal line(s)\n", skippedCorruptLines)
+				if flags.asJSON {
+					return printJSONFiltered(cmd.OutOrStdout(), feedbackListResult{
+						Entries:             entries,
+						SkippedCorruptLines: skippedCorruptLines,
+					}, flags)
+				}
 			}
 			return printJSONFiltered(cmd.OutOrStdout(), entries, flags)
 		},

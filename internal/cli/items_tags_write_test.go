@@ -22,6 +22,7 @@ type itemTagTestServer struct {
 	tags         map[string][]map[string]any
 	patchBodies  map[string]map[string]any
 	patchHeaders map[string]string
+	getCounts    map[string]int
 	patchCounts  map[string]int
 }
 
@@ -32,6 +33,7 @@ func newItemTagTestServer(t *testing.T, versions map[string]string, tags map[str
 		tags:         tags,
 		patchBodies:  map[string]map[string]any{},
 		patchHeaders: map[string]string{},
+		getCounts:    map[string]int{},
 		patchCounts:  map[string]int{},
 	}
 	ts.server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -42,6 +44,7 @@ func newItemTagTestServer(t *testing.T, versions map[string]string, tags map[str
 			}
 			switch r.Method {
 			case http.MethodGet:
+				ts.getCounts[key]++
 				version := ts.versions[key]
 				w.Header().Set("Last-Modified-Version", version)
 				_, _ = fmt.Fprintf(w, `{"key":%q,"version":%s,"data":{"tags":%s}}`, key, version, mustJSON(t, ts.tags[key]))
@@ -171,6 +174,34 @@ func TestItemsTagsPreviewWritesNothing(t *testing.T) {
 	}
 	if srv.patchCounts["K1"] != 0 {
 		t.Fatalf("PATCH count = %d, want 0", srv.patchCounts["K1"])
+	}
+}
+
+func TestItemsTagsDryRunAvoidsVersionFetch(t *testing.T) {
+	srv := newItemTagTestServer(t, map[string]string{"K1": "42"}, map[string][]map[string]any{
+		"K1": {{"tag": "existing", "type": float64(0)}},
+	})
+
+	env, _ := runItemsTagsTestCmd(t, srv, &rootFlags{asJSON: true, dryRun: true, maxChanges: -1}, "add", "--tag", "fresh", "K1")
+	if !env.OK || env.Mode != "preview" || env.PreviewReason != "dry_run" || env.Result != nil || env.Plan.Summary.Planned != 1 {
+		t.Fatalf("env = %+v, want dry-run preview with one planned change", env)
+	}
+	if srv.getCounts["K1"] != 0 || srv.patchCounts["K1"] != 0 {
+		t.Fatalf("requests: GET=%d PATCH=%d, want none", srv.getCounts["K1"], srv.patchCounts["K1"])
+	}
+}
+
+func TestItemsTagsRemoveDryRunAvoidsVersionFetch(t *testing.T) {
+	srv := newItemTagTestServer(t, map[string]string{"K1": "42"}, map[string][]map[string]any{
+		"K1": {{"tag": "existing", "type": float64(0)}},
+	})
+
+	env, _ := runItemsTagsTestCmd(t, srv, &rootFlags{asJSON: true, dryRun: true, maxChanges: -1}, "remove", "--tag", "existing", "K1")
+	if !env.OK || env.Mode != "preview" || env.PreviewReason != "dry_run" || env.Result != nil || env.Plan.Summary.Planned != 1 {
+		t.Fatalf("env = %+v, want dry-run preview with one planned change", env)
+	}
+	if srv.getCounts["K1"] != 0 || srv.patchCounts["K1"] != 0 {
+		t.Fatalf("requests: GET=%d PATCH=%d, want none", srv.getCounts["K1"], srv.patchCounts["K1"])
 	}
 }
 

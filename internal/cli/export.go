@@ -9,7 +9,10 @@ import (
 	"io"
 	"net/url"
 	"os"
+	"strconv"
 	"strings"
+
+	"zotio/internal/client"
 
 	"github.com/spf13/cobra"
 )
@@ -116,18 +119,23 @@ large datasets as it has no memory pressure.`,
 				return usageErr(fmt.Errorf("unknown resource %q; valid: %s", resource, strings.Join(validResourceList, ", ")))
 			}
 
-			c, err := flags.newClient()
-			if err != nil {
-				return err
-			}
-			if noCache {
-				c.NoCache = true
-			}
+			var err error
 
 			// encode the optional resource id as one path segment.
 			path := "/" + resource
 			if len(args) > 1 {
 				path += "/" + url.PathEscape(args[1])
+			}
+
+			var c *client.Client
+			if flags.dataSource != "local" {
+				c, err = flags.newClient()
+				if err != nil {
+					return err
+				}
+				if noCache {
+					c.NoCache = true
+				}
 			}
 
 			var file *os.File
@@ -143,32 +151,44 @@ large datasets as it has no memory pressure.`,
 
 			var count int
 			var exportErr error
-			if len(args) > 1 {
-				data, getErr := c.Get(path, nil)
+			if flags.dataSource == "local" {
+				params := map[string]string(nil)
+				if len(args) == 1 && limit > 0 {
+					params = map[string]string{"limit": strconv.Itoa(limit)}
+				}
+				data, _, getErr := resolveRead(cmd.Context(), nil, flags, resource, len(args) == 1, path, params, nil)
 				if getErr != nil {
 					return finishExport(writer, file, classifyAPIError(getErr, flags))
 				}
 				count, exportErr = writeExport(writer, format, data, limit)
 			} else {
-				items := make([]json.RawMessage, 0)
-				count, exportErr = resumablePaginatedFetch(cmd.Context(), c, path, nil, 100, limit, "", func(page []json.RawMessage) error {
-					if format != "jsonl" {
-						items = append(items, page...)
-						return nil
+				if len(args) > 1 {
+					data, getErr := c.Get(path, nil)
+					if getErr != nil {
+						return finishExport(writer, file, classifyAPIError(getErr, flags))
 					}
-					for _, item := range page {
-						if _, err := fmt.Fprintln(writer, string(item)); err != nil {
-							return err
+					count, exportErr = writeExport(writer, format, data, limit)
+				} else {
+					items := make([]json.RawMessage, 0)
+					count, exportErr = resumablePaginatedFetch(cmd.Context(), c, path, nil, 100, limit, "", func(page []json.RawMessage) error {
+						if format != "jsonl" {
+							items = append(items, page...)
+							return nil
 						}
-					}
-					return nil
-				})
-				if exportErr == nil && format != "jsonl" {
-					data, marshalErr := json.Marshal(items)
-					if marshalErr != nil {
-						exportErr = marshalErr
-					} else {
-						_, exportErr = writeExport(writer, format, data, 0)
+						for _, item := range page {
+							if _, err := fmt.Fprintln(writer, string(item)); err != nil {
+								return err
+							}
+						}
+						return nil
+					})
+					if exportErr == nil && format != "jsonl" {
+						data, marshalErr := json.Marshal(items)
+						if marshalErr != nil {
+							exportErr = marshalErr
+						} else {
+							_, exportErr = writeExport(writer, format, data, 0)
+						}
 					}
 				}
 			}
