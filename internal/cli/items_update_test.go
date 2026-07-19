@@ -25,7 +25,7 @@ func TestItemsUpdateAbortsWhenVersionReadFails(t *testing.T) {
 	defer srv.Close()
 
 	t.Setenv("ZOTERO_BASE_URL", srv.URL+"/users/0")
-	cmd := newItemsUpdateCmd(&rootFlags{asJSON: true})
+	cmd := newItemsUpdateCmd(&rootFlags{asJSON: true, yes: true})
 	cmd.SilenceErrors, cmd.SilenceUsage = true, true
 	cmd.SetOut(&bytes.Buffer{})
 	cmd.SetErr(&bytes.Buffer{})

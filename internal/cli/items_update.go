@@ -32,15 +32,6 @@ func newItemsUpdateCmd(flags *rootFlags) *cobra.Command {
 				return cmd.Help()
 			}
 
-			// Route through the write target and supply the version precondition Zotero
-			// requires for key-based writes (PATCH returns HTTP 428 without
-			// If-Unmodified-Since-Version). Mirrors items delete; the version GET and
-			// the PATCH hit the same library, so an item created on the web but not yet
-			// synced locally still resolves. An explicit version in a --stdin body is respected.
-			c, err := flags.newWriteClient()
-			if err != nil {
-				return err
-			}
 			// Encode the item key as a single Zotero path segment.
 			path := replacePathParam("/items/{itemKey}", "itemKey", url.PathEscape(args[0]))
 			var body map[string]any
@@ -80,8 +71,32 @@ func newItemsUpdateCmd(flags *rootFlags) *cobra.Command {
 					body["extra"] = bodyExtra
 				}
 			}
+
+			// Preview by default; apply only with --yes (or the resolved apply mode).
+			if mode := resolveMutationMode(flags); !mode.Apply {
+				return printJSONFiltered(cmd.OutOrStdout(), map[string]any{
+					"action":         "update",
+					"resource":       "items",
+					"key":            args[0],
+					"body":           body,
+					"status":         0,
+					"success":        false,
+					"dry_run":        true,
+					"preview_reason": mode.PreviewReason,
+				}, flags)
+			}
+
+			// Route through the write target and supply the version precondition Zotero
+			// requires for key-based writes (PATCH returns HTTP 428 without
+			// If-Unmodified-Since-Version). Mirrors items delete; the version GET and
+			// the PATCH hit the same library, so an item created on the web but not yet
+			// synced locally still resolves. An explicit version in a --stdin body is respected.
+			c, err := flags.newWriteClient()
+			if err != nil {
+				return err
+			}
 			patchHeaders := map[string]string{}
-			if _, hasVersion := body["version"]; !hasVersion && !flags.dryRun {
+			if _, hasVersion := body["version"]; !hasVersion {
 				_, version, err := c.GetWithVersion(path, nil)
 				if err != nil {
 					return classifyAPIError(err, flags)

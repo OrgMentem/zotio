@@ -517,9 +517,16 @@ func (c *Client) doRequest(ctx context.Context, method, path string, params map[
 		if req.Header.Get("User-Agent") == "" {
 			req.Header.Set("User-Agent", "zotio/0.1.0")
 		}
+		// A write is safe to retry only when it is idempotent: GET/HEAD, or it
+		// carries an idempotency guard — a Zotero write token, or an RFC
+		// conditional precondition (If-Unmodified-Since-Version, If-Match, or
+		// If-None-Match, which Zotero's file-upload protocol relies on for safe
+		// authorization/registration retries).
 		retrySafe := method == http.MethodGet || method == http.MethodHead ||
 			req.Header.Get("Zotero-Write-Token") != "" ||
-			req.Header.Get("If-Unmodified-Since-Version") != ""
+			req.Header.Get("If-Unmodified-Since-Version") != "" ||
+			req.Header.Get("If-Match") != "" ||
+			req.Header.Get("If-None-Match") != ""
 
 		resp, err := c.requestHTTPClient().Do(req)
 		if err != nil {
@@ -573,7 +580,7 @@ func (c *Client) doRequest(ctx context.Context, method, path string, params map[
 		}
 
 		// Rate limited - adjust adaptive limiter and retry
-		if resp.StatusCode == 429 && attempt < maxRetries {
+		if retrySafe && resp.StatusCode == 429 && attempt < maxRetries {
 			c.limiter.OnRateLimit()
 			wait := cliutil.RetryAfter(resp)
 			fmt.Fprintf(os.Stderr, "rate limited, waiting %s (attempt %d/%d, rate adjusted to %.1f req/s)\n", wait, attempt+1, maxRetries, c.limiter.Rate())

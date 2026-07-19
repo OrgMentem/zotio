@@ -551,7 +551,11 @@ func parsePushNote(path string) (*pushNote, error) {
 	region, has := extractNotesRegion(body)
 	st, serr := parseStateComment(body)
 	if serr != nil {
-		fmt.Fprintf(os.Stderr, "warning: %s: %v; treating note as unsynced\n", path, serr)
+		// A corrupt state comment means we cannot tell whether this note is already
+		// synced. Fail closed: returning the error makes loadPushNotesWithWarnings
+		// record a warning and skip the note, rather than pushOne treating it as
+		// unmanaged (NoteKey == "") and creating a duplicate remote note.
+		return nil, serr
 	}
 	return &pushNote{
 		path:      path,

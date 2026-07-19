@@ -130,35 +130,3 @@ func fetchRecentItems(ctx context.Context, c *client.Client, flags *rootFlags, l
 	out, err := json.Marshal(filtered)
 	return out, provenance, err
 }
-
-func filterRecentItems(data json.RawMessage, limit, days int, itemType string) (json.RawMessage, error) {
-	var items []map[string]any
-	if err := json.Unmarshal(data, &items); err != nil {
-		return nil, fmt.Errorf("parsing items response: %w", err)
-	}
-	filtered := make([]map[string]any, 0, len(items))
-	var cutoff time.Time
-	if days > 0 {
-		cutoff = time.Now().Add(-time.Duration(days) * 24 * time.Hour)
-	}
-	for _, item := range items {
-		if itemType != "" && jsonStringFieldFromMap(item, "itemType") != itemType {
-			continue
-		}
-		if days > 0 {
-			added, err := time.Parse(time.RFC3339, jsonStringFieldFromMap(item, "dateAdded"))
-			if err != nil || added.Before(cutoff) {
-				continue
-			}
-		}
-		filtered = append(filtered, item)
-		if limit > 0 && len(filtered) >= limit {
-			break
-		}
-	}
-	out, err := json.Marshal(filtered)
-	if err != nil {
-		return nil, err
-	}
-	return out, nil
-}

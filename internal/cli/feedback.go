@@ -252,11 +252,16 @@ func newFeedbackListCmd(flags *rootFlags) *cobra.Command {
 			if skippedCorruptLines > 0 {
 				fmt.Fprintf(cmd.ErrOrStderr(), "warning: skipped %d corrupt feedback journal line(s)\n", skippedCorruptLines)
 				if flags.asJSON {
-					return printJSONFiltered(cmd.OutOrStdout(), feedbackListResult{
+					if err := printJSONFiltered(cmd.OutOrStdout(), feedbackListResult{
 						Entries:             entries,
 						SkippedCorruptLines: skippedCorruptLines,
-					}, flags)
+					}, flags); err != nil {
+						return err
+					}
+				} else if err := printJSONFiltered(cmd.OutOrStdout(), entries, flags); err != nil {
+					return err
 				}
+				return degradedErr(fmt.Errorf("feedback list: skipped %d corrupt journal line(s); results incomplete", skippedCorruptLines))
 			}
 			return printJSONFiltered(cmd.OutOrStdout(), entries, flags)
 		},

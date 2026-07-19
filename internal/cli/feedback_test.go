@@ -35,8 +35,9 @@ func TestFeedbackListReportsCorruptJournalLines(t *testing.T) {
 	var out, errOut bytes.Buffer
 	cmd.SetOut(&out)
 	cmd.SetErr(&errOut)
-	if err := cmd.Execute(); err != nil {
-		t.Fatalf("feedback list: %v", err)
+	err = cmd.Execute()
+	if code := ExitCode(err); code != 13 {
+		t.Fatalf("feedback list exit = %d, want 13 (degraded); err = %v", code, err)
 	}
 
 	var result feedbackListResult

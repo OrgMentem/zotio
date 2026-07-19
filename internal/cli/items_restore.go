@@ -13,14 +13,15 @@ func newItemsRestoreCmd(flags *rootFlags) *cobra.Command {
 			if len(args) == 0 {
 				return cmd.Help()
 			}
-			if flags.dryRun {
+			if mode := resolveMutationMode(flags); !mode.Apply {
 				return printJSONFiltered(cmd.OutOrStdout(), map[string]any{
-					"action":   "restore",
-					"resource": "items",
-					"key":      args[0],
-					"status":   0,
-					"success":  false,
-					"dry_run":  true,
+					"action":         "restore",
+					"resource":       "items",
+					"key":            args[0],
+					"status":         0,
+					"success":        false,
+					"dry_run":        true,
+					"preview_reason": mode.PreviewReason,
 				}, flags)
 			}
 

@@ -49,13 +49,9 @@ func newAnnotationsTimelineCmd(flags *rootFlags) *cobra.Command {
 			var annotations []annotationSummary
 			if flagCollection != "" {
 				path := "/collections/" + url.PathEscape(flagCollection) + "/items"
-				data, _, err := resolveRead(cmd.Context(), c, readFlags, "items", false, path, nil, nil)
+				items, err := fetchResolvedZoteroItems(cmd.Context(), c, readFlags, path, nil, 0)
 				if err != nil {
 					return classifyAPIError(err, flags)
-				}
-				items, err := decodeZoteroItems(data)
-				if err != nil {
-					return fmt.Errorf("parsing collection items: %w", err)
 				}
 				for _, item := range items {
 					if !zoteroItemHasChildren(item) {
@@ -77,17 +73,20 @@ func newAnnotationsTimelineCmd(flags *rootFlags) *cobra.Command {
 					annotations = append(annotations, annotationSummariesFromItems(childItems)...)
 				}
 			} else {
-				data, _, err := resolveRead(cmd.Context(), c, readFlags, "items", false, "/items", map[string]string{
+				// The requested limit is applied after client-side --item/--since
+				// filtering below, so page the full set when a filter is active
+				// rather than capping the fetch at the first page.
+				maxItems := flagLimit
+				if flagItem != "" || hasSince {
+					maxItems = 0
+				}
+				items, err := fetchResolvedZoteroItems(cmd.Context(), c, readFlags, "/items", map[string]string{
 					"itemType":  "annotation",
 					"sort":      "dateAdded",
 					"direction": "desc",
-				}, nil)
+				}, maxItems)
 				if err != nil {
 					return classifyAPIError(err, flags)
-				}
-				items, err := decodeZoteroItems(data)
-				if err != nil {
-					return fmt.Errorf("parsing annotations: %w", err)
 				}
 				annotations = annotationSummariesFromItems(items)
 			}
@@ -122,19 +121,6 @@ func newAnnotationsTimelineCmd(flags *rootFlags) *cobra.Command {
 	cmd.Flags().BoolVar(&refresh, "refresh", false, "Fetch live from the API instead of the local store")
 
 	return cmd
-}
-
-func fetchLimitForClientFilteredAnnotations(limit int, since, item string) int {
-	if strings.TrimSpace(since) == "" && strings.TrimSpace(item) == "" {
-		return limit
-	}
-	if limit <= 0 {
-		return 0
-	}
-	if limit < 100 {
-		return 100
-	}
-	return limit
 }
 
 func parseAnnotationSince(value string) (time.Time, bool, error) {

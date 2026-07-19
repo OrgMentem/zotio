@@ -101,6 +101,16 @@ func newImportFileCmd(flags *rootFlags) *cobra.Command {
 }
 
 func importFileViaConnector(cmd *cobra.Command, flags *rootFlags, filePath string, content []byte, format, collectionKey string) error {
+	// Preview before any network call so --via connector --dry-run stays offline;
+	// resolveCreateVia below pings the desktop connector to resolve the target.
+	if flags.dryRun {
+		return printJSONFiltered(cmd.OutOrStdout(), map[string]any{
+			"dry_run": true,
+			"file":    filePath,
+			"via":     "connector",
+			"target":  strings.TrimSpace(flags.connectorTarget),
+		}, flags)
+	}
 	via, err := flags.resolveCreateVia(cmd.Context(), collectionKey != "" || strings.TrimSpace(flags.connectorTarget) != "")
 	if err != nil {
 		return preconditionErr(err)
@@ -118,14 +128,6 @@ func importFileViaConnector(cmd *cobra.Command, flags *rootFlags, filePath strin
 		if err != nil {
 			return err
 		}
-	}
-	if flags.dryRun {
-		return printJSONFiltered(cmd.OutOrStdout(), map[string]any{
-			"dry_run": true,
-			"file":    filePath,
-			"via":     "connector",
-			"target":  target,
-		}, flags)
 	}
 	sessionID, err := connector.NewID()
 	if err != nil {

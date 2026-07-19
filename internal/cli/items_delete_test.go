@@ -48,7 +48,7 @@ func deleteVersionServer(t *testing.T, version string) (*httptest.Server, *strin
 func TestItemsDeleteSendsVersionHeader(t *testing.T) {
 	srv, sent := deleteVersionServer(t, "42")
 	defer srv.Close()
-	cmd := newItemsDeleteCmd(&rootFlags{asJSON: true})
+	cmd := newItemsDeleteCmd(&rootFlags{asJSON: true, yes: true})
 	cmd.SilenceErrors, cmd.SilenceUsage = true, true
 	if err := runDeleteCmd(t, cmd, srv.URL, "K"); err != nil {
 		t.Fatalf("items delete: %v", err)
@@ -113,7 +113,7 @@ func TestDeletesAbortWhenVersionReadFails(t *testing.T) {
 			}))
 			defer srv.Close()
 
-			cmd := tt.new(&rootFlags{asJSON: true})
+			cmd := tt.new(&rootFlags{asJSON: true, yes: true})
 			err := runDeleteCmd(t, cmd, srv.URL, "K")
 			if ExitCode(err) != 5 {
 				t.Fatalf("ExitCode(delete error) = %d, want 5; err = %v", ExitCode(err), err)
@@ -167,12 +167,58 @@ func TestDeletesTreatMissingVersionReadAsNoop(t *testing.T) {
 			}))
 			defer srv.Close()
 
-			cmd := tt.new(&rootFlags{asJSON: true})
+			cmd := tt.new(&rootFlags{asJSON: true, yes: true})
 			if err := runDeleteCmd(t, cmd, srv.URL, "K"); err != nil {
 				t.Fatalf("delete missing item: %v", err)
 			}
 			if deleteIssued {
 				t.Fatal("DELETE issued for already-gone resource")
+			}
+		})
+	}
+}
+
+// Preview-first contract (0.11.0): a bare items delete/update/restore renders a
+// preview and issues no HTTP request; mutation happens only under --yes.
+func TestItemMutationsPreviewByDefault(t *testing.T) {
+	requests := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+	t.Setenv("ZOTERO_BASE_URL", srv.URL+"/users/0")
+
+	type execCmd interface {
+		SetOut(io.Writer)
+		SetErr(io.Writer)
+		SetArgs([]string)
+		Execute() error
+	}
+	cases := []struct {
+		name string
+		cmd  execCmd
+		args []string
+	}{
+		{"delete", newItemsDeleteCmd(&rootFlags{asJSON: true}), []string{"K"}},
+		{"update", newItemsUpdateCmd(&rootFlags{asJSON: true}), []string{"K", "--title", "x"}},
+		{"restore", newItemsRestoreCmd(&rootFlags{asJSON: true}), []string{"K"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			requests = 0
+			var out bytes.Buffer
+			tc.cmd.SetOut(&out)
+			tc.cmd.SetErr(io.Discard)
+			tc.cmd.SetArgs(tc.args)
+			if err := tc.cmd.Execute(); err != nil {
+				t.Fatalf("%s preview: %v", tc.name, err)
+			}
+			if requests != 0 {
+				t.Fatalf("%s issued %d HTTP requests in preview mode, want 0", tc.name, requests)
+			}
+			if !bytes.Contains(out.Bytes(), []byte(`"dry_run"`)) {
+				t.Fatalf("%s preview output missing preview marker: %s", tc.name, out.String())
 			}
 		})
 	}

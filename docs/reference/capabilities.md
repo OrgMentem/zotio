@@ -28,7 +28,7 @@ The machine-readable registry every command is classified against — read vs. w
 | `collections top` | read |  |  |  |
 | `collections update` | write | `web_api` |  | `web_api_key` |
 | `creators audit` | read |  |  | `synced_store` |
-| `creators audit fix` | write | `web_api` |  | `synced_store` |
+| `creators audit fix` | write | `web_api` |  | `synced_store`, `web_api_key` |
 | `demo` | read |  |  |  |
 | `doctor` | introspect |  |  |  |
 | `export` | other |  |  |  |
@@ -79,7 +79,7 @@ The machine-readable registry every command is classified against — read vs. w
 | `items note-template` | read |  |  |  |
 | `items open` | other |  |  |  |
 | `items preprint-check` | read |  |  |  |
-| `items preprint-check fix` | other |  |  |  |
+| `items preprint-check fix` | write | `web_api` |  | `web_api_key` |
 | `items recent` | read |  |  |  |
 | `items related` | read |  |  | `synced_store` |
 | `items restore` | write | `web_api` |  | `web_api_key` |
@@ -134,10 +134,10 @@ The machine-readable registry every command is classified against — read vs. w
 | `tail` | read |  |  |  |
 | `vault audit` | read |  |  |  |
 | `vault conflicts` | read |  |  |  |
-| `vault pull` | other |  |  |  |
+| `vault pull` | write | `local_vault` |  | `web_api_key` |
 | `vault push` | write | `web_api` |  | `web_api_key` |
 | `vault resolve` | write | `web_api` |  | `web_api_key` |
-| `vault sync` | other |  |  |  |
+| `vault sync` | write | `local_vault` |  | `synced_store` |
 | `version` | introspect |  |  |  |
 | `watch` | sync |  |  |  |
 | `which` | introspect |  |  |  |

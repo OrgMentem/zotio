@@ -529,7 +529,7 @@ zotio collections update COLLECTIONKEY
 | Flag | Type | Default | Description |
 | --- | --- | --- | --- |
 | `--name` | `string` |  | New collection name |
-| `--parent-collection` | `string` |  | New parent collection key (false for top-level) |
+| `--parent-collection` | `string` |  | New parent collection key (false or empty for top-level) |
 | `--stdin` | `bool` | `false` | Read request body as JSON from stdin |
 
 ## `zotio creators`
@@ -825,7 +825,7 @@ Import data from JSONL file via API create/upsert calls
 
 Import data from a JSONL file by issuing POST requests for each record.
 Each line must be a valid JSON object. Failed records are logged to stderr
-but do not stop the import.
+but do not stop processing the import.
 
 ```
 zotio import <resource> [flags]

@@ -29,15 +29,16 @@ func newItemsDeleteCmd(flags *rootFlags) *cobra.Command {
 			}
 			path := "/items/{itemKey}"
 			path = replacePathParam(path, "itemKey", args[0])
-			if flags.dryRun {
+			if mode := resolveMutationMode(flags); !mode.Apply {
 				return printJSONFiltered(cmd.OutOrStdout(), map[string]any{
-					"action":   "delete",
-					"resource": "items",
-					"key":      args[0],
-					"path":     path,
-					"status":   0,
-					"success":  false,
-					"dry_run":  true,
+					"action":         "delete",
+					"resource":       "items",
+					"key":            args[0],
+					"path":           path,
+					"status":         0,
+					"success":        false,
+					"dry_run":        true,
+					"preview_reason": mode.PreviewReason,
 				}, flags)
 			}
 			c, err := flags.newWriteClient()

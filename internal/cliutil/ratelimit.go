@@ -82,7 +82,10 @@ func (l *AdaptiveLimiter) WaitContext(ctx context.Context) {
 	l.mu.Unlock()
 
 	for {
-		if d := time.Until(waiter.at); d > 0 {
+		l.mu.Lock()
+		deadline := waiter.at
+		l.mu.Unlock()
+		if d := time.Until(deadline); d > 0 {
 			timer := time.NewTimer(d)
 			select {
 			case <-timer.C:

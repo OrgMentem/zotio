@@ -45,6 +45,20 @@ func emitSyncEvent(ctx context.Context, v any) {
 	_, _ = writer.Write(append(b, '\n'))
 }
 
+// syncEventWriter serializes the JSONL sync events emitted by the concurrent
+// worker pool onto a single underlying writer (cmd stdout), which is not itself
+// safe for concurrent Write.
+type syncEventWriter struct {
+	mu sync.Mutex
+	w  io.Writer
+}
+
+func (s *syncEventWriter) Write(p []byte) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.w.Write(p)
+}
+
 func processDequeuedSyncResource(ctx context.Context, resource string, results chan<- syncResult, syncOne func(string) syncResult) bool {
 	if ctx.Err() != nil {
 		return false
@@ -185,7 +199,7 @@ Exit codes & warnings:
 				concurrency = 4
 			}
 
-			ctx := context.WithValue(cmd.Context(), syncEventWriterContextKey{}, cmd.OutOrStdout())
+			ctx := context.WithValue(cmd.Context(), syncEventWriterContextKey{}, &syncEventWriter{w: cmd.OutOrStdout()})
 			started := time.Now()
 			work := make(chan string, len(resources))
 			results := make(chan syncResult, len(resources))
