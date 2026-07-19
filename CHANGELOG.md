@@ -2,6 +2,28 @@
 
 Notable changes to zotio. Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow [SemVer](https://semver.org/).
 
+## [0.11.0] — 2026-07-20
+### Added
+- Local read-parity coverage extended (ADR-0002 scope): `resolveRead` now routes `annotations` search/timeline/export and `items` collections-of/note-template/fulltext against the synced local store, and `--refresh` vs `--data-source local` conflicts are rejected explicitly instead of silently preferring one source.
+- The MCP mirror surface (`ZOTIO_MCP_SURFACE=mirror`) now exposes the endpoint commands that were missing from it (`collections_create`, …), bringing the per-command mirror back in line with the CLI command tree (golden regenerated). `workflow run` failed-step checkpoints are resumable over MCP, archive pagination carries real Zotero keys through `start`/`limit`, and capability metadata reports per-command safety.
+- Install & packaging: the README install story is now per-OS tabbed (macOS/Linux/Windows/Prebuilt/From-source), documenting the previously undocumented Linux distro packages (`.deb`/`.rpm`/`.apk`) and the Windows Scoop bucket.
+
+### Changed — breaking
+- **More commands now exit non-zero on partial failure instead of a silent `0`.** Extending the 0.10.0 degraded-exit contract: `watch` exits non-zero when it stops without a successful sync cycle, `vault push`/`sync` exit degraded on unreadable/partial content, and JSONL `import`/import-apply exit non-zero on per-record failures. Scripts keying on a `0` exit from these must inspect the error/warnings.
+- **`items create/update/delete/restore` are now preview-by-default; mutation applies only under the resolved apply mode.** A bare `items create` (and the update/delete/restore paths) renders a dry-run preview rather than applying immediately; scripted/agent callers must pass the apply flag. `items update`/`delete` also require a `version` (or `--dry-run`) up front.
+- **`collections create` now accepts an object *or* an array of objects on stdin** (a non-object/array payload is rejected) and threads `parentCollection` (including `parentCollection:false` for top-level). Callers that relied on single-object-only parsing are unaffected; those parsing the response should expect the array-payload contract.
+- **`/collections/top` no longer resolves the literal segment `top` as a local collection key** — it now returns an explicit unsupported-local-scope error (ADR-0002).
+- **Homebrew distribution migrated from a formula to a cask** (`brews` → `homebrew_casks`). `brew install orgmentem/tap/zotio` still works on macOS and now installs both `zotio` and `zotio-mcp` (with a quarantine-stripping post-install hook), but **casks are macOS-only** — Linuxbrew is no longer a supported install path; Linux users use the `.deb`/`.rpm`/`.apk` packages.
+
+### Fixed
+- Local resolver: the get-by-ID fallback now `url.PathUnescape`s the path segment before using it as the store key (percent-escaped tag names previously missed) and wraps malformed-escape errors instead of passing them through.
+- Dry-run isolation: `items move`, `tags add`/`remove`, and file `import` short-circuit before client creation and version-precondition fetches, and write clients skip hybrid route resolution (`keys/current`) under `--dry-run` — so a preview never touches the network or resolves a write target.
+- Local store: pure reads open the store read-only and migration-free (writable reopens only for ORCID evidence and write-through mirrors); negative `limit`/`start` are rejected; completed-but-empty syncs return `[]` rather than a missing-data error; keyed single-object live reads are write-through cached; and store-open failures now surface contextually in `import scan` and `items summarize`.
+- Error propagation across the read/sync paths: sync page-decode and empty-envelope classification, checkpoint-read propagation, `--full` cursor reset, store `ListIDs`/`ResolveByName` scan errors, `search` decode errors, and `items enrich` local-read fan-out failures are no longer swallowed.
+- Assorted correctness: CrossRef empty-envelope rejection, trashed PDFs excluded from `import` coverage, `feedback list` surfaces corrupt journal lines, demo seeding propagates sync-state errors, MCP archive status propagates scan failures, `AdaptiveLimiter` releases slots for cancelled waiters, external fetch reuses memoized transports, `export` honors an explicit local data source, and `items summarize` fulltext uses a streaming, parent-scoped join.
+- Contracts/retry: the safe-retry predicate now only retries idempotent requests (GET/HEAD, or writes carrying a `Zotero-Write-Token`/version precondition), `export` gains pagination with scope-fingerprinted resume, CSL-JSON output is a single array, `items recent` pages the full candidate set, and linked-url PDF `contentType` is set.
+- CI now gates releases on the tagged commit: `go test ./...` runs before GoReleaser, the test matrix adds `macos-latest` and `-race`, a cross-build job compiles/vets windows/darwin/linux, vuln scanning moved to a weekly cron, and local git hooks (`make hooks`) enforce identity/gofmt/vet at commit and merge/am time.
+
 ## [0.10.0] — 2026-07-18
 ### Added
 - Opt-in release-update discovery, surfaced in `zotio doctor`. Disabled by default — a nil `[updates]` config section means no checks; `zotio init` offers to enable it, and `doctor` then reports when a newer public release is available with a channel-appropriate upgrade hint (Homebrew vs. source build). The check is one anonymous GET to the public GitHub releases endpoint, cached in the data dir and rate-limited to once a day; it collects no user data, and every network/cache/decoding failure is soft (you get the last cached result or nothing, never a surfaced error).
@@ -185,6 +207,7 @@ First tagged release: the trust-and-automation layer for Zotero.
 - **Onboarding** — `zotio init` guided setup (Zotero detection, local API, key, first sync, health check).
 - Release engineering: goreleaser builds for 6 platforms, cosign-signed checksums, SBOMs, Homebrew tap.
 
+[0.11.0]: https://github.com/OrgMentem/zotio/compare/v0.10.0...v0.11.0
 [0.10.0]: https://github.com/OrgMentem/zotio/compare/v0.9.0...v0.10.0
 [0.9.0]: https://github.com/OrgMentem/zotio/compare/v0.8.0...v0.9.0
 [0.8.0]: https://github.com/OrgMentem/zotio/compare/v0.7.0...v0.8.0
