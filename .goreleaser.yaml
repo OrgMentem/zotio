@@ -88,7 +88,7 @@ signs:
       - "${signature}"
       - "${artifact}"
     artifacts: checksum
-brews:
+homebrew_casks:
   - name: zotio
     repository:
       owner: OrgMentem
@@ -97,13 +97,19 @@ brews:
       # has contents:write on homebrew-tap only.
       token: "{{ .Env.HOMEBREW_TAP_GITHUB_TOKEN }}"
     commit_msg_template: "zotio {{ .Tag }}"
-    # goreleaser writes to the tap root unless told otherwise; brew expects Formula/.
-    directory: Formula
+    # Casks live under Casks/ in the tap (formulae used Formula/). The binaries
+    # are unsigned, so the post-install hook below strips the com.apple.quarantine
+    # xattr — otherwise Gatekeeper blocks first run on macOS.
+    directory: Casks
     homepage: "https://github.com/OrgMentem/zotio"
     description: "Zotero automation CLI: local-first search, library health checks, preview-first writes, annotation export, and MCP"
-    install: |
-      bin.install "zotio"
-      bin.install "zotio-mcp"
+    binaries:
+      - zotio
+      - zotio-mcp
+    hooks:
+      post:
+        install: |
+          system_command "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "#{staged_path}"]
 # Windows: self-owned Scoop bucket (mirrors the homebrew-tap pattern). Packages
 # the windows zip archives, which already contain both zotio and zotio-mcp.
 scoops:
