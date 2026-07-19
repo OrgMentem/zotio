@@ -24,6 +24,8 @@ type commandKind int
 
 const (
 	commandNovel commandKind = iota
+	// commandEndpoint is retained for the walkers' legacy switch cases. Endpoint
+	// annotations now remain CLI metadata rather than excluding a command from MCP.
 	commandEndpoint
 	commandFramework
 	commandHidden
@@ -83,20 +85,10 @@ func classify(cmd *cobra.Command) commandKind {
 	if cmd == nil || cmd.Hidden || isMCPHidden(cmd) {
 		return commandHidden
 	}
-	if endpointID(cmd) != "" {
-		return commandEndpoint
-	}
 	if frameworkCommands[cmd.Name()] {
 		return commandFramework
 	}
 	return commandNovel
-}
-
-func endpointID(cmd *cobra.Command) string {
-	if cmd == nil || cmd.Annotations == nil {
-		return ""
-	}
-	return strings.TrimSpace(cmd.Annotations[EndpointAnnotation])
 }
 
 func isMCPHidden(cmd *cobra.Command) bool {

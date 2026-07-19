@@ -544,9 +544,9 @@ func parsePushNote(path string) (*pushNote, error) {
 		return nil, err
 	}
 	body := string(data)
-	key := frontmatterKeyValue(body, "zotero_key")
+	key := vaultNoteKeyValue(body, "zotero_key")
 	if key == "" {
-		key = keyFromZoteroSelect(frontmatterKeyValue(body, "zotero"))
+		key = keyFromZoteroSelect(vaultNoteKeyValue(body, "zotero"))
 	}
 	region, has := extractNotesRegion(body)
 	st, serr := parseStateComment(body)
@@ -555,9 +555,9 @@ func parsePushNote(path string) (*pushNote, error) {
 	}
 	return &pushNote{
 		path:      path,
-		citekey:   frontmatterKeyValue(body, "citekey"),
+		citekey:   vaultNoteKeyValue(body, "citekey"),
 		itemKey:   key,
-		library:   frontmatterKeyValue(body, "zotero_library"),
+		library:   vaultNoteKeyValue(body, "zotero_library"),
 		region:    region,
 		hasRegion: has,
 		state:     st,
@@ -996,8 +996,16 @@ func printVaultWriteReport(cmd *cobra.Command, results []pushResult, outDir stri
 			fmt.Fprintf(cmd.ErrOrStderr(), "warning: %s\n", warning)
 		}
 	}
-	if len(warnings) > 0 {
-		return degradedErr(fmt.Errorf("vault push: %d warnings; results incomplete", len(warnings)))
+	issues := counts["error"] + counts["conflict"] + counts["remote_deleted"]
+	if len(warnings) > 0 || issues > 0 {
+		reasons := make([]string, 0, 2)
+		if len(warnings) > 0 {
+			reasons = append(reasons, fmt.Sprintf("%d warnings", len(warnings)))
+		}
+		if issues > 0 {
+			reasons = append(reasons, fmt.Sprintf("%d note failures", issues))
+		}
+		return degradedErr(fmt.Errorf("vault push: %s; results incomplete", strings.Join(reasons, ", ")))
 	}
 	return nil
 }

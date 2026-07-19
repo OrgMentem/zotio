@@ -7,10 +7,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"path/filepath"
 	"slices"
 	"testing"
@@ -434,12 +432,13 @@ func TestSyncResourceErrorEventEscapesControlCharacters(t *testing.T) {
 	db := syncTestOpenStore(t)
 	defer db.Close()
 
-	lines := captureSyncStdoutLines(t, func() {
-		result := syncResource(context.Background(), syncTestErrorClient{err: fmt.Errorf("%s", wantErr)}, db, "items", 0, false, 0, false)
-		if result.Err == nil {
-			t.Fatal("syncResource Err = nil, want error")
-		}
-	})
+	var output bytes.Buffer
+	ctx := context.WithValue(context.Background(), syncEventWriterContextKey{}, &output)
+	result := syncResource(ctx, syncTestErrorClient{err: fmt.Errorf("%s", wantErr)}, db, "items", 0, false, 0, false)
+	if result.Err == nil {
+		t.Fatal("syncResource Err = nil, want error")
+	}
+	lines := bytes.Split(bytes.TrimSuffix(output.Bytes(), []byte("\n")), []byte("\n"))
 	if len(lines) != 2 {
 		t.Fatalf("stdout lines = %d (%q), want sync_start and one sync_error line", len(lines), bytes.Join(lines, []byte("|")))
 	}
@@ -503,31 +502,6 @@ func (c syncTestErrorClient) GetWithVersionContext(context.Context, string, map[
 
 func (c syncTestErrorClient) RateLimit() float64 {
 	return 0
-}
-
-func captureSyncStdoutLines(t *testing.T, fn func()) [][]byte {
-	t.Helper()
-	oldStdout := os.Stdout
-	r, w, err := os.Pipe()
-	if err != nil {
-		t.Fatalf("pipe stdout: %v", err)
-	}
-	os.Stdout = w
-	defer func() { os.Stdout = oldStdout }()
-
-	fn()
-
-	if err := w.Close(); err != nil {
-		t.Fatalf("close stdout writer: %v", err)
-	}
-	out, err := io.ReadAll(r)
-	if err != nil {
-		t.Fatalf("read stdout: %v", err)
-	}
-	if err := r.Close(); err != nil {
-		t.Fatalf("close stdout reader: %v", err)
-	}
-	return bytes.Split(bytes.TrimSuffix(out, []byte("\n")), []byte("\n"))
 }
 
 func syncTestWithHumanFriendly(t *testing.T, value bool) {

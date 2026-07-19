@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"testing"
 )
 
@@ -128,7 +129,8 @@ func TestResumablePaginatedFetchResumesFromCheckpoint(t *testing.T) {
 	}
 
 	checkpointFile := filepath.Join(t.TempDir(), "export.checkpoint.json")
-	if err := writeExportCheckpoint(checkpointFile, exportCheckpoint{Path: "/items", NextStart: 200, Fetched: 200}); err != nil {
+	scope := exportCheckpointScope("/items", map[string]string{"format": "json"}, 100, 0)
+	if err := writeExportCheckpoint(checkpointFile, exportCheckpoint{Path: "/items", Scope: scope, NextStart: 200, Fetched: 200}); err != nil {
 		t.Fatalf("write checkpoint: %v", err)
 	}
 
@@ -157,10 +159,41 @@ func TestResumablePaginatedFetchResumesFromCheckpoint(t *testing.T) {
 	if !ok {
 		t.Fatalf("checkpoint not readable after fetch")
 	}
-	if cp != (exportCheckpoint{Path: "/items", NextStart: 250, Fetched: 250, Done: true}) {
+	if cp != (exportCheckpoint{Path: "/items", Scope: scope, NextStart: 250, Fetched: 250, Done: true}) {
 		t.Fatalf("checkpoint = %+v, want done at 250", cp)
 	}
 	assertFileMode(t, checkpointFile, 0o600)
+}
+
+func TestResumablePaginatedFetchRejectsMismatchedCheckpointScope(t *testing.T) {
+	var requests []exportPaginateRequest
+	srv := newExportPaginateTestClient(t, 250, &requests)
+	t.Setenv("ZOTERO_BASE_URL", srv.URL+"/users/0")
+	t.Setenv("ZOTERO_CONFIG", filepath.Join(t.TempDir(), "missing.toml"))
+
+	c, err := (&rootFlags{}).newClient()
+	if err != nil {
+		t.Fatalf("new client: %v", err)
+	}
+	checkpointFile := filepath.Join(t.TempDir(), "export.checkpoint.json")
+	if err := writeExportCheckpoint(checkpointFile, exportCheckpoint{
+		Path:      "/items",
+		Scope:     exportCheckpointScope("/items", map[string]string{"tag": "old"}, 100, 0),
+		NextStart: 100,
+		Fetched:   100,
+	}); err != nil {
+		t.Fatalf("write checkpoint: %v", err)
+	}
+
+	_, err = resumablePaginatedFetch(context.Background(), c, "/items", map[string]string{"tag": "new"}, 100, 0, checkpointFile, func([]json.RawMessage) error {
+		return nil
+	})
+	if err == nil || !strings.Contains(err.Error(), "checkpoint scope does not match") {
+		t.Fatalf("fetch error = %v, want scope mismatch", err)
+	}
+	if len(requests) != 0 {
+		t.Fatalf("requests = %+v, want no request for mismatched checkpoint", requests)
+	}
 }
 
 func TestReadExportCheckpointMissingFile(t *testing.T) {

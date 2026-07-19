@@ -249,7 +249,7 @@ func importApplyOps(cmd *cobra.Command, flags *rootFlags, writeClient importAppl
 						attachmentKey, err := postLinkedFileAttachment(writeClient, createdKey, entryPath, flags)
 						if err != nil {
 							detail["attachment_error"] = err.Error()
-							return "applied", detail, nil
+							return "failed", detail, nil
 						}
 						detail["attachment_key"] = attachmentKey
 					}

@@ -3,8 +3,10 @@
 package cli
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -66,27 +68,34 @@ and full resync. After archiving, use 'search' for instant full-text search.`,
 			var accessWarnings []string
 
 			for _, resource := range resources {
-				cursor := ""
+				start := 0
+				checkpointCount := 0
 				if !full {
-					existing, _, _, stateErr := s.GetSyncState(resource)
+					existing, _, existingCount, stateErr := s.GetSyncState(resource)
 					if stateErr != nil {
 						detail := fmt.Sprintf("%s: reading sync state: %v", resource, stateErr)
 						failures = append(failures, detail)
 						fmt.Fprintf(cmd.ErrOrStderr(), "  error: %s\n", detail)
 						continue
 					}
-					cursor = existing
+					if existing != "" {
+						if offset, err := strconv.Atoi(existing); err == nil && offset >= 0 {
+							start = offset
+							checkpointCount = existingCount
+						}
+					}
 				}
 
 				fmt.Fprintf(cmd.ErrOrStderr(), "Syncing %s...\n", resource)
 
-				params := map[string]string{"limit": "100"}
-				if cursor != "" {
-					params["after"] = cursor
+				const pageSize = 100
+				params := map[string]string{
+					"limit": strconv.Itoa(pageSize),
+					"start": strconv.Itoa(start),
 				}
-
 				count := 0
 				resourceIncomplete := false
+				var previousPage json.RawMessage
 				for {
 					data, fetchErr := c.Get("/"+resource, params)
 					if fetchErr != nil {
@@ -123,50 +132,69 @@ and full resync. After archiving, use 'search' for instant full-text search.`,
 							break
 						}
 						count++
+						checkpointCount++
+						if err := s.SaveSyncState(resource, "", checkpointCount); err != nil {
+							resourceIncomplete = true
+							detail := fmt.Sprintf("%s: saving sync state: %v", resource, err)
+							failures = append(failures, detail)
+							fmt.Fprintf(cmd.ErrOrStderr(), "  error: %s\n", detail)
+						}
 						break
 					}
 					if len(items) == 0 {
-						break
-					}
-					for _, item := range items {
-						var obj struct {
-							ID string `json:"id"`
-						}
-						if err := json.Unmarshal(item, &obj); err != nil {
+						if err := s.SaveSyncState(resource, "", checkpointCount); err != nil {
 							resourceIncomplete = true
-							detail := fmt.Sprintf("%s: parsing item: %v", resource, err)
+							detail := fmt.Sprintf("%s: saving sync state: %v", resource, err)
 							failures = append(failures, detail)
 							fmt.Fprintf(cmd.ErrOrStderr(), "  error: %s\n", detail)
-							break
 						}
-						id := obj.ID
-						if id == "" {
-							id = fmt.Sprintf("%s-%d", resource, count)
-						}
-						if err := s.Upsert(resource, id, item); err != nil {
-							resourceIncomplete = true
-							detail := fmt.Sprintf("%s: storing %s: %v", resource, id, err)
-							failures = append(failures, detail)
-							fmt.Fprintf(cmd.ErrOrStderr(), "  error: %s\n", detail)
-							break
-						}
-						cursor = id
-						count++
-					}
-					if resourceIncomplete || len(items) < 100 {
 						break
 					}
-					params["after"] = cursor
-				}
+					if previousPage != nil && bytes.Equal(data, previousPage) {
+						resourceIncomplete = true
+						detail := fmt.Sprintf("%s: pagination did not advance", resource)
+						failures = append(failures, detail)
+						fmt.Fprintf(cmd.ErrOrStderr(), "  error: %s\n", detail)
+						break
+					}
+					previousPage = data
 
-				if count > 0 {
-					if err := s.SaveSyncState(resource, cursor, count); err != nil {
+					stored, unresolved, err := s.UpsertBatch(resource, items)
+					if err != nil {
+						resourceIncomplete = true
+						detail := fmt.Sprintf("%s: storing page: %v", resource, err)
+						failures = append(failures, detail)
+						fmt.Fprintf(cmd.ErrOrStderr(), "  error: %s\n", detail)
+						break
+					}
+					count += stored
+					checkpointCount += stored
+					if unresolved > 0 {
+						resourceIncomplete = true
+						detail := fmt.Sprintf("%s: %d row(s) had no stable primary key", resource, unresolved)
+						failures = append(failures, detail)
+						fmt.Fprintf(cmd.ErrOrStderr(), "  error: %s\n", detail)
+						break
+					}
+
+					start += len(items)
+					nextCursor := ""
+					if len(items) == pageSize {
+						nextCursor = strconv.Itoa(start)
+					}
+					if err := s.SaveSyncState(resource, nextCursor, checkpointCount); err != nil {
+						resourceIncomplete = true
 						detail := fmt.Sprintf("%s: saving sync state: %v", resource, err)
 						failures = append(failures, detail)
-						resourceIncomplete = true
 						fmt.Fprintf(cmd.ErrOrStderr(), "  error: %s\n", detail)
+						break
 					}
+					if nextCursor == "" {
+						break
+					}
+					params["start"] = nextCursor
 				}
+
 				totalSynced += count
 				if resourceIncomplete {
 					fmt.Fprintf(cmd.ErrOrStderr(), "  %s: incomplete after %d items\n", resource, count)

@@ -13,6 +13,7 @@ import (
 
 	// Direct batch creates can route through the desktop connector.
 	"zotio/internal/connector"
+	"zotio/internal/mutation"
 )
 
 func newItemsCreateCmd(flags *rootFlags) *cobra.Command {
@@ -25,11 +26,6 @@ func newItemsCreateCmd(flags *rootFlags) *cobra.Command {
 		Example:     "  zotio items create",
 		Annotations: map[string]string{"zotio:endpoint": "items.create", "zotio:method": "POST", "zotio:path": "/items"},
 		RunE: func(cmd *cobra.Command, args []string) error {
-
-			c, err := flags.newClient()
-			if err != nil {
-				return err
-			}
 
 			path := "/items"
 			// Zotero's POST /items requires a bare JSON array of item objects.
@@ -53,6 +49,21 @@ func newItemsCreateCmd(flags *rootFlags) *cobra.Command {
 					return fmt.Errorf("parsing --items JSON: %w", err)
 				}
 				body = parsedItems
+			}
+			if !resolveMutationMode(flags).Apply {
+				env, runErr := runMutation(cmd.Context(), flags, "items.create", []mutation.Op{{
+					ID:      "items.create",
+					Kind:    "item_create",
+					Changes: []mutation.Change{{Field: "items", Add: body}},
+				}})
+				if renderErr := renderMutation(cmd, flags, env, nil); renderErr != nil {
+					return renderErr
+				}
+				return runErr
+			}
+			c, err := flags.newClient()
+			if err != nil {
+				return err
 			}
 			// Batch item creates use the desktop connector when the body is a JSON object array.
 			if via, err := flags.resolveCreateVia(cmd.Context(), false); err != nil {

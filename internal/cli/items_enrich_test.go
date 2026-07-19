@@ -154,6 +154,25 @@ func TestResolvePDFViaUnpaywall(t *testing.T) {
 	}
 }
 
+func TestResolveEnrichmentLinkedPDFDeclaresPDFContentType(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"best_oa_location":{"url_for_pdf":"https://oa.example/p.pdf"}}`))
+	}))
+	t.Cleanup(srv.Close)
+	withBase(t, &enrichUnpaywallBase, srv.URL)
+
+	proposal, reason := resolveEnrichment(context.Background(), http.DefaultClient, "missing_pdf", "K1", nil, map[string]any{
+		"title": "Paper",
+		"DOI":   "10.1/x",
+	}, "me@example.com", false, false, "linked-url", "")
+	if reason != "" {
+		t.Fatalf("resolveEnrichment skipped: %s", reason)
+	}
+	if proposal.Attachment["contentType"] != "application/pdf" {
+		t.Fatalf("contentType = %#v, want application/pdf", proposal.Attachment["contentType"])
+	}
+}
+
 func TestResolvePDFViaUnpaywall_NoOA(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte(`{"best_oa_location":{}}`))
@@ -678,7 +697,10 @@ func TestBuildEnrichProposals_DOIFromStore(t *testing.T) {
 	withBase(t, &enrichCrossRefBase, srv.URL)
 	db := seedEnrichStore(t)
 
-	proposals, skipped := buildEnrichProposals(context.Background(), db, http.DefaultClient, "missing_doi", 25, "", nil, "", false, false, "linked-url", "")
+	proposals, skipped, err := buildEnrichProposals(context.Background(), db, http.DefaultClient, "missing_doi", 25, "", nil, "", false, false, "linked-url", "")
+	if err != nil {
+		t.Fatalf("build proposals: %v", err)
+	}
 	if len(proposals) != 1 {
 		t.Fatalf("proposals = %d, want 1: %+v", len(proposals), proposals)
 	}
@@ -714,7 +736,10 @@ func TestBuildEnrichProposals_DOIFromSemanticScholarFallback(t *testing.T) {
 	withBase(t, &enrichSemanticScholarBase, ss.URL)
 	db := seedEnrichStore(t)
 
-	proposals, skipped := buildEnrichProposals(context.Background(), db, http.DefaultClient, "missing_doi", 25, "", nil, "", true, true, "linked-url", "")
+	proposals, skipped, err := buildEnrichProposals(context.Background(), db, http.DefaultClient, "missing_doi", 25, "", nil, "", true, true, "linked-url", "")
+	if err != nil {
+		t.Fatalf("build proposals: %v", err)
+	}
 	if len(proposals) != 1 {
 		t.Fatalf("proposals = %d, want 1: %+v (skipped=%+v)", len(proposals), proposals, skipped)
 	}
@@ -907,7 +932,10 @@ func TestBuildEnrichProposalsReportsCancelledFanoutItems(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	proposals, skipped := buildEnrichProposals(ctx, db, http.DefaultClient, "missing_doi", 25, "", nil, "", false, false, "linked-url", "")
+	proposals, skipped, err := buildEnrichProposals(ctx, db, http.DefaultClient, "missing_doi", 25, "", nil, "", false, false, "linked-url", "")
+	if err != nil {
+		t.Fatalf("build proposals: %v", err)
+	}
 	if len(proposals) != 0 {
 		t.Fatalf("proposals = %+v, want none after cancellation", proposals)
 	}

@@ -403,40 +403,58 @@ func workflowRunStepInvokesWorkflow(args []string) bool {
 	return len(positionals) > 0 && positionals[0] == "workflow"
 }
 
-var workflowRunRootFlagsWithValue = map[string]struct{}{
-	"--config":           {},
-	"--timeout":          {},
-	"--max-changes":      {},
-	"--max-failures":     {},
-	"--select":           {},
-	"--data-source":      {},
-	"--profile":          {},
-	"--deliver":          {},
-	"--rate-limit":       {},
-	"--group":            {},
-	"--via":              {},
-	"--connector-target": {},
+func workflowRunStepPositionals(args []string) []string {
+	return workflowRunStepPositionalsWithRoot(RootCmd(), args)
 }
 
-func workflowRunStepPositionals(args []string) []string {
+// workflowRunStepPositionalsWithRoot retains command-selecting arguments while
+// discarding flags and their values. The current command's FlagSet is consulted
+// before consuming a following token, so a value such as `5` in
+// `items list --limit 5` cannot be mistaken for a positional command argument.
+func workflowRunStepPositionalsWithRoot(root *cobra.Command, args []string) []string {
 	positionals := make([]string, 0, len(args))
+	command := root
 	for i := 0; i < len(args); i++ {
 		arg := args[i]
 		if arg == "--" {
 			return append(positionals, args[i+1:]...)
 		}
 		if strings.HasPrefix(arg, "-") {
-			if strings.Contains(arg, "=") {
-				continue
-			}
-			if _, ok := workflowRunRootFlagsWithValue[arg]; ok {
+			if !strings.Contains(arg, "=") && workflowRunStepFlagConsumesValue(command, arg) && i+1 < len(args) {
 				i++
 			}
 			continue
 		}
 		positionals = append(positionals, arg)
+		if resolved, _, err := root.Find(positionals); err == nil && resolved != nil {
+			command = resolved
+		}
 	}
 	return positionals
+}
+
+func workflowRunStepFlagConsumesValue(command *cobra.Command, arg string) bool {
+	if strings.HasPrefix(arg, "--") {
+		name := strings.TrimPrefix(arg, "--")
+		if flag := command.LocalFlags().Lookup(name); flag != nil {
+			return flag.NoOptDefVal == ""
+		}
+		if flag := command.InheritedFlags().Lookup(name); flag != nil {
+			return flag.NoOptDefVal == ""
+		}
+		return false
+	}
+	if len(arg) != 2 {
+		return false
+	}
+	name := arg[1:]
+	if flag := command.LocalFlags().ShorthandLookup(name); flag != nil {
+		return flag.NoOptDefVal == ""
+	}
+	if flag := command.InheritedFlags().ShorthandLookup(name); flag != nil {
+		return flag.NoOptDefVal == ""
+	}
+	return false
 }
 
 func workflowRunStepIsReadOnly(args []string) bool {
@@ -444,7 +462,7 @@ func workflowRunStepIsReadOnly(args []string) bool {
 }
 
 func workflowRunStepIsReadOnlyWithRoot(root *cobra.Command, args []string) bool {
-	command, _, err := root.Find(workflowRunStepPositionals(args))
+	command, _, err := root.Find(workflowRunStepPositionalsWithRoot(root, args))
 	if err != nil || command == nil {
 		return false
 	}
@@ -673,7 +691,9 @@ func executeWorkflowRunSpecWithRootFactory(ctx context.Context, spec workflowRun
 	completedByIndex := make(map[int]workflowRunCheckpointStep, len(execution.Completed))
 	stepResults := make(map[string]workflowRunStepResult, len(execution.Completed))
 	for _, completed := range execution.Completed {
-		completedByIndex[completed.Index] = completed
+		if completed.Status != "failed" {
+			completedByIndex[completed.Index] = completed
+		}
 		if completed.Index < 1 || completed.Index > len(spec.Steps) {
 			continue
 		}
@@ -801,6 +821,11 @@ func executeWorkflowRunSpecWithRootFactory(ctx context.Context, spec workflowRun
 			stepReport.Status = "failed"
 			stepReport.Error = workflowRunStepExecutionError(err, stderr)
 			report.OK = false
+			if checkpointErr := checkpointWorkflowRunStep(execution, stepReport.Index, stepReport.Name, stepReport.Status, output); checkpointErr != nil {
+				stepReport.Error = fmt.Sprintf("%s; %v", stepReport.Error, checkpointErr)
+				stopped = true
+				executionErr = checkpointErr
+			}
 			if !spec.ContinueOnError {
 				stopped = true
 			}
@@ -961,8 +986,8 @@ func validateWorkflowRunResolvedStepArgs(root *cobra.Command, stepIndex int, lit
 	// MCP-hidden subcommand (e.g. capabilities -> capabilities drift). Compare
 	// only the resolved command identity — an unknown command resolves the same
 	// way for both and falls through to execution's own "unknown command" error.
-	litCmd, _, _ := root.Find(workflowRunStepPositionals(literalArgs))
-	resCmd, _, _ := root.Find(workflowRunStepPositionals(resolvedArgs))
+	litCmd, _, _ := root.Find(workflowRunStepPositionalsWithRoot(root, literalArgs))
+	resCmd, _, _ := root.Find(workflowRunStepPositionalsWithRoot(root, resolvedArgs))
 	if litCmd != resCmd {
 		return fmt.Errorf("workflow step %d resolves to a different command after substitution; command-selecting arguments cannot be substituted", stepIndex)
 	}

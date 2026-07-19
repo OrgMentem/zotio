@@ -99,7 +99,8 @@ until it is resumed or deleted with zotio workflow run <spec> --yes --resume.`,
 				}
 			}()
 
-			_ = runCycle(ctx)
+			lastCycleErr := runCycle(ctx)
+			hadSuccessfulCycle := lastCycleErr == nil
 
 			ticker := time.NewTicker(interval)
 			defer ticker.Stop()
@@ -107,9 +108,13 @@ until it is resumed or deleted with zotio workflow run <spec> --yes --resume.`,
 			for {
 				select {
 				case <-ctx.Done():
+					if !hadSuccessfulCycle && lastCycleErr != nil {
+						return fmt.Errorf("watch stopped without a successful sync cycle: %w", lastCycleErr)
+					}
 					return nil
 				case <-ticker.C:
-					_ = runCycle(ctx)
+					lastCycleErr = runCycle(ctx)
+					hadSuccessfulCycle = hadSuccessfulCycle || lastCycleErr == nil
 				}
 			}
 		},

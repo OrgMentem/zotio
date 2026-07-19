@@ -42,12 +42,13 @@ func TestSearchIsNilOrEmpty(t *testing.T) {
 	}
 }
 
-func TestSearchExtractSearchResultsShapes(t *testing.T) {
+func TestSearchExtractSearchResultsShapesAndErrors(t *testing.T) {
 	tests := []struct {
 		name      string
 		data      json.RawMessage
 		wantCount int
 		wantFirst string
+		wantErr   bool
 	}{
 		{
 			name:      "bare array",
@@ -97,16 +98,24 @@ func TestSearchExtractSearchResultsShapes(t *testing.T) {
 			wantCount: 0,
 		},
 		{
-			name:      "garbage falls back to single raw item",
-			data:      json.RawMessage(`not-json`),
-			wantCount: 1,
-			wantFirst: `not-json`,
+			name:    "malformed response returns an error",
+			data:    json.RawMessage(`not-json`),
+			wantErr: true,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := extractSearchResults(tt.data)
+			got, err := extractSearchResults(tt.data)
+			if tt.wantErr {
+				if err == nil {
+					t.Fatalf("extractSearchResults(%s) returned nil error", string(tt.data))
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("extractSearchResults(%s) error = %v", string(tt.data), err)
+			}
 			if len(got) != tt.wantCount {
 				t.Fatalf("len(extractSearchResults(%s)) = %d, want %d", string(tt.data), len(got), tt.wantCount)
 			}

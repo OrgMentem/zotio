@@ -81,7 +81,7 @@ func newItemsUpdateCmd(flags *rootFlags) *cobra.Command {
 				}
 			}
 			patchHeaders := map[string]string{}
-			if _, hasVersion := body["version"]; !hasVersion {
+			if _, hasVersion := body["version"]; !hasVersion && !flags.dryRun {
 				_, version, err := c.GetWithVersion(path, nil)
 				if err != nil {
 					return classifyAPIError(err, flags)

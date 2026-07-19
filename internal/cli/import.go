@@ -5,6 +5,7 @@ package cli
 import (
 	"bufio"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -23,7 +24,7 @@ func newImportCmd(flags *rootFlags) *cobra.Command {
 		Short: "Import data from JSONL file via API create/upsert calls",
 		Long: `Import data from a JSONL file by issuing POST requests for each record.
 Each line must be a valid JSON object. Failed records are logged to stderr
-but do not stop the import.`,
+but do not stop processing the import.`,
 		Example: `  # Import from a JSONL file
   zotio import <resource> --input data.jsonl
 
@@ -68,14 +69,14 @@ but do not stop the import.`,
 
 				var body map[string]any
 				if err := json.Unmarshal([]byte(line), &body); err != nil {
-					fmt.Fprintf(os.Stderr, "warning: skipping invalid JSON line: %v\n", err)
+					fmt.Fprintf(cmd.ErrOrStderr(), "warning: skipping invalid JSON line: %v\n", err)
 					failed++
 					continue
 				}
 
 				_, _, err := c.Post(path, body)
 				if err != nil {
-					fmt.Fprintf(os.Stderr, "warning: failed to import record: %v\n", err)
+					fmt.Fprintf(cmd.ErrOrStderr(), "warning: failed to import record: %v\n", err)
 					failed++
 					continue
 				}
@@ -88,13 +89,19 @@ but do not stop the import.`,
 
 			// JSON envelope: {succeeded, failed, skipped}.
 			if flags.asJSON {
-				return printJSONFiltered(cmd.OutOrStdout(), map[string]any{
+				if err := printJSONFiltered(cmd.OutOrStdout(), map[string]any{
 					"succeeded": success,
 					"failed":    failed,
 					"skipped":   skipped,
-				}, flags)
+				}, flags); err != nil {
+					return err
+				}
+			} else {
+				fmt.Fprintf(cmd.ErrOrStderr(), "Import complete: %d succeeded, %d failed, %d skipped\n", success, failed, skipped)
 			}
-			fmt.Fprintf(os.Stderr, "Import complete: %d succeeded, %d failed, %d skipped\n", success, failed, skipped)
+			if failed > 0 {
+				return errors.New("import incomplete: one or more records failed")
+			}
 			return nil
 		},
 	}

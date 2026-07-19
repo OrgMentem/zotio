@@ -41,7 +41,7 @@ func newItemsNoteTemplateCmd(flags *rootFlags) *cobra.Command {
 			}
 
 			path := replacePathParam("/items/{itemKey}", "itemKey", args[0])
-			data, err := c.Get(path, nil)
+			data, _, err := resolveRead(cmd.Context(), c, flags, "items", false, path, nil, nil)
 			if err != nil {
 				return classifyAPIError(err, flags)
 			}

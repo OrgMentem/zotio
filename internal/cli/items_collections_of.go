@@ -28,7 +28,7 @@ func newItemsCollectionsOfCmd(flags *rootFlags) *cobra.Command {
 			}
 
 			itemPath := replacePathParam("/items/{itemKey}", "itemKey", args[0])
-			itemData, err := c.Get(itemPath, nil)
+			itemData, _, err := resolveRead(cmd.Context(), c, flags, "items", false, itemPath, nil, nil)
 			if err != nil {
 				return classifyAPIError(err, flags)
 			}
@@ -40,7 +40,7 @@ func newItemsCollectionsOfCmd(flags *rootFlags) *cobra.Command {
 			rows := make([]itemCollectionRow, 0, len(collectionKeys))
 			for _, key := range collectionKeys {
 				collectionPath := replacePathParam("/collections/{collectionKey}", "collectionKey", key)
-				collectionData, err := c.Get(collectionPath, nil)
+				collectionData, _, err := resolveRead(cmd.Context(), c, flags, "collections", false, collectionPath, nil, nil)
 				if err != nil {
 					return classifyAPIError(err, flags)
 				}

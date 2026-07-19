@@ -27,13 +27,23 @@ func newItemsDeleteCmd(flags *rootFlags) *cobra.Command {
 			if len(args) == 0 {
 				return cmd.Help()
 			}
+			path := "/items/{itemKey}"
+			path = replacePathParam(path, "itemKey", args[0])
+			if flags.dryRun {
+				return printJSONFiltered(cmd.OutOrStdout(), map[string]any{
+					"action":   "delete",
+					"resource": "items",
+					"key":      args[0],
+					"path":     path,
+					"status":   0,
+					"success":  false,
+					"dry_run":  true,
+				}, flags)
+			}
 			c, err := flags.newWriteClient()
 			if err != nil {
 				return err
 			}
-
-			path := "/items/{itemKey}"
-			path = replacePathParam(path, "itemKey", args[0])
 			// Zotero requires If-Unmodified-Since-Version on DELETE (HTTP 428
 			// without it). newWriteClient points at the write target, so this version
 			// GET and the DELETE hit the same library (the Web API under hybrid routing)

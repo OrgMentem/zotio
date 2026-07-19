@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strings"
 
 	"github.com/spf13/cobra"
 )
@@ -50,8 +51,12 @@ func newCollectionsUpdateCmd(flags *rootFlags) *cobra.Command {
 				if bodyName != "" {
 					body["name"] = bodyName
 				}
-				if bodyParentCollection != "" {
-					body["parentCollection"] = bodyParentCollection
+				if cmd.Flags().Changed("parent-collection") {
+					if bodyParentCollection == "" || strings.EqualFold(bodyParentCollection, "false") {
+						body["parentCollection"] = false
+					} else {
+						body["parentCollection"] = bodyParentCollection
+					}
 				}
 			}
 			data, statusCode, err := c.Put(path, body)
@@ -122,7 +127,7 @@ func newCollectionsUpdateCmd(flags *rootFlags) *cobra.Command {
 		},
 	}
 	cmd.Flags().StringVar(&bodyName, "name", "", "New collection name")
-	cmd.Flags().StringVar(&bodyParentCollection, "parent-collection", "", "New parent collection key (false for top-level)")
+	cmd.Flags().StringVar(&bodyParentCollection, "parent-collection", "", "New parent collection key (false or empty for top-level)")
 	cmd.Flags().BoolVar(&stdinBody, "stdin", false, "Read request body as JSON from stdin")
 
 	return cmd

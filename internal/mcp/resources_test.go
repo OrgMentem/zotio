@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"zotio/internal/store"
@@ -111,6 +112,14 @@ func TestMCPReadContextResource(t *testing.T) {
 	_ = json.Unmarshal(toolJSON, &fromTool)
 	if fromTool["tool_surface"] != ctx["tool_surface"] {
 		t.Errorf("resource/tool context drift on tool_surface")
+	}
+	tips, _ := json.Marshal(ctx["query_tips"])
+	tipText := string(tips)
+	if !strings.Contains(tipText, "start") || !strings.Contains(tipText, "limit") {
+		t.Errorf("context query_tips = %q, want Zotero start/limit pagination guidance", tipText)
+	}
+	if strings.Contains(tipText, "cursor-based") {
+		t.Errorf("context query_tips = %q, must not advertise cursor pagination", tipText)
 	}
 }
 

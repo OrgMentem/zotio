@@ -27,10 +27,24 @@ func newItemsFulltextCmd(flags *rootFlags) *cobra.Command {
 			}
 			itemKey := args[0]
 
-			// Serve from the local store (sync --fulltext)
-			// when present; --refresh forces the live API path below.
-			if !refresh {
-				if db, _ := openStoreForRead(cmd.Context(), "zotio"); db != nil {
+			if refresh && flags.dataSource == "local" {
+				return usageErr(fmt.Errorf("--refresh cannot be used with --data-source local"))
+			}
+
+			// Local-only reads must not fall through to the API when the mirror
+			// lacks this attachment's full text. In auto mode, a local miss may
+			// still use the live API below.
+			useLocal := flags.dataSource == "local" || (flags.dataSource == "auto" && !refresh)
+			if useLocal {
+				db, err := openStoreForRead(cmd.Context(), "zotio")
+				if err != nil || db == nil {
+					if flags.dataSource == "local" {
+						if err != nil {
+							return fmt.Errorf("opening local database: %w\nRun 'zotio sync --fulltext' first.", err)
+						}
+						return fmt.Errorf("no local data. Run 'zotio sync --fulltext' first")
+					}
+				} else {
 					defer db.Close()
 					if data, ok := localPDFFulltext(db, itemKey); ok {
 						if flagSearch != "" {
@@ -41,6 +55,9 @@ func newItemsFulltextCmd(flags *rootFlags) *cobra.Command {
 							data = filtered
 						}
 						return printOutputWithFlags(cmd.OutOrStdout(), data, flags)
+					}
+					if flags.dataSource == "local" {
+						return fmt.Errorf("no local full text for item %s. Run 'zotio sync --fulltext' first", itemKey)
 					}
 				}
 			}

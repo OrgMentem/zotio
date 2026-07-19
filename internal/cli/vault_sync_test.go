@@ -311,6 +311,56 @@ func TestVaultSyncLogseqCreate(t *testing.T) {
 	}
 }
 
+func TestVaultSyncLogseqIdempotent(t *testing.T) {
+	seedVaultStore(t)
+	vault := filepath.Join(t.TempDir(), "vault")
+	runVaultSync(t, &rootFlags{asJSON: true}, []string{"--out", vault, "--format", "logseq"})
+
+	out := runVaultSync(t, &rootFlags{asJSON: true}, []string{"--out", vault, "--format", "logseq"})
+	var report struct {
+		Created   int `json:"created"`
+		Updated   int `json:"updated"`
+		Unchanged int `json:"unchanged"`
+	}
+	if err := json.Unmarshal([]byte(out), &report); err != nil {
+		t.Fatalf("decode report: %v", err)
+	}
+	if report.Created != 0 || report.Updated != 0 || report.Unchanged != 1 {
+		t.Fatalf("second Logseq sync = %+v, want one unchanged note", report)
+	}
+	entries, err := os.ReadDir(vault)
+	if err != nil {
+		t.Fatalf("read vault: %v", err)
+	}
+	var notes []string
+	for _, entry := range entries {
+		if !entry.IsDir() && strings.HasSuffix(entry.Name(), ".md") {
+			notes = append(notes, entry.Name())
+		}
+	}
+	if len(notes) != 1 || notes[0] != "vaswani2017.md" {
+		t.Fatalf("Logseq notes = %v, want [vaswani2017.md]", notes)
+	}
+}
+
+func TestVaultSyncReportFailsForIssues(t *testing.T) {
+	for _, status := range []string{"error", "file_busy"} {
+		t.Run(status, func(t *testing.T) {
+			cmd := newVaultSyncCmd(&rootFlags{asJSON: true})
+			var out bytes.Buffer
+			cmd.SetOut(&out)
+
+			err := printVaultSyncReport(cmd, []vaultSyncResult{{File: "note.md", Status: status}}, "vault", "obsidian", &rootFlags{asJSON: true})
+			if code := ExitCode(err); code != 13 {
+				t.Fatalf("exit code = %d, want 13 (err=%v)", code, err)
+			}
+			if !strings.Contains(out.String(), status) {
+				t.Fatalf("report did not render %q: %s", status, out.String())
+			}
+		})
+	}
+}
+
 func TestSanitizeVaultFilename(t *testing.T) {
 	cases := map[string]string{
 		"vaswani2017": "vaswani2017",

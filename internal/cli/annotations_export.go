@@ -16,7 +16,6 @@ import (
 
 	"zotio/internal/client"
 	"zotio/internal/cliutil"
-	"zotio/internal/store"
 )
 
 type annotationExportItem struct {
@@ -70,33 +69,29 @@ func newAnnotationsExportCmd(flags *rootFlags) *cobra.Command {
 				return usageErr(fmt.Errorf("invalid --format value %q: must be markdown or json", flagFormat))
 			}
 
+			if refresh && flags.dataSource == "local" {
+				return usageErr(fmt.Errorf("--refresh cannot be used with --data-source local"))
+			}
+			readFlags := flags
+			if refresh {
+				override := *flags
+				override.dataSource = "live"
+				readFlags = &override
+			}
 			c, err := flags.newClient()
 			if err != nil {
 				return err
 			}
 
-			// resolve per-item annotations from the local
-			// store when available (avoids one /children fetch per item);
-			// --refresh or an empty store falls back to the live fan-out.
-			var db *store.Store
-			if !refresh {
-				if d, _ := openStoreForRead(cmd.Context(), "zotio"); d != nil {
-					db = d
-					defer db.Close()
-				}
-			}
-
 			path := "/items/top"
 			params := map[string]string{}
 			if flagCollection != "" {
-				// url-encode path param to prevent segment injection.
 				path = "/collections/" + url.PathEscape(flagCollection) + "/items"
 			} else if flagTag != "" {
 				path = "/items"
 				params["tag"] = flagTag
 			}
-
-			items, err := fetchZoteroItems(c, path, params, flagLimit)
+			items, err := fetchResolvedZoteroItems(cmd.Context(), c, readFlags, path, params, flagLimit)
 			if err != nil {
 				return classifyAPIError(err, flags)
 			}
@@ -116,29 +111,14 @@ func newAnnotationsExportCmd(flags *rootFlags) *cobra.Command {
 				func(item map[string]any) string { return zoteroString(item, "key") },
 				func(fctx context.Context, item map[string]any) (annotationExportItem, error) {
 					key := zoteroString(item, "key")
-					var childItems []map[string]any
-					if db != nil {
-						// local annotation resolution.
-						rows, lerr := db.AnnotationsForItem(key)
-						if lerr != nil {
-							return annotationExportItem{}, lerr
-						}
-						for _, raw := range rows {
-							var obj map[string]any
-							if json.Unmarshal(raw, &obj) == nil {
-								childItems = append(childItems, obj)
-							}
-						}
-					} else {
-						// url-encode path param to prevent segment injection.
-						children, err := c.GetContext(fctx, "/items/"+url.PathEscape(key)+"/children", map[string]string{"itemType": "annotation"})
-						if err != nil {
-							return annotationExportItem{}, err
-						}
-						childItems, err = decodeZoteroItems(children)
-						if err != nil {
-							return annotationExportItem{}, fmt.Errorf("parsing annotation children for %s: %w", key, err)
-						}
+					childPath := "/items/" + url.PathEscape(key) + "/children"
+					data, _, err := resolveRead(fctx, c, readFlags, "items", false, childPath, map[string]string{"itemType": "annotation"}, nil)
+					if err != nil {
+						return annotationExportItem{}, err
+					}
+					childItems, err := decodeZoteroItems(data)
+					if err != nil {
+						return annotationExportItem{}, fmt.Errorf("parsing annotation children for %s: %w", key, err)
 					}
 					annotations := annotationSummariesFromItems(childItems)
 					if len(annotations) == 0 {
@@ -210,6 +190,7 @@ func fetchZoteroItems(c zoteroGetter, path string, params map[string]string, max
 			if remaining < pageSize {
 				pageSize = remaining
 			} else {
+
 				pageSize = 100
 			}
 		}
@@ -219,6 +200,48 @@ func fetchZoteroItems(c zoteroGetter, path string, params map[string]string, max
 		pageParams["start"] = fmt.Sprintf("%d", start)
 
 		data, err := c.Get(path, pageParams)
+		if err != nil {
+			return nil, err
+		}
+		items, err := decodeZoteroItems(data)
+		if err != nil {
+			return nil, err
+		}
+		if len(items) == 0 {
+			break
+		}
+		all = append(all, items...)
+		if len(items) < pageSize {
+			break
+		}
+		start += len(items)
+	}
+	if maxItems > 0 && len(all) > maxItems {
+		all = all[:maxItems]
+	}
+	return all, nil
+}
+
+func fetchResolvedZoteroItems(ctx context.Context, c *client.Client, flags *rootFlags, path string, params map[string]string, maxItems int) ([]map[string]any, error) {
+	all := make([]map[string]any, 0)
+	start := 0
+	pageSize := 100
+	for {
+		if maxItems > 0 {
+			remaining := maxItems - len(all)
+			if remaining <= 0 {
+				break
+			}
+			if remaining < pageSize {
+				pageSize = remaining
+			} else {
+				pageSize = 100
+			}
+		}
+		pageParams := cloneStringMap(params)
+		pageParams["limit"] = fmt.Sprintf("%d", pageSize)
+		pageParams["start"] = fmt.Sprintf("%d", start)
+		data, _, err := resolveRead(ctx, c, flags, "items", false, path, pageParams, nil)
 		if err != nil {
 			return nil, err
 		}

@@ -3,6 +3,7 @@
 package cli
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -65,25 +66,37 @@ func hasSearchIdentity(obj map[string]interface{}, keys []string) bool {
 }
 
 // extractSearchResults unwraps API search responses by checking common envelope paths.
-func extractSearchResults(data json.RawMessage) []json.RawMessage {
-	// Try direct array first
-	var items []json.RawMessage
-	if json.Unmarshal(data, &items) == nil {
-		return items
+func extractSearchResults(data json.RawMessage) ([]json.RawMessage, error) {
+	trimmed := bytes.TrimSpace(data)
+	if len(trimmed) == 0 {
+		return nil, fmt.Errorf("decoding search response: expected a JSON array or object")
 	}
-	// Try common wrapper paths: data, results, items
-	var wrapped map[string]json.RawMessage
-	if json.Unmarshal(data, &wrapped) == nil {
+
+	switch trimmed[0] {
+	case '[':
+		var items []json.RawMessage
+		if err := json.Unmarshal(trimmed, &items); err != nil {
+			return nil, fmt.Errorf("decoding search response array: %w", err)
+		}
+		return items, nil
+	case '{':
+		var wrapped map[string]json.RawMessage
+		if err := json.Unmarshal(trimmed, &wrapped); err != nil {
+			return nil, fmt.Errorf("decoding search response object: %w", err)
+		}
 		for _, key := range []string{"data", "results", "items", "records", "entries"} {
-			if inner, ok := wrapped[key]; ok {
-				if json.Unmarshal(inner, &items) == nil {
-					return items
+			if inner, ok := wrapped[key]; ok && len(bytes.TrimSpace(inner)) > 0 && bytes.TrimSpace(inner)[0] == '[' {
+				var items []json.RawMessage
+				if err := json.Unmarshal(inner, &items); err != nil {
+					return nil, fmt.Errorf("decoding search response %q array: %w", key, err)
 				}
+				return items, nil
 			}
 		}
+		return []json.RawMessage{data}, nil
+	default:
+		return nil, fmt.Errorf("decoding search response: expected a JSON array or object")
 	}
-	// Return as single-item array
-	return []json.RawMessage{data}
 }
 
 func newSearchCmd(flags *rootFlags) *cobra.Command {
@@ -131,8 +144,11 @@ In local mode: searches locally synced data only.`,
 				}
 				data, getErr := c.Get("/items", params)
 				if getErr == nil {
-					// Live search succeeded
-					results := extractSearchResults(data)
+					// Live search succeeded.
+					results, err := extractSearchResults(data)
+					if err != nil {
+						return fmt.Errorf("decoding live search response: %w", err)
+					}
 					prov := DataProvenance{Source: "live"}
 					return outputSearchResults(cmd, flags, results, limit, prov)
 				}

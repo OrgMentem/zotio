@@ -3,9 +3,11 @@
 package cli
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/url"
 	"os"
 	"strconv"
@@ -29,12 +31,18 @@ type syncResult struct {
 	Duration time.Duration
 }
 
-func emitSyncEvent(v any) {
+type syncEventWriterContextKey struct{}
+
+func emitSyncEvent(ctx context.Context, v any) {
 	b, err := json.Marshal(v)
 	if err != nil {
 		return
 	}
-	_, _ = os.Stdout.Write(append(b, '\n'))
+	writer, _ := ctx.Value(syncEventWriterContextKey{}).(io.Writer)
+	if writer == nil {
+		writer = io.Discard
+	}
+	_, _ = writer.Write(append(b, '\n'))
 }
 
 func processDequeuedSyncResource(ctx context.Context, resource string, results chan<- syncResult, syncOne func(string) syncResult) bool {
@@ -177,7 +185,7 @@ Exit codes & warnings:
 				concurrency = 4
 			}
 
-			ctx := cmd.Context()
+			ctx := context.WithValue(cmd.Context(), syncEventWriterContextKey{}, cmd.OutOrStdout())
 			started := time.Now()
 			work := make(chan string, len(resources))
 			results := make(chan syncResult, len(resources))
@@ -273,7 +281,7 @@ Exit codes & warnings:
 						totalSynced, totalResources, elapsed.Seconds())
 				}
 			} else {
-				emitSyncEvent(struct {
+				emitSyncEvent(ctx, struct {
 					Event        string `json:"event"`
 					TotalRecords int    `json:"total_records"`
 					Resources    int    `json:"resources"`
@@ -432,7 +440,7 @@ func syncResource(ctx context.Context, c syncHTTPClient, db *store.Store, resour
 	started := time.Now()
 
 	if !humanFriendly {
-		emitSyncEvent(struct {
+		emitSyncEvent(ctx, struct {
 			Event    string `json:"event"`
 			Resource string `json:"resource"`
 		}{
@@ -449,18 +457,27 @@ func syncResource(ctx context.Context, c syncHTTPClient, db *store.Store, resour
 	// must use a client whose base URL has the library segment stripped.
 	requestClient := syncClientForResource(c, resource)
 
-	// Resume cursor from sync_state (unless --full cleared it)
-	existingCursor, _, _, _ := db.GetSyncState(resource)
+	// Resume cursor from sync_state unless a full sync explicitly starts over.
+	existingCursor := ""
+	if !full {
+		var stateErr error
+		existingCursor, _, _, stateErr = db.GetSyncState(resource)
+		if stateErr != nil {
+			return syncResult{Resource: resource, Err: fmt.Errorf("reading sync cursor for %s: %w", resource, stateErr), Duration: time.Since(started)}
+		}
+	}
 
 	// Determine the since value: an explicit --since version wins; otherwise use
 	// the stored Last-Modified-Version checkpoint for incremental sync (skipped
-	// on --full).: Zotero's `since` is an integer
-	// library version, not a timestamp — the old RFC3339 value was silently
-	// ignored by the API, so incremental sync never actually filtered.
+	// on --full). Zotero's `since` is an integer library version, not a timestamp.
 	sinceParam := determineSinceParam()
 	effectiveSince := sinceVersion
 	if effectiveSince == 0 && !full {
-		if v, verr := db.GetLibraryVersion(resource); verr == nil && v > 0 {
+		v, versionErr := db.GetLibraryVersion(resource)
+		if versionErr != nil {
+			return syncResult{Resource: resource, Err: fmt.Errorf("reading library-version checkpoint for %s: %w", resource, versionErr), Duration: time.Since(started)}
+		}
+		if v > 0 {
 			effectiveSince = v
 		}
 	}
@@ -513,7 +530,7 @@ func syncResource(ctx context.Context, c syncHTTPClient, db *store.Store, resour
 		if err != nil {
 			if w, ok := isSyncAccessWarning(err); ok {
 				if !humanFriendly {
-					emitSyncEvent(struct {
+					emitSyncEvent(ctx, struct {
 						Event    string `json:"event"`
 						Resource string `json:"resource"`
 						Status   int    `json:"status"`
@@ -530,7 +547,7 @@ func syncResource(ctx context.Context, c syncHTTPClient, db *store.Store, resour
 				return syncResult{Resource: resource, Count: totalCount, Warn: fmt.Errorf("skipped %s: %s", resource, w.Reason), Duration: time.Since(started)}
 			}
 			if !humanFriendly {
-				emitSyncEvent(struct {
+				emitSyncEvent(ctx, struct {
 					Event    string `json:"event"`
 					Resource string `json:"resource"`
 					Error    string `json:"error"`
@@ -543,28 +560,53 @@ func syncResource(ctx context.Context, c syncHTTPClient, db *store.Store, resour
 			return syncResult{Resource: resource, Count: totalCount, Err: fmt.Errorf("fetching %s: %w", resource, err), Duration: time.Since(started)}
 		}
 
-		// Try to extract items from the response.
-		// Strategy: try array first, then common wrapper keys.
-		items, nextCursor, hasMore := extractPageItems(data, pageSize.cursorParam)
+		// Decode pages before deciding whether a response is a singleton record.
+		items, nextCursor, hasMore, isPage, extractErr := extractPageItemsWithError(data, pageSize.cursorParam)
+		if extractErr != nil {
+			err := fmt.Errorf("decoding page for %s: %w", resource, extractErr)
+			if !humanFriendly {
+				emitSyncEvent(ctx, struct {
+					Event    string `json:"event"`
+					Resource string `json:"resource"`
+					Error    string `json:"error"`
+				}{
+					Event:    "sync_error",
+					Resource: resource,
+					Error:    err.Error(),
+				})
+			}
+			return syncResult{Resource: resource, Count: totalCount, Err: err, Duration: time.Since(started)}
+		}
 		if nextCursor == "" && pageSize.cursorParam == "start" && len(items) == pageSize.limit {
-			// Zotero array
-			// endpoints paginate via start/limit and put Link headers outside
-			// the JSON body, so derive the next offset when a full page arrives.
+			// Zotero array endpoints paginate via start/limit and put Link headers
+			// outside the JSON body, so derive the next offset when a full page arrives.
 			currentStart, _ := strconv.Atoi(params[pageSize.cursorParam])
 			nextCursor = strconv.Itoa(currentStart + len(items))
 			hasMore = true
 		}
 
-		if len(items) == 0 {
-			var emptyPage []json.RawMessage
-			if err := json.Unmarshal(data, &emptyPage); err == nil && len(emptyPage) == 0 {
+		if isPage && len(items) == 0 {
+			if !hasMore || nextCursor == "" {
 				completedNaturally = true
 				break
 			}
-			// Single object response - try to store as-is
+			pagesFetched++
+			if maxPages > 0 && pagesFetched >= maxPages {
+				break
+			}
+			if nextCursor == lastNextCursor {
+				break
+			}
+			lastNextCursor = nextCursor
+			cursor = nextCursor
+			continue
+		}
+
+		if len(items) == 0 {
+			// A validated object response is a singleton resource record.
 			if err := upsertSingleObject(db, resource, data); err != nil {
 				if !humanFriendly {
-					emitSyncEvent(struct {
+					emitSyncEvent(ctx, struct {
 						Event    string `json:"event"`
 						Resource string `json:"resource"`
 						Error    string `json:"error"`
@@ -594,7 +636,7 @@ func syncResource(ctx context.Context, c syncHTTPClient, db *store.Store, resour
 		stored, extractFailures, err := upsertResourceBatch(db, resource, items)
 		if err != nil {
 			if !humanFriendly {
-				emitSyncEvent(struct {
+				emitSyncEvent(ctx, struct {
 					Event    string `json:"event"`
 					Resource string `json:"resource"`
 					Error    string `json:"error"`
@@ -619,7 +661,7 @@ func syncResource(ctx context.Context, c syncHTTPClient, db *store.Store, resour
 			if humanFriendly {
 				fmt.Fprintf(os.Stderr, "warning: %s returned %d items but stored 0 — the local store will be empty for this resource. Likely cause: scalar item shape rather than objects with extractable IDs.\n", resource, len(items))
 			} else {
-				emitSyncEvent(struct {
+				emitSyncEvent(ctx, struct {
 					Event    string `json:"event"`
 					Resource string `json:"resource"`
 					Consumed int    `json:"consumed"`
@@ -642,7 +684,7 @@ func syncResource(ctx context.Context, c syncHTTPClient, db *store.Store, resour
 			if humanFriendly {
 				fmt.Fprintf(os.Stderr, "\nwarning: %s had %d item(s) on this page with no extractable primary key — those rows were dropped silently. Annotate the spec with x-resource-id to fix.\n", resource, extractFailures)
 			} else {
-				emitSyncEvent(struct {
+				emitSyncEvent(ctx, struct {
 					Event    string `json:"event"`
 					Resource string `json:"resource"`
 					Consumed int    `json:"consumed"`
@@ -681,7 +723,7 @@ func syncResource(ctx context.Context, c syncHTTPClient, db *store.Store, resour
 			}
 		} else {
 			if currentRate > 0 {
-				emitSyncEvent(struct {
+				emitSyncEvent(ctx, struct {
 					Event    string  `json:"event"`
 					Resource string  `json:"resource"`
 					Fetched  int64   `json:"fetched"`
@@ -693,7 +735,7 @@ func syncResource(ctx context.Context, c syncHTTPClient, db *store.Store, resour
 					RateRPS:  currentRate,
 				})
 			} else {
-				emitSyncEvent(struct {
+				emitSyncEvent(ctx, struct {
 					Event    string `json:"event"`
 					Resource string `json:"resource"`
 					Fetched  int64  `json:"fetched"`
@@ -724,7 +766,7 @@ func syncResource(ctx context.Context, c syncHTTPClient, db *store.Store, resour
 			if humanFriendly {
 				fmt.Fprintf(os.Stderr, "\n  %s: reached --max-pages limit (%d pages, %d items)\n", resource, maxPages, totalCount)
 			} else {
-				emitSyncEvent(struct {
+				emitSyncEvent(ctx, struct {
 					Event    string `json:"event"`
 					Resource string `json:"resource"`
 					Reason   string `json:"reason"`
@@ -748,7 +790,7 @@ func syncResource(ctx context.Context, c syncHTTPClient, db *store.Store, resour
 			if humanFriendly {
 				fmt.Fprintf(os.Stderr, "\n  %s: API returned the same next cursor across two pages; aborting to prevent budget waste.\n", resource)
 			} else {
-				emitSyncEvent(struct {
+				emitSyncEvent(ctx, struct {
 					Event    string `json:"event"`
 					Resource string `json:"resource"`
 					Reason   string `json:"reason"`
@@ -793,7 +835,7 @@ func syncResource(ctx context.Context, c syncHTTPClient, db *store.Store, resour
 		if humanFriendly {
 			fmt.Fprintf(os.Stderr, "\nwarning: %s consumed %d items, extracted %d primary keys, but stored 0 rows — extraction succeeded yet nothing landed. Investigate FTS triggers / transaction rollback / encoding.\n", resource, consumedTotal, consumedTotal-extractFailureTotal)
 		} else {
-			emitSyncEvent(struct {
+			emitSyncEvent(ctx, struct {
 				Event           string `json:"event"`
 				Resource        string `json:"resource"`
 				Consumed        int    `json:"consumed"`
@@ -812,7 +854,7 @@ func syncResource(ctx context.Context, c syncHTTPClient, db *store.Store, resour
 	}
 
 	if !humanFriendly {
-		emitSyncEvent(struct {
+		emitSyncEvent(ctx, struct {
 			Event      string `json:"event"`
 			Resource   string `json:"resource"`
 			Total      int    `json:"total"`
@@ -850,56 +892,78 @@ func determineSinceParam() string {
 	return "since"
 }
 
-// extractPageItems attempts to extract an array of items and pagination cursor from a response.
-// It tries multiple strategies:
-// 1. Direct JSON array
-// 2. Common wrapper keys: "data", "results", "items", "records", "nodes", "entries"
-// It also extracts the next cursor from common response fields.
+// extractPageItems preserves the legacy helper API for non-sync consumers.
+// Sync callers use extractPageItemsWithError so malformed responses cannot be
+// mistaken for singleton records.
 func extractPageItems(data json.RawMessage, cursorParam string) ([]json.RawMessage, string, bool) {
-	// Strategy 1: direct array
-	var items []json.RawMessage
-	if err := json.Unmarshal(data, &items); err == nil {
-		return items, "", false
+	items, cursor, hasMore, _, _ := extractPageItemsWithError(data, cursorParam)
+	return items, cursor, hasMore
+}
+
+// extractPageItemsWithError extracts a collection page and distinguishes it
+// from a validated singleton object. isPage is true for direct arrays and
+// recognized pagination envelopes, including empty envelopes.
+func extractPageItemsWithError(data json.RawMessage, cursorParam string) ([]json.RawMessage, string, bool, bool, error) {
+	data = bytes.TrimSpace(data)
+	if len(data) == 0 {
+		return nil, "", false, false, fmt.Errorf("empty response body")
 	}
 
-	// Strategy 2: object with known wrapper keys
+	if data[0] == '[' {
+		var items []json.RawMessage
+		if err := json.Unmarshal(data, &items); err != nil {
+			return nil, "", false, false, fmt.Errorf("decoding response array: %w", err)
+		}
+		return items, "", false, true, nil
+	}
+	if data[0] != '{' {
+		return nil, "", false, false, fmt.Errorf("expected JSON array or object")
+	}
+
 	var envelope map[string]json.RawMessage
 	if err := json.Unmarshal(data, &envelope); err != nil {
-		return nil, "", false
+		return nil, "", false, false, fmt.Errorf("decoding response object: %w", err)
 	}
 
-	// Try common item keys first (fast path)
 	itemKeys := []string{"data", "results", "items", "records", "nodes", "entries"}
 	for _, key := range itemKeys {
-		if raw, ok := envelope[key]; ok {
-			if err := json.Unmarshal(raw, &items); err == nil && len(items) > 0 {
-				nextCursor, hasMore := extractPaginationFromEnvelope(envelope, cursorParam)
-				return items, nextCursor, hasMore
-			}
+		raw, ok := envelope[key]
+		if !ok {
+			continue
 		}
+		raw = bytes.TrimSpace(raw)
+		if len(raw) == 0 || raw[0] != '[' {
+			continue
+		}
+		var items []json.RawMessage
+		if err := json.Unmarshal(raw, &items); err != nil {
+			return nil, "", false, false, fmt.Errorf("decoding pagination envelope %q: %w", key, err)
+		}
+		nextCursor, hasMore := extractPaginationFromEnvelope(envelope, cursorParam)
+		return items, nextCursor, hasMore, true, nil
 	}
 
-	// Fallback: try every key in the envelope. If exactly one maps to a JSON
-	// array with items, use it. This handles APIs that wrap responses with the
-	// resource name (e.g., {"markets": [...], "cursor": "..."}).
-	var arrayKey string
+	// Fall back to one non-empty resource-named array, e.g. {"markets":[...]}.
 	var arrayItems []json.RawMessage
 	arrayCount := 0
-	for key, raw := range envelope {
+	for _, raw := range envelope {
+		raw = bytes.TrimSpace(raw)
+		if len(raw) == 0 || raw[0] != '[' {
+			continue
+		}
 		var candidate []json.RawMessage
 		if err := json.Unmarshal(raw, &candidate); err == nil && len(candidate) > 0 {
-			arrayKey = key
 			arrayItems = candidate
 			arrayCount++
 		}
 	}
 	if arrayCount == 1 {
 		nextCursor, hasMore := extractPaginationFromEnvelope(envelope, cursorParam)
-		_ = arrayKey // used for detection, items extracted above
-		return arrayItems, nextCursor, hasMore
+		return arrayItems, nextCursor, hasMore, true, nil
 	}
 
-	return nil, "", false
+	// A syntactically valid object with no collection envelope is a singleton.
+	return nil, "", false, false, nil
 }
 
 // extractPaginationFromEnvelope extracts cursor and has_more from a response envelope.
@@ -1133,12 +1197,21 @@ func resolveDiscriminatedResource(resource string, obj map[string]any) string {
 func upsertSingleObject(db *store.Store, resource string, data json.RawMessage) error {
 	// Decode with UseNumber so large integer IDs (e.g. 55043301) keep their
 	// literal form instead of being coerced to float64 ("5.5043301e+07").
-	dec := json.NewDecoder(strings.NewReader(string(data)))
+	dec := json.NewDecoder(bytes.NewReader(data))
 	dec.UseNumber()
 	var obj map[string]any
 	if err := dec.Decode(&obj); err != nil {
-		// Not a JSON object either - store raw under resource name
-		return db.Upsert(canonicalStoreResource(resource), canonicalStoreResource(resource), data)
+		return fmt.Errorf("decoding single response for %s: %w", resource, err)
+	}
+	if obj == nil {
+		return fmt.Errorf("decoding single response for %s: expected JSON object", resource)
+	}
+	var trailing any
+	if err := dec.Decode(&trailing); err != io.EOF {
+		if err == nil {
+			return fmt.Errorf("decoding single response for %s: expected a single JSON object", resource)
+		}
+		return fmt.Errorf("decoding single response for %s: %w", resource, err)
 	}
 
 	resource = resolveDiscriminatedResource(resource, obj)

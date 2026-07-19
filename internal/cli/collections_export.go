@@ -80,6 +80,14 @@ the top-level collection without recursing into subcollections.`,
 func exportCollection(c interface {
 	Get(path string, params map[string]string) (json.RawMessage, error)
 }, out io.Writer, collKey, format string, flat bool, limit int, visited map[string]bool) error {
+	if format == "csljson" {
+		items := make([]json.RawMessage, 0)
+		if err := collectCollectionCSLJSON(c, collKey, flat, limit, visited, &items); err != nil {
+			return err
+		}
+		return json.NewEncoder(out).Encode(items)
+	}
+
 	if visited[collKey] {
 		return nil
 	}
@@ -127,6 +135,55 @@ func exportCollection(c interface {
 			continue
 		}
 		if err := exportCollection(c, out, key, format, flat, limit, visited); err != nil {
+			return fmt.Errorf("exporting subcollection %s: %w", key, err)
+		}
+	}
+	return nil
+}
+
+func collectCollectionCSLJSON(c interface {
+	Get(path string, params map[string]string) (json.RawMessage, error)
+}, collKey string, flat bool, limit int, visited map[string]bool, items *[]json.RawMessage) error {
+	if visited[collKey] {
+		return nil
+	}
+	visited[collKey] = true
+
+	data, err := c.Get("/collections/"+url.PathEscape(collKey)+"/items", map[string]string{
+		"format": "csljson",
+		"limit":  fmt.Sprintf("%d", limit),
+	})
+	if err != nil {
+		return fmt.Errorf("fetching items for collection %s: %w", collKey, err)
+	}
+	var collectionItems []json.RawMessage
+	if err := json.Unmarshal(data, &collectionItems); err != nil {
+		return fmt.Errorf("decoding CSL-JSON items for collection %s: %w", collKey, err)
+	}
+	*items = append(*items, collectionItems...)
+
+	if flat {
+		return nil
+	}
+	subData, err := c.Get("/collections/"+url.PathEscape(collKey)+"/collections", nil)
+	if err != nil {
+		return fmt.Errorf("fetching subcollections for %s: %w", collKey, err)
+	}
+	var subcols []map[string]any
+	if err := json.Unmarshal(subData, &subcols); err != nil {
+		return fmt.Errorf("decoding subcollections for %s: %w", collKey, err)
+	}
+	for _, sub := range subcols {
+		key, _ := sub["key"].(string)
+		if key == "" {
+			if d, ok := sub["data"].(map[string]any); ok {
+				key, _ = d["key"].(string)
+			}
+		}
+		if key == "" {
+			continue
+		}
+		if err := collectCollectionCSLJSON(c, key, flat, limit, visited, items); err != nil {
 			return fmt.Errorf("exporting subcollection %s: %w", key, err)
 		}
 	}

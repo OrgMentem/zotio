@@ -3,14 +3,11 @@
 package cli
 
 import (
-	"encoding/json"
 	"fmt"
 	"net/url"
 	"sort"
 	"strings"
 	"time"
-
-	"zotio/internal/store"
 
 	"github.com/spf13/cobra"
 )
@@ -31,6 +28,15 @@ func newAnnotationsTimelineCmd(flags *rootFlags) *cobra.Command {
   zotio annotations timeline --item ABCD1234 --json`,
 		Annotations: map[string]string{"mcp:read-only": "true"},
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if refresh && flags.dataSource == "local" {
+				return usageErr(fmt.Errorf("--refresh cannot be used with --data-source local"))
+			}
+			readFlags := flags
+			if refresh {
+				override := *flags
+				override.dataSource = "live"
+				readFlags = &override
+			}
 			c, err := flags.newClient()
 			if err != nil {
 				return err
@@ -40,22 +46,16 @@ func newAnnotationsTimelineCmd(flags *rootFlags) *cobra.Command {
 				return err
 			}
 
-			// resolve annotations from the local store when
-			// available; --refresh or an empty store falls back to live.
-			var db *store.Store
-			if !refresh {
-				if d, _ := openStoreForRead(cmd.Context(), "zotio"); d != nil {
-					db = d
-					defer db.Close()
-				}
-			}
-
 			var annotations []annotationSummary
 			if flagCollection != "" {
-				// url-encode path param to prevent segment injection.
-				items, err := fetchZoteroItems(c, "/collections/"+url.PathEscape(flagCollection)+"/items", nil, 0)
+				path := "/collections/" + url.PathEscape(flagCollection) + "/items"
+				data, _, err := resolveRead(cmd.Context(), c, readFlags, "items", false, path, nil, nil)
 				if err != nil {
 					return classifyAPIError(err, flags)
+				}
+				items, err := decodeZoteroItems(data)
+				if err != nil {
+					return fmt.Errorf("parsing collection items: %w", err)
 				}
 				for _, item := range items {
 					if !zoteroItemHasChildren(item) {
@@ -65,54 +65,29 @@ func newAnnotationsTimelineCmd(flags *rootFlags) *cobra.Command {
 					if key == "" {
 						continue
 					}
-					var childItems []map[string]any
-					if db != nil {
-						// local annotation resolution.
-						rows, lerr := db.AnnotationsForItem(key)
-						if lerr != nil {
-							return lerr
-						}
-						for _, raw := range rows {
-							var obj map[string]any
-							if json.Unmarshal(raw, &obj) == nil {
-								childItems = append(childItems, obj)
-							}
-						}
-					} else {
-						// url-encode path param to prevent segment injection.
-						children, err := c.Get("/items/"+url.PathEscape(key)+"/children", map[string]string{"itemType": "annotation"})
-						if err != nil {
-							return classifyAPIError(err, flags)
-						}
-						childItems, err = decodeZoteroItems(children)
-						if err != nil {
-							return fmt.Errorf("parsing annotation children for %s: %w", key, err)
-						}
+					childPath := "/items/" + url.PathEscape(key) + "/children"
+					children, _, err := resolveRead(cmd.Context(), c, readFlags, "items", false, childPath, map[string]string{"itemType": "annotation"}, nil)
+					if err != nil {
+						return classifyAPIError(err, flags)
+					}
+					childItems, err := decodeZoteroItems(children)
+					if err != nil {
+						return fmt.Errorf("parsing annotation children for %s: %w", key, err)
 					}
 					annotations = append(annotations, annotationSummariesFromItems(childItems)...)
 				}
-			} else if db != nil {
-				// list annotations straight from the store.
-				rows, lerr := db.ItemsByType("annotation", 0)
-				if lerr != nil {
-					return lerr
-				}
-				items := make([]map[string]any, 0, len(rows))
-				for _, raw := range rows {
-					var obj map[string]any
-					if json.Unmarshal(raw, &obj) == nil {
-						items = append(items, obj)
-					}
-				}
-				annotations = annotationSummariesFromItems(items)
 			} else {
-				items, err := fetchZoteroItems(c, "/items", map[string]string{
+				data, _, err := resolveRead(cmd.Context(), c, readFlags, "items", false, "/items", map[string]string{
 					"itemType":  "annotation",
 					"sort":      "dateAdded",
 					"direction": "desc",
-				}, fetchLimitForClientFilteredAnnotations(flagLimit, flagSince, flagItem))
+				}, nil)
 				if err != nil {
 					return classifyAPIError(err, flags)
+				}
+				items, err := decodeZoteroItems(data)
+				if err != nil {
+					return fmt.Errorf("parsing annotations: %w", err)
 				}
 				annotations = annotationSummariesFromItems(items)
 			}

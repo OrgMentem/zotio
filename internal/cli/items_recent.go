@@ -3,10 +3,14 @@
 package cli
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
+	"strconv"
 	"time"
+
+	"zotio/internal/client"
 
 	"github.com/spf13/cobra"
 )
@@ -26,15 +30,9 @@ func newItemsRecentCmd(flags *rootFlags) *cobra.Command {
 				return err
 			}
 
-			path := "/items"
-			params := map[string]string{"sort": "dateAdded", "direction": "desc"}
-			data, prov, err := resolveRead(cmd.Context(), c, flags, "items", false, path, params, nil)
+			data, prov, err := fetchRecentItems(cmd.Context(), c, flags, flagLimit, flagDays, flagType)
 			if err != nil {
 				return classifyAPIError(err, flags)
-			}
-			data, err = filterRecentItems(data, flagLimit, flagDays, flagType)
-			if err != nil {
-				return err
 			}
 			printProvenance(cmd, countResultItems(data), prov)
 			if flags.asJSON || !isTerminal(cmd.OutOrStdout()) {
@@ -70,6 +68,67 @@ func newItemsRecentCmd(flags *rootFlags) *cobra.Command {
 	cmd.Flags().StringVar(&flagType, "type", "", "Filter by item type")
 
 	return cmd
+}
+
+func fetchRecentItems(ctx context.Context, c *client.Client, flags *rootFlags, limit, days int, itemType string) (json.RawMessage, DataProvenance, error) {
+	const pageSize = 100
+
+	params := map[string]string{
+		"sort":      "dateAdded",
+		"direction": "desc",
+	}
+	if itemType != "" {
+		params["itemType"] = itemType
+	}
+	var cutoff time.Time
+	if days > 0 {
+		cutoff = time.Now().Add(-time.Duration(days) * 24 * time.Hour)
+	}
+
+	filtered := make([]map[string]any, 0)
+	var provenance DataProvenance
+	for start := 0; ; {
+		pageParams := cloneStringMap(params)
+		pageParams["start"] = strconv.Itoa(start)
+		pageParams["limit"] = strconv.Itoa(pageSize)
+		data, prov, err := resolveRead(ctx, c, flags, "items", false, "/items", pageParams, nil)
+		if err != nil {
+			return nil, DataProvenance{}, err
+		}
+		if start == 0 {
+			provenance = prov
+		}
+		var items []map[string]any
+		if err := json.Unmarshal(data, &items); err != nil {
+			return nil, DataProvenance{}, fmt.Errorf("parsing items response: %w", err)
+		}
+		for _, item := range items {
+			if itemType != "" && jsonStringFieldFromMap(item, "itemType") != itemType {
+				continue
+			}
+			if days > 0 {
+				added, err := time.Parse(time.RFC3339, jsonStringFieldFromMap(item, "dateAdded"))
+				if err != nil {
+					continue
+				}
+				if added.Before(cutoff) {
+					out, err := json.Marshal(filtered)
+					return out, provenance, err
+				}
+			}
+			filtered = append(filtered, item)
+			if limit > 0 && len(filtered) >= limit {
+				out, err := json.Marshal(filtered)
+				return out, provenance, err
+			}
+		}
+		if len(items) < pageSize {
+			break
+		}
+		start += len(items)
+	}
+	out, err := json.Marshal(filtered)
+	return out, provenance, err
 }
 
 func filterRecentItems(data json.RawMessage, limit, days int, itemType string) (json.RawMessage, error) {

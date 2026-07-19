@@ -362,9 +362,9 @@ func scanVaultIndex(outDir string) vaultIndex {
 		// Prefer the explicit identity key, but fall back to the item key embedded
 		// in the zotero:// select link so older managed notes are updated in place
 		// instead of duplicated as "foreign" files.
-		key := frontmatterKeyValue(string(data), "zotero_key")
+		key := vaultNoteKeyValue(string(data), "zotero_key")
 		if key == "" {
-			key = keyFromZoteroSelect(frontmatterKeyValue(string(data), "zotero"))
+			key = keyFromZoteroSelect(vaultNoteKeyValue(string(data), "zotero"))
 		}
 		if key == "" {
 			continue
@@ -387,6 +387,27 @@ func frontmatterKeyValue(content, key string) string {
 	for _, ln := range fmLines {
 		if strings.HasPrefix(ln, prefix) {
 			return strings.Trim(strings.TrimSpace(ln[len(prefix):]), `"'`)
+		}
+	}
+	return ""
+}
+
+// vaultNoteKeyValue reads a managed identity value from either Obsidian
+// frontmatter or the contiguous Logseq property block at the beginning of a note.
+// Logseq spells the managed underscore-separated keys with hyphens.
+func vaultNoteKeyValue(content, key string) string {
+	if value := frontmatterKeyValue(content, key); value != "" {
+		return value
+	}
+
+	logseqKey := strings.ReplaceAll(key, "_", "-")
+	for _, line := range strings.Split(content, "\n") {
+		propertyKey, ok := logseqProp(line)
+		if !ok {
+			break
+		}
+		if propertyKey == logseqKey {
+			return strings.Trim(strings.TrimSpace(line[len(propertyKey)+len(":: "):]), `"'`)
 		}
 	}
 	return ""
@@ -1187,29 +1208,35 @@ func printVaultSyncReport(cmd *cobra.Command, results []vaultSyncResult, outDir,
 		if err != nil {
 			return err
 		}
-		return printOutputWithFlags(cmd.OutOrStdout(), json.RawMessage(data), flags)
-	}
+		if err := printOutputWithFlags(cmd.OutOrStdout(), json.RawMessage(data), flags); err != nil {
+			return err
+		}
+	} else {
 
-	out := cmd.OutOrStdout()
-	verb := "Synced"
-	if flags.dryRun {
-		verb = "Would sync"
+		out := cmd.OutOrStdout()
+		verb := "Synced"
+		if flags.dryRun {
+			verb = "Would sync"
+		}
+		summary := fmt.Sprintf("%s %d note(s) to %s [%s]: %d created, %d updated, %d unchanged",
+			verb, len(results), outDir, format, created, updated, unchanged)
+		if issues > 0 {
+			summary += fmt.Sprintf(", %d issue(s)", issues)
+		}
+		fmt.Fprintln(out, summary)
+		for _, r := range results {
+			if r.Status == "unchanged" && r.Note == "" {
+				continue
+			}
+			line := fmt.Sprintf("  [%s] %s", r.Status, r.File)
+			if r.Note != "" {
+				line += " — " + r.Note
+			}
+			fmt.Fprintln(out, line)
+		}
 	}
-	summary := fmt.Sprintf("%s %d note(s) to %s [%s]: %d created, %d updated, %d unchanged",
-		verb, len(results), outDir, format, created, updated, unchanged)
 	if issues > 0 {
-		summary += fmt.Sprintf(", %d issue(s)", issues)
-	}
-	fmt.Fprintln(out, summary)
-	for _, r := range results {
-		if r.Status == "unchanged" && r.Note == "" {
-			continue
-		}
-		line := fmt.Sprintf("  [%s] %s", r.Status, r.File)
-		if r.Note != "" {
-			line += " — " + r.Note
-		}
-		fmt.Fprintln(out, line)
+		return degradedErr(fmt.Errorf("vault sync: %d issue(s); results incomplete", issues))
 	}
 	return nil
 }

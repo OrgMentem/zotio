@@ -4,6 +4,7 @@ package cli
 
 import (
 	"encoding/json"
+	"fmt"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -25,14 +26,30 @@ func newAnnotationsSearchCmd(flags *rootFlags) *cobra.Command {
 			}
 			query := strings.Join(args, " ")
 
-			// search the local annotation store when
-			// present; --refresh forces the live API path below. The API `q`
-			// param has no local equivalent, so text matching runs in memory.
-			if !refresh {
-				if db, _ := openStoreForRead(cmd.Context(), "zotio"); db != nil {
+			if refresh && flags.dataSource == "local" {
+				return usageErr(fmt.Errorf("--refresh cannot be used with --data-source local"))
+			}
+
+			// Search the local annotation store only when local data was requested.
+			// A completed local store with no matches is a valid empty result.
+			useLocal := flags.dataSource == "local" || (flags.dataSource == "auto" && !refresh)
+			if useLocal {
+				db, err := openStoreForRead(cmd.Context(), "zotio")
+				if err != nil || db == nil {
+					if flags.dataSource == "local" {
+						if err != nil {
+							return fmt.Errorf("opening local database: %w\nRun 'zotio sync' first.", err)
+						}
+						return fmt.Errorf("no local data. Run 'zotio sync' first")
+					}
+				} else {
 					defer db.Close()
 					rows, lerr := db.ItemsByType("annotation", 0)
-					if lerr == nil && len(rows) > 0 {
+					if lerr != nil {
+						if flags.dataSource == "local" {
+							return fmt.Errorf("querying local annotations: %w", lerr)
+						}
+					} else {
 						items := make([]map[string]any, 0, len(rows))
 						for _, raw := range rows {
 							var obj map[string]any

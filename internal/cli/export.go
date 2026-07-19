@@ -141,12 +141,37 @@ large datasets as it has no memory pressure.`,
 			}
 			writer := bufio.NewWriter(output)
 
-			data, err := c.Get(path, nil)
-			if err != nil {
-				return finishExport(writer, file, classifyAPIError(err, flags))
+			var count int
+			var exportErr error
+			if len(args) > 1 {
+				data, getErr := c.Get(path, nil)
+				if getErr != nil {
+					return finishExport(writer, file, classifyAPIError(getErr, flags))
+				}
+				count, exportErr = writeExport(writer, format, data, limit)
+			} else {
+				items := make([]json.RawMessage, 0)
+				count, exportErr = resumablePaginatedFetch(cmd.Context(), c, path, nil, 100, limit, "", func(page []json.RawMessage) error {
+					if format != "jsonl" {
+						items = append(items, page...)
+						return nil
+					}
+					for _, item := range page {
+						if _, err := fmt.Fprintln(writer, string(item)); err != nil {
+							return err
+						}
+					}
+					return nil
+				})
+				if exportErr == nil && format != "jsonl" {
+					data, marshalErr := json.Marshal(items)
+					if marshalErr != nil {
+						exportErr = marshalErr
+					} else {
+						_, exportErr = writeExport(writer, format, data, 0)
+					}
+				}
 			}
-
-			count, exportErr := writeExport(writer, format, data, limit)
 			if err := finishExport(writer, file, exportErr); err != nil {
 				return err
 			}

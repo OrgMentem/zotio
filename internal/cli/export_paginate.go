@@ -5,6 +5,7 @@ package cli
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -18,6 +19,27 @@ type exportCheckpoint struct {
 	NextStart int    `json:"next_start"`
 	Fetched   int    `json:"fetched"`
 	Done      bool   `json:"done"`
+	Scope     string `json:"scope"`
+}
+
+func exportCheckpointScope(path string, params map[string]string, pageSize, limit int) string {
+	canonicalParams := make(map[string]string, len(params))
+	for key, value := range params {
+		canonicalParams[key] = value
+	}
+	payload, _ := json.Marshal(struct {
+		Path     string            `json:"path"`
+		Params   map[string]string `json:"params"`
+		PageSize int               `json:"page_size"`
+		Limit    int               `json:"limit"`
+	}{
+		Path:     path,
+		Params:   canonicalParams,
+		PageSize: pageSize,
+		Limit:    limit,
+	})
+	sum := sha256.Sum256(payload)
+	return fmt.Sprintf("%x", sum)
 }
 
 func readExportCheckpoint(file string) (exportCheckpoint, bool) {
@@ -47,15 +69,17 @@ func resumablePaginatedFetch(ctx context.Context, c *client.Client, path string,
 	} else if pageSize > 100 {
 		pageSize = 100
 	}
-
+	scope := exportCheckpointScope(path, params, pageSize, limit)
 	start := 0
 	if checkpointFile != "" {
 		if cp, ok := readExportCheckpoint(checkpointFile); ok && cp.Path == path && !cp.Done {
+			if cp.Scope != scope {
+				return 0, fmt.Errorf("checkpoint scope does not match this export; remove the checkpoint or rerun without --resume")
+			}
 			start = cp.NextStart
 			fetched = cp.Fetched
 		}
 	}
-
 	for {
 		if err := ctx.Err(); err != nil {
 			return fetched, err
@@ -98,7 +122,7 @@ func resumablePaginatedFetch(ctx context.Context, c *client.Client, path string,
 		start += len(page)
 		done := len(page) < thisLimit || (limit > 0 && fetched >= limit)
 		if checkpointFile != "" {
-			cp := exportCheckpoint{Path: path, NextStart: start, Fetched: fetched, Done: done}
+			cp := exportCheckpoint{Path: path, Scope: scope, NextStart: start, Fetched: fetched, Done: done}
 			if err := writeExportCheckpoint(checkpointFile, cp); err != nil {
 				return fetched, err
 			}

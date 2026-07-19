@@ -54,9 +54,8 @@ func domainContext() map[string]any {
 			{"name": "tags", "description": "Manage tags across your Zotero library", "endpoints": []string{"get", "list"}, "syncable": true, "searchable": true},
 		},
 		"query_tips": []string{
-			"Pagination uses cursor-based paging. Pass after parameter for subsequent pages.",
-			"Control page size with the limit parameter (default 100).",
-			"Use since for incremental fetches (filter by modification time).",
+			"List commands use Zotero offset pagination: pass start (zero-based) and limit (maximum 100), then advance start by the number of returned records; Zotero has no after cursor.",
+			"Use since only when command_search shows that flag for a command; it filters changes after a library version and is not general pagination.",
 			"Use the sql tool for ad-hoc analysis on synced data. Run sync first to populate the local database.",
 			"Use the search tool for full-text search across all synced resources. Faster than iterating list endpoints.",
 			"Prefer sql/search over repeated API calls when the data is already synced.",

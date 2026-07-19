@@ -20,3 +20,38 @@ func TestCapabilityOverridesResolveToRealCommands(t *testing.T) {
 		}
 	}
 }
+
+func TestMutableCapabilityOverridesHaveWriteMetadata(t *testing.T) {
+	want := map[string]struct {
+		target  string
+		require string
+	}{
+		"creators audit fix":       {target: "web_api", require: preconditionWebAPIKey},
+		"items preprint-check fix": {target: "web_api", require: preconditionWebAPIKey},
+		"vault pull":               {target: "local_vault", require: preconditionWebAPIKey},
+		"vault sync":               {target: "local_vault", require: preconditionSyncedStore},
+	}
+	for _, entry := range buildCapabilityRegistry(RootCmd()) {
+		expected, ok := want[entry.Path]
+		if !ok {
+			continue
+		}
+		delete(want, entry.Path)
+		if entry.Operation != "write" || entry.WriteTarget != expected.target {
+			t.Errorf("capability %q = operation=%q write_target=%q, want write to %q", entry.Path, entry.Operation, entry.WriteTarget, expected.target)
+		}
+		found := false
+		for _, requirement := range entry.Requires {
+			if requirement == expected.require {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("capability %q requires %q, want %q", entry.Path, entry.Requires, expected.require)
+		}
+	}
+	for path := range want {
+		t.Errorf("capability registry omitted mutable command %q", path)
+	}
+}

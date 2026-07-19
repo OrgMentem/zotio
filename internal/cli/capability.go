@@ -55,7 +55,7 @@ var capabilityOverrides = map[string]capabilityEntry{
 	"items similar":          {Requires: []string{preconditionSyncedStore}},
 	"items summarize":        {Requires: []string{preconditionSyncedStore}},
 	"creators audit":         {Operation: "read", Requires: []string{preconditionSyncedStore}},
-	"creators audit fix":     {Operation: "write", WriteTarget: "web_api", Requires: []string{preconditionSyncedStore}},
+	"creators audit fix":     {Operation: "write", WriteTarget: "web_api", Requires: []string{preconditionSyncedStore, preconditionWebAPIKey}},
 	"tags audit":             {Requires: []string{preconditionSyncedStore}},
 	"tags inventory":         {Requires: []string{preconditionSyncedStore}},
 	"export snapshot verify": {Requires: []string{preconditionSyncedStore}},
@@ -97,14 +97,17 @@ var capabilityOverrides = map[string]capabilityEntry{
 	"import targets":           {Operation: "read", Requires: []string{preconditionDesktopConnector}},
 	"import translators":       {Operation: "read", Requires: []string{preconditionDesktopConnector}},
 	// items new validates against /items/new (Web-only) then POSTs.
-	"items new": {Operation: "write", WriteTarget: "web_api", Requires: []string{preconditionWebAPIKey}},
+	"items new":                {Operation: "write", WriteTarget: "web_api", Requires: []string{preconditionWebAPIKey}},
+	"items preprint-check fix": {Operation: "write", WriteTarget: "web_api", Requires: []string{preconditionWebAPIKey}},
 	// import apply creates items / linked-file attachments via the Web API.
 	"import apply": {Operation: "write", WriteTarget: "web_api", Requires: []string{preconditionWebAPIKey}},
 	// attachments add uploads stored files via the Zotero Web API file-upload protocol.
 	"attachments add": {Operation: "write", WriteTarget: "web_api", Requires: []string{preconditionWebAPIKey}},
-	// vault push/resolve write tool-owned child notes back to Zotero via the Web API.
+	// vault push writes to Zotero; pull and sync write the local vault.
 	"vault push":    {Operation: "write", WriteTarget: "web_api", Requires: []string{preconditionWebAPIKey}},
+	"vault pull":    {Operation: "write", WriteTarget: "local_vault", Requires: []string{preconditionWebAPIKey}},
 	"vault resolve": {Operation: "write", WriteTarget: "web_api", Requires: []string{preconditionWebAPIKey}},
+	"vault sync":    {Operation: "write", WriteTarget: "local_vault", Requires: []string{preconditionSyncedStore}},
 	// Sync writes the local store (not a Zotero mutation).
 	"sync":  {Operation: "sync"},
 	"watch": {Operation: "sync"},

@@ -1420,7 +1420,7 @@ func (s *Store) ListIDs(resourceType string) ([]string, error) {
 		resourceType,
 	)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("querying %s IDs: %w", resourceType, err)
 	}
 	defer rows.Close()
 
@@ -1428,11 +1428,14 @@ func (s *Store) ListIDs(resourceType string) ([]string, error) {
 	for rows.Next() {
 		var id string
 		if err := rows.Scan(&id); err != nil {
-			continue
+			return nil, fmt.Errorf("scanning %s ID: %w", resourceType, err)
 		}
 		ids = append(ids, id)
 	}
-	return ids, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterating %s IDs: %w", resourceType, err)
+	}
+	return ids, nil
 }
 
 // GetLastSyncedAt returns the last sync timestamp for a resource type.
@@ -1534,25 +1537,31 @@ func (s *Store) ResolveByName(resourceType string, input string, matchFields ...
 		)
 		rows, err := s.db.Query(query, resourceType, input)
 		if err != nil {
-			continue
+			return "", fmt.Errorf("querying %s by %s: %w", resourceType, field, err)
 		}
 		for rows.Next() {
 			var id string
-			if rows.Scan(&id) == nil {
-				// Deduplicate
-				found := false
-				for _, m := range matches {
-					if m == id {
-						found = true
-						break
-					}
-				}
-				if !found {
-					matches = append(matches, id)
+			if err := rows.Scan(&id); err != nil {
+				_ = rows.Close()
+				return "", fmt.Errorf("scanning %s by %s: %w", resourceType, field, err)
+			}
+			// Deduplicate
+			found := false
+			for _, m := range matches {
+				if m == id {
+					found = true
+					break
 				}
 			}
+			if !found {
+				matches = append(matches, id)
+			}
 		}
-		rows.Close()
+		if err := rows.Err(); err != nil {
+			_ = rows.Close()
+			return "", fmt.Errorf("iterating %s by %s: %w", resourceType, field, err)
+		}
+		_ = rows.Close()
 	}
 
 	switch len(matches) {

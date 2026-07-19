@@ -26,7 +26,7 @@ func TestItemsCreateSendsBareArray(t *testing.T) {
 	defer srv.Close()
 	t.Setenv("ZOTERO_BASE_URL", srv.URL+"/users/0")
 
-	cmd := newItemsCreateCmd(&rootFlags{asJSON: true})
+	cmd := newItemsCreateCmd(&rootFlags{asJSON: true, yes: true})
 	var out bytes.Buffer
 	cmd.SetOut(&out)
 	cmd.SetErr(io.Discard)
@@ -50,7 +50,11 @@ func TestItemsCreateSendsBareArray(t *testing.T) {
 func TestItemsCreateConnectorDryRunDoesNotWrite(t *testing.T) {
 	oldPing := connectorPing
 	defer func() { connectorPing = oldPing }()
-	connectorPing = func(ctx context.Context, c *connector.Client) error { return nil }
+	var connectorChecks int
+	connectorPing = func(ctx context.Context, c *connector.Client) error {
+		connectorChecks++
+		return nil
+	}
 
 	flags := &rootFlags{asJSON: true, via: "connector", configPath: testConfigFile(t, "http://localhost:23119/api/users/0"), dryRun: true}
 	cmd := newItemsCreateCmd(flags)
@@ -67,7 +71,18 @@ func TestItemsCreateConnectorDryRunDoesNotWrite(t *testing.T) {
 	if err := json.Unmarshal(out.Bytes(), &got); err != nil {
 		t.Fatalf("decode output: %v; %s", err, out.String())
 	}
-	if got["dry_run"] != true || got["via"] != "connector" {
-		t.Fatalf("output = %+v, want connector dry-run preview", got)
+	if got["mode"] != "preview" || got["preview_reason"] != "dry_run" {
+		t.Fatalf("output = %+v, want dry-run preview envelope", got)
+	}
+	plan, ok := got["plan"].(map[string]any)
+	if !ok {
+		t.Fatalf("output = %+v, want preview plan", got)
+	}
+	operations, ok := plan["operations"].([]any)
+	if !ok || len(operations) != 1 {
+		t.Fatalf("plan = %+v, want one planned create operation", plan)
+	}
+	if connectorChecks != 0 {
+		t.Fatalf("connector checks = %d, want no connector access in preview", connectorChecks)
 	}
 }

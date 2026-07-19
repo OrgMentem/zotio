@@ -33,25 +33,33 @@ func newCollectionsCreateCmd(flags *rootFlags) *cobra.Command {
 			}
 
 			path := "/collections"
-			var body map[string]any
+			var body any
 			if stdinBody {
 				stdinData, err := io.ReadAll(os.Stdin)
 				if err != nil {
 					return fmt.Errorf("reading stdin: %w", err)
 				}
-				var jsonBody map[string]any
+				var jsonBody any
 				if err := json.Unmarshal(stdinData, &jsonBody); err != nil {
 					return fmt.Errorf("parsing stdin JSON: %w", err)
 				}
-				body = jsonBody
+				switch payload := jsonBody.(type) {
+				case map[string]any:
+					body = []map[string]any{payload}
+				case []any:
+					body = payload
+				default:
+					return fmt.Errorf("parsing stdin JSON: collection payload must be an object or array of objects")
+				}
 			} else {
-				body = map[string]any{}
+				collection := map[string]any{}
 				if bodyName != "" {
-					body["name"] = bodyName
+					collection["name"] = bodyName
 				}
 				if bodyParentCollection != "" {
-					body["parentCollection"] = bodyParentCollection
+					collection["parentCollection"] = bodyParentCollection
 				}
+				body = []map[string]any{collection}
 			}
 			data, statusCode, err := c.Post(path, body)
 			if err != nil {

@@ -84,6 +84,18 @@ type enrichSkip struct {
 	Reason   string `json:"reason"`
 }
 
+type enrichLocalReadError struct {
+	err error
+}
+
+func (e *enrichLocalReadError) Error() string {
+	return fmt.Sprintf("loading item from local store: %v", e.err)
+}
+
+func (e *enrichLocalReadError) Unwrap() error {
+	return e.err
+}
+
 func newItemsEnrichCmd(flags *rootFlags) *cobra.Command {
 	var (
 		flagMissingDOI        bool
@@ -193,19 +205,29 @@ Applied field changes record provenance in the item's Extra field.`,
 
 			var proposals []enrichProposal
 			var skipped []enrichSkip
+			var proposalErrs []error
 
 			// Thread collection scope through every selected enrichment category.
 			if flagMissingDOI {
-				p, s := buildEnrichProposals(cmd.Context(), db, httpClient, "missing_doi", flagLimit, flagCollection, keyFilter, flagEmail, useOpenAlex, useSemanticScholar, "linked-url", "")
+				p, s, buildErr := buildEnrichProposals(cmd.Context(), db, httpClient, "missing_doi", flagLimit, flagCollection, keyFilter, flagEmail, useOpenAlex, useSemanticScholar, "linked-url", "")
 				proposals, skipped = append(proposals, p...), append(skipped, s...)
+				if buildErr != nil {
+					proposalErrs = append(proposalErrs, buildErr)
+				}
 			}
 			if flagMissingAbstract {
-				p, s := buildEnrichProposals(cmd.Context(), db, httpClient, "missing_abstract", flagLimit, flagCollection, keyFilter, flagEmail, useOpenAlex, useSemanticScholar, "linked-url", "")
+				p, s, buildErr := buildEnrichProposals(cmd.Context(), db, httpClient, "missing_abstract", flagLimit, flagCollection, keyFilter, flagEmail, useOpenAlex, useSemanticScholar, "linked-url", "")
 				proposals, skipped = append(proposals, p...), append(skipped, s...)
+				if buildErr != nil {
+					proposalErrs = append(proposalErrs, buildErr)
+				}
 			}
 			if flagMissingPDF {
-				p, s := buildEnrichProposals(cmd.Context(), db, httpClient, "missing_pdf", flagLimit, flagCollection, keyFilter, flagEmail, useOpenAlex, useSemanticScholar, attachMode, pdfDir)
+				p, s, buildErr := buildEnrichProposals(cmd.Context(), db, httpClient, "missing_pdf", flagLimit, flagCollection, keyFilter, flagEmail, useOpenAlex, useSemanticScholar, attachMode, pdfDir)
 				proposals, skipped = append(proposals, p...), append(skipped, s...)
+				if buildErr != nil {
+					proposalErrs = append(proposalErrs, buildErr)
+				}
 			}
 
 			// Preserve proposal building and route preview/apply through the shared mutation helper.
@@ -232,7 +254,7 @@ Applied field changes record provenance in the item's Extra field.`,
 			if renderErr != nil {
 				return renderErr
 			}
-			return runErr
+			return errors.Join(runErr, errors.Join(proposalErrs...))
 		},
 	}
 
@@ -304,7 +326,7 @@ func filterEnrichRowsByKeys(rows []map[string]any, allow map[string]bool) []map[
 // provider has title/creators/DOI/version, then dispatches to the resolver.
 // Carry collection and exact key scopes into the work queue, filtering before
 // provider lookups so remediation stays bounded and cheap.
-func buildEnrichProposals(ctx context.Context, db localQueryStore, httpClient *http.Client, category string, limit int, collection string, keyFilter map[string]bool, email string, useOpenAlex bool, useSemanticScholar bool, attachMode string, pdfDir string) ([]enrichProposal, []enrichSkip) {
+func buildEnrichProposals(ctx context.Context, db localQueryStore, httpClient *http.Client, category string, limit int, collection string, keyFilter map[string]bool, email string, useOpenAlex bool, useSemanticScholar bool, attachMode string, pdfDir string) ([]enrichProposal, []enrichSkip, error) {
 	queryLimit := limit
 	if keyFilter != nil {
 		// Exact keys identify remediation targets. Fetch the complete queue
@@ -314,7 +336,7 @@ func buildEnrichProposals(ctx context.Context, db localQueryStore, httpClient *h
 	}
 	rows, err := enrichWorkQueue(db, category, queryLimit, collection)
 	if err != nil {
-		return nil, []enrichSkip{{Category: category, Reason: fmt.Sprintf("querying work queue: %v", err)}}
+		return nil, []enrichSkip{{Category: category, Reason: fmt.Sprintf("querying work queue: %v", err)}}, err
 	}
 	rows = filterEnrichRowsByKeys(rows, keyFilter)
 	if keyFilter != nil && limit > 0 && len(rows) > limit {
@@ -336,7 +358,10 @@ func buildEnrichProposals(ctx context.Context, db localQueryStore, httpClient *h
 		func(ctx context.Context, row map[string]any) (outcome, error) {
 			key := sqlStringValue(row["key"])
 			raw, gerr := db.Get("items", key)
-			if gerr != nil || raw == nil {
+			if gerr != nil {
+				return outcome{}, &enrichLocalReadError{err: gerr}
+			}
+			if raw == nil {
 				return outcome{skip: enrichSkip{Key: key, Category: category, Reason: "item not found in local store"}, skipped: true}, nil
 			}
 			version, data := enrichItemFields(raw)
@@ -357,14 +382,19 @@ func buildEnrichProposals(ctx context.Context, db localQueryStore, httpClient *h
 			proposals = append(proposals, r.Value.prop)
 		}
 	}
+	var localReadErrs []error
 	for _, fanoutErr := range fanoutErrs {
 		skipped = append(skipped, enrichSkip{
 			Key:      fanoutErr.Source,
 			Category: category,
 			Reason:   fmt.Sprintf("resolving enrichment: %v", fanoutErr.Err),
 		})
+		var localReadErr *enrichLocalReadError
+		if errors.As(fanoutErr.Err, &localReadErr) {
+			localReadErrs = append(localReadErrs, fmt.Errorf("loading enrichment item %s: %w", fanoutErr.Source, fanoutErr.Err))
+		}
 	}
-	return proposals, skipped
+	return proposals, skipped, errors.Join(localReadErrs...)
 }
 
 // enrichWorkQueue returns the candidate rows for a category, reusing the audit
@@ -576,11 +606,12 @@ func resolveEnrichment(ctx context.Context, httpClient *http.Client, category, k
 		default:
 			p.AttachMode = "linked-url"
 			p.Attachment = map[string]any{
-				"itemType":   "attachment",
-				"linkMode":   "linked_url",
-				"title":      "Open-access PDF (Unpaywall)",
-				"url":        pdfURL,
-				"parentItem": key,
+				"itemType":    "attachment",
+				"linkMode":    "linked_url",
+				"title":       "Open-access PDF (Unpaywall)",
+				"url":         pdfURL,
+				"parentItem":  key,
+				"contentType": "application/pdf",
 			}
 			return p, ""
 		}

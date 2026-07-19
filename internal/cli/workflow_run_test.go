@@ -186,6 +186,11 @@ func TestWorkflowRunTransformsStepArgsByMode(t *testing.T) {
 		t.Fatalf("mutating step %q was resolved as read-only", mutatingArgs)
 	}
 
+	readOnlyValueFlagArgs := []string{"items", "list", "--limit", "5", "--format", "bibtex"}
+	if !workflowRunStepIsReadOnly(readOnlyValueFlagArgs) {
+		t.Fatalf("read-only step with value flags %q was not resolved as read-only", readOnlyValueFlagArgs)
+	}
+
 	tests := []struct {
 		name     string
 		mode     string
@@ -303,15 +308,15 @@ func TestWorkflowRunApplyLeavesCheckpointAfterFailure(t *testing.T) {
 		t.Fatalf("checkpoint vars = %v, want resolved override", checkpoint.Vars)
 	}
 	if len(checkpoint.Completed) != 2 {
-		t.Fatalf("checkpoint completed = %v, want completed source and in-progress failed step", checkpoint.Completed)
+		t.Fatalf("checkpoint completed = %v, want completed source and failed step", checkpoint.Completed)
 	}
 	completed := checkpoint.Completed[0]
 	if completed.Index != 1 || completed.Name != "source" || completed.Status != "ok" || completed.Output != report.Steps[0].Output {
 		t.Fatalf("checkpoint completed step = %+v, want captured successful source step", completed)
 	}
-	inProgress := checkpoint.Completed[1]
-	if inProgress.Index != 2 || inProgress.Status != "in_progress" {
-		t.Fatalf("checkpoint second step = %+v, want in-progress failed step", inProgress)
+	failed := checkpoint.Completed[1]
+	if failed.Index != 2 || failed.Status != "failed" {
+		t.Fatalf("checkpoint second step = %+v, want failed step", failed)
 	}
 }
 
@@ -468,6 +473,38 @@ func TestWorkflowRunResumeSkipsCompletedStepsAndReusesRunID(t *testing.T) {
 	}
 	if !report.Steps[1].OK || report.Steps[1].Status != "ok" {
 		t.Fatalf("second step = %+v, want executed ok", report.Steps[1])
+	}
+}
+
+func TestWorkflowRunResumeRetriesFailedStep(t *testing.T) {
+	spec := workflowRunSpec{Steps: []workflowRunStepSpec{
+		{Args: []string{"version"}},
+		{Args: []string{"--help"}},
+	}}
+	path := writeWorkflowRunTestSpec(t, spec)
+	_, rawSpec, err := readWorkflowRunSpecFile(path)
+	if err != nil {
+		t.Fatalf("read workflow spec: %v", err)
+	}
+	checkpoint := workflowRunCheckpoint{
+		SchemaVersion: workflowRunCheckpointSchemaVersion,
+		RunID:         "workflow-run-id",
+		SpecSHA256:    workflowRunSpecSHA256(rawSpec),
+		Completed: []workflowRunCheckpointStep{
+			{Index: 1, Status: "ok", Output: "zotio test\n"},
+			{Index: 2, Status: "failed"},
+		},
+	}
+	if err := writeWorkflowRunCheckpoint(workflowRunCheckpointPath(path), checkpoint); err != nil {
+		t.Fatalf("write workflow checkpoint: %v", err)
+	}
+
+	report, stderr, err := runWorkflowRunTestCmdAtPath(t, path, true, true)
+	if err != nil {
+		t.Fatalf("resume workflow: %v; stderr=%s", err, stderr)
+	}
+	if len(report.Steps) != 2 || report.Steps[0].Status != "skipped" || report.Steps[1].Status != "ok" {
+		t.Fatalf("resume report = %+v, want completed first step skipped and failed step retried", report)
 	}
 }
 
@@ -848,7 +885,7 @@ func TestWorkflowRunResumeHydratesCompletedOutput(t *testing.T) {
 	}
 }
 
-func TestWorkflowRunConditionSkipIsCheckpointedBesideInProgressFailure(t *testing.T) {
+func TestWorkflowRunConditionSkipIsCheckpointedBesideFailedStep(t *testing.T) {
 	spec := workflowRunSpec{
 		ContinueOnError: true,
 		Steps: []workflowRunStepSpec{
@@ -869,14 +906,9 @@ func TestWorkflowRunConditionSkipIsCheckpointedBesideInProgressFailure(t *testin
 		t.Fatalf("read workflow checkpoint: %v", err)
 	}
 	if len(checkpoint.Completed) != 2 ||
-		checkpoint.Completed[0].Index != 1 || checkpoint.Completed[0].Status != "in_progress" ||
+		checkpoint.Completed[0].Index != 1 || checkpoint.Completed[0].Status != "failed" ||
 		checkpoint.Completed[1].Index != 2 || checkpoint.Completed[1].Status != "skipped" {
-		t.Fatalf("checkpoint completed = %+v, want in-progress source and condition-skipped step", checkpoint.Completed)
-	}
-
-	_, err = runWorkflowRunFile(context.Background(), path, workflowRunInvocation{Yes: true, Resume: true})
-	if err == nil || !strings.Contains(err.Error(), "in progress") {
-		t.Fatalf("resume error = %v, want in-progress reconciliation refusal", err)
+		t.Fatalf("checkpoint completed = %+v, want failed source and condition-skipped step", checkpoint.Completed)
 	}
 }
 

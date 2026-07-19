@@ -63,3 +63,23 @@ func TestExportCollectionHealthyOutputUnchanged(t *testing.T) {
 		t.Fatalf("output = %q, want unchanged export", got)
 	}
 }
+
+func TestExportCollectionCSLJSONCombinesRecursiveItems(t *testing.T) {
+	client := exportClientStub{
+		"/collections/ROOT/items":       {data: json.RawMessage(`[{"id":"root"}]`)},
+		"/collections/ROOT/collections": {data: json.RawMessage(`[{"key":"SUB"}]`)},
+		"/collections/SUB/items":        {data: json.RawMessage(`[{"id":"sub"}]`)},
+		"/collections/SUB/collections":  {data: json.RawMessage(`[]`)},
+	}
+	var out bytes.Buffer
+	if err := exportCollection(client, &out, "ROOT", "csljson", false, 200, map[string]bool{}); err != nil {
+		t.Fatalf("exportCollection: %v", err)
+	}
+	var items []map[string]string
+	if err := json.Unmarshal(out.Bytes(), &items); err != nil {
+		t.Fatalf("output is not a single CSL-JSON array: %q (%v)", out.String(), err)
+	}
+	if len(items) != 2 || items[0]["id"] != "root" || items[1]["id"] != "sub" {
+		t.Fatalf("items = %#v, want root and sub", items)
+	}
+}

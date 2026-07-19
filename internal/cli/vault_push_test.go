@@ -178,6 +178,47 @@ func TestLoadPushNotesParsesStateAndRegion(t *testing.T) {
 	}
 }
 
+func TestParsePushNoteLogseqProperties(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "logseq.md")
+	writeFile(t, path, strings.Join([]string{
+		"citekey:: smith2024",
+		"zotero-key:: K1",
+		"zotero-library:: users/42",
+		"zotero:: zotero://select/library/items/K1",
+		"",
+		"## Notes",
+		vaultNotesBegin,
+		"body text",
+		vaultNotesEnd,
+	}, "\n"))
+
+	note, err := parsePushNote(path)
+	if err != nil {
+		t.Fatalf("parse Logseq note: %v", err)
+	}
+	if note.itemKey != "K1" || note.citekey != "smith2024" || note.library != "users/42" || !note.hasRegion {
+		t.Errorf("parsed Logseq note wrong: %+v", note)
+	}
+}
+
+func TestVaultPushReportFailsForNoteFailures(t *testing.T) {
+	for _, status := range []string{"error", "conflict", "remote_deleted"} {
+		t.Run(status, func(t *testing.T) {
+			cmd := newVaultPushCmd(&rootFlags{asJSON: true})
+			var out bytes.Buffer
+			cmd.SetOut(&out)
+
+			err := printVaultWriteReport(cmd, []pushResult{{File: "note.md", Status: status}}, "vault", &rootFlags{asJSON: true}, "Pushed", "Would push")
+			if code := ExitCode(err); code != 13 {
+				t.Fatalf("exit code = %d, want 13 (err=%v)", code, err)
+			}
+			if !strings.Contains(out.String(), status) {
+				t.Fatalf("report did not render %q: %s", status, out.String())
+			}
+		})
+	}
+}
+
 func TestVaultPushReportsUnreadableNotes(t *testing.T) {
 	if os.Geteuid() == 0 {
 		t.Skip("chmod(0000) is not enforced for root; unreadable-note path cannot be exercised")
