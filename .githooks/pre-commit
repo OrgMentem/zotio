@@ -23,15 +23,17 @@ done
 # --- gofmt on staged Go files -------------------------------------------
 # Checks the worktree version of staged files: close enough for a fast gate,
 # and the CI format job remains the exact authority.
-staged_go=$(git diff --cached --name-only --diff-filter=ACMR -- '*.go')
-if [ -n "$staged_go" ]; then
-  unformatted=$(gofmt -l $staged_go)
-  if [ -n "$unformatted" ]; then
-    echo "pre-commit: gofmt needed:" >&2
-    echo "$unformatted" >&2
-    echo "fix: gofmt -w <files>" >&2
-    exit 1
-  fi
+gofmt_output=$(mktemp "${TMPDIR:-/tmp}/zotio-gofmt.XXXXXX")
+trap 'rm -f "$gofmt_output"' 0 HUP INT TERM
+git diff --cached --name-only --diff-filter=ACMR -- '*.go' |
+while IFS= read -r f; do
+  gofmt -l "$f" >>"$gofmt_output"
+done
+if [ -s "$gofmt_output" ]; then
+  echo "pre-commit: gofmt needed:" >&2
+  cat "$gofmt_output" >&2
+  echo "fix: gofmt -w <files>" >&2
+  exit 1
 fi
 
 # --- Secrets in staged content ------------------------------------------
