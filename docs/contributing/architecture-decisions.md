@@ -1,6 +1,6 @@
 # Architecture decisions
 
-zotio records its non-trivial design decisions as **ADRs** (Architecture Decision Records). The full technical records — context, options weighed, consequences — live in the repository under [`notes/adr/`](https://github.com/OrgMentem/zotio/tree/main/notes/adr). This page gives short, plain-language summaries of the ones that affect how you *use* the tool.
+zotio records its non-trivial design decisions as **ADRs** (Architecture Decision Records). The full technical records — context, options weighed, consequences — live in the repository under [`dev/adr/`](https://github.com/OrgMentem/zotio/tree/main/dev/adr). This page gives short, plain-language summaries of the ones that affect how you *use* the tool.
 
 ## MCP command surface
 
@@ -8,7 +8,7 @@ The MCP server does **not** expose one tool per Zotero endpoint. Instead it pres
 
 **What this means for you:** the default MCP surface is the facade. If you want the full one-tool-per-endpoint mirror instead, set `ZOTIO_MCP_SURFACE` (see the [MCP server guide](../guide/mcp-server.md) and the [MCP tools reference](../reference/mcp-tools.md)).
 
-Full record: [ADR 0001 — MCP command surface](https://github.com/OrgMentem/zotio/blob/main/notes/adr/0001-mcp-command-surface.md).
+Full record: [ADR 0001 — MCP command surface](https://github.com/OrgMentem/zotio/blob/main/dev/adr/0001-mcp-command-surface.md).
 
 ## Retired typed MCP tools
 
@@ -16,7 +16,7 @@ Earlier builds also exposed 28 typed, spec-derived endpoint tools (`collections_
 
 **What this means for you:** hosts pinned to `collections_*` / `items_*` / `schema_*` / `tags_*` tool names must switch to `command_run` (facade) or the per-command mirror.
 
-Full record: [ADR 0003 — Retire typed MCP endpoint tools](https://github.com/OrgMentem/zotio/blob/main/notes/adr/0003-retire-typed-mcp-endpoint-tools.md).
+Full record: [ADR 0003 — Retire typed MCP endpoint tools](https://github.com/OrgMentem/zotio/blob/main/dev/adr/0003-retire-typed-mcp-endpoint-tools.md).
 
 ## Local read parity
 
@@ -24,4 +24,4 @@ Offline reads from the synced SQLite mirror are a **deliberate, per-resource sub
 
 **What this means for you:** `--data-source local` works for the scopes that have been built out; where a local path doesn't exist yet, `auto` falls back to the live API rather than returning partial results. See [Local read parity](../concepts/local-read-parity.md).
 
-Full record: [ADR 0002 — Local read parity subsystem](https://github.com/OrgMentem/zotio/blob/main/notes/adr/0002-local-read-parity-subsystem.md).
+Full record: [ADR 0002 — Local read parity subsystem](https://github.com/OrgMentem/zotio/blob/main/dev/adr/0002-local-read-parity-subsystem.md).

@@ -52,4 +52,4 @@ zotio schema drift        # detect new/removed item types & fields
 Zotero now ships every 6–10 weeks. New releases almost always add *fields and data* rather than endpoints, so `schema drift` is the tool to catch what changed. The Web API v3 surface is stable and versioned; the local API is the evolving one.
 
 !!! note "For maintainers"
-    The full endpoint coverage matrix, known gaps, and the refresh procedure to re-run after a Zotero upgrade live in the repo at `notes/zotero-api-coverage.md`.
+    The full endpoint coverage matrix, known gaps, and the refresh procedure to re-run after a Zotero upgrade live in the repo at `dev/zotero-api-coverage.md`.

@@ -37,12 +37,12 @@ For install, auth, examples, and longer product guidance, read `README.md` and `
 
 For CI, the [zotio-action](https://github.com/OrgMentem/zotio-action) GitHub Action ([marketplace](https://github.com/marketplace/actions/zotio-bibliography-health-for-zotero)) packages install → sync → gate on `library health` exit codes; see `docs/guide/ci.md`.
 
-Before cutting a release (tagging `v*`), read `notes/releasing.md` — release flow, version/breaking-change decisions, validation checklist, and footguns. When the release coordinates with papio (the acquisition-side sister project), also read `~/@dev/papio/.agents/skills/papio-release/SKILL.md`: papio enforces a minimum-zotio-version floor and its release order depends on whether that floor moved.
+Before cutting a release (tagging `v*`), read `dev/releasing.md` — release flow, version/breaking-change decisions, validation checklist, and footguns. When the release coordinates with papio (the acquisition-side sister project), also read `~/@dev/papio/.agents/skills/papio-release/SKILL.md`: papio enforces a minimum-zotio-version floor and its release order depends on whether that floor moved.
 
 ## Zotero API Surface
 
 Missable invariants before you touch endpoints, schema, or mutations. Full coverage
-matrix, known gaps, and the **refresh procedure** live in `notes/zotero-api-coverage.md`
+matrix, known gaps, and the **refresh procedure** live in `dev/zotero-api-coverage.md`
 — re-run it when a new Zotero version ships (releases are now every 6–10 weeks).
 
 - This CLI targets Zotero's **local API** (`http://localhost:23119/api`, base in `spec.yaml` ends `/users/0`), which mirrors Web API v3 plus local-only extras. Enable it in Zotero: Settings → Advanced → "Allow other applications…".
@@ -57,7 +57,7 @@ The MCP surface **is** the CLI tree: `zotio-mcp` runs Cobra commands in-process 
 
 ## Architecture Decisions
 
-Non-trivial architecture/infrastructure decisions (as opposed to product sequencing, which lives in `notes/roadmap.md`) are recorded as ADRs under `notes/adr/`. Read the relevant ADR before reworking the subsystem it covers.
+Non-trivial architecture/infrastructure decisions (as opposed to product sequencing, which lives in `dev/roadmap.md`) are recorded as ADRs under `dev/adr/`. Read the relevant ADR before reworking the subsystem it covers.
 
-- `notes/adr/0001-mcp-command-surface.md` — why the MCP server defaults to a command-orchestration facade (`command_search`/`command_run`) with global flags stripped from the mirror, and how to switch surfaces via `ZOTIO_MCP_SURFACE`.
-- `notes/adr/0002-local-read-parity-subsystem.md` — why Zotero-aware local read parity (`internal/store/query.go` + the `resolveLocal*` path) is a deliberate, per-resource subsystem grown on demand, NOT a generic query-planner layer; read before adding a new `--data-source local` scope.
+- `dev/adr/0001-mcp-command-surface.md` — why the MCP server defaults to a command-orchestration facade (`command_search`/`command_run`) with global flags stripped from the mirror, and how to switch surfaces via `ZOTIO_MCP_SURFACE`.
+- `dev/adr/0002-local-read-parity-subsystem.md` — why Zotero-aware local read parity (`internal/store/query.go` + the `resolveLocal*` path) is a deliberate, per-resource subsystem grown on demand, NOT a generic query-planner layer; read before adding a new `--data-source local` scope.

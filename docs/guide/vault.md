@@ -88,4 +88,4 @@ zotio vault resolve <citekey> --keep-vault    # ...or --keep-remote
 !!! note "Mental model"
     Obsidian is the editing surface; the Zotero child note is a managed mirror. `pull` folds remote edits back on a clean fast-forward; simultaneous edits on both sides surface as a conflict, never an auto-merge.
 
-See the full command surface in the [command reference](../reference/commands.md#zotio-vault), and the design positioning (why the CLI owns batch, plugins own live) in the repo at `notes/obsidian-positioning.md`.
+See the full command surface in the [command reference](../reference/commands.md#zotio-vault), and the design positioning (why the CLI owns batch, plugins own live) in the repo at `dev/obsidian-positioning.md`.

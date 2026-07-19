@@ -1,8 +1,11 @@
-# Internal working notes
+# `dev/` — internal working notes
 
 Engineering-facing notes kept in the repo for contributors and agents but **not
 published** to the documentation site (`docs/`). They contain planning,
 maintenance procedures, and design analysis rather than user-facing guidance.
+
+Throwaway artifacts (one-shot Oracle runs and other scratch) belong in
+`dev/scratch/`, which is gitignored.
 
 | File | What it is |
 | --- | --- |

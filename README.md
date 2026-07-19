@@ -423,7 +423,7 @@ Once installed (above), invoke `/zotio <query>` in Claude Code. The skill drives
 
 ### Use the MCP server in an agent host
 
-Once registered (above), the MCP server exposes a **command-orchestration facade** (`command_search` / `command_run`) rather than one tool per endpoint — agents discover and drive the CLI the same way a human would (see [`notes/adr/0001-mcp-command-surface.md`](notes/adr/0001-mcp-command-surface.md); switch surfaces via `ZOTIO_MCP_SURFACE`). It also serves Zotero context as **resources** — `zotero://context`, `zotero://agent-context`, `zotero://status`, `zotero://schema`, `zotero://freshness`, `zotero://health/{scope}`, `zotero://capabilities`, and bounded graph resources (`collections/{key}/tree`, `items/{key}/children|attachments|context`) — plus guided **prompts** (prepare-library-health, prepare-import, sync-vault-safely).
+Once registered (above), the MCP server exposes a **command-orchestration facade** (`command_search` / `command_run`) rather than one tool per endpoint — agents discover and drive the CLI the same way a human would (see [`dev/adr/0001-mcp-command-surface.md`](dev/adr/0001-mcp-command-surface.md); switch surfaces via `ZOTIO_MCP_SURFACE`). It also serves Zotero context as **resources** — `zotero://context`, `zotero://agent-context`, `zotero://status`, `zotero://schema`, `zotero://freshness`, `zotero://health/{scope}`, `zotero://capabilities`, and bounded graph resources (`collections/{key}/tree`, `items/{key}/children|attachments|context`) — plus guided **prompts** (prepare-library-health, prepare-import, sync-vault-safely).
 
 ---
 
