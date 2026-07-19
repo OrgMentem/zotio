@@ -37,15 +37,16 @@
 </p>
 
 <p align="center">
-  <a href="https://orgmentem.github.io/zotio/"><strong>Home</strong></a>
-  &middot;
+  <strong>Docs:</strong>
   <a href="https://orgmentem.github.io/zotio/guide/install/"><strong>Get started</strong></a>
   &middot;
   <a href="https://orgmentem.github.io/zotio/reference/commands/"><strong>Commands</strong></a>
   &middot;
   <a href="https://orgmentem.github.io/zotio/guide/mcp-server/"><strong>MCP server</strong></a>
   &middot;
-  <a href="https://orgmentem.github.io/zotio/"><strong>Documentation</strong></a>
+  <a href="https://orgmentem.github.io/zotio/concepts/write-safety/"><strong>Safe writes</strong></a>
+  &middot;
+  <a href="https://orgmentem.github.io/zotio/guide/workflows/"><strong>Workflows</strong></a>
 </p>
 
 <p align="center">
