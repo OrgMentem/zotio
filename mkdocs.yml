@@ -46,6 +46,7 @@ theme:
     - toc.follow
     - content.code.copy
     - content.code.annotate
+    - content.tabs.link
     - content.tooltips
     - search.suggest
     - search.highlight
@@ -79,6 +80,8 @@ markdown_extensions:
         - name: mermaid
           class: mermaid
           format: !!python/name:pymdownx.superfences.fence_code_format
+  - pymdownx.tabbed:
+      alternate_style: true
 
 nav:
   - Home: index.md

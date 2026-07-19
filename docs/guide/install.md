@@ -7,22 +7,62 @@
 
 ## 1. The CLI — `zotio`
 
-**Homebrew (macOS / Linux):**
+=== "macOS"
 
-```bash
-brew install orgmentem/tap/zotio
-```
+    **Homebrew** — installs both `zotio` and the `zotio-mcp` MCP server; `brew upgrade` tracks new releases:
 
-This installs both `zotio` and the `zotio-mcp` MCP server; `brew upgrade` tracks new releases.
+    ```bash
+    brew install orgmentem/tap/zotio
+    ```
 
-**Prebuilt binaries:** every [GitHub release](https://github.com/OrgMentem/zotio/releases) ships archives for macOS, Linux, and Windows (amd64/arm64) with cosign-signed checksums and SBOMs. Unpack and put `zotio` on your `PATH`; on macOS clear the Gatekeeper quarantine (`xattr -d com.apple.quarantine zotio`), on Unix `chmod +x zotio`.
+=== "Linux"
 
-**From source:**
+    **Homebrew** (Linuxbrew) — installs both `zotio` and `zotio-mcp`; `brew upgrade` tracks new releases:
 
-```bash
-git clone https://github.com/OrgMentem/zotio && cd zotio
-go build -o zotio ./cmd/zotio
-```
+    ```bash
+    brew install orgmentem/tap/zotio
+    ```
+
+    **Distro packages** — every [GitHub release](https://github.com/OrgMentem/zotio/releases) ships `.deb`, `.rpm`, and `.apk` for amd64/arm64, each bundling both `zotio` and `zotio-mcp`. Download the file for your arch, then:
+
+    ```bash
+    # Debian / Ubuntu
+    sudo dpkg -i zotio_<version>_linux_amd64.deb
+
+    # Fedora / RHEL / openSUSE
+    sudo rpm -i zotio_<version>_linux_amd64.rpm
+
+    # Alpine
+    sudo apk add --allow-untrusted zotio_<version>_linux_amd64.apk
+    ```
+
+=== "Windows"
+
+    **Scoop** — installs both `zotio` and `zotio-mcp`; `scoop update zotio` tracks new releases:
+
+    ```powershell
+    scoop bucket add orgmentem https://github.com/OrgMentem/scoop-bucket
+    scoop install zotio
+    ```
+
+    !!! note "WinGet is on the way"
+        A `winget install OrgMentem.zotio` manifest is pending review in `microsoft/winget-pkgs`. Until it lands, use Scoop or a prebuilt archive.
+
+=== "Prebuilt binary"
+
+    Every [GitHub release](https://github.com/OrgMentem/zotio/releases) ships archives for macOS, Linux, and Windows (amd64/arm64) with cosign-signed checksums and SBOMs — both `zotio` and `zotio-mcp` in each archive. Unpack and put the binaries on your `PATH`:
+
+    - **macOS:** clear the Gatekeeper quarantine — `xattr -d com.apple.quarantine zotio`, then `chmod +x zotio`
+    - **Linux:** `chmod +x zotio`
+    - **Windows:** unzip and add the folder to your `PATH`
+
+=== "From source"
+
+    ```bash
+    git clone https://github.com/OrgMentem/zotio && cd zotio
+    go build -o zotio ./cmd/zotio
+    go build -o zotio-mcp ./cmd/zotio-mcp   # optional: the MCP server
+    ```
 
 Then let the CLI walk you through setup — Zotero detection, the local-API toggle, an optional Web API key, first sync, and a health check:
 
