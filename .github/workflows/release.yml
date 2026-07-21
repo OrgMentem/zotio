@@ -62,14 +62,24 @@ jobs:
           GH_TOKEN: ${{ secrets.HOMEBREW_TAP_GITHUB_TOKEN }}
         run: |
           set -euo pipefail
-          sha="$(gh api repos/OrgMentem/homebrew-tap/contents/Formula/zotio.rb --jq .sha 2>/dev/null || true)"
-          if [ -n "$sha" ]; then
-            gh api -X DELETE repos/OrgMentem/homebrew-tap/contents/Formula/zotio.rb \
-              -f message="zotio: drop formula superseded by cask" \
-              -f sha="$sha"
-            echo "Deleted stale Formula/zotio.rb ($sha)"
-          else
+          path="repos/OrgMentem/homebrew-tap/contents/Formula/zotio.rb"
+          sha="$(gh api "$path" --jq .sha 2>/dev/null || true)"
+          if [ -z "$sha" ]; then
             echo "No stale formula to remove."
+            exit 0
+          fi
+          # Concurrent sibling releases (papio) push tap commits between our
+          # GET and DELETE; a 404/409 then only means the file is already gone
+          # or the ref moved. Re-check before failing the whole release job.
+          if gh api -X DELETE "$path" \
+              -f message="zotio: drop formula superseded by cask" \
+              -f sha="$sha"; then
+            echo "Deleted stale Formula/zotio.rb ($sha)"
+          elif [ -z "$(gh api "$path" --jq .sha 2>/dev/null || true)" ]; then
+            echo "Formula already removed by a concurrent run."
+          else
+            echo "Formula still present and delete failed; failing." >&2
+            exit 1
           fi
 
   publish_registry:
