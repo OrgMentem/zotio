@@ -42,3 +42,21 @@ if command -v betterleaks >/dev/null 2>&1; then
 else
   echo "pre-commit: betterleaks not installed; skipping (CI still scans)" >&2
 fi
+
+# --- Internal tooling names in public prose -----------------------------
+# Changelogs, docs, and READMEs are published; private tooling (glean, beads)
+# must never be referenced there. Code/CI/agent files are exempt.
+staged_prose=$(git diff --cached --name-only --diff-filter=ACMR -- \
+  'CHANGELOG.md' 'README.md' 'docs/*.md' 'docs/**/*.md')
+if [ -n "$staged_prose" ]; then
+  hits=$(printf '%s\n' "$staged_prose" |
+    while IFS= read -r f; do
+      git show ":$f" | grep -inE 'glean|beads' | sed "s|^|$f:|" || true
+    done)
+  if [ -n "$hits" ]; then
+    echo "pre-commit: internal tooling reference in public prose:" >&2
+    echo "$hits" >&2
+    echo "fix: reword without naming private tools (e.g. 'a triaged audit pass')" >&2
+    exit 1
+  fi
+fi
