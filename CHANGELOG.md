@@ -2,9 +2,12 @@
 
 Notable changes to zotio. Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow [SemVer](https://semver.org/).
 
-## [0.11.1] — 2026-07-21
+## [0.12.0] — 2026-07-21
+### Changed — breaking
+- **More paths now fail loud instead of silently degrading.** Extending the 0.10.0/0.11.0 degraded-exit contract: `export` lockfile builds error on unkeyed/unhashable rows (previously the integrity set silently shrank), `groups inspect` exits non-zero on config-load errors, malformed duplicate-keys JSON is a hard error rather than an empty candidate set, import manifest builds propagate path-resolution failures, and default/demo DB path resolution surfaces `UserHomeDir` errors through every caller. Scripts keying on a `0` exit from these must inspect the error.
+
 ### Fixed
-- Error handling hardened across nine paths: `mcp` SQL/context handlers surface column-read and marshal errors; export lockfile builds fail loud on unkeyed/unhashable rows instead of silently shrinking the integrity set; `groups inspect` fails on config-load errors; import manifest builds propagate `filepath.Abs` failures; default/demo DB path resolution surfaces `UserHomeDir` errors through all callers; malformed duplicate-keys JSON is a hard error rather than an empty candidate set; the desktop connector includes body-read errors on non-200 responses; dead store accessors that swallowed scan errors are deleted.
+- MCP `sql`/`context` handlers surface column-read and marshal errors instead of returning empty or corrupt success payloads; the desktop connector includes body-read errors on non-200 responses; dead store accessors that swallowed scan errors are deleted.
 
 ## [0.11.0] — 2026-07-20
 ### Added
@@ -211,7 +214,7 @@ First tagged release: the trust-and-automation layer for Zotero.
 - **Onboarding** — `zotio init` guided setup (Zotero detection, local API, key, first sync, health check).
 - Release engineering: goreleaser builds for 6 platforms, cosign-signed checksums, SBOMs, Homebrew tap.
 
-[0.11.1]: https://github.com/OrgMentem/zotio/compare/v0.11.0...v0.11.1
+[0.12.0]: https://github.com/OrgMentem/zotio/compare/v0.11.0...v0.12.0
 [0.11.0]: https://github.com/OrgMentem/zotio/compare/v0.10.0...v0.11.0
 [0.10.0]: https://github.com/OrgMentem/zotio/compare/v0.9.0...v0.10.0
 [0.9.0]: https://github.com/OrgMentem/zotio/compare/v0.8.0...v0.9.0
