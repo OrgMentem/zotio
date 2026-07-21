@@ -2,6 +2,10 @@
 
 Notable changes to zotio. Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow [SemVer](https://semver.org/).
 
+## [0.11.1] — 2026-07-21
+### Fixed
+- Error handling hardened across nine paths (glean runs 20260718/20260719): `mcp` SQL/context handlers surface column-read and marshal errors; export lockfile builds fail loud on unkeyed/unhashable rows instead of silently shrinking the integrity set; `groups inspect` fails on config-load errors; import manifest builds propagate `filepath.Abs` failures; default/demo DB path resolution surfaces `UserHomeDir` errors through all callers; malformed duplicate-keys JSON is a hard error rather than an empty candidate set; the desktop connector includes body-read errors on non-200 responses; dead store accessors that swallowed scan errors are deleted.
+
 ## [0.11.0] — 2026-07-20
 ### Added
 - Local read-parity coverage extended (ADR-0002 scope): `resolveRead` now routes `annotations` search/timeline/export and `items` collections-of/note-template/fulltext against the synced local store, and `--refresh` vs `--data-source local` conflicts are rejected explicitly instead of silently preferring one source.
@@ -207,6 +211,7 @@ First tagged release: the trust-and-automation layer for Zotero.
 - **Onboarding** — `zotio init` guided setup (Zotero detection, local API, key, first sync, health check).
 - Release engineering: goreleaser builds for 6 platforms, cosign-signed checksums, SBOMs, Homebrew tap.
 
+[0.11.1]: https://github.com/OrgMentem/zotio/compare/v0.11.0...v0.11.1
 [0.11.0]: https://github.com/OrgMentem/zotio/compare/v0.10.0...v0.11.0
 [0.10.0]: https://github.com/OrgMentem/zotio/compare/v0.9.0...v0.10.0
 [0.9.0]: https://github.com/OrgMentem/zotio/compare/v0.8.0...v0.9.0
