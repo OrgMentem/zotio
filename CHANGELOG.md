@@ -4,7 +4,7 @@ Notable changes to zotio. Format follows [Keep a Changelog](https://keepachangel
 
 ## [0.11.1] — 2026-07-21
 ### Fixed
-- Error handling hardened across nine paths (glean runs 20260718/20260719): `mcp` SQL/context handlers surface column-read and marshal errors; export lockfile builds fail loud on unkeyed/unhashable rows instead of silently shrinking the integrity set; `groups inspect` fails on config-load errors; import manifest builds propagate `filepath.Abs` failures; default/demo DB path resolution surfaces `UserHomeDir` errors through all callers; malformed duplicate-keys JSON is a hard error rather than an empty candidate set; the desktop connector includes body-read errors on non-200 responses; dead store accessors that swallowed scan errors are deleted.
+- Error handling hardened across nine paths: `mcp` SQL/context handlers surface column-read and marshal errors; export lockfile builds fail loud on unkeyed/unhashable rows instead of silently shrinking the integrity set; `groups inspect` fails on config-load errors; import manifest builds propagate `filepath.Abs` failures; default/demo DB path resolution surfaces `UserHomeDir` errors through all callers; malformed duplicate-keys JSON is a hard error rather than an empty candidate set; the desktop connector includes body-read errors on non-200 responses; dead store accessors that swallowed scan errors are deleted.
 
 ## [0.11.0] — 2026-07-20
 ### Added
