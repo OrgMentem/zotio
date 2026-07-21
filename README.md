@@ -306,13 +306,17 @@ collection:KEY   tag:NAME   query:TEXT   item:KEY   saved-search:KEY (needs live
 
 ### 1. The CLI — `zotio`
 
-**Homebrew (macOS / Linux):**
+**Homebrew (macOS):**
 
 ```bash
 brew install orgmentem/tap/zotio
 ```
 
 This installs both `zotio` and the `zotio-mcp` MCP server; `brew upgrade` tracks new releases.
+
+**Linux (deb / rpm / apk):** download the package for your distro from the
+[GitHub releases](https://github.com/OrgMentem/zotio/releases) and install it
+with `dpkg -i`, `rpm -i`, or `apk add --allow-untrusted`.
 
 **Prebuilt binaries:** every [GitHub release](https://github.com/OrgMentem/zotio/releases) ships archives for macOS, Linux, and Windows (amd64/arm64) with cosign-signed checksums and SBOMs. Unpack and put `zotio` on your `PATH`; on macOS clear the Gatekeeper quarantine (`xattr -d com.apple.quarantine zotio`), on Unix `chmod +x zotio`.
 
