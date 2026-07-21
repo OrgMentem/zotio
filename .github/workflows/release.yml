@@ -5,9 +5,20 @@ on:
   push:
     tags:
       - 'v*'
+  # Recovery path: republish an existing tag's MCPB assets to the MCP
+  # Registry when the tag-triggered run cannot be safely re-run (GoReleaser
+  # keeps existing assets, so re-running a completed release job 422s).
+  # Publication stays inside this repo's Actions identity: the OIDC claim to
+  # the io.github.OrgMentem/* namespace never moves to a workstation.
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing v* tag whose MCPB assets to republish to the MCP Registry"
+        required: true
 
 jobs:
   release:
+    if: github.event_name == 'push'
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -85,10 +96,13 @@ jobs:
   publish_registry:
     name: Publish to Official MCP Registry
     needs: release
+    if: ${{ !cancelled() && (github.event_name == 'workflow_dispatch' || needs.release.result == 'success') }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
       id-token: write
+    env:
+      RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       # Download the release assets rather than passing unverified build output
@@ -100,7 +114,7 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p dist/mcpb
-          gh release download "$GITHUB_REF_NAME" \
+          gh release download "$RELEASE_TAG" \
             --repo "$GITHUB_REPOSITORY" \
             --pattern '*.mcpb' \
             --dir dist/mcpb
@@ -109,7 +123,7 @@ jobs:
       - name: Publish to MCP Registry
         run: |
           set -euo pipefail
-          version="${GITHUB_REF_NAME#v}"
+          version="${RELEASE_TAG#v}"
           publisher_version="1.7.9"
           publisher_sha256="ab128162b0616090b47cf245afe0a23f3ef08936fdce19074f5ba0a4469281ac"
           publisher_archive="${RUNNER_TEMP}/mcp-publisher_linux_amd64.tar.gz"
