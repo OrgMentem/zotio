@@ -326,11 +326,15 @@ func applyUndoMembership(c *client.Client, path string, changes []mutation.Chang
 		switch ch.Field {
 		case "tags":
 			if name, ok := ch.Add.(string); ok && name != "" && !itemHasTag(nextTags, name) {
-				nextTags = append(nextTags, map[string]any{"tag": name})
+				tag := map[string]any{"tag": name}
+				if ch.TagType != 0 {
+					tag["type"] = ch.TagType
+				}
+				nextTags = append(nextTags, tag)
 				tagsChanged = true
 			}
 			if name, ok := ch.Remove.(string); ok && name != "" {
-				if filtered, removed := undoDropTag(nextTags, name); removed {
+				if filtered, removed := undoDropTag(nextTags, name, ch.TagType); removed {
 					nextTags, tagsChanged = filtered, true
 				}
 			}
@@ -399,11 +403,12 @@ func undoDropString(items []string, drop string) ([]string, bool) {
 	return out, removed
 }
 
-func undoDropTag(tags []map[string]any, name string) ([]map[string]any, bool) {
+func undoDropTag(tags []map[string]any, name string, tagType int) ([]map[string]any, bool) {
 	out := make([]map[string]any, 0, len(tags))
 	removed := false
 	for _, tagObj := range tags {
-		if tagName, _ := tagObj["tag"].(string); tagName == name {
+		tagName, _ := tagObj["tag"].(string)
+		if tagName == name && (tagType == 0 || itemTagType(tagObj) == tagType) {
 			removed = true
 			continue
 		}

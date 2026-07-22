@@ -21,9 +21,10 @@ const SchemaVersion = 1
 
 // Change is a single field-level edit within an operation.
 type Change struct {
-	Field  string `json:"field"`
-	Add    any    `json:"add,omitempty"`
-	Remove any    `json:"remove,omitempty"`
+	Field   string `json:"field"`
+	Add     any    `json:"add,omitempty"`
+	Remove  any    `json:"remove,omitempty"`
+	TagType int    `json:"tag_type,omitempty"`
 }
 
 // Op is one planned mutation against one item. Apply performs the write and is
@@ -36,6 +37,7 @@ type Op struct {
 	Changes         []Change                                      `json:"changes"`
 	Destructive     bool                                          `json:"destructive,omitempty"`
 	Apply           func() (status string, reason any, err error) `json:"-"`
+	NoOpReason      any                                           `json:"-"`
 }
 
 // PlanSummary counts the planned operations before apply.
@@ -210,6 +212,7 @@ func Run(o Options, operation string, ops []Op) (Envelope, error) {
 		item := ResultItem{OpID: op.ID, Key: op.Key}
 		if len(op.Changes) == 0 {
 			item.Status = "no_op"
+			item.Reason = op.NoOpReason
 			result.Summary.Attempted++
 			result.Summary.NoOp++
 			result.Items = append(result.Items, item)

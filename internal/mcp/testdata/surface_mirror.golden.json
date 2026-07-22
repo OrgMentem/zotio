@@ -2302,6 +2302,10 @@
           "description": "Additional positional arguments to append to the command. Raw CLI flags are rejected.",
           "type": "string"
         },
+        "automatic": {
+          "description": "Write added tags as Zotero automatic tags (type 1) (default: false)",
+          "type": "boolean"
+        },
         "continue-on-error": {
           "description": "On bulk mutations, continue past per-item failures/conflicts instead of stopping at the first (default: false)",
           "type": "boolean"
@@ -2364,6 +2368,10 @@
         "args": {
           "description": "Additional positional arguments to append to the command. Raw CLI flags are rejected.",
           "type": "string"
+        },
+        "automatic-only": {
+          "description": "Remove only matching Zotero automatic tags (type 1) (default: false)",
+          "type": "boolean"
         },
         "continue-on-error": {
           "description": "On bulk mutations, continue past per-item failures/conflicts instead of stopping at the first (default: false)",

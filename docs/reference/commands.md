@@ -1750,6 +1750,7 @@ zotio items tags add --tag <tag> [itemKeys...] [flags]
 
 | Flag | Type | Default | Description |
 | --- | --- | --- | --- |
+| `--automatic` | `bool` | `false` | Write added tags as Zotero automatic tags (type 1) |
 | `--keys-from` | `string` |  | Read item keys from a file, '-' for stdin, or positional args when omitted |
 | `--tag` | `stringArray` | `[]` | Tag to add (repeatable) |
 
@@ -1777,6 +1778,7 @@ zotio items tags remove --tag <tag> [itemKeys...] [flags]
 
 | Flag | Type | Default | Description |
 | --- | --- | --- | --- |
+| `--automatic-only` | `bool` | `false` | Remove only matching Zotero automatic tags (type 1) |
 | `--keys-from` | `string` |  | Read item keys from a file, '-' for stdin, or positional args when omitted |
 | `--tag` | `stringArray` | `[]` | Tag to remove (repeatable) |
 

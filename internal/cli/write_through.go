@@ -181,7 +181,11 @@ func applyTagChangeToData(data map[string]any, c mutation.Change) bool {
 			}
 		}
 		if !present {
-			tags = append(tags, map[string]any{"tag": name})
+			tag := map[string]any{"tag": name}
+			if c.TagType != 0 {
+				tag["type"] = c.TagType
+			}
+			tags = append(tags, tag)
 		}
 	}
 	if c.Remove != nil {
@@ -192,7 +196,9 @@ func applyTagChangeToData(data map[string]any, c mutation.Change) bool {
 		kept := make([]any, 0, len(tags))
 		for _, t := range tags {
 			if m, ok := t.(map[string]any); ok && m["tag"] == name {
-				continue
+				if c.TagType == 0 || itemTagType(m) == c.TagType {
+					continue
+				}
 			}
 			kept = append(kept, t)
 		}

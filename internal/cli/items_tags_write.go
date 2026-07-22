@@ -44,6 +44,7 @@ func newItemsTagsAddCmd(flags *rootFlags) *cobra.Command {
 func newItemsTagsRemoveCmd(flags *rootFlags) *cobra.Command {
 	var tagNames []string
 	var keysFrom string
+	var automaticOnly bool
 
 	cmd := &cobra.Command{
 		Use:   "remove --tag <tag> [itemKeys...]",
@@ -56,11 +57,12 @@ func newItemsTagsRemoveCmd(flags *rootFlags) *cobra.Command {
 			"zotio:default-max-changes":        "500",
 		},
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runItemsTagsMutation(cmd, flags, "items.tags.remove", "tag_remove", tagNames, keysFrom, args, false, false)
+			return runItemsTagsMutation(cmd, flags, "items.tags.remove", "tag_remove", tagNames, keysFrom, args, false, automaticOnly)
 		},
 	}
 	cmd.Flags().StringArrayVar(&tagNames, "tag", nil, "Tag to remove (repeatable)")
 	cmd.Flags().StringVar(&keysFrom, "keys-from", "", "Read item keys from a file, '-' for stdin, or positional args when omitted")
+	cmd.Flags().BoolVar(&automaticOnly, "automatic-only", false, "Remove only matching Zotero automatic tags (type 1)")
 	return cmd
 }
 
@@ -81,8 +83,14 @@ func runItemsTagsMutation(cmd *cobra.Command, flags *rootFlags, operation, kind 
 				change := mutation.Change{Field: "tags"}
 				if add {
 					change.Add = tagName
+					if automatic {
+						change.TagType = 1
+					}
 				} else {
 					change.Remove = tagName
+					if automatic {
+						change.TagType = 1
+					}
 				}
 				changes = append(changes, change)
 			}
@@ -116,7 +124,7 @@ func runItemsTagsMutation(cmd *cobra.Command, flags *rootFlags, operation, kind 
 			return err
 		}
 
-		changes := tagMutationChanges(currentTags, tagNames, add)
+		changes := tagMutationChanges(currentTags, tagNames, add, automatic)
 		keyCopy := key
 		pathCopy := path
 		tagsCopy := append([]string(nil), tagNames...)
@@ -128,13 +136,16 @@ func runItemsTagsMutation(cmd *cobra.Command, flags *rootFlags, operation, kind 
 			Changes:         changes,
 			Destructive:     false,
 		}
+		if add && len(changes) == 0 {
+			op.NoOpReason = map[string]any{"tag_types": observedTagTypes(currentTags, tagNames)}
+		}
 		if add {
 			op.Apply = func() (string, any, error) {
 				return applyItemTagAdd(c, pathCopy, tagsCopy, automatic)
 			}
 		} else {
 			op.Apply = func() (string, any, error) {
-				return applyItemTagRemove(c, pathCopy, tagsCopy)
+				return applyItemTagRemove(c, pathCopy, tagsCopy, automatic)
 			}
 		}
 		ops = append(ops, op)
@@ -195,15 +206,23 @@ func itemDataTags(data json.RawMessage) ([]map[string]any, error) {
 	return tags, nil
 }
 
-func tagMutationChanges(currentTags []map[string]any, tagNames []string, add bool) []mutation.Change {
+func tagMutationChanges(currentTags []map[string]any, tagNames []string, add, automatic bool) []mutation.Change {
 	changes := make([]mutation.Change, 0, len(tagNames))
 	for _, tagName := range tagNames {
 		present := itemHasTag(currentTags, tagName)
 		if add && !present {
-			changes = append(changes, mutation.Change{Field: "tags", Add: tagName})
+			change := mutation.Change{Field: "tags", Add: tagName}
+			if automatic {
+				change.TagType = 1
+			}
+			changes = append(changes, change)
 		}
-		if !add && present {
-			changes = append(changes, mutation.Change{Field: "tags", Remove: tagName})
+		if !add && present && (!automatic || itemHasTagType(currentTags, tagName, 1)) {
+			change := mutation.Change{Field: "tags", Remove: tagName}
+			if automatic {
+				change.TagType = 1
+			}
+			changes = append(changes, change)
 		}
 	}
 	return changes
@@ -218,6 +237,39 @@ func itemHasTag(tags []map[string]any, tagName string) bool {
 	return false
 }
 
+func itemHasTagType(tags []map[string]any, tagName string, tagType int) bool {
+	for _, tagObj := range tags {
+		if currentTag, ok := tagObj["tag"].(string); ok && currentTag == tagName && itemTagType(tagObj) == tagType {
+			return true
+		}
+	}
+	return false
+}
+
+func itemTagType(tagObj map[string]any) int {
+	switch value := tagObj["type"].(type) {
+	case float64:
+		return int(value)
+	case int:
+		return value
+	default:
+		return 0
+	}
+}
+
+func observedTagTypes(currentTags []map[string]any, tagNames []string) map[string]int {
+	types := make(map[string]int, len(tagNames))
+	for _, tagName := range tagNames {
+		for _, tagObj := range currentTags {
+			if currentTag, _ := tagObj["tag"].(string); currentTag == tagName {
+				types[tagName] = itemTagType(tagObj)
+				break
+			}
+		}
+	}
+	return types
+}
+
 func applyItemTagAdd(c *client.Client, path string, tagNames []string, automatic bool) (string, any, error) {
 	currentData, currentVersion, err := c.GetWithVersion(path, nil)
 	if err != nil {
@@ -228,13 +280,14 @@ func applyItemTagAdd(c *client.Client, path string, tagNames []string, automatic
 		return "failed", err.Error(), err
 	}
 	missing := make([]string, 0, len(tagNames))
+	tagTypes := observedTagTypes(currentTags, tagNames)
 	for _, tagName := range tagNames {
 		if !itemHasTag(currentTags, tagName) {
 			missing = append(missing, tagName)
 		}
 	}
 	if len(missing) == 0 {
-		return "no_op", "tag already present", nil
+		return "no_op", map[string]any{"tag_types": tagTypes}, nil
 	}
 	nextTags := copyItemTags(currentTags)
 	for _, tagName := range missing {
@@ -247,7 +300,7 @@ func applyItemTagAdd(c *client.Client, path string, tagNames []string, automatic
 	return patchItemTags(c, path, currentVersion, nextTags)
 }
 
-func applyItemTagRemove(c *client.Client, path string, tagNames []string) (string, any, error) {
+func applyItemTagRemove(c *client.Client, path string, tagNames []string, automaticOnly bool) (string, any, error) {
 	currentData, currentVersion, err := c.GetWithVersion(path, nil)
 	if err != nil {
 		return "failed", err.Error(), err
@@ -264,7 +317,8 @@ func applyItemTagRemove(c *client.Client, path string, tagNames []string) (strin
 	removed := 0
 	for _, tagObj := range currentTags {
 		tagName, _ := tagObj["tag"].(string)
-		if _, ok := targets[tagName]; ok {
+		_, targeted := targets[tagName]
+		if targeted && (!automaticOnly || itemTagType(tagObj) == 1) {
 			removed++
 			continue
 		}

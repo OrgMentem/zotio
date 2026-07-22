@@ -40,6 +40,14 @@ func TestApplyChangeToItemData(t *testing.T) {
 			t.Errorf("tag remove: %v", d["tags"])
 		}
 	})
+	t.Run("automatic tag add preserves type", func(t *testing.T) {
+		d := map[string]any{}
+		applyChangeToItemData(d, mutation.Change{Field: "tags", Add: "papio:unavailable", TagType: 1})
+		tags, _ := d["tags"].([]any)
+		if len(tags) != 1 || tags[0].(map[string]any)["type"] != 1 {
+			t.Fatalf("automatic tag add: %v", d["tags"])
+		}
+	})
 	t.Run("collection add", func(t *testing.T) {
 		d := map[string]any{"collections": []any{"C1"}}
 		applyChangeToItemData(d, mutation.Change{Field: "collections", Add: "C2"})

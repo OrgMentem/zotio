@@ -4,7 +4,7 @@ Notable changes to zotio. Format follows [Keep a Changelog](https://keepachangel
 
 ## [Unreleased]
 ### Added
-- `items tags add --automatic` writes newly added tags as Zotero automatic tags (type 1), allowing them to be hidden through the tag selector.
+- `items tags add --automatic` writes new tags as Zotero automatic tags (type 1); `items tags remove --automatic-only` removes only matching type-1 tags. Both carry `tag_type` through preview, journal, write-through, and undo, so callers can manage namespaced automatic tags without retyping or deleting a same-name manual tag.
 
 ## [0.12.0] — 2026-07-21
 ### Changed — breaking

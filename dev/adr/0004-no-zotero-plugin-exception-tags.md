@@ -50,25 +50,29 @@ with two durable exception tags, maintained by papio through zotio's CLI:
 Contract:
 
 1. **Tags are reconciled state, not events.** papio recomputes the desired tag
-   as a pure function of each linked item's newest job state and converges
-   Zotero against it (applied-state ledger `zotio_tag_state` bounds writes to
-   deltas; a lost write is repaired by the next pass, a manual user removal of
-   a tag papio still believes applied is respected). No lifecycle tags, ever.
+   from each linked item's newest job state, then confirms that the item still
+   lacks a PDF. A crash-safe ledger records pending, papio-owned, foreign, and
+   missing-target states; pending intent is durable before the remote write,
+   and per-item mutation envelopes are consumed even when zotio exits nonzero.
+   Lost and partial writes therefore converge without claiming a user's
+   pre-existing same-name tag. No lifecycle tags, ever.
 2. **`papio:unavailable` decays.** Backfill re-checks unavailable items after a
    cool-down (`zotio.unavailable_recheck_days`, default 14) — green-OA copies
    appear months after publication, holdings change, adapters gain providers.
    A saved search on this tag is the user's ILL/manual worklist, so it must not
    go stale in either direction.
-3. **Personal library only.** papio invokes zotio with an explicit empty
-   `--group=` persistent flag, overriding any inherited `ZOTERO_GROUP`; tags
-   therefore land in My Library. Group libraries are shared surfaces and
-   papio's verdicts ("unavailable *to my institution*", "my SSO session needs
-   attention") are personal. Group items may be acquired; they are never
-   annotated.
-4. **Automatic tag type.** `items tags add --automatic` writes `{tag, type: 1}`
-   (what Zotero translators write), so the tag selector's automatic-tag toggle
-   can hide the entire namespace. zotio never retypes an existing same-name
-   manual tag. No colors are assigned; that stays the user's call.
+3. **Personal library only.** papio strips inherited `ZOTERO_GROUP` from every
+   zotio subprocess and passes explicit empty `--group=` on tag writes. Zotero
+   keys are library-local, so a v14 provenance table makes only keys observed
+   by a post-upgrade personal missing-PDF scan eligible; pre-existing
+   scope-unknown/group links are ignored. Group libraries are shared surfaces
+   and papio's verdicts ("unavailable *to my institution*", "my SSO session
+   needs attention") are personal.
+4. **Automatic tag type and ownership-safe removal.** `items tags add
+   --automatic` writes `{tag, type: 1}`; `items tags remove --automatic-only`
+   removes only a matching type-1 tag. zotio never retypes or removes an
+   existing same-name manual tag. Both operations expose type in their mutation
+   plans/journals. No colors are assigned; that stays the user's call.
 5. **Ownership split.** papio owns the state and the reconcile loop (it has the
    job store and already shells out to zotio); zotio owns every Zotero write
    and keeps its mutation envelope, version preconditions, rate limiting, and
@@ -78,9 +82,9 @@ Contract:
    tag in v1 is one a user provably reads.
 
 Version floor: the reconciler requires zotio >= 0.13.0 (first release with
-`--automatic`) and fails closed with an upgrade hint; papio's global zotio
-floor is unchanged because the feature is opt-in (`zotio.exception_tags`,
-default off).
+`--automatic` and `--automatic-only`) and fails closed with an upgrade hint;
+papio's global zotio floor is unchanged because the feature is opt-in
+(`zotio.exception_tags`, default off).
 
 ## Consequences
 
@@ -93,10 +97,16 @@ default off).
   ILL-handoff feature idea imagined without building it.
 - **Happy path writes nothing extra.** An item that acquires cleanly sees
   exactly one Zotero write — the attachment zotio was already making.
-- **Batch-failure retry is coarse.** A deleted Zotero item in a batch fails the
-  whole zotio invocation; the reconciler retries next pass (throttled logging).
-  Acceptable at exception-tag volumes; per-key fallback is the escalation if it
-  ever isn't.
+  While exception tags exist, reconciliation performs a bounded exact-key
+  missing-PDF read so a manually attached PDF clears stale state; stable
+  exception state performs no tag writes.
+- **Failures are isolated per item.** Tag mutations are one item per zotio
+  invocation. A deleted item is tombstoned without blocking valid items;
+  partial/applied outcomes are persisted before aggregate errors return.
+- **Disable converges.** After the daemon reloads
+  `zotio.exception_tags = false`, the maintenance runner remains active while
+  ledger state exists and removes papio-owned automatic tags. Users should
+  stop the daemon and force one reconcile pass before uninstalling.
 - **The plugin decision is reversible cheaply.** If beta users demonstrably hit
   tag-surface limits (need per-item progress detail, right-click ergonomics, or
   never see browser prompts), a plugin is a *zotio* deliverable that renders
@@ -116,5 +126,5 @@ default off).
 
 ## Validation
 
-- papio: `go test ./internal/zotio ./internal/config ./internal/store ./internal/doctor ./internal/api ./internal/cli ./internal/bootstrap` — reconciler convergence/idempotence, removal-before-add on tag transitions, latest-job-wins, version gate, failed-write retry, cool-down re-eligibility, config validation, schema v13 migration.
-- zotio: `go test ./internal/cli -run '^TestItemsTags'` — `--automatic` writes `{tag, type: 1}` for new tags, manual add unchanged, existing same-name manual tag no-ops.
+- papio: `go test ./internal/zotio ./internal/config ./internal/store ./internal/doctor ./internal/api ./internal/cli ./internal/bootstrap` — convergence/idempotence, ownership-safe manual tags, serialized passes, per-item 404 isolation, applied outcomes alongside errors, manual-PDF clearing, disable cleanup, personal-scope provenance, version gate, cool-down re-eligibility, config validation, and forward migration from the committed v13 ledger to schema v14.
+- zotio: `go test ./internal/cli ./internal/mutation ./internal/mcp` — automatic add/type-aware plans, automatic-only removal preserving manual tags, write-through and journal undo type parity, generated MCP surface, and command docs.

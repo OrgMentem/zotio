@@ -24,7 +24,7 @@ func InvertChange(c Change) (Change, bool) {
 	if !isScalarMembershipValue(c.Add) || !isScalarMembershipValue(c.Remove) {
 		return Change{}, false
 	}
-	return Change{Field: c.Field, Add: c.Remove, Remove: c.Add}, true
+	return Change{Field: c.Field, Add: c.Remove, Remove: c.Add, TagType: c.TagType}, true
 }
 
 // isScalarMembershipValue reports whether a change value is a single membership
