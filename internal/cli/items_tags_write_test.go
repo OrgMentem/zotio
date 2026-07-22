@@ -118,6 +118,50 @@ func TestItemsTagsAddNewTagApplies(t *testing.T) {
 	}
 }
 
+func TestItemsTagsAddAutomaticTagType(t *testing.T) {
+	t.Run("automatic new tag", func(t *testing.T) {
+		srv := newItemTagTestServer(t, map[string]string{"K1": "42"}, map[string][]map[string]any{
+			"K1": {{"tag": "existing", "type": float64(0)}},
+		})
+
+		env, _ := runItemsTagsTestCmd(t, srv, &rootFlags{asJSON: true, yes: true, maxChanges: -1}, "add", "--automatic", "--tag", "x", "K1")
+		if !env.OK || env.Result == nil || env.Result.Summary.Applied != 1 {
+			t.Fatalf("env = %+v, want one applied item", env)
+		}
+		if got := patchBodyTag(srv.patchBodies["K1"], "x"); got["type"] != float64(1) {
+			t.Errorf("automatic tag = %+v, want type 1", got)
+		}
+	})
+
+	t.Run("manual new tag", func(t *testing.T) {
+		srv := newItemTagTestServer(t, map[string]string{"K1": "42"}, map[string][]map[string]any{
+			"K1": {{"tag": "existing", "type": float64(0)}},
+		})
+
+		env, _ := runItemsTagsTestCmd(t, srv, &rootFlags{asJSON: true, yes: true, maxChanges: -1}, "add", "--tag", "x", "K1")
+		if !env.OK || env.Result == nil || env.Result.Summary.Applied != 1 {
+			t.Fatalf("env = %+v, want one applied item", env)
+		}
+		if got := patchBodyTag(srv.patchBodies["K1"], "x"); len(got) != 1 || got["tag"] != "x" {
+			t.Errorf("manual tag = %+v, want {tag:x}", got)
+		}
+	})
+
+	t.Run("existing manual tag is unchanged", func(t *testing.T) {
+		srv := newItemTagTestServer(t, map[string]string{"K1": "42"}, map[string][]map[string]any{
+			"K1": {{"tag": "x", "type": float64(0)}},
+		})
+
+		env, _ := runItemsTagsTestCmd(t, srv, &rootFlags{asJSON: true, yes: true, maxChanges: -1}, "add", "--automatic", "--tag", "x", "K1")
+		if !env.OK || env.Result == nil || env.Result.Summary.NoOp != 1 || env.Result.Items[0].Status != "no_op" {
+			t.Fatalf("env = %+v, want no_op", env)
+		}
+		if srv.patchCounts["K1"] != 0 {
+			t.Fatalf("PATCH count = %d, want 0", srv.patchCounts["K1"])
+		}
+	})
+}
+
 func TestItemsTagsAddAlreadyPresentIsNoOp(t *testing.T) {
 	srv := newItemTagTestServer(t, map[string]string{"K1": "42"}, map[string][]map[string]any{
 		"K1": {{"tag": "fresh", "type": float64(0)}},
@@ -268,4 +312,15 @@ func patchBodyHasTag(body map[string]any, tagName string) bool {
 		}
 	}
 	return false
+}
+
+func patchBodyTag(body map[string]any, tagName string) map[string]any {
+	rawTags, _ := body["tags"].([]any)
+	for _, raw := range rawTags {
+		tagObj, _ := raw.(map[string]any)
+		if tagObj["tag"] == tagName {
+			return tagObj
+		}
+	}
+	return nil
 }

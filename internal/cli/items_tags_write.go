@@ -19,6 +19,7 @@ import (
 func newItemsTagsAddCmd(flags *rootFlags) *cobra.Command {
 	var tagNames []string
 	var keysFrom string
+	var automatic bool
 
 	cmd := &cobra.Command{
 		Use:   "add --tag <tag> [itemKeys...]",
@@ -31,11 +32,12 @@ func newItemsTagsAddCmd(flags *rootFlags) *cobra.Command {
 			"zotio:default-max-changes":        "500",
 		},
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runItemsTagsMutation(cmd, flags, "items.tags.add", "tag_add", tagNames, keysFrom, args, true)
+			return runItemsTagsMutation(cmd, flags, "items.tags.add", "tag_add", tagNames, keysFrom, args, true, automatic)
 		},
 	}
 	cmd.Flags().StringArrayVar(&tagNames, "tag", nil, "Tag to add (repeatable)")
 	cmd.Flags().StringVar(&keysFrom, "keys-from", "", "Read item keys from a file, '-' for stdin, or positional args when omitted")
+	cmd.Flags().BoolVar(&automatic, "automatic", false, "Write added tags as Zotero automatic tags (type 1)")
 	return cmd
 }
 
@@ -54,7 +56,7 @@ func newItemsTagsRemoveCmd(flags *rootFlags) *cobra.Command {
 			"zotio:default-max-changes":        "500",
 		},
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runItemsTagsMutation(cmd, flags, "items.tags.remove", "tag_remove", tagNames, keysFrom, args, false)
+			return runItemsTagsMutation(cmd, flags, "items.tags.remove", "tag_remove", tagNames, keysFrom, args, false, false)
 		},
 	}
 	cmd.Flags().StringArrayVar(&tagNames, "tag", nil, "Tag to remove (repeatable)")
@@ -62,7 +64,7 @@ func newItemsTagsRemoveCmd(flags *rootFlags) *cobra.Command {
 	return cmd
 }
 
-func runItemsTagsMutation(cmd *cobra.Command, flags *rootFlags, operation, kind string, rawTags []string, keysFrom string, args []string, add bool) error {
+func runItemsTagsMutation(cmd *cobra.Command, flags *rootFlags, operation, kind string, rawTags []string, keysFrom string, args []string, add, automatic bool) error {
 	tagNames, err := normalizeTagNames(rawTags)
 	if err != nil {
 		return err
@@ -128,7 +130,7 @@ func runItemsTagsMutation(cmd *cobra.Command, flags *rootFlags, operation, kind 
 		}
 		if add {
 			op.Apply = func() (string, any, error) {
-				return applyItemTagAdd(c, pathCopy, tagsCopy)
+				return applyItemTagAdd(c, pathCopy, tagsCopy, automatic)
 			}
 		} else {
 			op.Apply = func() (string, any, error) {
@@ -216,7 +218,7 @@ func itemHasTag(tags []map[string]any, tagName string) bool {
 	return false
 }
 
-func applyItemTagAdd(c *client.Client, path string, tagNames []string) (string, any, error) {
+func applyItemTagAdd(c *client.Client, path string, tagNames []string, automatic bool) (string, any, error) {
 	currentData, currentVersion, err := c.GetWithVersion(path, nil)
 	if err != nil {
 		return "failed", err.Error(), err
@@ -236,7 +238,11 @@ func applyItemTagAdd(c *client.Client, path string, tagNames []string) (string, 
 	}
 	nextTags := copyItemTags(currentTags)
 	for _, tagName := range missing {
-		nextTags = append(nextTags, map[string]any{"tag": tagName})
+		tag := map[string]any{"tag": tagName}
+		if automatic {
+			tag["type"] = 1
+		}
+		nextTags = append(nextTags, tag)
 	}
 	return patchItemTags(c, path, currentVersion, nextTags)
 }

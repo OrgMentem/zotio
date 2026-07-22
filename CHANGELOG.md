@@ -2,6 +2,10 @@
 
 Notable changes to zotio. Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow [SemVer](https://semver.org/).
 
+## [Unreleased]
+### Added
+- `items tags add --automatic` writes newly added tags as Zotero automatic tags (type 1), allowing them to be hidden through the tag selector.
+
 ## [0.12.0] — 2026-07-21
 ### Changed — breaking
 - **More paths now fail loud instead of silently degrading.** Extending the 0.10.0/0.11.0 degraded-exit contract: `export` lockfile builds error on unkeyed/unhashable rows (previously the integrity set silently shrank), `groups inspect` exits non-zero on config-load errors, malformed duplicate-keys JSON is a hard error rather than an empty candidate set, import manifest builds propagate path-resolution failures, and default/demo DB path resolution surfaces `UserHomeDir` errors through every caller. Scripts keying on a `0` exit from these must inspect the error.

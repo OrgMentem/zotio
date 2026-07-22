@@ -61,3 +61,4 @@ Non-trivial architecture/infrastructure decisions (as opposed to product sequenc
 
 - `dev/adr/0001-mcp-command-surface.md` — why the MCP server defaults to a command-orchestration facade (`command_search`/`command_run`) with global flags stripped from the mirror, and how to switch surfaces via `ZOTIO_MCP_SURFACE`.
 - `dev/adr/0002-local-read-parity-subsystem.md` — why Zotero-aware local read parity (`internal/store/query.go` + the `resolveLocal*` path) is a deliberate, per-resource subsystem grown on demand, NOT a generic query-planner layer; read before adding a new `--data-source local` scope.
+- `dev/adr/0004-no-zotero-plugin-exception-tags.md` — why there is no Zotero plugin: papio exception state surfaces as two reconciled automatic tags (`papio:needs-action`, `papio:unavailable`) written through `items tags add --automatic`, personal library only; read before adding any papio-facing tag or plugin surface.

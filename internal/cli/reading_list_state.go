@@ -134,7 +134,7 @@ func runReadingListTransition(cmd *cobra.Command, flags *rootFlags, keysFrom str
 		}
 		if transition.addOnly {
 			op.Apply = func() (string, any, error) {
-				return applyItemTagAdd(c, pathCopy, addCopy)
+				return applyItemTagAdd(c, pathCopy, addCopy, false)
 			}
 		} else {
 			op.Apply = func() (string, any, error) {
