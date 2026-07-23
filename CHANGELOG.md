@@ -2,9 +2,13 @@
 
 Notable changes to zotio. Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow [SemVer](https://semver.org/).
 
-## [Unreleased]
+## [0.13.0] — 2026-07-23
 ### Added
-- `items tags add --automatic` writes new tags as Zotero automatic tags (type 1); `items tags remove --automatic-only` removes only matching type-1 tags. Both carry `tag_type` through preview, journal, write-through, and undo, so callers can manage namespaced automatic tags without retyping or deleting a same-name manual tag.
+- `items tags add --automatic` writes new tags as Zotero automatic tags
+  (type 1); `items tags remove --automatic-only` removes only matching type-1
+  tags. Both carry `tag_type` through preview, journal, write-through, and
+  undo, so callers can manage namespaced automatic tags without retyping or
+  deleting a same-name manual tag.
 
 ## [0.12.0] — 2026-07-21
 ### Changed — breaking
@@ -218,6 +222,7 @@ First tagged release: the trust-and-automation layer for Zotero.
 - **Onboarding** — `zotio init` guided setup (Zotero detection, local API, key, first sync, health check).
 - Release engineering: goreleaser builds for 6 platforms, cosign-signed checksums, SBOMs, Homebrew tap.
 
+[0.13.0]: https://github.com/OrgMentem/zotio/compare/v0.12.0...v0.13.0
 [0.12.0]: https://github.com/OrgMentem/zotio/compare/v0.11.0...v0.12.0
 [0.11.0]: https://github.com/OrgMentem/zotio/compare/v0.10.0...v0.11.0
 [0.10.0]: https://github.com/OrgMentem/zotio/compare/v0.9.0...v0.10.0
