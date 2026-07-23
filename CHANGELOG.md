@@ -10,6 +10,13 @@ Notable changes to zotio. Format follows [Keep a Changelog](https://keepachangel
   path — and a panicking mirrored command returns an MCP error result carrying
   the captured output instead of crashing the server.
 
+### Security
+- Docs CI installs the documentation toolchain from a hash-pinned lock
+  (`docs/requirements.lock.txt`, `pip install --require-hashes`), closing the
+  one third-party fetch that lacked a content-digest check.
+  `docs/requirements.txt` stays the human-edited source; regenerate the lock
+  on version bumps with the uv command noted there.
+
 ## [0.13.0] — 2026-07-23
 ### Added
 - `items tags add --automatic` writes new tags as Zotero automatic tags

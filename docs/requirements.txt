@@ -1,8 +1,9 @@
-# Documentation toolchain. Single source of truth for the pinned SSG version;
-# used by CI (.github/workflows/docs.yml) and `make docs-serve`/`make docs-build`.
+# Documentation toolchain. Human-edited source of truth for the pinned SSG version;
+# local docs installs use this file; CI installs the hash-pinned lock file.
 #
 # Zensical is pre-1.0 (alpha) and reads mkdocs.yml natively. Pin it hard and bump
-# deliberately. uv users: `uv pip install -r docs/requirements.txt`.
+# deliberately. On a version bump, edit docs/requirements.txt then regenerate
+#   uv pip compile --universal --generate-hashes --python-version 3.14 docs/requirements.txt -o docs/requirements.lock.txt
 zensical==0.0.51
 
 # Fallback engine — same mkdocs.yml also builds with Material for MkDocs.

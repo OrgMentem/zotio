@@ -30,7 +30,7 @@ jobs:
         with:
           python-version: "3.14"
       - name: Install Zensical
-        run: pip install -r docs/requirements.txt
+        run: pip install --require-hashes -r docs/requirements.lock.txt
       - name: Build site
         run: zensical build
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
