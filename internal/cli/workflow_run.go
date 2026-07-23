@@ -1037,15 +1037,9 @@ func executeWorkflowRunStepWithRoot(ctx context.Context, root *cobra.Command, ar
 	root.SetOut(&stdout)
 	root.SetErr(&stderr)
 
-	savedNoColor := noColor
-	savedHumanFriendly := humanFriendly
-	savedGroup := activeGroupID
-
+	restore := snapshotCLIGlobals()
+	defer restore()
 	err := root.ExecuteContext(ctx)
-
-	noColor = savedNoColor
-	humanFriendly = savedHumanFriendly
-	activeGroupID = savedGroup
 
 	return stdout.String(), stderr.String(), err
 }

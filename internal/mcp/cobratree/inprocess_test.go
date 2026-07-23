@@ -78,6 +78,41 @@ func TestInProcessHandler_Error(t *testing.T) {
 	}
 }
 
+func TestRunMirroredInProcessRecoversPanicAndRestoresState(t *testing.T) {
+	previousStateGuard := StateGuard
+	t.Cleanup(func() {
+		StateGuard = previousStateGuard
+	})
+	restored := false
+	StateGuard = func() func() {
+		return func() {
+			restored = true
+		}
+	}
+	rootFactory := func() *cobra.Command {
+		return &cobra.Command{
+			Use:           "zotio",
+			SilenceUsage:  true,
+			SilenceErrors: true,
+			RunE: func(cmd *cobra.Command, _ []string) error {
+				fmt.Fprint(cmd.OutOrStdout(), "partial output")
+				panic("mirror panic")
+			},
+		}
+	}
+
+	res := runMirroredInProcess(context.Background(), rootFactory, nil, nil)
+	if res == nil || !res.IsError {
+		t.Fatalf("result = %+v, want error tool result", res)
+	}
+	if got := toolResultText(t, res); !strings.Contains(got, "mirror panic") || !strings.Contains(got, "partial output") {
+		t.Fatalf("panic result = %q, want panic value and command output", got)
+	}
+	if !restored {
+		t.Fatal("state guard restore was not called")
+	}
+}
+
 func TestRegisterAll_NilFactoryIsNoOp(t *testing.T) {
 	defer func() {
 		if r := recover(); r != nil {

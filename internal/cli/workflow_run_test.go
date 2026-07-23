@@ -1223,3 +1223,41 @@ func TestInstallRuntimeHooksInstallsProductionHooks(t *testing.T) {
 		t.Fatal("runtime hooks were not installed")
 	}
 }
+
+func TestExecuteWorkflowRunStepWithRootRestoresGlobalsAfterPanic(t *testing.T) {
+	previousNoColor := noColor
+	previousHumanFriendly := humanFriendly
+	previousGroupID := activeGroupID
+	t.Cleanup(func() {
+		noColor = previousNoColor
+		humanFriendly = previousHumanFriendly
+		activeGroupID = previousGroupID
+	})
+
+	noColor = false
+	humanFriendly = true
+	activeGroupID = "outer-group"
+	root := &cobra.Command{
+		Use: "panic",
+		RunE: func(_ *cobra.Command, _ []string) error {
+			noColor = true
+			humanFriendly = false
+			activeGroupID = "inner-group"
+			panic("workflow panic")
+		},
+	}
+
+	panicValue := func() (recovered any) {
+		defer func() {
+			recovered = recover()
+		}()
+		_, _, _ = executeWorkflowRunStepWithRoot(context.Background(), root, nil, nil)
+		return nil
+	}()
+	if panicValue != "workflow panic" {
+		t.Fatalf("panic value = %v, want workflow panic", panicValue)
+	}
+	if noColor != false || humanFriendly != true || activeGroupID != "outer-group" {
+		t.Fatalf("CLI globals = noColor=%t humanFriendly=%t activeGroupID=%q, want false true outer-group", noColor, humanFriendly, activeGroupID)
+	}
+}

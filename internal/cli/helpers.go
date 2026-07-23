@@ -38,6 +38,23 @@ var humanFriendly bool
 // on-disk DB file to a group library.
 var activeGroupID string
 
+// snapshotCLIGlobals captures the CLI state mutated by root command flags.
+func snapshotCLIGlobals() func() {
+	savedNoColor := noColor
+	savedHumanFriendly := humanFriendly
+	savedGroupID := activeGroupID
+	return func() {
+		noColor = savedNoColor
+		humanFriendly = savedHumanFriendly
+		activeGroupID = savedGroupID
+	}
+}
+
+// SnapshotGlobals guards process-global CLI state around in-process command execution.
+func SnapshotGlobals() func() {
+	return snapshotCLIGlobals()
+}
+
 // colorEnabled reports whether output should carry ANSI styling.
 // Kill switches (--no-color, NO_COLOR, TERM=dumb) always win; --human-friendly
 // forces color on; otherwise color follows terminal auto-detection. Piped

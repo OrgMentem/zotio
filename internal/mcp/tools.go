@@ -23,6 +23,7 @@ import (
 
 // RegisterTools registers the MCP framework tools plus the selected Cobra command surface.
 func RegisterTools(s *server.MCPServer) {
+	cobratree.StateGuard = cli.SnapshotGlobals
 	s.AddTool(
 		mcplib.NewTool("search",
 			mcplib.WithDescription("Full-text search across all synced data. Faster than paginating list endpoints. Requires sync first. Large responses are bounded to the MCP tool-result budget."),

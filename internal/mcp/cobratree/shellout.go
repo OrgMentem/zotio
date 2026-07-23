@@ -18,6 +18,11 @@ import (
 
 var mirroredCommandMu sync.Mutex
 
+// StateGuard snapshots process-global CLI state before mirrored command
+// execution and returns a function that restores it. The MCP package sets it
+// to avoid an import cycle with the CLI package.
+var StateGuard func() (restore func())
+
 // inProcessHandler runs a mirrored Cobra command in-process via the shared
 // runMirroredInProcess core, so the MCP server works without a companion zotio
 // binary on PATH.
@@ -34,13 +39,25 @@ func inProcessHandler(rootFactory func() *cobra.Command, commandPath []string) s
 // exposes. This is the out-of-band mechanism that lets the schema drop
 // --agent/--json and the other global formatting/confirmation flags. Shared by
 // the command mirror (inProcessHandler) and the orchestration facade (command_run).
-func runMirroredInProcess(ctx context.Context, rootFactory func() *cobra.Command, commandPath []string, args map[string]any) *mcplib.CallToolResult {
+func runMirroredInProcess(ctx context.Context, rootFactory func() *cobra.Command, commandPath []string, args map[string]any) (result *mcplib.CallToolResult) {
 	// CLI package state (notably the group-selected local DB/API prefix) is still
 	// process-global. Serialize the
 	// in-process mirror so concurrent HTTP MCP requests cannot cross-contaminate
 	// library scope while commands run.
 	mirroredCommandMu.Lock()
 	defer mirroredCommandMu.Unlock()
+	if StateGuard != nil {
+		restore := StateGuard()
+		defer restore()
+	}
+
+	var buf bytes.Buffer
+	defer func() {
+		if panicValue := recover(); panicValue != nil {
+			result = mcplib.NewToolResultError(fmt.Sprintf("%s\npanic: %v", buf.String(), panicValue))
+		}
+	}()
+
 	root := rootFactory()
 	if root == nil {
 		return mcplib.NewToolResultError("failed to build command tree")
@@ -53,7 +70,6 @@ func runMirroredInProcess(ctx context.Context, rootFactory func() *cobra.Command
 	if raw, _ := args["args"].(string); strings.TrimSpace(raw) != "" {
 		finalArgs = append(finalArgs, splitShellArgs(raw)...)
 	}
-	var buf bytes.Buffer
 	root.SetOut(&buf)
 	root.SetErr(&buf)
 	root.SetArgs(finalArgs)

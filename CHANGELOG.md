@@ -2,6 +2,14 @@
 
 Notable changes to zotio. Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow [SemVer](https://semver.org/).
 
+## [Unreleased]
+### Fixed
+- In-process MCP mirrored commands and workflow-run steps now restore
+  process-global CLI state (output flags, `--group` scope) even when a command
+  panics — restoration is deferred instead of running only on the non-panic
+  path — and a panicking mirrored command returns an MCP error result carrying
+  the captured output instead of crashing the server.
+
 ## [0.13.0] — 2026-07-23
 ### Added
 - `items tags add --automatic` writes new tags as Zotero automatic tags
