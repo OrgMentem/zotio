@@ -63,35 +63,6 @@ jobs:
           HOMEBREW_TAP_GITHUB_TOKEN: ${{ secrets.HOMEBREW_TAP_GITHUB_TOKEN }}
           SCOOP_BUCKET_GITHUB_TOKEN: ${{ secrets.SCOOP_BUCKET_GITHUB_TOKEN }}
           WINGET_GITHUB_TOKEN: ${{ secrets.WINGET_GITHUB_TOKEN }}
-      # The Homebrew formula was migrated to a cask (Casks/zotio.rb, since
-      # 82189ca). GoReleaser publishes the cask but cannot delete the superseded
-      # Formula/zotio.rb, so `brew install orgmentem/tap/zotio` would keep
-      # resolving the frozen formula and ignore the cask. Remove it once the
-      # cask is published. Idempotent: a no-op after the first cask release.
-      - name: Drop stale Homebrew formula (superseded by cask)
-        env:
-          GH_TOKEN: ${{ secrets.HOMEBREW_TAP_GITHUB_TOKEN }}
-        run: |
-          set -euo pipefail
-          path="repos/OrgMentem/homebrew-tap/contents/Formula/zotio.rb"
-          sha="$(gh api "$path" --jq .sha 2>/dev/null || true)"
-          if [ -z "$sha" ]; then
-            echo "No stale formula to remove."
-            exit 0
-          fi
-          # Concurrent sibling releases (papio) push tap commits between our
-          # GET and DELETE; a 404/409 then only means the file is already gone
-          # or the ref moved. Re-check before failing the whole release job.
-          if gh api -X DELETE "$path" \
-              -f message="zotio: drop formula superseded by cask" \
-              -f sha="$sha"; then
-            echo "Deleted stale Formula/zotio.rb ($sha)"
-          elif [ -z "$(gh api "$path" --jq .sha 2>/dev/null || true)" ]; then
-            echo "Formula already removed by a concurrent run."
-          else
-            echo "Formula still present and delete failed; failing." >&2
-            exit 1
-          fi
 
   publish_registry:
     name: Publish to Official MCP Registry
