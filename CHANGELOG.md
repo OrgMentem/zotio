@@ -17,6 +17,13 @@ Notable changes to zotio. Format follows [Keep a Changelog](https://keepachangel
   `docs/requirements.txt` stays the human-edited source; regenerate the lock
   on version bumps with the uv command noted there.
 
+### Removed
+- Deleted the retired CLI Printing Press input spec (`spec.yaml`) — the generator was
+  retired 2026-07-08 with no regeneration path, and the spec was kept only as
+  coverage-reference data. Endpoint coverage now lives in the matrix in
+  `dev/zotero-api-coverage.md`; stale reprint references in `AGENTS.md`, the coverage
+  doc, and the diagrams skill were cleaned up.
+
 ## [0.13.0] — 2026-07-23
 ### Added
 - `items tags add --automatic` writes new tags as Zotero automatic tags

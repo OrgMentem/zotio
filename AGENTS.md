@@ -45,10 +45,10 @@ Missable invariants before you touch endpoints, schema, or mutations. Full cover
 matrix, known gaps, and the **refresh procedure** live in `dev/zotero-api-coverage.md`
 — re-run it when a new Zotero version ships (releases are now every 6–10 weeks).
 
-- This CLI targets Zotero's **local API** (`http://localhost:23119/api`, base in `spec.yaml` ends `/users/0`), which mirrors Web API v3 plus local-only extras. Enable it in Zotero: Settings → Advanced → "Allow other applications…".
+- This CLI targets Zotero's **local API** (`http://localhost:23119/api`, library base ends `/users/0`), which mirrors Web API v3 plus local-only extras. Enable it in Zotero: Settings → Advanced → "Allow other applications…".
 - **Local API is GET-only** (writes "coming" as of 2026-06). When the base URL is local, mutating commands **auto-route writes to the Web API** if an `api_key` is set (reads stay local; user ID resolved via `keys/current`, cached as `user_id`/`ZOTERO_USER_ID`); a one-time stderr notice names the target. With **no** key, writes hit the read-only guard (`classifyAPIError`/`isLocalWriteRejection`). `doctor` reports writability under `writes:`. Web API writes sync down to the desktop; nothing writes the local DB directly.
 - **Schema/type endpoints are global** (`/api/itemTypes`, `/itemFields`, `/itemTypeFields`, `/itemTypeCreatorTypes`, `/creatorFields`), NOT under the `/users|groups/<id>` prefix. The generated `schema *` commands keep the prefix and **404** live; `schema drift` strips it (`stripLibraryPrefix`). Mirror that if you fix them.
-- `spec.yaml` is retained as API-coverage reference data only. New endpoints are implemented as hand-written commands.
+- New endpoints are implemented as hand-written commands; the endpoint coverage matrix lives in `dev/zotero-api-coverage.md`.
 - Web API v3 is stable/versioned; the **local API is the evolving surface** (e.g. `/fulltext`, Jan 2025). New Zotero releases mostly add fields/data, rarely endpoints — run `zotio schema drift` to catch type/field deltas after an upgrade. The per-version "Zotero N for Developers" pages are Mozilla-migration guides, not API references; beta changelogs are unpublished (use the GitHub commit log).
 
 ## MCP Surface

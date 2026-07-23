@@ -393,7 +393,7 @@ All 26 open feature opportunities as of 2026-06-27:
 | API capability-drift detection | **Phase 7** |
 | MCP path-param URL-encoding | **Upstream** (generated `makeAPIHandler`); out of scope here |
 | MCP-guided cleanup workflows | **Phase 5** |
-| Generator extension layer | **Upstream** (cli-printing-press) |
+| Generator extension layer | **CUT** — was Upstream (cli-printing-press); generator retired 2026-07-08, no regeneration path |
 | Mutation run-journal + undo | **Phase 3** — journal yes; undo only where reversible |
 | Group readiness preflight | **Phase 7** |
 | Local semantic/RAG search | **CUT** — revisit only as host-provided vectors |

@@ -29,12 +29,14 @@ presence/absence to judge API changes.
 
 ## How initial coverage was bootstrapped (why coverage can lag)
 
-`spec.yaml` was derived (by the build agent) from a community OpenAPI spec
-(bitowl/zotero-openapi, ~25 Web API v3 endpoints), **not** a live probe of a running
-Zotero — the press's sniff gate skipped because Zotero wasn't running at build time.
-Endpoint coverage is therefore exactly: what that community spec described, plus the
-hand-written commands in `internal/cli/`. New endpoints never appear on their own;
-they must be implemented as hand-written commands. `spec.yaml` remains coverage-reference data; update it when the Zotero API surface itself changes.
+Initial coverage was generated (by the build agent, via the now-retired CLI Printing
+Press) from a community OpenAPI spec (bitowl/zotero-openapi, ~25 Web API v3
+endpoints), **not** a live probe of a running Zotero — the press's sniff gate skipped
+because Zotero wasn't running at build time. Endpoint coverage is therefore exactly:
+what that community spec seeded, plus the hand-written commands in `internal/cli/`.
+New endpoints never appear on their own; they must be implemented as hand-written
+commands. The generator and its `spec.yaml` are gone — the matrix below is the record
+of coverage now.
 
 ## Invariants & constraints (the gotchas)
 
@@ -84,11 +86,11 @@ they must be implemented as hand-written commands. `spec.yaml` remains coverage-
 ## Endpoint coverage matrix
 
 Covered = exercised by an implemented command. Verify with
-`grep -nE 'path:' spec.yaml` and `grep -rn 'c.Get' internal/cli`.
+`grep -rn 'c.Get' internal/cli` against this matrix.
 
 | Endpoint(s) | Covered | Where |
 | --- | --- | --- |
-| `/collections`, `/collections/top`, `/collections/<key>`, `…/collections`, `…/items[/top]` | ✅ | collections commands |
+| `/collections`, `/collections/top`, `/collections/<key>`, `…/collections`, `…/items[/top]`, `…/tags` | ✅ | collections commands |
 | `/items`, `/items/top`, `/items/trash`, `/items/<key>`, `/items/<key>/children`, `/items/<key>/tags` | ✅ | items commands |
 | `/searches`, `/searches/<key>` | ✅ | searches commands |
 | `/searches/<key>/items` (execute saved search — local-only) | ✅ | `searches run` |
@@ -119,13 +121,13 @@ Run this when a new Zotero version ships, or periodically:
 2. **Skim the changelog** for the current major (`/support/changelog`) and the
    GitHub commit log / local-API PRs since the last review. Beta changelogs are NOT
    published — the commit log is the only source for unreleased (e.g. *-beta) changes.
-3. **Diff documented endpoints vs. what we implement**:
-   `grep -nE 'path:' spec.yaml` and `grep -rn 'c\.Get\|c\.GetWithVersion' internal/cli`.
+3. **Diff documented endpoints (the live API docs above) vs. what we implement**:
+   `grep -rn 'c\.Get\|c\.GetWithVersion' internal/cli` against this matrix.
 4. **Run `zotio schema drift`** against live Zotero to catch new/removed item
    types and fields (the realistic between-version delta). `--deep` for per-type.
-5. **For genuinely new endpoints**: implement a hand-written command. The generator
-   was retired on 2026-07-08; `spec.yaml` remains coverage-reference data only, so
-   update it when the API surface itself changes. Add a `which` index entry if it's a hero feature.
+5. **For genuinely new endpoints**: implement a hand-written command (the generator
+   was retired on 2026-07-08 and there is no regeneration path) and update the
+   matrix above. Add a `which` index entry if it's a hero feature.
 6. **Update this doc**: the matrix + the "Last reviewed" line below.
 
 ## Last reviewed
