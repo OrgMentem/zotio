@@ -2,7 +2,7 @@
 
 Notable changes to zotio. Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow [SemVer](https://semver.org/).
 
-## [Unreleased]
+## [0.13.1] — 2026-07-27
 ### Fixed
 - In-process MCP mirrored commands and workflow-run steps now restore
   process-global CLI state (output flags, `--group` scope) even when a command
@@ -244,6 +244,7 @@ First tagged release: the trust-and-automation layer for Zotero.
 - **Onboarding** — `zotio init` guided setup (Zotero detection, local API, key, first sync, health check).
 - Release engineering: goreleaser builds for 6 platforms, cosign-signed checksums, SBOMs, Homebrew tap.
 
+[0.13.1]: https://github.com/OrgMentem/zotio/compare/v0.13.0...v0.13.1
 [0.13.0]: https://github.com/OrgMentem/zotio/compare/v0.12.0...v0.13.0
 [0.12.0]: https://github.com/OrgMentem/zotio/compare/v0.11.0...v0.12.0
 [0.11.0]: https://github.com/OrgMentem/zotio/compare/v0.10.0...v0.11.0
