@@ -61,7 +61,7 @@ func newCollectionsDeleteCmd(flags *rootFlags) *cobra.Command {
 				}, flags)
 			}
 			if gateFailure := mutation.CheckGates(mutationOptions(flags), ops); gateFailure != nil {
-				return gateErr(fmt.Errorf("%s", gateFailure.Message))
+				return fmt.Errorf("%s", gateFailure.Message)
 			}
 			c, err := flags.newWriteClient()
 			if err != nil {

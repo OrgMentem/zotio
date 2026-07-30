@@ -15,10 +15,11 @@ import (
 )
 
 // collectionsWriteRecorder answers the version GET these commands need and
-// records every mutating request, so "did anything reach the library" is a
-// direct observation rather than an inference from output.
+// records every request, so gate refusals can prove that no network call was
+// attempted rather than merely proving no mutation was sent.
 type collectionsWriteRecorder struct {
 	server   *httptest.Server
+	requests []string
 	mutating []string
 }
 
@@ -26,12 +27,14 @@ func newCollectionsWriteRecorder(t *testing.T) *collectionsWriteRecorder {
 	t.Helper()
 	rec := &collectionsWriteRecorder{}
 	rec.server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		request := r.Method + " " + r.URL.Path
+		rec.requests = append(rec.requests, request)
 		if r.Method == http.MethodGet {
 			w.Header().Set("Last-Modified-Version", "7")
 			_, _ = w.Write([]byte(`{"key":"K","version":7,"data":{"key":"K","name":"before"}}`))
 			return
 		}
-		rec.mutating = append(rec.mutating, r.Method+" "+r.URL.Path)
+		rec.mutating = append(rec.mutating, request)
 		w.Header().Set("Last-Modified-Version", "8")
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte(`{"successful":{}}`))
@@ -158,14 +161,34 @@ func TestCollectionsCreateHonorsMaxChanges(t *testing.T) {
 	if err == nil {
 		t.Fatal("collections create succeeded above --max-changes")
 	}
-	if ExitCode(err) != 11 {
-		t.Fatalf("ExitCode(%v) = %d, want gate exit 11", err, ExitCode(err))
+	// tags rename sends max_changes_exceeded through runMutation, which exits 1.
+	if ExitCode(err) != 1 {
+		t.Fatalf("ExitCode(%v) = %d, want tags rename-compatible exit 1", err, ExitCode(err))
 	}
 	if !strings.Contains(err.Error(), "planned 2 change(s), which exceeds the cap of 1") {
 		t.Fatalf("error = %q, want max-changes gate message", err)
 	}
-	if len(rec.mutating) != 0 {
-		t.Fatalf("POST requests = %v, want none after gate refusal", rec.mutating)
+	if len(rec.requests) != 0 {
+		t.Fatalf("requests = %v, want none after gate refusal", rec.requests)
+	}
+}
+
+func TestCollectionsUpdateHonorsMaxChanges(t *testing.T) {
+	rec := newCollectionsWriteRecorder(t)
+	cmd := newCollectionsUpdateCmd(&rootFlags{asJSON: true, yes: true, maxChanges: 0})
+
+	_, err := executeCollectionsWriteCmd(t, rec, cmd, "K", "--name", "Renamed")
+	if err == nil {
+		t.Fatal("collections update succeeded above --max-changes")
+	}
+	if ExitCode(err) != 1 {
+		t.Fatalf("ExitCode(%v) = %d, want tags rename-compatible exit 1", err, ExitCode(err))
+	}
+	if !strings.Contains(err.Error(), "planned 1 change(s), which exceeds the cap of 0") {
+		t.Fatalf("error = %q, want max-changes gate message", err)
+	}
+	if len(rec.requests) != 0 {
+		t.Fatalf("requests = %v, want none after gate refusal", rec.requests)
 	}
 }
 
@@ -178,14 +201,14 @@ func TestCollectionsDeleteRequiresDestructiveOptIn(t *testing.T) {
 		if err == nil {
 			t.Fatal("collections delete succeeded without --allow-destructive")
 		}
-		if ExitCode(err) != 11 {
-			t.Fatalf("ExitCode(%v) = %d, want gate exit 11", err, ExitCode(err))
+		if ExitCode(err) != 1 {
+			t.Fatalf("ExitCode(%v) = %d, want tags rename-compatible exit 1", err, ExitCode(err))
 		}
 		if !strings.Contains(err.Error(), "destructive changes require --allow-destructive") {
 			t.Fatalf("error = %q, want destructive opt-in message", err)
 		}
-		if len(rec.mutating) != 0 {
-			t.Fatalf("DELETE requests = %v, want none after gate refusal", rec.mutating)
+		if len(rec.requests) != 0 {
+			t.Fatalf("requests = %v, want none after destructive gate refusal", rec.requests)
 		}
 	})
 

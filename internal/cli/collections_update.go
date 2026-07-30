@@ -85,7 +85,7 @@ func newCollectionsUpdateCmd(flags *rootFlags) *cobra.Command {
 				}, flags)
 			}
 			if gateFailure := mutation.CheckGates(mutationOptions(flags), ops); gateFailure != nil {
-				return gateErr(fmt.Errorf("%s", gateFailure.Message))
+				return fmt.Errorf("%s", gateFailure.Message)
 			}
 			c, err := flags.newClient()
 			if err != nil {
