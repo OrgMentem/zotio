@@ -100,7 +100,7 @@ Covered = exercised by an implemented command. Verify with
 | `/items/<key>/fulltext`, `/fulltext?since=` | ✅ | `sync --fulltext`, `items fulltext` (hhup) |
 | `/items/<key>/file/view/url` (on-disk attachment path — local-only) | ✅ | `items file` |
 | `/publications/items`, `/publications/items/tags` (My Publications) | ❌ | gap (low value) |
-| `format=keys`, `format=versions` modes | ❌ | not used (we sync via `since=`) |
+| `format=keys`, `format=versions` modes | ⚠️ | `format=keys` bounds the `collections export` page walk when the server omits `Total-Results` (keys stay countable for item types an export format renders as nothing); `format=versions` unused (we sync via `since=`) |
 | `/keys/<key>` | ❌ | n/a for local (no auth) |
 
 ### Known gaps worth considering

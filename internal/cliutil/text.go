@@ -145,8 +145,13 @@ func SanitizeErrorBodyWithSecrets(msg string, secrets ...string) string {
 
 // truncateRunes cuts msg to at most max bytes without splitting a rune, so a
 // multi-byte character on the boundary cannot leave invalid UTF-8 in output
-// that is about to be JSON-encoded.
+// that is about to be JSON-encoded. A non-positive max yields the marker
+// alone: callers pass a constant today, but slicing on a negative bound would
+// panic inside an error-formatting helper, which is the worst place for it.
 func truncateRunes(msg string, max int) string {
+	if max <= 0 {
+		return "..."
+	}
 	if len(msg) <= max {
 		return msg
 	}
