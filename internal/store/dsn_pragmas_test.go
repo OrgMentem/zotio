@@ -100,3 +100,47 @@ func TestOpenReadOnlyInstallsTheDSNPragmas(t *testing.T) {
 		t.Error("read-only connection accepted a write")
 	}
 }
+
+// The upgrade path every existing user takes: a database created by a previous
+// release is in DELETE mode with real data, and the new binary must convert its
+// journal mode AND run migrations against it in the same open. The conversion
+// is a persistent write that races the migration lock's BEGIN IMMEDIATE, and
+// getting it wrong would make existing libraries unopenable rather than merely
+// slow, so it is worth a test of its own -- TestOpenInstallsTheDSNPragmas only
+// ever sees a database this process just created.
+func TestOpenConvertsAnExistingDeleteModeDatabase(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "existing.db")
+	previous, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := previous.Exec(`CREATE TABLE legacy (v TEXT)`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := previous.Exec(`INSERT INTO legacy (v) VALUES ('survives')`); err != nil {
+		t.Fatal(err)
+	}
+	if err := previous.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	s, err := Open(dbPath)
+	if err != nil {
+		t.Fatalf("opening a pre-WAL database: %v", err)
+	}
+	t.Cleanup(func() { _ = s.Close() })
+
+	var carried string
+	if err := s.db.QueryRow(`SELECT v FROM legacy`).Scan(&carried); err != nil {
+		t.Fatalf("data written before the upgrade is unreadable: %v", err)
+	}
+	if carried != "survives" {
+		t.Errorf("legacy row = %q, want survives", carried)
+	}
+	if got := livePragma(t, s, "journal_mode"); got != "wal" {
+		t.Errorf("journal_mode = %s, want the upgrade to have converted to wal", got)
+	}
+	if _, err := s.SchemaVersion(); err != nil {
+		t.Errorf("migrations did not complete against the converted database: %v", err)
+	}
+}
