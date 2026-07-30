@@ -132,6 +132,27 @@ func OpenWithContext(ctx context.Context, dbPath string) (*Store, error) {
 	return s, nil
 }
 
+// RuntimePragmaNames are the connection settings worth reporting: the ones the
+// concurrency and durability design depends on.
+var RuntimePragmaNames = []string{"journal_mode", "busy_timeout", "synchronous", "foreign_keys"}
+
+// RuntimePragmas reads the settings actually in force, rather than the ones
+// the DSN asked for. Those diverged silently once already -- the DSN used a
+// shorthand the pinned driver does not implement, so the store ran in
+// rollback-journal mode with no busy timeout while every comment and code path
+// assumed WAL. Reporting live state is what makes that visible.
+func (s *Store) RuntimePragmas() (map[string]string, error) {
+	pragmas := make(map[string]string, len(RuntimePragmaNames))
+	for _, name := range RuntimePragmaNames {
+		var value string
+		if err := s.db.QueryRow("PRAGMA " + name).Scan(&value); err != nil {
+			return nil, fmt.Errorf("reading pragma %s: %w", name, err)
+		}
+		pragmas[name] = value
+	}
+	return pragmas, nil
+}
+
 func (s *Store) Close() error {
 	return s.db.Close()
 }

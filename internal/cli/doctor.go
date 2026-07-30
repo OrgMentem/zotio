@@ -548,6 +548,20 @@ func collectCacheReport(ctx context.Context, staleAfterSpec string) map[string]a
 		report["schema_version"] = v
 	}
 
+	// Report what the connection actually negotiated, not what the DSN asked
+	// for. Those silently diverged once: every pragma was dropped and the store
+	// ran without WAL or a busy timeout while the code assumed both.
+	if pragmas, perr := s.RuntimePragmas(); perr == nil {
+		report["pragmas"] = pragmas
+		if !strings.EqualFold(pragmas["journal_mode"], "wal") {
+			report["pragma_hint"] = "journal_mode is " + pragmas["journal_mode"] +
+				", not wal: readers block behind a writer and concurrent commands can self-block"
+		}
+		if pragmas["busy_timeout"] == "0" {
+			report["busy_timeout_hint"] = "busy_timeout is 0: contention returns SQLITE_BUSY immediately instead of waiting"
+		}
+	}
+
 	staleAfter := 6 * time.Hour
 	if staleAfterSpec != "" {
 		if d, derr := time.ParseDuration(staleAfterSpec); derr == nil {

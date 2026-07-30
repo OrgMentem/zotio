@@ -2,6 +2,43 @@
 
 Notable changes to zotio. Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow [SemVer](https://semver.org/).
 
+## [Unreleased]
+### Changed — breaking
+- **The local store now actually runs in WAL mode, and converts existing
+  databases on first open.** Both DSNs used mattn/go-sqlite3 shorthand
+  (`_journal_mode`, `_busy_timeout`, …) that the pinned `modernc.org/sqlite`
+  does not implement and silently ignores, so every pragma had been dropped:
+  the store ran in rollback-journal mode with `busy_timeout=0`,
+  `synchronous=FULL`, and foreign keys off, while the code and its comments
+  assumed the opposite. Reading them back off a live connection is what
+  surfaced it. Two consequences worth knowing before upgrading: the first open
+  after this release performs a one-way on-disk conversion to WAL, and
+  effective durability moves from `FULL` to the intended `NORMAL`, which can
+  lose the most recent commits on power loss or OS crash (not on process
+  crash). That is the right trade for a re-syncable cache, but it is a real
+  change from shipped behavior. `zotio doctor` now reports live pragma state
+  under `cache.pragmas` and flags a non-WAL journal mode or a zero busy
+  timeout.
+- **`collections create`, `collections update`, and `collections delete` now
+  preview by default and require `--yes` to apply.** They previously wrote on
+  invocation, honoring none of the write-safety gates — while the MCP surface
+  advertised `yes`, `dry-run`, and `allow-destructive` on them, because it
+  advertises those on every mutating command. An agent host was shown gates
+  that did not exist. Scripts calling these three non-interactively must add
+  `--yes`.
+
+### Security
+- Library content returned through the MCP command mirror is now framed as
+  data rather than instructions. Item titles, abstracts, notes, tags, and
+  annotations are authored by anyone who can write to the library (a shared
+  group, a downloaded PDF's metadata) and reached the host model in the same
+  channel as operator instructions, unlabelled. Opaque output — export blobs,
+  rendered tables — is wrapped in a nonce-delimited data block with an explicit
+  "not instructions" preamble, and C0/DEL control bytes are neutralized on that
+  path (JSON results are unaffected: `encoding/json` already escapes them, and
+  they keep their exact shape so hosts can still parse them). This is
+  mitigation, not a boundary — the control that holds is the write gate above.
+
 ## [0.13.1] — 2026-07-27
 ### Fixed
 - In-process MCP mirrored commands and workflow-run steps now restore
