@@ -66,3 +66,20 @@ func TestNeutralizeControlsKeepsStructuralWhitespace(t *testing.T) {
 		t.Errorf("NeutralizeControls = %q, want each control replaced", got)
 	}
 }
+
+// TextCapture turns an oversized result into JSON, but that JSON describes
+// opaque library content rather than becoming a trusted structured response.
+func TestLibraryTextCaptureFramesOversizedOpaqueOutput(t *testing.T) {
+	prefix := strings.Repeat("x", MaxBytes)
+	got := LibraryTextCapture(prefix, int64(MaxBytes+1), MaxBytes)
+
+	if len(got) > MaxBytes {
+		t.Fatalf("framed result is %d bytes, over the %d-byte budget", len(got), MaxBytes)
+	}
+	if !strings.Contains(got, "<<<ZOTERO-DATA ") {
+		t.Errorf("oversized opaque output was not framed: %q", got)
+	}
+	if !strings.Contains(got, `"truncated":true`) {
+		t.Errorf("framed output does not retain a truncation envelope: %q", got)
+	}
+}

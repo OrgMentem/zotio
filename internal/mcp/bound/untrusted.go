@@ -114,3 +114,27 @@ func LibraryText(out string) string {
 	}
 	return UntrustedBlock(out)
 }
+
+// LibraryTextCapture prepares output retained under a cap. Its JSON decision
+// uses the original complete capture, before TextCapture can turn opaque data
+// into a JSON preview envelope. A caller may reserve part of budget for trusted
+// context, such as a command error, without allowing the framed result to
+// exceed its transport limit.
+func LibraryTextCapture(prefix string, total int64, budget int) string {
+	complete := total == int64(len(prefix))
+	jsonOutput := complete && json.Valid([]byte(strings.TrimSpace(prefix)))
+	out := TextCapture(prefix, total)
+
+	if jsonOutput {
+		if len(out) > budget {
+			out = textCapturePreview(prefix, total)
+		}
+		return NeutralizeControls(out)
+	}
+
+	framed := UntrustedBlock(out)
+	if len(framed) <= budget {
+		return framed
+	}
+	return UntrustedBlock(textCapturePreview(prefix, total))
+}

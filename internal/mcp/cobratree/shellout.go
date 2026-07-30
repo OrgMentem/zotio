@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"unicode/utf8"
 
 	mcplib "github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
@@ -18,6 +19,8 @@ import (
 )
 
 var mirroredCommandMu sync.Mutex
+
+const maxMirroredErrorBytes = 4096
 
 // StateGuard snapshots process-global CLI state before mirrored command
 // execution and returns a function that restores it. The MCP package sets it
@@ -55,7 +58,7 @@ func runMirroredInProcess(ctx context.Context, rootFactory func() *cobra.Command
 	var buf boundedCapture
 	defer func() {
 		if panicValue := recover(); panicValue != nil {
-			result = mcplib.NewToolResultError(fmt.Sprintf("%s\npanic: %v", buf.String(), panicValue))
+			result = mcplib.NewToolResultError(mirroredErrorText(&buf, fmt.Sprintf("panic: %v", panicValue)))
 		}
 	}()
 
@@ -75,20 +78,27 @@ func runMirroredInProcess(ctx context.Context, rootFactory func() *cobra.Command
 	root.SetErr(&buf)
 	root.SetArgs(finalArgs)
 	if err := root.ExecuteContext(ctx); err != nil {
-		return mcplib.NewToolResultError(buf.String() + "\n" + err.Error())
+		return mcplib.NewToolResultError(mirroredErrorText(&buf, err.Error()))
 	}
-	// Bound at the writer, not after. A mirrored command whose output scales
-	// with the library was materialized whole just to be handed to a transport
-	// that can carry 60 KB; the cap now costs bound.MaxBytes of retention
-	// regardless of how much the command writes, and the discarded bytes are
-	// still counted so the truncation notice reports the real size.
-	//
-	// Framing then follows structure: JSON keeps its shape (hosts parse these,
-	// and zotio's own reports travel this same path), while opaque library
-	// content -- an export blob, a rendered table -- gets the
-	// data-not-directive block. An oversized result is a preview envelope,
-	// which is JSON either way.
-	return mcplib.NewToolResultText(bound.LibraryText(bound.TextCapture(buf.String(), buf.Total())))
+	// The capture retains only the transport cap, while the formatter reserves
+	// enough room for opaque-data framing. JSON is classified before a
+	// truncation preview can make opaque data look structured.
+	return mcplib.NewToolResultText(bound.LibraryTextCapture(buf.String(), buf.Total(), bound.MaxBytes))
+}
+
+// mirroredErrorText keeps a failing command's library output inside the same
+// bounded, nonce-delimited transport boundary as its successful output, while
+// leaving the command failure outside the data block.
+func mirroredErrorText(buf *boundedCapture, detail string) string {
+	suffix := "\n" + bound.NeutralizeControls(detail)
+	if len(suffix) > maxMirroredErrorBytes {
+		end := maxMirroredErrorBytes - len("...")
+		for end > 0 && !utf8.RuneStart(suffix[end]) {
+			end--
+		}
+		suffix = suffix[:end] + "..."
+	}
+	return bound.LibraryTextCapture(buf.String(), buf.Total(), bound.MaxBytes-len(suffix)) + suffix
 }
 
 func cliArgsFromMCP(args map[string]any) []string {

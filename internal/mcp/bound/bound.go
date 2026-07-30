@@ -151,6 +151,13 @@ func TextCapture(prefix string, total int64) string {
 	if total <= MaxBytes && total == int64(len(prefix)) {
 		return prefix
 	}
+	return textCapturePreview(prefix, total)
+}
+
+// textCapturePreview renders a preview even when the retained output itself
+// fits the transport cap. Callers use it when their enclosing transport
+// framing needs part of that cap.
+func textCapturePreview(prefix string, total int64) string {
 	return previewEnvelopeSized([]byte(prefix), total, textResultNote)
 }
 

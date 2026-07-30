@@ -12,6 +12,8 @@ import (
 	mcplib "github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
 	"github.com/spf13/cobra"
+
+	"zotio/internal/mcp/bound"
 )
 
 func newEchoRoot() *cobra.Command {
@@ -110,6 +112,8 @@ func TestInProcessHandler_Error(t *testing.T) {
 	}
 	if got := toolResultText(t, res); !strings.Contains(got, "boom") {
 		t.Errorf("error result %q does not contain 'boom'", got)
+	} else if !strings.Contains(got, "<<<ZOTERO-DATA ") {
+		t.Errorf("error result %q does not frame partial output as library data", got)
 	}
 }
 
@@ -142,9 +146,44 @@ func TestRunMirroredInProcessRecoversPanicAndRestoresState(t *testing.T) {
 	}
 	if got := toolResultText(t, res); !strings.Contains(got, "mirror panic") || !strings.Contains(got, "partial output") {
 		t.Fatalf("panic result = %q, want panic value and command output", got)
+	} else if !strings.Contains(got, "<<<ZOTERO-DATA ") {
+		t.Fatalf("panic result = %q, want partial output framed as library data", got)
 	}
 	if !restored {
 		t.Fatal("state guard restore was not called")
+	}
+}
+
+func TestInProcessHandlerBoundsFramedOpaqueOutput(t *testing.T) {
+	for _, size := range []int{bound.MaxBytes - 1, bound.MaxBytes, bound.MaxBytes + 1} {
+		t.Run(fmt.Sprintf("%d_bytes", size), func(t *testing.T) {
+			rootFactory := func() *cobra.Command {
+				root := &cobra.Command{Use: "zotio", SilenceUsage: true, SilenceErrors: true}
+				root.AddCommand(&cobra.Command{
+					Use: "export",
+					RunE: func(cmd *cobra.Command, _ []string) error {
+						_, err := fmt.Fprint(cmd.OutOrStdout(), strings.Repeat("x", size))
+						return err
+					},
+				})
+				return root
+			}
+
+			res := runMirroredInProcess(context.Background(), rootFactory, []string{"export"}, nil)
+			if res == nil || res.IsError {
+				t.Fatalf("result = %+v, want successful tool result", res)
+			}
+			got := toolResultText(t, res)
+			if len(got) > bound.MaxBytes {
+				t.Errorf("result is %d bytes, over the %d-byte transport budget", len(got), bound.MaxBytes)
+			}
+			if !strings.Contains(got, "<<<ZOTERO-DATA ") {
+				t.Errorf("result does not frame opaque output as library data: %q", got)
+			}
+			if !strings.Contains(got, `"truncated":true`) {
+				t.Errorf("result does not retain an oversized-output preview: %q", got)
+			}
+		})
 	}
 }
 
