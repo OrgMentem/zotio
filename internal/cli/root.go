@@ -95,16 +95,26 @@ func Execute() error {
 		// through to 1, clobbering the conventional code-2 for usage errors.
 		err = usageErr(err)
 	}
-	if shouldDeliverCapturedOutput(err, flags.deliverSpool) {
-		if derr := Deliver(rootCmd.Context(), flags.deliverSink, flags.deliverSpool, flags.compact); derr != nil {
-			fmt.Fprintf(os.Stderr, "warning: deliver to %s:%s failed: %v\n", flags.deliverSink.Scheme, flags.deliverSink.Target, derr)
-		}
-	}
+	deliverCapturedOutput(err, rootCmd.Context(), flags.deliverSink, flags.deliverSpool, flags.compact)
 	flags.deliverSpool.cleanup()
 	return err
 }
 
+func deliverCapturedOutput(commandErr error, ctx context.Context, sink DeliverSink, spool *deliverSpool, compact bool) {
+	if shouldDeliverCapturedOutput(commandErr, spool) {
+		if err := Deliver(ctx, sink, spool, compact); err != nil {
+			fmt.Fprintf(os.Stderr, "warning: deliver to %s:%s failed: %v\n", sink.Scheme, sink.Target, err)
+		}
+	}
+}
+
 func shouldDeliverCapturedOutput(err error, spool *deliverSpool) bool {
+	if spool == nil {
+		return false
+	}
+	if spool.writeErr != nil {
+		return true
+	}
 	if spool.Len() == 0 {
 		return false
 	}

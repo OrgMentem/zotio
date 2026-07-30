@@ -13,9 +13,8 @@ import (
 	"testing"
 )
 
-// A file sink spools straight to the tmp file the rename will promote, so
-// delivery costs a rename rather than a second full copy -- and, because the
-// tmp sits beside the target, it can never land on a different filesystem.
+// A file sink spools to a unique tmp file beside the target. The rename costs
+// no second full copy and stays on the target filesystem.
 func TestDeliverFileSpoolsBesideTheTargetAndRenamesIntoPlace(t *testing.T) {
 	target := filepath.Join(t.TempDir(), "nested", "out.json")
 	spool, err := newDeliverSpool(DeliverSink{Scheme: "file", Target: target})
@@ -28,8 +27,11 @@ func TestDeliverFileSpoolsBesideTheTargetAndRenamesIntoPlace(t *testing.T) {
 	if _, err := io.WriteString(spool, payload); err != nil {
 		t.Fatal(err)
 	}
-	if spool.file.Name() != target+".tmp" {
-		t.Errorf("spool path = %q, want the sibling tmp of %q", spool.file.Name(), target)
+	if filepath.Dir(spool.path) != filepath.Dir(target) {
+		t.Errorf("spool path = %q, want a sibling of %q", spool.path, target)
+	}
+	if !strings.HasPrefix(filepath.Base(spool.path), "."+filepath.Base(target)+"-") {
+		t.Errorf("spool path = %q, want a target-specific unique tmp name", spool.path)
 	}
 	// Nothing is visible at the target until the command succeeds.
 	if _, err := os.Stat(target); !os.IsNotExist(err) {
@@ -46,15 +48,15 @@ func TestDeliverFileSpoolsBesideTheTargetAndRenamesIntoPlace(t *testing.T) {
 	if string(got) != payload {
 		t.Errorf("delivered %d bytes, want %d", len(got), len(payload))
 	}
-	if _, err := os.Stat(target + ".tmp"); !os.IsNotExist(err) {
+	if _, err := os.Stat(spool.path); !os.IsNotExist(err) {
 		t.Error("tmp file survived delivery")
 	}
 }
 
 // The webhook body is streamed off disk with an explicit length. Without the
 // length net/http would fall back to chunked encoding, which webhook receivers
-// commonly reject, and GetBody is what lets a redirect or retry replay the
-// body without holding a second copy in memory.
+// commonly reject. GetBody lets net/http use the seekable spool without
+// retaining a second copy in memory.
 func TestDeliverWebhookStreamsTheSpoolWithADeclaredLength(t *testing.T) {
 	payload := strings.Repeat("event\n", 8192)
 	var gotBody []byte
@@ -126,5 +128,110 @@ func TestDeliverSpoolWriteFailureDoesNotTruncateStdout(t *testing.T) {
 	}
 	if derr := Deliver(context.Background(), DeliverSink{Scheme: "file", Target: target}, spool, false); derr == nil {
 		t.Error("Deliver reported success after the spool failed to write")
+	}
+}
+
+func TestDeliverFileSpoolsUseIndependentTempsForTheSameTarget(t *testing.T) {
+	target := filepath.Join(t.TempDir(), "out.json")
+	first, err := newDeliverSpool(DeliverSink{Scheme: "file", Target: target})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(first.cleanup)
+	second, err := newDeliverSpool(DeliverSink{Scheme: "file", Target: target})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(second.cleanup)
+
+	if first.path == second.path {
+		t.Fatalf("spool paths match: %q", first.path)
+	}
+	firstOutput := "first run begins\nfirst run ends\n"
+	secondOutput := "second run begins\nsecond run ends\n"
+	for _, write := range []struct {
+		spool *deliverSpool
+		text  string
+	}{
+		{first, "first run begins\n"},
+		{second, "second run begins\n"},
+		{first, "first run ends\n"},
+		{second, "second run ends\n"},
+	} {
+		if _, err := io.WriteString(write.spool, write.text); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if err := first.commitFile(); err != nil {
+		t.Fatalf("commit first spool: %v", err)
+	}
+	got, err := os.ReadFile(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != firstOutput {
+		t.Fatalf("first committed output = %q, want %q", got, firstOutput)
+	}
+
+	if err := second.commitFile(); err != nil {
+		got, readErr := os.ReadFile(target)
+		if readErr != nil {
+			t.Fatal(readErr)
+		}
+		if string(got) != firstOutput {
+			t.Fatalf("failed second commit changed target to %q, want %q", got, firstOutput)
+		}
+		return
+	}
+	got, err = os.ReadFile(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != secondOutput {
+		t.Errorf("second committed output = %q, want %q", got, secondOutput)
+	}
+}
+
+func TestDeliverSpoolZeroByteWriteFailureWarns(t *testing.T) {
+	target := filepath.Join(t.TempDir(), "out.json")
+	spool, err := newDeliverSpool(DeliverSink{Scheme: "file", Target: target})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(spool.cleanup)
+	if err := spool.file.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if n, err := io.WriteString(spool, "stdout must continue"); err != nil || n != len("stdout must continue") {
+		t.Fatalf("Write = (%d, %v), want (%d, nil)", n, err, len("stdout must continue"))
+	}
+	if spool.Len() != 0 {
+		t.Fatalf("captured length = %d, want zero after failed first write", spool.Len())
+	}
+
+	oldStderr := os.Stderr
+	stderrR, stderrW, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	os.Stderr = stderrW
+	t.Cleanup(func() {
+		os.Stderr = oldStderr
+		_ = stderrR.Close()
+		_ = stderrW.Close()
+	})
+
+	deliverCapturedOutput(nil, context.Background(), DeliverSink{Scheme: "file", Target: target}, spool, false)
+	if err := stderrW.Close(); err != nil {
+		t.Fatal(err)
+	}
+	os.Stderr = oldStderr
+	stderr, err := io.ReadAll(stderrR)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(stderr), "warning: deliver to file:"+target+" failed:") {
+		t.Fatalf("stderr = %q, want delivery failure warning", stderr)
 	}
 }

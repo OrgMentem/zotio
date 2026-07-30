@@ -18,13 +18,14 @@ import (
 // producing a payload that streams to disk without trouble, and a failed
 // webhook kept the whole buffer live until the command returned.
 //
-// For a file sink the spool IS the atomic tmp file the rename will promote, so
+// For a file sink the spool is a unique atomic tmp file beside the target, so
 // delivery costs a rename rather than a copy and cannot cross a filesystem
-// boundary. Other sinks spool to the OS temp dir and replay from there, which
-// is also what makes a webhook retry cheap: the body is re-read, not re-held.
+// boundary. Other sinks spool to the OS temp dir so webhook bodies can stream
+// from disk without retaining a second full copy in memory.
 type deliverSpool struct {
 	file   *os.File
-	target string // non-empty when the spool is a file sink's tmp file
+	path   string // temporary spool path
+	target string // non-empty when the spool is a file sink's final path
 	n      int64
 	// writeErr records the first spool failure. Writes keep reporting success
 	// to the MultiWriter regardless: stdout is the primary output and must not
@@ -40,18 +41,22 @@ func newDeliverSpool(sink DeliverSink) (*deliverSpool, error) {
 				return nil, fmt.Errorf("creating deliver dir: %w", err)
 			}
 		}
-		tmp := sink.Target + ".tmp"
-		file, err := os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
+		file, err := os.CreateTemp(dir, "."+filepath.Base(sink.Target)+"-*.tmp")
 		if err != nil {
 			return nil, fmt.Errorf("opening deliver tmp: %w", err)
 		}
-		return &deliverSpool{file: file, target: sink.Target}, nil
+		if err := file.Chmod(0o600); err != nil {
+			_ = file.Close()
+			_ = os.Remove(file.Name())
+			return nil, fmt.Errorf("securing deliver tmp: %w", err)
+		}
+		return &deliverSpool{file: file, path: file.Name(), target: sink.Target}, nil
 	}
 	file, err := os.CreateTemp("", "zotio-deliver-*")
 	if err != nil {
 		return nil, fmt.Errorf("creating deliver spool: %w", err)
 	}
-	return &deliverSpool{file: file}, nil
+	return &deliverSpool{file: file, path: file.Name()}, nil
 }
 
 func (s *deliverSpool) Write(p []byte) (int, error) {
@@ -85,14 +90,14 @@ func (s *deliverSpool) commitFile() error {
 	if err := s.file.Close(); err != nil {
 		return fmt.Errorf("closing deliver tmp: %w", err)
 	}
-	if err := os.Rename(s.target+".tmp", s.target); err != nil {
+	if err := os.Rename(s.path, s.target); err != nil {
 		return fmt.Errorf("replacing deliver file: %w", err)
 	}
 	return nil
 }
 
-// reader rewinds the spool for replay. Returned as an io.ReadSeeker so an HTTP
-// body can be re-read on redirect or retry without a second copy in memory.
+// reader rewinds the spool for a streamed, length-delimited HTTP body without
+// retaining another copy in memory.
 func (s *deliverSpool) reader() (io.ReadSeeker, error) {
 	if s.writeErr != nil {
 		return nil, fmt.Errorf("writing deliver spool: %w", s.writeErr)
@@ -112,7 +117,7 @@ func (s *deliverSpool) cleanup() {
 	if s == nil || s.file == nil {
 		return
 	}
-	name := s.file.Name()
+	name := s.path
 	_ = s.file.Close()
 	_ = os.Remove(name)
 	s.file = nil

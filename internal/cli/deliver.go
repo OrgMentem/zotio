@@ -279,9 +279,8 @@ func outboundHostIsPrivate(host string) bool {
 	return !strings.Contains(h, ".")
 }
 
-// deliverWebhookSpool posts the spooled output without reading it back into
-// memory. Length is declared explicitly and the body is re-openable, so a
-// retry replays from disk instead of holding a second full copy.
+// deliverWebhookSpool posts the spooled output as a streamed,
+// length-delimited body without reading it back into memory.
 func deliverWebhookSpool(ctx context.Context, url string, spool *deliverSpool, compact bool) error {
 	body, err := spool.reader()
 	if err != nil {
@@ -312,7 +311,8 @@ func postDeliverWebhook(ctx context.Context, url string, body io.ReadSeeker, len
 		return fmt.Errorf("building webhook request: %w", err)
 	}
 	// net/http cannot size an arbitrary reader, and a webhook receiver that
-	// rejects chunked encoding would see an empty body without this.
+	// rejects chunked encoding would see an empty body without this. GetBody
+	// reuses the seekable spool so net/http never has to buffer the body.
 	req.ContentLength = length
 	req.GetBody = func() (io.ReadCloser, error) {
 		if _, seekErr := body.Seek(0, io.SeekStart); seekErr != nil {
