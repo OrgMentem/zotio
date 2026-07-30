@@ -1261,3 +1261,47 @@ func TestExecuteWorkflowRunStepWithRootRestoresGlobalsAfterPanic(t *testing.T) {
 		t.Fatalf("CLI globals = noColor=%t humanFriendly=%t activeGroupID=%q, want false true outer-group", noColor, humanFriendly, activeGroupID)
 	}
 }
+
+// Step output cannot be silently capped: it feeds ${steps.<name>.output},
+// StdinFrom, and the resume checkpoint, so trimming it would hand the next step
+// truncated JSON. What it can do is refuse to grow without bound. Past the
+// ceiling the run was heading for an OOM, and a named error beats being killed
+// by the allocator -- including when the command ignores its own write errors.
+func TestWorkflowStepFailsInsteadOfGrowingPastTheOutputCeiling(t *testing.T) {
+	oldCeiling := workflowRunStepOutputCeiling
+	workflowRunStepOutputCeiling = 4096
+	t.Cleanup(func() { workflowRunStepOutputCeiling = oldCeiling })
+
+	root := &cobra.Command{Use: "test"}
+	root.AddCommand(&cobra.Command{
+		Use: "flood",
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			// Ignore write errors, the way a command that fires and forgets
+			// its output would.
+			for range 8 {
+				_, _ = cmd.OutOrStdout().Write([]byte(strings.Repeat("x", 1024)))
+			}
+			return nil
+		},
+	})
+
+	out, _, err := executeWorkflowRunStepWithRoot(context.Background(), root, []string{"flood"}, nil)
+	if err == nil {
+		t.Fatal("step succeeded with output past the ceiling")
+	}
+	if !strings.Contains(err.Error(), "narrow the step") {
+		t.Errorf("err = %v, want an actionable ceiling error", err)
+	}
+	if len(out) > workflowRunStepOutputCeiling {
+		t.Errorf("retained %d bytes, past the %d ceiling", len(out), workflowRunStepOutputCeiling)
+	}
+}
+
+// The ceiling must sit far above the report's display cap, or ordinary steps
+// would start failing: workflowRunOutputLimit trims what is rendered, not what
+// is piped.
+func TestWorkflowOutputCeilingIsWellAboveTheDisplayCap(t *testing.T) {
+	if workflowRunStepOutputCeiling <= workflowRunOutputLimit*100 {
+		t.Errorf("ceiling %d is too close to the %d display cap", workflowRunStepOutputCeiling, workflowRunOutputLimit)
+	}
+}

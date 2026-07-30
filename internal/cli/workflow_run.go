@@ -1032,8 +1032,8 @@ func executeWorkflowRunStepWithRoot(ctx context.Context, root *cobra.Command, ar
 	if stdin != nil {
 		root.SetIn(strings.NewReader(*stdin))
 	}
-	var stdout bytes.Buffer
-	var stderr bytes.Buffer
+	var stdout ceilingBuffer
+	var stderr ceilingBuffer
 	root.SetOut(&stdout)
 	root.SetErr(&stderr)
 
@@ -1041,8 +1041,45 @@ func executeWorkflowRunStepWithRoot(ctx context.Context, root *cobra.Command, ar
 	defer restore()
 	err := root.ExecuteContext(ctx)
 
+	// A command that ignores its write errors would otherwise finish with
+	// silently truncated output, and truncated output here is not cosmetic:
+	// it feeds ${steps.<name>.output}, StdinFrom, and the resume checkpoint.
+	// Failing the step is the only honest outcome.
+	if stdout.overflowed || stderr.overflowed {
+		return stdout.String(), stderr.String(), errWorkflowStepOutputTooLarge()
+	}
 	return stdout.String(), stderr.String(), err
 }
+
+// workflowRunStepOutputCeiling is a tripwire, not a budget. Step output is a
+// contract -- substitution, piping, and resume all read the full text, so it
+// cannot be capped the way a display value can (workflowRunOutputLimit trims
+// only what the report renders). What it can do is refuse to grow without
+// bound: past this point the run was heading for an OOM, and a named error
+// beats being killed by the allocator. A var so tests can trip it without
+// allocating a quarter gigabyte.
+var workflowRunStepOutputCeiling = 256 << 20
+
+func errWorkflowStepOutputTooLarge() error {
+	return fmt.Errorf(
+		"workflow step produced more than %d MiB of output; step output is piped and checkpointed in full, so narrow the step (--limit, --select, --compact) or write to a file instead",
+		workflowRunStepOutputCeiling>>20)
+}
+
+type ceilingBuffer struct {
+	buf        bytes.Buffer
+	overflowed bool
+}
+
+func (b *ceilingBuffer) Write(p []byte) (int, error) {
+	if b.buf.Len()+len(p) > workflowRunStepOutputCeiling {
+		b.overflowed = true
+		return 0, errWorkflowStepOutputTooLarge()
+	}
+	return b.buf.Write(p)
+}
+
+func (b *ceilingBuffer) String() string { return b.buf.String() }
 
 func capWorkflowRunOutput(output string) string {
 	if len(output) <= workflowRunOutputLimit {
