@@ -271,7 +271,7 @@
           "type": "string"
         },
         "limit": {
-          "description": "Maximum items per collection request (default: 200)",
+          "description": "Items fetched per API request (max 100); the export always walks every page (default: 100)",
           "type": "number"
         },
         "output": {

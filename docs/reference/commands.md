@@ -373,7 +373,7 @@ Examples:
 | --- | --- | --- | --- |
 | `--flat` | `bool` | `false` | Export only the top-level collection, skip subcollections |
 | `--format` | `string` | `bibtex` | Export format: bibtex, ris, csljson |
-| `--limit` | `int` | `200` | Maximum items per collection request |
+| `--limit` | `int` | `100` | Items fetched per API request (max 100); the export always walks every page |
 | `--output` | `string` |  | Write output to file instead of stdout |
 
 ### `zotio collections gaps`

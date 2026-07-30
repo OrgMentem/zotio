@@ -25,6 +25,11 @@ func (g *pathencCaptureGetter) Get(path string, params map[string]string) (json.
 	return json.RawMessage(`[]`), nil
 }
 
+func (g *pathencCaptureGetter) GetWithHeader(path string, params map[string]string, _ string) (json.RawMessage, string, error) {
+	data, err := g.Get(path, params)
+	return data, "", err
+}
+
 func TestCollectionsExportEscapesCollectionPathSegments(t *testing.T) {
 	getter := &pathencCaptureGetter{}
 	var out bytes.Buffer
