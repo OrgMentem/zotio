@@ -3,6 +3,7 @@
 package store
 
 import (
+	"database/sql"
 	"path/filepath"
 	"testing"
 )
@@ -51,9 +52,27 @@ func TestOpenInstallsTheDSNPragmas(t *testing.T) {
 // immediate SQLITE_BUSY.
 func TestOpenReadOnlyInstallsTheDSNPragmas(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "pragmas.db")
-	writable, err := Open(dbPath)
+	// Open directly so this database remains in SQLite's default DELETE journal
+	// mode; Open would convert it to WAL before OpenReadOnly gets a chance to
+	// prove it can read a store created by an earlier release.
+	writable, err := sql.Open("sqlite", dbPath)
 	if err != nil {
 		t.Fatal(err)
+	}
+	if _, err := writable.Exec(`CREATE TABLE entries (value TEXT)`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := writable.Exec(`INSERT INTO entries (value) VALUES ('readable')`); err != nil {
+		t.Fatal(err)
+	}
+	if got := func() string {
+		var journalMode string
+		if err := writable.QueryRow(`PRAGMA journal_mode`).Scan(&journalMode); err != nil {
+			t.Fatal(err)
+		}
+		return journalMode
+	}(); got != "delete" {
+		t.Fatalf("direct database journal mode = %s, want delete", got)
 	}
 	if err := writable.Close(); err != nil {
 		t.Fatal(err)
@@ -65,11 +84,15 @@ func TestOpenReadOnlyInstallsTheDSNPragmas(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = s.Close() })
 
+	var value string
+	if err := s.db.QueryRow(`SELECT value FROM entries`).Scan(&value); err != nil {
+		t.Fatalf("read pre-WAL database: %v", err)
+	}
+	if value != "readable" {
+		t.Errorf("read value = %q, want readable", value)
+	}
 	if got := livePragma(t, s, "busy_timeout"); got != "10000" {
 		t.Errorf("PRAGMA busy_timeout = %s, want 10000", got)
-	}
-	if got := livePragma(t, s, "journal_mode"); got != "wal" {
-		t.Errorf("PRAGMA journal_mode = %s, want wal", got)
 	}
 	// mode=ro is the whole point of this constructor and is a real SQLite URI
 	// parameter, unlike the pragmas above; a regression here opens read-write.

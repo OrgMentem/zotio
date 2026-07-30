@@ -70,7 +70,6 @@ type Store struct {
 func OpenReadOnly(dbPath string) (*Store, error) {
 	db, err := sql.Open("sqlite", "file:"+dbPath+"?mode=ro"+
 		"&_pragma=busy_timeout(10000)"+
-		"&_pragma=journal_mode(WAL)"+
 		"&_pragma=foreign_keys(ON)"+
 		"&_pragma=temp_store(MEMORY)"+
 		"&_pragma=mmap_size(268435456)")
