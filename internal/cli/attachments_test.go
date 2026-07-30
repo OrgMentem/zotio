@@ -592,10 +592,12 @@ func uploadRequestFor(t *testing.T, payload []byte) storedUploadRequest {
 	if err != nil {
 		t.Fatal(err)
 	}
+	digest := md5.Sum(payload) //nolint:gosec // G401: mirrors Zotero's upload protocol.
 	return storedUploadRequest{
 		Path:     path,
 		Filename: "payload.bin",
 		Size:     info.Size(),
+		MD5:      hex.EncodeToString(digest[:]),
 		MtimeMS:  info.ModTime().UnixMilli(),
 	}
 }
@@ -808,5 +810,112 @@ func TestPostUploadPayloadRefusesAFileChangedAfterHashing(t *testing.T) {
 	}
 	if uploaded {
 		t.Error("mismatched bytes were sent to storage")
+	}
+}
+
+// Size and mtime are only a fast preflight check. An attacker or a fast
+// same-size rewrite can preserve both, so storage must never accept the
+// complete body unless the streamed bytes retain the plan-time MD5.
+func TestPostUploadPayloadRejectsSameMetadataDifferentContent(t *testing.T) {
+	original := []byte("first-content")
+	rewritten := []byte("later-content")
+	if len(original) != len(rewritten) {
+		t.Fatal("test fixture must preserve size")
+	}
+
+	req := uploadRequestFor(t, original)
+	info, err := os.Stat(req.Path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(req.Path, rewritten, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chtimes(req.Path, info.ModTime(), info.ModTime()); err != nil {
+		t.Fatal(err)
+	}
+	after, err := os.Stat(req.Path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.Size() != req.Size || after.ModTime().UnixMilli() != req.MtimeMS {
+		t.Fatalf("test rewrite metadata = size %d mtime %d, want size %d mtime %d", after.Size(), after.ModTime().UnixMilli(), req.Size, req.MtimeMS)
+	}
+
+	var mu sync.Mutex
+	stored := false
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, readErr := io.ReadAll(r.Body)
+		mu.Lock()
+		stored = readErr == nil && bytes.Equal(body, rewritten)
+		mu.Unlock()
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	t.Cleanup(srv.Close)
+	oldAllowPrivateOutbound := allowPrivateOutboundForTests
+	allowPrivateOutboundForTests = true
+	t.Cleanup(func() { allowPrivateOutboundForTests = oldAllowPrivateOutbound })
+
+	err = postUploadPayload(context.Background(), &client.Client{HTTPClient: srv.Client()}, srv.URL+"/upload", "", "", "", req)
+	if err == nil || !strings.Contains(err.Error(), "does not match authorized MD5") {
+		t.Fatalf("err = %v, want streamed-digest refusal", err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if stored {
+		t.Error("mismatched bytes reached storage as a complete payload")
+	}
+}
+
+// Redirects replay the request body through GetBody. The file can change
+// after the first attempt, so every replay needs its own streamed digest.
+func TestPostUploadPayloadRejectsChangedRedirectReplay(t *testing.T) {
+	original := []byte("first-content")
+	rewritten := []byte("later-content")
+	req := uploadRequestFor(t, original)
+	info, err := os.Stat(req.Path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var mu sync.Mutex
+	replayStored := false
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/first":
+			body, readErr := io.ReadAll(r.Body)
+			if readErr != nil || !bytes.Equal(body, original) {
+				t.Errorf("first body = %q, read error = %v", body, readErr)
+			}
+			if err := os.WriteFile(req.Path, rewritten, 0o600); err != nil {
+				t.Errorf("rewrite source: %v", err)
+			}
+			if err := os.Chtimes(req.Path, info.ModTime(), info.ModTime()); err != nil {
+				t.Errorf("restore source mtime: %v", err)
+			}
+			http.Redirect(w, r, "/replay", http.StatusTemporaryRedirect)
+		case "/replay":
+			body, readErr := io.ReadAll(r.Body)
+			mu.Lock()
+			replayStored = readErr == nil && bytes.Equal(body, rewritten)
+			mu.Unlock()
+			w.WriteHeader(http.StatusNoContent)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(srv.Close)
+	oldAllowPrivateOutbound := allowPrivateOutboundForTests
+	allowPrivateOutboundForTests = true
+	t.Cleanup(func() { allowPrivateOutboundForTests = oldAllowPrivateOutbound })
+
+	err = postUploadPayload(context.Background(), &client.Client{HTTPClient: srv.Client()}, srv.URL+"/first", "", "", "", req)
+	if err == nil || !strings.Contains(err.Error(), "does not match authorized MD5") {
+		t.Fatalf("err = %v, want replay digest refusal", err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if replayStored {
+		t.Error("redirect replay sent the changed file as a complete payload")
 	}
 }

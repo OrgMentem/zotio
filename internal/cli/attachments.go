@@ -20,6 +20,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"hash"
 	"io"
 	"net/http"
 	"net/netip"
@@ -392,6 +393,9 @@ func uploadStoredAttachment(ctx context.Context, c *client.Client, req storedUpl
 			"item %s already has stored attachment %q (key %s) with different content (md5 %s, ours %s); refusing to duplicate or overwrite — review manually",
 			req.ParentKey, req.Filename, sibling.ConflictKey, sibling.ConflictMD5, req.MD5)}
 	}
+	// This is a server-side MD5 match, so no local bytes are sent or
+	// registered on this idempotent path. A later local edit cannot alter the
+	// already-associated server content.
 	if sibling.ExistingKey != "" {
 		return storedUploadOutcome{Key: sibling.ExistingKey, Status: storedUploadReused}, nil
 	}
@@ -526,7 +530,10 @@ func registerStoredFile(ctx context.Context, c *client.Client, key string, req s
 		return fmt.Errorf("parsing upload authorization: %w", err)
 	}
 	if auth.Exists == 1 {
-		return nil // the server already holds these bytes; association is complete
+		// Zotero keyed this response by req.MD5 and has already associated those
+		// bytes. No local body is sent or registration follows, so a later local
+		// edit cannot affect the server-side association.
+		return nil
 	}
 	if auth.URL == "" || auth.UploadKey == "" {
 		return fmt.Errorf("upload authorization missing url/uploadKey")
@@ -567,8 +574,18 @@ func postUploadPayload(ctx context.Context, c *client.Client, uploadURL, content
 		if err != nil {
 			return nil, fmt.Errorf("reopening attachment for upload: %w", err)
 		}
+		digest := md5.New() //nolint:gosec // G401: Zotero's upload authorization is keyed by MD5.
 		return readerWithCloser{
-			Reader: io.MultiReader(strings.NewReader(prefix), file, strings.NewReader(suffix)),
+			Reader: io.MultiReader(
+				strings.NewReader(prefix),
+				&verifiedUploadSource{
+					Reader:   io.TeeReader(file, digest),
+					digest:   digest,
+					expected: req.MD5,
+					filename: req.Filename,
+				},
+				strings.NewReader(suffix),
+			),
 			closer: file,
 		}, nil
 	}
@@ -603,8 +620,8 @@ func postUploadPayload(ctx context.Context, c *client.Client, uploadURL, content
 	return nil
 }
 
-// readerWithCloser pairs a MultiReader envelope with the file it streams, so
-// the descriptor is released whether the transport finishes, retries, or
+// readerWithCloser pairs an upload envelope with its source file, so the
+// descriptor is released whether the transport finishes, retries, or
 // abandons the body.
 type readerWithCloser struct {
 	io.Reader
@@ -612,6 +629,125 @@ type readerWithCloser struct {
 }
 
 func (r readerWithCloser) Close() error { return r.closer.Close() }
+
+// verifiedUploadSource hashes exactly the bytes supplied for one file body.
+// It withholds one byte until the source reaches EOF, which lets a digest
+// mismatch abort the request before a complete unauthorized payload reaches
+// storage while retaining only constant memory.
+type verifiedUploadSource struct {
+	io.Reader
+	digest   hash.Hash
+	expected string
+	filename string
+
+	held      byte
+	hasHeld   bool
+	exhausted bool
+}
+
+func (r *verifiedUploadSource) Read(p []byte) (int, error) {
+	if len(p) == 0 {
+		return 0, nil
+	}
+	if r.exhausted {
+		return r.release(p)
+	}
+	if !r.hasHeld {
+		var next [1]byte
+		n, err := r.Reader.Read(next[:])
+		if n > 0 {
+			r.held, r.hasHeld = next[0], true
+		}
+		if err == io.EOF {
+			if err := r.verify(); err != nil {
+				r.hasHeld = false
+				return 0, err
+			}
+			return r.release(p)
+		}
+		if err != nil {
+			r.hasHeld = false
+			return 0, err
+		}
+		if n == 0 {
+			return 0, nil
+		}
+	}
+
+	if len(p) == 1 {
+		var next [1]byte
+		n, err := r.Reader.Read(next[:])
+		if n == 0 {
+			if err == io.EOF {
+				if err := r.verify(); err != nil {
+					r.hasHeld = false
+					return 0, err
+				}
+				return r.release(p)
+			}
+			return 0, err
+		}
+		if err == io.EOF {
+			if err := r.verify(); err != nil {
+				r.hasHeld = false
+				return 0, err
+			}
+			p[0], r.held, r.hasHeld = r.held, next[0], true
+			return 1, nil
+		}
+		if err != nil {
+			r.hasHeld = false
+			return 0, err
+		}
+		p[0], r.held = r.held, next[0]
+		return 1, nil
+	}
+
+	n, err := r.Reader.Read(p[1:])
+	if n == 0 {
+		if err == io.EOF {
+			if err := r.verify(); err != nil {
+				r.hasHeld = false
+				return 0, err
+			}
+			return r.release(p)
+		}
+		return 0, err
+	}
+	if err == io.EOF {
+		if err := r.verify(); err != nil {
+			r.hasHeld = false
+			return 0, err
+		}
+		p[0] = r.held
+		r.hasHeld = false
+		return n + 1, nil
+	}
+	if err != nil {
+		r.hasHeld = false
+		return 0, err
+	}
+	p[0], r.held = r.held, p[n]
+	return n, nil
+}
+
+func (r *verifiedUploadSource) verify() error {
+	r.exhausted = true
+	got := hex.EncodeToString(r.digest.Sum(nil))
+	if got != r.expected {
+		return fmt.Errorf("attachment %s changed after it was hashed: uploaded bytes MD5 %s does not match authorized MD5 %s; rerun to upload the current file", r.filename, got, r.expected)
+	}
+	return nil
+}
+
+func (r *verifiedUploadSource) release(p []byte) (int, error) {
+	if !r.hasHeld {
+		return 0, io.EOF
+	}
+	p[0] = r.held
+	r.hasHeld = false
+	return 1, nil
+}
 
 // assertUploadSourceUnchanged refuses to send a file that moved under the plan.
 // The MD5 and size in req were measured before authorization; uploading
