@@ -77,6 +77,9 @@ func Execute() error {
 
 	// Run under the interrupt context so cmd.Context() is Ctrl-C/SIGTERM-cancellable
 	// on the CLI path; newClient seeds the client base context from it.
+	defer func() {
+		flags.deliverSpool.cleanup()
+	}()
 	err := rootCmd.ExecuteContext(client.InterruptContext())
 	if err != nil && strings.Contains(err.Error(), "unknown flag") {
 		msg := err.Error()
@@ -96,7 +99,6 @@ func Execute() error {
 		err = usageErr(err)
 	}
 	deliverCapturedOutput(err, rootCmd.Context(), flags.deliverSink, flags.deliverSpool, flags.compact)
-	flags.deliverSpool.cleanup()
 	return err
 }
 

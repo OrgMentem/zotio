@@ -51,6 +51,11 @@ func TestDeliverFileSpoolsBesideTheTargetAndRenamesIntoPlace(t *testing.T) {
 	if _, err := os.Stat(spool.path); !os.IsNotExist(err) {
 		t.Error("tmp file survived delivery")
 	}
+	spool.cleanup()
+	spool.cleanup()
+	if _, err := os.Stat(target); err != nil {
+		t.Errorf("cleanup after commit removed delivered file: %v", err)
+	}
 }
 
 // The webhook body is streamed off disk with an explicit length. Without the
@@ -233,5 +238,93 @@ func TestDeliverSpoolZeroByteWriteFailureWarns(t *testing.T) {
 	}
 	if !strings.Contains(string(stderr), "warning: deliver to file:"+target+" failed:") {
 		t.Fatalf("stderr = %q, want delivery failure warning", stderr)
+	}
+}
+
+func TestExecuteDeliverFileCommitsBeforeDeferredCleanup(t *testing.T) {
+	target := filepath.Join(t.TempDir(), "out.json")
+
+	if recovered := executeForDeliverSpoolTest(t,
+		"--deliver", "file:"+target,
+		"which", "citation",
+	); recovered != nil {
+		t.Fatalf("Execute panicked: %v", recovered)
+	}
+
+	delivered, err := os.ReadFile(target)
+	if err != nil {
+		t.Fatalf("delivered file: %v", err)
+	}
+	if len(delivered) == 0 {
+		t.Fatal("delivered file is empty")
+	}
+	assertNoDeliverTemp(t, target)
+}
+
+func TestExecuteDeliverFileCleansUpSpoolAfterPanic(t *testing.T) {
+	target := filepath.Join(t.TempDir(), "out.json")
+	original, hadOriginal := capabilityOverrides["which"]
+	capabilityOverrides["which"] = capabilityEntry{Requires: []string{"test-panic"}}
+	t.Cleanup(func() {
+		if hadOriginal {
+			capabilityOverrides["which"] = original
+			return
+		}
+		delete(capabilityOverrides, "which")
+	})
+
+	if recovered := executeForDeliverSpoolTest(t,
+		"--deliver", "file:"+target,
+		"which", "citation",
+	); recovered == nil {
+		t.Fatal("Execute did not panic")
+	}
+
+	if _, err := os.Stat(target); !os.IsNotExist(err) {
+		t.Fatalf("target exists after panicking command: %v", err)
+	}
+	assertNoDeliverTemp(t, target)
+}
+
+func executeForDeliverSpoolTest(t *testing.T, args ...string) (recovered any) {
+	t.Helper()
+
+	stdout, err := os.CreateTemp(t.TempDir(), "stdout-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	stderr, err := os.CreateTemp(t.TempDir(), "stderr-*")
+	if err != nil {
+		_ = stdout.Close()
+		t.Fatal(err)
+	}
+	oldArgs, oldStdout, oldStderr := os.Args, os.Stdout, os.Stderr
+	os.Args = append([]string{"zotio"}, args...)
+	os.Stdout, os.Stderr = stdout, stderr
+	t.Cleanup(func() {
+		os.Args, os.Stdout, os.Stderr = oldArgs, oldStdout, oldStderr
+		_ = stdout.Close()
+		_ = stderr.Close()
+	})
+
+	defer func() {
+		recovered = recover()
+	}()
+	_ = Execute()
+	return nil
+}
+
+func assertNoDeliverTemp(t *testing.T, target string) {
+	t.Helper()
+
+	temps, err := filepath.Glob(filepath.Join(
+		filepath.Dir(target),
+		"."+filepath.Base(target)+"-*.tmp",
+	))
+	if err != nil {
+		t.Fatalf("glob deliver temps: %v", err)
+	}
+	if len(temps) != 0 {
+		t.Fatalf("leftover deliver temps: %q", temps)
 	}
 }
