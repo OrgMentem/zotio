@@ -189,13 +189,41 @@ func newHardenedStreamableHTTPServer(mcpServer *server.MCPServer, addr, authToke
 		}
 		httpSrv.ServeHTTP(w, r)
 	})
-	httpServer := &http.Server{
-		Addr:              addr,
-		Handler:           mux,
-		ReadHeaderTimeout: 5 * time.Second,
-	}
+	httpServer := newMCPHTTPServer(addr, mux)
 	httpSrv = server.NewStreamableHTTPServer(mcpServer, server.WithStreamableHTTPServer(httpServer))
 	return httpSrv
+}
+
+const (
+	// mcpHTTPReadTimeout bounds how long one client may take to deliver a whole
+	// request, headers and body together, so a sender that dribbles bytes
+	// cannot pin a goroutine and a socket indefinitely.
+	mcpHTTPReadTimeout = 30 * time.Second
+	// mcpHTTPIdleTimeout reaps keep-alive connections between requests, which
+	// is how an abandoned client otherwise accumulates file descriptors until
+	// the process hits its limit.
+	mcpHTTPIdleTimeout = 120 * time.Second
+)
+
+func newMCPHTTPServer(addr string, handler http.Handler) *http.Server {
+	return mcpHTTPServer(addr, handler, mcpHTTPReadTimeout, mcpHTTPIdleTimeout)
+}
+
+// mcpHTTPServer builds the hardened server behind the MCP endpoint.
+//
+// WriteTimeout stays unset on purpose. Streamable HTTP and SSE responses are
+// open for the life of a session, and a write deadline would sever a healthy
+// stream mid-flight. Read and idle deadlines never apply to an in-flight
+// response, so they bound slow senders and abandoned sockets without touching
+// legitimate streaming.
+func mcpHTTPServer(addr string, handler http.Handler, readTimeout, idleTimeout time.Duration) *http.Server {
+	return &http.Server{
+		Addr:              addr,
+		Handler:           handler,
+		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       readTimeout,
+		IdleTimeout:       idleTimeout,
+	}
 }
 
 // Local MCP HTTP servers are reachable from a browser. Validate Host and

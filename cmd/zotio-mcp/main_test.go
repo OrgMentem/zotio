@@ -1,12 +1,17 @@
 package main
 
 import (
+	"errors"
+	"fmt"
+	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"regexp"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestIsLoopbackHTTPAddr(t *testing.T) {
@@ -238,5 +243,62 @@ func assertGeneratedMCPToken(t *testing.T, token string) {
 
 	if !regexp.MustCompile(`^[0-9a-f]{64}$`).MatchString(token) {
 		t.Fatalf("generated token = %q, want 64 lowercase hex characters", token)
+	}
+}
+
+// The MCP endpoint is reachable from anything that can open a local socket, so
+// a client that sends headers and then dribbles its body must be cut off
+// rather than pinning a goroutine and a file descriptor for as long as it
+// likes. Only ReadHeaderTimeout was set before, which does not cover the body.
+func TestMCPHTTPServerDisconnectsAClientThatStallsMidBody(t *testing.T) {
+	t.Parallel()
+
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.Copy(io.Discard, r.Body)
+		w.WriteHeader(http.StatusOK)
+	})
+	srv := mcpHTTPServer(listener.Addr().String(), handler, 300*time.Millisecond, 300*time.Millisecond)
+	go func() { _ = srv.Serve(listener) }()
+	t.Cleanup(func() { _ = srv.Close() })
+
+	conn, err := net.Dial("tcp", listener.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+
+	// Announce a body, then never send it.
+	if _, err := fmt.Fprintf(conn, "POST /mcp HTTP/1.1\r\nHost: %s\r\nContent-Length: 1024\r\n\r\n", listener.Addr()); err != nil {
+		t.Fatal(err)
+	}
+	if err := conn.SetReadDeadline(time.Now().Add(10 * time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := io.ReadAll(conn); err != nil {
+		var netErr net.Error
+		if errors.As(err, &netErr) && netErr.Timeout() {
+			t.Fatal("server never dropped a client that stalled mid-body")
+		}
+	}
+}
+
+// A write deadline would sever a healthy Streamable HTTP or SSE session, which
+// is the whole transport here, so the hardening has to stop short of one.
+func TestNewMCPHTTPServerBoundsReadsAndIdleButNotWrites(t *testing.T) {
+	t.Parallel()
+
+	srv := newMCPHTTPServer("127.0.0.1:0", http.NewServeMux())
+	if srv.ReadHeaderTimeout <= 0 || srv.ReadTimeout <= 0 || srv.IdleTimeout <= 0 {
+		t.Errorf("read/idle deadlines = %v/%v/%v, want all bounded", srv.ReadHeaderTimeout, srv.ReadTimeout, srv.IdleTimeout)
+	}
+	if srv.ReadTimeout < srv.ReadHeaderTimeout {
+		t.Errorf("ReadTimeout %v is shorter than ReadHeaderTimeout %v", srv.ReadTimeout, srv.ReadHeaderTimeout)
+	}
+	if srv.WriteTimeout != 0 {
+		t.Errorf("WriteTimeout = %v, want unset so long-lived MCP streams survive", srv.WriteTimeout)
 	}
 }
