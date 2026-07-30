@@ -45,10 +45,11 @@ type fakeZoteroUpload struct {
 	nextKey   int
 
 	// behavior switches
-	quotaOnAuth   bool // 413 on upload authorization
-	rateLimitOnce bool // one 429 before a successful authorization
-	replayCreate  bool // 412 on POST /items (write token already submitted)
-	existsOnAuth  bool // respond {exists:1} instead of an upload target
+	quotaOnAuth                    bool // 413 on upload authorization
+	rateLimitOnce                  bool // one 429 before a successful authorization
+	replayCreate                   bool // 412 on POST /items (write token already submitted)
+	existsOnAuth                   bool // respond {exists:1} instead of an upload target
+	storageReplyAfterContentLength bool
 
 	// observed traffic
 	creates       int
@@ -215,6 +216,15 @@ func (f *fakeZoteroUpload) handle(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "upload not authorized", http.StatusForbidden)
 			return
 		}
+		if f.storageReplyAfterContentLength {
+			if _, err := io.CopyN(io.Discard, r.Body, r.ContentLength); err != nil {
+				http.Error(w, "incomplete upload", http.StatusBadRequest)
+				return
+			}
+			f.uploads++
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
 		if got := r.Header.Get("Content-Type"); got != "application/octet-stream" {
 			f.t.Errorf("storage upload Content-Type = %q, want application/octet-stream", got)
 		}
@@ -366,6 +376,37 @@ func TestAttachmentsAddStoredUploadsExactlyOnceAndRetryNoOps(t *testing.T) {
 	creates, uploads, registers = f.snapshot()
 	if creates != 1 || uploads != 1 || registers != 1 {
 		t.Fatalf("retry traffic = creates:%d uploads:%d registers:%d, want unchanged 1/1/1", creates, uploads, registers)
+	}
+}
+
+// Storage may acknowledge immediately after it has received Content-Length
+// bytes. A source that grows after preflight must fail before that early
+// acknowledgement can authorize registration of a truncated, wrong envelope.
+func TestRegisterStoredFileRefusesSourceGrownAfterPreflight(t *testing.T) {
+	f := newFakeZoteroUpload(t, "PARENT1")
+	f.children = append(f.children, fakeUploadChild{Key: "ATT1", Filename: "paper.pdf"})
+	original := []byte(uploadFixturePDF)
+	req := uploadRequestFor(t, original)
+	req.Filename = "paper.pdf"
+	f.storageReplyAfterContentLength = true
+
+	mutated := false
+	httpClient := &http.Client{Transport: externalHTTPRoundTripFunc(func(r *http.Request) (*http.Response, error) {
+		if r.URL.Path == "/storage/ATT1" && !mutated {
+			mutated = true
+			if err := os.WriteFile(req.Path, append(append([]byte(nil), original...), []byte(" trailing bytes")...), 0o600); err != nil {
+				return nil, err
+			}
+		}
+		return f.srv.Client().Transport.RoundTrip(r)
+	})}
+	err := registerStoredFile(context.Background(), &client.Client{BaseURL: f.srv.URL, HTTPClient: httpClient}, "ATT1", req, applyFlags())
+	if err == nil || !strings.Contains(err.Error(), "grew after it was hashed") {
+		t.Fatalf("err = %v, want source-growth refusal", err)
+	}
+	creates, uploads, registers := f.snapshot()
+	if creates != 0 || uploads != 0 || registers != 0 {
+		t.Fatalf("traffic = creates:%d uploads:%d registers:%d, want 0/0/0", creates, uploads, registers)
 	}
 }
 
@@ -810,6 +851,33 @@ func TestPostUploadPayloadRefusesAFileChangedAfterHashing(t *testing.T) {
 	}
 	if uploaded {
 		t.Error("mismatched bytes were sent to storage")
+	}
+}
+
+func TestPostUploadPayloadRefusesSourceShrunkAfterPreflight(t *testing.T) {
+	req := uploadRequestFor(t, []byte("original contents"))
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.ReadAll(r.Body)
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	t.Cleanup(srv.Close)
+	oldAllowPrivateOutbound := allowPrivateOutboundForTests
+	allowPrivateOutboundForTests = true
+	t.Cleanup(func() { allowPrivateOutboundForTests = oldAllowPrivateOutbound })
+
+	mutated := false
+	httpClient := &http.Client{Transport: externalHTTPRoundTripFunc(func(r *http.Request) (*http.Response, error) {
+		if !mutated {
+			mutated = true
+			if err := os.Truncate(req.Path, req.Size-1); err != nil {
+				return nil, err
+			}
+		}
+		return srv.Client().Transport.RoundTrip(r)
+	})}
+	err := postUploadPayload(context.Background(), &client.Client{HTTPClient: httpClient}, srv.URL+"/upload", "", "", "", req)
+	if err == nil || !strings.Contains(err.Error(), "shrank after it was hashed") {
+		t.Fatalf("err = %v, want a clear source-shrink refusal", err)
 	}
 }
 

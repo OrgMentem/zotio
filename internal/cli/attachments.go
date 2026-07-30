@@ -575,14 +575,18 @@ func postUploadPayload(ctx context.Context, c *client.Client, uploadURL, content
 			return nil, fmt.Errorf("reopening attachment for upload: %w", err)
 		}
 		digest := md5.New() //nolint:gosec // G401: Zotero's upload authorization is keyed by MD5.
+		limited := &io.LimitedReader{R: file, N: req.Size}
 		return readerWithCloser{
 			Reader: io.MultiReader(
 				strings.NewReader(prefix),
 				&verifiedUploadSource{
-					Reader:   io.TeeReader(file, digest),
-					digest:   digest,
-					expected: req.MD5,
-					filename: req.Filename,
+					Reader:     io.TeeReader(limited, digest),
+					digest:     digest,
+					expected:   req.MD5,
+					filename:   req.Filename,
+					limited:    limited,
+					authorized: req.Size,
+					trailing:   file,
 				},
 				strings.NewReader(suffix),
 			),
@@ -630,15 +634,17 @@ type readerWithCloser struct {
 
 func (r readerWithCloser) Close() error { return r.closer.Close() }
 
-// verifiedUploadSource hashes exactly the bytes supplied for one file body.
-// It withholds one byte until the source reaches EOF, which lets a digest
-// mismatch abort the request before a complete unauthorized payload reaches
-// storage while retaining only constant memory.
+// verifiedUploadSource hashes exactly the authorized file bytes supplied for
+// one file body. It withholds one byte until that extent is complete and still
+// matches its authorized digest, retaining only constant memory.
 type verifiedUploadSource struct {
 	io.Reader
-	digest   hash.Hash
-	expected string
-	filename string
+	digest     hash.Hash
+	expected   string
+	filename   string
+	limited    *io.LimitedReader
+	authorized int64
+	trailing   io.Reader
 
 	held      byte
 	hasHeld   bool
@@ -733,6 +739,20 @@ func (r *verifiedUploadSource) Read(p []byte) (int, error) {
 
 func (r *verifiedUploadSource) verify() error {
 	r.exhausted = true
+	if r.limited != nil && r.limited.N != 0 {
+		return fmt.Errorf("attachment %s shrank after it was hashed: expected %d bytes but reached EOF after %d; rerun to upload the current file",
+			r.filename, r.authorized, r.authorized-r.limited.N)
+	}
+	if r.trailing != nil {
+		var extra [1]byte
+		n, err := r.trailing.Read(extra[:])
+		if n > 0 {
+			return fmt.Errorf("attachment %s grew after it was hashed: expected %d bytes; rerun to upload the current file", r.filename, r.authorized)
+		}
+		if err != nil && err != io.EOF {
+			return fmt.Errorf("checking attachment %s after upload: %w", r.filename, err)
+		}
+	}
 	got := hex.EncodeToString(r.digest.Sum(nil))
 	if got != r.expected {
 		return fmt.Errorf("attachment %s changed after it was hashed: uploaded bytes MD5 %s does not match authorized MD5 %s; rerun to upload the current file", r.filename, got, r.expected)
