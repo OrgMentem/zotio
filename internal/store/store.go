@@ -57,11 +57,23 @@ type Store struct {
 // The file: URI prefix is load-bearing: modernc.org/sqlite only honors
 // SQLite's URI query parameters (mode, cache, etc.) when the DSN starts
 // with "file:". Without the prefix, "?mode=ro" is silently dropped and
-// the connection opens read-write. Underscore-prefixed driver pragmas
-// (_journal_mode, _busy_timeout, etc.) work either way; they're parsed
-// out of the DSN by the driver before sqlite3_open_v2.
+// the connection opens read-write.
+//
+// Pragmas must use the driver's _pragma(name(value)) form. The
+// mattn/go-sqlite3 shorthand this DSN used to carry (_journal_mode,
+// _busy_timeout, ...) does not exist in the pinned driver, which ignores
+// unknown underscore keys instead of rejecting them, and SQLite then drops
+// them again as unrecognized URI params. Every pragma was silently lost:
+// the store ran in rollback-journal mode with busy_timeout 0. See
+// TestOpenInstallsTheDSNPragmas, which asserts live state rather than
+// trusting the DSN string.
 func OpenReadOnly(dbPath string) (*Store, error) {
-	db, err := sql.Open("sqlite", "file:"+dbPath+"?mode=ro&_journal_mode=WAL&_busy_timeout=10000&_foreign_keys=ON&_temp_store=MEMORY&_mmap_size=268435456")
+	db, err := sql.Open("sqlite", "file:"+dbPath+"?mode=ro"+
+		"&_pragma=busy_timeout(10000)"+
+		"&_pragma=journal_mode(WAL)"+
+		"&_pragma=foreign_keys(ON)"+
+		"&_pragma=temp_store(MEMORY)"+
+		"&_pragma=mmap_size(268435456)")
 	if err != nil {
 		return nil, fmt.Errorf("opening database (read-only): %w", err)
 	}
@@ -89,7 +101,15 @@ func OpenWithContext(ctx context.Context, dbPath string) (*Store, error) {
 		return nil, fmt.Errorf("securing db directory: %w", err)
 	}
 
-	db, err := sql.Open("sqlite", dbPath+"?_journal_mode=WAL&_synchronous=NORMAL&_busy_timeout=5000&_foreign_keys=ON&_temp_store=MEMORY&_mmap_size=268435456")
+	// busy_timeout first: it governs how the pragmas after it behave under
+	// contention, and the driver applies _pragma entries in order.
+	db, err := sql.Open("sqlite", dbPath+
+		"?_pragma=busy_timeout(5000)"+
+		"&_pragma=journal_mode(WAL)"+
+		"&_pragma=synchronous(NORMAL)"+
+		"&_pragma=foreign_keys(ON)"+
+		"&_pragma=temp_store(MEMORY)"+
+		"&_pragma=mmap_size(268435456)")
 	if err != nil {
 		return nil, fmt.Errorf("opening database: %w", err)
 	}
