@@ -10,6 +10,8 @@ import (
 	"strings"
 
 	"github.com/spf13/cobra"
+
+	"zotio/internal/mutation"
 )
 
 func newCollectionsUpdateCmd(flags *rootFlags) *cobra.Command {
@@ -35,16 +37,11 @@ func newCollectionsUpdateCmd(flags *rootFlags) *cobra.Command {
 				return cmd.Help()
 			}
 
-			c, err := flags.newClient()
-			if err != nil {
-				return err
-			}
-
 			path := "/collections/{collectionKey}"
 			path = replacePathParam(path, "collectionKey", args[0])
 			var body map[string]any
 			if stdinBody {
-				stdinData, err := io.ReadAll(os.Stdin)
+				stdinData, err := io.ReadAll(cmd.InOrStdin())
 				if err != nil {
 					return fmt.Errorf("reading stdin: %w", err)
 				}
@@ -66,6 +63,12 @@ func newCollectionsUpdateCmd(flags *rootFlags) *cobra.Command {
 					}
 				}
 			}
+			ops := []mutation.Op{{
+				ID:      "collections.update:" + args[0],
+				Key:     args[0],
+				Kind:    "collection_update",
+				Changes: []mutation.Change{{Field: "collection", Add: body}},
+			}}
 			// Preview unless the caller explicitly applied. The body is planned
 			// first so the preview shows exactly what apply would send.
 			if mode := resolveMutationMode(flags); !mode.Apply {
@@ -80,6 +83,13 @@ func newCollectionsUpdateCmd(flags *rootFlags) *cobra.Command {
 					"dry_run":        true,
 					"preview_reason": mode.PreviewReason,
 				}, flags)
+			}
+			if gateFailure := mutation.CheckGates(mutationOptions(flags), ops); gateFailure != nil {
+				return gateErr(fmt.Errorf("%s", gateFailure.Message))
+			}
+			c, err := flags.newClient()
+			if err != nil {
+				return err
 			}
 			data, statusCode, err := c.Put(path, body)
 			if err != nil {

@@ -61,7 +61,9 @@ func TestItemsDeleteSendsVersionHeader(t *testing.T) {
 func TestCollectionsDeleteSendsVersionHeader(t *testing.T) {
 	srv, sent := deleteVersionServer(t, "7")
 	defer srv.Close()
-	cmd := newCollectionsDeleteCmd(&rootFlags{asJSON: true, yes: true})
+	// collections delete is now a destructive gated mutation: applying it needs
+	// --allow-destructive as well as --yes, and an unset max-changes cap.
+	cmd := newCollectionsDeleteCmd(&rootFlags{asJSON: true, yes: true, allowDestructive: true, maxChanges: -1})
 	cmd.SilenceErrors, cmd.SilenceUsage = true, true
 	if err := runDeleteCmd(t, cmd, srv.URL, "K"); err != nil {
 		t.Fatalf("collections delete: %v", err)
@@ -113,7 +115,7 @@ func TestDeletesAbortWhenVersionReadFails(t *testing.T) {
 			}))
 			defer srv.Close()
 
-			cmd := tt.new(&rootFlags{asJSON: true, yes: true})
+			cmd := tt.new(&rootFlags{asJSON: true, yes: true, allowDestructive: true, maxChanges: -1})
 			err := runDeleteCmd(t, cmd, srv.URL, "K")
 			if ExitCode(err) != 5 {
 				t.Fatalf("ExitCode(delete error) = %d, want 5; err = %v", ExitCode(err), err)
@@ -167,7 +169,7 @@ func TestDeletesTreatMissingVersionReadAsNoop(t *testing.T) {
 			}))
 			defer srv.Close()
 
-			cmd := tt.new(&rootFlags{asJSON: true, yes: true})
+			cmd := tt.new(&rootFlags{asJSON: true, yes: true, allowDestructive: true, maxChanges: -1})
 			if err := runDeleteCmd(t, cmd, srv.URL, "K"); err != nil {
 				t.Fatalf("delete missing item: %v", err)
 			}

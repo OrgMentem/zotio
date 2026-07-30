@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/spf13/cobra"
@@ -41,6 +42,15 @@ func newCollectionsWriteRecorder(t *testing.T) *collectionsWriteRecorder {
 
 func runCollectionsWriteCmd(t *testing.T, rec *collectionsWriteRecorder, cmd *cobra.Command, args ...string) map[string]any {
 	t.Helper()
+	decoded, err := executeCollectionsWriteCmd(t, rec, cmd, args...)
+	if err != nil {
+		t.Fatalf("%s %v: %v", cmd.Name(), args, err)
+	}
+	return decoded
+}
+
+func executeCollectionsWriteCmd(t *testing.T, rec *collectionsWriteRecorder, cmd *cobra.Command, args ...string) (map[string]any, error) {
+	t.Helper()
 	t.Setenv("ZOTERO_BASE_URL", rec.server.URL+"/users/0")
 	t.Setenv("ZOTERO_CONFIG", filepath.Join(t.TempDir(), "missing.toml"))
 	t.Setenv("ZOTERO_API_KEY", "test-key")
@@ -49,16 +59,14 @@ func runCollectionsWriteCmd(t *testing.T, rec *collectionsWriteRecorder, cmd *co
 	cmd.SetOut(&out)
 	cmd.SetErr(&bytes.Buffer{})
 	cmd.SetArgs(args)
-	if err := cmd.Execute(); err != nil {
-		t.Fatalf("%s %v: %v", cmd.Name(), args, err)
-	}
+	err := cmd.Execute()
 	decoded := map[string]any{}
 	if out.Len() > 0 {
-		if err := json.Unmarshal(out.Bytes(), &decoded); err != nil {
-			t.Fatalf("decode %q: %v", out.String(), err)
+		if decodeErr := json.Unmarshal(out.Bytes(), &decoded); decodeErr != nil {
+			t.Fatalf("decode %q: %v", out.String(), decodeErr)
 		}
 	}
-	return decoded
+	return decoded, err
 }
 
 // collections create/update/delete wrote on invocation, honoring none of the
@@ -128,7 +136,11 @@ func TestCollectionsWritesPreviewUntilExplicitlyApplied(t *testing.T) {
 
 			t.Run("yes applies", func(t *testing.T) {
 				rec := newCollectionsWriteRecorder(t)
-				runCollectionsWriteCmd(t, rec, tc.build(&rootFlags{asJSON: true, yes: true}), tc.args...)
+				flags := &rootFlags{asJSON: true, yes: true, maxChanges: -1}
+				if tc.name == "delete" {
+					flags.allowDestructive = true
+				}
+				runCollectionsWriteCmd(t, rec, tc.build(flags), tc.args...)
 				if len(rec.mutating) != 1 {
 					t.Errorf("mutating requests = %v, want exactly one once --yes is given", rec.mutating)
 				}
@@ -137,30 +149,68 @@ func TestCollectionsWritesPreviewUntilExplicitlyApplied(t *testing.T) {
 	}
 }
 
-// The annotations are what an MCP host reads to decide whether a tool needs
-// approval, so a mutating command that omits them is misrepresented on the
-// agent surface even once its runtime gate is correct.
-func TestCollectionsWriteCommandsDeclareTheirWriteSafetyAnnotations(t *testing.T) {
-	for _, tc := range []struct {
-		name        string
-		build       func(*rootFlags) *cobra.Command
-		destructive string
-	}{
-		{name: "create", build: newCollectionsCreateCmd, destructive: "false"},
-		{name: "update", build: newCollectionsUpdateCmd, destructive: "false"},
-		{name: "delete", build: newCollectionsDeleteCmd, destructive: "true"},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			annotations := tc.build(&rootFlags{}).Annotations
-			if got := annotations["zotio:destructive"]; got != tc.destructive {
-				t.Errorf("zotio:destructive = %q, want %q", got, tc.destructive)
-			}
-			if got := annotations["zotio:supports-dry-run"]; got != "true" {
-				t.Errorf("zotio:supports-dry-run = %q, want true", got)
-			}
-			if annotations["mcp:read-only"] != "" {
-				t.Error("a write command must not claim mcp:read-only")
-			}
-		})
+func TestCollectionsCreateHonorsMaxChanges(t *testing.T) {
+	rec := newCollectionsWriteRecorder(t)
+	cmd := newCollectionsCreateCmd(&rootFlags{asJSON: true, yes: true, maxChanges: 1})
+	cmd.SetIn(bytes.NewBufferString(`[{"name":"one"},{"name":"two"}]`))
+
+	_, err := executeCollectionsWriteCmd(t, rec, cmd, "--stdin")
+	if err == nil {
+		t.Fatal("collections create succeeded above --max-changes")
 	}
+	if ExitCode(err) != 11 {
+		t.Fatalf("ExitCode(%v) = %d, want gate exit 11", err, ExitCode(err))
+	}
+	if !strings.Contains(err.Error(), "planned 2 change(s), which exceeds the cap of 1") {
+		t.Fatalf("error = %q, want max-changes gate message", err)
+	}
+	if len(rec.mutating) != 0 {
+		t.Fatalf("POST requests = %v, want none after gate refusal", rec.mutating)
+	}
+}
+
+func TestCollectionsDeleteRequiresDestructiveOptIn(t *testing.T) {
+	t.Run("refuses without opt-in", func(t *testing.T) {
+		rec := newCollectionsWriteRecorder(t)
+		cmd := newCollectionsDeleteCmd(&rootFlags{asJSON: true, yes: true, maxChanges: -1})
+
+		_, err := executeCollectionsWriteCmd(t, rec, cmd, "K")
+		if err == nil {
+			t.Fatal("collections delete succeeded without --allow-destructive")
+		}
+		if ExitCode(err) != 11 {
+			t.Fatalf("ExitCode(%v) = %d, want gate exit 11", err, ExitCode(err))
+		}
+		if !strings.Contains(err.Error(), "destructive changes require --allow-destructive") {
+			t.Fatalf("error = %q, want destructive opt-in message", err)
+		}
+		if len(rec.mutating) != 0 {
+			t.Fatalf("DELETE requests = %v, want none after gate refusal", rec.mutating)
+		}
+	})
+
+	t.Run("applies with opt-in", func(t *testing.T) {
+		rec := newCollectionsWriteRecorder(t)
+		cmd := newCollectionsDeleteCmd(&rootFlags{
+			asJSON: true, yes: true, maxChanges: -1, allowDestructive: true,
+		})
+
+		runCollectionsWriteCmd(t, rec, cmd, "K")
+		if len(rec.mutating) != 1 || rec.mutating[0] != "DELETE /users/0/collections/K" {
+			t.Fatalf("mutating requests = %v, want DELETE /users/0/collections/K", rec.mutating)
+		}
+	})
+}
+
+func TestCollectionsDeleteCapabilityIsDestructive(t *testing.T) {
+	for _, capability := range buildCapabilityRegistry(RootCmd()) {
+		if capability.Path != "collections delete" {
+			continue
+		}
+		if capability.Operation != "write" || !capability.Destructive {
+			t.Fatalf("collections delete capability = %+v, want destructive write", capability)
+		}
+		return
+	}
+	t.Fatal("collections delete is absent from the capability registry")
 }

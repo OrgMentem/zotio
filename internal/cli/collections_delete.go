@@ -13,6 +13,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"zotio/internal/client"
+	"zotio/internal/mutation"
 )
 
 func newCollectionsDeleteCmd(flags *rootFlags) *cobra.Command {
@@ -28,7 +29,7 @@ func newCollectionsDeleteCmd(flags *rootFlags) *cobra.Command {
 			"zotio:path":                       "/collections/{collectionKey}",
 			"zotio:destructive":                "true",
 			"zotio:supports-dry-run":           "true",
-			"zotio:requires-allow-destructive": "false",
+			"zotio:requires-allow-destructive": "true",
 		},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if len(args) == 0 {
@@ -36,6 +37,13 @@ func newCollectionsDeleteCmd(flags *rootFlags) *cobra.Command {
 			}
 			path := "/collections/{collectionKey}"
 			path = replacePathParam(path, "collectionKey", args[0])
+			ops := []mutation.Op{{
+				ID:          "collections.delete:" + args[0],
+				Key:         args[0],
+				Kind:        "collection_delete",
+				Changes:     []mutation.Change{{Field: "collection", Remove: args[0]}},
+				Destructive: true,
+			}}
 			// Preview unless the caller explicitly applied. MCP advertises the
 			// write-safety gate flags on every mutating command, so a command
 			// that writes on invocation is a false affordance: a host told the
@@ -51,6 +59,9 @@ func newCollectionsDeleteCmd(flags *rootFlags) *cobra.Command {
 					"dry_run":        true,
 					"preview_reason": mode.PreviewReason,
 				}, flags)
+			}
+			if gateFailure := mutation.CheckGates(mutationOptions(flags), ops); gateFailure != nil {
+				return gateErr(fmt.Errorf("%s", gateFailure.Message))
 			}
 			c, err := flags.newWriteClient()
 			if err != nil {

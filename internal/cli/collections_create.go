@@ -9,6 +9,8 @@ import (
 	"os"
 
 	"github.com/spf13/cobra"
+
+	"zotio/internal/mutation"
 )
 
 func newCollectionsCreateCmd(flags *rootFlags) *cobra.Command {
@@ -34,15 +36,11 @@ func newCollectionsCreateCmd(flags *rootFlags) *cobra.Command {
 					return fmt.Errorf("required flag \"%s\" not set", "name")
 				}
 			}
-			c, err := flags.newClient()
-			if err != nil {
-				return err
-			}
 
 			path := "/collections"
 			var body any
 			if stdinBody {
-				stdinData, err := io.ReadAll(os.Stdin)
+				stdinData, err := io.ReadAll(cmd.InOrStdin())
 				if err != nil {
 					return fmt.Errorf("reading stdin: %w", err)
 				}
@@ -68,6 +66,7 @@ func newCollectionsCreateCmd(flags *rootFlags) *cobra.Command {
 				}
 				body = []map[string]any{collection}
 			}
+			ops := collectionCreateOps(body)
 			// Preview unless the caller explicitly applied. The payload is built
 			// first so the preview names every collection apply would create.
 			if mode := resolveMutationMode(flags); !mode.Apply {
@@ -81,6 +80,13 @@ func newCollectionsCreateCmd(flags *rootFlags) *cobra.Command {
 					"dry_run":        true,
 					"preview_reason": mode.PreviewReason,
 				}, flags)
+			}
+			if gateFailure := mutation.CheckGates(mutationOptions(flags), ops); gateFailure != nil {
+				return gateErr(fmt.Errorf("%s", gateFailure.Message))
+			}
+			c, err := flags.newClient()
+			if err != nil {
+				return err
 			}
 			data, statusCode, err := c.Post(path, body)
 			if err != nil {
@@ -154,4 +160,36 @@ func newCollectionsCreateCmd(flags *rootFlags) *cobra.Command {
 	cmd.Flags().BoolVar(&stdinBody, "stdin", false, "Read request body as JSON from stdin")
 
 	return cmd
+}
+
+func collectionCreateOps(body any) []mutation.Op {
+	var collections []any
+	switch payload := body.(type) {
+	case []any:
+		collections = payload
+	case []map[string]any:
+		collections = make([]any, len(payload))
+		for i := range payload {
+			collections[i] = payload[i]
+		}
+	default:
+		return nil
+	}
+
+	ops := make([]mutation.Op, 0, len(collections))
+	for i, collection := range collections {
+		key := fmt.Sprintf("%d", i+1)
+		if fields, ok := collection.(map[string]any); ok {
+			if name, ok := fields["name"].(string); ok && name != "" {
+				key = name
+			}
+		}
+		ops = append(ops, mutation.Op{
+			ID:      fmt.Sprintf("collections.create:%d", i+1),
+			Key:     key,
+			Kind:    "collection_create",
+			Changes: []mutation.Change{{Field: "collection", Add: collection}},
+		})
+	}
+	return ops
 }
