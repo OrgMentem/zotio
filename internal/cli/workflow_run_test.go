@@ -1297,6 +1297,56 @@ func TestWorkflowStepFailsInsteadOfGrowingPastTheOutputCeiling(t *testing.T) {
 	}
 }
 
+func TestWorkflowRunOverflowDiscardsOutputBeforeCheckpoint(t *testing.T) {
+	oldCeiling := workflowRunStepOutputCeiling
+	workflowRunStepOutputCeiling = 4 << 20
+	t.Cleanup(func() { workflowRunStepOutputCeiling = oldCeiling })
+
+	chunk := []byte(strings.Repeat("x", 1024))
+	newRoot := func() *cobra.Command {
+		root := &cobra.Command{Use: "test"}
+		root.PersistentFlags().Bool("yes", false, "accept")
+		root.AddCommand(&cobra.Command{
+			Use:         "flood",
+			Annotations: map[string]string{"mcp:read-only": "true"},
+			RunE: func(cmd *cobra.Command, _ []string) error {
+				// Ignore write errors to keep writing past the tripwire.
+				for range 8 * 1024 {
+					_, _ = cmd.OutOrStdout().Write(chunk)
+				}
+				return nil
+			},
+		})
+		return root
+	}
+
+	output, _, err := executeWorkflowRunStepWithRoot(context.Background(), newRoot(), []string{"flood"}, nil)
+	if err == nil {
+		t.Fatal("overflowing step succeeded")
+	}
+	if output != "" {
+		t.Fatalf("overflowing step returned %d bytes, want no retained prefix", len(output))
+	}
+
+	checkpoint := workflowRunCheckpoint{}
+	report, err := executeWorkflowRunSpecWithRootFactory(context.Background(), workflowRunSpec{
+		Steps: []workflowRunStepSpec{{Name: "flood", Args: []string{"flood"}}},
+	}, workflowRunExecution{
+		Mode:           workflowRunModeApply,
+		Checkpoint:     &checkpoint,
+		CheckpointPath: filepath.Join(t.TempDir(), "workflow.checkpoint.json"),
+	}, newRoot)
+	if err != nil {
+		t.Fatalf("execute overflowing workflow: %v", err)
+	}
+	if report.OK || len(report.Steps) != 1 || report.Steps[0].Status != "failed" {
+		t.Fatalf("report = %+v, want one failed overflowing step", report)
+	}
+	if len(checkpoint.Completed) != 1 || checkpoint.Completed[0].Output != "" {
+		t.Fatalf("checkpoint = %+v, want failed step without retained output", checkpoint)
+	}
+}
+
 // The ceiling must sit far above the report's display cap, or ordinary steps
 // would start failing: workflowRunOutputLimit trims what is rendered, not what
 // is piped.

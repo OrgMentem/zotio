@@ -11,23 +11,69 @@ Notable changes to zotio. Format follows [Keep a Changelog](https://keepachangel
   the store ran in rollback-journal mode with `busy_timeout=0`,
   `synchronous=FULL`, and foreign keys off, while the code and its comments
   assumed the opposite. Reading them back off a live connection is what
-  surfaced it. Two consequences worth knowing before upgrading: the first open
-  after this release performs a one-way on-disk conversion to WAL, and
-  effective durability moves from `FULL` to the intended `NORMAL`, which can
-  lose the most recent commits on power loss or OS crash (not on process
-  crash). That is the right trade for a re-syncable cache, but it is a real
-  change from shipped behavior. `zotio doctor` now reports live pragma state
-  under `cache.pragmas` and flags a non-WAL journal mode or a zero busy
-  timeout.
+  surfaced it. Three consequences worth knowing before upgrading. The first
+  open after this release converts the file to WAL; that is persistent but
+  reversible with `PRAGMA journal_mode=DELETE`. Effective durability moves from
+  `FULL` to the intended `NORMAL`, which can lose the most recent commits on
+  power loss or OS crash (not on process crash) — the right trade for a
+  re-syncable cache, but a real change from shipped behavior. And **WAL does
+  not work on a network filesystem**, because its index relies on shared
+  memory: if you point `--db` at an NFS or SMB path, move the database to local
+  storage or revert it to `DELETE` mode before upgrading. `zotio doctor` now
+  reports live pragma state under `cache.pragmas` and flags a non-WAL journal
+  mode or a zero busy timeout.
+- **`collections export --limit` changed meaning.** It was effectively a cap on
+  how much of a collection you got, because the command made a single request
+  and kept whatever came back (default 200, silently clamped to the API's 100).
+  It is now a page size, clamped to 100, and the export always walks every page
+  — so `--limit 10` used to return at most 10 items and now returns the whole
+  collection, 10 items per request. Scripts relying on it as a cap will see
+  much larger output and many more requests.
 - **`collections create`, `collections update`, and `collections delete` now
-  preview by default and require `--yes` to apply.** They previously wrote on
+  preview by default and require `--yes` to apply**, and `collections delete`
+  additionally requires `--allow-destructive`. They previously wrote on
   invocation, honoring none of the write-safety gates — while the MCP surface
   advertised `yes`, `dry-run`, and `allow-destructive` on them, because it
   advertises those on every mutating command. An agent host was shown gates
-  that did not exist. Scripts calling these three non-interactively must add
-  `--yes`.
+  that did not exist. `collections create --stdin` now also counts each
+  collection in the payload against `--max-changes` (50 under `--agent`), so a
+  large batch needs an explicit higher cap. Scripts calling these three
+  non-interactively must add the matching flags.
+- A workflow step that writes more than 256 MiB to one stream now fails with an
+  actionable error instead of growing until the process dies. Step output is
+  piped and checkpointed in full, so it cannot be silently trimmed; the
+  overflowing step's output is discarded rather than returned or checkpointed.
+
+### Fixed
+- `collections export` walks every page instead of returning only the first.
+  Any collection over 100 items was silently truncated, and the subcollection
+  listing was unpaginated too, so broad collections lost whole subtrees.
+  BibTeX citation keys are now deduplicated across pages and subcollections —
+  Zotero's translator only dedupes within one response, so concatenated pages
+  could repeat a key. A server that ignores `start` is now an error rather than
+  a silent partial export.
+- `reading-list add`, `start`, and `done` work under `--dry-run`. They read the
+  live item to diff its tags, which a dry-run client answers locally, so every
+  invocation failed on "item response missing data object". The dry-run plan is
+  built from the transition and reports the upper bound of changes, since it
+  cannot know which tags the item already carries.
+- A stored attachment upload now verifies the bytes it sends against the digest
+  Zotero authorized, hashing the stream as it uploads, and fails if the source
+  changed after planning rather than registering a file the server believes it
+  verified.
+- Oversized MCP mirror results become a self-describing preview envelope
+  reporting the true output size, instead of an unbounded result.
+- The MCP HTTP transport bounds slow request bodies (30s) and idle keep-alives
+  (120s). Long-lived Streamable HTTP and SSE responses are unaffected — no
+  write deadline is set, deliberately.
+- `--deliver` streams to disk rather than buffering the whole result in memory,
+  and each run now spools through a unique temporary file, so concurrent
+  deliveries to the same target cannot corrupt each other.
 
 ### Security
+- Credential-shaped strings are redacted before error bodies are truncated.
+  A key straddling the 200-byte cap was previously cut down to a prefix the
+  redaction pattern no longer matched, and that fragment was printed.
 - Library content returned through the MCP command mirror is now framed as
   data rather than instructions. Item titles, abstracts, notes, tags, and
   annotations are authored by anyone who can write to the library (a shared
@@ -36,8 +82,10 @@ Notable changes to zotio. Format follows [Keep a Changelog](https://keepachangel
   rendered tables — is wrapped in a nonce-delimited data block with an explicit
   "not instructions" preamble, and C0/DEL control bytes are neutralized on that
   path (JSON results are unaffected: `encoding/json` already escapes them, and
-  they keep their exact shape so hosts can still parse them). This is
-  mitigation, not a boundary — the control that holds is the write gate above.
+  they keep their exact shape so hosts can still parse them). The framing also
+  covers failed and panicking commands, which emit partial library content.
+  This is mitigation, not a boundary — the control that holds is the write
+  gate above.
 
 ## [0.13.1] — 2026-07-27
 ### Fixed

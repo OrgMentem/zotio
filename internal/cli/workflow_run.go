@@ -1044,9 +1044,11 @@ func executeWorkflowRunStepWithRoot(ctx context.Context, root *cobra.Command, ar
 	// A command that ignores its write errors would otherwise finish with
 	// silently truncated output, and truncated output here is not cosmetic:
 	// it feeds ${steps.<name>.output}, StdinFrom, and the resume checkpoint.
-	// Failing the step is the only honest outcome.
+	// Failing the step is the only honest outcome. Do not materialize the
+	// retained prefix: it has already exceeded the workflow's contract and a
+	// failed step's output is unavailable to downstream dataflow.
 	if stdout.overflowed || stderr.overflowed {
-		return stdout.String(), stderr.String(), errWorkflowStepOutputTooLarge()
+		return "", "", errWorkflowStepOutputTooLarge()
 	}
 	return stdout.String(), stderr.String(), err
 }
