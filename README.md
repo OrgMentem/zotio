@@ -314,9 +314,12 @@ brew install orgmentem/tap/zotio
 
 This installs both `zotio` and the `zotio-mcp` MCP server; `brew upgrade` tracks new releases.
 
-**Linux (deb / rpm / apk):** download the package for your distro from the
-[GitHub releases](https://github.com/OrgMentem/zotio/releases) and install it
-with `dpkg -i`, `rpm -i`, or `apk add --allow-untrusted`.
+**Linux (deb / rpm / apk):** there is no apt/dnf/pacman repository — the packages
+are [GitHub release](https://github.com/OrgMentem/zotio/releases) assets. Install
+with `dpkg -i`, `rpm -i`, or `apk add --allow-untrusted`; the
+[install guide](https://orgmentem.github.io/zotio/guide/install/) has a snippet
+that resolves the latest version and your architecture. Homebrew is macOS-only
+(the tap ships a cask).
 
 **Windows (WinGet / Scoop):** `winget install OrgMentem.zotio`, or
 `scoop bucket add orgmentem https://github.com/OrgMentem/scoop-bucket && scoop install zotio`.

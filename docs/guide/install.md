@@ -17,18 +17,25 @@
 
 === "Linux"
 
-    **Distro packages** — every [GitHub release](https://github.com/OrgMentem/zotio/releases) ships `.deb`, `.rpm`, and `.apk` for amd64/arm64, each bundling both `zotio` and `zotio-mcp`. Download the file for your arch, then:
+    **Distro packages** — every [GitHub release](https://github.com/OrgMentem/zotio/releases) ships `.deb`, `.rpm`, and `.apk` for amd64/arm64, each bundling both `zotio` and `zotio-mcp`. There is no apt/dnf/pacman repository to add: the packages are release assets, and their filenames carry the version. This resolves the latest release and your architecture for you:
 
     ```bash
+    ver=$(curl -fsSL https://api.github.com/repos/OrgMentem/zotio/releases/latest |
+      sed -n 's/.*"tag_name": *"v\([^"]*\)".*/\1/p')
+    arch=$(uname -m); case "$arch" in x86_64) arch=amd64;; aarch64) arch=arm64;; esac
+    pkg=zotio_${ver}_linux_${arch}
+
     # Debian / Ubuntu
-    sudo dpkg -i zotio_<version>_linux_amd64.deb
+    curl -fsSLO "https://github.com/OrgMentem/zotio/releases/download/v${ver}/${pkg}.deb" && sudo dpkg -i "${pkg}.deb"
 
     # Fedora / RHEL / openSUSE
-    sudo rpm -i zotio_<version>_linux_amd64.rpm
+    curl -fsSLO "https://github.com/OrgMentem/zotio/releases/download/v${ver}/${pkg}.rpm" && sudo rpm -i "${pkg}.rpm"
 
     # Alpine
-    sudo apk add --allow-untrusted zotio_<version>_linux_amd64.apk
+    curl -fsSLO "https://github.com/OrgMentem/zotio/releases/download/v${ver}/${pkg}.apk" && sudo apk add --allow-untrusted "${pkg}.apk"
     ```
+
+    Upgrades are the same command again (`dpkg -i` / `rpm -U` / `apk add`). Homebrew is not an option on Linux — the tap ships a macOS-only cask.
 
 === "Windows"
 
