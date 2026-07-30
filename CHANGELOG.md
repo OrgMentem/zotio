@@ -2,7 +2,7 @@
 
 Notable changes to zotio. Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow [SemVer](https://semver.org/).
 
-## [Unreleased]
+## [0.14.0] — 2026-07-30
 ### Changed — breaking
 - **The local store now actually runs in WAL mode, and converts existing
   databases on first open.** Both DSNs used mattn/go-sqlite3 shorthand
@@ -336,6 +336,7 @@ First tagged release: the trust-and-automation layer for Zotero.
 - **Onboarding** — `zotio init` guided setup (Zotero detection, local API, key, first sync, health check).
 - Release engineering: goreleaser builds for 6 platforms, cosign-signed checksums, SBOMs, Homebrew tap.
 
+[0.14.0]: https://github.com/OrgMentem/zotio/compare/v0.13.1...v0.14.0
 [0.13.1]: https://github.com/OrgMentem/zotio/compare/v0.13.0...v0.13.1
 [0.13.0]: https://github.com/OrgMentem/zotio/compare/v0.12.0...v0.13.0
 [0.12.0]: https://github.com/OrgMentem/zotio/compare/v0.11.0...v0.12.0
