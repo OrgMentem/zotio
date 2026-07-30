@@ -12,14 +12,17 @@ Notable changes to zotio. Format follows [Keep a Changelog](https://keepachangel
   `synchronous=FULL`, and foreign keys off, while the code and its comments
   assumed the opposite. Reading them back off a live connection is what
   surfaced it. Three consequences worth knowing before upgrading. The first
-  open after this release converts the file to WAL; that is persistent but
-  reversible with `PRAGMA journal_mode=DELETE`. Effective durability moves from
-  `FULL` to the intended `NORMAL`, which can lose the most recent commits on
-  power loss or OS crash (not on process crash) — the right trade for a
-  re-syncable cache, but a real change from shipped behavior. And **WAL does
-  not work on a network filesystem**, because its index relies on shared
-  memory: if you point `--db` at an NFS or SMB path, move the database to local
-  storage or revert it to `DELETE` mode before upgrading. `zotio doctor` now
+  *writable* open after this release converts the file to WAL — a read-only
+  command leaves a legacy database untouched, so the conversion happens the
+  first time you run something that writes. It is persistent but reversible
+  with `PRAGMA journal_mode=DELETE`. Effective durability moves from `FULL` to
+  the intended `NORMAL`, which can lose the most recent commits on power loss
+  or OS crash (not on process crash) — the right trade for a re-syncable cache,
+  but a real change from shipped behavior. And **WAL does not work on a network
+  filesystem**, because its index relies on shared memory: if you point `--db`
+  at an NFS or SMB path, move the database to local storage before upgrading.
+  Reverting the file to `DELETE` mode is not a workaround — every writable open
+  re-applies the WAL pragma, so the next command undoes it. `zotio doctor` now
   reports live pragma state under `cache.pragmas` and flags a non-WAL journal
   mode or a zero busy timeout.
 - **`collections export --limit` changed meaning.** It was effectively a cap on
@@ -60,7 +63,9 @@ Notable changes to zotio. Format follows [Keep a Changelog](https://keepachangel
 - A stored attachment upload now verifies the bytes it sends against the digest
   Zotero authorized, hashing the stream as it uploads, and fails if the source
   changed after planning rather than registering a file the server believes it
-  verified.
+  verified. Stored uploads also no longer hold the file in memory: the digest
+  streams and the payload is re-read from disk as it is sent, so peak usage no
+  longer scales with attachment size.
 - Oversized MCP mirror results become a self-describing preview envelope
   reporting the true output size, instead of an unbounded result.
 - The MCP HTTP transport bounds slow request bodies (30s) and idle keep-alives
@@ -73,7 +78,9 @@ Notable changes to zotio. Format follows [Keep a Changelog](https://keepachangel
 ### Security
 - Credential-shaped strings are redacted before error bodies are truncated.
   A key straddling the 200-byte cap was previously cut down to a prefix the
-  redaction pattern no longer matched, and that fragment was printed.
+  redaction pattern no longer matched, and that fragment was printed. Error
+  bodies are also truncated on UTF-8 rune boundaries now, so a multi-byte
+  character at the cap is no longer split into invalid UTF-8.
 - Library content returned through the MCP command mirror is now framed as
   data rather than instructions. Item titles, abstracts, notes, tags, and
   annotations are authored by anyone who can write to the library (a shared
