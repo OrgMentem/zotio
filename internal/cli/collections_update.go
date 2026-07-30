@@ -21,8 +21,15 @@ func newCollectionsUpdateCmd(flags *rootFlags) *cobra.Command {
 		Use:   "update <collectionKey>",
 		Short: "Update a collection",
 		// use a collection key placeholder, not a token.
-		Example:     "  zotio collections update COLLECTIONKEY",
-		Annotations: map[string]string{"zotio:endpoint": "collections.update", "zotio:method": "PUT", "zotio:path": "/collections/{collectionKey}"},
+		Example: "  zotio collections update COLLECTIONKEY",
+		Annotations: map[string]string{
+			"zotio:endpoint":                   "collections.update",
+			"zotio:method":                     "PUT",
+			"zotio:path":                       "/collections/{collectionKey}",
+			"zotio:destructive":                "false",
+			"zotio:supports-dry-run":           "true",
+			"zotio:requires-allow-destructive": "false",
+		},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if len(args) == 0 {
 				return cmd.Help()
@@ -58,6 +65,21 @@ func newCollectionsUpdateCmd(flags *rootFlags) *cobra.Command {
 						body["parentCollection"] = bodyParentCollection
 					}
 				}
+			}
+			// Preview unless the caller explicitly applied. The body is planned
+			// first so the preview shows exactly what apply would send.
+			if mode := resolveMutationMode(flags); !mode.Apply {
+				return printJSONFiltered(cmd.OutOrStdout(), map[string]any{
+					"action":         "update",
+					"resource":       "collections",
+					"key":            args[0],
+					"path":           path,
+					"body":           body,
+					"status":         0,
+					"success":        false,
+					"dry_run":        true,
+					"preview_reason": mode.PreviewReason,
+				}, flags)
 			}
 			data, statusCode, err := c.Put(path, body)
 			if err != nil {

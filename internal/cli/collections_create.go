@@ -17,10 +17,17 @@ func newCollectionsCreateCmd(flags *rootFlags) *cobra.Command {
 	var stdinBody bool
 
 	cmd := &cobra.Command{
-		Use:         "create",
-		Short:       "Create one or more collections",
-		Example:     "  zotio collections create --name example-resource",
-		Annotations: map[string]string{"zotio:endpoint": "collections.create", "zotio:method": "POST", "zotio:path": "/collections"},
+		Use:     "create",
+		Short:   "Create one or more collections",
+		Example: "  zotio collections create --name example-resource",
+		Annotations: map[string]string{
+			"zotio:endpoint":                   "collections.create",
+			"zotio:method":                     "POST",
+			"zotio:path":                       "/collections",
+			"zotio:destructive":                "false",
+			"zotio:supports-dry-run":           "true",
+			"zotio:requires-allow-destructive": "false",
+		},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if !stdinBody {
 				if !cmd.Flags().Changed("name") && !flags.dryRun {
@@ -60,6 +67,20 @@ func newCollectionsCreateCmd(flags *rootFlags) *cobra.Command {
 					collection["parentCollection"] = bodyParentCollection
 				}
 				body = []map[string]any{collection}
+			}
+			// Preview unless the caller explicitly applied. The payload is built
+			// first so the preview names every collection apply would create.
+			if mode := resolveMutationMode(flags); !mode.Apply {
+				return printJSONFiltered(cmd.OutOrStdout(), map[string]any{
+					"action":         "create",
+					"resource":       "collections",
+					"path":           path,
+					"body":           body,
+					"status":         0,
+					"success":        false,
+					"dry_run":        true,
+					"preview_reason": mode.PreviewReason,
+				}, flags)
 			}
 			data, statusCode, err := c.Post(path, body)
 			if err != nil {

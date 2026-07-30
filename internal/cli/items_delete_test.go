@@ -61,7 +61,7 @@ func TestItemsDeleteSendsVersionHeader(t *testing.T) {
 func TestCollectionsDeleteSendsVersionHeader(t *testing.T) {
 	srv, sent := deleteVersionServer(t, "7")
 	defer srv.Close()
-	cmd := newCollectionsDeleteCmd(&rootFlags{asJSON: true})
+	cmd := newCollectionsDeleteCmd(&rootFlags{asJSON: true, yes: true})
 	cmd.SilenceErrors, cmd.SilenceUsage = true, true
 	if err := runDeleteCmd(t, cmd, srv.URL, "K"); err != nil {
 		t.Fatalf("collections delete: %v", err)

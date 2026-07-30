@@ -21,19 +21,41 @@ func newCollectionsDeleteCmd(flags *rootFlags) *cobra.Command {
 		Use:   "delete <collectionKey>",
 		Short: "Delete a collection (does not delete items)",
 		// use a collection key placeholder, not a token.
-		Example:     "  zotio collections delete COLLECTIONKEY",
-		Annotations: map[string]string{"zotio:endpoint": "collections.delete", "zotio:method": "DELETE", "zotio:path": "/collections/{collectionKey}"},
+		Example: "  zotio collections delete COLLECTIONKEY",
+		Annotations: map[string]string{
+			"zotio:endpoint":                   "collections.delete",
+			"zotio:method":                     "DELETE",
+			"zotio:path":                       "/collections/{collectionKey}",
+			"zotio:destructive":                "true",
+			"zotio:supports-dry-run":           "true",
+			"zotio:requires-allow-destructive": "false",
+		},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if len(args) == 0 {
 				return cmd.Help()
+			}
+			path := "/collections/{collectionKey}"
+			path = replacePathParam(path, "collectionKey", args[0])
+			// Preview unless the caller explicitly applied. MCP advertises the
+			// write-safety gate flags on every mutating command, so a command
+			// that writes on invocation is a false affordance: a host told the
+			// gates exist would auto-approve a delete that never honored them.
+			if mode := resolveMutationMode(flags); !mode.Apply {
+				return printJSONFiltered(cmd.OutOrStdout(), map[string]any{
+					"action":         "delete",
+					"resource":       "collections",
+					"key":            args[0],
+					"path":           path,
+					"status":         0,
+					"success":        false,
+					"dry_run":        true,
+					"preview_reason": mode.PreviewReason,
+				}, flags)
 			}
 			c, err := flags.newWriteClient()
 			if err != nil {
 				return err
 			}
-
-			path := "/collections/{collectionKey}"
-			path = replacePathParam(path, "collectionKey", args[0])
 			// Zotero requires If-Unmodified-Since-Version on DELETE (HTTP 428
 			// without it). newWriteClient points at the write target, so this
 			// version GET and the DELETE hit the same library (the Web API under hybrid routing).
