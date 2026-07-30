@@ -103,11 +103,12 @@ native streaming instead of polling.`,
 			}
 			defer db.Close()
 
-			// Tail streams live and owns delivery per cycle; nil the deliver
-			// buffer so root.go's post-run flush never fires (it would buffer
-			// the whole stream forever).
+			// Tail streams live and owns delivery per cycle; drop the spool so
+			// root.go's post-run flush never fires (it would spool the whole
+			// stream forever).
 			sink := flags.deliverSink
-			flags.deliverBuf = nil
+			flags.deliverSpool.cleanup()
+			flags.deliverSpool = nil
 
 			sig := make(chan os.Signal, 1)
 			signal.Notify(sig, syscall.SIGTERM, syscall.SIGINT)

@@ -3,7 +3,6 @@
 package cli
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -49,10 +48,11 @@ type rootFlags struct {
 	// numeric group ID selected via --group ("" = personal).
 	group string
 
-	// deliverBuf captures command output when --deliver is set to a
-	// non-stdout sink. Flushed to the sink after Execute returns.
-	deliverBuf  *bytes.Buffer
-	deliverSink DeliverSink
+	// deliverSpool streams command output to disk when --deliver names a
+	// non-stdout sink, so a library-sized result is never held on the heap.
+	// Promoted or posted after Execute returns.
+	deliverSpool *deliverSpool
+	deliverSink  DeliverSink
 	// ctx is the command context, set in PersistentPreRunE, so newClient can
 	// seed the client base context and propagate cancellation to HTTP work.
 	ctx context.Context
@@ -95,16 +95,17 @@ func Execute() error {
 		// through to 1, clobbering the conventional code-2 for usage errors.
 		err = usageErr(err)
 	}
-	if shouldDeliverCapturedOutput(err, flags.deliverBuf) {
-		if derr := Deliver(rootCmd.Context(), flags.deliverSink, flags.deliverBuf.Bytes(), flags.compact); derr != nil {
+	if shouldDeliverCapturedOutput(err, flags.deliverSpool) {
+		if derr := Deliver(rootCmd.Context(), flags.deliverSink, flags.deliverSpool, flags.compact); derr != nil {
 			fmt.Fprintf(os.Stderr, "warning: deliver to %s:%s failed: %v\n", flags.deliverSink.Scheme, flags.deliverSink.Target, derr)
 		}
 	}
+	flags.deliverSpool.cleanup()
 	return err
 }
 
-func shouldDeliverCapturedOutput(err error, buf *bytes.Buffer) bool {
-	if buf == nil || buf.Len() == 0 {
+func shouldDeliverCapturedOutput(err error, spool *deliverSpool) bool {
+	if spool.Len() == 0 {
 		return false
 	}
 	if err == nil {
@@ -221,8 +222,12 @@ See README.md or the bundled SKILL.md for recipes.`,
 			}
 			flags.deliverSink = sink
 			if sink.Scheme != "stdout" && sink.Scheme != "" {
-				flags.deliverBuf = &bytes.Buffer{}
-				cmd.SetOut(io.MultiWriter(os.Stdout, flags.deliverBuf))
+				spool, err := newDeliverSpool(sink)
+				if err != nil {
+					return err
+				}
+				flags.deliverSpool = spool
+				cmd.SetOut(io.MultiWriter(os.Stdout, spool))
 			}
 		}
 		if flags.profileName != "" {

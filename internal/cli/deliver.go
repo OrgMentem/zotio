@@ -6,12 +6,11 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/netip"
 	neturl "net/url"
-	"os"
-	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -65,10 +64,11 @@ func ParseDeliverSink(spec string) (DeliverSink, error) {
 	return DeliverSink{Scheme: scheme, Target: target}, nil
 }
 
-// Deliver routes a captured output buffer to the configured sink. stdout
-// is a no-op because the buffer has already been streamed to stdout via
-// the MultiWriter set up in root.go.
-func Deliver(ctx context.Context, sink DeliverSink, body []byte, compact bool) error {
+// Deliver routes spooled command output to the configured sink. stdout is a
+// no-op because the output already went there through the MultiWriter set up
+// in root.go. Nothing is read back into memory: a file sink renames the spool
+// into place, a webhook streams it as the request body.
+func Deliver(ctx context.Context, sink DeliverSink, spool *deliverSpool, compact bool) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -76,31 +76,12 @@ func Deliver(ctx context.Context, sink DeliverSink, body []byte, compact bool) e
 	case "", "stdout":
 		return nil
 	case "file":
-		return deliverFile(sink.Target, body)
+		return spool.commitFile()
 	case "webhook":
-		return deliverWebhook(ctx, sink.Target, body, compact)
+		return deliverWebhookSpool(ctx, sink.Target, spool, compact)
 	default:
 		return fmt.Errorf("unsupported deliver sink %q", sink.Scheme)
 	}
-}
-
-func deliverFile(path string, body []byte) error {
-	// Atomic write: tmp + rename. Protects agents from seeing a partial
-	// file if the process is interrupted mid-write.
-	dir := filepath.Dir(path)
-	if dir != "" && dir != "." {
-		if err := os.MkdirAll(dir, 0o755); err != nil {
-			return fmt.Errorf("creating deliver dir: %w", err)
-		}
-	}
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, body, 0o600); err != nil {
-		return fmt.Errorf("writing deliver tmp: %w", err)
-	}
-	if err := os.Rename(tmp, path); err != nil {
-		return fmt.Errorf("replacing deliver file: %w", err)
-	}
-	return nil
 }
 
 // validateExternalHTTPURL rejects schemes and hosts that would let optional
@@ -298,7 +279,22 @@ func outboundHostIsPrivate(host string) bool {
 	return !strings.Contains(h, ".")
 }
 
+// deliverWebhookSpool posts the spooled output without reading it back into
+// memory. Length is declared explicitly and the body is re-openable, so a
+// retry replays from disk instead of holding a second full copy.
+func deliverWebhookSpool(ctx context.Context, url string, spool *deliverSpool, compact bool) error {
+	body, err := spool.reader()
+	if err != nil {
+		return err
+	}
+	return postDeliverWebhook(ctx, url, body, spool.Len(), compact)
+}
+
 func deliverWebhook(ctx context.Context, url string, body []byte, compact bool) error {
+	return postDeliverWebhook(ctx, url, bytes.NewReader(body), int64(len(body)), compact)
+}
+
+func postDeliverWebhook(ctx context.Context, url string, body io.ReadSeeker, length int64, compact bool) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -311,9 +307,18 @@ func deliverWebhook(ctx context.Context, url string, body []byte, compact bool) 
 	if compact {
 		contentType = "application/x-ndjson"
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, body)
 	if err != nil {
 		return fmt.Errorf("building webhook request: %w", err)
+	}
+	// net/http cannot size an arbitrary reader, and a webhook receiver that
+	// rejects chunked encoding would see an empty body without this.
+	req.ContentLength = length
+	req.GetBody = func() (io.ReadCloser, error) {
+		if _, seekErr := body.Seek(0, io.SeekStart); seekErr != nil {
+			return nil, seekErr
+		}
+		return io.NopCloser(body), nil
 	}
 	req.Header.Set("Content-Type", contentType)
 	req.Header.Set("User-Agent", "zotio/deliver")
