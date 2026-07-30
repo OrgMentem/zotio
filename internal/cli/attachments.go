@@ -536,14 +536,21 @@ func postUploadPayload(ctx context.Context, c *client.Client, uploadURL, content
 		}
 		return fmt.Errorf("refusing file upload to untrusted storage host %s", host)
 	}
-	body := make([]byte, 0, len(prefix)+len(data)+len(suffix))
-	body = append(body, prefix...)
-	body = append(body, data...)
-	body = append(body, suffix...)
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, uploadURL, bytes.NewReader(body))
+	// Stream the envelope instead of concatenating it: the file is already in
+	// memory once, and building prefix+data+suffix into a fresh slice doubled
+	// peak usage for the length of every upload.
+	envelope := func() io.Reader {
+		return io.MultiReader(strings.NewReader(prefix), bytes.NewReader(data), strings.NewReader(suffix))
+	}
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, uploadURL, envelope())
 	if err != nil {
 		return fmt.Errorf("building upload request: %w", err)
 	}
+	// net/http cannot size a MultiReader, and storage backends reject a chunked
+	// upload here, so declare the length. GetBody keeps the request replayable
+	// across redirects and retries now that the body is not a single buffer.
+	httpReq.ContentLength = int64(len(prefix) + len(data) + len(suffix))
+	httpReq.GetBody = func() (io.ReadCloser, error) { return io.NopCloser(envelope()), nil }
 	if contentType != "" {
 		httpReq.Header.Set("Content-Type", contentType)
 	}

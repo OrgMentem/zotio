@@ -12,6 +12,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -611,6 +612,44 @@ func TestPostUploadPayloadAllowsLoopbackTestEscape(t *testing.T) {
 
 	if err := postUploadPayload(context.Background(), &client.Client{HTTPClient: srv.Client()}, srv.URL+"/upload", "", "", "", []byte("payload")); err != nil {
 		t.Fatalf("loopback upload with test escape: %v", err)
+	}
+}
+
+// The envelope is streamed rather than concatenated into a second full-size
+// buffer, so the bytes on the wire and the declared length both have to stay
+// exactly what a single-buffer body produced -- storage backends reject a
+// chunked upload, and net/http cannot size a MultiReader on its own.
+func TestPostUploadPayloadSendsTheWholeEnvelopeWithADeclaredLength(t *testing.T) {
+	prefix, data, suffix := "--boundary\r\n\r\n", []byte("file-contents"), "\r\n--boundary--\r\n"
+	var gotBody []byte
+	var gotLength int64
+	var gotEncoding []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Errorf("read body: %v", err)
+		}
+		gotBody, gotLength, gotEncoding = body, r.ContentLength, r.TransferEncoding
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	t.Cleanup(srv.Close)
+	oldAllowPrivateOutbound := allowPrivateOutboundForTests
+	allowPrivateOutboundForTests = true
+	t.Cleanup(func() { allowPrivateOutboundForTests = oldAllowPrivateOutbound })
+
+	if err := postUploadPayload(context.Background(), &client.Client{HTTPClient: srv.Client()}, srv.URL+"/upload", "text/plain", prefix, suffix, data); err != nil {
+		t.Fatalf("upload: %v", err)
+	}
+
+	want := prefix + string(data) + suffix
+	if string(gotBody) != want {
+		t.Errorf("body = %q, want %q", gotBody, want)
+	}
+	if gotLength != int64(len(want)) {
+		t.Errorf("Content-Length = %d, want %d", gotLength, len(want))
+	}
+	if len(gotEncoding) != 0 {
+		t.Errorf("Transfer-Encoding = %v, want none (storage rejects chunked)", gotEncoding)
 	}
 }
 
