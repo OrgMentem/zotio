@@ -108,6 +108,24 @@ func runReadingListTransition(cmd *cobra.Command, flags *rootFlags, keysFrom str
 	if err != nil {
 		return err
 	}
+
+	// A dry-run client answers every request, GET included, with the
+	// {"dry_run": true} envelope, so reading the live item to diff its tags
+	// fails the whole command on "item response missing data object". Plan the
+	// transition from the request instead, the way items move does.
+	if flags.dryRun {
+		ops := make([]mutation.Op, 0, len(keys))
+		for _, key := range keys {
+			ops = append(ops, mutation.Op{
+				ID:      transition.operation + ":" + key,
+				Key:     key,
+				Kind:    transition.kind,
+				Changes: readingListPlannedChanges(transition),
+			})
+		}
+		return renderReadingListMutation(cmd, flags, transition, ops)
+	}
+
 	ops := make([]mutation.Op, 0, len(keys))
 	for _, key := range keys {
 		path := replacePathParam("/items/{itemKey}", "itemKey", key)
@@ -144,12 +162,36 @@ func runReadingListTransition(cmd *cobra.Command, flags *rootFlags, keysFrom str
 		ops = append(ops, op)
 	}
 
+	return renderReadingListMutation(cmd, flags, transition, ops)
+}
+
+func renderReadingListMutation(cmd *cobra.Command, flags *rootFlags, transition readingListTransition, ops []mutation.Op) error {
 	env, runErr := runMutation(cmd.Context(), flags, transition.operation, ops)
 	renderErr := renderMutation(cmd, flags, env, readingListTransitionSingleLine(transition))
 	if renderErr != nil {
 		return renderErr
 	}
 	return runErr
+}
+
+// readingListPlannedChanges describes the transition without the live item.
+// A dry run cannot know which tags the item already carries, so it reports the
+// upper bound: every tag the transition would remove and every tag it adds.
+func readingListPlannedChanges(transition readingListTransition) []mutation.Change {
+	addSet := readingListTagSet(transition.add)
+	changes := make([]mutation.Change, 0, len(transition.remove)+len(transition.add))
+	if !transition.addOnly {
+		for _, tagName := range transition.remove {
+			if _, keep := addSet[tagName]; keep {
+				continue
+			}
+			changes = append(changes, mutation.Change{Field: "tags", Remove: tagName})
+		}
+	}
+	for _, tagName := range transition.add {
+		changes = append(changes, mutation.Change{Field: "tags", Add: tagName})
+	}
+	return changes
 }
 
 func readingListTagChanges(currentTags []map[string]any, removeTags []string, addTags []string) []mutation.Change {

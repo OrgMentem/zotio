@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"slices"
 	"testing"
 
 	"zotio/internal/mutation"
@@ -126,5 +127,89 @@ func TestReadingListBulkKeysFrom(t *testing.T) {
 		if patchBodyHasTag(body, "to-read") || !patchBodyHasTag(body, "reading") {
 			t.Errorf("%s PATCH body = %+v, want start transition", key, body)
 		}
+	}
+}
+
+func changeSets(changes []mutation.Change) (added, removed []string) {
+	for _, change := range changes {
+		if tag, ok := change.Add.(string); ok {
+			added = append(added, tag)
+		}
+		if tag, ok := change.Remove.(string); ok {
+			removed = append(removed, tag)
+		}
+	}
+	return added, removed
+}
+
+// A dry-run client answers every request locally, GET included, so reading the
+// live item to diff its tags returned {"dry_run": true} and failed the command
+// on "item response missing data object": add, start, and done were all
+// unusable with --dry-run. The plan has to come from the transition instead,
+// and it must not touch the network at all.
+func TestReadingListTransitionsPlanUnderDryRunWithoutCallingTheAPI(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		args       []string
+		operation  string
+		kind       string
+		wantAdd    []string
+		wantRemove []string
+	}{
+		{
+			name:      "add",
+			args:      []string{"add", "K1"},
+			operation: "reading-list.add",
+			kind:      "reading.enqueue",
+			wantAdd:   []string{"to-read"},
+		},
+		{
+			name:       "start",
+			args:       []string{"start", "K1"},
+			operation:  "reading-list.start",
+			kind:       "reading.start",
+			wantRemove: []string{"to-read"},
+			wantAdd:    []string{"reading"},
+		},
+		{
+			name:       "done",
+			args:       []string{"done", "K1"},
+			operation:  "reading-list.done",
+			kind:       "reading.done",
+			wantRemove: []string{"to-read", "reading"},
+			wantAdd:    []string{"read"},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := newItemTagTestServer(t, map[string]string{"K1": "42"}, map[string][]map[string]any{
+				"K1": {{"tag": "to-read", "type": float64(0)}},
+			})
+
+			env := runReadingListStateTestCmd(t, srv, &rootFlags{asJSON: true, dryRun: true, maxChanges: -1}, tc.args...)
+			if !env.OK || env.Operation != tc.operation {
+				t.Fatalf("env = %+v, want a successful %s plan", env, tc.operation)
+			}
+			if env.Mode != "preview" || env.PreviewReason != "dry_run" {
+				t.Fatalf("mode = %q/%q, want preview/dry_run", env.Mode, env.PreviewReason)
+			}
+			if env.Result != nil {
+				t.Fatalf("result = %+v, want nothing applied", env.Result)
+			}
+			if len(env.Plan.Operations) != 1 || env.Plan.Operations[0].Kind != tc.kind {
+				t.Fatalf("operations = %+v, want one %s", env.Plan.Operations, tc.kind)
+			}
+
+			added, removed := changeSets(env.Plan.Operations[0].Changes)
+			if !slices.Equal(added, tc.wantAdd) {
+				t.Errorf("added = %v, want %v", added, tc.wantAdd)
+			}
+			if !slices.Equal(removed, tc.wantRemove) {
+				t.Errorf("removed = %v, want %v", removed, tc.wantRemove)
+			}
+
+			if srv.getCounts["K1"] != 0 || srv.patchCounts["K1"] != 0 {
+				t.Errorf("dry run made %d GET and %d PATCH requests, want none", srv.getCounts["K1"], srv.patchCounts["K1"])
+			}
+		})
 	}
 }
