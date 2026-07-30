@@ -3,7 +3,6 @@
 package cobratree
 
 import (
-	"bytes"
 	"context"
 	"fmt"
 	"sort"
@@ -53,7 +52,7 @@ func runMirroredInProcess(ctx context.Context, rootFactory func() *cobra.Command
 		defer restore()
 	}
 
-	var buf bytes.Buffer
+	var buf boundedCapture
 	defer func() {
 		if panicValue := recover(); panicValue != nil {
 			result = mcplib.NewToolResultError(fmt.Sprintf("%s\npanic: %v", buf.String(), panicValue))
@@ -78,13 +77,18 @@ func runMirroredInProcess(ctx context.Context, rootFactory func() *cobra.Command
 	if err := root.ExecuteContext(ctx); err != nil {
 		return mcplib.NewToolResultError(buf.String() + "\n" + err.Error())
 	}
-	// Mirrored output is the one path carrying library content verbatim, and
-	// an export format (BibTeX, RIS) is neither JSON nor control-escaped, so a
-	// raw ESC in an item field reaches the transport intact. Structured output
-	// keeps its shape -- hosts parse these results -- and only gets its control
-	// bytes neutralized; opaque prose additionally gets the data-not-directive
-	// framing, where there is no parser to break.
-	return mcplib.NewToolResultText(bound.LibraryText(buf.String()))
+	// Bound at the writer, not after. A mirrored command whose output scales
+	// with the library was materialized whole just to be handed to a transport
+	// that can carry 60 KB; the cap now costs bound.MaxBytes of retention
+	// regardless of how much the command writes, and the discarded bytes are
+	// still counted so the truncation notice reports the real size.
+	//
+	// Framing then follows structure: JSON keeps its shape (hosts parse these,
+	// and zotio's own reports travel this same path), while opaque library
+	// content -- an export blob, a rendered table -- gets the
+	// data-not-directive block. An oversized result is a preview envelope,
+	// which is JSON either way.
+	return mcplib.NewToolResultText(bound.LibraryText(bound.TextCapture(buf.String(), buf.Total())))
 }
 
 func cliArgsFromMCP(args map[string]any) []string {

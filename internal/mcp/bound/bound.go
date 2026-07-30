@@ -137,10 +137,21 @@ func JSON(v any) (string, error) {
 // output passes through unchanged; oversized output becomes a JSON preview
 // envelope so the result stays valid and self-describing.
 func Text(out string) string {
-	if len(out) <= MaxBytes {
-		return out
+	return TextCapture(out, int64(len(out)))
+}
+
+// TextCapture renders command output that was captured under a retention cap.
+// prefix is what was kept, total is how many bytes the command actually wrote.
+//
+// Splitting the two is what lets the caller stop buffering at MaxBytes instead
+// of materializing gigabytes to report 60 KB: the preview only ever quotes the
+// first few KB, and original_bytes stays truthful because the writer counted
+// everything it discarded.
+func TextCapture(prefix string, total int64) string {
+	if total <= MaxBytes && total == int64(len(prefix)) {
+		return prefix
 	}
-	return previewEnvelope([]byte(out), textResultNote)
+	return previewEnvelopeSized([]byte(prefix), total, textResultNote)
 }
 
 func boundedSingleArrayObject(data json.RawMessage) ([]byte, bool) {
@@ -433,6 +444,12 @@ func extractStringPath(data json.RawMessage, path string) string {
 }
 
 func previewEnvelope(data []byte, note string) string {
+	return previewEnvelopeSized(data, int64(len(data)), note)
+}
+
+// previewEnvelopeSized reports originalBytes separately from what it was handed,
+// so a caller that stopped buffering early still describes the real output size.
+func previewEnvelopeSized(data []byte, originalBytes int64, note string) string {
 	limit := len(data)
 	if limit > maxPreviewBytes {
 		limit = maxPreviewBytes
@@ -441,7 +458,7 @@ func previewEnvelope(data []byte, note string) string {
 		out, err := json.Marshal(map[string]any{
 			"truncated":      true,
 			"resumable":      false,
-			"original_bytes": len(data),
+			"original_bytes": originalBytes,
 			"max_bytes":      MaxBytes,
 			"preview":        previewString(data, limit),
 			"note":           note,
