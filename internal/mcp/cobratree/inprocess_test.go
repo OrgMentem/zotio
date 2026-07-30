@@ -58,8 +58,43 @@ func TestInProcessHandler_Success(t *testing.T) {
 	if res.IsError {
 		t.Fatalf("unexpected error result: %q", toolResultText(t, res))
 	}
-	if got := toolResultText(t, res); got != "echoed:hello,world" {
-		t.Errorf("result = %q, want echoed:hello,world", got)
+	// Opaque (non-JSON) mirrored output is library content as far as the
+	// transport can tell -- an export blob or a rendered table -- so it arrives
+	// inside the data-not-directive block. JSON results keep their bare shape;
+	// TestInProcessHandler_JSONOutputIsNotWrappedInProse covers that side.
+	got := toolResultText(t, res)
+	if !strings.Contains(got, "echoed:hello,world") {
+		t.Errorf("result = %q, want it to carry echoed:hello,world", got)
+	}
+	if !strings.Contains(got, "<<<ZOTERO-DATA ") {
+		t.Errorf("result = %q, want opaque output framed as library data", got)
+	}
+}
+
+// The counterpart guarantee, and the reason framing is not applied blanket:
+// hosts parse JSON tool results, and this same path carries zotio's own
+// structured output (workflow reports, every --agent command), which is not
+// library-authored at all. Prefixing prose to those breaks their consumers and
+// mislabels the source, so structured output must arrive byte-exact.
+func TestInProcessHandler_JSONOutputIsNotWrappedInProse(t *testing.T) {
+	newJSONRoot := func() *cobra.Command {
+		root := &cobra.Command{Use: "root"}
+		root.AddCommand(&cobra.Command{
+			Use: "report",
+			RunE: func(cmd *cobra.Command, _ []string) error {
+				_, err := cmd.OutOrStdout().Write([]byte(`{"ok":true,"mode":"preview"}`))
+				return err
+			},
+		})
+		return root
+	}
+	h := inProcessHandler(newJSONRoot, []string{"report"})
+	res, err := h(context.Background(), mcplib.CallToolRequest{Params: mcplib.CallToolParams{Name: "report"}})
+	if err != nil {
+		t.Fatalf("handler returned protocol error: %v", err)
+	}
+	if got := toolResultText(t, res); got != `{"ok":true,"mode":"preview"}` {
+		t.Errorf("result = %q, want the JSON report byte-exact", got)
 	}
 }
 

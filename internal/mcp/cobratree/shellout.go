@@ -14,6 +14,8 @@ import (
 	mcplib "github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
 	"github.com/spf13/cobra"
+
+	"zotio/internal/mcp/bound"
 )
 
 var mirroredCommandMu sync.Mutex
@@ -76,7 +78,13 @@ func runMirroredInProcess(ctx context.Context, rootFactory func() *cobra.Command
 	if err := root.ExecuteContext(ctx); err != nil {
 		return mcplib.NewToolResultError(buf.String() + "\n" + err.Error())
 	}
-	return mcplib.NewToolResultText(buf.String())
+	// Mirrored output is the one path carrying library content verbatim, and
+	// an export format (BibTeX, RIS) is neither JSON nor control-escaped, so a
+	// raw ESC in an item field reaches the transport intact. Structured output
+	// keeps its shape -- hosts parse these results -- and only gets its control
+	// bytes neutralized; opaque prose additionally gets the data-not-directive
+	// framing, where there is no parser to break.
+	return mcplib.NewToolResultText(bound.LibraryText(buf.String()))
 }
 
 func cliArgsFromMCP(args map[string]any) []string {
