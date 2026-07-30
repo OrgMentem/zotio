@@ -38,9 +38,14 @@ func TestCollectionsExportEscapesCollectionPathSegments(t *testing.T) {
 		t.Fatalf("exportCollection returned error: %v", err)
 	}
 
+	// This stub sends no Total-Results, so each collection's item walk also
+	// issues the format=keys probe that decides whether another page follows.
+	// The probe must escape the key exactly like the page request does.
 	want := []string{
 		"/collections/..%2FROOT%2FA/items",
+		"/collections/..%2FROOT%2FA/items",
 		"/collections/..%2FROOT%2FA/collections",
+		"/collections/..%2FCHILD%2FX/items",
 		"/collections/..%2FCHILD%2FX/items",
 		"/collections/..%2FCHILD%2FX/collections",
 	}

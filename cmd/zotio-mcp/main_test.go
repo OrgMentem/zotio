@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"errors"
 	"fmt"
 	"io"
@@ -300,5 +301,64 @@ func TestNewMCPHTTPServerBoundsReadsAndIdleButNotWrites(t *testing.T) {
 	}
 	if srv.WriteTimeout != 0 {
 		t.Errorf("WriteTimeout = %v, want unset so long-lived MCP streams survive", srv.WriteTimeout)
+	}
+}
+
+// Asserting WriteTimeout is unset only covers half the risk: net/http also
+// puts ReadTimeout on the connection, so if that deadline outlived the request
+// read it would tear down exactly the long-lived sessions this transport is
+// built on. This drives the real MCP shape -- POST a body, stall, then stream
+// well past both deadlines -- and requires every frame to arrive.
+func TestMCPHTTPServerKeepsStreamingPastItsReadAndIdleDeadlines(t *testing.T) {
+	t.Parallel()
+
+	const (
+		deadline = 200 * time.Millisecond
+		frames   = 6
+	)
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.Copy(io.Discard, r.Body)
+		time.Sleep(3 * deadline) // a slow tool call before the first byte
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		for i := range frames {
+			fmt.Fprintf(w, "data: frame%d\n\n", i)
+			w.(http.Flusher).Flush()
+			time.Sleep(deadline)
+		}
+	})
+	srv := mcpHTTPServer(listener.Addr().String(), handler, deadline, deadline)
+	go func() { _ = srv.Serve(listener) }()
+	t.Cleanup(func() { _ = srv.Close() })
+
+	conn, err := net.Dial("tcp", listener.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	if _, err := fmt.Fprintf(conn, "POST /mcp HTTP/1.1\r\nHost: %s\r\nContent-Length: 2\r\n\r\n{}", listener.Addr()); err != nil {
+		t.Fatal(err)
+	}
+	if err := conn.SetReadDeadline(time.Now().Add(30 * time.Second)); err != nil {
+		t.Fatal(err)
+	}
+
+	reader := bufio.NewReader(conn)
+	got := 0
+	for {
+		line, err := reader.ReadString('\n')
+		if err != nil {
+			break
+		}
+		if strings.HasPrefix(line, "data: frame") {
+			got++
+		}
+	}
+	if got != frames {
+		t.Errorf("received %d of %d frames; a deadline severed a live stream", got, frames)
 	}
 }

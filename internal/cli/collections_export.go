@@ -167,9 +167,11 @@ func exportCollection(c collectionExportClient, out io.Writer, collKey, format s
 //
 // An export format returns an opaque document rather than a countable array,
 // so the page count comes from Total-Results, which the API sends on every
-// multi-object read. A server that omits the header falls back to paging until
-// a page comes back blank: one wasted request at the end, but a first page can
-// no longer be mistaken for the whole collection.
+// multi-object read. When a server omits the header, termination cannot come
+// from the page body: an export format renders nothing for an item it cannot
+// represent, so a page of attachments or notes is blank in the middle of a
+// perfectly full collection. Ask format=keys instead, which stays countable
+// whatever the export format can render.
 func forEachCollectionItemPage(c collectionExportClient, collKey, format string, limit int, emit func(json.RawMessage) error) error {
 	pageSize := exportPageSize(limit)
 	// url-encode path param to prevent segment injection.
@@ -189,22 +191,43 @@ func forEachCollectionItemPage(c collectionExportClient, collKey, format string,
 		}
 		prev = data
 
-		blank := isBlankExportPage(data)
-		if !blank {
+		if !isBlankExportPage(data) {
 			if err := emit(data); err != nil {
 				return err
 			}
 		}
+
+		next := start + pageSize
 		if count, cerr := strconv.Atoi(strings.TrimSpace(total)); cerr == nil {
-			if start+pageSize >= count {
+			if next >= count {
 				return nil
 			}
 			continue
 		}
-		if blank {
+		more, err := collectionHasItemAt(c, collKey, next)
+		if err != nil {
+			return err
+		}
+		if !more {
 			return nil
 		}
 	}
+}
+
+// collectionHasItemAt reports whether the collection still holds an item at
+// offset start, asking for a single key because format=keys is countable for
+// every item type. Only the Total-Results-less path needs it.
+func collectionHasItemAt(c collectionExportClient, collKey string, start int) (bool, error) {
+	// url-encode path param to prevent segment injection.
+	data, err := c.Get("/collections/"+url.PathEscape(collKey)+"/items", map[string]string{
+		"format": "keys",
+		"limit":  "1",
+		"start":  strconv.Itoa(start),
+	})
+	if err != nil {
+		return false, fmt.Errorf("checking for more items in collection %s: %w", collKey, err)
+	}
+	return !isBlankExportPage(data), nil
 }
 
 func collectCollectionCSLJSON(c collectionExportClient, collKey string, flat bool, limit int, visited map[string]bool, items *[]json.RawMessage) error {

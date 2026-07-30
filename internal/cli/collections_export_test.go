@@ -142,6 +142,11 @@ func (s *exportPageStub) resolve(path string, params map[string]string) (json.Ra
 			total = ""
 		}
 		lo, hi := window(len(records))
+		// format=keys stays countable for every item type, which is exactly why
+		// the header-free walk asks for it.
+		if params["format"] == "keys" {
+			return json.RawMessage(strings.Join(records[lo:hi], "\n")), total, nil
+		}
 		if params["format"] == "csljson" {
 			page := make([]json.RawMessage, 0, hi-lo)
 			for _, id := range records[lo:hi] {
@@ -152,6 +157,11 @@ func (s *exportPageStub) resolve(path string, params map[string]string) (json.Ra
 		}
 		var b strings.Builder
 		for _, id := range records[lo:hi] {
+			// An export format renders nothing for an item it cannot represent,
+			// so a page of these is blank without the collection having ended.
+			if strings.HasPrefix(id, "attachment") {
+				continue
+			}
 			fmt.Fprintf(&b, "@article{%s}", id)
 		}
 		return json.RawMessage(b.String()), total, nil
@@ -303,6 +313,29 @@ func TestExportCollectionWalksEverySubcollectionPage(t *testing.T) {
 	for _, child := range children {
 		if !strings.Contains(out.String(), "@article{"+child+"-item}") {
 			t.Fatalf("export never visited subcollection %s", child)
+		}
+	}
+}
+
+// Without Total-Results the walk cannot read termination out of the page body:
+// BibTeX renders nothing for an attachment, so a whole page of them is blank
+// in the middle of a full collection. Stopping there would silently drop
+// everything after it, which is the same class of bug as the single-shot
+// export this pagination replaced.
+func TestExportCollectionKeepsGoingPastABlankMiddlePageWithoutTotalResults(t *testing.T) {
+	records := append(manyIDs("attachment", 100), manyIDs("item", 50)...)
+	client := &exportPageStub{
+		items:   map[string][]string{"ROOT": records},
+		subcols: map[string][]string{"ROOT": nil},
+		noTotal: true,
+	}
+	var out bytes.Buffer
+	if err := exportCollection(client, &out, "ROOT", "bibtex", true, 0, map[string]bool{}); err != nil {
+		t.Fatalf("exportCollection: %v", err)
+	}
+	for _, id := range manyIDs("item", 50) {
+		if !strings.Contains(out.String(), "@article{"+id+"}") {
+			t.Fatalf("export stopped at the blank attachment page and dropped %s", id)
 		}
 	}
 }
