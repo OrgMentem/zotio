@@ -7,6 +7,7 @@ import (
 	"regexp"
 	"strings"
 	"time"
+	"unicode/utf8"
 )
 
 // CleanText normalizes scraped text by trimming whitespace and decoding
@@ -126,8 +127,10 @@ func SanitizeErrorBody(msg string) string {
 
 // SanitizeErrorBodyWithSecrets redacts credential-shaped substrings and any
 // literal secret supplied (e.g. the configured Zotero API key), then truncates.
-// The explicit-secret pass runs before truncation so a key straddling the
-// length cap is still caught, and covers a reflected key that has no prefix.
+// Both redaction passes run before truncation: a credential straddling the
+// length cap would otherwise be cut down to a prefix that no longer matches
+// credPatterns, and that unmatched prefix is a real key fragment printed to
+// the user's terminal and their logs.
 // Secret-aware redaction lets the caller pass the live credential so reflected
 // secrets are masked even when they do not match a generic token pattern.
 func SanitizeErrorBodyWithSecrets(msg string, secrets ...string) string {
@@ -136,9 +139,20 @@ func SanitizeErrorBodyWithSecrets(msg string, secrets ...string) string {
 			msg = strings.ReplaceAll(msg, s, "[REDACTED]")
 		}
 	}
-	if len(msg) > 200 {
-		msg = msg[:200] + "..."
-	}
 	msg = credPatterns.ReplaceAllString(msg, "[REDACTED]")
-	return msg
+	return truncateRunes(msg, 200)
+}
+
+// truncateRunes cuts msg to at most max bytes without splitting a rune, so a
+// multi-byte character on the boundary cannot leave invalid UTF-8 in output
+// that is about to be JSON-encoded.
+func truncateRunes(msg string, max int) string {
+	if len(msg) <= max {
+		return msg
+	}
+	cut := max
+	for cut > 0 && !utf8.RuneStart(msg[cut]) {
+		cut--
+	}
+	return msg[:cut] + "..."
 }

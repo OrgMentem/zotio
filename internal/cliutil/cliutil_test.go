@@ -14,6 +14,7 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+	"unicode/utf8"
 )
 
 // ---- CleanText ----
@@ -145,6 +146,16 @@ func TestSanitizeErrorBodyWithSecrets(t *testing.T) {
 			wantNotContains: []string{straddlingSecret, straddlingSecret[:5]},
 			wantTruncated:   true,
 		},
+		{
+			// The pattern pass used to run after truncation, so a key cut at the
+			// 200-byte boundary no longer matched credPatterns and the surviving
+			// prefix -- real key material -- was printed verbatim.
+			name:            "credential shape crossing truncation boundary",
+			in:              strings.Repeat("x", 190) + "sk-abcdefghijklmnop tail",
+			wantContains:    []string{"[REDACTED]"},
+			wantNotContains: []string{"sk-abcdefgh", "sk-abc", "sk-"},
+			wantTruncated:   true,
+		},
 	}
 
 	for _, tc := range tests {
@@ -180,6 +191,19 @@ func TestSanitizeErrorBodyMatchesSecretAwareVariantWithoutExplicitSecrets(t *tes
 	in := "token sk-abcdefghi Bearer abc.def key=secretvalue"
 	if got, want := SanitizeErrorBody(in), SanitizeErrorBodyWithSecrets(in); got != want {
 		t.Fatalf("SanitizeErrorBody() = %q, SanitizeErrorBodyWithSecrets() = %q", got, want)
+	}
+}
+
+// The cap is a byte count, so a multi-byte character sitting across it used to
+// be cut in half and emitted as a replacement char once the message was
+// JSON-encoded into --json output.
+func TestSanitizeErrorBodyTruncatesOnRuneBoundaries(t *testing.T) {
+	got := SanitizeErrorBodyWithSecrets(strings.Repeat("x", 199) + "é" + strings.Repeat("y", 20))
+	if !utf8.ValidString(got) {
+		t.Fatalf("SanitizeErrorBodyWithSecrets() = %q, want valid UTF-8", got)
+	}
+	if !strings.HasSuffix(got, "...") {
+		t.Fatalf("SanitizeErrorBodyWithSecrets() = %q, want truncation suffix", got)
 	}
 }
 
