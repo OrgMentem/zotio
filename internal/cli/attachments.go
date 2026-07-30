@@ -107,7 +107,7 @@ By default this previews the planned attachment; apply with --yes.`,
 				kind = "attachment_link"
 				change = "linked-file -> " + req.Path
 			} else {
-				change = fmt.Sprintf("stored -> %s (%d bytes, md5 %s)", req.Filename, len(req.Data), req.MD5[:8])
+				change = fmt.Sprintf("stored -> %s (%d bytes, md5 %s)", req.Filename, req.Size, req.MD5[:8])
 			}
 			op := mutation.Op{
 				ID:      "attachments.add:001:" + mode,
@@ -240,7 +240,7 @@ type storedUploadRequest struct {
 	Filename    string
 	Title       string
 	ContentType string
-	Data        []byte
+	Size        int64
 	MD5         string
 	MtimeMS     int64
 	WriteToken  string
@@ -268,17 +268,25 @@ func (e *storedConflictError) Error() string { return e.msg }
 // newStoredUploadRequest validates the local file and precomputes the protocol
 // inputs (MD5, mtime, content type, deterministic write token). Reading the
 // file here keeps preview network-free while showing real plan evidence.
+//
+// The digest streams and only the content-type probe is retained. Holding the
+// whole file meant a stored upload cost its size in resident memory from plan
+// through apply, and the upload then copied it again; size and mtime are
+// enough to describe the payload, and the bytes are re-read from disk at the
+// moment they are sent.
 func newStoredUploadRequest(parentKey, path, title string) (storedUploadRequest, error) {
 	absPath, info, filename, title, err := attachmentFileDetails(path, title)
 	if err != nil {
 		return storedUploadRequest{}, err
 	}
-	data, err := os.ReadFile(absPath) //nolint:gosec // G304: uploading a user-named local file is the command's purpose.
+	md5hex, err := fileMD5(absPath)
 	if err != nil {
 		return storedUploadRequest{}, fmt.Errorf("reading attachment: %w", err)
 	}
-	sum := md5.Sum(data) //nolint:gosec // G401: Zotero's upload authorization is keyed by MD5.
-	md5hex := hex.EncodeToString(sum[:])
+	probe, err := readAttachmentContentProbe(absPath)
+	if err != nil {
+		return storedUploadRequest{}, fmt.Errorf("reading attachment: %w", err)
+	}
 	// Deterministic write token: an identical retry replays the same token, so
 	// Zotero rejects a duplicate create (412) instead of making a second child.
 	tok := sha256.Sum256([]byte("zotio.attachments.add\x00" + parentKey + "\x00" + filename + "\x00" + md5hex))
@@ -287,12 +295,28 @@ func newStoredUploadRequest(parentKey, path, title string) (storedUploadRequest,
 		Path:        absPath,
 		Filename:    filename,
 		Title:       title,
-		ContentType: storedAttachmentContentType(filename, attachmentContentProbe(data)),
-		Data:        data,
+		ContentType: storedAttachmentContentType(filename, probe),
+		Size:        info.Size(),
 		MD5:         md5hex,
 		MtimeMS:     info.ModTime().UnixMilli(),
 		WriteToken:  hex.EncodeToString(tok[:16]),
 	}, nil
+}
+
+// fileMD5 streams the digest so hashing does not scale memory with file size.
+// Zotero's upload authorization is keyed by MD5, so the algorithm is fixed by
+// the protocol.
+func fileMD5(path string) (string, error) {
+	file, err := os.Open(path) //nolint:gosec // G304: uploading a user-named local file is the command's purpose.
+	if err != nil {
+		return "", err
+	}
+	defer func() { _ = file.Close() }()
+	digest := md5.New() //nolint:gosec // G401: Zotero's upload authorization is keyed by MD5.
+	if _, err := io.Copy(digest, file); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(digest.Sum(nil)), nil
 }
 
 // newLinkedFileRequest records only file metadata. Linked files are never
@@ -339,13 +363,6 @@ func attachmentFileDetails(path, title string) (string, os.FileInfo, string, str
 }
 
 const attachmentContentProbeBytes = 512
-
-func attachmentContentProbe(data []byte) []byte {
-	if len(data) > attachmentContentProbeBytes {
-		return data[:attachmentContentProbeBytes]
-	}
-	return data
-}
 
 func readAttachmentContentProbe(path string) ([]byte, error) {
 	file, err := os.Open(path) //nolint:gosec // G304: reading a user-named local file is the command's purpose.
@@ -491,7 +508,7 @@ func registerStoredFile(ctx context.Context, c *client.Client, key string, req s
 	form := url.Values{}
 	form.Set("md5", req.MD5)
 	form.Set("filename", req.Filename)
-	form.Set("filesize", strconv.Itoa(len(req.Data)))
+	form.Set("filesize", strconv.FormatInt(req.Size, 10))
 	form.Set("mtime", strconv.FormatInt(req.MtimeMS, 10))
 	resp, _, err := c.PostFormWithHeaders("/items/"+key+"/file", form, map[string]string{"If-None-Match": "*"})
 	if err != nil {
@@ -514,7 +531,7 @@ func registerStoredFile(ctx context.Context, c *client.Client, key string, req s
 	if auth.URL == "" || auth.UploadKey == "" {
 		return fmt.Errorf("upload authorization missing url/uploadKey")
 	}
-	if err := postUploadPayload(ctx, c, auth.URL, auth.ContentType, auth.Prefix, auth.Suffix, req.Data); err != nil {
+	if err := postUploadPayload(ctx, c, auth.URL, auth.ContentType, auth.Prefix, auth.Suffix, req); err != nil {
 		return err
 	}
 	reg := url.Values{}
@@ -527,7 +544,13 @@ func registerStoredFile(ctx context.Context, c *client.Client, key string, req s
 
 // postUploadPayload POSTs prefix+file+suffix to the storage URL returned by
 // upload authorization. The URL is bearer-signed: never log or persist it.
-func postUploadPayload(ctx context.Context, c *client.Client, uploadURL, contentType, prefix, suffix string, data []byte) error {
+//
+// The file is read from disk as it is sent, so an upload costs a buffer, not
+// the file's size, and each attempt reopens rather than replaying a retained
+// copy. That makes staleness detectable and worth detecting: the digest the
+// server authorized was computed at plan time, so a file edited in between
+// would upload bytes that do not match their own MD5. Fail instead.
+func postUploadPayload(ctx context.Context, c *client.Client, uploadURL, contentType, prefix, suffix string, req storedUploadRequest) error {
 	u, err := url.Parse(uploadURL)
 	if err != nil || !uploadURLTrusted(u) {
 		host := "<unparseable>"
@@ -536,21 +559,33 @@ func postUploadPayload(ctx context.Context, c *client.Client, uploadURL, content
 		}
 		return fmt.Errorf("refusing file upload to untrusted storage host %s", host)
 	}
-	// Stream the envelope instead of concatenating it: the file is already in
-	// memory once, and building prefix+data+suffix into a fresh slice doubled
-	// peak usage for the length of every upload.
-	envelope := func() io.Reader {
-		return io.MultiReader(strings.NewReader(prefix), bytes.NewReader(data), strings.NewReader(suffix))
+	if err := assertUploadSourceUnchanged(req); err != nil {
+		return err
 	}
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, uploadURL, envelope())
+	envelope := func() (io.ReadCloser, error) {
+		file, err := os.Open(req.Path) //nolint:gosec // G304: uploading a user-named local file is the command's purpose.
+		if err != nil {
+			return nil, fmt.Errorf("reopening attachment for upload: %w", err)
+		}
+		return readerWithCloser{
+			Reader: io.MultiReader(strings.NewReader(prefix), file, strings.NewReader(suffix)),
+			closer: file,
+		}, nil
+	}
+	body, err := envelope()
+	if err != nil {
+		return err
+	}
+	defer func() { _ = body.Close() }()
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, uploadURL, body)
 	if err != nil {
 		return fmt.Errorf("building upload request: %w", err)
 	}
 	// net/http cannot size a MultiReader, and storage backends reject a chunked
-	// upload here, so declare the length. GetBody keeps the request replayable
-	// across redirects and retries now that the body is not a single buffer.
-	httpReq.ContentLength = int64(len(prefix) + len(data) + len(suffix))
-	httpReq.GetBody = func() (io.ReadCloser, error) { return io.NopCloser(envelope()), nil }
+	// upload here, so declare the length. GetBody reopens the file so a
+	// redirect or retry replays from disk instead of a retained copy.
+	httpReq.ContentLength = int64(len(prefix)) + req.Size + int64(len(suffix))
+	httpReq.GetBody = envelope
 	if contentType != "" {
 		httpReq.Header.Set("Content-Type", contentType)
 	}
@@ -564,6 +599,32 @@ func postUploadPayload(ctx context.Context, c *client.Client, uploadURL, content
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return fmt.Errorf("file payload upload returned HTTP %d", resp.StatusCode)
+	}
+	return nil
+}
+
+// readerWithCloser pairs a MultiReader envelope with the file it streams, so
+// the descriptor is released whether the transport finishes, retries, or
+// abandons the body.
+type readerWithCloser struct {
+	io.Reader
+	closer io.Closer
+}
+
+func (r readerWithCloser) Close() error { return r.closer.Close() }
+
+// assertUploadSourceUnchanged refuses to send a file that moved under the plan.
+// The MD5 and size in req were measured before authorization; uploading
+// different bytes under that digest would register a file the server believes
+// it verified.
+func assertUploadSourceUnchanged(req storedUploadRequest) error {
+	info, err := os.Stat(req.Path)
+	if err != nil {
+		return fmt.Errorf("re-checking attachment before upload: %w", err)
+	}
+	if info.Size() != req.Size || info.ModTime().UnixMilli() != req.MtimeMS {
+		return fmt.Errorf("attachment %s changed after it was hashed (size %d->%d, mtime %d->%d); rerun to upload the current file",
+			req.Filename, req.Size, info.Size(), req.MtimeMS, info.ModTime().UnixMilli())
 	}
 	return nil
 }

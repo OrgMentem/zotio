@@ -17,6 +17,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -573,8 +574,29 @@ func TestNewLinkedFileRequestDoesNotBufferWholeFile(t *testing.T) {
 	if err != nil {
 		t.Fatalf("new linked request: %v", err)
 	}
-	if req.Data != nil || req.MD5 != "" {
-		t.Fatalf("linked request buffered upload data: data=%d bytes md5=%q", len(req.Data), req.MD5)
+	if req.Size != 0 || req.MD5 != "" {
+		t.Fatalf("linked request measured upload data: size=%d md5=%q", req.Size, req.MD5)
+	}
+}
+
+// uploadRequestFor writes a payload to disk and describes it the way the plan
+// phase would, so upload tests exercise the same reopen-from-disk path
+// production uses.
+func uploadRequestFor(t *testing.T, payload []byte) storedUploadRequest {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "payload.bin")
+	if err := os.WriteFile(path, payload, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return storedUploadRequest{
+		Path:     path,
+		Filename: "payload.bin",
+		Size:     info.Size(),
+		MtimeMS:  info.ModTime().UnixMilli(),
 	}
 }
 
@@ -592,7 +614,7 @@ func TestPostUploadPayloadGuardsPrivateDials(t *testing.T) {
 	allowPrivateOutboundForTests = false
 	t.Cleanup(func() { allowPrivateOutboundForTests = oldAllowPrivateOutbound })
 
-	err := postUploadPayload(context.Background(), &client.Client{}, "https://127.0.0.1:1/upload", "", "", "", []byte("payload"))
+	err := postUploadPayload(context.Background(), &client.Client{}, "https://127.0.0.1:1/upload", "", "", "", uploadRequestFor(t, []byte("payload")))
 	if err == nil || !strings.Contains(err.Error(), "local or private") {
 		t.Fatalf("private upload error = %v, want dial-time local/private rejection", err)
 	}
@@ -610,7 +632,7 @@ func TestPostUploadPayloadAllowsLoopbackTestEscape(t *testing.T) {
 	allowPrivateOutboundForTests = true
 	t.Cleanup(func() { allowPrivateOutboundForTests = oldAllowPrivateOutbound })
 
-	if err := postUploadPayload(context.Background(), &client.Client{HTTPClient: srv.Client()}, srv.URL+"/upload", "", "", "", []byte("payload")); err != nil {
+	if err := postUploadPayload(context.Background(), &client.Client{HTTPClient: srv.Client()}, srv.URL+"/upload", "", "", "", uploadRequestFor(t, []byte("payload"))); err != nil {
 		t.Fatalf("loopback upload with test escape: %v", err)
 	}
 }
@@ -637,7 +659,7 @@ func TestPostUploadPayloadSendsTheWholeEnvelopeWithADeclaredLength(t *testing.T)
 	allowPrivateOutboundForTests = true
 	t.Cleanup(func() { allowPrivateOutboundForTests = oldAllowPrivateOutbound })
 
-	if err := postUploadPayload(context.Background(), &client.Client{HTTPClient: srv.Client()}, srv.URL+"/upload", "text/plain", prefix, suffix, data); err != nil {
+	if err := postUploadPayload(context.Background(), &client.Client{HTTPClient: srv.Client()}, srv.URL+"/upload", "text/plain", prefix, suffix, uploadRequestFor(t, data)); err != nil {
 		t.Fatalf("upload: %v", err)
 	}
 
@@ -715,5 +737,76 @@ func TestImportApplyStoredAttachUploadsAndRetryNoOps(t *testing.T) {
 	creates, uploads, registers = f.snapshot()
 	if creates != 1 || uploads != 1 || registers != 1 {
 		t.Fatalf("retry traffic = creates:%d uploads:%d registers:%d, want unchanged", creates, uploads, registers)
+	}
+}
+
+// The plan phase used to hold the whole file so the upload could send it, and
+// then copied it again to build the envelope. A stored upload of a 64 MB PDF
+// cost that twice in resident memory; size and mtime describe the payload just
+// as well, and the bytes are re-read from disk when they are sent.
+func TestNewStoredUploadRequestDoesNotRetainFileContents(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "large.pdf")
+	if err := os.WriteFile(path, []byte("%PDF-1.7\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	file, err := os.OpenFile(path, os.O_WRONLY, 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := file.Truncate(64 << 20); err != nil {
+		_ = file.Close()
+		t.Fatal(err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	var before, after runtime.MemStats
+	runtime.GC()
+	runtime.ReadMemStats(&before)
+	req, err := newStoredUploadRequest("PARENT1", path, "")
+	if err != nil {
+		t.Fatalf("new stored request: %v", err)
+	}
+	runtime.ReadMemStats(&after)
+
+	if req.Size != 64<<20 {
+		t.Errorf("Size = %d, want the file size", req.Size)
+	}
+	if req.MD5 == "" {
+		t.Error("MD5 was not computed")
+	}
+	// Generous margin: the point is that allocation does not scale with the
+	// file, not that hashing is allocation-free.
+	if grew := after.TotalAlloc - before.TotalAlloc; grew > 8<<20 {
+		t.Errorf("planning allocated %d bytes for a %d-byte file; contents are being retained", grew, req.Size)
+	}
+}
+
+// The digest the server authorizes is computed at plan time. Streaming from
+// disk at send time means an edit in between would upload bytes that do not
+// match their own MD5, registering a file the server believes it verified.
+func TestPostUploadPayloadRefusesAFileChangedAfterHashing(t *testing.T) {
+	uploaded := false
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		uploaded = true
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	t.Cleanup(srv.Close)
+	oldAllowPrivateOutbound := allowPrivateOutboundForTests
+	allowPrivateOutboundForTests = true
+	t.Cleanup(func() { allowPrivateOutboundForTests = oldAllowPrivateOutbound })
+
+	req := uploadRequestFor(t, []byte("original contents"))
+	if err := os.WriteFile(req.Path, []byte("contents rewritten after hashing"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	err := postUploadPayload(context.Background(), &client.Client{HTTPClient: srv.Client()}, srv.URL+"/upload", "", "", "", req)
+	if err == nil || !strings.Contains(err.Error(), "changed after it was hashed") {
+		t.Fatalf("err = %v, want a staleness refusal", err)
+	}
+	if uploaded {
+		t.Error("mismatched bytes were sent to storage")
 	}
 }
