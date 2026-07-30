@@ -13,6 +13,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/spf13/cobra"
+
 	"zotio/internal/store"
 )
 
@@ -517,5 +519,79 @@ func TestLibraryHealthBadgeEmptyStorePrintsNotSyncedAndPrecondition(t *testing.T
 	want := healthBadge{SchemaVersion: 1, Label: "library", Message: "not synced", Color: "lightgrey"}
 	if badge != want {
 		t.Fatalf("badge = %+v, want %+v", badge, want)
+	}
+}
+
+// colorTestReport is the smallest report that exercises every styled token:
+// verdict, both severity groups, a finding kind label, the gate, and freshness.
+func colorTestReport() healthReport {
+	return healthReport{
+		Summary: healthSummary{Critical: 1, High: 1, Total: 2},
+		Scope:   healthScope{Expr: "library", Items: 2, Source: "local"},
+		Preset:  "quick",
+		Findings: []Finding{
+			{Kind: "citekey_conflict", Severity: sevCritical, ItemKey: "C1", Title: "Tidy Data"},
+			{Kind: "duplicate_candidates", Severity: sevHigh, Evidence: map[string]any{"group": "doi", "value": "10.1/x", "count": 2}},
+		},
+		RemediationPlan: []healthRemediationPlanStep{
+			{Kind: "duplicate_candidates", Command: "zotio items duplicates resolve --doi", Notes: "preview first"},
+		},
+		Gate:      &healthGate{FailOn: "high", Status: "failed"},
+		Freshness: &healthFreshness{Stale: false},
+	}
+}
+
+func renderHealthReport(t *testing.T, report healthReport) string {
+	t.Helper()
+	var out bytes.Buffer
+	cmd := &cobra.Command{}
+	cmd.SetOut(&out)
+	printHealthReport(cmd, report)
+	return out.String()
+}
+
+// Severity has to survive as color, not just as a group header: a finding line
+// scrolled away from its header must still be classifiable, and the CI gate
+// verdict must be readable at a glance.
+func TestPrintHealthReportColorsSeverity(t *testing.T) {
+	oldNoColor, oldHumanFriendly := noColor, humanFriendly
+	noColor = false
+	humanFriendly = true
+	t.Cleanup(func() { noColor, humanFriendly = oldNoColor, oldHumanFriendly })
+	// NO_COLOR and TERM=dumb outrank --human-friendly, and both are common in
+	// CI and agent shells; neutralize them so the assertion is hermetic.
+	t.Setenv("NO_COLOR", "")
+	t.Setenv("TERM", "xterm-256color")
+
+	got := renderHealthReport(t, colorTestReport())
+	for _, want := range []string{
+		"\033[31mcritical\033[0m",               // verdict tracks the worst severity
+		"\033[31m[citekey_conflict]\033[0m",     // critical finding reads red
+		"\033[33m[duplicate_candidates]\033[0m", // high finding reads yellow
+		"\033[31mFAILED\033[0m",                 // gate verdict
+		"\033[32mOK\033[0m",                     // freshness
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("health report missing styled token %q\ngot:\n%s", want, got)
+		}
+	}
+}
+
+// The gate exit path, --agent, and piped consumers all read this text; a stray
+// escape would corrupt CI logs and golden comparisons.
+func TestPrintHealthReportPlainWhenColorDisabled(t *testing.T) {
+	oldNoColor, oldHumanFriendly := noColor, humanFriendly
+	noColor = true
+	humanFriendly = false
+	t.Cleanup(func() { noColor, humanFriendly = oldNoColor, oldHumanFriendly })
+
+	got := renderHealthReport(t, colorTestReport())
+	if strings.Contains(got, "\033") {
+		t.Fatalf("health report leaked ANSI escapes with color disabled:\n%q", got)
+	}
+	for _, want := range []string{"Health: critical", "[citekey_conflict]", "Gate: fail-on high -> FAILED", "Freshness: OK"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("plain health report missing %q\ngot:\n%s", want, got)
+		}
 	}
 }

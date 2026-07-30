@@ -2,6 +2,29 @@
 
 Notable changes to zotio. Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow [SemVer](https://semver.org/).
 
+## [Unreleased]
+### Changed
+- **`library health` colors its human output.** The headline command and CI gate
+  rendered entirely monochrome: the verdict, the `Critical`/`High`/`Info` group
+  headers, every `[check_name]` label, the gate result, and the freshness line
+  were all the same weight, so nothing was scannable and a finding scrolled away
+  from its header was no longer classifiable. Severity now carries color —
+  critical red, high yellow, info cyan — on both the group header and each
+  finding's own kind label, remediation commands read cyan with dimmed notes, and
+  the gate verdict is green/red/yellow for passed/failed/indeterminate. Piped,
+  `--agent`, `--no-color`, `NO_COLOR`, and `TERM=dumb` output is byte-identical
+  to before.
+
+### Documentation
+- **The Linux install instructions no longer print a `<version>` placeholder.**
+  The `.deb`/`.rpm`/`.apk` packages are release assets whose filenames embed the
+  version, and the docs asked you to substitute it by hand. The guide now
+  resolves the latest tag and your architecture, and both the README and the
+  guide state outright that there is no apt/dnf/pacman repository to add and
+  that Homebrew is macOS-only (the tap ships a cask, not a formula).
+- Added `docs/assets/demos/preview.png`, a static card for external directory
+  listings, screenshotted from the `demo-tour` tape by `make demos`.
+
 ## [0.14.0] — 2026-07-30
 ### Changed — breaking
 - **The local store now actually runs in WAL mode, and converts existing
@@ -336,6 +359,7 @@ First tagged release: the trust-and-automation layer for Zotero.
 - **Onboarding** — `zotio init` guided setup (Zotero detection, local API, key, first sync, health check).
 - Release engineering: goreleaser builds for 6 platforms, cosign-signed checksums, SBOMs, Homebrew tap.
 
+[Unreleased]: https://github.com/OrgMentem/zotio/compare/v0.14.0...HEAD
 [0.14.0]: https://github.com/OrgMentem/zotio/compare/v0.13.1...v0.14.0
 [0.13.1]: https://github.com/OrgMentem/zotio/compare/v0.13.0...v0.13.1
 [0.13.0]: https://github.com/OrgMentem/zotio/compare/v0.12.0...v0.13.0

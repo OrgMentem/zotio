@@ -1138,7 +1138,7 @@ func countDuplicateGroups(findings []Finding, group string) int {
 
 func printHealthReport(cmd *cobra.Command, report healthReport) {
 	out := cmd.OutOrStdout()
-	fmt.Fprintf(out, "Health: %s\n", healthStatusWord(report.Summary))
+	fmt.Fprintf(out, "Health: %s\n", healthStatusStyled(report.Summary))
 	// surface the baseline delta immediately after the summary line.
 	if report.Baseline != nil {
 		if report.Baseline.Established {
@@ -1166,11 +1166,12 @@ func printHealthReport(cmd *cobra.Command, report healthReport) {
 		if len(group) == 0 {
 			continue
 		}
-		fmt.Fprintf(out, "%s (%d)\n", strings.ToUpper(sev[:1])+sev[1:], countForSeverity(report.Summary, sev))
+		header := fmt.Sprintf("%s (%d)", strings.ToUpper(sev[:1])+sev[1:], countForSeverity(report.Summary, sev))
+		fmt.Fprintln(out, bold(colorForSeverity(sev, header)))
 		for _, f := range group {
 			prefix := ""
 			if FindingIsNew(report, f) {
-				prefix = "NEW "
+				prefix = bold("NEW ")
 			}
 			fmt.Fprintf(out, "  %s%s\n", prefix, formatFindingLine(f))
 		}
@@ -1178,7 +1179,7 @@ func printHealthReport(cmd *cobra.Command, report healthReport) {
 	}
 
 	if len(report.Skipped) > 0 {
-		fmt.Fprintln(out, "Skipped (precondition unmet)")
+		fmt.Fprintln(out, bold("Skipped (precondition unmet)"))
 		for _, s := range report.Skipped {
 			fmt.Fprintf(out, "  %s — %s\n", s.Kind, s.Detail)
 			for _, r := range s.Remediation {
@@ -1193,15 +1194,15 @@ func printHealthReport(cmd *cobra.Command, report healthReport) {
 	}
 
 	if len(report.RemediationPlan) > 0 {
-		fmt.Fprintln(out, "Remediation plan (preview-first)")
+		fmt.Fprintln(out, bold("Remediation plan (preview-first)"))
 		for _, step := range report.RemediationPlan {
 			scope := "global"
 			if step.Scoped {
 				scope = fmt.Sprintf("%d exact keys via stdin", step.Count)
 			}
-			fmt.Fprintf(out, "  %s — %s (%s)\n", step.Kind, step.Command, scope)
+			fmt.Fprintf(out, "  %s — %s (%s)\n", step.Kind, cyan(step.Command), scope)
 			if step.Notes != "" {
-				fmt.Fprintf(out, "    %s\n", step.Notes)
+				fmt.Fprintf(out, "    %s\n", dim(step.Notes))
 			}
 		}
 		fmt.Fprintln(out)
@@ -1209,13 +1210,13 @@ func printHealthReport(cmd *cobra.Command, report healthReport) {
 
 	if report.Freshness != nil {
 		if report.Freshness.Stale {
-			fmt.Fprintf(out, "Freshness: STALE (%s) — run 'zotio sync' and retry\n", report.Freshness.Reason)
+			fmt.Fprintf(out, "Freshness: %s (%s) — run 'zotio sync' and retry\n", yellow("STALE"), report.Freshness.Reason)
 		} else {
-			fmt.Fprintln(out, "Freshness: OK")
+			fmt.Fprintf(out, "Freshness: %s\n", green("OK"))
 		}
 	}
 	if report.Gate != nil {
-		line := fmt.Sprintf("Gate: fail-on %s -> %s", report.Gate.FailOn, strings.ToUpper(report.Gate.Status))
+		line := fmt.Sprintf("Gate: fail-on %s -> %s", report.Gate.FailOn, healthGateStyled(report.Gate.Status))
 		if report.Gate.Reason != "" {
 			line += fmt.Sprintf(" (%s)", report.Gate.Reason)
 		}
@@ -1233,6 +1234,53 @@ func healthStatusWord(s healthSummary) string {
 		return "ok with notes"
 	default:
 		return "clean"
+	}
+}
+
+// colorForSeverity styles a token by finding severity, matching the indicator
+// convention doctor uses: critical reads red, high yellow, info cyan. Returns
+// the token untouched when color is disabled, so piped and --agent output and
+// the golden tests keep byte-identical text.
+func colorForSeverity(severity, s string) string {
+	switch severity {
+	case sevCritical:
+		return red(s)
+	case sevHigh:
+		return yellow(s)
+	case sevInfo:
+		return cyan(s)
+	default:
+		return s
+	}
+}
+
+// healthStatusStyled colors the summary verdict by the worst severity present;
+// a clean library reads green.
+func healthStatusStyled(s healthSummary) string {
+	word := healthStatusWord(s)
+	switch {
+	case s.Critical > 0:
+		return red(word)
+	case s.High > 0:
+		return yellow(word)
+	case s.Info > 0:
+		return cyan(word)
+	default:
+		return green(word)
+	}
+}
+
+// healthGateStyled colors the CI gate verdict: passed green, failed red,
+// indeterminate (a gate-relevant check could not run) yellow.
+func healthGateStyled(status string) string {
+	upper := strings.ToUpper(status)
+	switch status {
+	case "passed":
+		return green(upper)
+	case "failed":
+		return red(upper)
+	default:
+		return yellow(upper)
 	}
 }
 
@@ -1259,15 +1307,22 @@ func countForSeverity(s healthSummary, severity string) int {
 	}
 }
 
+// findingKindLabel renders the bracketed check name, colored by the finding's
+// own severity so a line stays classifiable after the group header scrolls off.
+func findingKindLabel(f Finding) string {
+	return colorForSeverity(f.Severity, "["+f.Kind+"]")
+}
+
 func formatFindingLine(f Finding) string {
+	kind := findingKindLabel(f)
 	switch f.Kind {
 	case "duplicate_candidates":
-		return fmt.Sprintf("[%s] %s=%q (%v items)", f.Kind, sqlStringValue(f.Evidence["group"]), sqlStringValue(f.Evidence["value"]), f.Evidence["count"])
+		return fmt.Sprintf("%s %s=%q (%v items)", kind, sqlStringValue(f.Evidence["group"]), sqlStringValue(f.Evidence["value"]), f.Evidence["count"])
 	case "tag_drift":
-		return fmt.Sprintf("[%s] %q <- %v (%v items)", f.Kind, sqlStringValue(f.Evidence["canonical"]), f.Evidence["aliases"], f.Evidence["total_items"])
+		return fmt.Sprintf("%s %q <- %v (%v items)", kind, sqlStringValue(f.Evidence["canonical"]), f.Evidence["aliases"], f.Evidence["total_items"])
 	case "retracted_item":
 		// surface CrossRef notice DOI/date in human health output.
-		line := fmt.Sprintf("[%s] %s", f.Kind, f.ItemKey)
+		line := fmt.Sprintf("%s %s", kind, f.ItemKey)
 		if f.Title != "" {
 			line += " " + f.Title
 		}
@@ -1280,7 +1335,7 @@ func formatFindingLine(f Finding) string {
 		}
 		return line
 	default:
-		line := fmt.Sprintf("[%s] %s", f.Kind, f.ItemKey)
+		line := fmt.Sprintf("%s %s", kind, f.ItemKey)
 		if f.Title != "" {
 			line += " " + f.Title
 		}
