@@ -318,6 +318,12 @@ This installs both `zotio` and the `zotio-mcp` MCP server; `brew upgrade` tracks
 [GitHub releases](https://github.com/OrgMentem/zotio/releases) and install it
 with `dpkg -i`, `rpm -i`, or `apk add --allow-untrusted`.
 
+**Windows (WinGet / Scoop):** `winget install OrgMentem.zotio`, or
+`scoop bucket add orgmentem https://github.com/OrgMentem/scoop-bucket && scoop install zotio`.
+Both install `zotio` and `zotio-mcp`. WinGet can serve the previous version for
+a short window after a release while Microsoft merges the version bump; Scoop
+updates immediately.
+
 **Prebuilt binaries:** every [GitHub release](https://github.com/OrgMentem/zotio/releases) ships archives for macOS, Linux, and Windows (amd64/arm64) with cosign-signed checksums and SBOMs. Unpack and put `zotio` on your `PATH`; on macOS clear the Gatekeeper quarantine (`xattr -d com.apple.quarantine zotio`), on Unix `chmod +x zotio`.
 
 **From source:**

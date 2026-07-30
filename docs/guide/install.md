@@ -32,15 +32,24 @@
 
 === "Windows"
 
-    **Scoop** — installs both `zotio` and `zotio-mcp`; `scoop update zotio` tracks new releases:
+    **WinGet** — installs both `zotio` and `zotio-mcp`:
+
+    ```powershell
+    winget install OrgMentem.zotio
+    ```
+
+    **Scoop** — the same two binaries; `scoop update zotio` tracks new releases:
 
     ```powershell
     scoop bucket add orgmentem https://github.com/OrgMentem/scoop-bucket
     scoop install zotio
     ```
 
-    !!! note "WinGet is on the way"
-        A `winget install OrgMentem.zotio` manifest is pending review in `microsoft/winget-pkgs`. Until it lands, use Scoop or a prebuilt archive.
+    !!! note "WinGet can lag a new release by a few days"
+        Each release opens a version-bump PR against `microsoft/winget-pkgs`,
+        which their moderators merge on their own schedule. `winget install`
+        always works, but it may serve the previous version for a short window
+        after a release. Scoop and the prebuilt archives update immediately.
 
 === "Prebuilt binary"
 

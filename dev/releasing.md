@@ -87,6 +87,17 @@ so local uncommitted changes never enter a release.
    an Actions incident *before* touching config — it is almost always a GitHub
    OIDC outage, not us. Wait for recovery, then re-run the failed run.
 
+   A green job does not mean every channel published. Confirm no publisher
+   silently no-op'd:
+   ```
+   gh run view <run-id> -R OrgMentem/zotio --log \
+     | grep -i "pipe skipped" | grep -v "disabled during snapshot mode"
+   ```
+   Expect no output. The `grep -v` is required, not cosmetic: the "Build
+   snapshot for version smoke test" step legitimately logs a skip on every
+   release, and a check that fires every time is a check nobody reads — which
+   is how the `skip_upload` footgun below survived six releases.
+
 **Validate distribution** (post-publish, from a Linux box with `gh`, `jq`,
 `curl`, and `sha256sum`)
 7. GitHub release: `gh release view vX.Y.Z --repo OrgMentem/zotio --json isDraft,assets`
@@ -120,19 +131,37 @@ so local uncommitted changes never enter a release.
    ```
 9. Scoop: read `https://raw.githubusercontent.com/OrgMentem/scoop-bucket/master/bucket/zotio.json`
    — version matches, both arches, both binaries.
-10. Homebrew: read `https://raw.githubusercontent.com/OrgMentem/homebrew-tap/main/Formula/zotio.rb`
-    — version matches.
+10. Homebrew: read `https://raw.githubusercontent.com/OrgMentem/homebrew-tap/main/Casks/zotio.rb`
+    — version matches. (It is a **cask**, not a formula: `.goreleaser.yaml` uses
+    `homebrew_casks`, so the published path is `Casks/`, not `Formula/`.)
 11. WinGet: `gh pr list --repo microsoft/winget-pkgs --search "OrgMentem.zotio"`.
 
 **WinGet PR completion** (Microsoft side)
-12. First-ever submission gets the `New-Package` label, requires the **CLA**
-    (the submitter comments `@microsoft-github-policy-service agree` on the PR —
-    a human legal act, not automatable), and goes through **manual moderation**.
-    Contributors do NOT merge winget-pkgs PRs; `mergeState: BLOCKED /
-    REVIEW_REQUIRED` is normal. Just wait; act only if a bot requests changes.
+12. The package is established upstream as of PR #400391 (v0.7.0, merged
+    2026-07-28), so every release since is a **version bump** — the fast path:
+    automated validation, no `New-Package` label, no CLA step. Contributors do
+    NOT merge winget-pkgs PRs; `mergeState: BLOCKED / REVIEW_REQUIRED` is
+    normal. Just wait; act only if a bot requests changes.
+
+    Historical, for the next new package in this org: a first-ever submission
+    gets the `New-Package` label, requires the **CLA** (the submitter comments
+    `@microsoft-github-policy-service agree` on the PR — a human legal act, not
+    automatable), and goes through **manual moderation**.
 
 ## Footguns
 
+- **A `skip_upload` publisher silently ships nothing, and the job still goes
+  green.** `winget.skip_upload: true` was set during the New-Package wait so
+  parallel PRs would not stack on Microsoft's moderators. It then stayed set
+  through v0.8.0–v0.13.1: GoReleaser wrote the manifests, logged one line —
+  `pipe skipped or partially skipped  reason=winget.skip_upload is set` — and
+  published nothing, while the release job reported success and every checklist
+  step above passed. Six releases never reached WinGet. Nothing in this runbook
+  caught it; the only evidence was that `microsoft/winget-pkgs` still carried
+  0.7.0 and the fork had no branch past `zotio-0.7.0`. If you set `skip_upload`
+  (or any publisher's skip) as a temporary measure, write the removal condition
+  into the config comment AND grep the release log for `pipe skipped` as part of
+  step 6 — a green job is not evidence a channel published.
 - **WinGet PR 403 "Resource not accessible by personal access token".** A
   fine-grained PAT can push the branch to the fork but **cannot open a cross-org
   PR** to `microsoft/winget-pkgs`. `WINGET_GITHUB_TOKEN` must be a **classic PAT
