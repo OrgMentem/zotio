@@ -172,46 +172,96 @@ func exportTextCollection(c collectionExportClient, out io.Writer, collKey, form
 // combined export. Zotero only coordinates keys within one translator call.
 func deduplicateBibTeXCitationKeys(page string, emitted map[string]bool) string {
 	var out strings.Builder
-	for offset := 0; ; {
-		entry := strings.IndexByte(page[offset:], '@')
-		if entry < 0 {
-			out.WriteString(page[offset:])
-			return out.String()
-		}
-		entry += offset
-		brace := strings.IndexByte(page[entry:], '{')
-		if brace < 0 {
-			out.WriteString(page[offset:])
-			return out.String()
-		}
-		brace += entry
-		comma := strings.IndexByte(page[brace:], ',')
-		if comma < 0 {
-			out.WriteString(page[offset:])
-			return out.String()
-		}
-		comma += brace
+	copied, depth := 0, 0
+	for i := 0; i < len(page); i++ {
+		switch page[i] {
+		case '\\':
+			if i+1 < len(page) {
+				i++
+			}
+		case '%':
+			for i < len(page) && page[i] != '\n' {
+				i++
+			}
+		case '{':
+			depth++
+		case '}':
+			if depth > 0 {
+				depth--
+			}
+		case '@':
+			if depth != 0 {
+				continue
+			}
 
-		key := page[brace+1 : comma]
-		if key == "" || strings.ContainsAny(page[entry+1:brace], "\r\n") {
-			out.WriteString(page[offset : brace+1])
-			offset = brace + 1
-			continue
-		}
-		out.WriteString(page[offset : brace+1])
-		if emitted[key] {
-			for suffix := 1; ; suffix++ {
-				candidate := fmt.Sprintf("%s-%d", key, suffix)
-				if !emitted[candidate] {
-					key = candidate
-					break
+			typeStart := i + 1
+			typeEnd := typeStart
+			for typeEnd < len(page) && isBibTeXEntryTypeByte(page[typeEnd]) {
+				typeEnd++
+			}
+			if typeEnd == typeStart {
+				continue
+			}
+			brace := typeEnd
+			for brace < len(page) && isBibTeXWhitespace(page[brace]) {
+				brace++
+			}
+			if brace == len(page) || page[brace] != '{' {
+				continue
+			}
+			if typeName := page[typeStart:typeEnd]; strings.EqualFold(typeName, "comment") || strings.EqualFold(typeName, "preamble") || strings.EqualFold(typeName, "string") {
+				continue
+			}
+			comma := bibTeXCitationKeyEnd(page, brace+1)
+			if comma < 0 {
+				continue
+			}
+
+			key := page[brace+1 : comma]
+			if key == "" {
+				continue
+			}
+			out.WriteString(page[copied : brace+1])
+			if emitted[key] {
+				for suffix := 1; ; suffix++ {
+					candidate := fmt.Sprintf("%s-%d", key, suffix)
+					if !emitted[candidate] {
+						key = candidate
+						break
+					}
 				}
 			}
+			emitted[key] = true
+			out.WriteString(key)
+			copied = comma
 		}
-		emitted[key] = true
-		out.WriteString(key)
-		offset = comma
 	}
+	out.WriteString(page[copied:])
+	return out.String()
+}
+
+func isBibTeXEntryTypeByte(b byte) bool {
+	return b >= 'A' && b <= 'Z' || b >= 'a' && b <= 'z' || b >= '0' && b <= '9' || b == '_' || b == '-'
+}
+
+func isBibTeXWhitespace(b byte) bool {
+	return b == ' ' || b == '\t' || b == '\r' || b == '\n'
+}
+
+func bibTeXCitationKeyEnd(page string, start int) int {
+	for i := start; i < len(page); i++ {
+		switch page[i] {
+		case '\\':
+			if i+1 < len(page) {
+				i++
+			}
+		case ',':
+			return i
+		case '{', '}', '\r', '\n', '%':
+			return -1
+		}
+	}
+	return -1
 }
 
 // forEachCollectionItemPage walks every page of a collection's items, handing
@@ -226,8 +276,7 @@ func forEachCollectionItemPage(c collectionExportClient, collKey, format string,
 	pageSize := exportPageSize(limit)
 	// url-encode path param to prevent segment injection.
 	path := "/collections/" + url.PathEscape(collKey) + "/items"
-	var firstKey string
-	var haveFirstKey bool
+	seenPageKeys := make(map[string]bool)
 	for start := 0; ; start += pageSize {
 		data, total, err := c.GetWithHeader(path, map[string]string{
 			"format": format,
@@ -253,11 +302,10 @@ func forEachCollectionItemPage(c collectionExportClient, collKey, format string,
 			if !found {
 				return fmt.Errorf("pagination for collection %s ended before Total-Results %d", collKey, count)
 			}
-			if !haveFirstKey {
-				firstKey, haveFirstKey = key, true
-			} else if key == firstKey {
+			if seenPageKeys[key] {
 				return fmt.Errorf("pagination for collection %s ignored start %d", collKey, start)
 			}
+			seenPageKeys[key] = true
 			if !isBlankExportPage(data) {
 				if err := emit(data); err != nil {
 					return err
@@ -281,18 +329,20 @@ func forEachCollectionItemPage(c collectionExportClient, collKey, format string,
 		if !found {
 			return nil
 		}
-		if !haveFirstKey {
-			firstKey, haveFirstKey, err = collectionKeyAt(c, collKey, start)
+		if start == 0 {
+			firstKey, firstFound, err := collectionKeyAt(c, collKey, start)
 			if err != nil {
 				return err
 			}
-			if !haveFirstKey {
+			if !firstFound {
 				return fmt.Errorf("pagination for collection %s returned a key at %d but not %d", collKey, next, start)
 			}
+			seenPageKeys[firstKey] = true
 		}
-		if key == firstKey {
+		if seenPageKeys[key] {
 			return fmt.Errorf("pagination for collection %s ignored start %d", collKey, next)
 		}
+		seenPageKeys[key] = true
 	}
 }
 

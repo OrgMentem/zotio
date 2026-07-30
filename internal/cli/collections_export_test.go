@@ -101,14 +101,15 @@ func TestExportCollectionCSLJSONCombinesRecursiveItems(t *testing.T) {
 // stops after page one is visible as missing records rather than as a passing
 // test against a stub that ignores pagination.
 type exportPageStub struct {
-	items       map[string][]string
-	bibtex      map[string]string
-	subcols     map[string][]string
-	noTotal     bool
-	ignoreStart bool
-	formats     []string
-	starts      []string
-	limits      []string
+	items           map[string][]string
+	bibtex          map[string]string
+	subcols         map[string][]string
+	noTotal         bool
+	ignoreStart     bool
+	clampLateStarts bool
+	formats         []string
+	starts          []string
+	limits          []string
 }
 
 func (s *exportPageStub) resolve(path string, params map[string]string) (json.RawMessage, string, error) {
@@ -125,6 +126,8 @@ func (s *exportPageStub) resolve(path string, params map[string]string) (json.Ra
 	start, _ := strconv.Atoi(params["start"])
 	if s.ignoreStart {
 		start = 0
+	} else if s.clampLateStarts && start >= 100 {
+		start = 100
 	}
 	window := func(n int) (int, int) {
 		if start >= n {
@@ -283,6 +286,27 @@ func TestExportCollectionErrorsWhenTheServerIgnoresStart(t *testing.T) {
 	}
 }
 
+// A server can honor the first page boundary and clamp every later request.
+// Every probed page key must be distinct; comparing only with offset zero
+// would accept the repeated second page.
+func TestExportCollectionErrorsWhenServerClampsAtLaterOffset(t *testing.T) {
+	for _, noTotal := range []bool{false, true} {
+		t.Run(fmt.Sprintf("no_total=%t", noTotal), func(t *testing.T) {
+			client := &exportPageStub{
+				items:           map[string][]string{"ROOT": manyIDs("item", 350)},
+				subcols:         map[string][]string{"ROOT": nil},
+				noTotal:         noTotal,
+				clampLateStarts: true,
+			}
+			var out bytes.Buffer
+			err := exportCollection(client, &out, "ROOT", "bibtex", true, 0, map[string]bool{})
+			if err == nil || !strings.Contains(err.Error(), "ignored start") {
+				t.Fatalf("exportCollection error = %v, want ignored-start failure", err)
+			}
+		})
+	}
+}
+
 func TestCollectCollectionCSLJSONWalksEveryItemPage(t *testing.T) {
 	client := &exportPageStub{
 		items:   map[string][]string{"ROOT": manyIDs("item", 250)},
@@ -378,6 +402,92 @@ func TestExportCollectionDeduplicatesBibTeXKeysAcrossPages(t *testing.T) {
 	}
 	if got := out.String(); strings.Count(got, "@article{same,") != 1 || strings.Count(got, "@article{same-1,") != 1 || strings.Count(got, "title = {same}") != 2 {
 		t.Fatalf("BibTeX keys = %q, want distinct keys and unchanged field values", got)
+	}
+}
+
+func TestDeduplicateBibTeXCitationKeysPreservesAtSignsInFieldValues(t *testing.T) {
+	input := `@article{same,
+  annote = {Contact a@example.com \textit{urgent}, follow up},
+  title = {First}
+}
+@article{same,
+  annote = {Contact a@example.com \textit{urgent}, follow up},
+  title = {Second}
+}`
+	want := `@article{same,
+  annote = {Contact a@example.com \textit{urgent}, follow up},
+  title = {First}
+}
+@article{same-1,
+  annote = {Contact a@example.com \textit{urgent}, follow up},
+  title = {Second}
+}`
+	if got := deduplicateBibTeXCitationKeys(input, make(map[string]bool)); got != want {
+		t.Fatalf("deduplicateBibTeXCitationKeys corrupted field content:\n%s\nwant:\n%s", got, want)
+	}
+}
+
+func TestDeduplicateBibTeXCitationKeysIgnoresEntrySyntaxInsideFieldValues(t *testing.T) {
+	input := `@article{same,
+  annote = {The literal @article{not-a-record, value} belongs in this note}
+}
+@article{same,
+  annote = {The literal @article{not-a-record, value} belongs in this note}
+}`
+	want := `@article{same,
+  annote = {The literal @article{not-a-record, value} belongs in this note}
+}
+@article{same-1,
+  annote = {The literal @article{not-a-record, value} belongs in this note}
+}`
+	if got := deduplicateBibTeXCitationKeys(input, make(map[string]bool)); got != want {
+		t.Fatalf("deduplicateBibTeXCitationKeys rewrote field content:\n%s\nwant:\n%s", got, want)
+	}
+}
+
+func TestDeduplicateBibTeXCitationKeysLeavesNonRecordsAndCommentsUntouched(t *testing.T) {
+	input := `@comment{same, metadata}
+@comment{same, metadata}
+@preamble{"one, two"}
+@preamble{"one, two"}
+@string{abbr = "one, two"}
+@string{abbr = "one, two"}
+% @article{fake, title = {commented}}
+@article
+{fake, title = {real}}
+@article
+{fake, title = {real duplicate}}`
+	want := `@comment{same, metadata}
+@comment{same, metadata}
+@preamble{"one, two"}
+@preamble{"one, two"}
+@string{abbr = "one, two"}
+@string{abbr = "one, two"}
+% @article{fake, title = {commented}}
+@article
+{fake, title = {real}}
+@article
+{fake-1, title = {real duplicate}}`
+	if got := deduplicateBibTeXCitationKeys(input, make(map[string]bool)); got != want {
+		t.Fatalf("deduplicateBibTeXCitationKeys rewrote a non-record:\n%s\nwant:\n%s", got, want)
+	}
+}
+
+func TestDeduplicateBibTeXCitationKeysHonorsEscapedBraces(t *testing.T) {
+	input := `@article{same,
+  annote = {Contact \} a@example.com \textit{urgent}, follow up}
+}
+@article{same,
+  annote = {Contact \} a@example.com \textit{urgent}, follow up}
+}`
+	want := `@article{same,
+  annote = {Contact \} a@example.com \textit{urgent}, follow up}
+}
+@article{same-1,
+  annote = {Contact \} a@example.com \textit{urgent}, follow up}
+}`
+	if got := deduplicateBibTeXCitationKeys(input, make(map[string]bool)); got != want {
+		t.Fatalf("deduplicateBibTeXCitationKeys misread escaped braces:\n%s\nwant:\n%s", got, want)
 	}
 }
 
