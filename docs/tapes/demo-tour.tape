@@ -34,6 +34,11 @@ Sleep 3s
 Type "zotio library stats --years 5 --top 5"
 Enter
 Sleep 5s
+
+# Static card for external directory listings (Terminal Trove et al.): this
+# frame is all zotio output — duplicate groups plus the stats bars — and reads
+# as an academic-library tool at thumbnail size.
+Screenshot ../assets/demos/preview.png
 Hide
 Type "clear" Enter
 Show

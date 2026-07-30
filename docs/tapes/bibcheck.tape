@@ -20,7 +20,3 @@ Sleep 2.5s
 Type "zotio items bibcheck fixtures/paper.tex"
 Enter
 Sleep 5s
-
-# Static card for directory listings (Terminal Trove et al.); the final frame of
-# this tape is the most self-explanatory single screen zotio has.
-Screenshot ../assets/demos/preview.png
