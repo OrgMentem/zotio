@@ -133,13 +133,19 @@ func exportCollection(c collectionExportClient, out io.Writer, collKey, format s
 		}
 		return json.NewEncoder(out).Encode(items)
 	}
+	return exportTextCollection(c, out, collKey, format, flat, limit, visited, make(map[string]bool))
+}
 
+func exportTextCollection(c collectionExportClient, out io.Writer, collKey, format string, flat bool, limit int, visited, citationKeys map[string]bool) error {
 	if visited[collKey] {
 		return nil
 	}
 	visited[collKey] = true
 
 	if err := forEachCollectionItemPage(c, collKey, format, limit, func(data json.RawMessage) error {
+		if format == "bibtex" {
+			data = json.RawMessage(deduplicateBibTeXCitationKeys(string(data), citationKeys))
+		}
 		_, err := fmt.Fprintln(out, strings.TrimSpace(string(data)))
 		return err
 	}); err != nil {
@@ -155,28 +161,73 @@ func exportCollection(c collectionExportClient, out io.Writer, collKey, format s
 		return err
 	}
 	for _, key := range subcols {
-		if err := exportCollection(c, out, key, format, flat, limit, visited); err != nil {
+		if err := exportTextCollection(c, out, key, format, flat, limit, visited, citationKeys); err != nil {
 			return fmt.Errorf("exporting subcollection %s: %w", key, err)
 		}
 	}
 	return nil
 }
 
+// deduplicateBibTeXCitationKeys keeps every citation key unique across a
+// combined export. Zotero only coordinates keys within one translator call.
+func deduplicateBibTeXCitationKeys(page string, emitted map[string]bool) string {
+	var out strings.Builder
+	for offset := 0; ; {
+		entry := strings.IndexByte(page[offset:], '@')
+		if entry < 0 {
+			out.WriteString(page[offset:])
+			return out.String()
+		}
+		entry += offset
+		brace := strings.IndexByte(page[entry:], '{')
+		if brace < 0 {
+			out.WriteString(page[offset:])
+			return out.String()
+		}
+		brace += entry
+		comma := strings.IndexByte(page[brace:], ',')
+		if comma < 0 {
+			out.WriteString(page[offset:])
+			return out.String()
+		}
+		comma += brace
+
+		key := page[brace+1 : comma]
+		if key == "" || strings.ContainsAny(page[entry+1:brace], "\r\n") {
+			out.WriteString(page[offset : brace+1])
+			offset = brace + 1
+			continue
+		}
+		out.WriteString(page[offset : brace+1])
+		if emitted[key] {
+			for suffix := 1; ; suffix++ {
+				candidate := fmt.Sprintf("%s-%d", key, suffix)
+				if !emitted[candidate] {
+					key = candidate
+					break
+				}
+			}
+		}
+		emitted[key] = true
+		out.WriteString(key)
+		offset = comma
+	}
+}
+
 // forEachCollectionItemPage walks every page of a collection's items, handing
 // each non-blank page to emit.
 //
 // An export format returns an opaque document rather than a countable array,
-// so the page count comes from Total-Results, which the API sends on every
-// multi-object read. When a server omits the header, termination cannot come
-// from the page body: an export format renders nothing for an item it cannot
-// represent, so a page of attachments or notes is blank in the middle of a
-// perfectly full collection. Ask format=keys instead, which stays countable
-// whatever the export format can render.
+// so Total-Results bounds the walk when the API sends it. Without that header,
+// keys at the next offset establish whether another page exists. Keys also
+// verify that a server honored start, because opaque export bytes can repeat
+// for distinct, unrenderable items.
 func forEachCollectionItemPage(c collectionExportClient, collKey, format string, limit int, emit func(json.RawMessage) error) error {
 	pageSize := exportPageSize(limit)
 	// url-encode path param to prevent segment injection.
 	path := "/collections/" + url.PathEscape(collKey) + "/items"
-	var prev []byte
+	var firstKey string
+	var haveFirstKey bool
 	for start := 0; ; start += pageSize {
 		data, total, err := c.GetWithHeader(path, map[string]string{
 			"format": format,
@@ -186,38 +237,68 @@ func forEachCollectionItemPage(c collectionExportClient, collKey, format string,
 		if err != nil {
 			return fmt.Errorf("fetching items for collection %s: %w", collKey, err)
 		}
-		if repeatedPage(prev, data) {
-			return nil
+
+		next := start + pageSize
+		if count, cerr := strconv.Atoi(strings.TrimSpace(total)); cerr == nil && count >= 0 {
+			if count == 0 {
+				return nil
+			}
+			if start >= count {
+				return fmt.Errorf("pagination for collection %s exceeded Total-Results %d", collKey, count)
+			}
+			key, found, err := collectionKeyAt(c, collKey, start)
+			if err != nil {
+				return err
+			}
+			if !found {
+				return fmt.Errorf("pagination for collection %s ended before Total-Results %d", collKey, count)
+			}
+			if !haveFirstKey {
+				firstKey, haveFirstKey = key, true
+			} else if key == firstKey {
+				return fmt.Errorf("pagination for collection %s ignored start %d", collKey, start)
+			}
+			if !isBlankExportPage(data) {
+				if err := emit(data); err != nil {
+					return err
+				}
+			}
+			if next >= count {
+				return nil
+			}
+			continue
 		}
-		prev = data
 
 		if !isBlankExportPage(data) {
 			if err := emit(data); err != nil {
 				return err
 			}
 		}
-
-		next := start + pageSize
-		if count, cerr := strconv.Atoi(strings.TrimSpace(total)); cerr == nil {
-			if next >= count {
-				return nil
-			}
-			continue
-		}
-		more, err := collectionHasItemAt(c, collKey, next)
+		key, found, err := collectionKeyAt(c, collKey, next)
 		if err != nil {
 			return err
 		}
-		if !more {
+		if !found {
 			return nil
+		}
+		if !haveFirstKey {
+			firstKey, haveFirstKey, err = collectionKeyAt(c, collKey, start)
+			if err != nil {
+				return err
+			}
+			if !haveFirstKey {
+				return fmt.Errorf("pagination for collection %s returned a key at %d but not %d", collKey, next, start)
+			}
+		}
+		if key == firstKey {
+			return fmt.Errorf("pagination for collection %s ignored start %d", collKey, next)
 		}
 	}
 }
 
-// collectionHasItemAt reports whether the collection still holds an item at
-// offset start, asking for a single key because format=keys is countable for
-// every item type. Only the Total-Results-less path needs it.
-func collectionHasItemAt(c collectionExportClient, collKey string, start int) (bool, error) {
+// collectionKeyAt returns the first item key at offset start. Key responses
+// remain countable even when an export translator omits an item entirely.
+func collectionKeyAt(c collectionExportClient, collKey string, start int) (string, bool, error) {
 	// url-encode path param to prevent segment injection.
 	data, err := c.Get("/collections/"+url.PathEscape(collKey)+"/items", map[string]string{
 		"format": "keys",
@@ -225,9 +306,16 @@ func collectionHasItemAt(c collectionExportClient, collKey string, start int) (b
 		"start":  strconv.Itoa(start),
 	})
 	if err != nil {
-		return false, fmt.Errorf("checking for more items in collection %s: %w", collKey, err)
+		return "", false, fmt.Errorf("checking for item key in collection %s: %w", collKey, err)
 	}
-	return !isBlankExportPage(data), nil
+	key := strings.TrimSpace(string(data))
+	if key == "" || key == "[]" || key == "null" {
+		return "", false, nil
+	}
+	if newline := strings.IndexByte(key, '\n'); newline >= 0 {
+		key = strings.TrimSpace(key[:newline])
+	}
+	return key, key != "", nil
 }
 
 func collectCollectionCSLJSON(c collectionExportClient, collKey string, flat bool, limit int, visited map[string]bool, items *[]json.RawMessage) error {

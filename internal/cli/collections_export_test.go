@@ -102,9 +102,11 @@ func TestExportCollectionCSLJSONCombinesRecursiveItems(t *testing.T) {
 // test against a stub that ignores pagination.
 type exportPageStub struct {
 	items       map[string][]string
+	bibtex      map[string]string
 	subcols     map[string][]string
 	noTotal     bool
 	ignoreStart bool
+	formats     []string
 	starts      []string
 	limits      []string
 }
@@ -117,6 +119,7 @@ func (s *exportPageStub) resolve(path string, params map[string]string) (json.Ra
 	key, kind := parts[0], parts[1]
 	s.starts = append(s.starts, params["start"])
 	s.limits = append(s.limits, params["limit"])
+	s.formats = append(s.formats, params["format"])
 
 	limit, _ := strconv.Atoi(params["limit"])
 	start, _ := strconv.Atoi(params["start"])
@@ -160,6 +163,10 @@ func (s *exportPageStub) resolve(path string, params map[string]string) (json.Ra
 			// An export format renders nothing for an item it cannot represent,
 			// so a page of these is blank without the collection having ended.
 			if strings.HasPrefix(id, "attachment") {
+				continue
+			}
+			if citationKey, ok := s.bibtex[id]; ok {
+				fmt.Fprintf(&b, "@article{%s,\n  title = {%s},\n}", citationKey, citationKey)
 				continue
 			}
 			fmt.Fprintf(&b, "@article{%s}", id)
@@ -213,8 +220,8 @@ func TestExportCollectionWalksEveryItemPage(t *testing.T) {
 			t.Fatalf("export dropped %s", id)
 		}
 	}
-	if got := client.starts; len(got) != 3 || got[0] != "0" || got[1] != "100" || got[2] != "200" {
-		t.Fatalf("item page starts = %v, want 0/100/200", got)
+	if got := client.starts; len(got) != 6 || got[0] != "0" || got[1] != "0" || got[2] != "100" || got[3] != "100" || got[4] != "200" || got[5] != "200" {
+		t.Fatalf("item page starts = %v, want 0/0/100/100/200/200", got)
 	}
 }
 
@@ -233,9 +240,12 @@ func TestExportCollectionClampsPageSizeAndStillExportsEverything(t *testing.T) {
 	if !strings.Contains(out.String(), "@article{item249}") {
 		t.Fatal("export stopped before the last item")
 	}
-	for _, limit := range client.limits {
+	for i, limit := range client.limits {
+		if client.formats[i] == "keys" {
+			continue
+		}
 		if limit != "100" {
-			t.Fatalf("requested limit = %s, want the API maximum of 100", limit)
+			t.Fatalf("requested export limit = %s, want the API maximum of 100", limit)
 		}
 	}
 }
@@ -258,21 +268,18 @@ func TestExportCollectionWalksEveryPageWithoutTotalResults(t *testing.T) {
 	}
 }
 
-// A server that ignores start would otherwise stream page one forever, filling
-// the output file until the disk does.
-func TestExportCollectionStopsWhenTheServerIgnoresStart(t *testing.T) {
+// A server that ignores start cannot be treated as a successful one-page
+// export: the keys probe proves it returned the first item at a later offset.
+func TestExportCollectionErrorsWhenTheServerIgnoresStart(t *testing.T) {
 	client := &exportPageStub{
 		items:       map[string][]string{"ROOT": manyIDs("item", 250)},
 		subcols:     map[string][]string{"ROOT": nil},
-		noTotal:     true,
 		ignoreStart: true,
 	}
 	var out bytes.Buffer
-	if err := exportCollection(client, &out, "ROOT", "bibtex", true, 0, map[string]bool{}); err != nil {
-		t.Fatalf("exportCollection: %v", err)
-	}
-	if got := strings.Count(out.String(), "@article{item000}"); got != 1 {
-		t.Fatalf("emitted the repeated page %d times, want 1", got)
+	err := exportCollection(client, &out, "ROOT", "bibtex", true, 0, map[string]bool{})
+	if err == nil || !strings.Contains(err.Error(), "ignored start") {
+		t.Fatalf("exportCollection error = %v, want ignored-start failure", err)
 	}
 }
 
@@ -337,5 +344,60 @@ func TestExportCollectionKeepsGoingPastABlankMiddlePageWithoutTotalResults(t *te
 		if !strings.Contains(out.String(), "@article{"+id+"}") {
 			t.Fatalf("export stopped at the blank attachment page and dropped %s", id)
 		}
+	}
+}
+
+// Two adjacent pages can be byte-identical when they contain only
+// unrenderable attachments. Their opaque output is not a pagination signal.
+func TestExportCollectionWalksPastConsecutiveBlankPages(t *testing.T) {
+	records := append(manyIDs("attachment", 200), manyIDs("item", 50)...)
+	client := &exportPageStub{
+		items:   map[string][]string{"ROOT": records},
+		subcols: map[string][]string{"ROOT": nil},
+	}
+	var out bytes.Buffer
+	if err := exportCollection(client, &out, "ROOT", "bibtex", true, 0, map[string]bool{}); err != nil {
+		t.Fatalf("exportCollection: %v", err)
+	}
+	if !strings.Contains(out.String(), "@article{item049}") {
+		t.Fatal("export stopped after consecutive blank pages")
+	}
+}
+
+// Zotero resolves a duplicate citation key only within one translator call.
+// Paginated output must preserve that uniqueness across calls.
+func TestExportCollectionDeduplicatesBibTeXKeysAcrossPages(t *testing.T) {
+	client := &exportPageStub{
+		items:   map[string][]string{"ROOT": {"first", "second"}},
+		subcols: map[string][]string{"ROOT": nil},
+		bibtex:  map[string]string{"first": "same", "second": "same"},
+	}
+	var out bytes.Buffer
+	if err := exportCollection(client, &out, "ROOT", "bibtex", true, 1, map[string]bool{}); err != nil {
+		t.Fatalf("exportCollection: %v", err)
+	}
+	if got := out.String(); strings.Count(got, "@article{same,") != 1 || strings.Count(got, "@article{same-1,") != 1 || strings.Count(got, "title = {same}") != 2 {
+		t.Fatalf("BibTeX keys = %q, want distinct keys and unchanged field values", got)
+	}
+}
+
+func TestExportCollectionDeduplicatesBibTeXKeysAcrossSubcollections(t *testing.T) {
+	client := &exportPageStub{
+		items: map[string][]string{
+			"ROOT": {"root"},
+			"SUB":  {"sub"},
+		},
+		subcols: map[string][]string{
+			"ROOT": {"SUB"},
+			"SUB":  nil,
+		},
+		bibtex: map[string]string{"root": "same", "sub": "same"},
+	}
+	var out bytes.Buffer
+	if err := exportCollection(client, &out, "ROOT", "bibtex", false, 1, map[string]bool{}); err != nil {
+		t.Fatalf("exportCollection: %v", err)
+	}
+	if got := out.String(); strings.Count(got, "@article{same,") != 1 || strings.Count(got, "@article{same-1,") != 1 {
+		t.Fatalf("BibTeX keys = %q, want same and same-1", got)
 	}
 }
