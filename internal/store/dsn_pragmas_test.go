@@ -140,7 +140,9 @@ func TestOpenConvertsAnExistingDeleteModeDatabase(t *testing.T) {
 	if got := livePragma(t, s, "journal_mode"); got != "wal" {
 		t.Errorf("journal_mode = %s, want the upgrade to have converted to wal", got)
 	}
-	if _, err := s.SchemaVersion(); err != nil {
-		t.Errorf("migrations did not complete against the converted database: %v", err)
+	if version, err := s.SchemaVersion(); err != nil {
+		t.Errorf("read migrated schema version: %v", err)
+	} else if version != StoreSchemaVersion {
+		t.Errorf("migrated schema version = %d, want %d", version, StoreSchemaVersion)
 	}
 }
