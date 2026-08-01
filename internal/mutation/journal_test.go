@@ -5,6 +5,7 @@ package mutation
 
 import (
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -221,14 +222,15 @@ func TestListEntriesRetriesPartialFinalAppend(t *testing.T) {
 	}
 }
 
-func TestListEntriesIgnoresPersistentIncompleteFinalRecord(t *testing.T) {
+func TestListEntriesReportsPersistentIncompleteFinalRecord(t *testing.T) {
 	dir := t.TempDir()
 	entry, _ := BuildJournalEntry(appliedEnvelope(), time.Date(2026, 6, 28, 9, 0, 0, 0, time.UTC))
 	entry.RunID = "run-1"
 	if err := WriteEntry(dir, entry); err != nil {
 		t.Fatalf("write entry: %v", err)
 	}
-	f, err := os.OpenFile(filepath.Join(dir, JournalFileName), os.O_APPEND|os.O_WRONLY, 0o600)
+	journalPath := filepath.Join(dir, JournalFileName)
+	f, err := os.OpenFile(journalPath, os.O_APPEND|os.O_WRONLY, 0o600)
 	if err != nil {
 		t.Fatalf("open incomplete journal: %v", err)
 	}
@@ -241,11 +243,23 @@ func TestListEntriesIgnoresPersistentIncompleteFinalRecord(t *testing.T) {
 	}
 
 	entries, err := ListEntries(dir)
-	if err != nil {
-		t.Fatalf("list with persistent incomplete final record: %v", err)
+	var incomplete *IncompleteJournalError
+	if !errors.As(err, &incomplete) {
+		t.Fatalf("list error = %v, want IncompleteJournalError", err)
+	}
+	if incomplete.Path != journalPath {
+		t.Errorf("incomplete journal path = %q, want %q", incomplete.Path, journalPath)
 	}
 	if len(entries) != 1 || entries[0].RunID != "run-1" {
 		t.Fatalf("entries = %+v, want prior valid entry only", entries)
+	}
+
+	found, err := ReadEntry(dir, "run-1")
+	if err != nil || found.RunID != "run-1" {
+		t.Fatalf("read valid prefix = (%+v, %v), want run-1", found, err)
+	}
+	if _, err := ReadEntry(dir, "missing"); !errors.As(err, &incomplete) {
+		t.Fatalf("read missing with incomplete tail error = %v, want IncompleteJournalError", err)
 	}
 }
 

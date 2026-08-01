@@ -50,33 +50,44 @@ var requiredReadOnlySchema = []requiredSchemaTable{
 // waitForReadOnlyReadiness waits only for a writer's transactional schema
 // publication. It does not execute DDL, run migrations, or otherwise write
 // through the read-only handle.
-func (s *Store) waitForReadOnlyReadiness(ctx context.Context) error {
-	deadline := time.Now().Add(readOnlyReadinessTimeout)
+func (s *Store) waitForReadOnlyReadiness(ctx, probeCtx context.Context) error {
 	backoff := migrationLockBackoffMin
-
+	var lastErr error
 	for {
 		if err := ctx.Err(); err != nil {
 			return fmt.Errorf("waiting for local store readiness: %w", err)
 		}
 
-		err := s.readOnlySchemaReady(ctx)
-		if err == nil {
+		lastErr = s.readOnlySchemaReady(probeCtx)
+		if lastErr == nil {
 			return nil
 		}
-		if ctxErr := ctx.Err(); ctxErr != nil {
-			return fmt.Errorf("waiting for local store readiness: %w", ctxErr)
+		if err := ctx.Err(); err != nil {
+			return fmt.Errorf("waiting for local store readiness: %w", err)
 		}
-		if !isReadOnlySchemaTransition(err) {
-			return fmt.Errorf("checking read-only store readiness: %w", err)
+		if errors.Is(probeCtx.Err(), context.DeadlineExceeded) {
+			return fmt.Errorf("local store schema did not become ready within %s; run zotio sync to initialize or migrate it: %w", readOnlyReadinessTimeout, lastErr)
 		}
-		if time.Now().After(deadline) {
-			return fmt.Errorf("local store schema did not become ready within %s; run zotio sync to initialize or migrate it: %w", readOnlyReadinessTimeout, err)
+		if !isReadOnlySchemaTransition(lastErr) {
+			return fmt.Errorf("checking read-only store readiness: %w", lastErr)
 		}
 
+		timer := time.NewTimer(backoff)
 		select {
 		case <-ctx.Done():
+			if !timer.Stop() {
+				<-timer.C
+			}
 			return fmt.Errorf("waiting for local store readiness: %w", ctx.Err())
-		case <-time.After(backoff):
+		case <-probeCtx.Done():
+			if !timer.Stop() {
+				<-timer.C
+			}
+			if err := ctx.Err(); err != nil {
+				return fmt.Errorf("waiting for local store readiness: %w", err)
+			}
+			return fmt.Errorf("local store schema did not become ready within %s; run zotio sync to initialize or migrate it: %w", readOnlyReadinessTimeout, lastErr)
+		case <-timer.C:
 		}
 		backoff = min(backoff*2, migrationLockBackoffMax)
 	}

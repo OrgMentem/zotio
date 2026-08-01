@@ -10,6 +10,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -47,6 +48,20 @@ type JournalEntry struct {
 	Summary       ResultSummary `json:"summary"`
 	Ops           []JournalOp   `json:"ops"`
 }
+
+// IncompleteJournalError reports that a final unterminated journal record could
+// not be decoded after bounded retries. Entries preceding it are valid, but the
+// journal cannot establish whether the missing record contains a requested run.
+type IncompleteJournalError struct {
+	Path string
+	Err  error
+}
+
+func (e *IncompleteJournalError) Error() string {
+	return fmt.Sprintf("journal %s has an incomplete final record: %v", e.Path, e.Err)
+}
+
+func (e *IncompleteJournalError) Unwrap() error { return e.Err }
 
 // BuildJournalEntry builds an entry from an applied envelope, joining each plan
 // operation with its result status. It returns ok=false when the envelope is not
@@ -139,9 +154,10 @@ func WriteEntry(dir string, e JournalEntry) error {
 //
 // Writers append JSON records while readers remain concurrent. If the final,
 // unterminated record cannot be decoded after bounded retries, it is treated as
-// an in-progress or crash-torn append and omitted; all preceding valid records
-// remain available. Any malformed completed record, or malformed record followed
-// by another record, is corruption and returns an error.
+// an in-progress or crash-torn append and omitted; preceding valid records are
+// returned with an IncompleteJournalError. Any malformed completed record, or
+// malformed record followed by another record, is corruption and returns an
+// error without entries.
 func ListEntries(dir string) ([]JournalEntry, error) {
 	path := filepath.Join(dir, JournalFileName)
 	for attempt := range journalListReadAttempts {
@@ -165,7 +181,7 @@ func ListEntries(dir string) ([]JournalEntry, error) {
 			continue
 		}
 		if finalIncomplete {
-			return newestFirst(entries), nil
+			return newestFirst(entries), &IncompleteJournalError{Path: path, Err: err}
 		}
 		return nil, err
 	}
@@ -217,15 +233,21 @@ func newestFirst(entries []JournalEntry) []JournalEntry {
 }
 
 // ReadEntry returns the recorded run with the given id, or an error if absent.
+// When the journal has an incomplete final record, a matching complete entry is
+// still safe to return; an absent run is ambiguous and returns that error.
 func ReadEntry(dir, runID string) (JournalEntry, error) {
 	entries, err := ListEntries(dir)
-	if err != nil {
+	var incomplete *IncompleteJournalError
+	if err != nil && !errors.As(err, &incomplete) {
 		return JournalEntry{}, err
 	}
 	for _, e := range entries {
 		if e.RunID == runID {
 			return e, nil
 		}
+	}
+	if incomplete != nil {
+		return JournalEntry{}, incomplete
 	}
 	return JournalEntry{}, fmt.Errorf("no journal entry with run id %q", runID)
 }

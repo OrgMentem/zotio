@@ -136,75 +136,22 @@ are preserved. Use --dry-run to preview create/update/unchanged without writing.
 			}
 			flagOut = outDir
 
-			rawDB, err := openStoreForRead(cmd.Context(), "zotio")
+			run := func() error {
+				return executeVaultSync(cmd, flags, outDir, format, flagCollection, flagTag, flagItemType, flagLimit)
+			}
+			if flags.dryRun {
+				return run()
+			}
+			canonicalOut, err := canonicalOutputPath(outDir)
 			if err != nil {
-				return fmt.Errorf("opening database: %w", err)
+				return fmt.Errorf("resolving vault output path: %w", err)
 			}
-			if rawDB == nil {
-				fmt.Fprintln(cmd.OutOrStdout(), "Run 'zotio sync' first.")
-				return nil
-			}
-			defer rawDB.Close()
-
-			items, err := rawDB.QueryItems(store.ItemQuery{
-				ItemType:   flagItemType,
-				Tag:        flagTag,
-				Collection: flagCollection,
-				TopOnly:    true,
-				Sort:       "title",
-				Direction:  "asc",
-				Limit:      flagLimit,
+			return withPathWriterLock(cmd, canonicalOut+".lock", fmt.Sprintf("syncing vault %q", canonicalOut), func() error {
+				if vaultSyncAfterLock != nil {
+					vaultSyncAfterLock()
+				}
+				return run()
 			})
-			if err != nil {
-				return fmt.Errorf("querying items: %w", err)
-			}
-
-			// Select literature items first, then batch-load annotations for all of
-			// them in one query, and create the vault dir once instead of inside the
-			// per-note loop.
-			metas := make([]vaultMeta, 0, len(items))
-			keys := make([]string, 0, len(items))
-			libraryID := vaultLibraryID(flags)
-			collNames := loadCollectionNames(rawDB)
-			for _, raw := range items {
-				meta := vaultItemMeta(raw)
-				if !isRegularLiteratureItem(meta.ItemType) {
-					continue
-				}
-				meta.Library = libraryID
-				meta.CollectionNames = resolveCollectionNames(meta.Collections, collNames)
-				metas = append(metas, meta)
-				keys = append(keys, meta.Key)
-			}
-
-			annByKey, err := rawDB.AnnotationsForItems(keys)
-			if err != nil {
-				return fmt.Errorf("querying annotations: %w", err)
-			}
-
-			if !flags.dryRun {
-				if err := os.MkdirAll(flagOut, 0o755); err != nil {
-					return fmt.Errorf("creating vault dir: %w", err)
-				}
-			}
-
-			// Index existing managed notes by Zotero key so a re-sync updates the
-			// same file even when the citation key changed, and new notes avoid
-			// colliding with an existing managed or foreign file.
-			idx := scanVaultIndex(flagOut)
-			claimed := make(map[string]bool, len(metas))
-			results := make([]vaultSyncResult, 0, len(metas))
-			for _, meta := range metas {
-				anns := annotationSummariesSorted(annByKey[meta.Key])
-				filename := resolveNoteFilename(meta, flagOut, idx, claimed)
-				res, werr := syncVaultNote(meta, anns, format, flagOut, filename, flags.dryRun)
-				if werr != nil {
-					return werr
-				}
-				results = append(results, res)
-			}
-
-			return printVaultSyncReport(cmd, results, flagOut, format, flags)
 		},
 	}
 
@@ -216,6 +163,82 @@ are preserved. Use --dry-run to preview create/update/unchanged without writing.
 	cmd.Flags().IntVar(&flagLimit, "limit", 0, "Maximum items to sync (0 = all)")
 
 	return cmd
+}
+
+// vaultSyncAfterLock is a test seam used to establish a writer has acquired
+// its output-directory lock before its vault scan begins.
+var vaultSyncAfterLock func()
+
+func executeVaultSync(cmd *cobra.Command, flags *rootFlags, outDir, format, collection, tag, itemType string, limit int) error {
+	rawDB, err := openStoreForRead(cmd.Context(), "zotio")
+	if err != nil {
+		return fmt.Errorf("opening database: %w", err)
+	}
+	if rawDB == nil {
+		fmt.Fprintln(cmd.OutOrStdout(), "Run 'zotio sync' first.")
+		return nil
+	}
+	defer rawDB.Close()
+
+	items, err := rawDB.QueryItems(store.ItemQuery{
+		ItemType:   itemType,
+		Tag:        tag,
+		Collection: collection,
+		TopOnly:    true,
+		Sort:       "title",
+		Direction:  "asc",
+		Limit:      limit,
+	})
+	if err != nil {
+		return fmt.Errorf("querying items: %w", err)
+	}
+
+	// Select literature items first, then batch-load annotations for all of
+	// them in one query, and create the vault dir once instead of inside the
+	// per-note loop.
+	metas := make([]vaultMeta, 0, len(items))
+	keys := make([]string, 0, len(items))
+	libraryID := vaultLibraryID(flags)
+	collNames := loadCollectionNames(rawDB)
+	for _, raw := range items {
+		meta := vaultItemMeta(raw)
+		if !isRegularLiteratureItem(meta.ItemType) {
+			continue
+		}
+		meta.Library = libraryID
+		meta.CollectionNames = resolveCollectionNames(meta.Collections, collNames)
+		metas = append(metas, meta)
+		keys = append(keys, meta.Key)
+	}
+
+	annByKey, err := rawDB.AnnotationsForItems(keys)
+	if err != nil {
+		return fmt.Errorf("querying annotations: %w", err)
+	}
+
+	if !flags.dryRun {
+		if err := os.MkdirAll(outDir, 0o755); err != nil {
+			return fmt.Errorf("creating vault dir: %w", err)
+		}
+	}
+
+	// Index existing managed notes by Zotero key so a re-sync updates the
+	// same file even when the citation key changed, and new notes avoid
+	// colliding with an existing managed or foreign file.
+	idx := scanVaultIndex(outDir)
+	claimed := make(map[string]bool, len(metas))
+	results := make([]vaultSyncResult, 0, len(metas))
+	for _, meta := range metas {
+		anns := annotationSummariesSorted(annByKey[meta.Key])
+		filename := resolveNoteFilename(meta, outDir, idx, claimed)
+		res, werr := syncVaultNote(meta, anns, format, outDir, filename, flags.dryRun)
+		if werr != nil {
+			return werr
+		}
+		results = append(results, res)
+	}
+
+	return printVaultSyncReport(cmd, results, outDir, format, flags)
 }
 
 // syncVaultNote writes (or previews) a single item's note and reports the

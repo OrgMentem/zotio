@@ -76,6 +76,9 @@ type Client struct {
 	// fetched response. It deliberately does not cover cache reads or HTTP I/O.
 	cacheMu         sync.Mutex
 	cacheGeneration uint64
+	// cachePublishBeforeWrite is a test-only hook run after the shared
+	// generation check while the publication lock is held.
+	cachePublishBeforeWrite func()
 	// cacheWarnOnce ensures a failing response cache warns at most once per
 	// client instead of once per uncached GET.
 	cacheWarnOnce sync.Once
@@ -440,6 +443,9 @@ func (c *Client) writeCacheAtGeneration(generation cacheGenerationToken, path st
 	}
 	// Hold both locks through rename so neither a local nor another process's
 	// invalidation can advance the marker between this check and publication.
+	if c.cachePublishBeforeWrite != nil {
+		c.cachePublishBeforeWrite()
+	}
 	writeErr := cliutil.AtomicWriteFile(cacheFile, data, 0o600, 0o700)
 	return errors.Join(writeErr, lock.Release())
 }
@@ -455,7 +461,7 @@ func (c *Client) invalidateCache() error {
 	c.cacheMu.Lock()
 	defer c.cacheMu.Unlock()
 
-	lock, err := c.acquireCachePublicationLock("invalidating response cache", 25*time.Millisecond)
+	lock, err := c.acquireCachePublicationLock("invalidating response cache", 250*time.Millisecond)
 	if err != nil {
 		return err
 	}
@@ -542,7 +548,9 @@ func (c *Client) doRequest(ctx context.Context, method, path string, params map[
 	mutationSucceeded := false
 	defer func() {
 		if retErr != nil && !mutationSucceeded && method != http.MethodGet && !c.DryRun {
-			_ = c.invalidateCache()
+			if err := c.invalidateCache(); err != nil {
+				retErr = errors.Join(retErr, err)
+			}
 		}
 	}()
 	targetURL := c.baseURLFor(ctx, method) + path

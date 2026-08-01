@@ -458,7 +458,7 @@ func templateKey(uri, prefix string) string {
 // store yields a graceful "not synced" payload rather than an error unless
 // the caller's context is canceled.
 func archiveStatus(ctx context.Context) (map[string]any, error) {
-	db, err := store.OpenReadOnlyContext(ctx, dbPath())
+	db, err := store.OpenReadOnlyDiagnosticContext(ctx, dbPath())
 	if err != nil {
 		if ctxErr := ctx.Err(); ctxErr != nil {
 			return nil, ctxErr
@@ -552,7 +552,7 @@ func archiveStatus(ctx context.Context) (map[string]any, error) {
 
 // localSchemaDDL returns the DDL of the local store's tables and indexes.
 func localSchemaDDL(ctx context.Context) (string, error) {
-	db, err := store.OpenReadOnlyContext(ctx, dbPath())
+	db, err := store.OpenReadOnlyDiagnosticContext(ctx, dbPath())
 	if err != nil {
 		return "", fmt.Errorf("opening database: %w", err)
 	}

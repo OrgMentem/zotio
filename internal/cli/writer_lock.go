@@ -24,33 +24,23 @@ type writerLockOwnership struct {
 	previous context.Context
 }
 
-// installationWriterLockPath returns the installation-wide writer lock path.
-// Config-file overrides select their containing directory; an otherwise absent
-// config still uses the resolved config directory, matching config.Load.
-func installationWriterLockPath(flags *rootFlags) (string, error) {
-	configPath := ""
-	if flags != nil {
-		configPath = strings.TrimSpace(flags.configPath)
-	}
-	if configPath == "" {
-		configPath = strings.TrimSpace(os.Getenv("ZOTERO_CONFIG"))
-	}
-
-	var dir string
-	if configPath != "" {
-		dir = filepath.Dir(configPath)
-	} else {
-		var err error
-		dir, err = cliutil.ConfigDir()
-		if err != nil {
-			return "", fmt.Errorf("resolving config directory for writer lock: %w", err)
-		}
-	}
-	absDir, err := filepath.Abs(filepath.Clean(dir))
+// installationWriterLockPath returns the host-user installation lock path.
+//
+// Profiles are persisted at ~/.zotio/profiles.json regardless of --config or
+// ZOTIO_DATA_DIR. Locking there keeps profile writers serialized with every
+// other installation writer that can also update shared credentials, cursors,
+// journals, or configuration. A distinct user home is an independent
+// installation scope; selecting a config file or data directory is not.
+func installationWriterLockPath(_ *rootFlags) (string, error) {
+	home, err := os.UserHomeDir()
 	if err != nil {
-		return "", fmt.Errorf("canonicalizing writer lock directory %q: %w", dir, err)
+		return "", fmt.Errorf("resolving home directory for writer lock: %w", err)
 	}
-	return filepath.Join(absDir, ".writer.lock"), nil
+	absHome, err := filepath.Abs(filepath.Clean(home))
+	if err != nil {
+		return "", fmt.Errorf("canonicalizing writer lock home %q: %w", home, err)
+	}
+	return filepath.Join(absHome, ".zotio", ".writer.lock"), nil
 }
 
 // withInstallationWriterLock serializes a complete installation-state writer
@@ -147,12 +137,15 @@ type writerLockMode uint8
 const (
 	writerLockAlways writerLockMode = iota
 	writerLockOnApply
+	writerLockOnNotDryRun
+	writerLockOnCommandNotDryRun
+	writerLockOnORCID
 )
 
 // explicitInstallationWriterCommands covers installation writers whose Cobra
-// annotations intentionally do not expose them as capability writes: auth and
-// profile persist local state, and init/demo/tail/workflow manage installation
-// setup, cursors, or checkpoints. Keep this narrow so normal readers stay free.
+// annotations intentionally do not expose them as capability writes, and
+// capability writers that do not use the shared --yes mutation gate. Keep this
+// narrow so normal readers stay free.
 var explicitInstallationWriterCommands = map[string]writerLockMode{
 	"auth set-token": writerLockAlways,
 	"auth logout":    writerLockAlways,
@@ -162,6 +155,26 @@ var explicitInstallationWriterCommands = map[string]writerLockMode{
 	"demo":           writerLockAlways,
 	"tail":           writerLockAlways,
 	"workflow run":   writerLockOnApply,
+
+	// These commands post or publish by default and preview only with --dry-run.
+	"items new":    writerLockOnNotDryRun,
+	"import url":   writerLockOnNotDryRun,
+	"import file":  writerLockOnNotDryRun,
+	"import pmid":  writerLockOnNotDryRun,
+	"import arxiv": writerLockOnNotDryRun,
+	"import isbn":  writerLockOnNotDryRun,
+	"vault push":   writerLockOnNotDryRun,
+	"vault pull":   writerLockOnNotDryRun,
+
+	// Generic import has its own command-local --dry-run flag and is marked
+	// capability "other" despite POSTing one record per input line.
+	"import": writerLockOnCommandNotDryRun,
+
+	// Resolving always publishes either the vault or Zotero state; it has no
+	// dry-run mode. --orcid opens the local store for write, while plain audit
+	// uses a read-only handle.
+	"vault resolve":  writerLockAlways,
+	"creators audit": writerLockOnORCID,
 }
 
 // installInstallationWriterLocks derives writer candidates only after the full
@@ -196,6 +209,9 @@ func installationWriterLockModes(rootCmd *cobra.Command) map[string]writerLockMo
 	for path, mode := range explicitInstallationWriterCommands {
 		modes[path] = mode
 	}
+	// Vault note publication is independent of installation state and uses the
+	// canonical output-directory lock in vault sync instead.
+	delete(modes, "vault sync")
 	return modes
 }
 
@@ -208,8 +224,34 @@ func installationWriterLockModeForCommand(rootCmd, cmd *cobra.Command) (writerLo
 	return mode, ok
 }
 
-func shouldAcquireInstallationWriterLock(mode writerLockMode, flags *rootFlags) bool {
-	return mode == writerLockAlways || resolveMutationMode(flags).Apply
+func shouldAcquireInstallationWriterLock(cmd *cobra.Command, mode writerLockMode, flags *rootFlags) bool {
+	switch mode {
+	case writerLockAlways:
+		return true
+	case writerLockOnApply:
+		return resolveMutationMode(flags).Apply
+	case writerLockOnNotDryRun:
+		if flags != nil && flags.dryRun {
+			return false
+		}
+		dryRun, err := commandBoolFlag(cmd, "dry-run")
+		return err != nil || !dryRun
+	case writerLockOnCommandNotDryRun:
+		dryRun, err := commandBoolFlag(cmd, "dry-run")
+		return err != nil || !dryRun
+	case writerLockOnORCID:
+		orcid, err := commandBoolFlag(cmd, "orcid")
+		return err == nil && orcid
+	default:
+		return false
+	}
+}
+
+func commandBoolFlag(cmd *cobra.Command, name string) (bool, error) {
+	if cmd == nil || cmd.Flags().Lookup(name) == nil {
+		return false, fmt.Errorf("flag %q is unavailable", name)
+	}
+	return cmd.Flags().GetBool(name)
 }
 
 func wrapRootPersistentWriterLockPreRun(rootCmd *cobra.Command, flags *rootFlags) {
@@ -219,13 +261,14 @@ func wrapRootPersistentWriterLockPreRun(rootCmd *cobra.Command, flags *rootFlags
 	}
 	rootCmd.PersistentPreRunE = func(cmd *cobra.Command, args []string) error {
 		mode, ok := installationWriterLockModeForCommand(rootCmd, cmd)
-		if !ok || !shouldAcquireInstallationWriterLock(mode, flags) {
+		if !ok || !shouldAcquireInstallationWriterLock(cmd, mode, flags) {
 			return original(cmd, args)
 		}
 		lockPath, err := installationWriterLockPath(flags)
 		if err != nil {
 			return err
 		}
+
 		if ownership := writerLockOwner(cmd); ownership != nil && ownership.path == lockPath {
 			return original(cmd, args)
 		}
@@ -243,7 +286,7 @@ func wrapRootPersistentWriterLockPreRun(rootCmd *cobra.Command, flags *rootFlags
 func wrapInstallationWriterCommand(cmd *cobra.Command, flags *rootFlags, operation string, mode writerLockMode) {
 	wrap := func(run func(*cobra.Command, []string) error) func(*cobra.Command, []string) error {
 		return func(cmd *cobra.Command, args []string) error {
-			if mode == writerLockOnApply && !resolveMutationMode(flags).Apply {
+			if !shouldAcquireInstallationWriterLock(cmd, mode, flags) {
 				return run(cmd, args)
 			}
 			return withInstallationWriterLock(cmd, flags, operation, func() error {
@@ -262,7 +305,7 @@ func wrapInstallationWriterCommand(cmd *cobra.Command, flags *rootFlags, operati
 		// command use, flags, annotations, and user-visible behavior are unchanged.
 		cmd.Run = nil
 		cmd.RunE = func(cmd *cobra.Command, args []string) error {
-			if mode == writerLockOnApply && !resolveMutationMode(flags).Apply {
+			if !shouldAcquireInstallationWriterLock(cmd, mode, flags) {
 				run(cmd, args)
 				return nil
 			}

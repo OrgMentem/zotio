@@ -6,10 +6,13 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"zotio/internal/store"
 )
@@ -44,6 +47,123 @@ func runVaultSync(t *testing.T, flags *rootFlags, args []string) string {
 		t.Fatalf("vault sync %v: %v", args, err)
 	}
 	return out.String()
+}
+
+func TestVaultSyncSameDirectoryReturnsBusyWhileDryRunRemainsAvailable(t *testing.T) {
+	seedVaultStore(t)
+	vault := filepath.Join(t.TempDir(), "vault")
+	started, release := blockFirstVaultSyncAfterLock(t)
+
+	first := startVaultSyncForLockTest(&rootFlags{}, []string{"--out", vault})
+	waitForVaultLock(t, started)
+
+	second := newVaultSyncCmd(&rootFlags{})
+	second.SilenceErrors, second.SilenceUsage = true, true
+	second.SetArgs([]string{"--out", vault})
+	if err := second.Execute(); err == nil || ExitCode(err) != 9 {
+		t.Fatalf("second sync error = %v, exit = %d; want busy precondition exit 9", err, ExitCode(err))
+	}
+
+	dryRun := startVaultSyncForLockTest(&rootFlags{dryRun: true}, []string{"--out", vault})
+	select {
+	case err := <-dryRun:
+		if err != nil {
+			t.Fatalf("dry-run sync while writer held: %v", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("dry-run sync blocked behind vault writer")
+	}
+
+	close(release)
+	if err := <-first; err != nil {
+		t.Fatalf("first sync: %v", err)
+	}
+}
+
+func TestVaultSyncDifferentDirectoriesRunConcurrently(t *testing.T) {
+	seedVaultStore(t)
+	started, release := blockFirstVaultSyncAfterLock(t)
+
+	first := startVaultSyncForLockTest(&rootFlags{}, []string{"--out", filepath.Join(t.TempDir(), "first")})
+	waitForVaultLock(t, started)
+	second := startVaultSyncForLockTest(&rootFlags{}, []string{"--out", filepath.Join(t.TempDir(), "second")})
+	select {
+	case err := <-second:
+		if err != nil {
+			t.Fatalf("second vault sync: %v", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("different vault directory blocked behind first writer")
+	}
+
+	close(release)
+	if err := <-first; err != nil {
+		t.Fatalf("first vault sync: %v", err)
+	}
+}
+
+func TestVaultSyncDifferentConfigsSameDirectoryConflict(t *testing.T) {
+	seedVaultStore(t)
+	vault := filepath.Join(t.TempDir(), "vault")
+	configA := filepath.Join(t.TempDir(), "one.toml")
+	configB := filepath.Join(t.TempDir(), "two.toml")
+	writeFile(t, configA, fmt.Sprintf("[vault]\nroot = %q\n", vault))
+	writeFile(t, configB, fmt.Sprintf("[vault]\nroot = %q\n", vault))
+	started, release := blockFirstVaultSyncAfterLock(t)
+
+	first := startVaultSyncForLockTest(&rootFlags{configPath: configA}, nil)
+	waitForVaultLock(t, started)
+	second := newVaultSyncCmd(&rootFlags{configPath: configB})
+	second.SilenceErrors, second.SilenceUsage = true, true
+	if err := second.Execute(); err == nil || ExitCode(err) != 9 {
+		t.Fatalf("second config sync error = %v, exit = %d; want busy precondition exit 9", err, ExitCode(err))
+	}
+
+	close(release)
+	if err := <-first; err != nil {
+		t.Fatalf("first config sync: %v", err)
+	}
+}
+
+func startVaultSyncForLockTest(flags *rootFlags, args []string) <-chan error {
+	cmd := newVaultSyncCmd(flags)
+	cmd.SilenceErrors, cmd.SilenceUsage = true, true
+	cmd.SetArgs(args)
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetErr(&bytes.Buffer{})
+	done := make(chan error, 1)
+	go func() { done <- cmd.Execute() }()
+	return done
+}
+
+func blockFirstVaultSyncAfterLock(t *testing.T) (<-chan struct{}, chan<- struct{}) {
+	t.Helper()
+	started := make(chan struct{})
+	release := make(chan struct{})
+	oldHook := vaultSyncAfterLock
+	var mu sync.Mutex
+	first := true
+	vaultSyncAfterLock = func() {
+		mu.Lock()
+		block := first
+		first = false
+		mu.Unlock()
+		if block {
+			close(started)
+			<-release
+		}
+	}
+	t.Cleanup(func() { vaultSyncAfterLock = oldHook })
+	return started, release
+}
+
+func waitForVaultLock(t *testing.T, started <-chan struct{}) {
+	t.Helper()
+	select {
+	case <-started:
+	case <-time.After(3 * time.Second):
+		t.Fatal("vault sync did not acquire its output lock")
+	}
 }
 
 func TestVaultSyncCreatesObsidianNote(t *testing.T) {

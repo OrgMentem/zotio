@@ -15,6 +15,7 @@ import (
 
 	"zotio/internal/store"
 
+	mcplib "github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
 )
 
@@ -301,5 +302,57 @@ func TestArchiveStatusCancellationStopsBeforeStateReads(t *testing.T) {
 	}
 	if status != nil {
 		t.Fatalf("archiveStatus returned normal status after cancellation: %#v", status)
+	}
+}
+
+func TestDiagnosticResourcesReadPartialSchemaButStrictReadsDoNot(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	if err := os.MkdirAll(filepath.Dir(dbPath()), 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	db, err := store.OpenWithContext(context.Background(), dbPath())
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	if err := db.Upsert("items", "TOP1", json.RawMessage(`{"key":"TOP1","version":1,"data":{"key":"TOP1","itemType":"book","title":"X"}}`)); err != nil {
+		t.Fatalf("seed item: %v", err)
+	}
+	if _, err := db.DB().Exec(`DROP TABLE resources_fts`); err != nil {
+		t.Fatalf("drop FTS table: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close store: %v", err)
+	}
+
+	status, err := archiveStatus(context.Background())
+	if err != nil {
+		t.Fatalf("archiveStatus on partial schema: %v", err)
+	}
+	if status["synced"] != true {
+		t.Fatalf("status synced = %v, want true", status["synced"])
+	}
+	resources, ok := status["resources"].(map[string]any)
+	if !ok {
+		t.Fatalf("status resources = %#v, want per-table diagnostics", status)
+	}
+	items, ok := resources["items"].(map[string]any)
+	if !ok || items["count"] != 1 {
+		t.Fatalf("items diagnostic = %#v, want count 1", items)
+	}
+	ddl, err := localSchemaDDL(context.Background())
+	if err != nil {
+		t.Fatalf("localSchemaDDL on partial schema: %v", err)
+	}
+	if !strings.Contains(ddl, "CREATE TABLE resources") {
+		t.Fatalf("schema DDL omitted surviving resources table: %s", ddl)
+	}
+	search := mcplib.CallToolRequest{}
+	search.Params.Arguments = map[string]any{"query": "X"}
+	result, err := handleSearch(context.Background(), search)
+	if err != nil {
+		t.Fatalf("handleSearch protocol error: %v", err)
+	}
+	if result == nil || !result.IsError || !strings.Contains(toolResultText(t, result), "run zotio sync") {
+		t.Fatalf("strict search result = %+v, want readiness remediation", result)
 	}
 }

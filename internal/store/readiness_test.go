@@ -176,3 +176,40 @@ func TestOpenReadOnlyContext_ReadySchemaReturnsImmediately(t *testing.T) {
 		t.Fatalf("ready schema open took %s", elapsed)
 	}
 }
+
+func TestOpenReadOnlyContext_ReadinessDeadlineInterruptsExclusiveLock(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "locked.db")
+	ready, err := OpenWithContext(context.Background(), dbPath)
+	if err != nil {
+		t.Fatalf("create current schema: %v", err)
+	}
+	if err := ready.Close(); err != nil {
+		t.Fatalf("close current schema: %v", err)
+	}
+
+	writer, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("open writer: %v", err)
+	}
+	defer writer.Close()
+	if _, err := writer.Exec(`PRAGMA journal_mode=DELETE`); err != nil {
+		t.Fatalf("set rollback journal: %v", err)
+	}
+	if _, err := writer.Exec(`BEGIN EXCLUSIVE`); err != nil {
+		t.Fatalf("take exclusive lock: %v", err)
+	}
+	defer writer.Exec(`ROLLBACK`)
+
+	start := time.Now()
+	_, err = OpenReadOnlyContext(context.Background(), dbPath)
+	elapsed := time.Since(start)
+	if err == nil {
+		t.Fatal("OpenReadOnlyContext succeeded while schema was exclusively locked")
+	}
+	if !strings.Contains(err.Error(), "run zotio sync") {
+		t.Fatalf("exclusive-lock error lacks readiness remediation: %v", err)
+	}
+	if elapsed > 2*time.Second {
+		t.Fatalf("readiness deadline did not interrupt SQLite lock wait: %s", elapsed)
+	}
+}

@@ -80,8 +80,47 @@ func OpenReadOnlyContext(ctx context.Context, dbPath string) (*Store, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
+	probeCtx, cancel := context.WithTimeout(ctx, readOnlyReadinessTimeout)
+	defer cancel()
+
+	s, err := openReadOnlyDiagnosticContext(probeCtx, dbPath, readOnlyProbeBusyTimeout(probeCtx))
+	if err != nil {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return nil, ctxErr
+		}
+		if errors.Is(probeCtx.Err(), context.DeadlineExceeded) {
+			return nil, fmt.Errorf("local store schema did not become ready within %s; run zotio sync to initialize or migrate it: %w", readOnlyReadinessTimeout, err)
+		}
+		return nil, err
+	}
+	if err := s.waitForReadOnlyReadiness(ctx, probeCtx); err != nil {
+		s.Close()
+		return nil, err
+	}
+	// The bounded readiness handle uses a correspondingly short SQLite
+	// busy_timeout so an in-flight probe cannot outlive probeCtx. Do not return
+	// that handle to callers: the store contract keeps the normal 10-second
+	// busy timeout after readiness has been established.
+	if err := s.Close(); err != nil {
+		return nil, fmt.Errorf("closing local store readiness probe: %w", err)
+	}
+	return openReadOnlyDiagnosticContext(ctx, dbPath, 10*time.Second)
+}
+
+// OpenReadOnlyDiagnosticContext opens an existing store for diagnostic reads
+// without migrating it or requiring the current query schema. It is for
+// inspecting a partial or damaged store; normal local reads must use
+// OpenReadOnlyContext so they retain its readiness requirements.
+func OpenReadOnlyDiagnosticContext(ctx context.Context, dbPath string) (*Store, error) {
+	return openReadOnlyDiagnosticContext(ctx, dbPath, 10*time.Second)
+}
+
+func openReadOnlyDiagnosticContext(ctx context.Context, dbPath string, busyTimeout time.Duration) (*Store, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	db, err := sql.Open("sqlite", "file:"+dbPath+"?mode=ro"+
-		"&_pragma=busy_timeout(10000)"+
+		fmt.Sprintf("&_pragma=busy_timeout(%d)", max(busyTimeout.Milliseconds(), 1))+
 		"&_pragma=foreign_keys(ON)"+
 		"&_pragma=temp_store(MEMORY)"+
 		"&_pragma=mmap_size(268435456)")
@@ -89,13 +128,19 @@ func OpenReadOnlyContext(ctx context.Context, dbPath string) (*Store, error) {
 		return nil, fmt.Errorf("opening database (read-only): %w", err)
 	}
 	db.SetMaxOpenConns(2)
-
-	s := &Store{db: db, path: dbPath}
-	if err := s.waitForReadOnlyReadiness(ctx); err != nil {
+	if err := db.PingContext(ctx); err != nil {
 		db.Close()
-		return nil, err
+		return nil, fmt.Errorf("opening database (read-only): %w", err)
 	}
-	return s, nil
+	return &Store{db: db, path: dbPath}, nil
+}
+
+func readOnlyProbeBusyTimeout(ctx context.Context) time.Duration {
+	deadline, ok := ctx.Deadline()
+	if !ok {
+		return readOnlyReadinessTimeout
+	}
+	return min(time.Until(deadline), readOnlyReadinessTimeout)
 }
 
 // Open opens or creates the SQLite store at dbPath using a background

@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -128,6 +129,83 @@ func TestJournalListAndShow(t *testing.T) {
 	}
 }
 
+func TestJournalListRendersPrefixWhenTailIncomplete(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	entry := journalTestEntry(t, "run-complete", "items.tags.add")
+	dir := helpersTestJournalDir(t)
+	if err := mutation.WriteEntry(dir, entry); err != nil {
+		t.Fatalf("seed journal: %v", err)
+	}
+	journalPath := filepath.Join(dir, mutation.JournalFileName)
+	f, err := os.OpenFile(journalPath, os.O_APPEND|os.O_WRONLY, 0o600)
+	if err != nil {
+		t.Fatalf("open journal for torn tail: %v", err)
+	}
+	if _, err := f.WriteString(`{"run_id":`); err != nil {
+		_ = f.Close()
+		t.Fatalf("append torn journal tail: %v", err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatalf("close torn journal tail: %v", err)
+	}
+
+	flags := &rootFlags{asJSON: true}
+	cmd := newJournalCmd(flags)
+	cmd.SetArgs([]string{"list"})
+	cmd.SilenceErrors, cmd.SilenceUsage = true, true
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&bytes.Buffer{})
+	err = cmd.Execute()
+	if ExitCode(err) != 13 {
+		t.Fatalf("journal list exit code = %d, want 13 (err=%v)", ExitCode(err), err)
+	}
+	var entries []mutation.JournalEntry
+	if err := json.Unmarshal(out.Bytes(), &entries); err != nil {
+		t.Fatalf("decode rendered prefix: %v (output=%q)", err, out.String())
+	}
+	if len(entries) != 1 || entries[0].RunID != "run-complete" {
+		t.Fatalf("rendered entries = %+v, want complete prefix", entries)
+	}
+
+	humanCmd := newJournalCmd(&rootFlags{})
+	humanCmd.SetArgs([]string{"list"})
+	humanCmd.SilenceErrors, humanCmd.SilenceUsage = true, true
+	var humanOut bytes.Buffer
+	humanCmd.SetOut(&humanOut)
+	humanCmd.SetErr(&bytes.Buffer{})
+	if err := humanCmd.Execute(); ExitCode(err) != 13 {
+		t.Fatalf("human journal list exit code = %d, want 13 (err=%v)", ExitCode(err), err)
+	}
+	if !strings.Contains(humanOut.String(), "run-complete") {
+		t.Fatalf("human rendered prefix = %q, want run-complete", humanOut.String())
+	}
+}
+
+func TestJournalUndoDoesNotReportMissingRunForIncompleteTail(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	dir := helpersTestJournalDir(t)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatalf("create journal dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, mutation.JournalFileName), []byte(`{"run_id":`), 0o600); err != nil {
+		t.Fatalf("write torn journal tail: %v", err)
+	}
+
+	cmd := newJournalCmd(&rootFlags{})
+	cmd.SetArgs([]string{"undo", "missing"})
+	cmd.SilenceErrors, cmd.SilenceUsage = true, true
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetErr(&bytes.Buffer{})
+	err := cmd.Execute()
+	if ExitCode(err) != 13 {
+		t.Fatalf("journal undo exit code = %d, want 13 (err=%v)", ExitCode(err), err)
+	}
+	var incomplete *mutation.IncompleteJournalError
+	if !errors.As(err, &incomplete) {
+		t.Fatalf("journal undo error = %v, want IncompleteJournalError", err)
+	}
+}
 func TestJournalListFiltersWorkflow(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 

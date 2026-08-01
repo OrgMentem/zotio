@@ -4,8 +4,11 @@ package client
 
 import (
 	"bytes"
+	"errors"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -215,6 +218,109 @@ func TestConcurrentGetsWithoutMutationCacheResponses(t *testing.T) {
 	}
 	if got := atomic.LoadInt32(&getHits); got != 2 {
 		t.Fatalf("GET hits = %d, want 2 (third GET must use cache)", got)
+	}
+}
+
+func TestFailedMutationJoinsCacheInvalidationError(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "ambiguous failure", http.StatusInternalServerError)
+	}))
+	defer server.Close()
+
+	c := clientTestNewClient(t, server.URL)
+	c.cacheDir = t.TempDir() + "/cache"
+	if err := os.Mkdir(c.cacheGenerationMarkerPath(), 0o700); err != nil {
+		t.Fatalf("make invalid generation marker: %v", err)
+	}
+	_, _, err := c.Post("/items", map[string]string{"title": "mutation"})
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) {
+		t.Fatalf("mutation error = %v, want APIError", err)
+	}
+	if !strings.Contains(err.Error(), "reading cache generation marker") {
+		t.Fatalf("mutation error discarded cache invalidation failure: %v", err)
+	}
+}
+
+func TestPublicationLockPreventsInvalidationBetweenCheckAndRename(t *testing.T) {
+	var version int32 = 1
+	var getHits int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			http.Error(w, "unexpected method", http.StatusMethodNotAllowed)
+			return
+		}
+		atomic.AddInt32(&getHits, 1)
+		if atomic.LoadInt32(&version) == 1 {
+			_, _ = w.Write([]byte(`{"version":"old"}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"version":"new"}`))
+	}))
+	defer server.Close()
+
+	cacheDir := t.TempDir() + "/cache"
+	publisher := clientTestNewClient(t, server.URL)
+	publisher.cacheDir = cacheDir
+	invalidator := clientTestNewClient(t, server.URL)
+	invalidator.cacheDir = cacheDir
+	checkedMarker := make(chan struct{})
+	releasePublication := make(chan struct{})
+	publisher.cachePublishBeforeWrite = func() {
+		close(checkedMarker)
+		<-releasePublication
+	}
+
+	published := make(chan error, 1)
+	go func() {
+		_, err := publisher.Get("/items", nil)
+		published <- err
+	}()
+	select {
+	case <-checkedMarker:
+	case <-time.After(5 * time.Second):
+		t.Fatal("publisher did not reach marker check")
+	}
+
+	invalidated := make(chan error, 1)
+	go func() {
+		invalidated <- invalidator.invalidateCache()
+	}()
+	select {
+	case err := <-invalidated:
+		t.Fatalf("invalidation advanced before publication released lock: %v", err)
+	case <-time.After(75 * time.Millisecond):
+	}
+
+	atomic.StoreInt32(&version, 2)
+	close(releasePublication)
+	select {
+	case err := <-published:
+		if err != nil {
+			t.Fatalf("publishing GET: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("publishing GET did not finish")
+	}
+	select {
+	case err := <-invalidated:
+		if err != nil {
+			t.Fatalf("invalidation after publication: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("invalidation did not finish after publication released lock")
+	}
+	publisher.cachePublishBeforeWrite = nil
+
+	fresh, err := publisher.Get("/items", nil)
+	if err != nil {
+		t.Fatalf("fresh GET: %v", err)
+	}
+	if !bytes.Equal(fresh, []byte(`{"version":"new"}`)) {
+		t.Fatalf("fresh GET body = %s, want new response", fresh)
+	}
+	if got := atomic.LoadInt32(&getHits); got != 2 {
+		t.Fatalf("GET hits = %d, want 2 after invalidation", got)
 	}
 }
 

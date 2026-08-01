@@ -31,4 +31,4 @@ claude mcp add zotero zotio-mcp -e ZOTERO_API_KEY=<your-key>
 
 ## Concurrent access
 
-Only one zotio writer may update an installation or independent output at a time. A concurrent write fails immediately and is safe to retry after the active writer finishes; read-only commands remain available.
+Only one zotio writer may update an installation or independent output at a time. Installation writers use the host-user lock `~/.zotio/.writer.lock`: `--config`, `ZOTERO_CONFIG`, and `ZOTIO_DATA_DIR` do not make concurrent writer scopes because profiles remain shared at `~/.zotio/profiles.json`. A concurrent write fails immediately with exit code 9 and is safe to retry after the active writer finishes; read-only commands and dry-run previews remain available.

@@ -83,6 +83,14 @@ func humanJournalLibrary(library string) string {
 	return library
 }
 
+func journalEntryLookupErr(err error) error {
+	var incomplete *mutation.IncompleteJournalError
+	if errors.As(err, &incomplete) {
+		return degradedErr(fmt.Errorf("journal may omit the requested run: %w", incomplete))
+	}
+	return notFoundErr(err)
+}
+
 func readJournalEntryForUndo(runID string) (mutation.JournalEntry, error) {
 	dir, err := journalDir()
 	if err != nil {
@@ -160,7 +168,8 @@ func newJournalListCmd(flags *rootFlags) *cobra.Command {
 				return err
 			}
 			entries, err := mutation.ListEntries(dir)
-			if err != nil {
+			var incomplete *mutation.IncompleteJournalError
+			if err != nil && !errors.As(err, &incomplete) {
 				return fmt.Errorf("reading journal: %w", err)
 			}
 			normalizeJournalEntries(entries)
@@ -178,24 +187,33 @@ func newJournalListCmd(flags *rootFlags) *cobra.Command {
 				if err != nil {
 					return err
 				}
-				return printOutputWithFlags(cmd.OutOrStdout(), json.RawMessage(data), flags)
+				if err := printOutputWithFlags(cmd.OutOrStdout(), json.RawMessage(data), flags); err != nil {
+					return err
+				}
+				if incomplete != nil {
+					return degradedErr(fmt.Errorf("journal list is incomplete; some runs may be omitted: %w", incomplete))
+				}
+				return nil
 			}
 			out := cmd.OutOrStdout()
 			if len(entries) == 0 {
 				fmt.Fprintln(out, "No mutation runs recorded yet.")
-				return nil
+			} else {
+				for _, e := range entries {
+					ok := "ok"
+					if !e.OK {
+						ok = "incomplete"
+					}
+					fmt.Fprintf(out, "%s  %s  %-10s  %-24s  applied=%d  %s",
+						e.RunID, e.Timestamp.Format("2006-01-02 15:04"), humanJournalLibrary(e.Library), e.Operation, e.Summary.Applied, ok)
+					if e.WorkflowRunID != "" {
+						fmt.Fprintf(out, "  workflow=%s", e.WorkflowRunID)
+					}
+					fmt.Fprintln(out)
+				}
 			}
-			for _, e := range entries {
-				ok := "ok"
-				if !e.OK {
-					ok = "incomplete"
-				}
-				fmt.Fprintf(out, "%s  %s  %-10s  %-24s  applied=%d  %s",
-					e.RunID, e.Timestamp.Format("2006-01-02 15:04"), humanJournalLibrary(e.Library), e.Operation, e.Summary.Applied, ok)
-				if e.WorkflowRunID != "" {
-					fmt.Fprintf(out, "  workflow=%s", e.WorkflowRunID)
-				}
-				fmt.Fprintln(out)
+			if incomplete != nil {
+				return degradedErr(fmt.Errorf("journal list is incomplete; some runs may be omitted: %w", incomplete))
 			}
 			return nil
 		},
@@ -217,7 +235,7 @@ func newJournalShowCmd(flags *rootFlags) *cobra.Command {
 			}
 			entry, err := mutation.ReadEntry(dir, args[0])
 			if err != nil {
-				return notFoundErr(err)
+				return journalEntryLookupErr(err)
 			}
 			entry = normalizeJournalEntry(entry)
 			if flags.asJSON {
@@ -258,7 +276,7 @@ func newJournalUndoCmd(flags *rootFlags) *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			entry, err := readJournalEntryForUndo(args[0])
 			if err != nil {
-				return notFoundErr(err)
+				return journalEntryLookupErr(err)
 			}
 			if err := ensureJournalLibraryMatches(entry); err != nil {
 				return err

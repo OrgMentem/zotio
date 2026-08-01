@@ -34,11 +34,18 @@ and persist `UserID` and append zotio's local mutation journal.
    atomic-publish/checkpoint-cleanup transaction. A busy lock fails immediately
    with retry guidance and precondition-failure exit code 9; writers never wait
    indefinitely.
-2. Installation-state writers share `<config-dir>/.writer.lock`. An output artifact
-   independent of installation state instead uses a lock keyed by its canonical
-   output path. The lock applies to configuration and credentials, profiles,
-   local-store sync/demo/tail cursor changes, workflow checkpoint plus journal,
-   export snapshot sidecars, vault compare plus replace, and bundle publication.
+2. Installation-state writers share the host user's
+   `~/.zotio/.writer.lock`, because profiles are persisted in
+   `~/.zotio/profiles.json` even when configuration or data paths are
+   overridden. `--config` and `ZOTERO_CONFIG` select only configuration; they
+   never create an independent writer scope. Likewise `ZOTIO_DATA_DIR` moves
+   credentials and local state but does not isolate the shared profile file, so
+   it also shares this lock. A distinct user home is an independent
+   installation scope. An output artifact independent of installation state
+   instead uses a lock keyed by its canonical output path. The lock applies to
+   configuration and credentials, profiles, local-store sync/demo/tail cursor
+   changes, workflow checkpoint plus journal, export snapshot sidecars, vault
+   compare plus replace, and bundle publication.
 3. Remote library mutations also take the writer lock: in addition to the remote
    mutation, they can resolve and persist `UserID` and append the local mutation
    journal. Zotero-side conflicts remain protected by
@@ -46,7 +53,11 @@ and persist `UserID` and append zotio's local mutation journal.
 4. Readers remain concurrent. Local and MCP queries continue to use SQLite WAL and
    read-only handles; reads do not take the writer lock. The MCP in-process
    mirrored-command mutex remains defense in depth only.
-5. The lock is an OS advisory lock implemented cross-platform with
+5. Lock eligibility follows a command's actual mutation condition, not capability
+   metadata alone. Confirmation-gated mutations lock only in apply mode;
+   commands that write unless `--dry-run` lock for their live mode; and
+   flag-sensitive commands lock only when the write-enabling flag is present.
+6. The lock is an OS advisory lock implemented cross-platform with
    `github.com/gofrs/flock` v0.13.0. Process death releases the OS lock, so there
    is no stale-lock recovery protocol;
    the lock file itself may remain harmlessly. Atomic temp-plus-rename remains the
