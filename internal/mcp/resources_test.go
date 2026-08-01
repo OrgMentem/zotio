@@ -7,6 +7,7 @@ package mcp
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -256,7 +257,10 @@ func TestArchiveStatusSurfacesReadErrors(t *testing.T) {
 	}
 	db.Close()
 
-	status := archiveStatus(context.Background())
+	status, err := archiveStatus(context.Background())
+	if err != nil {
+		t.Fatalf("archiveStatus: %v", err)
+	}
 	if status["synced"] != true {
 		t.Fatalf("synced = %v, want true (resources still counted)", status["synced"])
 	}
@@ -270,5 +274,32 @@ func TestArchiveStatusSurfacesReadErrors(t *testing.T) {
 	}
 	if msg, _ := entry["error"].(string); msg == "" {
 		t.Errorf("items entry must surface a persistence read error, got %#v", entry)
+	}
+}
+
+func TestArchiveStatusCancellationStopsBeforeStateReads(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	if err := os.MkdirAll(filepath.Dir(dbPath()), 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	db, err := store.OpenWithContext(context.Background(), dbPath())
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	if _, err := db.DB().Exec(`DROP TABLE sync_state`); err != nil {
+		t.Fatalf("drop sync_state: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close store: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	status, err := archiveStatus(ctx)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("archiveStatus error = %v, want context cancellation", err)
+	}
+	if status != nil {
+		t.Fatalf("archiveStatus returned normal status after cancellation: %#v", status)
 	}
 }

@@ -37,6 +37,11 @@ func routeCreateItem(ctx context.Context, flags *rootFlags, webClient itemPoster
 	if err != nil {
 		return itemCreateResult{}, err
 	}
+	return routeCreateItemVia(ctx, flags, via, webClient, item, sourceURI, collectionRequested)
+}
+
+// routeCreateItemVia creates one Zotero item through an already resolved route.
+func routeCreateItemVia(ctx context.Context, flags *rootFlags, via string, webClient itemPoster, item map[string]any, sourceURI string, collectionRequested bool) (itemCreateResult, error) {
 	switch via {
 	case "web":
 		if webClient == nil {

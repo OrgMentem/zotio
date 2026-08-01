@@ -261,6 +261,9 @@ func TestReadWriteCacheHonorsFreshness(t *testing.T) {
 	if got, ok := c.readCache("/items", params, nil); ok {
 		t.Fatalf("readCache hit expired cache with body %s", got)
 	}
+	if _, err := os.Stat(cacheFile); !os.IsNotExist(err) {
+		t.Fatalf("expired cache file still exists: %v", err)
+	}
 }
 
 func TestCheckRedirectRequiresSameOrigin(t *testing.T) {

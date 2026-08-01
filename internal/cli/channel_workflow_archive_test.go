@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 	"zotio/internal/store"
@@ -128,6 +129,55 @@ func TestWorkflowArchiveCancellationStopsResourceLoop(t *testing.T) {
 	defer mu.Unlock()
 	if got, want := strings.Join(resources, ","), "collections"; got != want {
 		t.Fatalf("fetched resources = %q, want %q", got, want)
+	}
+}
+
+func TestWorkflowArchive_ClientTimeoutMarksResourceIncompleteAndContinues(t *testing.T) {
+	collectionStarted := make(chan struct{})
+	var itemsRequested atomic.Bool
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		resource := strings.TrimPrefix(r.URL.Path, "/users/0/")
+		if resource == "collections" {
+			close(collectionStarted)
+			<-r.Context().Done()
+			return
+		}
+		if resource == "items" {
+			itemsRequested.Store(true)
+		}
+		_, _ = w.Write([]byte("[]"))
+	}))
+	defer srv.Close()
+
+	t.Setenv("ZOTERO_BASE_URL", srv.URL+"/users/0")
+	t.Setenv("ZOTERO_CONFIG", filepath.Join(t.TempDir(), "missing.toml"))
+	cmd := newWorkflowArchiveCmd(&rootFlags{asJSON: true, noCache: true, timeout: 20 * time.Millisecond})
+	cmd.SilenceErrors, cmd.SilenceUsage = true, true
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetArgs([]string{"--db", filepath.Join(t.TempDir(), "archive.db")})
+
+	err := cmd.ExecuteContext(context.Background())
+	if err == nil || ExitCode(err) != 13 {
+		t.Fatalf("archive error = %v, exit=%d; want incomplete archive error", err, ExitCode(err))
+	}
+	select {
+	case <-collectionStarted:
+	default:
+		t.Fatal("collections request did not begin")
+	}
+	if !itemsRequested.Load() {
+		t.Fatal("archive stopped after HTTP client timeout, want later items request")
+	}
+	var result struct {
+		Status   string   `json:"status"`
+		Failures []string `json:"failures"`
+	}
+	if err := json.Unmarshal(out.Bytes(), &result); err != nil {
+		t.Fatalf("decode archive result %q: %v", out.String(), err)
+	}
+	if result.Status != "incomplete" || len(result.Failures) == 0 {
+		t.Fatalf("archive result = %+v, want incomplete result with failures", result)
 	}
 }
 

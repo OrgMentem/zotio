@@ -137,6 +137,60 @@ func TestEmitChanges_ChangeFeed(t *testing.T) {
 	}
 }
 
+func TestEmitChanges_DeletionFetchCancellationDoesNotEmitOrAdvanceCursor(t *testing.T) {
+	deletionStarted := make(chan struct{})
+	mux := http.NewServeMux()
+	mux.HandleFunc("/items", func(w http.ResponseWriter, r *http.Request) {
+		if since := r.URL.Query().Get("since"); since != "10" {
+			t.Errorf("/items since=%q, want 10", since)
+		}
+		w.Header().Set("Last-Modified-Version", "12")
+		_, _ = io.WriteString(w, `[{"key":"A","version":12}]`)
+	})
+	mux.HandleFunc("/deleted", func(w http.ResponseWriter, r *http.Request) {
+		close(deletionStarted)
+		<-r.Context().Done()
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	c := client.New(&config.Config{BaseURL: srv.URL}, 5*time.Second, 0)
+	c.NoCache = true
+	db := tailTestStore(t)
+	if err := db.SaveLibraryVersion("tail:items", 10); err != nil {
+		t.Fatalf("seeding cursor: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	var buf bytes.Buffer
+	done := make(chan error, 1)
+	go func() {
+		_, err := emitChanges(ctx, c, db, "items", "/items", DeliverSink{Scheme: "stdout"}, &buf)
+		done <- err
+	}()
+	select {
+	case <-deletionStarted:
+	case <-time.After(time.Second):
+		t.Fatal("/deleted request did not start")
+	}
+	cancel()
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("emitChanges error = %v, want context cancellation", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("emitChanges did not return after deletion fetch cancellation")
+	}
+	if got, _ := db.GetLibraryVersion("tail:items"); got != 10 {
+		t.Errorf("cursor = %d, want unchanged 10", got)
+	}
+	if buf.Len() != 0 {
+		t.Errorf("emitted output = %q, want none", buf.String())
+	}
+}
+
 // TestEmitChanges_WebhookDelivery verifies that each cycle's NDJSON is POSTed
 // to a webhook sink in addition to being written to the local writer.
 func TestEmitChanges_WebhookDelivery(t *testing.T) {

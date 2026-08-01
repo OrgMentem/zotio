@@ -232,6 +232,9 @@ func emitChanges(ctx context.Context, c *client.Client, db *store.Store, resourc
 	if cursor > 0 {
 		delBody, _, derr := c.GetWithVersionContext(ctx, "/deleted", params)
 		if derr != nil {
+			if ctxErr := ctx.Err(); ctxErr != nil {
+				return 0, ctxErr
+			}
 			fmt.Fprintf(os.Stderr, "warning: tail %s: fetching deletions failed: %v\n", resource, derr)
 		} else {
 			var buckets map[string][]string

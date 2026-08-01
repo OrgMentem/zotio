@@ -56,6 +56,14 @@ func newImportDoiCmd(flags *rootFlags) *cobra.Command {
 			if len(args) == 0 {
 				return cmd.Help()
 			}
+			// The DOI import plan is known before fetching metadata: one create,
+			// plus the resolver attachment when requested. In apply mode, reject
+			// an over-cap plan before constructing clients or making network calls.
+			if resolveMutationMode(flags).Apply {
+				if gateFailure := mutation.CheckGates(mutationOptions(flags), doiImportPreflightOps(args[0], flagFetchPDF)); gateFailure != nil {
+					return fmt.Errorf("%s", gateFailure.Message)
+				}
+			}
 
 			item, err := fetchCrossRefItem(cmd, flags.timeout, args[0])
 			if err != nil {
@@ -73,8 +81,12 @@ func newImportDoiCmd(flags *rootFlags) *cobra.Command {
 					{Field: "item", Add: item},
 				},
 				Apply: func() (string, any, error) {
+					var (
+						via string
+						err error
+					)
 					if flagFetchPDF {
-						via, err := flags.resolveCreateVia(cmd.Context(), cmd.Flags().Changed("collection"))
+						via, err = flags.resolveCreateVia(cmd.Context(), cmd.Flags().Changed("collection"))
 						if err != nil {
 							return "failed", nil, err
 						}
@@ -86,7 +98,11 @@ func newImportDoiCmd(flags *rootFlags) *cobra.Command {
 					if err != nil {
 						return "failed", nil, err
 					}
-					res, err = routeCreateItem(cmd.Context(), flags, c, item, itemCreateSourceURI(item), cmd.Flags().Changed("collection"))
+					if flagFetchPDF {
+						res, err = routeCreateItemVia(cmd.Context(), flags, via, c, item, itemCreateSourceURI(item), cmd.Flags().Changed("collection"))
+					} else {
+						res, err = routeCreateItem(cmd.Context(), flags, c, item, itemCreateSourceURI(item), cmd.Flags().Changed("collection"))
+					}
 					if err != nil {
 						return "failed", nil, err
 					}
@@ -133,6 +149,26 @@ func newImportDoiCmd(flags *rootFlags) *cobra.Command {
 	cmd.Flags().BoolVar(&flagFetchPDF, "fetch-pdf", false, "Attach an open-access PDF via Zotero's desktop resolver (requires --via connector)")
 
 	return cmd
+}
+
+// doiImportPreflightOps describes the countable writes before CrossRef metadata
+// is available. The fully detailed operations are still built and run later.
+func doiImportPreflightOps(doi string, fetchPDF bool) []mutation.Op {
+	ops := []mutation.Op{{
+		ID:      "import.doi",
+		Key:     doi,
+		Kind:    "item_create",
+		Changes: []mutation.Change{{Field: "doi"}},
+	}}
+	if fetchPDF {
+		ops = append(ops, mutation.Op{
+			ID:      "import.doi:resolver-pdf",
+			Key:     doi,
+			Kind:    "attachment_create",
+			Changes: []mutation.Change{{Field: "attachment"}},
+		})
+	}
+	return ops
 }
 
 func fetchCrossRefItem(cmd *cobra.Command, timeout time.Duration, doi string) (map[string]any, error) {

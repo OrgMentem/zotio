@@ -117,7 +117,7 @@ func writeHealthBaseline(path string, preset string, findings []Finding) error {
 		return err
 	}
 	data = append(data, '\n')
-	return cliutil.AtomicWriteDurableFile(path, data, 0o644, 0o755)
+	return cliutil.AtomicWriteDurableFile(path, data, 0o600, 0o755)
 }
 
 // write --report JSON sidecars in human and badge modes without changing stdout.
@@ -127,7 +127,7 @@ func writeHealthReportFile(path string, report healthReport) error {
 		return err
 	}
 	data = append(data, '\n')
-	return cliutil.AtomicWriteFile(path, data, 0o644, 0o755)
+	return cliutil.AtomicWriteFile(path, data, 0o600, 0o755)
 }
 
 // baseline identity helpers reuse watch --health finding keys.

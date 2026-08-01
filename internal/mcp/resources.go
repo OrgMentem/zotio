@@ -104,7 +104,11 @@ func RegisterResources(s *server.MCPServer) {
 			mcplib.WithResourceDescription("Sync/archive status of the local store: per-resource counts, library versions, last sync time, and schema version."),
 			mcplib.WithMIMEType("application/json")),
 		func(ctx context.Context, req mcplib.ReadResourceRequest) ([]mcplib.ResourceContents, error) {
-			return jsonContentsValue(req.Params.URI, archiveStatus(ctx)), nil
+			status, err := archiveStatus(ctx)
+			if err != nil {
+				return nil, err
+			}
+			return jsonContentsValue(req.Params.URI, status), nil
 		},
 	)
 
@@ -451,17 +455,23 @@ func templateKey(uri, prefix string) string {
 }
 
 // archiveStatus reports the local store's sync state. A missing/unopenable
-// store yields a graceful "not synced" payload rather than an error so the
-// resource is always readable.
-func archiveStatus(ctx context.Context) map[string]any {
+// store yields a graceful "not synced" payload rather than an error unless
+// the caller's context is canceled.
+func archiveStatus(ctx context.Context) (map[string]any, error) {
 	db, err := store.OpenReadOnly(dbPath())
 	if err != nil {
-		return map[string]any{"db_path": dbPath(), "synced": false, "note": "local store not initialized; run sync"}
+		return map[string]any{"db_path": dbPath(), "synced": false, "note": "local store not initialized; run sync"}, nil
 	}
 	defer db.Close()
 
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	counts := map[string]int{}
 	rows, qerr := db.QueryContext(ctx, `SELECT resource_type, COUNT(*) FROM resources GROUP BY resource_type`)
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	if qerr == nil {
 		for rows.Next() {
 			var rt string
@@ -471,6 +481,10 @@ func archiveStatus(ctx context.Context) map[string]any {
 				break
 			}
 			counts[rt] = n
+			if err := ctx.Err(); err != nil {
+				_ = rows.Close()
+				return nil, err
+			}
 		}
 		if err := rows.Err(); err != nil && qerr == nil {
 			qerr = fmt.Errorf("iterating resource counts: %w", err)
@@ -479,11 +493,23 @@ func archiveStatus(ctx context.Context) map[string]any {
 			qerr = fmt.Errorf("closing resource counts: %w", err)
 		}
 	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 
 	resources := map[string]any{}
 	for _, t := range []string{"items", "collections", "searches", "tags"} {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		_, lastSynced, _, syncErr := db.GetSyncState(t)
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		ver, verErr := db.GetLibraryVersion(t)
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		entry := map[string]any{
 			"count":           counts[t],
 			"library_version": ver,
@@ -499,7 +525,13 @@ func archiveStatus(ctx context.Context) map[string]any {
 		}
 		resources[t] = entry
 	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	schemaVer, schemaErr := db.SchemaVersion()
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	status := map[string]any{
 		"db_path":        dbPath(),
 		"synced":         qerr == nil && len(counts) > 0,
@@ -512,7 +544,7 @@ func archiveStatus(ctx context.Context) map[string]any {
 	if schemaErr != nil {
 		status["schema_version_error"] = schemaErr.Error()
 	}
-	return status
+	return status, nil
 }
 
 // localSchemaDDL returns the DDL of the local store's tables and indexes.

@@ -71,32 +71,32 @@ func TestSyncFulltext_StoresAndIndexes(t *testing.T) {
 	}
 }
 
+type cancelOnEOFReadCloser struct {
+	io.ReadCloser
+	cancel   func()
+	canceled atomic.Bool
+}
+
+func (b *cancelOnEOFReadCloser) Read(p []byte) (int, error) {
+	n, err := b.ReadCloser.Read(p)
+	if err == io.EOF && b.canceled.CompareAndSwap(false, true) {
+		b.cancel()
+	}
+	return n, err
+}
+
 func TestSyncFulltext_CanceledContextsStopIndexAndPerItemFanout(t *testing.T) {
 	var indexRequests atomic.Int64
 	var perItemRequests atomic.Int64
-	var canceledFanout atomic.Bool
-	fanoutCtx, cancelFanout := context.WithCancel(context.Background())
-	defer cancelFanout()
-
 	mux := http.NewServeMux()
 	mux.HandleFunc("/fulltext", func(w http.ResponseWriter, r *http.Request) {
 		indexRequests.Add(1)
 		w.Header().Set("Last-Modified-Version", "9")
 		_, _ = io.WriteString(w, `{"ATT1":3,"ATT2":4}`)
 	})
-	mux.HandleFunc("/items/ATT1/fulltext", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/items/", func(w http.ResponseWriter, r *http.Request) {
 		perItemRequests.Add(1)
-		if canceledFanout.CompareAndSwap(false, true) {
-			cancelFanout()
-		}
-		<-r.Context().Done()
-	})
-	mux.HandleFunc("/items/ATT2/fulltext", func(w http.ResponseWriter, r *http.Request) {
-		perItemRequests.Add(1)
-		if canceledFanout.CompareAndSwap(false, true) {
-			cancelFanout()
-		}
-		<-r.Context().Done()
+		_, _ = io.WriteString(w, `{"content":"unexpected"}`)
 	})
 	srv := httptest.NewServer(mux)
 	defer srv.Close()
@@ -121,14 +121,23 @@ func TestSyncFulltext_CanceledContextsStopIndexAndPerItemFanout(t *testing.T) {
 		t.Fatalf("per-item fulltext requests with pre-canceled context = %d, want 0", got)
 	}
 
+	fanoutCtx, cancelFanout := context.WithCancel(context.Background())
+	defer cancelFanout()
+	c.HTTPClient = &http.Client{Transport: externalHTTPRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+		resp, err := http.DefaultTransport.RoundTrip(req)
+		if err == nil && req.URL.Path == "/fulltext" {
+			resp.Body = &cancelOnEOFReadCloser{ReadCloser: resp.Body, cancel: cancelFanout}
+		}
+		return resp, err
+	})}
 	if err := syncFulltext(fanoutCtx, c, db, true); err == nil {
-		t.Fatal("syncFulltext with cancellation during per-item fanout succeeded, want error")
+		t.Fatal("syncFulltext with post-index cancellation succeeded, want error")
 	}
 	if got := indexRequests.Load(); got != 1 {
-		t.Fatalf("/fulltext index requests = %d, want 1 before per-item cancellation", got)
+		t.Fatalf("/fulltext index requests = %d, want 1 before cancellation", got)
 	}
-	if got := perItemRequests.Load(); got == 0 {
-		t.Fatal("per-item fulltext requests = 0, want cancellation during fanout")
+	if got := perItemRequests.Load(); got != 0 {
+		t.Fatalf("per-item fulltext requests = %d, want 0 after pre-fanout cancellation", got)
 	}
 }
 

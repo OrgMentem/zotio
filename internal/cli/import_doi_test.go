@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -132,6 +133,42 @@ func TestCrossRefContainerTitleOmitsUnverifiedThesisUniversity(t *testing.T) {
 		"itemType": "", "title": "", "DOI": "",
 	}, item); err != nil {
 		t.Fatalf("validateItemFields(%v) = %v", item, err)
+	}
+}
+
+func TestImportDoiMaxChangesPreflightSkipsMetadataAndWrites(t *testing.T) {
+	crossRefRequests := 0
+	crossRef := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		crossRefRequests++
+		http.Error(w, "CrossRef must not be called", http.StatusInternalServerError)
+	}))
+	t.Cleanup(crossRef.Close)
+	withBase(t, &enrichCrossRefBase, crossRef.URL)
+
+	zoteroPosts := 0
+	zotero := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost {
+			zoteroPosts++
+		}
+		http.Error(w, "Zotero must not be called", http.StatusInternalServerError)
+	}))
+	t.Cleanup(zotero.Close)
+	t.Setenv("ZOTERO_BASE_URL", zotero.URL+"/users/0")
+
+	cmd := newImportDoiCmd(&rootFlags{asJSON: true, yes: true, via: "web", timeout: time.Second, maxChanges: 0})
+	cmd.SetOut(io.Discard)
+	cmd.SetErr(io.Discard)
+	cmd.SilenceErrors = true
+	cmd.SilenceUsage = true
+	cmd.SetArgs([]string{"10.1234/safety"})
+	if err := cmd.Execute(); err == nil {
+		t.Fatal("import doi --yes --max-changes 0 succeeded, want refusal")
+	}
+	if crossRefRequests != 0 {
+		t.Fatalf("CrossRef requests after zero-cap refusal = %d, want 0", crossRefRequests)
+	}
+	if zoteroPosts != 0 {
+		t.Fatalf("Zotero POSTs after zero-cap refusal = %d, want 0", zoteroPosts)
 	}
 }
 
@@ -287,8 +324,118 @@ func TestImportDoiRequiresYesToCreate(t *testing.T) {
 		t.Fatalf("create requests after zero-cap refusal = %d, want 0", createRequests)
 	}
 
-	run(rootFlags{asJSON: true, yes: true, via: "web", timeout: time.Second, maxChanges: -1})
+	apply := run(rootFlags{asJSON: true, yes: true, via: "web", timeout: time.Second, maxChanges: -1})
 	if createRequests != 1 {
 		t.Fatalf("create requests with --yes = %d, want 1", createRequests)
+	}
+	var applyEnv struct {
+		OK        bool   `json:"ok"`
+		Mode      string `json:"mode"`
+		Operation string `json:"operation"`
+		Result    *struct {
+			Summary struct {
+				Applied int `json:"applied"`
+				Failed  int `json:"failed"`
+			} `json:"summary"`
+		} `json:"result"`
+	}
+	if err := json.Unmarshal(apply, &applyEnv); err != nil {
+		t.Fatalf("decode apply output: %v; %s", err, apply)
+	}
+	if !applyEnv.OK || applyEnv.Mode != "apply" || applyEnv.Operation != "import.doi" || applyEnv.Result == nil || applyEnv.Result.Summary.Applied != 1 || applyEnv.Result.Summary.Failed != 0 {
+		t.Fatalf("apply envelope = %+v, want successful import.doi apply", applyEnv)
+	}
+}
+
+func TestImportDoiFetchPDFUsesResolvedConnectorRoute(t *testing.T) {
+	crossRef := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"message":{"type":"journal-article","title":["Route Test"],"DOI":"10.1234/route"}}`))
+	}))
+	t.Cleanup(crossRef.Close)
+	withBase(t, &enrichCrossRefBase, crossRef.URL)
+
+	var pingRequests, saveItemRequests, resolverChecks, attachmentRequests, webPosts int
+	listener, err := net.Listen("tcp", "127.0.0.1:23119")
+	if err != nil {
+		t.Skipf("port 23119 is unavailable: %v", err)
+	}
+	connectorServer := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/connector/ping":
+			pingRequests++
+			if pingRequests > 1 {
+				http.Error(w, "second route resolution must not happen", http.StatusServiceUnavailable)
+				return
+			}
+			w.WriteHeader(http.StatusOK)
+		case "/connector/saveItems":
+			saveItemRequests++
+			w.WriteHeader(http.StatusCreated)
+		case "/connector/hasAttachmentResolvers":
+			resolverChecks++
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte("true"))
+		case "/connector/saveAttachmentFromResolver":
+			attachmentRequests++
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusCreated)
+			_, _ = w.Write([]byte(`"Route Test PDF"`))
+		case "/api/users/0/items":
+			if r.Method == http.MethodPost {
+				webPosts++
+			}
+			w.Header().Set("Last-Modified-Version", "0")
+			_, _ = w.Write([]byte(`[]`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	connectorServer.Listener = listener
+	connectorServer.Start()
+	t.Cleanup(connectorServer.Close)
+
+	flags := &rootFlags{
+		asJSON:     true,
+		yes:        true,
+		via:        "auto",
+		timeout:    time.Second,
+		maxChanges: -1,
+		configPath: testConfigFile(t, "http://127.0.0.1:23119/api/users/0"),
+	}
+	cmd := newImportDoiCmd(flags)
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(io.Discard)
+	cmd.SilenceErrors = true
+	cmd.SilenceUsage = true
+	cmd.SetArgs([]string{"10.1234/route", "--fetch-pdf"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("import doi --fetch-pdf through connector: %v; %s", err, out.String())
+	}
+
+	var env struct {
+		OK     bool   `json:"ok"`
+		Mode   string `json:"mode"`
+		Result *struct {
+			Summary struct {
+				Applied int `json:"applied"`
+			} `json:"summary"`
+		} `json:"result"`
+	}
+	if err := json.Unmarshal(out.Bytes(), &env); err != nil {
+		t.Fatalf("decode import output: %v; %s", err, out.Bytes())
+	}
+	if !env.OK || env.Mode != "apply" || env.Result == nil || env.Result.Summary.Applied != 2 {
+		t.Fatalf("import envelope = %+v, want successful create and attachment", env)
+	}
+	if pingRequests != 1 {
+		t.Fatalf("connector pings = %d, want one route resolution", pingRequests)
+	}
+	if saveItemRequests != 1 || resolverChecks != 1 || attachmentRequests != 1 {
+		t.Fatalf("connector requests = saveItems:%d hasAttachmentResolvers:%d saveAttachmentFromResolver:%d, want one each", saveItemRequests, resolverChecks, attachmentRequests)
+	}
+	if webPosts != 0 {
+		t.Fatalf("Web API item POSTs = %d, want connector-only import", webPosts)
 	}
 }
