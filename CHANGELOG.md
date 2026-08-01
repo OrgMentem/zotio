@@ -2,7 +2,7 @@
 
 Notable changes to zotio. Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow [SemVer](https://semver.org/).
 
-## [Unreleased]
+## [0.15.0] — 2026-08-01
 ### Changed — breaking
 - **A batch create that Zotero partially rejects is no longer reported as
   success.** `items create`, `collections create`, and `import file` send
@@ -502,7 +502,7 @@ First tagged release: the trust-and-automation layer for Zotero.
 - **Onboarding** — `zotio init` guided setup (Zotero detection, local API, key, first sync, health check).
 - Release engineering: goreleaser builds for 6 platforms, cosign-signed checksums, SBOMs, Homebrew tap.
 
-[Unreleased]: https://github.com/OrgMentem/zotio/compare/v0.14.0...HEAD
+[0.15.0]: https://github.com/OrgMentem/zotio/compare/v0.14.0...v0.15.0
 [0.14.0]: https://github.com/OrgMentem/zotio/compare/v0.13.1...v0.14.0
 [0.13.1]: https://github.com/OrgMentem/zotio/compare/v0.13.0...v0.13.1
 [0.13.0]: https://github.com/OrgMentem/zotio/compare/v0.12.0...v0.13.0
