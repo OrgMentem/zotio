@@ -308,7 +308,7 @@ func handleSQL(ctx context.Context, req mcplib.CallToolRequest) (*mcplib.CallToo
 		}
 		row := make(map[string]any)
 		for i, col := range cols {
-			row[col] = values[i]
+			row[col] = normalizeSQLValue(values[i])
 		}
 		results = append(results, row)
 	}
@@ -326,6 +326,15 @@ func handleSQL(ctx context.Context, req mcplib.CallToolRequest) (*mcplib.CallToo
 		return mcplib.NewToolResultError(fmt.Sprintf("encoding query results: %v", err)), nil
 	}
 	return mcplib.NewToolResultText(bound.EndpointResponse("GET", data)), nil
+}
+
+func normalizeSQLValue(v any) any {
+	switch x := v.(type) {
+	case []byte:
+		return string(x)
+	default:
+		return x
+	}
 }
 
 func handleContext(_ context.Context, _ mcplib.CallToolRequest) (*mcplib.CallToolResult, error) {

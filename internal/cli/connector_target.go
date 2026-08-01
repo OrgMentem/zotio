@@ -135,6 +135,7 @@ func apiCollectionPaths(rows []apiCollectionRow) map[string]string {
 		}
 	}
 	paths := make(map[string]string, len(rows))
+	visiting := make(map[string]bool, len(rows))
 	var build func(string) string
 	build = func(key string) string {
 		if path := paths[key]; path != "" {
@@ -144,6 +145,12 @@ func apiCollectionPaths(rows []apiCollectionRow) map[string]string {
 		if !ok {
 			return ""
 		}
+		if visiting[key] {
+			paths[key] = strings.TrimSpace(row.Data.Name)
+			return paths[key]
+		}
+		visiting[key] = true
+		defer delete(visiting, key)
 		name := strings.TrimSpace(row.Data.Name)
 		parent := collectionParentKey(row.Data.ParentCollection)
 		if parent == "" {
@@ -151,6 +158,9 @@ func apiCollectionPaths(rows []apiCollectionRow) map[string]string {
 			return name
 		}
 		parentPath := build(parent)
+		if path := paths[key]; path != "" {
+			return path
+		}
 		if parentPath == "" {
 			paths[key] = name
 			return name

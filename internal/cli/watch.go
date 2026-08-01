@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -57,7 +58,7 @@ until it is resumed or deleted with zotio workflow run <spec> --yes --resume.`,
 			// local to this wrapper.
 			runCycle := func(ctx context.Context) error {
 				syncCmd := newSyncCmd(flags)
-				syncCmd.SetArgs(args)
+				syncCmd.SetArgs(watchSyncArgs(args))
 				syncCmd.SetOut(cmd.OutOrStdout())
 				syncCmd.SetErr(cmd.ErrOrStderr())
 
@@ -128,6 +129,13 @@ until it is resumed or deleted with zotio workflow run <spec> --yes --resume.`,
 	cmd.Flags().StringVar(&workflowPath, "workflow", "", "Run this workflow after every successful sync; previews unless --yes, and failed applied runs require zotio workflow run <spec> --yes --resume")
 
 	return cmd
+}
+
+func watchSyncArgs(args []string) []string {
+	if len(args) == 0 {
+		return nil
+	}
+	return []string{"--resources", strings.Join(args, ",")}
 }
 
 // runTriggeredWorkflow reports workflow failures without disrupting its caller.

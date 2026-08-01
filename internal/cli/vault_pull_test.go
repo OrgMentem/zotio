@@ -78,8 +78,23 @@ func TestIsManagedNoteHTML(t *testing.T) {
 }
 
 func TestStripHTMLTags(t *testing.T) {
-	if got := stripHTMLTags("<p>hello <strong>world</strong></p>"); got != "hello world" {
-		t.Errorf("stripHTMLTags = %q, want 'hello world'", got)
+	cases := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{name: "quoted double attribute", in: `<a title="Click > Here">text</a>`, want: "text"},
+		{name: "quoted single attribute", in: `<span data-x='a > b'>y</span>`, want: "y"},
+		{name: "ordinary tags", in: "<b>bold</b>", want: "bold"},
+		{name: "bare greater-than text", in: "a > b", want: "a > b"},
+		{name: "unterminated quote", in: `<a title="Click > Here`, want: ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := stripHTMLTags(tc.in); got != tc.want {
+				t.Errorf("stripHTMLTags(%q) = %q, want %q", tc.in, got, tc.want)
+			}
+		})
 	}
 }
 

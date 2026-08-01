@@ -218,20 +218,34 @@ func unescapeMarkdownHTML(s string) string {
 func stripHTMLTags(s string) string {
 	var b strings.Builder
 	depth := 0
+	var quote rune
 	for _, r := range s {
+		if depth == 0 {
+			if r == '<' {
+				depth++
+			} else {
+				b.WriteRune(r)
+			}
+			continue
+		}
+
+		if quote != 0 {
+			if r == quote {
+				quote = 0
+			}
+			continue
+		}
+
 		switch r {
 		case '<':
 			depth++
 		case '>':
-			if depth > 0 {
-				depth--
-			} else {
-				b.WriteRune(r)
-			}
-		default:
+			depth--
 			if depth == 0 {
-				b.WriteRune(r)
+				quote = 0
 			}
+		case '\'', '"':
+			quote = r
 		}
 	}
 	return b.String()

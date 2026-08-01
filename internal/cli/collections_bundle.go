@@ -98,7 +98,10 @@ func writeCollectionBundle(db *store.Store, collKey, outDir string) (collectionB
 	if err != nil {
 		return collectionBundleManifest{}, fmt.Errorf("reading collection annotations: %w", err)
 	}
-	ftByItem := fulltextByParentItem(db)
+	ftByItem, err := fulltextByParentItemWithErr(db)
+	if err != nil {
+		return collectionBundleManifest{}, fmt.Errorf("reading collection fulltext: %w", err)
+	}
 
 	bundle := summarizeCollectionBundle{
 		Collection: collKey,

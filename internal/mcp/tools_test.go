@@ -167,6 +167,52 @@ func TestStripLeadingSQLNoise(t *testing.T) {
 	}
 }
 
+func TestHandleSQLNormalizesTextAndPreservesJSONTypes(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("ZOTERO_DATA_DIR", t.TempDir())
+
+	db, err := store.OpenWithContext(context.Background(), dbPath())
+	if err != nil {
+		t.Fatalf("open writable db: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close writable db: %v", err)
+	}
+
+	req := mcplib.CallToolRequest{}
+	req.Params.Arguments = map[string]any{
+		"query": "SELECT 'Readable title' AS text_value, 42 AS integer_value, 3.5 AS real_value, NULL AS null_value",
+	}
+	res, err := handleSQL(context.Background(), req)
+	if err != nil {
+		t.Fatalf("handleSQL protocol error: %v", err)
+	}
+	if res == nil || res.IsError {
+		t.Fatalf("handleSQL result = %+v, want success", res)
+	}
+
+	var got sqlResultEnvelope
+	if err := json.Unmarshal([]byte(toolResultText(t, res)), &got); err != nil {
+		t.Fatalf("decode SQL result: %v", err)
+	}
+	if len(got.Rows) != 1 {
+		t.Fatalf("rows = %d, want 1", len(got.Rows))
+	}
+	row := got.Rows[0]
+	if value, ok := row["text_value"].(string); !ok || value != "Readable title" {
+		t.Fatalf("text_value = %#v, want readable string", row["text_value"])
+	}
+	if value, ok := row["integer_value"].(float64); !ok || value != 42 {
+		t.Fatalf("integer_value = %#v, want JSON number 42", row["integer_value"])
+	}
+	if value, ok := row["real_value"].(float64); !ok || value != 3.5 {
+		t.Fatalf("real_value = %#v, want JSON number 3.5", row["real_value"])
+	}
+	if value, ok := row["null_value"]; !ok || value != nil {
+		t.Fatalf("null_value = %#v, want JSON null", row["null_value"])
+	}
+}
+
 func TestHandleSQLRecursiveCTEIsRowLimited(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	t.Setenv("ZOTERO_DATA_DIR", t.TempDir())

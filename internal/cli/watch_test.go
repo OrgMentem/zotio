@@ -36,6 +36,32 @@ func TestWatchRejectsTooShortInterval(t *testing.T) {
 	}
 }
 
+func TestWatchSyncArgs(t *testing.T) {
+	tests := []struct {
+		name string
+		args []string
+		want []string
+	}{
+		{name: "default resources", want: nil},
+		{name: "one resource", args: []string{"items"}, want: []string{"--resources", "items"}},
+		{name: "multiple resources", args: []string{"items", "collections"}, want: []string{"--resources", "items,collections"}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := watchSyncArgs(tt.args)
+			if len(got) != len(tt.want) {
+				t.Fatalf("watchSyncArgs(%v) = %v, want %v", tt.args, got, tt.want)
+			}
+			for i := range got {
+				if got[i] != tt.want[i] {
+					t.Fatalf("watchSyncArgs(%v) = %v, want %v", tt.args, got, tt.want)
+				}
+			}
+		})
+	}
+}
+
 func runWatchOnceTest(t *testing.T, workflowPath string) (string, error) {
 	t.Helper()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

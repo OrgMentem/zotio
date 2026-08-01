@@ -40,6 +40,22 @@ func TestAPICollectionPaths(t *testing.T) {
 	}
 }
 
+func TestAPICollectionPathsCyclicParents(t *testing.T) {
+	rows := []apiCollectionRow{
+		collectionRow("SELF", "Self", "SELF"),
+		collectionRow("A", "A", "B"),
+		collectionRow("B", "B", "A"),
+	}
+
+	got := apiCollectionPaths(rows)
+	if got["SELF"] != "Self" {
+		t.Errorf("self-referencing path = %q, want %q", got["SELF"], "Self")
+	}
+	if got["A"] == "" || got["B"] == "" {
+		t.Errorf("cyclic paths = %#v, want paths for both collections", got)
+	}
+}
+
 func collectionRow(key, name string, parent any) apiCollectionRow {
 	var row apiCollectionRow
 	row.Key = key

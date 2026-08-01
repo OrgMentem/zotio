@@ -271,3 +271,67 @@ func TestTagsRenameMaxChangesRefusesBeforePatching(t *testing.T) {
 		t.Fatalf("PATCH count = %d, want 0", total)
 	}
 }
+
+func TestRenamedItemTagsDeduplicatesByExactName(t *testing.T) {
+	type tagSpec struct {
+		tag    string
+		typeID int
+	}
+	for _, tc := range []struct {
+		name   string
+		oldTag string
+		newTag string
+		input  []tagSpec
+		want   []tagSpec
+	}{
+		{
+			name:   "renames without changing count",
+			oldTag: "foo",
+			newTag: "baz",
+			input:  []tagSpec{{"foo", 0}, {"bar", 1}},
+			want:   []tagSpec{{"baz", 0}, {"bar", 1}},
+		},
+		{
+			name:   "renamed tag collapses into existing exact name",
+			oldTag: "foo",
+			newTag: "Foo",
+			input:  []tagSpec{{"foo", 0}, {"Foo", 1}},
+			want:   []tagSpec{{"Foo", 0}},
+		},
+		{
+			name:   "preexisting duplicate keeps first tag",
+			oldTag: "foo",
+			newTag: "bar",
+			input:  []tagSpec{{"a", 0}, {"b", 1}, {"a", 2}},
+			want:   []tagSpec{{"a", 0}, {"b", 1}},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			tags := make([]any, 0, len(tc.input))
+			for _, tag := range tc.input {
+				tags = append(tags, map[string]any{"tag": tag.tag, "type": tag.typeID})
+			}
+			item := map[string]any{"data": map[string]any{"tags": tags}}
+
+			got, _, err := renamedItemTags(item, tc.oldTag, tc.newTag)
+			if err != nil {
+				t.Fatalf("renamedItemTags: %v", err)
+			}
+			if len(got) != len(tc.want) {
+				t.Fatalf("tag count = %d, want %d", len(got), len(tc.want))
+			}
+			for i, want := range tc.want {
+				tagObj, ok := got[i].(map[string]any)
+				if !ok {
+					t.Fatalf("tag %d = %#v, want tag object", i, got[i])
+				}
+				if actual := tagObj["tag"]; actual != want.tag {
+					t.Errorf("tag %d name = %q, want %q", i, actual, want.tag)
+				}
+				if actual := tagObj["type"]; actual != want.typeID {
+					t.Errorf("tag %d type = %v, want %d", i, actual, want.typeID)
+				}
+			}
+		})
+	}
+}

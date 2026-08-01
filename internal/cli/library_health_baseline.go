@@ -126,10 +126,7 @@ func writeHealthReportFile(path string, report healthReport) error {
 		return err
 	}
 	data = append(data, '\n')
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return err
-	}
-	return os.WriteFile(path, data, 0o600)
+	return writeFileAtomic(path, data)
 }
 
 func writeFileAtomic(path string, data []byte) error {

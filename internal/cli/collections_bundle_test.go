@@ -56,6 +56,23 @@ func TestCollectionsBundleWritesResearchPackage(t *testing.T) {
 	}
 }
 
+func TestCollectionsBundleIncludesStoredFulltext(t *testing.T) {
+	seedCollectionBundleStore(t)
+
+	outDir := filepath.Join(t.TempDir(), "bundle")
+	cmd := newCollectionsCmd(&rootFlags{})
+	cmd.SetArgs([]string{"bundle", "COL", "--out", outDir})
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetErr(&bytes.Buffer{})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("bundle: %v", err)
+	}
+
+	if synthesis := readBundleTestFile(t, outDir, "synthesis.md"); !strings.Contains(synthesis, "transformer full text") {
+		t.Fatalf("synthesis.md missing stored fulltext:\n%s", synthesis)
+	}
+}
+
 func TestCollectionsBundleJSONManifest(t *testing.T) {
 	seedCollectionBundleStore(t)
 
@@ -111,6 +128,11 @@ func seedCollectionBundleStore(t *testing.T) {
 	}
 	if _, _, err := db.UpsertBatch("items", items); err != nil {
 		t.Fatalf("seed items: %v", err)
+	}
+	if err := db.UpsertKeyed("fulltext", []string{"ATT1"}, []json.RawMessage{
+		json.RawMessage(`{"content":"transformer full text"}`),
+	}); err != nil {
+		t.Fatalf("seed fulltext: %v", err)
 	}
 }
 

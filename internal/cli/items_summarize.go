@@ -294,10 +294,6 @@ func itemGaps(meta vaultMeta, hasFulltext, fulltextSkipped bool) []string {
 // fulltextByParentItem streams stored attachment full text once and maps each
 // parent item key to its PDF's stored full text, avoiding a per-item rescan in
 // collection mode.
-func fulltextByParentItem(db *store.Store) map[string]string {
-	fulltext, _ := fulltextByParentItemWithErr(db)
-	return fulltext
-}
 
 func fulltextByParentItemWithErr(db *store.Store) (map[string]string, error) {
 	out := make(map[string]string)

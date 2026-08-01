@@ -5,12 +5,15 @@ package cli
 import (
 	"encoding/json"
 	"fmt"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
 )
+
+var dateYearPattern = regexp.MustCompile(`\b(1[5-9]\d{2}|20\d{2})\b`)
 
 type itemNoteMetadata struct {
 	Title    string
@@ -124,17 +127,7 @@ func noteAuthors(raw any) []string {
 }
 
 func yearFromDate(date string) string {
-	date = strings.TrimSpace(date)
-	if len(date) < 4 {
-		return ""
-	}
-	year := date[:4]
-	for _, r := range year {
-		if r < '0' || r > '9' {
-			return ""
-		}
-	}
-	return year
+	return dateYearPattern.FindString(date)
 }
 
 func citationKeyFromExtra(extra string) string {

@@ -221,6 +221,7 @@ func renamedItemTags(item map[string]any, oldTag, newTag string) ([]any, bool, e
 	}
 
 	renamed := make([]any, 0, len(rawTags))
+	seen := make(map[string]struct{}, len(rawTags))
 	changed := false
 	for _, rawTag := range rawTags {
 		tagObj, ok := rawTag.(map[string]any)
@@ -232,9 +233,17 @@ func renamedItemTags(item map[string]any, oldTag, newTag string) ([]any, bool, e
 		for k, v := range tagObj {
 			copied[k] = v
 		}
-		if tagName, ok := copied["tag"].(string); ok && tagName == oldTag {
+		tagName, ok := copied["tag"].(string)
+		if ok && tagName == oldTag {
 			copied["tag"] = newTag
+			tagName = newTag
 			changed = true
+		}
+		if ok {
+			if _, exists := seen[tagName]; exists {
+				continue
+			}
+			seen[tagName] = struct{}{}
 		}
 		renamed = append(renamed, copied)
 	}

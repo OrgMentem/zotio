@@ -109,6 +109,47 @@ func TestUpdateCheckSoftFailsForRateLimit(t *testing.T) {
 	}
 }
 
+func TestCompareVersion(t *testing.T) {
+	tests := []struct {
+		name        string
+		left, right string
+		want        int
+	}{
+		{
+			name:  "fourth segment is ignored",
+			left:  "1.2.3",
+			right: "1.2.3.4",
+			want:  0,
+		},
+		{
+			name:  "newer patch",
+			left:  "1.2.4",
+			right: "1.2.3",
+			want:  1,
+		},
+		{
+			name:  "leading v is ignored",
+			left:  "v1.2.3",
+			right: "1.2.3",
+			want:  0,
+		},
+		{
+			name:  "pre-release and build suffixes are ignored",
+			left:  "1.2.3-rc.1+build.7",
+			right: "1.2.3",
+			want:  0,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := compareVersion(test.left, test.right); got != test.want {
+				t.Fatalf("compareVersion(%q, %q) = %d, want %d", test.left, test.right, got, test.want)
+			}
+		})
+	}
+}
+
 func TestUpdateDevVersionNeverAppearsBehind(t *testing.T) {
 	if IsNewer("1.2.3", "dev") {
 		t.Fatal("development version reported behind")

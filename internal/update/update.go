@@ -180,7 +180,10 @@ func compareVersion(left, right string) int {
 		value = strings.TrimPrefix(value, "v")
 		value = strings.SplitN(value, "-", 2)[0]
 		value = strings.SplitN(value, "+", 2)[0]
-		for i, raw := range strings.SplitN(value, ".", 3) {
+		for i, raw := range strings.Split(value, ".") {
+			if i == len(parts) {
+				break
+			}
 			parts[i], _ = strconv.Atoi(raw)
 		}
 		return parts
