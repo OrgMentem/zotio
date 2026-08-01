@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -75,8 +76,12 @@ func TestCollectionsBundleSameOutputReturnsBusyAndPreservesFirstArtifacts(t *tes
 		second.SetArgs([]string{"bundle", "OTHER", "--out", outDir})
 		second.SetOut(&bytes.Buffer{})
 		second.SetErr(&bytes.Buffer{})
-		if busyErr := second.Execute(); busyErr == nil || ExitCode(busyErr) != 9 {
-			return fmt.Errorf("second bundle error = %v, exit = %d; want busy precondition exit 9", busyErr, ExitCode(busyErr))
+		busyErr := second.Execute()
+		switch {
+		case busyErr == nil:
+			return errors.New("second bundle succeeded; want busy precondition exit 9")
+		case ExitCode(busyErr) != 9:
+			return fmt.Errorf("second bundle exit = %d, want busy precondition exit 9: %w", ExitCode(busyErr), busyErr)
 		}
 		return runCollectionsBundle(first, firstFlags, "COL", outDir)
 	})

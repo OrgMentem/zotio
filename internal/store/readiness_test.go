@@ -205,7 +205,7 @@ func TestOpenReadOnlyContext_ReadinessDeadlineInterruptsExclusiveLock(t *testing
 	if _, err := writer.Exec(`BEGIN EXCLUSIVE`); err != nil {
 		t.Fatalf("take exclusive lock: %v", err)
 	}
-	defer writer.Exec(`ROLLBACK`)
+	defer func() { _, _ = writer.Exec(`ROLLBACK`) }()
 
 	start := time.Now()
 	_, err = OpenReadOnlyContext(context.Background(), dbPath)

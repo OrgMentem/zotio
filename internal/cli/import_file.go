@@ -560,12 +560,6 @@ func setImportString(item map[string]any, field, value string) {
 	}
 }
 
-func addImportCollectionToItems(items []map[string]any, collection string) {
-	for _, item := range items {
-		addImportCollection(item, collection)
-	}
-}
-
 func addImportCollection(item map[string]any, collection string) {
 	collection = strings.TrimSpace(collection)
 	if collection == "" {

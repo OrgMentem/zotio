@@ -652,7 +652,7 @@ func TestHelpersWriterAccessorsFallBackForBareFlags(t *testing.T) {
 	}()
 
 	flags := &rootFlags{asJSON: true}
-	classifyAPIError(helpersTestAPIError(409, "already exists"), flags)
+	_ = classifyAPIError(helpersTestAPIError(409, "already exists"), flags)
 	flags.asJSON = false
 	if err := writeNoop(flags.out(), flags.errOut(), flags, "already_deleted", "already deleted (no-op)"); err != nil {
 		t.Fatalf("write prose no-op: %v", err)
