@@ -14,7 +14,10 @@ require (
 	modernc.org/sqlite v1.52.0 // CVE-2025-3277 concat_ws heap overflow fix
 )
 
-require golang.org/x/text v0.40.0
+require (
+	github.com/gofrs/flock v0.13.0
+	golang.org/x/text v0.40.0
+)
 
 require (
 	github.com/dlclark/regexp2 v1.11.5 // indirect

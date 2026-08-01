@@ -28,3 +28,7 @@ The `ZOTERO_API_KEY` env var is optional for read-only local-desktop use (the lo
 ```bash
 claude mcp add zotero zotio-mcp -e ZOTERO_API_KEY=<your-key>
 ```
+
+## Concurrent access
+
+Only one zotio writer may update an installation or independent output at a time. A concurrent write fails immediately and is safe to retry after the active writer finishes; read-only commands remain available.
