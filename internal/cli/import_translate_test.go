@@ -242,13 +242,32 @@ func TestImportDoiDryRun(t *testing.T) {
 		t.Fatalf("import doi --dry-run: %v", err)
 	}
 	var env struct {
-		DryRun bool           `json:"dry_run"`
-		Item   map[string]any `json:"item"`
+		Mode          string `json:"mode"`
+		PreviewReason string `json:"preview_reason"`
+		Plan          struct {
+			Operations []struct {
+				Changes []struct {
+					Field string          `json:"field"`
+					Add   json.RawMessage `json:"add"`
+				} `json:"changes"`
+			} `json:"operations"`
+		} `json:"plan"`
 	}
 	if err := json.Unmarshal(out.Bytes(), &env); err != nil {
 		t.Fatalf("decode %q: %v", out.String(), err)
 	}
-	if !env.DryRun || env.Item["title"] != "DOI Title" || env.Item["abstractNote"] != "Abs." {
-		t.Errorf("doi dry-run item = %v (dry_run=%v)", env.Item, env.DryRun)
+	if env.Mode != "preview" || env.PreviewReason != "dry_run" || len(env.Plan.Operations) != 1 {
+		t.Fatalf("doi dry-run envelope = %+v", env)
+	}
+	var item map[string]any
+	for _, change := range env.Plan.Operations[0].Changes {
+		if change.Field == "item" {
+			if err := json.Unmarshal(change.Add, &item); err != nil {
+				t.Fatalf("decode planned item: %v", err)
+			}
+		}
+	}
+	if item["title"] != "DOI Title" || item["abstractNote"] != "Abs." {
+		t.Errorf("doi dry-run item = %v", item)
 	}
 }

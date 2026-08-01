@@ -10,6 +10,8 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
+
+	"zotio/internal/mutation"
 )
 
 type crossRefWorkResponse struct {
@@ -61,8 +63,20 @@ func newImportDoiCmd(flags *rootFlags) *cobra.Command {
 			}
 			addImportCollection(item, flagCollection)
 
-			if flags.dryRun {
-				return printImportDryRun(cmd, item, "CrossRef (DOI "+args[0]+")", flags)
+			if !resolveMutationMode(flags).Apply {
+				env, runErr := runMutation(cmd.Context(), flags, "import.doi", []mutation.Op{{
+					ID:   "import.doi",
+					Key:  args[0],
+					Kind: "item_create",
+					Changes: []mutation.Change{
+						{Field: "doi", Add: args[0]},
+						{Field: "item", Add: item},
+					},
+				}})
+				if renderErr := renderMutation(cmd, flags, env, nil); renderErr != nil {
+					return renderErr
+				}
+				return runErr
 			}
 
 			c, err := flags.newClient()

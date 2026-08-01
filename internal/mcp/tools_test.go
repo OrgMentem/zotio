@@ -175,13 +175,25 @@ func TestHandleSQLNormalizesTextAndPreservesJSONTypes(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open writable db: %v", err)
 	}
+	if _, err := db.DB().Exec(`
+		CREATE TABLE sql_normalization_values (
+			text_value TEXT,
+			integer_value INTEGER,
+			real_value REAL,
+			null_value TEXT
+		);
+		INSERT INTO sql_normalization_values (text_value, integer_value, real_value, null_value)
+		VALUES ('Readable title', 42, 3.5, NULL);
+	`); err != nil {
+		t.Fatalf("seed SQL normalization values: %v", err)
+	}
 	if err := db.Close(); err != nil {
 		t.Fatalf("close writable db: %v", err)
 	}
 
 	req := mcplib.CallToolRequest{}
 	req.Params.Arguments = map[string]any{
-		"query": "SELECT 'Readable title' AS text_value, 42 AS integer_value, 3.5 AS real_value, NULL AS null_value",
+		"query": "SELECT text_value, integer_value, real_value, null_value FROM sql_normalization_values",
 	}
 	res, err := handleSQL(context.Background(), req)
 	if err != nil {

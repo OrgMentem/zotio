@@ -5,8 +5,11 @@ package cli
 import (
 	"bytes"
 	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -38,5 +41,82 @@ func TestImportFileDryRunPrintsPreviewWithoutImporting(t *testing.T) {
 	}
 	if _, ok := got["imported"]; ok {
 		t.Fatalf("preview = %+v, must not claim imported items", got)
+	}
+}
+
+func TestImportFileReportsBatchWriteFailures(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"successful":{},"success":{},"unchanged":{},"failed":{"0":{"code":400,"message":"title is required"}}}`))
+	}))
+	defer srv.Close()
+	t.Setenv("ZOTERO_BASE_URL", srv.URL+"/users/0")
+
+	filePath := filepath.Join(t.TempDir(), "items.bib")
+	if err := os.WriteFile(filePath, []byte("@article{example,\n  title = {Example}\n}\n"), 0o600); err != nil {
+		t.Fatalf("write import fixture: %v", err)
+	}
+
+	cmd := newImportFileCmd(&rootFlags{asJSON: true})
+	cmd.SilenceErrors, cmd.SilenceUsage = true, true
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetArgs([]string{filePath})
+	err := cmd.Execute()
+	if err == nil || ExitCode(err) != 13 {
+		t.Fatalf("import error = %v, exit=%d; want degraded failure", err, ExitCode(err))
+	}
+	for _, want := range []string{"index 0", "code 400", "title is required"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("import error = %q, want %q", err, want)
+		}
+	}
+	if out.Len() != 0 {
+		t.Fatalf("import output = %q, must not report a failed batch as imported", out.String())
+	}
+}
+
+func TestImportFileReportsSuccessfulBatch(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"successful":{"0":{"key":"NEWKEY11"}},"success":{},"unchanged":{},"failed":{}}`))
+	}))
+	defer srv.Close()
+	t.Setenv("ZOTERO_BASE_URL", srv.URL+"/users/0")
+
+	filePath := filepath.Join(t.TempDir(), "items.bib")
+	if err := os.WriteFile(filePath, []byte("@article{example,\n  title = {Example}\n}\n"), 0o600); err != nil {
+		t.Fatalf("write import fixture: %v", err)
+	}
+
+	cmd := newImportFileCmd(&rootFlags{asJSON: true})
+	cmd.SilenceErrors, cmd.SilenceUsage = true, true
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetArgs([]string{filePath})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("import successful batch: %v", err)
+	}
+	var got map[string]any
+	if err := json.Unmarshal(out.Bytes(), &got); err != nil {
+		t.Fatalf("decode import output %q: %v", out.String(), err)
+	}
+	if got["file"] != filePath || got["imported"] != float64(1) {
+		t.Fatalf("import output = %+v, want unchanged success report", got)
+	}
+}
+
+func TestImportFileRejectsCSLJSONWithoutConnector(t *testing.T) {
+	filePath := filepath.Join(t.TempDir(), "items.json")
+	if err := os.WriteFile(filePath, []byte(`[{"type":"article-journal","title":"Example"}]`), 0o600); err != nil {
+		t.Fatalf("write CSL JSON fixture: %v", err)
+	}
+
+	cmd := newImportFileCmd(&rootFlags{asJSON: true})
+	cmd.SilenceErrors, cmd.SilenceUsage = true, true
+	cmd.SetArgs([]string{"--format", "csljson", filePath})
+	err := cmd.Execute()
+	if err == nil || !strings.Contains(err.Error(), "--via connector") {
+		t.Fatalf("CSL JSON error = %v, want translator guidance via --via connector", err)
 	}
 }

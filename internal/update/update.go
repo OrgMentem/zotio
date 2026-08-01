@@ -175,25 +175,27 @@ func UpgradeHint(executable, releaseURL string) string {
 }
 
 func compareVersion(left, right string) int {
-	parse := func(value string) [3]int {
-		var parts [3]int
+	parse := func(value string) []string {
 		value = strings.TrimPrefix(value, "v")
 		value = strings.SplitN(value, "-", 2)[0]
 		value = strings.SplitN(value, "+", 2)[0]
-		for i, raw := range strings.Split(value, ".") {
-			if i == len(parts) {
-				break
-			}
-			parts[i], _ = strconv.Atoi(raw)
-		}
-		return parts
+		return strings.Split(value, ".")
 	}
 	a, b := parse(left), parse(right)
-	for i := range a {
-		if a[i] < b[i] {
+	for i := range max(len(a), len(b)) {
+		var leftRaw, rightRaw string
+		if i < len(a) {
+			leftRaw = a[i]
+		}
+		if i < len(b) {
+			rightRaw = b[i]
+		}
+		leftPart, _ := strconv.Atoi(leftRaw)
+		rightPart, _ := strconv.Atoi(rightRaw)
+		if leftPart < rightPart {
 			return -1
 		}
-		if a[i] > b[i] {
+		if leftPart > rightPart {
 			return 1
 		}
 	}

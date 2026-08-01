@@ -56,6 +56,28 @@ func TestAPICollectionPathsCyclicParents(t *testing.T) {
 	}
 }
 
+func TestAPICollectionPathsSharedAncestor(t *testing.T) {
+	rows := []apiCollectionRow{
+		collectionRow("A", "A", nil),
+		collectionRow("B", "B", "A"),
+		collectionRow("C", "C", "A"),
+		collectionRow("D", "D", "B"),
+		collectionRow("E", "E", "C"),
+	}
+
+	got := apiCollectionPaths(rows)
+	want := map[string]string{
+		"A": "A",
+		"B": "A/B",
+		"C": "A/C",
+		"D": "A/B/D",
+		"E": "A/C/E",
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("diamond paths = %#v, want %#v", got, want)
+	}
+}
+
 func collectionRow(key, name string, parent any) apiCollectionRow {
 	var row apiCollectionRow
 	row.Key = key

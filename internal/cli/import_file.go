@@ -75,9 +75,12 @@ func newImportFileCmd(flags *rootFlags) *cobra.Command {
 				if end > len(items) {
 					end = len(items)
 				}
-				_, _, err := c.Post("/items", items[start:end])
+				data, _, err := c.Post("/items", items[start:end])
 				if err != nil {
 					return classifyAPIError(err, flags)
+				}
+				if err := batchWriteFailuresError("import file", decodeBatchWriteResponse(data).Failed); err != nil {
+					return degradedErr(err)
 				}
 			}
 
@@ -207,12 +210,7 @@ func parseImportFileItems(content, format, collection string) ([]map[string]any,
 	case "ris":
 		return parseRISItems(content, collection)
 	case "csljson":
-		var items []map[string]any
-		if err := json.Unmarshal([]byte(content), &items); err != nil {
-			return nil, fmt.Errorf("parsing CSL JSON: %w", err)
-		}
-		addImportCollectionToItems(items, collection)
-		return items, nil
+		return nil, fmt.Errorf("CSL JSON import requires Zotero's translator; re-run with --via connector")
 	default:
 		return nil, fmt.Errorf("unknown format: use --format bibtex, ris, or csljson")
 	}

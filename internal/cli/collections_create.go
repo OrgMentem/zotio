@@ -92,6 +92,9 @@ func newCollectionsCreateCmd(flags *rootFlags) *cobra.Command {
 			if err != nil {
 				return classifyAPIError(err, flags)
 			}
+			if err := batchWriteFailuresError("collections create", decodeBatchWriteResponse(data).Failed); err != nil {
+				return degradedErr(err)
+			}
 			if wantsHumanTable(cmd.OutOrStdout(), flags) {
 				// Check if response contains an array (directly or wrapped in "data")
 				var items []map[string]any

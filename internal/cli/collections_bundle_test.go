@@ -73,6 +73,54 @@ func TestCollectionsBundleIncludesStoredFulltext(t *testing.T) {
 	}
 }
 
+func TestCollectionsBundlePropagatesFulltextReadError(t *testing.T) {
+	db := seedCollectionBundleStoreOpen(t)
+	defer db.Close()
+
+	if _, err := db.DB().Exec(`ALTER TABLE resources RENAME TO resources_original`); err != nil {
+		t.Fatalf("rename resources table: %v", err)
+	}
+	if _, err := db.DB().Exec(`
+		CREATE TABLE resources (
+			id TEXT NOT NULL,
+			resource_type TEXT NOT NULL,
+			data JSON,
+			parent_key TEXT,
+			item_type TEXT,
+			annotation_color TEXT,
+			item_date TEXT,
+			synced_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+			updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+			PRIMARY KEY (resource_type, id)
+		)
+	`); err != nil {
+		t.Fatalf("create nullable resources table: %v", err)
+	}
+	if _, err := db.DB().Exec(`
+		INSERT INTO resources (id, resource_type, data, parent_key, item_type, annotation_color, item_date, synced_at, updated_at)
+		SELECT id, resource_type, data, parent_key, item_type, annotation_color, item_date, synced_at, updated_at
+		FROM resources_original
+	`); err != nil {
+		t.Fatalf("copy resources: %v", err)
+	}
+	if _, err := db.DB().Exec(`DROP TABLE resources_original`); err != nil {
+		t.Fatalf("drop original resources table: %v", err)
+	}
+	if _, err := db.DB().Exec(`UPDATE resources SET data = NULL WHERE resource_type = 'fulltext' AND id = 'ATT1'`); err != nil {
+		t.Fatalf("corrupt stored fulltext: %v", err)
+	}
+
+	outDir := filepath.Join(t.TempDir(), "bundle")
+	if _, err := writeCollectionBundle(db, "COL", outDir); err == nil {
+		t.Fatal("writeCollectionBundle succeeded after fulltext read failure")
+	} else if !strings.Contains(err.Error(), "reading collection fulltext") {
+		t.Fatalf("writeCollectionBundle error = %v, want fulltext read error", err)
+	}
+	if _, err := os.Stat(outDir); !os.IsNotExist(err) {
+		t.Errorf("bundle output directory exists after fulltext read failure: %v", err)
+	}
+}
+
 func TestCollectionsBundleJSONManifest(t *testing.T) {
 	seedCollectionBundleStore(t)
 
@@ -101,6 +149,14 @@ func TestCollectionsBundleJSONManifest(t *testing.T) {
 
 func seedCollectionBundleStore(t *testing.T) {
 	t.Helper()
+	db := seedCollectionBundleStoreOpen(t)
+	if err := db.Close(); err != nil {
+		t.Fatalf("close store: %v", err)
+	}
+}
+
+func seedCollectionBundleStoreOpen(t *testing.T) *store.Store {
+	t.Helper()
 	savedGroup := activeGroupID
 	activeGroupID = ""
 	t.Cleanup(func() { activeGroupID = savedGroup })
@@ -111,7 +167,6 @@ func seedCollectionBundleStore(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open store: %v", err)
 	}
-	defer db.Close()
 
 	collections := []json.RawMessage{
 		json.RawMessage(`{"key":"COL","version":1,"data":{"key":"COL","name":"Reading List"}}`),
@@ -134,6 +189,7 @@ func seedCollectionBundleStore(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("seed fulltext: %v", err)
 	}
+	return db
 }
 
 func readBundleTestFile(t *testing.T, dir, name string) string {

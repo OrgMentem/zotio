@@ -8,6 +8,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -573,9 +574,14 @@ func TestHasUnreproducibleParamsScopesGenericLocalWarnings(t *testing.T) {
 		want   bool
 	}{
 		{
-			name:   "pagination and format are reproducible",
-			params: map[string]string{"limit": "2", "start": "1", "format": "json"},
+			name:   "pagination is reproducible",
+			params: map[string]string{"limit": "2", "start": "1"},
 			want:   false,
+		},
+		{
+			name:   "format is unreproducible",
+			params: map[string]string{"format": "bib"},
+			want:   true,
 		},
 		{
 			name:   "real filter is unreproducible",
@@ -595,6 +601,100 @@ func TestHasUnreproducibleParamsScopesGenericLocalWarnings(t *testing.T) {
 				t.Fatalf("hasUnreproducibleParams(%v) = %v, want %v", tt.params, got, tt.want)
 			}
 		})
+	}
+}
+
+func captureStderr(t *testing.T, fn func()) string {
+	t.Helper()
+	oldStderr := os.Stderr
+	stderrR, stderrW, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("open stderr pipe: %v", err)
+	}
+	os.Stderr = stderrW
+	t.Cleanup(func() {
+		os.Stderr = oldStderr
+		_ = stderrR.Close()
+		_ = stderrW.Close()
+	})
+
+	fn()
+	if err := stderrW.Close(); err != nil {
+		t.Fatalf("close stderr pipe: %v", err)
+	}
+	os.Stderr = oldStderr
+	stderr, err := io.ReadAll(stderrR)
+	if err != nil {
+		t.Fatalf("read stderr pipe: %v", err)
+	}
+	return string(stderr)
+}
+
+func TestResolveReadLocalItemsFallsBackForUnreproducibleScopes(t *testing.T) {
+	seedLocalQueryPlannerDB(t)
+	flags := &rootFlags{asJSON: true, dataSource: "local", noCache: true, timeout: time.Second}
+	db, err := store.OpenWithContext(context.Background(), helpersTestDefaultDBPath(t, "zotio"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+
+	cases := []struct {
+		name   string
+		params map[string]string
+	}{
+		{name: "since", params: map[string]string{"since": "42"}},
+		{name: "format", params: map[string]string{"format": "bib"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			data, handled, err := resolveLocalItemList(db, "/items", tc.params)
+			if err != nil {
+				t.Fatalf("resolveLocalItemList: %v", err)
+			}
+			if handled || data != nil {
+				t.Fatalf("resolveLocalItemList = (%q, %v), want fallthrough", data, handled)
+			}
+
+			var (
+				gotData json.RawMessage
+				prov    DataProvenance
+				gotErr  error
+			)
+			stderr := captureStderr(t, func() {
+				gotData, prov, gotErr = resolveRead(context.Background(), nil, flags, "items", false, "/items", tc.params, nil)
+			})
+			if gotErr != nil {
+				t.Fatalf("resolveRead: %v", gotErr)
+			}
+			if prov.Scoped {
+				t.Fatalf("provenance = %+v, want unscoped generic fallback", prov)
+			}
+			if !strings.Contains(stderr, "warning: local data may be unfiltered") {
+				t.Fatalf("stderr = %q, want unreproducible-parameter warning", stderr)
+			}
+			if keys := itemKeysFromRawList(t, gotData); len(keys) != len(localQueryPlannerItems) {
+				t.Fatalf("fallback keys = %v, want generic dump of %d items", keys, len(localQueryPlannerItems))
+			}
+		})
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close store: %v", err)
+	}
+}
+
+func TestResolveReadLocalItemsReproducibleScopeRemainsScoped(t *testing.T) {
+	seedLocalQueryPlannerDB(t)
+	flags := &rootFlags{asJSON: true, dataSource: "local", noCache: true, timeout: time.Second}
+
+	data, prov, err := resolveRead(context.Background(), nil, flags, "items", false, "/items", map[string]string{"tag": "ml"}, nil)
+	if err != nil {
+		t.Fatalf("resolveRead: %v", err)
+	}
+	if prov.Source != "local" || prov.ResourceType != "items" || !prov.Scoped {
+		t.Fatalf("provenance = %+v, want scoped local items", prov)
+	}
+	if keys := itemKeysFromRawList(t, data); !equalKeys(keys, []string{"A", "C"}) {
+		t.Fatalf("scoped keys = %v, want [A C]", keys)
 	}
 }
 

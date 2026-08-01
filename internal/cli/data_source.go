@@ -239,9 +239,9 @@ func resolveLocal(ctx context.Context, resourceType string, isList bool, path st
 
 	prov := localProvenance(db, resourceType, reason)
 
-	// Zotero-aware local query planner. For item-list reads
-	// (/items, /items/top, /collections/{key}/items[/top]) apply the same
-	// scopes the live endpoint would (itemType, tag, collection, top-level,
+	// Zotero-aware local item query planner. For item-list reads
+	// (/items, /items/top, /collections/{key}/items[/top]) it applies the
+	// scopes it can reproduce locally (itemType, tag, collection, top-level,
 	// quick-search, sort, direction, limit, start) instead of dumping all
 	// synced rows. Keyed on the path so it also covers the collection-items
 	// command, which labels its resource "collections".
@@ -340,9 +340,9 @@ func resolveLocal(ctx context.Context, resourceType string, isList bool, path st
 }
 
 // reproducibleLocalParams are request params a generic local list read can
-// honor (pagination) or that don't filter the row set (output format), so they
-// must not trigger the "local data may be unfiltered" warning..
-var reproducibleLocalParams = map[string]bool{"limit": true, "start": true, "format": true}
+// honor. Only pagination is reproducible by the generic dump; every other
+// non-empty request param must trigger its unfiltered-data warning.
+var reproducibleLocalParams = map[string]bool{"limit": true, "start": true}
 
 // hasUnreproducibleParams reports whether params contains any filter a generic
 // local read cannot reproduce (anything outside reproducibleLocalParams).
@@ -441,13 +441,21 @@ func resolveLocalTrashList(db *store.Store, resourceType string, isList bool, pa
 }
 
 // resolveLocalItemList runs the Zotero-aware item query planner when the path
-// is an item-list endpoint, returning (data, true, err). It returns
-// (nil, false, nil) for non-item-list paths so the caller falls back to its
-// generic get/list handling. An empty match yields a JSON empty array, which
-// mirrors a live list that matched nothing.
+// is an item-list endpoint and its requested scope is locally reproducible.
+// It returns (nil, false, nil) for non-item-list paths or unreproducible
+// scopes so the caller falls back to its honest generic get/list handling.
+// An empty match yields a JSON empty array, which mirrors a live list that
+// matched nothing.
 func resolveLocalItemList(db *store.Store, path string, params map[string]string) (json.RawMessage, bool, error) {
 	collectionKey, parentKey, topOnly, isList := parseItemListPath(path)
 	if !isList {
+		return nil, false, nil
+	}
+
+	// The local item planner cannot reproduce incremental version scopes or
+	// rendered bibliography output. Fall through so the generic path warns
+	// rather than presenting an unscoped JSON dump as a scoped result.
+	if params["since"] != "" || params["format"] != "" {
 		return nil, false, nil
 	}
 	q := store.ItemQuery{

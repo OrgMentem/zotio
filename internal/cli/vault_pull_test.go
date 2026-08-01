@@ -85,6 +85,8 @@ func TestStripHTMLTags(t *testing.T) {
 	}{
 		{name: "quoted double attribute", in: `<a title="Click > Here">text</a>`, want: "text"},
 		{name: "quoted single attribute", in: `<span data-x='a > b'>y</span>`, want: "y"},
+		{name: "single quote within double-quoted attribute", in: `<a title="Click ' > Here">text</a>`, want: "text"},
+		{name: "double quote within single-quoted attribute", in: `<span data-x='a " > b'>y</span>`, want: "y"},
 		{name: "ordinary tags", in: "<b>bold</b>", want: "bold"},
 		{name: "bare greater-than text", in: "a > b", want: "a > b"},
 		{name: "unterminated quote", in: `<a title="Click > Here`, want: ""},

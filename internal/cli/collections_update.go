@@ -6,7 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"os"
+	"strconv"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -87,11 +87,21 @@ func newCollectionsUpdateCmd(flags *rootFlags) *cobra.Command {
 			if gateFailure := mutation.CheckGates(mutationOptions(flags), ops); gateFailure != nil {
 				return fmt.Errorf("%s", gateFailure.Message)
 			}
-			c, err := flags.newClient()
+			// Read from the write target immediately before the PUT so the
+			// precondition protects against concurrent collection edits.
+			c, err := flags.newWriteClient()
 			if err != nil {
 				return err
 			}
-			data, statusCode, err := c.Put(path, body)
+			_, version, err := c.GetWithVersion(path, nil)
+			if err != nil {
+				return classifyAPIError(err, flags)
+			}
+			headers := map[string]string{}
+			if version > 0 {
+				headers["If-Unmodified-Since-Version"] = strconv.Itoa(version)
+			}
+			data, statusCode, err := c.PutWithHeaders(path, body, headers)
 			if err != nil {
 				return classifyAPIError(err, flags)
 			}
@@ -100,7 +110,7 @@ func newCollectionsUpdateCmd(flags *rootFlags) *cobra.Command {
 				var items []map[string]any
 				if json.Unmarshal(data, &items) == nil && len(items) > 0 {
 					if err := printAutoTable(cmd.OutOrStdout(), items); err != nil {
-						fmt.Fprintf(os.Stderr, "warning: table rendering failed, falling back to JSON: %v\n", err)
+						fmt.Fprintf(cmd.ErrOrStderr(), "warning: table rendering failed, falling back to JSON: %v\n", err)
 					} else {
 						return nil
 					}
@@ -110,7 +120,7 @@ func newCollectionsUpdateCmd(flags *rootFlags) *cobra.Command {
 					}
 					if json.Unmarshal(data, &wrapped) == nil && len(wrapped.Data) > 0 {
 						if err := printAutoTable(cmd.OutOrStdout(), wrapped.Data); err != nil {
-							fmt.Fprintf(os.Stderr, "warning: table rendering failed, falling back to JSON: %v\n", err)
+							fmt.Fprintf(cmd.ErrOrStderr(), "warning: table rendering failed, falling back to JSON: %v\n", err)
 						} else {
 							return nil
 						}

@@ -116,9 +116,27 @@ func TestCompareVersion(t *testing.T) {
 		want        int
 	}{
 		{
-			name:  "fourth segment is ignored",
+			name:  "fourth segment is newer",
+			left:  "1.2.3.4",
+			right: "1.2.3",
+			want:  1,
+		},
+		{
+			name:  "fourth segment is older",
 			left:  "1.2.3",
 			right: "1.2.3.4",
+			want:  -1,
+		},
+		{
+			name:  "trailing zero segment is equal",
+			left:  "1.2.3.0",
+			right: "1.2.3",
+			want:  0,
+		},
+		{
+			name:  "missing trailing zero segment is equal",
+			left:  "1.2",
+			right: "1.2.0",
 			want:  0,
 		},
 		{

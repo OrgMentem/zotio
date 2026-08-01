@@ -168,6 +168,9 @@ func importApplyOps(cmd *cobra.Command, flags *rootFlags, writeClient importAppl
 						if entryPath == "" {
 							return "failed", nil, fmt.Errorf("manifest entry %d attachment path is empty", entryNumber)
 						}
+						if err := validateImportStoredAttachment(entryPath); err != nil {
+							return "failed", nil, err
+						}
 						res, err := routeCreateItem(cmd.Context(), flags, writeClient, item, importEntrySourceURL(entry, item), connectorCollectionKeyFromItem(item) != "" || strings.TrimSpace(flags.connectorTarget) != "")
 						if err != nil {
 							return "failed", nil, err
@@ -314,6 +317,28 @@ func importApplyOps(cmd *cobra.Command, flags *rootFlags, writeClient importAppl
 		}
 	}
 	return ops
+}
+
+// validateImportStoredAttachment checks that a stored upload can load the
+// named attachment before creating a parent that would otherwise be orphaned.
+func validateImportStoredAttachment(path string) error {
+	file, err := os.Open(path) //nolint:gosec // G304: importing a user-named local file is the command's purpose.
+	if err != nil {
+		return fmt.Errorf("reading attachment %s: %w", path, err)
+	}
+	defer func() { _ = file.Close() }()
+
+	info, err := file.Stat()
+	if err != nil {
+		return fmt.Errorf("reading attachment %s: %w", path, err)
+	}
+	if !info.Mode().IsRegular() {
+		return fmt.Errorf("reading attachment %s: not a regular file", path)
+	}
+	if info.Size() >= int64(^uint(0)>>1) {
+		return fmt.Errorf("reading attachment %s: file is too large to load", path)
+	}
+	return nil
 }
 
 // Isolate manifest item maps before closure capture.

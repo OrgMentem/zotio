@@ -674,6 +674,30 @@ func seedEnrichStore(t *testing.T, extra ...string) localQueryStore {
 	return localQueryStore{rawDB}
 }
 
+func seedEnrichWorkQueueStore(t *testing.T, items []json.RawMessage) localQueryStore {
+	t.Helper()
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("ZOTERO_CONFIG", filepath.Join(t.TempDir(), "work-queue.toml"))
+	dbPath := helpersTestDefaultDBPath(t, "zotio")
+	db, err := store.OpenWithContext(context.Background(), dbPath)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	if _, _, err := db.UpsertBatch("items", items); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close store: %v", err)
+	}
+
+	rawDB, err := openStoreForRead(context.Background(), "zotio")
+	if err != nil || rawDB == nil {
+		t.Fatalf("reopen store: %v", err)
+	}
+	t.Cleanup(func() { _ = rawDB.Close() })
+	return localQueryStore{rawDB}
+}
+
 func seedEnrichPDFStore(t *testing.T) {
 	t.Helper()
 	t.Setenv("HOME", t.TempDir())
@@ -924,6 +948,75 @@ func TestItemsEnrichMissingDOIKeysFromOutsideDefaultLimit(t *testing.T) {
 	}
 	if env.Plan.Operations[0].Key != "K00" {
 		t.Errorf("proposal key = %q, want oldest requested key K00", env.Plan.Operations[0].Key)
+	}
+}
+
+func TestBuildEnrichProposalsKeysApplyLimit(t *testing.T) {
+	var requested []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		title := r.URL.Query().Get("query.bibliographic")
+		requested = append(requested, title)
+		_, _ = fmt.Fprintf(w, `{"message":{"items":[{"title":[%q],"DOI":"10.1/selected"}]}}`, title)
+	}))
+	t.Cleanup(srv.Close)
+	withBase(t, &enrichCrossRefBase, srv.URL)
+
+	db := seedEnrichWorkQueueStore(t, []json.RawMessage{
+		json.RawMessage(`{"key":"KOLD","version":1,"data":{"key":"KOLD","itemType":"journalArticle","title":"Selected Old","dateAdded":"2026-01-01T00:00:00Z"}}`),
+		json.RawMessage(`{"key":"KNEW","version":1,"data":{"key":"KNEW","itemType":"journalArticle","title":"Selected New","dateAdded":"2026-01-03T00:00:00Z"}}`),
+		json.RawMessage(`{"key":"KOUT","version":1,"data":{"key":"KOUT","itemType":"journalArticle","title":"Outside Selection","dateAdded":"2026-01-04T00:00:00Z"}}`),
+	})
+
+	proposals, skipped, err := buildEnrichProposals(context.Background(), db, http.DefaultClient, "missing_doi", 1, "", map[string]bool{"KOLD": true, "KNEW": true}, "", false, false, "linked-url", "")
+	if err != nil {
+		t.Fatalf("build proposals: %v", err)
+	}
+	if len(skipped) != 0 || len(proposals) != 1 {
+		t.Fatalf("proposals=%+v skipped=%+v, want only the newest selected proposal", proposals, skipped)
+	}
+	if proposals[0].Key != "KNEW" {
+		t.Errorf("proposal key = %q, want KNEW", proposals[0].Key)
+	}
+	if len(requested) != 1 || requested[0] != "Selected New" {
+		t.Errorf("provider calls = %v, want only Selected New", requested)
+	}
+}
+
+func TestEnrichWorkQueueForKeysChunks(t *testing.T) {
+	items := make([]json.RawMessage, 0, enrichKeyChunkSize+2)
+	keys := make(map[string]bool, enrichKeyChunkSize+1)
+	for i := range enrichKeyChunkSize + 1 {
+		key := fmt.Sprintf("K%04d", i)
+		item, err := json.Marshal(map[string]any{
+			"key":     key,
+			"version": 1,
+			"data": map[string]any{
+				"key":       key,
+				"itemType":  "journalArticle",
+				"title":     key,
+				"dateAdded": "2026-01-01T00:00:00Z",
+			},
+		})
+		if err != nil {
+			t.Fatalf("marshal %s: %v", key, err)
+		}
+		items = append(items, item)
+		keys[key] = true
+	}
+	items = append(items, json.RawMessage(`{"key":"KOUT","version":1,"data":{"key":"KOUT","itemType":"journalArticle","title":"Outside Selection","dateAdded":"2026-01-02T00:00:00Z"}}`))
+
+	db := seedEnrichWorkQueueStore(t, items)
+	rows, err := enrichWorkQueueForKeys(db, "missing_doi", 0, "", keys)
+	if err != nil {
+		t.Fatalf("query key-scoped work queue: %v", err)
+	}
+	if len(rows) != len(keys) {
+		t.Fatalf("rows = %d, want %d", len(rows), len(keys))
+	}
+	for _, row := range rows {
+		if !keys[sqlStringValue(row["key"])] {
+			t.Errorf("unrequested key returned: %q", sqlStringValue(row["key"]))
+		}
 	}
 }
 

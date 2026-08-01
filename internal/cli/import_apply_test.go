@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -190,6 +191,35 @@ func TestImportApplyStoredWebCreateAppliesParentAndAttachment(t *testing.T) {
 	creates, uploads, registers := fake.snapshot()
 	if fake.parentSnapshot() != 1 || creates != 1 || uploads != 1 || registers != 1 {
 		t.Fatalf("traffic parent=%d attachment=%d upload=%d register=%d, want 1 each", fake.parentSnapshot(), creates, uploads, registers)
+	}
+}
+
+func TestImportApplyStoredCreateRejectsMissingAttachmentBeforeParent(t *testing.T) {
+	fake := newFakeZoteroUpload(t, "")
+	missing := filepath.Join(t.TempDir(), "missing.pdf")
+	manifest := importManifest{
+		SchemaVersion: importManifestSchemaVersion,
+		Dir:           filepath.Dir(missing),
+		Entries: []importManifestEntry{{
+			Path: missing, Action: "create", Status: "resolved", Title: "Missing Paper",
+			Item: map[string]any{"itemType": "journalArticle", "title": "Missing Paper"},
+		}},
+	}
+	manifestPath := writeImportApplyTestManifest(t, manifest)
+	flags := &rootFlags{
+		asJSON: true, yes: true, via: "web", maxChanges: -1,
+		configPath: testConfigFile(t, fake.srv.URL+"/users/0"),
+	}
+	env, stderr, err := runImportApplyTestCmdWithFlags(t, flags, []string{"--attach-mode", "stored", manifestPath})
+	if err == nil {
+		t.Fatalf("stored create with missing attachment succeeded; env=%+v stderr=%s", env, stderr)
+	}
+	if env.Result == nil || env.Result.Summary.Failed != 1 || len(env.Result.Items) != 1 ||
+		!strings.Contains(fmt.Sprint(env.Result.Items[0].Reason), "reading attachment") {
+		t.Fatalf("env = %+v, want a failed attachment-read result", env)
+	}
+	if got := fake.parentSnapshot(); got != 0 {
+		t.Fatalf("parent create requests = %d, want 0", got)
 	}
 }
 

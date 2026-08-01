@@ -2,7 +2,15 @@
 
 package cli
 
-import "testing"
+import (
+	"bytes"
+	"encoding/json"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"testing"
+	"time"
+)
 
 func TestCrossRefItemFromWorkPlacesContainerInValidField(t *testing.T) {
 	tests := []struct {
@@ -124,5 +132,105 @@ func TestCrossRefContainerTitleOmitsUnverifiedThesisUniversity(t *testing.T) {
 		"itemType": "", "title": "", "DOI": "",
 	}, item); err != nil {
 		t.Fatalf("validateItemFields(%v) = %v", item, err)
+	}
+}
+
+func TestImportDoiRequiresYesToCreate(t *testing.T) {
+	crossRef := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"message":{"type":"journal-article","title":["Safety Test"],"DOI":"10.1234/safety"}}`))
+	}))
+	t.Cleanup(crossRef.Close)
+	withBase(t, &enrichCrossRefBase, crossRef.URL)
+
+	createRequests := 0
+	zotero := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/users/0/items" {
+			http.NotFound(w, r)
+			return
+		}
+		createRequests++
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"success":{"0":"NEWKEY11"},"successful":{},"unchanged":{},"failed":{}}`))
+	}))
+	t.Cleanup(zotero.Close)
+	t.Setenv("ZOTERO_BASE_URL", zotero.URL+"/users/0")
+
+	run := func(flags rootFlags) []byte {
+		t.Helper()
+		cmd := newImportDoiCmd(&flags)
+		var out bytes.Buffer
+		cmd.SetOut(&out)
+		cmd.SetErr(io.Discard)
+		cmd.SilenceErrors = true
+		cmd.SilenceUsage = true
+		cmd.SetArgs([]string{"10.1234/safety"})
+		if err := cmd.Execute(); err != nil {
+			t.Fatalf("import doi (flags=%+v): %v", flags, err)
+		}
+		return out.Bytes()
+	}
+
+	defaultFlags := rootFlags{asJSON: true, via: "web", timeout: time.Second}
+	preview := run(defaultFlags)
+	if createRequests != 0 {
+		t.Fatalf("create requests without --yes = %d, want 0", createRequests)
+	}
+	var env struct {
+		Mode string `json:"mode"`
+		Plan struct {
+			Operations []struct {
+				Changes []struct {
+					Field string          `json:"field"`
+					Add   json.RawMessage `json:"add"`
+				} `json:"changes"`
+			} `json:"operations"`
+		} `json:"plan"`
+	}
+	if err := json.Unmarshal(preview, &env); err != nil {
+		t.Fatalf("decode preview: %v; %s", err, preview)
+	}
+	if env.Mode != "preview" || len(env.Plan.Operations) != 1 {
+		t.Fatalf("preview = %+v, want one planned create", env)
+	}
+	var gotDOI string
+	var gotItem map[string]any
+	for _, change := range env.Plan.Operations[0].Changes {
+		switch change.Field {
+		case "doi":
+			if err := json.Unmarshal(change.Add, &gotDOI); err != nil {
+				t.Fatalf("decode DOI change: %v", err)
+			}
+		case "item":
+			if err := json.Unmarshal(change.Add, &gotItem); err != nil {
+				t.Fatalf("decode item change: %v", err)
+			}
+		}
+	}
+	if gotDOI != "10.1234/safety" || gotItem["DOI"] != "10.1234/safety" {
+		t.Fatalf("planned create DOI=%q item=%v, want DOI and item", gotDOI, gotItem)
+	}
+
+	for _, previewFlags := range []rootFlags{
+		{asJSON: true, yes: true, dryRun: true, via: "web", timeout: time.Second},
+		{asJSON: true, agent: true, via: "web", timeout: time.Second},
+	} {
+		var previewEnv struct {
+			Mode string `json:"mode"`
+		}
+		if err := json.Unmarshal(run(previewFlags), &previewEnv); err != nil {
+			t.Fatalf("decode preview (flags=%+v): %v", previewFlags, err)
+		}
+		if previewEnv.Mode != "preview" {
+			t.Fatalf("preview mode (flags=%+v) = %q, want preview", previewFlags, previewEnv.Mode)
+		}
+	}
+	if createRequests != 0 {
+		t.Fatalf("create requests before --yes = %d, want 0", createRequests)
+	}
+
+	run(rootFlags{asJSON: true, yes: true, via: "web", timeout: time.Second})
+	if createRequests != 1 {
+		t.Fatalf("create requests with --yes = %d, want 1", createRequests)
 	}
 }

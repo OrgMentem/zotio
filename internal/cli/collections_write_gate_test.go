@@ -18,9 +18,10 @@ import (
 // records every request, so gate refusals can prove that no network call was
 // attempted rather than merely proving no mutation was sent.
 type collectionsWriteRecorder struct {
-	server   *httptest.Server
-	requests []string
-	mutating []string
+	server    *httptest.Server
+	requests  []string
+	mutating  []string
+	putHeader string
 }
 
 func newCollectionsWriteRecorder(t *testing.T) *collectionsWriteRecorder {
@@ -33,6 +34,9 @@ func newCollectionsWriteRecorder(t *testing.T) *collectionsWriteRecorder {
 			w.Header().Set("Last-Modified-Version", "7")
 			_, _ = w.Write([]byte(`{"key":"K","version":7,"data":{"key":"K","name":"before"}}`))
 			return
+		}
+		if r.Method == http.MethodPut {
+			rec.putHeader = r.Header.Get("If-Unmodified-Since-Version")
 		}
 		rec.mutating = append(rec.mutating, request)
 		w.Header().Set("Last-Modified-Version", "8")
@@ -149,6 +153,20 @@ func TestCollectionsWritesPreviewUntilExplicitlyApplied(t *testing.T) {
 				}
 			})
 		})
+	}
+}
+
+func TestCollectionsUpdateAppliesVersionPrecondition(t *testing.T) {
+	rec := newCollectionsWriteRecorder(t)
+	cmd := newCollectionsUpdateCmd(&rootFlags{asJSON: true, yes: true, maxChanges: -1})
+
+	runCollectionsWriteCmd(t, rec, cmd, "K", "--name", "Renamed")
+
+	if got, want := strings.Join(rec.requests, ","), "GET /users/0/collections/K,PUT /users/0/collections/K"; got != want {
+		t.Fatalf("request order = %q, want %q", got, want)
+	}
+	if got, want := rec.putHeader, "7"; got != want {
+		t.Fatalf("If-Unmodified-Since-Version = %q, want %q", got, want)
 	}
 }
 

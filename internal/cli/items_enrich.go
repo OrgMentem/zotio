@@ -327,20 +327,9 @@ func filterEnrichRowsByKeys(rows []map[string]any, allow map[string]bool) []map[
 // Carry collection and exact key scopes into the work queue, filtering before
 // provider lookups so remediation stays bounded and cheap.
 func buildEnrichProposals(ctx context.Context, db localQueryStore, httpClient *http.Client, category string, limit int, collection string, keyFilter map[string]bool, email string, useOpenAlex bool, useSemanticScholar bool, attachMode string, pdfDir string) ([]enrichProposal, []enrichSkip, error) {
-	queryLimit := limit
-	if keyFilter != nil {
-		// Exact keys identify remediation targets. Fetch the complete queue
-		// before filtering so the SQL limit cannot hide an older requested key,
-		// then retain the requested limit below.
-		queryLimit = 0
-	}
-	rows, err := enrichWorkQueue(db, category, queryLimit, collection)
+	rows, err := enrichWorkQueueForKeys(db, category, limit, collection, keyFilter)
 	if err != nil {
 		return nil, []enrichSkip{{Category: category, Reason: fmt.Sprintf("querying work queue: %v", err)}}, err
-	}
-	rows = filterEnrichRowsByKeys(rows, keyFilter)
-	if keyFilter != nil && limit > 0 && len(rows) > limit {
-		rows = rows[:limit]
 	}
 
 	// Each candidate triggers an independent
@@ -395,6 +384,101 @@ func buildEnrichProposals(ctx context.Context, db localQueryStore, httpClient *h
 		}
 	}
 	return proposals, skipped, errors.Join(localReadErrs...)
+}
+
+const enrichKeyChunkSize = 900
+
+// enrichWorkQueueForKeys keeps exact remediation scopes in SQL rather than
+// materializing the full work queue. SQLite caps bound variables, so large
+// key selections run as separately ordered chunks before applying the global
+// result limit.
+func enrichWorkQueueForKeys(db localQueryStore, category string, limit int, collection string, keyFilter map[string]bool) ([]map[string]any, error) {
+	if keyFilter == nil {
+		return enrichWorkQueue(db, category, limit, collection)
+	}
+
+	keys := make([]string, 0, len(keyFilter))
+	for key, allowed := range keyFilter {
+		if allowed {
+			keys = append(keys, key)
+		}
+	}
+	if len(keys) == 0 {
+		return nil, nil
+	}
+	sort.Strings(keys)
+
+	rows := make([]map[string]any, 0, len(keys))
+	for start := 0; start < len(keys); start += enrichKeyChunkSize {
+		end := min(start+enrichKeyChunkSize, len(keys))
+		chunk, err := queryEnrichWorkQueueKeyChunk(db, category, collection, keys[start:end])
+		if err != nil {
+			return nil, err
+		}
+		rows = append(rows, chunk...)
+	}
+	sort.SliceStable(rows, func(i, j int) bool {
+		left, right := rows[i]["date_added"], rows[j]["date_added"]
+		if left == nil {
+			return false
+		}
+		if right == nil {
+			return true
+		}
+		return sqlStringValue(left) > sqlStringValue(right)
+	})
+	if limit > 0 && len(rows) > limit {
+		rows = rows[:limit]
+	}
+	return rows, nil
+}
+
+func queryEnrichWorkQueueKeyChunk(db localQueryStore, category, collection string, keys []string) ([]map[string]any, error) {
+	switch category {
+	case "missing_doi":
+		query := `
+SELECT
+	id AS key,
+	json_extract(data, '$.data.title') AS title,
+	json_extract(data, '$.data.itemType') AS item_type,
+	json_extract(data, '$.data.DOI') AS doi,
+	json_extract(data, '$.data.dateAdded') AS date_added
+FROM resources
+WHERE resource_type = 'items'
+	AND json_extract(data, '$.data.itemType') IN ('journalArticle', 'conferencePaper', 'preprint')
+	AND (json_extract(data, '$.data.DOI') IS NULL OR TRIM(json_extract(data, '$.data.DOI')) = '')`
+		args := enrichCollectionFilterArgs(&query, "data", collection)
+		query += `
+	AND id IN (` + strings.TrimSuffix(strings.Repeat("?,", len(keys)), ",") + `)
+ORDER BY date_added DESC`
+		for _, key := range keys {
+			args = append(args, key)
+		}
+		return db.QueryRaw(query, args...)
+	case "missing_abstract":
+		query := `
+SELECT
+	id AS key,
+	json_extract(data, '$.data.title') AS title,
+	json_extract(data, '$.data.itemType') AS item_type,
+	json_extract(data, '$.data.DOI') AS doi,
+	json_extract(data, '$.data.dateAdded') AS date_added
+FROM resources
+WHERE resource_type = 'items'
+	AND (json_extract(data, '$.data.abstractNote') IS NULL OR TRIM(json_extract(data, '$.data.abstractNote')) = '')`
+		args := enrichCollectionFilterArgs(&query, "data", collection)
+		query += `
+	AND id IN (` + strings.TrimSuffix(strings.Repeat("?,", len(keys)), ",") + `)
+ORDER BY date_added DESC`
+		for _, key := range keys {
+			args = append(args, key)
+		}
+		return db.QueryRaw(query, args...)
+	case "missing_pdf":
+		return queryMissingPDFItemsForKeys(db, "", 0, collection, keys)
+	default:
+		return nil, fmt.Errorf("unknown category %q", category)
+	}
 }
 
 // enrichWorkQueue returns the candidate rows for a category, reusing the audit

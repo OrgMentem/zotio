@@ -11,6 +11,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"zotio/internal/connector"
@@ -84,5 +85,45 @@ func TestItemsCreateConnectorDryRunDoesNotWrite(t *testing.T) {
 	}
 	if connectorChecks != 0 {
 		t.Fatalf("connector checks = %d, want no connector access in preview", connectorChecks)
+	}
+}
+
+func TestItemsCreateReportsBatchWriteFailures(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"successful":{},"success":{},"unchanged":{},"failed":{"0":{"code":400,"message":"itemType is required"}}}`))
+	}))
+	defer srv.Close()
+	t.Setenv("ZOTERO_BASE_URL", srv.URL+"/users/0")
+
+	cmd := newItemsCreateCmd(&rootFlags{asJSON: true, yes: true})
+	cmd.SilenceErrors, cmd.SilenceUsage = true, true
+	cmd.SetErr(io.Discard)
+	cmd.SetArgs([]string{"--items", `[{"title":"x"}]`})
+	err := cmd.Execute()
+	if err == nil || ExitCode(err) != 13 {
+		t.Fatalf("items create error = %v, exit=%d; want degraded failure", err, ExitCode(err))
+	}
+	for _, want := range []string{"index 0", "code 400", "itemType is required"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("items create error = %q, want %q", err, want)
+		}
+	}
+}
+
+func TestItemsCreateAcceptsSingleObjectResponse(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"key":"NEWKEY11","version":1}`))
+	}))
+	defer srv.Close()
+	t.Setenv("ZOTERO_BASE_URL", srv.URL+"/users/0")
+
+	cmd := newItemsCreateCmd(&rootFlags{asJSON: true, yes: true})
+	cmd.SilenceErrors, cmd.SilenceUsage = true, true
+	cmd.SetErr(io.Discard)
+	cmd.SetArgs([]string{"--items", `[{"itemType":"journalArticle","title":"x"}]`})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("items create with a single-object response: %v", err)
 	}
 }

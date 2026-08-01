@@ -43,3 +43,29 @@ func TestImportFileConnectorDryRunDoesNotWrite(t *testing.T) {
 		t.Fatalf("output = %+v, want connector dry-run preview", got)
 	}
 }
+
+func TestImportFileCSLJSONConnectorDryRunUsesConnectorPath(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "refs.json")
+	if err := os.WriteFile(path, []byte(`[{"type":"article-journal","title":"Dry Run"}]`), 0o600); err != nil {
+		t.Fatalf("write CSL JSON: %v", err)
+	}
+
+	flags := &rootFlags{asJSON: true, via: "connector", configPath: testConfigFile(t, "http://localhost:23119/api/users/0"), dryRun: true}
+	cmd := newImportFileCmd(flags)
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(io.Discard)
+	cmd.SilenceErrors = true
+	cmd.SilenceUsage = true
+	cmd.SetArgs([]string{"--format", "csljson", path})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("CSL JSON connector dry-run: %v", err)
+	}
+	var got map[string]any
+	if err := json.Unmarshal(out.Bytes(), &got); err != nil {
+		t.Fatalf("decode output: %v; %s", err, out.String())
+	}
+	if got["dry_run"] != true || got["via"] != "connector" {
+		t.Fatalf("output = %+v, want connector dry-run preview", got)
+	}
+}

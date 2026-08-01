@@ -133,7 +133,7 @@ until it is resumed or deleted with zotio workflow run <spec> --yes --resume.`,
 
 func watchSyncArgs(args []string) []string {
 	if len(args) == 0 {
-		return nil
+		return []string{}
 	}
 	return []string{"--resources", strings.Join(args, ",")}
 }

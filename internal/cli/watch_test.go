@@ -11,6 +11,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -42,7 +43,7 @@ func TestWatchSyncArgs(t *testing.T) {
 		args []string
 		want []string
 	}{
-		{name: "default resources", want: nil},
+		{name: "default resources", want: []string{}},
 		{name: "one resource", args: []string{"items"}, want: []string{"--resources", "items"}},
 		{name: "multiple resources", args: []string{"items", "collections"}, want: []string{"--resources", "items,collections"}},
 	}
@@ -50,13 +51,11 @@ func TestWatchSyncArgs(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			got := watchSyncArgs(tt.args)
-			if len(got) != len(tt.want) {
-				t.Fatalf("watchSyncArgs(%v) = %v, want %v", tt.args, got, tt.want)
+			if !reflect.DeepEqual(got, tt.want) {
+				t.Fatalf("watchSyncArgs(%v) = %#v, want %#v", tt.args, got, tt.want)
 			}
-			for i := range got {
-				if got[i] != tt.want[i] {
-					t.Fatalf("watchSyncArgs(%v) = %v, want %v", tt.args, got, tt.want)
-				}
+			if len(tt.args) == 0 && got == nil {
+				t.Fatalf("watchSyncArgs(%v) returned nil, want a non-nil empty argv", tt.args)
 			}
 		})
 	}
