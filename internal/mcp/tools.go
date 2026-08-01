@@ -124,11 +124,11 @@ func handleSearch(ctx context.Context, req mcplib.CallToolRequest) (*mcplib.Call
 		return mcplib.NewToolResultError(fmt.Sprintf("search failed: %v", err)), nil
 	}
 
-	data, err := json.MarshalIndent(results, "", "  ")
+	framed, err := bound.LibraryJSON(results)
 	if err != nil {
 		return mcplib.NewToolResultError(fmt.Sprintf("encoding search results: %v", err)), nil
 	}
-	return mcplib.NewToolResultText(bound.EndpointResponse("GET", data)), nil
+	return mcplib.NewToolResultText(framed), nil
 }
 
 // validateReadOnlyQuery gates the MCP sql tool. The agent contract advertised
@@ -321,11 +321,11 @@ func handleSQL(ctx context.Context, req mcplib.CallToolRequest) (*mcplib.CallToo
 		Truncated: truncated,
 		RowLimit:  sqlRowLimit,
 	}
-	data, err := json.MarshalIndent(payload, "", "  ")
+	framed, err := bound.LibraryJSON(payload)
 	if err != nil {
 		return mcplib.NewToolResultError(fmt.Sprintf("encoding query results: %v", err)), nil
 	}
-	return mcplib.NewToolResultText(bound.EndpointResponse("GET", data)), nil
+	return mcplib.NewToolResultText(framed), nil
 }
 
 func normalizeSQLValue(v any) any {

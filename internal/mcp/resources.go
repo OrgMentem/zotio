@@ -21,6 +21,7 @@ import (
 	"github.com/mark3labs/mcp-go/server"
 
 	"zotio/internal/cli"
+	"zotio/internal/mcp/bound"
 	"zotio/internal/store"
 )
 
@@ -134,7 +135,7 @@ func RegisterResources(s *server.MCPServer) {
 			if err != nil {
 				return nil, err
 			}
-			return jsonContentsValue(req.Params.URI, payload), nil
+			return libraryJSONContentsValue(req.Params.URI, payload)
 		},
 	)
 
@@ -147,7 +148,7 @@ func RegisterResources(s *server.MCPServer) {
 			if err != nil {
 				return nil, err
 			}
-			return jsonContentsValue(req.Params.URI, payload), nil
+			return libraryJSONContentsValue(req.Params.URI, payload)
 		},
 	)
 
@@ -174,7 +175,7 @@ func RegisterResources(s *server.MCPServer) {
 			if err != nil {
 				return nil, err
 			}
-			return jsonContents(req.Params.URI, string(data)), nil
+			return libraryJSONContents(req.Params.URI, data)
 		},
 	)
 
@@ -188,7 +189,7 @@ func RegisterResources(s *server.MCPServer) {
 			if err != nil {
 				return nil, err
 			}
-			return jsonContents(req.Params.URI, string(data)), nil
+			return libraryJSONContents(req.Params.URI, data)
 		},
 	)
 	s.AddResourceTemplate(
@@ -200,7 +201,7 @@ func RegisterResources(s *server.MCPServer) {
 			if err != nil {
 				return nil, err
 			}
-			return jsonContents(req.Params.URI, string(data)), nil
+			return libraryJSONContents(req.Params.URI, data)
 		},
 	)
 	s.AddResourceTemplate(
@@ -212,7 +213,7 @@ func RegisterResources(s *server.MCPServer) {
 			if err != nil {
 				return nil, err
 			}
-			return jsonContents(req.Params.URI, string(data)), nil
+			return libraryJSONContents(req.Params.URI, data)
 		},
 	)
 	s.AddResourceTemplate(
@@ -224,7 +225,7 @@ func RegisterResources(s *server.MCPServer) {
 			if err != nil {
 				return nil, err
 			}
-			return jsonContents(req.Params.URI, string(data)), nil
+			return libraryJSONContents(req.Params.URI, data)
 		},
 	)
 	s.AddResourceTemplate(
@@ -236,7 +237,7 @@ func RegisterResources(s *server.MCPServer) {
 			if err != nil {
 				return nil, err
 			}
-			return jsonContents(req.Params.URI, string(data)), nil
+			return libraryJSONContents(req.Params.URI, data)
 		},
 	)
 }
@@ -393,6 +394,26 @@ func jsonContentsValue(uri string, v any) []mcplib.ResourceContents {
 
 func jsonContents(uri, text string) []mcplib.ResourceContents {
 	return []mcplib.ResourceContents{mcplib.TextResourceContents{URI: uri, MIMEType: "application/json", Text: text}}
+}
+
+// libraryJSONContentsValue wraps a library-derived value in authoritative
+// provenance without changing the native JSON resource contract.
+func libraryJSONContentsValue(uri string, v any) ([]mcplib.ResourceContents, error) {
+	data, err := bound.LibraryJSON(v)
+	if err != nil {
+		return nil, err
+	}
+	return jsonContents(uri, data), nil
+}
+
+// libraryJSONContents wraps already-encoded library-derived JSON in
+// authoritative provenance while preserving its native JSON shape.
+func libraryJSONContents(uri string, raw []byte) ([]mcplib.ResourceContents, error) {
+	data, err := bound.LibraryRawJSON(json.RawMessage(raw))
+	if err != nil {
+		return nil, err
+	}
+	return jsonContents(uri, data), nil
 }
 
 func promptResult(description, text string) *mcplib.GetPromptResult {
