@@ -1,10 +1,9 @@
 module zotio
 
-go 1.26
-
-// Pin a patched 1.26.x: 1.26.5 fixes CVE-2026-42505 (ECH privacy leak in
-// crypto/tls), and every outbound metadata provider call rides that stack.
-toolchain go1.26.5
+// 1.26.5 fixes CVE-2026-42505 (ECH privacy leak in crypto/tls), and every
+// outbound metadata provider call rides that stack. Patch-level go directive:
+// an older 1.26.x is refused, and GOTOOLCHAIN=auto fetches 1.26.5.
+go 1.26.5
 
 require (
 	github.com/mark3labs/mcp-go v0.57.0 // Shutdown closes active sessions (upstream PR 926)
