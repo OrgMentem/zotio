@@ -917,7 +917,7 @@ zotio import file <path> [flags]
 | Flag | Type | Default | Description |
 | --- | --- | --- | --- |
 | `--collection` | `string` |  | Collection key to add imported items to |
-| `--format` | `string` |  | Input format (bibtex, ris, csljson) |
+| `--format` | `string` |  | Input format (bibtex, ris, csljson; csljson requires --via connector) |
 
 ### `zotio import isbn`
 

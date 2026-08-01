@@ -25,3 +25,11 @@ Offline reads from the synced SQLite mirror are a **deliberate, per-resource sub
 **What this means for you:** `--data-source local` works for the scopes that have been built out; where a local path doesn't exist yet, `auto` falls back to the live API rather than returning partial results. See [Local read parity](../concepts/local-read-parity.md).
 
 Full record: [ADR 0002 — Local read parity subsystem](https://github.com/OrgMentem/zotio/blob/main/dev/adr/0002-local-read-parity-subsystem.md).
+
+## Single-writer concurrency
+
+zotio is **multi-reader, single-writer**. Any number of reads, `--dry-run` previews, and unapplied `--agent` invocations run concurrently, but only one process at a time may apply writes to an installation — or to one independent output artifact, such as an export snapshot, collection bundle, or vault directory. Writers **fail fast rather than wait**: a second writer exits 9 immediately with retry guidance, because a queued writer would silently apply against state it read before the wait. Atomic file replacement, which the code previously relied on, prevents a torn file but is not concurrency control; a writer now holds its lock across the whole load-mutate-publish transaction.
+
+**What this means for you:** serialize applies and parallelize reads. Scheduled jobs and agent hosts that fire overlapping writes should treat exit 9 as "retry shortly", not as a failure. Selecting a different config file or data directory (`--config`, `ZOTERO_CONFIG`, `ZOTIO_DATA_DIR`) does **not** buy you a second writer, because credentials, profiles, and the mutation journal remain shared per user home.
+
+Full record: [ADR 0005 — Single-writer concurrency contract](https://github.com/OrgMentem/zotio/blob/main/dev/adr/0005-single-writer-concurrency-contract.md).

@@ -74,6 +74,12 @@
     go build -o zotio-mcp ./cmd/zotio-mcp   # optional: the MCP server
     ```
 
+    Needs **Go 1.26.5 or newer** — `go.mod` carries a `toolchain go1.26.5`
+    directive, so an older 1.26.x either fetches that toolchain automatically or
+    refuses to build. The floor is a security one: 1.26.5 fixes CVE-2026-42505
+    in `crypto/tls`, the stack every API-key-bearing request rides. Release
+    archives are always built on a patched toolchain.
+
 Then let the CLI walk you through setup — Zotero detection, the local-API toggle, an optional Web API key, first sync, and a health check:
 
 ```bash

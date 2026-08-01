@@ -3,6 +3,70 @@
 Notable changes to zotio. Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow [SemVer](https://semver.org/).
 
 ## [Unreleased]
+### Changed — breaking
+- **A batch create that Zotero partially rejects is no longer reported as
+  success.** `items create`, `collections create`, and `import file` send
+  batched writes, and Zotero answers a batch with HTTP 200 even when it
+  rejected some elements — naming them in a `failed` map in the body. That map
+  was discarded, so a run whose items were refused for a missing `itemType`,
+  `title`, or `name` printed success and exited 0, and an import silently lost
+  records. The failures are now decoded and reported with the source index, the
+  per-element status code, and Zotero's message, and the command exits 13
+  (degraded). Import indices refer to positions in the source file, not to the
+  offset inside whichever batch carried them. Scripts that only checked for a
+  zero exit will now see failures they were previously blind to.
+- **`import doi` previews by default and requires `--yes` to apply.** It wrote
+  on invocation, contradicting the write contract every other mutating command
+  honors and the gates the MCP surface advertises for it. It now routes through
+  the shared mutation gate: the preview shows the create, `--max-changes` is
+  checked *before* the CrossRef request rather than after, and a conditional
+  `--fetch-pdf` attachment appears in the plan. Non-interactive callers must add
+  `--yes`.
+- **`import file --format csljson` without `--via connector` is refused.** The
+  direct Web API path posted CSL fields (`author`, `container-title`, `issued`,
+  `type`) straight to Zotero, which expects `itemType`/`creators` and its own
+  field schema — so records were created incomplete or wrong while the command
+  reported success. CSL JSON now requires the connector translator, which maps
+  it properly. BibTeX and RIS are unaffected.
+- **`collections update` sends `If-Unmodified-Since-Version`.** It was the one
+  key-based collection mutation without the precondition its siblings use, so
+  two concurrent renames or reparentings both returned success and the later one
+  silently discarded the earlier. A stale update now fails instead of
+  overwriting; re-read the collection and retry.
+- **One zotio writer per installation, and busy writers fail fast (exit 9).**
+  Atomic file replacement was doing duty as concurrency control, which it is
+  not: concurrent invocations could lose profile saves, resurrect credentials
+  deleted by a logout, regress a sync cursor, or interleave two exports into one
+  output directory. Commands that actually write now take a single
+  installation-scoped advisory lock (`~/.zotio/.writer.lock`), and independent
+  artifacts (export snapshots, collection bundles, vault paths, workflow
+  checkpoints) take a lock on their canonical output path. Writers do not queue
+  — a second writer exits 9 immediately with retry guidance. Reads, `--dry-run`
+  previews, and unapplied `--agent` invocations stay concurrent, and nested
+  workflow steps inherit their parent's ownership. `--config`, `ZOTERO_CONFIG`,
+  and `ZOTIO_DATA_DIR` do **not** create independent writer scopes, because
+  profiles and credentials remain shared. See
+  [ADR-0005](https://github.com/OrgMentem/zotio/blob/main/dev/adr/0005-single-writer-concurrency-contract.md).
+- **MCP results that carry library content are now framed as untrusted data.**
+  An item title, abstract, note, or tag is authored by whoever can write to the
+  library — a group co-member, a scraped web page, an enrichment provider — and
+  it reached the host model in the same channel as its operator's instructions,
+  on a surface that also applies writes. Native `search`, `sql`, and library
+  resources now carry a top-level `_zotio_provenance` object
+  (`source`/`trust`/`notice`), array payloads move under an `items` field with
+  `count` and truncation metadata, text results are wrapped in a
+  nonce-delimited block with a data-not-instructions preamble, and C0/ANSI
+  control bytes are neutralized. JSON stays valid, MIME types and the 50-item /
+  60-KB bounds are unchanged, and trusted `zotero://context`, `status`, and
+  `schema` resources stay unframed. MCP clients that parsed a bare array from
+  these tools must read `items`.
+- **`items list --data-source local` no longer claims to handle `--since` and
+  `--format`.** The local planner implements a subset of Zotero's item
+  parameters and short-circuited the generic path, so `--since` returned older
+  items and `--format bib/csljson` returned ordinary JSON rows — both while
+  claiming the live item-list contract. Unsupported parameters now fall through
+  to the honest generic local dump with a warning, per ADR-0002.
+
 ### Changed
 - **`library health` colors its human output.** The headline command and CI gate
   rendered entirely monochrome: the verdict, the `Critical`/`High`/`Info` group
@@ -14,6 +78,61 @@ Notable changes to zotio. Format follows [Keep a Changelog](https://keepachangel
   the gate verdict is green/red/yellow for passed/failed/indeterminate. Piped,
   `--agent`, `--no-color`, `NO_COLOR`, and `TERM=dumb` output is byte-identical
   to before.
+
+### Fixed
+- `zotio watch items` (or any positional resource) syncs only that resource.
+  The positional was dropped on the way to the inner sync, so a scoped watch
+  quietly synced the whole library on every tick.
+- The MCP `sql` tool returns TEXT columns as text. `database/sql` scans dynamic
+  columns into `[]byte`, which `encoding/json` renders as base64 — every title,
+  key, and DOI came back unreadable.
+- Dates like `July 2026` or `15 July 2026` yield a year. The extractor only
+  looked at the first four characters, so non-ISO Zotero dates produced an empty
+  `year` in vault notes and note templates, breaking indexes and filters.
+- Four-segment versions compare correctly (`1.2.3` → `1.2.3.4` is an upgrade);
+  everything past the third component used to be ignored.
+- A cyclic collection parent chain is detected instead of recursing until the
+  process dies, and `stripHTMLTags` is quote-aware, so a `>` inside an attribute
+  no longer leaks into rendered text.
+- `tags rename` deduplicates its PATCH body, and `collections bundle` reports
+  full-text read errors instead of silently emitting an empty or partial
+  `annotations.md`/`bibliography.json`.
+- `import` validates an attachment path before creating the parent item, so a
+  bad path no longer leaves an orphaned item behind.
+- `items enrich --keys` filters in SQL instead of scanning the whole
+  missing-metadata queue and discarding rows in memory.
+- Cancellation is honored where it was ignored: `sync --fulltext`, `schema
+  drift`, `tail`, and the workflow archive now run under the command context,
+  `tail` no longer advances its cursor when a `/deleted` fetch is interrupted,
+  and the workflow archive distinguishes an aborted command from an HTTP
+  timeout. A partially failed full-text batch checkpoints the items that did
+  succeed instead of re-fetching them all next run.
+- `zotio-mcp` shuts down cleanly while a client holds the SSE stream
+  (`mcp-go` v0.57.0 closes active sessions). Every SIGTERM/SIGINT previously
+  burned the full 5-second drain timeout and exited 1, so supervisors saw a
+  failed stop.
+- Irreplaceable state is fsynced before it is published — credentials, config,
+  profiles, vault conflict artifacts, and health baselines survive a power loss
+  rather than only a process crash; hot response/provider caches stay atomic but
+  deliberately non-durable, and an expired cache file is now deleted when it is
+  read instead of lingering.
+- A GET that started before a mutation can no longer repopulate the response
+  cache with pre-mutation data after the invalidation, and a torn final line in
+  the mutation journal degrades that one entry instead of failing the whole
+  listing. Read-only commands wait, boundedly and cancellably, for a concurrent
+  migration to publish its schema instead of erroring on a missing table.
+- No-op and API-error envelopes are written to the command's own streams, so
+  in-process MCP capture sees them (ADR-0001), and a nil store context no longer
+  panics inside `database/sql`.
+
+### Security
+- **`go.mod` pins `toolchain go1.26.5`.** The module declared only `go 1.26`, so
+  a source build on any locally installed 1.26.x produced a binary whose
+  crypto/tls carried CVE-2026-42505 (ECH privacy leak) — on the exact stack that
+  carries the Zotero API key and every metadata-provider call. Shipped release
+  artifacts were never affected; they build on the newest patch.
+- Library content delivered over MCP is labelled as data, not instruction, and
+  stripped of terminal control sequences (see the breaking entry above).
 
 ### Documentation
 - **The Linux install instructions no longer print a `<version>` placeholder.**

@@ -115,7 +115,7 @@ func newImportFileCmd(flags *rootFlags) *cobra.Command {
 			return nil
 		},
 	}
-	cmd.Flags().StringVar(&flagFormat, "format", "", "Input format (bibtex, ris, csljson)")
+	cmd.Flags().StringVar(&flagFormat, "format", "", "Input format (bibtex, ris, csljson; csljson requires --via connector)")
 	cmd.Flags().StringVar(&flagCollection, "collection", "", "Collection key to add imported items to")
 
 	return cmd

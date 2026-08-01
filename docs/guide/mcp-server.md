@@ -32,3 +32,13 @@ claude mcp add zotero zotio-mcp -e ZOTERO_API_KEY=<your-key>
 ## Concurrent access
 
 Only one zotio writer may update an installation or independent output at a time. Installation writers use the host-user lock `~/.zotio/.writer.lock`: `--config`, `ZOTERO_CONFIG`, and `ZOTIO_DATA_DIR` do not make concurrent writer scopes because profiles remain shared at `~/.zotio/profiles.json`. A concurrent write fails immediately with exit code 9 and is safe to retry after the active writer finishes; read-only commands and dry-run previews remain available.
+
+## Library content is data, never instruction
+
+An item's title, abstract, note, tag, or annotation is authored by whoever can write to the library — a group co-member, a scraped web page, a metadata provider — and this same server exposes the CLI's write surface. Results that carry library content are therefore framed before they reach the host model, so an injected "ignore previous instructions" reads as a quoted string rather than as an operator directive:
+
+- **JSON results** (`search`, `sql`, and the library resources: collections, items, bundles, manifests, reading notes) carry a top-level `_zotio_provenance` object — `source: zotero_library`, `trust: untrusted_data`, and a notice naming the content as data. Array payloads move under an `items` field alongside `count` and the existing truncation metadata; a result field named `_zotio_provenance` in the library itself cannot forge it, because the authoritative value is written after decoding.
+- **Text results** — mirrored CLI stdout included — are wrapped in a preamble plus a per-call nonce-delimited `<<<ZOTERO-DATA …>>>` block, so content cannot close the block and resume as trusted text. C0 and ANSI control bytes are neutralized in the same pass.
+- **Trusted resources stay unframed:** `zotero://context`, `zotero://agent-context`, `zotero://status`, `zotero://freshness`, `zotero://schema`, and `zotero://capabilities` describe this CLI, not your library.
+
+MIME types, JSON validity, root field names, and the 50-item / 60-KB result bounds are unchanged. Framing is mitigation, not a boundary: the write gate — `command_run` still requires an explicit `yes` — is what actually decides whether a model's request mutates anything.

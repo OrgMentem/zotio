@@ -13,6 +13,8 @@ Every write command — `items enrich`, `tags audit fix`, `items duplicates reso
 - **Gates cap the blast radius.** `--max-changes` defaults to 500 (50 under `--agent`); irreversible ops (merge, permanent delete, empty-trash) refuse to run without `--allow-destructive`.
 - **Read-your-writes.** An applied write is replayed into the local mirror immediately, and the post-write item state comes back in the envelope — a re-audit sees the fix with no follow-up `sync`.
 - **Journaled + reversible.** Every applied run is recorded append-only (`journal list` / `journal show`). `journal undo <run-id>` reverses the reversible ops (tag renames, collection membership) and **loudly refuses** the rest (merges, deletions, field overwrites) rather than guessing.
+- **One writer at a time.** Applying a write takes a host-wide advisory lock (`~/.zotio/.writer.lock`), or a lock on the canonical output path for independent artifacts like an export snapshot, collection bundle, or vault directory. Writers do not queue: a second concurrent writer exits **9** immediately and is safe to retry once the first finishes. Reads and previews are never blocked, so parallelize those and serialize applies. See [Architecture decisions › Single-writer concurrency](../contributing/architecture-decisions.md#single-writer-concurrency).
+- **Partial success is loud.** Zotero answers a batched write with HTTP 200 even when it rejected some elements. Those rejections are reported with their source index and message, and the command exits **13** (degraded) — never 0.
 
 ## Across a whole workflow
 

@@ -971,7 +971,7 @@
           "type": "boolean"
         },
         "format": {
-          "description": "Input format (bibtex, ris, csljson)",
+          "description": "Input format (bibtex, ris, csljson; csljson requires --via connector)",
           "type": "string"
         },
         "max-changes": {

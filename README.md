@@ -296,7 +296,7 @@ format = "obsidian"      # or "logseq"
 collection:KEY   tag:NAME   query:TEXT   item:KEY   saved-search:KEY (needs live desktop)
 ```
 
-**Exit codes:** `0` ok · `2` usage · `3` not-found · `4` auth · `5` API · `7` rate-limited · `9` precondition/setup · `10` config · `11` quality-gate failed · `12` freshness-gate failed.
+**Exit codes:** `0` ok · `2` usage · `3` not-found · `4` auth · `5` API · `7` rate-limited · `9` precondition/setup (including *another writer holds the lock* — retry) · `10` config · `11` quality-gate failed · `12` freshness-gate failed · `13` degraded (output produced, part of it unreadable or rejected).
 
 ---
 
