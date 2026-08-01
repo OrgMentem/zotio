@@ -63,41 +63,70 @@ func newImportDoiCmd(flags *rootFlags) *cobra.Command {
 			}
 			addImportCollection(item, flagCollection)
 
-			if !resolveMutationMode(flags).Apply {
-				env, runErr := runMutation(cmd.Context(), flags, "import.doi", []mutation.Op{{
-					ID:   "import.doi",
-					Key:  args[0],
-					Kind: "item_create",
-					Changes: []mutation.Change{
-						{Field: "doi", Add: args[0]},
-						{Field: "item", Add: item},
-					},
-				}})
-				if renderErr := renderMutation(cmd, flags, env, nil); renderErr != nil {
-					return renderErr
-				}
-				return runErr
-			}
-
-			c, err := flags.newClient()
-			if err != nil {
-				return err
-			}
-			// Route item creates through the desktop connector when available.
-			res, err := routeCreateItem(cmd.Context(), flags, c, item, itemCreateSourceURI(item), cmd.Flags().Changed("collection"))
-			if err != nil {
-				return err
-			}
+			var res itemCreateResult
+			ops := []mutation.Op{{
+				ID:   "import.doi",
+				Key:  args[0],
+				Kind: "item_create",
+				Changes: []mutation.Change{
+					{Field: "doi", Add: args[0]},
+					{Field: "item", Add: item},
+				},
+				Apply: func() (string, any, error) {
+					if flagFetchPDF {
+						via, err := flags.resolveCreateVia(cmd.Context(), cmd.Flags().Changed("collection"))
+						if err != nil {
+							return "failed", nil, err
+						}
+						if via != "connector" {
+							return "failed", nil, preconditionErr(fmt.Errorf("--fetch-pdf requires the desktop connector; use --via connector"))
+						}
+					}
+					c, err := flags.newClient()
+					if err != nil {
+						return "failed", nil, err
+					}
+					res, err = routeCreateItem(cmd.Context(), flags, c, item, itemCreateSourceURI(item), cmd.Flags().Changed("collection"))
+					if err != nil {
+						return "failed", nil, err
+					}
+					return "applied", map[string]any{"via": res.Via}, nil
+				},
+			}}
 			if flagFetchPDF {
-				if res.Via != "connector" {
-					return preconditionErr(fmt.Errorf("--fetch-pdf requires the desktop connector; use --via connector"))
-				}
-				attachResolverPDF(cmd.Context(), flags, &res)
+				ops = append(ops, mutation.Op{
+					ID:   "import.doi:resolver-pdf",
+					Key:  args[0],
+					Kind: "attachment_create",
+					Changes: []mutation.Change{{
+						Field: "attachment",
+						Add: map[string]any{
+							"source":    "resolver",
+							"condition": "when an open-access PDF resolver is available",
+						},
+					}},
+					Apply: func() (string, any, error) {
+						attachResolverPDF(cmd.Context(), flags, &res)
+						detail := map[string]any{
+							"status": res.OAPDFStatus,
+							"title":  res.OAPDFTitle,
+							"error":  res.OAPDFError,
+						}
+						if res.OAPDFStatus == "attached" {
+							return "applied", detail, nil
+						}
+						return "no_op", detail, nil
+					},
+				})
 			}
-			if res.Via == "connector" {
+			env, runErr := runMutation(cmd.Context(), flags, "import.doi", ops)
+			if renderErr := renderMutation(cmd, flags, env, nil); renderErr != nil {
+				return renderErr
+			}
+			if runErr == nil && res.Via == "connector" {
 				refreshItemsFromLocalAPI(cmd.Context(), flags)
 			}
-			return printCreateResult(cmd, flags, res, res.WebData)
+			return runErr
 		},
 	}
 	cmd.Flags().StringVar(&flagCollection, "collection", "", "Collection key to add the item to")

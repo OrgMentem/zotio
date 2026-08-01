@@ -4,7 +4,9 @@ package cli
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
@@ -102,7 +104,12 @@ and full resync. After archiving, use 'search' for instant full-text search.`,
 				for {
 					data, fetchErr := c.Get("/"+resource, params)
 					if fetchErr != nil {
-						resourceIncomplete = true
+						if ctxErr := cmd.Context().Err(); ctxErr != nil {
+							return ctxErr
+						}
+						if errors.Is(fetchErr, context.Canceled) || errors.Is(fetchErr, context.DeadlineExceeded) {
+							return fetchErr
+						}
 						if warning, ok := isSyncAccessWarning(fetchErr); ok {
 							detail := fmt.Sprintf("%s: access denied (%s)", resource, warning.Reason)
 							accessWarnings = append(accessWarnings, detail)

@@ -7,7 +7,7 @@ go 1.26
 toolchain go1.26.5
 
 require (
-	github.com/mark3labs/mcp-go v0.55.0 // transport/session hardening after 0.52.0
+	github.com/mark3labs/mcp-go v0.57.0 // Shutdown closes active sessions (upstream PR 926)
 	github.com/pelletier/go-toml/v2 v2.3.1 // fuzz-found datetime-unmarshal panic fix
 	github.com/spf13/cobra v1.10.2 // keep Cobra coordinated with pflag 1.0.10
 	github.com/spf13/pflag v1.0.10 // coordinated Cobra/pflag bump

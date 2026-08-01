@@ -6,12 +6,15 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 	"zotio/internal/store"
 )
 
@@ -74,6 +77,57 @@ func TestWorkflowArchive_FetchFailureRetainsCursorAndReportsIncomplete(t *testin
 	cursor, _, _, err := db.GetSyncState("items")
 	if err != nil || cursor != "PREVIOUS" {
 		t.Fatalf("items cursor = %q, %v; want unchanged PREVIOUS", cursor, err)
+	}
+}
+
+func TestWorkflowArchiveCancellationStopsResourceLoop(t *testing.T) {
+	started := make(chan struct{})
+	var startedOnce sync.Once
+	var mu sync.Mutex
+	var resources []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		resource := strings.TrimPrefix(r.URL.Path, "/users/0/")
+		mu.Lock()
+		resources = append(resources, resource)
+		mu.Unlock()
+		if resource == "collections" {
+			startedOnce.Do(func() { close(started) })
+			<-r.Context().Done()
+			return
+		}
+		_, _ = w.Write([]byte("[]"))
+	}))
+	defer srv.Close()
+
+	t.Setenv("ZOTERO_BASE_URL", srv.URL+"/users/0")
+	t.Setenv("ZOTERO_CONFIG", filepath.Join(t.TempDir(), "missing.toml"))
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	cmd := newWorkflowArchiveCmd(&rootFlags{ctx: ctx, asJSON: true, noCache: true})
+	cmd.SilenceErrors, cmd.SilenceUsage = true, true
+	cmd.SetArgs([]string{"--db", filepath.Join(t.TempDir(), "archive.db")})
+
+	done := make(chan error, 1)
+	go func() { done <- cmd.ExecuteContext(ctx) }()
+	select {
+	case <-started:
+	case <-time.After(3 * time.Second):
+		t.Fatal("archive did not begin fetching collections")
+	}
+	cancel()
+
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("archive error = %v, want context cancellation", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("archive did not stop after context cancellation")
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if got, want := strings.Join(resources, ","), "collections"; got != want {
+		t.Fatalf("fetched resources = %q, want %q", got, want)
 	}
 }
 

@@ -1492,6 +1492,32 @@ func (s *Store) Query(query string, args ...any) (*sql.Rows, error) {
 	return s.queryWithBusyRetry(query, args...)
 }
 
+// Row retries Scan because database/sql defers QueryRowContext errors until
+// the caller consumes the row.
+type Row struct {
+	store *Store
+	ctx   context.Context
+	query string
+	args  []any
+}
+
+// QueryRowContext executes a raw SQL query for one row with cancellation.
+// Busy errors arise during Scan, so the scan itself is retried.
+func (s *Store) QueryRowContext(ctx context.Context, query string, args ...any) *Row {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return &Row{store: s, ctx: ctx, query: query, args: args}
+}
+
+// Scan reads the query row, retrying SQLite contention until the store deadline.
+func (r *Row) Scan(dest ...any) error {
+	deadline := time.Now().Add(migrationLockTimeout)
+	return retryOnBusy(r.ctx, deadline, "querying local store", func() error {
+		return r.store.db.QueryRowContext(r.ctx, r.query, r.args...).Scan(dest...)
+	})
+}
+
 func (s *Store) queryWithBusyRetry(query string, args ...any) (*sql.Rows, error) {
 	var rows *sql.Rows
 	deadline := time.Now().Add(migrationLockTimeout)

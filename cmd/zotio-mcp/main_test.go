@@ -13,6 +13,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/mark3labs/mcp-go/server"
 )
 
 func TestIsLoopbackHTTPAddr(t *testing.T) {
@@ -68,16 +70,7 @@ func TestValidateMCPHTTPRequestRejectsOriginWithoutMatchingExplicitPort(t *testi
 	}
 }
 
-func TestValidateMCPHTTPRequestRejectsForeignHostAndOrigin(t *testing.T) {
-	hostReq, err := http.NewRequest(http.MethodPost, "http://evil.example:7777/mcp", strings.NewReader("{}"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	hostReq.Host = "evil.example:7777"
-	if err := validateMCPHTTPRequest("127.0.0.1:7777", hostReq); err == nil || !strings.Contains(err.Error(), "Host") {
-		t.Fatalf("foreign Host error = %v, want forbidden Host", err)
-	}
-
+func TestValidateMCPHTTPRequestRejectsForeignOrigin(t *testing.T) {
 	originReq, err := http.NewRequest(http.MethodPost, "http://127.0.0.1:7777/mcp", strings.NewReader("{}"))
 	if err != nil {
 		t.Fatal(err)
@@ -86,6 +79,26 @@ func TestValidateMCPHTTPRequestRejectsForeignHostAndOrigin(t *testing.T) {
 	originReq.Header.Set("Origin", "https://attacker.example")
 	if err := validateMCPHTTPRequest("127.0.0.1:7777", originReq); err == nil || !strings.Contains(err.Error(), "Origin") {
 		t.Fatalf("foreign Origin error = %v, want forbidden Origin", err)
+	}
+}
+
+func TestHardenedHTTPServerRejectsForeignHostOnLoopback(t *testing.T) {
+	mcpServer := server.NewMCPServer("test", "1.0.0")
+	httpServer := httptest.NewServer(newHardenedStreamableHTTPServer(mcpServer, "127.0.0.1:7777", ""))
+	defer httpServer.Close()
+
+	req, err := http.NewRequest(http.MethodGet, httpServer.URL+"/mcp", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Host = "evil.example"
+	resp, err := httpServer.Client().Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("foreign Host status = %d, want %d", resp.StatusCode, http.StatusForbidden)
 	}
 }
 

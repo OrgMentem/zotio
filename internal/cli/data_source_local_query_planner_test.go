@@ -682,6 +682,32 @@ func TestResolveReadLocalItemsFallsBackForUnreproducibleScopes(t *testing.T) {
 	}
 }
 
+func TestResolveReadLocalCollectionItemsFormatFallsBackToUnscopedItemList(t *testing.T) {
+	seedLocalQueryPlannerDB(t)
+	flags := &rootFlags{asJSON: true, dataSource: "local", noCache: true, timeout: time.Second}
+
+	var (
+		data json.RawMessage
+		prov DataProvenance
+		err  error
+	)
+	stderr := captureStderr(t, func() {
+		data, prov, err = resolveRead(context.Background(), nil, flags, "collections", false, "/collections/COL1/items", map[string]string{"format": "bib"}, nil)
+	})
+	if err != nil {
+		t.Fatalf("resolveRead collection items: %v", err)
+	}
+	if prov.Source != "local" || prov.ResourceType != "items" || prov.Scoped {
+		t.Fatalf("provenance = %+v, want unscoped local item fallback", prov)
+	}
+	if !strings.Contains(stderr, "warning: local data may be unfiltered") {
+		t.Fatalf("stderr = %q, want unreproducible-parameter warning", stderr)
+	}
+	if keys := itemKeysFromRawList(t, data); len(keys) != len(localQueryPlannerItems) {
+		t.Fatalf("fallback keys = %v, want generic dump of %d items", keys, len(localQueryPlannerItems))
+	}
+}
+
 func TestResolveReadLocalItemsReproducibleScopeRemainsScoped(t *testing.T) {
 	seedLocalQueryPlannerDB(t)
 	flags := &rootFlags{asJSON: true, dataSource: "local", noCache: true, timeout: time.Second}

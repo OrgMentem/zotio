@@ -7,9 +7,10 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"path/filepath"
 	"sort"
 	"time"
+
+	"zotio/internal/cliutil"
 )
 
 // healthBaselineFile is the persisted baseline identity schema used by CI delta gates.
@@ -116,7 +117,7 @@ func writeHealthBaseline(path string, preset string, findings []Finding) error {
 		return err
 	}
 	data = append(data, '\n')
-	return writeFileAtomic(path, data)
+	return cliutil.AtomicWriteDurableFile(path, data, 0o644, 0o755)
 }
 
 // write --report JSON sidecars in human and badge modes without changing stdout.
@@ -126,31 +127,7 @@ func writeHealthReportFile(path string, report healthReport) error {
 		return err
 	}
 	data = append(data, '\n')
-	return writeFileAtomic(path, data)
-}
-
-func writeFileAtomic(path string, data []byte) error {
-	dir := filepath.Dir(path)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return err
-	}
-	tmp, err := os.CreateTemp(dir, "."+filepath.Base(path)+".tmp-*")
-	if err != nil {
-		return err
-	}
-	tmpName := tmp.Name()
-	defer os.Remove(tmpName)
-	if _, err := tmp.Write(data); err != nil {
-		_ = tmp.Close()
-		return err
-	}
-	if err := tmp.Close(); err != nil {
-		return err
-	}
-	if err := os.Rename(tmpName, path); err != nil {
-		return err
-	}
-	return nil
+	return cliutil.AtomicWriteFile(path, data, 0o644, 0o755)
 }
 
 // baseline identity helpers reuse watch --health finding keys.

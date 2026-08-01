@@ -54,7 +54,7 @@ func newItemsDeleteCmd(flags *rootFlags) *cobra.Command {
 			if err != nil {
 				var apiErr *client.APIError
 				if errors.As(err, &apiErr) && apiErr.StatusCode == http.StatusNotFound {
-					return writeNoop(flags, "already_deleted", "already deleted (no-op)")
+					return writeNoop(cmd.OutOrStdout(), cmd.ErrOrStderr(), flags, "already_deleted", "already deleted (no-op)")
 				}
 				return classifyAPIError(err, flags)
 			}

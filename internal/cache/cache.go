@@ -14,6 +14,8 @@ import (
 	"os"
 	"path/filepath"
 	"time"
+
+	"zotio/internal/cliutil"
 )
 
 // Store is a key-value cache backed by the filesystem.
@@ -31,7 +33,11 @@ func New(dir string, ttl time.Duration) *Store {
 func (s *Store) Get(key string) (json.RawMessage, bool) {
 	path := s.path(key)
 	info, err := os.Stat(path)
-	if err != nil || time.Since(info.ModTime()) > s.TTL {
+	if err != nil {
+		return nil, false
+	}
+	if time.Since(info.ModTime()) > s.TTL {
+		_ = os.Remove(path)
 		return nil, false
 	}
 	data, err := os.ReadFile(path)
@@ -45,34 +51,7 @@ func (s *Store) Get(key string) (json.RawMessage, bool) {
 // can surface cache-write failures (disk full, permissions) instead of silently
 // degrading to a perpetual cache miss.
 func (s *Store) Set(key string, value json.RawMessage) error {
-	if err := os.MkdirAll(s.Dir, 0o700); err != nil {
-		return err
-	}
-	// Write to a unique temp file then atomically rename so a concurrent Get
-	// (os.ReadFile) never observes a partially written entry.
-	tmp, err := os.CreateTemp(s.Dir, ".tmp-*")
-	if err != nil {
-		return err
-	}
-	tmpName := tmp.Name()
-	if _, err := tmp.Write([]byte(value)); err != nil {
-		tmp.Close()
-		os.Remove(tmpName)
-		return err
-	}
-	if err := tmp.Close(); err != nil {
-		os.Remove(tmpName)
-		return err
-	}
-	if err := os.Chmod(tmpName, 0o600); err != nil {
-		os.Remove(tmpName)
-		return err
-	}
-	if err := os.Rename(tmpName, s.path(key)); err != nil {
-		os.Remove(tmpName)
-		return err
-	}
-	return nil
+	return cliutil.AtomicWriteFile(s.path(key), value, 0o600, 0o700)
 }
 
 // Clear removes all cached entries.

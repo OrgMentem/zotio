@@ -311,19 +311,19 @@ type noopResult struct {
 	Reason string `json:"reason"`
 }
 
-func writeNoop(flags *rootFlags, reason, prose string) error {
+func writeNoop(out, errOut io.Writer, flags *rootFlags, reason, prose string) error {
 	if flags != nil && flags.asJSON {
-		return json.NewEncoder(os.Stdout).Encode(noopResult{Status: "noop", Reason: reason})
+		return json.NewEncoder(out).Encode(noopResult{Status: "noop", Reason: reason})
 	}
-	fmt.Fprintln(os.Stderr, prose)
+	fmt.Fprintln(errOut, prose)
 	return nil
 }
 
-func writeAPIErrorEnvelope(flags *rootFlags, err error, code int) {
+func writeAPIErrorEnvelope(out io.Writer, flags *rootFlags, err error, code int) {
 	if flags == nil || !flags.asJSON {
 		return
 	}
-	_ = json.NewEncoder(os.Stdout).Encode(map[string]any{
+	_ = json.NewEncoder(out).Encode(map[string]any{
 		"error": err.Error(),
 		"code":  code,
 	})
@@ -358,10 +358,10 @@ func classifyAPIError(err error, flags *rootFlags) error {
 	switch cliutil.ClassifyHTTPError(msg) {
 	case cliutil.HTTPErrConflict:
 		if flags != nil && flags.idempotent {
-			return writeNoop(flags, "already_exists", "already exists (no-op)")
+			return writeNoop(flags.out(), flags.errOut(), flags, "already_exists", "already exists (no-op)")
 		}
 		classified := apiErr(redactedAPIError(err, msg, secrets, ""))
-		writeAPIErrorEnvelope(flags, classified, ExitCode(classified))
+		writeAPIErrorEnvelope(flags.out(), flags, classified, ExitCode(classified))
 		return classified
 	case cliutil.HTTPErrBadRequestAuth:
 		return authErr(redactedAPIError(err, msg, secrets, "\nhint: the API rejected the request — this usually means auth is missing or invalid."+
@@ -398,7 +398,7 @@ func isLocalWriteRejection(msg string) bool {
 func classifyDeleteError(err error, flags *rootFlags) error {
 	msg := err.Error()
 	if strings.Contains(msg, "HTTP 404") && flags != nil && flags.ignoreMissing {
-		return writeNoop(flags, "already_deleted", "already deleted (no-op)")
+		return writeNoop(flags.out(), flags.errOut(), flags, "already_deleted", "already deleted (no-op)")
 	}
 	return classifyAPIError(err, flags)
 }

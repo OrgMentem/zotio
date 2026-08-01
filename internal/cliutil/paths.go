@@ -127,35 +127,74 @@ func ReadFileWithLegacyFallback(primary, legacy string) ([]byte, string, error) 
 	return data, legacy, nil
 }
 
-func AtomicWritePrivateFile(path string, data []byte, fileMode, dirMode os.FileMode) error {
+// AtomicWriteFile replaces path with data via a temp file and rename, so a
+// reader never observes a torn file. It deliberately does NOT fsync: an fsync
+// pair costs ~9ms versus ~0.2ms for the rename alone, which is the wrong price
+// for regenerable data such as the API response cache written on every GET.
+// Use AtomicWriteDurableFile for state whose loss is not recoverable.
+func AtomicWriteFile(path string, data []byte, fileMode, dirMode os.FileMode) error {
+	return atomicWrite(path, data, fileMode, dirMode, false)
+}
+
+// AtomicWriteDurableFile additionally fsyncs the data and the parent directory,
+// so both the contents and the rename survive sudden power loss. Reserve it for
+// state that cannot be regenerated -- credentials, config, profiles -- and pay
+// its fsync cost knowingly.
+func AtomicWriteDurableFile(path string, data []byte, fileMode, dirMode os.FileMode) error {
+	return atomicWrite(path, data, fileMode, dirMode, true)
+}
+
+func atomicWrite(path string, data []byte, fileMode, dirMode os.FileMode, durable bool) error {
 	dir := filepath.Dir(path)
 	if err := os.MkdirAll(dir, dirMode); err != nil {
-		return fmt.Errorf("creating private file dir: %w", err)
+		return fmt.Errorf("creating file dir: %w", err)
 	}
 	tmp, err := os.CreateTemp(dir, "."+filepath.Base(path)+".*.tmp")
 	if err != nil {
-		return fmt.Errorf("creating temporary private file: %w", err)
+		return fmt.Errorf("creating temporary file: %w", err)
 	}
 	tmpPath := tmp.Name()
-	if err := tmp.Chmod(fileMode); err != nil {
-		tmp.Close()
+	cleanup := func() {
+		_ = tmp.Close()
 		_ = os.Remove(tmpPath)
-		return fmt.Errorf("securing temporary private file: %w", err)
+	}
+	if err := tmp.Chmod(fileMode); err != nil {
+		cleanup()
+		return fmt.Errorf("securing temporary file: %w", err)
 	}
 	if _, err := tmp.Write(data); err != nil {
-		tmp.Close()
-		_ = os.Remove(tmpPath)
-		return fmt.Errorf("writing temporary private file: %w", err)
+		cleanup()
+		return fmt.Errorf("writing temporary file: %w", err)
+	}
+	if durable {
+		if err := tmp.Sync(); err != nil {
+			cleanup()
+			return fmt.Errorf("syncing temporary file: %w", err)
+		}
 	}
 	if err := tmp.Close(); err != nil {
 		_ = os.Remove(tmpPath)
-		return fmt.Errorf("closing temporary private file: %w", err)
+		return fmt.Errorf("closing temporary file: %w", err)
 	}
 	if err := os.Rename(tmpPath, path); err != nil {
 		_ = os.Remove(tmpPath)
-		return fmt.Errorf("publishing private file: %w", err)
+		return fmt.Errorf("publishing file: %w", err)
+	}
+	if durable {
+		// Some platforms cannot sync directories, but the published file remains
+		// usable, so do not make a completed write fail for that limitation.
+		if dirFile, err := os.Open(dir); err == nil {
+			_ = dirFile.Sync()
+			_ = dirFile.Close()
+		}
 	}
 	return nil
+}
+
+// AtomicWritePrivateFile publishes credentials and config, whose loss forces a
+// re-auth, so it is durable by default.
+func AtomicWritePrivateFile(path string, data []byte, fileMode, dirMode os.FileMode) error {
+	return AtomicWriteDurableFile(path, data, fileMode, dirMode)
 }
 
 func KindDir(kind PathKind) (string, error) {

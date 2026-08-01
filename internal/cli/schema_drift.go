@@ -8,6 +8,7 @@
 package cli
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -80,7 +81,7 @@ Zotero install.`,
 			}
 			c.NoCache = true
 
-			itemTypes, schemaVersion, err := probeSchemaVersion(c)
+			itemTypes, schemaVersion, err := probeSchemaVersion(cmd.Context(), c)
 			if err != nil {
 				return classifyAPIError(err, flags)
 			}
@@ -137,8 +138,8 @@ Zotero install.`,
 // probeSchemaVersion fetches the item-types list plus the Zotero-Schema-Version
 // response header in a single request — enough to short-circuit a drift check when
 // the schema version is unchanged. schemaVersion is empty when the header is absent.
-func probeSchemaVersion(c *client.Client) (itemTypes []string, schemaVersion string, err error) {
-	body, version, err := c.GetWithHeader("/itemTypes", nil, "Zotero-Schema-Version")
+func probeSchemaVersion(ctx context.Context, c *client.Client) (itemTypes []string, schemaVersion string, err error) {
+	body, version, err := c.GetWithHeaderContext(ctx, "/itemTypes", nil, "Zotero-Schema-Version")
 	if err != nil {
 		return nil, "", err
 	}

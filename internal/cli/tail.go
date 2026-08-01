@@ -196,7 +196,7 @@ func emitChanges(ctx context.Context, c *client.Client, db *store.Store, resourc
 		params["since"] = strconv.Itoa(cursor)
 	}
 
-	body, newVer, err := c.GetWithVersion(path, params)
+	body, newVer, err := c.GetWithVersionContext(ctx, path, params)
 	if err != nil {
 		return 0, err
 	}
@@ -230,7 +230,7 @@ func emitChanges(ctx context.Context, c *client.Client, db *store.Store, resourc
 	// poll (cursor == 0) emits the full current set as upserts and skips
 	// /deleted, which is the intended change-feed bootstrap.
 	if cursor > 0 {
-		delBody, _, derr := c.GetWithVersion("/deleted", params)
+		delBody, _, derr := c.GetWithVersionContext(ctx, "/deleted", params)
 		if derr != nil {
 			fmt.Fprintf(os.Stderr, "warning: tail %s: fetching deletions failed: %v\n", resource, derr)
 		} else {

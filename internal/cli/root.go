@@ -56,6 +56,24 @@ type rootFlags struct {
 	// ctx is the command context, set in PersistentPreRunE, so newClient can
 	// seed the client base context and propagate cancellation to HTTP work.
 	ctx context.Context
+	// output and errorOutput retain Cobra's writers for helpers that run below
+	// command layers and therefore cannot receive cmd directly.
+	output      io.Writer
+	errorOutput io.Writer
+}
+
+func (flags *rootFlags) out() io.Writer {
+	if flags != nil && flags.output != nil {
+		return flags.output
+	}
+	return os.Stdout
+}
+
+func (flags *rootFlags) errOut() io.Writer {
+	if flags != nil && flags.errorOutput != nil {
+		return flags.errorOutput
+	}
+	return os.Stderr
 }
 
 var errWebAPIKeyRequired = errors.New("web_api_key required")
@@ -242,6 +260,9 @@ See README.md or the bundled SKILL.md for recipes.`,
 				cmd.SetOut(io.MultiWriter(os.Stdout, spool))
 			}
 		}
+		// retain the final Cobra writers so nested helpers preserve in-process capture.
+		flags.output = cmd.OutOrStdout()
+		flags.errorOutput = cmd.ErrOrStderr()
 		if flags.profileName != "" {
 			profile, err := GetProfile(flags.profileName)
 			if err != nil {

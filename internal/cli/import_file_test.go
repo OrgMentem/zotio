@@ -5,6 +5,7 @@ package cli
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -73,6 +74,72 @@ func TestImportFileReportsBatchWriteFailures(t *testing.T) {
 	}
 	if out.Len() != 0 {
 		t.Fatalf("import output = %q, must not report a failed batch as imported", out.String())
+	}
+}
+
+func TestImportFileOffsetsLaterBatchWriteFailureIndexes(t *testing.T) {
+	requestCount := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requestCount++
+		w.Header().Set("Content-Type", "application/json")
+		if requestCount == 2 {
+			_, _ = w.Write([]byte(`{"successful":{},"success":{},"unchanged":{},"failed":{"0":{"code":400,"message":"title is required"}}}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"successful":{"0":{"key":"NEWKEY11"}},"success":{},"unchanged":{},"failed":{}}`))
+	}))
+	defer srv.Close()
+	t.Setenv("ZOTERO_BASE_URL", srv.URL+"/users/0")
+
+	var content strings.Builder
+	for i := 0; i <= importFileBatchSize; i++ {
+		fmt.Fprintf(&content, "@article{example%d,\n  title = {Example %d}\n}\n", i, i)
+	}
+	filePath := filepath.Join(t.TempDir(), "items.bib")
+	if err := os.WriteFile(filePath, []byte(content.String()), 0o600); err != nil {
+		t.Fatalf("write import fixture: %v", err)
+	}
+
+	cmd := newImportFileCmd(&rootFlags{asJSON: true})
+	cmd.SilenceErrors, cmd.SilenceUsage = true, true
+	cmd.SetArgs([]string{filePath})
+	err := cmd.Execute()
+	if err == nil || ExitCode(err) != 13 {
+		t.Fatalf("import error = %v, exit=%d; want degraded failure", err, ExitCode(err))
+	}
+	if requestCount != 2 {
+		t.Fatalf("import requests = %d, want 2 batches", requestCount)
+	}
+	if !strings.Contains(err.Error(), "index 50") {
+		t.Fatalf("import error = %q, want source-relative index 50", err)
+	}
+	if strings.Contains(err.Error(), "index 0") {
+		t.Fatalf("import error = %q, must not report the second batch's relative index", err)
+	}
+}
+
+func TestImportFilePreservesNonNumericBatchWriteFailureIndexes(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"successful":{},"success":{},"unchanged":{},"failed":{"unexpected":{"code":400,"message":"title is required"}}}`))
+	}))
+	defer srv.Close()
+	t.Setenv("ZOTERO_BASE_URL", srv.URL+"/users/0")
+
+	filePath := filepath.Join(t.TempDir(), "items.bib")
+	if err := os.WriteFile(filePath, []byte("@article{example,\n  title = {Example}\n}\n"), 0o600); err != nil {
+		t.Fatalf("write import fixture: %v", err)
+	}
+
+	cmd := newImportFileCmd(&rootFlags{asJSON: true})
+	cmd.SilenceErrors, cmd.SilenceUsage = true, true
+	cmd.SetArgs([]string{filePath})
+	err := cmd.Execute()
+	if err == nil || ExitCode(err) != 13 {
+		t.Fatalf("import error = %v, exit=%d; want degraded failure", err, ExitCode(err))
+	}
+	if !strings.Contains(err.Error(), "index unexpected") {
+		t.Fatalf("import error = %q, want unchanged non-numeric index", err)
 	}
 }
 

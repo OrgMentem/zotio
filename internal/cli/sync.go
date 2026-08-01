@@ -374,7 +374,7 @@ func syncFulltext(ctx context.Context, c *client.Client, db *store.Store, full b
 	// The /fulltext endpoint returns 400 without `since`, so always send it,
 	// including 0 on a full sync.
 	params := map[string]string{"since": strconv.Itoa(cursor)}
-	body, newVer, err := c.GetWithVersion("/fulltext", params)
+	body, newVer, err := c.GetWithVersionContext(ctx, "/fulltext", params)
 	if err != nil {
 		return fmt.Errorf("fetching fulltext index: %w", err)
 	}

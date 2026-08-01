@@ -49,4 +49,7 @@ func TestStoreGetRespectsTTL(t *testing.T) {
 	if got, ok := store.Get(key); ok {
 		t.Fatalf("expired cache entry returned (%s), want miss", got)
 	}
+	if _, err := os.Stat(store.path(key)); !os.IsNotExist(err) {
+		t.Fatalf("expired cache entry still exists, stat error = %v", err)
+	}
 }

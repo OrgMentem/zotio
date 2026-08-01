@@ -3,15 +3,16 @@
 package cli
 
 import (
+	"context"
 	"database/sql"
 	"errors"
 	"fmt"
 	"strings"
 	"time"
 
-	"zotio/internal/store"
-
 	"github.com/spf13/cobra"
+
+	"zotio/internal/store"
 )
 
 type syncHintState struct {
@@ -23,7 +24,7 @@ func hintIfStale(cmd *cobra.Command, db *store.Store, resourceType string, maxAg
 	if cmd == nil || db == nil || maxAge <= 0 {
 		return false
 	}
-	state, err := readSyncHintState(db, resourceType)
+	state, err := readSyncHintStateContext(cmd.Context(), db, resourceType)
 	if err != nil || !state.hasState {
 		return false
 	}
@@ -35,7 +36,7 @@ func hintIfStale(cmd *cobra.Command, db *store.Store, resourceType string, maxAg
 	return true
 }
 
-func readSyncHintState(db *store.Store, resourceType string) (syncHintState, error) {
+func readSyncHintStateContext(ctx context.Context, db *store.Store, resourceType string) (syncHintState, error) {
 	if db == nil {
 		return syncHintState{}, nil
 	}
@@ -50,7 +51,7 @@ func readSyncHintState(db *store.Store, resourceType string) (syncHintState, err
 	query += ` ORDER BY last_synced_at ASC LIMIT 1`
 
 	var lastSynced sql.NullTime
-	err := db.DB().QueryRow(query, args...).Scan(&lastSynced)
+	err := db.QueryRowContext(ctx, query, args...).Scan(&lastSynced)
 	if err == nil {
 		if !lastSynced.Valid {
 			return syncHintState{}, nil
@@ -64,6 +65,10 @@ func readSyncHintState(db *store.Store, resourceType string) (syncHintState, err
 		return syncHintState{}, nil
 	}
 	return syncHintState{}, err
+}
+
+func readSyncHintState(db *store.Store, resourceType string) (syncHintState, error) {
+	return readSyncHintStateContext(context.Background(), db, resourceType)
 }
 
 func syncHintMissingTable(err error) bool {

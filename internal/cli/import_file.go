@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"regexp"
+	"strconv"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -16,6 +17,23 @@ import (
 )
 
 const importFileBatchSize = 50
+
+func importFileFailureIndexes(failures map[string]batchWriteFailure, offset int) map[string]batchWriteFailure {
+	if offset == 0 || len(failures) == 0 {
+		return failures
+	}
+
+	offsetFailures := make(map[string]batchWriteFailure, len(failures))
+	for index, failure := range failures {
+		itemIndex, err := strconv.Atoi(index)
+		if err != nil {
+			offsetFailures[index] = failure
+			continue
+		}
+		offsetFailures[strconv.Itoa(itemIndex+offset)] = failure
+	}
+	return offsetFailures
+}
 
 var bibTeXEntryStartPattern = regexp.MustCompile(`(?is)@([a-zA-Z]+)\s*\{`)
 var bibTeXAuthorSplitPattern = regexp.MustCompile(`(?i)\s+and\s+`)
@@ -79,7 +97,7 @@ func newImportFileCmd(flags *rootFlags) *cobra.Command {
 				if err != nil {
 					return classifyAPIError(err, flags)
 				}
-				if err := batchWriteFailuresError("import file", decodeBatchWriteResponse(data).Failed); err != nil {
+				if err := batchWriteFailuresError("import file", importFileFailureIndexes(decodeBatchWriteResponse(data).Failed, start)); err != nil {
 					return degradedErr(err)
 				}
 			}

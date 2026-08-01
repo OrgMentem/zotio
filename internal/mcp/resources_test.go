@@ -256,7 +256,7 @@ func TestArchiveStatusSurfacesReadErrors(t *testing.T) {
 	}
 	db.Close()
 
-	status := archiveStatus()
+	status := archiveStatus(context.Background())
 	if status["synced"] != true {
 		t.Fatalf("synced = %v, want true (resources still counted)", status["synced"])
 	}

@@ -226,13 +226,11 @@ func mcpHTTPServer(addr string, handler http.Handler, readTimeout, idleTimeout t
 	}
 }
 
-// Local MCP HTTP servers are reachable from a browser. Validate Host and
-// Origin before mcp-go sees the request so loopback
-// CSRF/DNS-rebinding attempts cannot ride an ambient local server.
+// Local MCP HTTP servers are reachable from a browser. Validate Origin before
+// mcp-go sees the request so loopback CSRF attempts cannot ride an ambient
+// local server. StreamableHTTPServer's default localhost protection rejects
+// non-loopback Host headers on loopback connections.
 func validateMCPHTTPRequest(addr string, r *http.Request) error {
-	if !hostAllowedForMCP(addr, r.Host) {
-		return fmt.Errorf("forbidden Host header")
-	}
 	origin := strings.TrimSpace(r.Header.Get("Origin"))
 	if origin == "" {
 		return nil

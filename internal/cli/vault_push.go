@@ -27,6 +27,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"zotio/internal/client"
+	"zotio/internal/cliutil"
 )
 
 const (
@@ -664,32 +665,7 @@ func writeConflictArtifact(outDir string, n *pushNote, liveVer int, liveHTML str
 	// content cannot escape into Markdown.
 	b.WriteString(markdownFence("html", liveHTML+"\n"))
 
-	return path, writePrivateFile(path, []byte(b.String()))
-}
-
-// writePrivateFile centralizes the 0600 temp-file write for private note
-// content.
-func writePrivateFile(path string, body []byte) error {
-	tmp, err := os.CreateTemp(filepath.Dir(path), ".zpp-conflict-*.tmp")
-	if err != nil {
-		return err
-	}
-	tmpName := tmp.Name()
-	defer os.Remove(tmpName)
-	// Force 0600 even if the process umask or an existing artifact would
-	// otherwise leave user notes readable.
-	if err := tmp.Chmod(0o600); err != nil {
-		tmp.Close()
-		return err
-	}
-	if _, err := tmp.Write(body); err != nil {
-		tmp.Close()
-		return err
-	}
-	if err := tmp.Close(); err != nil {
-		return err
-	}
-	return os.Rename(tmpName, path)
+	return path, cliutil.AtomicWriteDurableFile(path, []byte(b.String()), 0o600, 0o700)
 }
 
 // markdownFence returns a fence that outgrows untrusted remote HTML, and also

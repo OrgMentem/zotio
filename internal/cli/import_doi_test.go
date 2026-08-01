@@ -211,6 +211,51 @@ func TestImportDoiRequiresYesToCreate(t *testing.T) {
 		t.Fatalf("planned create DOI=%q item=%v, want DOI and item", gotDOI, gotItem)
 	}
 
+	var fetchPDFEnv struct {
+		Plan struct {
+			Summary struct {
+				Planned int `json:"planned"`
+			} `json:"summary"`
+			Operations []struct {
+				Kind    string `json:"kind"`
+				Changes []struct {
+					Field string          `json:"field"`
+					Add   json.RawMessage `json:"add"`
+				} `json:"changes"`
+			} `json:"operations"`
+		} `json:"plan"`
+	}
+	cmd := newImportDoiCmd(&rootFlags{asJSON: true, via: "web", timeout: time.Second, maxChanges: -1})
+	var fetchPDFOut bytes.Buffer
+	cmd.SetOut(&fetchPDFOut)
+	cmd.SetErr(io.Discard)
+	cmd.SilenceErrors = true
+	cmd.SilenceUsage = true
+	cmd.SetArgs([]string{"10.1234/safety", "--fetch-pdf"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("import doi --fetch-pdf preview: %v", err)
+	}
+	if err := json.Unmarshal(fetchPDFOut.Bytes(), &fetchPDFEnv); err != nil {
+		t.Fatalf("decode --fetch-pdf preview: %v; %s", err, fetchPDFOut.Bytes())
+	}
+	if fetchPDFEnv.Plan.Summary.Planned != 2 || len(fetchPDFEnv.Plan.Operations) != 2 {
+		t.Fatalf("--fetch-pdf plan = %+v, want create and conditional attachment writes", fetchPDFEnv.Plan)
+	}
+	if fetchPDFEnv.Plan.Operations[1].Kind != "attachment_create" {
+		t.Fatalf("--fetch-pdf second operation kind = %q, want attachment_create", fetchPDFEnv.Plan.Operations[1].Kind)
+	}
+	var attachment map[string]string
+	for _, change := range fetchPDFEnv.Plan.Operations[1].Changes {
+		if change.Field == "attachment" {
+			if err := json.Unmarshal(change.Add, &attachment); err != nil {
+				t.Fatalf("decode attachment change: %v", err)
+			}
+		}
+	}
+	if attachment["source"] != "resolver" || attachment["condition"] == "" {
+		t.Fatalf("attachment preview = %v, want conditional resolver attachment", attachment)
+	}
+
 	for _, previewFlags := range []rootFlags{
 		{asJSON: true, yes: true, dryRun: true, via: "web", timeout: time.Second},
 		{asJSON: true, agent: true, via: "web", timeout: time.Second},
@@ -229,7 +274,20 @@ func TestImportDoiRequiresYesToCreate(t *testing.T) {
 		t.Fatalf("create requests before --yes = %d, want 0", createRequests)
 	}
 
-	run(rootFlags{asJSON: true, yes: true, via: "web", timeout: time.Second})
+	refusedCmd := newImportDoiCmd(&rootFlags{asJSON: true, yes: true, via: "web", timeout: time.Second, maxChanges: 0})
+	refusedCmd.SetOut(io.Discard)
+	refusedCmd.SetErr(io.Discard)
+	refusedCmd.SilenceErrors = true
+	refusedCmd.SilenceUsage = true
+	refusedCmd.SetArgs([]string{"10.1234/safety"})
+	if err := refusedCmd.Execute(); err == nil {
+		t.Fatal("import doi --yes --max-changes 0 succeeded, want refusal")
+	}
+	if createRequests != 0 {
+		t.Fatalf("create requests after zero-cap refusal = %d, want 0", createRequests)
+	}
+
+	run(rootFlags{asJSON: true, yes: true, via: "web", timeout: time.Second, maxChanges: -1})
 	if createRequests != 1 {
 		t.Fatalf("create requests with --yes = %d, want 1", createRequests)
 	}

@@ -11,6 +11,9 @@ import (
 // QueryContext executes a raw SQL query with cancellation and returns the rows.
 // Used by agent-facing tools that must not outlive their request context.
 func (s *Store) QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	return s.queryContextWithBusyRetry(ctx, query, args...)
 }
 

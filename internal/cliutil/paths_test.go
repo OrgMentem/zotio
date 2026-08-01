@@ -199,6 +199,29 @@ func TestSetHomeOverrideExpandsTildeAndCleans(t *testing.T) {
 	}
 }
 
+func TestAtomicWriteFilePreservesContentAndMode(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "nested", "entry.json")
+	want := []byte(`{"private":true}`)
+
+	if err := AtomicWriteFile(path, want, 0o600, 0o700); err != nil {
+		t.Fatalf("AtomicWriteFile: %v", err)
+	}
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read written file: %v", err)
+	}
+	if !bytes.Equal(got, want) {
+		t.Fatalf("written content = %q, want %q", got, want)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("stat written file: %v", err)
+	}
+	if got := info.Mode().Perm(); got != 0o600 {
+		t.Fatalf("written file mode = %04o, want 0600", got)
+	}
+}
+
 func assertDataDir(t *testing.T, want string) {
 	t.Helper()
 	got, err := DataDir()

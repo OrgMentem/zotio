@@ -233,6 +233,12 @@ func (c *Client) GetWithHeaders(path string, params map[string]string, headers m
 	return c.getWithHeadersContext(c.baseCtx(), path, params, headers)
 }
 
+// GetWithHeadersContext is GetWithHeaders honoring a caller-provided context.
+// A nil ctx falls back to the client base context.
+func (c *Client) GetWithHeadersContext(ctx context.Context, path string, params map[string]string, headers map[string]string) (json.RawMessage, error) {
+	return c.getWithHeadersContext(ctx, path, params, headers)
+}
+
 // GetContext is Get honoring a caller-provided context, for callers fanning out
 // under a cancellable context (e.g. FanoutRun) that must abort in-flight fetches
 // on cancellation. A nil ctx falls back to the client base context.
@@ -302,7 +308,11 @@ func (c *Client) cacheKey(path string, params map[string]string, headers map[str
 func (c *Client) readCache(path string, params map[string]string, headers map[string]string) (json.RawMessage, bool) {
 	cacheFile := filepath.Join(c.cacheDir, c.cacheKey(path, params, headers)+".json")
 	info, err := os.Stat(cacheFile)
-	if err != nil || time.Since(info.ModTime()) > 5*time.Minute {
+	if err != nil {
+		return nil, false
+	}
+	if time.Since(info.ModTime()) > 5*time.Minute {
+		_ = os.Remove(cacheFile)
 		return nil, false
 	}
 	data, err := os.ReadFile(cacheFile)
@@ -313,9 +323,9 @@ func (c *Client) readCache(path string, params map[string]string, headers map[st
 }
 
 func (c *Client) writeCache(path string, params map[string]string, headers map[string]string, data json.RawMessage) error {
-	// cached Zotero API payloads
-	// contain private library metadata, so keep the directory and files private
-	// even when they already existed with older world-readable permissions.
+	// Chmod as well as MkdirAll: cached Zotero API payloads contain private
+	// library metadata, so keep the directory and files private even when they
+	// already existed with older world-readable permissions.
 	if err := os.MkdirAll(c.cacheDir, 0o700); err != nil {
 		return err
 	}
@@ -323,31 +333,7 @@ func (c *Client) writeCache(path string, params map[string]string, headers map[s
 		return err
 	}
 	cacheFile := filepath.Join(c.cacheDir, c.cacheKey(path, params, headers)+".json")
-	// Write to a unique temp file then atomically rename so a concurrent GET's
-	// readCache (os.ReadFile) never observes a partially written entry.
-	tmp, err := os.CreateTemp(c.cacheDir, ".tmp-*")
-	if err != nil {
-		return err
-	}
-	tmpName := tmp.Name()
-	if _, err := tmp.Write([]byte(data)); err != nil {
-		tmp.Close()
-		os.Remove(tmpName)
-		return err
-	}
-	if err := tmp.Close(); err != nil {
-		os.Remove(tmpName)
-		return err
-	}
-	if err := os.Chmod(tmpName, 0o600); err != nil {
-		os.Remove(tmpName)
-		return err
-	}
-	if err := os.Rename(tmpName, cacheFile); err != nil {
-		os.Remove(tmpName)
-		return err
-	}
-	return nil
+	return cliutil.AtomicWriteFile(cacheFile, data, 0o600, 0o700)
 }
 
 // invalidateCache wholesale-removes the cache directory so the next read
@@ -798,7 +784,16 @@ func (c *Client) GetWithVersionContext(ctx context.Context, path string, params 
 // headers (e.g. Zotero-Schema-Version) that the cached Get path discards; bypasses
 // the read cache like GetWithVersion so the caller observes a live value.
 func (c *Client) GetWithHeader(path string, params map[string]string, header string) (json.RawMessage, string, error) {
-	respBody, _, hdr, err := c.doRequest(c.baseCtx(), "GET", path, params, nil, nil)
+	return c.GetWithHeaderContext(c.baseCtx(), path, params, header)
+}
+
+// GetWithHeaderContext is GetWithHeader honoring a caller-provided context.
+// A nil ctx falls back to the client base context.
+func (c *Client) GetWithHeaderContext(ctx context.Context, path string, params map[string]string, header string) (json.RawMessage, string, error) {
+	if ctx == nil {
+		ctx = c.baseCtx()
+	}
+	respBody, _, hdr, err := c.doRequest(ctx, "GET", path, params, nil, nil)
 	if err != nil {
 		return nil, "", err
 	}

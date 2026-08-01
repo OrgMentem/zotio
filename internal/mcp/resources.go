@@ -103,15 +103,17 @@ func RegisterResources(s *server.MCPServer) {
 		mcplib.NewResource("zotero://status", "Local archive status",
 			mcplib.WithResourceDescription("Sync/archive status of the local store: per-resource counts, library versions, last sync time, and schema version."),
 			mcplib.WithMIMEType("application/json")),
-		jsonResourceHandler(func() (any, error) { return archiveStatus(), nil }),
+		func(ctx context.Context, req mcplib.ReadResourceRequest) ([]mcplib.ResourceContents, error) {
+			return jsonContentsValue(req.Params.URI, archiveStatus(ctx)), nil
+		},
 	)
 
 	s.AddResource(
 		mcplib.NewResource("zotero://schema", "Local SQLite schema",
 			mcplib.WithResourceDescription("The DDL of the local SQLite store, for writing queries against the sql tool."),
 			mcplib.WithMIMEType("text/plain")),
-		func(_ context.Context, req mcplib.ReadResourceRequest) ([]mcplib.ResourceContents, error) {
-			ddl, err := localSchemaDDL()
+		func(ctx context.Context, req mcplib.ReadResourceRequest) ([]mcplib.ResourceContents, error) {
+			ddl, err := localSchemaDDL(ctx)
 			if err != nil {
 				return nil, err
 			}
@@ -451,7 +453,7 @@ func templateKey(uri, prefix string) string {
 // archiveStatus reports the local store's sync state. A missing/unopenable
 // store yields a graceful "not synced" payload rather than an error so the
 // resource is always readable.
-func archiveStatus() map[string]any {
+func archiveStatus(ctx context.Context) map[string]any {
 	db, err := store.OpenReadOnly(dbPath())
 	if err != nil {
 		return map[string]any{"db_path": dbPath(), "synced": false, "note": "local store not initialized; run sync"}
@@ -459,7 +461,7 @@ func archiveStatus() map[string]any {
 	defer db.Close()
 
 	counts := map[string]int{}
-	rows, qerr := db.DB().Query(`SELECT resource_type, COUNT(*) FROM resources GROUP BY resource_type`)
+	rows, qerr := db.QueryContext(ctx, `SELECT resource_type, COUNT(*) FROM resources GROUP BY resource_type`)
 	if qerr == nil {
 		for rows.Next() {
 			var rt string
@@ -514,13 +516,13 @@ func archiveStatus() map[string]any {
 }
 
 // localSchemaDDL returns the DDL of the local store's tables and indexes.
-func localSchemaDDL() (string, error) {
+func localSchemaDDL(ctx context.Context) (string, error) {
 	db, err := store.OpenReadOnly(dbPath())
 	if err != nil {
 		return "", fmt.Errorf("opening database: %w", err)
 	}
 	defer db.Close()
-	rows, err := db.DB().Query(`SELECT sql FROM sqlite_master WHERE sql IS NOT NULL ORDER BY type DESC, name`)
+	rows, err := db.QueryContext(ctx, `SELECT sql FROM sqlite_master WHERE sql IS NOT NULL ORDER BY type DESC, name`)
 	if err != nil {
 		return "", err
 	}

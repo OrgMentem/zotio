@@ -13,6 +13,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"zotio/internal/cliutil"
 )
 
 const (
@@ -249,24 +251,7 @@ func (c *Checker) writeCache(cached cacheEntry) error {
 	if err := os.Chmod(c.dataDir, 0o700); err != nil {
 		return err
 	}
-	tmp, err := os.CreateTemp(c.dataDir, ".update-cache-*")
-	if err != nil {
-		return err
-	}
-	name := tmp.Name()
-	defer os.Remove(name)
-	if err := tmp.Chmod(0o600); err != nil {
-		_ = tmp.Close()
-		return err
-	}
-	if _, err := tmp.Write(data); err != nil {
-		_ = tmp.Close()
-		return err
-	}
-	if err := tmp.Close(); err != nil {
-		return err
-	}
-	return os.Rename(name, c.cachePath())
+	return cliutil.AtomicWriteFile(c.cachePath(), data, 0o600, 0o700)
 }
 
 func (cached cacheEntry) info() *Info {

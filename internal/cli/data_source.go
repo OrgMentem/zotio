@@ -136,14 +136,14 @@ func resolveRead(ctx context.Context, c *client.Client, flags *rootFlags, resour
 		return data, attachFreshness(prov, flags), err
 
 	case "live":
-		data, err := c.GetWithHeaders(path, params, headers)
+		data, err := c.GetWithHeadersContext(ctx, path, params, headers)
 		if err != nil {
 			return nil, DataProvenance{}, err
 		}
 		return data, attachFreshness(DataProvenance{Source: "live"}, flags), nil
 
 	default: // "auto"
-		data, err := c.GetWithHeaders(path, params, headers)
+		data, err := c.GetWithHeadersContext(ctx, path, params, headers)
 		if err == nil {
 			writeThroughCache(ctx, resourceType, data)
 			return data, attachFreshness(DataProvenance{Source: "live"}, flags), nil
@@ -253,6 +253,14 @@ func resolveLocal(ctx context.Context, resourceType string, isList bool, path st
 		itemProv.Scoped = true
 		return data, itemProv, nil
 	}
+	// An item-list path can intentionally fall through when its scope cannot
+	// be reproduced. Preserve its list classification for the generic dump:
+	// collection-items commands otherwise look like keyed collection reads.
+	if _, _, _, itemList := parseItemListPath(path); itemList {
+		resourceType = "items"
+		isList = true
+		prov = localProvenance(db, resourceType, reason)
+	}
 
 	if data, handled, qErr := resolveLocalTrashList(db, resourceType, isList, path, params); handled {
 		if qErr != nil {
@@ -344,8 +352,8 @@ func resolveLocal(ctx context.Context, resourceType string, isList bool, path st
 // non-empty request param must trigger its unfiltered-data warning.
 var reproducibleLocalParams = map[string]bool{"limit": true, "start": true}
 
-// hasUnreproducibleParams reports whether params contains any filter a generic
-// local read cannot reproduce (anything outside reproducibleLocalParams).
+// hasUnreproducibleParams reports whether params contains any request parameter
+// a generic local read cannot reproduce (anything outside reproducibleLocalParams).
 func hasUnreproducibleParams(params map[string]string) bool {
 	for k, v := range params {
 		if v == "" {

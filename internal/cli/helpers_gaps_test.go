@@ -3,6 +3,7 @@
 package cli
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -543,5 +544,135 @@ func TestHelpersTruncateJSONArray(t *testing.T) {
 	nonArray := json.RawMessage(`{"id":1}`)
 	if got := truncateJSONArray(nonArray, 1); string(got) != string(nonArray) {
 		t.Fatalf("truncateJSONArray non-array = %s, want original %s", string(got), string(nonArray))
+	}
+}
+
+func TestHelpersWriteNoopAndAPIErrorEnvelopeUseCommandWriters(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	flags := &rootFlags{}
+	root := newRootCmd(flags)
+	root.SilenceErrors = true
+	root.SilenceUsage = true
+	root.SetOut(&stdout)
+	root.SetErr(&stderr)
+	root.AddCommand(&cobra.Command{
+		Use: "capture-writers",
+		RunE: func(_ *cobra.Command, _ []string) error {
+			if err := writeNoop(flags.out(), flags.errOut(), flags, "already_deleted", "already deleted (no-op)"); err != nil {
+				return err
+			}
+			return classifyAPIError(helpersTestAPIError(409, "already exists"), flags)
+		},
+	})
+	root.SetArgs([]string{"--json", "capture-writers"})
+
+	processStdout, err := os.CreateTemp(t.TempDir(), "stdout")
+	if err != nil {
+		t.Fatalf("create process stdout capture: %v", err)
+	}
+	processStderr, err := os.CreateTemp(t.TempDir(), "stderr")
+	if err != nil {
+		t.Fatalf("create process stderr capture: %v", err)
+	}
+	originalStdout, originalStderr := os.Stdout, os.Stderr
+	os.Stdout, os.Stderr = processStdout, processStderr
+	defer func() {
+		os.Stdout, os.Stderr = originalStdout, originalStderr
+		_ = processStdout.Close()
+		_ = processStderr.Close()
+	}()
+
+	classified := root.Execute()
+	if classified == nil {
+		t.Fatal("capture-writers command succeeded, want API conflict")
+	}
+
+	lines := strings.Split(strings.TrimSuffix(stdout.String(), "\n"), "\n")
+	if len(lines) != 2 {
+		t.Fatalf("command stdout lines = %q, want JSON no-op and API error envelope", stdout.String())
+	}
+	if lines[0] != `{"status":"noop","reason":"already_deleted"}` {
+		t.Fatalf("JSON no-op = %q", lines[0])
+	}
+	var envelope struct {
+		Error string `json:"error"`
+		Code  int    `json:"code"`
+	}
+	if err := json.Unmarshal([]byte(lines[1]), &envelope); err != nil {
+		t.Fatalf("decode API error envelope %q: %v", lines[1], err)
+	}
+	if envelope.Error != classified.Error() || envelope.Code != ExitCode(classified) {
+		t.Fatalf("API error envelope = %+v, want error=%q code=%d", envelope, classified, ExitCode(classified))
+	}
+	if stderr.Len() != 0 {
+		t.Fatalf("command stderr = %q, want no JSON output", stderr.String())
+	}
+	flags.asJSON = false
+	if err := writeNoop(root.OutOrStdout(), root.ErrOrStderr(), flags, "already_deleted", "already deleted (no-op)"); err != nil {
+		t.Fatalf("write prose no-op: %v", err)
+	}
+	if stderr.String() != "already deleted (no-op)\n" {
+		t.Fatalf("command stderr = %q, want prose no-op", stderr.String())
+	}
+
+	if err := processStdout.Sync(); err != nil {
+		t.Fatalf("sync process stdout capture: %v", err)
+	}
+	if err := processStderr.Sync(); err != nil {
+		t.Fatalf("sync process stderr capture: %v", err)
+	}
+	processOut, err := os.ReadFile(processStdout.Name())
+	if err != nil {
+		t.Fatalf("read process stdout capture: %v", err)
+	}
+	processErr, err := os.ReadFile(processStderr.Name())
+	if err != nil {
+		t.Fatalf("read process stderr capture: %v", err)
+	}
+	if len(processOut) != 0 || len(processErr) != 0 {
+		t.Fatalf("process streams received output: stdout=%q stderr=%q", processOut, processErr)
+	}
+}
+
+func TestHelpersWriterAccessorsFallBackForBareFlags(t *testing.T) {
+	processStdout, err := os.CreateTemp(t.TempDir(), "stdout")
+	if err != nil {
+		t.Fatalf("create process stdout capture: %v", err)
+	}
+	processStderr, err := os.CreateTemp(t.TempDir(), "stderr")
+	if err != nil {
+		t.Fatalf("create process stderr capture: %v", err)
+	}
+	originalStdout, originalStderr := os.Stdout, os.Stderr
+	os.Stdout, os.Stderr = processStdout, processStderr
+	defer func() {
+		os.Stdout, os.Stderr = originalStdout, originalStderr
+		_ = processStdout.Close()
+		_ = processStderr.Close()
+	}()
+
+	flags := &rootFlags{asJSON: true}
+	classifyAPIError(helpersTestAPIError(409, "already exists"), flags)
+	flags.asJSON = false
+	if err := writeNoop(flags.out(), flags.errOut(), flags, "already_deleted", "already deleted (no-op)"); err != nil {
+		t.Fatalf("write prose no-op: %v", err)
+	}
+
+	if err := processStdout.Sync(); err != nil {
+		t.Fatalf("sync process stdout capture: %v", err)
+	}
+	if err := processStderr.Sync(); err != nil {
+		t.Fatalf("sync process stderr capture: %v", err)
+	}
+	processOut, err := os.ReadFile(processStdout.Name())
+	if err != nil {
+		t.Fatalf("read process stdout capture: %v", err)
+	}
+	processErr, err := os.ReadFile(processStderr.Name())
+	if err != nil {
+		t.Fatalf("read process stderr capture: %v", err)
+	}
+	if len(processOut) == 0 || len(processErr) == 0 {
+		t.Fatalf("bare flags did not use fallback writers: stdout=%q stderr=%q", processOut, processErr)
 	}
 }

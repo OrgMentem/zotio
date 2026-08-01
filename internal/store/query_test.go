@@ -5,9 +5,11 @@ package store
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 func queryTestStore(t *testing.T) *Store {
@@ -31,6 +33,53 @@ func TestQueryContextPreCanceledContextReturnsError(t *testing.T) {
 	}
 	if err == nil {
 		t.Fatalf("QueryContext with canceled context returned nil error")
+	}
+}
+
+func TestQueryRowContextRetriesBusyDatabase(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "busy.db")
+	holder, err := sql.Open("sqlite", "file:"+dbPath+"?_pragma=busy_timeout(0)")
+	if err != nil {
+		t.Fatalf("open lock holder: %v", err)
+	}
+	holder.SetMaxOpenConns(1)
+	t.Cleanup(func() { _ = holder.Close() })
+	if _, err := holder.Exec(`CREATE TABLE entries (value TEXT)`); err != nil {
+		t.Fatalf("create entries: %v", err)
+	}
+	if _, err := holder.Exec(`INSERT INTO entries (value) VALUES ('retried')`); err != nil {
+		t.Fatalf("seed entries: %v", err)
+	}
+	if _, err := holder.Exec(`BEGIN EXCLUSIVE`); err != nil {
+		t.Fatalf("acquire exclusive lock: %v", err)
+	}
+	t.Cleanup(func() { _, _ = holder.Exec(`ROLLBACK`) })
+
+	queryDB, err := sql.Open("sqlite", "file:"+dbPath+"?mode=ro&_pragma=busy_timeout(0)")
+	if err != nil {
+		t.Fatalf("open query database: %v", err)
+	}
+	s := &Store{db: queryDB}
+	t.Cleanup(func() { _ = s.Close() })
+
+	released := make(chan error, 1)
+	go func() {
+		time.Sleep(25 * time.Millisecond)
+		_, err := holder.Exec(`COMMIT`)
+		released <- err
+	}()
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	var value string
+	if err := s.QueryRowContext(ctx, `SELECT value FROM entries`).Scan(&value); err != nil {
+		t.Fatalf("QueryRowContext did not retry SQLITE_BUSY: %v", err)
+	}
+	if err := <-released; err != nil {
+		t.Fatalf("release exclusive lock: %v", err)
+	}
+	if value != "retried" {
+		t.Errorf("value = %q, want %q", value, "retried")
 	}
 }
 
