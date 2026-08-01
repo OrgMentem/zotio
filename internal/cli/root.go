@@ -349,6 +349,7 @@ See README.md or the bundled SKILL.md for recipes.`,
 	rootCmd.AddCommand(newGroupsCmd(flags))
 	rootCmd.AddCommand(newVaultCmd(flags))
 	rootCmd.AddCommand(newVersionCliCmd())
+	installInstallationWriterLocks(rootCmd, flags)
 
 	return rootCmd
 }

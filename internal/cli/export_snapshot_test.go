@@ -13,7 +13,9 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 )
 
 func TestSnapshotScopePath(t *testing.T) {
@@ -47,6 +49,26 @@ func TestSnapshotScopePath(t *testing.T) {
 				t.Errorf("snapshotScopePath(%q) = (%q, tag=%q, %q), want (%q, tag=%q, %q)", tc.in, path, params["tag"], label, tc.wantPath, tc.wantTag, tc.wantLabel)
 			}
 		})
+	}
+}
+
+func TestCanonicalOutputPathResolvesExistingAncestor(t *testing.T) {
+	realParent := t.TempDir()
+	linkParent := filepath.Join(t.TempDir(), "linked")
+	if err := os.Symlink(realParent, linkParent); err != nil {
+		t.Skipf("creating symlink: %v", err)
+	}
+	got, err := canonicalOutputPath(filepath.Join(linkParent, "not-created", "snapshot.jsonl"))
+	if err != nil {
+		t.Fatalf("canonical output: %v", err)
+	}
+	resolvedParent, err := filepath.EvalSymlinks(realParent)
+	if err != nil {
+		t.Fatalf("resolve real parent: %v", err)
+	}
+	want := filepath.Join(resolvedParent, "not-created", "snapshot.jsonl")
+	if got != want {
+		t.Fatalf("canonical output = %q, want %q", got, want)
 	}
 }
 
@@ -123,5 +145,95 @@ func TestExportSnapshotPaginatesAndLocks(t *testing.T) {
 	assertFileMode(t, out+".lock.json", 0o600)
 	if _, err := os.Stat(out + ".checkpoint.json"); !os.IsNotExist(err) {
 		t.Errorf("checkpoint sidecar should be removed on success, stat err = %v", err)
+	}
+}
+
+func TestExportSnapshotSameOutputReturnsBusyBeforeSecondRequest(t *testing.T) {
+	firstRequest := make(chan struct{})
+	releaseFirst := make(chan struct{})
+	var once sync.Once
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		once.Do(func() {
+			close(firstRequest)
+			<-releaseFirst
+		})
+		_, _ = w.Write([]byte(`[{"key":"K1","version":1}]`))
+	}))
+	t.Cleanup(srv.Close)
+	t.Setenv("ZOTERO_BASE_URL", srv.URL+"/users/0")
+	t.Setenv("ZOTERO_CONFIG", filepath.Join(t.TempDir(), "missing.toml"))
+
+	output := filepath.Join(t.TempDir(), "snapshot.jsonl")
+	first := newExportSnapshotCmd(&rootFlags{})
+	first.SilenceErrors, first.SilenceUsage = true, true
+	first.SetArgs([]string{"--output", output})
+	firstErr := make(chan error, 1)
+	go func() { firstErr <- first.Execute() }()
+	<-firstRequest
+
+	second := newExportSnapshotCmd(&rootFlags{})
+	second.SilenceErrors, second.SilenceUsage = true, true
+	second.SetArgs([]string{"--output", output})
+	if err := second.Execute(); err == nil || ExitCode(err) != 9 {
+		t.Fatalf("second snapshot error = %v, exit = %d; want busy precondition exit 9", err, ExitCode(err))
+	}
+
+	close(releaseFirst)
+	if err := <-firstErr; err != nil {
+		t.Fatalf("first snapshot: %v", err)
+	}
+	data, err := os.ReadFile(output)
+	if err != nil {
+		t.Fatalf("read snapshot: %v", err)
+	}
+	var item map[string]any
+	if err := json.Unmarshal(bytes.TrimSpace(data), &item); err != nil || item["key"] != "K1" {
+		t.Fatalf("snapshot JSONL = %q, err = %v", data, err)
+	}
+	lockfile, err := os.ReadFile(output + ".lock.json")
+	if err != nil {
+		t.Fatalf("read snapshot lockfile: %v", err)
+	}
+	var lock exportLockfile
+	if err := json.Unmarshal(lockfile, &lock); err != nil || lock.Count != 1 {
+		t.Fatalf("snapshot lockfile = %q, err = %v", lockfile, err)
+	}
+}
+
+func TestExportSnapshotDifferentOutputsRunConcurrently(t *testing.T) {
+	arrived := make(chan struct{}, 2)
+	release := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		arrived <- struct{}{}
+		<-release
+		_, _ = w.Write([]byte(`[{"key":"K1","version":1}]`))
+	}))
+	t.Cleanup(srv.Close)
+	t.Setenv("ZOTERO_BASE_URL", srv.URL+"/users/0")
+	t.Setenv("ZOTERO_CONFIG", filepath.Join(t.TempDir(), "missing.toml"))
+
+	run := func(output string) <-chan error {
+		cmd := newExportSnapshotCmd(&rootFlags{})
+		cmd.SilenceErrors, cmd.SilenceUsage = true, true
+		cmd.SetArgs([]string{"--output", output})
+		done := make(chan error, 1)
+		go func() { done <- cmd.Execute() }()
+		return done
+	}
+	first := run(filepath.Join(t.TempDir(), "first.jsonl"))
+	second := run(filepath.Join(t.TempDir(), "second.jsonl"))
+	for range 2 {
+		select {
+		case <-arrived:
+		case <-time.After(3 * time.Second):
+			t.Fatal("different output paths did not reach their requests concurrently")
+		}
+	}
+	close(release)
+	if err := <-first; err != nil {
+		t.Fatalf("first export: %v", err)
+	}
+	if err := <-second; err != nil {
+		t.Fatalf("second export: %v", err)
 	}
 }

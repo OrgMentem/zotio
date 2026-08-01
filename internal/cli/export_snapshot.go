@@ -16,6 +16,7 @@ import (
 	"fmt"
 	"net/url"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -54,100 +55,13 @@ Scope is one of: library (default), collection:KEY, or tag:NAME.`,
 				return usageErr(fmt.Errorf("--output is required for export snapshot (it writes a data file and a .lock.json sidecar)"))
 			}
 
-			c, err := flags.newClient()
+			canonicalOutput, err := canonicalOutputPath(outputFile)
 			if err != nil {
-				return err
+				return fmt.Errorf("resolving output path: %w", err)
 			}
-
-			checkpointFile := outputFile + ".checkpoint.json"
-			// only append when a checkpoint for THIS scope is
-			// genuinely resumable (matching path, not done). --resume on a finished,
-			// missing, or mismatched checkpoint must truncate, else the fetch restarts
-			// at offset 0 while appending and silently duplicates the snapshot.
-			resumable := false
-			if resume {
-				if cp, ok := readExportCheckpoint(checkpointFile); ok && cp.Path == path && !cp.Done {
-					resumable = true
-				}
-			}
-			openFlags := os.O_CREATE | os.O_WRONLY
-			if resumable {
-				openFlags |= os.O_APPEND
-			} else {
-				openFlags |= os.O_TRUNC
-				_ = os.Remove(checkpointFile)
-			}
-			f, err := openPrivateOutputFile(outputFile, openFlags)
-			if err != nil {
-				return fmt.Errorf("opening output: %w", err)
-			}
-			w := bufio.NewWriter(f)
-
-			onPage := func(page []json.RawMessage) error {
-				for _, item := range page {
-					var buf bytes.Buffer
-					if err := json.Compact(&buf, item); err != nil {
-						return err
-					}
-					if _, err := w.Write(buf.Bytes()); err != nil {
-						return err
-					}
-					if err := w.WriteByte('\n'); err != nil {
-						return err
-					}
-				}
-				// flush each page to the OS before the engine
-				// advances the checkpoint, so an abrupt interrupt cannot leave the
-				// checkpoint ahead of the data file (a later --resume would skip the tail).
-				return w.Flush()
-			}
-
-			fetched, fetchErr := resumablePaginatedFetch(cmd.Context(), c, path, params, pageSize, limit, checkpointFile, onPage)
-			flushErr := w.Flush()
-			closeErr := f.Close()
-			if fetchErr != nil {
-				return fetchErr
-			}
-			if flushErr != nil {
-				return flushErr
-			}
-			if closeErr != nil {
-				return closeErr
-			}
-
-			// Build the lockfile from the complete data file so --resume runs
-			// produce a correct full-set fingerprint, not just the new pages.
-			items, err := readJSONLItems(outputFile)
-			if err != nil {
-				return err
-			}
-			lf, err := buildExportLockfile(scopeLabel, "jsonl", items)
-			if err != nil {
-				return err
-			}
-			lockPath := outputFile + ".lock.json"
-			lockFile, err := openPrivateOutputFile(lockPath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC)
-			if err != nil {
-				return fmt.Errorf("writing lockfile: %w", err)
-			}
-			if err := writeExportLockfile(lockFile, lf); err != nil {
-				_ = lockFile.Close()
-				return err
-			}
-			if err := lockFile.Close(); err != nil {
-				return err
-			}
-			_ = os.Remove(checkpointFile)
-
-			report, _ := json.Marshal(map[string]any{
-				"scope":          scopeLabel,
-				"output":         outputFile,
-				"lockfile":       lockPath,
-				"fetched":        fetched,
-				"count":          lf.Count,
-				"content_sha256": lf.ContentSHA256,
+			return withPathWriterLock(cmd, canonicalOutput+".lock", "export snapshot", func() error {
+				return exportSnapshot(cmd, flags, outputFile, path, params, scopeLabel, pageSize, limit, resume)
 			})
-			return printOutputWithFlags(cmd.OutOrStdout(), json.RawMessage(report), flags)
 		},
 	}
 	cmd.Flags().StringVarP(&outputFile, "output", "o", "", "Output JSONL data file (required); the lockfile is written to <output>.lock.json")
@@ -156,6 +70,137 @@ Scope is one of: library (default), collection:KEY, or tag:NAME.`,
 	cmd.Flags().BoolVar(&resume, "resume", false, "Resume an interrupted snapshot from its checkpoint sidecar")
 	cmd.AddCommand(newExportSnapshotVerifyCmd(flags))
 	return cmd
+}
+
+func exportSnapshot(cmd *cobra.Command, flags *rootFlags, outputFile, path string, params map[string]string, scopeLabel string, pageSize, limit int, resume bool) error {
+	c, err := flags.newClient()
+	if err != nil {
+		return err
+	}
+
+	checkpointFile := outputFile + ".checkpoint.json"
+	// only append when a checkpoint for THIS scope is
+	// genuinely resumable (matching path, not done). --resume on a finished,
+	// missing, or mismatched checkpoint must truncate, else the fetch restarts
+	// at offset 0 while appending and silently duplicates the snapshot.
+	resumable := false
+	if resume {
+		if cp, ok := readExportCheckpoint(checkpointFile); ok && cp.Path == path && !cp.Done {
+			resumable = true
+		}
+	}
+	openFlags := os.O_CREATE | os.O_WRONLY
+	if resumable {
+		openFlags |= os.O_APPEND
+	} else {
+		openFlags |= os.O_TRUNC
+		_ = os.Remove(checkpointFile)
+	}
+	f, err := openPrivateOutputFile(outputFile, openFlags)
+	if err != nil {
+		return fmt.Errorf("opening output: %w", err)
+	}
+	w := bufio.NewWriter(f)
+
+	onPage := func(page []json.RawMessage) error {
+		for _, item := range page {
+			var buf bytes.Buffer
+			if err := json.Compact(&buf, item); err != nil {
+				return err
+			}
+			if _, err := w.Write(buf.Bytes()); err != nil {
+				return err
+			}
+			if err := w.WriteByte('\n'); err != nil {
+				return err
+			}
+		}
+		// flush each page to the OS before the engine
+		// advances the checkpoint, so an abrupt interrupt cannot leave the
+		// checkpoint ahead of the data file (a later --resume would skip the tail).
+		return w.Flush()
+	}
+
+	fetched, fetchErr := resumablePaginatedFetch(cmd.Context(), c, path, params, pageSize, limit, checkpointFile, onPage)
+	flushErr := w.Flush()
+	closeErr := f.Close()
+	if fetchErr != nil {
+		return fetchErr
+	}
+	if flushErr != nil {
+		return flushErr
+	}
+	if closeErr != nil {
+		return closeErr
+	}
+
+	// Build the lockfile from the complete data file so --resume runs
+	// produce a correct full-set fingerprint, not just the new pages.
+	items, err := readJSONLItems(outputFile)
+	if err != nil {
+		return err
+	}
+	lf, err := buildExportLockfile(scopeLabel, "jsonl", items)
+	if err != nil {
+		return err
+	}
+	lockPath := outputFile + ".lock.json"
+	lockFile, err := openPrivateOutputFile(lockPath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC)
+	if err != nil {
+		return fmt.Errorf("writing lockfile: %w", err)
+	}
+	if err := writeExportLockfile(lockFile, lf); err != nil {
+		_ = lockFile.Close()
+		return err
+	}
+	if err := lockFile.Close(); err != nil {
+		return err
+	}
+	_ = os.Remove(checkpointFile)
+
+	report, _ := json.Marshal(map[string]any{
+		"scope":          scopeLabel,
+		"output":         outputFile,
+		"lockfile":       lockPath,
+		"fetched":        fetched,
+		"count":          lf.Count,
+		"content_sha256": lf.ContentSHA256,
+	})
+	return printOutputWithFlags(cmd.OutOrStdout(), json.RawMessage(report), flags)
+}
+
+// canonicalOutputPath provides one lock identity for equivalent output paths.
+// It resolves the output itself when present, otherwise an existing ancestor,
+// without requiring the output target to exist.
+func canonicalOutputPath(path string) (string, error) {
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return "", err
+	}
+	abs = filepath.Clean(abs)
+	if resolved, err := filepath.EvalSymlinks(abs); err == nil {
+		return filepath.Clean(resolved), nil
+	}
+
+	parent := filepath.Dir(abs)
+	suffix := []string{filepath.Base(abs)}
+	for {
+		if resolved, err := filepath.EvalSymlinks(parent); err == nil {
+			parts := make([]string, 1, len(suffix)+1)
+			parts[0] = resolved
+			for i := len(suffix) - 1; i >= 0; i-- {
+				parts = append(parts, suffix[i])
+			}
+			return filepath.Join(parts...), nil
+		}
+		next := filepath.Dir(parent)
+		if next == parent {
+			break
+		}
+		suffix = append(suffix, filepath.Base(parent))
+		parent = next
+	}
+	return abs, nil
 }
 
 // snapshotScopePath maps a snapshot scope to a Web API path + query params.

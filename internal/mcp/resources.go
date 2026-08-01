@@ -128,9 +128,9 @@ func RegisterResources(s *server.MCPServer) {
 	s.AddResourceTemplate(
 		mcplib.NewResourceTemplate("zotero://collections/{key}", "Collection manifest",
 			mcplib.WithTemplateDescription("A collection's metadata plus the keys/titles/types of its items, from the local store.")),
-		func(_ context.Context, req mcplib.ReadResourceRequest) ([]mcplib.ResourceContents, error) {
+		func(ctx context.Context, req mcplib.ReadResourceRequest) ([]mcplib.ResourceContents, error) {
 			key := templateKey(req.Params.URI, "zotero://collections/")
-			payload, err := collectionManifest(key)
+			payload, err := collectionManifest(ctx, key)
 			if err != nil {
 				return nil, err
 			}
@@ -141,9 +141,9 @@ func RegisterResources(s *server.MCPServer) {
 	s.AddResourceTemplate(
 		mcplib.NewResourceTemplate("zotero://items/{key}", "Item bundle",
 			mcplib.WithTemplateDescription("An item's metadata plus its annotations, from the local store.")),
-		func(_ context.Context, req mcplib.ReadResourceRequest) ([]mcplib.ResourceContents, error) {
+		func(ctx context.Context, req mcplib.ReadResourceRequest) ([]mcplib.ResourceContents, error) {
 			key := templateKey(req.Params.URI, "zotero://items/")
-			payload, err := itemBundle(key)
+			payload, err := itemBundle(ctx, key)
 			if err != nil {
 				return nil, err
 			}
@@ -458,8 +458,11 @@ func templateKey(uri, prefix string) string {
 // store yields a graceful "not synced" payload rather than an error unless
 // the caller's context is canceled.
 func archiveStatus(ctx context.Context) (map[string]any, error) {
-	db, err := store.OpenReadOnly(dbPath())
+	db, err := store.OpenReadOnlyContext(ctx, dbPath())
 	if err != nil {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return nil, ctxErr
+		}
 		return map[string]any{"db_path": dbPath(), "synced": false, "note": "local store not initialized; run sync"}, nil
 	}
 	defer db.Close()
@@ -549,7 +552,7 @@ func archiveStatus(ctx context.Context) (map[string]any, error) {
 
 // localSchemaDDL returns the DDL of the local store's tables and indexes.
 func localSchemaDDL(ctx context.Context) (string, error) {
-	db, err := store.OpenReadOnly(dbPath())
+	db, err := store.OpenReadOnlyContext(ctx, dbPath())
 	if err != nil {
 		return "", fmt.Errorf("opening database: %w", err)
 	}
@@ -572,11 +575,11 @@ func localSchemaDDL(ctx context.Context) (string, error) {
 
 // collectionManifest builds a collection's metadata plus a compact list of its
 // member items (key, title, itemType) from the local store.
-func collectionManifest(key string) (map[string]any, error) {
+func collectionManifest(ctx context.Context, key string) (map[string]any, error) {
 	if key == "" {
 		return nil, fmt.Errorf("collection key required")
 	}
-	db, err := store.OpenReadOnly(dbPath())
+	db, err := store.OpenReadOnlyContext(ctx, dbPath())
 	if err != nil {
 		return nil, fmt.Errorf("opening database: %w", err)
 	}
@@ -596,11 +599,11 @@ func collectionManifest(key string) (map[string]any, error) {
 }
 
 // itemBundle builds an item's metadata plus its annotations from the store.
-func itemBundle(key string) (map[string]any, error) {
+func itemBundle(ctx context.Context, key string) (map[string]any, error) {
 	if key == "" {
 		return nil, fmt.Errorf("item key required")
 	}
-	db, err := store.OpenReadOnly(dbPath())
+	db, err := store.OpenReadOnlyContext(ctx, dbPath())
 	if err != nil {
 		return nil, fmt.Errorf("opening database: %w", err)
 	}

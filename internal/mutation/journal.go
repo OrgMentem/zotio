@@ -6,7 +6,7 @@
 package mutation
 
 import (
-	"bufio"
+	"bytes"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
@@ -136,38 +136,84 @@ func WriteEntry(dir string, e JournalEntry) error {
 
 // ListEntries reads every recorded run, newest first. A missing journal is not
 // an error: it returns an empty slice.
+//
+// Writers append JSON records while readers remain concurrent. If the final,
+// unterminated record cannot be decoded after bounded retries, it is treated as
+// an in-progress or crash-torn append and omitted; all preceding valid records
+// remain available. Any malformed completed record, or malformed record followed
+// by another record, is corruption and returns an error.
 func ListEntries(dir string) ([]JournalEntry, error) {
-	f, err := os.Open(filepath.Join(dir, JournalFileName))
-	if err != nil {
-		if os.IsNotExist(err) {
-			return nil, nil
+	path := filepath.Join(dir, JournalFileName)
+	for attempt := range journalListReadAttempts {
+		snapshot, err := os.ReadFile(path)
+		if err != nil {
+			if os.IsNotExist(err) {
+				return nil, nil
+			}
+			return nil, err
+		}
+
+		entries, finalDecodeFailure, finalIncomplete, err := parseJournalSnapshot(snapshot)
+		if err == nil {
+			return newestFirst(entries), nil
+		}
+		if !finalDecodeFailure {
+			return nil, err
+		}
+		if attempt+1 < journalListReadAttempts {
+			journalListRetryBackoff()
+			continue
+		}
+		if finalIncomplete {
+			return newestFirst(entries), nil
 		}
 		return nil, err
 	}
-	defer f.Close()
+	panic("unreachable")
+}
 
-	entries := make([]JournalEntry, 0)
-	scanner := bufio.NewScanner(f)
-	scanner.Buffer(make([]byte, 0, 64*1024), 8*1024*1024)
-	for scanner.Scan() {
-		line := scanner.Bytes()
+const journalListReadAttempts = 3
+
+var journalListRetryBackoff = func() {
+	time.Sleep(5 * time.Millisecond)
+}
+
+// parseJournalSnapshot distinguishes a potentially in-progress final record
+// from corruption in every earlier record. Empty lines retain their historical
+// meaning and are ignored.
+func parseJournalSnapshot(snapshot []byte) ([]JournalEntry, bool, bool, error) {
+	lines := bytes.Split(snapshot, []byte{'\n'})
+	lastNonEmpty := -1
+	for i, line := range lines {
+		if len(line) != 0 {
+			lastNonEmpty = i
+		}
+	}
+	finalIncomplete := len(snapshot) != 0 && snapshot[len(snapshot)-1] != '\n'
+
+	entries := make([]JournalEntry, 0, len(lines))
+	for i, line := range lines {
 		if len(line) == 0 {
 			continue
 		}
-		var e JournalEntry
-		if err := json.Unmarshal(line, &e); err != nil {
-			return nil, fmt.Errorf("parsing journal entry: %w", err)
+		var entry JournalEntry
+		if err := json.Unmarshal(line, &entry); err != nil {
+			parseErr := fmt.Errorf("parsing journal entry: %w", err)
+			if i == lastNonEmpty {
+				return entries, true, finalIncomplete, parseErr
+			}
+			return nil, false, false, parseErr
 		}
-		entries = append(entries, e)
+		entries = append(entries, entry)
 	}
-	if err := scanner.Err(); err != nil {
-		return nil, err
-	}
-	// Newest first.
+	return entries, false, false, nil
+}
+
+func newestFirst(entries []JournalEntry) []JournalEntry {
 	for i, j := 0, len(entries)-1; i < j; i, j = i+1, j-1 {
 		entries[i], entries[j] = entries[j], entries[i]
 	}
-	return entries, nil
+	return entries
 }
 
 // ReadEntry returns the recorded run with the given id, or an error if absent.

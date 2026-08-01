@@ -299,17 +299,12 @@ func readVaultFile(path string) ([]byte, error) {
 
 var errVaultFileBusy = errors.New("vault file changed during sync")
 
-// atomicReplace writes newContent via a temp file + rename, but only when the
-// file's current bytes still equal expected (compare-before-replace). This keeps
-// a concurrent Obsidian/iCloud write from being silently clobbered.
+// atomicReplace writes and prepares newContent before its final byte comparison.
+// The comparison narrows the window in which an uncooperative Obsidian/iCloud
+// writer can be clobbered, but rename cannot provide a cross-application CAS.
+var vaultBeforeFinalCompare func()
+
 func atomicReplace(path string, expected, newContent []byte) error {
-	cur, err := readVaultFile(path)
-	if err != nil {
-		return err
-	}
-	if !bytes.Equal(cur, expected) {
-		return errVaultFileBusy
-	}
 	mode := os.FileMode(0o644)
 	if fi, statErr := os.Stat(path); statErr == nil {
 		mode = fi.Mode().Perm()
@@ -333,6 +328,19 @@ func atomicReplace(path string, expected, newContent []byte) error {
 	}
 	if err := os.Chmod(tmpName, mode); err != nil {
 		return err
+	}
+	if vaultBeforeFinalCompare != nil {
+		vaultBeforeFinalCompare()
+	}
+	// This is deliberately the last possible check before rename. Another process
+	// can still replace the path after it, because the filesystem has no portable
+	// compare-and-swap rename.
+	cur, err := readVaultFile(path)
+	if err != nil {
+		return err
+	}
+	if !bytes.Equal(cur, expected) {
+		return errVaultFileBusy
 	}
 	return os.Rename(tmpName, path)
 }

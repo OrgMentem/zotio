@@ -68,6 +68,18 @@ type Store struct {
 // TestOpenInstallsTheDSNPragmas, which asserts live state rather than
 // trusting the DSN string.
 func OpenReadOnly(dbPath string) (*Store, error) {
+	return OpenReadOnlyContext(context.Background(), dbPath)
+}
+
+// OpenReadOnlyContext opens a ready SQLite store without ever migrating it.
+// A first sync or migration publishes the required schema transactionally, so
+// a concurrent reader can briefly see the prior (missing or old) schema. It
+// waits a short, cancellable interval for that publication rather than handing
+// an MCP query a transient "no such table" or "no such column" error.
+func OpenReadOnlyContext(ctx context.Context, dbPath string) (*Store, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	db, err := sql.Open("sqlite", "file:"+dbPath+"?mode=ro"+
 		"&_pragma=busy_timeout(10000)"+
 		"&_pragma=foreign_keys(ON)"+
@@ -77,7 +89,13 @@ func OpenReadOnly(dbPath string) (*Store, error) {
 		return nil, fmt.Errorf("opening database (read-only): %w", err)
 	}
 	db.SetMaxOpenConns(2)
-	return &Store{db: db, path: dbPath}, nil
+
+	s := &Store{db: db, path: dbPath}
+	if err := s.waitForReadOnlyReadiness(ctx); err != nil {
+		db.Close()
+		return nil, err
+	}
+	return s, nil
 }
 
 // Open opens or creates the SQLite store at dbPath using a background
@@ -595,8 +613,8 @@ WHERE live.resource_type = 'items'
 	return nil
 }
 
-func tableHasColumn(ctx context.Context, conn *sql.Conn, table, column string) (bool, error) {
-	rows, err := conn.QueryContext(ctx, fmt.Sprintf(`PRAGMA table_info("%s")`, table))
+func tableHasColumn(ctx context.Context, queryer schemaQueryer, table, column string) (bool, error) {
+	rows, err := queryer.QueryContext(ctx, fmt.Sprintf(`PRAGMA table_info("%s")`, table))
 	if err != nil {
 		return false, err
 	}

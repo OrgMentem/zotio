@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"unicode/utf8"
 
@@ -142,6 +143,34 @@ func TestAtomicReplaceCompareBeforeReplace(t *testing.T) {
 	}
 	if got := readNote(t, p); got != "B" {
 		t.Errorf("file not replaced: %q", got)
+	}
+}
+
+func TestAtomicReplaceChecksImmediatelyBeforeRename(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "n.md")
+	writeFile(t, path, "expected")
+
+	reachedCompare := make(chan struct{})
+	continueCompare := make(chan struct{})
+	var hookOnce sync.Once
+	oldHook := vaultBeforeFinalCompare
+	vaultBeforeFinalCompare = func() {
+		hookOnce.Do(func() { close(reachedCompare) })
+		<-continueCompare
+	}
+	t.Cleanup(func() { vaultBeforeFinalCompare = oldHook })
+
+	result := make(chan error, 1)
+	go func() { result <- atomicReplace(path, []byte("expected"), []byte("zotio")) }()
+	<-reachedCompare
+	writeFile(t, path, "external")
+	close(continueCompare)
+
+	if err := <-result; !errors.Is(err, errVaultFileBusy) {
+		t.Fatalf("atomicReplace error = %v, want errVaultFileBusy", err)
+	}
+	if got := readNote(t, path); got != "external" {
+		t.Fatalf("external bytes = %q, want preserved competing bytes", got)
 	}
 }
 

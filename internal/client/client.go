@@ -8,6 +8,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"math"
@@ -71,6 +72,10 @@ type Client struct {
 	ResolveWriteBase func(context.Context) (string, error)
 	// protect lazy hybrid write-route resolution.
 	writeRouteMu sync.RWMutex
+	// cacheMu serializes cache invalidation with the final publication of a
+	// fetched response. It deliberately does not cover cache reads or HTTP I/O.
+	cacheMu         sync.Mutex
+	cacheGeneration uint64
 	// cacheWarnOnce ensures a failing response cache warns at most once per
 	// client instead of once per uncached GET.
 	cacheWarnOnce sync.Once
@@ -182,7 +187,7 @@ func New(cfg *config.Config, timeout time.Duration, rateLimit float64) *Client {
 // CloneForRead returns a read-only client targeting baseURL, sharing the config,
 // HTTP client, rate limiter, and cancellation context but with fresh
 // synchronization state. A Client must never be copied by value because it holds
-// a sync.Once and RWMutex; global schema endpoints need the library prefix
+// sync.Once values and mutexes; global schema endpoints need the library prefix
 // stripped from BaseURL, so clone explicitly instead.
 func (c *Client) CloneForRead(baseURL string) *Client {
 	return &Client{
@@ -250,15 +255,25 @@ func (c *Client) getWithHeadersContext(ctx context.Context, path string, params 
 	if ctx == nil {
 		ctx = c.baseCtx()
 	}
-	// Check cache for GET requests
-	if !c.NoCache && !c.DryRun && c.cacheDir != "" {
-		if cached, ok := c.readCache(path, params, headers); ok {
+	cacheable := !c.NoCache && !c.DryRun && c.cacheDir != ""
+	var generation cacheGenerationToken
+	if cacheable {
+		// Capture before either a cache lookup or HTTP work. A mutation advances
+		// this generation before removing the cache, preventing this GET from
+		// publishing a response that predates that mutation.
+		var snapshotErr error
+		generation, snapshotErr = c.cacheGenerationSnapshot()
+		if snapshotErr != nil {
+			// A cache-generation marker we cannot read cannot safely coordinate
+			// this process with other clients, so bypass this optional cache.
+			cacheable = false
+		} else if cached, ok := c.readCache(path, params, headers); ok {
 			return cached, nil
 		}
 	}
 	result, _, err := c.do(ctx, "GET", path, params, nil, headers)
-	if err == nil && !c.NoCache && !c.DryRun && c.cacheDir != "" {
-		if werr := c.writeCache(path, params, headers, result); werr != nil {
+	if err == nil && cacheable {
+		if werr := c.writeCacheAtGeneration(generation, path, params, headers, result); werr != nil {
 			c.cacheWarnOnce.Do(func() {
 				fmt.Fprintf(os.Stderr, "warning: caching response failed (%v); continuing without response cache\n", werr)
 			})
@@ -322,10 +337,76 @@ func (c *Client) readCache(path string, params map[string]string, headers map[st
 	return json.RawMessage(data), true
 }
 
+type cacheGenerationToken struct {
+	memory uint64
+	marker uint64
+}
+
+func (c *Client) cacheGenerationMarkerPath() string {
+	return c.cacheDir + ".generation"
+}
+
+func (c *Client) cachePublicationLockPath() string {
+	return c.cacheDir + ".publish.lock"
+}
+
+func (c *Client) readCacheGenerationMarker() (uint64, error) {
+	data, err := os.ReadFile(c.cacheGenerationMarkerPath())
+	if errors.Is(err, os.ErrNotExist) {
+		return 0, nil
+	}
+	if err != nil {
+		return 0, fmt.Errorf("reading cache generation marker: %w", err)
+	}
+	generation, err := strconv.ParseUint(strings.TrimSpace(string(data)), 10, 64)
+	if err != nil {
+		return 0, fmt.Errorf("parsing cache generation marker: %w", err)
+	}
+	return generation, nil
+}
+
+func (c *Client) cacheGenerationSnapshot() (cacheGenerationToken, error) {
+	c.cacheMu.Lock()
+	defer c.cacheMu.Unlock()
+
+	marker, err := c.readCacheGenerationMarker()
+	if err != nil {
+		return cacheGenerationToken{}, err
+	}
+	return cacheGenerationToken{memory: c.cacheGeneration, marker: marker}, nil
+}
+
 func (c *Client) writeCache(path string, params map[string]string, headers map[string]string, data json.RawMessage) error {
+	generation, err := c.cacheGenerationSnapshot()
+	if err != nil {
+		return err
+	}
+	return c.writeCacheAtGeneration(generation, path, params, headers, data)
+}
+
+func (c *Client) acquireCachePublicationLock(operation string, wait time.Duration) (*cliutil.WriterLock, error) {
+	deadline := time.Now().Add(wait)
+	for {
+		lock, err := cliutil.AcquireWriterLock(c.cachePublicationLockPath(), operation)
+		if err == nil {
+			return lock, nil
+		}
+		var busy *cliutil.WriterLockBusyError
+		if !errors.As(err, &busy) || wait <= 0 || !time.Now().Before(deadline) {
+			return nil, err
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
+func (c *Client) writeCacheAtGeneration(generation cacheGenerationToken, path string, params map[string]string, headers map[string]string, data json.RawMessage) error {
 	// Chmod as well as MkdirAll: cached Zotero API payloads contain private
 	// library metadata, so keep the directory and files private even when they
 	// already existed with older world-readable permissions.
+	//
+	// Directory preparation is intentionally outside cacheMu. The mutex only
+	// protects the generation check and atomic file publication; it never
+	// serializes network requests.
 	if err := os.MkdirAll(c.cacheDir, 0o700); err != nil {
 		return err
 	}
@@ -333,7 +414,34 @@ func (c *Client) writeCache(path string, params map[string]string, headers map[s
 		return err
 	}
 	cacheFile := filepath.Join(c.cacheDir, c.cacheKey(path, params, headers)+".json")
-	return cliutil.AtomicWriteFile(cacheFile, data, 0o600, 0o700)
+
+	c.cacheMu.Lock()
+	defer c.cacheMu.Unlock()
+	if generation.memory != c.cacheGeneration {
+		return nil
+	}
+
+	lock, err := c.acquireCachePublicationLock("publishing response cache", 0)
+	if err != nil {
+		var busy *cliutil.WriterLockBusyError
+		if errors.As(err, &busy) {
+			// Cache publication is optional; leave the successful GET uncached
+			// rather than making it wait behind another process's publication.
+			return nil
+		}
+		return err
+	}
+	marker, markerErr := c.readCacheGenerationMarker()
+	if markerErr != nil {
+		return errors.Join(markerErr, lock.Release())
+	}
+	if generation.marker != marker {
+		return lock.Release()
+	}
+	// Hold both locks through rename so neither a local nor another process's
+	// invalidation can advance the marker between this check and publication.
+	writeErr := cliutil.AtomicWriteFile(cacheFile, data, 0o600, 0o700)
+	return errors.Join(writeErr, lock.Release())
 }
 
 // invalidateCache wholesale-removes the cache directory so the next read
@@ -343,7 +451,32 @@ func (c *Client) invalidateCache() error {
 	if c.cacheDir == "" {
 		return nil
 	}
-	return os.RemoveAll(c.cacheDir)
+
+	c.cacheMu.Lock()
+	defer c.cacheMu.Unlock()
+
+	lock, err := c.acquireCachePublicationLock("invalidating response cache", 25*time.Millisecond)
+	if err != nil {
+		return err
+	}
+	marker, markerErr := c.readCacheGenerationMarker()
+	if markerErr != nil {
+		return errors.Join(markerErr, lock.Release())
+	}
+	next := marker + 1
+	if next <= c.cacheGeneration {
+		next = c.cacheGeneration + 1
+	}
+	// AtomicWriteFile intentionally does not fsync; this marker only prevents
+	// stale cache publication and the response cache is regenerable.
+	if markerErr = cliutil.AtomicWriteFile(c.cacheGenerationMarkerPath(), []byte(strconv.FormatUint(next, 10)), 0o600, 0o700); markerErr != nil {
+		return errors.Join(markerErr, lock.Release())
+	}
+	// Advance in memory after publishing the process-shared marker and before
+	// removal. GETs holding the prior token must skip their later writes.
+	c.cacheGeneration = next
+	removeErr := os.RemoveAll(c.cacheDir)
+	return errors.Join(removeErr, lock.Release())
 }
 
 // RawBody carries a pre-encoded request payload with an explicit content type.

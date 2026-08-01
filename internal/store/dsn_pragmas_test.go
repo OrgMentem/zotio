@@ -59,10 +59,18 @@ func TestOpenReadOnlyInstallsTheDSNPragmas(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := writable.Exec(`CREATE TABLE entries (value TEXT)`); err != nil {
+	tx, err := writable.Begin()
+	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := writable.Exec(`INSERT INTO entries (value) VALUES ('readable')`); err != nil {
+	createCurrentSchemaInTransaction(t, tx)
+	if _, err := tx.Exec(`CREATE TABLE entries (value TEXT)`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tx.Exec(`INSERT INTO entries (value) VALUES ('readable')`); err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.Commit(); err != nil {
 		t.Fatal(err)
 	}
 	if got := func() string {

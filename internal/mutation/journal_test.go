@@ -4,9 +4,11 @@
 package mutation
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 	"time"
 )
@@ -131,6 +133,146 @@ func TestWriteEntryReturnsJournalPathFailure(t *testing.T) {
 	entry, _ := BuildJournalEntry(appliedEnvelope(), time.Now())
 	if err := WriteEntry(dir, entry); err == nil {
 		t.Fatal("WriteEntry succeeded with a directory at the journal path")
+	}
+}
+
+func TestListEntriesRetriesPartialFinalAppend(t *testing.T) {
+	dir := t.TempDir()
+	first, _ := BuildJournalEntry(appliedEnvelope(), time.Date(2026, 6, 28, 9, 0, 0, 0, time.UTC))
+	first.RunID = "run-1"
+	if err := WriteEntry(dir, first); err != nil {
+		t.Fatalf("write first entry: %v", err)
+	}
+	second, _ := BuildJournalEntry(appliedEnvelope(), time.Date(2026, 6, 28, 10, 0, 0, 0, time.UTC))
+	second.RunID = "run-2"
+	line, err := json.Marshal(second)
+	if err != nil {
+		t.Fatalf("marshal second entry: %v", err)
+	}
+
+	partialWritten := make(chan struct{})
+	finishWrite := make(chan struct{})
+	writerDone := make(chan struct{})
+	go func() {
+		defer close(writerDone)
+		f, err := os.OpenFile(filepath.Join(dir, JournalFileName), os.O_APPEND|os.O_WRONLY, 0o600)
+		if err != nil {
+			t.Errorf("open partial writer: %v", err)
+			return
+		}
+		defer f.Close()
+		if _, err := f.Write(line[:len(line)/2]); err != nil {
+			t.Errorf("write partial record: %v", err)
+			return
+		}
+		if err := f.Sync(); err != nil {
+			t.Errorf("sync partial record: %v", err)
+			return
+		}
+		close(partialWritten)
+		<-finishWrite
+		if _, err := f.Write(append(line[len(line)/2:], '\n')); err != nil {
+			t.Errorf("complete partial record: %v", err)
+			return
+		}
+		if err := f.Sync(); err != nil {
+			t.Errorf("sync complete record: %v", err)
+		}
+	}()
+	<-partialWritten
+
+	originalBackoff := journalListRetryBackoff
+	retryObserved := make(chan struct{})
+	journalListRetryBackoff = func() {
+		close(retryObserved)
+		<-writerDone
+	}
+	t.Cleanup(func() {
+		journalListRetryBackoff = originalBackoff
+	})
+
+	type listResult struct {
+		entries []JournalEntry
+		err     error
+	}
+	listDone := make(chan listResult, 1)
+	go func() {
+		entries, err := ListEntries(dir)
+		listDone <- listResult{entries: entries, err: err}
+	}()
+
+	select {
+	case <-retryObserved:
+	case <-time.After(time.Second):
+		t.Fatal("ListEntries did not retry the partial final record")
+	}
+	close(finishWrite)
+
+	select {
+	case result := <-listDone:
+		if result.err != nil {
+			t.Fatalf("list after append completed: %v", result.err)
+		}
+		if len(result.entries) != 2 || result.entries[0].RunID != "run-2" || result.entries[1].RunID != "run-1" {
+			t.Fatalf("entries = %+v, want newest-first [run-2, run-1]", result.entries)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("ListEntries did not finish after append completed")
+	}
+}
+
+func TestListEntriesIgnoresPersistentIncompleteFinalRecord(t *testing.T) {
+	dir := t.TempDir()
+	entry, _ := BuildJournalEntry(appliedEnvelope(), time.Date(2026, 6, 28, 9, 0, 0, 0, time.UTC))
+	entry.RunID = "run-1"
+	if err := WriteEntry(dir, entry); err != nil {
+		t.Fatalf("write entry: %v", err)
+	}
+	f, err := os.OpenFile(filepath.Join(dir, JournalFileName), os.O_APPEND|os.O_WRONLY, 0o600)
+	if err != nil {
+		t.Fatalf("open incomplete journal: %v", err)
+	}
+	if _, err := f.WriteString(`{"run_id":`); err != nil {
+		_ = f.Close()
+		t.Fatalf("write incomplete journal: %v", err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatalf("close incomplete journal: %v", err)
+	}
+
+	entries, err := ListEntries(dir)
+	if err != nil {
+		t.Fatalf("list with persistent incomplete final record: %v", err)
+	}
+	if len(entries) != 1 || entries[0].RunID != "run-1" {
+		t.Fatalf("entries = %+v, want prior valid entry only", entries)
+	}
+}
+
+func TestListEntriesRejectsMalformedMiddleRecord(t *testing.T) {
+	dir := t.TempDir()
+	first, _ := BuildJournalEntry(appliedEnvelope(), time.Date(2026, 6, 28, 9, 0, 0, 0, time.UTC))
+	first.RunID = "run-1"
+	second, _ := BuildJournalEntry(appliedEnvelope(), time.Date(2026, 6, 28, 10, 0, 0, 0, time.UTC))
+	second.RunID = "run-2"
+	firstLine, err := json.Marshal(first)
+	if err != nil {
+		t.Fatalf("marshal first entry: %v", err)
+	}
+	secondLine, err := json.Marshal(second)
+	if err != nil {
+		t.Fatalf("marshal second entry: %v", err)
+	}
+	journal := append(firstLine, '\n')
+	journal = append(journal, []byte(`{"run_id": not-json}`+"\n")...)
+	journal = append(journal, secondLine...)
+	journal = append(journal, '\n')
+	if err := os.WriteFile(filepath.Join(dir, JournalFileName), journal, 0o600); err != nil {
+		t.Fatalf("write malformed journal: %v", err)
+	}
+
+	if _, err := ListEntries(dir); err == nil || !strings.Contains(err.Error(), "parsing journal entry") {
+		t.Fatalf("list malformed middle record error = %v, want parse error", err)
 	}
 }
 

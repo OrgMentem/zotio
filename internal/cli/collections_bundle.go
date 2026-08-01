@@ -41,42 +41,52 @@ never writes to Zotero; run sync first if local data is missing.`,
 				return usageErr(fmt.Errorf("--out is required"))
 			}
 
-			db, err := openStoreForRead(cmd.Context(), "zotio")
+			canonicalOut, err := canonicalOutputPath(outDir)
 			if err != nil {
-				return err
+				return fmt.Errorf("resolving output path: %w", err)
 			}
-			if db == nil {
-				fmt.Fprintln(cmd.OutOrStdout(), "Run 'zotio sync' first.")
-				return nil
-			}
-			defer db.Close()
-
-			itemCount, err := db.Count("items")
-			if err != nil {
-				return fmt.Errorf("checking local item store: %w", err)
-			}
-			if itemCount == 0 {
-				fmt.Fprintln(cmd.OutOrStdout(), "Run 'zotio sync' first.")
-				return nil
-			}
-
-			manifest, err := writeCollectionBundle(db, args[0], outDir)
-			if err != nil {
-				return err
-			}
-			if flags.asJSON {
-				return printCommandJSON(cmd.OutOrStdout(), manifest, flags)
-			}
-			fmt.Fprintf(cmd.OutOrStdout(), "Wrote %d files for collection %s (%d item(s)) to %s\n", len(manifest.Files), manifest.Collection, manifest.ItemCount, manifest.Out)
-			for _, name := range manifest.Files {
-				fmt.Fprintf(cmd.OutOrStdout(), "- %s\n", name)
-			}
-			return nil
+			return withPathWriterLock(cmd, canonicalOut+".lock", "collections bundle", func() error {
+				return runCollectionsBundle(cmd, flags, args[0], outDir)
+			})
 		},
 	}
 	cmd.Flags().StringVar(&outDir, "out", "", "Output directory for the research package")
 	_ = cmd.MarkFlagRequired("out")
 	return cmd
+}
+
+func runCollectionsBundle(cmd *cobra.Command, flags *rootFlags, collectionKey, outDir string) error {
+	db, err := openStoreForRead(cmd.Context(), "zotio")
+	if err != nil {
+		return err
+	}
+	if db == nil {
+		fmt.Fprintln(cmd.OutOrStdout(), "Run 'zotio sync' first.")
+		return nil
+	}
+	defer db.Close()
+
+	itemCount, err := db.Count("items")
+	if err != nil {
+		return fmt.Errorf("checking local item store: %w", err)
+	}
+	if itemCount == 0 {
+		fmt.Fprintln(cmd.OutOrStdout(), "Run 'zotio sync' first.")
+		return nil
+	}
+
+	manifest, err := writeCollectionBundle(db, collectionKey, outDir)
+	if err != nil {
+		return err
+	}
+	if flags.asJSON {
+		return printCommandJSON(cmd.OutOrStdout(), manifest, flags)
+	}
+	fmt.Fprintf(cmd.OutOrStdout(), "Wrote %d files for collection %s (%d item(s)) to %s\n", len(manifest.Files), manifest.Collection, manifest.ItemCount, manifest.Out)
+	for _, name := range manifest.Files {
+		fmt.Fprintf(cmd.OutOrStdout(), "- %s\n", name)
+	}
+	return nil
 }
 
 func writeCollectionBundle(db *store.Store, collKey, outDir string) (collectionBundleManifest, error) {

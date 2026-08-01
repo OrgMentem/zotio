@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -53,6 +54,40 @@ func TestCollectionsBundleWritesResearchPackage(t *testing.T) {
 
 	for _, name := range []string{"synthesis.md", "annotations.md", "bibliography.json"} {
 		assertFileMode(t, filepath.Join(outDir, name), 0o600)
+	}
+}
+
+func TestCollectionsBundleSameOutputReturnsBusyAndPreservesFirstArtifacts(t *testing.T) {
+	seedCollectionBundleStore(t)
+	outDir := filepath.Join(t.TempDir(), "bundle")
+	canonicalOut, err := canonicalOutputPath(outDir)
+	if err != nil {
+		t.Fatalf("canonical output: %v", err)
+	}
+
+	firstFlags := &rootFlags{}
+	first := newCollectionsBundleCmd(firstFlags)
+	first.SetContext(context.Background())
+	first.SetOut(&bytes.Buffer{})
+	first.SetErr(&bytes.Buffer{})
+	err = withPathWriterLock(first, canonicalOut+".lock", "collections bundle", func() error {
+		second := newCollectionsCmd(&rootFlags{})
+		second.SetArgs([]string{"bundle", "OTHER", "--out", outDir})
+		second.SetOut(&bytes.Buffer{})
+		second.SetErr(&bytes.Buffer{})
+		if busyErr := second.Execute(); busyErr == nil || ExitCode(busyErr) != 9 {
+			return fmt.Errorf("second bundle error = %v, exit = %d; want busy precondition exit 9", busyErr, ExitCode(busyErr))
+		}
+		return runCollectionsBundle(first, firstFlags, "COL", outDir)
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for _, name := range []string{"synthesis.md", "annotations.md", "bibliography.json"} {
+		if data := readBundleTestFile(t, outDir, name); !strings.Contains(data, "Attention Is All You Need") {
+			t.Fatalf("%s does not contain the first fixture: %q", name, data)
+		}
 	}
 }
 
