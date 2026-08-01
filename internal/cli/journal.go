@@ -88,7 +88,30 @@ func journalEntryLookupErr(err error) error {
 	if errors.As(err, &incomplete) {
 		return degradedErr(fmt.Errorf("journal may omit the requested run: %w", incomplete))
 	}
-	return notFoundErr(err)
+	var notFound *mutation.JournalEntryNotFoundError
+	if errors.As(err, &notFound) {
+		return notFoundErr(err)
+	}
+	return err
+}
+
+func journalLookupErrorPriority(err error) int {
+	var notFound *mutation.JournalEntryNotFoundError
+	if errors.As(err, &notFound) {
+		return 1
+	}
+	var incomplete *mutation.IncompleteJournalError
+	if errors.As(err, &incomplete) {
+		return 2
+	}
+	return 3
+}
+
+func preferredJournalLookupErr(first, second error) error {
+	if journalLookupErrorPriority(second) > journalLookupErrorPriority(first) {
+		return second
+	}
+	return first
 }
 
 func readJournalEntryForUndo(runID string) (mutation.JournalEntry, error) {
@@ -96,21 +119,22 @@ func readJournalEntryForUndo(runID string) (mutation.JournalEntry, error) {
 	if err != nil {
 		return mutation.JournalEntry{}, err
 	}
-	entry, err := mutation.ReadEntry(dir, runID)
-	if err == nil {
+	entry, groupErr := mutation.ReadEntry(dir, runID)
+	if groupErr == nil {
 		return normalizeJournalEntry(entry), nil
 	}
-	if activeGroupID != "" {
-		legacyDir, err := personalJournalDir()
-		if err != nil {
-			return mutation.JournalEntry{}, err
-		}
-		legacyEntry, legacyErr := mutation.ReadEntry(legacyDir, runID)
-		if legacyErr == nil {
-			return normalizeJournalEntry(legacyEntry), nil
-		}
+	if activeGroupID == "" {
+		return mutation.JournalEntry{}, groupErr
 	}
-	return mutation.JournalEntry{}, err
+	legacyDir, err := personalJournalDir()
+	if err != nil {
+		return mutation.JournalEntry{}, err
+	}
+	legacyEntry, legacyErr := mutation.ReadEntry(legacyDir, runID)
+	if legacyErr == nil {
+		return normalizeJournalEntry(legacyEntry), nil
+	}
+	return mutation.JournalEntry{}, preferredJournalLookupErr(groupErr, legacyErr)
 }
 
 func ensureJournalLibraryMatches(entry mutation.JournalEntry) error {

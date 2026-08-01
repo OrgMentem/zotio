@@ -41,25 +41,35 @@ Use --dry-run to preview without writing to the vault.`,
 			if err != nil {
 				return err
 			}
-			notes, err := loadPushNotes(outDir)
-			if err != nil {
-				return err
+			run := func() error {
+				return executeVaultPull(cmd, flags, outDir)
 			}
-			c, err := flags.newWriteClient()
-			if err != nil {
-				return err
+			if flags.dryRun {
+				return run()
 			}
-			c.DryRun = false // pull gates the local write on flags.dryRun; remote reads must be live
-
-			results := make([]pushResult, 0, len(notes))
-			for _, n := range notes {
-				results = append(results, pullOne(c, outDir, n, flags))
-			}
-			return printVaultWriteReport(cmd, results, outDir, flags, "Pulled", "Would pull")
+			return withVaultWriterLock(cmd, outDir, "pulling vault", run)
 		},
 	}
 	cmd.Flags().StringVar(&flagOut, "out", "", "Vault directory (overrides [vault].root + notes_dir from config)")
 	return cmd
+}
+
+func executeVaultPull(cmd *cobra.Command, flags *rootFlags, outDir string) error {
+	notes, err := loadPushNotes(outDir)
+	if err != nil {
+		return err
+	}
+	c, err := flags.newWriteClient()
+	if err != nil {
+		return err
+	}
+	c.DryRun = false // pull gates the local write on flags.dryRun; remote reads must be live
+
+	results := make([]pushResult, 0, len(notes))
+	for _, n := range notes {
+		results = append(results, pullOne(c, outDir, n, flags))
+	}
+	return printVaultWriteReport(cmd, results, outDir, flags, "Pulled", "Would pull")
 }
 
 // pullOne runs the per-note fast-forward pull state machine.
@@ -96,12 +106,16 @@ func pullOne(c *client.Client, outDir string, n *pushNote, flags *rootFlags) pus
 	// Remote moved. A clean fast-forward is only safe when the local region has
 	// not changed since the last sync; otherwise both sides diverged.
 	if sha256hex(strings.TrimSpace(n.region)) != n.state.SourceHash {
-		artifact, werr := writeConflictArtifact(outDir, n, liveVer, liveHTML)
-		res.Status = "conflict"
-		if werr != nil {
-			res.Note = "local and remote both changed; failed to write conflict artifact: " + werr.Error()
-		} else {
-			res.Note = "local and remote both changed; see " + filepath.Base(artifact) + " (keep vault: 'vault resolve " + n.citekey + " --keep-vault'; keep remote: 'vault resolve " + n.citekey + " --keep-remote')"
+		res.Status = "would conflict"
+		res.Note = "local and remote both changed"
+		if !flags.dryRun {
+			artifact, werr := writeConflictArtifact(outDir, n, liveVer, liveHTML)
+			res.Status = "conflict"
+			if werr != nil {
+				res.Note = "local and remote both changed; failed to write conflict artifact: " + werr.Error()
+			} else {
+				res.Note = "local and remote both changed; see " + filepath.Base(artifact) + " (keep vault: 'vault resolve " + n.citekey + " --keep-vault'; keep remote: 'vault resolve " + n.citekey + " --keep-remote')"
+			}
 		}
 		return res
 	}

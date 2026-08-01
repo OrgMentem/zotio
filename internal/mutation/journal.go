@@ -63,6 +63,16 @@ func (e *IncompleteJournalError) Error() string {
 
 func (e *IncompleteJournalError) Unwrap() error { return e.Err }
 
+// JournalEntryNotFoundError reports a complete journal lookup with no matching
+// run. It lets callers distinguish a definite absence from an incomplete tail.
+type JournalEntryNotFoundError struct {
+	RunID string
+}
+
+func (e *JournalEntryNotFoundError) Error() string {
+	return fmt.Sprintf("no journal entry with run id %q", e.RunID)
+}
+
 // BuildJournalEntry builds an entry from an applied envelope, joining each plan
 // operation with its result status. It returns ok=false when the envelope is not
 // an apply (no Result) so callers can skip recording previews.
@@ -249,5 +259,5 @@ func ReadEntry(dir, runID string) (JournalEntry, error) {
 	if incomplete != nil {
 		return JournalEntry{}, incomplete
 	}
-	return JournalEntry{}, fmt.Errorf("no journal entry with run id %q", runID)
+	return JournalEntry{}, &JournalEntryNotFoundError{RunID: runID}
 }

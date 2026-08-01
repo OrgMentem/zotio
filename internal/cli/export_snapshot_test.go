@@ -72,6 +72,41 @@ func TestCanonicalOutputPathResolvesExistingAncestor(t *testing.T) {
 	}
 }
 
+func TestCanonicalOutputPathMatchesDanglingSymlinkTarget(t *testing.T) {
+	parent := t.TempDir()
+	target := filepath.Join(parent, "missing-vault")
+	link := filepath.Join(parent, "vault-link")
+	if err := os.Symlink("missing-vault", link); err != nil {
+		t.Skipf("creating symlink: %v", err)
+	}
+	throughLink, err := canonicalOutputPath(link)
+	if err != nil {
+		t.Fatalf("canonical dangling symlink: %v", err)
+	}
+	direct, err := canonicalOutputPath(target)
+	if err != nil {
+		t.Fatalf("canonical direct target: %v", err)
+	}
+	if throughLink != direct {
+		t.Fatalf("dangling link identity = %q, direct target = %q", throughLink, direct)
+	}
+}
+
+func TestCanonicalOutputPathRejectsSymlinkCycle(t *testing.T) {
+	parent := t.TempDir()
+	first := filepath.Join(parent, "first")
+	second := filepath.Join(parent, "second")
+	if err := os.Symlink("second", first); err != nil {
+		t.Skipf("creating first symlink: %v", err)
+	}
+	if err := os.Symlink("first", second); err != nil {
+		t.Fatalf("creating second symlink: %v", err)
+	}
+	if _, err := canonicalOutputPath(first); err == nil || !strings.Contains(err.Error(), "possible cycle") {
+		t.Fatalf("cycle error = %v, want clear cycle error", err)
+	}
+}
+
 func TestExportSnapshotPaginatesAndLocks(t *testing.T) {
 	const corpus = 150
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

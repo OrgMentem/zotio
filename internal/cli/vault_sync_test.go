@@ -14,6 +14,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/spf13/cobra"
+
 	"zotio/internal/store"
 )
 
@@ -72,6 +74,37 @@ func TestVaultSyncSameDirectoryReturnsBusyWhileDryRunRemainsAvailable(t *testing
 		}
 	case <-time.After(3 * time.Second):
 		t.Fatal("dry-run sync blocked behind vault writer")
+	}
+
+	close(release)
+	if err := <-first; err != nil {
+		t.Fatalf("first sync: %v", err)
+	}
+}
+
+func TestVaultSyncBlocksOtherLiveVaultTransactions(t *testing.T) {
+	seedVaultStore(t)
+	vault := filepath.Join(t.TempDir(), "vault")
+	started, release := blockFirstVaultSyncAfterLock(t)
+	first := startVaultSyncForLockTest(&rootFlags{}, []string{"--out", vault})
+	waitForVaultLock(t, started)
+
+	for _, tc := range []struct {
+		name string
+		cmd  *cobra.Command
+		args []string
+	}{
+		{name: "push", cmd: newVaultPushCmd(&rootFlags{}), args: []string{"--out", vault}},
+		{name: "pull", cmd: newVaultPullCmd(&rootFlags{}), args: []string{"--out", vault}},
+		{name: "resolve", cmd: newVaultResolveCmd(&rootFlags{}), args: []string{"K1", "--keep-vault", "--out", vault}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			tc.cmd.SilenceErrors, tc.cmd.SilenceUsage = true, true
+			tc.cmd.SetArgs(tc.args)
+			if err := tc.cmd.Execute(); err == nil || ExitCode(err) != 9 {
+				t.Fatalf("%s error = %v, exit = %d; want busy precondition exit 9", tc.name, err, ExitCode(err))
+			}
+		})
 	}
 
 	close(release)

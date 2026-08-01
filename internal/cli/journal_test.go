@@ -182,28 +182,61 @@ func TestJournalListRendersPrefixWhenTailIncomplete(t *testing.T) {
 	}
 }
 
-func TestJournalUndoDoesNotReportMissingRunForIncompleteTail(t *testing.T) {
+func TestJournalUndoUsesLegacyPrefixOrReportsTornTail(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
+	savedGroupID := activeGroupID
+	t.Cleanup(func() { activeGroupID = savedGroupID })
+
+	activeGroupID = ""
 	dir := helpersTestJournalDir(t)
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		t.Fatalf("create journal dir: %v", err)
+	entry := journalTestEntry(t, "legacy-complete", "items.tags.add")
+	entry.Library = "group:12345"
+	if err := mutation.WriteEntry(dir, entry); err != nil {
+		t.Fatalf("seed legacy journal: %v", err)
 	}
-	if err := os.WriteFile(filepath.Join(dir, mutation.JournalFileName), []byte(`{"run_id":`), 0o600); err != nil {
-		t.Fatalf("write torn journal tail: %v", err)
+	journalPath := filepath.Join(dir, mutation.JournalFileName)
+	f, err := os.OpenFile(journalPath, os.O_APPEND|os.O_WRONLY, 0o600)
+	if err != nil {
+		t.Fatalf("open legacy journal for torn tail: %v", err)
+	}
+	if _, err := f.WriteString(`{"run_id":`); err != nil {
+		_ = f.Close()
+		t.Fatalf("append legacy torn tail: %v", err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatalf("close legacy torn tail: %v", err)
 	}
 
-	cmd := newJournalCmd(&rootFlags{})
-	cmd.SetArgs([]string{"undo", "missing"})
-	cmd.SilenceErrors, cmd.SilenceUsage = true, true
-	cmd.SetOut(&bytes.Buffer{})
-	cmd.SetErr(&bytes.Buffer{})
-	err := cmd.Execute()
+	activeGroupID = "12345" // The group journal remains missing: definite absence.
+	missingCmd := newJournalCmd(&rootFlags{})
+	missingCmd.SetArgs([]string{"undo", "missing"})
+	missingCmd.SilenceErrors, missingCmd.SilenceUsage = true, true
+	missingCmd.SetOut(&bytes.Buffer{})
+	missingCmd.SetErr(&bytes.Buffer{})
+	err = missingCmd.Execute()
 	if ExitCode(err) != 13 {
 		t.Fatalf("journal undo exit code = %d, want 13 (err=%v)", ExitCode(err), err)
 	}
 	var incomplete *mutation.IncompleteJournalError
 	if !errors.As(err, &incomplete) {
 		t.Fatalf("journal undo error = %v, want IncompleteJournalError", err)
+	}
+
+	completeCmd := newJournalCmd(&rootFlags{asJSON: true})
+	completeCmd.SetArgs([]string{"undo", "legacy-complete"})
+	completeCmd.SilenceErrors, completeCmd.SilenceUsage = true, true
+	var out bytes.Buffer
+	completeCmd.SetOut(&out)
+	completeCmd.SetErr(&bytes.Buffer{})
+	if err := completeCmd.Execute(); err != nil {
+		t.Fatalf("journal undo of legacy complete prefix: %v", err)
+	}
+	var env mutation.Envelope
+	if err := json.Unmarshal(out.Bytes(), &env); err != nil {
+		t.Fatalf("decode legacy undo output: %v", err)
+	}
+	if env.Mode != "preview" || len(env.Plan.Operations) != 1 {
+		t.Fatalf("legacy undo envelope = %+v, want one preview operation", env)
 	}
 }
 func TestJournalListFiltersWorkflow(t *testing.T) {

@@ -175,6 +175,13 @@ func TestOpenReadOnlyContext_ReadySchemaReturnsImmediately(t *testing.T) {
 	if elapsed > 500*time.Millisecond {
 		t.Fatalf("ready schema open took %s", elapsed)
 	}
+	pragmas, err := reader.RuntimePragmas()
+	if err != nil {
+		t.Fatalf("read runtime pragmas: %v", err)
+	}
+	if pragmas["busy_timeout"] != "10000" {
+		t.Fatalf("read-only busy_timeout = %q, want normal runtime value 10000", pragmas["busy_timeout"])
+	}
 }
 
 func TestOpenReadOnlyContext_ReadinessDeadlineInterruptsExclusiveLock(t *testing.T) {

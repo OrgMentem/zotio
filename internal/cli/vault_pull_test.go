@@ -3,9 +3,16 @@
 package cli
 
 import (
+	"net/http"
+	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
+
+	"zotio/internal/client"
+	"zotio/internal/config"
 )
 
 // TestRenderPullRoundTripPreservesTextSafely pins the renderer's contract:
@@ -136,5 +143,33 @@ func TestApplyPulledRegion(t *testing.T) {
 	}
 	if strings.Contains(s, "old local") {
 		t.Errorf("old region not replaced:\n%s", s)
+	}
+}
+
+func TestVaultPullDryRunConflictDoesNotWriteArtifact(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"version":2,"data":{"note":"<p>remote changed</p>"}}`))
+	}))
+	t.Cleanup(srv.Close)
+	c := client.New(&config.Config{BaseURL: srv.URL}, time.Second, 0)
+	c.NoCache = true
+
+	outDir := t.TempDir()
+	note := &pushNote{
+		path:      filepath.Join(outDir, "cite.md"),
+		citekey:   "cite",
+		hasRegion: true,
+		region:    "local changed",
+		state: pushState{
+			NoteKey:    "ABCD1234",
+			SourceHash: sha256hex("baseline"),
+		},
+	}
+	result := pullOne(c, outDir, note, &rootFlags{dryRun: true})
+	if result.Status != "would conflict" {
+		t.Fatalf("dry-run conflict status = %q (%s), want would conflict", result.Status, result.Note)
+	}
+	if _, err := os.Stat(filepath.Join(outDir, vaultConflictsDir)); !os.IsNotExist(err) {
+		t.Fatalf("dry-run created conflict artifact directory: %v", err)
 	}
 }

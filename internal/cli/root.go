@@ -38,9 +38,12 @@ type rootFlags struct {
 	configPath       string
 	profileName      string
 	deliverSpec      string
-	timeout          time.Duration
-	rateLimit        float64
-	dataSource       string
+	// profileApplied prevents PersistentPreRun wrappers and the root handler
+	// from loading and overlaying a profile more than once per invocation.
+	profileApplied bool
+	timeout        time.Duration
+	rateLimit      float64
+	dataSource     string
 	// creation write route; auto uses the desktop connector when local.
 	via             string
 	connectorTarget string
@@ -167,6 +170,43 @@ func isCobraUsageError(err error) bool {
 		strings.HasPrefix(msg, `invalid argument "`)
 }
 
+// applySelectedProfile resolves a selected profile and overlays its values once.
+// Writer-lock eligibility depends on profile-provided dry-run, confirmation, and
+// command flags, so lock wrappers call this before deciding whether to acquire.
+func applySelectedProfile(cmd *cobra.Command, flags *rootFlags) error {
+	if flags == nil || flags.profileApplied {
+		return nil
+	}
+	if cmd == nil {
+		return fmt.Errorf("applying profile: nil command")
+	}
+	if !cmd.Flags().Changed("profile") {
+		if v := strings.TrimSpace(os.Getenv("ZOTERO_PROFILE")); v != "" {
+			flags.profileName = v
+		}
+	}
+	if flags.profileName == "" {
+		flags.profileApplied = true
+		return nil
+	}
+	profile, err := GetProfile(flags.profileName)
+	if err != nil {
+		return err
+	}
+	if profile == nil {
+		available := ListProfileNames()
+		if len(available) == 0 {
+			return fmt.Errorf("profile %q not found (no profiles saved yet; run '%s profile save <name> --<flag> <value>')", flags.profileName, cmd.Root().Name())
+		}
+		return fmt.Errorf("profile %q not found; available: %s", flags.profileName, strings.Join(available, ", "))
+	}
+	if err := ApplyProfileToFlags(cmd, profile); err != nil {
+		return err
+	}
+	flags.profileApplied = true
+	return nil
+}
+
 func newRootCmd(flags *rootFlags) *cobra.Command {
 	rootCmd := &cobra.Command{
 		Use:   "zotio",
@@ -232,13 +272,8 @@ See README.md or the bundled SKILL.md for recipes.`,
 		// Capture the command context so newClient can propagate per-command
 		// deadlines and MCP request cancellation into client HTTP work.
 		flags.ctx = cmd.Context()
-		// env fallback so MCP installs and
-		// scheduled agents (which set env, not CLI flags) honor profile/group
-		// selection. An explicit CLI flag always wins over the env value.
-		if !cmd.Flags().Changed("profile") {
-			if v := strings.TrimSpace(os.Getenv("ZOTERO_PROFILE")); v != "" {
-				flags.profileName = v
-			}
+		if err := applySelectedProfile(cmd, flags); err != nil {
+			return err
 		}
 		if !cmd.Flags().Changed("group") {
 			if v := strings.TrimSpace(os.Getenv("ZOTERO_GROUP")); v != "" {
@@ -263,22 +298,7 @@ See README.md or the bundled SKILL.md for recipes.`,
 		// retain the final Cobra writers so nested helpers preserve in-process capture.
 		flags.output = cmd.OutOrStdout()
 		flags.errorOutput = cmd.ErrOrStderr()
-		if flags.profileName != "" {
-			profile, err := GetProfile(flags.profileName)
-			if err != nil {
-				return err
-			}
-			if profile == nil {
-				available := ListProfileNames()
-				if len(available) == 0 {
-					return fmt.Errorf("profile %q not found (no profiles saved yet; run '%s profile save <name> --<flag> <value>')", flags.profileName, cmd.Root().Name())
-				}
-				return fmt.Errorf("profile %q not found; available: %s", flags.profileName, strings.Join(available, ", "))
-			}
-			if err := ApplyProfileToFlags(cmd, profile); err != nil {
-				return err
-			}
-		}
+
 		if flags.agent {
 			if !cmd.Flags().Changed("json") {
 				flags.asJSON = true

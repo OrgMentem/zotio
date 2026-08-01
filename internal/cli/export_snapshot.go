@@ -13,7 +13,9 @@ import (
 	"bufio"
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io/fs"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -170,37 +172,50 @@ func exportSnapshot(cmd *cobra.Command, flags *rootFlags, outputFile, path strin
 }
 
 // canonicalOutputPath provides one lock identity for equivalent output paths.
-// It resolves the output itself when present, otherwise an existing ancestor,
-// without requiring the output target to exist.
+// It resolves symlink components even when their final target does not exist.
 func canonicalOutputPath(path string) (string, error) {
 	abs, err := filepath.Abs(path)
 	if err != nil {
 		return "", err
 	}
-	abs = filepath.Clean(abs)
-	if resolved, err := filepath.EvalSymlinks(abs); err == nil {
-		return filepath.Clean(resolved), nil
-	}
+	return resolveOutputSymlinks(filepath.Clean(abs), 0)
+}
 
-	parent := filepath.Dir(abs)
-	suffix := []string{filepath.Base(abs)}
-	for {
-		if resolved, err := filepath.EvalSymlinks(parent); err == nil {
-			parts := make([]string, 1, len(suffix)+1)
-			parts[0] = resolved
-			for i := len(suffix) - 1; i >= 0; i-- {
-				parts = append(parts, suffix[i])
-			}
-			return filepath.Join(parts...), nil
-		}
-		next := filepath.Dir(parent)
-		if next == parent {
-			break
-		}
-		suffix = append(suffix, filepath.Base(parent))
-		parent = next
+func resolveOutputSymlinks(path string, depth int) (string, error) {
+	if depth >= 40 {
+		return "", fmt.Errorf("resolving output path symlinks: too many links (possible cycle)")
 	}
-	return abs, nil
+	volume := filepath.VolumeName(path)
+	remaining := strings.TrimPrefix(path, volume)
+	remaining = strings.TrimPrefix(remaining, string(filepath.Separator))
+	current := volume + string(filepath.Separator)
+	parts := strings.Split(remaining, string(filepath.Separator))
+	for i, part := range parts {
+		if part == "" || part == "." {
+			continue
+		}
+		current = filepath.Join(current, part)
+		info, err := os.Lstat(current)
+		if err != nil {
+			if errors.Is(err, fs.ErrNotExist) {
+				return filepath.Join(append([]string{current}, parts[i+1:]...)...), nil
+			}
+			return "", fmt.Errorf("resolving output path %q: %w", current, err)
+		}
+		if info.Mode()&os.ModeSymlink == 0 {
+			continue
+		}
+		target, err := os.Readlink(current)
+		if err != nil {
+			return "", fmt.Errorf("reading output symlink %q: %w", current, err)
+		}
+		if !filepath.IsAbs(target) {
+			target = filepath.Join(filepath.Dir(current), target)
+		}
+		target = filepath.Join(append([]string{target}, parts[i+1:]...)...)
+		return resolveOutputSymlinks(filepath.Clean(target), depth+1)
+	}
+	return filepath.Clean(current), nil
 }
 
 // snapshotScopePath maps a snapshot scope to a Web API path + query params.

@@ -142,11 +142,7 @@ are preserved. Use --dry-run to preview create/update/unchanged without writing.
 			if flags.dryRun {
 				return run()
 			}
-			canonicalOut, err := canonicalOutputPath(outDir)
-			if err != nil {
-				return fmt.Errorf("resolving vault output path: %w", err)
-			}
-			return withPathWriterLock(cmd, canonicalOut+".lock", fmt.Sprintf("syncing vault %q", canonicalOut), func() error {
+			return withVaultWriterLock(cmd, outDir, "syncing vault", func() error {
 				if vaultSyncAfterLock != nil {
 					vaultSyncAfterLock()
 				}
@@ -168,6 +164,14 @@ are preserved. Use --dry-run to preview create/update/unchanged without writing.
 // vaultSyncAfterLock is a test seam used to establish a writer has acquired
 // its output-directory lock before its vault scan begins.
 var vaultSyncAfterLock func()
+
+func withVaultWriterLock(cmd *cobra.Command, outDir, operation string, fn func() error) error {
+	canonicalOut, err := canonicalOutputPath(outDir)
+	if err != nil {
+		return fmt.Errorf("resolving vault output path: %w", err)
+	}
+	return withPathWriterLock(cmd, canonicalOut+".lock", fmt.Sprintf("%s %q", operation, canonicalOut), fn)
+}
 
 func executeVaultSync(cmd *cobra.Command, flags *rootFlags, outDir, format, collection, tag, itemType string, limit int) error {
 	rawDB, err := openStoreForRead(cmd.Context(), "zotio")

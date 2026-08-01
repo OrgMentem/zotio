@@ -165,6 +165,7 @@ var explicitInstallationWriterCommands = map[string]writerLockMode{
 	"import isbn":  writerLockOnNotDryRun,
 	"vault push":   writerLockOnNotDryRun,
 	"vault pull":   writerLockOnNotDryRun,
+	"vault sync":   writerLockOnNotDryRun,
 
 	// Generic import has its own command-local --dry-run flag and is marked
 	// capability "other" despite POSTing one record per input line.
@@ -209,9 +210,6 @@ func installationWriterLockModes(rootCmd *cobra.Command) map[string]writerLockMo
 	for path, mode := range explicitInstallationWriterCommands {
 		modes[path] = mode
 	}
-	// Vault note publication is independent of installation state and uses the
-	// canonical output-directory lock in vault sync instead.
-	delete(modes, "vault sync")
 	return modes
 }
 
@@ -260,6 +258,9 @@ func wrapRootPersistentWriterLockPreRun(rootCmd *cobra.Command, flags *rootFlags
 		return
 	}
 	rootCmd.PersistentPreRunE = func(cmd *cobra.Command, args []string) error {
+		if err := applySelectedProfile(cmd, flags); err != nil {
+			return err
+		}
 		mode, ok := installationWriterLockModeForCommand(rootCmd, cmd)
 		if !ok || !shouldAcquireInstallationWriterLock(cmd, mode, flags) {
 			return original(cmd, args)
@@ -286,6 +287,9 @@ func wrapRootPersistentWriterLockPreRun(rootCmd *cobra.Command, flags *rootFlags
 func wrapInstallationWriterCommand(cmd *cobra.Command, flags *rootFlags, operation string, mode writerLockMode) {
 	wrap := func(run func(*cobra.Command, []string) error) func(*cobra.Command, []string) error {
 		return func(cmd *cobra.Command, args []string) error {
+			if ownership := writerLockOwner(cmd); ownership != nil && ownership.owner == cmd {
+				return finishWriterLockOwnership(cmd, ownership, run(cmd, args))
+			}
 			if !shouldAcquireInstallationWriterLock(cmd, mode, flags) {
 				return run(cmd, args)
 			}
@@ -305,6 +309,10 @@ func wrapInstallationWriterCommand(cmd *cobra.Command, flags *rootFlags, operati
 		// command use, flags, annotations, and user-visible behavior are unchanged.
 		cmd.Run = nil
 		cmd.RunE = func(cmd *cobra.Command, args []string) error {
+			if ownership := writerLockOwner(cmd); ownership != nil && ownership.owner == cmd {
+				run(cmd, args)
+				return finishWriterLockOwnership(cmd, ownership, nil)
+			}
 			if !shouldAcquireInstallationWriterLock(cmd, mode, flags) {
 				run(cmd, args)
 				return nil

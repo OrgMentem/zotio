@@ -83,28 +83,51 @@ func OpenReadOnlyContext(ctx context.Context, dbPath string) (*Store, error) {
 	probeCtx, cancel := context.WithTimeout(ctx, readOnlyReadinessTimeout)
 	defer cancel()
 
-	s, err := openReadOnlyDiagnosticContext(probeCtx, dbPath, readOnlyProbeBusyTimeout(probeCtx))
+	s, err := openReadOnlyStore(dbPath)
 	if err != nil {
-		if ctxErr := ctx.Err(); ctxErr != nil {
-			return nil, ctxErr
-		}
-		if errors.Is(probeCtx.Err(), context.DeadlineExceeded) {
-			return nil, fmt.Errorf("local store schema did not become ready within %s; run zotio sync to initialize or migrate it: %w", readOnlyReadinessTimeout, err)
-		}
 		return nil, err
 	}
-	if err := s.waitForReadOnlyReadiness(ctx, probeCtx); err != nil {
+	s.db.SetMaxOpenConns(1)
+	conn, err := s.db.Conn(probeCtx)
+	if err != nil {
+		s.Close()
+		return nil, readinessOpenError(ctx, probeCtx, err)
+	}
+	if _, err := conn.ExecContext(probeCtx, fmt.Sprintf(`PRAGMA busy_timeout = %d`, max(readOnlyProbeBusyTimeout(probeCtx).Milliseconds(), 1))); err != nil {
+		conn.Close()
+		s.Close()
+		return nil, readinessOpenError(ctx, probeCtx, err)
+	}
+	if err := s.waitForReadOnlyReadiness(ctx, probeCtx, conn); err != nil {
+		conn.Close()
 		s.Close()
 		return nil, err
 	}
-	// The bounded readiness handle uses a correspondingly short SQLite
-	// busy_timeout so an in-flight probe cannot outlive probeCtx. Do not return
-	// that handle to callers: the store contract keeps the normal 10-second
-	// busy timeout after readiness has been established.
-	if err := s.Close(); err != nil {
-		return nil, fmt.Errorf("closing local store readiness probe: %w", err)
+	if _, err := conn.ExecContext(context.Background(), `PRAGMA busy_timeout = 10000`); err != nil {
+		conn.Close()
+		s.Close()
+		return nil, fmt.Errorf("restoring read-only busy timeout: %w", err)
 	}
-	return openReadOnlyDiagnosticContext(ctx, dbPath, 10*time.Second)
+	if err := conn.Close(); err != nil {
+		s.Close()
+		return nil, fmt.Errorf("releasing local store readiness connection: %w", err)
+	}
+	s.db.SetMaxOpenConns(2)
+	if err := ctx.Err(); err != nil {
+		s.Close()
+		return nil, err
+	}
+	return s, nil
+}
+
+func readinessOpenError(ctx, probeCtx context.Context, err error) error {
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		return ctxErr
+	}
+	if errors.Is(probeCtx.Err(), context.DeadlineExceeded) {
+		return fmt.Errorf("local store schema did not become ready within %s; run zotio sync to initialize or migrate it: %w", readOnlyReadinessTimeout, err)
+	}
+	return fmt.Errorf("opening database (read-only): %w", err)
 }
 
 // OpenReadOnlyDiagnosticContext opens an existing store for diagnostic reads
@@ -112,15 +135,23 @@ func OpenReadOnlyContext(ctx context.Context, dbPath string) (*Store, error) {
 // inspecting a partial or damaged store; normal local reads must use
 // OpenReadOnlyContext so they retain its readiness requirements.
 func OpenReadOnlyDiagnosticContext(ctx context.Context, dbPath string) (*Store, error) {
-	return openReadOnlyDiagnosticContext(ctx, dbPath, 10*time.Second)
-}
-
-func openReadOnlyDiagnosticContext(ctx context.Context, dbPath string, busyTimeout time.Duration) (*Store, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
+	s, err := openReadOnlyStore(dbPath)
+	if err != nil {
+		return nil, err
+	}
+	if err := s.db.PingContext(ctx); err != nil {
+		s.Close()
+		return nil, fmt.Errorf("opening database (read-only): %w", err)
+	}
+	return s, nil
+}
+
+func openReadOnlyStore(dbPath string) (*Store, error) {
 	db, err := sql.Open("sqlite", "file:"+dbPath+"?mode=ro"+
-		fmt.Sprintf("&_pragma=busy_timeout(%d)", max(busyTimeout.Milliseconds(), 1))+
+		"&_pragma=busy_timeout(10000)"+
 		"&_pragma=foreign_keys(ON)"+
 		"&_pragma=temp_store(MEMORY)"+
 		"&_pragma=mmap_size(268435456)")
@@ -128,10 +159,6 @@ func openReadOnlyDiagnosticContext(ctx context.Context, dbPath string, busyTimeo
 		return nil, fmt.Errorf("opening database (read-only): %w", err)
 	}
 	db.SetMaxOpenConns(2)
-	if err := db.PingContext(ctx); err != nil {
-		db.Close()
-		return nil, fmt.Errorf("opening database (read-only): %w", err)
-	}
 	return &Store{db: db, path: dbPath}, nil
 }
 

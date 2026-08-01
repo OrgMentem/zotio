@@ -23,6 +23,11 @@ type schemaQueryer interface {
 	QueryContext(context.Context, string, ...any) (*sql.Rows, error)
 }
 
+type schemaReadinessQueryer interface {
+	schemaQueryer
+	QueryRowContext(context.Context, string, ...any) *sql.Row
+}
+
 type requiredSchemaTable struct {
 	name    string
 	columns []string
@@ -50,7 +55,7 @@ var requiredReadOnlySchema = []requiredSchemaTable{
 // waitForReadOnlyReadiness waits only for a writer's transactional schema
 // publication. It does not execute DDL, run migrations, or otherwise write
 // through the read-only handle.
-func (s *Store) waitForReadOnlyReadiness(ctx, probeCtx context.Context) error {
+func (s *Store) waitForReadOnlyReadiness(ctx, probeCtx context.Context, queryer schemaReadinessQueryer) error {
 	backoff := migrationLockBackoffMin
 	var lastErr error
 	for {
@@ -58,7 +63,7 @@ func (s *Store) waitForReadOnlyReadiness(ctx, probeCtx context.Context) error {
 			return fmt.Errorf("waiting for local store readiness: %w", err)
 		}
 
-		lastErr = s.readOnlySchemaReady(probeCtx)
+		lastErr = s.readOnlySchemaReady(probeCtx, queryer)
 		if lastErr == nil {
 			return nil
 		}
@@ -93,9 +98,9 @@ func (s *Store) waitForReadOnlyReadiness(ctx, probeCtx context.Context) error {
 	}
 }
 
-func (s *Store) readOnlySchemaReady(ctx context.Context) error {
+func (s *Store) readOnlySchemaReady(ctx context.Context, queryer schemaReadinessQueryer) error {
 	var version int
-	if err := s.db.QueryRowContext(ctx, `PRAGMA user_version`).Scan(&version); err != nil {
+	if err := queryer.QueryRowContext(ctx, `PRAGMA user_version`).Scan(&version); err != nil {
 		return fmt.Errorf("reading schema version: %w", err)
 	}
 	if version > StoreSchemaVersion {
@@ -107,7 +112,7 @@ func (s *Store) readOnlySchemaReady(ctx context.Context) error {
 
 	for _, table := range requiredReadOnlySchema {
 		for _, column := range table.columns {
-			hasColumn, err := tableHasColumn(ctx, s.db, table.name, column)
+			hasColumn, err := tableHasColumn(ctx, queryer, table.name, column)
 			if err != nil {
 				return fmt.Errorf("checking required column %s.%s: %w", table.name, column, err)
 			}

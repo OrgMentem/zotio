@@ -87,50 +87,60 @@ Use --dry-run to preview create/update/conflict without writing anything.`,
 			if err != nil {
 				return err
 			}
-			notes, warnings, err := loadPushNotesWithWarnings(outDir)
-			if err != nil {
-				return err
+			run := func() error {
+				return executeVaultPush(cmd, flags, outDir)
 			}
-			if len(notes) == 0 && len(warnings) > 0 {
-				return printVaultWriteReport(cmd, nil, outDir, flags, "Pushed", "Would push", warnings)
+			if flags.dryRun {
+				return run()
 			}
-
-			targetLib := vaultLibraryID(flags)
-			if strings.HasPrefix(targetLib, "groups/") {
-				fmt.Fprintf(os.Stderr, "→ pushing notes to GROUP library %s (members may read them)\n", targetLib)
-			}
-
-			c, err := flags.newWriteClient()
-			if err != nil {
-				return err
-			}
-			c.DryRun = false // push gates writes on flags.dryRun itself; reads must be live
-
-			// Remote version map for all bound notes: detects remote-only changes
-			// (honest "unchanged" vs "remote_changed") and remote deletion.
-			boundKeys := make([]string, 0, len(notes))
-			for _, n := range notes {
-				if n.state.NoteKey != "" {
-					boundKeys = append(boundKeys, n.state.NoteKey)
-				}
-			}
-			versions, err := fetchNoteVersions(c, boundKeys)
-			if err != nil {
-				if ce := classifyAPIError(err, flags); ce != nil {
-					return ce
-				}
-				return err
-			}
-
-			results := make([]pushResult, 0, len(notes))
-			for _, n := range notes {
-				results = append(results, pushOne(c, outDir, targetLib, n, versions, flags))
-			}
-			return printVaultWriteReport(cmd, results, outDir, flags, "Pushed", "Would push", warnings)
+			return withVaultWriterLock(cmd, outDir, "pushing vault", run)
 		},
 	}
 	cmd.Flags().StringVar(&flagOut, "out", "", "Vault directory (overrides [vault].root + notes_dir from config)")
 	return cmd
+}
+
+func executeVaultPush(cmd *cobra.Command, flags *rootFlags, outDir string) error {
+	notes, warnings, err := loadPushNotesWithWarnings(outDir)
+	if err != nil {
+		return err
+	}
+	if len(notes) == 0 && len(warnings) > 0 {
+		return printVaultWriteReport(cmd, nil, outDir, flags, "Pushed", "Would push", warnings)
+	}
+
+	targetLib := vaultLibraryID(flags)
+	if strings.HasPrefix(targetLib, "groups/") {
+		fmt.Fprintf(os.Stderr, "→ pushing notes to GROUP library %s (members may read them)\n", targetLib)
+	}
+
+	c, err := flags.newWriteClient()
+	if err != nil {
+		return err
+	}
+	c.DryRun = false // push gates writes on flags.dryRun itself; reads must be live
+
+	// Remote version map for all bound notes: detects remote-only changes
+	// (honest "unchanged" vs "remote_changed") and remote deletion.
+	boundKeys := make([]string, 0, len(notes))
+	for _, n := range notes {
+		if n.state.NoteKey != "" {
+			boundKeys = append(boundKeys, n.state.NoteKey)
+		}
+	}
+	versions, err := fetchNoteVersions(c, boundKeys)
+	if err != nil {
+		if ce := classifyAPIError(err, flags); ce != nil {
+			return ce
+		}
+		return err
+	}
+
+	results := make([]pushResult, 0, len(notes))
+	for _, n := range notes {
+		results = append(results, pushOne(c, outDir, targetLib, n, versions, flags))
+	}
+	return printVaultWriteReport(cmd, results, outDir, flags, "Pushed", "Would push", warnings)
 }
 
 // pushOne runs the per-note state machine and returns its result. It performs at
@@ -395,84 +405,87 @@ resolved conflict artifact is removed on success.`,
 			if err != nil {
 				return err
 			}
-			notes, err := loadPushNotes(outDir)
-			if err != nil {
-				return err
-			}
-			target := args[0]
-			var n *pushNote
-			for _, cand := range notes {
-				if cand.citekey == target || cand.itemKey == target || cand.state.NoteKey == target {
-					n = cand
-					break
+			run := func() error {
+				notes, err := loadPushNotes(outDir)
+				if err != nil {
+					return err
 				}
-			}
-			if n == nil {
-				return fmt.Errorf("no vault note matches %q (by citekey, item key, or note key)", target)
-			}
-			if !n.hasRegion {
-				return fmt.Errorf("note %s has no notes region", filepath.Base(n.path))
-			}
-
-			c, err := flags.newWriteClient()
-			if err != nil {
-				return err
-			}
-			c.DryRun = false
-
-			// --keep-remote pulls the remote note over the vault Notes region
-			// (discards local edits), the mirror of --keep-vault. Reads remote
-			// and writes locally; never writes to Zotero.
-			if flagKeepRemote {
-				if n.state.NoteKey == "" {
-					return fmt.Errorf("note %s has no Zotero child note to keep (nothing pushed yet)", n.citekey)
-				}
-				liveVer, liveHTML, gerr := getNote(c, n.state.NoteKey)
-				if gerr != nil {
-					if apiStatus(gerr) == 404 {
-						return fmt.Errorf("remote note %s was deleted; nothing to keep (use --keep-vault --recreate to re-create it)", n.state.NoteKey)
+				target := args[0]
+				var n *pushNote
+				for _, cand := range notes {
+					if cand.citekey == target || cand.itemKey == target || cand.state.NoteKey == target {
+						n = cand
+						break
 					}
+				}
+				if n == nil {
+					return fmt.Errorf("no vault note matches %q (by citekey, item key, or note key)", target)
+				}
+				if !n.hasRegion {
+					return fmt.Errorf("note %s has no notes region", filepath.Base(n.path))
+				}
+
+				c, err := flags.newWriteClient()
+				if err != nil {
+					return err
+				}
+				c.DryRun = false
+
+				// --keep-remote pulls the remote note over the vault Notes region
+				// (discards local edits), the mirror of --keep-vault. Reads remote
+				// and writes locally; never writes to Zotero.
+				if flagKeepRemote {
+					if n.state.NoteKey == "" {
+						return fmt.Errorf("note %s has no Zotero child note to keep (nothing pushed yet)", n.citekey)
+					}
+					liveVer, liveHTML, gerr := getNote(c, n.state.NoteKey)
+					if gerr != nil {
+						if apiStatus(gerr) == 404 {
+							return fmt.Errorf("remote note %s was deleted; nothing to keep (use --keep-vault --recreate to re-create it)", n.state.NoteKey)
+						}
+						return classifyAPIError(gerr, flags)
+					}
+					if rerr := keepRemoteResolve(outDir, n, liveVer, liveHTML); rerr != nil {
+						return rerr
+					}
+					fmt.Fprintf(cmd.OutOrStdout(), "Resolved %s: remote note %s pulled into vault (local Notes changes discarded)\n", n.citekey, n.state.NoteKey)
+					return nil
+				}
+
+				region := strings.TrimSpace(n.region)
+				srcHash := sha256hex(region)
+				desiredHTML := markdownToNoteHTML(n.citekey, region)
+
+				out := cmd.OutOrStdout()
+				if n.state.NoteKey == "" || flagRecreate {
+					key, cerr := createChildNote(c, n.itemKey, desiredHTML)
+					if cerr != nil {
+						return classifyAPIError(cerr, flags)
+					}
+					if ferr := finalizeState(n, key, srcHash, c); ferr != nil {
+						return ferr
+					}
+					removeConflictArtifacts(outDir, n)
+					fmt.Fprintf(out, "Recreated child note %s for %s\n", key, n.citekey)
+					return nil
+				}
+
+				// --keep-vault: overwrite remote using the live version as precondition.
+				liveVer, _, gerr := getNote(c, n.state.NoteKey)
+				if gerr != nil {
 					return classifyAPIError(gerr, flags)
 				}
-				if rerr := keepRemoteResolve(outDir, n, liveVer, liveHTML); rerr != nil {
-					return rerr
+				if perr := patchNote(c, n.state.NoteKey, desiredHTML, liveVer); perr != nil {
+					return classifyAPIError(perr, flags)
 				}
-				fmt.Fprintf(cmd.OutOrStdout(), "Resolved %s: remote note %s pulled into vault (local Notes changes discarded)\n", n.citekey, n.state.NoteKey)
-				return nil
-			}
-
-			region := strings.TrimSpace(n.region)
-			srcHash := sha256hex(region)
-			desiredHTML := markdownToNoteHTML(n.citekey, region)
-
-			out := cmd.OutOrStdout()
-			if n.state.NoteKey == "" || flagRecreate {
-				key, cerr := createChildNote(c, n.itemKey, desiredHTML)
-				if cerr != nil {
-					return classifyAPIError(cerr, flags)
-				}
-				if ferr := finalizeState(n, key, srcHash, c); ferr != nil {
+				if ferr := finalizeState(n, n.state.NoteKey, srcHash, c); ferr != nil {
 					return ferr
 				}
 				removeConflictArtifacts(outDir, n)
-				fmt.Fprintf(out, "Recreated child note %s for %s\n", key, n.citekey)
+				fmt.Fprintf(out, "Resolved %s: vault copy written to Zotero note %s\n", n.citekey, n.state.NoteKey)
 				return nil
 			}
-
-			// --keep-vault: overwrite remote using the live version as precondition.
-			liveVer, _, gerr := getNote(c, n.state.NoteKey)
-			if gerr != nil {
-				return classifyAPIError(gerr, flags)
-			}
-			if perr := patchNote(c, n.state.NoteKey, desiredHTML, liveVer); perr != nil {
-				return classifyAPIError(perr, flags)
-			}
-			if ferr := finalizeState(n, n.state.NoteKey, srcHash, c); ferr != nil {
-				return ferr
-			}
-			removeConflictArtifacts(outDir, n)
-			fmt.Fprintf(out, "Resolved %s: vault copy written to Zotero note %s\n", n.citekey, n.state.NoteKey)
-			return nil
+			return withVaultWriterLock(cmd, outDir, "resolving vault", run)
 		},
 	}
 	cmd.Flags().StringVar(&flagOut, "out", "", "Vault directory (overrides [vault].root + notes_dir from config)")
