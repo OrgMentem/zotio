@@ -75,7 +75,7 @@ jobs:
       - name: betterleaks
         run: |
           set -euo pipefail
-          BL_VERSION=1.7.0
+          BL_VERSION=1.7.3
           BL_SHA256=75f07552508d80d59537ca27c2cd6113f51a2ad55bc88a548f7c1156e4bb934e
           TMP="$(mktemp -d)"
           curl -sSL "https://github.com/betterleaks/betterleaks/releases/download/v${BL_VERSION}/betterleaks_${BL_VERSION}_linux_x64.tar.gz" -o "$TMP/bl.tar.gz"
