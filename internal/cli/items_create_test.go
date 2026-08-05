@@ -127,3 +127,102 @@ func TestItemsCreateAcceptsSingleObjectResponse(t *testing.T) {
 		t.Fatalf("items create with a single-object response: %v", err)
 	}
 }
+
+// TestItemsCreateChargesEachItemAgainstMaxChanges guards against the
+// mutation.CheckGates blind spot where a single batched Op (one Op, N
+// Changes) charges an N-item array as 1 planned operation, letting
+// --max-changes sail past regardless of how many items are in the array.
+// Deleting the pre-write itemsCreatePreflightOps gate check must make this
+// test fail: a 3-item array with --max-changes 2 must be refused before any
+// HTTP request is issued.
+func TestItemsCreateChargesEachItemAgainstMaxChanges(t *testing.T) {
+	requestCount := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requestCount++
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"success":{"0":"K1","1":"K2","2":"K3"},"successful":{},"unchanged":{},"failed":{}}`))
+	}))
+	defer srv.Close()
+	t.Setenv("ZOTERO_BASE_URL", srv.URL+"/users/0")
+
+	cmd := newItemsCreateCmd(&rootFlags{asJSON: true, yes: true, maxChanges: 2})
+	cmd.SilenceErrors, cmd.SilenceUsage = true, true
+	cmd.SetErr(io.Discard)
+	cmd.SetArgs([]string{"--items", `[{"itemType":"journalArticle","title":"a"},{"itemType":"journalArticle","title":"b"},{"itemType":"journalArticle","title":"c"}]`})
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("items create apply succeeded, want max_changes_exceeded refusal")
+	}
+	if !strings.Contains(err.Error(), "planned 3 change(s)") || !strings.Contains(err.Error(), "cap of 2") {
+		t.Fatalf("error = %q, want the per-item count and cap", err)
+	}
+	if requestCount != 0 {
+		t.Fatalf("requests = %d, want 0 -- refusal must happen before any network call", requestCount)
+	}
+}
+
+// TestItemsCreateBatchesUnderCapIntoOnePost proves the gate added for
+// TestItemsCreateChargesEachItemAgainstMaxChanges charges N items against
+// --max-changes without splitting the actual write: a 3-item array under the
+// cap still results in exactly one POST carrying all three items.
+func TestItemsCreateBatchesUnderCapIntoOnePost(t *testing.T) {
+	requestCount := 0
+	var gotBody []byte
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requestCount++
+		gotBody, _ = io.ReadAll(r.Body)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"success":{"0":"K1","1":"K2","2":"K3"},"successful":{},"unchanged":{},"failed":{}}`))
+	}))
+	defer srv.Close()
+	t.Setenv("ZOTERO_BASE_URL", srv.URL+"/users/0")
+
+	cmd := newItemsCreateCmd(&rootFlags{asJSON: true, yes: true, maxChanges: 3})
+	cmd.SilenceErrors, cmd.SilenceUsage = true, true
+	cmd.SetErr(io.Discard)
+	cmd.SetArgs([]string{"--items", `[{"itemType":"journalArticle","title":"a"},{"itemType":"journalArticle","title":"b"},{"itemType":"journalArticle","title":"c"}]`})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("items create under cap: %v", err)
+	}
+	if requestCount != 1 {
+		t.Fatalf("requests = %d, want exactly 1 batched POST", requestCount)
+	}
+	var arr []map[string]any
+	if err := json.Unmarshal(gotBody, &arr); err != nil {
+		t.Fatalf("create body is not a JSON array: %s (%v)", gotBody, err)
+	}
+	if len(arr) != 3 {
+		t.Fatalf("batched body has %d items, want 3 sent in one request", len(arr))
+	}
+}
+
+// TestItemsCreateConnectorRouteChargesEachItemAgainstMaxChanges proves the
+// same pre-write gate protects the desktop-connector branch, which writes via
+// conn.SaveItems and (before this fix) never reached any --max-changes check
+// at all. A 3-item array with --max-changes 2 routed through the connector
+// must be refused before the connector is ever contacted.
+func TestItemsCreateConnectorRouteChargesEachItemAgainstMaxChanges(t *testing.T) {
+	oldPing := connectorPing
+	defer func() { connectorPing = oldPing }()
+	var connectorChecks int
+	connectorPing = func(ctx context.Context, c *connector.Client) error {
+		connectorChecks++
+		return nil
+	}
+
+	flags := &rootFlags{asJSON: true, via: "connector", yes: true, maxChanges: 2, configPath: testConfigFile(t, "http://localhost:23119/api/users/0")}
+	cmd := newItemsCreateCmd(flags)
+	cmd.SilenceErrors, cmd.SilenceUsage = true, true
+	cmd.SetErr(io.Discard)
+	cmd.SetArgs([]string{"--items", `[{"itemType":"book","title":"a"},{"itemType":"book","title":"b"},{"itemType":"book","title":"c"}]`})
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("items create connector apply succeeded, want max_changes_exceeded refusal")
+	}
+	if !strings.Contains(err.Error(), "planned 3 change(s)") || !strings.Contains(err.Error(), "cap of 2") {
+		t.Fatalf("error = %q, want the per-item count and cap", err)
+	}
+	if connectorChecks != 0 {
+		t.Fatalf("connector checks = %d, want 0 -- refusal must happen before the connector is contacted", connectorChecks)
+	}
+}

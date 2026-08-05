@@ -61,6 +61,15 @@ func newItemsCreateCmd(flags *rootFlags) *cobra.Command {
 				}
 				return runErr
 			}
+			// CheckGates counts operations, not the Changes inside them, so the
+			// single batched Op below (one Op, N Changes) would charge an N-item
+			// array as 1 against --max-changes. Charge one op per item here,
+			// before any network call -- this also covers the connector branch
+			// below, which writes via conn.SaveItems and never reaches the
+			// journaled Op's gate check.
+			if gateFailure := mutation.CheckGates(mutationOptions(flags), itemsCreatePreflightOps(body)); gateFailure != nil {
+				return fmt.Errorf("%s", gateFailure.Message)
+			}
 			c, err := flags.newClient()
 			if err != nil {
 				return err
@@ -251,6 +260,41 @@ func itemsCreateHasCollections(items []map[string]any) bool {
 		}
 	}
 	return false
+}
+
+// itemsCreatePreflightOps builds one mutation.Op per item in a JSON object
+// array body, mirroring collectionCreateOps (collections_create.go) and the
+// per-record preflight pattern used before other batched writes. Unlike
+// itemsCreateChanges below -- which feeds the single Op that wraps the real,
+// still-batched write for journaling -- this list exists only to run
+// mutation.CheckGates before any network call. CheckGates counts operations,
+// not the Changes within them, so without this, an N-item array charges as a
+// single planned op no matter how large N is. Non-object-array bodies (e.g. a
+// single object from --stdin) still charge as one op, matching the batched
+// write below.
+func itemsCreatePreflightOps(body any) []mutation.Op {
+	items, ok := itemsCreateObjects(body)
+	if !ok {
+		return []mutation.Op{{
+			ID:      "items.create:1",
+			Kind:    "item_create",
+			Changes: []mutation.Change{{Field: "item", Add: body}},
+		}}
+	}
+	ops := make([]mutation.Op, 0, len(items))
+	for i, item := range items {
+		key := fmt.Sprintf("%d", i+1)
+		if title, ok := item["title"].(string); ok && title != "" {
+			key = title
+		}
+		ops = append(ops, mutation.Op{
+			ID:      fmt.Sprintf("items.create:%d", i+1),
+			Key:     key,
+			Kind:    "item_create",
+			Changes: []mutation.Change{{Field: "item", Add: item}},
+		})
+	}
+	return ops
 }
 
 // itemsCreateChanges reports one mutation.Change per item in a JSON object

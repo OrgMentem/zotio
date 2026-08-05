@@ -156,10 +156,11 @@ var explicitInstallationWriterCommands = map[string]writerLockMode{
 	"tail":           writerLockAlways,
 	"workflow run":   writerLockOnApply,
 
-	// Every command that writes on behalf of the user now routes through the
-	// shared --yes gate, so the capability registry's writerLockOnApply is the
-	// right mode and no create/publish command needs an entry here. The vault
-	// commands are listed explicitly only because their capability is "other".
+	// Every item/collection create and publish command routes through the shared
+	// --yes gate, so the capability registry's writerLockOnApply covers them and
+	// none needs an entry here. The vault trio is listed explicitly only because
+	// its capability is "other"; `import` and `vault resolve` below are the two
+	// genuine holdouts that still write without --yes.
 	"vault push": writerLockOnApply,
 	"vault pull": writerLockOnApply,
 	"vault sync": writerLockOnApply,

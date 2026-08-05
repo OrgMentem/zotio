@@ -72,9 +72,16 @@ func executeVaultPull(cmd *cobra.Command, flags *rootFlags, outDir string, previ
 	}
 	c.DryRun = false // pull gates the local write on preview; remote reads must be live
 
+	// Classify every note once, caching whatever getNote() returned per note
+	// in remotes. The apply pass below reuses that cache instead of
+	// re-fetching: each candidate note gets exactly one live GET per run, and
+	// a write can only ever be applied against the remote state CheckGates
+	// already counted — never a fresher read that moved mid-run.
+	remotes := make([]*remoteNoteState, len(notes))
 	results := make([]pushResult, 0, len(notes))
-	for _, n := range notes {
-		results = append(results, pullOne(c, outDir, n, flags, true))
+	for i, n := range notes {
+		remotes[i] = &remoteNoteState{}
+		results = append(results, pullOne(c, outDir, n, flags, true, remotes[i]))
 	}
 	if !preview {
 		// Gate on the writes this run actually plans (pulls and conflict
@@ -96,17 +103,42 @@ func executeVaultPull(cmd *cobra.Command, flags *rootFlags, outDir string, previ
 		if gateFailure := mutation.CheckGates(mutationOptions(flags), ops); gateFailure != nil {
 			return fmt.Errorf("%s", gateFailure.Message)
 		}
-		results = results[:0]
-		for _, n := range notes {
-			results = append(results, pullOne(c, outDir, n, flags, false))
+		applied := make([]pushResult, 0, len(notes))
+		for i, n := range notes {
+			switch results[i].Status {
+			case "would pull", "would conflict":
+				// These are the only statuses that reach a write below;
+				// apply against the exact remote state classified above,
+				// not a second fetch.
+				applied = append(applied, pullOne(c, outDir, n, flags, false, remotes[i]))
+			default:
+				// Nothing to apply differently: reuse the classify result
+				// verbatim rather than re-fetching a note that will not be
+				// written to.
+				applied = append(applied, results[i])
+			}
 		}
+		results = applied
 	}
 	return printVaultWriteReport(cmd, results, outDir, flags, preview, "Pulled", "Would pull")
 }
 
+// remoteNoteState caches a single getNote() result for a note so the classify
+// pass (which fetches) and a later apply pass for the same note (which
+// reuses it) share exactly one live GET instead of two independent ones.
+type remoteNoteState struct {
+	fetched bool
+	ver     int
+	html    string
+}
+
 // pullOne runs the per-note fast-forward pull state machine. preview reports
-// what would happen without writing to the vault.
-func pullOne(c *client.Client, outDir string, n *pushNote, flags *rootFlags, preview bool) pushResult {
+// what would happen without writing to the vault. remote, when provided,
+// caches the getNote() result across the two passes over the same note: a
+// call that finds remote.fetched already true reuses remote.ver/remote.html
+// instead of issuing another GET, so a note is fetched from Zotero at most
+// once per run and the apply pass can never diverge from what was gated.
+func pullOne(c *client.Client, outDir string, n *pushNote, flags *rootFlags, preview bool, remote ...*remoteNoteState) pushResult {
 	res := pushResult{File: filepath.Base(n.path), ItemKey: n.itemKey, NoteKey: n.state.NoteKey}
 
 	if n.state.NoteKey == "" {
@@ -120,16 +152,33 @@ func pullOne(c *client.Client, outDir string, n *pushNote, flags *rootFlags, pre
 		return res
 	}
 
-	liveVer, liveHTML, err := getNote(c, n.state.NoteKey)
-	if err != nil {
-		if apiStatus(err) == 404 {
-			res.Status = "remote_deleted"
-			res.Note = "child note missing remotely; nothing to pull"
+	var rs *remoteNoteState
+	if len(remote) > 0 {
+		rs = remote[0]
+	}
+
+	var liveVer int
+	var liveHTML string
+	if rs != nil && rs.fetched {
+		liveVer, liveHTML = rs.ver, rs.html
+	} else {
+		var err error
+		liveVer, liveHTML, err = getNote(c, n.state.NoteKey)
+		if err != nil {
+			if apiStatus(err) == 404 {
+				res.Status = "remote_deleted"
+				res.Note = "child note missing remotely; nothing to pull"
+				return res
+			}
+			res.Status = "error"
+			res.Note = pushErr(err, flags)
 			return res
 		}
-		res.Status = "error"
-		res.Note = pushErr(err, flags)
-		return res
+		if rs != nil {
+			rs.fetched = true
+			rs.ver = liveVer
+			rs.html = liveHTML
+		}
 	}
 	if liveVer == n.state.NoteVersion {
 		res.Status = "unchanged"
