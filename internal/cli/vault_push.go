@@ -414,10 +414,15 @@ that was deleted in Zotero.
 vault Notes region, discarding local edits (a forced 'vault pull'). Only notes
 in the shape this CLI writes are pulled.
 
-Exactly one direction is required so the destructive side is explicit; the
-resolved conflict artifact is removed on success.`,
+Exactly one direction is required so the destructive side is explicit, but a
+direction is not consent: it only selects WHICH side wins. Previews by default,
+describing the note and side that would be written without creating, patching,
+or removing anything; pass --yes to apply. --dry-run always wins over --yes.
+The resolved conflict artifact is removed on success. Counts as one change
+against --max-changes.`,
 		Example: `  zotio vault resolve smith2024 --keep-vault
-  zotio vault resolve smith2024 --keep-remote`,
+  zotio vault resolve smith2024 --keep-vault --yes
+  zotio vault resolve smith2024 --keep-remote --yes`,
 		Annotations: map[string]string{"mcp:read-only": "false"},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if len(args) == 0 {
@@ -436,6 +441,11 @@ resolved conflict artifact is removed on success.`,
 			if err != nil {
 				return err
 			}
+			// .Apply is true only under --yes without --dry-run, so preview
+			// defaults to true and --dry-run always beats --yes. --keep-vault /
+			// --keep-remote / --recreate only pick a direction; they are never
+			// consent to write.
+			preview := !resolveMutationMode(flags).Apply
 			run := func() error {
 				notes, err := loadPushNotes(outDir)
 				if err != nil {
@@ -460,7 +470,12 @@ resolved conflict artifact is removed on success.`,
 				if err != nil {
 					return err
 				}
-				c.DryRun = false
+				// Client dry-run is left exactly as flags resolved it (never
+				// forced off): under --dry-run the reads below degrade to
+				// stubs too, which is fine since preview never reaches a write
+				// on any path below regardless of what the reads returned.
+
+				out := cmd.OutOrStdout()
 
 				// --keep-remote pulls the remote note over the vault Notes region
 				// (discards local edits), the mirror of --keep-vault. Reads remote
@@ -476,10 +491,17 @@ resolved conflict artifact is removed on success.`,
 						}
 						return classifyAPIError(gerr, flags)
 					}
+					if preview {
+						fmt.Fprintf(out, "Would resolve %s: remote note %s would be pulled into vault (local Notes changes discarded)\n", n.citekey, n.state.NoteKey)
+						return nil
+					}
+					if gateFailure := mutation.CheckGates(mutationOptions(flags), vaultResolveGateOps()); gateFailure != nil {
+						return fmt.Errorf("%s", gateFailure.Message)
+					}
 					if rerr := keepRemoteResolve(outDir, n, liveVer, liveHTML); rerr != nil {
 						return rerr
 					}
-					fmt.Fprintf(cmd.OutOrStdout(), "Resolved %s: remote note %s pulled into vault (local Notes changes discarded)\n", n.citekey, n.state.NoteKey)
+					fmt.Fprintf(out, "Resolved %s: remote note %s pulled into vault (local Notes changes discarded)\n", n.citekey, n.state.NoteKey)
 					return nil
 				}
 
@@ -487,8 +509,14 @@ resolved conflict artifact is removed on success.`,
 				srcHash := sha256hex(region)
 				desiredHTML := markdownToNoteHTML(n.citekey, region)
 
-				out := cmd.OutOrStdout()
 				if n.state.NoteKey == "" || flagRecreate {
+					if preview {
+						fmt.Fprintf(out, "Would resolve %s: child note would be (re)created under item %s\n", n.citekey, n.itemKey)
+						return nil
+					}
+					if gateFailure := mutation.CheckGates(mutationOptions(flags), vaultResolveGateOps()); gateFailure != nil {
+						return fmt.Errorf("%s", gateFailure.Message)
+					}
 					key, cerr := createChildNote(c, n.itemKey, desiredHTML)
 					if cerr != nil {
 						return classifyAPIError(cerr, flags)
@@ -506,6 +534,13 @@ resolved conflict artifact is removed on success.`,
 				if gerr != nil {
 					return classifyAPIError(gerr, flags)
 				}
+				if preview {
+					fmt.Fprintf(out, "Would resolve %s: vault copy would be written to Zotero note %s\n", n.citekey, n.state.NoteKey)
+					return nil
+				}
+				if gateFailure := mutation.CheckGates(mutationOptions(flags), vaultResolveGateOps()); gateFailure != nil {
+					return fmt.Errorf("%s", gateFailure.Message)
+				}
 				if perr := patchNote(c, n.state.NoteKey, desiredHTML, liveVer); perr != nil {
 					return classifyAPIError(perr, flags)
 				}
@@ -516,6 +551,9 @@ resolved conflict artifact is removed on success.`,
 				fmt.Fprintf(out, "Resolved %s: vault copy written to Zotero note %s\n", n.citekey, n.state.NoteKey)
 				return nil
 			}
+			if preview {
+				return run()
+			}
 			return withVaultWriterLock(cmd, outDir, "resolving vault", run)
 		},
 	}
@@ -524,6 +562,13 @@ resolved conflict artifact is removed on success.`,
 	cmd.Flags().BoolVar(&flagKeepRemote, "keep-remote", false, "Pull the Zotero note over the vault Notes region (discards local edits)")
 	cmd.Flags().BoolVar(&flagRecreate, "recreate", false, "Re-create a child note deleted in Zotero")
 	return cmd
+}
+
+// vaultResolveGateOps is the single synthetic op vault resolve charges against
+// --max-changes: exactly one note is ever created, patched, or pulled per
+// invocation, so one op with one Change is enough for CheckGates to count it.
+func vaultResolveGateOps() []mutation.Op {
+	return []mutation.Op{{Kind: "vault_note_resolve", Changes: []mutation.Change{{Field: "note"}}}}
 }
 
 // keepRemoteResolve pulls the live remote note body over the vault Notes region,

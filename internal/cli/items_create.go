@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strconv"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -34,7 +35,10 @@ func newItemsCreateCmd(flags *rootFlags) *cobra.Command {
 			// either an array or an object from stdin.
 			var body any
 			if stdinBody {
-				stdinData, err := io.ReadAll(os.Stdin)
+				// cmd.InOrStdin(), not os.Stdin: under a stdio MCP server os.Stdin IS
+				// the JSON-RPC transport, so a model-issued --stdin would consume the
+				// protocol stream and hang the session.
+				stdinData, err := io.ReadAll(cmd.InOrStdin())
 				if err != nil {
 					return fmt.Errorf("reading stdin: %w", err)
 				}
@@ -61,13 +65,16 @@ func newItemsCreateCmd(flags *rootFlags) *cobra.Command {
 				}
 				return runErr
 			}
-			// CheckGates counts operations, not the Changes inside them, so the
-			// single batched Op below (one Op, N Changes) would charge an N-item
-			// array as 1 against --max-changes. Charge one op per item here,
-			// before any network call -- this also covers the connector branch
-			// below, which writes via conn.SaveItems and never reaches the
-			// journaled Op's gate check.
-			if gateFailure := mutation.CheckGates(mutationOptions(flags), itemsCreatePreflightOps(body)); gateFailure != nil {
+			// CheckGates counts operations, not the Changes inside them, so a
+			// single batched Op (one Op, N Changes) would charge an N-item array
+			// as 1 against --max-changes. itemsCreatePreflightOps charges one op
+			// per item instead, before any network call -- this also covers the
+			// connector branch below, which writes via conn.SaveItems and never
+			// reaches the journaled ops' gate check. The same per-item ops feed
+			// the real write below, so the preflight count and the applied count
+			// always agree.
+			ops := itemsCreatePreflightOps(body)
+			if gateFailure := mutation.CheckGates(mutationOptions(flags), ops); gateFailure != nil {
 				return fmt.Errorf("%s", gateFailure.Message)
 			}
 			c, err := flags.newClient()
@@ -131,34 +138,62 @@ func newItemsCreateCmd(flags *rootFlags) *cobra.Command {
 					return nil
 				}
 			}
-			// The Web API create is the only write below; wrap it in a mutation.Op so
-			// it is journaled and (best-effort) replayed into the local mirror like
-			// every other CRUD command. Key stays empty: the item doesn't exist yet,
-			// so there is nothing for write-through to key a mirror update on.
+			// The Web API create is the only write below. Zotero answers a
+			// batched POST with HTTP 200 even when it rejects some elements, and
+			// the elements it did not reject were still created -- so wrapping
+			// the whole batch in one mutation.Op (as before) let a single
+			// rejected element erase the journal record of everything created
+			// alongside it (recordMutationJournal skips runs with Applied == 0).
+			// One Op per item fixes that: the first item's Apply issues the
+			// single batched POST and caches the decoded response, and every
+			// other item reads its outcome from that cache, so the HTTP request
+			// count is unchanged. Key stays empty on each item op: the item
+			// doesn't exist yet, so there is nothing for write-through to key a
+			// mirror update on.
 			var (
-				data       json.RawMessage
-				statusCode int
-				applyErr   error
+				data           json.RawMessage
+				statusCode     int
+				applyErr       error // aggregate failure returned as the command's own error
+				batchExecuted  bool
+				batchTransport error // set only when the POST itself failed (not a per-element rejection)
+				batchFailed    map[string]batchWriteFailure
 			)
-			ops := []mutation.Op{{
-				ID:      "items.create",
-				Kind:    "item_create",
-				Changes: itemsCreateChanges(body),
-				Apply: func() (string, any, error) {
+			applyItem := func(index int) (string, any, error) {
+				if !batchExecuted {
+					batchExecuted = true
 					var postErr error
 					data, statusCode, postErr = c.Post(path, body)
 					if postErr != nil {
-						applyErr = classifyAPIError(postErr, flags)
-						return "failed", nil, applyErr
+						batchTransport = classifyAPIError(postErr, flags)
+						applyErr = batchTransport
+					} else {
+						batchFailed = decodeBatchWriteResponse(data).Failed
+						if bwErr := batchWriteFailuresError("items create", batchFailed); bwErr != nil {
+							applyErr = degradedErr(bwErr)
+						}
 					}
-					if bwErr := batchWriteFailuresError("items create", decodeBatchWriteResponse(data).Failed); bwErr != nil {
-						applyErr = degradedErr(bwErr)
-						return "failed", nil, applyErr
-					}
-					return "applied", nil, nil
-				},
-			}}
-			if _, runErr := runMutation(cmd.Context(), flags, "items.create", ops); runErr != nil {
+				}
+				if batchTransport != nil {
+					return "failed", nil, batchTransport
+				}
+				if failure, ok := batchFailed[strconv.Itoa(index)]; ok {
+					return "failed", fmt.Sprintf("index %d: code %d: %s", index, failure.Code, failure.Message), nil
+				}
+				return "applied", nil, nil
+			}
+			for i := range ops {
+				index := i
+				ops[i].Apply = func() (string, any, error) {
+					return applyItem(index)
+				}
+			}
+			// A rejected element travelled to Zotero alongside its batch-mates
+			// and cannot un-submit them, so stopping at the first rejection
+			// would report the rest as not_attempted -- a lie that invites a
+			// duplicating re-create. Every item reports its own outcome.
+			if _, runErr := runMutation(cmd.Context(), flags, "items.create", ops, func(o *mutation.Options) {
+				o.ContinueOnError = true
+			}); runErr != nil {
 				// applyErr already carries the command's own classification
 				// (classifyAPIError / degradedErr); only fall back to the engine's
 				// generic error when Apply never ran (e.g. a gate rejected the op).
@@ -264,14 +299,14 @@ func itemsCreateHasCollections(items []map[string]any) bool {
 
 // itemsCreatePreflightOps builds one mutation.Op per item in a JSON object
 // array body, mirroring collectionCreateOps (collections_create.go) and the
-// per-record preflight pattern used before other batched writes. Unlike
-// itemsCreateChanges below -- which feeds the single Op that wraps the real,
-// still-batched write for journaling -- this list exists only to run
-// mutation.CheckGates before any network call. CheckGates counts operations,
-// not the Changes within them, so without this, an N-item array charges as a
-// single planned op no matter how large N is. Non-object-array bodies (e.g. a
-// single object from --stdin) still charge as one op, matching the batched
-// write below.
+// per-record preflight pattern used before other batched writes. Beyond
+// running mutation.CheckGates before any network call -- CheckGates counts
+// operations, not the Changes within them, so without this an N-item array
+// would charge as a single planned op no matter how large N is -- these same
+// ops carry the real write's per-item Apply closures below, so the pre-write
+// gate and the journaled result always count the same N. Non-object-array
+// bodies (e.g. a single object from --stdin) still charge, and apply, as one
+// op.
 func itemsCreatePreflightOps(body any) []mutation.Op {
 	items, ok := itemsCreateObjects(body)
 	if !ok {
@@ -295,20 +330,4 @@ func itemsCreatePreflightOps(body any) []mutation.Op {
 		})
 	}
 	return ops
-}
-
-// itemsCreateChanges reports one mutation.Change per item in a JSON object
-// array body, so the journal (and any future undo tooling) sees each created
-// object individually rather than one opaque blob. Non-object-array bodies
-// (e.g. a single object from --stdin) still journal as a single change.
-func itemsCreateChanges(body any) []mutation.Change {
-	items, ok := itemsCreateObjects(body)
-	if !ok {
-		return []mutation.Change{{Field: "item", Add: body}}
-	}
-	changes := make([]mutation.Change, 0, len(items))
-	for _, item := range items {
-		changes = append(changes, mutation.Change{Field: "item", Add: item})
-	}
-	return changes
 }

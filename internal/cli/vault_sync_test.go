@@ -94,11 +94,11 @@ func TestVaultSyncBlocksOtherLiveVaultTransactions(t *testing.T) {
 		cmd  *cobra.Command
 		args []string
 	}{
-		// push and pull only take the vault lock when applying, so they must be
-		// --yes here to contend for it; resolve is writerLockAlways.
+		// push, pull, and resolve only take the vault lock when applying, so
+		// they must be --yes here to contend for it.
 		{name: "push", cmd: newVaultPushCmd(&rootFlags{yes: true, maxChanges: -1}), args: []string{"--out", vault}},
 		{name: "pull", cmd: newVaultPullCmd(&rootFlags{yes: true, maxChanges: -1}), args: []string{"--out", vault}},
-		{name: "resolve", cmd: newVaultResolveCmd(&rootFlags{}), args: []string{"K1", "--keep-vault", "--out", vault}},
+		{name: "resolve", cmd: newVaultResolveCmd(&rootFlags{yes: true, maxChanges: -1}), args: []string{"K1", "--keep-vault", "--out", vault}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			tc.cmd.SilenceErrors, tc.cmd.SilenceUsage = true, true

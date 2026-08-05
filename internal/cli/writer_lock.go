@@ -156,23 +156,19 @@ var explicitInstallationWriterCommands = map[string]writerLockMode{
 	"tail":           writerLockAlways,
 	"workflow run":   writerLockOnApply,
 
-	// Every item/collection create and publish command routes through the shared
-	// --yes gate, so the capability registry's writerLockOnApply covers them and
-	// none needs an entry here. The vault trio is listed explicitly only because
-	// its capability is "other"; `import` and `vault resolve` below are the two
-	// genuine holdouts that still write without --yes.
-	"vault push": writerLockOnApply,
-	"vault pull": writerLockOnApply,
-	"vault sync": writerLockOnApply,
+	// Every command that writes on the user's behalf routes through the shared
+	// --yes gate, so the capability registry's writerLockOnApply is the right
+	// mode. These are listed explicitly only because their capability is not
+	// typed "write": the vault trio and generic import are "other", and
+	// `vault resolve` is a vault publish.
+	"vault push":    writerLockOnApply,
+	"vault pull":    writerLockOnApply,
+	"vault sync":    writerLockOnApply,
+	"vault resolve": writerLockOnApply,
+	"import":        writerLockOnApply,
 
-	// Generic import has its own command-local --dry-run flag and is marked
-	// capability "other" despite POSTing one record per input line.
-	"import": writerLockOnCommandNotDryRun,
-
-	// Resolving always publishes either the vault or Zotero state; it has no
-	// dry-run mode. --orcid opens the local store for write, while plain audit
-	// uses a read-only handle.
-	"vault resolve":  writerLockAlways,
+	// --orcid opens the local store for write, while plain audit uses a
+	// read-only handle.
 	"creators audit": writerLockOnORCID,
 }
 

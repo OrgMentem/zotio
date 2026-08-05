@@ -39,7 +39,7 @@ func newItemsUpdateCmd(flags *rootFlags) *cobra.Command {
 			path := replacePathParam("/items/{itemKey}", "itemKey", args[0])
 			var body map[string]any
 			if stdinBody {
-				stdinData, err := io.ReadAll(os.Stdin)
+				stdinData, err := io.ReadAll(cmd.InOrStdin())
 				if err != nil {
 					return fmt.Errorf("reading stdin: %w", err)
 				}

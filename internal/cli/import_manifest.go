@@ -59,12 +59,17 @@ func manifestActionForStatus(status string) string {
 	}
 }
 
-// readImportManifest reads a manifest from a file path, or stdin when path is
-// "-". It validates the schema version.
-func readImportManifest(path string) (importManifest, error) {
+// readImportManifest reads a manifest from a file path, or from stdin when path
+// is "-". stdin is the command's reader rather than os.Stdin: under a stdio MCP
+// server the process's stdin is the JSON-RPC transport, and consuming it would
+// corrupt the session. It validates the schema version.
+func readImportManifest(path string, stdin io.Reader) (importManifest, error) {
 	var r io.Reader
 	if path == "-" {
-		r = os.Stdin
+		if stdin == nil {
+			return importManifest{}, fmt.Errorf("reading manifest from stdin: no input stream available")
+		}
+		r = stdin
 	} else {
 		f, err := os.Open(path)
 		if err != nil {

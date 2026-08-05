@@ -823,9 +823,12 @@ zotio groups list
 
 Import data from JSONL file via API create/upsert calls
 
-Import data from a JSONL file by issuing POST requests for each record.
+Import data from a JSONL file by issuing one POST request per record.
 Each line must be a valid JSON object. Failed records are logged to stderr
 but do not stop processing the import.
+
+The import previews by default and writes only under --yes; --dry-run always
+wins over --yes. Every parsed record counts against --max-changes.
 
 ```
 zotio import <resource> [flags]
@@ -834,20 +837,19 @@ zotio import <resource> [flags]
 Examples:
 
 ```bash
-# Import from a JSONL file
+# Preview an import without sending anything (the default)
   zotio import <resource> --input data.jsonl
 
-  # Dry-run to preview without sending
-  zotio import <resource> --input data.jsonl --dry-run
+  # Apply the import
+  zotio import <resource> --input data.jsonl --yes
 
   # Import from stdin
-  cat data.jsonl | zotio import <resource> --input -
+  cat data.jsonl | zotio import <resource> --input - --yes
 ```
 
 | Flag | Type | Default | Description |
 | --- | --- | --- | --- |
 | `--batch-size` | `int` | `1` | Records per batch (future: batch API support) |
-| `--dry-run` | `bool` | `false` | Preview import without sending requests |
 | `-i, --input` | `string` |  | Input JSONL file path (use - for stdin) |
 
 ### `zotio import apply`
@@ -2738,8 +2740,12 @@ that was deleted in Zotero.
 vault Notes region, discarding local edits (a forced 'vault pull'). Only notes
 in the shape this CLI writes are pulled.
 
-Exactly one direction is required so the destructive side is explicit; the
-resolved conflict artifact is removed on success.
+Exactly one direction is required so the destructive side is explicit, but a
+direction is not consent: it only selects WHICH side wins. Previews by default,
+describing the note and side that would be written without creating, patching,
+or removing anything; pass --yes to apply. --dry-run always wins over --yes.
+The resolved conflict artifact is removed on success. Counts as one change
+against --max-changes.
 
 ```
 zotio vault resolve <citekey-or-item-key> (--keep-vault | --keep-remote) [--out <dir>] [flags]
@@ -2749,7 +2755,8 @@ Examples:
 
 ```bash
 zotio vault resolve smith2024 --keep-vault
-  zotio vault resolve smith2024 --keep-remote
+  zotio vault resolve smith2024 --keep-vault --yes
+  zotio vault resolve smith2024 --keep-remote --yes
 ```
 
 | Flag | Type | Default | Description |

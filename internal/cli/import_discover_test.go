@@ -146,7 +146,7 @@ func TestImportManifestV2DiscoveryCompat(t *testing.T) {
 	if err := os.WriteFile(v1Path, []byte(v1Fixture), 0o600); err != nil {
 		t.Fatalf("write v1 fixture: %v", err)
 	}
-	got, err := readImportManifest(v1Path)
+	got, err := readImportManifest(v1Path, nil)
 	if err != nil {
 		t.Fatalf("readImportManifest(v1): %v", err)
 	}
@@ -443,7 +443,7 @@ func runImportDiscoverTestCmd(t *testing.T, flags *rootFlags, args ...string) (i
 	if manifestPath == "" {
 		t.Fatalf("test command args missing --out: %v", args)
 	}
-	manifest, err := readImportManifest(manifestPath)
+	manifest, err := readImportManifest(manifestPath, nil)
 	if err != nil {
 		t.Fatalf("read discover manifest: %v", err)
 	}

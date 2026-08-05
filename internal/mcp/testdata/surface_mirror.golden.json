@@ -728,7 +728,7 @@
   },
   {
     "name": "import",
-    "description": "Import data from a JSONL file by issuing POST requests for each record.\nEach line must be a valid JSON object. Failed records are logged to stderr\nbut do not stop processing the import.",
+    "description": "Import data from a JSONL file by issuing one POST request per record.\nEach line must be a valid JSON object. Failed records are logged to stderr\nbut do not stop processing the import.\n\nThe import previews by default and writes only under --yes; --dry-run always\nwins over --yes. Every parsed record counts against --max-changes.",
     "inputSchema": {
       "properties": {
         "allow-destructive": {
@@ -748,7 +748,7 @@
           "type": "boolean"
         },
         "dry-run": {
-          "description": "Preview import without sending requests (default: false)",
+          "description": "Show request without sending (default: false)",
           "type": "boolean"
         },
         "input": {
@@ -3416,7 +3416,7 @@
   },
   {
     "name": "vault_resolve",
-    "description": "Resolve a conflict (or a remotely-deleted note) by choosing a direction:\n\n--keep-vault writes the vault's Notes region over the Zotero child note, using\nthe live remote version as the precondition. --recreate re-creates a child note\nthat was deleted in Zotero.\n\n--keep-remote does the reverse: it pulls the live Zotero note body over the\nvault Notes region, discarding local edits (a forced 'vault pull'). Only notes\nin the shape this CLI writes are pulled.\n\nExactly one direction is required so the destructive side is explicit; the\nresolved conflict artifact is removed on success.",
+    "description": "Resolve a conflict (or a remotely-deleted note) by choosing a direction:\n\n--keep-vault writes the vault's Notes region over the Zotero child note, using\nthe live remote version as the precondition. --recreate re-creates a child note\nthat was deleted in Zotero.\n\n--keep-remote does the reverse: it pulls the live Zotero note body over the\nvault Notes region, discarding local edits (a forced 'vault pull'). Only notes\nin the shape this CLI writes are pulled.\n\nExactly one direction is required so the destructive side is explicit, but a\ndirection is not consent: it only selects WHICH side wins. Previews by default,\ndescribing the note and side that would be written without creating, patching,\nor removing anything; pass --yes to apply. --dry-run always wins over --yes.\nThe resolved conflict artifact is removed on success. Counts as one change\nagainst --max-changes.",
     "inputSchema": {
       "properties": {
         "allow-destructive": {

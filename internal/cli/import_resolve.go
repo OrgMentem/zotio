@@ -38,7 +38,7 @@ func resolveImportManifest(cmd *cobra.Command, flags *rootFlags, arg string, lim
 		return buildImportManifestFromDir(cmd, flags, arg, limit)
 	}
 
-	m, err := readImportManifest(arg)
+	m, err := readImportManifest(arg, cmd.InOrStdin())
 	if err != nil {
 		return importManifest{}, err
 	}

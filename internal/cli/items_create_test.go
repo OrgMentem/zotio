@@ -11,10 +11,12 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 
 	"zotio/internal/connector"
+	"zotio/internal/mutation"
 )
 
 func TestItemsCreateSendsBareArray(t *testing.T) {
@@ -108,6 +110,108 @@ func TestItemsCreateReportsBatchWriteFailures(t *testing.T) {
 		if !strings.Contains(err.Error(), want) {
 			t.Fatalf("items create error = %q, want %q", err, want)
 		}
+	}
+}
+
+// TestItemsCreatePartialBatchIsJournaled proves the fix for the write-safety
+// defect where recordMutationJournal (Applied == 0 skips recording) erased
+// the journal entry for an entirely successful sub-batch just because one
+// sibling element in the same POST was rejected. Zotero answers a batch
+// write with HTTP 200 even when it rejects some elements, and the elements it
+// did not reject were still created in the library -- so the run must still
+// be journaled, with an accurate applied/failed split.
+func TestItemsCreatePartialBatchIsJournaled(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	mutationJournalRecorder = recordMutationJournal
+	t.Cleanup(func() { mutationJournalRecorder = nil })
+
+	requestCount := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requestCount++
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"success":{"0":"K1","2":"K3"},"successful":{},"unchanged":{},"failed":{"1":{"code":400,"message":"itemType is required"}}}`))
+	}))
+	defer srv.Close()
+	t.Setenv("ZOTERO_BASE_URL", srv.URL+"/users/0")
+
+	cmd := newItemsCreateCmd(&rootFlags{asJSON: true, yes: true, maxChanges: -1})
+	cmd.SilenceErrors, cmd.SilenceUsage = true, true
+	cmd.SetErr(io.Discard)
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetArgs([]string{"--items", `[{"itemType":"journalArticle","title":"a"},{"title":"b"},{"itemType":"journalArticle","title":"c"}]`})
+	err := cmd.Execute()
+	if err == nil || ExitCode(err) != 13 {
+		t.Fatalf("items create error = %v, exit=%d; want degraded failure", err, ExitCode(err))
+	}
+	if requestCount != 1 {
+		t.Fatalf("requests = %d, want exactly 1 batched POST for a 3-item body", requestCount)
+	}
+
+	entries, listErr := mutation.ListEntries(helpersTestJournalDir(t))
+	if listErr != nil {
+		t.Fatalf("list journal entries: %v", listErr)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("journal entries = %d, want 1 recorded run even though the batch partially failed", len(entries))
+	}
+	if entries[0].Summary.Applied != 2 || entries[0].Summary.Failed != 1 {
+		t.Fatalf("journaled summary = %+v, want 2 applied and 1 failed", entries[0].Summary)
+	}
+}
+
+// TestItemsCreateReadsStdinFromCommandReader guards the MCP stdin-hijack fix:
+// under a stdio MCP server, os.Stdin IS the JSON-RPC transport, so --stdin
+// must read cmd.InOrStdin(), never the process stdin.
+func TestItemsCreateReadsStdinFromCommandReader(t *testing.T) {
+	var gotBody []byte
+	requestCount := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requestCount++
+		gotBody, _ = io.ReadAll(r.Body)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"success":{"0":"NEWKEY11"},"successful":{},"unchanged":{},"failed":{}}`))
+	}))
+	defer srv.Close()
+	t.Setenv("ZOTERO_BASE_URL", srv.URL+"/users/0")
+
+	// Point the real process stdin at an already-closed pipe. If the command
+	// fell back to os.Stdin it would read zero bytes (immediate EOF) and fail
+	// to parse JSON, instead of reading the item supplied via cmd.SetIn below.
+	pr, pw, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("os.Pipe: %v", err)
+	}
+	if err := pw.Close(); err != nil {
+		t.Fatalf("close pipe writer: %v", err)
+	}
+	origStdin := os.Stdin
+	os.Stdin = pr
+	t.Cleanup(func() {
+		os.Stdin = origStdin
+		pr.Close()
+	})
+
+	cmd := newItemsCreateCmd(&rootFlags{asJSON: true, yes: true, maxChanges: -1})
+	cmd.SilenceErrors, cmd.SilenceUsage = true, true
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(io.Discard)
+	cmd.SetIn(strings.NewReader(`[{"itemType":"journalArticle","title":"From cmd.SetIn"}]`))
+	cmd.SetArgs([]string{"--stdin"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("items create from stdin: %v (%s)", err, out.String())
+	}
+
+	if requestCount != 1 {
+		t.Fatalf("requests = %d, want exactly 1 -- command must read cmd.InOrStdin(), not the process stdin", requestCount)
+	}
+	var arr []map[string]any
+	if err := json.Unmarshal(gotBody, &arr); err != nil {
+		t.Fatalf("create body is not a JSON array: %s (%v)", gotBody, err)
+	}
+	if len(arr) != 1 || arr[0]["title"] != "From cmd.SetIn" {
+		t.Fatalf("posted body = %s, want the item supplied via cmd.SetIn", gotBody)
 	}
 }
 

@@ -299,8 +299,9 @@ func TestInstallationWriterLockExceptionsResolveAndClassify(t *testing.T) {
 	}{
 		{path: "items new", flags: rootFlags{yes: true, maxChanges: -1}, wantMode: writerLockOnApply, wantAcquireLock: true},
 		{path: "items new", wantMode: writerLockOnApply},
-		{path: "import", wantMode: writerLockOnCommandNotDryRun, wantAcquireLock: true},
-		{path: "import", flag: "dry-run", flagValue: "true", wantMode: writerLockOnCommandNotDryRun},
+		{path: "import", flags: rootFlags{yes: true, maxChanges: -1}, wantMode: writerLockOnApply, wantAcquireLock: true},
+		{path: "import", wantMode: writerLockOnApply},
+		{path: "import", flags: rootFlags{yes: true, dryRun: true, maxChanges: -1}, wantMode: writerLockOnApply},
 		// Now on the shared --yes gate: the lock follows apply mode, not --dry-run.
 		{path: "import url", flags: rootFlags{yes: true, maxChanges: -1}, wantMode: writerLockOnApply, wantAcquireLock: true},
 		{path: "import url", wantMode: writerLockOnApply},
@@ -325,7 +326,9 @@ func TestInstallationWriterLockExceptionsResolveAndClassify(t *testing.T) {
 		{path: "vault sync", flags: rootFlags{yes: true, maxChanges: -1}, wantMode: writerLockOnApply, wantAcquireLock: true},
 		{path: "vault sync", wantMode: writerLockOnApply},
 		{path: "vault sync", flags: rootFlags{yes: true, dryRun: true, maxChanges: -1}, wantMode: writerLockOnApply},
-		{path: "vault resolve", wantMode: writerLockAlways, wantAcquireLock: true},
+		{path: "vault resolve", flags: rootFlags{yes: true, maxChanges: -1}, wantMode: writerLockOnApply, wantAcquireLock: true},
+		{path: "vault resolve", wantMode: writerLockOnApply},
+		{path: "vault resolve", flags: rootFlags{yes: true, dryRun: true, maxChanges: -1}, wantMode: writerLockOnApply},
 		{path: "creators audit", wantMode: writerLockOnORCID},
 		{path: "creators audit", flag: "orcid", flagValue: "true", wantMode: writerLockOnORCID, wantAcquireLock: true},
 	}

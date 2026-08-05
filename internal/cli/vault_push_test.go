@@ -377,3 +377,146 @@ func TestVaultPushPreviewsWithoutWriting(t *testing.T) {
 		})
 	}
 }
+
+// TestVaultResolvePreviewsWithoutWriting proves resolve's default gate: neither
+// a bare invocation nor --agent applies a write, even though --keep-vault
+// targets a note whose vault region differs from the last-pushed baseline (so
+// the apply branch would PATCH). The fixture note key must be exactly 8
+// uppercase-alphanumeric characters — validateZoteroKey rejects anything
+// shorter before the gate is ever reached. --yes must still apply.
+func TestVaultResolvePreviewsWithoutWriting(t *testing.T) {
+	const citekey = "cite1"
+	const noteKey = "NOTEKEY1" // validateZoteroKey: exactly 8 uppercase-alnum chars
+	const region = "vault copy wins"
+
+	newFixture := func(t *testing.T) (outDir, notePath string, before []byte, artifact string) {
+		t.Helper()
+		outDir = t.TempDir()
+		state := pushState{
+			Schema:      noteStateSchema,
+			NoteKey:     noteKey,
+			NoteVersion: 5,
+			SourceHash:  sha256hex("original notes"),
+			RemoteHash:  sha256hex(markdownToNoteHTML(citekey, "original notes")),
+			Renderer:    vaultRenderer,
+		}
+		notePath = filepath.Join(outDir, "note.md")
+		writeFile(t, notePath, "---\nzotero_key: K1\ncitekey: "+citekey+"\n---\n\n## Notes\n"+
+			vaultNotesBegin+"\n"+region+"\n"+vaultNotesEnd+"\n"+stateComment(state)+"\n")
+		var err error
+		before, err = os.ReadFile(notePath)
+		if err != nil {
+			t.Fatalf("read fixture: %v", err)
+		}
+
+		// A conflict artifact resolve must leave untouched in preview mode
+		// (removeConflictArtifacts matches on this exact citekey--noteKey prefix).
+		confDir := filepath.Join(outDir, vaultConflictsDir)
+		if err := os.MkdirAll(confDir, 0o755); err != nil {
+			t.Fatalf("mkdir conflicts dir: %v", err)
+		}
+		artifact = filepath.Join(confDir, sanitizeVaultFilename(citekey+"--"+noteKey)+"--remote-v7.md")
+		writeFile(t, artifact, "conflict body")
+		return outDir, notePath, before, artifact
+	}
+
+	for _, tc := range []struct {
+		name  string
+		flags rootFlags
+	}{
+		{name: "bare", flags: rootFlags{}},
+		{name: "agent", flags: rootFlags{agent: true}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var violation string
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Method != http.MethodGet {
+					violation = r.Method + " " + r.URL.Path
+					http.Error(w, "unexpected write under preview", http.StatusInternalServerError)
+					return
+				}
+				w.Header().Set("Last-Modified-Version", "7")
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(`{"version":7,"data":{"note":"<p>live</p>"}}`))
+			}))
+			t.Cleanup(srv.Close)
+			t.Setenv("ZOTERO_BASE_URL", srv.URL+"/users/0")
+			t.Setenv("ZOTERO_CONFIG", filepath.Join(t.TempDir(), "missing.toml"))
+
+			outDir, notePath, before, artifact := newFixture(t)
+
+			flags := tc.flags
+			cmd := newVaultResolveCmd(&flags)
+			cmd.SetArgs([]string{citekey, "--keep-vault", "--out", outDir})
+			var out bytes.Buffer
+			cmd.SetOut(&out)
+			cmd.SetErr(&bytes.Buffer{})
+			if err := cmd.Execute(); err != nil {
+				t.Fatalf("vault resolve (%s): %v", tc.name, err)
+			}
+			if violation != "" {
+				t.Fatalf("%s: preview issued a non-GET request: %s", tc.name, violation)
+			}
+
+			after, err := os.ReadFile(notePath)
+			if err != nil {
+				t.Fatalf("read note after preview: %v", err)
+			}
+			if !bytes.Equal(before, after) {
+				t.Fatalf("%s: preview modified the vault note", tc.name)
+			}
+			if _, err := os.Stat(artifact); err != nil {
+				t.Fatalf("%s: preview removed the conflict artifact: %v", tc.name, err)
+			}
+		})
+	}
+
+	// --yes applies: the PATCH reaches the server, the vault note's baseline
+	// advances, and the conflict artifact is cleared — the mirror image of the
+	// preview assertions above, proving the gate (not something else) is what
+	// blocked the write.
+	t.Run("yes applies", func(t *testing.T) {
+		var patched bool
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			switch r.Method {
+			case http.MethodGet:
+				w.Header().Set("Last-Modified-Version", "7")
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(`{"version":7,"data":{"note":"<p>live</p>"}}`))
+			case http.MethodPatch:
+				patched = true
+				w.WriteHeader(http.StatusNoContent)
+			default:
+				t.Fatalf("unexpected method %s %s", r.Method, r.URL.Path)
+			}
+		}))
+		t.Cleanup(srv.Close)
+		t.Setenv("ZOTERO_BASE_URL", srv.URL+"/users/0")
+		t.Setenv("ZOTERO_CONFIG", filepath.Join(t.TempDir(), "missing.toml"))
+
+		outDir, notePath, before, artifact := newFixture(t)
+
+		flags := rootFlags{yes: true, maxChanges: -1}
+		cmd := newVaultResolveCmd(&flags)
+		cmd.SetArgs([]string{citekey, "--keep-vault", "--out", outDir})
+		cmd.SetOut(&bytes.Buffer{})
+		cmd.SetErr(&bytes.Buffer{})
+		if err := cmd.Execute(); err != nil {
+			t.Fatalf("vault resolve --yes: %v", err)
+		}
+		if !patched {
+			t.Fatalf("--yes did not PATCH the Zotero note")
+		}
+
+		after, err := os.ReadFile(notePath)
+		if err != nil {
+			t.Fatalf("read note after apply: %v", err)
+		}
+		if bytes.Equal(before, after) {
+			t.Fatalf("--yes should have advanced the vault note's baseline state")
+		}
+		if _, err := os.Stat(artifact); !os.IsNotExist(err) {
+			t.Fatalf("--yes should have removed the conflict artifact (err=%v)", err)
+		}
+	})
+}

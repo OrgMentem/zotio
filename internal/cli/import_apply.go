@@ -41,7 +41,7 @@ func newImportApplyCmd(flags *rootFlags) *cobra.Command {
 				return fmt.Errorf("--attach-mode must be one of none, linked-file, stored")
 			}
 
-			m, err := readImportManifest(args[0])
+			m, err := readImportManifest(args[0], cmd.InOrStdin())
 			if err != nil {
 				return err
 			}

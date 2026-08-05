@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strconv"
 
 	"github.com/spf13/cobra"
 
@@ -88,46 +89,65 @@ func newCollectionsCreateCmd(flags *rootFlags) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			// One op wraps the single POST: every collection in the body becomes a
-			// Change so journal/max-changes accounting matches the pre-write gate
-			// above, but a non-string Add means applyChangeToItemData always
-			// refuses the replay -- a collection key must never land on an item.
-			var collections []any
-			switch payload := body.(type) {
-			case []any:
-				collections = payload
-			case []map[string]any:
-				collections = make([]any, len(payload))
-				for i := range payload {
-					collections[i] = payload[i]
-				}
-			}
-			changes := make([]mutation.Change, 0, len(collections))
-			for _, collection := range collections {
-				changes = append(changes, mutation.Change{Field: "collection", Add: collection})
-			}
-			var applyErr error
-			var data json.RawMessage
-			var statusCode int
-			applyOps := []mutation.Op{{
-				ID:      "collections.create",
-				Kind:    "collection_create",
-				Changes: changes,
-				Apply: func() (string, any, error) {
+			// The Web API create is the only write below. Zotero answers a
+			// batched POST with HTTP 200 even when it rejects some elements, and
+			// the elements it did not reject were still created -- so wrapping
+			// the whole batch in one mutation.Op (as before) let a single
+			// rejected element erase the journal record of everything created
+			// alongside it (recordMutationJournal skips runs with Applied == 0).
+			// One Op per collection fixes that: the first collection's Apply
+			// issues the single batched POST and caches the decoded response,
+			// and every other collection reads its outcome from that cache, so
+			// the HTTP request count is unchanged. A non-string Add means
+			// applyChangeToItemData always refuses the replay -- a collection
+			// key must never land on an item.
+			var (
+				data           json.RawMessage
+				statusCode     int
+				applyErr       error // aggregate failure returned as the command's own error
+				batchExecuted  bool
+				batchTransport error // set only when the POST itself failed (not a per-element rejection)
+				batchFailed    map[string]batchWriteFailure
+			)
+			applyCollection := func(index int) (string, any, error) {
+				if !batchExecuted {
+					batchExecuted = true
 					var postErr error
 					data, statusCode, postErr = c.Post(path, body)
 					if postErr != nil {
-						applyErr = classifyAPIError(postErr, flags)
-						return "failed", nil, applyErr
+						batchTransport = classifyAPIError(postErr, flags)
+						applyErr = batchTransport
+					} else {
+						batchFailed = decodeBatchWriteResponse(data).Failed
+						if bwErr := batchWriteFailuresError("collections create", batchFailed); bwErr != nil {
+							applyErr = degradedErr(bwErr)
+						}
 					}
-					if failErr := batchWriteFailuresError("collections create", decodeBatchWriteResponse(data).Failed); failErr != nil {
-						applyErr = degradedErr(failErr)
-						return "failed", nil, applyErr
-					}
-					return "applied", nil, nil
-				},
-			}}
-			if _, runErr := runMutation(cmd.Context(), flags, "collections.create", applyOps); runErr != nil {
+				}
+				if batchTransport != nil {
+					return "failed", nil, batchTransport
+				}
+				if failure, ok := batchFailed[strconv.Itoa(index)]; ok {
+					return "failed", fmt.Sprintf("index %d: code %d: %s", index, failure.Code, failure.Message), nil
+				}
+				return "applied", nil, nil
+			}
+			for i := range ops {
+				index := i
+				ops[i].Apply = func() (string, any, error) {
+					return applyCollection(index)
+				}
+			}
+			// A rejected element travelled to Zotero alongside its batch-mates
+			// and cannot un-submit them, so stopping at the first rejection
+			// would report the rest as not_attempted -- a lie that invites a
+			// duplicating re-create. Every collection reports its own outcome.
+			if _, runErr := runMutation(cmd.Context(), flags, "collections.create", ops, func(o *mutation.Options) {
+				o.ContinueOnError = true
+			}); runErr != nil {
+				// applyErr already carries the command's own classification
+				// (classifyAPIError / degradedErr); only fall back to the engine's
+				// generic error when Apply never ran (e.g. a gate rejected the op).
 				if applyErr != nil {
 					return applyErr
 				}
