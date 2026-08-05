@@ -313,7 +313,7 @@ func TestRenamedItemTagsDeduplicatesByExactName(t *testing.T) {
 			}
 			item := map[string]any{"data": map[string]any{"tags": tags}}
 
-			got, _, err := renamedItemTags(item, tc.oldTag, tc.newTag)
+			got, _, _, err := renamedItemTags(item, tc.oldTag, tc.newTag)
 			if err != nil {
 				t.Fatalf("renamedItemTags: %v", err)
 			}
@@ -331,6 +331,115 @@ func TestRenamedItemTagsDeduplicatesByExactName(t *testing.T) {
 				if actual := tagObj["type"]; actual != want.typeID {
 					t.Errorf("tag %d type = %v, want %d", i, actual, want.typeID)
 				}
+			}
+		})
+	}
+}
+
+// TestBuildTagRenameOpsEmitsInvertibleTagsChange guards the mirror-corruption
+// and undo-refusal regression: buildTagRenameOps used to emit the singular
+// field name "tag", which bypassed applyChangeToItemData's tags-membership
+// branch (corrupting the local mirror with a bogus "tag" key) and was refused
+// by mutation.InvertChange (breaking the documented `journal undo` promise
+// for tag renames). It must emit plural "tags" with the alias in Remove and
+// the canonical name in Add, carrying the per-item tag type through so a
+// rename never flips manual <-> automatic.
+func TestBuildTagRenameOpsEmitsInvertibleTagsChange(t *testing.T) {
+	updates := []tagRenameUpdate{
+		{key: "K1", version: 5, tags: []any{map[string]any{"tag": "bar", "type": 0}}, tagType: 0},
+		{key: "K2", version: 7, tags: []any{map[string]any{"tag": "bar", "type": 1}}, tagType: 1},
+	}
+	ops := buildTagRenameOps(updates, "foo", "bar", func(tagRenameUpdate) (string, any, error) {
+		return "applied", nil, nil
+	})
+	if len(ops) != 2 {
+		t.Fatalf("ops = %d, want 2", len(ops))
+	}
+	for i, op := range ops {
+		if len(op.Changes) != 1 {
+			t.Fatalf("op %d changes = %+v, want exactly one", i, op.Changes)
+		}
+		change := op.Changes[0]
+		if change.Field != "tags" {
+			t.Errorf("op %d field = %q, want %q", i, change.Field, "tags")
+		}
+		if change.Remove != "foo" || change.Add != "bar" {
+			t.Errorf("op %d change = %+v, want Remove=foo Add=bar", i, change)
+		}
+		if change.TagType != updates[i].tagType {
+			t.Errorf("op %d TagType = %d, want %d", i, change.TagType, updates[i].tagType)
+		}
+
+		inv, ok := mutation.InvertChange(change)
+		if !ok {
+			t.Fatalf("op %d change %+v not reversible, want journal undo to reverse tag renames", i, change)
+		}
+		if inv.Field != "tags" || inv.Remove != "bar" || inv.Add != "foo" || inv.TagType != change.TagType {
+			t.Errorf("op %d inverse = %+v, want reverse rename Remove=bar Add=foo", i, inv)
+		}
+	}
+}
+
+// TestTagRenameChangeReplaysOntoMirroredItemTags proves the write-through
+// mirror replays a tag rename correctly: the stale alias disappears, the
+// canonical name appears in its place, unrelated tags are untouched, and the
+// manual(0)/automatic(1) type carried on the Change is preserved rather than
+// silently flipped to manual. Modeled on the direct applyChangeToItemData
+// calls in write_through_test.go.
+func TestTagRenameChangeReplaysOntoMirroredItemTags(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		tagType int
+	}{
+		{name: "manual alias", tagType: 0},
+		{name: "automatic alias", tagType: 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			data := map[string]any{
+				"tags": []any{
+					map[string]any{"tag": "old", "type": tc.tagType},
+					map[string]any{"tag": "untouched", "type": 0},
+				},
+			}
+			change := mutation.Change{Field: "tags", Remove: "old", Add: "new", TagType: tc.tagType}
+			if !applyChangeToItemData(data, change) {
+				t.Fatal("tag rename change refused by write-through replay")
+			}
+
+			tags, _ := data["tags"].([]any)
+			var sawOld, sawUntouched bool
+			var newType any
+			newFound := false
+			for _, raw := range tags {
+				tag, ok := raw.(map[string]any)
+				if !ok {
+					t.Fatalf("tag entry = %#v, want object", raw)
+				}
+				switch tag["tag"] {
+				case "old":
+					sawOld = true
+				case "new":
+					newFound = true
+					newType = tag["type"]
+				case "untouched":
+					sawUntouched = true
+				}
+			}
+			if sawOld {
+				t.Errorf("mirrored tags = %+v, stale alias %q still present", tags, "old")
+			}
+			if !newFound {
+				t.Fatalf("mirrored tags = %+v, renamed tag %q missing", tags, "new")
+			}
+			if !sawUntouched {
+				t.Errorf("mirrored tags = %+v, unrelated tag dropped", tags)
+			}
+			var wantType any
+			if tc.tagType != 0 {
+				wantType = tc.tagType
+			}
+			if newType != wantType {
+				t.Errorf("renamed tag type = %v, want %v (rename must not flip manual/automatic)", newType, wantType)
 			}
 		})
 	}

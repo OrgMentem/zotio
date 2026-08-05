@@ -581,8 +581,26 @@ func (c *Client) doRequest(ctx context.Context, method, path string, params map[
 		return nil, 0, nil, err
 	}
 
-	// Build the request for dry-run display or actual execution
-	if c.DryRun {
+	// Build the request for dry-run display or actual execution.
+	//
+	// --dry-run means "do not CHANGE anything on the server", not "do not
+	// TALK to the server". Only mutating verbs take the short-circuit below;
+	// GET/HEAD always execute live. A preview command (e.g. "vault resolve")
+	// reads current state before describing a would-be mutation, and that
+	// read has to be real or the preview describes a fiction. This also
+	// means a read error under --dry-run (a 404 for something deleted
+	// upstream, a 500, ...) surfaces normally instead of being swallowed by
+	// a fabricated always-success sentinel — which is exactly the property a
+	// preview needs to detect remote drift. Reuses baseURLFor's read/write
+	// classification (isMutatingMethod) rather than a second, divergent list.
+	//
+	// Because GET/HEAD never take this branch anymore, Get/GetWithHeaders/
+	// GetWithHeadersContext (which discard the status int) can no longer
+	// receive the synthetic dry-run body at all, so the historical hazard of
+	// a fabricated response being indistinguishable from a real one through
+	// those callers is closed by construction, not by a status-code
+	// convention those callers would have to opt into.
+	if c.DryRun && isMutatingMethod(method) {
 		respBody, status, derr := c.dryRun(method, targetURL, path, params, bodyBytes, headerOverrides, authHeader)
 		return respBody, status, nil, derr
 	}
@@ -795,11 +813,21 @@ func trustedZoteroBaseURL(u *url.URL) bool {
 	return false
 }
 
+// isMutatingMethod reports whether method changes server state. GET and HEAD
+// are the only safe verbs in play here; every other verb (POST, PUT, PATCH,
+// DELETE, ...) mutates and must be routed to the write base URL and, under
+// --dry-run, short-circuited instead of dispatched. Single source of truth
+// for that classification — baseURLFor's write routing and doRequest's
+// dry-run gate both defer to it instead of keeping their own lists in sync.
+func isMutatingMethod(method string) bool {
+	return method != http.MethodGet && method != http.MethodHead
+}
+
 // baseURLFor returns the base URL for a request: writes (non-GET) route to the
 // resolved WriteBaseURL when hybrid routing is configured; reads use BaseURL. The
 // write base is resolved lazily on first use.
 func (c *Client) baseURLFor(ctx context.Context, method string) string {
-	if method == http.MethodGet || method == http.MethodHead {
+	if !isMutatingMethod(method) {
 		return c.BaseURL
 	}
 	c.resolveWriteRoute(ctx)
@@ -871,7 +899,11 @@ func (c *Client) doRead(ctx context.Context, method, path string, params map[str
 }
 
 // isMutatingVerb reports whether the HTTP method writes server state. Used by
-// do()'s verify-mode short-circuit to gate dial-out.
+// do()'s verify-mode short-circuit to gate dial-out. Deliberately a fixed
+// positive list of the four write verbs Zotero's API actually uses (not the
+// negative "anything but GET/HEAD" test in isMutatingMethod): verify mode
+// short-circuits ONLY known writes, so an unrecognized/custom verb dials
+// through instead of being silently swallowed by a generic catch-all.
 func isMutatingVerb(method string) bool {
 	switch method {
 	case "DELETE", "POST", "PUT", "PATCH":

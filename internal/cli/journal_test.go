@@ -405,8 +405,139 @@ func TestJournalUndoPreviewPlan(t *testing.T) {
 	if op.Kind != "undo.tag_add" || len(op.Changes) != 1 || op.Changes[0].Field != "tags" || op.Changes[0].Remove != "ml" {
 		t.Errorf("inverse op = %+v, want undo.tag_add removing ml", op)
 	}
-	if !strings.Contains(errOut.String(), "missing_doi") {
-		t.Errorf("stderr should report the refused DOI op: %q", errOut.String())
+	// Under --json the refused DOI op is reported in the envelope, not stderr
+	// prose: renderMutation only prints Warnings to stderr for interactive
+	// (non-JSON) callers.
+	if errOut.Len() != 0 {
+		t.Errorf("JSON undo should not print refusal prose to stderr, got %q", errOut.String())
+	}
+	if len(env.Warnings) != 1 || !strings.Contains(env.Warnings[0], "missing_doi") || !strings.Contains(env.Warnings[0], "op b") {
+		t.Errorf("warnings = %#v, want the refused missing_doi op (id b)", env.Warnings)
+	}
+	if env.OK != true {
+		t.Errorf("env.OK = %v, want true: one op reversed, the other refused but the reversible one still previews fine", env.OK)
+	}
+	refused, ok := env.Journal.(map[string]any)
+	if !ok {
+		t.Fatalf("env.Journal = %#v, want a map with the structured refusal list", env.Journal)
+	}
+	if refusedList, _ := refused["refused"].([]any); len(refusedList) != 1 {
+		t.Errorf("Journal[\"refused\"] = %#v, want exactly one refusal", refused["refused"])
+	}
+}
+
+func TestJournalUndoReportsRefusalsInJSON(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	entry := mutation.JournalEntry{
+		RunID: "mixed-run", Operation: "items.tags.add", Mode: "apply",
+		Ops: []mutation.JournalOp{
+			{ID: "a", Key: "K1", Kind: "tag_add", Status: "applied", Changes: []mutation.Change{{Field: "tags", Add: "ml"}}},
+			{ID: "b", Key: "K2", Kind: "item_delete", Status: "applied", Changes: []mutation.Change{{Field: "deleted", Add: true}}},
+		},
+	}
+	if err := mutation.WriteEntry(helpersTestJournalDir(t), entry); err != nil {
+		t.Fatalf("seed journal: %v", err)
+	}
+
+	flags := &rootFlags{asJSON: true} // preview (no --yes)
+	cmd := newJournalCmd(flags)
+	cmd.SilenceErrors, cmd.SilenceUsage = true, true
+	cmd.SetArgs([]string{"undo", "mixed-run"})
+	var out, errOut bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&errOut)
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("undo preview: %v; stderr=%s", err, errOut.String())
+	}
+
+	var env mutation.Envelope
+	if err := json.Unmarshal(out.Bytes(), &env); err != nil {
+		t.Fatalf("decode %q: %v", out.String(), err)
+	}
+	if len(env.Plan.Operations) != 1 {
+		t.Fatalf("plan = %+v, want only the reversible tag op planned", env.Plan)
+	}
+
+	// The refusal must be machine-readable, not just present as free text
+	// somewhere in stderr: decode the structured Journal payload and check its
+	// fields.
+	journal, ok := env.Journal.(map[string]any)
+	if !ok {
+		t.Fatalf("env.Journal = %#v, want a map carrying the refusal list", env.Journal)
+	}
+	refusedRaw, ok := journal["refused"].([]any)
+	if !ok || len(refusedRaw) != 1 {
+		t.Fatalf("Journal[\"refused\"] = %#v, want exactly one refusal", journal["refused"])
+	}
+	refusal, ok := refusedRaw[0].(map[string]any)
+	if !ok {
+		t.Fatalf("refusal entry = %#v, want an object", refusedRaw[0])
+	}
+	if refusal["op_id"] != "b" || refusal["key"] != "K2" || refusal["kind"] != "item_delete" {
+		t.Fatalf("refusal = %+v, want op_id=b key=K2 kind=item_delete", refusal)
+	}
+	reason, _ := refusal["reason"].(string)
+	if !strings.Contains(reason, "deleted") {
+		t.Fatalf("refusal reason = %q, want it to name the unreversible field", reason)
+	}
+
+	if len(env.Warnings) != 1 || !strings.Contains(env.Warnings[0], "item_delete") || !strings.Contains(env.Warnings[0], "op b") {
+		t.Fatalf("warnings = %#v, want the refusal named by kind and op id", env.Warnings)
+	}
+}
+
+func TestJournalUndoAllRefusedEmitsEnvelope(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	entry := mutation.JournalEntry{
+		RunID: "all-refused-run", Operation: "items.delete", Mode: "apply",
+		Ops: []mutation.JournalOp{
+			{ID: "a", Key: "K1", Kind: "item_delete", Status: "applied", Changes: []mutation.Change{{Field: "deleted", Add: true}}},
+			{ID: "b", Key: "K2", Kind: "item_delete", Status: "applied", Changes: []mutation.Change{{Field: "deleted", Add: true}}},
+		},
+	}
+	if err := mutation.WriteEntry(helpersTestJournalDir(t), entry); err != nil {
+		t.Fatalf("seed journal: %v", err)
+	}
+
+	flags := &rootFlags{asJSON: true} // preview (no --yes)
+	cmd := newJournalCmd(flags)
+	cmd.SilenceErrors, cmd.SilenceUsage = true, true
+	cmd.SetArgs([]string{"undo", "all-refused-run"})
+	var out, errOut bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&errOut)
+	// A fully-refused run still emits a full envelope on stdout (checked
+	// below) but degrades the exit code: a caller that only checks the
+	// process result must not see a clean exit from a run that undid nothing.
+	err := cmd.Execute()
+	if ExitCode(err) != 13 {
+		t.Fatalf("undo of fully-refused run exit code = %d (err=%v), want 13 (degraded)", ExitCode(err), err)
+	}
+
+	// This is the regression this test guards: today the all-refused path
+	// prints "Nothing reversible in run ..." prose instead of JSON, which
+	// fails to decode.
+	var env mutation.Envelope
+	if err := json.Unmarshal(out.Bytes(), &env); err != nil {
+		t.Fatalf("undo output is not valid JSON under --json: %q: %v", out.String(), err)
+	}
+	if len(env.Plan.Operations) != 0 {
+		t.Fatalf("plan = %+v, want zero planned ops: nothing was reversible", env.Plan)
+	}
+	if env.OK {
+		t.Fatalf("env.OK = true, want false: every op was refused, which is not a successful reversal")
+	}
+
+	journal, ok := env.Journal.(map[string]any)
+	if !ok {
+		t.Fatalf("env.Journal = %#v, want a map carrying the refusal list", env.Journal)
+	}
+	refusedRaw, _ := journal["refused"].([]any)
+	if len(refusedRaw) != 2 {
+		t.Fatalf("Journal[\"refused\"] = %#v, want both item_delete ops refused", journal["refused"])
+	}
+	if len(env.Warnings) != 2 {
+		t.Fatalf("warnings = %#v, want one entry per refused op", env.Warnings)
 	}
 }
 

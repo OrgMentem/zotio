@@ -65,6 +65,58 @@ func TestApplyChangeToItemData(t *testing.T) {
 	})
 }
 
+// TestMirrorSkipsUnknownFieldNames covers the fail-open regression: producers
+// have shipped Changes naming fields that were never real Zotero item fields
+// (a rename that emits "tag" singular instead of "tags", a generic "record"
+// or "note" placeholder, a scoped-wrong "attachment" label). None of these
+// belong in the mirrored item's data map, so applyChangeToItemData must
+// refuse to replay them instead of injecting a bogus key.
+func TestMirrorSkipsUnknownFieldNames(t *testing.T) {
+	for _, field := range []string{"tag", "tags_set", "record", "note", "attachment"} {
+		t.Run(field, func(t *testing.T) {
+			d := map[string]any{}
+			if applyChangeToItemData(d, mutation.Change{Field: field, Add: "x"}) {
+				t.Fatalf("unrecognized field %q should not replay", field)
+			}
+			if _, present := d[field]; present {
+				t.Fatalf("unrecognized field %q was injected into the mirror: %v", field, d)
+			}
+		})
+	}
+}
+
+// TestMirrorRejectsIdentityFields covers bookkeeping/identity fields, which
+// must never be replayed even though a malformed producer could name them
+// directly: overwriting "key"/"version"/"itemType"/"dateModified" from a
+// Change value would desync the mirror's own bookkeeping from the API.
+func TestMirrorRejectsIdentityFields(t *testing.T) {
+	for _, field := range []string{"key", "version", "itemType", "dateModified"} {
+		t.Run(field, func(t *testing.T) {
+			d := map[string]any{field: "original"}
+			if applyChangeToItemData(d, mutation.Change{Field: field, Add: "corrupted"}) {
+				t.Fatalf("identity field %q should not replay", field)
+			}
+			if d[field] != "original" {
+				t.Fatalf("identity field %q was mutated: %v", field, d[field])
+			}
+		})
+	}
+}
+
+// TestMirrorReplaysKnownScalarFields guards against over-tightening: real
+// scalar fields this CLI's own write paths set (items_update.go's
+// --title/--abstract-note/--extra) must keep replaying exactly as before.
+func TestMirrorReplaysKnownScalarFields(t *testing.T) {
+	for _, field := range []string{"title", "abstractNote", "extra"} {
+		t.Run(field, func(t *testing.T) {
+			d := map[string]any{field: ""}
+			if !applyChangeToItemData(d, mutation.Change{Field: field, Add: "new value"}) || d[field] != "new value" {
+				t.Fatalf("known scalar field %q should replay: %v", field, d)
+			}
+		})
+	}
+}
+
 func TestRunMutationReadsYourWritesLocally(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 

@@ -89,8 +89,14 @@ func TestTagsAuditFixPreviewPlansRenamesWithoutWrites(t *testing.T) {
 		if op.Kind != "tag_rename" || op.Destructive {
 			t.Errorf("op = %+v, want non-destructive tag_rename", op)
 		}
-		if len(op.Changes) != 1 || op.Changes[0].Field != "tag" || op.Changes[0].Add != "Data Science" {
+		// "tags" (plural) is the field name applyChangeToItemData special-cases
+		// for membership replay; "tag" (singular) used to fall through to the
+		// fail-open scalar-set branch and corrupt the local mirror.
+		if len(op.Changes) != 1 || op.Changes[0].Field != "tags" || op.Changes[0].Add != "Data Science" {
 			t.Errorf("changes = %+v, want tag rename to canonical Data Science", op.Changes)
+		}
+		if remove, ok := op.Changes[0].Remove.(string); !ok || (remove != "data science" && remove != "Data  Science") {
+			t.Errorf("changes = %+v, want Remove to be the alias being renamed", op.Changes)
 		}
 	}
 }
@@ -237,5 +243,47 @@ func TestTagsAuditFixNoAliasesIsEmptyPlan(t *testing.T) {
 	}
 	if env.Result == nil || env.Result.Summary.Attempted != 0 || len(env.Result.Items) != 0 {
 		t.Fatalf("empty result = %+v, want no attempted items", env.Result)
+	}
+}
+
+// TestBuildTagAuditFixOpsEmitsInvertibleTagsChange guards the same
+// mirror-corruption / undo-refusal regression as the `tags rename` producer:
+// buildTagAuditFixOps used to emit the singular field name "tag", which
+// bypassed applyChangeToItemData's tags-membership branch and was refused by
+// mutation.InvertChange. It must emit plural "tags" with the alias in Remove
+// and the canonical name in Add, preserving the alias's manual/automatic
+// type so a fix-up rename never flips it.
+func TestBuildTagAuditFixOpsEmitsInvertibleTagsChange(t *testing.T) {
+	seedTagsAuditFixStore(t, []json.RawMessage{
+		json.RawMessage(`{"key":"K1","version":1,"data":{"key":"K1","tags":[{"tag":"ml","type":1}]}}`),
+	})
+	db, err := store.OpenWithContext(context.Background(), helpersTestDefaultDBPath(t, "zotio"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer db.Close()
+
+	plans := []tagAuditPlan{{Canonical: "Machine Learning", Aliases: []string{"ml"}}}
+	ops, err := buildTagAuditFixOps(localQueryStore{db}, plans, func(tagRenameUpdate) (string, any, error) {
+		return "applied", nil, nil
+	})
+	if err != nil {
+		t.Fatalf("buildTagAuditFixOps: %v", err)
+	}
+	if len(ops) != 1 || len(ops[0].Changes) != 1 {
+		t.Fatalf("ops = %+v, want one op with one change", ops)
+	}
+
+	change := ops[0].Changes[0]
+	if change.Field != "tags" || change.Remove != "ml" || change.Add != "Machine Learning" || change.TagType != 1 {
+		t.Fatalf("change = %+v, want tags rename ml->Machine Learning preserving automatic type", change)
+	}
+
+	inv, ok := mutation.InvertChange(change)
+	if !ok {
+		t.Fatalf("change %+v not reversible, want journal undo to reverse tag audit fixes", change)
+	}
+	if inv.Field != "tags" || inv.Remove != "Machine Learning" || inv.Add != "ml" || inv.TagType != 1 {
+		t.Errorf("inverse = %+v, want reverse rename Machine Learning->ml preserving automatic type", inv)
 	}
 }

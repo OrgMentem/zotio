@@ -133,11 +133,75 @@ func dropStaleItemVersion(item map[string]any) {
 	}
 }
 
+// mirrorReplayableFields is a conservative allowlist of Zotero item fields
+// applyChangeToItemData will replay as a scalar set/clear onto the local
+// mirror. It's derived from the fields this CLI's own write paths actually
+// set directly: items_update.go's --title/--abstract-note/--extra flags,
+// items_enrich.go's provenance and --missing-pdf url writes, and
+// items_preprint_check_fix.go's DOI corrections -- not from the full,
+// item-type-dependent Zotero schema (see schema_item-fields.go), which
+// varies per itemType and isn't resolvable offline at replay time.
+//
+// Anything absent here -- including every producer-invented or mis-scoped
+// field name -- is deliberately left unreplayed for the next `sync` to
+// reconcile authoritatively. Keep this list narrow: a field missing from it
+// just waits one sync cycle to catch up; a field wrongly present in it can
+// silently corrupt the mirror, which agents then trust as confirmed
+// post-write state (see it.Item in applyMirrorWriteThrough).
+var mirrorReplayableFields = map[string]bool{
+	"title":            true,
+	"abstractNote":     true,
+	"extra":            true,
+	"DOI":              true,
+	"url":              true,
+	"date":             true,
+	"shortTitle":       true,
+	"language":         true,
+	"rights":           true,
+	"publicationTitle": true,
+	"volume":           true,
+	"issue":            true,
+	"pages":            true,
+	"series":           true,
+	"place":            true,
+	"publisher":        true,
+	"ISBN":             true,
+	"ISSN":             true,
+	"callNumber":       true,
+	"archive":          true,
+	"archiveLocation":  true,
+	"libraryCatalog":   true,
+	"accessDate":       true,
+}
+
+// mirrorIdentityFields are bookkeeping/identity fields that must never be
+// replayed onto the mirror even if some producer names them: they aren't
+// user-editable content, and blindly overwriting them (e.g. "key",
+// "version") would desync the mirror's own bookkeeping from the API rather
+// than reflect the write. Checked explicitly, in addition to being absent
+// from mirrorReplayableFields, so the rejection survives future edits to
+// the allowlist above.
+var mirrorIdentityFields = map[string]bool{
+	"key":          true,
+	"version":      true,
+	"itemType":     true,
+	"dateAdded":    true,
+	"dateModified": true,
+	"deleted":      true,
+	"parentItem":   true,
+	"relations":    true,
+	"library":      true,
+	"links":        true,
+	"meta":         true,
+}
+
 // applyChangeToItemData forward-applies one change to an item's data map. It
 // handles tag/collection membership (scalar values only), creator display-name
-// renames over the ordered creators array, and scalar field set/clear; anything
-// else (bulk []string adds, "deleted"/trash, structural edits) returns false so
-// the caller skips write-through for that item.
+// renames over the ordered creators array, and scalar field set/clear for a
+// conservative, explicit allowlist of known Zotero item fields; anything else
+// (bulk []string adds, "deleted"/trash, structural edits, unrecognized or
+// identity field names) returns false so the caller skips write-through for
+// that item and leaves it for the next `sync`.
 func applyChangeToItemData(data map[string]any, c mutation.Change) bool {
 	switch c.Field {
 	case "tags":
@@ -147,6 +211,18 @@ func applyChangeToItemData(data map[string]any, c mutation.Change) bool {
 	case "creators":
 		return applyCreatorRenameChangeToData(data, c)
 	default:
+		// Fail-closed: replay only fields this CLI knows to be directly-settable
+		// Zotero item fields (mirrorReplayableFields), and never identity or
+		// bookkeeping fields even if a producer names them explicitly. A field
+		// left out of the allowlist is not an error -- it's simply skipped here
+		// and self-heals on the next `sync`. That's strictly safer than the
+		// alternative: a wrongly (or wrongly-scoped) replayed value sits in the
+		// mirror silently wrong until the next sync, and in the meantime is
+		// handed to agents as confirmed post-write state via it.Item in
+		// applyMirrorWriteThrough -- read-your-writes becomes read-your-corruption.
+		if mirrorIdentityFields[c.Field] || !mirrorReplayableFields[c.Field] {
+			return false
+		}
 		if c.Add != nil {
 			s, ok := c.Add.(string)
 			if !ok {

@@ -306,16 +306,9 @@ func newJournalUndoCmd(flags *rootFlags) *cobra.Command {
 				return err
 			}
 			inverse, refused := mutation.InverseOps(entry)
-			for _, r := range refused {
-				fmt.Fprintf(cmd.ErrOrStderr(), "skip %s %s: %s\n", r.Kind, r.Key, r.Reason)
-			}
-			if len(inverse) == 0 {
-				fmt.Fprintf(cmd.OutOrStdout(), "Nothing reversible in run %s (%d op(s) refused).\n", entry.RunID, len(refused))
-				return nil
-			}
 
 			var writeClient *client.Client
-			if resolveMutationMode(flags).Apply {
+			if resolveMutationMode(flags).Apply && len(inverse) > 0 {
 				writeClient, err = flags.newWriteClient()
 				if err != nil {
 					return err
@@ -337,11 +330,60 @@ func newJournalUndoCmd(flags *rootFlags) *cobra.Command {
 			}
 
 			env, runErr := runMutation(cmd.Context(), flags, "journal.undo", ops)
+			attachUndoRefusals(&env, refused)
+			if !env.OK && runErr == nil {
+				// attachUndoRefusals forced ok=false because nothing in this run was
+				// reversible. Surface that on the exit code too — a caller that only
+				// checks the process result (not the JSON body) must not see a clean
+				// exit from a run that undid nothing.
+				runErr = degradedErr(fmt.Errorf("journal.undo: %d op(s) refused; nothing was reversible", len(refused)))
+			}
+
+			if len(inverse) == 0 && !flags.asJSON {
+				// Same JSON/agent gate as newJournalListCmd's list/show output: JSON
+				// callers fall through to the full envelope below like every other
+				// path, and only the interactive branch keeps the terse sentence
+				// instead of the generic zero-op plan summary renderMutation would
+				// otherwise print.
+				fmt.Fprintf(cmd.OutOrStdout(), "Nothing reversible in run %s (%d op(s) refused).\n", entry.RunID, len(refused))
+				for _, w := range env.Warnings {
+					fmt.Fprintf(cmd.ErrOrStderr(), "warning: %s\n", w)
+				}
+				return runErr
+			}
+
 			if renderErr := renderMutation(cmd, flags, env, nil); renderErr != nil {
 				return renderErr
 			}
 			return runErr
 		},
+	}
+}
+
+// attachUndoRefusals surfaces mutation.InverseOps' refusals in the envelope
+// instead of only a human-readable stderr line, so a JSON/agent caller can see
+// which recorded ops were skipped and why. mutation.ReversalRefusal already
+// carries op id/key/kind/reason and is JSON-tagged for exactly this, so it is
+// attached to env.Journal verbatim; a human-readable rendering of the same
+// facts goes to env.Warnings, which renderMutation already prints on stderr
+// for interactive callers and folds into the JSON envelope otherwise.
+func attachUndoRefusals(env *mutation.Envelope, refused []mutation.ReversalRefusal) {
+	if len(refused) == 0 {
+		return
+	}
+	for _, r := range refused {
+		env.Warnings = append(env.Warnings, fmt.Sprintf("skip %s %s (op %s): %s", r.Kind, r.Key, r.OpID, r.Reason))
+	}
+	env.Journal = map[string]any{"refused": refused}
+	// ok normally means "every attempted op succeeded" (see mutation.Run), which
+	// still holds when refusals are mixed with successful reversals — the run
+	// did everything it safely could, and the refusals remain visible above for
+	// a caller who checks them. But when NO op was even planned (every recorded
+	// op was refused), a bare ok=true reads as "successfully reversed" to a
+	// caller that only checks that one field. Force it false so a fully-refused
+	// run can never be mistaken for a fully-reversed no-op.
+	if len(env.Plan.Operations) == 0 {
+		env.OK = false
 	}
 }
 

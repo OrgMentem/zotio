@@ -10,6 +10,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"zotio/internal/mutation"
 )
 
 type collectionMoveTestServer struct {
@@ -86,7 +88,7 @@ func TestCollectionsMovePreviewWithoutYesWritesNothing(t *testing.T) {
 func TestCollectionsMoveApplyGetsThenPutsWithVersionPrecondition(t *testing.T) {
 	srv := newCollectionMoveTestServer(t)
 
-	_, stderr, err := runCollectionsMoveTestCmd(t, srv, &rootFlags{yes: true}, "--to", "PARENT", "COLL")
+	_, stderr, err := runCollectionsMoveTestCmd(t, srv, &rootFlags{yes: true, maxChanges: -1}, "--to", "PARENT", "COLL")
 	if err != nil {
 		t.Fatalf("collections move apply: %v; stderr=%s", err, stderr)
 	}
@@ -116,5 +118,86 @@ func TestCollectionsMoveDryRunWritesNothing(t *testing.T) {
 	}
 	if srv.getCount != 0 || srv.putCount != 0 || len(srv.requestPaths) != 0 {
 		t.Fatalf("requests = %v (GET=%d PUT=%d), want no HTTP calls", srv.requestPaths, srv.getCount, srv.putCount)
+	}
+}
+
+// TestCollectionsMoveIsJournaled guards the fix for the reviewer-flagged gap:
+// the PUT used to bypass runMutation entirely, so an applied move never
+// reached the journal. Route it through runMutation and the run must appear
+// as a journaled "collections.move" entry with one applied change.
+func TestCollectionsMoveIsJournaled(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	mutationJournalRecorder = recordMutationJournal
+	t.Cleanup(func() { mutationJournalRecorder = nil })
+
+	srv := newCollectionMoveTestServer(t)
+
+	_, stderr, err := runCollectionsMoveTestCmd(t, srv, &rootFlags{yes: true, maxChanges: -1}, "--to", "PARENT", "COLL")
+	if err != nil {
+		t.Fatalf("collections move apply: %v; stderr=%s", err, stderr)
+	}
+
+	entries, err := mutation.ListEntries(helpersTestJournalDir(t))
+	if err != nil {
+		t.Fatalf("list journal entries: %v", err)
+	}
+	if len(entries) != 1 || entries[0].Operation != "collections.move" || entries[0].Summary.Applied != 1 {
+		t.Fatalf("recorded entries = %+v, want one applied collections.move run", entries)
+	}
+}
+
+// TestCollectionsMoveHonorsMaxChanges guards the same gap from the gate side:
+// the direct PutWithHeaders call never consulted CheckGates, so --max-changes
+// had no effect on this command. Routing through runMutation must make a cap
+// of zero refuse the write before any PUT is issued.
+func TestCollectionsMoveHonorsMaxChanges(t *testing.T) {
+	srv := newCollectionMoveTestServer(t)
+
+	_, stderr, err := runCollectionsMoveTestCmd(t, srv, &rootFlags{yes: true, maxChanges: 0}, "--to", "PARENT", "COLL")
+	if err == nil {
+		t.Fatalf("collections move at cap 0 = nil error, want max-changes refusal; stderr=%s", stderr)
+	}
+	if srv.putCount != 0 {
+		t.Fatalf("putCount = %d, want 0 (max-changes must block before the PUT)", srv.putCount)
+	}
+}
+
+// TestCollectionsMoveSendsVersionHeader confirms the version-read precondition
+// survives the runMutation rewrite: the read must stay outside the gated
+// Apply closure, still land the If-Unmodified-Since-Version header on the
+// PUT, and a failing version read must abort before any PUT is attempted.
+func TestCollectionsMoveSendsVersionHeader(t *testing.T) {
+	srv := newCollectionMoveTestServer(t)
+
+	_, stderr, err := runCollectionsMoveTestCmd(t, srv, &rootFlags{yes: true, maxChanges: -1}, "--to", "PARENT", "COLL")
+	if err != nil {
+		t.Fatalf("collections move apply: %v; stderr=%s", err, stderr)
+	}
+	if srv.putHeader != "77" {
+		t.Fatalf("If-Unmodified-Since-Version = %q, want 77", srv.putHeader)
+	}
+
+	var putAttempted bool
+	failServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPut {
+			putAttempted = true
+		}
+		http.Error(w, "version lookup failed", http.StatusBadRequest)
+	}))
+	t.Cleanup(failServer.Close)
+	t.Setenv("ZOTERO_BASE_URL", failServer.URL+"/users/0")
+	t.Setenv("ZOTERO_API_KEY", "testkey")
+	t.Setenv("ZOTERO_CONFIG", filepath.Join(t.TempDir(), "missing.toml"))
+
+	cmd := newCollectionsMoveCmd(&rootFlags{yes: true, maxChanges: -1})
+	cmd.SilenceErrors, cmd.SilenceUsage = true, true
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetErr(&bytes.Buffer{})
+	cmd.SetArgs([]string{"--to", "PARENT", "COLL"})
+	if err := cmd.Execute(); err == nil {
+		t.Fatal("collections move with failing version GET = nil error, want failure")
+	}
+	if putAttempted {
+		t.Fatal("PUT was attempted despite a failed version GET")
 	}
 }

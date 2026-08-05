@@ -23,6 +23,15 @@ const duplicateResolveStrategyKeepMostComplete = "keep-most-complete"
 // Centralize the high-risk title matcher warning for CLI output and tests.
 const duplicateResolveTitleWarning = "warning: --title matches by title and can group distinct items; review the preview carefully before applying"
 
+// duplicateResolveMergeKind is the planned op kind for every duplicate merge.
+// duplicateResolveMergePartialKind replaces it, in place on that op, only when
+// the merge-target PATCH committed but the follow-up trash PATCH failed — see
+// applyDuplicateResolve. Because it is written directly into the op the
+// engine already holds, it is what `journal show` later prints, distinguishing
+// a half-applied merge from a clean one in the permanent record.
+const duplicateResolveMergeKind = "duplicate_merge"
+const duplicateResolveMergePartialKind = "duplicate_merge_partial"
+
 type duplicateResolveItem struct {
 	Key          string
 	Version      int
@@ -91,6 +100,7 @@ review the preview carefully before applying.`,
 				return err
 			}
 			env, runErr := runMutation(cmd.Context(), flags, "items.duplicates.resolve", ops)
+			duplicateResolveSurfacePartialWarnings(&env, ops)
 			renderErr := renderMutation(cmd, flags, env, itemsDuplicatesResolveSingleLine)
 			if renderErr != nil {
 				return renderErr
@@ -114,6 +124,20 @@ func duplicateResolveIncludes(cmd *cobra.Command, flagDOI, flagTitle bool) (bool
 	return flagDOI, flagTitle
 }
 
+// duplicateResolvePending is one planned merge, computed before its
+// mutation.Op is built. Building the ops slice happens in a second, fixed-size
+// pass (see buildDuplicateResolveOps) so the &ops[i] pointer each op's Apply
+// closure captures — to flip its own Kind on a half-applied outcome — stays
+// valid: it must never be invalidated by a later append reallocating the
+// backing array.
+type duplicateResolvePending struct {
+	id              string
+	masterKey       string
+	dupKey          string
+	expectedVersion int
+	changes         []mutation.Change
+}
+
 func buildDuplicateResolveOps(db localQueryStore, flags *rootFlags, includeDOI, includeTitle bool) ([]mutation.Op, error) {
 	rows, err := duplicateResolveRows(db, includeDOI, includeTitle)
 	if err != nil {
@@ -124,7 +148,7 @@ func buildDuplicateResolveOps(db localQueryStore, flags *rootFlags, includeDOI, 
 		return nil, fmt.Errorf("querying duplicate child PDFs: %w", err)
 	}
 
-	ops := make([]mutation.Op, 0)
+	pending := make([]duplicateResolvePending, 0)
 	plannedDupes := map[string]struct{}{}
 	for _, row := range rows {
 		keys, err := duplicateResolveRowKeys(row)
@@ -149,30 +173,69 @@ func buildDuplicateResolveOps(db localQueryStore, flags *rootFlags, includeDOI, 
 			if _, seen := plannedDupes[item.Key]; seen {
 				continue
 			}
-			changes := duplicateResolveChanges(master, item)
-			masterKey := master.Key
-			dupKey := item.Key
-			op := mutation.Op{
-				ID:              "items.duplicates.resolve:" + masterKey + ":" + dupKey,
-				Key:             dupKey,
-				Kind:            "duplicate_merge",
-				ExpectedVersion: item.Version,
-				Changes:         changes,
-				// A merge trashes the duplicate, so it is
-				// destructive — require --allow-destructive (matches the capability
-				// registry and the --allow-destructive help, which both name "merge").
-				Destructive: true,
-				Apply: func() (string, any, error) {
-					return applyDuplicateResolve(flags, masterKey, dupKey)
-				},
-			}
-			ops = append(ops, op)
+			pending = append(pending, duplicateResolvePending{
+				id:              "items.duplicates.resolve:" + master.Key + ":" + item.Key,
+				masterKey:       master.Key,
+				dupKey:          item.Key,
+				expectedVersion: item.Version,
+				changes:         duplicateResolveChanges(master, item),
+			})
 			plannedDupes[item.Key] = struct{}{}
 			master.Collections, _ = duplicateResolveUnionStrings(master.Collections, item.Collections)
 			master.Tags, _ = duplicateResolveUnionTags(master.Tags, item.Tags)
 		}
 	}
+
+	// One mutation.Op per duplicate pair — unchanged from before, so
+	// --max-changes still caps the number of pairs, not sub-writes. Allocated
+	// at its final length up front (never appended to below) so the &ops[i]
+	// pointers handed to each Apply closure stay stable for the run's whole
+	// lifetime.
+	ops := make([]mutation.Op, len(pending))
+	for i, p := range pending {
+		ops[i] = mutation.Op{
+			ID:              p.id,
+			Key:             p.dupKey,
+			Kind:            duplicateResolveMergeKind,
+			ExpectedVersion: p.expectedVersion,
+			Changes:         p.changes,
+			// A merge trashes the duplicate, so it is
+			// destructive — require --allow-destructive (matches the capability
+			// registry and the --allow-destructive help, which both name "merge").
+			Destructive: true,
+		}
+		masterKey, dupKey, kindSlot := p.masterKey, p.dupKey, &ops[i].Kind
+		ops[i].Apply = func() (string, any, error) {
+			return applyDuplicateResolve(flags, masterKey, dupKey, kindSlot)
+		}
+	}
 	return ops, nil
+}
+
+// duplicateResolveSurfacePartialWarnings makes a half-applied merge visible in
+// this run's own output, not just the journal: applyDuplicateResolve reports
+// such an op as "applied" (so Summary.Applied > 0 and the run gets journaled),
+// so the summary counts alone would otherwise read as a clean success.
+// renderMutation always prints env.Warnings, in both --json and human mode,
+// before the summary — so this is never silent.
+func duplicateResolveSurfacePartialWarnings(env *mutation.Envelope, ops []mutation.Op) {
+	if env.Result == nil {
+		return
+	}
+	partial := make(map[string]bool, len(ops))
+	for _, op := range ops {
+		if op.Kind == duplicateResolveMergePartialKind {
+			partial[op.ID] = true
+		}
+	}
+	if len(partial) == 0 {
+		return
+	}
+	for _, item := range env.Result.Items {
+		if partial[item.OpID] {
+			env.Warnings = append(env.Warnings, fmt.Sprintf("%v", item.Reason))
+		}
+	}
 }
 
 func duplicateResolveRows(db localQueryStore, includeDOI, includeTitle bool) ([]map[string]any, error) {
@@ -334,7 +397,13 @@ func duplicateResolveChanges(master, dup duplicateResolveItem) []mutation.Change
 	return changes
 }
 
-func applyDuplicateResolve(flags *rootFlags, masterKey, dupKey string) (string, any, error) {
+// applyDuplicateResolve performs a merge's two writes: PATCH the merge target
+// with the union of collections/tags, then PATCH the duplicate to trash it.
+// kindSlot points at this op's own Kind field (see buildDuplicateResolveOps);
+// it is left untouched on a clean outcome (success or a failure before any
+// write landed) and is set to duplicateResolveMergePartialKind only for the
+// half-applied case below.
+func applyDuplicateResolve(flags *rootFlags, masterKey, dupKey string, kindSlot *string) (string, any, error) {
 	c, err := flags.newWriteClient()
 	if err != nil {
 		return "failed", err.Error(), err
@@ -363,6 +432,12 @@ func applyDuplicateResolve(flags *rootFlags, masterKey, dupKey string) (string, 
 	if len(missingCollections) == 0 && len(missingTags) == 0 && dup.Deleted {
 		return "no_op", "duplicate already merged and trashed", nil
 	}
+
+	// targetUpdated tracks whether the merge-target PATCH below actually
+	// committed. Once it has, this op has made a real, durable write against
+	// masterKey — even if the trash PATCH that follows then fails, that write
+	// must never be reported (or journaled) as if nothing happened.
+	targetUpdated := false
 	if len(missingCollections) > 0 || len(missingTags) > 0 {
 		body := map[string]any{}
 		if len(missingCollections) > 0 {
@@ -374,10 +449,28 @@ func applyDuplicateResolve(flags *rootFlags, masterKey, dupKey string) (string, 
 		if status, reason, patchErr := duplicateResolvePatch(c, masterPath, masterVersion, body); patchErr != nil {
 			return status, reason, patchErr
 		}
+		targetUpdated = true
 	}
 	if !dup.Deleted {
 		if status, reason, patchErr := duplicateResolvePatch(c, dupPath, dupVersion, map[string]any{"deleted": 1}); patchErr != nil {
-			return status, reason, patchErr
+			if !targetUpdated {
+				// Nothing committed: report the clean failure exactly as before.
+				return status, reason, patchErr
+			}
+			// Half-applied: the merge target already committed, so this run
+			// made a real change and must land in the journal (Applied >= 1)
+			// even though the duplicate is still live. Reporting "applied"
+			// is what makes that happen; the flipped Kind (persisted to the
+			// journal) and this reason (surfaced in live output via
+			// duplicateResolveSurfacePartialWarnings and in Rows()) are what
+			// keep the half-state from being silent. The next resolve run
+			// naturally retries just the trash: the union merge is already
+			// idempotent, so nothing here is re-applied incorrectly.
+			*kindSlot = duplicateResolveMergePartialKind
+			return "applied", fmt.Sprintf(
+				"merge target %s updated (collections/tags merged), but trashing duplicate %s failed (%s): %v",
+				masterKey, dupKey, status, reason,
+			), nil
 		}
 	}
 	return "applied", nil, nil

@@ -621,6 +621,66 @@ func TestApplyEnrichProposal_AttachPostsChild(t *testing.T) {
 	}
 }
 
+// TestEnrichProposalChangesExtraRecordsFullAppendedValue guards the mirror
+// against replaying a bare provenance-delta line over an item's Extra field:
+// the recorded Change must equal the post-PATCH Extra (existing content plus
+// the new line), matching exactly what appendEnrichProvenance sends.
+func TestEnrichProposalChangesExtraRecordsFullAppendedValue(t *testing.T) {
+	existing := "Citation Key: smith2020\nsome user note"
+	p := enrichProposal{
+		Key: "K1", Category: "missing_doi", Action: enrichActionPatch,
+		Source: "CrossRef", Fields: map[string]any{"DOI": "10.1/x"}, extra: existing,
+	}
+	changes := enrichProposalChanges(p)
+	if len(changes) != 2 || changes[0].Field != "DOI" || changes[1].Field != "extra" {
+		t.Fatalf("changes = %+v, want DOI add + extra change", changes)
+	}
+	got, ok := changes[1].Add.(string)
+	if !ok {
+		t.Fatalf("extra Change Add = %v (%T), want string", changes[1].Add, changes[1].Add)
+	}
+	// The bug under test recorded only the delta line; guard explicitly
+	// against regressing to that value.
+	if got == enrichProvenanceLine(&p) {
+		t.Fatalf("extra Change = %q, recorded only the delta line and dropped existing Extra content", got)
+	}
+	want := existing + "\n" + enrichProvenanceLine(&p)
+	if got != want {
+		t.Fatalf("extra Change = %q, want %q (existing Extra preserved with provenance appended)", got, want)
+	}
+}
+
+// TestEnrichProposalChangesAttachNeverNamesParentField guards against
+// attributing the child-attachment POST to the parent item's own schema
+// fields (e.g. "url") in the mirror-replayed Change: the linked-url attach
+// path must record the child body under a synthetic field with a non-string
+// Add, which a fail-closed mirror can never replay onto a real parent field.
+func TestEnrichProposalChangesAttachNeverNamesParentField(t *testing.T) {
+	p := enrichProposal{
+		Key: "K1", Category: "missing_pdf", Action: enrichActionAttach,
+		Source: "Unpaywall", AttachMode: "linked-url", DownloadURL: "https://oa.example/p.pdf",
+		Attachment: map[string]any{
+			"itemType": "attachment", "linkMode": "linked_url", "title": "Open-access PDF (Unpaywall)",
+			"url": "https://oa.example/p.pdf", "parentItem": "K1", "contentType": "application/pdf",
+		},
+	}
+	changes := enrichProposalChanges(p)
+	if len(changes) != 1 {
+		t.Fatalf("changes = %+v, want exactly one attach Change", changes)
+	}
+	c := changes[0]
+	if c.Field == "url" {
+		t.Fatalf("attach Change named the parent's real %q field with Add=%v; Zotero never writes the parent's url field for a linked-url attach", c.Field, c.Add)
+	}
+	if _, isString := c.Add.(string); isString {
+		t.Fatalf("attach Change %+v carries a string Add on field %q; a fail-closed mirror could replay a string onto a matching real field name", c, c.Field)
+	}
+	body, ok := c.Add.(map[string]any)
+	if !ok || body["url"] != "https://oa.example/p.pdf" || body["parentItem"] != "K1" {
+		t.Fatalf("attach Change body = %v, want the full child attachment body", c.Add)
+	}
+}
+
 func TestApplyEnrichProposal_ConflictStatusIsTyped(t *testing.T) {
 	f := &fakeMutator{patchErr: &client.APIError{Method: http.MethodPatch, Path: "/items/ABC", StatusCode: http.StatusPreconditionFailed, Body: "stale"}}
 	p := enrichProposal{
@@ -1079,6 +1139,44 @@ func TestItemsEnrichPreviewEnvelope(t *testing.T) {
 	}
 	if got[1].Field != "extra" || !strings.Contains(fmt.Sprint(got[1].Add), "zotio: DOI added via") {
 		t.Errorf("second change = %+v, want extra provenance line in the preview", got[1])
+	}
+}
+
+// TestItemsEnrichPreviewEnvelopePreservesExistingExtra is the end-to-end
+// counterpart of TestEnrichProposalChangesExtraRecordsFullAppendedValue: the
+// previewed "extra" Change must be the item's pre-existing Extra (including
+// Better BibTeX "Citation Key:" content) with the provenance line appended,
+// not the bare delta line, since that is what a mirror replay would apply.
+func TestItemsEnrichPreviewEnvelopePreservesExistingExtra(t *testing.T) {
+	srv := crossRefSearchServer(t, "Attention Is All You Need", "10.1/attention")
+	withBase(t, &enrichCrossRefBase, srv.URL)
+	existingExtra := "Citation Key: smith2020\nsome user note"
+	_ = seedEnrichStore(t, existingExtra) // sets HOME to the seeded store
+
+	flags := &rootFlags{asJSON: true} // no yes -> preview only
+	cmd := newItemsEnrichCmd(flags)
+	cmd.SetArgs([]string{"--missing-doi", "--no-openalex", "--no-semantic-scholar"})
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&bytes.Buffer{})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("enrich: %v", err)
+	}
+
+	var env mutation.Envelope
+	if err := json.Unmarshal(out.Bytes(), &env); err != nil {
+		t.Fatalf("decode %q: %v", out.String(), err)
+	}
+	if len(env.Plan.Operations) != 1 || len(env.Plan.Operations[0].Changes) != 2 {
+		t.Fatalf("expected 1 planned proposal with 2 changes, got ops=%+v", env.Plan.Operations)
+	}
+	extraChange := env.Plan.Operations[0].Changes[1]
+	got, ok := extraChange.Add.(string)
+	if extraChange.Field != "extra" || !ok {
+		t.Fatalf("extra change = %+v, want a string extra Change", extraChange)
+	}
+	if !strings.HasPrefix(got, existingExtra+"\n") {
+		t.Errorf("previewed extra = %q, want it to start with the pre-existing Extra %q (not just the delta line)", got, existingExtra)
 	}
 }
 

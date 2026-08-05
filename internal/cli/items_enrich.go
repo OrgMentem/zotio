@@ -875,18 +875,23 @@ func enrichProposalChanges(p enrichProposal) []mutation.Change {
 		for _, key := range keys {
 			changes = append(changes, mutation.Change{Field: key, Add: p.Fields[key]})
 		}
-		// The PATCH also rewrites Extra to append the provenance line; surface
-		// that in the preview so consent covers every field the apply touches.
-		changes = append(changes, mutation.Change{Field: "extra", Add: enrichProvenanceLine(&p)})
+		// The PATCH also rewrites Extra by appending the provenance line to
+		// whatever Extra already holds; record that RESULTING value (not just
+		// the new line) so a mirror replay lands on the same state Zotero now
+		// holds instead of discarding prior Extra content such as Better
+		// BibTeX "Citation Key:" lines.
+		changes = append(changes, mutation.Change{Field: "extra", Add: appendEnrichProvenance(&p, nil)})
 		return changes
 	case enrichActionAttach:
 		switch p.AttachMode {
 		case "linked-file":
 			return []mutation.Change{{Field: "attachment", Add: fmt.Sprintf("linked-file -> %s (download %q)", p.PDFPath, p.DownloadURL)}}
 		default:
-			if url, ok := p.Attachment["url"]; ok {
-				return []mutation.Change{{Field: "url", Add: url}}
-			}
+			// linked-url POSTs a NEW CHILD attachment item; the parent's own
+			// fields (including its real "url" field) are never touched by
+			// Zotero. Record the child body under a synthetic, non-schema
+			// field name so the mirror can never mistake it for a real
+			// parent-item field and replay it onto the parent's data.
 			return []mutation.Change{{Field: "attachment", Add: p.Attachment}}
 		}
 	default:

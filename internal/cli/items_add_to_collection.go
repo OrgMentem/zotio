@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"zotio/internal/client"
+	"zotio/internal/mutation"
 
 	"github.com/spf13/cobra"
 )
@@ -18,6 +19,14 @@ import (
 // The collection is resolved by exact name and created when absent; membership
 // is delegated to items move so version guards and idempotency stay identical
 // to the established collection mutation path.
+//
+// Preview mode (no --yes) only reads: it fetches the item and looks up whether
+// a same-named collection already exists, then reports what apply would do.
+// Apply mode routes an on-demand collection create through the mutation engine
+// so it is gated by --max-changes and journaled like every other write, then
+// delegates the membership change to items move. Two journal entries for one
+// invocation — a collection create plus an item move — is correct: two writes
+// really did happen.
 func newItemsAddToCollectionCmd(flags *rootFlags) *cobra.Command {
 	var collectionName string
 
@@ -36,9 +45,6 @@ func newItemsAddToCollectionCmd(flags *rootFlags) *cobra.Command {
 			if name == "" {
 				return fmt.Errorf("--collection-name is required")
 			}
-			if !resolveMutationMode(flags).Apply {
-				return fmt.Errorf("items add-to-collection creates a collection on demand; pass --yes to apply")
-			}
 			c, err := flags.newWriteClient()
 			if err != nil {
 				return err
@@ -51,9 +57,42 @@ func newItemsAddToCollectionCmd(flags *rootFlags) *cobra.Command {
 			if _, err := itemCollections(itemData); err != nil {
 				return err
 			}
-			collectionKey, err := findOrCreateCollectionByName(c, name)
+			collections, err := collectionsByName(c)
 			if err != nil {
 				return classifyAPIError(err, flags)
+			}
+			existingKey := collections[name]
+
+			mode := resolveMutationMode(flags)
+			if !mode.Apply {
+				collectionAction := "create"
+				if existingKey != "" {
+					collectionAction = "reuse"
+				}
+				report := map[string]any{
+					"action":            "add-to-collection",
+					"resource":          "items",
+					"key":               args[0],
+					"collection_name":   name,
+					"collection_action": collectionAction,
+					"status":            0,
+					"success":           false,
+					"dry_run":           true,
+					"preview_reason":    mode.PreviewReason,
+				}
+				if existingKey != "" {
+					report["collection_key"] = existingKey
+				}
+				return printJSONFiltered(cmd.OutOrStdout(), report, flags)
+			}
+
+			collectionKey := existingKey
+			if collectionKey == "" {
+				created, err := createCollectionThroughMutation(cmd, flags, c, name)
+				if err != nil {
+					return err
+				}
+				collectionKey = created
 			}
 			return runItemsMoveMutation(cmd, flags, "", collectionKey, "", args)
 		},
@@ -62,14 +101,44 @@ func newItemsAddToCollectionCmd(flags *rootFlags) *cobra.Command {
 	return cmd
 }
 
-func findOrCreateCollectionByName(c *client.Client, name string) (string, error) {
-	collections, err := collectionsByName(c)
-	if err != nil {
-		return "", err
+// createCollectionThroughMutation creates the on-demand collection through the
+// shared mutation engine instead of a bare HTTP POST, so the create is counted
+// against --max-changes and journaled like any other write. Kind and Changes
+// follow the same "collection_create" / non-string Add convention as
+// collections create, so the mirror never mistakes a collection key for an
+// item field and reverse.go correctly refuses to invert it.
+func createCollectionThroughMutation(cmd *cobra.Command, flags *rootFlags, c *client.Client, name string) (string, error) {
+	var (
+		createdKey string
+		applyErr   error
+	)
+	ops := []mutation.Op{{
+		ID:      "items.add-to-collection:" + name,
+		Key:     name,
+		Kind:    "collection_create",
+		Changes: []mutation.Change{{Field: "collection", Add: map[string]any{"name": name}}},
+		Apply: func() (string, any, error) {
+			key, err := createCollectionByName(c, name)
+			if err != nil {
+				applyErr = classifyAPIError(err, flags)
+				return "failed", nil, applyErr
+			}
+			createdKey = key
+			return "applied", nil, nil
+		},
+	}}
+	if _, runErr := runMutation(cmd.Context(), flags, "items.add-to-collection", ops); runErr != nil {
+		if applyErr != nil {
+			return "", applyErr
+		}
+		return "", runErr
 	}
-	if key := collections[name]; key != "" {
-		return key, nil
-	}
+	return createdKey, nil
+}
+
+// createCollectionByName POSTs a new top-level collection and returns its key.
+// The caller has already confirmed no same-named collection exists.
+func createCollectionByName(c *client.Client, name string) (string, error) {
 	created, _, err := c.PostWithHeaders(
 		"/collections",
 		[]map[string]any{{"name": name}},
@@ -99,7 +168,7 @@ func findOrCreateCollectionByName(c *client.Client, name string) (string, error)
 
 	// Zotero's Web API normally returns successful[index] -> collection key.
 	// Re-read for compatible local/proxy responses that omit that envelope.
-	collections, err = collectionsByName(c)
+	collections, err := collectionsByName(c)
 	if err != nil {
 		return "", err
 	}

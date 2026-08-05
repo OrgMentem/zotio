@@ -189,7 +189,7 @@ func buildTagAuditFixOps(db localQueryStore, plans []tagAuditPlan, apply func(ta
 					Key:             update.key,
 					Kind:            "tag_rename",
 					ExpectedVersion: mutationExpectedVersion(update.version),
-					Changes:         []mutation.Change{{Field: "tag", Remove: alias, Add: canonical}},
+					Changes:         []mutation.Change{{Field: "tags", Remove: alias, Add: canonical, TagType: update.tagType}},
 					Destructive:     false,
 					Apply: func() (string, any, error) {
 						return apply(update)

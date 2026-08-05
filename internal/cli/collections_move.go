@@ -8,6 +8,8 @@ import (
 	"strconv"
 
 	"github.com/spf13/cobra"
+
+	"zotio/internal/mutation"
 )
 
 func newCollectionsMoveCmd(flags *rootFlags) *cobra.Command {
@@ -44,6 +46,11 @@ func newCollectionsMoveCmd(flags *rootFlags) *cobra.Command {
 				return err
 			}
 
+			// Read the current version immediately before the PUT so the
+			// precondition protects against concurrent collection edits. This stays
+			// outside the gated Apply closure (mirrors collections update): it is
+			// not a change to record, and a failed read must abort with its own
+			// classifyAPIError result, not the engine's generic "mutation incomplete".
 			_, version, err := c.GetWithVersion(path, nil)
 			if err != nil {
 				return classifyAPIError(err, flags)
@@ -52,9 +59,35 @@ func newCollectionsMoveCmd(flags *rootFlags) *cobra.Command {
 			if version > 0 {
 				headers["If-Unmodified-Since-Version"] = strconv.Itoa(version)
 			}
-			data, statusCode, err := c.PutWithHeaders(path, map[string]any{"parentCollection": parentCollection}, headers)
-			if err != nil {
-				return classifyAPIError(err, flags)
+
+			// Only the PUT itself is the write; routing just this call through the
+			// mutation engine journals it and (best-effort) mirror-replays it.
+			var data json.RawMessage
+			var statusCode int
+			var applyErr error
+			ops := []mutation.Op{{
+				ID:   "collections.move:" + args[0],
+				Key:  args[0],
+				Kind: "collection_move",
+				// Map, not string, on purpose: the item-keyed mirror must never
+				// replay a collection key onto an item, and "collection" isn't in
+				// reverse.go's reversibleFields, so undo correctly refuses it.
+				Changes: []mutation.Change{{Field: "collection", Add: map[string]any{"parentCollection": parentCollection}}},
+				Apply: func() (string, any, error) {
+					var putErr error
+					data, statusCode, putErr = c.PutWithHeaders(path, map[string]any{"parentCollection": parentCollection}, headers)
+					if putErr != nil {
+						applyErr = classifyAPIError(putErr, flags)
+						return "failed", nil, applyErr
+					}
+					return "applied", nil, nil
+				},
+			}}
+			if _, runErr := runMutation(cmd.Context(), flags, "collections.move", ops); runErr != nil {
+				if applyErr != nil {
+					return applyErr
+				}
+				return runErr
 			}
 
 			envelope := map[string]any{

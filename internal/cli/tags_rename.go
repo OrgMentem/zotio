@@ -19,6 +19,10 @@ type tagRenameUpdate struct {
 	key     string
 	version any
 	tags    []any
+	// tagType is the manual(0)/automatic(1) type of the renamed alias tag on
+	// this specific item, captured so the replayed mutation.Change neither
+	// fabricates nor drops that distinction in the local mirror.
+	tagType int
 }
 
 func newTagsRenameCmd(flags *rootFlags) *cobra.Command {
@@ -104,7 +108,7 @@ func buildTagRenameOps(updates []tagRenameUpdate, oldName, newName string, apply
 			Key:             update.key,
 			Kind:            "tag_rename",
 			ExpectedVersion: mutationExpectedVersion(update.version),
-			Changes:         []mutation.Change{{Field: "tag", Remove: oldName, Add: newName}},
+			Changes:         []mutation.Change{{Field: "tags", Remove: oldName, Add: newName, TagType: update.tagType}},
 			Destructive:     false,
 			Apply: func() (string, any, error) {
 				return apply(update)
@@ -194,7 +198,7 @@ func buildTagRenameUpdates(data json.RawMessage, oldTag, newTag string) ([]tagRe
 		if !ok {
 			return nil, fmt.Errorf("item %s missing version", key)
 		}
-		tags, changed, err := renamedItemTags(item, oldTag, newTag)
+		tags, changed, tagType, err := renamedItemTags(item, oldTag, newTag)
 		if err != nil {
 			return nil, fmt.Errorf("item %s: %w", key, err)
 		}
@@ -205,24 +209,26 @@ func buildTagRenameUpdates(data json.RawMessage, oldTag, newTag string) ([]tagRe
 			key:     key,
 			version: version,
 			tags:    tags,
+			tagType: tagType,
 		})
 	}
 	return updates, nil
 }
 
-func renamedItemTags(item map[string]any, oldTag, newTag string) ([]any, bool, error) {
+func renamedItemTags(item map[string]any, oldTag, newTag string) ([]any, bool, int, error) {
 	dataObj, ok := item["data"].(map[string]any)
 	if !ok {
-		return nil, false, fmt.Errorf("missing data object")
+		return nil, false, 0, fmt.Errorf("missing data object")
 	}
 	rawTags, ok := dataObj["tags"].([]any)
 	if !ok {
-		return []any{}, false, nil
+		return []any{}, false, 0, nil
 	}
 
 	renamed := make([]any, 0, len(rawTags))
 	seen := make(map[string]struct{}, len(rawTags))
 	changed := false
+	tagType := 0
 	for _, rawTag := range rawTags {
 		tagObj, ok := rawTag.(map[string]any)
 		if !ok {
@@ -235,6 +241,10 @@ func renamedItemTags(item map[string]any, oldTag, newTag string) ([]any, bool, e
 		}
 		tagName, ok := copied["tag"].(string)
 		if ok && tagName == oldTag {
+			// Capture the alias's own manual/automatic type before renaming it:
+			// Zotero tracks type per tag object, and the replayed mutation.Change
+			// must carry it forward so the local mirror doesn't flip it.
+			tagType = itemTagType(copied)
 			copied["tag"] = newTag
 			tagName = newTag
 			changed = true
@@ -247,5 +257,5 @@ func renamedItemTags(item map[string]any, oldTag, newTag string) ([]any, bool, e
 		}
 		renamed = append(renamed, copied)
 	}
-	return renamed, changed, nil
+	return renamed, changed, tagType, nil
 }

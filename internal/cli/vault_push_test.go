@@ -520,3 +520,143 @@ func TestVaultResolvePreviewsWithoutWriting(t *testing.T) {
 		}
 	})
 }
+
+// TestVaultResolvePreviewDetectsRemotelyDeletedNote is the regression guard for
+// d047d69: gating vault resolve dropped the unconditional c.DryRun = false,
+// which had a second purpose beyond forcing writes off -- it forced reads
+// live. client.DryRun suppresses every HTTP verb, GET included, and returns a
+// stubbed, error-free response, so under --dry-run (including inside a
+// `workflow run` preview, which injects --dry-run into every step) getNote
+// silently returned a fabricated zero-version note instead of the server's
+// 404, and preview printed a confident but false "would resolve" message.
+// Both --dry-run and a bare invocation must surface the read error instead.
+func TestVaultResolvePreviewDetectsRemotelyDeletedNote(t *testing.T) {
+	const citekey = "cite1"
+	const noteKey = "NOTEKEY1" // validateZoteroKey: exactly 8 uppercase-alnum chars
+	const region = "vault copy wins"
+
+	for _, tc := range []struct {
+		name  string
+		flags rootFlags
+	}{
+		{name: "dry-run", flags: rootFlags{dryRun: true}},
+		{name: "bare", flags: rootFlags{}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var nonGET string
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Method != http.MethodGet {
+					nonGET = r.Method + " " + r.URL.Path
+					http.Error(w, "unexpected write under preview", http.StatusInternalServerError)
+					return
+				}
+				// The remote child note is gone: Zotero answers 404.
+				http.Error(w, `{"message":"Not found"}`, http.StatusNotFound)
+			}))
+			t.Cleanup(srv.Close)
+			t.Setenv("ZOTERO_BASE_URL", srv.URL+"/users/0")
+			t.Setenv("ZOTERO_CONFIG", filepath.Join(t.TempDir(), "missing.toml"))
+
+			outDir := t.TempDir()
+			state := pushState{
+				Schema:      noteStateSchema,
+				NoteKey:     noteKey,
+				NoteVersion: 5,
+				SourceHash:  sha256hex("original notes"),
+				RemoteHash:  sha256hex(markdownToNoteHTML(citekey, "original notes")),
+				Renderer:    vaultRenderer,
+			}
+			writeFile(t, filepath.Join(outDir, "note.md"), "---\nzotero_key: K1\ncitekey: "+citekey+"\n---\n\n## Notes\n"+
+				vaultNotesBegin+"\n"+region+"\n"+vaultNotesEnd+"\n"+stateComment(state)+"\n")
+
+			flags := tc.flags
+			cmd := newVaultResolveCmd(&flags)
+			cmd.SetArgs([]string{citekey, "--keep-vault", "--out", outDir})
+			var out bytes.Buffer
+			cmd.SetOut(&out)
+			cmd.SetErr(&bytes.Buffer{})
+			err := cmd.Execute()
+			if nonGET != "" {
+				t.Fatalf("%s: preview issued a non-GET request: %s", tc.name, nonGET)
+			}
+			if err == nil {
+				t.Fatalf("%s: remotely-deleted note was not surfaced as an error during preview; output: %q", tc.name, out.String())
+			}
+			if strings.Contains(out.String(), "Would resolve") {
+				t.Fatalf("%s: preview printed a false success message despite the remote 404: %q", tc.name, out.String())
+			}
+		})
+	}
+}
+
+// TestVaultResolvePreviewPerformsLiveRead is the read half of the same
+// regression guard: it proves the preview's getNote call reaches the server
+// as a real GET rather than degrading to a client.DryRun stub, while still
+// issuing zero non-GET requests. An accurate preview requires real remote
+// state; the write-safety property is that it performs no writes, not that it
+// performs no requests.
+func TestVaultResolvePreviewPerformsLiveRead(t *testing.T) {
+	const citekey = "cite1"
+	const noteKey = "NOTEKEY1"
+	const region = "vault copy wins"
+
+	for _, tc := range []struct {
+		name  string
+		flags rootFlags
+	}{
+		{name: "dry-run", flags: rootFlags{dryRun: true}},
+		{name: "bare", flags: rootFlags{}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var gotLiveGET bool
+			var nonGET string
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Method != http.MethodGet {
+					nonGET = r.Method + " " + r.URL.Path
+					http.Error(w, "unexpected write under preview", http.StatusInternalServerError)
+					return
+				}
+				if r.URL.Path == "/users/0/items/"+noteKey {
+					gotLiveGET = true
+				}
+				w.Header().Set("Last-Modified-Version", "7")
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(`{"version":7,"data":{"note":"<p>live</p>"}}`))
+			}))
+			t.Cleanup(srv.Close)
+			t.Setenv("ZOTERO_BASE_URL", srv.URL+"/users/0")
+			t.Setenv("ZOTERO_CONFIG", filepath.Join(t.TempDir(), "missing.toml"))
+
+			outDir := t.TempDir()
+			state := pushState{
+				Schema:      noteStateSchema,
+				NoteKey:     noteKey,
+				NoteVersion: 5,
+				SourceHash:  sha256hex("original notes"),
+				RemoteHash:  sha256hex(markdownToNoteHTML(citekey, "original notes")),
+				Renderer:    vaultRenderer,
+			}
+			writeFile(t, filepath.Join(outDir, "note.md"), "---\nzotero_key: K1\ncitekey: "+citekey+"\n---\n\n## Notes\n"+
+				vaultNotesBegin+"\n"+region+"\n"+vaultNotesEnd+"\n"+stateComment(state)+"\n")
+
+			flags := tc.flags
+			cmd := newVaultResolveCmd(&flags)
+			cmd.SetArgs([]string{citekey, "--keep-vault", "--out", outDir})
+			var out bytes.Buffer
+			cmd.SetOut(&out)
+			cmd.SetErr(&bytes.Buffer{})
+			if err := cmd.Execute(); err != nil {
+				t.Fatalf("vault resolve preview (%s): %v", tc.name, err)
+			}
+			if nonGET != "" {
+				t.Fatalf("%s: preview issued a non-GET request: %s", tc.name, nonGET)
+			}
+			if !gotLiveGET {
+				t.Fatalf("%s: preview never reached the server with a live GET on the note endpoint (read was stubbed)", tc.name)
+			}
+			if !strings.Contains(out.String(), "Would resolve") {
+				t.Fatalf("%s: expected a would-resolve preview message, got %q", tc.name, out.String())
+			}
+		})
+	}
+}

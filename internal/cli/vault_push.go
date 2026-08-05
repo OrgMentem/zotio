@@ -471,9 +471,10 @@ against --max-changes.`,
 					return err
 				}
 				// Client dry-run is left exactly as flags resolved it (never
-				// forced off): under --dry-run the reads below degrade to
-				// stubs too, which is fine since preview never reaches a write
-				// on any path below regardless of what the reads returned.
+				// forced off): the client suppresses only mutating verbs under
+				// --dry-run, so the reads below (getNote et al.) stay live and an
+				// accurate preview can detect e.g. a remotely-deleted note; no write
+				// on any path below is ever reached before the preview check.
 
 				out := cmd.OutOrStdout()
 

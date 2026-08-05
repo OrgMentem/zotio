@@ -3,6 +3,9 @@
 package cli
 
 import (
+	"fmt"
+	"strconv"
+
 	"github.com/spf13/cobra"
 
 	"zotio/internal/mutation"
@@ -29,12 +32,35 @@ func newItemsRestoreCmd(flags *rootFlags) *cobra.Command {
 				}, flags)
 			}
 
-			c, err := flags.newClient()
+			// Route through the write target and supply the version precondition Zotero
+			// requires for key-based writes (PATCH returns HTTP 428 without
+			// If-Unmodified-Since-Version). Mirrors items update/delete: the version GET
+			// and the PATCH hit the same library under hybrid routing, so an item just
+			// created on the web and not yet synced locally still resolves.
+			c, err := flags.newWriteClient()
 			if err != nil {
 				return err
 			}
 
 			path := replacePathParam("/items/{itemKey}", "itemKey", args[0])
+
+			// The version read stays outside the mutation.Op/Apply closure (as in items
+			// update/delete) so a failed read aborts immediately with its own
+			// classifyAPIError result rather than the engine's generic "mutation
+			// incomplete". Unlike items delete, a 404 here is NOT treated as a no-op:
+			// delete's target state ("gone") is already satisfied when the item is
+			// missing, but restore's target state ("present and undeleted") can never be
+			// reached for an item that doesn't exist, so a missing item is a genuine
+			// error here.
+			_, version, err := c.GetWithVersion(path, nil)
+			if err != nil {
+				return classifyAPIError(err, flags)
+			}
+			if version <= 0 {
+				return apiErr(fmt.Errorf("reading item version for %s: response did not include a version", args[0]))
+			}
+			patchHeaders := map[string]string{"If-Unmodified-Since-Version": strconv.Itoa(version)}
+
 			var (
 				applyErr   error
 				statusCode int
@@ -47,7 +73,7 @@ func newItemsRestoreCmd(flags *rootFlags) *cobra.Command {
 				// restore and lets the field stay out of reverse.go's reversibleFields.
 				Changes: []mutation.Change{{Field: "deleted", Remove: true}},
 				Apply: func() (string, any, error) {
-					_, statusCode, applyErr = c.Patch(path, map[string]any{"deleted": 0})
+					_, statusCode, applyErr = c.PatchWithHeaders(path, map[string]any{"deleted": 0}, patchHeaders)
 					if applyErr != nil {
 						return "failed", nil, applyErr
 					}
