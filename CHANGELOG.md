@@ -2,6 +2,120 @@
 
 Notable changes to zotio. Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow [SemVer](https://semver.org/).
 
+## [0.16.0] — 2026-08-05
+### Changed — breaking
+- **Every write now previews by default and applies only under `--yes`.** The
+  contract already held for most of the CLI, but eleven commands were exempt and
+  wrote the moment you invoked them, previewing only under `--dry-run`:
+  `import file`, `import url`, `items new`, `import pmid`, `import arxiv`,
+  `import isbn`, the generic `import <resource>`, and `vault push`/`pull`/`sync`/
+  `resolve`. All of them now route through the shared mutation gate. Scripts and
+  agents that relied on a bare invocation writing MUST add `--yes`. `vault
+  resolve` was the sharpest edge: it never honored `--dry-run` at all, and
+  because `workflow run` previews a plan by injecting `--dry-run` into each step,
+  a *preview* containing a resolve step performed a real, irreversible overwrite
+  of the remote note.
+- **`--dry-run` no longer suppresses reads.** The HTTP client short-circuited
+  every verb, not just mutating ones, returning a fabricated `{"dry_run": true}`
+  body with a nil error — and the read helpers discard the status, so
+  `zotio items get ABCD1234 --dry-run` exited 0 and printed that sentinel as if
+  it were the item. `--dry-run` now means "change nothing", not "talk to nobody":
+  GET and HEAD execute and their errors surface, while every mutating verb is
+  still suppressed exactly as before. This is what lets a preview describe real
+  state instead of a fiction.
+- **`import pmid`, `import arxiv`, `import isbn`, and `import <resource>` no
+  longer declare their own `--dry-run`.** Each shadowed the global persistent
+  flag, which is precisely why the gate could not see it. The flag name and
+  preview behavior are unchanged; it now composes correctly with `--yes` and is
+  listed under global flags.
+- **Previews from the one-item importers return the standard mutation
+  envelope.** `import file`, `import url`, `items new`, and `import
+  pmid|arxiv|isbn` previously emitted an ad-hoc `{"dry_run", "source", "item"}`
+  object. They now emit the same `mode`/`preview_reason`/`plan` envelope every
+  other gated command produces, with the proposed item under the plan's changes.
+  Parse the envelope, not the old shape.
+- **`journal undo` discloses refusals in the envelope, and a fully-refused run
+  exits 13.** Refusals were printed as unstructured stderr text and never
+  appeared in JSON, so an agent could not distinguish a fully-reversed run from
+  one where nothing was reversed — and the all-refused case printed prose and
+  returned 0 even under `--json`. Refusals now appear in `warnings` and in a
+  structured `journal.refused` array, and an all-refused run renders a real
+  envelope with `ok: false` and exit 13. Because none of the newly journaled CRUD
+  kinds are losslessly invertible, that is now the common outcome for undoing
+  them.
+- **`items add-to-collection` previews instead of erroring.** Without `--yes` it
+  returned an error telling you to pass `--yes`. It now reports what it would do,
+  including whether the named collection would be created or reused.
+- **`items restore` sends `If-Unmodified-Since-Version` and fails on a missing
+  item.** It was the one key-based write without the precondition, so it could
+  clobber a concurrently modified item, and it used the read client rather than
+  the write client. A 404 is now a genuine error (exit 3) rather than a silent
+  no-op: unlike `items delete`, whose target state is already satisfied by a
+  missing item, restore cannot succeed against one that does not exist.
+- **Vault writes count against `--max-changes`.** `vault push`/`pull`/`sync`/
+  `resolve` never consulted the cap. Each planned note write is now one change,
+  so a large vault can be refused where it previously proceeded — the default cap
+  is 500, and 50 under `--agent`. Raise it with `--max-changes` for a big first
+  push.
+
+### Fixed
+- **Single-resource CRUD writes are journaled and replayed into the local
+  mirror.** `items create/update/delete/restore` and `collections
+  create/update/delete` previewed and honored `--yes` but issued their write
+  directly, so `journal list` never saw them and a following `--data-source
+  local` read returned pre-write state. They now run through the shared engine.
+  A journal entry is an audit record, not a promise of reversibility: `journal
+  undo` still refuses anything it cannot invert losslessly, so a delete is
+  recorded but not undoable — recover it from Zotero's trash with `items
+  restore`.
+- **A partially rejected batch is no longer missing from the journal.** `items
+  create` and `collections create` wrapped a whole batch in one operation that
+  reported failure if Zotero refused any element, and runs with nothing applied
+  are not journaled — so a 100-item create where one element was malformed wrote
+  99 items and recorded none of them. Each item is now its own operation behind a
+  shared batch executor, so the request count is unchanged and the applied/failed
+  split is real.
+- **`items create` charges each item against `--max-changes`.** A batch counted
+  as a single change, so a 10,000-item array sailed past a cap of 50. Both the
+  Web API and desktop-connector routes now count per item and refuse before any
+  request.
+- **The local mirror no longer accepts writes it cannot verify.** Replay wrote
+  any unrecognized field with a string value straight into the cached item, so a
+  command naming a synthetic or mis-scoped field silently corrupted the local
+  copy — invisible until the next `sync`, and served to agents as confirmed
+  read-your-writes state. Replay is now restricted to an allowlist of settable
+  Zotero fields, rejects identity fields outright, and leaves everything else for
+  `sync`.
+- **`tags rename` and `tags audit fix` mirror correctly and are undoable.** Both
+  recorded a singular `tag` field, which fabricated a bogus key while the real
+  tag array kept the stale name, and which `journal undo` refused — despite the
+  documented promise that tag renames are reversible. They now record a proper
+  tag membership swap, preserving manual/automatic tag type.
+- **`items enrich` no longer truncates the mirrored Extra field or mislabels an
+  attachment.** It recorded only the new provenance line while sending the full
+  appended value, so replay replaced cached Extra — including Better BibTeX
+  `Citation Key:` lines — with just that line. Its `--missing-pdf` path also
+  attributed the child attachment's URL to the parent item's own `url` field.
+- **`items duplicates resolve` records a half-applied merge.** If the merge-target
+  write succeeded and the subsequent trash failed, the run reported nothing
+  applied and was skipped by the journal, leaving a destructive merge with no
+  audit trail. The half-applied state is now journaled and surfaced as a warning.
+- **`collections move` is journaled and capped.** It honored `--yes` and its
+  version precondition but wrote directly, so it never reached the journal and
+  `--max-changes 0` did not stop it.
+- **A cancelled multi-operation run stops between operations.** The engine ran
+  every remaining operation after a `ctx` cancellation; in-flight requests already
+  aborted, but the loop did not. Remaining operations are now reported as
+  `not_attempted` with a cancellation warning.
+- **`vault pull` fetches each note once and applies exactly the plan it gated.**
+  Its apply pass re-read every note independently, doubling remote requests and
+  letting a note reclassified mid-run be written without being counted.
+- **`items update` no longer double-encodes the item key** in its request path.
+- **`--stdin` and `--input -` read the command's input stream, not the process's.**
+  Under the stdio MCP server the process stdin is the JSON-RPC transport, so a
+  model-issued call that triggered a stdin read consumed the protocol stream and
+  hung the session.
+
 ## [0.15.0] — 2026-08-01
 ### Changed — breaking
 - **A batch create that Zotero partially rejects is no longer reported as
@@ -502,6 +616,7 @@ First tagged release: the trust-and-automation layer for Zotero.
 - **Onboarding** — `zotio init` guided setup (Zotero detection, local API, key, first sync, health check).
 - Release engineering: goreleaser builds for 6 platforms, cosign-signed checksums, SBOMs, Homebrew tap.
 
+[0.16.0]: https://github.com/OrgMentem/zotio/compare/v0.15.0...v0.16.0
 [0.15.0]: https://github.com/OrgMentem/zotio/compare/v0.14.0...v0.15.0
 [0.14.0]: https://github.com/OrgMentem/zotio/compare/v0.13.1...v0.14.0
 [0.13.1]: https://github.com/OrgMentem/zotio/compare/v0.13.0...v0.13.1
