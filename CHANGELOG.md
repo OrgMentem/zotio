@@ -115,6 +115,11 @@ Notable changes to zotio. Format follows [Keep a Changelog](https://keepachangel
   Under the stdio MCP server the process stdin is the JSON-RPC transport, so a
   model-issued call that triggered a stdin read consumed the protocol stream and
   hung the session.
+- **Opening a fresh database from two processes at once no longer fails with
+  `database is locked`.** The migration path retried the schema-version read
+  against the WAL-init race but not the connection acquisition immediately
+  before it, so the failure simply moved one line earlier. Both now share one
+  retry budget.
 
 ## [0.15.0] — 2026-08-01
 ### Changed — breaking

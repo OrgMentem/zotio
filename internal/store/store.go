@@ -452,9 +452,23 @@ func (s *Store) rebuildResourcesPKIfNeeded(ctx context.Context, conn *sql.Conn) 
 }
 
 func (s *Store) migrate(ctx context.Context) error {
-	conn, err := s.db.Conn(ctx)
-	if err != nil {
-		return fmt.Errorf("acquiring migration connection: %w", err)
+	// One deadline covers acquiring the connection AND reading the schema
+	// version. On a fresh DB the WAL-init race can BUSY either one — the
+	// acquisition happens first, so leaving it unprotected while retrying the
+	// SELECT below just moves the failure one line earlier. Sharing the budget
+	// keeps the total bounded.
+	deadline := time.Now().Add(migrationLockTimeout)
+
+	var conn *sql.Conn
+	if err := retryOnBusy(ctx, deadline, "acquiring migration connection", func() error {
+		acquired, err := s.db.Conn(ctx)
+		if err != nil {
+			return err
+		}
+		conn = acquired
+		return nil
+	}); err != nil {
+		return err
 	}
 	defer conn.Close()
 
@@ -462,7 +476,6 @@ func (s *Store) migrate(ctx context.Context) error {
 	// opening a newer-schema DB rejects immediately. WAL readers don't
 	// normally block on writers, but the fresh-DB WAL-init race can BUSY
 	// a SELECT — share the lock's deadline so total budget stays bounded.
-	deadline := time.Now().Add(migrationLockTimeout)
 	var current int
 	if err := retryOnBusy(ctx, deadline, "reading schema version", func() error {
 		return conn.QueryRowContext(ctx, `PRAGMA user_version`).Scan(&current)
