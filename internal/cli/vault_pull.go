@@ -18,6 +18,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"zotio/internal/client"
+	"zotio/internal/mutation"
 )
 
 func newVaultPullCmd(flags *rootFlags) *cobra.Command {
@@ -32,19 +33,25 @@ remote note changed, it is reported as a conflict and nothing is merged or
 overwritten (resolve by hand, or 'vault resolve --keep-vault' to keep the vault
 copy). Only notes in the shape this CLI writes are pulled.
 
-Use --dry-run to preview without writing to the vault.`,
+Pull previews by default and writes to the vault only under --yes; --dry-run
+always wins over --yes. Each note write it plans (a pull or a conflict
+artifact) counts as one change against --max-changes.`,
 		Example: `  zotio vault pull --dry-run
-  zotio vault pull --out ~/vault/refs`,
+  zotio vault pull --yes
+  zotio vault pull --yes --out ~/vault/refs`,
 		Annotations: map[string]string{"mcp:read-only": "false"},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			outDir, err := resolveVaultOutDir(flags, flagOut)
 			if err != nil {
 				return err
 			}
+			// .Apply is true only under --yes with no --dry-run, so preview
+			// defaults to true and --dry-run always beats --yes.
+			preview := !resolveMutationMode(flags).Apply
 			run := func() error {
-				return executeVaultPull(cmd, flags, outDir)
+				return executeVaultPull(cmd, flags, outDir, preview)
 			}
-			if flags.dryRun {
+			if preview {
 				return run()
 			}
 			return withVaultWriterLock(cmd, outDir, "pulling vault", run)
@@ -54,7 +61,7 @@ Use --dry-run to preview without writing to the vault.`,
 	return cmd
 }
 
-func executeVaultPull(cmd *cobra.Command, flags *rootFlags, outDir string) error {
+func executeVaultPull(cmd *cobra.Command, flags *rootFlags, outDir string, preview bool) error {
 	notes, err := loadPushNotes(outDir)
 	if err != nil {
 		return err
@@ -63,17 +70,43 @@ func executeVaultPull(cmd *cobra.Command, flags *rootFlags, outDir string) error
 	if err != nil {
 		return err
 	}
-	c.DryRun = false // pull gates the local write on flags.dryRun; remote reads must be live
+	c.DryRun = false // pull gates the local write on preview; remote reads must be live
 
 	results := make([]pushResult, 0, len(notes))
 	for _, n := range notes {
-		results = append(results, pullOne(c, outDir, n, flags))
+		results = append(results, pullOne(c, outDir, n, flags, true))
 	}
-	return printVaultWriteReport(cmd, results, outDir, flags, "Pulled", "Would pull")
+	if !preview {
+		// Gate on the writes this run actually plans (pulls and conflict
+		// artifacts) before touching disk, then repeat the pass to apply them.
+		writes := 0
+		for _, r := range results {
+			if r.Status == "would pull" || r.Status == "would conflict" {
+				writes++
+			}
+		}
+		ops := make([]mutation.Op, writes)
+		for i := range ops {
+			ops[i] = mutation.Op{
+				ID:      fmt.Sprintf("vault-pull-%d", i),
+				Kind:    "vault_note_write",
+				Changes: []mutation.Change{{Field: "note"}},
+			}
+		}
+		if gateFailure := mutation.CheckGates(mutationOptions(flags), ops); gateFailure != nil {
+			return fmt.Errorf("%s", gateFailure.Message)
+		}
+		results = results[:0]
+		for _, n := range notes {
+			results = append(results, pullOne(c, outDir, n, flags, false))
+		}
+	}
+	return printVaultWriteReport(cmd, results, outDir, flags, preview, "Pulled", "Would pull")
 }
 
-// pullOne runs the per-note fast-forward pull state machine.
-func pullOne(c *client.Client, outDir string, n *pushNote, flags *rootFlags) pushResult {
+// pullOne runs the per-note fast-forward pull state machine. preview reports
+// what would happen without writing to the vault.
+func pullOne(c *client.Client, outDir string, n *pushNote, flags *rootFlags, preview bool) pushResult {
 	res := pushResult{File: filepath.Base(n.path), ItemKey: n.itemKey, NoteKey: n.state.NoteKey}
 
 	if n.state.NoteKey == "" {
@@ -108,7 +141,7 @@ func pullOne(c *client.Client, outDir string, n *pushNote, flags *rootFlags) pus
 	if sha256hex(strings.TrimSpace(n.region)) != n.state.SourceHash {
 		res.Status = "would conflict"
 		res.Note = "local and remote both changed"
-		if !flags.dryRun {
+		if !preview {
 			artifact, werr := writeConflictArtifact(outDir, n, liveVer, liveHTML)
 			res.Status = "conflict"
 			if werr != nil {
@@ -127,7 +160,7 @@ func pullOne(c *client.Client, outDir string, n *pushNote, flags *rootFlags) pus
 	}
 
 	newRegion := htmlNoteToMarkdown(liveHTML)
-	if flags.dryRun {
+	if preview {
 		res.Status = "would pull"
 		return res
 	}

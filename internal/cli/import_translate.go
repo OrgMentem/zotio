@@ -4,14 +4,12 @@
 // pipeline: a DOI embedded in the URL resolves full metadata from CrossRef, and
 // otherwise the page's embedded "citation_*"/Open Graph/Dublin Core meta tags
 // (the same signals Zotero's Embedded Metadata translator reads) are mapped into
-// a typed item. A bare webpage item remains the last-resort fallback. Both
-// import url and import doi gain a --dry-run preview of the request body.
+// a typed item. A bare webpage item remains the last-resort fallback.
 
 package cli
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"html"
 	"io"
@@ -20,8 +18,6 @@ import (
 	"regexp"
 	"strings"
 	"time"
-
-	"github.com/spf13/cobra"
 )
 
 var (
@@ -261,28 +257,6 @@ func parseCreatorName(name string) map[string]any {
 		return map[string]any{"creatorType": "author", "firstName": strings.TrimSpace(name[:sp]), "lastName": strings.TrimSpace(name[sp+1:])}
 	}
 	return map[string]any{"creatorType": "author", "name": name}
-}
-
-// printImportDryRun renders the proposed item body for --dry-run.
-func printImportDryRun(cmd *cobra.Command, item map[string]any, source string, flags *rootFlags) error {
-	envelope := map[string]any{
-		"dry_run": true,
-		"source":  source,
-		"item":    item,
-	}
-	if flags.asJSON {
-		data, err := json.Marshal(envelope)
-		if err != nil {
-			return err
-		}
-		return printOutputWithFlags(cmd.OutOrStdout(), json.RawMessage(data), flags)
-	}
-	pretty, err := json.MarshalIndent(item, "", "  ")
-	if err != nil {
-		return err
-	}
-	fmt.Fprintf(cmd.OutOrStdout(), "Would import via %s:\n%s\n", source, pretty)
-	return nil
 }
 
 // --- small helpers ---

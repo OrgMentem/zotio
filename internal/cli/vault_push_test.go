@@ -208,7 +208,7 @@ func TestVaultPushReportFailsForNoteFailures(t *testing.T) {
 			var out bytes.Buffer
 			cmd.SetOut(&out)
 
-			err := printVaultWriteReport(cmd, []pushResult{{File: "note.md", Status: status}}, "vault", &rootFlags{asJSON: true}, "Pushed", "Would push")
+			err := printVaultWriteReport(cmd, []pushResult{{File: "note.md", Status: status}}, "vault", &rootFlags{asJSON: true}, false, "Pushed", "Would push")
 			if code := ExitCode(err); code != 13 {
 				t.Fatalf("exit code = %d, want 13 (err=%v)", code, err)
 			}

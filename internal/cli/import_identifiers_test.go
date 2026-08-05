@@ -105,9 +105,9 @@ func TestImportPmidDryRun(t *testing.T) {
 	defer srv.Close()
 	withBase(t, &importPubMedBase, srv.URL)
 
-	flags := &rootFlags{asJSON: true, timeout: 5 * time.Second}
+	flags := &rootFlags{asJSON: true, timeout: 5 * time.Second, dryRun: true, maxChanges: -1}
 	cmd := newImportPmidCmd(flags)
-	cmd.SetArgs([]string{"314159", "--dry-run"})
+	cmd.SetArgs([]string{"314159"})
 	var out bytes.Buffer
 	cmd.SetOut(&out)
 	cmd.SetErr(&bytes.Buffer{})
@@ -115,12 +115,18 @@ func TestImportPmidDryRun(t *testing.T) {
 		t.Fatalf("import pmid --dry-run: %v", err)
 	}
 
-	env := decodeIdentifierDryRun(t, out.Bytes())
-	if !env.DryRun || env.Item["itemType"] != "journalArticle" || env.Item["title"] != "PubMed Dry Title" {
-		t.Fatalf("pubmed dry-run = %+v", env)
+	env := decodeIdentifierPreview(t, out.Bytes())
+	if env.Mode != "preview" || env.PreviewReason != "dry_run" {
+		t.Fatalf("mode=%q reason=%q, want preview/dry_run", env.Mode, env.PreviewReason)
+	}
+	if env.Source != "PubMed (314159)" {
+		t.Errorf("source = %q", env.Source)
+	}
+	if env.Item["itemType"] != "journalArticle" || env.Item["title"] != "PubMed Dry Title" {
+		t.Fatalf("pubmed preview = %+v", env.Item)
 	}
 	if env.Item["DOI"] != "10.1000/radium" || env.Item["date"] != "1911" {
-		t.Errorf("pubmed dry-run DOI/date = %v/%v", env.Item["DOI"], env.Item["date"])
+		t.Errorf("pubmed preview DOI/date = %v/%v", env.Item["DOI"], env.Item["date"])
 	}
 	assertIdentifierDryRunCreator(t, env.Item)
 }
@@ -153,9 +159,9 @@ func TestImportArxivDryRun(t *testing.T) {
 	defer srv.Close()
 	withBase(t, &importArxivBase, srv.URL)
 
-	flags := &rootFlags{asJSON: true, timeout: 5 * time.Second}
+	flags := &rootFlags{asJSON: true, timeout: 5 * time.Second, dryRun: true, maxChanges: -1}
 	cmd := newImportArxivCmd(flags)
-	cmd.SetArgs([]string{"2401.00001", "--dry-run"})
+	cmd.SetArgs([]string{"2401.00001"})
 	var out bytes.Buffer
 	cmd.SetOut(&out)
 	cmd.SetErr(&bytes.Buffer{})
@@ -163,12 +169,18 @@ func TestImportArxivDryRun(t *testing.T) {
 		t.Fatalf("import arxiv --dry-run: %v", err)
 	}
 
-	env := decodeIdentifierDryRun(t, out.Bytes())
-	if !env.DryRun || env.Item["itemType"] != "preprint" || env.Item["title"] != "ArXiv Dry Title" {
-		t.Fatalf("arxiv dry-run = %+v", env)
+	env := decodeIdentifierPreview(t, out.Bytes())
+	if env.Mode != "preview" || env.PreviewReason != "dry_run" {
+		t.Fatalf("mode=%q reason=%q, want preview/dry_run", env.Mode, env.PreviewReason)
+	}
+	if env.Source != "arXiv (2401.00001)" {
+		t.Errorf("source = %q", env.Source)
+	}
+	if env.Item["itemType"] != "preprint" || env.Item["title"] != "ArXiv Dry Title" {
+		t.Fatalf("arxiv preview = %+v", env.Item)
 	}
 	if env.Item["DOI"] != "10.48550/arXiv.2401.00001" || env.Item["date"] != "2024-01-02" {
-		t.Errorf("arxiv dry-run DOI/date = %v/%v", env.Item["DOI"], env.Item["date"])
+		t.Errorf("arxiv preview DOI/date = %v/%v", env.Item["DOI"], env.Item["date"])
 	}
 	assertIdentifierDryRunCreator(t, env.Item)
 }
@@ -189,9 +201,9 @@ func TestImportIsbnDryRun(t *testing.T) {
 	defer srv.Close()
 	withBase(t, &importOpenLibraryBase, srv.URL)
 
-	flags := &rootFlags{asJSON: true, timeout: 5 * time.Second}
+	flags := &rootFlags{asJSON: true, timeout: 5 * time.Second, dryRun: true, maxChanges: -1}
 	cmd := newImportIsbnCmd(flags)
-	cmd.SetArgs([]string{"9781234567890", "--dry-run"})
+	cmd.SetArgs([]string{"9781234567890"})
 	var out bytes.Buffer
 	cmd.SetOut(&out)
 	cmd.SetErr(&bytes.Buffer{})
@@ -199,16 +211,107 @@ func TestImportIsbnDryRun(t *testing.T) {
 		t.Fatalf("import isbn --dry-run: %v", err)
 	}
 
-	env := decodeIdentifierDryRun(t, out.Bytes())
-	if !env.DryRun || env.Item["itemType"] != "book" || env.Item["title"] != "ISBN Dry Title" {
-		t.Fatalf("isbn dry-run = %+v", env)
+	env := decodeIdentifierPreview(t, out.Bytes())
+	if env.Mode != "preview" || env.PreviewReason != "dry_run" {
+		t.Fatalf("mode=%q reason=%q, want preview/dry_run", env.Mode, env.PreviewReason)
+	}
+	if env.Source != "Open Library (9781234567890)" {
+		t.Errorf("source = %q", env.Source)
+	}
+	if env.Item["itemType"] != "book" || env.Item["title"] != "ISBN Dry Title" {
+		t.Fatalf("isbn preview = %+v", env.Item)
 	}
 	if env.Item["ISBN"] != "9781234567890" {
-		t.Errorf("isbn dry-run ISBN = %v", env.Item["ISBN"])
+		t.Errorf("isbn preview ISBN = %v", env.Item["ISBN"])
 	}
 	assertIdentifierDryRunCreator(t, env.Item)
 }
 
+// The gate is the point of the fix: none of the one-item creators may write
+// without --yes, and --agent only changes formatting, not consent.
+func TestSingleItemCreatorsPreviewWithoutWriting(t *testing.T) {
+	allowPrivateMetadataProviderServers(t)
+
+	pubmed := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"result":{"uids":["314159"],"314159":{"title":"Gated PubMed"}}}`))
+	}))
+	defer pubmed.Close()
+	withBase(t, &importPubMedBase, pubmed.URL)
+
+	arxiv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/atom+xml")
+		_, _ = w.Write([]byte(`<?xml version="1.0" encoding="UTF-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom"><entry><id>http://arxiv.org/abs/2401.00001v1</id><title>Gated ArXiv</title></entry></feed>`))
+	}))
+	defer arxiv.Close()
+	withBase(t, &importArxivBase, arxiv.URL)
+
+	openLibrary := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"ISBN:9781234567890":{"title":"Gated ISBN"}}`))
+	}))
+	defer openLibrary.Close()
+	withBase(t, &importOpenLibraryBase, openLibrary.URL)
+
+	commands := []struct {
+		name string
+		new  func(*rootFlags) *cobra.Command
+		args []string
+	}{
+		{name: "import pmid", new: newImportPmidCmd, args: []string{"314159"}},
+		{name: "import arxiv", new: newImportArxivCmd, args: []string{"2401.00001"}},
+		{name: "import isbn", new: newImportIsbnCmd, args: []string{"9781234567890"}},
+		{name: "items new", new: newItemsNewCmd, args: []string{"--item-type", "journalArticle"}},
+	}
+	modes := []struct {
+		name       string
+		flags      rootFlags
+		wantReason string
+	}{
+		{name: "bare", flags: rootFlags{asJSON: true, maxChanges: -1}, wantReason: "default"},
+		{name: "agent", flags: rootFlags{asJSON: true, agent: true, maxChanges: -1}, wantReason: "default"},
+		{name: "dry-run beats yes", flags: rootFlags{asJSON: true, dryRun: true, yes: true, maxChanges: -1}, wantReason: "dry_run"},
+	}
+
+	for _, tc := range commands {
+		for _, mode := range modes {
+			t.Run(tc.name+"/"+mode.name, func(t *testing.T) {
+				writes := 0
+				zotero := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					if r.Method != http.MethodGet {
+						writes++
+					}
+					w.Header().Set("Content-Type", "application/json")
+					// items new fetches its schema template with GET /items/new.
+					_, _ = w.Write([]byte(`{"itemType":"journalArticle","title":"","creators":[],"collections":[]}`))
+				}))
+				defer zotero.Close()
+				t.Setenv("ZOTERO_BASE_URL", zotero.URL+"/users/0")
+				t.Setenv("ZOTERO_API_KEY", "gate-test")
+
+				flags := mode.flags
+				flags.timeout = 5 * time.Second
+				cmd := tc.new(&flags)
+				cmd.SilenceErrors, cmd.SilenceUsage = true, true
+				var out bytes.Buffer
+				cmd.SetOut(&out)
+				cmd.SetErr(&bytes.Buffer{})
+				cmd.SetArgs(tc.args)
+				if err := cmd.Execute(); err != nil {
+					t.Fatalf("%s preview: %v", tc.name, err)
+				}
+				if writes != 0 {
+					t.Fatalf("%s issued %d write request(s) without --yes", tc.name, writes)
+				}
+				env := decodeIdentifierPreview(t, out.Bytes())
+				if env.Mode != "preview" || env.PreviewReason != mode.wantReason {
+					t.Fatalf("mode=%q reason=%q, want preview/%s", env.Mode, env.PreviewReason, mode.wantReason)
+				}
+			})
+		}
+	}
+}
 func TestIdentifierProvidersRedirectPolicy(t *testing.T) {
 	allowPrivateMetadataProviderServers(t)
 
@@ -311,20 +414,52 @@ func allowPrivateMetadataProviderServers(t *testing.T) {
 	t.Cleanup(func() { allowPrivateOutboundForTests = old })
 }
 
-type identifierDryRunEnvelope struct {
-	DryRun bool           `json:"dry_run"`
-	Source string         `json:"source"`
-	Item   map[string]any `json:"item"`
+type identifierPreview struct {
+	Mode          string
+	PreviewReason string
+	Source        string
+	Item          map[string]any
 }
 
-// Decode shared dry-run envelopes emitted by identifier import commands.
-func decodeIdentifierDryRun(t *testing.T, data []byte) identifierDryRunEnvelope {
+// decodeIdentifierPreview reads the shared mutation envelope the one-item
+// importers emit and pulls out the proposed item and its metadata source.
+func decodeIdentifierPreview(t *testing.T, data []byte) identifierPreview {
 	t.Helper()
-	var env identifierDryRunEnvelope
+	var env struct {
+		Mode          string `json:"mode"`
+		PreviewReason string `json:"preview_reason"`
+		Result        *any   `json:"result"`
+		Plan          struct {
+			Operations []struct {
+				Changes []struct {
+					Field string `json:"field"`
+					Add   any    `json:"add"`
+				} `json:"changes"`
+			} `json:"operations"`
+		} `json:"plan"`
+	}
 	if err := json.Unmarshal(data, &env); err != nil {
 		t.Fatalf("decode %q: %v", string(data), err)
 	}
-	return env
+	if env.Result != nil {
+		t.Fatalf("preview reported a result: %s", data)
+	}
+	if len(env.Plan.Operations) == 0 {
+		t.Fatalf("no planned operation in %s", data)
+	}
+	out := identifierPreview{Mode: env.Mode, PreviewReason: env.PreviewReason}
+	for _, change := range env.Plan.Operations[0].Changes {
+		switch change.Field {
+		case "source":
+			out.Source, _ = change.Add.(string)
+		case "item":
+			out.Item, _ = change.Add.(map[string]any)
+		}
+	}
+	if out.Item == nil {
+		t.Fatalf("no previewed item in %s", data)
+	}
+	return out
 }
 
 // Assert dry-run JSON preserved at least one mapped Zotero creator.

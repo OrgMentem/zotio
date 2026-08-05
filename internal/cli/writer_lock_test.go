@@ -297,26 +297,34 @@ func TestInstallationWriterLockExceptionsResolveAndClassify(t *testing.T) {
 		wantMode        writerLockMode
 		wantAcquireLock bool
 	}{
-		{path: "items new", wantMode: writerLockOnNotDryRun, wantAcquireLock: true},
-		{path: "items new", flags: rootFlags{dryRun: true}, wantMode: writerLockOnNotDryRun},
+		{path: "items new", flags: rootFlags{yes: true, maxChanges: -1}, wantMode: writerLockOnApply, wantAcquireLock: true},
+		{path: "items new", wantMode: writerLockOnApply},
 		{path: "import", wantMode: writerLockOnCommandNotDryRun, wantAcquireLock: true},
 		{path: "import", flag: "dry-run", flagValue: "true", wantMode: writerLockOnCommandNotDryRun},
-		{path: "import url", wantMode: writerLockOnNotDryRun, wantAcquireLock: true},
-		{path: "import url", flags: rootFlags{dryRun: true}, wantMode: writerLockOnNotDryRun},
-		{path: "import file", wantMode: writerLockOnNotDryRun, wantAcquireLock: true},
-		{path: "import file", flags: rootFlags{dryRun: true}, wantMode: writerLockOnNotDryRun},
-		{path: "import pmid", wantMode: writerLockOnNotDryRun, wantAcquireLock: true},
-		{path: "import pmid", flag: "dry-run", flagValue: "true", wantMode: writerLockOnNotDryRun},
-		{path: "import arxiv", wantMode: writerLockOnNotDryRun, wantAcquireLock: true},
-		{path: "import arxiv", flag: "dry-run", flagValue: "true", wantMode: writerLockOnNotDryRun},
-		{path: "import isbn", wantMode: writerLockOnNotDryRun, wantAcquireLock: true},
-		{path: "import isbn", flag: "dry-run", flagValue: "true", wantMode: writerLockOnNotDryRun},
-		{path: "vault push", wantMode: writerLockOnNotDryRun, wantAcquireLock: true},
-		{path: "vault push", flags: rootFlags{dryRun: true}, wantMode: writerLockOnNotDryRun},
-		{path: "vault pull", wantMode: writerLockOnNotDryRun, wantAcquireLock: true},
-		{path: "vault pull", flags: rootFlags{dryRun: true}, wantMode: writerLockOnNotDryRun},
-		{path: "vault sync", wantMode: writerLockOnNotDryRun, wantAcquireLock: true},
-		{path: "vault sync", flags: rootFlags{dryRun: true}, wantMode: writerLockOnNotDryRun},
+		// Now on the shared --yes gate: the lock follows apply mode, not --dry-run.
+		{path: "import url", flags: rootFlags{yes: true, maxChanges: -1}, wantMode: writerLockOnApply, wantAcquireLock: true},
+		{path: "import url", wantMode: writerLockOnApply},
+		{path: "import url", flags: rootFlags{yes: true, dryRun: true, maxChanges: -1}, wantMode: writerLockOnApply},
+		{path: "import file", flags: rootFlags{yes: true, maxChanges: -1}, wantMode: writerLockOnApply, wantAcquireLock: true},
+		{path: "import file", wantMode: writerLockOnApply},
+		{path: "import file", flags: rootFlags{yes: true, dryRun: true, maxChanges: -1}, wantMode: writerLockOnApply},
+		{path: "import pmid", flags: rootFlags{yes: true, maxChanges: -1}, wantMode: writerLockOnApply, wantAcquireLock: true},
+		{path: "import pmid", wantMode: writerLockOnApply},
+		{path: "import arxiv", flags: rootFlags{yes: true, maxChanges: -1}, wantMode: writerLockOnApply, wantAcquireLock: true},
+		{path: "import arxiv", wantMode: writerLockOnApply},
+		{path: "import isbn", flags: rootFlags{yes: true, maxChanges: -1}, wantMode: writerLockOnApply, wantAcquireLock: true},
+		{path: "import isbn", wantMode: writerLockOnApply},
+		// The vault commands are on the shared --yes gate now, so the lock
+		// follows apply mode rather than --dry-run.
+		{path: "vault push", flags: rootFlags{yes: true, maxChanges: -1}, wantMode: writerLockOnApply, wantAcquireLock: true},
+		{path: "vault push", wantMode: writerLockOnApply},
+		{path: "vault push", flags: rootFlags{yes: true, dryRun: true, maxChanges: -1}, wantMode: writerLockOnApply},
+		{path: "vault pull", flags: rootFlags{yes: true, maxChanges: -1}, wantMode: writerLockOnApply, wantAcquireLock: true},
+		{path: "vault pull", wantMode: writerLockOnApply},
+		{path: "vault pull", flags: rootFlags{yes: true, dryRun: true, maxChanges: -1}, wantMode: writerLockOnApply},
+		{path: "vault sync", flags: rootFlags{yes: true, maxChanges: -1}, wantMode: writerLockOnApply, wantAcquireLock: true},
+		{path: "vault sync", wantMode: writerLockOnApply},
+		{path: "vault sync", flags: rootFlags{yes: true, dryRun: true, maxChanges: -1}, wantMode: writerLockOnApply},
 		{path: "vault resolve", wantMode: writerLockAlways, wantAcquireLock: true},
 		{path: "creators audit", wantMode: writerLockOnORCID},
 		{path: "creators audit", flag: "orcid", flagValue: "true", wantMode: writerLockOnORCID, wantAcquireLock: true},
@@ -325,7 +333,10 @@ func TestInstallationWriterLockExceptionsResolveAndClassify(t *testing.T) {
 		t.Run(tt.path+"/"+tt.flagValue, func(t *testing.T) {
 			flags := tt.flags
 			root := newRootCmd(&flags)
+			// newRootCmd binds these to their flag defaults; restore the case's values.
 			flags.dryRun = tt.flags.dryRun
+			flags.yes = tt.flags.yes
+			flags.maxChanges = tt.flags.maxChanges
 			cmd, _, err := root.Find(strings.Fields(tt.path))
 			if err != nil || cmd == nil || !cmd.Runnable() {
 				t.Fatalf("exception path %q does not resolve to a runnable command: cmd=%v err=%v", tt.path, cmd, err)
@@ -358,7 +369,9 @@ func TestProfileValuesDetermineWriterLockEligibility(t *testing.T) {
 		wantRun  bool
 	}{
 		{name: "dry run preview", path: []string{"items", "new"}, profile: map[string]string{"dry-run": "true"}, wantRun: true},
-		{name: "live writer", path: []string{"items", "new"}, profile: map[string]string{}, wantBusy: true},
+		// items new is on the shared gate now: no --yes means no write, no lock.
+		{name: "ungated preview", path: []string{"items", "new"}, profile: map[string]string{}, wantRun: true},
+		{name: "live writer", path: []string{"items", "new"}, profile: map[string]string{"yes": "true"}, wantBusy: true},
 		{name: "yes gated apply", path: []string{"items", "create"}, profile: map[string]string{"yes": "true"}, wantBusy: true},
 		{name: "orcid sidecar", path: []string{"creators", "audit"}, profile: map[string]string{"orcid": "true"}, wantBusy: true},
 	}

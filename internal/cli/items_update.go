@@ -6,11 +6,13 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"net/url"
 	"os"
+	"sort"
 	"strconv"
 
 	"github.com/spf13/cobra"
+
+	"zotio/internal/mutation"
 )
 
 func newItemsUpdateCmd(flags *rootFlags) *cobra.Command {
@@ -32,8 +34,9 @@ func newItemsUpdateCmd(flags *rootFlags) *cobra.Command {
 				return cmd.Help()
 			}
 
-			// Encode the item key as a single Zotero path segment.
-			path := replacePathParam("/items/{itemKey}", "itemKey", url.PathEscape(args[0]))
+			// replacePathParam percent-encodes the key as a single path segment;
+			// pre-escaping here would double-encode it.
+			path := replacePathParam("/items/{itemKey}", "itemKey", args[0])
 			var body map[string]any
 			if stdinBody {
 				stdinData, err := io.ReadAll(os.Stdin)
@@ -106,9 +109,36 @@ func newItemsUpdateCmd(flags *rootFlags) *cobra.Command {
 				}
 				patchHeaders["If-Unmodified-Since-Version"] = strconv.Itoa(version)
 			}
-			data, statusCode, err := c.PatchWithHeaders(path, body, patchHeaders)
-			if err != nil {
-				return classifyAPIError(err, flags)
+
+			// Only the PATCH itself is the write; routing just this call through the
+			// mutation engine journals it and mirror-replays it into the local
+			// SQLite cache for read-your-writes. The version precondition above stays
+			// outside the gated path since it is not a change to record and a failed
+			// read must abort with its own classifyAPIError result, not the engine's
+			// generic "mutation incomplete".
+			var data json.RawMessage
+			var statusCode int
+			var applyErr error
+			ops := []mutation.Op{{
+				ID:      "items.update",
+				Key:     args[0],
+				Kind:    "item_update",
+				Changes: itemsUpdateChanges(body),
+				Apply: func() (string, any, error) {
+					var patchErr error
+					data, statusCode, patchErr = c.PatchWithHeaders(path, body, patchHeaders)
+					if patchErr != nil {
+						applyErr = classifyAPIError(patchErr, flags)
+						return "failed", nil, applyErr
+					}
+					return "applied", nil, nil
+				},
+			}}
+			if _, runErr := runMutation(cmd.Context(), flags, "items.update", ops); runErr != nil {
+				if applyErr != nil {
+					return applyErr
+				}
+				return runErr
 			}
 			if wantsHumanTable(cmd.OutOrStdout(), flags) {
 				// Check if response contains an array (directly or wrapped in "data")
@@ -181,4 +211,35 @@ func newItemsUpdateCmd(flags *rootFlags) *cobra.Command {
 	cmd.Flags().BoolVar(&stdinBody, "stdin", false, "Read request body as JSON from stdin")
 
 	return cmd
+}
+
+// itemsUpdateChanges derives one mutation.Change per field the update body
+// actually sets, so runMutation can journal and mirror-replay each edit.
+// tags/collections REPLACE the whole list rather than toggling membership, so
+// they use the "_set" field names: Field:"tags" would let journal undo invert
+// a full-list replace into a bogus per-tag removal, and mirror write-through
+// would try to merge the slice as a single tag/collection name. version is a
+// write precondition, not a user-visible change, so it is never emitted.
+func itemsUpdateChanges(body map[string]any) []mutation.Change {
+	keys := make([]string, 0, len(body))
+	for k := range body {
+		if k == "version" {
+			continue
+		}
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+
+	changes := make([]mutation.Change, 0, len(keys))
+	for _, k := range keys {
+		field := k
+		switch k {
+		case "tags":
+			field = "tags_set"
+		case "collections":
+			field = "collections_set"
+		}
+		changes = append(changes, mutation.Change{Field: field, Add: body[k]})
+	}
+	return changes
 }

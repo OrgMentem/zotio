@@ -165,7 +165,7 @@ func TestVaultPullDryRunConflictDoesNotWriteArtifact(t *testing.T) {
 			SourceHash: sha256hex("baseline"),
 		},
 	}
-	result := pullOne(c, outDir, note, &rootFlags{dryRun: true})
+	result := pullOne(c, outDir, note, &rootFlags{dryRun: true}, true)
 	if result.Status != "would conflict" {
 		t.Fatalf("dry-run conflict status = %q (%s), want would conflict", result.Status, result.Note)
 	}

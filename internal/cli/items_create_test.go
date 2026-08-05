@@ -27,7 +27,7 @@ func TestItemsCreateSendsBareArray(t *testing.T) {
 	defer srv.Close()
 	t.Setenv("ZOTERO_BASE_URL", srv.URL+"/users/0")
 
-	cmd := newItemsCreateCmd(&rootFlags{asJSON: true, yes: true})
+	cmd := newItemsCreateCmd(&rootFlags{asJSON: true, yes: true, maxChanges: -1})
 	var out bytes.Buffer
 	cmd.SetOut(&out)
 	cmd.SetErr(io.Discard)
@@ -96,7 +96,7 @@ func TestItemsCreateReportsBatchWriteFailures(t *testing.T) {
 	defer srv.Close()
 	t.Setenv("ZOTERO_BASE_URL", srv.URL+"/users/0")
 
-	cmd := newItemsCreateCmd(&rootFlags{asJSON: true, yes: true})
+	cmd := newItemsCreateCmd(&rootFlags{asJSON: true, yes: true, maxChanges: -1})
 	cmd.SilenceErrors, cmd.SilenceUsage = true, true
 	cmd.SetErr(io.Discard)
 	cmd.SetArgs([]string{"--items", `[{"title":"x"}]`})
@@ -119,7 +119,7 @@ func TestItemsCreateAcceptsSingleObjectResponse(t *testing.T) {
 	defer srv.Close()
 	t.Setenv("ZOTERO_BASE_URL", srv.URL+"/users/0")
 
-	cmd := newItemsCreateCmd(&rootFlags{asJSON: true, yes: true})
+	cmd := newItemsCreateCmd(&rootFlags{asJSON: true, yes: true, maxChanges: -1})
 	cmd.SilenceErrors, cmd.SilenceUsage = true, true
 	cmd.SetErr(io.Discard)
 	cmd.SetArgs([]string{"--items", `[{"itemType":"journalArticle","title":"x"}]`})

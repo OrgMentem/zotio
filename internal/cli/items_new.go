@@ -21,8 +21,13 @@ func newItemsNewCmd(flags *rootFlags) *cobra.Command {
 	var flagCollection string
 
 	cmd := &cobra.Command{
-		Use:         "new --item-type <type>",
-		Short:       "Create a schema-validated item from Zotero's blank item template",
+		Use:   "new --item-type <type>",
+		Short: "Create a schema-validated item from Zotero's blank item template",
+		Long: `Create a schema-validated item from Zotero's blank item template.
+
+Fields are checked against the item type's template before anything is sent.
+The item previews by default and is created only under --yes; --dry-run always
+wins over --yes.`,
 		Annotations: map[string]string{"zotio:method": "POST", "zotio:path": "/items"},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			itemType := strings.TrimSpace(flagItemType)
@@ -71,23 +76,12 @@ func newItemsNewCmd(flags *rootFlags) *cobra.Command {
 			}
 			addImportCollection(item, flagCollection)
 
-			if flags.dryRun {
-				return printImportDryRun(cmd, item, "items new ("+itemType+")", flags)
-			}
-
-			c, err := flags.newClient()
-			if err != nil {
-				return err
-			}
-			// Route item creates through the desktop connector when available.
-			res, err := routeCreateItem(cmd.Context(), flags, c, item, itemCreateSourceURI(item), cmd.Flags().Changed("collection"))
-			if err != nil {
-				return err
-			}
-			if res.Via == "connector" {
-				refreshItemsFromLocalAPI(cmd.Context(), flags)
-			}
-			return printCreateResult(cmd, flags, res, res.WebData)
+			return runSingleItemCreate(cmd, flags, singleItemCreate{
+				operation: "items.new",
+				key:       itemType,
+				source:    "items new (" + itemType + ")",
+				item:      item,
+			})
 		},
 	}
 	cmd.Flags().StringVar(&flagItemType, "item-type", "", "Zotero item type to create (e.g. journalArticle)")

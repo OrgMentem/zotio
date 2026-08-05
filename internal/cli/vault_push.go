@@ -28,6 +28,7 @@ import (
 
 	"zotio/internal/client"
 	"zotio/internal/cliutil"
+	"zotio/internal/mutation"
 )
 
 const (
@@ -78,19 +79,22 @@ when its Notes region changed since the last push, the remote note body is check
 first, and a divergent remote is never overwritten — a conflict artifact is
 written under ` + vaultConflictsDir + `/ and reported instead.
 
-Use --dry-run to preview create/update/conflict without writing anything.`,
+Previews by default; nothing is written until you pass --yes. --dry-run always
+wins, even together with --yes. Each note write (create, update, or conflict)
+counts against --max-changes.`,
 		Example: `  zotio vault push --dry-run
-  zotio vault push --out ~/vault/refs`,
+  zotio vault push --yes --out ~/vault/refs`,
 		Annotations: map[string]string{"mcp:read-only": "false"},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			outDir, err := resolveVaultOutDir(flags, flagOut)
 			if err != nil {
 				return err
 			}
+			preview := !resolveMutationMode(flags).Apply
 			run := func() error {
-				return executeVaultPush(cmd, flags, outDir)
+				return executeVaultPush(cmd, flags, outDir, preview)
 			}
-			if flags.dryRun {
+			if preview {
 				return run()
 			}
 			return withVaultWriterLock(cmd, outDir, "pushing vault", run)
@@ -100,13 +104,13 @@ Use --dry-run to preview create/update/conflict without writing anything.`,
 	return cmd
 }
 
-func executeVaultPush(cmd *cobra.Command, flags *rootFlags, outDir string) error {
+func executeVaultPush(cmd *cobra.Command, flags *rootFlags, outDir string, preview bool) error {
 	notes, warnings, err := loadPushNotesWithWarnings(outDir)
 	if err != nil {
 		return err
 	}
 	if len(notes) == 0 && len(warnings) > 0 {
-		return printVaultWriteReport(cmd, nil, outDir, flags, "Pushed", "Would push", warnings)
+		return printVaultWriteReport(cmd, nil, outDir, flags, preview, "Pushed", "Would push", warnings)
 	}
 
 	targetLib := vaultLibraryID(flags)
@@ -118,7 +122,7 @@ func executeVaultPush(cmd *cobra.Command, flags *rootFlags, outDir string) error
 	if err != nil {
 		return err
 	}
-	c.DryRun = false // push gates writes on flags.dryRun itself; reads must be live
+	c.DryRun = false // push gates writes on the threaded preview value; reads must be live
 
 	// Remote version map for all bound notes: detects remote-only changes
 	// (honest "unchanged" vs "remote_changed") and remote deletion.
@@ -136,17 +140,44 @@ func executeVaultPush(cmd *cobra.Command, flags *rootFlags, outDir string) error
 		return err
 	}
 
+	// Plan every note in preview mode first, both to report under a bare
+	// invocation and to size the --max-changes gate before any write is
+	// attempted. The apply pass below reuses `versions` so this costs no
+	// extra network round-trips.
+	plan := make([]pushResult, 0, len(notes))
+	for _, n := range notes {
+		plan = append(plan, pushOne(c, outDir, targetLib, n, versions, flags, true))
+	}
+	if preview {
+		return printVaultWriteReport(cmd, plan, outDir, flags, preview, "Pushed", "Would push", warnings)
+	}
+
+	writeCount := 0
+	for _, r := range plan {
+		switch r.Status {
+		case "would create", "would update", "would conflict":
+			writeCount++
+		}
+	}
+	ops := make([]mutation.Op, writeCount)
+	for i := range ops {
+		ops[i] = mutation.Op{Kind: "vault_note_write", Changes: []mutation.Change{{Field: "note"}}}
+	}
+	if gateFailure := mutation.CheckGates(mutationOptions(flags), ops); gateFailure != nil {
+		return fmt.Errorf("%s", gateFailure.Message)
+	}
+
 	results := make([]pushResult, 0, len(notes))
 	for _, n := range notes {
-		results = append(results, pushOne(c, outDir, targetLib, n, versions, flags))
+		results = append(results, pushOne(c, outDir, targetLib, n, versions, flags, false))
 	}
-	return printVaultWriteReport(cmd, results, outDir, flags, "Pushed", "Would push", warnings)
+	return printVaultWriteReport(cmd, results, outDir, flags, preview, "Pushed", "Would push", warnings)
 }
 
 // pushOne runs the per-note state machine and returns its result. It performs at
-// most one create or one PATCH (plus follow-up reads); writes are skipped under
-// --dry-run.
-func pushOne(c *client.Client, outDir, targetLib string, n *pushNote, versions map[string]int, flags *rootFlags) pushResult {
+// most one create or one PATCH (plus follow-up reads); writes are skipped when
+// preview is true (the default, or under --dry-run).
+func pushOne(c *client.Client, outDir, targetLib string, n *pushNote, versions map[string]int, flags *rootFlags, preview bool) pushResult {
 	res := pushResult{File: filepath.Base(n.path), ItemKey: n.itemKey, NoteKey: n.state.NoteKey}
 
 	if n.itemKey == "" {
@@ -176,7 +207,7 @@ func pushOne(c *client.Client, outDir, targetLib string, n *pushNote, versions m
 			res.Note = "empty notes region; nothing to create"
 			return res
 		}
-		if flags.dryRun {
+		if preview {
 			res.Status = "would create"
 			return res
 		}
@@ -217,7 +248,7 @@ func pushOne(c *client.Client, outDir, targetLib string, n *pushNote, versions m
 		return res
 	}
 
-	if flags.dryRun {
+	if preview {
 		if liveVer != n.state.NoteVersion {
 			res.Status = "would conflict"
 			res.Note = "local and remote both changed"
@@ -945,7 +976,7 @@ type vaultWriteReport struct {
 	Warnings []string       `json:"warnings,omitempty"`
 }
 
-func printVaultWriteReport(cmd *cobra.Command, results []pushResult, outDir string, flags *rootFlags, doneVerb, dryVerb string, warningSlices ...[]string) error {
+func printVaultWriteReport(cmd *cobra.Command, results []pushResult, outDir string, flags *rootFlags, preview bool, doneVerb, dryVerb string, warningSlices ...[]string) error {
 	var warnings []string
 	for _, slice := range warningSlices {
 		warnings = append(warnings, slice...)
@@ -957,7 +988,7 @@ func printVaultWriteReport(cmd *cobra.Command, results []pushResult, outDir stri
 	if flags.asJSON {
 		data, err := json.Marshal(vaultWriteReport{
 			Out:      outDir,
-			DryRun:   flags.dryRun,
+			DryRun:   preview,
 			Counts:   counts,
 			Results:  results,
 			Warnings: warnings,
@@ -971,7 +1002,7 @@ func printVaultWriteReport(cmd *cobra.Command, results []pushResult, outDir stri
 	} else {
 		out := cmd.OutOrStdout()
 		verb := doneVerb
-		if flags.dryRun {
+		if preview {
 			verb = dryVerb
 		}
 		fmt.Fprintf(out, "%s notes from %s: %s\n", verb, outDir, summarizeCounts(counts))

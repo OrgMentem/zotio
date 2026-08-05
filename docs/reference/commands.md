@@ -867,6 +867,11 @@ zotio import apply <manifest> [flags]
 
 Import a preprint from arXiv metadata
 
+Import a preprint from arXiv metadata.
+
+The item previews by default and is created only under --yes; --dry-run always
+wins over --yes.
+
 ```
 zotio import arxiv <id> [flags]
 ```
@@ -874,7 +879,6 @@ zotio import arxiv <id> [flags]
 | Flag | Type | Default | Description |
 | --- | --- | --- | --- |
 | `--collection` | `string` |  | Collection key to add the item to |
-| `--dry-run` | `bool` | `false` | Preview import without sending requests |
 | `--fetch-pdf` | `bool` | `false` | Attach an open-access PDF via Zotero's desktop resolver (requires --via connector) |
 
 ### `zotio import discover`
@@ -910,6 +914,15 @@ zotio import doi <doi> [flags]
 
 Import items from BibTeX, RIS, or CSL JSON
 
+Import items from a BibTeX, RIS, or CSL JSON file.
+
+The import previews by default and writes only under --yes; --dry-run always
+wins over --yes. Every parsed record counts against --max-changes.
+
+Records are posted in batches, so a record Zotero rejects cannot un-submit the
+records sent alongside it. Every record therefore reports its own outcome
+instead of the run stopping at the first rejection.
+
 ```
 zotio import file <path> [flags]
 ```
@@ -923,6 +936,11 @@ zotio import file <path> [flags]
 
 Import a book from Open Library ISBN metadata
 
+Import a book from Open Library ISBN metadata.
+
+The item previews by default and is created only under --yes; --dry-run always
+wins over --yes.
+
 ```
 zotio import isbn <isbn> [flags]
 ```
@@ -930,7 +948,6 @@ zotio import isbn <isbn> [flags]
 | Flag | Type | Default | Description |
 | --- | --- | --- | --- |
 | `--collection` | `string` |  | Collection key to add the item to |
-| `--dry-run` | `bool` | `false` | Preview import without sending requests |
 | `--fetch-pdf` | `bool` | `false` | Attach an open-access PDF via Zotero's desktop resolver (requires --via connector) |
 
 ### `zotio import pdf`
@@ -952,6 +969,11 @@ zotio import pdf <path...>
 
 Import a journal article from PubMed metadata
 
+Import a journal article from PubMed metadata.
+
+The item previews by default and is created only under --yes; --dry-run always
+wins over --yes.
+
 ```
 zotio import pmid <pmid> [flags]
 ```
@@ -959,7 +981,6 @@ zotio import pmid <pmid> [flags]
 | Flag | Type | Default | Description |
 | --- | --- | --- | --- |
 | `--collection` | `string` |  | Collection key to add the item to |
-| `--dry-run` | `bool` | `false` | Preview import without sending requests |
 | `--fetch-pdf` | `bool` | `false` | Attach an open-access PDF via Zotero's desktop resolver (requires --via connector) |
 
 ### `zotio import resolve`
@@ -1048,7 +1069,8 @@ page's embedded metadata (citation_*, Open Graph, Dublin Core meta tags) is
 mapped into a typed item with title, creators, abstract, and publication venue.
 A bare webpage item is used only when no metadata is available.
 
-Use --dry-run to preview the proposed item without writing it.
+The item previews by default and is created only under --yes; --dry-run always
+wins over --yes.
 
 ```
 zotio import url <url> [flags]
@@ -1525,6 +1547,12 @@ zotio items move [itemKey...] [--to <collectionKey>] [--from <collectionKey>] [f
 ### `zotio items new`
 
 Create a schema-validated item from Zotero's blank item template
+
+Create a schema-validated item from Zotero's blank item template.
+
+Fields are checked against the item type's template before anything is sent.
+The item previews by default and is created only under --yes; --dry-run always
+wins over --yes.
 
 ```
 zotio items new --item-type <type> [flags]
@@ -2646,7 +2674,9 @@ remote note changed, it is reported as a conflict and nothing is merged or
 overwritten (resolve by hand, or 'vault resolve --keep-vault' to keep the vault
 copy). Only notes in the shape this CLI writes are pulled.
 
-Use --dry-run to preview without writing to the vault.
+Pull previews by default and writes to the vault only under --yes; --dry-run
+always wins over --yes. Each note write it plans (a pull or a conflict
+artifact) counts as one change against --max-changes.
 
 ```
 zotio vault pull [--out <dir>] [flags]
@@ -2656,7 +2686,8 @@ Examples:
 
 ```bash
 zotio vault pull --dry-run
-  zotio vault pull --out ~/vault/refs
+  zotio vault pull --yes
+  zotio vault pull --yes --out ~/vault/refs
 ```
 
 | Flag | Type | Default | Description |
@@ -2674,7 +2705,9 @@ when its Notes region changed since the last push, the remote note body is check
 first, and a divergent remote is never overwritten — a conflict artifact is
 written under _vault-zotero-conflicts/ and reported instead.
 
-Use --dry-run to preview create/update/conflict without writing anything.
+Previews by default; nothing is written until you pass --yes. --dry-run always
+wins, even together with --yes. Each note write (create, update, or conflict)
+counts against --max-changes.
 
 ```
 zotio vault push [--out <dir>] [flags]
@@ -2684,7 +2717,7 @@ Examples:
 
 ```bash
 zotio vault push --dry-run
-  zotio vault push --out ~/vault/refs
+  zotio vault push --yes --out ~/vault/refs
 ```
 
 | Flag | Type | Default | Description |
@@ -2736,7 +2769,11 @@ backlinks, and embed current annotations in a managed block.
 
 Re-running is idempotent and non-destructive: only the managed frontmatter keys
 and the fenced annotations block change; your prose and other frontmatter keys
-are preserved. Use --dry-run to preview create/update/unchanged without writing.
+are preserved.
+
+Previews by default, showing create/update/unchanged without writing. Pass --yes
+to write; --dry-run always wins over --yes. Each note that would be created or
+updated counts as one change against --max-changes.
 
 ```
 zotio vault sync [--out <dir>] [flags]
@@ -2746,7 +2783,7 @@ Examples:
 
 ```bash
 zotio vault sync                 # uses [vault] root/notes_dir from config
-  zotio vault sync --out ~/vault/refs
+  zotio vault sync --out ~/vault/refs --yes
   zotio vault sync --out ~/vault/refs --collection ABCD1234 --dry-run
 ```
 

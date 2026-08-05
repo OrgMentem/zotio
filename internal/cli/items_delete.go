@@ -13,6 +13,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"zotio/internal/client"
+	"zotio/internal/mutation"
 )
 
 func newItemsDeleteCmd(flags *rootFlags) *cobra.Command {
@@ -45,26 +46,57 @@ func newItemsDeleteCmd(flags *rootFlags) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			// Zotero requires If-Unmodified-Since-Version on DELETE (HTTP 428
-			// without it). newWriteClient points at the write target, so this version
-			// GET and the DELETE hit the same library (the Web API under hybrid routing)
-			// — correct even for an item just created on the web and not yet synced local.
-			delHeaders := map[string]string{}
-			_, version, err := c.GetWithVersion(path, nil)
-			if err != nil {
-				var apiErr *client.APIError
-				if errors.As(err, &apiErr) && apiErr.StatusCode == http.StatusNotFound {
-					return writeNoop(cmd.OutOrStdout(), cmd.ErrOrStderr(), flags, "already_deleted", "already deleted (no-op)")
+			var (
+				applyErr    error
+				alreadyGone bool
+				data        json.RawMessage
+				statusCode  int
+			)
+			ops := []mutation.Op{{
+				ID:   "items.delete:" + args[0],
+				Key:  args[0],
+				Kind: "item_delete",
+				// Boolean on purpose: the mirror must never replay a trash, and
+				// "deleted" isn't in reverse.go's reversibleFields, so undo correctly refuses it.
+				Changes: []mutation.Change{{Field: "deleted", Add: true}},
+				Apply: func() (string, any, error) {
+					// Zotero requires If-Unmodified-Since-Version on DELETE (HTTP 428
+					// without it). newWriteClient points at the write target, so this version
+					// GET and the DELETE hit the same library (the Web API under hybrid routing)
+					// — correct even for an item just created on the web and not yet synced local.
+					delHeaders := map[string]string{}
+					_, version, verErr := c.GetWithVersion(path, nil)
+					if verErr != nil {
+						var apiErr *client.APIError
+						if errors.As(verErr, &apiErr) && apiErr.StatusCode == http.StatusNotFound {
+							alreadyGone = true
+							return "no_op", nil, nil
+						}
+						applyErr = verErr
+						return "failed", nil, verErr
+					}
+					if version <= 0 {
+						applyErr = apiErr(fmt.Errorf("reading item version for %s: response did not include a version", args[0]))
+						return "failed", nil, applyErr
+					}
+					delHeaders["If-Unmodified-Since-Version"] = strconv.Itoa(version)
+					var delErr error
+					data, statusCode, delErr = c.DeleteWithHeaders(path, delHeaders)
+					if delErr != nil {
+						applyErr = delErr
+						return "failed", nil, delErr
+					}
+					return "applied", nil, nil
+				},
+			}}
+			if _, runErr := runMutation(cmd.Context(), flags, "items.delete", ops); runErr != nil {
+				if applyErr != nil {
+					return classifyDeleteError(applyErr, flags)
 				}
-				return classifyAPIError(err, flags)
+				return runErr
 			}
-			if version <= 0 {
-				return apiErr(fmt.Errorf("reading item version for %s: response did not include a version", args[0]))
-			}
-			delHeaders["If-Unmodified-Since-Version"] = strconv.Itoa(version)
-			data, statusCode, err := c.DeleteWithHeaders(path, delHeaders)
-			if err != nil {
-				return classifyDeleteError(err, flags)
+			if alreadyGone {
+				return writeNoop(cmd.OutOrStdout(), cmd.ErrOrStderr(), flags, "already_deleted", "already deleted (no-op)")
 			}
 			if wantsHumanTable(cmd.OutOrStdout(), flags) {
 				// Check if response contains an array (directly or wrapped in "data")

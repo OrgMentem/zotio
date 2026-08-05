@@ -88,7 +88,10 @@ func newCollectionsUpdateCmd(flags *rootFlags) *cobra.Command {
 				return fmt.Errorf("%s", gateFailure.Message)
 			}
 			// Read from the write target immediately before the PUT so the
-			// precondition protects against concurrent collection edits.
+			// precondition protects against concurrent collection edits. This stays
+			// outside the gated Apply closure (mirrors items update): it is not a
+			// change to record, and a failed read must abort with its own
+			// classifyAPIError result, not the engine's generic "mutation incomplete".
 			c, err := flags.newWriteClient()
 			if err != nil {
 				return err
@@ -101,9 +104,25 @@ func newCollectionsUpdateCmd(flags *rootFlags) *cobra.Command {
 			if version > 0 {
 				headers["If-Unmodified-Since-Version"] = strconv.Itoa(version)
 			}
-			data, statusCode, err := c.PutWithHeaders(path, body, headers)
-			if err != nil {
-				return classifyAPIError(err, flags)
+			// Only the PUT itself is the write; routing just this call through the
+			// mutation engine journals it and (best-effort) mirror-replays it.
+			var data json.RawMessage
+			var statusCode int
+			var applyErr error
+			ops[0].Apply = func() (string, any, error) {
+				var putErr error
+				data, statusCode, putErr = c.PutWithHeaders(path, body, headers)
+				if putErr != nil {
+					applyErr = classifyAPIError(putErr, flags)
+					return "failed", nil, applyErr
+				}
+				return "applied", nil, nil
+			}
+			if _, runErr := runMutation(cmd.Context(), flags, "collections.update", ops); runErr != nil {
+				if applyErr != nil {
+					return applyErr
+				}
+				return runErr
 			}
 			if wantsHumanTable(cmd.OutOrStdout(), flags) {
 				// Check if response contains an array (directly or wrapped in "data")

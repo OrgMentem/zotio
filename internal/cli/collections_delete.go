@@ -37,11 +37,15 @@ func newCollectionsDeleteCmd(flags *rootFlags) *cobra.Command {
 			}
 			path := "/collections/{collectionKey}"
 			path = replacePathParam(path, "collectionKey", args[0])
+			// Add (not Remove) and a bool, not the key string: the mirror is keyed
+			// by item key, so a non-string Add guarantees applyChangeToItemData
+			// refuses to replay a collection key onto an item, and a bool never
+			// satisfies reverse.go's string-scalar inversion check either.
 			ops := []mutation.Op{{
 				ID:          "collections.delete:" + args[0],
 				Key:         args[0],
 				Kind:        "collection_delete",
-				Changes:     []mutation.Change{{Field: "collection", Remove: args[0]}},
+				Changes:     []mutation.Change{{Field: "collection", Add: true}},
 				Destructive: true,
 			}}
 			// Preview unless the caller explicitly applied. MCP advertises the
@@ -67,25 +71,48 @@ func newCollectionsDeleteCmd(flags *rootFlags) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			// Zotero requires If-Unmodified-Since-Version on DELETE (HTTP 428
-			// without it). newWriteClient points at the write target, so this
-			// version GET and the DELETE hit the same library (the Web API under hybrid routing).
-			delHeaders := map[string]string{}
-			_, version, err := c.GetWithVersion(path, nil)
-			if err != nil {
-				var apiErr *client.APIError
-				if errors.As(err, &apiErr) && apiErr.StatusCode == http.StatusNotFound {
-					return writeNoop(cmd.OutOrStdout(), cmd.ErrOrStderr(), flags, "already_deleted", "already deleted (no-op)")
+			var (
+				applyErr    error
+				alreadyGone bool
+				data        json.RawMessage
+				statusCode  int
+			)
+			ops[0].Apply = func() (string, any, error) {
+				// Zotero requires If-Unmodified-Since-Version on DELETE (HTTP 428
+				// without it). newWriteClient points at the write target, so this
+				// version GET and the DELETE hit the same library (the Web API under hybrid routing).
+				delHeaders := map[string]string{}
+				_, version, verErr := c.GetWithVersion(path, nil)
+				if verErr != nil {
+					var apiErr *client.APIError
+					if errors.As(verErr, &apiErr) && apiErr.StatusCode == http.StatusNotFound {
+						alreadyGone = true
+						return "no_op", nil, nil
+					}
+					applyErr = classifyAPIError(verErr, flags)
+					return "failed", nil, applyErr
 				}
-				return classifyAPIError(err, flags)
+				if version <= 0 {
+					applyErr = apiErr(fmt.Errorf("reading collection version for %s: response did not include a version", args[0]))
+					return "failed", nil, applyErr
+				}
+				delHeaders["If-Unmodified-Since-Version"] = strconv.Itoa(version)
+				var delErr error
+				data, statusCode, delErr = c.DeleteWithHeaders(path, delHeaders)
+				if delErr != nil {
+					applyErr = classifyDeleteError(delErr, flags)
+					return "failed", nil, applyErr
+				}
+				return "applied", nil, nil
 			}
-			if version <= 0 {
-				return apiErr(fmt.Errorf("reading collection version for %s: response did not include a version", args[0]))
+			if _, runErr := runMutation(cmd.Context(), flags, "collections.delete", ops); runErr != nil {
+				if applyErr != nil {
+					return applyErr
+				}
+				return runErr
 			}
-			delHeaders["If-Unmodified-Since-Version"] = strconv.Itoa(version)
-			data, statusCode, err := c.DeleteWithHeaders(path, delHeaders)
-			if err != nil {
-				return classifyDeleteError(err, flags)
+			if alreadyGone {
+				return writeNoop(cmd.OutOrStdout(), cmd.ErrOrStderr(), flags, "already_deleted", "already deleted (no-op)")
 			}
 			if wantsHumanTable(cmd.OutOrStdout(), flags) {
 				// Check if response contains an array (directly or wrapped in "data")

@@ -88,12 +88,50 @@ func newCollectionsCreateCmd(flags *rootFlags) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			data, statusCode, err := c.Post(path, body)
-			if err != nil {
-				return classifyAPIError(err, flags)
+			// One op wraps the single POST: every collection in the body becomes a
+			// Change so journal/max-changes accounting matches the pre-write gate
+			// above, but a non-string Add means applyChangeToItemData always
+			// refuses the replay -- a collection key must never land on an item.
+			var collections []any
+			switch payload := body.(type) {
+			case []any:
+				collections = payload
+			case []map[string]any:
+				collections = make([]any, len(payload))
+				for i := range payload {
+					collections[i] = payload[i]
+				}
 			}
-			if err := batchWriteFailuresError("collections create", decodeBatchWriteResponse(data).Failed); err != nil {
-				return degradedErr(err)
+			changes := make([]mutation.Change, 0, len(collections))
+			for _, collection := range collections {
+				changes = append(changes, mutation.Change{Field: "collection", Add: collection})
+			}
+			var applyErr error
+			var data json.RawMessage
+			var statusCode int
+			applyOps := []mutation.Op{{
+				ID:      "collections.create",
+				Kind:    "collection_create",
+				Changes: changes,
+				Apply: func() (string, any, error) {
+					var postErr error
+					data, statusCode, postErr = c.Post(path, body)
+					if postErr != nil {
+						applyErr = classifyAPIError(postErr, flags)
+						return "failed", nil, applyErr
+					}
+					if failErr := batchWriteFailuresError("collections create", decodeBatchWriteResponse(data).Failed); failErr != nil {
+						applyErr = degradedErr(failErr)
+						return "failed", nil, applyErr
+					}
+					return "applied", nil, nil
+				},
+			}}
+			if _, runErr := runMutation(cmd.Context(), flags, "collections.create", applyOps); runErr != nil {
+				if applyErr != nil {
+					return applyErr
+				}
+				return runErr
 			}
 			if wantsHumanTable(cmd.OutOrStdout(), flags) {
 				// Check if response contains an array (directly or wrapped in "data")

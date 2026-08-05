@@ -25,6 +25,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"zotio/internal/config"
+	"zotio/internal/mutation"
 	"zotio/internal/store"
 )
 
@@ -107,9 +108,13 @@ backlinks, and embed current annotations in a managed block.
 
 Re-running is idempotent and non-destructive: only the managed frontmatter keys
 and the fenced annotations block change; your prose and other frontmatter keys
-are preserved. Use --dry-run to preview create/update/unchanged without writing.`,
+are preserved.
+
+Previews by default, showing create/update/unchanged without writing. Pass --yes
+to write; --dry-run always wins over --yes. Each note that would be created or
+updated counts as one change against --max-changes.`,
 		Example: `  zotio vault sync                 # uses [vault] root/notes_dir from config
-  zotio vault sync --out ~/vault/refs
+  zotio vault sync --out ~/vault/refs --yes
   zotio vault sync --out ~/vault/refs --collection ABCD1234 --dry-run`,
 		Annotations: map[string]string{"mcp:read-only": "false"},
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -136,10 +141,13 @@ are preserved. Use --dry-run to preview create/update/unchanged without writing.
 			}
 			flagOut = outDir
 
+			// .Apply is true only under --yes without --dry-run, so preview
+			// defaults to true and --dry-run always beats --yes.
+			preview := !resolveMutationMode(flags).Apply
 			run := func() error {
-				return executeVaultSync(cmd, flags, outDir, format, flagCollection, flagTag, flagItemType, flagLimit)
+				return executeVaultSync(cmd, flags, outDir, format, flagCollection, flagTag, flagItemType, flagLimit, preview)
 			}
-			if flags.dryRun {
+			if preview {
 				return run()
 			}
 			return withVaultWriterLock(cmd, outDir, "syncing vault", func() error {
@@ -173,7 +181,11 @@ func withVaultWriterLock(cmd *cobra.Command, outDir, operation string, fn func()
 	return withPathWriterLock(cmd, canonicalOut+".lock", fmt.Sprintf("%s %q", operation, canonicalOut), fn)
 }
 
-func executeVaultSync(cmd *cobra.Command, flags *rootFlags, outDir, format, collection, tag, itemType string, limit int) error {
+// executeVaultSync always classifies every note in preview mode first (no
+// writes, no mkdir) so --max-changes can refuse an oversized run before it
+// touches the filesystem. When preview is false it then re-runs the same
+// items in apply mode, reusing the filenames the first pass already resolved.
+func executeVaultSync(cmd *cobra.Command, flags *rootFlags, outDir, format, collection, tag, itemType string, limit int, preview bool) error {
 	rawDB, err := openStoreForRead(cmd.Context(), "zotio")
 	if err != nil {
 		return fmt.Errorf("opening database: %w", err)
@@ -220,26 +232,52 @@ func executeVaultSync(cmd *cobra.Command, flags *rootFlags, outDir, format, coll
 		return fmt.Errorf("querying annotations: %w", err)
 	}
 
-	if !flags.dryRun {
-		if err := os.MkdirAll(outDir, 0o755); err != nil {
-			return fmt.Errorf("creating vault dir: %w", err)
-		}
-	}
-
 	// Index existing managed notes by Zotero key so a re-sync updates the
 	// same file even when the citation key changed, and new notes avoid
-	// colliding with an existing managed or foreign file.
+	// colliding with an existing managed or foreign file. scanVaultIndex
+	// tolerates a missing outDir, so this is safe to run before any write.
 	idx := scanVaultIndex(outDir)
 	claimed := make(map[string]bool, len(metas))
+	filenames := make([]string, len(metas))
+	anns := make([][]annotationSummary, len(metas))
 	results := make([]vaultSyncResult, 0, len(metas))
-	for _, meta := range metas {
-		anns := annotationSummariesSorted(annByKey[meta.Key])
-		filename := resolveNoteFilename(meta, outDir, idx, claimed)
-		res, werr := syncVaultNote(meta, anns, format, outDir, filename, flags.dryRun)
+	writes := 0
+	for i, meta := range metas {
+		anns[i] = annotationSummariesSorted(annByKey[meta.Key])
+		filenames[i] = resolveNoteFilename(meta, outDir, idx, claimed)
+		res, werr := syncVaultNote(meta, anns[i], format, outDir, filenames[i], true /* preview: classify only, never write */)
 		if werr != nil {
 			return werr
 		}
+		if res.Status == "created" || res.Status == "updated" {
+			writes++
+		}
 		results = append(results, res)
+	}
+
+	if !preview {
+		// One synthetic op per note write; CheckGates only inspects Changes
+		// and Destructive, so ID/Key/Kind carry no runtime meaning here.
+		ops := make([]mutation.Op, writes)
+		for i := range ops {
+			ops[i] = mutation.Op{Kind: "vault_note_write", Changes: []mutation.Change{{Field: "note"}}}
+		}
+		if gateFailure := mutation.CheckGates(mutationOptions(flags), ops); gateFailure != nil {
+			return fmt.Errorf("%s", gateFailure.Message)
+		}
+
+		if err := os.MkdirAll(outDir, 0o755); err != nil {
+			return fmt.Errorf("creating vault dir: %w", err)
+		}
+
+		results = results[:0]
+		for i, meta := range metas {
+			res, werr := syncVaultNote(meta, anns[i], format, outDir, filenames[i], false)
+			if werr != nil {
+				return werr
+			}
+			results = append(results, res)
+		}
 	}
 
 	return printVaultSyncReport(cmd, results, outDir, format, flags)
@@ -249,7 +287,7 @@ func executeVaultSync(cmd *cobra.Command, flags *rootFlags, outDir, format, coll
 // resulting status. A genuine read error is no longer swallowed; writes go
 // through an atomic temp-file + rename that refuses to clobber a concurrent
 // Obsidian/iCloud edit, re-merging once before reporting file_busy.
-func syncVaultNote(meta vaultMeta, anns []annotationSummary, format, outDir, filename string, dryRun bool) (vaultSyncResult, error) {
+func syncVaultNote(meta vaultMeta, anns []annotationSummary, format, outDir, filename string, preview bool) (vaultSyncResult, error) {
 	annBlock := renderAnnotationBlock(anns)
 	path := filepath.Join(outDir, filename)
 
@@ -264,7 +302,7 @@ func syncVaultNote(meta vaultMeta, anns []annotationSummary, format, outDir, fil
 		result.Note = "needs_notes_boundary: add a single '## Notes' heading or notes markers to enable note sync"
 	}
 
-	if dryRun || result.Status == "unchanged" {
+	if preview || result.Status == "unchanged" {
 		return result, nil
 	}
 
@@ -1228,11 +1266,16 @@ func printVaultSyncReport(cmd *cobra.Command, results []vaultSyncResult, outDir,
 		}
 	}
 
+	// Recomputed from flags (not threaded in) so this stays the single call
+	// site printing the report; it must agree with the preview the caller
+	// already gated writes on.
+	preview := !resolveMutationMode(flags).Apply
+
 	if flags.asJSON {
 		report := map[string]any{
 			"out":       outDir,
 			"format":    format,
-			"dry_run":   flags.dryRun,
+			"dry_run":   preview,
 			"created":   created,
 			"updated":   updated,
 			"unchanged": unchanged,
@@ -1250,7 +1293,7 @@ func printVaultSyncReport(cmd *cobra.Command, results []vaultSyncResult, outDir,
 
 		out := cmd.OutOrStdout()
 		verb := "Synced"
-		if flags.dryRun {
+		if preview {
 			verb = "Would sync"
 		}
 		summary := fmt.Sprintf("%s %d note(s) to %s [%s]: %d created, %d updated, %d unchanged",

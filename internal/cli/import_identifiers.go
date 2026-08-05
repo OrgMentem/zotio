@@ -39,12 +39,15 @@ type arxivAuthor struct {
 // Register PubMed ID import as a reviewable Zotero item create.
 func newImportPmidCmd(flags *rootFlags) *cobra.Command {
 	var flagCollection string
-	var flagDryRun bool
 	var flagFetchPDF bool
 
 	cmd := &cobra.Command{
-		Use:         "pmid <pmid>",
-		Short:       "Import a journal article from PubMed metadata",
+		Use:   "pmid <pmid>",
+		Short: "Import a journal article from PubMed metadata",
+		Long: `Import a journal article from PubMed metadata.
+
+The item previews by default and is created only under --yes; --dry-run always
+wins over --yes.`,
 		Annotations: map[string]string{"zotio:method": "POST", "zotio:path": "/items"},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if len(args) == 0 {
@@ -58,33 +61,16 @@ func newImportPmidCmd(flags *rootFlags) *cobra.Command {
 			}
 			addImportCollection(item, flagCollection)
 
-			if flags.dryRun || flagDryRun {
-				return printImportDryRun(cmd, item, "PubMed ("+pmid+")", flags)
-			}
-
-			c, err := flags.newClient()
-			if err != nil {
-				return err
-			}
-			// Route item creates through the desktop connector when available.
-			res, err := routeCreateItem(cmd.Context(), flags, c, item, itemCreateSourceURI(item), cmd.Flags().Changed("collection"))
-			if err != nil {
-				return err
-			}
-			if flagFetchPDF {
-				if res.Via != "connector" {
-					return preconditionErr(fmt.Errorf("--fetch-pdf requires the desktop connector; use --via connector"))
-				}
-				attachResolverPDF(cmd.Context(), flags, &res)
-			}
-			if res.Via == "connector" {
-				refreshItemsFromLocalAPI(cmd.Context(), flags)
-			}
-			return printCreateResult(cmd, flags, res, res.WebData)
+			return runSingleItemCreate(cmd, flags, singleItemCreate{
+				operation: "import.pmid",
+				key:       pmid,
+				source:    "PubMed (" + pmid + ")",
+				item:      item,
+				fetchPDF:  flagFetchPDF,
+			})
 		},
 	}
 	cmd.Flags().StringVar(&flagCollection, "collection", "", "Collection key to add the item to")
-	cmd.Flags().BoolVar(&flagDryRun, "dry-run", false, "Preview import without sending requests")
 	cmd.Flags().BoolVar(&flagFetchPDF, "fetch-pdf", false, "Attach an open-access PDF via Zotero's desktop resolver (requires --via connector)")
 
 	return cmd
@@ -169,12 +155,15 @@ func pubmedItemFromSummary(rec map[string]any) map[string]any {
 // Register arXiv import as a reviewable Zotero item create.
 func newImportArxivCmd(flags *rootFlags) *cobra.Command {
 	var flagCollection string
-	var flagDryRun bool
 	var flagFetchPDF bool
 
 	cmd := &cobra.Command{
-		Use:         "arxiv <id>",
-		Short:       "Import a preprint from arXiv metadata",
+		Use:   "arxiv <id>",
+		Short: "Import a preprint from arXiv metadata",
+		Long: `Import a preprint from arXiv metadata.
+
+The item previews by default and is created only under --yes; --dry-run always
+wins over --yes.`,
 		Annotations: map[string]string{"zotio:method": "POST", "zotio:path": "/items"},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if len(args) == 0 {
@@ -188,33 +177,16 @@ func newImportArxivCmd(flags *rootFlags) *cobra.Command {
 			}
 			addImportCollection(item, flagCollection)
 
-			if flags.dryRun || flagDryRun {
-				return printImportDryRun(cmd, item, "arXiv ("+id+")", flags)
-			}
-
-			c, err := flags.newClient()
-			if err != nil {
-				return err
-			}
-			// Route item creates through the desktop connector when available.
-			res, err := routeCreateItem(cmd.Context(), flags, c, item, itemCreateSourceURI(item), cmd.Flags().Changed("collection"))
-			if err != nil {
-				return err
-			}
-			if flagFetchPDF {
-				if res.Via != "connector" {
-					return preconditionErr(fmt.Errorf("--fetch-pdf requires the desktop connector; use --via connector"))
-				}
-				attachResolverPDF(cmd.Context(), flags, &res)
-			}
-			if res.Via == "connector" {
-				refreshItemsFromLocalAPI(cmd.Context(), flags)
-			}
-			return printCreateResult(cmd, flags, res, res.WebData)
+			return runSingleItemCreate(cmd, flags, singleItemCreate{
+				operation: "import.arxiv",
+				key:       id,
+				source:    "arXiv (" + id + ")",
+				item:      item,
+				fetchPDF:  flagFetchPDF,
+			})
 		},
 	}
 	cmd.Flags().StringVar(&flagCollection, "collection", "", "Collection key to add the item to")
-	cmd.Flags().BoolVar(&flagDryRun, "dry-run", false, "Preview import without sending requests")
 	cmd.Flags().BoolVar(&flagFetchPDF, "fetch-pdf", false, "Attach an open-access PDF via Zotero's desktop resolver (requires --via connector)")
 
 	return cmd
@@ -290,12 +262,15 @@ func arxivItemFromEntry(entry arxivEntry, id string) map[string]any {
 // Register ISBN import as a reviewable Zotero item create.
 func newImportIsbnCmd(flags *rootFlags) *cobra.Command {
 	var flagCollection string
-	var flagDryRun bool
 	var flagFetchPDF bool
 
 	cmd := &cobra.Command{
-		Use:         "isbn <isbn>",
-		Short:       "Import a book from Open Library ISBN metadata",
+		Use:   "isbn <isbn>",
+		Short: "Import a book from Open Library ISBN metadata",
+		Long: `Import a book from Open Library ISBN metadata.
+
+The item previews by default and is created only under --yes; --dry-run always
+wins over --yes.`,
 		Annotations: map[string]string{"zotio:method": "POST", "zotio:path": "/items"},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if len(args) == 0 {
@@ -309,33 +284,16 @@ func newImportIsbnCmd(flags *rootFlags) *cobra.Command {
 			}
 			addImportCollection(item, flagCollection)
 
-			if flags.dryRun || flagDryRun {
-				return printImportDryRun(cmd, item, "Open Library ("+isbn+")", flags)
-			}
-
-			c, err := flags.newClient()
-			if err != nil {
-				return err
-			}
-			// Route item creates through the desktop connector when available.
-			res, err := routeCreateItem(cmd.Context(), flags, c, item, itemCreateSourceURI(item), cmd.Flags().Changed("collection"))
-			if err != nil {
-				return err
-			}
-			if flagFetchPDF {
-				if res.Via != "connector" {
-					return preconditionErr(fmt.Errorf("--fetch-pdf requires the desktop connector; use --via connector"))
-				}
-				attachResolverPDF(cmd.Context(), flags, &res)
-			}
-			if res.Via == "connector" {
-				refreshItemsFromLocalAPI(cmd.Context(), flags)
-			}
-			return printCreateResult(cmd, flags, res, res.WebData)
+			return runSingleItemCreate(cmd, flags, singleItemCreate{
+				operation: "import.isbn",
+				key:       isbn,
+				source:    "Open Library (" + isbn + ")",
+				item:      item,
+				fetchPDF:  flagFetchPDF,
+			})
 		},
 	}
 	cmd.Flags().StringVar(&flagCollection, "collection", "", "Collection key to add the item to")
-	cmd.Flags().BoolVar(&flagDryRun, "dry-run", false, "Preview import without sending requests")
 	cmd.Flags().BoolVar(&flagFetchPDF, "fetch-pdf", false, "Attach an open-access PDF via Zotero's desktop resolver (requires --via connector)")
 
 	return cmd

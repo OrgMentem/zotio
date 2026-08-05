@@ -188,40 +188,86 @@ func TestBuildImportItemFromURL_Fallback(t *testing.T) {
 	}
 }
 
-func TestImportURLDryRun(t *testing.T) {
-	pagesrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "text/html")
-		_, _ = w.Write([]byte(citationHTML))
-	}))
-	defer pagesrv.Close()
+// import url previews by default; --yes is what writes. --agent only changes
+// formatting, so it must still preview.
+func TestImportURLPreviewsWithoutWriting(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		flags rootFlags
+	}{
+		{name: "bare", flags: rootFlags{asJSON: true, timeout: 5 * time.Second, maxChanges: -1}},
+		{name: "agent", flags: rootFlags{asJSON: true, agent: true, timeout: 5 * time.Second, maxChanges: -1}},
+		{name: "dry-run", flags: rootFlags{asJSON: true, dryRun: true, timeout: 5 * time.Second, maxChanges: -1}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pagesrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "text/html")
+				_, _ = w.Write([]byte(citationHTML))
+			}))
+			defer pagesrv.Close()
 
-	flags := &rootFlags{asJSON: true, dryRun: true, timeout: 5 * time.Second}
-	cmd := newImportUrlCmd(flags)
-	cmd.SetArgs([]string{pagesrv.URL + "/article", "--collection", "COL9"})
-	var out bytes.Buffer
-	cmd.SetOut(&out)
-	cmd.SetErr(&bytes.Buffer{})
-	if err := cmd.Execute(); err != nil {
-		t.Fatalf("import url --dry-run: %v", err)
-	}
+			writes := 0
+			zotero := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				writes++
+			}))
+			defer zotero.Close()
+			t.Setenv("ZOTERO_BASE_URL", zotero.URL+"/users/0")
 
-	var env struct {
-		DryRun bool           `json:"dry_run"`
-		Source string         `json:"source"`
-		Item   map[string]any `json:"item"`
-	}
-	if err := json.Unmarshal(out.Bytes(), &env); err != nil {
-		t.Fatalf("decode %q: %v", out.String(), err)
-	}
-	if !env.DryRun || env.Source != "fallback (no metadata)" {
-		t.Errorf("dry_run=%v source=%q", env.DryRun, env.Source)
-	}
-	if env.Item["title"] != pagesrv.URL+"/article" {
-		t.Errorf("item title = %v", env.Item["title"])
-	}
-	// --collection assignment preserved in the previewed body.
-	if _, ok := env.Item["collections"]; !ok {
-		t.Errorf("collections not preserved: %v", env.Item)
+			flags := tc.flags
+			cmd := newImportUrlCmd(&flags)
+			cmd.SilenceErrors, cmd.SilenceUsage = true, true
+			cmd.SetArgs([]string{pagesrv.URL + "/article", "--collection", "COL9"})
+			var out bytes.Buffer
+			cmd.SetOut(&out)
+			cmd.SetErr(&bytes.Buffer{})
+			if err := cmd.Execute(); err != nil {
+				t.Fatalf("import url preview: %v", err)
+			}
+			if writes != 0 {
+				t.Fatalf("preview issued %d write request(s); want none", writes)
+			}
+
+			var env struct {
+				Mode   string `json:"mode"`
+				Result *any   `json:"result"`
+				Plan   struct {
+					Operations []struct {
+						Changes []struct {
+							Field string `json:"field"`
+							Add   any    `json:"add"`
+						} `json:"changes"`
+					} `json:"operations"`
+				} `json:"plan"`
+			}
+			if err := json.Unmarshal(out.Bytes(), &env); err != nil {
+				t.Fatalf("decode %q: %v", out.String(), err)
+			}
+			if env.Mode != "preview" || env.Result != nil {
+				t.Fatalf("envelope = %s, want a preview with no result", out.String())
+			}
+			if len(env.Plan.Operations) != 1 {
+				t.Fatalf("operations = %+v, want one create", env.Plan.Operations)
+			}
+
+			changes := map[string]any{}
+			for _, c := range env.Plan.Operations[0].Changes {
+				changes[c.Field] = c.Add
+			}
+			if changes["source"] != "fallback (no metadata)" {
+				t.Errorf("previewed source = %v", changes["source"])
+			}
+			item, ok := changes["item"].(map[string]any)
+			if !ok {
+				t.Fatalf("previewed item missing: %s", out.String())
+			}
+			if item["title"] != pagesrv.URL+"/article" {
+				t.Errorf("item title = %v", item["title"])
+			}
+			// --collection assignment preserved in the previewed body.
+			if _, ok := item["collections"]; !ok {
+				t.Errorf("collections not preserved: %v", item)
+			}
+		})
 	}
 }
 

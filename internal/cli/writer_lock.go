@@ -156,16 +156,13 @@ var explicitInstallationWriterCommands = map[string]writerLockMode{
 	"tail":           writerLockAlways,
 	"workflow run":   writerLockOnApply,
 
-	// These commands post or publish by default and preview only with --dry-run.
-	"items new":    writerLockOnNotDryRun,
-	"import url":   writerLockOnNotDryRun,
-	"import file":  writerLockOnNotDryRun,
-	"import pmid":  writerLockOnNotDryRun,
-	"import arxiv": writerLockOnNotDryRun,
-	"import isbn":  writerLockOnNotDryRun,
-	"vault push":   writerLockOnNotDryRun,
-	"vault pull":   writerLockOnNotDryRun,
-	"vault sync":   writerLockOnNotDryRun,
+	// Every command that writes on behalf of the user now routes through the
+	// shared --yes gate, so the capability registry's writerLockOnApply is the
+	// right mode and no create/publish command needs an entry here. The vault
+	// commands are listed explicitly only because their capability is "other".
+	"vault push": writerLockOnApply,
+	"vault pull": writerLockOnApply,
+	"vault sync": writerLockOnApply,
 
 	// Generic import has its own command-local --dry-run flag and is marked
 	// capability "other" despite POSTing one record per input line.

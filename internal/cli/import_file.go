@@ -14,6 +14,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"zotio/internal/connector"
+	"zotio/internal/mutation"
 )
 
 const importFileBatchSize = 50
@@ -43,8 +44,16 @@ func newImportFileCmd(flags *rootFlags) *cobra.Command {
 	var flagCollection string
 
 	cmd := &cobra.Command{
-		Use:         "file <path>",
-		Short:       "Import items from BibTeX, RIS, or CSL JSON",
+		Use:   "file <path>",
+		Short: "Import items from BibTeX, RIS, or CSL JSON",
+		Long: `Import items from a BibTeX, RIS, or CSL JSON file.
+
+The import previews by default and writes only under --yes; --dry-run always
+wins over --yes. Every parsed record counts against --max-changes.
+
+Records are posted in batches, so a record Zotero rejects cannot un-submit the
+records sent alongside it. Every record therefore reports its own outcome
+instead of the run stopping at the first rejection.`,
 		Annotations: map[string]string{"zotio:method": "POST", "zotio:path": "/items"},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if len(args) == 0 {
@@ -72,47 +81,37 @@ func newImportFileCmd(flags *rootFlags) *cobra.Command {
 			if len(items) == 0 {
 				return fmt.Errorf("no items found in %s", filePath)
 			}
-			if flags.dryRun {
-				return printJSONFiltered(cmd.OutOrStdout(), map[string]any{
-					"action":   "import",
-					"resource": "items",
-					"file":     filePath,
-					"planned":  len(items),
-					"status":   0,
-					"success":  false,
-					"dry_run":  true,
-				}, flags)
+
+			batch := newImportFileBatch(flags, items)
+			ops := make([]mutation.Op, 0, len(items))
+			for i := range items {
+				index := i
+				ops = append(ops, mutation.Op{
+					ID:      fmt.Sprintf("import.file:%03d", index+1),
+					Key:     importFileRecordKey(items[index], index),
+					Kind:    "item_create",
+					Changes: []mutation.Change{{Field: "item", Add: items[index]}},
+					Apply: func() (string, any, error) {
+						return batch.apply(index)
+					},
+				})
 			}
 
-			c, err := flags.newClient()
-			if err != nil {
-				return err
+			// Records travel to Zotero in batches, so stopping at the first
+			// rejection would report already-submitted records as unattempted
+			// and invite a duplicating re-import. Every record reports instead.
+			env, runErr := runMutation(cmd.Context(), flags, "import.file", ops, func(o *mutation.Options) {
+				o.ContinueOnError = true
+			})
+			if renderErr := renderMutation(cmd, flags, env, nil); renderErr != nil {
+				return renderErr
 			}
-			for start := 0; start < len(items); start += importFileBatchSize {
-				end := start + importFileBatchSize
-				if end > len(items) {
-					end = len(items)
-				}
-				data, _, err := c.Post("/items", items[start:end])
-				if err != nil {
-					return classifyAPIError(err, flags)
-				}
-				if err := batchWriteFailuresError("import file", importFileFailureIndexes(decodeBatchWriteResponse(data).Failed, start)); err != nil {
-					return degradedErr(err)
-				}
+			if runErr != nil && env.Result != nil && env.Result.Summary.Failed > 0 {
+				// Zotero answers a batched write with HTTP 200 even when it
+				// rejected elements; that stays exit 13, not a hard failure.
+				return degradedErr(runErr)
 			}
-
-			if flags.asJSON || flags.csv || flags.plain {
-				return printJSONFiltered(cmd.OutOrStdout(), map[string]any{
-					"file":     filePath,
-					"imported": len(items),
-				}, flags)
-			}
-			if flags.quiet {
-				return nil
-			}
-			fmt.Fprintf(cmd.OutOrStdout(), "Imported %d items from %s\n", len(items), filePath)
-			return nil
+			return runErr
 		},
 	}
 	cmd.Flags().StringVar(&flagFormat, "format", "", "Input format (bibtex, ris, csljson; csljson requires --via connector)")
@@ -121,18 +120,165 @@ func newImportFileCmd(flags *rootFlags) *cobra.Command {
 	return cmd
 }
 
-func importFileViaConnector(cmd *cobra.Command, flags *rootFlags, filePath string, content []byte, format, collectionKey string) error {
-	// Preview before any network call so --via connector --dry-run stays offline;
-	// resolveCreateVia below pings the desktop connector to resolve the target.
-	if flags.dryRun {
-		return printJSONFiltered(cmd.OutOrStdout(), map[string]any{
-			"dry_run": true,
-			"file":    filePath,
-			"via":     "connector",
-			"target":  strings.TrimSpace(flags.connectorTarget),
-		}, flags)
+// importFileRecordKey labels an operation with the record's title so a preview
+// is readable; parsed records have no Zotero key yet.
+func importFileRecordKey(item map[string]any, index int) string {
+	if title, ok := item["title"].(string); ok && strings.TrimSpace(title) != "" {
+		return strings.TrimSpace(title)
 	}
-	via, err := flags.resolveCreateVia(cmd.Context(), collectionKey != "" || strings.TrimSpace(flags.connectorTarget) != "")
+	return fmt.Sprintf("record %d", index+1)
+}
+
+// importFileBatch posts parsed records in Zotero's batch size while the mutation
+// engine still reports one result per record: the first record of a batch issues
+// the request, and the rest read their outcome from the cached response. Zotero
+// reports per-element rejections inside an HTTP 200, so a rejected record is
+// mapped back onto exactly the record that produced it.
+type importFileBatch struct {
+	flags    *rootFlags
+	items    []map[string]any
+	client   importApplyPoster
+	executed map[int]bool
+	failed   map[int]batchWriteFailure
+	fatal    map[int]error
+}
+
+func newImportFileBatch(flags *rootFlags, items []map[string]any) *importFileBatch {
+	return &importFileBatch{
+		flags:    flags,
+		items:    items,
+		executed: make(map[int]bool),
+		failed:   make(map[int]batchWriteFailure),
+		fatal:    make(map[int]error),
+	}
+}
+
+func (b *importFileBatch) apply(index int) (string, any, error) {
+	start := index - index%importFileBatchSize
+	if !b.executed[start] {
+		b.executed[start] = true
+		b.runBatch(start)
+	}
+	if err := b.fatal[index]; err != nil {
+		return "failed", nil, err
+	}
+	if failure, ok := b.failed[index]; ok {
+		return "failed", fmt.Sprintf("index %d: code %d: %s", index, failure.Code, failure.Message), nil
+	}
+	return "applied", nil, nil
+}
+
+func (b *importFileBatch) runBatch(start int) {
+	end := min(start+importFileBatchSize, len(b.items))
+	if b.client == nil {
+		c, err := b.flags.newClient()
+		if err != nil {
+			b.failRange(start, end, err)
+			return
+		}
+		b.client = c
+	}
+	data, _, err := b.client.Post("/items", b.items[start:end])
+	if err != nil {
+		b.failRange(start, end, classifyAPIError(err, b.flags))
+		return
+	}
+	for key, failure := range importFileFailureIndexes(decodeBatchWriteResponse(data).Failed, start) {
+		index, convErr := strconv.Atoi(key)
+		if convErr != nil {
+			// Zotero returned a non-numeric element index; charge it to the
+			// batch's first record rather than dropping the rejection.
+			b.failed[start] = batchWriteFailure{Code: failure.Code, Message: fmt.Sprintf("index %s: %s", key, failure.Message)}
+			continue
+		}
+		b.failed[index] = failure
+	}
+}
+
+func (b *importFileBatch) failRange(start, end int, err error) {
+	for i := start; i < end; i++ {
+		b.fatal[i] = err
+	}
+}
+
+// importFileViaConnector routes the file through the Zotero desktop translator.
+// The connector translates the whole file in one session, so every locally
+// counted record becomes an operation for previewing and --max-changes, and the
+// first applied operation runs the session the rest report against.
+func importFileViaConnector(cmd *cobra.Command, flags *rootFlags, filePath string, content []byte, format, collectionKey string) error {
+	records := countImportFileRecords(string(content), format)
+	if records == 0 {
+		return fmt.Errorf("no items found in %s", filePath)
+	}
+	session := &importFileConnectorSession{
+		flags:         flags,
+		content:       content,
+		format:        format,
+		collectionKey: collectionKey,
+	}
+	ops := make([]mutation.Op, 0, records)
+	for index := range records {
+		ops = append(ops, mutation.Op{
+			ID:   fmt.Sprintf("import.file:connector:%03d", index+1),
+			Key:  fmt.Sprintf("record %d", index+1),
+			Kind: "item_create",
+			Changes: []mutation.Change{{Field: "item", Add: map[string]any{
+				"file":   filePath,
+				"via":    "connector",
+				"record": index + 1,
+			}}},
+			Apply: func() (string, any, error) {
+				return session.apply(cmd, index)
+			},
+		})
+	}
+
+	env, runErr := runMutation(cmd.Context(), flags, "import.file", ops)
+	if renderErr := renderMutation(cmd, flags, env, nil); renderErr != nil {
+		return renderErr
+	}
+	return runErr
+}
+
+// importFileConnectorSession performs the one-shot desktop translator import on
+// the first applied operation and replays its outcome to the remaining ones.
+type importFileConnectorSession struct {
+	flags         *rootFlags
+	content       []byte
+	format        string
+	collectionKey string
+
+	done      bool
+	err       error
+	sessionID string
+	target    string
+	keys      []string
+	imported  int
+}
+
+func (s *importFileConnectorSession) apply(cmd *cobra.Command, index int) (string, any, error) {
+	if !s.done {
+		s.done = true
+		s.err = s.run(cmd)
+	}
+	if s.err != nil {
+		return "failed", nil, s.err
+	}
+	if index > 0 {
+		return "applied", map[string]any{"via": "connector", "session": s.sessionID}, nil
+	}
+	return "applied", map[string]any{
+		"via":      "connector",
+		"session":  s.sessionID,
+		"imported": s.imported,
+		"keys":     s.keys,
+		"target":   s.target,
+	}, nil
+}
+
+func (s *importFileConnectorSession) run(cmd *cobra.Command) error {
+	flags := s.flags
+	via, err := flags.resolveCreateVia(cmd.Context(), s.collectionKey != "" || strings.TrimSpace(flags.connectorTarget) != "")
 	if err != nil {
 		return preconditionErr(err)
 	}
@@ -144,8 +290,8 @@ func importFileViaConnector(cmd *cobra.Command, flags *rootFlags, filePath strin
 		return err
 	}
 	target := strings.TrimSpace(flags.connectorTarget)
-	if target == "" && strings.TrimSpace(collectionKey) != "" {
-		target, err = resolveConnectorTarget(cmd.Context(), flags, conn, collectionKey)
+	if target == "" && strings.TrimSpace(s.collectionKey) != "" {
+		target, err = resolveConnectorTarget(cmd.Context(), flags, conn, s.collectionKey)
 		if err != nil {
 			return err
 		}
@@ -154,7 +300,7 @@ func importFileViaConnector(cmd *cobra.Command, flags *rootFlags, filePath strin
 	if err != nil {
 		return err
 	}
-	items, err := conn.Import(cmd.Context(), sessionID, content, connectorImportContentType(format))
+	items, err := conn.Import(cmd.Context(), sessionID, s.content, connectorImportContentType(s.format))
 	if err != nil {
 		return err
 	}
@@ -165,22 +311,38 @@ func importFileViaConnector(cmd *cobra.Command, flags *rootFlags, filePath strin
 	}
 	refreshItemsFromLocalAPI(cmd.Context(), flags)
 
-	keys := connectorImportKeys(items)
-	if flags.asJSON || flags.agent || flags.csv || flags.plain {
-		return printJSONFiltered(cmd.OutOrStdout(), map[string]any{
-			"file":     filePath,
-			"via":      "connector",
-			"session":  sessionID,
-			"imported": len(items),
-			"keys":     keys,
-			"target":   target,
-		}, flags)
-	}
-	if flags.quiet {
-		return nil
-	}
-	fmt.Fprintf(cmd.OutOrStdout(), "Imported %d items from %s via Zotero desktop\n", len(items), filePath)
+	s.sessionID = sessionID
+	s.target = target
+	s.keys = connectorImportKeys(items)
+	s.imported = len(items)
 	return nil
+}
+
+// countImportFileRecords counts records without invoking the translator so the
+// connector preview stays offline.
+func countImportFileRecords(content, format string) int {
+	switch strings.ToLower(strings.TrimSpace(format)) {
+	case "bibtex":
+		return len(bibTeXEntryStartPattern.FindAllStringIndex(content, -1))
+	case "ris":
+		count := 0
+		scanner := bufio.NewScanner(strings.NewReader(content))
+		scanner.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
+		for scanner.Scan() {
+			if tag, _, ok := parseRISLine(scanner.Text()); ok && tag == "TY" {
+				count++
+			}
+		}
+		return count
+	case "csljson":
+		var records []json.RawMessage
+		if err := json.Unmarshal([]byte(content), &records); err != nil {
+			return 0
+		}
+		return len(records)
+	default:
+		return 0
+	}
 }
 
 func connectorImportContentType(format string) string {

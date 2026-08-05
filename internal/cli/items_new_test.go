@@ -4,7 +4,6 @@ package cli
 
 import (
 	"bytes"
-	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -54,28 +53,23 @@ func TestItemsNewRejectsUnknownField(t *testing.T) {
 	}
 }
 
-// Dry-run output must include merged schema-backed fields.
-func TestItemsNewDryRunJSONIncludesAppliedFields(t *testing.T) {
+// The preview must carry the merged schema-backed fields, so the user sees the
+// item body they are about to create.
+func TestItemsNewPreviewJSONIncludesAppliedFields(t *testing.T) {
 	srv := newItemsNewTemplateServer(t)
 
 	out, err := runItemsNewTestCmd(t, srv, "--json", "--no-cache", "--dry-run", "items", "new", "--item-type", "journalArticle", "--field", "title=Hello")
 	if err != nil {
 		t.Fatalf("items new --dry-run: %v", err)
 	}
-	var envelope struct {
-		DryRun bool           `json:"dry_run"`
-		Item   map[string]any `json:"item"`
+	env := decodeIdentifierPreview(t, []byte(out))
+	if env.Mode != "preview" || env.PreviewReason != "dry_run" {
+		t.Fatalf("mode=%q reason=%q, want preview/dry_run", env.Mode, env.PreviewReason)
 	}
-	if err := json.Unmarshal([]byte(out), &envelope); err != nil {
-		t.Fatalf("decode dry-run output %q: %v", out, err)
-	}
-	if !envelope.DryRun {
-		t.Fatalf("dry_run = false, want true")
-	}
-	if got := envelope.Item["title"]; got != "Hello" {
+	if got := env.Item["title"]; got != "Hello" {
 		t.Fatalf("title = %v, want Hello", got)
 	}
-	if got := envelope.Item["itemType"]; got != "journalArticle" {
+	if got := env.Item["itemType"]; got != "journalArticle" {
 		t.Fatalf("itemType = %v, want journalArticle", got)
 	}
 }

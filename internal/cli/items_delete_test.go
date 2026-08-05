@@ -48,7 +48,7 @@ func deleteVersionServer(t *testing.T, version string) (*httptest.Server, *strin
 func TestItemsDeleteSendsVersionHeader(t *testing.T) {
 	srv, sent := deleteVersionServer(t, "42")
 	defer srv.Close()
-	cmd := newItemsDeleteCmd(&rootFlags{asJSON: true, yes: true})
+	cmd := newItemsDeleteCmd(&rootFlags{asJSON: true, yes: true, maxChanges: -1})
 	cmd.SilenceErrors, cmd.SilenceUsage = true, true
 	if err := runDeleteCmd(t, cmd, srv.URL, "K"); err != nil {
 		t.Fatalf("items delete: %v", err)

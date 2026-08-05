@@ -822,7 +822,7 @@
   },
   {
     "name": "import_arxiv",
-    "description": "Import a preprint from arXiv metadata",
+    "description": "Import a preprint from arXiv metadata.\n\nThe item previews by default and is created only under --yes; --dry-run always\nwins over --yes.",
     "inputSchema": {
       "properties": {
         "allow-destructive": {
@@ -842,7 +842,7 @@
           "type": "boolean"
         },
         "dry-run": {
-          "description": "Preview import without sending requests (default: false)",
+          "description": "Show request without sending (default: false)",
           "type": "boolean"
         },
         "fetch-pdf": {
@@ -947,7 +947,7 @@
   },
   {
     "name": "import_file",
-    "description": "Import items from BibTeX, RIS, or CSL JSON",
+    "description": "Import items from a BibTeX, RIS, or CSL JSON file.\n\nThe import previews by default and writes only under --yes; --dry-run always\nwins over --yes. Every parsed record counts against --max-changes.\n\nRecords are posted in batches, so a record Zotero rejects cannot un-submit the\nrecords sent alongside it. Every record therefore reports its own outcome\ninstead of the run stopping at the first rejection.",
     "inputSchema": {
       "properties": {
         "allow-destructive": {
@@ -993,7 +993,7 @@
   },
   {
     "name": "import_isbn",
-    "description": "Import a book from Open Library ISBN metadata",
+    "description": "Import a book from Open Library ISBN metadata.\n\nThe item previews by default and is created only under --yes; --dry-run always\nwins over --yes.",
     "inputSchema": {
       "properties": {
         "allow-destructive": {
@@ -1013,7 +1013,7 @@
           "type": "boolean"
         },
         "dry-run": {
-          "description": "Preview import without sending requests (default: false)",
+          "description": "Show request without sending (default: false)",
           "type": "boolean"
         },
         "fetch-pdf": {
@@ -1077,7 +1077,7 @@
   },
   {
     "name": "import_pmid",
-    "description": "Import a journal article from PubMed metadata",
+    "description": "Import a journal article from PubMed metadata.\n\nThe item previews by default and is created only under --yes; --dry-run always\nwins over --yes.",
     "inputSchema": {
       "properties": {
         "allow-destructive": {
@@ -1097,7 +1097,7 @@
           "type": "boolean"
         },
         "dry-run": {
-          "description": "Preview import without sending requests (default: false)",
+          "description": "Show request without sending (default: false)",
           "type": "boolean"
         },
         "fetch-pdf": {
@@ -1186,7 +1186,7 @@
   },
   {
     "name": "import_url",
-    "description": "Import a URL, resolving real metadata where possible.\n\nIf the URL embeds a DOI, full metadata is fetched from CrossRef. Otherwise the\npage's embedded metadata (citation_*, Open Graph, Dublin Core meta tags) is\nmapped into a typed item with title, creators, abstract, and publication venue.\nA bare webpage item is used only when no metadata is available.\n\nUse --dry-run to preview the proposed item without writing it.",
+    "description": "Import a URL, resolving real metadata where possible.\n\nIf the URL embeds a DOI, full metadata is fetched from CrossRef. Otherwise the\npage's embedded metadata (citation_*, Open Graph, Dublin Core meta tags) is\nmapped into a typed item with title, creators, abstract, and publication venue.\nA bare webpage item is used only when no metadata is available.\n\nThe item previews by default and is created only under --yes; --dry-run always\nwins over --yes.",
     "inputSchema": {
       "properties": {
         "allow-destructive": {
@@ -1934,7 +1934,7 @@
   },
   {
     "name": "items_new",
-    "description": "Create a schema-validated item from Zotero's blank item template",
+    "description": "Create a schema-validated item from Zotero's blank item template.\n\nFields are checked against the item type's template before anything is sent.\nThe item previews by default and is created only under --yes; --dry-run always\nwins over --yes.",
     "inputSchema": {
       "properties": {
         "allow-destructive": {
@@ -3332,7 +3332,7 @@
   },
   {
     "name": "vault_pull",
-    "description": "Pull edits made to a managed Zotero child note back into the vault note's\n\"## Notes\" region. This is fast-forward only: a note is updated only when its\nlocal region is unchanged since the last sync. If both the local region and the\nremote note changed, it is reported as a conflict and nothing is merged or\noverwritten (resolve by hand, or 'vault resolve --keep-vault' to keep the vault\ncopy). Only notes in the shape this CLI writes are pulled.\n\nUse --dry-run to preview without writing to the vault.",
+    "description": "Pull edits made to a managed Zotero child note back into the vault note's\n\"## Notes\" region. This is fast-forward only: a note is updated only when its\nlocal region is unchanged since the last sync. If both the local region and the\nremote note changed, it is reported as a conflict and nothing is merged or\noverwritten (resolve by hand, or 'vault resolve --keep-vault' to keep the vault\ncopy). Only notes in the shape this CLI writes are pulled.\n\nPull previews by default and writes to the vault only under --yes; --dry-run\nalways wins over --yes. Each note write it plans (a pull or a conflict\nartifact) counts as one change against --max-changes.",
     "inputSchema": {
       "properties": {
         "allow-destructive": {
@@ -3374,7 +3374,7 @@
   },
   {
     "name": "vault_push",
-    "description": "Push the user-owned Notes region of each vault note to a single managed Zotero\nchild note (Obsidian -\u003e Zotero). Reads stay local; writes go to the Web API (an\napi_key must be configured). Idempotent and conflict-safe: a note is only written\nwhen its Notes region changed since the last push, the remote note body is checked\nfirst, and a divergent remote is never overwritten — a conflict artifact is\nwritten under _vault-zotero-conflicts/ and reported instead.\n\nUse --dry-run to preview create/update/conflict without writing anything.",
+    "description": "Push the user-owned Notes region of each vault note to a single managed Zotero\nchild note (Obsidian -\u003e Zotero). Reads stay local; writes go to the Web API (an\napi_key must be configured). Idempotent and conflict-safe: a note is only written\nwhen its Notes region changed since the last push, the remote note body is checked\nfirst, and a divergent remote is never overwritten — a conflict artifact is\nwritten under _vault-zotero-conflicts/ and reported instead.\n\nPreviews by default; nothing is written until you pass --yes. --dry-run always\nwins, even together with --yes. Each note write (create, update, or conflict)\ncounts against --max-changes.",
     "inputSchema": {
       "properties": {
         "allow-destructive": {
@@ -3470,7 +3470,7 @@
   },
   {
     "name": "vault_sync",
-    "description": "Materialize literature notes into an Obsidian or Logseq vault from the local\nstore (run 'sync' first). Notes are named from the citation key, carry zotero://\nbacklinks, and embed current annotations in a managed block.\n\nRe-running is idempotent and non-destructive: only the managed frontmatter keys\nand the fenced annotations block change; your prose and other frontmatter keys\nare preserved. Use --dry-run to preview create/update/unchanged without writing.",
+    "description": "Materialize literature notes into an Obsidian or Logseq vault from the local\nstore (run 'sync' first). Notes are named from the citation key, carry zotero://\nbacklinks, and embed current annotations in a managed block.\n\nRe-running is idempotent and non-destructive: only the managed frontmatter keys\nand the fenced annotations block change; your prose and other frontmatter keys\nare preserved.\n\nPreviews by default, showing create/update/unchanged without writing. Pass --yes\nto write; --dry-run always wins over --yes. Each note that would be created or\nupdated counts as one change against --max-changes.",
     "inputSchema": {
       "properties": {
         "allow-destructive": {

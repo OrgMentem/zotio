@@ -122,12 +122,41 @@ func newItemsCreateCmd(flags *rootFlags) *cobra.Command {
 					return nil
 				}
 			}
-			data, statusCode, err := c.Post(path, body)
-			if err != nil {
-				return classifyAPIError(err, flags)
-			}
-			if err := batchWriteFailuresError("items create", decodeBatchWriteResponse(data).Failed); err != nil {
-				return degradedErr(err)
+			// The Web API create is the only write below; wrap it in a mutation.Op so
+			// it is journaled and (best-effort) replayed into the local mirror like
+			// every other CRUD command. Key stays empty: the item doesn't exist yet,
+			// so there is nothing for write-through to key a mirror update on.
+			var (
+				data       json.RawMessage
+				statusCode int
+				applyErr   error
+			)
+			ops := []mutation.Op{{
+				ID:      "items.create",
+				Kind:    "item_create",
+				Changes: itemsCreateChanges(body),
+				Apply: func() (string, any, error) {
+					var postErr error
+					data, statusCode, postErr = c.Post(path, body)
+					if postErr != nil {
+						applyErr = classifyAPIError(postErr, flags)
+						return "failed", nil, applyErr
+					}
+					if bwErr := batchWriteFailuresError("items create", decodeBatchWriteResponse(data).Failed); bwErr != nil {
+						applyErr = degradedErr(bwErr)
+						return "failed", nil, applyErr
+					}
+					return "applied", nil, nil
+				},
+			}}
+			if _, runErr := runMutation(cmd.Context(), flags, "items.create", ops); runErr != nil {
+				// applyErr already carries the command's own classification
+				// (classifyAPIError / degradedErr); only fall back to the engine's
+				// generic error when Apply never ran (e.g. a gate rejected the op).
+				if applyErr != nil {
+					return applyErr
+				}
+				return runErr
 			}
 			if wantsHumanTable(cmd.OutOrStdout(), flags) {
 				// Check if response contains an array (directly or wrapped in "data")
@@ -222,4 +251,20 @@ func itemsCreateHasCollections(items []map[string]any) bool {
 		}
 	}
 	return false
+}
+
+// itemsCreateChanges reports one mutation.Change per item in a JSON object
+// array body, so the journal (and any future undo tooling) sees each created
+// object individually rather than one opaque blob. Non-object-array bodies
+// (e.g. a single object from --stdin) still journal as a single change.
+func itemsCreateChanges(body any) []mutation.Change {
+	items, ok := itemsCreateObjects(body)
+	if !ok {
+		return []mutation.Change{{Field: "item", Add: body}}
+	}
+	changes := make([]mutation.Change, 0, len(items))
+	for _, item := range items {
+		changes = append(changes, mutation.Change{Field: "item", Add: item})
+	}
+	return changes
 }

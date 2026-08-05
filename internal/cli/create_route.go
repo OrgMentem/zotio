@@ -13,6 +13,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"zotio/internal/connector"
+	"zotio/internal/mutation"
 	"zotio/internal/store"
 )
 
@@ -38,6 +39,92 @@ func routeCreateItem(ctx context.Context, flags *rootFlags, webClient itemPoster
 		return itemCreateResult{}, err
 	}
 	return routeCreateItemVia(ctx, flags, via, webClient, item, sourceURI, collectionRequested)
+}
+
+// singleItemCreate describes one proposed item create for the commands that
+// resolve exactly one item from metadata: items new and import url/pmid/arxiv/isbn.
+type singleItemCreate struct {
+	// operation names the mutation, e.g. "import.pmid".
+	operation string
+	// key echoes the identifier the item was resolved from.
+	key string
+	// source labels where the metadata came from, e.g. "PubMed (12345)".
+	source string
+	// item is the proposed Zotero item body.
+	item map[string]any
+	// fetchPDF attaches an open-access PDF after the item is created.
+	fetchPDF bool
+}
+
+// runSingleItemCreate previews the create by default and writes only under
+// --yes, so every one-item importer shares the same gate, envelope, journal
+// entry, and --max-changes accounting. The local mirror is refreshed when the
+// desktop connector handled the write, since that path bypasses the Web API.
+func runSingleItemCreate(cmd *cobra.Command, flags *rootFlags, spec singleItemCreate) error {
+	var res itemCreateResult
+	ops := []mutation.Op{{
+		ID:   spec.operation,
+		Key:  spec.key,
+		Kind: "item_create",
+		Changes: []mutation.Change{
+			{Field: "source", Add: spec.source},
+			{Field: "item", Add: spec.item},
+		},
+		Apply: func() (string, any, error) {
+			c, err := flags.newClient()
+			if err != nil {
+				return "failed", nil, err
+			}
+			res, err = routeCreateItem(cmd.Context(), flags, c, spec.item, itemCreateSourceURI(spec.item), cmd.Flags().Changed("collection"))
+			if err != nil {
+				return "failed", nil, err
+			}
+			return "applied", map[string]any{"via": res.Via, "key": createdItemKeyOf(res)}, nil
+		},
+	}}
+	if spec.fetchPDF {
+		ops = append(ops, mutation.Op{
+			ID:   spec.operation + ":resolver-pdf",
+			Key:  spec.key,
+			Kind: "attachment_create",
+			Changes: []mutation.Change{{Field: "attachment", Add: map[string]any{
+				"source":    "resolver",
+				"condition": "when an open-access PDF resolver is available",
+			}}},
+			Apply: func() (string, any, error) {
+				if res.Via != "connector" {
+					return "failed", nil, preconditionErr(fmt.Errorf("--fetch-pdf requires the desktop connector; use --via connector"))
+				}
+				attachResolverPDF(cmd.Context(), flags, &res)
+				detail := map[string]any{
+					"status": res.OAPDFStatus,
+					"title":  res.OAPDFTitle,
+					"error":  res.OAPDFError,
+				}
+				if res.OAPDFStatus == "attached" {
+					return "applied", detail, nil
+				}
+				return "no_op", detail, nil
+			},
+		})
+	}
+
+	env, runErr := runMutation(cmd.Context(), flags, spec.operation, ops)
+	if renderErr := renderMutation(cmd, flags, env, nil); renderErr != nil {
+		return renderErr
+	}
+	if runErr == nil && res.Via == "connector" {
+		refreshItemsFromLocalAPI(cmd.Context(), flags)
+	}
+	return runErr
+}
+
+// createdItemKeyOf reports the new item's key from whichever route created it.
+func createdItemKeyOf(res itemCreateResult) string {
+	if res.Via == "connector" {
+		return res.ConnKey
+	}
+	return res.WebKey
 }
 
 // routeCreateItemVia creates one Zotero item through an already resolved route.
@@ -132,35 +219,6 @@ func attachResolverPDF(ctx context.Context, flags *rootFlags, res *itemCreateRes
 	}
 	res.OAPDFStatus = "attached"
 	res.OAPDFTitle = title
-}
-
-func printCreateResult(cmd *cobra.Command, flags *rootFlags, res itemCreateResult, webData json.RawMessage) error {
-	if res.Via != "connector" {
-		return printOutputWithFlags(cmd.OutOrStdout(), webData, flags)
-	}
-	if flags.asJSON || flags.agent {
-		payload := map[string]any{"via": "connector", "status": "created", "key": nil}
-		if res.OAPDFStatus != "" {
-			payload["oa_pdf"] = map[string]any{"status": res.OAPDFStatus, "title": res.OAPDFTitle, "error": res.OAPDFError}
-		}
-		data, err := json.Marshal(payload)
-		if err != nil {
-			return err
-		}
-		return printOutput(cmd.OutOrStdout(), json.RawMessage(data), true)
-	}
-	fmt.Fprintln(cmd.OutOrStdout(), "Created in desktop Zotero (key assigned on save; syncs on next sync).")
-	if res.OAPDFStatus != "" {
-		fmt.Fprintf(cmd.OutOrStdout(), "OA PDF: %s", res.OAPDFStatus)
-		if res.OAPDFTitle != "" {
-			fmt.Fprintf(cmd.OutOrStdout(), " (%s)", res.OAPDFTitle)
-		}
-		if res.OAPDFError != "" {
-			fmt.Fprintf(cmd.OutOrStdout(), " — %s", res.OAPDFError)
-		}
-		fmt.Fprintln(cmd.OutOrStdout())
-	}
-	return nil
 }
 
 func itemCreateSourceURI(item map[string]any) string {

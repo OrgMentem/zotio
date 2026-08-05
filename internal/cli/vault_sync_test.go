@@ -56,10 +56,10 @@ func TestVaultSyncSameDirectoryReturnsBusyWhileDryRunRemainsAvailable(t *testing
 	vault := filepath.Join(t.TempDir(), "vault")
 	started, release := blockFirstVaultSyncAfterLock(t)
 
-	first := startVaultSyncForLockTest(&rootFlags{}, []string{"--out", vault})
+	first := startVaultSyncForLockTest(&rootFlags{yes: true, maxChanges: -1}, []string{"--out", vault})
 	waitForVaultLock(t, started)
 
-	second := newVaultSyncCmd(&rootFlags{})
+	second := newVaultSyncCmd(&rootFlags{yes: true, maxChanges: -1})
 	second.SilenceErrors, second.SilenceUsage = true, true
 	second.SetArgs([]string{"--out", vault})
 	if err := second.Execute(); err == nil || ExitCode(err) != 9 {
@@ -86,7 +86,7 @@ func TestVaultSyncBlocksOtherLiveVaultTransactions(t *testing.T) {
 	seedVaultStore(t)
 	vault := filepath.Join(t.TempDir(), "vault")
 	started, release := blockFirstVaultSyncAfterLock(t)
-	first := startVaultSyncForLockTest(&rootFlags{}, []string{"--out", vault})
+	first := startVaultSyncForLockTest(&rootFlags{yes: true, maxChanges: -1}, []string{"--out", vault})
 	waitForVaultLock(t, started)
 
 	for _, tc := range []struct {
@@ -94,8 +94,10 @@ func TestVaultSyncBlocksOtherLiveVaultTransactions(t *testing.T) {
 		cmd  *cobra.Command
 		args []string
 	}{
-		{name: "push", cmd: newVaultPushCmd(&rootFlags{}), args: []string{"--out", vault}},
-		{name: "pull", cmd: newVaultPullCmd(&rootFlags{}), args: []string{"--out", vault}},
+		// push and pull only take the vault lock when applying, so they must be
+		// --yes here to contend for it; resolve is writerLockAlways.
+		{name: "push", cmd: newVaultPushCmd(&rootFlags{yes: true, maxChanges: -1}), args: []string{"--out", vault}},
+		{name: "pull", cmd: newVaultPullCmd(&rootFlags{yes: true, maxChanges: -1}), args: []string{"--out", vault}},
 		{name: "resolve", cmd: newVaultResolveCmd(&rootFlags{}), args: []string{"K1", "--keep-vault", "--out", vault}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -117,9 +119,9 @@ func TestVaultSyncDifferentDirectoriesRunConcurrently(t *testing.T) {
 	seedVaultStore(t)
 	started, release := blockFirstVaultSyncAfterLock(t)
 
-	first := startVaultSyncForLockTest(&rootFlags{}, []string{"--out", filepath.Join(t.TempDir(), "first")})
+	first := startVaultSyncForLockTest(&rootFlags{yes: true, maxChanges: -1}, []string{"--out", filepath.Join(t.TempDir(), "first")})
 	waitForVaultLock(t, started)
-	second := startVaultSyncForLockTest(&rootFlags{}, []string{"--out", filepath.Join(t.TempDir(), "second")})
+	second := startVaultSyncForLockTest(&rootFlags{yes: true, maxChanges: -1}, []string{"--out", filepath.Join(t.TempDir(), "second")})
 	select {
 	case err := <-second:
 		if err != nil {
@@ -144,9 +146,9 @@ func TestVaultSyncDifferentConfigsSameDirectoryConflict(t *testing.T) {
 	writeFile(t, configB, fmt.Sprintf("[vault]\nroot = %q\n", vault))
 	started, release := blockFirstVaultSyncAfterLock(t)
 
-	first := startVaultSyncForLockTest(&rootFlags{configPath: configA}, nil)
+	first := startVaultSyncForLockTest(&rootFlags{configPath: configA, yes: true, maxChanges: -1}, nil)
 	waitForVaultLock(t, started)
-	second := newVaultSyncCmd(&rootFlags{configPath: configB})
+	second := newVaultSyncCmd(&rootFlags{configPath: configB, yes: true, maxChanges: -1})
 	second.SilenceErrors, second.SilenceUsage = true, true
 	if err := second.Execute(); err == nil || ExitCode(err) != 9 {
 		t.Fatalf("second config sync error = %v, exit = %d; want busy precondition exit 9", err, ExitCode(err))
@@ -203,7 +205,7 @@ func TestVaultSyncCreatesObsidianNote(t *testing.T) {
 	seedVaultStore(t)
 	vault := filepath.Join(t.TempDir(), "vault")
 
-	out := runVaultSync(t, &rootFlags{asJSON: true}, []string{"--out", vault})
+	out := runVaultSync(t, &rootFlags{asJSON: true, yes: true, maxChanges: -1}, []string{"--out", vault})
 	var report struct {
 		Created int `json:"created"`
 		Results []vaultSyncResult
@@ -249,10 +251,10 @@ func TestVaultSyncIdempotent(t *testing.T) {
 	seedVaultStore(t)
 	vault := filepath.Join(t.TempDir(), "vault")
 
-	runVaultSync(t, &rootFlags{asJSON: true}, []string{"--out", vault})
+	runVaultSync(t, &rootFlags{asJSON: true, yes: true, maxChanges: -1}, []string{"--out", vault})
 	first, _ := os.ReadFile(filepath.Join(vault, "vaswani2017.md"))
 
-	out := runVaultSync(t, &rootFlags{asJSON: true}, []string{"--out", vault})
+	out := runVaultSync(t, &rootFlags{asJSON: true, yes: true, maxChanges: -1}, []string{"--out", vault})
 	var report struct {
 		Created   int `json:"created"`
 		Updated   int `json:"updated"`
@@ -283,6 +285,40 @@ func TestVaultSyncDryRunWritesNothing(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(vault, "vaswani2017.md")); !os.IsNotExist(err) {
 		t.Errorf("dry-run wrote a file")
+	}
+}
+
+// TestVaultSyncPreviewsWithoutWriting proves the new default gate: neither a
+// bare invocation nor --agent applies a write. Both must report a preview and
+// leave the output directory untouched -- not just empty, but never created.
+func TestVaultSyncPreviewsWithoutWriting(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		flags rootFlags
+	}{
+		{name: "bare", flags: rootFlags{asJSON: true}},
+		{name: "agent", flags: rootFlags{asJSON: true, agent: true}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			seedVaultStore(t)
+			vault := filepath.Join(t.TempDir(), "vault")
+
+			flags := tc.flags
+			out := runVaultSync(t, &flags, []string{"--out", vault})
+			var report struct {
+				Created int  `json:"created"`
+				DryRun  bool `json:"dry_run"`
+			}
+			if err := json.Unmarshal([]byte(out), &report); err != nil {
+				t.Fatalf("decode report %q: %v", out, err)
+			}
+			if !report.DryRun || report.Created != 1 {
+				t.Errorf("%s report = %+v, want dry_run + created=1", tc.name, report)
+			}
+			if _, err := os.Stat(vault); !os.IsNotExist(err) {
+				t.Errorf("%s: preview created the vault directory", tc.name)
+			}
+		})
 	}
 }
 
@@ -450,7 +486,7 @@ func TestSplitObsidianFrontmatterLFUnchanged(t *testing.T) {
 func TestVaultSyncLogseqCreate(t *testing.T) {
 	seedVaultStore(t)
 	vault := filepath.Join(t.TempDir(), "vault")
-	runVaultSync(t, &rootFlags{asJSON: true}, []string{"--out", vault, "--format", "logseq"})
+	runVaultSync(t, &rootFlags{asJSON: true, yes: true, maxChanges: -1}, []string{"--out", vault, "--format", "logseq"})
 
 	body, err := os.ReadFile(filepath.Join(vault, "vaswani2017.md"))
 	if err != nil {
@@ -467,9 +503,9 @@ func TestVaultSyncLogseqCreate(t *testing.T) {
 func TestVaultSyncLogseqIdempotent(t *testing.T) {
 	seedVaultStore(t)
 	vault := filepath.Join(t.TempDir(), "vault")
-	runVaultSync(t, &rootFlags{asJSON: true}, []string{"--out", vault, "--format", "logseq"})
+	runVaultSync(t, &rootFlags{asJSON: true, yes: true, maxChanges: -1}, []string{"--out", vault, "--format", "logseq"})
 
-	out := runVaultSync(t, &rootFlags{asJSON: true}, []string{"--out", vault, "--format", "logseq"})
+	out := runVaultSync(t, &rootFlags{asJSON: true, yes: true, maxChanges: -1}, []string{"--out", vault, "--format", "logseq"})
 	var report struct {
 		Created   int `json:"created"`
 		Updated   int `json:"updated"`

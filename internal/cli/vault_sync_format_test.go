@@ -21,7 +21,7 @@ import (
 func TestVaultSyncWritesIdentityAndFences(t *testing.T) {
 	seedVaultStore(t)
 	vault := t.TempDir()
-	runVaultSync(t, &rootFlags{asJSON: true}, []string{"--out", vault})
+	runVaultSync(t, &rootFlags{asJSON: true, yes: true, maxChanges: -1}, []string{"--out", vault})
 
 	s := readNote(t, filepath.Join(vault, "vaswani2017.md"))
 	for _, want := range []string{
@@ -45,7 +45,7 @@ func TestVaultSyncStableLookupByKey(t *testing.T) {
 	writeFile(t, old, "---\nzotero_key: K1\ncitekey: oldcitekey\n---\n\n## Notes\n"+
 		vaultNotesBegin+"\nmine\n"+vaultNotesEnd+"\n")
 
-	runVaultSync(t, &rootFlags{asJSON: true}, []string{"--out", vault})
+	runVaultSync(t, &rootFlags{asJSON: true, yes: true, maxChanges: -1}, []string{"--out", vault})
 
 	if _, err := os.Stat(filepath.Join(vault, "vaswani2017.md")); !os.IsNotExist(err) {
 		t.Errorf("created a duplicate note instead of updating the existing one by key")
@@ -68,7 +68,7 @@ func TestVaultSyncFilenameCollision(t *testing.T) {
 	foreign := filepath.Join(vault, "vaswani2017.md")
 	writeFile(t, foreign, "not mine\n")
 
-	runVaultSync(t, &rootFlags{asJSON: true}, []string{"--out", vault})
+	runVaultSync(t, &rootFlags{asJSON: true, yes: true, maxChanges: -1}, []string{"--out", vault})
 
 	if got := readNote(t, foreign); got != "not mine\n" {
 		t.Errorf("clobbered foreign file: %q", got)
@@ -86,7 +86,7 @@ func TestVaultSyncMigratesLegacyNotes(t *testing.T) {
 	writeFile(t, filepath.Join(vault, "vaswani2017.md"),
 		"---\nzotero_key: K1\ncitekey: vaswani2017\n---\n\n## Notes\n\nlegacy prose\n")
 
-	runVaultSync(t, &rootFlags{asJSON: true}, []string{"--out", vault})
+	runVaultSync(t, &rootFlags{asJSON: true, yes: true, maxChanges: -1}, []string{"--out", vault})
 
 	s := readNote(t, filepath.Join(vault, "vaswani2017.md"))
 	bi, ei := strings.Index(s, vaultNotesBegin), strings.Index(s, vaultNotesEnd)
@@ -107,7 +107,7 @@ func TestVaultSyncNeedsNotesBoundary(t *testing.T) {
 	writeFile(t, filepath.Join(vault, "vaswani2017.md"),
 		"---\nzotero_key: K1\n---\n\n## Notes\na\n\n## Notes\nb\n")
 
-	out := runVaultSync(t, &rootFlags{asJSON: true}, []string{"--out", vault})
+	out := runVaultSync(t, &rootFlags{asJSON: true, yes: true, maxChanges: -1}, []string{"--out", vault})
 	var report struct {
 		Results []vaultSyncResult
 	}
@@ -272,7 +272,7 @@ func TestVaultSyncRecognizesLegacyNoteByLink(t *testing.T) {
 	legacy := filepath.Join(vault, "stalename.md")
 	writeFile(t, legacy, "---\ncitekey: vaswani2017\nzotero: \"zotero://select/library/items/K1\"\n---\n\n## Notes\n\nkeep me\n")
 
-	runVaultSync(t, &rootFlags{asJSON: true}, []string{"--out", vault})
+	runVaultSync(t, &rootFlags{asJSON: true, yes: true, maxChanges: -1}, []string{"--out", vault})
 
 	if _, err := os.Stat(filepath.Join(vault, "vaswani2017.md")); !os.IsNotExist(err) {
 		t.Errorf("legacy note duplicated instead of updated in place")
@@ -332,7 +332,7 @@ func TestVaultSyncCollectionNames(t *testing.T) {
 	_ = db.Close()
 
 	vault := t.TempDir()
-	runVaultSync(t, &rootFlags{asJSON: true}, []string{"--out", vault})
+	runVaultSync(t, &rootFlags{asJSON: true, yes: true, maxChanges: -1}, []string{"--out", vault})
 	s := readNote(t, filepath.Join(vault, "vaswani2017.md"))
 	if !strings.Contains(s, "collection_names:") || !strings.Contains(s, "Transformers") {
 		t.Errorf("collection_names not resolved from store:\n%s", s)
@@ -347,7 +347,7 @@ func TestVaultSyncResolvesOutFromConfig(t *testing.T) {
 	cfgPath := filepath.Join(t.TempDir(), "config.toml")
 	writeFile(t, cfgPath, fmt.Sprintf("[vault]\nroot = %q\nnotes_dir = \"refs\"\n", root))
 
-	runVaultSync(t, &rootFlags{asJSON: true, configPath: cfgPath}, nil)
+	runVaultSync(t, &rootFlags{asJSON: true, configPath: cfgPath, yes: true, maxChanges: -1}, nil)
 
 	if _, err := os.Stat(filepath.Join(root, "refs", "vaswani2017.md")); err != nil {
 		t.Errorf("note not written to config-resolved dir: %v", err)
@@ -362,7 +362,7 @@ func TestVaultSyncOutFlagOverridesConfig(t *testing.T) {
 	writeFile(t, cfgPath, fmt.Sprintf("[vault]\nroot = %q\n", cfgRoot))
 	out := t.TempDir()
 
-	runVaultSync(t, &rootFlags{asJSON: true, configPath: cfgPath}, []string{"--out", out})
+	runVaultSync(t, &rootFlags{asJSON: true, configPath: cfgPath, yes: true, maxChanges: -1}, []string{"--out", out})
 
 	if _, err := os.Stat(filepath.Join(out, "vaswani2017.md")); err != nil {
 		t.Errorf("note not written to --out dir: %v", err)
