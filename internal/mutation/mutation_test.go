@@ -4,6 +4,7 @@
 package mutation
 
 import (
+	"context"
 	"errors"
 	"strings"
 	"testing"
@@ -125,6 +126,55 @@ func TestRunApplyConflictFailFast(t *testing.T) {
 	}
 	if got := env.Result.Items[2].Status; got != "not_attempted" {
 		t.Fatalf("third status = %q, want not_attempted", got)
+	}
+}
+
+// Cancelling mid-run stops the engine before the next operation; the operation
+// already in flight is aborted by its own transport.
+func TestRunApplyStopsOnCanceledContext(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	applied := 0
+	ops := []Op{
+		{ID: "op1", Key: "K1", Kind: "test", Changes: []Change{{Field: "title", Add: "A"}}, Apply: func() (string, any, error) {
+			applied++
+			cancel()
+			return "applied", nil, nil
+		}},
+		{ID: "op2", Key: "K2", Kind: "test", Changes: []Change{{Field: "title", Add: "B"}}, Apply: func() (string, any, error) {
+			applied++
+			return "applied", nil, nil
+		}},
+	}
+	env, err := Run(Options{Yes: true, MaxChanges: -1, Context: ctx}, "test", ops)
+	if err == nil {
+		t.Fatal("Run canceled err = nil, want non-nil")
+	}
+	if applied != 1 {
+		t.Fatalf("applied %d operation(s) after cancellation, want 1", applied)
+	}
+	if env.Result.Summary.Applied != 1 || env.Result.Summary.NotAttempted != 1 {
+		t.Fatalf("summary = %+v", env.Result.Summary)
+	}
+	if got := env.Result.Items[1].Status; got != "not_attempted" {
+		t.Fatalf("second status = %q, want not_attempted", got)
+	}
+	if len(env.Warnings) != 1 || !strings.Contains(env.Warnings[0], "canceled") {
+		t.Fatalf("warnings = %v, want a cancellation warning", env.Warnings)
+	}
+}
+
+// A nil Context must never cancel: most callers do not set one.
+func TestRunApplyNilContextNeverCancels(t *testing.T) {
+	ops := []Op{
+		{ID: "op1", Key: "K1", Kind: "test", Changes: []Change{{Field: "title", Add: "A"}}, Apply: func() (string, any, error) { return "applied", nil, nil }},
+		{ID: "op2", Key: "K2", Kind: "test", Changes: []Change{{Field: "title", Add: "B"}}, Apply: func() (string, any, error) { return "applied", nil, nil }},
+	}
+	env, err := Run(Options{Yes: true, MaxChanges: -1}, "test", ops)
+	if err != nil {
+		t.Fatalf("Run err = %v, want nil", err)
+	}
+	if env.Result.Summary.Applied != 2 {
+		t.Fatalf("summary = %+v, want both applied", env.Result.Summary)
 	}
 }
 

@@ -40,10 +40,15 @@ func resolveMutationMode(flags *rootFlags) mutation.Mode {
 
 // runMutation previews or applies the operations through the shared engine, then
 // (on the real CLI path) replays applied writes into the local mirror for
-// read-your-writes and records the run to the journal.
-func runMutation(ctx context.Context, flags *rootFlags, operation string, ops []mutation.Op) (mutation.Envelope, error) {
-	_ = ctx
-	env, err := mutation.Run(mutationOptions(flags), operation, ops)
+// read-your-writes and records the run to the journal. tune adjusts the resolved
+// options for callers whose transport imposes its own semantics.
+func runMutation(ctx context.Context, flags *rootFlags, operation string, ops []mutation.Op, tune ...func(*mutation.Options)) (mutation.Envelope, error) {
+	opts := mutationOptions(flags)
+	opts.Context = ctx
+	for _, adjust := range tune {
+		adjust(&opts)
+	}
+	env, err := mutation.Run(opts, operation, ops)
 	if mirrorWriteThrough != nil {
 		mirrorWriteThrough(&env)
 	}

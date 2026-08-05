@@ -11,6 +11,7 @@
 package mutation
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"sort"
@@ -112,6 +113,10 @@ type Options struct {
 	AllowDestructive bool
 	ContinueOnError  bool
 	MaxFailures      int
+	// Context aborts a multi-operation run between operations. An in-flight
+	// Apply is cancelled by the context its own transport already carries; this
+	// stops the engine from starting the next one. A nil Context never cancels.
+	Context context.Context
 }
 
 // Mode is the resolved preview/apply decision.
@@ -202,7 +207,15 @@ func Run(o Options, operation string, ops []Op) (Envelope, error) {
 	result := Result{Items: make([]ResultItem, 0, len(ops))}
 	failures := 0
 	stop := false
+	canceled := false
 	for _, op := range ops {
+		// Cancellation is checked between operations. The op already running when
+		// the context is cancelled is aborted by its own transport; this keeps the
+		// engine from starting the next one.
+		if !stop && o.Context != nil && o.Context.Err() != nil {
+			stop = true
+			canceled = true
+		}
 		if stop {
 			result.Items = append(result.Items, ResultItem{OpID: op.ID, Key: op.Key, Status: "not_attempted"})
 			result.Summary.NotAttempted++
@@ -263,6 +276,9 @@ func Run(o Options, operation string, ops []Op) (Envelope, error) {
 		}
 	}
 
+	if canceled {
+		env.Warnings = append(env.Warnings, fmt.Sprintf("run canceled: %v; remaining operations were not attempted", o.Context.Err()))
+	}
 	env.Result = &result
 	env.OK = result.Summary.Conflicts == 0 && result.Summary.Failed == 0 && result.Summary.NotAttempted == 0 && env.Plan.Summary.Invalid == 0
 	if !env.OK {
