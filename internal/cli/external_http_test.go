@@ -222,6 +222,24 @@ func TestExternalFetchHTTPClientReusesGuardedTransport(t *testing.T) {
 	}
 }
 
+func TestExternalHTTPClientDoesNotMutateDefaultClient(t *testing.T) {
+	oldDefaultClient := http.DefaultClient
+	sentinel := &http.Client{}
+	http.DefaultClient = sentinel
+	t.Cleanup(func() { http.DefaultClient = oldDefaultClient })
+
+	client := externalHTTPClient(nil, false)
+	if client == sentinel {
+		t.Fatal("externalHTTPClient returned http.DefaultClient itself, want a private client")
+	}
+	if sentinel.CheckRedirect != nil {
+		t.Fatal("externalHTTPClient installed its redirect gate on http.DefaultClient")
+	}
+	if client.CheckRedirect == nil {
+		t.Fatal("externalHTTPClient did not install a redirect gate on the returned client")
+	}
+}
+
 func TestDeliverWebhookRejectsPrivateLiteralTarget(t *testing.T) {
 	err := deliverWebhook(context.Background(), "http://127.0.0.1:1/hook", []byte(`{"ok":true}`), false)
 	if err == nil {

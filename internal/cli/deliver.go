@@ -158,7 +158,11 @@ func publicOutboundIPs(ctx context.Context, host string) ([]string, error) {
 }
 
 func externalHTTPClient(base *http.Client, requireHTTPS bool) *http.Client {
-	client := http.DefaultClient
+	// Never start from http.DefaultClient: the CheckRedirect assignment below
+	// would mutate process-global state shared by every other caller, racing
+	// concurrent requests under the in-process MCP server. A nil base is an
+	// expected shape (see client.requestHTTPClient), so synthesize a client.
+	client := &http.Client{}
 	if base != nil {
 		copied := *base
 		client = &copied

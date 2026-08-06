@@ -56,7 +56,7 @@ func withInstallationWriterLock(cmd *cobra.Command, flags *rootFlags, operation 
 // withPathWriterLock serializes a complete transaction for one canonical output
 // path. A nested RootCmd inherits the command context, so it may reuse only the
 // exact lock already held by its caller; distinct output paths remain isolated.
-func withPathWriterLock(cmd *cobra.Command, lockPath, operation string, fn func() error) error {
+func withPathWriterLock(cmd *cobra.Command, lockPath, operation string, fn func() error) (err error) {
 	if cmd == nil {
 		return fmt.Errorf("acquiring writer lock for %s: nil command", operation)
 	}
@@ -72,14 +72,31 @@ func withPathWriterLock(cmd *cobra.Command, lockPath, operation string, fn func(
 		if ownership.owner != cmd {
 			return fn()
 		}
-		return finishWriterLockOwnership(cmd, ownership, fn())
+		// fn is caller-supplied and may panic mid-transaction. defer is load-bearing
+		// here: the in-process MCP server recovers such panics at
+		// internal/mcp/cobratree/shellout.go and keeps serving requests, so without
+		// a deferred release this lock file would stay held forever and every later
+		// writer command on that server would fail busy. We deliberately do not
+		// recover the panic ourselves — it must keep propagating to that recovery
+		// point unchanged.
+		defer func() {
+			err = finishWriterLockOwnership(cmd, ownership, err)
+		}()
+		err = fn()
+		return err
 	}
 
 	ownership, err := acquireWriterLockOwnership(cmd, canonicalPath, operation)
 	if err != nil {
 		return err
 	}
-	return finishWriterLockOwnership(cmd, ownership, fn())
+	// See the comment above: fn may panic, and defer is the only way to still
+	// release/restore on that path without swallowing the panic.
+	defer func() {
+		err = finishWriterLockOwnership(cmd, ownership, err)
+	}()
+	err = fn()
+	return err
 }
 
 func acquireWriterLockOwnership(cmd *cobra.Command, lockPath, operation string) (*writerLockOwnership, error) {
@@ -251,7 +268,7 @@ func wrapRootPersistentWriterLockPreRun(rootCmd *cobra.Command, flags *rootFlags
 	if original == nil {
 		return
 	}
-	rootCmd.PersistentPreRunE = func(cmd *cobra.Command, args []string) error {
+	rootCmd.PersistentPreRunE = func(cmd *cobra.Command, args []string) (err error) {
 		if err := applySelectedProfile(cmd, flags); err != nil {
 			return err
 		}
@@ -271,18 +288,42 @@ func wrapRootPersistentWriterLockPreRun(rootCmd *cobra.Command, flags *rootFlags
 		if err != nil {
 			return err
 		}
-		if err := original(cmd, args); err != nil {
-			return finishWriterLockOwnership(cmd, ownership, err)
+		// original may panic during setup. On success, ownership release is
+		// handed off to the RunE wrapper installed by wrapInstallationWriterCommand
+		// (it holds the lock until the command body finishes). On error or panic
+		// here, RunE never runs, so this defer is the only remaining chance to
+		// release — and since the in-process MCP server recovers panics at
+		// internal/mcp/cobratree/shellout.go and keeps serving requests, a leaked
+		// lock here would wedge every later writer command. We do not recover the
+		// panic ourselves; it must keep propagating unchanged.
+		released := false
+		defer func() {
+			if !released {
+				err = finishWriterLockOwnership(cmd, ownership, err)
+			}
+		}()
+		if err = original(cmd, args); err != nil {
+			return err
 		}
+		released = true
 		return nil
 	}
 }
 
 func wrapInstallationWriterCommand(cmd *cobra.Command, flags *rootFlags, operation string, mode writerLockMode) {
 	wrap := func(run func(*cobra.Command, []string) error) func(*cobra.Command, []string) error {
-		return func(cmd *cobra.Command, args []string) error {
+		return func(cmd *cobra.Command, args []string) (err error) {
 			if ownership := writerLockOwner(cmd); ownership != nil && ownership.owner == cmd {
-				return finishWriterLockOwnership(cmd, ownership, run(cmd, args))
+				// run is caller-supplied and may panic; defer keeps the release
+				// happening on that path too. See withPathWriterLock for why this
+				// defer is load-bearing (the in-process MCP server recovers panics
+				// and keeps running, so a leaked lock here would wedge every later
+				// writer command). The panic itself is left to propagate.
+				defer func() {
+					err = finishWriterLockOwnership(cmd, ownership, err)
+				}()
+				err = run(cmd, args)
+				return err
 			}
 			if !shouldAcquireInstallationWriterLock(cmd, mode, flags) {
 				return run(cmd, args)
@@ -302,10 +343,16 @@ func wrapInstallationWriterCommand(cmd *cobra.Command, flags *rootFlags, operati
 		// to the equivalent RunE form so a busy writer still reports exit 9;
 		// command use, flags, annotations, and user-visible behavior are unchanged.
 		cmd.Run = nil
-		cmd.RunE = func(cmd *cobra.Command, args []string) error {
+		cmd.RunE = func(cmd *cobra.Command, args []string) (err error) {
 			if ownership := writerLockOwner(cmd); ownership != nil && ownership.owner == cmd {
+				// run never returns an error, but it may still panic; defer keeps
+				// the release happening on that path. See withPathWriterLock for
+				// why this defer is load-bearing.
+				defer func() {
+					err = finishWriterLockOwnership(cmd, ownership, err)
+				}()
 				run(cmd, args)
-				return finishWriterLockOwnership(cmd, ownership, nil)
+				return nil
 			}
 			if !shouldAcquireInstallationWriterLock(cmd, mode, flags) {
 				run(cmd, args)

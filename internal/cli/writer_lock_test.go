@@ -458,6 +458,101 @@ func TestProfileWriterLockReleasesAfterHandlerError(t *testing.T) {
 	}
 }
 
+func TestWithPathWriterLockReleasesAfterPanic(t *testing.T) {
+	lockPath := filepath.Join(t.TempDir(), "writer.lock")
+	wantPanic := "transaction panicked"
+	panicking := &cobra.Command{Use: "panics"}
+
+	func() {
+		defer func() {
+			recovered := recover()
+			if recovered != wantPanic {
+				t.Fatalf("recovered panic = %v, want %v", recovered, wantPanic)
+			}
+		}()
+		_ = withPathWriterLock(panicking, lockPath, "panicking transaction", func() error {
+			panic(wantPanic)
+		})
+		t.Fatal("withPathWriterLock did not propagate the panic")
+	}()
+
+	probe := &cobra.Command{Use: "probe"}
+	if err := withPathWriterLock(probe, lockPath, "probe", func() error { return nil }); err != nil {
+		t.Fatalf("writer lock leaked after panicking transaction: %v", err)
+	}
+}
+
+// The root pre-run acquires installation ownership and hands release off to the
+// RunE wrapper, so a panic inside the command body is the only path that can
+// strand the lock. The in-process MCP server recovers that panic and keeps
+// serving requests, so a leak here wedges every later writer command.
+func TestInstallationWriterLockReleasesAfterHandlerPanic(t *testing.T) {
+	useWriterLockTestHome(t)
+	configPath := filepath.Join(t.TempDir(), "config.toml")
+	wantPanic := "writer handler panicked"
+	flags := &rootFlags{configPath: configPath}
+	root := &cobra.Command{
+		Use:               "zotio",
+		PersistentPreRunE: func(*cobra.Command, []string) error { return nil },
+	}
+	root.AddCommand(newWriterLockTestSyncCmd(func(*cobra.Command, []string) error {
+		panic(wantPanic)
+	}))
+	installInstallationWriterLocks(root, flags)
+	root.SilenceErrors, root.SilenceUsage = true, true
+	root.SetArgs([]string{"sync"})
+
+	func() {
+		defer func() {
+			if recovered := recover(); recovered != wantPanic {
+				t.Fatalf("recovered panic = %v, want %v", recovered, wantPanic)
+			}
+		}()
+		_ = root.ExecuteContext(context.Background())
+		t.Fatal("writer handler panic did not propagate out of Execute")
+	}()
+
+	probe := &cobra.Command{Use: "probe"}
+	if err := withInstallationWriterLock(probe, &rootFlags{configPath: configPath}, "probe", func() error { return nil }); err != nil {
+		t.Fatalf("writer lock leaked after handler panic: %v", err)
+	}
+}
+
+func TestInstallationWriterLockReleasesAfterPersistentPreRunPanic(t *testing.T) {
+	useWriterLockTestHome(t)
+	configPath := filepath.Join(t.TempDir(), "config.toml")
+	wantPanic := "persistent pre-run panicked"
+	flags := &rootFlags{configPath: configPath}
+	root := &cobra.Command{
+		Use: "zotio",
+		PersistentPreRunE: func(*cobra.Command, []string) error {
+			panic(wantPanic)
+		},
+	}
+	root.AddCommand(newWriterLockTestSyncCmd(func(*cobra.Command, []string) error {
+		return nil
+	}))
+	installInstallationWriterLocks(root, flags)
+	root.SilenceErrors, root.SilenceUsage = true, true
+	root.SetArgs([]string{"sync"})
+
+	func() {
+		defer func() {
+			recovered := recover()
+			if recovered != wantPanic {
+				t.Fatalf("recovered panic = %v, want %v", recovered, wantPanic)
+			}
+		}()
+		_ = root.ExecuteContext(context.Background())
+		t.Fatal("persistent pre-run panic did not propagate out of Execute")
+	}()
+
+	probe := &cobra.Command{Use: "probe"}
+	if err := withInstallationWriterLock(probe, &rootFlags{configPath: configPath}, "probe", func() error { return nil }); err != nil {
+		t.Fatalf("writer lock leaked after persistent pre-run panic: %v", err)
+	}
+}
+
 func TestInstallationWriterLockCandidatesResolve(t *testing.T) {
 
 	home := useWriterLockTestHome(t)
