@@ -2,6 +2,38 @@
 
 Notable changes to zotio. Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow [SemVer](https://semver.org/).
 
+## [Unreleased]
+### Fixed
+- **Quoted boolean keywords in search are matched literally instead of becoming
+  operators.** Searching for the phrase `"AND"`, `"OR"`, or `"NOT"` compiled the
+  quoted term into an FTS logical operator — `foo "AND" bar` became
+  `"foo" AND "bar"`, silently dropping the term the user explicitly quoted.
+  Quoting now means "literal term" for keywords too; unquoted `AND`/`OR`/`NOT`
+  are unchanged, including their case-insensitivity.
+- **`analytics --group-by` reports real distributions instead of one empty
+  bucket.** Grouping read the top level of each stored resource, but synced
+  Zotero payloads carry their bibliographic fields under `data`, so
+  `--group-by itemType` (and `title`, `date`, …) matched nothing and counted
+  every row into a single `<nil>` bucket. Fields now resolve nested-first with a
+  top-level fallback, and genuinely missing values report as `(unset)`.
+- **MCP group-library reads no longer split-brain between two databases.** With
+  `ZOTERO_GROUP` set, `zotero://freshness`, `zotero://health/*`, and the
+  collection/item graph resources read the personal `data.db` while `sql`,
+  `search`, `zotero://archive/status`, and `zotero://schema` read
+  `data-group-<id>.db` — the same server answering the same group library from
+  two different mirrors. Demo mode diverged the same way. Both surfaces now
+  share one path resolver.
+- **A panicking write command no longer strands the installation writer lock.**
+  Release ran as a call argument, so a panic unwound past it; under `zotio-mcp`
+  the panic is recovered and the server keeps serving, leaving every later
+  mutating command failing as "another writer is active" until restart.
+- **`items enrich` no longer leaks a connection pool per PDF download.** Each
+  download cloned its guarded HTTP transport and never released it, exhausting
+  sockets in long-running `zotio-mcp` and `zotio watch` processes.
+- Redirect gating for external fetches no longer mutates the process-global
+  `http.DefaultClient`, and `zotero://archive/status` no longer leaks a database
+  cursor when its context is canceled mid-query.
+
 ## [0.16.0] — 2026-08-05
 ### Changed — breaking
 - **Every write now previews by default and applies only under `--yes`.** The
