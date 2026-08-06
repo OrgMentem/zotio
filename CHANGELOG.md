@@ -2,8 +2,15 @@
 
 Notable changes to zotio. Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow [SemVer](https://semver.org/).
 
-## [Unreleased]
+## [0.16.1] — 2026-08-06
 ### Fixed
+- **`zotio-mcp` no longer starts on a malformed `ZOTERO_GROUP`.** It previously
+  served the *personal* library when the variable held a non-numeric value, so a
+  typo answered every query from the wrong mirror under a group's name. Startup
+  now fails closed with exit 2 and the same error `--group` already produces. If
+  you set `ZOTERO_GROUP`, confirm it is a numeric Zotero group ID before
+  upgrading; unset or numeric values are unaffected. (papio is not affected — it
+  strips `ZOTERO_GROUP` before invoking zotio.)
 - **Quoted boolean keywords in search are matched literally instead of becoming
   operators.** Searching for the phrase `"AND"`, `"OR"`, or `"NOT"` compiled the
   quoted term into an FTS logical operator — `foo "AND" bar` became
@@ -36,9 +43,6 @@ Notable changes to zotio. Format follows [Keep a Changelog](https://keepachangel
   installation lock and then returned without ever reaching the body that
   releases it. Harmless for a one-shot CLI, but under `zotio-mcp` it wedged
   every later writer. The lock is now taken only once validation would pass.
-- **`zotio-mcp` refuses to start on a malformed `ZOTERO_GROUP`** instead of
-  silently serving the personal library under a group's name, matching the hard
-  error `--group` already produces.
 - Redirect gating for external fetches no longer mutates the process-global
   `http.DefaultClient`, and `zotero://archive/status` no longer leaks a database
   cursor when its context is canceled mid-query.
@@ -662,6 +666,7 @@ First tagged release: the trust-and-automation layer for Zotero.
 - **Onboarding** — `zotio init` guided setup (Zotero detection, local API, key, first sync, health check).
 - Release engineering: goreleaser builds for 6 platforms, cosign-signed checksums, SBOMs, Homebrew tap.
 
+[0.16.1]: https://github.com/OrgMentem/zotio/compare/v0.16.0...v0.16.1
 [0.16.0]: https://github.com/OrgMentem/zotio/compare/v0.15.0...v0.16.0
 [0.15.0]: https://github.com/OrgMentem/zotio/compare/v0.14.0...v0.15.0
 [0.14.0]: https://github.com/OrgMentem/zotio/compare/v0.13.1...v0.14.0
