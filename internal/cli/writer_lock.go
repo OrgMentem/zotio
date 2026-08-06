@@ -284,6 +284,22 @@ func wrapRootPersistentWriterLockPreRun(rootCmd *cobra.Command, flags *rootFlags
 		if ownership := writerLockOwner(cmd); ownership != nil && ownership.path == lockPath {
 			return original(cmd, args)
 		}
+		// Acquire only after the command's own flag validation would pass.
+		// Cobra runs PreRunE, ValidateRequiredFlags and ValidateFlagGroups
+		// AFTER every PersistentPreRunE and BEFORE RunE (cobra command.go:999-1012),
+		// and returns from execute() on failure. Acquiring first would therefore
+		// strand the lock whenever validation fails -- `import --yes items` with no
+		// --input is enough, since import is writerLockOnApply and marks --input
+		// required -- because the release below is disarmed on success and RunE,
+		// the other releaser, never runs. Validation is pure and idempotent, so
+		// cobra re-running it costs nothing. No production command defines a
+		// non-persistent PreRunE that could satisfy a required flag later.
+		if err := cmd.ValidateRequiredFlags(); err != nil {
+			return err
+		}
+		if err := cmd.ValidateFlagGroups(); err != nil {
+			return err
+		}
 		ownership, err := acquireWriterLockOwnership(cmd, lockPath, cmd.CommandPath())
 		if err != nil {
 			return err

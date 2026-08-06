@@ -7,6 +7,7 @@ package cli
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"strings"
 )
@@ -47,6 +48,12 @@ func CommandOverrideCapability(path string) (operation string, requires []string
 	return entry.Operation, entry.Requires, entry.Destructive, true
 }
 
+// ActiveGroupID returns the numeric Zotero group ID scoping this process, or ""
+// for the personal library.
+func ActiveGroupID() string {
+	return activeGroupID
+}
+
 // DefaultDBPath returns the canonical local SQLite database path for name,
 // honoring the active --group scope and demo mode (see defaultDBPath). It
 // exists so the MCP server resolves the identical group-scoped and
@@ -57,17 +64,27 @@ func DefaultDBPath(name string) (string, error) {
 }
 
 // ApplyGroupScopeFromEnv sets activeGroupID from ZOTERO_GROUP when it is
-// currently unset and the env value is a non-empty numeric string. MCP
-// resource handlers call exported cli helpers (FreshnessJSON, HealthJSON,
-// ItemContextJSON, ...) directly and never execute the cobra root, so the
-// ZOTERO_GROUP fallback that PersistentPreRunE performs for CLI commands
-// never runs for them; the MCP server calls this once at startup to apply
-// the same fallback before serving.
-func ApplyGroupScopeFromEnv() {
+// currently unset. MCP resource handlers call exported cli helpers
+// (FreshnessJSON, HealthJSON, ItemContextJSON, ...) directly and never execute
+// the cobra root, so the ZOTERO_GROUP fallback that PersistentPreRunE performs
+// for CLI commands never runs for them; the MCP server calls this once at
+// startup to apply the same fallback before serving.
+//
+// A malformed value is an error rather than a silent fall back to the personal
+// library, matching the hard failure root.go produces for --group. Silently
+// serving a different library than the operator asked for is the same class of
+// bug as the split-brain resolver this function exists to prevent.
+func ApplyGroupScopeFromEnv() error {
 	if activeGroupID != "" {
-		return
+		return nil
 	}
-	if v := strings.TrimSpace(os.Getenv("ZOTERO_GROUP")); v != "" && isAllDigits(v) {
-		activeGroupID = v
+	v := strings.TrimSpace(os.Getenv("ZOTERO_GROUP"))
+	if v == "" {
+		return nil
 	}
+	if !isAllDigits(v) {
+		return fmt.Errorf("invalid ZOTERO_GROUP value %q: expected a numeric Zotero group ID", v)
+	}
+	activeGroupID = v
+	return nil
 }

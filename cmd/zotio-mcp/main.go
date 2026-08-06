@@ -44,8 +44,12 @@ func main() {
 
 	// MCP resource handlers call exported cli helpers directly and never run
 	// cobra's PersistentPreRunE, so apply its ZOTERO_GROUP env fallback here
-	// before any tool/resource resolves a DB path.
-	cli.ApplyGroupScopeFromEnv()
+	// before any tool/resource resolves a DB path. Fail closed on a malformed
+	// value rather than serving the personal library under a group's name.
+	if err := cli.ApplyGroupScopeFromEnv(); err != nil {
+		fmt.Fprintf(os.Stderr, "MCP server error: %v\n", err)
+		os.Exit(2)
+	}
 
 	mcptools.RegisterTools(s)
 	// First-class MCP resources and prompts.

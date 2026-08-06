@@ -87,7 +87,14 @@ func dbPath() string {
 		home, _ := os.UserHomeDir()
 		dataDir = filepath.Join(home, ".local", "share", cliutil.AppName())
 	}
-	return filepath.Join(dataDir, "data.db")
+	// Keep the group suffix on the fallback too: degrading a group-scoped
+	// server to the personal mirror would answer a group library from the
+	// wrong database, which is the failure this resolver exists to prevent.
+	file := "data.db"
+	if group := cli.ActiveGroupID(); group != "" {
+		file = "data-group-" + group + ".db"
+	}
+	return filepath.Join(dataDir, file)
 }
 
 func handleSearch(ctx context.Context, req mcplib.CallToolRequest) (*mcplib.CallToolResult, error) {

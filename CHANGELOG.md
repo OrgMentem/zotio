@@ -30,6 +30,15 @@ Notable changes to zotio. Format follows [Keep a Changelog](https://keepachangel
 - **`items enrich` no longer leaks a connection pool per PDF download.** Each
   download cloned its guarded HTTP transport and never released it, exhausting
   sockets in long-running `zotio-mcp` and `zotio watch` processes.
+- **A write command that fails flag validation no longer strands the writer
+  lock.** Cobra validates required flags *after* the persistent pre-run and
+  *before* `RunE`, so `import --yes items` with no `--input` acquired the
+  installation lock and then returned without ever reaching the body that
+  releases it. Harmless for a one-shot CLI, but under `zotio-mcp` it wedged
+  every later writer. The lock is now taken only once validation would pass.
+- **`zotio-mcp` refuses to start on a malformed `ZOTERO_GROUP`** instead of
+  silently serving the personal library under a group's name, matching the hard
+  error `--group` already produces.
 - Redirect gating for external fetches no longer mutates the process-global
   `http.DefaultClient`, and `zotero://archive/status` no longer leaks a database
   cursor when its context is canceled mid-query.

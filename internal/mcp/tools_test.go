@@ -130,23 +130,34 @@ func TestDBPathUsesNumericZoteroGroup(t *testing.T) {
 
 	// activeGroupID is a cli package global, populated only via the exported
 	// ApplyGroupScopeFromEnv initializer now that dbPath() no longer reads
-	// ZOTERO_GROUP itself; each case restores it so the two cases don't leak
+	// ZOTERO_GROUP itself; each case restores it so the cases don't leak
 	// group scope into each other.
 	func() {
 		defer cli.SnapshotGlobals()()
 		t.Setenv("ZOTERO_GROUP", "12345")
-		cli.ApplyGroupScopeFromEnv()
+		if err := cli.ApplyGroupScopeFromEnv(); err != nil {
+			t.Fatalf("ApplyGroupScopeFromEnv() error = %v, want nil for a numeric group", err)
+		}
 		if got, want := dbPath(), filepath.Join(dataDir, "data-group-12345.db"); got != want {
 			t.Fatalf("dbPath() with numeric group = %q, want %q", got, want)
 		}
 	}()
 
+	// A malformed group is rejected rather than silently resolving to the
+	// personal library; the server exits on this error instead of serving the
+	// wrong mirror under a group's name.
 	func() {
 		defer cli.SnapshotGlobals()()
 		t.Setenv("ZOTERO_GROUP", "team-alpha")
-		cli.ApplyGroupScopeFromEnv()
+		err := cli.ApplyGroupScopeFromEnv()
+		if err == nil {
+			t.Fatal("ApplyGroupScopeFromEnv() error = nil, want a rejection for a non-numeric group")
+		}
+		if !strings.Contains(err.Error(), "team-alpha") {
+			t.Fatalf("ApplyGroupScopeFromEnv() error = %v, want it to name the offending value", err)
+		}
 		if got, want := dbPath(), filepath.Join(dataDir, "data.db"); got != want {
-			t.Fatalf("dbPath() with non-numeric group = %q, want personal DB %q", got, want)
+			t.Fatalf("dbPath() after a rejected group = %q, want personal DB %q", got, want)
 		}
 	}()
 }
@@ -174,7 +185,9 @@ func TestDBPathMatchesCLIResolver(t *testing.T) {
 		func() {
 			defer cli.SnapshotGlobals()()
 			t.Setenv("ZOTERO_GROUP", c.group)
-			cli.ApplyGroupScopeFromEnv()
+			// A rejected group leaves the scope unset; parity must still hold,
+			// which is what keeps the fallback branch of dbPath() honest.
+			_ = cli.ApplyGroupScopeFromEnv()
 			want, err := cli.DefaultDBPath("zotio")
 			if err != nil {
 				t.Fatalf("%s: cli.DefaultDBPath() error = %v", c.name, err)

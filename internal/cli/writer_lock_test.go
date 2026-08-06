@@ -432,16 +432,36 @@ func TestProfileValuesDetermineWriterLockEligibility(t *testing.T) {
 }
 
 func TestProfileWriterLockReleasesAfterHandlerError(t *testing.T) {
-	for _, profile := range []map[string]string{
-		{},
-		{"dry-run": "true"},
+	for _, tc := range []struct {
+		profile map[string]string
+		// wantHeld records whether the profile should make the command acquire
+		// the installation lock at all. Without it, the {} and {dry-run} cases
+		// never acquire (items new is writerLockOnApply, which requires an apply
+		// mode), so the post-run probe would succeed no matter what the release
+		// path did and the release assertion would be vacuous.
+		wantHeld bool
+	}{
+		{profile: map[string]string{}, wantHeld: false},
+		{profile: map[string]string{"dry-run": "true"}, wantHeld: false},
+		{profile: map[string]string{"yes": "true"}, wantHeld: true},
 	} {
-		t.Run(fmt.Sprint(profile), func(t *testing.T) {
+		t.Run(fmt.Sprint(tc.profile), func(t *testing.T) {
 			useWriterLockTestHome(t)
-			saveWriterLockTestProfile(t, profile)
+			saveWriterLockTestProfile(t, tc.profile)
 			handlerErr := errors.New("handler failed")
 			flags := &rootFlags{}
 			root := newProfileWriterLockTestRoot(flags, []string{"items", "new"}, func(*cobra.Command, []string) error {
+				// Probe from inside the handler: this is what proves the lock is
+				// genuinely held while the body runs, so the post-run probe below
+				// is testing the release rather than an absent lock.
+				inner := &cobra.Command{Use: "inner"}
+				err := withInstallationWriterLock(inner, &rootFlags{}, "inner", func() error { return nil })
+				if tc.wantHeld && err == nil {
+					t.Error("installation lock was not held while the handler ran")
+				}
+				if !tc.wantHeld && err != nil {
+					t.Errorf("installation lock was held for a non-applying profile: %v", err)
+				}
 				return handlerErr
 			})
 			root.SilenceErrors, root.SilenceUsage = true, true
@@ -455,6 +475,47 @@ func TestProfileWriterLockReleasesAfterHandlerError(t *testing.T) {
 				t.Fatalf("writer lock leaked after handler error: %v", err)
 			}
 		})
+	}
+}
+
+// Cobra runs ValidateRequiredFlags/ValidateFlagGroups after every
+// PersistentPreRunE and before RunE, so a validation failure returns from
+// execute() without ever reaching the RunE wrapper that normally releases the
+// installation lock. Under zotio-mcp the process keeps serving, so a leak here
+// wedges every later writer command.
+func TestInstallationWriterLockReleasesWhenFlagValidationFails(t *testing.T) {
+	useWriterLockTestHome(t)
+	configPath := filepath.Join(t.TempDir(), "config.toml")
+	flags := &rootFlags{configPath: configPath}
+	root := &cobra.Command{
+		Use:               "zotio",
+		PersistentPreRunE: func(*cobra.Command, []string) error { return nil },
+	}
+	ran := false
+	syncCmd := newWriterLockTestSyncCmd(func(*cobra.Command, []string) error {
+		ran = true
+		return nil
+	})
+	syncCmd.Flags().String("input", "", "")
+	if err := syncCmd.MarkFlagRequired("input"); err != nil {
+		t.Fatalf("marking --input required: %v", err)
+	}
+	root.AddCommand(syncCmd)
+	installInstallationWriterLocks(root, flags)
+	root.SilenceErrors, root.SilenceUsage = true, true
+	root.SetArgs([]string{"sync"})
+
+	err := root.ExecuteContext(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "input") {
+		t.Fatalf("execute error = %v, want a required-flag failure naming input", err)
+	}
+	if ran {
+		t.Fatal("command body ran despite failing flag validation")
+	}
+
+	probe := &cobra.Command{Use: "probe"}
+	if err := withInstallationWriterLock(probe, &rootFlags{configPath: configPath}, "probe", func() error { return nil }); err != nil {
+		t.Fatalf("writer lock leaked after flag validation failure: %v", err)
 	}
 }
 
