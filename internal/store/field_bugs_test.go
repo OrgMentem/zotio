@@ -26,6 +26,34 @@ func TestFTSMatchQueryPreservesBooleanSyntax(t *testing.T) {
 	}
 }
 
+// Regression for quoted boolean keywords being miscompiled as FTS operators:
+// quoting is the user's explicit request for a literal term ("AND" in
+// quotes), so it must never be read as AND/OR/NOT syntax, and unquoted
+// operators must keep working exactly as before.
+func TestFTSMatchQueryQuotedKeywordsAreLiteralTerms(t *testing.T) {
+	cases := map[string]string{
+		// Quoted keyword alone: a literal term, not a dropped/miscompiled operator.
+		`"AND"`: `"AND"`,
+		`"NOT"`: `"NOT"`,
+		// Quoted keyword beside a normal term: all three stay terms, joined
+		// the same way the unquoted path joins bare adjacent terms (relying
+		// on FTS5's implicit AND between space-separated terms).
+		`foo "AND" bar`: `"foo" "AND" "bar"`,
+		// Unquoted operators: unchanged from today's behavior.
+		`foo AND bar`: `"foo" AND "bar"`,
+		`foo OR bar`:  `"foo" OR "bar"`,
+		`foo NOT bar`: `"foo" AND NOT "bar"`,
+		// Unquoted operators are case-insensitive.
+		`foo and bar`: `"foo" AND "bar"`,
+		`foo Or bar`:  `"foo" OR "bar"`,
+	}
+	for input, want := range cases {
+		if got := ftsMatchQuery(input); got != want {
+			t.Fatalf("ftsMatchQuery(%q) = %q, want %q", input, got, want)
+		}
+	}
+}
+
 func TestSearchExecutesBooleanORAndParentheses(t *testing.T) {
 	s, err := OpenWithContext(context.Background(), filepath.Join(t.TempDir(), "data.db"))
 	if err != nil {

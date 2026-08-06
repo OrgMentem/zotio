@@ -409,19 +409,23 @@ func normalizeFTSQuery(tokens []ftsQueryToken) string {
 			continue
 		}
 		op := strings.ToUpper(text)
-		switch op {
-		case "AND", "OR":
+		switch {
+		case !tok.quote && (op == "AND" || op == "OR"):
 			if !expectOperand {
 				out = append(out, op)
 				expectOperand = true
 			}
-		case "NOT":
+		case !tok.quote && op == "NOT":
 			if !expectOperand {
 				out = append(out, "AND")
 			}
 			out = append(out, "NOT")
 			expectOperand = true
 		default:
+			// Quoting is the user's explicit request for a literal term, so a
+			// quoted AND/OR/NOT is data, not syntax: it must fall through to
+			// the literal-term case even though its uppercased text matches
+			// an operator keyword when unquoted.
 			out = append(out, quoteFTSTerm(text))
 			expectOperand = false
 		}
