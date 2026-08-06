@@ -15,6 +15,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -36,6 +37,46 @@ func crossRefSearchServer(t *testing.T, matchTitle, matchDOI string) *httptest.S
 	}))
 	t.Cleanup(srv.Close)
 	return srv
+}
+
+func TestGuardedClientReleasesClonedTransport(t *testing.T) {
+	baseTransport := &http.Transport{}
+	downloader := newEnrichPDFDownloader(&http.Client{Transport: baseTransport})
+
+	client, release, err := downloader.guardedClient()
+	if err != nil {
+		t.Fatalf("guardedClient: %v", err)
+	}
+	if client.Transport == baseTransport {
+		t.Fatal("guarded client reused the base transport, losing the dial guard")
+	}
+	cloned, ok := client.Transport.(*http.Transport)
+	if !ok {
+		t.Fatalf("guarded transport = %T, want *http.Transport", client.Transport)
+	}
+	// The clone owns a private connection pool, so release must actually close
+	// it; a no-op strands idle sockets in long-running zotio-mcp/watch runs.
+	if got, want := reflect.ValueOf(release).Pointer(), reflect.ValueOf(cloned.CloseIdleConnections).Pointer(); got != want {
+		t.Fatal("release func does not close the cloned transport's idle connections")
+	}
+}
+
+func TestGuardedClientSharesTransportWithoutDialGuard(t *testing.T) {
+	baseTransport := &http.Transport{}
+	downloader := newEnrichPDFDownloader(&http.Client{Transport: baseTransport})
+	downloader.dialGuard = nil
+
+	client, release, err := downloader.guardedClient()
+	if err != nil {
+		t.Fatalf("guardedClient: %v", err)
+	}
+	if client.Transport != baseTransport {
+		t.Fatal("unguarded client cloned the transport, want the caller's transport shared")
+	}
+	if release == nil {
+		t.Fatal("release func is nil, want a no-op for a shared transport")
+	}
+	release()
 }
 
 func withBase(t *testing.T, target *string, value string) {

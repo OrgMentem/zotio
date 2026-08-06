@@ -109,7 +109,7 @@ func runGroupBy(w io.Writer, db *store.Store, resourceType, field string, limit 
 		if err := json.Unmarshal(item, &obj); err != nil {
 			continue
 		}
-		val := fmt.Sprintf("%v", obj[field])
+		val := groupByFieldValue(obj, field)
 		counts[val]++
 	}
 
@@ -138,4 +138,28 @@ func runGroupBy(w io.Writer, db *store.Store, resourceType, field string, limit 
 		fmt.Fprintf(w, "%s\t%d\n", kv.Key, kv.Count)
 	}
 	return nil
+}
+
+// groupByUnsetSentinel marks resources where the requested group-by field is
+// absent at every level. fmt.Sprintf("%v", nil) renders as the Go-internal
+// string "<nil>", which would silently mix real data with a formatting
+// artifact; a distinct, obviously-non-data sentinel keeps missing values
+// visible and unambiguous in reports.
+const groupByUnsetSentinel = "(unset)"
+
+// groupByFieldValue resolves field for grouping using the same precedence
+// synced Zotero payloads use elsewhere in the codebase: nested obj["data"][field]
+// first, then the top-level obj[field] as a fallback for flat/local payloads.
+// This mirrors the COALESCE(data.dateModified, dateModified) ordering used by
+// QueryTrash's ORDER BY (internal/store/query.go:133-136).
+func groupByFieldValue(obj map[string]any, field string) string {
+	if data, ok := obj["data"].(map[string]any); ok {
+		if v, present := data[field]; present && v != nil {
+			return fmt.Sprintf("%v", v)
+		}
+	}
+	if v, present := obj[field]; present && v != nil {
+		return fmt.Sprintf("%v", v)
+	}
+	return groupByUnsetSentinel
 }

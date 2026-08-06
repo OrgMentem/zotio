@@ -983,10 +983,11 @@ func (d enrichPDFDownloader) download(ctx context.Context, rawURL, destPath stri
 			return err
 		}
 	}
-	clientCopy, err := d.guardedClient()
+	clientCopy, releaseTransport, err := d.guardedClient()
 	if err != nil {
 		return err
 	}
+	defer releaseTransport()
 	clientCopy.CheckRedirect = func(req *http.Request, via []*http.Request) error {
 		if len(via) >= 10 {
 			return fmt.Errorf("stopped after 10 redirects")
@@ -1014,14 +1015,22 @@ func (d enrichPDFDownloader) download(ctx context.Context, rawURL, destPath stri
 	return writePDFResponse(resp.Body, destPath, maxBytes)
 }
 
-func (d enrichPDFDownloader) guardedClient() (*http.Client, error) {
+// guardedClient returns a client whose transport dials only vetted
+// destinations, plus a release func the caller must invoke when the download
+// finishes. Release is load-bearing: the guarded transport is cloned per call
+// (its DialContext closes over this downloader's resolver, so a shared cache
+// would bind the wrong guard), and an unreleased clone strands its own
+// connection pool of idle sockets in long-running zotio-mcp/watch processes.
+func (d enrichPDFDownloader) guardedClient() (*http.Client, func(), error) {
 	base := d.client
 	if base == nil {
 		base = http.DefaultClient
 	}
 	clientCopy := *base
 	if d.dialGuard == nil {
-		return &clientCopy, nil
+		// Shares the caller's transport; closing its idle connections here
+		// would evict pooled sockets this call never created.
+		return &clientCopy, func() {}, nil
 	}
 	var transport *http.Transport
 	switch t := base.Transport.(type) {
@@ -1030,14 +1039,14 @@ func (d enrichPDFDownloader) guardedClient() (*http.Client, error) {
 	case *http.Transport:
 		transport = t.Clone()
 	default:
-		return nil, fmt.Errorf("guarding PDF download: unsupported HTTP transport %T", base.Transport)
+		return nil, nil, fmt.Errorf("guarding PDF download: unsupported HTTP transport %T", base.Transport)
 	}
 	// A proxy would resolve the destination outside this process and bypass the
 	// destination-address guard, so PDF fetches always connect directly.
 	transport.Proxy = nil
 	transport.DialContext = d.dialContext
 	clientCopy.Transport = transport
-	return &clientCopy, nil
+	return &clientCopy, transport.CloseIdleConnections, nil
 }
 
 func (d enrichPDFDownloader) dialContext(ctx context.Context, network, address string) (net.Conn, error) {
