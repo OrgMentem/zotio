@@ -71,35 +71,24 @@ func RegisterTools(s *server.MCPServer) {
 	cobratree.RegisterWorkflowSubmit(s, cli.RootCmd)
 }
 
+// dbPath delegates to cli.DefaultDBPath so MCP resolves the identical
+// group-scoped and demo-scoped path as the CLI's native sql/search/archive
+// commands (see cli.ApplyGroupScopeFromEnv, called at server startup to
+// apply the ZOTERO_GROUP fallback that cobra's PersistentPreRunE would
+// otherwise apply). On error, fall back to the same data-dir computation
+// cli.defaultDBPath uses so behavior on a broken environment is no worse
+// than before.
 func dbPath() string {
+	if path, err := cli.DefaultDBPath("zotio"); err == nil {
+		return path
+	}
 	dataDir, err := cliutil.KindDir(cliutil.PathKindData)
 	if err != nil {
 		home, _ := os.UserHomeDir()
 		dataDir = filepath.Join(home, ".local", "share", cliutil.AppName())
 	}
-	file := "data.db"
-	if groupID := strings.TrimSpace(os.Getenv("ZOTERO_GROUP")); groupID != "" && isDigits(groupID) {
-		// Native MCP sql/search/resources must read the same group-scoped mirror
-		// selected for cobratree commands.
-		file = "data-group-" + groupID + ".db"
-	}
-	return filepath.Join(dataDir, file)
+	return filepath.Join(dataDir, "data.db")
 }
-
-func isDigits(s string) bool {
-	if s == "" {
-		return false
-	}
-	for _, r := range s {
-		if r < '0' || r > '9' {
-			return false
-		}
-	}
-	return true
-}
-
-// Note: MCP tools use their own dbPath() because they are in a separate package (main, not cli).
-// The CLI's defaultDBPath() in the cli package uses the same canonical path.
 
 func handleSearch(ctx context.Context, req mcplib.CallToolRequest) (*mcplib.CallToolResult, error) {
 	args := req.GetArguments()
@@ -295,6 +284,12 @@ func handleSQL(ctx context.Context, req mcplib.CallToolRequest) (*mcplib.CallToo
 	truncated := false
 	for rows.Next() {
 		if len(results) >= sqlRowLimit {
+			// Keep stepping past the limit instead of breaking. Stepping is
+			// deliberate: rows.Err() below must observe a failure that SQLite
+			// only raises on a later row, so truncation never masks a broken
+			// query (see TestHandleSQLSurfacesIteratorErrorAfterRowLimit).
+			// Only Next() runs here -- no Scan, no allocation -- so the cost is
+			// bounded by sqlQueryTimeout rather than by result-set size.
 			truncated = true
 			continue
 		}

@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 
+	"zotio/internal/cli"
 	"zotio/internal/mcp/bound"
 	"zotio/internal/store"
 
@@ -127,14 +128,61 @@ func TestDBPathUsesNumericZoteroGroup(t *testing.T) {
 	t.Setenv("HOME", home)
 	t.Setenv("ZOTERO_DATA_DIR", dataDir)
 
-	t.Setenv("ZOTERO_GROUP", "12345")
-	if got, want := dbPath(), filepath.Join(dataDir, "data-group-12345.db"); got != want {
-		t.Fatalf("dbPath() with numeric group = %q, want %q", got, want)
-	}
+	// activeGroupID is a cli package global, populated only via the exported
+	// ApplyGroupScopeFromEnv initializer now that dbPath() no longer reads
+	// ZOTERO_GROUP itself; each case restores it so the two cases don't leak
+	// group scope into each other.
+	func() {
+		defer cli.SnapshotGlobals()()
+		t.Setenv("ZOTERO_GROUP", "12345")
+		cli.ApplyGroupScopeFromEnv()
+		if got, want := dbPath(), filepath.Join(dataDir, "data-group-12345.db"); got != want {
+			t.Fatalf("dbPath() with numeric group = %q, want %q", got, want)
+		}
+	}()
 
-	t.Setenv("ZOTERO_GROUP", "team-alpha")
-	if got, want := dbPath(), filepath.Join(dataDir, "data.db"); got != want {
-		t.Fatalf("dbPath() with non-numeric group = %q, want personal DB %q", got, want)
+	func() {
+		defer cli.SnapshotGlobals()()
+		t.Setenv("ZOTERO_GROUP", "team-alpha")
+		cli.ApplyGroupScopeFromEnv()
+		if got, want := dbPath(), filepath.Join(dataDir, "data.db"); got != want {
+			t.Fatalf("dbPath() with non-numeric group = %q, want personal DB %q", got, want)
+		}
+	}()
+}
+
+// TestDBPathMatchesCLIResolver pins the collapsed dual-resolver contract:
+// mcp.dbPath() must return exactly what cli.DefaultDBPath("zotio") returns,
+// since MCP resource handlers call cli's exported JSON helpers directly and
+// must open the same on-disk file the native mcp sql/search tools open via
+// dbPath().
+func TestDBPathMatchesCLIResolver(t *testing.T) {
+	home := t.TempDir()
+	dataDir := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("ZOTERO_DATA_DIR", dataDir)
+
+	cases := []struct {
+		name  string
+		group string
+	}{
+		{"unset group", ""},
+		{"numeric group", "12345"},
+		{"non-numeric group", "team-alpha"},
+	}
+	for _, c := range cases {
+		func() {
+			defer cli.SnapshotGlobals()()
+			t.Setenv("ZOTERO_GROUP", c.group)
+			cli.ApplyGroupScopeFromEnv()
+			want, err := cli.DefaultDBPath("zotio")
+			if err != nil {
+				t.Fatalf("%s: cli.DefaultDBPath() error = %v", c.name, err)
+			}
+			if got := dbPath(); got != want {
+				t.Fatalf("%s: dbPath() = %q, want %q", c.name, got, want)
+			}
+		}()
 	}
 }
 

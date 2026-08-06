@@ -42,6 +42,11 @@ func main() {
 		server.WithPromptCapabilities(true),
 	)
 
+	// MCP resource handlers call exported cli helpers directly and never run
+	// cobra's PersistentPreRunE, so apply its ZOTERO_GROUP env fallback here
+	// before any tool/resource resolves a DB path.
+	cli.ApplyGroupScopeFromEnv()
+
 	mcptools.RegisterTools(s)
 	// First-class MCP resources and prompts.
 	mcptools.RegisterResources(s)

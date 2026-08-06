@@ -5,7 +5,11 @@
 
 package cli
 
-import "encoding/json"
+import (
+	"encoding/json"
+	"os"
+	"strings"
+)
 
 // AgentContextJSON builds the structured agent-context description from a fresh
 // command tree and returns it as indented JSON — the same payload the
@@ -41,4 +45,29 @@ func CommandOverrideCapability(path string) (operation string, requires []string
 		return "", nil, false, false
 	}
 	return entry.Operation, entry.Requires, entry.Destructive, true
+}
+
+// DefaultDBPath returns the canonical local SQLite database path for name,
+// honoring the active --group scope and demo mode (see defaultDBPath). It
+// exists so the MCP server resolves the identical group-scoped and
+// demo-scoped path as the CLI, instead of maintaining a second resolver
+// that can silently diverge from defaultDBPath's group/demo handling.
+func DefaultDBPath(name string) (string, error) {
+	return defaultDBPath(name)
+}
+
+// ApplyGroupScopeFromEnv sets activeGroupID from ZOTERO_GROUP when it is
+// currently unset and the env value is a non-empty numeric string. MCP
+// resource handlers call exported cli helpers (FreshnessJSON, HealthJSON,
+// ItemContextJSON, ...) directly and never execute the cobra root, so the
+// ZOTERO_GROUP fallback that PersistentPreRunE performs for CLI commands
+// never runs for them; the MCP server calls this once at startup to apply
+// the same fallback before serving.
+func ApplyGroupScopeFromEnv() {
+	if activeGroupID != "" {
+		return
+	}
+	if v := strings.TrimSpace(os.Getenv("ZOTERO_GROUP")); v != "" && isAllDigits(v) {
+		activeGroupID = v
+	}
 }

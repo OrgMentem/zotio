@@ -493,9 +493,9 @@ func archiveStatus(ctx context.Context) (map[string]any, error) {
 	}
 	counts := map[string]int{}
 	rows, qerr := db.QueryContext(ctx, `SELECT resource_type, COUNT(*) FROM resources GROUP BY resource_type`)
-	if err := ctx.Err(); err != nil {
-		return nil, err
-	}
+	// No cancellation check between QueryContext and this block: returning here
+	// would leak the open sql.Rows. The loop below checks ctx itself and closes
+	// rows on the way out.
 	if qerr == nil {
 		for rows.Next() {
 			var rt string
