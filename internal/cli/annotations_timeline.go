@@ -47,12 +47,14 @@ func newAnnotationsTimelineCmd(flags *rootFlags) *cobra.Command {
 			}
 
 			var annotations []annotationSummary
+			var provenance DataProvenance
 			if flagCollection != "" {
 				path := "/collections/" + url.PathEscape(flagCollection) + "/items"
-				items, err := fetchResolvedZoteroItems(cmd.Context(), c, readFlags, path, nil, 0)
+				items, prov, err := fetchResolvedZoteroItems(cmd.Context(), c, readFlags, path, nil, 0)
 				if err != nil {
 					return classifyAPIError(err, flags)
 				}
+				provenance = prov
 				for _, item := range items {
 					if !zoteroItemHasChildren(item) {
 						continue
@@ -80,7 +82,7 @@ func newAnnotationsTimelineCmd(flags *rootFlags) *cobra.Command {
 				if flagItem != "" || hasSince {
 					maxItems = 0
 				}
-				items, err := fetchResolvedZoteroItems(cmd.Context(), c, readFlags, "/items", map[string]string{
+				items, prov, err := fetchResolvedZoteroItems(cmd.Context(), c, readFlags, "/items", map[string]string{
 					"itemType":  "annotation",
 					"sort":      "dateAdded",
 					"direction": "desc",
@@ -88,6 +90,7 @@ func newAnnotationsTimelineCmd(flags *rootFlags) *cobra.Command {
 				if err != nil {
 					return classifyAPIError(err, flags)
 				}
+				provenance = prov
 				annotations = annotationSummariesFromItems(items)
 			}
 
@@ -110,7 +113,7 @@ func newAnnotationsTimelineCmd(flags *rootFlags) *cobra.Command {
 			if flagLimit > 0 && len(filtered) > flagLimit {
 				filtered = filtered[:flagLimit]
 			}
-			return printCommandJSON(cmd.OutOrStdout(), filtered, flags)
+			return printCommandJSONEnvelope(cmd.OutOrStdout(), filtered, flags, provenance)
 		},
 	}
 	cmd.Flags().IntVar(&flagLimit, "limit", 50, "Maximum number of annotations to return")

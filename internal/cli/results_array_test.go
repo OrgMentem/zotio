@@ -11,6 +11,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"github.com/spf13/cobra"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -165,5 +166,99 @@ func TestItemsFindGainsResultsWrapper(t *testing.T) {
 	}
 	if got := env.Results[0]["key"]; got != "DOIKEY1" {
 		t.Fatalf("results[0].key = %v, want DOIKEY1", got)
+	}
+}
+
+func annotationEnvelopeFixture() string {
+	return `{"key":"ANN1","version":1,"data":{"key":"ANN1","itemType":"annotation","parentItem":"PARENT1","dateAdded":"2026-08-08T10:00:00Z","annotationColor":"#ffd400","annotationType":"highlight","annotationText":"A highlighted passage","annotationComment":"A note","annotationPageLabel":"1"}}`
+}
+
+func TestAnnotationsSearchResultsIsArray(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/users/0/items" {
+			t.Fatalf("unexpected request path %q", r.URL.Path)
+		}
+		_, _ = w.Write([]byte("[" + annotationEnvelopeFixture() + "]"))
+	}))
+	t.Cleanup(srv.Close)
+	t.Setenv("ZOTERO_BASE_URL", srv.URL+"/users/0")
+	t.Setenv("ZOTERO_CONFIG", filepath.Join(t.TempDir(), "missing.toml"))
+
+	flags := &rootFlags{asJSON: true, dataSource: "live", noCache: true}
+	cmd := newAnnotationsSearchCmd(flags)
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&bytes.Buffer{})
+	cmd.SetArgs([]string{"passage"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("annotations search: %v", err)
+	}
+	env := decodeResultsArrayEnvelope(t, out.Bytes())
+	if len(env.Results) != 1 || env.Results[0]["key"] != "ANN1" {
+		t.Fatalf("results[0] = %#v, want annotation ANN1", env.Results)
+	}
+}
+
+func TestAnnotationsTimelineResultsIsArray(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/users/0/items" {
+			t.Fatalf("unexpected request path %q", r.URL.Path)
+		}
+		_, _ = w.Write([]byte("[" + annotationEnvelopeFixture() + "]"))
+	}))
+	t.Cleanup(srv.Close)
+	t.Setenv("ZOTERO_BASE_URL", srv.URL+"/users/0")
+	t.Setenv("ZOTERO_CONFIG", filepath.Join(t.TempDir(), "missing.toml"))
+
+	flags := &rootFlags{asJSON: true, dataSource: "live", noCache: true}
+	cmd := newAnnotationsTimelineCmd(flags)
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&bytes.Buffer{})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("annotations timeline: %v", err)
+	}
+	env := decodeResultsArrayEnvelope(t, out.Bytes())
+	if len(env.Results) != 1 || env.Results[0]["key"] != "ANN1" {
+		t.Fatalf("results[0] = %#v, want annotation ANN1", env.Results)
+	}
+}
+
+func TestCapabilitiesResultsIsArray(t *testing.T) {
+	root := &cobra.Command{Use: "zotio"}
+	root.AddCommand(&cobra.Command{
+		Use:         "demo",
+		Annotations: map[string]string{"mcp:read-only": "true"},
+		RunE:        func(cmd *cobra.Command, args []string) error { return nil },
+	})
+	cmd := newCapabilitiesCmd(root, &rootFlags{})
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("capabilities: %v", err)
+	}
+	env := decodeResultsArrayEnvelope(t, out.Bytes())
+	if len(env.Results) != 1 || env.Results[0]["path"] != "demo" {
+		t.Fatalf("results[0] = %#v, want capability demo", env.Results)
+	}
+}
+
+func TestProfileListResultsIsArray(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("ZOTERO_CONFIG", filepath.Join(t.TempDir(), "missing.toml"))
+	if err := saveProfileStore(&profileStore{Profiles: map[string]Profile{
+		"night": {Name: "night", Description: "Nightly defaults", Values: map[string]string{"data-source": "local"}},
+	}}); err != nil {
+		t.Fatalf("seed profile store: %v", err)
+	}
+	cmd := newProfileListCmd(&rootFlags{asJSON: true})
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("profile list: %v", err)
+	}
+	env := decodeResultsArrayEnvelope(t, out.Bytes())
+	if len(env.Results) != 1 || env.Results[0]["name"] != "night" {
+		t.Fatalf("results[0] = %#v, want profile night", env.Results)
 	}
 }

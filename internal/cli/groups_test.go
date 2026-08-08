@@ -101,15 +101,12 @@ func TestGroupsList(t *testing.T) {
 	if err := jsonCmd.Execute(); err != nil {
 		t.Fatalf("groups list --json: %v", err)
 	}
-	var groups []map[string]any
-	if err := json.Unmarshal(jsonBuf.Bytes(), &groups); err != nil {
-		t.Fatalf("decoding json output %q: %v", jsonBuf.String(), err)
+	env := decodeResultsArrayEnvelope(t, jsonBuf.Bytes())
+	if len(env.Results) != 1 {
+		t.Fatalf("got %d groups, want 1", len(env.Results))
 	}
-	if len(groups) != 1 {
-		t.Fatalf("got %d groups, want 1", len(groups))
-	}
-	if groupFieldString(groups[0], "name") != "Lab" {
-		t.Errorf("group name = %q, want Lab", groupFieldString(groups[0], "name"))
+	if groupFieldString(env.Results[0], "name") != "Lab" {
+		t.Errorf("group name = %q, want Lab", groupFieldString(env.Results[0], "name"))
 	}
 
 	// Table output renders the flattened columns.

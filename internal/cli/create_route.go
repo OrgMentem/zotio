@@ -217,7 +217,15 @@ func routeCreateItemVia(ctx context.Context, flags *rootFlags, via string, webCl
 				return itemCreateResult{}, err
 			}
 		}
-		return itemCreateResult{Via: "connector", Session: sessionID, ConnKey: connectorKey}, nil
+		// Resolve the real Zotero key on success as well, not only when the
+		// connector errored. ConnKey is the id zotio generated for the session and
+		// means nothing to the API, so without this a connector create reported an
+		// empty key: the journal recorded nothing actionable and `journal undo`
+		// had no item to trash. The item is created asynchronously by the desktop,
+		// so an unresolved lookup is reported as such rather than failing a write
+		// that already succeeded.
+		resolved, _, _ := confirmConnectorCreate(flags, item, createdAfter)
+		return itemCreateResult{Via: "connector", Session: sessionID, ConnKey: connectorKey, WebKey: resolved}, nil
 	default:
 		return itemCreateResult{}, fmt.Errorf("unsupported create route %q", via)
 	}

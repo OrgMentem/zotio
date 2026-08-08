@@ -8,6 +8,7 @@ import (
 	"compress/zlib"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -39,6 +40,33 @@ func TestExtractPDFDOI(t *testing.T) {
 	// No DOI anywhere.
 	if doi, src, err := extractPDFDOI(writeScanFile(t, dir, "scan001.pdf", "binary-ish bytes, no identifier")); err != nil || doi != "" || src != "none" {
 		t.Errorf("no DOI = (%q,%q,%v), want (\"\", none, nil)", doi, src, err)
+	}
+}
+
+func TestImportScanRegularFileGuidesImportPDF(t *testing.T) {
+	path := writeScanFile(t, t.TempDir(), "paper.pdf", "not a complete PDF")
+	cmd := newImportScanCmd(&rootFlags{})
+	cmd.SilenceErrors, cmd.SilenceUsage = true, true
+	cmd.SetArgs([]string{path})
+
+	err := cmd.Execute()
+	if err == nil || !strings.Contains(err.Error(), "zotio import pdf") {
+		t.Fatalf("import scan regular-file error = %v, want guidance to zotio import pdf", err)
+	}
+	if !strings.Contains(err.Error(), "expects a directory") {
+		t.Fatalf("import scan regular-file error = %v, want directory guidance", err)
+	}
+}
+
+func TestImportScanMissingPathPreservesNotFoundError(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "missing")
+	cmd := newImportScanCmd(&rootFlags{})
+	cmd.SilenceErrors, cmd.SilenceUsage = true, true
+	cmd.SetArgs([]string{path})
+
+	err := cmd.Execute()
+	if err == nil || !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("import scan missing-path error = %v, want not-found error", err)
 	}
 }
 

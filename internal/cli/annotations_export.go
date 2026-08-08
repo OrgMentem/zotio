@@ -91,7 +91,7 @@ func newAnnotationsExportCmd(flags *rootFlags) *cobra.Command {
 				path = "/items"
 				params["tag"] = flagTag
 			}
-			items, err := fetchResolvedZoteroItems(cmd.Context(), c, readFlags, path, params, flagLimit)
+			items, _, err := fetchResolvedZoteroItems(cmd.Context(), c, readFlags, path, params, flagLimit)
 			if err != nil {
 				return classifyAPIError(err, flags)
 			}
@@ -222,10 +222,11 @@ func fetchZoteroItems(c zoteroGetter, path string, params map[string]string, max
 	return all, nil
 }
 
-func fetchResolvedZoteroItems(ctx context.Context, c *client.Client, flags *rootFlags, path string, params map[string]string, maxItems int) ([]map[string]any, error) {
+func fetchResolvedZoteroItems(ctx context.Context, c *client.Client, flags *rootFlags, path string, params map[string]string, maxItems int) ([]map[string]any, DataProvenance, error) {
 	all := make([]map[string]any, 0)
 	start := 0
 	pageSize := 100
+	var provenance DataProvenance
 	for {
 		if maxItems > 0 {
 			remaining := maxItems - len(all)
@@ -241,13 +242,16 @@ func fetchResolvedZoteroItems(ctx context.Context, c *client.Client, flags *root
 		pageParams := cloneStringMap(params)
 		pageParams["limit"] = fmt.Sprintf("%d", pageSize)
 		pageParams["start"] = fmt.Sprintf("%d", start)
-		data, _, err := resolveRead(ctx, c, flags, "items", false, path, pageParams, nil)
+		data, prov, err := resolveRead(ctx, c, flags, "items", false, path, pageParams, nil)
 		if err != nil {
-			return nil, err
+			return nil, DataProvenance{}, err
+		}
+		if start == 0 {
+			provenance = prov
 		}
 		items, err := decodeZoteroItems(data)
 		if err != nil {
-			return nil, err
+			return nil, DataProvenance{}, err
 		}
 		if len(items) == 0 {
 			break
@@ -261,7 +265,27 @@ func fetchResolvedZoteroItems(ctx context.Context, c *client.Client, flags *root
 	if maxItems > 0 && len(all) > maxItems {
 		all = all[:maxItems]
 	}
-	return all, nil
+	return all, provenance, nil
+}
+
+func printCommandJSONEnvelope(w io.Writer, v any, flags *rootFlags, prov DataProvenance) error {
+	data, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+	if flags.selectFields != "" {
+		data = filterFields(data, flags.selectFields)
+	} else if flags.compact {
+		data = compactFields(data)
+	}
+	wrapped, err := wrapWithProvenance(json.RawMessage(data), attachFreshness(prov, flags))
+	if err != nil {
+		return err
+	}
+	if flags.quiet {
+		return nil
+	}
+	return printOutput(w, wrapped, true)
 }
 
 func cloneStringMap(in map[string]string) map[string]string {

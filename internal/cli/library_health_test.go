@@ -667,9 +667,16 @@ func TestLibraryHealthScopeLineNamesDefinition(t *testing.T) {
 		Preset: "quick",
 	}
 	got := renderHealthReport(t, report)
-	want := "Scope: library · 928 top-level items (4306 mirrored rows) · source local"
+	flag := newLibraryHealthCmd(&rootFlags{}).Flags().Lookup("for")
+	if flag == nil {
+		t.Fatal("library health is missing the --for flag")
+	}
+	want := "Scope: library · 928 top-level items (4306 mirrored rows) · source local · --" + flag.Name + " " + report.Preset
 	if !strings.Contains(got, want) {
 		t.Errorf("scope line = %q, want it to contain %q", got, want)
+	}
+	if strings.Contains(got, "preset quick") {
+		t.Errorf("scope line = %q, must use the accepted --for spelling", got)
 	}
 }
 

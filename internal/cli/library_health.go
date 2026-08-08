@@ -1203,7 +1203,7 @@ func printHealthReport(cmd *cobra.Command, report healthReport) {
 			scopeLine += fmt.Sprintf(" · synced %s ago", age)
 		}
 	}
-	fmt.Fprintf(out, "%s · preset %s\n\n", scopeLine, report.Preset)
+	fmt.Fprintf(out, "%s · --for %s\n\n", scopeLine, report.Preset)
 
 	for _, sev := range []string{sevCritical, sevHigh, sevInfo} {
 		group := findingsForSeverity(report.Findings, sev)

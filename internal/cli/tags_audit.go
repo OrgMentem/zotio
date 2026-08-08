@@ -72,21 +72,26 @@ func newTagsAuditCmd(flags *rootFlags) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			totalTags, plans, ok, err := readTagAuditPlans(cmd, policy)
+			totalTags, plans, ok, prov, err := readTagAuditPlans(cmd, policy)
 			if err != nil {
 				return err
 			}
 			if !ok {
 				return nil
 			}
-			if flags.asJSON {
+			if flags.asJSON && wantsJSONEnvelope(cmd.OutOrStdout(), flags) {
 				data, err := json.Marshal(plans)
 				if err != nil {
 					return err
 				}
-				jsonFlags := *flags
-				jsonFlags.compact = false
-				return printOutputWithFlags(cmd.OutOrStdout(), json.RawMessage(data), &jsonFlags)
+				if flags.selectFields != "" {
+					data = filterFields(data, flags.selectFields)
+				}
+				wrapped, err := wrapWithProvenance(json.RawMessage(data), prov)
+				if err != nil {
+					return err
+				}
+				return printOutput(cmd.OutOrStdout(), wrapped, true)
 			}
 			return printTagAuditReport(cmd, totalTags, plans, policy, flags.dryRun)
 		},
@@ -116,7 +121,7 @@ func newTagsAuditFixCmd(flags *rootFlags) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			_, plans, ok, err := readTagAuditPlans(cmd, policy)
+			_, plans, ok, _, err := readTagAuditPlans(cmd, policy)
 			if err != nil {
 				return err
 			}
@@ -199,31 +204,32 @@ FROM resources, json_each(json_extract(data, '$.data.tags')) AS tags
 WHERE resource_type = 'items' AND tag_name IS NOT NULL AND tag_name != ''
 	AND CAST(json_extract(tags.value, '$.type') AS INTEGER) = 1`
 
-func readTagAuditPlans(cmd *cobra.Command, prefer tagAuditPrefer) (int, []tagAuditPlan, bool, error) {
+func readTagAuditPlans(cmd *cobra.Command, prefer tagAuditPrefer) (int, []tagAuditPlan, bool, DataProvenance, error) {
 	rawDB, err := openStoreForRead(cmd.Context(), "zotio")
 	if err != nil {
-		return 0, nil, false, fmt.Errorf("opening database: %w", err)
+		return 0, nil, false, DataProvenance{}, fmt.Errorf("opening database: %w", err)
 	}
 	if rawDB == nil {
 		fmt.Fprintln(cmd.OutOrStdout(), "Run 'zotio sync' first.")
-		return 0, nil, false, nil
+		return 0, nil, false, DataProvenance{}, nil
 	}
 	defer rawDB.Close()
+	prov := localProvenance(rawDB, "tags", "local_only")
 	db := localQueryStore{rawDB}
 
 	tagRows, err := db.QueryRaw(tagAuditDistinctQuery)
 	if err != nil {
-		return 0, nil, false, fmt.Errorf("querying tags: %w", err)
+		return 0, nil, false, DataProvenance{}, fmt.Errorf("querying tags: %w", err)
 	}
 	countRows, err := db.QueryRaw(tagAuditCountQuery)
 	if err != nil {
-		return 0, nil, false, fmt.Errorf("querying tag counts: %w", err)
+		return 0, nil, false, DataProvenance{}, fmt.Errorf("querying tag counts: %w", err)
 	}
 	automaticTags := map[string]bool{}
 	if prefer != tagAuditPreferFrequency {
 		automaticRows, err := db.QueryRaw(tagAuditAutomaticQuery)
 		if err != nil {
-			return 0, nil, false, fmt.Errorf("querying automatic tags: %w", err)
+			return 0, nil, false, DataProvenance{}, fmt.Errorf("querying automatic tags: %w", err)
 		}
 		for _, row := range automaticRows {
 			if name := sqlStringValue(row["tag_name"]); name != "" {
@@ -232,7 +238,7 @@ func readTagAuditPlans(cmd *cobra.Command, prefer tagAuditPrefer) (int, []tagAud
 		}
 	}
 
-	return len(tagRows), buildTagAuditPlans(tagRows, countRows, prefer, automaticTags), true, nil
+	return len(tagRows), buildTagAuditPlans(tagRows, countRows, prefer, automaticTags), true, prov, nil
 }
 
 const tagAuditAliasItemsQuery = `

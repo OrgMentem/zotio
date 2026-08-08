@@ -4,6 +4,19 @@ Notable changes to zotio. Format follows [Keep a Changelog](https://keepachangel
 
 ## [Unreleased]
 ### Fixed
+- **`import scan` now explains when it receives a file.** The command previously
+  passed an existing regular file to directory reads and surfaced the misleading
+  filesystem error "not a directory"; it now directs single-file imports to
+  `zotio import pdf <file>` while preserving missing-path and permission errors.
+- **`library health` now labels its scope with the accepted flag spelling.** The
+  human report previously said "preset quick", even though the selector is
+  `--for`; it now prints `--for quick` so the displayed invocation can be copied.
+- **List-shaped reads now share the `{meta, results}` envelope.** `tags audit`,
+  `annotations search`, `annotations timeline`, `capabilities`, `groups list`, and
+  `profile list` previously returned bare arrays, so agents could not use the
+  documented `.results[]` traversal consistently. They now expose array results
+  with provenance metadata; `annotations export` remains raw markdown/JSON so its
+  consumable export format is unchanged.
 - **`import pdf --on-duplicate` now classifies before importing.** The command
   previously ignored `import scan`'s `attach_candidate` verdict and could create
   a second item for a DOI already in the library. Duplicate matches now skip by
@@ -15,6 +28,11 @@ Notable changes to zotio. Format follows [Keep a Changelog](https://keepachangel
   labeled review-only without runnable rename commands. Safe exact and
   initials-compatible variants still emit pasteable commands, while canonical
   names now prefer the most complete spelling over frequency.
+- **`creators audit --json` now exposes every safe rename.** JSON findings
+  previously offered a runnable command only for exact-normalized groups, while
+  the text plan also emitted commands for initials/full-name aliases; findings
+  now carry the same per-alias commands for both safe tiers, while ambiguous
+  aliases remain unsafe and review-only.
 - **`items trash` shows what you just trashed.** Writes route to
   `api.zotero.org`, but the command read the Zotero desktop local API, which does
   not learn about a trash until Zotero syncs it down — it returned an empty trash

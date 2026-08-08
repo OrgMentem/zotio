@@ -200,11 +200,23 @@ preconditions (live_local_api, web_api_key, synced_store, better_bibtex) so
 agents can select safe commands and pre-flight requirements without parsing
 --help or guessing from names.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			data, err := json.Marshal(buildCapabilityRegistry(rootCmd))
+			if err != nil {
+				return err
+			}
+			wrapped, err := wrapWithProvenance(json.RawMessage(data), DataProvenance{
+				Source:       "local",
+				Reason:       "generated_registry",
+				ResourceType: "capabilities",
+			})
+			if err != nil {
+				return err
+			}
 			enc := json.NewEncoder(cmd.OutOrStdout())
 			if pretty {
 				enc.SetIndent("", "  ")
 			}
-			return enc.Encode(buildCapabilityRegistry(rootCmd))
+			return enc.Encode(wrapped)
 		},
 	}
 	cmd.Flags().BoolVar(&pretty, "pretty", false, "indent JSON output for human reading")

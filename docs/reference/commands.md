@@ -3,7 +3,7 @@
 
 Every `zotio` command, generated directly from the binary. Add `--agent` to any command for JSON output and non-interactive defaults; mutating commands preview unless `--yes` is passed.
 
-Read commands emit a `{meta, results}` envelope in JSON mode; for ordinary list/single-resource reads, `results` is *always* a JSON array, even for a single-object read like `items get` (a one-element array) — index it as `results[0]` or iterate with `results[]` uniformly. Report-shaped diagnostics are the explicit exception: `items audit` returns named summary/check fields (including `findings`) rather than a `results` array.
+Read commands emit a `{meta, results}` envelope in JSON mode; for ordinary list/single-resource reads, `results` is *always* a JSON array, even for a single-object read like `items get` (a one-element array) — index it as `results[0]` or iterate with `results[]` uniformly. Purpose-built report-shaped diagnostics are explicit exceptions: `items audit`, `journal show`, `doctor`, `which`, `analytics`, `schema drift`, `capabilities drift`, `workflow status`, `reading-list`, `items duplicates`, `items citekey-conflicts`, and `creators audit` expose named report fields instead of `results`. `annotations export` is also an explicit raw-export exception: its `--format markdown` and `--format json` outputs are consumable documents, not read-list envelopes.
 
 ## Global flags
 

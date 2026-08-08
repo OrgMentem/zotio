@@ -274,7 +274,11 @@ func newProfileListCmd(flags *rootFlags) *cobra.Command {
 						"field_count": len(p.Values),
 					})
 				}
-				return printJSONFiltered(cmd.OutOrStdout(), out, flags)
+				return printCommandJSONEnvelope(cmd.OutOrStdout(), out, flags, DataProvenance{
+					Source:       "local",
+					Reason:       "profile_store",
+					ResourceType: "profiles",
+				})
 			}
 			headers := []string{"NAME", "FIELDS", "DESCRIPTION"}
 			rows := make([][]string, 0, len(names))

@@ -283,6 +283,38 @@ func TestTagsAuditReportNamesFixCommand(t *testing.T) {
 	}
 }
 
+func TestTagsAuditResultsIsArrayAndHumanPlanStaysIntact(t *testing.T) {
+	seedTagsAuditFixStore(t, duplicateTagAuditItems())
+
+	jsonFlags := &rootFlags{asJSON: true}
+	jsonCmd := newTagsAuditCmd(jsonFlags)
+	var jsonOut bytes.Buffer
+	jsonCmd.SetOut(&jsonOut)
+	jsonCmd.SetErr(io.Discard)
+	if err := jsonCmd.Execute(); err != nil {
+		t.Fatalf("tags audit --json: %v", err)
+	}
+	env := decodeResultsArrayEnvelope(t, jsonOut.Bytes())
+	if len(env.Results) == 0 {
+		t.Fatalf("tags audit results is empty: %s", jsonOut.String())
+	}
+	if _, ok := env.Results[0]["canonical"]; !ok {
+		t.Fatalf("tags audit results[0] missing canonical plan: %s", jsonOut.String())
+	}
+
+	human := runTagsAuditReportCmd(t)
+	for _, want := range []string{
+		"Summary",
+		"Merge plan",
+		"Run zotio tags audit fix --yes to apply every rename below in one batch",
+		"zotio tags rename",
+	} {
+		if !strings.Contains(human, want) {
+			t.Fatalf("human tags audit output missing %q:\n%s", want, human)
+		}
+	}
+}
+
 // runTagsAuditFixCmdArgs is runTagsAuditFixCmd (tags_audit_fix_test.go) but
 // accepts extra args after "fix", to exercise --prefer.
 func runTagsAuditFixCmdArgs(t *testing.T, flags *rootFlags, baseURL string, extra ...string) (mutation.Envelope, string, error) {

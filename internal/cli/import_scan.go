@@ -131,6 +131,14 @@ or text-only PDFs may report "unidentified".`,
 }
 
 func listPDFs(dir string, limit int) ([]string, error) {
+	info, err := os.Stat(dir)
+	if err != nil {
+		return nil, fmt.Errorf("reading %s: %w", dir, err)
+	}
+	if info.Mode().IsRegular() {
+		return nil, fmt.Errorf("import scan expects a directory; for a single file use `zotio import pdf %s`", dir)
+	}
+
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return nil, fmt.Errorf("reading %s: %w", dir, err)

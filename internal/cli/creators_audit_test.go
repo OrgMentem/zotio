@@ -316,6 +316,76 @@ func TestCreatorsAuditEmitsRunnableRenameCommand(t *testing.T) {
 	}
 }
 
+func TestCreatorsAuditJSONRunnableRenamesMatchTextPlan(t *testing.T) {
+	names := []string{
+		"John Exact",
+		"john  exact",
+		"JOHN EXACT",
+		"E. Hollnagel",
+		"Erik Hollnagel",
+		"Erik A. Hollnagel",
+		"Zhengguang Liu",
+		"Yangyang Liu",
+		"Huaigui Liu",
+		"Yang S. Liu",
+		"Qimin Liu",
+		"Li Liu",
+	}
+	items := make([]json.RawMessage, 0, len(names))
+	for i, name := range names {
+		items = append(items, creatorAuditTestItem(fmt.Sprintf("P%d", i), name, "", nil, creatorAuditNameCreator(name)))
+	}
+	creatorAuditSeedCommandStore(t, items...)
+
+	report, _ := creatorAuditRunJSONCommand(t, "--include-ambiguous")
+	jsonRunnable := 0
+	jsonAmbiguous := 0
+	for _, finding := range report.Findings {
+		actionCommand := ""
+		if finding.RecommendedAction != nil {
+			actionCommand = finding.RecommendedAction.Command
+		}
+		aliases, ok := finding.Evidence["aliases"].([]any)
+		if !ok || len(aliases) != 1 {
+			t.Fatalf("finding %q aliases = %#v, want one alias", finding.Title, finding.Evidence["aliases"])
+		}
+		alias, ok := aliases[0].(map[string]any)
+		if !ok {
+			t.Fatalf("finding %q alias = %#v, want object", finding.Title, aliases[0])
+		}
+		unsafe, _ := alias["unsafe"].(bool)
+		renameCommand, _ := alias["rename_command"].(string)
+		if unsafe {
+			jsonAmbiguous++
+			if actionCommand != "" {
+				t.Fatalf("ambiguous finding %q carried runnable command %q", finding.Title, actionCommand)
+			}
+			continue
+		}
+		if renameCommand == "" || actionCommand != renameCommand {
+			t.Fatalf("safe finding %q action = %q, alias rename_command = %q", finding.Title, actionCommand, renameCommand)
+		}
+		jsonRunnable++
+	}
+	if jsonAmbiguous == 0 {
+		t.Fatal("fixture did not produce an ambiguous finding")
+	}
+
+	flags := &rootFlags{timeout: time.Second}
+	cmd := newCreatorsAuditCmd(flags)
+	cmd.SilenceErrors, cmd.SilenceUsage = true, true
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetArgs([]string{"--include-ambiguous"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("creators audit text: %v", err)
+	}
+	textRunnable := strings.Count(out.String(), "zotio creators rename --from ")
+	if jsonRunnable != textRunnable {
+		t.Fatalf("runnable rename counts differ: JSON=%d text=%d; text=%q", jsonRunnable, textRunnable, out.String())
+	}
+}
+
 func TestCreatorsAuditORCIDSidecarAndEvidence(t *testing.T) {
 	dbPath := creatorAuditSeedCommandStore(t,
 		creatorAuditTestItem("L1", "Lee Initial", "10.555/lee-initial", nil, creatorAuditNameCreator("A. Lee")),

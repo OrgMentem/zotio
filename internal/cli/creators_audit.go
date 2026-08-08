@@ -695,7 +695,7 @@ func makeCreatorVariantGroup(tier creatorVariantTier, members []*creatorNameVari
 			ItemKeys:  member.cappedItemKeys(creatorAuditItemKeyCap),
 			Unsafe:    tier == creatorVariantTierAmbiguous,
 		}
-		if !alias.Unsafe {
+		if creatorVariantTierAllowsRename(tier) {
 			alias.RenameCommand = creatorRenameCommand(member.Name, canonical.Name)
 		}
 		aliases = append(aliases, alias)
@@ -710,6 +710,35 @@ func makeCreatorVariantGroup(tier creatorVariantTier, members []*creatorNameVari
 			"item_key_cap": creatorAuditItemKeyCap,
 		},
 		members: members,
+	}
+}
+
+func creatorVariantTierAllowsRename(tier creatorVariantTier) bool {
+	return tier == creatorVariantTierExact || tier == creatorVariantTierInitials
+}
+
+func creatorVariantAliasRunnable(alias creatorVariantAlias) bool {
+	return !alias.Unsafe && alias.RenameCommand != ""
+}
+
+func creatorVariantFindingAction(alias creatorVariantAlias) *RecommendedAction {
+	if creatorVariantAliasRunnable(alias) {
+		return &RecommendedAction{Command: alias.RenameCommand}
+	}
+	if alias.Unsafe {
+		return &RecommendedAction{Text: "Review manually; ORCID conflicts or ambiguous same-surname evidence should not be auto-merged."}
+	}
+	return nil
+}
+
+func creatorVariantFindingActionText(tier creatorVariantTier) string {
+	switch tier {
+	case creatorVariantTierExact:
+		return "Exact-normalized creator variants are safe candidates for creators audit fix when that mutation surface is enabled."
+	case creatorVariantTierInitials:
+		return "Initial/full-name creator variants are safe candidates for a deliberate creators rename."
+	default:
+		return ""
 	}
 }
 
@@ -1106,42 +1135,59 @@ func creatorAuditSummary(scopeExpr string, occurrences []*creatorOccurrence, gro
 func creatorVariantFindings(groups []creatorVariantGroup, source FindingSource) []Finding {
 	findings := make([]Finding, 0, len(groups))
 	for _, group := range groups {
-		finding := Finding{
-			Kind:        string(group.Tier),
-			Severity:    sevInfo,
-			Title:       fmt.Sprintf("Creator variants for %s", group.Canonical),
-			Evidence:    creatorVariantFindingEvidence(group),
-			Source:      source,
-			Autofixable: group.Tier == creatorVariantTierExact,
-		}
-		switch group.Tier {
-		case creatorVariantTierExact:
-			cmdText := "Exact-normalized creator variants are safe candidates for creators audit fix when that mutation surface is enabled."
-			if len(group.Aliases) > 0 {
-				finding.RecommendedAction = &RecommendedAction{Command: group.Aliases[0].RenameCommand, Text: cmdText}
-			} else {
-				finding.RecommendedAction = &RecommendedAction{Text: cmdText}
+		aliases := group.Aliases
+		if len(aliases) == 0 {
+			finding := Finding{
+				Kind:        string(group.Tier),
+				Severity:    sevInfo,
+				Title:       fmt.Sprintf("Creator variants for %s", group.Canonical),
+				Evidence:    creatorVariantFindingEvidence(group),
+				Source:      source,
+				Autofixable: group.Tier == creatorVariantTierExact,
 			}
-		case creatorVariantTierInitials:
-			finding.RecommendedAction = &RecommendedAction{Command: "zotio creators audit fix --map <alias>=<canonical>"}
-		case creatorVariantTierAmbiguous:
-			finding.RecommendedAction = &RecommendedAction{Text: "Review manually; ORCID conflicts or ambiguous same-surname evidence should not be auto-merged."}
+			if text := creatorVariantFindingActionText(group.Tier); text != "" {
+				finding.RecommendedAction = &RecommendedAction{Text: text}
+			}
+			findings = append(findings, finding)
+			continue
 		}
-		findings = append(findings, finding)
+		for _, alias := range aliases {
+			finding := Finding{
+				Kind:        string(group.Tier),
+				Severity:    sevInfo,
+				Title:       fmt.Sprintf("Creator variants for %s", group.Canonical),
+				Evidence:    creatorVariantFindingEvidenceForAliases(group, []creatorVariantAlias{alias}),
+				Source:      source,
+				Autofixable: group.Tier == creatorVariantTierExact,
+			}
+			if action := creatorVariantFindingAction(alias); action != nil {
+				if action.Command != "" {
+					action.Text = creatorVariantFindingActionText(group.Tier)
+				}
+				finding.RecommendedAction = action
+			} else if text := creatorVariantFindingActionText(group.Tier); text != "" {
+				finding.RecommendedAction = &RecommendedAction{Text: text}
+			}
+			findings = append(findings, finding)
+		}
 	}
 	return findings
 }
 
 func creatorVariantFindingEvidence(group creatorVariantGroup) map[string]any {
-	aliases := make([]map[string]any, 0, len(group.Aliases))
-	for _, alias := range group.Aliases {
+	return creatorVariantFindingEvidenceForAliases(group, group.Aliases)
+}
+
+func creatorVariantFindingEvidenceForAliases(group creatorVariantGroup, aliasesInput []creatorVariantAlias) map[string]any {
+	aliases := make([]map[string]any, 0, len(aliasesInput))
+	for _, alias := range aliasesInput {
 		evidence := map[string]any{
 			"name":       alias.Name,
 			"item_count": alias.ItemCount,
 			"item_keys":  alias.ItemKeys,
 			"unsafe":     alias.Unsafe,
 		}
-		if alias.RenameCommand != "" {
+		if creatorVariantAliasRunnable(alias) {
 			evidence["rename_command"] = alias.RenameCommand
 		}
 		aliases = append(aliases, evidence)
@@ -1188,7 +1234,7 @@ func printCreatorsAuditReport(cmd *cobra.Command, report creatorsAuditReport) er
 				fmt.Fprintf(out, "  - %s (%d item(s): %s)\n", alias.Name, alias.ItemCount, keys)
 				if alias.Unsafe {
 					fmt.Fprintln(out, "    REVIEW ONLY — UNSAFE same-surname candidate; not a runnable rename command")
-				} else if alias.RenameCommand != "" {
+				} else if creatorVariantAliasRunnable(alias) {
 					fmt.Fprintf(out, "    %s\n", alias.RenameCommand)
 				}
 			}

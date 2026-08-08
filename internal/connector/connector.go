@@ -88,6 +88,14 @@ func (c *Client) SaveItems(ctx context.Context, sessionID, uri string, items []m
 	if uri == "" {
 		uri = "https://zotero.org/"
 	}
+	// Zotero's ItemSaver rejects a creator whose name fields are ALL empty with
+	// HTTP 500, before creating anything. schema new-item-template emits exactly
+	// that as its placeholder ([{"creatorType":"author","firstName":"","lastName":""}]),
+	// and `items new` sends the template verbatim, so every bare create with no
+	// --field creators=... failed on the default connector route. Bisected against
+	// /connector/saveItems: creators omitted -> 201, [] -> 201, both names empty
+	// -> 500, lastName only -> 201. Stripped here so every caller is covered.
+	items = withoutPlaceholderCreators(items)
 	payload := map[string]any{
 		"sessionID": sessionID,
 		"uri":       uri,
@@ -104,6 +112,57 @@ func (c *Client) SaveItems(ctx context.Context, sessionID, uri string, items []m
 	c.setVersion(req)
 	req.Header.Set("Content-Type", "application/json")
 	return c.expectCreated(req, "saveItems")
+}
+
+// withoutPlaceholderCreators removes creator entries whose name fields are all
+// empty, dropping the "creators" key entirely when none survive.
+//
+// Zotero's ItemSaver 500s on such an entry. An empty list and an absent key are
+// both accepted, so removing them is safe for every item type; a creator with
+// any name content is left untouched.
+func withoutPlaceholderCreators(items []map[string]any) []map[string]any {
+	cleaned := make([]map[string]any, 0, len(items))
+	for _, item := range items {
+		raw, ok := item["creators"].([]any)
+		if !ok {
+			cleaned = append(cleaned, item)
+			continue
+		}
+		kept := make([]any, 0, len(raw))
+		for _, entry := range raw {
+			if creator, ok := entry.(map[string]any); ok && creatorHasNoName(creator) {
+				continue
+			}
+			kept = append(kept, entry)
+		}
+		if len(kept) == len(raw) {
+			cleaned = append(cleaned, item)
+			continue
+		}
+		// Copy-on-write: the caller's map must not be mutated.
+		copied := make(map[string]any, len(item))
+		for k, v := range item {
+			copied[k] = v
+		}
+		if len(kept) == 0 {
+			delete(copied, "creators")
+		} else {
+			copied["creators"] = kept
+		}
+		cleaned = append(cleaned, copied)
+	}
+	return cleaned
+}
+
+// creatorHasNoName reports whether a creator carries no name content in any of
+// the fields Zotero accepts (firstName/lastName, or the single-field "name").
+func creatorHasNoName(creator map[string]any) bool {
+	for _, field := range []string{"firstName", "lastName", "name"} {
+		if value, ok := creator[field].(string); ok && strings.TrimSpace(value) != "" {
+			return false
+		}
+	}
+	return true
 }
 
 // SaveAttachment imports raw attachment bytes as a stored child of a connector-created parent.

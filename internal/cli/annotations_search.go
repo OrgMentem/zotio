@@ -59,7 +59,8 @@ func newAnnotationsSearchCmd(flags *rootFlags) *cobra.Command {
 						}
 						annotations := annotationSummariesFromItems(items)
 						filtered := filterAnnotationSummaries(annotations, query, flagColor, flagLimit)
-						return printCommandJSON(cmd.OutOrStdout(), filtered, flags)
+						prov := localProvenance(db, "annotations", "local_only")
+						return printCommandJSONEnvelope(cmd.OutOrStdout(), filtered, flags, prov)
 					}
 				}
 			}
@@ -86,7 +87,7 @@ func newAnnotationsSearchCmd(flags *rootFlags) *cobra.Command {
 					break
 				}
 			}
-			return printCommandJSON(cmd.OutOrStdout(), filtered, flags)
+			return printCommandJSONEnvelope(cmd.OutOrStdout(), filtered, flags, DataProvenance{Source: "live", ResourceType: "annotations"})
 		},
 	}
 	cmd.Flags().StringVar(&flagColor, "color", "", "Filter by annotation color (yellow, red, green, blue, purple, orange)")

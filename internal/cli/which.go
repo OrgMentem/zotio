@@ -11,13 +11,11 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// whichEntry is one row of the which ranking corpus. Curated entries are
-// seeded at generation time from the same NovelFeature list that drives
-// the SKILL.md feature section, so the command a `which` query returns is
-// guaranteed to exist and to match what the skill advertises. Every other
-// runnable command in the live Cobra tree gets a generic entry too (see
-// buildWhichIndex), so a command with no curated write-up is still
-// reachable by its own name and Short description.
+// whichEntry is one row of the which ranking corpus. Curated entries are a
+// hand-written feature index maintained alongside the user-facing skill and
+// docs; buildWhichIndex supplements it with every runnable command in the live
+// Cobra tree. This keeps curated natural-language matches focused while still
+// making uncurated commands reachable by their own name and Short description.
 type whichEntry struct {
 	Command      string   `json:"command"`
 	Description  string   `json:"description"`

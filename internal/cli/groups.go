@@ -49,8 +49,18 @@ func newGroupsListCmd(flags *rootFlags) *cobra.Command {
 			if err != nil {
 				return classifyAPIError(err, flags)
 			}
-			if flags.asJSON {
-				return printOutputWithFlags(cmd.OutOrStdout(), data, flags)
+			if flags.asJSON && wantsJSONEnvelope(cmd.OutOrStdout(), flags) {
+				filtered := data
+				if flags.selectFields != "" {
+					filtered = filterFields(filtered, flags.selectFields)
+				} else if flags.compact {
+					filtered = compactFields(filtered)
+				}
+				wrapped, err := wrapWithProvenance(filtered, DataProvenance{Source: "live", ResourceType: "groups"})
+				if err != nil {
+					return err
+				}
+				return printOutput(cmd.OutOrStdout(), wrapped, true)
 			}
 			rows, err := groupTableRows(data)
 			if err != nil {
