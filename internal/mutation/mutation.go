@@ -246,6 +246,16 @@ func Run(o Options, operation string, ops []Op) (Envelope, error) {
 		}
 		item.Status = status
 		item.Reason = reason
+		// A create cannot know its key until the object exists, so Op.Key carries a
+		// placeholder (the item type) at plan time. When Apply reports the real key
+		// in its reason, adopt it — this runs before the journal entry is built, so
+		// the journal records a key `journal undo` can actually act on rather than
+		// something like "journalArticle".
+		if detail, ok := reason.(map[string]any); ok {
+			if applied, ok := detail["key"].(string); ok && applied != "" {
+				item.Key = applied
+			}
+		}
 		switch status {
 		case "applied":
 			result.Summary.Applied++

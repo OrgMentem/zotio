@@ -4,6 +4,14 @@ Notable changes to zotio. Format follows [Keep a Changelog](https://keepachangel
 
 ## [Unreleased]
 ### Fixed
+- **An empty list response is no longer cached.** Reads hit the local desktop API
+  while writes route to `api.zotero.org`, so for a few seconds after a write a
+  filtered query legitimately returns nothing — and caching that pinned the
+  emptiness for the full 5-minute TTL, long after the read plane had caught up.
+  A `tags rename` previewed during that window then applied nothing and reported
+  success, because the apply served the preview's cached empty match set:
+  **previewing first, the careful workflow, was what broke the apply.** Selection
+  for a write now also bypasses the cache and queries the plane it writes to.
 - **`items delete` no longer destroys data it documented as recoverable.** The
   help said "moves to trash" and `items restore` exists to reverse it, but the
   command issued a hard `DELETE`: the item vanished from the server, was *not* in

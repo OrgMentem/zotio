@@ -410,6 +410,14 @@ func (c *Client) acquireCachePublicationLock(operation string, wait time.Duratio
 }
 
 func (c *Client) writeCacheAtGeneration(generation cacheGenerationToken, path string, params map[string]string, headers map[string]string, data json.RawMessage) error {
+	// Never cache an empty list. zotio reads the local desktop API while writes
+	// route to api.zotero.org, so for a few seconds after a write a filtered
+	// query legitimately returns nothing — and caching that pinned the emptiness
+	// for the full TTL, long after the read plane had caught up. An empty result
+	// is also the cheapest possible re-fetch, so there is nothing to protect.
+	if isEmptyJSONList(data) {
+		return nil
+	}
 	// Chmod as well as MkdirAll: cached Zotero API payloads contain private
 	// library metadata, so keep the directory and files private even when they
 	// already existed with older world-readable permissions.
@@ -455,6 +463,16 @@ func (c *Client) writeCacheAtGeneration(generation cacheGenerationToken, path st
 	}
 	writeErr := cliutil.AtomicWriteFile(cacheFile, data, 0o600, 0o700)
 	return errors.Join(writeErr, lock.Release())
+}
+
+// isEmptyJSONList reports whether a response body is an empty JSON array,
+// ignoring surrounding whitespace.
+func isEmptyJSONList(data json.RawMessage) bool {
+	trimmed := bytes.TrimSpace(data)
+	if len(trimmed) < 2 || trimmed[0] != '[' {
+		return false
+	}
+	return len(bytes.TrimSpace(trimmed[1:len(trimmed)-1])) == 0 && trimmed[len(trimmed)-1] == ']'
 }
 
 // invalidateCache wholesale-removes the cache directory so the next read

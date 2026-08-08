@@ -115,17 +115,8 @@ func runSingleItemCreate(cmd *cobra.Command, flags *rootFlags, spec singleItemCr
 	}
 
 	env, runErr := runMutation(cmd.Context(), flags, spec.operation, ops)
-	// The plan cannot know the key — the item does not exist yet — so Op.Key
-	// carries the item type as a placeholder. Once created, report the real key
-	// where every other command puts it, instead of leaving the caller to dig it
-	// out of reason.key.
-	if key := createdItemKeyOf(res); key != "" && env.Result != nil {
-		for i := range env.Result.Items {
-			if env.Result.Items[i].Status == "applied" {
-				env.Result.Items[i].Key = key
-			}
-		}
-	}
+	// The real key reaches the envelope AND the journal via the reason's "key"
+	// field, which mutation.Run adopts into ResultItem.Key before journalling.
 	if renderErr := renderMutation(cmd, flags, env, nil); renderErr != nil {
 		return renderErr
 	}
