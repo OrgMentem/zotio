@@ -2,7 +2,64 @@
 
 Notable changes to zotio. Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow [SemVer](https://semver.org/).
 
-## [Unreleased]
+## [0.17.0] — 2026-08-08
+
+This release is dominated by a single root cause: zotio reads from the Zotero
+desktop local API but routes writes to `api.zotero.org`, and the two planes
+number object versions independently. Code that compared or persisted a version
+without qualifying it by plane was wrong, which is why writes could not happen,
+the mirror could not refresh, and a preview could make the apply that followed
+silently do nothing. Found by four consecutive adversarial walk-tests of the
+deployed binary against a real 2621-item library.
+
+### Changed — breaking
+
+Every item here changes a JSON shape or a command's behaviour for scripted and
+agent consumers. Pre-1.0, so these ship in a minor release with no major-version
+signal.
+
+- **`.results` is always a JSON array.** It was an object for `items get`,
+  `collections get`, `searches get`, `tags get` and `schema new-item-template`
+  (now one-element arrays), and `items find` returned a bare top-level array with
+  no wrapper at all (now `{meta, results}`). `jq` written against one read command
+  threw on another. **Migration:** `.results[0]` where you previously used
+  `.results`.
+- **Eight more read commands gained the `{meta, results}` envelope.** `tags audit`,
+  `annotations search`, `annotations timeline`, `capabilities`, `groups list`,
+  `profile list`, `journal list` and `items collections-of` previously returned
+  bare arrays. **Migration:** `.results[]` instead of `.[]`.
+  `annotations export` deliberately still returns its raw
+  document; `items audit`, `journal show`, `doctor`, `which`, `analytics`,
+  `schema drift`, `workflow status`, `reading-list`, `items duplicates` and
+  `creators audit` remain report-shaped with purpose-built top-level keys.
+- **`items delete` now moves an item to the trash instead of destroying it.** It
+  documented "moves to trash" and `items restore` exists to reverse it, but it
+  issued a hard `DELETE`: the item and its child PDF were gone, nothing was in the
+  trash, and `--allow-destructive` did not gate it. **Migration:** the previous
+  behaviour is `--permanent`, which is marked destructive and therefore requires
+  `--allow-destructive`.
+- **`items delete`, `items restore` and `items update` use the standard mutation
+  envelope.** Each emitted a bespoke shape (`{action, resource, path, status}`, or
+  `{"status": "noop"}`), so the `.result.items[0]` pattern that works for every
+  other mutation threw. **Migration:** read `.result.items[0]`, and
+  `.journal.run_id` to undo your own write.
+- **`items new` reports the created item's key in `key`.** It reported the item
+  *type* there, with the real key buried in `reason.key` — and on the connector
+  route it reported nothing at all. **Migration:** none, unless you relied on the
+  old placeholder.
+- **`journal` is an object with a null `run_id` on no-ops**, not `null`, so one
+  extraction path works across a command's outcomes. **Migration:**
+  `.journal.run_id` no longer throws on a no-op.
+- **`creators audit --json` findings are per alias.** Previously grouped, and 59
+  of 73 safe renames carried no runnable command. Ambiguous same-surname
+  candidates now carry no command at all and are marked `"unsafe": true` — see
+  Fixed, they were proposing merges of different people.
+- **Upgrading forces one full resync.** Version cursors now record the plane that
+  issued them, and a cursor with no recorded plane is treated as foreign, so the
+  first `sync` after upgrading does a complete pass and clears stored per-row
+  versions. This is the repair for the frozen mirror described below; it happens
+  once.
+
 ### Fixed
 - **`import scan` now explains when it receives a file.** The command previously
   passed an existing regular file to directory reads and surfaced the misleading
@@ -11,12 +68,6 @@ Notable changes to zotio. Format follows [Keep a Changelog](https://keepachangel
 - **`library health` now labels its scope with the accepted flag spelling.** The
   human report previously said "preset quick", even though the selector is
   `--for`; it now prints `--for quick` so the displayed invocation can be copied.
-- **List-shaped reads now share the `{meta, results}` envelope.** `tags audit`,
-  `annotations search`, `annotations timeline`, `capabilities`, `groups list`, and
-  `profile list` previously returned bare arrays, so agents could not use the
-  documented `.results[]` traversal consistently. They now expose array results
-  with provenance metadata; `annotations export` remains raw markdown/JSON so its
-  consumable export format is unchanged.
 - **`import pdf --on-duplicate` now classifies before importing.** The command
   previously ignored `import scan`'s `attach_candidate` verdict and could create
   a second item for a DOI already in the library. Duplicate matches now skip by
@@ -28,11 +79,6 @@ Notable changes to zotio. Format follows [Keep a Changelog](https://keepachangel
   labeled review-only without runnable rename commands. Safe exact and
   initials-compatible variants still emit pasteable commands, while canonical
   names now prefer the most complete spelling over frequency.
-- **`creators audit --json` now exposes every safe rename.** JSON findings
-  previously offered a runnable command only for exact-normalized groups, while
-  the text plan also emitted commands for initials/full-name aliases; findings
-  now carry the same per-alias commands for both safe tiers, while ambiguous
-  aliases remain unsafe and review-only.
 - **`items trash` shows what you just trashed.** Writes route to
   `api.zotero.org`, but the command read the Zotero desktop local API, which does
   not learn about a trash until Zotero syncs it down — it returned an empty trash
@@ -49,14 +95,6 @@ Notable changes to zotio. Format follows [Keep a Changelog](https://keepachangel
   success, because the apply served the preview's cached empty match set:
   **previewing first, the careful workflow, was what broke the apply.** Selection
   for a write now also bypasses the cache and queries the plane it writes to.
-- **`items delete` no longer destroys data it documented as recoverable.** The
-  help said "moves to trash" and `items restore` exists to reverse it, but the
-  command issued a hard `DELETE`: the item vanished from the server, was *not* in
-  the trash, and its child PDF went with it — none of it gated by
-  `--allow-destructive`, whose own help advertises that it gates permanent
-  deletes. It now sets the trash flag (`deleted: 1`), which `items trash` lists
-  and `items restore` clears. The old behaviour is available as `--permanent`,
-  which is marked destructive and therefore requires `--allow-destructive`.
 - **The local mirror could not be refreshed at all, in two independent layers.**
   Zotero's local desktop API and `api.zotero.org` number versions independently.
   (1) The sync cursor was a single unqualified number guarded by `MAX()`, so a
@@ -86,9 +124,6 @@ Notable changes to zotio. Format follows [Keep a Changelog](https://keepachangel
   `"journal": null` while `journal list` showed the run, so an agent could not
   undo its own write from the write's own response. The envelope now carries
   `journal.run_id` (and `workflow_run_id` when set).
-- **`items delete` uses the standard mutation envelope.** It emitted a bespoke
-  `{"status": "noop", "reason": …}` / `{action, resource, path, status}` shape, so
-  the `.result.items[0]` pattern that works for every other mutation threw.
 - **`sync --help` names the plane it pulls from.** It said "Sync data from the
   API", which readers reasonably took to mean api.zotero.org and their cloud
   library. It is the Zotero desktop local API, one direction only, and that
@@ -96,12 +131,11 @@ Notable changes to zotio. Format follows [Keep a Changelog](https://keepachangel
 - **`--plain` drops response wrappers.** `library`, `links`, `meta` and
   `relations` rendered as raw JSON objects inside single cells, pushing item rows
   past 2 KB across ~35 columns. An explicit `--select` still wins.
-- **Journal keys, undo, and mutation/read envelopes are consistent.** Created
-  items now journal their real Zotero key and `journal undo` moves them to the
-  reversible trash; `items update --stdin`, `journal list`, and `items
-  collections-of` now use the standard envelopes. `items audit` and
-  `journal show` remain explicit report-shaped exceptions documented in
-  generated command guidance.
+- **`journal undo` can reverse an `items new`.** A create recorded the item type
+  where its key belonged, so undo refused with "field source is not reversible".
+  Creates now journal the real Zotero key and undo moves the item to the
+  reversible trash; a create whose key was never confirmed refuses with a message
+  naming the item and the command to trash it.
 - **`GetSyncState` tolerates a NULL cursor.** A `sync_state` row created by a
   library-version write before any pass had stored a cursor made every read of it
   fail with "converting NULL to string is unsupported".
@@ -256,6 +290,46 @@ Notable changes to zotio. Format follows [Keep a Changelog](https://keepachangel
   valid fallback URI (or the item's DOI/URL). This was originally believed to be
   the cause of the HTTP 500 above; it was not, but the empty URI was wrong on its
   own terms.
+- **The agent skill no longer authorizes an agent to apply writes on its own.**
+  `SKILL.md` said "pass `--yes` to apply" and never whose decision that is, so
+  the only consent token for a merge, an enrichment, a permanent delete, or a
+  `vault resolve` direction was one the agent handed itself. `--yes`,
+  `--allow-destructive`, a conflict winner, and a raised `--max-changes` now
+  wait on a user who has seen the current preview — and the skill states that a
+  preview binds nothing, because `--yes` recomputes the change set before
+  applying it.
+- **The agent skill no longer describes library-wide writes as if they were
+  scoped.** `items duplicates resolve` merges every detected pair and accepts no
+  key selector, `tags audit fix` applies the entire library-wide plan, and
+  `vault push` writes every managed note in the vault; all three read as
+  targeted operations. Their real blast radius, and the flags that do and do not
+  bound it, are now stated where each is named.
+- **The agent skill no longer promises that every applied write is journaled.**
+  `vault sync/push/pull/resolve` never enters the mutation envelope, so
+  `journal undo` cannot see it, and most of what *is* journaled — field
+  overwrites, merges, enrichment, permanent deletes — does not reverse. The
+  skill says so now, and points at `export snapshot` as the recovery record to
+  take before a bulk write.
+- **The agent skill's recipes run again.** `annotations timeline --format
+  markdown` was rejected outright (no such flag), and its `--since` was a
+  hard-coded date that stopped meaning "the last 7 days" the day after it was
+  written. `--select data.DOI,data.title` matched nothing on `items missing-pdf`,
+  whose rows are flat, so the documented `jq` printed no DOIs;
+  `--select venue,count,year_range` silently dropped the year, because the
+  fields are `min_year`/`max_year`; and `collections list --select id,name,status`
+  collapsed every row to `{}`. That `--select` accepts unknown field names
+  silently, rather than refusing them, is now documented as the trap it is.
+- **The agent skill's contract claims match the CLI.** Exit codes 1, 9, 11, 12
+  and 13 were missing from its table — including the exit 13 the same file
+  explains at length. Webhook delivery failure was described as fatal when it
+  only warns; `--agent` output was described as always enveloped, when
+  report-shaped commands return a bare object and `items missing-pdf`/`items
+  venues` a bare array; "every input is a flag" ignored positional arguments;
+  `library health --badge` is refused under the `--agent` the skill mandates
+  everywhere; release binaries are unsigned, with Sigstore signing the
+  checksums; and the hero list is no longer claimed to be the same index
+  `zotio which` resolves against, since the two have diverged by four entries
+  each way.
 
 ### Changed
 - **Tests can no longer write to the developer's real zotio data directory.** The
@@ -263,18 +337,6 @@ Notable changes to zotio. Format follows [Keep a Changelog](https://keepachangel
   `~/.local/share/zotio/journal` — keys like `K1`, `ITEM0001` and `Example 0..50`
   interleaved with genuine library history, offered for reversal by
   `journal undo`. The package now runs against a throwaway `HOME`.
-- **`.results` is now always a JSON array in the read envelope.** `items get`
-  (and `collections get`, `searches get`, `tags get`,
-  `schema new-item-template`) returned `.results` as a bare JSON *object*,
-  while `items list`, `search` and `collections list` returned an *array* —
-  both were `.results`, so a `jq` pipeline written against one broke on the
-  other with `cannot use null as iterable`. `items find` was a third shape:
-  a bare top-level array with no `meta`/`results` wrapper at all, so
-  `jq '.results[]'` failed outright. Every read command now emits one shape:
-  single-object reads return a one-element array and `items find` gains the
-  standard `{meta, results}` wrapper, so `results[0]`/`results[]` works
-  uniformly everywhere. This is a deliberate breaking change to the read
-  envelope, made pre-1.0.
 
 ### Added
 - **`import pdf` returns the keys it created** (`item_key`, `attachment_key`,
@@ -305,6 +367,18 @@ Notable changes to zotio. Format follows [Keep a Changelog](https://keepachangel
   fail or overwrite concurrent changes. An item whose write-plane copy no
   longer carries the old name reports a structured `no_op` instead of erroring
   or corrupting the item.
+- **`SKILL.md` is pinned to the CLI by two drift guards**
+  (`cmd/docs-gen/drift_test.go`). The agent skill is the page an agent reads
+  *instead of* the generated command reference, and nothing tied it to the
+  cobra tree: a manual sweep found `annotations timeline --format` documented
+  but never declared, and `duplicates resolve`/`preprint-check fix` written
+  without their `items` parent, un-runnable as printed. Every `zotio …`
+  invocation and every bare flag mention — including flags discussed in prose
+  rather than on a command line — now resolves against the live tree, scoped to
+  the commands its section names. Unlike papio's version, a relative command
+  path fails rather than being skipped, since being silently ignored is how
+  those two survived. Renaming a command or dropping a flag now fails the
+  build.
 
 ## [0.16.1] — 2026-08-06
 ### Fixed
@@ -970,6 +1044,7 @@ First tagged release: the trust-and-automation layer for Zotero.
 - **Onboarding** — `zotio init` guided setup (Zotero detection, local API, key, first sync, health check).
 - Release engineering: goreleaser builds for 6 platforms, cosign-signed checksums, SBOMs, Homebrew tap.
 
+[0.17.0]: https://github.com/OrgMentem/zotio/compare/v0.16.1...v0.17.0
 [0.16.1]: https://github.com/OrgMentem/zotio/compare/v0.16.0...v0.16.1
 [0.16.0]: https://github.com/OrgMentem/zotio/compare/v0.15.0...v0.16.0
 [0.15.0]: https://github.com/OrgMentem/zotio/compare/v0.14.0...v0.15.0

@@ -1003,7 +1003,14 @@ func (c *Client) GetWithVersionContext(ctx context.Context, path string, params 
 // cannot be resolved: a precondition read from the wrong plane is worse than a
 // failed write, because the version spaces are unrelated and Zotero would either
 // reject the PATCH with an opaque 412 or guard it against a meaningless number.
-func (c *Client) GetFromWriteBaseWithVersion(ctx context.Context, path string, params map[string]string) (json.RawMessage, int, error) {
+// GetFromWriteBaseWithVersion reads path from the write plane using the client's
+// own SIGINT/SIGTERM-cancellable context. Callers holding a request-scoped
+// context should use GetFromWriteBaseWithVersionContext.
+func (c *Client) GetFromWriteBaseWithVersion(path string, params map[string]string) (json.RawMessage, int, error) {
+	return c.GetFromWriteBaseWithVersionContext(c.baseCtx(), path, params)
+}
+
+func (c *Client) GetFromWriteBaseWithVersionContext(ctx context.Context, path string, params map[string]string) (json.RawMessage, int, error) {
 	if ctx == nil {
 		ctx = c.baseCtx()
 	}

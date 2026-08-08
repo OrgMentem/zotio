@@ -181,9 +181,7 @@ func skillFenceMarker(line string) (marker, info string, ok bool) {
 func skillInvocations(body string, root *cobra.Command) [][]string {
 	body = skillBody(body)
 	var candidates []string
-	for _, line := range skillFenceContents(body) {
-		candidates = append(candidates, line)
-	}
+	candidates = append(candidates, skillFenceContents(body)...)
 	for _, span := range skillSpan.FindAllStringSubmatch(body, -1) {
 		candidates = append(candidates, span[1])
 	}

@@ -442,7 +442,7 @@ func rewriteCreatorDisplayName(creator map[string]any, displayName string) {
 // tags_rename.go.
 func applyCreatorRenameUpdate(c *client.Client, update creatorRenameUpdate) (string, any, error) {
 	path := replacePathParam("/items/{itemKey}", "itemKey", update.key)
-	currentData, currentVersion, err := c.GetFromWriteBaseWithVersion(nil, path, nil)
+	currentData, currentVersion, err := c.GetFromWriteBaseWithVersion(path, nil)
 	if err != nil {
 		return "failed", err.Error(), err
 	}

@@ -199,7 +199,7 @@ func buildTagRenameOps(updates []tagRenameUpdate, oldName, newName string, apply
 // the write plane's own tag list rather than overwriting it with a stale copy.
 func applyTagRenameUpdate(c *client.Client, update tagRenameUpdate) (string, any, error) {
 	path := replacePathParam("/items/{itemKey}", "itemKey", update.key)
-	currentData, currentVersion, err := c.GetFromWriteBaseWithVersion(nil, path, nil)
+	currentData, currentVersion, err := c.GetFromWriteBaseWithVersion(path, nil)
 	if err != nil {
 		return "failed", err.Error(), err
 	}

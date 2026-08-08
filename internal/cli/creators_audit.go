@@ -152,12 +152,6 @@ no creator ORCID field.`,
 	return cmd
 }
 
-// runCreatorsAudit preserves the package-level default used by tests and
-// callers: ambiguous groups are not included in the displayed plan.
-func runCreatorsAudit(ctx context.Context, flags *rootFlags, scopeExpr string, withORCID bool) (creatorsAuditReport, bool, error) {
-	return runCreatorsAuditWithOptions(ctx, flags, scopeExpr, withORCID, false)
-}
-
 func runCreatorsAuditWithOptions(ctx context.Context, flags *rootFlags, scopeExpr string, withORCID, includeAmbiguous bool) (creatorsAuditReport, bool, error) {
 	rawDB, err := openStoreForRead(ctx, "zotio")
 	if err != nil {
