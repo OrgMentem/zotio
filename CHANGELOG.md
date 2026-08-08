@@ -65,6 +65,7 @@ signal.
   passed an existing regular file to directory reads and surfaced the misleading
   filesystem error "not a directory"; it now directs single-file imports to
   `zotio import pdf <file>` while preserving missing-path and permission errors.
+- **`export snapshot` now describes and cleans up its artifacts honestly.** The parent help previously advertised `--format` and `--no-cache` even though the snapshot subcommand rejected them; those legacy parent flags are no longer shown, and snapshot help now documents only its JSONL options. Successful snapshots write the content manifest to `<output>.manifest.json` and remove the transient `<output>.lock`; interrupted runs retain checkpoint state for `--resume`.
 - **`library health` now labels its scope with the accepted flag spelling.** The
   human report previously said "preset quick", even though the selector is
   `--for`; it now prints `--for quick` so the displayed invocation can be copied.
@@ -330,6 +331,48 @@ signal.
   checksums; and the hero list is no longer claimed to be the same index
   `zotio which` resolves against, since the two have diverged by four entries
   each way.
+
+- **`workflow archive` now fetches every advertised resource from its real
+  endpoint.** It previously treated internal store names such as `items-trash`
+  and `schema-item-fields` as literal paths, causing four 404s; archive now
+  maps `/items/trash` and the global schema endpoints outside the library
+  prefix, matching the sync path.
+- **`analytics` now counts and groups Zotero concepts instead of accepting
+  chat-product boilerplate.** `--type items` and other mirrored resource kinds
+  retain their census counts, while item types such as `journalArticle` filter
+  the items mirror; unknown types and unsupported `--group-by` fields now
+  error, and supported year, itemType, collection, creator, and tag groups
+  honor `--limit`.
+- **`items delete` and `collections delete` no longer report success for
+  something they did not delete.** A 404 on the pre-write version read was
+  treated as "already deleted", but a trashed item still GETs fine with
+  `data.deleted: 1` — Zotero only 404s a key that never existed, was
+  permanently destroyed, or (the case that broke this) was created moments ago
+  and has not yet propagated from the local desktop up to the write plane
+  (~15-20s observed). Reporting success in that window is a false success: an
+  item deleted this way materialized live and untrashed. Both commands now fail
+  honestly on a 404, exactly like `items tags add` / `items move` already do on
+  the identical race. `--ignore-missing`, the separate opt-in idempotency flag,
+  is unaffected — 404-as-no-op is still available, just no longer the default.
+- **`sync --full` reaps `items-trash`, closing a tombstone class the earlier
+  `items` fix left one resource short of complete.** The mark-and-sweep gated
+  on the pass having reported at least one key, on the theory that an empty
+  result might mean a failed fetch rather than a genuinely empty resource — but
+  a request or decode error always returns before that point, so the pass
+  actually completing is already the safety guarantee, and requiring a
+  non-empty result on top of it left a row with no corresponding item on either
+  plane permanently unreapable whenever the live trash was legitimately empty.
+  The sweep now runs on every completed full pass, including one with nothing
+  to report.
+- **`tags list` and `tags audit` no longer disagree on how many tags exist.**
+  `tags list` passes Zotero's raw per-`(tag, type)` feed straight through, so a
+  name that exists as both an automatic and a manual tag — `Depression` is
+  `type 1` on some items and `type 0` on others — produced two rows with an
+  identical `tag` value and no visible difference, because `--plain` drops
+  `meta` as a structural wrapper and the disambiguating `type` lives there.
+  `type` and `num_items` are now promoted to columns for the human/plain
+  render path; JSON output, which already had `meta.type`, is unchanged.
+
 
 ### Changed
 - **Tests can no longer write to the developer's real zotio data directory.** The

@@ -89,18 +89,29 @@ and full resync. After archiving, use 'search' for instant full-text search.`,
 					}
 				}
 
-				fmt.Fprintf(cmd.ErrOrStderr(), "Syncing %s...\n", resource)
-
 				const pageSize = 100
 				params := map[string]string{
 					"limit": strconv.Itoa(pageSize),
 					"start": strconv.Itoa(start),
 				}
+				path, pathErr := syncResourcePath(resource)
+				if pathErr != nil {
+					detail := fmt.Sprintf("%s: resolving endpoint: %v", resource, pathErr)
+					failures = append(failures, detail)
+					fmt.Fprintf(cmd.ErrOrStderr(), "  error: %s\n", detail)
+					continue
+				}
+				fetchClient := c
+				if isSchemaSyncResource(resource) {
+					// Schema resources are global endpoints. Keep this mapping and
+					// prefix stripping aligned with sync.go's source of truth.
+					fetchClient = c.CloneForRead(stripLibraryPrefix(c.BaseURL))
+				}
 				count := 0
 				resourceIncomplete := false
 				var previousPage json.RawMessage
 				for {
-					data, fetchErr := c.Get("/"+resource, params)
+					data, fetchErr := fetchClient.Get(path, params)
 					if fetchErr != nil {
 						if ctxErr := cmd.Context().Err(); ctxErr != nil {
 							return ctxErr

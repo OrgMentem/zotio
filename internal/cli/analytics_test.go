@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/json"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"zotio/internal/store"
@@ -152,5 +153,117 @@ func TestRunGroupByNonMapDataFallsBack(t *testing.T) {
 
 	if got, want := counts["journalArticle"], 1; got != want {
 		t.Fatalf("journalArticle count = %v, want %v", got, want)
+	}
+}
+func TestAnalyticsTypeFiltersItemsAndRejectsUnknown(t *testing.T) {
+	db := openAnalyticsTestStore(t)
+	for key, raw := range map[string]string{
+		"A1": `{"key":"A1","data":{"itemType":"journalArticle","date":"2020"}}`,
+		"A2": `{"key":"A2","data":{"itemType":"journalArticle","date":"2021"}}`,
+		"B1": `{"key":"B1","data":{"itemType":"book","date":"2020"}}`,
+	} {
+		if err := db.Upsert("items", key, json.RawMessage(raw)); err != nil {
+			t.Fatalf("seed %s: %v", key, err)
+		}
+	}
+
+	scope, err := analyticsScopeForType(db, "journalArticle")
+	if err != nil {
+		t.Fatalf("journalArticle scope: %v", err)
+	}
+	if got, want := len(scope.rows), 2; got != want {
+		t.Fatalf("journalArticle count = %d, want %d", got, want)
+	}
+	if scope.resourceType != "items" || scope.itemType != "journalArticle" {
+		t.Fatalf("scope = %+v, want items filtered to journalArticle", scope)
+	}
+	if _, err := analyticsScopeForType(db, "bogusType"); err == nil || !strings.Contains(err.Error(), "unknown analytics type") {
+		t.Fatalf("bogusType error = %v, want unknown analytics type", err)
+	}
+}
+
+func TestAnalyticsGroupByCollectionHonorsLimit(t *testing.T) {
+	db := openAnalyticsTestStore(t)
+	seed := []string{
+		`{"key":"C1","data":{"itemType":"journalArticle","collections":["COL-A","COL-B"]}}`,
+		`{"key":"C2","data":{"itemType":"book","collections":["COL-A"]}}`,
+	}
+	for i, raw := range seed {
+		if err := db.Upsert("items", string(rune('A'+i)), json.RawMessage(raw)); err != nil {
+			t.Fatalf("seed item: %v", err)
+		}
+	}
+	var out bytes.Buffer
+	if err := runGroupBy(&out, db, "items", "collection", 1, &rootFlags{asJSON: true}); err != nil {
+		t.Fatalf("collection grouping: %v", err)
+	}
+	var got []groupByResult
+	if err := json.Unmarshal(out.Bytes(), &got); err != nil {
+		t.Fatalf("decode grouping: %v", err)
+	}
+	if len(got) != 1 || got[0].Value != "COL-A" || got[0].Count != 2 {
+		t.Fatalf("limited collection groups = %+v, want [{COL-A 2}]", got)
+	}
+}
+
+func TestAnalyticsUnsupportedGroupByErrors(t *testing.T) {
+	if err := validateAnalyticsGroupBy("nonsense"); err == nil {
+		t.Fatal("unsupported group-by unexpectedly accepted")
+	}
+}
+func TestAnalyticsCommandReportsFilteredItemTypeCount(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "data.db")
+	db, err := store.OpenWithContext(context.Background(), dbPath)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	for key, raw := range map[string]string{
+		"J1": `{"key":"J1","data":{"itemType":"journalArticle"}}`,
+		"J2": `{"key":"J2","data":{"itemType":"journalArticle"}}`,
+		"B1": `{"key":"B1","data":{"itemType":"book"}}`,
+	} {
+		if err := db.Upsert("items", key, json.RawMessage(raw)); err != nil {
+			db.Close()
+			t.Fatalf("seed %s: %v", key, err)
+		}
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close store: %v", err)
+	}
+
+	var out bytes.Buffer
+	cmd := newAnalyticsCmd(&rootFlags{asJSON: true})
+	cmd.SetOut(&out)
+	cmd.SetErr(&bytes.Buffer{})
+	cmd.SetArgs([]string{"--db", dbPath, "--type", "journalArticle"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("analytics command: %v", err)
+	}
+	var result struct {
+		Count int `json:"count"`
+	}
+	if err := json.Unmarshal(out.Bytes(), &result); err != nil {
+		t.Fatalf("decode command result: %v (%s)", err, out.String())
+	}
+	if result.Count != 2 {
+		t.Fatalf("journalArticle command count = %d, want 2", result.Count)
+	}
+}
+
+func TestAnalyticsCommandRejectsInvalidLimit(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "data.db")
+	db, err := store.OpenWithContext(context.Background(), dbPath)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close store: %v", err)
+	}
+	cmd := newAnalyticsCmd(&rootFlags{})
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetErr(&bytes.Buffer{})
+	cmd.SetArgs([]string{"--db", dbPath, "--type", "items", "--limit", "0"})
+	if err := cmd.Execute(); err == nil || !strings.Contains(err.Error(), "--limit must be greater than zero") {
+		t.Fatalf("invalid limit error = %v", err)
 	}
 }

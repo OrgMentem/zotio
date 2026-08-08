@@ -85,11 +85,12 @@ func TestCrudAppliesAreJournaled(t *testing.T) {
 	}
 }
 
-// TestItemsDeleteNoOpIsNotJournaled proves recordMutationJournal's applied-only
-// guard: when the pre-write version GET 404s, items delete --yes reports a
-// writeNoop result with Summary.Applied == 0, and must write no journal entry
-// at all -- nothing changed, so there is nothing to record or undo.
-func TestItemsDeleteNoOpIsNotJournaled(t *testing.T) {
+// TestItemsDeleteFailureIsNotJournaled proves recordMutationJournal's
+// applied-only guard: when the pre-write version GET 404s, items delete --yes
+// now fails honestly (N4-2 — a 404 is not "already deleted"; it may mean the
+// item has not yet propagated to the write plane, and reporting success there
+// was a false success). Nothing was applied, so nothing may be journaled.
+func TestItemsDeleteFailureIsNotJournaled(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	mutationJournalRecorder = recordMutationJournal
 	t.Cleanup(func() { mutationJournalRecorder = nil })
@@ -110,8 +111,8 @@ func TestItemsDeleteNoOpIsNotJournaled(t *testing.T) {
 	cmd.SetOut(&bytes.Buffer{})
 	cmd.SetErr(&bytes.Buffer{})
 	cmd.SetArgs([]string{"GONE"})
-	if err := cmd.Execute(); err != nil {
-		t.Fatalf("items delete: %v", err)
+	if err := cmd.Execute(); err == nil {
+		t.Fatal("items delete on a 404 reported success; want an honest failure (N4-2)")
 	}
 
 	entries, err := mutation.ListEntries(helpersTestJournalDir(t))
@@ -119,7 +120,7 @@ func TestItemsDeleteNoOpIsNotJournaled(t *testing.T) {
 		t.Fatalf("list journal entries: %v", err)
 	}
 	if len(entries) != 0 {
-		t.Fatalf("journal entries = %d, want 0 for a no-op delete", len(entries))
+		t.Fatalf("journal entries = %d, want 0 for a failed delete", len(entries))
 	}
 }
 

@@ -906,7 +906,15 @@ func syncResource(ctx context.Context, c syncHTTPClient, db *store.Store, resour
 		// absence means unchanged, not deleted. Nothing reaped before this, so
 		// zotio's own permanent deletes and any deletion made elsewhere left rows
 		// behind that offline reads happily served and every count included.
-		if full && len(seenKeys) > 0 {
+		//
+		// Gated on `full`, not on len(seenKeys) > 0: a genuinely empty resource
+		// (e.g. an empty trash) completes naturally with zero keys, and that is a
+		// real answer, not a failed fetch — any request or decode error returns
+		// early above, well before completedNaturally can become true, so nothing
+		// here can misread "fetch failed" as "resource is empty". Requiring a
+		// non-empty seenKeys left a phantom items-trash row unreapable forever,
+		// because the live trash was legitimately empty on every pass.
+		if full {
 			storeResource := canonicalStoreResource(resource)
 			if reaped, rerr := db.SweepMissing(storeResource, seenKeys); rerr != nil {
 				fmt.Fprintf(os.Stderr, "warning: reaping deleted %s rows: %v\n", storeResource, rerr)

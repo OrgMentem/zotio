@@ -51,17 +51,17 @@ func newExportSnapshotVerifyCmd(flags *rootFlags) *cobra.Command {
 	var failOnDrift bool
 
 	cmd := &cobra.Command{
-		Use:   "verify <lockfile.lock.json>",
-		Short: "Verify a snapshot lockfile against the current library",
-		Long: `Verify a snapshot lockfile against the current Zotero library.
+		Use:   "verify <manifest.json>",
+		Short: "Verify a snapshot manifest against the current library",
+		Long: `Verify a snapshot manifest against the current Zotero library.
 
-The verifier re-resolves the lockfile scope when possible, recomputes the same
+The verifier re-resolves the manifest scope when possible, recomputes the same
 content hash as export snapshot, and separates semantic drift (added, removed,
 changed) from Zotero version churn (touched). Touched items have a newer version
 but identical normalized content and never fail --fail-on-drift.`,
-		Example: `  zotio export snapshot verify backup.jsonl.lock.json
-  zotio export snapshot verify backup.jsonl.lock.json --fail-on-drift
-  zotio export snapshot verify backup.jsonl.lock.json --json`,
+		Example: `  zotio export snapshot verify backup.jsonl.manifest.json
+  zotio export snapshot verify backup.jsonl.manifest.json --fail-on-drift
+  zotio export snapshot verify backup.jsonl.manifest.json --json`,
 		Args:        cobra.ExactArgs(1),
 		Annotations: map[string]string{"mcp:read-only": "true"},
 		RunE: func(cmd *cobra.Command, args []string) error {

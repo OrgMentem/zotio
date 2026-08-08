@@ -4,15 +4,12 @@ package cli
 
 import (
 	"encoding/json"
-	"errors"
 	"fmt"
-	"net/http"
 	"os"
 	"strconv"
 
 	"github.com/spf13/cobra"
 
-	"zotio/internal/client"
 	"zotio/internal/mutation"
 )
 
@@ -72,23 +69,25 @@ func newCollectionsDeleteCmd(flags *rootFlags) *cobra.Command {
 				return err
 			}
 			var (
-				applyErr    error
-				alreadyGone bool
-				data        json.RawMessage
-				statusCode  int
+				applyErr   error
+				data       json.RawMessage
+				statusCode int
 			)
 			ops[0].Apply = func() (string, any, error) {
 				// Zotero requires If-Unmodified-Since-Version on DELETE (HTTP 428
 				// without it). newWriteClient points at the write target, so this
 				// version GET and the DELETE hit the same library (the Web API under hybrid routing).
+				//
+				// A 404 here is a hard failure, not a no-op. The same read was
+				// previously treated as "already deleted" (mirroring items delete's
+				// identical, now-proven-wrong logic — see N4-2): the response cannot
+				// distinguish a genuinely absent key from a collection created moments
+				// ago that has not yet propagated to this plane, and reporting success
+				// in that window would falsely tell the caller a live collection is
+				// gone. Fail honestly instead.
 				delHeaders := map[string]string{}
 				_, version, verErr := c.GetWithVersion(path, nil)
 				if verErr != nil {
-					var apiErr *client.APIError
-					if errors.As(verErr, &apiErr) && apiErr.StatusCode == http.StatusNotFound {
-						alreadyGone = true
-						return "no_op", nil, nil
-					}
 					applyErr = classifyAPIError(verErr, flags)
 					return "failed", nil, applyErr
 				}
@@ -110,9 +109,6 @@ func newCollectionsDeleteCmd(flags *rootFlags) *cobra.Command {
 					return applyErr
 				}
 				return runErr
-			}
-			if alreadyGone {
-				return writeNoop(cmd.OutOrStdout(), cmd.ErrOrStderr(), flags, "already_deleted", "already deleted (no-op)")
 			}
 			if wantsHumanTable(cmd.OutOrStdout(), flags) {
 				// Check if response contains an array (directly or wrapped in "data")

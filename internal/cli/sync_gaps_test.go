@@ -184,6 +184,76 @@ func TestSyncConvergesPlaneWithoutVersionHeader(t *testing.T) {
 	}
 }
 
+// N4-3: sync --full did not reap items-trash, so the X-3 phantom returned. A
+// genuinely empty trash (0 entries on both planes) completed a full pass with
+// zero seen keys, and the sweep's old len(seenKeys) > 0 guard treated that as
+// "the fetch may have failed" and skipped reaping — leaving a row with no
+// corresponding item on either plane unreapable by any command, forever.
+func TestSyncReapsPhantomFromAGenuinelyEmptyResource(t *testing.T) {
+	syncTestWithHumanFriendly(t, false)
+	db := syncTestOpenStore(t)
+	defer db.Close()
+
+	// A trashed item's mirror row survives after the underlying item is gone
+	// from both planes — exactly the WH3JEEWH scenario.
+	if _, _, err := db.UpsertBatch("items-trash", []json.RawMessage{
+		json.RawMessage(`{"key":"PHANTOM","version":1,"data":{"key":"PHANTOM","itemType":"book"}}`),
+	}); err != nil {
+		t.Fatalf("seed phantom trash row: %v", err)
+	}
+
+	// The plane genuinely reports an empty trash — not a fetch failure.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`[]`))
+	}))
+	defer srv.Close()
+
+	if res := syncResource(context.Background(), syncTestClient(srv.URL), db, "items-trash", 0, true, 0, false); res.Err != nil {
+		t.Fatalf("sync error: %v", res.Err)
+	}
+
+	ids, err := db.ResourceIDs("items-trash")
+	if err != nil {
+		t.Fatalf("ResourceIDs: %v", err)
+	}
+	if ids["PHANTOM"] {
+		t.Fatal("phantom items-trash row survived a full sync of a genuinely empty trash")
+	}
+}
+
+// A request failure must never be misread as "the resource is empty": nothing
+// may be swept on an incomplete pass.
+func TestSyncDoesNotSweepOnAFailedPass(t *testing.T) {
+	syncTestWithHumanFriendly(t, false)
+	db := syncTestOpenStore(t)
+	defer db.Close()
+
+	if _, _, err := db.UpsertBatch("items", []json.RawMessage{
+		json.RawMessage(`{"key":"SURVIVES","version":1,"data":{"key":"SURVIVES","itemType":"book"}}`),
+	}); err != nil {
+		t.Fatalf("seed mirror: %v", err)
+	}
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "server error", http.StatusInternalServerError)
+	}))
+	defer srv.Close()
+
+	res := syncResource(context.Background(), syncTestClient(srv.URL), db, "items", 0, true, 0, false)
+	if res.Err == nil {
+		t.Fatal("expected a sync error from the 500, got none")
+	}
+
+	ids, err := db.ResourceIDs("items")
+	if err != nil {
+		t.Fatalf("ResourceIDs: %v", err)
+	}
+	if !ids["SURVIVES"] {
+		t.Fatal("a failed pass reaped a row it never should have touched")
+	}
+}
+
 func TestSyncPageExtractionHelpers(t *testing.T) {
 	items, cursor, hasMore := extractPageItems(json.RawMessage(`[{"id":"a"},{"id":"b"}]`), "after")
 	if len(items) != 2 || cursor != "" || hasMore {

@@ -3,9 +3,7 @@
 package cli
 
 import (
-	"errors"
 	"fmt"
-	"net/http"
 	"strconv"
 
 	"github.com/spf13/cobra"
@@ -74,15 +72,18 @@ cannot be undone by 'items restore' and requires --allow-destructive.`,
 					// the write target, so this version GET and the write hit the same
 					// library (the Web API under hybrid routing) — correct even for an
 					// item just created on the web and not yet synced local.
+					//
+					// A 404 here is NOT "already deleted": a trashed item still GETs
+					// fine with data.deleted=1, so a 404 means the key never existed, was
+					// permanently destroyed, or — the case that broke this — was created
+					// moments ago through the connector and has not yet propagated from
+					// the local desktop up to this plane (~15-20s observed). Reporting
+					// success in that window is a false success: `SDLDFA9W` was "deleted"
+					// this way and then materialized on the write plane, untrashed. Fail
+					// honestly instead, exactly like items tags add / items move already
+					// do on the identical 404.
 					_, version, verErr := c.GetWithVersion(path, nil)
 					if verErr != nil {
-						var apiErr *client.APIError
-						if errors.As(verErr, &apiErr) && apiErr.StatusCode == http.StatusNotFound {
-							return "no_op", map[string]any{
-								"code":    "already_deleted",
-								"message": "item does not exist on the write plane",
-							}, nil
-						}
 						applyErr = verErr
 						return "failed", nil, verErr
 					}

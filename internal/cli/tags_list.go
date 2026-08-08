@@ -62,6 +62,15 @@ func newTagsListCmd(flags *rootFlags) *cobra.Command {
 				return printOutput(cmd.OutOrStdout(), wrapped, true)
 			}
 			// For all other output modes (table, csv, plain, quiet), use the standard pipeline
+			//
+			// Zotero's raw /tags response nests type and numItems under "meta",
+			// which --plain/table treat as a structural wrapper and drop (see
+			// plainStructuralFields), so a manual and an automatic instance of the
+			// same tag name rendered as identical, inexplicable duplicate rows
+			// (tags list counted 793 rows for the 786 distinct names tags audit
+			// reports — 7 tags exist as both). Promote them to columns for the
+			// human paths only; JSON callers already have meta.type.
+			data = flattenTagMetaForDisplay(data)
 			if wantsHumanTable(cmd.OutOrStdout(), flags) {
 				var items []map[string]any
 				if json.Unmarshal(data, &items) == nil && len(items) > 0 {
@@ -82,4 +91,38 @@ func newTagsListCmd(flags *rootFlags) *cobra.Command {
 	cmd.Flags().StringVar(&flagQ, "query", "", "Filter tags by name substring")
 
 	return cmd
+}
+
+// flattenTagMetaForDisplay promotes meta.type and meta.numItems to top-level
+// fields so the shared plain/table renderer, which drops "meta" as a
+// structural wrapper, can still show them as columns. Non-object entries and
+// entries with no meta pass through unchanged.
+func flattenTagMetaForDisplay(data json.RawMessage) json.RawMessage {
+	var tags []map[string]any
+	if err := json.Unmarshal(data, &tags); err != nil {
+		return data
+	}
+	changed := false
+	for _, tag := range tags {
+		meta, ok := tag["meta"].(map[string]any)
+		if !ok {
+			continue
+		}
+		if tagType, ok := meta["type"]; ok {
+			tag["type"] = tagType
+			changed = true
+		}
+		if numItems, ok := meta["numItems"]; ok {
+			tag["num_items"] = numItems
+			changed = true
+		}
+	}
+	if !changed {
+		return data
+	}
+	flattened, err := json.Marshal(tags)
+	if err != nil {
+		return data
+	}
+	return flattened
 }

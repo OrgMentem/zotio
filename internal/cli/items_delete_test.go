@@ -186,7 +186,14 @@ func TestDeletesAbortWhenVersionReadFails(t *testing.T) {
 	}
 }
 
-func TestDeletesTreatMissingVersionReadAsNoop(t *testing.T) {
+// N4-2: a 404 on the version GET is not "already deleted". A trashed item still
+// GETs fine with data.deleted=1, so 404 means the key never existed, was
+// permanently destroyed, or — the case that broke this — was created moments ago
+// and has not yet propagated to the write plane. Reporting success in that
+// window is a false success: the delete never happened and the item resurfaces
+// live. Both items delete and collections delete must fail honestly instead,
+// exactly like items tags add / items move already do on the identical 404.
+func TestDeletesFailHonestlyOnMissingVersionRead(t *testing.T) {
 	for _, tt := range []struct {
 		name string
 		new  func(*rootFlags) interface {
@@ -229,11 +236,14 @@ func TestDeletesTreatMissingVersionReadAsNoop(t *testing.T) {
 			defer srv.Close()
 
 			cmd := tt.new(&rootFlags{asJSON: true, yes: true, allowDestructive: true, maxChanges: -1})
-			if err := runDeleteCmd(t, cmd, srv.URL, "K"); err != nil {
-				t.Fatalf("delete missing item: %v", err)
+			err := runDeleteCmd(t, cmd, srv.URL, "K")
+			// The report observed rc=3 for the identical 404 on items tags add /
+			// items move; delete must land on the same exit code family.
+			if ExitCode(err) != 3 {
+				t.Fatalf("ExitCode(delete on 404) = %d, want 3 — the false-success bug N4-2 caught; err = %v", ExitCode(err), err)
 			}
 			if deleteIssued {
-				t.Fatal("DELETE issued for already-gone resource")
+				t.Fatal("DELETE issued for a key the version read already 404'd on")
 			}
 		})
 	}

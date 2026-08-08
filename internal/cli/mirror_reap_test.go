@@ -122,9 +122,17 @@ func TestSweepMissingReapsAbsentRows(t *testing.T) {
 	}
 }
 
-// An empty seen-set must never be treated as "everything is gone": that would
-// wipe the mirror after a pass that fetched nothing.
-func TestSweepMissingWithNoSeenKeysIsNotInvokedBySync(t *testing.T) {
+// SweepMissing itself intentionally treats an empty seen-set as "everything is
+// gone" — a resource with nothing reported really did lose every row it had.
+// The safety property belongs to the CALLER: syncResource only calls this after
+// completedNaturally is true, which is guaranteed false for any request or
+// decode error (each returns before reaching the sweep). A fetch failure can
+// therefore never masquerade as "the resource is empty" and reach here with a
+// stale seen-set — that guarantee, not a check on len(seenKeys), is what makes
+// this safe to call unconditionally on a genuinely empty full pass (see N4-3:
+// requiring seenKeys to be non-empty left a phantom items-trash row unreapable
+// forever, because the live trash really was empty on every pass).
+func TestSweepMissingTreatsEmptySeenSetAsEverythingGone(t *testing.T) {
 	db, _ := reapTestStore(t)
 	defer db.Close()
 
@@ -133,15 +141,12 @@ func TestSweepMissingWithNoSeenKeysIsNotInvokedBySync(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("seed mirror: %v", err)
 	}
-	// syncResource guards on len(seenKeys) > 0; this asserts the primitive itself
-	// is honest about what an empty set means, so the guard is the only thing
-	// standing between a fetch-nothing pass and an empty mirror.
 	reaped, err := db.SweepMissing("items", map[string]bool{})
 	if err != nil {
 		t.Fatalf("SweepMissing: %v", err)
 	}
 	if reaped != 1 {
-		t.Fatalf("SweepMissing reaped %d; the primitive treats an empty set as 'all gone', so syncResource MUST keep its len(seenKeys) > 0 guard", reaped)
+		t.Fatalf("SweepMissing reaped %d, want 1: an empty seen-set must mean everything reported is gone", reaped)
 	}
 }
 

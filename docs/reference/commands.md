@@ -73,10 +73,14 @@ zotio agent-context [flags]
 
 ## `zotio analytics`
 
-Run analytics queries on locally synced data
+Analyze a synced Zotero library
 
-Analyze locally synced data with count, group-by, and summary operations.
-Data must be synced first with the sync command.
+Analyze locally synced Zotero data.
+
+--type accepts a mirrored resource kind (such as items or collections) for
+resource counts, or a Zotero item type (such as journalArticle or book) to
+count only matching rows in the items mirror. When --group-by is supplied,
+the item rows are grouped by year, itemType, collection, creator, or tag.
 
 ```
 zotio analytics [flags]
@@ -85,22 +89,21 @@ zotio analytics [flags]
 Examples:
 
 ```bash
-# Count records by type
-  zotio analytics --type messages
+# Count all items and only journal articles
+  zotio analytics --type items
+  zotio analytics --type journalArticle --json
 
-  # Group by a field
-  zotio analytics --type messages --group-by author_id
-
-  # Top 10 most frequent values
-  zotio analytics --type messages --group-by channel_id --limit 10 --json
+  # Group items by publication year or collection
+  zotio analytics --type items --group-by year
+  zotio analytics --type items --group-by collection --limit 10 --json
 ```
 
 | Flag | Type | Default | Description |
 | --- | --- | --- | --- |
 | `--db` | `string` |  | Database path |
-| `--group-by` | `string` |  | Field to group by |
-| `--limit` | `int` | `25` | Max groups to show |
-| `--type` | `string` |  | Resource type to analyze |
+| `--group-by` | `string` |  | Group items by year, itemType, collection, creator, or tag |
+| `--limit` | `int` | `25` | Maximum groups to show with --group-by |
+| `--type` | `string` |  | Resource kind or Zotero item type to analyze |
 
 ## `zotio annotations`
 
@@ -704,9 +707,9 @@ zotio doctor
 
 Export data to JSONL or JSON for backup, migration, or analysis
 
-Export paginated API data to a local file. Supports JSONL (one JSON object
-per line, streaming-friendly) and JSON (array). JSONL is recommended for
-large datasets as it has no memory pressure.
+Export paginated API data to a local file. Output defaults to JSONL
+(one JSON object per line, streaming-friendly); JSON output is available for
+backwards-compatible resource exports.
 
 ```
 zotio export <resource> [id] [flags]
@@ -716,28 +719,26 @@ Examples:
 
 ```bash
 # Export all items as JSONL (streaming, recommended for large datasets)
-  zotio export <resource> --format jsonl --output data.jsonl
+  zotio export items --output data.jsonl
 
   # Export with limit
-  zotio export <resource> --format jsonl --limit 1000
+  zotio export items --limit 1000
 
   # Pipe to another tool
-  zotio export <resource> --format jsonl | jq '.id'
+  zotio export items | jq '.id'
 ```
 
 | Flag | Type | Default | Description |
 | --- | --- | --- | --- |
-| `--format` | `string` | `jsonl` | Output format: jsonl or json |
 | `--limit` | `int` | `0` | Maximum records to export (0 = unlimited) |
-| `--no-cache` | `bool` | `false` | Bypass response cache for fresh data |
 | `-o, --output` | `string` |  | Output file path (default: stdout) |
 
 ### `zotio export snapshot`
 
-Reproducible, resumable paginated export with a content lockfile
+Reproducible, resumable paginated export with a content manifest
 
 Export a structured item set (JSONL) across all pages into a data file,
-plus a sidecar lockfile (<output>.lock.json) recording each item's key+version
+plus a sidecar manifest (<output>.manifest.json) recording each item's key+version
 and a content hash for reproducibility/drift detection. Resumable: an interrupted
 run can continue with --resume (a <output>.checkpoint.json sidecar tracks progress).
 
@@ -760,29 +761,29 @@ zotio export snapshot --output backup.jsonl
 | `--limit` | `int` | `0` | Maximum items to export (0 = all) |
 | `--page-size` | `int` | `100` | Items per API page (1-100) |
 | `--resume` | `bool` | `false` | Resume an interrupted snapshot from its checkpoint sidecar |
-| `-o, --output` | `string` |  | Output JSONL data file (required); the lockfile is written to <output>.lock.json |
+| `-o, --output` | `string` |  | Output JSONL data file (required); the manifest is written to <output>.manifest.json |
 
 #### `zotio export snapshot verify`
 
-Verify a snapshot lockfile against the current library
+Verify a snapshot manifest against the current library
 
-Verify a snapshot lockfile against the current Zotero library.
+Verify a snapshot manifest against the current Zotero library.
 
-The verifier re-resolves the lockfile scope when possible, recomputes the same
+The verifier re-resolves the manifest scope when possible, recomputes the same
 content hash as export snapshot, and separates semantic drift (added, removed,
 changed) from Zotero version churn (touched). Touched items have a newer version
 but identical normalized content and never fail --fail-on-drift.
 
 ```
-zotio export snapshot verify <lockfile.lock.json> [flags]
+zotio export snapshot verify <manifest.json> [flags]
 ```
 
 Examples:
 
 ```bash
-zotio export snapshot verify backup.jsonl.lock.json
-  zotio export snapshot verify backup.jsonl.lock.json --fail-on-drift
-  zotio export snapshot verify backup.jsonl.lock.json --json
+zotio export snapshot verify backup.jsonl.manifest.json
+  zotio export snapshot verify backup.jsonl.manifest.json --fail-on-drift
+  zotio export snapshot verify backup.jsonl.manifest.json --json
 ```
 
 | Flag | Type | Default | Description |

@@ -89,17 +89,17 @@ func newExportCmd(flags *rootFlags) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "export <resource> [id]",
 		Short: "Export data to JSONL or JSON for backup, migration, or analysis",
-		Long: `Export paginated API data to a local file. Supports JSONL (one JSON object
-per line, streaming-friendly) and JSON (array). JSONL is recommended for
-large datasets as it has no memory pressure.`,
+		Long: `Export paginated API data to a local file. Output defaults to JSONL
+(one JSON object per line, streaming-friendly); JSON output is available for
+backwards-compatible resource exports.`,
 		Example: `  # Export all items as JSONL (streaming, recommended for large datasets)
-  zotio export <resource> --format jsonl --output data.jsonl
+  zotio export items --output data.jsonl
 
   # Export with limit
-  zotio export <resource> --format jsonl --limit 1000
+  zotio export items --limit 1000
 
   # Pipe to another tool
-  zotio export <resource> --format jsonl | jq '.id'`,
+  zotio export items | jq '.id'`,
 		Args: cobra.MinimumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			validResources := map[string]bool{
@@ -206,6 +206,11 @@ large datasets as it has no memory pressure.`,
 	cmd.Flags().StringVarP(&outputFile, "output", "o", "", "Output file path (default: stdout)")
 	cmd.Flags().IntVar(&limit, "limit", 0, "Maximum records to export (0 = unlimited)")
 	cmd.Flags().BoolVar(&noCache, "no-cache", false, "Bypass response cache for fresh data")
+	// These flags belong to the legacy resource-export form. Keep accepting
+	// them for existing scripts, but do not advertise them on the parent
+	// command: `export snapshot` has its own, JSONL-only interface.
+	_ = cmd.Flags().MarkHidden("format")
+	_ = cmd.Flags().MarkHidden("no-cache")
 
 	// paginated/resumable snapshot subcommand.
 	cmd.AddCommand(newExportSnapshotCmd(flags))

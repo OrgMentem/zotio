@@ -134,11 +134,16 @@ func TestWorkflowArchiveCancellationStopsResourceLoop(t *testing.T) {
 
 func TestWorkflowArchive_ClientTimeoutMarksResourceIncompleteAndContinues(t *testing.T) {
 	collectionStarted := make(chan struct{})
+	var closeOnce sync.Once
 	var itemsRequested atomic.Bool
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		resource := strings.TrimPrefix(r.URL.Path, "/users/0/")
 		if resource == "collections" {
-			close(collectionStarted)
+			// The client retries the timed-out request, hitting this branch more
+			// than once; closing an already-closed channel panics net/http's
+			// per-connection goroutine (recovered, so the suite still reports
+			// PASS, but it logs a real panic on every run).
+			closeOnce.Do(func() { close(collectionStarted) })
 			<-r.Context().Done()
 			return
 		}
@@ -240,5 +245,59 @@ func TestWorkflowArchivePaginatesWithStartAndUsesZoteroKeys(t *testing.T) {
 		t.Fatalf("get synthetic item ID: %v", err)
 	} else if item != nil {
 		t.Fatal("archive stored a synthetic item ID")
+	}
+}
+
+func TestWorkflowArchive_UsesCanonicalResourceEndpoints(t *testing.T) {
+	wantPaths := map[string]struct{}{
+		"/users/0/collections": {},
+		"/users/0/items":       {},
+		"/users/0/items/trash": {},
+		"/itemTypes":           {},
+		"/creatorFields":       {},
+		"/itemFields":          {},
+		"/users/0/searches":    {},
+		"/users/0/tags":        {},
+	}
+	seenPaths := make(map[string]struct{}, len(wantPaths))
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if _, ok := wantPaths[r.URL.Path]; !ok {
+			http.Error(w, "unexpected endpoint", http.StatusNotFound)
+			return
+		}
+		seenPaths[r.URL.Path] = struct{}{}
+		_, _ = w.Write([]byte("[]"))
+	}))
+	defer srv.Close()
+
+	t.Setenv("ZOTERO_BASE_URL", srv.URL+"/users/0")
+	t.Setenv("ZOTERO_CONFIG", filepath.Join(t.TempDir(), "missing.toml"))
+	cmd := newWorkflowArchiveCmd(&rootFlags{asJSON: true, noCache: true})
+	cmd.SilenceErrors, cmd.SilenceUsage = true, true
+	var out, errOut bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&errOut)
+	cmd.SetArgs([]string{"--db", filepath.Join(t.TempDir(), "archive.db"), "--full"})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("archive: %v; stderr=%s", err, errOut.String())
+	}
+	var result struct {
+		Status   string   `json:"status"`
+		Failures []string `json:"failures"`
+	}
+	if err := json.Unmarshal(out.Bytes(), &result); err != nil {
+		t.Fatalf("decode archive result %q: %v", out.String(), err)
+	}
+	if result.Status != "complete" || len(result.Failures) != 0 {
+		t.Fatalf("archive result = %+v, want complete with no failures", result)
+	}
+	if len(seenPaths) != len(wantPaths) {
+		t.Fatalf("archive endpoints = %v, want exactly %v", seenPaths, wantPaths)
+	}
+	for path := range wantPaths {
+		if _, ok := seenPaths[path]; !ok {
+			t.Errorf("archive did not fetch canonical endpoint %s", path)
+		}
 	}
 }

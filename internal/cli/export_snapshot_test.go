@@ -18,6 +18,41 @@ import (
 	"time"
 )
 
+func TestExportHelpMatchesSnapshotFlags(t *testing.T) {
+	var parentHelp bytes.Buffer
+	parent := newExportCmd(&rootFlags{})
+	parent.SetOut(&parentHelp)
+	parent.SetErr(&parentHelp)
+	parent.SetArgs([]string{"--help"})
+	if err := parent.Execute(); err != nil {
+		t.Fatalf("export --help: %v", err)
+	}
+	for _, flag := range []string{"--format", "--no-cache"} {
+		if strings.Contains(parentHelp.String(), flag) {
+			t.Fatalf("export --help advertises unreachable %s:\n%s", flag, parentHelp.String())
+		}
+	}
+
+	var snapshotHelp bytes.Buffer
+	snapshot := newExportSnapshotCmd(&rootFlags{})
+	snapshot.SetOut(&snapshotHelp)
+	snapshot.SetErr(&snapshotHelp)
+	snapshot.SetArgs([]string{"--help"})
+	if err := snapshot.Execute(); err != nil {
+		t.Fatalf("export snapshot --help: %v", err)
+	}
+	for _, flag := range []string{"--output", "--limit", "--page-size", "--resume"} {
+		if !strings.Contains(snapshotHelp.String(), flag) {
+			t.Fatalf("export snapshot --help omits documented %s:\n%s", flag, snapshotHelp.String())
+		}
+	}
+	for _, flag := range []string{"--format", "--no-cache"} {
+		if strings.Contains(snapshotHelp.String(), flag) {
+			t.Fatalf("export snapshot --help advertises rejected %s:\n%s", flag, snapshotHelp.String())
+		}
+	}
+}
+
 func TestSnapshotScopePath(t *testing.T) {
 	cases := []struct {
 		in        string
@@ -162,22 +197,25 @@ func TestExportSnapshotPaginatesAndLocks(t *testing.T) {
 		t.Errorf("data lines = %d, want %d (paginated across 3 pages of 50)", lines, corpus)
 	}
 
-	lockRaw, err := os.ReadFile(out + ".lock.json")
+	manifestRaw, err := os.ReadFile(out + ".manifest.json")
 	if err != nil {
-		t.Fatalf("read lockfile: %v", err)
+		t.Fatalf("read manifest: %v", err)
 	}
 	var lf exportLockfile
-	if err := json.Unmarshal(lockRaw, &lf); err != nil {
-		t.Fatalf("decode lockfile: %v", err)
+	if err := json.Unmarshal(manifestRaw, &lf); err != nil {
+		t.Fatalf("decode manifest: %v", err)
 	}
 	if lf.Count != corpus || len(lf.Items) != corpus || lf.ContentSHA256 == "" {
-		t.Errorf("lockfile = {count:%d items:%d sha:%q}, want count/items %d with a hash", lf.Count, len(lf.Items), lf.ContentSHA256, corpus)
+		t.Errorf("manifest = {count:%d items:%d sha:%q}, want count/items %d with a hash", lf.Count, len(lf.Items), lf.ContentSHA256, corpus)
 	}
 	if lf.Items[0].Key != "K000" {
-		t.Errorf("lockfile items not sorted: first = %q, want K000", lf.Items[0].Key)
+		t.Errorf("manifest items not sorted: first = %q, want K000", lf.Items[0].Key)
 	}
 	assertFileMode(t, out, 0o600)
-	assertFileMode(t, out+".lock.json", 0o600)
+	assertFileMode(t, out+".manifest.json", 0o600)
+	if _, err := os.Stat(out + ".lock"); !os.IsNotExist(err) {
+		t.Errorf("writer lock should be removed on success, stat err = %v", err)
+	}
 	if _, err := os.Stat(out + ".checkpoint.json"); !os.IsNotExist(err) {
 		t.Errorf("checkpoint sidecar should be removed on success, stat err = %v", err)
 	}
@@ -217,21 +255,16 @@ func TestExportSnapshotSameOutputReturnsBusyBeforeSecondRequest(t *testing.T) {
 	if err := <-firstErr; err != nil {
 		t.Fatalf("first snapshot: %v", err)
 	}
-	data, err := os.ReadFile(output)
+	manifest, err := os.ReadFile(output + ".manifest.json")
 	if err != nil {
-		t.Fatalf("read snapshot: %v", err)
-	}
-	var item map[string]any
-	if err := json.Unmarshal(bytes.TrimSpace(data), &item); err != nil || item["key"] != "K1" {
-		t.Fatalf("snapshot JSONL = %q, err = %v", data, err)
-	}
-	lockfile, err := os.ReadFile(output + ".lock.json")
-	if err != nil {
-		t.Fatalf("read snapshot lockfile: %v", err)
+		t.Fatalf("read snapshot manifest: %v", err)
 	}
 	var lock exportLockfile
-	if err := json.Unmarshal(lockfile, &lock); err != nil || lock.Count != 1 {
-		t.Fatalf("snapshot lockfile = %q, err = %v", lockfile, err)
+	if err := json.Unmarshal(manifest, &lock); err != nil || lock.Count != 1 {
+		t.Fatalf("snapshot manifest = %q, err = %v", manifest, err)
+	}
+	if _, err := os.Stat(output + ".lock"); !os.IsNotExist(err) {
+		t.Fatalf("writer lock remains after successful export: %v", err)
 	}
 }
 

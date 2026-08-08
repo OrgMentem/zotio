@@ -1,7 +1,7 @@
 [
   {
     "name": "analytics",
-    "description": "Analyze locally synced data with count, group-by, and summary operations.\nData must be synced first with the sync command.",
+    "description": "Analyze locally synced Zotero data.\n\n--type accepts a mirrored resource kind (such as items or collections) for\nresource counts, or a Zotero item type (such as journalArticle or book) to\ncount only matching rows in the items mirror. When --group-by is supplied,\nthe item rows are grouped by year, itemType, collection, creator, or tag.",
     "inputSchema": {
       "properties": {
         "db": {
@@ -9,15 +9,15 @@
           "type": "string"
         },
         "group-by": {
-          "description": "Field to group by",
+          "description": "Group items by year, itemType, collection, creator, or tag",
           "type": "string"
         },
         "limit": {
-          "description": "Max groups to show (default: 25)",
+          "description": "Maximum groups to show with --group-by (default: 25)",
           "type": "number"
         },
         "type": {
-          "description": "Resource type to analyze",
+          "description": "Resource kind or Zotero item type to analyze",
           "type": "string"
         }
       },
@@ -657,7 +657,7 @@
   },
   {
     "name": "export",
-    "description": "Export paginated API data to a local file. Supports JSONL (one JSON object\nper line, streaming-friendly) and JSON (array). JSONL is recommended for\nlarge datasets as it has no memory pressure.",
+    "description": "Export paginated API data to a local file. Output defaults to JSONL\n(one JSON object per line, streaming-friendly); JSON output is available for\nbackwards-compatible resource exports.",
     "inputSchema": {
       "properties": {
         "allow-destructive": {
@@ -676,10 +676,6 @@
           "description": "Show request without sending (default: false)",
           "type": "boolean"
         },
-        "format": {
-          "description": "Output format: jsonl or json (default: jsonl)",
-          "type": "string"
-        },
         "limit": {
           "description": "Maximum records to export (0 = unlimited) (default: 0)",
           "type": "number"
@@ -691,10 +687,6 @@
         "max-failures": {
           "description": "With --continue-on-error, stop after this many failures (0 = unlimited) (default: 0)",
           "type": "number"
-        },
-        "no-cache": {
-          "description": "Bypass response cache for fresh data (default: false)",
-          "type": "boolean"
         },
         "output": {
           "description": "Output file path (default: stdout)",
@@ -711,7 +703,7 @@
   },
   {
     "name": "export_snapshot",
-    "description": "Export a structured item set (JSONL) across all pages into a data file,\nplus a sidecar lockfile (\u003coutput\u003e.lock.json) recording each item's key+version\nand a content hash for reproducibility/drift detection. Resumable: an interrupted\nrun can continue with --resume (a \u003coutput\u003e.checkpoint.json sidecar tracks progress).\n\nScope is one of: library (default), collection:KEY, or tag:NAME.",
+    "description": "Export a structured item set (JSONL) across all pages into a data file,\nplus a sidecar manifest (\u003coutput\u003e.manifest.json) recording each item's key+version\nand a content hash for reproducibility/drift detection. Resumable: an interrupted\nrun can continue with --resume (a \u003coutput\u003e.checkpoint.json sidecar tracks progress).\n\nScope is one of: library (default), collection:KEY, or tag:NAME.",
     "inputSchema": {
       "properties": {
         "args": {
@@ -723,7 +715,7 @@
           "type": "number"
         },
         "output": {
-          "description": "Output JSONL data file (required); the lockfile is written to \u003coutput\u003e.lock.json",
+          "description": "Output JSONL data file (required); the manifest is written to \u003coutput\u003e.manifest.json",
           "type": "string"
         },
         "page-size": {
@@ -741,7 +733,7 @@
   },
   {
     "name": "export_snapshot_verify",
-    "description": "Verify a snapshot lockfile against the current Zotero library.\n\nThe verifier re-resolves the lockfile scope when possible, recomputes the same\ncontent hash as export snapshot, and separates semantic drift (added, removed,\nchanged) from Zotero version churn (touched). Touched items have a newer version\nbut identical normalized content and never fail --fail-on-drift.",
+    "description": "Verify a snapshot manifest against the current Zotero library.\n\nThe verifier re-resolves the manifest scope when possible, recomputes the same\ncontent hash as export snapshot, and separates semantic drift (added, removed,\nchanged) from Zotero version churn (touched). Touched items have a newer version\nbut identical normalized content and never fail --fail-on-drift.",
     "inputSchema": {
       "properties": {
         "args": {

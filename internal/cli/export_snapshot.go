@@ -2,7 +2,7 @@
 // `export snapshot` — a truly paginated,
 // resumable, reproducible export. Unlike the generated single-page `export`, it
 // walks every page (start/limit) of a structured item set, streams JSONL to a
-// data file (append-resumable via a checkpoint sidecar), and writes a lockfile
+// data file (append-resumable via a checkpoint sidecar), and writes a manifest
 // recording each item's key+version plus a content hash so the snapshot is
 // reproducible and drift is detectable. Uses structured item JSON, never the
 // formatted-bibliography mode (which ignores limit/pagination).
@@ -32,9 +32,9 @@ func newExportSnapshotCmd(flags *rootFlags) *cobra.Command {
 
 	cmd := &cobra.Command{
 		Use:   "snapshot [scope]",
-		Short: "Reproducible, resumable paginated export with a content lockfile",
+		Short: "Reproducible, resumable paginated export with a content manifest",
 		Long: `Export a structured item set (JSONL) across all pages into a data file,
-plus a sidecar lockfile (<output>.lock.json) recording each item's key+version
+plus a sidecar manifest (<output>.manifest.json) recording each item's key+version
 and a content hash for reproducibility/drift detection. Resumable: an interrupted
 run can continue with --resume (a <output>.checkpoint.json sidecar tracks progress).
 
@@ -54,19 +54,30 @@ Scope is one of: library (default), collection:KEY, or tag:NAME.`,
 				return err
 			}
 			if strings.TrimSpace(outputFile) == "" {
-				return usageErr(fmt.Errorf("--output is required for export snapshot (it writes a data file and a .lock.json sidecar)"))
+				return usageErr(fmt.Errorf("--output is required for export snapshot (it writes a data file and a .manifest.json sidecar)"))
 			}
 
 			canonicalOutput, err := canonicalOutputPath(outputFile)
 			if err != nil {
 				return fmt.Errorf("resolving output path: %w", err)
 			}
-			return withPathWriterLock(cmd, canonicalOutput+".lock", "export snapshot", func() error {
+			runErr := withPathWriterLock(cmd, canonicalOutput+".lock", "export snapshot", func() error {
 				return exportSnapshot(cmd, flags, outputFile, path, params, scopeLabel, pageSize, limit, resume)
 			})
+			if runErr != nil {
+				return runErr
+			}
+			// The checkpoint and manifest are the recovery and verification
+			// artifacts. Once both are complete, the advisory lock is no
+			// longer needed and can be removed after withPathWriterLock has
+			// released it. Failed or interrupted runs retain the lock path.
+			if err := os.Remove(canonicalOutput + ".lock"); err != nil && !os.IsNotExist(err) {
+				return fmt.Errorf("removing export lock: %w", err)
+			}
+			return nil
 		},
 	}
-	cmd.Flags().StringVarP(&outputFile, "output", "o", "", "Output JSONL data file (required); the lockfile is written to <output>.lock.json")
+	cmd.Flags().StringVarP(&outputFile, "output", "o", "", "Output JSONL data file (required); the manifest is written to <output>.manifest.json")
 	cmd.Flags().IntVar(&pageSize, "page-size", 100, "Items per API page (1-100)")
 	cmd.Flags().IntVar(&limit, "limit", 0, "Maximum items to export (0 = all)")
 	cmd.Flags().BoolVar(&resume, "resume", false, "Resume an interrupted snapshot from its checkpoint sidecar")
@@ -136,7 +147,7 @@ func exportSnapshot(cmd *cobra.Command, flags *rootFlags, outputFile, path strin
 		return closeErr
 	}
 
-	// Build the lockfile from the complete data file so --resume runs
+	// Build the manifest from the complete data file so --resume runs
 	// produce a correct full-set fingerprint, not just the new pages.
 	items, err := readJSONLItems(outputFile)
 	if err != nil {
@@ -146,16 +157,16 @@ func exportSnapshot(cmd *cobra.Command, flags *rootFlags, outputFile, path strin
 	if err != nil {
 		return err
 	}
-	lockPath := outputFile + ".lock.json"
-	lockFile, err := openPrivateOutputFile(lockPath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC)
+	manifestPath := outputFile + ".manifest.json"
+	manifestFile, err := openPrivateOutputFile(manifestPath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC)
 	if err != nil {
-		return fmt.Errorf("writing lockfile: %w", err)
+		return fmt.Errorf("writing manifest: %w", err)
 	}
-	if err := writeExportLockfile(lockFile, lf); err != nil {
-		_ = lockFile.Close()
+	if err := writeExportLockfile(manifestFile, lf); err != nil {
+		_ = manifestFile.Close()
 		return err
 	}
-	if err := lockFile.Close(); err != nil {
+	if err := manifestFile.Close(); err != nil {
 		return err
 	}
 	_ = os.Remove(checkpointFile)
@@ -163,7 +174,7 @@ func exportSnapshot(cmd *cobra.Command, flags *rootFlags, outputFile, path strin
 	report, _ := json.Marshal(map[string]any{
 		"scope":          scopeLabel,
 		"output":         outputFile,
-		"lockfile":       lockPath,
+		"manifest":       manifestPath,
 		"fetched":        fetched,
 		"count":          lf.Count,
 		"content_sha256": lf.ContentSHA256,
