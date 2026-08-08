@@ -140,6 +140,49 @@ func TestCreatorsAuditJSONContractIncludesGroupsAndFindingsEnvelope(t *testing.T
 	}
 }
 
+// TestCreatorsAuditEmitsRunnableRenameCommand proves creators audit's merge
+// plan carries the exact `zotio creators rename` invocation for each alias —
+// both in the JSON contract (rename_command) and in the human report — so the
+// audit is no longer a dead end with no way to act on what it finds.
+func TestCreatorsAuditEmitsRunnableRenameCommand(t *testing.T) {
+	creatorAuditSeedCommandStore(t,
+		creatorAuditTestItem("R1", "Canonical", "", nil, creatorAuditNameCreator("Adam J. Rock")),
+		creatorAuditTestItem("R2", "Canonical too", "", nil, creatorAuditNameCreator("Adam J. Rock")),
+		creatorAuditTestItem("R3", "Canonical three", "", nil, creatorAuditNameCreator("Adam J. Rock")),
+		creatorAuditTestItem("R4", "Alias", "", nil, creatorAuditNameCreator("Adam J Rock")),
+		creatorAuditTestItem("R5", "Alias too", "", nil, creatorAuditNameCreator("Adam J Rock")),
+	)
+
+	report, _ := creatorAuditRunJSONCommand(t)
+	group := creatorAuditRequireGroupContaining(t, report.Groups, "Adam J. Rock", "Adam J Rock")
+	if group.Tier != creatorVariantTierExact {
+		t.Fatalf("tier = %q, want exact", group.Tier)
+	}
+	var alias creatorVariantAlias
+	for _, a := range group.Aliases {
+		if a.Name == "Adam J Rock" {
+			alias = a
+		}
+	}
+	wantCommand := `zotio creators rename --from 'Adam J Rock' --to 'Adam J. Rock'`
+	if alias.RenameCommand != wantCommand {
+		t.Fatalf("alias rename_command = %q, want %q", alias.RenameCommand, wantCommand)
+	}
+
+	flags := &rootFlags{timeout: time.Second}
+	cmd := newCreatorsAuditCmd(flags)
+	cmd.SilenceErrors, cmd.SilenceUsage = true, true
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetArgs(nil)
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("creators audit (text): %v", err)
+	}
+	if !strings.Contains(out.String(), wantCommand) {
+		t.Fatalf("text report %q does not contain runnable command %q", out.String(), wantCommand)
+	}
+}
+
 func TestCreatorsAuditORCIDSidecarAndEvidence(t *testing.T) {
 	dbPath := creatorAuditSeedCommandStore(t,
 		creatorAuditTestItem("L1", "Lee Initial", "10.555/lee-initial", nil, creatorAuditNameCreator("A. Lee")),

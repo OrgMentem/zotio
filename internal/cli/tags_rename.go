@@ -61,23 +61,37 @@ func newTagsRenameCmd(flags *rootFlags) *cobra.Command {
 			if flagLimit <= 0 {
 				return fmt.Errorf("--limit must be greater than zero")
 			}
+			// Renaming a tag to itself used to PATCH every carrier: item versions
+			// bumped, the journal gained a meaningless run, and other clients saw
+			// spurious modifications — all to change nothing. No selection query
+			// is needed to know that.
+			selfRename := flagFrom == flagTo
 
-			c, err := flags.newClient()
-			if err != nil {
-				return err
-			}
-			// Planning a rename always has to read the real matching item set;
-			// --dry-run controls the mutation engine, not the discovery GETs.
-			c.DryRun = false
-			updates, matched, err := listTagRenameUpdates(c, flagFrom, flagTo, flagLimit)
-			if err != nil {
-				return classifyAPIError(err, flags)
-			}
-			// "Nothing selected" must never look like "no such tag".
-			if len(updates) == 0 && matched > 0 {
-				fmt.Fprintf(cmd.ErrOrStderr(),
-					"warning: %d item(s) match tag %q but none could be planned for rename; none of them carry it as a distinct tag from %q\n",
-					matched, flagFrom, flagTo)
+			var updates []tagRenameUpdate
+			matched := 0
+			if !selfRename {
+				// Selection decides what gets written, so it must see the plane the
+				// write lands on, uncached.
+				//
+				// Reads normally go to the local desktop API while writes route to
+				// api.zotero.org, and a tag written moments ago does not exist on
+				// the read plane until Zotero syncs it down (~15s). Worse, the
+				// response cache would then pin that emptiness for its full
+				// 5-minute TTL: a preview run during the propagation window cached
+				// the empty result, and the apply that followed served the cache
+				// and silently renamed nothing, reporting ok and exit 0.
+				// Previewing first — the documented, careful workflow — was itself
+				// what broke the apply.
+				selectClient, selectErr := flags.newSelectionClient()
+				if selectErr != nil {
+					return selectErr
+				}
+				// --dry-run controls the mutation engine, not the discovery GETs.
+				selectClient.DryRun = false
+				updates, matched, selectErr = listTagRenameUpdates(selectClient, flagFrom, flagTo, flagLimit)
+				if selectErr != nil {
+					return classifyAPIError(selectErr, flags)
+				}
 			}
 
 			var renameApply func(tagRenameUpdate) (string, any, error)
@@ -88,6 +102,17 @@ func newTagsRenameCmd(flags *rootFlags) *cobra.Command {
 				}
 				return renameApply(update)
 			})
+			// A rename that changes nothing must say WHY: "selected: 0" was
+			// byte-identical for a self-rename, a tag that does not exist, and the
+			// silent plane/cache failure above.
+			if len(ops) == 0 {
+				ops = []mutation.Op{{
+					ID:         "tags.rename:" + flagFrom,
+					Key:        flagFrom,
+					Kind:       "tag_rename",
+					NoOpReason: emptyTagRenameReason(selfRename, flagFrom, flagTo, matched),
+				}}
+			}
 			if resolveMutationMode(flags).Apply && len(ops) > 0 {
 				writeClient, err := flags.newWriteClient()
 				if err != nil {
@@ -111,6 +136,36 @@ func newTagsRenameCmd(flags *rootFlags) *cobra.Command {
 	cmd.Flags().IntVar(&flagLimit, "limit", 100, "Maximum number of items to process per page")
 
 	return cmd
+}
+
+// emptyTagRenameReason explains a rename that planned nothing. Three very
+// different situations previously produced the identical `selected: 0, ok: true,
+// exit 0`: renaming a tag to itself, a tag no item carries, and a tag whose
+// carriers all already hold the target name. A caller cannot act on any of them
+// without a code.
+func emptyTagRenameReason(selfRename bool, from, to string, matched int) map[string]any {
+	switch {
+	case selfRename:
+		return map[string]any{
+			"code":    "same_name",
+			"message": fmt.Sprintf("--from and --to are both %q; nothing to rename", from),
+			"from":    from,
+		}
+	case matched == 0:
+		return map[string]any{
+			"code":    "tag_not_found",
+			"message": fmt.Sprintf("no item carries tag %q on the plane this write targets", from),
+			"from":    from,
+		}
+	default:
+		return map[string]any{
+			"code":    "already_renamed",
+			"message": fmt.Sprintf("%d item(s) carry %q, but none as a tag distinct from %q", matched, from, to),
+			"from":    from,
+			"to":      to,
+			"matched": matched,
+		}
+	}
 }
 
 func buildTagRenameOps(updates []tagRenameUpdate, oldName, newName string, apply func(tagRenameUpdate) (string, any, error)) []mutation.Op {

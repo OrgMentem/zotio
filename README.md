@@ -130,7 +130,7 @@ One command that answers a real question — *"is this library fit for the next 
 ```console
 $ zotio library health --for quick
 Health: needs attention
-Scope: library · 846 items · source local · synced 1d ago · preset quick
+Scope: library · 846 top-level items (2103 mirrored rows) · source local · synced 1d ago · preset quick
 
 High (13)
   [duplicate_candidates] doi="10.1002/bdm.2118" (2 items)

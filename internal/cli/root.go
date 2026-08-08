@@ -441,6 +441,41 @@ func (f *rootFlags) newWriteClient() (*client.Client, error) {
 	return c, nil
 }
 
+// newSelectionClient returns the client a write command must use to decide WHAT
+// to write: pinned to the plane the write lands on, and never cached.
+//
+// Both properties are load-bearing. Reads normally go to the local desktop API
+// while writes route to api.zotero.org, so an object written moments ago is
+// invisible to a read-plane query until Zotero syncs it down (~15s observed).
+// And the response cache would then pin that emptiness for its full 5-minute
+// TTL, so a preview taken during the propagation window cached an empty match
+// set and the apply that followed served the cache and silently wrote nothing —
+// previewing first, the careful workflow, was what broke the apply.
+//
+// Unlike newWriteClient this prints no write-route notice (it performs no write)
+// and degrades to the read plane when no write route is configured, which is
+// correct: without hybrid routing the two planes are the same.
+func (f *rootFlags) newSelectionClient() (*client.Client, error) {
+	c, err := f.newClient()
+	if err != nil {
+		return nil, err
+	}
+	// A stale empty match set is indistinguishable from "nothing to do", so the
+	// selection query must never be served from cache.
+	c.NoCache = true
+	if c.ResolveWriteBase != nil {
+		ctx := f.ctx
+		if ctx == nil {
+			ctx = context.Background()
+		}
+		if base, rerr := c.ResolveWriteBase(ctx); rerr == nil && base != "" {
+			c.BaseURL = base
+			c.ResolveWriteBase = nil
+		}
+	}
+	return c, nil
+}
+
 // newWebReadClient returns a read client pinned to the Zotero Web API library
 // for read-only endpoints whose semantics differ from the local API (for
 // example, server-side CSL style rendering). Unlike newWriteClient, it never

@@ -35,6 +35,10 @@ type creatorVariantAlias struct {
 	Name      string   `json:"name"`
 	ItemCount int      `json:"item_count"`
 	ItemKeys  []string `json:"item_keys"`
+	// RenameCommand is the exact `zotio creators rename` invocation that
+	// folds this alias into the group's canonical name, mirroring how tags
+	// audit emits ready-to-run `zotio tags rename` commands per alias.
+	RenameCommand string `json:"rename_command"`
 }
 
 type creatorVariantGroup struct {
@@ -334,6 +338,17 @@ func parseCreatorSingleName(name string) (first, last string) {
 
 func collapseCreatorWhitespace(value string) string {
 	return strings.Join(strings.Fields(strings.TrimSpace(value)), " ")
+}
+
+// creatorRenameCommand builds the exact `zotio creators rename` invocation
+// that folds alias into canonical, reusing the same shell-safe quoting tags
+// audit uses for its merge-plan commands.
+func creatorRenameCommand(alias, canonical string) string {
+	return fmt.Sprintf(
+		`zotio creators rename --from %s --to %s`,
+		quoteTagAuditCommandArg(alias),
+		quoteTagAuditCommandArg(canonical),
+	)
 }
 
 func normalizeCreatorAuditText(value string) string {
@@ -661,9 +676,10 @@ func makeCreatorVariantGroup(tier creatorVariantTier, members []*creatorNameVari
 			continue
 		}
 		aliases = append(aliases, creatorVariantAlias{
-			Name:      member.Name,
-			ItemCount: member.itemCount(),
-			ItemKeys:  member.cappedItemKeys(creatorAuditItemKeyCap),
+			Name:          member.Name,
+			ItemCount:     member.itemCount(),
+			ItemKeys:      member.cappedItemKeys(creatorAuditItemKeyCap),
+			RenameCommand: creatorRenameCommand(member.Name, canonical.Name),
 		})
 	}
 	return creatorVariantGroup{
@@ -1058,7 +1074,12 @@ func creatorVariantFindings(groups []creatorVariantGroup, source FindingSource) 
 		}
 		switch group.Tier {
 		case creatorVariantTierExact:
-			finding.RecommendedAction = &RecommendedAction{Text: "Exact-normalized creator variants are safe candidates for creators audit fix when that mutation surface is enabled."}
+			cmdText := "Exact-normalized creator variants are safe candidates for creators audit fix when that mutation surface is enabled."
+			if len(group.Aliases) > 0 {
+				finding.RecommendedAction = &RecommendedAction{Command: group.Aliases[0].RenameCommand, Text: cmdText}
+			} else {
+				finding.RecommendedAction = &RecommendedAction{Text: cmdText}
+			}
 		case creatorVariantTierInitials:
 			finding.RecommendedAction = &RecommendedAction{Command: "zotio creators audit fix --map <alias>=<canonical>"}
 		case creatorVariantTierAmbiguous:
@@ -1073,9 +1094,10 @@ func creatorVariantFindingEvidence(group creatorVariantGroup) map[string]any {
 	aliases := make([]map[string]any, 0, len(group.Aliases))
 	for _, alias := range group.Aliases {
 		aliases = append(aliases, map[string]any{
-			"name":       alias.Name,
-			"item_count": alias.ItemCount,
-			"item_keys":  alias.ItemKeys,
+			"name":           alias.Name,
+			"item_count":     alias.ItemCount,
+			"item_keys":      alias.ItemKeys,
+			"rename_command": alias.RenameCommand,
 		})
 	}
 	evidence := map[string]any{
@@ -1118,6 +1140,9 @@ func printCreatorsAuditReport(cmd *cobra.Command, report creatorsAuditReport) er
 					keys = "no item keys"
 				}
 				fmt.Fprintf(out, "  - %s (%d item(s): %s)\n", alias.Name, alias.ItemCount, keys)
+				if alias.RenameCommand != "" {
+					fmt.Fprintf(out, "    %s\n", alias.RenameCommand)
+				}
 			}
 			if len(group.Evidence) > 0 {
 				if matches, ok := group.Evidence["orcid_matches"]; ok {

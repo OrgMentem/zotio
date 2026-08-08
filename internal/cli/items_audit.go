@@ -213,15 +213,11 @@ func itemsAuditFindingAction(kind string) *RecommendedAction {
 	}
 }
 
-// itemsAuditScopePredicate restricts an audit to the rows an audit can actually
-// score: top-level bibliographic items. Attachments, notes and annotations
-// cannot carry an abstract, a DOI or tags, so counting them made every
-// denominator meaningless — a 928-item library reported 4018 "missing tags",
-// mostly PDFs. Uses the indexed parent_key/item_type columns and matches the
-// top-level predicate in collections_gaps.go: the store persists top-level items
-// with parent_key = ”, not NULL.
-const itemsAuditScopePredicate = `COALESCE(parent_key, '') = ''
-	AND item_type NOT IN ('attachment', 'note', 'annotation')`
+// libraryTopLevelItemsPredicate is defined in library_health.go, the shared
+// home for "how many items does this library have" — see its doc comment.
+// Attachments, notes and annotations cannot carry an abstract, a DOI or tags,
+// so counting them made every denominator meaningless — a 928-item library
+// reported 4018 "missing tags", mostly PDFs.
 
 func queryItemsAuditSummary(db localQueryStore) (itemsAuditSummary, error) {
 	missingPDF, err := queryMissingPDFCount(db)
@@ -243,7 +239,7 @@ SELECT
 	COUNT(CASE WHEN ` + citationIncompletePredicate + ` THEN 1 END) AS missing_citation
 FROM resources
 WHERE resource_type = 'items'
-	AND ` + itemsAuditScopePredicate)
+	AND ` + libraryTopLevelItemsPredicate)
 	if err != nil {
 		return itemsAuditSummary{}, err
 	}
@@ -289,7 +285,7 @@ SELECT
 	json_extract(data, '$.data.dateAdded') AS date_added
 FROM resources
 WHERE resource_type = 'items'
-	AND ` + itemsAuditScopePredicate + `
+	AND ` + libraryTopLevelItemsPredicate + `
 	AND (json_extract(data, '$.data.abstractNote') IS NULL OR TRIM(json_extract(data, '$.data.abstractNote')) = '')`
 	// Let items enrich scope missing-abstract candidates to a collection.
 	args := enrichCollectionFilterArgs(&query, "data", collection)
@@ -308,7 +304,7 @@ SELECT
 	json_extract(data, '$.data.dateAdded') AS date_added
 FROM resources
 WHERE resource_type = 'items'
-	AND ` + itemsAuditScopePredicate + `
+	AND ` + libraryTopLevelItemsPredicate + `
 	AND item_type IN ('journalArticle', 'conferencePaper', 'preprint')
 	AND (json_extract(data, '$.data.DOI') IS NULL OR TRIM(json_extract(data, '$.data.DOI')) = '')`
 	// Let items enrich scope missing-DOI candidates to a collection.
@@ -328,7 +324,7 @@ SELECT
 	json_extract(data, '$.data.dateAdded') AS date_added
 FROM resources
 WHERE resource_type = 'items'
-	AND ` + itemsAuditScopePredicate + `
+	AND ` + libraryTopLevelItemsPredicate + `
 	AND COALESCE(json_array_length(json_extract(data, '$.data.tags')), 0) = 0
 ORDER BY date_added DESC`
 	return queryItemsAuditRows(db, query, limit)
@@ -416,7 +412,7 @@ SELECT
 	json_extract(data, '$.data.dateAdded') AS date_added
 FROM resources
 WHERE resource_type = 'items'
-	AND ` + itemsAuditScopePredicate + `
+	AND ` + libraryTopLevelItemsPredicate + `
 	AND ` + citationIncompletePredicate + `
 ORDER BY date_added DESC`
 	rows, err := queryItemsAuditRows(db, query, limit)

@@ -540,6 +540,14 @@ func (s *Store) migrate(ctx context.Context) error {
 			written_at DATETIME DEFAULT CURRENT_TIMESTAMP,
 			PRIMARY KEY (resource_type, id)
 		)`,
+		// Repair: an empty list response was once stored keyed by its own resource
+		// name, producing rows like (items-trash, '[]'). They surfaced in local
+		// reads as an entry with no `data` object, breaking `jq '.results[].data'`.
+		// Genuine singleton records are JSON objects, preserved by the json_type
+		// guard.
+		`DELETE FROM resources
+		 WHERE id = resource_type
+		   AND COALESCE(json_type(data), 'invalid') != 'object'`,
 	}
 
 	// Run every migration — including the column backfill and the

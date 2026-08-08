@@ -11,5 +11,6 @@ func newCreatorsCmd(flags *rootFlags) *cobra.Command {
 	}
 
 	cmd.AddCommand(newCreatorsAuditCmd(flags))
+	cmd.AddCommand(newCreatorsRenameCmd(flags))
 	return cmd
 }

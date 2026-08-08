@@ -27,29 +27,57 @@ type creatorAuditFixServer struct {
 	server   *httptest.Server
 	requests int
 	patches  map[string]creatorAuditFixPatch
+	// writePlane holds the write-plane copy of each item, keyed by item key.
+	// applyCreatorRenameUpdate re-reads from here to resolve the
+	// If-Unmodified-Since-Version precondition before PATCHing.
+	writePlane map[string]json.RawMessage
 }
 
-func newCreatorAuditFixServer(t *testing.T) *creatorAuditFixServer {
+// newCreatorAuditFixServer serves both halves of a write: the write-plane GET
+// re-read applyCreatorRenameUpdate performs to resolve the precondition, and
+// the PATCH it then sends. writePlaneItems seeds the write-plane copies; tests
+// that want write-plane state to differ from the local mirror (e.g. a no_op
+// because the write plane no longer carries the alias) pass items that differ
+// from what was seeded into the local store.
+func newCreatorAuditFixServer(t *testing.T, writePlaneItems []json.RawMessage) *creatorAuditFixServer {
 	t.Helper()
-	ts := &creatorAuditFixServer{patches: map[string]creatorAuditFixPatch{}}
+	ts := &creatorAuditFixServer{patches: map[string]creatorAuditFixPatch{}, writePlane: map[string]json.RawMessage{}}
+	for _, raw := range writePlaneItems {
+		var item struct {
+			Key string `json:"key"`
+		}
+		if err := json.Unmarshal(raw, &item); err != nil {
+			t.Fatalf("decode write-plane fixture: %v", err)
+		}
+		ts.writePlane[item.Key] = raw
+	}
 	ts.server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		ts.requests++
-		if r.Method != http.MethodPatch {
-			http.Error(w, "unexpected method", http.StatusMethodNotAllowed)
-			return
-		}
 		if !strings.HasPrefix(r.URL.Path, "/users/0/items/") {
 			http.Error(w, "unexpected path", http.StatusNotFound)
 			return
 		}
-		var body map[string]any
-		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-			http.Error(w, err.Error(), http.StatusBadRequest)
-			return
-		}
 		key := strings.TrimPrefix(r.URL.Path, "/users/0/items/")
-		ts.patches[key] = creatorAuditFixPatch{Body: body, Header: r.Header.Get("If-Unmodified-Since-Version")}
-		w.WriteHeader(http.StatusNoContent)
+		switch r.Method {
+		case http.MethodGet:
+			raw, ok := ts.writePlane[key]
+			if !ok {
+				http.Error(w, "unknown item", http.StatusNotFound)
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write(raw)
+		case http.MethodPatch:
+			var body map[string]any
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+			ts.patches[key] = creatorAuditFixPatch{Body: body, Header: r.Header.Get("If-Unmodified-Since-Version")}
+			w.WriteHeader(http.StatusNoContent)
+		default:
+			http.Error(w, "unexpected method", http.StatusMethodNotAllowed)
+		}
 	}))
 	t.Cleanup(ts.server.Close)
 	return ts
@@ -105,7 +133,7 @@ func runCreatorAuditFixCmd(t *testing.T, flags *rootFlags, baseURL string, args 
 
 func TestCreatorsAuditFixPreviewDefaultsToTier1OnlyWithoutWrites(t *testing.T) {
 	seedCreatorAuditFixStore(t, creatorAuditFixFixtureItems())
-	srv := newCreatorAuditFixServer(t)
+	srv := newCreatorAuditFixServer(t, creatorAuditFixFixtureItems())
 
 	env, _, err := runCreatorAuditFixCmd(t, &rootFlags{asJSON: true}, srv.server.URL)
 	if err != nil {
@@ -129,7 +157,7 @@ func TestCreatorsAuditFixPreviewDefaultsToTier1OnlyWithoutWrites(t *testing.T) {
 
 func TestCreatorsAuditFixExplicitMapPlansTier2(t *testing.T) {
 	seedCreatorAuditFixStore(t, creatorAuditFixFixtureItems())
-	srv := newCreatorAuditFixServer(t)
+	srv := newCreatorAuditFixServer(t, creatorAuditFixFixtureItems())
 
 	env, _, err := runCreatorAuditFixCmd(t, &rootFlags{asJSON: true}, srv.server.URL, "--map", "J. Smith=John Smith")
 	if err != nil {
@@ -155,7 +183,7 @@ func TestCreatorsAuditFixExplicitMapPlansTier2(t *testing.T) {
 
 func TestCreatorsAuditFixApplyPatchesFullCreatorsAndWritesThrough(t *testing.T) {
 	seedCreatorAuditFixStore(t, creatorAuditFixFixtureItems())
-	srv := newCreatorAuditFixServer(t)
+	srv := newCreatorAuditFixServer(t, creatorAuditFixFixtureItems())
 	oldMirror := mirrorWriteThrough
 	mirrorWriteThrough = applyMirrorWriteThrough
 	t.Cleanup(func() { mirrorWriteThrough = oldMirror })
@@ -199,7 +227,7 @@ func TestCreatorsAuditFixApplyPatchesFullCreatorsAndWritesThrough(t *testing.T) 
 
 func TestCreatorsAuditFixMapAliasOutsideTier2IsUsageError(t *testing.T) {
 	seedCreatorAuditFixStore(t, creatorAuditFixFixtureItems())
-	srv := newCreatorAuditFixServer(t)
+	srv := newCreatorAuditFixServer(t, creatorAuditFixFixtureItems())
 
 	_, _, err := runCreatorAuditFixCmd(t, &rootFlags{asJSON: true}, srv.server.URL, "--map", "Smith=John Smith")
 	if err == nil {
@@ -218,7 +246,7 @@ func TestCreatorsAuditFixMapAliasOutsideTier2IsUsageError(t *testing.T) {
 
 func TestCreatorsAuditFixMaxChangesCountsItemWrites(t *testing.T) {
 	seedCreatorAuditFixStore(t, creatorAuditFixFixtureItems())
-	srv := newCreatorAuditFixServer(t)
+	srv := newCreatorAuditFixServer(t, creatorAuditFixFixtureItems())
 
 	refused, refusedJSON, err := runCreatorAuditFixCmd(t, &rootFlags{asJSON: true, yes: true, maxChanges: 1}, srv.server.URL, "--map", "J. Smith=John Smith")
 	if err == nil {
@@ -245,8 +273,8 @@ func TestCreatorsAuditFixMaxChangesCountsItemWrites(t *testing.T) {
 	if !allowed.OK || allowed.Result == nil || allowed.Plan.Summary.Planned != 2 || allowed.Result.Summary.Applied != 2 {
 		t.Fatalf("allowed envelope = %+v, want two planned/applied item writes", allowed)
 	}
-	if srv.requests != 2 {
-		t.Fatalf("PATCH requests after allowed apply = %d, want 2", srv.requests)
+	if len(srv.patches) != 2 {
+		t.Fatalf("PATCH requests after allowed apply = %d, want 2", len(srv.patches))
 	}
 }
 

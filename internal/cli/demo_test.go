@@ -275,7 +275,7 @@ func TestDemoFixtureContainsRequiredResearchIntegrityData(t *testing.T) {
 			t.Fatalf("tag count query: %v", err)
 		}
 		variants := map[string]map[string]bool{} // normalized -> set of raw variants
-		for _, p := range buildTagAuditPlans(tagRows, countRows) {
+		for _, p := range buildTagAuditPlans(tagRows, countRows, tagAuditPreferFrequency, nil) {
 			set := map[string]bool{p.Canonical: true}
 			for _, a := range p.Aliases {
 				set[a] = true

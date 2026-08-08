@@ -100,6 +100,16 @@ Notable changes to zotio. Format follows [Keep a Changelog](https://keepachangel
   types cannot carry. All checks and their listings are now scoped to top-level
   bibliographic items, and the summary states the denominator
   (`Scope: N top-level items`, `top_level_items` in JSON).
+- **`library health` and `items audit` now agree on "how many items are in the
+  library."** `health`'s scope line counted every row whose indexed
+  `item_type` wasn't attachment/note/annotation, while `audit`'s denominator
+  also excluded child rows via `parent_key` — two independently-typed
+  predicates that could drift, on top of the store's raw mirrored-row count
+  (`doctor`) and the live web plane, for a total of three different numbers
+  answering "the library." Both commands now share one predicate
+  (top-level bibliographic items), and `health`'s scope line names what it
+  counted and shows the mirrored-row total alongside it:
+  `Scope: library · 928 top-level items (4306 mirrored rows) · source local`.
 - **`--plain` emits plain text instead of JSON.** The flag suppressed the human
   table and then fell through to the shared JSON path, so `items recent --plain`,
   `search --plain` and `collections list --plain` all returned JSON. Read
@@ -111,6 +121,61 @@ Notable changes to zotio. Format follows [Keep a Changelog](https://keepachangel
   or collection. Results now carry a machine-readable `code`
   (`already_member`, `already_moved`, `not_in_source_collection`) alongside a
   human message.
+- **`tags audit` merge plans no longer cement three conventions in one run.**
+  Each duplicate group picked its canonical spelling by frequency in
+  isolation, so a single plan could resolve `Children`→`children`,
+  `Cognitive Psychology`→`Cognitive psychology` and `Developmental
+  psychology`→`Developmental Psychology` — three different case conventions,
+  none of them library-wide. `tags audit` and `tags audit fix` now take a
+  shared `--prefer frequency|sentence|title|lower` flag (default `frequency`,
+  preserving today's output exactly) that both commands resolve identically,
+  so the plan a user reads is the plan `fix` applies. Any duplicate group
+  containing an automatic (type 1) tag — typically a MeSH term a translator
+  imported, where Title Case is already correct — is skipped by a
+  non-frequency policy and falls back to frequency, flagged in the plan.
+- **`tags audit` now tells you `tags audit fix` exists.** The report emitted
+  nothing but 54 copy-pasteable `zotio tags rename` lines with no pointer to
+  the command that already batch-applies all of them. It now leads with
+  `zotio tags audit fix --yes` (carrying `--prefer` when set) as the primary
+  path, keeping the individual commands below as a manual escape hatch.
+- **`zotio which` no longer misses commands with no curated write-up, and
+  finds collection membership by name.** The ranked index only scored the
+  ~30 curated hero entries, so a real command like `items move` or `items
+  add-to-collection` scored zero for every query no matter how well its own
+  name or description matched the words typed — `which "add an item to a
+  collection"` surfaced `attachments add` and `schema drift` instead, and
+  `collections --help` had nowhere to send you. `which` now indexes every
+  command in the Cobra tree (curated entries keep a small tie-breaking
+  boost so existing good answers are unchanged), curated intent aliases
+  resolve phrasings like "file a paper into a collection" and "put item in
+  collection" to `items move`/`items add-to-collection`, and `collections
+  --help` now names the commands that add an item to one.
+- **`import pdf` no longer creates duplicates it can already detect.** It never
+  consulted `import scan`'s own DOI/PDF-presence classifier, so importing a PDF
+  whose DOI already had a copy on file minted a second top-level item —
+  `library health` then reported the pair it had just created as a duplicate.
+  `import pdf` now runs the same classification before touching the connector
+  and takes `--on-duplicate skip|attach|create` (default `skip`): `skip` warns
+  and reports which existing item the DOI already matched instead of creating
+  anything; `attach` uploads the PDF onto that existing item via the same
+  stored-attachment protocol as `attachments add`, instead of minting a second
+  item; `create` preserves the previous unconditional-create behaviour.
+- **`import pdf` gained `--collection <key|name>`.** Every import landed in My
+  Library root, forcing a two-step `import pdf` then `items move` — and the
+  global `--connector-target` help text already advertised "overrides
+  `--collection` target mapping" for a flag that did not exist on this command.
+  Zotero's `saveStandaloneAttachment` connector endpoint saves into whatever
+  the desktop pane currently targets and accepts no collection parameter, so
+  filing now happens as a step after import, reusing `items move`'s membership
+  writer (a name is resolved and created when absent, exactly like `items
+  add-to-collection`). An item whose key could not be resolved is reported as
+  not filed rather than silently dropping the flag.
+- **`import pdf --dry-run` no longer plans an import Zotero desktop can't run.**
+  With the desktop not running, `--dry-run` returned a full, clean plan; only
+  `import pdf` itself (not its preview) checked the connector. The plan phase
+  now probes `/connector/ping` through the existing `desktop_connector`
+  preconditions-registry check, and the failure names the one alternative that
+  needs no desktop: `zotio import doi <DOI>`.
 
 ### Changed
 - **Tests can no longer write to the developer's real zotio data directory.** The
@@ -118,6 +183,18 @@ Notable changes to zotio. Format follows [Keep a Changelog](https://keepachangel
   `~/.local/share/zotio/journal` — keys like `K1`, `ITEM0001` and `Example 0..50`
   interleaved with genuine library history, offered for reversal by
   `journal undo`. The package now runs against a throwaway `HOME`.
+- **`.results` is now always a JSON array in the read envelope.** `items get`
+  (and `collections get`, `searches get`, `tags get`,
+  `schema new-item-template`) returned `.results` as a bare JSON *object*,
+  while `items list`, `search` and `collections list` returned an *array* —
+  both were `.results`, so a `jq` pipeline written against one broke on the
+  other with `cannot use null as iterable`. `items find` was a third shape:
+  a bare top-level array with no `meta`/`results` wrapper at all, so
+  `jq '.results[]'` failed outright. Every read command now emits one shape:
+  single-object reads return a one-element array and `items find` gains the
+  standard `{meta, results}` wrapper, so `results[0]`/`results[]` works
+  uniformly everywhere. This is a deliberate breaking change to the read
+  envelope, made pre-1.0.
 
 ### Added
 - **`import pdf` returns the keys it created** (`item_key`, `attachment_key`,
@@ -132,6 +209,22 @@ Notable changes to zotio. Format follows [Keep a Changelog](https://keepachangel
 - **`items move` and `items add-to-collection` cross-reference each other** in
   `--help`, so finding the key-based bulk command from the name-based one (and
   vice versa) no longer requires reading the whole `items` command list.
+- **`creators audit` is no longer a dead end.** It found variant groups
+  (`Adam J Rock` vs. `Adam J. Rock`) with nowhere to send them: no `creators
+  rename`, no merge plan, not even copy-pasteable commands the way `tags audit`
+  emits them. Every group's aliases now print with the exact
+  `zotio creators rename --from … --to …` command to fold them into the
+  canonical name (also carried as `rename_command` in the JSON groups and
+  finding evidence), and `creators rename` applies it: one PATCH per affected
+  item, preserving creator order, `creatorType`, and either name shape
+  (`firstName`/`lastName` or a single `name` field). Sharing `tags rename`'s
+  writer also means the same fix applies here: the precondition and the
+  creators array being replaced both come from a fresh write-plane read at
+  apply time, not the local mirror captured at plan time, so writes to items
+  never pushed upstream (and the freshest state of items that have) no longer
+  fail or overwrite concurrent changes. An item whose write-plane copy no
+  longer carries the old name reports a structured `no_op` instead of erroring
+  or corrupting the item.
 
 ## [0.16.1] — 2026-08-06
 ### Fixed

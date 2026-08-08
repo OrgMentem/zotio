@@ -95,3 +95,71 @@ func TestWhichIndex_ExistsAndIsWellFormed(t *testing.T) {
 		}
 	}
 }
+
+// Regression: report #1 finding 12 - the two most obvious phrasings for
+// filing an item into a collection must resolve to the actual command,
+// not to an unrelated curated entry that merely shares a keyword (e.g.
+// "attachments add" for "add").
+func TestRankWhich_ReportPhrasesResolveToCollectionMembership(t *testing.T) {
+	index := buildWhichIndex(RootCmd())
+	wantAny := map[string]bool{"items move": true, "items add-to-collection": true}
+	for _, query := range []string{
+		"add an item to a collection",
+		"file a paper into a collection",
+	} {
+		got := rankWhich(index, query, 3)
+		found := false
+		for _, m := range got {
+			if wantAny[m.Entry.Command] {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("query %q: want 'items move' or 'items add-to-collection' in top 3, got %+v", query, got)
+		}
+	}
+}
+
+// Regression: a command with no curated whichIndex entry must still be
+// reachable by its own name - buildWhichIndex now walks the whole Cobra
+// tree instead of scoring only the curated highlights.
+func TestBuildWhichIndex_UncuratedCommandReachableByOwnName(t *testing.T) {
+	index := buildWhichIndex(RootCmd())
+	curated := make(map[string]bool, len(whichIndex))
+	for _, e := range whichIndex {
+		curated[e.Command] = true
+	}
+	var uncurated string
+	for _, e := range index {
+		if !curated[e.Command] {
+			uncurated = e.Command
+			break
+		}
+	}
+	if uncurated == "" {
+		t.Fatal("expected at least one command in the full tree with no curated highlight entry")
+	}
+	got := rankWhich(index, uncurated, 3)
+	if len(got) == 0 || got[0].Entry.Command != uncurated {
+		t.Errorf("query %q (uncurated command's own name): want it to rank first, got %+v", uncurated, got)
+	}
+}
+
+// Regression: queries that already resolved to a sensible curated answer
+// before the full-tree index and intent aliases were added must keep
+// resolving to that same answer - the fix must not push good matches out.
+func TestRankWhich_PriorGoodMatchesStillWin(t *testing.T) {
+	index := buildWhichIndex(RootCmd())
+	cases := map[string]string{
+		"retracted papers":  "items retract-check",
+		"check manuscript":  "items bibcheck",
+		"citekey conflicts": "library health",
+	}
+	for query, want := range cases {
+		got := rankWhich(index, query, 3)
+		if len(got) == 0 || got[0].Entry.Command != want {
+			t.Errorf("query %q: want top match %q, got %+v", query, want, got)
+		}
+	}
+}

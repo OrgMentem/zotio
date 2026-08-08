@@ -25,10 +25,22 @@ type creatorAuditFixPlan struct {
 }
 
 type creatorRenameUpdate struct {
-	key      string
-	version  any
-	creators []any
-	changes  []mutation.Change
+	key string
+	// renames is the alias->canonical display-name mapping to apply to this
+	// item's creators array. Both `creators audit fix` (possibly several
+	// aliases folded into one item write) and `creators rename` (always a
+	// single alias) populate it identically so both share the write-plane
+	// apply path below.
+	renames map[string]string
+	// version is the read plane's object version, recorded for the plan only.
+	// The write precondition is resolved from the write plane at apply time
+	// (see applyCreatorRenameUpdate) because the two planes do not share a
+	// version space.
+	version any
+	// changes describes the rename(s) for the plan preview, computed from the
+	// read plane at plan time. The write itself recomputes the creators array
+	// from a fresh write-plane read rather than trusting this.
+	changes []mutation.Change
 }
 
 func newCreatorsAuditFixCmd(flags *rootFlags) *cobra.Command {
@@ -322,15 +334,18 @@ func buildCreatorRenameUpdate(key string, item map[string]any, renames map[strin
 	if itemKey, ok := item["key"].(string); ok && itemKey != "" {
 		key = itemKey
 	}
-	version, ok := item["version"]
-	if !ok {
-		return creatorRenameUpdate{}, false, fmt.Errorf("missing version")
-	}
-	creators, changes, changed, err := renamedItemCreators(item, renames)
+	// The read plane's version is recorded for the plan only. A row may
+	// legitimately carry none: write-through strips the stale version from
+	// rows it replays, and an item never pushed upstream has no write-plane
+	// version at all. Requiring one here made every such item invisible to
+	// creator renames; the write precondition is instead resolved from the
+	// write plane at apply time (see applyCreatorRenameUpdate).
+	version := item["version"]
+	_, changes, changed, err := renamedItemCreators(item, renames)
 	if err != nil || !changed {
 		return creatorRenameUpdate{}, changed, err
 	}
-	return creatorRenameUpdate{key: key, version: version, creators: creators, changes: changes}, true, nil
+	return creatorRenameUpdate{key: key, version: version, renames: renames, changes: changes}, true, nil
 }
 
 func renamedItemCreators(item map[string]any, renames map[string]string) ([]any, []mutation.Change, bool, error) {
@@ -413,14 +428,58 @@ func rewriteCreatorDisplayName(creator map[string]any, displayName string) {
 	}
 }
 
+// applyCreatorRenameUpdate performs the rename(s) against the write plane.
+//
+// It deliberately re-reads the item from the write plane instead of PATCHing
+// the creators array captured at plan time. Plan-time state comes from the
+// read plane (the local desktop API), whose object versions live in a
+// different version space and are empty for items never pushed upstream — so
+// the plan-time version yields no If-Unmodified-Since-Version header and
+// Zotero refuses the write outright ("Either If-Unmodified-Since-Version or
+// object version property must be provided for key-based writes"). Re-reading
+// also means the PATCH replaces the write plane's own creators array rather
+// than overwriting it with a stale copy. Mirrors applyTagRenameUpdate in
+// tags_rename.go.
 func applyCreatorRenameUpdate(c *client.Client, update creatorRenameUpdate) (string, any, error) {
 	path := replacePathParam("/items/{itemKey}", "itemKey", update.key)
-	headers := map[string]string{}
-	if version := mutationExpectedVersion(update.version); version > 0 {
-		headers["If-Unmodified-Since-Version"] = strconv.Itoa(version)
+	currentData, currentVersion, err := c.GetFromWriteBaseWithVersion(nil, path, nil)
+	if err != nil {
+		return "failed", err.Error(), err
 	}
+	var current map[string]any
+	if err := json.Unmarshal(currentData, &current); err != nil {
+		wrapped := fmt.Errorf("parsing item %s from the write plane: %w", update.key, err)
+		return "failed", wrapped.Error(), wrapped
+	}
+	creators, _, changed, err := renamedItemCreators(current, update.renames)
+	if err != nil {
+		wrapped := fmt.Errorf("item %s: %w", update.key, err)
+		return "failed", wrapped.Error(), wrapped
+	}
+	if !changed {
+		aliases := make([]string, 0, len(update.renames))
+		for alias := range update.renames {
+			aliases = append(aliases, alias)
+		}
+		sort.Strings(aliases)
+		return "no_op", map[string]any{
+			"code":    "creator_absent",
+			"message": fmt.Sprintf("item no longer carries creator name(s) %s on the write plane", strings.Join(aliases, ", ")),
+			"from":    aliases,
+		}, nil
+	}
+
+	// Defence in depth: nothing may PATCH without a precondition. Zotero
+	// refuses such a write anyway ("Either If-Unmodified-Since-Version or
+	// object version property must be provided for key-based writes"); failing
+	// here reports the real cause instead of relaying that opaque message.
+	if currentVersion <= 0 {
+		err := fmt.Errorf("no write-plane version for item %s; refusing to write without an If-Unmodified-Since-Version precondition", update.key)
+		return "failed", err.Error(), err
+	}
+	headers := map[string]string{"If-Unmodified-Since-Version": strconv.Itoa(currentVersion)}
 	_, statusCode, err := c.PatchWithHeaders(path, map[string]any{
-		"creators": update.creators,
+		"creators": creators,
 	}, headers)
 	if err != nil {
 		var apiErr *client.APIError

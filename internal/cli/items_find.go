@@ -5,6 +5,7 @@ package cli
 import (
 	"encoding/json"
 	"fmt"
+	"os"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -69,6 +70,40 @@ ORDER BY id`, flagDOI, flagDOI, flagArXiv, escapedArXiv, flagArXiv, escapedArXiv
 			data, err := json.Marshal(extractItemDataRows(rows))
 			if err != nil {
 				return err
+			}
+			// items find has no live equivalent — Zotero exposes no
+			// identifier-lookup endpoint — so it always reads the local
+			// mirror. Route through the same envelope pipeline as every
+			// other read command so `.results` stays a JSON array here too
+			// (it used to be a bare top-level array with no meta/results
+			// wrapper at all).
+			prov := localProvenance(rawDB, "items", "local_only")
+			printProvenance(cmd, countResultItems(data), prov)
+			if wantsJSONEnvelope(cmd.OutOrStdout(), flags) {
+				filtered := data
+				if flags.selectFields != "" {
+					filtered = filterFields(filtered, flags.selectFields)
+				} else if flags.compact {
+					filtered = compactFields(filtered)
+				}
+				wrapped, wrapErr := wrapWithProvenance(filtered, prov)
+				if wrapErr != nil {
+					return wrapErr
+				}
+				return printOutput(cmd.OutOrStdout(), wrapped, true)
+			}
+			// For all other output modes (table, csv, plain, quiet), use the standard pipeline
+			if wantsHumanTable(cmd.OutOrStdout(), flags) {
+				var items []map[string]any
+				if json.Unmarshal(data, &items) == nil && len(items) > 0 {
+					if err := printAutoTable(cmd.OutOrStdout(), items); err != nil {
+						return err
+					}
+					if len(items) >= 25 {
+						fmt.Fprintf(os.Stderr, "\nShowing %d results. To narrow: add --limit, --json --select, or filter flags.\n", len(items))
+					}
+					return nil
+				}
 			}
 			return printOutputWithFlags(cmd.OutOrStdout(), data, flags)
 		},

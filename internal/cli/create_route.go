@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/spf13/cobra"
 
@@ -30,6 +31,10 @@ type itemCreateResult struct {
 	OAPDFStatus string
 	OAPDFTitle  string
 	OAPDFError  string
+	// ConnectorError records that the connector reported a failure for a write
+	// that nevertheless landed, so the result can say so instead of claiming a
+	// clean create.
+	ConnectorError string
 }
 
 // routeCreateItem creates one Zotero item via the selected route.
@@ -110,6 +115,17 @@ func runSingleItemCreate(cmd *cobra.Command, flags *rootFlags, spec singleItemCr
 	}
 
 	env, runErr := runMutation(cmd.Context(), flags, spec.operation, ops)
+	// The plan cannot know the key — the item does not exist yet — so Op.Key
+	// carries the item type as a placeholder. Once created, report the real key
+	// where every other command puts it, instead of leaving the caller to dig it
+	// out of reason.key.
+	if key := createdItemKeyOf(res); key != "" && env.Result != nil {
+		for i := range env.Result.Items {
+			if env.Result.Items[i].Status == "applied" {
+				env.Result.Items[i].Key = key
+			}
+		}
+	}
 	if renderErr := renderMutation(cmd, flags, env, nil); renderErr != nil {
 		return renderErr
 	}
@@ -120,11 +136,13 @@ func runSingleItemCreate(cmd *cobra.Command, flags *rootFlags, spec singleItemCr
 }
 
 // createdItemKeyOf reports the new item's key from whichever route created it.
+// WebKey wins when present: it is a real Zotero item key, whereas ConnKey is the
+// id zotio generated for the connector session and means nothing to the API.
 func createdItemKeyOf(res itemCreateResult) string {
-	if res.Via == "connector" {
-		return res.ConnKey
+	if res.WebKey != "" {
+		return res.WebKey
 	}
-	return res.WebKey
+	return res.ConnKey
 }
 
 // routeCreateItemVia creates one Zotero item through an already resolved route.
@@ -175,8 +193,27 @@ func routeCreateItemVia(ctx context.Context, flags *rootFlags, via string, webCl
 			return itemCreateResult{}, err
 		}
 		item["id"] = connectorKey
-		if err := conn.SaveItems(ctx, sessionID, sourceURI, []map[string]any{item}); err != nil {
-			return itemCreateResult{}, err
+		// Zotero's connector can return an error AFTER having already created the
+		// item (observed: HTTP 500 with the item present on the server at that
+		// instant). Reporting `failed` for a write that succeeded makes a
+		// retrying caller mint a duplicate on every attempt while appearing to
+		// make no progress, so confirm against the library before believing it.
+		createdAfter := time.Now().UTC().Add(-recentItemClockSkew)
+		if saveErr := conn.SaveItems(ctx, sessionID, sourceURI, []map[string]any{item}); saveErr != nil {
+			recovered, matched, lookupErr := confirmConnectorCreate(flags, item, createdAfter)
+			if lookupErr != nil || recovered == "" {
+				if matched > 1 {
+					return itemCreateResult{}, fmt.Errorf("connector reported %w, and %d recently added items share this title, so whether it was created is unresolved; check the library before retrying", saveErr, matched)
+				}
+				return itemCreateResult{}, saveErr
+			}
+			return itemCreateResult{
+				Via:            "connector",
+				Session:        sessionID,
+				ConnKey:        connectorKey,
+				WebKey:         recovered,
+				ConnectorError: saveErr.Error(),
+			}, nil
 		}
 		if target != "" {
 			if err := conn.UpdateSession(ctx, sessionID, target, nil, ""); err != nil {
@@ -187,6 +224,22 @@ func routeCreateItemVia(ctx context.Context, flags *rootFlags, via string, webCl
 	default:
 		return itemCreateResult{}, fmt.Errorf("unsupported create route %q", via)
 	}
+}
+
+// confirmConnectorCreate asks the library whether a connector write that
+// reported an error actually landed. Best-effort: an unresolvable answer leaves
+// the original error in place.
+func confirmConnectorCreate(flags *rootFlags, item map[string]any, createdAfter time.Time) (string, int, error) {
+	title, _ := item["title"].(string)
+	itemType, _ := item["itemType"].(string)
+	if title == "" || itemType == "" {
+		return "", 0, nil
+	}
+	c, err := flags.newClient()
+	if err != nil {
+		return "", 0, err
+	}
+	return findRecentlyAddedItemKey(c, title, itemType, createdAfter)
 }
 
 // attachResolverPDF adds an open-access PDF to a connector-created item when

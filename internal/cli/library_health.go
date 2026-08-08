@@ -84,6 +84,15 @@ type healthScope struct {
 	Source   string     `json:"source"`
 	SyncedAt *time.Time `json:"synced_at,omitempty"`
 	Items    int        `json:"items"`
+	// ItemsLabel names what Items counts — "top-level items" for the whole
+	// library, "items" for an exact resolved key set — so the number never
+	// has to be taken on faith. MirroredRows is the store's raw row count for
+	// the items resource (attachments, notes, annotations and children
+	// included); populated only for a whole-library scope, where it is
+	// legitimately larger than Items and would otherwise look like a
+	// contradiction (dev/field-report-2026-08-08-library-hygiene.md #9).
+	ItemsLabel   string `json:"items_label"`
+	MirroredRows int    `json:"mirrored_rows,omitempty"`
 }
 
 type healthSummary struct {
@@ -535,9 +544,9 @@ func assembleHealthReport(db localQueryStore, ctx *healthContext, preset string,
 			Expr:     scope.Expr,
 			Source:   "local",
 			SyncedAt: ctx.src.SyncedAt,
-			Items:    scopeItemCount(db, scope),
 		},
 	}
+	report.Scope.Items, report.Scope.ItemsLabel, report.Scope.MirroredRows = scopeItemStats(db, scope)
 
 	var scopeSet map[string]bool
 	if !scope.All {
@@ -607,13 +616,16 @@ func assembleHealthReport(db localQueryStore, ctx *healthContext, preset string,
 	return report, nil
 }
 
-// scopeItemCount reports how many items the scope covers: the whole library
-// when unscoped, else the number of resolved keys.
-func scopeItemCount(db localQueryStore, scope scopeResult) int {
+// scopeItemStats reports how many items the scope covers, what that number
+// counts, and — for a whole-library scope — the raw mirrored-row total
+// alongside it. A scoped run (collection/tag/query/item) already names an
+// exact resolved key set, so it needs no further qualification and no
+// mirrored-row figure.
+func scopeItemStats(db localQueryStore, scope scopeResult) (items int, label string, mirroredRows int) {
 	if scope.All {
-		return countCiteableItems(db)
+		return countCiteableItems(db), "top-level items", countMirroredItemRows(db)
 	}
-	return len(scope.Keys)
+	return len(scope.Keys), "items", 0
 }
 
 // filterFindingsByScope keeps only findings that reference an item in scope.
@@ -834,7 +846,7 @@ func runTagDrift(db localQueryStore, ctx *healthContext) ([]Finding, *healthSkip
 	if err != nil {
 		return nil, nil, err
 	}
-	plans := buildTagAuditPlans(tagRows, countRows)
+	plans := buildTagAuditPlans(tagRows, countRows, tagAuditPreferFrequency, nil)
 	findings := make([]Finding, 0, len(plans))
 	for _, p := range plans {
 		if len(p.Aliases) == 0 {
@@ -985,12 +997,40 @@ func runRetractedItem(db localQueryStore, ctx *healthContext) ([]Finding, *healt
 	return findings, nil, nil
 }
 
+// libraryTopLevelItemsPredicate is the one definition of "an item in the
+// library" shared by every library-wide count: top-level bibliographic items,
+// excluding attachments, notes, annotations, and anything with a parent
+// (children of those types). `library health`'s scope line, `items audit`'s
+// denominator, and any future library-wide count all filter through this
+// single predicate so they cannot drift from one another — see
+// dev/field-report-2026-08-08-library-hygiene.md finding 9, where `health`,
+// `items audit`, and the raw store row count each reported a different
+// number for "the library". Uses the indexed parent_key/item_type columns;
+// the store persists top-level items with parent_key = ”, not NULL.
+const libraryTopLevelItemsPredicate = `COALESCE(parent_key, '') = ''
+	AND item_type NOT IN ('attachment', 'note', 'annotation')`
+
+// countCiteableItems reports the library-wide top-level item count — the
+// canonical "how many items does this library have" answer.
 func countCiteableItems(db localQueryStore) int {
 	rows, err := db.QueryRaw(`
 SELECT COUNT(*) AS count
 FROM resources
 WHERE resource_type = 'items'
-	AND COALESCE(item_type, '') NOT IN ('attachment', 'annotation', 'note')`)
+	AND ` + libraryTopLevelItemsPredicate)
+	if err != nil {
+		return 0
+	}
+	return firstCount(rows)
+}
+
+// countMirroredItemRows reports every row this store mirrors for the items
+// resource — attachments, notes, annotations and children included. It is
+// the raw sync-mirror size, not "how many items are in the library"; the
+// scope line surfaces it alongside the top-level count so the two numbers
+// stop looking like a contradiction.
+func countMirroredItemRows(db localQueryStore) int {
+	rows, err := db.QueryRaw(`SELECT COUNT(*) AS count FROM resources WHERE resource_type = 'items'`)
 	if err != nil {
 		return 0
 	}
@@ -1148,7 +1188,11 @@ func printHealthReport(cmd *cobra.Command, report healthReport) {
 		}
 	}
 
-	scopeLine := fmt.Sprintf("Scope: %s · %d items · source %s", report.Scope.Expr, report.Scope.Items, report.Scope.Source)
+	itemsPart := fmt.Sprintf("%d %s", report.Scope.Items, report.Scope.ItemsLabel)
+	if report.Scope.MirroredRows > 0 {
+		itemsPart += fmt.Sprintf(" (%d mirrored rows)", report.Scope.MirroredRows)
+	}
+	scopeLine := fmt.Sprintf("Scope: %s · %s · source %s", report.Scope.Expr, itemsPart, report.Scope.Source)
 	if report.Scope.SyncedAt != nil {
 		// durationAgo returns "just now" for <1m — appending
 		// " ago" produced "synced just now ago" in the scope line.

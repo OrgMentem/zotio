@@ -11,15 +11,20 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// whichEntry is one row of the curated capability index. The index is
+// whichEntry is one row of the which ranking corpus. Curated entries are
 // seeded at generation time from the same NovelFeature list that drives
-// the SKILL.md feature section, so the command a `which` query returns
-// is guaranteed to exist and to match what the skill advertises.
+// the SKILL.md feature section, so the command a `which` query returns is
+// guaranteed to exist and to match what the skill advertises. Every other
+// runnable command in the live Cobra tree gets a generic entry too (see
+// buildWhichIndex), so a command with no curated write-up is still
+// reachable by its own name and Short description.
 type whichEntry struct {
-	Command      string `json:"command"`
-	Description  string `json:"description"`
-	Group        string `json:"group,omitempty"`
-	WhyItMatters string `json:"why_it_matters,omitempty"`
+	Command      string   `json:"command"`
+	Description  string   `json:"description"`
+	Group        string   `json:"group,omitempty"`
+	WhyItMatters string   `json:"why_it_matters,omitempty"`
+	Aliases      []string `json:"aliases,omitempty"`
+	Curated      bool     `json:"-"`
 }
 
 // whichIndex is the curated list of capabilities this CLI advertises as
@@ -71,6 +76,86 @@ var whichIndex = []whichEntry{
 	{Command: "library wrapped", Description: "Your Zotero year in review — items added by month and type, top venues and authors, annotation activity, PDF coverage — with a shareable SVG card (--card).", Group: "Reading workflow", WhyItMatters: "The fun one: see (and share) what your reading year actually looked like, straight from the local store."},
 }
 
+// whichAliases maps a command's full path (root name stripped, e.g. "items
+// move") to intent phrases that describe the operation in words a user
+// might type but that never appear in the command's own Short text or a
+// curated Description/WhyItMatters - "file a paper into a collection" says
+// nothing like "Add, remove, or move item collection memberships". Applied
+// to whichever entry ends up representing that path in buildWhichIndex,
+// curated or generic, so an alias works even for a command with no
+// curated write-up.
+var whichAliases = map[string][]string{
+	"items move": {
+		"add item to collection",
+		"add a paper to a collection",
+		"file a paper into a collection",
+		"file an item into a collection",
+		"put item in collection",
+		"tag item into collection",
+		"organise item into collection",
+	},
+	"items add-to-collection": {
+		"add item to collection",
+		"add a paper to a collection",
+		"file a paper into a collection",
+		"file an item into a collection",
+		"put item in collection",
+		"tag item into collection",
+		"organise item into collection",
+	},
+}
+
+// whichSkip lists command names invisible to the which index: meta-commands
+// that don't implement a library capability (mirroring
+// buildCapabilityRegistry's skip list), plus "which" itself so a capability
+// query never just recommends running which again.
+var whichSkip = map[string]bool{"help": true, "completion": true, "capabilities": true, "agent-context": true, "which": true}
+
+// buildWhichIndex returns the full ranking corpus for `which`: every curated
+// highlight from whichIndex (tagged Curated so whichScoreEntry can give it a
+// small tie-breaking boost), plus one generic entry - command path and Short
+// description - for every remaining runnable command in the live Cobra
+// tree, walked the same way buildCapabilityRegistry walks it. Before this,
+// only the curated entries were scored at all: a plain CRUD command absent
+// from that list could never surface for any query, no matter how well its
+// name or description matched the query (see report #1 finding 12 -
+// "items move" and "items add-to-collection" never appeared for "add an
+// item to a collection" because they were not candidates, not because they
+// scored low).
+func buildWhichIndex(rootCmd *cobra.Command) []whichEntry {
+	seen := make(map[string]bool, len(whichIndex))
+	out := make([]whichEntry, 0, len(whichIndex)+64)
+	for _, e := range whichIndex {
+		e.Curated = true
+		e.Aliases = whichAliases[e.Command]
+		out = append(out, e)
+		seen[e.Command] = true
+	}
+
+	var walk func(c *cobra.Command)
+	walk = func(c *cobra.Command) {
+		for _, sub := range c.Commands() {
+			if sub.Hidden || whichSkip[sub.Name()] {
+				continue
+			}
+			if sub.Runnable() {
+				path := strings.TrimPrefix(sub.CommandPath(), rootCmd.Name()+" ")
+				if !seen[path] {
+					out = append(out, whichEntry{
+						Command:     path,
+						Description: sub.Short,
+						Aliases:     whichAliases[path],
+					})
+					seen[path] = true
+				}
+			}
+			walk(sub)
+		}
+	}
+	walk(rootCmd)
+	return out
+}
+
 // whichMatch pairs an index entry with its ranking score for a query.
 // Higher score means stronger match. The ranker is naive (exact token
 // then substring then group tag) because 20-40 entries do not need
@@ -89,14 +174,15 @@ type whichMatch struct {
 //	+2  per meaningful query token found in the command or description
 //	+1  per meaningful query token found in why-it-matters
 //	+1  group tag contains a query token
+//	+6  the query and a curated intent alias are substrings of each other
+//	+3  per meaningful query token shared with a curated intent alias
+//	+1  curated (hero-feature) entry, once any of the above matched
 //
 // The ranker scores each meaningful query token over the description and
 // why-it-matters so goal-phrase queries like "retracted papers" and
-// "check manuscript" can match.
-//
-// Ties break on declaration order in the index. An empty query returns
-// every entry at score 0 in declaration order - this is the "list all"
-// behavior the skill documents for broad agent discovery.
+// "check manuscript" can match. Intent aliases (see whichAliases) extend
+// this to phrasings that share no words with the command's own text at
+// all, such as "file a paper into a collection" for `items move`.
 func rankWhich(index []whichEntry, query string, limit int) []whichMatch {
 	if limit <= 0 {
 		limit = 3
@@ -189,6 +275,39 @@ func whichScoreEntry(e whichEntry, query string, qTokens []string) int {
 			}
 		}
 	}
+	// Intent alias match: a curated phrasing of this operation that shares
+	// no words with the command's own name or description (see the
+	// whichAliases doc comment). Each alias is scored independently so
+	// several near-duplicate phrasings reinforce the same command rather
+	// than canceling out.
+	for _, alias := range e.Aliases {
+		alias = strings.ToLower(alias)
+		if alias == "" {
+			continue
+		}
+		if strings.Contains(alias, query) || strings.Contains(query, alias) {
+			score += 6
+		}
+		aliasTokens := strings.Fields(alias)
+		for _, qt := range qTokens {
+			if len(qt) < 3 || whichStopwords[qt] {
+				continue
+			}
+			for _, at := range aliasTokens {
+				if qt == at {
+					score += 3
+					break
+				}
+			}
+		}
+	}
+	// Curated (hero-feature) entries get a small tie-breaking boost over a
+	// generic entry with equal keyword overlap, but only once something
+	// else already matched - an unrelated query must not surface every
+	// curated entry by default.
+	if score > 0 && e.Curated {
+		score++
+	}
 	return score
 }
 
@@ -210,15 +329,16 @@ Exit codes:
   zotio which --limit 1 "send message"
   zotio which                                # list the full capability index`,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if len(whichIndex) == 0 {
+			index := buildWhichIndex(cmd.Root())
+			if len(index) == 0 {
 				return usageErr(fmt.Errorf("this CLI has no curated capability index; run '--help' to see every command"))
 			}
 			query := strings.Join(args, " ")
-			matches := rankWhich(whichIndex, query, limit)
+			matches := rankWhich(index, query, limit)
 
 			// Empty query returns the whole index at score 0 (listing mode).
 			if strings.TrimSpace(query) == "" {
-				return renderWhich(cmd, flags, rankWhichAll(whichIndex))
+				return renderWhich(cmd, flags, rankWhichAll(index))
 			}
 
 			if len(matches) == 0 {

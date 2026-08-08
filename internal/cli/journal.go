@@ -151,7 +151,14 @@ func ensureJournalLibraryMatches(entry mutation.JournalEntry) error {
 // can undo its own write from the write's own response instead of scanning
 // `journal list` and guessing which run was its own by timestamp.
 func recordMutationJournal(env *mutation.Envelope) error {
-	if env == nil || env.Result == nil || env.Result.Summary.Applied == 0 {
+	if env == nil || env.Result == nil {
+		return nil
+	}
+	if env.Result.Summary.Applied == 0 {
+		// Nothing was written, so there is no run to record — but leave a journal
+		// object rather than null so one extraction path (`.journal.run_id`) works
+		// across every outcome of a command instead of throwing on no-ops.
+		env.Journal = map[string]any{"run_id": nil}
 		return nil
 	}
 	entry, ok := mutation.BuildJournalEntry(*env, time.Now())

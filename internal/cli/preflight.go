@@ -268,13 +268,20 @@ WHERE resource_type='items'
 	return true, "", nil
 }
 
-func checkDesktopConnectorPrecondition(ctx context.Context, flags *rootFlags, _ *cobra.Command, _ capabilityEntry) (bool, string, error) {
+func checkDesktopConnectorPrecondition(ctx context.Context, flags *rootFlags, cmd *cobra.Command, _ capabilityEntry) (bool, string, error) {
 	conn, err := flags.newConnector()
 	if err != nil {
 		return false, err.Error(), nil
 	}
 	if err := connectorPing(ctx, conn); err != nil {
-		return false, fmt.Sprintf("Zotero desktop connector is not reachable: %v", err), nil
+		detail := fmt.Sprintf("Zotero desktop connector is not reachable: %v", err)
+		// import pdf's plan phase probes here too (field-report-2026-08-08
+		// finding 8): recognition only exists in Zotero desktop, so name the
+		// one alternative that needs no desktop instead of a dead end.
+		if commandRegistryPath(cmd) == "import pdf" {
+			detail += "; start Zotero desktop, or use 'zotio import doi <DOI>' which needs no desktop"
+		}
+		return false, detail, nil
 	}
 	return true, "", nil
 }

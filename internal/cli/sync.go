@@ -1264,6 +1264,13 @@ func resolveDiscriminatedResource(resource string, obj map[string]any) string {
 
 // upsertSingleObject stores a non-array API response as a single record.
 func upsertSingleObject(db *store.Store, resource string, data json.RawMessage) error {
+	// An empty or array payload is a list response with nothing in it, not a
+	// singleton record. Storing it produced rows keyed by the resource name
+	// itself — (items-trash, "[]") — which surfaced in local reads as an entry
+	// with no `data` object and broke `jq '.results[].data'`.
+	if trimmed := bytes.TrimSpace(data); len(trimmed) == 0 || trimmed[0] == '[' {
+		return nil
+	}
 	// Decode with UseNumber so large integer IDs (e.g. 55043301) keep their
 	// literal form instead of being coerced to float64 ("5.5043301e+07").
 	dec := json.NewDecoder(bytes.NewReader(data))

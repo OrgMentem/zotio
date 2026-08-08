@@ -7,17 +7,50 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"unicode"
 
 	"github.com/spf13/cobra"
 
 	"zotio/internal/mutation"
 )
 
+// tagAuditPrefer selects the canonical spelling within a duplicate tag group.
+// "frequency" (the default, and the only policy in effect before --prefer
+// existed) picks whichever spelling carries the most items; the case
+// policies instead rewrite the group's normalized name into a single
+// consistent convention. See buildTagAuditPlans for the automatic-tag
+// carve-out that keeps a case policy from mangling MeSH-style imports.
+type tagAuditPrefer string
+
+const (
+	tagAuditPreferFrequency tagAuditPrefer = "frequency"
+	tagAuditPreferSentence  tagAuditPrefer = "sentence"
+	tagAuditPreferTitle     tagAuditPrefer = "title"
+	tagAuditPreferLower     tagAuditPrefer = "lower"
+)
+
+func parseTagAuditPrefer(value string) (tagAuditPrefer, error) {
+	switch tagAuditPrefer(value) {
+	case tagAuditPreferFrequency, tagAuditPreferSentence, tagAuditPreferTitle, tagAuditPreferLower:
+		return tagAuditPrefer(value), nil
+	default:
+		return "", fmt.Errorf("invalid --prefer %q: want one of frequency, sentence, title, lower", value)
+	}
+}
+
 type tagAuditPlan struct {
 	Canonical      string   `json:"canonical"`
 	Aliases        []string `json:"aliases"`
 	TotalItems     int      `json:"total_items"`
 	RenameCommands []string `json:"rename_commands"`
+	// AutomaticSkipped is true when a non-frequency --prefer policy could not
+	// be applied to this group because at least one of its variants carries
+	// Zotero's automatic tag type (type: 1) on some item -- e.g. a
+	// MeSH-derived term imported by a translator, where the library's Title
+	// Case is already correct and a blanket case rewrite would mangle it.
+	// The group falls back to the frequency policy instead, and this flag
+	// surfaces that so the caller doesn't silently disagree with --prefer.
+	AutomaticSkipped bool `json:"automatic_skipped,omitempty"`
 }
 
 type countedTag struct {
@@ -26,14 +59,20 @@ type countedTag struct {
 }
 
 func newTagsAuditCmd(flags *rootFlags) *cobra.Command {
+	var prefer string
 	cmd := &cobra.Command{
 		Use:   "audit",
 		Short: "Audit tags for case and spacing drift",
 		Example: `  zotio tags audit
-  zotio tags audit --json`,
+  zotio tags audit --json
+  zotio tags audit --prefer title`,
 		Annotations: map[string]string{"mcp:read-only": "true"},
 		RunE: func(cmd *cobra.Command, args []string) error {
-			totalTags, plans, ok, err := readTagAuditPlans(cmd)
+			policy, err := parseTagAuditPrefer(prefer)
+			if err != nil {
+				return err
+			}
+			totalTags, plans, ok, err := readTagAuditPlans(cmd, policy)
 			if err != nil {
 				return err
 			}
@@ -49,17 +88,22 @@ func newTagsAuditCmd(flags *rootFlags) *cobra.Command {
 				jsonFlags.compact = false
 				return printOutputWithFlags(cmd.OutOrStdout(), json.RawMessage(data), &jsonFlags)
 			}
-			return printTagAuditReport(cmd, totalTags, plans, flags.dryRun)
+			return printTagAuditReport(cmd, totalTags, plans, policy, flags.dryRun)
 		},
 	}
+	cmd.Flags().StringVar(&prefer, "prefer", string(tagAuditPreferFrequency),
+		"Canonical spelling policy for duplicate groups: frequency (default, most-used spelling wins), sentence, title, or lower. Automatic (type 1) tags always keep the frequency canonical to avoid mangling MeSH-style imports.")
 	cmd.AddCommand(newTagsAuditFixCmd(flags))
 	return cmd
 }
 
 func newTagsAuditFixCmd(flags *rootFlags) *cobra.Command {
+	var prefer string
 	cmd := &cobra.Command{
 		Use:   "fix",
 		Short: "Apply the tag rename plan produced by tags audit",
+		Example: `  zotio tags audit fix --yes
+  zotio tags audit fix --prefer title --yes`,
 		Annotations: map[string]string{
 			"mcp:read-only":                    "false",
 			"zotio:destructive":                "false",
@@ -68,7 +112,11 @@ func newTagsAuditFixCmd(flags *rootFlags) *cobra.Command {
 			"zotio:default-max-changes":        "500",
 		},
 		RunE: func(cmd *cobra.Command, args []string) error {
-			_, plans, ok, err := readTagAuditPlans(cmd)
+			policy, err := parseTagAuditPrefer(prefer)
+			if err != nil {
+				return err
+			}
+			_, plans, ok, err := readTagAuditPlans(cmd, policy)
 			if err != nil {
 				return err
 			}
@@ -120,6 +168,8 @@ func newTagsAuditFixCmd(flags *rootFlags) *cobra.Command {
 			return runErr
 		},
 	}
+	cmd.Flags().StringVar(&prefer, "prefer", string(tagAuditPreferFrequency),
+		"Canonical spelling policy for duplicate groups: frequency, sentence, title, or lower. Must match the --prefer used for `tags audit` to apply the same targets shown there.")
 	return cmd
 }
 
@@ -137,7 +187,19 @@ FROM resources, json_each(json_extract(data, '$.data.tags')) AS tags
 WHERE resource_type = 'items' AND tag_name IS NOT NULL AND tag_name != ''
 GROUP BY tag_name ORDER BY item_count DESC`
 
-func readTagAuditPlans(cmd *cobra.Command) (int, []tagAuditPlan, bool, error) {
+// tagAuditAutomaticQuery names every distinct tag that carries Zotero's
+// automatic type (type: 1) on at least one item. A non-frequency --prefer
+// policy skips any duplicate group containing one of these names: automatic
+// tags are typically translator/MeSH imports where the source casing (often
+// Title Case) is the correct one, and a blanket case rewrite would corrupt
+// it. See buildTagAuditPlans.
+const tagAuditAutomaticQuery = `
+SELECT DISTINCT json_extract(tags.value, '$.tag') AS tag_name
+FROM resources, json_each(json_extract(data, '$.data.tags')) AS tags
+WHERE resource_type = 'items' AND tag_name IS NOT NULL AND tag_name != ''
+	AND CAST(json_extract(tags.value, '$.type') AS INTEGER) = 1`
+
+func readTagAuditPlans(cmd *cobra.Command, prefer tagAuditPrefer) (int, []tagAuditPlan, bool, error) {
 	rawDB, err := openStoreForRead(cmd.Context(), "zotio")
 	if err != nil {
 		return 0, nil, false, fmt.Errorf("opening database: %w", err)
@@ -157,8 +219,20 @@ func readTagAuditPlans(cmd *cobra.Command) (int, []tagAuditPlan, bool, error) {
 	if err != nil {
 		return 0, nil, false, fmt.Errorf("querying tag counts: %w", err)
 	}
+	automaticTags := map[string]bool{}
+	if prefer != tagAuditPreferFrequency {
+		automaticRows, err := db.QueryRaw(tagAuditAutomaticQuery)
+		if err != nil {
+			return 0, nil, false, fmt.Errorf("querying automatic tags: %w", err)
+		}
+		for _, row := range automaticRows {
+			if name := sqlStringValue(row["tag_name"]); name != "" {
+				automaticTags[name] = true
+			}
+		}
+	}
 
-	return len(tagRows), buildTagAuditPlans(tagRows, countRows), true, nil
+	return len(tagRows), buildTagAuditPlans(tagRows, countRows, prefer, automaticTags), true, nil
 }
 
 const tagAuditAliasItemsQuery = `
@@ -222,7 +296,7 @@ func tagAuditFixUpdates(db localQueryStore, alias, canonical string) ([]tagRenam
 	return buildTagRenameUpdates(data, alias, canonical)
 }
 
-func buildTagAuditPlans(tagRows, countRows []map[string]any) []tagAuditPlan {
+func buildTagAuditPlans(tagRows, countRows []map[string]any, prefer tagAuditPrefer, automaticTags map[string]bool) []tagAuditPlan {
 	counts := make(map[string]int, len(countRows))
 	for _, row := range countRows {
 		name := sqlStringValue(row["tag_name"])
@@ -248,7 +322,7 @@ func buildTagAuditPlans(tagRows, countRows []map[string]any) []tagAuditPlan {
 	}
 
 	plans := make([]tagAuditPlan, 0)
-	for _, tags := range groups {
+	for normalized, tags := range groups {
 		if len(tags) <= 1 {
 			continue
 		}
@@ -258,9 +332,27 @@ func buildTagAuditPlans(tagRows, countRows []map[string]any) []tagAuditPlan {
 			}
 			return tags[i].name < tags[j].name
 		})
-		canonical := tags[0].name
+
+		// Frequency is always the fallback: it is the only policy applied
+		// when --prefer is left at its default, and it is also what a
+		// non-frequency policy falls back to for a group carrying an
+		// automatic (type 1) tag, so the plan never mangles a MeSH-style
+		// import into some other case convention.
+		effectivePrefer := prefer
+		automaticSkipped := false
+		if prefer != tagAuditPreferFrequency {
+			for _, tag := range tags {
+				if automaticTags[tag.name] {
+					automaticSkipped = true
+					effectivePrefer = tagAuditPreferFrequency
+					break
+				}
+			}
+		}
+
+		canonical := tagAuditCanonicalName(effectivePrefer, normalized, tags)
 		aliases := make([]string, 0, len(tags)-1)
-		commands := make([]string, 0, len(tags)-1)
+		commands := make([]string, 0, len(tags))
 		total := 0
 		for _, tag := range tags {
 			total += tag.count
@@ -276,10 +368,11 @@ func buildTagAuditPlans(tagRows, countRows []map[string]any) []tagAuditPlan {
 			))
 		}
 		plans = append(plans, tagAuditPlan{
-			Canonical:      canonical,
-			Aliases:        aliases,
-			TotalItems:     total,
-			RenameCommands: commands,
+			Canonical:        canonical,
+			Aliases:          aliases,
+			TotalItems:       total,
+			RenameCommands:   commands,
+			AutomaticSkipped: automaticSkipped,
 		})
 	}
 
@@ -292,6 +385,48 @@ func buildTagAuditPlans(tagRows, countRows []map[string]any) []tagAuditPlan {
 	return plans
 }
 
+// tagAuditCanonicalName picks the group's canonical spelling for the given
+// (already-resolved) policy. Frequency keeps today's behavior exactly: the
+// most-used spelling, tied broken alphabetically by sort.Slice above. The
+// case policies instead rewrite the group's normalized name (lowercase,
+// single-spaced) into one consistent convention, independent of which
+// spelling happens to be most common -- that's the point of --prefer: one
+// convention across the whole library, not a per-group popularity contest.
+func tagAuditCanonicalName(prefer tagAuditPrefer, normalized string, tags []countedTag) string {
+	switch prefer {
+	case tagAuditPreferSentence:
+		return tagAuditSentenceCase(normalized)
+	case tagAuditPreferTitle:
+		return tagAuditTitleCase(normalized)
+	case tagAuditPreferLower:
+		return normalized
+	default:
+		return tags[0].name
+	}
+}
+
+func tagAuditSentenceCase(normalized string) string {
+	r := []rune(normalized)
+	if len(r) == 0 {
+		return normalized
+	}
+	r[0] = unicode.ToUpper(r[0])
+	return string(r)
+}
+
+func tagAuditTitleCase(normalized string) string {
+	words := strings.Fields(normalized)
+	for i, word := range words {
+		r := []rune(word)
+		if len(r) == 0 {
+			continue
+		}
+		r[0] = unicode.ToUpper(r[0])
+		words[i] = string(r)
+	}
+	return strings.Join(words, " ")
+}
+
 func normalizeTagAuditName(tag string) string {
 	return strings.ToLower(strings.Join(strings.Fields(strings.TrimSpace(tag)), " "))
 }
@@ -302,7 +437,7 @@ func quoteTagAuditCommandArg(value string) string {
 	return "'" + strings.ReplaceAll(value, "'", `'\''`) + "'"
 }
 
-func printTagAuditReport(cmd *cobra.Command, totalTags int, plans []tagAuditPlan, dryRun bool) error {
+func printTagAuditReport(cmd *cobra.Command, totalTags int, plans []tagAuditPlan, prefer tagAuditPrefer, dryRun bool) error {
 	summaryTitle := "Summary"
 	if dryRun {
 		summaryTitle += " (dry run)"
@@ -315,7 +450,19 @@ func printTagAuditReport(cmd *cobra.Command, totalTags int, plans []tagAuditPlan
 		fmt.Fprintln(cmd.OutOrStdout(), "No duplicate tag groups found.")
 		return nil
 	}
+	fixCommand := "zotio tags audit fix --yes"
+	if prefer != tagAuditPreferFrequency {
+		fixCommand += " --prefer " + string(prefer)
+	}
+	fmt.Fprintf(cmd.OutOrStdout(),
+		"Run %s to apply every rename below in one batch (prepend --dry-run to preview first). The individual commands below remain a manual escape hatch for renaming groups one at a time.\n\n",
+		bold(fixCommand))
 	for _, plan := range plans {
+		if plan.AutomaticSkipped {
+			fmt.Fprintf(cmd.OutOrStdout(), "%s\n", dim(fmt.Sprintf(
+				"# %s carries an automatic (type 1) tag; kept the frequency canonical instead of --prefer %s",
+				plan.Canonical, prefer)))
+		}
 		for _, command := range plan.RenameCommands {
 			fmt.Fprintln(cmd.OutOrStdout(), command)
 		}

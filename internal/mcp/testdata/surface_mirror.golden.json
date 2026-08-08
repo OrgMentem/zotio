@@ -588,6 +588,56 @@
     }
   },
   {
+    "name": "creators_rename",
+    "description": "Rename a creator's display name across every item in scope that carries it.\n\nThis is the fix half of creators audit: run creators audit first to find variant\ngroups, then apply the rename it suggests (or any alias/canonical pair of your\nown choosing) with this command.\n\nThe rename PATCHes each affected item with its full creators array and a\nversion precondition, preserving creatorType, creator order, and unrelated\ncreators. It handles both creator shapes: firstName/lastName and a single name\nfield.",
+    "inputSchema": {
+      "properties": {
+        "allow-destructive": {
+          "description": "Allow irreversible operations (merge, permanent delete, empty-trash) to apply (default: false)",
+          "type": "boolean"
+        },
+        "args": {
+          "description": "Additional positional arguments to append to the command. Raw CLI flags are rejected.",
+          "type": "string"
+        },
+        "continue-on-error": {
+          "description": "On bulk mutations, continue past per-item failures/conflicts instead of stopping at the first (default: false)",
+          "type": "boolean"
+        },
+        "dry-run": {
+          "description": "Show request without sending (default: false)",
+          "type": "boolean"
+        },
+        "from": {
+          "description": "Old creator display name",
+          "type": "string"
+        },
+        "max-changes": {
+          "description": "Max write operations a single mutation may apply before refusing (-1 = default: 500, or 50 under --agent) (default: -1)",
+          "type": "number"
+        },
+        "max-failures": {
+          "description": "With --continue-on-error, stop after this many failures (0 = unlimited) (default: 0)",
+          "type": "number"
+        },
+        "scope": {
+          "description": "Item scope: library, collection:\u003ckey\u003e, tag:\u003ctag\u003e, item:\u003ckey\u003e, or query:\u003ctext\u003e (default: library)",
+          "type": "string"
+        },
+        "to": {
+          "description": "New creator display name",
+          "type": "string"
+        },
+        "yes": {
+          "description": "Skip confirmation prompts (for agents and scripts) (default: false)",
+          "type": "boolean"
+        }
+      },
+      "required": [],
+      "type": "object"
+    }
+  },
+  {
     "name": "demo",
     "description": "Seed a bundled sample library into a separate demo store and print a\nshort tour of commands to try.\n\nThe sandbox is a self-contained SQLite database (demo.db) beside your real\nstore. Set ZOTIO_DEMO=1 on any command to read from it with a pristine,\nkey-less config -- your real library, config, and API key are never touched.\nNo Zotero desktop and no API key are required.",
     "inputSchema": {
@@ -1039,7 +1089,7 @@
   },
   {
     "name": "import_pdf",
-    "description": "Create Zotero items from local PDF files by asking the Zotero desktop Connector\nAPI to save each PDF as a standalone attachment and run Zotero's metadata recognizer.\n\nThis command requires a local Zotero base URL, Zotero running, and Zotero's local API\npreference enabled. Recognition failures are reported as unrecognized standalone PDF\nattachments instead of hard errors.",
+    "description": "Create Zotero items from local PDF files by asking the Zotero desktop Connector\nAPI to save each PDF as a standalone attachment and run Zotero's metadata recognizer.\n\nThis command requires a local Zotero base URL, Zotero running, and Zotero's local API\npreference enabled. Recognition failures are reported as unrecognized standalone PDF\nattachments instead of hard errors. The plan phase probes the connector before\npreviewing or applying anything, so a missing desktop fails loudly instead of a\n--dry-run silently planning an import that cannot run.\n\nBefore importing, each PDF is classified against your synced library the same way\n'import scan' does (DOI match). A DOI that already has a copy on file is handled per\n--on-duplicate (skip, attach, or create) instead of always minting a second item; a\nsynced library is required for that check, and its absence only disables the check,\nnever the import.\n\n--collection \u003ckey|name\u003e files the created item into a collection after import,\ncreating a same-named collection when one doesn't already exist (like 'items\nadd-to-collection'). This is a separate step, not part of the connector call: the\nsaveStandaloneAttachment endpoint saves into whatever the desktop pane currently\ntargets and accepts no collection parameter.",
     "inputSchema": {
       "properties": {
         "allow-destructive": {
@@ -1048,6 +1098,10 @@
         },
         "args": {
           "description": "Additional positional arguments to append to the command. Raw CLI flags are rejected.",
+          "type": "string"
+        },
+        "collection": {
+          "description": "Collection key or name to file the created item into (the name is created if it doesn't exist)",
           "type": "string"
         },
         "continue-on-error": {
@@ -1065,6 +1119,10 @@
         "max-failures": {
           "description": "With --continue-on-error, stop after this many failures (0 = unlimited) (default: 0)",
           "type": "number"
+        },
+        "on-duplicate": {
+          "description": "How to handle a PDF whose DOI already has a copy in the library: skip, attach, or create (default: skip)",
+          "type": "string"
         },
         "yes": {
           "description": "Skip confirmation prompts (for agents and scripts) (default: false)",
@@ -3159,7 +3217,12 @@
     "name": "tags_audit",
     "description": "Audit tags for case and spacing drift",
     "inputSchema": {
-      "properties": {},
+      "properties": {
+        "prefer": {
+          "description": "Canonical spelling policy for duplicate groups: frequency (default, most-used spelling wins), sentence, title, or lower. Automatic (type 1) tags always keep the frequency canonical to avoid mangling MeSH-style imports. (default: frequency)",
+          "type": "string"
+        }
+      },
       "required": [],
       "type": "object"
     }
@@ -3188,6 +3251,10 @@
         "max-failures": {
           "description": "With --continue-on-error, stop after this many failures (0 = unlimited) (default: 0)",
           "type": "number"
+        },
+        "prefer": {
+          "description": "Canonical spelling policy for duplicate groups: frequency, sentence, title, or lower. Must match the --prefer used for `tags audit` to apply the same targets shown there. (default: frequency)",
+          "type": "string"
         },
         "yes": {
           "description": "Skip confirmation prompts (for agents and scripts) (default: false)",

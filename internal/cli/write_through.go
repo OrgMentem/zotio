@@ -48,6 +48,7 @@ func applyMirrorWriteThrough(env *mutation.Envelope) {
 	defer db.Close()
 	qs := localQueryStore{db}
 
+	singleWrite := env.Result.Summary.Applied == 1
 	for i := range env.Result.Items {
 		it := &env.Result.Items[i]
 		if it.Status != "applied" || it.Key == "" {
@@ -77,7 +78,13 @@ func applyMirrorWriteThrough(env *mutation.Envelope) {
 		// Zotero syncs it down from zotero.org. Without a marker the next `sync`
 		// re-applies the pre-write copy and rolls the mirror back.
 		recordPendingWrite(db, it.Key, changesByOp[it.OpID])
-		it.Item = item // read-your-writes: post-write state in the envelope
+		// Read-your-writes: return the post-write state so a targeted write needs
+		// no follow-up read. Suppressed for a batch — a 53-group tag merge emitted
+		// the full item JSON per op, megabytes of payload the caller already has,
+		// and it only needs the keys.
+		if singleWrite {
+			it.Item = item
+		}
 	}
 }
 

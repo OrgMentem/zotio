@@ -595,3 +595,98 @@ func TestPrintHealthReportPlainWhenColorDisabled(t *testing.T) {
 		}
 	}
 }
+
+// TestLibraryTopLevelItemDefinitionIsShared guards
+// dev/field-report-2026-08-08-library-hygiene.md finding 9: `library health`,
+// `items audit`, and the raw store row count each reported a different number
+// for "the library". Seeds a store where a naive count would disagree with
+// the top-level-item definition, and asserts health and audit agree, and that
+// both exclude attachments/notes/annotations and child items — including a
+// malformed child whose item_type is not one of the three known child types,
+// which only the parent_key clause (not the item_type clause) catches.
+func TestLibraryTopLevelItemDefinitionIsShared(t *testing.T) {
+	db, err := store.OpenWithContext(context.Background(), filepath.Join(t.TempDir(), "data.db"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+
+	items := []json.RawMessage{
+		// Two ordinary top-level items — the only rows that should count.
+		json.RawMessage(`{"key":"P1","version":1,"data":{"key":"P1","itemType":"journalArticle","title":"P1"}}`),
+		json.RawMessage(`{"key":"P2","version":1,"data":{"key":"P2","itemType":"book","title":"P2"}}`),
+		// A PDF attachment child of P1.
+		json.RawMessage(`{"key":"A1","version":1,"data":{"key":"A1","itemType":"attachment","parentItem":"P1","contentType":"application/pdf"}}`),
+		// A standalone note (no parent) — excluded by item_type alone.
+		json.RawMessage(`{"key":"N1","version":1,"data":{"key":"N1","itemType":"note"}}`),
+		// An annotation child of the attachment.
+		json.RawMessage(`{"key":"AN1","version":1,"data":{"key":"AN1","itemType":"annotation","parentItem":"A1"}}`),
+		// A malformed child row: a "book"-typed row carrying a parentItem.
+		// Zotero's data model never produces this (only attachments, notes and
+		// annotations can have a parent), but the store doesn't enforce it —
+		// the predicate must exclude it via the parent_key clause, not just
+		// the item_type clause.
+		json.RawMessage(`{"key":"C1","version":1,"data":{"key":"C1","itemType":"book","title":"Child of P2","parentItem":"P2"}}`),
+	}
+	if _, _, err := db.UpsertBatch("items", items); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	qs := localQueryStore{db}
+
+	summary, err := queryItemsAuditSummary(qs)
+	if err != nil {
+		t.Fatalf("queryItemsAuditSummary: %v", err)
+	}
+	healthItems, healthLabel, mirroredRows := scopeItemStats(qs, scopeResult{All: true, Expr: "library"})
+
+	const wantTopLevel = 2 // P1, P2 only
+	if summary.TopLevelItems != wantTopLevel {
+		t.Errorf("items audit TopLevelItems = %d, want %d", summary.TopLevelItems, wantTopLevel)
+	}
+	if healthItems != wantTopLevel {
+		t.Errorf("library health Items = %d, want %d", healthItems, wantTopLevel)
+	}
+	if healthItems != summary.TopLevelItems {
+		t.Errorf("library health (%d) and items audit (%d) disagree on the library item count", healthItems, summary.TopLevelItems)
+	}
+	if healthLabel != "top-level items" {
+		t.Errorf("scope item label = %q, want %q", healthLabel, "top-level items")
+	}
+	// All 6 seeded rows are mirrored (P1, P2, A1, N1, AN1, C1); only 2 are top-level items.
+	if mirroredRows != 6 {
+		t.Errorf("mirrored rows = %d, want 6", mirroredRows)
+	}
+}
+
+// TestLibraryHealthScopeLineNamesDefinition asserts the whole-library scope
+// line spells out what its count measures and surfaces the mirrored-row total
+// alongside it, so the two numbers stop looking like a contradiction.
+func TestLibraryHealthScopeLineNamesDefinition(t *testing.T) {
+	report := healthReport{
+		Scope:  healthScope{Expr: "library", Items: 928, ItemsLabel: "top-level items", MirroredRows: 4306, Source: "local"},
+		Preset: "quick",
+	}
+	got := renderHealthReport(t, report)
+	want := "Scope: library · 928 top-level items (4306 mirrored rows) · source local"
+	if !strings.Contains(got, want) {
+		t.Errorf("scope line = %q, want it to contain %q", got, want)
+	}
+}
+
+// TestLibraryHealthScopeLineScopedRunOmitsMirroredRows asserts a key/collection/
+// tag/query scope — already an exact resolved set — keeps the plain "N items"
+// phrasing with no mirrored-row aside, since there is nothing to disambiguate.
+func TestLibraryHealthScopeLineScopedRunOmitsMirroredRows(t *testing.T) {
+	report := healthReport{
+		Scope:  healthScope{Expr: "item:P1", Items: 1, ItemsLabel: "items", Source: "local"},
+		Preset: "quick",
+	}
+	got := renderHealthReport(t, report)
+	want := "Scope: item:P1 · 1 items · source local"
+	if !strings.Contains(got, want) {
+		t.Errorf("scope line = %q, want it to contain %q", got, want)
+	}
+	if strings.Contains(got, "mirrored rows") {
+		t.Errorf("scoped run scope line should not mention mirrored rows:\n%s", got)
+	}
+}

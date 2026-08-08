@@ -10,6 +10,14 @@ func newCollectionsCmd(flags *rootFlags) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "collections",
 		Short: "Manage collections in your Zotero library",
+		Long: `Manage collections in your Zotero library.
+
+This group covers the collections themselves (create, update, move, delete,
+list, export); it does not add items to a collection. To add an item, use
+'zotio items move --to <collectionKey>' (by key, also --from and --keys-from
+for many items at once) or 'zotio items add-to-collection <itemKey>
+--collection-name <name>' (by name, creating the collection if it does not
+exist yet).`,
 	}
 
 	cmd.AddCommand(newCollectionsCreateCmd(flags))

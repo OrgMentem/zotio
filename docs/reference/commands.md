@@ -3,6 +3,8 @@
 
 Every `zotio` command, generated directly from the binary. Add `--agent` to any command for JSON output and non-interactive defaults; mutating commands preview unless `--yes` is passed.
 
+Read commands emit a `{meta, results}` envelope in JSON mode; `results` is *always* a JSON array, even for a single-object read like `items get` (a one-element array) — index it as `results[0]` or iterate with `results[]` uniformly across every read command.
+
 ## Global flags
 
 These flags are available on every command.
@@ -289,6 +291,15 @@ zotio capabilities drift
 ## `zotio collections`
 
 Manage collections in your Zotero library
+
+Manage collections in your Zotero library.
+
+This group covers the collections themselves (create, update, move, delete,
+list, export); it does not add items to a collection. To add an item, use
+'zotio items move --to <collectionKey>' (by key, also --from and --keys-from
+for many items at once) or 'zotio items add-to-collection <itemKey>
+--collection-name <name>' (by name, creating the collection if it does not
+exist yet).
 
 ```
 zotio collections
@@ -605,6 +616,39 @@ zotio creators audit fix
 | --- | --- | --- | --- |
 | `--map` | `stringArray` | `[]` | Tier-2 alias mapping alias=canonical; repeatable |
 | `--scope` | `string` | `library` | Item scope: library, collection:<key>, tag:<tag>, item:<key>, or query:<text> |
+
+### `zotio creators rename`
+
+Rename a creator display name across matching items
+
+Rename a creator's display name across every item in scope that carries it.
+
+This is the fix half of creators audit: run creators audit first to find variant
+groups, then apply the rename it suggests (or any alias/canonical pair of your
+own choosing) with this command.
+
+The rename PATCHes each affected item with its full creators array and a
+version precondition, preserving creatorType, creator order, and unrelated
+creators. It handles both creator shapes: firstName/lastName and a single name
+field.
+
+```
+zotio creators rename --from <oldName> --to <newName> [flags]
+```
+
+Examples:
+
+```bash
+zotio creators rename --from "Adam J Rock" --to "Adam J. Rock"
+  zotio creators rename --from "Adam J Rock" --to "Adam J. Rock" --yes
+  zotio creators rename --from "Adam J Rock" --to "Adam J. Rock" --scope collection:ABCD1234
+```
+
+| Flag | Type | Default | Description |
+| --- | --- | --- | --- |
+| `--from` | `string` |  | Old creator display name |
+| `--scope` | `string` | `library` | Item scope: library, collection:<key>, tag:<tag>, item:<key>, or query:<text> |
+| `--to` | `string` |  | New creator display name |
 
 ## `zotio demo`
 
@@ -961,11 +1005,30 @@ API to save each PDF as a standalone attachment and run Zotero's metadata recogn
 
 This command requires a local Zotero base URL, Zotero running, and Zotero's local API
 preference enabled. Recognition failures are reported as unrecognized standalone PDF
-attachments instead of hard errors.
+attachments instead of hard errors. The plan phase probes the connector before
+previewing or applying anything, so a missing desktop fails loudly instead of a
+--dry-run silently planning an import that cannot run.
+
+Before importing, each PDF is classified against your synced library the same way
+'import scan' does (DOI match). A DOI that already has a copy on file is handled per
+--on-duplicate (skip, attach, or create) instead of always minting a second item; a
+synced library is required for that check, and its absence only disables the check,
+never the import.
+
+--collection <key|name> files the created item into a collection after import,
+creating a same-named collection when one doesn't already exist (like 'items
+add-to-collection'). This is a separate step, not part of the connector call: the
+saveStandaloneAttachment endpoint saves into whatever the desktop pane currently
+targets and accepts no collection parameter.
 
 ```
-zotio import pdf <path...>
+zotio import pdf <path...> [flags]
 ```
+
+| Flag | Type | Default | Description |
+| --- | --- | --- | --- |
+| `--collection` | `string` |  | Collection key or name to file the created item into (the name is created if it doesn't exist) |
+| `--on-duplicate` | `string` | `skip` | How to handle a PDF whose DOI already has a copy in the library: skip, attach, or create |
 
 ### `zotio import pmid`
 
@@ -2556,7 +2619,7 @@ zotio tags
 Audit tags for case and spacing drift
 
 ```
-zotio tags audit
+zotio tags audit [flags]
 ```
 
 Examples:
@@ -2564,15 +2627,31 @@ Examples:
 ```bash
 zotio tags audit
   zotio tags audit --json
+  zotio tags audit --prefer title
 ```
+
+| Flag | Type | Default | Description |
+| --- | --- | --- | --- |
+| `--prefer` | `string` | `frequency` | Canonical spelling policy for duplicate groups: frequency (default, most-used spelling wins), sentence, title, or lower. Automatic (type 1) tags always keep the frequency canonical to avoid mangling MeSH-style imports. |
 
 #### `zotio tags audit fix`
 
 Apply the tag rename plan produced by tags audit
 
 ```
-zotio tags audit fix
+zotio tags audit fix [flags]
 ```
+
+Examples:
+
+```bash
+zotio tags audit fix --yes
+  zotio tags audit fix --prefer title --yes
+```
+
+| Flag | Type | Default | Description |
+| --- | --- | --- | --- |
+| `--prefer` | `string` | `frequency` | Canonical spelling policy for duplicate groups: frequency, sentence, title, or lower. Must match the --prefer used for `tags audit` to apply the same targets shown there. |
 
 ### `zotio tags get`
 

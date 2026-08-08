@@ -390,6 +390,90 @@ func TestHelpersPaginationExtraction(t *testing.T) {
 	}
 }
 
+// TestWrapWithProvenanceResultsAlwaysArray pins the read-envelope invariant:
+// .results is always a JSON array, whether the underlying read returned a
+// single object (items get, collections get, ...), an already-array list
+// read (items list, search, ...), or a non-JSON payload (a --format bib
+// response). A jq pipeline written against results[0] or results[] must
+// work uniformly across all three.
+func TestWrapWithProvenanceResultsAlwaysArray(t *testing.T) {
+	prov := DataProvenance{Source: "live"}
+
+	t.Run("single object becomes a one-element array", func(t *testing.T) {
+		wrapped, err := wrapWithProvenance(json.RawMessage(`{"key":"ABCD1234","version":7}`), prov)
+		if err != nil {
+			t.Fatalf("wrapWithProvenance: %v", err)
+		}
+		var env struct {
+			Results []map[string]any `json:"results"`
+			Meta    struct {
+				Source string `json:"source"`
+			} `json:"meta"`
+		}
+		if err := json.Unmarshal(wrapped, &env); err != nil {
+			t.Fatalf("decode %s: %v", wrapped, err)
+		}
+		if len(env.Results) != 1 {
+			t.Fatalf("results length = %d, want 1 (envelope: %s)", len(env.Results), wrapped)
+		}
+		// jq-style traversal: results[0].key must reach the wrapped object.
+		if got := env.Results[0]["key"]; got != "ABCD1234" {
+			t.Fatalf("results[0].key = %v, want ABCD1234", got)
+		}
+		if env.Meta.Source != "live" {
+			t.Fatalf("meta.source = %q, want live", env.Meta.Source)
+		}
+	})
+
+	t.Run("array passes through unchanged", func(t *testing.T) {
+		wrapped, err := wrapWithProvenance(json.RawMessage(`[{"key":"A"},{"key":"B"}]`), prov)
+		if err != nil {
+			t.Fatalf("wrapWithProvenance: %v", err)
+		}
+		var env struct {
+			Results []map[string]any `json:"results"`
+		}
+		if err := json.Unmarshal(wrapped, &env); err != nil {
+			t.Fatalf("decode %s: %v", wrapped, err)
+		}
+		if len(env.Results) != 2 || env.Results[0]["key"] != "A" || env.Results[1]["key"] != "B" {
+			t.Fatalf("results = %v, want [A B] unchanged", env.Results)
+		}
+	})
+
+	t.Run("empty array stays empty, not a one-element array of an empty array", func(t *testing.T) {
+		wrapped, err := wrapWithProvenance(json.RawMessage(`[]`), prov)
+		if err != nil {
+			t.Fatalf("wrapWithProvenance: %v", err)
+		}
+		var env struct {
+			Results []map[string]any `json:"results"`
+		}
+		if err := json.Unmarshal(wrapped, &env); err != nil {
+			t.Fatalf("decode %s: %v", wrapped, err)
+		}
+		if env.Results == nil || len(env.Results) != 0 {
+			t.Fatalf("results = %v, want empty array", env.Results)
+		}
+	})
+
+	t.Run("non-JSON payload becomes a one-element array", func(t *testing.T) {
+		wrapped, err := wrapWithProvenance(json.RawMessage("Smith, J. (2020). A paper."), prov)
+		if err != nil {
+			t.Fatalf("wrapWithProvenance: %v", err)
+		}
+		var env struct {
+			Results []string `json:"results"`
+		}
+		if err := json.Unmarshal(wrapped, &env); err != nil {
+			t.Fatalf("decode %s: %v", wrapped, err)
+		}
+		if len(env.Results) != 1 || env.Results[0] != "Smith, J. (2020). A paper." {
+			t.Fatalf("results = %v, want one-element array holding the raw text", env.Results)
+		}
+	})
+}
+
 func TestHelpersFilterFields(t *testing.T) {
 	data := json.RawMessage(`[{"id":1,"name":"paper","owner":{"email":"a@example.test","name":"Ada"},"createdAt":"2026-06-01T12:00:00Z","ignored":true}]`)
 	helpersTestAssertJSONEqual(t, filterFields(data, "id,owner.email,created-at"), `[{"id":1,"owner":{"email":"a@example.test"},"createdAt":"2026-06-01T12:00:00Z"}]`)

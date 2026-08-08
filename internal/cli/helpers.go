@@ -3,6 +3,7 @@
 package cli
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -1562,11 +1563,17 @@ func printProvenance(cmd *cobra.Command, count int, prov DataProvenance) {
 }
 
 // wrapWithProvenance wraps response data in a provenance envelope:
-// {"results": ..., "meta": {...}}. When data is valid JSON, it embeds as
-// the parsed shape; when data is non-JSON (e.g., XML/RSS responses, plain
-// text), it embeds as a JSON string so json.Marshal doesn't choke on
-// "invalid character '<'" while still passing the raw payload through to
-// the consumer.
+// {"results": [...], "meta": {...}}. The envelope invariant is that
+// .results is ALWAYS a JSON array — a jq pipeline written for one read
+// command works against every other read command:
+//
+//   - A JSON array (list/search reads) passes through unchanged.
+//   - A JSON object (single-resource reads like `items get`) becomes a
+//     one-element array, not a bare object.
+//   - Non-JSON payloads (e.g. XML/RSS responses, plain text) become a
+//     one-element array holding the raw text as a JSON string, so
+//     json.Marshal doesn't choke on "invalid character '<'" while still
+//     passing the raw payload through to the consumer.
 func wrapWithProvenance(data json.RawMessage, prov DataProvenance) (json.RawMessage, error) {
 	meta := map[string]any{"source": prov.Source}
 	if prov.SyncedAt != nil {
@@ -1585,15 +1592,26 @@ func wrapWithProvenance(data json.RawMessage, prov DataProvenance) (json.RawMess
 	if prov.Scoped {
 		meta["scoped"] = true
 	}
-	var results any = json.RawMessage(data)
-	if !json.Valid(data) {
-		results = string(data)
-	}
 	envelope := map[string]any{
-		"results": results,
+		"results": normalizeResultsArray(data),
 		"meta":    meta,
 	}
 	return json.Marshal(envelope)
+}
+
+// normalizeResultsArray enforces the read-envelope invariant that .results
+// is always a JSON array (see wrapWithProvenance). It never fully decodes
+// data — a leading-byte check after trimming whitespace is enough to tell
+// an existing JSON array from everything else, so a large item list is not
+// re-parsed just to be wrapped.
+func normalizeResultsArray(data json.RawMessage) any {
+	if !json.Valid(data) {
+		return []any{string(data)}
+	}
+	if trimmed := bytes.TrimSpace(data); len(trimmed) > 0 && trimmed[0] == '[' {
+		return json.RawMessage(data)
+	}
+	return [1]json.RawMessage{json.RawMessage(data)}
 }
 
 // truncateJSONArray returns a JSON array containing at most n elements
