@@ -147,9 +147,9 @@ zotio which "<capability in your own words>"
 zotio annotations timeline --since "$(date -v-7d +%F)" --agent > this-week.json
 ```
 
-Every highlight and note from the past 7 days. Output is a bare JSON array, not a
-provenance envelope, and `timeline` has no `--format`: use `annotations export
---format markdown` when you want markdown.
+Every highlight and note from the past 7 days, wrapped in the provenance envelope —
+read `.results`. `timeline` has no `--format`: use `annotations export --format
+markdown` when you want markdown.
 
 ### Generate BibTeX for a collection branch
 
@@ -225,7 +225,7 @@ Commands that read from the local store or the API wrap output in a provenance e
 }
 ```
 
-Parse `.results` for data — always an array, even for a single resource — and `.meta.source` for freshness. Hand-written reports (`items missing-pdf`, `items venues`, `annotations timeline`) skip the envelope and print a bare array, so check the top-level shape before indexing. A human-readable `N results (live)` summary is printed to stderr only when stdout is a terminal — piped/agent consumers get pure JSON on stdout.
+Parse `.results` for data — always an array, even for a single resource — and `.meta.source` for freshness. Not every command wraps: see the shape gotcha above for the report-shaped and bare-array exceptions, and check the top-level shape before indexing. A human-readable `N results (live)` summary is printed to stderr only when stdout is a terminal — piped/agent consumers get pure JSON on stdout.
 
 ## Agent Feedback
 
