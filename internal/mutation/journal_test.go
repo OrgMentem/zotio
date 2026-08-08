@@ -64,6 +64,27 @@ func TestBuildJournalEntryJoinsStatus(t *testing.T) {
 		t.Errorf("op2 status = %q, want no_op", e.Ops[1].Status)
 	}
 }
+func TestBuildJournalEntryUsesAppliedResultKey(t *testing.T) {
+	env := Envelope{
+		Operation: "items.new",
+		Mode:      "apply",
+		Plan: Plan{Operations: []Op{{
+			ID: "create", Key: "journalArticle", Kind: "item_create",
+			Changes: []Change{{Field: "item", Add: map[string]any{"itemType": "journalArticle"}}},
+		}}},
+		Result: &Result{
+			Summary: ResultSummary{Attempted: 1, Applied: 1},
+			Items:   []ResultItem{{OpID: "create", Key: "REALKEY1", Status: "applied"}},
+		},
+	}
+	entry, ok := BuildJournalEntry(env, time.Now())
+	if !ok {
+		t.Fatal("applied envelope should build a journal entry")
+	}
+	if got := entry.Ops[0].Key; got != "REALKEY1" {
+		t.Fatalf("journal key = %q, want applied key REALKEY1 (not item type)", got)
+	}
+}
 
 func TestJournalWriteListReadRoundtrip(t *testing.T) {
 	dir := t.TempDir()

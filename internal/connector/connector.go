@@ -80,6 +80,14 @@ func (c *Client) Ping(ctx context.Context) error {
 // SaveItems creates one or more items in the running Zotero desktop session.
 // Each item must carry a unique connector-local "id" field.
 func (c *Client) SaveItems(ctx context.Context, sessionID, uri string, items []map[string]any) error {
+	// Zotero's SaveSession passes data.uri to ItemSaver as its referrer. A
+	// schema-backed bare create has no source page, but the connector still
+	// expects a valid URI in this field; an empty string makes Zotero reject
+	// the save with HTTP 500 before it can create the item.
+	uri = strings.TrimSpace(uri)
+	if uri == "" {
+		uri = "https://zotero.org/"
+	}
 	payload := map[string]any{
 		"sessionID": sessionID,
 		"uri":       uri,

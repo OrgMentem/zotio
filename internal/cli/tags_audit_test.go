@@ -131,6 +131,59 @@ func TestBuildTagAuditPlansPreferPolicies(t *testing.T) {
 	}
 }
 
+func TestTagAuditCasePoliciesRespectIntraTokenBoundaries(t *testing.T) {
+	tests := []struct {
+		name         string
+		input        string
+		wantTitle    string
+		wantSentence string
+	}{
+		{name: "wt2 hyphen", input: "wt2-Case", wantTitle: "Wt2-Case", wantSentence: "Wt2-case"},
+		{name: "meta analysis", input: "meta-analysis", wantTitle: "Meta-Analysis", wantSentence: "Meta-analysis"},
+		{name: "Carhart Harris", input: "Carhart-Harris", wantTitle: "Carhart-Harris", wantSentence: "Carhart-harris"},
+		{name: "double blind", input: "double-blind", wantTitle: "Double-Blind", wantSentence: "Double-blind"},
+		{name: "fMRI adaptation", input: "fMRI-adaptation", wantTitle: "Fmri-Adaptation", wantSentence: "Fmri-adaptation"},
+		{name: "O'Brien", input: "O'Brien", wantTitle: "O'Brien", wantSentence: "O'brien"},
+		{name: "don't", input: "don't", wantTitle: "Don't", wantSentence: "Don't"},
+		{name: "trailing hyphen", input: "meta-", wantTitle: "Meta-", wantSentence: "Meta-"},
+		{name: "doubled hyphen", input: "a--b", wantTitle: "A--B", wantSentence: "A--b"},
+		{name: "slash separator", input: "dose-response/side-effect", wantTitle: "Dose-Response/Side-Effect", wantSentence: "Dose-response/side-effect"},
+		{name: "multi-word tag", input: "multi word tag", wantTitle: "Multi Word Tag", wantSentence: "Multi word tag"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			normalized := normalizeTagAuditName(tc.input)
+			if got := tagAuditTitleCase(normalized); got != tc.wantTitle {
+				t.Errorf("title case = %q, want %q", got, tc.wantTitle)
+			}
+			if got := tagAuditSentenceCase(normalized); got != tc.wantSentence {
+				t.Errorf("sentence case = %q, want %q", got, tc.wantSentence)
+			}
+		})
+	}
+}
+
+func TestTagAuditCasePoliciesPreserveExistingInternalCase(t *testing.T) {
+	tests := []struct {
+		input        string
+		wantTitle    string
+		wantSentence string
+	}{
+		{input: "McDonald", wantTitle: "McDonald", wantSentence: "McDonald"},
+		{input: "Parkinson's", wantTitle: "Parkinson's", wantSentence: "Parkinson's"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.input, func(t *testing.T) {
+			if got := tagAuditTitleCase(tc.input); got != tc.wantTitle {
+				t.Errorf("title case = %q, want %q", got, tc.wantTitle)
+			}
+			if got := tagAuditSentenceCase(tc.input); got != tc.wantSentence {
+				t.Errorf("sentence case = %q, want %q", got, tc.wantSentence)
+			}
+		})
+	}
+}
+
 // TestBuildTagAuditPlansSkipsPreferForAutomaticTags is the type-1 decision:
 // a group containing an automatic (type 1) tag -- e.g. a MeSH term a
 // translator imported -- must not have a case policy imposed on it, because
@@ -157,6 +210,14 @@ func TestBuildTagAuditPlansSkipsPreferForAutomaticTags(t *testing.T) {
 	// --prefer lower target.
 	if p.Canonical != "Magnetic Resonance Imaging" {
 		t.Errorf("canonical = %q, want frequency fallback %q", p.Canonical, "Magnetic Resonance Imaging")
+	}
+
+	titlePlans := buildTagAuditPlans(tagRows, countRows, tagAuditPreferTitle, automaticTags)
+	if len(titlePlans) != 1 || !titlePlans[0].AutomaticSkipped {
+		t.Fatalf("title plans = %+v, want one automatic-skipped group", titlePlans)
+	}
+	if titlePlans[0].Canonical != p.Canonical {
+		t.Errorf("title automatic fallback %q != frequency canonical %q", titlePlans[0].Canonical, p.Canonical)
 	}
 
 	// The same group under the default frequency policy never needed to

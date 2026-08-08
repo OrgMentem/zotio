@@ -4,6 +4,17 @@ Notable changes to zotio. Format follows [Keep a Changelog](https://keepachangel
 
 ## [Unreleased]
 ### Fixed
+- **`import pdf --on-duplicate` now classifies before importing.** The command
+  previously ignored `import scan`'s `attach_candidate` verdict and could create
+  a second item for a DOI already in the library. Duplicate matches now skip by
+  default with a payload naming the DOI and existing item, `create` records the
+  match while preserving the import, and `attach` uploads the PDF as a child of
+  the existing item.
+- **`creators audit` no longer emits unsafe merges.** Ambiguous same-surname
+  candidates are hidden unless `--include-ambiguous` is requested, and then are
+  labeled review-only without runnable rename commands. Safe exact and
+  initials-compatible variants still emit pasteable commands, while canonical
+  names now prefer the most complete spelling over frequency.
 - **`items trash` shows what you just trashed.** Writes route to
   `api.zotero.org`, but the command read the Zotero desktop local API, which does
   not learn about a trash until Zotero syncs it down — it returned an empty trash
@@ -67,6 +78,12 @@ Notable changes to zotio. Format follows [Keep a Changelog](https://keepachangel
 - **`--plain` drops response wrappers.** `library`, `links`, `meta` and
   `relations` rendered as raw JSON objects inside single cells, pushing item rows
   past 2 KB across ~35 columns. An explicit `--select` still wins.
+- **Journal keys, undo, and mutation/read envelopes are consistent.** Created
+  items now journal their real Zotero key and `journal undo` moves them to the
+  reversible trash; `items update --stdin`, `journal list`, and `items
+  collections-of` now use the standard envelopes. `items audit` and
+  `journal show` remain explicit report-shaped exceptions documented in
+  generated command guidance.
 - **`GetSyncState` tolerates a NULL cursor.** A `sync_state` row created by a
   library-version write before any pass had stored a cursor made every read of it
   fail with "converting NULL to string is unsupported".
@@ -192,6 +209,20 @@ Notable changes to zotio. Format follows [Keep a Changelog](https://keepachangel
   now probes `/connector/ping` through the existing `desktop_connector`
   preconditions-registry check, and the failure names the one alternative that
   needs no desktop: `zotio import doi <DOI>`.
+- **`tags audit --prefer title` now capitalizes hyphenated and slash-separated
+  words.** The policy previously capitalized only after spaces, so tags such as
+  `meta-analysis` became `Meta-analysis`; it now produces `Meta-Analysis`
+  and recognizes name-shaped one-letter apostrophe prefixes such as `O'Brien`
+  without turning contractions such as `don't` into `Don'T`. Sentence case
+  remains first-word-only, so `meta-analysis` stays `Meta-analysis` by design.
+- **`schema new-item-template` now works against local Zotero.** The local API
+  does not implement Web-only `/items/new`; the command now builds the faithful
+  blank template from the local global schema endpoints, without credentials or
+  a Web API round trip, and keeps the read envelope's `.results` array contract.
+- **`items new` no longer sends an empty connector URI.** Zotero's
+  `/connector/saveItems` passes `uri` into its item saver even for metadata-only
+  creates; the schema template has no source page, so the empty URI triggered
+  HTTP 500. Connector saves now send a valid fallback URI (or the item's DOI/URL).
 
 ### Changed
 - **Tests can no longer write to the developer's real zotio data directory.** The

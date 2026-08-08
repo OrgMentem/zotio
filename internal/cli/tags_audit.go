@@ -422,9 +422,29 @@ func tagAuditTitleCase(normalized string) string {
 			continue
 		}
 		r[0] = unicode.ToUpper(r[0])
+		for j := 1; j < len(r); j++ {
+			if tagAuditTitleBoundary(r, j-1) {
+				r[j] = unicode.ToUpper(r[j])
+			}
+		}
 		words[i] = string(r)
 	}
 	return strings.Join(words, " ")
+}
+
+// tagAuditTitleBoundary identifies punctuation that conventionally starts a
+// new word inside a title-case token. An apostrophe starts a word only for
+// one-letter prefixes such as O'Brien; ordinary contractions such as don't
+// remain a single word.
+func tagAuditTitleBoundary(r []rune, separator int) bool {
+	switch r[separator] {
+	case '/', '-':
+		return true
+	case '\'', '’':
+		return separator == 1 && unicode.IsLetter(r[0])
+	default:
+		return unicode.Is(unicode.Dash, r[separator])
+	}
 }
 
 func normalizeTagAuditName(tag string) string {

@@ -8,6 +8,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestResolveMode(t *testing.T) {
@@ -105,6 +106,26 @@ func TestRunApplySuccess(t *testing.T) {
 	}
 	if env.Result.Summary.Applied != 1 || env.Result.Summary.NoOp != 1 || env.Result.Summary.Attempted != 2 {
 		t.Fatalf("summary = %+v", env.Result.Summary)
+	}
+}
+func TestRunAdoptsCreatedKeyAndDoesNotUseTypePlaceholder(t *testing.T) {
+	ops := []Op{{
+		ID: "create", Key: "journalArticle", Kind: "item_create",
+		Changes: []Change{{Field: "item", Add: map[string]any{"itemType": "journalArticle"}}},
+		Apply: func() (string, any, error) {
+			return "applied", map[string]any{"key": "REALKEY1"}, nil
+		},
+	}}
+	env, err := Run(Options{Yes: true, MaxChanges: -1}, "items.new", ops)
+	if err != nil {
+		t.Fatalf("Run create err = %v", err)
+	}
+	if got := env.Result.Items[0].Key; got != "REALKEY1" {
+		t.Fatalf("result key = %q, want REALKEY1", got)
+	}
+	entry, ok := BuildJournalEntry(env, time.Now())
+	if !ok || entry.Ops[0].Key != "REALKEY1" {
+		t.Fatalf("journal entry = %+v, want real created key", entry)
 	}
 }
 

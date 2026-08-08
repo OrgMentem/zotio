@@ -26,6 +26,10 @@ type itemsAuditSummary struct {
 	Findings        []Finding `json:"findings"`
 }
 
+// items audit is intentionally report-shaped rather than a list read: its JSON
+// payload contains named check arrays and summary counters, plus findings. The
+// generated command reference documents this and journal show as explicit
+// exceptions from the {meta, results} envelope used by ordinary reads.
 func newItemsAuditCmd(flags *rootFlags) *cobra.Command {
 	var flagMissingPDF bool
 	var flagMissingAbstract bool

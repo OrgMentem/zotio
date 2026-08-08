@@ -3,7 +3,7 @@
 
 Every `zotio` command, generated directly from the binary. Add `--agent` to any command for JSON output and non-interactive defaults; mutating commands preview unless `--yes` is passed.
 
-Read commands emit a `{meta, results}` envelope in JSON mode; `results` is *always* a JSON array, even for a single-object read like `items get` (a one-element array) — index it as `results[0]` or iterate with `results[]` uniformly across every read command.
+Read commands emit a `{meta, results}` envelope in JSON mode; for ordinary list/single-resource reads, `results` is *always* a JSON array, even for a single-object read like `items get` (a one-element array) — index it as `results[0]` or iterate with `results[]` uniformly. Report-shaped diagnostics are the explicit exception: `items audit` returns named summary/check fields (including `findings`) rather than a `results` array.
 
 ## Global flags
 
@@ -559,9 +559,11 @@ Audit synced creator names for variant candidates without mutating Zotero.
 
 The audit reads item creators from the local synced store and groups likely name
 variants into three confidence tiers: exact-after-normalization, initial/full-name
-compatibility, and ambiguous same-surname diagnostics. Use --orcid to fetch
-CrossRef author ORCIDs for DOI-bearing tier-2/3 candidates and store them in the
-local creator_orcids sidecar table as corroboration evidence. That sidecar is
+compatibility, and ambiguous same-surname diagnostics. Ambiguous groups are
+hidden unless --include-ambiguous is supplied; when shown, they are review-only
+and never include runnable rename commands. Use --orcid to fetch CrossRef author
+ORCIDs for DOI-bearing tier-2/3 candidates and store them in the local
+creator_orcids sidecar table as corroboration evidence. That sidecar is
 local-only evidence; zotio never writes ORCIDs back to Zotero because Zotero has
 no creator ORCID field.
 
@@ -579,6 +581,7 @@ zotio creators audit
 
 | Flag | Type | Default | Description |
 | --- | --- | --- | --- |
+| `--include-ambiguous` | `bool` | `false` | Include unsafe same-surname groups as review-only evidence; no rename commands are emitted |
 | `--orcid` | `bool` | `false` | Fetch CrossRef author ORCIDs into the local-only sidecar table; never writes ORCIDs to Zotero |
 | `--scope` | `string` | `library` | Item scope: library, collection:<key>, tag:<tag>, item:<key>, or query:<text> |
 

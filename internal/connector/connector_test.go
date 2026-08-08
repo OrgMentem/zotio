@@ -61,6 +61,35 @@ func TestConnectorSaveItemsRequest(t *testing.T) {
 		t.Fatal("server did not receive request")
 	}
 }
+func TestConnectorSaveItemsBareCreateUsesValidURI(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			URI   string           `json:"uri"`
+			Items []map[string]any `json:"items"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("decode body: %v", err)
+		}
+		if body.URI != "https://zotero.org/" {
+			t.Fatalf("bare create uri = %q, want valid synthetic URI", body.URI)
+		}
+		if len(body.Items) != 1 || body.Items[0]["id"] != "connector-key" ||
+			body.Items[0]["itemType"] != "journalArticle" {
+			t.Fatalf("unexpected bare create item: %+v", body.Items)
+		}
+		w.WriteHeader(http.StatusCreated)
+	}))
+	defer server.Close()
+
+	c := New(server.URL+"/connector", time.Second)
+	if err := c.SaveItems(context.Background(), "session", "", []map[string]any{{
+		"id": "connector-key", "itemType": "journalArticle",
+	}}); err != nil {
+		t.Fatalf("SaveItems returned error: %v", err)
+	}
+}
 
 func TestConnectorRefusesRedirects(t *testing.T) {
 	t.Parallel()

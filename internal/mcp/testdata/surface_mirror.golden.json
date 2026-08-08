@@ -526,9 +526,13 @@
   },
   {
     "name": "creators_audit",
-    "description": "Audit synced creator names for variant candidates without mutating Zotero.\n\nThe audit reads item creators from the local synced store and groups likely name\nvariants into three confidence tiers: exact-after-normalization, initial/full-name\ncompatibility, and ambiguous same-surname diagnostics. Use --orcid to fetch\nCrossRef author ORCIDs for DOI-bearing tier-2/3 candidates and store them in the\nlocal creator_orcids sidecar table as corroboration evidence. That sidecar is\nlocal-only evidence; zotio never writes ORCIDs back to Zotero because Zotero has\nno creator ORCID field.",
+    "description": "Audit synced creator names for variant candidates without mutating Zotero.\n\nThe audit reads item creators from the local synced store and groups likely name\nvariants into three confidence tiers: exact-after-normalization, initial/full-name\ncompatibility, and ambiguous same-surname diagnostics. Ambiguous groups are\nhidden unless --include-ambiguous is supplied; when shown, they are review-only\nand never include runnable rename commands. Use --orcid to fetch CrossRef author\nORCIDs for DOI-bearing tier-2/3 candidates and store them in the local\ncreator_orcids sidecar table as corroboration evidence. That sidecar is\nlocal-only evidence; zotio never writes ORCIDs back to Zotero because Zotero has\nno creator ORCID field.",
     "inputSchema": {
       "properties": {
+        "include-ambiguous": {
+          "description": "Include unsafe same-surname groups as review-only evidence; no rename commands are emitted (default: false)",
+          "type": "boolean"
+        },
         "orcid": {
           "description": "Fetch CrossRef author ORCIDs into the local-only sidecar table; never writes ORCIDs to Zotero (default: false)",
           "type": "boolean"

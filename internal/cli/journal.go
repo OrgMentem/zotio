@@ -211,6 +211,9 @@ func newJournalListCmd(flags *rootFlags) *cobra.Command {
 				return fmt.Errorf("reading journal: %w", err)
 			}
 			normalizeJournalEntries(entries)
+			if entries == nil {
+				entries = make([]mutation.JournalEntry, 0)
+			}
 			if workflowRunID != "" {
 				filtered := entries[:0]
 				for _, entry := range entries {
@@ -225,7 +228,18 @@ func newJournalListCmd(flags *rootFlags) *cobra.Command {
 				if err != nil {
 					return err
 				}
-				if err := printOutputWithFlags(cmd.OutOrStdout(), json.RawMessage(data), flags); err != nil {
+				filtered := json.RawMessage(data)
+				if flags.selectFields != "" {
+					filtered = filterFields(filtered, flags.selectFields)
+				} else if flags.compact {
+					filtered = compactFields(filtered)
+				}
+				prov := DataProvenance{Source: "local", ResourceType: "journal"}
+				wrapped, err := wrapWithProvenance(filtered, prov)
+				if err != nil {
+					return err
+				}
+				if err := printOutput(cmd.OutOrStdout(), wrapped, true); err != nil {
 					return err
 				}
 				if incomplete != nil {
@@ -338,6 +352,9 @@ func newJournalUndoCmd(flags *rootFlags) *cobra.Command {
 					if writeClient == nil {
 						return "failed", "no write client", errors.New("no write client")
 					}
+					if inv.Kind == "undo.item_create" {
+						return applyUndoCreate(writeClient, path)
+					}
 					return applyUndoMembership(writeClient, path, changes)
 				}
 				ops = append(ops, op)
@@ -407,6 +424,41 @@ func attachUndoRefusals(env *mutation.Envelope, refused []mutation.ReversalRefus
 	if len(env.Plan.Operations) == 0 {
 		env.OK = false
 	}
+}
+
+// applyUndoCreate moves the created item to Zotero's reversible trash. The
+// journal's create key is the write-plane key adopted into ResultItem.Key, and
+// the version precondition is read from that same plane before PATCH.
+func applyUndoCreate(c *client.Client, path string) (string, any, error) {
+	_, version, err := c.GetWithVersion(path, nil)
+	if err != nil {
+		var apiErr *client.APIError
+		if errors.As(err, &apiErr) && apiErr.StatusCode == http.StatusNotFound {
+			return "no_op", map[string]any{
+				"code":    "already_trashed",
+				"message": "created item is already gone from the write plane",
+			}, nil
+		}
+		return "failed", err.Error(), err
+	}
+	if version <= 0 {
+		err := fmt.Errorf("reading created item version: response did not include a version")
+		return "failed", err.Error(), err
+	}
+	headers := map[string]string{"If-Unmodified-Since-Version": strconv.Itoa(version)}
+	_, statusCode, err := c.PatchWithHeaders(path, map[string]any{"deleted": 1}, headers)
+	if err != nil {
+		var apiErr *client.APIError
+		if errors.As(err, &apiErr) && (apiErr.StatusCode == http.StatusPreconditionFailed || apiErr.StatusCode == http.StatusPreconditionRequired) {
+			return "conflict", apiErr.Body, err
+		}
+		return "failed", err.Error(), err
+	}
+	if statusCode < 200 || statusCode >= 300 {
+		err := fmt.Errorf("trash returned HTTP %d", statusCode)
+		return "failed", err.Error(), err
+	}
+	return "applied", map[string]any{"deleted": true}, nil
 }
 
 // applyUndoMembership re-reads the item and applies the inverse tag/collection

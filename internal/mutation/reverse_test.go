@@ -62,3 +62,19 @@ func TestInverseOps(t *testing.T) {
 		}
 	}
 }
+func TestInverseOpsTrashesCreatedItem(t *testing.T) {
+	entry := JournalEntry{Ops: []JournalOp{{
+		ID: "create", Key: "REALKEY1", Kind: "item_create", Status: "applied",
+		Changes: []Change{{Field: "source", Add: "manual"}, {Field: "item", Add: map[string]any{"itemType": "book"}}},
+	}}}
+	inverse, refused := InverseOps(entry)
+	if len(refused) != 0 {
+		t.Fatalf("create refusals = %+v, want none", refused)
+	}
+	if len(inverse) != 1 || inverse[0].Key != "REALKEY1" || inverse[0].Kind != "undo.item_create" {
+		t.Fatalf("create inverse = %+v, want undo.item_create on REALKEY1", inverse)
+	}
+	if len(inverse[0].Changes) != 1 || inverse[0].Changes[0].Field != "deleted" {
+		t.Fatalf("create inverse changes = %+v, want deleted trash change", inverse[0].Changes)
+	}
+}

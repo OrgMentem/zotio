@@ -7,12 +7,16 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
+	"zotio/internal/client"
+	"zotio/internal/config"
 	"zotio/internal/mutation"
 )
 
@@ -28,6 +32,20 @@ func runJournalCmd(t *testing.T, args ...string) string {
 		t.Fatalf("journal %v: %v", args, err)
 	}
 	return out.String()
+}
+
+type journalListEnvelope struct {
+	Results []mutation.JournalEntry `json:"results"`
+	Meta    map[string]any          `json:"meta"`
+}
+
+func decodeJournalList(t *testing.T, raw string) journalListEnvelope {
+	t.Helper()
+	var env journalListEnvelope
+	if err := json.Unmarshal([]byte(raw), &env); err != nil {
+		t.Fatalf("decode journal list: %v", err)
+	}
+	return env
 }
 
 func journalTestEntry(t *testing.T, runID, op string) mutation.JournalEntry {
@@ -73,15 +91,15 @@ func TestJournalListAndShow(t *testing.T) {
 		}
 	}
 
-	var listed []mutation.JournalEntry
-	if err := json.Unmarshal([]byte(runJournalCmd(t, "list")), &listed); err != nil {
-		t.Fatalf("decode list: %v", err)
+	listed := decodeJournalList(t, runJournalCmd(t, "list"))
+	if len(listed.Results) != 2 || listed.Results[0].RunID != "run-B" {
+		t.Fatalf("list = %+v, want newest-first [run-B, run-A]", listed.Results)
 	}
-	if len(listed) != 2 || listed[0].RunID != "run-B" {
-		t.Fatalf("list = %+v, want newest-first [run-B, run-A]", listed)
+	if listed.Meta["source"] != "local" || listed.Meta["resource_type"] != "journal" {
+		t.Fatalf("list meta = %+v, want local journal provenance", listed.Meta)
 	}
-	if listed[0].Library != "user" || listed[1].Library != "user" {
-		t.Fatalf("list libraries = %q/%q, want user/user", listed[0].Library, listed[1].Library)
+	if listed.Results[0].Library != "user" || listed.Results[1].Library != "user" {
+		t.Fatalf("list libraries = %q/%q, want user/user", listed.Results[0].Library, listed.Results[1].Library)
 	}
 
 	var shown mutation.JournalEntry
@@ -128,6 +146,37 @@ func TestJournalListAndShow(t *testing.T) {
 		t.Fatalf("human show = %q, want workflow run ID", humanShow.String())
 	}
 }
+func TestApplyUndoCreateTrashesCreatedKeyWithVersion(t *testing.T) {
+	var gotHeader string
+	var gotDeleted any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet:
+			w.Header().Set("Last-Modified-Version", "7")
+			_, _ = w.Write([]byte(`{}`))
+		case http.MethodPatch:
+			gotHeader = r.Header.Get("If-Unmodified-Since-Version")
+			var body map[string]any
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Errorf("decode trash body: %v", err)
+			}
+			gotDeleted = body["deleted"]
+			w.WriteHeader(http.StatusNoContent)
+		default:
+			http.Error(w, "unexpected", http.StatusMethodNotAllowed)
+		}
+	}))
+	defer srv.Close()
+
+	c := client.New(&config.Config{BaseURL: srv.URL + "/users/0"}, 0, 0)
+	status, _, err := applyUndoCreate(c, "/items/REALKEY1")
+	if err != nil || status != "applied" {
+		t.Fatalf("applyUndoCreate = (%q, %v), want applied", status, err)
+	}
+	if gotHeader != "7" || gotDeleted != float64(1) {
+		t.Fatalf("trash request header/deleted = %q/%v, want 7/1", gotHeader, gotDeleted)
+	}
+}
 
 func TestJournalListRendersPrefixWhenTailIncomplete(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
@@ -160,12 +209,9 @@ func TestJournalListRendersPrefixWhenTailIncomplete(t *testing.T) {
 	if ExitCode(err) != 13 {
 		t.Fatalf("journal list exit code = %d, want 13 (err=%v)", ExitCode(err), err)
 	}
-	var entries []mutation.JournalEntry
-	if err := json.Unmarshal(out.Bytes(), &entries); err != nil {
-		t.Fatalf("decode rendered prefix: %v (output=%q)", err, out.String())
-	}
-	if len(entries) != 1 || entries[0].RunID != "run-complete" {
-		t.Fatalf("rendered entries = %+v, want complete prefix", entries)
+	entries := decodeJournalList(t, out.String())
+	if len(entries.Results) != 1 || entries.Results[0].RunID != "run-complete" {
+		t.Fatalf("rendered entries = %+v, want complete prefix", entries.Results)
 	}
 
 	humanCmd := newJournalCmd(&rootFlags{})
@@ -252,20 +298,14 @@ func TestJournalListFiltersWorkflow(t *testing.T) {
 		}
 	}
 
-	var filtered []mutation.JournalEntry
-	if err := json.Unmarshal([]byte(runJournalCmd(t, "list", "--workflow", "workflow-1")), &filtered); err != nil {
-		t.Fatalf("decode filtered list: %v", err)
-	}
-	if len(filtered) != 1 || filtered[0].RunID != "workflow-match" {
-		t.Fatalf("filtered list = %+v, want only workflow-match", filtered)
+	filtered := decodeJournalList(t, runJournalCmd(t, "list", "--workflow", "workflow-1"))
+	if len(filtered.Results) != 1 || filtered.Results[0].RunID != "workflow-match" {
+		t.Fatalf("filtered list = %+v, want only workflow-match", filtered.Results)
 	}
 
-	var none []mutation.JournalEntry
-	if err := json.Unmarshal([]byte(runJournalCmd(t, "list", "--workflow", "workflow-missing")), &none); err != nil {
-		t.Fatalf("decode non-matching list: %v", err)
-	}
-	if len(none) != 0 {
-		t.Fatalf("non-matching filtered list = %+v, want none", none)
+	none := decodeJournalList(t, runJournalCmd(t, "list", "--workflow", "workflow-missing"))
+	if len(none.Results) != 0 {
+		t.Fatalf("non-matching filtered list = %+v, want none", none.Results)
 	}
 }
 

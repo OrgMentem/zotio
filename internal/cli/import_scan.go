@@ -10,9 +10,13 @@
 package cli
 
 import (
+	"bytes"
+	"compress/flate"
+	"compress/zlib"
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/spf13/cobra"
 	"io"
 	"net/http"
 	"os"
@@ -20,8 +24,6 @@ import (
 	"regexp"
 	"strings"
 	"time"
-
-	"github.com/spf13/cobra"
 
 	"zotio/internal/store"
 )
@@ -33,6 +35,13 @@ var doiScanRE = regexp.MustCompile(`10\.\d{4,9}/[A-Za-z0-9._;()/:\-]+`)
 const (
 	scanHeadBytes = 2 << 20   // bytes scanned from the head of each PDF for an embedded DOI
 	scanTailBytes = 512 << 10 // bytes scanned from the tail (XMP/Info often live near the trailer)
+
+	// Decompression is deliberately bounded: import scan must remain a cheap
+	// preflight even when handed a hostile or unusually large PDF.
+	pdfCompressedScanBytes = 64 << 20
+	pdfMaxFlateStreams     = 128
+	pdfMaxFlateStreamBytes = 4 << 20
+	pdfMaxFlateOutputBytes = 8 << 20
 )
 
 type scanResult struct {
@@ -249,29 +258,116 @@ func classifyPDFWithErr(ctx context.Context, path string, idx libraryDOIIndex, h
 	return res, nil
 }
 
-// extractPDFDOI finds a DOI in the filename, then in the PDF's uncompressed
-// embedded metadata. It never decodes compressed page text (no PDF parser).
+// extractPDFDOI finds a DOI in the filename, then in the PDF's metadata and
+// compressed content streams. It intentionally does not attempt full PDF text
+// extraction: bounded Flate decoding is enough for DOI-bearing streams produced
+// by ordinary scholarly PDFs and keeps this preflight dependency-free.
 func extractPDFDOI(path string) (doi, source string, err error) {
 	base := strings.TrimSuffix(filepath.Base(path), filepath.Ext(path))
 	// A filename cannot contain '/', so a DOI saved into one is slash-encoded.
 	// Decode the common, unambiguous encodings before matching (skip '_' — DOIs
 	// legitimately contain underscores, so that substitution is too risky).
 	decoded := strings.NewReplacer("%2F", "/", "%2f", "/", "\u2044", "/", "\u2215", "/").Replace(base)
-	if m := doiScanRE.FindString(decoded); m != "" {
-		if d := normalizeDOI(m); d != "" {
-			return d, "filename", nil
-		}
+	if d := doiFromBytes([]byte(decoded)); d != "" {
+		return d, "filename", nil
 	}
-	bytes, err := pdfScanBytes(path)
+	raw, err := pdfScanBytes(path)
 	if err != nil {
 		return "", "none", err
 	}
-	if m := doiScanRE.FindString(string(bytes)); m != "" {
-		if d := normalizeDOI(m); d != "" {
-			return d, "content", nil
-		}
+	if d := doiFromBytes(raw); d != "" {
+		return d, "content", nil
+	}
+	if d, err := pdfScanFlateDOI(path); err != nil {
+		return "", "none", err
+	} else if d != "" {
+		return d, "content", nil
 	}
 	return "", "none", nil
+}
+
+func doiFromBytes(data []byte) string {
+	m := doiScanRE.Find(data)
+	if len(m) == 0 {
+		return ""
+	}
+	doi := strings.TrimRight(normalizeDOI(string(m)), ")]}")
+	if slash := strings.IndexByte(doi, '/'); slash >= 0 {
+		doi = doi[:slash+1] + strings.TrimLeft(doi[slash+1:], "/")
+	}
+	return doi
+}
+
+func pdfScanFlateDOI(path string) (string, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return "", fmt.Errorf("opening: %w", err)
+	}
+	defer f.Close()
+	data, err := io.ReadAll(io.LimitReader(f, pdfCompressedScanBytes+1))
+	if err != nil {
+		return "", fmt.Errorf("reading compressed streams: %w", err)
+	}
+	if len(data) > pdfCompressedScanBytes {
+		data = data[:pdfCompressedScanBytes]
+	}
+	streams := 0
+	for searchFrom := 0; searchFrom < len(data) && streams < pdfMaxFlateStreams; {
+		rel := bytes.Index(data[searchFrom:], []byte("stream"))
+		if rel < 0 {
+			break
+		}
+		streamStart := searchFrom + rel + len("stream")
+		dictStart := bytes.LastIndex(data[searchFrom:searchFrom+rel], []byte("<<"))
+		if dictStart < 0 {
+			searchFrom = streamStart
+			continue
+		}
+		dict := data[searchFrom+dictStart : searchFrom+rel]
+		if !bytes.Contains(dict, []byte("FlateDecode")) {
+			searchFrom = streamStart
+			continue
+		}
+		if streamStart < len(data) && data[streamStart] == '\r' {
+			streamStart++
+		}
+		if streamStart < len(data) && data[streamStart] == '\n' {
+			streamStart++
+		}
+		endRel := bytes.Index(data[streamStart:], []byte("endstream"))
+		if endRel < 0 {
+			break
+		}
+		streamEnd := streamStart + endRel
+		if streamEnd-streamStart > pdfMaxFlateStreamBytes {
+			searchFrom = streamEnd
+			continue
+		}
+		streams++
+		if decoded := inflatePDFStream(data[streamStart:streamEnd]); len(decoded) > 0 {
+			if d := doiFromBytes(decoded); d != "" {
+				return d, nil
+			}
+		}
+		searchFrom = streamEnd + len("endstream")
+	}
+	return "", nil
+}
+
+func inflatePDFStream(data []byte) []byte {
+	readers := make([]io.ReadCloser, 0, 2)
+	if zr, err := zlib.NewReader(bytes.NewReader(data)); err == nil {
+		readers = append(readers, zr)
+	}
+	readers = append(readers, flate.NewReader(bytes.NewReader(data)))
+	for _, reader := range readers {
+		out, err := io.ReadAll(io.LimitReader(reader, pdfMaxFlateOutputBytes+1))
+		_ = reader.Close()
+		if err == nil && len(out) <= pdfMaxFlateOutputBytes {
+			return out
+		}
+	}
+	return nil
 }
 
 // pdfScanBytes returns the head and tail bytes of a file (where PDF XMP/Info

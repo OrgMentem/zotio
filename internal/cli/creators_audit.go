@@ -35,10 +35,11 @@ type creatorVariantAlias struct {
 	Name      string   `json:"name"`
 	ItemCount int      `json:"item_count"`
 	ItemKeys  []string `json:"item_keys"`
-	// RenameCommand is the exact `zotio creators rename` invocation that
-	// folds this alias into the group's canonical name, mirroring how tags
-	// audit emits ready-to-run `zotio tags rename` commands per alias.
-	RenameCommand string `json:"rename_command"`
+	// RenameCommand is populated only for safe exact/initial expansions.
+	// Ambiguous groups are review-only and deliberately carry no runnable
+	// command, even when explicitly requested with --include-ambiguous.
+	RenameCommand string `json:"rename_command,omitempty"`
+	Unsafe        bool   `json:"unsafe,omitempty"`
 }
 
 type creatorVariantGroup struct {
@@ -110,6 +111,7 @@ type creatorNameVariant struct {
 func newCreatorsAuditCmd(flags *rootFlags) *cobra.Command {
 	var flagScope string
 	var flagORCID bool
+	var flagIncludeAmbiguous bool
 
 	cmd := &cobra.Command{
 		Use:   "audit",
@@ -118,9 +120,11 @@ func newCreatorsAuditCmd(flags *rootFlags) *cobra.Command {
 
 The audit reads item creators from the local synced store and groups likely name
 variants into three confidence tiers: exact-after-normalization, initial/full-name
-compatibility, and ambiguous same-surname diagnostics. Use --orcid to fetch
-CrossRef author ORCIDs for DOI-bearing tier-2/3 candidates and store them in the
-local creator_orcids sidecar table as corroboration evidence. That sidecar is
+compatibility, and ambiguous same-surname diagnostics. Ambiguous groups are
+hidden unless --include-ambiguous is supplied; when shown, they are review-only
+and never include runnable rename commands. Use --orcid to fetch CrossRef author
+ORCIDs for DOI-bearing tier-2/3 candidates and store them in the local
+creator_orcids sidecar table as corroboration evidence. That sidecar is
 local-only evidence; zotio never writes ORCIDs back to Zotero because Zotero has
 no creator ORCID field.`,
 		Example: `  zotio creators audit
@@ -128,7 +132,7 @@ no creator ORCID field.`,
   zotio creators audit --orcid --json`,
 		Annotations: map[string]string{"mcp:read-only": "true"},
 		RunE: func(cmd *cobra.Command, args []string) error {
-			report, ok, err := runCreatorsAudit(cmd.Context(), flags, flagScope, flagORCID)
+			report, ok, err := runCreatorsAuditWithOptions(cmd.Context(), flags, flagScope, flagORCID, flagIncludeAmbiguous)
 			if err != nil {
 				return err
 			}
@@ -143,11 +147,18 @@ no creator ORCID field.`,
 	}
 	cmd.Flags().StringVar(&flagScope, "scope", "library", "Item scope: library, collection:<key>, tag:<tag>, item:<key>, or query:<text>")
 	cmd.Flags().BoolVar(&flagORCID, "orcid", false, "Fetch CrossRef author ORCIDs into the local-only sidecar table; never writes ORCIDs to Zotero")
+	cmd.Flags().BoolVar(&flagIncludeAmbiguous, "include-ambiguous", false, "Include unsafe same-surname groups as review-only evidence; no rename commands are emitted")
 	cmd.AddCommand(newCreatorsAuditFixCmd(flags))
 	return cmd
 }
 
+// runCreatorsAudit preserves the package-level default used by tests and
+// callers: ambiguous groups are not included in the displayed plan.
 func runCreatorsAudit(ctx context.Context, flags *rootFlags, scopeExpr string, withORCID bool) (creatorsAuditReport, bool, error) {
+	return runCreatorsAuditWithOptions(ctx, flags, scopeExpr, withORCID, false)
+}
+
+func runCreatorsAuditWithOptions(ctx context.Context, flags *rootFlags, scopeExpr string, withORCID, includeAmbiguous bool) (creatorsAuditReport, bool, error) {
 	rawDB, err := openStoreForRead(ctx, "zotio")
 	if err != nil {
 		return creatorsAuditReport{}, false, fmt.Errorf("opening local database: %w", err)
@@ -185,14 +196,17 @@ func runCreatorsAudit(ctx context.Context, flags *rootFlags, scopeExpr string, w
 	}
 
 	groups := buildCreatorVariantGroups(occurrences)
-	summary := creatorAuditSummary(scope.Expr, occurrences, groups)
+	var orcidSummary creatorsAuditORCIDSummary
 	if withORCID {
-		orcidSummary, err := captureCreatorAuditORCIDs(ctx, db, occurrences, groups, flags.timeout)
+		orcidSummary, err = captureCreatorAuditORCIDs(ctx, db, occurrences, groups, flags.timeout)
 		if err != nil {
 			return creatorsAuditReport{}, false, err
 		}
 		groups = buildCreatorVariantGroups(occurrences)
-		summary = creatorAuditSummary(scope.Expr, occurrences, groups)
+	}
+	groups = displayedCreatorVariantGroups(groups, includeAmbiguous)
+	summary := creatorAuditSummary(scope.Expr, occurrences, groups)
+	if withORCID {
 		summary.ORCID = &orcidSummary
 	}
 
@@ -675,12 +689,16 @@ func makeCreatorVariantGroup(tier creatorVariantTier, members []*creatorNameVari
 		if member == canonical {
 			continue
 		}
-		aliases = append(aliases, creatorVariantAlias{
-			Name:          member.Name,
-			ItemCount:     member.itemCount(),
-			ItemKeys:      member.cappedItemKeys(creatorAuditItemKeyCap),
-			RenameCommand: creatorRenameCommand(member.Name, canonical.Name),
-		})
+		alias := creatorVariantAlias{
+			Name:      member.Name,
+			ItemCount: member.itemCount(),
+			ItemKeys:  member.cappedItemKeys(creatorAuditItemKeyCap),
+			Unsafe:    tier == creatorVariantTierAmbiguous,
+		}
+		if !alias.Unsafe {
+			alias.RenameCommand = creatorRenameCommand(member.Name, canonical.Name)
+		}
+		aliases = append(aliases, alias)
 	}
 	return creatorVariantGroup{
 		Tier:               tier,
@@ -696,19 +714,43 @@ func makeCreatorVariantGroup(tier creatorVariantTier, members []*creatorNameVari
 }
 
 func creatorVariantCanonicalLess(a, b *creatorNameVariant) bool {
-	if a.itemCount() != b.itemCount() {
-		return a.itemCount() > b.itemCount()
-	}
 	if creatorFullnessScore(a.Name) != creatorFullnessScore(b.Name) {
 		return creatorFullnessScore(a.Name) > creatorFullnessScore(b.Name)
+	}
+	// Two forms carrying the same information can still differ in convention:
+	// "Robin L. Carhart-Harris" and "Robin L Carhart-Harris" are equally complete,
+	// but the punctuated initial is the bibliographic norm. Ranked above item count
+	// deliberately — the report's point is that the canonical form should be the
+	// most correct one, not the most common, and frequency previously downgraded a
+	// properly punctuated name to a bare one.
+	if creatorInitialPeriodScore(a.Name) != creatorInitialPeriodScore(b.Name) {
+		return creatorInitialPeriodScore(a.Name) > creatorInitialPeriodScore(b.Name)
 	}
 	if creatorCaseQualityScore(a.Name) != creatorCaseQualityScore(b.Name) {
 		return creatorCaseQualityScore(a.Name) > creatorCaseQualityScore(b.Name)
 	}
+	if a.itemCount() != b.itemCount() {
+		return a.itemCount() > b.itemCount()
+	}
+	// Any remaining punctuation difference is noise (stray commas, doubled dots),
+	// so the tidier form wins.
 	if creatorPunctuationCount(a.Name) != creatorPunctuationCount(b.Name) {
 		return creatorPunctuationCount(a.Name) < creatorPunctuationCount(b.Name)
 	}
 	return a.Name < b.Name
+}
+
+// creatorInitialPeriodScore counts initials written in the conventional
+// punctuated form ("L." rather than "L").
+func creatorInitialPeriodScore(name string) int {
+	score := 0
+	for _, token := range strings.Fields(name) {
+		runes := []rune(token)
+		if len(runes) == 2 && unicode.IsLetter(runes[0]) && runes[1] == '.' {
+			score++
+		}
+	}
+	return score
 }
 
 func creatorFullnessScore(name string) int {
@@ -1093,12 +1135,16 @@ func creatorVariantFindings(groups []creatorVariantGroup, source FindingSource) 
 func creatorVariantFindingEvidence(group creatorVariantGroup) map[string]any {
 	aliases := make([]map[string]any, 0, len(group.Aliases))
 	for _, alias := range group.Aliases {
-		aliases = append(aliases, map[string]any{
-			"name":           alias.Name,
-			"item_count":     alias.ItemCount,
-			"item_keys":      alias.ItemKeys,
-			"rename_command": alias.RenameCommand,
-		})
+		evidence := map[string]any{
+			"name":       alias.Name,
+			"item_count": alias.ItemCount,
+			"item_keys":  alias.ItemKeys,
+			"unsafe":     alias.Unsafe,
+		}
+		if alias.RenameCommand != "" {
+			evidence["rename_command"] = alias.RenameCommand
+		}
+		aliases = append(aliases, evidence)
 	}
 	evidence := map[string]any{
 		"tier":                 string(group.Tier),
@@ -1140,7 +1186,9 @@ func printCreatorsAuditReport(cmd *cobra.Command, report creatorsAuditReport) er
 					keys = "no item keys"
 				}
 				fmt.Fprintf(out, "  - %s (%d item(s): %s)\n", alias.Name, alias.ItemCount, keys)
-				if alias.RenameCommand != "" {
+				if alias.Unsafe {
+					fmt.Fprintln(out, "    REVIEW ONLY — UNSAFE same-surname candidate; not a runnable rename command")
+				} else if alias.RenameCommand != "" {
 					fmt.Fprintf(out, "    %s\n", alias.RenameCommand)
 				}
 			}
@@ -1163,6 +1211,19 @@ func groupsForCreatorTier(groups []creatorVariantGroup, tier creatorVariantTier)
 	out := make([]creatorVariantGroup, 0)
 	for _, group := range groups {
 		if group.Tier == tier {
+			out = append(out, group)
+		}
+	}
+	return out
+}
+
+func displayedCreatorVariantGroups(groups []creatorVariantGroup, includeAmbiguous bool) []creatorVariantGroup {
+	if includeAmbiguous {
+		return groups
+	}
+	out := make([]creatorVariantGroup, 0, len(groups))
+	for _, group := range groups {
+		if group.Tier != creatorVariantTierAmbiguous {
 			out = append(out, group)
 		}
 	}

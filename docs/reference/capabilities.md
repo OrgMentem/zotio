@@ -59,7 +59,7 @@ The machine-readable registry every command is classified against — read vs. w
 | `items audit` | read |  |  | `synced_store` |
 | `items authors` | read |  |  |  |
 | `items bibcheck` | read |  |  | `synced_store`, `better_bibtex` |
-| `items bibliography` | read |  |  | `web_api_key` |
+| `items bibliography` | read |  |  |  |
 | `items children` | read |  |  |  |
 | `items cite` | read |  |  |  |
 | `items citekey-conflicts` | read |  |  | `synced_store`, `better_bibtex` |
@@ -119,7 +119,7 @@ The machine-readable registry every command is classified against — read vs. w
 | `schema item-type-creator-types` | read |  |  |  |
 | `schema item-type-fields` | read |  |  |  |
 | `schema item-types` | read |  |  |  |
-| `schema new-item-template` | read |  |  | `web_api_key` |
+| `schema new-item-template` | read |  |  | `live_local_api` |
 | `search` | other |  |  |  |
 | `searches get` | read |  |  |  |
 | `searches list` | read |  |  |  |

@@ -5,13 +5,14 @@ package cli
 
 import (
 	"bytes"
+	"compress/zlib"
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
-
 	"zotio/internal/store"
 )
 
@@ -38,6 +39,22 @@ func TestExtractPDFDOI(t *testing.T) {
 	// No DOI anywhere.
 	if doi, src, err := extractPDFDOI(writeScanFile(t, dir, "scan001.pdf", "binary-ish bytes, no identifier")); err != nil || doi != "" || src != "none" {
 		t.Errorf("no DOI = (%q,%q,%v), want (\"\", none, nil)", doi, src, err)
+	}
+}
+
+func TestExtractPDFDOIFromFlateContentStream(t *testing.T) {
+	dir := t.TempDir()
+	var compressed bytes.Buffer
+	zw := zlib.NewWriter(&compressed)
+	_, _ = zw.Write([]byte("BT (doi 10.1037/0021-9010.87.4.611) ET"))
+	if err := zw.Close(); err != nil {
+		t.Fatalf("close compressed stream: %v", err)
+	}
+	pdf := fmt.Sprintf("%%PDF-1.7\n1 0 obj\n<< /Length %d /Filter /FlateDecode >>\nstream\n%s\nendstream\nendobj\n%%EOF\n", compressed.Len(), compressed.Bytes())
+	path := writeScanFile(t, dir, "paper.pdf", pdf)
+	doi, source, err := extractPDFDOI(path)
+	if err != nil || doi != "10.1037/0021-9010.87.4.611" || source != "content" {
+		t.Fatalf("flate DOI = (%q,%q,%v), want DOI from content stream", doi, source, err)
 	}
 }
 

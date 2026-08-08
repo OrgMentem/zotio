@@ -126,12 +126,13 @@ func TestItemsDeleteNoOpIsNotJournaled(t *testing.T) {
 // TestJournalUndoRefusesCrudOps is the safety net behind "journaled but not
 // undoable": every Kind/Change shape the shipped CRUD commands actually
 // record -- item_update/title, item_delete/deleted, item_create/item, and
-// collection_delete/collection -- must land in InverseOps' refused list with
+// collection_delete/collection — must land in InverseOps' refused list with
 // no inverse op produced. reversibleFields only recognizes "tags"/"collections"
 // membership toggles; if any of these fields were ever folded into that set,
 // journal undo would silently fabricate an inverse for an op it cannot safely
-// reverse (a title overwrite, a trash, a whole-item create, a whole-collection
-// delete).
+// reverse (a title overwrite, a trash, or a whole-collection delete). Item
+// creates are intentionally covered separately: a recorded real key is safely
+// moved to the reversible trash.
 func TestJournalUndoRefusesCrudOps(t *testing.T) {
 	cases := []struct {
 		kind   string
@@ -139,32 +140,29 @@ func TestJournalUndoRefusesCrudOps(t *testing.T) {
 	}{
 		{kind: "item_update", change: mutation.Change{Field: "title", Add: "x"}},
 		{kind: "item_delete", change: mutation.Change{Field: "deleted", Add: true}},
-		{kind: "item_create", change: mutation.Change{Field: "item", Add: map[string]any{"title": "x"}}},
 		{kind: "collection_delete", change: mutation.Change{Field: "collection", Add: true}},
 	}
 
 	for _, tc := range cases {
-		t.Run(tc.kind, func(t *testing.T) {
-			entry := mutation.JournalEntry{
-				Ops: []mutation.JournalOp{{
-					ID:      "op",
-					Key:     "K",
-					Kind:    tc.kind,
-					Status:  "applied",
-					Changes: []mutation.Change{tc.change},
-				}},
-			}
-			inverse, refused := mutation.InverseOps(entry)
-			if len(inverse) != 0 {
-				t.Fatalf("inverse = %+v, want none for a non-reversible %s change", inverse, tc.kind)
-			}
-			if len(refused) != 1 {
-				t.Fatalf("refused = %+v, want exactly one refusal for %s", refused, tc.kind)
-			}
-			if refused[0].Kind != tc.kind {
-				t.Errorf("refused kind = %q, want %q", refused[0].Kind, tc.kind)
-			}
-		})
+		entry := mutation.JournalEntry{
+			Ops: []mutation.JournalOp{{
+				ID:      "op",
+				Key:     "K",
+				Kind:    tc.kind,
+				Status:  "applied",
+				Changes: []mutation.Change{tc.change},
+			}},
+		}
+		inverse, refused := mutation.InverseOps(entry)
+		if len(inverse) != 0 {
+			t.Fatalf("inverse = %+v, want none for a non-reversible %s change", inverse, tc.kind)
+		}
+		if len(refused) != 1 {
+			t.Fatalf("refused = %+v, want exactly one refusal for %s", refused, tc.kind)
+		}
+		if refused[0].Kind != tc.kind {
+			t.Errorf("refused kind = %q, want %q", refused[0].Kind, tc.kind)
+		}
 	}
 }
 

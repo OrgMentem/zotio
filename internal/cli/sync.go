@@ -564,6 +564,8 @@ func syncResource(ctx context.Context, c syncHTTPClient, db *store.Store, resour
 	anomalyEmitted := false
 	completedNaturally := false
 
+	// Keys the plane reported during a full pass; drives the sweep below.
+	seenKeys := map[string]bool{}
 	for {
 		params := map[string]string{}
 
@@ -694,6 +696,17 @@ func syncResource(ctx context.Context, c syncHTTPClient, db *store.Store, resour
 		// "primary_key_unresolved" the first time any single item
 		// fails, and the F4b "stored_count_zero_after_extraction"
 		// probe when extraction succeeded but rows still didn't land.
+		// During a full pass, record every key the plane reported so the sweep
+		// below can reap rows for objects that no longer exist. The local desktop
+		// API implements no /deleted feed, so a complete pass is the only way to
+		// learn that a mirrored object is gone.
+		if full {
+			for _, entry := range items {
+				if key := pendingWriteID(canonicalStoreResource(resource), entry); key != "" {
+					seenKeys[key] = true
+				}
+			}
+		}
 		stored, extractFailures, err := upsertResourceBatch(db, resource, items)
 		if err != nil {
 			if !humanFriendly {
@@ -887,6 +900,19 @@ func syncResource(ctx context.Context, c syncHTTPClient, db *store.Store, resour
 		// library_version legitimately stays 0 here; only the plane converges.
 		if serr := db.SaveLibraryVersion(resource, c.Plane(), libraryVersion); serr != nil {
 			return syncResult{Resource: resource, Count: totalCount, Err: fmt.Errorf("persisting library-version checkpoint: %w", serr), Duration: time.Since(started)}
+		}
+		// Reap rows for objects that no longer exist upstream. Only valid after a
+		// COMPLETE full pass: an incremental sync sees only what changed, so
+		// absence means unchanged, not deleted. Nothing reaped before this, so
+		// zotio's own permanent deletes and any deletion made elsewhere left rows
+		// behind that offline reads happily served and every count included.
+		if full && len(seenKeys) > 0 {
+			storeResource := canonicalStoreResource(resource)
+			if reaped, rerr := db.SweepMissing(storeResource, seenKeys); rerr != nil {
+				fmt.Fprintf(os.Stderr, "warning: reaping deleted %s rows: %v\n", storeResource, rerr)
+			} else if reaped > 0 && humanFriendly {
+				fmt.Fprintf(os.Stderr, "  reaped %d %s row(s) for objects that no longer exist\n", reaped, storeResource)
+			}
 		}
 	}
 

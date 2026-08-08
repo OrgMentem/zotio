@@ -28,7 +28,7 @@ func newItemsCollectionsOfCmd(flags *rootFlags) *cobra.Command {
 			}
 
 			itemPath := replacePathParam("/items/{itemKey}", "itemKey", args[0])
-			itemData, _, err := resolveRead(cmd.Context(), c, flags, "items", false, itemPath, nil, nil)
+			itemData, prov, err := resolveRead(cmd.Context(), c, flags, "items", false, itemPath, nil, nil)
 			if err != nil {
 				return classifyAPIError(err, flags)
 			}
@@ -47,13 +47,25 @@ func newItemsCollectionsOfCmd(flags *rootFlags) *cobra.Command {
 				rows = append(rows, itemCollectionRow{Key: key, Name: jsonStringField(collectionData, "name")})
 			}
 
-			if !wantsHumanTable(cmd.OutOrStdout(), flags) {
-				data, err := json.Marshal(rows)
-				if err != nil {
-					return err
+			data, err := json.Marshal(rows)
+			if err != nil {
+				return err
+			}
+			printProvenance(cmd, len(rows), prov)
+			if wantsJSONEnvelope(cmd.OutOrStdout(), flags) {
+				filtered := json.RawMessage(data)
+				if flags.selectFields != "" {
+					filtered = filterFields(filtered, flags.selectFields)
+				} else if flags.compact {
+					filtered = compactFields(filtered)
 				}
-				// Shared formatter, so --plain/--csv/--select are honoured here
-				// exactly as on every other read command.
+				wrapped, wrapErr := wrapWithProvenance(filtered, prov)
+				if wrapErr != nil {
+					return wrapErr
+				}
+				return printOutput(cmd.OutOrStdout(), wrapped, true)
+			}
+			if !wantsHumanTable(cmd.OutOrStdout(), flags) {
 				return printOutputWithFlags(cmd.OutOrStdout(), json.RawMessage(data), flags)
 			}
 			return printItemCollectionsTable(cmd, rows)

@@ -126,14 +126,13 @@ func runSingleItemCreate(cmd *cobra.Command, flags *rootFlags, spec singleItemCr
 	return runErr
 }
 
-// createdItemKeyOf reports the new item's key from whichever route created it.
-// WebKey wins when present: it is a real Zotero item key, whereas ConnKey is the
-// id zotio generated for the connector session and means nothing to the API.
+// createdItemKeyOf reports the new item's key when the write route returned a
+// Zotero key. Connector session IDs are deliberately not a fallback: they are
+// local correlation IDs, not keys accepted by the Zotero item endpoint. A
+// connector create whose key cannot be confirmed therefore remains explicitly
+// non-undoable instead of journaling a misleading target.
 func createdItemKeyOf(res itemCreateResult) string {
-	if res.WebKey != "" {
-		return res.WebKey
-	}
-	return res.ConnKey
+	return res.WebKey
 }
 
 // routeCreateItemVia creates one Zotero item through an already resolved route.
@@ -184,6 +183,13 @@ func routeCreateItemVia(ctx context.Context, flags *rootFlags, via string, webCl
 			return itemCreateResult{}, err
 		}
 		item["id"] = connectorKey
+		// SaveItems requires a non-empty source URI even for metadata-only
+		// creates. Prefer the item's DOI/URL when callers did not supply one;
+		// connector.SaveItems supplies a valid synthetic URI only for a truly
+		// source-less schema template.
+		if strings.TrimSpace(sourceURI) == "" {
+			sourceURI = itemCreateSourceURI(item)
+		}
 		// Zotero's connector can return an error AFTER having already created the
 		// item (observed: HTTP 500 with the item present on the server at that
 		// instant). Reporting `failed` for a write that succeeded makes a

@@ -6,12 +6,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"os"
 	"sort"
 	"strconv"
 
 	"github.com/spf13/cobra"
 
+	"zotio/internal/client"
 	"zotio/internal/mutation"
 )
 
@@ -75,32 +75,20 @@ func newItemsUpdateCmd(flags *rootFlags) *cobra.Command {
 				}
 			}
 
-			// Preview by default; apply only with --yes (or the resolved apply mode).
-			if mode := resolveMutationMode(flags); !mode.Apply {
-				return printJSONFiltered(cmd.OutOrStdout(), map[string]any{
-					"action":         "update",
-					"resource":       "items",
-					"key":            args[0],
-					"body":           body,
-					"status":         0,
-					"success":        false,
-					"dry_run":        true,
-					"preview_reason": mode.PreviewReason,
-				}, flags)
-			}
-
-			// Route through the write target and supply the version precondition Zotero
-			// requires for key-based writes (PATCH returns HTTP 428 without
-			// If-Unmodified-Since-Version). Mirrors items delete; the version GET and
-			// the PATCH hit the same library, so an item created on the web but not yet
-			// synced locally still resolves. An explicit version in a --stdin body is respected.
-			c, err := flags.newWriteClient()
-			if err != nil {
-				return err
+			// Route through the mutation engine so preview/apply share one stable
+			// envelope and applied runs expose journal.run_id. The precondition GET
+			// remains outside Apply and still comes from the write plane.
+			var writeClient *client.Client
+			if resolveMutationMode(flags).Apply {
+				var err error
+				writeClient, err = flags.newWriteClient()
+				if err != nil {
+					return err
+				}
 			}
 			patchHeaders := map[string]string{}
-			if _, hasVersion := body["version"]; !hasVersion {
-				_, version, err := c.GetWithVersion(path, nil)
+			if _, hasVersion := body["version"]; !hasVersion && writeClient != nil {
+				_, version, err := writeClient.GetWithVersion(path, nil)
 				if err != nil {
 					return classifyAPIError(err, flags)
 				}
@@ -110,14 +98,6 @@ func newItemsUpdateCmd(flags *rootFlags) *cobra.Command {
 				patchHeaders["If-Unmodified-Since-Version"] = strconv.Itoa(version)
 			}
 
-			// Only the PATCH itself is the write; routing just this call through the
-			// mutation engine journals it and mirror-replays it into the local
-			// SQLite cache for read-your-writes. The version precondition above stays
-			// outside the gated path since it is not a change to record and a failed
-			// read must abort with its own classifyAPIError result, not the engine's
-			// generic "mutation incomplete".
-			var data json.RawMessage
-			var statusCode int
 			var applyErr error
 			ops := []mutation.Op{{
 				ID:      "items.update",
@@ -125,82 +105,32 @@ func newItemsUpdateCmd(flags *rootFlags) *cobra.Command {
 				Kind:    "item_update",
 				Changes: itemsUpdateChanges(body),
 				Apply: func() (string, any, error) {
-					var patchErr error
-					data, statusCode, patchErr = c.PatchWithHeaders(path, body, patchHeaders)
-					if patchErr != nil {
-						applyErr = classifyAPIError(patchErr, flags)
+					if writeClient == nil {
+						return "failed", "no write client", fmt.Errorf("no write client")
+					}
+					_, statusCode, err := writeClient.PatchWithHeaders(path, body, patchHeaders)
+					if err != nil {
+						applyErr = classifyAPIError(err, flags)
+						return "failed", nil, applyErr
+					}
+					if statusCode < 200 || statusCode >= 300 {
+						applyErr = apiErr(fmt.Errorf("update returned HTTP %d", statusCode))
 						return "failed", nil, applyErr
 					}
 					return "applied", nil, nil
 				},
 			}}
-			if _, runErr := runMutation(cmd.Context(), flags, "items.update", ops); runErr != nil {
+			env, runErr := runMutation(cmd.Context(), flags, "items.update", ops)
+			if renderErr := renderMutation(cmd, flags, env, nil); renderErr != nil {
+				return renderErr
+			}
+			if runErr != nil {
 				if applyErr != nil {
 					return applyErr
 				}
 				return runErr
 			}
-			if wantsHumanTable(cmd.OutOrStdout(), flags) {
-				// Check if response contains an array (directly or wrapped in "data")
-				var items []map[string]any
-				if json.Unmarshal(data, &items) == nil && len(items) > 0 {
-					if err := printAutoTable(cmd.OutOrStdout(), items); err != nil {
-						fmt.Fprintf(os.Stderr, "warning: table rendering failed, falling back to JSON: %v\n", err)
-					} else {
-						return nil
-					}
-				} else {
-					var wrapped struct {
-						Data []map[string]any `json:"data"`
-					}
-					if json.Unmarshal(data, &wrapped) == nil && len(wrapped.Data) > 0 {
-						if err := printAutoTable(cmd.OutOrStdout(), wrapped.Data); err != nil {
-							fmt.Fprintf(os.Stderr, "warning: table rendering failed, falling back to JSON: %v\n", err)
-						} else {
-							return nil
-						}
-					}
-				}
-			}
-			if flags.asJSON || !isTerminal(cmd.OutOrStdout()) {
-				if flags.quiet {
-					return nil
-				}
-				// Apply --compact and --select to the API response before wrapping.
-				// --select wins when both are set: explicit field choice trumps the
-				// generic high-gravity allow-list. Otherwise --compact still applies
-				// when --agent is on but the user did not name fields.
-				filtered := data
-				if flags.selectFields != "" {
-					filtered = filterFields(filtered, flags.selectFields)
-				} else if flags.compact {
-					filtered = compactFields(filtered)
-				}
-				envelope := map[string]any{
-					"action":   "patch",
-					"resource": "items",
-					"path":     path,
-					"status":   statusCode,
-					"success":  statusCode >= 200 && statusCode < 300,
-				}
-				if flags.dryRun {
-					envelope["dry_run"] = true
-					envelope["status"] = 0
-					envelope["success"] = false
-				}
-				if len(filtered) > 0 {
-					var parsed any
-					if err := json.Unmarshal(filtered, &parsed); err == nil {
-						envelope["data"] = parsed
-					}
-				}
-				envelopeJSON, err := json.Marshal(envelope)
-				if err != nil {
-					return err
-				}
-				return printOutput(cmd.OutOrStdout(), json.RawMessage(envelopeJSON), true)
-			}
-			return printOutputWithFlags(cmd.OutOrStdout(), data, flags)
+			return nil
 		},
 	}
 	cmd.Flags().StringVar(&bodyTitle, "title", "", "Item title")

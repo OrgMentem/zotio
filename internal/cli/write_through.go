@@ -15,6 +15,7 @@ import (
 	"os"
 
 	"zotio/internal/mutation"
+	"zotio/internal/store"
 )
 
 // mirrorWriteThrough, when non-nil, updates the local mirror from applied writes.
@@ -34,6 +35,10 @@ func applyMirrorWriteThrough(env *mutation.Envelope) {
 	for _, op := range env.Plan.Operations {
 		changesByOp[op.ID] = op.Changes
 	}
+	kindByOp := make(map[string]string, len(env.Plan.Operations))
+	for _, op := range env.Plan.Operations {
+		kindByOp[op.ID] = op.Kind
+	}
 
 	db, err := openExistingStoreForWrite(context.Background(), "zotio")
 	if err != nil {
@@ -52,6 +57,26 @@ func applyMirrorWriteThrough(env *mutation.Envelope) {
 	for i := range env.Result.Items {
 		it := &env.Result.Items[i]
 		if it.Status != "applied" || it.Key == "" {
+			continue
+		}
+		// Trash, restore and permanent delete change an item's EXISTENCE or its
+		// trash membership rather than a replayable field, so applyChangeToItemData
+		// cannot express them and the generic replay below bails out. Handled here
+		// instead: without this, `items trash` could not see what `items delete`
+		// had just trashed, and a permanent delete left a row that offline reads
+		// still served and every count still included.
+		switch kindByOp[it.OpID] {
+		case "item_delete":
+			reapMirroredItem(db, it.Key)
+			continue
+		case "item_trash":
+			mirrorTrashedItem(db, qs, it.Key)
+			continue
+		case "item_restore":
+			// No longer trashed; drop the trash row so `items trash` stops listing it.
+			if err := db.ReapResource("items-trash", it.Key); err != nil {
+				warnMirrorUpdateFailed(it.Key, err)
+			}
 			continue
 		}
 		item, ok, err := replayItemChanges(qs, it.Key, changesByOp[it.OpID])
@@ -85,6 +110,42 @@ func applyMirrorWriteThrough(env *mutation.Envelope) {
 		if singleWrite {
 			it.Item = item
 		}
+	}
+}
+
+// reapMirroredItem removes an item the caller permanently deleted, from both the
+// item mirror and the trash mirror. Nothing did this before, so a row survived
+// its own object: offline reads served items that 404 on both planes, and every
+// mirror-derived count included them.
+func reapMirroredItem(db *store.Store, key string) {
+	if err := db.ReapResource("items", key); err != nil {
+		warnMirrorUpdateFailed(key, err)
+		return
+	}
+	// A permanently deleted item cannot be in the trash either.
+	if err := db.ReapResource("items-trash", key); err != nil {
+		warnMirrorUpdateFailed(key, err)
+	}
+}
+
+// mirrorTrashedItem copies an item's mirrored row into the trash mirror, so
+// `items trash` can see it before Zotero has synced the trash down.
+//
+// The write lands on api.zotero.org while reads go to the local desktop API,
+// which does not report the trash for ~15s. That window is precisely when a
+// caller runs `items trash` to confirm what it just did.
+func mirrorTrashedItem(db *store.Store, qs localQueryStore, key string) {
+	rows, err := qs.QueryRaw("SELECT data FROM resources WHERE resource_type='items' AND id=?", key)
+	if err != nil {
+		warnMirrorUpdateFailed(key, err)
+		return
+	}
+	if len(rows) == 0 {
+		return // not mirrored yet; the next sync establishes it
+	}
+	raw := json.RawMessage(sqlStringValue(rows[0]["data"]))
+	if err := db.UpsertKeyed("items-trash", []string{key}, []json.RawMessage{raw}); err != nil {
+		warnMirrorUpdateFailed(key, err)
 	}
 }
 

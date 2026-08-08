@@ -337,8 +337,46 @@ func TestImportPDFOnDuplicateCreatePreservesTodaysBehavior(t *testing.T) {
 	if result.Status != "recognized" || result.ItemKey != "NEW1" || result.AttachmentKey != "ATTNEW" {
 		t.Fatalf("result = %+v, want a normal recognized create despite the duplicate match", result)
 	}
+	if result.DOI != "10.1037/0021-9010.87.4.611" || result.DuplicateOf != "PHMIJWH3" || !strings.Contains(result.DuplicateNote, "created a new item") {
+		t.Fatalf("result = %+v, want create payload to record the matched DOI and existing key", result)
+	}
 	if f.saveStandaloneCalls != 1 {
 		t.Fatalf("saveStandaloneAttachment calls = %d, want 1 (create must still hit the connector)", f.saveStandaloneCalls)
+	}
+}
+
+func TestImportPDFOnAttachCandidateUsesExistingItem(t *testing.T) {
+	const existingKey = "PHMIJWH3"
+	fu := newFakeZoteroUpload(t, existingKey)
+	setUploadTestEnv(t, fu)
+
+	dir := t.TempDir()
+	pdfPath := filepath.Join(dir, "candidate.pdf")
+	if err := os.WriteFile(pdfPath, []byte(uploadFixturePDF), 0o600); err != nil {
+		t.Fatalf("write pdf: %v", err)
+	}
+	cmd := testApplyCmd()
+	opts := importPDFOptions{
+		OnDuplicate: "attach",
+		Duplicate: scanResult{
+			Status: "attach_candidate", ItemKey: existingKey, DOI: "10.1037/0021-9010.87.4.611",
+		},
+	}
+	op := importPDFOpWithOptions(cmd, &rootFlags{asJSON: true}, nil, pdfPath, filepath.Base(pdfPath), 1, opts)
+	if op.Kind != "import_pdf_duplicate_attach" {
+		t.Fatalf("kind = %q, want import_pdf_duplicate_attach", op.Kind)
+	}
+	status, reason, err := op.Apply()
+	if err != nil || status != "applied" {
+		t.Fatalf("apply attach_candidate = %q, %v; reason=%#v", status, err, reason)
+	}
+	result, ok := reason.(importPDFResult)
+	if !ok || result.ItemKey != existingKey || result.DuplicateOf != existingKey {
+		t.Fatalf("result = %#v, want attachment on existing item %s", reason, existingKey)
+	}
+	creates, uploads, registers := fu.snapshot()
+	if creates != 1 || uploads != 1 || registers != 1 || fu.parentSnapshot() != 0 {
+		t.Fatalf("upload protocol = creates:%d uploads:%d registers:%d parents:%d, want one attachment and no parent item", creates, uploads, registers, fu.parentSnapshot())
 	}
 }
 

@@ -74,23 +74,35 @@ func (e *JournalEntryNotFoundError) Error() string {
 }
 
 // BuildJournalEntry builds an entry from an applied envelope, joining each plan
-// operation with its result status. It returns ok=false when the envelope is not
-// an apply (no Result) so callers can skip recording previews.
+// operation with its result status and post-write key. It returns ok=false when
+// the envelope is not an apply (no Result) so callers can skip recording previews.
 func BuildJournalEntry(env Envelope, now time.Time) (JournalEntry, bool) {
 	if env.Result == nil {
 		return JournalEntry{}, false
 	}
-	status := make(map[string]string, len(env.Result.Items))
+	results := make(map[string]ResultItem, len(env.Result.Items))
 	for _, item := range env.Result.Items {
-		status[item.OpID] = item.Status
+		results[item.OpID] = item
 	}
 	ops := make([]JournalOp, 0, len(env.Plan.Operations))
 	for _, op := range env.Plan.Operations {
+		item := results[op.ID]
+		key := op.Key
+		// Creates do not know their key at plan time. Run adopts the key
+		// returned by Apply into ResultItem.Key; use that applied key in the
+		// journal so undo targets the object that was actually created. If the
+		// route could not confirm a Zotero key (for example, a connector
+		// correlation ID), keep it empty rather than recording the item type.
+		if op.Kind == "item_create" {
+			key = item.Key
+		} else if item.Key != "" {
+			key = item.Key
+		}
 		ops = append(ops, JournalOp{
 			ID:          op.ID,
-			Key:         op.Key,
+			Key:         key,
 			Kind:        op.Kind,
-			Status:      status[op.ID],
+			Status:      item.Status,
 			Destructive: op.Destructive,
 			Changes:     op.Changes,
 		})

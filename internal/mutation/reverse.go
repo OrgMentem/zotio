@@ -2,7 +2,8 @@
 // journal undo. Reversibility is decided per change
 // field: tag/collection membership inverts cleanly (Add<->Remove); field
 // overwrites (DOI, abstract), renames, merges, and deletions are refused because
-// the prior value was not (or cannot be) captured.
+// the prior value was not (or cannot be) captured. An item create is reversed
+// by moving the recorded created key to the trash.
 
 package mutation
 
@@ -48,11 +49,28 @@ type ReversalRefusal struct {
 // InverseOps derives the inverse operations for the applied, reversible ops in a
 // journal entry, and a refusal list for ops that cannot be safely reversed. Only
 // ops recorded with status "applied" are considered (a no-op/conflict/failed op
-// changed nothing). The returned ops carry inverted Changes but no Apply closure;
-// the caller attaches the apply step.
+// changed nothing). Item creates are safely reversed by trashing their recorded
+// key; membership changes carry inverted Changes but no Apply closure, which the
+// cli attaches.
 func InverseOps(entry JournalEntry) (inverse []Op, refused []ReversalRefusal) {
 	for _, op := range entry.Ops {
 		if op.Status != "applied" || len(op.Changes) == 0 {
+			continue
+		}
+		if op.Kind == "item_create" {
+			if op.Key == "" {
+				refused = append(refused, ReversalRefusal{
+					OpID: op.ID, Key: op.Key, Kind: op.Kind,
+					Reason: "created Zotero key was not recorded; inspect the library and run `zotio items delete <REAL_KEY> --yes`",
+				})
+				continue
+			}
+			inverse = append(inverse, Op{
+				ID:      "undo:" + op.ID,
+				Key:     op.Key,
+				Kind:    "undo.item_create",
+				Changes: []Change{{Field: "deleted", Add: true}},
+			})
 			continue
 		}
 		inv := make([]Change, 0, len(op.Changes))

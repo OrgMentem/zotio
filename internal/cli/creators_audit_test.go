@@ -74,7 +74,7 @@ func TestCreatorsAuditVariantTierClassification(t *testing.T) {
 }
 
 func TestCreatorsAuditCanonicalSelection(t *testing.T) {
-	t.Run("highest item count wins before fullness", func(t *testing.T) {
+	t.Run("fullest name wins before item frequency", func(t *testing.T) {
 		groups := buildCreatorVariantGroups([]*creatorOccurrence{
 			creatorAuditTestOccurrence("J. Count", "C1"),
 			creatorAuditTestOccurrence("J. Count", "C2"),
@@ -82,10 +82,10 @@ func TestCreatorsAuditCanonicalSelection(t *testing.T) {
 		})
 
 		group := creatorAuditRequireOnlyGroup(t, groups, creatorVariantTierInitials)
-		if group.Canonical != "J. Count" || group.CanonicalItemCount != 2 {
-			t.Fatalf("canonical = %q/%d, want J. Count/2", group.Canonical, group.CanonicalItemCount)
+		if group.Canonical != "John Count" || group.CanonicalItemCount != 1 {
+			t.Fatalf("canonical = %q/%d, want John Count/1", group.Canonical, group.CanonicalItemCount)
 		}
-		creatorAuditRequireAlias(t, group, "John Count", 1)
+		creatorAuditRequireAlias(t, group, "J. Count", 2)
 	})
 
 	t.Run("count tie chooses fuller longer form", func(t *testing.T) {
@@ -100,6 +100,139 @@ func TestCreatorsAuditCanonicalSelection(t *testing.T) {
 		}
 		creatorAuditRequireAlias(t, group, "J. Fuller", 1)
 	})
+}
+
+func TestCreatorsAuditCanonicalSelectionUsesCompleteRealNames(t *testing.T) {
+	for _, tc := range []struct {
+		short, full, want string
+	}{
+		{"M. H. Teicher", "Martin H. Teicher", "Martin H. Teicher"},
+		{"Mark Griffin", "Mark A. Griffin", "Mark A. Griffin"},
+		{"A. J. Rock", "Adam J. Rock", "Adam J. Rock"},
+	} {
+		t.Run(tc.full, func(t *testing.T) {
+			group := creatorAuditRequireOnlyGroup(t, buildCreatorVariantGroups([]*creatorOccurrence{
+				creatorAuditTestOccurrence(tc.short, "C1"),
+				creatorAuditTestOccurrence(tc.full, "C2"),
+			}), creatorVariantTierInitials)
+			if group.Canonical != tc.want {
+				t.Fatalf("canonical = %q, want %q", group.Canonical, tc.want)
+			}
+			creatorAuditRequireAlias(t, group, tc.short, 1)
+		})
+	}
+}
+
+func TestCreatorsAuditAmbiguousCandidatesAreReviewOnlyAndGated(t *testing.T) {
+	occurrences := make([]*creatorOccurrence, 0, 8)
+	for i, name := range []string{
+		"Zhengguang Liu", "Yangyang Liu", "Huaigui Liu", "Yang S. Liu",
+		"Qimin Liu", "Li Liu", "Jiaojian Wang", "Meifang Wang",
+	} {
+		occurrences = append(occurrences, creatorAuditTestOccurrence(name, fmt.Sprintf("X%d", i)))
+	}
+	groups := buildCreatorVariantGroups(occurrences)
+	for _, group := range groups {
+		if group.Tier != creatorVariantTierAmbiguous {
+			continue
+		}
+		for _, alias := range group.Aliases {
+			if alias.RenameCommand != "" {
+				t.Fatalf("ambiguous alias %q emitted runnable command %q", alias.Name, alias.RenameCommand)
+			}
+			if !alias.Unsafe {
+				t.Fatalf("ambiguous alias %q is not marked unsafe", alias.Name)
+			}
+		}
+	}
+	if shown := displayedCreatorVariantGroups(groups, false); len(shown) != 0 {
+		t.Fatalf("default displayed groups = %+v, want none", shown)
+	}
+	shown := displayedCreatorVariantGroups(groups, true)
+	if len(shown) == 0 {
+		t.Fatal("include-ambiguous displayed no review groups")
+	}
+}
+
+func TestCreatorsAuditMixedPlanCountsOnlySafeCommands(t *testing.T) {
+	names := []string{
+		"Zhengguang Liu", "Yangyang Liu", "Huaigui Liu", "Yang S. Liu",
+		"Qimin Liu", "Li Liu", "Jiaojian Wang", "Meifang Wang",
+		"M. H. Teicher", "Martin H. Teicher",
+		"Mark Griffin", "Mark A. Griffin",
+		"A. J. Rock", "Adam J. Rock",
+	}
+	occurrences := make([]*creatorOccurrence, 0, len(names))
+	for i, name := range names {
+		occurrences = append(occurrences, creatorAuditTestOccurrence(name, fmt.Sprintf("M%d", i)))
+	}
+	commands := 0
+	for _, group := range buildCreatorVariantGroups(occurrences) {
+		for _, alias := range group.Aliases {
+			if alias.RenameCommand != "" {
+				commands++
+			}
+		}
+	}
+	if commands != 3 {
+		t.Fatalf("mixed plan emitted %d commands, want 3 safe initials expansions", commands)
+	}
+}
+
+func TestCreatorsAuditIncludeAmbiguousFlagControlsReport(t *testing.T) {
+	names := []string{"Zhengguang Liu", "Yangyang Liu", "Huaigui Liu", "Yang S. Liu", "Qimin Liu", "Li Liu"}
+	items := make([]json.RawMessage, 0, len(names))
+	for i, name := range names {
+		items = append(items, creatorAuditTestItem(fmt.Sprintf("G%d", i), name, "", nil, creatorAuditNameCreator(name)))
+	}
+	creatorAuditSeedCommandStore(t, items...)
+
+	defaultReport, _ := creatorAuditRunJSONCommand(t)
+	for _, group := range defaultReport.Groups {
+		if group.Tier == creatorVariantTierAmbiguous {
+			t.Fatalf("default report exposed ambiguous group: %+v", group)
+		}
+	}
+	defaultFlags := &rootFlags{timeout: time.Second}
+	defaultCmd := newCreatorsAuditCmd(defaultFlags)
+	defaultCmd.SilenceErrors, defaultCmd.SilenceUsage = true, true
+	var defaultOut bytes.Buffer
+	defaultCmd.SetOut(&defaultOut)
+	defaultCmd.SetArgs(nil)
+	if err := defaultCmd.Execute(); err != nil {
+		t.Fatalf("creators audit default (text): %v", err)
+	}
+	if strings.Contains(defaultOut.String(), "zotio creators rename --from") {
+		t.Fatalf("default text report exposed a pasteable rename command: %q", defaultOut.String())
+	}
+	includedReport, _ := creatorAuditRunJSONCommand(t, "--include-ambiguous")
+	found := false
+	for _, group := range includedReport.Groups {
+		if group.Tier != creatorVariantTierAmbiguous {
+			continue
+		}
+		found = true
+		for _, alias := range group.Aliases {
+			if alias.RenameCommand != "" || !alias.Unsafe {
+				t.Fatalf("included ambiguous alias is runnable or unmarked: %+v", alias)
+			}
+		}
+	}
+	if !found {
+		t.Fatal("--include-ambiguous did not expose review-only group")
+	}
+	flags := &rootFlags{timeout: time.Second}
+	cmd := newCreatorsAuditCmd(flags)
+	cmd.SilenceErrors, cmd.SilenceUsage = true, true
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetArgs([]string{"--include-ambiguous"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("creators audit --include-ambiguous (text): %v", err)
+	}
+	if !strings.Contains(out.String(), "REVIEW ONLY") || strings.Contains(out.String(), "zotio creators rename --from") {
+		t.Fatalf("ambiguous text report was runnable or not visibly gated: %q", out.String())
+	}
 }
 
 func TestCreatorsAuditJSONContractIncludesGroupsAndFindingsEnvelope(t *testing.T) {
@@ -226,7 +359,7 @@ func TestCreatorsAuditORCIDSidecarAndEvidence(t *testing.T) {
 		t.Fatalf("CrossRef hits without --orcid = %d, want 0", got)
 	}
 
-	report, _ := creatorAuditRunJSONCommand(t, "--orcid")
+	report, _ := creatorAuditRunJSONCommand(t, "--orcid", "--include-ambiguous")
 	if got := hits.Load(); got != 4 {
 		t.Fatalf("CrossRef hits with --orcid = %d, want one lookup per DOI-bearing candidate item", got)
 	}

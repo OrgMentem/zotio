@@ -164,8 +164,12 @@ func importPDFOp(cmd *cobra.Command, flags *rootFlags, conn *connector.Client, p
 func importPDFOpWithOptions(cmd *cobra.Command, flags *rootFlags, conn *connector.Client, path, label string, index int, opts importPDFOptions) mutation.Op {
 	kind := "import_pdf"
 	changes := []mutation.Change{{Field: "pdf", Add: label}}
-	if opts.Duplicate.Status == "duplicate" {
-		changes = append(changes, mutation.Change{Field: "duplicate", Add: map[string]any{"item_key": opts.Duplicate.ItemKey, "doi": opts.Duplicate.DOI}})
+	if isImportPDFDuplicate(opts.Duplicate) {
+		changes = append(changes, mutation.Change{Field: "duplicate", Add: map[string]any{
+			"item_key": opts.Duplicate.ItemKey,
+			"doi":      opts.Duplicate.DOI,
+			"status":   opts.Duplicate.Status,
+		}})
 		switch opts.OnDuplicate {
 		case "skip":
 			kind = "import_pdf_duplicate_skip"
@@ -182,17 +186,19 @@ func importPDFOpWithOptions(cmd *cobra.Command, flags *rootFlags, conn *connecto
 		Kind:    kind,
 		Changes: changes,
 		Apply: func() (string, any, error) {
-			if opts.Duplicate.Status == "duplicate" {
+			if isImportPDFDuplicate(opts.Duplicate) {
 				switch opts.OnDuplicate {
 				case "skip":
+					pdfNote := "does not have a PDF"
+					if opts.Duplicate.Status == "duplicate" {
+						pdfNote = "already has a PDF"
+					}
 					result := importPDFResult{
-						File:        path,
-						Status:      "skipped_duplicate",
-						DOI:         opts.Duplicate.DOI,
-						DuplicateOf: opts.Duplicate.ItemKey,
-						DuplicateNote: fmt.Sprintf(
-							"DOI %s already has a PDF on item %s; not creating a duplicate (use --on-duplicate attach or create to override)",
-							opts.Duplicate.DOI, opts.Duplicate.ItemKey),
+						File:          path,
+						Status:        "skipped_duplicate",
+						DOI:           opts.Duplicate.DOI,
+						DuplicateOf:   opts.Duplicate.ItemKey,
+						DuplicateNote: fmt.Sprintf("DOI %s already has an item %s (%s); not creating a duplicate (use --on-duplicate attach or create to override)", opts.Duplicate.DOI, opts.Duplicate.ItemKey, pdfNote),
 					}
 					if opts.Collection != "" {
 						result.CollectionNote = "not filed: skipped duplicate, no new item was created"
@@ -221,7 +227,6 @@ func importPDFOpWithOptions(cmd *cobra.Command, flags *rootFlags, conn *connecto
 			}
 			activeConn := conn
 			if activeConn == nil {
-				var err error
 				activeConn, err = flags.newConnector()
 				if err != nil {
 					return "failed", nil, err
@@ -249,6 +254,11 @@ func importPDFOpWithOptions(cmd *cobra.Command, flags *rootFlags, conn *connecto
 					result.Status = "unrecognized"
 				}
 			}
+			if isImportPDFDuplicate(opts.Duplicate) && opts.OnDuplicate == "create" {
+				result.DOI = opts.Duplicate.DOI
+				result.DuplicateOf = opts.Duplicate.ItemKey
+				result.DuplicateNote = fmt.Sprintf("DOI %s matched existing item %s; created a new item because --on-duplicate create was requested", opts.Duplicate.DOI, opts.Duplicate.ItemKey)
+			}
 			resolveImportPDFKeys(flags, &result, filepath.Base(path), importedAfter)
 
 			if opts.Collection == "" {
@@ -267,6 +277,10 @@ func importPDFOpWithOptions(cmd *cobra.Command, flags *rootFlags, conn *connecto
 			return "applied", result, nil
 		},
 	}
+}
+
+func isImportPDFDuplicate(scan scanResult) bool {
+	return scan.ItemKey != "" && (scan.Status == "duplicate" || scan.Status == "attach_candidate")
 }
 
 // loadImportPDFDuplicateIndex builds the same by-DOI library index 'import

@@ -221,8 +221,14 @@ func Run(o Options, operation string, ops []Op) (Envelope, error) {
 			result.Summary.NotAttempted++
 			continue
 		}
-
 		item := ResultItem{OpID: op.ID, Key: op.Key}
+		if op.Kind == "item_create" {
+			// A create's planned key is often the item type or source
+			// identifier, not a Zotero key. Keep the applied result empty until
+			// Apply confirms the real key, so the journal cannot target a
+			// synthetic placeholder.
+			item.Key = ""
+		}
 		if len(op.Changes) == 0 {
 			item.Status = "no_op"
 			item.Reason = op.NoOpReason
@@ -246,11 +252,9 @@ func Run(o Options, operation string, ops []Op) (Envelope, error) {
 		}
 		item.Status = status
 		item.Reason = reason
-		// A create cannot know its key until the object exists, so Op.Key carries a
-		// placeholder (the item type) at plan time. When Apply reports the real key
-		// in its reason, adopt it — this runs before the journal entry is built, so
-		// the journal records a key `journal undo` can actually act on rather than
-		// something like "journalArticle".
+		// A create cannot know its key until the object exists. When Apply
+		// reports the real key in its reason, adopt it — this runs before the
+		// journal entry is built, so the journal can target the created object.
 		if detail, ok := reason.(map[string]any); ok {
 			if applied, ok := detail["key"].(string); ok && applied != "" {
 				item.Key = applied

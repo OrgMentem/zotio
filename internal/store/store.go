@@ -1935,3 +1935,76 @@ func isSafeJSONFieldName(s string) bool {
 	}
 	return true
 }
+
+// ReapResource removes a mirror row and its FTS document, for an object that no
+// longer exists upstream.
+//
+// Nothing reaped rows before: zotio's own permanent deletes left them behind, and
+// so did deletions made anywhere else, because the local desktop API does not
+// implement /deleted. Offline reads then served items that return 404 on both
+// planes, and every mirror-derived count drifted upward (933 top-level items
+// against 929 real ones).
+func (s *Store) ReapResource(resourceType, id string) error {
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	// Explicit rowid for FTS5 compatibility with modernc.org/sqlite.
+	if _, err := tx.Exec(`DELETE FROM resources_fts WHERE rowid = ?`, ftsRowID(resourceType, id)); err != nil {
+		return fmt.Errorf("fts cleanup for %s/%s: %w", resourceType, id, err)
+	}
+	if _, err := tx.Exec(`DELETE FROM resources WHERE resource_type = ? AND id = ?`, resourceType, id); err != nil {
+		return fmt.Errorf("reaping %s/%s: %w", resourceType, id, err)
+	}
+	if _, err := tx.Exec(`DELETE FROM pending_writes WHERE resource_type = ? AND id = ?`, resourceType, id); err != nil {
+		return fmt.Errorf("clearing pending write for %s/%s: %w", resourceType, id, err)
+	}
+	return tx.Commit()
+}
+
+// ResourceIDs lists every mirrored row id for a resource type, for the
+// mark-and-sweep a full sync performs.
+func (s *Store) ResourceIDs(resourceType string) (map[string]bool, error) {
+	rows, err := s.db.Query(`SELECT id FROM resources WHERE resource_type = ?`, resourceType)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	ids := map[string]bool{}
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		ids[id] = true
+	}
+	return ids, rows.Err()
+}
+
+// SweepMissing reaps every mirrored row of a resource type whose id is not in
+// seen, returning how many it removed.
+//
+// Only safe after a COMPLETE pass over the resource: an incremental sync sees
+// only what changed, so anything absent is unchanged rather than deleted. The
+// local desktop API implements no /deleted feed, so a full pass is the only way
+// zotio can learn that an object it mirrors is gone.
+func (s *Store) SweepMissing(resourceType string, seen map[string]bool) (int, error) {
+	existing, err := s.ResourceIDs(resourceType)
+	if err != nil {
+		return 0, err
+	}
+	reaped := 0
+	for id := range existing {
+		if seen[id] {
+			continue
+		}
+		if err := s.ReapResource(resourceType, id); err != nil {
+			return reaped, err
+		}
+		reaped++
+	}
+	return reaped, nil
+}
