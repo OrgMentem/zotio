@@ -39,7 +39,7 @@ func TestSkillInvocationsResolve(t *testing.T) {
 	invocations := skillInvocations(mustRead(t, "SKILL.md"), root)
 	// Set just below the current parse count. This is deliberately a coverage
 	// floor: a parser regression must not silently make the guard vacuous.
-	if len(invocations) < 113 {
+	if len(invocations) < 121 {
 		t.Fatalf("parsed only %d command invocations from SKILL.md — the parser, not the skill, shrank", len(invocations))
 	}
 	t.Logf("parsed %d command invocations", len(invocations))
@@ -96,10 +96,6 @@ func TestSkillInvocationsResolve(t *testing.T) {
 	}
 }
 
-// skillAbsentFlags are flags SKILL.md names in order to say they do NOT exist.
-// Keep this inverted assertion: adding one to the CLI must update that sentence.
-var skillAbsentFlags = map[string]bool{"agent": true}
-
 // TestSkillFlagMentionsResolve checks bare flag spans in capability bullets,
 // paragraphs, and recipes. A flag is checked against the commands named by its
 // own bullet, or the union of commands named by the surrounding section.
@@ -118,12 +114,12 @@ func TestSkillFlagMentionsResolve(t *testing.T) {
 			if !ok {
 				continue
 			}
-			if skillAbsentFlags[name] && skillSaysAbsentFlag(block.text, flag) {
-				if known[name] {
-					t.Errorf("SKILL.md says %s does not exist, but the CLI now declares it: %q", flag, skillHead(block.text))
-				}
-				continue
-			}
+			// papio's port carries an inverted "this flag must NOT exist"
+			// assertion for sentences denying a flag. zotio makes no such
+			// claim — it denies `--agent`'s write semantics, not its
+			// existence — and inferring denial from prose misfires on
+			// ordinary phrasing like "with no --keys". Reinstate the
+			// explicit map from papio if an absence claim ever appears.
 			checked++
 			if len(contexts) == 0 {
 				if !known[name] {
@@ -146,7 +142,7 @@ func TestSkillFlagMentionsResolve(t *testing.T) {
 			}
 		}
 	}
-	if checked < 67 {
+	if checked < 70 {
 		t.Fatalf("checked only %d bare flag mentions — the block parser stopped matching", checked)
 	}
 	t.Logf("checked %d bare flag mentions", checked)
@@ -541,28 +537,6 @@ func skillHead(item string) string {
 		return item[:72] + "…"
 	}
 	return item
-}
-
-// skillSaysAbsentFlag distinguishes the sentence denying a flag from ordinary
-// positive mentions. Zotio discusses --agent repeatedly while denying only its
-// write semantics, so every occurrence must not be treated as an absence claim.
-func skillSaysAbsentFlag(item, flag string) bool {
-	lower := strings.ToLower(strings.ReplaceAll(item, "`", ""))
-	flag = strings.ToLower(flag)
-	for _, phrase := range []string{
-		"no " + flag,
-		"without " + flag,
-		"does not have " + flag,
-		"doesn't have " + flag,
-		flag + " does not exist",
-		flag + " doesn't exist",
-		flag + " does not exist as",
-	} {
-		if strings.Contains(lower, phrase) {
-			return true
-		}
-	}
-	return false
 }
 
 func skillFlagName(token string) (string, bool) {

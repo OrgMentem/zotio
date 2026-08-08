@@ -237,10 +237,25 @@ Notable changes to zotio. Format follows [Keep a Changelog](https://keepachangel
   does not implement Web-only `/items/new`; the command now builds the faithful
   blank template from the local global schema endpoints, without credentials or
   a Web API round trip, and keeps the read envelope's `.results` array contract.
+- **`items new` works on its default connector route again.** Every bare create
+  failed with `connector saveItems: HTTP 500`; only `--via web` worked. Bisecting
+  all 35 template fields against `/connector/saveItems` isolated exactly one:
+  Zotero's item saver rejects a creator whose name fields are all empty, which is
+  precisely the placeholder `schema new-item-template` emits and `items new` sends
+  verbatim (creators omitted → 201, `[]` → 201, both names empty → 500, lastName
+  only → 201). Creator entries with no name content are now dropped before the
+  save, covering every caller; the template stays faithful to Zotero's own
+  `/items/new` shape, since the constraint belongs at the transport.
+- **A connector create reports the key it created.** Only the error-recovery path
+  resolved the real Zotero key, so a *successful* connector create returned an
+  empty key, the journal recorded nothing actionable, and `journal undo` had no
+  item to trash. The key is now resolved on success too.
 - **`items new` no longer sends an empty connector URI.** Zotero's
   `/connector/saveItems` passes `uri` into its item saver even for metadata-only
-  creates; the schema template has no source page, so the empty URI triggered
-  HTTP 500. Connector saves now send a valid fallback URI (or the item's DOI/URL).
+  creates, and the schema template has no source page. Connector saves now send a
+  valid fallback URI (or the item's DOI/URL). This was originally believed to be
+  the cause of the HTTP 500 above; it was not, but the empty URI was wrong on its
+  own terms.
 
 ### Changed
 - **Tests can no longer write to the developer's real zotio data directory.** The
