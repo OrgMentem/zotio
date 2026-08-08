@@ -4,6 +4,14 @@ Notable changes to zotio. Format follows [Keep a Changelog](https://keepachangel
 
 ## [Unreleased]
 ### Fixed
+- **`items trash` shows what you just trashed.** Writes route to
+  `api.zotero.org`, but the command read the Zotero desktop local API, which does
+  not learn about a trash until Zotero syncs it down — it returned an empty trash
+  for an item the web plane already reported as deleted. So immediately after
+  `items delete`, `items trash` was blind, and `--data-source local` (normally the
+  *less* current source) was the only one that was right. It now unions the two,
+  de-duplicated by key, so items trashed in the Zotero UI and items trashed by
+  zotio both appear, and says on stderr when the mirror supplied any.
 - **An empty list response is no longer cached.** Reads hit the local desktop API
   while writes route to `api.zotero.org`, so for a few seconds after a write a
   filtered query legitimately returns nothing — and caching that pinned the

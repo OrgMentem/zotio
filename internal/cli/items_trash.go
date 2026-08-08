@@ -3,6 +3,7 @@
 package cli
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -35,6 +36,16 @@ func newItemsTrashCmd(flags *rootFlags) *cobra.Command {
 			data, prov, err := resolveRead(cmd.Context(), c, flags, "items-trash", true, path, params, nil)
 			if err != nil {
 				return classifyAPIError(err, flags)
+			}
+			// The read plane does not learn that an item was trashed until Zotero
+			// syncs the write down from zotero.org, and it returned an empty trash
+			// for items the web plane already reported as deleted. So immediately
+			// after `items delete`, this command could not show what was just
+			// trashed — while the mirror, normally the less current source, could.
+			// Union the two: live catches items trashed in the Zotero UI, the mirror
+			// catches zotio's own trashes that have not propagated yet.
+			if flags.dataSource != "local" {
+				data, prov = unionMirroredTrash(cmd.Context(), cmd, flags, data, prov)
 			}
 			// Honor --limit when the API accepts but ignores ?limit=N.
 			data = truncateJSONArray(data, flagLimit)
@@ -76,4 +87,58 @@ func newItemsTrashCmd(flags *rootFlags) *cobra.Command {
 	cmd.Flags().IntVar(&flagStart, "start", 0, "Pagination offset (zero-based)")
 
 	return cmd
+}
+
+// unionMirroredTrash appends items the local mirror lists as trashed but the read
+// plane has not reported yet, de-duplicated by key.
+//
+// Neither source alone is right: the read plane (the Zotero desktop local API)
+// only learns about a trash once Zotero syncs it down from zotero.org, and the
+// mirror only knows what the last sync or a write-through recorded. The union is
+// the honest answer, and it self-heals as the read plane catches up.
+//
+// Best-effort: an unreadable mirror leaves the live result untouched.
+func unionMirroredTrash(ctx context.Context, cmd *cobra.Command, flags *rootFlags, live json.RawMessage, prov DataProvenance) (json.RawMessage, DataProvenance) {
+	var liveItems []json.RawMessage
+	if err := json.Unmarshal(live, &liveItems); err != nil {
+		// Not a list (an error envelope, say); nothing to union.
+		return live, prov
+	}
+	seen := make(map[string]bool, len(liveItems))
+	for _, entry := range liveItems {
+		if key := jsonStringField(entry, "key"); key != "" {
+			seen[key] = true
+		}
+	}
+
+	mirrored, _, err := resolveLocal(ctx, "items-trash", true, "/items/trash", map[string]string{}, "trash_reconciliation")
+	if err != nil {
+		return live, prov
+	}
+	var mirroredItems []json.RawMessage
+	if err := json.Unmarshal(mirrored, &mirroredItems); err != nil {
+		return live, prov
+	}
+
+	added := 0
+	for _, entry := range mirroredItems {
+		key := jsonStringField(entry, "key")
+		if key == "" || seen[key] {
+			continue
+		}
+		seen[key] = true
+		liveItems = append(liveItems, entry)
+		added++
+	}
+	if added == 0 {
+		return live, prov
+	}
+	merged, err := json.Marshal(liveItems)
+	if err != nil {
+		return live, prov
+	}
+	fmt.Fprintf(cmd.ErrOrStderr(),
+		"note: %d trashed item(s) came from the local mirror; the Zotero read API has not caught up with them yet\n", added)
+	prov.Source = "live+local"
+	return merged, prov
 }
