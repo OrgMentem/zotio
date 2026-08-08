@@ -33,6 +33,16 @@ func newItemsAddToCollectionCmd(flags *rootFlags) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "add-to-collection <itemKey>",
 		Short: "Add an item to a named collection, creating it when needed",
+		Long: `Add an item to a top-level collection identified by name, creating the
+collection when no collection of that name exists.
+
+Prefer this when you know the collection by name. When you already have the
+collection key, or need to move many items at once or remove a membership, use
+'zotio items move --to <collectionKey>' (also --from, --keys-from); this command
+resolves the name and then delegates the membership change to it.
+
+Apply mode journals two writes for one invocation when the collection has to be
+created — a collection create plus an item move — because two writes happen.`,
 		Annotations: map[string]string{
 			"mcp:read-only":                    "false",
 			"zotio:destructive":                "false",

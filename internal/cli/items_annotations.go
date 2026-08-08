@@ -42,7 +42,7 @@ func newItemsAnnotationsCmd(flags *rootFlags) *cobra.Command {
 				}
 			}
 			printProvenance(cmd, countResultItems(data), prov)
-			if flags.asJSON || !isTerminal(cmd.OutOrStdout()) {
+			if wantsJSONEnvelope(cmd.OutOrStdout(), flags) {
 				filtered := data
 				if flags.selectFields != "" {
 					filtered = filterFields(filtered, flags.selectFields)

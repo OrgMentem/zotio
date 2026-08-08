@@ -346,7 +346,7 @@ func TestRecorderStampsWorkflowRunID(t *testing.T) {
 	activeWorkflowRunID = "workflow-1"
 	t.Cleanup(func() { activeWorkflowRunID = savedWorkflowRunID })
 
-	if err := recordMutationJournal(mutation.Envelope{
+	env := mutation.Envelope{
 		Operation: "items.tags.add",
 		Mode:      "apply",
 		OK:        true,
@@ -357,8 +357,21 @@ func TestRecorderStampsWorkflowRunID(t *testing.T) {
 			Summary: mutation.ResultSummary{Attempted: 1, Applied: 1},
 			Items:   []mutation.ResultItem{{OpID: "o1", Key: "K1", Status: "applied"}},
 		},
-	}); err != nil {
+	}
+	if err := recordMutationJournal(&env); err != nil {
 		t.Fatalf("record workflow run: %v", err)
+	}
+	// The run ID must come back through the envelope: without it an agent cannot
+	// undo its own write from the write's own response.
+	journal, ok := env.Journal.(map[string]any)
+	if !ok {
+		t.Fatalf("env.Journal = %#v, want the recorded run ID", env.Journal)
+	}
+	if runID, _ := journal["run_id"].(string); runID == "" {
+		t.Fatalf("journal = %#v, want a non-empty run_id", journal)
+	}
+	if journal["workflow_run_id"] != "workflow-1" {
+		t.Errorf("journal workflow_run_id = %v, want workflow-1", journal["workflow_run_id"])
 	}
 
 	entries, err := mutation.ListEntries(helpersTestJournalDir(t))

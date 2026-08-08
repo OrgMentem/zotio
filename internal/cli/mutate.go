@@ -53,7 +53,7 @@ func runMutation(ctx context.Context, flags *rootFlags, operation string, ops []
 		mirrorWriteThrough(&env)
 	}
 	if mutationJournalRecorder != nil {
-		if journalErr := mutationJournalRecorder(env); journalErr != nil {
+		if journalErr := mutationJournalRecorder(&env); journalErr != nil {
 			env.Warnings = append(env.Warnings, fmt.Sprintf("applied but not journaled: %v (journal undo unavailable for this run)", journalErr))
 			err = degradedErr(fmt.Errorf("%s: %d warnings; results incomplete", operation, len(env.Warnings)))
 		}

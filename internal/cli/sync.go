@@ -97,11 +97,20 @@ func newSyncCmd(flags *rootFlags) *cobra.Command {
 
 	cmd := &cobra.Command{
 		Use:   "sync",
-		Short: "Sync API data to local SQLite for offline search and analysis",
+		Short: "Mirror the Zotero read API into local SQLite for offline search and analysis",
 		// Sync populates the store; it must never be gated by a synced-store preflight.
 		Annotations: map[string]string{"zotio:preflight": "skip"},
-		Long: `Sync data from the API into a local SQLite database. Supports resumable
-incremental sync (only fetches new data since last sync) and full resync.
+		Long: `Mirror data from the Zotero read API into a local SQLite database. One
+direction only: it pulls into the mirror and never writes to Zotero.
+
+The read API is normally the Zotero desktop local API (http://localhost:23119),
+NOT api.zotero.org — so this mirrors what the desktop app currently holds, which
+lags your cloud library until Zotero itself syncs. 'zotio doctor' names the plane
+each cursor came from under cache.resources[].cursor_source. Version numbers are
+per-plane, so changing the configured base URL discards the cursor and resyncs.
+
+Supports resumable incremental sync (only fetches new data since the last sync)
+and full resync (--full, which also discards stored per-row versions).
 Once synced, use the 'search' command for instant full-text search.
 
 Exit codes & warnings:
@@ -287,6 +296,13 @@ Exit codes & warnings:
 
 			elapsed := time.Since(started)
 			totalResources := successCount + warnCount + errCount
+			// Rows holding a write the read plane has not reported back yet. Sync
+			// preserves them rather than rolling them back, but the gap between
+			// the two planes is worth stating: it closes when Zotero syncs down.
+			pendingWrites, pendingErr := db.PendingWriteCount()
+			if pendingErr != nil {
+				pendingWrites = 0
+			}
 			if humanFriendly {
 				if fulltextErr != nil {
 					fmt.Fprintf(os.Stderr, "Sync incomplete: fulltext: %v\n", fulltextErr)
@@ -297,25 +313,30 @@ Exit codes & warnings:
 					fmt.Fprintf(os.Stderr, "Sync complete: %d records across %d resources (%.1fs)\n",
 						totalSynced, totalResources, elapsed.Seconds())
 				}
+				if pendingWrites > 0 {
+					fmt.Fprintf(os.Stderr, "  %d local write(s) not yet confirmed by Zotero; kept in the mirror until it syncs them down\n", pendingWrites)
+				}
 			} else {
 				emitSyncEvent(ctx, struct {
-					Event        string `json:"event"`
-					TotalRecords int    `json:"total_records"`
-					Resources    int    `json:"resources"`
-					Success      int    `json:"success"`
-					Warned       int    `json:"warned"`
-					Errored      int    `json:"errored"`
-					FulltextOK   bool   `json:"fulltext_ok"`
-					DurationMS   int64  `json:"duration_ms"`
+					Event         string `json:"event"`
+					TotalRecords  int    `json:"total_records"`
+					Resources     int    `json:"resources"`
+					Success       int    `json:"success"`
+					Warned        int    `json:"warned"`
+					Errored       int    `json:"errored"`
+					PendingWrites int    `json:"pending_writes"`
+					FulltextOK    bool   `json:"fulltext_ok"`
+					DurationMS    int64  `json:"duration_ms"`
 				}{
-					Event:        "sync_summary",
-					TotalRecords: totalSynced,
-					Resources:    totalResources,
-					Success:      successCount,
-					Warned:       warnCount,
-					Errored:      errCount,
-					FulltextOK:   fulltextErr == nil,
-					DurationMS:   elapsed.Milliseconds(),
+					Event:         "sync_summary",
+					TotalRecords:  totalSynced,
+					Resources:     totalResources,
+					Success:       successCount,
+					Warned:        warnCount,
+					Errored:       errCount,
+					PendingWrites: pendingWrites,
+					FulltextOK:    fulltextErr == nil,
+					DurationMS:    elapsed.Milliseconds(),
 				})
 			}
 
@@ -365,7 +386,7 @@ Exit codes & warnings:
 func syncFulltext(ctx context.Context, c *client.Client, db *store.Store, full bool) error {
 	cursor := 0
 	if !full {
-		v, gerr := db.GetLibraryVersion("fulltext")
+		v, gerr := db.GetLibraryVersion("fulltext", c.BaseURL)
 		if gerr != nil {
 			return fmt.Errorf("reading fulltext checkpoint: %w", gerr)
 		}
@@ -417,7 +438,7 @@ func syncFulltext(ctx context.Context, c *client.Client, db *store.Store, full b
 		}
 	}
 	if newVer > cursor {
-		if err := db.SaveLibraryVersion("fulltext", newVer); err != nil {
+		if err := db.SaveLibraryVersion("fulltext", c.BaseURL, newVer); err != nil {
 			return fmt.Errorf("persisting fulltext checkpoint: %w", err)
 		}
 	}
@@ -430,6 +451,9 @@ type syncHTTPClient interface {
 	GetWithVersion(string, map[string]string) (json.RawMessage, int, error)
 	GetWithVersionContext(context.Context, string, map[string]string) (json.RawMessage, int, error)
 	RateLimit() float64
+	// Plane identifies which Zotero API this client reads from. Version cursors
+	// are per-plane, so the checkpoint is stored qualified by it.
+	Plane() string
 }
 
 func syncClientForResource(c syncHTTPClient, resource string) syncHTTPClient {
@@ -490,12 +514,32 @@ func syncResource(ctx context.Context, c syncHTTPClient, db *store.Store, resour
 	sinceParam := determineSinceParam()
 	effectiveSince := sinceVersion
 	if effectiveSince == 0 && !full {
-		v, versionErr := db.GetLibraryVersion(resource)
+		v, versionErr := db.GetLibraryVersion(resource, c.Plane())
 		if versionErr != nil {
 			return syncResult{Resource: resource, Err: fmt.Errorf("reading library-version checkpoint for %s: %w", resource, versionErr), Duration: time.Since(started)}
 		}
 		if v > 0 {
 			effectiveSince = v
+		}
+	}
+	// Row upserts are version-monotonic, which is correct only when both versions
+	// come from the same plane. A row holding a web-API version (11973) rejects
+	// every local-plane row (version 65) as "older" and never refreshes, so the
+	// mirror stays frozen. Strip the stored versions when they cannot be trusted:
+	//   - the plane changed, making them incomparable; or
+	//   - --full was requested, which means "re-fetch authoritatively" and must
+	//     not be silently downgraded to "keep whatever has the bigger number".
+	clearVersions := full
+	if !clearVersions {
+		planeChanged, planeErr := db.PlaneChanged(resource, c.Plane())
+		if planeErr != nil {
+			return syncResult{Resource: resource, Err: fmt.Errorf("checking cursor plane for %s: %w", resource, planeErr), Duration: time.Since(started)}
+		}
+		clearVersions = planeChanged
+	}
+	if clearVersions {
+		if clearErr := db.ClearResourceVersions(canonicalStoreResource(resource)); clearErr != nil {
+			return syncResult{Resource: resource, Err: fmt.Errorf("clearing stale-plane versions for %s: %w", resource, clearErr), Duration: time.Since(started)}
 		}
 	}
 	libraryVersion := 0
@@ -835,7 +879,7 @@ func syncResource(ctx context.Context, c syncHTTPClient, db *store.Store, resour
 			return syncResult{Resource: resource, Count: totalCount, Err: fmt.Errorf("persisting sync checkpoint: %w", serr), Duration: time.Since(started)}
 		}
 		if libraryVersion > 0 {
-			if serr := db.SaveLibraryVersion(resource, libraryVersion); serr != nil {
+			if serr := db.SaveLibraryVersion(resource, c.Plane(), libraryVersion); serr != nil {
 				return syncResult{Resource: resource, Count: totalCount, Err: fmt.Errorf("persisting library-version checkpoint: %w", serr), Duration: time.Since(started)}
 			}
 		}
@@ -1114,6 +1158,9 @@ var discriminatorDispatchers = map[string]discriminatorDispatch{}
 
 func upsertResourceBatch(db *store.Store, resource string, items []json.RawMessage) (int, int, error) {
 	storeResource := canonicalStoreResource(resource)
+	// Rows pulled from the read plane predate any write the read plane has not
+	// caught up with yet; merge those writes back in before they are stored.
+	items, _ = reconcilePendingWrites(db, storeResource, items)
 	if _, ok := discriminatorDispatchers[resource]; !ok {
 		// store.UpsertBatch has its own generated ID map;
 		// key resources with sync-local overrides here so tags and global schema

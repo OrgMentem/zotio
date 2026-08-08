@@ -569,30 +569,82 @@ func collectCacheReport(ctx context.Context, staleAfterSpec string) map[string]a
 		}
 	}
 
-	rows, qerr := s.DB().Query(`SELECT resource_type, COALESCE(total_count, 0), last_synced_at FROM sync_state ORDER BY resource_type`)
+	var warnings []string
+
+	// Rows carrying a write that landed on the write plane but that the read
+	// plane has not reported back yet. Sync preserves them; surfacing the count
+	// makes the gap between the two planes visible instead of invisible.
+	if pending, perr := s.PendingWriteCount(); perr == nil && pending > 0 {
+		report["pending_writes"] = pending
+	}
+
+	// `rows` must report what the store actually holds. sync_state.total_count is
+	// the last run's fetched delta, so reporting it as "rows" made a fully
+	// hydrated cache read as catastrophically empty whenever the last sync was a
+	// no-op delta. Count `resources` instead and keep the delta as `last_delta`.
+	storeRows := map[string]int64{}
+	if countRows, cerr := s.DB().Query(`SELECT resource_type, COUNT(*) FROM resources GROUP BY resource_type`); cerr == nil {
+		for countRows.Next() {
+			var rtype string
+			var n int64
+			if err := countRows.Scan(&rtype, &n); err != nil {
+				warnings = append(warnings, fmt.Sprintf("counting %s rows: %v", rtype, err))
+				continue
+			}
+			storeRows[rtype] = n
+		}
+		if err := countRows.Err(); err != nil {
+			warnings = append(warnings, fmt.Sprintf("counting resource rows: %v", err))
+		}
+		countRows.Close()
+	}
+
+	rows, qerr := s.DB().Query(`SELECT resource_type, COALESCE(total_count, 0), last_synced_at,
+		COALESCE(library_version, 0), COALESCE(cursor_source, ''), last_changed_at
+		FROM sync_state ORDER BY resource_type`)
 	if qerr != nil {
 		// sync_state may not exist on a fresh DB that has migrated but not
 		// yet had any sync runs — treat as unknown rather than error.
 		report["status"] = "unknown"
 		report["hint"] = "No sync state recorded; run 'zotio sync' to populate."
+		// Any warning the row-count query already produced is still diagnostic
+		// information; returning here must not discard it.
+		if len(warnings) > 0 {
+			report["warnings"] = warnings
+		}
 		return report
 	}
 	defer rows.Close()
 
 	var resources []map[string]any
-	var warnings []string
 	fresh := true
 	haveAny := false
 	oldest := time.Duration(0)
 	for rows.Next() {
 		var rtype string
-		var count int64
-		var lastSynced sql.NullTime
-		if err := rows.Scan(&rtype, &count, &lastSynced); err != nil {
+		var count, libraryVersion int64
+		var cursorSource string
+		var lastSynced, lastChanged sql.NullTime
+		if err := rows.Scan(&rtype, &count, &lastSynced, &libraryVersion, &cursorSource, &lastChanged); err != nil {
 			warnings = append(warnings, fmt.Sprintf("reading sync_state row: %v", err))
 			continue
 		}
-		r := map[string]any{"type": rtype, "rows": count}
+		r := map[string]any{"type": rtype, "rows": storeRows[rtype], "last_delta": count}
+		if libraryVersion > 0 {
+			// The cursor and the plane that issued it: a cursor from the wrong
+			// plane matches nothing, which used to freeze the mirror invisibly.
+			r["library_version"] = libraryVersion
+			if cursorSource != "" {
+				r["cursor_source"] = cursorSource
+			}
+		}
+		if lastChanged.Valid {
+			r["last_changed_at"] = lastChanged.Time.UTC().Format(time.RFC3339)
+			r["data_age"] = time.Since(lastChanged.Time).Round(time.Minute).String()
+		} else {
+			// Polls have run but never returned a record.
+			r["data_age"] = "never"
+		}
 		if lastSynced.Valid {
 			haveAny = true
 			r["last_synced_at"] = lastSynced.Time.UTC().Format(time.RFC3339)
@@ -663,6 +715,9 @@ func renderCacheReport(w io.Writer, rep map[string]any) {
 	if v, ok := rep["oldest_age"]; ok {
 		fmt.Fprintf(w, "    oldest_age: %v\n", v)
 	}
+	if v, ok := rep["pending_writes"]; ok {
+		fmt.Fprintf(w, "    pending_writes: %v (local writes Zotero has not synced down yet)\n", v)
+	}
 	if resourcesAny, ok := rep["resources"]; ok {
 		if resources, ok := resourcesAny.([]map[string]any); ok && len(resources) > 0 {
 			fmt.Fprintf(w, "    resources:\n")
@@ -670,7 +725,16 @@ func renderCacheReport(w io.Writer, rep map[string]any) {
 				rtype, _ := r["type"].(string)
 				rows := r["rows"]
 				staleness, _ := r["staleness"].(string)
-				fmt.Fprintf(w, "      - %s: %v rows, %s\n", rtype, rows, staleness)
+				line := fmt.Sprintf("      - %s: %v rows, %s", rtype, rows, staleness)
+				if delta, ok := r["last_delta"].(int64); ok && delta > 0 {
+					line += fmt.Sprintf(" (last delta: %d)", delta)
+				}
+				// The poll age alone read as healthy for a mirror that had not
+				// received a record in weeks; name when data last actually moved.
+				if dataAge, ok := r["data_age"].(string); ok && dataAge != staleness {
+					line += fmt.Sprintf(" [data %s]", dataAge)
+				}
+				fmt.Fprintln(w, line)
 			}
 		}
 	}

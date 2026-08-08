@@ -15,6 +15,9 @@ import (
 )
 
 type itemsAuditSummary struct {
+	// TopLevelItems is the denominator every count below is measured against.
+	// Without it the counts read as fractions of an unstated whole.
+	TopLevelItems   int       `json:"top_level_items"`
 	MissingPDF      int       `json:"missing_pdf"`
 	MissingAbstract int       `json:"missing_abstract"`
 	MissingDOI      int       `json:"missing_doi"`
@@ -210,6 +213,16 @@ func itemsAuditFindingAction(kind string) *RecommendedAction {
 	}
 }
 
+// itemsAuditScopePredicate restricts an audit to the rows an audit can actually
+// score: top-level bibliographic items. Attachments, notes and annotations
+// cannot carry an abstract, a DOI or tags, so counting them made every
+// denominator meaningless — a 928-item library reported 4018 "missing tags",
+// mostly PDFs. Uses the indexed parent_key/item_type columns and matches the
+// top-level predicate in collections_gaps.go: the store persists top-level items
+// with parent_key = ”, not NULL.
+const itemsAuditScopePredicate = `COALESCE(parent_key, '') = ''
+	AND item_type NOT IN ('attachment', 'note', 'annotation')`
+
 func queryItemsAuditSummary(db localQueryStore) (itemsAuditSummary, error) {
 	missingPDF, err := queryMissingPDFCount(db)
 	if err != nil {
@@ -222,24 +235,28 @@ func queryItemsAuditSummary(db localQueryStore) (itemsAuditSummary, error) {
 	// indexed item_type column.
 	rows, err := db.QueryRaw(`
 SELECT
+	COUNT(*) AS top_level_items,
 	COUNT(CASE WHEN json_extract(data, '$.data.abstractNote') IS NULL OR TRIM(json_extract(data, '$.data.abstractNote')) = '' THEN 1 END) AS missing_abstract,
 	COUNT(CASE WHEN item_type IN ('journalArticle', 'conferencePaper', 'preprint')
 		AND (json_extract(data, '$.data.DOI') IS NULL OR TRIM(json_extract(data, '$.data.DOI')) = '') THEN 1 END) AS missing_doi,
 	COUNT(CASE WHEN COALESCE(json_array_length(json_extract(data, '$.data.tags')), 0) = 0 THEN 1 END) AS missing_tags,
-	COUNT(CASE WHEN json_extract(data, '$.data.itemType') NOT IN ('attachment', 'annotation', 'note') AND ` + citationIncompletePredicate + ` THEN 1 END) AS missing_citation
+	COUNT(CASE WHEN ` + citationIncompletePredicate + ` THEN 1 END) AS missing_citation
 FROM resources
-WHERE resource_type = 'items'`)
+WHERE resource_type = 'items'
+	AND ` + itemsAuditScopePredicate)
 	if err != nil {
 		return itemsAuditSummary{}, err
 	}
-	var missingAbstract, missingDOI, missingTags, missingCitation int
+	var topLevel, missingAbstract, missingDOI, missingTags, missingCitation int
 	if len(rows) > 0 {
+		topLevel = sqlIntValue(rows[0]["top_level_items"])
 		missingAbstract = sqlIntValue(rows[0]["missing_abstract"])
 		missingDOI = sqlIntValue(rows[0]["missing_doi"])
 		missingTags = sqlIntValue(rows[0]["missing_tags"])
 		missingCitation = sqlIntValue(rows[0]["missing_citation"])
 	}
 	return itemsAuditSummary{
+		TopLevelItems:   topLevel,
 		MissingPDF:      missingPDF,
 		MissingAbstract: missingAbstract,
 		MissingDOI:      missingDOI,
@@ -249,6 +266,9 @@ WHERE resource_type = 'items'`)
 }
 
 func printItemsAuditSummary(cmd *cobra.Command, summary itemsAuditSummary) error {
+	// State the denominator: the counts below are otherwise fractions of an
+	// unstated whole, and the store holds several times more rows than items.
+	fmt.Fprintf(cmd.OutOrStdout(), "Scope: %d top-level items\n", summary.TopLevelItems)
 	rows := [][]string{
 		{"missing-pdf", strconv.Itoa(summary.MissingPDF)},
 		{"missing-abstract", strconv.Itoa(summary.MissingAbstract)},
@@ -269,6 +289,7 @@ SELECT
 	json_extract(data, '$.data.dateAdded') AS date_added
 FROM resources
 WHERE resource_type = 'items'
+	AND ` + itemsAuditScopePredicate + `
 	AND (json_extract(data, '$.data.abstractNote') IS NULL OR TRIM(json_extract(data, '$.data.abstractNote')) = '')`
 	// Let items enrich scope missing-abstract candidates to a collection.
 	args := enrichCollectionFilterArgs(&query, "data", collection)
@@ -287,7 +308,8 @@ SELECT
 	json_extract(data, '$.data.dateAdded') AS date_added
 FROM resources
 WHERE resource_type = 'items'
-	AND json_extract(data, '$.data.itemType') IN ('journalArticle', 'conferencePaper', 'preprint')
+	AND ` + itemsAuditScopePredicate + `
+	AND item_type IN ('journalArticle', 'conferencePaper', 'preprint')
 	AND (json_extract(data, '$.data.DOI') IS NULL OR TRIM(json_extract(data, '$.data.DOI')) = '')`
 	// Let items enrich scope missing-DOI candidates to a collection.
 	args := enrichCollectionFilterArgs(&query, "data", collection)
@@ -306,6 +328,7 @@ SELECT
 	json_extract(data, '$.data.dateAdded') AS date_added
 FROM resources
 WHERE resource_type = 'items'
+	AND ` + itemsAuditScopePredicate + `
 	AND COALESCE(json_array_length(json_extract(data, '$.data.tags')), 0) = 0
 ORDER BY date_added DESC`
 	return queryItemsAuditRows(db, query, limit)
@@ -393,7 +416,7 @@ SELECT
 	json_extract(data, '$.data.dateAdded') AS date_added
 FROM resources
 WHERE resource_type = 'items'
-	AND json_extract(data, '$.data.itemType') NOT IN ('attachment', 'annotation', 'note')
+	AND ` + itemsAuditScopePredicate + `
 	AND ` + citationIncompletePredicate + `
 ORDER BY date_added DESC`
 	rows, err := queryItemsAuditRows(db, query, limit)

@@ -131,6 +131,21 @@ func TestItemsMoveAlreadyInTargetIsNoOp(t *testing.T) {
 	if srv.patchCounts["K1"] != 0 {
 		t.Fatalf("PATCH count = %d, want 0", srv.patchCounts["K1"])
 	}
+	// A bare {"status":"no_op"} is indistinguishable from a missing item or
+	// collection, so the reason must name which no-op this was.
+	reason, ok := env.Result.Items[0].Reason.(map[string]any)
+	if !ok {
+		t.Fatalf("reason = %#v, want a structured reason", env.Result.Items[0].Reason)
+	}
+	if reason["code"] != "already_member" {
+		t.Errorf("reason code = %v, want already_member", reason["code"])
+	}
+	if reason["to"] != "TARGET" {
+		t.Errorf("reason target = %v, want TARGET", reason["to"])
+	}
+	if _, ok := reason["message"].(string); !ok {
+		t.Errorf("reason %#v carries no human message", reason)
+	}
 }
 
 func TestItemsMoveFromRemovesCollection(t *testing.T) {

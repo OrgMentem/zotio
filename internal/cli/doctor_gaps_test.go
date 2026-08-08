@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -142,6 +143,19 @@ func TestDoctorCollectCacheReport(t *testing.T) {
 	if err := s.SaveSyncState("collections", "collection-cursor", 3); err != nil {
 		t.Fatalf("save stale sync state: %v", err)
 	}
+	// The stored row count and the last fetched delta must be reported
+	// separately: a hydrated store whose last sync was a small (or empty) delta
+	// previously read as "0 rows".
+	for i := range 40 {
+		if err := s.Upsert("items", fmt.Sprintf("ITEM%02d", i), json.RawMessage(`{"key":"x"}`)); err != nil {
+			t.Fatalf("seed item row: %v", err)
+		}
+	}
+	for i := range 7 {
+		if err := s.Upsert("collections", fmt.Sprintf("COLL%02d", i), json.RawMessage(`{"key":"x"}`)); err != nil {
+			t.Fatalf("seed collection row: %v", err)
+		}
+	}
 	staleAt := time.Now().Add(-3 * time.Hour)
 	if _, err := s.DB().Exec(`UPDATE sync_state SET last_synced_at = ? WHERE resource_type = ?`, staleAt, "collections"); err != nil {
 		t.Fatalf("age sync state: %v", err)
@@ -166,8 +180,14 @@ func TestDoctorCollectCacheReport(t *testing.T) {
 		t.Fatalf("resources has unexpected type %T", rep["resources"])
 	}
 	byType := doctorTestResourcesByType(resources)
-	doctorTestAssertResource(t, byType, "collections", int64(3), false)
-	doctorTestAssertResource(t, byType, "items", int64(12), false)
+	doctorTestAssertResource(t, byType, "collections", int64(7), false)
+	doctorTestAssertResource(t, byType, "items", int64(40), false)
+	if got := byType["items"]["last_delta"]; got != int64(12) {
+		t.Fatalf("items last_delta: want 12, got %v", got)
+	}
+	if got := byType["collections"]["last_delta"]; got != int64(3) {
+		t.Fatalf("collections last_delta: want 3, got %v", got)
+	}
 }
 
 func TestDoctorCollectCacheReportMissingDatabase(t *testing.T) {
@@ -276,8 +296,8 @@ func TestDoctorRenderCacheReport(t *testing.T) {
 		"stale_after":    "1h0m0s",
 		"oldest_age":     "3h0m0s",
 		"resources": []map[string]any{
-			{"type": "collections", "rows": int64(3), "staleness": "3h0m0s"},
-			{"type": "items", "rows": int64(12), "staleness": "5m0s"},
+			{"type": "collections", "rows": int64(3), "staleness": "3h0m0s", "last_delta": int64(0)},
+			{"type": "items", "rows": int64(12), "staleness": "5m0s", "last_delta": int64(4)},
 		},
 		"hint": "Some resources are older than stale_after; run 'zotio sync' to refresh.",
 	}
@@ -293,8 +313,8 @@ func TestDoctorRenderCacheReport(t *testing.T) {
 		"stale_after: 1h0m0s",
 		"oldest_age: 3h0m0s",
 		"resources:",
-		"- collections: 3 rows, 3h0m0s",
-		"- items: 12 rows, 5m0s",
+		"- collections: 3 rows, 3h0m0s\n",
+		"- items: 12 rows, 5m0s (last delta: 4)",
 		"hint: Some resources are older than stale_after",
 	} {
 		if !strings.Contains(out, want) {

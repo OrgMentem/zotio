@@ -14,10 +14,15 @@ import (
 )
 
 type tagAuditPlan struct {
-	Canonical      string   `json:"canonical"`
-	Aliases        []string `json:"aliases"`
-	TotalItems     int      `json:"total_items"`
-	RenameCommands []string `json:"rename_commands"`
+	Canonical string   `json:"canonical"`
+	Aliases   []string `json:"aliases"`
+	// OrphanedAliases are case-variant tag names that exist in Zotero's tag list
+	// but that no item carries. A rename has nothing to rewrite for them, so they
+	// are reported rather than planned: including them produced merge plans whose
+	// every operation came back tag_absent, which read as a stale plan.
+	OrphanedAliases []string `json:"orphaned_aliases,omitempty"`
+	TotalItems      int      `json:"total_items"`
+	RenameCommands  []string `json:"rename_commands"`
 }
 
 type countedTag struct {
@@ -261,10 +266,19 @@ func buildTagAuditPlans(tagRows, countRows []map[string]any) []tagAuditPlan {
 		canonical := tags[0].name
 		aliases := make([]string, 0, len(tags)-1)
 		commands := make([]string, 0, len(tags)-1)
+		var orphaned []string
 		total := 0
 		for _, tag := range tags {
 			total += tag.count
 			if tag.name == canonical {
+				continue
+			}
+			if tag.count == 0 {
+				// Zotero keeps a tag row that no item carries. A rename has
+				// nothing to rewrite, so planning it produced an operation that
+				// could only ever report tag_absent — a plan that looked stale
+				// and wrote nothing. Report it instead of proposing it.
+				orphaned = append(orphaned, tag.name)
 				continue
 			}
 			aliases = append(aliases, tag.name)
@@ -275,11 +289,16 @@ func buildTagAuditPlans(tagRows, countRows []map[string]any) []tagAuditPlan {
 				quoteTagAuditCommandArg(canonical),
 			))
 		}
+		// Nothing renameable: the duplicates are all orphaned tag rows.
+		if len(aliases) == 0 {
+			continue
+		}
 		plans = append(plans, tagAuditPlan{
-			Canonical:      canonical,
-			Aliases:        aliases,
-			TotalItems:     total,
-			RenameCommands: commands,
+			Canonical:       canonical,
+			Aliases:         aliases,
+			OrphanedAliases: orphaned,
+			TotalItems:      total,
+			RenameCommands:  commands,
 		})
 	}
 
@@ -309,7 +328,18 @@ func printTagAuditReport(cmd *cobra.Command, totalTags int, plans []tagAuditPlan
 	}
 	fmt.Fprintln(cmd.OutOrStdout(), bold(summaryTitle))
 	fmt.Fprintf(cmd.OutOrStdout(), "%s  %d\n", dim("total tags:"), totalTags)
-	fmt.Fprintf(cmd.OutOrStdout(), "%s  %d\n\n", dim("duplicate groups:"), len(plans))
+	fmt.Fprintf(cmd.OutOrStdout(), "%s  %d\n", dim("duplicate groups:"), len(plans))
+	orphaned := 0
+	for _, plan := range plans {
+		orphaned += len(plan.OrphanedAliases)
+	}
+	if orphaned > 0 {
+		// Not renameable: no item carries them, so they are reported rather than
+		// planned. Zotero clears them when its tag list is next cleaned up.
+		fmt.Fprintf(cmd.OutOrStdout(), "%s  %d (no item carries them; not renameable)\n",
+			dim("orphaned tag rows:"), orphaned)
+	}
+	fmt.Fprintln(cmd.OutOrStdout())
 	fmt.Fprintln(cmd.OutOrStdout(), bold("Merge plan"))
 	if len(plans) == 0 {
 		fmt.Fprintln(cmd.OutOrStdout(), "No duplicate tag groups found.")

@@ -16,9 +16,17 @@ import (
 )
 
 type tagRenameUpdate struct {
-	key     string
+	key string
+	// oldTag/newTag travel with the update because one run can carry several
+	// distinct renames: `tags audit fix` plans an alias→canonical rename per
+	// group, so the pair cannot come from command flags at apply time.
+	oldTag string
+	newTag string
+	// version is the read plane's object version, recorded for the plan only.
+	// The write precondition is resolved from the write plane at apply time
+	// (see applyTagRenameUpdate) because the two planes do not share a version
+	// space.
 	version any
-	tags    []any
 	// tagType is the manual(0)/automatic(1) type of the renamed alias tag on
 	// this specific item, captured so the replayed mutation.Change neither
 	// fabricates nor drops that distinction in the local mirror.
@@ -61,9 +69,15 @@ func newTagsRenameCmd(flags *rootFlags) *cobra.Command {
 			// Planning a rename always has to read the real matching item set;
 			// --dry-run controls the mutation engine, not the discovery GETs.
 			c.DryRun = false
-			updates, err := listTagRenameUpdates(c, flagFrom, flagTo, flagLimit)
+			updates, matched, err := listTagRenameUpdates(c, flagFrom, flagTo, flagLimit)
 			if err != nil {
 				return classifyAPIError(err, flags)
+			}
+			// "Nothing selected" must never look like "no such tag".
+			if len(updates) == 0 && matched > 0 {
+				fmt.Fprintf(cmd.ErrOrStderr(),
+					"warning: %d item(s) match tag %q but none could be planned for rename; none of them carry it as a distinct tag from %q\n",
+					matched, flagFrom, flagTo)
 			}
 
 			var renameApply func(tagRenameUpdate) (string, any, error)
@@ -118,14 +132,52 @@ func buildTagRenameOps(updates []tagRenameUpdate, oldName, newName string, apply
 	return ops
 }
 
+// applyTagRenameUpdate performs the rename against the write plane.
+//
+// It deliberately re-reads the item from the write plane instead of PATCHing the
+// tag list captured at plan time. Plan-time state comes from the read plane (the
+// local desktop API), whose object versions live in a different version space
+// and are empty for items never pushed upstream — so the plan-time version
+// yields no If-Unmodified-Since-Version header and Zotero refuses the write
+// outright ("Either If-Unmodified-Since-Version or object version property must
+// be provided for key-based writes"). Re-reading also means the PATCH replaces
+// the write plane's own tag list rather than overwriting it with a stale copy.
 func applyTagRenameUpdate(c *client.Client, update tagRenameUpdate) (string, any, error) {
 	path := replacePathParam("/items/{itemKey}", "itemKey", update.key)
-	headers := map[string]string{}
-	if version := mutationExpectedVersion(update.version); version > 0 {
-		headers["If-Unmodified-Since-Version"] = strconv.Itoa(version)
+	currentData, currentVersion, err := c.GetFromWriteBaseWithVersion(nil, path, nil)
+	if err != nil {
+		return "failed", err.Error(), err
 	}
+	var current map[string]any
+	if err := json.Unmarshal(currentData, &current); err != nil {
+		wrapped := fmt.Errorf("parsing item %s from the write plane: %w", update.key, err)
+		return "failed", wrapped.Error(), wrapped
+	}
+	tags, changed, _, err := renamedItemTags(current, update.oldTag, update.newTag)
+	if err != nil {
+		wrapped := fmt.Errorf("item %s: %w", update.key, err)
+		return "failed", wrapped.Error(), wrapped
+	}
+	if !changed {
+		return "no_op", map[string]any{
+			"code":    "tag_absent",
+			"message": fmt.Sprintf("item no longer carries tag %q on the write plane", update.oldTag),
+			"from":    update.oldTag,
+			"to":      update.newTag,
+		}, nil
+	}
+
+	// Defence in depth: nothing may PATCH without a precondition. Zotero refuses
+	// such a write anyway ("Either If-Unmodified-Since-Version or object version
+	// property must be provided for key-based writes"); failing here reports the
+	// real cause instead of relaying that opaque message.
+	if currentVersion <= 0 {
+		err := fmt.Errorf("no write-plane version for item %s; refusing to write without an If-Unmodified-Since-Version precondition", update.key)
+		return "failed", err.Error(), err
+	}
+	headers := map[string]string{"If-Unmodified-Since-Version": strconv.Itoa(currentVersion)}
 	_, statusCode, err := c.PatchWithHeaders(path, map[string]any{
-		"tags": update.tags,
+		"tags": tags,
 	}, headers)
 	if err != nil {
 		var apiErr *client.APIError
@@ -150,13 +202,18 @@ func tagRenameSingleLine(oldName, newName string) func(mutation.Envelope) string
 	}
 }
 
-func listTagRenameUpdates(c *client.Client, oldName, newName string, limit int) ([]tagRenameUpdate, error) {
+// listTagRenameUpdates returns the items to rename, plus how many items the tag
+// query actually matched. A caller must not report "nothing to do" when the tag
+// demonstrably exists: that output is indistinguishable from "no such tag",
+// which is how New-1's version-less-row bug stayed invisible.
+func listTagRenameUpdates(c *client.Client, oldName, newName string, limit int) ([]tagRenameUpdate, int, error) {
 	// Zotero caps /items?tag pages, so walk start offsets until a short page
 	// instead of reporting the first page as a complete rename.
 	if limit > 100 {
 		limit = 100
 	}
 	var all []tagRenameUpdate
+	matched := 0
 	for start := 0; ; start += limit {
 		data, err := c.Get("/items", map[string]string{
 			"tag":   oldName,
@@ -164,22 +221,23 @@ func listTagRenameUpdates(c *client.Client, oldName, newName string, limit int) 
 			"start": fmt.Sprintf("%d", start),
 		})
 		if err != nil {
-			return nil, err
+			return nil, 0, err
 		}
 		updates, err := buildTagRenameUpdates(data, oldName, newName)
 		if err != nil {
-			return nil, err
+			return nil, 0, err
 		}
 		all = append(all, updates...)
 		var page []json.RawMessage
 		if err := json.Unmarshal(data, &page); err != nil {
-			return nil, fmt.Errorf("parsing items page: %w", err)
+			return nil, 0, fmt.Errorf("parsing items page: %w", err)
 		}
+		matched += len(page)
 		if len(page) < limit {
 			break
 		}
 	}
-	return all, nil
+	return all, matched, nil
 }
 
 func buildTagRenameUpdates(data json.RawMessage, oldTag, newTag string) ([]tagRenameUpdate, error) {
@@ -194,11 +252,19 @@ func buildTagRenameUpdates(data json.RawMessage, oldTag, newTag string) ([]tagRe
 		if !ok || key == "" {
 			return nil, fmt.Errorf("item response missing key")
 		}
-		version, ok := item["version"]
-		if !ok {
-			return nil, fmt.Errorf("item %s missing version", key)
-		}
-		tags, changed, tagType, err := renamedItemTags(item, oldTag, newTag)
+		// The read plane's version is recorded for the plan only. A row may
+		// legitimately carry none: write-through strips the stale version from
+		// rows it replays, because keeping it would assert a version that plane
+		// never issued. Requiring one here made every item zotio had just
+		// written invisible to `tags rename` (silently, as selected: 0) and
+		// aborted a whole `tags audit fix` batch on the first such row. The
+		// write precondition comes from the write plane at apply time, so a
+		// missing version is not an obstacle to renaming.
+		version := item["version"]
+		// The renamed tag list is recomputed from the write plane at apply time;
+		// only the fact that this item matches, and the alias tag's type, matter
+		// to the plan.
+		_, changed, tagType, err := renamedItemTags(item, oldTag, newTag)
 		if err != nil {
 			return nil, fmt.Errorf("item %s: %w", key, err)
 		}
@@ -207,8 +273,9 @@ func buildTagRenameUpdates(data json.RawMessage, oldTag, newTag string) ([]tagRe
 		}
 		updates = append(updates, tagRenameUpdate{
 			key:     key,
+			oldTag:  oldTag,
+			newTag:  newTag,
 			version: version,
-			tags:    tags,
 			tagType: tagType,
 		})
 	}

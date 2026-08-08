@@ -124,22 +124,69 @@ func TestUpsertVersionlessAlwaysUpdates(t *testing.T) {
 
 func TestSaveLibraryVersionMonotonic(t *testing.T) {
 	s := queryTestStore(t)
+	const local = "http://localhost:23119/api/users/0"
 
-	if err := s.SaveLibraryVersion("items", 5); err != nil {
+	if err := s.SaveLibraryVersion("items", local, 5); err != nil {
 		t.Fatalf("save 5: %v", err)
 	}
 	// A slower run completing with an older checkpoint must not regress it.
-	if err := s.SaveLibraryVersion("items", 3); err != nil {
+	if err := s.SaveLibraryVersion("items", local, 3); err != nil {
 		t.Fatalf("save 3: %v", err)
 	}
-	if v, err := s.GetLibraryVersion("items"); err != nil || v != 5 {
+	if v, err := s.GetLibraryVersion("items", local); err != nil || v != 5 {
 		t.Fatalf("after regress attempt: got %d err=%v, want 5", v, err)
 	}
 	// A newer checkpoint still advances.
-	if err := s.SaveLibraryVersion("items", 7); err != nil {
+	if err := s.SaveLibraryVersion("items", local, 7); err != nil {
 		t.Fatalf("save 7: %v", err)
 	}
-	if v, err := s.GetLibraryVersion("items"); err != nil || v != 7 {
+	if v, err := s.GetLibraryVersion("items", local); err != nil || v != 7 {
 		t.Fatalf("after advance: got %d err=%v, want 7", v, err)
+	}
+}
+
+// Version numbers are per-plane. A web-API checkpoint (12689) must not outrank a
+// local one (71) via the monotonic guard: `?since=12689` against the local plane
+// matches nothing, which froze incremental sync permanently.
+func TestLibraryVersionIsPerPlane(t *testing.T) {
+	s := queryTestStore(t)
+	const local = "http://localhost:23119/api/users/0"
+	const web = "https://api.zotero.org/users/5847066"
+
+	if err := s.SaveLibraryVersion("items", web, 12689); err != nil {
+		t.Fatalf("save web checkpoint: %v", err)
+	}
+	// The local plane must not inherit the web cursor.
+	if v, err := s.GetLibraryVersion("items", local); err != nil || v != 0 {
+		t.Fatalf("local cursor = %d err=%v, want 0: a foreign cursor must force a full pass", v, err)
+	}
+	// Recording a much smaller local version must win, not lose to MAX().
+	if err := s.SaveLibraryVersion("items", local, 71); err != nil {
+		t.Fatalf("save local checkpoint: %v", err)
+	}
+	if v, err := s.GetLibraryVersion("items", local); err != nil || v != 71 {
+		t.Fatalf("local cursor = %d err=%v, want 71", v, err)
+	}
+	// Switching back is symmetric: the web cursor was replaced, not retained.
+	if v, err := s.GetLibraryVersion("items", web); err != nil || v != 0 {
+		t.Fatalf("web cursor = %d err=%v, want 0 after the plane changed", v, err)
+	}
+	// Status reporting still sees the stored value and names its plane.
+	v, source, err := s.StoredLibraryVersion("items")
+	if err != nil || v != 71 || source != local {
+		t.Fatalf("StoredLibraryVersion = %d, %q, %v; want 71 from the local plane", v, source, err)
+	}
+}
+
+// A checkpoint written by a build that recorded no plane must not be replayed
+// against a plane it may not belong to.
+func TestLibraryVersionWithoutSourceForcesFullPass(t *testing.T) {
+	s := queryTestStore(t)
+	if _, err := s.DB().Exec(
+		`INSERT INTO sync_state (resource_type, library_version) VALUES ('items', 12689)`); err != nil {
+		t.Fatalf("seed legacy row: %v", err)
+	}
+	if v, err := s.GetLibraryVersion("items", "http://localhost:23119/api/users/0"); err != nil || v != 0 {
+		t.Fatalf("legacy cursor = %d err=%v, want 0", v, err)
 	}
 }

@@ -224,7 +224,7 @@ func outputSearchResults(cmd *cobra.Command, flags *rootFlags, results []json.Ra
 		results = results[:limit]
 	}
 
-	jsonMode := flags.asJSON || !isTerminal(cmd.OutOrStdout())
+	jsonMode := wantsJSONEnvelope(cmd.OutOrStdout(), flags)
 
 	// JSON mode always emits a valid envelope, including on no matches —
 	// agents pipe stdout through json.loads / jq and need parseable output
@@ -249,13 +249,18 @@ func outputSearchResults(cmd *cobra.Command, flags *rootFlags, results []json.Ra
 	}
 
 	printProvenance(cmd, len(results), prov)
-	// Human at a terminal: same auto table/card rendering as the list
-	// commands. Fall back to raw JSON only if the rows don't decode.
+	data, err := json.Marshal(results)
+	if err != nil {
+		return err
+	}
+	// --plain/--csv route through the shared formatter; a human at a terminal
+	// gets the same auto table/card rendering as the list commands.
+	if !wantsHumanTable(cmd.OutOrStdout(), flags) {
+		return printOutputWithFlags(cmd.OutOrStdout(), data, flags)
+	}
 	var items []map[string]any
-	if raw, err := json.Marshal(results); err == nil {
-		if json.Unmarshal(raw, &items) == nil && len(items) > 0 {
-			return printAutoTable(cmd.OutOrStdout(), items)
-		}
+	if json.Unmarshal(data, &items) == nil && len(items) > 0 {
+		return printAutoTable(cmd.OutOrStdout(), items)
 	}
 	for _, r := range results {
 		fmt.Fprintln(cmd.OutOrStdout(), string(r))

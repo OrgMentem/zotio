@@ -35,7 +35,7 @@ func newItemsRecentCmd(flags *rootFlags) *cobra.Command {
 				return classifyAPIError(err, flags)
 			}
 			printProvenance(cmd, countResultItems(data), prov)
-			if flags.asJSON || !isTerminal(cmd.OutOrStdout()) {
+			if wantsJSONEnvelope(cmd.OutOrStdout(), flags) {
 				filtered := data
 				if flags.selectFields != "" {
 					filtered = filterFields(filtered, flags.selectFields)

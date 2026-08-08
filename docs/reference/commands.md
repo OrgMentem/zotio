@@ -1114,6 +1114,17 @@ zotio items
 
 Add an item to a named collection, creating it when needed
 
+Add an item to a top-level collection identified by name, creating the
+collection when no collection of that name exists.
+
+Prefer this when you know the collection by name. When you already have the
+collection key, or need to move many items at once or remove a membership, use
+'zotio items move --to <collectionKey>' (also --from, --keys-from); this command
+resolves the name and then delegates the membership change to it.
+
+Apply mode journals two writes for one invocation when the collection has to be
+created — a collection create plus an item move — because two writes happen.
+
 ```
 zotio items add-to-collection <itemKey> [flags]
 ```
@@ -1310,10 +1321,18 @@ zotio items create
 
 ### `zotio items delete`
 
-Delete an item (moves to trash)
+Move an item to the trash
+
+Move an item to the trash, where 'zotio items restore' can bring it back.
+
+This is a reversible trash operation (the item's "deleted" flag is set), matching
+what 'zotio items trash' lists and 'zotio items restore' reverses.
+
+--permanent instead destroys the item and its child attachments outright. That
+cannot be undone by 'items restore' and requires --allow-destructive.
 
 ```
-zotio items delete <itemKey>
+zotio items delete <itemKey> [flags]
 ```
 
 Examples:
@@ -1321,6 +1340,10 @@ Examples:
 ```bash
 zotio items delete ABC12345
 ```
+
+| Flag | Type | Default | Description |
+| --- | --- | --- | --- |
+| `--permanent` | `bool` | `false` | Destroy the item and its attachments outright instead of trashing it (irreversible; requires --allow-destructive) |
 
 ### `zotio items duplicates`
 
@@ -1535,6 +1558,16 @@ zotio items missing-pdf [flags]
 ### `zotio items move`
 
 Add, remove, or move item collection memberships
+
+Add, remove, or move item collection memberships by collection key.
+
+Use --to to add, --from to remove, and both together to move between collections.
+Accepts many item keys, or --keys-from to read them from a file or stdin.
+
+To file an item into a collection you know by name rather than by key (creating
+the collection when it does not exist), use 'zotio items add-to-collection
+<itemKey> --collection-name <name>'. That command resolves the name to a key and
+then delegates the membership change here, so guards and idempotency are shared.
 
 ```
 zotio items move [itemKey...] [--to <collectionKey>] [--from <collectionKey>] [flags]
@@ -2445,10 +2478,19 @@ zotio searches run <searchKey>
 
 ## `zotio sync`
 
-Sync API data to local SQLite for offline search and analysis
+Mirror the Zotero read API into local SQLite for offline search and analysis
 
-Sync data from the API into a local SQLite database. Supports resumable
-incremental sync (only fetches new data since last sync) and full resync.
+Mirror data from the Zotero read API into a local SQLite database. One
+direction only: it pulls into the mirror and never writes to Zotero.
+
+The read API is normally the Zotero desktop local API (http://localhost:23119),
+NOT api.zotero.org — so this mirrors what the desktop app currently holds, which
+lags your cloud library until Zotero itself syncs. 'zotio doctor' names the plane
+each cursor came from under cache.resources[].cursor_source. Version numbers are
+per-plane, so changing the configured base URL discards the cursor and resyncs.
+
+Supports resumable incremental sync (only fetches new data since the last sync)
+and full resync (--full, which also discards stored per-row versions).
 Once synced, use the 'search' command for instant full-text search.
 
 Exit codes & warnings:

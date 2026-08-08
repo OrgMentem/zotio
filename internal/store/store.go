@@ -350,6 +350,15 @@ func (s *Store) backfillColumns(ctx context.Context, conn *sql.Conn) error {
 		// Zotero incremental sync is keyed on an
 		// integer library version (Last-Modified-Version), not a timestamp.
 		{table: "sync_state", column: "library_version", decl: "INTEGER DEFAULT 0"},
+		// Which plane issued library_version. Zotero's local desktop API and
+		// api.zotero.org number versions independently, so a cursor from one is
+		// meaningless against the other; without this the highest number ever
+		// seen won the monotonic guard and froze incremental sync permanently.
+		{table: "sync_state", column: "cursor_source", decl: "TEXT"},
+		// When a sync pass last brought records back, as opposed to merely
+		// running. "Cache: fresh" otherwise reported a recent poll for a mirror
+		// that had received nothing in weeks.
+		{table: "sync_state", column: "last_changed_at", decl: "DATETIME"},
 		// indexed columns for dependent-resource sync
 		// (annotations / attachments) so parent/type queries don't scan JSON.
 		{table: "resources", column: "parent_key", decl: "TEXT"},
@@ -509,10 +518,27 @@ func (s *Store) migrate(ctx context.Context) error {
 			last_cursor TEXT,
 			last_synced_at DATETIME,
 			total_count INTEGER DEFAULT 0,
-			library_version INTEGER DEFAULT 0
+			library_version INTEGER DEFAULT 0,
+			-- Which plane issued library_version; see SaveLibraryVersion.
+			cursor_source TEXT,
+			-- When a pass last brought records back; see SaveSyncState.
+			last_changed_at DATETIME
 		)`,
 		`CREATE VIRTUAL TABLE IF NOT EXISTS resources_fts USING fts5(
 			id, resource_type, content, tokenize='porter unicode61'
+		)`,
+		// pending_writes records a mutation that landed on the write plane
+		// (api.zotero.org) but that the read plane (the local desktop API) has
+		// not reported back yet. Sync pulls from the read plane, so without
+		// this it re-applied the pre-write copy over the mirror and silently
+		// rolled the write back for every later read. Additive: older binaries
+		// simply ignore the table, so no schema-version bump is required.
+		`CREATE TABLE IF NOT EXISTS pending_writes (
+			resource_type TEXT NOT NULL,
+			id TEXT NOT NULL,
+			changes JSON NOT NULL,
+			written_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+			PRIMARY KEY (resource_type, id)
 		)`,
 	}
 
@@ -1468,63 +1494,219 @@ func (s *Store) UpsertBatch(resourceType string, items []json.RawMessage) (int, 
 	return stored, extractFailures, nil
 }
 
+// SaveSyncState records the outcome of a sync pass. last_synced_at advances on
+// every pass, but last_changed_at advances only when the pass actually brought
+// records back: without that distinction "Cache: fresh" reported a recent poll
+// even when the mirror had received nothing for weeks.
 func (s *Store) SaveSyncState(resourceType, cursor string, count int) error {
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
 	_, err := s.db.Exec(
-		`INSERT INTO sync_state (resource_type, last_cursor, last_synced_at, total_count)
-		 VALUES (?, ?, ?, ?)
+		`INSERT INTO sync_state (resource_type, last_cursor, last_synced_at, total_count, last_changed_at)
+		 VALUES (?, ?, ?, ?, CASE WHEN ? > 0 THEN ? ELSE NULL END)
 		 ON CONFLICT(resource_type) DO UPDATE SET last_cursor = excluded.last_cursor,
-		 last_synced_at = excluded.last_synced_at, total_count = excluded.total_count`,
-		resourceType, cursor, time.Now(), count,
+		 last_synced_at = excluded.last_synced_at, total_count = excluded.total_count,
+		 last_changed_at = COALESCE(excluded.last_changed_at, sync_state.last_changed_at)`,
+		resourceType, cursor, time.Now(), count, count, time.Now(),
 	)
 	return err
 }
 
+// GetSyncState reads a resource's pagination cursor, last poll time and last
+// delta count. Every column is nullable: SaveLibraryVersion can create the row
+// before any pass has stored a cursor, so scanning last_cursor into a plain
+// string failed with "converting NULL to string is unsupported".
 func (s *Store) GetSyncState(resourceType string) (cursor string, lastSynced time.Time, count int, err error) {
+	var rawCursor sql.NullString
+	var rawSynced sql.NullTime
+	var rawCount sql.NullInt64
 	err = s.db.QueryRow(
 		`SELECT last_cursor, last_synced_at, total_count FROM sync_state WHERE resource_type = ?`,
 		resourceType,
-	).Scan(&cursor, &lastSynced, &count)
+	).Scan(&rawCursor, &rawSynced, &rawCount)
 	if err == sql.ErrNoRows {
 		return "", time.Time{}, 0, nil
 	}
-	return
+	if err != nil {
+		return "", time.Time{}, 0, err
+	}
+	return rawCursor.String, rawSynced.Time, int(rawCount.Int64), nil
+}
+
+// RecordPendingWrite marks a resource row as carrying a write that landed on the
+// write plane but that the read plane has not reported back yet. changes is the
+// serialized []mutation.Change the caller applied, so a later sync can tell
+// whether the read plane has caught up. Re-recording replaces the prior entry.
+func (s *Store) RecordPendingWrite(resourceType, id string, changes []byte) error {
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+	_, err := s.db.Exec(
+		`INSERT INTO pending_writes (resource_type, id, changes, written_at)
+		 VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+		 ON CONFLICT(resource_type, id) DO UPDATE SET changes = excluded.changes,
+		 written_at = CURRENT_TIMESTAMP`,
+		resourceType, id, string(changes),
+	)
+	return err
+}
+
+// PendingWrite is one unconfirmed write: the changes that were applied and when.
+type PendingWrite struct {
+	Changes   []byte
+	WrittenAt time.Time
+}
+
+// PendingWrites returns every unconfirmed write of a resource type, keyed by row
+// id. An empty map means the mirror agrees with the read plane.
+func (s *Store) PendingWrites(resourceType string) (map[string]PendingWrite, error) {
+	rows, err := s.db.Query(`SELECT id, changes, written_at FROM pending_writes WHERE resource_type = ?`, resourceType)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	pending := map[string]PendingWrite{}
+	for rows.Next() {
+		var id, changes string
+		var writtenAt sql.NullTime
+		if err := rows.Scan(&id, &changes, &writtenAt); err != nil {
+			return nil, err
+		}
+		pending[id] = PendingWrite{Changes: []byte(changes), WrittenAt: writtenAt.Time}
+	}
+	return pending, rows.Err()
+}
+
+// ClearPendingWrite drops the marker once the read plane reports the written
+// state, so a row is never pinned to a local copy indefinitely.
+func (s *Store) ClearPendingWrite(resourceType, id string) error {
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+	_, err := s.db.Exec(`DELETE FROM pending_writes WHERE resource_type = ? AND id = ?`, resourceType, id)
+	return err
+}
+
+// PendingWriteCount reports how many rows hold a write the read plane has not
+// confirmed. Surfaced by doctor so the gap between the two planes is visible.
+func (s *Store) PendingWriteCount() (int, error) {
+	var count int
+	if err := s.db.QueryRow(`SELECT COUNT(*) FROM pending_writes`).Scan(&count); err != nil {
+		return 0, err
+	}
+	return count, nil
 }
 
 // SaveLibraryVersion records the Zotero Last-Modified-Version checkpoint for a
 // resource so the next incremental sync can pass it as the integer `since`
-// parameter.
-func (s *Store) SaveLibraryVersion(resourceType string, version int) error {
+// parameter. source identifies the plane that issued the version (the client's
+// base URL): version numbers are per-plane, so a checkpoint is only valid against
+// the plane it came from.
+func (s *Store) SaveLibraryVersion(resourceType, source string, version int) error {
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
-	// Monotonic checkpoint: a slower concurrent sync/tail run completing with an
-	// older Last-Modified-Version must not regress the stored checkpoint, or the
-	// next incremental pass would re-fetch or replay already-seen changes.
+	// Monotonic checkpoint WITHIN one plane: a slower concurrent sync/tail run
+	// completing with an older Last-Modified-Version must not regress the stored
+	// checkpoint, or the next incremental pass would replay already-seen changes.
+	// Across planes the guard must NOT apply — a web-API version (12689) would
+	// otherwise outrank every local version (71) forever and freeze incremental
+	// sync, because `?since=12689` against the local plane matches nothing.
 	_, err := s.db.Exec(
-		`INSERT INTO sync_state (resource_type, library_version)
-		 VALUES (?, ?)
-		 ON CONFLICT(resource_type) DO UPDATE SET library_version = MAX(COALESCE(sync_state.library_version, 0), excluded.library_version)`,
-		resourceType, version,
+		`INSERT INTO sync_state (resource_type, library_version, cursor_source)
+		 VALUES (?, ?, ?)
+		 ON CONFLICT(resource_type) DO UPDATE SET
+			library_version = CASE
+				WHEN COALESCE(sync_state.cursor_source, '') = excluded.cursor_source
+				THEN MAX(COALESCE(sync_state.library_version, 0), excluded.library_version)
+				ELSE excluded.library_version
+			END,
+			cursor_source = excluded.cursor_source`,
+		resourceType, version, source,
 	)
 	return err
 }
 
 // GetLibraryVersion returns the stored Zotero library version checkpoint for a
-// resource, or 0 when none has been recorded.
-func (s *Store) GetLibraryVersion(resourceType string) (int, error) {
+// resource, or 0 when none has been recorded for this plane. A checkpoint issued
+// by a different plane (or by a build that did not record one) returns 0 so the
+// caller performs a full pass instead of sending a cursor the plane cannot
+// interpret.
+func (s *Store) GetLibraryVersion(resourceType, source string) (int, error) {
 	var v sql.NullInt64
+	var storedSource sql.NullString
 	err := s.db.QueryRow(
-		`SELECT library_version FROM sync_state WHERE resource_type = ?`,
+		`SELECT library_version, cursor_source FROM sync_state WHERE resource_type = ?`,
 		resourceType,
-	).Scan(&v)
+	).Scan(&v, &storedSource)
 	if err == sql.ErrNoRows {
 		return 0, nil
 	}
 	if err != nil {
 		return 0, err
 	}
+	if storedSource.String != source {
+		return 0, nil
+	}
 	return int(v.Int64), nil
+}
+
+// StoredLibraryVersion returns the recorded checkpoint and the plane that issued
+// it, without filtering by plane. For status reporting only — a sync decision
+// must use GetLibraryVersion so a foreign cursor is never replayed as `since`.
+func (s *Store) StoredLibraryVersion(resourceType string) (int, string, error) {
+	var v sql.NullInt64
+	var source sql.NullString
+	err := s.db.QueryRow(
+		`SELECT library_version, cursor_source FROM sync_state WHERE resource_type = ?`,
+		resourceType,
+	).Scan(&v, &source)
+	if err == sql.ErrNoRows {
+		return 0, "", nil
+	}
+	if err != nil {
+		return 0, "", err
+	}
+	return int(v.Int64), source.String, nil
+}
+
+// PlaneChanged reports whether a checkpoint exists for this resource that was
+// issued by a different plane than source.
+func (s *Store) PlaneChanged(resourceType, source string) (bool, error) {
+	var stored sql.NullString
+	err := s.db.QueryRow(
+		`SELECT cursor_source FROM sync_state WHERE resource_type = ?`,
+		resourceType,
+	).Scan(&stored)
+	if err == sql.ErrNoRows {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	// A row with no recorded plane predates this bookkeeping; treat it as foreign
+	// so one resync repairs it, after which the plane is always recorded.
+	return stored.String != source, nil
+}
+
+// ClearResourceVersions strips the stored Zotero object version from every row of
+// a resource type.
+//
+// Required when the read plane changes. Row upserts are version-monotonic, which
+// is correct within one plane but not across planes: a row carrying a web-API
+// version (11973) would reject every incoming row from the local desktop API
+// (version 65) as "older", freezing that row forever even during a full pass.
+// The stored number is meaningless for the new plane, so removing it lets the
+// guard's null branch accept the fresh data — the same reasoning by which
+// write-through drops the version from rows it replays.
+func (s *Store) ClearResourceVersions(resourceType string) error {
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+	_, err := s.db.Exec(
+		`UPDATE resources
+		 SET data = json_remove(data, '$.version', '$.data.version')
+		 WHERE resource_type = ?
+		   AND json_extract(data, '$.version') IS NOT NULL`,
+		resourceType,
+	)
+	return err
 }
 
 // SaveSyncCursor stores the pagination cursor for a resource type.

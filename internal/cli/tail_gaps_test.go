@@ -99,7 +99,7 @@ func TestEmitChanges_ChangeFeed(t *testing.T) {
 	if !gotKeys["A"] || !gotKeys["B"] {
 		t.Errorf("baseline keys = %v, want A and B", gotKeys)
 	}
-	if v, _ := db.GetLibraryVersion("tail:items"); v != 10 {
+	if v, _, _ := db.StoredLibraryVersion("tail:items"); v != 10 {
 		t.Errorf("cursor after baseline = %d, want 10", v)
 	}
 
@@ -132,7 +132,7 @@ func TestEmitChanges_ChangeFeed(t *testing.T) {
 	if upserts != 1 || deletes != 1 {
 		t.Errorf("delta: upserts=%d deletes=%d, want 1 and 1", upserts, deletes)
 	}
-	if v, _ := db.GetLibraryVersion("tail:items"); v != 12 {
+	if v, _, _ := db.StoredLibraryVersion("tail:items"); v != 12 {
 		t.Errorf("cursor after delta = %d, want 12", v)
 	}
 }
@@ -157,7 +157,7 @@ func TestEmitChanges_DeletionFetchCancellationDoesNotEmitOrAdvanceCursor(t *test
 	c := client.New(&config.Config{BaseURL: srv.URL}, 5*time.Second, 0)
 	c.NoCache = true
 	db := tailTestStore(t)
-	if err := db.SaveLibraryVersion("tail:items", 10); err != nil {
+	if err := db.SaveLibraryVersion("tail:items", c.Plane(), 10); err != nil {
 		t.Fatalf("seeding cursor: %v", err)
 	}
 
@@ -183,7 +183,7 @@ func TestEmitChanges_DeletionFetchCancellationDoesNotEmitOrAdvanceCursor(t *test
 	case <-time.After(time.Second):
 		t.Fatal("emitChanges did not return after deletion fetch cancellation")
 	}
-	if got, _ := db.GetLibraryVersion("tail:items"); got != 10 {
+	if got, _, _ := db.StoredLibraryVersion("tail:items"); got != 10 {
 		t.Errorf("cursor = %d, want unchanged 10", got)
 	}
 	if buf.Len() != 0 {
@@ -254,7 +254,7 @@ func TestEmitChanges_WebhookFailureRetainsCursor(t *testing.T) {
 	if _, err := emitChanges(context.Background(), c, db, "items", "/items", DeliverSink{Scheme: "webhook", Target: hook.URL}, &buf); err == nil {
 		t.Fatal("emitChanges succeeded despite webhook delivery failure")
 	}
-	if got, err := db.GetLibraryVersion("tail:items"); err != nil || got != 0 {
+	if got, _, err := db.StoredLibraryVersion("tail:items"); err != nil || got != 0 {
 		t.Fatalf("tail cursor = %d, %v; want unchanged 0", got, err)
 	}
 }

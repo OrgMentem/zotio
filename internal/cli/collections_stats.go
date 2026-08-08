@@ -158,9 +158,14 @@ LIMIT ?`, collKey, flagTop)
 				TopVenues:     venueRows,
 			}
 
-			if flags.asJSON || !isTerminal(cmd.OutOrStdout()) {
-				data, _ := json.Marshal(result)
-				return printOutput(cmd.OutOrStdout(), data, true)
+			if !wantsHumanTable(cmd.OutOrStdout(), flags) {
+				data, err := json.Marshal(result)
+				if err != nil {
+					return err
+				}
+				// Shared formatter: --plain/--csv/--select were silently dropped
+				// by the direct printOutput call this replaces.
+				return printOutputWithFlags(cmd.OutOrStdout(), data, flags)
 			}
 
 			// Human table output

@@ -23,6 +23,15 @@ func newItemsMoveCmd(flags *rootFlags) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "move [itemKey...] [--to <collectionKey>] [--from <collectionKey>]",
 		Short: "Add, remove, or move item collection memberships",
+		Long: `Add, remove, or move item collection memberships by collection key.
+
+Use --to to add, --from to remove, and both together to move between collections.
+Accepts many item keys, or --keys-from to read them from a file or stdin.
+
+To file an item into a collection you know by name rather than by key (creating
+the collection when it does not exist), use 'zotio items add-to-collection
+<itemKey> --collection-name <name>'. That command resolves the name to a key and
+then delegates the membership change here, so guards and idempotency are shared.`,
 		Annotations: map[string]string{
 			"mcp:read-only":                    "false",
 			"zotio:destructive":                "false",
@@ -101,6 +110,10 @@ func runItemsMoveMutation(cmd *cobra.Command, flags *rootFlags, fromCol, toCol, 
 			ExpectedVersion: version,
 			Changes:         collectionMutationChanges(collections, fromCol, toCol),
 			Destructive:     false,
+			// An op planned with no changes never reaches Apply, so the reason
+			// has to travel with the op: a bare {"status":"no_op"} is
+			// indistinguishable from a missing item or collection.
+			NoOpReason: itemCollectionNoOpReason(fromCol, toCol),
 			Apply: func() (string, any, error) {
 				return applyItemCollectionMove(c, pathCopy, fromCopy, toCopy)
 			},
@@ -221,14 +234,29 @@ func sameStringSlice(left, right []string) bool {
 	return true
 }
 
-func itemCollectionNoOpReason(fromCol, toCol string) string {
+// itemCollectionNoOpReason explains why a move changed nothing. The code is the
+// stable part agents branch on; the message is the human line.
+func itemCollectionNoOpReason(fromCol, toCol string) map[string]any {
 	switch {
 	case fromCol != "" && toCol != "":
-		return "collection membership already matches requested move"
+		return map[string]any{
+			"code":    "already_moved",
+			"message": "collection membership already matches requested move",
+			"from":    fromCol,
+			"to":      toCol,
+		}
 	case fromCol != "":
-		return "item not in source collection"
+		return map[string]any{
+			"code":    "not_in_source_collection",
+			"message": "item not in source collection",
+			"from":    fromCol,
+		}
 	default:
-		return "already in target collection"
+		return map[string]any{
+			"code":    "already_member",
+			"message": "already in target collection",
+			"to":      toCol,
+		}
 	}
 }
 

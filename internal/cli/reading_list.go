@@ -3,6 +3,7 @@
 package cli
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"sort"
@@ -93,8 +94,14 @@ func newReadingListCmd(flags *rootFlags) *cobra.Command {
 			if len(queue) > 0 {
 				result.Oldest = queue[0].DateAdded
 			}
-			if flags.asJSON || !isTerminal(cmd.OutOrStdout()) {
-				return printCommandJSON(cmd.OutOrStdout(), result, flags)
+			if !wantsHumanTable(cmd.OutOrStdout(), flags) {
+				data, err := json.Marshal(result)
+				if err != nil {
+					return err
+				}
+				// The payload wraps a single `items` array, so --plain/--csv can
+				// render it as records; printCommandJSON force-cleared them.
+				return printOutputWithFlags(cmd.OutOrStdout(), json.RawMessage(data), flags)
 			}
 			return printReadingList(cmd, result)
 		},

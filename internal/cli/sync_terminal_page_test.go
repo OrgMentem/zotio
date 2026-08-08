@@ -54,7 +54,7 @@ func TestSyncResourceTerminalEmptyPageClearsCursorAndStoresCheckpoint(t *testing
 	if cursor != "" || total != 100 {
 		t.Fatalf("sync state cursor=%q total=%d, want cleared cursor and total=100", cursor, total)
 	}
-	if version, err := db.GetLibraryVersion("items"); err != nil || version != 200 {
+	if version, _, err := db.StoredLibraryVersion("items"); err != nil || version != 200 {
 		t.Fatalf("library version = %d (err %v), want 200 after terminal empty page", version, err)
 	}
 }

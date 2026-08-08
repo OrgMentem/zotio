@@ -53,25 +53,34 @@ func newItemsTagsListCmd(flags *rootFlags) *cobra.Command {
 }
 
 // runItemTagsRead is extracted from the generated command so list and the deprecated alias share one reader.
+//
+// It reads the item and projects data.tags rather than calling
+// /items/<key>/tags: that endpoint exists on the Web API but NOT on the Zotero
+// local desktop API, where reads are routed, so it returned 404 for every item.
+// Under --data-source local it failed differently, the path being parsed as
+// resource "items" with id "tags". Both planes carry the tags inside the item
+// payload, so projecting them works everywhere and needs no fallback.
 func runItemTagsRead(cmd *cobra.Command, flags *rootFlags, itemKey string) error {
 	c, err := flags.newClient()
 	if err != nil {
 		return err
 	}
 
-	path := "/items/{itemKey}/tags"
-	path = replacePathParam(path, "itemKey", itemKey)
-	params := map[string]string{}
-	data, prov, err := resolveRead(cmd.Context(), c, flags, "items", false, path, params, nil)
+	path := replacePathParam("/items/{itemKey}", "itemKey", itemKey)
+	item, prov, err := resolveRead(cmd.Context(), c, flags, "items", false, path, map[string]string{}, nil)
 	if err != nil {
 		return classifyAPIError(err, flags)
+	}
+	data, err := itemTagsFromPayload(item, itemKey)
+	if err != nil {
+		return err
 	}
 	// Print provenance to stderr for human-facing output
 	printProvenance(cmd, countResultItems(data), prov)
 	// For JSON output, wrap with provenance envelope before passing through flags.
 	// --select wins over --compact when both are set; --compact only runs when
 	// no explicit fields were requested.
-	if flags.asJSON || !isTerminal(cmd.OutOrStdout()) {
+	if wantsJSONEnvelope(cmd.OutOrStdout(), flags) {
 		filtered := data
 		if flags.selectFields != "" {
 			filtered = filterFields(filtered, flags.selectFields)
@@ -98,4 +107,33 @@ func runItemTagsRead(cmd *cobra.Command, flags *rootFlags, itemKey string) error
 		}
 	}
 	return printOutputWithFlags(cmd.OutOrStdout(), data, flags)
+}
+
+// itemTagsFromPayload projects an item's tags as a bare array, the shape both
+// planes agree on. A single-item read may arrive as the object itself or (from
+// the local store path) as a one-element array.
+func itemTagsFromPayload(item json.RawMessage, itemKey string) (json.RawMessage, error) {
+	var obj map[string]any
+	if err := json.Unmarshal(item, &obj); err != nil {
+		var arr []map[string]any
+		if arrErr := json.Unmarshal(item, &arr); arrErr != nil || len(arr) == 0 {
+			return nil, fmt.Errorf("reading tags for %s: unexpected item payload", itemKey)
+		}
+		obj = arr[0]
+	}
+	dataObj, ok := obj["data"].(map[string]any)
+	if !ok {
+		// Some paths return the item's data fields at the top level.
+		dataObj = obj
+	}
+	tags, ok := dataObj["tags"]
+	if !ok || tags == nil {
+		// An item with no tags is an empty list, not an error.
+		return json.RawMessage("[]"), nil
+	}
+	encoded, err := json.Marshal(tags)
+	if err != nil {
+		return nil, fmt.Errorf("encoding tags for %s: %w", itemKey, err)
+	}
+	return encoded, nil
 }

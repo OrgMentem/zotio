@@ -23,7 +23,7 @@ import (
 // mutationJournalRecorder, when non-nil, records applied mutation runs. It is
 // set only on the real CLI entry (Execute), so unit tests that drive
 // subcommands directly never write to the filesystem.
-var mutationJournalRecorder func(env mutation.Envelope) error
+var mutationJournalRecorder func(env *mutation.Envelope) error
 
 // journalDir is the per-install directory holding the append-only run journal,
 // alongside the synced store.
@@ -147,12 +147,14 @@ func ensureJournalLibraryMatches(entry mutation.JournalEntry) error {
 }
 
 // recordMutationJournal appends an entry for any run that applied at least one
-// change.
-func recordMutationJournal(env mutation.Envelope) error {
-	if env.Result == nil || env.Result.Summary.Applied == 0 {
+// change, and reports the resulting run ID back through the envelope so a caller
+// can undo its own write from the write's own response instead of scanning
+// `journal list` and guessing which run was its own by timestamp.
+func recordMutationJournal(env *mutation.Envelope) error {
+	if env == nil || env.Result == nil || env.Result.Summary.Applied == 0 {
 		return nil
 	}
-	entry, ok := mutation.BuildJournalEntry(env, time.Now())
+	entry, ok := mutation.BuildJournalEntry(*env, time.Now())
 	if !ok {
 		return nil
 	}
@@ -165,6 +167,11 @@ func recordMutationJournal(env mutation.Envelope) error {
 	if err := mutation.WriteEntry(dir, entry); err != nil {
 		return err
 	}
+	journal := map[string]any{"run_id": entry.RunID}
+	if entry.WorkflowRunID != "" {
+		journal["workflow_run_id"] = entry.WorkflowRunID
+	}
+	env.Journal = journal
 	return nil
 }
 

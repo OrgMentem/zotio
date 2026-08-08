@@ -47,12 +47,14 @@ func newItemsCollectionsOfCmd(flags *rootFlags) *cobra.Command {
 				rows = append(rows, itemCollectionRow{Key: key, Name: jsonStringField(collectionData, "name")})
 			}
 
-			if flags.asJSON || !isTerminal(cmd.OutOrStdout()) {
+			if !wantsHumanTable(cmd.OutOrStdout(), flags) {
 				data, err := json.Marshal(rows)
 				if err != nil {
 					return err
 				}
-				return printOutput(cmd.OutOrStdout(), json.RawMessage(data), true)
+				// Shared formatter, so --plain/--csv/--select are honoured here
+				// exactly as on every other read command.
+				return printOutputWithFlags(cmd.OutOrStdout(), json.RawMessage(data), flags)
 			}
 			return printItemCollectionsTable(cmd, rows)
 		},

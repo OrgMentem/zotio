@@ -189,7 +189,7 @@ func tailKnownResources() []string {
 // sync_state so it never collides with sync's own checkpoint.
 func emitChanges(ctx context.Context, c *client.Client, db *store.Store, resource, path string, sink DeliverSink, w io.Writer) (int, error) {
 	cursorKey := "tail:" + resource
-	cursor, _ := db.GetLibraryVersion(cursorKey)
+	cursor, _ := db.GetLibraryVersion(cursorKey, c.BaseURL)
 
 	params := map[string]string{}
 	if cursor > 0 {
@@ -287,7 +287,7 @@ func emitChanges(ctx context.Context, c *client.Client, db *store.Store, resourc
 	}
 
 	if newVer > cursor {
-		if err := db.SaveLibraryVersion(cursorKey, newVer); err != nil {
+		if err := db.SaveLibraryVersion(cursorKey, c.BaseURL, newVer); err != nil {
 			return emitted, fmt.Errorf("tail %s: saving cursor: %w", resource, err)
 		}
 	}

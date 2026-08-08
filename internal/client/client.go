@@ -230,6 +230,13 @@ func (c *Client) RateLimit() float64 {
 	return c.limiter.Rate()
 }
 
+// Plane identifies which Zotero API this client reads from. The local desktop API
+// and api.zotero.org number object versions independently, so anything persisting
+// a version cursor must record which plane issued it.
+func (c *Client) Plane() string {
+	return c.BaseURL
+}
+
 // public wrappers keep their signatures while using the client base context
 // (seeded from cmd.Context() via SetContext) so interrupts, per-command
 // deadlines, and MCP request cancellation all cancel their HTTP work.
@@ -534,7 +541,15 @@ func (c *Client) PatchWithHeaders(path string, body any, headers map[string]stri
 
 // do executes an HTTP request. headerOverrides, when non-nil, override global
 // RequiredHeaders for this specific request (used for per-endpoint API versioning).
-func (c *Client) doRequest(ctx context.Context, method, path string, params map[string]string, body any, headerOverrides map[string]string) (_ json.RawMessage, _ int, _ http.Header, retErr error) {
+func (c *Client) doRequest(ctx context.Context, method, path string, params map[string]string, body any, headerOverrides map[string]string) (json.RawMessage, int, http.Header, error) {
+	return c.doRequestOnBase(ctx, "", method, path, params, body, headerOverrides)
+}
+
+// doRequestOnBase is doRequest against an explicit base URL. An empty
+// baseOverride keeps the normal read/write classification in baseURLFor; only a
+// caller that must reach a specific plane (see GetFromWriteBaseWithVersion)
+// passes one.
+func (c *Client) doRequestOnBase(ctx context.Context, baseOverride, method, path string, params map[string]string, body any, headerOverrides map[string]string) (_ json.RawMessage, _ int, _ http.Header, retErr error) {
 	// all network construction below requires a
 	// non-nil context so callers can cancel request creation, dialing, and reads.
 	if ctx == nil {
@@ -553,7 +568,11 @@ func (c *Client) doRequest(ctx context.Context, method, path string, params map[
 			}
 		}
 	}()
-	targetURL := c.baseURLFor(ctx, method) + path
+	base := baseOverride
+	if base == "" {
+		base = c.baseURLFor(ctx, method)
+	}
+	targetURL := base + path
 
 	var bodyBytes []byte
 	bodyContentType := "application/json"
@@ -950,6 +969,83 @@ func (c *Client) GetWithVersionContext(ctx context.Context, path string, params 
 		return nil, 0, err
 	}
 	return respBody, parseLastModifiedVersion(hdr), nil
+}
+
+// GetFromWriteBaseWithVersion reads path from the plane writes go to, returning
+// the body and that plane's object version.
+//
+// Reads normally stay on BaseURL, but a key-based Zotero write cannot use the
+// read plane's version: Zotero requires an If-Unmodified-Since-Version
+// precondition, version numbers are per-plane, and the local API reports an
+// empty version (and empty Last-Modified-Version header) for items it has never
+// pushed upstream. Both coerce to 0, i.e. no precondition, which Zotero rejects.
+// The only source of the write plane's version is the write plane.
+//
+// It fails rather than falling back to the read plane when the write route
+// cannot be resolved: a precondition read from the wrong plane is worse than a
+// failed write, because the version spaces are unrelated and Zotero would either
+// reject the PATCH with an opaque 412 or guard it against a meaningless number.
+func (c *Client) GetFromWriteBaseWithVersion(ctx context.Context, path string, params map[string]string) (json.RawMessage, int, error) {
+	if ctx == nil {
+		ctx = c.baseCtx()
+	}
+	base, err := c.writeBaseForRead(ctx)
+	if err != nil {
+		return nil, 0, err
+	}
+	respBody, _, hdr, err := c.doRequestOnBase(ctx, base, "GET", path, params, nil, nil)
+	if err != nil {
+		return nil, 0, err
+	}
+	version := parseLastModifiedVersion(hdr)
+	if version == 0 {
+		// Zotero also carries the version as an object property; prefer the
+		// header but do not give up the precondition when only the body has it.
+		version = objectVersion(respBody)
+	}
+	return respBody, version, nil
+}
+
+// writeBaseForRead resolves the base a version-bearing read must use, or errors.
+// An empty return means BaseURL is already the write plane — either there is no
+// hybrid routing, or the CLI's eager resolution already flattened the resolved
+// write base into BaseURL and cleared the resolver.
+func (c *Client) writeBaseForRead(ctx context.Context) (string, error) {
+	c.writeRouteMu.RLock()
+	base, pending := c.WriteBaseURL, c.ResolveWriteBase != nil
+	c.writeRouteMu.RUnlock()
+	if base != "" {
+		return base, nil
+	}
+	if !pending {
+		return "", nil
+	}
+	// Hybrid routing is configured but unresolved. Resolve it now; a failure
+	// here must not degrade into reading the local plane.
+	c.resolveWriteRoute(ctx)
+	c.writeRouteMu.RLock()
+	base = c.WriteBaseURL
+	c.writeRouteMu.RUnlock()
+	if base == "" {
+		return "", errors.New("could not resolve the Zotero Web API write base; refusing to take a write precondition from the local read plane")
+	}
+	return base, nil
+}
+
+// objectVersion reads the "version" property from a Zotero object response.
+// Tolerates the empty string the local API returns for never-pushed objects.
+func objectVersion(body json.RawMessage) int {
+	var object struct {
+		Version json.Number `json:"version"`
+	}
+	if err := json.Unmarshal(body, &object); err != nil {
+		return 0
+	}
+	version, err := object.Version.Int64()
+	if err != nil {
+		return 0
+	}
+	return int(version)
 }
 
 // GetWithHeader performs a GET and returns the body plus the trimmed value of the

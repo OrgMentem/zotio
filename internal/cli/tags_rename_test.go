@@ -81,6 +81,17 @@ func newTagRenameCommandTestServer(t *testing.T, keys []string) *tagRenameComman
 				_, _ = fmt.Fprintf(w, `{"key":%q,"version":%d,"data":{"key":%q,"tags":[{"tag":"foo","type":0},{"tag":"keep","type":1}]}}`, key, ts.versions[key], key)
 			}
 			_, _ = w.Write([]byte("]"))
+		case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/users/0/items/"):
+			// Apply re-reads the item from the write plane to resolve the
+			// precondition version.
+			key := strings.TrimPrefix(r.URL.Path, "/users/0/items/")
+			version, ok := ts.versions[key]
+			if !ok {
+				http.Error(w, "unknown item", http.StatusNotFound)
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = fmt.Fprintf(w, `{"key":%q,"version":%d,"data":{"key":%q,"tags":[{"tag":"foo","type":0},{"tag":"keep","type":1}]}}`, key, version, key)
 		case r.Method == http.MethodPatch && strings.HasPrefix(r.URL.Path, "/users/0/items/"):
 			key := strings.TrimPrefix(r.URL.Path, "/users/0/items/")
 			var body map[string]any
@@ -174,9 +185,12 @@ func TestListTagRenameUpdatesWalksMultiplePages(t *testing.T) {
 
 	c := client.New(&config.Config{BaseURL: srv.URL + "/users/0"}, 5*time.Second, 0)
 	c.NoCache = true
-	updates, err := listTagRenameUpdates(c, "old", "new", 2)
+	updates, matched, err := listTagRenameUpdates(c, "old", "new", 2)
 	if err != nil {
 		t.Fatalf("listTagRenameUpdates: %v", err)
+	}
+	if matched != len(updates) {
+		t.Errorf("matched = %d, want %d: every paged item carries the tag here", matched, len(updates))
 	}
 
 	wantRequests := []tagRenamePageRequest{{Start: 0, Limit: 2}, {Start: 2, Limit: 2}, {Start: 4, Limit: 2}}
@@ -195,12 +209,8 @@ func TestListTagRenameUpdatesWalksMultiplePages(t *testing.T) {
 		if wantKey := "K" + strconv.Itoa(i); update.key != wantKey {
 			t.Fatalf("update %d key = %q, want %q", i, update.key, wantKey)
 		}
-		raw, err := json.Marshal(update.tags)
-		if err != nil {
-			t.Fatalf("marshal tags: %v", err)
-		}
-		if string(raw) != `[{"tag":"new","type":0}]` {
-			t.Fatalf("update %d tags = %s, want renamed tag only", i, raw)
+		if mutationExpectedVersion(update.version) == 0 {
+			t.Fatalf("update %d recorded no read-plane version: %#v", i, update.version)
 		}
 	}
 }
@@ -346,8 +356,8 @@ func TestRenamedItemTagsDeduplicatesByExactName(t *testing.T) {
 // rename never flips manual <-> automatic.
 func TestBuildTagRenameOpsEmitsInvertibleTagsChange(t *testing.T) {
 	updates := []tagRenameUpdate{
-		{key: "K1", version: 5, tags: []any{map[string]any{"tag": "bar", "type": 0}}, tagType: 0},
-		{key: "K2", version: 7, tags: []any{map[string]any{"tag": "bar", "type": 1}}, tagType: 1},
+		{key: "K1", version: 5, tagType: 0},
+		{key: "K2", version: 7, tagType: 1},
 	}
 	ops := buildTagRenameOps(updates, "foo", "bar", func(tagRenameUpdate) (string, any, error) {
 		return "applied", nil, nil

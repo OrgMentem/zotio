@@ -6,6 +6,7 @@ package cli
 
 import (
 	"bytes"
+	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -35,7 +36,7 @@ func deleteVersionServer(t *testing.T, version string) (*httptest.Server, *strin
 		case http.MethodGet:
 			w.Header().Set("Last-Modified-Version", version)
 			_, _ = w.Write([]byte(`{"key":"K","version":` + version + `,"data":{}}`))
-		case http.MethodDelete:
+		case http.MethodDelete, http.MethodPatch:
 			*sent = r.Header.Get("If-Unmodified-Since-Version")
 			w.WriteHeader(http.StatusNoContent)
 		default:
@@ -45,13 +46,71 @@ func deleteVersionServer(t *testing.T, version string) (*httptest.Server, *strin
 	return srv, sent
 }
 
-func TestItemsDeleteSendsVersionHeader(t *testing.T) {
-	srv, sent := deleteVersionServer(t, "42")
+// `items delete` documents a trash operation and `items restore` reverses one, so
+// it must PATCH deleted=1. It previously issued a hard DELETE, destroying the
+// item and its child attachments with nothing in the trash to restore.
+func TestItemsDeleteTrashesRatherThanDestroying(t *testing.T) {
+	var methods []string
+	var body map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		methods = append(methods, r.Method)
+		switch r.Method {
+		case http.MethodGet:
+			w.Header().Set("Last-Modified-Version", "42")
+			_, _ = w.Write([]byte(`{"key":"K","version":42,"data":{}}`))
+		case http.MethodPatch:
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Errorf("decode patch body: %v", err)
+			}
+			w.WriteHeader(http.StatusNoContent)
+		default:
+			http.Error(w, "unexpected", http.StatusMethodNotAllowed)
+		}
+	}))
 	defer srv.Close()
+
 	cmd := newItemsDeleteCmd(&rootFlags{asJSON: true, yes: true, maxChanges: -1})
 	cmd.SilenceErrors, cmd.SilenceUsage = true, true
 	if err := runDeleteCmd(t, cmd, srv.URL, "K"); err != nil {
 		t.Fatalf("items delete: %v", err)
+	}
+	for _, m := range methods {
+		if m == http.MethodDelete {
+			t.Fatalf("items delete issued a hard DELETE; methods = %v", methods)
+		}
+	}
+	if got := body["deleted"]; got != float64(1) {
+		t.Fatalf("patch body = %#v, want deleted=1", body)
+	}
+}
+
+// The permanent form is irreversible, so it must not apply without the gate the
+// --allow-destructive help text already advertises for "permanent delete".
+func TestItemsDeletePermanentRequiresDestructiveGate(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodDelete {
+			t.Error("permanent delete applied without --allow-destructive")
+		}
+		w.Header().Set("Last-Modified-Version", "42")
+		_, _ = w.Write([]byte(`{"key":"K","version":42,"data":{}}`))
+	}))
+	defer srv.Close()
+
+	cmd := newItemsDeleteCmd(&rootFlags{asJSON: true, yes: true, maxChanges: -1})
+	cmd.SilenceErrors, cmd.SilenceUsage = true, true
+	// Not a fatal error path: the engine reports the op as blocked rather than
+	// applying it. What matters is that no DELETE reached the server.
+	_ = runDeleteCmd(t, cmd, srv.URL, "--permanent", "K")
+}
+
+// With the gate, --permanent still does the hard delete and sends the precondition.
+func TestItemsDeletePermanentSendsVersionHeader(t *testing.T) {
+	srv, sent := deleteVersionServer(t, "42")
+	defer srv.Close()
+	cmd := newItemsDeleteCmd(&rootFlags{asJSON: true, yes: true, allowDestructive: true, maxChanges: -1})
+	cmd.SilenceErrors, cmd.SilenceUsage = true, true
+	if err := runDeleteCmd(t, cmd, srv.URL, "--permanent", "K"); err != nil {
+		t.Fatalf("items delete --permanent: %v", err)
 	}
 	if *sent != "42" {
 		t.Errorf("If-Unmodified-Since-Version = %q, want 42", *sent)
@@ -219,7 +278,11 @@ func TestItemMutationsPreviewByDefault(t *testing.T) {
 			if requests != 0 {
 				t.Fatalf("%s issued %d HTTP requests in preview mode, want 0", tc.name, requests)
 			}
-			if !bytes.Contains(out.Bytes(), []byte(`"dry_run"`)) {
+			// items delete now renders the shared mutation envelope like every
+			// other mutating command, which marks a preview with mode/preview_reason
+			// rather than the bespoke dry_run flag the others still emit.
+			if !bytes.Contains(out.Bytes(), []byte(`"dry_run"`)) &&
+				!bytes.Contains(out.Bytes(), []byte(`"mode": "preview"`)) {
 				t.Fatalf("%s preview output missing preview marker: %s", tc.name, out.String())
 			}
 		})

@@ -104,21 +104,65 @@ func TestQueryItemsAuditSummary_SingleScan(t *testing.T) {
 	if err != nil {
 		t.Fatalf("queryItemsAuditSummary: %v", err)
 	}
+	// P1, P2, P3 are top-level; A2 is P2's attachment. Scoring A2 for fields an
+	// attachment cannot have is what made the counts exceed the library size.
+	if summary.TopLevelItems != 3 {
+		t.Errorf("TopLevelItems = %d, want 3", summary.TopLevelItems)
+	}
 	// P1 + P3 lack a PDF (P2 has one).
 	if summary.MissingPDF != 2 {
 		t.Errorf("MissingPDF = %d, want 2", summary.MissingPDF)
 	}
-	// P1, A2, P3 lack an abstract; P2 has one.
-	if summary.MissingAbstract != 3 {
-		t.Errorf("MissingAbstract = %d, want 3", summary.MissingAbstract)
+	// P1 and P3 lack an abstract; P2 has one; A2 is not counted.
+	if summary.MissingAbstract != 2 {
+		t.Errorf("MissingAbstract = %d, want 2 (A2 is an attachment)", summary.MissingAbstract)
 	}
 	// Only P1 is a DOI-bearing type without a DOI (P2 has one; book/attachment excluded).
 	if summary.MissingDOI != 1 {
 		t.Errorf("MissingDOI = %d, want 1", summary.MissingDOI)
 	}
-	// P1, A2, P3 have no tags; P2 has one.
-	if summary.MissingTags != 3 {
-		t.Errorf("MissingTags = %d, want 3", summary.MissingTags)
+	// P1 and P3 have no tags; P2 has one; A2 is not counted.
+	if summary.MissingTags != 2 {
+		t.Errorf("MissingTags = %d, want 2 (A2 is an attachment)", summary.MissingTags)
+	}
+	// No count may exceed the denominator.
+	for name, count := range map[string]int{
+		"missing_abstract": summary.MissingAbstract,
+		"missing_doi":      summary.MissingDOI,
+		"missing_tags":     summary.MissingTags,
+		"missing_citation": summary.MissingCitation,
+	} {
+		if count > summary.TopLevelItems {
+			t.Errorf("%s = %d exceeds the %d top-level items it is measured against", name, count, summary.TopLevelItems)
+		}
+	}
+}
+
+// The per-check listings must agree with the summary, or --missing-tags lists
+// items the summary never counted.
+func TestItemsAuditRowQueriesSkipChildItems(t *testing.T) {
+	db := seedAuditStore(t)
+
+	abstracts, err := queryMissingAbstractItems(db, 0, "")
+	if err != nil {
+		t.Fatalf("queryMissingAbstractItems: %v", err)
+	}
+	tags, err := queryMissingTagsItems(db, 0)
+	if err != nil {
+		t.Fatalf("queryMissingTagsItems: %v", err)
+	}
+	for name, rows := range map[string][]map[string]any{
+		"missing-abstract": abstracts,
+		"missing-tags":     tags,
+	} {
+		if len(rows) != 2 {
+			t.Errorf("%s returned %d rows, want 2 top-level items: %v", name, len(rows), rows)
+		}
+		for _, row := range rows {
+			if key := sqlStringValue(row["key"]); key == "A2" {
+				t.Errorf("%s listed attachment A2", name)
+			}
+		}
 	}
 }
 

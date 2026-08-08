@@ -530,13 +530,18 @@ func archiveStatus(ctx context.Context) (map[string]any, error) {
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
-		ver, verErr := db.GetLibraryVersion(t)
+		ver, cursorSource, verErr := db.StoredLibraryVersion(t)
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
 		entry := map[string]any{
 			"count":           counts[t],
 			"library_version": ver,
+		}
+		if cursorSource != "" {
+			// Version numbers are per-plane; naming the issuing plane keeps a
+			// checkpoint from being read as comparable across them.
+			entry["cursor_source"] = cursorSource
 		}
 		if !lastSynced.IsZero() {
 			entry["last_synced_at"] = lastSynced.UTC().Format("2006-01-02T15:04:05Z07:00")

@@ -340,12 +340,14 @@ func TestItemsTagsBulkAddKeysFrom(t *testing.T) {
 }
 
 func TestItemsTagsBareReadDeprecatedAlias(t *testing.T) {
+	// Tags are read out of the item payload: /items/<key>/tags exists on the Web
+	// API but 404s on the Zotero local desktop API, where reads are routed.
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodGet || r.URL.Path != "/users/0/items/K1/tags" {
-			http.Error(w, "unexpected request", http.StatusNotFound)
+		if r.Method != http.MethodGet || r.URL.Path != "/users/0/items/K1" {
+			http.Error(w, "unexpected request for "+r.URL.Path, http.StatusNotFound)
 			return
 		}
-		_, _ = w.Write([]byte(`[{"tag":"existing","type":0}]`))
+		_, _ = w.Write([]byte(`{"key":"K1","version":42,"data":{"key":"K1","tags":[{"tag":"existing","type":0}]}}`))
 	}))
 	t.Cleanup(srv.Close)
 	t.Setenv("ZOTERO_BASE_URL", srv.URL+"/users/0")

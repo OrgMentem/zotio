@@ -73,6 +73,10 @@ func applyMirrorWriteThrough(env *mutation.Envelope) {
 			warnMirrorUpdateFailed(it.Key, err)
 			continue
 		}
+		// The read plane (local desktop API) does not know about this write until
+		// Zotero syncs it down from zotero.org. Without a marker the next `sync`
+		// re-applies the pre-write copy and rolls the mirror back.
+		recordPendingWrite(db, it.Key, changesByOp[it.OpID])
 		it.Item = item // read-your-writes: post-write state in the envelope
 	}
 }

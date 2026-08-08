@@ -1270,7 +1270,7 @@
   },
   {
     "name": "items_add_to_collection",
-    "description": "Add an item to a named collection, creating it when needed",
+    "description": "Add an item to a top-level collection identified by name, creating the\ncollection when no collection of that name exists.\n\nPrefer this when you know the collection by name. When you already have the\ncollection key, or need to move many items at once or remove a membership, use\n'zotio items move --to \u003ccollectionKey\u003e' (also --from, --keys-from); this command\nresolves the name and then delegates the membership change to it.\n\nApply mode journals two writes for one invocation when the collection has to be\ncreated — a collection create plus an item move — because two writes happen.",
     "inputSchema": {
       "properties": {
         "allow-destructive": {
@@ -1544,7 +1544,7 @@
   },
   {
     "name": "items_delete",
-    "description": "Delete an item (moves to trash)",
+    "description": "Move an item to the trash, where 'zotio items restore' can bring it back.\n\nThis is a reversible trash operation (the item's \"deleted\" flag is set), matching\nwhat 'zotio items trash' lists and 'zotio items restore' reverses.\n\n--permanent instead destroys the item and its child attachments outright. That\ncannot be undone by 'items restore' and requires --allow-destructive.",
     "inputSchema": {
       "properties": {
         "allow-destructive": {
@@ -1570,6 +1570,10 @@
         "max-failures": {
           "description": "With --continue-on-error, stop after this many failures (0 = unlimited) (default: 0)",
           "type": "number"
+        },
+        "permanent": {
+          "description": "Destroy the item and its attachments outright instead of trashing it (irreversible; requires --allow-destructive) (default: false)",
+          "type": "boolean"
         },
         "yes": {
           "description": "Skip confirmation prompts (for agents and scripts) (default: false)",
@@ -1884,7 +1888,7 @@
   },
   {
     "name": "items_move",
-    "description": "Add, remove, or move item collection memberships",
+    "description": "Add, remove, or move item collection memberships by collection key.\n\nUse --to to add, --from to remove, and both together to move between collections.\nAccepts many item keys, or --keys-from to read them from a file or stdin.\n\nTo file an item into a collection you know by name rather than by key (creating\nthe collection when it does not exist), use 'zotio items add-to-collection\n\u003citemKey\u003e --collection-name \u003cname\u003e'. That command resolves the name to a key and\nthen delegates the membership change here, so guards and idempotency are shared.",
     "inputSchema": {
       "properties": {
         "allow-destructive": {
@@ -3080,7 +3084,7 @@
   },
   {
     "name": "sync",
-    "description": "Sync data from the API into a local SQLite database. Supports resumable\nincremental sync (only fetches new data since last sync) and full resync.\nOnce synced, use the 'search' command for instant full-text search.\n\nExit codes \u0026 warnings:\n  Resources the API denies access to (HTTP 403, or HTTP 400 with an\n  access-policy body) are reported as warnings rather than failing the\n  run. In --json mode each is emitted as a {\"event\":\"sync_warning\",...}\n  line carrying status, reason, and message fields, and a final\n  {\"event\":\"sync_summary\",...} aggregates the run.\n\n  Exit 0 when at least one resource synced and no resource flagged in\n  the spec as critical (x-critical: true) failed. Pass --strict to exit\n  non-zero on any per-resource failure. Exit is always\n  non-zero when every selected resource failed, regardless of --strict.",
+    "description": "Mirror data from the Zotero read API into a local SQLite database. One\ndirection only: it pulls into the mirror and never writes to Zotero.\n\nThe read API is normally the Zotero desktop local API (http://localhost:23119),\nNOT api.zotero.org — so this mirrors what the desktop app currently holds, which\nlags your cloud library until Zotero itself syncs. 'zotio doctor' names the plane\neach cursor came from under cache.resources[].cursor_source. Version numbers are\nper-plane, so changing the configured base URL discards the cursor and resyncs.\n\nSupports resumable incremental sync (only fetches new data since the last sync)\nand full resync (--full, which also discards stored per-row versions).\nOnce synced, use the 'search' command for instant full-text search.\n\nExit codes \u0026 warnings:\n  Resources the API denies access to (HTTP 403, or HTTP 400 with an\n  access-policy body) are reported as warnings rather than failing the\n  run. In --json mode each is emitted as a {\"event\":\"sync_warning\",...}\n  line carrying status, reason, and message fields, and a final\n  {\"event\":\"sync_summary\",...} aggregates the run.\n\n  Exit 0 when at least one resource synced and no resource flagged in\n  the spec as critical (x-critical: true) failed. Pass --strict to exit\n  non-zero on any per-resource failure. Exit is always\n  non-zero when every selected resource failed, regardless of --strict.",
     "inputSchema": {
       "properties": {
         "allow-destructive": {

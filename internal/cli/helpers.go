@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"text/tabwriter"
 	"time"
@@ -644,6 +645,12 @@ func printOutputWithFlags(w io.Writer, data json.RawMessage, flags *rootFlags) e
 	if flags.csv {
 		return printCSV(w, data)
 	}
+	// --plain: tab-separated text
+	if flags.plain {
+		// An explicit --select means the caller chose the columns; otherwise the
+		// structural wrapper fields are dropped so a row stays readable.
+		return printPlain(w, data, flags.selectFields != "")
+	}
 	return printOutput(w, data, flags.asJSON)
 }
 
@@ -819,6 +826,181 @@ func csvSafeCell(s string) string {
 	}
 }
 
+// printPlain renders tab-separated records for --plain: a header line, then one
+// line per record. Before this the flag only suppressed the human table and fell
+// through to the shared JSON path, so --plain silently emitted JSON.
+//
+// Cells are NOT truncated the way table cells are: --plain is a machine format
+// feeding cut/awk, so a 60-character display truncation would hand the caller
+// quietly wrong values.
+func printPlain(w io.Writer, data json.RawMessage, explicitFields bool) error {
+	var records []json.RawMessage
+	if err := json.Unmarshal(data, &records); err == nil {
+		return printPlainRecords(w, records, explicitFields)
+	}
+	var obj map[string]json.RawMessage
+	if err := json.Unmarshal(data, &obj); err == nil {
+		// Read commands wrap results in a provenance envelope
+		// ({"results": [...], "meta": {...}}); render the records, not the wrapper.
+		if nested, ok := extractPaginatedItems(obj); ok {
+			return printPlainRecords(w, nested, explicitFields)
+		}
+		// An object holding several sibling arrays (e.g. items audit with more
+		// than one check) has no single record list. Rendering it as one row
+		// would put a whole JSON array in each cell, which is worse than the
+		// format the caller asked for being unavailable: emit JSON and say so.
+		if countArrayFields(obj) > 1 {
+			fmt.Fprintln(os.Stderr, "note: --plain has no tabular form for this response; emitting JSON")
+			return printOutput(w, data, true)
+		}
+		return printPlainRecords(w, []json.RawMessage{data}, explicitFields)
+	}
+	// Scalar or non-JSON payload (e.g. a plain-text file URL): pass it through.
+	var scalar any
+	if err := json.Unmarshal(data, &scalar); err == nil {
+		// Decode first so a JSON string does not print its own quotes.
+		fmt.Fprintln(w, plainCell(scalar))
+		return nil
+	}
+	fmt.Fprintln(w, plainCell(strings.TrimSpace(string(data))))
+	return nil
+}
+
+// countArrayFields reports how many top-level fields hold a JSON array.
+func countArrayFields(obj map[string]json.RawMessage) int {
+	count := 0
+	for _, value := range obj {
+		var arr []json.RawMessage
+		if json.Unmarshal(value, &arr) == nil {
+			count++
+		}
+	}
+	return count
+}
+
+func printPlainRecords(w io.Writer, records []json.RawMessage, explicitFields bool) error {
+	if len(records) == 0 {
+		return nil
+	}
+	items := make([]map[string]any, 0, len(records))
+	scalars := 0
+	for _, record := range records {
+		var obj map[string]any
+		if err := json.Unmarshal(record, &obj); err != nil {
+			scalars++
+			continue
+		}
+		items = append(items, obj)
+	}
+	// An array of scalars (e.g. collection keys) has no columns: one value per
+	// line is the useful shape. A mixed array cannot be rendered as records
+	// without silently dropping the scalars, so it takes the same path.
+	if len(items) == 0 || scalars > 0 {
+		for _, record := range records {
+			var value any
+			if err := json.Unmarshal(record, &value); err != nil {
+				return fmt.Errorf("rendering plain output: %w", err)
+			}
+			fmt.Fprintln(w, plainCell(value))
+		}
+		return nil
+	}
+
+	items = flattenResourceEnvelopesForTable(items)
+	headers := plainHeaders(items, explicitFields)
+	fmt.Fprintln(w, strings.Join(headers, "\t"))
+	cells := make([]string, len(headers))
+	for _, item := range items {
+		for i, header := range headers {
+			cells[i] = plainCell(item[header])
+		}
+		fmt.Fprintln(w, strings.Join(cells, "\t"))
+	}
+	return nil
+}
+
+// plainHeaders keeps the table column order for the fields the first record has,
+// then appends any field only later records carry so every row stays rectangular.
+func plainHeaders(items []map[string]any, explicitFields bool) []string {
+	headers := plainBibliographicFields(prioritizeAllHeaders(items[0]), explicitFields)
+	seen := make(map[string]bool, len(headers))
+	for _, header := range headers {
+		seen[header] = true
+	}
+	var extra []string
+	for _, item := range items[1:] {
+		for field := range item {
+			if !seen[field] {
+				seen[field] = true
+				extra = append(extra, field)
+			}
+		}
+	}
+	sort.Strings(extra)
+	return append(headers, plainBibliographicFields(extra, explicitFields)...)
+}
+
+// plainStructuralFields are the Zotero response wrappers that carry no
+// bibliographic data. In --plain they rendered as whole JSON objects inside a
+// single cell, pushing item rows past 2 KB across ~35 columns. They are dropped
+// unless the caller named fields explicitly with --select, which always wins.
+var plainStructuralFields = map[string]bool{
+	"library":   true,
+	"links":     true,
+	"meta":      true,
+	"relations": true,
+}
+
+func plainBibliographicFields(fields []string, explicitFields bool) []string {
+	if explicitFields {
+		return fields
+	}
+	kept := fields[:0]
+	for _, field := range fields {
+		if plainStructuralFields[field] {
+			continue
+		}
+		kept = append(kept, field)
+	}
+	return kept
+}
+
+// plainCell renders one value losslessly on a single line. Tabs and newlines
+// inside a value would shift columns or split the record, so they collapse to
+// spaces before the control-character sanitizer runs.
+func plainCell(v any) string {
+	var s string
+	switch val := v.(type) {
+	case nil:
+		s = ""
+	case string:
+		s = val
+	case float64:
+		if val == float64(int64(val)) {
+			s = strconv.FormatInt(int64(val), 10)
+		} else {
+			s = strconv.FormatFloat(val, 'f', -1, 64)
+		}
+	case bool:
+		s = strconv.FormatBool(val)
+	default:
+		encoded, err := json.Marshal(val)
+		if err != nil {
+			s = fmt.Sprintf("%v", val)
+		} else {
+			s = string(encoded)
+		}
+	}
+	s = strings.Map(func(r rune) rune {
+		switch r {
+		case '\t', '\n', '\r':
+			return ' '
+		}
+		return r
+	}, s)
+	return sanitizeForTerminal(s)
+}
+
 // printOutput auto-detects arrays and renders as tables, or prints raw JSON for objects.
 func printOutput(w io.Writer, data json.RawMessage, asJSON bool) error {
 	if !asJSON && !isTerminal(w) {
@@ -931,6 +1113,27 @@ func wantsHumanTable(w io.Writer, flags *rootFlags) bool {
 		return false
 	}
 	return isTerminal(w)
+}
+
+// wantsJSONEnvelope reports whether a read command should emit its JSON
+// provenance envelope: requested with --json, or implied because stdout is not a
+// terminal.
+//
+// An explicitly named competing format wins over the piped-stdout default.
+// --plain and --csv ARE machine formats, so treating "not a terminal" as "must
+// be JSON" silently substituted JSON for the format the caller asked for — the
+// worst of the three options.
+func wantsJSONEnvelope(w io.Writer, flags *rootFlags) bool {
+	if flags == nil {
+		return !isTerminal(w)
+	}
+	if flags.asJSON {
+		return true
+	}
+	if flags.plain || flags.csv {
+		return false
+	}
+	return !isTerminal(w)
 }
 
 func printAutoTable(w io.Writer, items []map[string]any) error {

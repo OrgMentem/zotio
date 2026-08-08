@@ -66,7 +66,7 @@ func TestSyncFulltext_StoresAndIndexes(t *testing.T) {
 		t.Error("Search(hello) found no full-text rows")
 	}
 
-	if v, _ := db.GetLibraryVersion("fulltext"); v != 3 {
+	if v, _, _ := db.StoredLibraryVersion("fulltext"); v != 3 {
 		t.Errorf("fulltext cursor = %d, want 3", v)
 	}
 }
@@ -166,14 +166,14 @@ func TestSyncFulltext_FetchFailureRetainsCheckpointAndSuccessfulRows(t *testing.
 		t.Fatalf("open store: %v", err)
 	}
 	defer db.Close()
-	if err := db.SaveLibraryVersion("fulltext", 4); err != nil {
+	if err := db.SaveLibraryVersion("fulltext", c.Plane(), 4); err != nil {
 		t.Fatalf("seed fulltext checkpoint: %v", err)
 	}
 
 	if err := syncFulltext(context.Background(), c, db, false); err == nil {
 		t.Fatal("syncFulltext succeeded despite attachment fetch failure")
 	}
-	if got, err := db.GetLibraryVersion("fulltext"); err != nil || got != 4 {
+	if got, err := db.GetLibraryVersion("fulltext", c.Plane()); err != nil || got != 4 {
 		t.Fatalf("fulltext checkpoint = %d, %v; want unchanged 4", got, err)
 	}
 	data, ok, err := db.Fulltext("ATTOK")
@@ -202,7 +202,7 @@ func TestSyncFulltext_PersistenceFailureRetainsCheckpoint(t *testing.T) {
 		t.Fatalf("open store: %v", err)
 	}
 	defer db.Close()
-	if err := db.SaveLibraryVersion("fulltext", 4); err != nil {
+	if err := db.SaveLibraryVersion("fulltext", c.Plane(), 4); err != nil {
 		t.Fatalf("seed fulltext checkpoint: %v", err)
 	}
 	triggerDB, err := sql.Open("sqlite", dbPath)
@@ -223,7 +223,7 @@ func TestSyncFulltext_PersistenceFailureRetainsCheckpoint(t *testing.T) {
 	if err := syncFulltext(context.Background(), c, db, false); err == nil {
 		t.Fatal("syncFulltext succeeded despite persistence failure")
 	}
-	if got, err := db.GetLibraryVersion("fulltext"); err != nil || got != 4 {
+	if got, err := db.GetLibraryVersion("fulltext", c.Plane()); err != nil || got != 4 {
 		t.Fatalf("fulltext checkpoint = %d, %v; want unchanged 4", got, err)
 	}
 }

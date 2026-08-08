@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"zotio/internal/mutation"
@@ -42,6 +43,25 @@ func duplicateTagAuditItems() []json.RawMessage {
 		json.RawMessage(`{"key":"K2","version":2,"data":{"key":"K2","tags":[{"tag":"Data Science","type":0},{"tag":"data science","type":0}]}}`),
 		json.RawMessage(`{"key":"K3","version":3,"data":{"key":"K3","tags":[{"tag":"Data  Science","type":0}]}}`),
 	}
+}
+
+// serveTagAuditFixItem answers the single-item read apply performs to resolve
+// the write plane's precondition version. Returns false for non-GET so callers
+// keep their own PATCH handling.
+func serveTagAuditFixItem(w http.ResponseWriter, r *http.Request, items []json.RawMessage) bool {
+	if r.Method != http.MethodGet {
+		return false
+	}
+	key := strings.TrimPrefix(r.URL.Path, "/users/0/items/")
+	for _, item := range items {
+		if jsonStringField(item, "key") == key {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write(item)
+			return true
+		}
+	}
+	http.Error(w, "unknown item "+key, http.StatusNotFound)
+	return true
 }
 
 func runTagsAuditFixCmd(t *testing.T, flags *rootFlags, baseURL string) (mutation.Envelope, string, error) {
@@ -104,7 +124,11 @@ func TestTagsAuditFixPreviewPlansRenamesWithoutWrites(t *testing.T) {
 func TestTagsAuditFixApplyRenamesEachAlias(t *testing.T) {
 	seedTagsAuditFixStore(t, duplicateTagAuditItems())
 	patches := map[string]map[string]any{}
+	items := duplicateTagAuditItems()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if serveTagAuditFixItem(w, r, items) {
+			return
+		}
 		switch r.Method {
 		case http.MethodPatch:
 			var body map[string]any
@@ -179,7 +203,11 @@ func largeTagAuditItems() []json.RawMessage {
 func TestTagsAuditFixMaxChangesCountsItemWrites(t *testing.T) {
 	seedTagsAuditFixStore(t, largeTagAuditItems())
 	patches := 0
+	items := largeTagAuditItems()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if serveTagAuditFixItem(w, r, items) {
+			return
+		}
 		if r.Method != http.MethodPatch {
 			http.Error(w, "unexpected request", http.StatusMethodNotAllowed)
 			return

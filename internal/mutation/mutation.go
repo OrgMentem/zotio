@@ -310,6 +310,25 @@ func apply(op Op) (string, any, error) {
 	return op.Apply()
 }
 
+// reasonText renders a result reason for human output. Reasons carry a machine
+// code for agents, so a structured reason must not print as a raw Go map: when
+// it supplies a "message", that is the human form.
+func reasonText(reason any) string {
+	switch value := reason.(type) {
+	case nil:
+		return ""
+	case string:
+		return value
+	case map[string]any:
+		if message, ok := value["message"].(string); ok {
+			return message
+		}
+		return fmt.Sprintf("%v", value)
+	default:
+		return fmt.Sprintf("%v", value)
+	}
+}
+
 // Rows renders the envelope's operations/results into prioritized display lines
 // (failures and destructive ops first). The cli adapter prints these.
 func Rows(env Envelope) []string {
@@ -337,8 +356,8 @@ func Rows(env Envelope) []string {
 				p = 2
 			}
 			line := fmt.Sprintf("  [%s] %s", item.Status, item.Key)
-			if item.Reason != nil {
-				line += fmt.Sprintf(" — %v", item.Reason)
+			if reason := reasonText(item.Reason); reason != "" {
+				line += " — " + reason
 			}
 			rows = append(rows, row{priority: p, text: line})
 		}

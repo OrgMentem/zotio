@@ -24,54 +24,128 @@ func TestSyncResourceVersionBasedIncremental(t *testing.T) {
 	db := syncTestOpenStore(t)
 	defer db.Close()
 
-	// First sync: server reports Last-Modified-Version; syncResource stores it.
-	var firstSince string
-	srv1 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		firstSince = r.URL.Query().Get("since")
-		w.Header().Set("Last-Modified-Version", "100")
+	// One server for the whole sequence: version cursors are per-plane, so
+	// changing the base URL between passes would (correctly) discard the
+	// checkpoint and is not what this test is about.
+	var sinceSeen []string
+	version := "100"
+	body := `[{"id":"a"},{"id":"b"}]`
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		sinceSeen = append(sinceSeen, r.URL.Query().Get("since"))
+		w.Header().Set("Last-Modified-Version", version)
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`[{"id":"a"},{"id":"b"}]`))
+		_, _ = w.Write([]byte(body))
 	}))
-	defer srv1.Close()
-	if res := syncResource(context.Background(), syncTestClient(srv1.URL), db, "items", 0, false, 0, false); res.Err != nil {
+	defer srv.Close()
+
+	// First sync: no checkpoint yet, and the reported version is stored.
+	if res := syncResource(context.Background(), syncTestClient(srv.URL), db, "items", 0, false, 0, false); res.Err != nil {
 		t.Fatalf("first sync error: %v", res.Err)
 	}
-	if firstSince != "" {
-		t.Errorf("first sync sent since=%q, want empty (no checkpoint yet)", firstSince)
+	if sinceSeen[0] != "" {
+		t.Errorf("first sync sent since=%q, want empty (no checkpoint yet)", sinceSeen[0])
 	}
-	if v, err := db.GetLibraryVersion("items"); err != nil || v != 100 {
+	if v, _, err := db.StoredLibraryVersion("items"); err != nil || v != 100 {
 		t.Fatalf("stored library version = %d (err %v), want 100", v, err)
 	}
 
-	// Second sync: a stored checkpoint and no --full must send since=100 (int).
-	var secondSince string
-	srv2 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		secondSince = r.URL.Query().Get("since")
-		w.Header().Set("Last-Modified-Version", "150")
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`[{"id":"c"}]`))
-	}))
-	defer srv2.Close()
-	if res := syncResource(context.Background(), syncTestClient(srv2.URL), db, "items", 0, false, 0, false); res.Err != nil {
+	// Second sync: the stored checkpoint is sent as an integer `since`.
+	version, body = "150", `[{"id":"c"}]`
+	if res := syncResource(context.Background(), syncTestClient(srv.URL), db, "items", 0, false, 0, false); res.Err != nil {
 		t.Fatalf("second sync error: %v", res.Err)
 	}
-	if secondSince != "100" {
-		t.Errorf("second sync sent since=%q, want \"100\" (stored checkpoint)", secondSince)
+	if sinceSeen[1] != "100" {
+		t.Errorf("second sync sent since=%q, want \"100\" (stored checkpoint)", sinceSeen[1])
 	}
 
 	// An explicit --since version overrides the stored checkpoint.
-	var thirdSince string
-	srv3 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		thirdSince = r.URL.Query().Get("since")
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`[{"id":"d"}]`))
-	}))
-	defer srv3.Close()
-	if res := syncResource(context.Background(), syncTestClient(srv3.URL), db, "items", 4521, false, 0, false); res.Err != nil {
+	body = `[{"id":"d"}]`
+	if res := syncResource(context.Background(), syncTestClient(srv.URL), db, "items", 4521, false, 0, false); res.Err != nil {
 		t.Fatalf("third sync error: %v", res.Err)
 	}
-	if thirdSince != "4521" {
-		t.Errorf("explicit --since sent since=%q, want \"4521\"", thirdSince)
+	if sinceSeen[2] != "4521" {
+		t.Errorf("explicit --since sent since=%q, want \"4521\"", sinceSeen[2])
+	}
+}
+
+// A checkpoint is only meaningful against the plane that issued it. Replaying a
+// web-API version against the local desktop API matched nothing and froze the
+// mirror indefinitely, so a plane change must fall back to a full pass.
+func TestSyncResourceDiscardsForeignPlaneCheckpoint(t *testing.T) {
+	syncTestWithHumanFriendly(t, false)
+	db := syncTestOpenStore(t)
+	defer db.Close()
+
+	first := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Last-Modified-Version", "12689")
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`[{"id":"a"}]`))
+	}))
+	defer first.Close()
+	if res := syncResource(context.Background(), syncTestClient(first.URL), db, "items", 0, false, 0, false); res.Err != nil {
+		t.Fatalf("first sync error: %v", res.Err)
+	}
+
+	var since string
+	second := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		since = r.URL.Query().Get("since")
+		w.Header().Set("Last-Modified-Version", "71")
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`[{"id":"b"}]`))
+	}))
+	defer second.Close()
+	if res := syncResource(context.Background(), syncTestClient(second.URL), db, "items", 0, false, 0, false); res.Err != nil {
+		t.Fatalf("second sync error: %v", res.Err)
+	}
+	if since != "" {
+		t.Errorf("sent since=%q to a different plane; want a full pass", since)
+	}
+	// The new plane's much smaller version must replace the old one, not lose to
+	// the monotonic guard.
+	if v, _, err := db.StoredLibraryVersion("items"); err != nil || v != 71 {
+		t.Fatalf("stored version = %d (err %v), want 71 from the current plane", v, err)
+	}
+}
+
+// The cursor fix alone is not enough: row upserts are version-monotonic, so a
+// row still carrying a web-API version (11973) rejects every local-plane row
+// (version 65) as "older" and never refreshes, freezing the mirror even during a
+// full pass. A plane change must reset those versions.
+func TestSyncRefreshesRowsHoldingForeignPlaneVersions(t *testing.T) {
+	syncTestWithHumanFriendly(t, false)
+	db := syncTestOpenStore(t)
+	defer db.Close()
+
+	// Seed the mirror as an earlier web-plane sync left it: a high version and
+	// the now-outdated tag casing.
+	if _, _, err := db.UpsertBatch("items", []json.RawMessage{
+		json.RawMessage(`{"key":"K1","version":11973,"data":{"key":"K1","itemType":"journalArticle","tags":[{"tag":"depression","type":0}]}}`),
+	}); err != nil {
+		t.Fatalf("seed mirror: %v", err)
+	}
+	if err := db.SaveLibraryVersion("items", "https://api.zotero.org/users/5847066", 12689); err != nil {
+		t.Fatalf("seed foreign checkpoint: %v", err)
+	}
+
+	// The local plane reports the same item with its own small version.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Last-Modified-Version", "65")
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`[{"key":"K1","version":65,"data":{"key":"K1","itemType":"journalArticle","tags":[{"tag":"Depression","type":0}]}}]`))
+	}))
+	defer srv.Close()
+
+	if res := syncResource(context.Background(), syncTestClient(srv.URL), db, "items", 0, false, 1, false); res.Err != nil {
+		t.Fatalf("sync error: %v", res.Err)
+	}
+
+	rows, err := (localQueryStore{db}).QueryRaw(
+		`SELECT json_extract(data,'$.data.tags[0].tag') AS tag FROM resources WHERE resource_type='items' AND id='K1'`)
+	if err != nil || len(rows) != 1 {
+		t.Fatalf("read back: rows=%v err=%v", rows, err)
+	}
+	if got := sqlStringValue(rows[0]["tag"]); got != "Depression" {
+		t.Fatalf("mirrored tag = %q, want Depression: the row was frozen by a foreign-plane version", got)
 	}
 }
 
@@ -502,6 +576,10 @@ func (c syncTestErrorClient) GetWithVersionContext(context.Context, string, map[
 
 func (c syncTestErrorClient) RateLimit() float64 {
 	return 0
+}
+
+func (c syncTestErrorClient) Plane() string {
+	return "test://error-client"
 }
 
 func syncTestWithHumanFriendly(t *testing.T, value bool) {
