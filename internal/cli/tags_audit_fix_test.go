@@ -121,6 +121,42 @@ func TestTagsAuditFixPreviewPlansRenamesWithoutWrites(t *testing.T) {
 	}
 }
 
+// The other half of New-1: a mirror row with no version (write-through strips it
+// from rows it replays) aborted the WHOLE batch with "item <key> missing
+// version", so one freshly-written item took down every planned group. The batch
+// must plan straight through it.
+func TestTagsAuditFixPlansThroughVersionlessMirrorRows(t *testing.T) {
+	// K2 carries the alias and has NO version field, exactly as write-through
+	// leaves a row it has just replayed.
+	seedTagsAuditFixStore(t, []json.RawMessage{
+		json.RawMessage(`{"key":"K1","version":1,"data":{"key":"K1","tags":[{"tag":"Data Science","type":0}]}}`),
+		json.RawMessage(`{"key":"K2","data":{"key":"K2","tags":[{"tag":"Data Science","type":0},{"tag":"data science","type":0}]}}`),
+	})
+	requests := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		http.Error(w, "preview must not call Zotero", http.StatusInternalServerError)
+	}))
+	defer srv.Close()
+
+	env, out, err := runTagsAuditFixCmd(t, &rootFlags{asJSON: true}, srv.URL)
+	if err != nil {
+		t.Fatalf("tags audit fix aborted on a version-less mirror row: %v (out %s)", err, out)
+	}
+	if requests != 0 {
+		t.Fatalf("preview made %d Zotero request(s), want 0", requests)
+	}
+	if env.Plan.Summary.Planned == 0 {
+		t.Fatalf("planned nothing: the version-less row was skipped. envelope = %+v", env)
+	}
+	for _, op := range env.Plan.Operations {
+		if op.Key == "K2" {
+			return
+		}
+	}
+	t.Fatalf("no op planned for the version-less item K2: operations = %+v", env.Plan.Operations)
+}
+
 func TestTagsAuditFixApplyRenamesEachAlias(t *testing.T) {
 	seedTagsAuditFixStore(t, duplicateTagAuditItems())
 	patches := map[string]map[string]any{}

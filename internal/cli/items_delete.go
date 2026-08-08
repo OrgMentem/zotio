@@ -36,10 +36,22 @@ cannot be undone by 'items restore' and requires --allow-destructive.`,
 			}
 			path := "/items/{itemKey}"
 			path = replacePathParam(path, "itemKey", args[0])
-			// No early bespoke preview envelope: the engine renders plan and apply
-			// in the same shape, so callers can rely on .result.items[0] here as
-			// they do for move/rename/tags. The write client is built inside Apply
-			// so a preview needs no credentials.
+			// The engine renders plan and apply in the same shape, so callers can
+			// rely on .result.items[0] here as they do for move/rename/tags.
+			//
+			// The write client is built here, not inside Apply: a config-load
+			// failure must keep its own exit code (10), and routing it through
+			// Apply funnels it into classifyDeleteError, which downgrades it to a
+			// generic API error (5). Only apply mode needs it, so a preview still
+			// requires no credentials.
+			var writeClient *client.Client
+			if resolveMutationMode(flags).Apply {
+				var clientErr error
+				writeClient, clientErr = flags.newWriteClient()
+				if clientErr != nil {
+					return clientErr
+				}
+			}
 			var applyErr error
 			kind := "item_trash"
 			if permanent {
@@ -56,11 +68,7 @@ cannot be undone by 'items restore' and requires --allow-destructive.`,
 				// "deleted" isn't in reverse.go's reversibleFields, so undo correctly refuses it.
 				Changes: []mutation.Change{{Field: "deleted", Add: true}},
 				Apply: func() (string, any, error) {
-					c, clientErr := flags.newWriteClient()
-					if clientErr != nil {
-						applyErr = clientErr
-						return "failed", nil, clientErr
-					}
+					c := writeClient
 					// Zotero requires If-Unmodified-Since-Version on both the DELETE
 					// (HTTP 428 without it) and the trash PATCH. newWriteClient points at
 					// the write target, so this version GET and the write hit the same

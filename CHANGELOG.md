@@ -44,10 +44,10 @@ Notable changes to zotio. Format follows [Keep a Changelog](https://keepachangel
 - **`items delete` uses the standard mutation envelope.** It emitted a bespoke
   `{"status": "noop", "reason": …}` / `{action, resource, path, status}` shape, so
   the `.result.items[0]` pattern that works for every other mutation threw.
-- **`tags audit` no longer plans renames that cannot apply.** Case-variant tags
-  that no item carries (Zotero keeps the tag row) were listed in the merge plan,
-  where every operation could only ever report `tag_absent`. They are counted
-  as `orphaned tag rows` instead.
+- **`sync --help` names the plane it pulls from.** It said "Sync data from the
+  API", which readers reasonably took to mean api.zotero.org and their cloud
+  library. It is the Zotero desktop local API, one direction only, and that
+  ambiguity is what made the frozen mirror hard to diagnose.
 - **`--plain` drops response wrappers.** `library`, `links`, `meta` and
   `relations` rendered as raw JSON objects inside single cells, pushing item rows
   past 2 KB across ~35 columns. An explicit `--select` still wins.

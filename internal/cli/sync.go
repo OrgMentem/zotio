@@ -878,10 +878,15 @@ func syncResource(ctx context.Context, c syncHTTPClient, db *store.Store, resour
 		if serr := db.SaveSyncState(resource, "", totalCount); serr != nil {
 			return syncResult{Resource: resource, Count: totalCount, Err: fmt.Errorf("persisting sync checkpoint: %w", serr), Duration: time.Since(started)}
 		}
-		if libraryVersion > 0 {
-			if serr := db.SaveLibraryVersion(resource, c.Plane(), libraryVersion); serr != nil {
-				return syncResult{Resource: resource, Count: totalCount, Err: fmt.Errorf("persisting library-version checkpoint: %w", serr), Duration: time.Since(started)}
-			}
+		// Stamp the plane unconditionally, even when no page carried a usable
+		// Last-Modified-Version (the local API omits it for /items). Gating this
+		// on libraryVersion > 0 left cursor_source NULL forever for exactly that
+		// resource, so PlaneChanged stayed true and every sync re-wiped the stored
+		// row versions instead of doing it once — permanently voiding the
+		// version-monotonic guard and rewriting the whole table each run.
+		// library_version legitimately stays 0 here; only the plane converges.
+		if serr := db.SaveLibraryVersion(resource, c.Plane(), libraryVersion); serr != nil {
+			return syncResult{Resource: resource, Count: totalCount, Err: fmt.Errorf("persisting library-version checkpoint: %w", serr), Duration: time.Since(started)}
 		}
 	}
 

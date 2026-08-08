@@ -381,7 +381,15 @@ func attachUndoRefusals(env *mutation.Envelope, refused []mutation.ReversalRefus
 	for _, r := range refused {
 		env.Warnings = append(env.Warnings, fmt.Sprintf("skip %s %s (op %s): %s", r.Kind, r.Key, r.OpID, r.Reason))
 	}
-	env.Journal = map[string]any{"refused": refused}
+	// Merge, never replace: recordMutationJournal has already put this undo run's
+	// own run_id here, and a caller needs it to trace or reverse the undo. A bare
+	// assignment dropped it whenever a run mixed reversible ops with refusals.
+	journal, _ := env.Journal.(map[string]any)
+	if journal == nil {
+		journal = map[string]any{}
+	}
+	journal["refused"] = refused
+	env.Journal = journal
 	// ok normally means "every attempted op succeeded" (see mutation.Run), which
 	// still holds when refusals are mixed with successful reversals — the run
 	// did everything it safely could, and the refusals remain visible above for

@@ -149,6 +149,41 @@ func TestSyncRefreshesRowsHoldingForeignPlaneVersions(t *testing.T) {
 	}
 }
 
+// The local desktop API omits Last-Modified-Version on /items. Stamping the
+// cursor's plane only when a version arrived left cursor_source NULL forever for
+// exactly that resource, so every sync re-detected a "plane change" and re-wiped
+// the stored row versions — permanently voiding the version-monotonic upsert
+// guard and rewriting the whole table on every run instead of once.
+func TestSyncConvergesPlaneWithoutVersionHeader(t *testing.T) {
+	syncTestWithHumanFriendly(t, false)
+	db := syncTestOpenStore(t)
+	defer db.Close()
+
+	// No Last-Modified-Version header, and no version on the rows.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`[{"key":"K1","data":{"key":"K1","itemType":"journalArticle"}}]`))
+	}))
+	defer srv.Close()
+
+	client := syncTestClient(srv.URL)
+	if res := syncResource(context.Background(), client, db, "items", 0, false, 1, false); res.Err != nil {
+		t.Fatalf("first sync error: %v", res.Err)
+	}
+
+	// After one pass the plane must be recorded, even though the version is 0.
+	changed, err := db.PlaneChanged("items", client.Plane())
+	if err != nil {
+		t.Fatalf("PlaneChanged: %v", err)
+	}
+	if changed {
+		t.Fatal("plane still reads as changed after a full pass: every sync would re-wipe stored row versions")
+	}
+	if _, source, serr := db.StoredLibraryVersion("items"); serr != nil || source != client.Plane() {
+		t.Fatalf("cursor_source = %q (err %v), want the plane that just synced", source, serr)
+	}
+}
+
 func TestSyncPageExtractionHelpers(t *testing.T) {
 	items, cursor, hasMore := extractPageItems(json.RawMessage(`[{"id":"a"},{"id":"b"}]`), "after")
 	if len(items) != 2 || cursor != "" || hasMore {
