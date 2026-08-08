@@ -209,7 +209,13 @@ func TestHelpersClassifyAPIErrorRedactsBadRequestAuthBody(t *testing.T) {
 	})
 }
 
-func TestHelpersClassifyDeleteError(t *testing.T) {
+// TestHelpersClassifyAPIErrorStatusCodeMapping was TestHelpersClassifyDeleteError
+// before classifyDeleteError was folded away: with --ignore-missing now resolved
+// as a structured mutation no_op inside items/collections delete's own Apply
+// (see N4-2's fix and its follow-up), classifyDeleteError's only remaining
+// behaviour was delegating straight to classifyAPIError, so this table now
+// exercises that directly rather than through a dead wrapper.
+func TestHelpersClassifyAPIErrorStatusCodeMapping(t *testing.T) {
 	tests := []struct {
 		name string
 		err  error
@@ -225,7 +231,7 @@ func TestHelpersClassifyDeleteError(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			helpersTestAssertCLIError(t, classifyDeleteError(tt.err, nil), tt.want)
+			helpersTestAssertCLIError(t, classifyAPIError(tt.err, nil), tt.want)
 		})
 	}
 }

@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"zotio/internal/mutation"
 )
 
 func runDeleteCmd(t *testing.T, cmd interface {
@@ -294,6 +295,158 @@ func TestItemMutationsPreviewByDefault(t *testing.T) {
 			if !bytes.Contains(out.Bytes(), []byte(`"dry_run"`)) &&
 				!bytes.Contains(out.Bytes(), []byte(`"mode": "preview"`)) {
 				t.Fatalf("%s preview output missing preview marker: %s", tc.name, out.String())
+			}
+		})
+	}
+}
+
+// deletesTestRunJSON executes a delete command and decodes the standard
+// mutation envelope, failing the test if the shape isn't that envelope (e.g.
+// the legacy {"status":"noop","reason":...} bypass writeNoop used to produce).
+func deletesTestRunJSON(t *testing.T, cmd interface {
+	SetOut(io.Writer)
+	SetErr(io.Writer)
+	SetArgs([]string)
+	Execute() error
+}, baseURL string, args ...string) (mutation.Envelope, error) {
+	t.Helper()
+	t.Setenv("ZOTERO_BASE_URL", baseURL+"/users/0")
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(io.Discard)
+	cmd.SetArgs(args)
+	err := cmd.Execute()
+	var env mutation.Envelope
+	if decodeErr := json.Unmarshal(out.Bytes(), &env); decodeErr != nil {
+		t.Fatalf("decode envelope: %v\noutput: %s", decodeErr, out.String())
+	}
+	return env, err
+}
+
+// Trashing an item that is already trashed (data.deleted=1 on the write
+// plane's own copy) must no-op rather than send a redundant PATCH: real
+// version churn and journal noise for zero effect, the same class as W-6
+// (rename-to-itself). --permanent stays exempt — destroying an already-trashed
+// item is what that flag is for, not a no-op.
+func TestItemsDeleteAlreadyTrashedIsNoOp(t *testing.T) {
+	var patched bool
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet:
+			w.Header().Set("Last-Modified-Version", "9")
+			_, _ = w.Write([]byte(`{"key":"K","version":9,"data":{"deleted":1}}`))
+		case http.MethodPatch:
+			patched = true
+			w.WriteHeader(http.StatusNoContent)
+		default:
+			http.Error(w, "unexpected", http.StatusMethodNotAllowed)
+		}
+	}))
+	defer srv.Close()
+
+	cmd := newItemsDeleteCmd(&rootFlags{asJSON: true, yes: true, maxChanges: -1})
+	cmd.SilenceErrors, cmd.SilenceUsage = true, true
+	env, err := deletesTestRunJSON(t, cmd, srv.URL, "K")
+	if err != nil {
+		t.Fatalf("items delete on an already-trashed item: %v", err)
+	}
+	if patched {
+		t.Fatal("PATCHed an item that was already trashed")
+	}
+	if env.Result == nil || len(env.Result.Items) != 1 {
+		t.Fatalf("result = %+v, want one item", env.Result)
+	}
+	item := env.Result.Items[0]
+	if item.Status != "no_op" {
+		t.Fatalf("status = %q, want no_op", item.Status)
+	}
+	reason, ok := item.Reason.(map[string]any)
+	if !ok || reason["code"] != "already_deleted" {
+		t.Fatalf("reason = %#v, want code already_deleted", item.Reason)
+	}
+}
+
+// --permanent must still destroy an already-trashed item: that is what the
+// flag is for, not a case the no-op above should swallow.
+func TestItemsDeletePermanentStillDestroysAnAlreadyTrashedItem(t *testing.T) {
+	var deleted bool
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet:
+			w.Header().Set("Last-Modified-Version", "9")
+			_, _ = w.Write([]byte(`{"key":"K","version":9,"data":{"deleted":1}}`))
+		case http.MethodDelete:
+			deleted = true
+			w.WriteHeader(http.StatusNoContent)
+		default:
+			http.Error(w, "unexpected", http.StatusMethodNotAllowed)
+		}
+	}))
+	defer srv.Close()
+
+	cmd := newItemsDeleteCmd(&rootFlags{asJSON: true, yes: true, allowDestructive: true, maxChanges: -1})
+	cmd.SilenceErrors, cmd.SilenceUsage = true, true
+	if err := runDeleteCmd(t, cmd, srv.URL, "--permanent", "K"); err != nil {
+		t.Fatalf("items delete --permanent on a trashed item: %v", err)
+	}
+	if !deleted {
+		t.Fatal("--permanent no-op'd on an already-trashed item instead of destroying it")
+	}
+}
+
+// --ignore-missing must resolve as a structured no_op through the standard
+// mutation envelope, on BOTH commands and BOTH failure points (the version
+// read and the write-call race), not the legacy bespoke
+// {"status":"noop","reason":...} shape writeNoop produced.
+func TestDeleteIgnoreMissingIsAStructuredNoOp(t *testing.T) {
+	for _, tt := range []struct {
+		name             string
+		allowDestructive bool
+		new              func(*rootFlags) interface {
+			SetOut(io.Writer)
+			SetErr(io.Writer)
+			SetArgs([]string)
+			Execute() error
+		}
+	}{
+		{name: "items", new: func(flags *rootFlags) interface {
+			SetOut(io.Writer)
+			SetErr(io.Writer)
+			SetArgs([]string)
+			Execute() error
+		} {
+			return newItemsDeleteCmd(flags)
+		}},
+		{name: "collections", allowDestructive: true, new: func(flags *rootFlags) interface {
+			SetOut(io.Writer)
+			SetErr(io.Writer)
+			SetArgs([]string)
+			Execute() error
+		} {
+			return newCollectionsDeleteCmd(flags)
+		}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				http.NotFound(w, r)
+			}))
+			defer srv.Close()
+
+			cmd := tt.new(&rootFlags{asJSON: true, yes: true, ignoreMissing: true, allowDestructive: tt.allowDestructive, maxChanges: -1})
+			env, err := deletesTestRunJSON(t, cmd, srv.URL, "DOESNOTEXIST")
+			if err != nil {
+				t.Fatalf("%s delete --ignore-missing on a 404: %v", tt.name, err)
+			}
+			if env.Result == nil || len(env.Result.Items) != 1 {
+				t.Fatalf("%s: result = %+v, want one item (the legacy bypass never populated .result at all)", tt.name, env.Result)
+			}
+			item := env.Result.Items[0]
+			if item.Status != "no_op" {
+				t.Fatalf("%s: status = %q, want no_op", tt.name, item.Status)
+			}
+			reason, ok := item.Reason.(map[string]any)
+			if !ok || reason["code"] != "already_deleted" {
+				t.Fatalf("%s: reason = %#v, want code already_deleted", tt.name, item.Reason)
 			}
 		})
 	}

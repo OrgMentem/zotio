@@ -63,6 +63,42 @@ so local uncommitted changes never enter a release.
 > lint failure sails straight into a tagged release (this bit us on v0.6.0 — the
 > tag pointed at a commit with an untidy `go.mod`). Check the commit's CI first.
 
+> **CI green proves the code compiles and the mocks agree. It does not prove the
+> binary works.** Every P0 in the 0.17.0 cycle was invisible to a green suite —
+> `tags rename` could not write a single tag while `go test ./...` passed, because
+> the tests mocked away the read/write plane split. Install the release binary and
+> exercise the changed commands against a real library before tagging:
+>
+> - **Snapshot, revert, re-snapshot — and treat a mismatch as a finding.** Record
+>   count, distinct tags, trash, and a hash of the key→tags map before you start;
+>   revert every mutation; confirm byte-identical. This is a detector, not a
+>   courtesy: it is the only reason a connector write that reported `failed` while
+>   actually succeeding was ever noticed — a record count of 2621 → 2622 was the
+>   entire signal.
+> - **Re-run the original reproduction, not a proxy that shares its error code.**
+>   N4-2 was "verified" against a never-existed key when the real bug needed a
+>   create-then-immediately-delete race. Also confirm the fix did not succeed by
+>   removing the work: `workflow archive` reporting zero 404s was true, and the
+>   question that mattered was whether its four resources were now archived or
+>   merely dropped.
+> - **Both planes, both directions.** Reads resolve against the desktop API,
+>   writes route to `api.zotero.org`, and propagation runs ~15–20s each way. Test
+>   read-then-write, write-then-read, and write-then-read-immediately. Most 0.17.0
+>   defects lived in one of those windows — including the inverse one, where an
+>   item created through the connector is briefly invisible to the write plane.
+> - **Use an independent oracle, and page it.** Check zotio against
+>   `api.zotero.org` directly, never against another zotio command. Page every
+>   endpoint you use as an oracle: an unpaged `/tags` returns 25 rows, which once
+>   turned a restoration check into a page-size measurement.
+> - **Distrust green.** "PASS" and "no panics" are different claims — `net/http`
+>   recovers per-connection, so a panicking test still prints `ok`; grep the raw
+>   log. So are "PASS" and "actually ran": check for `(cached)`, use `-count=1`.
+>
+> If a finding later proves wrong, retract it in the same file, loudly. A wrong
+> finding costs the fixer more than a missed one — New-1's root cause was a
+> correlation that explained every observation, and a fix was built on it before
+> anyone tried to break it.
+
 1. `git log vLAST..HEAD` — confirm the changeset and that unrelated sibling WIP
    is *not* included. Stage only your files if the tree has others' work.
 2. Update `CHANGELOG.md`: rename `[Unreleased]` → `[X.Y.Z] — DATE`, add the

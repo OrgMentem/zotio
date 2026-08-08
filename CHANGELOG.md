@@ -61,6 +61,28 @@ signal.
   once.
 
 ### Fixed
+- **`items delete` no longer sends a redundant PATCH to an item that is
+  already trashed.** N4-2's fix removed the false "already deleted" no-op on a
+  404, but never added back the correct one — the write plane's own copy of the
+  item genuinely carrying `deleted: 1` — so trashing an already-trashed item
+  always re-applied, real version churn and journal noise for zero effect,
+  same class as W-6's rename-to-itself. It now checks the fetched item body and
+  no-ops with `code: already_deleted` before writing. `--permanent` is exempt:
+  destroying an already-trashed item is what that flag is for.
+- **`items delete --ignore-missing` and `collections delete --ignore-missing`
+  return the standard mutation envelope.** N4-2's honest-404 fix broke the
+  documented idempotent-retry contract for `--ignore-missing`: on the shipped
+  `4bc96ea`, `collections delete <missing> --ignore-missing --allow-destructive
+  --yes` regressed from a clean no-op to exit 3, because the flag's only
+  handling (`classifyDeleteError`, keyed off the DELETE call's own error) never
+  saw the version-read's 404, which now fails first and bypasses it entirely.
+  Both commands now check `--ignore-missing` at every 404 point — the version
+  read and the write call — and resolve as a genuine `no_op` through the
+  standard mutation envelope, not the legacy bespoke
+  `{"status":"noop","reason":...}` shape the removed `classifyDeleteError`
+  path produced (which for `collections delete` specifically fell through to a
+  raw, unpopulated `{"status":0,"success":false}` — a successful no-op that
+  read as a failure).
 - **`import scan` now explains when it receives a file.** The command previously
   passed an existing regular file to directory reads and surfaced the misleading
   filesystem error "not a directory"; it now directs single-file imports to

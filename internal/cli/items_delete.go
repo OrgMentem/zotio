@@ -3,8 +3,10 @@
 package cli
 
 import (
+	"encoding/json"
 	"fmt"
 	"strconv"
+	"strings"
 
 	"github.com/spf13/cobra"
 
@@ -39,7 +41,7 @@ cannot be undone by 'items restore' and requires --allow-destructive.`,
 			//
 			// The write client is built here, not inside Apply: a config-load
 			// failure must keep its own exit code (10), and routing it through
-			// Apply funnels it into classifyDeleteError, which downgrades it to a
+			// Apply funnels it into classifyAPIError, which downgrades it to a
 			// generic API error (5). Only apply mode needs it, so a preview still
 			// requires no credentials.
 			var writeClient *client.Client
@@ -73,23 +75,41 @@ cannot be undone by 'items restore' and requires --allow-destructive.`,
 					// library (the Web API under hybrid routing) — correct even for an
 					// item just created on the web and not yet synced local.
 					//
-					// A 404 here is NOT "already deleted": a trashed item still GETs
-					// fine with data.deleted=1, so a 404 means the key never existed, was
-					// permanently destroyed, or — the case that broke this — was created
-					// moments ago through the connector and has not yet propagated from
-					// the local desktop up to this plane (~15-20s observed). Reporting
-					// success in that window is a false success: `SDLDFA9W` was "deleted"
-					// this way and then materialized on the write plane, untrashed. Fail
-					// honestly instead, exactly like items tags add / items move already
-					// do on the identical 404.
-					_, version, verErr := c.GetWithVersion(path, nil)
+					// A 404 here is NOT "already deleted" by default: a trashed item
+					// still GETs fine with data.deleted=1, so a 404 means the key never
+					// existed, was permanently destroyed, or was created moments ago
+					// through the connector and has not yet propagated from the local
+					// desktop up to this plane (~15-20s observed). Reporting success in
+					// that window is a false success: `SDLDFA9W` was "deleted" this way
+					// and then materialized on the write plane, untrashed. Fail honestly
+					// instead, exactly like items tags add / items move already do on the
+					// identical 404 — UNLESS the caller opted into --ignore-missing,
+					// which exists precisely to accept that risk for idempotent retries.
+					body, version, verErr := c.GetWithVersion(path, nil)
 					if verErr != nil {
+						if flags.ignoreMissing && strings.Contains(verErr.Error(), "HTTP 404") {
+							return "no_op", map[string]any{
+								"code":    "already_deleted",
+								"message": "item does not exist on the write plane; --ignore-missing treats this as already done",
+							}, nil
+						}
 						applyErr = verErr
 						return "failed", nil, verErr
 					}
 					if version <= 0 {
 						applyErr = apiErr(fmt.Errorf("reading item version for %s: response did not include a version", args[0]))
 						return "failed", nil, applyErr
+					}
+					// The actual "already deleted" case: the write plane's own copy
+					// already carries deleted=1. Trashing it again would be a redundant
+					// PATCH — real version churn and journal noise for zero effect.
+					// --permanent is exempt: destroying an already-trashed item is
+					// exactly what it is for, not a no-op.
+					if !permanent && itemAlreadyTrashed(body) {
+						return "no_op", map[string]any{
+							"code":    "already_deleted",
+							"message": "item is already in the trash",
+						}, nil
 					}
 					headers := map[string]string{"If-Unmodified-Since-Version": strconv.Itoa(version)}
 					var writeErr error
@@ -102,6 +122,14 @@ cannot be undone by 'items restore' and requires --allow-destructive.`,
 						_, _, writeErr = c.PatchWithHeaders(path, map[string]any{"deleted": 1}, headers)
 					}
 					if writeErr != nil {
+						// The rare GET-then-write race: the item vanished in the moment
+						// between the version read and this call.
+						if flags.ignoreMissing && strings.Contains(writeErr.Error(), "HTTP 404") {
+							return "no_op", map[string]any{
+								"code":    "already_deleted",
+								"message": "item was removed between the version read and the write; --ignore-missing treats this as already done",
+							}, nil
+						}
 						applyErr = writeErr
 						return "failed", nil, writeErr
 					}
@@ -111,7 +139,7 @@ cannot be undone by 'items restore' and requires --allow-destructive.`,
 			env, runErr := runMutation(cmd.Context(), flags, "items.delete", ops)
 			if runErr != nil {
 				if applyErr != nil {
-					return classifyDeleteError(applyErr, flags)
+					return classifyAPIError(applyErr, flags)
 				}
 				return runErr
 			}
@@ -123,4 +151,21 @@ cannot be undone by 'items restore' and requires --allow-destructive.`,
 		"Destroy the item and its attachments outright instead of trashing it (irreversible; requires --allow-destructive)")
 
 	return cmd
+}
+
+// itemAlreadyTrashed reports whether a Zotero item's own write-plane copy
+// already carries deleted=1. Fails closed (false) on any unexpected shape,
+// since the worst consequence of a false negative is a redundant PATCH, while
+// a false positive would silently skip a real trash.
+func itemAlreadyTrashed(body json.RawMessage) bool {
+	var envelope struct {
+		Data struct {
+			Deleted json.Number `json:"deleted"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(body, &envelope); err != nil {
+		return false
+	}
+	n, err := envelope.Data.Deleted.Int64()
+	return err == nil && n != 0
 }

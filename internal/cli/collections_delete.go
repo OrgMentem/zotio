@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"strconv"
+	"strings"
 
 	"github.com/spf13/cobra"
 
@@ -78,16 +79,24 @@ func newCollectionsDeleteCmd(flags *rootFlags) *cobra.Command {
 				// without it). newWriteClient points at the write target, so this
 				// version GET and the DELETE hit the same library (the Web API under hybrid routing).
 				//
-				// A 404 here is a hard failure, not a no-op. The same read was
-				// previously treated as "already deleted" (mirroring items delete's
-				// identical, now-proven-wrong logic — see N4-2): the response cannot
-				// distinguish a genuinely absent key from a collection created moments
-				// ago that has not yet propagated to this plane, and reporting success
-				// in that window would falsely tell the caller a live collection is
-				// gone. Fail honestly instead.
+				// A 404 here is a hard failure by default, not a no-op. The response
+				// cannot distinguish a genuinely absent key from a collection created
+				// moments ago that has not yet propagated to this plane, and reporting
+				// success in that window would falsely tell the caller a live
+				// collection is gone (see N4-2, the identical bug in items delete).
+				// --ignore-missing is the caller's explicit opt-in to accept that risk
+				// for idempotent retries; unlike items, a collection has no trash
+				// state to distinguish "already gone" from, so this is the only
+				// no-op path collections delete needs.
 				delHeaders := map[string]string{}
 				_, version, verErr := c.GetWithVersion(path, nil)
 				if verErr != nil {
+					if flags.ignoreMissing && strings.Contains(verErr.Error(), "HTTP 404") {
+						return "no_op", map[string]any{
+							"code":    "already_deleted",
+							"message": "collection does not exist on the write plane; --ignore-missing treats this as already done",
+						}, nil
+					}
 					applyErr = classifyAPIError(verErr, flags)
 					return "failed", nil, applyErr
 				}
@@ -99,16 +108,34 @@ func newCollectionsDeleteCmd(flags *rootFlags) *cobra.Command {
 				var delErr error
 				data, statusCode, delErr = c.DeleteWithHeaders(path, delHeaders)
 				if delErr != nil {
-					applyErr = classifyDeleteError(delErr, flags)
+					if flags.ignoreMissing && strings.Contains(delErr.Error(), "HTTP 404") {
+						return "no_op", map[string]any{
+							"code":    "already_deleted",
+							"message": "collection was removed between the version read and the write; --ignore-missing treats this as already done",
+						}, nil
+					}
+					applyErr = classifyAPIError(delErr, flags)
 					return "failed", nil, applyErr
 				}
 				return "applied", nil, nil
 			}
-			if _, runErr := runMutation(cmd.Context(), flags, "collections.delete", ops); runErr != nil {
+			env, runErr := runMutation(cmd.Context(), flags, "collections.delete", ops)
+			if runErr != nil {
 				if applyErr != nil {
 					return applyErr
 				}
 				return runErr
+			}
+			// The rest of this command's rendering assumes a real "applied" DELETE
+			// populated data/statusCode from the wire. --ignore-missing's no_op
+			// never calls DeleteWithHeaders, so those stay zero-valued, and falling
+			// through produced {"status":0,"success":false} — a no-op that reads as
+			// a failure. Render the standard mutation envelope for that one case,
+			// which is where items delete's own no_op already lives; leave the
+			// "applied" path exactly as it was; that legacy shape is unrelated to
+			// this fix and untouched.
+			if env.Result != nil && len(env.Result.Items) > 0 && env.Result.Items[0].Status == "no_op" {
+				return renderMutation(cmd, flags, env, nil)
 			}
 			if wantsHumanTable(cmd.OutOrStdout(), flags) {
 				// Check if response contains an array (directly or wrapped in "data")

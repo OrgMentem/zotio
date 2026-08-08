@@ -396,15 +396,6 @@ func isLocalWriteRejection(msg string) bool {
 		strings.Contains(msg, "Method not implemented")
 }
 
-// classifyDeleteError maps DELETE errors and supports explicit idempotent no-op handling.
-func classifyDeleteError(err error, flags *rootFlags) error {
-	msg := err.Error()
-	if strings.Contains(msg, "HTTP 404") && flags != nil && flags.ignoreMissing {
-		return writeNoop(flags.out(), flags.errOut(), flags, "already_deleted", "already deleted (no-op)")
-	}
-	return classifyAPIError(err, flags)
-}
-
 func sanitizeForTerminal(s string) string {
 	for i := range len(s) {
 		b := s[i]
