@@ -2,6 +2,137 @@
 
 Notable changes to zotio. Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow [SemVer](https://semver.org/).
 
+## [Unreleased]
+### Fixed
+- **`items delete` no longer destroys data it documented as recoverable.** The
+  help said "moves to trash" and `items restore` exists to reverse it, but the
+  command issued a hard `DELETE`: the item vanished from the server, was *not* in
+  the trash, and its child PDF went with it — none of it gated by
+  `--allow-destructive`, whose own help advertises that it gates permanent
+  deletes. It now sets the trash flag (`deleted: 1`), which `items trash` lists
+  and `items restore` clears. The old behaviour is available as `--permanent`,
+  which is marked destructive and therefore requires `--allow-destructive`.
+- **The local mirror could not be refreshed at all, in two independent layers.**
+  Zotero's local desktop API and `api.zotero.org` number versions independently.
+  (1) The sync cursor was a single unqualified number guarded by `MAX()`, so a
+  web-API value (12689) outranked every local value (71) forever and `?since=`
+  matched nothing — every sync reported success with `total: 0`. (2) Row upserts
+  are version-monotonic, so rows holding a web-API version (11973) rejected the
+  same item from the local plane (version 65) as "older" and never refreshed —
+  which defeated `--full` too. Cursors now record the plane that issued them and
+  are ignored across planes; stored row versions are cleared when the plane
+  changes or `--full` is requested. On a real 4306-item store frozen since
+  2026-07-15 this restored 5343 records and took `tags audit` from 53 phantom
+  duplicate groups to 0, matching the live library exactly.
+- **`tags rename` silently renamed nothing on freshly written items.** Selection
+  required a mirror row to carry a version, but write-through deliberately strips
+  the stale version from rows it replays, so any item zotio had just written was
+  invisible: `selected: 0`, `ok: true`, exit 0 — indistinguishable from "no such
+  tag". The same rows aborted an entire `tags audit fix` batch with "item
+  <key> missing version". The write precondition comes from the write plane, so a
+  missing mirror version is now irrelevant to selection, and a run that matches
+  items but plans none says so on stderr.
+- **`items tags list` returned 404 for every item.** `/items/<key>/tags` exists on
+  the Web API but not on the local desktop API, where reads are routed;
+  `--data-source local` failed differently, parsing the path as resource `items`
+  with id `tags`. Tags are now projected from the item payload, which both planes
+  carry.
+- **Mutation payloads report the journal run id.** Every applied run returned
+  `"journal": null` while `journal list` showed the run, so an agent could not
+  undo its own write from the write's own response. The envelope now carries
+  `journal.run_id` (and `workflow_run_id` when set).
+- **`items delete` uses the standard mutation envelope.** It emitted a bespoke
+  `{"status": "noop", "reason": …}` / `{action, resource, path, status}` shape, so
+  the `.result.items[0]` pattern that works for every other mutation threw.
+- **`tags audit` no longer plans renames that cannot apply.** Case-variant tags
+  that no item carries (Zotero keeps the tag row) were listed in the merge plan,
+  where every operation could only ever report `tag_absent`. They are counted
+  as `orphaned tag rows` instead.
+- **`--plain` drops response wrappers.** `library`, `links`, `meta` and
+  `relations` rendered as raw JSON objects inside single cells, pushing item rows
+  past 2 KB across ~35 columns. An explicit `--select` still wins.
+- **`GetSyncState` tolerates a NULL cursor.** A `sync_state` row created by a
+  library-version write before any pass had stored a cursor made every read of it
+  fail with "converting NULL to string is unsupported".
+- **`sync` no longer rolls back a write Zotero has not synced down yet.** Reads
+  resolve against the local mirror and writes land on `api.zotero.org`.
+  Write-through already replayed an applied write onto the mirror, but `sync`
+  pulls from the *local desktop API* — which only learns of the write when Zotero
+  itself syncs down — so the next sync re-applied the pre-write copy and the
+  store silently reverted. A successful `items move` really did report `[]` from
+  `items collections-of` afterwards. Applied writes are now marked pending and
+  re-applied on top of each incoming row, so the read plane's own edits still
+  land while the local write survives; the marker clears automatically once the
+  read plane reports the written state. `sync` and `doctor` report the
+  outstanding count (`pending_writes`).
+- **A rename never writes without a precondition.** If the Web API write route
+  cannot be resolved, the version lookup now fails loudly instead of quietly
+  reading the local plane and sending a PATCH with no
+  `If-Unmodified-Since-Version` header — the original failure, reintroduced by a
+  transient resolver error.
+- **`items collections-of`, `collections stats` and `reading-list` honour output
+  flags.** All three bypassed the shared formatter, so `--plain`, `--csv` and (for
+  two of them) `--select`/`--compact` were silently dropped and JSON came back
+  instead.
+- **`--plain` no longer mangles responses that have no tabular form.** A payload
+  with several sibling arrays (`items audit` with more than one check) was
+  rendered as a single row with a whole JSON array per cell; it now emits JSON
+  and says so on stderr. A bare JSON string no longer prints its own quotes, and
+  a mixed array no longer drops its scalar entries.
+- **`tags rename` and `tags audit fix` can write again.** Every rename was
+  planned with the read plane's object version and refused by Zotero with
+  "Either If-Unmodified-Since-Version or object version property must be
+  provided for key-based writes" — 0 of 54 renames from zotio's own `tags audit`
+  merge plan applied, with no flag to work around it. The local API reports an
+  empty version (and empty `Last-Modified-Version`) for items it has never
+  pushed upstream, and its version space is unrelated to the web API's in any
+  case. Apply now re-reads each item from the plane the write goes to, taking
+  both the precondition version and the tag list from there, so the PATCH can no
+  longer overwrite upstream state with a stale copy either.
+- **`doctor` reports the rows the store actually holds.** The cache report
+  printed `sync_state.total_count` — the last run's fetched delta — as `rows`, so
+  a fully hydrated 4308-item cache displayed as `items: 0 rows` whenever the last
+  sync was an empty delta. Rows are now counted from `resources`; the delta is
+  reported separately as `last delta`.
+- **`items audit` counts only the items it can score.** Attachments, notes and
+  annotations were included in every check, so a 928-item library reported 4018
+  "missing tags" and 3773 "missing abstracts" — mostly PDFs, for fields those
+  types cannot carry. All checks and their listings are now scoped to top-level
+  bibliographic items, and the summary states the denominator
+  (`Scope: N top-level items`, `top_level_items` in JSON).
+- **`--plain` emits plain text instead of JSON.** The flag suppressed the human
+  table and then fell through to the shared JSON path, so `items recent --plain`,
+  `search --plain` and `collections list --plain` all returned JSON. Read
+  commands now render tab-separated records, and an explicitly requested
+  `--plain`/`--csv` is no longer overridden by the "stdout is piped, so emit
+  JSON" default. Plain cells are not truncated the way table cells are.
+- **`items move` no-ops say why.** A no-op returned a bare
+  `{"status": "no_op", "changes": null}`, indistinguishable from a missing item
+  or collection. Results now carry a machine-readable `code`
+  (`already_member`, `already_moved`, `not_in_source_collection`) alongside a
+  human message.
+
+### Changed
+- **Tests can no longer write to the developer's real zotio data directory.** The
+  `internal/cli` suite appended 16 fixture runs per full-suite invocation to
+  `~/.local/share/zotio/journal` — keys like `K1`, `ITEM0001` and `Example 0..50`
+  interleaved with genuine library history, offered for reversal by
+  `journal undo`. The package now runs against a throwaway `HOME`.
+
+### Added
+- **`import pdf` returns the keys it created** (`item_key`, `attachment_key`,
+  `doi`). Zotero's connector reports only a title and item type, so the keys are
+  resolved from the library after recognition. Resolution is anchored to a
+  wall-clock floor captured before the import and requires an unambiguous match,
+  because Zotero's connector saves into whatever library the desktop pane
+  currently targets — which need not be the library zotio reads. An older item
+  that merely shares the recognized title is never reported; anything unresolved
+  comes back as `keys_note`. Filing an import no longer costs a title search plus
+  a `links.up` walk.
+- **`items move` and `items add-to-collection` cross-reference each other** in
+  `--help`, so finding the key-based bulk command from the name-based one (and
+  vice versa) no longer requires reading the whole `items` command list.
+
 ## [0.16.1] — 2026-08-06
 ### Fixed
 - **`zotio-mcp` no longer starts on a malformed `ZOTERO_GROUP`.** It previously
