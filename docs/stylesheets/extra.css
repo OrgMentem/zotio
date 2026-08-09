@@ -1,0 +1,101 @@
+/* Site chrome that is not diagram-specific (see diagrams.css for those).
+   Custom classes use the `mdx-` prefix so they never collide with theme
+   internals, which own `md-`. */
+
+/* Landing hero (overrides/home.html): animated wordmark left, positioning
+   copy right.
+
+   The hero spans the full grid, but the page keeps its sidebars, so the two
+   hero columns are sized to the page's own columns: the art sits over the
+   navigation rail and the copy starts exactly where the article text does.
+   That leaves no stranded gutter and no second reading measure to maintain. */
+:root {
+  --mdx-hero-rail: 12.5rem; /* primary sidebar (12.1rem) + the article inset */
+  --mdx-hero-gap: 2.4rem; /* gap between art and copy */
+  --mdx-hero-mark: calc(var(--mdx-hero-rail) - var(--mdx-hero-gap));
+}
+
+.mdx-hero {
+  border-bottom: 0.05rem solid var(--md-default-fg-color--lightest);
+  background-color: var(--md-default-bg-color);
+}
+
+.mdx-hero__inner {
+  display: grid;
+  grid-template-columns: minmax(0, var(--mdx-hero-mark)) minmax(0, 1fr);
+  align-items: center;
+  gap: var(--mdx-hero-gap);
+  padding: 2.4rem 0.8rem;
+}
+
+/* The two ink variants are stacked and cross-faded instead of using the
+   theme's `#only-light` / `#only-dark` display toggle: a display:none <img>
+   restarts its SVG animation when revealed, so flipping the palette would
+   blank the hero for most of a cycle. Both documents animate from page load
+   and therefore stay in lockstep. */
+.mdx-hero__mark {
+  display: grid;
+}
+
+[data-md-color-scheme] .mdx-hero__mark img[src] {
+  display: block;
+  grid-area: 1 / 1;
+  width: 100%;
+  height: auto;
+  transition: opacity 125ms;
+}
+
+[data-md-color-scheme="slate"] .mdx-hero__mark img[src$="#only-light"],
+[data-md-color-scheme="default"] .mdx-hero__mark img[src$="#only-dark"] {
+  opacity: 0;
+}
+
+.mdx-hero__copy h1 {
+  margin: 0 0 0.6rem;
+  color: var(--md-default-fg-color);
+  font-weight: 700;
+}
+
+.mdx-hero__copy p {
+  margin: 0 0 1.2rem;
+  max-width: 30rem;
+}
+
+.mdx-hero__copy .md-button + .md-button {
+  margin-left: 0.4rem;
+}
+
+/* Below the theme's desktop breakpoint there is no navigation rail to hold
+   the mark, so stack it above the copy — both flush with the article's left
+   edge, which now starts at the grid inset. */
+@media screen and (max-width: 76.1875em) {
+  .mdx-hero__inner {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 1.6rem;
+    padding: 2rem 0.8rem;
+  }
+
+  .mdx-hero__mark {
+    max-width: var(--mdx-hero-mark);
+  }
+}
+
+/* Phones: center the stack and cap the mark so it never owns the whole fold. */
+@media screen and (max-width: 44.9375em) {
+  .mdx-hero__inner {
+    grid-template-columns: 1fr;
+    justify-items: center;
+    gap: 1.6rem;
+    padding: 1.6rem 0.8rem 2rem;
+    text-align: center;
+  }
+
+  .mdx-hero__mark {
+    max-width: 9rem;
+  }
+
+  .mdx-hero__copy p {
+    margin-left: auto;
+    margin-right: auto;
+  }
+}

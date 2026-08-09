@@ -1,0 +1,71 @@
+{#-
+  Landing-page template: a full-width hero under the tab bar, holding the
+  animated wordmark and the positioning copy.
+
+  Both engines this repo builds with — Zensical (MiniJinja) and Material for
+  MkDocs (Jinja) — ship the same `base.html` block layout, so extending
+  `main.html` and wrapping the `tabs` block works unchanged on either. The
+  hero goes after `super()` (not in the earlier `hero` block) so the colored
+  tab bar stays flush under the header, as on every other page.
+
+  The mark is shipped as two files differing only in ink color; the palette
+  toggle is handled by the theme's `#only-light` / `#only-dark` image suffixes,
+  because the SVG is loaded via <img> and site CSS cannot reach inside it. The
+  SVG carries its own `prefers-reduced-motion` static frame.
+-#}
+{% extends "main.html" %}
+
+{% block tabs %}
+  {{ super() }}
+  <section class="mdx-hero">
+    <div class="mdx-hero__inner md-grid md-typeset">
+      <div class="mdx-hero__mark">
+        <img
+          src="{{ 'assets/logo-wordmark.svg' | url }}#only-light"
+          alt="zotio"
+          width="512"
+          height="660"
+        >
+        <img
+          src="{{ 'assets/logo-wordmark-dark.svg' | url }}#only-dark"
+          alt=""
+          width="512"
+          height="660"
+        >
+      </div>
+      <div class="mdx-hero__copy">
+        <h1>The trust-and-automation layer for Zotero</h1>
+        <p>
+          Search, export, analytics, and <em>safe</em> writes for your
+          reference library — from the terminal, from a coding agent, or
+          over MCP.
+        </p>
+        <a href="{{ 'guide/install/' | url }}" class="md-button md-button--primary">
+          Get started
+        </a>
+        <a href="{{ 'reference/commands/' | url }}" class="md-button">
+          Command reference
+        </a>
+      </div>
+    </div>
+  </section>
+{% endblock %}
+
+{#-
+  The hero owns the page's <h1>, so skip the content partial's fallback
+  heading (it injects one whenever the Markdown has none) and render the
+  article body directly. That also drops the edit/source actions, which do
+  not belong on a landing page.
+
+  The page keeps both sidebars, so the article column — and its reading
+  measure — is exactly the one every other page uses; the hero's two columns
+  are sized in extra.css to line up with them.
+-#}
+{% block content %}
+  {{ page.content }}
+{% endblock %}
+
+{#- Homepage: the site name alone, not the "Index - zotio" filename title. -#}
+{% block htmltitle %}
+  <title>{{ config.site_name }} — the trust-and-automation layer for Zotero</title>
+{% endblock %}

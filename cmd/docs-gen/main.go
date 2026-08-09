@@ -367,6 +367,11 @@ var llmsSectionRank = map[string]int{"guide": 1, "concepts": 2, "reference": 3, 
 
 var llmsCommentRE = regexp.MustCompile(`(?s)<!--.*?-->\n?`)
 
+// Page front matter (template/hide directives on the landing page) is site
+// chrome, not documentation — strip it before titling, describing, or
+// concatenating a page.
+var llmsFrontMatterRE = regexp.MustCompile(`(?s)\A---\n.*?\n---\n`)
+
 type llmsPage struct {
 	rel   string // e.g. "guide/install" ("index" for the landing page)
 	url   string
@@ -396,7 +401,7 @@ func generateLLMS(srcDir, outDir string) error {
 		if err != nil {
 			return err
 		}
-		body := strings.TrimSpace(llmsCommentRE.ReplaceAllString(string(raw), ""))
+		body := strings.TrimSpace(llmsCommentRE.ReplaceAllString(llmsFrontMatterRE.ReplaceAllString(string(raw), ""), ""))
 		rel := strings.TrimSuffix(strings.TrimPrefix(filepath.ToSlash(p), filepath.ToSlash(srcDir)+"/"), ".md")
 		url := llmsSiteURL
 		if rel != "index" {
@@ -451,6 +456,11 @@ func llmsTitle(body, rel string) string {
 		if strings.HasPrefix(line, "# ") {
 			return strings.TrimSpace(line[2:])
 		}
+	}
+	// The landing page carries no Markdown h1 — its headline lives in the
+	// hero template (overrides/home.html).
+	if rel == "index" {
+		return "zotio"
 	}
 	return rel
 }

@@ -1,6 +1,6 @@
-# zotio
-
-**The trust-and-automation layer for Zotero.** Search, export, analytics, and *safe* writes for your reference library — from the terminal, from a coding agent, or over MCP.
+---
+template: home.html
+---
 
 Zotero's GUI is great for reading and citing. It gets painful the moment you need to *operate* on a library at scale: find every article missing a PDF, catch duplicate `\cite{}` keys before a submission, export a week of highlights, keep an Obsidian vault in sync, or hand an AI agent trustworthy context. `zotio` owns that glue — and the risk that comes with it.
 

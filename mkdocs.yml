@@ -18,6 +18,9 @@ edit_uri: edit/main/docs/
 
 theme:
   name: material
+  # Landing-page hero lives in overrides/home.html (see docs/index.md front
+  # matter). Same block layout in Zensical and Material for MkDocs.
+  custom_dir: overrides
   logo: assets/logo-mono.svg
   favicon: assets/favicon.png
   palette:
@@ -54,6 +57,7 @@ theme:
 
 extra_css:
   - stylesheets/diagrams.css
+  - stylesheets/extra.css
 
 extra:
   # Suppress the "Made with Zensical/Material for MkDocs" footer notice.

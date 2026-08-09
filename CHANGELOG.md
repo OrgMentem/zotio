@@ -2,6 +2,19 @@
 
 Notable changes to zotio. Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow [SemVer](https://semver.org/).
 
+## [Unreleased]
+
+### Documentation
+
+- **The docs landing page leads with the animated wordmark.** The mark that
+  opens the README now opens <https://orgmentem.github.io/zotio/> too, in a
+  full-width two-column hero rendered by a `home.html` template override. The
+  hero columns are sized to the page's own: the mark sits over the navigation
+  rail and the headline, blurb, and calls to action start exactly where the
+  article text below them does. It stacks once the theme drops that rail.
+  Both ink variants are stacked and cross-faded rather than display-toggled,
+  so switching the palette does not restart the animation.
+
 ## [0.17.0] — 2026-08-08
 
 This release is dominated by a single root cause: zotio reads from the Zotero
