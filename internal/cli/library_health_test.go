@@ -697,3 +697,124 @@ func TestLibraryHealthScopeLineScopedRunOmitsMirroredRows(t *testing.T) {
 		t.Errorf("scoped run scope line should not mention mirrored rows:\n%s", got)
 	}
 }
+
+// zotio-4062cb6: a Web API base must not be probed for file verification; it
+// must yield a loud live_local_api skip with zero broken-attachment findings.
+func TestBrokenAttachmentFile_WebBaseYieldsSkip(t *testing.T) {
+	// Any non-local base should short-circuit before the probe. No server
+	// needed — isLocalZoteroAPI returns false for this port/host, so the
+	// guard returns a skip without issuing GET /.
+	web := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Fatalf("Web base must not be probed: %s %s", r.Method, r.URL.Path)
+	}))
+	t.Cleanup(web.Close)
+
+	t.Setenv("ZOTERO_BASE_URL", web.URL+"/users/0")
+	t.Setenv("ZOTERO_API_KEY", "testkey")
+	t.Setenv("ZOTERO_CONFIG", filepath.Join(t.TempDir(), "missing.toml"))
+
+	db := seedHealthStore(t)
+	ctx := &healthContext{
+		src:         FindingSource{Kind: "local"},
+		preset:      "quick",
+		verifyFiles: true,
+		flags:       &rootFlags{timeout: time.Second},
+	}
+	findings, skip, err := runBrokenAttachmentFile(db, ctx)
+	if err != nil {
+		t.Fatalf("runBrokenAttachmentFile: %v", err)
+	}
+	if len(findings) != 0 {
+		t.Fatalf("want zero findings on Web base, got %d: %+v", len(findings), findings)
+	}
+	if skip == nil {
+		t.Fatal("want live_local_api skip on Web base, got nil")
+	}
+	if skip.Precondition != "live_local_api" || skip.Kind != "broken_attachment_file" {
+		t.Fatalf("skip = %+v, want live_local_api broken_attachment_file", skip)
+	}
+	if !strings.Contains(skip.Detail, "Web API") {
+		t.Fatalf("skip.Detail = %q, want mention of Web API", skip.Detail)
+	}
+}
+
+func TestBrokenAttachmentFile_LocalProbeErrorYieldsSkip(t *testing.T) {
+	// Local base whose probe cannot connect must also skip rather than
+	// proceeding to check attachments via the local-only file endpoint.
+	// No server is listening on 23119 in tests, so the probe fails with a
+	// transport error and must be treated as "not reachable".
+	t.Setenv("ZOTERO_BASE_URL", "http://localhost:23119/api/users/0")
+	t.Setenv("ZOTERO_CONFIG", filepath.Join(t.TempDir(), "missing.toml"))
+	t.Setenv("ZOTERO_API_KEY", "")
+
+	db := seedHealthStore(t)
+	ctx := &healthContext{
+		src:         FindingSource{Kind: "local"},
+		preset:      "quick",
+		verifyFiles: true,
+		flags:       &rootFlags{timeout: 200 * time.Millisecond},
+	}
+	findings, skip, err := runBrokenAttachmentFile(db, ctx)
+	if err != nil {
+		t.Fatalf("runBrokenAttachmentFile: %v", err)
+	}
+	if len(findings) != 0 {
+		t.Fatalf("want zero findings when local probe fails, got %d", len(findings))
+	}
+	if skip == nil || skip.Precondition != "live_local_api" {
+		t.Fatalf("want live_local_api skip when probe fails, got %+v", skip)
+	}
+}
+
+// zotio-2f8ea9a: retraction checks must respect cancellation via the command context.
+func TestRetractedItem_RespectsCancellation(t *testing.T) {
+	seedRetractionDefaultStore(t, []json.RawMessage{
+		json.RawMessage(`{"key":"RET1","version":1,"data":{"key":"RET1","itemType":"journalArticle","title":"A","DOI":"10.777/one"}}`),
+		json.RawMessage(`{"key":"RET2","version":1,"data":{"key":"RET2","itemType":"journalArticle","title":"B","DOI":"10.777/two"}}`),
+	})
+
+	// CrossRef server that hangs on the probe so cancellation can win.
+	// If the retraction code ignores the command context, this would block
+	// until the http.Client timeout instead of returning promptly.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		<-r.Context().Done()
+	}))
+	t.Cleanup(srv.Close)
+	withBase(t, &crossrefRetractionBaseURL, srv.URL)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // already canceled before the call
+
+	db, err := store.OpenWithContext(context.Background(), helpersTestDefaultDBPath(t, "zotio"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer db.Close()
+	qs := localQueryStore{db}
+
+	hctx := &healthContext{
+		preset:           "all",
+		checkRetractions: true,
+		flags:            &rootFlags{timeout: 5 * time.Second},
+		cmdCtx:           ctx,
+	}
+	start := time.Now()
+	findings, skip, retErr := runRetractedItem(qs, hctx)
+	elapsed := time.Since(start)
+	if elapsed > 2*time.Second {
+		t.Fatalf("cancellation did not abort promptly, elapsed %s", elapsed)
+	}
+	// Canceled probe yields a skip; canceled loop yields an error. Either
+	// must be quick and must not produce findings.
+	if retErr == nil && skip == nil && len(findings) != 0 {
+		t.Fatalf("want skip or error on canceled context, got findings %v", findings)
+	}
+	if retErr != nil {
+		if !strings.Contains(retErr.Error(), "canceled") && !strings.Contains(retErr.Error(), "cancelled") && !strings.Contains(strings.ToLower(retErr.Error()), "context") {
+			// Context errors may be wrapped; allow skip-based handling too.
+			if skip == nil {
+				t.Logf("retErr = %v", retErr)
+			}
+		}
+	}
+}

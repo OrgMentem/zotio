@@ -391,13 +391,20 @@ func pubmedCreatorName(name string) string {
 	return strings.Join(fields[:len(fields)-1], " ") + ", " + fields[len(fields)-1]
 }
 
-// Detect PubMed compact initial tokens such as "FM" or "F.M.".
+// Detect PubMed compact initial tokens such as "FM" or "F.M.". Bounded to an
+// initials shape (letters only, <=4 chars after stripping dots/hyphens, all
+// uppercase) so all-caps surnames like "SMITH" are not mis-detected.
 func pubmedInitials(value string) bool {
 	clean := strings.ReplaceAll(strings.ReplaceAll(value, ".", ""), "-", "")
-	if clean == "" {
+	if clean == "" || len(clean) > 4 {
 		return false
 	}
-	return clean == strings.ToUpper(clean)
+	for _, r := range clean {
+		if r < 'A' || r > 'Z' {
+			return false
+		}
+	}
+	return true
 }
 
 // Extract creator maps from identifier provider arrays without introducing a second name convention.

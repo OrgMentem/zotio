@@ -133,7 +133,7 @@ func TestPreprintCheckFixProposalAppendsExtraVerbatim(t *testing.T) {
 	}
 }
 
-func TestPreprintCheckFixPlannedOpCarriesVersionIntoPatch(t *testing.T) {
+func TestPreprintCheckFixPlannedOpUsesWritePlaneVersionHeader(t *testing.T) {
 	proposal := preprintCheckFixProposal{
 		Key:     "K1",
 		Title:   "Paper",
@@ -141,8 +141,11 @@ func TestPreprintCheckFixPlannedOpCarriesVersionIntoPatch(t *testing.T) {
 		Fields:  map[string]any{"DOI": "10.1234/published", "extra": "published provenance"},
 		version: float64(17),
 	}
-	mutator := &fakeMutator{}
-	ops := preprintCheckFixPlannedOps([]preprintCheckFixProposal{proposal}, func() apiMutator { return mutator })
+	// The proposal's local-plane version (17) is kept only for plan display
+	// (ExpectedVersion). The write precondition must come from the write plane,
+	// sent as If-Unmodified-Since-Version, not as a body "version" key.
+	mutator := &fakeMutator{writeVersion: 42}
+	ops := preprintCheckFixPlannedOps(context.Background(), []preprintCheckFixProposal{proposal}, func() apiMutator { return mutator })
 	if len(ops) != 1 {
 		t.Fatalf("planned ops = %d, want 1", len(ops))
 	}
@@ -157,11 +160,46 @@ func TestPreprintCheckFixPlannedOpCarriesVersionIntoPatch(t *testing.T) {
 	if mutator.patchPath != "/items/K1" {
 		t.Fatalf("patch path = %q, want /items/K1", mutator.patchPath)
 	}
-	if mutator.patchBody["version"] != float64(17) {
-		t.Fatalf("patch version = %v, want 17", mutator.patchBody["version"])
+	if _, hasVersion := mutator.patchBody["version"]; hasVersion {
+		t.Fatalf("patch body must not carry a version key; got %v", mutator.patchBody)
 	}
 	if mutator.patchBody["DOI"] != "10.1234/published" {
 		t.Fatalf("patch DOI = %v, want published DOI", mutator.patchBody["DOI"])
+	}
+	if got := mutator.patchHeaders["If-Unmodified-Since-Version"]; got != "42" {
+		t.Fatalf("If-Unmodified-Since-Version = %q, want %q (write-plane version)", got, "42")
+	}
+	if len(mutator.writeVerPaths) == 0 || mutator.writeVerPaths[0] != "/items/K1" {
+		t.Fatalf("write-plane version lookup path = %v, want [/items/K1]", mutator.writeVerPaths)
+	}
+}
+
+func TestPreprintCheckFixPlannedOpFailsClosedOnMissingWritePlaneVersion(t *testing.T) {
+	proposal := preprintCheckFixProposal{
+		Key:    "K1",
+		Title:  "Paper",
+		DOI:    "10.1234/published",
+		Fields: map[string]any{"DOI": "10.1234/published"},
+		// Local version present but write-plane version is absent (0) — must fail closed.
+		version: float64(17),
+	}
+	mutator := &fakeMutator{writeVersion: 0}
+	ops := preprintCheckFixPlannedOps(context.Background(), []preprintCheckFixProposal{proposal}, func() apiMutator { return mutator })
+	if len(ops) != 1 {
+		t.Fatalf("planned ops = %d, want 1", len(ops))
+	}
+	status, reason, err := ops[0].Apply()
+	if err == nil {
+		t.Fatalf("apply err = nil, want error when write-plane version is 0")
+	}
+	if status != "failed" {
+		t.Fatalf("apply status = %q, want failed", status)
+	}
+	if reason == nil || !strings.Contains(fmt.Sprint(reason), "write-plane version") {
+		t.Fatalf("apply reason = %v, want message mentioning write-plane version", reason)
+	}
+	if mutator.patchPath != "" {
+		t.Fatalf("patch path = %q, want no PATCH dispatched when version is 0", mutator.patchPath)
 	}
 }
 

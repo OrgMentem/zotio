@@ -344,3 +344,241 @@ func captureWriteThroughStderr(t *testing.T, fn func()) string {
 	os.Stderr = old
 	return string(out)
 }
+
+// Restore after a sync-reconciled trash must reconstruct the live row from
+// the cached trash payload; otherwise the item ends up in neither table until
+// the next sync. Common write-through trash keeps the live row (UpsertKeyed
+// does not reconcile), so the fix must NOT overwrite a present live row.
+// See zotio-a13b50b and reconcileItemLifecycleTx.
+func TestApplyMirrorWriteThrough_RestoreReinstatesLiveRow(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	// Seed only the trash mirror to simulate the sync-reconciled case where
+	// reconcileItemLifecycleTx deleted the live row (trash had higher version).
+	// Payload carries deleted markers and stale version fields that must be
+	// stripped before reinsertion.
+	db, err := store.OpenWithContext(context.Background(), helpersTestDefaultDBPath(t, "zotio"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	raw := json.RawMessage(`{"key":"R1","version":9,"data":{"key":"R1","itemType":"book","title":"Restored","deleted":1,"version":9,"dateModified":"2026-01-01T00:00:00Z"}}`)
+	if err := db.UpsertKeyed("items-trash", []string{"R1"}, []json.RawMessage{raw}); err != nil {
+		_ = db.Close()
+		t.Fatalf("seed trash: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close seeded store: %v", err)
+	}
+
+	env := mutation.Envelope{
+		Plan: mutation.Plan{Operations: []mutation.Op{
+			{ID: "items.restore:R1", Key: "R1", Kind: "item_restore", Changes: []mutation.Change{{Field: "deleted", Remove: true}}},
+		}},
+		Result: &mutation.Result{
+			Summary: mutation.ResultSummary{Applied: 1},
+			Items:   []mutation.ResultItem{{OpID: "items.restore:R1", Key: "R1", Status: "applied"}},
+		},
+	}
+	stderr := captureWriteThroughStderr(t, func() { applyMirrorWriteThrough(&env) })
+	if stderr != "" {
+		t.Fatalf("restore with cached trash row should not warn, got stderr %q", stderr)
+	}
+
+	db2, err := store.OpenWithContext(context.Background(), helpersTestDefaultDBPath(t, "zotio"))
+	if err != nil {
+		t.Fatalf("reopen store: %v", err)
+	}
+	defer db2.Close()
+	qs := localQueryStore{db2}
+
+	// Live table must now contain the item and not the trash table.
+	liveRows, err := qs.QueryRaw("SELECT data FROM resources WHERE resource_type='items' AND id=?", "R1")
+	if err != nil || len(liveRows) != 1 {
+		t.Fatalf("live row after restore: rows=%v err=%v", liveRows, err)
+	}
+	var item map[string]any
+	if err := json.Unmarshal([]byte(sqlStringValue(liveRows[0]["data"])), &item); err != nil {
+		t.Fatalf("decode live item: %v", err)
+	}
+	if _, ok := item["deleted"]; ok {
+		t.Fatalf("restored live item still has top-level deleted: %v", item)
+	}
+	if data, ok := item["data"].(map[string]any); ok {
+		if _, ok := data["deleted"]; ok {
+			t.Fatalf("restored live item data still has deleted: %v", data)
+		}
+		if _, ok := data["version"]; ok {
+			t.Fatalf("restored live item data still has stale version: %v", data)
+		}
+		if _, ok := data["dateModified"]; ok {
+			t.Fatalf("restored live item data still has stale dateModified: %v", data)
+		}
+	} else {
+		t.Fatalf("restored item has no data object: %v", item)
+	}
+	if _, ok := item["version"]; ok {
+		t.Fatalf("restored live item still has stale top-level version: %v", item)
+	}
+	// title must survive the round-trip.
+	if got := sqlStringValue(liveRows[0]["data"]); !strings.Contains(got, "Restored") {
+		t.Fatalf("restored payload lost title: %v", got)
+	}
+
+	trashRows, err := qs.QueryRaw("SELECT id FROM resources WHERE resource_type='items-trash' AND id=?", "R1")
+	if err != nil {
+		t.Fatalf("query trash after restore: %v", err)
+	}
+	if len(trashRows) != 0 {
+		t.Fatalf("trash row still present after restore: %v", trashRows)
+	}
+}
+
+func TestApplyMirrorWriteThrough_RestoreWithoutTrashRowWarns(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	// Create an empty store so openExistingStoreForWrite returns a DB
+	// (not nil) but with no trash row to restore from.
+	db, err := store.OpenWithContext(context.Background(), helpersTestDefaultDBPath(t, "zotio"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	_ = db.Close()
+
+	env := mutation.Envelope{
+		Plan: mutation.Plan{Operations: []mutation.Op{
+			{ID: "items.restore:MISSING", Key: "MISSING", Kind: "item_restore", Changes: []mutation.Change{{Field: "deleted", Remove: true}}},
+		}},
+		Result: &mutation.Result{
+			Summary: mutation.ResultSummary{Applied: 1},
+			Items:   []mutation.ResultItem{{OpID: "items.restore:MISSING", Key: "MISSING", Status: "applied"}},
+		},
+	}
+	stderr := captureWriteThroughStderr(t, func() { applyMirrorWriteThrough(&env) })
+	if !strings.Contains(stderr, "warning: read-your-writes mirror update failed for MISSING:") {
+		t.Fatalf("missing-trash restore should warn, got stderr %q", stderr)
+	}
+	if !strings.Contains(stderr, "no cached trash row") {
+		t.Fatalf("missing-trash warning should name the degraded-cache condition, got %q", stderr)
+	}
+
+	db2, err := store.OpenWithContext(context.Background(), helpersTestDefaultDBPath(t, "zotio"))
+	if err != nil {
+		t.Fatalf("reopen store: %v", err)
+	}
+	defer db2.Close()
+	qs := localQueryStore{db2}
+	liveRows, err := qs.QueryRaw("SELECT id FROM resources WHERE resource_type='items' AND id=?", "MISSING")
+	if err != nil {
+		t.Fatalf("query live after missing restore: %v", err)
+	}
+	if len(liveRows) != 0 {
+		t.Fatalf("missing-trash restore should not create a live row, got %v", liveRows)
+	}
+	trashRows, err := qs.QueryRaw("SELECT id FROM resources WHERE resource_type='items-trash' AND id=?", "MISSING")
+	if err != nil {
+		t.Fatalf("query trash after missing restore: %v", err)
+	}
+	if len(trashRows) != 0 {
+		t.Fatalf("trash row should remain absent after missing restore: %v", trashRows)
+	}
+}
+
+func TestApplyMirrorWriteThrough_TrashKeepsLiveRow(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	seedWriteThroughItem(t, "T1", `{"key":"T1","version":1,"data":{"key":"T1","itemType":"book","title":"TrashMe"}}`)
+
+	env := mutation.Envelope{
+		Plan: mutation.Plan{Operations: []mutation.Op{
+			{ID: "items.delete:T1", Key: "T1", Kind: "item_trash", Changes: []mutation.Change{{Field: "deleted", Add: true}}},
+		}},
+		Result: &mutation.Result{
+			Summary: mutation.ResultSummary{Applied: 1},
+			Items:   []mutation.ResultItem{{OpID: "items.delete:T1", Key: "T1", Status: "applied"}},
+		},
+	}
+	stderr := captureWriteThroughStderr(t, func() { applyMirrorWriteThrough(&env) })
+	if stderr != "" {
+		t.Fatalf("trash should not warn, got %q", stderr)
+	}
+
+	db2, err := store.OpenWithContext(context.Background(), helpersTestDefaultDBPath(t, "zotio"))
+	if err != nil {
+		t.Fatalf("reopen store: %v", err)
+	}
+	defer db2.Close()
+	qs := localQueryStore{db2}
+	trashRows, err := qs.QueryRaw("SELECT id FROM resources WHERE resource_type='items-trash' AND id=?", "T1")
+	if err != nil || len(trashRows) != 1 {
+		t.Fatalf("trash row after trash: rows=%v err=%v", trashRows, err)
+	}
+	liveRows, err := qs.QueryRaw("SELECT id FROM resources WHERE resource_type='items' AND id=?", "T1")
+	if err != nil {
+		t.Fatalf("query live after trash: %v", err)
+	}
+	if len(liveRows) != 1 {
+		t.Fatalf("live row should remain after trash (Zotero keeps items with deleted=1; only permanent delete reaps) — got %v", liveRows)
+	}
+}
+
+func TestApplyMirrorWriteThrough_RestoreWhenLivePresentDoesNotOverwrite(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	// Seed BOTH tables to simulate the common write-through trash path
+	// where mirrorTrashedItem copied into trash without deleting the live
+	// row (UpsertKeyed does not call reconcileItemLifecycleTx, so live
+	// survives). The live row is newer (title LiveTitle) than the stale
+	// trash copy (title StaleTitle). Restore must NOT overwrite live.
+	db, err := store.OpenWithContext(context.Background(), helpersTestDefaultDBPath(t, "zotio"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	liveRaw := json.RawMessage(`{"key":"R2","version":2,"data":{"key":"R2","itemType":"book","title":"LiveTitle","version":2}}`)
+	trashRaw := json.RawMessage(`{"key":"R2","version":1,"data":{"key":"R2","itemType":"book","title":"StaleTitle","deleted":1,"version":1}}`)
+	if _, _, err := db.UpsertBatch("items", []json.RawMessage{liveRaw}); err != nil {
+		_ = db.Close()
+		t.Fatalf("seed live: %v", err)
+	}
+	// Use UpsertKeyed for trash to avoid reconcile deleting live (mirrors real write-through)
+	if err := db.UpsertKeyed("items-trash", []string{"R2"}, []json.RawMessage{trashRaw}); err != nil {
+		_ = db.Close()
+		t.Fatalf("seed trash: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close seeded store: %v", err)
+	}
+
+	env := mutation.Envelope{
+		Plan: mutation.Plan{Operations: []mutation.Op{
+			{ID: "items.restore:R2", Key: "R2", Kind: "item_restore", Changes: []mutation.Change{{Field: "deleted", Remove: true}}},
+		}},
+		Result: &mutation.Result{
+			Summary: mutation.ResultSummary{Applied: 1},
+			Items:   []mutation.ResultItem{{OpID: "items.restore:R2", Key: "R2", Status: "applied"}},
+		},
+	}
+	stderr := captureWriteThroughStderr(t, func() { applyMirrorWriteThrough(&env) })
+	if stderr != "" {
+		t.Fatalf("restore with live present should not warn, got %q", stderr)
+	}
+
+	db2, err := store.OpenWithContext(context.Background(), helpersTestDefaultDBPath(t, "zotio"))
+	if err != nil {
+		t.Fatalf("reopen store: %v", err)
+	}
+	defer db2.Close()
+	qs := localQueryStore{db2}
+	liveRows, err := qs.QueryRaw("SELECT data FROM resources WHERE resource_type='items' AND id=?", "R2")
+	if err != nil || len(liveRows) != 1 {
+		t.Fatalf("live row after restore: rows=%v err=%v", liveRows, err)
+	}
+	if got := sqlStringValue(liveRows[0]["data"]); !strings.Contains(got, "LiveTitle") {
+		t.Fatalf("restore overwrote live row with stale trash payload: %v", got)
+	}
+	if got := sqlStringValue(liveRows[0]["data"]); strings.Contains(got, "StaleTitle") {
+		t.Fatalf("live row should not contain stale trash title, got %v", got)
+	}
+	trashRows, err := qs.QueryRaw("SELECT id FROM resources WHERE resource_type='items-trash' AND id=?", "R2")
+	if err != nil {
+		t.Fatalf("query trash after restore: %v", err)
+	}
+	if len(trashRows) != 0 {
+		t.Fatalf("trash row still present after restore: %v", trashRows)
+	}
+}

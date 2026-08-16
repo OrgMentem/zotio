@@ -107,18 +107,45 @@ func TestExtractVenue(t *testing.T) {
 }
 
 func TestTruncateRunes(t *testing.T) {
-	out, cut := truncateRunes(strings.Repeat("é", 10), 5) // 20 bytes -> cap 5
+	// --max-chars is a character (rune) limit, not a byte limit. 10 runes of
+	// "é" (2 bytes each, 20 bytes total) with max 5 should keep exactly 5
+	// characters (10 bytes), not 5 bytes (~2 chars).
+	out, cut := truncateRunes(strings.Repeat("é", 10), 5)
 	if !cut {
 		t.Errorf("expected truncation")
 	}
 	if !utf8.ValidString(out) {
 		t.Errorf("truncation produced invalid UTF-8: %q", out)
 	}
-	if len(out) > 5 {
-		t.Errorf("len = %d, want <= 5", len(out))
+	if got := utf8.RuneCountInString(out); got != 5 {
+		t.Errorf("rune count = %d, want 5; out=%q", got, out)
+	}
+	if want := strings.Repeat("é", 5); out != want {
+		t.Errorf("out = %q, want %q", out, want)
 	}
 	if out2, cut2 := truncateRunes("abc", 10); cut2 || out2 != "abc" {
 		t.Errorf("short input should be untouched, got %q cut=%v", out2, cut2)
+	}
+	// ASCII and multibyte: limit landing exactly on a character boundary.
+	if out3, cut3 := truncateRunes("abcdef", 3); !cut3 || out3 != "abc" {
+		t.Errorf("ascii truncate = %q cut=%v, want abc/true", out3, cut3)
+	}
+	if out4, cut4 := truncateRunes("abcdef", 6); cut4 || out4 != "abcdef" {
+		t.Errorf("exact boundary should not truncate, got %q cut=%v", out4, cut4)
+	}
+	// 3-byte CJK character: 100 chars (300 bytes) with max 100 must keep 100 chars.
+	cjk := strings.Repeat("中", 100)
+	if out5, cut5 := truncateRunes(cjk, 100); cut5 || out5 != cjk {
+		t.Errorf("cjk exact limit: cut=%v runes=%d, want untouched", cut5, utf8.RuneCountInString(out5))
+	}
+	if out6, cut6 := truncateRunes(cjk+"x", 100); !cut6 || utf8.RuneCountInString(out6) != 100 {
+		t.Errorf("cjk over limit: cut=%v runes=%d, want 100/true", cut6, utf8.RuneCountInString(out6))
+	}
+	// Mixed-width: cut inside a multibyte sequence must not happen; limit is
+	// by runes so the 3-byte rune is kept whole.
+	mixed := "a中b中c"
+	if out7, cut7 := truncateRunes(mixed, 3); !cut7 || out7 != "a中b" {
+		t.Errorf("mixed truncate = %q cut=%v, want a中b/true", out7, cut7)
 	}
 }
 

@@ -164,14 +164,15 @@ const (
 // capability writers that do not use the shared --yes mutation gate. Keep this
 // narrow so normal readers stay free.
 var explicitInstallationWriterCommands = map[string]writerLockMode{
-	"auth set-token": writerLockAlways,
-	"auth logout":    writerLockAlways,
-	"profile save":   writerLockAlways,
-	"profile delete": writerLockAlways,
-	"init":           writerLockAlways,
-	"demo":           writerLockAlways,
-	"tail":           writerLockAlways,
-	"workflow run":   writerLockOnApply,
+	"auth set-token":   writerLockAlways,
+	"auth logout":      writerLockAlways,
+	"profile save":     writerLockAlways,
+	"profile delete":   writerLockAlways,
+	"init":             writerLockAlways,
+	"demo":             writerLockAlways,
+	"tail":             writerLockAlways,
+	"workflow archive": writerLockAlways,
+	"workflow run":     writerLockOnApply,
 
 	// Every command that writes on the user's behalf routes through the shared
 	// --yes gate, so the capability registry's writerLockOnApply is the right

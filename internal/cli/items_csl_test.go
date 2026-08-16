@@ -4,15 +4,19 @@ package cli
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
+
+	"zotio/internal/config"
 )
 
 func TestItemsCiteNamedCSLStyleUsesWebAPI(t *testing.T) {
@@ -246,4 +250,144 @@ func joinStrings(parts []string, sep string) string {
 		out += sep + part
 	}
 	return out
+}
+
+// TestItemsBibliographyReadOnlyDoesNotPersistUserID asserts the read-only
+// invariant for items bibliography: with an absent configured UserID, a
+// personal-library Web read resolves the Web base via keys/current but
+// leaves the config file byte-identical (and mtime unchanged), matching the
+// harness in readonly_contract_test.go ("writes nothing to the config file").
+// The resolved ID is still usable in-memory for the current invocation, so
+// the command succeeds and renders the bibliography.
+func TestItemsBibliographyReadOnlyDoesNotPersistUserID(t *testing.T) {
+	oldAllowPrivateOutbound := allowPrivateOutboundForTests
+	allowPrivateOutboundForTests = true
+	t.Cleanup(func() { allowPrivateOutboundForTests = oldAllowPrivateOutbound })
+
+	// Web API mock: userID resolution plus a BIB render.
+	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/keys/current":
+			_, _ = w.Write([]byte(`{"userID":99,"username":"x","access":{}}`))
+		case "/users/99/items":
+			q := r.URL.Query()
+			if q.Get("format") == "bib" {
+				_, _ = w.Write([]byte("Dune, 1965."))
+				return
+			}
+			// Scope probe before render: empty library yields empty array.
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`[]`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer api.Close()
+	oldBase := zoteroWebAPIBase
+	zoteroWebAPIBase = api.URL
+	defer func() { zoteroWebAPIBase = oldBase }()
+
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "config.toml")
+	// Local data API base triggers hybrid routing in newWebReadClient.
+	// No user_id on purpose — resolution must happen via keys/current.
+	if err := os.WriteFile(configPath, []byte("base_url = \"http://localhost:23119/api/users/0\"\napi_key = \"k\"\n"), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	before, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatalf("read config before: %v", err)
+	}
+	beforeInfo, err := os.Stat(configPath)
+	if err != nil {
+		t.Fatalf("stat config before: %v", err)
+	}
+
+	// Drive items bibliography through the CLI, not just the resolver, so
+	// the test covers the exact user-facing promise: `zotio items bibliography`
+	// with a missing UserID renders while writing nothing to config.
+	t.Setenv("ZOTERO_CONFIG", configPath)
+	t.Setenv("ZOTERO_API_KEY", "k")
+	t.Setenv("ZOTERO_BASE_URL", "http://localhost:23119/api/users/0")
+	// Isolate HOME so other probes cannot create ~/.zotio side effects.
+	t.Setenv("HOME", dir)
+	t.Setenv("ZOTIO_DEMO", "0")
+	// Some helpers touch the temp dir via ZOTERO_DATA_DIR; point it inside dir.
+	t.Setenv("ZOTERO_DATA_DIR", filepath.Join(dir, "data"))
+	activeGroupSave := activeGroupID
+	activeGroupID = ""
+	t.Cleanup(func() { activeGroupID = activeGroupSave })
+
+	flags := &rootFlags{configPath: configPath, noCache: true}
+	// Scope "item:K1" avoids the paginated scope-key loop hitting the Web API
+	// with unmocked params; the single Get for BIB is what we want to prove
+	// still succeeds after the in-memory userID is filled.
+	out, err := runCSLItemsCommand(t, flags, []string{"bibliography", "--scope", "item:K1"})
+	if err != nil {
+		t.Fatalf("items bibliography: %v", err)
+	}
+	if got := out.String(); got != "Dune, 1965." {
+		t.Fatalf("bibliography output = %q, want %q", got, "Dune, 1965.")
+	}
+
+	after, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatalf("read config after: %v", err)
+	}
+	if string(after) != string(before) {
+		t.Fatalf("config mutated by read-only bibliography:\nbefore %q\nafter  %q", string(before), string(after))
+	}
+	if fi, err := os.Stat(configPath); err != nil {
+		t.Fatalf("stat after: %v", err)
+	} else if !fi.ModTime().Equal(beforeInfo.ModTime()) {
+		t.Fatalf("config mtime changed: before %v, after %v", beforeInfo.ModTime(), fi.ModTime())
+	}
+
+	// Counter-proof: the mutating path still persists.
+	mutDir := t.TempDir()
+	mutPath := filepath.Join(mutDir, "config.toml")
+	if err := os.WriteFile(mutPath, []byte("base_url = \"http://localhost:23119/api/users/0\"\napi_key = \"k\"\n"), 0o600); err != nil {
+		t.Fatalf("write mut config: %v", err)
+	}
+	mutCfg, err := config.Load(mutPath)
+	if err != nil {
+		t.Fatalf("load mut cfg: %v", err)
+	}
+	// Resolve via the write path — it must now persist.
+	if _, err := resolveWebWriteBase(context.Background(), mutCfg, "", 0); err != nil {
+		t.Fatalf("resolve write path: %v", err)
+	}
+	mutAfter, err := os.ReadFile(mutPath)
+	if err != nil {
+		t.Fatalf("read mut config after: %v", err)
+	}
+	if !strings.Contains(string(mutAfter), "user_id") {
+		t.Fatalf("write path did not persist user_id; file = %q", string(mutAfter))
+	}
+	if mutCfg.UserID != "99" {
+		t.Fatalf("write path UserID = %q, want 99", mutCfg.UserID)
+	}
+
+	// And the read-only path leaves its own file alone even when exercised
+	// through the lower-level resolver (covers both entry points).
+	roDir := t.TempDir()
+	roPath := filepath.Join(roDir, "config.toml")
+	if err := os.WriteFile(roPath, []byte("base_url = \"http://localhost:23119/api/users/0\"\napi_key = \"k\"\n"), 0o600); err != nil {
+		t.Fatalf("write ro config: %v", err)
+	}
+	roCfg, err := config.Load(roPath)
+	if err != nil {
+		t.Fatalf("load ro cfg: %v", err)
+	}
+	roBefore, _ := os.ReadFile(roPath)
+	if _, err := resolveWebWriteBaseWithoutPersist(context.Background(), roCfg, "", 0); err != nil {
+		t.Fatalf("resolve read path: %v", err)
+	}
+	if roCfg.UserID != "99" {
+		t.Fatalf("read path in-memory UserID = %q, want 99", roCfg.UserID)
+	}
+	roAfter, _ := os.ReadFile(roPath)
+	if string(roAfter) != string(roBefore) {
+		t.Fatalf("read path mutated config:\nbefore %q\nafter %q", string(roBefore), string(roAfter))
+	}
 }

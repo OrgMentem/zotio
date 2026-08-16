@@ -13,6 +13,8 @@ import (
 	"strings"
 	"testing"
 
+	"zotio/internal/client"
+	"zotio/internal/config"
 	"zotio/internal/mutation"
 )
 
@@ -88,13 +90,23 @@ func runItemsTagsTestCmd(t *testing.T, srv *itemTagTestServer, flags *rootFlags,
 	cmd.SetOut(&out)
 	cmd.SetErr(&errOut)
 	cmd.SetArgs(args)
-	if err := cmd.Execute(); err != nil {
+	err := cmd.Execute()
+	var env mutation.Envelope
+	if out.Len() > 0 {
+		if err2 := json.Unmarshal(out.Bytes(), &env); err2 != nil {
+			t.Fatalf("decode mutation envelope %q: %v (execute err %v; stderr=%s)", out.String(), err2, err, errOut.String())
+		}
+	}
+	if err != nil && out.Len() == 0 {
 		t.Fatalf("items tags %v: %v; stderr=%s", args, err, errOut.String())
 	}
-	var env mutation.Envelope
-	if err := json.Unmarshal(out.Bytes(), &env); err != nil {
-		t.Fatalf("decode mutation envelope %q: %v", out.String(), err)
+	if err != nil && env.Result == nil && env.Plan.Summary.Selected == 0 && len(env.Plan.Operations) == 0 {
+		// Command error without a mutation envelope (e.g. flag validation). Still fatal.
+		t.Fatalf("items tags %v: %v; stderr=%s; envelope=%+v", args, err, errOut.String(), env)
 	}
+	// For mutation-incomplete (failed/conflict) the engine returns an error but
+	// still emits a JSON envelope with Result. Return the envelope so callers
+	// can assert per-item status; the error is intentionally not fatal here.
 	return env, errOut.String()
 }
 
@@ -391,4 +403,49 @@ func patchBodyTag(body map[string]any, tagName string) map[string]any {
 		}
 	}
 	return nil
+}
+
+func TestPatchItemTagsFailsClosedWithoutVersion(t *testing.T) {
+	// patchItemTags must refuse to PATCH when the version read returned 0.
+	// Zotero rejects a preconditionless key-based write with an opaque 428, so
+	// the user would otherwise see that transport error instead of the real
+	// cause; on a permissive server it would overwrite a concurrent edit with
+	// no conflict detection.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Fatalf("PATCH must not be dispatched when version is 0; got %s %s", r.Method, r.URL.Path)
+	}))
+	t.Cleanup(srv.Close)
+	c := client.New(&config.Config{BaseURL: srv.URL + "/users/0"}, 0, 0)
+	c.NoCache = true
+	status, reason, err := patchItemTags(c, "/users/0/items/K1", 0, []map[string]any{{"tag": "fresh"}})
+	if err == nil {
+		t.Fatalf("patchItemTags with version 0: err = nil, want error")
+	}
+	if status != "failed" {
+		t.Fatalf("status = %q, want failed", status)
+	}
+	msg, _ := reason.(string)
+	if !strings.Contains(strings.ToLower(msg), "write-plane version") && !strings.Contains(strings.ToLower(msg), "if-unmodified-since-version") {
+		t.Fatalf("reason = %q, want missing write-plane precondition", msg)
+	}
+}
+
+func TestApplyItemTagAddFailsClosedOnZeroVersion(t *testing.T) {
+	// applyItemTagAdd reads the live item; when that read yields version 0 the
+	// follow-up PATCH must not be sent. Exercise the full path via the mutation
+	// envelope so the no-request guarantee is end-to-end.
+	srv := newItemTagTestServer(t, map[string]string{"K1": "0"}, map[string][]map[string]any{
+		"K1": {},
+	})
+	// Version "0" → parseLastModifiedVersion returns 0 → version 0.
+	env, _ := runItemsTagsTestCmd(t, srv, &rootFlags{asJSON: true, yes: true, maxChanges: -1}, "add", "--tag", "fresh", "K1")
+	if env.Result == nil || len(env.Result.Items) != 1 {
+		t.Fatalf("env = %+v, want one result", env)
+	}
+	if env.Result.Items[0].Status != "failed" {
+		t.Fatalf("status = %q, want failed (zero version must fail closed)", env.Result.Items[0].Status)
+	}
+	if srv.patchCounts["K1"] != 0 {
+		t.Fatalf("PATCH count = %d, want 0 (no request when version is 0)", srv.patchCounts["K1"])
+	}
 }

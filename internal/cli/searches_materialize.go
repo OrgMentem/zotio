@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/url"
+	"strconv"
 
 	"zotio/internal/client"
 	"zotio/internal/mutation"
@@ -50,24 +51,63 @@ func runSearchesMaterializeMutation(cmd *cobra.Command, flags *rootFlags, search
 	}
 
 	searchPath := "/searches/" + url.PathEscape(searchKey) + "/items"
-	data, err := c.Get(searchPath, nil)
-	if err != nil {
-		return renderEmptySearchesMaterializePlan(cmd, flags, fmt.Sprintf("saved search items unavailable: %v", err))
-	}
-	if zoteroResultIsEmpty(data) {
-		return renderEmptySearchesMaterializePlan(cmd, flags, "saved search returned no items")
-	}
+	// Walk the saved-search items endpoint to exhaustion. The Zotero API
+	// paginates with limit/start (default ~25, max zoteroPageMax=100), so a
+	// single unpaginated fetch silently truncates any search larger than one
+	// page. Accumulate every page before building the mutation plan.
+	var allKeys []string
+	seen := make(map[string]bool, zoteroPageMax)
+	for start := 0; ; start += zoteroPageMax {
+		params := map[string]string{
+			"limit": strconv.Itoa(zoteroPageMax),
+			"start": strconv.Itoa(start),
+		}
+		data, err := c.Get(searchPath, params)
+		if err != nil {
+			if start == 0 {
+				return renderEmptySearchesMaterializePlan(cmd, flags, fmt.Sprintf("saved search items unavailable: %v", err))
+			}
+			return fmt.Errorf("fetching saved search %s items at start %d: %w", searchKey, start, err)
+		}
+		if zoteroResultIsEmpty(data) {
+			if start == 0 {
+				return renderEmptySearchesMaterializePlan(cmd, flags, "saved search returned no items")
+			}
+			break
+		}
 
-	keys, err := searchMaterializeItemKeys(data)
-	if err != nil {
-		return err
+		keys, err := searchMaterializeItemKeys(data)
+		if err != nil {
+			return err
+		}
+		if len(keys) == 0 {
+			if start == 0 {
+				return renderEmptySearchesMaterializePlan(cmd, flags, "saved search returned no item keys")
+			}
+			break
+		}
+		// A server that ignores start would repeat keys forever and either
+		// loop or double-file items. Treat a repeat as a pagination failure
+		// rather than silently duplicating operations.
+		for _, key := range keys {
+			if seen[key] {
+				return fmt.Errorf("pagination for saved search %s ignored start %d (duplicate key %s)", searchKey, start, key)
+			}
+		}
+		for _, key := range keys {
+			seen[key] = true
+		}
+		allKeys = append(allKeys, keys...)
+		if len(keys) < zoteroPageMax {
+			break
+		}
 	}
-	if len(keys) == 0 {
+	if len(allKeys) == 0 {
 		return renderEmptySearchesMaterializePlan(cmd, flags, "saved search returned no item keys")
 	}
 
-	ops := make([]mutation.Op, 0, len(keys))
-	for _, key := range keys {
+	ops := make([]mutation.Op, 0, len(allKeys))
+	for _, key := range allKeys {
 		keyCopy := key
 		pathCopy := replacePathParam("/items/{itemKey}", "itemKey", keyCopy)
 		toCopy := toCollection
@@ -134,7 +174,12 @@ func applySearchesMaterializeCollectionAdd(c *client.Client, path, toCollection 
 		return "no_op", "already in target collection", nil
 	}
 	nextCollections := append(append([]string(nil), currentCollections...), toCollection)
-	return patchItemCollections(c, path, currentVersion, nextCollections)
+	body := map[string]any{"collections": nextCollections}
+	// Fail closed when no write-plane version is available rather than
+	// dispatching a preconditionless PATCH that Zotero would reject with an
+	// opaque 428. patchWithVersionGuard sets If-Unmodified-Since-Version and
+	// maps 412/428 to "conflict".
+	return patchWithVersionGuard(c, path, body, currentVersion)
 }
 
 func searchesMaterializeSingleLine(toCollection string) func(mutation.Envelope) string {

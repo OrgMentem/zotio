@@ -25,6 +25,7 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"unicode"
 
 	"zotio/internal/client"
 	"zotio/internal/cliutil"
@@ -715,16 +716,18 @@ func applyEnrichProposalWithContext(ctx context.Context, downloader enrichPDFDow
 			err := errors.New("missing API client")
 			return "failed", err.Error(), err
 		}
-		body := map[string]any{"version": p.version}
+		// The version in the proposal was read from the LOCAL plane; the write
+		// is routed to the Web API where versions are an independent number
+		// space. Re-read the precondition from the plane the PATCH lands on
+		// and send it as If-Unmodified-Since-Version rather than a body
+		// `version` property.
+		body := map[string]any{}
 		for k, v := range p.Fields {
 			body[k] = v
 		}
 		body["extra"] = appendEnrichProvenance(p, flags)
 		path := replacePathParam("/items/{itemKey}", "itemKey", p.Key)
-		if _, _, err := c.Patch(path, body); err != nil {
-			return enrichErrorStatus(err)
-		}
-		return "applied", nil, nil
+		return patchWithWritePlaneVersion(ctx, c, path, body)
 	case enrichActionAttach:
 		switch p.AttachMode {
 		case "", "linked-url":
@@ -828,9 +831,13 @@ func linkedAttachmentCreationConfirmedAbsent(err error) bool {
 }
 
 // apiMutator is the subset of *client.Client used to apply enrichments; a small
-// interface keeps the apply step unit-testable without a live server.
+// interface keeps the apply step unit-testable without a live server. It
+// includes the write-plane precondition surface because a key-based Zotero
+// write must carry an If-Unmodified-Since-Version read from the plane the
+// write is routed to (see write_precondition.go).
 type apiMutator interface {
 	Patch(path string, body any) (json.RawMessage, int, error)
+	PatchWithHeaders(path string, body any, headers map[string]string) (json.RawMessage, int, error)
 	Post(path string, body any) (json.RawMessage, int, error)
 }
 
@@ -900,11 +907,9 @@ func enrichProposalChanges(p enrichProposal) []mutation.Change {
 }
 
 func enrichErrorStatus(err error) (string, any, error) {
-	var apiErr *client.APIError
-	if errors.As(err, &apiErr) && (apiErr.StatusCode == http.StatusPreconditionFailed || apiErr.StatusCode == http.StatusPreconditionRequired) {
-		return "conflict", apiErr.Body, err
-	}
-	return "failed", err.Error(), err
+	// Single source of truth for 412/428 -> "conflict" lives in
+	// write_precondition.go; keep this name for existing call sites.
+	return classifyWriteError(err)
 }
 
 func mutationExpectedVersion(version any) int {
@@ -1219,11 +1224,17 @@ func resolveDOIViaCrossRef(ctx context.Context, httpClient *http.Client, data ma
 		return "", crossRefWork{}, false
 	}
 	want := normalizeTitleForMatch(title)
+	// Empty-equals-empty must never count as an exact match: punctuation-only
+	// or (pre-fix) non-Latin titles all collapsed to "" and would otherwise
+	// accept the first provider hit as a false exact match.
+	if want == "" {
+		return "", crossRefWork{}, false
+	}
 	for _, w := range resp.Message.Items {
 		if len(w.Title) == 0 || w.DOI == "" {
 			continue
 		}
-		if normalizeTitleForMatch(w.Title[0]) == want {
+		if cand := normalizeTitleForMatch(w.Title[0]); cand != "" && cand == want {
 			return normalizeDOI(w.DOI), w, true
 		}
 	}
@@ -1314,11 +1325,14 @@ func resolveDOIViaSemanticScholar(ctx context.Context, httpClient *http.Client, 
 		return "", false
 	}
 	want := normalizeTitleForMatch(title)
+	if want == "" {
+		return "", false
+	}
 	for _, paper := range resp.Data {
 		if paper.Title == "" || paper.ExternalIDs.DOI == "" {
 			continue
 		}
-		if normalizeTitleForMatch(paper.Title) == want {
+		if cand := normalizeTitleForMatch(paper.Title); cand != "" && cand == want {
 			return normalizeDOI(paper.ExternalIDs.DOI), true
 		}
 	}
@@ -1408,11 +1422,14 @@ func resolveDOIViaOpenAlex(ctx context.Context, httpClient *http.Client, data ma
 		return "", false
 	}
 	want := normalizeTitleForMatch(title)
+	if want == "" {
+		return "", false
+	}
 	for _, w := range resp.Results {
 		if w.DOI == "" || w.Title == "" {
 			continue
 		}
-		if normalizeTitleForMatch(w.Title) == want {
+		if cand := normalizeTitleForMatch(w.Title); cand != "" && cand == want {
 			return normalizeDOI(w.DOI), true
 		}
 	}
@@ -1555,8 +1572,9 @@ func firstCreatorFamily(data map[string]any) string {
 func normalizeTitleForMatch(title string) string {
 	var b strings.Builder
 	for _, r := range strings.ToLower(title) {
-		switch {
-		case r >= 'a' && r <= 'z', r >= '0' && r <= '9':
+		// Keep any Unicode letter or number so CJK/Cyrillic/Arabic titles
+		// normalize to meaningful content instead of the empty string.
+		if unicode.IsLetter(r) || unicode.IsNumber(r) {
 			b.WriteRune(r)
 		}
 	}

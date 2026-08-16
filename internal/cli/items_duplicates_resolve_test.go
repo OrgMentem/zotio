@@ -13,6 +13,8 @@ import (
 	"strings"
 	"testing"
 
+	"zotio/internal/client"
+	"zotio/internal/config"
 	"zotio/internal/mutation"
 	"zotio/internal/store"
 )
@@ -111,12 +113,18 @@ func runItemsDuplicatesResolveTestCmdWithStderr(t *testing.T, srv *duplicateReso
 	cmd.SetOut(&out)
 	cmd.SetErr(&errOut)
 	cmd.SetArgs(args)
-	if err := cmd.Execute(); err != nil {
+	err := cmd.Execute()
+	var env mutation.Envelope
+	if out.Len() > 0 {
+		if err2 := json.Unmarshal(out.Bytes(), &env); err2 != nil {
+			t.Fatalf("decode mutation envelope %q: %v (execute err %v; stderr=%s)", out.String(), err2, err, errOut.String())
+		}
+	}
+	if err != nil && out.Len() == 0 {
 		t.Fatalf("items duplicates %v: %v; stderr=%s", args, err, errOut.String())
 	}
-	var env mutation.Envelope
-	if err := json.Unmarshal(out.Bytes(), &env); err != nil {
-		t.Fatalf("decode mutation envelope %q: %v", out.String(), err)
+	if err != nil && env.Result == nil && env.Plan.Summary.Selected == 0 && len(env.Plan.Operations) == 0 {
+		t.Fatalf("items duplicates %v: %v; stderr=%s; envelope=%+v", args, err, errOut.String(), env)
 	}
 	return env, errOut.String()
 }
@@ -390,5 +398,49 @@ func TestDuplicatesResolvePartialFailureIsJournaled(t *testing.T) {
 	}
 	if entry.Ops[0].Kind != duplicateResolveMergePartialKind {
 		t.Fatalf("journal op kind = %q, want %q so `journal show` marks the half-applied state", entry.Ops[0].Kind, duplicateResolveMergePartialKind)
+	}
+}
+
+func TestDuplicateResolvePatchFailsClosedWithoutVersion(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Fatalf("PATCH must not be dispatched when version is 0; got %s %s", r.Method, r.URL.Path)
+	}))
+	t.Cleanup(srv.Close)
+	c := client.New(&config.Config{BaseURL: srv.URL + "/users/0"}, 0, 0)
+	c.NoCache = true
+	status, reason, err := duplicateResolvePatch(c, "/users/0/items/K1", 0, map[string]any{"deleted": float64(1)})
+	if err == nil {
+		t.Fatalf("duplicateResolvePatch with version 0: err = nil, want error")
+	}
+	if status != "failed" {
+		t.Fatalf("status = %q, want failed", status)
+	}
+	msg, _ := reason.(string)
+	if !strings.Contains(strings.ToLower(msg), "write-plane version") && !strings.Contains(strings.ToLower(msg), "if-unmodified-since-version") {
+		t.Fatalf("reason = %q, want missing write-plane precondition", msg)
+	}
+}
+
+func TestDuplicateResolveApplyFailsClosedOnZeroVersion(t *testing.T) {
+	// One leg has version 0. applyDuplicateResolve should fail that leg's PATCH
+	// without dispatching it, and the mutation framework should surface the
+	// failure with zero PATCHes sent for the zero-version key.
+	seedDuplicateResolveStore(t, []json.RawMessage{
+		json.RawMessage(`{"key":"K1","version":0,"data":{"key":"K1","itemType":"journalArticle","title":"Same","DOI":"10/example","collections":["C1"],"tags":[{"tag":"keep"}]}}`),
+		json.RawMessage(`{"key":"K2","version":11,"data":{"key":"K2","itemType":"journalArticle","title":"Same","DOI":"10/example","collections":["C2"],"tags":[{"tag":"dup"}]}}`),
+	})
+	srv := newDuplicateResolveTestServer(t, map[string]int{"K1": 0, "K2": 11}, map[string]map[string]any{
+		"K1": {"key": "K1", "itemType": "journalArticle", "title": "Same", "DOI": "10/example", "collections": []any{"C1"}, "tags": []any{map[string]any{"tag": "keep"}}},
+		"K2": {"key": "K2", "itemType": "journalArticle", "title": "Same", "DOI": "10/example", "collections": []any{"C2"}, "tags": []any{map[string]any{"tag": "dup"}}},
+	})
+	env := runItemsDuplicatesResolveTestCmd(t, srv, &rootFlags{asJSON: true, yes: true, maxChanges: -1, allowDestructive: true}, "resolve", "--doi")
+	if env.Result == nil || len(env.Result.Items) != 1 {
+		t.Fatalf("env = %+v, want one result", env)
+	}
+	if env.Result.Items[0].Status != "failed" {
+		t.Fatalf("status = %q, want failed (zero version must fail closed)", env.Result.Items[0].Status)
+	}
+	if srv.patchCounts["K1"] != 0 {
+		t.Fatalf("PATCH count for K1 = %d, want 0 (no request when version is 0)", srv.patchCounts["K1"])
 	}
 }

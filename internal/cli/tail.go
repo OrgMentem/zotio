@@ -120,7 +120,7 @@ native streaming instead of polling.`,
 			fmt.Fprintf(os.Stderr, "Tailing %s every %s (Ctrl+C to stop)\n", resource, interval)
 
 			// Initial poll
-			if events, err := emitChanges(cmd.Context(), c, db, resource, path, sink, os.Stdout); err != nil {
+			if events, err := emitChanges(cmd.Context(), c, db, resource, path, sink, cmd.OutOrStdout()); err != nil {
 				return fmt.Errorf("initial tail poll: %w", err)
 			} else if events >= 1 && workflowPath != "" {
 				runTriggeredWorkflow(cmd.Context(), cmd, "tail", workflowPath, workflowRunInvocation{
@@ -144,7 +144,7 @@ native streaming instead of polling.`,
 					fmt.Fprintln(os.Stderr, "\nShutting down gracefully...")
 					return nil
 				case <-ticker.C:
-					if events, err := emitChanges(cmd.Context(), c, db, resource, path, sink, os.Stdout); err != nil {
+					if events, err := emitChanges(cmd.Context(), c, db, resource, path, sink, cmd.OutOrStdout()); err != nil {
 						return fmt.Errorf("tail poll: %w", err)
 					} else if events >= 1 && workflowPath != "" {
 						runTriggeredWorkflow(cmd.Context(), cmd, "tail", workflowPath, workflowRunInvocation{
@@ -206,7 +206,13 @@ func emitChanges(ctx context.Context, c *client.Client, db *store.Store, resourc
 	now := time.Now().UTC().Format(time.RFC3339)
 	emitted := 0
 
-	items, _, _ := extractPageItems(body, "")
+	items, _, _, isPage, extractErr := extractPageItemsWithError(body, "")
+	if extractErr != nil {
+		return 0, fmt.Errorf("tail %s: decoding change page: %w", resource, extractErr)
+	}
+	if !isPage {
+		return 0, fmt.Errorf("tail %s: decoding change page: expected JSON array or object", resource)
+	}
 	for _, item := range items {
 		var obj map[string]any
 		if err := json.Unmarshal(item, &obj); err != nil {
@@ -238,19 +244,20 @@ func emitChanges(ctx context.Context, c *client.Client, db *store.Store, resourc
 			fmt.Fprintf(os.Stderr, "warning: tail %s: fetching deletions failed: %v\n", resource, derr)
 		} else {
 			var buckets map[string][]string
-			if err := json.Unmarshal(delBody, &buckets); err == nil {
-				for _, k := range buckets[resource] {
-					event := map[string]any{
-						"event":     "delete",
-						"resource":  resource,
-						"key":       k,
-						"timestamp": now,
-					}
-					if err := enc.Encode(event); err != nil {
-						return emitted, err
-					}
-					emitted++
+			if err := json.Unmarshal(delBody, &buckets); err != nil {
+				return 0, fmt.Errorf("tail %s: decoding deletions: %w", resource, err)
+			}
+			for _, k := range buckets[resource] {
+				event := map[string]any{
+					"event":     "delete",
+					"resource":  resource,
+					"key":       k,
+					"timestamp": now,
 				}
+				if err := enc.Encode(event); err != nil {
+					return emitted, err
+				}
+				emitted++
 			}
 		}
 	}

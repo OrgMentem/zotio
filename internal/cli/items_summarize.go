@@ -419,18 +419,22 @@ func citationAuthors(authors []string) string {
 	return authors[0] + " et al."
 }
 
-// truncateRunes caps s at max bytes without splitting a UTF-8 rune; the bool
-// reports whether anything was cut.
+// truncateRunes caps s at max characters (runes) without splitting a UTF-8
+// rune; the bool reports whether anything was cut.
 func truncateRunes(s string, max int) (string, bool) {
-	if max <= 0 || len(s) <= max {
+	if max <= 0 || utf8.RuneCountInString(s) <= max {
 		return s, false
 	}
-	b := []byte(s)
-	i := max
-	for i > 0 && !utf8.RuneStart(b[i]) {
-		i--
+	// Advance by rune index to honor --max-chars as a character contract;
+	// avoid allocating a full []rune for large limits.
+	idx := 0
+	for pos := range s {
+		if idx == max {
+			return s[:pos], true
+		}
+		idx++
 	}
-	return string(b[:i]), true
+	return s, false
 }
 
 func renderBundleMarkdown(b summarizeBundle, level int, withPrompt bool) string {

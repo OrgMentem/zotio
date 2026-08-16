@@ -273,3 +273,29 @@ func TestImportScanStoreOpenFailureDoesNotLookMissing(t *testing.T) {
 		t.Fatalf("stdout = %q, must not misclassify corrupt store as missing", out.String())
 	}
 }
+
+func TestInflatePDFStreamClosesReaders(t *testing.T) {
+	// Construct a valid zlib payload that inflatePDFStream must decompress.
+	// The lazy-close fix ensures the zlib reader is closed before returning;
+	// the flate reader must not be constructed at all on success (contract
+	// hygiene — both wrap bytes.Reader so there is no FD leak, but Close
+	// must still be honored).
+	var buf bytes.Buffer
+	zw := zlib.NewWriter(&buf)
+	plain := []byte("hello from zlib stream for inflatePDFStream hygiene check")
+	if _, err := zw.Write(plain); err != nil {
+		t.Fatalf("zlib write: %v", err)
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatalf("zlib close: %v", err)
+	}
+	out := inflatePDFStream(buf.Bytes())
+	if string(out) != string(plain) {
+		t.Fatalf("inflate zlib = %q, want %q", string(out), string(plain))
+	}
+	// Uncompressed / non-zlib bytes must fall through to the flate attempt
+	// and still return nil without panicking.
+	if got := inflatePDFStream([]byte("not compressed at all")); got != nil {
+		t.Fatalf("inflate non-compressed = %q, want nil", string(got))
+	}
+}

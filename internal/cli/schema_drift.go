@@ -109,9 +109,11 @@ Zotero install.`,
 
 			// Fast path: the Zotero-Schema-Version header covers the whole schema
 			// (types, fields, per-type validity), so a matching version means no drift
-			// at any depth — skip the remaining fetches. Only when both sides report a
-			// version and we are not re-baselining.
-			if !update && schemaVersion != "" && base.SchemaVersion == schemaVersion {
+			// — skip the remaining fetches. Only when both sides report a
+			// version and we are not re-baselining. When --deep was requested we
+			// must have deep data in the baseline; a shallow baseline cannot
+			// prove a clean deep audit, so force a full deep fetch and compare.
+			if !update && schemaVersion != "" && base.SchemaVersion == schemaVersion && (!deep || (base.TypeFields != nil && base.TypeCreators != nil)) {
 				base.SchemaVersion = schemaVersion
 				return renderSchemaDrift(cmd, flags, false, nil, path, base)
 			}
@@ -220,7 +222,10 @@ func decodeSchemaList(data json.RawMessage, path, key string) ([]string, error) 
 // diffSnapshots computes the ordered list of deltas from base to live. Per-type
 // sections are emitted only for item types present in BOTH snapshots with deep
 // data, so a wholly new/removed type shows up once (in item-types) rather than
-// re-listing all its fields.
+// re-listing all its fields. When the baseline lacks deep maps (shallow baseline)
+// but live has them (--deep after a shallow capture), every live type's fields
+// and creators are reported as added so the run cannot falsely claim a clean
+// deep audit — the user sees the per-type data is newly baselined.
 func diffSnapshots(base, live schemaSnapshot) []schemaDelta {
 	var deltas []schemaDelta
 	if d := diffStringSets("item-types", base.ItemTypes, live.ItemTypes); d != nil {
@@ -232,17 +237,33 @@ func diffSnapshots(base, live schemaSnapshot) []schemaDelta {
 	if d := diffStringSets("creator-fields", base.CreatorFields, live.CreatorFields); d != nil {
 		deltas = append(deltas, *d)
 	}
-	if base.TypeFields != nil && live.TypeFields != nil {
-		for _, it := range sharedKeys(base.TypeFields, live.TypeFields) {
-			if d := diffStringSets("type-fields:"+it, base.TypeFields[it], live.TypeFields[it]); d != nil {
-				deltas = append(deltas, *d)
+	if live.TypeFields != nil {
+		if base.TypeFields == nil {
+			for _, it := range sortedKeys(live.TypeFields) {
+				if d := diffStringSets("type-fields:"+it, nil, live.TypeFields[it]); d != nil {
+					deltas = append(deltas, *d)
+				}
+			}
+		} else {
+			for _, it := range sharedKeys(base.TypeFields, live.TypeFields) {
+				if d := diffStringSets("type-fields:"+it, base.TypeFields[it], live.TypeFields[it]); d != nil {
+					deltas = append(deltas, *d)
+				}
 			}
 		}
 	}
-	if base.TypeCreators != nil && live.TypeCreators != nil {
-		for _, it := range sharedKeys(base.TypeCreators, live.TypeCreators) {
-			if d := diffStringSets("type-creators:"+it, base.TypeCreators[it], live.TypeCreators[it]); d != nil {
-				deltas = append(deltas, *d)
+	if live.TypeCreators != nil {
+		if base.TypeCreators == nil {
+			for _, it := range sortedKeys(live.TypeCreators) {
+				if d := diffStringSets("type-creators:"+it, nil, live.TypeCreators[it]); d != nil {
+					deltas = append(deltas, *d)
+				}
+			}
+		} else {
+			for _, it := range sharedKeys(base.TypeCreators, live.TypeCreators) {
+				if d := diffStringSets("type-creators:"+it, base.TypeCreators[it], live.TypeCreators[it]); d != nil {
+					deltas = append(deltas, *d)
+				}
 			}
 		}
 	}
@@ -286,6 +307,16 @@ func sharedKeys(a, b map[string][]string) []string {
 	}
 	sort.Strings(out)
 	return out
+}
+
+// sortedKeys returns the sorted keys of m.
+func sortedKeys(m map[string][]string) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
 }
 
 // schemaBaselinePath returns the default baseline location next to the local

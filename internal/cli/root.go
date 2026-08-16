@@ -495,7 +495,7 @@ func (f *rootFlags) newWebReadClient(ctx context.Context) (*client.Client, error
 	c.DryRun = f.dryRun
 	c.NoCache = f.noCache
 	if isLocalZoteroAPI(cfg.BaseURL) {
-		base, err := resolveWebWriteBase(ctx, cfg, f.group, f.timeout)
+		base, err := resolveWebWriteBaseWithoutPersist(ctx, cfg, f.group, f.timeout)
 		if err != nil {
 			return nil, err
 		}

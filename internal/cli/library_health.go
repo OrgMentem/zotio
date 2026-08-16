@@ -10,7 +10,6 @@ package cli
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"net/http"
 	"slices"
@@ -19,8 +18,6 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
-
-	"zotio/internal/client"
 )
 
 const (
@@ -258,6 +255,11 @@ type healthContext struct {
 	requireFresh     time.Duration
 	citekeyRows      []citekeyConflictRow
 	citekeyLoaded    bool
+	// cmdCtx carries the command context for cancellation of network-bound
+	// retraction checks. Populated from cmd.Context() in newLibraryHealthCmd
+	// so Ctrl-C / MCP deadlines propagate to CrossRef probes instead of being
+	// lost via context.Background().
+	cmdCtx context.Context
 }
 
 type healthCheckRunner func(db localQueryStore, ctx *healthContext) ([]Finding, *healthSkip, error)
@@ -452,6 +454,7 @@ its precondition is unmet, the command refuses loudly (exit 9) rather than passi
 				checkRetractions: flagCheckRetractions,
 				flags:            flags,
 				requireFresh:     flagRequireFresh,
+				cmdCtx:           cmd.Context(),
 			}
 
 			scope := scopeResult{All: true, Expr: "library"}
@@ -883,24 +886,36 @@ func runBrokenAttachmentFile(db localQueryStore, ctx *healthContext) ([]Finding,
 			},
 		}, nil
 	}
-
 	c, err := ctx.flags.newClient()
 	if err != nil {
 		return nil, nil, err
 	}
+	// --verify-files requires the local Zotero desktop API. Fail closed:
+	// if the configured base is not local (Web API), return a loud skip so
+	// the gate does not flood with spurious critical findings from the
+	// local-only /items/{key}/file/view/url endpoint.
+	if !isLocalZoteroAPI(c.BaseURL) {
+		return nil, &healthSkip{
+			Kind:         "broken_attachment_file",
+			Precondition: "live_local_api",
+			Detail:       fmt.Sprintf("--verify-files requires the Zotero desktop local API, but the configured base is the Web API (%s).", c.BaseURL),
+			Remediation: []healthRemediation{
+				{Action: "open_zotero", Text: "Open Zotero desktop and enable Settings -> Advanced -> 'Allow other applications to communicate with Zotero', then re-run with a local API base"},
+			},
+		}, nil
+	}
 	if _, probeErr := c.Get("/", nil); probeErr != nil {
-		var apiErr *client.APIError
-		if !errors.As(probeErr, &apiErr) {
-			// Network-level failure: Zotero desktop / local API is not reachable.
-			return nil, &healthSkip{
-				Kind:         "broken_attachment_file",
-				Precondition: "live_local_api",
-				Detail:       fmt.Sprintf("Zotero desktop is not reachable on the local API (%s).", probeErr),
-				Remediation: []healthRemediation{
-					{Action: "open_zotero", Text: "Open Zotero desktop and enable Settings -> Advanced -> 'Allow other applications to communicate with Zotero', then re-run"},
-				},
-			}, nil
-		}
+		// Only a successful probe proves the desktop connector is present.
+		// Any error — APIError (e.g. local 404) or transport failure — means
+		// the local API is not usable.
+		return nil, &healthSkip{
+			Kind:         "broken_attachment_file",
+			Precondition: "live_local_api",
+			Detail:       fmt.Sprintf("Zotero desktop is not reachable on the local API (%s).", probeErr),
+			Remediation: []healthRemediation{
+				{Action: "open_zotero", Text: "Open Zotero desktop and enable Settings -> Advanced -> 'Allow other applications to communicate with Zotero', then re-run"},
+			},
+		}, nil
 	}
 
 	attachments, err := queryPDFAttachments(db, ctx.limit)
@@ -931,7 +946,6 @@ func runBrokenAttachmentFile(db localQueryStore, ctx *healthContext) ([]Finding,
 	return findings, nil, nil
 }
 
-// live CrossRef retraction health check, gated like verify-files.
 func runRetractedItem(db localQueryStore, ctx *healthContext) ([]Finding, *healthSkip, error) {
 	if !ctx.checkRetractions {
 		return nil, &healthSkip{
@@ -945,7 +959,14 @@ func runRetractedItem(db localQueryStore, ctx *healthContext) ([]Finding, *healt
 	}
 
 	httpClient := &http.Client{Timeout: enrichTimeout(ctx.flags.timeout)}
-	if err := probeCrossrefRetractionAPI(context.Background(), httpClient); err != nil {
+	// Use the command context so Ctrl-C / MCP cancellation / deadlines abort
+	// the probe and the per-item pacing loop; fall back to Background only
+	// when assembled outside a command (e.g. unit tests).
+	retractCtx := ctx.cmdCtx
+	if retractCtx == nil {
+		retractCtx = context.Background()
+	}
+	if err := probeCrossrefRetractionAPI(retractCtx, httpClient); err != nil {
 		return nil, &healthSkip{
 			Kind:         "retracted_item",
 			Precondition: "external_crossref",
@@ -956,7 +977,7 @@ func runRetractedItem(db localQueryStore, ctx *healthContext) ([]Finding, *healt
 		}, nil
 	}
 
-	report, err := runRetractionCheck(context.Background(), db, httpClient, ctx.limit, "")
+	report, err := runRetractionCheck(retractCtx, db, httpClient, ctx.limit, "")
 	if err != nil {
 		return nil, nil, err
 	}

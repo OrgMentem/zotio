@@ -9,6 +9,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/spf13/cobra"
 
@@ -118,12 +119,35 @@ func newItemsCreateCmd(flags *rootFlags) *cobra.Command {
 						}
 						item["id"] = connectorKey
 					}
+					// Zotero's connector can succeed at SaveItems and then fail
+					// at the follow-up UpdateSession target filing. There is no
+					// transaction across the two calls; returning bare err here
+					// would make a successfully created batch look like a total
+					// failure and invite a duplicating retry. Preserve the
+					// correlation and surface the filing error separately.
+					createdAfter := time.Now().UTC().Add(-recentItemClockSkew)
 					if err := conn.SaveItems(cmd.Context(), sessionID, "", items); err != nil {
 						return err
 					}
 					if target := strings.TrimSpace(flags.connectorTarget); target != "" {
 						if err := conn.UpdateSession(cmd.Context(), sessionID, target, nil, ""); err != nil {
-							return err
+							// SaveItems committed; recover best-effort WebKeys so
+							// the caller can correlate instead of blindly retrying.
+							// Refresh the mirror so local reads see the new items
+							// even though filing failed.
+							refreshItemsFromLocalAPI(cmd.Context(), flags)
+							var recovered []string
+							for _, it := range items {
+								if k, _, _ := confirmConnectorCreate(flags, it, createdAfter); k != "" {
+									recovered = append(recovered, k)
+								}
+							}
+							// Return the populated creation context alongside the
+							// filing error — never a zero-value "failed".
+							if len(recovered) > 0 {
+								return fmt.Errorf("created %d item(s) via connector (session %s, keys %v) but target %q filing failed: %w", len(items), sessionID, recovered, target, err)
+							}
+							return fmt.Errorf("created %d item(s) via connector (session %s) but target %q filing failed: %w (items remain; retry filing, not creation)", len(items), sessionID, target, err)
 						}
 					}
 					refreshItemsFromLocalAPI(cmd.Context(), flags)

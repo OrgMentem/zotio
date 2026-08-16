@@ -279,7 +279,7 @@ func newWorkflowStatusCmd(flags *rootFlags) *cobra.Command {
 					return err
 				}
 			}
-			s, err := store.OpenWithContext(cmd.Context(), dbPath)
+			s, err := store.OpenReadOnlyContext(cmd.Context(), dbPath)
 			if err != nil {
 				return fmt.Errorf("opening store: %w", err)
 			}

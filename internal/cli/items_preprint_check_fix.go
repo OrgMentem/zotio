@@ -3,6 +3,7 @@
 package cli
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"net/http"
@@ -121,7 +122,7 @@ func buildPreprintCheckFixOps(cmd *cobra.Command, flags *rootFlags, readClient z
 		proposals = append(proposals, proposal)
 	}
 
-	return preprintCheckFixPlannedOps(proposals, writeClient), skipped, nil
+	return preprintCheckFixPlannedOps(cmd.Context(), proposals, writeClient), skipped, nil
 }
 
 // preprintCheckFixProposalForItem decides DOI-vs-Extra field changes without promoting the Zotero item type.
@@ -188,7 +189,7 @@ func preprintCheckItemVersion(item map[string]any) any {
 }
 
 // preprintCheckFixPlannedOps converts proposals into shared mutation-engine operations.
-func preprintCheckFixPlannedOps(proposals []preprintCheckFixProposal, writeClient func() apiMutator) []mutation.Op {
+func preprintCheckFixPlannedOps(ctx context.Context, proposals []preprintCheckFixProposal, writeClient func() apiMutator) []mutation.Op {
 	ops := make([]mutation.Op, 0, len(proposals))
 	for i := range proposals {
 		proposal := proposals[i]
@@ -199,7 +200,7 @@ func preprintCheckFixPlannedOps(proposals []preprintCheckFixProposal, writeClien
 			ExpectedVersion: mutationExpectedVersion(proposal.version),
 			Changes:         preprintCheckFixChanges(proposal),
 			Apply: func() (string, any, error) {
-				return applyPreprintCheckFixProposal(writeClient(), proposal)
+				return applyPreprintCheckFixProposal(ctx, writeClient(), proposal)
 			},
 		})
 	}
@@ -219,20 +220,23 @@ func preprintCheckFixChanges(proposal preprintCheckFixProposal) []mutation.Chang
 }
 
 // applyPreprintCheckFixProposal applies the item PATCH using enrich's typed API-error statuses.
-func applyPreprintCheckFixProposal(c apiMutator, proposal preprintCheckFixProposal) (string, any, error) {
+// It resolves the If-Unmodified-Since-Version precondition from the write plane
+// rather than reusing the local-plane version carried on the proposal. The local
+// and Web APIs maintain independent version spaces, so the local version either
+// spuriously conflicts or silently overwrites a concurrent Web edit; the write
+// plane version must be read at apply time. The patch body carries only the
+// field changes, with the version sent as a header via patchWithWritePlaneVersion.
+func applyPreprintCheckFixProposal(ctx context.Context, c apiMutator, proposal preprintCheckFixProposal) (string, any, error) {
 	if c == nil {
 		err := errors.New("write client not initialized")
 		return "failed", err.Error(), err
 	}
-	body := map[string]any{"version": proposal.version}
+	body := make(map[string]any, len(proposal.Fields))
 	for key, value := range proposal.Fields {
 		body[key] = value
 	}
 	path := replacePathParam("/items/{itemKey}", "itemKey", proposal.Key)
-	if _, _, err := c.Patch(path, body); err != nil {
-		return enrichErrorStatus(err)
-	}
-	return "applied", nil, nil
+	return patchWithWritePlaneVersion(ctx, c, path, body)
 }
 
 // renderPreprintCheckFixMutation keeps skips visible in JSON/non-TTY envelopes and human terminal output.

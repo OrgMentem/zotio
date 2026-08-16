@@ -436,12 +436,31 @@ func TestDownloadEnrichPDFAcceptsMissingContentType(t *testing.T) {
 }
 
 type fakeMutator struct {
-	patchPath string
-	patchBody map[string]any
-	patchErr  error
-	postPath  string
-	postBody  any
-	postErr   error
+	patchPath    string
+	patchBody    map[string]any
+	patchHeaders map[string]string
+	patchErr     error
+	postPath     string
+	postBody     any
+	postErr      error
+	// writeVersion is the version the fake's write plane reports; 0 models a
+	// response that carries no usable version.
+	writeVersion  int
+	writeVerErr   error
+	writeVerPaths []string
+}
+
+func (f *fakeMutator) PatchWithHeaders(path string, body any, headers map[string]string) (json.RawMessage, int, error) {
+	f.patchHeaders = headers
+	return f.Patch(path, body)
+}
+
+func (f *fakeMutator) GetFromWriteBaseWithVersionContext(_ context.Context, path string, _ map[string]string) (json.RawMessage, int, error) {
+	f.writeVerPaths = append(f.writeVerPaths, path)
+	if f.writeVerErr != nil {
+		return nil, 0, f.writeVerErr
+	}
+	return json.RawMessage(`{}`), f.writeVersion, nil
 }
 
 func (f *fakeMutator) Patch(path string, body any) (json.RawMessage, int, error) {
@@ -619,7 +638,7 @@ func TestApplyEnrichProposalLinkedFileReconcilesLostCreateResponse(t *testing.T)
 }
 
 func TestApplyEnrichProposal_PatchIncludesVersionAndProvenance(t *testing.T) {
-	f := &fakeMutator{}
+	f := &fakeMutator{writeVersion: 42}
 	p := enrichProposal{
 		Key: "ABC", Category: "missing_doi", Action: enrichActionPatch,
 		Source: "CrossRef", Fields: map[string]any{"DOI": "10.1/x"}, version: float64(7),
@@ -634,8 +653,14 @@ func TestApplyEnrichProposal_PatchIncludesVersionAndProvenance(t *testing.T) {
 	if f.patchBody["DOI"] != "10.1/x" {
 		t.Errorf("patch body DOI = %v", f.patchBody["DOI"])
 	}
-	if f.patchBody["version"] != float64(7) {
-		t.Errorf("patch body version = %v, want 7", f.patchBody["version"])
+	if _, hasVersion := f.patchBody["version"]; hasVersion {
+		t.Errorf("patch body must not carry a version key; got %v", f.patchBody)
+	}
+	if got := f.patchHeaders["If-Unmodified-Since-Version"]; got != "42" {
+		t.Errorf("If-Unmodified-Since-Version header = %q, want 42", got)
+	}
+	if len(f.writeVerPaths) != 1 || f.writeVerPaths[0] != "/items/ABC" {
+		t.Errorf("write version paths = %v, want [/items/ABC]", f.writeVerPaths)
 	}
 	extra, _ := f.patchBody["extra"].(string)
 	if !strings.Contains(extra, "DOI added via CrossRef") {
@@ -723,7 +748,7 @@ func TestEnrichProposalChangesAttachNeverNamesParentField(t *testing.T) {
 }
 
 func TestApplyEnrichProposal_ConflictStatusIsTyped(t *testing.T) {
-	f := &fakeMutator{patchErr: &client.APIError{Method: http.MethodPatch, Path: "/items/ABC", StatusCode: http.StatusPreconditionFailed, Body: "stale"}}
+	f := &fakeMutator{writeVersion: 9, patchErr: &client.APIError{Method: http.MethodPatch, Path: "/items/ABC", StatusCode: http.StatusPreconditionFailed, Body: "stale"}}
 	p := enrichProposal{
 		Key: "ABC", Category: "missing_doi", Action: enrichActionPatch,
 		Source: "CrossRef", Fields: map[string]any{"DOI": "10.1/x"}, version: float64(7),
@@ -1358,10 +1383,18 @@ func TestItemsEnrichApplyViaAPI(t *testing.T) {
 	_ = seedEnrichStore(t) // sets HOME + ZOTERO_CONFIG to the seeded store
 
 	var gotBody map[string]any
+	var gotHeader string
 	zsrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodPatch && r.URL.Path == "/items/K1" {
+			gotHeader = r.Header.Get("If-Unmodified-Since-Version")
 			_ = json.NewDecoder(r.Body).Decode(&gotBody)
 			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		if r.Method == http.MethodGet && r.URL.Path == "/items/K1" {
+			w.Header().Set("Last-Modified-Version", "42")
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"key":"K1","version":42,"data":{"key":"K1"}}`))
 			return
 		}
 		w.WriteHeader(http.StatusOK)
@@ -1386,8 +1419,11 @@ func TestItemsEnrichApplyViaAPI(t *testing.T) {
 	if gotBody["DOI"] != "10.1/attention" {
 		t.Errorf("patched DOI = %v, want 10.1/attention", gotBody["DOI"])
 	}
-	if gotBody["version"] != float64(9) {
-		t.Errorf("patched version = %v, want 9 (conflict guard)", gotBody["version"])
+	if gotHeader != "42" {
+		t.Errorf("If-Unmodified-Since-Version = %q, want %q", gotHeader, "42")
+	}
+	if _, ok := gotBody["version"]; ok {
+		t.Errorf("PATCH body must not contain version key; gotBody=%v", gotBody)
 	}
 
 	var env mutation.Envelope
@@ -1402,17 +1438,25 @@ func TestItemsEnrichApplyViaAPI(t *testing.T) {
 	}
 }
 
-func captureItemsEnrichApplyPatch(t *testing.T, extra ...string) map[string]any {
+func captureItemsEnrichApplyPatch(t *testing.T, extra ...string) (map[string]any, string) {
 	t.Helper()
 	crsrv := crossRefSearchServer(t, "Attention Is All You Need", "10.1/attention")
 	withBase(t, &enrichCrossRefBase, crsrv.URL)
 	_ = seedEnrichStore(t, extra...)
 
 	var gotBody map[string]any
+	var gotHeader string
 	zsrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodPatch && r.URL.Path == "/items/K1" {
+			gotHeader = r.Header.Get("If-Unmodified-Since-Version")
 			_ = json.NewDecoder(r.Body).Decode(&gotBody)
 			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		if r.Method == http.MethodGet && r.URL.Path == "/items/K1" {
+			w.Header().Set("Last-Modified-Version", "42")
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"key":"K1","version":42,"data":{"key":"K1"}}`))
 			return
 		}
 		w.WriteHeader(http.StatusOK)
@@ -1432,12 +1476,18 @@ func captureItemsEnrichApplyPatch(t *testing.T, extra ...string) map[string]any 
 	if gotBody == nil {
 		t.Fatal("Zotero server never received the PATCH")
 	}
-	return gotBody
+	return gotBody, gotHeader
 }
 
 func TestItemsEnrichApplyPreservesExistingExtra(t *testing.T) {
 	existingExtra := "Citation Key: smith2020\nsome user note"
-	gotBody := captureItemsEnrichApplyPatch(t, existingExtra)
+	gotBody, gotHeader := captureItemsEnrichApplyPatch(t, existingExtra)
+	if gotHeader != "42" {
+		t.Fatalf("If-Unmodified-Since-Version = %q, want %q", gotHeader, "42")
+	}
+	if _, ok := gotBody["version"]; ok {
+		t.Fatalf("PATCH body must not contain version key; gotBody=%v", gotBody)
+	}
 
 	want := existingExtra + "\n" + enrichProvenanceLine(&enrichProposal{Category: "missing_doi", Source: "CrossRef"})
 	if gotBody["extra"] != want {
@@ -1446,7 +1496,13 @@ func TestItemsEnrichApplyPreservesExistingExtra(t *testing.T) {
 }
 
 func TestItemsEnrichApplyEmptyExtraWritesOnlyProvenance(t *testing.T) {
-	gotBody := captureItemsEnrichApplyPatch(t)
+	gotBody, gotHeader := captureItemsEnrichApplyPatch(t)
+	if gotHeader != "42" {
+		t.Fatalf("If-Unmodified-Since-Version = %q, want %q", gotHeader, "42")
+	}
+	if _, ok := gotBody["version"]; ok {
+		t.Fatalf("PATCH body must not contain version key; gotBody=%v", gotBody)
+	}
 
 	want := enrichProvenanceLine(&enrichProposal{Category: "missing_doi", Source: "CrossRef"})
 	if gotBody["extra"] != want {
@@ -1612,5 +1668,156 @@ func TestItemsEnrichValidateReportsCrossRefTitleDiscrepancy(t *testing.T) {
 	}
 	if len(report.UnverifiedDOIs) != 0 {
 		t.Errorf("unverified DOIs = %+v, want none", report.UnverifiedDOIs)
+	}
+}
+func TestApplyEnrichProposal_PatchFailsClosedOnZeroWriteVersion(t *testing.T) {
+	f := &fakeMutator{writeVersion: 0}
+	p := enrichProposal{
+		Key: "ABC", Category: "missing_doi", Action: enrichActionPatch,
+		Source: "CrossRef", Fields: map[string]any{"DOI": "10.1/x"}, version: float64(7),
+	}
+	status, _, err := applyEnrichProposal(f, &p, &rootFlags{})
+	if err == nil || status != "failed" {
+		t.Fatalf("apply = status %q err %v, want failed when write-plane version is 0", status, err)
+	}
+	if f.patchPath != "" {
+		t.Errorf("patch path = %q, want no PATCH dispatched on zero-version precondition", f.patchPath)
+	}
+}
+
+func TestNormalizeTitleForMatch_UnicodeAware(t *testing.T) {
+	// Non-Latin titles must normalize to non-empty, distinct content.
+	a := normalizeTitleForMatch("机器学习导论")
+	b := normalizeTitleForMatch("量子物理基础")
+	if a == "" {
+		t.Fatal("Chinese title normalized to empty, want meaningful content")
+	}
+	if a == b {
+		t.Fatalf("distinct Chinese titles both normalized to %q", a)
+	}
+	if got := normalizeTitleForMatch("机器学习导论"); got != a {
+		t.Errorf("identical Chinese title normalized to %q, want %q", got, a)
+	}
+	// Punctuation-only titles must normalize to empty so the empty guard fires.
+	if got := normalizeTitleForMatch("...!!!"); got != "" {
+		t.Errorf("punctuation-only title normalized to %q, want empty", got)
+	}
+}
+
+func TestResolveDOIViaCrossRef_NonLatinMismatchReturnsNoMatch(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body := `{"message":{"items":[{"title":["量子物理基础"],"DOI":"10.9/wrong"}]}}`
+		_, _ = w.Write([]byte(body))
+	}))
+	t.Cleanup(srv.Close)
+	withBase(t, &enrichCrossRefBase, srv.URL)
+	data := map[string]any{"title": "机器学习导论"}
+	if _, _, ok := resolveDOIViaCrossRef(context.Background(), http.DefaultClient, data); ok {
+		t.Fatal("expected no DOI match for unrelated Chinese titles")
+	}
+}
+
+func TestResolveDOIViaCrossRef_NonLatinIdenticalMatches(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body := `{"message":{"items":[{"title":["机器学习导论"],"DOI":"10.9/match"}]}}`
+		_, _ = w.Write([]byte(body))
+	}))
+	t.Cleanup(srv.Close)
+	withBase(t, &enrichCrossRefBase, srv.URL)
+	data := map[string]any{"title": "机器学习导论"}
+	doi, _, ok := resolveDOIViaCrossRef(context.Background(), http.DefaultClient, data)
+	if !ok || doi != "10.9/match" {
+		t.Fatalf("doi = %q ok=%v, want 10.9/match for identical Chinese titles", doi, ok)
+	}
+}
+
+func TestResolveDOIViaCrossRef_PunctuationOnlyLocalTitleReturnsNoMatch(t *testing.T) {
+	hit := false
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hit = true // guard should fire before provider is consulted; url stays same but logic short-circuits
+		_, _ = w.Write([]byte(`{"message":{"items":[{"title":["!!!"],"DOI":"10.9/wrong"}]}}`))
+	}))
+	t.Cleanup(srv.Close)
+	withBase(t, &enrichCrossRefBase, srv.URL)
+	data := map[string]any{"title": "...!!!"}
+	if _, _, ok := resolveDOIViaCrossRef(context.Background(), http.DefaultClient, data); ok {
+		t.Fatal("expected no match for punctuation-only local title")
+	}
+	// The guard returns before iterating, but getJSON still ran (empty guard
+	// sits after fetch). What matters is no-match, not whether the server was
+	// contacted — a follow-up could move the guard earlier.
+	_ = hit
+}
+
+func TestResolveDOIViaSemanticScholar_NonLatinMismatchReturnsNoMatch(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"data":[{"title":"量子物理基础","externalIds":{"DOI":"10.9/wrong"}}]}`))
+	}))
+	t.Cleanup(srv.Close)
+	withBase(t, &enrichSemanticScholarBase, srv.URL)
+	data := map[string]any{"title": "机器学习导论"}
+	if _, ok := resolveDOIViaSemanticScholar(context.Background(), http.DefaultClient, data); ok {
+		t.Fatal("expected no DOI match for unrelated Chinese titles via Semantic Scholar")
+	}
+}
+
+func TestResolveDOIViaSemanticScholar_NonLatinIdenticalMatches(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"data":[{"title":"机器学习导论","externalIds":{"DOI":"10.9/ssmatch"}}]}`))
+	}))
+	t.Cleanup(srv.Close)
+	withBase(t, &enrichSemanticScholarBase, srv.URL)
+	data := map[string]any{"title": "机器学习导论"}
+	doi, ok := resolveDOIViaSemanticScholar(context.Background(), http.DefaultClient, data)
+	if !ok || doi != "10.9/ssmatch" {
+		t.Fatalf("doi = %q ok=%v, want 10.9/ssmatch for identical Chinese titles", doi, ok)
+	}
+}
+
+func TestResolveDOIViaOpenAlex_NonLatinMismatchReturnsNoMatch(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"results":[{"doi":"https://doi.org/10.9/wrong","title":"量子物理基础"}]}`))
+	}))
+	t.Cleanup(srv.Close)
+	withBase(t, &enrichOpenAlexBase, srv.URL)
+	data := map[string]any{"title": "机器学习导论"}
+	if _, ok := resolveDOIViaOpenAlex(context.Background(), http.DefaultClient, data, ""); ok {
+		t.Fatal("expected no DOI match for unrelated Chinese titles via OpenAlex")
+	}
+}
+
+func TestResolveDOIViaOpenAlex_NonLatinIdenticalMatches(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"results":[{"doi":"https://doi.org/10.9/oamatch","title":"机器学习导论"}]}`))
+	}))
+	t.Cleanup(srv.Close)
+	withBase(t, &enrichOpenAlexBase, srv.URL)
+	data := map[string]any{"title": "机器学习导论"}
+	doi, ok := resolveDOIViaOpenAlex(context.Background(), http.DefaultClient, data, "")
+	if !ok || doi != "10.9/oamatch" {
+		t.Fatalf("doi = %q ok=%v, want 10.9/oamatch for identical Chinese titles", doi, ok)
+	}
+}
+
+func TestResolveDOIViaOpenAlex_PunctuationOnlyLocalTitleReturnsNoMatch(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"results":[{"doi":"https://doi.org/10.9/wrong","title":"...!!!"}]}`))
+	}))
+	t.Cleanup(srv.Close)
+	withBase(t, &enrichOpenAlexBase, srv.URL)
+	data := map[string]any{"title": "...!!!"}
+	if _, ok := resolveDOIViaOpenAlex(context.Background(), http.DefaultClient, data, ""); ok {
+		t.Fatal("expected no match for punctuation-only local title via OpenAlex")
+	}
+}
+func TestResolveDOIViaSemanticScholar_PunctuationOnlyLocalTitleReturnsNoMatch(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"data":[{"title":"...!!!","externalIds":{"DOI":"10.9/wrong"}}]}`))
+	}))
+	t.Cleanup(srv.Close)
+	withBase(t, &enrichSemanticScholarBase, srv.URL)
+	data := map[string]any{"title": "...!!!"}
+	if _, ok := resolveDOIViaSemanticScholar(context.Background(), http.DefaultClient, data); ok {
+		t.Fatal("expected no match for punctuation-only local title via Semantic Scholar")
 	}
 }

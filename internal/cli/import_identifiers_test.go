@@ -470,3 +470,62 @@ func assertIdentifierDryRunCreator(t *testing.T, item map[string]any) {
 		t.Fatalf("creators = %v, want at least one creator", item["creators"])
 	}
 }
+
+func TestPubmedInitialsShape(t *testing.T) {
+	// Genuine initials (letters only, <=4, uppercase) should still be detected.
+	for _, tok := range []string{"J", "J.", "JF", "J.F.", "J-F", "ABC", "ABCD"} {
+		if !pubmedInitials(tok) {
+			t.Errorf("pubmedInitials(%q) = false, want true", tok)
+		}
+	}
+	// All-caps surnames or oversized/impure tokens must NOT be treated as initials.
+	for _, tok := range []string{"SMITH", "JOHNSON", "ABCDE", "A1", "J1", "SMITH-JONES", "hello", ""} {
+		if pubmedInitials(tok) {
+			t.Errorf("pubmedInitials(%q) = true, want false", tok)
+		}
+	}
+	// Lowercase and mixed case are not initials.
+	for _, tok := range []string{"jf", "Jf", "Smith"} {
+		if pubmedInitials(tok) {
+			t.Errorf("pubmedInitials(%q) = true, want false (must be all uppercase)", tok)
+		}
+	}
+}
+
+func TestPubmedCreatorNamePubMedScope(t *testing.T) {
+	// PubMed-style "Last FM" should normalize to "Last, FM" for parseCreatorName.
+	cases := []struct {
+		in        string
+		wantLast  string
+		wantFirst string
+	}{
+		{"Smith J", "Smith", "J"},
+		{"Smith J.", "Smith", "J."},
+		{"Smith JF", "Smith", "JF"},
+		{"Smith J.F.", "Smith", "J.F."},
+	}
+	for _, tc := range cases {
+		normalized := pubmedCreatorName(tc.in)
+		c := parseCreatorName(normalized)
+		if c == nil {
+			t.Fatalf("parseCreatorName(pubmedCreatorName(%q)=%q) = nil", tc.in, normalized)
+		}
+		if c["lastName"] != tc.wantLast || c["firstName"] != tc.wantFirst {
+			t.Errorf("pubmedCreatorName(%q)->%q parse = %v, want lastName=%q firstName=%q", tc.in, normalized, c, tc.wantLast, tc.wantFirst)
+		}
+	}
+	// "John SMITH" must NOT be swapped — SMITH is a surname shape, not initials.
+	noSwap := pubmedCreatorName("John SMITH")
+	if noSwap != "John SMITH" {
+		t.Errorf("pubmedCreatorName(%q) = %q, want unchanged (SMITH is not initials)", "John SMITH", noSwap)
+	}
+	c := parseCreatorName(noSwap)
+	if c == nil {
+		t.Fatalf("parseCreatorName(%q) = nil", noSwap)
+	}
+	// parseCreatorName on "John SMITH" (no comma) treats "John" as lastName via its own split;
+	// the key assertion is that pubmedCreatorName did NOT rewrite to "John, SMITH".
+	if c["lastName"] == "John" && c["firstName"] == "SMITH" {
+		t.Errorf("unexpected swap for John SMITH: %v (pubmedCreatorName should not have inserted a comma)", c)
+	}
+}

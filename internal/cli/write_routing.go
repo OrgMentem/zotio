@@ -123,6 +123,36 @@ func resolveWebWriteBase(ctx context.Context, cfg *config.Config, group string, 
 	return zoteroWebAPIBase + "/users/" + id, nil
 }
 
+// resolveWebWriteBaseWithoutPersist resolves the Web API base for the personal
+// library without persisting the resolved user ID. This is the read-only path
+// (e.g. items bibliography via newWebReadClient): persisting would be a whole-file
+// config save outside the installation writer lock, so two concurrent reads can
+// race their saves and a concurrent auth/profile/config writer's unrelated fields
+// can be clobbered by a stale snapshot. Atomic temp+rename prevents torn files,
+// not lost updates. Writes keep using resolveWebWriteBase, which persists under
+// the writer lock so the ID is still cached after the first mutating command.
+func resolveWebWriteBaseWithoutPersist(ctx context.Context, cfg *config.Config, group string, timeout time.Duration) (string, error) {
+	if cfg == nil || cfg.AuthHeader() == "" {
+		return "", nil
+	}
+	if group != "" {
+		return zoteroWebAPIBase + "/groups/" + group, nil
+	}
+	id := cfg.UserID
+	if id == "" {
+		resolved, err := fetchZoteroUserID(ctx, cfg, timeout)
+		if err != nil {
+			return "", err
+		}
+		id = resolved
+		// Use the resolved ID for this invocation only. Persisting would be a
+		// whole-file save outside the installation writer lock, so keep it
+		// in-memory. Intentionally not calling cfg.SaveUserID here.
+		cfg.UserID = id
+	}
+	return zoteroWebAPIBase + "/users/" + id, nil
+}
+
 const maxKeyMetadataResponseBytes int64 = 1 << 20
 
 func fetchCurrentKeyMetadata(ctx context.Context, cfg *config.Config, timeout time.Duration) ([]byte, error) {

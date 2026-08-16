@@ -345,3 +345,171 @@ func TestSchemaCommandStripsLibraryPrefix(t *testing.T) {
 		t.Errorf("expected item types in output, got %s", out.String())
 	}
 }
+
+// deepSchemaServer serves global schema endpoints including per-type deep
+// endpoints. It versions every response when version != "".
+func deepSchemaServer(t *testing.T, version string, itemTypes []string, hits map[string]int, mu *sync.Mutex) *httptest.Server {
+	t.Helper()
+	typeFields := map[string][]string{"book": {"title", "ISBN"}}
+	typeCreators := map[string][]string{"book": {"author"}}
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if mu != nil {
+			mu.Lock()
+			hits[r.URL.Path]++
+			mu.Unlock()
+		}
+		if version != "" {
+			w.Header().Set("Zotero-Schema-Version", version)
+		}
+		switch r.URL.Path {
+		case "/itemTypes":
+			writeSchemaRows(w, "itemType", itemTypes)
+		case "/itemFields":
+			writeSchemaRows(w, "field", []string{"title"})
+		case "/creatorFields":
+			writeSchemaRows(w, "field", []string{"firstName"})
+		case "/itemTypeFields":
+			it := r.URL.Query().Get("itemType")
+			writeSchemaRows(w, "field", typeFields[it])
+		case "/itemTypeCreatorTypes":
+			it := r.URL.Query().Get("itemType")
+			writeSchemaRows(w, "creatorType", typeCreators[it])
+		default:
+			http.Error(w, "unexpected "+r.URL.Path, http.StatusNotFound)
+		}
+	}))
+}
+
+func TestSchemaDriftShallowThenDeepFetchesPerTypeEndpoints(t *testing.T) {
+	var mu sync.Mutex
+	srv1 := versionedSchemaServer("100", []string{"book"}, map[string]int{}, &mu)
+	baseline := filepath.Join(t.TempDir(), "baseline.json")
+	if _, err := runSchemaDrift(t, srv1.URL, baseline, true); err != nil {
+		srv1.Close()
+		t.Fatalf("shallow capture: %v", err)
+	}
+	srv1.Close()
+	baseLoaded, _, err := loadSchemaBaseline(baseline)
+	if err != nil {
+		t.Fatalf("reload: %v", err)
+	}
+	if baseLoaded.TypeFields != nil || baseLoaded.TypeCreators != nil {
+		t.Fatalf("expected shallow baseline, got deep maps: %#v", baseLoaded)
+	}
+	hits := map[string]int{}
+	srv2 := deepSchemaServer(t, "100", []string{"book"}, hits, &mu)
+	defer srv2.Close()
+	out, err := runSchemaDrift(t, srv2.URL, baseline, true, "--deep")
+	if err != nil {
+		t.Fatalf("deep drift: %v", err)
+	}
+	mu.Lock()
+	gotDeep := hits["/itemTypeFields"] > 0 && hits["/itemTypeCreatorTypes"] > 0
+	mu.Unlock()
+	if !gotDeep {
+		t.Fatalf("expected --deep after shallow baseline to fetch per-type endpoints, hits=%v output=%s", hits, out)
+	}
+	var res map[string]any
+	if err := json.Unmarshal([]byte(out), &res); err != nil {
+		t.Fatalf("decode %q: %v", out, err)
+	}
+	if res["drift"] != true {
+		t.Errorf("drift = %v, want true (deep baseline newly surfaced), output=%s", res["drift"], out)
+	}
+	if !strings.Contains(out, "type-fields:book") && !strings.Contains(out, "type-creators:book") {
+		t.Errorf("expected deep deltas for book, got %s", out)
+	}
+}
+
+func TestSchemaDriftDeepPerTypeFieldChangeIsReported(t *testing.T) {
+	var mu sync.Mutex
+	srv1 := versionedSchemaServer("100", []string{"book"}, map[string]int{}, &mu)
+	baseline := filepath.Join(t.TempDir(), "baseline.json")
+	if _, err := runSchemaDrift(t, srv1.URL, baseline, true); err != nil {
+		srv1.Close()
+		t.Fatalf("shallow capture: %v", err)
+	}
+	srv1.Close()
+	hits := map[string]int{}
+	srv2 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		hits[r.URL.Path]++
+		mu.Unlock()
+		w.Header().Set("Zotero-Schema-Version", "100")
+		switch r.URL.Path {
+		case "/itemTypes":
+			writeSchemaRows(w, "itemType", []string{"book"})
+		case "/itemFields":
+			writeSchemaRows(w, "field", []string{"title"})
+		case "/creatorFields":
+			writeSchemaRows(w, "field", []string{"firstName"})
+		case "/itemTypeFields":
+			writeSchemaRows(w, "field", []string{"title", "ISBN", "DOI"})
+		case "/itemTypeCreatorTypes":
+			writeSchemaRows(w, "creatorType", []string{"author"})
+		default:
+			http.Error(w, "unexpected "+r.URL.Path, http.StatusNotFound)
+		}
+	}))
+	defer srv2.Close()
+	out, err := runSchemaDrift(t, srv2.URL, baseline, true, "--deep")
+	if err != nil {
+		t.Fatalf("deep drift: %v", err)
+	}
+	_ = hits
+	var res struct {
+		Drift  bool `json:"drift"`
+		Deltas []struct {
+			Section string   `json:"section"`
+			Added   []string `json:"added"`
+		} `json:"deltas"`
+	}
+	if err := json.Unmarshal([]byte(out), &res); err != nil {
+		t.Fatalf("decode %q: %v", out, err)
+	}
+	if !res.Drift {
+		t.Fatalf("expected drift for changed per-type field, got none: %s", out)
+	}
+	found := false
+	for _, d := range res.Deltas {
+		if d.Section == "type-fields:book" && contains(d.Added, "DOI") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected type-fields:book +DOI, got %s", out)
+	}
+}
+
+func TestSchemaDriftShallowFastPathStillFires(t *testing.T) {
+	var mu sync.Mutex
+	hits := map[string]int{}
+	srv := versionedSchemaServer("100", []string{"book"}, hits, &mu)
+	defer srv.Close()
+	baseline := filepath.Join(t.TempDir(), "baseline.json")
+	if _, err := runSchemaDrift(t, srv.URL, baseline, true); err != nil {
+		t.Fatalf("capture: %v", err)
+	}
+	mu.Lock()
+	hits["/itemTypes"], hits["/itemFields"], hits["/creatorFields"] = 0, 0, 0
+	mu.Unlock()
+	out, err := runSchemaDrift(t, srv.URL, baseline, true)
+	if err != nil {
+		t.Fatalf("second shallow run: %v", err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if hits["/itemTypes"] != 1 {
+		t.Errorf("/itemTypes hits = %d, want 1", hits["/itemTypes"])
+	}
+	if hits["/itemFields"] != 0 || hits["/creatorFields"] != 0 {
+		t.Errorf("shallow fast path must still skip remaining fetches, hits=%v", hits)
+	}
+	var res map[string]any
+	if err := json.Unmarshal([]byte(out), &res); err != nil {
+		t.Fatalf("decode %q: %v", out, err)
+	}
+	if res["drift"] != false {
+		t.Errorf("drift = %v, want false", res["drift"])
+	}
+}

@@ -107,9 +107,7 @@ func newAnnotationsTimelineCmd(flags *rootFlags) *cobra.Command {
 				}
 				filtered = append(filtered, annotation)
 			}
-			sort.Slice(filtered, func(i, j int) bool {
-				return filtered[i].DateAdded > filtered[j].DateAdded
-			})
+			filtered = sortAnnotationsByInstantDesc(filtered)
 			if flagLimit > 0 && len(filtered) > flagLimit {
 				filtered = filtered[:flagLimit]
 			}
@@ -150,4 +148,42 @@ func parseZoteroTime(value string) (time.Time, error) {
 		return parsed, nil
 	}
 	return time.Time{}, fmt.Errorf("invalid time %q", value)
+}
+
+// sortAnnotationsByInstantDesc orders annotations newest-first by parsed
+// instant. Comparing the raw RFC3339 strings would order by text, which only
+// coincides with chronological order while every timestamp shares one offset
+// and width; a payload carrying mixed offsets would silently interleave.
+// Unparseable timestamps cannot be placed on the timeline at all, so they sort
+// last by key rather than being dropped or comparing as the zero instant.
+func sortAnnotationsByInstantDesc(annotations []annotationSummary) []annotationSummary {
+	type keyed struct {
+		annotation annotationSummary
+		added      time.Time
+		valid      bool
+	}
+	keys := make([]keyed, len(annotations))
+	for i, annotation := range annotations {
+		added, err := parseZoteroTime(annotation.DateAdded)
+		keys[i] = keyed{annotation: annotation, added: added, valid: err == nil}
+	}
+	sort.SliceStable(keys, func(i, j int) bool {
+		if keys[i].valid != keys[j].valid {
+			return keys[i].valid
+		}
+		if keys[i].valid && !keys[i].added.Equal(keys[j].added) {
+			return keys[i].added.After(keys[j].added)
+		}
+		return keys[i].annotation.Key < keys[j].annotation.Key
+	})
+	sorted := make([]annotationSummary, len(keys))
+	for i, k := range keys {
+		sorted[i] = k.annotation
+	}
+	return sorted
+}
+
+// sortFilteredAnnotationsForTest exposes the timeline ordering to tests.
+func sortFilteredAnnotationsForTest(annotations []annotationSummary) []annotationSummary {
+	return sortAnnotationsByInstantDesc(annotations)
 }

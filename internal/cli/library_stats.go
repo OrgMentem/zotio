@@ -181,10 +181,13 @@ ORDER BY count DESC LIMIT ?`, top)
 }
 
 func queryLibraryPDFCoverage(db localQueryStore) (libraryPDFCoverage, error) {
+	// Count distinct parent items with at least one PDF, not distinct
+	// attachments. LEFT JOIN + CASE guard ensures items with zero PDFs
+	// are excluded from the numerator (see library_wrapped.go:313).
 	rows, err := db.QueryRaw(`
 SELECT
 	COUNT(DISTINCT i.id) AS total_items,
-	COUNT(DISTINCT a.id) AS items_with_pdf
+	COUNT(DISTINCT CASE WHEN a.id IS NOT NULL THEN i.id END) AS items_with_pdf
 FROM resources i
 LEFT JOIN resources a ON
 	a.resource_type='items'

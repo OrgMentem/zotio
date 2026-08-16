@@ -4,10 +4,7 @@ package cli
 
 import (
 	"encoding/json"
-	"errors"
 	"fmt"
-	"net/http"
-	"strconv"
 	"strings"
 
 	"zotio/internal/client"
@@ -331,23 +328,19 @@ func applyItemTagRemove(c *client.Client, path string, tagNames []string, automa
 }
 
 func patchItemTags(c *client.Client, path string, version int, tags []map[string]any) (string, any, error) {
+	// Fail closed when the version read returned 0 — sending a key-based PATCH
+	// without If-Unmodified-Since-Version would either be rejected with an
+	// opaque 428 or, on a permissive server, overwrite a concurrent edit with
+	// no conflict detection. The wording matches the established shape in
+	// creators_audit_fix.go / tags_rename.go.
 	body := map[string]any{"tags": tags}
-	headers := map[string]string{}
-	if version > 0 {
-		headers["If-Unmodified-Since-Version"] = strconv.Itoa(version)
-	}
-	_, statusCode, err := c.PatchWithHeaders(path, body, headers)
+	status, reason, err := patchWithVersionGuard(c, path, body, version)
 	if err != nil {
-		var apiErr *client.APIError
-		if errors.As(err, &apiErr) && (apiErr.StatusCode == http.StatusPreconditionFailed || apiErr.StatusCode == http.StatusPreconditionRequired) {
-			return "conflict", apiErr.Body, err
-		}
-		return "failed", err.Error(), err
+		return status, reason, err
 	}
-	if statusCode < 200 || statusCode >= 300 {
-		return "failed", fmt.Sprintf("HTTP %d", statusCode), fmt.Errorf("patch returned HTTP %d", statusCode)
-	}
-	return "applied", nil, nil
+	// patchWithVersionGuard handles 412/428→conflict mapping and normal error
+	// classification internally; preserve the success reason shape.
+	return status, reason, nil
 }
 
 func copyItemTags(tags []map[string]any) []map[string]any {

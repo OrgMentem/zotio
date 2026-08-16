@@ -5,9 +5,7 @@ package cli
 
 import (
 	"encoding/json"
-	"errors"
 	"fmt"
-	"net/http"
 	"sort"
 	"strconv"
 	"strings"
@@ -477,22 +475,14 @@ func applyDuplicateResolve(flags *rootFlags, masterKey, dupKey string, kindSlot 
 }
 
 func duplicateResolvePatch(c *client.Client, path string, version int, body map[string]any) (string, any, error) {
-	headers := map[string]string{}
-	if version > 0 {
-		headers["If-Unmodified-Since-Version"] = strconv.Itoa(version)
-	}
-	_, statusCode, err := c.PatchWithHeaders(path, body, headers)
+	// Fail closed when the version read returned 0 — see patchItemTags for the
+	// hazard. Body is caller-supplied (collections/tags union or deleted:1),
+	// so pass it through unchanged to the shared guard.
+	status, reason, err := patchWithVersionGuard(c, path, body, version)
 	if err != nil {
-		var apiErr *client.APIError
-		if errors.As(err, &apiErr) && (apiErr.StatusCode == http.StatusPreconditionFailed || apiErr.StatusCode == http.StatusPreconditionRequired) {
-			return "conflict", apiErr.Body, err
-		}
-		return "failed", err.Error(), err
+		return status, reason, err
 	}
-	if statusCode < 200 || statusCode >= 300 {
-		return "failed", fmt.Sprintf("HTTP %d", statusCode), fmt.Errorf("patch returned HTTP %d", statusCode)
-	}
-	return "applied", nil, nil
+	return status, reason, nil
 }
 
 func duplicateResolveUnionStrings(base, add []string) ([]string, []string) {
@@ -522,7 +512,6 @@ func duplicateResolveUnionStrings(base, add []string) ([]string, []string) {
 	}
 	return out, missing
 }
-
 func duplicateResolveUnionTags(base, add []map[string]any) ([]map[string]any, []map[string]any) {
 	seen := make(map[string]struct{}, len(base)+len(add))
 	out := copyItemTags(base)

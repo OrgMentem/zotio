@@ -214,7 +214,15 @@ func routeCreateItemVia(ctx context.Context, flags *rootFlags, via string, webCl
 		}
 		if target != "" {
 			if err := conn.UpdateSession(ctx, sessionID, target, nil, ""); err != nil {
-				return itemCreateResult{}, err
+				// SaveItems has already committed the item; a transaction does
+				// not span the two connector calls. Returning a zero value
+				// here would erase Session/ConnKey/WebKey and make the caller
+				// record the whole mutation as failed, inviting a duplicating
+				// retry. Recover the best-effort WebKey and return the
+				// populated result alongside the filing error so the create is
+				// journaled and the target failure is reported separately.
+				resolved, _, _ := confirmConnectorCreate(flags, item, createdAfter)
+				return itemCreateResult{Via: "connector", Session: sessionID, ConnKey: connectorKey, WebKey: resolved}, err
 			}
 		}
 		// Resolve the real Zotero key on success as well, not only when the

@@ -4,6 +4,7 @@ package cli
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/url"
 	"strings"
 
@@ -44,24 +45,20 @@ func newSearchesRunCmd(flags *rootFlags) *cobra.Command {
 				return printOutputWithFlags(cmd.OutOrStdout(), results, flags)
 			}
 
-			altResults, altErr := c.Get("/items", map[string]string{"q": "", "savedSearch": rawSearchKey})
-			if altErr == nil && !zoteroResultIsEmpty(altResults) {
-				return printOutputWithFlags(cmd.OutOrStdout(), altResults, flags)
-			}
-
 			errText := ""
 			if resultErr != nil {
 				errText = resultErr.Error()
 			}
-			if altErr != nil {
-				if errText != "" {
-					errText += "; "
-				}
-				errText += altErr.Error()
-			}
+			// The correct endpoint for saved-search results is /searches/{key}/items.
+			// A fabricated broad query against /items cannot be distinguished from an
+			// unfiltered library dump when the plane ignores unknown query parameters
+			// (Zotero silently ignores them), so the fallback is removed entirely;
+			// report unavailable instead of risking unrelated items.
+			reason := "Saved search results are unavailable: the saved-search results endpoint is unavailable on the configured plane and saved-search conditions cannot be evaluated remotely."
+			fmt.Fprintf(cmd.ErrOrStderr(), "warning: %s\n", reason)
 			fallback := searchesRunFallback{
 				ResultsAvailable: false,
-				Message:          "Saved search result endpoints were unavailable or returned no items. Use `items list` with equivalent filters from the search conditions.",
+				Message:          reason,
 				ResultError:      errText,
 				Search:           searchData,
 			}

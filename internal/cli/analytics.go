@@ -45,8 +45,7 @@ the item rows are grouped by year, itemType, collection, creator, or tag.`,
 					return err
 				}
 			}
-
-			db, err := store.OpenWithContext(cmd.Context(), dbPath)
+			db, err := store.OpenReadOnlyContext(cmd.Context(), dbPath)
 			if err != nil {
 				return fmt.Errorf("opening local database: %w\nRun 'zotio sync' first.", err)
 			}

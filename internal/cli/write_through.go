@@ -73,7 +73,76 @@ func applyMirrorWriteThrough(env *mutation.Envelope) {
 			mirrorTrashedItem(db, qs, it.Key)
 			continue
 		case "item_restore":
-			// No longer trashed; drop the trash row so `items trash` stops listing it.
+			// Restore reverses a trash. When the item was synced from
+			// `items-trash` with a higher version than `items`,
+			// reconcileItemLifecycleTx has already deleted the live row, so the
+			// local mirror looks like the item is gone. The cloud PATCH
+			// succeeded, so reconstruct the live row from the cached trash
+			// payload when the live row is absent; otherwise the trash-row
+			// removal is sufficient and we avoid overwriting a possibly newer
+			// live row with stale data.
+			trashRows, err := qs.QueryRaw("SELECT data FROM resources WHERE resource_type='items-trash' AND id=?", it.Key)
+			if err != nil {
+				warnMirrorUpdateFailed(it.Key, err)
+				// Best-effort: still try to reap a possibly stale trash row.
+				if rerr := db.ReapResource("items-trash", it.Key); rerr != nil {
+					warnMirrorUpdateFailed(it.Key, rerr)
+				}
+				continue
+			}
+			if len(trashRows) == 0 {
+				// Never synced / already reaped: don't silently leave both tables
+				// empty. Warn explicitly so the user knows the local mirror is
+				// stale and a sync is needed.
+				warnMirrorUpdateFailed(it.Key, fmt.Errorf("no cached trash row for %s: local mirror is stale; next sync will reconcile", it.Key))
+				if rerr := db.ReapResource("items-trash", it.Key); rerr != nil {
+					warnMirrorUpdateFailed(it.Key, rerr)
+				}
+				continue
+			}
+			raw := json.RawMessage(sqlStringValue(trashRows[0]["data"]))
+			var item map[string]any
+			if err := json.Unmarshal([]byte(raw), &item); err != nil {
+				warnMirrorUpdateFailed(it.Key, err)
+				if rerr := db.ReapResource("items-trash", it.Key); rerr != nil {
+					warnMirrorUpdateFailed(it.Key, rerr)
+				}
+				continue
+			}
+			// Clear the deleted marker — may appear top-level or under data.
+			delete(item, "deleted")
+			if data, ok := item["data"].(map[string]any); ok {
+				delete(data, "deleted")
+			}
+			// Drop stale version metadata the same way normal write-through does;
+			// the advanced Web version is not available here.
+			dropStaleItemVersion(item)
+			// Only reinstate when the live row is missing (sync-reconciled
+			// case). When mirrorTrashedItem copied the item into trash without
+			// deleting the live row, that row may be newer than the trashed
+			// copy; blindly UpsertKeyed would overwrite it with stale data.
+			// Check first so the common write-through trash path stays a
+			// no-op apart from dropping the trash row.
+			liveRows, err := qs.QueryRaw("SELECT id FROM resources WHERE resource_type='items' AND id=?", it.Key)
+			if err != nil {
+				warnMirrorUpdateFailed(it.Key, err)
+				// Still drop the trash row; the live-row check is best-effort.
+				if rerr := db.ReapResource("items-trash", it.Key); rerr != nil {
+					warnMirrorUpdateFailed(it.Key, rerr)
+				}
+				continue
+			}
+			if len(liveRows) == 0 {
+				restored, err := json.Marshal(item)
+				if err != nil {
+					warnMirrorUpdateFailed(it.Key, err)
+					continue
+				}
+				if err := db.UpsertKeyed("items", []string{it.Key}, []json.RawMessage{restored}); err != nil {
+					warnMirrorUpdateFailed(it.Key, err)
+					continue
+				}
+			}
 			if err := db.ReapResource("items-trash", it.Key); err != nil {
 				warnMirrorUpdateFailed(it.Key, err)
 			}
@@ -144,6 +213,11 @@ func mirrorTrashedItem(db *store.Store, qs localQueryStore, key string) {
 		return // not mirrored yet; the next sync establishes it
 	}
 	raw := json.RawMessage(sqlStringValue(rows[0]["data"]))
+	// Deliberately does not reap the live row. In Zotero a trashed item still
+	// exists in the library with deleted=1, so `items get` must keep resolving
+	// it; only a permanent delete removes the row (see reapMirroredItem). The
+	// store's reconcileItemLifecycleTx arbitrates which of items/items-trash
+	// survives once a synced payload carries a newer version.
 	if err := db.UpsertKeyed("items-trash", []string{key}, []json.RawMessage{raw}); err != nil {
 		warnMirrorUpdateFailed(key, err)
 	}

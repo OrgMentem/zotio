@@ -4,10 +4,7 @@ package cli
 
 import (
 	"encoding/json"
-	"errors"
 	"fmt"
-	"net/http"
-	"strconv"
 
 	"zotio/internal/client"
 	"zotio/internal/mutation"
@@ -172,23 +169,15 @@ func applyItemCollectionMove(c *client.Client, path, fromCol, toCol string) (str
 }
 
 func patchItemCollections(c *client.Client, path string, version int, collections []string) (string, any, error) {
+	// Fail closed when the version read returned 0 — see patchItemTags for the
+	// hazard. Pass through to the shared guard so 412/428 map to "conflict"
+	// and the If-Unmodified-Since-Version header is always present on success.
 	body := map[string]any{"collections": collections}
-	headers := map[string]string{}
-	if version > 0 {
-		headers["If-Unmodified-Since-Version"] = strconv.Itoa(version)
-	}
-	_, statusCode, err := c.PatchWithHeaders(path, body, headers)
+	status, reason, err := patchWithVersionGuard(c, path, body, version)
 	if err != nil {
-		var apiErr *client.APIError
-		if errors.As(err, &apiErr) && (apiErr.StatusCode == http.StatusPreconditionFailed || apiErr.StatusCode == http.StatusPreconditionRequired) {
-			return "conflict", apiErr.Body, err
-		}
-		return "failed", err.Error(), err
+		return status, reason, err
 	}
-	if statusCode < 200 || statusCode >= 300 {
-		return "failed", fmt.Sprintf("HTTP %d", statusCode), fmt.Errorf("patch returned HTTP %d", statusCode)
-	}
-	return "applied", nil, nil
+	return status, reason, nil
 }
 
 func nextItemCollections(current []string, fromCol, toCol string) ([]string, bool, bool) {
@@ -212,7 +201,6 @@ func nextItemCollections(current []string, fromCol, toCol string) ([]string, boo
 	}
 	return next, removed, added
 }
-
 func stringSliceContains(values []string, target string) bool {
 	for _, value := range values {
 		if value == target {

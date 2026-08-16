@@ -54,9 +54,11 @@ WHERE resource_type='items'
 				return fmt.Errorf("querying collection stats: %w", err)
 			}
 
-			// PDF count
+			// Count DISTINCT parents so an item with two PDFs contributes 1,
+			// not 2. total counts parent items, so the numerator must be
+			// parent identity as well.
 			pdfRows, err := db.QueryRaw(`
-SELECT COUNT(*) AS items_with_pdf
+SELECT COUNT(DISTINCT a.parent_key) AS items_with_pdf
 FROM resources a
 WHERE a.resource_type='items'
   AND a.item_type='attachment'

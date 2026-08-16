@@ -7,6 +7,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"sort"
+	"time"
 
 	"github.com/spf13/cobra"
 )
@@ -26,12 +28,21 @@ func newItemsTrashCmd(flags *rootFlags) *cobra.Command {
 			}
 
 			path := "/items/trash"
+			// Reconcile the full candidate set BEFORE pagination, then paginate once.
+			// The union must sort by dateModified and then slice by start/limit
+			// locally; fetching the live page already paginated would lose rows
+			// that belong on the merged page and break Zotero ordering. So for
+			// the union path, fetch the live set unpaginated and let
+			// unionMirroredTrash sort and paginate; for --data-source local,
+			// QueryTrash already handles this locally.
 			params := map[string]string{}
-			if flagLimit != 0 {
-				params["limit"] = fmt.Sprintf("%v", flagLimit)
-			}
-			if flagStart != 0 {
-				params["start"] = fmt.Sprintf("%v", flagStart)
+			if flags.dataSource == "local" {
+				if flagLimit != 0 {
+					params["limit"] = fmt.Sprintf("%v", flagLimit)
+				}
+				if flagStart != 0 {
+					params["start"] = fmt.Sprintf("%v", flagStart)
+				}
 			}
 			data, prov, err := resolveRead(cmd.Context(), c, flags, "items-trash", true, path, params, nil)
 			if err != nil {
@@ -43,12 +54,15 @@ func newItemsTrashCmd(flags *rootFlags) *cobra.Command {
 			// after `items delete`, this command could not show what was just
 			// trashed — while the mirror, normally the less current source, could.
 			// Union the two: live catches items trashed in the Zotero UI, the mirror
-			// catches zotio's own trashes that have not propagated yet.
+			// catches zotio's own trashes that have not propagated yet. The union
+			// sorts and paginates after the merge so ordering is correct.
 			if flags.dataSource != "local" {
-				data, prov = unionMirroredTrash(cmd.Context(), cmd, flags, data, prov)
+				data, prov = unionMirroredTrash(cmd.Context(), cmd, flags, data, prov, flagStart, flagLimit)
+			} else {
+				// Local reads already paginate via QueryTrash; this only honors a
+				// limit the API accepted but ignored (idempotent when honored).
+				data = truncateJSONArray(data, flagLimit)
 			}
-			// Honor --limit when the API accepts but ignores ?limit=N.
-			data = truncateJSONArray(data, flagLimit)
 			// Print provenance to stderr for human-facing output
 			printProvenance(cmd, countResultItems(data), prov)
 			// For JSON output, wrap with provenance envelope before passing through flags.
@@ -97,8 +111,12 @@ func newItemsTrashCmd(flags *rootFlags) *cobra.Command {
 // mirror only knows what the last sync or a write-through recorded. The union is
 // the honest answer, and it self-heals as the read plane catches up.
 //
-// Best-effort: an unreadable mirror leaves the live result untouched.
-func unionMirroredTrash(ctx context.Context, cmd *cobra.Command, flags *rootFlags, live json.RawMessage, prov DataProvenance) (json.RawMessage, DataProvenance) {
+// Best-effort: an unreadable mirror leaves the live result untouched. The merged
+// view is sorted by dateModified descending (Zotero trash order) with key as a
+// stable tie-breaker; rows with missing or unparseable dateModified sort last
+// deterministically. Pagination (start/limit) is applied AFTER the merge and sort
+// so a short live terminal page is not padded with out-of-page mirror rows.
+func unionMirroredTrash(ctx context.Context, cmd *cobra.Command, flags *rootFlags, live json.RawMessage, prov DataProvenance, start, limit int) (json.RawMessage, DataProvenance) {
 	var liveItems []json.RawMessage
 	if err := json.Unmarshal(live, &liveItems); err != nil {
 		// Not a list (an error envelope, say); nothing to union.
@@ -113,10 +131,22 @@ func unionMirroredTrash(ctx context.Context, cmd *cobra.Command, flags *rootFlag
 
 	mirrored, _, err := resolveLocal(ctx, "items-trash", true, "/items/trash", map[string]string{}, "trash_reconciliation")
 	if err != nil {
+		// No mirror — still sort and paginate the live set so ordering and
+		// missing-date handling are consistent even without a union.
+		liveItems = sortTrashItems(liveItems)
+		liveItems = paginateTrashItems(liveItems, start, limit)
+		if data, err := json.Marshal(liveItems); err == nil {
+			return data, prov
+		}
 		return live, prov
 	}
 	var mirroredItems []json.RawMessage
 	if err := json.Unmarshal(mirrored, &mirroredItems); err != nil {
+		liveItems = sortTrashItems(liveItems)
+		liveItems = paginateTrashItems(liveItems, start, limit)
+		if data, err := json.Marshal(liveItems); err == nil {
+			return data, prov
+		}
 		return live, prov
 	}
 
@@ -130,8 +160,18 @@ func unionMirroredTrash(ctx context.Context, cmd *cobra.Command, flags *rootFlag
 		liveItems = append(liveItems, entry)
 		added++
 	}
+	// Deterministic Zotero order: dateModified descending, missing/invalid last,
+	// key ascending as stable tie-breaker.
+	liveItems = sortTrashItems(liveItems)
+	liveItems = paginateTrashItems(liveItems, start, limit)
 	if added == 0 {
-		return live, prov
+		// No new rows — but the live set has been reconciled (sorted and
+		// paginated) so callers still see the correct ordered page.
+		merged, err := json.Marshal(liveItems)
+		if err != nil {
+			return live, prov
+		}
+		return merged, prov
 	}
 	merged, err := json.Marshal(liveItems)
 	if err != nil {
@@ -141,4 +181,67 @@ func unionMirroredTrash(ctx context.Context, cmd *cobra.Command, flags *rootFlag
 		"note: %d trashed item(s) came from the local mirror; the Zotero read API has not caught up with them yet\n", added)
 	prov.Source = "live+local"
 	return merged, prov
+}
+
+// trashDateModified extracts dateModified (nested under data or flat) and parses
+// it. Unparseable or missing values sort last deterministically and never panic.
+func trashDateModified(raw json.RawMessage) (time.Time, bool) {
+	s := jsonStringField(raw, "dateModified")
+	if s == "" {
+		return time.Time{}, false
+	}
+	if t, err := time.Parse(time.RFC3339Nano, s); err == nil {
+		return t, true
+	}
+	if t, err := time.Parse(time.RFC3339, s); err == nil {
+		return t, true
+	}
+	// Zotero sometimes emits date-only or space-separated variants; try the
+	// common ones without failing the sort.
+	if t, err := time.Parse("2006-01-02", s); err == nil {
+		return t, true
+	}
+	if t, err := time.Parse("2006-01-02 15:04:05", s); err == nil {
+		return t, true
+	}
+	return time.Time{}, false
+}
+
+func sortTrashItems(items []json.RawMessage) []json.RawMessage {
+	sort.SliceStable(items, func(i, j int) bool {
+		ti, okI := trashDateModified(items[i])
+		tj, okJ := trashDateModified(items[j])
+		if okI && okJ {
+			if !ti.Equal(tj) {
+				return ti.After(tj)
+			}
+		} else if okI && !okJ {
+			return true
+		} else if !okI && okJ {
+			return false
+		}
+		ki := jsonStringField(items[i], "key")
+		kj := jsonStringField(items[j], "key")
+		return ki < kj
+	})
+	return items
+}
+
+func paginateTrashItems(items []json.RawMessage, start, limit int) []json.RawMessage {
+	if start < 0 {
+		start = 0
+	}
+	if limit < 0 {
+		limit = 0
+	}
+	if start >= len(items) {
+		return []json.RawMessage{}
+	}
+	if start > 0 {
+		items = items[start:]
+	}
+	if limit > 0 && len(items) > limit {
+		items = items[:limit]
+	}
+	return items
 }

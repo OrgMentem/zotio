@@ -215,6 +215,7 @@ func importFileViaConnector(cmd *cobra.Command, flags *rootFlags, filePath strin
 		content:       content,
 		format:        format,
 		collectionKey: collectionKey,
+		records:       records,
 	}
 	ops := make([]mutation.Op, 0, records)
 	for index := range records {
@@ -242,6 +243,9 @@ func importFileViaConnector(cmd *cobra.Command, flags *rootFlags, filePath strin
 
 // importFileConnectorSession performs the one-shot desktop translator import on
 // the first applied operation and replays its outcome to the remaining ones.
+// s.imported is the actual translator count (len of Import response), which may
+// be smaller than the locally counted record count when the translator rejects
+// or merges records. s.records is that local count.
 type importFileConnectorSession struct {
 	flags         *rootFlags
 	content       []byte
@@ -254,6 +258,7 @@ type importFileConnectorSession struct {
 	target    string
 	keys      []string
 	imported  int
+	records   int
 }
 
 func (s *importFileConnectorSession) apply(cmd *cobra.Command, index int) (string, any, error) {
@@ -262,7 +267,28 @@ func (s *importFileConnectorSession) apply(cmd *cobra.Command, index int) (strin
 		s.err = s.run(cmd)
 	}
 	if s.err != nil {
+		// Post-create filing failure after Import committed: return the
+		// populated result (session/keys/imported) alongside the error so the
+		// caller can journal the create and avoid a duplicating retry — never a
+		// zero value. Import-only failures have no session.
+		if s.sessionID != "" {
+			reason := map[string]any{
+				"via":      "connector",
+				"session":  s.sessionID,
+				"imported": s.imported,
+				"keys":     s.keys,
+				"target":   s.target,
+			}
+			return "failed", reason, s.err
+		}
 		return "failed", nil, s.err
+	}
+	// Reconcile the per-op status against the actual imported count: the
+	// translator may return fewer items than were parsed, so only the first
+	// s.imported ops are truly applied.
+	if index >= s.imported {
+		reason := fmt.Sprintf("translator returned %d item(s) for %d parsed record(s); record %d was not imported", s.imported, s.records, index+1)
+		return "skipped", reason, nil
 	}
 	if index > 0 {
 		return "applied", map[string]any{"via": "connector", "session": s.sessionID}, nil
@@ -304,17 +330,24 @@ func (s *importFileConnectorSession) run(cmd *cobra.Command) error {
 	if err != nil {
 		return err
 	}
+	// Populate partial-result fields BEFORE the filing step: if UpdateSession
+	// fails after the items are already committed, the caller must receive the
+	// populated result (session, keys, count) alongside the error so it can
+	// journal the create and avoid a duplicating blind retry.
+	s.sessionID = sessionID
+	s.keys = connectorImportKeys(items)
+	s.imported = len(items)
+	s.target = target
 	if target != "" {
 		if err := conn.UpdateSession(cmd.Context(), sessionID, target, nil, ""); err != nil {
+			// The items are already committed; refresh the mirror so local
+			// reads can see them even though filing failed.
+			refreshItemsFromLocalAPI(cmd.Context(), flags)
 			return err
 		}
 	}
 	refreshItemsFromLocalAPI(cmd.Context(), flags)
 
-	s.sessionID = sessionID
-	s.target = target
-	s.keys = connectorImportKeys(items)
-	s.imported = len(items)
 	return nil
 }
 

@@ -364,17 +364,22 @@ func pdfScanFlateDOI(path string) (string, error) {
 }
 
 func inflatePDFStream(data []byte) []byte {
-	readers := make([]io.ReadCloser, 0, 2)
+	// Try zlib first and close its reader before attempting flate, so a
+	// successful zlib decompression does not abandon an unclosed flate reader.
+	// Both readers wrap a bytes.Reader (heap buffers only), but closing
+	// eagerly preserves the io.Closer contract.
 	if zr, err := zlib.NewReader(bytes.NewReader(data)); err == nil {
-		readers = append(readers, zr)
-	}
-	readers = append(readers, flate.NewReader(bytes.NewReader(data)))
-	for _, reader := range readers {
-		out, err := io.ReadAll(io.LimitReader(reader, pdfMaxFlateOutputBytes+1))
-		_ = reader.Close()
+		out, err := io.ReadAll(io.LimitReader(zr, pdfMaxFlateOutputBytes+1))
+		_ = zr.Close()
 		if err == nil && len(out) <= pdfMaxFlateOutputBytes {
 			return out
 		}
+	}
+	fr := flate.NewReader(bytes.NewReader(data))
+	out, err := io.ReadAll(io.LimitReader(fr, pdfMaxFlateOutputBytes+1))
+	_ = fr.Close()
+	if err == nil && len(out) <= pdfMaxFlateOutputBytes {
+		return out
 	}
 	return nil
 }
