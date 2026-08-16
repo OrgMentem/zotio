@@ -28,11 +28,15 @@ var mutationJournalRecorder func(env *mutation.Envelope) error
 // journalDir is the per-install directory holding the append-only run journal,
 // alongside the synced store.
 func journalDir() (string, error) {
+	return journalDirFor(activeGroupIDLocked())
+}
+
+func journalDirFor(gid string) (string, error) {
 	name := "journal"
-	if activeGroupIDLocked() != "" {
-		name = "journal-group-" + activeGroupIDLocked()
+	if gid != "" {
+		name = "journal-group-" + gid
 	}
-	dbPath, err := defaultDBPath("zotio")
+	dbPath, err := defaultDBPathFor(gid, "zotio")
 	if err != nil {
 		return "", err
 	}
@@ -48,8 +52,12 @@ func personalJournalDir() (string, error) {
 }
 
 func currentJournalLibrary() string {
-	if activeGroupIDLocked() != "" {
-		return "group:" + activeGroupIDLocked()
+	return currentJournalLibraryFor(activeGroupIDLocked())
+}
+
+func currentJournalLibraryFor(gid string) string {
+	if gid != "" {
+		return "group:" + gid
 	}
 	return "user"
 }

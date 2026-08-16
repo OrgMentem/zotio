@@ -267,3 +267,118 @@ func TestAnalyticsCommandRejectsInvalidLimit(t *testing.T) {
 		t.Fatalf("invalid limit error = %v", err)
 	}
 }
+
+func TestAnalyticsCommandNonexistentDB_ReportsEmpty_Human(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "missing.db")
+	cmd := newAnalyticsCmd(&rootFlags{})
+	cmd.SilenceErrors, cmd.SilenceUsage = true, true
+	var out, errOut bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&errOut)
+	cmd.SetArgs([]string{"--db", dbPath})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("analytics error = %v; want nil empty result", err)
+	}
+	got := out.String()
+	if !strings.Contains(got, "Resource Type") || !strings.Contains(got, "Count") {
+		t.Fatalf("stdout = %q; want empty analytics table header", got)
+	}
+	if strings.Contains(errOut.String(), "opening local database") || strings.Contains(out.String(), "opening local database") {
+		t.Fatalf("output must not contain store-open error on fresh install; stdout=%q stderr=%q", out.String(), errOut.String())
+	}
+}
+
+func TestAnalyticsCommandNonexistentDB_ReportsEmpty_JSON(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "missing.db")
+	cmd := newAnalyticsCmd(&rootFlags{asJSON: true})
+	cmd.SilenceErrors, cmd.SilenceUsage = true, true
+	var out, errOut bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&errOut)
+	cmd.SetArgs([]string{"--db", dbPath})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("analytics --json error = %v; want nil", err)
+	}
+	var status map[string]int
+	if err := json.Unmarshal(bytes.TrimSpace(out.Bytes()), &status); err != nil {
+		t.Fatalf("decode %q: %v", out.String(), err)
+	}
+	if len(status) != 0 {
+		t.Fatalf("status = %v; want empty map", status)
+	}
+	if strings.Contains(errOut.String(), "opening local database") {
+		t.Fatalf("stderr = %q; must not contain store-open error", errOut.String())
+	}
+}
+
+func TestAnalyticsCommandNonexistentDB_TypeReportsEmpty_Human(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "missing.db")
+	cmd := newAnalyticsCmd(&rootFlags{})
+	cmd.SilenceErrors, cmd.SilenceUsage = true, true
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&bytes.Buffer{})
+	cmd.SetArgs([]string{"--db", dbPath, "--type", "items"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("analytics --type items error = %v; want nil", err)
+	}
+	if want := "items: 0 records"; !strings.Contains(out.String(), want) {
+		t.Fatalf("stdout = %q; want %q", out.String(), want)
+	}
+}
+
+func TestAnalyticsCommandNonexistentDB_TypeReportsEmpty_JSON(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "missing.db")
+	cmd := newAnalyticsCmd(&rootFlags{asJSON: true})
+	cmd.SilenceErrors, cmd.SilenceUsage = true, true
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&bytes.Buffer{})
+	cmd.SetArgs([]string{"--db", dbPath, "--type", "journalArticle"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("analytics --type journalArticle --json error = %v; want nil", err)
+	}
+	var result map[string]any
+	if err := json.Unmarshal(out.Bytes(), &result); err != nil {
+		t.Fatalf("decode %q: %v", out.String(), err)
+	}
+	if got := result["count"]; got != float64(0) {
+		t.Fatalf("count = %v; want 0", got)
+	}
+	if got := result["resource_type"]; got != "items" {
+		t.Fatalf("resource_type = %v; want items", got)
+	}
+	if got := result["item_type"]; got != "journalArticle" {
+		t.Fatalf("item_type = %v; want journalArticle", got)
+	}
+}
+
+func TestAnalyticsCommandNonexistentDB_GroupByReportsEmpty(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "missing.db")
+	for _, asJSON := range []bool{false, true} {
+		t.Run(map[bool]string{false: "human", true: "json"}[asJSON], func(t *testing.T) {
+			cmd := newAnalyticsCmd(&rootFlags{asJSON: asJSON})
+			cmd.SilenceErrors, cmd.SilenceUsage = true, true
+			var out bytes.Buffer
+			cmd.SetOut(&out)
+			cmd.SetErr(&bytes.Buffer{})
+			cmd.SetArgs([]string{"--db", dbPath, "--type", "items", "--group-by", "year"})
+			if err := cmd.Execute(); err != nil {
+				t.Fatalf("analytics --group-by error = %v; want nil", err)
+			}
+			if asJSON {
+				var arr []any
+				if err := json.Unmarshal(bytes.TrimSpace(out.Bytes()), &arr); err != nil {
+					t.Fatalf("decode %q: %v", out.String(), err)
+				}
+				if len(arr) != 0 {
+					t.Fatalf("group-by JSON = %v; want empty array", arr)
+				}
+			} else {
+				if !strings.Contains(out.String(), "year") {
+					t.Fatalf("stdout = %q; want header containing group-by field", out.String())
+				}
+			}
+		})
+	}
+}

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"os"
 	"sort"
 	"strings"
 
@@ -43,6 +44,73 @@ the item rows are grouped by year, itemType, collection, creator, or tag.`,
 				dbPath, err = defaultDBPath("zotio")
 				if err != nil {
 					return err
+				}
+			}
+			if _, err := os.Stat(dbPath); err != nil {
+				if os.IsNotExist(err) {
+					if cmd.Flags().Changed("limit") && limit <= 0 {
+						return fmt.Errorf("--limit must be greater than zero")
+					}
+					if groupBy != "" {
+						if resourceType == "" {
+							return fmt.Errorf("--group-by requires --type items or a Zotero item type")
+						}
+						if err := validateAnalyticsGroupBy(groupBy); err != nil {
+							return err
+						}
+						isKnownKind := analyticsResourceKinds[resourceType]
+						isKnownItemType := analyticsItemTypes[resourceType]
+						if !isKnownKind && !isKnownItemType {
+							return fmt.Errorf("unknown analytics type %q: expected a mirrored resource kind or Zotero item type", resourceType)
+						}
+						if isKnownKind && resourceType != "items" {
+							return fmt.Errorf("--group-by applies to Zotero items, not resource kind %q", resourceType)
+						}
+						if flags.asJSON {
+							enc := json.NewEncoder(cmd.OutOrStdout())
+							enc.SetIndent("", "  ")
+							return enc.Encode([]any{})
+						}
+						fmt.Fprintf(cmd.OutOrStdout(), "%s\tCount\n", groupBy)
+						fmt.Fprintln(cmd.OutOrStdout(), "---\t-----")
+						return nil
+					}
+					if cmd.Flags().Changed("limit") {
+						return fmt.Errorf("--limit requires --group-by")
+					}
+					if resourceType == "" {
+						if flags.asJSON {
+							enc := json.NewEncoder(cmd.OutOrStdout())
+							enc.SetIndent("", "  ")
+							return enc.Encode(map[string]int{})
+						}
+						w := cmd.OutOrStdout()
+						fmt.Fprintln(w, "Resource Type\tCount")
+						fmt.Fprintln(w, "-------------\t-----")
+						return nil
+					}
+					isKnownKind := analyticsResourceKinds[resourceType]
+					isKnownItemType := analyticsItemTypes[resourceType]
+					if !isKnownKind && !isKnownItemType {
+						return fmt.Errorf("unknown analytics type %q: expected a mirrored resource kind or Zotero item type", resourceType)
+					}
+					reportedType := resourceType
+					itemType := ""
+					if !isKnownKind {
+						reportedType = "items"
+						itemType = resourceType
+					}
+					if flags.asJSON {
+						result := map[string]any{"resource_type": reportedType, "count": 0}
+						if itemType != "" {
+							result["item_type"] = itemType
+						}
+						enc := json.NewEncoder(cmd.OutOrStdout())
+						enc.SetIndent("", "  ")
+						return enc.Encode(result)
+					}
+					fmt.Fprintf(cmd.OutOrStdout(), "%s: %d records\n", resourceType, 0)
+					return nil
 				}
 			}
 			db, err := store.OpenReadOnlyContext(cmd.Context(), dbPath)

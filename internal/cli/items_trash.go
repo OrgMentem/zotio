@@ -8,7 +8,10 @@ import (
 	"fmt"
 	"os"
 	"sort"
+	"strconv"
 	"time"
+
+	"zotio/internal/client"
 
 	"github.com/spf13/cobra"
 )
@@ -28,40 +31,38 @@ func newItemsTrashCmd(flags *rootFlags) *cobra.Command {
 			}
 
 			path := "/items/trash"
-			// Reconcile the full candidate set BEFORE pagination, then paginate once.
-			// The union must sort by dateModified and then slice by start/limit
-			// locally; fetching the live page already paginated would lose rows
-			// that belong on the merged page and break Zotero ordering. So for
-			// the union path, fetch the live set unpaginated and let
-			// unionMirroredTrash sort and paginate; for --data-source local,
-			// QueryTrash already handles this locally.
-			params := map[string]string{}
+			var data json.RawMessage
+			var prov DataProvenance
 			if flags.dataSource == "local" {
+				params := map[string]string{}
 				if flagLimit != 0 {
 					params["limit"] = fmt.Sprintf("%v", flagLimit)
 				}
 				if flagStart != 0 {
 					params["start"] = fmt.Sprintf("%v", flagStart)
 				}
-			}
-			data, prov, err := resolveRead(cmd.Context(), c, flags, "items-trash", true, path, params, nil)
-			if err != nil {
-				return classifyAPIError(err, flags)
-			}
-			// The read plane does not learn that an item was trashed until Zotero
-			// syncs the write down from zotero.org, and it returned an empty trash
-			// for items the web plane already reported as deleted. So immediately
-			// after `items delete`, this command could not show what was just
-			// trashed — while the mirror, normally the less current source, could.
-			// Union the two: live catches items trashed in the Zotero UI, the mirror
-			// catches zotio's own trashes that have not propagated yet. The union
-			// sorts and paginates after the merge so ordering is correct.
-			if flags.dataSource != "local" {
-				data, prov = unionMirroredTrash(cmd.Context(), cmd, flags, data, prov, flagStart, flagLimit)
-			} else {
+				var readErr error
+				data, prov, readErr = resolveRead(cmd.Context(), c, flags, "items-trash", true, path, params, nil)
+				if readErr != nil {
+					return classifyAPIError(readErr, flags)
+				}
 				// Local reads already paginate via QueryTrash; this only honors a
 				// limit the API accepted but ignored (idempotent when honored).
 				data = truncateJSONArray(data, flagLimit)
+			} else {
+				// Non-local: Zotero Web API defaults `limit` to 25 and caps at 100
+				// (basics#sorting_and_pagination). An omitted limit is NOT unbounded.
+				// Page explicitly with limit=100 and incrementing start before the
+				// union. GetWithHeadersContext discards Link headers, so we terminate
+				// on a short page and guard with a bounded iteration count plus a
+				// no-progress check.
+				ctx := cmd.Context()
+				var fetchErr error
+				data, prov, fetchErr = fetchAllLiveTrash(ctx, c, flags, path)
+				if fetchErr != nil {
+					return fetchErr
+				}
+				data, prov = unionMirroredTrash(ctx, cmd, flags, data, prov, flagStart, flagLimit)
 			}
 			// Print provenance to stderr for human-facing output
 			printProvenance(cmd, countResultItems(data), prov)
@@ -101,6 +102,74 @@ func newItemsTrashCmd(flags *rootFlags) *cobra.Command {
 	cmd.Flags().IntVar(&flagStart, "start", 0, "Pagination offset (zero-based)")
 
 	return cmd
+}
+
+// fetchAllLiveTrash pages /items/trash with limit=100 until a short page.
+// It deduplicates keys across pages and guards against a non-terminating server
+// with both a bounded iteration count and a no-progress (all-duplicate) check.
+func fetchAllLiveTrash(ctx context.Context, c *client.Client, flags *rootFlags, path string) (json.RawMessage, DataProvenance, error) {
+	const maxTrashPages = 500 // 50k rows; trash never approaches this
+	seen := make(map[string]bool, zoteroPageMax)
+	var all []json.RawMessage
+	for page := range maxTrashPages {
+		start := page * zoteroPageMax
+		params := map[string]string{
+			"limit": strconv.Itoa(zoteroPageMax),
+			"start": strconv.Itoa(start),
+		}
+		pageData, err := c.GetWithHeadersContext(ctx, path, params, nil)
+		if err != nil {
+			if page == 0 && flags.dataSource == "auto" && isNetworkError(err) {
+				fbData, fbProv, fbErr := resolveLocal(ctx, "items-trash", true, path, map[string]string{}, "api_unreachable")
+				if fbErr != nil {
+					return nil, DataProvenance{}, classifyAPIError(err, flags)
+				}
+				return fbData, attachFreshness(fbProv, flags), nil
+			}
+			return nil, DataProvenance{}, classifyAPIError(err, flags)
+		}
+		var pageItems []json.RawMessage
+		if err := json.Unmarshal(pageData, &pageItems); err != nil {
+			if page == 0 {
+				return pageData, attachFreshness(DataProvenance{Source: "live"}, flags), nil
+			}
+			break
+		}
+		if len(pageItems) == 0 {
+			if page == 0 {
+				return pageData, attachFreshness(DataProvenance{Source: "live"}, flags), nil
+			}
+			break
+		}
+		added := 0
+		for _, entry := range pageItems {
+			key := jsonStringField(entry, "key")
+			if key != "" && seen[key] {
+				continue
+			}
+			if key != "" {
+				seen[key] = true
+			}
+			all = append(all, entry)
+			added++
+		}
+		if added == 0 {
+			break
+		}
+		if len(pageItems) < zoteroPageMax {
+			break
+		}
+	}
+	if all == nil {
+		all = []json.RawMessage{}
+	}
+	marshaled, err := json.Marshal(all)
+	if err != nil {
+		return nil, DataProvenance{}, err
+	}
+	prov := attachFreshness(DataProvenance{Source: "live"}, flags)
+	writeThroughCache(ctx, "items-trash", marshaled)
+	return marshaled, prov, nil
 }
 
 // unionMirroredTrash appends items the local mirror lists as trashed but the read

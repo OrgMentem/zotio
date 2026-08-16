@@ -79,6 +79,11 @@ func DefaultDBPath(name string) (string, error) {
 // followed by a write could interleave with cobra's PersistentPreRunE and
 // clobber a scope another goroutine just established.
 func ApplyGroupScopeFromEnv() error {
+	activeGroupMu.Lock()
+	defer activeGroupMu.Unlock()
+	if activeGroupIDValue != "" {
+		return nil
+	}
 	v := strings.TrimSpace(os.Getenv("ZOTERO_GROUP"))
 	if v == "" {
 		return nil
@@ -86,10 +91,6 @@ func ApplyGroupScopeFromEnv() error {
 	if !isAllDigits(v) {
 		return fmt.Errorf("invalid ZOTERO_GROUP value %q: expected a numeric Zotero group ID", v)
 	}
-	activeGroupMu.Lock()
-	defer activeGroupMu.Unlock()
-	if activeGroupIDValue == "" {
-		activeGroupIDValue = v
-	}
+	activeGroupIDValue = v
 	return nil
 }

@@ -21,11 +21,12 @@ import (
 // convention used by vault backlinks. The key is percent-encoded as one path
 // segment so a key containing "/" cannot re-target a different desktop object.
 func zoteroDeepLink(targetType, key string) (uri, normType, libScope string, err error) {
+	gid := activeGroupIDLocked()
 	libScope = "personal"
-	if activeGroupIDLocked() != "" {
-		libScope = "group:" + activeGroupIDLocked()
+	if gid != "" {
+		libScope = "group:" + gid
 	}
-	seg := zoteroLibrarySegment() // "library" or "groups/<id>"
+	seg := zoteroLibrarySegmentFor(gid) // "library" or "groups/<id>"
 	keySeg := url.PathEscape(key)
 	switch targetType {
 	case "item", "":

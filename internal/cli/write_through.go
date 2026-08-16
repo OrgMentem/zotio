@@ -23,6 +23,19 @@ import (
 // don't touch the filesystem (mirrors the journal-recorder pattern).
 var mirrorWriteThrough func(env *mutation.Envelope)
 
+// queryRawForRestore is a test seam to inject query failures for the restore
+// path. When nil, restore uses qs.QueryRaw directly. Tests may set it to
+// return an error for the live-row existence check to exercise Defect C's
+// error path without breaking the preceding trash-row read.
+var queryRawForRestore func(qs localQueryStore, query string, args ...any) ([]map[string]any, error)
+
+func queryRaw(qs localQueryStore, query string, args ...any) ([]map[string]any, error) {
+	if queryRawForRestore != nil {
+		return queryRawForRestore(qs, query, args...)
+	}
+	return qs.QueryRaw(query, args...)
+}
+
 // applyMirrorWriteThrough replays each applied operation's changes onto the
 // cached mirror item and records the post-write state on the result item. The
 // replayed item intentionally omits version fields because Zotero's advanced
@@ -81,7 +94,7 @@ func applyMirrorWriteThrough(env *mutation.Envelope) {
 			// payload when the live row is absent; otherwise the trash-row
 			// removal is sufficient and we avoid overwriting a possibly newer
 			// live row with stale data.
-			trashRows, err := qs.QueryRaw("SELECT data FROM resources WHERE resource_type='items-trash' AND id=?", it.Key)
+			trashRows, err := queryRaw(qs, "SELECT data FROM resources WHERE resource_type='items-trash' AND id=?", it.Key)
 			if err != nil {
 				warnMirrorUpdateFailed(it.Key, err)
 				// Best-effort: still try to reap a possibly stale trash row.
@@ -123,13 +136,15 @@ func applyMirrorWriteThrough(env *mutation.Envelope) {
 			// copy; blindly UpsertKeyed would overwrite it with stale data.
 			// Check first so the common write-through trash path stays a
 			// no-op apart from dropping the trash row.
-			liveRows, err := qs.QueryRaw("SELECT id FROM resources WHERE resource_type='items' AND id=?", it.Key)
+			liveRows, err := queryRaw(qs, "SELECT id FROM resources WHERE resource_type='items' AND id=?", it.Key)
 			if err != nil {
 				warnMirrorUpdateFailed(it.Key, err)
-				// Still drop the trash row; the live-row check is best-effort.
-				if rerr := db.ReapResource("items-trash", it.Key); rerr != nil {
-					warnMirrorUpdateFailed(it.Key, rerr)
-				}
+				// Do NOT reap trash on live-row query error. The query never
+				// established whether a live row exists; reaping would leave
+				// neither table when live is absent — the exact
+				// read-your-writes violation a13b50b fixed, reintroduced on
+				// the error path. Retaining trash is recoverable by sync;
+				// losing both rows makes the item invisible locally.
 				continue
 			}
 			if len(liveRows) == 0 {
@@ -138,10 +153,18 @@ func applyMirrorWriteThrough(env *mutation.Envelope) {
 					warnMirrorUpdateFailed(it.Key, err)
 					continue
 				}
-				if err := db.UpsertKeyed("items", []string{it.Key}, []json.RawMessage{restored}); err != nil {
+				if err := db.RestoreMirroredItem(it.Key, restored); err != nil {
 					warnMirrorUpdateFailed(it.Key, err)
 					continue
 				}
+				// Defect A: cached trash payload may be stale if the item
+				// was edited on the server while trashed. item_restore's
+				// Apply returns nil (no post-write payload from the write
+				// plane is reachable here), so the mirror may hold pre-trash
+				// field values. Emit an explicit degraded-cache warning
+				// rather than silently claiming the mirror was updated.
+				warnMirrorUpdateFailed(it.Key, fmt.Errorf("restored %s from cached trash payload; mirror may hold pre-trash field values pending sync; next sync will reconcile", it.Key))
+				continue
 			}
 			if err := db.ReapResource("items-trash", it.Key); err != nil {
 				warnMirrorUpdateFailed(it.Key, err)

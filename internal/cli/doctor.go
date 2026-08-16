@@ -334,8 +334,8 @@ releases feed at most once a day.`,
 			report["version"] = version
 			// surface which library this invocation targets so
 			// "which library am I on" is answerable; db_path already reflects it.
-			if activeGroupIDLocked() != "" {
-				report["library"] = "group:" + activeGroupIDLocked()
+			if gid := activeGroupIDLocked(); gid != "" {
+				report["library"] = "group:" + gid
 			} else {
 				report["library"] = "personal"
 			}

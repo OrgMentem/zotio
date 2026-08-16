@@ -362,6 +362,68 @@ func TestSearchesMaterializeDuplicateKeysArePaginationFailure(t *testing.T) {
 		t.Fatalf("error = %q, want pagination/duplicate failure", err.Error())
 	}
 }
+
+func TestSearchesMaterializeSamePageDuplicateProducesOneOperation(t *testing.T) {
+	// One response page contains the same key twice. The materializer must
+	// deduplicate within the page and emit exactly one mutation operation
+	// for that key, not two. Cross-page duplicates remain a hard pagination
+	// error; same-page duplicates are a benign server quirk that is soft-
+	// skipped (see fix for 3f28cd9).
+	dupKey := "K1"
+	otherKey := "K2"
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.Path, "/users/0/searches/") && strings.HasSuffix(r.URL.Path, "/items") && r.Method == http.MethodGet {
+			items := []map[string]any{
+				{"key": dupKey, "version": "1", "data": map[string]any{"collections": []string{}}},
+				{"key": dupKey, "version": "1", "data": map[string]any{"collections": []string{}}},
+				{"key": otherKey, "version": "1", "data": map[string]any{"collections": []string{}}},
+			}
+			_, _ = fmt.Fprint(w, searchMaterializeJSON(t, items))
+			return
+		}
+		if r.URL.Path == "/users/0/items/"+dupKey || r.URL.Path == "/users/0/items/"+otherKey {
+			switch r.Method {
+			case http.MethodGet:
+				w.Header().Set("Last-Modified-Version", "1")
+				_, _ = fmt.Fprintf(w, `{"key":%q,"version":1,"data":{"collections":[]}}`, strings.TrimPrefix(r.URL.Path, "/users/0/items/"))
+			case http.MethodPatch:
+				w.WriteHeader(http.StatusNoContent)
+			}
+			return
+		}
+		http.Error(w, "unexpected "+r.URL.Path, http.StatusNotFound)
+	}))
+	defer ts.Close()
+	t.Setenv("ZOTERO_BASE_URL", ts.URL+"/users/0")
+	t.Setenv("ZOTERO_CONFIG", filepath.Join(t.TempDir(), "missing.toml"))
+	flags := &rootFlags{asJSON: true, maxChanges: -1}
+	cmd := newSearchesMaterializeCmd(flags)
+	cmd.SilenceErrors, cmd.SilenceUsage = true, true
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&bytes.Buffer{})
+	cmd.SetArgs([]string{"SK", "--to", "TARGET"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("materialize with same-page duplicate: %v", err)
+	}
+	var env mutation.Envelope
+	if err := json.Unmarshal(out.Bytes(), &env); err != nil {
+		t.Fatalf("decode envelope %q: %v", out.String(), err)
+	}
+	if len(env.Plan.Operations) != 2 {
+		t.Fatalf("operations = %d, want 2 (K1 deduped to one + K2)", len(env.Plan.Operations))
+	}
+	count := 0
+	for _, op := range env.Plan.Operations {
+		if op.Key == dupKey {
+			count++
+		}
+	}
+	if count != 1 {
+		t.Fatalf("operations for %s = %d, want 1; ops=%v", dupKey, count, env.Plan.Operations)
+	}
+}
+
 func TestApplySearchesMaterializeCollectionAdd_FailsClosedOnZeroVersion(t *testing.T) {
 	var patchDispatched bool
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

@@ -267,19 +267,36 @@ func (s *importFileConnectorSession) apply(cmd *cobra.Command, index int) (strin
 		s.err = s.run(cmd)
 	}
 	if s.err != nil {
-		// Post-create filing failure after Import committed: return the
-		// populated result (session/keys/imported) alongside the error so the
-		// caller can journal the create and avoid a duplicating retry — never a
-		// zero value. Import-only failures have no session.
 		if s.sessionID != "" {
-			reason := map[string]any{
-				"via":      "connector",
-				"session":  s.sessionID,
-				"imported": s.imported,
-				"keys":     s.keys,
-				"target":   s.target,
+			// Import committed but UpdateSession/filing failed. The items are
+			// already in Zotero — report per-op applied with a singular key so
+			// the engine journals ResultItem.Key, plus a human message so a
+			// retry can target filing only.
+			if index >= s.imported {
+				reason := fmt.Sprintf("translator returned %d item(s) for %d parsed record(s); record %d was not imported", s.imported, s.records, index+1)
+				return "skipped", reason, nil
 			}
-			return "failed", reason, s.err
+			webKey := ""
+			if index < len(s.keys) {
+				webKey = s.keys[index]
+			}
+			reason := map[string]any{
+				"via":     "connector",
+				"session": s.sessionID,
+				"target":  s.target,
+			}
+			if webKey != "" {
+				reason["key"] = webKey
+			}
+			if s.imported != 0 {
+				reason["imported"] = s.imported
+			}
+			if webKey != "" {
+				reason["message"] = fmt.Sprintf("created item %s; target filing failed: %v; retry filing only, do not re-create the item", webKey, s.err)
+			} else {
+				reason["message"] = fmt.Sprintf("created %d item(s) in session %s; target filing failed: %v; retry filing only, do not re-create the item", s.imported, s.sessionID, s.err)
+			}
+			return "applied", reason, nil
 		}
 		return "failed", nil, s.err
 	}
@@ -290,16 +307,25 @@ func (s *importFileConnectorSession) apply(cmd *cobra.Command, index int) (strin
 		reason := fmt.Sprintf("translator returned %d item(s) for %d parsed record(s); record %d was not imported", s.imported, s.records, index+1)
 		return "skipped", reason, nil
 	}
-	if index > 0 {
-		return "applied", map[string]any{"via": "connector", "session": s.sessionID}, nil
+	webKey := ""
+	if index < len(s.keys) {
+		webKey = s.keys[index]
 	}
-	return "applied", map[string]any{
-		"via":      "connector",
-		"session":  s.sessionID,
-		"imported": s.imported,
-		"keys":     s.keys,
-		"target":   s.target,
-	}, nil
+	reason := map[string]any{
+		"via":     "connector",
+		"session": s.sessionID,
+	}
+	if webKey != "" {
+		reason["key"] = webKey
+	}
+	if index == 0 {
+		reason["imported"] = s.imported
+		reason["keys"] = s.keys
+		reason["target"] = s.target
+	} else if s.target != "" {
+		reason["target"] = s.target
+	}
+	return "applied", reason, nil
 }
 
 func (s *importFileConnectorSession) run(cmd *cobra.Command) error {

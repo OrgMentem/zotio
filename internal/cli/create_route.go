@@ -35,6 +35,10 @@ type itemCreateResult struct {
 	// that nevertheless landed, so the result can say so instead of claiming a
 	// clean create.
 	ConnectorError string
+	// FilingFailed distinguishes SaveItems-committed-but-filing-failed from a
+	// true SaveItems failure. The Apply closure checks this explicitly rather
+	// than inferring committed state from non-empty strings.
+	FilingFailed bool
 }
 
 // routeCreateItem creates one Zotero item via the selected route.
@@ -81,10 +85,7 @@ func runSingleItemCreate(cmd *cobra.Command, flags *rootFlags, spec singleItemCr
 				return "failed", nil, err
 			}
 			res, err = routeCreateItem(cmd.Context(), flags, c, spec.item, itemCreateSourceURI(spec.item), cmd.Flags().Changed("collection"))
-			if err != nil {
-				return "failed", nil, err
-			}
-			return "applied", map[string]any{"via": res.Via, "key": createdItemKeyOf(res)}, nil
+			return singleItemCreateApplyResult(res, err, spec.key)
 		},
 	}}
 	if spec.fetchPDF {
@@ -133,6 +134,36 @@ func runSingleItemCreate(cmd *cobra.Command, flags *rootFlags, spec singleItemCr
 // non-undoable instead of journaling a misleading target.
 func createdItemKeyOf(res itemCreateResult) string {
 	return res.WebKey
+}
+
+func singleItemCreateApplyResult(res itemCreateResult, err error, fallbackKey string) (string, any, error) {
+	if err != nil {
+		if res.FilingFailed {
+			k := createdItemKeyOf(res)
+			fallback := res.Session
+			if fallback == "" {
+				fallback = res.ConnKey
+			}
+			display := k
+			if display == "" {
+				display = fallback
+			}
+			if display == "" {
+				display = fallbackKey
+			}
+			reason := map[string]any{
+				"via":     res.Via,
+				"session": res.Session,
+				"message": fmt.Sprintf("created item %s; target filing failed: %v; retry filing only, do not re-create the item", display, err),
+			}
+			if k != "" {
+				reason["key"] = k
+			}
+			return "applied", reason, nil
+		}
+		return "failed", nil, err
+	}
+	return "applied", map[string]any{"via": res.Via, "key": createdItemKeyOf(res)}, nil
 }
 
 // routeCreateItemVia creates one Zotero item through an already resolved route.
@@ -222,7 +253,7 @@ func routeCreateItemVia(ctx context.Context, flags *rootFlags, via string, webCl
 				// populated result alongside the filing error so the create is
 				// journaled and the target failure is reported separately.
 				resolved, _, _ := confirmConnectorCreate(flags, item, createdAfter)
-				return itemCreateResult{Via: "connector", Session: sessionID, ConnKey: connectorKey, WebKey: resolved}, err
+				return itemCreateResult{Via: "connector", Session: sessionID, ConnKey: connectorKey, WebKey: resolved, FilingFailed: true}, err
 			}
 		}
 		// Resolve the real Zotero key on success as well, not only when the

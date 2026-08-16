@@ -9,6 +9,97 @@ import (
 	"github.com/spf13/cobra"
 )
 
+const collectionStatsEligibleItemPredicate = "item_type NOT IN ('attachment','note','annotation')"
+
+func queryCollectionStatsSummary(db localQueryStore, collKey string) (total int, minYear, maxYear string, err error) {
+	rows, err := db.QueryRaw(`
+SELECT
+  COUNT(*) AS total,
+  MIN(CASE WHEN SUBSTR(COALESCE(json_extract(data,'$.data.date'),''),1,4) GLOB '[12][0-9][0-9][0-9]'
+       THEN SUBSTR(json_extract(data,'$.data.date'),1,4) END) AS min_year,
+  MAX(CASE WHEN SUBSTR(COALESCE(json_extract(data,'$.data.date'),''),1,4) GLOB '[12][0-9][0-9][0-9]'
+       THEN SUBSTR(json_extract(data,'$.data.date'),1,4) END) AS max_year
+FROM resources
+WHERE resource_type='items'
+  AND `+collectionStatsEligibleItemPredicate+`
+  AND EXISTS (
+    SELECT 1 FROM json_each(json_extract(data,'$.data.collections')) c
+    WHERE c.value = ?
+  )`, collKey)
+	if err != nil {
+		return 0, "", "", err
+	}
+	if len(rows) == 0 {
+		return 0, "", "", nil
+	}
+	if v, ok := rows[0]["total"]; ok {
+		n, err := toInt64(v)
+		if err != nil {
+			return 0, "", "", err
+		}
+		total = int(n)
+	}
+	if v, ok := rows[0]["min_year"]; ok && v != nil {
+		minYear, _ = v.(string)
+	}
+	if v, ok := rows[0]["max_year"]; ok && v != nil {
+		maxYear, _ = v.(string)
+	}
+	return total, minYear, maxYear, nil
+}
+
+func queryCollectionPDFCount(db localQueryStore, collKey string) (int, error) {
+	rows, err := db.QueryRaw(`
+SELECT COUNT(DISTINCT a.parent_key) AS items_with_pdf
+FROM resources a
+WHERE a.resource_type='items'
+  AND a.item_type='attachment'
+  AND json_extract(a.data,'$.data.contentType')='application/pdf'
+  AND EXISTS (
+    SELECT 1 FROM resources i
+    WHERE i.resource_type='items'
+      AND i.id = a.parent_key
+      AND i.`+collectionStatsEligibleItemPredicate+`
+      AND EXISTS (
+        SELECT 1 FROM json_each(json_extract(i.data,'$.data.collections')) c
+        WHERE c.value = ?
+      )
+  )`, collKey)
+	if err != nil {
+		return 0, err
+	}
+	if len(rows) == 0 {
+		return 0, nil
+	}
+	n, err := toInt64(rows[0]["items_with_pdf"])
+	if err != nil {
+		return 0, err
+	}
+	return int(n), nil
+}
+
+func queryCollectionTopVenues(db localQueryStore, collKey string, top int) ([]map[string]any, error) {
+	return db.QueryRaw(`
+SELECT
+  COALESCE(
+    NULLIF(TRIM(json_extract(data,'$.data.publicationTitle')),''),
+    NULLIF(TRIM(json_extract(data,'$.data.bookTitle')),''),
+    NULLIF(TRIM(json_extract(data,'$.data.publisher')),'')
+  ) AS venue,
+  COUNT(*) AS count
+FROM resources
+WHERE resource_type='items'
+  AND `+collectionStatsEligibleItemPredicate+`
+  AND EXISTS (
+    SELECT 1 FROM json_each(json_extract(data,'$.data.collections')) c
+    WHERE c.value = ?
+  )
+GROUP BY venue
+HAVING venue IS NOT NULL AND venue != ''
+ORDER BY count DESC
+LIMIT ?`, collKey, top)
+}
+
 func newCollectionsStatsCmd(flags *rootFlags) *cobra.Command {
 	var flagTop int
 
@@ -33,99 +124,19 @@ func newCollectionsStatsCmd(flags *rootFlags) *cobra.Command {
 			defer rawDB.Close()
 			db := localQueryStore{rawDB}
 
-			// filter on indexed item_type/parent_key
-			// columns instead of json_extract to use the resources indexes.
-			// Total items + year range
-			summaryRows, err := db.QueryRaw(`
-SELECT
-  COUNT(*) AS total,
-  MIN(CASE WHEN SUBSTR(COALESCE(json_extract(data,'$.data.date'),''),1,4) GLOB '[12][0-9][0-9][0-9]'
-       THEN SUBSTR(json_extract(data,'$.data.date'),1,4) END) AS min_year,
-  MAX(CASE WHEN SUBSTR(COALESCE(json_extract(data,'$.data.date'),''),1,4) GLOB '[12][0-9][0-9][0-9]'
-       THEN SUBSTR(json_extract(data,'$.data.date'),1,4) END) AS max_year
-FROM resources
-WHERE resource_type='items'
-  AND item_type NOT IN ('attachment','note','annotation')
-  AND EXISTS (
-    SELECT 1 FROM json_each(json_extract(data,'$.data.collections')) c
-    WHERE c.value = ?
-  )`, collKey)
+			total, minYear, maxYear, err := queryCollectionStatsSummary(db, collKey)
 			if err != nil {
 				return fmt.Errorf("querying collection stats: %w", err)
 			}
 
-			// Count DISTINCT parents so an item with two PDFs contributes 1,
-			// not 2. total counts parent items, so the numerator must be
-			// parent identity as well.
-			pdfRows, err := db.QueryRaw(`
-SELECT COUNT(DISTINCT a.parent_key) AS items_with_pdf
-FROM resources a
-WHERE a.resource_type='items'
-  AND a.item_type='attachment'
-  AND json_extract(a.data,'$.data.contentType')='application/pdf'
-  AND EXISTS (
-    SELECT 1 FROM resources i
-    WHERE i.resource_type='items'
-      AND i.id = a.parent_key
-      AND EXISTS (
-        SELECT 1 FROM json_each(json_extract(i.data,'$.data.collections')) c
-        WHERE c.value = ?
-      )
-  )`, collKey)
+			pdfCount, err := queryCollectionPDFCount(db, collKey)
 			if err != nil {
 				return fmt.Errorf("querying PDF count: %w", err)
 			}
 
-			// Top journals
-			venueRows, err := db.QueryRaw(`
-SELECT
-  COALESCE(
-    NULLIF(TRIM(json_extract(data,'$.data.publicationTitle')),''),
-    NULLIF(TRIM(json_extract(data,'$.data.bookTitle')),''),
-    NULLIF(TRIM(json_extract(data,'$.data.publisher')),'')
-  ) AS venue,
-  COUNT(*) AS count
-FROM resources
-WHERE resource_type='items'
-  AND item_type NOT IN ('attachment','note','annotation')
-  AND EXISTS (
-    SELECT 1 FROM json_each(json_extract(data,'$.data.collections')) c
-    WHERE c.value = ?
-  )
-GROUP BY venue
-HAVING venue IS NOT NULL AND venue != ''
-ORDER BY count DESC
-LIMIT ?`, collKey, flagTop)
+			venueRows, err := queryCollectionTopVenues(db, collKey, flagTop)
 			if err != nil {
 				return fmt.Errorf("querying top journals: %w", err)
-			}
-
-			// Build result
-			var total, pdfCount int
-			var minYear, maxYear string
-			if len(summaryRows) > 0 {
-				if v, ok := summaryRows[0]["total"]; ok {
-					n, err := toInt64(v)
-					if err != nil {
-						return fmt.Errorf("parsing total item count: %w", err)
-					}
-					total = int(n)
-				}
-				if v, ok := summaryRows[0]["min_year"]; ok && v != nil {
-					minYear, _ = v.(string)
-				}
-				if v, ok := summaryRows[0]["max_year"]; ok && v != nil {
-					maxYear, _ = v.(string)
-				}
-			}
-			if len(pdfRows) > 0 {
-				if v, ok := pdfRows[0]["items_with_pdf"]; ok {
-					n, err := toInt64(v)
-					if err != nil {
-						return fmt.Errorf("parsing PDF item count: %w", err)
-					}
-					pdfCount = int(n)
-				}
 			}
 
 			var pdfPct float64
@@ -165,12 +176,9 @@ LIMIT ?`, collKey, flagTop)
 				if err != nil {
 					return err
 				}
-				// Shared formatter: --plain/--csv/--select were silently dropped
-				// by the direct printOutput call this replaces.
 				return printOutputWithFlags(cmd.OutOrStdout(), data, flags)
 			}
 
-			// Human table output
 			fmt.Fprintf(cmd.OutOrStdout(), "Collection: %s\n\n", collKey)
 			fmt.Fprintf(cmd.OutOrStdout(), "Items:        %d\n", total)
 			fmt.Fprintf(cmd.OutOrStdout(), "PDF coverage: %d/%d (%.0f%%)\n", pdfCount, total, pdfPct)

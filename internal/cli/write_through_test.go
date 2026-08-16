@@ -5,6 +5,7 @@ package cli
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -379,8 +380,12 @@ func TestApplyMirrorWriteThrough_RestoreReinstatesLiveRow(t *testing.T) {
 		},
 	}
 	stderr := captureWriteThroughStderr(t, func() { applyMirrorWriteThrough(&env) })
-	if stderr != "" {
-		t.Fatalf("restore with cached trash row should not warn, got stderr %q", stderr)
+	// Defect A: cached trash payload may be stale (edited on server while
+	// trashed). The write plane returns no post-write payload for restore,
+	// so the mirror may hold pre-trash field values. We surface an explicit
+	// degraded-cache warning rather than silently claiming success.
+	if !strings.Contains(stderr, "mirror may hold pre-trash field values pending sync") {
+		t.Fatalf("sync-reconciled restore should emit degraded-cache warning, got stderr %q", stderr)
 	}
 
 	db2, err := store.OpenWithContext(context.Background(), helpersTestDefaultDBPath(t, "zotio"))
@@ -580,5 +585,161 @@ func TestApplyMirrorWriteThrough_RestoreWhenLivePresentDoesNotOverwrite(t *testi
 	}
 	if len(trashRows) != 0 {
 		t.Fatalf("trash row still present after restore: %v", trashRows)
+	}
+}
+
+// TestApplyMirrorWriteThrough_RestoreStaleCacheEmitsDegradedWarning verifies
+// Defect A: when item_restore reinstates a sync-reconciled live row from a
+// cached trash payload, the mirror must emit an explicit degraded-cache warning
+// rather than silently claiming the local state changed. The cached payload may
+// be stale if the item was edited on the server while trashed, and the write
+// plane provides no post-write item for restore (Apply returns nil).
+func TestApplyMirrorWriteThrough_RestoreStaleCacheEmitsDegradedWarning(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	db, err := store.OpenWithContext(context.Background(), helpersTestDefaultDBPath(t, "zotio"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	raw := json.RawMessage(`{"key":"SA1","version":3,"data":{"key":"SA1","itemType":"book","title":"StaleBeforeTrash","version":3}}`)
+	if err := db.UpsertKeyed("items-trash", []string{"SA1"}, []json.RawMessage{raw}); err != nil {
+		_ = db.Close()
+		t.Fatalf("seed trash: %v", err)
+	}
+	_ = db.Close()
+
+	env := mutation.Envelope{
+		Plan: mutation.Plan{Operations: []mutation.Op{
+			{ID: "items.restore:SA1", Key: "SA1", Kind: "item_restore", Changes: []mutation.Change{{Field: "deleted", Remove: true}}},
+		}},
+		Result: &mutation.Result{
+			Summary: mutation.ResultSummary{Applied: 1},
+			Items:   []mutation.ResultItem{{OpID: "items.restore:SA1", Key: "SA1", Status: "applied"}},
+		},
+	}
+	stderr := captureWriteThroughStderr(t, func() { applyMirrorWriteThrough(&env) })
+	if !strings.Contains(stderr, "mirror may hold pre-trash field values pending sync") {
+		t.Fatalf("stale-cache restore should emit degraded-cache warning, got stderr %q", stderr)
+	}
+	// Final state must still be live present / trash absent; warning does not change semantics.
+	db2, err := store.OpenWithContext(context.Background(), helpersTestDefaultDBPath(t, "zotio"))
+	if err != nil {
+		t.Fatalf("reopen store: %v", err)
+	}
+	defer db2.Close()
+	qs := localQueryStore{db2}
+	liveRows, _ := qs.QueryRaw("SELECT id FROM resources WHERE resource_type='items' AND id=?", "SA1")
+	if len(liveRows) != 1 {
+		t.Fatalf("live row should be present after stale-cache restore, got %v", liveRows)
+	}
+	trashRows, _ := qs.QueryRaw("SELECT id FROM resources WHERE resource_type='items-trash' AND id=?", "SA1")
+	if len(trashRows) != 0 {
+		t.Fatalf("trash row should be reaped after stale-cache restore, got %v", trashRows)
+	}
+}
+
+// TestApplyMirrorWriteThrough_RestoreRequiresNoObservableBothRowsWindow verifies
+// Defect B's final-state contract. The restore does an UpsertKeyed(items) then
+// ReapResource(items-trash) as separate transactions; a concurrent reader could
+// briefly observe both rows, but the committed final state must be exactly one
+// live row and zero trash rows. This test asserts the final state invariant so
+// a regression that leaves both rows (or neither) is caught. Full atomicity
+// requires a store-side helper (Store.RestoreMirroredItem or TransactRestore)
+// that this file cannot add because it does not own store.go; until that helper
+// exists the observable-window is documented but not eliminated.
+func TestApplyMirrorWriteThrough_RestoreRequiresNoObservableBothRowsWindow(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	db, err := store.OpenWithContext(context.Background(), helpersTestDefaultDBPath(t, "zotio"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	raw := json.RawMessage(`{"key":"AW1","version":5,"data":{"key":"AW1","itemType":"book","title":"AtomicWindow","version":5}}`)
+	if err := db.UpsertKeyed("items-trash", []string{"AW1"}, []json.RawMessage{raw}); err != nil {
+		_ = db.Close()
+		t.Fatalf("seed trash: %v", err)
+	}
+	_ = db.Close()
+
+	env := mutation.Envelope{
+		Plan: mutation.Plan{Operations: []mutation.Op{
+			{ID: "items.restore:AW1", Key: "AW1", Kind: "item_restore", Changes: []mutation.Change{{Field: "deleted", Remove: true}}},
+		}},
+		Result: &mutation.Result{
+			Summary: mutation.ResultSummary{Applied: 1},
+			Items:   []mutation.ResultItem{{OpID: "items.restore:AW1", Key: "AW1", Status: "applied"}},
+		},
+	}
+	_ = captureWriteThroughStderr(t, func() { applyMirrorWriteThrough(&env) })
+
+	db2, err := store.OpenWithContext(context.Background(), helpersTestDefaultDBPath(t, "zotio"))
+	if err != nil {
+		t.Fatalf("reopen store: %v", err)
+	}
+	defer db2.Close()
+	qs := localQueryStore{db2}
+	liveRows, _ := qs.QueryRaw("SELECT id FROM resources WHERE resource_type='items' AND id=?", "AW1")
+	trashRows, _ := qs.QueryRaw("SELECT id FROM resources WHERE resource_type='items-trash' AND id=?", "AW1")
+	if len(liveRows) != 1 || len(trashRows) != 0 {
+		t.Fatalf("restore final state must be live=1 trash=0, got live=%d trash=%d", len(liveRows), len(trashRows))
+	}
+}
+
+// TestApplyMirrorWriteThrough_RestoreLiveQueryErrorRetainsTrashRow verifies
+// Defect C: if the live-row existence query fails, the restore must NOT reap
+// the trash row. Reaping when the existence check errored would leave neither
+// table when live was absent — the exact read-your-writes violation a13b50b
+// fixed, reintroduced on the error path. Trash is recoverable by sync;
+// losing both rows makes the item invisible locally.
+func TestApplyMirrorWriteThrough_RestoreLiveQueryErrorRetainsTrashRow(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	// Seed only trash (sync-reconciled case: live is absent).
+	db, err := store.OpenWithContext(context.Background(), helpersTestDefaultDBPath(t, "zotio"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	raw := json.RawMessage(`{"key":"EC1","version":2,"data":{"key":"EC1","itemType":"book","title":"ErrorPath","version":2}}`)
+	if err := db.UpsertKeyed("items-trash", []string{"EC1"}, []json.RawMessage{raw}); err != nil {
+		_ = db.Close()
+		t.Fatalf("seed trash: %v", err)
+	}
+	_ = db.Close()
+
+	// Inject a transient failure only for the live-row existence check.
+	orig := queryRawForRestore
+	queryRawForRestore = func(qs localQueryStore, query string, args ...any) ([]map[string]any, error) {
+		if len(args) > 0 && args[0] == "EC1" && strings.Contains(query, "resource_type='items'") {
+			return nil, fmt.Errorf("injected live-row query failure")
+		}
+		return qs.QueryRaw(query, args...)
+	}
+	t.Cleanup(func() { queryRawForRestore = orig })
+
+	env := mutation.Envelope{
+		Plan: mutation.Plan{Operations: []mutation.Op{
+			{ID: "items.restore:EC1", Key: "EC1", Kind: "item_restore", Changes: []mutation.Change{{Field: "deleted", Remove: true}}},
+		}},
+		Result: &mutation.Result{
+			Summary: mutation.ResultSummary{Applied: 1},
+			Items:   []mutation.ResultItem{{OpID: "items.restore:EC1", Key: "EC1", Status: "applied"}},
+		},
+	}
+	stderr := captureWriteThroughStderr(t, func() { applyMirrorWriteThrough(&env) })
+	if !strings.Contains(stderr, "injected live-row query failure") {
+		t.Fatalf("live-query error path should warn, got stderr %q", stderr)
+	}
+
+	db2, err := store.OpenWithContext(context.Background(), helpersTestDefaultDBPath(t, "zotio"))
+	if err != nil {
+		t.Fatalf("reopen store: %v", err)
+	}
+	defer db2.Close()
+	qs := localQueryStore{db2}
+	// Trash must be retained; live must still be absent (not reaped, not reinserted into neither).
+	trashRows, _ := qs.QueryRaw("SELECT id FROM resources WHERE resource_type='items-trash' AND id=?", "EC1")
+	if len(trashRows) != 1 {
+		t.Fatalf("live-query error must retain trash row, got %v", trashRows)
+	}
+	liveRows, _ := qs.QueryRaw("SELECT id FROM resources WHERE resource_type='items' AND id=?", "EC1")
+	if len(liveRows) != 0 {
+		t.Fatalf("live-query error path should not create live row when existence check failed, got %v", liveRows)
 	}
 }

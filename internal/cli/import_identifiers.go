@@ -391,20 +391,35 @@ func pubmedCreatorName(name string) string {
 	return strings.Join(fields[:len(fields)-1], " ") + ", " + fields[len(fields)-1]
 }
 
-// Detect PubMed compact initial tokens such as "FM" or "F.M.". Bounded to an
-// initials shape (letters only, <=4 chars after stripping dots/hyphens, all
-// uppercase) so all-caps surnames like "SMITH" are not mis-detected.
+// Detect PubMed compact initial tokens such as "J" or "J.A.". PubMed uses
+// one or two uppercase letters with optional periods after each letter
+// (J, JA, J., J.A.). Hyphens are NOT treated as initials separators
+// (so J-F is not initials). Tradeoff: a three-initial author such as
+// "Smith JAB" will now be read as a surname (no comma inserted) because
+// three- and four-letter surnames (LEE, WONG, KIM, ABC) are far more
+// common in real libraries than three-initial authors, and a wrongly
+// swapped surname corrupts citations while a missed initial split does not.
 func pubmedInitials(value string) bool {
-	clean := strings.ReplaceAll(strings.ReplaceAll(value, ".", ""), "-", "")
-	if clean == "" || len(clean) > 4 {
+	if value == "" {
 		return false
 	}
-	for _, r := range clean {
+	letters := 0
+	for i, r := range value {
+		if r == '.' {
+			if i == 0 || value[i-1] == '.' {
+				return false
+			}
+			continue
+		}
 		if r < 'A' || r > 'Z' {
 			return false
 		}
+		letters++
+		if letters > 2 {
+			return false
+		}
 	}
-	return true
+	return letters >= 1 && letters <= 2
 }
 
 // Extract creator maps from identifier provider arrays without introducing a second name convention.

@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -277,6 +278,17 @@ func newWorkflowStatusCmd(flags *rootFlags) *cobra.Command {
 				dbPath, err = defaultDBPath("zotio")
 				if err != nil {
 					return err
+				}
+			}
+			if _, err := os.Stat(dbPath); err != nil {
+				if os.IsNotExist(err) {
+					if flags.asJSON {
+						enc := json.NewEncoder(cmd.OutOrStdout())
+						enc.SetIndent("", "  ")
+						return enc.Encode(map[string]int{})
+					}
+					fmt.Fprintln(cmd.OutOrStdout(), "No archived data. Run 'workflow archive' to sync.")
+					return nil
 				}
 			}
 			s, err := store.OpenReadOnlyContext(cmd.Context(), dbPath)

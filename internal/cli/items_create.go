@@ -135,6 +135,10 @@ func newItemsCreateCmd(flags *rootFlags) *cobra.Command {
 							// the caller can correlate instead of blindly retrying.
 							// Refresh the mirror so local reads see the new items
 							// even though filing failed.
+							// This batch path runs OUTSIDE the mutation engine and
+							// therefore remains UNJOURNALLED; the JSON response
+							// below carries the committed keys structurally so a
+							// retry can file without re-creating.
 							refreshItemsFromLocalAPI(cmd.Context(), flags)
 							var recovered []string
 							for _, it := range items {
@@ -142,17 +146,52 @@ func newItemsCreateCmd(flags *rootFlags) *cobra.Command {
 									recovered = append(recovered, k)
 								}
 							}
-							// Return the populated creation context alongside the
-							// filing error — never a zero-value "failed".
+							msg := fmt.Sprintf("created %d item(s) via connector (session %s) but target %q filing failed: %v; retry filing only, do not re-create the item", len(items), sessionID, target, err)
 							if len(recovered) > 0 {
-								return fmt.Errorf("created %d item(s) via connector (session %s, keys %v) but target %q filing failed: %w", len(items), sessionID, recovered, target, err)
+								msg = fmt.Sprintf("created %d item(s) via connector (session %s, keys %v) but target %q filing failed: %v; retry filing only, do not re-create the item", len(items), sessionID, recovered, target, err)
+							}
+							if flags.asJSON || flags.agent {
+								payload, mErr := json.Marshal(map[string]any{
+									"via":           "connector",
+									"status":        "created",
+									"count":         len(items),
+									"keys":          recovered,
+									"session":       sessionID,
+									"target":        target,
+									"filing_failed": true,
+									"filing_error":  err.Error(),
+									"message":       msg,
+								})
+								if mErr == nil {
+									_ = printOutput(cmd.OutOrStdout(), json.RawMessage(payload), true)
+								}
+							}
+							if len(recovered) > 0 {
+								return fmt.Errorf("created %d item(s) via connector (session %s, keys %v) but target %q filing failed: %w; retry filing only, do not re-create the item", len(items), sessionID, recovered, target, err)
 							}
 							return fmt.Errorf("created %d item(s) via connector (session %s) but target %q filing failed: %w (items remain; retry filing, not creation)", len(items), sessionID, target, err)
 						}
 					}
 					refreshItemsFromLocalAPI(cmd.Context(), flags)
 					if flags.asJSON || flags.agent {
-						payload, err := json.Marshal(map[string]any{"via": "connector", "status": "created", "key": nil, "count": len(items)})
+						// Best-effort: include recovered WebKeys structurally instead
+						// of hardcoding key:nil. If resolution races the desktop,
+						// keys may be empty but session is still present.
+						var recovered []string
+						for _, it := range items {
+							if k, _, _ := confirmConnectorCreate(flags, it, createdAfter); k != "" {
+								recovered = append(recovered, k)
+							}
+						}
+						m := map[string]any{"via": "connector", "status": "created", "count": len(items), "keys": recovered, "session": sessionID}
+						if len(recovered) == 1 {
+							m["key"] = recovered[0]
+						} else if len(recovered) > 1 {
+							m["key"] = recovered
+						} else {
+							m["key"] = nil
+						}
+						payload, err := json.Marshal(m)
 						if err != nil {
 							return err
 						}

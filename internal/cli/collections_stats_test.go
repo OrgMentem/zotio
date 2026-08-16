@@ -46,8 +46,6 @@ func TestToInt64NonNumericStringReturnsError(t *testing.T) {
 	}
 }
 
-// seedStoreWithItems opens an isolated store and upserts the given item
-// payloads. Caller must close via t.Cleanup; this mirrors seedAuditStore.
 func seedStoreWithItems(t *testing.T, items []json.RawMessage) localQueryStore {
 	t.Helper()
 	db, err := store.OpenWithContext(context.Background(), filepath.Join(t.TempDir(), "data.db"))
@@ -62,9 +60,11 @@ func seedStoreWithItems(t *testing.T, items []json.RawMessage) localQueryStore {
 }
 
 func TestCollectionStatsPDFCountsDistinctParents(t *testing.T) {
-	// One collection item P1 with TWO PDF attachments A1, A2. The numerator
-	// must count distinct parents (1), not attachment rows (2), otherwise
-	// pdf_pct would be 200%.
+	// One eligible collection item P1 with TWO PDF attachments A1, A2.
+	// Numerator must count distinct parents (1), not attachment rows (2),
+	// otherwise pct would be 200. Exercises the production seam
+	// queryCollectionPDFCount / queryCollectionStatsSummary so a reversion
+	// to COUNT(*) causes failure (negative control a).
 	items := []json.RawMessage{
 		json.RawMessage(`{"key":"P1","version":1,"data":{"key":"P1","itemType":"journalArticle","title":"P1","collections":["COL1"]}}`),
 		json.RawMessage(`{"key":"A1","version":1,"data":{"key":"A1","itemType":"attachment","parentItem":"P1","contentType":"application/pdf"}}`),
@@ -72,47 +72,18 @@ func TestCollectionStatsPDFCountsDistinctParents(t *testing.T) {
 	}
 	db := seedStoreWithItems(t, items)
 
-	// Replicate the fixed collection stats PDF query verbatim.
-	pdfRows, err := db.QueryRaw(`
-SELECT COUNT(DISTINCT a.parent_key) AS items_with_pdf
-FROM resources a
-WHERE a.resource_type='items'
-  AND a.item_type='attachment'
-  AND json_extract(a.data,'$.data.contentType')='application/pdf'
-  AND EXISTS (
-    SELECT 1 FROM resources i
-    WHERE i.resource_type='items'
-      AND i.id = a.parent_key
-      AND EXISTS (
-        SELECT 1 FROM json_each(json_extract(i.data,'$.data.collections')) c
-        WHERE c.value = ?
-      )
-  )`, "COL1")
+	got, err := queryCollectionPDFCount(db, "COL1")
 	if err != nil {
-		t.Fatalf("QueryRaw pdf count: %v", err)
+		t.Fatalf("queryCollectionPDFCount: %v", err)
 	}
-	if len(pdfRows) == 0 {
-		t.Fatalf("no rows from pdf count query")
-	}
-	got := sqlIntValue(pdfRows[0]["items_with_pdf"])
 	if got != 1 {
 		t.Fatalf("items_with_pdf = %d, want 1 (distinct parent, not attachment rows)", got)
 	}
 
-	// Verify total and derived percentage as the command computes it.
-	summaryRows, err := db.QueryRaw(`
-SELECT COUNT(*) AS total
-FROM resources
-WHERE resource_type='items'
-  AND item_type NOT IN ('attachment','note','annotation')
-  AND EXISTS (
-    SELECT 1 FROM json_each(json_extract(data,'$.data.collections')) c
-    WHERE c.value = ?
-  )`, "COL1")
+	total, _, _, err := queryCollectionStatsSummary(db, "COL1")
 	if err != nil {
-		t.Fatalf("QueryRaw total: %v", err)
+		t.Fatalf("queryCollectionStatsSummary: %v", err)
 	}
-	total := sqlIntValue(summaryRows[0]["total"])
 	if total != 1 {
 		t.Fatalf("total = %d, want 1", total)
 	}
@@ -121,13 +92,63 @@ WHERE resource_type='items'
 		pdfPct = float64(got) / float64(total) * 100
 	}
 	if pdfPct != 100 {
-		t.Fatalf("pdfPct = %v, want 100 (clamping not used; DISTINCT fix is the cause)", pdfPct)
+		t.Fatalf("pdfPct = %v, want 100 (DISTINCT bounds it; must not be 200)", pdfPct)
+	}
+	if pdfPct > 100 {
+		t.Fatalf("pdfPct = %v, must be bounded by 100", pdfPct)
+	}
+}
+
+func TestCollectionStatsPDFExcludesIneligibleParents(t *testing.T) {
+	// One eligible item + a note and an annotation in the same collection,
+	// each with a PDF child. Numerator must count only the eligible parent
+	// (negative control b: removing the eligibility predicate must fail this).
+	items := []json.RawMessage{
+		json.RawMessage(`{"key":"P1","version":1,"data":{"key":"P1","itemType":"journalArticle","title":"P1","collections":["COL1"]}}`),
+		json.RawMessage(`{"key":"N1","version":1,"data":{"key":"N1","itemType":"note","note":"n","collections":["COL1"]}}`),
+		json.RawMessage(`{"key":"AN1","version":1,"data":{"key":"AN1","itemType":"annotation","annotationText":"a","collections":["COL1"]}}`),
+		json.RawMessage(`{"key":"A1","version":1,"data":{"key":"A1","itemType":"attachment","parentItem":"P1","contentType":"application/pdf"}}`),
+		json.RawMessage(`{"key":"A2","version":1,"data":{"key":"A2","itemType":"attachment","parentItem":"N1","contentType":"application/pdf"}}`),
+		json.RawMessage(`{"key":"A3","version":1,"data":{"key":"A3","itemType":"attachment","parentItem":"AN1","contentType":"application/pdf"}}`),
+	}
+	db := seedStoreWithItems(t, items)
+
+	total, _, _, err := queryCollectionStatsSummary(db, "COL1")
+	if err != nil {
+		t.Fatalf("queryCollectionStatsSummary: %v", err)
+	}
+	if total != 1 {
+		t.Fatalf("total = %d, want 1 (only eligible parent counted)", total)
+	}
+
+	got, err := queryCollectionPDFCount(db, "COL1")
+	if err != nil {
+		t.Fatalf("queryCollectionPDFCount: %v", err)
+	}
+	if got != 1 {
+		t.Fatalf("items_with_pdf = %d, want 1 (only eligible parent in collection should count)", got)
+	}
+
+	var pdfPct float64
+	if total > 0 {
+		pdfPct = float64(got) / float64(total) * 100
+	}
+	if pdfPct > 100 {
+		t.Fatalf("pdfPct = %v, want <= 100 (ineligible parents must not inflate numerator)", pdfPct)
+	}
+	if pdfPct != 100 {
+		t.Fatalf("pdfPct = %v, want 100", pdfPct)
+	}
+}
+
+func TestCollectionStatsEligibleItemPredicateIsShared(t *testing.T) {
+	want := "item_type NOT IN ('attachment','note','annotation')"
+	if collectionStatsEligibleItemPredicate != want {
+		t.Fatalf("predicate = %q, want %q", collectionStatsEligibleItemPredicate, want)
 	}
 }
 
 func TestLibraryPDFCoverageCountsDistinctParents(t *testing.T) {
-	// One qualifying item P1 with TWO PDF attachments must contribute 1 to
-	// items_with_pdf, not 2. Verifies COUNT(DISTINCT CASE WHEN a.id IS NOT NULL THEN i.id END).
 	items := []json.RawMessage{
 		json.RawMessage(`{"key":"P1","version":1,"data":{"key":"P1","itemType":"journalArticle","title":"P1"}}`),
 		json.RawMessage(`{"key":"A1","version":1,"data":{"key":"A1","itemType":"attachment","parentItem":"P1","contentType":"application/pdf"}}`),
@@ -150,9 +171,6 @@ func TestLibraryPDFCoverageCountsDistinctParents(t *testing.T) {
 }
 
 func TestLibraryPDFCoverageExcludesZeroPDFItems(t *testing.T) {
-	// P1 has a PDF, P2 has none. LEFT JOIN CASE guard must exclude P2
-	// from the numerator; a bare COUNT(DISTINCT i.id) would incorrectly
-	// count both.
 	items := []json.RawMessage{
 		json.RawMessage(`{"key":"P1","version":1,"data":{"key":"P1","itemType":"journalArticle","title":"P1"}}`),
 		json.RawMessage(`{"key":"P2","version":1,"data":{"key":"P2","itemType":"journalArticle","title":"P2"}}`),

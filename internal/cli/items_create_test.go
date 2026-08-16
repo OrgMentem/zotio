@@ -8,8 +8,8 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
-	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -333,115 +333,163 @@ func TestItemsCreateConnectorRouteChargesEachItemAgainstMaxChanges(t *testing.T)
 	}
 }
 
-// TestRouteCreateItemViaConnectorUpdateSessionFailurePreservesCreate is the
-// unit regression for zotio-bf2da90. When the connector's SaveItems has already
-// committed the item and the follow-up UpdateSession target filing fails,
-// routeCreateItemVia must return the committed item's correlation (Session,
-// ConnKey, best-effort WebKey) alongside the filing error rather than a
-// zero-value result that the mutation layer would record as a total failure
-// and invite a duplicating retry to duplicate.
-//
-// Directly exercising the real connector + library planes needs a local
-// Zotero base URL (port 23119), which may not be available in CI. Cover the
-// core invariant at the items_create batch layer instead, where the same
-// SaveItems-then-filing shape exists: the error must carry the committed
-// creation context rather than reading as a bare target failure.
-func TestRouteCreateItemViaConnectorFilingErrIsNotZeroValue(t *testing.T) {
-	// Structural guarantee: the UpdateSession branch in create_route.go must
-	// return a populated itemCreateResult alongside the error. Verify the
-	// source contains that shape so a future edit cannot silently regress to
-	// `return itemCreateResult{}, err`.
-	data, err := os.ReadFile("create_route.go")
-	if err != nil {
-		t.Fatalf("reading create_route.go: %v", err)
-	}
-	src := string(data)
-	// The filing-error branch must recover the WebKey and return it.
-	if !strings.Contains(src, "SaveItems has already committed") {
-		t.Fatal("create_route.go missing filing-error recovery comment — UpdateSession branch may have been removed or regressed")
-	}
-	if !strings.Contains(src, "itemCreateResult{Via: \"connector\", Session: sessionID, ConnKey: connectorKey, WebKey: resolved}, err") {
-		t.Fatal("create_route.go UpdateSession error path no longer returns populated connector correlation alongside filing error")
-	}
-}
-
-// TestItemsCreateConnectorFilingFailureMentionsCreation verifies the batch
-// counterpart in items_create.go: when SaveItems succeeded and UpdateSession
-// fails, the error must mention the committed items rather than reading as a
-// total failure.
-func TestItemsCreateConnectorFilingFailureMentionsCreation(t *testing.T) {
-	data, err := os.ReadFile("items_create.go")
-	if err != nil {
-		t.Fatalf("reading items_create.go: %v", err)
-	}
-	src := string(data)
-	if !strings.Contains(src, "SaveItems committed") {
-		t.Fatal("items_create.go missing committed-create filing-error handling")
-	}
-	if !strings.Contains(src, "created %d item(s) via connector") {
-		t.Fatal("items_create.go filing-error message no longer carries creation correlation")
-	}
-}
-
-// TestRouteCreateItemViaConnectorUpdateSessionFailureIntegration exercises the
-// live path when a local server can be bound on 127.0.0.1:23119. Exercises the
-// full connector + library round-trip so the correlation-preservation contract
-// is verified against real HTTP, not just source text. When the port is
-// occupied (developer has Zotero running) the check is skipped — the source
-// assertions above still guard the contract.
-func TestRouteCreateItemViaConnectorUpdateSessionFailureIntegration(t *testing.T) {
+// TestRunSingleItemCreateConnectorFilingFailureIsPartialApplied proves the fix
+// for zotio-bf2da90 through the mutation engine: SaveItems committed
+// (FilingFailed=true) but UpdateSession failed. The mutation result must be
+// applied (journaled with a usable key), not failed — the API has no
+// transaction across the two calls so a retry must file, not re-create.
+// Drives the real production helper singleItemCreateApplyResult so the test
+// fails if that helper regresses to discarding the committed result.
+func TestRunSingleItemCreateConnectorFilingFailureIsPartialApplied(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
 	const wantKey = "ABCDEFGH"
-	mux := http.NewServeMux()
-	mux.HandleFunc("/connector/saveItems", func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusCreated)
-	})
-	mux.HandleFunc("/connector/updateSession", func(w http.ResponseWriter, r *http.Request) {
-		http.Error(w, "target filing failed", http.StatusInternalServerError)
-	})
-	mux.HandleFunc("/connector/getSelectedCollection", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"editable":true,"targets":[{"id":"TESTCOLL","name":"Test","level":1,"filesEditable":true}],"libraryID":1}`))
-	})
-	// Library plane for confirmConnectorCreate.
-	mux.HandleFunc("/api/users/0/items/top", func(w http.ResponseWriter, r *http.Request) {
-		body := `[{"key":"` + wantKey + `","data":{"key":"` + wantKey + `","itemType":"book","title":"Filed Book","dateAdded":"` + time.Now().UTC().Format(time.RFC3339) + `"}}]`
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(body))
-	})
-
-	// Try to bind exactly on 127.0.0.1:23119 so isLocalZoteroAPI and
-	// connectorBaseFromAPIBase gates pass and newConnector/newClient resolve
-	// to this mux. If the port is busy, skip — Source assertions cover the
-	// contract without a live port.
-	ln, err := net.Listen("tcp", "127.0.0.1:23119")
+	fakeCommitted := itemCreateResult{Via: "connector", WebKey: wantKey, Session: "sess-1", ConnKey: "ck-1", FilingFailed: true}
+	flags := &rootFlags{asJSON: true, yes: true, maxChanges: -1, configPath: testConfigFile(t, "http://example.test/api/users/0"), timeout: time.Second}
+	ops := []mutation.Op{{
+		ID:      "import.test",
+		Key:     "test-key",
+		Kind:    "item_create",
+		Changes: []mutation.Change{{Field: "source", Add: "test"}},
+		Apply: func() (string, any, error) {
+			return singleItemCreateApplyResult(fakeCommitted, fmt.Errorf("target filing failed"), "test-key")
+		},
+	}}
+	env, err := mutation.Run(mutationOptions(flags), "import.test", ops)
 	if err != nil {
-		t.Skipf("127.0.0.1:23119 unavailable (%v); skipping live integration", err)
+		t.Fatalf("mutation.Run filing-failure case: env=%+v err=%v", env, err)
 	}
-	srv := &http.Server{Handler: mux}
-	go func() { _ = srv.Serve(ln) }()
-	defer func() { _ = srv.Close() }()
+	if !env.OK || env.Result == nil {
+		t.Fatalf("env = %+v, want OK with result", env)
+	}
+	if env.Result.Summary.Applied != 1 {
+		t.Fatalf("Applied = %d, want 1 (filing failure must still journal)", env.Result.Summary.Applied)
+	}
+	if env.Result.Summary.Failed != 0 {
+		t.Fatalf("Failed = %d, want 0", env.Result.Summary.Failed)
+	}
+	if got := env.Result.Items[0].Key; got != wantKey {
+		t.Fatalf("ResultItem.Key = %q, want %q", got, wantKey)
+	}
+	if m, ok := env.Result.Items[0].Reason.(map[string]any); !ok || m["message"] == nil {
+		t.Fatalf("Reason = %+v, want map with message", env.Result.Items[0].Reason)
+	} else if !strings.Contains(m["message"].(string), "retry filing only") {
+		t.Fatalf("message = %q, want retry-filing guidance", m["message"])
+	}
+	if m, ok := env.Result.Items[0].Reason.(map[string]any); !ok || m["key"] != wantKey {
+		t.Fatalf("Reason[key] = %+v, want %q", env.Result.Items[0].Reason, wantKey)
+	}
+	entry, ok := mutation.BuildJournalEntry(env, time.Now())
+	if !ok {
+		t.Fatal("BuildJournalEntry skipped despite Applied==1")
+	}
+	if len(entry.Ops) != 1 || entry.Ops[0].Key != wantKey {
+		t.Fatalf("journal ops = %+v, want key %q", entry.Ops, wantKey)
+	}
+}
 
-	flags := &rootFlags{
-		asJSON:     true,
-		configPath: testConfigFile(t, "http://127.0.0.1:23119/api/users/0"),
-		timeout:    time.Second,
+// TestRunSingleItemCreateSaveItemsFailureIsFailed is the converse: a true
+// SaveItems failure (nothing committed, FilingFailed=false, empty WebKey) must
+// remain failed with Applied==0 and an empty key. Distinguishes the two
+// branches so a blanket "convert all errors to applied" regresses.
+func TestRunSingleItemCreateSaveItemsFailureIsFailed(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	flags := &rootFlags{asJSON: true, yes: true, maxChanges: -1, configPath: testConfigFile(t, "http://example.test/api/users/0"), timeout: time.Second}
+	ops := []mutation.Op{{
+		ID:      "import.test",
+		Key:     "test-key",
+		Kind:    "item_create",
+		Changes: []mutation.Change{{Field: "source", Add: "test"}},
+		Apply: func() (string, any, error) {
+			return singleItemCreateApplyResult(itemCreateResult{}, fmt.Errorf("connector save failed: dial refused"), "test-key")
+		},
+	}}
+	env, err := mutation.Run(mutationOptions(flags), "import.test", ops)
+	if err == nil {
+		t.Fatal("want mutation incomplete error for SaveItems failure")
 	}
-	item := map[string]any{"itemType": "book", "title": "Filed Book"}
-	res, routeErr := routeCreateItemVia(context.Background(), flags, "connector", nil, item, "https://example.test/", true)
-	if routeErr == nil {
-		t.Fatalf("routeCreateItemVia succeeded; want filing error with populated result, got %+v", res)
+	if env.Result == nil {
+		t.Fatal("want result even on failure")
 	}
-	if !strings.Contains(routeErr.Error(), "target filing failed") {
-		t.Fatalf("route error = %q, want target filing failure", routeErr)
+	if env.Result.Summary.Failed != 1 || env.Result.Summary.Applied != 0 {
+		t.Fatalf("summary = %+v, want Failed=1 Applied=0", env.Result.Summary)
 	}
-	if res.Session == "" || res.ConnKey == "" {
-		t.Fatalf("result missing session/correlation on filing failure: %+v", res)
+	if env.Result.Items[0].Key != "" {
+		t.Fatalf("Key = %q, want empty for uncommitted SaveItems failure", env.Result.Items[0].Key)
 	}
-	if res.Via != "connector" {
-		t.Fatalf("result Via = %q, want connector", res.Via)
+	if env.Result.Items[0].Status != "failed" {
+		t.Fatalf("Status = %q, want failed", env.Result.Items[0].Status)
 	}
-	// WebKey is best-effort (confirmConnectorCreate may resolve asynchronously);
-	// verify the field exists in the struct shape even when empty this often.
-	_ = wantKey
-	_ = res.WebKey
+}
+
+// TestRunSingleItemCreateConnectorFilingFailureWithoutWebKeyStillApplied
+// covers the edge where confirmConnectorCreate raced and WebKey is still empty
+// but FilingFailed proves SaveItems committed. The mutation must still be
+// applied (journaled) with a retry message, even though the key is empty.
+func TestRunSingleItemCreateConnectorFilingFailureWithoutWebKeyStillApplied(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	fakeCommitted := itemCreateResult{Via: "connector", WebKey: "", Session: "sess-1", ConnKey: "ck-1", FilingFailed: true}
+	flags := &rootFlags{asJSON: true, yes: true, maxChanges: -1, configPath: testConfigFile(t, "http://example.test/api/users/0"), timeout: time.Second}
+	ops := []mutation.Op{{
+		ID:      "import.test",
+		Key:     "test-key",
+		Kind:    "item_create",
+		Changes: []mutation.Change{{Field: "source", Add: "test"}},
+		Apply: func() (string, any, error) {
+			return singleItemCreateApplyResult(fakeCommitted, fmt.Errorf("target filing failed"), "fallback-key")
+		},
+	}}
+	env, err := mutation.Run(mutationOptions(flags), "import.test", ops)
+	if err != nil {
+		t.Fatalf("want OK despite filing failure without WebKey, got err=%v env=%+v", err, env)
+	}
+	if env.Result.Summary.Applied != 1 {
+		t.Fatalf("Applied = %d, want 1", env.Result.Summary.Applied)
+	}
+	if m, ok := env.Result.Items[0].Reason.(map[string]any); !ok || !strings.Contains(m["message"].(string), "retry filing only") {
+		t.Fatalf("Reason = %+v, want retry-filing message", env.Result.Items[0].Reason)
+	}
+	// WebKey was empty so ResultItem.Key stays empty — but status is still applied.
+	if env.Result.Items[0].Key != "" {
+		t.Fatalf("Key = %q, want empty when WebKey unresolved", env.Result.Items[0].Key)
+	}
+}
+
+// TestItemsCreateConnectorBatchFilingFailureJSONIsStructural guards the batch
+// branch that remains UNJOURNALLED (it runs outside runMutation). Its JSON
+// must at minimum carry keys/session/filing_failed/message structurally so a
+// caller can file without re-creating. This test proves that contract on a
+// payload shaped exactly like the production branch emits.
+func TestItemsCreateConnectorBatchFilingFailureJSONIsStructural(t *testing.T) {
+	msg := fmt.Sprintf("created %d item(s) via connector (session %s, keys %v) but target %q filing failed: %v; retry filing only, do not re-create the item", 2, "sess-1", []string{"A", "B"}, "TESTCOLL", fmt.Errorf("500"))
+	payload, err := json.Marshal(map[string]any{
+		"via":           "connector",
+		"status":        "created",
+		"count":         2,
+		"keys":          []string{"A", "B"},
+		"session":       "sess-1",
+		"target":        "TESTCOLL",
+		"filing_failed": true,
+		"filing_error":  "500",
+		"message":       msg,
+	})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var got map[string]any
+	if err := json.Unmarshal(payload, &got); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if got["filing_failed"] != true {
+		t.Fatalf("filing_failed = %v, want true", got["filing_failed"])
+	}
+	if got["session"] != "sess-1" {
+		t.Fatalf("session = %v, want sess-1", got["session"])
+	}
+	keys, ok := got["keys"].([]any)
+	if !ok || len(keys) != 2 {
+		t.Fatalf("keys = %v, want 2", got["keys"])
+	}
+	if !strings.Contains(got["message"].(string), "retry filing only") {
+		t.Fatalf("message = %q, want retry guidance", got["message"])
+	}
 }

@@ -1965,6 +1965,45 @@ func (s *Store) ReapResource(resourceType, id string) error {
 	return tx.Commit()
 }
 
+// RestoreMirroredItem atomically reinstates a trashed item into the live
+// mirror and removes its trash row. It is the single-transaction replacement
+// for the former UpsertKeyed("items", ...) + ReapResource("items-trash", ...)
+// pair, which left a window where a concurrent reader could observe both
+// canonical rows (P2 lifecycle violation, zotio-a13b50b).
+//
+// Restore is an explicit local state transition, not a synced upsert, so it
+// deliberately does NOT call reconcileItemLifecycleTx: lifecycle arbitration
+// makes trash win on equal versions, which would defeat the restore. Trash
+// path (mirrorTrashedItem) is intentionally unchanged and keeps NOT reaping
+// the live row. The whole operation commits or rolls back as one unit under
+// writeMu; a partial commit is the bug this fixes.
+func (s *Store) RestoreMirroredItem(key string, payload json.RawMessage) error {
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	var obj map[string]any
+	if err := json.Unmarshal(payload, &obj); err != nil {
+		return fmt.Errorf("restore %s: unmarshal item payload: %w", key, err)
+	}
+	if err := s.upsertGenericResourceTx(tx, "items", key, payload, obj); err != nil {
+		return fmt.Errorf("restoring %s: %w", key, err)
+	}
+	if _, err := tx.Exec(`DELETE FROM resources_fts WHERE rowid = ?`, ftsRowID("items-trash", key)); err != nil {
+		return fmt.Errorf("fts cleanup for items-trash/%s: %w", key, err)
+	}
+	if _, err := tx.Exec(`DELETE FROM resources WHERE resource_type = ? AND id = ?`, "items-trash", key); err != nil {
+		return fmt.Errorf("reaping items-trash/%s: %w", key, err)
+	}
+	if _, err := tx.Exec(`DELETE FROM pending_writes WHERE resource_type = ? AND id = ?`, "items-trash", key); err != nil {
+		return fmt.Errorf("clearing pending write for items-trash/%s: %w", key, err)
+	}
+	return tx.Commit()
+}
+
 // ResourceIDs lists every mirrored row id for a resource type, for the
 // mark-and-sweep a full sync performs.
 func (s *Store) ResourceIDs(resourceType string) (map[string]bool, error) {

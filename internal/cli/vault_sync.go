@@ -534,11 +534,17 @@ func filenameTaken(fn, key, outDir string, idx vaultIndex, claimed map[string]bo
 // ("groups/<id>" or "users/<id>"), resolved locally with no network call. Empty
 // when the personal user ID has not been cached yet.
 func vaultLibraryID(flags *rootFlags) string {
-	if activeGroupIDLocked() != "" {
-		return "groups/" + activeGroupIDLocked()
+	return vaultLibraryIDFor(activeGroupIDLocked(), flags)
+}
+
+func vaultLibraryIDFor(gid string, flags *rootFlags) string {
+	if gid != "" {
+		return "groups/" + gid
 	}
-	if cfg, err := config.Load(flags.configPath); err == nil && cfg.UserID != "" {
-		return "users/" + cfg.UserID
+	if flags != nil {
+		if cfg, err := config.Load(flags.configPath); err == nil && cfg.UserID != "" {
+			return "users/" + cfg.UserID
+		}
 	}
 	return ""
 }
@@ -758,8 +764,12 @@ func annotationPageNum(page string) int {
 // --- zotero:// backlinks ---
 
 func zoteroLibrarySegment() string {
-	if activeGroupIDLocked() != "" {
-		return "groups/" + activeGroupIDLocked()
+	return zoteroLibrarySegmentFor(activeGroupIDLocked())
+}
+
+func zoteroLibrarySegmentFor(gid string) string {
+	if gid != "" {
+		return "groups/" + gid
 	}
 	return "library"
 }

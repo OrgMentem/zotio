@@ -45,6 +45,16 @@ const (
 	pdfMaxFlateOutputBytes = 8 << 20
 )
 
+// test seams for inflatePDFStream: allow tests to observe construction and Close
+// calls without changing behavior when not overridden.
+var inflateZlibReader = func(r io.Reader) (io.ReadCloser, error) {
+	return zlib.NewReader(r)
+}
+
+var inflateFlateReader = func(r io.Reader) io.ReadCloser {
+	return flate.NewReader(r)
+}
+
 type scanResult struct {
 	File      string `json:"file"`
 	DOI       string `json:"doi,omitempty"`
@@ -368,14 +378,14 @@ func inflatePDFStream(data []byte) []byte {
 	// successful zlib decompression does not abandon an unclosed flate reader.
 	// Both readers wrap a bytes.Reader (heap buffers only), but closing
 	// eagerly preserves the io.Closer contract.
-	if zr, err := zlib.NewReader(bytes.NewReader(data)); err == nil {
+	if zr, err := inflateZlibReader(bytes.NewReader(data)); err == nil {
 		out, err := io.ReadAll(io.LimitReader(zr, pdfMaxFlateOutputBytes+1))
 		_ = zr.Close()
 		if err == nil && len(out) <= pdfMaxFlateOutputBytes {
 			return out
 		}
 	}
-	fr := flate.NewReader(bytes.NewReader(data))
+	fr := inflateFlateReader(bytes.NewReader(data))
 	out, err := io.ReadAll(io.LimitReader(fr, pdfMaxFlateOutputBytes+1))
 	_ = fr.Close()
 	if err == nil && len(out) <= pdfMaxFlateOutputBytes {

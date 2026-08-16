@@ -87,17 +87,28 @@ func runSearchesMaterializeMutation(cmd *cobra.Command, flags *rootFlags, search
 			break
 		}
 		// A server that ignores start would repeat keys forever and either
-		// loop or double-file items. Treat a repeat as a pagination failure
-		// rather than silently duplicating operations.
+		// loop or double-file items. Treat a cross-page repeat as a
+		// pagination failure rather than silently duplicating operations.
+		// A duplicate *within* a single page is a benign server anomaly:
+		// skip the repeat and emit one operation. This keeps the
+		// pagination-integrity signal (hard error for cross-page repeats)
+		// while preventing duplicate mutation ops from a single-page quirk.
+		pageSeen := make(map[string]bool, len(keys))
+		unique := make([]string, 0, len(keys))
 		for _, key := range keys {
 			if seen[key] {
 				return fmt.Errorf("pagination for saved search %s ignored start %d (duplicate key %s)", searchKey, start, key)
 			}
+			if pageSeen[key] {
+				continue
+			}
+			pageSeen[key] = true
+			unique = append(unique, key)
 		}
-		for _, key := range keys {
+		for _, key := range unique {
 			seen[key] = true
 		}
-		allKeys = append(allKeys, keys...)
+		allKeys = append(allKeys, unique...)
 		if len(keys) < zoteroPageMax {
 			break
 		}

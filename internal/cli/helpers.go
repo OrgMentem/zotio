@@ -1663,7 +1663,7 @@ func truncateJSONArray(data json.RawMessage, n int) json.RawMessage {
 // defaultDBPath returns the canonical path for the local SQLite database.
 // group libraries get their own data-group-<id>.db file so
 // a group sync never mixes into the personal data.db; personal stays data.db.
-func defaultDBPath(name string) (string, error) {
+func defaultDBPathFor(gid, name string) (string, error) {
 	// the demo sandbox uses a separate demo.db in the same
 	// directory (group suffix is irrelevant in demo mode).
 	if demoActive() {
@@ -1678,10 +1678,14 @@ func defaultDBPath(name string) (string, error) {
 		dataDir = filepath.Join(home, ".local", "share", name)
 	}
 	file := "data.db"
-	if activeGroupIDLocked() != "" {
-		file = "data-group-" + activeGroupIDLocked() + ".db"
+	if gid != "" {
+		file = "data-group-" + gid + ".db"
 	}
 	return filepath.Join(dataDir, file), nil
+}
+
+func defaultDBPath(name string) (string, error) {
+	return defaultDBPathFor(activeGroupIDLocked(), name)
 }
 
 // rewriteLibraryPrefix rewrites a Zotero API base URL's library prefix to a

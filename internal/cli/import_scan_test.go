@@ -5,11 +5,13 @@ package cli
 
 import (
 	"bytes"
+	"compress/flate"
 	"compress/zlib"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -275,11 +277,44 @@ func TestImportScanStoreOpenFailureDoesNotLookMissing(t *testing.T) {
 }
 
 func TestInflatePDFStreamClosesReaders(t *testing.T) {
-	// Construct a valid zlib payload that inflatePDFStream must decompress.
-	// The lazy-close fix ensures the zlib reader is closed before returning;
-	// the flate reader must not be constructed at all on success (contract
-	// hygiene — both wrap bytes.Reader so there is no FD leak, but Close
-	// must still be honored).
+	origZlib := inflateZlibReader
+	origFlate := inflateFlateReader
+	defer func() {
+		inflateZlibReader = origZlib
+		inflateFlateReader = origFlate
+	}()
+
+	var zlibConstructed, zlibClosed, flateConstructed, flateClosed int
+	inflateZlibReader = func(r io.Reader) (io.ReadCloser, error) {
+		rc, err := origZlib(r)
+		if err != nil {
+			return nil, err
+		}
+		zlibConstructed++
+		wrapped := rc
+		return closeCounting(wrapped, &zlibClosed), nil
+	}
+	inflateFlateReader = func(r io.Reader) io.ReadCloser {
+		flateConstructed++
+		wrapped := origFlate(r)
+		return closeCounting(wrapped, &flateClosed)
+	}
+	resetCounts := func() {
+		zlibConstructed, zlibClosed, flateConstructed, flateClosed = 0, 0, 0, 0
+	}
+	assertAllClosed := func() {
+		t.Helper()
+		if zlibConstructed != zlibClosed {
+			t.Fatalf("zlib reader leak: constructed %d, closed %d", zlibConstructed, zlibClosed)
+		}
+		if flateConstructed != flateClosed {
+			t.Fatalf("flate reader leak: constructed %d, closed %d (expected every constructed decompressor to be closed exactly once, including on early-return)", flateConstructed, flateClosed)
+		}
+	}
+
+	// Case 1: valid zlib payload must decompress correctly and not leak flate.
+	// The original bug eagerly constructed both readers and returned on the first
+	// success without closing the remaining flate reader; this case catches that.
 	var buf bytes.Buffer
 	zw := zlib.NewWriter(&buf)
 	plain := []byte("hello from zlib stream for inflatePDFStream hygiene check")
@@ -293,9 +328,59 @@ func TestInflatePDFStreamClosesReaders(t *testing.T) {
 	if string(out) != string(plain) {
 		t.Fatalf("inflate zlib = %q, want %q", string(out), string(plain))
 	}
-	// Uncompressed / non-zlib bytes must fall through to the flate attempt
-	// and still return nil without panicking.
+	if zlibConstructed != 1 || zlibClosed != 1 {
+		t.Fatalf("zlib constructed=%d closed=%d, want 1 1", zlibConstructed, zlibClosed)
+	}
+	assertAllClosed()
+	if flateConstructed != 0 {
+		t.Fatalf("flate should not be constructed when zlib succeeds (fixed path); got constructed=%d — eager pre-allocation would leak it", flateConstructed)
+	}
+
+	// Case 2: raw flate payload — zlib construction should fail or be closed,
+	// flate must be constructed and closed exactly once and bytes must match.
+	resetCounts()
+	var buf2 bytes.Buffer
+	fw, err := flate.NewWriter(&buf2, flate.DefaultCompression)
+	if err != nil {
+		t.Fatalf("flate NewWriter: %v", err)
+	}
+	plain2 := []byte("hello from raw flate stream for inflatePDFStream check")
+	if _, err := fw.Write(plain2); err != nil {
+		t.Fatalf("flate write: %v", err)
+	}
+	if err := fw.Close(); err != nil {
+		t.Fatalf("flate close: %v", err)
+	}
+	out2 := inflatePDFStream(buf2.Bytes())
+	if string(out2) != string(plain2) {
+		t.Fatalf("inflate flate = %q, want %q", string(out2), string(plain2))
+	}
+	assertAllClosed()
+	if flateConstructed != 1 || flateClosed != 1 {
+		t.Fatalf("flate constructed=%d closed=%d, want 1 1", flateConstructed, flateClosed)
+	}
+
+	// Case 3: non-compressed bytes must fall through and still close flate.
+	resetCounts()
 	if got := inflatePDFStream([]byte("not compressed at all")); got != nil {
 		t.Fatalf("inflate non-compressed = %q, want nil", string(got))
 	}
+	assertAllClosed()
+	if flateConstructed != 1 || flateClosed != 1 {
+		t.Fatalf("flate constructed=%d closed=%d on invalid data, want 1 1", flateConstructed, flateClosed)
+	}
+}
+
+func closeCounting(rc io.ReadCloser, ctr *int) io.ReadCloser {
+	return &scanCountingCloser{ReadCloser: rc, count: ctr}
+}
+
+type scanCountingCloser struct {
+	io.ReadCloser
+	count *int
+}
+
+func (c *scanCountingCloser) Close() error {
+	*c.count++
+	return c.ReadCloser.Close()
 }

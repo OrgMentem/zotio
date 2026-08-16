@@ -472,14 +472,16 @@ func assertIdentifierDryRunCreator(t *testing.T, item map[string]any) {
 }
 
 func TestPubmedInitialsShape(t *testing.T) {
-	// Genuine initials (letters only, <=4, uppercase) should still be detected.
-	for _, tok := range []string{"J", "J.", "JF", "J.F.", "J-F", "ABC", "ABCD"} {
+	// Genuine initials: one or two uppercase letters with optional periods.
+	// Accepted: J, J., JA/JF (two letters), J.A./J.F. (dotted). Hyphens are NOT separators.
+	for _, tok := range []string{"J", "J.", "JF", "J.F.", "JA", "J.A.", "J.A", "JA."} {
 		if !pubmedInitials(tok) {
 			t.Errorf("pubmedInitials(%q) = false, want true", tok)
 		}
 	}
-	// All-caps surnames or oversized/impure tokens must NOT be treated as initials.
-	for _, tok := range []string{"SMITH", "JOHNSON", "ABCDE", "A1", "J1", "SMITH-JONES", "hello", ""} {
+	// All-caps surnames (3-4 letters) or oversized/impure tokens must NOT be treated as initials.
+	// ABC/ABCD/J-F were previously asserted as initials — that was the bug (len<=4 all-caps).
+	for _, tok := range []string{"SMITH", "JOHNSON", "ABCDE", "A1", "J1", "SMITH-JONES", "hello", "", "ABC", "ABCD", "J-F", "JAB", "LEE", "WONG", "KIM", "JAB.", "ABC."} {
 		if pubmedInitials(tok) {
 			t.Errorf("pubmedInitials(%q) = true, want false", tok)
 		}
@@ -488,6 +490,12 @@ func TestPubmedInitialsShape(t *testing.T) {
 	for _, tok := range []string{"jf", "Jf", "Smith"} {
 		if pubmedInitials(tok) {
 			t.Errorf("pubmedInitials(%q) = true, want false (must be all uppercase)", tok)
+		}
+	}
+	// Hyphenated and malformed dotted tokens are not initials.
+	for _, tok := range []string{"J-F", "J-A", "J..", ".J", "J..A", "J--F"} {
+		if pubmedInitials(tok) {
+			t.Errorf("pubmedInitials(%q) = true, want false (hyphens/dots malformed)", tok)
 		}
 	}
 }
@@ -503,6 +511,8 @@ func TestPubmedCreatorNamePubMedScope(t *testing.T) {
 		{"Smith J.", "Smith", "J."},
 		{"Smith JF", "Smith", "JF"},
 		{"Smith J.F.", "Smith", "J.F."},
+		{"Smith JA", "Smith", "JA"},
+		{"Smith J.A.", "Smith", "J.A."},
 	}
 	for _, tc := range cases {
 		normalized := pubmedCreatorName(tc.in)
@@ -527,5 +537,17 @@ func TestPubmedCreatorNamePubMedScope(t *testing.T) {
 	// the key assertion is that pubmedCreatorName did NOT rewrite to "John, SMITH".
 	if c["lastName"] == "John" && c["firstName"] == "SMITH" {
 		t.Errorf("unexpected swap for John SMITH: %v (pubmedCreatorName should not have inserted a comma)", c)
+	}
+	// Regression: three/four-letter surnames must NOT swap.
+	for _, in := range []string{"John LEE", "John ABC", "John WONG", "Jane KIM"} {
+		got := pubmedCreatorName(in)
+		if got != in {
+			t.Errorf("pubmedCreatorName(%q) = %q, want unchanged (surname, not initials)", in, got)
+		}
+		// Deliberate tradeoff: Smith JAB (three initials) is read as surname, not initials.
+	}
+	jab := pubmedCreatorName("Smith JAB")
+	if jab != "Smith JAB" {
+		t.Errorf("pubmedCreatorName(%q) = %q, want unchanged (three initials treated as surname by design)", "Smith JAB", jab)
 	}
 }
