@@ -19,9 +19,9 @@ import (
 
 func seedTagsAuditFixStore(t *testing.T, items []json.RawMessage) {
 	t.Helper()
-	savedGroup := activeGroupID
-	activeGroupID = ""
-	t.Cleanup(func() { activeGroupID = savedGroup })
+	savedGroup := activeGroupIDLocked()
+	setActiveGroupID("")
+	t.Cleanup(func() { setActiveGroupID(savedGroup) })
 	t.Setenv("HOME", t.TempDir())
 	t.Setenv("ZOTERO_CONFIG", filepath.Join(t.TempDir(), "missing.toml"))
 	db, err := store.OpenWithContext(context.Background(), helpersTestDefaultDBPath(t, "zotio"))

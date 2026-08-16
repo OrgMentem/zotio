@@ -14,9 +14,9 @@ import (
 )
 
 func TestQueryItemVenuesUsesParsedDateForYear(t *testing.T) {
-	savedGroup := activeGroupID
-	activeGroupID = ""
-	t.Cleanup(func() { activeGroupID = savedGroup })
+	savedGroup := activeGroupIDLocked()
+	setActiveGroupID("")
+	t.Cleanup(func() { setActiveGroupID(savedGroup) })
 	t.Setenv("HOME", t.TempDir())
 	t.Setenv("ZOTERO_CONFIG", filepath.Join(t.TempDir(), "missing.toml"))
 

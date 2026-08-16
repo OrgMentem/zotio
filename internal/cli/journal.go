@@ -29,8 +29,8 @@ var mutationJournalRecorder func(env *mutation.Envelope) error
 // alongside the synced store.
 func journalDir() (string, error) {
 	name := "journal"
-	if activeGroupID != "" {
-		name = "journal-group-" + activeGroupID
+	if activeGroupIDLocked() != "" {
+		name = "journal-group-" + activeGroupIDLocked()
 	}
 	dbPath, err := defaultDBPath("zotio")
 	if err != nil {
@@ -48,8 +48,8 @@ func personalJournalDir() (string, error) {
 }
 
 func currentJournalLibrary() string {
-	if activeGroupID != "" {
-		return "group:" + activeGroupID
+	if activeGroupIDLocked() != "" {
+		return "group:" + activeGroupIDLocked()
 	}
 	return "user"
 }
@@ -123,7 +123,7 @@ func readJournalEntryForUndo(runID string) (mutation.JournalEntry, error) {
 	if groupErr == nil {
 		return normalizeJournalEntry(entry), nil
 	}
-	if activeGroupID == "" {
+	if activeGroupIDLocked() == "" {
 		return mutation.JournalEntry{}, groupErr
 	}
 	legacyDir, err := personalJournalDir()

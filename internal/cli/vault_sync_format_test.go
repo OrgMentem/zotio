@@ -212,15 +212,15 @@ func TestSanitizeVaultFilenameRuneSafe(t *testing.T) {
 }
 
 func TestVaultLibraryID(t *testing.T) {
-	saved := activeGroupID
-	defer func() { activeGroupID = saved }()
+	saved := activeGroupIDLocked()
+	defer func() { setActiveGroupID(saved) }()
 
-	activeGroupID = "999"
+	setActiveGroupID("999")
 	if got := vaultLibraryID(&rootFlags{}); got != "groups/999" {
 		t.Errorf("group library = %q, want groups/999", got)
 	}
 
-	activeGroupID = ""
+	setActiveGroupID("")
 	cfgPath := filepath.Join(t.TempDir(), "config.toml")
 	writeFile(t, cfgPath, "user_id = \"99999\"\n")
 	if got := vaultLibraryID(&rootFlags{configPath: cfgPath}); got != "users/99999" {

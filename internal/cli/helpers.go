@@ -15,6 +15,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"text/tabwriter"
 	"time"
 	"unicode"
@@ -35,20 +36,45 @@ var noColor bool
 // on even when stdout is not a terminal (e.g. when piping into a renderer).
 var humanFriendly bool
 
-// activeGroupID holds the numeric Zotero group ID selected via --group, or ""
-// for the personal library. It scopes both the API library prefix and the
+// activeGroupIDValue holds the numeric Zotero group ID selected via --group, or
+// "" for the personal library. It scopes both the API library prefix and the
 // on-disk DB file to a group library.
-var activeGroupID string
+//
+// Access it ONLY through activeGroupIDLocked/setActiveGroupID. Cobra's root
+// PersistentPreRunE writes it on every in-process command execution, while the
+// MCP server reads it from its own dispatch goroutines: under --transport http
+// a native sql/search/archive-status/schema handler can read while a concurrent
+// command_run writes. The mirrored-command mutex serializes only mirrored runs,
+// so it cannot stand in for this lock. The raw variable is deliberately named
+// so that direct access does not compile.
+var (
+	activeGroupMu      sync.RWMutex
+	activeGroupIDValue string
+)
+
+// activeGroupIDLocked returns the group scope under a read lock.
+func activeGroupIDLocked() string {
+	activeGroupMu.RLock()
+	defer activeGroupMu.RUnlock()
+	return activeGroupIDValue
+}
+
+// setActiveGroupID replaces the group scope under a write lock.
+func setActiveGroupID(id string) {
+	activeGroupMu.Lock()
+	activeGroupIDValue = id
+	activeGroupMu.Unlock()
+}
 
 // snapshotCLIGlobals captures the CLI state mutated by root command flags.
 func snapshotCLIGlobals() func() {
 	savedNoColor := noColor
 	savedHumanFriendly := humanFriendly
-	savedGroupID := activeGroupID
+	savedGroupID := activeGroupIDLocked()
 	return func() {
 		noColor = savedNoColor
 		humanFriendly = savedHumanFriendly
-		activeGroupID = savedGroupID
+		setActiveGroupID(savedGroupID)
 	}
 }
 
@@ -1652,8 +1678,8 @@ func defaultDBPath(name string) (string, error) {
 		dataDir = filepath.Join(home, ".local", "share", name)
 	}
 	file := "data.db"
-	if activeGroupID != "" {
-		file = "data-group-" + activeGroupID + ".db"
+	if activeGroupIDLocked() != "" {
+		file = "data-group-" + activeGroupIDLocked() + ".db"
 	}
 	return filepath.Join(dataDir, file), nil
 }

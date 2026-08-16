@@ -48,35 +48,35 @@ func TestUserIDFromBaseURL(t *testing.T) {
 }
 
 func TestDefaultDBPath_GroupAware(t *testing.T) {
-	saved := activeGroupID
-	defer func() { activeGroupID = saved }()
+	saved := activeGroupIDLocked()
+	defer func() { setActiveGroupID(saved) }()
 
-	activeGroupID = ""
+	setActiveGroupID("")
 	if got := helpersTestDefaultDBPath(t, "zotio"); !strings.HasSuffix(got, "data.db") || strings.Contains(got, "data-group") {
 		t.Errorf("personal defaultDBPath = %q, want .../data.db", got)
 	}
 
-	activeGroupID = "12345"
+	setActiveGroupID("12345")
 	if got := helpersTestDefaultDBPath(t, "zotio"); !strings.HasSuffix(got, "data-group-12345.db") {
 		t.Errorf("group defaultDBPath = %q, want .../data-group-12345.db", got)
 	}
 }
 
 func TestDefaultDBPathUsesDataDirOverride(t *testing.T) {
-	saved := activeGroupID
-	defer func() { activeGroupID = saved }()
+	saved := activeGroupIDLocked()
+	defer func() { setActiveGroupID(saved) }()
 
 	dataDir := t.TempDir()
 	t.Setenv("ZOTERO_DATA_DIR", dataDir)
 	t.Setenv("ZOTERO_HOME", "")
 	t.Setenv("XDG_DATA_HOME", "")
 
-	activeGroupID = ""
+	setActiveGroupID("")
 	if got, want := helpersTestDefaultDBPath(t, "zotio"), filepath.Join(dataDir, "data.db"); got != want {
 		t.Fatalf("personal defaultDBPath = %q, want %q", got, want)
 	}
 
-	activeGroupID = "12345"
+	setActiveGroupID("12345")
 	if got, want := helpersTestDefaultDBPath(t, "zotio"), filepath.Join(dataDir, "data-group-12345.db"); got != want {
 		t.Fatalf("group defaultDBPath = %q, want %q", got, want)
 	}

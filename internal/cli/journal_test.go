@@ -230,10 +230,10 @@ func TestJournalListRendersPrefixWhenTailIncomplete(t *testing.T) {
 
 func TestJournalUndoUsesLegacyPrefixOrReportsTornTail(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
-	savedGroupID := activeGroupID
-	t.Cleanup(func() { activeGroupID = savedGroupID })
+	savedGroupID := activeGroupIDLocked()
+	t.Cleanup(func() { setActiveGroupID(savedGroupID) })
 
-	activeGroupID = ""
+	setActiveGroupID("")
 	dir := helpersTestJournalDir(t)
 	entry := journalTestEntry(t, "legacy-complete", "items.tags.add")
 	entry.Library = "group:12345"
@@ -253,7 +253,7 @@ func TestJournalUndoUsesLegacyPrefixOrReportsTornTail(t *testing.T) {
 		t.Fatalf("close legacy torn tail: %v", err)
 	}
 
-	activeGroupID = "12345" // The group journal remains missing: definite absence.
+	setActiveGroupID("12345") // The group journal remains missing: definite absence.
 	missingCmd := newJournalCmd(&rootFlags{})
 	missingCmd.SetArgs([]string{"undo", "missing"})
 	missingCmd.SilenceErrors, missingCmd.SilenceUsage = true, true
@@ -596,17 +596,17 @@ func TestJournalUndoAllRefusedEmitsEnvelope(t *testing.T) {
 
 func TestJournalUndoRefusesLibraryMismatchAndAllowsMatchingScope(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
-	saved := activeGroupID
-	defer func() { activeGroupID = saved }()
+	saved := activeGroupIDLocked()
+	defer func() { setActiveGroupID(saved) }()
 
-	activeGroupID = ""
+	setActiveGroupID("")
 	personal := journalTestEntry(t, "personal-run", "items.tags.add")
 	personal.Library = "" // pre-fix entries had no library field and are personal.
 	if err := mutation.WriteEntry(helpersTestJournalDir(t), personal); err != nil {
 		t.Fatalf("seed personal journal: %v", err)
 	}
 
-	activeGroupID = "12345"
+	setActiveGroupID("12345")
 	groupCmd := newJournalCmd(&rootFlags{asJSON: true})
 	groupCmd.SilenceErrors, groupCmd.SilenceUsage = true, true
 	groupCmd.SetArgs([]string{"undo", "personal-run"})
@@ -621,7 +621,7 @@ func TestJournalUndoRefusesLibraryMismatchAndAllowsMatchingScope(t *testing.T) {
 		t.Fatalf("group mismatch error = %q, want user/group mismatch", msg)
 	}
 
-	activeGroupID = ""
+	setActiveGroupID("")
 	personalCmd := newJournalCmd(&rootFlags{asJSON: true})
 	personalCmd.SilenceErrors, personalCmd.SilenceUsage = true, true
 	personalCmd.SetArgs([]string{"undo", "personal-run"})
@@ -657,7 +657,7 @@ func TestJournalUndoRefusesLibraryMismatchAndAllowsMatchingScope(t *testing.T) {
 		t.Fatalf("personal mismatch error = %q, want group/user mismatch", msg)
 	}
 
-	activeGroupID = "12345"
+	setActiveGroupID("12345")
 	if err := mutation.WriteEntry(helpersTestJournalDir(t), groupEntry); err != nil {
 		t.Fatalf("seed group journal: %v", err)
 	}

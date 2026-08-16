@@ -202,9 +202,9 @@ func isolateCSLTestEnv(t *testing.T) {
 	t.Setenv("ZOTERO_DATA_DIR", filepath.Join(t.TempDir(), "data"))
 	t.Setenv("ZOTERO_CONFIG", filepath.Join(t.TempDir(), "missing.toml"))
 	t.Setenv("ZOTIO_DEMO", "0")
-	savedGroup := activeGroupID
-	activeGroupID = ""
-	t.Cleanup(func() { activeGroupID = savedGroup })
+	savedGroup := activeGroupIDLocked()
+	setActiveGroupID("")
+	t.Cleanup(func() { setActiveGroupID(savedGroup) })
 }
 
 func runCSLItemsCommand(t *testing.T, flags *rootFlags, args []string) (*bytes.Buffer, error) {
@@ -314,9 +314,9 @@ func TestItemsBibliographyReadOnlyDoesNotPersistUserID(t *testing.T) {
 	t.Setenv("ZOTIO_DEMO", "0")
 	// Some helpers touch the temp dir via ZOTERO_DATA_DIR; point it inside dir.
 	t.Setenv("ZOTERO_DATA_DIR", filepath.Join(dir, "data"))
-	activeGroupSave := activeGroupID
-	activeGroupID = ""
-	t.Cleanup(func() { activeGroupID = activeGroupSave })
+	activeGroupSave := activeGroupIDLocked()
+	setActiveGroupID("")
+	t.Cleanup(func() { setActiveGroupID(activeGroupSave) })
 
 	flags := &rootFlags{configPath: configPath, noCache: true}
 	// Scope "item:K1" avoids the paginated scope-key loop hitting the Web API

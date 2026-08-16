@@ -35,9 +35,9 @@ func seedImportDiscoverForwardStore(t *testing.T, items []importDiscoverForwardS
 	t.Setenv("ZOTERO_CONFIG", filepath.Join(t.TempDir(), "missing.toml"))
 	t.Setenv("ZOTERO_BASE_URL", "http://127.0.0.1:1/api/users/0")
 	t.Setenv("ZOTERO_QUEUE_TAG", "to-read")
-	savedGroup := activeGroupID
-	activeGroupID = ""
-	t.Cleanup(func() { activeGroupID = savedGroup })
+	savedGroup := activeGroupIDLocked()
+	setActiveGroupID("")
+	t.Cleanup(func() { setActiveGroupID(savedGroup) })
 
 	dbPath := helpersTestDefaultDBPath(t, "zotio")
 	if err := os.MkdirAll(filepath.Dir(dbPath), 0o755); err != nil {

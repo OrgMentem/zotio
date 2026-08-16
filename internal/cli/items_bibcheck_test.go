@@ -395,9 +395,9 @@ func bibcheckIsolatedHome(t *testing.T) string {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	t.Setenv("ZOTERO_CONFIG", filepath.Join(t.TempDir(), "missing.toml"))
-	savedGroup := activeGroupID
-	activeGroupID = ""
-	t.Cleanup(func() { activeGroupID = savedGroup })
+	savedGroup := activeGroupIDLocked()
+	setActiveGroupID("")
+	t.Cleanup(func() { setActiveGroupID(savedGroup) })
 	return home
 }
 

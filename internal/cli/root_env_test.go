@@ -11,7 +11,7 @@ import (
 
 func runRootForEnvTest(t *testing.T, args ...string) {
 	t.Helper()
-	t.Cleanup(func() { activeGroupID = "" })
+	t.Cleanup(func() { setActiveGroupID("") })
 	var flags rootFlags
 	root := newRootCmd(&flags)
 	root.SetArgs(args)
@@ -26,8 +26,8 @@ func TestGroupEnvFallbackApplies(t *testing.T) {
 	t.Setenv("ZOTERO_GROUP", "12345")
 	t.Setenv("ZOTERO_PROFILE", "")
 	runRootForEnvTest(t, "capabilities")
-	if activeGroupID != "12345" {
-		t.Errorf("activeGroupID = %q, want 12345 from ZOTERO_GROUP", activeGroupID)
+	if activeGroupIDLocked() != "12345" {
+		t.Errorf("activeGroupID = %q, want 12345 from ZOTERO_GROUP", activeGroupIDLocked())
 	}
 }
 
@@ -35,7 +35,7 @@ func TestExplicitGroupFlagBeatsEnv(t *testing.T) {
 	t.Setenv("ZOTERO_GROUP", "12345")
 	t.Setenv("ZOTERO_PROFILE", "")
 	runRootForEnvTest(t, "--group", "999", "capabilities")
-	if activeGroupID != "999" {
-		t.Errorf("activeGroupID = %q, want 999 (explicit --group beats env)", activeGroupID)
+	if activeGroupIDLocked() != "999" {
+		t.Errorf("activeGroupID = %q, want 999 (explicit --group beats env)", activeGroupIDLocked())
 	}
 }

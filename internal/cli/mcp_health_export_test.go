@@ -9,9 +9,9 @@ import (
 )
 
 func TestHealthJSONNoStore(t *testing.T) {
-	savedGroup := activeGroupID
-	activeGroupID = ""
-	t.Cleanup(func() { activeGroupID = savedGroup })
+	savedGroup := activeGroupIDLocked()
+	setActiveGroupID("")
+	t.Cleanup(func() { setActiveGroupID(savedGroup) })
 	t.Setenv("HOME", t.TempDir())
 
 	data, err := HealthJSON(context.Background(), "")

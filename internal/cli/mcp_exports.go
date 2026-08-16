@@ -51,7 +51,7 @@ func CommandOverrideCapability(path string) (operation string, requires []string
 // ActiveGroupID returns the numeric Zotero group ID scoping this process, or ""
 // for the personal library.
 func ActiveGroupID() string {
-	return activeGroupID
+	return activeGroupIDLocked()
 }
 
 // DefaultDBPath returns the canonical local SQLite database path for name,
@@ -63,8 +63,8 @@ func DefaultDBPath(name string) (string, error) {
 	return defaultDBPath(name)
 }
 
-// ApplyGroupScopeFromEnv sets activeGroupID from ZOTERO_GROUP when it is
-// currently unset. MCP resource handlers call exported cli helpers
+// ApplyGroupScopeFromEnv sets the active group scope from ZOTERO_GROUP when it
+// is currently unset. MCP resource handlers call exported cli helpers
 // (FreshnessJSON, HealthJSON, ItemContextJSON, ...) directly and never execute
 // the cobra root, so the ZOTERO_GROUP fallback that PersistentPreRunE performs
 // for CLI commands never runs for them; the MCP server calls this once at
@@ -74,10 +74,11 @@ func DefaultDBPath(name string) (string, error) {
 // library, matching the hard failure root.go produces for --group. Silently
 // serving a different library than the operator asked for is the same class of
 // bug as the split-brain resolver this function exists to prevent.
+//
+// The unset check and the assignment share one write lock: a separate read
+// followed by a write could interleave with cobra's PersistentPreRunE and
+// clobber a scope another goroutine just established.
 func ApplyGroupScopeFromEnv() error {
-	if activeGroupID != "" {
-		return nil
-	}
 	v := strings.TrimSpace(os.Getenv("ZOTERO_GROUP"))
 	if v == "" {
 		return nil
@@ -85,6 +86,10 @@ func ApplyGroupScopeFromEnv() error {
 	if !isAllDigits(v) {
 		return fmt.Errorf("invalid ZOTERO_GROUP value %q: expected a numeric Zotero group ID", v)
 	}
-	activeGroupID = v
+	activeGroupMu.Lock()
+	defer activeGroupMu.Unlock()
+	if activeGroupIDValue == "" {
+		activeGroupIDValue = v
+	}
 	return nil
 }

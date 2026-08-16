@@ -172,9 +172,9 @@ func TestTail_FollowFalseWritesToCobraOut(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	t.Setenv("ZOTERO_BASE_URL", srv.URL)
 	t.Setenv("ZOTERO_CONFIG", filepath.Join(t.TempDir(), "missing.toml"))
-	savedGroup := activeGroupID
-	activeGroupID = ""
-	t.Cleanup(func() { activeGroupID = savedGroup })
+	savedGroup := activeGroupIDLocked()
+	setActiveGroupID("")
+	t.Cleanup(func() { setActiveGroupID(savedGroup) })
 
 	cmd := RootCmd()
 	cmd.SilenceErrors = true

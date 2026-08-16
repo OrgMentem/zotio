@@ -65,11 +65,11 @@ func TestZoteroDeepLink(t *testing.T) {
 		{"pdf_alias", "pdf", "", "PDF9", "zotero://open-pdf/library/items/PDF9", "attachment", "personal"},
 		{"key_path_escaped", "item", "", "A/B?x", "zotero://select/library/items/A%2FB%3Fx", "item", "personal"},
 	}
-	saved := activeGroupID
-	t.Cleanup(func() { activeGroupID = saved })
+	saved := activeGroupIDLocked()
+	t.Cleanup(func() { setActiveGroupID(saved) })
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			activeGroupID = tc.group
+			setActiveGroupID(tc.group)
 			uri, typ, scope, err := zoteroDeepLink(tc.typ, tc.key)
 			if err != nil {
 				t.Fatalf("zoteroDeepLink: %v", err)
@@ -119,9 +119,9 @@ func TestItemsOpenJSONEnvelope(t *testing.T) {
 
 // The global --group / activeGroupID scopes the deep link to a group library.
 func TestItemsOpenGroupScopeURI(t *testing.T) {
-	saved := activeGroupID
-	t.Cleanup(func() { activeGroupID = saved })
-	activeGroupID = "12345"
+	saved := activeGroupIDLocked()
+	t.Cleanup(func() { setActiveGroupID(saved) })
+	setActiveGroupID("12345")
 
 	stdout, _, err := executeItemsOpen("ABC123")
 	if err != nil {

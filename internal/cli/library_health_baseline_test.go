@@ -260,9 +260,9 @@ func seedBaselineHealthCommandStore(t *testing.T) string {
 	t.Setenv("HOME", home)
 	t.Setenv("ZOTERO_CONFIG", filepath.Join(t.TempDir(), "missing.toml"))
 	t.Setenv("ZOTIO_DEMO", "")
-	savedGroup := activeGroupID
-	activeGroupID = ""
-	t.Cleanup(func() { activeGroupID = savedGroup })
+	savedGroup := activeGroupIDLocked()
+	setActiveGroupID("")
+	t.Cleanup(func() { setActiveGroupID(savedGroup) })
 	upsertBaselineHealthItems(t, baselineSeedHealthItems()...)
 	return home
 }

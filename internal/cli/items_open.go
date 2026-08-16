@@ -22,8 +22,8 @@ import (
 // segment so a key containing "/" cannot re-target a different desktop object.
 func zoteroDeepLink(targetType, key string) (uri, normType, libScope string, err error) {
 	libScope = "personal"
-	if activeGroupID != "" {
-		libScope = "group:" + activeGroupID
+	if activeGroupIDLocked() != "" {
+		libScope = "group:" + activeGroupIDLocked()
 	}
 	seg := zoteroLibrarySegment() // "library" or "groups/<id>"
 	keySeg := url.PathEscape(key)

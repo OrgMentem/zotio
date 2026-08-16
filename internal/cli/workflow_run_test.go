@@ -1227,22 +1227,22 @@ func TestInstallRuntimeHooksInstallsProductionHooks(t *testing.T) {
 func TestExecuteWorkflowRunStepWithRootRestoresGlobalsAfterPanic(t *testing.T) {
 	previousNoColor := noColor
 	previousHumanFriendly := humanFriendly
-	previousGroupID := activeGroupID
+	previousGroupID := activeGroupIDLocked()
 	t.Cleanup(func() {
 		noColor = previousNoColor
 		humanFriendly = previousHumanFriendly
-		activeGroupID = previousGroupID
+		setActiveGroupID(previousGroupID)
 	})
 
 	noColor = false
 	humanFriendly = true
-	activeGroupID = "outer-group"
+	setActiveGroupID("outer-group")
 	root := &cobra.Command{
 		Use: "panic",
 		RunE: func(_ *cobra.Command, _ []string) error {
 			noColor = true
 			humanFriendly = false
-			activeGroupID = "inner-group"
+			setActiveGroupID("inner-group")
 			panic("workflow panic")
 		},
 	}
@@ -1257,8 +1257,8 @@ func TestExecuteWorkflowRunStepWithRootRestoresGlobalsAfterPanic(t *testing.T) {
 	if panicValue != "workflow panic" {
 		t.Fatalf("panic value = %v, want workflow panic", panicValue)
 	}
-	if noColor != false || humanFriendly != true || activeGroupID != "outer-group" {
-		t.Fatalf("CLI globals = noColor=%t humanFriendly=%t activeGroupID=%q, want false true outer-group", noColor, humanFriendly, activeGroupID)
+	if noColor != false || humanFriendly != true || activeGroupIDLocked() != "outer-group" {
+		t.Fatalf("CLI globals = noColor=%t humanFriendly=%t activeGroupID=%q, want false true outer-group", noColor, humanFriendly, activeGroupIDLocked())
 	}
 }
 

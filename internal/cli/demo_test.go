@@ -34,9 +34,9 @@ func isolateDemoEnv(t *testing.T, demoVal string) string {
 	t.Setenv("ZOTERO_CONFIG", filepath.Join(t.TempDir(), "missing.toml"))
 	t.Setenv("ZOTERO_BASE_URL", "http://127.0.0.1:1/api/users/0") // unused in local mode
 	t.Setenv("ZOTERO_QUEUE_TAG", "to-read")
-	savedGroup := activeGroupID
-	activeGroupID = ""
-	t.Cleanup(func() { activeGroupID = savedGroup })
+	savedGroup := activeGroupIDLocked()
+	setActiveGroupID("")
+	t.Cleanup(func() { setActiveGroupID(savedGroup) })
 	return home
 }
 
@@ -83,8 +83,8 @@ func runReadCmd(t *testing.T, cmd *cobra.Command, args []string) []byte {
 // suffix; a real path must never be demo.db.
 func TestDefaultDBPathRoutesToDemoDBWhenActive(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
-	savedGroup := activeGroupID
-	t.Cleanup(func() { activeGroupID = savedGroup })
+	savedGroup := activeGroupIDLocked()
+	t.Cleanup(func() { setActiveGroupID(savedGroup) })
 
 	cases := []struct {
 		name     string
@@ -102,7 +102,7 @@ func TestDefaultDBPathRoutesToDemoDBWhenActive(t *testing.T) {
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			t.Setenv("ZOTIO_DEMO", c.demo)
-			activeGroupID = c.group
+			setActiveGroupID(c.group)
 			got := helpersTestDefaultDBPath(t, "zotio")
 			base := filepath.Base(got)
 			if c.wantDemo {

@@ -283,9 +283,9 @@ func isolateItemsSimilarStore(t *testing.T) {
 	t.Setenv("ZOTIO_DEMO", "0")
 	t.Setenv("ZOTERO_CONFIG", filepath.Join(t.TempDir(), "missing.toml"))
 	t.Setenv("ZOTERO_BASE_URL", "http://127.0.0.1:1/api/users/0")
-	savedGroup := activeGroupID
-	activeGroupID = ""
-	t.Cleanup(func() { activeGroupID = savedGroup })
+	savedGroup := activeGroupIDLocked()
+	setActiveGroupID("")
+	t.Cleanup(func() { setActiveGroupID(savedGroup) })
 }
 
 func runItemsSimilarCommand(t *testing.T, flags *rootFlags, args ...string) []byte {

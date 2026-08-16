@@ -319,7 +319,7 @@ See README.md or the bundled SKILL.md for recipes.`,
 		if flags.group != "" && !isAllDigits(flags.group) {
 			return usageErr(fmt.Errorf("invalid --group value %q: expected a numeric Zotero group ID", flags.group))
 		}
-		activeGroupID = flags.group
+		setActiveGroupID(flags.group)
 		switch flags.dataSource {
 		case "auto", "live", "local":
 			// valid

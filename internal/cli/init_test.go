@@ -22,9 +22,9 @@ func TestInitNoInputJSONReportsSetupRequiredWithoutPrompt(t *testing.T) {
 	t.Setenv("ZOTERO_API_KEY", "")
 	t.Setenv("ZOTERO_PROFILE", "")
 	t.Setenv("ZOTERO_GROUP", "")
-	savedGroup := activeGroupID
-	activeGroupID = ""
-	t.Cleanup(func() { activeGroupID = savedGroup })
+	savedGroup := activeGroupIDLocked()
+	setActiveGroupID("")
+	t.Cleanup(func() { setActiveGroupID(savedGroup) })
 
 	srv := httptest.NewServer(http.NotFoundHandler())
 	baseURL := srv.URL

@@ -534,8 +534,8 @@ func filenameTaken(fn, key, outDir string, idx vaultIndex, claimed map[string]bo
 // ("groups/<id>" or "users/<id>"), resolved locally with no network call. Empty
 // when the personal user ID has not been cached yet.
 func vaultLibraryID(flags *rootFlags) string {
-	if activeGroupID != "" {
-		return "groups/" + activeGroupID
+	if activeGroupIDLocked() != "" {
+		return "groups/" + activeGroupIDLocked()
 	}
 	if cfg, err := config.Load(flags.configPath); err == nil && cfg.UserID != "" {
 		return "users/" + cfg.UserID
@@ -758,8 +758,8 @@ func annotationPageNum(page string) int {
 // --- zotero:// backlinks ---
 
 func zoteroLibrarySegment() string {
-	if activeGroupID != "" {
-		return "groups/" + activeGroupID
+	if activeGroupIDLocked() != "" {
+		return "groups/" + activeGroupIDLocked()
 	}
 	return "library"
 }
