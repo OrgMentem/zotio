@@ -8,7 +8,9 @@ package cli
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
+	"net/http"
 	"net/url"
 	"strings"
 
@@ -75,7 +77,9 @@ API must be enabled (Settings → Advanced → "Allow other applications…").`,
 // (no error) when no attachment file is available.
 func resolveAttachmentFileURL(c *client.Client, itemKey string) (string, string, error) {
 	// itemKey may itself be an attachment with a file.
-	if fileURL, ok := fetchAttachmentFileURL(c, itemKey); ok {
+	if fileURL, ok, err := fetchAttachmentFileURLError(c, itemKey); err != nil {
+		return "", "", err
+	} else if ok {
 		return itemKey, fileURL, nil
 	}
 	// Otherwise resolve the item's PDF attachment among its children.
@@ -92,23 +96,49 @@ func resolveAttachmentFileURL(c *client.Client, itemKey string) (string, string,
 	if pdfKey == "" {
 		return "", "", nil
 	}
-	fileURL, _ := fetchAttachmentFileURL(c, pdfKey)
+	fileURL, ok, err := fetchAttachmentFileURLError(c, pdfKey)
+	if err != nil {
+		return "", "", err
+	}
+	if !ok {
+		return pdfKey, "", nil
+	}
 	return pdfKey, fileURL, nil
 }
 
 // fetchAttachmentFileURL GETs the local-API file URL for an attachment key. The
 // endpoint returns the file:// URL as plain text. A request error (e.g. the key
 // is a regular item with no file) reports ok=false so the caller can fall back.
+// This wrapper preserves the old (string,bool) signature for callers that treat
+// every error as "no file" (e.g. health probes that are already gated by
+// isLocalZoteroAPI). New code that must distinguish transient failures from
+// genuine absence should call fetchAttachmentFileURLError.
 func fetchAttachmentFileURL(c *client.Client, key string) (string, bool) {
+	url, ok, _ := fetchAttachmentFileURLError(c, key)
+	return url, ok
+}
+
+// fetchAttachmentFileURLError is the error-aware core of fetchAttachmentFileURL.
+// It distinguishes "endpoint unavailable on this plane" (non-local base) and
+// "no file for this key" (404) from transient failures. Only transient failures
+// on the local plane are returned as errors.
+func fetchAttachmentFileURLError(c *client.Client, key string) (string, bool, error) {
 	// replacePathParam encodes the attachment key as one Zotero path segment.
 	path := replacePathParam("/items/{key}/file/view/url", "key", key)
 	data, err := c.Get(path, nil)
 	if err != nil {
-		return "", false
+		if !isLocalZoteroAPI(c.BaseURL) {
+			return "", false, nil
+		}
+		var apiErr *client.APIError
+		if errors.As(err, &apiErr) && apiErr.StatusCode == http.StatusNotFound {
+			return "", false, nil
+		}
+		return "", false, err
 	}
 	s := strings.TrimSpace(string(data))
 	if s == "" {
-		return "", false
+		return "", false, nil
 	}
 	// Tolerate local API builds that return the URL as a quoted JSON string.
 	if strings.HasPrefix(s, `"`) {
@@ -117,7 +147,7 @@ func fetchAttachmentFileURL(c *client.Client, key string) (string, bool) {
 			s = strings.TrimSpace(quoted)
 		}
 	}
-	return s, true
+	return s, true, nil
 }
 
 // fileURLToPath converts a file:// URL to a filesystem path, percent-decoding it.

@@ -6,7 +6,6 @@ package cli
 import (
 	"context"
 	"fmt"
-	"io"
 	"net/http"
 	"strings"
 
@@ -78,7 +77,7 @@ func fetchTranslatorHTML(ctx context.Context, pageURL string, flags *rootFlags) 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return "", fmt.Errorf("fetching %s: HTTP %d", pageURL, resp.StatusCode)
 	}
-	body, err := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
+	body, err := readCappedExternalBody(resp.Body, 4<<20)
 	if err != nil {
 		return "", fmt.Errorf("reading %s: %w", pageURL, err)
 	}

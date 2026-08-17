@@ -127,7 +127,7 @@ func TestBuildLibraryDOIIndex(t *testing.T) {
 		t.Fatalf("seed: %v", err)
 	}
 
-	idx, err := buildLibraryDOIIndex(db)
+	idx, err := buildLibraryDOIIndex(context.Background(), db)
 	if err != nil {
 		t.Fatalf("buildLibraryDOIIndex: %v", err)
 	}
@@ -157,7 +157,7 @@ func TestItemsWithPDFSetExcludesTrashedAttachments(t *testing.T) {
 		t.Fatalf("seed trashed attachment: %v", err)
 	}
 
-	withPDF, err := itemsWithPDFSet(db)
+	withPDF, err := itemsWithPDFSet(context.Background(), db)
 	if err != nil {
 		t.Fatalf("itemsWithPDFSet: %v", err)
 	}
@@ -180,7 +180,7 @@ func TestItemsWithPDFSetPropagatesReadError(t *testing.T) {
 	if err := db.Close(); err != nil {
 		t.Fatalf("close store: %v", err)
 	}
-	if _, err := itemsWithPDFSet(db); err == nil {
+	if _, err := itemsWithPDFSet(context.Background(), db); err == nil {
 		t.Fatal("itemsWithPDFSet error = nil, want closed-store read error")
 	}
 }

@@ -475,3 +475,24 @@ func TestDiagnosticResourcesReadPartialSchemaButStrictReadsDoNot(t *testing.T) {
 		t.Fatalf("strict search result = %+v, want readiness remediation", result)
 	}
 }
+
+func TestCollectionManifestPropagatesStorageError(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	if err := os.MkdirAll(filepath.Dir(dbPath()), 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	db, err := store.OpenWithContext(context.Background(), dbPath())
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	if _, err := db.DB().Exec(`DROP TABLE resources`); err != nil {
+		t.Fatalf("drop resources: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close store: %v", err)
+	}
+	_, err = collectionManifest(context.Background(), "FAKEKEY")
+	if err == nil {
+		t.Fatalf("collectionManifest should return error when storage fails, got nil")
+	}
+}

@@ -576,3 +576,33 @@ func TestVaultSyncRequiresOut(t *testing.T) {
 		t.Error("expected error when --out is missing")
 	}
 }
+
+func TestScanVaultIndexMissingDirStillSucceedsSilently(t *testing.T) {
+	tmp := t.TempDir()
+	missing := filepath.Join(tmp, "does-not-exist-12345")
+	idx, err := scanVaultIndex(missing)
+	if err != nil {
+		t.Fatalf("missing outDir should succeed, got err: %v", err)
+	}
+	if len(idx.byKey) != 0 || len(idx.byFile) != 0 {
+		t.Fatalf("missing dir should yield empty index, got %+v", idx)
+	}
+}
+
+func TestScanVaultIndexNonENOENTErrorSurfaces(t *testing.T) {
+	tmp := t.TempDir()
+	// Use a regular file where a directory is expected: ReadDir returns
+	// "not a directory" (ENOTDIR), not ENOENT. The fixed scanVaultIndex
+	// must surface this, while the old code silently returned an empty index.
+	filePath := filepath.Join(tmp, "not-a-dir")
+	if err := os.WriteFile(filePath, []byte("x"), 0o600); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+	_, err := scanVaultIndex(filePath)
+	if err == nil {
+		t.Fatalf("expected error for non-directory vault path, got nil (empty index would hide a duplicate)")
+	}
+	if !strings.Contains(err.Error(), "reading vault dir") {
+		t.Fatalf("error should name the cause, got: %v", err)
+	}
+}

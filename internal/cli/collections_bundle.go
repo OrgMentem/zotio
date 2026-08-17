@@ -3,6 +3,7 @@
 package cli
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -75,7 +76,7 @@ func runCollectionsBundle(cmd *cobra.Command, flags *rootFlags, collectionKey, o
 		return nil
 	}
 
-	manifest, err := writeCollectionBundle(db, collectionKey, outDir)
+	manifest, err := writeCollectionBundle(cmd.Context(), db, collectionKey, outDir)
 	if err != nil {
 		return err
 	}
@@ -89,8 +90,8 @@ func runCollectionsBundle(cmd *cobra.Command, flags *rootFlags, collectionKey, o
 	return nil
 }
 
-func writeCollectionBundle(db *store.Store, collKey, outDir string) (collectionBundleManifest, error) {
-	items, err := db.QueryItems(store.ItemQuery{
+func writeCollectionBundle(ctx context.Context, db *store.Store, collKey, outDir string) (collectionBundleManifest, error) {
+	items, err := db.QueryItemsContext(ctx, store.ItemQuery{
 		Collection: collKey,
 		TopOnly:    true,
 		Sort:       "title",
@@ -108,7 +109,7 @@ func writeCollectionBundle(db *store.Store, collKey, outDir string) (collectionB
 	if err != nil {
 		return collectionBundleManifest{}, fmt.Errorf("reading collection annotations: %w", err)
 	}
-	ftByItem, err := fulltextByParentItemWithErr(db)
+	ftByItem, err := fulltextByParentItemWithErr(ctx, db)
 	if err != nil {
 		return collectionBundleManifest{}, fmt.Errorf("reading collection fulltext: %w", err)
 	}

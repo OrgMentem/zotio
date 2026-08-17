@@ -1811,15 +1811,22 @@ func (r *Row) Scan(dest ...any) error {
 	})
 }
 
-func (s *Store) queryWithBusyRetry(query string, args ...any) (*sql.Rows, error) {
+func (s *Store) queryWithBusyRetryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	var rows *sql.Rows
 	deadline := time.Now().Add(migrationLockTimeout)
-	err := retryOnBusy(context.Background(), deadline, "querying local store", func() error {
+	err := retryOnBusy(ctx, deadline, "querying local store", func() error {
 		var err error
-		rows, err = s.db.Query(query, args...)
+		rows, err = s.db.QueryContext(ctx, query, args...)
 		return err
 	})
 	return rows, err
+}
+
+func (s *Store) queryWithBusyRetry(query string, args ...any) (*sql.Rows, error) {
+	return s.queryWithBusyRetryContext(context.Background(), query, args...)
 }
 
 func (s *Store) Count(resourceType string) (int, error) {

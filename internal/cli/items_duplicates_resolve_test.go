@@ -444,3 +444,58 @@ func TestDuplicateResolveApplyFailsClosedOnZeroVersion(t *testing.T) {
 		t.Fatalf("PATCH count for K1 = %d, want 0 (no request when version is 0)", srv.patchCounts["K1"])
 	}
 }
+
+func TestDuplicateResolveVersionNoPanicOnNonMapData(t *testing.T) {
+	defer func() {
+		if r := recover(); r != nil {
+			t.Fatalf("duplicateResolveVersion panicked on non-map data: %v", r)
+		}
+	}()
+	cases := []map[string]any{
+		{"data": "not a map"},
+		{"data": []any{"a"}},
+		{"data": nil},
+		{"data": float64(42)},
+		{},
+		{"version": float64(5), "data": "not a map"},
+	}
+	for i, obj := range cases {
+		got := duplicateResolveVersion(obj)
+		want := 0
+		// Case with top-level version 5 should return 5 even when data is malformed.
+		if i == 5 {
+			want = 5
+		}
+		if got != want {
+			t.Fatalf("case %d: got %d, want %d (obj=%v)", i, got, want, obj)
+		}
+	}
+	// Explicit: malformed data with no top-level version must be 0, not panic.
+	if got := duplicateResolveVersion(map[string]any{"data": "bad"}); got != 0 {
+		t.Fatalf("bad data, no version: got %d, want 0", got)
+	}
+}
+
+func TestDuplicateResolveVersionNormalPath(t *testing.T) {
+	tests := []struct {
+		name string
+		obj  map[string]any
+		want int
+	}{
+		{"top-level float64", map[string]any{"version": float64(7), "data": map[string]any{"version": float64(3)}}, 7},
+		{"fallback to data version", map[string]any{"data": map[string]any{"version": float64(9)}}, 9},
+		{"top-level int", map[string]any{"version": 12, "data": map[string]any{}}, 12},
+		{"data int fallback", map[string]any{"data": map[string]any{"version": 15}}, 15},
+		{"json.Number top-level", map[string]any{"version": json.Number("21"), "data": map[string]any{"version": float64(1)}}, 21},
+		{"json.Number fallback", map[string]any{"data": map[string]any{"version": json.Number("33")}}, 33},
+		{"zero when absent", map[string]any{"data": map[string]any{}}, 0},
+		{"zero when empty", map[string]any{}, 0},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := duplicateResolveVersion(tc.obj); got != tc.want {
+				t.Fatalf("got %d, want %d", got, tc.want)
+			}
+		})
+	}
+}

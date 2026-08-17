@@ -17,6 +17,10 @@ import (
 	"time"
 )
 
+// journalRandRead is the entropy source for NewRunID, exposed as a seam so
+// tests can simulate crypto/rand failure without monkey-patching the stdlib.
+var journalRandRead = rand.Read
+
 // JournalSchemaVersion versions the on-disk journal-entry format.
 const JournalSchemaVersion = 1
 
@@ -125,9 +129,15 @@ func BuildJournalEntry(env Envelope, now time.Time) (JournalEntry, bool) {
 // by every step entry.
 func NewRunID(now time.Time) string {
 	var b [4]byte
-	suffix := "0000"
-	if _, err := rand.Read(b[:]); err == nil {
+	suffix := ""
+	if _, err := journalRandRead(b[:]); err == nil {
 		suffix = hex.EncodeToString(b[:])
+	} else {
+		// crypto/rand should not fail, but if it does we must not mint a
+		// deterministic constant — two concurrentwriters in the same UTC
+		// second would collide on "0000". Incorporate process and
+		// time uniqueness so the fallback cannot collide across processes.
+		suffix = fmt.Sprintf("%08x-%d", os.Getpid(), time.Now().UnixNano())
 	}
 	return now.UTC().Format("20060102T150405Z") + "-" + suffix
 }

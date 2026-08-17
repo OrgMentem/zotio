@@ -151,7 +151,7 @@ func TestCollectionsBundlePropagatesFulltextReadError(t *testing.T) {
 	}
 
 	outDir := filepath.Join(t.TempDir(), "bundle")
-	if _, err := writeCollectionBundle(db, "COL", outDir); err == nil {
+	if _, err := writeCollectionBundle(context.Background(), db, "COL", outDir); err == nil {
 		t.Fatal("writeCollectionBundle succeeded after fulltext read failure")
 	} else if !strings.Contains(err.Error(), "reading collection fulltext") {
 		t.Fatalf("writeCollectionBundle error = %v, want fulltext read error", err)

@@ -78,7 +78,7 @@ func readImportManifest(path string, stdin io.Reader) (importManifest, error) {
 		defer f.Close()
 		r = f
 	}
-	data, err := io.ReadAll(io.LimitReader(r, 64<<20))
+	data, err := readCappedExternalBody(r, 64<<20)
 	if err != nil {
 		return importManifest{}, fmt.Errorf("reading manifest: %w", err)
 	}

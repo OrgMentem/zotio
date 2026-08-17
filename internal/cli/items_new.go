@@ -111,7 +111,9 @@ func fetchItemTemplate(ctx context.Context, flags *rootFlags, itemType string) (
 	// ResolveWriteBase yields "" and the Get below fails into the precondition
 	// error below.
 	if c.ResolveWriteBase != nil {
-		if base, rerr := c.ResolveWriteBase(ctx); rerr == nil && base != "" {
+		if base, rerr := c.ResolveWriteBase(ctx); rerr != nil {
+			return nil, fmt.Errorf("could not resolve Zotero Web API write route: %w", rerr)
+		} else if base != "" {
 			c.BaseURL = stripLibraryPrefix(base)
 		}
 		c.ResolveWriteBase = nil

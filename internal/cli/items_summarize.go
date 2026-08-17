@@ -8,6 +8,7 @@
 package cli
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -113,7 +114,7 @@ structured bundle; otherwise a readable Markdown brief you can paste into any LL
 			}
 
 			if flagCollection != "" {
-				return runSummarizeCollection(cmd, db, flagCollection, opts, flags)
+				return runSummarizeCollection(cmd.Context(), cmd, db, flagCollection, opts, flags)
 			}
 			if len(args) == 0 {
 				return cmd.Help()
@@ -133,7 +134,7 @@ structured bundle; otherwise a readable Markdown brief you can paste into any LL
 			}
 			fulltext := ""
 			if !opts.noFulltext {
-				fulltext, err = fulltextForItem(db, args[0])
+				fulltext, err = fulltextForItem(cmd.Context(), db, args[0])
 				if err != nil {
 					warnings = append(warnings, fmt.Sprintf("reading fulltext for item %s: %v", args[0], err))
 				}
@@ -150,8 +151,8 @@ structured bundle; otherwise a readable Markdown brief you can paste into any LL
 	return cmd
 }
 
-func runSummarizeCollection(cmd *cobra.Command, db *store.Store, collKey string, opts summarizeOpts, flags *rootFlags) error {
-	items, err := db.QueryItems(store.ItemQuery{
+func runSummarizeCollection(ctx context.Context, cmd *cobra.Command, db *store.Store, collKey string, opts summarizeOpts, flags *rootFlags) error {
+	items, err := db.QueryItemsContext(ctx, store.ItemQuery{
 		Collection: collKey,
 		TopOnly:    true,
 		Sort:       "title",
@@ -174,7 +175,7 @@ func runSummarizeCollection(cmd *cobra.Command, db *store.Store, collKey string,
 	// re-scan the attachment table per item.
 	var ftByItem map[string]string
 	if !opts.noFulltext {
-		ftByItem, err = fulltextByParentItemWithErr(db)
+		ftByItem, err = fulltextByParentItemWithErr(ctx, db)
 		if err != nil {
 			warnings = append(warnings, fmt.Sprintf("reading fulltext for collection %s: %v", collKey, err))
 		}
@@ -295,9 +296,9 @@ func itemGaps(meta vaultMeta, hasFulltext, fulltextSkipped bool) []string {
 // parent item key to its PDF's stored full text, avoiding a per-item rescan in
 // collection mode.
 
-func fulltextByParentItemWithErr(db *store.Store) (map[string]string, error) {
+func fulltextByParentItemWithErr(ctx context.Context, db *store.Store) (map[string]string, error) {
 	out := make(map[string]string)
-	err := db.VisitSimilarityFulltextDocuments(func(doc store.SimilarityFulltextDocument) error {
+	err := db.VisitSimilarityFulltextDocumentsContext(ctx, func(doc store.SimilarityFulltextDocument) error {
 		if c := strings.TrimSpace(fulltextContent(doc.Data)); c != "" {
 			out[doc.ParentItemKey] = c
 		}
@@ -309,7 +310,7 @@ func fulltextByParentItemWithErr(db *store.Store) (map[string]string, error) {
 	return out, nil
 }
 
-func fulltextForItem(db *store.Store, itemKey string) (string, error) {
+func fulltextForItem(ctx context.Context, db *store.Store, itemKey string) (string, error) {
 	ft, ok, err := db.Fulltext(itemKey)
 	if err != nil {
 		return "", fmt.Errorf("reading item %s: %w", itemKey, err)
@@ -317,7 +318,7 @@ func fulltextForItem(db *store.Store, itemKey string) (string, error) {
 	if ok {
 		return fulltextContent(ft), nil
 	}
-	ft, ok, err = fulltextForPDFAttachment(db, itemKey)
+	ft, ok, err = fulltextForPDFAttachment(ctx, db, itemKey)
 	if err != nil {
 		return "", err
 	}
@@ -330,8 +331,8 @@ func fulltextForItem(db *store.Store, itemKey string) (string, error) {
 // fulltextForPDFAttachment finds the first PDF child with stored full text.
 // QueryItems scopes the attachment scan to one parent rather than loading every
 // attachment in the local mirror.
-func fulltextForPDFAttachment(db *store.Store, itemKey string) (json.RawMessage, bool, error) {
-	attachments, err := db.QueryItems(store.ItemQuery{
+func fulltextForPDFAttachment(ctx context.Context, db *store.Store, itemKey string) (json.RawMessage, bool, error) {
+	attachments, err := db.QueryItemsContext(ctx, store.ItemQuery{
 		ItemType: "attachment",
 		Parent:   itemKey,
 	})

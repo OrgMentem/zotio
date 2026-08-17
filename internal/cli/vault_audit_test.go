@@ -71,3 +71,41 @@ func TestVaultAuditReportsOrphanedManagedNote(t *testing.T) {
 	}
 	t.Fatalf("missing orphaned GHOST finding: %+v", report.Findings)
 }
+
+func TestVaultAuditReportsUnparseableStateComment(t *testing.T) {
+	seedVaultAuditStore(t)
+	vaultDir := t.TempDir()
+	// Store LIVE at version 7; note claims NoteVersion 99 is ahead, but
+	// the comment is truncated so it cannot be parsed — audit must not
+	// silently treat it as fresh (NoteVersion 0) and miss the drift.
+	body := "---\nzotero_key: LIVE\n---\n\n## Notes\n" + vaultNotesBegin + "\nnotes\n" + vaultNotesEnd + "\n" + vaultStatePrefix + "{invalid json" + " -->\n"
+	writeFile(t, filepath.Join(vaultDir, "broken-state.md"), body)
+	flags := &rootFlags{asJSON: true}
+	cmd := newVaultCmd(flags)
+	cmd.SetArgs([]string{"audit", "--out", vaultDir})
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&bytes.Buffer{})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("vault audit: %v", err)
+	}
+	var report struct {
+		Counts   map[string]int `json:"counts"`
+		Findings []Finding      `json:"findings"`
+	}
+	if err := json.Unmarshal(out.Bytes(), &report); err != nil {
+		t.Fatalf("decode audit JSON: %v\n%s", err, out.String())
+	}
+	if report.Counts["unparseable_state"] != 1 {
+		t.Fatalf("expected unparseable_state count = 1, got %v (findings=%+v)\n%s", report.Counts["unparseable_state"], report.Findings, out.String())
+	}
+	found := false
+	for _, f := range report.Findings {
+		if f.ItemKey == "LIVE" && f.Evidence["issue"] == "unparseable_state" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("missing unparseable_state finding for LIVE: %+v", report.Findings)
+	}
+}

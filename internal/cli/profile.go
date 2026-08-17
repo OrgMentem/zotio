@@ -9,12 +9,29 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
 
 	"zotio/internal/cliutil"
 )
+
+var (
+	profileWarnedMu sync.Mutex
+	profileWarned   = map[string]struct{}{}
+)
+
+func warnProfileIssue(path, action string, err error) {
+	key := path + "\x00" + action
+	profileWarnedMu.Lock()
+	defer profileWarnedMu.Unlock()
+	if _, ok := profileWarned[key]; ok {
+		return
+	}
+	profileWarned[key] = struct{}{}
+	fmt.Fprintf(os.Stderr, "warning: profiles %s failed for %s: %v\n", action, path, err)
+}
 
 // Profile is a named set of flag values saved for reuse across invocations.
 // HeyGen's "Beacon" pattern: one named context that a scheduled agent reuses
@@ -129,6 +146,11 @@ func ApplyProfileToFlags(cmd *cobra.Command, profile *Profile) error {
 func ListProfileNames() []string {
 	s, err := loadProfileStore()
 	if err != nil {
+		p, pathErr := profileStorePath()
+		if pathErr != nil {
+			p = "profiles.json"
+		}
+		warnProfileIssue(p, "reading", err)
 		return nil
 	}
 	names := make([]string, 0, len(s.Profiles))

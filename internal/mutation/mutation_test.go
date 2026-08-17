@@ -215,3 +215,68 @@ func TestRunApplyContinueOnError(t *testing.T) {
 		t.Fatalf("summary = %+v", env.Result.Summary)
 	}
 }
+
+func TestRunApplyAppliedWithErrorIsFailed(t *testing.T) {
+	op := Op{ID: "x", Key: "K1", Kind: "test", Changes: []Change{{Field: "title", Add: "A"}}, Apply: func() (string, any, error) {
+		return "applied", nil, errors.New("post-condition write failed")
+	}}
+	env, err := Run(Options{Yes: true, MaxChanges: -1}, "test", []Op{op})
+	if err == nil {
+		t.Fatal("Run err = nil, want non-nil for applied-with-error")
+	}
+	if env.OK {
+		t.Fatal("env.OK = true, want false when applied carries an error")
+	}
+	if env.Result == nil {
+		t.Fatal("Result is nil")
+	}
+	if got := env.Result.Items[0].Status; got != "failed" {
+		t.Fatalf("status = %q, want %q", got, "failed")
+	}
+	if env.Result.Summary.Failed != 1 || env.Result.Summary.Applied != 0 {
+		t.Fatalf("summary = %+v, want Failed=1 Applied=0", env.Result.Summary)
+	}
+}
+
+func TestRunApplyAppliedWithReasonRemainsApplied(t *testing.T) {
+	reason := map[string]any{"message": "created but filing failed", "key": "NEWKEY"}
+	op := Op{ID: "y", Key: "journalArticle", Kind: "item_create", Changes: []Change{{Field: "item", Add: map[string]any{"itemType": "journalArticle"}}}, Apply: func() (string, any, error) {
+		return "applied", reason, nil
+	}}
+	env, err := Run(Options{Yes: true, MaxChanges: -1}, "test", []Op{op})
+	if err != nil {
+		t.Fatalf("Run err = %v, want nil for applied-with-reason (no error)", err)
+	}
+	if !env.OK {
+		t.Fatalf("env.OK = false, want true for partial-success with nil error; envelope=%+v", env)
+	}
+	if got := env.Result.Items[0].Status; got != "applied" {
+		t.Fatalf("status = %q, want applied", got)
+	}
+	if env.Result.Summary.Applied != 1 {
+		t.Fatalf("summary = %+v, want Applied=1", env.Result.Summary)
+	}
+	if env.Result.Items[0].Reason == nil {
+		t.Fatal("reason is nil, want partial-success reason preserved")
+	}
+}
+
+func TestRunCanceledErrorIsWrappable(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	ops := []Op{
+		{ID: "op1", Key: "K1", Kind: "test", Changes: []Change{{Field: "title", Add: "A"}}, Apply: func() (string, any, error) {
+			cancel()
+			return "applied", nil, nil
+		}},
+		{ID: "op2", Key: "K2", Kind: "test", Changes: []Change{{Field: "title", Add: "B"}}, Apply: func() (string, any, error) {
+			return "applied", nil, nil
+		}},
+	}
+	_, err := Run(Options{Yes: true, MaxChanges: -1, Context: ctx}, "test", ops)
+	if err == nil {
+		t.Fatal("Run err = nil, want non-nil on cancellation")
+	}
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("errors.Is(err, context.Canceled) = false, err=%v", err)
+	}
+}

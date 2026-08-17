@@ -97,7 +97,9 @@ targets and accepts no collection parameter.`,
 			default:
 				return fmt.Errorf("--on-duplicate must be one of skip, attach, create")
 			}
-			if via, err := flags.resolveCreateVia(cmd.Context(), false); err != nil || via != "connector" {
+			if via, err := flags.resolveCreateVia(cmd.Context(), false); err != nil {
+				return preconditionErr(fmt.Errorf("import pdf requires the desktop connector: %w", err))
+			} else if via != "connector" {
 				return preconditionErr(fmt.Errorf("import pdf requires the desktop connector (local base URL + Zotero running)"))
 			}
 			conn, err := flags.newConnector()
@@ -299,7 +301,7 @@ func loadImportPDFDuplicateIndex(ctx context.Context) (libraryDOIIndex, string) 
 		return empty, "duplicate detection disabled: local store is not synced; run 'zotio sync' to enable --on-duplicate checks"
 	}
 	defer db.Close()
-	idx, err := buildLibraryDOIIndex(db)
+	idx, err := buildLibraryDOIIndex(ctx, db)
 	if err != nil {
 		return empty, fmt.Sprintf("duplicate detection disabled: indexing library DOIs: %v", err)
 	}

@@ -321,3 +321,34 @@ func assertMode(t *testing.T, path string, want os.FileMode) {
 		t.Fatalf("%s mode = %04o, want %04o", path, got, want)
 	}
 }
+
+func TestNewRunIDFallbackIsNonConstant(t *testing.T) {
+	orig := journalRandRead
+	journalRandRead = func(b []byte) (int, error) { return 0, errors.New("entropy unavailable") }
+	t.Cleanup(func() { journalRandRead = orig })
+
+	now := time.Date(2026, 8, 17, 12, 0, 0, 0, time.UTC)
+	id1 := NewRunID(now)
+	id2 := NewRunID(now)
+	if id1 == id2 {
+		t.Fatalf("fallback RunIDs collided: %q == %q", id1, id2)
+	}
+	if strings.HasSuffix(id1, "-0000") || strings.HasSuffix(id2, "-0000") {
+		t.Fatalf("fallback RunID must not be deterministic 0000: %q %q", id1, id2)
+	}
+	if !strings.HasPrefix(id1, "20260817T120000Z-") || !strings.HasPrefix(id2, "20260817T120000Z-") {
+		t.Fatalf("RunID timestamp prefix wrong: %q %q", id1, id2)
+	}
+}
+
+func TestNewRunIDSuccessPathUnchanged(t *testing.T) {
+	now := time.Date(2026, 8, 17, 12, 0, 0, 0, time.UTC)
+	id := NewRunID(now)
+	if !strings.HasPrefix(id, "20260817T120000Z-") {
+		t.Fatalf("RunID = %q, want prefix 20260817T120000Z-", id)
+	}
+	suffix := strings.TrimPrefix(id, "20260817T120000Z-")
+	if len(suffix) != 8 {
+		t.Fatalf("success suffix length = %d, want 8 (4 random bytes hex); id=%q", len(suffix), id)
+	}
+}

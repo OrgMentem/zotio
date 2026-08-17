@@ -54,7 +54,7 @@ func buildImportManifestFromDir(cmd *cobra.Command, flags *rootFlags, dir string
 	idx := libraryDOIIndex{byDOI: map[string]libItem{}}
 	if db != nil {
 		defer db.Close()
-		idx, err = buildLibraryDOIIndex(db)
+		idx, err = buildLibraryDOIIndex(cmd.Context(), db)
 		if err != nil {
 			return importManifest{}, fmt.Errorf("indexing library DOIs: %w", err)
 		}

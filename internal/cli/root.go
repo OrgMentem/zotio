@@ -432,7 +432,9 @@ func (f *rootFlags) newWriteClient() (*client.Client, error) {
 		if ctx == nil {
 			ctx = context.Background()
 		}
-		if base, rerr := c.ResolveWriteBase(ctx); rerr == nil && base != "" {
+		if base, rerr := c.ResolveWriteBase(ctx); rerr != nil {
+			return nil, fmt.Errorf("could not resolve Zotero Web API write route: %w", rerr)
+		} else if base != "" {
 			c.BaseURL = base
 			c.ResolveWriteBase = nil
 			fmt.Fprintf(os.Stderr, "→ writing via Zotero Web API: %s\n", base)

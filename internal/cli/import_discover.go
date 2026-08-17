@@ -199,7 +199,7 @@ func buildImportDiscoverManifestWithDirection(ctx context.Context, flags *rootFl
 	if err != nil {
 		return importManifest{}, importDiscoverReport{}, fmt.Errorf("querying scope DOI items: %w", err)
 	}
-	libraryDOIs, err := buildLibraryDOIIndex(rawDB)
+	libraryDOIs, err := buildLibraryDOIIndex(ctx, rawDB)
 	if err != nil {
 		return importManifest{}, importDiscoverReport{}, fmt.Errorf("indexing library DOIs: %w", err)
 	}

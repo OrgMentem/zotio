@@ -6,12 +6,93 @@ Notable changes to zotio. Format follows [Keep a Changelog](https://keepachangel
 
 ### Fixed
 
-Three consecutive passes over the same body of work: 24 findings from a static
-audit, then 14 defects that seven reviewers found in those fixes, then two
-pre-existing issues those reviewers flagged as out of scope. Every fix now
-carries a negative control — the bug reinstated, the test observed to fail,
-the code restored — because the first pass shipped three tests that could not
-fail, one of which copied the production SQL it was meant to check.
+A fourth pass over the same body of work, this one from findings a weak model
+produced against a tree that was being rewritten underneath it. Of 48 findings,
+16 were noise — false positives, duplicates, or already fixed — and validating
+them individually mattered more than fixing them: three of the surviving fixes
+had to be reverted because they inverted deliberate contracts, each one caught
+by an existing test whose *name* stated the behavior being removed.
+
+Preceded by three earlier passes: 24 findings from a static audit, then 14
+defects that seven reviewers found in those fixes, then two pre-existing issues
+those reviewers flagged as out of scope. Every fix carries a negative control —
+the bug reinstated, the test observed to fail, the code restored — because the
+first pass shipped three tests that could not fail, one of which copied the
+production SQL it was meant to check.
+
+- **`items annotations --color` matched nothing for every documented value.**
+  The flag's own help lists colour names (`yellow`, `red`, `green`, …) but the
+  filter compared that name against the stored hex, so `--color yellow` returned
+  zero rows while `--color '#ffd400'` returned 456 on the same library. A
+  name-aware helper already existed and simply was not called.
+- **An unresolvable Web API write route was reported as a version conflict.**
+  With hybrid routing configured and no cached user ID, a failure to resolve the
+  write base was discarded at three separate sites, and the write then fell
+  through to a path that reported `status: conflict` with the server's opaque
+  `Zotero-Server-ID not provided` — sending users to look for a concurrent edit
+  when the real cause was, for example, an expired key. The resolver error is
+  now retained and surfaced: `could not resolve Zotero Web API write route:
+  resolving Zotero user ID: keys/current returned HTTP 403`. The deliberate
+  non-latching of a failed resolution is unchanged, so the next write still
+  retries.
+- **`items update` sent a precondition read before the plan was applied.** The
+  version was fetched outside `Apply` and frozen, and a 412/428 rejection was
+  reported as a generic failure rather than a conflict. It now resolves the
+  precondition on the write plane at apply time through the shared guard.
+- **Local reads failed hard under WAL contention.** `QueryItems`, `QueryTrash`,
+  and `QuerySimilarityCandidates` bypassed the BUSY-retry helper their siblings
+  used, so an ordinary read could fail while a writer held the database. They
+  now retry within the bounded window, and the retry honours the caller's
+  context, so Ctrl-C and MCP cancellation abort a contended read promptly
+  instead of waiting out the lock timeout.
+- **MCP command execution ignored cancellation.** `command_search` and
+  `command_run` blocked on the in-process serialization mutex without watching
+  the caller's context, so a cancelled request still queued behind a long
+  `sync`. Acquisition is now cancellable and the mutex is never left wedged.
+- **`items find` over-matched identifier prefixes.** `--pmid`, `--citekey`, and
+  `--arxiv` search the freeform `Extra` field with a trailing wildcard, so
+  `smith2023` also matched `smith2023a` and PMID `123` matched `12345`. Since
+  these lookups resolve item identity, a false match could send automation at
+  the wrong item. Candidates are still found with `LIKE`, then filtered on an
+  exact token boundary.
+- **`items venues` reported garbage years and a nondeterministic item type.**
+  Min/max year came from `SUBSTR(date, 1, 4)` over Zotero's freeform date, so
+  `April 2023` yielded `Apri` and `n.d.` sorted as a year; and a bare
+  `item_type` under `GROUP BY venue` let SQLite pick an arbitrary row, so the
+  reported type changed between runs. Years are now parsed and undatable rows
+  excluded; the type is the venue's most common, ties broken deterministically.
+- **Silent truncation on import.** A manifest over 64 MiB and a translator page
+  over 4 MiB were both silently cut short, so a subset was imported while the
+  command reported success. Both now fail loudly and name the limit; the limits
+  themselves are unchanged.
+- **Errors that masked themselves as absence.** `items file` reported an
+  attachment as having no file when the fetch had actually failed;
+  `items fulltext` reported no local full text when the store errored; the MCP
+  collection manifest reported a missing collection when storage failed; the MCP
+  freshness resource reported healthy sync state it had never read; `vault audit`
+  treated an unparseable state comment as fresh; and `zotio profile` reported
+  zero profiles when the store was corrupt. Each now distinguishes failure from
+  absence — the profile case as a one-time stderr warning, because that path is
+  reachable from `mcp:read-only` commands.
+- **`vault sync` could duplicate a managed note.** A non-`ENOENT` failure
+  reading the vault directory produced an empty index, so an existing note was
+  written again under a new name instead of being updated. A missing directory
+  is still tolerated silently, which is what first-run sync depends on.
+- **Two paths could not be cancelled or diagnosed.** `mutation.Run` did not wrap
+  the cancellation error, so `errors.Is(err, context.Canceled)` was false for
+  callers, and it would have counted an operation as applied had `Apply` returned
+  a non-nil error alongside an `applied` status. Partial success — `applied` with
+  a reason — is unchanged and now has its own test.
+- **A journal run ID could collide.** `NewRunID` fell back to a constant `0000`
+  suffix when entropy failed, precisely when uniqueness matters; the fallback now
+  incorporates pid and nanosecond time.
+- **Smaller hardening.** `client.New` no longer builds a relative cache
+  directory when the home directory cannot be resolved, and the MCP server no
+  longer opens a CWD-relative database for the same reason; the response cache
+  key no longer lets two different query strings collide; `AcquireWriterLock`
+  no longer ignores a non-permission `Chmod` failure; and `duplicateResolveVersion`
+  no longer carries an unguarded type assertion, though no current caller can
+  reach it.
 
 - **Writes no longer send a local-plane version as a Web API precondition.**
   Zotero key-based writes need `If-Unmodified-Since-Version`, and the desktop

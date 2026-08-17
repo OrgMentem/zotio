@@ -3,6 +3,7 @@
 package cli
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -46,7 +47,11 @@ func newItemsFulltextCmd(flags *rootFlags) *cobra.Command {
 					}
 				} else {
 					defer db.Close()
-					if data, ok := localPDFFulltext(db, itemKey); ok {
+					data, ok, lerr := localPDFFulltext(cmd.Context(), db, itemKey)
+					if lerr != nil {
+						return fmt.Errorf("reading local fulltext: %w", lerr)
+					}
+					if ok {
 						if flagSearch != "" {
 							filtered, ferr := filterFulltextLines(data, flagSearch)
 							if ferr != nil {
@@ -106,12 +111,17 @@ func newItemsFulltextCmd(flags *rootFlags) *cobra.Command {
 // It first treats itemKey as an attachment key directly; failing that, it
 // queries only the item's PDF children for stored full text. Returns false when
 // nothing is available locally.
-func localPDFFulltext(db *store.Store, itemKey string) (json.RawMessage, bool) {
-	if ft, ok, _ := db.Fulltext(itemKey); ok {
-		return ft, true
+func localPDFFulltext(ctx context.Context, db *store.Store, itemKey string) (json.RawMessage, bool, error) {
+	if ft, ok, err := db.Fulltext(itemKey); err != nil {
+		return nil, false, err
+	} else if ok {
+		return ft, true, nil
 	}
-	ft, ok, _ := fulltextForPDFAttachment(db, itemKey)
-	return ft, ok
+	ft, ok, err := fulltextForPDFAttachment(ctx, db, itemKey)
+	if err != nil {
+		return nil, false, err
+	}
+	return ft, ok, nil
 }
 
 func findPDFAttachmentKey(data json.RawMessage) (string, error) {

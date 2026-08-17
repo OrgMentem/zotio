@@ -142,8 +142,10 @@ func auditVaultNotes(outDir string) (vaultAuditReport, error) {
 			return nil
 		}
 		storeVersion := sqlIntValue(rows[0]["version"])
-		st, _ := parseStateComment(body)
-		if st.NoteVersion > 0 && storeVersion > st.NoteVersion {
+		st, perr := parseStateComment(body)
+		if perr != nil {
+			addVaultAuditIssue(&report, rel, key, "unparseable_state")
+		} else if st.NoteVersion > 0 && storeVersion > st.NoteVersion {
 			addVaultAuditIssue(&report, rel, key, vaultAuditIssueStale)
 		}
 		return nil
@@ -157,6 +159,7 @@ func newVaultAuditCounts() map[string]int {
 		vaultAuditIssueStale:              0,
 		vaultAuditIssueUpgradeable:        0,
 		vaultAuditIssueNeedsNotesBoundary: 0,
+		"unparseable_state":               0,
 	}
 }
 

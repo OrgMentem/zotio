@@ -18,7 +18,7 @@ func TestBuildItemSimilarReportScoresExplainableSignals(t *testing.T) {
 	db := seedItemsSimilarFixture(t, filepath.Join(t.TempDir(), "data.db"))
 	defer db.Close()
 
-	report, found, err := buildItemSimilarReport(localQueryStore{db}, "SRC", itemSimilarOptions{Limit: 10})
+	report, found, err := buildItemSimilarReport(context.Background(), localQueryStore{db}, "SRC", itemSimilarOptions{Limit: 10})
 	if err != nil {
 		t.Fatalf("buildItemSimilarReport: %v", err)
 	}
@@ -72,7 +72,7 @@ func TestBuildItemSimilarReportLimitAndMinScore(t *testing.T) {
 	db := seedItemsSimilarFixture(t, filepath.Join(t.TempDir(), "data.db"))
 	defer db.Close()
 
-	report, found, err := buildItemSimilarReport(localQueryStore{db}, "SRC", itemSimilarOptions{Limit: 1, MinScore: 0.40})
+	report, found, err := buildItemSimilarReport(context.Background(), localQueryStore{db}, "SRC", itemSimilarOptions{Limit: 1, MinScore: 0.40})
 	if err != nil {
 		t.Fatalf("buildItemSimilarReport: %v", err)
 	}
@@ -83,7 +83,7 @@ func TestBuildItemSimilarReportLimitAndMinScore(t *testing.T) {
 		t.Fatalf("filtered report = %+v, want only SIM", report.Similar)
 	}
 
-	report, found, err = buildItemSimilarReport(localQueryStore{db}, "SRC", itemSimilarOptions{Limit: 10, MinScore: 0.60})
+	report, found, err = buildItemSimilarReport(context.Background(), localQueryStore{db}, "SRC", itemSimilarOptions{Limit: 10, MinScore: 0.60})
 	if err != nil {
 		t.Fatalf("buildItemSimilarReport high threshold: %v", err)
 	}
@@ -206,7 +206,7 @@ func TestBuildItemSimilarFulltextCorpusCountsEmptyDocuments(t *testing.T) {
 		t.Fatalf("seed fulltext: %v", err)
 	}
 
-	corpus, err := buildItemSimilarFulltextCorpus(db, "SRC")
+	corpus, err := buildItemSimilarFulltextCorpus(context.Background(), db, "SRC")
 	if err != nil {
 		t.Fatalf("build corpus: %v", err)
 	}
@@ -233,7 +233,7 @@ func TestBuildItemSimilarReportRejectsNewerTrashedSource(t *testing.T) {
 		t.Fatalf("seed trash source: %v", err)
 	}
 
-	_, _, err := buildItemSimilarReport(localQueryStore{db}, "SRC", itemSimilarOptions{Limit: 10})
+	_, _, err := buildItemSimilarReport(context.Background(), localQueryStore{db}, "SRC", itemSimilarOptions{Limit: 10})
 	if err == nil || !strings.Contains(err.Error(), "item is in trash") {
 		t.Fatalf("error = %v, want loud trash error", err)
 	}

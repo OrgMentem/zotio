@@ -647,7 +647,7 @@ func TestResolveReadLocalItemsFallsBackForUnreproducibleScopes(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			data, handled, err := resolveLocalItemList(db, "/items", tc.params)
+			data, handled, err := resolveLocalItemList(context.Background(), db, "/items", tc.params)
 			if err != nil {
 				t.Fatalf("resolveLocalItemList: %v", err)
 			}
@@ -957,7 +957,7 @@ func TestResolveLocalItemListRejectsInvalidPagination(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			data, handled, err := resolveLocalItemList(db, "/items", tc.params)
+			data, handled, err := resolveLocalItemList(context.Background(), db, "/items", tc.params)
 			if !handled {
 				t.Fatalf("handled = false, want true for item-list path")
 			}

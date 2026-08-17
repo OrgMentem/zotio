@@ -113,7 +113,7 @@ or text-only PDFs may report "unidentified".`,
 			}
 			defer db.Close()
 
-			idx, err := buildLibraryDOIIndex(db)
+			idx, err := buildLibraryDOIIndex(cmd.Context(), db)
 			if err != nil {
 				return finishScanReport(cmd, nil, 0, args[0], []string{fmt.Sprintf("indexing library DOI and PDF attachments: %v", err)}, flags)
 			}
@@ -177,13 +177,13 @@ type libraryDOIIndex struct {
 	byDOI map[string]libItem // key: lowercased DOI
 }
 
-func buildLibraryDOIIndex(db *store.Store) (libraryDOIIndex, error) {
+func buildLibraryDOIIndex(ctx context.Context, db *store.Store) (libraryDOIIndex, error) {
 	idx := libraryDOIIndex{byDOI: map[string]libItem{}}
-	items, err := db.QueryItems(store.ItemQuery{TopOnly: true})
+	items, err := db.QueryItemsContext(ctx, store.ItemQuery{TopOnly: true})
 	if err != nil {
 		return idx, err
 	}
-	withPDF, err := itemsWithPDFSet(db)
+	withPDF, err := itemsWithPDFSet(ctx, db)
 	if err != nil {
 		return idx, fmt.Errorf("indexing PDF attachments: %w", err)
 	}
@@ -212,9 +212,9 @@ func buildLibraryDOIIndex(db *store.Store) (libraryDOIIndex, error) {
 }
 
 // itemsWithPDFSet returns the set of parent item keys that have a live PDF attachment.
-func itemsWithPDFSet(db *store.Store) (map[string]bool, error) {
+func itemsWithPDFSet(ctx context.Context, db *store.Store) (map[string]bool, error) {
 	set := map[string]bool{}
-	atts, err := db.QueryItems(store.ItemQuery{ItemType: "attachment"})
+	atts, err := db.QueryItemsContext(ctx, store.ItemQuery{ItemType: "attachment"})
 	if err != nil {
 		return nil, err
 	}

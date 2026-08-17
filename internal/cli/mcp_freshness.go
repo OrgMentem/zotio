@@ -28,7 +28,15 @@ func FreshnessJSON(ctx context.Context) ([]byte, error) {
 	entries := make([]map[string]any, 0, len(rows))
 	for _, row := range rows {
 		rt := sqlStringValue(row["resource_type"])
-		_, lastSynced, count, _ := db.GetSyncState(rt)
+		_, lastSynced, count, syncErr := db.GetSyncState(rt)
+		if syncErr != nil {
+			entries = append(entries, map[string]any{
+				"resource": rt,
+				"count":    count,
+				"error":    syncErr.Error(),
+			})
+			continue
+		}
 		age := time.Since(lastSynced)
 		entry := map[string]any{
 			"resource":       rt,

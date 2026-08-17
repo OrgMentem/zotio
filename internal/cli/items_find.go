@@ -67,11 +67,18 @@ ORDER BY id`, flagDOI, flagDOI, flagArXiv, escapedArXiv, flagArXiv, escapedArXiv
 			if err != nil {
 				return fmt.Errorf("querying local identifiers: %w", err)
 			}
+			// Keep the SQL LIKE as a cheap candidate filter, then post-filter
+			// in Go with exact token-boundary checks to avoid prefix
+			// over-matches (e.g. smith2023 matching smith2023a, PMID 123
+			// matching 12345). Token ends at end-of-string, newline, or
+			// whitespace.
+			if flagArXiv != "" || flagPMID != "" || flagCitekey != "" {
+				rows = filterFindRowsExact(rows, flagDOI, flagArXiv, flagISBN, flagPMID, flagCitekey)
+			}
 			data, err := json.Marshal(extractItemDataRows(rows))
 			if err != nil {
 				return err
 			}
-			// items find has no live equivalent — Zotero exposes no
 			// identifier-lookup endpoint — so it always reads the local
 			// mirror. Route through the same envelope pipeline as every
 			// other read command so `.results` stays a JSON array here too
@@ -140,4 +147,92 @@ func extractItemDataRows(rows []map[string]any) []map[string]any {
 		out = append(out, item)
 	}
 	return out
+}
+
+func filterFindRowsExact(rows []map[string]any, flagDOI, flagArXiv, flagISBN, flagPMID, flagCitekey string) []map[string]any {
+	out := make([]map[string]any, 0, len(rows))
+	for _, row := range rows {
+		if findRowMatchesExact(row, flagDOI, flagArXiv, flagISBN, flagPMID, flagCitekey) {
+			out = append(out, row)
+		}
+	}
+	return out
+}
+
+func findRowMatchesExact(row map[string]any, flagDOI, flagArXiv, flagISBN, flagPMID, flagCitekey string) bool {
+	raw, ok := row["data"].(string)
+	if !ok {
+		// Keep candidate; no data to check — let it through rather than dropping results silently.
+		return true
+	}
+	var decoded struct {
+		Data struct {
+			DOI         string `json:"DOI"`
+			ISBN        string `json:"ISBN"`
+			ArchiveID   string `json:"archiveID"`
+			CitationKey string `json:"citationKey"`
+			Extra       string `json:"extra"`
+		} `json:"data"`
+	}
+	if json.Unmarshal([]byte(raw), &decoded) != nil {
+		return true
+	}
+	d := decoded.Data
+	if flagDOI != "" && d.DOI == flagDOI {
+		return true
+	}
+	if flagISBN != "" && d.ISBN == flagISBN {
+		return true
+	}
+	if flagArXiv != "" {
+		// archiveID is exact: "arXiv:<id>" or plain id.
+		if d.ArchiveID == "arXiv:"+flagArXiv || d.ArchiveID == flagArXiv {
+			return true
+		}
+		if extraContainsExactToken(d.Extra, "arXiv: ", flagArXiv) {
+			return true
+		}
+	}
+	if flagPMID != "" && extraContainsExactToken(d.Extra, "PMID: ", flagPMID) {
+		return true
+	}
+	if flagCitekey != "" {
+		if d.CitationKey == flagCitekey {
+			return true
+		}
+		if extraContainsExactToken(d.Extra, "Citation Key: ", flagCitekey) {
+			return true
+		}
+	}
+	return false
+}
+
+func extraContainsExactToken(extra, prefix, token string) bool {
+	if token == "" {
+		return false
+	}
+	// Extra is a set of newline-separated lines; we scan for the exact
+	// "<prefix><token>" and verify the token ends at a boundary (end of
+	// string, newline, or whitespace) so "smith2023" does not match
+	// "smith2023a" and "123" does not match "12345".
+	needle := prefix + token
+	searchFrom := 0
+	for {
+		idx := strings.Index(extra[searchFrom:], needle)
+		if idx < 0 {
+			return false
+		}
+		pos := searchFrom + idx
+		after := pos + len(needle)
+		if after >= len(extra) {
+			return true
+		}
+		switch extra[after] {
+		case '\n', '\r', ' ', '\t':
+			return true
+		default:
+			// Prefix match only — continue searching past this occurrence.
+			searchFrom = after
+		}
+	}
 }

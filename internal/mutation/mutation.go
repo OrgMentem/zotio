@@ -250,6 +250,9 @@ func Run(o Options, operation string, ops []Op) (Envelope, error) {
 				status = "applied"
 			}
 		}
+		if err != nil && status == "applied" {
+			status = "failed"
+		}
 		item.Status = status
 		item.Reason = reason
 		// A create cannot know its key until the object exists. When Apply
@@ -289,13 +292,15 @@ func Run(o Options, operation string, ops []Op) (Envelope, error) {
 			stop = true
 		}
 	}
-
 	if canceled {
 		env.Warnings = append(env.Warnings, fmt.Sprintf("run canceled: %v; remaining operations were not attempted", o.Context.Err()))
 	}
 	env.Result = &result
 	env.OK = result.Summary.Conflicts == 0 && result.Summary.Failed == 0 && result.Summary.NotAttempted == 0 && env.Plan.Summary.Invalid == 0
 	if !env.OK {
+		if canceled && o.Context != nil && o.Context.Err() != nil {
+			return env, fmt.Errorf("mutation incomplete: %w", o.Context.Err())
+		}
 		return env, errors.New("mutation incomplete")
 	}
 	return env, nil

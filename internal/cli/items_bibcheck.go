@@ -342,6 +342,7 @@ func stripMarkdownInlineCode(line string) string {
 		n := countSameByte(line, i, '`')
 		end := findClosingBackticks(line, i+n, n)
 		if end < 0 {
+			b.WriteString(line[i:])
 			break
 		}
 		i = end + n

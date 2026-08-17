@@ -9,6 +9,7 @@
 package store
 
 import (
+	"context"
 	"encoding/json"
 	"strings"
 )
@@ -47,6 +48,14 @@ var itemSortColumns = map[string]string{
 // and returns the matching payloads in the requested order. An empty result is
 // not an error — it mirrors a live list that matched nothing.
 func (s *Store) QueryItems(q ItemQuery) ([]json.RawMessage, error) {
+	return s.QueryItemsContext(context.Background(), q)
+}
+
+// QueryItemsContext is the cancellable variant of QueryItems. It retries
+// transient SQLITE_BUSY/LOCKED errors with the caller's context, honoring
+// cancellation and the bounded retry window instead of running to
+// migrationLockTimeout on context.Background().
+func (s *Store) QueryItemsContext(ctx context.Context, q ItemQuery) ([]json.RawMessage, error) {
 	var sb strings.Builder
 	var args []any
 
@@ -96,7 +105,7 @@ func (s *Store) QueryItems(q ItemQuery) ([]json.RawMessage, error) {
 		args = append(args, q.Start)
 	}
 
-	rows, err := s.db.Query(sb.String(), args...)
+	rows, err := s.queryWithBusyRetryContext(ctx, sb.String(), args...)
 	if err != nil {
 		return nil, err
 	}
@@ -124,6 +133,11 @@ type TrashQuery struct {
 // Zotero payloads normally nest fields under data, while older/local payloads
 // may be flat, so the ordering expression supports both shapes.
 func (s *Store) QueryTrash(q TrashQuery) ([]json.RawMessage, error) {
+	return s.QueryTrashContext(context.Background(), q)
+}
+
+// QueryTrashContext is the cancellable variant of QueryTrash.
+func (s *Store) QueryTrashContext(ctx context.Context, q TrashQuery) ([]json.RawMessage, error) {
 	var sb strings.Builder
 	args := make([]any, 0, 2)
 	sb.WriteString(`
@@ -147,7 +161,7 @@ ORDER BY COALESCE(
 		args = append(args, q.Start)
 	}
 
-	rows, err := s.db.Query(sb.String(), args...)
+	rows, err := s.queryWithBusyRetryContext(ctx, sb.String(), args...)
 	if err != nil {
 		return nil, err
 	}
@@ -174,7 +188,12 @@ type SimilarityCandidate struct {
 // QuerySimilarityCandidates returns top-level bibliographic items, excluding
 // child-only item types and any key that also exists in the trash mirror.
 func (s *Store) QuerySimilarityCandidates() ([]SimilarityCandidate, error) {
-	rows, err := s.db.Query(`
+	return s.QuerySimilarityCandidatesContext(context.Background())
+}
+
+// QuerySimilarityCandidatesContext is the cancellable variant of QuerySimilarityCandidates.
+func (s *Store) QuerySimilarityCandidatesContext(ctx context.Context) ([]SimilarityCandidate, error) {
+	rows, err := s.queryWithBusyRetryContext(ctx, `
 SELECT r.id, r.data
 FROM resources r
 WHERE r.resource_type = 'items'
@@ -216,7 +235,15 @@ type SimilarityFulltextDocument struct {
 // Documents without a known parent and documents under trashed parents are
 // excluded.
 func (s *Store) VisitSimilarityFulltextDocuments(visit func(SimilarityFulltextDocument) error) error {
-	rows, err := s.db.Query(`
+	return s.VisitSimilarityFulltextDocumentsContext(context.Background(), visit)
+}
+
+// VisitSimilarityFulltextDocumentsContext is the cancellable variant of VisitSimilarityFulltextDocuments.
+func (s *Store) VisitSimilarityFulltextDocumentsContext(ctx context.Context, visit func(SimilarityFulltextDocument) error) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	rows, err := s.queryWithBusyRetryContext(ctx, `
 SELECT ft.id, att.parent_key, ft.data
 FROM resources ft
 JOIN resources att ON att.resource_type = 'items' AND att.id = ft.id

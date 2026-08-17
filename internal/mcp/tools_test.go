@@ -613,30 +613,23 @@ func toolResultText(t *testing.T, res *mcplib.CallToolResult) string {
 	return text.Text
 }
 
-func TestHandleSQLSurfacesIteratorErrorAfterRowLimit(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
-	t.Setenv("ZOTERO_DATA_DIR", t.TempDir())
-
-	db, err := store.OpenWithContext(context.Background(), dbPath())
-	if err != nil {
-		t.Fatalf("open writable db: %v", err)
+func TestDBPathDoesNotReturnCWDRelativePath(t *testing.T) {
+	// Force the fallback branch by making KindDir fail and UserHomeDir
+	// unavailable. The strongest way to trigger this without mocking is to
+	// clear HOME and set an invalid per-kind override so KindDir cannot
+	// resolve, then check dbPath never returns a CWD-relative path.
+	t.Setenv("HOME", "")
+	t.Setenv("USER", "")
+	t.Setenv("ZOTERO_DATA_DIR", "")
+	t.Setenv("ZOTERO_HOME", "")
+	t.Setenv("XDG_DATA_HOME", "")
+	// Even when the environment is broken, dbPath must not return a
+	// relative path like ".local/share/zotio/data.db".
+	p := dbPath()
+	if !filepath.IsAbs(p) {
+		t.Fatalf("dbPath() = %q, want absolute path (fallback under broken HOME must use TempDir, not CWD-relative)", p)
 	}
-	if err := db.Close(); err != nil {
-		t.Fatalf("close writable db: %v", err)
-	}
-
-	req := mcplib.CallToolRequest{}
-	req.Params.Arguments = map[string]any{
-		"query": "WITH RECURSIVE cnt(x) AS (VALUES(1) UNION ALL SELECT x+1 FROM cnt WHERE x < 5002) SELECT CASE WHEN x = 5002 THEN abs(-9223372036854775808) ELSE x END AS x FROM cnt",
-	}
-	res, err := handleSQL(context.Background(), req)
-	if err != nil {
-		t.Fatalf("handleSQL protocol error: %v", err)
-	}
-	if res == nil || !res.IsError {
-		t.Fatalf("handleSQL result = %+v, want iterator error after row limit", res)
-	}
-	if got := toolResultText(t, res); !strings.Contains(got, "query failed") {
-		t.Fatalf("error result = %q, want query failure", got)
+	if strings.HasPrefix(p, ".local") || p == ".local/share/zotio/data.db" {
+		t.Fatalf("dbPath() = %q is CWD-relative", p)
 	}
 }

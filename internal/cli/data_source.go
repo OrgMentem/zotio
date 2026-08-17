@@ -55,7 +55,7 @@ func openStoreForRead(ctx context.Context, cliName string) (*store.Store, error)
 	if _, err := os.Stat(dbPath); os.IsNotExist(err) {
 		return nil, nil
 	}
-	return store.OpenReadOnly(dbPath)
+	return store.OpenReadOnlyContext(ctx, dbPath)
 }
 
 // openStoreForWrite opens the local SQLite store for a path that intentionally
@@ -245,7 +245,7 @@ func resolveLocal(ctx context.Context, resourceType string, isList bool, path st
 	// quick-search, sort, direction, limit, start) instead of dumping all
 	// synced rows. Keyed on the path so it also covers the collection-items
 	// command, which labels its resource "collections".
-	if data, handled, qErr := resolveLocalItemList(db, path, params); handled {
+	if data, handled, qErr := resolveLocalItemList(ctx, db, path, params); handled {
 		if qErr != nil {
 			return nil, DataProvenance{}, qErr
 		}
@@ -262,7 +262,7 @@ func resolveLocal(ctx context.Context, resourceType string, isList bool, path st
 		prov = localProvenance(db, resourceType, reason)
 	}
 
-	if data, handled, qErr := resolveLocalTrashList(db, resourceType, isList, path, params); handled {
+	if data, handled, qErr := resolveLocalTrashList(ctx, db, resourceType, isList, path, params); handled {
 		if qErr != nil {
 			return nil, DataProvenance{}, qErr
 		}
@@ -411,7 +411,7 @@ func paginateLocalRows(rows []json.RawMessage, params map[string]string) []json.
 // resolveLocalTrashList reproduces the live /items/trash list's default order
 // and SQL pagination. A completed empty sync is valid local data; the absence
 // of both rows and a sync timestamp remains a loud hydration error.
-func resolveLocalTrashList(db *store.Store, resourceType string, isList bool, path string, params map[string]string) (json.RawMessage, bool, error) {
+func resolveLocalTrashList(ctx context.Context, db *store.Store, resourceType string, isList bool, path string, params map[string]string) (json.RawMessage, bool, error) {
 	if resourceType != "items-trash" || !isLocalListRead(resourceType, isList, path) {
 		return nil, false, nil
 	}
@@ -420,7 +420,7 @@ func resolveLocalTrashList(db *store.Store, resourceType string, isList bool, pa
 	if err != nil {
 		return nil, true, err
 	}
-	rows, err := db.QueryTrash(store.TrashQuery{Limit: limit, Start: start})
+	rows, err := db.QueryTrashContext(ctx, store.TrashQuery{Limit: limit, Start: start})
 	if err != nil {
 		return nil, true, fmt.Errorf("querying local trash: %w", err)
 	}
@@ -454,7 +454,7 @@ func resolveLocalTrashList(db *store.Store, resourceType string, isList bool, pa
 // scopes so the caller falls back to its honest generic get/list handling.
 // An empty match yields a JSON empty array, which mirrors a live list that
 // matched nothing.
-func resolveLocalItemList(db *store.Store, path string, params map[string]string) (json.RawMessage, bool, error) {
+func resolveLocalItemList(ctx context.Context, db *store.Store, path string, params map[string]string) (json.RawMessage, bool, error) {
 	collectionKey, parentKey, topOnly, isList := parseItemListPath(path)
 	if !isList {
 		return nil, false, nil
@@ -482,7 +482,7 @@ func resolveLocalItemList(db *store.Store, path string, params map[string]string
 	}
 	q.Limit = limit
 	q.Start = start
-	items, err := db.QueryItems(q)
+	items, err := db.QueryItemsContext(ctx, q)
 	if err != nil {
 		return nil, true, fmt.Errorf("local item query: %w", err)
 	}

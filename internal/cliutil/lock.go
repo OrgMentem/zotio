@@ -12,6 +12,10 @@ import (
 	"github.com/gofrs/flock"
 )
 
+// osChmod is the filesystem Chmod used by AcquireWriterLock. Overridable in
+// tests to simulate Chmod failures without manipulating the real filesystem.
+var osChmod = os.Chmod
+
 // WriterLockBusyError reports that another zotio process owns the requested
 // writer lock. Callers can use errors.As to classify this as a precondition
 // failure without matching its user-facing text.
@@ -55,8 +59,14 @@ func AcquireWriterLock(path string, operation string) (*WriterLock, error) {
 		return nil, &WriterLockBusyError{Operation: operation, Path: path}
 	}
 
-	if err := os.Chmod(path, 0o600); err != nil && os.IsPermission(err) && !lockFileIsPrivate(path) {
-		return nil, fmt.Errorf("securing writer lock for %s at %q: %w", operation, path, releaseAfterFailedAcquire(f, err))
+	if err := osChmod(path, 0o600); err != nil {
+		if os.IsPermission(err) {
+			if !lockFileIsPrivate(path) {
+				return nil, fmt.Errorf("securing writer lock for %s at %q: %w", operation, path, releaseAfterFailedAcquire(f, err))
+			}
+		} else {
+			return nil, fmt.Errorf("securing writer lock for %s at %q: %w", operation, path, releaseAfterFailedAcquire(f, err))
+		}
 	}
 
 	return &WriterLock{flock: f, operation: operation, path: path}, nil

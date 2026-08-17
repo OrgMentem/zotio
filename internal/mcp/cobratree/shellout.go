@@ -20,6 +20,41 @@ import (
 
 var mirroredCommandMu sync.Mutex
 
+// acquireMirroredMu attempts to acquire mirroredCommandMu while honoring
+// context cancellation. It returns ctx.Err() promptly if the context is
+// cancelled while waiting, without leaving the mutex permanently held.
+func acquireMirroredMu(ctx context.Context) error {
+	if ctx == nil {
+		mirroredCommandMu.Lock()
+		return nil
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if mirroredCommandMu.TryLock() {
+		return nil
+	}
+	acquired := make(chan struct{})
+	go func() {
+		mirroredCommandMu.Lock()
+		close(acquired)
+	}()
+	select {
+	case <-ctx.Done():
+		go func() {
+			<-acquired
+			mirroredCommandMu.Unlock()
+		}()
+		return ctx.Err()
+	case <-acquired:
+		if err := ctx.Err(); err != nil {
+			mirroredCommandMu.Unlock()
+			return err
+		}
+		return nil
+	}
+}
+
 const maxMirroredErrorBytes = 4096
 
 // StateGuard snapshots process-global CLI state before mirrored command
@@ -48,7 +83,9 @@ func runMirroredInProcess(ctx context.Context, rootFactory func() *cobra.Command
 	// process-global. Serialize the
 	// in-process mirror so concurrent HTTP MCP requests cannot cross-contaminate
 	// library scope while commands run.
-	mirroredCommandMu.Lock()
+	if err := acquireMirroredMu(ctx); err != nil {
+		return mcplib.NewToolResultError(err.Error())
+	}
 	defer mirroredCommandMu.Unlock()
 	if StateGuard != nil {
 		restore := StateGuard()

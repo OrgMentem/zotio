@@ -85,7 +85,7 @@ func filterAnnotationItems(data json.RawMessage, color, annotationType string) (
 	annotationType = strings.TrimSpace(annotationType)
 	filtered := make([]json.RawMessage, 0, len(items))
 	for _, item := range items {
-		if color != "" && !strings.EqualFold(jsonStringField(item, "annotationColor"), color) {
+		if color != "" && !annotationColorMatches(jsonStringField(item, "annotationColor"), color) {
 			continue
 		}
 		if annotationType != "" && !strings.EqualFold(jsonStringField(item, "annotationType"), annotationType) {

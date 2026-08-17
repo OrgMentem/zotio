@@ -573,7 +573,11 @@ func duplicateResolveNonEmpty(value any) bool {
 }
 
 func duplicateResolveVersion(obj map[string]any) int {
-	for _, value := range []any{obj["version"], obj["data"].(map[string]any)["version"]} {
+	values := []any{obj["version"]}
+	if dataObj, ok := obj["data"].(map[string]any); ok {
+		values = append(values, dataObj["version"])
+	}
+	for _, value := range values {
 		switch v := value.(type) {
 		case float64:
 			return int(v)

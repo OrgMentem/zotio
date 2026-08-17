@@ -38,10 +38,13 @@ func RegisterOrchestration(s *server.MCPServer, rootFactory func() *cobra.Comman
 }
 
 func commandSearchHandler(rootFactory func() *cobra.Command) server.ToolHandlerFunc {
-	return func(_ context.Context, req mcplib.CallToolRequest) (*mcplib.CallToolResult, error) {
+	return func(ctx context.Context, req mcplib.CallToolRequest) (*mcplib.CallToolResult, error) {
 		args := req.GetArguments()
 		if name, ok := args["name"].(string); ok && name != "" {
-			cmd, _, ok := findMirrorableCommand(rootFactory, name)
+			cmd, _, ok, err := findMirrorableCommandWithContext(ctx, rootFactory, name)
+			if err != nil {
+				return mcplib.NewToolResultError(err.Error()), nil
+			}
 			if !ok {
 				return mcplib.NewToolResultError("mirrorable command not found: " + name), nil
 			}
@@ -72,7 +75,10 @@ func commandSearchHandler(rootFactory func() *cobra.Command) server.ToolHandlerF
 
 		query, _ := args["query"].(string)
 		needle := strings.ToLower(query)
-		commands := listMirrorableCommands(rootFactory)
+		commands, err := listMirrorableCommandsWithContext(ctx, rootFactory)
+		if err != nil {
+			return mcplib.NewToolResultError(err.Error()), nil
+		}
 		out := make([]orchestrationCommandSummary, 0, len(commands))
 		for _, command := range commands {
 			if needle != "" && !strings.Contains(strings.ToLower(command.Name+" "+command.Summary), needle) {
@@ -96,7 +102,10 @@ func commandRunHandler(rootFactory func() *cobra.Command) server.ToolHandlerFunc
 		if name == "" {
 			return mcplib.NewToolResultError("command_run requires name"), nil
 		}
-		cmd, path, ok := findMirrorableCommand(rootFactory, name)
+		cmd, path, ok, err := findMirrorableCommandWithContext(ctx, rootFactory, name)
+		if err != nil {
+			return mcplib.NewToolResultError(err.Error()), nil
+		}
 		if !ok {
 			return mcplib.NewToolResultError("mirrorable command not found: " + name), nil
 		}
@@ -148,10 +157,13 @@ type orchestrationFlagDetail struct {
 	Description string `json:"description"`
 }
 
-func listMirrorableCommands(rootFactory func() *cobra.Command) []orchestrationCommandSummary {
-	root := orchestrationRoot(rootFactory)
+func listMirrorableCommandsWithContext(ctx context.Context, rootFactory func() *cobra.Command) ([]orchestrationCommandSummary, error) {
+	root, err := orchestrationRootWithContext(ctx, rootFactory)
+	if err != nil {
+		return nil, err
+	}
 	if root == nil {
-		return nil
+		return nil, nil
 	}
 	var out []orchestrationCommandSummary
 	walk(root, nil, func(cmd *cobra.Command, path []string) {
@@ -168,7 +180,7 @@ func listMirrorableCommands(rootFactory func() *cobra.Command) []orchestrationCo
 			Destructive: destructive,
 		})
 	})
-	return out
+	return out, nil
 }
 
 // orchestrationCapability derives the command's operation kind, declared
@@ -192,9 +204,17 @@ func orchestrationCapability(cmd *cobra.Command, path string) (operation string,
 }
 
 func findMirrorableCommand(rootFactory func() *cobra.Command, name string) (*cobra.Command, []string, bool) {
-	root := orchestrationRoot(rootFactory)
+	cmd, path, ok, _ := findMirrorableCommandWithContext(context.Background(), rootFactory, name)
+	return cmd, path, ok
+}
+
+func findMirrorableCommandWithContext(ctx context.Context, rootFactory func() *cobra.Command, name string) (*cobra.Command, []string, bool, error) {
+	root, err := orchestrationRootWithContext(ctx, rootFactory)
+	if err != nil {
+		return nil, nil, false, err
+	}
 	if root == nil {
-		return nil, nil, false
+		return nil, nil, false, nil
 	}
 	var found *cobra.Command
 	var foundPath []string
@@ -205,21 +225,23 @@ func findMirrorableCommand(rootFactory func() *cobra.Command, name string) (*cob
 		found = cmd
 		foundPath = append([]string{}, path...)
 	})
-	return found, foundPath, found != nil
+	return found, foundPath, found != nil, nil
 }
 
 func orchestrationRoot(rootFactory func() *cobra.Command) *cobra.Command {
+	cmd, _ := orchestrationRootWithContext(context.Background(), rootFactory)
+	return cmd
+}
+
+func orchestrationRootWithContext(ctx context.Context, rootFactory func() *cobra.Command) (*cobra.Command, error) {
 	if rootFactory == nil {
-		return nil
+		return nil, nil
 	}
-	// rootFactory() registers flags that mutate package-global output state
-	// (humanFriendly/noColor). Serialize the build under the same lock
-	// runMirroredInProcess holds during execution so a command_search tree build
-	// cannot race an in-flight command_run's render. Callers never hold the lock
-	// when invoking this, so the non-reentrant mutex is safe.
-	mirroredCommandMu.Lock()
+	if err := acquireMirroredMu(ctx); err != nil {
+		return nil, err
+	}
 	defer mirroredCommandMu.Unlock()
-	return rootFactory()
+	return rootFactory(), nil
 }
 
 func isMirrorableCommand(cmd *cobra.Command) bool {

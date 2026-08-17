@@ -588,3 +588,71 @@ func TestLoadImportPDFDuplicateIndexUsesSyncedStore(t *testing.T) {
 		t.Fatalf("idx[10.1/x] = %+v (ok=%v), want EXIST01 with hasPDF true", li, ok)
 	}
 }
+
+// --- zotio-f28769caf83cbfdf: precondition error must surface underlying cause ---
+
+func TestImportPDFViaConnectorSurfacesUnderlyingError(t *testing.T) {
+	// Explicit --via connector with a non-local base must include the cause.
+	flags := &rootFlags{asJSON: true, via: "connector", configPath: testConfigFile(t, "https://api.zotero.org/users/1")}
+	cmd := newImportPDFCmd(flags)
+	cmd.SilenceErrors, cmd.SilenceUsage = true, true
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetErr(&bytes.Buffer{})
+	cmd.SetArgs([]string{"dummy.pdf"})
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatalf("import pdf with non-local base and --via connector succeeded, want precondition error")
+	}
+	helpersTestAssertCLIError(t, err, 9)
+	msg := err.Error()
+	if !strings.Contains(msg, "desktop connector") {
+		t.Fatalf("error = %q, want 'desktop connector'", msg)
+	}
+	// The underlying cause (non-local base / local URL requirement) must be visible.
+	if !strings.Contains(msg, "local") {
+		t.Fatalf("error = %q, want underlying cause to mention 'local'", msg)
+	}
+}
+
+func TestImportPDFViaConnectorUnreachableSurfacesCause(t *testing.T) {
+	oldPing := connectorPing
+	t.Cleanup(func() { connectorPing = oldPing })
+	connectorPing = func(context.Context, *connector.Client) error {
+		return fmt.Errorf("dial tcp 127.0.0.1:23119: connect: connection refused")
+	}
+	flags := &rootFlags{asJSON: true, via: "connector", configPath: testConfigFile(t, "http://localhost:23119/api/users/0")}
+	cmd := newImportPDFCmd(flags)
+	cmd.SilenceErrors, cmd.SilenceUsage = true, true
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetErr(&bytes.Buffer{})
+	cmd.SetArgs([]string{"dummy.pdf"})
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatalf("import pdf with unreachable connector succeeded, want precondition error")
+	}
+	helpersTestAssertCLIError(t, err, 9)
+	msg := err.Error()
+	if !strings.Contains(msg, "not reachable") {
+		t.Fatalf("error = %q, want 'not reachable' cause", msg)
+	}
+}
+
+func TestImportPDFAutoWithoutConnectorIsGeneric(t *testing.T) {
+	// Auto mode with non-local base: via resolves to "web", so the precondition
+	// error is the generic fallback and must not leak a nil-cause wrap.
+	flags := &rootFlags{asJSON: true, via: "auto", configPath: testConfigFile(t, "https://api.zotero.org/users/1")}
+	cmd := newImportPDFCmd(flags)
+	cmd.SilenceErrors, cmd.SilenceUsage = true, true
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetErr(&bytes.Buffer{})
+	cmd.SetArgs([]string{"dummy.pdf"})
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatalf("import pdf auto non-local succeeded, want precondition error")
+	}
+	helpersTestAssertCLIError(t, err, 9)
+	msg := err.Error()
+	if !strings.Contains(msg, "local base URL") {
+		t.Fatalf("error = %q, want generic 'local base URL' message", msg)
+	}
+}

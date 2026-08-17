@@ -3,11 +3,11 @@
 package cli
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"sort"
-	"strconv"
 
 	"github.com/spf13/cobra"
 
@@ -76,48 +76,46 @@ func newItemsUpdateCmd(flags *rootFlags) *cobra.Command {
 			}
 
 			// Route through the mutation engine so preview/apply share one stable
-			// envelope and applied runs expose journal.run_id. The precondition GET
-			// remains outside Apply and still comes from the write plane.
+			// envelope and applied runs expose journal.run_id. The precondition
+			// is resolved on the write plane at apply time via the shared
+			// helpers, so the PATCH never carries a stale plan-time version.
 			var writeClient *client.Client
+			var expectedVersion int
 			if resolveMutationMode(flags).Apply {
 				var err error
 				writeClient, err = flags.newWriteClient()
 				if err != nil {
 					return err
 				}
-			}
-			patchHeaders := map[string]string{}
-			if _, hasVersion := body["version"]; !hasVersion && writeClient != nil {
-				_, version, err := writeClient.GetWithVersion(path, nil)
-				if err != nil {
-					return classifyAPIError(err, flags)
+				if v, hasVersion := body["version"]; hasVersion {
+					expectedVersion = mutationExpectedVersion(v)
+				} else {
+					_, v, err := writeClient.GetFromWriteBaseWithVersionContext(cmd.Context(), path, nil)
+					if err != nil {
+						return classifyAPIError(err, flags)
+					}
+					if v <= 0 {
+						return apiErr(fmt.Errorf("reading item version for %s: response did not include a version", args[0]))
+					}
+					expectedVersion = v
 				}
-				if version <= 0 {
-					return apiErr(fmt.Errorf("reading item version for %s: response did not include a version", args[0]))
-				}
-				patchHeaders["If-Unmodified-Since-Version"] = strconv.Itoa(version)
 			}
 
 			var applyErr error
+			// Capture by value for the closure.
+			bodyCopy := body
+			pathCopy := path
 			ops := []mutation.Op{{
-				ID:      "items.update",
-				Key:     args[0],
-				Kind:    "item_update",
-				Changes: itemsUpdateChanges(body),
+				ID:              "items.update",
+				Key:             args[0],
+				Kind:            "item_update",
+				ExpectedVersion: expectedVersion,
+				Changes:         itemsUpdateChanges(body),
 				Apply: func() (string, any, error) {
 					if writeClient == nil {
 						return "failed", "no write client", fmt.Errorf("no write client")
 					}
-					_, statusCode, err := writeClient.PatchWithHeaders(path, body, patchHeaders)
-					if err != nil {
-						applyErr = classifyAPIError(err, flags)
-						return "failed", nil, applyErr
-					}
-					if statusCode < 200 || statusCode >= 300 {
-						applyErr = apiErr(fmt.Errorf("update returned HTTP %d", statusCode))
-						return "failed", nil, applyErr
-					}
-					return "applied", nil, nil
+					return applyItemsUpdateWithContext(cmd.Context(), writeClient, pathCopy, bodyCopy, &applyErr, flags)
 				},
 			}}
 			env, runErr := runMutation(cmd.Context(), flags, "items.update", ops)
@@ -172,4 +170,51 @@ func itemsUpdateChanges(body map[string]any) []mutation.Change {
 		changes = append(changes, mutation.Change{Field: field, Add: body[k]})
 	}
 	return changes
+}
+
+// applyItemsUpdateWithContext executes the PATCH under a write-plane
+// precondition. When the caller supplied an explicit body version, that
+// version is sent as If-Unmodified-Since-Version via the shared guard;
+// otherwise the version is re-read from the write plane at apply time so a
+// concurrent edit between plan and apply is detected. 412/428 maps to
+// "conflict" via classifyWriteError (called inside the helpers) rather than
+// a generic "failed".
+func applyItemsUpdateWithContext(ctx context.Context, c *client.Client, path string, body map[string]any, applyErr *error, flags *rootFlags) (string, any, error) {
+	if c == nil {
+		err := fmt.Errorf("no write client")
+		if applyErr != nil {
+			*applyErr = err
+		}
+		return "failed", "no write client", err
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	_ = flags
+	if v, hasVersion := body["version"]; hasVersion {
+		ver := mutationExpectedVersion(v)
+		payload := make(map[string]any, len(body))
+		for k, val := range body {
+			if k == "version" {
+				continue
+			}
+			payload[k] = val
+		}
+		status, reason, err := patchWithVersionGuard(c, path, payload, ver)
+		if applyErr != nil && err != nil {
+			*applyErr = err
+		} else if applyErr != nil && status != "applied" {
+			if e, ok := reason.(error); ok {
+				*applyErr = e
+			} else if s, ok := reason.(string); ok && s != "" {
+				*applyErr = fmt.Errorf("%s", s)
+			}
+		}
+		return status, reason, err
+	}
+	status, reason, err := patchWithWritePlaneVersion(ctx, c, path, body)
+	if applyErr != nil && err != nil {
+		*applyErr = err
+	}
+	return status, reason, err
 }

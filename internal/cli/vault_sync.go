@@ -196,7 +196,7 @@ func executeVaultSync(cmd *cobra.Command, flags *rootFlags, outDir, format, coll
 	}
 	defer rawDB.Close()
 
-	items, err := rawDB.QueryItems(store.ItemQuery{
+	items, err := rawDB.QueryItemsContext(cmd.Context(), store.ItemQuery{
 		ItemType:   itemType,
 		Tag:        tag,
 		Collection: collection,
@@ -236,7 +236,10 @@ func executeVaultSync(cmd *cobra.Command, flags *rootFlags, outDir, format, coll
 	// same file even when the citation key changed, and new notes avoid
 	// colliding with an existing managed or foreign file. scanVaultIndex
 	// tolerates a missing outDir, so this is safe to run before any write.
-	idx := scanVaultIndex(outDir)
+	idx, err := scanVaultIndex(outDir)
+	if err != nil {
+		return err
+	}
 	claimed := make(map[string]bool, len(metas))
 	filenames := make([]string, len(metas))
 	anns := make([][]annotationSummary, len(metas))
@@ -418,11 +421,14 @@ type vaultIndex struct {
 	byFile map[string]string
 }
 
-func scanVaultIndex(outDir string) vaultIndex {
+func scanVaultIndex(outDir string) (vaultIndex, error) {
 	idx := vaultIndex{byKey: map[string]string{}, byFile: map[string]string{}}
 	entries, err := os.ReadDir(outDir)
 	if err != nil {
-		return idx
+		if os.IsNotExist(err) {
+			return idx, nil
+		}
+		return idx, fmt.Errorf("reading vault dir %s: %w", outDir, err)
 	}
 	for _, e := range entries {
 		if e.IsDir() || !strings.HasSuffix(e.Name(), ".md") {
@@ -430,6 +436,7 @@ func scanVaultIndex(outDir string) vaultIndex {
 		}
 		data, err := os.ReadFile(filepath.Join(outDir, e.Name()))
 		if err != nil {
+			fmt.Fprintf(os.Stderr, "warning: reading vault note %s: %v\n", filepath.Join(outDir, e.Name()), err)
 			continue
 		}
 		// Prefer the explicit identity key, but fall back to the item key embedded
@@ -447,7 +454,7 @@ func scanVaultIndex(outDir string) vaultIndex {
 			idx.byKey[key] = e.Name() // ReadDir is sorted: first file wins, deterministically
 		}
 	}
-	return idx
+	return idx, nil
 }
 
 // frontmatterKeyValue returns the unquoted value of a top-level frontmatter key.

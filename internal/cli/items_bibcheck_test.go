@@ -407,3 +407,17 @@ func writeTestFile(t *testing.T, path, content string) {
 		t.Fatalf("write %s: %v", path, err)
 	}
 }
+func TestBibcheckUnmatchedBacktickDoesNotDropTrailingCitations(t *testing.T) {
+	content := "Text `unclosed and @hidden should still count\nNext line @visible also counts."
+	got := parsePandocMarkdownCiteKeys(content)
+	want := []string{"hidden", "visible"}
+	// Before fix, stripMarkdownInlineCode broke on unmatched `, discarding rest of line.
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("parsePandocMarkdownCiteKeys() = %#v, want %#v (unmatched backtick must not drop citekeys)", got, want)
+	}
+	// Also verify strip helper directly preserves remainder.
+	stripped := stripMarkdownInlineCode("a `unclosed and @alpha rest")
+	if !strings.Contains(stripped, "@alpha") {
+		t.Fatalf("stripMarkdownInlineCode(%q) = %q, want remainder preserved including @alpha", "a `unclosed and @alpha rest", stripped)
+	}
+}

@@ -612,10 +612,14 @@ func collectionManifest(ctx context.Context, key string) (map[string]any, error)
 	defer db.Close()
 
 	manifest := map[string]any{"key": key}
-	if col, gerr := db.Get("collections", key); gerr == nil && col != nil {
+	col, gerr := db.Get("collections", key)
+	if gerr != nil {
+		return nil, gerr
+	}
+	if col != nil {
 		manifest["collection"] = json.RawMessage(col)
 	}
-	items, qerr := db.QueryItems(store.ItemQuery{Collection: key, Sort: "title", Direction: "asc"})
+	items, qerr := db.QueryItemsContext(ctx, store.ItemQuery{Collection: key, Sort: "title", Direction: "asc"})
 	if qerr != nil {
 		return nil, qerr
 	}

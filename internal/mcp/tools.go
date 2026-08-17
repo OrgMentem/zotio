@@ -84,8 +84,18 @@ func dbPath() string {
 	}
 	dataDir, err := cliutil.KindDir(cliutil.PathKindData)
 	if err != nil {
-		home, _ := os.UserHomeDir()
-		dataDir = filepath.Join(home, ".local", "share", cliutil.AppName())
+		home, homeErr := os.UserHomeDir()
+		if homeErr != nil || home == "" {
+			// Neither resolver succeeded and we cannot determine a home
+			// directory — do not fabricate a CWD-relative path that would
+			// silently open/seed a different database.
+			// Keep the same error chain shape as cli.defaultDBPathFor so
+			// callers that open the path surface a consistent "opening
+			// database" error rather than a confusing "no such table".
+			dataDir = filepath.Join(os.TempDir(), cliutil.AppName())
+		} else {
+			dataDir = filepath.Join(home, ".local", "share", cliutil.AppName())
+		}
 	}
 	// Keep the group suffix on the fallback too: degrading a group-scoped
 	// server to the personal mirror would answer a group library from the

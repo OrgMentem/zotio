@@ -149,11 +149,11 @@ func itemSimilarReportFromLocalStore(ctx context.Context, key string, opts itemS
 	}
 	defer db.Close()
 
-	report, found, err := buildItemSimilarReport(localQueryStore{db}, key, opts)
+	report, found, err := buildItemSimilarReport(ctx, localQueryStore{db}, key, opts)
 	return report, found, true, err
 }
 
-func buildItemSimilarReport(db localQueryStore, key string, opts itemSimilarOptions) (itemSimilarReport, bool, error) {
+func buildItemSimilarReport(ctx context.Context, db localQueryStore, key string, opts itemSimilarOptions) (itemSimilarReport, bool, error) {
 	report := itemSimilarReport{Similar: []itemSimilarEntry{}}
 	trashed, err := db.Get("items-trash", key)
 	if err != nil {
@@ -176,11 +176,11 @@ func buildItemSimilarReport(db localQueryStore, key string, opts itemSimilarOpti
 	}
 	report.Source = source.itemSimilarSummary
 
-	candidates, err := queryItemSimilarCandidates(db)
+	candidates, err := queryItemSimilarCandidates(ctx, db)
 	if err != nil {
 		return report, false, err
 	}
-	corpus, err := buildItemSimilarFulltextCorpus(db.Store, source.Key)
+	corpus, err := buildItemSimilarFulltextCorpus(ctx, db.Store, source.Key)
 	if err != nil {
 		return report, false, err
 	}
@@ -193,7 +193,7 @@ func buildItemSimilarReport(db localQueryStore, key string, opts itemSimilarOpti
 		}
 		entries = append(entries, scoreItemSimilarCandidate(source, candidate))
 	}
-	if err := applyItemSimilarFulltextScores(db.Store, source, candidates, corpus, entries); err != nil {
+	if err := applyItemSimilarFulltextScores(ctx, db.Store, source, candidates, corpus, entries); err != nil {
 		return report, false, err
 	}
 
@@ -222,8 +222,8 @@ func buildItemSimilarReport(db localQueryStore, key string, opts itemSimilarOpti
 	return report, true, nil
 }
 
-func queryItemSimilarCandidates(db localQueryStore) ([]itemSimilarRecord, error) {
-	rows, err := db.QuerySimilarityCandidates()
+func queryItemSimilarCandidates(ctx context.Context, db localQueryStore) ([]itemSimilarRecord, error) {
+	rows, err := db.QuerySimilarityCandidatesContext(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("querying candidate items: %w", err)
 	}
@@ -368,9 +368,9 @@ func itemSimilarTextScore(source, candidate itemSimilarFulltext) (float64, int) 
 	return float64(shared) / float64(denom), shared
 }
 
-func buildItemSimilarFulltextCorpus(db *store.Store, sourceKey string) (itemSimilarFulltextCorpus, error) {
+func buildItemSimilarFulltextCorpus(ctx context.Context, db *store.Store, sourceKey string) (itemSimilarFulltextCorpus, error) {
 	corpus := itemSimilarFulltextCorpus{DocumentFrequency: make(map[string]int)}
-	err := db.VisitSimilarityFulltextDocuments(func(doc store.SimilarityFulltextDocument) error {
+	err := db.VisitSimilarityFulltextDocumentsContext(ctx, func(doc store.SimilarityFulltextDocument) error {
 		corpus.DocumentCount++
 		terms := tokenizeItemSimilarFulltext(fulltextContent(doc.Data))
 		for token := range terms {
@@ -401,7 +401,7 @@ func buildItemSimilarFulltextCorpus(db *store.Store, sourceKey string) (itemSimi
 	return corpus, nil
 }
 
-func applyItemSimilarFulltextScores(db *store.Store, source itemSimilarRecord, candidates []itemSimilarRecord, corpus itemSimilarFulltextCorpus, entries []itemSimilarEntry) error {
+func applyItemSimilarFulltextScores(ctx context.Context, db *store.Store, source itemSimilarRecord, candidates []itemSimilarRecord, corpus itemSimilarFulltextCorpus, entries []itemSimilarEntry) error {
 	var parent string
 	var fulltext itemSimilarFulltext
 	candidateIndex := -1
@@ -418,7 +418,7 @@ func applyItemSimilarFulltextScores(db *store.Store, source itemSimilarRecord, c
 		entries[entryIndex] = scoreItemSimilarCandidate(source, candidate)
 	}
 
-	err := db.VisitSimilarityFulltextDocuments(func(doc store.SimilarityFulltextDocument) error {
+	err := db.VisitSimilarityFulltextDocumentsContext(ctx, func(doc store.SimilarityFulltextDocument) error {
 		if doc.ParentItemKey != parent {
 			scoreParent()
 			parent = doc.ParentItemKey

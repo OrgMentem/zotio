@@ -157,10 +157,10 @@ func TestFulltextReadersPropagateStoreFailures(t *testing.T) {
 	if err := db.Close(); err != nil {
 		t.Fatalf("close store: %v", err)
 	}
-	if _, err := fulltextByParentItemWithErr(db); err == nil {
+	if _, err := fulltextByParentItemWithErr(context.Background(), db); err == nil {
 		t.Fatal("fulltextByParentItem error = nil, want closed-store read error")
 	}
-	if _, err := fulltextForItem(db, "ITEM"); err == nil {
+	if _, err := fulltextForItem(context.Background(), db, "ITEM"); err == nil {
 		t.Fatal("fulltextForItem error = nil, want closed-store read error")
 	}
 }
