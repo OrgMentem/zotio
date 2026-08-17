@@ -348,6 +348,49 @@ func TestExportCollectionWalksEverySubcollectionPage(t *testing.T) {
 	}
 }
 
+// The CSL-JSON walk used to `break` on a repeated page, so a server that
+// ignores `start` produced a complete-looking JSON array holding only the
+// first page. The text walk already failed loudly here; this one committed
+// silent truncation, and an atomic publisher would faithfully publish it.
+func TestCollectCollectionCSLJSONErrorsWhenTheServerIgnoresStart(t *testing.T) {
+	client := &exportPageStub{
+		items:       map[string][]string{"ROOT": manyIDs("item", 250)},
+		subcols:     map[string][]string{"ROOT": nil},
+		ignoreStart: true,
+	}
+	var out bytes.Buffer
+	err := exportCollection(client, &out, "ROOT", "csljson", true, 0, map[string]bool{})
+	if err == nil || !strings.Contains(err.Error(), "ignored start") {
+		t.Fatalf("exportCollection error = %v, want ignored-start failure", err)
+	}
+	// Nothing may reach the writer: a partial array is worse than no array,
+	// because it parses.
+	if out.Len() != 0 {
+		t.Fatalf("truncated CSL-JSON was emitted despite the error: %q", out.String())
+	}
+}
+
+// The subcollection walk used to `return keys, nil` on a repeated page, so a
+// server that ignores `start` silently dropped every subtree past page one
+// while reporting success.
+func TestExportCollectionErrorsWhenSubcollectionPagingIgnoresStart(t *testing.T) {
+	children := manyIDs("SUB", 150)
+	items := map[string][]string{"ROOT": nil}
+	subcols := map[string][]string{"ROOT": children}
+	for _, child := range children {
+		items[child] = []string{child + "-item"}
+		subcols[child] = nil
+	}
+	client := &exportPageStub{items: items, subcols: subcols, ignoreStart: true}
+
+	var out bytes.Buffer
+	// flat=false, or exportCollection returns before it ever reads subcollections.
+	err := exportCollection(client, &out, "ROOT", "bibtex", false, 0, map[string]bool{})
+	if err == nil || !strings.Contains(err.Error(), "ignored start") {
+		t.Fatalf("exportCollection error = %v, want ignored-start failure", err)
+	}
+}
+
 // Without Total-Results the walk cannot read termination out of the page body:
 // BibTeX renders nothing for an attachment, so a whole page of them is blank
 // in the middle of a full collection. Stopping there would silently drop

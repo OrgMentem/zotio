@@ -9,7 +9,6 @@ import (
 	"fmt"
 	"io"
 	"net/url"
-	"os"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -160,7 +159,12 @@ func newAnnotationsExportCmd(flags *rootFlags) *cobra.Command {
 				out = []byte(formatAnnotationExportMarkdown(exports))
 			}
 			if flagOutput != "" {
-				return os.WriteFile(flagOutput, out, 0o600)
+				// os.WriteFile left an existing file's mode alone, so preserve it
+				// rather than silently tightening permissions the user chose.
+				return withAtomicOutputFile(flagOutput, publishedOutputMode(flagOutput, 0o600), func(w io.Writer) error {
+					_, writeErr := w.Write(out)
+					return writeErr
+				})
 			}
 			_, err = cmd.OutOrStdout().Write(out)
 			return err

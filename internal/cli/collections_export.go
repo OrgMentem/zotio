@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"io"
 	"net/url"
-	"os"
 	"strconv"
 	"strings"
 
@@ -57,18 +56,17 @@ the top-level collection without recursing into subcollections.`,
 				return err
 			}
 
-			var out = cmd.OutOrStdout()
-			if flagOutput != "" {
-				f, err := openPrivateOutputFile(flagOutput, os.O_WRONLY|os.O_CREATE|os.O_TRUNC)
-				if err != nil {
-					return fmt.Errorf("creating output file: %w", err)
-				}
-				defer f.Close()
-				out = f
-			}
-
 			visited := map[string]bool{}
-			return exportCollection(c, out, collKey, format, flagFlat, flagLimit, visited)
+			if flagOutput == "" {
+				// Stdout stays unbuffered: wrapping it would delay broken-pipe
+				// detection and keep fetching pages after the consumer exited.
+				return exportCollection(c, cmd.OutOrStdout(), collKey, format, flagFlat, flagLimit, visited)
+			}
+			// Published atomically, so a mid-walk failure leaves the previous
+			// artifact intact instead of a valid-looking partial bibliography.
+			return withAtomicOutputFile(flagOutput, exportOutputFileMode, func(w io.Writer) error {
+				return exportCollection(c, w, collKey, format, flagFlat, flagLimit, visited)
+			})
 		},
 	}
 	cmd.Flags().StringVar(&flagFormat, "format", "bibtex", "Export format: bibtex, ris, csljson")
@@ -388,7 +386,7 @@ func collectCollectionCSLJSON(c collectionExportClient, collKey string, flat boo
 			return fmt.Errorf("fetching items for collection %s: %w", collKey, err)
 		}
 		if repeatedPage(prev, data) {
-			break
+			return fmt.Errorf("pagination for collection %s ignored start %d", collKey, start)
 		}
 		prev = data
 
@@ -436,7 +434,7 @@ func fetchSubcollectionKeys(c collectionExportClient, collKey string) ([]string,
 			return nil, fmt.Errorf("fetching subcollections for %s: %w", collKey, err)
 		}
 		if repeatedPage(prev, data) {
-			return keys, nil
+			return nil, fmt.Errorf("pagination for subcollections of %s ignored start %d", collKey, start)
 		}
 		prev = data
 

@@ -32,23 +32,10 @@ func openPrivateOutputFile(path string, flags int) (*os.File, error) {
 	return f, nil
 }
 
-func finishExport(writer *bufio.Writer, file *os.File, primary error) error {
-	flushErr := writer.Flush()
-	var closeErr error
-	if file != nil {
-		closeErr = file.Close()
-	}
-	if primary != nil {
-		return primary
-	}
-	if flushErr != nil {
-		return fmt.Errorf("flushing export: %w", flushErr)
-	}
-	if closeErr != nil {
-		return fmt.Errorf("closing export: %w", closeErr)
-	}
-	return nil
-}
+// exportOutputFileMode is the mode an export artifact is published with. It
+// matches what openPrivateOutputFile forced for the direct writes this
+// replaced, so the published permissions are unchanged.
+const exportOutputFileMode = 0o600
 
 func writeExport(writer io.Writer, format string, data []byte, limit int) (int, error) {
 	switch format {
@@ -138,62 +125,88 @@ backwards-compatible resource exports.`,
 				}
 			}
 
-			var file *os.File
-			output := cmd.OutOrStdout()
-			if outputFile != "" {
-				file, err = openPrivateOutputFile(outputFile, os.O_WRONLY|os.O_CREATE|os.O_TRUNC)
-				if err != nil {
-					return fmt.Errorf("creating output file: %w", err)
+			// Generation must not know whether it is writing to stdout or to a
+			// file: only publication differs between them.
+			runExport := func(writer *bufio.Writer) (int, error) {
+				if flags.dataSource == "local" {
+					params := map[string]string(nil)
+					if len(args) == 1 && limit > 0 {
+						params = map[string]string{"limit": strconv.Itoa(limit)}
+					}
+					data, _, getErr := resolveRead(cmd.Context(), nil, flags, resource, len(args) == 1, path, params, nil)
+					if getErr != nil {
+						return 0, classifyAPIError(getErr, flags)
+					}
+					return writeExport(writer, format, data, limit)
 				}
-				output = file
-			}
-			writer := bufio.NewWriter(output)
-
-			var count int
-			var exportErr error
-			if flags.dataSource == "local" {
-				params := map[string]string(nil)
-				if len(args) == 1 && limit > 0 {
-					params = map[string]string{"limit": strconv.Itoa(limit)}
-				}
-				data, _, getErr := resolveRead(cmd.Context(), nil, flags, resource, len(args) == 1, path, params, nil)
-				if getErr != nil {
-					return finishExport(writer, file, classifyAPIError(getErr, flags))
-				}
-				count, exportErr = writeExport(writer, format, data, limit)
-			} else {
 				if len(args) > 1 {
 					data, getErr := c.Get(path, nil)
 					if getErr != nil {
-						return finishExport(writer, file, classifyAPIError(getErr, flags))
+						return 0, classifyAPIError(getErr, flags)
 					}
-					count, exportErr = writeExport(writer, format, data, limit)
-				} else {
-					items := make([]json.RawMessage, 0)
-					count, exportErr = resumablePaginatedFetch(cmd.Context(), c, path, nil, 100, limit, "", func(page []json.RawMessage) error {
-						if format != "jsonl" {
-							items = append(items, page...)
-							return nil
-						}
-						for _, item := range page {
-							if _, err := fmt.Fprintln(writer, string(item)); err != nil {
-								return err
-							}
-						}
+					return writeExport(writer, format, data, limit)
+				}
+				items := make([]json.RawMessage, 0)
+				fetched, fetchErr := resumablePaginatedFetch(cmd.Context(), c, path, nil, 100, limit, "", func(page []json.RawMessage) error {
+					if format != "jsonl" {
+						items = append(items, page...)
 						return nil
-					})
-					if exportErr == nil && format != "jsonl" {
-						data, marshalErr := json.Marshal(items)
-						if marshalErr != nil {
-							exportErr = marshalErr
-						} else {
-							_, exportErr = writeExport(writer, format, data, 0)
+					}
+					for _, item := range page {
+						if _, err := fmt.Fprintln(writer, string(item)); err != nil {
+							return err
 						}
+					}
+					return nil
+				})
+				if fetchErr != nil {
+					return fetched, fetchErr
+				}
+				if format != "jsonl" {
+					data, marshalErr := json.Marshal(items)
+					if marshalErr != nil {
+						return fetched, marshalErr
+					}
+					// The reported count stays the fetched count; writeExport
+					// would re-count the same records it is rendering.
+					if _, writeErr := writeExport(writer, format, data, 0); writeErr != nil {
+						return fetched, writeErr
 					}
 				}
+				return fetched, nil
 			}
-			if err := finishExport(writer, file, exportErr); err != nil {
-				return err
+
+			var count int
+			if outputFile == "" {
+				writer := bufio.NewWriter(cmd.OutOrStdout())
+				count, err = runExport(writer)
+				// Stdout keeps its historical behaviour: bytes generated before a
+				// failure are still flushed, because a stream consumer has already
+				// been handed everything up to that point.
+				flushErr := writer.Flush()
+				if err != nil {
+					return err
+				}
+				if flushErr != nil {
+					return fmt.Errorf("flushing export: %w", flushErr)
+				}
+			} else {
+				// A file is published atomically: a failure leaves whatever
+				// artifact was already there instead of truncating it, and nothing
+				// is flushed into a temporary file that is about to be discarded.
+				if err := withAtomicOutputFile(outputFile, exportOutputFileMode, func(w io.Writer) error {
+					writer := bufio.NewWriter(w)
+					count, err = runExport(writer)
+					if err != nil {
+						return err
+					}
+					if flushErr := writer.Flush(); flushErr != nil {
+						return fmt.Errorf("flushing export: %w", flushErr)
+					}
+					return nil
+				}); err != nil {
+					return err
+				}
 			}
 			if outputFile != "" && format == "jsonl" {
 				fmt.Fprintf(cmd.ErrOrStderr(), "Exported %d records to %s\n", count, outputFile)

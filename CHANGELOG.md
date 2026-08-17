@@ -6,6 +6,54 @@ Notable changes to zotio. Format follows [Keep a Changelog](https://keepachangel
 
 ### Fixed
 
+**A failed export no longer destroys the export it was replacing.** Every
+file-producing export truncated its target before fetching anything, so any
+failure mid-run published the wreckage. Measured on a 4,624-item library:
+`zotio export items --output x.jsonl` against an unreachable API turned an
+11,299,615-byte artifact into 0 bytes, and `zotio collections export NOSUCHKEY
+--output refs.bib` exited non-zero after leaving 1,086 complete, valid
+`@article` entries on disk — syntactically perfect, silently incomplete, and
+indistinguishable downstream from a real bibliography. Neither needed any
+concurrency to reproduce.
+
+Exports now publish atomically: output is streamed into a temporary file in the
+target's own directory and renamed over the target only on success, so a failure
+leaves the previous artifact byte-for-byte intact and creates nothing at all when
+there was no previous artifact. A reader can no longer observe a half-written
+export. The contract is same-directory replacement using the host filesystem's
+rename semantics — process-failure publication safety, not power-loss
+durability; nothing is fsynced, because an export is a regenerable projection.
+
+Two behaviour changes fall out of publishing by rename, both deliberate:
+
+- An existing output path that is **not a regular file is now refused** with an
+  actionable error instead of being written through. Previously `--output` on a
+  symlink wrote to its referent; renaming would instead have replaced the user's
+  link with a file, and resolving the link first would have widened a
+  time-of-check/time-of-use window from a single `open` to the whole export.
+  Refusing is the only option that is both safe and honest. This also covers
+  directories, FIFOs, sockets and devices, which these paths already failed on.
+- `annotations export --output` **preserves an existing file's permissions**.
+  It used `os.WriteFile`, which leaves an existing mode alone, so normalising to
+  `0600` would have silently tightened a mode the user chose. `export` and
+  `collections export` still publish `0600`, matching the mode they already
+  forced.
+
+Streaming to stdout is unchanged, including its flush-on-failure behaviour: a
+pipe consumer has already been handed every byte generated before the failure,
+and `collections export` still writes stdout unbuffered so a broken pipe is
+detected promptly rather than after another page is fetched.
+
+**`collections export` no longer publishes a silently truncated export when the
+server ignores pagination.** The three walks disagreed: the text path failed
+loudly on a repeated page, while the CSL-JSON path `break`ed and the
+subcollection path returned its partial key list — both reporting success. A
+server that ignores `start` therefore produced a complete-looking JSON array
+holding only the first page, or an export missing whole subtrees. Both now fail
+with the same pagination error the text path already used. This had to land
+alongside atomic publication, which would otherwise have faithfully committed the
+truncated result.
+
 A fourth pass over the same body of work, this one from findings a weak model
 produced against a tree that was being rewritten underneath it. Of 48 findings,
 16 were noise — false positives, duplicates, or already fixed — and validating
