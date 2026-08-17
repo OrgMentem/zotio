@@ -772,3 +772,166 @@ func TestJournalUndoAutomaticAddPreservesReplacementManualTag(t *testing.T) {
 		t.Fatalf("PATCH count = %d, want 0", srv.patchCounts["K1"])
 	}
 }
+
+// applyUndoMembership previously built its header map conditionally
+// ("if version > 0"), so an item whose version could not be resolved was
+// PATCHed with no If-Unmodified-Since-Version at all. Zotero rejects that with
+// an opaque 428, and a server that accepted it would let the reversal clobber a
+// concurrent edit. The write must now be refused before it is dispatched.
+//
+// The positive case is asserted alongside it so the guard cannot regress into
+// refusing every reversal.
+func TestApplyUndoMembershipRequiresWritePlaneVersion(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		version     string
+		wantStatus  string
+		wantPatched bool
+	}{
+		{name: "version present", version: "11", wantStatus: "applied", wantPatched: true},
+		{name: "version absent", version: "", wantStatus: "failed", wantPatched: false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var patches int
+			var gotHeader string
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				switch r.Method {
+				case http.MethodGet:
+					// An absent version means BOTH sources are absent: the local
+					// API omits the header and reports an empty object version
+					// for items it has never pushed upstream.
+					if tc.version != "" {
+						w.Header().Set("Last-Modified-Version", tc.version)
+					}
+					_, _ = w.Write([]byte(`{"key":"K1","data":{"tags":[{"tag":"ml"},{"tag":"keep"}],"collections":[]}}`))
+				case http.MethodPatch:
+					patches++
+					gotHeader = r.Header.Get("If-Unmodified-Since-Version")
+					w.WriteHeader(http.StatusNoContent)
+				default:
+					http.Error(w, "unexpected", http.StatusMethodNotAllowed)
+				}
+			}))
+			defer srv.Close()
+
+			c := client.New(&config.Config{BaseURL: srv.URL + "/users/0"}, 0, 0)
+			changes := []mutation.Change{{Field: "tags", Remove: "ml"}}
+			status, detail, err := applyUndoMembership(c, "/items/K1", changes)
+
+			if status != tc.wantStatus {
+				t.Fatalf("status = %q (detail %v, err %v), want %q", status, detail, err, tc.wantStatus)
+			}
+			if tc.wantPatched {
+				if patches != 1 {
+					t.Fatalf("patches = %d, want exactly 1", patches)
+				}
+				if gotHeader != tc.version {
+					t.Errorf("If-Unmodified-Since-Version = %q, want %q", gotHeader, tc.version)
+				}
+				return
+			}
+			if patches != 0 {
+				t.Fatalf("dispatched %d unguarded PATCH(es); want the write refused before any request", patches)
+			}
+			if err == nil {
+				t.Fatal("want an error naming the missing precondition, got nil")
+			}
+			if !strings.Contains(err.Error(), "If-Unmodified-Since-Version") {
+				t.Errorf("error = %q, want it to name the missing precondition", err.Error())
+			}
+		})
+	}
+}
+
+// Both undo helpers read the item they are about to PATCH. That read must come
+// from the plane the PATCH lands on: newWriteClient only flattens the resolved
+// write base into BaseURL when resolution SUCCEEDS and silently swallows the
+// error when it does not, leaving reads on the local desktop API while writes
+// still route to api.zotero.org. The two planes version objects independently,
+// so a local version is not a valid Web precondition -- it either spuriously
+// conflicts or, when the numbers happen to coincide, guards nothing.
+//
+// For applyUndoMembership the membership state matters as much as the version:
+// inverting tags computed from the read plane would overwrite the write plane's
+// copy with stale data.
+func TestJournalUndoTakesPreconditionFromWritePlane(t *testing.T) {
+	newPlanes := func(t *testing.T, onPatch func(*http.Request)) *client.Client {
+		t.Helper()
+		readServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			t.Errorf("undo read the local plane at %s; the precondition must come from the write plane", r.URL.Path)
+			http.Error(w, "wrong plane", http.StatusInternalServerError)
+		}))
+		t.Cleanup(readServer.Close)
+		writeServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			switch r.Method {
+			case http.MethodGet:
+				w.Header().Set("Last-Modified-Version", "900")
+				// "upstream" is present only on the write plane, so a body built
+				// from it proves the read landed there.
+				_, _ = w.Write([]byte(`{"key":"K1","version":900,"data":{"tags":[{"tag":"ml"},{"tag":"upstream"}],"collections":[]}}`))
+			case http.MethodPatch:
+				onPatch(r)
+				w.WriteHeader(http.StatusNoContent)
+			default:
+				http.Error(w, "unexpected method", http.StatusMethodNotAllowed)
+			}
+		}))
+		t.Cleanup(writeServer.Close)
+
+		c := client.New(&config.Config{BaseURL: readServer.URL + "/users/0"}, 5*time.Second, 0)
+		c.NoCache = true
+		c.ResolveWriteBase = func(context.Context) (string, error) { return writeServer.URL + "/users/0", nil }
+		return c
+	}
+
+	t.Run("membership", func(t *testing.T) {
+		var precondition string
+		var body map[string]any
+		patches := 0
+		c := newPlanes(t, func(r *http.Request) {
+			patches++
+			precondition = r.Header.Get("If-Unmodified-Since-Version")
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Errorf("decode patch body: %v", err)
+			}
+		})
+
+		status, detail, err := applyUndoMembership(c, "/items/K1", []mutation.Change{{Field: "tags", Remove: "ml"}})
+		if err != nil || status != "applied" {
+			t.Fatalf("applyUndoMembership = (%q, %v, %v), want applied", status, detail, err)
+		}
+		if patches != 1 {
+			t.Fatalf("PATCH count = %d, want 1", patches)
+		}
+		if precondition != "900" {
+			t.Errorf("If-Unmodified-Since-Version = %q, want the write plane's 900", precondition)
+		}
+		tags, _ := body["tags"].([]any)
+		if len(tags) != 1 {
+			t.Fatalf("patched tags = %v, want only the write plane's remaining tag", tags)
+		}
+		if m, _ := tags[0].(map[string]any); m["tag"] != "upstream" {
+			t.Errorf("remaining tag = %v, want upstream: the inverse must be computed from the write plane's copy", tags[0])
+		}
+	})
+
+	t.Run("create", func(t *testing.T) {
+		var precondition string
+		patches := 0
+		c := newPlanes(t, func(r *http.Request) {
+			patches++
+			precondition = r.Header.Get("If-Unmodified-Since-Version")
+		})
+
+		status, detail, err := applyUndoCreate(c, "/items/K1")
+		if err != nil || status != "applied" {
+			t.Fatalf("applyUndoCreate = (%q, %v, %v), want applied", status, detail, err)
+		}
+		if patches != 1 {
+			t.Fatalf("PATCH count = %d, want 1", patches)
+		}
+		if precondition != "900" {
+			t.Errorf("If-Unmodified-Since-Version = %q, want the write plane's 900", precondition)
+		}
+	})
+}

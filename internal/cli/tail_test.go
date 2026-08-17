@@ -195,3 +195,85 @@ func TestTail_FollowFalseWritesToCobraOut(t *testing.T) {
 		t.Errorf("event = %v, want upsert/X", events[0])
 	}
 }
+
+// A /deleted failure has two cases with OPPOSITE correct responses, so the
+// cursor rule cannot be uniform. Both are pinned here.
+//
+// Case 1: the plane does not implement /deleted. The Zotero local API 404s it
+// and local is the default base, so this is the steady state for most users.
+// Advancing is mandatory: no deletion is observable on this plane ever, so
+// none can be lost, while holding the cursor would wedge the feed permanently
+// and re-emit the entire window on every poll.
+func TestEmitChanges_UnsupportedDeletionsStillAdvancesCursor(t *testing.T) {
+	db := tailTestStore(t)
+	mux := http.NewServeMux()
+	mux.HandleFunc("/items", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Last-Modified-Version", "12")
+		_, _ = io.WriteString(w, `[{"key":"A","version":12,"data":{"title":"t"}}]`)
+	})
+	mux.HandleFunc("/deleted", func(w http.ResponseWriter, r *http.Request) {
+		// Verbatim shape of the live local API: 404 "No endpoint found".
+		http.Error(w, "No endpoint found", http.StatusNotFound)
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	c := client.New(&config.Config{BaseURL: srv.URL}, 5*time.Second, 0)
+	c.NoCache = true
+	if err := db.SaveLibraryVersion("tail:items", srv.URL, 10); err != nil {
+		t.Fatalf("seeding cursor: %v", err)
+	}
+
+	var buf bytes.Buffer
+	emitted, err := emitChanges(context.Background(), c, db, "items", "/items", DeliverSink{Scheme: "stdout"}, &buf)
+	if err != nil {
+		t.Fatalf("unsupported /deleted must not fail the poll: %v", err)
+	}
+	if emitted != 1 {
+		t.Errorf("emitted = %d, want the upsert still delivered", emitted)
+	}
+	if v, _, _ := db.StoredLibraryVersion("tail:items"); v != 12 {
+		t.Fatalf("cursor = %d, want 12: an unimplemented /deleted must not wedge the feed", v)
+	}
+}
+
+// Case 2: the request failed for any other reason. Deletions may well exist in
+// this window and simply were not retrieved, so advancing past them loses them
+// permanently -- the next poll asks only for changes strictly after newVer.
+// Hold the cursor and retry the window; the re-emitted upserts are the
+// at-least-once duplication a change feed is allowed to have.
+//
+// The poll must still return nil: emitChanges errors terminate the whole
+// --follow loop (see newTailCmd), so failing here would turn a recoverable
+// blip into a dead tail.
+func TestEmitChanges_DeletionsFetchFailureRetainsCursor(t *testing.T) {
+	db := tailTestStore(t)
+	mux := http.NewServeMux()
+	mux.HandleFunc("/items", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Last-Modified-Version", "12")
+		_, _ = io.WriteString(w, `[{"key":"A","version":12,"data":{"title":"t"}}]`)
+	})
+	mux.HandleFunc("/deleted", func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "forbidden", http.StatusForbidden)
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	c := client.New(&config.Config{BaseURL: srv.URL}, 5*time.Second, 0)
+	c.NoCache = true
+	if err := db.SaveLibraryVersion("tail:items", srv.URL, 10); err != nil {
+		t.Fatalf("seeding cursor: %v", err)
+	}
+
+	var buf bytes.Buffer
+	emitted, err := emitChanges(context.Background(), c, db, "items", "/items", DeliverSink{Scheme: "stdout"}, &buf)
+	if err != nil {
+		t.Fatalf("a recoverable deletions failure must not kill the tail: %v", err)
+	}
+	if emitted != 1 {
+		t.Errorf("emitted = %d, want the upsert still delivered", emitted)
+	}
+	if v, src, _ := db.StoredLibraryVersion("tail:items"); v != 10 || src != srv.URL {
+		t.Fatalf("cursor = (%d,%q), want (10,%q): unread deletions must be retried, not skipped", v, src, srv.URL)
+	}
+}

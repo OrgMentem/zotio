@@ -435,10 +435,13 @@ func attachUndoRefusals(env *mutation.Envelope, refused []mutation.ReversalRefus
 }
 
 // applyUndoCreate moves the created item to Zotero's reversible trash. The
-// journal's create key is the write-plane key adopted into ResultItem.Key, and
-// the version precondition is read from that same plane before PATCH.
+// journal's create key is the write-plane key adopted into ResultItem.Key, so
+// the version precondition is read from that same plane: newWriteClient only
+// flattens the resolved write base into BaseURL when resolution SUCCEEDS, and
+// it swallows the error when it does not, so a plain read here would silently
+// take a local version and guard a Web API write with it.
 func applyUndoCreate(c *client.Client, path string) (string, any, error) {
-	_, version, err := c.GetWithVersion(path, nil)
+	_, version, err := c.GetFromWriteBaseWithVersion(path, nil)
 	if err != nil {
 		var apiErr *client.APIError
 		if errors.As(err, &apiErr) && apiErr.StatusCode == http.StatusNotFound {
@@ -470,9 +473,11 @@ func applyUndoCreate(c *client.Client, path string) (string, any, error) {
 }
 
 // applyUndoMembership re-reads the item and applies the inverse tag/collection
-// changes in a single version-checked PATCH.
+// changes in a single version-checked PATCH. Both the membership state being
+// inverted and the precondition guarding it come from the plane the PATCH
+// lands on, so the read cannot describe a different library than the write.
 func applyUndoMembership(c *client.Client, path string, changes []mutation.Change) (string, any, error) {
-	data, version, err := c.GetWithVersion(path, nil)
+	data, version, err := c.GetFromWriteBaseWithVersion(path, nil)
 	if err != nil {
 		return "failed", err.Error(), err
 	}
@@ -529,22 +534,10 @@ func applyUndoMembership(c *client.Client, path string, changes []mutation.Chang
 	if collsChanged {
 		body["collections"] = nextColls
 	}
-	headers := map[string]string{}
-	if version > 0 {
-		headers["If-Unmodified-Since-Version"] = strconv.Itoa(version)
-	}
-	_, statusCode, err := c.PatchWithHeaders(path, body, headers)
-	if err != nil {
-		var apiErr *client.APIError
-		if errors.As(err, &apiErr) && (apiErr.StatusCode == http.StatusPreconditionFailed || apiErr.StatusCode == http.StatusPreconditionRequired) {
-			return "conflict", apiErr.Body, err
-		}
-		return "failed", err.Error(), err
-	}
-	if statusCode < 200 || statusCode >= 300 {
-		return "failed", fmt.Sprintf("HTTP %d", statusCode), fmt.Errorf("patch returned HTTP %d", statusCode)
-	}
-	return "applied", nil, nil
+	// Fail closed rather than dispatch an unguarded PATCH: Zotero rejects a
+	// key-based write with no precondition, and a server that accepted one
+	// would let this reversal silently clobber a concurrent edit.
+	return patchWithVersionGuard(c, path, body, version)
 }
 
 func undoContains(items []string, want string) bool {

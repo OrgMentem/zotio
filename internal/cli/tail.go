@@ -6,12 +6,15 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"net/http"
 	"os"
 	"os/signal"
 	"path/filepath"
 	"strconv"
+	"sync"
 	"syscall"
 	"time"
 
@@ -20,6 +23,12 @@ import (
 
 	"github.com/spf13/cobra"
 )
+
+// tailDeletionsUnsupportedOnce keeps the "/deleted is not implemented" notice
+// to a single line per process. The condition is a property of the API plane,
+// not of any one poll, so repeating it every interval would be pure noise on
+// the local API, where it is permanent.
+var tailDeletionsUnsupportedOnce sync.Once
 
 func newTailCmd(flags *rootFlags) *cobra.Command {
 	var resource string
@@ -235,13 +244,37 @@ func emitChanges(ctx context.Context, c *client.Client, db *store.Store, resourc
 	// Deletions only make sense once a baseline cursor exists: the first
 	// poll (cursor == 0) emits the full current set as upserts and skips
 	// /deleted, which is the intended change-feed bootstrap.
+	//
+	// A failure here is classified rather than uniformly warned past, because
+	// the two cases have opposite correct responses:
+	//
+	//   - The plane does not implement /deleted at all. The Zotero local API
+	//     404s it, and local is the default base, so this is the steady state
+	//     for most users. No deletion can be missed by advancing, because none
+	//     is observable on this plane ever. Holding the cursor here would wedge
+	//     the feed permanently and re-emit the whole window every poll.
+	//   - Anything else (5xx, timeout, connection reset). Deletions may well
+	//     exist in this window and were simply not retrieved. Advancing the
+	//     cursor past them loses them permanently, since the next poll asks
+	//     for changes strictly after newVer. Hold the cursor so the window is
+	//     retried; the upserts already emitted redeliver, which is the
+	//     at-least-once contract a change feed is allowed to have.
+	deletionsIncomplete := false
 	if cursor > 0 {
 		delBody, _, derr := c.GetWithVersionContext(ctx, "/deleted", params)
 		if derr != nil {
 			if ctxErr := ctx.Err(); ctxErr != nil {
 				return 0, ctxErr
 			}
-			fmt.Fprintf(os.Stderr, "warning: tail %s: fetching deletions failed: %v\n", resource, derr)
+			var apiErr *client.APIError
+			if errors.As(derr, &apiErr) && (apiErr.StatusCode == http.StatusNotFound || apiErr.StatusCode == http.StatusNotImplemented) {
+				tailDeletionsUnsupportedOnce.Do(func() {
+					fmt.Fprintf(os.Stderr, "warning: tail %s: this Zotero API does not implement /deleted (HTTP %d); deletions will not be reported on this feed\n", resource, apiErr.StatusCode)
+				})
+			} else {
+				deletionsIncomplete = true
+				fmt.Fprintf(os.Stderr, "warning: tail %s: fetching deletions failed: %v; holding the cursor at %d so this window is retried (upserts may repeat)\n", resource, derr, cursor)
+			}
 		} else {
 			var buckets map[string][]string
 			if err := json.Unmarshal(delBody, &buckets); err != nil {
@@ -293,7 +326,7 @@ func emitChanges(ctx context.Context, c *client.Client, db *store.Store, resourc
 		}
 	}
 
-	if newVer > cursor {
+	if newVer > cursor && !deletionsIncomplete {
 		if err := db.SaveLibraryVersion(cursorKey, c.BaseURL, newVer); err != nil {
 			return emitted, fmt.Errorf("tail %s: saving cursor: %w", resource, err)
 		}
