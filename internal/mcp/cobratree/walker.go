@@ -112,6 +112,10 @@ var writeGatingMCPFlags = []string{
 	"yes",
 	"dry-run",
 	"allow-destructive",
+	// Same category as allow-destructive: an explicit mutation safety
+	// override. The stored-upload refusal names it in its remediation, so an
+	// agent that cannot pass it is told to do something the surface rejects.
+	"allow-zotero-cloud",
 	"max-changes",
 	"continue-on-error",
 	"max-failures",

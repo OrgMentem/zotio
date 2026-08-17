@@ -10,7 +10,7 @@
         },
         "flags": {
           "additionalProperties": true,
-          "description": "Safe flags to pass by name: command-local flags plus, for mutating commands, the write-safety gate flags (yes, dry-run, allow-destructive, max-changes, continue-on-error, max-failures) — pass {\"yes\": true} to apply a write. Inspect available flags via command_search.",
+          "description": "Safe flags to pass by name: command-local flags plus, for mutating commands, the write-safety gate flags (yes, dry-run, allow-destructive, allow-zotero-cloud, max-changes, continue-on-error, max-failures) — pass {\"yes\": true} to apply a write. Inspect available flags via command_search.",
           "properties": {},
           "type": "object"
         },

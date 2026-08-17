@@ -98,6 +98,10 @@
           "description": "Allow irreversible operations (merge, permanent delete, empty-trash) to apply (default: false)",
           "type": "boolean"
         },
+        "allow-zotero-cloud": {
+          "description": "Allow stored attachment uploads into Zotero's cloud storage even when Zotero desktop keeps files elsewhere (for example WebDAV) (default: false)",
+          "type": "boolean"
+        },
         "args": {
           "description": "Additional positional arguments to append to the command. Raw CLI flags are rejected.",
           "type": "string"
@@ -178,6 +182,10 @@
           "description": "Allow irreversible operations (merge, permanent delete, empty-trash) to apply (default: false)",
           "type": "boolean"
         },
+        "allow-zotero-cloud": {
+          "description": "Allow stored attachment uploads into Zotero's cloud storage even when Zotero desktop keeps files elsewhere (for example WebDAV) (default: false)",
+          "type": "boolean"
+        },
         "continue-on-error": {
           "description": "On bulk mutations, continue past per-item failures/conflicts instead of stopping at the first (default: false)",
           "type": "boolean"
@@ -222,6 +230,10 @@
       "properties": {
         "allow-destructive": {
           "description": "Allow irreversible operations (merge, permanent delete, empty-trash) to apply (default: false)",
+          "type": "boolean"
+        },
+        "allow-zotero-cloud": {
+          "description": "Allow stored attachment uploads into Zotero's cloud storage even when Zotero desktop keeps files elsewhere (for example WebDAV) (default: false)",
           "type": "boolean"
         },
         "args": {
@@ -372,6 +384,10 @@
           "description": "Allow irreversible operations (merge, permanent delete, empty-trash) to apply (default: false)",
           "type": "boolean"
         },
+        "allow-zotero-cloud": {
+          "description": "Allow stored attachment uploads into Zotero's cloud storage even when Zotero desktop keeps files elsewhere (for example WebDAV) (default: false)",
+          "type": "boolean"
+        },
         "args": {
           "description": "Additional positional arguments to append to the command. Raw CLI flags are rejected.",
           "type": "string"
@@ -474,6 +490,10 @@
           "description": "Allow irreversible operations (merge, permanent delete, empty-trash) to apply (default: false)",
           "type": "boolean"
         },
+        "allow-zotero-cloud": {
+          "description": "Allow stored attachment uploads into Zotero's cloud storage even when Zotero desktop keeps files elsewhere (for example WebDAV) (default: false)",
+          "type": "boolean"
+        },
         "args": {
           "description": "Additional positional arguments to append to the command. Raw CLI flags are rejected.",
           "type": "string"
@@ -555,6 +575,10 @@
           "description": "Allow irreversible operations (merge, permanent delete, empty-trash) to apply (default: false)",
           "type": "boolean"
         },
+        "allow-zotero-cloud": {
+          "description": "Allow stored attachment uploads into Zotero's cloud storage even when Zotero desktop keeps files elsewhere (for example WebDAV) (default: false)",
+          "type": "boolean"
+        },
         "continue-on-error": {
           "description": "On bulk mutations, continue past per-item failures/conflicts instead of stopping at the first (default: false)",
           "type": "boolean"
@@ -598,6 +622,10 @@
       "properties": {
         "allow-destructive": {
           "description": "Allow irreversible operations (merge, permanent delete, empty-trash) to apply (default: false)",
+          "type": "boolean"
+        },
+        "allow-zotero-cloud": {
+          "description": "Allow stored attachment uploads into Zotero's cloud storage even when Zotero desktop keeps files elsewhere (for example WebDAV) (default: false)",
           "type": "boolean"
         },
         "args": {
@@ -662,6 +690,10 @@
       "properties": {
         "allow-destructive": {
           "description": "Allow irreversible operations (merge, permanent delete, empty-trash) to apply (default: false)",
+          "type": "boolean"
+        },
+        "allow-zotero-cloud": {
+          "description": "Allow stored attachment uploads into Zotero's cloud storage even when Zotero desktop keeps files elsewhere (for example WebDAV) (default: false)",
           "type": "boolean"
         },
         "args": {
@@ -781,6 +813,10 @@
           "description": "Allow irreversible operations (merge, permanent delete, empty-trash) to apply (default: false)",
           "type": "boolean"
         },
+        "allow-zotero-cloud": {
+          "description": "Allow stored attachment uploads into Zotero's cloud storage even when Zotero desktop keeps files elsewhere (for example WebDAV) (default: false)",
+          "type": "boolean"
+        },
         "args": {
           "description": "Additional positional arguments to append to the command. Raw CLI flags are rejected.",
           "type": "string"
@@ -829,6 +865,10 @@
           "description": "Allow irreversible operations (merge, permanent delete, empty-trash) to apply (default: false)",
           "type": "boolean"
         },
+        "allow-zotero-cloud": {
+          "description": "Allow stored attachment uploads into Zotero's cloud storage even when Zotero desktop keeps files elsewhere (for example WebDAV) (default: false)",
+          "type": "boolean"
+        },
         "args": {
           "description": "Additional positional arguments to append to the command. Raw CLI flags are rejected.",
           "type": "string"
@@ -873,6 +913,10 @@
       "properties": {
         "allow-destructive": {
           "description": "Allow irreversible operations (merge, permanent delete, empty-trash) to apply (default: false)",
+          "type": "boolean"
+        },
+        "allow-zotero-cloud": {
+          "description": "Allow stored attachment uploads into Zotero's cloud storage even when Zotero desktop keeps files elsewhere (for example WebDAV) (default: false)",
           "type": "boolean"
         },
         "args": {
@@ -954,6 +998,10 @@
           "description": "Allow irreversible operations (merge, permanent delete, empty-trash) to apply (default: false)",
           "type": "boolean"
         },
+        "allow-zotero-cloud": {
+          "description": "Allow stored attachment uploads into Zotero's cloud storage even when Zotero desktop keeps files elsewhere (for example WebDAV) (default: false)",
+          "type": "boolean"
+        },
         "args": {
           "description": "Additional positional arguments to append to the command. Raw CLI flags are rejected.",
           "type": "string"
@@ -998,6 +1046,10 @@
       "properties": {
         "allow-destructive": {
           "description": "Allow irreversible operations (merge, permanent delete, empty-trash) to apply (default: false)",
+          "type": "boolean"
+        },
+        "allow-zotero-cloud": {
+          "description": "Allow stored attachment uploads into Zotero's cloud storage even when Zotero desktop keeps files elsewhere (for example WebDAV) (default: false)",
           "type": "boolean"
         },
         "args": {
@@ -1046,6 +1098,10 @@
           "description": "Allow irreversible operations (merge, permanent delete, empty-trash) to apply (default: false)",
           "type": "boolean"
         },
+        "allow-zotero-cloud": {
+          "description": "Allow stored attachment uploads into Zotero's cloud storage even when Zotero desktop keeps files elsewhere (for example WebDAV) (default: false)",
+          "type": "boolean"
+        },
         "args": {
           "description": "Additional positional arguments to append to the command. Raw CLI flags are rejected.",
           "type": "string"
@@ -1092,6 +1148,10 @@
           "description": "Allow irreversible operations (merge, permanent delete, empty-trash) to apply (default: false)",
           "type": "boolean"
         },
+        "allow-zotero-cloud": {
+          "description": "Allow stored attachment uploads into Zotero's cloud storage even when Zotero desktop keeps files elsewhere (for example WebDAV) (default: false)",
+          "type": "boolean"
+        },
         "args": {
           "description": "Additional positional arguments to append to the command. Raw CLI flags are rejected.",
           "type": "string"
@@ -1136,6 +1196,10 @@
       "properties": {
         "allow-destructive": {
           "description": "Allow irreversible operations (merge, permanent delete, empty-trash) to apply (default: false)",
+          "type": "boolean"
+        },
+        "allow-zotero-cloud": {
+          "description": "Allow stored attachment uploads into Zotero's cloud storage even when Zotero desktop keeps files elsewhere (for example WebDAV) (default: false)",
           "type": "boolean"
         },
         "args": {
@@ -1247,6 +1311,10 @@
           "description": "Allow irreversible operations (merge, permanent delete, empty-trash) to apply (default: false)",
           "type": "boolean"
         },
+        "allow-zotero-cloud": {
+          "description": "Allow stored attachment uploads into Zotero's cloud storage even when Zotero desktop keeps files elsewhere (for example WebDAV) (default: false)",
+          "type": "boolean"
+        },
         "args": {
           "description": "Additional positional arguments to append to the command. Raw CLI flags are rejected.",
           "type": "string"
@@ -1293,6 +1361,10 @@
           "description": "Allow irreversible operations (merge, permanent delete, empty-trash) to apply (default: false)",
           "type": "boolean"
         },
+        "allow-zotero-cloud": {
+          "description": "Allow stored attachment uploads into Zotero's cloud storage even when Zotero desktop keeps files elsewhere (for example WebDAV) (default: false)",
+          "type": "boolean"
+        },
         "continue-on-error": {
           "description": "On bulk mutations, continue past per-item failures/conflicts instead of stopping at the first (default: false)",
           "type": "boolean"
@@ -1329,6 +1401,10 @@
       "properties": {
         "allow-destructive": {
           "description": "Allow irreversible operations (merge, permanent delete, empty-trash) to apply (default: false)",
+          "type": "boolean"
+        },
+        "allow-zotero-cloud": {
+          "description": "Allow stored attachment uploads into Zotero's cloud storage even when Zotero desktop keeps files elsewhere (for example WebDAV) (default: false)",
           "type": "boolean"
         },
         "args": {
@@ -1563,6 +1639,10 @@
           "description": "Allow irreversible operations (merge, permanent delete, empty-trash) to apply (default: false)",
           "type": "boolean"
         },
+        "allow-zotero-cloud": {
+          "description": "Allow stored attachment uploads into Zotero's cloud storage even when Zotero desktop keeps files elsewhere (for example WebDAV) (default: false)",
+          "type": "boolean"
+        },
         "continue-on-error": {
           "description": "On bulk mutations, continue past per-item failures/conflicts instead of stopping at the first (default: false)",
           "type": "boolean"
@@ -1603,6 +1683,10 @@
       "properties": {
         "allow-destructive": {
           "description": "Allow irreversible operations (merge, permanent delete, empty-trash) to apply (default: false)",
+          "type": "boolean"
+        },
+        "allow-zotero-cloud": {
+          "description": "Allow stored attachment uploads into Zotero's cloud storage even when Zotero desktop keeps files elsewhere (for example WebDAV) (default: false)",
           "type": "boolean"
         },
         "args": {
@@ -1661,6 +1745,10 @@
           "description": "Allow irreversible operations (merge, permanent delete, empty-trash) to apply (default: false)",
           "type": "boolean"
         },
+        "allow-zotero-cloud": {
+          "description": "Allow stored attachment uploads into Zotero's cloud storage even when Zotero desktop keeps files elsewhere (for example WebDAV) (default: false)",
+          "type": "boolean"
+        },
         "continue-on-error": {
           "description": "On bulk mutations, continue past per-item failures/conflicts instead of stopping at the first (default: false)",
           "type": "boolean"
@@ -1705,6 +1793,10 @@
       "properties": {
         "allow-destructive": {
           "description": "Allow irreversible operations (merge, permanent delete, empty-trash) to apply (default: false)",
+          "type": "boolean"
+        },
+        "allow-zotero-cloud": {
+          "description": "Allow stored attachment uploads into Zotero's cloud storage even when Zotero desktop keeps files elsewhere (for example WebDAV) (default: false)",
           "type": "boolean"
         },
         "attach-mode": {
@@ -1949,6 +2041,10 @@
           "description": "Allow irreversible operations (merge, permanent delete, empty-trash) to apply (default: false)",
           "type": "boolean"
         },
+        "allow-zotero-cloud": {
+          "description": "Allow stored attachment uploads into Zotero's cloud storage even when Zotero desktop keeps files elsewhere (for example WebDAV) (default: false)",
+          "type": "boolean"
+        },
         "args": {
           "description": "Additional positional arguments to append to the command. Raw CLI flags are rejected.",
           "type": "string"
@@ -1997,6 +2093,10 @@
       "properties": {
         "allow-destructive": {
           "description": "Allow irreversible operations (merge, permanent delete, empty-trash) to apply (default: false)",
+          "type": "boolean"
+        },
+        "allow-zotero-cloud": {
+          "description": "Allow stored attachment uploads into Zotero's cloud storage even when Zotero desktop keeps files elsewhere (for example WebDAV) (default: false)",
           "type": "boolean"
         },
         "args": {
@@ -2074,6 +2174,10 @@
           "description": "Allow irreversible operations (merge, permanent delete, empty-trash) to apply (default: false)",
           "type": "boolean"
         },
+        "allow-zotero-cloud": {
+          "description": "Allow stored attachment uploads into Zotero's cloud storage even when Zotero desktop keeps files elsewhere (for example WebDAV) (default: false)",
+          "type": "boolean"
+        },
         "args": {
           "description": "Additional positional arguments to append to the command. Raw CLI flags are rejected.",
           "type": "string"
@@ -2132,6 +2236,10 @@
       "properties": {
         "allow-destructive": {
           "description": "Allow irreversible operations (merge, permanent delete, empty-trash) to apply (default: false)",
+          "type": "boolean"
+        },
+        "allow-zotero-cloud": {
+          "description": "Allow stored attachment uploads into Zotero's cloud storage even when Zotero desktop keeps files elsewhere (for example WebDAV) (default: false)",
           "type": "boolean"
         },
         "continue-on-error": {
@@ -2206,6 +2314,10 @@
       "properties": {
         "allow-destructive": {
           "description": "Allow irreversible operations (merge, permanent delete, empty-trash) to apply (default: false)",
+          "type": "boolean"
+        },
+        "allow-zotero-cloud": {
+          "description": "Allow stored attachment uploads into Zotero's cloud storage even when Zotero desktop keeps files elsewhere (for example WebDAV) (default: false)",
           "type": "boolean"
         },
         "args": {
@@ -2356,6 +2468,10 @@
           "description": "Allow irreversible operations (merge, permanent delete, empty-trash) to apply (default: false)",
           "type": "boolean"
         },
+        "allow-zotero-cloud": {
+          "description": "Allow stored attachment uploads into Zotero's cloud storage even when Zotero desktop keeps files elsewhere (for example WebDAV) (default: false)",
+          "type": "boolean"
+        },
         "args": {
           "description": "Additional positional arguments to append to the command. Raw CLI flags are rejected.",
           "type": "string"
@@ -2421,6 +2537,10 @@
       "properties": {
         "allow-destructive": {
           "description": "Allow irreversible operations (merge, permanent delete, empty-trash) to apply (default: false)",
+          "type": "boolean"
+        },
+        "allow-zotero-cloud": {
+          "description": "Allow stored attachment uploads into Zotero's cloud storage even when Zotero desktop keeps files elsewhere (for example WebDAV) (default: false)",
           "type": "boolean"
         },
         "args": {
@@ -2550,6 +2670,10 @@
           "description": "Allow irreversible operations (merge, permanent delete, empty-trash) to apply (default: false)",
           "type": "boolean"
         },
+        "allow-zotero-cloud": {
+          "description": "Allow stored attachment uploads into Zotero's cloud storage even when Zotero desktop keeps files elsewhere (for example WebDAV) (default: false)",
+          "type": "boolean"
+        },
         "args": {
           "description": "Additional positional arguments to append to the command. Raw CLI flags are rejected.",
           "type": "string"
@@ -2652,6 +2776,10 @@
       "properties": {
         "allow-destructive": {
           "description": "Allow irreversible operations (merge, permanent delete, empty-trash) to apply (default: false)",
+          "type": "boolean"
+        },
+        "allow-zotero-cloud": {
+          "description": "Allow stored attachment uploads into Zotero's cloud storage even when Zotero desktop keeps files elsewhere (for example WebDAV) (default: false)",
           "type": "boolean"
         },
         "args": {
@@ -2830,6 +2958,10 @@
           "description": "Allow irreversible operations (merge, permanent delete, empty-trash) to apply (default: false)",
           "type": "boolean"
         },
+        "allow-zotero-cloud": {
+          "description": "Allow stored attachment uploads into Zotero's cloud storage even when Zotero desktop keeps files elsewhere (for example WebDAV) (default: false)",
+          "type": "boolean"
+        },
         "args": {
           "description": "Additional positional arguments to append to the command. Raw CLI flags are rejected.",
           "type": "string"
@@ -2872,6 +3004,10 @@
           "description": "Allow irreversible operations (merge, permanent delete, empty-trash) to apply (default: false)",
           "type": "boolean"
         },
+        "allow-zotero-cloud": {
+          "description": "Allow stored attachment uploads into Zotero's cloud storage even when Zotero desktop keeps files elsewhere (for example WebDAV) (default: false)",
+          "type": "boolean"
+        },
         "args": {
           "description": "Additional positional arguments to append to the command. Raw CLI flags are rejected.",
           "type": "string"
@@ -2912,6 +3048,10 @@
       "properties": {
         "allow-destructive": {
           "description": "Allow irreversible operations (merge, permanent delete, empty-trash) to apply (default: false)",
+          "type": "boolean"
+        },
+        "allow-zotero-cloud": {
+          "description": "Allow stored attachment uploads into Zotero's cloud storage even when Zotero desktop keeps files elsewhere (for example WebDAV) (default: false)",
           "type": "boolean"
         },
         "args": {
@@ -3073,6 +3213,10 @@
           "description": "Allow irreversible operations (merge, permanent delete, empty-trash) to apply (default: false)",
           "type": "boolean"
         },
+        "allow-zotero-cloud": {
+          "description": "Allow stored attachment uploads into Zotero's cloud storage even when Zotero desktop keeps files elsewhere (for example WebDAV) (default: false)",
+          "type": "boolean"
+        },
         "args": {
           "description": "Additional positional arguments to append to the command. Raw CLI flags are rejected.",
           "type": "string"
@@ -3143,6 +3287,10 @@
       "properties": {
         "allow-destructive": {
           "description": "Allow irreversible operations (merge, permanent delete, empty-trash) to apply (default: false)",
+          "type": "boolean"
+        },
+        "allow-zotero-cloud": {
+          "description": "Allow stored attachment uploads into Zotero's cloud storage even when Zotero desktop keeps files elsewhere (for example WebDAV) (default: false)",
           "type": "boolean"
         },
         "concurrency": {
@@ -3230,6 +3378,10 @@
       "properties": {
         "allow-destructive": {
           "description": "Allow irreversible operations (merge, permanent delete, empty-trash) to apply (default: false)",
+          "type": "boolean"
+        },
+        "allow-zotero-cloud": {
+          "description": "Allow stored attachment uploads into Zotero's cloud storage even when Zotero desktop keeps files elsewhere (for example WebDAV) (default: false)",
           "type": "boolean"
         },
         "continue-on-error": {
@@ -3320,6 +3472,10 @@
           "description": "Allow irreversible operations (merge, permanent delete, empty-trash) to apply (default: false)",
           "type": "boolean"
         },
+        "allow-zotero-cloud": {
+          "description": "Allow stored attachment uploads into Zotero's cloud storage even when Zotero desktop keeps files elsewhere (for example WebDAV) (default: false)",
+          "type": "boolean"
+        },
         "args": {
           "description": "Additional positional arguments to append to the command. Raw CLI flags are rejected.",
           "type": "string"
@@ -3406,6 +3562,10 @@
           "description": "Allow irreversible operations (merge, permanent delete, empty-trash) to apply (default: false)",
           "type": "boolean"
         },
+        "allow-zotero-cloud": {
+          "description": "Allow stored attachment uploads into Zotero's cloud storage even when Zotero desktop keeps files elsewhere (for example WebDAV) (default: false)",
+          "type": "boolean"
+        },
         "args": {
           "description": "Additional positional arguments to append to the command. Raw CLI flags are rejected.",
           "type": "string"
@@ -3448,6 +3608,10 @@
           "description": "Allow irreversible operations (merge, permanent delete, empty-trash) to apply (default: false)",
           "type": "boolean"
         },
+        "allow-zotero-cloud": {
+          "description": "Allow stored attachment uploads into Zotero's cloud storage even when Zotero desktop keeps files elsewhere (for example WebDAV) (default: false)",
+          "type": "boolean"
+        },
         "args": {
           "description": "Additional positional arguments to append to the command. Raw CLI flags are rejected.",
           "type": "string"
@@ -3488,6 +3652,10 @@
       "properties": {
         "allow-destructive": {
           "description": "Allow irreversible operations (merge, permanent delete, empty-trash) to apply (default: false)",
+          "type": "boolean"
+        },
+        "allow-zotero-cloud": {
+          "description": "Allow stored attachment uploads into Zotero's cloud storage even when Zotero desktop keeps files elsewhere (for example WebDAV) (default: false)",
           "type": "boolean"
         },
         "args": {
@@ -3542,6 +3710,10 @@
       "properties": {
         "allow-destructive": {
           "description": "Allow irreversible operations (merge, permanent delete, empty-trash) to apply (default: false)",
+          "type": "boolean"
+        },
+        "allow-zotero-cloud": {
+          "description": "Allow stored attachment uploads into Zotero's cloud storage even when Zotero desktop keeps files elsewhere (for example WebDAV) (default: false)",
           "type": "boolean"
         },
         "args": {
@@ -3604,6 +3776,10 @@
       "properties": {
         "allow-destructive": {
           "description": "Allow irreversible operations (merge, permanent delete, empty-trash) to apply (default: false)",
+          "type": "boolean"
+        },
+        "allow-zotero-cloud": {
+          "description": "Allow stored attachment uploads into Zotero's cloud storage even when Zotero desktop keeps files elsewhere (for example WebDAV) (default: false)",
           "type": "boolean"
         },
         "continue-on-error": {

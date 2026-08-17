@@ -310,6 +310,104 @@ user_pref("extensions.zotero.sync.storage.url", "nas.example.com/zotero");
 	}
 }
 
+// The hazard union is independent of which profile is chosen to describe the
+// configuration. Choosing a representative by MODE alone would discard a
+// different profile's positively decoded "file syncing is off" — the reported
+// struct describes one profile, but any profile could be the running one.
+func TestHazardsAccumulateAcrossProfilesIndependentlyOfTheRepresentative(t *testing.T) {
+	mk := func(name, prefs string) string {
+		dir := filepath.Join(t.TempDir(), name)
+		if err := os.MkdirAll(dir, 0o750); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, "prefs.js"), []byte(prefs), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		return dir
+	}
+
+	// A: Zotero cloud, personal syncing OFF. B: unrecognised protocol, so its
+	// mode is unknown, which outranks cloud and makes B the representative.
+	a := mk("a", `
+user_pref("extensions.zotero.sync.storage.protocol", "zotero");
+user_pref("extensions.zotero.sync.storage.enabled", false);
+`)
+	b := mk("b", `user_pref("extensions.zotero.sync.storage.protocol", "s3");`)
+
+	fs, err := loadAcross([]string{a, b}, a)
+	if err != nil {
+		t.Fatalf("loadAcross: %v", err)
+	}
+	if got := fs.Personal().Mode; got != StorageUnknown {
+		t.Fatalf("Personal().Mode = %q, want the riskier unknown representative", got)
+	}
+	if !fs.AnyPersonalSyncDisabled() {
+		t.Fatal("AnyPersonalSyncDisabled() = false; profile A's decoded syncing-off evidence was discarded")
+	}
+	if !fs.AnyPersonalModeUnknown() {
+		t.Fatal("AnyPersonalModeUnknown() = false, want profile B's undecodable protocol recorded")
+	}
+	if fs.AnyPersonalWebDAV() {
+		t.Fatal("AnyPersonalWebDAV() = true with no WebDAV profile present")
+	}
+}
+
+// Same failure on the group axis, and with no mode difference to mask it: the
+// preferred profile wins the tie, so a sibling's disabled group syncing has to
+// survive on its own.
+func TestGroupSyncDisabledInASiblingProfileSurvivesTheModeTie(t *testing.T) {
+	mk := func(name, prefs string) string {
+		dir := filepath.Join(t.TempDir(), name)
+		if err := os.MkdirAll(dir, 0o750); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, "prefs.js"), []byte(prefs), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		return dir
+	}
+	a := mk("a", `user_pref("extensions.zotero.sync.storage.protocol", "zotero");`)
+	b := mk("b", `user_pref("extensions.zotero.sync.storage.groups.enabled", false);`)
+
+	fs, err := loadAcross([]string{a, b}, a)
+	if err != nil {
+		t.Fatalf("loadAcross: %v", err)
+	}
+	if fs.ProfilePath != a {
+		t.Fatalf("ProfilePath = %q, want the preferred profile to win the mode tie", fs.ProfilePath)
+	}
+	if !fs.AnyGroupSyncDisabled() {
+		t.Fatal("AnyGroupSyncDisabled() = false; the sibling's decoded evidence was lost to the tie")
+	}
+}
+
+// An unreadable preferred profile must not suppress the sibling scan that
+// exists to catch a WebDAV profile hiding behind it.
+func TestUnreadablePreferredProfileDoesNotHideAWebDAVSibling(t *testing.T) {
+	root := t.TempDir()
+	missing := filepath.Join(root, "gone")
+	sibling := filepath.Join(root, "b")
+	if err := os.MkdirAll(sibling, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(sibling, "prefs.js"),
+		[]byte(`user_pref("extensions.zotero.sync.storage.protocol", "webdav");`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	fs, err := loadAcross([]string{missing, sibling}, missing)
+	if err != nil {
+		t.Fatalf("loadAcross: %v", err)
+	}
+	if !fs.AnyPersonalWebDAV() {
+		t.Fatal("AnyPersonalWebDAV() = false; an unreadable default profile hid the WebDAV sibling")
+	}
+	// The sibling's own defaults must come through, not a zero struct.
+	if !fs.GroupsEnabled {
+		t.Fatal("GroupsEnabled = false, want the sibling's shipped default rather than a zero struct")
+	}
+}
+
 // Pinning the profile removes the ambiguity entirely.
 func TestProfileDirOverrideWinsAndIsNotAmbiguous(t *testing.T) {
 	dir := writeProfile(t, `user_pref("extensions.zotero.sync.storage.protocol", "webdav");`)

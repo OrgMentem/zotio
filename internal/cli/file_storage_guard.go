@@ -144,29 +144,32 @@ func baseURLTargetsGroup(baseURL string) bool {
 
 // storedUploadRefusal reports why a Zotero Web API stored-file upload must not
 // run for the targeted library, or "" when it may proceed.
+//
+// The decision reads the UNION of hazards across every readable profile, not
+// the single representative reading: a profile positively saying "file syncing
+// is off" is independent evidence and must not be discarded because a
+// different profile happened to have a riskier storage mode.
 func storedUploadRefusal(flags *rootFlags) string {
 	if flags != nil && flags.allowZoteroCloud {
 		return ""
 	}
 	fs, err := zoteroFileStorage()
-	if err != nil {
-		// An unreadable profile is not evidence of a misroute.
+	if err != nil || !fs.Found() {
+		// An absent or unreadable profile is not evidence of a misroute.
 		return ""
 	}
 	// Zotero always uses its own storage for group libraries — WebDAV is a
 	// personal-library setting — so a Web API upload is the correct route
 	// there. Only file syncing being switched off is worth naming.
 	if storedUploadTargetsGroup(flags) {
-		lib := fs.Group()
-		if lib.Mode != zoteroprefs.StorageUnknown && !lib.Enabled {
+		if fs.AnyGroupSyncDisabled() {
 			return "Zotero desktop has group-library file syncing turned off (sync.storage.groups.enabled is false), so a stored attachment uploaded through the Zotero Web API would consume the account's storage plan and never be downloaded by Zotero"
 		}
 		return ""
 	}
 
-	lib := fs.Personal()
 	switch {
-	case lib.Mode == zoteroprefs.StorageWebDAV:
+	case fs.AnyPersonalWebDAV():
 		detail := fmt.Sprintf(
 			"Zotero desktop keeps personal-library attachment files on %s, but a stored attachment uploaded through the Zotero Web API always lands in Zotero's own cloud storage and is billed against that storage plan. Zotero's connector cannot attach a file to an item that already exists in the library, so this upload has no local route",
 			fs.Describe(zoteroprefs.StorageWebDAV))
@@ -176,7 +179,7 @@ func storedUploadRefusal(flags *rootFlags) string {
 				fs.ProfileCount, zoteroprefs.ProfileDirEnv)
 		}
 		return detail
-	case lib.Mode != zoteroprefs.StorageUnknown && !lib.Enabled:
+	case fs.AnyPersonalSyncDisabled():
 		// A separate problem from the WebDAV mismatch: the destination is
 		// right, but Zotero will never download what is uploaded.
 		return "Zotero desktop has personal-library file syncing turned off (sync.storage.enabled is false), so a stored attachment uploaded through the Zotero Web API would consume the account's storage plan and never be downloaded by Zotero"
@@ -260,6 +263,10 @@ func addDoctorFileStorageReport(report map[string]any, flags *rootFlags) {
 		hints = append(hints, "attach in Zotero desktop, or use 'zotio import apply --attach-mode stored --via connector' for new items; --allow-zotero-cloud overrides")
 	case flags != nil && flags.allowZoteroCloud:
 		desc += " — stored uploads forced into Zotero's cloud storage by --allow-zotero-cloud"
+	case lib.Mode == zoteroprefs.StorageUnknown:
+		// Saying uploads "reach the configured store" here would assert exactly
+		// what an unrecognised protocol means we could not establish.
+		desc += " — the destination could not be determined; stored uploads are allowed because this guard only refuses on positive evidence"
 	default:
 		desc += " — stored uploads via the Web API reach the configured store"
 	}

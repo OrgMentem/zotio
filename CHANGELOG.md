@@ -22,25 +22,32 @@ to make the refusal actionable.
 ### Changed — breaking
 
 - **A stored attachment upload is refused when Zotero desktop keeps files
-  somewhere else.** `attachments add --mode stored`, `import apply
-  --attach-mode stored` against an existing item, and any stored upload that
-  resolves to the Web route now exit 9 with a `precondition_unmet` envelope
+  somewhere else.** `attachments add --mode stored` and `import apply
+  --attach-mode stored` exit 9 with a `precondition_unmet` envelope
   (`zotero_file_storage`) naming the configured store and the routes that reach
   it. Previously the bytes went to Zotero's cloud storage and were billed to
-  that plan with no warning. The guard fires only on positive evidence: no
-  Zotero desktop, an unreadable profile, or a value it cannot decode all allow
-  the upload, so machines with no desktop are unaffected. Group libraries are
-  unaffected — Zotero always uses its own storage for them. **Migration:**
-  attach in Zotero desktop, use `import apply --attach-mode stored --via
-  connector` for new items, or pass `--allow-zotero-cloud`.
+  that plan with no warning. A stored upload discovered mid-run — `import pdf
+  --on-duplicate attach` classifies duplicates while applying — is stopped by
+  the same guard at the upload itself, but reports as a failed operation rather
+  than exit 9. The guard fires only on positive evidence: no Zotero desktop, an
+  unreadable profile, or a value it cannot decode all allow the upload, so
+  machines with no desktop are unaffected. Group *storage mode* is unaffected —
+  Zotero always uses its own storage for groups — but a group upload is still
+  refused when group file syncing is switched off. **Migration:** attach in
+  Zotero desktop, use `import apply --attach-mode stored --via connector` for
+  new items, or pass `--allow-zotero-cloud`.
 
 ### Added
 
 - **`--allow-zotero-cloud`** uploads into Zotero's cloud storage anyway. Root
-  persistent flag, mirroring `--allow-destructive`.
-- **`doctor` reports `file_storage:`** — where Zotero desktop actually keeps
-  attachment files for the targeted library, whether uploads are consequently
-  refused, and what to do about it.
+  persistent flag, mirroring `--allow-destructive`, and exposed on the MCP
+  surface in the same write-gating set so an agent can act on the refusal's
+  own remediation.
+- **`doctor` reports `file_storage:`** — what the discovered `prefs.js`
+  currently indicates about where Zotero keeps attachment files for the
+  targeted library, whether uploads are consequently refused, and what to do
+  about it. Reported as unknown when no profile is found or the protocol is one
+  zotio does not model.
 
 ### Fixed
 

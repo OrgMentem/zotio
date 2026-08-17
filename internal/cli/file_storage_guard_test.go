@@ -406,6 +406,15 @@ func TestGroupScopeComesFromTheResolvedWriteTargetNotJustTheFlag(t *testing.T) {
 		{name: "configured group base", baseURL: "https://api.zotero.org/groups/12345", wantGroup: true},
 		{name: "configured user base", baseURL: "https://api.zotero.org/users/999", wantGroup: false},
 		{name: "local user base", baseURL: "http://localhost:23119/api/users/0", wantGroup: false},
+		// The exact silent-misroute trigger: newClient installs hybrid routing
+		// for any local base capturing only flags.group, so writes go to
+		// /users/<id> even when the local base names a group.
+		{name: "local group base writes personal", baseURL: "http://localhost:23119/api/groups/12345", wantGroup: false},
+		// The library prefix is the tail of the URL; a query string or a
+		// deployment prefix must not be mistaken for it.
+		{name: "groups only in query string", baseURL: "https://api.zotero.org/users/1?next=/groups/123", wantGroup: false},
+		{name: "groups only in host", baseURL: "https://groups.example/api/users/1", wantGroup: false},
+		{name: "groups then users in path", baseURL: "https://proxy.example/groups/tenant/api/users/1", wantGroup: false},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -634,7 +643,6 @@ func TestLocalFileURLProducesAValidFileURI(t *testing.T) {
 		{name: "hash escaped", path: "/tmp/draft#2.pdf", want: "file:///tmp/draft%232.pdf"},
 		{name: "question mark escaped", path: "/tmp/what?.pdf", want: "file:///tmp/what%3F.pdf"},
 		{name: "percent escaped", path: "/tmp/100%.pdf", want: "file:///tmp/100%25.pdf"},
-		{name: "relative path gets empty authority", path: "rel/a.pdf", want: "file:///rel/a.pdf"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -652,14 +660,36 @@ func TestLocalFileURLProducesAValidFileURI(t *testing.T) {
 			if u.Host != "" {
 				t.Fatalf("host = %q, want an empty authority", u.Host)
 			}
-			// The decoded path must round-trip back to the original.
-			want := tc.path
-			if !strings.HasPrefix(want, "/") {
-				want = "/" + want
-			}
-			if u.Path != want {
-				t.Fatalf("decoded path = %q, want %q", u.Path, want)
+			if u.Path != tc.path {
+				t.Fatalf("decoded path = %q, want the original %q", u.Path, tc.path)
 			}
 		})
+	}
+}
+
+// A relative path must denote the file that was actually read. Prefixing "/"
+// would claim a location at the filesystem root that was never opened, and
+// that value syncs as attachment metadata. The earlier version of this case
+// asserted the buggy output and called it a round trip.
+func TestLocalFileURLResolvesRelativePathsAgainstTheWorkingDirectory(t *testing.T) {
+	dir := t.TempDir()
+	t.Chdir(dir)
+
+	got := localFileURL(filepath.Join("papers", "scan.pdf"))
+
+	u, err := url.Parse(got)
+	if err != nil {
+		t.Fatalf("parse %q: %v", got, err)
+	}
+	want := filepath.Join(dir, "papers", "scan.pdf")
+	// macOS resolves TempDir through /private; compare on the real path.
+	if resolved, err := filepath.EvalSymlinks(dir); err == nil {
+		want = filepath.Join(resolved, "papers", "scan.pdf")
+	}
+	if u.Path != want && u.Path != filepath.Join(dir, "papers", "scan.pdf") {
+		t.Fatalf("localFileURL(relative) = %q (path %q), want it resolved under %q", got, u.Path, dir)
+	}
+	if strings.HasPrefix(u.Path, "/papers/") {
+		t.Fatalf("localFileURL(relative) = %q, which claims the filesystem root", got)
 	}
 }

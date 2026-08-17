@@ -120,15 +120,55 @@ type FileStorage struct {
 	// Verified reports whether Zotero has verified the WebDAV server.
 	Verified bool
 	// Ambiguous is set when several Zotero profiles exist and discovery could
-	// not establish which one is running. The reported mode then folds in every
-	// profile, so a WebDAV profile is never missed just because a different
-	// profile is marked default.
+	// not establish which one is running.
 	Ambiguous bool
 	// ProfileCount is how many profiles discovery found.
 	ProfileCount int
+	// hazards are the safety-relevant facts observed across EVERY readable
+	// profile, not just the represented one. The rest of this struct describes
+	// a single profile so a message can name concrete values; the hazards are
+	// the union, because -P means any profile might be the running one and a
+	// mode-based choice of representative would otherwise discard a different
+	// profile's positively decoded "syncing is off".
+	hazards hazardSet
 
 	found bool
 }
+
+// hazardSet is the union of safety-relevant facts across all readable
+// profiles. Each field means "at least one readable profile positively said
+// this"; absence of evidence never sets one.
+type hazardSet struct {
+	personalWebDAV      bool
+	personalSyncOff     bool
+	groupSyncOff        bool
+	personalModeUnknown bool
+}
+
+func (h hazardSet) or(other hazardSet) hazardSet {
+	return hazardSet{
+		personalWebDAV:      h.personalWebDAV || other.personalWebDAV,
+		personalSyncOff:     h.personalSyncOff || other.personalSyncOff,
+		groupSyncOff:        h.groupSyncOff || other.groupSyncOff,
+		personalModeUnknown: h.personalModeUnknown || other.personalModeUnknown,
+	}
+}
+
+// AnyPersonalWebDAV reports whether any readable profile keeps personal-library
+// files on WebDAV.
+func (f FileStorage) AnyPersonalWebDAV() bool { return f.hazards.personalWebDAV }
+
+// AnyPersonalSyncDisabled reports whether any readable profile has
+// personal-library file syncing switched off.
+func (f FileStorage) AnyPersonalSyncDisabled() bool { return f.hazards.personalSyncOff }
+
+// AnyGroupSyncDisabled reports whether any readable profile has group-library
+// file syncing switched off.
+func (f FileStorage) AnyGroupSyncDisabled() bool { return f.hazards.groupSyncOff }
+
+// AnyPersonalModeUnknown reports whether any readable profile's storage
+// protocol could not be decoded to a mode this package models.
+func (f FileStorage) AnyPersonalModeUnknown() bool { return f.hazards.personalModeUnknown }
 
 // Found reports whether a readable Zotero desktop profile was located.
 func (f FileStorage) Found() bool { return f.found }
@@ -249,14 +289,17 @@ func Load() (FileStorage, error) {
 	return loadAcross(dirs, preferred)
 }
 
-// loadAcross reads every discovered profile and reports the one that argues
-// most strongly against a Web API upload.
+// loadAcross reads every discovered profile and reports one representative
+// reading plus the UNION of the safety-relevant facts across all of them.
 //
-// Zotero's -P switch means the profile marked default may not be the running
-// one, so the riskiest reading wins: WebDAV beats unknown, unknown beats
-// Zotero's cloud, and the preferred profile wins ties. The whole struct is
-// taken from a single profile rather than merging fields from several, so the
-// reported configuration is always one that actually exists somewhere.
+// Those are deliberately two different things. Zotero's -P switch means any
+// profile might be the running one, so a hazard observed anywhere has to count;
+// but a message needs concrete values, and merging fields from several profiles
+// would describe a configuration that exists nowhere. So the representative is
+// chosen by riskiest mode (WebDAV beats unknown, unknown beats Zotero's cloud,
+// preferred wins ties) while hazards accumulate independently — otherwise a
+// profile positively saying "file syncing is off" would be discarded merely
+// because a different profile had a riskier MODE.
 //
 // A profile that fails to read is skipped, INCLUDING the preferred one:
 // aborting there would suppress the very sibling scan that exists to catch a
@@ -266,6 +309,7 @@ func loadAcross(dirs []string, preferred string) (FileStorage, error) {
 	var (
 		best     FileStorage
 		haveBest bool
+		hazards  hazardSet
 		firstErr error
 	)
 	consider := func(dir string) {
@@ -279,6 +323,7 @@ func loadAcross(dirs []string, preferred string) (FileStorage, error) {
 		if !fs.found {
 			return
 		}
+		hazards = hazards.or(fs.hazards)
 		if !haveBest || riskRank(fs.mode()) > riskRank(best.mode()) {
 			best, haveBest = fs, true
 		}
@@ -300,6 +345,7 @@ func loadAcross(dirs []string, preferred string) (FileStorage, error) {
 	}
 	best.ProfileCount = len(dirs)
 	best.Ambiguous = len(dirs) > 1
+	best.hazards = hazards
 	return best, nil
 }
 
@@ -395,6 +441,15 @@ func LoadProfile(profileDir string) (FileStorage, error) {
 	}
 	if v, ok := values[prefStorageVerified]; ok && !v.undecodable {
 		fs.Verified = v.truthy()
+	}
+	// Each profile contributes its own positively decoded hazards; loadAcross
+	// unions them so a hazard in one profile is never lost by choosing another
+	// profile as the representative.
+	fs.hazards = hazardSet{
+		personalWebDAV:      fs.mode() == StorageWebDAV,
+		personalSyncOff:     !fs.Enabled,
+		groupSyncOff:        !fs.GroupsEnabled,
+		personalModeUnknown: fs.mode() == StorageUnknown,
 	}
 	return fs, nil
 }
