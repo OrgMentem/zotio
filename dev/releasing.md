@@ -205,6 +205,21 @@ so local uncommitted changes never enter a release.
   open the PR by hand — `gh pr create --repo microsoft/winget-pkgs --head
   OrgMentem:zotio-X.Y.Z --base master ...` — using a token/login that can PR
   public repos.
+- **`could not sync fork ... without workflow scope` is expected and non-fatal —
+  but the fork drifts.** GoReleaser tries `merge-upstream` on
+  `OrgMentem/winget-pkgs` before pushing the version branch, and upstream now
+  carries `.github/workflows/*.lock.yml`, which a PAT without `workflow` scope may
+  not write. The sync 422s, GoReleaser logs one yellow line and continues: the
+  branch push and the cross-org PR both succeed, so the release is fine. Observed
+  identically on v0.17.0 (2026-08-08) and v0.18.0 (2026-08-17); by v0.18.0 the
+  fork was **5,984 commits behind** master. It has not broken validation because
+  a version-bump PR only adds files under `manifests/o/OrgMentem/zotio/`, so
+  there is nothing to conflict with. Do not chase it during a release. To clear
+  it: add `workflow` scope to `WINGET_GITHUB_TOKEN`, or sync the fork by hand
+  (`gh repo sync OrgMentem/winget-pkgs --source microsoft/winget-pkgs`) with a
+  token that has it. Check drift with
+  `gh api repos/microsoft/winget-pkgs/compare/master...OrgMentem:master --jq
+  '{status,behind_by}'`.
 - **Never *replace* release notes; only prepend.** `gh release edit
   --notes-file` overwrites the entire body, destroying GoReleaser's SHA-prefixed,
   grouped changelog. If you must add a breaking-changes callout, reconstruct
