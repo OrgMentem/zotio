@@ -29,16 +29,17 @@ type profileStore struct {
 	Profiles map[string]Profile `json:"profiles"`
 }
 
+// profileStorePath computes the store path without touching the filesystem.
+// It used to create ~/.zotio as a side effect, which made every reader a
+// writer: `agent-context` is annotated mcp:read-only=true and reaches this
+// through ListProfileNames -> loadProfileStore, so merely describing the CLI
+// created a state directory. Directory creation now belongs to the save path.
 func profileStorePath() (string, error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return "", fmt.Errorf("resolving home dir: %w", err)
 	}
-	dir := filepath.Join(home, ".zotio")
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return "", fmt.Errorf("creating state dir: %w", err)
-	}
-	return filepath.Join(dir, "profiles.json"), nil
+	return filepath.Join(home, ".zotio", "profiles.json"), nil
 }
 
 func loadProfileStore() (*profileStore, error) {
