@@ -225,11 +225,17 @@ releases feed at most once a day.`,
 			if localAPI {
 				conn, err := flags.newConnector()
 				if err == nil && connectorPing(cmd.Context(), conn) == nil {
-					report["desktop_connector"] = "reachable (stored attachments + local-first create available)"
+					report["desktop_connector"] = "reachable (local-first create; stored attachments only for items created in the same connector session)"
 				} else {
-					report["desktop_connector"] = "not running (creates use the Web API; stored attachments unavailable)"
+					report["desktop_connector"] = "not running (creates use the Web API)"
 				}
 			}
+
+			// Where Zotero desktop itself keeps attachment FILES. A stored
+			// upload through the Web API always lands in Zotero's cloud
+			// storage, so a desktop configured for WebDAV means those uploads
+			// are refused rather than silently misrouted.
+			addDoctorFileStorageReport(report, flags)
 
 			// Check auth environment variables
 			authEnvSet := []string{}
@@ -388,7 +394,7 @@ releases feed at most once a day.`,
 				fmt.Fprintf(w, "  %s %s: %s\n", indicator, ck.label, s)
 			}
 			// Print info keys without status indicator
-			for _, key := range []string{"config_path", "base_url", "writes", "library", "auth_source", "version"} {
+			for _, key := range []string{"config_path", "base_url", "writes", "file_storage", "library", "auth_source", "version"} {
 				if v, ok := report[key]; ok {
 					fmt.Fprintf(w, "  %s: %v\n", key, v)
 				}

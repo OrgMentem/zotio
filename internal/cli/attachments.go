@@ -58,18 +58,25 @@ func newAttachmentsAddCmd(flags *rootFlags) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "add <parent-key> <file>",
 		Short: "Attach a local file to an existing item",
-		Long: `Attach a local file (typically a PDF) to an existing item through the
-Zotero Web API. Mode "stored" uploads an imported_file child that syncs to all
+		Long: `Attach a local file (typically a PDF) to an existing item. Mode "stored"
+uploads an imported_file child through the Zotero Web API that syncs to all
 devices. Mode "linked-file" records the absolute local path without consuming
 Zotero storage quota; the bytes remain local to this machine.
+
+Stored uploads always land in Zotero's OWN cloud storage and are billed against
+that storage plan. Zotero's desktop connector cannot attach a file to an item
+that already exists in the library, so there is no local route for this
+command. When Zotero desktop is configured to keep files elsewhere (a personal
+WebDAV server, or file syncing turned off) the upload is refused rather than
+silently misrouted; attach the file in Zotero desktop instead, or pass
+--allow-zotero-cloud to upload anyway.
 
 Both modes are retry-safe. Stored files reconcile by filename and registered
 MD5. Linked files reconcile by absolute path. An identical retry no-ops instead
 of creating another child.
 
 By default this previews the planned attachment; apply with --yes.`,
-		Example: "  zotio attachments add AB3DE6F8 ./paper.pdf --mode stored --yes",
-		Args:    cobra.ExactArgs(2),
+		Args: cobra.ExactArgs(2),
 		Annotations: map[string]string{
 			"zotio:method": "POST",
 			"zotio:path":   "/items/{key}/file",
@@ -137,6 +144,12 @@ By default this previews the planned attachment; apply with --yes.`,
 // applyStoredUpload maps upload outcomes onto mutation-engine statuses so both
 // `attachments add` and `import apply --attach-mode stored` report identically.
 func applyStoredUpload(ctx context.Context, c *client.Client, req storedUploadRequest, flags *rootFlags) (string, any, error) {
+	// Backstop for the routes preflight cannot decide in advance: import
+	// apply's per-entry fallback to the Web route, and import pdf's
+	// retro-attach onto an already-existing duplicate.
+	if err := guardStoredUpload(flags); err != nil {
+		return "failed", nil, err
+	}
 	if c == nil {
 		return "failed", nil, fmt.Errorf("missing write client")
 	}

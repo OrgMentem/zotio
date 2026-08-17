@@ -23,6 +23,11 @@ const (
 	preconditionSyncedStore      = "synced_store"
 	preconditionBetterBibTeX     = "better_bibtex"
 	preconditionDesktopConnector = "desktop_connector"
+	// preconditionZoteroFileStorage guards commands that upload attachment
+	// bytes through the Zotero Web API file-upload protocol, which always
+	// writes into Zotero's own cloud storage. It is unmet when Zotero desktop
+	// is configured to keep files somewhere else (see file_storage_guard.go).
+	preconditionZoteroFileStorage = "zotero_file_storage"
 )
 
 type capabilityEntry struct {
@@ -100,8 +105,11 @@ var capabilityOverrides = map[string]capabilityEntry{
 	"items preprint-check fix": {Operation: "write", WriteTarget: "web_api", Requires: []string{preconditionWebAPIKey}},
 	// import apply creates items / linked-file attachments via the Web API.
 	"import apply": {Operation: "write", WriteTarget: "web_api", Requires: []string{preconditionWebAPIKey}},
-	// attachments add uploads stored files via the Zotero Web API file-upload protocol.
-	"attachments add": {Operation: "write", WriteTarget: "web_api", Requires: []string{preconditionWebAPIKey}},
+	// attachments add uploads stored files via the Zotero Web API file-upload
+	// protocol. That always targets Zotero's cloud storage, and the desktop
+	// connector cannot attach to an already-existing item, so the upload is
+	// refused outright when Zotero keeps its files elsewhere.
+	"attachments add": {Operation: "write", WriteTarget: "web_api", Requires: []string{preconditionWebAPIKey, preconditionZoteroFileStorage}},
 	// vault push writes to Zotero; pull and sync write the local vault.
 	"vault push":    {Operation: "write", WriteTarget: "web_api", Requires: []string{preconditionWebAPIKey}},
 	"vault pull":    {Operation: "write", WriteTarget: "local_vault", Requires: []string{preconditionWebAPIKey}},

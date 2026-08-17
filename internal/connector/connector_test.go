@@ -631,8 +631,33 @@ func TestConnectorNonCreatedErrors(t *testing.T) {
 	if err := c.SaveItems(context.Background(), "session", "", []map[string]any{{"id": "id"}}); err == nil {
 		t.Fatal("SaveItems returned nil error for HTTP 400")
 	}
-	if err := c.SaveAttachment(context.Background(), "session", "id", "PDF", "", "application/pdf", nil); err == nil {
+	// A real source URL keeps this exercising the HTTP 400 path; an empty one
+	// is now rejected before the request is sent.
+	if err := c.SaveAttachment(context.Background(), "session", "id", "PDF", "https://example.test/p.pdf", "application/pdf", nil); err == nil {
 		t.Fatal("SaveAttachment returned nil error for HTTP 400")
+	}
+}
+
+// Zotero's Attachments.importFromNetworkStream throws "'url' not provided" on
+// an empty url, and the connector reports it as a bare HTTP 500 AFTER the
+// parent item was created. Reject it locally so the caller gets a reason.
+func TestConnectorSaveAttachmentRejectsEmptySourceURL(t *testing.T) {
+	t.Parallel()
+
+	var called bool
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		called = true
+		w.WriteHeader(http.StatusCreated)
+	}))
+	defer server.Close()
+
+	c := New(server.URL+"/connector", time.Second)
+	err := c.SaveAttachment(context.Background(), "session", "id", "PDF", "   ", "application/pdf", []byte("%PDF-1.4"))
+	if err == nil || !strings.Contains(err.Error(), "requires a source URL") {
+		t.Fatalf("err = %v, want a named empty-source-URL refusal", err)
+	}
+	if called {
+		t.Fatal("SaveAttachment sent a request Zotero would have rejected with HTTP 500")
 	}
 }
 

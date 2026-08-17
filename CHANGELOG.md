@@ -2,6 +2,82 @@
 
 Notable changes to zotio. Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow [SemVer](https://semver.org/).
 
+## [Unreleased]
+
+One defect, found by running zotio against a Zotero desktop configured to keep
+attachment files on a personal WebDAV server: every stored attachment upload
+went into Zotero's own cloud storage instead, silently, because the Web API
+file-upload protocol has no other destination and Zotero's file store is a
+client-side setting the API never reports.
+
+The obvious repair — route the bytes through the desktop connector — turns out
+to be impossible for an item that already exists, and that was established
+empirically rather than assumed: `POST /connector/saveAttachment` resolves
+`parentItemID` only through its own save session, so a real library key answers
+`500` on a live session and `400 SESSION_NOT_FOUND` otherwise. So the honest
+behaviour is a refusal, and the one route that does reach a WebDAV store —
+creating item and file inside a single connector session — had to be repaired
+to make the refusal actionable.
+
+### Changed — breaking
+
+- **A stored attachment upload is refused when Zotero desktop keeps files
+  somewhere else.** `attachments add --mode stored`, `import apply
+  --attach-mode stored` against an existing item, and any stored upload that
+  resolves to the Web route now exit 9 with a `precondition_unmet` envelope
+  (`zotero_file_storage`) naming the configured store and the routes that reach
+  it. Previously the bytes went to Zotero's cloud storage and were billed to
+  that plan with no warning. The guard fires only on positive evidence: no
+  Zotero desktop, an unreadable profile, or a value it cannot decode all allow
+  the upload, so machines with no desktop are unaffected. Group libraries are
+  unaffected — Zotero always uses its own storage for them. **Migration:**
+  attach in Zotero desktop, use `import apply --attach-mode stored --via
+  connector` for new items, or pass `--allow-zotero-cloud`.
+
+### Added
+
+- **`--allow-zotero-cloud`** uploads into Zotero's cloud storage anyway. Root
+  persistent flag, mirroring `--allow-destructive`.
+- **`doctor` reports `file_storage:`** — where Zotero desktop actually keeps
+  attachment files for the targeted library, whether uploads are consequently
+  refused, and what to do about it.
+
+### Fixed
+
+- **`import apply --attach-mode stored --via connector` no longer fails on a
+  PDF with no source URL.** Zotero's `Attachments.importFromNetworkStream`
+  rejects an empty `url`, which the connector reported as a bare `500` *after*
+  committing the parent, leaving an item with no attachment and no reason —
+  precisely the case for a locally scanned paper. The file's own `file://` URI
+  is now used as provenance. `connector.SaveAttachment` rejects an empty source
+  URL up front so the failure is named rather than opaque.
+- **`localFileURL` builds a real file URI.** It concatenated `"file://"` with
+  the path, so spaces, `#`, `?`, `%` and non-ASCII went unescaped (a `#` in a
+  filename truncated the URL at the fragment) and a Windows drive letter parsed
+  as an authority. Now constructed with `net/url`, yielding `file:///C:/...`
+  and RFC 8089 UNC form. Affects `import pdf` as well.
+- **`doctor` no longer claims the connector offers stored attachments
+  generally.** It cannot attach to an already-existing item, and the text said
+  otherwise.
+
+### Security
+
+- **A WebDAV password containing `/`, `?` or `#` could reach doctor output and
+  the refusal envelope.** `WebDAVHost` truncated at the first path delimiter
+  before stripping userinfo, so the `@` was discarded along with the host and
+  the credential prefix was returned as the hostname. Userinfo is now stripped
+  first, and non-printable characters decoded from prefs.js are dropped so a
+  crafted value cannot rewrite the terminal line it is reported on.
+
+### Documentation
+
+- `AGENTS.md` and `dev/zotero-api-coverage.md` record both connector
+  invariants — session-local `parentItemID`, and the mandatory non-empty `url`
+  — with the evidence and dates behind them. The guard is documented as
+  best-effort rather than fail-closed: `prefs.js` is flushed lazily and can lag
+  the running application in either direction, and Zotero's `-P` switch means
+  the default profile may not be the running one.
+
 ## [0.18.0] — 2026-08-17
 
 Four consecutive audit passes over one body of work, plus the export-durability
@@ -1528,6 +1604,7 @@ First tagged release: the trust-and-automation layer for Zotero.
 - **Onboarding** — `zotio init` guided setup (Zotero detection, local API, key, first sync, health check).
 - Release engineering: goreleaser builds for 6 platforms, cosign-signed checksums, SBOMs, Homebrew tap.
 
+[Unreleased]: https://github.com/OrgMentem/zotio/compare/v0.18.0...HEAD
 [0.18.0]: https://github.com/OrgMentem/zotio/compare/v0.17.0...v0.18.0
 [0.17.0]: https://github.com/OrgMentem/zotio/compare/v0.16.1...v0.17.0
 [0.16.1]: https://github.com/OrgMentem/zotio/compare/v0.16.0...v0.16.1

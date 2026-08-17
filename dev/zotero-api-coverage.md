@@ -61,6 +61,32 @@ of coverage now.
   changes sync down to the desktop. With **no** key, writes hit the local API and the
   read-only guidance fires. A `412` maps to a "version conflict — run sync" hint
   (reads are local, writes cloud, so a stale local version can race).
+- **Stored attachment uploads always land in Zotero's own cloud storage, and the
+  connector cannot substitute for them on an existing item.** The Web API
+  file-upload protocol writes into Zotero File Storage ("zfs") and bills the
+  account's storage plan. Zotero's own file store is a *client-side* setting the
+  API does not report: `sync.storage.protocol = webdav` puts personal-library
+  files on a WebDAV server instead (`Zotero.Sync.Storage.Local.getModeForLibrary`
+  in `storage/storageLocal.js`; group libraries are always `zfs`, WebDAV is
+  personal-library only). **Verified 2026-08-17 against Zotero 7:**
+  `POST /connector/saveAttachment` resolves `parentItemID` exclusively through
+  `SaveSession.getItemByConnectorKey` — an in-memory, per-session map keyed by the
+  `id` a same-session `saveItems` assigned — so a **real library item key is not
+  addressable**: `500` for a live session, `400 SESSION_NOT_FOUND` otherwise. No
+  connector endpoint (`saveItems`, `saveSnapshot`, `saveSingleFile`,
+  `saveStandaloneAttachment`, `saveAttachmentFromResolver`) accepts one. So there
+  is no local route for attaching a file to an item that already exists, and
+  zotio refuses those uploads when the desktop keeps files elsewhere rather than
+  misrouting them (`internal/cli/file_storage_guard.go`, precondition
+  `zotero_file_storage`; `doctor` reports it under `file_storage:`). The one path
+  that reaches a WebDAV store is creating the item and its file in a **single
+  connector session** — `import apply --attach-mode stored --via connector`.
+- **`POST /connector/saveAttachment` requires a non-empty `url`.** Zotero's
+  `Attachments.importFromNetworkStream` throws `'url' not provided` and the
+  connector reports it as a bare `500` **after** the parent item has already been
+  created, leaving a childless item and no reason. A locally scanned PDF has no
+  web source, so callers must fall back to the file's own `file://` URI;
+  `connector.SaveAttachment` rejects an empty one up front so the failure is named.
 - **Schema/type endpoints are global**, served under `/api` directly, NOT under the
   `/users|groups/<id>` library prefix the configured base URL carries:
   `/api/itemTypes`, `/api/itemFields`, `/api/itemTypeFields`,
@@ -151,6 +177,14 @@ Run this when a new Zotero version ships, or periodically:
 
 ## Last reviewed
 
+- **2026-08-17** — against the live Zotero 7 desktop connector. Established that
+  `POST /connector/saveAttachment` cannot target an existing library item
+  (session-local ids only; `500` live, `400 SESSION_NOT_FOUND` otherwise) and that
+  it rejects an empty `url` with an opaque `500` after creating the parent. Both
+  are recorded under Invariants above. Consequently stored uploads that would
+  silently land in Zotero's cloud storage are now refused when the desktop keeps
+  files elsewhere, and `import apply --attach-mode stored --via connector`
+  supplies a `file://` fallback so it works for locally scanned PDFs.
 - **2026-06-17** — against Zotero 9.0.5 (stable) and 10.0-beta; Local API doc dated
   2026-06-07. No new REST endpoints since `/fulltext` (Jan 2025). Web API v3 stable.
   Verified local API is GET-only (writes 400/501). Added this session: `schema drift`

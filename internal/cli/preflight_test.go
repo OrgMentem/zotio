@@ -119,11 +119,12 @@ func TestCapabilityPreflightWritePreviewBypassesWebAPIKeyRequirement(t *testing.
 
 func TestCapabilityPreflightOverrideRequiresKnownPreconditions(t *testing.T) {
 	known := map[string]struct{}{
-		preconditionLiveLocalAPI:     {},
-		preconditionWebAPIKey:        {},
-		preconditionSyncedStore:      {},
-		preconditionBetterBibTeX:     {},
-		preconditionDesktopConnector: {},
+		preconditionLiveLocalAPI:      {},
+		preconditionWebAPIKey:         {},
+		preconditionSyncedStore:       {},
+		preconditionBetterBibTeX:      {},
+		preconditionDesktopConnector:  {},
+		preconditionZoteroFileStorage: {},
 	}
 	for req := range preconditionCheckers {
 		if _, ok := known[req]; !ok {

@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"os"
 	"testing"
+
+	"zotio/internal/zoteroprefs"
 )
 
 // TestMain points this package's tests at a throwaway HOME.
@@ -33,10 +35,18 @@ func TestMain(m *testing.M) {
 	// than pointed at the temp dir: XDG_DATA_HOME outranks $HOME/.local/share,
 	// so setting it would defeat the per-test `t.Setenv("HOME", t.TempDir())`
 	// isolation many tests rely on and make them share one store.
+	//
+	// APPDATA and ZOTERO_PROFILE_DIR are cleared for a second reason: the
+	// stored-upload guard reads Zotero DESKTOP's profile, and both of those
+	// outrank HOME when locating it. Left inherited, a maintainer whose own
+	// Zotero is configured for WebDAV would see stored-attachment tests refuse
+	// and fail on their laptop while passing on CI.
 	for key, value := range map[string]string{
-		"HOME":            home,
-		"XDG_DATA_HOME":   "",
-		"XDG_CONFIG_HOME": "",
+		"HOME":                    home,
+		"XDG_DATA_HOME":           "",
+		"XDG_CONFIG_HOME":         "",
+		"APPDATA":                 "",
+		zoteroprefs.ProfileDirEnv: "",
 	} {
 		if err := os.Setenv(key, value); err != nil {
 			fmt.Fprintf(os.Stderr, "isolating %s: %v\n", key, err)

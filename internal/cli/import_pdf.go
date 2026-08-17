@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -518,6 +519,19 @@ func addedAfter(entry json.RawMessage, floor time.Time) bool {
 	return !added.Before(floor)
 }
 
+// localFileURL builds an RFC 8089 file URI for a local path.
+//
+// Zotero stores this value in the attachment item's url field, so it has to be
+// a real URI rather than a concatenation: string-joining "file://" with a
+// Windows path yields file://C:/... , which reads C: as an authority, and
+// leaves spaces, #, ? and non-ASCII characters unescaped. url.URL handles the
+// escaping; the leading slash gives the empty authority that makes a drive
+// letter part of the path (file:///C:/...).
 func localFileURL(path string) string {
-	return "file://" + filepath.ToSlash(path)
+	slashed := filepath.ToSlash(path)
+	if !strings.HasPrefix(slashed, "/") {
+		slashed = "/" + slashed
+	}
+	u := url.URL{Scheme: "file", Path: slashed}
+	return u.String()
 }

@@ -30,6 +30,20 @@ func newImportApplyCmd(flags *rootFlags) *cobra.Command {
 		Use:   "apply <manifest>",
 		Short: "Apply a reviewed import manifest",
 		Args:  cobra.ExactArgs(1),
+		Long: `Apply a reviewed import manifest, optionally attaching each entry's file.
+
+--attach-mode stored routes two different ways. For an entry that CREATES its
+item, --via connector hands the item and its file to Zotero desktop in one
+session, so Zotero files the bytes wherever it is configured to — including a
+personal WebDAV server. Every other stored case (attaching to an item that
+already exists, or a create that resolves to the Web route) uploads through the
+Zotero Web API, which always lands in Zotero's own cloud storage; that upload is
+refused when the desktop keeps files elsewhere, unless --allow-zotero-cloud.
+
+An entry with no DOI or source URL records the file's own file:// URI as the
+attachment's provenance, so the local path becomes item metadata and syncs.
+
+By default this previews the planned changes; apply with --yes.`,
 		Annotations: map[string]string{
 			"zotio:method": "POST",
 			"zotio:path":   "/items",
@@ -60,6 +74,16 @@ func newImportApplyCmd(flags *rootFlags) *cobra.Command {
 					return preconditionErr(fmt.Errorf("action recognize requires the desktop connector (local base URL + Zotero running)"))
 				}
 			}
+			// A stored attachment that lands on an already-existing item can
+			// only go through the Web API file-upload protocol, which always
+			// writes into Zotero's cloud storage. That is knowable without
+			// resolving the create route, so refuse it in preview too rather
+			// than presenting a plan that apply will reject.
+			if attachMode == "stored" && (manifestHasAttachEntries(m) || (manifestHasResolvedCreate(m) && flags.via == "web")) {
+				if err := refuseStoredWebUpload(cmd, flags, "import apply"); err != nil {
+					return err
+				}
+			}
 
 			var writeClient importApplyPoster
 			var storedClient *client.Client
@@ -73,6 +97,13 @@ func newImportApplyCmd(flags *rootFlags) *cobra.Command {
 				}
 				needsStoredWeb := attachMode == "stored" &&
 					(manifestHasAttachEntries(m) || storedCreateVia == "web")
+				if needsStoredWeb {
+					// Route resolution can still land on the Web uploader for
+					// creates under --via auto; catch that before any bytes move.
+					if err := refuseStoredWebUpload(cmd, flags, "import apply"); err != nil {
+						return err
+					}
+				}
 				if needsStoredWeb {
 					c, err := flags.newWriteClient()
 					if err != nil {
@@ -185,7 +216,18 @@ func importApplyOps(cmd *cobra.Command, flags *rootFlags, writeClient importAppl
 							if err != nil {
 								return "failed", nil, err
 							}
-							if err := conn.SaveAttachment(cmd.Context(), res.Session, res.ConnKey, "Full Text PDF", importEntrySourceURL(entry, item), "application/pdf", data); err != nil {
+							// Zotero's importFromNetworkStream hard-rejects an
+							// empty url ("'url' not provided"), which the
+							// connector surfaces as an opaque HTTP 500 AFTER the
+							// parent item was already created. A locally scanned
+							// PDF has no DOI or web source, so fall back to the
+							// file's own URI — the same provenance import pdf
+							// already records for standalone attachments.
+							attachmentURL := importEntrySourceURL(entry, item)
+							if strings.TrimSpace(attachmentURL) == "" {
+								attachmentURL = localFileURL(entryPath)
+							}
+							if err := conn.SaveAttachment(cmd.Context(), res.Session, res.ConnKey, "Full Text PDF", attachmentURL, "application/pdf", data); err != nil {
 								return "failed", nil, err
 							}
 							if fetchPDF {

@@ -165,8 +165,23 @@ func creatorHasNoName(creator map[string]any) bool {
 	return true
 }
 
-// SaveAttachment imports raw attachment bytes as a stored child of a connector-created parent.
+// SaveAttachment imports raw attachment bytes as a stored child of a
+// connector-created parent.
+//
+// parentConnectorKey must be the "id" a same-session SaveItems call assigned to
+// the parent, NOT a Zotero item key. Zotero resolves it through
+// SaveSession.getItemByConnectorKey, an in-memory per-session map, so an item
+// that already exists in the library is not addressable here: Zotero answers
+// HTTP 500 for a live session and 400 SESSION_NOT_FOUND otherwise. Verified
+// against Zotero 7 on 2026-08-17.
 func (c *Client) SaveAttachment(ctx context.Context, sessionID, parentConnectorKey, title, sourceURL, contentType string, data []byte) error {
+	// Zotero's Attachments.importFromNetworkStream throws "'url' not provided"
+	// on an empty url and the connector reports that as a bare HTTP 500 —
+	// after the parent item has already been created, so the caller is left
+	// with a parentless item and no reason. Name it here instead.
+	if strings.TrimSpace(sourceURL) == "" {
+		return fmt.Errorf("connector saveAttachment requires a source URL; Zotero rejects an empty one")
+	}
 	metadata := map[string]any{
 		"sessionID":    sessionID,
 		"parentItemID": parentConnectorKey,

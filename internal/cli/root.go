@@ -31,6 +31,10 @@ type rootFlags struct {
 	yes              bool
 	maxChanges       int
 	allowDestructive bool
+	// allowZoteroCloud opts back in to uploading stored attachment bytes into
+	// Zotero's own cloud storage when the desktop is configured to keep files
+	// elsewhere (see file_storage_guard.go).
+	allowZoteroCloud bool
 	continueOnError  bool
 	maxFailures      int
 	agent            bool
@@ -253,6 +257,7 @@ See README.md or the bundled SKILL.md for recipes.`,
 	rootCmd.PersistentFlags().BoolVar(&flags.yes, "yes", false, "Skip confirmation prompts (for agents and scripts)")
 	rootCmd.PersistentFlags().IntVar(&flags.maxChanges, "max-changes", -1, "Max write operations a single mutation may apply before refusing (-1 = default: 500, or 50 under --agent)")
 	rootCmd.PersistentFlags().BoolVar(&flags.allowDestructive, "allow-destructive", false, "Allow irreversible operations (merge, permanent delete, empty-trash) to apply")
+	rootCmd.PersistentFlags().BoolVar(&flags.allowZoteroCloud, "allow-zotero-cloud", false, "Allow stored attachment uploads into Zotero's cloud storage even when Zotero desktop keeps files elsewhere (for example WebDAV)")
 	rootCmd.PersistentFlags().BoolVar(&flags.continueOnError, "continue-on-error", false, "On bulk mutations, continue past per-item failures/conflicts instead of stopping at the first")
 	rootCmd.PersistentFlags().IntVar(&flags.maxFailures, "max-failures", 0, "With --continue-on-error, stop after this many failures (0 = unlimited)")
 	rootCmd.PersistentFlags().BoolVar(&noColor, "no-color", false, "Disable colored output")
@@ -272,6 +277,10 @@ See README.md or the bundled SKILL.md for recipes.`,
 		// Capture the command context so newClient can propagate per-command
 		// deadlines and MCP request cancellation into client HTTP work.
 		flags.ctx = cmd.Context()
+		// Drop any memoized Zotero desktop storage reading: under the MCP
+		// server this Cobra tree is long-lived, so a cached value would
+		// outlive the desktop configuration it described.
+		resetZoteroFileStorageCache()
 		if err := applySelectedProfile(cmd, flags); err != nil {
 			return err
 		}

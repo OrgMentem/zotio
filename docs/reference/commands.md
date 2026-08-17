@@ -13,6 +13,7 @@ These flags are available on every command.
 | --- | --- | --- | --- |
 | `--agent` | `bool` | `false` | Set agent-friendly defaults (--json --compact --no-input --no-color); does NOT auto-apply writes — pass --yes to mutate |
 | `--allow-destructive` | `bool` | `false` | Allow irreversible operations (merge, permanent delete, empty-trash) to apply |
+| `--allow-zotero-cloud` | `bool` | `false` | Allow stored attachment uploads into Zotero's cloud storage even when Zotero desktop keeps files elsewhere (for example WebDAV) |
 | `--compact` | `bool` | `false` | Return only key fields (id, name, status, timestamps) for minimal token usage |
 | `--config` | `string` |  | Config file path |
 | `--connector-target` | `string` |  | Desktop connector save target ID (for example C78); overrides --collection target mapping |
@@ -180,10 +181,18 @@ zotio attachments
 
 Attach a local file to an existing item
 
-Attach a local file (typically a PDF) to an existing item through the
-Zotero Web API. Mode "stored" uploads an imported_file child that syncs to all
+Attach a local file (typically a PDF) to an existing item. Mode "stored"
+uploads an imported_file child through the Zotero Web API that syncs to all
 devices. Mode "linked-file" records the absolute local path without consuming
 Zotero storage quota; the bytes remain local to this machine.
+
+Stored uploads always land in Zotero's OWN cloud storage and are billed against
+that storage plan. Zotero's desktop connector cannot attach a file to an item
+that already exists in the library, so there is no local route for this
+command. When Zotero desktop is configured to keep files elsewhere (a personal
+WebDAV server, or file syncing turned off) the upload is refused rather than
+silently misrouted; attach the file in Zotero desktop instead, or pass
+--allow-zotero-cloud to upload anyway.
 
 Both modes are retry-safe. Stored files reconcile by filename and registered
 MD5. Linked files reconcile by absolute path. An identical retry no-ops instead
@@ -193,12 +202,6 @@ By default this previews the planned attachment; apply with --yes.
 
 ```
 zotio attachments add <parent-key> <file> [flags]
-```
-
-Examples:
-
-```bash
-zotio attachments add AB3DE6F8 ./paper.pdf --mode stored --yes
 ```
 
 | Flag | Type | Default | Description |
@@ -903,6 +906,21 @@ Examples:
 ### `zotio import apply`
 
 Apply a reviewed import manifest
+
+Apply a reviewed import manifest, optionally attaching each entry's file.
+
+--attach-mode stored routes two different ways. For an entry that CREATES its
+item, --via connector hands the item and its file to Zotero desktop in one
+session, so Zotero files the bytes wherever it is configured to — including a
+personal WebDAV server. Every other stored case (attaching to an item that
+already exists, or a create that resolves to the Web route) uploads through the
+Zotero Web API, which always lands in Zotero's own cloud storage; that upload is
+refused when the desktop keeps files elsewhere, unless --allow-zotero-cloud.
+
+An entry with no DOI or source URL records the file's own file:// URI as the
+attachment's provenance, so the local path becomes item metadata and syncs.
+
+By default this previews the planned changes; apply with --yes.
 
 ```
 zotio import apply <manifest> [flags]

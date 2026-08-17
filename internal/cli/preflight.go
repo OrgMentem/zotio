@@ -36,11 +36,12 @@ type preconditionUnmetEnvelope struct {
 type preconditionChecker func(context.Context, *rootFlags, *cobra.Command, capabilityEntry) (bool, string, error)
 
 var preconditionCheckers = map[string]preconditionChecker{
-	preconditionSyncedStore:      checkSyncedStorePrecondition,
-	preconditionWebAPIKey:        checkWebAPIKeyPrecondition,
-	preconditionLiveLocalAPI:     checkLiveLocalAPIPrecondition,
-	preconditionBetterBibTeX:     checkBetterBibTeXPrecondition,
-	preconditionDesktopConnector: checkDesktopConnectorPrecondition,
+	preconditionSyncedStore:       checkSyncedStorePrecondition,
+	preconditionWebAPIKey:         checkWebAPIKeyPrecondition,
+	preconditionLiveLocalAPI:      checkLiveLocalAPIPrecondition,
+	preconditionBetterBibTeX:      checkBetterBibTeXPrecondition,
+	preconditionDesktopConnector:  checkDesktopConnectorPrecondition,
+	preconditionZoteroFileStorage: checkZoteroFileStoragePrecondition,
 }
 
 func init() {
@@ -162,6 +163,8 @@ func preconditionRemediation(precondition string) []string {
 			"Open Zotero desktop and enable Settings -> Advanced -> 'Allow other applications to communicate with Zotero'.",
 			"Use a local Zotero base URL (the default http://localhost:23119/api/users/0) and retry after 'zotio doctor' reports the desktop connector reachable.",
 		}
+	case preconditionZoteroFileStorage:
+		return storedUploadRefusalRemediation()
 	default:
 		return []string{"Fix the declared setup precondition, then retry."}
 	}
@@ -284,4 +287,36 @@ func checkDesktopConnectorPrecondition(ctx context.Context, flags *rootFlags, cm
 		return false, detail, nil
 	}
 	return true, "", nil
+}
+
+// checkZoteroFileStoragePrecondition refuses a Web API stored-file upload that
+// would silently bypass the operator's configured Zotero file store.
+//
+// It is scoped to invocations that actually request a stored attachment: the
+// mode flag is read from the command so that --mode linked-file, which never
+// uploads bytes, is unaffected.
+func checkZoteroFileStoragePrecondition(_ context.Context, flags *rootFlags, cmd *cobra.Command, _ capabilityEntry) (bool, string, error) {
+	if !commandRequestsStoredUpload(cmd) {
+		return true, "", nil
+	}
+	detail := storedUploadRefusal(flags)
+	if detail == "" {
+		return true, "", nil
+	}
+	return false, detail, nil
+}
+
+// commandRequestsStoredUpload reports whether this invocation asked for a
+// stored attachment. Commands carrying no mode flag are treated as requesting
+// one, since they would not declare the precondition otherwise.
+func commandRequestsStoredUpload(cmd *cobra.Command) bool {
+	if cmd == nil {
+		return true
+	}
+	for _, name := range []string{"mode", "attach-mode"} {
+		if f := cmd.Flags().Lookup(name); f != nil {
+			return strings.TrimSpace(f.Value.String()) == "stored"
+		}
+	}
+	return true
 }

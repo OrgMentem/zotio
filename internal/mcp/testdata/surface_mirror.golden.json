@@ -91,7 +91,7 @@
   },
   {
     "name": "attachments_add",
-    "description": "Attach a local file (typically a PDF) to an existing item through the\nZotero Web API. Mode \"stored\" uploads an imported_file child that syncs to all\ndevices. Mode \"linked-file\" records the absolute local path without consuming\nZotero storage quota; the bytes remain local to this machine.\n\nBoth modes are retry-safe. Stored files reconcile by filename and registered\nMD5. Linked files reconcile by absolute path. An identical retry no-ops instead\nof creating another child.\n\nBy default this previews the planned attachment; apply with --yes.",
+    "description": "Attach a local file (typically a PDF) to an existing item. Mode \"stored\"\nuploads an imported_file child through the Zotero Web API that syncs to all\ndevices. Mode \"linked-file\" records the absolute local path without consuming\nZotero storage quota; the bytes remain local to this machine.\n\nStored uploads always land in Zotero's OWN cloud storage and are billed against\nthat storage plan. Zotero's desktop connector cannot attach a file to an item\nthat already exists in the library, so there is no local route for this\ncommand. When Zotero desktop is configured to keep files elsewhere (a personal\nWebDAV server, or file syncing turned off) the upload is refused rather than\nsilently misrouted; attach the file in Zotero desktop instead, or pass\n--allow-zotero-cloud to upload anyway.\n\nBoth modes are retry-safe. Stored files reconcile by filename and registered\nMD5. Linked files reconcile by absolute path. An identical retry no-ops instead\nof creating another child.\n\nBy default this previews the planned attachment; apply with --yes.",
     "inputSchema": {
       "properties": {
         "allow-destructive": {
@@ -822,7 +822,7 @@
   },
   {
     "name": "import_apply",
-    "description": "Apply a reviewed import manifest",
+    "description": "Apply a reviewed import manifest, optionally attaching each entry's file.\n\n--attach-mode stored routes two different ways. For an entry that CREATES its\nitem, --via connector hands the item and its file to Zotero desktop in one\nsession, so Zotero files the bytes wherever it is configured to — including a\npersonal WebDAV server. Every other stored case (attaching to an item that\nalready exists, or a create that resolves to the Web route) uploads through the\nZotero Web API, which always lands in Zotero's own cloud storage; that upload is\nrefused when the desktop keeps files elsewhere, unless --allow-zotero-cloud.\n\nAn entry with no DOI or source URL records the file's own file:// URI as the\nattachment's provenance, so the local path becomes item metadata and syncs.\n\nBy default this previews the planned changes; apply with --yes.",
     "inputSchema": {
       "properties": {
         "allow-destructive": {
