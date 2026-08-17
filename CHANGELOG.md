@@ -2,7 +2,102 @@
 
 Notable changes to zotio. Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow [SemVer](https://semver.org/).
 
-## [Unreleased]
+## [0.18.0] — 2026-08-17
+
+Four consecutive audit passes over one body of work, plus the export-durability
+repair they exposed. No new commands: this release is entirely about paths that
+reported success while losing data — a failed export destroying the export it
+was replacing, two writers to one file silently overwriting each other, writes
+dispatching an unguarded precondition, pagination stopping early and reporting a
+complete result, and read-only commands writing. Every fix carries a negative
+control: the bug reinstated, the test observed to fail, the code restored.
+
+Breaking for scripted and agent consumers, so pre-1.0 it ships as a minor with
+no major-version signal. papio's minimum-zotio floor is unchanged (0.13.0); its
+`items tags add --automatic` path is affected only by the fail-closed
+precondition below.
+
+### Changed — breaking
+
+Every item here changes an exit code, a JSON value, or a command's observable
+behaviour.
+
+- **A file-producing export refuses an output path that is not a regular file.**
+  `--output` on a symlink previously wrote through to its referent; publishing by
+  rename would instead replace the link, and resolving it first would widen a
+  time-of-check/time-of-use window across the whole export. Directories, FIFOs,
+  sockets and devices are covered by the same refusal. **Migration:** pass the
+  resolved path.
+- **`export`, `collections export` and `annotations export` exit 9 when another
+  zotio writer holds the target.** They previously took no lock at all, so two
+  runs to one file raced. The check happens before the first API request.
+  `export snapshot`, `collections bundle` and the `vault` writers already
+  behaved this way. **Migration:** retry after the active writer exits.
+- **`--deliver=file` can now be skipped.** A busy target makes delivery warn on
+  stderr and leave the artifact alone; the command's exit code is unchanged,
+  matching delivery's existing warn-only contract. **Migration:** verify the
+  delivered file, not just the exit code.
+- **A `<output>.lock` sibling is left next to every published artifact.**
+  `export snapshot` used to delete its own; with the key now shared across
+  commands, unlinking it can split the lock namespace. Pre-existing content at
+  that path is never truncated. **Migration:** exclude `*.lock` when globbing an
+  output directory.
+- **`collections export` fails instead of truncating** when the server ignores
+  `start`. The CSL-JSON walk `break`ed and the subcollection walk returned its
+  partial key list, both exiting 0 with a complete-looking artifact. **Migration:**
+  a run that previously "succeeded" with partial output now reports the
+  pagination error the text path already used.
+- **Writes fail closed when the write plane's version cannot be resolved.**
+  `items enrich`, `items preprint-check --fix`, `items tags`, `items move`,
+  `items duplicates resolve`, `searches materialize` and `journal undo`
+  previously dispatched an unguarded PATCH, or sent a local-plane version as a
+  Web API precondition. **Migration:** a write that formerly went through
+  unguarded now fails with a stated reason; resolve the key/route it names.
+- **`searches run` reports the result as unavailable** instead of falling back to
+  a query whose filter parameter the plane may ignore — which answered with the
+  entire unfiltered library. **Migration:** treat unavailable as unavailable; do
+  not read the previous output as a saved-search result.
+- **`library health --verify-files` skips with an unmet precondition** under a
+  Web API configuration, instead of checking every attachment through a
+  local-only endpoint and reporting them all broken.
+- **`items find --pmid`, `--citekey` and `--arxiv` no longer prefix-match.**
+  `smith2023` matched `smith2023a` and PMID `123` matched `12345`. **Migration:**
+  result sets shrink to exact token matches.
+- **`items venues` reports different years and item types.** Years are parsed
+  rather than substring-sliced (so `April 2023` and `n.d.` no longer yield `Apri`
+  and a year), undatable rows are excluded, and the type is the venue's most
+  common rather than an arbitrary row.
+- **Over-limit imports fail instead of truncating.** A manifest over 64 MiB and a
+  translator page over 4 MiB were silently cut short and reported success. The
+  limits themselves are unchanged.
+- **PDF-coverage percentages change.** `library stats` and `collections stats`
+  counted attachment rows against a denominator of parent items, so coverage
+  could exceed 100%. Both now count distinct parents.
+- **`items trash` returns different pages.** Mirror rows were appended after
+  pagination and unsorted, and the live side fetched one unpaginated page (25
+  results from the Web API).
+- **Connector creates and file imports report different JSON.** A create whose
+  collection filing failed was reported as failed with no key; it is now reported
+  committed, with its key, and the filing failure named as a follow-up. File
+  imports report what Zotero actually imported rather than the parsed-record
+  count.
+- **`items annotations --color <name>` now matches rows.** Every documented
+  colour name returned zero rows, because the name was compared against the
+  stored hex.
+- **`items summarize --max-chars` counts characters, not bytes.** A CJK summary
+  was cut to roughly a third of the requested length, so non-Latin summaries get
+  longer.
+- **`tail` writes events to the command's output stream**, not process stdout, so
+  redirected output receives them. Where the API does not implement `/deleted` —
+  which the Zotero local API does not — the feed advances and says so once,
+  instead of replaying the library on every poll.
+- **Read-only commands no longer write.** `doctor`, `analytics`, `workflow
+  status` and `items bibliography` no longer take the writer lock or persist
+  state, and `agent-context` no longer creates `~/.zotio` as a side effect.
+  **Migration:** if you relied on `agent-context` creating that directory, run
+  `zotio init` or any writer first.
+- **`workflow status` and `analytics` exit 0 on a fresh install**, reporting that
+  nothing is archived instead of failing with a store-open error.
 
 ### Fixed
 
@@ -1433,6 +1528,7 @@ First tagged release: the trust-and-automation layer for Zotero.
 - **Onboarding** — `zotio init` guided setup (Zotero detection, local API, key, first sync, health check).
 - Release engineering: goreleaser builds for 6 platforms, cosign-signed checksums, SBOMs, Homebrew tap.
 
+[0.18.0]: https://github.com/OrgMentem/zotio/compare/v0.17.0...v0.18.0
 [0.17.0]: https://github.com/OrgMentem/zotio/compare/v0.16.1...v0.17.0
 [0.16.1]: https://github.com/OrgMentem/zotio/compare/v0.16.0...v0.16.1
 [0.16.0]: https://github.com/OrgMentem/zotio/compare/v0.15.0...v0.16.0
