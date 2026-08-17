@@ -174,11 +174,11 @@ updated counts as one change against --max-changes.`,
 var vaultSyncAfterLock func()
 
 func withVaultWriterLock(cmd *cobra.Command, outDir, operation string, fn func() error) error {
-	canonicalOut, err := canonicalOutputPath(outDir)
+	lockPath, canonicalOut, err := outputWriterLockPath(outDir)
 	if err != nil {
 		return fmt.Errorf("resolving vault output path: %w", err)
 	}
-	return withPathWriterLock(cmd, canonicalOut+".lock", fmt.Sprintf("%s %q", operation, canonicalOut), fn)
+	return withPathWriterLock(cmd, lockPath, fmt.Sprintf("%s %q", operation, canonicalOut), fn)
 }
 
 // executeVaultSync always classifies every note in preview mode first (no

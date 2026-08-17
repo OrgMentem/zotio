@@ -4,6 +4,7 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -11,6 +12,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"zotio/internal/cliutil"
 )
 
 // A file sink spools to a unique tmp file beside the target. The rename costs
@@ -55,6 +58,56 @@ func TestDeliverFileSpoolsBesideTheTargetAndRenamesIntoPlace(t *testing.T) {
 	spool.cleanup()
 	if _, err := os.Stat(target); err != nil {
 		t.Errorf("cleanup after commit removed delivered file: %v", err)
+	}
+}
+
+// A file sink writes a user-named path, so it joins the output collision
+// namespace (ADR-0005). Delivery is secondary: a busy target is reported to the
+// caller, whose warn-only channel skips the delivery without touching the
+// artifact the active writer is publishing.
+func TestDeliverFileSkipsWhenTargetLockBusy(t *testing.T) {
+	target := filepath.Join(t.TempDir(), "out.json")
+	sink := DeliverSink{Scheme: "file", Target: target}
+	spool, err := newDeliverSpool(sink)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(spool.cleanup)
+	const payload = "delivered payload\n"
+	if _, err := io.WriteString(spool, payload); err != nil {
+		t.Fatal(err)
+	}
+
+	lockPath, _, err := outputWriterLockPath(target)
+	if err != nil {
+		t.Fatalf("deriving output lock path: %v", err)
+	}
+	lock, err := cliutil.AcquireWriterLock(lockPath, "test holder")
+	if err != nil {
+		t.Fatalf("holding output lock: %v", err)
+	}
+
+	err = Deliver(context.Background(), sink, spool, false)
+	var busy *cliutil.WriterLockBusyError
+	if !errors.As(err, &busy) {
+		t.Fatalf("Deliver error = %v, want a writer-lock busy error", err)
+	}
+	if _, statErr := os.Stat(target); !os.IsNotExist(statErr) {
+		t.Fatalf("busy delivery published to the target: %v", statErr)
+	}
+
+	if err := lock.Release(); err != nil {
+		t.Fatalf("releasing holder lock: %v", err)
+	}
+	if err := Deliver(context.Background(), sink, spool, false); err != nil {
+		t.Fatalf("Deliver after release: %v", err)
+	}
+	got, err := os.ReadFile(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != payload {
+		t.Fatalf("delivered %q, want %q", got, payload)
 	}
 }
 

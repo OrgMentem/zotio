@@ -82,92 +82,105 @@ func newAnnotationsExportCmd(flags *rootFlags) *cobra.Command {
 				return err
 			}
 
-			path := "/items/top"
-			params := map[string]string{}
-			if flagCollection != "" {
-				path = "/collections/" + url.PathEscape(flagCollection) + "/items"
-			} else if flagTag != "" {
-				path = "/items"
-				params["tag"] = flagTag
-			}
-			items, _, err := fetchResolvedZoteroItems(cmd.Context(), c, readFlags, path, params, flagLimit)
-			if err != nil {
-				return classifyAPIError(err, flags)
-			}
-
-			// fetch each candidate item's annotations
-			// in parallel instead of one sequential Get per item. The per-item
-			// Get goes through the client's shared (now race-safe) rate limiter,
-			// and FanoutRun returns results in source order so export ordering
-			// stays stable.
-			var candidates []map[string]any
-			for _, item := range items {
-				if zoteroItemHasChildren(item) && zoteroString(item, "key") != "" {
-					candidates = append(candidates, item)
+			// Everything from here on reads the source and publishes. It runs
+			// under the output writer lock when --output names a file, so the
+			// lock precedes the first source read.
+			run := func() error {
+				path := "/items/top"
+				params := map[string]string{}
+				if flagCollection != "" {
+					path = "/collections/" + url.PathEscape(flagCollection) + "/items"
+				} else if flagTag != "" {
+					path = "/items"
+					params["tag"] = flagTag
 				}
-			}
-			results, errs := cliutil.FanoutRun(cmd.Context(), candidates,
-				func(item map[string]any) string { return zoteroString(item, "key") },
-				func(fctx context.Context, item map[string]any) (annotationExportItem, error) {
-					key := zoteroString(item, "key")
-					childPath := "/items/" + url.PathEscape(key) + "/children"
-					data, _, err := resolveRead(fctx, c, readFlags, "items", false, childPath, map[string]string{"itemType": "annotation"}, nil)
-					if err != nil {
-						return annotationExportItem{}, err
-					}
-					childItems, err := decodeZoteroItems(data)
-					if err != nil {
-						return annotationExportItem{}, fmt.Errorf("parsing annotation children for %s: %w", key, err)
-					}
-					annotations := annotationSummariesFromItems(childItems)
-					if len(annotations) == 0 {
-						return annotationExportItem{}, nil
-					}
-					return annotationExportItem{
-						Key:         key,
-						Title:       zoteroString(item, "title"),
-						Year:        zoteroItemYear(item),
-						Authors:     zoteroItemAuthors(item),
-						DOI:         zoteroString(item, "DOI"),
-						Annotations: annotations,
-					}, nil
-				})
-			if len(errs) > 0 {
-				e := errs[0].Err
-				var apiErr *client.APIError
-				if errors.As(e, &apiErr) {
-					return classifyAPIError(e, flags)
-				}
-				return e
-			}
-			exports := make([]annotationExportItem, 0, len(results))
-			for _, r := range results {
-				if len(r.Value.Annotations) == 0 {
-					continue
-				}
-				exports = append(exports, r.Value)
-			}
-
-			var out []byte
-			if format == "json" {
-				out, err = json.MarshalIndent(exports, "", "  ")
+				items, _, err := fetchResolvedZoteroItems(cmd.Context(), c, readFlags, path, params, flagLimit)
 				if err != nil {
-					return err
+					return classifyAPIError(err, flags)
 				}
-				out = append(out, '\n')
-			} else {
-				out = []byte(formatAnnotationExportMarkdown(exports))
+
+				// fetch each candidate item's annotations
+				// in parallel instead of one sequential Get per item. The per-item
+				// Get goes through the client's shared (now race-safe) rate limiter,
+				// and FanoutRun returns results in source order so export ordering
+				// stays stable.
+				var candidates []map[string]any
+				for _, item := range items {
+					if zoteroItemHasChildren(item) && zoteroString(item, "key") != "" {
+						candidates = append(candidates, item)
+					}
+				}
+				results, errs := cliutil.FanoutRun(cmd.Context(), candidates,
+					func(item map[string]any) string { return zoteroString(item, "key") },
+					func(fctx context.Context, item map[string]any) (annotationExportItem, error) {
+						key := zoteroString(item, "key")
+						childPath := "/items/" + url.PathEscape(key) + "/children"
+						data, _, err := resolveRead(fctx, c, readFlags, "items", false, childPath, map[string]string{"itemType": "annotation"}, nil)
+						if err != nil {
+							return annotationExportItem{}, err
+						}
+						childItems, err := decodeZoteroItems(data)
+						if err != nil {
+							return annotationExportItem{}, fmt.Errorf("parsing annotation children for %s: %w", key, err)
+						}
+						annotations := annotationSummariesFromItems(childItems)
+						if len(annotations) == 0 {
+							return annotationExportItem{}, nil
+						}
+						return annotationExportItem{
+							Key:         key,
+							Title:       zoteroString(item, "title"),
+							Year:        zoteroItemYear(item),
+							Authors:     zoteroItemAuthors(item),
+							DOI:         zoteroString(item, "DOI"),
+							Annotations: annotations,
+						}, nil
+					})
+				if len(errs) > 0 {
+					e := errs[0].Err
+					var apiErr *client.APIError
+					if errors.As(e, &apiErr) {
+						return classifyAPIError(e, flags)
+					}
+					return e
+				}
+				exports := make([]annotationExportItem, 0, len(results))
+				for _, r := range results {
+					if len(r.Value.Annotations) == 0 {
+						continue
+					}
+					exports = append(exports, r.Value)
+				}
+
+				var out []byte
+				if format == "json" {
+					out, err = json.MarshalIndent(exports, "", "  ")
+					if err != nil {
+						return err
+					}
+					out = append(out, '\n')
+				} else {
+					out = []byte(formatAnnotationExportMarkdown(exports))
+				}
+				if flagOutput != "" {
+					// os.WriteFile left an existing file's mode alone, so preserve it
+					// rather than silently tightening permissions the user chose.
+					return withAtomicOutputFile(flagOutput, publishedOutputMode(flagOutput, 0o600), func(w io.Writer) error {
+						_, writeErr := w.Write(out)
+						return writeErr
+					})
+				}
+				_, err = cmd.OutOrStdout().Write(out)
+				return err
 			}
-			if flagOutput != "" {
-				// os.WriteFile left an existing file's mode alone, so preserve it
-				// rather than silently tightening permissions the user chose.
-				return withAtomicOutputFile(flagOutput, publishedOutputMode(flagOutput, 0o600), func(w io.Writer) error {
-					_, writeErr := w.Write(out)
-					return writeErr
-				})
+			if flagOutput == "" {
+				return run()
 			}
-			_, err = cmd.OutOrStdout().Write(out)
-			return err
+			lockPath, canonicalTarget, err := outputWriterLockPath(flagOutput)
+			if err != nil {
+				return fmt.Errorf("resolving output path: %w", err)
+			}
+			return withPathWriterLock(cmd, lockPath, fmt.Sprintf("annotations export to %q", canonicalTarget), run)
 		},
 	}
 	cmd.Flags().StringVar(&flagCollection, "collection", "", "Scope to items in this collection key")

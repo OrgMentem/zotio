@@ -5,6 +5,7 @@ package cli
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -14,6 +15,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"zotio/internal/cliutil"
 )
 
 // DeliverSink describes where command output should be routed when
@@ -68,6 +71,14 @@ func ParseDeliverSink(spec string) (DeliverSink, error) {
 // no-op because the output already went there through the MultiWriter set up
 // in root.go. Nothing is read back into memory: a file sink renames the spool
 // into place, a webhook streams it as the request body.
+//
+// A file sink joins the output collision namespace (ADR-0005): it takes the
+// same <canonical target>.lock every primary writer to that path takes. The
+// lock is acquired directly rather than through withPathWriterLock because
+// delivery runs after Execute returns, when the command's ownership stack is
+// already unwound. It is held only across the rename — delivery has no load
+// phase on the target — and a busy lock is returned to the caller, whose
+// warn-only channel turns it into the documented skip-with-warning.
 func Deliver(ctx context.Context, sink DeliverSink, spool *deliverSpool, compact bool) error {
 	if ctx == nil {
 		ctx = context.Background()
@@ -76,7 +87,19 @@ func Deliver(ctx context.Context, sink DeliverSink, spool *deliverSpool, compact
 	case "", "stdout":
 		return nil
 	case "file":
-		return spool.commitFile()
+		lockPath, canonicalTarget, err := outputWriterLockPath(sink.Target)
+		if err != nil {
+			return fmt.Errorf("resolving deliver target: %w", err)
+		}
+		lock, err := cliutil.AcquireWriterLock(lockPath, fmt.Sprintf("delivering to %q", canonicalTarget))
+		if err != nil {
+			return err
+		}
+		commitErr := spool.commitFile()
+		if releaseErr := lock.Release(); releaseErr != nil {
+			return errors.Join(commitErr, fmt.Errorf("releasing writer lock at %q: %w", lockPath, releaseErr))
+		}
+		return commitErr
 	case "webhook":
 		return deliverWebhookSpool(ctx, sink.Target, spool, compact)
 	default:

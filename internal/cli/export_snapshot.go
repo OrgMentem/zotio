@@ -57,24 +57,17 @@ Scope is one of: library (default), collection:KEY, or tag:NAME.`,
 				return usageErr(fmt.Errorf("--output is required for export snapshot (it writes a data file and a .manifest.json sidecar)"))
 			}
 
-			canonicalOutput, err := canonicalOutputPath(outputFile)
+			lockPath, _, err := outputWriterLockPath(outputFile)
 			if err != nil {
 				return fmt.Errorf("resolving output path: %w", err)
 			}
-			runErr := withPathWriterLock(cmd, canonicalOutput+".lock", "export snapshot", func() error {
+			// The lock file is deliberately left behind. Plain exports and
+			// --deliver=file now share this key, and unlinking it could drop an
+			// inode a concurrent acquirer has already flocked, letting a third
+			// writer lock a fresh inode under the same name. See ADR-0005.
+			return withPathWriterLock(cmd, lockPath, "export snapshot", func() error {
 				return exportSnapshot(cmd, flags, outputFile, path, params, scopeLabel, pageSize, limit, resume)
 			})
-			if runErr != nil {
-				return runErr
-			}
-			// The checkpoint and manifest are the recovery and verification
-			// artifacts. Once both are complete, the advisory lock is no
-			// longer needed and can be removed after withPathWriterLock has
-			// released it. Failed or interrupted runs retain the lock path.
-			if err := os.Remove(canonicalOutput + ".lock"); err != nil && !os.IsNotExist(err) {
-				return fmt.Errorf("removing export lock: %w", err)
-			}
-			return nil
 		},
 	}
 	cmd.Flags().StringVarP(&outputFile, "output", "o", "", "Output JSONL data file (required); the manifest is written to <output>.manifest.json")

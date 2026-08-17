@@ -42,11 +42,11 @@ never writes to Zotero; run sync first if local data is missing.`,
 				return usageErr(fmt.Errorf("--out is required"))
 			}
 
-			canonicalOut, err := canonicalOutputPath(outDir)
+			lockPath, _, err := outputWriterLockPath(outDir)
 			if err != nil {
 				return fmt.Errorf("resolving output path: %w", err)
 			}
-			return withPathWriterLock(cmd, canonicalOut+".lock", "collections bundle", func() error {
+			return withPathWriterLock(cmd, lockPath, "collections bundle", func() error {
 				return runCollectionsBundle(cmd, flags, args[0], outDir)
 			})
 		},

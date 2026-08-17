@@ -54,6 +54,45 @@ with the same pagination error the text path already used. This had to land
 alongside atomic publication, which would otherwise have faithfully committed the
 truncated result.
 
+**Two exports to the same file no longer race, and the writer lock no longer
+releases itself early.** `export snapshot --output F` coordinated on `F`, a plain
+`export --output F` took no lock at all, and `--deliver=file:F` was exempt from
+both — three writers to one named file under three different policies. Atomic
+publication (above) stopped either writer from being observed torn, but two
+writers still silently overwrote each other's complete artifact. Every command
+that names an output path now derives its lock through one helper, so the same
+named target always yields the same lock identity, including through symlinked
+ancestors: `export`, `collections export`, `annotations export`, `export
+snapshot`, `collections bundle`, and the `vault` writers. A busy target fails
+fast with exit 9 before the first API request, so a collision costs no traffic.
+`--deliver=file` joins the same namespace but stays secondary: a busy target
+skips the delivery with a warning and leaves the command's exit code alone,
+because the command's real work already succeeded.
+
+Repairing the lock machinery had to come first. `withPathWriterLock` could not
+hold two locks: re-entering a path the same command already held deferred a
+release of the **outer** ownership, so the outer transaction ran on to
+publication with its lock already gone; reuse only ever inspected the innermost
+lock, so an installation writer that nested an output lock could not re-enter its
+own installation lock; and the installation wrapper identified its handoff by
+owning command alone, so it would have released an output-scope lock the same
+command acquired. All three were latent — every call site took exactly one path
+lock — and all three would have become live the moment exports started locking.
+
+`export snapshot` no longer deletes its lock file on success. Now that several
+commands share that path, unlinking it can drop an inode a live acquirer already
+holds and let a third writer lock a fresh inode under the same name, splitting
+one namespace into two "locked" writers. Acquisition also never truncates or
+rewrites a pre-existing `<target>.lock`: the sibling lives in the user's output
+directory, so its bytes are not zotio's to destroy. The visible cost is a
+retained `<target>.lock` next to each published artifact, which was already
+documented as harmless — it is not evidence of an active writer.
+
+ADR-0005 is rewritten around the four axes these bugs kept collapsing:
+derivation dependency (does a stale load corrupt the next publication?),
+coordination scope and key, collision policy as a property of the scope rather
+than of each writer, and publication mechanism.
+
 A fourth pass over the same body of work, this one from findings a weak model
 produced against a tree that was being rewritten underneath it. Of 48 findings,
 16 were noise — false positives, duplicates, or already fixed — and validating

@@ -62,10 +62,17 @@ the top-level collection without recursing into subcollections.`,
 				// detection and keep fetching pages after the consumer exited.
 				return exportCollection(c, cmd.OutOrStdout(), collKey, format, flagFlat, flagLimit, visited)
 			}
-			// Published atomically, so a mid-walk failure leaves the previous
-			// artifact intact instead of a valid-looking partial bibliography.
-			return withAtomicOutputFile(flagOutput, exportOutputFileMode, func(w io.Writer) error {
-				return exportCollection(c, w, collKey, format, flagFlat, flagLimit, visited)
+			lockPath, canonicalTarget, err := outputWriterLockPath(flagOutput)
+			if err != nil {
+				return fmt.Errorf("resolving output path: %w", err)
+			}
+			// The lock precedes the first source read, and covers the atomic
+			// publication that keeps a mid-walk failure from replacing the
+			// previous artifact with a valid-looking partial bibliography.
+			return withPathWriterLock(cmd, lockPath, fmt.Sprintf("collections export to %q", canonicalTarget), func() error {
+				return withAtomicOutputFile(flagOutput, exportOutputFileMode, func(w io.Writer) error {
+					return exportCollection(c, w, collKey, format, flagFlat, flagLimit, visited)
+				})
 			})
 		},
 	}

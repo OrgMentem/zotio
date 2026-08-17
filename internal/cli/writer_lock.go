@@ -54,8 +54,9 @@ func withInstallationWriterLock(cmd *cobra.Command, flags *rootFlags, operation 
 }
 
 // withPathWriterLock serializes a complete transaction for one canonical output
-// path. A nested RootCmd inherits the command context, so it may reuse only the
-// exact lock already held by its caller; distinct output paths remain isolated.
+// path. A transaction reuses any lock already held anywhere in its command
+// context — nested RootCmd invocations inherit that context — and never
+// releases a lock it did not acquire. Distinct paths nest and release LIFO.
 func withPathWriterLock(cmd *cobra.Command, lockPath, operation string, fn func() error) (err error) {
 	if cmd == nil {
 		return fmt.Errorf("acquiring writer lock for %s: nil command", operation)
@@ -64,26 +65,12 @@ func withPathWriterLock(cmd *cobra.Command, lockPath, operation string, fn func(
 		return fmt.Errorf("acquiring writer lock for %s: nil transaction", operation)
 	}
 
-	canonicalPath, err := canonicalWriterLockPath(lockPath)
+	canonicalPath, err := normalizedWriterLockPath(lockPath)
 	if err != nil {
 		return fmt.Errorf("canonicalizing writer lock for %s: %w", operation, err)
 	}
-	if ownership := writerLockOwner(cmd); ownership != nil && ownership.path == canonicalPath {
-		if ownership.owner != cmd {
-			return fn()
-		}
-		// fn is caller-supplied and may panic mid-transaction. defer is load-bearing
-		// here: the in-process MCP server recovers such panics at
-		// internal/mcp/cobratree/shellout.go and keeps serving requests, so without
-		// a deferred release this lock file would stay held forever and every later
-		// writer command on that server would fail busy. We deliberately do not
-		// recover the panic ourselves — it must keep propagating to that recovery
-		// point unchanged.
-		defer func() {
-			err = finishWriterLockOwnership(cmd, ownership, err)
-		}()
-		err = fn()
-		return err
+	if heldWriterLockPath(cmd, canonicalPath) {
+		return fn()
 	}
 
 	ownership, err := acquireWriterLockOwnership(cmd, canonicalPath, operation)
@@ -123,6 +110,20 @@ func writerLockOwner(cmd *cobra.Command) *writerLockOwnership {
 	return ownership
 }
 
+// heldWriterLockPath reports whether any writer-lock ownership in the command's
+// context stack already holds canonicalPath, regardless of which command
+// acquired it. Reuse must never release a lock it did not acquire, so callers
+// that see true run their transaction without acquiring or releasing anything.
+func heldWriterLockPath(cmd *cobra.Command, canonicalPath string) bool {
+	for ownership := writerLockOwner(cmd); ownership != nil; {
+		if ownership.path == canonicalPath {
+			return true
+		}
+		ownership, _ = ownership.previous.Value(writerLockContextKey{}).(*writerLockOwnership)
+	}
+	return false
+}
+
 func commandContext(cmd *cobra.Command) context.Context {
 	if cmd != nil && cmd.Context() != nil {
 		return cmd.Context()
@@ -141,12 +142,30 @@ func finishWriterLockOwnership(cmd *cobra.Command, ownership *writerLockOwnershi
 	return transactionErr
 }
 
-func canonicalWriterLockPath(path string) (string, error) {
+// normalizedWriterLockPath normalizes a lock path with Abs+Clean. That is
+// lexical normalization, not filesystem identity: two spellings that resolve
+// through different symlinked ancestors normalize differently. Output-scope
+// callers must therefore derive their key through outputWriterLockPath so every
+// spelling of one named target shares a single lock.
+func normalizedWriterLockPath(path string) (string, error) {
 	path = strings.TrimSpace(path)
 	if path == "" {
 		return "", fmt.Errorf("empty lock path")
 	}
 	return filepath.Abs(filepath.Clean(path))
+}
+
+// outputWriterLockPath derives the collision-namespace writer-lock key for a
+// user-named output target: the transient sibling <canonical target>.lock.
+// Every command that publishes to a user-named path must key its lock through
+// this helper — same named data target implies same lock identity, including
+// through symlinked ancestors, which canonicalOutputPath resolves.
+func outputWriterLockPath(target string) (lockPath, canonicalTarget string, err error) {
+	canonicalTarget, err = canonicalOutputPath(target)
+	if err != nil {
+		return "", "", err
+	}
+	return canonicalTarget + ".lock", canonicalTarget, nil
 }
 
 type writerLockMode uint8
@@ -282,7 +301,7 @@ func wrapRootPersistentWriterLockPreRun(rootCmd *cobra.Command, flags *rootFlags
 			return err
 		}
 
-		if ownership := writerLockOwner(cmd); ownership != nil && ownership.path == lockPath {
+		if heldWriterLockPath(cmd, lockPath) {
 			return original(cmd, args)
 		}
 		// Acquire only after the command's own flag validation would pass.
@@ -327,10 +346,33 @@ func wrapRootPersistentWriterLockPreRun(rootCmd *cobra.Command, flags *rootFlags
 	}
 }
 
+// installationWriterLockHandoff returns the installation-lock ownership that
+// wrapRootPersistentWriterLockPreRun handed to this command body for release,
+// or nil. The path comparison is load-bearing: the installation wrapper must
+// never release an output-scope lock that the same command acquired. It reads
+// only the top of the stack on purpose — finishWriterLockOwnership restores
+// ownership.previous, so releasing anything but the innermost ownership would
+// drop the locks nested above it.
+func installationWriterLockHandoff(cmd *cobra.Command, flags *rootFlags) *writerLockOwnership {
+	ownership := writerLockOwner(cmd)
+	if ownership == nil || ownership.owner != cmd {
+		return nil
+	}
+	lockPath, err := installationWriterLockPath(flags)
+	if err != nil {
+		// Fall through unhanded: withInstallationWriterLock reports the same error.
+		return nil
+	}
+	if ownership.path != lockPath {
+		return nil
+	}
+	return ownership
+}
+
 func wrapInstallationWriterCommand(cmd *cobra.Command, flags *rootFlags, operation string, mode writerLockMode) {
 	wrap := func(run func(*cobra.Command, []string) error) func(*cobra.Command, []string) error {
 		return func(cmd *cobra.Command, args []string) (err error) {
-			if ownership := writerLockOwner(cmd); ownership != nil && ownership.owner == cmd {
+			if ownership := installationWriterLockHandoff(cmd, flags); ownership != nil {
 				// run is caller-supplied and may panic; defer keeps the release
 				// happening on that path too. See withPathWriterLock for why this
 				// defer is load-bearing (the in-process MCP server recovers panics
@@ -361,7 +403,7 @@ func wrapInstallationWriterCommand(cmd *cobra.Command, flags *rootFlags, operati
 		// command use, flags, annotations, and user-visible behavior are unchanged.
 		cmd.Run = nil
 		cmd.RunE = func(cmd *cobra.Command, args []string) (err error) {
-			if ownership := writerLockOwner(cmd); ownership != nil && ownership.owner == cmd {
+			if ownership := installationWriterLockHandoff(cmd, flags); ownership != nil {
 				// run never returns an error, but it may still panic; defer keeps
 				// the release happening on that path. See withPathWriterLock for
 				// why this defer is load-bearing.

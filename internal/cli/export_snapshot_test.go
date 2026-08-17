@@ -213,8 +213,10 @@ func TestExportSnapshotPaginatesAndLocks(t *testing.T) {
 	}
 	assertFileMode(t, out, 0o600)
 	assertFileMode(t, out+".manifest.json", 0o600)
-	if _, err := os.Stat(out + ".lock"); !os.IsNotExist(err) {
-		t.Errorf("writer lock should be removed on success, stat err = %v", err)
+	// The lock file is retained: plain exports and --deliver=file share this
+	// key, and unlinking it could split the flock namespace (ADR-0005).
+	if _, err := os.Stat(out + ".lock"); err != nil {
+		t.Errorf("writer lock should be retained on success, stat err = %v", err)
 	}
 	if _, err := os.Stat(out + ".checkpoint.json"); !os.IsNotExist(err) {
 		t.Errorf("checkpoint sidecar should be removed on success, stat err = %v", err)
@@ -263,8 +265,8 @@ func TestExportSnapshotSameOutputReturnsBusyBeforeSecondRequest(t *testing.T) {
 	if err := json.Unmarshal(manifest, &lock); err != nil || lock.Count != 1 {
 		t.Fatalf("snapshot manifest = %q, err = %v", manifest, err)
 	}
-	if _, err := os.Stat(output + ".lock"); !os.IsNotExist(err) {
-		t.Fatalf("writer lock remains after successful export: %v", err)
+	if _, err := os.Stat(output + ".lock"); err != nil {
+		t.Fatalf("writer lock should be retained after a successful export: %v", err)
 	}
 }
 

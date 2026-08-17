@@ -191,19 +191,27 @@ backwards-compatible resource exports.`,
 					return fmt.Errorf("flushing export: %w", flushErr)
 				}
 			} else {
-				// A file is published atomically: a failure leaves whatever
-				// artifact was already there instead of truncating it, and nothing
-				// is flushed into a temporary file that is about to be discarded.
-				if err := withAtomicOutputFile(outputFile, exportOutputFileMode, func(w io.Writer) error {
-					writer := bufio.NewWriter(w)
-					count, err = runExport(writer)
-					if err != nil {
-						return err
-					}
-					if flushErr := writer.Flush(); flushErr != nil {
-						return fmt.Errorf("flushing export: %w", flushErr)
-					}
-					return nil
+				lockPath, canonicalTarget, lockErr := outputWriterLockPath(outputFile)
+				if lockErr != nil {
+					return fmt.Errorf("resolving output path: %w", lockErr)
+				}
+				// The lock is taken before the first source read so a busy target
+				// costs no API traffic, and it covers the atomic publication.
+				if err := withPathWriterLock(cmd, lockPath, fmt.Sprintf("export to %q", canonicalTarget), func() error {
+					// A file is published atomically: a failure leaves whatever
+					// artifact was already there instead of truncating it, and nothing
+					// is flushed into a temporary file that is about to be discarded.
+					return withAtomicOutputFile(outputFile, exportOutputFileMode, func(w io.Writer) error {
+						writer := bufio.NewWriter(w)
+						count, err = runExport(writer)
+						if err != nil {
+							return err
+						}
+						if flushErr := writer.Flush(); flushErr != nil {
+							return fmt.Errorf("flushing export: %w", flushErr)
+						}
+						return nil
+					})
 				}); err != nil {
 					return err
 				}
