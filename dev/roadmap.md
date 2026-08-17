@@ -13,6 +13,18 @@
   constraints (local API is GET-only; writes route to the Web API with a key; stale local reads
   vs. cloud writes race to `412`; schema endpoints are global; `/items/new` is Web-only; fast
   6–10 week release cadence) live in `docs/zotero-api-coverage.md` and are assumed throughout.
+- **Ledger reconciliation (2026-08-17).** The feature-opportunity ledger had drifted from this
+  document: 64 `task`/`chore` findings sat open, most of them raw material for the Phase 9–11
+  review above that was never closed out. Each was re-verified against the *shipped* surface
+  (158 commands in the built binary, plus source), deliberately **not** against this file, since
+  a phase marked SHIPPED here is a claim. Result: 3 shipped, 12 already covered by a recorded
+  Cut/Decline/Park/Defer decision, 2 duplicates — closed; **47 remain genuinely open or partial**.
+  That ratio is the finding: the backlog was real work, not stale bookkeeping. Two P1s were
+  downgraded on measurement (PDF full-text search is indexed but its hits carry no item identity;
+  the desktop-connector write route is modelled but mis-declared on two commands). One row in
+  *Cut / defer* was corrected: it justified declining the multi-library workspace with a
+  `--group all` fan-out that does not exist. **Standing rule:** when a phase is marked SHIPPED
+  here, close its source findings in the same pass, or the ledger stops being trustworthy.
 
 ## Product thesis
 
@@ -338,7 +350,7 @@ it expressive, expressive before wiring triggers. Triggered runs stay preview-on
 |---|---|---|
 | **Defer** | Journal before-images / broader undo | Relitigates the recorded "defer universal undo"; no demand evidence. Before-images are the principled path *if* demand shows. |
 | **Defer** | Stored-file upload protocol | Still the riskiest import edge; the attach-mode contract already reserves `upload`. Revisit on group-library demand. |
-| **Decline** | Multi-library workspace model | `--group all` read/diagnostic fan-out is the cheap 80%; a workspace registry is architecture without a user. |
+| **Decline** | Multi-library workspace model | A workspace registry is architecture without a user. The intended cheap 80% is `--group all` read/diagnostic fan-out — **not yet built** (`--group` accepts a numeric ID only; `--group all` exits 2), tracked as `zotio-e93e08d3268d422a`. Corrected 2026-08-17: this row previously implied the fan-out already shipped, so the decline rested on an unbuilt alternative. |
 | **Decline** | Beacon recurring scheduler | `watch --interval` + OS schedulers/CI cover it; a resident daemon is a large operational surface against the composability thesis. |
 | **Park** | BYO-vector seam | The sanctioned form of the semantic-search cut, but build nothing until a host actually shows up with vectors. |
 | **Park** | P3 long tail (analytics, digests, ZotFile-style renaming, notes, collaboration) | Promote individual items only on user signal from the outreach channels. |
