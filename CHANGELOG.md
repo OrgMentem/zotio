@@ -4,6 +4,149 @@ Notable changes to zotio. Format follows [Keep a Changelog](https://keepachangel
 
 ## [Unreleased]
 
+### Fixed
+
+Three consecutive passes over the same body of work: 24 findings from a static
+audit, then 14 defects that seven reviewers found in those fixes, then two
+pre-existing issues those reviewers flagged as out of scope. Every fix now
+carries a negative control — the bug reinstated, the test observed to fail,
+the code restored — because the first pass shipped three tests that could not
+fail, one of which copied the production SQL it was meant to check.
+
+- **Writes no longer send a local-plane version as a Web API precondition.**
+  Zotero key-based writes need `If-Unmodified-Since-Version`, and the desktop
+  local API and `api.zotero.org` number object versions in independent spaces.
+  `items enrich` and `items preprint-check --fix` put a version read from the
+  local mirror into the PATCH body, which either conflicts spuriously or, when
+  the numbers happen to coincide, guards nothing and overwrites a concurrent Web
+  edit. Five further paths — `items tags`, `items move`, `items duplicates
+  resolve`, `searches materialize`, and `journal undo`'s tag and collection
+  reversal — built their precondition header conditionally and dispatched an
+  unguarded PATCH when the version read returned 0, surfacing an opaque 428
+  instead of the real cause.
+  All of them now resolve the version from the plane the write lands on and fail
+  closed with a stated reason if it is unavailable.
+- **`journal undo` reads the item it is reversing from the plane it writes to.**
+  Both reversals read through the general client, which is only pointed at the
+  write plane when route resolution succeeds — and that error was discarded. A
+  failed resolution therefore read the local library and PATCHed the remote one.
+  For tag and collection reversals this corrupted the write itself, not just the
+  guard: the membership being inverted came from the wrong library, so the
+  reversal could overwrite upstream tags with stale ones.
+- **`tail` no longer skips changes it failed to read.** A malformed but
+  successful response decoded to zero events and the cursor advanced anyway, so
+  those changes were never observable again; a legitimately empty page still
+  advances. Deletions had the same defect on the transport path and are now
+  retried rather than skipped — except where the API does not implement
+  `/deleted` at all, which the Zotero local API does not, where the feed advances
+  and says so once instead of replaying the library on every poll. `tail` also
+  wrote events straight to process stdout; it now uses the command's own output
+  writer, so callers that redirect output receive them.
+- **`searches materialize` walks every page of a saved search.** It issued one
+  unpaginated request and reported a complete plan, so everything past the first
+  page was silently left unfiled. Keys are also deduplicated within a page, not
+  just across pages.
+- **`searches run` no longer returns the whole library as a saved search.** When
+  the saved-search endpoint was unavailable it fell back to a query with an empty
+  search term and an unverified filter parameter, and accepted any non-empty
+  response. An API plane that ignores that parameter answers with the entire
+  unfiltered library. The unverified fallback is gone; the command now reports
+  the result as unavailable.
+- **PDF coverage can no longer exceed 100%.** `library stats` and `collections
+  stats` counted attachment rows against a denominator of parent items, so one
+  item with two PDFs contributed twice. Both now count distinct parents, and the
+  item-eligibility predicate is shared between numerator and denominator so they
+  cannot drift apart again.
+- **`items restore` leaves the local mirror in a readable state.** It removed the
+  trash row without reinstating the live one, so an immediately following
+  `--data-source local` read, health check, or count reported the item as
+  missing entirely. The reinstate and the trash removal are now one transaction,
+  a stale cached payload is reported rather than silently resurrected, and a
+  failed live-row read no longer discards the trash row on the way out.
+- **`library health --verify-files` requires the local API instead of guessing.**
+  It probed for the desktop connector but ignored every API error from the probe,
+  so a Web API configuration — where the probe returns 404 — proceeded to check
+  every attachment through a local-only endpoint and reported them all as broken.
+  It now skips with an unmet precondition.
+- **Connector item creates are no longer reported as failed after the item was
+  created.** Filing the new item into a target collection is a second call with
+  no transaction around it, and a failure there discarded the result, so the
+  operation was journalled as failed without the key needed to reconcile it and a
+  retry could duplicate the item. The commit is now reported with its key, with
+  the filing failure named as a follow-up.
+- **Connector file imports report what Zotero actually imported.** Every parsed
+  record was reported as applied even when the translator merged, rejected, or
+  returned fewer items, so automation could not tell a real import from a
+  parser-count placeholder.
+- **Enrichment no longer attaches a DOI to an unrelated non-Latin title.** The
+  exact-title guard compared titles stripped to ASCII letters and digits, so any
+  wholly non-Latin title — Chinese, Cyrillic, Arabic — normalized to an empty
+  string, and two unrelated titles compared equal. It now compares Unicode
+  letters and digits and refuses to match on an empty normalization.
+- **PubMed imports stop swapping all-caps surnames into given names.** Any
+  all-caps final token up to four characters was read as PubMed's initials
+  convention, so `Lee`, `Wong`, `Kim` were inverted. Now limited to the
+  documented one- and two-letter shape. `Smith JAB` is read as a surname by
+  design: three-letter surnames are far commoner than three-initial authors, and
+  a swapped surname corrupts every citation it appears in.
+- **`items trash` paginates the union of both trash sources correctly.** Mirror
+  rows were appended after pagination and without sorting, so `--start`/`--limit`
+  could return rows from the wrong page, out of date order, or duplicated across
+  pages. The live side also fetched only one unpaginated page, which the Web API
+  answers with 25 results, so a larger trash paginated an incomplete set.
+- **`schema drift --deep` no longer reports a clean audit against a shallow
+  baseline.** The version fast path compared schema versions without checking
+  whether the stored baseline actually contained the per-item-type maps that
+  `--deep` compares, so newly added or removed fields went unreported until the
+  schema version itself changed.
+- **`library health` stops issuing external requests after cancellation.** Its
+  retraction checks ran on a background context, so a cancelled or timed-out
+  request kept querying CrossRef and delayed process shutdown.
+- **Read-only commands no longer write.** `doctor`, `analytics` and `workflow
+  status` opened the local mirror through the migrating writable path, taking the
+  writer lock and stamping schema during what the capability registry advertises
+  as a read; `items bibliography` persisted a resolved user ID from an
+  `mcp:read-only` command outside that lock, letting concurrent reads clobber
+  each other's unrelated config; and `agent-context` — the command an agent runs
+  first — created `~/.zotio` as a side effect four calls deep inside a function
+  that computes a path. This last one matters twice over, because `workflow run
+  --dry-run` skips `--dry-run` injection precisely for commands annotated
+  read-only, so their writes execute for real inside a preview. All 85 read-only
+  commands are now audited by call-graph reachability, with legitimate writers
+  allowlisted by reason and the list failing if an entry goes stale.
+- **`workflow status` and `analytics` work on a fresh install.** Making them
+  read-only left them opening a database that does not exist yet, so a first run
+  failed with a store-open error instead of reporting that nothing is archived.
+- **`workflow archive` takes the installation writer lock.** It writes cursor and
+  checkpoint state but was classified as an untyped command and left out of the
+  writer-lock set, so a concurrent archive and sync could load the same
+  checkpoint, duplicate work, and publish last-write-wins cursor state.
+- **The group scope is no longer read without synchronization.** MCP dispatch
+  goroutines read the active group while Cobra's pre-run wrote it — a genuine
+  data race, and a wrong-library read whenever the two values differed. Putting
+  it behind an accessor then exposed a second defect: seven sites called that
+  accessor twice around a single check-then-use, so a
+  write landing between them produced torn values such as a `data-group-.db`
+  path or a bare `group:` scope; compound operations now thread one snapshot
+  through, so a deep link and the helpers it calls cannot disagree.
+- **Cached responses are written atomically.** The cache truncated the live file
+  and then wrote it, so a concurrent reader could observe a partial JSON document
+  and surface a decode error as a command failure. Entries are now written to a
+  temporary file and renamed.
+- **`import scan` no longer leaks decompressors while scanning PDFs.** Readers
+  for every compressed stream were allocated up front and the loop returned on
+  the first success, leaving the rest unclosed. They are now constructed lazily.
+- **`annotations timeline` sorts chronologically.** It compared RFC 3339
+  timestamps as strings, so annotations from clients writing different UTC
+  offsets were ordered by text rather than by instant. Timestamps are parsed once
+  into a sort key, with malformed values kept last.
+- **`items summarize --max-chars` counts characters.** It budgeted bytes, so a
+  CJK summary was cut to roughly a third of the requested length — verified at 33
+  of 100 characters — making the limit depend on the language of the source.
+- **`items fulltext` reports its endpoint in command metadata.** It carried the
+  annotations every other endpoint-backed command carries except the HTTP method
+  and path, so tooling that reads command metadata saw an incomplete contract.
+
 ### Documentation
 
 - **The docs landing page leads with the animated wordmark.** The mark that

@@ -70,6 +70,21 @@ of coverage now.
   Keep using it for any new schema/type command — `flags.newClient()` alone 404s.
   (`/items/new` is global too, but the **local API does not implement it**, so
   `schema new-item-template` 404s against local Zotero and only works on the Web API.)
+- **The local API does not implement `/deleted`.** **Verified 2026-08-17 against
+  the running desktop app:** `GET /api/users/0/deleted?since=1` → `404` "No
+  endpoint found", with and without `since`. It is a standard Web API v3 endpoint
+  and the only way to observe deletions in a change feed, so `tail` cannot report
+  deletions against a local base at all — and because local is the default base,
+  that is the common case, not an edge one. `tail` therefore classifies the
+  failure: `404`/`501` means the plane can never report deletions, so the cursor
+  advances (nothing is lost that was ever observable) and a one-time notice is
+  printed; any other failure means deletions may exist and went unread, so the
+  cursor is held and the window retried on the next poll. Treating both alike in
+  either direction is a bug — advancing always loses deletions silently on the
+  Web API, holding always wedges the feed on local and replays the whole library
+  every interval. Re-check this on Zotero upgrades: if `/deleted` lands locally,
+  the `404` branch stops being reachable and the notice should disappear on its
+  own.
 - **Web API v3 endpoint set is stable/versioned**; the **local API is the evolving
   surface**. New Zotero releases (fast cycle: 8 → 9 → 10 …, every 6–10 weeks) almost
   always add *fields/data*, rarely endpoints. Use `schema drift` to catch field/type
@@ -99,6 +114,7 @@ Covered = exercised by an implemented command. Verify with
 | `/items/new` (new-item template — global) | ⚠️ | `schema new-item-template`: prefix stripped, but the local API doesn't implement it (Web API only) |
 | `/items/<key>/fulltext`, `/fulltext?since=` | ✅ | `sync --fulltext`, `items fulltext` (hhup) |
 | `/items/<key>/file/view/url` (on-disk attachment path — local-only) | ✅ | `items file` |
+| `/deleted?since=` (deleted-object keys) | ⚠️ | `tail` uses it to emit delete events, but the local API returns `404`, so deletions are only observable against the Web API |
 | `/publications/items`, `/publications/items/tags` (My Publications) | ❌ | gap (low value) |
 | `format=keys`, `format=versions` modes | ⚠️ | `format=keys` bounds the `collections export` page walk when the server omits `Total-Results` (keys stay countable for item types an export format renders as nothing); `format=versions` unused (we sync via `since=`) |
 | `/keys/<key>` | ❌ | n/a for local (no auth) |
@@ -108,6 +124,9 @@ Covered = exercised by an implemented command. Verify with
 1. **My Publications** (`/publications/items`) — niche; not implemented.
 2. **`/items/new`** (new-item template) — the command exists but the **local API
    does not serve this endpoint**; it works only against the Web API.
+3. **`/deleted`** (deleted-object keys) — not served by the local API, so a
+   `tail` against the default local base emits upserts only. Nothing in the CLI
+   can work around it: deletions are simply not exposed on that plane.
 
 Resolved this session: attachment file paths (`items file`), and the generated
 `schema *` commands' library-prefix 404 (now routed through `newSchemaClient`).

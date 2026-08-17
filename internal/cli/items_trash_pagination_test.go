@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
@@ -282,14 +283,7 @@ func TestItemsTrashUnionMultiPage(t *testing.T) {
 	liveItems := make([]json.RawMessage, liveCount)
 	baseDate := time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC)
 	for i := range liveCount {
-		key := "LIVE" + strconv.Itoa(100 + i + 1)[1:] // LIVE101 .. LIVE135 but we want 001
-		// Use LIVE001 style for readability.
-		key = "LIVE" + strconv.FormatInt(int64(i+1), 10)
-		if i+1 < 10 {
-			key = "LIVE00" + strconv.Itoa(i+1)
-		} else if i+1 < 100 {
-			key = "LIVE0" + strconv.Itoa(i+1)
-		}
+		key := fmt.Sprintf("LIVE%03d", i+1)
 		date := baseDate.Add(time.Duration(i) * 24 * time.Hour).Format(time.RFC3339)
 		liveItems[i] = mustTrashItem(key, date)
 	}
@@ -361,10 +355,6 @@ func TestItemsTrashUnionMultiPage(t *testing.T) {
 
 	// Pagination must return correctly ordered, non-overlapping pages across the full set.
 	// Re-derive expected order by sorting a copy with production comparator.
-	type itemWithRaw struct {
-		key string
-		raw json.RawMessage
-	}
 	var all []json.RawMessage
 	all = append(all, liveItems...)
 	all = append(all, mirrorItems...)

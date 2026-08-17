@@ -51,6 +51,13 @@ cycle that emits events. It previews unless this tail invocation carries --yes.
 A failed applied run leaves its checkpoint: subsequent applied triggers refuse
 until it is resumed or deleted with zotio workflow run <spec> --yes --resume.
 
+Deletions are reported only when the configured API serves /deleted. The Zotero
+desktop local API does not, so against the default local base this feed emits
+upserts only, and says so once on the first poll that checks; point base_url
+(or ZOTERO_BASE_URL) at the Web API if you need delete events. If a poll cannot
+read deletions for any other reason, the cursor is held and that window is
+retried, so upserts may repeat.
+
 Note: For APIs with WebSocket or SSE support, a future version will use
 native streaming instead of polling.`,
 		Example: `  # Tail all changes every 10 seconds
