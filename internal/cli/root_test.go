@@ -358,3 +358,83 @@ func TestFilterFields(t *testing.T) {
 		})
 	}
 }
+
+// A mistyped subcommand under a grouping command used to print help and exit
+// 0. For a scripted or agent consumer that is a mutation that never ran,
+// reported as success — `zotio items empty-trash` was found this way.
+func TestUnknownSubcommandUnderAGroupIsAUsageError(t *testing.T) {
+	t.Parallel()
+	root := RootCmd()
+
+	cases := []struct {
+		name string
+		args []string
+		want bool
+	}{
+		{"group with a mistyped subcommand", []string{"items", "empty-trash"}, true},
+		{"another group, to prove it is not items-specific", []string{"tags", "nonsense"}, true},
+		{"group alone still prints help", []string{"items"}, false},
+		{"help flag is not a positional", []string{"items", "--help"}, false},
+		// A flag VALUE must not be mistaken for a subcommand: this is why the
+		// check parses flags instead of scanning for a leading non-dash token.
+		{"flag value is not a positional", []string{"items", "--group", "12345"}, false},
+		{"runnable leaf takes its own arguments", []string{"items", "children", "ABCD1234"}, false},
+		{"no arguments at all", nil, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := unknownSubcommandErr(root, tc.args)
+			if tc.want != (err != nil) {
+				t.Fatalf("unknownSubcommandErr(%q) = %v, want error: %v", tc.args, err, tc.want)
+			}
+			if err == nil {
+				return
+			}
+			// Exit 2 is the conventional usage code; 1 would make a typo
+			// indistinguishable from a genuine command failure.
+			if got := ExitCode(err); got != 2 {
+				t.Fatalf("ExitCode = %d, want 2 for a usage error", got)
+			}
+			if !strings.Contains(err.Error(), tc.args[1]) {
+				t.Fatalf("error = %q, want the rejected token named", err)
+			}
+		})
+	}
+}
+
+// Root already reported unknown commands. The fix must not silence it, which
+// is exactly what setting Args on the tree did: Cobra consults legacyArgs only
+// while Args is nil, and legacyArgs is what makes root's case an error.
+func TestRootUnknownCommandStillReportedByCobra(t *testing.T) {
+	t.Parallel()
+	if _, _, err := RootCmd().Find([]string{"bogus"}); err == nil {
+		t.Fatal("root Find accepted an unknown command; legacyArgs no longer applies")
+	}
+}
+
+// The other tempting fix — giving these groups a RunE — would make them
+// Runnable, and Runnable is the predicate the MCP mirror
+// (internal/mcp/cobratree/walker.go) and the capability registry use to decide
+// what to expose. That would silently publish each group as an agent tool.
+//
+// Only pure groups are listed. Commands that are deliberately runnable AND
+// have subcommands (`export`, `items tags`, `creators audit`, …) are a
+// different, legitimate shape: they take their own arguments, so Cobra already
+// rejects a bad one and unknownSubcommandErr correctly stands aside.
+func TestPureGroupCommandsStayNonRunnable(t *testing.T) {
+	t.Parallel()
+	root := RootCmd()
+	for _, path := range [][]string{{"items"}, {"tags"}, {"collections"}, {"attachments"}, {"auth"}} {
+		cmd, _, err := root.Find(path)
+		if err != nil || cmd == nil || cmd.CommandPath() != "zotio "+path[0] {
+			t.Fatalf("Find(%q) = %v, %v; the command was renamed or removed", path, cmd, err)
+		}
+		if !cmd.HasSubCommands() {
+			t.Fatalf("%q has no subcommands; it is no longer a group and this guard is vacuous", path[0])
+		}
+		if cmd.Runnable() {
+			t.Fatalf("%q became runnable: it would now be exposed as an agent tool, and "+
+				"unknownSubcommandErr would stop rejecting its mistyped subcommands", path[0])
+		}
+	}
+}

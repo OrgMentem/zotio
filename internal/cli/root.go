@@ -105,6 +105,11 @@ func Execute() error {
 	defer func() {
 		flags.deliverSpool.cleanup()
 	}()
+	// Before Cobra can answer a mistyped subcommand with help text and success.
+	// Returned, not printed: main is the only writer of the error line.
+	if err := unknownSubcommandErr(rootCmd, os.Args[1:]); err != nil {
+		return err
+	}
 	err := rootCmd.ExecuteContext(client.InterruptContext())
 	if err != nil && strings.Contains(err.Error(), "unknown flag") {
 		msg := err.Error()
@@ -384,6 +389,48 @@ See README.md or the bundled SKILL.md for recipes.`,
 	installInstallationWriterLocks(rootCmd, flags)
 
 	return rootCmd
+}
+
+// unknownSubcommandErr rejects a mistyped subcommand that Cobra would answer
+// with help text and exit 0.
+//
+// A grouping command like `items` has subcommands and no Run of its own.
+// Cobra's execute() returns flag.ErrHelp for any non-runnable command BEFORE
+// it validates arguments, and ExecuteC turns that into "print help, return
+// nil" — so `zotio items empty-trash` exited 0 having mutated nothing, which
+// for the scripted and agent consumers this CLI exists to serve is a silent
+// no-op reported as success. Root escapes this only because Find() applies
+// legacyArgs when Args is nil, and legacyArgs errors for the root command
+// alone.
+//
+// Fixed here rather than on the commands themselves because both remedies to
+// hand are worse: setting Args is never consulted on a non-runnable command,
+// and giving groups a RunE would make them Runnable — which is exactly the
+// predicate the MCP mirror (internal/mcp/cobratree/walker.go) and the
+// capability registry use to decide what to expose, so every group would
+// become an agent tool.
+func unknownSubcommandErr(rootCmd *cobra.Command, args []string) error {
+	cmd, rest, err := rootCmd.Find(args)
+	if err != nil || cmd == nil || cmd.Runnable() {
+		// Root's own unknown-command error, a real leaf, or a resolution
+		// failure Cobra already reports with suggestions.
+		return nil
+	}
+	// Parse so flag values are not mistaken for positional arguments
+	// (`items --group 12345` leaves no positionals). pflag resets its arg
+	// list on each Parse, so Cobra reparsing after us is not affected.
+	if err := cmd.ParseFlags(rest); err != nil {
+		return nil // Cobra reports flag errors itself, with better wording.
+	}
+	extra := cmd.Flags().Args()
+	if len(extra) == 0 {
+		return nil // `zotio items` alone: help and exit 0, as before.
+	}
+	msg := fmt.Sprintf("unknown command %q for %q", extra[0], cmd.CommandPath())
+	if suggestions := cmd.SuggestionsFor(extra[0]); len(suggestions) > 0 {
+		msg += fmt.Sprintf("\n\nDid you mean this?\n\t%s", strings.Join(suggestions, "\n\t"))
+	}
+	return usageErr(errors.New(msg))
 }
 
 func ExitCode(err error) int {
