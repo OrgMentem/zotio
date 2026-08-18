@@ -40,6 +40,7 @@
 package cli
 
 import (
+	"context"
 	"fmt"
 	"net/url"
 	"regexp"
@@ -142,6 +143,25 @@ func baseURLTargetsGroup(baseURL string) bool {
 	return strings.HasPrefix(matches[len(matches)-1], "/groups/")
 }
 
+// storedUploadRoute describes why the Web API uploader is the route in play.
+// It decides whether the refusal can name an actionable local alternative:
+// "no local route exists" and "the local route exists but is not available
+// right now" are different problems with different fixes.
+type storedUploadRoute int
+
+const (
+	// storedUploadRouteUnknown makes no claim about alternatives. Used by the
+	// apply-time backstop, which is shared by callers in both situations.
+	storedUploadRouteUnknown storedUploadRoute = iota
+	// storedUploadToExistingItem: the file must attach to an item already in
+	// the library, which the connector cannot address at all.
+	storedUploadToExistingItem
+	// storedUploadCreateFellBack: the item would have been created alongside
+	// its file, so the connector could have carried this and something
+	// prevented it. That something is worth diagnosing.
+	storedUploadCreateFellBack
+)
+
 // storedUploadRefusal reports why a Zotero Web API stored-file upload must not
 // run for the targeted library, or "" when it may proceed.
 //
@@ -149,7 +169,7 @@ func baseURLTargetsGroup(baseURL string) bool {
 // the single representative reading: a profile positively saying "file syncing
 // is off" is independent evidence and must not be discarded because a
 // different profile happened to have a riskier storage mode.
-func storedUploadRefusal(flags *rootFlags) string {
+func storedUploadRefusal(ctx context.Context, flags *rootFlags, route storedUploadRoute) string {
 	if flags != nil && flags.allowZoteroCloud {
 		return ""
 	}
@@ -171,8 +191,11 @@ func storedUploadRefusal(flags *rootFlags) string {
 	switch {
 	case fs.AnyPersonalWebDAV():
 		detail := fmt.Sprintf(
-			"Zotero desktop keeps personal-library attachment files on %s, but a stored attachment uploaded through the Zotero Web API always lands in Zotero's own cloud storage and is billed against that storage plan. Zotero's connector cannot attach a file to an item that already exists in the library, so this upload has no local route",
+			"Zotero desktop keeps personal-library attachment files on %s, but a stored attachment uploaded through the Zotero Web API always lands in Zotero's own cloud storage and is billed against that storage plan",
 			fs.Describe(zoteroprefs.StorageWebDAV))
+		if clause := storedUploadRouteClause(ctx, flags, route); clause != "" {
+			detail += ". " + clause
+		}
 		if fs.Ambiguous {
 			detail += fmt.Sprintf(
 				". Zotero has %d profiles here and which one is running cannot be determined, so this reads the WebDAV one; pin it with %s if that is not the profile you use",
@@ -186,6 +209,44 @@ func storedUploadRefusal(flags *rootFlags) string {
 	default:
 		return ""
 	}
+}
+
+// storedUploadRouteClause explains why the local route is not carrying this
+// upload. Saying "the connector cannot attach to an existing item" when the
+// real problem is that Zotero is closed sends the operator looking for a
+// limitation instead of opening an application.
+func storedUploadRouteClause(ctx context.Context, flags *rootFlags, route storedUploadRoute) string {
+	switch route {
+	case storedUploadToExistingItem:
+		return "Zotero's connector cannot attach a file to an item that already exists in the library, so this upload has no local route"
+	case storedUploadCreateFellBack:
+		if reason := connectorUnavailableReason(ctx, flags); reason != "" {
+			return "creating the item and its file together in one Zotero desktop session would reach the configured store, but " + reason
+		}
+		// The desktop is reachable, so the Web route was chosen explicitly.
+		return "--via web forces the Zotero Web API uploader; '--via auto' (the default) or '--via connector' creates the item and its file together in Zotero desktop, which reaches the configured store"
+	default:
+		return ""
+	}
+}
+
+// connectorUnavailableReason names, in the operator's terms, why the desktop
+// connector cannot be used for this invocation, or "" when it is available.
+func connectorUnavailableReason(ctx context.Context, flags *rootFlags) string {
+	if flags == nil {
+		return ""
+	}
+	if strings.TrimSpace(flags.group) != "" {
+		return "the desktop connector has no group parameter, so group writes cannot use it"
+	}
+	conn, err := flags.newConnector()
+	if err != nil {
+		return "the configured base_url is not a local Zotero API, so the desktop connector is not reachable from here"
+	}
+	if err := connectorPing(ctx, conn); err != nil {
+		return "Zotero desktop is not running (nothing answered on 127.0.0.1:23119) — start Zotero and run this again"
+	}
+	return ""
 }
 
 // storedUploadRefusalRemediation lists the routes that do reach a
@@ -203,8 +264,11 @@ func storedUploadRefusalRemediation() []string {
 // funnels through applyStoredUpload, so placing the check there catches the
 // routes that preflight cannot decide in advance: import apply's per-entry
 // fallback to the Web route, and import pdf's retro-attach onto a duplicate.
-func guardStoredUpload(flags *rootFlags) error {
-	detail := storedUploadRefusal(flags)
+//
+// Those callers sit on both sides of the existing-item split, so this makes no
+// claim about alternatives; the preflight refusals, which know, do.
+func guardStoredUpload(ctx context.Context, flags *rootFlags) error {
+	detail := storedUploadRefusal(ctx, flags, storedUploadRouteUnknown)
 	if detail == "" {
 		return nil
 	}
@@ -216,8 +280,8 @@ func guardStoredUpload(flags *rootFlags) error {
 // command is about to use the Zotero Web API stored-file uploader against a
 // library whose files Zotero keeps elsewhere. Returns nil when the upload may
 // proceed, so callers can guard inline.
-func refuseStoredWebUpload(cmd *cobra.Command, flags *rootFlags, capability string) error {
-	detail := storedUploadRefusal(flags)
+func refuseStoredWebUpload(cmd *cobra.Command, flags *rootFlags, capability string, route storedUploadRoute) error {
+	detail := storedUploadRefusal(cmd.Context(), flags, route)
 	if detail == "" {
 		return nil
 	}
@@ -227,7 +291,7 @@ func refuseStoredWebUpload(cmd *cobra.Command, flags *rootFlags, capability stri
 // addDoctorFileStorageReport records where Zotero desktop keeps attachment
 // files, and whether stored uploads are consequently refused. Reported for the
 // library this invocation targets, since WebDAV is personal-library only.
-func addDoctorFileStorageReport(report map[string]any, flags *rootFlags) {
+func addDoctorFileStorageReport(ctx context.Context, report map[string]any, flags *rootFlags) {
 	fs, err := zoteroFileStorage()
 	if err != nil {
 		report["file_storage"] = sanitizeForTerminal(fmt.Sprintf("unknown (%v); stored uploads are allowed", err))
@@ -258,7 +322,7 @@ func addDoctorFileStorageReport(report map[string]any, flags *rootFlags) {
 		hints = append(hints, fmt.Sprintf("several Zotero profiles exist and the running one cannot be determined; pin it with %s", zoteroprefs.ProfileDirEnv))
 	}
 	switch {
-	case storedUploadRefusal(flags) != "":
+	case storedUploadRefusal(ctx, flags, storedUploadRouteUnknown) != "":
 		desc += " — stored uploads via the Web API are refused; they would go to Zotero's cloud storage instead"
 		hints = append(hints, "attach in Zotero desktop, or use 'zotio import apply --attach-mode stored --via connector' for new items; --allow-zotero-cloud overrides")
 	case flags != nil && flags.allowZoteroCloud:

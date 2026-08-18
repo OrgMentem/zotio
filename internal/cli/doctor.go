@@ -235,7 +235,7 @@ releases feed at most once a day.`,
 			// upload through the Web API always lands in Zotero's cloud
 			// storage, so a desktop configured for WebDAV means those uploads
 			// are refused rather than silently misrouted.
-			addDoctorFileStorageReport(report, flags)
+			addDoctorFileStorageReport(cmd.Context(), report, flags)
 
 			// Check auth environment variables
 			authEnvSet := []string{}

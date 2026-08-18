@@ -147,7 +147,7 @@ func applyStoredUpload(ctx context.Context, c *client.Client, req storedUploadRe
 	// Backstop for the routes preflight cannot decide in advance: import
 	// apply's per-entry fallback to the Web route, and import pdf's
 	// retro-attach onto an already-existing duplicate.
-	if err := guardStoredUpload(flags); err != nil {
+	if err := guardStoredUpload(ctx, flags); err != nil {
 		return "failed", nil, err
 	}
 	if c == nil {

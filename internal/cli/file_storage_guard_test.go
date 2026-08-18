@@ -3,6 +3,8 @@
 package cli
 
 import (
+	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"net"
@@ -74,7 +76,7 @@ func TestStoredUploadRefusalOnlyFiresOnPositiveMisrouteEvidence(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			stubZoteroFileStorage(t, tc.protocol, tc.enabled)
-			got := storedUploadRefusal(tc.flags)
+			got := storedUploadRefusal(t.Context(), tc.flags, storedUploadToExistingItem)
 			if (got != "") != tc.wantRefuse {
 				t.Fatalf("storedUploadRefusal = %q, wantRefuse=%v", got, tc.wantRefuse)
 			}
@@ -95,7 +97,7 @@ user_pref("extensions.zotero.sync.storage.url", "webdav.example.com/home/Sources
 	resetZoteroFileStorageCache()
 	t.Cleanup(func() { loadZoteroFileStorage = old; resetZoteroFileStorageCache() })
 
-	detail := storedUploadRefusal(&rootFlags{})
+	detail := storedUploadRefusal(t.Context(), &rootFlags{}, storedUploadToExistingItem)
 	if !strings.Contains(detail, "webdav.example.com") {
 		t.Fatalf("detail = %q, want the configured WebDAV host named", detail)
 	}
@@ -281,7 +283,7 @@ func TestStoredUploadAllowedWhenProfileReadFails(t *testing.T) {
 	resetZoteroFileStorageCache()
 	t.Cleanup(func() { loadZoteroFileStorage = old; resetZoteroFileStorageCache() })
 
-	if got := storedUploadRefusal(&rootFlags{}); got != "" {
+	if got := storedUploadRefusal(t.Context(), &rootFlags{}, storedUploadToExistingItem); got != "" {
 		t.Fatalf("storedUploadRefusal = %q, want an unreadable profile to allow the upload", got)
 	}
 }
@@ -292,7 +294,7 @@ func TestDoctorReportsWebDAVFileStorageAndTheRefusal(t *testing.T) {
 	stubZoteroFileStorage(t, "webdav", true)
 
 	report := map[string]any{}
-	addDoctorFileStorageReport(report, &rootFlags{})
+	addDoctorFileStorageReport(t.Context(), report, &rootFlags{})
 
 	got, _ := report["file_storage"].(string)
 	if !strings.Contains(got, "WebDAV") {
@@ -310,7 +312,7 @@ func TestDoctorReportsUnknownFileStorageWithoutZoteroDesktop(t *testing.T) {
 	stubZoteroFileStorage(t, "", true)
 
 	report := map[string]any{}
-	addDoctorFileStorageReport(report, &rootFlags{})
+	addDoctorFileStorageReport(t.Context(), report, &rootFlags{})
 
 	got, _ := report["file_storage"].(string)
 	if !strings.HasPrefix(got, "unknown") {
@@ -432,7 +434,7 @@ func TestWebDAVPersonalLibraryDoesNotRefuseConfiguredGroupUploads(t *testing.T) 
 	stubZoteroFileStorage(t, "webdav", true)
 
 	flags := &rootFlags{configPath: testConfigFile(t, "https://api.zotero.org/groups/12345")}
-	if got := storedUploadRefusal(flags); got != "" {
+	if got := storedUploadRefusal(t.Context(), flags, storedUploadToExistingItem); got != "" {
 		t.Fatalf("storedUploadRefusal = %q, want a group upload to proceed", got)
 	}
 }
@@ -454,11 +456,11 @@ func TestStorageReadingIsMemoizedPerInvocationNotPerProcess(t *testing.T) {
 	t.Cleanup(func() { loadZoteroFileStorage = old; resetZoteroFileStorageCache() })
 
 	flags := &rootFlags{}
-	if got := storedUploadRefusal(flags); got != "" {
+	if got := storedUploadRefusal(t.Context(), flags, storedUploadToExistingItem); got != "" {
 		t.Fatalf("cloud-configured desktop refused: %q", got)
 	}
 	// Repeat reads within one invocation must not re-parse prefs.js.
-	_ = storedUploadRefusal(flags)
+	_ = storedUploadRefusal(t.Context(), flags, storedUploadToExistingItem)
 	if calls != 1 {
 		t.Fatalf("prefs read %d times in one invocation, want 1", calls)
 	}
@@ -466,7 +468,7 @@ func TestStorageReadingIsMemoizedPerInvocationNotPerProcess(t *testing.T) {
 	// The operator switches Zotero to WebDAV; the next invocation must see it.
 	protocol = "webdav"
 	resetZoteroFileStorageCache()
-	if got := storedUploadRefusal(flags); got == "" {
+	if got := storedUploadRefusal(t.Context(), flags, storedUploadToExistingItem); got == "" {
 		t.Fatal("reconfigured desktop still permitted the upload; the memo outlived the invocation")
 	}
 }
@@ -521,7 +523,7 @@ user_pref("extensions.zotero.sync.storage.url", "nas.example.com/zotero");
 	resetZoteroFileStorageCache()
 	t.Cleanup(func() { loadZoteroFileStorage = old; resetZoteroFileStorageCache() })
 
-	detail := storedUploadRefusal(&rootFlags{})
+	detail := storedUploadRefusal(t.Context(), &rootFlags{}, storedUploadToExistingItem)
 	if detail == "" {
 		t.Fatal("a WebDAV profile did not refuse; the risky direction was masked")
 	}
@@ -534,7 +536,7 @@ user_pref("extensions.zotero.sync.storage.url", "nas.example.com/zotero");
 
 	// doctor must keep BOTH the refusal workaround and the pinning instruction.
 	report := map[string]any{}
-	addDoctorFileStorageReport(report, &rootFlags{})
+	addDoctorFileStorageReport(t.Context(), report, &rootFlags{})
 	hint, _ := report["file_storage_hint"].(string)
 	if !strings.Contains(hint, zoteroprefs.ProfileDirEnv) {
 		t.Fatalf("hint = %q, want the profile-pinning instruction retained", hint)
@@ -691,5 +693,156 @@ func TestLocalFileURLResolvesRelativePathsAgainstTheWorkingDirectory(t *testing.
 	}
 	if strings.HasPrefix(u.Path, "/papers/") {
 		t.Fatalf("localFileURL(relative) = %q, which claims the filesystem root", got)
+	}
+}
+
+// The refusal must distinguish "no local route exists" from "the local route
+// exists but is not available right now". Telling an operator the connector
+// cannot address an existing item, when the real problem is that Zotero is
+// closed, sends them looking for a limitation instead of opening an app.
+func TestRefusalNamesWhyTheLocalRouteIsUnavailable(t *testing.T) {
+	stubZoteroFileStorage(t, "webdav", true)
+
+	existing := storedUploadRefusal(t.Context(), &rootFlags{}, storedUploadToExistingItem)
+	if !strings.Contains(existing, "already exists in the library") {
+		t.Fatalf("existing-item refusal = %q, want the unaddressable-parent reason", existing)
+	}
+
+	// A create that reached the Web uploader with the desktop reachable can
+	// only have got there by an explicit --via web.
+	forced := storedUploadRefusal(t.Context(), &rootFlags{via: "web"}, storedUploadCreateFellBack)
+	if strings.Contains(forced, "already exists in the library") {
+		t.Fatalf("create refusal = %q, must not claim the item already exists", forced)
+	}
+
+	// The apply-time backstop serves callers on both sides, so it must claim
+	// neither.
+	unknown := storedUploadRefusal(t.Context(), &rootFlags{}, storedUploadRouteUnknown)
+	if strings.Contains(unknown, "already exists in the library") {
+		t.Fatalf("backstop refusal = %q, want no claim about alternatives", unknown)
+	}
+	if !strings.Contains(unknown, "webdav") && !strings.Contains(unknown, "WebDAV") {
+		t.Fatalf("backstop refusal = %q, want the store still named", unknown)
+	}
+}
+
+// A non-local base means the desktop connector is not reachable at all, which
+// is a different sentence from "Zotero is not running".
+func TestConnectorUnavailableReasonNamesTheActualObstacle(t *testing.T) {
+	remote := &rootFlags{configPath: testConfigFile(t, "https://api.zotero.org/users/1")}
+	if got := connectorUnavailableReason(t.Context(), remote); !strings.Contains(got, "not a local Zotero API") {
+		t.Fatalf("remote base reason = %q, want the non-local base named", got)
+	}
+
+	grouped := &rootFlags{group: "12345", configPath: testConfigFile(t, "http://localhost:23119/api/users/0")}
+	if got := connectorUnavailableReason(t.Context(), grouped); !strings.Contains(got, "group") {
+		t.Fatalf("group reason = %q, want the group limitation named", got)
+	}
+}
+
+// The branch an operator hits with Zotero closed. isLocalZoteroAPI requires
+// BOTH port 23119 and a loopback hostname, so there is no spare address to
+// point at: the port itself has to be free. Zotero holds it on a developer
+// machine, hence the skip — the same tradeoff as the existing connector
+// integration tests.
+func TestConnectorUnavailableReasonSaysZoteroIsNotRunning(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:23119")
+	if err != nil {
+		t.Skip("port 23119 is in use; cannot prove the not-running branch here")
+	}
+	_ = ln.Close()
+
+	allowPrivateOutboundForTests = true
+	t.Cleanup(func() { allowPrivateOutboundForTests = false })
+
+	flags := &rootFlags{configPath: testConfigFile(t, "http://localhost:23119/api/users/0")}
+	got := connectorUnavailableReason(t.Context(), flags)
+	if !strings.Contains(got, "not running") {
+		t.Fatalf("reason = %q, want Zotero desktop reported as not running", got)
+	}
+	if !strings.Contains(got, "start Zotero") && !strings.Contains(got, "Start Zotero") {
+		t.Fatalf("reason = %q, want an actionable instruction", got)
+	}
+}
+
+// The skip above runs for real in CI, where no Zotero holds the port. This
+// companion proves the same branch everywhere by making the ping fail through
+// a dead context, so the wording cannot rot on a developer machine.
+func TestUnreachableConnectorProducesTheStartZoteroRefusal(t *testing.T) {
+	stubZoteroFileStorage(t, "webdav", true)
+	allowPrivateOutboundForTests = true
+	t.Cleanup(func() { allowPrivateOutboundForTests = false })
+
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+
+	flags := &rootFlags{configPath: testConfigFile(t, "http://localhost:23119/api/users/0")}
+	detail := storedUploadRefusal(ctx, flags, storedUploadCreateFellBack)
+	if detail == "" {
+		t.Fatal("storedUploadRefusal = \"\", want a WebDAV refusal")
+	}
+	if !strings.Contains(detail, "not running") {
+		t.Fatalf("detail = %q, want an unreachable desktop reported as not running", detail)
+	}
+	if strings.Contains(detail, "already exists in the library") {
+		t.Fatalf("detail = %q, must not blame an existing item for a create", detail)
+	}
+	if strings.Contains(detail, "--via web forces") {
+		t.Fatalf("detail = %q, must not blame --via web when the desktop is unreachable", detail)
+	}
+}
+
+// The remediation used to be reachable only under --json, so the terminal told
+// operators they were blocked and never how to proceed.
+func TestHumanPreconditionMessageCarriesTheRemediation(t *testing.T) {
+	steps := []string{"Do the first thing.", "Do the second thing."}
+	msg := humanPreconditionMessage("attachments add", "zotero_file_storage", "the store is wrong", steps)
+
+	for _, want := range append([]string{"attachments add", "zotero_file_storage", "the store is wrong"}, steps...) {
+		if !strings.Contains(msg, want) {
+			t.Fatalf("message = %q, missing %q", msg, want)
+		}
+	}
+	if !strings.Contains(msg, "What to do instead:") {
+		t.Fatalf("message = %q, want the remediation introduced", msg)
+	}
+	// One heading, and the detail must not be repeated under it.
+	if strings.Count(msg, "the store is wrong") != 1 {
+		t.Fatalf("message = %q, want the detail stated once", msg)
+	}
+}
+
+// Human output carries the remediation inline; JSON keeps a single-line error
+// because the envelope already carries the list in a parseable field.
+func TestPreconditionRemediationReachesBothSurfaces(t *testing.T) {
+	human := &bytes.Buffer{}
+	humanErr := emitPreconditionUnmet(human, &rootFlags{}, "attachments add", preconditionZoteroFileStorage, "the store is wrong")
+	if humanErr == nil {
+		t.Fatal("emitPreconditionUnmet returned nil for a failure")
+	}
+	if human.Len() != 0 {
+		t.Fatalf("non-JSON run wrote %q to stdout; the error is the only channel", human.String())
+	}
+	if !strings.Contains(humanErr.Error(), "--allow-zotero-cloud") {
+		t.Fatalf("human error = %q, want the remediation visible without --json", humanErr.Error())
+	}
+	if ExitCode(humanErr) != 9 {
+		t.Fatalf("exit code = %d, want 9", ExitCode(humanErr))
+	}
+
+	jsonOut := &bytes.Buffer{}
+	jsonErr := emitPreconditionUnmet(jsonOut, &rootFlags{asJSON: true}, "attachments add", preconditionZoteroFileStorage, "the store is wrong")
+	var env struct {
+		Kind        string   `json:"kind"`
+		Remediation []string `json:"remediation"`
+	}
+	if err := json.Unmarshal(jsonOut.Bytes(), &env); err != nil {
+		t.Fatalf("decode envelope: %v", err)
+	}
+	if env.Kind != "precondition_unmet" || len(env.Remediation) == 0 {
+		t.Fatalf("envelope = %+v, want the remediation in a parseable field", env)
+	}
+	if strings.Contains(jsonErr.Error(), "\n") {
+		t.Fatalf("json error = %q, want a single line for logs", jsonErr.Error())
 	}
 }

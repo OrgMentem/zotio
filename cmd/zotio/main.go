@@ -11,7 +11,9 @@ import (
 
 func main() {
 	if err := cli.Execute(); err != nil {
-		fmt.Fprintln(os.Stderr, err.Error())
+		// Cobra's own error printing is silenced, so this is the only place a
+		// failure reaches the terminal.
+		fmt.Fprintf(os.Stderr, "Error: %s\n", err.Error())
 		os.Exit(cli.ExitCode(err))
 	}
 }

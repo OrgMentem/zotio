@@ -80,7 +80,13 @@ By default this previews the planned changes; apply with --yes.`,
 			// resolving the create route, so refuse it in preview too rather
 			// than presenting a plan that apply will reject.
 			if attachMode == "stored" && (manifestHasAttachEntries(m) || (manifestHasResolvedCreate(m) && flags.via == "web")) {
-				if err := refuseStoredWebUpload(cmd, flags, "import apply"); err != nil {
+				// Attach entries are the harder constraint: no route reaches a
+				// non-cloud store for them, whatever --via says.
+				route := storedUploadCreateFellBack
+				if manifestHasAttachEntries(m) {
+					route = storedUploadToExistingItem
+				}
+				if err := refuseStoredWebUpload(cmd, flags, "import apply", route); err != nil {
 					return err
 				}
 			}
@@ -100,7 +106,13 @@ By default this previews the planned changes; apply with --yes.`,
 				if needsStoredWeb {
 					// Route resolution can still land on the Web uploader for
 					// creates under --via auto; catch that before any bytes move.
-					if err := refuseStoredWebUpload(cmd, flags, "import apply"); err != nil {
+					// A create that fell back this way has a local route that is
+					// merely unavailable, which is worth saying differently.
+					route := storedUploadCreateFellBack
+					if manifestHasAttachEntries(m) {
+						route = storedUploadToExistingItem
+					}
+					if err := refuseStoredWebUpload(cmd, flags, "import apply", route); err != nil {
 						return err
 					}
 				}

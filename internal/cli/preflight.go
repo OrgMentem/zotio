@@ -116,23 +116,49 @@ func commandRegistryPath(cmd *cobra.Command) string {
 }
 
 func emitPreconditionUnmet(w io.Writer, flags *rootFlags, capability, precondition, detail string) error {
+	detail = sanitizeForTerminal(detail)
+	remediation := preconditionRemediation(precondition)
 	env := preconditionUnmetEnvelope{
 		Kind:                  "precondition_unmet",
 		Capability:            capability,
 		Precondition:          precondition,
 		Detail:                detail,
-		Remediation:           preconditionRemediation(precondition),
+		Remediation:           remediation,
 		RetryAfterRemediation: true,
 	}
-	writePreconditionUnmetEnvelope(w, flags, env)
-	return preconditionErr(fmt.Errorf("%s requires %s: %s", capability, precondition, detail))
+	if writePreconditionUnmetEnvelope(w, flags, env) {
+		// The machine-readable envelope already carries the remediation, so the
+		// error stays a single line for logs.
+		return preconditionErr(fmt.Errorf("%s requires %s: %s", capability, precondition, detail))
+	}
+	return preconditionErr(errors.New(humanPreconditionMessage(capability, precondition, detail, remediation)))
 }
 
-func writePreconditionUnmetEnvelope(w io.Writer, flags *rootFlags, env preconditionUnmetEnvelope) {
+// humanPreconditionMessage renders the failure the way a person needs to read
+// it: what is wrong, then what to do about it. The remediation used to be
+// reachable only under --json, which meant the terminal told operators they
+// were blocked and never how to proceed.
+func humanPreconditionMessage(capability, precondition, detail string, remediation []string) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "%s requires %s.\n\n%s.", capability, precondition, strings.TrimRight(detail, "."))
+	if len(remediation) == 0 {
+		return b.String()
+	}
+	b.WriteString("\n\nWhat to do instead:")
+	for _, step := range remediation {
+		fmt.Fprintf(&b, "\n  - %s", sanitizeForTerminal(step))
+	}
+	return b.String()
+}
+
+// writePreconditionUnmetEnvelope reports whether it wrote the machine-readable
+// envelope, so the caller knows whether the remediation still needs saying.
+func writePreconditionUnmetEnvelope(w io.Writer, flags *rootFlags, env preconditionUnmetEnvelope) bool {
 	if flags == nil || !flags.asJSON || w == nil {
-		return
+		return false
 	}
 	_ = json.NewEncoder(w).Encode(env)
+	return true
 }
 
 func preconditionRemediation(precondition string) []string {
@@ -295,11 +321,13 @@ func checkDesktopConnectorPrecondition(ctx context.Context, flags *rootFlags, cm
 // It is scoped to invocations that actually request a stored attachment: the
 // mode flag is read from the command so that --mode linked-file, which never
 // uploads bytes, is unaffected.
-func checkZoteroFileStoragePrecondition(_ context.Context, flags *rootFlags, cmd *cobra.Command, _ capabilityEntry) (bool, string, error) {
+func checkZoteroFileStoragePrecondition(ctx context.Context, flags *rootFlags, cmd *cobra.Command, _ capabilityEntry) (bool, string, error) {
 	if !commandRequestsStoredUpload(cmd) {
 		return true, "", nil
 	}
-	detail := storedUploadRefusal(flags)
+	// Only `attachments add` declares this precondition, and it always targets
+	// an item that is already in the library.
+	detail := storedUploadRefusal(ctx, flags, storedUploadToExistingItem)
 	if detail == "" {
 		return true, "", nil
 	}

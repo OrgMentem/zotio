@@ -237,7 +237,10 @@ Agent mode: add --agent to any command for JSON output + non-interactive mode; m
 First run: 'zotio init' walks setup end to end (detect Zotero, key, first sync, health check); 'zotio demo' seeds a no-setup trial sandbox; 'zotio doctor' verifies auth and connectivity.
 See README.md or the bundled SKILL.md for recipes.`,
 		SilenceUsage: true,
-		Version:      version,
+		// main() prints the error and owns the exit code. Without this Cobra
+		// prints it too, so every failure appeared twice.
+		SilenceErrors: true,
+		Version:       version,
 	}
 	rootCmd.SetVersionTemplate("zotio {{ .Version }}\n")
 

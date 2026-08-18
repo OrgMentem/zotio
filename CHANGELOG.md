@@ -66,6 +66,25 @@ to make the refusal actionable.
 - **`doctor` no longer claims the connector offers stored attachments
   generally.** It cannot attach to an already-existing item, and the text said
   otherwise.
+- **Precondition failures now show their remediation without `--json`.** Every
+  `precondition_unmet` carries a list of concrete next steps, but
+  `writePreconditionUnmetEnvelope` returned early unless JSON was requested, so
+  the terminal told operators they were blocked and never how to proceed. The
+  human error now renders as the failure, a blank line, then a `What to do
+  instead:` list. JSON output is unchanged: the envelope already carries the
+  list in a parseable field, so the error there stays a single line for logs.
+  Affects every precondition, not just the storage guard.
+- **Errors printed twice.** The root command silenced Cobra's usage output but
+  not its error output, so `main` and Cobra each printed the same message.
+  Cobra's is now silenced; `main` is the only writer.
+- **The storage refusal blamed the wrong thing when Zotero was closed.** It
+  always said the connector cannot attach to an item that already exists —
+  true for `attachments add`, but wrong for a create that fell back to the Web
+  route because the desktop was unreachable, where the fix is simply to start
+  Zotero. The refusal now names the actual obstacle: an unaddressable existing
+  item, a desktop that is not running, a non-local `base_url`, a group write,
+  or an explicit `--via web`. The apply-time backstop serves callers on both
+  sides of that split and so makes no claim either way.
 
 ### Security
 
