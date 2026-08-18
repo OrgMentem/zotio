@@ -638,6 +638,9 @@ func TestLinuxFallbackScansTheRootDirectlyNotOnlyProfilesSubfolder(t *testing.T)
 // not suppress the directory scan that would otherwise find a live, unlisted
 // profile.
 func TestStaleINIEntryDoesNotSuppressALiveUnlistedProfile(t *testing.T) {
+	// Without this the darwin branch runs on a Mac and the Linux fallback this
+	// test exists for is never exercised — it passed here and failed in CI.
+	setGOOS(t, "linux")
 	root := t.TempDir()
 	live := filepath.Join(root, "Profiles", "bbbbbbbb.default")
 	if err := os.MkdirAll(live, 0o750); err != nil {

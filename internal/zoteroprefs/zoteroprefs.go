@@ -655,13 +655,24 @@ func profilesInRoot(root string) (all []string, preferred string, err error) {
 		return nil, "", err
 	}
 
+	bases := profileFallbackBases(root)
+	// A base is a container of profiles, never a profile. On Linux the root is
+	// scanned directly (profiles live at ~/.zotero/zotero/<name>), so a
+	// sibling Profiles/ folder would otherwise be discovered as a profile in
+	// its own right — inflating ProfileCount, making the reading look
+	// Ambiguous, and attaching a directory nobody configured to every refusal.
+	container := make(map[string]bool, len(bases))
+	for _, base := range bases {
+		container[filepath.Clean(base)] = true
+	}
+
 	seen := make(map[string]bool, len(iniAll))
 	addUsable := func(dir string) {
 		if !profileDirLooksUsable(dir) {
 			return
 		}
 		clean := filepath.Clean(dir)
-		if seen[clean] {
+		if seen[clean] || container[clean] {
 			return
 		}
 		seen[clean] = true
@@ -674,7 +685,7 @@ func profilesInRoot(root string) (all []string, preferred string, err error) {
 		preferred = iniPreferred
 	}
 
-	for _, base := range profileFallbackBases(root) {
+	for _, base := range bases {
 		dirs, dErr := profileDirs(base)
 		if dErr != nil {
 			return nil, "", dErr
