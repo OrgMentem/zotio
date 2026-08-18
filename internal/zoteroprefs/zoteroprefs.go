@@ -421,7 +421,12 @@ func loadAcross(dirs []string, preferred string) (FileStorage, error) {
 
 	if !haveBest {
 		if firstErr != nil {
-			return FileStorage{}, firstErr
+			// Every discovered profile failed to read. This is the case where
+			// naming the paths matters most - the operator has no other way to
+			// learn which file to fix - so the error travels WITH the evidence
+			// rather than instead of it. found stays false, so no caller can
+			// mistake this for a successful reading.
+			return FileStorage{unreadableProfiles: unreadable}, firstErr
 		}
 		return FileStorage{}, nil
 	}

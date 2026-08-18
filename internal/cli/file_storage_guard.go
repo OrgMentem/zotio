@@ -256,9 +256,15 @@ const (
 	storedUploadReasonPersonalSyncOff
 	// storedUploadReasonGroupSyncOff: group file syncing is switched off.
 	storedUploadReasonGroupSyncOff
-	// storedUploadReasonUnevaluable: Zotero is installed here but its
-	// configuration could not be read, so the destination is unproven.
+	// storedUploadReasonUnevaluable: Zotero's configuration WAS read, but it
+	// names a storage protocol this version of zotio does not model, so the
+	// destination cannot be established.
 	storedUploadReasonUnevaluable
+	// storedUploadReasonUnreadable: the configuration could not be read at
+	// all. Kept distinct from Unevaluable because the remediation and the
+	// wording differ: these profiles evidenced only the INABILITY to evaluate,
+	// so a refusal must not claim it read a setting from them.
+	storedUploadReasonUnreadable
 )
 
 // storedUploadVerdict is a refusal, the reason behind it, and the profiles the
@@ -308,19 +314,18 @@ func storedUploadDecision(ctx context.Context, flags *rootFlags, route storedUpl
 	}
 	fs, err := zoteroFileStorage()
 	if err != nil {
+		// The reader hands back the paths it could not evaluate alongside the
+		// error, so a total read failure still names the files to go and fix.
 		return storedUploadVerdict{
-			reason: storedUploadReasonUnevaluable,
+			reason: storedUploadReasonUnreadable,
 			detail: fmt.Sprintf(
 				"Zotero desktop's file-storage configuration could not be read, so this upload's destination cannot be established (%v)", err),
+			profiles: fs.UnreadableProfiles(),
 		}
-	}
-	if !fs.Found() {
-		// No Zotero on this host says nothing about a misroute.
-		return storedUploadVerdict{}
 	}
 	if fs.AnyUnreadableProfile() {
 		return storedUploadVerdict{
-			reason: storedUploadReasonUnevaluable,
+			reason: storedUploadReasonUnreadable,
 			detail: fmt.Sprintf(
 				"Zotero desktop has %d profile(s) here whose configuration could not be read, so a WebDAV setting among them cannot be ruled out and this upload's destination is unproven",
 				fs.UnreadableProfileCount()),
@@ -489,12 +494,24 @@ func storedUploadRefusalSteps(v storedUploadVerdict) []string {
 		for _, p := range v.profiles {
 			named = append(named, sanitizeForTerminal(p))
 		}
-		subject, verb := "profile", "is"
+		// Plural agreement runs through the whole sentence: the predicate noun
+		// and the trailing pronoun both refer back to the subject.
+		subject, verb, predicate, pronoun := "profile", "is", "the profile", "it is"
 		if len(named) > 1 {
-			subject, verb = "profiles", "are"
+			subject, verb, predicate, pronoun = "profiles", "are", "profiles", "they are"
 		}
-		pin = fmt.Sprintf("This reading came from %s %s, which %s not necessarily the profile for the account you are writing to; point %s at the right one if it is not.",
-			subject, strings.Join(named, ", "), verb, zoteroprefs.ProfileDirEnv)
+		joined := strings.Join(named, ", ")
+		if v.reason == storedUploadReasonUnreadable {
+			// These profiles evidenced only the inability to evaluate them.
+			// Saying a reading "came from" them would be false, and would
+			// send the operator looking for a setting in a file zotio never
+			// managed to parse.
+			pin = fmt.Sprintf("Zotio could not read %s %s; fix the file's permissions or contents, or point %s at a profile it can read.",
+				subject, joined, zoteroprefs.ProfileDirEnv)
+		} else {
+			pin = fmt.Sprintf("This reading came from %s %s, which %s not necessarily %s for the account you are writing to; point %s at the right one if %s not.",
+				subject, joined, verb, predicate, zoteroprefs.ProfileDirEnv, pronoun)
+		}
 	}
 
 	switch v.reason {
@@ -508,10 +525,15 @@ func storedUploadRefusalSteps(v storedUploadVerdict) []string {
 	case storedUploadReasonGroupSyncOff:
 		return []string{
 			"Turn group file syncing back on in Zotero: Settings -> Sync -> File Syncing -> 'Sync attachment files in group libraries'.",
+			// The group hazard is attributed like every other one, so the
+			// contributing profiles must be named here too: omitting them
+			// leaves doctor showing the risk-ranked representative, which for
+			// a group refusal is routinely a profile that evidenced nothing.
+			pin,
 			linkedFile,
 			override,
 		}
-	case storedUploadReasonUnevaluable:
+	case storedUploadReasonUnevaluable, storedUploadReasonUnreadable:
 		return []string{
 			pin,
 			linkedFile,
@@ -566,7 +588,15 @@ func addDoctorFileStorageReport(ctx context.Context, report map[string]any, flag
 	fs, err := zoteroFileStorage()
 	if err != nil {
 		report["file_storage"] = sanitizeForTerminal(fmt.Sprintf("unreadable (%v); stored uploads are refused because the destination cannot be established", err))
-		report["file_storage_hint"] = fmt.Sprintf("point %s at the Zotero profile this library belongs to, or pass --allow-zotero-cloud", zoteroprefs.ProfileDirEnv)
+		// The reader returns the paths it could not evaluate alongside the
+		// error, so the operator learns which files to fix, not just that
+		// something failed. Rendered in human output via the hint.
+		hint := fmt.Sprintf("point %s at the Zotero profile this library belongs to, or pass --allow-zotero-cloud", zoteroprefs.ProfileDirEnv)
+		if unreadable := fs.UnreadableProfiles(); len(unreadable) > 0 {
+			report["file_storage_unreadable_profiles"] = sanitizeForTerminal(strings.Join(unreadable, ", "))
+			hint = fmt.Sprintf("could not read %s; fix those files, %s", strings.Join(unreadable, ", "), hint)
+		}
+		report["file_storage_hint"] = sanitizeForTerminal(hint)
 		return
 	}
 	if !fs.Found() {
@@ -648,6 +678,8 @@ func refusalSummary(reason storedUploadReason) string {
 		return "group-library file syncing is off, so Zotero would never download them"
 	case storedUploadReasonUnevaluable:
 		return "the destination could not be established"
+	case storedUploadReasonUnreadable:
+		return "Zotero's configuration could not be read, so the destination could not be established"
 	default:
 		return "the destination is not the configured store"
 	}

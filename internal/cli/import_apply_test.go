@@ -285,6 +285,27 @@ func TestOrphanedConnectorParentDetailCarriesFindableEvidence(t *testing.T) {
 	if got := orphanedConnectorParentDetail(res, "Scanned Paper", cause)["parent_key"]; got != "ABCD1234" {
 		t.Fatalf("parent_key = %v, want the resolved key reported when one is known", got)
 	}
+	// The whole point of "message": reasonText prints only that key, so its
+	// absence renders the failure as a bare Go map. With the integration test
+	// skipped whenever Zotero holds :23119, nothing else pins it.
+	msg, ok := detail["message"].(string)
+	if !ok || !strings.Contains(msg, "created but the file was not attached") {
+		t.Fatalf("detail[message] = %v, want the orphan sentence the human renderer prints", detail["message"])
+	}
+	if rendered := mutation.Rows(mutation.Envelope{Result: &mutation.Result{
+		Items: []mutation.ResultItem{{Status: "failed", Reason: detail}},
+	}}); !strings.Contains(strings.Join(rendered, " "), "created but the file was not attached") {
+		t.Fatalf("human rows = %q, want the connector orphan explanation rendered", rendered)
+	}
+
+	// The dispatcher used by failure sites above the route switch, where the
+	// route is known only from the result.
+	if got := orphanedParentDetail(itemCreateResult{Via: "web", WebKey: "WEB1"}, "T", cause)["via"]; got != "web" {
+		t.Fatalf("dispatch via = %v, want the web shape for a web result", got)
+	}
+	if got := orphanedParentDetail(itemCreateResult{Via: "connector", Session: "s"}, "T", cause)["via"]; got != "connector" {
+		t.Fatalf("dispatch via = %v, want the connector shape for a connector result", got)
+	}
 
 	err := orphanedParentError("Scanned Paper", cause)
 	if !errors.Is(err, cause) {

@@ -177,9 +177,11 @@ func TestAttachmentsAddStoredRefusedUnderWebDAV(t *testing.T) {
 // two-profile fixture on disk, through the real Cobra preflight, and asserts
 // the refusal both fires and attributes correctly.
 //
-// Only platform profile DISCOVERY is stubbed — that is OS-specific path
-// layout, covered in internal/zoteroprefs, and hard-coding it here would make
-// the test skip on most machines and defend nothing there.
+// This drives the real prefs reader through the real Cobra preflight. Note it
+// does NOT discriminate attribution: the WebDAV sibling outranks the cloud
+// profile, so it becomes the representative and the pre-fix code named it
+// correctly by accident. TestRefusalNamesTheNonRepresentativeContributor
+// covers that axis; this one covers parsing and wiring.
 func TestAttachmentsAddRefusalReadsRealProfilesEndToEnd(t *testing.T) {
 	root := t.TempDir()
 	cloud := filepath.Join(root, "cloud.default")
@@ -234,6 +236,169 @@ user_pref("extensions.zotero.sync.storage.url", "nas.example.com/zotero");
 	}
 	if strings.Contains(joined, cloud) {
 		t.Fatalf("remediation = %q, must not name the cloud profile that evidenced nothing", joined)
+	}
+}
+
+// The attribution regression is only reachable when the profile that evidenced
+// the hazard LOSES the risk ranking, because the old code reported the
+// risk-ranked representative. Two profiles in the same storage mode tie, so
+// the preferred one stays representative while the sibling carries the
+// hazard - the exact shape that made a refusal name a profile whose settings
+// contradicted it. Runs the real reader through the real preflight.
+func TestRefusalNamesTheNonRepresentativeContributor(t *testing.T) {
+	root := t.TempDir()
+	// Preferred, innocent: same mode as the sibling, file syncing ON.
+	innocent := filepath.Join(root, "innocent.default")
+	writeTestPrefs(t, innocent, `
+user_pref("extensions.zotero.sync.storage.protocol", "zotero");
+user_pref("extensions.zotero.sync.storage.enabled", true);
+`)
+	// Guilty sibling: identical mode, so it can never win the ranking.
+	guilty := filepath.Join(root, "guilty.other")
+	writeTestPrefs(t, guilty, `
+user_pref("extensions.zotero.sync.storage.protocol", "zotero");
+user_pref("extensions.zotero.sync.storage.enabled", false);
+`)
+
+	old := loadZoteroFileStorage
+	loadZoteroFileStorage = func() (zoteroprefs.FileStorage, error) {
+		return zoteroprefs.LoadAcrossForTest([]string{innocent, guilty}, innocent)
+	}
+	// The premise that makes this test discriminating: the representative is
+	// the INNOCENT profile. If a future ranking change made the guilty one
+	// representative, this test would silently degrade into the vacuous shape
+	// it was written to replace, so assert it rather than assume it.
+	if fs, loadErr := zoteroprefs.LoadAcrossForTest([]string{innocent, guilty}, innocent); loadErr != nil {
+		t.Fatalf("LoadAcrossForTest: %v", loadErr)
+	} else if fs.ProfilePath != innocent {
+		t.Fatalf("representative = %q, want the innocent profile %q; the fixture no longer reproduces the regression", fs.ProfilePath, innocent)
+	}
+	resetZoteroFileStorageCache()
+	t.Cleanup(func() { loadZoteroFileStorage = old; resetZoteroFileStorageCache() })
+
+	cmdRoot, _, out, _ := newPreflightTestRoot(t)
+	add := mustFindPreflightCommand(t, cmdRoot, "attachments", "add")
+	runExecuted := false
+	add.RunE = func(cmd *cobra.Command, args []string) error {
+		runExecuted = true
+		return nil
+	}
+
+	cmdRoot.SetArgs([]string{"--json", "attachments", "add", "PARENT1", "/tmp/x.pdf", "--mode", "stored"})
+	err := cmdRoot.Execute()
+	if err == nil {
+		t.Fatal("a sync-disabled sibling profile did not refuse the stored upload")
+	}
+	if runExecuted {
+		t.Fatal("attachments add RunE executed after the storage precondition failed")
+	}
+	assertPreconditionExitCode(t, err, 9)
+
+	var env preconditionUnmetEnvelope
+	if decodeErr := json.Unmarshal(out.Bytes(), &env); decodeErr != nil {
+		t.Fatalf("decode precondition envelope: %v; output=%q", decodeErr, out.String())
+	}
+	joined := strings.Join(env.Remediation, " ")
+	if !strings.Contains(joined, guilty) {
+		t.Fatalf("remediation = %q, want the profile whose setting caused the refusal", joined)
+	}
+	// The regression itself: the representative evidenced nothing, and naming
+	// it sends the operator to verify the one file that contradicts the message.
+	if strings.Contains(joined, innocent) {
+		t.Fatalf("remediation = %q, must not name the representative profile that has syncing ON", joined)
+	}
+}
+
+// An unreadable profile evidenced only the INABILITY to evaluate it. Saying a
+// reading "came from" it is false, and sends the operator looking for a
+// setting in a file zotio never parsed.
+func TestUnreadableProfileRefusalDoesNotClaimAReading(t *testing.T) {
+	old := loadZoteroFileStorage
+	loadZoteroFileStorage = func() (zoteroprefs.FileStorage, error) {
+		return zoteroprefs.FileStorage{}, errors.New("/tmp/broken.default/prefs.js: permission denied")
+	}
+	resetZoteroFileStorageCache()
+	t.Cleanup(func() { loadZoteroFileStorage = old; resetZoteroFileStorageCache() })
+
+	verdict := storedUploadDecision(t.Context(), &rootFlags{}, storedUploadToExistingItem)
+	if verdict.reason != storedUploadReasonUnreadable {
+		t.Fatalf("reason = %v, want the unreadable classification", verdict.reason)
+	}
+	steps := strings.Join(storedUploadRefusalSteps(verdict), " ")
+	if strings.Contains(steps, "This reading came from") {
+		t.Fatalf("remediation = %q, must not claim a reading came from a file it could not read", steps)
+	}
+}
+
+// When EVERY discovered profile fails to read, naming the paths matters most:
+// the operator has no other way to learn which file to fix. The loader used to
+// drop them on this branch, so the error travelled without its evidence.
+func TestAllProfilesUnreadableStillNamesThePaths(t *testing.T) {
+	root := t.TempDir()
+	var dirs []string
+	for _, name := range []string{"broken-a.default", "broken-b.other"} {
+		dir := filepath.Join(root, name)
+		if err := os.MkdirAll(filepath.Join(dir, "prefs.js"), 0o750); err != nil {
+			t.Fatalf("create unreadable prefs: %v", err)
+		}
+		dirs = append(dirs, dir)
+	}
+
+	fs, err := zoteroprefs.LoadAcrossForTest(dirs, dirs[0])
+	if err == nil {
+		t.Fatal("two unreadable profiles produced no error")
+	}
+	if fs.Found() {
+		t.Fatal("a total read failure reported itself as a successful reading")
+	}
+	if got := fs.UnreadableProfiles(); len(got) != 2 {
+		t.Fatalf("unreadable profiles = %v, want both paths carried alongside the error", got)
+	}
+
+	old := loadZoteroFileStorage
+	loadZoteroFileStorage = func() (zoteroprefs.FileStorage, error) { return fs, err }
+	resetZoteroFileStorageCache()
+	t.Cleanup(func() { loadZoteroFileStorage = old; resetZoteroFileStorageCache() })
+
+	steps := strings.Join(storedUploadRefusalSteps(storedUploadDecision(t.Context(), &rootFlags{}, storedUploadToExistingItem)), " ")
+	for _, dir := range dirs {
+		if !strings.Contains(steps, dir) {
+			t.Fatalf("remediation = %q, want the unreadable path %q named", steps, dir)
+		}
+	}
+}
+
+// Group hazards are attributed like every other one, so a group refusal must
+// name its contributors too. Omitting them left doctor showing the
+// risk-ranked representative, which for a group refusal routinely evidenced
+// nothing.
+func TestGroupSyncRefusalNamesItsContributingProfiles(t *testing.T) {
+	verdict := storedUploadVerdict{
+		reason:   storedUploadReasonGroupSyncOff,
+		detail:   "group syncing off",
+		profiles: []string{"/tmp/group-guilty.default"},
+	}
+	steps := strings.Join(storedUploadRefusalSteps(verdict), " ")
+	if !strings.Contains(steps, "/tmp/group-guilty.default") {
+		t.Fatalf("remediation = %q, want the contributing profile named", steps)
+	}
+}
+
+// Plural agreement runs through the predicate noun and the trailing pronoun,
+// not just the verb; a refusal is the wrong place to be visibly sloppy.
+func TestRefusalPinAgreesInNumber(t *testing.T) {
+	one := strings.Join(storedUploadRefusalSteps(storedUploadVerdict{
+		reason: storedUploadReasonWebDAV, detail: "d", profiles: []string{"/a"},
+	}), " ")
+	if !strings.Contains(one, "came from profile /a, which is not necessarily the profile") {
+		t.Fatalf("singular pin = %q", one)
+	}
+	many := strings.Join(storedUploadRefusalSteps(storedUploadVerdict{
+		reason: storedUploadReasonWebDAV, detail: "d", profiles: []string{"/a", "/b"},
+	}), " ")
+	if !strings.Contains(many, "came from profiles /a, /b, which are not necessarily profiles") ||
+		!strings.Contains(many, "if they are not") {
+		t.Fatalf("plural pin = %q", many)
 	}
 }
 
@@ -375,8 +540,8 @@ func TestStoredUploadRefusedWhenProfileCannotBeEvaluated(t *testing.T) {
 	if !verdict.refused() {
 		t.Fatal("an unevaluable profile allowed the upload; the misroute is reachable again")
 	}
-	if verdict.reason != storedUploadReasonUnevaluable {
-		t.Fatalf("reason = %v, want the unevaluable classification", verdict.reason)
+	if verdict.reason != storedUploadReasonUnreadable {
+		t.Fatalf("reason = %v, want the unreadable classification, which is distinct from a decoded-but-unrecognised setting", verdict.reason)
 	}
 	if !strings.Contains(verdict.detail, "could not be read") {
 		t.Fatalf("detail = %q, want the read failure named", verdict.detail)
@@ -389,7 +554,7 @@ func TestStoredUploadRefusedWhenProfileCannotBeEvaluated(t *testing.T) {
 
 	// And the remediation names the pin, not a WebDAV workaround that has
 	// nothing to do with an unreadable file.
-	steps := storedUploadRefusalRemediation(storedUploadReasonUnevaluable)
+	steps := storedUploadRefusalRemediation(storedUploadReasonUnreadable)
 	if !strings.Contains(strings.Join(steps, " "), zoteroprefs.ProfileDirEnv) {
 		t.Fatalf("remediation = %v, want the profile pin named", steps)
 	}

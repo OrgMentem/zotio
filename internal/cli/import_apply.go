@@ -224,6 +224,16 @@ func importApplyOps(cmd *cobra.Command, flags *rootFlags, writeClient importAppl
 						}
 						res, err := routeCreateItem(cmd.Context(), flags, writeClient, item, importEntrySourceURL(entry, item), connectorCollectionKeyFromItem(item) != "" || strings.TrimSpace(flags.connectorTarget) != "")
 						if err != nil {
+							// routeCreateItem deliberately returns a POPULATED
+							// result alongside its error when the item was
+							// already committed and only a later step failed
+							// (create_route.go: SaveItems succeeded but the
+							// collection filing did not). Dropping res here
+							// would discard the only evidence of that parent
+							// and report a clean failure over an orphan.
+							if res.Session != "" || res.WebKey != "" {
+								return "failed", orphanedParentDetail(res, entryTitle, err), orphanedParentError(entryTitle, err)
+							}
 							return "failed", nil, err
 						}
 						switch res.Via {
@@ -273,6 +283,16 @@ func importApplyOps(cmd *cobra.Command, flags *rootFlags, writeClient importAppl
 								detail["attachment_key"] = upload["item_key"]
 							}
 							if status == "conflict" || status == "failed" {
+								// The parent is committed and the file did not
+								// land. This returns nil error by design (the
+								// outcome is a status, not a transport
+								// failure), so the engine's human renderer has
+								// only this map - and it prints just the
+								// "message" key. Without it the operator sees a
+								// bare Go map and no way to find the item.
+								detail["title"] = entryTitle
+								detail["message"] = orphanedParentError(entryTitle,
+									fmt.Errorf("attachment upload %s: %v", status, reason)).Error()
 								return status, detail, nil
 							}
 							return "applied", detail, nil
@@ -442,6 +462,17 @@ func orphanedWebParentDetail(parentKey, entryTitle string, cause error) map[stri
 		"title":      entryTitle,
 		"message":    orphanedParentError(entryTitle, cause).Error(),
 	}
+}
+
+// orphanedParentDetail dispatches on the route actually taken. It exists for
+// the failure sites that sit ABOVE the route switch — a create can commit its
+// parent and then fail before the caller has branched — where the route is
+// known only from the result.
+func orphanedParentDetail(res itemCreateResult, entryTitle string, cause error) map[string]any {
+	if res.Via == "web" {
+		return orphanedWebParentDetail(res.WebKey, entryTitle, cause)
+	}
+	return orphanedConnectorParentDetail(res, entryTitle, cause)
 }
 
 // orphanedParentError states plainly that the parent item already exists
