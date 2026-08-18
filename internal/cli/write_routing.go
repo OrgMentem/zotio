@@ -56,46 +56,86 @@ func (f *rootFlags) newConnector() (*connector.Client, error) {
 	return connector.New(base, f.timeout), nil
 }
 
+// webRouteCause records WHY the Web API uploader was selected. It is captured
+// at the moment of the decision because the decision is not recoverable from
+// later state: re-probing the connector to explain an earlier routing choice
+// reports what is true NOW, which can contradict what actually happened. A
+// desktop that finished starting between the two probes turned an automatic
+// fallback into a report that the operator had forced --via web.
+type webRouteCause int
+
+const (
+	// webRouteCauseNone: the connector carried the write, so nothing to explain.
+	webRouteCauseNone webRouteCause = iota
+	// webRouteCauseExplicitWeb: the operator passed --via web.
+	webRouteCauseExplicitWeb
+	// webRouteCauseGroup: a group target, which the connector has no parameter for.
+	webRouteCauseGroup
+	// webRouteCauseNonLocalBase: the configured base is not a local Zotero API.
+	webRouteCauseNonLocalBase
+	// webRouteCauseConnectorUnavailable: a local base whose connector did not
+	// answer. The classified reason travels in createRoute.detail.
+	webRouteCauseConnectorUnavailable
+)
+
+// createRoute is the immutable record of one item-creation routing decision.
+type createRoute struct {
+	via    string
+	cause  webRouteCause
+	detail string
+}
+
 // resolveCreateVia chooses the item-creation write route. --via affects only
 // create operations; updates/deletes/tags keep using the Web API write path.
 func (f *rootFlags) resolveCreateVia(ctx context.Context, collectionRequested bool) (string, error) {
+	route, err := f.resolveCreateRoute(ctx, collectionRequested)
+	return route.via, err
+}
+
+// resolveCreateRoute is resolveCreateVia plus the reason for the choice, for
+// callers that must explain the routing rather than merely follow it.
+func (f *rootFlags) resolveCreateRoute(ctx context.Context, collectionRequested bool) (createRoute, error) {
 	switch f.via {
 	case "", "auto":
 		cfg, err := config.Load(f.configPath)
 		if err != nil {
-			return "", configErr(err)
+			return createRoute{}, configErr(err)
 		}
 		if f.group != "" {
 			// The desktop connector has no group parameter; keep group writes on Web API.
-			return "web", nil
+			return createRoute{via: "web", cause: webRouteCauseGroup}, nil
 		}
 		if !isLocalZoteroAPI(cfg.BaseURL) {
-			return "web", nil
+			return createRoute{via: "web", cause: webRouteCauseNonLocalBase}, nil
 		}
 		conn, err := f.newConnector()
 		if err != nil {
-			return "web", nil
+			return createRoute{via: "web", cause: webRouteCauseNonLocalBase}, nil
 		}
 		if err := connectorPing(ctx, conn); err != nil {
-			return "web", nil
+			return createRoute{
+				via:    "web",
+				cause:  webRouteCauseConnectorUnavailable,
+				detail: describeConnectorPingFailure(ctx, err),
+			}, nil
 		}
-		return "connector", nil
+		return createRoute{via: "connector", cause: webRouteCauseNone}, nil
 	case "web":
-		return "web", nil
+		return createRoute{via: "web", cause: webRouteCauseExplicitWeb}, nil
 	case "connector":
 		if f.group != "" {
-			return "", fmt.Errorf("--via connector cannot honor --group; use --via web for group writes")
+			return createRoute{}, fmt.Errorf("--via connector cannot honor --group; use --via web for group writes")
 		}
 		conn, err := f.newConnector()
 		if err != nil {
-			return "", fmt.Errorf("--via connector requires a local Zotero base URL")
+			return createRoute{}, fmt.Errorf("--via connector requires a local Zotero base URL")
 		}
 		if err := connectorPing(ctx, conn); err != nil {
-			return "", fmt.Errorf("--via connector set but desktop Zotero is not reachable on :23119: %w", err)
+			return createRoute{}, fmt.Errorf("--via connector set but desktop Zotero is not reachable on :23119: %w", err)
 		}
-		return "connector", nil
+		return createRoute{via: "connector", cause: webRouteCauseNone}, nil
 	default:
-		return "", fmt.Errorf("invalid --via value %q: must be auto, connector, or web", f.via)
+		return createRoute{}, fmt.Errorf("invalid --via value %q: must be auto, connector, or web", f.via)
 	}
 }
 

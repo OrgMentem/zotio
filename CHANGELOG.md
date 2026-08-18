@@ -85,6 +85,59 @@ to make the refusal actionable.
   item, a desktop that is not running, a non-local `base_url`, a group write,
   or an explicit `--via web`. The apply-time backstop serves callers on both
   sides of that split and so makes no claim either way.
+- **A profile that could not be READ was treated as no profile at all**, so an
+  oversized, permission-denied, non-regular, wrongly-encoded, or explicitly
+  pinned-but-missing `prefs.js` silently authorised the very upload this guard
+  exists to refuse. `zoteroprefs.Load` had always documented that as operator
+  error; the guard disagreed with it. Inability to evaluate evidence that
+  demonstrably exists is now a refusal, with `--allow-zotero-cloud` still
+  releasing it. Absence of Zotero altogether stays permissive.
+- **Unreadable sibling profiles vanished from the reading.** `loadAcross`
+  returned a clean representative whenever any one profile parsed, so a
+  WebDAV profile with a corrupt `prefs.js` was invisible next to a readable
+  cloud one. Unreadability is now a counted hazard, surfaced by
+  `AnyUnreadableProfile`, and reported by `doctor`.
+- **The refusal reconstructed its own routing by probing a second time**, so it
+  reported what was true at the probe rather than at the decision. An automatic
+  fallback whose desktop finished starting was reported as the operator forcing
+  `--via web`, and `--via web` with Zotero closed was answered with "start
+  Zotero and run this again", which fixes nothing. The route now carries the
+  cause recorded when it was chosen.
+- **Every connector failure was reported as "Zotero is not running."** A
+  cancelled context, a deadline, and an HTTP error all say something else;
+  two of the three were false. Failures are now classified.
+- **Group scope matched `/groups/` anywhere in the path.** A reverse-proxy or
+  deployment base such as `/proxy/groups/tenant/v1` was classified as a group,
+  which skips the personal-WebDAV refusal entirely. The library prefix is now
+  anchored to the final two path segments, as its contract always claimed.
+- **One WebDAV-shaped remediation was attached to every refusal**, telling
+  group callers to use a connector that has no group parameter, and telling
+  sync-disabled callers that Zotero would sync the bytes. Remediation is now
+  chosen from the reason.
+- **A group refusal said the upload consumes "the account's storage plan".**
+  Zotero bills group files to the group owner's quota.
+- **`doctor` printed the representative profile's sync flag while refusing on
+  the union**, so it could show an enabled library and refuse it in the same
+  line. Both now read the same evidence.
+- **`doctor`'s human output dropped `file_storage_hint` and
+  `file_storage_profile`** — the actionable half was `--json`-only, the same
+  defect fixed above for preconditions.
+- **The apply-time backstop re-used preflight's snapshot**, so a desktop
+  reconfigured mid-invocation was judged by a stale reading. It now takes one
+  fresh reading at the planning/mutation boundary.
+- **`prefs.js` parsing accepted a truncated prefix of a string expression**
+  (`"zotero" + "-future"` read as `zotero`, positive evidence of cloud) and
+  **turned a type mismatch into a positive hazard** (a quoted string in a
+  boolean slot became `false`, manufacturing a syncing-disabled refusal). A
+  present-but-malformed known key is now indeterminate rather than either a
+  confident default or a fabricated negative. UTF-16 is rejected instead of
+  read as an empty preference set, and the per-line scanner cap no longer
+  fails a file well under the whole-file limit.
+- **Profile discovery missed real installations.** The Linux no-INI fallback
+  scanned `<root>/Profiles`, but Zotero puts Linux profiles directly under
+  `~/.zotero/zotero`; a stale `profiles.ini` entry suppressed the directory
+  fallback entirely, hiding a live unlisted profile; and Snap and Flatpak
+  layouts had no candidates. All three are fixed.
 
 ### Security
 

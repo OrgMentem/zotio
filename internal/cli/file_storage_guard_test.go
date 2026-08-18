@@ -14,11 +14,13 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
 	"github.com/spf13/cobra"
 
+	"zotio/internal/connector"
 	"zotio/internal/zoteroprefs"
 )
 
@@ -273,9 +275,12 @@ func TestApplyStoredUploadHonoursOverrideUnderWebDAV(t *testing.T) {
 	}
 }
 
-// A profile that cannot be read is not evidence of a misroute, so the guard
-// must allow rather than invent a refusal from a read failure.
-func TestStoredUploadAllowedWhenProfileReadFails(t *testing.T) {
+// A profile that CANNOT BE READ is not the same as no profile at all. Zotero
+// is installed here and its configuration exists; the reader simply could not
+// evaluate it, so a WebDAV setting cannot be ruled out. Treating that as
+// consent re-opened the silent misroute the guard exists to prevent, which is
+// what the earlier version of this test asserted.
+func TestStoredUploadRefusedWhenProfileCannotBeEvaluated(t *testing.T) {
 	old := loadZoteroFileStorage
 	loadZoteroFileStorage = func() (zoteroprefs.FileStorage, error) {
 		return zoteroprefs.FileStorage{}, errors.New("prefs.js exceeds 8388608 bytes")
@@ -283,8 +288,43 @@ func TestStoredUploadAllowedWhenProfileReadFails(t *testing.T) {
 	resetZoteroFileStorageCache()
 	t.Cleanup(func() { loadZoteroFileStorage = old; resetZoteroFileStorageCache() })
 
+	verdict := storedUploadDecision(t.Context(), &rootFlags{}, storedUploadToExistingItem)
+	if !verdict.refused() {
+		t.Fatal("an unevaluable profile allowed the upload; the misroute is reachable again")
+	}
+	if verdict.reason != storedUploadReasonUnevaluable {
+		t.Fatalf("reason = %v, want the unevaluable classification", verdict.reason)
+	}
+	if !strings.Contains(verdict.detail, "could not be read") {
+		t.Fatalf("detail = %q, want the read failure named", verdict.detail)
+	}
+
+	// The override still works, so a cloud user is never stuck.
+	if got := storedUploadRefusal(t.Context(), &rootFlags{allowZoteroCloud: true}, storedUploadToExistingItem); got != "" {
+		t.Fatalf("override refused anyway: %q", got)
+	}
+
+	// And the remediation names the pin, not a WebDAV workaround that has
+	// nothing to do with an unreadable file.
+	steps := storedUploadRefusalRemediation(storedUploadReasonUnevaluable)
+	if !strings.Contains(strings.Join(steps, " "), zoteroprefs.ProfileDirEnv) {
+		t.Fatalf("remediation = %v, want the profile pin named", steps)
+	}
+}
+
+// Absence of Zotero altogether stays permissive: zotio runs against the Web
+// API on machines with no desktop, and refusing there would block correct work
+// on no evidence.
+func TestStoredUploadAllowedWhenNoZoteroDesktopExists(t *testing.T) {
+	old := loadZoteroFileStorage
+	loadZoteroFileStorage = func() (zoteroprefs.FileStorage, error) {
+		return zoteroprefs.FileStorage{}, nil
+	}
+	resetZoteroFileStorageCache()
+	t.Cleanup(func() { loadZoteroFileStorage = old; resetZoteroFileStorageCache() })
+
 	if got := storedUploadRefusal(t.Context(), &rootFlags{}, storedUploadToExistingItem); got != "" {
-		t.Fatalf("storedUploadRefusal = %q, want an unreadable profile to allow the upload", got)
+		t.Fatalf("storedUploadRefusal = %q, want no desktop to allow the upload", got)
 	}
 }
 
@@ -412,17 +452,32 @@ func TestGroupScopeComesFromTheResolvedWriteTargetNotJustTheFlag(t *testing.T) {
 		// for any local base capturing only flags.group, so writes go to
 		// /users/<id> even when the local base names a group.
 		{name: "local group base writes personal", baseURL: "http://localhost:23119/api/groups/12345", wantGroup: false},
-		// The library prefix is the tail of the URL; a query string or a
-		// deployment prefix must not be mistaken for it.
+		// The library prefix is the TAIL of the URL; a query string, a host,
+		// or a deployment prefix must not be mistaken for it. The non-tail
+		// cases are the ones a scan-for-the-last-match implementation got
+		// wrong, and a false group verdict skips the WebDAV refusal entirely.
 		{name: "groups only in query string", baseURL: "https://api.zotero.org/users/1?next=/groups/123", wantGroup: false},
 		{name: "groups only in host", baseURL: "https://groups.example/api/users/1", wantGroup: false},
 		{name: "groups then users in path", baseURL: "https://proxy.example/groups/tenant/api/users/1", wantGroup: false},
+		{name: "group prefix with deployment suffix", baseURL: "https://proxy.example/proxy/groups/tenant/v1", wantGroup: false},
+		{name: "group prefix with resource suffix", baseURL: "https://api.zotero.org/groups/123/items", wantGroup: false},
+		{name: "group base with trailing slash", baseURL: "https://api.zotero.org/groups/12345/", wantGroup: true},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			flags := &rootFlags{group: tc.group, configPath: testConfigFile(t, tc.baseURL)}
 			if got := storedUploadTargetsGroup(flags); got != tc.wantGroup {
 				t.Fatalf("storedUploadTargetsGroup = %v, want %v", got, tc.wantGroup)
+			}
+			// The classifier is only useful if it agrees with where writes
+			// actually go. When --group is set, production routing rewrites
+			// the base through rewriteLibraryPrefix, so check the classifier
+			// against that rather than trusting the two to stay in step.
+			if tc.group != "" {
+				routed := rewriteLibraryPrefix(tc.baseURL, tc.group)
+				if !strings.Contains(routed, "/groups/"+tc.group) {
+					t.Fatalf("write base %q does not target the group the classifier claimed", routed)
+				}
 			}
 		})
 	}
@@ -498,25 +553,42 @@ func TestRootPersistentPreRunResetsTheStorageMemo(t *testing.T) {
 	}
 }
 
-// Zotero's -P switch means Default=1 does not prove which profile is running.
-// zoteroprefs folds a WebDAV sibling in and marks the result ambiguous (proven
-// in that package against loadAcross); what matters here is that the refusal
-// still fires AND tells the operator how to resolve the ambiguity. Built from
-// a real LoadProfile result so no platform-specific discovery layout is
-// needed — the earlier version of this test skipped on every OS and asserted
-// nothing.
+// Zotero's -P switch means Default=1 does not prove which profile is running,
+// so zoteroprefs folds a WebDAV sibling in and marks the result ambiguous.
+//
+// The ambiguity is produced by loading TWO REAL profiles, not by setting the
+// Ambiguous and ProfileCount fields by hand: the hand-built version pinned only
+// the message format, and would have stayed green with discovery, risk ranking,
+// and the cross-profile hazard union all deleted.
 func TestAmbiguousProfilesStillRefuseAndNameTheFix(t *testing.T) {
-	dir := t.TempDir()
-	writeTestPrefs(t, dir, `
+	root := t.TempDir()
+	cloud := filepath.Join(root, "aaaa.default")
+	webdav := filepath.Join(root, "bbbb.other")
+	for _, dir := range []string{cloud, webdav} {
+		if err := os.MkdirAll(dir, 0o750); err != nil {
+			t.Fatalf("mkdir: %v", err)
+		}
+	}
+	writeTestPrefs(t, cloud, `
+user_pref("extensions.zotero.sync.storage.protocol", "zotero");
+`)
+	writeTestPrefs(t, webdav, `
 user_pref("extensions.zotero.sync.storage.protocol", "webdav");
 user_pref("extensions.zotero.sync.storage.url", "nas.example.com/zotero");
 `)
-	ambiguous, err := zoteroprefs.LoadProfile(dir)
+
+	// The cloud profile is the preferred one, so a reading that trusted the
+	// default would report cloud and never refuse.
+	ambiguous, err := zoteroprefs.LoadAcrossForTest([]string{cloud, webdav}, cloud)
 	if err != nil {
-		t.Fatalf("LoadProfile: %v", err)
+		t.Fatalf("loadAcross: %v", err)
 	}
-	ambiguous.Ambiguous = true
-	ambiguous.ProfileCount = 2
+	if !ambiguous.Ambiguous {
+		t.Fatal("two profiles did not produce an ambiguous reading")
+	}
+	if ambiguous.ProfileCount != 2 {
+		t.Fatalf("ProfileCount = %d, want 2", ambiguous.ProfileCount)
+	}
 
 	old := loadZoteroFileStorage
 	loadZoteroFileStorage = func() (zoteroprefs.FileStorage, error) { return ambiguous, nil }
@@ -708,9 +780,13 @@ func TestRefusalNamesWhyTheLocalRouteIsUnavailable(t *testing.T) {
 		t.Fatalf("existing-item refusal = %q, want the unaddressable-parent reason", existing)
 	}
 
-	// A create that reached the Web uploader with the desktop reachable can
-	// only have got there by an explicit --via web.
-	forced := storedUploadRefusal(t.Context(), &rootFlags{via: "web"}, storedUploadCreateFellBack)
+	// Assert the forced-web explanation POSITIVELY. Checking only that the
+	// existing-item sentence is absent let the whole clause be deleted.
+	forced := storedUploadRefusal(t.Context(), &rootFlags{via: "web"},
+		storedUploadCreateFellBack(createRoute{via: "web", cause: webRouteCauseExplicitWeb}))
+	if !strings.Contains(forced, "--via web forces") {
+		t.Fatalf("create refusal = %q, want the forced-web route named", forced)
+	}
 	if strings.Contains(forced, "already exists in the library") {
 		t.Fatalf("create refusal = %q, must not claim the item already exists", forced)
 	}
@@ -726,6 +802,55 @@ func TestRefusalNamesWhyTheLocalRouteIsUnavailable(t *testing.T) {
 	}
 }
 
+// The recorded cause must survive into the message unchanged. Re-probing the
+// connector to explain an earlier decision reported what was true at the time
+// of the probe, which is how an automatic fallback came to be described as an
+// operator forcing --via web.
+func TestRouteClauseRendersTheRecordedCauseNotCurrentState(t *testing.T) {
+	cases := []struct {
+		name  string
+		route storedUploadRoute
+		want  string
+		deny  string
+	}{
+		{
+			name:  "explicit web",
+			route: storedUploadCreateFellBack(createRoute{cause: webRouteCauseExplicitWeb}),
+			want:  "--via web forces",
+			deny:  "not running",
+		},
+		{
+			name:  "connector unavailable",
+			route: storedUploadCreateFellBack(createRoute{cause: webRouteCauseConnectorUnavailable, detail: "Zotero desktop is not running (nothing answered on 127.0.0.1:23119) — start Zotero and run this again"}),
+			want:  "not running",
+			deny:  "--via web forces",
+		},
+		{
+			name:  "group target",
+			route: storedUploadCreateFellBack(createRoute{cause: webRouteCauseGroup}),
+			want:  "no group parameter",
+			deny:  "--via web forces",
+		},
+		{
+			name:  "non-local base",
+			route: storedUploadCreateFellBack(createRoute{cause: webRouteCauseNonLocalBase}),
+			want:  "not a local Zotero API",
+			deny:  "not running",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := storedUploadRouteClause(tc.route)
+			if !strings.Contains(got, tc.want) {
+				t.Fatalf("clause = %q, want it to name %q", got, tc.want)
+			}
+			if strings.Contains(got, tc.deny) {
+				t.Fatalf("clause = %q, must not claim %q", got, tc.deny)
+			}
+		})
+	}
+}
+
 // A non-local base means the desktop connector is not reachable at all, which
 // is a different sentence from "Zotero is not running".
 func TestConnectorUnavailableReasonNamesTheActualObstacle(t *testing.T) {
@@ -734,61 +859,83 @@ func TestConnectorUnavailableReasonNamesTheActualObstacle(t *testing.T) {
 		t.Fatalf("remote base reason = %q, want the non-local base named", got)
 	}
 
+	// A group target never reaches the personal-WebDAV route clause, so assert
+	// the behaviour that actually governs it: the refusal for a group library
+	// must not offer the connector, which has no group parameter.
 	grouped := &rootFlags{group: "12345", configPath: testConfigFile(t, "http://localhost:23119/api/users/0")}
 	if got := connectorUnavailableReason(t.Context(), grouped); !strings.Contains(got, "group") {
 		t.Fatalf("group reason = %q, want the group limitation named", got)
 	}
-}
-
-// The branch an operator hits with Zotero closed. isLocalZoteroAPI requires
-// BOTH port 23119 and a loopback hostname, so there is no spare address to
-// point at: the port itself has to be free. Zotero holds it on a developer
-// machine, hence the skip — the same tradeoff as the existing connector
-// integration tests.
-func TestConnectorUnavailableReasonSaysZoteroIsNotRunning(t *testing.T) {
-	ln, err := net.Listen("tcp", "127.0.0.1:23119")
-	if err != nil {
-		t.Skip("port 23119 is in use; cannot prove the not-running branch here")
-	}
-	_ = ln.Close()
-
-	allowPrivateOutboundForTests = true
-	t.Cleanup(func() { allowPrivateOutboundForTests = false })
-
-	flags := &rootFlags{configPath: testConfigFile(t, "http://localhost:23119/api/users/0")}
-	got := connectorUnavailableReason(t.Context(), flags)
-	if !strings.Contains(got, "not running") {
-		t.Fatalf("reason = %q, want Zotero desktop reported as not running", got)
-	}
-	if !strings.Contains(got, "start Zotero") && !strings.Contains(got, "Start Zotero") {
-		t.Fatalf("reason = %q, want an actionable instruction", got)
+	for _, step := range storedUploadRefusalRemediation(storedUploadReasonGroupSyncOff) {
+		if strings.Contains(step, "--via connector") {
+			t.Fatalf("group remediation offers the connector, which has no group parameter: %q", step)
+		}
 	}
 }
 
-// The skip above runs for real in CI, where no Zotero holds the port. This
-// companion proves the same branch everywhere by making the ping fail through
-// a dead context, so the wording cannot rot on a developer machine.
+// A ping failure has several causes and they need different fixes. Collapsing
+// them into "Zotero is not running" made two of the three false.
+func TestConnectorPingFailureIsClassifiedNotCollapsed(t *testing.T) {
+	refused := &net.OpError{Op: "dial", Err: syscall.ECONNREFUSED}
+	if got := describeConnectorPingFailure(context.Background(), refused); !strings.Contains(got, "not running") {
+		t.Fatalf("connection refused = %q, want the desktop reported as not running", got)
+	}
+
+	cancelled, cancel := context.WithCancel(context.Background())
+	cancel()
+	got := describeConnectorPingFailure(cancelled, context.Canceled)
+	if strings.Contains(got, "not running") {
+		t.Fatalf("cancellation = %q, must not claim Zotero is stopped", got)
+	}
+	if !strings.Contains(got, "cancelled") {
+		t.Fatalf("cancellation = %q, want the cancellation named", got)
+	}
+
+	deadline := describeConnectorPingFailure(context.Background(), context.DeadlineExceeded)
+	if strings.Contains(deadline, "not running") {
+		t.Fatalf("timeout = %q, must not claim Zotero is stopped", deadline)
+	}
+}
+
+// The branch an operator hits with Zotero closed, proven against a real closed
+// port rather than a cancelled context. A cancelled context fails the ping no
+// matter what the desktop is doing, so it could never distinguish a stopped
+// Zotero from a running one.
 func TestUnreachableConnectorProducesTheStartZoteroRefusal(t *testing.T) {
 	stubZoteroFileStorage(t, "webdav", true)
 	allowPrivateOutboundForTests = true
 	t.Cleanup(func() { allowPrivateOutboundForTests = false })
 
-	ctx, cancel := context.WithCancel(t.Context())
-	cancel()
+	// Bind and immediately release a port so the address is genuinely closed
+	// but routable, giving a deterministic connection-refused.
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	closedAddr := ln.Addr().String()
+	_ = ln.Close()
 
-	flags := &rootFlags{configPath: testConfigFile(t, "http://localhost:23119/api/users/0")}
-	detail := storedUploadRefusal(ctx, flags, storedUploadCreateFellBack)
-	if detail == "" {
-		t.Fatal("storedUploadRefusal = \"\", want a WebDAV refusal")
-	}
+	conn := connector.New("http://"+closedAddr+"/connector", 2*time.Second)
+	detail := describeConnectorPingFailure(t.Context(), connectorPing(t.Context(), conn))
 	if !strings.Contains(detail, "not running") {
-		t.Fatalf("detail = %q, want an unreachable desktop reported as not running", detail)
+		t.Fatalf("detail = %q, want a closed port reported as Zotero not running", detail)
 	}
-	if strings.Contains(detail, "already exists in the library") {
-		t.Fatalf("detail = %q, must not blame an existing item for a create", detail)
+	if !strings.Contains(detail, "start Zotero") && !strings.Contains(detail, "Start Zotero") {
+		t.Fatalf("detail = %q, want an actionable instruction", detail)
 	}
-	if strings.Contains(detail, "--via web forces") {
-		t.Fatalf("detail = %q, must not blame --via web when the desktop is unreachable", detail)
+
+	// And the refusal built from that recorded cause says the same thing,
+	// without blaming an existing item or a flag the caller never passed.
+	refusal := storedUploadRefusal(t.Context(), &rootFlags{},
+		storedUploadCreateFellBack(createRoute{cause: webRouteCauseConnectorUnavailable, detail: detail}))
+	if !strings.Contains(refusal, "not running") {
+		t.Fatalf("refusal = %q, want the unreachable desktop named", refusal)
+	}
+	if strings.Contains(refusal, "already exists in the library") {
+		t.Fatalf("refusal = %q, must not blame an existing item for a create", refusal)
+	}
+	if strings.Contains(refusal, "--via web forces") {
+		t.Fatalf("refusal = %q, must not blame --via web when the desktop is unreachable", refusal)
 	}
 }
 

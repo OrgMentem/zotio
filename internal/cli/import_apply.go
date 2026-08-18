@@ -82,7 +82,11 @@ By default this previews the planned changes; apply with --yes.`,
 			if attachMode == "stored" && (manifestHasAttachEntries(m) || (manifestHasResolvedCreate(m) && flags.via == "web")) {
 				// Attach entries are the harder constraint: no route reaches a
 				// non-cloud store for them, whatever --via says.
-				route := storedUploadCreateFellBack
+				//
+				// Preview does not resolve --via auto, so the only create that
+				// reaches here is one the operator explicitly sent to the Web
+				// uploader. That cause is known from the flag, not probed.
+				route := storedUploadCreateFellBack(createRoute{via: "web", cause: webRouteCauseExplicitWeb})
 				if manifestHasAttachEntries(m) {
 					route = storedUploadToExistingItem
 				}
@@ -95,11 +99,13 @@ By default this previews the planned changes; apply with --yes.`,
 			var storedClient *client.Client
 			if resolveMutationMode(flags).Apply {
 				storedCreateVia := ""
+				var storedCreateRoute createRoute
 				if attachMode == "stored" && manifestHasResolvedCreate(m) {
-					storedCreateVia, err = flags.resolveCreateVia(cmd.Context(), false)
+					storedCreateRoute, err = flags.resolveCreateRoute(cmd.Context(), false)
 					if err != nil {
 						return err
 					}
+					storedCreateVia = storedCreateRoute.via
 				}
 				needsStoredWeb := attachMode == "stored" &&
 					(manifestHasAttachEntries(m) || storedCreateVia == "web")
@@ -107,8 +113,10 @@ By default this previews the planned changes; apply with --yes.`,
 					// Route resolution can still land on the Web uploader for
 					// creates under --via auto; catch that before any bytes move.
 					// A create that fell back this way has a local route that is
-					// merely unavailable, which is worth saying differently.
-					route := storedUploadCreateFellBack
+					// merely unavailable, which is worth saying differently —
+					// using the cause recorded when the route was chosen, since
+					// re-probing now would describe a different moment.
+					route := storedUploadCreateFellBack(storedCreateRoute)
 					if manifestHasAttachEntries(m) {
 						route = storedUploadToExistingItem
 					}

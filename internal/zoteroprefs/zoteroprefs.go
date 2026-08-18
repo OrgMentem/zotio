@@ -40,6 +40,7 @@ package zoteroprefs
 
 import (
 	"bufio"
+	"bytes"
 	"errors"
 	"fmt"
 	"io"
@@ -133,6 +134,13 @@ type FileStorage struct {
 	hazards hazardSet
 
 	found bool
+
+	// unreadableProfileCount is how many of the DISCOVERED profiles (see
+	// ProfileCount) failed to read for a reason other than simply not
+	// existing, even though a different discovered profile could be read.
+	// Kept separate from ProfileCount, which counts every profile discovery
+	// found regardless of whether it could be evaluated.
+	unreadableProfileCount int
 }
 
 // hazardSet is the union of safety-relevant facts across all readable
@@ -169,6 +177,18 @@ func (f FileStorage) AnyGroupSyncDisabled() bool { return f.hazards.groupSyncOff
 // AnyPersonalModeUnknown reports whether any readable profile's storage
 // protocol could not be decoded to a mode this package models.
 func (f FileStorage) AnyPersonalModeUnknown() bool { return f.hazards.personalModeUnknown }
+
+// AnyUnreadableProfile reports whether at least one discovered profile could
+// not be evaluated — a permission error, a corrupt file, an oversized file —
+// even though a different discovered profile was readable. A profile
+// directory that simply has no prefs.js is not unreadable; Zotero has not
+// necessarily run there yet, and that is the ordinary case Found() already
+// handles.
+func (f FileStorage) AnyUnreadableProfile() bool { return f.unreadableProfileCount > 0 }
+
+// UnreadableProfileCount reports how many discovered profiles could not be
+// evaluated.
+func (f FileStorage) UnreadableProfileCount() int { return f.unreadableProfileCount }
 
 // Found reports whether a readable Zotero desktop profile was located.
 func (f FileStorage) Found() bool { return f.found }
@@ -289,6 +309,15 @@ func Load() (FileStorage, error) {
 	return loadAcross(dirs, preferred)
 }
 
+// LoadAcrossForTest exposes multi-profile folding to tests in other
+// packages, which otherwise cannot construct an ambiguous, multi-profile
+// reading without hand-setting fields — exactly the shortcut that let a
+// previous guard test pass without ever exercising a real read failure. It
+// is not test-file-scoped because it is called from package cli's tests.
+func LoadAcrossForTest(dirs []string, preferred string) (FileStorage, error) {
+	return loadAcross(dirs, preferred)
+}
+
 // loadAcross reads every discovered profile and reports one representative
 // reading plus the UNION of the safety-relevant facts across all of them.
 //
@@ -301,23 +330,31 @@ func Load() (FileStorage, error) {
 // profile positively saying "file syncing is off" would be discarded merely
 // because a different profile had a riskier MODE.
 //
-// A profile that fails to read is skipped, INCLUDING the preferred one:
-// aborting there would suppress the very sibling scan that exists to catch a
-// WebDAV profile hiding behind an unreadable default. The error is returned
-// only when no profile could be read at all.
+// A profile that fails to read is skipped when choosing the representative,
+// INCLUDING the preferred one: aborting there would suppress the very sibling
+// scan that exists to catch a WebDAV profile hiding behind an unreadable
+// default. The error is returned only when no profile could be read at all;
+// otherwise the failure is recorded as an unreadable-profile hazard so the
+// caller can see the reading is incomplete rather than treating it as clean.
 func loadAcross(dirs []string, preferred string) (FileStorage, error) {
 	var (
-		best     FileStorage
-		haveBest bool
-		hazards  hazardSet
-		firstErr error
+		best            FileStorage
+		haveBest        bool
+		hazards         hazardSet
+		firstErr        error
+		unreadableCount int
 	)
 	consider := func(dir string) {
 		fs, err := LoadProfile(dir)
 		if err != nil {
+			// LoadProfile already collapses a simply-missing profile into
+			// (zero value, nil), so any error reaching here is a genuine
+			// read failure — permission denied, a corrupt or oversized
+			// file, an unsupported encoding — never a benign absence.
 			if firstErr == nil {
 				firstErr = err
 			}
+			unreadableCount++
 			return
 		}
 		if !fs.found {
@@ -346,6 +383,7 @@ func loadAcross(dirs []string, preferred string) (FileStorage, error) {
 	best.ProfileCount = len(dirs)
 	best.Ambiguous = len(dirs) > 1
 	best.hazards = hazards
+	best.unreadableProfileCount = unreadableCount
 	return best, nil
 }
 
@@ -395,17 +433,29 @@ func LoadProfile(profileDir string) (FileStorage, error) {
 
 	// Read one byte past the cap so truncation is detectable: silently parsing
 	// a prefix would turn a present preference into an absent one, and absent
-	// preferences fall back to Zotero's cloud defaults. The byte total is
-	// measured by counting what the reader actually consumes — reconstructing
-	// it from token lengths miscounts, because bufio.ScanLines strips the \r of
-	// a CRLF line and drops the missing final newline of an unterminated file.
-	counter := &countingReader{r: io.LimitReader(f, maxPrefsFileBytes+1)}
-	values, err := parsePrefs(counter)
+	// preferences fall back to Zotero's cloud defaults.
+	data, err := io.ReadAll(io.LimitReader(f, maxPrefsFileBytes+1))
+	if err != nil {
+		return FileStorage{}, fmt.Errorf("reading Zotero prefs %s: %w", path, err)
+	}
+	if len(data) > maxPrefsFileBytes {
+		return FileStorage{}, fmt.Errorf("Zotero prefs %s exceeds %d bytes; refusing to read a partial preference set", path, maxPrefsFileBytes)
+	}
+	// Zotero (a Firefox-based application) always writes prefs.js as UTF-8. A
+	// differently encoded file — most plausibly UTF-16, from a profile a
+	// stray tool has touched — makes every "user_pref(" prefix match fail,
+	// since that ASCII byte sequence never starts a UTF-16 line. Every
+	// preference would then read as absent, which resolves to Zotero's cloud
+	// defaults: a confident wrong answer built from a decode failure, not
+	// from evidence. Surfacing the encoding mismatch as an error instead lets
+	// the caller treat it as the evaluation failure it is.
+	if reason := notUTF8Reason(data); reason != "" {
+		return FileStorage{}, fmt.Errorf("Zotero prefs %s is not readable as UTF-8 (%s)", path, reason)
+	}
+
+	values, err := parsePrefs(bytes.NewReader(data))
 	if err != nil {
 		return FileStorage{}, fmt.Errorf("parsing Zotero prefs %s: %w", path, err)
-	}
-	if counter.n > maxPrefsFileBytes {
-		return FileStorage{}, fmt.Errorf("Zotero prefs %s exceeds %d bytes; refusing to read a partial preference set", path, maxPrefsFileBytes)
 	}
 
 	// Defaults come from Zotero's defaults/preferences/zotero.js: file syncing
@@ -420,27 +470,43 @@ func LoadProfile(profileDir string) (FileStorage, error) {
 		ProfileCount:       1,
 		found:              true,
 	}
+	// A key that is PRESENT but could not be decoded to the type it should
+	// hold is different from an absent one: an absent key means Zotero's
+	// shipped default genuinely applies, but a present, malformed value means
+	// the real configuration is unknown. Both booleans keep their shipped
+	// default in that case — never collapsing an undecodable value to false,
+	// which would manufacture a "syncing is off" refusal from no evidence —
+	// while the malformed flags feed AnyPersonalModeUnknown so the caller
+	// knows the reading is not a confident one.
+	var enabledMalformed, groupsEnabledMalformed bool
 	if v, ok := values[prefStorageProtocol]; ok {
 		fs.Protocol = strings.ToLower(strings.TrimSpace(v.str))
-		// An unrecognised protocol must not be read as "therefore Zotero's
-		// cloud": that is the fail-open direction. Report it as unknown and let
-		// the caller decide.
+		// An unrecognised or undecodable protocol must not be read as
+		// "therefore Zotero's cloud": that is the fail-open direction.
+		// Report it as unknown and let the caller decide.
 		fs.ProtocolRecognised = !v.undecodable && (fs.Protocol == "zotero" || fs.Protocol == "webdav")
 	}
-	// An undecodable boolean keeps the shipped default. truthy() reads a
-	// garbled value as false, which would turn a parse failure into a
-	// "syncing is off" refusal — a wrong answer invented from no evidence.
-	if v, ok := values[prefStorageEnabled]; ok && !v.undecodable {
-		fs.Enabled = v.truthy()
+	if v, ok := values[prefStorageEnabled]; ok {
+		if b, bok := v.asBool(); bok {
+			fs.Enabled = b
+		} else {
+			enabledMalformed = true
+		}
 	}
-	if v, ok := values[prefStorageGroupsEnabled]; ok && !v.undecodable {
-		fs.GroupsEnabled = v.truthy()
+	if v, ok := values[prefStorageGroupsEnabled]; ok {
+		if b, bok := v.asBool(); bok {
+			fs.GroupsEnabled = b
+		} else {
+			groupsEnabledMalformed = true
+		}
 	}
 	if v, ok := values[prefStorageURL]; ok {
 		fs.URL = v.str
 	}
-	if v, ok := values[prefStorageVerified]; ok && !v.undecodable {
-		fs.Verified = v.truthy()
+	if v, ok := values[prefStorageVerified]; ok {
+		if b, bok := v.asBool(); bok {
+			fs.Verified = b
+		}
 	}
 	// Each profile contributes its own positively decoded hazards; loadAcross
 	// unions them so a hazard in one profile is never lost by choosing another
@@ -449,21 +515,9 @@ func LoadProfile(profileDir string) (FileStorage, error) {
 		personalWebDAV:      fs.mode() == StorageWebDAV,
 		personalSyncOff:     !fs.Enabled,
 		groupSyncOff:        !fs.GroupsEnabled,
-		personalModeUnknown: fs.mode() == StorageUnknown,
+		personalModeUnknown: fs.mode() == StorageUnknown || enabledMalformed || groupsEnabledMalformed,
 	}
 	return fs, nil
-}
-
-// countingReader records how many bytes were actually consumed.
-type countingReader struct {
-	r io.Reader
-	n int64
-}
-
-func (c *countingReader) Read(p []byte) (int, error) {
-	n, err := c.r.Read(p)
-	c.n += int64(n)
-	return n, err
 }
 
 // DiscoverProfileDir returns the profile discovery would read from, or "" when
@@ -476,65 +530,170 @@ func DiscoverProfileDir() (string, error) {
 	return preferred, err
 }
 
-// discoverProfiles returns every profile directory it can see plus the one to
-// prefer for reporting (profiles.ini's Default=1, else the only one).
+// goos selects Zotero's per-platform profile layout. A package variable
+// rather than a direct runtime.GOOS reference so tests can drive the
+// Linux/Unix discovery path — including the Snap and Flatpak candidates —
+// without needing to run on Linux.
+var goos = runtime.GOOS
+
+// discoverProfiles returns every profile directory it can see across every
+// platform root plus the one to prefer for reporting (profiles.ini's
+// Default=1 in whichever root it is found, else the first profile
+// discovered). Snap and Flatpak installs redirect Zotero's view of $HOME, so
+// more than one root can plausibly hold profiles on the same machine; results
+// are merged and deduplicated by cleaned absolute path rather than stopping at
+// the first root that exists.
 func discoverProfiles() (all []string, preferred string, err error) {
-	root, err := profileRoot()
-	if err != nil || root == "" {
-		return nil, "", err
-	}
-	all, preferred, err = profilesFromINI(filepath.Join(root, "profiles.ini"), root)
+	roots, err := profileRoots()
 	if err != nil {
 		return nil, "", err
 	}
-	if len(all) > 0 {
-		if preferred == "" {
-			preferred = all[0]
+	seen := make(map[string]bool)
+	for _, root := range roots {
+		info, statErr := os.Stat(root)
+		if statErr != nil || !info.IsDir() {
+			continue
 		}
-		return all, preferred, nil
+		rootAll, rootPreferred, rErr := profilesInRoot(root)
+		if rErr != nil {
+			return nil, "", rErr
+		}
+		for _, dir := range rootAll {
+			clean := filepath.Clean(dir)
+			if seen[clean] {
+				continue
+			}
+			seen[clean] = true
+			all = append(all, dir)
+		}
+		if preferred == "" {
+			preferred = rootPreferred
+		}
 	}
-	// No usable profiles.ini: fall back to the directories under Profiles/ so a
-	// hand-copied or partially migrated install still reports its configuration.
-	all, err = profileDirs(filepath.Join(root, "Profiles"))
-	if err != nil || len(all) == 0 {
-		return nil, "", err
+	if len(all) == 0 {
+		return nil, "", nil
 	}
-	return all, all[0], nil
+	if preferred == "" {
+		preferred = all[0]
+	}
+	return all, preferred, nil
 }
 
-// profileRoot returns the directory holding profiles.ini for this platform, or
-// "" when it does not exist. Zotero's DATA directory (~/Zotero by default) is
-// deliberately not a candidate: it is a different thing from the profile
-// directory and must not be probed for prefs.js.
-func profileRoot() (string, error) {
-	var candidates []string
-	switch runtime.GOOS {
+// profilesInRoot returns every profile directory discoverable under one
+// platform root, plus which one profiles.ini marks Default=1 (or, failing
+// that, the first profile found).
+//
+// profiles.ini is authoritative when it names a profile that still exists on
+// disk, but a stale entry — the profile directory renamed or removed since
+// the INI was last written — must not suppress the directory scan that would
+// otherwise find a live, unlisted profile; Zotero does not require
+// profiles.ini to be reconciled with what is actually on disk. So both
+// sources are gathered and merged, deduplicated by cleaned absolute path,
+// rather than the INI short-circuiting the fallback whenever it parses.
+func profilesInRoot(root string) (all []string, preferred string, err error) {
+	iniAll, iniPreferred, err := profilesFromINI(filepath.Join(root, "profiles.ini"), root)
+	if err != nil {
+		return nil, "", err
+	}
+
+	seen := make(map[string]bool, len(iniAll))
+	addUsable := func(dir string) {
+		if !profileDirLooksUsable(dir) {
+			return
+		}
+		clean := filepath.Clean(dir)
+		if seen[clean] {
+			return
+		}
+		seen[clean] = true
+		all = append(all, dir)
+	}
+	for _, dir := range iniAll {
+		addUsable(dir)
+	}
+	if iniPreferred != "" && profileDirLooksUsable(iniPreferred) {
+		preferred = iniPreferred
+	}
+
+	for _, base := range profileFallbackBases(root) {
+		dirs, dErr := profileDirs(base)
+		if dErr != nil {
+			return nil, "", dErr
+		}
+		for _, dir := range dirs {
+			addUsable(dir)
+		}
+	}
+
+	if preferred == "" && len(all) > 0 {
+		preferred = all[0]
+	}
+	return all, preferred, nil
+}
+
+// profileDirLooksUsable reports whether dir is worth treating as a profile
+// candidate. A stale profiles.ini entry naming a directory that no longer
+// exists must not be accepted just because the INI parsed cleanly —
+// LoadProfile will read prefs.js there anyway, and a genuinely missing
+// directory is never a signal, just leftover configuration.
+func profileDirLooksUsable(dir string) bool {
+	info, err := os.Stat(dir)
+	return err == nil && info.IsDir()
+}
+
+// profileFallbackBases lists the directories, under one platform root, that a
+// directory scan should treat as potentially holding profile folders
+// directly. Every platform gets the standard Profiles/ subfolder; Linux and
+// other Unix systems additionally get the root itself, because Zotero's
+// documented Linux layout puts the profile directory directly under
+// ~/.zotero/zotero rather than inside a Profiles/ subfolder the way macOS and
+// Windows do.
+func profileFallbackBases(root string) []string {
+	bases := []string{filepath.Join(root, "Profiles")}
+	switch goos {
+	case "darwin", "windows":
+	default:
+		bases = append(bases, root)
+	}
+	return bases
+}
+
+// profileRoots returns every directory this platform might hold a Zotero
+// profiles.ini or Profiles/ folder under, in priority order. Zotero's DATA
+// directory (~/Zotero by default) is deliberately not a candidate: it is a
+// different thing from the profile directory and must not be probed for
+// prefs.js.
+//
+// Snap and Flatpak packaging sandbox $HOME for the Zotero process, so a Snap
+// or Flatpak install's profile lives under a package-specific tree instead of
+// the native ~/.zotero/zotero; more than one of these can exist on the same
+// machine (one per install method actually used), so all are candidates
+// rather than the first that exists winning outright.
+func profileRoots() ([]string, error) {
+	switch goos {
 	case "darwin":
 		home, err := os.UserHomeDir()
 		if err != nil {
-			return "", fmt.Errorf("resolving home dir: %w", err)
+			return nil, fmt.Errorf("resolving home dir: %w", err)
 		}
-		candidates = append(candidates, filepath.Join(home, "Library", "Application Support", "Zotero"))
+		return []string{filepath.Join(home, "Library", "Application Support", "Zotero")}, nil
 	case "windows":
+		var roots []string
 		if appData := strings.TrimSpace(os.Getenv("APPDATA")); appData != "" {
-			candidates = append(candidates, filepath.Join(appData, "Zotero", "Zotero"))
+			roots = append(roots, filepath.Join(appData, "Zotero", "Zotero"))
 		}
+		return roots, nil
 	default:
 		home, err := os.UserHomeDir()
 		if err != nil {
-			return "", fmt.Errorf("resolving home dir: %w", err)
+			return nil, fmt.Errorf("resolving home dir: %w", err)
 		}
-		candidates = append(candidates, filepath.Join(home, ".zotero", "zotero"))
+		return []string{
+			filepath.Join(home, ".zotero", "zotero"),
+			filepath.Join(home, "snap", "zotero", "common", ".zotero", "zotero"),
+			filepath.Join(home, ".var", "app", "org.zotero.Zotero", ".zotero", "zotero"),
+		}, nil
 	}
-	for _, dir := range candidates {
-		// #nosec G703 -- candidates are fixed per-platform Zotero locations built
-		// from os.UserHomeDir/APPDATA, never from user input, and this only stats
-		// them. The one caller-supplied path is ZOTERO_PROFILE_DIR, handled in Load.
-		if info, err := os.Stat(dir); err == nil && info.IsDir() {
-			return dir, nil
-		}
-	}
-	return "", nil
 }
 
 // profilesFromINI lists every profile in profiles.ini and reports which one is
@@ -645,29 +804,39 @@ type prefValue struct {
 	undecodable bool
 }
 
-// truthy reports a boolean pref, treating a non-zero integer as true the way
-// the preferences system does.
-func (v prefValue) truthy() bool {
+// asBool decodes v as a boolean pref, accepting a genuine boolean token or an
+// integer — Zotero's own preferences system treats a non-zero integer as
+// true. Any other decoded type, most notably a string, is a type mismatch:
+// the writer never stores a boolean that way, so treating a stray string as
+// evidence of true or false would invent a reading from the wrong kind of
+// value rather than report one this package actually observed.
+func (v prefValue) asBool() (b bool, ok bool) {
 	switch {
+	case v.undecodable:
+		return false, false
 	case v.isBool:
-		return v.b
+		return v.b, true
 	case v.isNum:
-		return v.n != 0
+		return v.n != 0, true
 	default:
-		return strings.EqualFold(strings.TrimSpace(v.str), "true")
+		return false, false
 	}
 }
 
 // parsePrefs reads the user_pref("key", value); lines of a prefs.js, returning
-// the decoded values and the number of bytes consumed. A line that is not a
-// well-formed call is skipped, but a well-formed call whose value cannot be
-// decoded is recorded as undecodable rather than dropped: silently dropping it
-// would present a configured preference as absent, and absent preferences fall
-// back to Zotero's cloud defaults.
+// the decoded values. A line that is not a well-formed call is skipped, but a
+// well-formed call whose value cannot be decoded is recorded as undecodable
+// rather than dropped: silently dropping it would present a configured
+// preference as absent, and absent preferences fall back to Zotero's cloud
+// defaults.
 func parsePrefs(r io.Reader) (map[string]prefValue, error) {
 	values := make(map[string]prefValue, 16)
 	scanner := bufio.NewScanner(r)
-	scanner.Buffer(make([]byte, 0, 64<<10), 1<<20)
+	// The caller has already bounded the whole file to maxPrefsFileBytes, so
+	// the per-line buffer only needs to reach that same size: a lower cap here
+	// would let one long unrelated line fail the read even though the file as
+	// a whole is within bounds.
+	scanner.Buffer(make([]byte, 0, 64<<10), maxPrefsFileBytes)
 	first := true
 	for scanner.Scan() {
 		line := scanner.Text()
@@ -680,8 +849,7 @@ func parsePrefs(r io.Reader) (map[string]prefValue, error) {
 		if !strings.HasPrefix(line, call) {
 			continue
 		}
-		args := strings.TrimSuffix(strings.TrimSuffix(line[len(call):], ";"), ")")
-		key, rest, ok := cutQuotedString(args)
+		key, rest, ok := cutQuotedString(line[len(call):])
 		if !ok {
 			continue
 		}
@@ -689,9 +857,7 @@ func parsePrefs(r io.Reader) (map[string]prefValue, error) {
 		if !strings.HasPrefix(rest, ",") {
 			continue
 		}
-		raw := strings.TrimSpace(strings.TrimPrefix(rest, ","))
-		raw = strings.TrimSuffix(strings.TrimSpace(strings.TrimSuffix(raw, ")")), ";")
-		values[key] = parsePrefValue(strings.TrimSpace(raw))
+		values[key] = parsePrefValue(strings.TrimSpace(strings.TrimPrefix(rest, ",")))
 	}
 	if err := scanner.Err(); err != nil {
 		return nil, err
@@ -699,24 +865,102 @@ func parsePrefs(r io.Reader) (map[string]prefValue, error) {
 	return values, nil
 }
 
-func parsePrefValue(raw string) prefValue {
-	switch raw {
-	case "true":
-		return prefValue{isBool: true, b: true}
-	case "false":
-		return prefValue{isBool: true}
+// parsePrefValue decodes the value argument of a user_pref call: everything
+// after the key's trailing comma, up to end of line. That text still carries
+// the call's own closing paren and whatever the writer put after it, and both
+// are checked, not just discarded — a value only counts as decoded when
+// nothing but the call's own framing (a ")", an optional ";", an optional
+// trailing "//" comment) follows it. Anything else, such as string
+// concatenation the writer never emits, means the line does not actually
+// carry the value it appears to at a glance, and reporting a truncated prefix
+// as decoded would turn writer-controlled text into evidence this package
+// never really observed.
+func parsePrefValue(s string) prefValue {
+	if b, tail, ok := cutBoolLiteral(s); ok && validCallTail(tail) {
+		return prefValue{isBool: true, b: b}
 	}
-	if n, err := strconv.ParseInt(raw, 10, 64); err == nil {
+	if n, tail, ok := cutIntLiteral(s); ok && validCallTail(tail) {
 		return prefValue{isNum: true, n: n}
 	}
-	if s, _, ok := cutQuotedString(raw); ok {
-		return prefValue{str: s}
+	if str, tail, ok := cutQuotedString(s); ok && validCallTail(tail) {
+		return prefValue{str: str}
 	}
-	return prefValue{str: raw, undecodable: true}
+	return prefValue{str: s, undecodable: true}
+}
+
+// cutBoolLiteral matches a literal true/false keyword at the start of s and
+// returns what follows it. Zotero only ever writes the bare JavaScript
+// keyword for a boolean pref, never a quoted "true", so a quoted string is
+// deliberately not accepted here — that would make a type mismatch pass as a
+// genuine boolean reading.
+func cutBoolLiteral(s string) (b bool, tail string, ok bool) {
+	if rest, has := strings.CutPrefix(s, "true"); has {
+		return true, rest, true
+	}
+	if rest, has := strings.CutPrefix(s, "false"); has {
+		return false, rest, true
+	}
+	return false, "", false
+}
+
+// cutIntLiteral matches a leading base-10 integer literal in s and returns
+// what follows it.
+func cutIntLiteral(s string) (n int64, tail string, ok bool) {
+	i := 0
+	if i < len(s) && s[i] == '-' {
+		i++
+	}
+	start := i
+	for i < len(s) && s[i] >= '0' && s[i] <= '9' {
+		i++
+	}
+	if i == start {
+		return 0, "", false
+	}
+	v, err := strconv.ParseInt(s[:i], 10, 64)
+	if err != nil {
+		return 0, "", false
+	}
+	return v, s[i:], true
+}
+
+// validCallTail reports whether s is everything a genuine user_pref(...) call
+// may still carry after its value: the call's own closing paren, an optional
+// semicolon, and an optional trailing "//" comment running to end of line.
+// Anything else means the writer put more into the value position than a
+// clean decode captured, so the decode must not be trusted.
+func validCallTail(s string) bool {
+	s = strings.TrimSpace(s)
+	if !strings.HasPrefix(s, ")") {
+		return false
+	}
+	s = strings.TrimSpace(s[1:])
+	s = strings.TrimPrefix(s, ";")
+	s = strings.TrimSpace(s)
+	return s == "" || strings.HasPrefix(s, "//")
 }
 
 // stripBOM removes a leading UTF-8 byte order mark.
 func stripBOM(s string) string { return strings.TrimPrefix(s, "\ufeff") }
+
+// notUTF8Reason reports why data cannot be the UTF-8 text Zotero always
+// writes prefs.js as, or "" when it can. A BOM identifies the two encodings a
+// stray tool would plausibly leave behind; an embedded NUL byte or any other
+// invalid UTF-8 sequence catches the rest, since genuine prefs.js text is
+// generated JavaScript source that never contains one.
+func notUTF8Reason(data []byte) string {
+	switch {
+	case bytes.HasPrefix(data, []byte{0xff, 0xfe}):
+		return "UTF-16LE byte order mark"
+	case bytes.HasPrefix(data, []byte{0xfe, 0xff}):
+		return "UTF-16BE byte order mark"
+	case bytes.IndexByte(data, 0) >= 0:
+		return "embedded NUL byte"
+	case !utf8.Valid(data):
+		return "invalid UTF-8"
+	}
+	return ""
+}
 
 // cutQuotedString decodes a leading double-quoted JavaScript string literal and
 // returns it with the remainder of the input.

@@ -116,8 +116,15 @@ func commandRegistryPath(cmd *cobra.Command) string {
 }
 
 func emitPreconditionUnmet(w io.Writer, flags *rootFlags, capability, precondition, detail string) error {
+	return emitPreconditionUnmetWithRemediation(w, flags, capability, precondition, detail, preconditionRemediation(precondition))
+}
+
+// emitPreconditionUnmetWithRemediation is emitPreconditionUnmet for callers
+// whose remediation depends on WHY the precondition failed rather than on the
+// precondition alone. The storage guard refuses for several distinct reasons
+// and the useful next step differs for each.
+func emitPreconditionUnmetWithRemediation(w io.Writer, flags *rootFlags, capability, precondition, detail string, remediation []string) error {
 	detail = sanitizeForTerminal(detail)
-	remediation := preconditionRemediation(precondition)
 	env := preconditionUnmetEnvelope{
 		Kind:                  "precondition_unmet",
 		Capability:            capability,
@@ -190,7 +197,7 @@ func preconditionRemediation(precondition string) []string {
 			"Use a local Zotero base URL (the default http://localhost:23119/api/users/0) and retry after 'zotio doctor' reports the desktop connector reachable.",
 		}
 	case preconditionZoteroFileStorage:
-		return storedUploadRefusalRemediation()
+		return storedUploadRefusalRemediation(storedUploadReasonWebDAV)
 	default:
 		return []string{"Fix the declared setup precondition, then retry."}
 	}

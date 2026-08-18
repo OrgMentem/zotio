@@ -19,6 +19,7 @@ import (
 	"zotio/internal/config"
 	"zotio/internal/connector"
 	"zotio/internal/update"
+	"zotio/internal/zoteroprefs"
 )
 
 func TestIsLocalZoteroAPI(t *testing.T) {
@@ -164,5 +165,66 @@ func TestDoctorUpdateRows(t *testing.T) {
 	}
 	if got := updateReport(context.Background(), enabled, nil, "dev", ""); got != "INFO skipped (development build)" {
 		t.Fatalf("development row = %q", got)
+	}
+}
+
+// The JSON envelope has always carried file_storage_profile and
+// file_storage_hint; the human renderer at one point dropped both, so an
+// operator running plain `zotio doctor` had no way to see the actionable
+// remediation (e.g. pinning ZOTERO_PROFILE_DIR) that --json exposed. This
+// exercises the actual command's human output path, not the report map
+// directly, so it fails if the rendering is removed rather than just the
+// data.
+func TestDoctorHumanOutputShowsFileStorageProfileAndHint(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("ZOTIO_DEMO", "0")
+	t.Setenv("ZOTERO_API_KEY", "")
+	t.Setenv("ZOTERO_BASE_URL", "")
+
+	oldConnectorPing := connectorPing
+	connectorPing = func(context.Context, *connector.Client) error {
+		return errors.New("connector ping disabled")
+	}
+	t.Cleanup(func() { connectorPing = oldConnectorPing })
+
+	dir := t.TempDir()
+	writeTestPrefs(t, dir, `
+user_pref("extensions.zotero.sync.storage.protocol", "webdav");
+user_pref("extensions.zotero.sync.storage.url", "nas.example.com/zotero");
+`)
+	ambiguous, err := zoteroprefs.LoadProfile(dir)
+	if err != nil {
+		t.Fatalf("LoadProfile: %v", err)
+	}
+	ambiguous.Ambiguous = true
+	ambiguous.ProfileCount = 2
+
+	oldLoad := loadZoteroFileStorage
+	loadZoteroFileStorage = func() (zoteroprefs.FileStorage, error) { return ambiguous, nil }
+	resetZoteroFileStorageCache()
+	t.Cleanup(func() { loadZoteroFileStorage = oldLoad; resetZoteroFileStorageCache() })
+
+	flags := &rootFlags{
+		configPath: doctorTestConfigFile(t, "http://localhost:23119/api/users/0"),
+		timeout:    50 * time.Millisecond,
+	}
+	cmd := newDoctorCmd(flags)
+	cmd.SilenceErrors = true
+	cmd.SilenceUsage = true
+
+	var out bytes.Buffer
+	var errOut bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&errOut)
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("doctor: %v; stderr=%s", err, errOut.String())
+	}
+
+	stdout := out.String()
+	if !strings.Contains(stdout, "profile: "+ambiguous.ProfilePath) {
+		t.Fatalf("human output missing file_storage_profile line:\n%s", stdout)
+	}
+	if !strings.Contains(stdout, zoteroprefs.ProfileDirEnv) {
+		t.Fatalf("human output missing file_storage_hint's profile-pinning instruction:\n%s", stdout)
 	}
 }

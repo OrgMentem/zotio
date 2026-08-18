@@ -398,6 +398,24 @@ releases feed at most once a day.`,
 				if v, ok := report[key]; ok {
 					fmt.Fprintf(w, "  %s: %v\n", key, v)
 				}
+				if key != "file_storage" {
+					continue
+				}
+				// Subordinate to the file_storage line rather than independent
+				// checks, mirroring renderCacheReport's db_path/hint indentation:
+				// the profile the verdict came from, then the remediation hint
+				// when the setup is ambiguous or a refusal needs a workaround.
+				// Both exist in the JSON envelope already; without this they
+				// were invisible in human output.
+				if profile, ok := report["file_storage_profile"].(string); ok && profile != "" {
+					// Already sanitized where the report map is built.
+					fmt.Fprintf(w, "    profile: %s\n", profile)
+				}
+				if hint, ok := report["file_storage_hint"].(string); ok && hint != "" {
+					// Not sanitized at the source; the hint text can embed a
+					// WebDAV host pulled from another application's config.
+					fmt.Fprintf(w, "    hint: %s\n", sanitizeForTerminal(hint))
+				}
 			}
 			// Print auth setup hints (indented under Auth line)
 			if hint, ok := report["auth_hint"]; ok {

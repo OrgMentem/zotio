@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"unicode/utf16"
 )
 
 func writeProfile(t *testing.T, prefs string) string {
@@ -16,6 +17,17 @@ func writeProfile(t *testing.T, prefs string) string {
 		t.Fatalf("write prefs.js: %v", err)
 	}
 	return dir
+}
+
+// setGOOS points the package's platform switch at value for the duration of
+// the test, restoring it afterwards. Tests use this to drive the Linux/Unix
+// discovery path — including the Snap and Flatpak candidates — without
+// needing to run on Linux.
+func setGOOS(t *testing.T, value string) {
+	t.Helper()
+	old := goos
+	goos = value
+	t.Cleanup(func() { goos = old })
 }
 
 // The operator's real configuration: files belong on a personal WebDAV server,
@@ -74,6 +86,9 @@ func TestAbsentKeysResolveToZoteroDefaults(t *testing.T) {
 	}
 	if got := fs.Group(); got.Mode != StorageZoteroCloud || !got.Enabled {
 		t.Fatalf("Group() = %+v, want zotero cloud and enabled", got)
+	}
+	if fs.AnyPersonalModeUnknown() {
+		t.Fatal("AnyPersonalModeUnknown() = true for a profile with no malformed known key")
 	}
 }
 
@@ -233,6 +248,105 @@ func TestOversizedPrefsFileIsAnErrorNotAPartialRead(t *testing.T) {
 	}
 }
 
+// A string built from concatenation ("zotero" + "-future") must not decode as
+// a truncated prefix of its first operand: reading exactly "zotero" out of
+// that line would report confident cloud-mode evidence the writer never
+// actually wrote.
+func TestConcatenatedStringExpressionIsUndecodable(t *testing.T) {
+	dir := writeProfile(t, `user_pref("extensions.zotero.sync.storage.protocol", "zotero" + "-future");`)
+	fs, err := LoadProfile(dir)
+	if err != nil {
+		t.Fatalf("LoadProfile: %v", err)
+	}
+	if got := fs.Personal().Mode; got != StorageUnknown {
+		t.Fatalf("Personal().Mode = %q, want %q (a truncated read would wrongly report cloud storage)", got, StorageUnknown)
+	}
+	if !fs.AnyPersonalModeUnknown() {
+		t.Fatal("AnyPersonalModeUnknown() = false, want the undecodable protocol recorded")
+	}
+}
+
+// A quoted string handed to a boolean key is a type mismatch, not evidence.
+// The old truthy() coercion read a non-"true" string as a decoded false,
+// which would manufacture a "syncing is off" refusal from a value the writer
+// never wrote as a boolean at all.
+func TestStringValueForABooleanKeyIsUndecodableNotFalse(t *testing.T) {
+	dir := writeProfile(t, `user_pref("extensions.zotero.sync.storage.enabled", "garbage");`)
+	fs, err := LoadProfile(dir)
+	if err != nil {
+		t.Fatalf("LoadProfile: %v", err)
+	}
+	if !fs.Enabled {
+		t.Fatal("Enabled = false, want the shipped default kept rather than a decoded false invented from a type mismatch")
+	}
+	if fs.AnyPersonalSyncDisabled() {
+		t.Fatal("AnyPersonalSyncDisabled() = true, want a type mismatch to never become a positive hazard")
+	}
+	if !fs.AnyPersonalModeUnknown() {
+		t.Fatal("AnyPersonalModeUnknown() = false, want the malformed known key recorded as indeterminate")
+	}
+}
+
+// A well-formed value followed only by a trailing line comment is a normal,
+// legitimate prefs.js line: a comment is not corruption and must still parse.
+func TestTrailingLineCommentAfterAWellFormedValueStillParses(t *testing.T) {
+	dir := writeProfile(t, `user_pref("extensions.zotero.sync.storage.enabled", false); // disabled by operator`)
+	fs, err := LoadProfile(dir)
+	if err != nil {
+		t.Fatalf("LoadProfile: %v", err)
+	}
+	if fs.Enabled {
+		t.Fatal("Enabled = true, want the trailing comment to not prevent decoding false")
+	}
+	if !fs.AnyPersonalSyncDisabled() {
+		t.Fatal("AnyPersonalSyncDisabled() = false, want the decoded false to count as a hazard")
+	}
+	if fs.AnyPersonalModeUnknown() {
+		t.Fatal("AnyPersonalModeUnknown() = true, want a genuine decode followed by a comment to not read as malformed")
+	}
+}
+
+// Zotero always writes prefs.js as UTF-8. A UTF-16 file makes every
+// "user_pref(" prefix match fail, so every key would read as absent and
+// resolve to the confident cloud+enabled defaults; that must surface as an
+// evaluation failure instead.
+func TestUTF16PrefsFileIsAnErrorNotAnEmptyReading(t *testing.T) {
+	dir := t.TempDir()
+	prefs := `user_pref("extensions.zotero.sync.storage.protocol", "webdav");` + "\n"
+	units := utf16.Encode([]rune(prefs))
+	buf := make([]byte, 0, 2+2*len(units))
+	buf = append(buf, 0xff, 0xfe) // UTF-16LE byte order mark.
+	for _, u := range units {
+		buf = append(buf, byte(u), byte(u>>8))
+	}
+	if err := os.WriteFile(filepath.Join(dir, "prefs.js"), buf, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	fs, err := LoadProfile(dir)
+	if err == nil {
+		t.Fatalf("LoadProfile returned nil error for a UTF-16 prefs.js (fs = %+v)", fs)
+	}
+}
+
+// The per-line scanner buffer must not fire below the whole-file cap: one
+// long unrelated line must not fail the read when the file itself is well
+// within maxPrefsFileBytes.
+func TestALongUnrelatedLineDoesNotFailTheRead(t *testing.T) {
+	dir := t.TempDir()
+	body := "// " + strings.Repeat("x", 2<<20) + "\n" +
+		`user_pref("extensions.zotero.sync.storage.protocol", "webdav");` + "\n"
+	if err := os.WriteFile(filepath.Join(dir, "prefs.js"), []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	fs, err := LoadProfile(dir)
+	if err != nil {
+		t.Fatalf("LoadProfile: %v", err)
+	}
+	if got := fs.Personal().Mode; got != StorageWebDAV {
+		t.Fatalf("Personal().Mode = %q, want %q", got, StorageWebDAV)
+	}
+}
+
 // Discovery must follow profiles.ini rather than guessing, so the reported
 // configuration is the one Zotero most likely starts with.
 func TestDiscoverPrefersTheDefaultProfileFromProfilesINI(t *testing.T) {
@@ -382,11 +496,19 @@ func TestGroupSyncDisabledInASiblingProfileSurvivesTheModeTie(t *testing.T) {
 }
 
 // An unreadable preferred profile must not suppress the sibling scan that
-// exists to catch a WebDAV profile hiding behind it.
+// exists to catch a WebDAV profile hiding behind it, and the failure itself
+// must now be visible through the unreadable-profile accessors rather than
+// vanishing silently.
 func TestUnreadablePreferredProfileDoesNotHideAWebDAVSibling(t *testing.T) {
 	root := t.TempDir()
-	missing := filepath.Join(root, "gone")
+	// A directory sitting where prefs.js should be is a genuine read failure
+	// (not a regular file), unlike a simply-missing path, which LoadProfile
+	// treats as benign absence rather than an unreadable profile.
+	preferred := filepath.Join(root, "a")
 	sibling := filepath.Join(root, "b")
+	if err := os.MkdirAll(filepath.Join(preferred, "prefs.js"), 0o750); err != nil {
+		t.Fatal(err)
+	}
 	if err := os.MkdirAll(sibling, 0o750); err != nil {
 		t.Fatal(err)
 	}
@@ -395,7 +517,7 @@ func TestUnreadablePreferredProfileDoesNotHideAWebDAVSibling(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	fs, err := loadAcross([]string{missing, sibling}, missing)
+	fs, err := loadAcross([]string{preferred, sibling}, preferred)
 	if err != nil {
 		t.Fatalf("loadAcross: %v", err)
 	}
@@ -405,6 +527,41 @@ func TestUnreadablePreferredProfileDoesNotHideAWebDAVSibling(t *testing.T) {
 	// The sibling's own defaults must come through, not a zero struct.
 	if !fs.GroupsEnabled {
 		t.Fatal("GroupsEnabled = false, want the sibling's shipped default rather than a zero struct")
+	}
+	if !fs.AnyUnreadableProfile() {
+		t.Fatal("AnyUnreadableProfile() = false, want the directory-shaped prefs.js counted as unreadable")
+	}
+	if got := fs.UnreadableProfileCount(); got != 1 {
+		t.Fatalf("UnreadableProfileCount() = %d, want 1", got)
+	}
+}
+
+// A profile directory that simply has no prefs.js is the ordinary case
+// (Zotero has not necessarily run there), not an unreadable one.
+func TestAbsentPrefsFileIsNotCountedAsUnreadable(t *testing.T) {
+	root := t.TempDir()
+	a := filepath.Join(root, "a")
+	b := filepath.Join(root, "b")
+	if err := os.MkdirAll(a, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(b, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(b, "prefs.js"),
+		[]byte(`user_pref("extensions.zotero.sync.storage.protocol", "webdav");`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	fs, err := loadAcross([]string{a, b}, a)
+	if err != nil {
+		t.Fatalf("loadAcross: %v", err)
+	}
+	if fs.AnyUnreadableProfile() {
+		t.Fatal("AnyUnreadableProfile() = true for a profile that simply has no prefs.js")
+	}
+	if got := fs.UnreadableProfileCount(); got != 0 {
+		t.Fatalf("UnreadableProfileCount() = %d, want 0", got)
 	}
 }
 
@@ -436,11 +593,111 @@ func TestProfileRootDoesNotProbeTheDataDirectory(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(home, "Zotero"), 0o750); err != nil {
 		t.Fatal(err)
 	}
-	root, err := profileRoot()
+	roots, err := profileRoots()
 	if err != nil {
-		t.Fatalf("profileRoot: %v", err)
+		t.Fatalf("profileRoots: %v", err)
 	}
-	if root == filepath.Join(home, "Zotero") {
-		t.Fatal("profileRoot returned the Zotero DATA directory")
+	for _, root := range roots {
+		if root == filepath.Join(home, "Zotero") {
+			t.Fatal("profileRoots returned the Zotero DATA directory")
+		}
+	}
+}
+
+// Zotero's documented Linux layout puts the profile directory directly under
+// ~/.zotero/zotero rather than inside a Profiles/ subfolder, unlike macOS and
+// Windows. Discovery must scan the root itself on that platform, not only
+// Profiles/.
+func TestLinuxFallbackScansTheRootDirectlyNotOnlyProfilesSubfolder(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	setGOOS(t, "linux")
+
+	profile := filepath.Join(home, ".zotero", "zotero", "abcdefgh.default")
+	if err := os.MkdirAll(profile, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(profile, "prefs.js"),
+		[]byte(`user_pref("extensions.zotero.sync.storage.protocol", "webdav");`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	all, preferred, err := discoverProfiles()
+	if err != nil {
+		t.Fatalf("discoverProfiles: %v", err)
+	}
+	if len(all) != 1 || all[0] != profile {
+		t.Fatalf("discoverProfiles all = %v, want [%s]", all, profile)
+	}
+	if preferred != profile {
+		t.Fatalf("preferred = %q, want %q", preferred, profile)
+	}
+}
+
+// A stale profiles.ini entry naming a directory that no longer exists must
+// not suppress the directory scan that would otherwise find a live, unlisted
+// profile.
+func TestStaleINIEntryDoesNotSuppressALiveUnlistedProfile(t *testing.T) {
+	root := t.TempDir()
+	live := filepath.Join(root, "Profiles", "bbbbbbbb.default")
+	if err := os.MkdirAll(live, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(live, "prefs.js"),
+		[]byte(`user_pref("extensions.zotero.sync.storage.protocol", "webdav");`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// profiles.ini names a profile directory that was never created (renamed
+	// or removed since the INI was last written) and marks it Default=1.
+	ini := "[Profile0]\nIsRelative=1\nPath=Profiles/aaaaaaaa.gone\nDefault=1\n"
+	if err := os.WriteFile(filepath.Join(root, "profiles.ini"), []byte(ini), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	all, preferred, err := profilesInRoot(root)
+	if err != nil {
+		t.Fatalf("profilesInRoot: %v", err)
+	}
+	if len(all) != 1 || all[0] != live {
+		t.Fatalf("profilesInRoot all = %v, want [%s]", all, live)
+	}
+	if preferred != live {
+		t.Fatalf("preferred = %q, want the live profile since the INI's declared default no longer exists", preferred)
+	}
+}
+
+// Snap and Flatpak packaging sandbox $HOME for the Zotero process, so their
+// profiles live under package-specific trees that discovery must also treat
+// as candidates.
+func TestSnapAndFlatpakRootsAreAdditionalCandidates(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	setGOOS(t, "linux")
+
+	snapProfile := filepath.Join(home, "snap", "zotero", "common", ".zotero", "zotero", "aaaaaaaa.default")
+	flatpakProfile := filepath.Join(home, ".var", "app", "org.zotero.Zotero", ".zotero", "zotero", "bbbbbbbb.default")
+	for _, dir := range []string{snapProfile, flatpakProfile} {
+		if err := os.MkdirAll(dir, 0o750); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, "prefs.js"),
+			[]byte(`user_pref("extensions.zotero.sync.storage.protocol", "webdav");`), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	all, _, err := discoverProfiles()
+	if err != nil {
+		t.Fatalf("discoverProfiles: %v", err)
+	}
+	found := make(map[string]bool, len(all))
+	for _, dir := range all {
+		found[dir] = true
+	}
+	if !found[snapProfile] {
+		t.Fatalf("discoverProfiles = %v, want the Snap profile included", all)
+	}
+	if !found[flatpakProfile] {
+		t.Fatalf("discoverProfiles = %v, want the Flatpak profile included", all)
 	}
 }
