@@ -636,8 +636,12 @@ func addDoctorFileStorageReport(ctx context.Context, report map[string]any, flag
 	if fs.AnyUnreadableProfile() {
 		desc += fmt.Sprintf(", %d unreadable", fs.UnreadableProfileCount())
 		// Naming the path is the difference between "something is wrong" and a
-		// fixable permission or corruption problem.
-		report["file_storage_unreadable_profiles"] = sanitizeForTerminal(strings.Join(fs.UnreadableProfiles(), ", "))
+		// fixable permission or corruption problem. The count alone is the
+		// --json-only failure this report has already been fixed for twice, so
+		// the paths go in the hint, which the human renderer prints.
+		unreadable := fs.UnreadableProfiles()
+		report["file_storage_unreadable_profiles"] = sanitizeForTerminal(strings.Join(unreadable, ", "))
+		hints = append(hints, fmt.Sprintf("could not read %s; fix those files so their storage setting can be evaluated", strings.Join(unreadable, ", ")))
 	}
 
 	verdict := storedUploadDecision(ctx, flags, storedUploadRouteUnknown)

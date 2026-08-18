@@ -596,6 +596,52 @@ func TestDoctorReportsWebDAVFileStorageAndTheRefusal(t *testing.T) {
 	}
 }
 
+// A count of unreadable profiles tells the operator something is wrong and not
+// which file to fix, and the paths live in a --json-only field.
+//
+// With --allow-zotero-cloud the verdict short-circuits before any refusal is
+// built (file_storage_guard.go storedUploadDecision), so the refusal pin that
+// normally carries those paths never runs. That is the branch where the count
+// stood alone in human output, and the only branch where this test is not
+// vacuous: without the override the unreadable reason names them anyway.
+func TestDoctorNamesUnreadableProfilePathsInTheHint(t *testing.T) {
+	root := t.TempDir()
+	readable := filepath.Join(root, "ok.default")
+	writeTestPrefs(t, readable, `
+user_pref("extensions.zotero.sync.storage.protocol", "webdav");
+user_pref("extensions.zotero.sync.storage.url", "nas.example.com/zotero");
+`)
+	// A directory where prefs.js must be: discovered, and unreadable.
+	broken := filepath.Join(root, "broken.default")
+	if err := os.MkdirAll(filepath.Join(broken, "prefs.js"), 0o750); err != nil {
+		t.Fatalf("create unreadable profile: %v", err)
+	}
+
+	old := loadZoteroFileStorage
+	loadZoteroFileStorage = func() (zoteroprefs.FileStorage, error) {
+		return zoteroprefs.LoadAcrossForTest([]string{readable, broken}, readable)
+	}
+	resetZoteroFileStorageCache()
+	t.Cleanup(func() { loadZoteroFileStorage = old; resetZoteroFileStorageCache() })
+
+	report := map[string]any{}
+	addDoctorFileStorageReport(t.Context(), report, &rootFlags{allowZoteroCloud: true})
+
+	// Premise: no refusal here, so nothing else can supply the paths.
+	if desc, _ := report["file_storage"].(string); strings.Contains(desc, "refused") {
+		t.Fatalf("file_storage = %q, want the override to have suppressed the refusal", desc)
+	}
+
+	hint, _ := report["file_storage_hint"].(string)
+	if !strings.Contains(hint, broken) {
+		t.Fatalf("file_storage_hint = %q, want the unreadable path %q named", hint, broken)
+	}
+	// The JSON field stays, for consumers that want it structured.
+	if paths, _ := report["file_storage_unreadable_profiles"].(string); !strings.Contains(paths, broken) {
+		t.Fatalf("file_storage_unreadable_profiles = %q, want %q", paths, broken)
+	}
+}
+
 func TestDoctorReportsUnknownFileStorageWithoutZoteroDesktop(t *testing.T) {
 	stubZoteroFileStorage(t, "", true)
 
