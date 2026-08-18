@@ -63,6 +63,15 @@ so local uncommitted changes never enter a release.
 > lint failure sails straight into a tagged release (this bit us on v0.6.0 — the
 > tag pointed at a commit with an untidy `go.mod`). Check the commit's CI first.
 
+> **`make ci` runs those same gates locally**, job for job, in about 2.5 minutes
+> — including `-race` and the six-target cross-build. Neither is in `make test`,
+> and both are blind spots you cannot reason your way out of: v0.19.0 was pushed
+> green locally and failed CI three times over — a data race two new tests had
+> just introduced, a Linux-only discovery bug macOS structurally cannot reach,
+> and a test that only runs when Zotero is not holding `:23119`. Run it before
+> pushing a release commit; CI remains the authority, but it should be
+> confirming a result you already have, not discovering one.
+
 > **CI green proves the code compiles and the mocks agree. It does not prove the
 > binary works.** Every P0 in the 0.17.0 cycle was invisible to a green suite —
 > `tags rename` could not write a single tag while `go test ./...` passed, because
