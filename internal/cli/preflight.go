@@ -44,6 +44,29 @@ var preconditionCheckers = map[string]preconditionChecker{
 	preconditionZoteroFileStorage: checkZoteroFileStoragePrecondition,
 }
 
+// preconditionRemediators supply remediation that depends on WHY a
+// precondition failed rather than on the precondition alone. A precondition
+// without an entry here falls back to preconditionRemediation's static list.
+//
+// The storage guard needs this: it refuses for several distinct reasons, and
+// the useful next step differs for each, down to naming the specific Zotero
+// profile whose configuration produced the verdict.
+var preconditionRemediators = map[string]func(context.Context, *rootFlags) []string{
+	preconditionZoteroFileStorage: func(ctx context.Context, flags *rootFlags) []string {
+		return storedUploadRefusalSteps(storedUploadDecision(ctx, flags, storedUploadRouteUnknown))
+	},
+}
+
+// remediationFor resolves the remediation for one failed precondition.
+func remediationFor(ctx context.Context, flags *rootFlags, precondition string) []string {
+	if resolve := preconditionRemediators[precondition]; resolve != nil {
+		if steps := resolve(ctx, flags); len(steps) > 0 {
+			return steps
+		}
+	}
+	return preconditionRemediation(precondition)
+}
+
 func init() {
 	validateCapabilityPreconditions()
 }
@@ -84,7 +107,8 @@ func runCapabilityPreflight(cmd *cobra.Command, flags *rootFlags) error {
 			return err
 		}
 		if !ok {
-			return emitPreconditionUnmet(cmd.OutOrStdout(), flags, path, req, detail)
+			return emitPreconditionUnmetWithRemediation(cmd.OutOrStdout(), flags, path, req, detail,
+				remediationFor(ctx, flags, req))
 		}
 	}
 	return nil

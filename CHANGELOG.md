@@ -138,6 +138,13 @@ to make the refusal actionable.
   `~/.zotero/zotero`; a stale `profiles.ini` entry suppressed the directory
   fallback entirely, hiding a live unlisted profile; and Snap and Flatpak
   layouts had no candidates. All three are fixed.
+- **A refusal did not say whose configuration produced it.** Profile evidence is
+  machine-wide and cannot be bound to the Zotero account a command targets
+  (`dev/adr/0006-unbound-profile-evidence.md`), so a profile belonging to a
+  different account can refuse a correct upload. Refusals now name the profile
+  directory they read, alongside the `ZOTERO_PROFILE_DIR` pin, making that case
+  recognisable instead of inexplicable. Preconditions can now resolve
+  remediation from the failure rather than from a static per-precondition list.
 
 ### Security
 

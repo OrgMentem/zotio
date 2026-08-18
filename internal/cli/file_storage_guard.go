@@ -261,11 +261,17 @@ const (
 	storedUploadReasonUnevaluable
 )
 
-// storedUploadVerdict is a refusal and the reason behind it, so that the
-// remediation can be chosen from the reason instead of assumed.
+// storedUploadVerdict is a refusal, the reason behind it, and the profile the
+// evidence came from, so that the remediation can be chosen from the reason
+// instead of assumed and the operator can see WHOSE configuration was read.
 type storedUploadVerdict struct {
 	reason storedUploadReason
 	detail string
+	// profile is the Zotero profile directory the reading came from. Profile
+	// evidence is not bound to the Zotero ACCOUNT a command targets (see
+	// dev/adr/0006), so naming it is how an operator recognises a refusal
+	// produced by a profile belonging to a different account.
+	profile string
 }
 
 // refused reports whether the upload must not proceed.
@@ -342,20 +348,22 @@ func storedUploadDecision(ctx context.Context, flags *rootFlags, route storedUpl
 				". Zotero has %d profiles here and which one is running cannot be determined, so this reads the WebDAV one; pin it with %s if that is not the profile you use",
 				fs.ProfileCount, zoteroprefs.ProfileDirEnv)
 		}
-		return storedUploadVerdict{reason: storedUploadReasonWebDAV, detail: detail}
+		return storedUploadVerdict{reason: storedUploadReasonWebDAV, detail: detail, profile: fs.ProfilePath}
 	case fs.AnyPersonalSyncDisabled():
 		// A separate problem from the WebDAV mismatch: the destination is
 		// right, but Zotero will never download what is uploaded.
 		return storedUploadVerdict{
-			reason: storedUploadReasonPersonalSyncOff,
-			detail: "Zotero desktop has personal-library file syncing turned off (sync.storage.enabled is false), so a stored attachment uploaded through the Zotero Web API would consume the account's storage plan and never be downloaded by Zotero",
+			reason:  storedUploadReasonPersonalSyncOff,
+			detail:  "Zotero desktop has personal-library file syncing turned off (sync.storage.enabled is false), so a stored attachment uploaded through the Zotero Web API would consume the account's storage plan and never be downloaded by Zotero",
+			profile: fs.ProfilePath,
 		}
 	case fs.AnyPersonalModeUnknown():
 		// A protocol this package does not model. The destination is not
 		// Zotero's cloud by default; it is simply unknown.
 		return storedUploadVerdict{
-			reason: storedUploadReasonUnevaluable,
-			detail: "Zotero desktop is configured with a file-storage protocol this version of zotio does not recognise, so this upload's destination cannot be established",
+			reason:  storedUploadReasonUnevaluable,
+			detail:  "Zotero desktop is configured with a file-storage protocol this version of zotio does not recognise, so this upload's destination cannot be established",
+			profile: fs.ProfilePath,
 		}
 	default:
 		return storedUploadVerdict{}
@@ -450,13 +458,32 @@ func connectorUnavailableReason(ctx context.Context, flags *rootFlags) string {
 // parameter, and promised that attaching in Zotero desktop would sync the
 // bytes, which is exactly what a syncing-disabled profile will not do.
 func storedUploadRefusalRemediation(reason storedUploadReason) []string {
+	return storedUploadRefusalSteps(storedUploadVerdict{reason: reason})
+}
+
+// storedUploadRefusalSteps is the remediation for a specific verdict, so it can
+// name the profile the evidence came from.
+//
+// Profile evidence is machine-wide and not bound to the Zotero account a
+// command targets (dev/adr/0006-unbound-profile-evidence.md). A profile
+// belonging to a DIFFERENT account can therefore refuse a correct upload, and
+// the only way an operator recognises that is by being told which profile was
+// read and how to point at another one.
+func storedUploadRefusalSteps(v storedUploadVerdict) []string {
 	const linkedFile = "Use '--mode linked-file' (or '--attach-mode linked-file') to record the local path without uploading; the file stays on this machine and is not synced."
 	const override = "Pass --allow-zotero-cloud to upload into Zotero's cloud storage anyway."
 
-	switch reason {
+	pin := fmt.Sprintf("Point %s at the Zotero profile this library belongs to, so the destination can be established.", zoteroprefs.ProfileDirEnv)
+	if v.profile != "" {
+		pin = fmt.Sprintf("This read %s, which is not necessarily the profile for the account you are writing to; point %s at the right one if it is not.",
+			sanitizeForTerminal(v.profile), zoteroprefs.ProfileDirEnv)
+	}
+
+	switch v.reason {
 	case storedUploadReasonPersonalSyncOff:
 		return []string{
 			"Turn personal file syncing back on in Zotero: Settings -> Sync -> File Syncing -> 'Sync attachment files in My Library'.",
+			pin,
 			linkedFile,
 			override,
 		}
@@ -468,7 +495,7 @@ func storedUploadRefusalRemediation(reason storedUploadReason) []string {
 		}
 	case storedUploadReasonUnevaluable:
 		return []string{
-			fmt.Sprintf("Point %s at the Zotero profile this library belongs to, so the destination can be established.", zoteroprefs.ProfileDirEnv),
+			pin,
 			linkedFile,
 			override,
 		}
@@ -476,6 +503,7 @@ func storedUploadRefusalRemediation(reason storedUploadReason) []string {
 		return []string{
 			"Attach the file in Zotero desktop (right-click the item -> Add Attachment -> Attach Stored Copy of File); Zotero then syncs the bytes to your own file store.",
 			"For a NEW item, create it and its file in one desktop session: 'zotio import apply --attach-mode stored --via connector', which hands the bytes to Zotero instead of uploading them.",
+			pin,
 			linkedFile,
 			override,
 		}
@@ -496,7 +524,7 @@ func guardStoredUpload(ctx context.Context, flags *rootFlags) error {
 		return nil
 	}
 	return fmt.Errorf("refusing stored upload: %s; %s", verdict.detail,
-		strings.Join(storedUploadRefusalRemediation(verdict.reason), " "))
+		strings.Join(storedUploadRefusalSteps(verdict), " "))
 }
 
 // refuseStoredWebUpload emits the standard precondition_unmet envelope when a
@@ -510,7 +538,7 @@ func refuseStoredWebUpload(cmd *cobra.Command, flags *rootFlags, capability stri
 	}
 	return emitPreconditionUnmetWithRemediation(cmd.OutOrStdout(), flags, capability,
 		preconditionZoteroFileStorage, verdict.detail,
-		storedUploadRefusalRemediation(verdict.reason))
+		storedUploadRefusalSteps(verdict))
 }
 
 // addDoctorFileStorageReport records where Zotero desktop keeps attachment
@@ -567,7 +595,7 @@ func addDoctorFileStorageReport(ctx context.Context, report map[string]any, flag
 		desc += " — stored uploads via the Web API are refused: " + refusalSummary(verdict.reason)
 		// The doctor hint mirrors the refusal's own remediation, so the two
 		// surfaces cannot drift into giving different advice.
-		hints = append(hints, strings.Join(storedUploadRefusalRemediation(verdict.reason), " "))
+		hints = append(hints, strings.Join(storedUploadRefusalSteps(verdict), " "))
 	case flags != nil && flags.allowZoteroCloud:
 		desc += " — stored uploads forced into Zotero's cloud storage by --allow-zotero-cloud"
 	default:

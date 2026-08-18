@@ -993,3 +993,41 @@ func TestPreconditionRemediationReachesBothSurfaces(t *testing.T) {
 		t.Fatalf("json error = %q, want a single line for logs", jsonErr.Error())
 	}
 }
+
+// Profile evidence is machine-wide and cannot be bound to the Zotero account a
+// command targets (dev/adr/0006-unbound-profile-evidence.md), so a profile
+// belonging to a DIFFERENT account can refuse a correct upload. The refusal is
+// only recoverable if it says which profile it read, so that must survive.
+func TestRefusalNamesTheProfileItsEvidenceCameFrom(t *testing.T) {
+	dir := t.TempDir()
+	writeTestPrefs(t, dir, `
+user_pref("extensions.zotero.sync.storage.protocol", "webdav");
+user_pref("extensions.zotero.sync.storage.url", "nas.example.com/zotero");
+`)
+	fs, err := zoteroprefs.LoadProfile(dir)
+	if err != nil {
+		t.Fatalf("LoadProfile: %v", err)
+	}
+	old := loadZoteroFileStorage
+	loadZoteroFileStorage = func() (zoteroprefs.FileStorage, error) { return fs, nil }
+	resetZoteroFileStorageCache()
+	t.Cleanup(func() { loadZoteroFileStorage = old; resetZoteroFileStorageCache() })
+
+	verdict := storedUploadDecision(t.Context(), &rootFlags{}, storedUploadToExistingItem)
+	if !verdict.refused() {
+		t.Fatal("a WebDAV profile did not refuse")
+	}
+	if verdict.profile != fs.ProfilePath {
+		t.Fatalf("verdict.profile = %q, want the source profile %q", verdict.profile, fs.ProfilePath)
+	}
+
+	// A single unambiguous profile used to produce a confident refusal with no
+	// hint that it might belong to someone else's account.
+	steps := strings.Join(storedUploadRefusalSteps(verdict), " ")
+	if !strings.Contains(steps, dir) {
+		t.Fatalf("remediation = %q, want the profile it read named", steps)
+	}
+	if !strings.Contains(steps, zoteroprefs.ProfileDirEnv) {
+		t.Fatalf("remediation = %q, want the pinning override named", steps)
+	}
+}
