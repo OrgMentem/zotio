@@ -6,11 +6,16 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"net"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"zotio/internal/connector"
 	"zotio/internal/mutation"
@@ -194,6 +199,102 @@ func TestImportApplyStoredWebCreateAppliesParentAndAttachment(t *testing.T) {
 	}
 }
 
+// A stored create commits the parent before it uploads the file, and nothing
+// rolls that back. When the upload then fails, the operator is left with an
+// item that has no file, so the failure must hand back enough to find it.
+// Previously this returned a bare {"parent_key": ...} map, which the human
+// renderer printed as a Go map literal with no explanation.
+//
+// This exercises the real apply path against the fake Zotero Web API, so it
+// runs everywhere — unlike the connector-route sibling, which needs port 23119
+// and skips on any machine where Zotero desktop is running.
+func TestImportApplyStoredWebCreateReportsOrphanedParentOnUploadFailure(t *testing.T) {
+	fake := newFakeZoteroUpload(t, "")
+	fake.quotaOnAuth = true // 413 at upload authorization, after the parent exists
+	pdf := writeUploadFixture(t, "orphan-paper.pdf", []byte("%PDF-1.4\norphan\n%%EOF"))
+	manifest := importManifest{
+		SchemaVersion: importManifestSchemaVersion,
+		Dir:           filepath.Dir(pdf),
+		Entries: []importManifestEntry{{
+			Path: pdf, Action: "create", Status: "resolved", Title: "Orphan Paper",
+			Item: map[string]any{"itemType": "journalArticle", "title": "Orphan Paper"},
+		}},
+	}
+	manifestPath := writeImportApplyTestManifest(t, manifest)
+	flags := &rootFlags{
+		asJSON: true, yes: true, via: "web", maxChanges: -1,
+		configPath: testConfigFile(t, fake.srv.URL+"/users/0"),
+	}
+	env, stderr, err := runImportApplyTestCmdWithFlags(t, flags, []string{"--attach-mode", "stored", manifestPath})
+	if err == nil {
+		t.Fatalf("upload failure after parent create succeeded; env=%+v stderr=%s", env, stderr)
+	}
+	// The premise: the parent really was committed, so this is an orphan and
+	// not a clean no-op.
+	if got := fake.parentSnapshot(); got != 1 {
+		t.Fatalf("parent create requests = %d, want 1; the fixture no longer reproduces an orphan", got)
+	}
+	if env.Result == nil || len(env.Result.Items) != 1 {
+		t.Fatalf("env = %+v, want one failed result", env)
+	}
+	reason, ok := env.Result.Items[0].Reason.(map[string]any)
+	if !ok {
+		t.Fatalf("reason = %#v, want a structured detail map", env.Result.Items[0].Reason)
+	}
+	if reason["parent_key"] != "PARENT1" {
+		t.Fatalf("reason = %#v, want the created parent's key", reason)
+	}
+	if reason["title"] != "Orphan Paper" {
+		t.Fatalf("reason = %#v, want the title to search Zotero by", reason)
+	}
+	message, _ := reason["message"].(string)
+	if !strings.Contains(message, "created but the file was not attached") {
+		t.Fatalf("message = %q, want the orphaned-parent condition stated", message)
+	}
+	if !strings.Contains(message, "delete the item and re-run") {
+		t.Fatalf("message = %q, want a deterministic next step", message)
+	}
+	// reasonText prints only "message"; without it a person sees a Go map.
+	if rendered := mutation.Rows(env); !strings.Contains(strings.Join(rendered, " "), "created but the file was not attached") {
+		t.Fatalf("human rows = %q, want the orphan explanation rendered", rendered)
+	}
+}
+
+// The connector-route integration test above needs port 23119 and therefore
+// skips on any machine where Zotero desktop is running, which is most
+// developer machines. This pins the evidence shape unconditionally so the
+// connector contract is not defended only on CI.
+func TestOrphanedConnectorParentDetailCarriesFindableEvidence(t *testing.T) {
+	cause := errors.New("connector saveAttachment: HTTP 500")
+	res := itemCreateResult{Via: "connector", Session: "sess-1", ConnKey: "conn-1"}
+
+	detail := orphanedConnectorParentDetail(res, "Scanned Paper", cause)
+	for key, want := range map[string]any{
+		"via": "connector", "session": "sess-1", "connector_key": "conn-1", "title": "Scanned Paper",
+	} {
+		if detail[key] != want {
+			t.Fatalf("detail[%q] = %v, want %v", key, detail[key], want)
+		}
+	}
+	// The connector protocol returns no Zotero item key, so claiming one would
+	// send the operator looking for a key that does not exist.
+	if _, present := detail["parent_key"]; present {
+		t.Fatalf("detail = %#v, must not invent a parent_key the connector never returned", detail)
+	}
+	res.WebKey = "ABCD1234"
+	if got := orphanedConnectorParentDetail(res, "Scanned Paper", cause)["parent_key"]; got != "ABCD1234" {
+		t.Fatalf("parent_key = %v, want the resolved key reported when one is known", got)
+	}
+
+	err := orphanedParentError("Scanned Paper", cause)
+	if !errors.Is(err, cause) {
+		t.Fatalf("error = %v, want the underlying cause preserved for callers", err)
+	}
+	if !strings.Contains(err.Error(), "created but the file was not attached") {
+		t.Fatalf("error = %q, want the orphan condition stated", err)
+	}
+}
+
 func TestImportApplyStoredCreateRejectsMissingAttachmentBeforeParent(t *testing.T) {
 	fake := newFakeZoteroUpload(t, "")
 	missing := filepath.Join(t.TempDir(), "missing.pdf")
@@ -254,6 +355,87 @@ func TestImportApplyLinkedFileWebCreateReturnsParentAndAttachmentKeys(t *testing
 	if fake.parentSnapshot() != 1 || creates != 1 || uploads != 0 || registers != 0 {
 		t.Fatalf("traffic parent=%d attachment=%d upload=%d register=%d, want parent=1 attachment=1 upload=0 register=0",
 			fake.parentSnapshot(), creates, uploads, registers)
+	}
+}
+
+// TestImportApplyStoredConnectorCreateReportsOrphanedParentOnAttachFailure
+// covers zotio-orphan-evidence: routeCreateItem's SaveItems call commits the
+// parent in Zotero desktop before SaveAttachment ever runs, and the two calls
+// are not transactional (see connector.SaveAttachment's doc comment). When
+// SaveAttachment then fails, the operator must be told the parent already
+// exists and given evidence to find it, not a bare error.
+func TestImportApplyStoredConnectorCreateReportsOrphanedParentOnAttachFailure(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:23119")
+	if err != nil {
+		t.Skipf("port 23119 is unavailable: %v", err)
+	}
+	var saveItemRequests, saveAttachmentRequests int
+	connectorServer := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/connector/ping":
+			w.WriteHeader(http.StatusOK)
+		case "/connector/saveItems":
+			saveItemRequests++
+			w.WriteHeader(http.StatusCreated)
+		case "/connector/saveAttachment":
+			saveAttachmentRequests++
+			http.Error(w, "simulated WebDAV filing failure", http.StatusInternalServerError)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	connectorServer.Listener = listener
+	connectorServer.Start()
+	t.Cleanup(connectorServer.Close)
+
+	pdf := writeUploadFixture(t, "orphan-paper.pdf", []byte("%PDF-1.4\norphan\n%%EOF"))
+	manifest := importManifest{
+		SchemaVersion: importManifestSchemaVersion,
+		Dir:           filepath.Dir(pdf),
+		Entries: []importManifestEntry{{
+			Path: pdf, Action: "create", Status: "resolved", Title: "Orphan Paper",
+			Item: map[string]any{"itemType": "journalArticle", "title": "Orphan Paper"},
+		}},
+	}
+	manifestPath := writeImportApplyTestManifest(t, manifest)
+	flags := &rootFlags{
+		asJSON: true, yes: true, via: "connector", timeout: time.Second, maxChanges: -1,
+		configPath: testConfigFile(t, "http://127.0.0.1:23119/api/users/0"),
+	}
+	env, stderr, err := runImportApplyTestCmdWithFlags(t, flags, []string{"--attach-mode", "stored", manifestPath})
+	if err == nil {
+		t.Fatalf("stored connector create with failing attach succeeded; env=%+v stderr=%s", env, stderr)
+	}
+	if saveItemRequests != 1 || saveAttachmentRequests != 1 {
+		t.Fatalf("connector requests = saveItems:%d saveAttachment:%d, want one each", saveItemRequests, saveAttachmentRequests)
+	}
+	if env.Result == nil || env.Result.Summary.Failed != 1 || len(env.Result.Items) != 1 {
+		t.Fatalf("env = %+v, want one failed operation", env)
+	}
+	reason, ok := env.Result.Items[0].Reason.(map[string]any)
+	if !ok {
+		t.Fatalf("reason = %#v, want a detail map identifying the orphaned parent", env.Result.Items[0].Reason)
+	}
+	if reason["via"] != "connector" {
+		t.Fatalf("reason[via] = %v, want connector", reason["via"])
+	}
+	session, _ := reason["session"].(string)
+	connKey, _ := reason["connector_key"].(string)
+	if session == "" || connKey == "" {
+		t.Fatalf("reason = %#v, want non-empty connector session and connector_key", reason)
+	}
+	if reason["title"] != "Orphan Paper" {
+		t.Fatalf("reason[title] = %v, want %q", reason["title"], "Orphan Paper")
+	}
+	message, _ := reason["message"].(string)
+	if !strings.Contains(message, `"Orphan Paper" was created in Zotero desktop but the file was not attached`) {
+		t.Fatalf("reason[message] = %q, want it to name the created-but-unattached condition", message)
+	}
+	if !strings.Contains(message, "Attach Stored Copy of File") || !strings.Contains(message, "delete the item and re-run") {
+		t.Fatalf("reason[message] = %q, want a deterministic next step", message)
+	}
+	if !strings.Contains(message, "simulated WebDAV filing failure") {
+		t.Fatalf("reason[message] = %q, want the underlying connector error wrapped in", message)
 	}
 }
 

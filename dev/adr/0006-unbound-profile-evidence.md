@@ -32,8 +32,20 @@ because of a profile that has nothing to do with it.
 guard does not attempt to determine which Zotero account a profile belongs to.
 
 To keep the resulting false refusals recoverable, every refusal derived from
-profile evidence names the profile directory it read and points at
-`ZOTERO_PROFILE_DIR` as the way to select a different one.
+profile evidence names **every profile that positively evidenced that specific
+reason**, and points at `ZOTERO_PROFILE_DIR` as the way to select a different
+one.
+
+Attribution is per-hazard, not per-reading. `hazardSet` therefore carries
+profile paths rather than booleans. The first version of this decision named
+the *representative* profile instead, which was wrong: `riskRank` orders
+storage MODES only, so a hazard drawn from `Enabled`/`GroupsEnabled` is
+routinely carried by a profile that lost the ranking. A refusal saying "file
+syncing is off" would then name a profile with file syncing on — sending the
+operator to verify the one file guaranteed to contradict the message, and
+leaving the actual cause unnamed. Caught by adversarial review before release;
+regression-tested by
+`TestRefusalNamesTheProfileItsEvidenceCameFromNotTheRepresentative`.
 
 ## Why binding was rejected
 
@@ -69,7 +81,7 @@ non-deterministically is worse than one that is honestly over-broad.
 
 **Accepted:** a profile for an unrelated account can refuse a correct upload.
 This errs toward refusing, which is the recoverable direction: the refusal
-names the profile it read, `ZOTERO_PROFILE_DIR` selects a different one, and
+names the contributing profiles, `ZOTERO_PROFILE_DIR` selects a different one, and
 `--allow-zotero-cloud` overrides outright. The opposite error — permitting a
 silent misroute into a storage plan the operator does not use — is the original
 defect and is not recoverable, because the bytes are already billed.

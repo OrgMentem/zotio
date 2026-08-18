@@ -230,11 +230,12 @@ func importApplyOps(cmd *cobra.Command, flags *rootFlags, writeClient importAppl
 						case "connector":
 							data, err := os.ReadFile(entryPath)
 							if err != nil {
-								return "failed", nil, fmt.Errorf("reading attachment %s: %w", entryPath, err)
+								cause := fmt.Errorf("reading attachment %s: %w", entryPath, err)
+								return "failed", orphanedConnectorParentDetail(res, entryTitle, cause), orphanedParentError(entryTitle, cause)
 							}
 							conn, err := flags.newConnector()
 							if err != nil {
-								return "failed", nil, err
+								return "failed", orphanedConnectorParentDetail(res, entryTitle, err), orphanedParentError(entryTitle, err)
 							}
 							// Zotero's importFromNetworkStream hard-rejects an
 							// empty url ("'url' not provided"), which the
@@ -248,7 +249,7 @@ func importApplyOps(cmd *cobra.Command, flags *rootFlags, writeClient importAppl
 								attachmentURL = localFileURL(entryPath)
 							}
 							if err := conn.SaveAttachment(cmd.Context(), res.Session, res.ConnKey, "Full Text PDF", attachmentURL, "application/pdf", data); err != nil {
-								return "failed", nil, err
+								return "failed", orphanedConnectorParentDetail(res, entryTitle, err), orphanedParentError(entryTitle, err)
 							}
 							if fetchPDF {
 								attachResolverPDF(cmd.Context(), flags, &res)
@@ -257,11 +258,11 @@ func importApplyOps(cmd *cobra.Command, flags *rootFlags, writeClient importAppl
 						case "web":
 							req, err := newStoredUploadRequest(res.WebKey, entryPath, "")
 							if err != nil {
-								return "failed", map[string]any{"parent_key": res.WebKey}, err
+								return "failed", orphanedWebParentDetail(res.WebKey, entryTitle, err), orphanedParentError(entryTitle, err)
 							}
 							status, reason, err := applyStoredUpload(cmd.Context(), storedClient, req, flags)
 							if err != nil {
-								return "failed", map[string]any{"parent_key": res.WebKey}, err
+								return "failed", orphanedWebParentDetail(res.WebKey, entryTitle, err), orphanedParentError(entryTitle, err)
 							}
 							detail := map[string]any{
 								"via":               "web",
@@ -401,6 +402,52 @@ func validateImportStoredAttachment(path string) error {
 		return fmt.Errorf("reading attachment %s: file is too large to load", path)
 	}
 	return nil
+}
+
+// A stored create commits the parent item before it attaches the file, and
+// this package deliberately does not roll back or retry (the mutation model is
+// non-transactional). Both routes can therefore leave a parent behind with no
+// file, so both report the same thing: what was created, and how to finish or
+// undo it by hand.
+//
+// "message" carries the human text because reasonText, the engine's
+// human-output renderer, prints only a structured reason's "message" field —
+// without it the failure renders as a bare Go map.
+
+// orphanedConnectorParentDetail reports the evidence needed to find a parent
+// the connector route created. The connector protocol never returns a Zotero
+// item key for it (SaveAttachment takes only the connector-local ConnKey), so
+// session/key/title is the best available correlation.
+func orphanedConnectorParentDetail(res itemCreateResult, entryTitle string, cause error) map[string]any {
+	detail := map[string]any{
+		"via":           "connector",
+		"session":       res.Session,
+		"connector_key": res.ConnKey,
+		"title":         entryTitle,
+		"message":       orphanedParentError(entryTitle, cause).Error(),
+	}
+	if res.WebKey != "" {
+		detail["parent_key"] = res.WebKey
+	}
+	return detail
+}
+
+// orphanedWebParentDetail reports the same for the Web API route, which does
+// know the real Zotero item key — strictly better evidence than the connector
+// case, and previously the only thing reported, with no sentence to render.
+func orphanedWebParentDetail(parentKey, entryTitle string, cause error) map[string]any {
+	return map[string]any{
+		"via":        "web",
+		"parent_key": parentKey,
+		"title":      entryTitle,
+		"message":    orphanedParentError(entryTitle, cause).Error(),
+	}
+}
+
+// orphanedParentError states plainly that the parent item already exists
+// unattached, and gives a deterministic next step.
+func orphanedParentError(entryTitle string, cause error) error {
+	return fmt.Errorf("item %q was created but the file was not attached: %w; find it by title in Zotero, then either attach the file directly (right-click the item -> Add Attachment -> Attach Stored Copy of File) or delete the item and re-run", entryTitle, cause)
 }
 
 // Isolate manifest item maps before closure capture.

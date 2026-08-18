@@ -145,6 +145,21 @@ to make the refusal actionable.
   directory they read, alongside the `ZOTERO_PROFILE_DIR` pin, making that case
   recognisable instead of inexplicable. Preconditions can now resolve
   remediation from the failure rather than from a static per-precondition list.
+- **A refusal could name a profile that contradicted it.** Hazards were unioned
+  across profiles as plain booleans, then reported against the risk-ranked
+  representative — but `riskRank` orders storage *modes* only, so a
+  syncing-off or unrecognised-protocol hazard is routinely carried by a
+  profile that lost the ranking. "File syncing is off" could name a profile
+  with file syncing on, sending the operator to check the one file guaranteed
+  to disagree. Hazards are now attributed to the profiles that evidenced them,
+  and every contributor is named. `doctor` reports the contributing profiles
+  and the paths of any unreadable ones.
+- **A stored create that committed a parent and then failed to attach its file
+  reported nothing usable.** The connector route returned no evidence at all,
+  and the Web route returned a bare key map that the human renderer printed as
+  a Go map literal. Both now report the route, the created item's identifying
+  evidence, and a deterministic next step. This is evidence only: the mutation
+  model stays non-transactional and nothing is rolled back.
 
 ### Security
 

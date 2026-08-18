@@ -261,17 +261,21 @@ const (
 	storedUploadReasonUnevaluable
 )
 
-// storedUploadVerdict is a refusal, the reason behind it, and the profile the
+// storedUploadVerdict is a refusal, the reason behind it, and the profiles the
 // evidence came from, so that the remediation can be chosen from the reason
 // instead of assumed and the operator can see WHOSE configuration was read.
 type storedUploadVerdict struct {
 	reason storedUploadReason
 	detail string
-	// profile is the Zotero profile directory the reading came from. Profile
-	// evidence is not bound to the Zotero ACCOUNT a command targets (see
-	// dev/adr/0006), so naming it is how an operator recognises a refusal
-	// produced by a profile belonging to a different account.
-	profile string
+	// profiles are the Zotero profile directories that positively evidenced
+	// THIS reason — not the representative profile, which is chosen by risk
+	// rank over storage modes and can therefore be a profile whose own
+	// settings contradict the message.
+	//
+	// Profile evidence is also not bound to the Zotero ACCOUNT a command
+	// targets (see dev/adr/0006), so naming the contributors is how an
+	// operator recognises a refusal produced by another account's profile.
+	profiles []string
 }
 
 // refused reports whether the upload must not proceed.
@@ -320,6 +324,7 @@ func storedUploadDecision(ctx context.Context, flags *rootFlags, route storedUpl
 			detail: fmt.Sprintf(
 				"Zotero desktop has %d profile(s) here whose configuration could not be read, so a WebDAV setting among them cannot be ruled out and this upload's destination is unproven",
 				fs.UnreadableProfileCount()),
+			profiles: fs.UnreadableProfiles(),
 		}
 	}
 	// Zotero always uses its own storage for group libraries — WebDAV is a
@@ -328,8 +333,9 @@ func storedUploadDecision(ctx context.Context, flags *rootFlags, route storedUpl
 	if storedUploadTargetsGroup(flags) {
 		if fs.AnyGroupSyncDisabled() {
 			return storedUploadVerdict{
-				reason: storedUploadReasonGroupSyncOff,
-				detail: "Zotero desktop has group-library file syncing turned off (sync.storage.groups.enabled is false), so a stored attachment uploaded through the Zotero Web API would be billed against the group owner's storage plan and never downloaded by Zotero",
+				reason:   storedUploadReasonGroupSyncOff,
+				detail:   "Zotero desktop has group-library file syncing turned off (sync.storage.groups.enabled is false), so a stored attachment uploaded through the Zotero Web API would be billed against the group owner's storage plan and never downloaded by Zotero",
+				profiles: fs.GroupSyncDisabledProfiles(),
 			}
 		}
 		return storedUploadVerdict{}
@@ -348,22 +354,22 @@ func storedUploadDecision(ctx context.Context, flags *rootFlags, route storedUpl
 				". Zotero has %d profiles here and which one is running cannot be determined, so this reads the WebDAV one; pin it with %s if that is not the profile you use",
 				fs.ProfileCount, zoteroprefs.ProfileDirEnv)
 		}
-		return storedUploadVerdict{reason: storedUploadReasonWebDAV, detail: detail, profile: fs.ProfilePath}
+		return storedUploadVerdict{reason: storedUploadReasonWebDAV, detail: detail, profiles: fs.PersonalWebDAVProfiles()}
 	case fs.AnyPersonalSyncDisabled():
 		// A separate problem from the WebDAV mismatch: the destination is
 		// right, but Zotero will never download what is uploaded.
 		return storedUploadVerdict{
-			reason:  storedUploadReasonPersonalSyncOff,
-			detail:  "Zotero desktop has personal-library file syncing turned off (sync.storage.enabled is false), so a stored attachment uploaded through the Zotero Web API would consume the account's storage plan and never be downloaded by Zotero",
-			profile: fs.ProfilePath,
+			reason:   storedUploadReasonPersonalSyncOff,
+			detail:   "Zotero desktop has personal-library file syncing turned off (sync.storage.enabled is false), so a stored attachment uploaded through the Zotero Web API would consume the account's storage plan and never be downloaded by Zotero",
+			profiles: fs.PersonalSyncDisabledProfiles(),
 		}
 	case fs.AnyPersonalModeUnknown():
 		// A protocol this package does not model. The destination is not
 		// Zotero's cloud by default; it is simply unknown.
 		return storedUploadVerdict{
-			reason:  storedUploadReasonUnevaluable,
-			detail:  "Zotero desktop is configured with a file-storage protocol this version of zotio does not recognise, so this upload's destination cannot be established",
-			profile: fs.ProfilePath,
+			reason:   storedUploadReasonUnevaluable,
+			detail:   "Zotero desktop is configured with a file-storage protocol this version of zotio does not recognise, so this upload's destination cannot be established",
+			profiles: fs.PersonalModeUnknownProfiles(),
 		}
 	default:
 		return storedUploadVerdict{}
@@ -474,9 +480,21 @@ func storedUploadRefusalSteps(v storedUploadVerdict) []string {
 	const override = "Pass --allow-zotero-cloud to upload into Zotero's cloud storage anyway."
 
 	pin := fmt.Sprintf("Point %s at the Zotero profile this library belongs to, so the destination can be established.", zoteroprefs.ProfileDirEnv)
-	if v.profile != "" {
-		pin = fmt.Sprintf("This read %s, which is not necessarily the profile for the account you are writing to; point %s at the right one if it is not.",
-			sanitizeForTerminal(v.profile), zoteroprefs.ProfileDirEnv)
+	if len(v.profiles) > 0 {
+		// Every contributor is named, not just one: the hazard may come from a
+		// profile the operator forgot exists, and a refusal naming a single
+		// path invites them to check that path, find it innocent, and
+		// conclude zotio is broken.
+		named := make([]string, 0, len(v.profiles))
+		for _, p := range v.profiles {
+			named = append(named, sanitizeForTerminal(p))
+		}
+		subject, verb := "profile", "is"
+		if len(named) > 1 {
+			subject, verb = "profiles", "are"
+		}
+		pin = fmt.Sprintf("This reading came from %s %s, which %s not necessarily the profile for the account you are writing to; point %s at the right one if it is not.",
+			subject, strings.Join(named, ", "), verb, zoteroprefs.ProfileDirEnv)
 	}
 
 	switch v.reason {
@@ -587,12 +605,21 @@ func addDoctorFileStorageReport(ctx context.Context, report map[string]any, flag
 	}
 	if fs.AnyUnreadableProfile() {
 		desc += fmt.Sprintf(", %d unreadable", fs.UnreadableProfileCount())
+		// Naming the path is the difference between "something is wrong" and a
+		// fixable permission or corruption problem.
+		report["file_storage_unreadable_profiles"] = sanitizeForTerminal(strings.Join(fs.UnreadableProfiles(), ", "))
 	}
 
 	verdict := storedUploadDecision(ctx, flags, storedUploadRouteUnknown)
 	switch {
 	case verdict.refused():
 		desc += " — stored uploads via the Web API are refused: " + refusalSummary(verdict.reason)
+		// Which profiles actually evidenced the refusal, which is not
+		// necessarily file_storage_profile: that one is the risk-ranked
+		// representative and may not be a contributor at all.
+		if len(verdict.profiles) > 0 {
+			report["file_storage_evidence_profiles"] = sanitizeForTerminal(strings.Join(verdict.profiles, ", "))
+		}
 		// The doctor hint mirrors the refusal's own remediation, so the two
 		// surfaces cannot drift into giving different advice.
 		hints = append(hints, strings.Join(storedUploadRefusalSteps(verdict), " "))

@@ -13,6 +13,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"syscall"
 	"testing"
@@ -50,8 +51,24 @@ func stubZoteroFileStorage(t *testing.T, protocol string, enabled bool) {
 	})
 }
 
+// stubLoadedZoteroFileStorage installs an already-loaded reading, for tests
+// that need a multi-profile fold the single-profile stub cannot express.
+func stubLoadedZoteroFileStorage(t *testing.T, fs zoteroprefs.FileStorage) {
+	t.Helper()
+	old := loadZoteroFileStorage
+	loadZoteroFileStorage = func() (zoteroprefs.FileStorage, error) { return fs, nil }
+	resetZoteroFileStorageCache()
+	t.Cleanup(func() {
+		loadZoteroFileStorage = old
+		resetZoteroFileStorageCache()
+	})
+}
+
 func writeTestPrefs(t *testing.T, dir, contents string) {
 	t.Helper()
+	if err := os.MkdirAll(dir, 0o750); err != nil {
+		t.Fatalf("create profile dir: %v", err)
+	}
 	if err := os.WriteFile(filepath.Join(dir, "prefs.js"), []byte(contents), 0o600); err != nil {
 		t.Fatalf("write prefs.js: %v", err)
 	}
@@ -151,6 +168,72 @@ func TestAttachmentsAddStoredRefusedUnderWebDAV(t *testing.T) {
 	}
 	if !strings.Contains(joined, "--allow-zotero-cloud") {
 		t.Fatalf("remediation = %q, want the override named", joined)
+	}
+}
+
+// Every other command-level guard test stubs the prefs loader, so none of them
+// would notice if loadAcross stopped unioning hazards or the parser stopped
+// decoding the WebDAV protocol. This one drives the real reader over a real
+// two-profile fixture on disk, through the real Cobra preflight, and asserts
+// the refusal both fires and attributes correctly.
+//
+// Only platform profile DISCOVERY is stubbed — that is OS-specific path
+// layout, covered in internal/zoteroprefs, and hard-coding it here would make
+// the test skip on most machines and defend nothing there.
+func TestAttachmentsAddRefusalReadsRealProfilesEndToEnd(t *testing.T) {
+	root := t.TempDir()
+	cloud := filepath.Join(root, "cloud.default")
+	writeTestPrefs(t, cloud, `
+user_pref("extensions.zotero.sync.storage.protocol", "zotero");
+user_pref("extensions.zotero.sync.storage.enabled", true);
+`)
+	// The sibling that carries the hazard. It is not the preferred profile,
+	// which is the case a single-profile fixture cannot produce.
+	nas := filepath.Join(root, "nas.other")
+	writeTestPrefs(t, nas, `
+user_pref("extensions.zotero.sync.storage.protocol", "webdav");
+user_pref("extensions.zotero.sync.storage.url", "nas.example.com/zotero");
+`)
+
+	old := loadZoteroFileStorage
+	loadZoteroFileStorage = func() (zoteroprefs.FileStorage, error) {
+		return zoteroprefs.LoadAcrossForTest([]string{cloud, nas}, cloud)
+	}
+	resetZoteroFileStorageCache()
+	t.Cleanup(func() { loadZoteroFileStorage = old; resetZoteroFileStorageCache() })
+
+	cmdRoot, _, out, _ := newPreflightTestRoot(t)
+	add := mustFindPreflightCommand(t, cmdRoot, "attachments", "add")
+	runExecuted := false
+	add.RunE = func(cmd *cobra.Command, args []string) error {
+		runExecuted = true
+		return nil
+	}
+
+	cmdRoot.SetArgs([]string{"--json", "attachments", "add", "PARENT1", "/tmp/x.pdf", "--mode", "stored"})
+	err := cmdRoot.Execute()
+	if err == nil {
+		t.Fatal("a WebDAV sibling profile did not refuse the stored upload")
+	}
+	if runExecuted {
+		t.Fatal("attachments add RunE executed after the storage precondition failed")
+	}
+	assertPreconditionExitCode(t, err, 9)
+
+	var env preconditionUnmetEnvelope
+	if decodeErr := json.Unmarshal(out.Bytes(), &env); decodeErr != nil {
+		t.Fatalf("decode precondition envelope: %v; output=%q", decodeErr, out.String())
+	}
+	// The host is only reachable by actually parsing the fixture.
+	if !strings.Contains(env.Detail, "nas.example.com") {
+		t.Fatalf("detail = %q, want the WebDAV host read from the fixture", env.Detail)
+	}
+	joined := strings.Join(env.Remediation, " ")
+	if !strings.Contains(joined, nas) {
+		t.Fatalf("remediation = %q, want the WebDAV profile named", joined)
+	}
+	if strings.Contains(joined, cloud) {
+		t.Fatalf("remediation = %q, must not name the cloud profile that evidenced nothing", joined)
 	}
 }
 
@@ -997,37 +1080,87 @@ func TestPreconditionRemediationReachesBothSurfaces(t *testing.T) {
 // Profile evidence is machine-wide and cannot be bound to the Zotero account a
 // command targets (dev/adr/0006-unbound-profile-evidence.md), so a profile
 // belonging to a DIFFERENT account can refuse a correct upload. The refusal is
-// only recoverable if it says which profile it read, so that must survive.
-func TestRefusalNamesTheProfileItsEvidenceCameFrom(t *testing.T) {
-	dir := t.TempDir()
-	writeTestPrefs(t, dir, `
-user_pref("extensions.zotero.sync.storage.protocol", "webdav");
-user_pref("extensions.zotero.sync.storage.url", "nas.example.com/zotero");
+// only recoverable if it says which profile the evidence came from.
+//
+// The representative profile is NOT that answer. riskRank orders storage MODES
+// only, so a sync-off hazard is routinely carried by a profile that lost the
+// ranking: reporting the representative names a profile whose own settings
+// contradict the message, sending the operator to check the wrong file.
+func TestRefusalNamesTheProfileItsEvidenceCameFromNotTheRepresentative(t *testing.T) {
+	root := t.TempDir()
+
+	// Innocent: Zotero's cloud, syncing on. Preferred, and tied on risk rank,
+	// so this is the representative.
+	innocent := filepath.Join(root, "innocent.default")
+	writeTestPrefs(t, innocent, `
+user_pref("extensions.zotero.sync.storage.protocol", "zotero");
+user_pref("extensions.zotero.sync.storage.enabled", true);
 `)
-	fs, err := zoteroprefs.LoadProfile(dir)
+	// Guilty: same mode, so it never becomes the representative, but it is the
+	// only profile positively saying file syncing is off.
+	guilty := filepath.Join(root, "guilty.other")
+	writeTestPrefs(t, guilty, `
+user_pref("extensions.zotero.sync.storage.protocol", "zotero");
+user_pref("extensions.zotero.sync.storage.enabled", false);
+`)
+
+	fs, err := zoteroprefs.LoadAcrossForTest([]string{innocent, guilty}, innocent)
 	if err != nil {
-		t.Fatalf("LoadProfile: %v", err)
+		t.Fatalf("LoadAcrossForTest: %v", err)
 	}
-	old := loadZoteroFileStorage
-	loadZoteroFileStorage = func() (zoteroprefs.FileStorage, error) { return fs, nil }
-	resetZoteroFileStorageCache()
-	t.Cleanup(func() { loadZoteroFileStorage = old; resetZoteroFileStorageCache() })
+	if fs.ProfilePath != innocent {
+		t.Fatalf("representative = %q, want the innocent profile %q; the fixture no longer reproduces the mis-attribution", fs.ProfilePath, innocent)
+	}
+	stubLoadedZoteroFileStorage(t, fs)
 
 	verdict := storedUploadDecision(t.Context(), &rootFlags{}, storedUploadToExistingItem)
 	if !verdict.refused() {
-		t.Fatal("a WebDAV profile did not refuse")
+		t.Fatal("a sync-off profile did not refuse")
 	}
-	if verdict.profile != fs.ProfilePath {
-		t.Fatalf("verdict.profile = %q, want the source profile %q", verdict.profile, fs.ProfilePath)
+	if !slices.Equal(verdict.profiles, []string{guilty}) {
+		t.Fatalf("verdict.profiles = %v, want exactly the contributing profile %q", verdict.profiles, guilty)
 	}
 
-	// A single unambiguous profile used to produce a confident refusal with no
-	// hint that it might belong to someone else's account.
 	steps := strings.Join(storedUploadRefusalSteps(verdict), " ")
-	if !strings.Contains(steps, dir) {
-		t.Fatalf("remediation = %q, want the profile it read named", steps)
+	if !strings.Contains(steps, guilty) {
+		t.Fatalf("remediation = %q, want the profile whose setting caused the refusal", steps)
+	}
+	if strings.Contains(steps, innocent) {
+		t.Fatalf("remediation = %q, must not name a profile that has file syncing switched ON", steps)
 	}
 	if !strings.Contains(steps, zoteroprefs.ProfileDirEnv) {
 		t.Fatalf("remediation = %q, want the pinning override named", steps)
+	}
+}
+
+// Every contributor is named, not just the first: an operator who checks one
+// path, finds it innocent of the setting described, and is told nothing about
+// the second has no way to reach the truth.
+func TestRefusalNamesEveryContributingProfile(t *testing.T) {
+	root := t.TempDir()
+	first := filepath.Join(root, "a.default")
+	second := filepath.Join(root, "b.other")
+	for _, dir := range []string{first, second} {
+		writeTestPrefs(t, dir, `
+user_pref("extensions.zotero.sync.storage.protocol", "webdav");
+user_pref("extensions.zotero.sync.storage.url", "nas.example.com/zotero");
+`)
+	}
+
+	fs, err := zoteroprefs.LoadAcrossForTest([]string{first, second}, first)
+	if err != nil {
+		t.Fatalf("LoadAcrossForTest: %v", err)
+	}
+	stubLoadedZoteroFileStorage(t, fs)
+
+	verdict := storedUploadDecision(t.Context(), &rootFlags{}, storedUploadToExistingItem)
+	if !slices.Equal(verdict.profiles, []string{first, second}) {
+		t.Fatalf("verdict.profiles = %v, want both WebDAV profiles", verdict.profiles)
+	}
+	steps := strings.Join(storedUploadRefusalSteps(verdict), " ")
+	for _, want := range []string{first, second} {
+		if !strings.Contains(steps, want) {
+			t.Fatalf("remediation = %q, missing contributing profile %q", steps, want)
+		}
 	}
 }

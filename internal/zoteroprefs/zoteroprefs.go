@@ -47,6 +47,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strconv"
 	"strings"
 	"unicode"
@@ -135,48 +136,88 @@ type FileStorage struct {
 
 	found bool
 
-	// unreadableProfileCount is how many of the DISCOVERED profiles (see
-	// ProfileCount) failed to read for a reason other than simply not
-	// existing, even though a different discovered profile could be read.
-	// Kept separate from ProfileCount, which counts every profile discovery
-	// found regardless of whether it could be evaluated.
-	unreadableProfileCount int
+	// unreadableProfiles lists the DISCOVERED profiles (see ProfileCount) that
+	// failed to read for a reason other than simply not existing, even though
+	// a different discovered profile could be read. Kept separate from
+	// ProfileCount, which counts every profile discovery found regardless of
+	// whether it could be evaluated. Paths, not a count, so a refusal can name
+	// the file an operator has to go and fix.
+	unreadableProfiles []string
 }
 
 // hazardSet is the union of safety-relevant facts across all readable
-// profiles. Each field means "at least one readable profile positively said
-// this"; absence of evidence never sets one.
+// profiles. Each field lists the profile directories that positively said
+// this; absence of evidence never appends one.
+//
+// Attribution is load-bearing, not diagnostic decoration. The representative
+// profile is chosen by riskRank, which orders MODES only, so a hazard drawn
+// from Enabled/GroupsEnabled can come from a profile that is not the
+// representative. Reporting a refusal against the representative would then
+// name a profile whose settings contradict the message.
 type hazardSet struct {
-	personalWebDAV      bool
-	personalSyncOff     bool
-	groupSyncOff        bool
-	personalModeUnknown bool
+	personalWebDAV      []string
+	personalSyncOff     []string
+	groupSyncOff        []string
+	personalModeUnknown []string
 }
 
 func (h hazardSet) or(other hazardSet) hazardSet {
 	return hazardSet{
-		personalWebDAV:      h.personalWebDAV || other.personalWebDAV,
-		personalSyncOff:     h.personalSyncOff || other.personalSyncOff,
-		groupSyncOff:        h.groupSyncOff || other.groupSyncOff,
-		personalModeUnknown: h.personalModeUnknown || other.personalModeUnknown,
+		personalWebDAV:      mergeSources(h.personalWebDAV, other.personalWebDAV),
+		personalSyncOff:     mergeSources(h.personalSyncOff, other.personalSyncOff),
+		groupSyncOff:        mergeSources(h.groupSyncOff, other.groupSyncOff),
+		personalModeUnknown: mergeSources(h.personalModeUnknown, other.personalModeUnknown),
 	}
+}
+
+// mergeSources appends without duplicating, keeping discovery order so the
+// preferred profile is named first when it is itself a contributor.
+func mergeSources(dst, src []string) []string {
+	for _, s := range src {
+		if !slices.Contains(dst, s) {
+			dst = append(dst, s)
+		}
+	}
+	return dst
 }
 
 // AnyPersonalWebDAV reports whether any readable profile keeps personal-library
 // files on WebDAV.
-func (f FileStorage) AnyPersonalWebDAV() bool { return f.hazards.personalWebDAV }
+func (f FileStorage) AnyPersonalWebDAV() bool { return len(f.hazards.personalWebDAV) > 0 }
 
 // AnyPersonalSyncDisabled reports whether any readable profile has
 // personal-library file syncing switched off.
-func (f FileStorage) AnyPersonalSyncDisabled() bool { return f.hazards.personalSyncOff }
+func (f FileStorage) AnyPersonalSyncDisabled() bool { return len(f.hazards.personalSyncOff) > 0 }
 
 // AnyGroupSyncDisabled reports whether any readable profile has group-library
 // file syncing switched off.
-func (f FileStorage) AnyGroupSyncDisabled() bool { return f.hazards.groupSyncOff }
+func (f FileStorage) AnyGroupSyncDisabled() bool { return len(f.hazards.groupSyncOff) > 0 }
 
 // AnyPersonalModeUnknown reports whether any readable profile's storage
 // protocol could not be decoded to a mode this package models.
-func (f FileStorage) AnyPersonalModeUnknown() bool { return f.hazards.personalModeUnknown }
+func (f FileStorage) AnyPersonalModeUnknown() bool { return len(f.hazards.personalModeUnknown) > 0 }
+
+// PersonalWebDAVProfiles lists the profile directories that positively said
+// personal-library files live on WebDAV.
+func (f FileStorage) PersonalWebDAVProfiles() []string { return slices.Clone(f.hazards.personalWebDAV) }
+
+// PersonalSyncDisabledProfiles lists the profile directories that positively
+// said personal-library file syncing is off.
+func (f FileStorage) PersonalSyncDisabledProfiles() []string {
+	return slices.Clone(f.hazards.personalSyncOff)
+}
+
+// GroupSyncDisabledProfiles lists the profile directories that positively said
+// group-library file syncing is off.
+func (f FileStorage) GroupSyncDisabledProfiles() []string {
+	return slices.Clone(f.hazards.groupSyncOff)
+}
+
+// PersonalModeUnknownProfiles lists the profile directories whose storage
+// protocol could not be decoded.
+func (f FileStorage) PersonalModeUnknownProfiles() []string {
+	return slices.Clone(f.hazards.personalModeUnknown)
+}
 
 // AnyUnreadableProfile reports whether at least one discovered profile could
 // not be evaluated — a permission error, a corrupt file, an oversized file —
@@ -184,11 +225,15 @@ func (f FileStorage) AnyPersonalModeUnknown() bool { return f.hazards.personalMo
 // directory that simply has no prefs.js is not unreadable; Zotero has not
 // necessarily run there yet, and that is the ordinary case Found() already
 // handles.
-func (f FileStorage) AnyUnreadableProfile() bool { return f.unreadableProfileCount > 0 }
+func (f FileStorage) AnyUnreadableProfile() bool { return len(f.unreadableProfiles) > 0 }
 
 // UnreadableProfileCount reports how many discovered profiles could not be
 // evaluated.
-func (f FileStorage) UnreadableProfileCount() int { return f.unreadableProfileCount }
+func (f FileStorage) UnreadableProfileCount() int { return len(f.unreadableProfiles) }
+
+// UnreadableProfiles lists the discovered profiles that could not be
+// evaluated, so a refusal can name the exact path rather than only a count.
+func (f FileStorage) UnreadableProfiles() []string { return slices.Clone(f.unreadableProfiles) }
 
 // Found reports whether a readable Zotero desktop profile was located.
 func (f FileStorage) Found() bool { return f.found }
@@ -338,11 +383,11 @@ func LoadAcrossForTest(dirs []string, preferred string) (FileStorage, error) {
 // caller can see the reading is incomplete rather than treating it as clean.
 func loadAcross(dirs []string, preferred string) (FileStorage, error) {
 	var (
-		best            FileStorage
-		haveBest        bool
-		hazards         hazardSet
-		firstErr        error
-		unreadableCount int
+		best       FileStorage
+		haveBest   bool
+		hazards    hazardSet
+		firstErr   error
+		unreadable []string
 	)
 	consider := func(dir string) {
 		fs, err := LoadProfile(dir)
@@ -354,7 +399,7 @@ func loadAcross(dirs []string, preferred string) (FileStorage, error) {
 			if firstErr == nil {
 				firstErr = err
 			}
-			unreadableCount++
+			unreadable = mergeSources(unreadable, []string{dir})
 			return
 		}
 		if !fs.found {
@@ -383,7 +428,7 @@ func loadAcross(dirs []string, preferred string) (FileStorage, error) {
 	best.ProfileCount = len(dirs)
 	best.Ambiguous = len(dirs) > 1
 	best.hazards = hazards
-	best.unreadableProfileCount = unreadableCount
+	best.unreadableProfiles = unreadable
 	return best, nil
 }
 
@@ -508,14 +553,23 @@ func LoadProfile(profileDir string) (FileStorage, error) {
 			fs.Verified = b
 		}
 	}
-	// Each profile contributes its own positively decoded hazards; loadAcross
-	// unions them so a hazard in one profile is never lost by choosing another
-	// profile as the representative.
-	fs.hazards = hazardSet{
-		personalWebDAV:      fs.mode() == StorageWebDAV,
-		personalSyncOff:     !fs.Enabled,
-		groupSyncOff:        !fs.GroupsEnabled,
-		personalModeUnknown: fs.mode() == StorageUnknown || enabledMalformed || groupsEnabledMalformed,
+	// Each profile contributes its own positively decoded hazards, attributed
+	// to itself; loadAcross unions them so a hazard in one profile is never
+	// lost by choosing another profile as the representative, and never
+	// reported against a profile that did not evidence it.
+	self := []string{profileDir}
+	fs.hazards = hazardSet{}
+	if fs.mode() == StorageWebDAV {
+		fs.hazards.personalWebDAV = self
+	}
+	if !fs.Enabled {
+		fs.hazards.personalSyncOff = self
+	}
+	if !fs.GroupsEnabled {
+		fs.hazards.groupSyncOff = self
+	}
+	if fs.mode() == StorageUnknown || enabledMalformed || groupsEnabledMalformed {
+		fs.hazards.personalModeUnknown = self
 	}
 	return fs, nil
 }
