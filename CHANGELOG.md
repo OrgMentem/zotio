@@ -2,7 +2,7 @@
 
 Notable changes to zotio. Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow [SemVer](https://semver.org/).
 
-## [Unreleased]
+## [0.19.0] — 2026-08-18
 
 One defect, found by running zotio against a Zotero desktop configured to keep
 attachment files on a personal WebDAV server: every stored attachment upload
@@ -24,18 +24,23 @@ to make the refusal actionable.
 - **A stored attachment upload is refused when Zotero desktop keeps files
   somewhere else.** `attachments add --mode stored` and `import apply
   --attach-mode stored` exit 9 with a `precondition_unmet` envelope
-  (`zotero_file_storage`) naming the configured store and the routes that reach
-  it. Previously the bytes went to Zotero's cloud storage and were billed to
-  that plan with no warning. A stored upload discovered mid-run — `import pdf
+  (`zotero_file_storage`) naming the hazard that was detected and the routes
+  that do reach the configured store. Where the destination could not be
+  established at all — an unreadable profile, or a storage protocol this
+  version does not model — the envelope says exactly that instead of naming a
+  store it never read. Previously the bytes went to Zotero's cloud storage and
+  were billed to that plan with no warning.
+  A stored upload discovered mid-run — `import pdf
   --on-duplicate attach` classifies duplicates while applying — is stopped by
   the same guard at the upload itself, but reports as a failed operation rather
-  than exit 9. The guard fires only on positive evidence: no Zotero desktop, an
-  unreadable profile, or a value it cannot decode all allow the upload, so
-  machines with no desktop are unaffected. Group *storage mode* is unaffected —
-  Zotero always uses its own storage for groups — but a group upload is still
-  refused when group file syncing is switched off. **Migration:** attach in
-  Zotero desktop, use `import apply --attach-mode stored --via connector` for
-  new items, or pass `--allow-zotero-cloud`.
+  than exit 9. Absence of Zotero altogether stays permissive, so machines with
+  no desktop are unaffected; a profile that exists but cannot be read or
+  understood is refused, because inability to evaluate evidence that
+  demonstrably exists is not evidence of its absence. Group *storage mode* is
+  unaffected — Zotero always uses its own storage for groups — but a group
+  upload is still refused when group file syncing is switched off.
+  **Migration:** attach in Zotero desktop, use `import apply --attach-mode
+  stored --via connector` for new items, or pass `--allow-zotero-cloud`.
 
 ### Added
 
@@ -46,8 +51,10 @@ to make the refusal actionable.
 - **`doctor` reports `file_storage:`** — what the discovered `prefs.js`
   currently indicates about where Zotero keeps attachment files for the
   targeted library, whether uploads are consequently refused, and what to do
-  about it. Reported as unknown when no profile is found or the protocol is one
-  zotio does not model.
+  about it, including the contributing profile paths and any it could not read.
+  Reported as unknown when no Zotero profile is found — which allows uploads —
+  and also when the protocol is one zotio does not model, which does *not*:
+  a destination that cannot be established is refused like any other.
 
 ### Fixed
 
@@ -142,9 +149,11 @@ to make the refusal actionable.
   machine-wide and cannot be bound to the Zotero account a command targets
   (`dev/adr/0006-unbound-profile-evidence.md`), so a profile belonging to a
   different account can refuse a correct upload. Refusals now name the profile
-  directory they read, alongside the `ZOTERO_PROFILE_DIR` pin, making that case
-  recognisable instead of inexplicable. Preconditions can now resolve
-  remediation from the failure rather than from a static per-precondition list.
+  directories the evidence came from — or, where a profile could not be read,
+  the paths that could not be read — alongside the `ZOTERO_PROFILE_DIR` pin,
+  making that case recognisable instead of inexplicable. Preconditions can now
+  resolve remediation from the failure rather than from a static
+  per-precondition list.
 - **A refusal could name a profile that contradicted it.** Hazards were unioned
   across profiles as plain booleans, then reported against the risk-ranked
   representative — but `riskRank` orders storage *modes* only, so a
@@ -160,6 +169,15 @@ to make the refusal actionable.
   a Go map literal. Both now report the route, the created item's identifying
   evidence, and a deterministic next step. This is evidence only: the mutation
   model stays non-transactional and nothing is rolled back.
+- **A mistyped subcommand printed help and exited `0`.** `zotio items
+  empty-trash` — a command that does not exist — reported success having
+  mutated nothing, and so did any unknown subcommand under a grouping command
+  (`items`, `tags`, `collections`, …); only root-level typos exited non-zero.
+  For the scripted and agent consumers this CLI is built for, that is a
+  silently skipped operation indistinguishable from a completed one. Unknown
+  subcommands now exit `2` with the conventional usage error and a
+  "Did you mean this?" suggestion. Groups invoked bare still print help and
+  exit `0`. Found while smoke-testing this release against a live library.
 
 ### Security
 
@@ -1705,7 +1723,8 @@ First tagged release: the trust-and-automation layer for Zotero.
 - **Onboarding** — `zotio init` guided setup (Zotero detection, local API, key, first sync, health check).
 - Release engineering: goreleaser builds for 6 platforms, cosign-signed checksums, SBOMs, Homebrew tap.
 
-[Unreleased]: https://github.com/OrgMentem/zotio/compare/v0.18.0...HEAD
+[Unreleased]: https://github.com/OrgMentem/zotio/compare/v0.19.0...HEAD
+[0.19.0]: https://github.com/OrgMentem/zotio/compare/v0.18.0...v0.19.0
 [0.18.0]: https://github.com/OrgMentem/zotio/compare/v0.17.0...v0.18.0
 [0.17.0]: https://github.com/OrgMentem/zotio/compare/v0.16.1...v0.17.0
 [0.16.1]: https://github.com/OrgMentem/zotio/compare/v0.16.0...v0.16.1
