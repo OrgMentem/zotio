@@ -363,7 +363,12 @@ func TestFilterFields(t *testing.T) {
 // 0. For a scripted or agent consumer that is a mutation that never ran,
 // reported as success — `zotio items empty-trash` was found this way.
 func TestUnknownSubcommandUnderAGroupIsAUsageError(t *testing.T) {
-	t.Parallel()
+	// Not parallel: RootCmd() binds the package-level globals noColor and
+	// humanFriendly as flag targets (root.go:271-272), so pflag writes them on
+	// every tree construction and two concurrent RootCmd() calls are a data
+	// race. Production serialises tree building (Execute builds one; the MCP
+	// server holds mirroredCommandMu), so this is a latent coupling these
+	// tests must not trip rather than a live defect.
 	root := RootCmd()
 
 	cases := []struct {
@@ -406,7 +411,7 @@ func TestUnknownSubcommandUnderAGroupIsAUsageError(t *testing.T) {
 // is exactly what setting Args on the tree did: Cobra consults legacyArgs only
 // while Args is nil, and legacyArgs is what makes root's case an error.
 func TestRootUnknownCommandStillReportedByCobra(t *testing.T) {
-	t.Parallel()
+	// Not parallel: see TestUnknownSubcommandUnderAGroupIsAUsageError.
 	if _, _, err := RootCmd().Find([]string{"bogus"}); err == nil {
 		t.Fatal("root Find accepted an unknown command; legacyArgs no longer applies")
 	}
@@ -422,7 +427,7 @@ func TestRootUnknownCommandStillReportedByCobra(t *testing.T) {
 // different, legitimate shape: they take their own arguments, so Cobra already
 // rejects a bad one and unknownSubcommandErr correctly stands aside.
 func TestPureGroupCommandsStayNonRunnable(t *testing.T) {
-	t.Parallel()
+	// Not parallel: see TestUnknownSubcommandUnderAGroupIsAUsageError.
 	root := RootCmd()
 	for _, path := range [][]string{{"items"}, {"tags"}, {"collections"}, {"attachments"}, {"auth"}} {
 		cmd, _, err := root.Find(path)

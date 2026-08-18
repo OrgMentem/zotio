@@ -449,7 +449,10 @@ func TestImportApplyStoredConnectorCreateReportsOrphanedParentOnAttachFailure(t 
 		t.Fatalf("reason[title] = %v, want %q", reason["title"], "Orphan Paper")
 	}
 	message, _ := reason["message"].(string)
-	if !strings.Contains(message, `"Orphan Paper" was created in Zotero desktop but the file was not attached`) {
+	// Both routes share one orphan contract, so the sentence cannot say "in
+	// Zotero desktop": that is false for the Web API route, which creates the
+	// parent server-side. Locating it is the remediation's job, below.
+	if !strings.Contains(message, `"Orphan Paper" was created but the file was not attached`) {
 		t.Fatalf("reason[message] = %q, want it to name the created-but-unattached condition", message)
 	}
 	if !strings.Contains(message, "Attach Stored Copy of File") || !strings.Contains(message, "delete the item and re-run") {
