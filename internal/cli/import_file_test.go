@@ -289,6 +289,110 @@ func TestImportFileReportsSuccessfulBatch(t *testing.T) {
 	}
 }
 
+// TestImportFileWholeBatchPostRejectionReportsEveryRecordFatal covers the arm
+// at import_file.go:183: the batch POST itself is rejected, so every record in
+// the window is fatal. The existing tests only serve 200 responses carrying a
+// per-element failed map, which is a different report.
+func TestImportFileWholeBatchPostRejectionReportsEveryRecordFatal(t *testing.T) {
+	fastRetryBackoff(t)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, `internal error`, http.StatusInternalServerError)
+	}))
+	defer srv.Close()
+	t.Setenv("ZOTERO_BASE_URL", srv.URL+"/users/0")
+
+	var content strings.Builder
+	const n = 3
+	for i := range n {
+		fmt.Fprintf(&content, "@article{example%d,\n  title = {Example %d}\n}\n", i, i)
+	}
+	filePath := writeImportFixture(t, content.String())
+
+	env, raw, err := runImportFile(t, &rootFlags{asJSON: true, yes: true, maxChanges: -1}, filePath)
+	if err == nil || ExitCode(err) != 13 {
+		t.Fatalf("import error = %v, exit=%d; want degraded failure (%s)", err, ExitCode(err), raw)
+	}
+	if env.Result == nil {
+		t.Fatalf("result = nil, want batch-wide failure (%s)", raw)
+	}
+	if env.Result.Summary.Failed != n || env.Result.Summary.Applied != 0 {
+		t.Fatalf("summary applied=%d failed=%d, want 0/%d (%s)", env.Result.Summary.Applied, env.Result.Summary.Failed, n, raw)
+	}
+	if len(env.Result.Items) != n {
+		t.Fatalf("items len = %d, want %d (%s)", len(env.Result.Items), n, raw)
+	}
+	for i, item := range env.Result.Items {
+		if item.Status != "failed" {
+			t.Fatalf("record %d status = %q, want failed (%s)", i, item.Status, raw)
+		}
+		reason, _ := item.Reason.(string)
+		if !strings.Contains(reason, "500") {
+			t.Fatalf("record %d reason = %q, want to contain HTTP 500 (%s)", i, reason, raw)
+		}
+		if strings.Contains(reason, "code 400") || strings.Contains(reason, "title is required") {
+			t.Fatalf("record %d reason = %q, want batch-wide fatal not element rejection (%s)", i, reason, raw)
+		}
+	}
+}
+
+// TestImportFileBatchWindowIsolationOnPostRejection pins the failed window's
+// bounds: only the rejected batch's index range is fatal, and the batch that
+// already landed stays applied. An off-by-one here tells the operator to
+// re-import records that were written, or to ignore records that were not.
+func TestImportFileBatchWindowIsolationOnPostRejection(t *testing.T) {
+	fastRetryBackoff(t)
+	requests := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		if requests == 1 {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"successful": {}, "success": {}, "unchanged": {}, "failed": {}}`))
+			return
+		}
+		http.Error(w, `internal error`, http.StatusInternalServerError)
+	}))
+	defer srv.Close()
+	t.Setenv("ZOTERO_BASE_URL", srv.URL+"/users/0")
+
+	total := importFileBatchSize + 3
+	var content strings.Builder
+	for i := range total {
+		fmt.Fprintf(&content, "@article{example%d,\n  title = {Example %d}\n}\n", i, i)
+	}
+	filePath := writeImportFixture(t, content.String())
+
+	env, raw, err := runImportFile(t, &rootFlags{asJSON: true, yes: true, maxChanges: -1}, filePath)
+	if err == nil || ExitCode(err) != 13 {
+		t.Fatalf("import error = %v, exit=%d; want degraded failure (%s)", err, ExitCode(err), raw)
+	}
+	if requests < 2 {
+		t.Fatalf("requests = %d, want at least 2 batches (%s)", requests, raw)
+	}
+	if env.Result == nil {
+		t.Fatalf("result = nil (%s)", raw)
+	}
+	if env.Result.Summary.Applied != importFileBatchSize || env.Result.Summary.Failed != 3 {
+		t.Fatalf("summary applied=%d failed=%d, want %d/3 (%s)", env.Result.Summary.Applied, env.Result.Summary.Failed, importFileBatchSize, raw)
+	}
+	if len(env.Result.Items) != total {
+		t.Fatalf("items len = %d, want %d (%s)", len(env.Result.Items), total, raw)
+	}
+	for i := range importFileBatchSize {
+		if got := env.Result.Items[i].Status; got != "applied" {
+			t.Fatalf("record %d status = %q, want applied (%s)", i, got, raw)
+		}
+	}
+	for i := importFileBatchSize; i < total; i++ {
+		if got := env.Result.Items[i].Status; got != "failed" {
+			t.Fatalf("record %d status = %q, want failed (%s)", i, got, raw)
+		}
+		reason, _ := env.Result.Items[i].Reason.(string)
+		if !strings.Contains(reason, "500") {
+			t.Fatalf("record %d reason = %q, want to contain HTTP 500 (%s)", i, reason, raw)
+		}
+	}
+}
+
 func TestImportFileRejectsCSLJSONWithoutConnector(t *testing.T) {
 	filePath := filepath.Join(t.TempDir(), "items.json")
 	if err := os.WriteFile(filePath, []byte(`[{"type":"article-journal","title":"Example"}]`), 0o600); err != nil {

@@ -22,6 +22,13 @@ type itemPoster interface {
 	Post(path string, body any) (json.RawMessage, int, error)
 }
 
+// connectorForCreate is the connector factory for the single-item route.
+// Tests replace it with an httptest-backed client so recovery can be exercised
+// without contacting the desktop connector.
+var connectorForCreate = func(flags *rootFlags) (*connector.Client, error) {
+	return flags.newConnector()
+}
+
 type itemCreateResult struct {
 	Via         string
 	WebKey      string
@@ -183,7 +190,7 @@ func routeCreateItemVia(ctx context.Context, flags *rootFlags, via string, webCl
 		}
 		return itemCreateResult{Via: "web", WebKey: createdKey, WebData: data}, nil
 	case "connector":
-		conn, err := flags.newConnector()
+		conn, err := connectorForCreate(flags)
 		if err != nil {
 			return itemCreateResult{}, err
 		}

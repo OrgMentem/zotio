@@ -12,6 +12,10 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
+
+	"zotio/internal/client"
+	"zotio/internal/config"
 )
 
 func TestMarkdownToNoteHTMLVerbatim(t *testing.T) {
@@ -659,4 +663,289 @@ func TestVaultResolvePreviewPerformsLiveRead(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestPatchWithConflictStateMachine exercises patchWithConflict, the sole
+// 412 guard that must never overwrite a diverged remote note.
+func TestPatchWithConflictStateMachine(t *testing.T) {
+	// The PATCH 500 case walks the client's 5xx retry ladder; keep it in
+	// milliseconds so this table does not sleep out seven real seconds.
+	fastRetryBackoff(t)
+	const noteKey = "ABCD1234"
+	const citekey = "smith2024"
+	const itemKey = "ITEMKEY1"
+
+	baselineRegion := "baseline notes"
+	baselineHTML := markdownToNoteHTML(citekey, baselineRegion)
+	baselineState := pushState{
+		Schema:      noteStateSchema,
+		NoteKey:     noteKey,
+		NoteVersion: 5,
+		SourceHash:  sha256hex(baselineRegion),
+		RemoteHash:  sha256hex(baselineHTML),
+		Renderer:    vaultRenderer,
+	}
+
+	// The local edit that triggers pushOne's PATCH path.
+	localRegion := "updated local notes"
+	srcHash := sha256hex(localRegion)
+	desiredHTML := markdownToNoteHTML(citekey, localRegion)
+
+	// Helper: build a managed vault file with the given baseline.
+	newVaultNote := func(t *testing.T, outDir string) *pushNote {
+		t.Helper()
+		notePath := filepath.Join(outDir, citekey+".md")
+		body := "---\nzotero_key: " + itemKey + "\ncitekey: " + citekey + "\n---\n\n## Notes\n" +
+			vaultNotesBegin + "\n" + localRegion + "\n" + vaultNotesEnd + "\n" + stateComment(baselineState) + "\n"
+		writeFile(t, notePath, body)
+		parsed, err := parsePushNote(notePath)
+		if err != nil || parsed == nil {
+			t.Fatalf("parsePushNote: %v (nil=%v)", err, parsed == nil)
+		}
+		return parsed
+	}
+
+	// Helper: httptest client that never hits localhost:23119.
+	newClient := func(srv *httptest.Server) *client.Client {
+		c := client.New(&config.Config{BaseURL: srv.URL}, time.Second, 0)
+		c.NoCache = true
+		return c
+	}
+
+	noteBody := func(ver int, html string) string {
+		b, _ := json.Marshal(map[string]any{"version": ver, "data": map[string]string{"note": html}})
+		return string(b)
+	}
+
+	t.Run("patch 200 -> updated and state rewritten", func(t *testing.T) {
+		outDir := t.TempDir()
+		n := newVaultNote(t, outDir)
+
+		// Server: PATCH succeeds, then finalizeState GETs the written note.
+		liveVer := 6
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			switch r.Method {
+			case http.MethodPatch:
+				w.WriteHeader(http.StatusNoContent)
+			case http.MethodGet:
+				w.Header().Set("Last-Modified-Version", fmt.Sprintf("%d", liveVer))
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(noteBody(liveVer, desiredHTML)))
+			default:
+				t.Errorf("unexpected %s %s", r.Method, r.URL.Path)
+				http.Error(w, "unexpected", http.StatusInternalServerError)
+			}
+		}))
+		t.Cleanup(srv.Close)
+
+		res := patchWithConflict(newClient(srv), outDir, n, srcHash, desiredHTML, &rootFlags{})
+		if res.Status != "updated" {
+			t.Fatalf("status = %q (%s), want updated", res.Status, res.Note)
+		}
+		if _, err := os.Stat(filepath.Join(outDir, vaultConflictsDir)); !os.IsNotExist(err) {
+			t.Fatalf("updated must not create conflict dir: %v", err)
+		}
+		// Baseline should be advanced to the live version + desired content.
+		after, _ := parseStateComment(readNote(t, n.path))
+		if after.NoteVersion != liveVer {
+			t.Errorf("state NoteVersion = %d, want %d", after.NoteVersion, liveVer)
+		}
+		if after.SourceHash != srcHash {
+			t.Errorf("state SourceHash = %q, want %q", after.SourceHash, srcHash)
+		}
+		if after.RemoteHash != sha256hex(desiredHTML) {
+			t.Errorf("state RemoteHash mismatch")
+		}
+	})
+
+	t.Run("patch 500 -> error and no conflict directory", func(t *testing.T) {
+		outDir := t.TempDir()
+		n := newVaultNote(t, outDir)
+		before, _ := os.ReadFile(n.path)
+
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			http.Error(w, "boom", http.StatusInternalServerError)
+		}))
+		t.Cleanup(srv.Close)
+
+		// Speed up the 500 retry loop if the backoff seam exists; otherwise
+		// patchNote will retry 3 times at 1s/2s/4s which would make this case
+		// slow. We tolerate either shape: if the hook exists we use it.
+		if c := newClient(srv); c != nil {
+			_ = c
+		}
+
+		res := patchWithConflict(newClient(srv), outDir, n, srcHash, desiredHTML, &rootFlags{})
+		if res.Status != "error" {
+			t.Fatalf("status = %q (%s), want error", res.Status, res.Note)
+		}
+		if _, err := os.Stat(filepath.Join(outDir, vaultConflictsDir)); !os.IsNotExist(err) {
+			t.Fatalf("error must not create conflict dir: %v", err)
+		}
+		after, _ := os.ReadFile(n.path)
+		if !bytes.Equal(before, after) {
+			t.Fatalf("error must not rewrite vault state")
+		}
+	})
+
+	t.Run("412 then GET baseline then PATCH 200 -> updated (fast-forward)", func(t *testing.T) {
+		outDir := t.TempDir()
+		n := newVaultNote(t, outDir)
+
+		liveVer := 7
+		var patchCount int
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.Method == http.MethodPatch {
+				patchCount++
+				if patchCount == 1 {
+					http.Error(w, "precondition failed", http.StatusPreconditionFailed)
+					return
+				}
+				w.WriteHeader(http.StatusNoContent)
+				return
+			}
+			if r.Method == http.MethodGet {
+				// First GET: classifier fetch returns baseline HTML (remote body
+				// unchanged, only version moved). Second GET: finalizeState.
+				w.Header().Set("Last-Modified-Version", fmt.Sprintf("%d", liveVer))
+				w.Header().Set("Content-Type", "application/json")
+				// Return baseline HTML on the classifier GET; desiredHTML on
+				// finalize GET. We distinguish by counting PATCH attempts.
+				html := baselineHTML
+				if patchCount >= 2 {
+					html = desiredHTML
+				}
+				_, _ = w.Write([]byte(noteBody(liveVer, html)))
+				return
+			}
+			t.Errorf("unexpected %s %s", r.Method, r.URL.Path)
+			http.Error(w, "unexpected", http.StatusInternalServerError)
+		}))
+		t.Cleanup(srv.Close)
+
+		res := patchWithConflict(newClient(srv), outDir, n, srcHash, desiredHTML, &rootFlags{})
+		if res.Status != "updated" {
+			t.Fatalf("status = %q (%s), want updated", res.Status, res.Note)
+		}
+		if _, err := os.Stat(filepath.Join(outDir, vaultConflictsDir)); !os.IsNotExist(err) {
+			t.Fatalf("fast-forward must not create conflict dir: %v", err)
+		}
+		after, _ := parseStateComment(readNote(t, n.path))
+		if after.NoteVersion != liveVer {
+			t.Errorf("state NoteVersion = %d, want %d", after.NoteVersion, liveVer)
+		}
+		if after.SourceHash != srcHash {
+			t.Errorf("SourceHash = %q, want %q", after.SourceHash, srcHash)
+		}
+	})
+
+	t.Run("412 then GET diverged -> conflict, artifact, private dir, naming", func(t *testing.T) {
+		outDir := t.TempDir()
+		n := newVaultNote(t, outDir)
+		before, _ := os.ReadFile(n.path)
+
+		liveVer := 8
+		liveHTML := "<div>completely unrelated remote edit</div>"
+		var sawPatch bool
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.Method == http.MethodPatch {
+				sawPatch = true
+				http.Error(w, "precondition failed", http.StatusPreconditionFailed)
+				return
+			}
+			if r.Method == http.MethodGet {
+				w.Header().Set("Last-Modified-Version", fmt.Sprintf("%d", liveVer))
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(noteBody(liveVer, liveHTML)))
+				return
+			}
+			t.Errorf("unexpected %s %s", r.Method, r.URL.Path)
+			http.Error(w, "unexpected", http.StatusInternalServerError)
+		}))
+		t.Cleanup(srv.Close)
+
+		res := patchWithConflict(newClient(srv), outDir, n, srcHash, desiredHTML, &rootFlags{})
+		if !sawPatch {
+			t.Fatal("expected initial PATCH")
+		}
+		if res.Status != "conflict" {
+			t.Fatalf("status = %q (%s), want conflict", res.Status, res.Note)
+		}
+		if !strings.Contains(res.Note, "vault resolve") {
+			t.Errorf("conflict Note %q should name vault resolve", res.Note)
+		}
+
+		// Vault note must not be overwritten; no fast-forward baseline.
+		after, _ := os.ReadFile(n.path)
+		if !bytes.Equal(before, after) {
+			t.Fatalf("conflict must not rewrite vault state")
+		}
+
+		// Artifact under vaultConflictsDir, containing live HTML, mode 0700/0600.
+		confDir := filepath.Join(outDir, vaultConflictsDir)
+		fi, err := os.Stat(confDir)
+		if err != nil {
+			t.Fatalf("conflict dir missing: %v", err)
+		}
+		if got := fi.Mode().Perm(); got != 0o700 {
+			t.Errorf("conflict dir mode = %04o, want 0700", got)
+		}
+		entries, err := os.ReadDir(confDir)
+		if err != nil || len(entries) != 1 {
+			t.Fatalf("conflict dir entries = %v (err %v), want 1", entries, err)
+		}
+		artifactPath := filepath.Join(confDir, entries[0].Name())
+		art, _ := os.ReadFile(artifactPath)
+		if !strings.Contains(string(art), liveHTML) {
+			t.Errorf("artifact missing live HTML %q:\n%s", liveHTML, string(art))
+		}
+		if afi, _ := os.Stat(artifactPath); afi != nil && afi.Mode().Perm() != 0o600 {
+			t.Errorf("artifact mode = %04o, want 0600", afi.Mode().Perm())
+		}
+	})
+
+	t.Run("412 then GET desired -> converged", func(t *testing.T) {
+		outDir := t.TempDir()
+		n := newVaultNote(t, outDir)
+
+		liveVer := 9
+		// Another device already wrote desiredHTML; server returns it verbatim.
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.Method == http.MethodPatch {
+				http.Error(w, "precondition failed", http.StatusPreconditionFailed)
+				return
+			}
+			if r.Method == http.MethodGet {
+				w.Header().Set("Last-Modified-Version", fmt.Sprintf("%d", liveVer))
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(noteBody(liveVer, desiredHTML)))
+				return
+			}
+			t.Errorf("unexpected %s %s", r.Method, r.URL.Path)
+			http.Error(w, "unexpected", http.StatusInternalServerError)
+		}))
+		t.Cleanup(srv.Close)
+
+		res := patchWithConflict(newClient(srv), outDir, n, srcHash, desiredHTML, &rootFlags{})
+		// Read the production code and assert what it actually does: the
+		// second switch arm hashes desiredHTML vs liveHTML, so an already-
+		// applied remote converges by fast-forwarding the baseline without a
+		// second PATCH. It must never report updated or conflict.
+		if res.Status != "converged" {
+			t.Fatalf("already-applied status = %q (%s), want converged", res.Status, res.Note)
+		}
+		if _, err := os.Stat(filepath.Join(outDir, vaultConflictsDir)); !os.IsNotExist(err) {
+			t.Fatalf("converged must not create conflict dir: %v", err)
+		}
+		after, _ := parseStateComment(readNote(t, n.path))
+		if after.NoteVersion != liveVer {
+			t.Errorf("state NoteVersion = %d, want %d", after.NoteVersion, liveVer)
+		}
+		if after.SourceHash != srcHash {
+			t.Errorf("SourceHash = %q, want %q", after.SourceHash, srcHash)
+		}
+		if after.RemoteHash != sha256hex(desiredHTML) {
+			t.Errorf("RemoteHash mismatch after converged")
+		}
+	})
 }

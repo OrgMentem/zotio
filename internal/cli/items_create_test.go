@@ -493,3 +493,59 @@ func TestItemsCreateConnectorBatchFilingFailureJSONIsStructural(t *testing.T) {
 		t.Fatalf("message = %q, want retry guidance", got["message"])
 	}
 }
+
+// TestConnectorCreateAmbiguousRecovery proves that a failed connector write
+// refuses to guess when two recent same-title candidates exist.
+func TestConnectorCreateAmbiguousRecovery(t *testing.T) {
+	var attachmentResolverCalls int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/connector/saveItems":
+			http.Error(w, `{"error":"save failed"}`, http.StatusInternalServerError)
+		case "/connector/hasAttachmentResolvers", "/connector/saveAttachmentFromResolver":
+			attachmentResolverCalls++
+			http.Error(w, `{"error":"attachment must not be attempted"}`, http.StatusInternalServerError)
+		case "/users/0/items/top":
+			w.Header().Set("Content-Type", "application/json")
+			added := time.Now().UTC().Format(time.RFC3339)
+			_ = json.NewEncoder(w).Encode([]map[string]any{
+				{"key": "STALE1", "title": "Ambiguous", "itemType": "journalArticle", "dateAdded": added},
+				{"key": "STALE2", "title": "Ambiguous", "itemType": "journalArticle", "dateAdded": added},
+			})
+		default:
+			http.Error(w, "unexpected request", http.StatusNotFound)
+		}
+	}))
+	t.Cleanup(srv.Close)
+
+	oldConnectorForCreate := connectorForCreate
+	connectorForCreate = func(*rootFlags) (*connector.Client, error) {
+		return connector.New(srv.URL+"/connector", time.Second), nil
+	}
+	t.Cleanup(func() { connectorForCreate = oldConnectorForCreate })
+
+	flags := &rootFlags{
+		configPath: testConfigFile(t, srv.URL+"/users/0"),
+		via:        "connector",
+		timeout:    time.Second,
+	}
+	res, err := routeCreateItemVia(context.Background(), flags, "connector", nil, map[string]any{
+		"title":    "Ambiguous",
+		"itemType": "journalArticle",
+	}, "", false)
+	if err == nil {
+		t.Fatal("routeCreateItemVia succeeded, want ambiguous recovery error")
+	}
+	if !strings.Contains(err.Error(), "2 recently added items share this title") {
+		t.Fatalf("error = %q, want ambiguous recovery message", err)
+	}
+	if strings.Contains(err.Error(), "STALE1") || strings.Contains(err.Error(), "STALE2") {
+		t.Fatalf("error = %q, must not report a guessed key", err)
+	}
+	if res.WebKey != "" {
+		t.Fatalf("recovered key = %q, want empty for ambiguous recovery", res.WebKey)
+	}
+	if attachmentResolverCalls != 0 {
+		t.Fatalf("attachment resolver calls = %d, want none after ambiguous recovery", attachmentResolverCalls)
+	}
+}
