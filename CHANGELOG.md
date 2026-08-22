@@ -2,7 +2,7 @@
 
 Notable changes to zotio. Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow [SemVer](https://semver.org/).
 
-## [Unreleased]
+## [0.20.0] — 2026-08-23
 
 ### Added
 
@@ -1878,7 +1878,8 @@ First tagged release: the trust-and-automation layer for Zotero.
 - **Onboarding** — `zotio init` guided setup (Zotero detection, local API, key, first sync, health check).
 - Release engineering: goreleaser builds for 6 platforms, cosign-signed checksums, SBOMs, Homebrew tap.
 
-[Unreleased]: https://github.com/OrgMentem/zotio/compare/v0.19.0...HEAD
+[Unreleased]: https://github.com/OrgMentem/zotio/compare/v0.20.0...HEAD
+[0.20.0]: https://github.com/OrgMentem/zotio/compare/v0.19.0...v0.20.0
 [0.19.0]: https://github.com/OrgMentem/zotio/compare/v0.18.0...v0.19.0
 [0.18.0]: https://github.com/OrgMentem/zotio/compare/v0.17.0...v0.18.0
 [0.17.0]: https://github.com/OrgMentem/zotio/compare/v0.16.1...v0.17.0
