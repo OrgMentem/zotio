@@ -991,7 +991,7 @@
   },
   {
     "name": "import_doi",
-    "description": "Import an item from CrossRef DOI metadata",
+    "description": "Import an item from DOI metadata.\n\nThe DOI's registration agency is resolved automatically. CrossRef is asked\nfirst; if it reports no such record, DataCite is asked. That covers registrants\nCrossRef does not hold, including arXiv's own 10.48550/arXiv.* preprint DOIs,\nZenodo, Dryad, and figshare. A CrossRef outage is not treated as \"no record\",\nso a transient failure is reported rather than being retried at a registry that\ndoes not own the DOI.\n\nThe item previews by default and is created only under --yes; --dry-run always\nwins over --yes.",
     "inputSchema": {
       "properties": {
         "allow-destructive": {
@@ -1271,7 +1271,7 @@
           "type": "number"
         },
         "resolve": {
-          "description": "Fetch CrossRef titles for 'new' PDFs (network) (default: false)",
+          "description": "Fetch titles for 'new' PDFs from CrossRef, then DataCite (network) (default: false)",
           "type": "boolean"
         }
       },

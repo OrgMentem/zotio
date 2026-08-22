@@ -977,7 +977,19 @@ zotio import discover [flags]
 
 ### `zotio import doi`
 
-Import an item from CrossRef DOI metadata
+Import an item from DOI metadata (CrossRef, then DataCite)
+
+Import an item from DOI metadata.
+
+The DOI's registration agency is resolved automatically. CrossRef is asked
+first; if it reports no such record, DataCite is asked. That covers registrants
+CrossRef does not hold, including arXiv's own 10.48550/arXiv.* preprint DOIs,
+Zenodo, Dryad, and figshare. A CrossRef outage is not treated as "no record",
+so a transient failure is reported rather than being retried at a registry that
+does not own the DOI.
+
+The item previews by default and is created only under --yes; --dry-run always
+wins over --yes.
 
 ```
 zotio import doi <doi> [flags]
@@ -1137,7 +1149,7 @@ zotio import scan ~/Downloads/papers
 | Flag | Type | Default | Description |
 | --- | --- | --- | --- |
 | `--limit` | `int` | `0` | Scan at most N PDFs (0 = all) |
-| `--resolve` | `bool` | `false` | Fetch CrossRef titles for 'new' PDFs (network) |
+| `--resolve` | `bool` | `false` | Fetch titles for 'new' PDFs from CrossRef, then DataCite (network) |
 
 ### `zotio import targets`
 

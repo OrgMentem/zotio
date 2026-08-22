@@ -6,6 +6,25 @@ Notable changes to zotio. Format follows [Keep a Changelog](https://keepachangel
 
 ### Fixed
 
+- **DOI import resolves DataCite DOIs, not just CrossRef ones.** Every
+  `10.48550/arXiv.*` DOI was marked `unresolved` with
+  `fetching CrossRef metadata: HTTP 404: Resource not found`, because that
+  prefix is registered with DataCite and a CrossRef-only lookup can never
+  resolve it. The DOI was well-formed, registered, and resolvable — only the
+  registry was wrong — and the manifest entry blocked the import with no
+  consumer-side workaround. `import resolve`, `import doi`, `import discover`
+  and `import scan --resolve` now ask CrossRef first and fall back to DataCite
+  when CrossRef reports no such record, which also covers Zenodo, Dryad,
+  figshare and other DataCite registrants. A CrossRef timeout or 5xx is *not*
+  treated as "no record": retrying at a registry that does not own the DOI
+  would turn a truthful transient error into a misleading permanent one. When
+  both registries miss, the error names both attempts, because the
+  single-registry message is what sent a downstream consumer hunting for a
+  malformed DOI. arXiv self-DOIs land on the same `archiveID`/`repository`/
+  `extra` fields as an arXiv-ID import, so the same paper imported either way
+  produces the same item. Reported by papio; verified live against both
+  registries on 2026-08-22.
+
 - **`--compact`, and therefore `--agent`, no longer empties rows it does not
   recognise.** `compactFields` keeps an allow-list of item-ish field names, so a
   hand-written report row sharing none of them was reduced to `{}`. Measured

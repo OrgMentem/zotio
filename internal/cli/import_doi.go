@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -49,8 +50,19 @@ func newImportDoiCmd(flags *rootFlags) *cobra.Command {
 	var flagFetchPDF bool
 
 	cmd := &cobra.Command{
-		Use:         "doi <doi>",
-		Short:       "Import an item from CrossRef DOI metadata",
+		Use:   "doi <doi>",
+		Short: "Import an item from DOI metadata (CrossRef, then DataCite)",
+		Long: `Import an item from DOI metadata.
+
+The DOI's registration agency is resolved automatically. CrossRef is asked
+first; if it reports no such record, DataCite is asked. That covers registrants
+CrossRef does not hold, including arXiv's own 10.48550/arXiv.* preprint DOIs,
+Zenodo, Dryad, and figshare. A CrossRef outage is not treated as "no record",
+so a transient failure is reported rather than being retried at a registry that
+does not own the DOI.
+
+The item previews by default and is created only under --yes; --dry-run always
+wins over --yes.`,
 		Annotations: map[string]string{"zotio:method": "POST", "zotio:path": "/items"},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if len(args) == 0 {
@@ -65,7 +77,7 @@ func newImportDoiCmd(flags *rootFlags) *cobra.Command {
 				}
 			}
 
-			item, err := fetchCrossRefItem(cmd, flags.timeout, args[0])
+			item, err := fetchDOIItem(cmd, flags.timeout, args[0])
 			if err != nil {
 				return err
 			}
@@ -171,16 +183,50 @@ func doiImportPreflightOps(doi string, fetchPDF bool) []mutation.Op {
 	return ops
 }
 
-func fetchCrossRefItem(cmd *cobra.Command, timeout time.Duration, doi string) (map[string]any, error) {
-	return fetchCrossRefItemWithCache(cmd.Context(), &http.Client{Timeout: timeout}, doi, nil)
+// fetchDOIItem resolves a DOI to a Zotero item without assuming which registry
+// owns it. See import_datacite.go for why this is a fallback and not a prefix
+// table.
+func fetchDOIItem(cmd *cobra.Command, timeout time.Duration, doi string) (map[string]any, error) {
+	return fetchDOIItemWithCache(cmd.Context(), &http.Client{Timeout: timeout}, doi, nil)
 }
 
-func fetchCrossRefItemWithCache(ctx context.Context, httpClient *http.Client, doi string, providerCache *providerJSONCache) (map[string]any, error) {
-	work, err := fetchCrossRefWork(ctx, httpClient, doi, providerCache)
-	if err != nil {
-		return nil, err
+// fetchDOIItemWithCache tries CrossRef, then DataCite. Only a "no such record"
+// answer from CrossRef triggers the fallback: a timeout, a transport failure or
+// a 5xx means CrossRef may well own the DOI and is simply unavailable, so
+// retrying the same question at a registry that definitely does not own it
+// would trade a truthful transient error for a misleading permanent one.
+//
+// When both miss, the error names both attempts. The single-registry message
+// ("fetching CrossRef metadata: HTTP 404") is what sent a downstream consumer
+// hunting for a malformed DOI when the DOI was fine and the registry was wrong.
+func fetchDOIItemWithCache(ctx context.Context, httpClient *http.Client, doi string, providerCache *providerJSONCache) (map[string]any, error) {
+	work, crossRefErr := fetchCrossRefWork(ctx, httpClient, doi, providerCache)
+	if crossRefErr == nil {
+		return crossRefItemFromWork(work, doi), nil
 	}
-	return crossRefItemFromWork(work, doi), nil
+	if !isRegistryRecordAbsent(crossRefErr) {
+		return nil, crossRefErr
+	}
+
+	attrs, dataCiteErr := fetchDataCiteAttributes(ctx, httpClient, doi, providerCache)
+	if dataCiteErr == nil {
+		return dataCiteItemFromAttributes(attrs, doi), nil
+	}
+	// crossRefErr already self-identifies ("fetching CrossRef metadata: ..."),
+	// so naming CrossRef again here would stutter.
+	return nil, fmt.Errorf("resolving DOI metadata: %w; DataCite: %w", crossRefErr, dataCiteErr)
+}
+
+// isRegistryRecordAbsent reports whether an error means "this registry has no
+// such DOI" rather than "this registry could not answer". getCappedProviderJSON
+// renders a non-2xx as "HTTP <code>: <body>", so the status is matched on that
+// rendering; 404 and 410 are the two ways a DOI registry says it has no record.
+func isRegistryRecordAbsent(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	return strings.Contains(msg, "HTTP 404") || strings.Contains(msg, "HTTP 410")
 }
 
 func fetchCrossRefWork(ctx context.Context, httpClient *http.Client, doi string, providerCache *providerJSONCache) (crossRefWork, error) {

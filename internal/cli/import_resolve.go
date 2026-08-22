@@ -93,7 +93,7 @@ func buildImportManifestFromDir(cmd *cobra.Command, flags *rootFlags, dir string
 			if res.DOI == "" {
 				entry.Status = "unresolved"
 				entry.Note = "no identifier"
-			} else if item, fetchErr := fetchCrossRefItem(cmd, flags.timeout, res.DOI); fetchErr == nil {
+			} else if item, fetchErr := fetchDOIItem(cmd, flags.timeout, res.DOI); fetchErr == nil {
 				entry.Item = item
 			} else {
 				entry.Status = "unresolved"
@@ -115,7 +115,7 @@ func refreshImportManifestCreates(cmd *cobra.Command, flags *rootFlags, m import
 		if entry.Action != "create" || entry.Status != "unresolved" || entry.Identifier == "" {
 			continue
 		}
-		item, err := fetchCrossRefItem(cmd, flags.timeout, entry.Identifier)
+		item, err := fetchDOIItem(cmd, flags.timeout, entry.Identifier)
 		if err != nil {
 			entry.Note = err.Error()
 			continue

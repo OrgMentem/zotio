@@ -22,6 +22,7 @@ const (
 	providerSemanticScholar = "semantic_scholar"
 	providerCrossRef        = "crossref"
 	providerOpenAlex        = "openalex"
+	providerDataCite        = "datacite"
 )
 
 type providerJSONCache struct {

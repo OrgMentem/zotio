@@ -136,7 +136,7 @@ or text-only PDFs may report "unidentified".`,
 			return finishScanReport(cmd, results, len(pdfs), args[0], warnings, flags)
 		},
 	}
-	cmd.Flags().BoolVar(&flagResolve, "resolve", false, "Fetch CrossRef titles for 'new' PDFs (network)")
+	cmd.Flags().BoolVar(&flagResolve, "resolve", false, "Fetch titles for 'new' PDFs from CrossRef, then DataCite (network)")
 	cmd.Flags().IntVar(&flagLimit, "limit", 0, "Scan at most N PDFs (0 = all)")
 	return cmd
 }
@@ -268,8 +268,14 @@ func classifyPDFWithErr(ctx context.Context, path string, idx libraryDOIIndex, h
 	}
 	res.Status = "new"
 	if httpClient != nil {
-		if item, err := crossRefItemFromDOI(ctx, httpClient, res.DOI); err == nil {
-			if t, _ := stringValue(item["title"]); t != "" {
+		// Same registry-agnostic resolution the manifest uses, so a directory
+		// scan and the manifest it produces agree on an arXiv PDF's title
+		// instead of resolving the item but showing no title for it.
+		if item, err := fetchDOIItemWithCache(ctx, httpClient, res.DOI, nil); err == nil {
+			// crossRefItemFromWork falls back to the DOI when a record carries
+			// no title. A DOI is not a title, so do not display one as if it
+			// were.
+			if t, _ := stringValue(item["title"]); t != "" && !strings.EqualFold(t, res.DOI) {
 				res.Title = t
 			}
 		}

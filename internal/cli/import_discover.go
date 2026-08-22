@@ -257,7 +257,7 @@ func buildImportDiscoverManifestWithDirection(ctx context.Context, flags *rootFl
 			Discovery:      discovery,
 		}
 
-		item, err := fetchCrossRefItemWithCache(ctx, httpClient, candidate.DOI, providerCache)
+		item, err := fetchDOIItemWithCache(ctx, httpClient, candidate.DOI, providerCache)
 		if err != nil {
 			entry.Note = err.Error()
 			manifest.Entries = append(manifest.Entries, entry)
