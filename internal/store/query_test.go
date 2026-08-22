@@ -510,7 +510,7 @@ func TestSearchByType(t *testing.T) {
 		}
 	})
 
-	t.Run("limit clamp", func(t *testing.T) {
+	t.Run("limit contract matches Search", func(t *testing.T) {
 		const clampTerm = "clampchecktoken"
 		for i := 0; i < 60; i++ {
 			k := fmt.Sprintf("CLP%03d", i)
@@ -526,13 +526,24 @@ func TestSearchByType(t *testing.T) {
 		if len(got) != 5 {
 			t.Fatalf("SearchByType limit 5 len = %d, want 5", len(got))
 		}
-		for _, lim := range []int{0, -1, -100} {
+		// A limit of 0 applies the interactive default of 50.
+		got, err = s.SearchByType(clampTerm, "items", 0)
+		if err != nil {
+			t.Fatalf("SearchByType limit 0: %v", err)
+		}
+		if len(got) != 50 {
+			t.Fatalf("SearchByType limit 0 len = %d, want 50 (interactive default)", len(got))
+		}
+		// A negative limit means no limit, so a caller can enumerate the whole
+		// cohort for one resource type. Clamping it to 50 here would silently
+		// truncate that enumeration and diverge from Search.
+		for _, lim := range []int{-1, -100} {
 			got, err := s.SearchByType(clampTerm, "items", lim)
 			if err != nil {
 				t.Fatalf("SearchByType limit %d: %v", lim, err)
 			}
-			if len(got) != 50 {
-				t.Fatalf("SearchByType limit %d len = %d, want 50 (clamped)", lim, len(got))
+			if len(got) != 60 {
+				t.Fatalf("SearchByType limit %d len = %d, want all 60 (negative means no limit)", lim, len(got))
 			}
 		}
 		got, err = s.SearchByType(clampTerm, "items", 60)

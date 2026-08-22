@@ -489,9 +489,11 @@ func isFTSSpace(b byte) bool {
 
 // SearchByType runs an FTS search scoped to a single resource type. It mirrors
 // Search but adds a resource_type predicate so the search command's --type flag
-// genuinely narrows local results.
+// genuinely narrows local results. The limit contract is Search's: 0 applies the
+// interactive default of 50, and a negative limit means no limit (SQLite
+// LIMIT -1) so a caller can enumerate the full match cohort for one type.
 func (s *Store) SearchByType(query, resourceType string, limit int) ([]json.RawMessage, error) {
-	if limit <= 0 {
+	if limit == 0 {
 		limit = 50
 	}
 	rows, err := s.queryWithBusyRetry(
