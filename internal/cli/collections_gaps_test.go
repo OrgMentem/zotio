@@ -87,9 +87,9 @@ func TestBuildCollectionGapsReportRanksExcludesAndLooksUpOnlyTopTitles(t *testin
 	t.Cleanup(crossref.Close)
 	withBase(t, &enrichCrossRefBase, crossref.URL)
 
-	report, err := buildCollectionGapsReport(context.Background(), db, http.DefaultClient, "COL", 10, 2)
+	report, err := buildCollectionGapsReportWithCache(context.Background(), db, http.DefaultClient, nil, "COL", 10, 2)
 	if err != nil {
-		t.Fatalf("buildCollectionGapsReport: %v", err)
+		t.Fatalf("buildCollectionGapsReportWithCache: %v", err)
 	}
 	wantSummary := collectionGapsSummary{ItemsScanned: 1, ReferencesSeen: 5, UniqueCitedDOIs: 4, AlreadyInLibrary: 1, Gaps: 3}
 	if report.Summary != wantSummary {
@@ -139,16 +139,15 @@ func TestFetchOutgoingReferenceDOIsFallsBackToSemanticScholarOnCOCIEmptyOrError(
 			}))
 			t.Cleanup(ss.Close)
 			withBase(t, &enrichSemanticScholarBase, ss.URL)
-
-			refs, titles, err := fetchOutgoingReferenceDOIs(context.Background(), http.DefaultClient, "10.2000/source")
+			refs, err := fetchOutgoingReferences(context.Background(), http.DefaultClient, "10.2000/source", referenceFetchOptions{})
 			if err != nil {
-				t.Fatalf("fetchOutgoingReferenceDOIs: %v", err)
+				t.Fatalf("fetchOutgoingReferences: %v", err)
 			}
-			if !reflect.DeepEqual(refs, []string{"10.2000/ref"}) {
-				t.Fatalf("refs = %v, want Semantic Scholar DOI fallback", refs)
+			if !reflect.DeepEqual(refs.DOIs, []string{"10.2000/ref"}) {
+				t.Fatalf("refs = %v, want Semantic Scholar DOI fallback", refs.DOIs)
 			}
-			if titles["10.2000/ref"] != "Fallback Reference" {
-				t.Fatalf("titles = %v, want Semantic Scholar reference title", titles)
+			if refs.Titles["10.2000/ref"] != "Fallback Reference" {
+				t.Fatalf("titles = %v, want Semantic Scholar reference title", refs.Titles)
 			}
 		})
 	}

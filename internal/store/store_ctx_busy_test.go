@@ -135,8 +135,9 @@ func TestQueryItems_RetriesBusyInsteadOfFailingHard(t *testing.T) {
 		}
 	}()
 
-	// Legacy QueryItems (Background internally) should now retry via helper and succeed.
-	rows, err := s.QueryItems(ItemQuery{Limit: 10})
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	rows, err := s.QueryItemsContext(ctx, ItemQuery{Limit: 10})
 	if err != nil {
 		t.Fatalf("QueryItems did not survive WAL contention (should have retried): %v", err)
 	}
@@ -154,9 +155,9 @@ func TestQueryItems_RetriesBusyInsteadOfFailingHard(t *testing.T) {
 			t.Logf("commit2: %v", err)
 		}
 	}()
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
-	rows2, err := s.QueryItemsContext(ctx, ItemQuery{Limit: 10})
+	ctx2, cancel2 := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel2()
+	rows2, err := s.QueryItemsContext(ctx2, ItemQuery{Limit: 10})
 	if err != nil {
 		t.Fatalf("QueryItemsContext did not retry: %v", err)
 	}
@@ -198,8 +199,9 @@ func TestQueryTrash_RetriesBusyInsteadOfFailingHard(t *testing.T) {
 			t.Logf("commit: %v", err)
 		}
 	}()
-
-	rows, err := s.QueryTrash(TrashQuery{Limit: 10})
+	ctxTrash, cancelTrash := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancelTrash()
+	rows, err := s.QueryTrashContext(ctxTrash, TrashQuery{Limit: 10})
 	if err != nil {
 		t.Fatalf("QueryTrash did not retry busy: %v", err)
 	}
@@ -262,7 +264,9 @@ func TestQuerySimilarityCandidates_RetriesBusyInsteadOfFailingHard(t *testing.T)
 		}
 	}()
 
-	cands, err := s.QuerySimilarityCandidates()
+	ctxSim, cancelSim := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancelSim()
+	cands, err := s.QuerySimilarityCandidatesContext(ctxSim)
 	if err != nil {
 		t.Fatalf("QuerySimilarityCandidates did not retry: %v", err)
 	}

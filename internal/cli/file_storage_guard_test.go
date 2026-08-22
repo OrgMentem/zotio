@@ -1145,28 +1145,6 @@ func TestRouteClauseRendersTheRecordedCauseNotCurrentState(t *testing.T) {
 	}
 }
 
-// A non-local base means the desktop connector is not reachable at all, which
-// is a different sentence from "Zotero is not running".
-func TestConnectorUnavailableReasonNamesTheActualObstacle(t *testing.T) {
-	remote := &rootFlags{configPath: testConfigFile(t, "https://api.zotero.org/users/1")}
-	if got := connectorUnavailableReason(t.Context(), remote); !strings.Contains(got, "not a local Zotero API") {
-		t.Fatalf("remote base reason = %q, want the non-local base named", got)
-	}
-
-	// A group target never reaches the personal-WebDAV route clause, so assert
-	// the behaviour that actually governs it: the refusal for a group library
-	// must not offer the connector, which has no group parameter.
-	grouped := &rootFlags{group: "12345", configPath: testConfigFile(t, "http://localhost:23119/api/users/0")}
-	if got := connectorUnavailableReason(t.Context(), grouped); !strings.Contains(got, "group") {
-		t.Fatalf("group reason = %q, want the group limitation named", got)
-	}
-	for _, step := range storedUploadRefusalRemediation(storedUploadReasonGroupSyncOff) {
-		if strings.Contains(step, "--via connector") {
-			t.Fatalf("group remediation offers the connector, which has no group parameter: %q", step)
-		}
-	}
-}
-
 // A ping failure has several causes and they need different fixes. Collapsing
 // them into "Zotero is not running" made two of the three false.
 func TestConnectorPingFailureIsClassifiedNotCollapsed(t *testing.T) {
@@ -1257,7 +1235,7 @@ func TestHumanPreconditionMessageCarriesTheRemediation(t *testing.T) {
 // because the envelope already carries the list in a parseable field.
 func TestPreconditionRemediationReachesBothSurfaces(t *testing.T) {
 	human := &bytes.Buffer{}
-	humanErr := emitPreconditionUnmet(human, &rootFlags{}, "attachments add", preconditionZoteroFileStorage, "the store is wrong")
+	humanErr := emitPreconditionUnmetWithRemediation(human, &rootFlags{}, "attachments add", preconditionZoteroFileStorage, "the store is wrong", preconditionRemediation(preconditionZoteroFileStorage))
 	if humanErr == nil {
 		t.Fatal("emitPreconditionUnmet returned nil for a failure")
 	}
@@ -1272,7 +1250,7 @@ func TestPreconditionRemediationReachesBothSurfaces(t *testing.T) {
 	}
 
 	jsonOut := &bytes.Buffer{}
-	jsonErr := emitPreconditionUnmet(jsonOut, &rootFlags{asJSON: true}, "attachments add", preconditionZoteroFileStorage, "the store is wrong")
+	jsonErr := emitPreconditionUnmetWithRemediation(jsonOut, &rootFlags{asJSON: true}, "attachments add", preconditionZoteroFileStorage, "the store is wrong", preconditionRemediation(preconditionZoteroFileStorage))
 	var env struct {
 		Kind        string   `json:"kind"`
 		Remediation []string `json:"remediation"`

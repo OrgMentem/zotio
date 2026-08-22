@@ -139,10 +139,6 @@ func commandRegistryPath(cmd *cobra.Command) string {
 	return strings.TrimPrefix(cmd.CommandPath(), cmd.Root().Name()+" ")
 }
 
-func emitPreconditionUnmet(w io.Writer, flags *rootFlags, capability, precondition, detail string) error {
-	return emitPreconditionUnmetWithRemediation(w, flags, capability, precondition, detail, preconditionRemediation(precondition))
-}
-
 // emitPreconditionUnmetWithRemediation is emitPreconditionUnmet for callers
 // whose remediation depends on WHY the precondition failed rather than on the
 // precondition alone. The storage guard refuses for several distinct reasons

@@ -577,39 +577,28 @@ func TestConnectorImportRequest(t *testing.T) {
 	}
 }
 
-func TestConnectorTranslators(t *testing.T) {
+func TestConnectorDetectTranslators(t *testing.T) {
 	t.Parallel()
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch r.URL.Path {
-		case "/connector/getTranslators":
-			_, _ = w.Write([]byte(`[{"label":"arXiv.org","translatorID":"abc","priority":100}]`))
-		case "/connector/detect":
-			var body struct {
-				URI  string `json:"uri"`
-				HTML string `json:"html"`
-			}
-			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-				t.Fatalf("decode detect body: %v", err)
-			}
-			if body.URI != "https://arxiv.org/abs/1706.03762" || !strings.Contains(body.HTML, "Attention") {
-				t.Fatalf("detect body = %+v", body)
-			}
-			_, _ = w.Write([]byte(`[{"label":"arXiv.org","translatorID":"abc","priority":100}]`))
-		default:
+		if r.URL.Path != "/connector/detect" {
 			t.Fatalf("path = %s", r.URL.Path)
 		}
+		var body struct {
+			URI  string `json:"uri"`
+			HTML string `json:"html"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("decode detect body: %v", err)
+		}
+		if body.URI != "https://arxiv.org/abs/1706.03762" || !strings.Contains(body.HTML, "Attention") {
+			t.Fatalf("detect body = %+v", body)
+		}
+		_, _ = w.Write([]byte(`[{"label":"arXiv.org","translatorID":"abc","priority":100}]`))
 	}))
 	defer server.Close()
 
 	c := New(server.URL+"/connector", time.Second)
-	all, err := c.GetTranslators(context.Background())
-	if err != nil {
-		t.Fatalf("GetTranslators returned error: %v", err)
-	}
-	if len(all) != 1 || all[0].Label != "arXiv.org" {
-		t.Fatalf("translators = %+v", all)
-	}
 	matches, err := c.DetectTranslators(context.Background(), "https://arxiv.org/abs/1706.03762", "<title>Attention</title>")
 	if err != nil {
 		t.Fatalf("DetectTranslators returned error: %v", err)

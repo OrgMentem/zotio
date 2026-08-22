@@ -3,6 +3,7 @@
 package cli
 
 import (
+	"context"
 	"encoding/json"
 	"path/filepath"
 	"testing"
@@ -12,7 +13,7 @@ import (
 
 func TestSyncSingleObject_PreservesLargeIntegerResourceIDs(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "data.db")
-	db, err := store.Open(dbPath)
+	db, err := store.OpenWithContext(context.Background(), dbPath)
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}

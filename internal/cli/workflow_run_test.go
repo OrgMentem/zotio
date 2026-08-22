@@ -179,15 +179,15 @@ func TestWorkflowRunRejectsWorkflowStep(t *testing.T) {
 func TestWorkflowRunTransformsStepArgsByMode(t *testing.T) {
 	readOnlyArgs := []string{"journal", "list"}
 	mutatingArgs := []string{"journal", "undo", "RUN-ID"}
-	if !workflowRunStepIsReadOnly(readOnlyArgs) {
+	if !workflowRunStepIsReadOnlyWithRoot(RootCmd(), readOnlyArgs) {
 		t.Fatalf("read-only step %q was not resolved as read-only", readOnlyArgs)
 	}
-	if workflowRunStepIsReadOnly(mutatingArgs) {
+	if workflowRunStepIsReadOnlyWithRoot(RootCmd(), mutatingArgs) {
 		t.Fatalf("mutating step %q was resolved as read-only", mutatingArgs)
 	}
 
 	readOnlyValueFlagArgs := []string{"items", "list", "--limit", "5", "--format", "bibtex"}
-	if !workflowRunStepIsReadOnly(readOnlyValueFlagArgs) {
+	if !workflowRunStepIsReadOnlyWithRoot(RootCmd(), readOnlyValueFlagArgs) {
 		t.Fatalf("read-only step with value flags %q was not resolved as read-only", readOnlyValueFlagArgs)
 	}
 
@@ -959,7 +959,7 @@ func TestExecuteWorkflowRunStepDoesNotRaceWithConcurrentStdoutWriter(t *testing.
 	}()
 
 	for range 25 {
-		output, _, err := executeWorkflowRunStep(context.Background(), []string{"--help"}, nil)
+		output, _, err := executeWorkflowRunStepWithRoot(context.Background(), RootCmd(), []string{"--help"}, nil)
 		if err != nil {
 			t.Fatalf("executeWorkflowRunStep --help: %v", err)
 		}

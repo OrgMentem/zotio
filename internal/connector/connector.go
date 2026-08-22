@@ -428,8 +428,6 @@ func (c *Client) UpdateSession(ctx context.Context, sessionID, target string, ta
 	return err
 }
 
-// Translator describes one Zotero desktop translator returned by connector
-// translator diagnostic endpoints.
 type Translator struct {
 	TranslatorID   string `json:"translatorID,omitempty"`
 	Label          string `json:"label,omitempty"`
@@ -439,25 +437,6 @@ type Translator struct {
 	Priority       int    `json:"priority,omitempty"`
 	InRepository   bool   `json:"inRepository,omitempty"`
 	LastUpdated    string `json:"lastUpdated,omitempty"`
-}
-
-// GetTranslators lists available Zotero translators.
-func (c *Client) GetTranslators(ctx context.Context) ([]Translator, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.endpoint("/getTranslators"), bytes.NewReader([]byte("{}")))
-	if err != nil {
-		return nil, err
-	}
-	c.setVersion(req)
-	req.Header.Set("Content-Type", "application/json")
-	body, err := c.expectStatus(req, "getTranslators", http.StatusOK)
-	if err != nil {
-		return nil, err
-	}
-	var translators []Translator
-	if err := json.Unmarshal(body, &translators); err != nil {
-		return nil, fmt.Errorf("decoding connector getTranslators response: %w", err)
-	}
-	return translators, nil
 }
 
 // DetectTranslators asks Zotero which web translators match the provided page

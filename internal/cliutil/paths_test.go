@@ -28,11 +28,15 @@ func resetPathEnv(t *testing.T) string {
 	} {
 		t.Setenv(name, "")
 	}
-	restore, err := SetHomeOverride("")
-	if err != nil {
-		t.Fatalf("reset home override: %v", err)
-	}
-	t.Cleanup(restore)
+	pathHomeOverrideMu.Lock()
+	prev := pathHomeOverride
+	pathHomeOverride = ""
+	pathHomeOverrideMu.Unlock()
+	t.Cleanup(func() {
+		pathHomeOverrideMu.Lock()
+		pathHomeOverride = prev
+		pathHomeOverrideMu.Unlock()
+	})
 	return home
 }
 
@@ -118,32 +122,6 @@ func TestKindDirXDGAddsAppName(t *testing.T) {
 	}
 }
 
-func TestKindDirDataPrecedencePairs(t *testing.T) {
-	home := resetPathEnv(t)
-	perKind := filepath.Join(t.TempDir(), "per-kind")
-	flagHome := filepath.Join(t.TempDir(), "flag-home")
-	envHome := filepath.Join(t.TempDir(), "env-home")
-	xdg := filepath.Join(t.TempDir(), "xdg")
-	t.Setenv(envPrefix+"_DATA_DIR", perKind)
-	t.Setenv(envPrefix+"_HOME", envHome)
-	t.Setenv("XDG_DATA_HOME", xdg)
-	restore, err := SetHomeOverride(flagHome)
-	if err != nil {
-		t.Fatalf("SetHomeOverride() error = %v", err)
-	}
-	defer restore()
-
-	assertDataDir(t, perKind)
-	t.Setenv(envPrefix+"_DATA_DIR", "")
-	assertDataDir(t, filepath.Join(flagHome, "data"))
-	restore()
-	assertDataDir(t, filepath.Join(envHome, "data"))
-	t.Setenv(envPrefix+"_HOME", "")
-	assertDataDir(t, filepath.Join(xdg, appName))
-	t.Setenv("XDG_DATA_HOME", "")
-	assertDataDir(t, filepath.Join(home, ".local", "share", appName))
-}
-
 func TestKindDirRelativeOverridesWarnAndFallThrough(t *testing.T) {
 	home := resetPathEnv(t)
 	t.Setenv(envPrefix+"_HOME", "relative/home")
@@ -162,40 +140,6 @@ func TestKindDirRelativeOverridesWarnAndFallThrough(t *testing.T) {
 		if !strings.Contains(stderr, want) {
 			t.Fatalf("stderr %q does not mention %q", stderr, want)
 		}
-	}
-}
-
-func TestSetHomeOverrideRejectsRelative(t *testing.T) {
-	resetPathEnv(t)
-	if _, err := SetHomeOverride("../elsewhere"); err == nil || !strings.Contains(err.Error(), "--home") {
-		t.Fatalf("SetHomeOverride(relative) error = %v, want --home absolute-path error", err)
-	}
-}
-
-func TestSetHomeOverrideRejectsRegularFile(t *testing.T) {
-	resetPathEnv(t)
-	path := filepath.Join(t.TempDir(), "not-a-dir")
-	if err := os.WriteFile(path, []byte("file"), 0o600); err != nil {
-		t.Fatalf("write file: %v", err)
-	}
-	if _, err := SetHomeOverride(path); err == nil || !strings.Contains(err.Error(), "not a directory") {
-		t.Fatalf("SetHomeOverride(file) error = %v, want not-a-directory error", err)
-	}
-}
-
-func TestSetHomeOverrideExpandsTildeAndCleans(t *testing.T) {
-	home := resetPathEnv(t)
-	restore, err := SetHomeOverride("~/state/../root")
-	if err != nil {
-		t.Fatalf("SetHomeOverride() error = %v", err)
-	}
-	defer restore()
-	got, err := CacheDir()
-	if err != nil {
-		t.Fatalf("CacheDir() error = %v", err)
-	}
-	if want := filepath.Join(home, "root", "cache"); got != want {
-		t.Fatalf("CacheDir() = %q, want %q", got, want)
 	}
 }
 

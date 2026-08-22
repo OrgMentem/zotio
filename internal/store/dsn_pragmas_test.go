@@ -3,6 +3,7 @@
 package store
 
 import (
+	"context"
 	"database/sql"
 	"path/filepath"
 	"testing"
@@ -29,7 +30,7 @@ func livePragma(t *testing.T, s *Store, name string) string {
 //
 // Asserting the DSN string would not have caught it. These read live state.
 func TestOpenInstallsTheDSNPragmas(t *testing.T) {
-	s, err := Open(filepath.Join(t.TempDir(), "pragmas.db"))
+	s, err := OpenWithContext(context.Background(), filepath.Join(t.TempDir(), "pragmas.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -86,7 +87,7 @@ func TestOpenReadOnlyInstallsTheDSNPragmas(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	s, err := OpenReadOnly(dbPath)
+	s, err := OpenReadOnlyContext(context.Background(), dbPath)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -132,7 +133,7 @@ func TestOpenConvertsAnExistingDeleteModeDatabase(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	s, err := Open(dbPath)
+	s, err := OpenWithContext(context.Background(), dbPath)
 	if err != nil {
 		t.Fatalf("opening a pre-WAL database: %v", err)
 	}

@@ -143,26 +143,3 @@ func TestClient_VerifyShortCircuit_GETControl(t *testing.T) {
 		t.Fatalf("GET must never short-circuit; recorder saw %d calls", rec.calls)
 	}
 }
-
-// TestClient_VerifyShortCircuit_ReadOnlyPOST pins the doRead bypass: a POST
-// routed through doRead (the path PostQuery* takes for GraphQL queries,
-// JSON-RPC reads, and POST-based search) must NOT short-circuit under
-// ZOTIO_VERIFY=1, because the operation does not mutate remote state. Without
-// this, an inherited verify env silently breaks every read on a shared-endpoint
-// API.
-func TestClient_VerifyShortCircuit_ReadOnlyPOST(t *testing.T) {
-	for _, verb := range []string{"POST", "PUT", "PATCH"} {
-		verb := verb
-		t.Run(verb, func(t *testing.T) {
-			t.Setenv(cliutil.VerifyEnvVar, "1")
-			t.Setenv(cliutil.VerifyLiveHTTPEnvVar, "")
-			c, rec := newClientWithRecorder(t)
-
-			_, _, _ = c.doRead(context.Background(), verb, "/test", nil, nil, nil)
-
-			if rec.calls < 1 {
-				t.Fatalf("doRead(%s) must dial through; recorder saw %d calls", verb, rec.calls)
-			}
-		})
-	}
-}

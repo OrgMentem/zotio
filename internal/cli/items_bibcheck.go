@@ -157,14 +157,6 @@ func newItemsBibcheckCmd(flags *rootFlags) *cobra.Command {
 }
 
 // Dispatch manuscript parsing by supported extension only.
-func parseManuscriptCiteKeys(path string) ([]string, string, error) {
-	occurrences, format, err := parseManuscriptCitationOccurrences(path)
-	if err != nil {
-		return nil, "", err
-	}
-	return citeKeysFromOccurrences(occurrences), format, nil
-}
-
 func parseManuscriptCitationOccurrences(path string) ([]bibcheckOccurrence, string, error) {
 	ext := strings.ToLower(filepath.Ext(path))
 	var format string
@@ -191,19 +183,6 @@ func parseManuscriptCitationOccurrences(path string) ([]bibcheckOccurrence, stri
 	return parsePandocMarkdownCitationOccurrences(path, content), format, nil
 }
 
-func citeKeysFromOccurrences(occurrences []bibcheckOccurrence) []string {
-	keys := make([]string, 0, len(occurrences))
-	for _, occurrence := range occurrences {
-		keys = append(keys, occurrence.CiteKey)
-	}
-	return keys
-}
-
-// Parse LaTeX cite/nocite command key lists, including starred and optional-argument variants.
-func parseLatexCiteKeys(content string) []string {
-	return citeKeysFromOccurrences(parseLatexCitationOccurrences("", content))
-}
-
 func parseLatexCitationOccurrences(path, content string) []bibcheckOccurrence {
 	matches := latexCitationRE.FindAllStringSubmatchIndex(content, -1)
 	lines := lineStartOffsets(content)
@@ -218,11 +197,6 @@ func parseLatexCitationOccurrences(path, content string) []bibcheckOccurrence {
 		}
 	}
 	return out
-}
-
-// Parse Pandoc @citekey tokens after removing fenced and inline code.
-func parsePandocMarkdownCiteKeys(content string) []string {
-	return citeKeysFromOccurrences(parsePandocMarkdownCitationOccurrences("", content))
 }
 
 func parsePandocMarkdownCitationOccurrences(path, content string) []bibcheckOccurrence {

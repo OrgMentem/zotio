@@ -269,7 +269,7 @@ func TestOpenReadOnly_RejectsWrites(t *testing.T) {
 	}
 	rw.Close()
 
-	ro, err := OpenReadOnly(dbPath)
+	ro, err := OpenReadOnlyContext(context.Background(), dbPath)
 	if err != nil {
 		t.Fatalf("open read-only: %v", err)
 	}

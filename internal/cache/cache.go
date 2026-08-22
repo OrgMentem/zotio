@@ -54,11 +54,6 @@ func (s *Store) Set(key string, value json.RawMessage) error {
 	return cliutil.AtomicWriteFile(s.path(key), value, 0o600, 0o700)
 }
 
-// Clear removes all cached entries.
-func (s *Store) Clear() error {
-	return os.RemoveAll(s.Dir)
-}
-
 func (s *Store) path(key string) string {
 	h := sha256.Sum256([]byte(key))
 	return filepath.Join(s.Dir, hex.EncodeToString(h[:8])+".json")

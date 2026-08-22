@@ -442,25 +442,6 @@ func describeConnectorPingFailure(ctx context.Context, err error) string {
 	return fmt.Sprintf("the desktop connector on 127.0.0.1:23119 did not answer usably (%v)", err)
 }
 
-// connectorUnavailableReason names, in the operator's terms, why the desktop
-// connector cannot be used for this invocation, or "" when it is available.
-func connectorUnavailableReason(ctx context.Context, flags *rootFlags) string {
-	if flags == nil {
-		return ""
-	}
-	if strings.TrimSpace(flags.group) != "" {
-		return "the desktop connector has no group parameter, so group writes cannot use it"
-	}
-	conn, err := flags.newConnector()
-	if err != nil {
-		return "the configured base_url is not a local Zotero API, so the desktop connector is not reachable from here"
-	}
-	if err := connectorPing(ctx, conn); err != nil {
-		return describeConnectorPingFailure(ctx, err)
-	}
-	return ""
-}
-
 // storedUploadRefusalRemediation lists the routes that do reach a file store
 // other than Zotero's cloud, chosen for the reason actually being refused.
 //

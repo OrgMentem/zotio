@@ -457,10 +457,6 @@ func workflowRunStepFlagConsumesValue(command *cobra.Command, arg string) bool {
 	return false
 }
 
-func workflowRunStepIsReadOnly(args []string) bool {
-	return workflowRunStepIsReadOnlyWithRoot(RootCmd(), args)
-}
-
 func workflowRunStepIsReadOnlyWithRoot(root *cobra.Command, args []string) bool {
 	command, _, err := root.Find(workflowRunStepPositionalsWithRoot(root, args))
 	if err != nil || command == nil {
@@ -1018,13 +1014,6 @@ func workflowRunStepExecutionError(err error, stderr string) string {
 		return err.Error()
 	}
 	return fmt.Sprintf("%v: %s", err, diagnostic)
-}
-
-// executeWorkflowRunStep runs one argv in-process. A nil stdin inherits the
-// process stdin; a non-nil stdin (even empty) replaces it, so a step piped an
-// empty upstream output can never block on the terminal.
-func executeWorkflowRunStep(ctx context.Context, args []string, stdin *string) (string, string, error) {
-	return executeWorkflowRunStepWithRoot(ctx, RootCmd(), args, stdin)
 }
 
 func executeWorkflowRunStepWithRoot(ctx context.Context, root *cobra.Command, args []string, stdin *string) (string, string, error) {

@@ -579,16 +579,6 @@ func LoadProfile(profileDir string) (FileStorage, error) {
 	return fs, nil
 }
 
-// DiscoverProfileDir returns the profile discovery would read from, or "" when
-// Zotero is not installed for this user.
-func DiscoverProfileDir() (string, error) {
-	if override := strings.TrimSpace(os.Getenv(ProfileDirEnv)); override != "" {
-		return override, nil
-	}
-	_, preferred, err := discoverProfiles()
-	return preferred, err
-}
-
 // goos selects Zotero's per-platform profile layout. A package variable
 // rather than a direct runtime.GOOS reference so tests can drive the
 // Linux/Unix discovery path — including the Snap and Flatpak candidates —

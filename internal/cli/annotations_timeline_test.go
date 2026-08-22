@@ -1,8 +1,12 @@
-// Copyright 2026 OrgMentem. Licensed under MIT. See LICENSE.
+// Copyright 2026 OrgMentem and contributors. Licensed under MIT. See LICENSE.
 
 package cli
 
 import "testing"
+
+func sortFilteredAnnotations(annotations []annotationSummary) []annotationSummary {
+	return sortAnnotationsByInstantDesc(annotations)
+}
 
 func TestAnnotationsTimelineSortByParsedInstant(t *testing.T) {
 	// Chronological order, not lexical: RFC3339 strings that differ only by
@@ -16,7 +20,7 @@ func TestAnnotationsTimelineSortByParsedInstant(t *testing.T) {
 		{Key: "A", DateAdded: "2024-01-02T09:00:00Z"},
 		{Key: "B", DateAdded: "2024-01-02T10:00:00+02:00"},
 	}
-	sorted := sortFilteredAnnotationsForTest(filtered)
+	sorted := sortFilteredAnnotations(filtered)
 	if len(sorted) != 2 || sorted[0].Key != "A" || sorted[1].Key != "B" {
 		t.Fatalf("chronological sort = %v, want A then B", keysOf(sorted))
 	}
@@ -28,8 +32,7 @@ func TestAnnotationsTimelineInvalidTimestampLast(t *testing.T) {
 		{Key: "A", DateAdded: "2024-01-02T09:00:00Z"},
 		{Key: "B", DateAdded: "bad-date-2"},
 	}
-	sorted := sortFilteredAnnotationsForTest(filtered)
-	// Valid entries first (newest first), then invalid sorted by key.
+	sorted := sortFilteredAnnotations(filtered)
 	if len(sorted) != 3 || sorted[0].Key != "A" {
 		t.Fatalf("valid entries should be first, got %v", keysOf(sorted))
 	}
@@ -44,7 +47,7 @@ func TestAnnotationsTimelineStableTieBreak(t *testing.T) {
 		{Key: "A", DateAdded: "2024-01-02T09:00:00Z"},
 		{Key: "M", DateAdded: "2024-01-02T09:00:00Z"},
 	}
-	sorted := sortFilteredAnnotationsForTest(filtered)
+	sorted := sortFilteredAnnotations(filtered)
 	if sorted[0].Key != "A" || sorted[1].Key != "M" || sorted[2].Key != "Z" {
 		t.Fatalf("tie-break by key = %v, want A,M,Z", keysOf(sorted))
 	}

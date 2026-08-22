@@ -484,28 +484,6 @@ func extractPaginatedItems(obj map[string]json.RawMessage) ([]json.RawMessage, b
 	return nil, false
 }
 
-func rawAtPath(obj map[string]json.RawMessage, path string) (json.RawMessage, bool) {
-	if raw, ok := obj[path]; ok {
-		return raw, true
-	}
-
-	current := obj
-	parts := strings.Split(path, ".")
-	for i, part := range parts {
-		raw, ok := current[part]
-		if !ok {
-			return nil, false
-		}
-		if i == len(parts)-1 {
-			return raw, true
-		}
-		if err := json.Unmarshal(raw, &current); err != nil {
-			return nil, false
-		}
-	}
-	return nil, false
-}
-
 // printJSONFiltered marshals a Go-typed value through the same output
 // pipeline endpoint-mirror commands use. Hand-written novel commands that
 // build a typed slice/struct call this so --select, --compact, --csv, and
@@ -670,34 +648,6 @@ func printOutputWithFlags(w io.Writer, data json.RawMessage, flags *rootFlags) e
 		return printPlain(w, data, flags.selectFields != "")
 	}
 	return printOutput(w, data, flags.asJSON)
-}
-
-// extractResponseData unwraps common API response envelopes for display.
-// Many APIs return {"status":"success","data":[...]} instead of a bare array.
-// This extracts the inner data for output helpers (filterFields, compactFields,
-// printAutoTable) that expect arrays or flat objects.
-//
-// Only unwraps when a "status" field is present and indicates success — this
-// avoids false positives on APIs where "data" is a regular field (e.g., Stripe
-// returns {"data":[...],"has_more":true} where "data" is the list, not an
-// envelope wrapper).
-func extractResponseData(data json.RawMessage) json.RawMessage {
-	var envelope struct {
-		Status string          `json:"status"`
-		Data   json.RawMessage `json:"data"`
-	}
-	if err := json.Unmarshal(data, &envelope); err != nil {
-		return data
-	}
-	if envelope.Data == nil || envelope.Status == "" {
-		return data // No status field = not an envelope, might be regular "data" field
-	}
-	switch envelope.Status {
-	case "success", "ok", "OK", "Success":
-		return envelope.Data
-	default:
-		return data
-	}
 }
 
 // compactFields keeps only the most important fields for agent consumption.

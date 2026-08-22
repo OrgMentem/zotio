@@ -255,19 +255,19 @@ func TestSyncDoesNotSweepOnAFailedPass(t *testing.T) {
 }
 
 func TestSyncPageExtractionHelpers(t *testing.T) {
-	items, cursor, hasMore := extractPageItems(json.RawMessage(`[{"id":"a"},{"id":"b"}]`), "after")
-	if len(items) != 2 || cursor != "" || hasMore {
-		t.Fatalf("bare array extraction = len %d cursor %q hasMore %v, want len 2 empty false", len(items), cursor, hasMore)
+	items, cursor, hasMore, isPage, err := extractPageItemsWithError(json.RawMessage(`[{"id":"a"},{"id":"b"}]`), "after")
+	if len(items) != 2 || cursor != "" || hasMore || !isPage || err != nil {
+		t.Fatalf("bare array extraction = len %d cursor %q hasMore %v isPage %v err %v, want len 2 empty false true nil", len(items), cursor, hasMore, isPage, err)
 	}
 
-	items, cursor, hasMore = extractPageItems(json.RawMessage(`{"data":[{"id":"a"}],"next_cursor":"n1","has_more":true}`), "after")
-	if len(items) != 1 || cursor != "n1" || !hasMore {
-		t.Fatalf("data envelope extraction = len %d cursor %q hasMore %v, want len 1 n1 true", len(items), cursor, hasMore)
+	items, cursor, hasMore, isPage, err = extractPageItemsWithError(json.RawMessage(`{"data":[{"id":"a"}],"next_cursor":"n1","has_more":true}`), "after")
+	if len(items) != 1 || cursor != "n1" || !hasMore || !isPage || err != nil {
+		t.Fatalf("data envelope extraction = len %d cursor %q hasMore %v isPage %v err %v, want len 1 n1 true true nil", len(items), cursor, hasMore, isPage, err)
 	}
 
-	items, cursor, hasMore = extractPageItems(json.RawMessage(`{"widgets":[{"id":"a"}],"response_metadata":{"next_cursor":"nested"}}`), "after")
-	if len(items) != 1 || cursor != "nested" || !hasMore {
-		t.Fatalf("fallback envelope extraction = len %d cursor %q hasMore %v, want len 1 nested true", len(items), cursor, hasMore)
+	items, cursor, hasMore, isPage, err = extractPageItemsWithError(json.RawMessage(`{"widgets":[{"id":"a"}],"response_metadata":{"next_cursor":"nested"}}`), "after")
+	if len(items) != 1 || cursor != "nested" || !hasMore || !isPage || err != nil {
+		t.Fatalf("fallback envelope extraction = len %d cursor %q hasMore %v isPage %v err %v, want len 1 nested true true nil", len(items), cursor, hasMore, isPage, err)
 	}
 
 	envelope := map[string]json.RawMessage{

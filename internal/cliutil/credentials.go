@@ -38,6 +38,11 @@ func credentialsPath() (string, error) {
 	return filepath.Join(dir, credentialsFileName), nil
 }
 
+// CredentialsFilePath exposes the resolved credentials path to tests in other
+// packages, which must seed the real file that LoadCredentials reads. It is not
+// test-file-scoped because package cli's tests call it, and Go has no
+// cross-package test-only export. Production code resolves the path through the
+// unexported credentialsPath instead.
 func CredentialsFilePath() (string, error) {
 	return credentialsPath()
 }

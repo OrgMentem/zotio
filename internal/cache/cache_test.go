@@ -9,7 +9,7 @@ import (
 	"time"
 )
 
-func TestStoreSetGetClear(t *testing.T) {
+func TestStoreSetGet(t *testing.T) {
 	store := New(t.TempDir(), time.Hour)
 	value := json.RawMessage(`{"ok":true,"n":2}`)
 
@@ -25,13 +25,6 @@ func TestStoreSetGetClear(t *testing.T) {
 	}
 	if _, ok := store.Get("GET /items?limit=2"); ok {
 		t.Fatal("Get for a different key returned the stored value")
-	}
-
-	if err := store.Clear(); err != nil {
-		t.Fatalf("Clear: %v", err)
-	}
-	if _, ok := store.Get("GET /items?limit=1"); ok {
-		t.Fatal("Get found value after Clear")
 	}
 }
 

@@ -236,18 +236,25 @@ func TestCacheKeyDeterministicAndVaries(t *testing.T) {
 	}
 }
 
-func TestReadWriteCacheHonorsFreshness(t *testing.T) {
+func TestReadCacheHonorsFreshness(t *testing.T) {
 	c := clientTestNewClient(t, "http://example.test")
 	c.cacheDir = t.TempDir()
 	params := map[string]string{"q": "cache"}
 	want := []byte(`{"cached":true}`)
 
-	if err := c.writeCache("/items", params, nil, want); err != nil {
-		t.Fatalf("writeCache: %v", err)
+	// writeCache was a deleted wrapper around writeCacheAtGeneration; this
+	// test now drives the live atom directly so the freshness assertions
+	// defend real behavior.
+	gen, err := c.cacheGenerationSnapshot()
+	if err != nil {
+		t.Fatalf("cacheGenerationSnapshot: %v", err)
+	}
+	if err := c.writeCacheAtGeneration(gen, "/items", params, nil, want); err != nil {
+		t.Fatalf("writeCacheAtGeneration: %v", err)
 	}
 	got, ok := c.readCache("/items", params, nil)
 	if !ok {
-		t.Fatal("readCache missed immediately after writeCache")
+		t.Fatal("readCache missed immediately after writeCacheAtGeneration")
 	}
 	if !bytes.Equal(got, want) {
 		t.Fatalf("cached body = %s, want %s", got, want)

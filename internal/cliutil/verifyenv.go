@@ -50,13 +50,13 @@ func IsVerifyEnv() bool {
 //
 // The client uses this gate as:
 //
-//	if !readOnlyIntent && isMutatingVerb(method) && cliutil.IsVerifyEnv() && !cliutil.IsVerifyLiveHTTPEnv() {
+//	if isMutatingVerb(method) && cliutil.IsVerifyEnv() && !cliutil.IsVerifyLiveHTTPEnv() {
 //	    // synthetic envelope, no network call
 //	}
 //
-// readOnlyIntent is set by Client.doRead() callers (the PostQuery* family used
-// for read-only operations on mutating verbs — GraphQL queries, JSON-RPC reads,
-// POST-based search).
+// Read-only operations on POST-backed search, GraphQL, or JSON-RPC
+// endpoints must not be routed through that gate — they do not mutate
+// remote state and must dial even under verify mode.
 func IsVerifyLiveHTTPEnv() bool {
 	return os.Getenv(VerifyLiveHTTPEnvVar) == "1"
 }

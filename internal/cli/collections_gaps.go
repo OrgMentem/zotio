@@ -87,11 +87,6 @@ func newCollectionsGapsCmd(flags *rootFlags) *cobra.Command {
 }
 
 // aggregate references, exclude whole-library DOI holdings, and rank missing cited DOIs.
-func buildCollectionGapsReport(ctx context.Context, db localQueryStore, httpClient *http.Client, collectionKey string, limit int, top int) (collectionGapsReport, error) {
-	return buildCollectionGapsReportWithCache(ctx, db, httpClient, nil, collectionKey, limit, top)
-}
-
-// aggregate references, exclude whole-library DOI holdings, and rank missing cited DOIs.
 func buildCollectionGapsReportWithCache(ctx context.Context, db localQueryStore, httpClient *http.Client, providerCache *providerJSONCache, collectionKey string, limit int, top int) (collectionGapsReport, error) {
 	items, err := queryCollectionGapItems(db, collectionKey, limit)
 	if err != nil {
@@ -194,15 +189,6 @@ WHERE resource_type = 'items'
 		}
 	}
 	return out, nil
-}
-
-// prefer OpenCitations COCI references and fall back to Semantic Scholar when COCI is empty or unavailable.
-func fetchOutgoingReferenceDOIs(ctx context.Context, httpClient *http.Client, doi string) ([]string, map[string]string, error) {
-	refs, err := fetchOutgoingReferences(ctx, httpClient, doi, referenceFetchOptions{})
-	if err != nil {
-		return nil, nil, err
-	}
-	return refs.DOIs, refs.Titles, nil
 }
 
 type cociReference struct {

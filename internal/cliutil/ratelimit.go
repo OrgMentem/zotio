@@ -4,8 +4,6 @@ package cliutil
 
 import (
 	"context"
-	"fmt"
-	"math"
 	"net/http"
 	"strconv"
 	"strings"
@@ -201,17 +199,6 @@ type rateLimitError struct {
 	Body       string
 }
 
-func (e *rateLimitError) Error() string {
-	msg := fmt.Sprintf("rate limited: HTTP 429 for %s", e.URL)
-	if e.RetryAfter > 0 {
-		msg += fmt.Sprintf("; retry after %s", e.RetryAfter)
-	}
-	if body := strings.TrimSpace(e.Body); body != "" {
-		msg += ": " + body
-	}
-	return msg
-}
-
 // MaxRetryWait caps the wait derived from a Retry-After header so a buggy
 // or hostile upstream cannot pin a CLI for hours.
 const MaxRetryWait = 60 * time.Second
@@ -285,15 +272,3 @@ func retryAfterEpochWait(value int64) time.Duration {
 // MaxBackoff caps Backoff so tests stay bounded. Callers needing jitter
 // add their own; the bare exponential keeps the contract deterministic.
 const MaxBackoff = 30 * time.Second
-
-// Backoff returns 2^attempt seconds capped at MaxBackoff.
-func Backoff(attempt int) time.Duration {
-	if attempt < 0 {
-		attempt = 0
-	}
-	wait := time.Duration(math.Pow(2, float64(attempt))) * time.Second
-	if wait > MaxBackoff {
-		return MaxBackoff
-	}
-	return wait
-}

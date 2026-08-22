@@ -182,8 +182,3 @@ func sortAnnotationsByInstantDesc(annotations []annotationSummary) []annotationS
 	}
 	return sorted
 }
-
-// sortFilteredAnnotationsForTest exposes the timeline ordering to tests.
-func sortFilteredAnnotationsForTest(annotations []annotationSummary) []annotationSummary {
-	return sortAnnotationsByInstantDesc(annotations)
-}

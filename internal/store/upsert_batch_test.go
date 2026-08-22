@@ -16,7 +16,7 @@ import (
 
 // TestStoreWrite_NoSQLITE_BUSY_HighConcurrency exercises the writeMu serialization
 // guarantee: 16 fetcher-style goroutines hammer the store with a mix of
-// UpsertBatch, SaveSyncState, and SaveSyncCursor calls. Before the mutex
+// UpsertBatch and SaveSyncState calls. Before the mutex
 // fix, this test reproduces SQLITE_BUSY at default sync concurrency on
 // pure-Go SQLite (modernc.org/sqlite + WAL) because multiple writers
 // race for the WAL lock and busy_timeout retries are not exhaustive.
@@ -34,7 +34,7 @@ func TestStoreWrite_NoSQLITE_BUSY_HighConcurrency(t *testing.T) {
 	const itemsPerBatch = 5
 
 	var wg sync.WaitGroup
-	errCh := make(chan error, goroutines*3)
+	errCh := make(chan error, goroutines*2)
 
 	for g := 0; g < goroutines; g++ {
 		wg.Add(1)
@@ -51,10 +51,6 @@ func TestStoreWrite_NoSQLITE_BUSY_HighConcurrency(t *testing.T) {
 			}
 			if err := s.SaveSyncState(rt, fmt.Sprintf("cursor-%d", gid), itemsPerBatch); err != nil {
 				errCh <- fmt.Errorf("SaveSyncState goroutine %d: %w", gid, err)
-				return
-			}
-			if err := s.SaveSyncCursor(rt, fmt.Sprintf("cursor2-%d", gid)); err != nil {
-				errCh <- fmt.Errorf("SaveSyncCursor goroutine %d: %w", gid, err)
 				return
 			}
 		}(g)

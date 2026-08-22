@@ -29,8 +29,8 @@ const (
 	PathKindCache
 )
 
-// pathHomeOverride holds the --home flag value. SetHomeOverride writes
-// it once at command init; the MCP server's request handlers resolve
+// pathHomeOverride holds the --home flag value. It is set
+// once at command init; the MCP server's request handlers resolve
 // paths concurrently through ResolveKindDir, so access is guarded.
 var (
 	pathHomeOverrideMu sync.RWMutex
@@ -51,39 +51,6 @@ type PathResolution struct {
 type PathIgnoredOverride struct {
 	Name  string
 	Value string
-}
-
-func SetHomeOverride(path string) (func(), error) {
-	path = strings.TrimSpace(path)
-	if path == "" {
-		return setHomeOverride(""), nil
-	}
-	clean, ok := CleanPathOverride(path)
-	if !ok {
-		return nil, fmt.Errorf("invalid --home %q: path must be absolute", path)
-	}
-	if info, err := os.Stat(clean); err == nil {
-		if !info.IsDir() {
-			return nil, fmt.Errorf("--home %q: not a directory", clean)
-		}
-	} else if !errors.Is(err, os.ErrNotExist) {
-		return nil, fmt.Errorf("checking --home %q: %w", clean, err)
-	}
-	return setHomeOverride(clean), nil
-}
-
-// setHomeOverride swaps in value under lock and returns a restore
-// function that reinstates the prior value (also under lock).
-func setHomeOverride(value string) func() {
-	pathHomeOverrideMu.Lock()
-	previous := pathHomeOverride
-	pathHomeOverride = value
-	pathHomeOverrideMu.Unlock()
-	return func() {
-		pathHomeOverrideMu.Lock()
-		pathHomeOverride = previous
-		pathHomeOverrideMu.Unlock()
-	}
 }
 
 func homeOverride() string {

@@ -392,14 +392,6 @@ func (c *Client) cacheGenerationSnapshot() (cacheGenerationToken, error) {
 	return cacheGenerationToken{memory: c.cacheGeneration, marker: marker}, nil
 }
 
-func (c *Client) writeCache(path string, params map[string]string, headers map[string]string, data json.RawMessage) error {
-	generation, err := c.cacheGenerationSnapshot()
-	if err != nil {
-		return err
-	}
-	return c.writeCacheAtGeneration(generation, path, params, headers, data)
-}
-
 func (c *Client) acquireCachePublicationLock(operation string, wait time.Duration) (*cliutil.WriterLock, error) {
 	deadline := time.Now().Add(wait)
 	for {
@@ -958,14 +950,6 @@ func (c *Client) do(ctx context.Context, method, path string, params map[string]
 	if isMutatingVerb(method) && cliutil.IsVerifyEnv() && !cliutil.IsVerifyLiveHTTPEnv() {
 		return verifyShortCircuitEnvelope(method, path), http.StatusOK, nil
 	}
-	respBody, status, _, err := c.doRequest(ctx, method, path, params, body, headerOverrides)
-	return respBody, status, err
-}
-
-// doRead is do() without the verify-mode mutating-verb gate, for read-only
-// operations that ride a mutating verb on the wire (POST-based search,
-// GraphQL queries, JSON-RPC reads).
-func (c *Client) doRead(ctx context.Context, method, path string, params map[string]string, body any, headerOverrides map[string]string) (json.RawMessage, int, error) {
 	respBody, status, _, err := c.doRequest(ctx, method, path, params, body, headerOverrides)
 	return respBody, status, err
 }

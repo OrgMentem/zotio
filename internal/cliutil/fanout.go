@@ -10,8 +10,6 @@ package cliutil
 import (
 	"context"
 	"fmt"
-	"io"
-	"strings"
 	"sync"
 )
 
@@ -41,18 +39,6 @@ type fanoutOptions struct {
 // WithConcurrency option. 4 matches the existing sync.go worker-pool idiom
 // and is safe for scraping CLIs where per-host 429 pressure is real.
 const defaultFanoutConcurrency = 4
-
-// WithConcurrency overrides the default worker count for a single FanoutRun
-// call. Use higher values for fan-outs without external rate limits; keep
-// the default (4) for scraping CLIs. Values below 1 are clamped to 1.
-func WithConcurrency(n int) FanoutOption {
-	return func(o *fanoutOptions) {
-		if n < 1 {
-			n = 1
-		}
-		o.concurrency = n
-	}
-}
 
 // FanoutRun invokes fn concurrently for each source and collects successful
 // results plus per-source errors. It never returns a top-level error and
@@ -169,33 +155,4 @@ func FanoutRun[S, T any](
 		}
 	}
 	return results, errs
-}
-
-// FanoutReportErrors writes one warning line per FanoutError to w in source
-// order. Format: "warn: <source>: <short-error>\n" where <short-error> is
-// the error's first line truncated to 120 chars. No-op when errs is empty.
-//
-// Call this after FanoutRun so partial failures never get silently dropped
-// — the warning surface is the whole reason for the helper.
-func FanoutReportErrors(w io.Writer, errs []FanoutError) {
-	for _, e := range errs {
-		fmt.Fprintf(w, "warn: %s: %s\n", e.Source, shortFanoutErr(e.Err))
-	}
-}
-
-// shortFanoutErr condenses an error to a single-line reason string for
-// stderr display alongside many sources.
-func shortFanoutErr(err error) string {
-	if err == nil {
-		return ""
-	}
-	s := err.Error()
-	if i := strings.Index(s, "\n"); i >= 0 {
-		s = s[:i]
-	}
-	const max = 120
-	if len(s) > max {
-		s = s[:max] + "…"
-	}
-	return s
 }

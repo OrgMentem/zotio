@@ -1005,7 +1005,7 @@ func TestWriteThroughCacheStoresKeyedDetailResponse(t *testing.T) {
 
 	writeThroughCache(context.Background(), "items", payload)
 
-	db, err := store.OpenReadOnly(helpersTestDefaultDBPath(t, "zotio"))
+	db, err := store.OpenReadOnlyContext(context.Background(), helpersTestDefaultDBPath(t, "zotio"))
 	if err != nil {
 		t.Fatalf("open cached store: %v", err)
 	}

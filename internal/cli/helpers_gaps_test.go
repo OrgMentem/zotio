@@ -377,12 +377,6 @@ func TestHelpersPaginationExtraction(t *testing.T) {
 	if !ok || len(items) != 2 || string(items[1]) != `{"id":2}` {
 		t.Fatalf("extractPaginatedItems results = %v, %t; want two items", items, ok)
 	}
-	if raw, ok := rawAtPath(obj, "meta.next.cursor"); !ok || string(raw) != `"abc"` {
-		t.Fatalf("rawAtPath nested cursor = %s, %t; want abc", string(raw), ok)
-	}
-	if raw, ok := rawAtPath(obj, "meta.missing.cursor"); ok || raw != nil {
-		t.Fatalf("rawAtPath missing = %s, %t; want nil,false", string(raw), ok)
-	}
 
 	singleArrayObj := map[string]json.RawMessage{"payload": json.RawMessage(`[{"only":true}]`), "count": json.RawMessage(`1`)}
 	items, ok = extractPaginatedItems(singleArrayObj)
@@ -506,9 +500,6 @@ func TestHelpersFilterFields(t *testing.T) {
 func TestHelpersCompactExtractAndFormat(t *testing.T) {
 	helpersTestAssertJSONEqual(t, compactFields(json.RawMessage(`[{"id":"1","name":"Paper","description":"long","body":"long","unknown":"drop"}]`)), `[{"id":"1","name":"Paper"}]`)
 	helpersTestAssertJSONEqual(t, compactFields(json.RawMessage(`{"id":"1","description":"long","body":"long","comments":[1],"name":"Paper"}`)), `{"id":"1","name":"Paper"}`)
-
-	helpersTestAssertJSONEqual(t, extractResponseData(json.RawMessage(`{"status":"success","data":[{"id":1}]}`)), `[{"id":1}]`)
-	helpersTestAssertJSONEqual(t, extractResponseData(json.RawMessage(`{"data":[{"id":1}],"has_more":true}`)), `{"data":[{"id":1}],"has_more":true}`)
 
 	formatTests := []struct {
 		name string

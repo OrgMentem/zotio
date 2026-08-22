@@ -704,11 +704,6 @@ func resolveEnrichment(ctx context.Context, httpClient *http.Client, category, k
 	return enrichProposal{}, "unknown category"
 }
 
-// Return typed mutation statuses; details travel as result reasons.
-func applyEnrichProposal(c apiMutator, p *enrichProposal, flags *rootFlags) (string, any, error) {
-	return applyEnrichProposalWithContext(context.Background(), enrichPDFDownloaderFactory(http.DefaultClient), c, p, flags)
-}
-
 func applyEnrichProposalWithContext(ctx context.Context, downloader enrichPDFDownloader, c apiMutator, p *enrichProposal, flags *rootFlags) (string, any, error) {
 	switch p.Action {
 	case enrichActionPatch:
@@ -1119,10 +1114,6 @@ func validateEnrichPDFContentType(raw string) error {
 	default:
 		return fmt.Errorf("refusing downloaded PDF with Content-Type %q", mediaType)
 	}
-}
-
-func downloadEnrichPDF(ctx context.Context, httpClient *http.Client, rawURL, destPath string, maxBytes int64) error {
-	return enrichPDFDownloaderFactory(httpClient).download(ctx, rawURL, destPath, maxBytes)
 }
 
 func writePDFResponse(body io.Reader, destPath string, maxBytes int64) error {

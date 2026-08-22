@@ -3,14 +3,11 @@
 package cliutil
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"fmt"
 	"net/http"
-	"net/http/httptest"
 	"strings"
-	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -19,70 +16,6 @@ import (
 
 // ---- CleanText ----
 
-func TestCleanText(t *testing.T) {
-	cases := []struct {
-		name string
-		in   string
-		want string
-	}{
-		{"decodes numeric entity", "The Food Lab&#39;s Cookie", "The Food Lab's Cookie"},
-		{"decodes named entity", "AT&amp;T", "AT&T"},
-		{"trims whitespace", "  Chicken Tikka  ", "Chicken Tikka"},
-		{"empty input", "", ""},
-		{"plain passthrough", "Already clean.", "Already clean."},
-		// Single-pass unescape contract: nested &amp;amp; decodes once to &amp;
-		// but the inner &amp; stays encoded. If a caller needs repeated
-		// unescaping they have a deeper upstream problem.
-		{"single pass on nested entity", "&amp;amp;", "&amp;"},
-	}
-	for _, tc := range cases {
-		tc := tc
-		t.Run(tc.name, func(t *testing.T) {
-			if got := cleanText(tc.in); got != tc.want {
-				t.Errorf("cleanText(%q) = %q, want %q", tc.in, got, tc.want)
-			}
-		})
-	}
-}
-
-func TestParseStoredTime(t *testing.T) {
-	cases := []struct {
-		name string
-		in   string
-		want time.Time
-	}{
-		{
-			name: "rfc3339 nano",
-			in:   "2026-04-21T09:02:49.123456789-07:00",
-			want: time.Date(2026, 4, 21, 9, 2, 49, 123456789, time.FixedZone("", -7*60*60)),
-		},
-		{
-			name: "modernc go string",
-			in:   "2026-04-21 09:02:49.123456789 -0700 PDT",
-			want: time.Date(2026, 4, 21, 9, 2, 49, 123456789, time.FixedZone("PDT", -7*60*60)),
-		},
-		{
-			name: "blank",
-			in:   "",
-			want: time.Time{},
-		},
-		{
-			name: "invalid",
-			in:   "not a time",
-			want: time.Time{},
-		},
-	}
-	for _, tc := range cases {
-		tc := tc
-		t.Run(tc.name, func(t *testing.T) {
-			got := parseStoredTime(tc.in)
-			if !got.Equal(tc.want) {
-				t.Fatalf("parseStoredTime(%q) = %s, want %s", tc.in, got, tc.want)
-			}
-		})
-	}
-}
-
 func TestAuthErrorHelpers(t *testing.T) {
 	if !LooksLikeAuthError("HTTP 400: missing api_key") {
 		t.Fatal("expected missing api_key to look like an auth error")
@@ -90,13 +23,7 @@ func TestAuthErrorHelpers(t *testing.T) {
 	if LooksLikeAuthError("HTTP 400: malformed page number") {
 		t.Fatal("unexpected auth classification for non-auth message")
 	}
-
-	got := SanitizeErrorBody("token sk-abcdefghi Bearer abc.def key=secretvalue")
-	if got != "token [REDACTED] [REDACTED] [REDACTED]" {
-		t.Fatalf("SanitizeErrorBody redaction = %q", got)
-	}
 }
-
 func TestSanitizeErrorBodyWithSecrets(t *testing.T) {
 	straddlingSecret := "abcd12345678xyz"
 	straddlingInput := strings.Repeat("x", 195) + straddlingSecret + " tail"
@@ -187,16 +114,6 @@ func TestSanitizeErrorBodyWithSecrets(t *testing.T) {
 	}
 }
 
-func TestSanitizeErrorBodyMatchesSecretAwareVariantWithoutExplicitSecrets(t *testing.T) {
-	in := "token sk-abcdefghi Bearer abc.def key=secretvalue"
-	if got, want := SanitizeErrorBody(in), SanitizeErrorBodyWithSecrets(in); got != want {
-		t.Fatalf("SanitizeErrorBody() = %q, SanitizeErrorBodyWithSecrets() = %q", got, want)
-	}
-}
-
-// The cap is a byte count, so a multi-byte character sitting across it used to
-// be cut in half and emitted as a replacement char once the message was
-// JSON-encoded into --json output.
 func TestSanitizeErrorBodyTruncatesOnRuneBoundaries(t *testing.T) {
 	got := SanitizeErrorBodyWithSecrets(strings.Repeat("x", 199) + "é" + strings.Repeat("y", 20))
 	if !utf8.ValidString(got) {
@@ -285,61 +202,6 @@ func TestFanoutRunCancelledBeforeStart(t *testing.T) {
 	}
 }
 
-func TestFanoutRunBoundedConcurrency(t *testing.T) {
-	// Atomic counter wraps fn to verify max concurrent executions never
-	// exceeds WithConcurrency(n). Directly tests the bounded-channel
-	// contract without relying on runtime.NumGoroutine (too noisy).
-	//
-	// A sync.WaitGroup inside fn blocks each worker until concurrency-many
-	// workers have entered fn, guaranteeing the overlap needed to observe
-	// the max-inflight bound. A busy-wait would be flaky on fast or loaded
-	// hardware; the WaitGroup-based barrier makes the overlap deterministic.
-	var inflight int64
-	var maxInflight int64
-	var barrier sync.WaitGroup
-	barrier.Add(4) // require all 4 workers at the barrier before proceeding
-
-	sources := make([]int, 100)
-	for i := range sources {
-		sources[i] = i
-	}
-	// Only the first 4 calls participate in the barrier so the test doesn't
-	// deadlock — remaining 96 just run normally and contribute to max-inflight
-	// observations.
-	var gated int64
-
-	_, errs := FanoutRun(context.Background(), sources,
-		func(i int) string { return fmt.Sprintf("src-%d", i) },
-		func(_ context.Context, _ int) (struct{}, error) {
-			cur := atomic.AddInt64(&inflight, 1)
-			for {
-				m := atomic.LoadInt64(&maxInflight)
-				if cur <= m || atomic.CompareAndSwapInt64(&maxInflight, m, cur) {
-					break
-				}
-			}
-			if atomic.AddInt64(&gated, 1) <= 4 {
-				barrier.Done()
-				barrier.Wait()
-			}
-			atomic.AddInt64(&inflight, -1)
-			return struct{}{}, nil
-		},
-		WithConcurrency(4),
-	)
-	if len(errs) != 0 {
-		t.Fatalf("unexpected errors: %+v", errs)
-	}
-	if maxInflight > 4 {
-		t.Errorf("max in-flight = %d, want <= 4", maxInflight)
-	}
-	if maxInflight < 4 {
-		// Barrier forces all 4 workers into fn simultaneously. If this
-		// assertion ever fails the bounded-channel contract is broken.
-		t.Errorf("max in-flight = %d, want = 4 (barrier guarantees all 4 workers reach fn together)", maxInflight)
-	}
-}
-
 func TestFanoutRunEmptySources(t *testing.T) {
 	results, errs := FanoutRun(context.Background(), []string{},
 		func(s string) string { return s },
@@ -375,24 +237,6 @@ func TestFanoutRunAllFail(t *testing.T) {
 	}
 }
 
-func TestFanoutRunWithConcurrencyClampsZero(t *testing.T) {
-	// WithConcurrency(0) and WithConcurrency(-1) must clamp to 1, not deadlock.
-	for _, n := range []int{0, -1, -100} {
-		sources := []string{"a", "b"}
-		results, errs := FanoutRun(context.Background(), sources,
-			func(s string) string { return s },
-			func(_ context.Context, s string) (string, error) { return s, nil },
-			WithConcurrency(n),
-		)
-		if len(results) != 2 {
-			t.Errorf("WithConcurrency(%d): want 2 results, got %d", n, len(results))
-		}
-		if len(errs) != 0 {
-			t.Errorf("WithConcurrency(%d): unexpected errors: %+v", n, errs)
-		}
-	}
-}
-
 func TestFanoutRunRecoversPanic(t *testing.T) {
 	// An fn that panics must not crash the process. The panicking source
 	// gets a FanoutError; other sources complete normally.
@@ -415,7 +259,7 @@ func TestFanoutRunRecoversPanic(t *testing.T) {
 	if errs[0].Source != "panic" {
 		t.Errorf("panic error source = %q, want panic", errs[0].Source)
 	}
-	if errs[0].Err == nil || !containsString(errs[0].Err.Error(), "oops") {
+	if errs[0].Err == nil || !strings.Contains(errs[0].Err.Error(), "oops") {
 		t.Errorf("want panic error mentioning 'oops', got %v", errs[0].Err)
 	}
 }
@@ -466,276 +310,6 @@ func TestFanoutRunCancelMidFlight(t *testing.T) {
 		}
 	}
 }
-
-// containsString is a tiny strings.Contains alias so the test file only
-// imports the stdlib packages it otherwise uses.
-func containsString(haystack, needle string) bool {
-	for i := 0; i+len(needle) <= len(haystack); i++ {
-		if haystack[i:i+len(needle)] == needle {
-			return true
-		}
-	}
-	return false
-}
-
-func TestFanoutRunSerialWithConcurrency1(t *testing.T) {
-	// Serial execution: completion order must equal source order because
-	// there's only one worker. Double-checks the source-order contract.
-	sources := []string{"a", "b", "c"}
-	var completionOrder []string
-	var mu sync.Mutex
-
-	results, _ := FanoutRun(context.Background(), sources,
-		func(s string) string { return s },
-		func(_ context.Context, s string) (string, error) {
-			mu.Lock()
-			completionOrder = append(completionOrder, s)
-			mu.Unlock()
-			return s, nil
-		},
-		WithConcurrency(1),
-	)
-	for i, r := range results {
-		if r.Source != sources[i] {
-			t.Errorf("results[%d].Source = %q, want %q", i, r.Source, sources[i])
-		}
-	}
-	for i, s := range completionOrder {
-		if s != sources[i] {
-			t.Errorf("serial completion order[%d] = %q, want %q", i, s, sources[i])
-		}
-	}
-}
-
-// ---- FanoutReportErrors ----
-
-func TestFanoutReportErrorsOrder(t *testing.T) {
-	errs := []FanoutError{
-		{Source: "alpha", Err: errors.New("boom")},
-		{Source: "beta", Err: errors.New("crash\nsecond line")},
-	}
-	var buf bytes.Buffer
-	FanoutReportErrors(&buf, errs)
-	want := "warn: alpha: boom\nwarn: beta: crash\n"
-	if got := buf.String(); got != want {
-		t.Errorf("output mismatch.\n got: %q\nwant: %q", got, want)
-	}
-}
-
-func TestFanoutReportErrorsEmpty(t *testing.T) {
-	var buf bytes.Buffer
-	FanoutReportErrors(&buf, nil)
-	if buf.Len() != 0 {
-		t.Errorf("expected no output for empty errs, got %q", buf.String())
-	}
-}
-
-func TestFanoutReportErrorsTruncates(t *testing.T) {
-	// A long single-line error gets truncated to 120 chars + ellipsis so
-	// stderr stays scan-able when 14 sources all fail with verbose messages.
-	longMsg := ""
-	for i := 0; i < 200; i++ {
-		longMsg += "x"
-	}
-	errs := []FanoutError{
-		{Source: "verbose", Err: errors.New(longMsg)},
-	}
-	var buf bytes.Buffer
-	FanoutReportErrors(&buf, errs)
-	out := buf.String()
-	// "warn: verbose: " is 15 chars; body must be 120 chars + "…" + "\n"
-	if !containsString(out, "…") {
-		t.Errorf("expected truncation ellipsis in output, got %q", out)
-	}
-	if len(out) > 160 {
-		t.Errorf("truncated line should be ~140 chars, got %d (%q)", len(out), out)
-	}
-}
-
-// ---- ProbeReachable ----
-
-// TestProbeReachable_200 asserts that a plain 2xx GET is classified
-// reachable with the right code.
-func TestProbeReachable_200(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte("hello"))
-	}))
-	defer srv.Close()
-
-	status, code, err := ProbeReachable(context.Background(), srv.Client(), srv.URL)
-	if err != nil {
-		t.Fatalf("unexpected err: %v", err)
-	}
-	if status != ReachabilityReachable {
-		t.Errorf("status: want %q, got %q", ReachabilityReachable, status)
-	}
-	if code != 200 {
-		t.Errorf("code: want 200, got %d", code)
-	}
-}
-
-// TestProbeReachable_206_Reachable asserts hosts that honor Range
-// (returning 206 Partial Content) are classified reachable.
-func TestProbeReachable_206_Reachable(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusPartialContent)
-	}))
-	defer srv.Close()
-
-	status, code, err := ProbeReachable(context.Background(), srv.Client(), srv.URL)
-	if err != nil {
-		t.Fatalf("unexpected err: %v", err)
-	}
-	if status != ReachabilityReachable {
-		t.Errorf("status: want reachable, got %q", status)
-	}
-	if code != 206 {
-		t.Errorf("code: want 206, got %d", code)
-	}
-}
-
-// TestProbeReachable_416_Reachable asserts hosts that don't support
-// Range (returning 416 Range Not Satisfiable) are still reachable —
-// the headers came back, the host is up. This is the F4 motivating
-// case: HEAD-then-GET probes incorrectly report unreachable here.
-func TestProbeReachable_416_Reachable(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusRequestedRangeNotSatisfiable)
-	}))
-	defer srv.Close()
-
-	status, code, err := ProbeReachable(context.Background(), srv.Client(), srv.URL)
-	if err != nil {
-		t.Fatalf("unexpected err: %v", err)
-	}
-	if status != ReachabilityReachable {
-		t.Errorf("status: want reachable (416 means headers came back), got %q", status)
-	}
-	if code != 416 {
-		t.Errorf("code: want 416, got %d", code)
-	}
-}
-
-// TestProbeReachable_403_Blocked asserts CDN bot screens (4xx other
-// than 416) are classified blocked, not unreachable. The host is up
-// and refusing this request — a doctor command should render WARN
-// rather than FAIL.
-func TestProbeReachable_403_Blocked(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusForbidden)
-	}))
-	defer srv.Close()
-
-	status, code, err := ProbeReachable(context.Background(), srv.Client(), srv.URL)
-	if err != nil {
-		t.Fatalf("unexpected err: %v", err)
-	}
-	if status != ReachabilityBlocked {
-		t.Errorf("status: want blocked, got %q", status)
-	}
-	if code != 403 {
-		t.Errorf("code: want 403, got %d", code)
-	}
-}
-
-// TestProbeReachable_NetworkError_Unreachable asserts network-layer
-// failures (DNS, connection refused, timeout) report unreachable with
-// a non-nil err.
-func TestProbeReachable_NetworkError_Unreachable(t *testing.T) {
-	// Use a port that nothing is listening on.
-	status, code, err := ProbeReachable(context.Background(), http.DefaultClient, "http://127.0.0.1:1")
-	if err == nil {
-		t.Fatal("expected non-nil err for unreachable host")
-	}
-	if status != ReachabilityUnreachable {
-		t.Errorf("status: want unreachable, got %q", status)
-	}
-	if code != 0 {
-		t.Errorf("code: want 0 (no response), got %d", code)
-	}
-}
-
-// TestProbeReachable_NilClient_UsesDefault confirms the nil-client
-// guard so doctor commands don't have to plumb an explicit *http.Client
-// when default behavior is fine.
-func TestProbeReachable_NilClient_UsesDefault(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK)
-	}))
-	defer srv.Close()
-
-	status, _, err := ProbeReachable(context.Background(), nil, srv.URL)
-	if err != nil {
-		t.Fatalf("unexpected err: %v", err)
-	}
-	if status != ReachabilityReachable {
-		t.Errorf("status: want reachable, got %q", status)
-	}
-}
-
-// TestProbeReachable_NilClient_HasTimeout asserts the nil-client
-// fallback uses a bounded-timeout client rather than http.DefaultClient
-// (which has no timeout). Without this, a probe against a slow host
-// could hang indefinitely. The test starts a server that hangs forever
-// and relies on the default 10s timeout to bail out — capped to 12s
-// total so a regression that drops the timeout would surface as a
-// test failure rather than a hung test.
-func TestProbeReachable_NilClient_HasTimeout(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skip slow timeout test in -short mode")
-	}
-	hang := make(chan struct{})
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		<-hang // never returns until t.Cleanup closes it
-	}))
-	t.Cleanup(func() {
-		close(hang)
-		srv.Close()
-	})
-
-	done := make(chan struct{})
-	var status string
-	var probeErr error
-	go func() {
-		status, _, probeErr = ProbeReachable(context.Background(), nil, srv.URL)
-		close(done)
-	}()
-	select {
-	case <-done:
-		// Probe returned within the bounded timeout — expected.
-		if probeErr == nil {
-			t.Fatalf("expected timeout err, got nil")
-		}
-		if status != ReachabilityUnreachable {
-			t.Errorf("status: want unreachable on timeout, got %q", status)
-		}
-	case <-time.After(12 * time.Second):
-		t.Fatalf("ProbeReachable hung past defaultProbeTimeout — nil-client fallback may be missing its bounded-timeout guard")
-	}
-}
-
-// TestProbeReachable_SendsRangeHeader confirms the probe sends
-// `Range: bytes=0-1023` so hosts that support Range bound the
-// response body before we even read it.
-func TestProbeReachable_SendsRangeHeader(t *testing.T) {
-	var receivedRange string
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		receivedRange = r.Header.Get("Range")
-		w.WriteHeader(http.StatusOK)
-	}))
-	defer srv.Close()
-
-	_, _, err := ProbeReachable(context.Background(), srv.Client(), srv.URL)
-	if err != nil {
-		t.Fatalf("unexpected err: %v", err)
-	}
-	if receivedRange != "bytes=0-1023" {
-		t.Errorf("Range header: want %q, got %q", "bytes=0-1023", receivedRange)
-	}
-}
-
-// ---- AdaptiveLimiter / RateLimitError / RetryAfter / Backoff ----
 
 func TestAdaptiveLimiter_NewNilOnNonPositive(t *testing.T) {
 	if NewAdaptiveLimiter(0) != nil {
@@ -795,53 +369,6 @@ func TestAdaptiveLimiter_WaitEnforcesPacing(t *testing.T) {
 	elapsed := time.Since(start)
 	if elapsed < 80*time.Millisecond {
 		t.Errorf("second Wait() took %v, want >= 80ms", elapsed)
-	}
-}
-
-func TestRateLimitError_ErrorMessage(t *testing.T) {
-	cases := []struct {
-		name string
-		err  *rateLimitError
-		want string
-	}{
-		{
-			name: "with retry-after and body",
-			err:  &rateLimitError{URL: "https://api.example.com/x", RetryAfter: 5 * time.Second, Body: "slow down"},
-			want: "rate limited: HTTP 429 for https://api.example.com/x; retry after 5s: slow down",
-		},
-		{
-			name: "with retry-after no body",
-			err:  &rateLimitError{URL: "https://api.example.com/x", RetryAfter: 2 * time.Second},
-			want: "rate limited: HTTP 429 for https://api.example.com/x; retry after 2s",
-		},
-		{
-			name: "no retry-after with body",
-			err:  &rateLimitError{URL: "https://api.example.com/x", Body: "later"},
-			want: "rate limited: HTTP 429 for https://api.example.com/x: later",
-		},
-		{
-			name: "no retry-after no body",
-			err:  &rateLimitError{URL: "https://api.example.com/x"},
-			want: "rate limited: HTTP 429 for https://api.example.com/x",
-		},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			if got := tc.err.Error(); got != tc.want {
-				t.Errorf("Error() = %q, want %q", got, tc.want)
-			}
-		})
-	}
-}
-
-func TestRateLimitError_ErrorsAs(t *testing.T) {
-	var err error = &rateLimitError{URL: "https://x", RetryAfter: time.Second}
-	var target *rateLimitError
-	if !errors.As(err, &target) {
-		t.Fatal("errors.As should match *RateLimitError")
-	}
-	if target.URL != "https://x" {
-		t.Errorf("target.URL = %q, want %q", target.URL, "https://x")
 	}
 }
 
@@ -915,35 +442,5 @@ func TestRetryAfter_MalformedFallsBackToDefault(t *testing.T) {
 func TestRetryAfter_NilResp(t *testing.T) {
 	if got := RetryAfter(nil); got != 5*time.Second {
 		t.Errorf("RetryAfter(nil) = %v, want 5s default", got)
-	}
-}
-
-func TestBackoff_DoublesPerAttempt(t *testing.T) {
-	cases := []struct {
-		attempt int
-		want    time.Duration
-	}{
-		{0, 1 * time.Second},
-		{1, 2 * time.Second},
-		{2, 4 * time.Second},
-		{3, 8 * time.Second},
-		{4, 16 * time.Second},
-	}
-	for _, tc := range cases {
-		if got := Backoff(tc.attempt); got != tc.want {
-			t.Errorf("Backoff(%d) = %v, want %v", tc.attempt, got, tc.want)
-		}
-	}
-}
-
-func TestBackoff_CapsAtMax(t *testing.T) {
-	if got := Backoff(20); got != MaxBackoff {
-		t.Errorf("Backoff(20) = %v, want capped at %v", got, MaxBackoff)
-	}
-}
-
-func TestBackoff_NegativeAttemptClampsToZero(t *testing.T) {
-	if got := Backoff(-3); got != 1*time.Second {
-		t.Errorf("Backoff(-3) = %v, want 1s (clamped to 0)", got)
 	}
 }

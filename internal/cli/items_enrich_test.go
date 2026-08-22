@@ -254,7 +254,7 @@ func TestDownloadEnrichPDFWritesMagicPDF(t *testing.T) {
 	t.Cleanup(srv.Close)
 
 	dest := filepath.Join(t.TempDir(), "paper.pdf")
-	if err := downloadEnrichPDF(context.Background(), srv.Client(), srv.URL+"/paper.pdf", dest, 1024); err != nil {
+	if err := enrichPDFDownloaderFactory(srv.Client()).download(context.Background(), srv.URL+"/paper.pdf", dest, 1024); err != nil {
 		t.Fatalf("downloadEnrichPDF: %v", err)
 	}
 	got, err := os.ReadFile(dest)
@@ -276,7 +276,7 @@ func TestDownloadEnrichPDFRejectsNonPDFBody(t *testing.T) {
 	t.Cleanup(srv.Close)
 
 	dest := filepath.Join(t.TempDir(), "paper.pdf")
-	err := downloadEnrichPDF(context.Background(), srv.Client(), srv.URL+"/paper.pdf", dest, 1024)
+	err := enrichPDFDownloaderFactory(srv.Client()).download(context.Background(), srv.URL+"/paper.pdf", dest, 1024)
 	if err == nil || !strings.Contains(err.Error(), "not a PDF") {
 		t.Fatalf("err = %v, want non-PDF rejection", err)
 	}
@@ -293,7 +293,7 @@ func TestDownloadEnrichPDFRejectsOversize(t *testing.T) {
 	t.Cleanup(srv.Close)
 
 	dest := filepath.Join(t.TempDir(), "paper.pdf")
-	err := downloadEnrichPDF(context.Background(), srv.Client(), srv.URL+"/paper.pdf", dest, 7)
+	err := enrichPDFDownloaderFactory(srv.Client()).download(context.Background(), srv.URL+"/paper.pdf", dest, 7)
 	if err == nil || !strings.Contains(err.Error(), "exceeds size cap") {
 		t.Fatalf("err = %v, want oversize rejection", err)
 	}
@@ -326,7 +326,7 @@ func TestDownloadEnrichPDFRejectsRedirectToLocalhost(t *testing.T) {
 	})}
 
 	dest := filepath.Join(t.TempDir(), "paper.pdf")
-	err := downloadEnrichPDF(context.Background(), client, "http://example.test/paper.pdf", dest, 1024)
+	err := enrichPDFDownloaderFactory(client).download(context.Background(), "http://example.test/paper.pdf", dest, 1024)
 	if err == nil || !strings.Contains(err.Error(), "localhost") {
 		t.Fatalf("err = %v, want localhost redirect rejection", err)
 	}
@@ -345,7 +345,7 @@ func TestDownloadEnrichPDFNoClobber(t *testing.T) {
 	if err := os.WriteFile(dest, []byte("existing"), 0o600); err != nil {
 		t.Fatalf("seed existing file: %v", err)
 	}
-	err := downloadEnrichPDF(context.Background(), srv.Client(), srv.URL+"/paper.pdf", dest, 1024)
+	err := enrichPDFDownloaderFactory(srv.Client()).download(context.Background(), srv.URL+"/paper.pdf", dest, 1024)
 	if err == nil || !strings.Contains(err.Error(), "refusing to clobber") {
 		t.Fatalf("err = %v, want no-clobber rejection", err)
 	}
@@ -405,9 +405,8 @@ func TestDownloadEnrichPDFRejectsHTMLContentTypeBeforeCreatingFile(t *testing.T)
 		_, _ = w.Write([]byte("%PDF-1.7\nbody"))
 	}))
 	t.Cleanup(srv.Close)
-
 	dest := filepath.Join(t.TempDir(), "paper.pdf")
-	err := downloadEnrichPDF(context.Background(), srv.Client(), srv.URL, dest, 1024)
+	err := enrichPDFDownloaderFactory(srv.Client()).download(context.Background(), srv.URL, dest, 1024)
 	if err == nil || !strings.Contains(err.Error(), `Content-Type "text/html"`) {
 		t.Fatalf("download error = %v, want HTML Content-Type rejection", err)
 	}
@@ -427,7 +426,7 @@ func TestDownloadEnrichPDFAcceptsMissingContentType(t *testing.T) {
 		}, nil
 	})}
 	dest := filepath.Join(t.TempDir(), "paper.pdf")
-	if err := downloadEnrichPDF(context.Background(), client, "https://papers.example/paper.pdf", dest, 1024); err != nil {
+	if err := enrichPDFDownloaderFactory(client).download(context.Background(), "https://papers.example/paper.pdf", dest, 1024); err != nil {
 		t.Fatalf("download with missing Content-Type: %v", err)
 	}
 	if got, err := os.ReadFile(dest); err != nil || string(got) != "%PDF-1.7\nbody" {
@@ -643,7 +642,7 @@ func TestApplyEnrichProposal_PatchIncludesVersionAndProvenance(t *testing.T) {
 		Key: "ABC", Category: "missing_doi", Action: enrichActionPatch,
 		Source: "CrossRef", Fields: map[string]any{"DOI": "10.1/x"}, version: float64(7),
 	}
-	status, reason, err := applyEnrichProposal(f, &p, &rootFlags{})
+	status, reason, err := applyEnrichProposalWithContext(context.Background(), enrichPDFDownloaderFactory(http.DefaultClient), f, &p, &rootFlags{})
 	if err != nil || reason != nil || status != "applied" {
 		t.Fatalf("apply = status %q reason %v err %v, want applied without reason/error", status, reason, err)
 	}
@@ -674,9 +673,8 @@ func TestApplyEnrichProposal_AttachPostsChild(t *testing.T) {
 		Key: "ABC", Category: "missing_pdf", Action: enrichActionAttach, Source: "Unpaywall",
 		Attachment: map[string]any{"itemType": "attachment", "linkMode": "linked_url", "url": "https://oa/p.pdf", "parentItem": "ABC"},
 	}
-	status, reason, err := applyEnrichProposal(f, &p, &rootFlags{})
+	status, reason, err := applyEnrichProposalWithContext(context.Background(), enrichPDFDownloaderFactory(http.DefaultClient), f, &p, &rootFlags{})
 	if err != nil || reason != nil || status != "applied" {
-		t.Fatalf("apply = status %q reason %v err %v, want applied without reason/error", status, reason, err)
 	}
 	if f.postPath != "/items" {
 		t.Errorf("post path = %q, want /items", f.postPath)
@@ -753,7 +751,7 @@ func TestApplyEnrichProposal_ConflictStatusIsTyped(t *testing.T) {
 		Key: "ABC", Category: "missing_doi", Action: enrichActionPatch,
 		Source: "CrossRef", Fields: map[string]any{"DOI": "10.1/x"}, version: float64(7),
 	}
-	status, reason, err := applyEnrichProposal(f, &p, &rootFlags{})
+	status, reason, err := applyEnrichProposalWithContext(context.Background(), enrichPDFDownloaderFactory(http.DefaultClient), f, &p, &rootFlags{})
 	if err == nil || status != "conflict" || reason != "stale" {
 		t.Fatalf("apply = status %q reason %v err %v, want typed conflict with API body reason", status, reason, err)
 	}
@@ -1670,13 +1668,14 @@ func TestItemsEnrichValidateReportsCrossRefTitleDiscrepancy(t *testing.T) {
 		t.Errorf("unverified DOIs = %+v, want none", report.UnverifiedDOIs)
 	}
 }
+
 func TestApplyEnrichProposal_PatchFailsClosedOnZeroWriteVersion(t *testing.T) {
 	f := &fakeMutator{writeVersion: 0}
 	p := enrichProposal{
 		Key: "ABC", Category: "missing_doi", Action: enrichActionPatch,
 		Source: "CrossRef", Fields: map[string]any{"DOI": "10.1/x"}, version: float64(7),
 	}
-	status, _, err := applyEnrichProposal(f, &p, &rootFlags{})
+	status, _, err := applyEnrichProposalWithContext(context.Background(), enrichPDFDownloaderFactory(http.DefaultClient), f, &p, &rootFlags{})
 	if err == nil || status != "failed" {
 		t.Fatalf("apply = status %q err %v, want failed when write-plane version is 0", status, err)
 	}

@@ -34,11 +34,7 @@ func resetCredentialEnv(t *testing.T) (home, configPath string) {
 	} {
 		t.Setenv(name, "")
 	}
-	if restore, err := cliutil.SetHomeOverride(""); err == nil {
-		t.Cleanup(restore)
-	} else {
-		t.Fatalf("reset home override: %v", err)
-	}
+	// home override is cleared via environment isolation; no SetHomeOverride shim remains.
 	return home, filepath.Join(home, ".config", "zotio", "config.toml")
 }
 

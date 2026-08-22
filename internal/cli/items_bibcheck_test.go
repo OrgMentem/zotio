@@ -35,8 +35,8 @@ Wildcard-only nocite is ignored: \nocite{*}; real nocite stays: \nocite{iota}.
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := parseLatexCiteKeys(tc.content); !reflect.DeepEqual(got, tc.want) {
-				t.Fatalf("parseLatexCiteKeys() = %#v, want %#v", got, tc.want)
+			if got := citeKeysFromOccurrences(parseLatexCitationOccurrences("", tc.content)); !reflect.DeepEqual(got, tc.want) {
+				t.Fatalf("parseLatexCitationOccurrences() = %#v, want %#v", got, tc.want)
 			}
 		})
 	}
@@ -61,8 +61,8 @@ func TestBibcheckParsePandocMarkdownCiteKeys(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := parsePandocMarkdownCiteKeys(tc.content); !reflect.DeepEqual(got, tc.want) {
-				t.Fatalf("parsePandocMarkdownCiteKeys() = %#v, want %#v", got, tc.want)
+			if got := citeKeysFromOccurrences(parsePandocMarkdownCitationOccurrences("", tc.content)); !reflect.DeepEqual(got, tc.want) {
+				t.Fatalf("parsePandocMarkdownCitationOccurrences() = %#v, want %#v", got, tc.want)
 			}
 		})
 	}
@@ -71,13 +71,13 @@ func TestBibcheckParsePandocMarkdownCiteKeys(t *testing.T) {
 func TestBibcheckUnsupportedExtensionIsUsageError(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "paper.rst")
 	writeTestFile(t, path, "@alpha")
-	_, _, err := parseManuscriptCiteKeys(path)
+	_, _, err := parseManuscriptCitationOccurrences(path)
 	if err == nil {
-		t.Fatal("parseManuscriptCiteKeys(.rst) returned nil error, want usage error")
+		t.Fatal("parseManuscriptCitationOccurrences(.rst) returned nil error, want usage error")
 	}
 	var cliErr *cliError
 	if !errors.As(err, &cliErr) || cliErr.code != 2 {
-		t.Fatalf("parseManuscriptCiteKeys(.rst) error = %T %[1]v, want usage error code 2", err)
+		t.Fatalf("parseManuscriptCitationOccurrences(.rst) error = %T %[1]v, want usage error code 2", err)
 	}
 }
 
@@ -409,15 +409,23 @@ func writeTestFile(t *testing.T, path, content string) {
 }
 func TestBibcheckUnmatchedBacktickDoesNotDropTrailingCitations(t *testing.T) {
 	content := "Text `unclosed and @hidden should still count\nNext line @visible also counts."
-	got := parsePandocMarkdownCiteKeys(content)
+	got := citeKeysFromOccurrences(parsePandocMarkdownCitationOccurrences("", content))
 	want := []string{"hidden", "visible"}
 	// Before fix, stripMarkdownInlineCode broke on unmatched `, discarding rest of line.
 	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("parsePandocMarkdownCiteKeys() = %#v, want %#v (unmatched backtick must not drop citekeys)", got, want)
+		t.Fatalf("citeKeysFromOccurrences(parsePandocMarkdownCitationOccurrences()) = %#v, want %#v (unmatched backtick must not drop citekeys)", got, want)
 	}
 	// Also verify strip helper directly preserves remainder.
 	stripped := stripMarkdownInlineCode("a `unclosed and @alpha rest")
 	if !strings.Contains(stripped, "@alpha") {
 		t.Fatalf("stripMarkdownInlineCode(%q) = %q, want remainder preserved including @alpha", "a `unclosed and @alpha rest", stripped)
 	}
+}
+
+func citeKeysFromOccurrences(occurrences []bibcheckOccurrence) []string {
+	keys := make([]string, 0, len(occurrences))
+	for _, occurrence := range occurrences {
+		keys = append(keys, occurrence.CiteKey)
+	}
+	return keys
 }

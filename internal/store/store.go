@@ -49,28 +49,6 @@ type Store struct {
 	path    string
 }
 
-// OpenReadOnly opens an existing SQLite store at dbPath in read-only mode.
-// mode=ro rejects direct and CTE-wrapped writes (INSERT, UPDATE, DELETE,
-// REPLACE, "WITH x AS (...) INSERT ...") at the driver level. Skips
-// MkdirAll and migrate; the file is expected to exist.
-//
-// The file: URI prefix is load-bearing: modernc.org/sqlite only honors
-// SQLite's URI query parameters (mode, cache, etc.) when the DSN starts
-// with "file:". Without the prefix, "?mode=ro" is silently dropped and
-// the connection opens read-write.
-//
-// Pragmas must use the driver's _pragma(name(value)) form. The
-// mattn/go-sqlite3 shorthand this DSN used to carry (_journal_mode,
-// _busy_timeout, ...) does not exist in the pinned driver, which ignores
-// unknown underscore keys instead of rejecting them, and SQLite then drops
-// them again as unrecognized URI params. Every pragma was silently lost:
-// the store ran in rollback-journal mode with busy_timeout 0. See
-// TestOpenInstallsTheDSNPragmas, which asserts live state rather than
-// trusting the DSN string.
-func OpenReadOnly(dbPath string) (*Store, error) {
-	return OpenReadOnlyContext(context.Background(), dbPath)
-}
-
 // OpenReadOnlyContext opens a ready SQLite store without ever migrating it.
 // A first sync or migration publishes the required schema transactionally, so
 // a concurrent reader can briefly see the prior (missing or old) schema. It
@@ -168,13 +146,6 @@ func readOnlyProbeBusyTimeout(ctx context.Context) time.Duration {
 		return readOnlyReadinessTimeout
 	}
 	return min(time.Until(deadline), readOnlyReadinessTimeout)
-}
-
-// Open opens or creates the SQLite store at dbPath using a background
-// context. Thin wrapper over OpenWithContext for callers without a
-// cancellable context.
-func Open(dbPath string) (*Store, error) {
-	return OpenWithContext(context.Background(), dbPath)
 }
 
 // OpenWithContext opens or creates the SQLite store at dbPath. The
@@ -1713,19 +1684,6 @@ func (s *Store) ClearResourceVersions(resourceType string) error {
 		 WHERE resource_type = ?
 		   AND json_extract(data, '$.version') IS NOT NULL`,
 		resourceType,
-	)
-	return err
-}
-
-// SaveSyncCursor stores the pagination cursor for a resource type.
-func (s *Store) SaveSyncCursor(resourceType, cursor string) error {
-	s.writeMu.Lock()
-	defer s.writeMu.Unlock()
-	_, err := s.db.Exec(
-		`INSERT INTO sync_state (resource_type, last_cursor, last_synced_at, total_count)
-		 VALUES (?, ?, CURRENT_TIMESTAMP, 0)
-		 ON CONFLICT(resource_type) DO UPDATE SET last_cursor = ?, last_synced_at = CURRENT_TIMESTAMP`,
-		resourceType, cursor, cursor,
 	)
 	return err
 }

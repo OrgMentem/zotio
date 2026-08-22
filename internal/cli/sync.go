@@ -992,14 +992,6 @@ func determineSinceParam() string {
 	return "since"
 }
 
-// extractPageItems preserves the legacy helper API for non-sync consumers.
-// Sync callers use extractPageItemsWithError so malformed responses cannot be
-// mistaken for singleton records.
-func extractPageItems(data json.RawMessage, cursorParam string) ([]json.RawMessage, string, bool) {
-	items, cursor, hasMore, _, _ := extractPageItemsWithError(data, cursorParam)
-	return items, cursor, hasMore
-}
-
 // extractPageItemsWithError extracts a collection page and distinguishes it
 // from a validated singleton object. isPage is true for direct arrays and
 // recognized pagination envelopes, including empty envelopes.
