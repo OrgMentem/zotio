@@ -288,6 +288,17 @@ func (f *reparentFake) server(t *testing.T) *httptest.Server {
 					"itemType": "attachment", "linkMode": "imported_url",
 					"parentItem": f.tempParentKey,
 				}
+			} else if path == f.strandedParentKey && f.strandedParentKey != "" {
+				data = map[string]any{
+					"itemType":     "document",
+					"title":        "Real Paper",
+					"abstractNote": connectorTempParentMarker("deadbeefdeadbeef", "TARGET01"),
+				}
+			} else if path == "STRANDED1" {
+				data = map[string]any{
+					"itemType": "attachment", "linkMode": "imported_url",
+					"parentItem": f.strandedParentKey,
+				}
 			} else if path == f.tempParentKey {
 				// Carry the real marker: identity checks must pass for the item
 				// this run created, and only for it.
@@ -928,5 +939,101 @@ func TestConnectorRouteWaiverIsScoped(t *testing.T) {
 				t.Errorf("usesConnectorReparentRoute(%q, via=%q) = %v, want %v", tc.mode, tc.via, got, tc.want)
 			}
 		})
+	}
+}
+
+// TestConnectorReparentEmitsAnExplicitAttachmentKey pins a consumer contract
+// papio depends on. It prefers detail.attachment_key and falls back to item_key;
+// if a fallback key could ever name the TARGET, papio would record an item as
+// its own attachment. So the attachment key is emitted explicitly, on both the
+// applied and the no-op paths.
+func TestConnectorReparentEmitsAnExplicitAttachmentKey(t *testing.T) {
+	t.Run("applied", func(t *testing.T) {
+		fake := &reparentFake{tempParentKey: "TEMP0001", attachChildren: []string{"ATTACH01"}}
+		srv := fake.server(t)
+		flags := reparentFlags(t, srv)
+		c, _ := flags.newWriteClient()
+
+		_, detail, err := applyConnectorReparentUpload(context.Background(), reparentCmd(t), flags, c, reparentRequest(t, "TARGET01"))
+		if err != nil {
+			t.Fatalf("route failed: %v", err)
+		}
+		m, _ := detail.(map[string]any)
+		if m["attachment_key"] != "ATTACH01" {
+			t.Errorf("attachment_key = %v, want ATTACH01", m["attachment_key"])
+		}
+		if m["attachment_key"] == m["parent_key"] {
+			t.Error("attachment_key equals parent_key: a consumer would record the item as its own attachment")
+		}
+	})
+
+	t.Run("no_op", func(t *testing.T) {
+		req := reparentRequest(t, "TARGET01")
+		fake := &reparentFake{
+			tempParentKey:  "TEMP0001",
+			attachChildren: []string{"ATTACH01"},
+			childrenOfTarget: []map[string]any{{
+				"key": "EXISTING1",
+				"data": map[string]any{
+					"key": "EXISTING1", "itemType": "attachment",
+					"linkMode": "imported_url", "md5": req.MD5,
+				},
+			}},
+		}
+		srv := fake.server(t)
+		flags := reparentFlags(t, srv)
+		c, _ := flags.newWriteClient()
+
+		status, detail, err := applyConnectorReparentUpload(context.Background(), reparentCmd(t), flags, c, req)
+		if err != nil || status != "no_op" {
+			t.Fatalf("status=%q err=%v, want no_op", status, err)
+		}
+		m, _ := detail.(map[string]any)
+		if m["attachment_key"] != "EXISTING1" {
+			t.Errorf("attachment_key = %v, want EXISTING1 on the no-op too", m["attachment_key"])
+		}
+	})
+}
+
+// TestConnectorReparentResumesAnInterruptedRun covers the case papio asked the
+// reviewers to consider: it kills zotio at a 120s deadline, so a run can die
+// between the connector save and the move. That leaves a temporary parent
+// holding real bytes. Content-hash reconciliation against the TARGET cannot see
+// them, because they are attached to the orphan — so without adoption every
+// retry would create another temporary parent and another copy.
+func TestConnectorReparentResumesAnInterruptedRun(t *testing.T) {
+	req := reparentRequest(t, "TARGET01")
+	fake := &reparentFake{
+		tempParentKey:     "TEMP0001",
+		attachChildren:    []string{"ATTACH01"},
+		strandedParentKey: "ORPHAN01",
+		strandedChildMD5:  req.MD5,
+	}
+	srv := fake.server(t)
+	flags := reparentFlags(t, srv)
+	c, _ := flags.newWriteClient()
+
+	status, detail, err := applyConnectorReparentUpload(context.Background(), reparentCmd(t), flags, c, req)
+	if err != nil {
+		t.Fatalf("route failed: %v", err)
+	}
+	if status != "applied" {
+		t.Fatalf("status = %q, want applied: the orphan's file is moved, not re-created", status)
+	}
+	m, _ := detail.(map[string]any)
+	if m["resumed"] != true {
+		t.Errorf("detail = %v, want resumed=true", m)
+	}
+	if m["attachment_key"] != "STRANDED1" {
+		t.Errorf("attachment_key = %v, want the orphan's existing child STRANDED1", m["attachment_key"])
+	}
+	if m["temp_parent_key"] != "ORPHAN01" {
+		t.Errorf("temp_parent_key = %v, want the adopted orphan", m["temp_parent_key"])
+	}
+	// The decisive assertion: nothing new was created.
+	for _, call := range fake.sequence() {
+		if strings.HasPrefix(call, "connector.") {
+			t.Errorf("called %s: a resumed run must not create a second parent or copy", call)
+		}
 	}
 }

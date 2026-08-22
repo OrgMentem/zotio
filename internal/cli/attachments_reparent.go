@@ -167,9 +167,15 @@ func applyConnectorReparentUpload(ctx context.Context, cmd *cobra.Command, flags
 	}
 	if existing != "" {
 		return "no_op", map[string]any{
-			"item_key": existing,
-			"via":      "connector",
-			"note":     "an attachment with identical content is already on this item",
+			// attachment_key names the child that holds the file, explicitly.
+			// item_key is kept for symmetry with the Web route, but a consumer
+			// should prefer attachment_key: it can never be mistaken for the
+			// target item, which would record an item as its own attachment.
+			"attachment_key": existing,
+			"item_key":       existing,
+			"parent_key":     req.ParentKey,
+			"via":            "connector",
+			"note":           "an attachment with identical content is already on this item",
 		}, nil
 	}
 
@@ -192,7 +198,14 @@ func applyConnectorReparentUpload(ctx context.Context, cmd *cobra.Command, flags
 		detail["temp_parent_title"] = sanitizeForTerminal(out.TempTitle)
 	}
 	if out.AttachmentKey != "" {
+		// Emitted explicitly and named unambiguously, so a consumer never has to
+		// fall back to a key whose meaning depends on which branch produced it.
+		detail["attachment_key"] = out.AttachmentKey
 		detail["item_key"] = out.AttachmentKey
+	}
+	if out.Resumed {
+		detail["resumed"] = true
+		detail["note"] = "adopted a temporary parent left by an interrupted run instead of creating another"
 	}
 	if err != nil {
 		// The detail map carries everything needed to finish by hand, including
