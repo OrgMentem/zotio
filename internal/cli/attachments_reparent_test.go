@@ -1094,3 +1094,101 @@ func TestConnectorReparentToleratesAFreshlyCreatedTarget(t *testing.T) {
 		t.Errorf("target reads = %d, want more than the 2 that 404ed", fake.targetGets)
 	}
 }
+
+// TestConfirmConnectorCreatePollsForItsKey covers a defect papio reported and
+// this session reproduced: `items create --via connector` returned key null on a
+// successful apply. SaveItems had already committed, so the item existed; it had
+// simply not surfaced in /items/top yet, and the recovery looked exactly once.
+//
+// A consumer that treats an empty key as a failed apply re-derives the write and
+// duplicates the item, so the one-shot lookup was a duplicate generator.
+func TestConfirmConnectorCreatePollsForItsKey(t *testing.T) {
+	oldWindow, oldInterval := connectorCreateRecoveryWindow, connectorCreateRecoveryInterval
+	connectorCreateRecoveryWindow, connectorCreateRecoveryInterval = 2*time.Second, time.Millisecond
+	t.Cleanup(func() {
+		connectorCreateRecoveryWindow, connectorCreateRecoveryInterval = oldWindow, oldInterval
+	})
+
+	var gets int
+	mux := http.NewServeMux()
+	mux.HandleFunc("/users/0/items/top", func(w http.ResponseWriter, _ *http.Request) {
+		gets++
+		w.Header().Set("Last-Modified-Version", "1")
+		if gets <= 2 {
+			// Not surfaced yet: exactly what produced the empty key.
+			_, _ = w.Write([]byte(`[]`))
+			return
+		}
+		added := time.Now().UTC().Format("2006-01-02T15:04:05Z")
+		_ = json.NewEncoder(w).Encode([]map[string]any{{
+			"key":       "LATEKEY1",
+			"title":     "Delayed Item",
+			"itemType":  "document",
+			"dateAdded": added,
+			"data": map[string]any{
+				"key": "LATEKEY1", "title": "Delayed Item",
+				"itemType": "document", "dateAdded": added,
+			},
+		}})
+	})
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+
+	flags := &rootFlags{configPath: testConfigFile(t, srv.URL+"/users/0"), timeout: 5 * time.Second}
+	item := map[string]any{"title": "Delayed Item", "itemType": "document"}
+
+	key, matched, err := confirmConnectorCreate(flags, item, time.Now().Add(-time.Minute))
+	if err != nil {
+		t.Fatalf("confirmConnectorCreate: %v", err)
+	}
+	if key != "LATEKEY1" || matched != 1 {
+		t.Fatalf("key=%q matched=%d, want LATEKEY1/1 after the item surfaced", key, matched)
+	}
+	if gets <= 2 {
+		t.Errorf("lookups = %d, want more than the 2 that returned empty", gets)
+	}
+}
+
+// TestConfirmConnectorCreateDoesNotRetryAmbiguity pins that ambiguity returns at
+// once. More than one match will not resolve itself, and waiting only delays a
+// refusal that is already correct.
+func TestConfirmConnectorCreateDoesNotRetryAmbiguity(t *testing.T) {
+	oldWindow, oldInterval := connectorCreateRecoveryWindow, connectorCreateRecoveryInterval
+	connectorCreateRecoveryWindow, connectorCreateRecoveryInterval = time.Minute, 50*time.Millisecond
+	t.Cleanup(func() {
+		connectorCreateRecoveryWindow, connectorCreateRecoveryInterval = oldWindow, oldInterval
+	})
+
+	var gets int
+	mux := http.NewServeMux()
+	mux.HandleFunc("/users/0/items/top", func(w http.ResponseWriter, _ *http.Request) {
+		gets++
+		w.Header().Set("Last-Modified-Version", "1")
+		added := time.Now().UTC().Format("2006-01-02T15:04:05Z")
+		row := func(k string) map[string]any {
+			return map[string]any{
+				"key": k, "title": "Twin", "itemType": "document", "dateAdded": added,
+				"data": map[string]any{"key": k, "title": "Twin", "itemType": "document", "dateAdded": added},
+			}
+		}
+		_ = json.NewEncoder(w).Encode([]map[string]any{row("TWIN0001"), row("TWIN0002")})
+	})
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+
+	flags := &rootFlags{configPath: testConfigFile(t, srv.URL+"/users/0"), timeout: 5 * time.Second}
+	start := time.Now()
+	key, matched, err := confirmConnectorCreate(flags, map[string]any{"title": "Twin", "itemType": "document"}, time.Now().Add(-time.Minute))
+	if err != nil {
+		t.Fatalf("confirmConnectorCreate: %v", err)
+	}
+	if key != "" || matched != 2 {
+		t.Fatalf("key=%q matched=%d, want no key and 2 matches", key, matched)
+	}
+	if gets != 1 {
+		t.Errorf("lookups = %d, want exactly 1: ambiguity must not be retried", gets)
+	}
+	if elapsed := time.Since(start); elapsed > 5*time.Second {
+		t.Errorf("took %s: ambiguity must return at once", elapsed)
+	}
+}

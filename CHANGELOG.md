@@ -2,6 +2,21 @@
 
 Notable changes to zotio. Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow [SemVer](https://semver.org/).
 
+## [0.20.1] — 2026-08-23
+
+### Fixed
+
+- **A connector create no longer reports an empty key for a write that
+  succeeded.** `items create --via connector`, and every command that routes
+  through it, recovered the new item's key with a single `/items/top` lookup.
+  Zotero's `saveItems` has already committed by then, so the item exists — a
+  miss means it has not surfaced in that list yet, and the one-shot lookup
+  reported no key for a create that worked. A consumer that reads an empty key
+  as a failed apply then re-derives the write and creates the item twice; papio
+  reported exactly that duplicate risk. The recovery now polls within a bounded
+  window. Ambiguity is deliberately not retried: more than one match will not
+  resolve itself, so the refusal to guess is returned on the first lookup.
+
 ## [0.20.0] — 2026-08-23
 
 ### Added
@@ -1878,7 +1893,8 @@ First tagged release: the trust-and-automation layer for Zotero.
 - **Onboarding** — `zotio init` guided setup (Zotero detection, local API, key, first sync, health check).
 - Release engineering: goreleaser builds for 6 platforms, cosign-signed checksums, SBOMs, Homebrew tap.
 
-[Unreleased]: https://github.com/OrgMentem/zotio/compare/v0.20.0...HEAD
+[Unreleased]: https://github.com/OrgMentem/zotio/compare/v0.20.1...HEAD
+[0.20.1]: https://github.com/OrgMentem/zotio/compare/v0.20.0...v0.20.1
 [0.20.0]: https://github.com/OrgMentem/zotio/compare/v0.19.0...v0.20.0
 [0.19.0]: https://github.com/OrgMentem/zotio/compare/v0.18.0...v0.19.0
 [0.18.0]: https://github.com/OrgMentem/zotio/compare/v0.17.0...v0.18.0

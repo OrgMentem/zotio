@@ -290,8 +290,34 @@ func confirmConnectorCreate(flags *rootFlags, item map[string]any, createdAfter 
 	if err != nil {
 		return "", 0, err
 	}
-	return findRecentlyAddedItemKey(c, title, itemType, createdAfter)
+	// Poll rather than look once. SaveItems already succeeded, so the item
+	// EXISTS; a miss here means it has not surfaced in /items/top yet. A single
+	// lookup therefore reports "no key" for a create that worked, and a caller
+	// that treats an empty key as a failed apply can re-derive the write and
+	// duplicate the item. Reported by papio, and reproduced here.
+	//
+	// Ambiguity is NOT retried: more than one match will not resolve itself, and
+	// waiting only delays a refusal that is already correct.
+	deadline := time.Now().Add(connectorCreateRecoveryWindow)
+	for {
+		key, matched, err := findRecentlyAddedItemKey(c, title, itemType, createdAfter)
+		if err != nil || key != "" || matched > 1 || time.Now().After(deadline) {
+			return key, matched, err
+		}
+		if err := sleepWithContext(context.Background(), connectorCreateRecoveryInterval); err != nil {
+			return "", 0, err
+		}
+	}
 }
+
+// connectorCreateRecoveryWindow bounds the wait for a connector-created item to
+// surface on the plane this process reads. The desktop commits immediately, but
+// the item still has to appear in /items/top.
+var connectorCreateRecoveryWindow = 30 * time.Second
+
+// connectorCreateRecoveryInterval paces that wait. Both are vars so tests can
+// exercise the loop without spending real seconds in it.
+var connectorCreateRecoveryInterval = 2 * time.Second
 
 // attachResolverPDF adds an open-access PDF to a connector-created item when
 // Zotero reports an attachment resolver for the same save session.
