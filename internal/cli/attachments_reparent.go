@@ -231,7 +231,7 @@ func runConnectorReparent(ctx context.Context, cmd *cobra.Command, flags *rootFl
 	// Confirm the destination before creating anything. Zotero rejects an
 	// attachment whose parent is itself a child item, and discovering that after
 	// the connector has already written the file would leave an orphan.
-	targetTitle, err := verifyReparentTarget(webClient, req.ParentKey)
+	targetTitle, err := verifyReparentTarget(ctx, webClient, req.ParentKey)
 	if err != nil {
 		return out, err
 	}
@@ -541,14 +541,32 @@ func localClientForRoute(ctx context.Context, flags *rootFlags) (*client.Client,
 // verifyReparentTarget checks the destination can legally hold an attachment and
 // returns its title. Zotero requires a regular item: an attachment cannot parent
 // another, and only embedded-image attachments may have child parents.
-func verifyReparentTarget(c *client.Client, parentKey string) (string, error) {
-	body, _, err := c.GetWithVersion("/items/"+parentKey, nil)
-	if err != nil {
-		var respErr *client.APIError
-		if errors.As(err, &respErr) && respErr.StatusCode == http.StatusNotFound {
-			return "", notFoundErr(fmt.Errorf("target item %s not found", parentKey))
+//
+// A 404 here is polled, not fatal. The obvious caller creates an item and
+// attaches its PDF straight afterwards, and an item created through the desktop
+// connector takes 15-20s to reach the write plane — so the first read of a
+// brand-new target legitimately misses. Failing immediately made
+// create-then-attach unusable, which is exactly the shape a downstream consumer
+// uses; found by smoke-testing the release binary against a real library.
+func verifyReparentTarget(ctx context.Context, c *client.Client, parentKey string) (string, error) {
+	var body json.RawMessage
+	deadline := pollDeadline(ctx)
+	for {
+		var err error
+		body, _, err = c.GetWithVersion("/items/"+parentKey, nil)
+		if err == nil {
+			break
 		}
-		return "", fmt.Errorf("reading target item %s: %w", parentKey, err)
+		if !isNotFoundOrLag(err) {
+			return "", fmt.Errorf("reading target item %s: %w", parentKey, err)
+		}
+		if time.Now().After(deadline) {
+			return "", notFoundErr(fmt.Errorf("target item %s did not appear on the write plane within %s; "+
+				"if it was just created, it is still propagating", parentKey, connectorReparentVisibilityTimeout))
+		}
+		if err := sleepWithContext(ctx, connectorReparentPollInterval); err != nil {
+			return "", err
+		}
 	}
 	var envelope struct {
 		Data struct {
@@ -828,9 +846,16 @@ func findAttachmentByMD5(c *client.Client, parentKey, md5hex string) (string, er
 	}
 	rows, err := attachmentChildRows(c, parentKey)
 	if err != nil {
+		// A 404 means the target is not visible on this plane YET, which is the
+		// normal state of an item created through the connector seconds ago. It
+		// cannot have an attachment carrying our hash, so report "none" and let
+		// verifyReparentTarget — which polls — decide whether the item really is
+		// missing. Treating it as fatal here broke create-then-attach, the exact
+		// shape a consumer uses, and no unit test caught it because both fakes
+		// serve the target immediately.
 		var cliErr *cliError
 		if errors.As(err, &cliErr) {
-			return "", notFoundErr(fmt.Errorf("target item %s not found", parentKey))
+			return "", nil
 		}
 		return "", err
 	}

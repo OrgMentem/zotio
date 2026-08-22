@@ -73,6 +73,10 @@ type reparentFake struct {
 	strandedChildMD5 string
 	// blockUntilCancelled makes item reads hang so a deadline can be exercised.
 	blockUntilCancelled bool
+	// targetVisibleAfter makes the target 404 for its first N reads, as a
+	// connector-created item does until it reaches the write plane.
+	targetVisibleAfter int
+	targetGets         int
 	// targetGainsMD5After makes the target acquire targetGainedMD5 after N
 	// children reads, simulating another run winning mid-route.
 	targetGainsMD5After int
@@ -188,6 +192,19 @@ func (f *reparentFake) server(t *testing.T) *httptest.Server {
 		switch {
 		case strings.HasSuffix(path, "/children"):
 			key := strings.TrimSuffix(path, "/children")
+			if key == "TARGET01" && f.targetVisibleAfter > 0 {
+				f.mu.Lock()
+				f.targetGets++
+				seen := f.targetGets
+				f.mu.Unlock()
+				if seen <= f.targetVisibleAfter {
+					// A target that has not propagated 404s on its children too,
+					// not just on itself.
+					w.WriteHeader(http.StatusNotFound)
+					_, _ = w.Write([]byte(`{"message":"Not found"}`))
+					return
+				}
+			}
 			if key == f.strandedParentKey && f.strandedParentKey != "" {
 				_ = json.NewEncoder(w).Encode([]map[string]any{{
 					"key":     "STRANDED1",
@@ -268,6 +285,17 @@ func (f *reparentFake) server(t *testing.T) *httptest.Server {
 			return
 
 		case r.Method == http.MethodGet:
+			if path == "TARGET01" {
+				f.mu.Lock()
+				f.targetGets++
+				seen := f.targetGets
+				f.mu.Unlock()
+				if seen <= f.targetVisibleAfter {
+					w.WriteHeader(http.StatusNotFound)
+					_, _ = w.Write([]byte(`{"message":"Not found"}`))
+					return
+				}
+			}
 			// The attachment is invisible on the write plane until the
 			// propagation window closes.
 			isAttachment := len(f.attachChildren) > 0 && path == f.attachChildren[0]
@@ -1035,5 +1063,34 @@ func TestConnectorReparentResumesAnInterruptedRun(t *testing.T) {
 		if strings.HasPrefix(call, "connector.") {
 			t.Errorf("called %s: a resumed run must not create a second parent or copy", call)
 		}
+	}
+}
+
+// TestConnectorReparentToleratesAFreshlyCreatedTarget covers a defect found by
+// smoke-testing the release binary against a real library, in exactly the shape
+// a consumer uses: create an item, then attach its PDF. An item created through
+// the desktop connector takes 15-20s to reach the write plane, so the first read
+// of a brand-new target legitimately 404s. Failing immediately made
+// create-then-attach unusable.
+func TestConnectorReparentToleratesAFreshlyCreatedTarget(t *testing.T) {
+	fake := &reparentFake{
+		tempParentKey:  "TEMP0001",
+		attachChildren: []string{"ATTACH01"},
+		// The target 404s twice, as a just-created item does, then appears.
+		targetVisibleAfter: 2,
+	}
+	srv := fake.server(t)
+	flags := reparentFlags(t, srv)
+	c, _ := flags.newWriteClient()
+
+	status, _, err := applyConnectorReparentUpload(context.Background(), reparentCmd(t), flags, c, reparentRequest(t, "TARGET01"))
+	if err != nil {
+		t.Fatalf("route failed on a target that was merely propagating: %v", err)
+	}
+	if status != "applied" {
+		t.Fatalf("status = %q, want applied", status)
+	}
+	if fake.targetGets <= 2 {
+		t.Errorf("target reads = %d, want more than the 2 that 404ed", fake.targetGets)
 	}
 }
