@@ -13,11 +13,14 @@ How this report labels claims:
 - **NOT ESTABLISHED** — searched for and not found. Stated plainly so the next
   investigator does not repeat the search.
 
-No Zotero library was written to while producing this report. The two code
-findings were reproduced against scratch directories with `HOME` pointed at a
-temporary directory and `ZOTERO_BASE_URL` pointed at a closed port, so no
-library was reachable at all. Registry reads (CrossRef, DataCite) are public and
-read-only.
+The two code findings were reproduced without any library: `HOME` pointed at a
+temporary directory and `ZOTERO_BASE_URL` at a closed port, so nothing was
+reachable. Registry reads (CrossRef, DataCite) are public and read-only.
+
+The design assessment was FIRST written from source alone, with no library
+written to. It was then confirmed by a live probe on the operator's own library,
+at their explicit instruction — see "Measured live" below. That probe created
+three objects and trashed them; it modified nothing that existed beforehand.
 
 Related registers: `dev/field-report-2026-08-22-papio.md` (round 1) and
 `dev/field-report-2026-08-22-papio-arxiv.md`.
@@ -237,34 +240,79 @@ already has, not a best guess.
   only the deleted-item marker and this source shows no server-side child
   cascade (VERIFIED `model/Item.inc.php:1323-1332`); a hard delete nulls
   `sourceItemID` via `ON DELETE SET NULL` rather than deleting children
-  (VERIFIED `misc/shard.sql:412-414`). NOT ESTABLISHED: whether the Zotero
-  **desktop client** cascades a trash to children locally. That is a separate
-  code path from the server and it was not inspected. Until it is, moving the
-  attachment before trashing anything is the safe order.
+  (VERIFIED `misc/shard.sql:412-414`). The desktop client is a separate code
+  path; it was measured rather than read — see the probe below.
 - **Do not loop this per paper.** Round 1 recorded roughly 78 consecutive
   one-item `--via connector` invocations leaving Zotero unresponsive with
   progress windows accumulating and no dismiss route
   (`dev/field-report-2026-08-22-papio.md`). One connector session per repaired
   paper reproduces exactly that. A bulk repair must batch within a session.
 
-### What was not done, and why
+### Measured live, 2026-08-22, on the operator's own library
 
-NOT ESTABLISHED empirically. This assessment is source-verified only; no
-Zotero library was written to. A scratch Zotero library is not actually
-available: every library, including a new group, belongs to the operator's
-account, and any Web API write requires their key. Creating and trashing items
-in their library to test a hypothesis is not a scratch test.
+Run at the operator's explicit instruction with `dev/reparent-probe.sh`'s
+procedure, driven step by step. Only objects created by the probe were touched:
+baseline library version 14985, 1229 top-level items, **trash empty**. Full
+`export snapshot` taken first.
 
-For the acceptance question, server source is the stronger evidence anyway — it
-shows the rule rather than one instance of it. It does not cover desktop client
-behaviour, which is where the remaining unknown sits.
+| step | result |
+|---|---|
+| receiver item created | `VJ85KXIM`, v14986, top-level 1229 → 1230 |
+| connector create of parent + file | applied 1/1, `via: connector`, **`key: ""`** |
+| temp parent / attachment | `MZ3CCEGC` / `FV48BHNC`, `linkMode: imported_url` |
+| local storage path | `~/Zotero/storage/FV48BHNC/…pdf`, **no dir under the parent key** |
+| after sync | `md5 5ac56ea8…`, `mtime` set, v14989 — file registered with the store |
+| **PATCH `{"parentItem":"VJ85KXIM"}`** | **HTTP 204**, v14989 → 14990 |
+| after re-parent | `md5` and `mtime` **byte-identical**; storage dir unchanged |
+| old parent children | 0. New parent children: 1 |
+| **trash the former parent** | attachment `deleted: 0`, parent unchanged, **v still 14990** |
+| desktop client after sync | agrees on every point; trash holds only the probe's items |
+| end state | top-level back to 1229; nothing pre-existing modified (`?since=14985`) |
+
+VERIFIED, and this settles the assessment's three open points:
+
+1. **Re-parenting an already-stored, already-synced attachment is accepted.**
+   HTTP 204, and the desktop adopted the change on the next sync.
+2. **The bytes are never touched.** `md5` and `mtime` are identical before and
+   after, the local storage directory is still named for the attachment key, and
+   no directory appeared under the new parent's key. Nothing was re-uploaded.
+3. **Neither the server NOR the desktop client cascades a trash to a child that
+   has already been moved away.** Trashing the former parent left the attachment
+   at version 14990 — it was not modified at all. This was the one thing the
+   source could not answer.
+
+Two side observations worth keeping:
+
+- `import apply --via connector` reported `"key": ""`, confirming from the
+  outside what `import_apply.go:277` says: the connector branch returns no key.
+  `items create --via connector`, by contrast, DID return the real key, because
+  `confirmConnectorCreate` resolves it. So the discovery gap is specific to
+  attachments, and is the one piece of new code this route needs.
+- The round-1 progress-window hazard reproduced on a **single** invocation:
+  Zotero's window count went 1 → 2. It returned to 1 later on its own. One leak
+  per call is harmless; 78 of them are what wedged the app.
+
+NOT ESTABLISHED: the WebDAV server's own directory listing was not read. The
+password lives in the OS keychain and reading it was out of scope. Evidence for
+the remote side is therefore `md5`/`mtime` registration plus the source-verified
+`webdav.js` naming, not a directory listing.
 
 ### Recommendation
 
 `attachments add` on a WebDAV library is a **missing feature, not an
-impossibility**. The report's proposed fallback — restate the refusal as a
-permanent property so papio stops retrying — would be recording a wrong fact.
-papio should treat it as unsupported-for-now.
+impossibility** — now measured, not just argued. The report's proposed fallback,
+restating the refusal as a permanent property so papio stops retrying, would be
+recording a wrong fact. papio should treat it as unsupported-for-now.
 
-Implementing it needs a decision from the operator, because it creates and
-trashes items in their library, so it is not landed here.
+What implementing it actually needs, in order:
+
+1. **Attachment-key discovery after a connector save.** The only genuinely
+   missing piece. Model it on `confirmConnectorCreate`, and keep that function's
+   refusal to guess when more than one candidate matches: here a wrong match
+   attaches a PDF to the wrong paper, silently.
+2. **A `parentItem` write.** zotio has none today; `items update` sets a title
+   and `items move` changes collection membership.
+3. **Re-parent strictly before trashing**, and batch within one connector
+   session rather than one session per paper.
+
+The mutation itself is proven. It is one guarded PATCH that moves no bytes.
