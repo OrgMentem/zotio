@@ -116,6 +116,18 @@ var capabilityOverrides = map[string]capabilityEntry{
 	// desktop under --via connector. The field describes the DEFAULT route; a
 	// conditional requirement would need a vocabulary the registry does not
 	// have. An agent choosing --via connector must expect a running desktop.
+	//
+	// KNOWN, and deliberately not fixed here: Requires is the UNION, so it
+	// asserts zotero_file_storage even though the connector route exists to avoid
+	// that storage and checkZoteroFileStoragePrecondition already waives it. A
+	// false precondition in a machine-readable record is a defect even when
+	// nothing gates on it. The fix papio asked for and agreed to consume is
+	// additive: keep WriteTarget as the default route, add a per-route list each
+	// carrying its own Requires. Reasoning and the rejected alternative are in
+	// dev/field-report-2026-08-23-papio-capability-routes.md. Do NOT make
+	// WriteTarget conditional — two reviewers and the consumer all rejected it,
+	// because a scalar that sometimes means "default" and sometimes "one of
+	// several" cannot be read safely without knowing which release wrote it.
 	"attachments add": {Operation: "write", WriteTarget: "web_api", Requires: []string{preconditionWebAPIKey, preconditionZoteroFileStorage}},
 	// vault push writes to Zotero; pull and sync write the local vault.
 	"vault push":    {Operation: "write", WriteTarget: "web_api", Requires: []string{preconditionWebAPIKey}},
