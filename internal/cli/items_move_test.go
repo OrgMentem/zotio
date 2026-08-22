@@ -13,33 +13,41 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/spf13/cobra"
+
 	"zotio/internal/client"
 	"zotio/internal/config"
 	"zotio/internal/mutation"
 )
 
-type itemMoveTestServer struct {
+type writePlaneTestServer struct {
 	server       *httptest.Server
+	field        string
 	versions     map[string]string
-	collections  map[string][]string
+	items        map[string]any
 	patchBodies  map[string]map[string]any
 	patchHeaders map[string]string
 	getCounts    map[string]int
 	patchCounts  map[string]int
 }
 
-func newItemMoveTestServer(t *testing.T, versions map[string]string, collections map[string][]string) *itemMoveTestServer {
+func writePlaneTestNewItemServer[T any](t *testing.T, field string, versions map[string]string, values map[string]T) *writePlaneTestServer {
 	t.Helper()
-	ts := &itemMoveTestServer{
+	items := make(map[string]any, len(values))
+	for key, value := range values {
+		items[key] = value
+	}
+	ts := &writePlaneTestServer{
+		field:        field,
 		versions:     versions,
-		collections:  collections,
+		items:        items,
 		patchBodies:  map[string]map[string]any{},
 		patchHeaders: map[string]string{},
 		getCounts:    map[string]int{},
 		patchCounts:  map[string]int{},
 	}
 	ts.server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		for key := range ts.collections {
+		for key, value := range ts.items {
 			itemPath := "/users/0/items/" + key
 			if r.URL.Path != itemPath {
 				continue
@@ -49,7 +57,7 @@ func newItemMoveTestServer(t *testing.T, versions map[string]string, collections
 				ts.getCounts[key]++
 				version := ts.versions[key]
 				w.Header().Set("Last-Modified-Version", version)
-				_, _ = fmt.Fprintf(w, `{"key":%q,"version":%s,"data":{"collections":%s}}`, key, version, mustJSON(t, ts.collections[key]))
+				_, _ = fmt.Fprintf(w, `{"key":%q,"version":%s,"data":{%q:%s}}`, key, version, ts.field, mustJSON(t, value))
 			case http.MethodPatch:
 				var body map[string]any
 				if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
@@ -66,15 +74,15 @@ func newItemMoveTestServer(t *testing.T, versions map[string]string, collections
 		}
 		http.Error(w, "unexpected path", http.StatusNotFound)
 	}))
+	t.Setenv("ZOTERO_BASE_URL", ts.server.URL+"/users/0")
+	t.Setenv("ZOTERO_CONFIG", filepath.Join(t.TempDir(), "missing.toml"))
 	t.Cleanup(ts.server.Close)
 	return ts
 }
 
-func runItemsMoveTestCmd(t *testing.T, srv *itemMoveTestServer, flags *rootFlags, args ...string) (mutation.Envelope, string, error) {
+func writePlaneTestRunMutationCmd(t *testing.T, newCmd func(*rootFlags) *cobra.Command, flags *rootFlags, args ...string) (mutation.Envelope, string, error) {
 	t.Helper()
-	t.Setenv("ZOTERO_BASE_URL", srv.server.URL+"/users/0")
-	t.Setenv("ZOTERO_CONFIG", filepath.Join(t.TempDir(), "missing.toml"))
-	cmd := newItemsMoveCmd(flags)
+	cmd := newCmd(flags)
 	cmd.SilenceErrors, cmd.SilenceUsage = true, true
 	var out bytes.Buffer
 	var errOut bytes.Buffer
@@ -91,21 +99,55 @@ func runItemsMoveTestCmd(t *testing.T, srv *itemMoveTestServer, flags *rootFlags
 	return env, errOut.String(), err
 }
 
-func mustRunItemsMoveTestCmd(t *testing.T, srv *itemMoveTestServer, flags *rootFlags, args ...string) mutation.Envelope {
+func writePlaneTestMustRunMutationCmd(t *testing.T, label string, newCmd func(*rootFlags) *cobra.Command, flags *rootFlags, args ...string) mutation.Envelope {
 	t.Helper()
-	env, stderr, err := runItemsMoveTestCmd(t, srv, flags, args...)
+	env, stderr, err := writePlaneTestRunMutationCmd(t, newCmd, flags, args...)
 	if err != nil {
-		t.Fatalf("items move %v: %v; stderr=%s", args, err, stderr)
+		t.Fatalf("%s %v: %v; stderr=%s", label, args, err, stderr)
 	}
 	return env
 }
 
+type itemMoveTestServer = writePlaneTestServer
+
+func newItemMoveTestServer(t *testing.T, versions map[string]string, collections map[string][]string) *itemMoveTestServer {
+	t.Helper()
+	return writePlaneTestNewItemServer(t, "collections", versions, collections)
+}
+
+func runItemsMoveTestCmd(t *testing.T, srv *itemMoveTestServer, flags *rootFlags, args ...string) (mutation.Envelope, string, error) {
+	t.Helper()
+	return writePlaneTestRunMutationCmd(t, newItemsMoveCmd, flags, args...)
+}
+
+func mustRunItemsMoveTestCmd(t *testing.T, srv *itemMoveTestServer, flags *rootFlags, args ...string) mutation.Envelope {
+	t.Helper()
+	return writePlaneTestMustRunMutationCmd(t, "items move", newItemsMoveCmd, flags, args...)
+}
+
+func writePlaneTestPatchBodyCollections(t *testing.T, body map[string]any) []string {
+	t.Helper()
+	rawCollections, ok := body["collections"].([]any)
+	if !ok {
+		t.Fatalf("PATCH body = %+v, missing collections", body)
+	}
+	collections := make([]string, 0, len(rawCollections))
+	for _, raw := range rawCollections {
+		collection, ok := raw.(string)
+		if !ok {
+			t.Fatalf("PATCH collection = %#v, want string", raw)
+		}
+		collections = append(collections, collection)
+	}
+	return collections
+}
+
 func TestItemsMoveToAddsCollection(t *testing.T) {
-	srv := newItemMoveTestServer(t, map[string]string{"K1": "42"}, map[string][]string{
+	srv := writePlaneTestNewItemServer(t, "collections", map[string]string{"K1": "42"}, map[string][]string{
 		"K1": {"SOURCE"},
 	})
 
-	env := mustRunItemsMoveTestCmd(t, srv, &rootFlags{asJSON: true, yes: true, maxChanges: -1}, "--to", "TARGET", "K1")
+	env := writePlaneTestMustRunMutationCmd(t, "items move", newItemsMoveCmd, &rootFlags{asJSON: true, yes: true, maxChanges: -1}, "--to", "TARGET", "K1")
 	if !env.OK || env.Mode != "apply" || env.Result == nil || env.Result.Summary.Applied != 1 || env.Result.Items[0].Status != "applied" {
 		t.Fatalf("env = %+v, want one applied item", env)
 	}
@@ -115,18 +157,18 @@ func TestItemsMoveToAddsCollection(t *testing.T) {
 	if srv.patchHeaders["K1"] != "42" {
 		t.Errorf("If-Unmodified-Since-Version = %q, want 42", srv.patchHeaders["K1"])
 	}
-	collections := patchBodyCollections(t, srv.patchBodies["K1"])
+	collections := writePlaneTestPatchBodyCollections(t, srv.patchBodies["K1"])
 	if !stringSliceContains(collections, "SOURCE") || !stringSliceContains(collections, "TARGET") {
 		t.Errorf("PATCH collections = %v, want SOURCE and TARGET", collections)
 	}
 }
 
 func TestItemsMoveAlreadyInTargetIsNoOp(t *testing.T) {
-	srv := newItemMoveTestServer(t, map[string]string{"K1": "42"}, map[string][]string{
+	srv := writePlaneTestNewItemServer(t, "collections", map[string]string{"K1": "42"}, map[string][]string{
 		"K1": {"TARGET"},
 	})
 
-	env := mustRunItemsMoveTestCmd(t, srv, &rootFlags{asJSON: true, yes: true, maxChanges: -1}, "--to", "TARGET", "K1")
+	env := writePlaneTestMustRunMutationCmd(t, "items move", newItemsMoveCmd, &rootFlags{asJSON: true, yes: true, maxChanges: -1}, "--to", "TARGET", "K1")
 	if !env.OK || env.Result == nil || env.Result.Summary.NoOp != 1 || env.Result.Items[0].Status != "no_op" {
 		t.Fatalf("env = %+v, want no_op", env)
 	}
@@ -151,44 +193,44 @@ func TestItemsMoveAlreadyInTargetIsNoOp(t *testing.T) {
 }
 
 func TestItemsMoveFromRemovesCollection(t *testing.T) {
-	srv := newItemMoveTestServer(t, map[string]string{"K1": "42"}, map[string][]string{
+	srv := writePlaneTestNewItemServer(t, "collections", map[string]string{"K1": "42"}, map[string][]string{
 		"K1": {"SOURCE", "KEEP"},
 	})
 
-	env := mustRunItemsMoveTestCmd(t, srv, &rootFlags{asJSON: true, yes: true, maxChanges: -1}, "--from", "SOURCE", "K1")
+	env := writePlaneTestMustRunMutationCmd(t, "items move", newItemsMoveCmd, &rootFlags{asJSON: true, yes: true, maxChanges: -1}, "--from", "SOURCE", "K1")
 	if !env.OK || env.Result == nil || env.Result.Summary.Applied != 1 || env.Result.Items[0].Status != "applied" {
 		t.Fatalf("env = %+v, want applied remove", env)
 	}
-	collections := patchBodyCollections(t, srv.patchBodies["K1"])
+	collections := writePlaneTestPatchBodyCollections(t, srv.patchBodies["K1"])
 	if stringSliceContains(collections, "SOURCE") || !stringSliceContains(collections, "KEEP") {
 		t.Errorf("PATCH collections = %v, want SOURCE removed and KEEP preserved", collections)
 	}
 }
 
 func TestItemsMoveFromToMovesCollection(t *testing.T) {
-	srv := newItemMoveTestServer(t, map[string]string{"K1": "42"}, map[string][]string{
+	srv := writePlaneTestNewItemServer(t, "collections", map[string]string{"K1": "42"}, map[string][]string{
 		"K1": {"SOURCE", "KEEP"},
 	})
 
-	env := mustRunItemsMoveTestCmd(t, srv, &rootFlags{asJSON: true, yes: true, maxChanges: -1}, "--from", "SOURCE", "--to", "TARGET", "K1")
+	env := writePlaneTestMustRunMutationCmd(t, "items move", newItemsMoveCmd, &rootFlags{asJSON: true, yes: true, maxChanges: -1}, "--from", "SOURCE", "--to", "TARGET", "K1")
 	if !env.OK || env.Result == nil || env.Result.Summary.Applied != 1 || env.Result.Items[0].Status != "applied" {
 		t.Fatalf("env = %+v, want applied move", env)
 	}
 	if len(env.Plan.Operations) != 1 || len(env.Plan.Operations[0].Changes) != 2 {
 		t.Fatalf("changes = %+v, want remove and add", env.Plan.Operations)
 	}
-	collections := patchBodyCollections(t, srv.patchBodies["K1"])
+	collections := writePlaneTestPatchBodyCollections(t, srv.patchBodies["K1"])
 	if stringSliceContains(collections, "SOURCE") || !stringSliceContains(collections, "TARGET") || !stringSliceContains(collections, "KEEP") {
 		t.Errorf("PATCH collections = %v, want SOURCE removed, TARGET added, KEEP preserved", collections)
 	}
 }
 
 func TestItemsMoveRequiresToOrFrom(t *testing.T) {
-	srv := newItemMoveTestServer(t, map[string]string{"K1": "42"}, map[string][]string{
+	srv := writePlaneTestNewItemServer(t, "collections", map[string]string{"K1": "42"}, map[string][]string{
 		"K1": {"SOURCE"},
 	})
 
-	_, _, err := runItemsMoveTestCmd(t, srv, &rootFlags{asJSON: true, yes: true, maxChanges: -1}, "K1")
+	_, _, err := writePlaneTestRunMutationCmd(t, newItemsMoveCmd, &rootFlags{asJSON: true, yes: true, maxChanges: -1}, "K1")
 	if err == nil || !strings.Contains(err.Error(), "--to or --from") {
 		t.Fatalf("err = %v, want --to/--from usage error", err)
 	}
@@ -198,7 +240,7 @@ func TestItemsMoveRequiresToOrFrom(t *testing.T) {
 }
 
 func TestItemsMoveBulkKeysFrom(t *testing.T) {
-	srv := newItemMoveTestServer(t, map[string]string{"K1": "42", "K2": "43"}, map[string][]string{
+	srv := writePlaneTestNewItemServer(t, "collections", map[string]string{"K1": "42", "K2": "43"}, map[string][]string{
 		"K1": {"ONE"},
 		"K2": {"TWO"},
 	})
@@ -207,7 +249,7 @@ func TestItemsMoveBulkKeysFrom(t *testing.T) {
 		t.Fatalf("write keys file: %v", err)
 	}
 
-	env := mustRunItemsMoveTestCmd(t, srv, &rootFlags{asJSON: true, yes: true, maxChanges: -1}, "--to", "BULK", "--keys-from", keysPath)
+	env := writePlaneTestMustRunMutationCmd(t, "items move", newItemsMoveCmd, &rootFlags{asJSON: true, yes: true, maxChanges: -1}, "--to", "BULK", "--keys-from", keysPath)
 	if !env.OK || env.Result == nil || env.Result.Summary.Applied != 2 || len(env.Result.Items) != 2 {
 		t.Fatalf("env = %+v, want two applied items", env)
 	}
@@ -215,18 +257,18 @@ func TestItemsMoveBulkKeysFrom(t *testing.T) {
 		if srv.patchCounts[key] != 1 {
 			t.Fatalf("%s PATCH count = %d, want 1", key, srv.patchCounts[key])
 		}
-		if !stringSliceContains(patchBodyCollections(t, srv.patchBodies[key]), "BULK") {
+		if !stringSliceContains(writePlaneTestPatchBodyCollections(t, srv.patchBodies[key]), "BULK") {
 			t.Errorf("%s PATCH body = %+v, want BULK collection", key, srv.patchBodies[key])
 		}
 	}
 }
 
 func TestItemsMovePreviewWritesNothing(t *testing.T) {
-	srv := newItemMoveTestServer(t, map[string]string{"K1": "42"}, map[string][]string{
+	srv := writePlaneTestNewItemServer(t, "collections", map[string]string{"K1": "42"}, map[string][]string{
 		"K1": {"SOURCE"},
 	})
 
-	env := mustRunItemsMoveTestCmd(t, srv, &rootFlags{asJSON: true, maxChanges: -1}, "--to", "TARGET", "K1")
+	env := writePlaneTestMustRunMutationCmd(t, "items move", newItemsMoveCmd, &rootFlags{asJSON: true, maxChanges: -1}, "--to", "TARGET", "K1")
 	if !env.OK || env.Mode != "preview" || env.Result != nil || env.Plan.Summary.Planned != 1 {
 		t.Fatalf("env = %+v, want preview plan with one change", env)
 	}
@@ -236,34 +278,17 @@ func TestItemsMovePreviewWritesNothing(t *testing.T) {
 }
 
 func TestItemsMoveDryRunAvoidsVersionFetch(t *testing.T) {
-	srv := newItemMoveTestServer(t, map[string]string{"K1": "42"}, map[string][]string{
+	srv := writePlaneTestNewItemServer(t, "collections", map[string]string{"K1": "42"}, map[string][]string{
 		"K1": {"SOURCE"},
 	})
 
-	env := mustRunItemsMoveTestCmd(t, srv, &rootFlags{asJSON: true, dryRun: true, maxChanges: -1}, "--to", "TARGET", "K1")
+	env := writePlaneTestMustRunMutationCmd(t, "items move", newItemsMoveCmd, &rootFlags{asJSON: true, dryRun: true, maxChanges: -1}, "--to", "TARGET", "K1")
 	if !env.OK || env.Mode != "preview" || env.PreviewReason != "dry_run" || env.Result != nil || env.Plan.Summary.Planned != 1 {
 		t.Fatalf("env = %+v, want dry-run preview with one planned change", env)
 	}
 	if srv.getCounts["K1"] != 0 || srv.patchCounts["K1"] != 0 {
 		t.Fatalf("requests: GET=%d PATCH=%d, want none", srv.getCounts["K1"], srv.patchCounts["K1"])
 	}
-}
-
-func patchBodyCollections(t *testing.T, body map[string]any) []string {
-	t.Helper()
-	rawCollections, ok := body["collections"].([]any)
-	if !ok {
-		t.Fatalf("PATCH body = %+v, missing collections", body)
-	}
-	collections := make([]string, 0, len(rawCollections))
-	for _, raw := range rawCollections {
-		collection, ok := raw.(string)
-		if !ok {
-			t.Fatalf("PATCH collection = %#v, want string", raw)
-		}
-		collections = append(collections, collection)
-	}
-	return collections
 }
 
 func TestPatchItemCollectionsFailsClosedWithoutVersion(t *testing.T) {
@@ -287,10 +312,10 @@ func TestPatchItemCollectionsFailsClosedWithoutVersion(t *testing.T) {
 }
 
 func TestApplyItemCollectionMoveFailsClosedOnZeroVersion(t *testing.T) {
-	srv := newItemMoveTestServer(t, map[string]string{"K1": "0"}, map[string][]string{
+	srv := writePlaneTestNewItemServer(t, "collections", map[string]string{"K1": "0"}, map[string][]string{
 		"K1": {"SOURCE"},
 	})
-	env, _, _ := runItemsMoveTestCmd(t, srv, &rootFlags{asJSON: true, yes: true, maxChanges: -1}, "--to", "TARGET", "K1")
+	env, _, _ := writePlaneTestRunMutationCmd(t, newItemsMoveCmd, &rootFlags{asJSON: true, yes: true, maxChanges: -1}, "--to", "TARGET", "K1")
 	if env.Result == nil || len(env.Result.Items) != 1 {
 		t.Fatalf("env = %+v, want one result", env)
 	}

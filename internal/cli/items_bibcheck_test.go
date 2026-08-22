@@ -303,17 +303,7 @@ func TestBibcheckSingleFileJSONFieldsSurviveFindingsEnvelope(t *testing.T) {
 
 func seedBibcheckItems(t *testing.T, items []json.RawMessage) {
 	t.Helper()
-	db, err := store.OpenWithContext(context.Background(), helpersTestDefaultDBPath(t, "zotio"))
-	if err != nil {
-		t.Fatalf("open store: %v", err)
-	}
-	if _, _, err := db.UpsertBatch("items", items); err != nil {
-		_ = db.Close()
-		t.Fatalf("seed items: %v", err)
-	}
-	if err := db.Close(); err != nil {
-		t.Fatalf("close seed store: %v", err)
-	}
+	cliTestSeedItemsStore(t, items)
 }
 
 func runBibcheckJSON(t *testing.T, args ...string) (bibcheckReport, []byte, error) {

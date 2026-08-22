@@ -11,7 +11,47 @@ import (
 	"time"
 )
 
+// busyContendedStore creates a holder connection with busy_timeout(0),
+// creates the table, seeds it, holds BEGIN EXCLUSIVE, and opens a second
+// Store connection with busy_timeout(0). The caller owns the 30ms COMMIT
+// goroutine and the query. Shared by the retry table and the
+// cancellation tests where the query Store does not need mode=ro.
+func busyContendedStore(t *testing.T, dbFile, createSQL, seedSQL string) (*Store, *sql.DB) {
+	t.Helper()
+	dbPath := filepath.Join(t.TempDir(), dbFile)
+	holder, err := sql.Open("sqlite", "file:"+dbPath+"?_pragma=busy_timeout(0)")
+	if err != nil {
+		t.Fatalf("open holder: %v", err)
+	}
+	holder.SetMaxOpenConns(1)
+	t.Cleanup(func() { _ = holder.Close() })
+	if _, err := holder.Exec(createSQL); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if seedSQL != "" {
+		if _, err := holder.Exec(seedSQL); err != nil {
+			t.Fatalf("seed: %v", err)
+		}
+	}
+	if _, err := holder.Exec(`BEGIN EXCLUSIVE`); err != nil {
+		t.Fatalf("begin exclusive: %v", err)
+	}
+	t.Cleanup(func() { _, _ = holder.Exec(`ROLLBACK`) })
+
+	queryDB, err := sql.Open("sqlite", "file:"+dbPath+"?_pragma=busy_timeout(0)")
+	if err != nil {
+		t.Fatalf("open queryDB: %v", err)
+	}
+	queryDB.SetMaxOpenConns(1)
+	s := &Store{db: queryDB}
+	t.Cleanup(func() { _ = s.Close() })
+	return s, holder
+}
+
 func TestQueryWithBusyRetryContext_CancelledAbortsPromptly(t *testing.T) {
+	// This case needs mode=ro on the query connection, unlike the retry
+	// table, so keep its holder setup inline rather than forcing the
+	// shared helper to take a mode flag.
 	dbPath := filepath.Join(t.TempDir(), "cancel_query.db")
 	holder, err := sql.Open("sqlite", "file:"+dbPath+"?_pragma=busy_timeout(0)")
 	if err != nil {
@@ -58,31 +98,9 @@ func TestQueryWithBusyRetryContext_CancelledAbortsPromptly(t *testing.T) {
 }
 
 func TestQueryItems_CancellationViaContextAbortsPromptly(t *testing.T) {
-	dbPath := filepath.Join(t.TempDir(), "cancel_items.db")
-	holder, err := sql.Open("sqlite", "file:"+dbPath+"?_pragma=busy_timeout(0)")
-	if err != nil {
-		t.Fatalf("open holder: %v", err)
-	}
-	holder.SetMaxOpenConns(1)
-	t.Cleanup(func() { _ = holder.Close() })
-	if _, err := holder.Exec(`CREATE TABLE resources (id TEXT, resource_type TEXT, data TEXT, parent_key TEXT, item_type TEXT, updated_at INTEGER)`); err != nil {
-		t.Fatalf("create resources: %v", err)
-	}
-	if _, err := holder.Exec(`INSERT INTO resources (id, resource_type, data) VALUES ('A','items','{"key":"A"}')`); err != nil {
-		t.Fatalf("seed: %v", err)
-	}
-	if _, err := holder.Exec(`BEGIN EXCLUSIVE`); err != nil {
-		t.Fatalf("begin exclusive: %v", err)
-	}
-	t.Cleanup(func() { _, _ = holder.Exec(`ROLLBACK`) })
-
-	queryDB, err := sql.Open("sqlite", "file:"+dbPath+"?_pragma=busy_timeout(0)")
-	if err != nil {
-		t.Fatalf("open queryDB: %v", err)
-	}
-	queryDB.SetMaxOpenConns(1)
-	s := &Store{db: queryDB}
-	t.Cleanup(func() { _ = s.Close() })
+	s, _ := busyContendedStore(t, "cancel_items.db",
+		`CREATE TABLE resources (id TEXT, resource_type TEXT, data TEXT, parent_key TEXT, item_type TEXT, updated_at INTEGER)`,
+		`INSERT INTO resources (id, resource_type, data) VALUES ('A','items','{"key":"A"}')`)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	go func() {
@@ -90,7 +108,7 @@ func TestQueryItems_CancellationViaContextAbortsPromptly(t *testing.T) {
 		cancel()
 	}()
 	start := time.Now()
-	_, err = s.QueryItemsContext(ctx, ItemQuery{})
+	_, err := s.QueryItemsContext(ctx, ItemQuery{})
 	elapsed := time.Since(start)
 	if elapsed > 1500*time.Millisecond {
 		t.Fatalf("QueryItemsContext cancellation not honored: elapsed %v", elapsed)
@@ -100,177 +118,66 @@ func TestQueryItems_CancellationViaContextAbortsPromptly(t *testing.T) {
 	}
 }
 
-func TestQueryItems_RetriesBusyInsteadOfFailingHard(t *testing.T) {
-	dbPath := filepath.Join(t.TempDir(), "busy_items.db")
-	holder, err := sql.Open("sqlite", "file:"+dbPath+"?_pragma=busy_timeout(0)")
-	if err != nil {
-		t.Fatalf("open holder: %v", err)
-	}
-	holder.SetMaxOpenConns(1)
-	t.Cleanup(func() { _ = holder.Close() })
-	if _, err := holder.Exec(`CREATE TABLE resources (id TEXT, resource_type TEXT, data TEXT, parent_key TEXT, item_type TEXT, updated_at INTEGER)`); err != nil {
-		t.Fatalf("create resources: %v", err)
-	}
-	// Seed two items so result order is deterministic.
-	if _, err := holder.Exec(`INSERT INTO resources (id, resource_type, data, item_type) VALUES ('A','items','{"key":"A","data":{"title":"Alpha"}}','journalArticle'), ('B','items','{"key":"B","data":{"title":"Beta"}}','book')`); err != nil {
-		t.Fatalf("seed: %v", err)
-	}
-	if _, err := holder.Exec(`BEGIN EXCLUSIVE`); err != nil {
-		t.Fatalf("begin exclusive: %v", err)
-	}
-	t.Cleanup(func() { _, _ = holder.Exec(`ROLLBACK`) })
-
-	queryDB, err := sql.Open("sqlite", "file:"+dbPath+"?_pragma=busy_timeout(0)")
-	if err != nil {
-		t.Fatalf("open queryDB: %v", err)
-	}
-	queryDB.SetMaxOpenConns(1)
-	s := &Store{db: queryDB}
-	t.Cleanup(func() { _ = s.Close() })
-
-	go func() {
-		time.Sleep(30 * time.Millisecond)
-		if _, err := holder.Exec(`COMMIT`); err != nil {
-			t.Logf("commit release: %v", err)
-		}
-	}()
-
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
-	rows, err := s.QueryItemsContext(ctx, ItemQuery{Limit: 10})
-	if err != nil {
-		t.Fatalf("QueryItems did not survive WAL contention (should have retried): %v", err)
-	}
-	if len(rows) != 2 {
-		t.Fatalf("QueryItems rows = %d, want 2", len(rows))
-	}
-	// Also verify context-aware variant retries.
-	// Need to re-acquire lock for second call: holder after COMMIT is not in transaction.
-	if _, err := holder.Exec(`BEGIN EXCLUSIVE`); err != nil {
-		t.Fatalf("re-acquire exclusive: %v", err)
-	}
-	go func() {
-		time.Sleep(30 * time.Millisecond)
-		if _, err := holder.Exec(`COMMIT`); err != nil {
-			t.Logf("commit2: %v", err)
-		}
-	}()
-	ctx2, cancel2 := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel2()
-	rows2, err := s.QueryItemsContext(ctx2, ItemQuery{Limit: 10})
-	if err != nil {
-		t.Fatalf("QueryItemsContext did not retry: %v", err)
-	}
-	if len(rows2) != 2 {
-		t.Fatalf("QueryItemsContext rows = %d, want 2", len(rows2))
-	}
-}
-
-func TestQueryTrash_RetriesBusyInsteadOfFailingHard(t *testing.T) {
-	dbPath := filepath.Join(t.TempDir(), "busy_trash.db")
-	holder, err := sql.Open("sqlite", "file:"+dbPath+"?_pragma=busy_timeout(0)")
-	if err != nil {
-		t.Fatalf("open holder: %v", err)
-	}
-	holder.SetMaxOpenConns(1)
-	t.Cleanup(func() { _ = holder.Close() })
-	if _, err := holder.Exec(`CREATE TABLE resources (id TEXT, resource_type TEXT, data TEXT, parent_key TEXT, item_type TEXT, updated_at INTEGER)`); err != nil {
-		t.Fatalf("create resources: %v", err)
-	}
-	if _, err := holder.Exec(`INSERT INTO resources (id, resource_type, data) VALUES ('T1','items-trash','{"key":"T1","data":{"dateModified":"2020-01-02"}}'), ('T2','items-trash','{"key":"T2","data":{"dateModified":"2020-01-03"}}')`); err != nil {
-		t.Fatalf("seed: %v", err)
-	}
-	if _, err := holder.Exec(`BEGIN EXCLUSIVE`); err != nil {
-		t.Fatalf("begin exclusive: %v", err)
-	}
-	t.Cleanup(func() { _, _ = holder.Exec(`ROLLBACK`) })
-
-	queryDB, err := sql.Open("sqlite", "file:"+dbPath+"?_pragma=busy_timeout(0)")
-	if err != nil {
-		t.Fatalf("open queryDB: %v", err)
-	}
-	queryDB.SetMaxOpenConns(1)
-	s := &Store{db: queryDB}
-	t.Cleanup(func() { _ = s.Close() })
-
-	go func() {
-		time.Sleep(30 * time.Millisecond)
-		if _, err := holder.Exec(`COMMIT`); err != nil {
-			t.Logf("commit: %v", err)
-		}
-	}()
-	ctxTrash, cancelTrash := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancelTrash()
-	rows, err := s.QueryTrashContext(ctxTrash, TrashQuery{Limit: 10})
-	if err != nil {
-		t.Fatalf("QueryTrash did not retry busy: %v", err)
-	}
-	if len(rows) != 2 {
-		t.Fatalf("QueryTrash rows = %d, want 2", len(rows))
+func TestQuery_RetriesBusyInsteadOfFailingHard(t *testing.T) {
+	cases := []struct {
+		name      string
+		dbFile    string
+		createSQL string
+		seedSQL   string
+		query     func(context.Context, *Store) (int, error)
+	}{
+		{
+			name:      "items",
+			dbFile:    "busy_items.db",
+			createSQL: `CREATE TABLE resources (id TEXT, resource_type TEXT, data TEXT, parent_key TEXT, item_type TEXT, updated_at INTEGER)`,
+			seedSQL:   `INSERT INTO resources (id, resource_type, data, item_type) VALUES ('A','items','{"key":"A","data":{"title":"Alpha"}}','journalArticle'), ('B','items','{"key":"B","data":{"title":"Beta"}}','book')`,
+			query: func(ctx context.Context, s *Store) (int, error) {
+				rows, err := s.QueryItemsContext(ctx, ItemQuery{Limit: 10})
+				return len(rows), err
+			},
+		},
+		{
+			name:      "trash",
+			dbFile:    "busy_trash.db",
+			createSQL: `CREATE TABLE resources (id TEXT, resource_type TEXT, data TEXT, parent_key TEXT, item_type TEXT, updated_at INTEGER)`,
+			seedSQL:   `INSERT INTO resources (id, resource_type, data) VALUES ('T1','items-trash','{"key":"T1","data":{"dateModified":"2020-01-02"}}'), ('T2','items-trash','{"key":"T2","data":{"dateModified":"2020-01-03"}}')`,
+			query: func(ctx context.Context, s *Store) (int, error) {
+				rows, err := s.QueryTrashContext(ctx, TrashQuery{Limit: 10})
+				return len(rows), err
+			},
+		},
+		{
+			name:      "similarity_candidates",
+			dbFile:    "busy_sim.db",
+			createSQL: `CREATE TABLE resources (id TEXT, resource_type TEXT, data TEXT, parent_key TEXT, item_type TEXT)`,
+			seedSQL:   `INSERT INTO resources (id, resource_type, data, parent_key, item_type) VALUES ('A','items','{"key":"A"}','','book'), ('B','items','{"key":"B"}','','journalArticle')`,
+			query: func(ctx context.Context, s *Store) (int, error) {
+				cands, err := s.QuerySimilarityCandidatesContext(ctx)
+				return len(cands), err
+			},
+		},
 	}
 
-	// Context variant also retries.
-	if _, err := holder.Exec(`BEGIN EXCLUSIVE`); err != nil {
-		t.Fatalf("re-acquire: %v", err)
-	}
-	go func() {
-		time.Sleep(30 * time.Millisecond)
-		if _, err := holder.Exec(`COMMIT`); err != nil {
-			t.Logf("commit2: %v", err)
-		}
-	}()
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
-	rows2, err := s.QueryTrashContext(ctx, TrashQuery{Limit: 10})
-	if err != nil {
-		t.Fatalf("QueryTrashContext did not retry: %v", err)
-	}
-	if len(rows2) != 2 {
-		t.Fatalf("QueryTrashContext rows = %d, want 2", len(rows2))
-	}
-}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			s, holder := busyContendedStore(t, tc.dbFile, tc.createSQL, tc.seedSQL)
 
-func TestQuerySimilarityCandidates_RetriesBusyInsteadOfFailingHard(t *testing.T) {
-	dbPath := filepath.Join(t.TempDir(), "busy_sim.db")
-	holder, err := sql.Open("sqlite", "file:"+dbPath+"?_pragma=busy_timeout(0)")
-	if err != nil {
-		t.Fatalf("open holder: %v", err)
-	}
-	holder.SetMaxOpenConns(1)
-	t.Cleanup(func() { _ = holder.Close() })
-	if _, err := holder.Exec(`CREATE TABLE resources (id TEXT, resource_type TEXT, data TEXT, parent_key TEXT, item_type TEXT)`); err != nil {
-		t.Fatalf("create: %v", err)
-	}
-	if _, err := holder.Exec(`INSERT INTO resources (id, resource_type, data, parent_key, item_type) VALUES ('A','items','{"key":"A"}','','book'), ('B','items','{"key":"B"}','','journalArticle')`); err != nil {
-		t.Fatalf("seed: %v", err)
-	}
-	if _, err := holder.Exec(`BEGIN EXCLUSIVE`); err != nil {
-		t.Fatalf("begin: %v", err)
-	}
-	t.Cleanup(func() { _, _ = holder.Exec(`ROLLBACK`) })
+			go func() {
+				time.Sleep(30 * time.Millisecond)
+				if _, err := holder.Exec(`COMMIT`); err != nil {
+					t.Logf("commit release: %v", err)
+				}
+			}()
 
-	queryDB, err := sql.Open("sqlite", "file:"+dbPath+"?_pragma=busy_timeout(0)")
-	if err != nil {
-		t.Fatalf("open queryDB: %v", err)
-	}
-	queryDB.SetMaxOpenConns(1)
-	s := &Store{db: queryDB}
-	t.Cleanup(func() { _ = s.Close() })
-
-	go func() {
-		time.Sleep(30 * time.Millisecond)
-		if _, err := holder.Exec(`COMMIT`); err != nil {
-			t.Logf("commit: %v", err)
-		}
-	}()
-
-	ctxSim, cancelSim := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancelSim()
-	cands, err := s.QuerySimilarityCandidatesContext(ctxSim)
-	if err != nil {
-		t.Fatalf("QuerySimilarityCandidates did not retry: %v", err)
-	}
-	if len(cands) != 2 {
-		t.Fatalf("cands = %d, want 2", len(cands))
+			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+			defer cancel()
+			n, err := tc.query(ctx, s)
+			if err != nil {
+				t.Fatalf("%s did not survive busy contention (should have retried): %v", tc.name, err)
+			}
+			if n != 2 {
+				t.Fatalf("%s rows = %d, want 2", tc.name, n)
+			}
+		})
 	}
 }

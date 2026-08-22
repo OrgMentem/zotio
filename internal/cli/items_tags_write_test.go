@@ -5,7 +5,6 @@ package cli
 import (
 	"bytes"
 	"encoding/json"
-	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -18,56 +17,10 @@ import (
 	"zotio/internal/mutation"
 )
 
-type itemTagTestServer struct {
-	server       *httptest.Server
-	versions     map[string]string
-	tags         map[string][]map[string]any
-	patchBodies  map[string]map[string]any
-	patchHeaders map[string]string
-	getCounts    map[string]int
-	patchCounts  map[string]int
-}
+type itemTagTestServer = writePlaneTestServer
 
 func newItemTagTestServer(t *testing.T, versions map[string]string, tags map[string][]map[string]any) *itemTagTestServer {
-	t.Helper()
-	ts := &itemTagTestServer{
-		versions:     versions,
-		tags:         tags,
-		patchBodies:  map[string]map[string]any{},
-		patchHeaders: map[string]string{},
-		getCounts:    map[string]int{},
-		patchCounts:  map[string]int{},
-	}
-	ts.server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		for key := range ts.tags {
-			itemPath := "/users/0/items/" + key
-			if r.URL.Path != itemPath {
-				continue
-			}
-			switch r.Method {
-			case http.MethodGet:
-				ts.getCounts[key]++
-				version := ts.versions[key]
-				w.Header().Set("Last-Modified-Version", version)
-				_, _ = fmt.Fprintf(w, `{"key":%q,"version":%s,"data":{"tags":%s}}`, key, version, mustJSON(t, ts.tags[key]))
-			case http.MethodPatch:
-				var body map[string]any
-				if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-					t.Errorf("decode patch body: %v", err)
-				}
-				ts.patchBodies[key] = body
-				ts.patchHeaders[key] = r.Header.Get("If-Unmodified-Since-Version")
-				ts.patchCounts[key]++
-				w.WriteHeader(http.StatusNoContent)
-			default:
-				http.Error(w, "unexpected method", http.StatusMethodNotAllowed)
-			}
-			return
-		}
-		http.Error(w, "unexpected path", http.StatusNotFound)
-	}))
-	t.Cleanup(ts.server.Close)
-	return ts
+	return writePlaneTestNewItemServer(t, "tags", versions, tags)
 }
 
 func mustJSON(t *testing.T, value any) string {
@@ -79,7 +32,7 @@ func mustJSON(t *testing.T, value any) string {
 	return string(data)
 }
 
-func runItemsTagsTestCmd(t *testing.T, srv *itemTagTestServer, flags *rootFlags, args ...string) (mutation.Envelope, string) {
+func runItemsTagsTestCmd(t *testing.T, srv *writePlaneTestServer, flags *rootFlags, args ...string) (mutation.Envelope, string) {
 	t.Helper()
 	t.Setenv("ZOTERO_BASE_URL", srv.server.URL+"/users/0")
 	t.Setenv("ZOTERO_CONFIG", filepath.Join(t.TempDir(), "missing.toml"))
@@ -111,7 +64,7 @@ func runItemsTagsTestCmd(t *testing.T, srv *itemTagTestServer, flags *rootFlags,
 }
 
 func TestItemsTagsAddNewTagApplies(t *testing.T) {
-	srv := newItemTagTestServer(t, map[string]string{"K1": "42"}, map[string][]map[string]any{
+	srv := writePlaneTestNewItemServer(t, "tags", map[string]string{"K1": "42"}, map[string][]map[string]any{
 		"K1": {{"tag": "existing", "type": float64(0)}},
 	})
 
@@ -132,7 +85,7 @@ func TestItemsTagsAddNewTagApplies(t *testing.T) {
 
 func TestItemsTagsAddAutomaticTagType(t *testing.T) {
 	t.Run("automatic new tag", func(t *testing.T) {
-		srv := newItemTagTestServer(t, map[string]string{"K1": "42"}, map[string][]map[string]any{
+		srv := writePlaneTestNewItemServer(t, "tags", map[string]string{"K1": "42"}, map[string][]map[string]any{
 			"K1": {{"tag": "existing", "type": float64(0)}},
 		})
 
@@ -149,7 +102,7 @@ func TestItemsTagsAddAutomaticTagType(t *testing.T) {
 	})
 
 	t.Run("manual new tag", func(t *testing.T) {
-		srv := newItemTagTestServer(t, map[string]string{"K1": "42"}, map[string][]map[string]any{
+		srv := writePlaneTestNewItemServer(t, "tags", map[string]string{"K1": "42"}, map[string][]map[string]any{
 			"K1": {{"tag": "existing", "type": float64(0)}},
 		})
 
@@ -166,7 +119,7 @@ func TestItemsTagsAddAutomaticTagType(t *testing.T) {
 	})
 
 	t.Run("existing manual tag is unchanged", func(t *testing.T) {
-		srv := newItemTagTestServer(t, map[string]string{"K1": "42"}, map[string][]map[string]any{
+		srv := writePlaneTestNewItemServer(t, "tags", map[string]string{"K1": "42"}, map[string][]map[string]any{
 			"K1": {{"tag": "x", "type": float64(0)}},
 		})
 
@@ -185,7 +138,7 @@ func TestItemsTagsAddAutomaticTagType(t *testing.T) {
 	})
 
 	t.Run("existing automatic tag reports ownership type", func(t *testing.T) {
-		srv := newItemTagTestServer(t, map[string]string{"K1": "42"}, map[string][]map[string]any{
+		srv := writePlaneTestNewItemServer(t, "tags", map[string]string{"K1": "42"}, map[string][]map[string]any{
 			"K1": {{"tag": "x", "type": float64(1)}},
 		})
 
@@ -205,7 +158,7 @@ func TestItemsTagsAddAutomaticTagType(t *testing.T) {
 }
 
 func TestItemsTagsAddAlreadyPresentIsNoOp(t *testing.T) {
-	srv := newItemTagTestServer(t, map[string]string{"K1": "42"}, map[string][]map[string]any{
+	srv := writePlaneTestNewItemServer(t, "tags", map[string]string{"K1": "42"}, map[string][]map[string]any{
 		"K1": {{"tag": "fresh", "type": float64(0)}},
 	})
 
@@ -219,7 +172,7 @@ func TestItemsTagsAddAlreadyPresentIsNoOp(t *testing.T) {
 }
 
 func TestItemsTagsRemoveAbsentIsNoOp(t *testing.T) {
-	srv := newItemTagTestServer(t, map[string]string{"K1": "42"}, map[string][]map[string]any{
+	srv := writePlaneTestNewItemServer(t, "tags", map[string]string{"K1": "42"}, map[string][]map[string]any{
 		"K1": {{"tag": "existing", "type": float64(0)}},
 	})
 
@@ -233,7 +186,7 @@ func TestItemsTagsRemoveAbsentIsNoOp(t *testing.T) {
 }
 
 func TestItemsTagsRemovePresentApplies(t *testing.T) {
-	srv := newItemTagTestServer(t, map[string]string{"K1": "42"}, map[string][]map[string]any{
+	srv := writePlaneTestNewItemServer(t, "tags", map[string]string{"K1": "42"}, map[string][]map[string]any{
 		"K1": {{"tag": "keep", "type": float64(0)}, {"tag": "drop", "type": float64(0)}},
 	})
 
@@ -251,7 +204,7 @@ func TestItemsTagsRemovePresentApplies(t *testing.T) {
 
 func TestItemsTagsRemoveAutomaticOnly(t *testing.T) {
 	t.Run("preserves a manual tag", func(t *testing.T) {
-		srv := newItemTagTestServer(t, map[string]string{"K1": "42"}, map[string][]map[string]any{
+		srv := writePlaneTestNewItemServer(t, "tags", map[string]string{"K1": "42"}, map[string][]map[string]any{
 			"K1": {{"tag": "papio:unavailable", "type": float64(0)}},
 		})
 
@@ -265,7 +218,7 @@ func TestItemsTagsRemoveAutomaticOnly(t *testing.T) {
 	})
 
 	t.Run("removes an automatic tag", func(t *testing.T) {
-		srv := newItemTagTestServer(t, map[string]string{"K1": "42"}, map[string][]map[string]any{
+		srv := writePlaneTestNewItemServer(t, "tags", map[string]string{"K1": "42"}, map[string][]map[string]any{
 			"K1": {{"tag": "papio:unavailable", "type": float64(1)}, {"tag": "keep", "type": float64(0)}},
 		})
 
@@ -283,7 +236,7 @@ func TestItemsTagsRemoveAutomaticOnly(t *testing.T) {
 }
 
 func TestItemsTagsPreviewWritesNothing(t *testing.T) {
-	srv := newItemTagTestServer(t, map[string]string{"K1": "42"}, map[string][]map[string]any{
+	srv := writePlaneTestNewItemServer(t, "tags", map[string]string{"K1": "42"}, map[string][]map[string]any{
 		"K1": {{"tag": "existing", "type": float64(0)}},
 	})
 
@@ -297,7 +250,7 @@ func TestItemsTagsPreviewWritesNothing(t *testing.T) {
 }
 
 func TestItemsTagsDryRunAvoidsVersionFetch(t *testing.T) {
-	srv := newItemTagTestServer(t, map[string]string{"K1": "42"}, map[string][]map[string]any{
+	srv := writePlaneTestNewItemServer(t, "tags", map[string]string{"K1": "42"}, map[string][]map[string]any{
 		"K1": {{"tag": "existing", "type": float64(0)}},
 	})
 
@@ -314,7 +267,7 @@ func TestItemsTagsDryRunAvoidsVersionFetch(t *testing.T) {
 }
 
 func TestItemsTagsRemoveDryRunAvoidsVersionFetch(t *testing.T) {
-	srv := newItemTagTestServer(t, map[string]string{"K1": "42"}, map[string][]map[string]any{
+	srv := writePlaneTestNewItemServer(t, "tags", map[string]string{"K1": "42"}, map[string][]map[string]any{
 		"K1": {{"tag": "existing", "type": float64(0)}},
 	})
 
@@ -328,7 +281,7 @@ func TestItemsTagsRemoveDryRunAvoidsVersionFetch(t *testing.T) {
 }
 
 func TestItemsTagsBulkAddKeysFrom(t *testing.T) {
-	srv := newItemTagTestServer(t, map[string]string{"K1": "42", "K2": "43"}, map[string][]map[string]any{
+	srv := writePlaneTestNewItemServer(t, "tags", map[string]string{"K1": "42", "K2": "43"}, map[string][]map[string]any{
 		"K1": {{"tag": "one", "type": float64(0)}},
 		"K2": {{"tag": "two", "type": float64(0)}},
 	})
@@ -434,7 +387,7 @@ func TestApplyItemTagAddFailsClosedOnZeroVersion(t *testing.T) {
 	// applyItemTagAdd reads the live item; when that read yields version 0 the
 	// follow-up PATCH must not be sent. Exercise the full path via the mutation
 	// envelope so the no-request guarantee is end-to-end.
-	srv := newItemTagTestServer(t, map[string]string{"K1": "0"}, map[string][]map[string]any{
+	srv := writePlaneTestNewItemServer(t, "tags", map[string]string{"K1": "0"}, map[string][]map[string]any{
 		"K1": {},
 	})
 	// Version "0" → parseLastModifiedVersion returns 0 → version 0.

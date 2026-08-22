@@ -78,6 +78,8 @@ func newSearchesMaterializeTestServer(t *testing.T, searchKeys []string, version
 		}
 		http.Error(w, "unexpected path", http.StatusNotFound)
 	}))
+	t.Setenv("ZOTERO_BASE_URL", ts.server.URL+"/users/0")
+	t.Setenv("ZOTERO_CONFIG", filepath.Join(t.TempDir(), "missing.toml"))
 	t.Cleanup(ts.server.Close)
 	return ts
 }
@@ -91,60 +93,13 @@ func searchMaterializeJSON(t *testing.T, value any) string {
 	return string(data)
 }
 
-func searchMaterializePatchBodyCollections(t *testing.T, body map[string]any) []string {
-	t.Helper()
-	rawCollections, ok := body["collections"].([]any)
-	if !ok {
-		t.Fatalf("PATCH body = %+v, missing collections", body)
-	}
-	collections := make([]string, 0, len(rawCollections))
-	for _, raw := range rawCollections {
-		collection, ok := raw.(string)
-		if !ok {
-			t.Fatalf("PATCH collection = %#v, want string", raw)
-		}
-		collections = append(collections, collection)
-	}
-	return collections
-}
-
-func runSearchesMaterializeTestCmd(t *testing.T, srv *searchesMaterializeTestServer, flags *rootFlags, args ...string) (mutation.Envelope, string, error) {
-	t.Helper()
-	t.Setenv("ZOTERO_BASE_URL", srv.server.URL+"/users/0")
-	t.Setenv("ZOTERO_CONFIG", filepath.Join(t.TempDir(), "missing.toml"))
-	cmd := newSearchesMaterializeCmd(flags)
-	cmd.SilenceErrors, cmd.SilenceUsage = true, true
-	var out bytes.Buffer
-	var errOut bytes.Buffer
-	cmd.SetOut(&out)
-	cmd.SetErr(&errOut)
-	cmd.SetArgs(args)
-	err := cmd.Execute()
-	var env mutation.Envelope
-	if out.Len() > 0 {
-		if decodeErr := json.Unmarshal(out.Bytes(), &env); decodeErr != nil {
-			t.Fatalf("decode mutation envelope %q: %v", out.String(), decodeErr)
-		}
-	}
-	return env, errOut.String(), err
-}
-
-func mustRunSearchesMaterializeTestCmd(t *testing.T, srv *searchesMaterializeTestServer, flags *rootFlags, args ...string) mutation.Envelope {
-	t.Helper()
-	env, stderr, err := runSearchesMaterializeTestCmd(t, srv, flags, args...)
-	if err != nil {
-		t.Fatalf("searches materialize %v: %v; stderr=%s", args, err, stderr)
-	}
-	return env
-}
-
 func TestSearchesMaterializePreviewListsAddsAndWritesNothing(t *testing.T) {
 	srv := newSearchesMaterializeTestServer(t, []string{"K1", "K2"}, map[string]string{"K1": "42", "K2": "43"}, map[string][]string{
 		"K1": {"SOURCE"},
 		"K2": {"OTHER"},
 	})
 
-	env := mustRunSearchesMaterializeTestCmd(t, srv, &rootFlags{asJSON: true, maxChanges: -1}, "SK", "--to", "TARGET")
+	env := writePlaneTestMustRunMutationCmd(t, "searches materialize", newSearchesMaterializeCmd, &rootFlags{asJSON: true, maxChanges: -1}, "SK", "--to", "TARGET")
 	if !env.OK || env.Mode != "preview" || env.Result != nil || env.Plan.Summary.Planned != 2 || len(env.Plan.Operations) != 2 {
 		t.Fatalf("env = %+v, want preview plan with two adds", env)
 	}
@@ -164,7 +119,7 @@ func TestSearchesMaterializeYesAddsAllItems(t *testing.T) {
 		"K2": {"OTHER"},
 	})
 
-	env := mustRunSearchesMaterializeTestCmd(t, srv, &rootFlags{asJSON: true, yes: true, maxChanges: -1}, "SK", "--to", "TARGET")
+	env := writePlaneTestMustRunMutationCmd(t, "searches materialize", newSearchesMaterializeCmd, &rootFlags{asJSON: true, yes: true, maxChanges: -1}, "SK", "--to", "TARGET")
 	if !env.OK || env.Mode != "apply" || env.Result == nil || env.Result.Summary.Applied != 2 {
 		t.Fatalf("env = %+v, want two applied items", env)
 	}
@@ -175,7 +130,7 @@ func TestSearchesMaterializeYesAddsAllItems(t *testing.T) {
 		if srv.patchHeaders[key] != srv.versions[key] {
 			t.Errorf("If-Unmodified-Since-Version %s = %q, want %q", key, srv.patchHeaders[key], srv.versions[key])
 		}
-		collections := searchMaterializePatchBodyCollections(t, srv.patchBodies[key])
+		collections := writePlaneTestPatchBodyCollections(t, srv.patchBodies[key])
 		if !stringSliceContains(collections, "TARGET") {
 			t.Errorf("PATCH collections %s = %v, want TARGET", key, collections)
 		}
@@ -187,7 +142,7 @@ func TestSearchesMaterializeAlreadyInCollectionIsNoOp(t *testing.T) {
 		"K1": {"TARGET"},
 	})
 
-	env := mustRunSearchesMaterializeTestCmd(t, srv, &rootFlags{asJSON: true, yes: true, maxChanges: -1}, "SK", "--to", "TARGET")
+	env := writePlaneTestMustRunMutationCmd(t, "searches materialize", newSearchesMaterializeCmd, &rootFlags{asJSON: true, yes: true, maxChanges: -1}, "SK", "--to", "TARGET")
 	if !env.OK || env.Mode != "apply" || env.Result == nil || env.Result.Summary.NoOp != 1 || env.Result.Items[0].Status != "no_op" {
 		t.Fatalf("env = %+v, want one no_op item", env)
 	}
@@ -197,9 +152,9 @@ func TestSearchesMaterializeAlreadyInCollectionIsNoOp(t *testing.T) {
 }
 
 func TestSearchesMaterializeEmptySearchYieldsEmptyPlan(t *testing.T) {
-	srv := newSearchesMaterializeTestServer(t, nil, map[string]string{}, map[string][]string{})
+	newSearchesMaterializeTestServer(t, nil, map[string]string{}, map[string][]string{})
 
-	env := mustRunSearchesMaterializeTestCmd(t, srv, &rootFlags{asJSON: true, maxChanges: -1}, "SK", "--to", "TARGET")
+	env := writePlaneTestMustRunMutationCmd(t, "searches materialize", newSearchesMaterializeCmd, &rootFlags{asJSON: true, maxChanges: -1}, "SK", "--to", "TARGET")
 	if !env.OK || env.Mode != "preview" || env.Plan.Summary.Selected != 0 || len(env.Plan.Operations) != 0 {
 		t.Fatalf("env = %+v, want empty preview plan", env)
 	}
@@ -210,11 +165,11 @@ func TestSearchesMaterializeEmptySearchYieldsEmptyPlan(t *testing.T) {
 }
 
 func TestSearchesMaterializeRequiresTo(t *testing.T) {
-	srv := newSearchesMaterializeTestServer(t, []string{"K1"}, map[string]string{"K1": "42"}, map[string][]string{
+	newSearchesMaterializeTestServer(t, []string{"K1"}, map[string]string{"K1": "42"}, map[string][]string{
 		"K1": {"SOURCE"},
 	})
 
-	_, _, err := runSearchesMaterializeTestCmd(t, srv, &rootFlags{asJSON: true, maxChanges: -1}, "SK")
+	_, _, err := writePlaneTestRunMutationCmd(t, newSearchesMaterializeCmd, &rootFlags{asJSON: true, maxChanges: -1}, "SK")
 	if err == nil {
 		t.Fatalf("searches materialize without --to succeeded")
 	}

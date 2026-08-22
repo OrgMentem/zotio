@@ -11,6 +11,8 @@ import (
 	"testing"
 
 	"zotio/internal/store"
+
+	"github.com/spf13/cobra"
 )
 
 // openAnalyticsTestStore returns a fresh temp store for group-by tests.
@@ -341,132 +343,175 @@ func TestAnalyticsCommandRejectsInvalidLimit(t *testing.T) {
 	}
 }
 
-func TestAnalyticsCommandNonexistentDB_ReportsEmpty_Human(t *testing.T) {
-	dbPath := filepath.Join(t.TempDir(), "missing.db")
-	cmd := newAnalyticsCmd(&rootFlags{})
+// nonexistentDBTestRun is the single runner for every nonexistent-database no-data
+// check. It executes the command built by newCmd and returns stdout and stderr.
+// Drift check: every row must assert that neither "opening local database" nor
+// "opening store" appears in output; either substring is a store-open leak.
+func nonexistentDBTestRun(t *testing.T, newCmd func(*rootFlags) *cobra.Command, flags *rootFlags, args []string) (string, string) {
+	t.Helper()
+	cmd := newCmd(flags)
 	cmd.SilenceErrors, cmd.SilenceUsage = true, true
 	var out, errOut bytes.Buffer
 	cmd.SetOut(&out)
 	cmd.SetErr(&errOut)
-	cmd.SetArgs([]string{"--db", dbPath})
+	cmd.SetArgs(args)
 	if err := cmd.Execute(); err != nil {
-		t.Fatalf("analytics error = %v; want nil empty result", err)
+		t.Fatalf("command error = %v; want nil (no-data branch)", err)
 	}
-	env := analyticsDecodeEnvelope(t, bytes.TrimSpace(out.Bytes()))
-	if len(env.Results) != 0 {
-		t.Fatalf("results = %v; want empty array", env.Results)
-	}
-	if strings.Contains(errOut.String(), "opening local database") || strings.Contains(out.String(), "opening local database") {
-		t.Fatalf("output must not contain store-open error on fresh install; stdout=%q stderr=%q", out.String(), errOut.String())
-	}
+	return out.String(), errOut.String()
 }
 
-func TestAnalyticsCommandNonexistentDB_ReportsEmpty_JSON(t *testing.T) {
-	dbPath := filepath.Join(t.TempDir(), "missing.db")
-	cmd := newAnalyticsCmd(&rootFlags{asJSON: true})
-	cmd.SilenceErrors, cmd.SilenceUsage = true, true
-	var out, errOut bytes.Buffer
-	cmd.SetOut(&out)
-	cmd.SetErr(&errOut)
-	cmd.SetArgs([]string{"--db", dbPath})
-	if err := cmd.Execute(); err != nil {
-		t.Fatalf("analytics --json error = %v; want nil", err)
-	}
-	env := analyticsDecodeEnvelope(t, bytes.TrimSpace(out.Bytes()))
-	if len(env.Results) != 0 {
-		t.Fatalf("results = %v; want empty array", env.Results)
-	}
-	if strings.Contains(errOut.String(), "opening local database") {
-		t.Fatalf("stderr = %q; must not contain store-open error", errOut.String())
-	}
+// nonexistentDBTestCase binds one variant of the nonexistent-DB contract to a
+// row. Each row carries data, while shape-specific assertions live in check.
+type nonexistentDBTestCase struct {
+	name   string
+	newCmd func(*rootFlags) *cobra.Command
+	flags  *rootFlags
+	args   func(dbPath string) []string
+	check  func(t *testing.T, out string)
 }
 
-func TestAnalyticsCommandNonexistentDB_TypeReportsEmpty_Human(t *testing.T) {
-	dbPath := filepath.Join(t.TempDir(), "missing.db")
-	cmd := newAnalyticsCmd(&rootFlags{})
-	cmd.SilenceErrors, cmd.SilenceUsage = true, true
-	var out, errOut bytes.Buffer
-	cmd.SetOut(&out)
-	cmd.SetErr(&errOut)
-	cmd.SetArgs([]string{"--db", dbPath, "--type", "items"})
-	if err := cmd.Execute(); err != nil {
-		t.Fatalf("analytics --type items error = %v; want nil", err)
+func TestNonexistentDB_ReportsNoData(t *testing.T) {
+	cases := []nonexistentDBTestCase{
+		{
+			name:   "analytics/human/empty",
+			newCmd: newAnalyticsCmd,
+			flags:  &rootFlags{},
+			args:   func(dbPath string) []string { return []string{"--db", dbPath} },
+			check: func(t *testing.T, out string) {
+				t.Helper()
+				env := analyticsDecodeEnvelope(t, bytes.TrimSpace([]byte(out)))
+				if len(env.Results) != 0 {
+					t.Fatalf("results = %v; want empty array", env.Results)
+				}
+			},
+		},
+		{
+			name:   "analytics/json/empty",
+			newCmd: newAnalyticsCmd,
+			flags:  &rootFlags{asJSON: true},
+			args:   func(dbPath string) []string { return []string{"--db", dbPath} },
+			check: func(t *testing.T, out string) {
+				t.Helper()
+				env := analyticsDecodeEnvelope(t, bytes.TrimSpace([]byte(out)))
+				if len(env.Results) != 0 {
+					t.Fatalf("results = %v; want empty array", env.Results)
+				}
+			},
+		},
+		{
+			name:   "analytics/human/type/items",
+			newCmd: newAnalyticsCmd,
+			flags:  &rootFlags{},
+			args:   func(dbPath string) []string { return []string{"--db", dbPath, "--type", "items"} },
+			check: func(t *testing.T, out string) {
+				t.Helper()
+				env := analyticsDecodeEnvelope(t, bytes.TrimSpace([]byte(out)))
+				if len(env.Results) != 1 {
+					t.Fatalf("results len = %d, want 1 zero row: %s", len(env.Results), out)
+				}
+				row := env.Results[0]
+				if got := analyticsIntFromAny(row["count"]); got != 0 {
+					t.Fatalf("count = %v; want 0", row["count"])
+				}
+				if got := row["resource_type"]; got != "items" {
+					t.Fatalf("resource_type = %v; want items", got)
+				}
+			},
+		},
+		{
+			name:   "analytics/json/type/journalArticle",
+			newCmd: newAnalyticsCmd,
+			flags:  &rootFlags{asJSON: true},
+			args:   func(dbPath string) []string { return []string{"--db", dbPath, "--type", "journalArticle"} },
+			check: func(t *testing.T, out string) {
+				t.Helper()
+				env := analyticsDecodeEnvelope(t, []byte(out))
+				if len(env.Results) != 1 {
+					t.Fatalf("results len = %d, want 1: %s", len(env.Results), out)
+				}
+				row := env.Results[0]
+				if got := analyticsIntFromAny(row["count"]); got != 0 {
+					t.Fatalf("count = %v; want 0", got)
+				}
+				if got := row["resource_type"]; got != "items" {
+					t.Fatalf("resource_type = %v; want items", got)
+				}
+				if got := row["item_type"]; got != "journalArticle" {
+					t.Fatalf("item_type = %v; want journalArticle", got)
+				}
+			},
+		},
+		{
+			name:   "analytics/json/group-by/year",
+			newCmd: newAnalyticsCmd,
+			flags:  &rootFlags{asJSON: true},
+			args:   func(dbPath string) []string { return []string{"--db", dbPath, "--type", "items", "--group-by", "year"} },
+			check: func(t *testing.T, out string) {
+				t.Helper()
+				env := analyticsDecodeEnvelope(t, bytes.TrimSpace([]byte(out)))
+				if len(env.Results) != 0 {
+					t.Fatalf("group-by JSON results = %v; want empty array", env.Results)
+				}
+			},
+		},
+		{
+			name:   "analytics/piped_default/group-by/year",
+			newCmd: newAnalyticsCmd,
+			flags:  &rootFlags{},
+			args:   func(dbPath string) []string { return []string{"--db", dbPath, "--type", "items", "--group-by", "year"} },
+			check: func(t *testing.T, out string) {
+				t.Helper()
+				env := analyticsDecodeEnvelope(t, bytes.TrimSpace([]byte(out)))
+				if len(env.Results) != 0 {
+					t.Fatalf("piped default group-by results = %v; want empty array", env.Results)
+				}
+			},
+		},
+		{
+			name:   "workflow/human/no-data",
+			newCmd: newWorkflowStatusCmd,
+			flags:  &rootFlags{},
+			args:   func(dbPath string) []string { return []string{"--db", dbPath} },
+			check: func(t *testing.T, out string) {
+				t.Helper()
+				if !strings.Contains(out, "No archived data") {
+					t.Fatalf("stdout = %q; want containing 'No archived data'", out)
+				}
+			},
+		},
+		{
+			name:   "workflow/json/empty-map",
+			newCmd: newWorkflowStatusCmd,
+			flags:  &rootFlags{asJSON: true},
+			args:   func(dbPath string) []string { return []string{"--db", dbPath} },
+			check: func(t *testing.T, out string) {
+				t.Helper()
+				var status map[string]int
+				if err := json.Unmarshal(bytes.TrimSpace([]byte(out)), &status); err != nil {
+					t.Fatalf("decode %q: %v", out, err)
+				}
+				if len(status) != 0 {
+					t.Fatalf("status = %v; want empty map for no-data", status)
+				}
+			},
+		},
 	}
-	env := analyticsDecodeEnvelope(t, bytes.TrimSpace(out.Bytes()))
-	if len(env.Results) != 1 {
-		t.Fatalf("results len = %d, want 1 zero row: %s", len(env.Results), out.String())
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			dbPath := filepath.Join(t.TempDir(), "missing.db")
+			out, errOut := nonexistentDBTestRun(t, tc.newCmd, tc.flags, tc.args(dbPath))
+			if tc.check != nil {
+				tc.check(t, out)
+			}
+			if strings.Contains(out, "opening local database") || strings.Contains(errOut, "opening local database") {
+				t.Fatalf("output must not contain 'opening local database' on fresh install; stdout=%q stderr=%q", out, errOut)
+			}
+			if strings.Contains(out, "opening store") || strings.Contains(errOut, "opening store") {
+				t.Fatalf("output must not contain 'opening store' on fresh install; stdout=%q stderr=%q", out, errOut)
+			}
+		})
 	}
-	row := env.Results[0]
-	if got := analyticsIntFromAny(row["count"]); got != 0 {
-		t.Fatalf("count = %v; want 0", row["count"])
-	}
-	if got := row["resource_type"]; got != "items" {
-		t.Fatalf("resource_type = %v; want items", got)
-	}
-	if strings.Contains(errOut.String(), "opening local database") || strings.Contains(out.String(), "opening local database") {
-		t.Fatalf("output must not contain store-open error on fresh install; stdout=%q stderr=%q", out.String(), errOut.String())
-	}
-}
-
-func TestAnalyticsCommandNonexistentDB_TypeReportsEmpty_JSON(t *testing.T) {
-	dbPath := filepath.Join(t.TempDir(), "missing.db")
-	cmd := newAnalyticsCmd(&rootFlags{asJSON: true})
-	cmd.SilenceErrors, cmd.SilenceUsage = true, true
-	var out bytes.Buffer
-	cmd.SetOut(&out)
-	cmd.SetErr(&bytes.Buffer{})
-	cmd.SetArgs([]string{"--db", dbPath, "--type", "journalArticle"})
-	if err := cmd.Execute(); err != nil {
-		t.Fatalf("analytics --type journalArticle --json error = %v; want nil", err)
-	}
-	env := analyticsDecodeEnvelope(t, out.Bytes())
-	if len(env.Results) != 1 {
-		t.Fatalf("results len = %d, want 1: %s", len(env.Results), out.String())
-	}
-	row := env.Results[0]
-	if got := analyticsIntFromAny(row["count"]); got != 0 {
-		t.Fatalf("count = %v; want 0", got)
-	}
-	if got := row["resource_type"]; got != "items" {
-		t.Fatalf("resource_type = %v; want items", got)
-	}
-	if got := row["item_type"]; got != "journalArticle" {
-		t.Fatalf("item_type = %v; want journalArticle", got)
-	}
-}
-
-func TestAnalyticsCommandNonexistentDB_GroupByReportsEmpty(t *testing.T) {
-	dbPath := filepath.Join(t.TempDir(), "missing.db")
-	t.Run("json", func(t *testing.T) {
-		cmd := newAnalyticsCmd(&rootFlags{asJSON: true})
-		cmd.SilenceErrors, cmd.SilenceUsage = true, true
-		var out bytes.Buffer
-		cmd.SetOut(&out)
-		cmd.SetErr(&bytes.Buffer{})
-		cmd.SetArgs([]string{"--db", dbPath, "--type", "items", "--group-by", "year"})
-		if err := cmd.Execute(); err != nil {
-			t.Fatalf("analytics --group-by error = %v; want nil", err)
-		}
-		env := analyticsDecodeEnvelope(t, bytes.TrimSpace(out.Bytes()))
-		if len(env.Results) != 0 {
-			t.Fatalf("group-by JSON results = %v; want empty array", env.Results)
-		}
-	})
-	t.Run("piped_default_is_json", func(t *testing.T) {
-		cmd := newAnalyticsCmd(&rootFlags{})
-		cmd.SilenceErrors, cmd.SilenceUsage = true, true
-		var out bytes.Buffer
-		cmd.SetOut(&out)
-		cmd.SetErr(&bytes.Buffer{})
-		cmd.SetArgs([]string{"--db", dbPath, "--type", "items", "--group-by", "year"})
-		if err := cmd.Execute(); err != nil {
-			t.Fatalf("analytics --group-by error = %v; want nil", err)
-		}
-		env := analyticsDecodeEnvelope(t, bytes.TrimSpace(out.Bytes()))
-		if len(env.Results) != 0 {
-			t.Fatalf("piped default group-by results = %v; want empty array", env.Results)
-		}
-	})
 }
 
 // New tests covering the migrated envelope shapes.

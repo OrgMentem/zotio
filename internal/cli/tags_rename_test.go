@@ -3,7 +3,6 @@
 package cli
 
 import (
-	"bytes"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -106,29 +105,10 @@ func newTagRenameCommandTestServer(t *testing.T, keys []string) *tagRenameComman
 			http.Error(w, "unexpected request", http.StatusNotFound)
 		}
 	}))
+	t.Setenv("ZOTERO_BASE_URL", ts.server.URL+"/users/0")
+	t.Setenv("ZOTERO_CONFIG", filepath.Join(t.TempDir(), "missing.toml"))
 	t.Cleanup(ts.server.Close)
 	return ts
-}
-
-func runTagsRenameTestCmd(t *testing.T, srv *tagRenameCommandTestServer, flags *rootFlags, args ...string) (mutation.Envelope, string, error) {
-	t.Helper()
-	t.Setenv("ZOTERO_BASE_URL", srv.server.URL+"/users/0")
-	t.Setenv("ZOTERO_CONFIG", filepath.Join(t.TempDir(), "missing.toml"))
-	cmd := newTagsRenameCmd(flags)
-	cmd.SilenceErrors, cmd.SilenceUsage = true, true
-	var out bytes.Buffer
-	var errOut bytes.Buffer
-	cmd.SetOut(&out)
-	cmd.SetErr(&errOut)
-	cmd.SetArgs(args)
-	err := cmd.Execute()
-	var env mutation.Envelope
-	if out.Len() > 0 {
-		if decodeErr := json.Unmarshal(out.Bytes(), &env); decodeErr != nil {
-			t.Fatalf("decode mutation envelope %q: %v", out.String(), decodeErr)
-		}
-	}
-	return env, errOut.String(), err
 }
 
 func totalTagRenamePatchCount(srv *tagRenameCommandTestServer) int {
@@ -227,7 +207,7 @@ func TestTagsRenamePreviewsWithoutPatching(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			srv := newTagRenameCommandTestServer(t, []string{"K1", "K2"})
 
-			env, stderr, err := runTagsRenameTestCmd(t, srv, &tc.flags, "--from", "foo", "--to", "bar")
+			env, stderr, err := writePlaneTestRunMutationCmd(t, newTagsRenameCmd, &tc.flags, "--from", "foo", "--to", "bar")
 			if err != nil {
 				t.Fatalf("tags rename preview: %v; stderr=%s", err, stderr)
 			}
@@ -244,7 +224,7 @@ func TestTagsRenamePreviewsWithoutPatching(t *testing.T) {
 func TestTagsRenameYesAppliesPatches(t *testing.T) {
 	srv := newTagRenameCommandTestServer(t, []string{"K1", "K2"})
 
-	env, stderr, err := runTagsRenameTestCmd(t, srv, &rootFlags{yes: true, maxChanges: -1}, "--from", "foo", "--to", "bar")
+	env, stderr, err := writePlaneTestRunMutationCmd(t, newTagsRenameCmd, &rootFlags{yes: true, maxChanges: -1}, "--from", "foo", "--to", "bar")
 	if err != nil {
 		t.Fatalf("tags rename apply: %v; stderr=%s", err, stderr)
 	}
@@ -270,7 +250,7 @@ func TestTagsRenameYesAppliesPatches(t *testing.T) {
 func TestTagsRenameMaxChangesRefusesBeforePatching(t *testing.T) {
 	srv := newTagRenameCommandTestServer(t, []string{"K1", "K2"})
 
-	env, _, err := runTagsRenameTestCmd(t, srv, &rootFlags{yes: true, maxChanges: 1}, "--from", "foo", "--to", "bar")
+	env, _, err := writePlaneTestRunMutationCmd(t, newTagsRenameCmd, &rootFlags{yes: true, maxChanges: 1}, "--from", "foo", "--to", "bar")
 	if err == nil {
 		t.Fatal("tags rename apply succeeded, want max_changes_exceeded error")
 	}

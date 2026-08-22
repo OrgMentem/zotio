@@ -15,30 +15,18 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
-
-	"zotio/internal/store"
 )
 
 func seedWatchHealthDefaultStore(t *testing.T, items []json.RawMessage) {
 	t.Helper()
 	t.Setenv("HOME", t.TempDir())
 	t.Setenv("ZOTERO_CONFIG", filepath.Join(t.TempDir(), "missing.toml"))
-	upsertWatchHealthDefaultStore(t, items)
+	cliTestSeedItemsStore(t, items)
 }
 
 func upsertWatchHealthDefaultStore(t *testing.T, items []json.RawMessage) {
 	t.Helper()
-	db, err := store.OpenWithContext(context.Background(), helpersTestDefaultDBPath(t, "zotio"))
-	if err != nil {
-		t.Fatalf("open store: %v", err)
-	}
-	if _, _, err := db.UpsertBatch("items", items); err != nil {
-		_ = db.Close()
-		t.Fatalf("upsert items: %v", err)
-	}
-	if err := db.Close(); err != nil {
-		t.Fatalf("close store: %v", err)
-	}
+	cliTestSeedItemsStore(t, items)
 }
 
 func TestWatchHealthFindingKeyUsesStableTaxonomyIdentity(t *testing.T) {

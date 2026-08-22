@@ -2,52 +2,7 @@
 
 package cli
 
-import (
-	"bytes"
-	"encoding/json"
-	"path/filepath"
-	"strings"
-	"testing"
-)
-
-func TestWorkflowStatus_NonexistentDB_ReportsNoData_Human(t *testing.T) {
-	dbPath := filepath.Join(t.TempDir(), "missing.db")
-	cmd := newWorkflowStatusCmd(&rootFlags{})
-	cmd.SilenceErrors, cmd.SilenceUsage = true, true
-	var out, errOut bytes.Buffer
-	cmd.SetOut(&out)
-	cmd.SetErr(&errOut)
-	cmd.SetArgs([]string{"--db", dbPath})
-	if err := cmd.Execute(); err != nil {
-		t.Fatalf("workflow status error = %v; want nil (no-data branch)", err)
-	}
-	if got := out.String(); !strings.Contains(got, "No archived data") {
-		t.Fatalf("stdout = %q; want containing 'No archived data'", got)
-	}
-	if strings.Contains(errOut.String(), "opening store") {
-		t.Fatalf("stderr = %q; must not contain store-open error on fresh install", errOut.String())
-	}
-}
-
-func TestWorkflowStatus_NonexistentDB_ReportsNoData_JSON(t *testing.T) {
-	dbPath := filepath.Join(t.TempDir(), "missing.db")
-	cmd := newWorkflowStatusCmd(&rootFlags{asJSON: true})
-	cmd.SilenceErrors, cmd.SilenceUsage = true, true
-	var out, errOut bytes.Buffer
-	cmd.SetOut(&out)
-	cmd.SetErr(&errOut)
-	cmd.SetArgs([]string{"--db", dbPath})
-	if err := cmd.Execute(); err != nil {
-		t.Fatalf("workflow status --json error = %v; want nil", err)
-	}
-	var status map[string]int
-	if err := json.Unmarshal(bytes.TrimSpace(out.Bytes()), &status); err != nil {
-		t.Fatalf("decode %q: %v", out.String(), err)
-	}
-	if len(status) != 0 {
-		t.Fatalf("status = %v; want empty map for no-data", status)
-	}
-	if strings.Contains(errOut.String(), "opening store") {
-		t.Fatalf("stderr = %q; must not contain store-open error", errOut.String())
-	}
-}
+// Workflow nonexistent-DB no-data checks are covered by the shared table
+// TestNonexistentDB_ReportsNoData (rows workflow/human/no-data and
+// workflow/json/empty-map) in analytics_test.go via the single runner
+// nonexistentDBTestRun.

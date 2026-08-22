@@ -4,6 +4,7 @@ package cli
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -17,7 +18,23 @@ import (
 
 	"zotio/internal/client"
 	"zotio/internal/cliutil"
+	"zotio/internal/store"
 )
+
+func cliTestSeedItemsStore(t *testing.T, items []json.RawMessage) {
+	t.Helper()
+	db, err := store.OpenWithContext(context.Background(), helpersTestDefaultDBPath(t, "zotio"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	if _, _, err := db.UpsertBatch("items", items); err != nil {
+		_ = db.Close()
+		t.Fatalf("seed items: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close seeded store: %v", err)
+	}
+}
 
 func helpersTestAPIError(status int, body string) error {
 	return &client.APIError{Method: "GET", Path: "/items", StatusCode: status, Body: body}

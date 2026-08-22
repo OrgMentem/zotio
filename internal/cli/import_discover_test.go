@@ -16,8 +16,6 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
-
-	"zotio/internal/store"
 )
 
 func TestImportDiscoverBackwardManifestSkipsHeldAndTitleDuplicate(t *testing.T) {
@@ -344,17 +342,7 @@ func seedImportDiscoverStore(t *testing.T, items []json.RawMessage) {
 	t.Helper()
 	t.Setenv("HOME", t.TempDir())
 	t.Setenv("ZOTERO_CONFIG", filepath.Join(t.TempDir(), "zotio.toml"))
-	db, err := store.OpenWithContext(context.Background(), helpersTestDefaultDBPath(t, "zotio"))
-	if err != nil {
-		t.Fatalf("open store: %v", err)
-	}
-	if _, _, err := db.UpsertBatch("items", items); err != nil {
-		_ = db.Close()
-		t.Fatalf("seed items: %v", err)
-	}
-	if err := db.Close(); err != nil {
-		t.Fatalf("close seeded store: %v", err)
-	}
+	cliTestSeedItemsStore(t, items)
 }
 
 func withImportDiscoverProviderMocks(t *testing.T, references map[string][]string, works map[string]string) *importDiscoverProviderCounters {
