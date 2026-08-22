@@ -4,6 +4,20 @@ Notable changes to zotio. Format follows [Keep a Changelog](https://keepachangel
 
 ## [Unreleased]
 
+### Fixed
+
+- **`--compact`, and therefore `--agent`, no longer empties rows it does not
+  recognise.** `compactFields` keeps an allow-list of item-ish field names, so a
+  hand-written report row sharing none of them was reduced to `{}`. Measured
+  live: `zotio --agent journal list` answered ten empty objects and the entire
+  audit trail was gone, on the documented agent path. A row the allow-list
+  matches nothing in is not a Zotero item record, so compaction now strips
+  nothing rather than everything — the same reasoning as the existing nested
+  envelope branch, which was added for this failure mode but only covered rows
+  whose fields are nested under `data`. Rows the allow-list does recognise are
+  still compacted, so `collections list`, `searches list` and `tags list` keep
+  dropping `links`/`meta`/`version`/`library` as before.
+
 ### Changed — breaking
 
 - **Four local-mirror reads now answer the provenance envelope instead of a

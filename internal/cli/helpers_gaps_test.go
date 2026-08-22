@@ -623,6 +623,45 @@ func TestCompactFieldsPreservesEnvelopeData(t *testing.T) {
 	}
 }
 
+// TestCompactFieldsKeepsRowsTheAllowlistCannotMatch pins the other half of the
+// same contract. The allowlist names item-ish fields, so a hand-written report
+// row shares none of them and used to compact to {}: measured live on
+// 2026-08-22, `zotio --agent journal list` answered ten empty objects and the
+// whole audit trail was gone. Compaction must strip nothing rather than
+// everything when it recognises no field in a row.
+func TestCompactFieldsKeepsRowsTheAllowlistCannotMatch(t *testing.T) {
+	in := json.RawMessage(`[{"run_id":"R1","operation":"import.apply","timestamp":"2026-08-22T09:29:51Z","ok":true,"summary":{"applied":1}}]`)
+	var items []map[string]any
+	if err := json.Unmarshal(compactFields(in), &items); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if len(items) != 1 {
+		t.Fatalf("want 1 row, got %d", len(items))
+	}
+	if len(items[0]) == 0 {
+		t.Fatalf("compaction emptied a row the allowlist does not name: %v", items[0])
+	}
+	for _, field := range []string{"run_id", "operation", "timestamp", "ok", "summary"} {
+		if _, ok := items[0][field]; !ok {
+			t.Errorf("row lost %s: %v", field, items[0])
+		}
+	}
+
+	// A row the allowlist DOES name still gets compacted, so the passthrough
+	// cannot become a blanket exemption.
+	mixed := json.RawMessage(`[{"key":"K1","title":"T","abstractNote":"long","relations":{"a":"b"}}]`)
+	var got []map[string]any
+	if err := json.Unmarshal(compactFields(mixed), &got); err != nil {
+		t.Fatalf("unmarshal mixed: %v", err)
+	}
+	if _, ok := got[0]["abstractNote"]; ok {
+		t.Errorf("passthrough leaked a verbose field on a matched row: %v", got[0])
+	}
+	if got[0]["key"] != "K1" || got[0]["title"] != "T" {
+		t.Errorf("matched row lost its allowed fields: %v", got[0])
+	}
+}
+
 func TestHelpersTruncateJSONArray(t *testing.T) {
 	helpersTestAssertJSONEqual(t, truncateJSONArray(json.RawMessage(`[1,2,3,4]`), 2), `[1,2]`)
 

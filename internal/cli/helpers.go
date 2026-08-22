@@ -766,6 +766,17 @@ func compactListFields(items []map[string]any) json.RawMessage {
 				compact[k] = v
 			}
 		}
+		// A row that matched nothing is not a Zotero item record: the allowlist
+		// names item-ish fields, so a hand-written report row (e.g. `journal
+		// list`, whose fields are run_id/operation/timestamp/summary/ops)
+		// compacts to {} and the caller loses the entire row under --agent.
+		// Strip nothing rather than everything — same reasoning as the nested
+		// envelope branch above, which exists so compaction cannot empty a row
+		// whose real fields the allowlist does not name.
+		if len(compact) == 0 && len(item) > 0 {
+			filtered = append(filtered, item)
+			continue
+		}
 		filtered = append(filtered, compact)
 	}
 	result, _ := json.Marshal(filtered)
