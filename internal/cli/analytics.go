@@ -5,7 +5,6 @@ package cli
 import (
 	"encoding/json"
 	"fmt"
-	"io"
 	"os"
 	"sort"
 	"strings"
@@ -46,130 +45,169 @@ the item rows are grouped by year, itemType, collection, creator, or tag.`,
 					return err
 				}
 			}
-			if _, err := os.Stat(dbPath); err != nil {
-				if os.IsNotExist(err) {
-					if cmd.Flags().Changed("limit") && limit <= 0 {
-						return fmt.Errorf("--limit must be greater than zero")
-					}
-					if groupBy != "" {
-						if resourceType == "" {
-							return fmt.Errorf("--group-by requires --type items or a Zotero item type")
-						}
-						if err := validateAnalyticsGroupBy(groupBy); err != nil {
-							return err
-						}
-						isKnownKind := analyticsResourceKinds[resourceType]
-						isKnownItemType := analyticsItemTypes[resourceType]
-						if !isKnownKind && !isKnownItemType {
-							return fmt.Errorf("unknown analytics type %q: expected a mirrored resource kind or Zotero item type", resourceType)
-						}
-						if isKnownKind && resourceType != "items" {
-							return fmt.Errorf("--group-by applies to Zotero items, not resource kind %q", resourceType)
-						}
-						if flags.asJSON {
-							enc := json.NewEncoder(cmd.OutOrStdout())
-							enc.SetIndent("", "  ")
-							return enc.Encode([]any{})
-						}
-						fmt.Fprintf(cmd.OutOrStdout(), "%s\tCount\n", groupBy)
-						fmt.Fprintln(cmd.OutOrStdout(), "---\t-----")
-						return nil
-					}
-					if cmd.Flags().Changed("limit") {
-						return fmt.Errorf("--limit requires --group-by")
-					}
+
+			var rows []map[string]any
+			var prov DataProvenance
+			humanMode := ""
+
+			if _, err := os.Stat(dbPath); err != nil && os.IsNotExist(err) {
+				if cmd.Flags().Changed("limit") && limit <= 0 {
+					return fmt.Errorf("--limit must be greater than zero")
+				}
+				if groupBy != "" {
 					if resourceType == "" {
-						if flags.asJSON {
-							enc := json.NewEncoder(cmd.OutOrStdout())
-							enc.SetIndent("", "  ")
-							return enc.Encode(map[string]int{})
-						}
-						w := cmd.OutOrStdout()
-						fmt.Fprintln(w, "Resource Type\tCount")
-						fmt.Fprintln(w, "-------------\t-----")
-						return nil
+						return fmt.Errorf("--group-by requires --type items or a Zotero item type")
+					}
+					if err := validateAnalyticsGroupBy(groupBy); err != nil {
+						return err
 					}
 					isKnownKind := analyticsResourceKinds[resourceType]
 					isKnownItemType := analyticsItemTypes[resourceType]
 					if !isKnownKind && !isKnownItemType {
 						return fmt.Errorf("unknown analytics type %q: expected a mirrored resource kind or Zotero item type", resourceType)
 					}
+					if isKnownKind && resourceType != "items" {
+						return fmt.Errorf("--group-by applies to Zotero items, not resource kind %q", resourceType)
+					}
 					reportedType := resourceType
-					itemType := ""
 					if !isKnownKind {
 						reportedType = "items"
-						itemType = resourceType
 					}
-					if flags.asJSON {
-						result := map[string]any{"resource_type": reportedType, "count": 0}
-						if itemType != "" {
-							result["item_type"] = itemType
+					rows = make([]map[string]any, 0)
+					prov = DataProvenance{Source: "local", Reason: "local_only", ResourceType: reportedType, GroupBy: groupBy}
+					humanMode = "group"
+				} else {
+					if cmd.Flags().Changed("limit") {
+						return fmt.Errorf("--limit requires --group-by")
+					}
+					if resourceType == "" {
+						rows = make([]map[string]any, 0)
+						prov = DataProvenance{Source: "local", Reason: "local_only", ResourceType: "analytics"}
+						humanMode = "status"
+					} else {
+						isKnownKind := analyticsResourceKinds[resourceType]
+						isKnownItemType := analyticsItemTypes[resourceType]
+						if !isKnownKind && !isKnownItemType {
+							return fmt.Errorf("unknown analytics type %q: expected a mirrored resource kind or Zotero item type", resourceType)
 						}
-						enc := json.NewEncoder(cmd.OutOrStdout())
-						enc.SetIndent("", "  ")
-						return enc.Encode(result)
+						reportedType := resourceType
+						itemType := ""
+						if !isKnownKind {
+							reportedType = "items"
+							itemType = resourceType
+						}
+						row := map[string]any{"resource_type": reportedType, "count": 0}
+						if itemType != "" {
+							row["item_type"] = itemType
+						}
+						rows = make([]map[string]any, 0, 1)
+						rows = append(rows, row)
+						prov = DataProvenance{Source: "local", Reason: "local_only", ResourceType: reportedType}
+						humanMode = "type"
 					}
-					fmt.Fprintf(cmd.OutOrStdout(), "%s: %d records\n", resourceType, 0)
-					return nil
 				}
-			}
-			db, err := store.OpenReadOnlyContext(cmd.Context(), dbPath)
-			if err != nil {
-				return fmt.Errorf("opening local database: %w\nRun 'zotio sync' first.", err)
-			}
-			defer db.Close()
-
-			if cmd.Flags().Changed("limit") && limit <= 0 {
-				return fmt.Errorf("--limit must be greater than zero")
-			}
-			if groupBy != "" {
-				if resourceType == "" {
-					return fmt.Errorf("--group-by requires --type items or a Zotero item type")
-				}
-				if err := validateAnalyticsGroupBy(groupBy); err != nil {
-					return err
-				}
-				return runGroupBy(cmd.OutOrStdout(), db, resourceType, groupBy, limit, flags)
-			}
-			if cmd.Flags().Changed("limit") {
-				return fmt.Errorf("--limit requires --group-by")
-			}
-
-			if resourceType == "" {
-				status, err := db.Status()
+			} else {
+				db, err := store.OpenReadOnlyContext(cmd.Context(), dbPath)
 				if err != nil {
-					return fmt.Errorf("getting status: %w", err)
+					return fmt.Errorf("opening local database: %w\nRun 'zotio sync' first.", err)
 				}
-				if flags.asJSON {
-					enc := json.NewEncoder(cmd.OutOrStdout())
-					enc.SetIndent("", "  ")
-					return enc.Encode(status)
+				defer db.Close()
+
+				if cmd.Flags().Changed("limit") && limit <= 0 {
+					return fmt.Errorf("--limit must be greater than zero")
 				}
-				w := cmd.OutOrStdout()
-				fmt.Fprintln(w, "Resource Type\tCount")
-				fmt.Fprintln(w, "-------------\t-----")
-				for rt, count := range status {
-					fmt.Fprintf(w, "%s\t%d\n", rt, count)
+				if groupBy != "" {
+					if resourceType == "" {
+						return fmt.Errorf("--group-by requires --type items or a Zotero item type")
+					}
+					if err := validateAnalyticsGroupBy(groupBy); err != nil {
+						return err
+					}
+					rows, err = analyticsGroupRows(db, resourceType, groupBy, limit)
+					if err != nil {
+						return err
+					}
+					// analyticsGroupRows refuses a scope that does not resolve to
+					// items, so a successful call fixes the resource type. Resolving
+					// the scope again here would list and JSON-decode the whole
+					// items mirror a second time for one string.
+					prov = localProvenance(db, "items", "local_only")
+					prov.GroupBy = groupBy
+					humanMode = "group"
+				} else {
+					if cmd.Flags().Changed("limit") {
+						return fmt.Errorf("--limit requires --group-by")
+					}
+					if resourceType == "" {
+						rows, err = analyticsStatusRows(db)
+						if err != nil {
+							return fmt.Errorf("getting status: %w", err)
+						}
+						prov = localProvenance(db, "analytics", "local_only")
+						humanMode = "status"
+					} else {
+						rows, err = analyticsTypeRows(db, resourceType)
+						if err != nil {
+							return err
+						}
+						// The row already carries the resolved resource type, so
+						// read it back instead of resolving the scope a second
+						// time over the whole items mirror.
+						reported := resourceType
+						if len(rows) == 1 {
+							if rt, ok := rows[0]["resource_type"].(string); ok && rt != "" {
+								reported = rt
+							}
+						}
+						prov = localProvenance(db, reported, "local_only")
+						humanMode = "type"
+					}
 				}
-				return nil
 			}
 
-			scope, err := analyticsScopeForType(db, resourceType)
+			data, err := json.Marshal(rows)
 			if err != nil {
 				return err
 			}
-			count := len(scope.rows)
-			if flags.asJSON {
-				result := map[string]any{"resource_type": scope.resourceType, "count": count}
-				if scope.itemType != "" {
-					result["item_type"] = scope.itemType
+			printProvenance(cmd, len(rows), prov)
+			if wantsJSONEnvelope(cmd.OutOrStdout(), flags) {
+				filtered := json.RawMessage(data)
+				if flags.selectFields != "" {
+					filtered = filterFields(filtered, flags.selectFields)
+				} else if flags.compact {
+					filtered = compactFields(filtered)
 				}
-				enc := json.NewEncoder(cmd.OutOrStdout())
-				enc.SetIndent("", "  ")
-				return enc.Encode(result)
+				wrapped, wrapErr := wrapWithProvenance(filtered, prov)
+				if wrapErr != nil {
+					return wrapErr
+				}
+				return printOutput(cmd.OutOrStdout(), wrapped, true)
 			}
-			fmt.Fprintf(cmd.OutOrStdout(), "%s: %d records\n", resourceType, count)
-			return nil
+			if wantsHumanTable(cmd.OutOrStdout(), flags) {
+				w := cmd.OutOrStdout()
+				switch humanMode {
+				case "group":
+					fmt.Fprintf(w, "%s\tCount\n", groupBy)
+					fmt.Fprintln(w, "---\t-----")
+					for _, row := range rows {
+						fmt.Fprintf(w, "%s\t%d\n", row["value"], row["count"])
+					}
+				case "status":
+					fmt.Fprintln(w, "Resource Type\tCount")
+					fmt.Fprintln(w, "-------------\t-----")
+					for _, row := range rows {
+						fmt.Fprintf(w, "%s\t%d\n", row["resource_type"], row["count"])
+					}
+				case "type":
+					count := 0
+					if len(rows) == 1 {
+						count, _ = rows[0]["count"].(int)
+					}
+					fmt.Fprintf(w, "%s: %d records\n", resourceType, count)
+				}
+				return nil
+			}
+			return printOutputWithFlags(cmd.OutOrStdout(), json.RawMessage(data), flags)
 		},
 	}
 
@@ -256,13 +294,13 @@ func validateAnalyticsGroupBy(field string) error {
 	}
 }
 
-func runGroupBy(w io.Writer, db *store.Store, resourceType, field string, limit int, flags *rootFlags) error {
+func analyticsGroupRows(db *store.Store, resourceType, field string, limit int) ([]map[string]any, error) {
 	scope, err := analyticsScopeForType(db, resourceType)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	if scope.resourceType != "items" {
-		return fmt.Errorf("--group-by applies to Zotero items, not resource kind %q", scope.resourceType)
+		return nil, fmt.Errorf("--group-by applies to Zotero items, not resource kind %q", scope.resourceType)
 	}
 
 	counts := make(map[string]int)
@@ -278,8 +316,8 @@ func runGroupBy(w io.Writer, db *store.Store, resourceType, field string, limit 
 	}
 
 	type kv struct {
-		Key   string `json:"value"`
-		Count int    `json:"count"`
+		Key   string
+		Count int
 	}
 	sorted := make([]kv, 0, len(counts))
 	for k, v := range counts {
@@ -295,18 +333,45 @@ func runGroupBy(w io.Writer, db *store.Store, resourceType, field string, limit 
 		sorted = sorted[:limit]
 	}
 
-	if flags.asJSON {
-		enc := json.NewEncoder(w)
-		enc.SetIndent("", "  ")
-		return enc.Encode(sorted)
+	rows := make([]map[string]any, 0, len(sorted))
+	for _, item := range sorted {
+		rows = append(rows, map[string]any{"value": item.Key, "count": item.Count})
 	}
+	return rows, nil
+}
 
-	fmt.Fprintf(w, "%s\tCount\n", field)
-	fmt.Fprintln(w, "---\t-----")
-	for _, kv := range sorted {
-		fmt.Fprintf(w, "%s\t%d\n", kv.Key, kv.Count)
+func analyticsStatusRows(db *store.Store) ([]map[string]any, error) {
+	status, err := db.Status()
+	if err != nil {
+		return nil, err
 	}
-	return nil
+	rows := make([]map[string]any, 0, len(status))
+	for resourceType, count := range status {
+		rows = append(rows, map[string]any{"resource_type": resourceType, "count": count})
+	}
+	sort.Slice(rows, func(i, j int) bool {
+		leftCount := rows[i]["count"].(int)
+		rightCount := rows[j]["count"].(int)
+		if leftCount != rightCount {
+			return leftCount > rightCount
+		}
+		return rows[i]["resource_type"].(string) < rows[j]["resource_type"].(string)
+	})
+	return rows, nil
+}
+
+func analyticsTypeRows(db *store.Store, requested string) ([]map[string]any, error) {
+	scope, err := analyticsScopeForType(db, requested)
+	if err != nil {
+		return nil, err
+	}
+	row := map[string]any{"resource_type": scope.resourceType, "count": len(scope.rows)}
+	if scope.itemType != "" {
+		row["item_type"] = scope.itemType
+	}
+	rows := make([]map[string]any, 0, 1)
+	rows = append(rows, row)
+	return rows, nil
 }
 
 func analyticsGroupValues(obj map[string]any, field string) []string {

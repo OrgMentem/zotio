@@ -1,9 +1,17 @@
 // Copyright 2026 OrgMentem. Licensed under MIT. See LICENSE.
 // Pins the read-envelope invariant end to end, at the command level: .results
 // is always a JSON array, for a single-item read (items get), a list read
-// (items list), and items find — which previously had no envelope at all.
-// See dev/field-report-2026-08-08.md finding 10 and
-// dev/field-report-2026-08-08-library-hygiene.md finding 8.
+// (items list), items find, the local-mirror record reads (items missing-pdf,
+// items stale, items unfiled, items venues), and analytics — all of which
+// once printed a bare top-level array with no envelope at all.
+//
+// The invariant covers commands that answer resource records. It does NOT
+// cover report-shaped commands, which answer a purpose-built object (items
+// audit, doctor, library health, import scan, …). See SKILL.md for the consumer-facing shape taxonomy.
+//
+// See dev/field-report-2026-08-08.md finding 10,
+// dev/field-report-2026-08-08-library-hygiene.md finding 8, and
+// dev/field-report-2026-08-22-papio.md finding 1.
 
 package cli
 
@@ -167,6 +175,165 @@ func TestItemsFindGainsResultsWrapper(t *testing.T) {
 	}
 	if got := env.Results[0]["key"]; got != "DOIKEY1" {
 		t.Fatalf("results[0].key = %v, want DOIKEY1", got)
+	}
+}
+
+// TestLocalRecordReadsGainResultsWrapper covers the papio field report of
+// 2026-08-22, finding 1: `items missing-pdf` still printed a bare top-level
+// JSON array while its siblings `items find` and `items list` answered the
+// {meta, results} envelope, so a consumer's `.results[]` silently yielded
+// nothing. The same bare-array shape covered `items stale`, `items unfiled`
+// and `items venues`, which read the same local mirror and return the same
+// kind of record rows.
+//
+// All four are exercised from one seeded store: a single journalArticle with
+// no PDF child, no collections, an old dateAdded and a publicationTitle
+// satisfies every one of the four queries at once. Adding a sibling local
+// record read is one row in this table.
+func TestLocalRecordReadsGainResultsWrapper(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+	t.Setenv("ZOTERO_CONFIG", filepath.Join(t.TempDir(), "missing.toml"))
+
+	dbPath, err := defaultDBPath("zotio")
+	if err != nil {
+		t.Fatalf("defaultDBPath: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Dir(dbPath), 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	db, err := store.OpenWithContext(context.Background(), dbPath)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	seed := []json.RawMessage{
+		json.RawMessage(`{"key":"BAREONE","version":3,"data":{"key":"BAREONE","itemType":"journalArticle","title":"Envelope Test Paper","publicationTitle":"Journal of Envelopes","date":"2019","dateAdded":"2019-01-01T00:00:00Z","DOI":"10.1000/envelope","collections":[]}}`),
+	}
+	if _, _, err := db.UpsertBatch("items", seed); err != nil {
+		t.Fatalf("seed items: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close store: %v", err)
+	}
+
+	for _, tc := range []struct {
+		name   string
+		newCmd func(*rootFlags) *cobra.Command
+		args   []string
+		field  string
+		want   any
+	}{
+		{"items missing-pdf", newItemsMissingPdfCmd, nil, "key", "BAREONE"},
+		{"items stale", newItemsStaleCmd, nil, "key", "BAREONE"},
+		{"items unfiled", newItemsUnfiledCmd, nil, "key", "BAREONE"},
+		{"items venues", newItemsVenuesCmd, nil, "venue", "Journal of Envelopes"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cmd := tc.newCmd(&rootFlags{asJSON: true, noCache: true})
+			cmd.SilenceErrors, cmd.SilenceUsage = true, true
+			var out bytes.Buffer
+			cmd.SetOut(&out)
+			cmd.SetErr(&bytes.Buffer{})
+			cmd.SetArgs(tc.args)
+			if err := cmd.Execute(); err != nil {
+				t.Fatalf("%s: %v", tc.name, err)
+			}
+
+			var bareArray []json.RawMessage
+			if json.Unmarshal(out.Bytes(), &bareArray) == nil {
+				t.Fatalf("%s --json emitted a bare top-level array, want a {meta, results} envelope: %s", tc.name, out.String())
+			}
+			env := decodeResultsArrayEnvelope(t, out.Bytes())
+			if env.Meta.Source == "" {
+				t.Fatalf("%s: meta.source missing from envelope: %s", tc.name, out.String())
+			}
+			if len(env.Results) != 1 {
+				t.Fatalf("%s: results length = %d, want 1: %s", tc.name, len(env.Results), out.String())
+			}
+			if got := env.Results[0][tc.field]; got != tc.want {
+				t.Fatalf("%s: results[0].%s = %v, want %v", tc.name, tc.field, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestAnalyticsGainsResultsWrapper covers the final analytics shape: analytics
+// once bypassed the shared print pipeline and emitted three different JSON
+// shapes (a bare array for --group-by, a map for the breakdown, and a single
+// object for --type), and ignored every format flag except --json. It must
+// now answer the same {meta, results} envelope every other read command uses,
+// with .results always an array of row objects each carrying a count.
+//
+// analytics takes --db <path>, so it does not need the HOME/defaultDBPath
+// dance the other local-mirror tests use. Seed a store at a TempDir path and
+// pass --db. Seeding models TestAnalyticsCommandReportsFilteredItemTypeCount
+// (internal/cli/analytics_test.go) which uses store.OpenWithContext plus
+// db.Upsert("items", key, raw).
+func TestAnalyticsGainsResultsWrapper(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "data.db")
+	db, err := store.OpenWithContext(context.Background(), dbPath)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	for key, raw := range map[string]string{
+		"J1": `{"key":"J1","version":1,"data":{"key":"J1","itemType":"journalArticle","title":"Envelope Test Paper","date":"2019"}}`,
+	} {
+		if err := db.Upsert("items", key, json.RawMessage(raw)); err != nil {
+			db.Close()
+			t.Fatalf("seed %s: %v", key, err)
+		}
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close store: %v", err)
+	}
+
+	for _, tc := range []struct {
+		name  string
+		args  []string
+		field string
+		want  string
+	}{
+		{"group-by year", []string{"--db", dbPath, "--type", "items", "--group-by", "year"}, "value", "2019"},
+		{"type journalArticle", []string{"--db", dbPath, "--type", "journalArticle"}, "resource_type", "items"},
+		{"breakdown", []string{"--db", dbPath}, "resource_type", "items"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cmd := newAnalyticsCmd(&rootFlags{asJSON: true})
+			cmd.SilenceErrors, cmd.SilenceUsage = true, true
+			var out bytes.Buffer
+			cmd.SetOut(&out)
+			cmd.SetErr(&bytes.Buffer{})
+			cmd.SetArgs(tc.args)
+			if err := cmd.Execute(); err != nil {
+				t.Fatalf("analytics %s: %v", tc.name, err)
+			}
+
+			var bareArray []json.RawMessage
+			if json.Unmarshal(out.Bytes(), &bareArray) == nil {
+				t.Fatalf("analytics --json emitted a bare top-level array, want a {meta, results} envelope: %s", out.String())
+			}
+
+			env := decodeResultsArrayEnvelope(t, out.Bytes())
+			if env.Meta.Source == "" {
+				t.Fatalf("analytics %s: meta.source missing from envelope: %s", tc.name, out.String())
+			}
+			if len(env.Results) == 0 {
+				t.Fatalf("analytics %s: results empty, want at least 1: %s", tc.name, out.String())
+			}
+			if tc.name == "type journalArticle" && len(env.Results) != 1 {
+				t.Fatalf("analytics %s: results length = %d, want 1: %s", tc.name, len(env.Results), out.String())
+			}
+			found := false
+			for _, row := range env.Results {
+				if got, ok := row[tc.field]; ok && got == tc.want {
+					found = true
+					break
+				}
+			}
+			if !found {
+				t.Fatalf("analytics %s: no row with %s=%q in %#v: %s", tc.name, tc.field, tc.want, env.Results, out.String())
+			}
+		})
 	}
 }
 

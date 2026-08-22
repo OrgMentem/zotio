@@ -3,7 +3,7 @@
 
 Every `zotio` command, generated directly from the binary. Add `--agent` to any command for JSON output and non-interactive defaults; mutating commands preview unless `--yes` is passed.
 
-Read commands emit a `{meta, results}` envelope in JSON mode; for ordinary list/single-resource reads, `results` is *always* a JSON array, even for a single-object read like `items get` (a one-element array) — index it as `results[0]` or iterate with `results[]` uniformly. Purpose-built report-shaped diagnostics are explicit exceptions: `items audit`, `journal show`, `doctor`, `which`, `analytics`, `schema drift`, `capabilities drift`, `workflow status`, `reading-list`, `items duplicates`, `items citekey-conflicts`, and `creators audit` expose named report fields instead of `results`. `annotations export` is also an explicit raw-export exception: its `--format markdown` and `--format json` outputs are consumable documents, not read-list envelopes.
+Read commands emit a `{meta, results}` envelope in JSON mode; for ordinary list/single-resource reads, `results` is *always* a JSON array, even for a single-object read like `items get` (a one-element array) — index it as `results[0]` or iterate with `results[]` uniformly. `analytics` is in this group too: every mode answers `results` rows carrying a `count`, so one jq works across `--group-by`, `--type`, and the no-flag resource breakdown. Purpose-built report-shaped diagnostics are explicit exceptions: `items audit`, `journal show`, `doctor`, `which`, `schema drift`, `capabilities drift`, `workflow status`, `reading-list`, `items duplicates`, `items citekey-conflicts`, and `creators audit` expose named report fields instead of `results`. `annotations export` is also an explicit raw-export exception: its `--format markdown` and `--format json` outputs are consumable documents, not read-list envelopes.
 
 ## Global flags
 
@@ -922,6 +922,16 @@ attachment's provenance, so the local path becomes item metadata and syncs.
 
 By default this previews the planned changes; apply with --yes.
 
+--via connector hands work to the running Zotero desktop, which surfaces its
+own progress UI; zotio cannot dismiss it and the connector protocol exposes no
+endpoint that closes or completes a save session. Observed 2026-08-22: roughly
+78 consecutive one-per-item invocations left Zotero unresponsive with progress
+windows accumulating; no proven mechanism has been established. Prefer one
+invocation with many records: import file --via connector and items create
+share one session, while import apply currently opens one per manifest entry.
+--rate-limit governs only Web API requests and does not pace connector calls;
+pace your own invocations.
+
 ```
 zotio import apply <manifest> [flags]
 ```
@@ -1042,6 +1052,15 @@ creating a same-named collection when one doesn't already exist (like 'items
 add-to-collection'). This is a separate step, not part of the connector call: the
 saveStandaloneAttachment endpoint saves into whatever the desktop pane currently
 targets and accepts no collection parameter.
+
+--via connector hands work to the running Zotero desktop, which surfaces its
+own progress UI; zotio cannot dismiss it and the connector protocol exposes no
+endpoint that closes or completes a save session. Observed 2026-08-22: roughly
+78 consecutive one-per-item invocations left Zotero unresponsive with progress
+windows accumulating; no proven mechanism has been established. Prefer one
+invocation with many PDFs: import file --via connector and items create share
+one session (import apply opens one per manifest entry). --rate-limit
+governs only Web API requests and does not pace connector calls.
 
 ```
 zotio import pdf <path...> [flags]
@@ -1388,6 +1407,18 @@ zotio items collections-of <itemKey>
 ### `zotio items create`
 
 Create one or more items
+
+Create one or more items from JSON supplied with --items or --stdin.
+
+This command shares one connector session across the invocation when routed
+through --via connector; the Zotero desktop surfaces its own progress UI and
+zotio cannot dismiss it — no connector endpoint closes or completes a save
+session. Observed 2026-08-22: roughly 78 consecutive one-per-item
+invocations left Zotero unresponsive with progress windows accumulating; no
+proven mechanism has been established. Prefer one invocation with many items:
+import file --via connector and this command share one session, while import
+apply currently opens one per manifest entry. --rate-limit governs only Web
+API requests and does not pace connector calls.
 
 ```
 zotio items create [flags]

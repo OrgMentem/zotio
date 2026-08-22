@@ -727,9 +727,12 @@ func compactListFields(items []map[string]any) json.RawMessage {
 		"url": true, "email": true, "key": true,
 		"created_at": true, "updated_at": true, "createdAt": true, "updatedAt": true,
 		// Preserve hand-written Zotero analytics fields under --agent compact output.
+		// resource_type and value carry the analytics row's grouping key: without
+		// them a row compacts to a bare {"count":N} and the data is gone.
 		"cite_key": true, "display_name": true, "creator_type": true, "item_count": true,
 		"venue": true, "item_type": true, "min_year": true, "max_year": true,
 		"count": true, "date_added": true, "uri": true, "launched": true,
+		"resource_type": true, "value": true,
 		"parent_item": true, "color": true, "text": true, "comment": true,
 		"page": true, "tag": true, "collection_count": true, "library_count": true,
 		"collection_only": true, "queue_tag": true, "oldest": true, "items": true,
@@ -1540,6 +1543,10 @@ type DataProvenance struct {
 	// true when a local read applied the request's scopes
 	// (itemType/tag/collection/sort/limit) rather than dumping all synced rows.
 	Scoped bool `json:"scoped,omitempty"`
+	// GroupBy names the analytics grouping field, so a consumer receiving
+	// {value, count} rows can tell whether value is a year, a tag, or a
+	// creator without re-reading its own command line.
+	GroupBy string `json:"group_by,omitempty"`
 }
 
 // printProvenance writes a one-line provenance message to stderr for TTY users.
@@ -1608,6 +1615,9 @@ func wrapWithProvenance(data json.RawMessage, prov DataProvenance) (json.RawMess
 	// advertise that local filters were applied.
 	if prov.Scoped {
 		meta["scoped"] = true
+	}
+	if prov.GroupBy != "" {
+		meta["group_by"] = prov.GroupBy
 	}
 	envelope := map[string]any{
 		"results": normalizeResultsArray(data),

@@ -46,6 +46,27 @@ func newItemsMissingPdfCmd(flags *rootFlags) *cobra.Command {
 			if err != nil {
 				return err
 			}
+			// This command reads the local mirror only, so route it through the
+			// same envelope pipeline as every other read command and keep
+			// `.results` a JSON array. It used to print a bare top-level array
+			// while its siblings `items find`/`items list` did not, which cost a
+			// downstream consumer a whole debugging cycle (papio field report
+			// 2026-08-22, finding 1).
+			prov := localProvenance(rawDB, "items", "local_only")
+			printProvenance(cmd, len(rows), prov)
+			if wantsJSONEnvelope(cmd.OutOrStdout(), flags) {
+				filtered := json.RawMessage(data)
+				if flags.selectFields != "" {
+					filtered = filterFields(filtered, flags.selectFields)
+				} else if flags.compact {
+					filtered = compactFields(filtered)
+				}
+				wrapped, wrapErr := wrapWithProvenance(filtered, prov)
+				if wrapErr != nil {
+					return wrapErr
+				}
+				return printOutput(cmd.OutOrStdout(), wrapped, true)
+			}
 			return printOutputWithFlags(cmd.OutOrStdout(), json.RawMessage(data), flags)
 		},
 	}

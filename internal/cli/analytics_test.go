@@ -24,7 +24,7 @@ func openAnalyticsTestStore(t *testing.T) *store.Store {
 	return db
 }
 
-// groupByResult mirrors the JSON shape runGroupBy emits (kv.Key/kv.Count).
+// groupByResult mirrors the JSON shape analytics grouping emits (value/count).
 type groupByResult struct {
 	Value string `json:"value"`
 	Count int    `json:"count"`
@@ -32,14 +32,29 @@ type groupByResult struct {
 
 func runGroupByJSON(t *testing.T, db *store.Store, resourceType, field string) []groupByResult {
 	t.Helper()
-	var buf bytes.Buffer
-	flags := &rootFlags{asJSON: true}
-	if err := runGroupBy(&buf, db, resourceType, field, 0, flags); err != nil {
-		t.Fatalf("runGroupBy: %v", err)
+	rows, err := analyticsGroupRows(db, resourceType, field, 0)
+	if err != nil {
+		t.Fatalf("analyticsGroupRows: %v", err)
 	}
-	var results []groupByResult
-	if err := json.Unmarshal(buf.Bytes(), &results); err != nil {
-		t.Fatalf("decode group-by output: %v (raw: %s)", err, buf.String())
+	results := make([]groupByResult, 0, len(rows))
+	for _, row := range rows {
+		var r groupByResult
+		if v, ok := row["value"].(string); ok {
+			r.Value = v
+		}
+		switch c := row["count"].(type) {
+		case int:
+			r.Count = c
+		case int64:
+			r.Count = int(c)
+		case float64:
+			r.Count = int(c)
+		case json.Number:
+			if n, err := c.Int64(); err == nil {
+				r.Count = int(n)
+			}
+		}
+		results = append(results, r)
 	}
 	return results
 }
@@ -193,13 +208,25 @@ func TestAnalyticsGroupByCollectionHonorsLimit(t *testing.T) {
 			t.Fatalf("seed item: %v", err)
 		}
 	}
-	var out bytes.Buffer
-	if err := runGroupBy(&out, db, "items", "collection", 1, &rootFlags{asJSON: true}); err != nil {
+	rows, err := analyticsGroupRows(db, "items", "collection", 1)
+	if err != nil {
 		t.Fatalf("collection grouping: %v", err)
 	}
 	var got []groupByResult
-	if err := json.Unmarshal(out.Bytes(), &got); err != nil {
-		t.Fatalf("decode grouping: %v", err)
+	for _, row := range rows {
+		var r groupByResult
+		if v, ok := row["value"].(string); ok {
+			r.Value = v
+		}
+		switch c := row["count"].(type) {
+		case int:
+			r.Count = c
+		case int64:
+			r.Count = int(c)
+		case float64:
+			r.Count = int(c)
+		}
+		got = append(got, r)
 	}
 	if len(got) != 1 || got[0].Value != "COL-A" || got[0].Count != 2 {
 		t.Fatalf("limited collection groups = %+v, want [{COL-A 2}]", got)
@@ -211,6 +238,47 @@ func TestAnalyticsUnsupportedGroupByErrors(t *testing.T) {
 		t.Fatal("unsupported group-by unexpectedly accepted")
 	}
 }
+
+// analyticsEnvelope mirrors the shared {meta, results} shape analytics answers
+// in JSON mode. Results is always an array of row objects carrying a count.
+type analyticsEnvelope struct {
+	Results []map[string]any `json:"results"`
+	Meta    struct {
+		Source       string `json:"source"`
+		Reason       string `json:"reason,omitempty"`
+		ResourceType string `json:"resource_type,omitempty"`
+		GroupBy      string `json:"group_by,omitempty"`
+	} `json:"meta"`
+}
+
+func analyticsDecodeEnvelope(t *testing.T, out []byte) analyticsEnvelope {
+	t.Helper()
+	var env analyticsEnvelope
+	if err := json.Unmarshal(out, &env); err != nil {
+		t.Fatalf("decode envelope %s: %v", string(out), err)
+	}
+	if env.Results == nil {
+		t.Fatalf("envelope results is nil, want non-nil slice (empty array, not null): %s", string(out))
+	}
+	return env
+}
+
+func analyticsIntFromAny(v any) int {
+	switch n := v.(type) {
+	case int:
+		return n
+	case int64:
+		return int(n)
+	case float64:
+		return int(n)
+	case json.Number:
+		if i, err := n.Int64(); err == nil {
+			return int(i)
+		}
+	}
+	return 0
+}
+
 func TestAnalyticsCommandReportsFilteredItemTypeCount(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "data.db")
 	db, err := store.OpenWithContext(context.Background(), dbPath)
@@ -239,14 +307,19 @@ func TestAnalyticsCommandReportsFilteredItemTypeCount(t *testing.T) {
 	if err := cmd.Execute(); err != nil {
 		t.Fatalf("analytics command: %v", err)
 	}
-	var result struct {
-		Count int `json:"count"`
+	env := analyticsDecodeEnvelope(t, out.Bytes())
+	if len(env.Results) != 1 {
+		t.Fatalf("results len = %d, want 1: %s", len(env.Results), out.String())
 	}
-	if err := json.Unmarshal(out.Bytes(), &result); err != nil {
-		t.Fatalf("decode command result: %v (%s)", err, out.String())
+	row := env.Results[0]
+	if got := analyticsIntFromAny(row["count"]); got != 2 {
+		t.Fatalf("count = %v, want 2: %+v", row["count"], row)
 	}
-	if result.Count != 2 {
-		t.Fatalf("journalArticle command count = %d, want 2", result.Count)
+	if got, want := row["resource_type"], "items"; got != want {
+		t.Fatalf("resource_type = %v, want %v: %+v", got, want, row)
+	}
+	if got, want := row["item_type"], "journalArticle"; got != want {
+		t.Fatalf("item_type = %v, want %v: %+v", got, want, row)
 	}
 }
 
@@ -279,9 +352,9 @@ func TestAnalyticsCommandNonexistentDB_ReportsEmpty_Human(t *testing.T) {
 	if err := cmd.Execute(); err != nil {
 		t.Fatalf("analytics error = %v; want nil empty result", err)
 	}
-	got := out.String()
-	if !strings.Contains(got, "Resource Type") || !strings.Contains(got, "Count") {
-		t.Fatalf("stdout = %q; want empty analytics table header", got)
+	env := analyticsDecodeEnvelope(t, bytes.TrimSpace(out.Bytes()))
+	if len(env.Results) != 0 {
+		t.Fatalf("results = %v; want empty array", env.Results)
 	}
 	if strings.Contains(errOut.String(), "opening local database") || strings.Contains(out.String(), "opening local database") {
 		t.Fatalf("output must not contain store-open error on fresh install; stdout=%q stderr=%q", out.String(), errOut.String())
@@ -299,12 +372,9 @@ func TestAnalyticsCommandNonexistentDB_ReportsEmpty_JSON(t *testing.T) {
 	if err := cmd.Execute(); err != nil {
 		t.Fatalf("analytics --json error = %v; want nil", err)
 	}
-	var status map[string]int
-	if err := json.Unmarshal(bytes.TrimSpace(out.Bytes()), &status); err != nil {
-		t.Fatalf("decode %q: %v", out.String(), err)
-	}
-	if len(status) != 0 {
-		t.Fatalf("status = %v; want empty map", status)
+	env := analyticsDecodeEnvelope(t, bytes.TrimSpace(out.Bytes()))
+	if len(env.Results) != 0 {
+		t.Fatalf("results = %v; want empty array", env.Results)
 	}
 	if strings.Contains(errOut.String(), "opening local database") {
 		t.Fatalf("stderr = %q; must not contain store-open error", errOut.String())
@@ -315,15 +385,26 @@ func TestAnalyticsCommandNonexistentDB_TypeReportsEmpty_Human(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "missing.db")
 	cmd := newAnalyticsCmd(&rootFlags{})
 	cmd.SilenceErrors, cmd.SilenceUsage = true, true
-	var out bytes.Buffer
+	var out, errOut bytes.Buffer
 	cmd.SetOut(&out)
-	cmd.SetErr(&bytes.Buffer{})
+	cmd.SetErr(&errOut)
 	cmd.SetArgs([]string{"--db", dbPath, "--type", "items"})
 	if err := cmd.Execute(); err != nil {
 		t.Fatalf("analytics --type items error = %v; want nil", err)
 	}
-	if want := "items: 0 records"; !strings.Contains(out.String(), want) {
-		t.Fatalf("stdout = %q; want %q", out.String(), want)
+	env := analyticsDecodeEnvelope(t, bytes.TrimSpace(out.Bytes()))
+	if len(env.Results) != 1 {
+		t.Fatalf("results len = %d, want 1 zero row: %s", len(env.Results), out.String())
+	}
+	row := env.Results[0]
+	if got := analyticsIntFromAny(row["count"]); got != 0 {
+		t.Fatalf("count = %v; want 0", row["count"])
+	}
+	if got := row["resource_type"]; got != "items" {
+		t.Fatalf("resource_type = %v; want items", got)
+	}
+	if strings.Contains(errOut.String(), "opening local database") || strings.Contains(out.String(), "opening local database") {
+		t.Fatalf("output must not contain store-open error on fresh install; stdout=%q stderr=%q", out.String(), errOut.String())
 	}
 }
 
@@ -338,47 +419,408 @@ func TestAnalyticsCommandNonexistentDB_TypeReportsEmpty_JSON(t *testing.T) {
 	if err := cmd.Execute(); err != nil {
 		t.Fatalf("analytics --type journalArticle --json error = %v; want nil", err)
 	}
-	var result map[string]any
-	if err := json.Unmarshal(out.Bytes(), &result); err != nil {
-		t.Fatalf("decode %q: %v", out.String(), err)
+	env := analyticsDecodeEnvelope(t, out.Bytes())
+	if len(env.Results) != 1 {
+		t.Fatalf("results len = %d, want 1: %s", len(env.Results), out.String())
 	}
-	if got := result["count"]; got != float64(0) {
+	row := env.Results[0]
+	if got := analyticsIntFromAny(row["count"]); got != 0 {
 		t.Fatalf("count = %v; want 0", got)
 	}
-	if got := result["resource_type"]; got != "items" {
+	if got := row["resource_type"]; got != "items" {
 		t.Fatalf("resource_type = %v; want items", got)
 	}
-	if got := result["item_type"]; got != "journalArticle" {
+	if got := row["item_type"]; got != "journalArticle" {
 		t.Fatalf("item_type = %v; want journalArticle", got)
 	}
 }
 
 func TestAnalyticsCommandNonexistentDB_GroupByReportsEmpty(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "missing.db")
-	for _, asJSON := range []bool{false, true} {
-		t.Run(map[bool]string{false: "human", true: "json"}[asJSON], func(t *testing.T) {
-			cmd := newAnalyticsCmd(&rootFlags{asJSON: asJSON})
-			cmd.SilenceErrors, cmd.SilenceUsage = true, true
+	t.Run("json", func(t *testing.T) {
+		cmd := newAnalyticsCmd(&rootFlags{asJSON: true})
+		cmd.SilenceErrors, cmd.SilenceUsage = true, true
+		var out bytes.Buffer
+		cmd.SetOut(&out)
+		cmd.SetErr(&bytes.Buffer{})
+		cmd.SetArgs([]string{"--db", dbPath, "--type", "items", "--group-by", "year"})
+		if err := cmd.Execute(); err != nil {
+			t.Fatalf("analytics --group-by error = %v; want nil", err)
+		}
+		env := analyticsDecodeEnvelope(t, bytes.TrimSpace(out.Bytes()))
+		if len(env.Results) != 0 {
+			t.Fatalf("group-by JSON results = %v; want empty array", env.Results)
+		}
+	})
+	t.Run("piped_default_is_json", func(t *testing.T) {
+		cmd := newAnalyticsCmd(&rootFlags{})
+		cmd.SilenceErrors, cmd.SilenceUsage = true, true
+		var out bytes.Buffer
+		cmd.SetOut(&out)
+		cmd.SetErr(&bytes.Buffer{})
+		cmd.SetArgs([]string{"--db", dbPath, "--type", "items", "--group-by", "year"})
+		if err := cmd.Execute(); err != nil {
+			t.Fatalf("analytics --group-by error = %v; want nil", err)
+		}
+		env := analyticsDecodeEnvelope(t, bytes.TrimSpace(out.Bytes()))
+		if len(env.Results) != 0 {
+			t.Fatalf("piped default group-by results = %v; want empty array", env.Results)
+		}
+	})
+}
+
+// New tests covering the migrated envelope shapes.
+
+func TestAnalyticsCommandBreakdownReturnsResourceTypeRows(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "data.db")
+	db, err := store.OpenWithContext(context.Background(), dbPath)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	// Seed two resource kinds with different counts so sort order is observable.
+	for i := 0; i < 3; i++ {
+		key := filepath.Base(t.TempDir()) + "_i" + string(rune('0'+i))
+		// Use distinct keys; content does not matter for Status().
+		if err := db.Upsert("items", key, json.RawMessage(`{"key":"`+key+`","data":{"itemType":"journalArticle"}}`)); err != nil {
+			db.Close()
+			t.Fatalf("seed items %s: %v", key, err)
+		}
+	}
+	if err := db.Upsert("collections", "COL1", json.RawMessage(`{"key":"COL1","data":{"name":"C1"}}`)); err != nil {
+		db.Close()
+		t.Fatalf("seed collections: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close store: %v", err)
+	}
+
+	var out bytes.Buffer
+	cmd := newAnalyticsCmd(&rootFlags{asJSON: true})
+	cmd.SetOut(&out)
+	cmd.SetErr(&bytes.Buffer{})
+	cmd.SetArgs([]string{"--db", dbPath})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("analytics no-flag: %v", err)
+	}
+	env := analyticsDecodeEnvelope(t, out.Bytes())
+	if len(env.Results) < 2 {
+		t.Fatalf("results len = %d, want >=2: %s", len(env.Results), out.String())
+	}
+	// Every row must carry resource_type and count.
+	for _, row := range env.Results {
+		if _, ok := row["resource_type"]; !ok {
+			t.Fatalf("row missing resource_type: %+v", row)
+		}
+		if _, ok := row["count"]; !ok {
+			t.Fatalf("row missing count: %+v", row)
+		}
+	}
+	// Sorted by count descending, then resource_type ascending.
+	for i := 1; i < len(env.Results); i++ {
+		prev := analyticsIntFromAny(env.Results[i-1]["count"])
+		curr := analyticsIntFromAny(env.Results[i]["count"])
+		if prev < curr {
+			t.Fatalf("results not sorted by count descending: %+v before %+v", env.Results[i-1], env.Results[i])
+		}
+		if prev == curr {
+			a := env.Results[i-1]["resource_type"].(string)
+			b := env.Results[i]["resource_type"].(string)
+			if a > b {
+				t.Fatalf("results with equal count not sorted by resource_type ascending: %q before %q", a, b)
+			}
+		}
+	}
+	// The top row should be the kind with highest count (items).
+	if got := env.Results[0]["resource_type"]; got != "items" {
+		t.Fatalf("first row resource_type = %v, want items (highest count)", got)
+	}
+}
+
+func TestAnalyticsCommandGroupByPlainReturnsTabSeparated(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "data.db")
+	db, err := store.OpenWithContext(context.Background(), dbPath)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	for key, raw := range map[string]string{
+		"A1": `{"key":"A1","data":{"itemType":"journalArticle"}}`,
+		"A2": `{"key":"A2","data":{"itemType":"journalArticle"}}`,
+		"B1": `{"key":"B1","data":{"itemType":"book"}}`,
+	} {
+		if err := db.Upsert("items", key, json.RawMessage(raw)); err != nil {
+			db.Close()
+			t.Fatalf("seed %s: %v", key, err)
+		}
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close store: %v", err)
+	}
+
+	var out bytes.Buffer
+	cmd := newAnalyticsCmd(&rootFlags{plain: true})
+	cmd.SetOut(&out)
+	cmd.SetErr(&bytes.Buffer{})
+	cmd.SetArgs([]string{"--db", dbPath, "--type", "items", "--group-by", "itemType"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("analytics --plain: %v", err)
+	}
+	got := out.String()
+	if strings.Contains(got, "{") || strings.Contains(got, "\"value\"") {
+		t.Fatalf("plain output looks like JSON, want tab-separated rows: %q", got)
+	}
+	if !strings.Contains(got, "\t") {
+		t.Fatalf("plain output missing tab separator: %q", got)
+	}
+	lines := strings.Split(strings.TrimSpace(got), "\n")
+	if len(lines) < 2 {
+		t.Fatalf("plain output lines = %d, want header plus rows: %q", len(lines), got)
+	}
+	header := strings.ToLower(lines[0])
+	if !strings.Contains(header, "value") || !strings.Contains(header, "count") {
+		t.Fatalf("plain header = %q, want to contain value and count", lines[0])
+	}
+	if !strings.Contains(got, "journalArticle") || !strings.Contains(got, "book") {
+		t.Fatalf("plain output missing expected values: %q", got)
+	}
+}
+
+func TestAnalyticsCommandGroupByCSVReturnsCommaSeparated(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "data.db")
+	db, err := store.OpenWithContext(context.Background(), dbPath)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	for key, raw := range map[string]string{
+		"A1": `{"key":"A1","data":{"itemType":"journalArticle"}}`,
+		"A2": `{"key":"A2","data":{"itemType":"journalArticle"}}`,
+		"B1": `{"key":"B1","data":{"itemType":"book"}}`,
+	} {
+		if err := db.Upsert("items", key, json.RawMessage(raw)); err != nil {
+			db.Close()
+			t.Fatalf("seed %s: %v", key, err)
+		}
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close store: %v", err)
+	}
+
+	var out bytes.Buffer
+	cmd := newAnalyticsCmd(&rootFlags{csv: true})
+	cmd.SetOut(&out)
+	cmd.SetErr(&bytes.Buffer{})
+	cmd.SetArgs([]string{"--db", dbPath, "--type", "items", "--group-by", "itemType"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("analytics --csv: %v", err)
+	}
+	got := out.String()
+	if strings.Contains(got, "\t") {
+		t.Fatalf("csv output contains tab, want comma-separated: %q", got)
+	}
+	if !strings.Contains(got, ",") {
+		t.Fatalf("csv output missing comma: %q", got)
+	}
+	lines := strings.Split(strings.TrimSpace(got), "\n")
+	if len(lines) < 2 {
+		t.Fatalf("csv lines = %d, want header plus rows: %q", len(lines), got)
+	}
+	header := strings.ToLower(lines[0])
+	if !strings.Contains(header, "value") || !strings.Contains(header, "count") {
+		t.Fatalf("csv header = %q, want value and count", lines[0])
+	}
+}
+
+func TestAnalyticsCommandGroupBySelectNarrowsFields(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "data.db")
+	db, err := store.OpenWithContext(context.Background(), dbPath)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	for key, raw := range map[string]string{
+		"A1": `{"key":"A1","data":{"itemType":"journalArticle"}}`,
+		"A2": `{"key":"A2","data":{"itemType":"journalArticle"}}`,
+		"B1": `{"key":"B1","data":{"itemType":"book"}}`,
+	} {
+		if err := db.Upsert("items", key, json.RawMessage(raw)); err != nil {
+			db.Close()
+			t.Fatalf("seed %s: %v", key, err)
+		}
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close store: %v", err)
+	}
+
+	var out bytes.Buffer
+	cmd := newAnalyticsCmd(&rootFlags{asJSON: true, selectFields: "value"})
+	cmd.SetOut(&out)
+	cmd.SetErr(&bytes.Buffer{})
+	cmd.SetArgs([]string{"--db", dbPath, "--type", "items", "--group-by", "itemType"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("analytics --select: %v", err)
+	}
+	env := analyticsDecodeEnvelope(t, out.Bytes())
+	if len(env.Results) == 0 {
+		t.Fatalf("results empty, want group-by rows: %s", out.String())
+	}
+	for _, row := range env.Results {
+		if _, ok := row["value"]; !ok {
+			t.Fatalf("row missing value after --select value: %+v", row)
+		}
+		if _, ok := row["count"]; ok {
+			t.Fatalf("row still has count after --select value, want only value: %+v", row)
+		}
+	}
+}
+
+// TestAnalyticsCommandCompactKeepsRowKeyFields guards the field that carries
+// the data. compactListFields is an allow-list, so a row field absent from it
+// is dropped silently: under --compact (and therefore --agent, the documented
+// agent path) every analytics row collapsed to a bare {"count":N} and the
+// grouping key was gone. Measured live against a real mirror on 2026-08-22,
+// after the envelope migration passed every other test.
+func TestAnalyticsCommandCompactKeepsRowKeyFields(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "data.db")
+	db, err := store.OpenWithContext(context.Background(), dbPath)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	for key, raw := range map[string]string{
+		"A1": `{"key":"A1","data":{"itemType":"journalArticle"}}`,
+		"B1": `{"key":"B1","data":{"itemType":"book"}}`,
+	} {
+		if err := db.Upsert("items", key, json.RawMessage(raw)); err != nil {
+			db.Close()
+			t.Fatalf("seed %s: %v", key, err)
+		}
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close store: %v", err)
+	}
+
+	for _, tc := range []struct {
+		name  string
+		args  []string
+		field string
+	}{
+		{"breakdown", []string{"--db", dbPath}, "resource_type"},
+		{"type", []string{"--db", dbPath, "--type", "items"}, "resource_type"},
+		{"group-by", []string{"--db", dbPath, "--type", "items", "--group-by", "itemType"}, "value"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
 			var out bytes.Buffer
+			cmd := newAnalyticsCmd(&rootFlags{asJSON: true, compact: true})
 			cmd.SetOut(&out)
 			cmd.SetErr(&bytes.Buffer{})
-			cmd.SetArgs([]string{"--db", dbPath, "--type", "items", "--group-by", "year"})
+			cmd.SetArgs(tc.args)
 			if err := cmd.Execute(); err != nil {
-				t.Fatalf("analytics --group-by error = %v; want nil", err)
+				t.Fatalf("analytics --compact: %v", err)
 			}
-			if asJSON {
-				var arr []any
-				if err := json.Unmarshal(bytes.TrimSpace(out.Bytes()), &arr); err != nil {
-					t.Fatalf("decode %q: %v", out.String(), err)
+			env := analyticsDecodeEnvelope(t, out.Bytes())
+			if len(env.Results) == 0 {
+				t.Fatalf("results empty, want rows: %s", out.String())
+			}
+			for _, row := range env.Results {
+				if v, ok := row[tc.field]; !ok || v == nil || v == "" {
+					t.Fatalf("--compact dropped %s, leaving no grouping key: %+v", tc.field, row)
 				}
-				if len(arr) != 0 {
-					t.Fatalf("group-by JSON = %v; want empty array", arr)
-				}
-			} else {
-				if !strings.Contains(out.String(), "year") {
-					t.Fatalf("stdout = %q; want header containing group-by field", out.String())
+				if _, ok := row["count"]; !ok {
+					t.Fatalf("--compact dropped count: %+v", row)
 				}
 			}
 		})
 	}
+}
+
+func TestAnalyticsCommandMetaGroupByPresentAndAbsent(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "data.db")
+	db, err := store.OpenWithContext(context.Background(), dbPath)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	for key, raw := range map[string]string{
+		"J1": `{"key":"J1","data":{"itemType":"journalArticle"}}`,
+		"J2": `{"key":"J2","data":{"itemType":"journalArticle"}}`,
+	} {
+		if err := db.Upsert("items", key, json.RawMessage(raw)); err != nil {
+			db.Close()
+			t.Fatalf("seed %s: %v", key, err)
+		}
+	}
+	if err := db.Upsert("collections", "COL1", json.RawMessage(`{"key":"COL1"}`)); err != nil {
+		db.Close()
+		t.Fatalf("seed collections: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close store: %v", err)
+	}
+
+	// --group-by mode: meta.group_by equals the requested field.
+	t.Run("group_by_present", func(t *testing.T) {
+		var out bytes.Buffer
+		cmd := newAnalyticsCmd(&rootFlags{asJSON: true})
+		cmd.SetOut(&out)
+		cmd.SetErr(&bytes.Buffer{})
+		cmd.SetArgs([]string{"--db", dbPath, "--type", "items", "--group-by", "itemType"})
+		if err := cmd.Execute(); err != nil {
+			t.Fatalf("group-by: %v", err)
+		}
+		env := analyticsDecodeEnvelope(t, out.Bytes())
+		if env.Meta.GroupBy != "itemType" {
+			t.Fatalf("meta.group_by = %q, want itemType", env.Meta.GroupBy)
+		}
+	})
+
+	// --type mode: meta.group_by absent.
+	t.Run("type_absent", func(t *testing.T) {
+		var out bytes.Buffer
+		cmd := newAnalyticsCmd(&rootFlags{asJSON: true})
+		cmd.SetOut(&out)
+		cmd.SetErr(&bytes.Buffer{})
+		cmd.SetArgs([]string{"--db", dbPath, "--type", "items"})
+		if err := cmd.Execute(); err != nil {
+			t.Fatalf("type: %v", err)
+		}
+		env := analyticsDecodeEnvelope(t, out.Bytes())
+		if env.Meta.GroupBy != "" {
+			t.Fatalf("meta.group_by = %q, want empty (absent) for --type mode", env.Meta.GroupBy)
+		}
+		// Also assert raw JSON does not contain the key when omitempty.
+		var raw map[string]json.RawMessage
+		if err := json.Unmarshal(out.Bytes(), &raw); err != nil {
+			t.Fatalf("decode raw: %v", err)
+		}
+		var meta map[string]any
+		if err := json.Unmarshal(raw["meta"], &meta); err != nil {
+			t.Fatalf("decode meta: %v", err)
+		}
+		if _, ok := meta["group_by"]; ok {
+			t.Fatalf("meta contains group_by %v, want absent for --type mode", meta)
+		}
+	})
+
+	// no-flag breakdown: meta.group_by absent.
+	t.Run("breakdown_absent", func(t *testing.T) {
+		var out bytes.Buffer
+		cmd := newAnalyticsCmd(&rootFlags{asJSON: true})
+		cmd.SetOut(&out)
+		cmd.SetErr(&bytes.Buffer{})
+		cmd.SetArgs([]string{"--db", dbPath})
+		if err := cmd.Execute(); err != nil {
+			t.Fatalf("breakdown: %v", err)
+		}
+		env := analyticsDecodeEnvelope(t, out.Bytes())
+		if env.Meta.GroupBy != "" {
+			t.Fatalf("meta.group_by = %q, want empty for no-flag breakdown", env.Meta.GroupBy)
+		}
+		var raw map[string]json.RawMessage
+		if err := json.Unmarshal(out.Bytes(), &raw); err != nil {
+			t.Fatalf("decode raw: %v", err)
+		}
+		var meta map[string]any
+		if err := json.Unmarshal(raw["meta"], &meta); err != nil {
+			t.Fatalf("decode meta: %v", err)
+		}
+		if _, ok := meta["group_by"]; ok {
+			t.Fatalf("meta contains group_by %v, want absent for breakdown", meta)
+		}
+	})
 }

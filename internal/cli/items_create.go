@@ -23,8 +23,19 @@ func newItemsCreateCmd(flags *rootFlags) *cobra.Command {
 	var stdinBody bool
 
 	cmd := &cobra.Command{
-		Use:         "create",
-		Short:       "Create one or more items",
+		Use:   "create",
+		Short: "Create one or more items",
+		Long: `Create one or more items from JSON supplied with --items or --stdin.
+
+This command shares one connector session across the invocation when routed
+through --via connector; the Zotero desktop surfaces its own progress UI and
+zotio cannot dismiss it — no connector endpoint closes or completes a save
+session. Observed 2026-08-22: roughly 78 consecutive one-per-item
+invocations left Zotero unresponsive with progress windows accumulating; no
+proven mechanism has been established. Prefer one invocation with many items:
+import file --via connector and this command share one session, while import
+apply currently opens one per manifest entry. --rate-limit governs only Web
+API requests and does not pace connector calls.`,
 		Example:     "  zotio items create",
 		Annotations: map[string]string{"zotio:endpoint": "items.create", "zotio:method": "POST", "zotio:path": "/items"},
 		RunE: func(cmd *cobra.Command, args []string) error {

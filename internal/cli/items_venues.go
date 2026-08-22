@@ -41,6 +41,24 @@ func newItemsVenuesCmd(flags *rootFlags) *cobra.Command {
 			if err != nil {
 				return err
 			}
+			// Local-mirror read: same envelope pipeline as every other read
+			// command, so `.results` stays a JSON array (this used to print a
+			// bare top-level array).
+			prov := localProvenance(rawDB, "items", "local_only")
+			printProvenance(cmd, len(rows), prov)
+			if wantsJSONEnvelope(cmd.OutOrStdout(), flags) {
+				filtered := json.RawMessage(data)
+				if flags.selectFields != "" {
+					filtered = filterFields(filtered, flags.selectFields)
+				} else if flags.compact {
+					filtered = compactFields(filtered)
+				}
+				wrapped, wrapErr := wrapWithProvenance(filtered, prov)
+				if wrapErr != nil {
+					return wrapErr
+				}
+				return printOutput(cmd.OutOrStdout(), wrapped, true)
+			}
 			return printOutputWithFlags(cmd.OutOrStdout(), json.RawMessage(data), flags)
 		},
 	}

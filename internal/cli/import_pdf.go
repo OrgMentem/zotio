@@ -85,7 +85,16 @@ never the import.
 creating a same-named collection when one doesn't already exist (like 'items
 add-to-collection'). This is a separate step, not part of the connector call: the
 saveStandaloneAttachment endpoint saves into whatever the desktop pane currently
-targets and accepts no collection parameter.`,
+targets and accepts no collection parameter.
+
+--via connector hands work to the running Zotero desktop, which surfaces its
+own progress UI; zotio cannot dismiss it and the connector protocol exposes no
+endpoint that closes or completes a save session. Observed 2026-08-22: roughly
+78 consecutive one-per-item invocations left Zotero unresponsive with progress
+windows accumulating; no proven mechanism has been established. Prefer one
+invocation with many PDFs: import file --via connector and items create share
+one session (import apply opens one per manifest entry). --rate-limit
+governs only Web API requests and does not pace connector calls.`,
 		Args: cobra.MinimumNArgs(1),
 		Annotations: map[string]string{
 			"zotio:method": "POST",

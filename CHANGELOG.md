@@ -2,6 +2,71 @@
 
 Notable changes to zotio. Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow [SemVer](https://semver.org/).
 
+## [Unreleased]
+
+### Changed — breaking
+
+- **Four local-mirror reads now answer the provenance envelope instead of a
+  bare JSON array.** `items missing-pdf`, `items stale`, `items unfiled` and
+  `items venues` return `{"meta": …, "results": […]}` under `--json`/`--agent`,
+  like every other record read, and honour `--select`/`--compact` inside it.
+  They were the last record reads left behind by the envelope rollout that
+  migrated `items find`, so a jq pipeline written against one read command
+  broke on these four. The cost was measured downstream: a consumer decoded
+  `items find` into a slice, that command gained the envelope, the decode
+  failed on every lookup, and a neighbouring command still decoding fine as a
+  bare array is what made a decode bug look impossible.
+  **Migration:** read `.results[]` instead of `.[]`. Consumers that must
+  tolerate both can branch on the top-level type.
+- **analytics answers the provenance envelope in every mode instead of three
+  different JSON shapes.** Every invocation now returns `{"meta": …, "results":
+  […]}` where `results` is always an array of rows each carrying a `count` —
+  the same envelope every other read command uses. `--group-by` was a bare
+  array, `--type X` was a bare object, and the no-flag mode was a map whose
+  keys carried the data (`{"items": 1}`), which could not be sorted, filtered,
+  or fed to `--select` or `--csv` because the data lived in key names rather
+  than row fields. It is now one `{"resource_type", "count"}` row per mirrored
+  resource kind, sorted by count descending then `resource_type` ascending;
+  `--group-by` rows remain `{"value", "count"}` sorted by count descending
+  then `value` ascending with `--limit` applied, and `--type` remains a
+  single `{"resource_type", "count"}` row. `--plain`, `--csv`, `--select`, and
+  `--compact` were silently ignored, and a piped invocation with no format flag
+  returned a human tab table instead of JSON; all now behave as they do on
+  every other read command, including `filterFields`/`compactFields` inside the
+  envelope and JSON-by-default when piped. `compactFields` is an allow-list, so
+  the two new row fields had to be added to it: without that, `--compact` — and
+  therefore `--agent`, the documented agent path — dropped `resource_type` and
+  `value` and left every row a bare `{"count": N}` with the grouping key gone.
+  Found by running the built binary against a real mirror, after the migration
+  passed every unit test. `meta.group_by` is new and names the
+  grouping field in `--group-by` mode, so a consumer receiving `{value, count}`
+  rows knows whether `value` is a year, tag, or creator without re-reading its
+  own command line. The no-flag human table previously iterated a Go map, so
+  its row order was nondeterministic between runs; it is now sorted.
+  **Migration:** `.[]` becomes `.results[]`, and `.items` becomes
+  `.results[] | select(.resource_type=="items") | .count` — the second is the
+  disruptive one, because a map lookup has no counterpart once the data moves
+  out of the keys and into rows. Consumers that must tolerate both shapes can
+  branch on whether the top-level JSON has a `results` array.
+
+### Documentation
+
+- **The `--via connector` route is now documented as unsafe to drive in a tight
+  loop.** `import apply`, `import pdf` and `items create` carry the warning in
+  their help text: the route hands work to the running Zotero desktop, which
+  surfaces its own progress UI that zotio cannot dismiss, and no connector
+  endpoint closes or completes a save session. Prefer one invocation carrying
+  many records — `import file --via connector` and `items create` already share
+  a single connector session, while `import apply` opens one per manifest
+  entry. The warning also states that `--rate-limit` governs only Web API
+  requests and does not pace connector calls, which was silently true before.
+  Prompted by an operator observation on 2026-08-22, where roughly 78
+  consecutive one-per-item invocations left Zotero desktop unresponsive with
+  progress windows accumulating. No mechanism for the window accumulation has
+  been proven, and the warning claims none; see
+  `dev/field-report-2026-08-22-papio.md` finding 3 for the evidence, the two
+  ruled-out theories, and the two remaining leads.
+
 ## [0.19.0] — 2026-08-18
 
 One defect, found by running zotio against a Zotero desktop configured to keep

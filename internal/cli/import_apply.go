@@ -43,7 +43,17 @@ refused when the desktop keeps files elsewhere, unless --allow-zotero-cloud.
 An entry with no DOI or source URL records the file's own file:// URI as the
 attachment's provenance, so the local path becomes item metadata and syncs.
 
-By default this previews the planned changes; apply with --yes.`,
+By default this previews the planned changes; apply with --yes.
+
+--via connector hands work to the running Zotero desktop, which surfaces its
+own progress UI; zotio cannot dismiss it and the connector protocol exposes no
+endpoint that closes or completes a save session. Observed 2026-08-22: roughly
+78 consecutive one-per-item invocations left Zotero unresponsive with progress
+windows accumulating; no proven mechanism has been established. Prefer one
+invocation with many records: import file --via connector and items create
+share one session, while import apply currently opens one per manifest entry.
+--rate-limit governs only Web API requests and does not pace connector calls;
+pace your own invocations.`,
 		Annotations: map[string]string{
 			"zotio:method": "POST",
 			"zotio:path":   "/items",
