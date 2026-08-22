@@ -7,7 +7,9 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"fmt"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -128,7 +130,7 @@ func TestQueryItems_ParentAndItemType(t *testing.T) {
 	s := queryTestStore(t)
 	seedParentScopedItems(t, s)
 
-	got, err := s.QueryItems(ItemQuery{Parent: "P1", Sort: "title", Direction: "asc"})
+	got, err := s.QueryItemsContext(context.Background(), ItemQuery{Parent: "P1", Sort: "title", Direction: "asc"})
 	if err != nil {
 		t.Fatalf("QueryItems parent: %v", err)
 	}
@@ -136,7 +138,7 @@ func TestQueryItems_ParentAndItemType(t *testing.T) {
 		t.Fatalf("parent=P1 keys = %v, want [C1 C2]", keys)
 	}
 
-	got, err = s.QueryItems(ItemQuery{Parent: "P1", ItemType: "note", Sort: "title", Direction: "asc"})
+	got, err = s.QueryItemsContext(context.Background(), ItemQuery{Parent: "P1", ItemType: "note", Sort: "title", Direction: "asc"})
 	if err != nil {
 		t.Fatalf("QueryItems parent+itemType: %v", err)
 	}
@@ -150,7 +152,7 @@ func TestQueryItems_ItemTypeAndSort(t *testing.T) {
 	seedItems(t, s)
 
 	// itemType filter + title ascending.
-	got, err := s.QueryItems(ItemQuery{ItemType: "journalArticle", Sort: "title", Direction: "asc"})
+	got, err := s.QueryItemsContext(context.Background(), ItemQuery{ItemType: "journalArticle", Sort: "title", Direction: "asc"})
 	if err != nil {
 		t.Fatalf("QueryItems: %v", err)
 	}
@@ -159,7 +161,7 @@ func TestQueryItems_ItemTypeAndSort(t *testing.T) {
 	}
 
 	// date descending across all items.
-	got, err = s.QueryItems(ItemQuery{Sort: "date", Direction: "desc"})
+	got, err = s.QueryItemsContext(context.Background(), ItemQuery{Sort: "date", Direction: "desc"})
 	if err != nil {
 		t.Fatalf("QueryItems: %v", err)
 	}
@@ -175,19 +177,19 @@ func TestQueryItems_TagCollectionTopLimit(t *testing.T) {
 	seedItems(t, s)
 
 	// Tag membership.
-	got, _ := s.QueryItems(ItemQuery{Tag: "ml", Sort: "title", Direction: "asc"})
+	got, _ := s.QueryItemsContext(context.Background(), ItemQuery{Tag: "ml", Sort: "title", Direction: "asc"})
 	if keys := itemKeys(t, got); len(keys) != 2 || keys[0] != "A" || keys[1] != "C" {
 		t.Fatalf("tag=ml keys = %v, want [A C]", keys)
 	}
 
 	// Collection membership.
-	got, _ = s.QueryItems(ItemQuery{Collection: "COL2", Sort: "title", Direction: "asc"})
+	got, _ = s.QueryItemsContext(context.Background(), ItemQuery{Collection: "COL2", Sort: "title", Direction: "asc"})
 	if keys := itemKeys(t, got); len(keys) != 2 || keys[0] != "B" || keys[1] != "C" {
 		t.Fatalf("collection=COL2 keys = %v, want [B C]", keys)
 	}
 
 	// Top-only excludes the attachment child D.
-	got, _ = s.QueryItems(ItemQuery{TopOnly: true})
+	got, _ = s.QueryItemsContext(context.Background(), ItemQuery{TopOnly: true})
 	for _, k := range itemKeys(t, got) {
 		if k == "D" {
 			t.Fatalf("TopOnly returned child item D: %v", itemKeys(t, got))
@@ -198,7 +200,7 @@ func TestQueryItems_TagCollectionTopLimit(t *testing.T) {
 	}
 
 	// Limit + start pagination over title-asc order [B, A, C, D].
-	got, _ = s.QueryItems(ItemQuery{Sort: "title", Direction: "asc", Limit: 2, Start: 1})
+	got, _ = s.QueryItemsContext(context.Background(), ItemQuery{Sort: "title", Direction: "asc", Limit: 2, Start: 1})
 	if keys := itemKeys(t, got); len(keys) != 2 || keys[0] != "A" || keys[1] != "C" {
 		t.Fatalf("limit/start keys = %v, want [A C]", keys)
 	}
@@ -209,7 +211,7 @@ func TestQueryItems_QuickSearch(t *testing.T) {
 	seedItems(t, s)
 
 	// Quick search hits the curated FTS doc (abstractNote of B).
-	got, err := s.QueryItems(ItemQuery{Query: "transformers"})
+	got, err := s.QueryItemsContext(context.Background(), ItemQuery{Query: "transformers"})
 	if err != nil {
 		t.Fatalf("QueryItems q: %v", err)
 	}
@@ -218,13 +220,13 @@ func TestQueryItems_QuickSearch(t *testing.T) {
 	}
 
 	// Creator last name is indexed in the document.
-	got, _ = s.QueryItems(ItemQuery{Query: "Zhang"})
+	got, _ = s.QueryItemsContext(context.Background(), ItemQuery{Query: "Zhang"})
 	if keys := itemKeys(t, got); len(keys) != 1 || keys[0] != "A" {
 		t.Fatalf("q=Zhang keys = %v, want [A]", keys)
 	}
 
 	// No matches is an empty result, not an error.
-	got, err = s.QueryItems(ItemQuery{Query: "nonexistentterm"})
+	got, err = s.QueryItemsContext(context.Background(), ItemQuery{Query: "nonexistentterm"})
 	if err != nil {
 		t.Fatalf("QueryItems empty: %v", err)
 	}
@@ -248,7 +250,7 @@ func TestQueryItems_QuickSearchIgnoresForeignResourceTypeMatches(t *testing.T) {
 	}
 
 	// A term present only in the same-keyed collection must not surface the item.
-	got, err := s.QueryItems(ItemQuery{Query: "collnamematch"})
+	got, err := s.QueryItemsContext(context.Background(), ItemQuery{Query: "collnamematch"})
 	if err != nil {
 		t.Fatalf("QueryItems collnamematch: %v", err)
 	}
@@ -257,7 +259,7 @@ func TestQueryItems_QuickSearchIgnoresForeignResourceTypeMatches(t *testing.T) {
 	}
 
 	// The item's own text still matches.
-	got, err = s.QueryItems(ItemQuery{Query: "itemtitleonly"})
+	got, err = s.QueryItemsContext(context.Background(), ItemQuery{Query: "itemtitleonly"})
 	if err != nil {
 		t.Fatalf("QueryItems itemtitleonly: %v", err)
 	}
@@ -283,7 +285,7 @@ func TestQueryTrash_DefaultOrderSupportsNestedAndFlatPayloads(t *testing.T) {
 		t.Fatalf("seed live item isolation sentinel: %v", err)
 	}
 
-	got, err := s.QueryTrash(TrashQuery{})
+	got, err := s.QueryTrashContext(context.Background(), TrashQuery{})
 	if err != nil {
 		t.Fatalf("QueryTrash: %v", err)
 	}
@@ -304,7 +306,7 @@ func TestQueryTrash_AppliesOffsetAndLimitAfterDefaultOrder(t *testing.T) {
 		t.Fatalf("seed trash: %v", err)
 	}
 
-	got, err := s.QueryTrash(TrashQuery{Start: 1, Limit: 2})
+	got, err := s.QueryTrashContext(context.Background(), TrashQuery{Start: 1, Limit: 2})
 	if err != nil {
 		t.Fatalf("QueryTrash page: %v", err)
 	}
@@ -319,7 +321,7 @@ func TestQueryTrash_EmptyRegardlessOfSyncState(t *testing.T) {
 		if err := s.SaveSyncState("items-trash", "", 0); err != nil {
 			t.Fatalf("save trash sync state: %v", err)
 		}
-		got, err := s.QueryTrash(TrashQuery{})
+		got, err := s.QueryTrashContext(context.Background(), TrashQuery{})
 		if err != nil {
 			t.Fatalf("QueryTrash synced empty: %v", err)
 		}
@@ -334,7 +336,7 @@ func TestQueryTrash_EmptyRegardlessOfSyncState(t *testing.T) {
 
 	t.Run("unsynced empty", func(t *testing.T) {
 		s := queryTestStore(t)
-		got, err := s.QueryTrash(TrashQuery{})
+		got, err := s.QueryTrashContext(context.Background(), TrashQuery{})
 		if err != nil {
 			t.Fatalf("QueryTrash unsynced empty: %v", err)
 		}
@@ -404,7 +406,7 @@ func TestQuerySimilarityCandidatesExcludesChildrenAndTrashCoexistence(t *testing
 		t.Fatalf("seed trash coexistence: %v", err)
 	}
 
-	got, err := s.QuerySimilarityCandidates()
+	got, err := s.QuerySimilarityCandidatesContext(context.Background())
 	if err != nil {
 		t.Fatalf("QuerySimilarityCandidates: %v", err)
 	}
@@ -441,7 +443,7 @@ func TestVisitSimilarityFulltextDocumentsExcludesTrashedParents(t *testing.T) {
 	}
 
 	var got []SimilarityFulltextDocument
-	err := s.VisitSimilarityFulltextDocuments(func(doc SimilarityFulltextDocument) error {
+	err := s.VisitSimilarityFulltextDocumentsContext(context.Background(), func(doc SimilarityFulltextDocument) error {
 		got = append(got, doc)
 		return nil
 	})
@@ -451,4 +453,97 @@ func TestVisitSimilarityFulltextDocumentsExcludesTrashedParents(t *testing.T) {
 	if len(got) != 1 || got[0].AttachmentKey != "AKEEP" || got[0].ParentItemKey != "KEEP" {
 		t.Fatalf("fulltext documents = %+v, want only AKEEP under KEEP", got)
 	}
+}
+func TestSearchByType(t *testing.T) {
+	s := queryTestStore(t)
+
+	// Two resource types both containing the same FTS term. A missing
+	// resource_type predicate would return both; correct predicate narrows.
+	const sharedTerm = "uniquelytypedtoken"
+	if err := s.Upsert("items", "ST01", json.RawMessage(`{"key":"ST01","data":{"key":"ST01","itemType":"journalArticle","title":"`+sharedTerm+`"}}`)); err != nil {
+		t.Fatalf("seed item ST01: %v", err)
+	}
+	if err := s.Upsert("collections", "STCOLL", json.RawMessage(`{"key":"STCOLL","data":{"key":"STCOLL","name":"`+sharedTerm+`"}}`)); err != nil {
+		t.Fatalf("seed collection STCOLL: %v", err)
+	}
+	if err := s.Upsert("items", "ST02", json.RawMessage(`{"key":"ST02","data":{"key":"ST02","itemType":"book","title":"`+sharedTerm+` again"}}`)); err != nil {
+		t.Fatalf("seed item ST02: %v", err)
+	}
+
+	t.Run("type predicate narrows results", func(t *testing.T) {
+		gotItems, err := s.SearchByType(sharedTerm, "items", 10)
+		if err != nil {
+			t.Fatalf("SearchByType items: %v", err)
+		}
+		if len(gotItems) != 2 {
+			t.Fatalf("SearchByType items len = %d, want 2", len(gotItems))
+		}
+		for _, r := range gotItems {
+			var o map[string]any
+			_ = json.Unmarshal(r, &o)
+			// Ensure the predicate did not leak a collection row.
+			if _, ok := o["name"]; ok {
+				t.Fatalf("SearchByType items returned a collection row: %s", string(r))
+			}
+		}
+
+		gotColl, err := s.SearchByType(sharedTerm, "collections", 10)
+		if err != nil {
+			t.Fatalf("SearchByType collections: %v", err)
+		}
+		if len(gotColl) != 1 {
+			t.Fatalf("SearchByType collections len = %d, want 1", len(gotColl))
+		}
+		var co map[string]any
+		_ = json.Unmarshal(gotColl[0], &co)
+		if co["key"] != "STCOLL" {
+			t.Fatalf("SearchByType collections row = %s, want key STCOLL", string(gotColl[0]))
+		}
+
+		// A type with no match returns empty, not an error.
+		gotTags, err := s.SearchByType(sharedTerm, "tags", 10)
+		if err != nil {
+			t.Fatalf("SearchByType tags: %v", err)
+		}
+		if len(gotTags) != 0 {
+			t.Fatalf("SearchByType tags len = %d, want 0", len(gotTags))
+		}
+	})
+
+	t.Run("limit clamp", func(t *testing.T) {
+		const clampTerm = "clampchecktoken"
+		for i := 0; i < 60; i++ {
+			k := fmt.Sprintf("CLP%03d", i)
+			body := fmt.Sprintf(`{"key":%q,"data":{"key":%q,"itemType":"journalArticle","title":%q}}`, k, k, clampTerm+" "+k)
+			if err := s.Upsert("items", k, json.RawMessage(body)); err != nil {
+				t.Fatalf("seed clamp item %s: %v", k, err)
+			}
+		}
+		got, err := s.SearchByType(clampTerm, "items", 5)
+		if err != nil {
+			t.Fatalf("SearchByType limit 5: %v", err)
+		}
+		if len(got) != 5 {
+			t.Fatalf("SearchByType limit 5 len = %d, want 5", len(got))
+		}
+		for _, lim := range []int{0, -1, -100} {
+			got, err := s.SearchByType(clampTerm, "items", lim)
+			if err != nil {
+				t.Fatalf("SearchByType limit %d: %v", lim, err)
+			}
+			if len(got) != 50 {
+				t.Fatalf("SearchByType limit %d len = %d, want 50 (clamped)", lim, len(got))
+			}
+		}
+		got, err = s.SearchByType(clampTerm, "items", 60)
+		if err != nil {
+			t.Fatalf("SearchByType limit 60: %v", err)
+		}
+		if len(got) != 60 {
+			t.Fatalf("SearchByType limit 60 len = %d, want 60", len(got))
+		}
+		if !strings.Contains(string(got[0]), clampTerm) {
+			t.Fatalf("SearchByType result missing search term: %s", string(got[0]))
+		}
+	})
 }

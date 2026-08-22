@@ -303,3 +303,548 @@ func TestImportFileRejectsCSLJSONWithoutConnector(t *testing.T) {
 		t.Fatalf("CSL JSON error = %v, want translator guidance via --via connector", err)
 	}
 }
+func TestImportFile_RIS(t *testing.T) {
+	t.Run("dispatchThroughParseImportFileItems", func(t *testing.T) {
+		ris := "TY  - JOUR\nTI  - Dispatch Title\nAU  - Doe, John\nPY  - 2020/05/10\nER  -\n"
+		items, err := parseImportFileItems(ris, "ris", "")
+		if err != nil {
+			t.Fatalf("parseImportFileItems ris = %v, want nil", err)
+		}
+		if len(items) != 1 {
+			t.Fatalf("items len = %d, want 1", len(items))
+		}
+		if got := items[0]["itemType"]; got != "journalArticle" {
+			t.Fatalf("dispatch itemType = %v, want %v", got, "journalArticle")
+		}
+		if got := items[0]["title"]; got != "Dispatch Title" {
+			t.Fatalf("dispatch title = %v, want %v", got, "Dispatch Title")
+		}
+		if got := items[0]["date"]; got != "2020" {
+			t.Fatalf("dispatch date = %v, want %v", got, "2020")
+		}
+	})
+
+	t.Run("itemTypeMapping", func(t *testing.T) {
+		for _, tc := range []struct {
+			name string
+			ty   string
+			want string
+		}{
+			{name: "JOUR", ty: "JOUR", want: "journalArticle"},
+			{name: "JFULL", ty: "JFULL", want: "journalArticle"},
+			{name: "EJOUR", ty: "EJOUR", want: "journalArticle"},
+			{name: "BOOK", ty: "BOOK", want: "book"},
+			{name: "CHAP", ty: "CHAP", want: "bookSection"},
+			{name: "CONF", ty: "CONF", want: "conferencePaper"},
+			{name: "CPAPER", ty: "CPAPER", want: "conferencePaper"},
+			{name: "THES", ty: "THES", want: "thesis"},
+			{name: "RPRT", ty: "RPRT", want: "report"},
+			{name: "ELEC", ty: "ELEC", want: "webpage"},
+			{name: "WEB", ty: "WEB", want: "webpage"},
+			{name: "unmapped fallback", ty: "VIDEO", want: "document"},
+			{name: "unmapped fallback lower", ty: "video", want: "document"},
+			{name: "empty maps to document", ty: "UNKNOWN_TYPE", want: "document"},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				ris := "TY  - " + tc.ty + "\nTI  - Title\nER  -\n"
+				items, err := parseRISItems(ris, "")
+				if err != nil {
+					t.Fatalf("parseRISItems TY %q = %v, want nil", tc.ty, err)
+				}
+				if len(items) != 1 {
+					t.Fatalf("items len = %d, want 1 for TY %q", len(items), tc.ty)
+				}
+				if got := items[0]["itemType"]; got != tc.want {
+					t.Fatalf("TY %q itemType = %v, want %v", tc.ty, got, tc.want)
+				}
+			})
+		}
+	})
+
+	t.Run("multiEntryFixture", func(t *testing.T) {
+		ris := strings.Join([]string{
+			"TY  - JOUR",
+			"TI  - Journal Article Title",
+			"AU  - Smith, John",
+			"PY  - 2020/05/15",
+			"JO  - Journal of Testing",
+			"DO  - 10.1234/journal.doi",
+			"AB  - Journal abstract",
+			"UR  - https://example.com/jour",
+			"ER  -",
+			"",
+			"TY  - BOOK",
+			"T1  - Book Title",
+			"A1  - Jane Doe",
+			"Y1  - 2019",
+			"JF  - Book Series",
+			"N2  - Book abstract via N2",
+			"UR  - https://example.com/book",
+			"ER  -",
+			"TY  - CONF",
+			"TI  - Conference Paper Title",
+			"AU  - Doe, Jane A.",
+			"PY  - 2021/12/01",
+			"T2  - Proceedings of Testing",
+			"DO  - 10.1234/conf.doi",
+			"ER  -",
+			"TY  - CHAP",
+			"TI  - Chapter Title",
+			"AU  - First Middle Last",
+			"T2  - Container Book",
+			"ER  -",
+			"TY  - THES",
+			"TI  - Thesis Title",
+			"AU  - Plato",
+			"ER  -",
+			"TY  - RPRT",
+			"TI  - Report Title",
+			"ER  -",
+			"TY  - ELEC",
+			"TI  - Webpage Title",
+			"ER  -",
+			"TY  - VIDEO",
+			"TI  - Fallback Title",
+			"ER  -",
+		}, "\n") + "\n"
+
+		items, err := parseRISItems(ris, "")
+		if err != nil {
+			t.Fatalf("parseRISItems multi = %v, want nil", err)
+		}
+		if len(items) != 8 {
+			t.Fatalf("items len = %d, want 8", len(items))
+		}
+		wantTypes := []string{"journalArticle", "book", "conferencePaper", "bookSection", "thesis", "report", "webpage", "document"}
+		for i, want := range wantTypes {
+			if got := items[i]["itemType"]; got != want {
+				t.Fatalf("item %d itemType = %v, want %v", i, got, want)
+			}
+		}
+		// JO maps to publicationTitle (journal path).
+		if got := items[0]["publicationTitle"]; got != "Journal of Testing" {
+			t.Fatalf("JOUR publicationTitle = %v, want %v", got, "Journal of Testing")
+		}
+		if got := items[0]["DOI"]; got != "10.1234/journal.doi" {
+			t.Fatalf("JOUR DOI = %v, want %v", got, "10.1234/journal.doi")
+		}
+		if got := items[0]["abstractNote"]; got != "Journal abstract" {
+			t.Fatalf("JOUR abstractNote = %v, want %v", got, "Journal abstract")
+		}
+		if got := items[0]["url"]; got != "https://example.com/jour" {
+			t.Fatalf("JOUR url = %v, want %v", got, "https://example.com/jour")
+		}
+		// JF maps to publicationTitle (book path).
+		if got := items[1]["publicationTitle"]; got != "Book Series" {
+			t.Fatalf("BOOK publicationTitle (JF) = %v, want %v", got, "Book Series")
+		}
+		if got := items[1]["abstractNote"]; got != "Book abstract via N2" {
+			t.Fatalf("BOOK abstractNote (N2) = %v, want %v", got, "Book abstract via N2")
+		}
+		// T2 maps to publicationTitle (conference/chapter path).
+		if got := items[2]["publicationTitle"]; got != "Proceedings of Testing" {
+			t.Fatalf("CONF publicationTitle (T2) = %v, want %v", got, "Proceedings of Testing")
+		}
+		if got := items[3]["publicationTitle"]; got != "Container Book" {
+			t.Fatalf("CHAP publicationTitle (T2) = %v, want %v", got, "Container Book")
+		}
+		// Title tags TI and T1 both map.
+		if got := items[0]["title"]; got != "Journal Article Title" {
+			t.Fatalf("TI title = %v, want %v", got, "Journal Article Title")
+		}
+		if got := items[1]["title"]; got != "Book Title" {
+			t.Fatalf("T1 title = %v, want %v", got, "Book Title")
+		}
+		// Count helper for same fixture.
+		if got := countImportFileRecords(ris, "ris"); got != 8 {
+			t.Fatalf("countImportFileRecords ris = %d, want 8", got)
+		}
+		// Same through the extension dispatch.
+		dispatched, err := parseImportFileItems(ris, "ris", "")
+		if err != nil {
+			t.Fatalf("parseImportFileItems multi = %v, want nil", err)
+		}
+		if len(dispatched) != 8 {
+			t.Fatalf("dispatched len = %d, want 8", len(dispatched))
+		}
+		for i, want := range wantTypes {
+			if got := dispatched[i]["itemType"]; got != want {
+				t.Fatalf("dispatched item %d itemType = %v, want %v", i, got, want)
+			}
+		}
+	})
+
+	t.Run("titleTagsBoth", func(t *testing.T) {
+		for _, tc := range []struct {
+			name  string
+			field string
+		}{
+			{name: "TI", field: "TI"},
+			{name: "T1", field: "T1"},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				ris := "TY  - JOUR\n" + tc.field + "  - Title via " + tc.field + "\nER  -\n"
+				items, err := parseRISItems(ris, "")
+				if err != nil {
+					t.Fatalf("parseRISItems %s = %v, want nil", tc.field, err)
+				}
+				if len(items) != 1 {
+					t.Fatalf("items len = %d, want 1", len(items))
+				}
+				if got := items[0]["title"]; got != "Title via "+tc.field {
+					t.Fatalf("title via %s = %v, want %v", tc.field, got, "Title via "+tc.field)
+				}
+			})
+		}
+	})
+
+	t.Run("authorTagsBoth", func(t *testing.T) {
+		for _, tc := range []struct {
+			name string
+			tag  string
+		}{
+			{name: "AU", tag: "AU"},
+			{name: "A1", tag: "A1"},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				ris := "TY  - JOUR\n" + tc.tag + "  - Smith, John\nER  -\n"
+				items, err := parseRISItems(ris, "")
+				if err != nil {
+					t.Fatalf("parseRISItems %s = %v, want nil", tc.tag, err)
+				}
+				creators := risCreators(t, items[0])
+				if len(creators) != 1 {
+					t.Fatalf("creators len = %d, want 1 for %s", len(creators), tc.tag)
+				}
+				if got := creators[0]["lastName"]; got != "Smith" {
+					t.Fatalf("lastName = %v, want %v", got, "Smith")
+				}
+				if got := creators[0]["firstName"]; got != "John" {
+					t.Fatalf("firstName = %v, want %v", got, "John")
+				}
+				if got := creators[0]["creatorType"]; got != "author" {
+					t.Fatalf("creatorType = %v, want %v", got, "author")
+				}
+			})
+		}
+	})
+
+	t.Run("authorShapes", func(t *testing.T) {
+		for _, tc := range []struct {
+			name      string
+			raw       string
+			wantFirst string
+			wantLast  string
+		}{
+			{name: "LastCommaFirst", raw: "Smith, John", wantFirst: "John", wantLast: "Smith"},
+			{name: "LastCommaFirstWithMiddle", raw: "Doe, Jane A.", wantFirst: "Jane A.", wantLast: "Doe"},
+			{name: "FirstLast", raw: "Jane Doe", wantFirst: "Jane", wantLast: "Doe"},
+			{name: "FirstMiddleLast", raw: "First Middle Last", wantFirst: "First Middle", wantLast: "Last"},
+			{name: "SingleName", raw: "Plato", wantFirst: "", wantLast: "Plato"},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				ris := "TY  - JOUR\nAU  - " + tc.raw + "\nER  -\n"
+				items, err := parseRISItems(ris, "")
+				if err != nil {
+					t.Fatalf("parseRISItems author %q = %v, want nil", tc.raw, err)
+				}
+				creators := risCreators(t, items[0])
+				if len(creators) != 1 {
+					t.Fatalf("creators len = %d, want 1 for %q", len(creators), tc.raw)
+				}
+				gotLast := creators[0]["lastName"]
+				if gotLast != tc.wantLast {
+					t.Fatalf("lastName for %q = %v, want %v", tc.raw, gotLast, tc.wantLast)
+				}
+				gotFirst, _ := creators[0]["firstName"].(string)
+				if gotFirst != tc.wantFirst {
+					t.Fatalf("firstName for %q = %v, want %v", tc.raw, gotFirst, tc.wantFirst)
+				}
+				if got := creators[0]["creatorType"]; got != "author" {
+					t.Fatalf("creatorType for %q = %v, want %v", tc.raw, got, "author")
+				}
+				// Field-by-field shape: only creatorType, lastName, and optionally firstName.
+				if len(creators[0]) != 2 && tc.wantFirst == "" {
+					// Single name: creatorType + lastName.
+					if len(creators[0]) != 2 {
+						t.Fatalf("creator fields for %q = %v, want 2 keys (creatorType, lastName)", tc.raw, creators[0])
+					}
+				}
+				if tc.wantFirst != "" && len(creators[0]) != 3 {
+					t.Fatalf("creator fields for %q = %v, want 3 keys (creatorType, firstName, lastName)", tc.raw, creators[0])
+				}
+			})
+		}
+	})
+
+	t.Run("multipleAuthors", func(t *testing.T) {
+		ris := "TY  - JOUR\nAU  - Smith, John\nAU  - Jane Doe\nAU  - Plato\nER  -\n"
+		items, err := parseRISItems(ris, "")
+		if err != nil {
+			t.Fatalf("parseRISItems multi authors = %v, want nil", err)
+		}
+		creators := risCreators(t, items[0])
+		if len(creators) != 3 {
+			t.Fatalf("creators len = %d, want 3", len(creators))
+		}
+		if got := creators[0]["lastName"]; got != "Smith" {
+			t.Fatalf("creators[0] lastName = %v, want %v", got, "Smith")
+		}
+		if got := creators[1]["firstName"]; got != "Jane" {
+			t.Fatalf("creators[1] firstName = %v, want %v", got, "Jane")
+		}
+		if got := creators[1]["lastName"]; got != "Doe" {
+			t.Fatalf("creators[1] lastName = %v, want %v", got, "Doe")
+		}
+		if got := creators[2]["lastName"]; got != "Plato" {
+			t.Fatalf("creators[2] lastName = %v, want %v", got, "Plato")
+		}
+	})
+
+	t.Run("dates", func(t *testing.T) {
+		for _, tc := range []struct {
+			name string
+			tag  string
+			val  string
+			want string
+		}{
+			{name: "PY plain year", tag: "PY", val: "2020", want: "2020"},
+			{name: "Y1 plain year", tag: "Y1", val: "2019", want: "2019"},
+			{name: "PY slash YYYY/MM/DD", tag: "PY", val: "2020/05/15", want: "2020"},
+			{name: "Y1 slash YYYY/MM/DD", tag: "Y1", val: "2018/12/01", want: "2018"},
+			{name: "PY slash YYYY/MM", tag: "PY", val: "2021/12", want: "2021"},
+			{name: "PY slash with spaces", tag: "PY", val: " 2022 / 01 / 03 ", want: "2022"},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				ris := "TY  - JOUR\n" + tc.tag + "  - " + tc.val + "\nER  -\n"
+				items, err := parseRISItems(ris, "")
+				if err != nil {
+					t.Fatalf("parseRISItems date %s %q = %v, want nil", tc.tag, tc.val, err)
+				}
+				if got := items[0]["date"]; got != tc.want {
+					t.Fatalf("date for %s %q = %v, want %v", tc.tag, tc.val, got, tc.want)
+				}
+			})
+		}
+	})
+
+	t.Run("containersDOIABN2UR", func(t *testing.T) {
+		for _, tc := range []struct {
+			name  string
+			tag   string
+			field string
+			value string
+		}{
+			{name: "JO", tag: "JO", field: "publicationTitle", value: "Journal via JO"},
+			{name: "JF", tag: "JF", field: "publicationTitle", value: "Journal via JF"},
+			{name: "T2", tag: "T2", field: "publicationTitle", value: "Container via T2"},
+			{name: "DO", tag: "DO", field: "DOI", value: "10.1000/test.doi"},
+			{name: "AB", tag: "AB", field: "abstractNote", value: "Abstract via AB"},
+			{name: "N2", tag: "N2", field: "abstractNote", value: "Abstract via N2"},
+			{name: "UR", tag: "UR", field: "url", value: "https://example.com/ris"},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				ris := "TY  - JOUR\n" + tc.tag + "  - " + tc.value + "\nER  -\n"
+				items, err := parseRISItems(ris, "")
+				if err != nil {
+					t.Fatalf("parseRISItems %s = %v, want nil", tc.tag, err)
+				}
+				if got := items[0][tc.field]; got != tc.value {
+					t.Fatalf("%s -> %s = %v, want %v", tc.tag, tc.field, got, tc.value)
+				}
+			})
+		}
+	})
+
+	t.Run("recordBoundariesER", func(t *testing.T) {
+		// ER ends a record; missing final ER still flushes the last record.
+		ris := "TY  - JOUR\nTI  - First\nER  -\nTY  - BOOK\nTI  - Second\nER  -\nTY  - CONF\nTI  - Third without ER\n"
+		items, err := parseRISItems(ris, "")
+		if err != nil {
+			t.Fatalf("parseRISItems boundaries = %v, want nil", err)
+		}
+		if len(items) != 3 {
+			t.Fatalf("items len = %d, want 3", len(items))
+		}
+		if got := items[0]["title"]; got != "First" {
+			t.Fatalf("item 0 title = %v, want %v", got, "First")
+		}
+		if got := items[1]["title"]; got != "Second" {
+			t.Fatalf("item 1 title = %v, want %v", got, "Second")
+		}
+		if got := items[2]["title"]; got != "Third without ER" {
+			t.Fatalf("item 2 title = %v, want %v", got, "Third without ER")
+		}
+		if got := countImportFileRecords(ris, "ris"); got != 3 {
+			t.Fatalf("countImportFileRecords = %d, want 3", got)
+		}
+		// Stray blank lines between records must not create phantom records.
+		risBlanks := "TY  - JOUR\nTI  - A\nER  -\n\n\nTY  - BOOK\nTI  - B\nER  -\n"
+		items, err = parseRISItems(risBlanks, "")
+		if err != nil {
+			t.Fatalf("parseRISItems blanks = %v, want nil", err)
+		}
+		if len(items) != 2 {
+			t.Fatalf("blanks items len = %d, want 2", len(items))
+		}
+		if got := countImportFileRecords(risBlanks, "ris"); got != 2 {
+			t.Fatalf("countImportFileRecords blanks = %d, want 2", got)
+		}
+	})
+
+	t.Run("crlfAndBlankLines", func(t *testing.T) {
+		risLF := strings.Join([]string{
+			"TY  - JOUR",
+			"TI  - First",
+			"AU  - Smith, John",
+			"ER  -",
+			"",
+			"TY  - BOOK",
+			"T1  - Second",
+			"A1  - Jane Doe",
+			"ER  -",
+			"TY  - CONF",
+			"TI  - Third",
+			"ER  -",
+		}, "\n") + "\n"
+		risCRLF := strings.ReplaceAll(risLF, "\n", "\r\n")
+		// Insert an extra stray CRLF blank line between records to mimic reference-manager export.
+		risCRLF = strings.ReplaceAll(risCRLF, "ER  -\r\nTY", "ER  -\r\n\r\nTY")
+
+		itemsLF, err := parseRISItems(risLF, "")
+		if err != nil {
+			t.Fatalf("parseRISItems LF = %v, want nil", err)
+		}
+		itemsCRLF, err := parseRISItems(risCRLF, "")
+		if err != nil {
+			t.Fatalf("parseRISItems CRLF = %v, want nil", err)
+		}
+		if len(itemsCRLF) != 3 {
+			t.Fatalf("CRLF items len = %d, want 3", len(itemsCRLF))
+		}
+		if len(itemsLF) != len(itemsCRLF) {
+			t.Fatalf("LF len %d != CRLF len %d", len(itemsLF), len(itemsCRLF))
+		}
+		for i := range itemsLF {
+			if got, want := itemsCRLF[i]["title"], itemsLF[i]["title"]; got != want {
+				t.Fatalf("CRLF item %d title = %v, want %v", i, got, want)
+			}
+			if got, want := itemsCRLF[i]["itemType"], itemsLF[i]["itemType"]; got != want {
+				t.Fatalf("CRLF item %d itemType = %v, want %v", i, got, want)
+			}
+		}
+		if got := countImportFileRecords(risCRLF, "ris"); got != 3 {
+			t.Fatalf("countImportFileRecords CRLF = %d, want 3", got)
+		}
+		// Also via dispatch.
+		dispatched, err := parseImportFileItems(risCRLF, "ris", "")
+		if err != nil {
+			t.Fatalf("parseImportFileItems CRLF = %v, want nil", err)
+		}
+		if len(dispatched) != 3 {
+			t.Fatalf("dispatched CRLF len = %d, want 3", len(dispatched))
+		}
+	})
+
+	t.Run("collectionCarried", func(t *testing.T) {
+		ris := "TY  - JOUR\nTI  - With Collection\nER  -\nTY  - BOOK\nTI  - Second\nER  -\n"
+		const coll = "ABC12345"
+		items, err := parseRISItems(ris, coll)
+		if err != nil {
+			t.Fatalf("parseRISItems collection = %v, want nil", err)
+		}
+		if len(items) != 2 {
+			t.Fatalf("items len = %d, want 2", len(items))
+		}
+		for i, item := range items {
+			cols := risCollections(t, item)
+			if len(cols) != 1 || cols[0] != coll {
+				t.Fatalf("item %d collections = %v, want [%v]", i, cols, coll)
+			}
+		}
+		// Dispatch path also carries it.
+		dispatched, err := parseImportFileItems(ris, "ris", coll)
+		if err != nil {
+			t.Fatalf("parseImportFileItems collection = %v, want nil", err)
+		}
+		for i, item := range dispatched {
+			cols := risCollections(t, item)
+			if len(cols) != 1 || cols[0] != coll {
+				t.Fatalf("dispatched item %d collections = %v, want [%v]", i, cols, coll)
+			}
+		}
+		// Empty collection adds nothing.
+		empty, err := parseRISItems(ris, "")
+		if err != nil {
+			t.Fatalf("parseRISItems empty collection = %v, want nil", err)
+		}
+		for i, item := range empty {
+			if _, ok := item["collections"]; ok {
+				t.Fatalf("item %d has collections %v, want none for empty collection", i, item["collections"])
+			}
+		}
+	})
+
+	t.Run("countImportFileRecordsSameFixture", func(t *testing.T) {
+		ris := "TY  - JOUR\nTI  - A\nER  -\nTY  - BOOK\nTI  - B\nER  -\nTY  - CONF\nTI  - C\nER  -\n"
+		if got := countImportFileRecords(ris, "ris"); got != 3 {
+			t.Fatalf("countImportFileRecords = %d, want 3", got)
+		}
+		if got := countImportFileRecords(ris, "RIS"); got != 3 {
+			t.Fatalf("countImportFileRecords RIS upper = %d, want 3", got)
+		}
+		if got := countImportFileRecords("", "ris"); got != 0 {
+			t.Fatalf("countImportFileRecords empty = %d, want 0", got)
+		}
+	})
+}
+
+func risCreators(t *testing.T, item map[string]any) []map[string]any {
+	t.Helper()
+	raw, ok := item["creators"]
+	if !ok {
+		t.Fatalf("item has no creators: %v", item)
+	}
+	switch v := raw.(type) {
+	case []map[string]any:
+		return v
+	case []any:
+		out := make([]map[string]any, 0, len(v))
+		for i, el := range v {
+			m, ok := el.(map[string]any)
+			if !ok {
+				t.Fatalf("creators[%d] = %T, want map[string]any", i, el)
+			}
+			out = append(out, m)
+		}
+		return out
+	default:
+		t.Fatalf("creators type = %T, want []map[string]any or []any", raw)
+		return nil
+	}
+}
+
+func risCollections(t *testing.T, item map[string]any) []string {
+	t.Helper()
+	raw, ok := item["collections"]
+	if !ok {
+		return nil
+	}
+	switch v := raw.(type) {
+	case []string:
+		return v
+	case []any:
+		out := make([]string, 0, len(v))
+		for i, el := range v {
+			s, ok := el.(string)
+			if !ok {
+				t.Fatalf("collections[%d] = %T, want string", i, el)
+			}
+			out = append(out, s)
+		}
+		return out
+	default:
+		t.Fatalf("collections type = %T, want []string or []any", raw)
+		return nil
+	}
+}

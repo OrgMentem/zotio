@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"zotio/internal/store"
@@ -68,4 +69,126 @@ func TestLocalPDFFulltextSurfacesStorageError(t *testing.T) {
 	// through a helper. We open the DB via store and use its Close-tested error path above
 	// as the acceptance. Positive-path coverage exists in summarize tests.
 	_ = json.RawMessage(nil)
+}
+func TestFilterFulltextLines(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		payload     string
+		query       string
+		wantContent string
+		wantErr     string
+		checkFields map[string]any
+		noContent   bool
+	}{
+		{
+			name:        "matching lines filtered case-insensitive",
+			payload:     `{"content":"Hello world\nfoo bar\nHELLO again\nbaz","extra":"keep"}`,
+			query:       "hello",
+			wantContent: "Hello world\nHELLO again",
+			checkFields: map[string]any{"extra": "keep"},
+		},
+		{
+			name:        "matching is case-insensitive query upper",
+			payload:     `{"content":"Hello world\nfoo bar\nHELLO again\nbaz"}`,
+			query:       "HELLO",
+			wantContent: "Hello world\nHELLO again",
+		},
+		{
+			name:        "empty query returns payload unchanged",
+			payload:     `{"content":"a\nb\nc","other":"x"}`,
+			query:       "",
+			wantContent: "a\nb\nc",
+			checkFields: map[string]any{"other": "x"},
+		},
+		{
+			name:      "payload with no content key returned unchanged",
+			payload:   `{"other":"value","count":2}`,
+			query:     "hello",
+			noContent: true,
+		},
+		{
+			name:    "malformed JSON returns wrapping parse error",
+			payload: `{"content":`,
+			query:   "hello",
+			wantErr: "parsing fulltext response",
+		},
+		{
+			name:        "other fields preserved after filter",
+			payload:     `{"content":"keep this\nremove\nkeep this too","key":"K1","count":42,"extra":"preserve"}`,
+			query:       "keep",
+			wantContent: "keep this\nkeep this too",
+			checkFields: map[string]any{"key": "K1", "extra": "preserve"},
+		},
+		{
+			name:        "filter that matches nothing returns empty content string",
+			payload:     `{"content":"a\nb\nc"}`,
+			query:       "zzz",
+			wantContent: "",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			data := json.RawMessage(tc.payload)
+			got, err := filterFulltextLines(data, tc.query)
+			if tc.wantErr != "" {
+				if err == nil {
+					t.Fatalf("filterFulltextLines = nil error, want containing %q", tc.wantErr)
+				}
+				if !strings.Contains(err.Error(), tc.wantErr) {
+					t.Fatalf("filterFulltextLines error = %q, want containing %q", err.Error(), tc.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("filterFulltextLines unexpected error: %v", err)
+			}
+			var obj map[string]any
+			if err := json.Unmarshal(got, &obj); err != nil {
+				t.Fatalf("returned value is not valid JSON: %v (raw %s)", err, string(got))
+			}
+			if tc.noContent {
+				if _, ok := obj["content"]; ok {
+					t.Fatalf("expected no content key, got %v", obj)
+				}
+				// Payload with no content key is returned unchanged rather than erroring.
+				var wantObj map[string]any
+				if err := json.Unmarshal(data, &wantObj); err != nil {
+					t.Fatalf("unmarshal want: %v", err)
+				}
+				if len(obj) != len(wantObj) {
+					t.Fatalf("returned fields = %v, want %v", obj, wantObj)
+				}
+				for k, want := range wantObj {
+					if obj[k] != want && obj[k] != float64(want.(float64)) {
+						// Compare via JSON round-trip for numeric fidelity.
+						gotJSON, _ := json.Marshal(obj[k])
+						wantJSON, _ := json.Marshal(want)
+						if string(gotJSON) != string(wantJSON) {
+							t.Fatalf("field %q = %v (%s), want %v (%s)", k, obj[k], string(gotJSON), want, string(wantJSON))
+						}
+					}
+				}
+				return
+			}
+			content, _ := obj["content"].(string)
+			if content != tc.wantContent {
+				t.Fatalf("content = %q, want %q", content, tc.wantContent)
+			}
+			for k, want := range tc.checkFields {
+				gotVal, ok := obj[k]
+				if !ok {
+					t.Fatalf("missing preserved field %q in %s", k, string(got))
+				}
+				// JSON numbers decode as float64.
+				if fv, ok := want.(int); ok {
+					if gotVal != float64(fv) {
+						t.Fatalf("field %q = %v (%T), want %v", k, gotVal, gotVal, want)
+					}
+					continue
+				}
+				if gotVal != want {
+					t.Fatalf("field %q = %v, want %v", k, gotVal, want)
+				}
+			}
+		})
+	}
 }

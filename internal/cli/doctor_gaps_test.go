@@ -6,12 +6,14 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
+	"zotio/internal/connector"
 	"zotio/internal/store"
 )
 
@@ -231,7 +233,7 @@ func TestDoctorCacheScanFailureDegradesReportAndExit(t *testing.T) {
 		t.Fatalf("warnings = %#v, want one scan failure", rep["warnings"])
 	}
 
-	cmd := newDoctorCmd(&rootFlags{asJSON: true})
+	cmd := newDoctorCmd(doctorGapsTestFlags(t))
 	cmd.SilenceErrors, cmd.SilenceUsage = true, true
 	var stdout, stderr bytes.Buffer
 	cmd.SetOut(&stdout)
@@ -270,7 +272,7 @@ func TestDoctorCleanCacheReportsFreshAndExitsZero(t *testing.T) {
 		t.Fatalf("close store: %v", err)
 	}
 
-	cmd := newDoctorCmd(&rootFlags{asJSON: true})
+	cmd := newDoctorCmd(doctorGapsTestFlags(t))
 	var stdout bytes.Buffer
 	cmd.SetOut(&stdout)
 	cmd.SetErr(&bytes.Buffer{})
@@ -285,6 +287,22 @@ func TestDoctorCleanCacheReportsFreshAndExitsZero(t *testing.T) {
 	if got := cache["status"]; got != "fresh" {
 		t.Fatalf("status: want fresh, got %v", got)
 	}
+}
+
+// doctorGapsTestFlags keeps a doctor run off the developer's live Zotero: the
+// zero-value rootFlags a test literal produces means timeout 0, i.e. an HTTP
+// client with no deadline, so the reachability probe at doctor.go:289 blocks
+// forever against a listening but unresponsive localhost:23119. Production
+// always gets the 30s persistent-flag default.
+func doctorGapsTestFlags(t *testing.T) *rootFlags {
+	t.Helper()
+	t.Setenv("ZOTERO_API_KEY", "")
+	oldConnectorPing := connectorPing
+	connectorPing = func(context.Context, *connector.Client) error {
+		return errors.New("connector ping disabled in test")
+	}
+	t.Cleanup(func() { connectorPing = oldConnectorPing })
+	return &rootFlags{asJSON: true, timeout: 50 * time.Millisecond}
 }
 
 func TestDoctorRenderCacheReport(t *testing.T) {

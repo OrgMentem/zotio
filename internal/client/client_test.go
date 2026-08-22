@@ -133,18 +133,16 @@ func TestCacheKeyNoCollisionAcrossParamBoundaries(t *testing.T) {
 	if k1 == k2 {
 		t.Fatalf("cache keys collide: %q vs %q", k1, k2)
 	}
-	// Config path tail + first param boundary must also be unambiguous.
+	// A config path must participate in the key: two clients reading the same
+	// path with the same params but different config files must not share a
+	// cache entry.
 	c1 := &Client{BaseURL: "http://example.test", Config: &config.Config{BaseURL: "http://example.test", Path: "/x/foo"}}
 	c2 := &Client{BaseURL: "http://example.test", Config: &config.Config{BaseURL: "http://example.test", Path: "/x/fooa"}}
-	p1 := c1.cacheKey("/items", map[string]string{"b": ""}, nil)
+	p1 := c1.cacheKey("/items", map[string]string{"a": "b"}, nil)
 	p2 := c2.cacheKey("/items", map[string]string{"a": "b"}, nil)
-	// Even if they happen to differ, the param-boundary case above is the
-	// definitive proof; this just guards the config_path tail.
-	if k1 == k2 {
-		t.Fatalf("param-boundary keys must differ")
+	if p1 == p2 {
+		t.Fatalf("config-path keys collide: %q vs %q", p1, p2)
 	}
-	_ = p1
-	_ = p2
 }
 
 func newLocalHitsServer(hits *int32) *httptest.Server {
@@ -152,4 +150,305 @@ func newLocalHitsServer(hits *int32) *httptest.Server {
 		atomic.AddInt32(hits, 1)
 		http.Error(w, "Method not implemented", http.StatusNotImplemented)
 	}))
+}
+func TestGetFromWriteBaseWithVersion(t *testing.T) {
+	cases := []struct {
+		name        string
+		header      string
+		body        string
+		wantVersion int
+	}{
+		{
+			name:        "header version wins over body",
+			header:      "77",
+			body:        `{"version":5}`,
+			wantVersion: 77,
+		},
+		{
+			name:        "header absent body numeric version",
+			header:      "",
+			body:        `{"version":42}`,
+			wantVersion: 42,
+		},
+		{
+			name:        "header absent body version json number large",
+			header:      "",
+			body:        `{"version":123456}`,
+			wantVersion: 123456,
+		},
+		{
+			name:        "header absent empty string version",
+			header:      "",
+			body:        `{"version":""}`,
+			wantVersion: 0,
+		},
+		{
+			name:        "neither header nor body version",
+			header:      "",
+			body:        `{"key":"ABC","title":"no version"}`,
+			wantVersion: 0,
+		},
+		{
+			name:        "invalid body version string",
+			header:      "",
+			body:        `{"version":"not-a-number"}`,
+			wantVersion: 0,
+		},
+		{
+			name:        "malformed json body yields zero",
+			header:      "",
+			body:        `not json`,
+			wantVersion: 0,
+		},
+	}
+
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if tc.header != "" {
+					w.Header().Set("Last-Modified-Version", tc.header)
+				}
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(tc.body))
+			}))
+			defer srv.Close()
+
+			c := clientTestNewClient(t, srv.URL)
+			c.NoCache = true
+
+			body, got, err := c.GetFromWriteBaseWithVersionContext(context.Background(), "/items/ABC", nil)
+			if err != nil {
+				t.Fatalf("GetFromWriteBaseWithVersionContext err = %v, want nil", err)
+			}
+			if got != tc.wantVersion {
+				t.Fatalf("version = %d, want %d", got, tc.wantVersion)
+			}
+			if string(body) != tc.body {
+				t.Fatalf("body = %q, want %q", string(body), tc.body)
+			}
+		})
+	}
+
+	t.Run("nil context delegates to base context", func(t *testing.T) {
+		const wantVersion = 99
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Last-Modified-Version", "99")
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"version":99}`))
+		}))
+		defer srv.Close()
+
+		c := clientTestNewClient(t, srv.URL)
+		c.NoCache = true
+
+		// Context form with nil should fall back to baseCtx and succeed.
+		bodyNil, verNil, errNil := c.GetFromWriteBaseWithVersionContext(nil, "/items/ABC", nil)
+		if errNil != nil {
+			t.Fatalf("GetFromWriteBaseWithVersionContext(nil) err = %v, want nil", errNil)
+		}
+		if verNil != wantVersion {
+			t.Fatalf("GetFromWriteBaseWithVersionContext(nil) version = %d, want %d", verNil, wantVersion)
+		}
+		if string(bodyNil) != `{"version":99}` {
+			t.Fatalf("GetFromWriteBaseWithVersionContext(nil) body = %q, want %q", string(bodyNil), `{"version":99}`)
+		}
+
+		// Non-context wrapper must delegate to the Context form and return the same result.
+		bodyWrap, verWrap, errWrap := c.GetFromWriteBaseWithVersion("/items/ABC", nil)
+		if errWrap != nil {
+			t.Fatalf("GetFromWriteBaseWithVersion err = %v, want nil", errWrap)
+		}
+		if verWrap != wantVersion {
+			t.Fatalf("GetFromWriteBaseWithVersion version = %d, want %d", verWrap, wantVersion)
+		}
+		if string(bodyWrap) != `{"version":99}` {
+			t.Fatalf("GetFromWriteBaseWithVersion body = %q, want %q", string(bodyWrap), `{"version":99}`)
+		}
+
+		// Explicit background context must also match.
+		_, verBg, errBg := c.GetFromWriteBaseWithVersionContext(context.Background(), "/items/ABC", nil)
+		if errBg != nil {
+			t.Fatalf("GetFromWriteBaseWithVersionContext(Background) err = %v, want nil", errBg)
+		}
+		if verBg != wantVersion {
+			t.Fatalf("GetFromWriteBaseWithVersionContext(Background) version = %d, want %d", verBg, wantVersion)
+		}
+	})
+}
+
+func TestWriteBaseForRead(t *testing.T) {
+	t.Run("uses WriteBaseURL directly", func(t *testing.T) {
+		var readHits, writeHits int32
+		readSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			atomic.AddInt32(&readHits, 1)
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"version":1}`))
+		}))
+		defer readSrv.Close()
+		writeSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			atomic.AddInt32(&writeHits, 1)
+			w.Header().Set("Last-Modified-Version", "55")
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"version":55}`))
+		}))
+		defer writeSrv.Close()
+
+		c := clientTestNewClient(t, readSrv.URL)
+		c.NoCache = true
+		c.WriteBaseURL = writeSrv.URL
+		c.ResolveWriteBase = func(context.Context) (string, error) {
+			t.Fatalf("ResolveWriteBase should not be called when WriteBaseURL already set")
+			return "", nil
+		}
+
+		base, err := c.writeBaseForRead(context.Background())
+		if err != nil {
+			t.Fatalf("writeBaseForRead err = %v, want nil", err)
+		}
+		if base != writeSrv.URL {
+			t.Fatalf("writeBaseForRead base = %q, want %q", base, writeSrv.URL)
+		}
+
+		_, ver, err := c.GetFromWriteBaseWithVersionContext(context.Background(), "/items/ABC", nil)
+		if err != nil {
+			t.Fatalf("GetFromWriteBaseWithVersionContext err = %v, want nil", err)
+		}
+		if ver != 55 {
+			t.Fatalf("version = %d, want %d", ver, 55)
+		}
+		if n := atomic.LoadInt32(&readHits); n != 0 {
+			t.Fatalf("read plane hits = %d, want %d", n, 0)
+		}
+		if n := atomic.LoadInt32(&writeHits); n != 1 {
+			t.Fatalf("write plane hits = %d, want %d", n, 1)
+		}
+	})
+
+	t.Run("calls ResolveWriteBase when WriteBaseURL empty", func(t *testing.T) {
+		var readHits, writeHits, resolveCalls int32
+		readSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			atomic.AddInt32(&readHits, 1)
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"version":1}`))
+		}))
+		defer readSrv.Close()
+		writeSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			atomic.AddInt32(&writeHits, 1)
+			w.Header().Set("Last-Modified-Version", "88")
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"version":88}`))
+		}))
+		defer writeSrv.Close()
+
+		c := clientTestNewClient(t, readSrv.URL)
+		c.NoCache = true
+		c.WriteBaseURL = ""
+		c.ResolveWriteBase = func(ctx context.Context) (string, error) {
+			atomic.AddInt32(&resolveCalls, 1)
+			return writeSrv.URL, nil
+		}
+
+		base, err := c.writeBaseForRead(context.Background())
+		if err != nil {
+			t.Fatalf("writeBaseForRead err = %v, want nil", err)
+		}
+		if base != writeSrv.URL {
+			t.Fatalf("writeBaseForRead base = %q, want %q", base, writeSrv.URL)
+		}
+		if n := atomic.LoadInt32(&resolveCalls); n != 1 {
+			t.Fatalf("resolve calls = %d, want %d", n, 1)
+		}
+
+		// Reset counters after the direct writeBaseForRead call which already resolved and cached the base.
+		// The subsequent Get must go to the resolved write host, not the read host.
+		atomic.StoreInt32(&readHits, 0)
+		atomic.StoreInt32(&writeHits, 0)
+
+		_, ver, err := c.GetFromWriteBaseWithVersionContext(context.Background(), "/items/ABC", nil)
+		if err != nil {
+			t.Fatalf("GetFromWriteBaseWithVersionContext err = %v, want nil", err)
+		}
+		if ver != 88 {
+			t.Fatalf("version = %d, want %d", ver, 88)
+		}
+		if n := atomic.LoadInt32(&readHits); n != 0 {
+			t.Fatalf("read plane hits = %d, want %d", n, 0)
+		}
+		if n := atomic.LoadInt32(&writeHits); n != 1 {
+			t.Fatalf("write plane hits = %d, want %d", n, 1)
+		}
+	})
+
+	t.Run("resolver error fails without fallback", func(t *testing.T) {
+		var readHits int32
+		readSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			atomic.AddInt32(&readHits, 1)
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"version":1}`))
+		}))
+		defer readSrv.Close()
+
+		c := clientTestNewClient(t, readSrv.URL)
+		c.NoCache = true
+		c.WriteBaseURL = ""
+		resolverErr := fmt.Errorf("keys/current returned HTTP 401: expired key")
+		c.ResolveWriteBase = func(context.Context) (string, error) { return "", resolverErr }
+
+		_, err := c.writeBaseForRead(context.Background())
+		if err == nil {
+			t.Fatal("writeBaseForRead err = nil, want error")
+		}
+		if !strings.Contains(err.Error(), "could not resolve Zotero Web API write base") {
+			t.Fatalf("writeBaseForRead err = %q, want write base prefix", err.Error())
+		}
+		if !strings.Contains(err.Error(), "expired key") {
+			t.Fatalf("writeBaseForRead err = %q, want underlying cause", err.Error())
+		}
+
+		_, _, err = c.GetFromWriteBaseWithVersionContext(context.Background(), "/items/ABC", nil)
+		if err == nil {
+			t.Fatal("GetFromWriteBaseWithVersionContext err = nil, want error")
+		}
+		if !strings.Contains(err.Error(), "could not resolve Zotero Web API write base") {
+			t.Fatalf("GetFromWriteBaseWithVersionContext err = %q, want write base prefix", err.Error())
+		}
+		if n := atomic.LoadInt32(&readHits); n != 0 {
+			t.Fatalf("read plane hits = %d, want %d", n, 0)
+		}
+	})
+
+	t.Run("resolver empty base fails without fallback", func(t *testing.T) {
+		var readHits int32
+		readSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			atomic.AddInt32(&readHits, 1)
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"version":1}`))
+		}))
+		defer readSrv.Close()
+
+		c := clientTestNewClient(t, readSrv.URL)
+		c.NoCache = true
+		c.WriteBaseURL = ""
+		c.ResolveWriteBase = func(context.Context) (string, error) { return "", nil }
+
+		_, err := c.writeBaseForRead(context.Background())
+		if err == nil {
+			t.Fatal("writeBaseForRead err = nil, want error")
+		}
+		if !strings.Contains(err.Error(), "could not resolve the Zotero Web API write base") {
+			t.Fatalf("writeBaseForRead err = %q, want empty-base message", err.Error())
+		}
+		if !strings.Contains(err.Error(), "refusing to take a write precondition from the local read plane") {
+			t.Fatalf("writeBaseForRead err = %q, want local-plane refusal", err.Error())
+		}
+
+		_, _, err = c.GetFromWriteBaseWithVersionContext(context.Background(), "/items/ABC", nil)
+		if err == nil {
+			t.Fatal("GetFromWriteBaseWithVersionContext err = nil, want error")
+		}
+		if n := atomic.LoadInt32(&readHits); n != 0 {
+			t.Fatalf("read plane hits = %d, want %d", n, 0)
+		}
+	})
 }

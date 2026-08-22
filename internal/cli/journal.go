@@ -549,11 +549,14 @@ func undoContains(items []string, want string) bool {
 	return false
 }
 
+// undoDropString removes the FIRST occurrence of drop. An undo reverses one
+// recorded addition, so it must not delete a duplicate membership that the
+// recorded mutation never created.
 func undoDropString(items []string, drop string) ([]string, bool) {
 	out := make([]string, 0, len(items))
 	removed := false
 	for _, s := range items {
-		if s == drop {
+		if !removed && s == drop {
 			removed = true
 			continue
 		}

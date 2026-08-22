@@ -935,3 +935,155 @@ func TestJournalUndoTakesPreconditionFromWritePlane(t *testing.T) {
 		}
 	})
 }
+func TestUndoHelpers(t *testing.T) {
+	t.Run("contains", func(t *testing.T) {
+		for _, tc := range []struct {
+			name  string
+			items []string
+			want  string
+			found bool
+		}{
+			{name: "present", items: []string{"a", "b", "c"}, want: "b", found: true},
+			{name: "absent", items: []string{"a", "b", "c"}, want: "z", found: false},
+			{name: "empty nil", items: nil, want: "a", found: false},
+			{name: "empty slice", items: []string{}, want: "a", found: false},
+			{name: "case mismatch", items: []string{"Tag"}, want: "tag", found: false},
+			{name: "case exact", items: []string{"Tag", "tag"}, want: "tag", found: true},
+			{name: "prefix miss", items: []string{"foobar"}, want: "foo", found: false},
+			{name: "prefix exact", items: []string{"foo", "foobar"}, want: "foo", found: true},
+			{name: "suffix miss", items: []string{"foo"}, want: "foobar", found: false},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				got := undoContains(tc.items, tc.want)
+				if got != tc.found {
+					t.Fatalf("undoContains(%v, %q) = %v, want %v", tc.items, tc.want, got, tc.found)
+				}
+			})
+		}
+	})
+
+	t.Run("dropString", func(t *testing.T) {
+		t.Run("removes first occurrence only when duplicated", func(t *testing.T) {
+			input := []string{"a", "b", "a", "c"}
+			orig := append([]string(nil), input...)
+			got, removed := undoDropString(input, "a")
+			if !removed {
+				t.Fatalf("undoDropString removed = false, want true")
+			}
+			// The contract is remove-first-occurrence. With two copies of "a",
+			// only the first is removed, leaving one "a" in the result.
+			// Current production code removes ALL occurrences (bug); assert the
+			// correct behaviour so the regression is visible.
+			// If this fails, production code needs fixing to skip only the first match.
+			want := []string{"b", "a", "c"}
+			if len(got) != len(want) {
+				t.Fatalf("undoDropString(%v, %q) = %v, want %v (len mismatch)", orig, "a", got, want)
+			}
+			for i := range want {
+				if got[i] != want[i] {
+					t.Fatalf("undoDropString(%v, %q) = %v, want %v", orig, "a", got, want)
+				}
+			}
+			for i := range orig {
+				if input[i] != orig[i] {
+					t.Fatalf("undoDropString mutated input: got %v, want %v", input, orig)
+				}
+			}
+		})
+
+		t.Run("two identical elements leaves one", func(t *testing.T) {
+			input := []string{"a", "a"}
+			orig := append([]string(nil), input...)
+			got, removed := undoDropString(input, "a")
+			if !removed {
+				t.Fatalf("undoDropString removed = false, want true")
+			}
+			want := []string{"a"}
+			if len(got) != len(want) || got[0] != want[0] {
+				t.Fatalf("undoDropString(%v, %q) = %v, want %v", orig, "a", got, want)
+			}
+			for i := range orig {
+				if input[i] != orig[i] {
+					t.Fatalf("undoDropString mutated input: got %v, want %v", input, orig)
+				}
+			}
+		})
+
+		t.Run("absent returns false and unchanged", func(t *testing.T) {
+			input := []string{"a", "b", "c"}
+			orig := append([]string(nil), input...)
+			got, removed := undoDropString(input, "z")
+			if removed {
+				t.Fatalf("undoDropString removed = true, want false")
+			}
+			if len(got) != len(orig) {
+				t.Fatalf("undoDropString(%v, %q) = %v, want %v", orig, "z", got, orig)
+			}
+			for i := range orig {
+				if got[i] != orig[i] {
+					t.Fatalf("undoDropString(%v, %q) = %v, want %v", orig, "z", got, orig)
+				}
+				if input[i] != orig[i] {
+					t.Fatalf("undoDropString mutated input: got %v, want %v", input, orig)
+				}
+			}
+		})
+
+		t.Run("empty nil safe", func(t *testing.T) {
+			var input []string
+			got, removed := undoDropString(input, "a")
+			if removed {
+				t.Fatalf("undoDropString nil removed = true, want false")
+			}
+			if len(got) != 0 {
+				t.Fatalf("undoDropString nil = %v, want []", got)
+			}
+			if input != nil && len(input) != 0 {
+				t.Fatalf("undoDropString mutated nil input: got %v", input)
+			}
+		})
+
+		t.Run("empty slice safe", func(t *testing.T) {
+			input := []string{}
+			orig := append([]string(nil), input...)
+			got, removed := undoDropString(input, "a")
+			if removed {
+				t.Fatalf("undoDropString empty removed = true, want false")
+			}
+			if len(got) != 0 {
+				t.Fatalf("undoDropString empty = %v, want []", got)
+			}
+			if len(input) != len(orig) {
+				t.Fatalf("undoDropString mutated empty input: got %v, want %v", input, orig)
+			}
+		})
+
+		t.Run("does not mutate backing array", func(t *testing.T) {
+			// Make an input with extra capacity to detect in-place corruption.
+			backing := make([]string, 3, 6)
+			copy(backing, []string{"a", "b", "a"})
+			input := backing[:3]
+			orig := append([]string(nil), input...)
+			origCap := cap(input)
+			got, removed := undoDropString(input, "a")
+			if !removed {
+				t.Fatalf("undoDropString removed = false, want true")
+			}
+			for i := range orig {
+				if input[i] != orig[i] {
+					t.Fatalf("undoDropString mutated backing array: input %v, want %v", input, orig)
+				}
+			}
+			if cap(input) != origCap {
+				t.Fatalf("cap changed %d want %d", cap(input), origCap)
+			}
+			// Modifying the result must not corrupt the original backing.
+			if len(got) > 0 {
+				got[0] = "mutated"
+				if input[0] != orig[0] {
+					t.Fatalf("result aliases input backing: input %v, want %v after mutating result %v", input, orig, got)
+				}
+			}
+		})
+	})
+}
