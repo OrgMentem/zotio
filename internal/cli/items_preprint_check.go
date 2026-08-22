@@ -33,11 +33,17 @@ type crossrefMatch struct {
 }
 
 const (
-	arxivAtomQueryURL   = "https://export.arxiv.org/api/query"
-	arxivSelfDOIPrefix  = "10.48550/arxiv."
-	crossrefWorksURL    = "https://api.crossref.org/works/"
-	crossrefUserAgent   = "zotio/1.0 (+https://github.com/OrgMentem/zotio)"
-	crossrefContentType = "application/json"
+	arxivAtomQueryURL = "https://export.arxiv.org/api/query"
+	// Lower case, for prefix COMPARISON against a DOI of any spelling.
+	arxivSelfDOIPrefix = "10.48550/arxiv."
+	// Canonical spelling, for CONSTRUCTING a self-DOI. arXiv, Zotero users and
+	// this repo's fixtures all write "arXiv"; DataCite lower-cases it in
+	// responses. See the note above dataCiteItemFromAttributes in
+	// import_datacite.go.
+	arxivSelfDOICanonicalPrefix = "10.48550/arXiv."
+	crossrefWorksURL            = "https://api.crossref.org/works/"
+	crossrefUserAgent           = "zotio/1.0 (+https://github.com/OrgMentem/zotio)"
+	crossrefContentType         = "application/json"
 )
 
 var (

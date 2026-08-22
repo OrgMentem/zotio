@@ -90,10 +90,9 @@ func buildImportManifestFromDir(cmd *cobra.Command, flags *rootFlags, dir string
 			entry.Identifier = res.DOI
 		}
 		if entry.Action == "create" {
-			if res.DOI == "" {
-				entry.Status = "unresolved"
-				entry.Note = "no identifier"
-			} else if item, fetchErr := fetchDOIItem(cmd, flags.timeout, res.DOI); fetchErr == nil {
+			// A "create" action means classifyPDF found a DOI: "new" is only
+			// reached after the empty-DOI case returns "unidentified".
+			if item, fetchErr := fetchDOIItem(cmd, flags.timeout, res.DOI); fetchErr == nil {
 				entry.Item = item
 			} else {
 				entry.Status = "unresolved"
@@ -102,6 +101,13 @@ func buildImportManifestFromDir(cmd *cobra.Command, flags *rootFlags, dir string
 		}
 		if res.Status == "unidentified" {
 			entry.Status = "unresolved"
+			// Without this, an entry carried no identifier, no item and no
+			// note, which reads as "the registry has no such record" rather
+			// than "nothing was extracted from this file". Name the failure and
+			// the next step: apply routes "recognize" entries to Zotero's own
+			// PDF recognizer. See dev/field-report-2026-08-22-papio-round2.md.
+			entry.Note = "no DOI or arXiv ID found in the filename or the PDF's content; " +
+				"import apply hands this file to Zotero's PDF recognizer"
 		}
 		m.Entries = append(m.Entries, entry)
 	}

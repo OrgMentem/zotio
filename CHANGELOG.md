@@ -6,6 +6,33 @@ Notable changes to zotio. Format follows [Keep a Changelog](https://keepachangel
 
 ### Fixed
 
+- **A staged filename's DOI is no longer truncated at a parenthesis.** Tools
+  that stage papers by identifier percent-encode the name, because a filename
+  cannot contain `/`. Only `%2F` was decoded, so a surviving `%28` ended the
+  DOI match early: `10.47205%2Fjdss.2023%284-ii%2934.pdf` was looked up as
+  `10.47205/jdss.2023` and 404ed at both registries, while the full DOI
+  answers 200 with its record. Parentheses are legal in a DOI suffix. Staged
+  filenames are now fully percent-decoded, falling back to the previous `%2F`
+  handling when the name contains an invalid escape and so was never encoded.
+  A trailing `)` that has a matching `(` is also kept now: the trim that
+  removes prose brackets from `(see 10.1000/foo)` used to turn
+  `10.1000/ends(x)` into the unbalanced `10.1000/ends(x`. Reported by papio;
+  verified live against CrossRef on 2026-08-22.
+- **An arXiv ID in a staged filename now resolves.** `arxiv-2301.08745.pdf`
+  produced no identifier, because filename extraction looked for DOIs only and
+  the existing arXiv patterns require `arxiv.org/abs/` or a literal `arxiv:`.
+  Names like `arxiv-<id>`, `arXiv_<id>` and `arxiv:<id>` now yield the paper's
+  DataCite self-DOI, `10.48550/arXiv.<id>`, so DataCite resolution and the
+  arXiv field mapping handle it with no second resolution path. The `arxiv`
+  token is required: a bare `2301.08745.pdf` still yields nothing rather than
+  an invented identifier, and an explicit DOI in the name still wins.
+- **An unresolved import entry now says why it is unresolved.** A PDF with no
+  extractable identifier became `status: unresolved` with an empty note, which
+  reads as a missing registry record rather than a failed extraction. The note
+  that existed was unreachable — it sat under the `create` action, which is
+  only assigned once a DOI has been found. Such entries now name the failure
+  and the next step: `import apply` hands them to Zotero's PDF recognizer.
+
 - **DOI import resolves DataCite DOIs, not just CrossRef ones.** Every
   `10.48550/arXiv.*` DOI was marked `unresolved` with
   `fetching CrossRef metadata: HTTP 404: Resource not found`, because that

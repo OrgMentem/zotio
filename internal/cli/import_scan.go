@@ -18,6 +18,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -32,6 +33,14 @@ import (
 // doiScanRE matches a DOI in a filename or raw PDF bytes; tighter than the URL
 // variant so it stops at whitespace/binary rather than over-capturing.
 var doiScanRE = regexp.MustCompile(`10\.\d{4,9}/[A-Za-z0-9._;()/:\-]+`)
+
+// arxivFilenamePattern matches an arXiv ID in a staged filename such as
+// "arxiv-2301.08745.pdf". The literal "arxiv" token is REQUIRED: a bare
+// "2301.08745" in a filename is not evidence of an arXiv paper, and inventing
+// an identifier is worse than reporting none. Accepts the separators that
+// appear in practice (space, ':', '.', '_', '-') and both ID generations, the
+// same two forms arxivURLPattern and arxivExtraPattern already accept.
+var arxivFilenamePattern = regexp.MustCompile(`(?i)arxiv[\s:._-]*([a-z-]+/[0-9]{7}|[0-9]{4}\.[0-9]{4,5})(?:v[0-9]+)?`)
 
 const (
 	scanHeadBytes = 2 << 20   // bytes scanned from the head of each PDF for an embedded DOI
@@ -289,11 +298,15 @@ func classifyPDFWithErr(ctx context.Context, path string, idx libraryDOIIndex, h
 // by ordinary scholarly PDFs and keeps this preflight dependency-free.
 func extractPDFDOI(path string) (doi, source string, err error) {
 	base := strings.TrimSuffix(filepath.Base(path), filepath.Ext(path))
-	// A filename cannot contain '/', so a DOI saved into one is slash-encoded.
-	// Decode the common, unambiguous encodings before matching (skip '_' — DOIs
-	// legitimately contain underscores, so that substitution is too risky).
-	decoded := strings.NewReplacer("%2F", "/", "%2f", "/", "\u2044", "/", "\u2215", "/").Replace(base)
+	decoded := decodeIdentifierFilename(base)
 	if d := doiFromBytes([]byte(decoded)); d != "" {
+		return d, "filename", nil
+	}
+	// No DOI in the name, but an arXiv ID in it names a paper just as
+	// precisely, and every arXiv paper has a DataCite self-DOI. Deriving that
+	// DOI hands the rest to the existing pipeline rather than adding a second
+	// resolution path for the same paper.
+	if d := arxivSelfDOIFromFilename(decoded); d != "" {
 		return d, "filename", nil
 	}
 	raw, err := pdfScanBytes(path)
@@ -311,12 +324,77 @@ func extractPDFDOI(path string) (doi, source string, err error) {
 	return "", "none", nil
 }
 
+// decodeIdentifierFilename turns a staged filename back into the identifier it
+// encodes. A filename cannot contain '/', so tools that stage papers by
+// identifier percent-encode it (papio writes
+// "10.47205%2Fjdss.2023%284-ii%2934.pdf").
+//
+// Decoding only %2F was not enough: '%' is outside doiScanRE's character class,
+// so a surviving "%28" ended the match early and
+// "10.47205/jdss.2023(4-ii)34" was looked up as "10.47205/jdss.2023", which
+// 404s at both registries even though the full DOI resolves. Parentheses are
+// legal in a DOI suffix. See dev/field-report-2026-08-22-papio-round2.md.
+//
+// An invalid escape means the name was not percent-encoded after all, so fall
+// back to the narrow slash decoding rather than returning the name unusable.
+// The Unicode division slashes are the other convention for the same problem.
+func decodeIdentifierFilename(base string) string {
+	base = strings.NewReplacer("\u2044", "/", "\u2215", "/").Replace(base)
+	if unescaped, err := url.PathUnescape(base); err == nil {
+		return unescaped
+	}
+	return strings.NewReplacer("%2F", "/", "%2f", "/").Replace(base)
+}
+
+// arxivSelfDOIFromFilename derives an arXiv paper's DataCite self-DOI from a
+// staged filename such as "arxiv-2301.08745.pdf". Returning a DOI rather than a
+// bare arXiv ID lets DataCite resolution and the arXiv field mapping in
+// import_datacite.go handle it unchanged.
+func arxivSelfDOIFromFilename(name string) string {
+	m := arxivFilenamePattern.FindStringSubmatch(name)
+	if len(m) < 2 {
+		return ""
+	}
+	id := normalizeArxivID(m[1])
+	if id == "" {
+		return ""
+	}
+	return arxivSelfDOICanonicalPrefix + id
+}
+
+// trimUnbalancedClosers drops trailing brackets that belong to the surrounding
+// prose rather than to the DOI, as in "as reported (see 10.1000/foo)". A closer
+// with a matching opener inside the match is part of the DOI itself
+// ("10.1000/ends(x)"), so it is kept: dropping it produced an unbalanced,
+// non-existent DOI.
+func trimUnbalancedClosers(doi string) string {
+	for len(doi) > 0 {
+		last := doi[len(doi)-1]
+		var open byte
+		switch last {
+		case ')':
+			open = '('
+		case ']':
+			open = '['
+		case '}':
+			open = '{'
+		default:
+			return doi
+		}
+		if strings.Count(doi, string(open)) >= strings.Count(doi, string(last)) {
+			return doi
+		}
+		doi = doi[:len(doi)-1]
+	}
+	return doi
+}
+
 func doiFromBytes(data []byte) string {
 	m := doiScanRE.Find(data)
 	if len(m) == 0 {
 		return ""
 	}
-	doi := strings.TrimRight(normalizeDOI(string(m)), ")]}")
+	doi := trimUnbalancedClosers(normalizeDOI(string(m)))
 	if slash := strings.IndexByte(doi, '/'); slash >= 0 {
 		doi = doi[:slash+1] + strings.TrimLeft(doi[slash+1:], "/")
 	}

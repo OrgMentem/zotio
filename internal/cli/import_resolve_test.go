@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -65,6 +66,50 @@ func TestImportResolveDirectoryBuildsManifest(t *testing.T) {
 	}
 	if entry.Item == nil || entry.Item["title"] != "Resolved DOI Title" {
 		t.Fatalf("entry item = %#v, want title", entry.Item)
+	}
+}
+
+// TestImportResolveUnidentifiedEntryExplainsItself covers the papio field
+// report of 2026-08-22 round 2, finding 2: a staged PDF with no extractable
+// identifier produced an entry with no identifier, no item and an EMPTY note,
+// which reads as a missing registry record rather than a failed extraction.
+// The note branch that existed was unreachable - it sat under
+// action == "create", which is only assigned once a DOI has been found.
+func TestImportResolveUnidentifiedEntryExplainsItself(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "scan001.pdf"), []byte("no identifier here"), 0o600); err != nil {
+		t.Fatalf("write pdf: %v", err)
+	}
+	t.Setenv("HOME", t.TempDir())
+
+	flags := &rootFlags{timeout: 5 * time.Second}
+	cmd := newImportResolveCmd(flags)
+	cmd.SilenceErrors, cmd.SilenceUsage = true, true
+	cmd.SetArgs([]string{dir})
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&bytes.Buffer{})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("import resolve dir: %v", err)
+	}
+
+	var got importManifest
+	if err := json.Unmarshal(out.Bytes(), &got); err != nil {
+		t.Fatalf("decode manifest %q: %v", out.String(), err)
+	}
+	if len(got.Entries) != 1 {
+		t.Fatalf("entries = %d, want 1", len(got.Entries))
+	}
+	entry := got.Entries[0]
+	if entry.Classification != "unidentified" || entry.Action != "recognize" || entry.Status != "unresolved" {
+		t.Fatalf("classification/action/status = %q/%q/%q", entry.Classification, entry.Action, entry.Status)
+	}
+	if entry.Note == "" {
+		t.Fatal("note is empty: an unresolved entry must say why it is unresolved")
+	}
+	// The note must name the extraction failure, not imply a missing record.
+	if !strings.Contains(entry.Note, "filename") || !strings.Contains(entry.Note, "recognizer") {
+		t.Errorf("note = %q, want it to name the failed extraction and the next step", entry.Note)
 	}
 }
 

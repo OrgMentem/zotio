@@ -45,6 +45,125 @@ func TestExtractPDFDOI(t *testing.T) {
 	}
 }
 
+// TestExtractPDFDOIDecodesPercentEncodedFilename covers the papio field report
+// of 2026-08-22 round 2, finding 1: a staged filename is percent-encoded, and
+// decoding only %2F left "%28" in the string. '%' is outside doiScanRE's
+// character class, so the match stopped there and
+// "10.47205%2Fjdss.2023%284-ii%2934" was looked up as "10.47205/jdss.2023" -
+// a 404 zotio inflicted on itself, while CrossRef answers 200 for the full DOI.
+func TestExtractPDFDOIDecodesPercentEncodedFilename(t *testing.T) {
+	dir := t.TempDir()
+	for _, tc := range []struct {
+		name, file, content, wantDOI, wantSrc string
+	}{
+		{
+			name:    "parenthesised suffix survives decoding",
+			file:    "10.47205%2Fjdss.2023%284-ii%2934.pdf",
+			wantDOI: "10.47205/jdss.2023(4-ii)34",
+			wantSrc: "filename",
+		},
+		{
+			// Parentheses are legal in a DOI suffix, so an already-decoded
+			// filename must reach the same result as the encoded one.
+			name:    "already decoded is unchanged",
+			file:    "10.47205%2Fjdss.2023(4-ii)34.pdf",
+			wantDOI: "10.47205/jdss.2023(4-ii)34",
+			wantSrc: "filename",
+		},
+		{
+			// A DOI whose suffix ENDS in ')' must keep it. The trailing-closer
+			// trim exists for prose like "(see 10.1/x)", so it must only strip
+			// a closer that has no opener to match.
+			name:    "balanced trailing paren is kept",
+			file:    "10.1000%2Fends%28x%29.pdf",
+			wantDOI: "10.1000/ends(x)",
+			wantSrc: "filename",
+		},
+		{
+			// An invalid escape means the name is not percent-encoded after
+			// all; the narrow %2F decoding must still apply rather than
+			// leaving the DOI unfindable.
+			name:    "invalid escape falls back to slash decoding",
+			file:    "10.1000%2Fbad%zz.pdf",
+			wantDOI: "10.1000/bad",
+			wantSrc: "filename",
+		},
+		{
+			name:    "unencoded filename unaffected",
+			file:    "10.1234%2Fjournal.2020.5.pdf",
+			wantDOI: "10.1234/journal.2020.5",
+			wantSrc: "filename",
+		},
+		{
+			// The prose case the trim was written for: an unbalanced closer
+			// belongs to the sentence, not the DOI.
+			name:    "unbalanced closer in content still trimmed",
+			file:    "prose.pdf",
+			content: "as reported (see 10.1000/foo) elsewhere",
+			wantDOI: "10.1000/foo",
+			wantSrc: "content",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			content := tc.content
+			if content == "" {
+				content = "no doi in body"
+			}
+			doi, src, err := extractPDFDOI(writeScanFile(t, dir, tc.file, content))
+			if err != nil {
+				t.Fatalf("extractPDFDOI: %v", err)
+			}
+			if doi != tc.wantDOI || src != tc.wantSrc {
+				t.Errorf("= (%q,%q), want (%q,%q)", doi, src, tc.wantDOI, tc.wantSrc)
+			}
+		})
+	}
+}
+
+// TestExtractPDFDOIDerivesArxivSelfDOIFromFilename covers the papio field
+// report of 2026-08-22 round 2, finding 2: "arxiv-2301.08745.pdf" resolved with
+// no identifier and no note. Filename extraction looked for DOIs only, so an
+// arXiv ID in the name yielded nothing. Every arXiv paper has a DataCite
+// self-DOI (10.48550/arXiv.<id>), so deriving it reuses the whole existing DOI
+// pipeline instead of adding a second resolution path.
+func TestExtractPDFDOIDerivesArxivSelfDOIFromFilename(t *testing.T) {
+	dir := t.TempDir()
+	for _, tc := range []struct {
+		name, file, wantDOI string
+	}{
+		{"hyphen separator", "arxiv-2301.08745.pdf", "10.48550/arXiv.2301.08745"},
+		{"the sibling case", "arxiv-2605.10930.pdf", "10.48550/arXiv.2605.10930"},
+		{"underscore and mixed case", "arXiv_2301.08745.pdf", "10.48550/arXiv.2301.08745"},
+		{"colon separator", "arxiv:2301.08745.pdf", "10.48550/arXiv.2301.08745"},
+		{"version suffix dropped", "arxiv-2301.08745v3.pdf", "10.48550/arXiv.2301.08745"},
+		{"four-digit sequence", "arxiv-1234.5678.pdf", "10.48550/arXiv.1234.5678"},
+		{"old style id", "arxiv-math%2F0309136.pdf", "10.48550/arXiv.math/0309136"},
+		// A real DOI in the name is the stronger signal and must win.
+		{"explicit doi wins", "10.1234%2Fx.arxiv-2301.08745.pdf", "10.1234/x.arxiv-2301.08745"},
+		// Guards against inventing identifiers out of ordinary filenames.
+		{"bare number is not an arxiv id", "2301.08745.pdf", ""},
+		{"non-id after token", "arxiv-notanid.pdf", ""},
+		{"scan filename", "scan001.pdf", ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			doi, src, err := extractPDFDOI(writeScanFile(t, dir, tc.file, "no identifier in body"))
+			if err != nil {
+				t.Fatalf("extractPDFDOI: %v", err)
+			}
+			if doi != tc.wantDOI {
+				t.Errorf("doi = %q, want %q", doi, tc.wantDOI)
+			}
+			wantSrc := "filename"
+			if tc.wantDOI == "" {
+				wantSrc = "none"
+			}
+			if src != wantSrc {
+				t.Errorf("source = %q, want %q", src, wantSrc)
+			}
+		})
+	}
+}
+
 func TestImportScanRegularFileGuidesImportPDF(t *testing.T) {
 	path := writeScanFile(t, t.TempDir(), "paper.pdf", "not a complete PDF")
 	cmd := newImportScanCmd(&rootFlags{})
