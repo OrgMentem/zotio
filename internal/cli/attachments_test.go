@@ -492,6 +492,7 @@ func TestAttachmentsAddQuotaFailureIsActionable(t *testing.T) {
 }
 
 func TestAttachmentsAddRateLimitedAuthorizationRetries(t *testing.T) {
+	fastRetryBackoff(t)
 	f := newFakeZoteroUpload(t, "PARENT1")
 	f.rateLimitOnce = true
 	setUploadTestEnv(t, f)
@@ -740,6 +741,7 @@ func TestAttachmentsAddUsageValidation(t *testing.T) {
 
 // The import-apply stored-attach route shares the uploader end to end.
 func TestImportApplyStoredAttachUploadsAndRetryNoOps(t *testing.T) {
+	fastRetryBackoff(t)
 	f := newFakeZoteroUpload(t, "MATCH1")
 	setUploadTestEnv(t, f)
 	pdfPath := writeUploadFixture(t, "attach.pdf", []byte(uploadFixturePDF))

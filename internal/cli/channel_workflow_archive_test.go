@@ -20,6 +20,7 @@ import (
 )
 
 func TestWorkflowArchive_FetchFailureRetainsCursorAndReportsIncomplete(t *testing.T) {
+	fastRetryBackoff(t)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		resource := strings.TrimPrefix(r.URL.Path, "/users/0/")
 		if resource == "items" {

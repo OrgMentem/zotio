@@ -14,6 +14,7 @@ import (
 )
 
 func TestItemsUpdateAbortsWhenVersionReadFails(t *testing.T) {
+	fastRetryBackoff(t)
 	patchIssued := false
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.Method {

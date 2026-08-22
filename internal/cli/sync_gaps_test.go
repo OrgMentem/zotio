@@ -225,6 +225,7 @@ func TestSyncReapsPhantomFromAGenuinelyEmptyResource(t *testing.T) {
 // A request failure must never be misread as "the resource is empty": nothing
 // may be swept on an incomplete pass.
 func TestSyncDoesNotSweepOnAFailedPass(t *testing.T) {
+	fastRetryBackoff(t)
 	syncTestWithHumanFriendly(t, false)
 	db := syncTestOpenStore(t)
 	defer db.Close()

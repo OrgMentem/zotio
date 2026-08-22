@@ -444,3 +444,46 @@ func TestRetryAfter_NilResp(t *testing.T) {
 		t.Errorf("RetryAfter(nil) = %v, want 5s default", got)
 	}
 }
+
+// TestRetryAfterOrFallback_ReportsWhoChoseTheWait pins the distinction the
+// client depends on: it scales the synthetic default but must honour a wait
+// the server actually sent. Collapsing the two would either ignore a server's
+// backoff request or make a real Retry-After shrink under test settings.
+func TestRetryAfterOrFallback_ReportsWhoChoseTheWait(t *testing.T) {
+	withHeader := func(v string) *http.Response {
+		resp := &http.Response{Header: http.Header{}}
+		if v != "" {
+			resp.Header.Set("Retry-After", v)
+		}
+		return resp
+	}
+	tests := []struct {
+		name         string
+		resp         *http.Response
+		wantWait     time.Duration
+		wantFallback bool
+	}{
+		{name: "server sends seconds", resp: withHeader("10"), wantWait: 10 * time.Second, wantFallback: false},
+		{name: "server sends the same value as the default", resp: withHeader("5"), wantWait: 5 * time.Second, wantFallback: false},
+		{name: "server sends over the cap", resp: withHeader("600"), wantWait: MaxRetryWait, wantFallback: false},
+		{name: "header absent", resp: withHeader(""), wantWait: 5 * time.Second, wantFallback: true},
+		{name: "header unparseable", resp: withHeader("not-a-number"), wantWait: 5 * time.Second, wantFallback: true},
+		{name: "header zero carries no delay", resp: withHeader("0"), wantWait: 5 * time.Second, wantFallback: true},
+		{name: "header negative carries no delay", resp: withHeader("-3"), wantWait: 5 * time.Second, wantFallback: true},
+		{name: "nil response", resp: nil, wantWait: 5 * time.Second, wantFallback: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			wait, fallback := RetryAfterOrFallback(tt.resp)
+			if wait != tt.wantWait {
+				t.Errorf("wait = %v, want %v", wait, tt.wantWait)
+			}
+			if fallback != tt.wantFallback {
+				t.Errorf("fallback = %v, want %v", fallback, tt.wantFallback)
+			}
+			if got := RetryAfter(tt.resp); got != wait {
+				t.Errorf("RetryAfter = %v, want %v (must agree with RetryAfterOrFallback)", got, wait)
+			}
+		})
+	}
+}

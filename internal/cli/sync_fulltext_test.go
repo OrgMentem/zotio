@@ -142,6 +142,7 @@ func TestSyncFulltext_CanceledContextsStopIndexAndPerItemFanout(t *testing.T) {
 }
 
 func TestSyncFulltext_FetchFailureRetainsCheckpointAndSuccessfulRows(t *testing.T) {
+	fastRetryBackoff(t)
 	mux := http.NewServeMux()
 	mux.HandleFunc("/fulltext", func(w http.ResponseWriter, r *http.Request) {
 		if since := r.URL.Query().Get("since"); since != "4" {

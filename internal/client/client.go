@@ -22,6 +22,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 	"zotio/internal/cliutil"
@@ -39,6 +40,31 @@ var (
 	interruptCtxOnce sync.Once
 	interruptCtx     context.Context
 )
+
+// retryBackoffBaseNanos controls the base for the 5xx exponential backoff
+// (1s, 2s, 4s). It is an atomic so concurrent tests can shorten it without
+// adding another unsynchronised process-global (see zotio-f13931dc198dc1b5).
+var retryBackoffBaseNanos atomic.Int64
+
+func init() {
+	retryBackoffBaseNanos.Store(int64(time.Second))
+}
+
+func retryBackoffBase() time.Duration {
+	return time.Duration(retryBackoffBaseNanos.Load())
+}
+
+// SetRetryBackoffBaseForTest lets tests shorten the 5xx retry backoff and the
+// 429 Retry-After fallback without sleeping real seconds. It is exported
+// because Go has no test-only export and package cli's tests need it; the
+// repo already carries this pattern (zoteroprefs.LoadAcrossForTest,
+// cliutil.CredentialsFilePath). The returned restore func must be called
+// (typically via t.Cleanup) to reset the global for subsequent tests.
+func SetRetryBackoffBaseForTest(d time.Duration) (restore func()) {
+	prev := retryBackoffBaseNanos.Load()
+	retryBackoffBaseNanos.Store(int64(d))
+	return func() { retryBackoffBaseNanos.Store(prev) }
+}
 
 func sigintContext() context.Context {
 	interruptCtxOnce.Do(func() {
@@ -767,7 +793,15 @@ func (c *Client) doRequestOnBase(ctx context.Context, baseOverride, method, path
 		// Rate limited - adjust adaptive limiter and retry
 		if retrySafe && resp.StatusCode == 429 && attempt < maxRetries {
 			c.limiter.OnRateLimit()
-			wait := cliutil.RetryAfter(resp)
+			wait, synthetic := cliutil.RetryAfterOrFallback(resp)
+			// A server-supplied Retry-After is honoured exactly as sent. Only
+			// the synthetic 5s fallback (missing, unparseable or non-positive
+			// header) is ours to scale, so tests that hit it pay 5x the short
+			// base instead of five real seconds. Production is unchanged: the
+			// default base is 1s, so the fallback stays 5s.
+			if synthetic {
+				wait = 5 * retryBackoffBase()
+			}
 			fmt.Fprintf(os.Stderr, "rate limited, waiting %s (attempt %d/%d, rate adjusted to %.1f req/s)\n", wait, attempt+1, maxRetries, c.limiter.Rate())
 			if err := sleepWithContext(ctx, wait); err != nil {
 				return nil, 0, nil, err
@@ -780,7 +814,7 @@ func (c *Client) doRequestOnBase(ctx context.Context, baseOverride, method, path
 		// (e.g. writes against the read-only Zotero local API), so don't retry it.
 		// avoid a pointless 3x backoff storm on local-API write rejections.
 		if retrySafe && resp.StatusCode >= 500 && resp.StatusCode != 501 && attempt < maxRetries {
-			wait := time.Duration(math.Pow(2, float64(attempt))) * time.Second
+			wait := time.Duration(math.Pow(2, float64(attempt))) * retryBackoffBase()
 			fmt.Fprintf(os.Stderr, "server error %d, retrying in %s (attempt %d/%d)\n", resp.StatusCode, wait, attempt+1, maxRetries)
 			if err := sleepWithContext(ctx, wait); err != nil {
 				return nil, 0, nil, err

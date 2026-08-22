@@ -227,6 +227,7 @@ func largeTagAuditItems() []json.RawMessage {
 }
 
 func TestTagsAuditFixMaxChangesCountsItemWrites(t *testing.T) {
+	fastRetryBackoff(t)
 	seedTagsAuditFixStore(t, largeTagAuditItems())
 	patches := 0
 	items := largeTagAuditItems()

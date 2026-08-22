@@ -149,6 +149,7 @@ func TestItemsFileNoAttachmentErrors(t *testing.T) {
 }
 
 func TestItemsFileTransientFailureSurfacesError(t *testing.T) {
+	fastRetryBackoff(t)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		p := r.URL.Path
 		switch {

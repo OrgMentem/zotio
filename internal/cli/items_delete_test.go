@@ -134,6 +134,7 @@ func TestCollectionsDeleteSendsVersionHeader(t *testing.T) {
 }
 
 func TestDeletesAbortWhenVersionReadFails(t *testing.T) {
+	fastRetryBackoff(t)
 	for _, tt := range []struct {
 		name string
 		new  func(*rootFlags) interface {

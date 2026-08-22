@@ -220,26 +220,41 @@ var retryAfterNow = time.Now
 // some APIs. Waits are capped at MaxRetryWait. Returns 5s when missing or
 // unparseable.
 func RetryAfter(resp *http.Response) time.Duration {
+	wait, _ := RetryAfterOrFallback(resp)
+	return wait
+}
+
+// RetryAfterOrFallback parses Retry-After like RetryAfter and additionally
+// reports whether the returned wait is the synthetic default rather than a
+// value the server actually supplied. A caller that scales its own backoff
+// needs that distinction: a server-supplied wait must be honoured as sent,
+// while the synthetic default is ours to adjust.
+func RetryAfterOrFallback(resp *http.Response) (wait time.Duration, fallback bool) {
 	if resp == nil {
-		return defaultRetryWait
+		return defaultRetryWait, true
 	}
 	header := strings.TrimSpace(resp.Header.Get("Retry-After"))
 	if header == "" {
-		return defaultRetryWait
+		return defaultRetryWait, true
 	}
 	if value, err := strconv.ParseInt(header, 10, 64); err == nil {
-		return retryAfterFromNumber(value)
+		if value <= 0 {
+			// Non-positive delta-seconds carry no usable delay, so the wait
+			// below is ours, not the server's.
+			return defaultRetryWait, true
+		}
+		return retryAfterFromNumber(value), false
 	}
 	if t, err := http.ParseTime(header); err == nil {
 		wait := t.Sub(retryAfterNow())
 		if wait > MaxRetryWait {
-			return MaxRetryWait
+			return MaxRetryWait, false
 		}
 		if wait > 0 {
-			return wait
+			return wait, false
 		}
 	}
-	return defaultRetryWait
+	return defaultRetryWait, true
 }
 
 func retryAfterFromNumber(value int64) time.Duration {

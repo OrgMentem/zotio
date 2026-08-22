@@ -56,6 +56,7 @@ func TestItemsRestoreSendsVersionHeader(t *testing.T) {
 }
 
 func TestItemsRestoreAbortsWhenVersionReadFails(t *testing.T) {
+	fastRetryBackoff(t)
 	patchIssued := false
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.Method {

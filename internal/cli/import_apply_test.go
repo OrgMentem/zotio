@@ -167,6 +167,7 @@ func TestImportApplyStoredPreviewPlansConnectorCreateAndWebAttach(t *testing.T) 
 }
 
 func TestImportApplyStoredWebCreateAppliesParentAndAttachment(t *testing.T) {
+	fastRetryBackoff(t)
 	fake := newFakeZoteroUpload(t, "")
 	pdf := writeUploadFixture(t, "created-paper.pdf", []byte("%PDF-1.4\ncreated\n%%EOF"))
 	manifest := importManifest{

@@ -223,6 +223,7 @@ func TestItemsAddToCollectionDoesNotCreateForInvalidItem(t *testing.T) {
 }
 
 func TestItemsAddToCollectionReconcilesWriteTokenRetry(t *testing.T) {
+	fastRetryBackoff(t)
 	srv := newCollectionFilingTestServer(t)
 	srv.ambiguousCollectionCreate = true
 
