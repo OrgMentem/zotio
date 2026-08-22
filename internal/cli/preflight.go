@@ -352,6 +352,16 @@ func checkZoteroFileStoragePrecondition(ctx context.Context, flags *rootFlags, c
 	if !commandRequestsStoredUpload(cmd) {
 		return true, "", nil
 	}
+	// --via connector never touches the Web API file uploader: the bytes go
+	// through the running desktop into whatever file store it uses, which is
+	// exactly the outcome this precondition exists to protect. Refusing that
+	// route would refuse the fix.
+	// Ask the same function the command asks, so this waiver cannot outlive the
+	// behaviour it is waived for. commandRequestsStoredUpload above has already
+	// established the stored mode.
+	if usesConnectorReparentRoute("stored", flags) {
+		return true, "", nil
+	}
 	// Only `attachments add` declares this precondition, and it always targets
 	// an item that is already in the library.
 	detail := storedUploadRefusal(ctx, flags, storedUploadToExistingItem)

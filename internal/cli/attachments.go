@@ -37,6 +37,14 @@ import (
 	"zotio/internal/mutation"
 )
 
+// usesConnectorReparentRoute is the single definition of "this invocation takes
+// the connector re-parent route". Both the command and the storage precondition
+// that waives itself for that route ask this one function, so the waiver and the
+// behaviour cannot drift apart in separate files.
+func usesConnectorReparentRoute(mode string, flags *rootFlags) bool {
+	return strings.TrimSpace(mode) == "stored" && strings.TrimSpace(flags.via) == "connector"
+}
+
 // zoteroItemKeyRE keeps user-supplied keys out of URL path tricks; real Zotero
 // keys are 8 uppercase alphanumerics, tolerated up to 32 for forks/tests.
 var zoteroItemKeyRE = regexp.MustCompile(`^[A-Za-z0-9]{1,32}$`)
@@ -59,21 +67,33 @@ func newAttachmentsAddCmd(flags *rootFlags) *cobra.Command {
 		Use:   "add <parent-key> <file>",
 		Short: "Attach a local file to an existing item",
 		Long: `Attach a local file (typically a PDF) to an existing item. Mode "stored"
-uploads an imported_file child through the Zotero Web API that syncs to all
-devices. Mode "linked-file" records the absolute local path without consuming
-Zotero storage quota; the bytes remain local to this machine.
+uploads an imported_file child that syncs to all devices. Mode "linked-file"
+records the absolute local path without consuming Zotero storage quota; the
+bytes remain local to this machine.
 
-Stored uploads always land in Zotero's OWN cloud storage and are billed against
-that storage plan. Zotero's desktop connector cannot attach a file to an item
-that already exists in the library, so there is no local route for this
-command. When Zotero desktop is configured to keep files elsewhere (a personal
-WebDAV server, or file syncing turned off) the upload is refused rather than
-silently misrouted; attach the file in Zotero desktop instead, or pass
---allow-zotero-cloud to upload anyway.
+A stored upload through the Zotero Web API always lands in Zotero's OWN cloud
+storage and is billed against that storage plan. When Zotero desktop keeps files
+elsewhere (a personal WebDAV server, or file syncing turned off) that upload is
+refused rather than silently misrouted.
 
-Both modes are retry-safe. Stored files reconcile by filename and registered
-MD5. Linked files reconcile by absolute path. An identical retry no-ops instead
-of creating another child.
+--via connector is the local route for that case. Zotero's connector cannot
+attach to an item that already exists, so this creates a temporary parent and
+the file in one connector session — putting the bytes in whatever file store the
+desktop actually uses — then moves the attachment onto your item and trashes the
+temporary parent. Moving it relocates no bytes: every storage name derives from
+the attachment's own key, not its parent's. Requires Zotero desktop running.
+
+The route is opt-in and never chosen by --via auto, because it creates and
+trashes a temporary item in your library. Pass --allow-zotero-cloud instead to
+accept the cloud upload.
+
+All routes are retry-safe. Stored files reconcile by filename and registered
+MD5, and linked files by absolute path. The connector route reconciles on
+content hash alone, because Zotero names the stored file after the parent item
+rather than after your file: an identical retry no-ops, and a run interrupted
+before the move is resumed rather than duplicated. Two limits are worth knowing:
+a retry issued before Zotero has registered the hash can still add a second
+copy, and two simultaneous runs against one item can both add one.
 
 By default this previews the planned attachment; apply with --yes.`,
 		Args: cobra.ExactArgs(2),
@@ -109,6 +129,16 @@ By default this previews the planned attachment; apply with --yes.`,
 				}
 			}
 
+			// --via connector selects the local route: create a temporary parent
+			// plus the file in one connector session, move the attachment onto
+			// the real item, trash the temporary parent. It is never selected by
+			// "auto", because creating and trashing an item in the operator's
+			// library is not a routing detail they should discover afterwards.
+			viaConnector := usesConnectorReparentRoute(mode, flags)
+			if viaConnector && flags.group != "" {
+				return usageErr(fmt.Errorf("--via connector cannot honor --group; the desktop connector has no group parameter"))
+			}
+
 			kind := "attachment_upload"
 			var change string
 			if mode == "linked-file" {
@@ -116,6 +146,9 @@ By default this previews the planned attachment; apply with --yes.`,
 				change = "linked-file -> " + req.Path
 			} else {
 				change = fmt.Sprintf("stored -> %s (%d bytes, md5 %s)", req.Filename, req.Size, req.MD5[:8])
+				if viaConnector {
+					change += " via desktop connector, then re-parented"
+				}
 			}
 			op := mutation.Op{
 				ID:      "attachments.add:001:" + mode,
@@ -123,10 +156,14 @@ By default this previews the planned attachment; apply with --yes.`,
 				Kind:    kind,
 				Changes: []mutation.Change{{Field: "attachment", Add: change}},
 				Apply: func() (string, any, error) {
-					if mode == "linked-file" {
+					switch {
+					case mode == "linked-file":
 						return applyLinkedAttachment(c, req, flags)
+					case viaConnector:
+						return applyConnectorReparentUpload(cmd.Context(), cmd, flags, c, req)
+					default:
+						return applyStoredUpload(cmd.Context(), c, req, flags)
 					}
-					return applyStoredUpload(cmd.Context(), c, req, flags)
 				},
 			}
 			env, runErr := runMutation(cmd.Context(), flags, "attachments.add", []mutation.Op{op})

@@ -182,21 +182,33 @@ zotio attachments
 Attach a local file to an existing item
 
 Attach a local file (typically a PDF) to an existing item. Mode "stored"
-uploads an imported_file child through the Zotero Web API that syncs to all
-devices. Mode "linked-file" records the absolute local path without consuming
-Zotero storage quota; the bytes remain local to this machine.
+uploads an imported_file child that syncs to all devices. Mode "linked-file"
+records the absolute local path without consuming Zotero storage quota; the
+bytes remain local to this machine.
 
-Stored uploads always land in Zotero's OWN cloud storage and are billed against
-that storage plan. Zotero's desktop connector cannot attach a file to an item
-that already exists in the library, so there is no local route for this
-command. When Zotero desktop is configured to keep files elsewhere (a personal
-WebDAV server, or file syncing turned off) the upload is refused rather than
-silently misrouted; attach the file in Zotero desktop instead, or pass
---allow-zotero-cloud to upload anyway.
+A stored upload through the Zotero Web API always lands in Zotero's OWN cloud
+storage and is billed against that storage plan. When Zotero desktop keeps files
+elsewhere (a personal WebDAV server, or file syncing turned off) that upload is
+refused rather than silently misrouted.
 
-Both modes are retry-safe. Stored files reconcile by filename and registered
-MD5. Linked files reconcile by absolute path. An identical retry no-ops instead
-of creating another child.
+--via connector is the local route for that case. Zotero's connector cannot
+attach to an item that already exists, so this creates a temporary parent and
+the file in one connector session — putting the bytes in whatever file store the
+desktop actually uses — then moves the attachment onto your item and trashes the
+temporary parent. Moving it relocates no bytes: every storage name derives from
+the attachment's own key, not its parent's. Requires Zotero desktop running.
+
+The route is opt-in and never chosen by --via auto, because it creates and
+trashes a temporary item in your library. Pass --allow-zotero-cloud instead to
+accept the cloud upload.
+
+All routes are retry-safe. Stored files reconcile by filename and registered
+MD5, and linked files by absolute path. The connector route reconciles on
+content hash alone, because Zotero names the stored file after the parent item
+rather than after your file: an identical retry no-ops, and a run interrupted
+before the move is resumed rather than duplicated. Two limits are worth knowing:
+a retry issued before Zotero has registered the hash can still add a second
+copy, and two simultaneous runs against one item can both add one.
 
 By default this previews the planned attachment; apply with --yes.
 

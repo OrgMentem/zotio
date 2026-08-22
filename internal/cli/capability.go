@@ -106,9 +106,16 @@ var capabilityOverrides = map[string]capabilityEntry{
 	// import apply creates items / linked-file attachments via the Web API.
 	"import apply": {Operation: "write", WriteTarget: "web_api", Requires: []string{preconditionWebAPIKey}},
 	// attachments add uploads stored files via the Zotero Web API file-upload
-	// protocol. That always targets Zotero's cloud storage, and the desktop
-	// connector cannot attach to an already-existing item, so the upload is
-	// refused outright when Zotero keeps its files elsewhere.
+	// protocol. That always targets Zotero's cloud storage, so the upload is
+	// refused when Zotero keeps its files elsewhere. `--via connector` bypasses
+	// the uploader entirely (temporary connector parent, then re-parent), and
+	// checkZoteroFileStoragePrecondition lets that route through.
+	//
+	// WriteTarget stays "web_api" and desktop_connector is NOT listed, matching
+	// the sibling hybrids (items create, import apply) which also reach the
+	// desktop under --via connector. The field describes the DEFAULT route; a
+	// conditional requirement would need a vocabulary the registry does not
+	// have. An agent choosing --via connector must expect a running desktop.
 	"attachments add": {Operation: "write", WriteTarget: "web_api", Requires: []string{preconditionWebAPIKey, preconditionZoteroFileStorage}},
 	// vault push writes to Zotero; pull and sync write the local vault.
 	"vault push":    {Operation: "write", WriteTarget: "web_api", Requires: []string{preconditionWebAPIKey}},

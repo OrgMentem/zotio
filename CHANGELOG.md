@@ -4,6 +4,36 @@ Notable changes to zotio. Format follows [Keep a Changelog](https://keepachangel
 
 ## [Unreleased]
 
+### Added
+
+- **`attachments add --via connector` attaches a file to an item that already
+  exists, without using Zotero's cloud storage.** A Web API stored upload always
+  lands in Zotero's own cloud storage and is billed to that plan, so it is
+  refused when the desktop keeps files elsewhere — a personal WebDAV server, or
+  file syncing turned off. Zotero's connector cannot address an item that
+  already exists, so until now there was no route at all: the only remedies were
+  attaching by hand in Zotero desktop, or a linked file that never syncs.
+
+  The new route creates a temporary parent and the file in one connector
+  session, so the bytes go through the running desktop into whatever file store
+  it actually uses; moves the attachment onto your item with a single
+  `PATCH {"parentItem": …}` guarded by `If-Unmodified-Since-Version`; then
+  trashes the temporary parent. Moving it relocates no bytes, because every
+  storage name — the local directory, the upload zip, and both WebDAV remote
+  names — derives from the attachment's own key rather than its parent's.
+
+  The route is **opt-in**. `--via auto` still refuses on such a library, so no
+  existing caller changes behaviour; the refusal now names `--via connector` as
+  its first remediation. It is retry-safe: an identical file no-ops against the
+  target by content hash, creating nothing. It refuses rather than guessing when
+  the temporary parent holds more than one attachment, and it never trashes that
+  parent unless the file has already left it, so a failure is recoverable by
+  hand from the keys it reports. Requires Zotero desktop running.
+
+  Every fact this rests on was measured against a real WebDAV-backed library
+  before the route was written, and the route itself was then smoke-tested on
+  scratch items: see `dev/field-report-2026-08-22-papio-round2.md`.
+
 ### Fixed
 
 - **A staged filename's DOI is no longer truncated at a parenthesis.** Tools

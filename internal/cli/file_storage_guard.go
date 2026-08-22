@@ -390,7 +390,11 @@ func storedUploadDecision(ctx context.Context, flags *rootFlags, route storedUpl
 func storedUploadRouteClause(route storedUploadRoute) string {
 	switch route.kind {
 	case storedUploadKindExistingItem:
-		return "Zotero's connector cannot attach a file to an item that already exists in the library, so this upload has no local route"
+		// The connector still cannot address an existing item directly, but
+		// `attachments add --via connector` now reaches one by creating a
+		// temporary parent and moving the attachment. Saying "no local route"
+		// here contradicted the remediation printed alongside it.
+		return "Zotero's connector cannot attach a file to an item that already exists in the library, so the direct Web API upload is refused"
 	case storedUploadKindCreateFellBack:
 		switch route.cause {
 		case webRouteCauseExplicitWeb:
@@ -522,8 +526,9 @@ func storedUploadRefusalSteps(v storedUploadVerdict) []string {
 		}
 	default:
 		return []string{
-			"Attach the file in Zotero desktop (right-click the item -> Add Attachment -> Attach Stored Copy of File); Zotero then syncs the bytes to your own file store.",
-			"For a NEW item, create it and its file in one desktop session: 'zotio import apply --attach-mode stored --via connector', which hands the bytes to Zotero instead of uploading them.",
+			"Use '--via connector' to route the bytes through Zotero desktop instead of uploading them: zotio creates a temporary parent plus the file in one connector session, moves the attachment onto your item, and trashes the temporary parent. Requires Zotero desktop running, and it creates and trashes one throwaway item in your library.",
+			"For a NEW item, create it and its file in one desktop session instead: 'zotio import apply --attach-mode stored --via connector'.",
+			"Or attach the file by hand in Zotero desktop (right-click the item -> Add Attachment -> Attach Stored Copy of File); Zotero then syncs the bytes to your own file store.",
 			pin,
 			linkedFile,
 			override,
