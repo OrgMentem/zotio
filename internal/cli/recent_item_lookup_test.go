@@ -60,14 +60,15 @@ func TestFindRecentlyAddedItemKey(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			var gotQuery map[string][]string
+			var gotMethod, gotPath string
 			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				if r.Method != http.MethodGet || r.URL.Path != "/users/0/items/top" {
-					t.Fatalf("request = %s %s, want GET /users/0/items/top", r.Method, r.URL.Path)
-				}
+				// Record and assert on the test goroutine: t.Fatalf here runs
+				// on the server goroutine, where it cannot stop the test.
+				gotMethod, gotPath = r.Method, r.URL.Path
 				gotQuery = r.URL.Query()
 				w.Header().Set("Content-Type", "application/json")
 				if err := json.NewEncoder(w).Encode(tt.entries); err != nil {
-					t.Fatalf("encode response: %v", err)
+					t.Errorf("encode response: %v", err)
 				}
 			}))
 			t.Cleanup(srv.Close)
@@ -76,6 +77,9 @@ func TestFindRecentlyAddedItemKey(t *testing.T) {
 			key, matched, err := findRecentlyAddedItemKey(c, "Paper", "journalArticle", floor)
 			if err != nil {
 				t.Fatalf("findRecentlyAddedItemKey: %v", err)
+			}
+			if gotMethod != http.MethodGet || gotPath != "/users/0/items/top" {
+				t.Fatalf("request = %s %s, want GET /users/0/items/top", gotMethod, gotPath)
 			}
 			if key != tt.wantKey {
 				t.Fatalf("key = %q, want %q", key, tt.wantKey)

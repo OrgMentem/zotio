@@ -768,13 +768,6 @@ func TestPatchWithConflictStateMachine(t *testing.T) {
 		}))
 		t.Cleanup(srv.Close)
 
-		// Speed up the 500 retry loop if the backoff seam exists; otherwise
-		// patchNote will retry 3 times at 1s/2s/4s which would make this case
-		// slow. We tolerate either shape: if the hook exists we use it.
-		if c := newClient(srv); c != nil {
-			_ = c
-		}
-
 		res := patchWithConflict(newClient(srv), outDir, n, srcHash, desiredHTML, &rootFlags{})
 		if res.Status != "error" {
 			t.Fatalf("status = %q (%s), want error", res.Status, res.Note)
