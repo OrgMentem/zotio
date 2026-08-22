@@ -54,6 +54,36 @@ func TestMain(m *testing.M) {
 		}
 	}
 
+	// Every external provider base points at a closed port for the whole
+	// package. A test that forgets to stub one now fails immediately and
+	// locally instead of reaching the real service over the network.
+	//
+	// This became load-bearing when DOI resolution gained a DataCite fallback
+	// on a CrossRef 404 (see import_datacite.go): a test that stubs CrossRef to
+	// answer 404 and does not stub DataCite would silently call
+	// api.datacite.org for real. The same hazard already existed for every
+	// other provider, one unstubbed base at a time. Same reasoning as the HOME
+	// isolation above - make it structurally impossible rather than remembered.
+	//
+	// Port 1 refuses instantly, so an escape surfaces as a fast, obvious
+	// connection error rather than a timeout. withBase() still overrides these
+	// per test and still restores them afterwards.
+	const closedPort = "http://127.0.0.1:1"
+	for _, base := range []*string{
+		&enrichCrossRefBase,
+		&enrichDataCiteBase,
+		&enrichUnpaywallBase,
+		&enrichOpenAlexBase,
+		&enrichSemanticScholarBase,
+		&enrichOpenCitationsBase,
+		&collectionGapsOpenCitationsBase,
+		&importPubMedBase,
+		&importArxivBase,
+		&importOpenLibraryBase,
+	} {
+		*base = closedPort
+	}
+
 	code := m.Run()
 	// os.Exit skips defers, so clean up explicitly.
 	_ = os.RemoveAll(home)
