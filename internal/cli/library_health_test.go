@@ -11,6 +11,7 @@ import (
 	"net/http/httptest"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -807,14 +808,49 @@ func TestBrokenAttachmentFile_LocalProbeErrorYieldsSkip_NoHeldPort(t *testing.T)
 	if isLocalZoteroAPI("http://127.0.0.1:0/api/users/0") {
 		t.Fatalf("isLocal unexpectedly true for ephemeral port")
 	}
-	// Also prove an ephemeral local base would take the OTHER skip path
-	// (Web API) and never reach the probe, so it cannot substitute.
+	// Prove an ephemeral local base would take the OTHER skip path
+	// (Web API) and never reach the probe, so it cannot substitute for
+	// the 23119 probe-error path exercised by the sibling test.
+	var requests atomic.Int64
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		t.Fatalf("ephemeral local base must not be probed: %s %s", r.Method, r.URL.Path)
+		requests.Add(1)
+		t.Errorf("ephemeral local base must not be probed: %s %s", r.Method, r.URL.Path)
 	}))
 	t.Cleanup(srv.Close)
-	_ = srv
-	t.Skip("informational: isLocalZoteroAPI hardcodes 23119 and genuinely cannot be exercised with an ephemeral httptest server — main assertion lives in TestBrokenAttachmentFile_LocalProbeErrorYieldsSkip")
+
+	t.Setenv("ZOTERO_BASE_URL", srv.URL+"/users/0")
+	t.Setenv("ZOTERO_API_KEY", "testkey")
+	t.Setenv("ZOTERO_CONFIG", filepath.Join(t.TempDir(), "missing.toml"))
+
+	db := seedHealthStore(t)
+	ctx := &healthContext{
+		src:         FindingSource{Kind: "local"},
+		preset:      "quick",
+		verifyFiles: true,
+		flags:       &rootFlags{timeout: time.Second},
+	}
+	findings, skip, err := runBrokenAttachmentFile(db, ctx)
+	if err != nil {
+		t.Fatalf("runBrokenAttachmentFile: %v", err)
+	}
+	if len(findings) != 0 {
+		t.Fatalf("want zero findings on ephemeral Web base, got %d: %+v", len(findings), findings)
+	}
+	if skip == nil {
+		t.Fatal("want skip on ephemeral Web base, got nil")
+	}
+	if skip.Kind != "broken_attachment_file" {
+		t.Fatalf("skip.Kind = %q, want broken_attachment_file", skip.Kind)
+	}
+	if skip.Precondition != "live_local_api" {
+		t.Fatalf("skip.Precondition = %q, want live_local_api", skip.Precondition)
+	}
+	if !strings.Contains(skip.Detail, "Web API") {
+		t.Fatalf("skip.Detail = %q, want mention of Web API (proves Web-API guard fired, not probe failure)", skip.Detail)
+	}
+	if got := requests.Load(); got != 0 {
+		t.Fatalf("ephemeral server was probed %d times, want 0 (must short-circuit before GET /)", got)
+	}
 }
 
 // zotio-2f8ea9a: retraction checks must respect cancellation via the command context.

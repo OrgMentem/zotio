@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	_ "modernc.org/sqlite"
 )
@@ -94,30 +95,38 @@ func TestStoreWrite_PanicReleasesLock(t *testing.T) {
 	}
 	defer s.Close()
 
-	// Trigger panic by passing a nil *Store method receiver indirectly:
-	// we call UpsertBatch with malformed JSON that survives Unmarshal
-	// (it's wrapped in skipped-count handling) — there's no easy panic
-	// path inside a locked section that doesn't also corrupt state, so
-	// we instead simulate the post-panic state by manually locking and
-	// unlocking, then assert subsequent calls succeed.
+	s.upsertBatchHook = func() { panic("simulated writer panic") }
+
+	didPanic := false
 	func() {
 		defer func() {
-			_ = recover()
+			if r := recover(); r != nil {
+				didPanic = true
+				if r != "simulated writer panic" {
+					t.Fatalf("panic value got %v, want simulated writer panic", r)
+				}
+			}
 		}()
-		s.writeMu.Lock()
-		defer s.writeMu.Unlock()
-		panic("simulated writer panic")
+		_, _, _ = s.UpsertBatch("post_panic", []json.RawMessage{json.RawMessage(`{"id": "x"}`)})
 	}()
+	if !didPanic {
+		t.Fatal("UpsertBatch did not panic through hook")
+	}
+	s.upsertBatchHook = nil
 
-	// Subsequent writer must not block.
+	// Subsequent writer must not block on a leaked writeMu.
 	done := make(chan struct{})
 	go func() {
-		if _, _, err := s.UpsertBatch("post_panic", []json.RawMessage{json.RawMessage(`{"id": "x"}`)}); err != nil {
+		if _, _, err := s.UpsertBatch("post_panic", []json.RawMessage{json.RawMessage(`{"id": "y"}`)}); err != nil {
 			t.Errorf("post-panic UpsertBatch: %v", err)
 		}
 		close(done)
 	}()
-	<-done
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("second UpsertBatch blocked: writeMu was not released after panic (leaked writeMu)")
+	}
 }
 
 // TestUpsertBatch_TemplatedIDFieldOverrideWins exercises the

@@ -115,6 +115,9 @@ func helpersTestAssertJSONEqual(t *testing.T, got json.RawMessage, want string) 
 	}
 }
 
+// Formerly TestHelpersClassifyDeleteError (via TestHelpersClassifyAPIErrorStatusCodeMapping):
+// classifyDeleteError was folded into classifyAPIError when --ignore-missing
+// became a structured no_op (N4-2); the wrapper's only behaviour was delegation.
 func TestHelpersClassifyAPIError(t *testing.T) {
 	tests := []struct {
 		name string
@@ -127,6 +130,7 @@ func TestHelpersClassifyAPIError(t *testing.T) {
 		{name: "rate limited api error", err: helpersTestAPIError(429, "slow down"), want: 7},
 		{name: "server error", err: helpersTestAPIError(500, "upstream exploded"), want: 5},
 		{name: "generic error", err: errors.New("dial tcp refused"), want: 5},
+		{name: "delete failed", err: errors.New("delete failed"), want: 5},
 		{name: "rate limit error", err: errors.New("rate limited: HTTP 429 for https://api.example.test/items"), want: 7},
 	}
 
@@ -224,33 +228,6 @@ func TestHelpersClassifyAPIErrorRedactsBadRequestAuthBody(t *testing.T) {
 			t.Fatalf("errors.As(classifyAPIError(), *client.APIError) = false, want true")
 		}
 	})
-}
-
-// TestHelpersClassifyAPIErrorStatusCodeMapping was TestHelpersClassifyDeleteError
-// before classifyDeleteError was folded away: with --ignore-missing now resolved
-// as a structured mutation no_op inside items/collections delete's own Apply
-// (see N4-2's fix and its follow-up), classifyDeleteError's only remaining
-// behaviour was delegating straight to classifyAPIError, so this table now
-// exercises that directly rather than through a dead wrapper.
-func TestHelpersClassifyAPIErrorStatusCodeMapping(t *testing.T) {
-	tests := []struct {
-		name string
-		err  error
-		want int
-	}{
-		{name: "unauthorized", err: helpersTestAPIError(401, "bad key"), want: 4},
-		{name: "forbidden", err: helpersTestAPIError(403, "permission denied"), want: 4},
-		{name: "not found", err: helpersTestAPIError(404, "missing"), want: 3},
-		{name: "rate limited", err: helpersTestAPIError(429, "slow down"), want: 7},
-		{name: "server error", err: helpersTestAPIError(500, "upstream exploded"), want: 5},
-		{name: "generic error", err: errors.New("delete failed"), want: 5},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			helpersTestAssertCLIError(t, classifyAPIError(tt.err, nil), tt.want)
-		})
-	}
 }
 
 func TestHelpersAccessDenial(t *testing.T) {

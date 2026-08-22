@@ -45,8 +45,9 @@ type Store struct {
 	// is 1 (one goroutine per resource via len(resources)-sized work channel)
 	// — read-then-write sequences (e.g., GetSyncState → SaveSyncState) are
 	// race-free by construction within a resource.
-	writeMu sync.Mutex
-	path    string
+	writeMu         sync.Mutex
+	path            string
+	upsertBatchHook func()
 }
 
 // OpenReadOnlyContext opens a ready SQLite store without ever migrating it.
@@ -1449,6 +1450,9 @@ func (s *Store) UpsertBatch(resourceType string, items []json.RawMessage) (int, 
 
 	var stored int
 	for _, item := range prepared {
+		if s.upsertBatchHook != nil {
+			s.upsertBatchHook()
+		}
 		if err := s.upsertGenericResourceTx(tx, resourceType, item.id, item.data, item.obj); err != nil {
 			return 0, extractFailures, fmt.Errorf("upserting %s/%s: %w", resourceType, item.id, err)
 		}
