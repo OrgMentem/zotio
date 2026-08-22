@@ -450,38 +450,45 @@ func TestRetryAfter_NilResp(t *testing.T) {
 // the server actually sent. Collapsing the two would either ignore a server's
 // backoff request or make a real Retry-After shrink under test settings.
 func TestRetryAfterOrFallback_ReportsWhoChoseTheWait(t *testing.T) {
-	withHeader := func(v string) *http.Response {
-		resp := &http.Response{Header: http.Header{}}
-		if v != "" {
-			resp.Header.Set("Retry-After", v)
-		}
-		return resp
-	}
+	// The table holds the Retry-After VALUE, and the response is built inside the
+	// loop. Holding a *http.Response in the table made bodyclose flag three of
+	// the seven identical constructions — a heuristic, since the response is
+	// synthetic and its Body is nil, so there is nothing to close and closing
+	// would panic. Building it here removes the pattern instead of suppressing
+	// the finding entry by entry.
 	tests := []struct {
 		name         string
-		resp         *http.Response
+		header       string // Retry-After value; "" means the header is absent
+		noResponse   bool   // a nil *http.Response, which is a distinct case
 		wantWait     time.Duration
 		wantFallback bool
 	}{
-		{name: "server sends seconds", resp: withHeader("10"), wantWait: 10 * time.Second, wantFallback: false},
-		{name: "server sends the same value as the default", resp: withHeader("5"), wantWait: 5 * time.Second, wantFallback: false},
-		{name: "server sends over the cap", resp: withHeader("600"), wantWait: MaxRetryWait, wantFallback: false},
-		{name: "header absent", resp: withHeader(""), wantWait: 5 * time.Second, wantFallback: true},
-		{name: "header unparseable", resp: withHeader("not-a-number"), wantWait: 5 * time.Second, wantFallback: true},
-		{name: "header zero carries no delay", resp: withHeader("0"), wantWait: 5 * time.Second, wantFallback: true},
-		{name: "header negative carries no delay", resp: withHeader("-3"), wantWait: 5 * time.Second, wantFallback: true},
-		{name: "nil response", resp: nil, wantWait: 5 * time.Second, wantFallback: true},
+		{name: "server sends seconds", header: "10", wantWait: 10 * time.Second, wantFallback: false},
+		{name: "server sends the same value as the default", header: "5", wantWait: 5 * time.Second, wantFallback: false},
+		{name: "server sends over the cap", header: "600", wantWait: MaxRetryWait, wantFallback: false},
+		{name: "header absent", header: "", wantWait: 5 * time.Second, wantFallback: true},
+		{name: "header unparseable", header: "not-a-number", wantWait: 5 * time.Second, wantFallback: true},
+		{name: "header zero carries no delay", header: "0", wantWait: 5 * time.Second, wantFallback: true},
+		{name: "header negative carries no delay", header: "-3", wantWait: 5 * time.Second, wantFallback: true},
+		{name: "nil response", noResponse: true, wantWait: 5 * time.Second, wantFallback: true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			wait, fallback := RetryAfterOrFallback(tt.resp)
+			var resp *http.Response
+			if !tt.noResponse {
+				resp = &http.Response{Header: http.Header{}}
+				if tt.header != "" {
+					resp.Header.Set("Retry-After", tt.header)
+				}
+			}
+			wait, fallback := RetryAfterOrFallback(resp)
 			if wait != tt.wantWait {
 				t.Errorf("wait = %v, want %v", wait, tt.wantWait)
 			}
 			if fallback != tt.wantFallback {
 				t.Errorf("fallback = %v, want %v", fallback, tt.wantFallback)
 			}
-			if got := RetryAfter(tt.resp); got != wait {
+			if got := RetryAfter(resp); got != wait {
 				t.Errorf("RetryAfter = %v, want %v (must agree with RetryAfterOrFallback)", got, wait)
 			}
 		})

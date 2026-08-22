@@ -115,11 +115,6 @@ func newItemMoveTestServer(t *testing.T, versions map[string]string, collections
 	return writePlaneTestNewItemServer(t, "collections", versions, collections)
 }
 
-func runItemsMoveTestCmd(t *testing.T, srv *itemMoveTestServer, flags *rootFlags, args ...string) (mutation.Envelope, string, error) {
-	t.Helper()
-	return writePlaneTestRunMutationCmd(t, newItemsMoveCmd, flags, args...)
-}
-
 func mustRunItemsMoveTestCmd(t *testing.T, srv *itemMoveTestServer, flags *rootFlags, args ...string) mutation.Envelope {
 	t.Helper()
 	return writePlaneTestMustRunMutationCmd(t, "items move", newItemsMoveCmd, flags, args...)

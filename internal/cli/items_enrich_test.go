@@ -676,6 +676,7 @@ func TestApplyEnrichProposal_AttachPostsChild(t *testing.T) {
 	}
 	status, reason, err := applyEnrichProposalWithContext(context.Background(), enrichPDFDownloaderFactory(http.DefaultClient), f, &p, &rootFlags{})
 	if err != nil || reason != nil || status != "applied" {
+		t.Fatalf("apply = (%q, %v, %v), want (applied, nil, nil)", status, reason, err)
 	}
 	if f.postPath != "/items" {
 		t.Errorf("post path = %q, want /items", f.postPath)

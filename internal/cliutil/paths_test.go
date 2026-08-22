@@ -166,17 +166,6 @@ func TestAtomicWriteFilePreservesContentAndMode(t *testing.T) {
 	}
 }
 
-func assertDataDir(t *testing.T, want string) {
-	t.Helper()
-	got, err := DataDir()
-	if err != nil {
-		t.Fatalf("DataDir() error = %v", err)
-	}
-	if got != want {
-		t.Fatalf("DataDir() = %q, want %q", got, want)
-	}
-}
-
 func captureStderr(t *testing.T, fn func()) string {
 	t.Helper()
 	old := os.Stderr

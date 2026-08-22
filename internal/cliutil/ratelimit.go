@@ -188,17 +188,6 @@ func (l *AdaptiveLimiter) Rate() float64 {
 	return l.rate
 }
 
-// rateLimitError signals an upstream returned 429 after retries were
-// exhausted. Callers must surface this as a hard error rather than empty
-// results — empty-on-throttle is indistinguishable from "no data exists"
-// and silently corrupts downstream queries.
-// unexported — only exercised by package tests today.
-type rateLimitError struct {
-	URL        string
-	RetryAfter time.Duration
-	Body       string
-}
-
 // MaxRetryWait caps the wait derived from a Retry-After header so a buggy
 // or hostile upstream cannot pin a CLI for hours.
 const MaxRetryWait = 60 * time.Second

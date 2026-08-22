@@ -26,3 +26,19 @@ regexTarget = "line"
 regexes = [
   '''Citation Key: [A-Za-z][A-Za-z0-9:._-]*''',
 ]
+
+# doctor_test.go builds credential-bearing URLs to prove `zotio doctor` REDACTS
+# them: the assertions check the rendered hint does not contain "sekret" or
+# "token=abc". The literal is the test's whole point, and it is a fixture.
+#
+# Scoped to the exact synthetic user:password pair, so a real credential URI is
+# still flagged anywhere, including elsewhere in this same file. Without this the
+# secrets gate is red for anyone running betterleaks 1.8.1 or newer while CI
+# stays green on its pinned 1.7.3, and a gate that fails only locally is a gate
+# people learn to ignore.
+[[allowlists]]
+description = "Synthetic credential URI in doctor_test.go (redaction assertions, not a credential)"
+regexTarget = "line"
+regexes = [
+  '''u:sekret@(localhost:23119|example\.com)''',
+]

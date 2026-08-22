@@ -243,7 +243,11 @@ func TestGetFromWriteBaseWithVersion(t *testing.T) {
 		c.NoCache = true
 
 		// Context form with nil should fall back to baseCtx and succeed.
-		bodyNil, verNil, errNil := c.GetFromWriteBaseWithVersionContext(nil, "/items/ABC", nil)
+		// A literal nil trips SA1012, but a nil context is exactly what this
+		// case exercises: the documented fallback to the client's base context.
+		// Passing context.TODO would test a different code path.
+		var nilCtx context.Context
+		bodyNil, verNil, errNil := c.GetFromWriteBaseWithVersionContext(nilCtx, "/items/ABC", nil)
 		if errNil != nil {
 			t.Fatalf("GetFromWriteBaseWithVersionContext(nil) err = %v, want nil", errNil)
 		}

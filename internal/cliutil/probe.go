@@ -2,16 +2,6 @@
 
 package cliutil
 
-import "time"
-
-// defaultProbeTimeout caps the request when the caller passes a nil
-// client and didn't set a context deadline. Without this cap, a probe
-// against a non-responsive host could hang indefinitely (the global
-// http.DefaultClient has no Timeout). Callers who pass their own
-// *http.Client are expected to set Timeout there; this value only
-// applies to the nil-client fallback.
-const defaultProbeTimeout = 10 * time.Second
-
 // ReachabilityStatus is one of the strings returned by ProbeReachable.
 // Callers (typically a doctor command listing per-source health) match
 // on these constants when deciding whether to render OK/WARN/FAIL.

@@ -1038,7 +1038,7 @@ func TestUndoHelpers(t *testing.T) {
 			if len(got) != 0 {
 				t.Fatalf("undoDropString nil = %v, want []", got)
 			}
-			if input != nil && len(input) != 0 {
+			if len(input) != 0 {
 				t.Fatalf("undoDropString mutated nil input: got %v", input)
 			}
 		})
