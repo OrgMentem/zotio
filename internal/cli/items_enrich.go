@@ -102,6 +102,7 @@ func newItemsEnrichCmd(flags *rootFlags) *cobra.Command {
 		flagMissingDOI        bool
 		flagMissingAbstract   bool
 		flagMissingPDF        bool
+		flagMissingCitation   bool
 		flagLimit             int
 		flagEmail             string
 		flagNoOpenAlex        bool
@@ -127,6 +128,9 @@ Work queues come from the same checks as 'items audit':
   --missing-doi       resolve a DOI by title from CrossRef, then OpenAlex/Semantic Scholar (exact title match)
   --missing-abstract  fill the abstract from CrossRef, then OpenAlex/Semantic Scholar (requires the item's DOI)
   --missing-pdf       attach an open-access PDF from Unpaywall (requires DOI)
+  --missing-citation  fill the core citation fields the citation health check
+                      measures - creators, title, date, and the venue field of
+                      the item's own type - from CrossRef (requires DOI)
 
 PDF attachment modes:
   linked-url   create a linked_url attachment (default; no download)
@@ -161,8 +165,8 @@ Applied field changes record provenance in the item's Extra field.`,
 			if flagMissingPDF && attachMode == "linked-file" && strings.TrimSpace(flagPDFDir) == "" {
 				return usageErr(fmt.Errorf("--pdf-dir is required with --missing-pdf --attach-mode linked-file"))
 			}
-			if !flagValidate && !flagMissingDOI && !flagMissingAbstract && !flagMissingPDF {
-				return fmt.Errorf("specify at least one of --missing-doi, --missing-abstract, --missing-pdf, or --validate")
+			if !flagValidate && !flagMissingDOI && !flagMissingAbstract && !flagMissingPDF && !flagMissingCitation {
+				return fmt.Errorf("specify at least one of --missing-doi, --missing-abstract, --missing-pdf, --missing-citation, or --validate")
 			}
 
 			pdfDir := ""
@@ -230,6 +234,13 @@ Applied field changes record provenance in the item's Extra field.`,
 					proposalErrs = append(proposalErrs, buildErr)
 				}
 			}
+			if flagMissingCitation {
+				p, s, buildErr := buildEnrichProposals(cmd.Context(), db, httpClient, "missing_citation", flagLimit, flagCollection, keyFilter, flagEmail, useOpenAlex, useSemanticScholar, "linked-url", "")
+				proposals, skipped = append(proposals, p...), append(skipped, s...)
+				if buildErr != nil {
+					proposalErrs = append(proposalErrs, buildErr)
+				}
+			}
 
 			// Preserve proposal building and route preview/apply through the shared mutation helper.
 			mode := resolveMutationMode(flags)
@@ -262,6 +273,7 @@ Applied field changes record provenance in the item's Extra field.`,
 	cmd.Flags().BoolVar(&flagMissingDOI, "missing-doi", false, "Resolve and add a DOI from CrossRef, OpenAlex, or Semantic Scholar")
 	cmd.Flags().BoolVar(&flagMissingAbstract, "missing-abstract", false, "Fill the abstract from CrossRef, OpenAlex, or Semantic Scholar (uses the item's DOI)")
 	cmd.Flags().BoolVar(&flagMissingPDF, "missing-pdf", false, "Attach an open-access PDF from Unpaywall as a link or download (uses the item's DOI)")
+	cmd.Flags().BoolVar(&flagMissingCitation, "missing-citation", false, "Fill the core citation fields the citation health check measures (creators, title, date, venue) from CrossRef (uses the item's DOI)")
 	cmd.Flags().StringVar(&flagAttachMode, "attach-mode", "linked-url", "PDF attachment handling: linked-url or linked-file; stored retro-attachment is handled by `zotio attachments add`")
 	cmd.Flags().StringVar(&flagPDFDir, "pdf-dir", "", "Directory for linked-file PDF downloads; responses must be PDF/octet-stream/unspecified Content-Type plus %PDF- magic")
 	cmd.Flags().IntVar(&flagLimit, "limit", 25, "Maximum items to process per category")
@@ -407,6 +419,17 @@ func enrichWorkQueueForKeys(db localQueryStore, category string, limit int, coll
 	if len(keys) == 0 {
 		return nil, nil
 	}
+
+	// The citation queue is filtered in Go, not in SQL, so it has no bound-
+	// variable ceiling and must not be chunked: each chunk would re-run the
+	// whole query and append the same rows again.
+	if category == "missing_citation" {
+		rows, err := queryCitationIncompleteItems(db, 0, collection)
+		if err != nil {
+			return nil, err
+		}
+		return applyEnrichQueueLimit(filterEnrichRowsByKeys(rows, keyFilter), limit), nil
+	}
 	sort.Strings(keys)
 
 	rows := make([]map[string]any, 0, len(keys))
@@ -428,10 +451,17 @@ func enrichWorkQueueForKeys(db localQueryStore, category string, limit int, coll
 		}
 		return sqlStringValue(left) > sqlStringValue(right)
 	})
+	return applyEnrichQueueLimit(rows, limit), nil
+}
+
+// applyEnrichQueueLimit caps a work queue assembled in Go. The SQL paths cap
+// themselves with LIMIT; the chunked and Go-filtered paths cannot, because the
+// cap applies to the merged result rather than to any one query.
+func applyEnrichQueueLimit(rows []map[string]any, limit int) []map[string]any {
 	if limit > 0 && len(rows) > limit {
-		rows = rows[:limit]
+		return rows[:limit]
 	}
-	return rows, nil
+	return rows
 }
 
 func queryEnrichWorkQueueKeyChunk(db localQueryStore, category, collection string, keys []string) ([]map[string]any, error) {
@@ -493,6 +523,8 @@ func enrichWorkQueue(db localQueryStore, category string, limit int, collection 
 		return queryMissingAbstractItems(db, limit, collection)
 	case "missing_pdf":
 		return queryMissingPDFItems(db, "", limit, collection)
+	case "missing_citation":
+		return queryCitationIncompleteItems(db, limit, collection)
 	default:
 		return nil, fmt.Errorf("unknown category %q", category)
 	}
@@ -658,6 +690,32 @@ func resolveEnrichment(ctx context.Context, httpClient *http.Client, category, k
 			extra:   stringFromMap(data, "extra"),
 		}, ""
 
+	case "missing_citation":
+		// A DOI is the only safe identity anchor here. The --missing-doi
+		// resolver matches on an exact title, but a citation-incomplete item
+		// may lack creators AND date AND venue, so a title match has far less
+		// corroboration and a wrong match writes a wrong reference — the very
+		// failure this check exists to catch.
+		doi := normalizeDOI(stringFromMap(data, "DOI"))
+		if doi == "" {
+			return enrichProposal{}, "no DOI to look up citation fields; run --missing-doi first"
+		}
+		work, ok := fetchCrossRefWorkByDOI(ctx, httpClient, doi)
+		if !ok {
+			return enrichProposal{}, "no CrossRef record for this DOI"
+		}
+		fields := citationEnrichFields(data, work)
+		if len(fields) == 0 {
+			return enrichProposal{}, "CrossRef supplied none of the citation fields this item lacks"
+		}
+		return enrichProposal{
+			Key: key, Title: title, Category: category, Action: enrichActionPatch,
+			Source: "CrossRef", Note: "citation fields " + strings.Join(sortedFieldNames(fields), ", "),
+			Fields:  fields,
+			version: version,
+			extra:   stringFromMap(data, "extra"),
+		}, ""
+
 	case "missing_pdf":
 		doi := normalizeDOI(stringFromMap(data, "DOI"))
 		if doi == "" {
@@ -702,6 +760,73 @@ func resolveEnrichment(ctx context.Context, httpClient *http.Client, category, k
 		}
 	}
 	return enrichProposal{}, "unknown category"
+}
+
+// citationEnrichFields returns the citation-core fields the STORED item lacks
+// and CrossRef can supply. Every test reads the stored item, never what the
+// provider returned: a Zotero PATCH replaces a whole field, and `creators` is
+// an array, so proposing creators for an item that already has them would
+// destroy the operator's own names. An item joins this queue for any single
+// missing field, so filling only the blank ones is the whole point.
+//
+// `extra` is never a key here. applyEnrichProposalWithContext overwrites
+// body["extra"] with the provenance line, so an `extra` field would be
+// silently dropped.
+func citationEnrichFields(data map[string]any, work crossRefWork) map[string]any {
+	fields := map[string]any{}
+	if creators, _ := data["creators"].([]any); len(creators) == 0 {
+		if resolved := crossRefCreators(work.Author); len(resolved) > 0 {
+			fields["creators"] = resolved
+		}
+	}
+	if strings.TrimSpace(stringFromMap(data, "title")) == "" {
+		if title := firstCrossRefString(work.Title, ""); title != "" {
+			fields["title"] = title
+		}
+	}
+	if strings.TrimSpace(stringFromMap(data, "date")) == "" {
+		if year := crossRefYear(work.Published); year != "" {
+			fields["date"] = year
+		}
+	}
+	// The venue field name is per item type, so it comes from the same table
+	// that generates the check's SQL. A type absent from that table has no
+	// venue requirement and contributes nothing.
+	if field, ok := citationVenueFields[stringFromMap(data, "itemType")]; ok {
+		if strings.TrimSpace(stringFromMap(data, field)) == "" {
+			if venue := citationVenueFromCrossRef(field, work); venue != "" {
+				fields[field] = venue
+			}
+		}
+	}
+	return fields
+}
+
+// citationVenueFromCrossRef maps a CrossRef work onto the one venue field the
+// item's own type defines. A preprint's `repository` has no CrossRef
+// counterpart: posted-content carries an institution or a group title, and
+// neither reliably names the repository. That arm therefore resolves to
+// nothing and the item is reported as a skip rather than filled with a guess.
+func citationVenueFromCrossRef(field string, work crossRefWork) string {
+	switch field {
+	case "publicationTitle", "proceedingsTitle":
+		return firstCrossRefString(work.ContainerTitle, "")
+	case "publisher":
+		return strings.TrimSpace(work.Publisher)
+	default:
+		return ""
+	}
+}
+
+// sortedFieldNames keeps a proposal's note stable across runs; ranging a Go
+// map directly would reorder it on every call.
+func sortedFieldNames(fields map[string]any) []string {
+	names := make([]string, 0, len(fields))
+	for name := range fields {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
 }
 
 func applyEnrichProposalWithContext(ctx context.Context, downloader enrichPDFDownloader, c apiMutator, p *enrichProposal, flags *rootFlags) (string, any, error) {
@@ -923,11 +1048,17 @@ func mutationExpectedVersion(version any) int {
 	}
 }
 
-// enrichProvenanceLine is the audit-trail line appended to Extra on apply.
+// enrichProvenanceLine is the audit-trail line appended to Extra on apply. It
+// names the fields actually written: a reader auditing a bibliography needs to
+// know which values came from a provider rather than from them, and the
+// citation category writes a different subset for every item.
 func enrichProvenanceLine(p *enrichProposal) string {
 	field := "DOI"
-	if p.Category == "missing_abstract" {
+	switch p.Category {
+	case "missing_abstract":
 		field = "abstract"
+	case "missing_citation":
+		field = strings.Join(sortedFieldNames(p.Fields), "+")
 	}
 	return fmt.Sprintf("zotio: %s added via %s on %s", field, p.Source, time.Now().UTC().Format("2006-01-02"))
 }

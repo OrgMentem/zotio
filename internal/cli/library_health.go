@@ -278,9 +278,9 @@ func healthCheckRegistry() []healthCheck {
 		{kind: "citekey_missing", severity: sevHigh, run: runCitekeyMissing},
 		{kind: "duplicate_candidates", severity: sevHigh, run: runDuplicateCandidates},
 		{kind: "missing_citation", severity: sevHigh, run: itemCheckRunner(
-			func(db localQueryStore) ([]map[string]any, error) { return queryCitationIncompleteItems(db, 0) },
-			"missing_citation", sevHigh, false,
-			&RecommendedAction{Text: "Add the missing core citation fields (creators, title, date, venue) in Zotero"})},
+			func(db localQueryStore) ([]map[string]any, error) { return queryCitationIncompleteItems(db, 0, "") },
+			"missing_citation", sevHigh, true,
+			&RecommendedAction{Command: "zotio items enrich --missing-citation --keys-from -"})},
 		{kind: "missing_doi", severity: sevHigh, run: itemCheckRunner(
 			func(db localQueryStore) ([]map[string]any, error) { return queryMissingDOIItems(db, 0, "") },
 			"missing_doi", sevHigh, true,

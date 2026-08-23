@@ -332,7 +332,7 @@ func TestItemsAuditCmd(t *testing.T) {
 			t.Fatalf("row key = %v, want JDOI", rows)
 		}
 
-		// Also cover missing_citation action Text (not Command).
+		// missing_citation now routes to a fixer, like every peer content check.
 		auditIsolateEnv(t, "")
 		auditSeedDB(t, []json.RawMessage{
 			json.RawMessage(`{"key":"CCLEAN","version":1,"data":{"key":"CCLEAN","itemType":"journalArticle","title":"Clean","creators":[{"lastName":"Doe","creatorType":"author"}],"date":"2020","publicationTitle":"J","DOI":"10/clean","abstractNote":"abs","tags":[{"tag":"t"}]}}`),
@@ -350,14 +350,14 @@ func TestItemsAuditCmd(t *testing.T) {
 		if len(f2) != 1 {
 			t.Fatalf("citation findings = %d, want 1", len(f2))
 		}
-		if f2[0].RecommendedAction == nil || f2[0].RecommendedAction.Text == "" {
-			t.Fatalf("citation finding action text empty: %+v", f2[0].RecommendedAction)
+		if f2[0].RecommendedAction == nil || f2[0].RecommendedAction.Command != "zotio items enrich --missing-citation --keys-from -" {
+			t.Fatalf("citation finding action = %+v, want the enrich fixer command", f2[0].RecommendedAction)
 		}
-		if f2[0].RecommendedAction.Command != "" {
-			t.Fatalf("citation finding should have Text not Command, got %+v", f2[0].RecommendedAction)
+		if f2[0].RecommendedAction.Text != "" {
+			t.Fatalf("citation finding should have Command not Text, got %+v", f2[0].RecommendedAction)
 		}
-		if !strings.Contains(f2[0].RecommendedAction.Text, "Add the missing core citation fields") {
-			t.Fatalf("citation action text = %q, want it to contain the remediation phrase", f2[0].RecommendedAction.Text)
+		if !f2[0].Autofixable {
+			t.Fatalf("citation finding autofixable = false, want true now that a fixer exists")
 		}
 	})
 

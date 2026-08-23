@@ -195,6 +195,149 @@ func TestResolvePDFViaUnpaywall(t *testing.T) {
 	}
 }
 
+// crossRefWorkServer serves one CrossRef work by DOI with the citation-core
+// fields populated.
+func crossRefWorkServer(t *testing.T) *httptest.Server {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"message":{` +
+			`"title":["Provider Title"],` +
+			`"author":[{"given":"Ada","family":"Lovelace"}],` +
+			`"published":{"date-parts":[[1843]]},` +
+			`"container-title":["Provider Venue"],` +
+			`"publisher":"Provider Press"` +
+			`}}`))
+	}))
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+func TestResolveEnrichmentCitationFillsOnlyBlankFields(t *testing.T) {
+	withBase(t, &enrichCrossRefBase, crossRefWorkServer(t).URL)
+
+	// The item lacks a date and a venue. It already carries a title and one
+	// creator, and a Zotero PATCH replaces a whole field, so proposing either
+	// would overwrite the operator's own data.
+	data := map[string]any{
+		"itemType": "journalArticle",
+		"title":    "Operator Title",
+		"DOI":      "10.1/x",
+		"creators": []any{map[string]any{"lastName": "Babbage", "creatorType": "author"}},
+	}
+	p, skip := resolveEnrichment(context.Background(), http.DefaultClient, "missing_citation", "K1", 7, data, "", true, true, "linked-url", "")
+	if skip != "" {
+		t.Fatalf("skip = %q, want a proposal", skip)
+	}
+	want := map[string]any{"date": "1843", "publicationTitle": "Provider Venue"}
+	if !reflect.DeepEqual(p.Fields, want) {
+		t.Fatalf("fields = %#v, want %#v", p.Fields, want)
+	}
+	if p.Action != enrichActionPatch || p.Source != "CrossRef" {
+		t.Fatalf("action/source = %v/%v, want patch/CrossRef", p.Action, p.Source)
+	}
+}
+
+func TestResolveEnrichmentCitationVenueFieldFollowsItemType(t *testing.T) {
+	withBase(t, &enrichCrossRefBase, crossRefWorkServer(t).URL)
+
+	// Only journalArticle has publicationTitle. Writing that field onto a
+	// conferencePaper or a book would send Zotero a field its type never
+	// defines, and a preprint's repository has no CrossRef counterpart at all.
+	for _, tc := range []struct {
+		itemType  string
+		wantField string
+		wantValue string
+	}{
+		{"journalArticle", "publicationTitle", "Provider Venue"},
+		{"conferencePaper", "proceedingsTitle", "Provider Venue"},
+		{"book", "publisher", "Provider Press"},
+	} {
+		t.Run(tc.itemType, func(t *testing.T) {
+			data := map[string]any{
+				"itemType": tc.itemType,
+				"title":    "T",
+				"date":     "2020",
+				"DOI":      "10.1/x",
+				"creators": []any{map[string]any{"lastName": "B", "creatorType": "author"}},
+			}
+			p, skip := resolveEnrichment(context.Background(), http.DefaultClient, "missing_citation", "K1", 1, data, "", true, true, "linked-url", "")
+			if skip != "" {
+				t.Fatalf("skip = %q, want a proposal", skip)
+			}
+			if got := p.Fields[tc.wantField]; got != tc.wantValue {
+				t.Fatalf("%s = %v, want %q (fields %#v)", tc.wantField, got, tc.wantValue, p.Fields)
+			}
+			if len(p.Fields) != 1 {
+				t.Fatalf("fields = %#v, want only %s", p.Fields, tc.wantField)
+			}
+		})
+	}
+
+	// A preprint missing only its repository resolves to nothing, so it is
+	// reported rather than filled with a guessed value.
+	data := map[string]any{
+		"itemType": "preprint",
+		"title":    "T",
+		"date":     "2020",
+		"DOI":      "10.1/x",
+		"creators": []any{map[string]any{"lastName": "B", "creatorType": "author"}},
+	}
+	if _, skip := resolveEnrichment(context.Background(), http.DefaultClient, "missing_citation", "K1", 1, data, "", true, true, "linked-url", ""); skip == "" {
+		t.Fatal("preprint repository resolved to a value, want a skip")
+	}
+}
+
+func TestResolveEnrichmentCitationNeverProposesExtra(t *testing.T) {
+	withBase(t, &enrichCrossRefBase, crossRefWorkServer(t).URL)
+
+	// applyEnrichProposalWithContext overwrites body["extra"] with the
+	// provenance line, so an `extra` field in a proposal is silently dropped.
+	// A type with no container field must therefore skip, never route the
+	// venue into Extra the way the import mapper does.
+	data := map[string]any{
+		"itemType": "videoRecording",
+		"DOI":      "10.1/x",
+		"title":    "T",
+		"date":     "2020",
+	}
+	p, skip := resolveEnrichment(context.Background(), http.DefaultClient, "missing_citation", "K1", 1, data, "", true, true, "linked-url", "")
+	if skip != "" {
+		t.Fatalf("skip = %q, want a creators-only proposal", skip)
+	}
+	if _, bad := p.Fields["extra"]; bad {
+		t.Fatalf("proposal carries an extra field, which apply would drop: %#v", p.Fields)
+	}
+	if _, ok := p.Fields["creators"]; !ok || len(p.Fields) != 1 {
+		t.Fatalf("fields = %#v, want creators only", p.Fields)
+	}
+}
+
+func TestResolveEnrichmentCitationRequiresDOI(t *testing.T) {
+	withBase(t, &enrichCrossRefBase, crossRefWorkServer(t).URL)
+
+	// A citation-incomplete item may lack creators, date and venue at once, so
+	// the title-match anchor used by --missing-doi has too little to confirm.
+	data := map[string]any{"itemType": "journalArticle", "title": "Operator Title"}
+	_, skip := resolveEnrichment(context.Background(), http.DefaultClient, "missing_citation", "K1", 1, data, "", true, true, "linked-url", "")
+	if !strings.Contains(skip, "--missing-doi") {
+		t.Fatalf("skip = %q, want it to name --missing-doi as the prior step", skip)
+	}
+}
+
+func TestResolveEnrichmentCitationSkipsWhenProviderAddsNothing(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"message":{"title":["Provider Title"]}}`))
+	}))
+	t.Cleanup(srv.Close)
+	withBase(t, &enrichCrossRefBase, srv.URL)
+
+	data := map[string]any{"itemType": "journalArticle", "title": "Operator Title", "DOI": "10.1/x", "date": "2020", "publicationTitle": "J"}
+	_, skip := resolveEnrichment(context.Background(), http.DefaultClient, "missing_citation", "K1", 1, data, "", true, true, "linked-url", "")
+	if skip == "" {
+		t.Fatal("expected a skip when CrossRef supplies none of the blank fields")
+	}
+}
+
 func TestResolveEnrichmentLinkedPDFDeclaresPDFContentType(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte(`{"best_oa_location":{"url_for_pdf":"https://oa.example/p.pdf"}}`))
@@ -866,6 +1009,70 @@ func TestBuildEnrichProposals_DOIFromStore(t *testing.T) {
 	}
 }
 
+func TestBuildEnrichProposals_CitationQueueRoutesAndScopes(t *testing.T) {
+	withBase(t, &enrichCrossRefBase, crossRefWorkServer(t).URL)
+	db := seedEnrichWorkQueueStore(t, []json.RawMessage{
+		// CFIX lacks a venue and carries a DOI: the fixable case.
+		json.RawMessage(`{"key":"CFIX","version":2,"data":{"key":"CFIX","itemType":"journalArticle","title":"Needs Venue","creators":[{"lastName":"A","creatorType":"author"}],"date":"2020","DOI":"10.1/fix"}}`),
+		// CNODOI lacks a venue and a DOI: queued, but unresolvable.
+		json.RawMessage(`{"key":"CNODOI","version":2,"data":{"key":"CNODOI","itemType":"journalArticle","title":"No DOI","creators":[{"lastName":"B","creatorType":"author"}],"date":"2020"}}`),
+		// CDONE is complete and must never enter the queue.
+		json.RawMessage(`{"key":"CDONE","version":2,"data":{"key":"CDONE","itemType":"journalArticle","title":"Done","creators":[{"lastName":"C","creatorType":"author"}],"date":"2020","publicationTitle":"J"}}`),
+	})
+
+	proposals, skipped, err := buildEnrichProposals(context.Background(), db, http.DefaultClient, "missing_citation", 25, "", nil, "", false, false, "linked-url", "")
+	if err != nil {
+		t.Fatalf("build proposals: %v", err)
+	}
+	if len(proposals) != 1 || proposals[0].Key != "CFIX" {
+		t.Fatalf("proposals = %+v, want one for CFIX", proposals)
+	}
+	if proposals[0].Fields["publicationTitle"] != "Provider Venue" {
+		t.Fatalf("fields = %#v, want the venue filled", proposals[0].Fields)
+	}
+	if len(skipped) != 1 || skipped[0].Key != "CNODOI" {
+		t.Fatalf("skipped = %+v, want one skip for CNODOI", skipped)
+	}
+
+	// An exact key scope filters the queue in Go, so assert it narrows rather
+	// than widening back to every queued candidate.
+	proposals, _, err = buildEnrichProposals(context.Background(), db, http.DefaultClient, "missing_citation", 25, "", map[string]bool{"CNODOI": true}, "", false, false, "linked-url", "")
+	if err != nil {
+		t.Fatalf("build proposals with key scope: %v", err)
+	}
+	if len(proposals) != 0 {
+		t.Fatalf("proposals = %+v, want none: the only selected key has no DOI", proposals)
+	}
+}
+
+func TestEnrichWorkQueueForKeys_CitationDoesNotDuplicateRows(t *testing.T) {
+	db := seedEnrichWorkQueueStore(t, []json.RawMessage{
+		json.RawMessage(`{"key":"CQ1","version":1,"data":{"key":"CQ1","itemType":"journalArticle","title":"One","creators":[{"lastName":"A","creatorType":"author"}],"date":"2020"}}`),
+		json.RawMessage(`{"key":"CQ2","version":1,"data":{"key":"CQ2","itemType":"journalArticle","title":"Two","creators":[{"lastName":"B","creatorType":"author"}],"date":"2020"}}`),
+	})
+
+	rows, err := enrichWorkQueueForKeys(db, "missing_citation", 0, "", map[string]bool{"CQ1": true, "CQ2": true})
+	if err != nil {
+		t.Fatalf("work queue: %v", err)
+	}
+	seen := map[string]int{}
+	for _, r := range rows {
+		seen[sqlStringValue(r["key"])]++
+	}
+	if len(rows) != 2 || seen["CQ1"] != 1 || seen["CQ2"] != 1 {
+		t.Fatalf("rows = %v, want CQ1 and CQ2 exactly once each", seen)
+	}
+
+	// The limit applies to the merged result, not to any one query.
+	rows, err = enrichWorkQueueForKeys(db, "missing_citation", 1, "", map[string]bool{"CQ1": true, "CQ2": true})
+	if err != nil {
+		t.Fatalf("work queue with limit: %v", err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("rows = %d, want the limit of 1 applied", len(rows))
+	}
+}
+
 // Semantic Scholar is the final exact-title DOI fallback after CrossRef and OpenAlex miss.
 func TestBuildEnrichProposals_DOIFromSemanticScholarFallback(t *testing.T) {
 	cr := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -1007,6 +1214,91 @@ func TestItemsEnrichMissingDOIKeys(t *testing.T) {
 	}
 	if len(requested) != 1 || !strings.Contains(requested[0], "In Selection") {
 		t.Errorf("provider calls = %v, want only In Selection", requested)
+	}
+}
+
+// The whole point of the fixer is that the diagnostic's own JSON drives it, so
+// assert the health report pipes into enrich without a hand-built key list.
+func TestItemsEnrichMissingCitationConsumesHealthReport(t *testing.T) {
+	withBase(t, &enrichCrossRefBase, crossRefWorkServer(t).URL)
+
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("ZOTERO_CONFIG", filepath.Join(t.TempDir(), "citation-pipe.toml"))
+	dbPath := helpersTestDefaultDBPath(t, "zotio")
+	db, err := store.OpenWithContext(context.Background(), dbPath)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	items := []json.RawMessage{
+		json.RawMessage(`{"key":"CPIPE","version":5,"data":{"key":"CPIPE","itemType":"journalArticle","title":"Needs Venue","creators":[{"lastName":"A","creatorType":"author"}],"date":"2020","DOI":"10.1/pipe"}}`),
+	}
+	if _, _, err := db.UpsertBatch("items", items); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	_ = db.Close()
+
+	report := FindingsReport{Findings: []Finding{{
+		Kind:        "missing_citation",
+		Severity:    sevHigh,
+		ItemKey:     "CPIPE",
+		Source:      FindingSource{Kind: "local"},
+		Autofixable: true,
+	}}}
+	piped, err := json.Marshal(report)
+	if err != nil {
+		t.Fatalf("marshal report: %v", err)
+	}
+
+	flags := &rootFlags{asJSON: true}
+	cmd := newItemsEnrichCmd(flags)
+	cmd.SetArgs([]string{"--missing-citation", "--keys-from", "-"})
+	cmd.SetIn(bytes.NewReader(piped))
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&bytes.Buffer{})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("enrich --missing-citation: %v", err)
+	}
+
+	var env mutation.Envelope
+	if err := json.Unmarshal(out.Bytes(), &env); err != nil {
+		t.Fatalf("decode %q: %v", out.String(), err)
+	}
+	if env.Plan.Summary.Planned != 1 || len(env.Plan.Operations) != 1 {
+		t.Fatalf("expected one proposal, got summary=%+v ops=%+v", env.Plan.Summary, env.Plan.Operations)
+	}
+	op := env.Plan.Operations[0]
+	if op.Key != "CPIPE" {
+		t.Fatalf("proposal key = %q, want CPIPE", op.Key)
+	}
+	var venue string
+	for _, change := range op.Changes {
+		if change.Field == "publicationTitle" {
+			venue, _ = change.Add.(string)
+		}
+		if change.Field == "title" || change.Field == "creators" || change.Field == "date" {
+			t.Errorf("proposal touches %q, which the item already has", change.Field)
+		}
+	}
+	if venue != "Provider Venue" {
+		t.Fatalf("planned changes = %+v, want publicationTitle filled", op.Changes)
+	}
+}
+
+func TestEnrichProvenanceLineNamesCitationFields(t *testing.T) {
+	// The default label is "DOI"; a citation patch that wrote a date and a
+	// venue must not claim it added a DOI.
+	p := enrichProposal{
+		Category: "missing_citation",
+		Source:   "CrossRef",
+		Fields:   map[string]any{"publicationTitle": "J", "date": "2020"},
+	}
+	line := enrichProvenanceLine(&p)
+	if !strings.Contains(line, "date+publicationTitle added via CrossRef") {
+		t.Fatalf("provenance = %q, want it to name the fields written", line)
+	}
+	if strings.Contains(line, "DOI") {
+		t.Fatalf("provenance = %q, must not claim a DOI was added", line)
 	}
 }
 

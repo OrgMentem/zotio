@@ -125,7 +125,7 @@ func newItemsBibcheckCmd(flags *rootFlags) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			incompleteRows, err := queryCitationIncompleteItems(db, 0)
+			incompleteRows, err := queryCitationIncompleteItems(db, 0, "")
 			if err != nil {
 				return fmt.Errorf("querying incomplete citation items: %w", err)
 			}
@@ -458,7 +458,7 @@ func buildBibcheckFindings(order []string, locationsByCiteKey map[string][]bibch
 	}
 
 	undefinedAction := &RecommendedAction{Text: "Add or correct the Better BibTeX key in Zotero, or fix the manuscript citation key"}
-	incompleteAction := &RecommendedAction{Text: "Add the missing core citation fields (creators, title, date, venue) in Zotero"}
+	incompleteAction := &RecommendedAction{Command: "zotio items enrich --missing-citation --keys-from -"}
 	findings := make([]Finding, 0)
 	incompleteByFile := make(map[string]int)
 	for _, citeKey := range order {
@@ -492,7 +492,7 @@ func buildBibcheckFindings(order []string, locationsByCiteKey map[string][]bibch
 				Title:             item.Title,
 				Evidence:          bibcheckEvidence(citeKey, locations, bibcheckMissingFields(sqlStringValue(row["missing"])), sqlStringValue(row["item_type"])),
 				Source:            source,
-				Autofixable:       false,
+				Autofixable:       true,
 				RecommendedAction: incompleteAction,
 			})
 		}

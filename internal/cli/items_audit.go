@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -149,7 +150,9 @@ func selectedItemsAuditChecks(missingPDF, missingAbstract, missingDOI, missingTa
 	// Citation-readiness check — items that cannot be cited
 	// because a core field is missing.
 	if missingCitation {
-		checks = append(checks, itemsAuditCheck{name: "missing_citation", query: queryCitationIncompleteItems})
+		checks = append(checks, itemsAuditCheck{name: "missing_citation", query: func(db localQueryStore, limit int) ([]map[string]any, error) {
+			return queryCitationIncompleteItems(db, limit, "")
+		}})
 	}
 	return checks
 }
@@ -195,7 +198,7 @@ func itemsAuditFindingSeverity(kind string) string {
 
 func itemsAuditFindingAutofixable(kind string) bool {
 	switch kind {
-	case "missing_doi", "missing_pdf", "missing_abstract":
+	case "missing_doi", "missing_pdf", "missing_abstract", "missing_citation":
 		return true
 	default:
 		return false
@@ -211,7 +214,7 @@ func itemsAuditFindingAction(kind string) *RecommendedAction {
 	case "missing_abstract":
 		return &RecommendedAction{Command: "zotio items enrich --missing-abstract --keys-from -"}
 	case "missing_citation":
-		return &RecommendedAction{Text: "Add the missing core citation fields (creators, title, date, venue) in Zotero"}
+		return &RecommendedAction{Command: "zotio items enrich --missing-citation --keys-from -"}
 	default:
 		return nil
 	}
@@ -390,20 +393,69 @@ func sqlStringValue(v any) string {
 	}
 }
 
+// citationVenueFields maps a citeable item type to the one Zotero field that
+// carries its venue. The field name differs per type and only journalArticle
+// has publicationTitle: conferencePaper has proceedingsTitle, preprint has
+// repository, and book has publisher. Testing the wrong field name flags every
+// item of that type forever, because Zotero never stores a field its type does
+// not define. One table therefore generates both the SQL predicate and the
+// missing-field annotation so the two can never drift.
+var citationVenueFields = map[string]string{
+	"journalArticle":  "publicationTitle",
+	"conferencePaper": "proceedingsTitle",
+	"preprint":        "repository",
+	"book":            "publisher",
+}
+
+// citationVenueTypes is citationVenueFields in a fixed order, so every
+// generated SQL string is byte-identical between processes.
+func citationVenueTypes() []string {
+	types := make([]string, 0, len(citationVenueFields))
+	for itemType := range citationVenueFields {
+		types = append(types, itemType)
+	}
+	sort.Strings(types)
+	return types
+}
+
+// citationVenueExpr is the SQL for the venue value of whichever type the row
+// holds, and citationVenueFieldExpr is the SQL for that field's name. Both are
+// empty strings for a type with no venue field, which is how the predicate
+// below excludes such types from the venue arm.
+func citationVenueExpr(valueOfField func(string) string) string {
+	var b strings.Builder
+	b.WriteString("CASE json_extract(data, '$.data.itemType')")
+	for _, itemType := range citationVenueTypes() {
+		b.WriteString("\n\t\tWHEN '" + itemType + "' THEN " + valueOfField(citationVenueFields[itemType]))
+	}
+	b.WriteString("\n\t\tELSE '' END")
+	return b.String()
+}
+
+func citationVenueValueSQL() string {
+	return citationVenueExpr(func(field string) string {
+		return "TRIM(COALESCE(json_extract(data, '$.data." + field + "'), ''))"
+	})
+}
+
+func citationVenueFieldSQL() string {
+	return citationVenueExpr(func(field string) string { return "'" + field + "'" })
+}
+
 // citationIncompletePredicate matches citeable items missing a core citation
 // field. Shared by the audit summary scan and the
 // --missing-citation listing so the count and the list never drift.
-const citationIncompletePredicate = `(
+var citationIncompletePredicate = `(
 	COALESCE(json_array_length(json_extract(data, '$.data.creators')), 0) = 0
 	OR TRIM(COALESCE(json_extract(data, '$.data.title'), '')) = ''
 	OR TRIM(COALESCE(json_extract(data, '$.data.date'), '')) = ''
-	OR (json_extract(data, '$.data.itemType') IN ('journalArticle', 'conferencePaper', 'preprint') AND TRIM(COALESCE(json_extract(data, '$.data.publicationTitle'), '')) = '')
-	OR (json_extract(data, '$.data.itemType') = 'book' AND TRIM(COALESCE(json_extract(data, '$.data.publisher'), '')) = '')
+	OR (` + citationVenueFieldSQL() + ` <> '' AND ` + citationVenueValueSQL() + ` = '')
 )`
 
 // queryCitationIncompleteItems lists citeable items missing core citation fields,
-// annotating each row with the specific fields it lacks.
-func queryCitationIncompleteItems(db localQueryStore, limit int) ([]map[string]any, error) {
+// annotating each row with the specific fields it lacks. Pass a collection to
+// scope the queue for `items enrich --missing-citation --collection`.
+func queryCitationIncompleteItems(db localQueryStore, limit int, collection string) ([]map[string]any, error) {
 	query := `
 SELECT
 	id AS key,
@@ -411,15 +463,17 @@ SELECT
 	json_extract(data, '$.data.itemType') AS item_type,
 	COALESCE(json_array_length(json_extract(data, '$.data.creators')), 0) AS n_creators,
 	TRIM(COALESCE(json_extract(data, '$.data.date'), '')) AS date,
-	TRIM(COALESCE(json_extract(data, '$.data.publicationTitle'), '')) AS publication_title,
-	TRIM(COALESCE(json_extract(data, '$.data.publisher'), '')) AS publisher,
+	` + citationVenueValueSQL() + ` AS venue,
+	` + citationVenueFieldSQL() + ` AS venue_field,
 	json_extract(data, '$.data.dateAdded') AS date_added
 FROM resources
 WHERE resource_type = 'items'
 	AND ` + libraryTopLevelItemsPredicate + `
-	AND ` + citationIncompletePredicate + `
+	AND ` + citationIncompletePredicate
+	args := enrichCollectionFilterArgs(&query, "data", collection)
+	query += `
 ORDER BY date_added DESC`
-	rows, err := queryItemsAuditRows(db, query, limit)
+	rows, err := queryItemsAuditRows(db, query, limit, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -430,6 +484,9 @@ ORDER BY date_added DESC`
 			"title":     sqlStringValue(r["title"]),
 			"item_type": sqlStringValue(r["item_type"]),
 			"missing":   strings.Join(citationMissingFields(r), ", "),
+			// date_added carries the same ordering key every peer queue
+			// selects, so a mixed-category enrich queue sorts consistently.
+			"date_added": sqlStringValue(r["date_added"]),
 		})
 	}
 	return out, nil
@@ -448,15 +505,8 @@ func citationMissingFields(r map[string]any) []string {
 	if sqlStringValue(r["date"]) == "" {
 		missing = append(missing, "date")
 	}
-	switch sqlStringValue(r["item_type"]) {
-	case "journalArticle", "conferencePaper", "preprint":
-		if sqlStringValue(r["publication_title"]) == "" {
-			missing = append(missing, "publicationTitle")
-		}
-	case "book":
-		if sqlStringValue(r["publisher"]) == "" {
-			missing = append(missing, "publisher")
-		}
+	if field := sqlStringValue(r["venue_field"]); field != "" && sqlStringValue(r["venue"]) == "" {
+		missing = append(missing, field)
 	}
 	return missing
 }

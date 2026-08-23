@@ -184,6 +184,14 @@ func seedCitationStore(t *testing.T) localQueryStore {
 		json.RawMessage(`{"key":"C4","version":1,"data":{"key":"C4","itemType":"attachment","parentItem":"C1","contentType":"application/pdf"}}`),
 		// C5: webpage with core fields; no type-specific venue requirement.
 		json.RawMessage(`{"key":"C5","version":1,"data":{"key":"C5","itemType":"webpage","title":"W","creators":[{"lastName":"C","creatorType":"author"}],"date":"2021"}}`),
+		// C6: complete conferencePaper. Its venue lives in proceedingsTitle,
+		// because Zotero's conferencePaper has no publicationTitle field at all;
+		// testing publicationTitle here flagged every conference paper forever.
+		json.RawMessage(`{"key":"C6","version":1,"data":{"key":"C6","itemType":"conferencePaper","title":"Conf","creators":[{"lastName":"D","creatorType":"author"}],"date":"2022","proceedingsTitle":"Proc"}}`),
+		// C7: complete preprint. Its venue lives in repository, for the same reason.
+		json.RawMessage(`{"key":"C7","version":1,"data":{"key":"C7","itemType":"preprint","title":"Pre","creators":[{"lastName":"E","creatorType":"author"}],"date":"2023","repository":"arXiv"}}`),
+		// C8: conferencePaper with no proceedingsTitle: genuinely incomplete.
+		json.RawMessage(`{"key":"C8","version":1,"data":{"key":"C8","itemType":"conferencePaper","title":"NoProc","creators":[{"lastName":"F","creatorType":"author"}],"date":"2024"}}`),
 	}
 	if _, _, err := db.UpsertBatch("items", items); err != nil {
 		t.Fatalf("seed: %v", err)
@@ -194,7 +202,7 @@ func seedCitationStore(t *testing.T) localQueryStore {
 func TestCitationAudit(t *testing.T) {
 	db := seedCitationStore(t)
 
-	rows, err := queryCitationIncompleteItems(db, 0)
+	rows, err := queryCitationIncompleteItems(db, 0, "")
 	if err != nil {
 		t.Fatalf("queryCitationIncompleteItems: %v", err)
 	}
@@ -202,7 +210,7 @@ func TestCitationAudit(t *testing.T) {
 	for _, r := range rows {
 		got[sqlStringValue(r["key"])] = sqlStringValue(r["missing"])
 	}
-	for _, k := range []string{"C1", "C4", "C5"} {
+	for _, k := range []string{"C1", "C4", "C5", "C6", "C7"} {
 		if m, bad := got[k]; bad {
 			t.Errorf("%s should be citation-complete/excluded, got missing=%q", k, m)
 		}
@@ -213,16 +221,21 @@ func TestCitationAudit(t *testing.T) {
 	if m := got["C3"]; m != "publisher" {
 		t.Errorf("C3 missing = %q, want 'publisher'", m)
 	}
-	if len(got) != 2 {
-		t.Errorf("citation-incomplete count = %d, want 2 (%v)", len(got), got)
+	if m := got["C8"]; m != "proceedingsTitle" {
+		t.Errorf("C8 missing = %q, want 'proceedingsTitle'", m)
+	}
+	if len(got) != 3 {
+		t.Errorf("citation-incomplete count = %d, want 3 (%v)", len(got), got)
 	}
 
 	summary, err := queryItemsAuditSummary(db)
 	if err != nil {
 		t.Fatalf("queryItemsAuditSummary: %v", err)
 	}
-	if summary.MissingCitation != 2 {
-		t.Errorf("summary.MissingCitation = %d, want 2", summary.MissingCitation)
+	// The summary scan and the listing share one generated predicate, so this
+	// count must equal the number of rows the listing returned above.
+	if summary.MissingCitation != len(got) {
+		t.Errorf("summary.MissingCitation = %d, want %d (the listed rows)", summary.MissingCitation, len(got))
 	}
 }
 

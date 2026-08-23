@@ -27,6 +27,9 @@ type crossRefWork struct {
 	Type           string              `json:"type"`
 	ContainerTitle []string            `json:"container-title"`
 	Reference      []crossRefReference `json:"reference"`
+	// Publisher backs the `book` arm of the citation-core check, whose
+	// predicate requires a publisher that no other CrossRef field carries.
+	Publisher string `json:"publisher"`
 	// CrossRef abstract (JATS XML) for enrichment.
 	Abstract string `json:"abstract"`
 }
