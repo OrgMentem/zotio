@@ -147,7 +147,7 @@ Remediation plan (preview-first)
 
 Three things make it trustworthy, not just convenient:
 
-- **It gates CI.** `--fail-on critical|high|any` exits **`11`** when the bar isn't met — drop it in a pre-submission hook. `--require-fresh 24h` exits **`12`** if your local mirror is stale.
+- **It gates CI.** `--fail-on critical|high|info|none` exits **`11`** when the bar isn't met — drop it in a pre-submission hook. `--require-fresh 24h` exits **`12`** if your local mirror is stale.
 - **It never lies by omission.** A check that needs the desktop app (broken attachments) doesn't silently vanish — it becomes a **loud skip with a remedy**, and if that skip is gate-relevant the run exits **`9`** (setup required) rather than falsely passing.
 - **It points at the real fixer.** Findings carry a `recommended_action` naming the exact existing command (`items enrich`, `items duplicates resolve`, `tags audit fix`) — health *diagnoses*, dedicated commands *treat*.
 
@@ -180,7 +180,7 @@ Every write command — `items enrich`, `tags audit fix`, `items duplicates reso
 - **`--agent` does *not* auto-apply.** Agent mode sets JSON + non-interactive defaults, but a write still needs an explicit `--yes`.
 - **Gates cap the blast radius.** `--max-changes` defaults to 500 (50 under `--agent`); irreversible ops (merge, permanent delete, empty-trash) refuse to run without `--allow-destructive`.
 - **Read-your-writes.** An applied write is replayed into the local mirror immediately, and the post-write item state comes back in the envelope — a re-audit sees the fix with no follow-up `sync`.
-- **Journaled + reversible.** Every applied run is recorded append-only (`journal list` / `journal show`). `journal undo <run-id>` reverses the reversible ops (tag renames, collection membership) and **loudly refuses** the rest (merges, deletions, field overwrites) rather than guessing.
+- **Journaled + reversible.** Every applied run is recorded append-only (`journal list` / `journal show`). `journal undo <run-id>` reverses the reversible ops (tag renames, collection membership, and creates — reversed by trashing the created item) and **loudly refuses** the rest (merges, deletions, field overwrites) rather than guessing.
 
 ---
 
@@ -200,7 +200,7 @@ zotio import apply manifest.json --yes         # schema-valid creation via the W
 
 - **Scan** classifies a folder of PDFs against your existing library — extracting DOIs from filenames or the PDF bytes — so you never re-import what you already have.
 - **Resolve** turns findings into an editable JSON manifest, enriching create-entries from CrossRef. This is the human touchpoint.
-- **Apply** creates schema-valid items, preview-first, with an explicit `--attach-mode none|linked-file` contract (stored-file upload is deferred, and says so).
+- **Apply** creates schema-valid items, preview-first, with an explicit `--attach-mode none|linked-file|stored` contract. `stored` uploads the file bytes: `--via connector` hands the item and its file to Zotero desktop in one session, while the direct Web API route is guarded by the file-storage precondition (`--allow-zotero-cloud` to override).
 
 One-shot importers are there too: `import doi|pmid|arxiv|isbn|url|file|pdf`.
 
@@ -285,7 +285,7 @@ format = "obsidian"      # or "logseq"
 `zotio` publishes a machine-readable trust model so an MCP host, CI job, or shell script can discover what's safe, fresh, and writable *before* it acts.
 
 - **`--agent`** on any command: JSON + compact + non-interactive + no color, in one flag. (It never auto-applies writes.)
-- **`capabilities`** — the full registry (122 commands), each tagged with `operation`, `data_sources`, `write_target`, `destructive`, and `requires` preconditions.
+- **`capabilities`** — the full registry (140 commands), each tagged with `operation`, `data_sources`, `write_target`, `destructive`, and `requires` preconditions.
 - **`agent-context`** — a structured description of the whole CLI, embedding the registry and discovery hints.
 - **`which "<capability in your words>"`** — resolve a natural-language query to the command that does it.
 - **Stable envelopes** — one mutation plan/result shape, one finding shape, one exit-code contract. Learn the grammar once.
@@ -318,8 +318,8 @@ This installs both `zotio` and the `zotio-mcp` MCP server; `brew upgrade` tracks
 are [GitHub release](https://github.com/OrgMentem/zotio/releases) assets. Install
 with `dpkg -i`, `rpm -i`, or `apk add --allow-untrusted`; the
 [install guide](https://orgmentem.github.io/zotio/guide/install/) has a snippet
-that resolves the latest version and your architecture. Homebrew is macOS-only
-(the tap ships a cask).
+that resolves the latest version and your architecture. Homebrew works on Linux
+too — the tap ships formulae, not casks (`brew install orgmentem/tap/zotio`).
 
 **Windows (WinGet / Scoop):** `winget install OrgMentem.zotio`, or
 `scoop bucket add orgmentem https://github.com/OrgMentem/scoop-bucket && scoop install zotio`.
@@ -437,7 +437,7 @@ Once installed (above), invoke `/zotio <query>` in Claude Code. The skill drives
 
 ### Use the MCP server in an agent host
 
-Once registered (above), the MCP server exposes a **command-orchestration facade** (`command_search` / `command_run`) rather than one tool per endpoint — agents discover and drive the CLI the same way a human would (see [`dev/adr/0001-mcp-command-surface.md`](dev/adr/0001-mcp-command-surface.md); switch surfaces via `ZOTIO_MCP_SURFACE`). It also serves Zotero context as **resources** — `zotero://context`, `zotero://agent-context`, `zotero://status`, `zotero://schema`, `zotero://freshness`, `zotero://health/{scope}`, `zotero://capabilities`, and bounded graph resources (`collections/{key}/tree`, `items/{key}/children|attachments|context`) — plus guided **prompts** (prepare-library-health, prepare-import, sync-vault-safely).
+Once registered (above), the MCP server exposes a **command-orchestration facade** (`command_search` / `command_run`) rather than one tool per endpoint — agents discover and drive the CLI the same way a human would (see [`dev/adr/0001-mcp-command-surface.md`](dev/adr/0001-mcp-command-surface.md); switch surfaces via `ZOTIO_MCP_SURFACE`). It also serves Zotero context as **resources** — `zotero://context`, `zotero://agent-context`, `zotero://status`, `zotero://schema`, `zotero://freshness`, `zotero://health/{scope}`, `zotero://capabilities`, and bounded graph resources (`collections/{key}/tree`, `items/{key}/children|attachments|context`) — plus guided **prompts** (prepare-library-health, prepare-import, sync-vault-safely, inspect-library, export-reading-notes, prepare-citation-export, synthesize).
 
 ---
 
@@ -490,7 +490,7 @@ zotio which "export bibtex for a collection"
 <details>
 <summary>Top-level commands</summary>
 
-`agent-context` · `analytics` · `annotations` · `auth` · `capabilities` · `collections` · `doctor` · `export` · `groups` · `import` · `init` · `items` · `journal` · `library` · `profile` · `reading-list` · `schema` · `search` · `searches` · `sync` · `tags` · `tail` · `vault` · `version` · `watch` · `which` · `workflow`
+`agent-context` · `analytics` · `annotations` · `attachments` · `auth` · `capabilities` · `collections` · `completion` · `creators` · `demo` · `doctor` · `export` · `feedback` · `groups` · `import` · `init` · `items` · `journal` · `library` · `profile` · `reading-list` · `schema` · `search` · `searches` · `sync` · `tags` · `tail` · `vault` · `version` · `watch` · `which` · `workflow`
 
 </details>
 

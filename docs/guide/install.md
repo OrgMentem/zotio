@@ -35,7 +35,7 @@
     curl -fsSLO "https://github.com/OrgMentem/zotio/releases/download/v${ver}/${pkg}.apk" && sudo apk add --allow-untrusted "${pkg}.apk"
     ```
 
-    Upgrades are the same command again (`dpkg -i` / `rpm -U` / `apk add`). Homebrew is not an option on Linux — the tap ships a macOS-only cask.
+    Upgrades are the same command again (`dpkg -i` / `rpm -U` / `apk add`). Homebrew works on Linux too — the tap ships formulae, not casks (`brew install orgmentem/tap/zotio`).
 
 === "Windows"
 
