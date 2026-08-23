@@ -640,6 +640,16 @@ func syncResource(ctx context.Context, c syncHTTPClient, db *store.Store, resour
 			}
 			return syncResult{Resource: resource, Count: totalCount, Err: err, Duration: time.Since(started)}
 		}
+		if isPage && libraryVersion == 0 && respVersion == 0 {
+			// The local desktop API omits Last-Modified-Version on list
+			// responses. This body value is a real Zotero library version
+			// from the same plane, so it remains comparable with the stored
+			// checkpoint that PlaneChanged guards.
+			if pageVersion := pageMaxObjectVersion(data); pageVersion > 0 {
+				libraryVersion = pageVersion
+			}
+		}
+
 		if nextCursor == "" && pageSize.cursorParam == "start" && len(items) == pageSize.limit {
 			// Zotero array endpoints paginate via start/limit and put Link headers
 			// outside the JSON body, so derive the next offset when a full page arrives.
@@ -914,7 +924,10 @@ func syncResource(ctx context.Context, c syncHTTPClient, db *store.Store, resour
 		// here can misread "fetch failed" as "resource is empty". Requiring a
 		// non-empty seenKeys left a phantom items-trash row unreapable forever,
 		// because the live trash was legitimately empty on every pass.
-		if full {
+		if full && canonicalStoreResource(resource) == resource {
+			// SweepMissing requires a complete pass over the swept resource
+			// type. A top-level alias fetches a strict subset, so the storage
+			// alias is correct for upserts but wrong for reaps.
 			storeResource := canonicalStoreResource(resource)
 			if reaped, rerr := db.SweepMissing(storeResource, seenKeys); rerr != nil {
 				fmt.Fprintf(os.Stderr, "warning: reaping deleted %s rows: %v\n", storeResource, rerr)
@@ -990,6 +1003,32 @@ func determinePaginationDefaults() paginationDefaults {
 // determineSinceParam returns the query parameter name for incremental sync filtering.
 func determineSinceParam() string {
 	return "since"
+}
+
+// pageMaxObjectVersion returns the highest Zotero object version in a list
+// response body. A malformed or non-array body returns zero so a missing
+// version degrades to the current no-cursor behavior.
+func pageMaxObjectVersion(data json.RawMessage) int {
+	var objects []map[string]any
+	if err := json.Unmarshal(data, &objects); err != nil {
+		return 0
+	}
+
+	maxVersion := 0
+	for _, object := range objects {
+		version, ok := object["version"].(float64)
+		if !ok {
+			nested, nestedOK := object["data"].(map[string]any)
+			if !nestedOK {
+				continue
+			}
+			version, ok = nested["version"].(float64)
+		}
+		if ok && int(version) > maxVersion {
+			maxVersion = int(version)
+		}
+	}
+	return maxVersion
 }
 
 // extractPageItemsWithError extracts a collection page and distinguishes it

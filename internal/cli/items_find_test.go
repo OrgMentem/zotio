@@ -82,6 +82,70 @@ func TestFindRowMatchesExact_ArXivPrefixOverMatch(t *testing.T) {
 		t.Fatal("arXiv 2006.11239 exact row should match")
 	}
 }
+func TestFindRowMatchesExact_ExtraIdentifierSpellings(t *testing.T) {
+	cases := []struct {
+		name    string
+		row     map[string]any
+		arxiv   string
+		pmid    string
+		citekey string
+		want    bool
+	}{
+		{
+			"arXiv colon-tight",
+			map[string]any{"data": `{"data":{"extra":"arXiv:0910.4514 [math-ph]"}}`},
+			"0910.4514", "", "", true,
+		},
+		{
+			"arXiv spaced",
+			map[string]any{"data": `{"data":{"extra":"arXiv: 0910.4514 [math-ph]"}}`},
+			"0910.4514", "", "", true,
+		},
+		{
+			"PMID colon-tight",
+			map[string]any{"data": `{"data":{"extra":"PMID:12345678"}}`},
+			"", "12345678", "", true,
+		},
+		{
+			"PMID spaced",
+			map[string]any{"data": `{"data":{"extra":"PMID: 12345678"}}`},
+			"", "12345678", "", true,
+		},
+		{
+			"citation key colon-tight",
+			map[string]any{"data": `{"data":{"extra":"Citation Key:smith2023"}}`},
+			"", "", "smith2023", true,
+		},
+		{
+			"citation key spaced",
+			map[string]any{"data": `{"data":{"extra":"Citation Key: smith2023"}}`},
+			"", "", "smith2023", true,
+		},
+		{
+			"arXiv colon-tight prefix rejected",
+			map[string]any{"data": `{"data":{"extra":"arXiv:0910.45141"}}`},
+			"0910.4514", "", "", false,
+		},
+		{
+			"PMID colon-tight prefix rejected",
+			map[string]any{"data": `{"data":{"extra":"PMID:12345"}}`},
+			"", "123", "", false,
+		},
+		{
+			"citation key colon-tight prefix rejected",
+			map[string]any{"data": `{"data":{"extra":"Citation Key:smith2023a"}}`},
+			"", "", "smith2023", false,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := findRowMatchesExact(tc.row, "", tc.arxiv, "", tc.pmid, tc.citekey)
+			if got != tc.want {
+				t.Fatalf("findRowMatchesExact(%q) = %v, want %v", tc.name, got, tc.want)
+			}
+		})
+	}
+}
 
 func TestFilterFindRowsExact_Citekey(t *testing.T) {
 	rows := []map[string]any{

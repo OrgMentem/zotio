@@ -184,6 +184,94 @@ func TestSyncConvergesPlaneWithoutVersionHeader(t *testing.T) {
 	}
 }
 
+func TestSyncFullTopLevelAliasDoesNotReapChildRows(t *testing.T) {
+	syncTestWithHumanFriendly(t, false)
+	db := syncTestOpenStore(t)
+	defer db.Close()
+
+	if _, _, err := db.UpsertBatch("items", []json.RawMessage{
+		json.RawMessage(`{"key":"PARENT","version":1,"data":{"key":"PARENT","itemType":"book"}}`),
+		json.RawMessage(`{"key":"CHILD","version":1,"data":{"key":"CHILD","parentItem":"PARENT","itemType":"attachment"}}`),
+	}); err != nil {
+		t.Fatalf("seed parent and child rows: %v", err)
+	}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/items/top" && r.URL.Path != "/items" {
+			t.Errorf("server path = %q, want /items/top or /items", r.URL.Path)
+			http.Error(w, "wrong path", http.StatusNotFound)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`[{"key":"PARENT","version":2,"data":{"key":"PARENT","itemType":"book"}}]`))
+	}))
+	defer server.Close()
+
+	client := syncTestClient(server.URL)
+	if res := syncResource(context.Background(), client, db, "items-top", 0, true, 0, false); res.Err != nil {
+		t.Fatalf("full items-top sync error: %v", res.Err)
+	}
+	ids, err := db.ResourceIDs("items")
+	if err != nil {
+		t.Fatalf("items ResourceIDs after alias sync: %v", err)
+	}
+	if !ids["CHILD"] {
+		t.Fatal("full items-top sync reaped a child row from the canonical items store")
+	}
+
+	if res := syncResource(context.Background(), client, db, "items", 0, true, 0, false); res.Err != nil {
+		t.Fatalf("full items sync error: %v", res.Err)
+	}
+	ids, err = db.ResourceIDs("items")
+	if err != nil {
+		t.Fatalf("items ResourceIDs after canonical sync: %v", err)
+	}
+	if ids["CHILD"] {
+		t.Fatal("full items sync did not reap the child row missing from the complete response")
+	}
+	if !ids["PARENT"] {
+		t.Fatal("full items sync reaped the parent row returned by the complete response")
+	}
+}
+
+func TestSyncUsesBodyVersionWhenHeaderIsMissing(t *testing.T) {
+	syncTestWithHumanFriendly(t, false)
+	db := syncTestOpenStore(t)
+	defer db.Close()
+
+	var sinceSeen []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		sinceSeen = append(sinceSeen, r.URL.Query().Get("since"))
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`[
+			{"key":"A","version":12,"data":{"key":"A","itemType":"book"}},
+			{"key":"B","version":19,"data":{"key":"B","itemType":"book"}}
+		]`))
+	}))
+	defer server.Close()
+
+	client := syncTestClient(server.URL)
+	if res := syncResource(context.Background(), client, db, "items", 0, false, 0, false); res.Err != nil {
+		t.Fatalf("first sync error: %v", res.Err)
+	}
+	if v, _, err := db.StoredLibraryVersion("items"); err != nil || v != 19 {
+		t.Fatalf("stored library version = %d (err %v), want page maximum 19", v, err)
+	}
+
+	if res := syncResource(context.Background(), client, db, "items", 0, false, 0, false); res.Err != nil {
+		t.Fatalf("second sync error: %v", res.Err)
+	}
+	if len(sinceSeen) != 2 {
+		t.Fatalf("request count = %d, want 2", len(sinceSeen))
+	}
+	if sinceSeen[0] != "" {
+		t.Errorf("first sync sent since=%q, want empty", sinceSeen[0])
+	}
+	if sinceSeen[1] != "19" {
+		t.Errorf("second sync sent since=%q, want stored body version 19", sinceSeen[1])
+	}
+}
+
 // N4-3: sync --full did not reap items-trash, so the X-3 phantom returned. A
 // genuinely empty trash (0 entries on both planes) completed a full pass with
 // zero seen keys, and the sweep's old len(seenKeys) > 0 guard treated that as
@@ -307,6 +395,53 @@ func TestSyncPageExtractionHelpers(t *testing.T) {
 	cursor = findCursorInMap(map[string]json.RawMessage{"after": json.RawMessage(`""`)}, []string{"after"})
 	if cursor != "" {
 		t.Fatalf("findCursorInMap empty string = %q, want empty", cursor)
+	}
+}
+
+func TestPageMaxObjectVersion(t *testing.T) {
+	tests := []struct {
+		name string
+		data string
+		want int
+	}{
+		{
+			name: "top-level version",
+			data: `[{"version":17}]`,
+			want: 17,
+		},
+		{
+			name: "nested-only data version",
+			data: `[{"data":{"version":23}}]`,
+			want: 23,
+		},
+		{
+			name: "mixed versions",
+			data: `[{"version":5},{"data":{"version":31}},{"version":19,"data":{"version":7}}]`,
+			want: 31,
+		},
+		{
+			name: "empty array",
+			data: `[]`,
+			want: 0,
+		},
+		{
+			name: "non-array object",
+			data: `{"version":41}`,
+			want: 0,
+		},
+		{
+			name: "malformed JSON",
+			data: `[{"version":41}`,
+			want: 0,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := pageMaxObjectVersion(json.RawMessage(tt.data)); got != tt.want {
+				t.Fatalf("pageMaxObjectVersion(%s) = %d, want %d", tt.data, got, tt.want)
+			}
+		})
 	}
 }
 

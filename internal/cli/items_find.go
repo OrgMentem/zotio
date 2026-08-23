@@ -41,8 +41,8 @@ func newItemsFindCmd(flags *rootFlags) *cobra.Command {
 			db := localQueryStore{Store: storeDB}
 
 			// Keep arXiv/PMID/citekey lookups exact by escaping SQLite LIKE
-			// wildcards. arXiv records are normally stored as archiveID, with
-			// Extra retained as a compatibility fallback for existing libraries.
+			// wildcards. Accept both Extra spellings: Zotero writes the
+			// colon-tight form, while zotio's importer writes the spaced form.
 			escapedArXiv := escapeSQLiteLikeLiteral(flagArXiv)
 			escapedPMID := escapeSQLiteLikeLiteral(flagPMID)
 			escapedCitekey := escapeSQLiteLikeLiteral(flagCitekey)
@@ -57,13 +57,20 @@ WHERE resource_type = 'items'
 			json_extract(data, '$.data.archiveID') = 'arXiv:' || ?
 			OR json_extract(data, '$.data.archiveID') = ?
 			OR json_extract(data, '$.data.extra') LIKE '%arXiv: ' || ? || '%' ESCAPE '\'
+			OR json_extract(data, '$.data.extra') LIKE '%arXiv:' || ? || '%' ESCAPE '\'
 		))
 		OR (? != '' AND json_extract(data, '$.data.ISBN') = ?)
-		OR (? != '' AND json_extract(data, '$.data.extra') LIKE '%PMID: ' || ? || '%' ESCAPE '\')
-		OR (? != '' AND json_extract(data, '$.data.extra') LIKE '%Citation Key: ' || ? || '%' ESCAPE '\')
+		OR (? != '' AND (
+			json_extract(data, '$.data.extra') LIKE '%PMID: ' || ? || '%' ESCAPE '\'
+			OR json_extract(data, '$.data.extra') LIKE '%PMID:' || ? || '%' ESCAPE '\'
+		))
+		OR (? != '' AND (
+			json_extract(data, '$.data.extra') LIKE '%Citation Key: ' || ? || '%' ESCAPE '\'
+			OR json_extract(data, '$.data.extra') LIKE '%Citation Key:' || ? || '%' ESCAPE '\'
+		))
 		OR (? != '' AND json_extract(data, '$.data.citationKey') = ?)
 	)
-ORDER BY id`, flagDOI, flagDOI, flagArXiv, escapedArXiv, flagArXiv, escapedArXiv, flagISBN, flagISBN, flagPMID, escapedPMID, flagCitekey, escapedCitekey, flagCitekey, flagCitekey)
+ORDER BY id`, flagDOI, flagDOI, flagArXiv, escapedArXiv, flagArXiv, escapedArXiv, escapedArXiv, flagISBN, flagISBN, flagPMID, escapedPMID, escapedPMID, flagCitekey, escapedCitekey, escapedCitekey, flagCitekey, flagCitekey)
 			if err != nil {
 				return fmt.Errorf("querying local identifiers: %w", err)
 			}
@@ -189,18 +196,22 @@ func findRowMatchesExact(row map[string]any, flagDOI, flagArXiv, flagISBN, flagP
 		if d.ArchiveID == "arXiv:"+flagArXiv || d.ArchiveID == flagArXiv {
 			return true
 		}
-		if extraContainsExactToken(d.Extra, "arXiv: ", flagArXiv) {
+		if extraContainsExactToken(d.Extra, "arXiv: ", flagArXiv) ||
+			extraContainsExactToken(d.Extra, "arXiv:", flagArXiv) {
 			return true
 		}
 	}
-	if flagPMID != "" && extraContainsExactToken(d.Extra, "PMID: ", flagPMID) {
+	if flagPMID != "" &&
+		(extraContainsExactToken(d.Extra, "PMID: ", flagPMID) ||
+			extraContainsExactToken(d.Extra, "PMID:", flagPMID)) {
 		return true
 	}
 	if flagCitekey != "" {
 		if d.CitationKey == flagCitekey {
 			return true
 		}
-		if extraContainsExactToken(d.Extra, "Citation Key: ", flagCitekey) {
+		if extraContainsExactToken(d.Extra, "Citation Key: ", flagCitekey) ||
+			extraContainsExactToken(d.Extra, "Citation Key:", flagCitekey) {
 			return true
 		}
 	}
