@@ -36,7 +36,18 @@ type capabilityEntry struct {
 	DataSources []string `json:"data_sources,omitempty"`
 	WriteTarget string   `json:"write_target,omitempty"`
 	Destructive bool     `json:"destructive,omitempty"`
-	Requires    []string `json:"requires,omitempty"`
+	Requires    []string `json:"requires,omitempty"` // describes the default route; routes carry the full truth
+	// Routes splits a command with more than one write path into one entry per
+	// route, each carrying its own Requires. The first route must be the
+	// default, and the top-level Requires/WriteTarget describe that route
+	// alone — NOT a union — so consumers written before Routes keep reading
+	// the same meaning they always had.
+	Routes []capabilityRoute `json:"routes,omitempty"`
+}
+
+type capabilityRoute struct {
+	Via      string   `json:"via"`
+	Requires []string `json:"requires,omitempty"`
 }
 
 // capabilityOverrides carries the safety-critical metadata that cannot be
@@ -111,24 +122,23 @@ var capabilityOverrides = map[string]capabilityEntry{
 	// the uploader entirely (temporary connector parent, then re-parent), and
 	// checkZoteroFileStoragePrecondition lets that route through.
 	//
-	// WriteTarget stays "web_api" and desktop_connector is NOT listed, matching
-	// the sibling hybrids (items create, import apply) which also reach the
-	// desktop under --via connector. The field describes the DEFAULT route; a
-	// conditional requirement would need a vocabulary the registry does not
-	// have. An agent choosing --via connector must expect a running desktop.
-	//
-	// KNOWN, and deliberately not fixed here: Requires is the UNION, so it
-	// asserts zotero_file_storage even though the connector route exists to avoid
-	// that storage and checkZoteroFileStoragePrecondition already waives it. A
-	// false precondition in a machine-readable record is a defect even when
-	// nothing gates on it. The fix papio asked for and agreed to consume is
-	// additive: keep WriteTarget as the default route, add a per-route list each
-	// carrying its own Requires. Reasoning and the rejected alternative are in
-	// dev/field-report-2026-08-23-papio-capability-routes.md. Do NOT make
-	// WriteTarget conditional — two reviewers and the consumer all rejected it,
-	// because a scalar that sometimes means "default" and sometimes "one of
-	// several" cannot be read safely without knowing which release wrote it.
-	"attachments add": {Operation: "write", WriteTarget: "web_api", Requires: []string{preconditionWebAPIKey, preconditionZoteroFileStorage}},
+	// Routes carries the per-route truth: the default (web uploader) route needs
+	// the key and Zotero cloud storage; the connector route needs a running
+	// desktop and NOT Zotero cloud storage. The top-level Requires/WriteTarget
+	// describe the default route, preserving their pre-Routes meaning.
+	// Do NOT make WriteTarget conditional — two reviewers and the consumer all
+	// rejected it, because a scalar that sometimes means "default" and sometimes
+	// "one of several" cannot be read safely without knowing which release
+	// wrote it. Reasoning in dev/field-report-2026-08-23-papio-capability-routes.md.
+	"attachments add": {
+		Operation:   "write",
+		WriteTarget: "web_api",
+		Requires:    []string{preconditionWebAPIKey, preconditionZoteroFileStorage},
+		Routes: []capabilityRoute{
+			{Via: "default", Requires: []string{preconditionWebAPIKey, preconditionZoteroFileStorage}},
+			{Via: "connector", Requires: []string{preconditionDesktopConnector}},
+		},
+	},
 	// vault push writes to Zotero; pull and sync write the local vault.
 	"vault push":    {Operation: "write", WriteTarget: "web_api", Requires: []string{preconditionWebAPIKey}},
 	"vault pull":    {Operation: "write", WriteTarget: "local_vault", Requires: []string{preconditionWebAPIKey}},
@@ -143,6 +153,28 @@ var capabilityOverrides = map[string]capabilityEntry{
 	"doctor":  {Operation: "introspect"},
 	"which":   {Operation: "introspect"},
 	"version": {Operation: "introspect"},
+}
+
+// dataSourcesForEntry derives the supported data sources from preconditions,
+// so the field never drifts from the precondition truth. For routed commands it
+// unions across routes, so `attachments add` reports both "web" (default) and
+// "live" (connector) even though the top-level Requires alone maps to web only.
+func dataSourcesForEntry(entry capabilityEntry) []string {
+	seen := map[string]bool{}
+	var out []string
+	add := func(requires []string) {
+		for _, ds := range dataSourcesForRequires(requires) {
+			if !seen[ds] {
+				seen[ds] = true
+				out = append(out, ds)
+			}
+		}
+	}
+	add(entry.Requires)
+	for _, r := range entry.Routes {
+		add(r.Requires)
+	}
+	return out
 }
 
 // dataSourcesForRequires derives the supported data sources from preconditions,
@@ -196,8 +228,9 @@ func buildCapabilityRegistry(rootCmd *cobra.Command) []capabilityEntry {
 					entry.WriteTarget = ov.WriteTarget
 					entry.Destructive = ov.Destructive
 					entry.Requires = ov.Requires
+					entry.Routes = ov.Routes
 				}
-				entry.DataSources = dataSourcesForRequires(entry.Requires)
+				entry.DataSources = dataSourcesForEntry(entry)
 				entries = append(entries, entry)
 			}
 			walk(sub)
@@ -223,9 +256,12 @@ func newCapabilitiesCmd(rootCmd *cobra.Command, flags ...*rootFlags) *cobra.Comm
 		Annotations: map[string]string{"mcp:read-only": "true"},
 		Long: `Outputs a typed registry describing each command's operation kind
 (read/write/destructive), write target, supported data sources, and
-preconditions (live_local_api, web_api_key, synced_store, better_bibtex) so
-agents can select safe commands and pre-flight requirements without parsing
---help or guessing from names.`,
+preconditions (live_local_api, web_api_key, synced_store, better_bibtex,
+desktop_connector, zotero_file_storage) so agents can select safe commands
+and pre-flight requirements without parsing --help or guessing from names.
+Commands with more than one write route carry a routes list where each route
+names its own preconditions; the top-level requires and write_target describe
+the default route (the first entry in routes).`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			data, err := json.Marshal(buildCapabilityRegistry(rootCmd))
 			if err != nil {

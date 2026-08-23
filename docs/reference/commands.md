@@ -281,9 +281,12 @@ Emit the machine-readable capability + preconditions registry
 
 Outputs a typed registry describing each command's operation kind
 (read/write/destructive), write target, supported data sources, and
-preconditions (live_local_api, web_api_key, synced_store, better_bibtex) so
-agents can select safe commands and pre-flight requirements without parsing
---help or guessing from names.
+preconditions (live_local_api, web_api_key, synced_store, better_bibtex,
+desktop_connector, zotero_file_storage) so agents can select safe commands
+and pre-flight requirements without parsing --help or guessing from names.
+Commands with more than one write route carry a routes list where each route
+names its own preconditions; the top-level requires and write_target describe
+the default route (the first entry in routes).
 
 ```
 zotio capabilities [flags]

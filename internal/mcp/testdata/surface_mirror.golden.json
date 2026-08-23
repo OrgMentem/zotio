@@ -141,7 +141,7 @@
   },
   {
     "name": "capabilities",
-    "description": "Outputs a typed registry describing each command's operation kind\n(read/write/destructive), write target, supported data sources, and\npreconditions (live_local_api, web_api_key, synced_store, better_bibtex) so\nagents can select safe commands and pre-flight requirements without parsing\n--help or guessing from names.",
+    "description": "Outputs a typed registry describing each command's operation kind\n(read/write/destructive), write target, supported data sources, and\npreconditions (live_local_api, web_api_key, synced_store, better_bibtex,\ndesktop_connector, zotero_file_storage) so agents can select safe commands\nand pre-flight requirements without parsing --help or guessing from names.\nCommands with more than one write route carry a routes list where each route\nnames its own preconditions; the top-level requires and write_target describe\nthe default route (the first entry in routes).",
     "inputSchema": {
       "properties": {
         "pretty": {

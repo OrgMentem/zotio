@@ -55,3 +55,67 @@ func TestMutableCapabilityOverridesHaveWriteMetadata(t *testing.T) {
 		t.Errorf("capability registry omitted mutable command %q", path)
 	}
 }
+
+func TestCapabilityRoutesConsistentWithTopLevel(t *testing.T) {
+	for _, entry := range buildCapabilityRegistry(RootCmd()) {
+		if len(entry.Routes) == 0 {
+			continue
+		}
+		if entry.Routes[0].Via != "default" {
+			t.Errorf("capability %q routes[0].via = %q; the first route must be the default so it lines up with write_target", entry.Path, entry.Routes[0].Via)
+		}
+		want := map[string]bool{}
+		for _, r := range entry.Routes[0].Requires {
+			want[r] = true
+		}
+		got := map[string]bool{}
+		for _, r := range entry.Requires {
+			got[r] = true
+		}
+		for r := range want {
+			if !got[r] {
+				t.Errorf("capability %q default route requires %q but the top-level requires %v does not — the top-level fields must describe the default route", entry.Path, r, entry.Requires)
+			}
+		}
+		for r := range got {
+			if !want[r] {
+				t.Errorf("capability %q top-level requires %q but the default route does not (%v) — the top-level fields must describe the default route, not a union", entry.Path, r, entry.Routes[0].Requires)
+			}
+		}
+	}
+}
+
+func TestAttachmentsAddCarriesConnectorRoute(t *testing.T) {
+	for _, entry := range buildCapabilityRegistry(RootCmd()) {
+		if entry.Path != "attachments add" {
+			continue
+		}
+		var connector *capabilityRoute
+		for i := range entry.Routes {
+			if entry.Routes[i].Via == "connector" {
+				connector = &entry.Routes[i]
+			}
+		}
+		if connector == nil {
+			t.Fatalf("attachments add routes = %v, want a connector route", entry.Routes)
+		}
+		for _, banned := range []string{preconditionZoteroFileStorage, preconditionWebAPIKey} {
+			for _, r := range connector.Requires {
+				if r == banned {
+					t.Errorf("attachments add connector route requires %q; the route exists to avoid Zotero cloud storage and never touches the Web API uploader", banned)
+				}
+			}
+		}
+		hasConnector := false
+		for _, r := range connector.Requires {
+			if r == preconditionDesktopConnector {
+				hasConnector = true
+			}
+		}
+		if !hasConnector {
+			t.Errorf("attachments add connector route requires %v, want desktop_connector", connector.Requires)
+		}
+		return
+	}
+	t.Fatal("capability registry omitted attachments add")
+}
