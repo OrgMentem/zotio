@@ -365,28 +365,6 @@ func (c *Config) saveCredentialsFirst() error {
 	return nil
 }
 
-func (c *Config) SaveTokens(clientID, clientSecret, accessToken, refreshToken string, expiry time.Time) error {
-	c.ClientID = clientID
-	c.ClientSecret = clientSecret
-	c.AccessToken = accessToken
-	c.RefreshToken = refreshToken
-	c.TokenExpiry = expiry
-	delete(c.envOverrides, "ClientID")
-	delete(c.envOverrides, "ClientSecret")
-	delete(c.envOverrides, "AccessToken")
-	delete(c.envOverrides, "RefreshToken")
-	delete(c.envOverrides, "TokenExpiry")
-	c.updateFileConfigField("ClientID")
-	c.updateFileConfigField("ClientSecret")
-	c.updateFileConfigField("AccessToken")
-	c.updateFileConfigField("RefreshToken")
-	c.updateFileConfigField("TokenExpiry")
-	if err := c.saveCredentialsFirst(); err != nil {
-		return err
-	}
-	return c.save()
-}
-
 // SaveCredential persists a single API credential to the field that
 // AuthHeader() consults for api_key auth. Writing to AccessToken (the
 // bearer slot) would silently no-op since AuthHeader() reads the env-var-
@@ -418,10 +396,10 @@ func (c *Config) SaveCredential(token string) error {
 func (c *Config) ClearTokens() error {
 	// AuthHeader() falls back to the env-var-derived fields when AuthHeaderVal
 	// and AccessToken are empty, so dropping the working credential requires
-	// zeroing every emitted credential field, not just the OAuth trio.
-	// ClientID/ClientSecret persist to disk via SaveTokens for the oauth2
-	// and oauth2-cc flows, so logout must wipe them too; otherwise
-	// `auth login` can re-mint a new access token unattended.
+	// zeroing every emitted credential field, not just the OAuth trio. Nothing
+	// writes ClientID/ClientSecret any more, but Load() still reads them out of
+	// legacy config files, so logout must wipe them too; otherwise a stale
+	// on-disk pair survives a logout.
 	c.AuthHeaderVal = ""
 	c.AccessToken = ""
 	c.RefreshToken = ""

@@ -1873,8 +1873,10 @@ func resourceIDsLocked(queryer resourceIDQueryer, resourceType string) (map[stri
 	return ids, rows.Err()
 }
 
-// ResourceIDs lists every mirrored row id for a resource type, for the
-// mark-and-sweep a full sync performs.
+// ResourceIDs lists every mirrored row id for a resource type. Production
+// mark-and-sweep reads the ids inside SweepMissing's transaction through
+// resourceIDsLocked; this exported wrapper exists for tests in other packages
+// that assert mirror contents, like cliutil.CredentialsFilePath.
 func (s *Store) ResourceIDs(resourceType string) (map[string]bool, error) {
 	return resourceIDsLocked(s.db, resourceType)
 }

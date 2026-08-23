@@ -198,26 +198,21 @@ const (
 	unixEpochMillisecondsThreshold = 1_000_000_000_000
 )
 
-// retryAfterNow is the clock RetryAfter reads. It defaults to time.Now (so
-// production behavior is unchanged) and is overridable in tests for exact,
-// non-flaky assertions on HTTP-date / epoch Retry-After parsing.
+// retryAfterNow is the clock RetryAfterOrFallback reads. It defaults to
+// time.Now (so production behavior is unchanged) and is overridable in tests
+// for exact, non-flaky assertions on HTTP-date / epoch Retry-After parsing.
 // test seam for deterministic time-dependent tests.
 var retryAfterNow = time.Now
 
-// RetryAfter parses an HTTP Retry-After header (RFC 7231: delta-seconds or
-// HTTP-date), plus common Unix epoch seconds/milliseconds variants emitted by
-// some APIs. Waits are capped at MaxRetryWait. Returns 5s when missing or
-// unparseable.
-func RetryAfter(resp *http.Response) time.Duration {
-	wait, _ := RetryAfterOrFallback(resp)
-	return wait
-}
-
-// RetryAfterOrFallback parses Retry-After like RetryAfter and additionally
-// reports whether the returned wait is the synthetic default rather than a
-// value the server actually supplied. A caller that scales its own backoff
-// needs that distinction: a server-supplied wait must be honoured as sent,
-// while the synthetic default is ours to adjust.
+// RetryAfterOrFallback parses an HTTP Retry-After header (RFC 7231:
+// delta-seconds or HTTP-date), plus the common Unix epoch
+// seconds/milliseconds variants some APIs emit. Waits are capped at
+// MaxRetryWait, and a missing or unparseable header yields 5s.
+//
+// It also reports whether the returned wait is that synthetic default rather
+// than a value the server actually supplied. A caller that scales its own
+// backoff needs the distinction: a server-supplied wait must be honoured as
+// sent, while the synthetic default is ours to adjust.
 func RetryAfterOrFallback(resp *http.Response) (wait time.Duration, fallback bool) {
 	if resp == nil {
 		return defaultRetryWait, true
