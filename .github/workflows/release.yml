@@ -34,6 +34,16 @@ jobs:
       # are pushed manually), so refuse to ship artifacts from untested code.
       - name: Test
         run: go test ./...
+      # Same reason as the test gate above. A manually pushed tag can bypass
+      # ci.yml entirely, and these two gates protect what ships rather than
+      # what compiles: a stale THIRD_PARTY_LICENSES.txt ships incomplete
+      # attribution on every channel, and a broken sqlite/libc lockstep ships
+      # binaries that fault at run time.
+      - name: Notices and dependency-invariant gate
+        run: |
+          go run ./cmd/notices-gen
+          git diff --exit-code THIRD_PARTY_LICENSES.txt
+          make lockstep
       - name: Install cosign
         uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
       - name: Install syft

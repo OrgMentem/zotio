@@ -25,26 +25,27 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 )
 
 const outputPath = "THIRD_PARTY_LICENSES.txt"
 
-// licenseNames are the file names, in preference order, that modules use for
-// their license text. NOTICE is appended separately when present, because
-// Apache-2.0 section 4(d) makes it additive rather than an alternative.
-var licenseNames = []string{
-	"LICENSE",
-	"LICENSE.txt",
-	"LICENSE.md",
-	"LICENCE",
-	"LICENCE.txt",
-	"COPYING",
-	"COPYING.txt",
-}
+// licenseFilePattern matches every file a module ships that carries license or
+// attribution terms. It is a pattern rather than a fixed preference list
+// because taking only the first recognized name drops terms that are actually
+// bundled: modernc.org/libc ships LICENSE-3RD-PARTY.md (musl, go-netdb and
+// others), modernc.org/memory ships LICENSE-GO and LICENSE-MMAP-GO,
+// modernc.org/sqlite ships SQLITE-LICENSE, and the golang.org/x modules ship
+// PATENTS, whose grant is part of their terms. Apache-2.0 section 4(d) is
+// likewise additive: every NOTICE must be preserved, not just one.
+var licenseFilePattern = regexp.MustCompile(`(?i)(licen[cs]e|copying|notice|patents)`)
 
-var noticeNames = []string{"NOTICE", "NOTICE.txt", "NOTICE.md"}
+// primaryLicensePattern matches the unadorned license file every module must
+// have. A module that matches licenseFilePattern only through a secondary file
+// (LICENSE-GO alone, say) is a packaging surprise worth failing on.
+var primaryLicensePattern = regexp.MustCompile(`(?i)^(licen[cs]e|copying)(\.(txt|md))?$`)
 
 type module struct {
 	Path    string
@@ -76,16 +77,50 @@ func run() error {
 
 	var b strings.Builder
 	b.WriteString(header)
+
+	// The Go standard library and runtime are linked into every binary, and
+	// their BSD-3-Clause terms carry the same binary-redistribution condition
+	// as any dependency. No version is printed: the license and patent grant
+	// texts are stable across toolchain patches, so pinning a version here
+	// would make the drift gate fire on every Go upgrade for no gain.
+	stdlib, err := goToolchainLicenseFiles()
+	if err != nil {
+		return err
+	}
+	writeNoticeEntry(&b, "the Go standard library and runtime", "", stdlib)
+
 	for _, m := range mods {
-		text, name, err := licenseText(m)
+		files, err := licenseFiles(m.Dir, m.Path)
 		if err != nil {
 			return err
 		}
-		fmt.Fprintf(&b, "%s\n%s %s\n%s\n\n", separator, m.Path, m.Version, name)
-		b.WriteString(strings.TrimRight(text, "\n"))
+		writeNoticeEntry(&b, m.Path, m.Version, files)
+	}
+	// 0o600 matches cmd/docs-gen; the packaged copies get their modes from
+	// GoReleaser and nfpms, not from this write.
+	return os.WriteFile(outputPath, []byte(b.String()), 0o600)
+}
+
+// writeNoticeEntry renders one component: a separator, its identity, then every
+// license file it ships, each named so a reader can tell which terms apply to
+// which bundled code.
+func writeNoticeEntry(b *strings.Builder, name, version string, files []licenseFile) {
+	title := name
+	if version != "" {
+		title = name + " " + version
+	}
+	names := make([]string, 0, len(files))
+	for _, f := range files {
+		names = append(names, f.Name)
+	}
+	fmt.Fprintf(b, "%s\n%s\n%s\n\n", separator, title, strings.Join(names, ", "))
+	for i, f := range files {
+		if i > 0 {
+			fmt.Fprintf(b, "--- %s ---\n\n", f.Name)
+		}
+		b.WriteString(strings.TrimRight(f.Text, "\n"))
 		b.WriteString("\n\n")
 	}
-	return os.WriteFile(outputPath, []byte(b.String()), 0o644)
 }
 
 const separator = "================================================================================"
@@ -135,7 +170,9 @@ func linkedModules() ([]module, error) {
 
 func collectModules(goos, goarch string, seen map[string]module) error {
 	cmd := exec.Command("go", "list", "-deps", "-json", "./cmd/zotio", "./cmd/zotio-mcp")
-	cmd.Env = append(os.Environ(), "GOOS="+goos, "GOARCH="+goarch)
+	// CGO_ENABLED=0 mirrors .goreleaser.yaml's build env. Without it a cgo-only
+	// import graph would be scanned instead of the one that ships.
+	cmd.Env = append(os.Environ(), "GOOS="+goos, "GOARCH="+goarch, "CGO_ENABLED=0")
 	cmd.Stderr = os.Stderr
 	out, err := cmd.Output()
 	if err != nil {
@@ -157,30 +194,137 @@ func collectModules(goos, goarch string, seen map[string]module) error {
 	return nil
 }
 
-// licenseText reads a module's license, plus its NOTICE when it ships one. A
-// module with no readable license is a hard error: silently omitting it is the
-// exact defect this generator exists to prevent.
-func licenseText(m module) (text, name string, err error) {
-	if m.Dir == "" {
-		return "", "", fmt.Errorf("%s has no local module directory; run go mod download first", m.Path)
+// licenseFile is one license or attribution file shipped by a component.
+type licenseFile struct {
+	Name string
+	Text string
+}
+
+// licenseFiles reads every license, notice, and patent-grant file a component
+// ships. A component with no primary license file is a hard error: silently
+// omitting terms is the exact defect this generator exists to prevent.
+func licenseFiles(dir, name string) ([]licenseFile, error) {
+	if dir == "" {
+		return nil, fmt.Errorf("%s has no local directory; run go mod download first", name)
 	}
-	for _, candidate := range licenseNames {
-		data, readErr := os.ReadFile(filepath.Join(m.Dir, candidate))
-		if readErr != nil {
+	files, primary, err := licenseFilesIn(dir)
+	if err != nil {
+		return nil, fmt.Errorf("reading licenses for %s: %w", name, err)
+	}
+	if !primary {
+		return nil, fmt.Errorf("no primary license file found for %s in %s", name, dir)
+	}
+	return files, nil
+}
+
+// licenseFilesIn reads one directory's license files, sorted by name, and
+// reports whether a primary license was among them. Ordering is explicit
+// because the committed output is drift-gated, which makes it a contract
+// rather than an implementation detail of os.ReadDir.
+func licenseFilesIn(dir string) (files []licenseFile, primary bool, err error) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil, false, err
+	}
+	for _, entry := range entries {
+		if entry.IsDir() || !licenseFilePattern.MatchString(entry.Name()) {
 			continue
 		}
-		body := string(data)
-		label := candidate
-		for _, noticeName := range noticeNames {
-			notice, noticeErr := os.ReadFile(filepath.Join(m.Dir, noticeName))
-			if noticeErr != nil {
-				continue
-			}
-			body = strings.TrimRight(body, "\n") + "\n\n--- " + noticeName + " ---\n\n" + string(notice)
-			label = candidate + " + " + noticeName
-			break
+		data, readErr := os.ReadFile(filepath.Join(dir, entry.Name()))
+		if readErr != nil {
+			return nil, false, readErr
 		}
-		return body, label, nil
+		if len(data) > maxLicenseBytes {
+			return nil, false, fmt.Errorf("%s is %d bytes, over the %d-byte license cap", entry.Name(), len(data), maxLicenseBytes)
+		}
+		if primaryLicensePattern.MatchString(entry.Name()) {
+			primary = true
+		}
+		files = append(files, licenseFile{Name: entry.Name(), Text: sanitizeLicenseText(string(data))})
 	}
-	return "", "", fmt.Errorf("no license file found for %s in %s", m.Path, m.Dir)
+	sort.Slice(files, func(i, j int) bool { return files[i].Name < files[j].Name })
+	return files, primary, nil
+}
+
+// maxLicenseBytes bounds a single license file. Every byte here is committed
+// and then shipped on every channel, so a dependency should not be able to
+// grow the artifact without someone noticing.
+const maxLicenseBytes = 1 << 20
+
+// sanitizeLicenseText drops C0 control characters other than tab and newline,
+// and normalizes CRLF. License text is copied verbatim from a dependency into a
+// file that renders on GitHub, installs under /usr/share/doc, and lands in the
+// container image; terminal escape sequences have no business there. The drift
+// gate still shows any real change in a reviewed diff, so this is a second
+// line rather than the only one.
+func sanitizeLicenseText(s string) string {
+	if !strings.ContainsFunc(s, isStrippedControl) {
+		return s
+	}
+	var b strings.Builder
+	b.Grow(len(s))
+	for _, r := range s {
+		if isStrippedControl(r) {
+			continue
+		}
+		b.WriteRune(r)
+	}
+	return b.String()
+}
+
+func isStrippedControl(r rune) bool {
+	switch r {
+	case '\t', '\n':
+		return false
+	case '\r':
+		return true
+	}
+	return r < 0x20 || r == 0x7f
+}
+
+// goToolchainLicenseFiles reads the Go license and patent grant. Layouts
+// differ: an upstream or actions/setup-go tree keeps LICENSE and PATENTS in
+// GOROOT, while Homebrew installs GOROOT as .../<version>/libexec and leaves
+// LICENSE in the parent. The parent is consulted only when GOROOT has no
+// primary license, so a CI toolchain never picks up an unrelated file, and
+// either layout yields the same text.
+func goToolchainLicenseFiles() ([]licenseFile, error) {
+	// `go env GOROOT`, not runtime.GOROOT(): the latter is deprecated since Go
+	// 1.24 because it reports the root this generator was built against, which
+	// need not be the toolchain that just resolved the module graph.
+	out, err := exec.Command("go", "env", "GOROOT").Output()
+	if err != nil {
+		return nil, fmt.Errorf("go env GOROOT: %w", err)
+	}
+	root := strings.TrimSpace(string(out))
+	if root == "" {
+		return nil, fmt.Errorf("go env GOROOT returned nothing")
+	}
+	files, err := licenseFiles(root, "the Go standard library")
+	if err == nil {
+		return files, nil
+	}
+	parent := filepath.Dir(root)
+	if parent == root {
+		return nil, err
+	}
+	outer, outerErr := licenseFiles(parent, "the Go standard library")
+	if outerErr != nil {
+		return nil, err
+	}
+	// GOROOT's own files win; the parent only supplies what GOROOT lacks.
+	inner, _, _ := licenseFilesIn(root)
+	byName := map[string]licenseFile{}
+	for _, f := range outer {
+		byName[f.Name] = f
+	}
+	for _, f := range inner {
+		byName[f.Name] = f
+	}
+	merged := make([]licenseFile, 0, len(byName))
+	for _, f := range byName {
+		merged = append(merged, f)
+	}
+	sort.Slice(merged, func(i, j int) bool { return merged[i].Name < merged[j].Name })
+	return merged, nil
 }

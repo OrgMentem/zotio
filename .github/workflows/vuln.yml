@@ -33,10 +33,20 @@ jobs:
   osv-scanner:
     runs-on: ubuntu-latest
     steps:
+      # persist-credentials: false — checkout otherwise leaves the job's
+      # GITHUB_TOKEN in .git/config, and the workspace is mounted into the
+      # third-party scanner container below. Neither job pushes.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
       # Scoped to go.mod rather than a recursive scan: the docs toolchain pins
       # in docs/requirements.txt are not shipped in any binary, and failing the
       # release gate on them would train everyone to ignore this job.
+      #
+      # The action pin fixes action.yml, not the image it runs: that action.yml
+      # names docker://ghcr.io/google/osv-scanner-action:v2.5.1, a mutable tag.
+      # Accepted deliberately — the job holds only a contents:read token and no
+      # secrets, so the blast radius is public-read.
       - uses: google/osv-scanner-action/osv-scanner-action@6e4298ebc4db23e847df9b2e2de2939d6f066c67 # v2.5.1
         with:
           scan-args: |-
@@ -50,22 +60,41 @@ jobs:
     continue-on-error: true
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
         with:
           go-version: '1.26.x'
       - name: Compare embedded SQLite against upstream
         run: |
           set -euo pipefail
+          # `go list -m -f '{{.Dir}}'` reports a path only for a module that is
+          # already extracted, and it exits 0 with an empty string otherwise. On
+          # a cold module cache that empty value would make the grep below scan
+          # the runner's own /lib, so download first and then refuse to continue
+          # on an empty path.
+          go mod download modernc.org/sqlite
           dir="$(go list -m -f '{{.Dir}}' modernc.org/sqlite)"
+          if [ -z "$dir" ]; then
+            echo "::warning::modernc.org/sqlite is not in the module cache; cannot read the embedded SQLite version"
+            exit 1
+          fi
           # sort -u, not head: under pipefail an early-exiting head makes grep
           # die of SIGPIPE and the step fails for the wrong reason. It also
           # asserts the transpile carries exactly one SQLITE_VERSION.
           embedded="$(grep -rhoE 'SQLITE_VERSION = "[0-9.]+"' "$dir/lib" | grep -oE '[0-9.]+' | sort -u)"
-          # download.html carries machine-readable PRODUCT lines; the autoconf
-          # tarball name encodes the version as Mmmpp00 (3530400 = 3.53.4).
+          # download.html carries machine-readable PRODUCT lines. SQLite encodes
+          # X.Y.Z in the autoconf tarball name as X*1000000 + Y*10000 + Z*100,
+          # so decode arithmetically rather than by slicing digits: slicing
+          # silently misreads any release whose field widths differ.
           encoded="$(curl -sSfL https://sqlite.org/download.html \
-            | grep -oE 'sqlite-autoconf-[0-9]{7}\.tar\.gz' | grep -oE '[0-9]{7}' | sort -u)"
-          upstream="$(( 10#${encoded:0:1} )).$(( 10#${encoded:1:2} )).$(( 10#${encoded:3:2} ))"
+            | grep -oE 'sqlite-autoconf-[0-9]{7,8}\.tar\.gz' | grep -oE '[0-9]{7,8}' | sort -rnu | sed -n 1p)"
+          if [ -z "$encoded" ]; then
+            echo "::warning::could not read a version from sqlite.org/download.html"
+            exit 1
+          fi
+          n=$(( 10#$encoded ))
+          upstream="$(( n / 1000000 )).$(( (n / 10000) % 100 )).$(( (n / 100) % 100 ))"
           echo "embedded=$embedded upstream=$upstream"
           if [ "$embedded" != "$upstream" ]; then
             echo "::warning::modernc.org/sqlite embeds SQLite $embedded; upstream is $upstream. Check the SQLite release notes for security content, then bump modernc.org/sqlite and modernc.org/libc together."

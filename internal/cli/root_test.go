@@ -367,8 +367,8 @@ func TestUnknownSubcommandUnderAGroupIsAUsageError(t *testing.T) {
 	// humanFriendly as flag targets (root.go:271-272), so pflag writes them on
 	// every tree construction and two concurrent RootCmd() calls are a data
 	// race. Production serialises tree building (Execute builds one; the MCP
-	// server holds mirroredCommandMu), so this is a latent coupling these
-	// tests must not trip rather than a live defect.
+	// server holds the mirrored-command slot), so this is a latent coupling
+	// these tests must not trip rather than a live defect.
 	root := RootCmd()
 
 	cases := []struct {

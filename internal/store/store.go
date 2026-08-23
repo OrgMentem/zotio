@@ -1876,7 +1876,8 @@ func resourceIDsLocked(queryer resourceIDQueryer, resourceType string) (map[stri
 // ResourceIDs lists every mirrored row id for a resource type. Production
 // mark-and-sweep reads the ids inside SweepMissing's transaction through
 // resourceIDsLocked; this exported wrapper exists for tests in other packages
-// that assert mirror contents, like cliutil.CredentialsFilePath.
+// that assert mirror contents, namely internal/cli's mirror_reap_test.go and
+// sync_gaps_test.go. Go has no cross-package test-only export.
 func (s *Store) ResourceIDs(resourceType string) (map[string]bool, error) {
 	return resourceIDsLocked(s.db, resourceType)
 }

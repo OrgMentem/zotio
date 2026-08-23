@@ -67,7 +67,7 @@ notices-drift: notices
 # in the WAL index under concurrent access). See gitlab.com/cznic/sqlite#177.
 lockstep:
 	@selected="$$(go list -m -f '{{.Version}}' modernc.org/libc)"; \
-	pinned="$$(awk '/modernc.org\/libc/ {print $$2}' "$$(go list -m -f '{{.GoMod}}' modernc.org/sqlite)")"; \
+	pinned="$$(awk '$$1=="modernc.org/libc"{print $$2; exit} $$1=="require" && $$2=="modernc.org/libc"{print $$3; exit}' "$$(go list -m -f '{{.GoMod}}' modernc.org/sqlite)")"; \
 	if [ "$$selected" != "$$pinned" ]; then \
 		echo "modernc.org/libc lockstep broken: selected $$selected, modernc.org/sqlite pins $$pinned"; \
 		echo "bump modernc.org/sqlite and modernc.org/libc together in one commit"; \

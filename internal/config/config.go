@@ -159,7 +159,12 @@ func Load(configPath string) (*Config, error) {
 	cfg.AccessToken = ""
 	cfg.RefreshToken = ""
 	cfg.TokenExpiry = time.Time{}
+	// ClientID goes with ClientSecret: nothing writes either field any more, so
+	// a legacy client_id left in place would still count as a credential in
+	// hasCredentialFields while AuthHeader() returns nothing, and an
+	// agentcookie-managed store would rewrite it to disk forever.
 	cfg.ClientSecret = ""
+	cfg.ClientID = ""
 
 	if cfg.AgentcookieManagedByExternalStore() {
 		cfg.markAgentcookieManaged()
@@ -377,7 +382,7 @@ func (c *Config) SaveCredential(token string) error {
 	c.AuthHeaderVal = ""
 	c.AccessToken = ""
 	// Pair each builtin-field zeroing with an envOverrides delete, like
-	// ClearTokens/SaveBearerToken: if an env var's placeholder collides with the
+	// ClearTokens: if an env var's placeholder collides with the
 	// AuthHeaderVal/AccessToken builtin tag, the override would otherwise survive
 	// and configForSave would restore the stale on-disk value instead of "".
 	delete(c.envOverrides, "AuthHeaderVal")

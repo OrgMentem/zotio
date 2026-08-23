@@ -23,9 +23,10 @@ import (
 // handlers) call dbPath() from MCP dispatch goroutines; under --transport http
 // those dispatch concurrently, while a concurrent command_run (or any
 // mirrored command via runMirroredInProcess) retargets the group scope.
-// runMirroredInProcess serializes only MIRRORED runs under mirroredCommandMu
-// with StateGuard — it does not cover native handlers — so the only correct
-// synchronization is the RWMutex around activeGroupIDValue (activeGroupMu).
+// runMirroredInProcess serializes only MIRRORED runs, under the
+// mirrored-command slot with StateGuard — it does not cover native handlers —
+// so the only correct synchronization is the RWMutex around
+// activeGroupIDValue (activeGroupMu).
 //
 // Without that mutex, concurrent setActiveGroupID writes from ExecuteContext
 // and activeGroupIDLocked reads from DefaultDBPath/dbPath race on the string
