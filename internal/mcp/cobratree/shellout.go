@@ -8,7 +8,6 @@ import (
 	"sort"
 	"strconv"
 	"strings"
-	"sync"
 	"unicode/utf8"
 
 	mcplib "github.com/mark3labs/mcp-go/mcp"
@@ -18,41 +17,42 @@ import (
 	"zotio/internal/mcp/bound"
 )
 
-var mirroredCommandMu sync.Mutex
+// mirroredCommandSlot serializes in-process mirrored command execution. It is
+// a one-deep channel rather than a sync.Mutex because acquisition must honor
+// context cancellation, and the only way to wait on a mutex is to block a
+// goroutine. The mutex version parked one goroutine per waiter plus a second
+// one per cancelled waiter to absorb the eventual lock hand-off, so a burst of
+// MCP callers that time out while a long import held the lock leaked two
+// goroutines each until the holder finished.
+var mirroredCommandSlot = make(chan struct{}, 1)
 
-// acquireMirroredMu attempts to acquire mirroredCommandMu while honoring
-// context cancellation. It returns ctx.Err() promptly if the context is
-// cancelled while waiting, without leaving the mutex permanently held.
-func acquireMirroredMu(ctx context.Context) error {
+// acquireMirroredSlot takes the mirrored-command slot, honoring context
+// cancellation. Cancellation is O(1) and spawns nothing: the caller simply
+// stops selecting on the send.
+func acquireMirroredSlot(ctx context.Context) error {
 	if ctx == nil {
-		mirroredCommandMu.Lock()
+		mirroredCommandSlot <- struct{}{}
 		return nil
 	}
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	if mirroredCommandMu.TryLock() {
-		return nil
-	}
-	acquired := make(chan struct{})
-	go func() {
-		mirroredCommandMu.Lock()
-		close(acquired)
-	}()
 	select {
-	case <-ctx.Done():
-		go func() {
-			<-acquired
-			mirroredCommandMu.Unlock()
-		}()
-		return ctx.Err()
-	case <-acquired:
+	case mirroredCommandSlot <- struct{}{}:
+		// A select with two ready cases picks at random, so re-check: a caller
+		// cancelled while waiting must not proceed to run the command.
 		if err := ctx.Err(); err != nil {
-			mirroredCommandMu.Unlock()
+			releaseMirroredSlot()
 			return err
 		}
 		return nil
+	case <-ctx.Done():
+		return ctx.Err()
 	}
+}
+
+func releaseMirroredSlot() {
+	<-mirroredCommandSlot
 }
 
 const maxMirroredErrorBytes = 4096
@@ -83,10 +83,10 @@ func runMirroredInProcess(ctx context.Context, rootFactory func() *cobra.Command
 	// process-global. Serialize the
 	// in-process mirror so concurrent HTTP MCP requests cannot cross-contaminate
 	// library scope while commands run.
-	if err := acquireMirroredMu(ctx); err != nil {
+	if err := acquireMirroredSlot(ctx); err != nil {
 		return mcplib.NewToolResultError(err.Error())
 	}
-	defer mirroredCommandMu.Unlock()
+	defer releaseMirroredSlot()
 	if StateGuard != nil {
 		restore := StateGuard()
 		defer restore()

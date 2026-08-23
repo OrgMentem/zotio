@@ -6,37 +6,47 @@ import (
 	"context"
 	"errors"
 	"reflect"
+	"runtime"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/spf13/cobra"
 )
 
-func TestAcquireMirroredMuRespectsCancelledContext(t *testing.T) {
-	mirroredCommandMu.Lock()
-	defer mirroredCommandMu.Unlock()
+// holdMirroredSlot takes the mirrored-command slot for the duration of the
+// test, the way a long-running import holds it in production.
+func holdMirroredSlot(t *testing.T) {
+	t.Helper()
+	if err := acquireMirroredSlot(context.Background()); err != nil {
+		t.Fatalf("acquireMirroredSlot: %v", err)
+	}
+	t.Cleanup(releaseMirroredSlot)
+}
+
+func TestAcquireMirroredSlotRespectsCancelledContext(t *testing.T) {
+	holdMirroredSlot(t)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
 	start := time.Now()
-	err := acquireMirroredMu(ctx)
+	err := acquireMirroredSlot(ctx)
 	elapsed := time.Since(start)
 
 	if err == nil {
-		t.Fatalf("acquireMirroredMu with cancelled context should return error, got nil")
+		t.Fatalf("acquireMirroredSlot with cancelled context should return error, got nil")
 	}
 	if !errors.Is(err, context.Canceled) {
-		t.Fatalf("acquireMirroredMu error = %v, want context.Canceled", err)
+		t.Fatalf("acquireMirroredSlot error = %v, want context.Canceled", err)
 	}
 	if elapsed > 500*time.Millisecond {
-		t.Fatalf("acquireMirroredMu took %v, should return promptly when context already cancelled", elapsed)
+		t.Fatalf("acquireMirroredSlot took %v, should return promptly when context already cancelled", elapsed)
 	}
 }
 
 func TestRunMirroredInProcessRespectsCancelledContextWhileLocked(t *testing.T) {
-	mirroredCommandMu.Lock()
-	defer mirroredCommandMu.Unlock()
+	holdMirroredSlot(t)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
@@ -54,8 +64,7 @@ func TestRunMirroredInProcessRespectsCancelledContextWhileLocked(t *testing.T) {
 }
 
 func TestOrchestrationRootWithContextRespectsCancellation(t *testing.T) {
-	mirroredCommandMu.Lock()
-	defer mirroredCommandMu.Unlock()
+	holdMirroredSlot(t)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
@@ -69,31 +78,61 @@ func TestOrchestrationRootWithContextRespectsCancellation(t *testing.T) {
 	}
 }
 
-func TestCancelledContextDoesNotWaitForLock(t *testing.T) {
-	mirroredCommandMu.Lock()
+func TestCancelledContextDoesNotWaitForSlot(t *testing.T) {
+	holdMirroredSlot(t)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
 	defer cancel()
 
 	done := make(chan error, 1)
 	go func() {
-		done <- acquireMirroredMu(ctx)
+		done <- acquireMirroredSlot(ctx)
 	}()
 
 	select {
 	case err := <-done:
 		if err == nil {
-			t.Fatalf("acquireMirroredMu should return context error when waiting and context expires")
+			t.Fatalf("acquireMirroredSlot should return context error when waiting and context expires")
 		}
-		mirroredCommandMu.Unlock()
-		time.Sleep(50 * time.Millisecond)
-		if !mirroredCommandMu.TryLock() {
-			t.Fatalf("mirroredCommandMu should be unlocked after cancelled acquisition")
-		}
-		mirroredCommandMu.Unlock()
 	case <-time.After(2 * time.Second):
-		mirroredCommandMu.Unlock()
-		t.Fatalf("acquireMirroredMu did not return within timeout - still blocking on mutex")
+		t.Fatalf("acquireMirroredSlot did not return within timeout - still blocking on the slot")
+	}
+}
+
+// TestCancelledAcquisitionsLeaveNoGoroutines pins the property the mutex
+// version could not have: a caller that gives up while the slot is held must
+// leave nothing behind. The mutex version parked a waiter goroutine per caller
+// plus a hand-off goroutine per cancellation, all of which survived until the
+// holder released — minutes, for a large import or sync.
+func TestCancelledAcquisitionsLeaveNoGoroutines(t *testing.T) {
+	holdMirroredSlot(t)
+
+	const callers = 100
+	baseline := runtime.NumGoroutine()
+
+	var wg sync.WaitGroup
+	for range callers {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Millisecond)
+			defer cancel()
+			if err := acquireMirroredSlot(ctx); err == nil {
+				t.Error("acquireMirroredSlot succeeded while the slot was held")
+				releaseMirroredSlot()
+			}
+		}()
+	}
+	wg.Wait()
+
+	// The slot is still held, so a leaked waiter would still be parked on it.
+	// Poll briefly: the callers' own goroutines are torn down asynchronously.
+	deadline := time.Now().Add(2 * time.Second)
+	for runtime.NumGoroutine() > baseline && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if leaked := runtime.NumGoroutine() - baseline; leaked > 0 {
+		t.Fatalf("%d goroutine(s) still parked after %d cancelled acquisitions", leaked, callers)
 	}
 }
 

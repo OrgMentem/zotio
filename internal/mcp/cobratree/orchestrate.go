@@ -237,10 +237,10 @@ func orchestrationRootWithContext(ctx context.Context, rootFactory func() *cobra
 	if rootFactory == nil {
 		return nil, nil
 	}
-	if err := acquireMirroredMu(ctx); err != nil {
+	if err := acquireMirroredSlot(ctx); err != nil {
 		return nil, err
 	}
-	defer mirroredCommandMu.Unlock()
+	defer releaseMirroredSlot()
 	return rootFactory(), nil
 }
 
