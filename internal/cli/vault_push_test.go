@@ -229,8 +229,8 @@ func TestVaultPushReportsUnreadableNotes(t *testing.T) {
 	}
 	// No note is pushable (one is unreadable, the other unmanaged), so any
 	// outbound request is a bug.
-	srv := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {
-		t.Fatalf("unexpected request while all notes are unreadable/unmanaged")
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Errorf("unexpected request while all notes are unreadable/unmanaged")
 	}))
 	t.Cleanup(srv.Close)
 	t.Setenv("ZOTERO_BASE_URL", srv.URL+"/users/0")
@@ -280,10 +280,9 @@ func TestVaultPushReportsUnreadableNotes(t *testing.T) {
 		t.Fatalf("JSON mode should not print warnings to stderr: %s", stderr.String())
 	}
 }
-
 func TestVaultPushAllReadableNotesExitZero(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		t.Fatalf("unexpected request for an unbound note")
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Errorf("unexpected request for an unbound note")
 	}))
 	t.Cleanup(srv.Close)
 	t.Setenv("ZOTERO_BASE_URL", srv.URL+"/users/0")
@@ -489,9 +488,10 @@ func TestVaultResolvePreviewsWithoutWriting(t *testing.T) {
 				_, _ = w.Write([]byte(`{"version":7,"data":{"note":"<p>live</p>"}}`))
 			case http.MethodPatch:
 				patched = true
-				w.WriteHeader(http.StatusNoContent)
 			default:
-				t.Fatalf("unexpected method %s %s", r.Method, r.URL.Path)
+				t.Errorf("unexpected method %s %s", r.Method, r.URL.Path)
+				http.Error(w, "unexpected method", http.StatusBadRequest)
+				return
 			}
 		}))
 		t.Cleanup(srv.Close)

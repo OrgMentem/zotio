@@ -403,7 +403,8 @@ func TestDuplicatesResolvePartialFailureIsJournaled(t *testing.T) {
 
 func TestDuplicateResolvePatchFailsClosedWithoutVersion(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		t.Fatalf("PATCH must not be dispatched when version is 0; got %s %s", r.Method, r.URL.Path)
+		t.Errorf("PATCH must not be dispatched when version is 0; got %s %s", r.Method, r.URL.Path)
+		http.Error(w, "unexpected PATCH", http.StatusBadRequest)
 	}))
 	t.Cleanup(srv.Close)
 	c := client.New(&config.Config{BaseURL: srv.URL + "/users/0"}, 0, 0)

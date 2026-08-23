@@ -707,7 +707,8 @@ func TestBrokenAttachmentFile_WebBaseYieldsSkip(t *testing.T) {
 	// needed — isLocalZoteroAPI returns false for this port/host, so the
 	// guard returns a skip without issuing GET /.
 	web := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		t.Fatalf("Web base must not be probed: %s %s", r.Method, r.URL.Path)
+		t.Errorf("Web base must not be probed: %s %s", r.Method, r.URL.Path)
+		http.Error(w, "unexpected probe", http.StatusBadRequest)
 	}))
 	t.Cleanup(web.Close)
 

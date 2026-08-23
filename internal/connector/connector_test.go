@@ -24,16 +24,24 @@ func TestConnectorSaveItemsRequest(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		seen = true
 		if r.URL.Path != "/connector/saveItems" {
-			t.Fatalf("path = %s", r.URL.Path)
+			t.Errorf("path = %s", r.URL.Path)
+			http.Error(w, "unexpected path", http.StatusBadRequest)
+			return
 		}
 		if r.Method != http.MethodPost {
-			t.Fatalf("method = %s", r.Method)
+			t.Errorf("method = %s", r.Method)
+			http.Error(w, "unexpected method", http.StatusBadRequest)
+			return
 		}
 		if got := r.Header.Get("X-Zotero-Connector-API-Version"); got != "3" {
-			t.Fatalf("api version = %q", got)
+			t.Errorf("api version = %q", got)
+			http.Error(w, "unexpected api version", http.StatusBadRequest)
+			return
 		}
 		if got := r.Header.Get("Content-Type"); got != "application/json" {
-			t.Fatalf("content-type = %q", got)
+			t.Errorf("content-type = %q", got)
+			http.Error(w, "unexpected content-type", http.StatusBadRequest)
+			return
 		}
 		var body struct {
 			SessionID string           `json:"sessionID"`
@@ -41,13 +49,19 @@ func TestConnectorSaveItemsRequest(t *testing.T) {
 			Items     []map[string]any `json:"items"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-			t.Fatalf("decode body: %v", err)
+			t.Errorf("decode body: %v", err)
+			http.Error(w, "invalid body", http.StatusBadRequest)
+			return
 		}
 		if body.SessionID != "session" || body.URI != "https://doi.org/10.test/foo" {
-			t.Fatalf("unexpected body metadata: %+v", body)
+			t.Errorf("unexpected body metadata: %+v", body)
+			http.Error(w, "unexpected body metadata", http.StatusBadRequest)
+			return
 		}
 		if len(body.Items) != 1 || body.Items[0]["id"] != "connector-key" {
-			t.Fatalf("items missing connector id: %+v", body.Items)
+			t.Errorf("items missing connector id: %+v", body.Items)
+			http.Error(w, "items missing connector id", http.StatusBadRequest)
+			return
 		}
 		w.WriteHeader(http.StatusCreated)
 	}))
@@ -70,14 +84,20 @@ func TestConnectorSaveItemsBareCreateUsesValidURI(t *testing.T) {
 			Items []map[string]any `json:"items"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-			t.Fatalf("decode body: %v", err)
+			t.Errorf("decode body: %v", err)
+			http.Error(w, "invalid body", http.StatusBadRequest)
+			return
 		}
 		if body.URI != "https://zotero.org/" {
-			t.Fatalf("bare create uri = %q, want valid synthetic URI", body.URI)
+			t.Errorf("bare create uri = %q, want valid synthetic URI", body.URI)
+			http.Error(w, "unexpected uri", http.StatusBadRequest)
+			return
 		}
 		if len(body.Items) != 1 || body.Items[0]["id"] != "connector-key" ||
 			body.Items[0]["itemType"] != "journalArticle" {
-			t.Fatalf("unexpected bare create item: %+v", body.Items)
+			t.Errorf("unexpected bare create item: %+v", body.Items)
+			http.Error(w, "unexpected item", http.StatusBadRequest)
+			return
 		}
 		w.WriteHeader(http.StatusCreated)
 	}))
@@ -307,13 +327,19 @@ func TestConnectorSaveAttachmentRequest(t *testing.T) {
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/connector/saveAttachment" {
-			t.Fatalf("path = %s", r.URL.Path)
+			t.Errorf("path = %s", r.URL.Path)
+			http.Error(w, "unexpected path", http.StatusBadRequest)
+			return
 		}
 		if got := r.Header.Get("X-Zotero-Connector-API-Version"); got != "3" {
-			t.Fatalf("api version = %q", got)
+			t.Errorf("api version = %q", got)
+			http.Error(w, "unexpected api version", http.StatusBadRequest)
+			return
 		}
 		if got := r.Header.Get("Content-Type"); got != "application/pdf" {
-			t.Fatalf("content-type = %q", got)
+			t.Errorf("content-type = %q", got)
+			http.Error(w, "unexpected content-type", http.StatusBadRequest)
+			return
 		}
 		var meta struct {
 			SessionID    string `json:"sessionID"`
@@ -322,20 +348,30 @@ func TestConnectorSaveAttachmentRequest(t *testing.T) {
 			URL          string `json:"url"`
 		}
 		if strings.Contains(r.Header.Get("X-Metadata"), "é") {
-			t.Fatalf("metadata header contains non-ASCII: %q", r.Header.Get("X-Metadata"))
+			t.Errorf("metadata header contains non-ASCII: %q", r.Header.Get("X-Metadata"))
+			http.Error(w, "invalid metadata header", http.StatusBadRequest)
+			return
 		}
 		if err := json.Unmarshal([]byte(r.Header.Get("X-Metadata")), &meta); err != nil {
-			t.Fatalf("metadata JSON: %v", err)
+			t.Errorf("metadata JSON: %v", err)
+			http.Error(w, "invalid metadata", http.StatusBadRequest)
+			return
 		}
 		if meta.SessionID != "session" || meta.ParentItemID != "connector-key" || meta.Title != "Café PDF" || meta.URL != "https://example.test/source.pdf" {
-			t.Fatalf("metadata = %+v", meta)
+			t.Errorf("metadata = %+v", meta)
+			http.Error(w, "unexpected metadata", http.StatusBadRequest)
+			return
 		}
 		data, err := io.ReadAll(r.Body)
 		if err != nil {
-			t.Fatalf("read body: %v", err)
+			t.Errorf("read body: %v", err)
+			http.Error(w, "read error", http.StatusBadRequest)
+			return
 		}
 		if string(data) != "%PDF-1.4" {
-			t.Fatalf("raw body = %q", string(data))
+			t.Errorf("raw body = %q", string(data))
+			http.Error(w, "unexpected body", http.StatusBadRequest)
+			return
 		}
 		w.WriteHeader(http.StatusCreated)
 	}))
@@ -352,13 +388,19 @@ func TestConnectorSaveStandaloneAttachmentRequest(t *testing.T) {
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/connector/saveStandaloneAttachment" {
-			t.Fatalf("path = %s", r.URL.Path)
+			t.Errorf("path = %s", r.URL.Path)
+			http.Error(w, "unexpected path", http.StatusBadRequest)
+			return
 		}
 		if got := r.Header.Get("X-Zotero-Connector-API-Version"); got != "3" {
-			t.Fatalf("api version = %q", got)
+			t.Errorf("api version = %q", got)
+			http.Error(w, "unexpected api version", http.StatusBadRequest)
+			return
 		}
 		if got := r.Header.Get("Content-Type"); got != "application/pdf" {
-			t.Fatalf("content-type = %q", got)
+			t.Errorf("content-type = %q", got)
+			http.Error(w, "unexpected content-type", http.StatusBadRequest)
+			return
 		}
 		var meta struct {
 			SessionID string `json:"sessionID"`
@@ -366,20 +408,30 @@ func TestConnectorSaveStandaloneAttachmentRequest(t *testing.T) {
 			URL       string `json:"url"`
 		}
 		if strings.Contains(r.Header.Get("X-Metadata"), "é") {
-			t.Fatalf("metadata header contains non-ASCII: %q", r.Header.Get("X-Metadata"))
+			t.Errorf("metadata header contains non-ASCII: %q", r.Header.Get("X-Metadata"))
+			http.Error(w, "invalid metadata header", http.StatusBadRequest)
+			return
 		}
 		if err := json.Unmarshal([]byte(r.Header.Get("X-Metadata")), &meta); err != nil {
-			t.Fatalf("metadata JSON: %v", err)
+			t.Errorf("metadata JSON: %v", err)
+			http.Error(w, "invalid metadata", http.StatusBadRequest)
+			return
 		}
 		if meta.SessionID != "session" || meta.Title != "Café.pdf" || meta.URL != "https://example.test/paper.pdf" {
-			t.Fatalf("metadata = %+v", meta)
+			t.Errorf("metadata = %+v", meta)
+			http.Error(w, "unexpected metadata", http.StatusBadRequest)
+			return
 		}
 		data, err := io.ReadAll(r.Body)
 		if err != nil {
-			t.Fatalf("read body: %v", err)
+			t.Errorf("read body: %v", err)
+			http.Error(w, "read error", http.StatusBadRequest)
+			return
 		}
 		if string(data) != "%PDF-1.4" {
-			t.Fatalf("raw body = %q", string(data))
+			t.Errorf("raw body = %q", string(data))
+			http.Error(w, "unexpected body", http.StatusBadRequest)
+			return
 		}
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusCreated)
@@ -402,16 +454,22 @@ func TestConnectorGetRecognizedItem(t *testing.T) {
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/connector/getRecognizedItem" {
-			t.Fatalf("path = %s", r.URL.Path)
+			t.Errorf("path = %s", r.URL.Path)
+			http.Error(w, "unexpected path", http.StatusBadRequest)
+			return
 		}
 		var body struct {
 			SessionID string `json:"sessionID"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-			t.Fatalf("decode body: %v", err)
+			t.Errorf("decode body: %v", err)
+			http.Error(w, "invalid body", http.StatusBadRequest)
+			return
 		}
 		if body.SessionID != "session" {
-			t.Fatalf("sessionID = %q", body.SessionID)
+			t.Errorf("sessionID = %q", body.SessionID)
+			http.Error(w, "unexpected sessionID", http.StatusBadRequest)
+			return
 		}
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"title":"Attention Is All You Need","itemType":"preprint"}`))
@@ -461,10 +519,14 @@ func TestConnectorAttachmentResolvers(t *testing.T) {
 			ItemID    string `json:"itemID"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-			t.Fatalf("decode body: %v", err)
+			t.Errorf("decode body: %v", err)
+			http.Error(w, "invalid body", http.StatusBadRequest)
+			return
 		}
 		if body.SessionID != "session" || body.ItemID != "connector-key" {
-			t.Fatalf("body = %+v", body)
+			t.Errorf("body = %+v", body)
+			http.Error(w, "unexpected body", http.StatusBadRequest)
+			return
 		}
 		switch r.URL.Path {
 		case "/connector/hasAttachmentResolvers":
@@ -473,7 +535,9 @@ func TestConnectorAttachmentResolvers(t *testing.T) {
 			w.WriteHeader(http.StatusCreated)
 			_, _ = w.Write([]byte("Full Text"))
 		default:
-			t.Fatalf("path = %s", r.URL.Path)
+			t.Errorf("path = %s", r.URL.Path)
+			http.NotFound(w, r)
+			return
 		}
 	}))
 	defer server.Close()
@@ -515,13 +579,19 @@ func TestConnectorSelectedCollectionAndUpdateSession(t *testing.T) {
 				Note      string   `json:"note"`
 			}
 			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-				t.Fatalf("decode update body: %v", err)
+				t.Errorf("decode update body: %v", err)
+				http.Error(w, "invalid body", http.StatusBadRequest)
+				return
 			}
 			if body.SessionID != "session" || body.Target != "C78" || len(body.Tags) != 1 || body.Tags[0] != "tag" || body.Note != "note" {
-				t.Fatalf("update body = %+v", body)
+				t.Errorf("update body = %+v", body)
+				http.Error(w, "unexpected body", http.StatusBadRequest)
+				return
 			}
 		default:
-			t.Fatalf("path = %s", r.URL.Path)
+			t.Errorf("path = %s", r.URL.Path)
+			http.NotFound(w, r)
+			return
 		}
 	}))
 	defer server.Close()
@@ -547,20 +617,30 @@ func TestConnectorImportRequest(t *testing.T) {
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/connector/import" {
-			t.Fatalf("path = %s", r.URL.Path)
+			t.Errorf("path = %s", r.URL.Path)
+			http.Error(w, "unexpected path", http.StatusBadRequest)
+			return
 		}
 		if got := r.URL.Query().Get("session"); got != "session 1" {
-			t.Fatalf("session = %q", got)
+			t.Errorf("session = %q", got)
+			http.Error(w, "unexpected session", http.StatusBadRequest)
+			return
 		}
 		if got := r.Header.Get("Content-Type"); got != "text/plain" {
-			t.Fatalf("content-type = %q", got)
+			t.Errorf("content-type = %q", got)
+			http.Error(w, "unexpected content-type", http.StatusBadRequest)
+			return
 		}
 		data, err := io.ReadAll(r.Body)
 		if err != nil {
-			t.Fatalf("read body: %v", err)
+			t.Errorf("read body: %v", err)
+			http.Error(w, "read error", http.StatusBadRequest)
+			return
 		}
 		if string(data) != "TY  - JOUR" {
-			t.Fatalf("body = %q", string(data))
+			t.Errorf("body = %q", string(data))
+			http.Error(w, "unexpected body", http.StatusBadRequest)
+			return
 		}
 		w.WriteHeader(http.StatusCreated)
 		_, _ = w.Write([]byte(`[{"key":"ABC123","data":{"title":"Imported"}}]`))
@@ -582,17 +662,23 @@ func TestConnectorDetectTranslators(t *testing.T) {
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/connector/detect" {
-			t.Fatalf("path = %s", r.URL.Path)
+			t.Errorf("path = %s", r.URL.Path)
+			http.Error(w, "unexpected path", http.StatusBadRequest)
+			return
 		}
 		var body struct {
 			URI  string `json:"uri"`
 			HTML string `json:"html"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-			t.Fatalf("decode detect body: %v", err)
+			t.Errorf("decode detect body: %v", err)
+			http.Error(w, "invalid body", http.StatusBadRequest)
+			return
 		}
 		if body.URI != "https://arxiv.org/abs/1706.03762" || !strings.Contains(body.HTML, "Attention") {
-			t.Fatalf("detect body = %+v", body)
+			t.Errorf("detect body = %+v", body)
+			http.Error(w, "unexpected body", http.StatusBadRequest)
+			return
 		}
 		_, _ = w.Write([]byte(`[{"label":"arXiv.org","translatorID":"abc","priority":100}]`))
 	}))

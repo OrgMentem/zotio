@@ -136,7 +136,9 @@ func runExportSnapshotVerifyTestCmd(t *testing.T, lockPath string, currentItems 
 			return
 		}
 		if r.URL.Query().Get("start") != "0" || r.URL.Query().Get("limit") != "100" {
-			t.Fatalf("query = %q, want start=0&limit=100", r.URL.RawQuery)
+			t.Errorf("query = %q, want start=0&limit=100", r.URL.RawQuery)
+			http.Error(w, "unexpected query", http.StatusBadRequest)
+			return
 		}
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte("[" + exportVerifyJoinRaw(currentItems) + "]"))

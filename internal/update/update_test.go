@@ -15,10 +15,14 @@ func TestUpdateCheckFetchesFreshRelease(t *testing.T) {
 	now := time.Date(2026, 7, 18, 12, 0, 0, 0, time.UTC)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet || r.URL.Path != "/releases/latest" || r.URL.RawQuery != "" {
-			t.Fatalf("request = %s %s", r.Method, r.URL)
+			t.Errorf("request = %s %s", r.Method, r.URL)
+			http.Error(w, "bad request", http.StatusBadRequest)
+			return
 		}
 		if got := r.Header.Get("Accept"); got != "application/vnd.github+json" {
-			t.Fatalf("Accept = %q", got)
+			t.Errorf("Accept = %q", got)
+			http.Error(w, "bad Accept", http.StatusBadRequest)
+			return
 		}
 		w.Header().Set("ETag", `"release-1"`)
 		_, _ = w.Write([]byte(`{"tag_name":"v1.2.3","html_url":"https://github.com/OrgMentem/zotio/releases/tag/v1.2.3"}`))
@@ -48,7 +52,9 @@ func TestUpdateCheckReusesETagAfterNotModified(t *testing.T) {
 	now := time.Date(2026, 7, 18, 12, 0, 0, 0, time.UTC)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if got := r.Header.Get("If-None-Match"); got != `"release-1"` {
-			t.Fatalf("If-None-Match = %q", got)
+			t.Errorf("If-None-Match = %q", got)
+			http.Error(w, "bad If-None-Match", http.StatusBadRequest)
+			return
 		}
 		w.WriteHeader(http.StatusNotModified)
 	}))
@@ -70,9 +76,10 @@ func TestUpdateCheckReusesETagAfterNotModified(t *testing.T) {
 func TestUpdateCheckRateLimitsNetworkRequests(t *testing.T) {
 	now := time.Date(2026, 7, 18, 12, 0, 0, 0, time.UTC)
 	var calls atomic.Int32
-	server := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		calls.Add(1)
-		t.Fatal("fresh cache made a network request")
+		t.Errorf("fresh cache made a network request")
+		http.Error(w, "unexpected request", http.StatusBadRequest)
 	}))
 	defer server.Close()
 

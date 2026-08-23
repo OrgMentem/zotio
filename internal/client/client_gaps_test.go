@@ -40,7 +40,9 @@ func clientTestNewClient(t *testing.T, baseURL string) *Client {
 func TestDoReturnsSuccessBody(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/ok" {
-			t.Fatalf("path = %q, want /ok", r.URL.Path)
+			t.Errorf("path = %q, want /ok", r.URL.Path)
+			http.Error(w, "unexpected path", http.StatusBadRequest)
+			return
 		}
 		w.WriteHeader(http.StatusCreated)
 		_, _ = w.Write([]byte(`{"ok":true}`))

@@ -133,15 +133,21 @@ func TestListTagRenameUpdatesWalksMultiplePages(t *testing.T) {
 			return
 		}
 		if got := r.URL.Query().Get("tag"); got != "old" {
-			t.Fatalf("tag query = %q, want old", got)
+			t.Errorf("tag query = %q, want old", got)
+			http.Error(w, "bad tag", http.StatusBadRequest)
+			return
 		}
 		limit, err := strconv.Atoi(r.URL.Query().Get("limit"))
 		if err != nil {
-			t.Fatalf("limit query = %q: %v", r.URL.Query().Get("limit"), err)
+			t.Errorf("limit query = %q: %v", r.URL.Query().Get("limit"), err)
+			http.Error(w, "bad limit", http.StatusBadRequest)
+			return
 		}
 		start, err := strconv.Atoi(r.URL.Query().Get("start"))
 		if err != nil {
-			t.Fatalf("start query = %q: %v", r.URL.Query().Get("start"), err)
+			t.Errorf("start query = %q: %v", r.URL.Query().Get("start"), err)
+			http.Error(w, "bad start", http.StatusBadRequest)
+			return
 		}
 		requests = append(requests, tagRenamePageRequest{Start: start, Limit: limit})
 		end := start + limit

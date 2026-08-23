@@ -129,16 +129,24 @@ func TestSearchExtractSearchResultsShapesAndErrors(t *testing.T) {
 func TestSearchCommandLiveFiltersEmptyResults(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/items" {
-			t.Fatalf("path = %q, want /items", r.URL.Path)
+			t.Errorf("path = %q, want /items", r.URL.Path)
+			http.Error(w, "bad path", http.StatusBadRequest)
+			return
 		}
 		if got := r.URL.Query().Get("q"); got != "paper" {
-			t.Fatalf("q = %q, want paper", got)
+			t.Errorf("q = %q, want paper", got)
+			http.Error(w, "bad q", http.StatusBadRequest)
+			return
 		}
 		if got := r.URL.Query().Get("qmode"); got != "everything" {
-			t.Fatalf("qmode = %q, want everything", got)
+			t.Errorf("qmode = %q, want everything", got)
+			http.Error(w, "bad qmode", http.StatusBadRequest)
+			return
 		}
 		if got := r.URL.Query().Get("limit"); got != "10" {
-			t.Fatalf("limit = %q, want 10", got)
+			t.Errorf("limit = %q, want 10", got)
+			http.Error(w, "bad limit", http.StatusBadRequest)
+			return
 		}
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"data":[{}, {"key":"ITEM1","version":1,"data":{"title":"Paper One","itemType":"journalArticle"}}, {"document":{"slug":"wrapped-paper"}}]}`))
@@ -208,7 +216,7 @@ func TestSearchCommandAutoFallsBackToLocalOnNetworkError(t *testing.T) {
 	}
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		t.Fatalf("closed server should not receive requests")
+		t.Errorf("closed server should not receive requests")
 	}))
 	baseURL := server.URL
 	server.Close()

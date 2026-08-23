@@ -344,7 +344,9 @@ func annotationEnvelopeFixture() string {
 func TestAnnotationsSearchResultsIsArray(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/users/0/items" {
-			t.Fatalf("unexpected request path %q", r.URL.Path)
+			t.Errorf("unexpected request path %q", r.URL.Path)
+			http.Error(w, "unexpected request path", http.StatusBadRequest)
+			return
 		}
 		_, _ = w.Write([]byte("[" + annotationEnvelopeFixture() + "]"))
 	}))
@@ -366,11 +368,12 @@ func TestAnnotationsSearchResultsIsArray(t *testing.T) {
 		t.Fatalf("results[0] = %#v, want annotation ANN1", env.Results)
 	}
 }
-
 func TestAnnotationsTimelineResultsIsArray(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/users/0/items" {
-			t.Fatalf("unexpected request path %q", r.URL.Path)
+			t.Errorf("unexpected request path %q", r.URL.Path)
+			http.Error(w, "unexpected request path", http.StatusBadRequest)
+			return
 		}
 		_, _ = w.Write([]byte("[" + annotationEnvelopeFixture() + "]"))
 	}))

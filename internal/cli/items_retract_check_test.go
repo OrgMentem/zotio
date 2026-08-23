@@ -88,7 +88,9 @@ func TestLookupCrossrefRetractionNoticesTreats404AsUnregistered(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		decoded, err := url.PathUnescape(r.URL.EscapedPath())
 		if err != nil || decoded != "/works/10.404/not-registered" {
-			t.Fatalf("request path = escaped %q decoded %q err %v", r.URL.EscapedPath(), decoded, err)
+			t.Errorf("request path = escaped %q decoded %q err %v", r.URL.EscapedPath(), decoded, err)
+			http.Error(w, "unexpected request", http.StatusBadRequest)
+			return
 		}
 		http.NotFound(w, r)
 	}))
