@@ -426,16 +426,22 @@ func (c *Config) ClearTokens() error {
 	c.ZoteroApiKey = ""
 	delete(c.envOverrides, "ZoteroApiKey")
 	c.updateFileConfigField("ZoteroApiKey")
-	if c.AgentcookieManagedByExternalStore() {
-		c.markAgentcookieManaged()
-		// save() persists the full config (credential fields included) for
-		// agentcookie-managed stores, so the zeroed fields must be written
-		// back; returning early would leave the secrets on disk.
-		return c.save()
-	}
+	// Remove the credentials file on BOTH paths. saveCredentialsFirst() declines
+	// to WRITE it under an agentcookie-managed store, but a credentials.toml
+	// written by `auth set-token` before the marker appeared still holds a live
+	// api_key, and Load() skipping that file does not delete it. Returning early
+	// here left the secret on disk while `auth logout` reported success.
+	// RemoveCredentials tolerates a missing file, so this is safe when the store
+	// never had one.
 	if err := cliutil.RemoveCredentials(); err != nil {
 		return err
 	}
+	if c.AgentcookieManagedByExternalStore() {
+		c.markAgentcookieManaged()
+	}
+	// save() persists the full config (credential fields included) for
+	// agentcookie-managed stores, so the zeroed fields must be written back;
+	// skipping it would leave the secrets in config.toml.
 	return c.save()
 }
 

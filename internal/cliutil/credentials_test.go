@@ -259,6 +259,61 @@ func TestClearTokensFromBothStateClearsCredentialsAndLegacy(t *testing.T) {
 	assertConfigCredential(t, reloaded, "")
 }
 
+// TestClearTokensRemovesCredentialsUnderAgentcookieManagement covers the branch
+// the test above does not reach. The marker only means the daemon owns future
+// writes; a credentials.toml written by `auth set-token` before the marker
+// appeared still holds a live api_key. Logout used to return before removing
+// it, so the secret survived while the command reported success.
+func TestClearTokensRemovesCredentialsUnderAgentcookieManagement(t *testing.T) {
+	_, configPath := resetCredentialEnv(t)
+	if err := os.MkdirAll(filepath.Dir(configPath), 0o700); err != nil {
+		t.Fatalf("mkdir config: %v", err)
+	}
+	if err := os.WriteFile(configPath, []byte("base_url = \"https://settings.example\"\n"), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	// Order matters: the credentials file predates the marker, which is exactly
+	// the state that leaked.
+	if err := cliutil.SaveCredentials(testCredentials("data-secret")); err != nil {
+		t.Fatalf("SaveCredentials() error = %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(filepath.Dir(configPath), ".agentcookie-managed"), []byte("managed\n"), 0o600); err != nil {
+		t.Fatalf("write marker: %v", err)
+	}
+
+	cfg, err := config.Load("")
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if !cfg.AgentcookieManagedByExternalStore() {
+		t.Fatal("config is not agentcookie-managed; the test would exercise the wrong branch")
+	}
+	if err := cfg.ClearTokens(); err != nil {
+		t.Fatalf("ClearTokens() error = %v", err)
+	}
+
+	if _, ok, err := cliutil.LoadCredentials(); err != nil || ok {
+		t.Fatalf("LoadCredentials() after logout = ok %v err %v, want the file removed", ok, err)
+	}
+	credsPath, err := cliutil.CredentialsFilePath()
+	if err != nil {
+		t.Fatalf("CredentialsFilePath: %v", err)
+	}
+	if data, err := os.ReadFile(credsPath); err == nil {
+		t.Fatalf("credentials file still on disk after logout: %s", data)
+	}
+	configData, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatalf("read config: %v", err)
+	}
+	if strings.Contains(string(configData), "data-secret") {
+		t.Fatalf("config.toml still contains the credential:\n%s", configData)
+	}
+	if !strings.Contains(string(configData), "https://settings.example") {
+		t.Fatalf("config.toml lost non-secret settings:\n%s", configData)
+	}
+}
+
 func TestConcurrentCredentialWritersLeaveParseableCredentials(t *testing.T) {
 	resetCredentialEnv(t)
 	cfgA := &config.Config{Path: filepath.Join(t.TempDir(), "a.toml")}
