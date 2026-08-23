@@ -53,8 +53,15 @@ jobs:
             --lockfile=go.mod
 
   # The embedded SQLite version, which no advisory database maps to a Go module
-  # path. Advisory: upstream SQLite patch releases are outside this repo's
-  # control, so a lagging pin must not block an unrelated push.
+  # path. Purely advisory: upstream SQLite patch releases are outside this
+  # repo's control, so a lagging pin must not block an unrelated push.
+  #
+  # A lag is reported as a warning annotation and the job still passes. A job
+  # that sits red for weeks because upstream shipped a patch teaches everyone
+  # to ignore it, which is the one outcome that makes this check worthless.
+  # continue-on-error remains for the genuine step failures below (a broken
+  # module cache, or sqlite.org being unreachable), which are equally outside
+  # this repo's control.
   sqlite-currency:
     runs-on: ubuntu-latest
     continue-on-error: true
@@ -98,5 +105,6 @@ jobs:
           echo "embedded=$embedded upstream=$upstream"
           if [ "$embedded" != "$upstream" ]; then
             echo "::warning::modernc.org/sqlite embeds SQLite $embedded; upstream is $upstream. Check the SQLite release notes for security content, then bump modernc.org/sqlite and modernc.org/libc together."
-            exit 1
+          else
+            echo "embedded SQLite is current"
           fi
