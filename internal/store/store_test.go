@@ -334,8 +334,9 @@ func TestClearResourceVersions(t *testing.T) {
 
 	itemA := json.RawMessage(`{"key":"CVER_A","version":10,"data":{"key":"CVER_A","itemType":"book","title":"Versioned A","version":10}}`)
 	itemB := json.RawMessage(`{"key":"CVER_B","version":5,"data":{"key":"CVER_B","itemType":"book","title":"Versioned B","version":5}}`)
+	itemNested := json.RawMessage(`{"key":"CVER_NESTED","data":{"key":"CVER_NESTED","itemType":"book","title":"Versioned Nested","version":20}}`)
 	itemNoVer := json.RawMessage(`{"key":"CVER_NOVER","data":{"key":"CVER_NOVER","itemType":"book","title":"No Version"}}`)
-	if _, _, err := s.UpsertBatch("items", []json.RawMessage{itemA, itemB, itemNoVer}); err != nil {
+	if _, _, err := s.UpsertBatch("items", []json.RawMessage{itemA, itemB, itemNested, itemNoVer}); err != nil {
 		t.Fatalf("seed items: %v", err)
 	}
 	coll := json.RawMessage(`{"key":"CVER_COLL","version":99,"data":{"key":"CVER_COLL","name":"Versioned Collection","version":99}}`)
@@ -343,8 +344,8 @@ func TestClearResourceVersions(t *testing.T) {
 		t.Fatalf("seed collection: %v", err)
 	}
 
-	if cnt, _ := s.Count("items"); cnt != 3 {
-		t.Fatalf("pre-clear items count = %d, want 3", cnt)
+	if cnt, _ := s.Count("items"); cnt != 4 {
+		t.Fatalf("pre-clear items count = %d, want 4", cnt)
 	}
 	if cnt, _ := s.Count("collections"); cnt != 1 {
 		t.Fatalf("pre-clear collections count = %d, want 1", cnt)
@@ -354,8 +355,8 @@ func TestClearResourceVersions(t *testing.T) {
 		t.Fatalf("ClearResourceVersions: %v", err)
 	}
 
-	if cnt, _ := s.Count("items"); cnt != 3 {
-		t.Fatalf("post-clear items count = %d, want 3", cnt)
+	if cnt, _ := s.Count("items"); cnt != 4 {
+		t.Fatalf("post-clear items count = %d, want 4", cnt)
 	}
 	if cnt, _ := s.Count("collections"); cnt != 1 {
 		t.Fatalf("post-clear collections count = %d, want 1 (unrelated type must survive)", cnt)
@@ -367,6 +368,7 @@ func TestClearResourceVersions(t *testing.T) {
 	}{
 		{name: "item A", key: "CVER_A"},
 		{name: "item B", key: "CVER_B"},
+		{name: "nested-only item", key: "CVER_NESTED"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			raw, err := s.Get("items", tc.key)
@@ -394,7 +396,20 @@ func TestClearResourceVersions(t *testing.T) {
 		})
 	}
 
-	raw, _ := s.Get("items", "CVER_NOVER")
+	// Clearing must disarm the guard for both version locations, so a lower
+	// version from the new plane can replace the former nested-only payload.
+	if err := s.Upsert("items", "CVER_NESTED", json.RawMessage(`{"key":"CVER_NESTED","data":{"key":"CVER_NESTED","itemType":"book","title":"Lower After Clear","version":1}}`)); err != nil {
+		t.Fatalf("lower nested upsert after clear: %v", err)
+	}
+	raw, err := s.Get("items", "CVER_NESTED")
+	if err != nil {
+		t.Fatalf("Get nested item after lower upsert: %v", err)
+	}
+	if raw == nil || !strings.Contains(string(raw), "Lower After Clear") {
+		t.Fatalf("lower nested payload after clear = %s, want Lower After Clear", string(raw))
+	}
+
+	raw, _ = s.Get("items", "CVER_NOVER")
 	if raw == nil {
 		t.Fatalf("versionless row missing after clear")
 	}
@@ -415,5 +430,45 @@ func TestClearResourceVersions(t *testing.T) {
 	}
 	if _, ok := collObj["version"]; !ok {
 		t.Fatalf("unrelated collection version was stripped, want preserved: %s", string(collRaw))
+	}
+}
+
+func TestSweepMissingReapsUnseenRows(t *testing.T) {
+	s := queryTestStore(t)
+	const resourceType = "sweep-test"
+	if err := s.Upsert(resourceType, "SWEEP_SEEN", json.RawMessage(`{"id":"SWEEP_SEEN","label":"seen"}`)); err != nil {
+		t.Fatalf("seed seen row: %v", err)
+	}
+	if err := s.Upsert(resourceType, "SWEEP_GONE", json.RawMessage(`{"id":"SWEEP_GONE","label":"gone"}`)); err != nil {
+		t.Fatalf("seed unseen row: %v", err)
+	}
+
+	reaped, err := s.SweepMissing(resourceType, map[string]bool{"SWEEP_SEEN": true})
+	if err != nil {
+		t.Fatalf("SweepMissing: %v", err)
+	}
+	if reaped != 1 {
+		t.Fatalf("SweepMissing reaped %d rows, want 1", reaped)
+	}
+	if raw, err := s.Get(resourceType, "SWEEP_SEEN"); err != nil {
+		t.Fatalf("get seen row: %v", err)
+	} else if raw == nil {
+		t.Fatal("SweepMissing removed seen row")
+	}
+	if raw, err := s.Get(resourceType, "SWEEP_GONE"); err != nil {
+		t.Fatalf("get reaped row: %v", err)
+	} else if raw != nil {
+		t.Fatalf("SweepMissing retained unseen row: %s", string(raw))
+	}
+
+	var orphanFTS int
+	if err := s.DB().QueryRow(
+		`SELECT count(*) FROM resources_fts WHERE rowid = ?`,
+		ftsRowID(resourceType, "SWEEP_GONE"),
+	).Scan(&orphanFTS); err != nil {
+		t.Fatalf("count reaped FTS row: %v", err)
+	}
+	if orphanFTS != 0 {
+		t.Fatalf("reaped row left %d resources_fts rows, want 0", orphanFTS)
 	}
 }

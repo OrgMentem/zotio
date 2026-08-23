@@ -24,6 +24,100 @@ func itemPayload(key string, version int, title string) json.RawMessage {
 	return b
 }
 
+func nestedItemPayload(key string, version int, title string) json.RawMessage {
+	obj := map[string]any{
+		"key": key,
+		"data": map[string]any{
+			"key":      key,
+			"version":  version,
+			"itemType": "journalArticle",
+			"title":    title,
+		},
+	}
+	b, _ := json.Marshal(obj)
+	return b
+}
+
+func getEffectiveVersionTitle(t *testing.T, s *Store, key string) (int, string) {
+	t.Helper()
+	raw, err := s.Get("items", key)
+	if err != nil {
+		t.Fatalf("get %s: %v", key, err)
+	}
+	if raw == nil {
+		t.Fatalf("get %s: no row", key)
+	}
+	var obj struct {
+		Version *int `json:"version"`
+		Data    struct {
+			Version *int   `json:"version"`
+			Title   string `json:"title"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(raw, &obj); err != nil {
+		t.Fatalf("decode %s: %v", key, err)
+	}
+	if obj.Version != nil {
+		return *obj.Version, obj.Data.Title
+	}
+	if obj.Data.Version != nil {
+		return *obj.Data.Version, obj.Data.Title
+	}
+	return 0, obj.Data.Title
+}
+
+func TestUpsertNestedVersionMonotonic(t *testing.T) {
+	t.Run("nested-only", func(t *testing.T) {
+		s := queryTestStore(t)
+		const key = "NESTED"
+
+		if err := s.Upsert("items", key, nestedItemPayload(key, 5, "Nestedfive")); err != nil {
+			t.Fatalf("upsert nested v5: %v", err)
+		}
+		if err := s.Upsert("items", key, nestedItemPayload(key, 4, "Nestedfour")); err != nil {
+			t.Fatalf("upsert nested v4: %v", err)
+		}
+		if version, title := getEffectiveVersionTitle(t, s, key); version != 5 || title != "Nestedfive" {
+			t.Fatalf("lower nested write clobbered row: got version=%d title=%q, want version=5 title=Nestedfive", version, title)
+		}
+
+		if err := s.Upsert("items", key, nestedItemPayload(key, 5, "Nestedequal")); err != nil {
+			t.Fatalf("upsert nested equal v5: %v", err)
+		}
+		if version, title := getEffectiveVersionTitle(t, s, key); version != 5 || title != "Nestedequal" {
+			t.Fatalf("equal nested write not applied: got version=%d title=%q, want version=5 title=Nestedequal", version, title)
+		}
+
+		if err := s.Upsert("items", key, nestedItemPayload(key, 6, "Nestedhigher")); err != nil {
+			t.Fatalf("upsert nested v6: %v", err)
+		}
+		if version, title := getEffectiveVersionTitle(t, s, key); version != 6 || title != "Nestedhigher" {
+			t.Fatalf("higher nested write not applied: got version=%d title=%q, want version=6 title=Nestedhigher", version, title)
+		}
+	})
+
+	t.Run("stored nested incoming top-level", func(t *testing.T) {
+		s := queryTestStore(t)
+		const key = "MIXED"
+
+		if err := s.Upsert("items", key, nestedItemPayload(key, 5, "Nestedstored")); err != nil {
+			t.Fatalf("upsert nested stored v5: %v", err)
+		}
+		if err := s.Upsert("items", key, itemPayload(key, 4, "Toplevelfour")); err != nil {
+			t.Fatalf("upsert top-level v4: %v", err)
+		}
+		if version, title := getEffectiveVersionTitle(t, s, key); version != 5 || title != "Nestedstored" {
+			t.Fatalf("lower top-level write clobbered nested row: got version=%d title=%q, want version=5 title=Nestedstored", version, title)
+		}
+		if err := s.Upsert("items", key, itemPayload(key, 6, "Toplevelsix")); err != nil {
+			t.Fatalf("upsert top-level v6: %v", err)
+		}
+		if version, title := getEffectiveVersionTitle(t, s, key); version != 6 || title != "Toplevelsix" {
+			t.Fatalf("higher top-level write not applied to nested row: got version=%d title=%q, want version=6 title=Toplevelsix", version, title)
+		}
+	})
+}
+
 func getVersionTitle(t *testing.T, s *Store, key string) (int, string) {
 	t.Helper()
 	raw, err := s.Get("items", key)

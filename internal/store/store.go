@@ -15,20 +15,12 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"regexp"
 	"strings"
 	"sync"
 	"time"
 
 	_ "modernc.org/sqlite"
 )
-
-var uuidPattern = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`)
-
-// IsUUID returns true if the input looks like a UUID.
-func IsUUID(s string) bool {
-	return uuidPattern.MatchString(s)
-}
 
 // StoreSchemaVersion is the on-disk schema version this binary understands.
 // It is stamped into SQLite's PRAGMA user_version on fresh databases and
@@ -45,8 +37,8 @@ type Store struct {
 	// is 1 (one goroutine per resource via len(resources)-sized work channel)
 	// — read-then-write sequences (e.g., GetSyncState → SaveSyncState) are
 	// race-free by construction within a resource.
-	writeMu         sync.Mutex
-	path            string
+	writeMu sync.Mutex
+
 	upsertBatchHook func()
 }
 
@@ -138,7 +130,7 @@ func openReadOnlyStore(dbPath string) (*Store, error) {
 		return nil, fmt.Errorf("opening database (read-only): %w", err)
 	}
 	db.SetMaxOpenConns(2)
-	return &Store{db: db, path: dbPath}, nil
+	return &Store{db: db}, nil
 }
 
 func readOnlyProbeBusyTimeout(ctx context.Context) time.Duration {
@@ -180,7 +172,7 @@ func OpenWithContext(ctx context.Context, dbPath string) (*Store, error) {
 	// iteration). Writes are still serialized by SQLite's WAL lock.
 	db.SetMaxOpenConns(2)
 
-	s := &Store{db: db, path: dbPath}
+	s := &Store{db: db}
 	if err := s.migrate(ctx); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("running migrations: %w", err)
@@ -216,11 +208,6 @@ func (s *Store) RuntimePragmas() (map[string]string, error) {
 
 func (s *Store) Close() error {
 	return s.db.Close()
-}
-
-// Path returns the on-disk path of the backing SQLite file.
-func (s *Store) Path() string {
-	return s.path
 }
 
 // DB exposes the underlying *sql.DB for callers that need to run ad-hoc
@@ -849,15 +836,17 @@ func (s *Store) upsertGenericResourceTx(tx *sql.Tx, resourceType, id string, dat
 	// write carrying an OLDER Zotero version must not clobber a newer row that is
 	// already persisted. The guard is evaluated atomically inside the statement,
 	// so it holds across concurrent processes (which each open their own Store
-	// and share no in-process writeMu). Rows lacking a version (or equal
+	// and share no in-process writeMu). The effective version is defined by
+	// zoteroObjectVersion; keep this SQL guard in lockstep with its top-level
+	// version and nested data.version fallback. Rows lacking a version (or equal
 	// versions) still update, preserving the prior always-overwrite behavior.
 	res, err := tx.Exec(
 		`INSERT INTO resources (id, resource_type, data, parent_key, item_type, annotation_color, item_date, synced_at, updated_at)
 		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
 		 ON CONFLICT(resource_type, id) DO UPDATE SET data = excluded.data, parent_key = excluded.parent_key, item_type = excluded.item_type, annotation_color = excluded.annotation_color, item_date = excluded.item_date, synced_at = excluded.synced_at, updated_at = excluded.updated_at
-		 WHERE json_extract(excluded.data, '$.version') IS NULL
-		    OR json_extract(resources.data, '$.version') IS NULL
-		    OR CAST(json_extract(excluded.data, '$.version') AS INTEGER) >= CAST(json_extract(resources.data, '$.version') AS INTEGER)`,
+		 WHERE COALESCE(json_extract(excluded.data, '$.version'), json_extract(excluded.data, '$.data.version')) IS NULL
+		    OR COALESCE(json_extract(resources.data, '$.version'), json_extract(resources.data, '$.data.version')) IS NULL
+		    OR CAST(COALESCE(json_extract(excluded.data, '$.version'), json_extract(excluded.data, '$.data.version')) AS INTEGER) >= CAST(COALESCE(json_extract(resources.data, '$.version'), json_extract(resources.data, '$.data.version')) AS INTEGER)`,
 		id, resourceType, string(data), parentKey, itemType, color, itemDate, time.Now(), time.Now(),
 	)
 	if err != nil {
@@ -1686,48 +1675,9 @@ func (s *Store) ClearResourceVersions(resourceType string) error {
 		`UPDATE resources
 		 SET data = json_remove(data, '$.version', '$.data.version')
 		 WHERE resource_type = ?
-		   AND json_extract(data, '$.version') IS NOT NULL`,
+		   AND COALESCE(json_extract(data, '$.version'), json_extract(data, '$.data.version')) IS NOT NULL`,
 		resourceType,
 	)
-	return err
-}
-
-// ListIDs returns all IDs for a resource type from the generic resources table.
-// Used by dependent sync to iterate parents.
-func (s *Store) ListIDs(resourceType string) ([]string, error) {
-	if resourceType == "" {
-		return nil, fmt.Errorf("resource type is required")
-	}
-	rows, err := s.db.Query(
-		// resourceType is data,
-		// not a SQL identifier; bind it instead of interpolating it as a table name.
-		"SELECT id FROM resources WHERE resource_type = ? ORDER BY id",
-		resourceType,
-	)
-	if err != nil {
-		return nil, fmt.Errorf("querying %s IDs: %w", resourceType, err)
-	}
-	defer rows.Close()
-
-	var ids []string
-	for rows.Next() {
-		var id string
-		if err := rows.Scan(&id); err != nil {
-			return nil, fmt.Errorf("scanning %s ID: %w", resourceType, err)
-		}
-		ids = append(ids, id)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("iterating %s IDs: %w", resourceType, err)
-	}
-	return ids, nil
-}
-
-// ClearSyncCursors resets all sync state for a full resync.
-func (s *Store) ClearSyncCursors() error {
-	s.writeMu.Lock()
-	defer s.writeMu.Unlock()
-	_, err := s.db.Exec("DELETE FROM sync_state")
 	return err
 }
 
@@ -1821,88 +1771,21 @@ func (s *Store) Status() (map[string]int, error) {
 	return status, rows.Err()
 }
 
-// ResolveByName resolves a human-readable name to a UUID from synced data.
-// If the input is already a UUID, it is returned as-is.
-// matchFields are JSON field names to search against (e.g., "name", "key", "email").
-func (s *Store) ResolveByName(resourceType string, input string, matchFields ...string) (string, error) {
-	if IsUUID(input) {
-		return input, nil
+// reapResourceLocked removes a mirror row and its FTS document within the
+// caller's transaction. The caller must hold writeMu when the transaction
+// participates in a read-then-modify operation.
+func reapResourceLocked(tx *sql.Tx, resourceType, id string) error {
+	// Explicit rowid for FTS5 compatibility with modernc.org/sqlite.
+	if _, err := tx.Exec(`DELETE FROM resources_fts WHERE rowid = ?`, ftsRowID(resourceType, id)); err != nil {
+		return fmt.Errorf("fts cleanup for %s/%s: %w", resourceType, id, err)
 	}
-
-	var matches []string
-	for _, field := range matchFields {
-		// the json_extract path is built with
-		// Sprintf, so a field name containing a quote could break out of the
-		// '$.<field>' path and inject SQL. Callers pass literals today; reject
-		// anything that isn't a plain dotted identifier as defense in depth.
-		if !isSafeJSONFieldName(field) {
-			continue
-		}
-		// #nosec G201 -- field name is pre-validated with isSafeJSONFieldName
-		query := fmt.Sprintf(
-			`SELECT id FROM resources WHERE resource_type = ? AND LOWER(json_extract(data, '$.%s')) = LOWER(?)`,
-			field,
-		)
-		rows, err := s.db.Query(query, resourceType, input)
-		if err != nil {
-			return "", fmt.Errorf("querying %s by %s: %w", resourceType, field, err)
-		}
-		for rows.Next() {
-			var id string
-			if err := rows.Scan(&id); err != nil {
-				_ = rows.Close()
-				return "", fmt.Errorf("scanning %s by %s: %w", resourceType, field, err)
-			}
-			// Deduplicate
-			found := false
-			for _, m := range matches {
-				if m == id {
-					found = true
-					break
-				}
-			}
-			if !found {
-				matches = append(matches, id)
-			}
-		}
-		if err := rows.Err(); err != nil {
-			_ = rows.Close()
-			return "", fmt.Errorf("iterating %s by %s: %w", resourceType, field, err)
-		}
-		_ = rows.Close()
+	if _, err := tx.Exec(`DELETE FROM resources WHERE resource_type = ? AND id = ?`, resourceType, id); err != nil {
+		return fmt.Errorf("reaping %s/%s: %w", resourceType, id, err)
 	}
-
-	switch len(matches) {
-	case 0:
-		return "", fmt.Errorf("%s %q not found in local store. Run 'sync' first, or use the UUID directly", resourceType, input)
-	case 1:
-		return matches[0], nil
-	default:
-		var hint string
-		if len(matches) > 5 {
-			hint = strings.Join(matches[:5], ", ") + "..."
-		} else {
-			hint = strings.Join(matches, ", ")
-		}
-		return "", fmt.Errorf("ambiguous: %q matches %d %s entries (%s). Use the exact UUID instead", input, len(matches), resourceType, hint)
+	if _, err := tx.Exec(`DELETE FROM pending_writes WHERE resource_type = ? AND id = ?`, resourceType, id); err != nil {
+		return fmt.Errorf("clearing pending write for %s/%s: %w", resourceType, id, err)
 	}
-}
-
-// isSafeJSONFieldName reports whether s is a plain, optionally dotted
-// identifier safe to interpolate into a json_extract path string.
-// guards ResolveByName's Sprintf-built query.
-func isSafeJSONFieldName(s string) bool {
-	if s == "" {
-		return false
-	}
-	for _, r := range s {
-		switch {
-		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9', r == '_', r == '.':
-		default:
-			return false
-		}
-	}
-	return true
+	return nil
 }
 
 // ReapResource removes a mirror row and its FTS document, for an object that no
@@ -1921,15 +1804,8 @@ func (s *Store) ReapResource(resourceType, id string) error {
 		return err
 	}
 	defer func() { _ = tx.Rollback() }()
-	// Explicit rowid for FTS5 compatibility with modernc.org/sqlite.
-	if _, err := tx.Exec(`DELETE FROM resources_fts WHERE rowid = ?`, ftsRowID(resourceType, id)); err != nil {
-		return fmt.Errorf("fts cleanup for %s/%s: %w", resourceType, id, err)
-	}
-	if _, err := tx.Exec(`DELETE FROM resources WHERE resource_type = ? AND id = ?`, resourceType, id); err != nil {
-		return fmt.Errorf("reaping %s/%s: %w", resourceType, id, err)
-	}
-	if _, err := tx.Exec(`DELETE FROM pending_writes WHERE resource_type = ? AND id = ?`, resourceType, id); err != nil {
-		return fmt.Errorf("clearing pending write for %s/%s: %w", resourceType, id, err)
+	if err := reapResourceLocked(tx, resourceType, id); err != nil {
+		return err
 	}
 	return tx.Commit()
 }
@@ -1973,10 +1849,15 @@ func (s *Store) RestoreMirroredItem(key string, payload json.RawMessage) error {
 	return tx.Commit()
 }
 
-// ResourceIDs lists every mirrored row id for a resource type, for the
-// mark-and-sweep a full sync performs.
-func (s *Store) ResourceIDs(resourceType string) (map[string]bool, error) {
-	rows, err := s.db.Query(`SELECT id FROM resources WHERE resource_type = ?`, resourceType)
+type resourceIDQueryer interface {
+	Query(query string, args ...any) (*sql.Rows, error)
+}
+
+// resourceIDsLocked lists every mirrored row id for a resource type using the
+// caller's query handle. The caller must hold writeMu when it shares a
+// transaction with subsequent reaping.
+func resourceIDsLocked(queryer resourceIDQueryer, resourceType string) (map[string]bool, error) {
+	rows, err := queryer.Query(`SELECT id FROM resources WHERE resource_type = ?`, resourceType)
 	if err != nil {
 		return nil, err
 	}
@@ -1992,6 +1873,12 @@ func (s *Store) ResourceIDs(resourceType string) (map[string]bool, error) {
 	return ids, rows.Err()
 }
 
+// ResourceIDs lists every mirrored row id for a resource type, for the
+// mark-and-sweep a full sync performs.
+func (s *Store) ResourceIDs(resourceType string) (map[string]bool, error) {
+	return resourceIDsLocked(s.db, resourceType)
+}
+
 // SweepMissing reaps every mirrored row of a resource type whose id is not in
 // seen, returning how many it removed.
 //
@@ -2000,7 +1887,17 @@ func (s *Store) ResourceIDs(resourceType string) (map[string]bool, error) {
 // local desktop API implements no /deleted feed, so a full pass is the only way
 // zotio can learn that an object it mirrors is gone.
 func (s *Store) SweepMissing(resourceType string, seen map[string]bool) (int, error) {
-	existing, err := s.ResourceIDs(resourceType)
+	// Hold writeMu for the full snapshot-and-reap transaction. Without one
+	// critical section, a row inserted after the snapshot could be reaped as
+	// missing even though it was written before the delete.
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+	tx, err := s.db.Begin()
+	if err != nil {
+		return 0, err
+	}
+	defer func() { _ = tx.Rollback() }()
+	existing, err := resourceIDsLocked(tx, resourceType)
 	if err != nil {
 		return 0, err
 	}
@@ -2009,10 +1906,13 @@ func (s *Store) SweepMissing(resourceType string, seen map[string]bool) (int, er
 		if seen[id] {
 			continue
 		}
-		if err := s.ReapResource(resourceType, id); err != nil {
+		if err := reapResourceLocked(tx, resourceType, id); err != nil {
 			return reaped, err
 		}
 		reaped++
+	}
+	if err := tx.Commit(); err != nil {
+		return reaped, err
 	}
 	return reaped, nil
 }
