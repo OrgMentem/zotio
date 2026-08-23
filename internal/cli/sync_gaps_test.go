@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -786,10 +787,23 @@ func TestProcessDequeuedSyncResourceStopsAfterCancellation(t *testing.T) {
 	if called {
 		t.Fatal("sync function was called after context cancellation")
 	}
+	// The resource is already out of the work channel, so this call is its only
+	// chance to appear in the result set. Dropping it made a cancelled sync
+	// report fewer resources than it was given, which reads as "never asked
+	// for" rather than "not attempted".
 	select {
 	case result := <-results:
-		t.Fatalf("unexpected sync result after cancellation: %#v", result)
+		if result.Resource != "items" {
+			t.Fatalf("cancellation result = %#v, want resource items", result)
+		}
+		if !errors.Is(result.Err, context.Canceled) {
+			t.Fatalf("cancellation result error = %v, want context.Canceled", result.Err)
+		}
+		if result.Count != 0 {
+			t.Fatalf("cancellation result count = %d, want 0", result.Count)
+		}
 	default:
+		t.Fatal("cancellation produced no result; the resource would vanish from the report")
 	}
 
 	activeResults := make(chan syncResult, 1)

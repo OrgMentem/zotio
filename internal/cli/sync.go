@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/url"
@@ -59,12 +60,40 @@ func (s *syncEventWriter) Write(p []byte) (int, error) {
 	return s.w.Write(p)
 }
 
+// errSyncNotRun marks a resource the pool never executed. Cancellation is the
+// only way that happens today, but a nil error here would read as success, so
+// the result carries this instead of ctx.Err() when the context is somehow
+// still live.
+var errSyncNotRun = errors.New("resource not synced: the worker pool stopped first")
+
 func processDequeuedSyncResource(ctx context.Context, resource string, results chan<- syncResult, syncOne func(string) syncResult) bool {
 	if ctx.Err() != nil {
+		// Report the dequeued-but-unrun resource rather than dropping it: a
+		// resource missing from the result set is indistinguishable from one
+		// the caller never asked for.
+		results <- syncResult{Resource: resource, Err: ctx.Err()}
 		return false
 	}
 	results <- syncOne(resource)
 	return true
+}
+
+// reportUnrunSyncResources completes the result set after the workers stop.
+// Cancellation leaves two kinds of orphan: resources still sitting in the work
+// channel, and resources the enqueue loop never sent at all. Both must yield a
+// result, or a cancelled sync silently reports fewer resources than it was
+// given.
+func reportUnrunSyncResources(ctx context.Context, work <-chan string, notEnqueued []string, results chan<- syncResult) {
+	err := ctx.Err()
+	if err == nil {
+		err = errSyncNotRun
+	}
+	for resource := range work {
+		results <- syncResult{Resource: resource, Err: err}
+	}
+	for _, resource := range notEnqueued {
+		results <- syncResult{Resource: resource, Err: err}
+	}
 }
 
 func runSyncWorker(ctx context.Context, work <-chan string, results chan<- syncResult, syncOne func(string) syncResult) {
@@ -228,12 +257,14 @@ Exit codes & warnings:
 			}
 
 			// Enqueue all resources, stopping promptly if the command is canceled.
+			enqueued := 0
 		enqueue:
 			for _, resource := range resources {
 				select {
 				case <-ctx.Done():
 					break enqueue
 				case work <- resource:
+					enqueued++
 				}
 			}
 			close(work)
@@ -241,6 +272,7 @@ Exit codes & warnings:
 			// Collect results in a separate goroutine
 			go func() {
 				wg.Wait()
+				reportUnrunSyncResources(ctx, work, resources[enqueued:], results)
 				close(results)
 			}()
 
