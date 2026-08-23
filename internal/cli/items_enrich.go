@@ -128,9 +128,12 @@ Work queues come from the same checks as 'items audit':
   --missing-doi       resolve a DOI by title from CrossRef, then OpenAlex/Semantic Scholar (exact title match)
   --missing-abstract  fill the abstract from CrossRef, then OpenAlex/Semantic Scholar (requires the item's DOI)
   --missing-pdf       attach an open-access PDF from Unpaywall (requires DOI)
-  --missing-citation  fill the core citation fields the citation health check
-                      measures - creators, title, date, and the venue field of
-                      the item's own type - from CrossRef (requires DOI)
+  --missing-citation  fill the core citation fields from CrossRef (requires DOI):
+                      creators, title, date and the venue field of the item's
+                      own type, plus volume/issue/pages when CrossRef carries
+                      them and the item's copy is blank. A blank volume is only
+                      a defect if the venue actually has one, so those fields
+                      are reported by --validate, not by 'library health'.
 
 PDF attachment modes:
   linked-url   create a linked_url attachment (default; no download)
@@ -273,7 +276,7 @@ Applied field changes record provenance in the item's Extra field.`,
 	cmd.Flags().BoolVar(&flagMissingDOI, "missing-doi", false, "Resolve and add a DOI from CrossRef, OpenAlex, or Semantic Scholar")
 	cmd.Flags().BoolVar(&flagMissingAbstract, "missing-abstract", false, "Fill the abstract from CrossRef, OpenAlex, or Semantic Scholar (uses the item's DOI)")
 	cmd.Flags().BoolVar(&flagMissingPDF, "missing-pdf", false, "Attach an open-access PDF from Unpaywall as a link or download (uses the item's DOI)")
-	cmd.Flags().BoolVar(&flagMissingCitation, "missing-citation", false, "Fill the core citation fields the citation health check measures (creators, title, date, venue) from CrossRef (uses the item's DOI)")
+	cmd.Flags().BoolVar(&flagMissingCitation, "missing-citation", false, "Fill the core citation fields from CrossRef: creators, title, date, venue, plus volume/issue/pages when the provider has them and the item does not (uses the item's DOI)")
 	cmd.Flags().StringVar(&flagAttachMode, "attach-mode", "linked-url", "PDF attachment handling: linked-url or linked-file; stored retro-attachment is handled by `zotio attachments add`")
 	cmd.Flags().StringVar(&flagPDFDir, "pdf-dir", "", "Directory for linked-file PDF downloads; responses must be PDF/octet-stream/unspecified Content-Type plus %PDF- magic")
 	cmd.Flags().IntVar(&flagLimit, "limit", 25, "Maximum items to process per category")
@@ -424,7 +427,7 @@ func enrichWorkQueueForKeys(db localQueryStore, category string, limit int, coll
 	// variable ceiling and must not be chunked: each chunk would re-run the
 	// whole query and append the same rows again.
 	if category == "missing_citation" {
-		rows, err := queryCitationIncompleteItems(db, 0, collection)
+		rows, err := queryCitationEnrichCandidates(db, 0, collection)
 		if err != nil {
 			return nil, err
 		}
@@ -524,7 +527,7 @@ func enrichWorkQueue(db localQueryStore, category string, limit int, collection 
 	case "missing_pdf":
 		return queryMissingPDFItems(db, "", limit, collection)
 	case "missing_citation":
-		return queryCitationIncompleteItems(db, limit, collection)
+		return queryCitationEnrichCandidates(db, limit, collection)
 	default:
 		return nil, fmt.Errorf("unknown category %q", category)
 	}
@@ -592,6 +595,18 @@ func validateEnrichItems(ctx context.Context, db localQueryStore, httpClient *ht
 			if providerYear != "" && storedYear != providerYear {
 				report.Findings = append(report.Findings, enrichValidationFinding(key, stringFromMap(data, "title"), "year", storedYear, providerYear, "crossref"))
 			}
+			// Render gaps: CrossRef carries the value and the item's copy is
+			// blank. This is the measuring surface for the fields
+			// citationIncompletePredicate deliberately refuses to assert
+			// locally, so the fixer writes nothing no check has verified.
+			for _, field := range citationRenderFields[stringFromMap(data, "itemType")] {
+				if strings.TrimSpace(stringFromMap(data, field)) != "" {
+					continue
+				}
+				if value := citationRenderFromCrossRef(field, work); value != "" {
+					report.Findings = append(report.Findings, enrichValidationFinding(key, stringFromMap(data, "title"), field, "", value, "crossref"))
+				}
+			}
 		}
 		if registered, known := resolveDOIRegisteredViaOpenCitations(ctx, httpClient, doi); known && !registered {
 			report.UnverifiedDOIs = append(report.UnverifiedDOIs, key+":"+doi)
@@ -602,7 +617,7 @@ func validateEnrichItems(ctx context.Context, db localQueryStore, httpClient *ht
 }
 
 func enrichValidationFinding(key, title, field, stored, provider, source string) Finding {
-	return Finding{
+	finding := Finding{
 		Kind:     "validation_discrepancy",
 		Severity: sevInfo,
 		ItemKey:  key,
@@ -615,6 +630,15 @@ func enrichValidationFinding(key, title, field, stored, provider, source string)
 		Source:            FindingSource{Kind: source},
 		RecommendedAction: &RecommendedAction{Text: "Review the stored metadata in Zotero against the provider record"},
 	}
+	// A blank local field is a gap the fixer closes; a field that DISAGREES
+	// with the provider is a judgement call, and auto-overwriting a title or a
+	// year the operator may have corrected by hand would be a data loss. Only
+	// the gap gets an autofix route.
+	if stored == "" && provider != "" {
+		finding.Autofixable = true
+		finding.RecommendedAction = &RecommendedAction{Command: "zotio items enrich --missing-citation --keys-from -"}
+	}
+	return finding
 }
 
 // Validation mode emits machine-readable reports in JSON mode and a compact human summary otherwise.
@@ -799,6 +823,20 @@ func citationEnrichFields(data map[string]any, work crossRefWork) map[string]any
 			}
 		}
 	}
+	// Render fields: filled only when the item's own type defines them, the
+	// item's copy is blank, AND CrossRef actually carries a value. That last
+	// condition is the whole reason these are not in the check predicate - an
+	// article-number journal has no volume, so "blank locally" alone proves
+	// nothing and a local-only assertion would gate CI on a field the venue
+	// never had.
+	for _, field := range citationRenderFields[stringFromMap(data, "itemType")] {
+		if strings.TrimSpace(stringFromMap(data, field)) != "" {
+			continue
+		}
+		if value := citationRenderFromCrossRef(field, work); value != "" {
+			fields[field] = value
+		}
+	}
 	return fields
 }
 
@@ -813,6 +851,21 @@ func citationVenueFromCrossRef(field string, work crossRefWork) string {
 		return firstCrossRefString(work.ContainerTitle, "")
 	case "publisher":
 		return strings.TrimSpace(work.Publisher)
+	default:
+		return ""
+	}
+}
+
+// citationRenderFromCrossRef maps a CrossRef work onto one Zotero render field.
+// CrossRef names the page range `page`; Zotero names it `pages`.
+func citationRenderFromCrossRef(field string, work crossRefWork) string {
+	switch field {
+	case "volume":
+		return strings.TrimSpace(work.Volume)
+	case "issue":
+		return strings.TrimSpace(work.Issue)
+	case "pages":
+		return strings.TrimSpace(work.Page)
 	default:
 		return ""
 	}

@@ -1539,9 +1539,12 @@ Work queues come from the same checks as 'items audit':
   --missing-doi       resolve a DOI by title from CrossRef, then OpenAlex/Semantic Scholar (exact title match)
   --missing-abstract  fill the abstract from CrossRef, then OpenAlex/Semantic Scholar (requires the item's DOI)
   --missing-pdf       attach an open-access PDF from Unpaywall (requires DOI)
-  --missing-citation  fill the core citation fields the citation health check
-                      measures - creators, title, date, and the venue field of
-                      the item's own type - from CrossRef (requires DOI)
+  --missing-citation  fill the core citation fields from CrossRef (requires DOI):
+                      creators, title, date and the venue field of the item's
+                      own type, plus volume/issue/pages when CrossRef carries
+                      them and the item's copy is blank. A blank volume is only
+                      a defect if the venue actually has one, so those fields
+                      are reported by --validate, not by 'library health'.
 
 PDF attachment modes:
   linked-url   create a linked_url attachment (default; no download)
@@ -1571,7 +1574,7 @@ zotio items enrich [flags]
 | `--keys-from` | `string` |  | Read exact item keys from a file or '-' for stdin, then enrich only matching queued items |
 | `--limit` | `int` | `25` | Maximum items to process per category |
 | `--missing-abstract` | `bool` | `false` | Fill the abstract from CrossRef, OpenAlex, or Semantic Scholar (uses the item's DOI) |
-| `--missing-citation` | `bool` | `false` | Fill the core citation fields the citation health check measures (creators, title, date, venue) from CrossRef (uses the item's DOI) |
+| `--missing-citation` | `bool` | `false` | Fill the core citation fields from CrossRef: creators, title, date, venue, plus volume/issue/pages when the provider has them and the item does not (uses the item's DOI) |
 | `--missing-doi` | `bool` | `false` | Resolve and add a DOI from CrossRef, OpenAlex, or Semantic Scholar |
 | `--missing-pdf` | `bool` | `false` | Attach an open-access PDF from Unpaywall as a link or download (uses the item's DOI) |
 | `--no-openalex` | `bool` | `false` | Disable the OpenAlex fallback for --missing-doi/--missing-abstract |

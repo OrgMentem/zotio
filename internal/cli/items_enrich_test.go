@@ -338,6 +338,148 @@ func TestResolveEnrichmentCitationSkipsWhenProviderAddsNothing(t *testing.T) {
 	}
 }
 
+func TestResolveEnrichmentCitationFillsRenderFieldsOnlyWhenProviderHasThem(t *testing.T) {
+	full := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"message":{"container-title":["V"],"volume":"12","issue":"3","page":"45-67"}}`))
+	}))
+	t.Cleanup(full.Close)
+
+	base := map[string]any{
+		"itemType": "journalArticle",
+		"title":    "T",
+		"date":     "2020",
+		"DOI":      "10.1/x",
+		"creators": []any{map[string]any{"lastName": "A", "creatorType": "author"}},
+	}
+	clone := func(over map[string]any) map[string]any {
+		out := map[string]any{}
+		for k, v := range base {
+			out[k] = v
+		}
+		for k, v := range over {
+			out[k] = v
+		}
+		return out
+	}
+
+	withBase(t, &enrichCrossRefBase, full.URL)
+	data := clone(map[string]any{"publicationTitle": "J"})
+	p, skip := resolveEnrichment(context.Background(), http.DefaultClient, "missing_citation", "K1", 1, data, "", true, true, "linked-url", "")
+	if skip != "" {
+		t.Fatalf("skip = %q, want a proposal", skip)
+	}
+	want := map[string]any{"volume": "12", "issue": "3", "pages": "45-67"}
+	if !reflect.DeepEqual(p.Fields, want) {
+		t.Fatalf("fields = %#v, want %#v (CrossRef `page` maps to Zotero `pages`)", p.Fields, want)
+	}
+
+	// An operator's own value is never replaced by the provider's.
+	data = clone(map[string]any{"publicationTitle": "J", "volume": "99", "issue": "9", "pages": "1-2"})
+	if _, skip = resolveEnrichment(context.Background(), http.DefaultClient, "missing_citation", "K1", 1, data, "", true, true, "linked-url", ""); skip == "" {
+		t.Fatal("proposed a change for an item whose render fields are all populated")
+	}
+
+	// An article-number journal has no volume and no page range. Blank locally
+	// plus absent at the provider must produce nothing, which is exactly why
+	// these fields are not asserted by citationIncompletePredicate.
+	bare := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"message":{"container-title":["V"]}}`))
+	}))
+	t.Cleanup(bare.Close)
+	withBase(t, &enrichCrossRefBase, bare.URL)
+	data = clone(map[string]any{"publicationTitle": "J"})
+	if _, skip = resolveEnrichment(context.Background(), http.DefaultClient, "missing_citation", "K1", 1, data, "", true, true, "linked-url", ""); skip == "" {
+		t.Fatal("invented a volume the provider does not have")
+	}
+}
+
+func TestResolveEnrichmentCitationRenderFieldsFollowTheSchema(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"message":{"volume":"12","issue":"3","page":"45-67"}}`))
+	}))
+	t.Cleanup(srv.Close)
+	withBase(t, &enrichCrossRefBase, srv.URL)
+
+	// bookSection defines volume and pages but has no issue field; a preprint
+	// defines none of the three. Writing a field the type does not define sends
+	// Zotero a key it will not store.
+	for itemType, want := range map[string][]string{
+		"bookSection": {"pages", "volume"},
+		"preprint":    nil,
+	} {
+		data := map[string]any{
+			"itemType": itemType,
+			"title":    "T",
+			"date":     "2020",
+			"DOI":      "10.1/x",
+			"creators": []any{map[string]any{"lastName": "A", "creatorType": "author"}},
+			"repository": func() string {
+				if itemType == "preprint" {
+					return "arXiv"
+				}
+				return ""
+			}(),
+		}
+		p, skip := resolveEnrichment(context.Background(), http.DefaultClient, "missing_citation", "K1", 1, data, "", true, true, "linked-url", "")
+		if want == nil {
+			if skip == "" {
+				t.Fatalf("%s: proposed %#v, want a skip: the type defines no render field", itemType, p.Fields)
+			}
+			continue
+		}
+		if skip != "" {
+			t.Fatalf("%s: skip = %q, want a proposal", itemType, skip)
+		}
+		if got := sortedFieldNames(p.Fields); !reflect.DeepEqual(got, want) {
+			t.Fatalf("%s: fields = %v, want %v", itemType, got, want)
+		}
+	}
+}
+
+func TestValidateEnrichItemsReportsRenderGapsAndRoutesThemToTheFixer(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.Contains(r.URL.Path, "metadata") {
+			_, _ = w.Write([]byte(`[{"doi":"10.1/v"}]`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"message":{"title":["Stored Title"],"published":{"date-parts":[[2020]]},"volume":"12","page":"45-67"}}`))
+	}))
+	t.Cleanup(srv.Close)
+	withBase(t, &enrichCrossRefBase, srv.URL)
+	withBase(t, &enrichOpenCitationsBase, srv.URL)
+
+	db := seedEnrichWorkQueueStore(t, []json.RawMessage{
+		json.RawMessage(`{"key":"VGAP","version":1,"data":{"key":"VGAP","itemType":"journalArticle","title":"Stored Title","creators":[{"lastName":"A","creatorType":"author"}],"date":"2020","publicationTitle":"J","DOI":"10.1/v"}}`),
+	})
+
+	report, err := validateEnrichItems(context.Background(), db, http.DefaultClient, 0, "", nil)
+	if err != nil {
+		t.Fatalf("validate: %v", err)
+	}
+	byField := map[string]Finding{}
+	for _, f := range report.Findings {
+		byField[sqlStringValue(f.Evidence["field"])] = f
+	}
+	for _, field := range []string{"volume", "pages"} {
+		f, ok := byField[field]
+		if !ok {
+			t.Fatalf("no %s discrepancy reported; got %v", field, byField)
+		}
+		// The gap is what justifies the fixer writing these fields at all: a
+		// field no check measures must not be written.
+		if f.RecommendedAction == nil || f.RecommendedAction.Command != "zotio items enrich --missing-citation --keys-from -" {
+			t.Fatalf("%s action = %+v, want the fixer command", field, f.RecommendedAction)
+		}
+		if !f.Autofixable {
+			t.Fatalf("%s finding autofixable = false, want true for a blank field", field)
+		}
+	}
+	// CrossRef carried no issue, so no issue gap exists to report.
+	if _, bad := byField["issue"]; bad {
+		t.Fatalf("reported an issue gap the provider cannot fill: %v", byField)
+	}
+}
+
 func TestResolveEnrichmentLinkedPDFDeclaresPDFContentType(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte(`{"best_oa_location":{"url_for_pdf":"https://oa.example/p.pdf"}}`))

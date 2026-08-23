@@ -407,6 +407,59 @@ var citationVenueFields = map[string]string{
 	"book":            "publisher",
 }
 
+// citationRenderFields maps an item type to the fields a reference needs to
+// PRINT completely, as opposed to the fields it needs to be identified. Only
+// types whose Zotero schema defines them appear: journalArticle and
+// conferencePaper carry volume, issue and pages, and bookSection carries volume
+// and pages but has no issue.
+//
+// These deliberately do NOT enter citationIncompletePredicate. A blank volume
+// is not evidence of a defect: an article-number journal such as PLOS ONE has
+// no volume and no page range, a conference paper usually has no volume, and a
+// book section in a single-volume book has none either. Measured on a
+// 1216-item library, requiring them locally would flag 20 of 20 conference
+// papers and 29 of 30 book sections - the same "field the type never fills"
+// error the venue arm used to make. Only the provider can tell a missing
+// volume from a volume that does not exist, so these are measured by
+// `items enrich --validate` against CrossRef and filled by the fixer, never
+// asserted by a local predicate that gates CI.
+var citationRenderFields = map[string][]string{
+	"journalArticle":  {"volume", "issue", "pages"},
+	"conferencePaper": {"volume", "issue", "pages"},
+	"bookSection":     {"volume", "pages"},
+}
+
+// citationRenderTypes is citationRenderFields in a fixed order, so generated
+// SQL is byte-identical between processes.
+func citationRenderTypes() []string {
+	types := make([]string, 0, len(citationRenderFields))
+	for itemType := range citationRenderFields {
+		types = append(types, itemType)
+	}
+	sort.Strings(types)
+	return types
+}
+
+// citationRenderBlankPredicate matches a DOI-bearing item of a render-field
+// type with at least one of those fields empty. It selects the FIXER's work
+// queue, never a health finding: over-selecting here costs one provider lookup
+// and a recorded skip, whereas over-selecting in a check would gate CI on a
+// field the venue never had.
+func citationRenderBlankPredicate() string {
+	var arms []string
+	for _, itemType := range citationRenderTypes() {
+		var blanks []string
+		for _, field := range citationRenderFields[itemType] {
+			blanks = append(blanks, "TRIM(COALESCE(json_extract(data, '$.data."+field+"'), '')) = ''")
+		}
+		arms = append(arms, "(json_extract(data, '$.data.itemType') = '"+itemType+"' AND ("+strings.Join(blanks, " OR ")+"))")
+	}
+	return `(
+	TRIM(COALESCE(json_extract(data, '$.data.DOI'), '')) <> ''
+	AND (` + strings.Join(arms, "\n\t\tOR ") + `)
+)`
+}
+
 // citationVenueTypes is citationVenueFields in a fixed order, so every
 // generated SQL string is byte-identical between processes.
 func citationVenueTypes() []string {
@@ -456,6 +509,20 @@ var citationIncompletePredicate = `(
 // annotating each row with the specific fields it lacks. Pass a collection to
 // scope the queue for `items enrich --missing-citation --collection`.
 func queryCitationIncompleteItems(db localQueryStore, limit int, collection string) ([]map[string]any, error) {
+	return queryCitationRows(db, citationIncompletePredicate, limit, collection)
+}
+
+// queryCitationEnrichCandidates is the FIXER's work queue: everything the check
+// reports, plus DOI-bearing items whose render fields are blank. It is
+// deliberately wider than the check, because the fixer verifies every candidate
+// against CrossRef before proposing anything - an item whose venue simply has
+// no volume yields a recorded skip, not a finding. Widening the check the same
+// way would gate CI on a field the venue never had.
+func queryCitationEnrichCandidates(db localQueryStore, limit int, collection string) ([]map[string]any, error) {
+	return queryCitationRows(db, "("+citationIncompletePredicate+"\n\tOR "+citationRenderBlankPredicate()+")", limit, collection)
+}
+
+func queryCitationRows(db localQueryStore, predicate string, limit int, collection string) ([]map[string]any, error) {
 	query := `
 SELECT
 	id AS key,
@@ -469,7 +536,7 @@ SELECT
 FROM resources
 WHERE resource_type = 'items'
 	AND ` + libraryTopLevelItemsPredicate + `
-	AND ` + citationIncompletePredicate
+	AND ` + predicate
 	args := enrichCollectionFilterArgs(&query, "data", collection)
 	query += `
 ORDER BY date_added DESC`

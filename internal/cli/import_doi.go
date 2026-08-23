@@ -30,6 +30,13 @@ type crossRefWork struct {
 	// Publisher backs the `book` arm of the citation-core check, whose
 	// predicate requires a publisher that no other CrossRef field carries.
 	Publisher string `json:"publisher"`
+	// Volume, Issue and Page are the render-critical fields: a reference can be
+	// fully identified and still print as "Author (2020). Title. Journal." with
+	// no volume and no page range. CrossRef is the only honest oracle for them,
+	// because an article-number journal legitimately has neither.
+	Volume string `json:"volume"`
+	Issue  string `json:"issue"`
+	Page   string `json:"page"`
 	// CrossRef abstract (JATS XML) for enrichment.
 	Abstract string `json:"abstract"`
 }

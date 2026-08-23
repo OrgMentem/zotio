@@ -239,6 +239,51 @@ func TestCitationAudit(t *testing.T) {
 	}
 }
 
+// The render fields are the fixer's business, never the check's. If this test
+// ever fails because the check grew a volume or pages arm, read the comment on
+// citationRenderFields first: on a real 1216-item library that arm flagged 20
+// of 20 conference papers and 29 of 30 book sections, all of them correct.
+func TestCitationCheckIgnoresRenderFieldsButTheFixerQueueDoesNot(t *testing.T) {
+	db, err := store.OpenWithContext(context.Background(), filepath.Join(t.TempDir(), "data.db"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	items := []json.RawMessage{
+		// Identity-complete, render-incomplete, DOI-bearing: invisible to the
+		// check, queued for the fixer.
+		json.RawMessage(`{"key":"R1","version":1,"data":{"key":"R1","itemType":"journalArticle","title":"No Volume","creators":[{"lastName":"A","creatorType":"author"}],"date":"2020","publicationTitle":"J","DOI":"10.1/r1"}}`),
+		// Same, but with no DOI: nothing can verify it, so it is queued nowhere.
+		json.RawMessage(`{"key":"R2","version":1,"data":{"key":"R2","itemType":"journalArticle","title":"No DOI","creators":[{"lastName":"B","creatorType":"author"}],"date":"2020","publicationTitle":"J"}}`),
+		// Fully complete: in neither.
+		json.RawMessage(`{"key":"R3","version":1,"data":{"key":"R3","itemType":"journalArticle","title":"Complete","creators":[{"lastName":"C","creatorType":"author"}],"date":"2020","publicationTitle":"J","DOI":"10.1/r3","volume":"1","issue":"2","pages":"3-4"}}`),
+	}
+	if _, _, err := db.UpsertBatch("items", items); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	store := localQueryStore{db}
+
+	checked, err := queryCitationIncompleteItems(store, 0, "")
+	if err != nil {
+		t.Fatalf("queryCitationIncompleteItems: %v", err)
+	}
+	if len(checked) != 0 {
+		t.Fatalf("check reported %+v, want nothing: every item is identity-complete", checked)
+	}
+
+	queued, err := queryCitationEnrichCandidates(store, 0, "")
+	if err != nil {
+		t.Fatalf("queryCitationEnrichCandidates: %v", err)
+	}
+	keys := map[string]bool{}
+	for _, r := range queued {
+		keys[sqlStringValue(r["key"])] = true
+	}
+	if len(keys) != 1 || !keys["R1"] {
+		t.Fatalf("fixer queue = %v, want only R1 (DOI-bearing and render-incomplete)", keys)
+	}
+}
+
 func TestQueryPDFAttachments(t *testing.T) {
 	db, err := store.OpenWithContext(context.Background(), filepath.Join(t.TempDir(), "data.db"))
 	if err != nil {
