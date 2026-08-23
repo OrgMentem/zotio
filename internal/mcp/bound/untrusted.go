@@ -97,25 +97,6 @@ func isDisallowedControl(b byte) bool {
 	return b < 0x20 || b == 0x7f
 }
 
-// LibraryText prepares mirrored command output for the transport.
-//
-// The framing above is prose, and an MCP tool result is a structured surface:
-// hosts parse JSON results, and zotio's own reports (workflow_submit, every
-// --agent command) travel this same path. Wrapping those in prose would break
-// their consumers and would mislabel zotio's own output as library-authored.
-//
-// So structure decides the treatment. JSON keeps its shape and only has its
-// control bytes neutralized -- encoding/json already escapes them, making this
-// a no-op in practice, but it costs nothing and holds if a handler ever writes
-// pre-encoded JSON. Anything else is opaque library content (an export blob,
-// a rendered table) with no parser to break, so it gets the full block.
-func LibraryText(out string) string {
-	if json.Valid([]byte(strings.TrimSpace(out))) {
-		return NeutralizeControls(out)
-	}
-	return UntrustedBlock(out)
-}
-
 // LibraryTextCapture prepares output retained under a cap. Its JSON decision
 // uses the original complete capture, before TextCapture can turn opaque data
 // into a JSON preview envelope. A caller may reserve part of budget for trusted

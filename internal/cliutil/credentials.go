@@ -68,14 +68,6 @@ func LoadCredentials() (*Credentials, bool, error) {
 	return &creds, true, nil
 }
 
-func CredentialsFileHasValues() (bool, error) {
-	creds, ok, err := LoadCredentials()
-	if err != nil || !ok {
-		return false, err
-	}
-	return creds.HasValues(), nil
-}
-
 func (c *Credentials) HasValues() bool {
 	if c == nil {
 		return false

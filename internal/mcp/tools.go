@@ -358,10 +358,3 @@ func handleContext(_ context.Context, _ mcplib.CallToolRequest) (*mcplib.CallToo
 	}
 	return mcplib.NewToolResultText(string(data)), nil
 }
-
-// RegisterNovelFeatureTools is kept as a compatibility no-op for older MCP
-// mains. New generated mains call RegisterTools only; RegisterTools now
-// includes the runtime Cobra-tree mirror.
-func RegisterNovelFeatureTools(s *server.MCPServer) {
-	_ = s
-}

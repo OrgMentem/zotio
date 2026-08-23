@@ -148,10 +148,12 @@ func newAuthLogoutCmd(flags *rootFlags) *cobra.Command {
 				return configErr(fmt.Errorf("clearing tokens: %w", err))
 			}
 
-			// Identify which (if any) auth env var is still exported so the
-			// JSON envelope and the human prose can both surface it.
+			// ZOTERO_API_KEY is the only env var that can keep supplying a
+			// credential after the config is cleared, so name it directly:
+			// reporting it lets the JSON envelope and the human prose both
+			// explain why `auth status` may still look authenticated.
 			envStillSet := ""
-			if envStillSet == "" && os.Getenv("ZOTERO_API_KEY") != "" {
+			if os.Getenv("ZOTERO_API_KEY") != "" {
 				envStillSet = "ZOTERO_API_KEY"
 			}
 

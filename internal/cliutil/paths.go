@@ -59,20 +59,12 @@ func homeOverride() string {
 	return pathHomeOverride
 }
 
-func HomeOverrideActive() bool {
-	return homeOverride() != ""
-}
-
 func ConfigDir() (string, error) {
 	return KindDir(PathKindConfig)
 }
 
 func DataDir() (string, error) {
 	return KindDir(PathKindData)
-}
-
-func StateDir() (string, error) {
-	return KindDir(PathKindState)
 }
 
 func CacheDir() (string, error) {
@@ -197,19 +189,6 @@ func ResolveKindDir(kind PathKind) (PathResolution, error) {
 		return PathResolution{}, err
 	}
 	return pathResolution(kind, filepath.Join(base, appName), "platform-default", "platform-default", ignored), nil
-}
-
-func AllPathResolutions() ([]PathResolution, error) {
-	kinds := []PathKind{PathKindConfig, PathKindData, PathKindState, PathKindCache}
-	resolutions := make([]PathResolution, 0, len(kinds))
-	for _, kind := range kinds {
-		resolution, err := ResolveKindDir(kind)
-		if err != nil {
-			return nil, err
-		}
-		resolutions = append(resolutions, resolution)
-	}
-	return resolutions, nil
 }
 
 func pathResolution(kind PathKind, dir, rung, source string, ignored []PathIgnoredOverride) PathResolution {
