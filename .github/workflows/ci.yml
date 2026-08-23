@@ -29,6 +29,14 @@ jobs:
           git diff --exit-code go.mod go.sum
       - name: Verify modules
         run: go mod verify
+      # modernc.org/sqlite carries a transpiled C runtime whose ABI is coupled
+      # to one exact modernc.org/libc revision, an equality Go modules cannot
+      # express: `require` is a floor, so MVS can select a higher libc that
+      # tidies, verifies, builds, and then faults at run time (upstream reports
+      # SIGBUS in the WAL index under concurrent access). See
+      # gitlab.com/cznic/sqlite issue 177.
+      - name: Check sqlite/libc lockstep
+        run: make lockstep
 
   # Generated reference docs (docs/reference/*) must match the binary. Mirrors the
   # go.mod drift gate above: regenerate and fail if anything changed.
@@ -43,6 +51,21 @@ jobs:
         run: go run ./cmd/docs-gen
       - name: Check for drift
         run: git diff --exit-code docs/reference
+
+  # THIRD_PARTY_LICENSES.txt must match the modules the released binaries link.
+  # Mirrors the docs-drift gate: regenerate and fail if anything changed, so a
+  # dependency cannot be added without its attribution.
+  notices-drift:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        with:
+          go-version: '1.26.x'
+      - name: Regenerate notices
+        run: go run ./cmd/notices-gen
+      - name: Check for drift
+        run: git diff --exit-code THIRD_PARTY_LICENSES.txt
 
   format:
     runs-on: ubuntu-latest

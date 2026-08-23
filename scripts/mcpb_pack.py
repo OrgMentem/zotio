@@ -7,7 +7,10 @@
 # An .mcpb is a zip with manifest.json at the root and the server binary at
 # the manifest's entry_point. Each platform gets its own bundle whose
 # manifest pins the release version, the platform, and (on Windows) the
-# .exe entry point.
+# .exe entry point. The bundle also carries LICENSE and
+# THIRD_PARTY_LICENSES.txt: manifest.json declares zotio's own MIT license,
+# while the static binary links BSD-3-Clause and Apache-2.0 code whose notices
+# must travel with it.
 import json
 import os
 import sys
@@ -40,6 +43,8 @@ def main() -> None:
         info.compress_type = zipfile.ZIP_DEFLATED
         with open(binary_path, "rb") as bf:
             zf.writestr(info, bf.read())
+        for extra in ("LICENSE", "THIRD_PARTY_LICENSES.txt"):
+            zf.write(extra, extra)
 
     print(f"packed {out_path}")
 

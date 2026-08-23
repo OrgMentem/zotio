@@ -67,6 +67,16 @@ builds:
 archives:
   - formats: [tar.gz]
     name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    # Declaring `files` replaces GoReleaser's default set, so the project's own
+    # LICENSE/README/CHANGELOG are relisted explicitly. THIRD_PARTY_LICENSES.txt
+    # carries the BSD-3-Clause and Apache-2.0 notices the static binaries are
+    # conditioned on reproducing; it also reaches the Homebrew cask, Scoop, and
+    # WinGet through this archive.
+    files:
+      - LICENSE
+      - THIRD_PARTY_LICENSES.txt
+      - README.md
+      - CHANGELOG.md
     format_overrides:
       - goos: windows
         formats: [zip]
@@ -165,3 +175,11 @@ nfpms:
     description: "Zotero automation CLI: local-first search, library health checks, preview-first writes, annotation export, and MCP"
     license: MIT
     bindir: /usr/bin
+    # `license: MIT` above names zotio's own license. Distro policy also wants
+    # the redistributed third-party terms on disk, under the conventional
+    # per-package doc directory.
+    contents:
+      - src: LICENSE
+        dst: /usr/share/doc/zotio/LICENSE
+      - src: THIRD_PARTY_LICENSES.txt
+        dst: /usr/share/doc/zotio/THIRD_PARTY_LICENSES.txt

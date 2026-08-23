@@ -10,7 +10,7 @@ require (
 	github.com/pelletier/go-toml/v2 v2.3.1 // fuzz-found datetime-unmarshal panic fix
 	github.com/spf13/cobra v1.10.2 // keep Cobra coordinated with pflag 1.0.10
 	github.com/spf13/pflag v1.0.10 // coordinated Cobra/pflag bump
-	modernc.org/sqlite v1.52.0 // CVE-2025-3277 concat_ws heap overflow fix
+	modernc.org/sqlite v1.52.0 // embeds SQLite 3.53.2; bump with modernc.org/libc in lockstep
 )
 
 require (
@@ -31,7 +31,7 @@ require (
 	github.com/spf13/cast v1.7.1 // indirect
 	github.com/yosida95/uritemplate/v3 v3.0.2 // indirect
 	golang.org/x/sys v0.46.0 // indirect
-	modernc.org/libc v1.72.3 // indirect
+	modernc.org/libc v1.72.3 // indirect; MUST equal the version modernc.org/sqlite's go.mod pins (gitlab.com/cznic/sqlite#177) — gated by `make lockstep`
 	modernc.org/mathutil v1.7.1 // indirect
 	modernc.org/memory v1.11.0 // indirect
 )

@@ -1,4 +1,4 @@
-.PHONY: build test test-race lint vet audit secrets verify ci tidy format cross-build docs-drift install clean build-mcp install-mcp build-all docs-deps docs-gen docs-build docs-serve demos hooks
+.PHONY: build test test-race lint vet audit secrets verify ci tidy format cross-build docs-drift notices notices-drift lockstep install clean build-mcp install-mcp build-all docs-deps docs-gen docs-build docs-serve demos hooks
 
 # Stamp local builds the way GoReleaser stamps releases (.goreleaser.yaml uses
 # -X zotio/internal/cli.version). Without this every locally built binary
@@ -53,6 +53,28 @@ format:
 docs-drift: docs-gen
 	git diff --exit-code docs/reference
 
+# ci.yml: notices-drift. Regenerates the third-party attribution file first, so
+# it fails only on real drift — i.e. when a dependency was added, removed, or
+# bumped without regenerating. Every release channel ships this file, so drift
+# means shipping incomplete attribution.
+notices-drift: notices
+	git diff --exit-code THIRD_PARTY_LICENSES.txt
+
+# ci.yml: tidy, lockstep step. modernc.org/sqlite carries a transpiled C
+# runtime whose ABI is coupled to one exact modernc.org/libc revision; a
+# `require` line is a floor, not an equality, so MVS happily selects a higher
+# libc that builds cleanly and then faults at run time (upstream reports SIGBUS
+# in the WAL index under concurrent access). See gitlab.com/cznic/sqlite#177.
+lockstep:
+	@selected="$$(go list -m -f '{{.Version}}' modernc.org/libc)"; \
+	pinned="$$(awk '/modernc.org\/libc/ {print $$2}' "$$(go list -m -f '{{.GoMod}}' modernc.org/sqlite)")"; \
+	if [ "$$selected" != "$$pinned" ]; then \
+		echo "modernc.org/libc lockstep broken: selected $$selected, modernc.org/sqlite pins $$pinned"; \
+		echo "bump modernc.org/sqlite and modernc.org/libc together in one commit"; \
+		exit 1; \
+	fi; \
+	echo "modernc.org/libc lockstep ok ($$selected)"
+
 # ci.yml: test, ubuntu leg. The race detector is the one gate whose absence
 # locally is not merely slower but blind: a green plain suite proves nothing
 # about concurrent access.
@@ -72,7 +94,7 @@ cross-build:
 	done
 
 # Every ci.yml gate, in roughly ascending cost. Run before pushing.
-ci: tidy format lint test-race cross-build docs-drift secrets
+ci: tidy lockstep format lint test-race cross-build docs-drift notices-drift secrets
 
 # The full local gate: CI plus the dependency scan from vuln.yml. `vet` is not
 # listed because cross-build already runs it for all six targets.
@@ -108,6 +130,12 @@ docs-deps:
 # binary. Drift-gated in CI — run after any command/flag change.
 docs-gen:
 	go run ./cmd/docs-gen
+
+# Regenerate THIRD_PARTY_LICENSES.txt from the modules the released binaries
+# link, across every release target. Drift-gated in CI — run after any
+# dependency change.
+notices:
+	go run ./cmd/notices-gen
 
 # Build the static site into ./site (regenerates reference first).
 docs-build: docs-gen

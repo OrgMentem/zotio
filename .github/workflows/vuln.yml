@@ -1,6 +1,14 @@
 # Dependency vulnerability scan. Lives outside ci.yml so it can also run on a
 # weekly schedule: released binaries need CVE signal even when the repo is
 # quiet — a push-only scan goes silent exactly when nobody is looking.
+#
+# Two scanners, because one is not enough here. govulncheck resolves advisories
+# by Go module path against vuln.go.dev, which tracks stdlib and golang.org/x
+# but none of this project's other modules. OSV aggregates GHSA and other
+# feeds, so it can match what govulncheck's database lacks. Neither can see a
+# SQLite CVE: modernc.org/sqlite is a transpile of SQLite's C source, and those
+# advisories are filed against SQLite commits, so the currency job below tracks
+# the embedded version instead.
 name: vuln
 
 on:
@@ -21,3 +29,45 @@ jobs:
         uses: golang/govulncheck-action@032d45514ae346b1db93c04b0c90b841c370344f # v1
         with:
           go-version-input: '1.26.x'
+
+  osv-scanner:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      # Scoped to go.mod rather than a recursive scan: the docs toolchain pins
+      # in docs/requirements.txt are not shipped in any binary, and failing the
+      # release gate on them would train everyone to ignore this job.
+      - uses: google/osv-scanner-action/osv-scanner-action@6e4298ebc4db23e847df9b2e2de2939d6f066c67 # v2.5.1
+        with:
+          scan-args: |-
+            --lockfile=go.mod
+
+  # The embedded SQLite version, which no advisory database maps to a Go module
+  # path. Advisory: upstream SQLite patch releases are outside this repo's
+  # control, so a lagging pin must not block an unrelated push.
+  sqlite-currency:
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        with:
+          go-version: '1.26.x'
+      - name: Compare embedded SQLite against upstream
+        run: |
+          set -euo pipefail
+          dir="$(go list -m -f '{{.Dir}}' modernc.org/sqlite)"
+          # sort -u, not head: under pipefail an early-exiting head makes grep
+          # die of SIGPIPE and the step fails for the wrong reason. It also
+          # asserts the transpile carries exactly one SQLITE_VERSION.
+          embedded="$(grep -rhoE 'SQLITE_VERSION = "[0-9.]+"' "$dir/lib" | grep -oE '[0-9.]+' | sort -u)"
+          # download.html carries machine-readable PRODUCT lines; the autoconf
+          # tarball name encodes the version as Mmmpp00 (3530400 = 3.53.4).
+          encoded="$(curl -sSfL https://sqlite.org/download.html \
+            | grep -oE 'sqlite-autoconf-[0-9]{7}\.tar\.gz' | grep -oE '[0-9]{7}' | sort -u)"
+          upstream="$(( 10#${encoded:0:1} )).$(( 10#${encoded:1:2} )).$(( 10#${encoded:3:2} ))"
+          echo "embedded=$embedded upstream=$upstream"
+          if [ "$embedded" != "$upstream" ]; then
+            echo "::warning::modernc.org/sqlite embeds SQLite $embedded; upstream is $upstream. Check the SQLite release notes for security content, then bump modernc.org/sqlite and modernc.org/libc together."
+            exit 1
+          fi
