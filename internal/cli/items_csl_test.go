@@ -195,6 +195,248 @@ func TestItemsBibliographyChunksCSLRequestsInScopeOrder(t *testing.T) {
 	}
 }
 
+func TestItemsBibliographyCSLJSONMergesChunksAndUsesCiteKeys(t *testing.T) {
+	isolateCSLTestEnv(t)
+	t.Setenv("ZOTERO_API_KEY", "testkey")
+
+	keys := make([]string, 53)
+	citeKeys := make(map[string]string, len(keys))
+	for i := range keys {
+		keys[i] = fmt.Sprintf("K%02d", i+1)
+		citeKeys[keys[i]] = fmt.Sprintf("cite%02d", i+1)
+	}
+	var exportRequests [][]string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Query().Get("format") {
+		case "json":
+			_, _ = w.Write([]byte(bibliographyScopeJSONWithCiteKeys(keys, citeKeys)))
+		case "csljson":
+			chunk := splitNonEmpty(r.URL.Query().Get("itemKey"), ",")
+			exportRequests = append(exportRequests, chunk)
+			if got := r.URL.Query().Get("limit"); got != fmt.Sprint(len(chunk)) {
+				t.Errorf("csljson limit = %q, want %d", got, len(chunk))
+			}
+			entries := make([]map[string]any, 0, len(chunk))
+			// The server may return its own sort order. The command must restore
+			// the scope order before it merges chunks.
+			for i := len(chunk) - 1; i >= 0; i-- {
+				key := chunk[i]
+				id := key
+				if i%2 == 0 {
+					id = "123/" + key
+				}
+				entries = append(entries, map[string]any{"id": id, "title": "Title " + key})
+			}
+			_ = json.NewEncoder(w).Encode(entries)
+		default:
+			http.Error(w, "unexpected format", http.StatusBadRequest)
+		}
+	}))
+	defer srv.Close()
+	t.Setenv("ZOTERO_BASE_URL", srv.URL+"/users/0")
+
+	out, err := runCSLItemsCommand(t, &rootFlags{asJSON: true, noCache: true}, []string{"bibliography", "--format", "csljson"})
+	if err != nil {
+		t.Fatalf("items bibliography --format csljson: %v", err)
+	}
+	var entries []map[string]any
+	if err := json.Unmarshal(out.Bytes(), &entries); err != nil {
+		t.Fatalf("decode CSL-JSON %q: %v", out.String(), err)
+	}
+	if len(entries) != len(keys) {
+		t.Fatalf("CSL-JSON entries = %d, want %d", len(entries), len(keys))
+	}
+	for i, entry := range entries {
+		if got := entry["id"]; got != citeKeys[keys[i]] {
+			t.Fatalf("entry %d id = %v, want %q", i, got, citeKeys[keys[i]])
+		}
+		if got := entry["title"]; got != "Title "+keys[i] {
+			t.Fatalf("entry %d title = %v, want preserved title", i, got)
+		}
+	}
+	if got := []int{len(exportRequests[0]), len(exportRequests[1])}; !reflect.DeepEqual(got, []int{50, 3}) {
+		t.Fatalf("CSL-JSON chunk sizes = %v, want [50 3]", got)
+	}
+}
+
+func TestItemsBibliographyItemScopeFetchesCiteKeyMetadata(t *testing.T) {
+	isolateCSLTestEnv(t)
+	t.Setenv("ZOTERO_API_KEY", "testkey")
+	var formats []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		format := r.URL.Query().Get("format")
+		formats = append(formats, format)
+		if got := r.URL.Query().Get("itemKey"); got != "K1" {
+			t.Errorf("itemKey = %q, want K1", got)
+		}
+		switch format {
+		case "json":
+			_, _ = w.Write([]byte(`[{"key":"K1","data":{"key":"K1","extra":"Citation Key: directKey"}}]`))
+		case "csljson":
+			_, _ = w.Write([]byte(`{"items":[{"id":"123/K1","title":"Direct"}]}`))
+		default:
+			http.Error(w, "unexpected format", http.StatusBadRequest)
+		}
+	}))
+	defer srv.Close()
+	t.Setenv("ZOTERO_BASE_URL", srv.URL+"/users/0")
+
+	out, err := runCSLItemsCommand(t, &rootFlags{asJSON: true, noCache: true}, []string{"bibliography", "--scope", "item:K1", "--format", "csljson"})
+	if err != nil {
+		t.Fatalf("item-scope CSL-JSON: %v", err)
+	}
+	var entries []map[string]any
+	if err := json.Unmarshal(out.Bytes(), &entries); err != nil {
+		t.Fatalf("decode output: %v", err)
+	}
+	if len(entries) != 1 || entries[0]["id"] != "directKey" {
+		t.Fatalf("entries = %#v, want id directKey", entries)
+	}
+	if !reflect.DeepEqual(formats, []string{"json", "csljson"}) {
+		t.Fatalf("request formats = %v, want metadata then export", formats)
+	}
+}
+
+func TestItemsBibliographyCSLJSONRejectsMissingAndDuplicateCiteKeys(t *testing.T) {
+	tests := []struct {
+		name string
+		rows string
+		want string
+	}{
+		{
+			name: "missing",
+			rows: `[{"key":"K1","data":{"key":"K1","title":"No Key"}}]`,
+			want: "have no Better BibTeX citation key",
+		},
+		{
+			name: "duplicate",
+			rows: `[
+				{"key":"K1","data":{"key":"K1","extra":"Citation Key: same"}},
+				{"key":"K2","data":{"key":"K2","citationKey":"same"}}
+			]`,
+			want: "are duplicated",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			isolateCSLTestEnv(t)
+			t.Setenv("ZOTERO_API_KEY", "testkey")
+			var exportCalled bool
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Query().Get("format") == "csljson" {
+					exportCalled = true
+				}
+				_, _ = w.Write([]byte(tc.rows))
+			}))
+			defer srv.Close()
+			t.Setenv("ZOTERO_BASE_URL", srv.URL+"/users/0")
+
+			out, err := runCSLItemsCommand(t, &rootFlags{asJSON: true, noCache: true}, []string{"bibliography", "--format", "csljson"})
+			if err == nil {
+				t.Fatal("CSL-JSON with invalid citekeys returned nil error")
+			}
+			if exportCalled {
+				t.Fatal("CSL-JSON export ran before citekey validation")
+			}
+			var env preconditionUnmetEnvelope
+			if decodeErr := json.Unmarshal(out.Bytes(), &env); decodeErr != nil {
+				t.Fatalf("decode precondition output %q: %v", out.String(), decodeErr)
+			}
+			if env.Precondition != preconditionBetterBibTeX || !strings.Contains(env.Detail, tc.want) {
+				t.Fatalf("precondition = %+v, want better_bibtex detail containing %q", env, tc.want)
+			}
+		})
+	}
+}
+
+func TestItemsBibliographyBibTeXChunksWithoutChangingText(t *testing.T) {
+	isolateCSLTestEnv(t)
+	t.Setenv("ZOTERO_API_KEY", "testkey")
+	keys := make([]string, 53)
+	for i := range keys {
+		keys[i] = fmt.Sprintf("K%02d", i+1)
+	}
+	var exportRequests [][]string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Query().Get("format") {
+		case "json":
+			_, _ = w.Write([]byte(bibliographyScopeJSON(keys)))
+		case "bibtex":
+			chunk := splitNonEmpty(r.URL.Query().Get("itemKey"), ",")
+			exportRequests = append(exportRequests, chunk)
+			if got := r.URL.Query().Get("limit"); got != fmt.Sprint(len(chunk)) {
+				t.Errorf("bibtex limit = %q, want %d", got, len(chunk))
+			}
+			if got := r.URL.Query().Get("style"); got != "" {
+				t.Errorf("bibtex style = %q, want none", got)
+			}
+			_, _ = fmt.Fprintf(w, "chunk%d:%s", len(exportRequests), strings.Join(chunk, ","))
+		default:
+			http.Error(w, "unexpected format", http.StatusBadRequest)
+		}
+	}))
+	defer srv.Close()
+	t.Setenv("ZOTERO_BASE_URL", srv.URL+"/users/0")
+
+	out, err := runCSLItemsCommand(t, &rootFlags{noCache: true}, []string{"bibliography", "--format", "bibtex"})
+	if err != nil {
+		t.Fatalf("items bibliography --format bibtex: %v", err)
+	}
+	want := "chunk1:" + strings.Join(keys[:50], ",") + "\nchunk2:" + strings.Join(keys[50:], ",")
+	if got := out.String(); got != want {
+		t.Fatalf("BibTeX output = %q, want exact chunks %q", got, want)
+	}
+}
+
+func TestItemsBibliographyFormatValidation(t *testing.T) {
+	for _, format := range []string{"bib", "csljson", "bibtex", "biblatex", "ris"} {
+		if got, err := normalizeBibliographyFormat(format); err != nil || got != format {
+			t.Errorf("normalize %q = (%q, %v)", format, got, err)
+		}
+	}
+	if _, err := normalizeBibliographyFormat("yaml"); err == nil {
+		t.Fatal("invalid bibliography format returned nil error")
+	}
+}
+
+func TestItemsBibliographyCSLJSONSkipsNonCiteableChildItems(t *testing.T) {
+	isolateCSLTestEnv(t)
+	t.Setenv("ZOTERO_API_KEY", "testkey")
+	var exportedKeys string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Query().Get("format") {
+		case "json":
+			_, _ = w.Write([]byte(`[
+				{"key":"BOOK","data":{"key":"BOOK","itemType":"book","citationKey":"bookKey"}},
+				{"key":"PDF","data":{"key":"PDF","itemType":"attachment","parentItem":"BOOK"}},
+				{"key":"NOTE","data":{"key":"NOTE","itemType":"note","parentItem":"BOOK"}}
+			]`))
+		case "csljson":
+			exportedKeys = r.URL.Query().Get("itemKey")
+			_, _ = w.Write([]byte(`{"items":[{"id":"123/BOOK","title":"Book"}]}`))
+		default:
+			http.Error(w, "unexpected format", http.StatusBadRequest)
+		}
+	}))
+	defer srv.Close()
+	t.Setenv("ZOTERO_BASE_URL", srv.URL+"/users/0")
+
+	out, err := runCSLItemsCommand(t, &rootFlags{asJSON: true, noCache: true}, []string{"bibliography", "--format", "csljson"})
+	if err != nil {
+		t.Fatalf("CSL-JSON with child items: %v", err)
+	}
+	if exportedKeys != "BOOK" {
+		t.Fatalf("exported itemKey = %q, want only BOOK", exportedKeys)
+	}
+	var entries []map[string]any
+	if err := json.Unmarshal(out.Bytes(), &entries); err != nil {
+		t.Fatalf("decode output: %v", err)
+	}
+	if len(entries) != 1 || entries[0]["id"] != "bookKey" {
+		t.Fatalf("entries = %#v, want one bookKey item", entries)
+	}
+}
+
 func isolateCSLTestEnv(t *testing.T) {
 	t.Helper()
 	t.Setenv("HOME", t.TempDir())
@@ -226,6 +468,21 @@ func bibliographyScopeJSON(keys []string) string {
 	}
 	data, _ := json.Marshal(rows)
 	return string(data)
+}
+
+func bibliographyScopeJSONWithCiteKeys(keys []string, citeKeys map[string]string) string {
+	rows := make([]map[string]any, 0, len(keys))
+	for i, key := range keys {
+		data := map[string]any{"key": key}
+		if i%2 == 0 {
+			data["citationKey"] = citeKeys[key]
+		} else {
+			data["extra"] = "Citation Key: " + citeKeys[key]
+		}
+		rows = append(rows, map[string]any{"key": key, "data": data})
+	}
+	encoded, _ := json.Marshal(rows)
+	return string(encoded)
 }
 
 func splitNonEmpty(s, sep string) []string {

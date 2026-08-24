@@ -1562,15 +1562,19 @@
   },
   {
     "name": "items_bibliography",
-    "description": "Render a formatted bibliography for items selected with the shared scope grammar.\n\nThe bibliography is rendered by Zotero's Web API CSL renderer so named styles\nsuch as apa, chicago, mla, nature, and journal-specific CSL IDs are honored.\nThe Web API limits itemKey batches, so large scopes are fetched in stable\n50-key chunks and concatenated in scope order.",
+    "description": "Render or export a bibliography for items selected with the shared scope grammar.\n\nThe default bib format uses Zotero's Web API CSL renderer, so named styles such\nas apa, chicago, mla, nature, and journal-specific CSL IDs are honored.\nMachine-readable csljson, bibtex, biblatex, and ris formats use Zotero's export\ntranslators. CSL-JSON ids are rewritten to unique Better BibTeX citation keys\nso Pandoc and Quarto citations resolve against the output.\n\nThe Web API limits itemKey batches, so large scopes are fetched in stable\n50-key chunks and merged in scope order.",
     "inputSchema": {
       "properties": {
+        "format": {
+          "description": "Output format: bib, csljson, bibtex, biblatex, or ris (default: bib)",
+          "type": "string"
+        },
         "scope": {
           "description": "Shared scope expression (library, collection:KEY, tag:NAME, item:KEY, query:TEXT) (default: library)",
           "type": "string"
         },
         "style": {
-          "description": "CSL style ID (default uses Zotero's default bibliography style)",
+          "description": "CSL style ID for --format bib (default uses Zotero's default bibliography style)",
           "type": "string"
         }
       },

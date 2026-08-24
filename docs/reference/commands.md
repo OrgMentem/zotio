@@ -1340,14 +1340,18 @@ zotio items bibcheck paper.tex
 
 ### `zotio items bibliography`
 
-Render a formatted bibliography for a scoped item selection
+Render or export a bibliography for a scoped item selection
 
-Render a formatted bibliography for items selected with the shared scope grammar.
+Render or export a bibliography for items selected with the shared scope grammar.
 
-The bibliography is rendered by Zotero's Web API CSL renderer so named styles
-such as apa, chicago, mla, nature, and journal-specific CSL IDs are honored.
+The default bib format uses Zotero's Web API CSL renderer, so named styles such
+as apa, chicago, mla, nature, and journal-specific CSL IDs are honored.
+Machine-readable csljson, bibtex, biblatex, and ris formats use Zotero's export
+translators. CSL-JSON ids are rewritten to unique Better BibTeX citation keys
+so Pandoc and Quarto citations resolve against the output.
+
 The Web API limits itemKey batches, so large scopes are fetched in stable
-50-key chunks and concatenated in scope order.
+50-key chunks and merged in scope order.
 
 ```
 zotio items bibliography [flags]
@@ -1357,14 +1361,16 @@ Examples:
 
 ```bash
 zotio items bibliography --scope collection:ABCD1234 --style apa
-  zotio items bibliography --scope tag:to-submit --style nature
+  zotio items bibliography --scope tag:to-submit --format csljson
+  zotio items bibliography --scope collection:ABCD1234 --format bibtex
   zotio items bibliography --scope item:ABCD1234 --json
 ```
 
 | Flag | Type | Default | Description |
 | --- | --- | --- | --- |
+| `--format` | `string` | `bib` | Output format: bib, csljson, bibtex, biblatex, or ris |
 | `--scope` | `string` | `library` | Shared scope expression (library, collection:KEY, tag:NAME, item:KEY, query:TEXT) |
-| `--style` | `string` |  | CSL style ID (default uses Zotero's default bibliography style) |
+| `--style` | `string` |  | CSL style ID for --format bib (default uses Zotero's default bibliography style) |
 
 ### `zotio items children`
 
