@@ -266,12 +266,13 @@ format = "obsidian"      # or "logseq"
 
 ### Enrichment (reads external APIs, writes Zotero)
 
-- **`items enrich`** — fill missing DOIs and abstracts from **CrossRef → OpenAlex → Semantic Scholar**, attach open-access PDF links from **Unpaywall**, and record provenance in each item's Extra field. `--validate` runs a read-only DOI discrepancy report against CrossRef and OpenCitations.
+- **`items enrich`** — fill missing DOIs and abstracts from **CrossRef → OpenAlex → Semantic Scholar**; fill missing citation fields from **CrossRef**; attach open-access PDFs from **Unpaywall**; and record provenance in each item's Extra field. `--missing-citation` fills only blank fields supported by the item type, including provider-backed volume, issue, and pages. `--validate` reports title, year, and render-field discrepancies against CrossRef, plus DOI registration failures from OpenCitations, without writing.
 - **`items preprint-check`** — find arXiv preprints that now have a published CrossRef record; `preprint-check fix` upgrades them with the journal DOI — preview-first, journaled, and it never overwrites a conflicting DOI.
 
 ### Export & reproducibility
 
-- **`collections export`** — a whole collection and its subcollections as one BibTeX or CSL-JSON file, structure preserved in comments.
+- **`items bibliography`** — render a shared scope with a CSL style, or export it as CSL-JSON, BibTeX, BibLaTeX, or RIS. CSL-JSON uses unique Better BibTeX citation keys for Pandoc and Quarto.
+- **`collections export`** — a whole collection and its subcollections as one BibTeX, RIS, or CSL-JSON file, structure preserved in comments.
 - **`export snapshot`** — a reproducible, resumable, fully paginated JSONL export with a `<output>.lock.json` content lockfile (sorted key+version + sha256) for drift detection and clean review handoffs.
 
 ### Freshness & schema
@@ -286,7 +287,7 @@ format = "obsidian"      # or "logseq"
 `zotio` publishes a machine-readable trust model so an MCP host, CI job, or shell script can discover what's safe, fresh, and writable *before* it acts.
 
 - **`--agent`** on any command: JSON + compact + non-interactive + no color, in one flag. (It never auto-applies writes.)
-- **`capabilities`** — the full registry (140 commands), each tagged with `operation`, `data_sources`, `write_target`, `destructive`, and `requires` preconditions.
+- **`capabilities`** — the full registry (140 commands), each tagged with `operation`, `data_sources`, `write_target`, `destructive`, and `requires` preconditions. Commands with several write routes also list each route's target and preconditions.
 - **`agent-context`** — a structured description of the whole CLI, embedding the registry and discovery hints.
 - **`which "<capability in your words>"`** — resolve a natural-language query to the command that does it.
 - **Stable envelopes** — one mutation plan/result shape, one finding shape, one exit-code contract. Learn the grammar once.

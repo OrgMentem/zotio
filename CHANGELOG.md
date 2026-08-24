@@ -2,25 +2,96 @@
 
 Notable changes to zotio. Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow [SemVer](https://semver.org/).
 
-## [Unreleased]
+## [0.21.0] — 2026-08-24
+
+### Changed — breaking
+
+- **Local tag reads now preserve Zotero's `(name, type)` identity.** Manual and
+  automatic tags with the same text remain separate through sync, filtering,
+  collection scoping, and full-text search. Scripts that assumed one result per
+  tag name must keep the type or deliberately merge the two rows.
+- **Citation health and validation results are more selective.** Conference
+  papers and preprints no longer fail `missing_citation` because Zotero does
+  not define `publicationTitle` for those types. `items enrich --validate` now
+  adds provider-confirmed volume, issue, and page gaps. Existing finding counts
+  and `library health --for citation` gate results can change.
+- **A cancelled sync now reports every requested resource.** Dequeued, queued,
+  and not-yet-enqueued resources each produce one result instead of disappearing
+  from the report. The command still returns its cancellation error, but
+  consumers will see a complete result array.
+- **Multi-route capability records now include `routes`.** Each route declares
+  its own write target and preconditions, so a connector route no longer
+  inherits an unrelated Web API storage requirement. The top-level fields keep
+  describing the default route. Strict JSON decoders must accept the new field.
+- **The local store schema advances to version 6.** The first open reindexes
+  synced full-text rows from raw JSON to PDF body text, so JSON field names no
+  longer match as prose. Older binaries refuse the newer database instead of
+  reading it with stale search semantics.
+- **The MCP `search` limit is now an integer from 1 through 100.** Larger,
+  fractional, and non-finite limits are rejected before a query starts instead
+  of allocating the complete result set before output framing.
 
 ### Added
 
+- **Citation health now has a complete automated repair path.**
+  `items enrich --missing-citation` fills only missing creators, title, date,
+  venue, volume, issue, and page fields that the stored item type supports and
+  CrossRef supplies. Items without a DOI are skipped with a specific next step.
+  Health, audit, and bibliography checks now recommend this command.
+- **Bibliography exports now cover CSL-JSON, BibTeX, BibLaTeX, and RIS.**
+  `items bibliography` exports any shared scope in these machine-readable
+  formats. CSL-JSON uses unique Better BibTeX citation keys.
+  `collections export` now writes one BibTeX, RIS, or CSL-JSON artifact across
+  the selected collection and its subcollections.
 - **PDF full-text search now returns the source item.** `search --fulltext`
-  searches the synced Zotero full-text mirror and returns each matching parent
-  item key, attachment key, title, and bounded snippet. It excludes orphaned
-  attachments and trashed parents. The MCP `search` tool exposes the same mode
-  through its `fulltext` argument.
-
+  searches only the synced PDF body and returns each matching parent item key,
+  attachment key, title, and a UTF-8-safe snippet capped at 4096 bytes. It
+  excludes orphaned attachments and trashed parents. The MCP `search` tool
+  exposes the same mode through its `fulltext` argument.
 - **Library statistics can show item intake by month or year.**
-  `library stats --added-by month|year` groups citeable items by Zotero's
-  `dateAdded` value. The result does not create snapshots or retain history.
-
+  `library stats --added-by month|year` groups top-level citeable items by a
+  valid Zotero `dateAdded` value. It ignores malformed dates. The result does
+  not create snapshots or retain history.
 - **Local item lookup now accepts URLs, OpenAlex work IDs, and exact titles.**
   `items find --url`, `--openalex`, and `--title` normalize their inputs and
   return the existing item result shape. URL matching ignores host case,
   fragments, and a trailing slash. Title matching ignores case and surrounding
   whitespace. OpenAlex matching accepts work IDs and `openalex.org` work URLs.
+- **Offline tag reads now honor the full tag filter set.** Exact-name,
+  contains, prefix, collection, and tag-type filters work against the synced
+  mirror without requiring the live Zotero API.
+- **Agents can discover keyless connector create routes.** Capability data now
+  advertises connector-backed item creation when the live desktop can perform
+  the write without a Web API key.
+
+### Fixed
+
+- **Top-level syncs no longer delete child rows.** An `items-top` refresh keeps
+  attachments, notes, and annotations. A `collections-top` refresh keeps nested
+  collections. Incremental local sync also advances its cursor from page
+  versions when Zotero omits the version response header.
+- **Store version guards and missing-row sweeps now use one atomic contract.**
+  Nested `data.version` values participate in monotonic write checks and
+  version resets. Missing-row detection and deletion now run under one writer
+  lock and one transaction.
+- **`auth logout` removes credentials under agentcookie management.** The
+  command no longer reports success while leaving an older
+  `credentials.toml` API key on disk.
+- **Cancelled MCP mirror callers no longer leave two goroutines each.**
+  Waiting for the single mirrored-command slot now stops directly on context
+  cancellation.
+- **Exact identifier lookup now keeps normalization and matching aligned.**
+  DOI URLs match bare stored DOIs and vice versa. arXiv URLs require an
+  `arxiv.org` host and a complete identifier. `arXiv:<id>`, `PMID:<id>`, and
+  `Citation Key:<key>` accept Zotero's no-space Extra syntax without weakening
+  token boundaries.
+- **Quiet CSL-JSON bibliography failures stay quiet.** A missing or conflicting
+  citation key still returns the precondition error, but `--quiet` no longer
+  writes its failure envelope to stdout.
+- **Release packages now carry complete third-party terms.** The generated
+  notice file includes every shipped license, notice, patent grant, SQLite
+  term, and Go standard-library license across all six release targets. The
+  file ships in archives, system packages, MCP bundles, and the container.
 
 ## [0.20.1] — 2026-08-23
 
@@ -1913,7 +1984,8 @@ First tagged release: the trust-and-automation layer for Zotero.
 - **Onboarding** — `zotio init` guided setup (Zotero detection, local API, key, first sync, health check).
 - Release engineering: goreleaser builds for 6 platforms, cosign-signed checksums, SBOMs, Homebrew tap.
 
-[Unreleased]: https://github.com/OrgMentem/zotio/compare/v0.20.1...HEAD
+[Unreleased]: https://github.com/OrgMentem/zotio/compare/v0.21.0...HEAD
+[0.21.0]: https://github.com/OrgMentem/zotio/compare/v0.20.1...v0.21.0
 [0.20.1]: https://github.com/OrgMentem/zotio/compare/v0.20.0...v0.20.1
 [0.20.0]: https://github.com/OrgMentem/zotio/compare/v0.19.0...v0.20.0
 [0.19.0]: https://github.com/OrgMentem/zotio/compare/v0.18.0...v0.19.0
