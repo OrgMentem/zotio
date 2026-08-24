@@ -2,7 +2,7 @@
 # Used by Glama to build, security-scan, introspect tools, and let users deploy.
 # Tool listing needs no ZOTERO_API_KEY (reads are keyless; the key only unlocks
 # writes and group libraries), so introspection works out of the box.
-FROM golang:1.26-alpine@sha256:3889b425f035be855a72fb4755265311293b6d414521f0a519d819df32222d83 AS build
+FROM golang:1.26-alpine@sha256:28d89ee9cc0ff9fec75c82ca201e6bf7fdf9a679d4b7b24dfa04f2bb766bb468 AS build
 ARG VERSION=dev
 WORKDIR /src
 # Cache module downloads independently of source changes.
