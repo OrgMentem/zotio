@@ -15,6 +15,8 @@ import (
 type libraryStats struct {
 	ItemsByType []libraryTypeCount  `json:"items_by_type"`
 	ItemsByYear []libraryYearCount  `json:"items_by_year"`
+	AddedBy     string              `json:"added_by,omitempty"`
+	ItemsAdded  []libraryAddedCount `json:"items_added,omitempty"`
 	TopVenues   []libraryVenueCount `json:"top_venues"`
 	PDFCoverage libraryPDFCoverage  `json:"pdf_coverage"`
 }
@@ -27,6 +29,11 @@ type libraryTypeCount struct {
 type libraryYearCount struct {
 	Year  string `json:"year"`
 	Count int    `json:"count"`
+}
+
+type libraryAddedCount struct {
+	Period string `json:"period"`
+	Count  int    `json:"count"`
 }
 
 type libraryVenueCount struct {
@@ -43,6 +50,7 @@ type libraryPDFCoverage struct {
 func newLibraryStatsCmd(flags *rootFlags) *cobra.Command {
 	var flagTop int
 	var flagYears int
+	var flagAddedBy string
 
 	cmd := &cobra.Command{
 		Use:         "stats",
@@ -54,6 +62,10 @@ func newLibraryStatsCmd(flags *rootFlags) *cobra.Command {
 			}
 			if flagYears < 0 {
 				return fmt.Errorf("--years must be zero or greater")
+			}
+			addedBy := strings.ToLower(strings.TrimSpace(flagAddedBy))
+			if addedBy != "" && addedBy != "month" && addedBy != "year" {
+				return fmt.Errorf("--added-by must be month or year")
 			}
 
 			rawDB, err := openStoreForRead(cmd.Context(), "zotio")
@@ -67,7 +79,7 @@ func newLibraryStatsCmd(flags *rootFlags) *cobra.Command {
 			defer rawDB.Close()
 			db := localQueryStore{rawDB}
 
-			stats, err := queryLibraryStats(db, flagTop, flagYears)
+			stats, err := queryLibraryStats(db, flagTop, flagYears, addedBy)
 			if err != nil {
 				return fmt.Errorf("querying library statistics: %w", err)
 			}
@@ -83,16 +95,21 @@ func newLibraryStatsCmd(flags *rootFlags) *cobra.Command {
 	}
 	cmd.Flags().IntVar(&flagTop, "top", 10, "Number of venues to show")
 	cmd.Flags().IntVar(&flagYears, "years", 20, "Number of years to show")
+	cmd.Flags().StringVar(&flagAddedBy, "added-by", "", "Group item intake by month or year")
 
 	return cmd
 }
 
-func queryLibraryStats(db localQueryStore, top, years int) (libraryStats, error) {
+func queryLibraryStats(db localQueryStore, top, years int, addedBy string) (libraryStats, error) {
 	itemsByType, err := queryLibraryItemsByType(db)
 	if err != nil {
 		return libraryStats{}, err
 	}
 	itemsByYear, err := queryLibraryItemsByYear(db, years)
+	if err != nil {
+		return libraryStats{}, err
+	}
+	itemsAdded, err := queryLibraryItemsAdded(db, addedBy)
 	if err != nil {
 		return libraryStats{}, err
 	}
@@ -107,6 +124,8 @@ func queryLibraryStats(db localQueryStore, top, years int) (libraryStats, error)
 	return libraryStats{
 		ItemsByType: itemsByType,
 		ItemsByYear: itemsByYear,
+		AddedBy:     addedBy,
+		ItemsAdded:  itemsAdded,
 		TopVenues:   topVenues,
 		PDFCoverage: pdfCoverage,
 	}, nil
@@ -148,6 +167,43 @@ GROUP BY year ORDER BY year DESC LIMIT ?`, years)
 		out = append(out, libraryYearCount{
 			Year:  sqlStringValue(row["year"]),
 			Count: sqlIntValue(row["count"]),
+		})
+	}
+	return out, nil
+}
+
+func queryLibraryItemsAdded(db localQueryStore, addedBy string) ([]libraryAddedCount, error) {
+	if addedBy == "" {
+		return nil, nil
+	}
+	var periodExpression string
+	var periodPattern string
+	switch addedBy {
+	case "month":
+		periodExpression = `SUBSTR(COALESCE(json_extract(data,'$.data.dateAdded'),''), 1, 7)`
+		periodPattern = `[12][0-9][0-9][0-9]-[01][0-9]`
+	case "year":
+		periodExpression = `SUBSTR(COALESCE(json_extract(data,'$.data.dateAdded'),''), 1, 4)`
+		periodPattern = `[12][0-9][0-9][0-9]`
+	default:
+		return nil, fmt.Errorf("unsupported item-intake bucket %q", addedBy)
+	}
+	rows, err := db.QueryRaw(`
+SELECT `+periodExpression+` AS period, COUNT(*) AS count
+FROM resources
+WHERE resource_type='items'
+	AND json_extract(data,'$.data.itemType') NOT IN ('attachment','note','annotation')
+	AND `+periodExpression+` GLOB ?
+GROUP BY period
+ORDER BY period DESC`, periodPattern)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]libraryAddedCount, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, libraryAddedCount{
+			Period: sqlStringValue(row["period"]),
+			Count:  sqlIntValue(row["count"]),
 		})
 	}
 	return out, nil
@@ -230,6 +286,17 @@ func printLibraryStats(cmd *cobra.Command, stats libraryStats, years int) error 
 		yearRows = append(yearRows, statRow{label: row.Year, count: row.Count})
 	}
 	printStatSection(w, fmt.Sprintf("Items by Year (last %d years)", years), yearRows)
+	if stats.AddedBy != "" {
+		addedRows := make([]statRow, 0, len(stats.ItemsAdded))
+		for _, row := range stats.ItemsAdded {
+			addedRows = append(addedRows, statRow{label: row.Period, count: row.Count})
+		}
+		heading := "Items Added by Month"
+		if stats.AddedBy == "year" {
+			heading = "Items Added by Year"
+		}
+		printStatSection(w, heading, addedRows)
+	}
 
 	venueRows := make([]statRow, 0, len(stats.TopVenues))
 	for _, row := range stats.TopVenues {
