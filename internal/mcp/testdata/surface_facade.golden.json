@@ -54,9 +54,13 @@
   },
   {
     "name": "search",
-    "description": "Full-text search across all synced data. Faster than paginating list endpoints. Requires sync first. Large responses are bounded to the MCP tool-result budget.",
+    "description": "Full-text search across synced data. Set fulltext to resolve synced PDF-text hits to parent items. Requires sync first. Large responses are bounded to the MCP tool-result budget.",
     "inputSchema": {
       "properties": {
+        "fulltext": {
+          "description": "Search only synced PDF text and return parent item context",
+          "type": "boolean"
+        },
         "limit": {
           "description": "Max results (default 25)",
           "type": "number"

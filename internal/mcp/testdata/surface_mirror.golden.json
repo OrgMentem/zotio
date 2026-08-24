@@ -1988,11 +1988,11 @@
   },
   {
     "name": "items_find",
-    "description": "Find locally synced items by DOI, ISBN, PMID, or citation key",
+    "description": "Find locally synced items by identifier, URL, or exact title",
     "inputSchema": {
       "properties": {
         "arxiv": {
-          "description": "Find items with this arXiv ID",
+          "description": "Find items with this arXiv ID or URL",
           "type": "string"
         },
         "citekey": {
@@ -2007,8 +2007,20 @@
           "description": "Find items with this ISBN",
           "type": "string"
         },
+        "openalex": {
+          "description": "Find items with this OpenAlex work ID or URL",
+          "type": "string"
+        },
         "pmid": {
           "description": "Find items with this PMID in Extra",
+          "type": "string"
+        },
+        "title": {
+          "description": "Find items with this exact title, ignoring case and surrounding whitespace",
+          "type": "string"
+        },
+        "url": {
+          "description": "Find items with this normalized URL",
           "type": "string"
         }
       },
@@ -3000,6 +3012,10 @@
     "description": "Show library-wide local statistics",
     "inputSchema": {
       "properties": {
+        "added-by": {
+          "description": "Group item intake by month or year",
+          "type": "string"
+        },
         "top": {
           "description": "Number of venues to show (default: 10)",
           "type": "number"
@@ -3262,9 +3278,13 @@
   },
   {
     "name": "search",
-    "description": "Full-text search across all synced data. Faster than paginating list endpoints. Requires sync first. Large responses are bounded to the MCP tool-result budget.",
+    "description": "Full-text search across synced data. Set fulltext to resolve synced PDF-text hits to parent items. Requires sync first. Large responses are bounded to the MCP tool-result budget.",
     "inputSchema": {
       "properties": {
+        "fulltext": {
+          "description": "Search only synced PDF text and return parent item context",
+          "type": "boolean"
+        },
         "limit": {
           "description": "Max results (default 25)",
           "type": "number"

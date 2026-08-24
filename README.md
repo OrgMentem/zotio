@@ -63,7 +63,7 @@ zotio init                                            # guided setup: detect Zot
 zotio library health --for citation --fail-on high   # is this library fit to cite? (exit 11 if not)
 zotio items retract-check                             # are you citing retracted papers?
 zotio items bibcheck thesis.tex --fail-on-unknown     # does every \cite{} resolve to your library?
-zotio search 'automation trust' --data-source local  # offline full-text search
+zotio search 'automation trust' --fulltext --data-source local  # resolve PDF-text hits to papers
 zotio items enrich --missing-doi --dry-run            # resolve DOIs from CrossRef/OpenAlex — preview only
 ```
 
@@ -244,10 +244,11 @@ format = "obsidian"      # or "logseq"
 - **`collections gaps`** — citation-graph gap analysis: rank the papers your collection cites most that are **missing from your library** (OpenCitations + Semantic Scholar), then `import doi` them. *(Network too.)*
 - **`items bibcheck <manuscript>`** — parse `\cite{}`/`@citekey` from `.tex` or pandoc Markdown and resolve every key against your library — unknown and ambiguous keys flagged, `--fail-on-unknown` exits 11 for CI.
 - **`tags audit`** — group tags that differ only by case or variant, with item counts and **ready-to-run merge commands**. On a real 840-tag library it surfaced 53 duplicate groups in one pass.
-- **`library stats`** — a one-command dashboard: items by type and year, top venues, PDF coverage (e.g. *684/792 (86%)*).
+- **`library stats`** — a one-command dashboard: items by type and year, top venues, PDF coverage, and optional intake buckets with `--added-by month|year`.
 - **`items audit`** — count and list items missing PDFs, abstracts, DOIs, tags, or citation-core fields; `--verify-files` checks PDFs actually exist on disk.
 - **`items duplicates`** — detect likely duplicates by DOI or title (attachments/notes excluded), then `duplicates resolve` to merge safely.
 - **`items citekey-conflicts`** — find missing or duplicate Better BibTeX keys before they break a LaTeX build.
+- **`items find`** — resolve a DOI, ISBN, PMID, arXiv ID, citation key, URL, OpenAlex work ID, or exact title against the local mirror before importing a duplicate.
 - **`items venues` · `items authors` · `items stale` · `items unfiled` · `items missing-pdf`** — slice your library by publication, creator, staleness, filing, and PDF gaps.
 
 ### Reading & synthesis
@@ -425,7 +426,7 @@ zotio library stats
 zotio library health --for citation --fail-on high
 
 # 5. Search offline
-zotio search 'automation trust' --data-source local --json
+zotio search 'automation trust' --fulltext --data-source local --json
 
 # 6. Export a week of highlights for synthesis
 zotio annotations timeline --since 2026-05-01 --format markdown > this-week.md

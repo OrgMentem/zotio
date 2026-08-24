@@ -53,11 +53,17 @@ List journal articles and book chapters that have no attached PDF — your downl
 
 > **Why it matters** — Use this to batch-generate a download list for Unpaywall or Sci-Hub scripts.
 
+### `search`
+
+Search synced metadata, or use --fulltext to resolve matching PDF text to parent papers with attachment keys and snippets.
+
+> **Why it matters** — Find the paper that contains a passage without opening each PDF or accepting an opaque attachment hit.
+
 ### `library stats`
 
-See your library broken down by item type, publication year, and top journals — a dashboard in one command.
+See item types, publication years, top journals, PDF coverage, and item intake grouped by month or year.
 
-> **Why it matters** — Use this to understand the shape and bias of a library before a systematic review or citation audit.
+> **Why it matters** — Use this to understand the shape, bias, and growth of a library before a systematic review or citation audit.
 
 ### `schema drift`
 
@@ -78,6 +84,12 @@ Reviewable ingest: triage a folder of PDFs against your library (new vs duplicat
 Turn a DOI, PMID, arXiv ID, or ISBN into a schema-valid Zotero item — one command per identifier (import doi|pmid|arxiv|isbn).
 
 > **Why it matters** — Add a paper from a citation you found without opening a browser or hand-typing metadata.
+
+### `items find`
+
+Resolve a DOI, ISBN, PMID, arXiv ID, citation key, URL, OpenAlex work ID, or exact title against the local mirror.
+
+> **Why it matters** — Check whether a paper already exists before an import creates a duplicate.
 
 ### `items enrich`
 

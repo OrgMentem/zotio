@@ -2,6 +2,26 @@
 
 Notable changes to zotio. Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow [SemVer](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+
+- **PDF full-text search now returns the source item.** `search --fulltext`
+  searches the synced Zotero full-text mirror and returns each matching parent
+  item key, attachment key, title, and bounded snippet. It excludes orphaned
+  attachments and trashed parents. The MCP `search` tool exposes the same mode
+  through its `fulltext` argument.
+
+- **Library statistics can show item intake by month or year.**
+  `library stats --added-by month|year` groups citeable items by Zotero's
+  `dateAdded` value. The result does not create snapshots or retain history.
+
+- **Local item lookup now accepts URLs, OpenAlex work IDs, and exact titles.**
+  `items find --url`, `--openalex`, and `--title` normalize their inputs and
+  return the existing item result shape. URL matching ignores host case,
+  fragments, and a trailing slash. Title matching ignores case and surrounding
+  whitespace. OpenAlex matching accepts work IDs and `openalex.org` work URLs.
+
 ## [0.20.1] — 2026-08-23
 
 ### Fixed

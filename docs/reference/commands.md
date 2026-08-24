@@ -1624,7 +1624,7 @@ Examples:
 
 ### `zotio items find`
 
-Find locally synced items by DOI, ISBN, PMID, or citation key
+Find locally synced items by identifier, URL, or exact title
 
 ```
 zotio items find [flags]
@@ -1635,16 +1635,22 @@ Examples:
 ```bash
 zotio items find --doi 10.1145/3290605.3300709
   zotio items find --isbn 978-0-262-03384-8
+  zotio items find --url https://example.org/paper
+  zotio items find --openalex W2741809807
+  zotio items find --title "Attention Is All You Need"
   zotio items find --citekey smith2023 --json
 ```
 
 | Flag | Type | Default | Description |
 | --- | --- | --- | --- |
-| `--arxiv` | `string` |  | Find items with this arXiv ID |
+| `--arxiv` | `string` |  | Find items with this arXiv ID or URL |
 | `--citekey` | `string` |  | Find items with this Better BibTeX citation key |
 | `--doi` | `string` |  | Find items with this DOI |
 | `--isbn` | `string` |  | Find items with this ISBN |
+| `--openalex` | `string` |  | Find items with this OpenAlex work ID or URL |
 | `--pmid` | `string` |  | Find items with this PMID in Extra |
+| `--title` | `string` |  | Find items with this exact title, ignoring case and surrounding whitespace |
+| `--url` | `string` |  | Find items with this normalized URL |
 
 ### `zotio items fulltext`
 
@@ -2224,6 +2230,7 @@ zotio library stats [flags]
 
 | Flag | Type | Default | Description |
 | --- | --- | --- | --- |
+| `--added-by` | `string` |  | Group item intake by month or year |
 | `--top` | `int` | `10` | Number of venues to show |
 | `--years` | `int` | `20` | Number of years to show |
 
@@ -2552,6 +2559,7 @@ In auto mode (default): uses the API search endpoint if the API has one,
 otherwise searches local data. Falls back to local on network failure.
 In live mode: uses the API search endpoint only.
 In local mode: searches locally synced data only.
+Use --fulltext to search synced PDF text and resolve hits to parent items.
 
 ```
 zotio search <query> [flags]
@@ -2569,6 +2577,9 @@ Examples:
   # Search a specific resource type locally
   zotio search "critical" --type transactions --data-source local
 
+  # Resolve synced PDF full-text matches to their parent items
+  zotio search "calibration feedback" --fulltext --data-source local
+
   # JSON output for piping
   zotio search "critical" --json --limit 20
 ```
@@ -2576,6 +2587,7 @@ Examples:
 | Flag | Type | Default | Description |
 | --- | --- | --- | --- |
 | `--db` | `string` |  | Database path (default: ~/.local/share/zotio/data.db) |
+| `--fulltext` | `bool` | `false` | Search synced PDF full text and return parent item context |
 | `--limit` | `int` | `50` | Maximum results to return |
 | `--type` | `string` |  | Filter by resource type |
 
