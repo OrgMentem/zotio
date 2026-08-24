@@ -117,12 +117,16 @@ The Web API limits itemKey batches, so large scopes are fetched in stable
 				if err != nil {
 					var keyErr *bibliographyCiteKeyError
 					if errors.As(err, &keyErr) {
+						preconditionOut := cmd.OutOrStdout()
+						if flags.quiet {
+							preconditionOut = nil
+						}
 						return emitPreconditionUnmetWithRemediation(
-							cmd.OutOrStdout(),
+							preconditionOut,
 							flags,
-							"items bibliography --format csljson",
+							"items bibliography",
 							preconditionBetterBibTeX,
-							keyErr.Error(),
+							"CSL-JSON export: "+keyErr.Error(),
 							[]string{
 								"Run 'zotio library health --for citation' and fix every citekey_missing or citekey_conflict finding.",
 								"Pin dynamic Better BibTeX citation keys when they are not present in Zotero's synced item data.",

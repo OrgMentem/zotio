@@ -342,10 +342,31 @@ func TestItemsBibliographyCSLJSONRejectsMissingAndDuplicateCiteKeys(t *testing.T
 			if decodeErr := json.Unmarshal(out.Bytes(), &env); decodeErr != nil {
 				t.Fatalf("decode precondition output %q: %v", out.String(), decodeErr)
 			}
+			if env.Capability != "items bibliography" {
+				t.Fatalf("capability = %q, want canonical items bibliography", env.Capability)
+			}
 			if env.Precondition != preconditionBetterBibTeX || !strings.Contains(env.Detail, tc.want) {
 				t.Fatalf("precondition = %+v, want better_bibtex detail containing %q", env, tc.want)
 			}
 		})
+	}
+}
+
+func TestItemsBibliographyCSLJSONQuietSuppressesCiteKeyFailureEnvelope(t *testing.T) {
+	isolateCSLTestEnv(t)
+	t.Setenv("ZOTERO_API_KEY", "testkey")
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`[{"key":"K1","data":{"key":"K1","itemType":"book"}}]`))
+	}))
+	defer srv.Close()
+	t.Setenv("ZOTERO_BASE_URL", srv.URL+"/users/0")
+
+	out, err := runCSLItemsCommand(t, &rootFlags{asJSON: true, quiet: true, noCache: true}, []string{"bibliography", "--format", "csljson"})
+	if err == nil {
+		t.Fatal("quiet CSL-JSON with missing citekey returned nil error")
+	}
+	if out.Len() != 0 {
+		t.Fatalf("quiet CSL-JSON failure output = %q, want none", out.String())
 	}
 }
 
