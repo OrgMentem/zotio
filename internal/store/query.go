@@ -360,6 +360,64 @@ ORDER BY att.parent_key, ft.id`)
 	return rows.Err()
 }
 
+// FulltextSearchResult identifies one matching attachment and its parent
+// bibliographic item. Snippet contains a bounded excerpt from synced PDF text.
+type FulltextSearchResult struct {
+	ItemKey       string `json:"item_key"`
+	AttachmentKey string `json:"attachment_key"`
+	Title         string `json:"title"`
+	Snippet       string `json:"snippet"`
+}
+
+// SearchFulltextContext searches only synced attachment full text and resolves
+// every hit to its parent bibliographic item. Unresolved and trashed parents are
+// excluded because they cannot produce an actionable library result.
+func (s *Store) SearchFulltextContext(ctx context.Context, query string, limit int) ([]FulltextSearchResult, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if limit == 0 {
+		limit = 50
+	}
+	rows, err := s.queryWithBusyRetryContext(ctx, `
+SELECT
+	parent.id,
+	attachment.id,
+	COALESCE(json_extract(parent.data, '$.data.title'), ''),
+	snippet(resources_fts, 2, '', '', ' … ', 24)
+FROM resources_fts
+JOIN resources attachment
+	ON attachment.resource_type = 'items'
+	AND attachment.id = resources_fts.id
+JOIN resources parent
+	ON parent.resource_type = 'items'
+	AND parent.id = attachment.parent_key
+WHERE resources_fts MATCH ?
+	AND resources_fts.resource_type = 'fulltext'
+	AND COALESCE(parent.item_type, '') NOT IN ('attachment', 'note', 'annotation')
+	AND NOT EXISTS (
+		SELECT 1 FROM resources trashed
+		WHERE trashed.resource_type = 'items-trash'
+			AND trashed.id = parent.id
+	)
+ORDER BY rank, parent.id, attachment.id
+LIMIT ?`, ftsMatchQuery(query), limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	results := make([]FulltextSearchResult, 0)
+	for rows.Next() {
+		var result FulltextSearchResult
+		if err := rows.Scan(&result.ItemKey, &result.AttachmentKey, &result.Title, &result.Snippet); err != nil {
+			return nil, err
+		}
+		results = append(results, result)
+	}
+	return results, rows.Err()
+}
+
 // itemOrderBy builds the ORDER BY clause for a sort field + direction, always
 // appending the item key as a deterministic tiebreaker so ordering is stable.
 func itemOrderBy(sortField, direction string) string {

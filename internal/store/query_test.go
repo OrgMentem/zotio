@@ -454,6 +454,49 @@ func TestVisitSimilarityFulltextDocumentsExcludesTrashedParents(t *testing.T) {
 		t.Fatalf("fulltext documents = %+v, want only AKEEP under KEEP", got)
 	}
 }
+
+func TestSearchFulltextResolvesParentItemContext(t *testing.T) {
+	s := queryTestStore(t)
+	items := []json.RawMessage{
+		json.RawMessage(`{"key":"KEEP","data":{"key":"KEEP","itemType":"journalArticle","title":"Kept Paper"}}`),
+		json.RawMessage(`{"key":"TRASHED","data":{"key":"TRASHED","itemType":"journalArticle","title":"Trashed Paper"}}`),
+		json.RawMessage(`{"key":"AKEEP","data":{"key":"AKEEP","itemType":"attachment","parentItem":"KEEP"}}`),
+		json.RawMessage(`{"key":"ATRASH","data":{"key":"ATRASH","itemType":"attachment","parentItem":"TRASHED"}}`),
+	}
+	if _, _, err := s.UpsertBatch("items", items); err != nil {
+		t.Fatalf("seed full-text search items: %v", err)
+	}
+	if _, _, err := s.UpsertBatch("items-trash", []json.RawMessage{
+		json.RawMessage(`{"key":"TRASHED","data":{"key":"TRASHED","itemType":"journalArticle"}}`),
+	}); err != nil {
+		t.Fatalf("seed full-text search trash: %v", err)
+	}
+	if err := s.UpsertKeyed(
+		"fulltext",
+		[]string{"AKEEP", "ATRASH", "ORPHAN"},
+		[]json.RawMessage{
+			json.RawMessage(`{"content":"before uniquely searchable passage after"}`),
+			json.RawMessage(`{"content":"uniquely searchable passage in trash"}`),
+			json.RawMessage(`{"content":"uniquely searchable passage without parent"}`),
+		},
+	); err != nil {
+		t.Fatalf("seed full-text search documents: %v", err)
+	}
+
+	got, err := s.SearchFulltextContext(context.Background(), "uniquely searchable", 10)
+	if err != nil {
+		t.Fatalf("SearchFulltextContext: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("full-text results = %+v, want one resolved live parent", got)
+	}
+	if got[0].ItemKey != "KEEP" || got[0].AttachmentKey != "AKEEP" || got[0].Title != "Kept Paper" {
+		t.Fatalf("full-text result = %+v", got[0])
+	}
+	if !strings.Contains(got[0].Snippet, "uniquely searchable") {
+		t.Fatalf("full-text snippet = %q, want matching passage", got[0].Snippet)
+	}
+}
 func TestSearchByType(t *testing.T) {
 	s := queryTestStore(t)
 

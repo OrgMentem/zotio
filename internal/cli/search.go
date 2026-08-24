@@ -103,6 +103,7 @@ func newSearchCmd(flags *rootFlags) *cobra.Command {
 	var resourceType string
 	var limit int
 	var dbPath string
+	var fulltextOnly bool
 
 	cmd := &cobra.Command{
 		Use:   "search <query>",
@@ -113,7 +114,8 @@ or hit the API's search endpoint when available.
 In auto mode (default): uses the API search endpoint if the API has one,
 otherwise searches local data. Falls back to local on network failure.
 In live mode: uses the API search endpoint only.
-In local mode: searches locally synced data only.`,
+In local mode: searches locally synced data only.
+Use --fulltext to search synced PDF text and resolve hits to parent items.`,
 		Example: `  # Search (uses API endpoint if available, local FTS otherwise)
   zotio search "error timeout"
 
@@ -123,6 +125,9 @@ In local mode: searches locally synced data only.`,
   # Search a specific resource type locally
   zotio search "critical" --type transactions --data-source local
 
+  # Resolve synced PDF full-text matches to their parent items
+  zotio search "calibration feedback" --fulltext --data-source local
+
   # JSON output for piping
   zotio search "critical" --json --limit 20`,
 		Annotations: map[string]string{"mcp:hidden": "true"},
@@ -131,9 +136,15 @@ In local mode: searches locally synced data only.`,
 				return cmd.Help()
 			}
 			query := args[0]
+			if fulltextOnly && resourceType != "" {
+				return fmt.Errorf("--fulltext cannot be combined with --type")
+			}
+			if fulltextOnly && flags.dataSource == "live" {
+				return fmt.Errorf("--fulltext requires synced local data; use --data-source local or auto")
+			}
 			// Zotero item full-text search is GET /items
 			// with qmode=everything; /searches returns saved-search definitions.
-			if flags.dataSource != "local" {
+			if !fulltextOnly && flags.dataSource != "local" {
 				c, err := flags.newClient()
 				if err != nil {
 					return err
@@ -175,12 +186,25 @@ In local mode: searches locally synced data only.`,
 			}
 			defer db.Close()
 
-			var results []json.RawMessage
-			// default local search runs cross-resource FTS
-			// (previously a no-op); --type scopes it to one resource type.
-			if resourceType == "" {
+			results := make([]json.RawMessage, 0)
+			switch {
+			case fulltextOnly:
+				matches, searchErr := db.SearchFulltextContext(cmd.Context(), query, limit)
+				if searchErr != nil {
+					err = searchErr
+					break
+				}
+				for _, match := range matches {
+					raw, marshalErr := json.Marshal(match)
+					if marshalErr != nil {
+						return fmt.Errorf("encoding full-text search result: %w", marshalErr)
+					}
+					results = append(results, raw)
+				}
+			case resourceType == "":
+				// Default local search runs cross-resource FTS.
 				results, err = db.Search(query, limit)
-			} else {
+			default:
 				results, err = db.SearchByType(query, resourceType, limit)
 			}
 			if err != nil {
@@ -188,10 +212,14 @@ In local mode: searches locally synced data only.`,
 			}
 
 			reason := "user_requested"
-			if flags.dataSource == "auto" {
+			if flags.dataSource == "auto" && !fulltextOnly {
 				reason = "api_unreachable"
 			}
-			prov := localProvenance(db, "search", reason)
+			provenanceResource := "search"
+			if fulltextOnly {
+				provenanceResource = "fulltext"
+			}
+			prov := localProvenance(db, provenanceResource, reason)
 
 			return outputSearchResults(cmd, flags, results, limit, prov)
 		},
@@ -200,6 +228,7 @@ In local mode: searches locally synced data only.`,
 	cmd.Flags().StringVar(&resourceType, "type", "", "Filter by resource type")
 	cmd.Flags().IntVar(&limit, "limit", 50, "Maximum results to return")
 	cmd.Flags().StringVar(&dbPath, "db", "", "Database path (default: ~/.local/share/zotio/data.db)")
+	cmd.Flags().BoolVar(&fulltextOnly, "fulltext", false, "Search synced PDF full text and return parent item context")
 
 	return cmd
 }

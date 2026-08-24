@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -259,5 +260,91 @@ func TestSearchCommandAutoFallsBackToLocalOnNetworkError(t *testing.T) {
 	}
 	if fr["id"] != "local-1" || fr["title"] != "Local Paper" || fr["abstract"] != "contains fallbackneedle" {
 		t.Fatalf("fallback result fields = %+v", fr)
+	}
+}
+
+func TestSearchCommandFulltextReturnsParentContext(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "search-fulltext.db")
+	db, err := store.OpenWithContext(context.Background(), dbPath)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	if _, _, err := db.UpsertBatch("items", []json.RawMessage{
+		json.RawMessage(`{"key":"PARENT","data":{"key":"PARENT","itemType":"journalArticle","title":"Parent Paper"}}`),
+		json.RawMessage(`{"key":"ATTACH","data":{"key":"ATTACH","itemType":"attachment","parentItem":"PARENT"}}`),
+	}); err != nil {
+		t.Fatalf("seed parent and attachment: %v", err)
+	}
+	if err := db.UpsertKeyed("fulltext", []string{"ATTACH"}, []json.RawMessage{
+		json.RawMessage(`{"content":"A distinctive calibration passage in the PDF."}`),
+	}); err != nil {
+		t.Fatalf("seed full text: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close store: %v", err)
+	}
+
+	flags := &rootFlags{asJSON: true, dataSource: "local"}
+	cmd := newSearchCmd(flags)
+	cmd.SetArgs([]string{"distinctive calibration", "--fulltext", "--db", dbPath})
+	var stdout bytes.Buffer
+	cmd.SetOut(&stdout)
+	cmd.SetErr(&bytes.Buffer{})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+
+	var got struct {
+		Results []struct {
+			ItemKey       string `json:"item_key"`
+			AttachmentKey string `json:"attachment_key"`
+			Title         string `json:"title"`
+			Snippet       string `json:"snippet"`
+		} `json:"results"`
+		Meta struct {
+			Source       string `json:"source"`
+			Reason       string `json:"reason"`
+			ResourceType string `json:"resource_type"`
+		} `json:"meta"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &got); err != nil {
+		t.Fatalf("unmarshal output %q: %v", stdout.String(), err)
+	}
+	if got.Meta.Source != "local" || got.Meta.Reason != "user_requested" || got.Meta.ResourceType != "fulltext" {
+		t.Fatalf("meta = %+v, want local fulltext provenance", got.Meta)
+	}
+	if len(got.Results) != 1 {
+		t.Fatalf("results = %+v, want one match", got.Results)
+	}
+	result := got.Results[0]
+	if result.ItemKey != "PARENT" || result.AttachmentKey != "ATTACH" || result.Title != "Parent Paper" {
+		t.Fatalf("result = %+v", result)
+	}
+	if !strings.Contains(result.Snippet, "distinctive calibration") {
+		t.Fatalf("snippet = %q, want matching PDF text", result.Snippet)
+	}
+}
+
+func TestSearchCommandFulltextRejectsLiveAndTypeModes(t *testing.T) {
+	tests := []struct {
+		name       string
+		dataSource string
+		args       []string
+		want       string
+	}{
+		{name: "live", dataSource: "live", args: []string{"term", "--fulltext"}, want: "requires synced local data"},
+		{name: "type", dataSource: "local", args: []string{"term", "--fulltext", "--type", "items"}, want: "cannot be combined with --type"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cmd := newSearchCmd(&rootFlags{dataSource: tt.dataSource})
+			cmd.SetArgs(tt.args)
+			cmd.SetOut(&bytes.Buffer{})
+			cmd.SetErr(&bytes.Buffer{})
+			err := cmd.Execute()
+			if err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("Execute() error = %v, want containing %q", err, tt.want)
+			}
+		})
 	}
 }

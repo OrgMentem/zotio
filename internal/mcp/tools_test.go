@@ -398,6 +398,56 @@ func TestHandleSearchBoundsLargeResult(t *testing.T) {
 	}
 }
 
+func TestHandleSearchFulltextResolvesParentItem(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("ZOTERO_DATA_DIR", t.TempDir())
+	db, err := store.OpenWithContext(t.Context(), dbPath())
+	if err != nil {
+		t.Fatalf("open writable db: %v", err)
+	}
+	if _, _, err := db.UpsertBatch("items", []json.RawMessage{
+		json.RawMessage(`{"key":"PARENT","data":{"key":"PARENT","itemType":"journalArticle","title":"Parent Paper"}}`),
+		json.RawMessage(`{"key":"ATTACH","data":{"key":"ATTACH","itemType":"attachment","parentItem":"PARENT"}}`),
+	}); err != nil {
+		t.Fatalf("seed full-text parents: %v", err)
+	}
+	if err := db.UpsertKeyed("fulltext", []string{"ATTACH"}, []json.RawMessage{
+		json.RawMessage(`{"content":"distinctive fulltext tool passage"}`),
+	}); err != nil {
+		t.Fatalf("seed full text: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close writable db: %v", err)
+	}
+
+	req := mcplib.CallToolRequest{}
+	req.Params.Arguments = map[string]any{"query": "distinctive", "fulltext": true}
+	res, err := handleSearch(t.Context(), req)
+	if err != nil {
+		t.Fatalf("handleSearch protocol error: %v", err)
+	}
+	if res == nil || res.IsError {
+		t.Fatalf("handleSearch result = %+v, want success", res)
+	}
+	var got struct {
+		Count int `json:"count"`
+		Items []struct {
+			ItemKey       string `json:"item_key"`
+			AttachmentKey string `json:"attachment_key"`
+			Title         string `json:"title"`
+		} `json:"items"`
+	}
+	if err := json.Unmarshal([]byte(toolResultText(t, res)), &got); err != nil {
+		t.Fatalf("decode search result: %v", err)
+	}
+	if got.Count != 1 || len(got.Items) != 1 {
+		t.Fatalf("search result count/items = %d/%d, want 1/1", got.Count, len(got.Items))
+	}
+	if got.Items[0].ItemKey != "PARENT" || got.Items[0].AttachmentKey != "ATTACH" || got.Items[0].Title != "Parent Paper" {
+		t.Fatalf("full-text item = %+v", got.Items[0])
+	}
+}
+
 func TestNativeLibraryToolsFrameDataDirect(t *testing.T) {
 	t.Run("search", func(t *testing.T) {
 		want := seedNativeLibraryToolData(t)

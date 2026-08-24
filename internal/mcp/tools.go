@@ -26,9 +26,10 @@ func RegisterTools(s *server.MCPServer) {
 	cobratree.StateGuard = cli.SnapshotGlobals
 	s.AddTool(
 		mcplib.NewTool("search",
-			mcplib.WithDescription("Full-text search across all synced data. Faster than paginating list endpoints. Requires sync first. Large responses are bounded to the MCP tool-result budget."),
+			mcplib.WithDescription("Full-text search across synced data. Set fulltext to resolve synced PDF-text hits to parent items. Requires sync first. Large responses are bounded to the MCP tool-result budget."),
 			mcplib.WithString("query", mcplib.Required(), mcplib.Description("Search query (supports FTS5 syntax: AND, OR, NOT, quotes for phrases)")),
 			mcplib.WithNumber("limit", mcplib.Description("Max results (default 25)")),
+			mcplib.WithBoolean("fulltext", mcplib.Description("Search only synced PDF text and return parent item context")),
 			mcplib.WithReadOnlyHintAnnotation(true),
 			mcplib.WithDestructiveHintAnnotation(false),
 		),
@@ -125,9 +126,25 @@ func handleSearch(ctx context.Context, req mcplib.CallToolRequest) (*mcplib.Call
 	}
 	defer db.Close()
 
-	results, err := db.Search(query, limit)
-	if err != nil {
-		return mcplib.NewToolResultError(fmt.Sprintf("search failed: %v", err)), nil
+	var results []json.RawMessage
+	if fulltext, _ := args["fulltext"].(bool); fulltext {
+		matches, searchErr := db.SearchFulltextContext(ctx, query, limit)
+		if searchErr != nil {
+			return mcplib.NewToolResultError(fmt.Sprintf("full-text search failed: %v", searchErr)), nil
+		}
+		results = make([]json.RawMessage, 0, len(matches))
+		for _, match := range matches {
+			raw, marshalErr := json.Marshal(match)
+			if marshalErr != nil {
+				return mcplib.NewToolResultError(fmt.Sprintf("encoding full-text search result: %v", marshalErr)), nil
+			}
+			results = append(results, raw)
+		}
+	} else {
+		results, err = db.Search(query, limit)
+		if err != nil {
+			return mcplib.NewToolResultError(fmt.Sprintf("search failed: %v", err)), nil
+		}
 	}
 
 	framed, err := bound.LibraryJSON(results)
