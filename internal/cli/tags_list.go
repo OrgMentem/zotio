@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"strconv"
+	"strings"
 
 	"github.com/spf13/cobra"
 )
@@ -14,6 +16,7 @@ func newTagsListCmd(flags *rootFlags) *cobra.Command {
 	var flagLimit int
 	var flagStart int
 	var flagQ string
+	var flagQMode string
 
 	cmd := &cobra.Command{
 		Use:         "list",
@@ -27,15 +30,9 @@ func newTagsListCmd(flags *rootFlags) *cobra.Command {
 			}
 
 			path := "/tags"
-			params := map[string]string{}
-			if flagLimit != 0 {
-				params["limit"] = fmt.Sprintf("%v", flagLimit)
-			}
-			if flagStart != 0 {
-				params["start"] = fmt.Sprintf("%v", flagStart)
-			}
-			if flagQ != "" {
-				params["q"] = fmt.Sprintf("%v", flagQ)
+			params, err := tagListParams(flagLimit, flagStart, flagQ, flagQMode)
+			if err != nil {
+				return usageErr(err)
 			}
 			data, prov, err := resolveRead(cmd.Context(), c, flags, "tags", false, path, params, nil)
 			if err != nil {
@@ -89,8 +86,31 @@ func newTagsListCmd(flags *rootFlags) *cobra.Command {
 	cmd.Flags().IntVar(&flagLimit, "limit", 0, "Maximum number of tags to return")
 	cmd.Flags().IntVar(&flagStart, "start", 0, "Pagination offset")
 	cmd.Flags().StringVar(&flagQ, "query", "", "Filter tags by name substring")
+	cmd.Flags().StringVar(&flagQMode, "query-mode", "contains", "Tag query mode: contains or startsWith")
 
 	return cmd
+}
+
+func tagListParams(limit, start int, query, queryMode string) (map[string]string, error) {
+	queryMode = strings.TrimSpace(queryMode)
+	if queryMode == "" {
+		queryMode = "contains"
+	}
+	if queryMode != "contains" && queryMode != "startsWith" {
+		return nil, fmt.Errorf("invalid --query-mode %q: must be contains or startsWith", queryMode)
+	}
+	params := map[string]string{}
+	if limit != 0 {
+		params["limit"] = strconv.Itoa(limit)
+	}
+	if start != 0 {
+		params["start"] = strconv.Itoa(start)
+	}
+	if query != "" {
+		params["q"] = query
+		params["qmode"] = queryMode
+	}
+	return params, nil
 }
 
 // flattenTagMetaForDisplay promotes meta.type and meta.numItems to top-level

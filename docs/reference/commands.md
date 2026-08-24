@@ -517,7 +517,7 @@ zotio collections subcollections COLLECTIONKEY
 List tags used within a collection
 
 ```
-zotio collections tags <collectionKey>
+zotio collections tags <collectionKey> [flags]
 ```
 
 Examples:
@@ -525,6 +525,13 @@ Examples:
 ```bash
 zotio collections tags COLLECTIONKEY
 ```
+
+| Flag | Type | Default | Description |
+| --- | --- | --- | --- |
+| `--limit` | `int` | `0` | Maximum number of tags to return |
+| `--query` | `string` |  | Filter tags by name substring |
+| `--query-mode` | `string` | `contains` | Tag query mode: contains or startsWith |
+| `--start` | `int` | `0` | Pagination offset |
 
 ### `zotio collections top`
 
@@ -2784,6 +2791,7 @@ zotio tags list
 | --- | --- | --- | --- |
 | `--limit` | `int` | `0` | Maximum number of tags to return |
 | `--query` | `string` |  | Filter tags by name substring |
+| `--query-mode` | `string` | `contains` | Tag query mode: contains or startsWith |
 | `--start` | `int` | `0` | Pagination offset |
 
 ### `zotio tags rename`

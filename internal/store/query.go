@@ -11,6 +11,7 @@ package store
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"strings"
 )
 
@@ -115,6 +116,107 @@ func (s *Store) QueryItemsContext(ctx context.Context, q ItemQuery) ([]json.RawM
 		results = append(results, json.RawMessage(data))
 	}
 	return results, rows.Err()
+}
+
+// TagQuery describes a scoped local tag-resource query. Tags are separate
+// synced resources, while collection membership lives on item rows.
+type TagQuery struct {
+	Query      string // tag-name filter
+	QueryMode  string // "contains" | "startsWith"
+	Collection string // collection key whose item tags are returned
+	Limit      int    // 0 = no limit
+	Start      int    // pagination offset
+}
+
+// QueryTagsContext reproduces /tags and /collections/{key}/tags against the
+// synced store. It returns the original tag resource payloads so meta.type and
+// meta.numItems keep the same shape as live reads.
+func (s *Store) QueryTagsContext(ctx context.Context, q TagQuery) ([]json.RawMessage, error) {
+	mode := strings.TrimSpace(q.QueryMode)
+	if mode == "" {
+		mode = "contains"
+	}
+	if mode != "contains" && mode != "startsWith" {
+		return nil, fmt.Errorf("unsupported tag query mode %q", q.QueryMode)
+	}
+
+	const tagName = `COALESCE(
+		json_extract(t.data, '$.tag'),
+		json_extract(t.data, '$.data.tag'),
+		t.id
+	)`
+	const tagType = `COALESCE(
+		json_extract(t.data, '$.meta.type'),
+		json_extract(t.data, '$.type'),
+		json_extract(t.data, '$.data.type'),
+		0
+	)`
+
+	var sb strings.Builder
+	args := make([]any, 0, 5)
+	sb.WriteString(`SELECT t.data
+FROM resources t
+WHERE t.resource_type = 'tags'`)
+
+	if query := strings.TrimSpace(q.Query); query != "" {
+		pattern := escapeTagLikeLiteral(query)
+		if mode == "startsWith" {
+			pattern += "%"
+		} else {
+			pattern = "%" + pattern + "%"
+		}
+		sb.WriteString("\nAND " + tagName + ` LIKE ? ESCAPE '\' COLLATE NOCASE`)
+		args = append(args, pattern)
+	}
+
+	if q.Collection != "" {
+		sb.WriteString(`
+AND EXISTS (
+	SELECT 1
+	FROM resources i
+	JOIN json_each(i.data, '$.data.collections') c
+	JOIN json_each(i.data, '$.data.tags') it
+	WHERE i.resource_type = 'items'
+		AND c.value = ?
+		AND json_extract(it.value, '$.tag') = ` + tagName + `
+)`)
+		args = append(args, q.Collection)
+	}
+
+	sb.WriteString("\nORDER BY " + tagName + " COLLATE NOCASE ASC, " + tagName + " ASC, " + tagType + " ASC, t.id ASC")
+	if q.Limit > 0 {
+		sb.WriteString("\nLIMIT ?")
+		args = append(args, q.Limit)
+		if q.Start > 0 {
+			sb.WriteString(" OFFSET ?")
+			args = append(args, q.Start)
+		}
+	} else if q.Start > 0 {
+		sb.WriteString("\nLIMIT -1 OFFSET ?")
+		args = append(args, q.Start)
+	}
+
+	rows, err := s.queryWithBusyRetryContext(ctx, sb.String(), args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	results := make([]json.RawMessage, 0)
+	for rows.Next() {
+		var data string
+		if err := rows.Scan(&data); err != nil {
+			return nil, err
+		}
+		results = append(results, json.RawMessage(data))
+	}
+	return results, rows.Err()
+}
+
+func escapeTagLikeLiteral(value string) string {
+	value = strings.ReplaceAll(value, `\`, `\\`)
+	value = strings.ReplaceAll(value, `%`, `\%`)
+	return strings.ReplaceAll(value, `_`, `\_`)
 }
 
 // TrashQuery describes pagination for the Zotero trash item list.

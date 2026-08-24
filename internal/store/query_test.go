@@ -558,3 +558,101 @@ func TestSearchByType(t *testing.T) {
 		}
 	})
 }
+
+func TestQueryTagsFiltersOrdersAndPaginates(t *testing.T) {
+	s := queryTestStore(t)
+	tags := []json.RawMessage{
+		json.RawMessage(`{"tag":"Beta","meta":{"type":0,"numItems":1}}`),
+		json.RawMessage(`{"tag":"alphabet","meta":{"type":1,"numItems":1}}`),
+		json.RawMessage(`{"tag":"Alpha","meta":{"type":0,"numItems":1}}`),
+		json.RawMessage(`{"tag":"100% reviewed","meta":{"type":0,"numItems":1}}`),
+		json.RawMessage(`{"tag":"Under_score","meta":{"type":0,"numItems":1}}`),
+	}
+	if _, _, err := s.UpsertBatch("tags", tags); err != nil {
+		t.Fatalf("seed tags: %v", err)
+	}
+
+	got, err := s.QueryTagsContext(context.Background(), TagQuery{Query: "PH", QueryMode: "contains"})
+	if err != nil {
+		t.Fatalf("contains query: %v", err)
+	}
+	if names := tagNames(t, got); !equalStrings(names, []string{"Alpha", "alphabet"}) {
+		t.Fatalf("contains names = %v, want [Alpha alphabet]", names)
+	}
+
+	got, err = s.QueryTagsContext(context.Background(), TagQuery{Query: "Alp", QueryMode: "startsWith", Limit: 1, Start: 1})
+	if err != nil {
+		t.Fatalf("startsWith pagination: %v", err)
+	}
+	if names := tagNames(t, got); !equalStrings(names, []string{"alphabet"}) {
+		t.Fatalf("startsWith page = %v, want [alphabet]", names)
+	}
+
+	for query, want := range map[string]string{"100%": "100% reviewed", "Under_": "Under_score"} {
+		got, err = s.QueryTagsContext(context.Background(), TagQuery{Query: query})
+		if err != nil {
+			t.Fatalf("literal query %q: %v", query, err)
+		}
+		if names := tagNames(t, got); !equalStrings(names, []string{want}) {
+			t.Fatalf("literal query %q names = %v, want [%s]", query, names, want)
+		}
+	}
+
+	if _, err := s.QueryTagsContext(context.Background(), TagQuery{QueryMode: "prefix"}); err == nil {
+		t.Fatal("invalid query mode returned nil error")
+	}
+}
+
+func TestQueryTagsCollectionScopeUsesItemTagMembership(t *testing.T) {
+	s := queryTestStore(t)
+	tags := []json.RawMessage{
+		json.RawMessage(`{"tag":"Manual","meta":{"type":0,"numItems":1}}`),
+		json.RawMessage(`{"tag":"Shared","meta":{"type":1,"numItems":1}}`),
+		json.RawMessage(`{"tag":"Elsewhere","meta":{"type":0,"numItems":1}}`),
+	}
+	if _, _, err := s.UpsertBatch("tags", tags); err != nil {
+		t.Fatalf("seed tags: %v", err)
+	}
+	items := []json.RawMessage{
+		json.RawMessage(`{"key":"C1","data":{"key":"C1","itemType":"book","collections":["COL1"],"tags":[{"tag":"Manual","type":0},{"tag":"Shared","type":1}]}}`),
+		json.RawMessage(`{"key":"C2","data":{"key":"C2","itemType":"book","collections":["COL2"],"tags":[{"tag":"Elsewhere","type":0},{"tag":"Shared","type":0}]}}`),
+	}
+	if _, _, err := s.UpsertBatch("items", items); err != nil {
+		t.Fatalf("seed items: %v", err)
+	}
+
+	got, err := s.QueryTagsContext(context.Background(), TagQuery{Collection: "COL1"})
+	if err != nil {
+		t.Fatalf("collection query: %v", err)
+	}
+	if names := tagNames(t, got); !equalStrings(names, []string{"Manual", "Shared"}) {
+		t.Fatalf("collection tags = %v, want [Manual Shared]", names)
+	}
+}
+
+func tagNames(t *testing.T, rows []json.RawMessage) []string {
+	t.Helper()
+	names := make([]string, 0, len(rows))
+	for _, row := range rows {
+		var tag struct {
+			Tag string `json:"tag"`
+		}
+		if err := json.Unmarshal(row, &tag); err != nil {
+			t.Fatalf("decode tag %s: %v", string(row), err)
+		}
+		names = append(names, tag.Tag)
+	}
+	return names
+}
+
+func equalStrings(got, want []string) bool {
+	if len(got) != len(want) {
+		return false
+	}
+	for i := range got {
+		if got[i] != want[i] {
+			return false
+		}
+	}
+	return true
+}

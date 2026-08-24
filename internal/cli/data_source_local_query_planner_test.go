@@ -1018,3 +1018,133 @@ func TestWriteThroughCacheStoresKeyedDetailResponse(t *testing.T) {
 		t.Fatalf("cached detail = %q, want %q", string(got), string(payload))
 	}
 }
+
+var tagParityTags = []json.RawMessage{
+	json.RawMessage(`{"tag":"Alpha","meta":{"type":0,"numItems":1}}`),
+	json.RawMessage(`{"tag":"alphabet","meta":{"type":1,"numItems":1}}`),
+	json.RawMessage(`{"tag":"Elsewhere","meta":{"type":0,"numItems":1}}`),
+}
+
+var tagParityItems = []json.RawMessage{
+	json.RawMessage(`{"key":"TAG1","data":{"key":"TAG1","itemType":"book","collections":["COL1"],"tags":[{"tag":"Alpha","type":0},{"tag":"alphabet","type":1}]}}`),
+	json.RawMessage(`{"key":"TAG2","data":{"key":"TAG2","itemType":"book","collections":["COL2"],"tags":[{"tag":"Elsewhere","type":0}]}}`),
+}
+
+func seedLocalTagParityDB(t *testing.T) *rootFlags {
+	t.Helper()
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("ZOTERO_CONFIG", filepath.Join(t.TempDir(), "missing.toml"))
+	t.Setenv("ZOTERO_BASE_URL", "http://127.0.0.1:1/api/users/0")
+	dbPath := helpersTestDefaultDBPath(t, "zotio")
+	if err := os.MkdirAll(filepath.Dir(dbPath), 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	db, err := store.OpenWithContext(context.Background(), dbPath)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	if _, _, err := db.UpsertBatch("tags", tagParityTags); err != nil {
+		_ = db.Close()
+		t.Fatalf("seed tags: %v", err)
+	}
+	if _, _, err := db.UpsertBatch("items", tagParityItems); err != nil {
+		_ = db.Close()
+		t.Fatalf("seed items: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close store: %v", err)
+	}
+	return &rootFlags{asJSON: true, dataSource: "local", noCache: true, timeout: time.Second}
+}
+
+func TestTagsListLiveLocalParityStartsWith(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/tags" {
+			t.Errorf("path = %q, want /tags", r.URL.Path)
+		}
+		if r.URL.Query().Get("q") != "Alp" || r.URL.Query().Get("qmode") != "startsWith" {
+			t.Errorf("query = %q, want q=Alp&qmode=startsWith", r.URL.RawQuery)
+		}
+		_, _ = w.Write([]byte(`[` + string(tagParityTags[0]) + `,` + string(tagParityTags[1]) + `]`))
+	}))
+	defer srv.Close()
+	t.Setenv("ZOTERO_BASE_URL", srv.URL)
+	t.Setenv("ZOTERO_CONFIG", filepath.Join(t.TempDir(), "missing.toml"))
+	args := []string{"--query", "Alp", "--query-mode", "startsWith", "--limit", "10"}
+	liveNames, _ := runTagsListCommand(t, &rootFlags{asJSON: true, dataSource: "live", noCache: true, timeout: time.Second}, args)
+
+	localNames, prov := runTagsListCommand(t, seedLocalTagParityDB(t), args)
+	if !equalKeys(localNames, liveNames) {
+		t.Fatalf("local tags = %v, want live parity %v", localNames, liveNames)
+	}
+	if prov.Source != "local" || prov.ResourceType != "tags" || !prov.Scoped {
+		t.Fatalf("local tag provenance = %+v, want scoped local tags", prov)
+	}
+}
+
+func TestCollectionsTagsLiveLocalParity(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/collections/COL1/tags" {
+			t.Errorf("path = %q, want /collections/COL1/tags", r.URL.Path)
+		}
+		if r.URL.Query().Get("q") != "Al" || r.URL.Query().Get("qmode") != "startsWith" {
+			t.Errorf("query = %q, want q=Al&qmode=startsWith", r.URL.RawQuery)
+		}
+		_, _ = w.Write([]byte(`[` + string(tagParityTags[0]) + `,` + string(tagParityTags[1]) + `]`))
+	}))
+	defer srv.Close()
+	t.Setenv("ZOTERO_BASE_URL", srv.URL)
+	t.Setenv("ZOTERO_CONFIG", filepath.Join(t.TempDir(), "missing.toml"))
+	args := []string{"COL1", "--query", "Al", "--query-mode", "startsWith"}
+	liveNames, _ := runCollectionsTagsCommand(t, &rootFlags{asJSON: true, dataSource: "live", noCache: true, timeout: time.Second}, args)
+
+	localNames, prov := runCollectionsTagsCommand(t, seedLocalTagParityDB(t), args)
+	if !equalKeys(localNames, liveNames) {
+		t.Fatalf("local collection tags = %v, want live parity %v", localNames, liveNames)
+	}
+	if prov.Source != "local" || prov.ResourceType != "tags" || !prov.Scoped {
+		t.Fatalf("local collection-tag provenance = %+v, want scoped local tags", prov)
+	}
+}
+
+func runTagsListCommand(t *testing.T, flags *rootFlags, args []string) ([]string, DataProvenance) {
+	t.Helper()
+	cmd := newTagsListCmd(flags)
+	cmd.SetArgs(args)
+	return runTagCommand(t, cmd)
+}
+
+func runCollectionsTagsCommand(t *testing.T, flags *rootFlags, args []string) ([]string, DataProvenance) {
+	t.Helper()
+	cmd := newCollectionsTagsCmd(flags)
+	cmd.SetArgs(args)
+	return runTagCommand(t, cmd)
+}
+
+func runTagCommand(t *testing.T, cmd interface {
+	Execute() error
+	SetOut(io.Writer)
+	SetErr(io.Writer)
+}) ([]string, DataProvenance) {
+	t.Helper()
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&bytes.Buffer{})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("tag command: %v", err)
+	}
+	var env struct {
+		Results []struct {
+			Tag string `json:"tag"`
+		} `json:"results"`
+		Meta DataProvenance `json:"meta"`
+	}
+	if err := json.Unmarshal(out.Bytes(), &env); err != nil {
+		t.Fatalf("decode tag output %q: %v", out.String(), err)
+	}
+	names := make([]string, 0, len(env.Results))
+	for _, tag := range env.Results {
+		names = append(names, tag.Tag)
+	}
+	return names, env.Meta
+}

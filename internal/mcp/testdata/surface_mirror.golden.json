@@ -461,6 +461,22 @@
         "args": {
           "description": "Additional positional arguments to append to the command. Raw CLI flags are rejected.",
           "type": "string"
+        },
+        "limit": {
+          "description": "Maximum number of tags to return (default: 0)",
+          "type": "number"
+        },
+        "query": {
+          "description": "Filter tags by name substring",
+          "type": "string"
+        },
+        "query-mode": {
+          "description": "Tag query mode: contains or startsWith (default: contains)",
+          "type": "string"
+        },
+        "start": {
+          "description": "Pagination offset (default: 0)",
+          "type": "number"
         }
       },
       "required": [],
@@ -3456,6 +3472,10 @@
         },
         "query": {
           "description": "Filter tags by name substring",
+          "type": "string"
+        },
+        "query-mode": {
+          "description": "Tag query mode: contains or startsWith (default: contains)",
           "type": "string"
         },
         "start": {

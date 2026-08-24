@@ -253,6 +253,15 @@ func resolveLocal(ctx context.Context, resourceType string, isList bool, path st
 		itemProv.Scoped = true
 		return data, itemProv, nil
 	}
+
+	if data, handled, qErr := resolveLocalTagList(ctx, db, path, params); handled {
+		if qErr != nil {
+			return nil, DataProvenance{}, qErr
+		}
+		tagProv := localProvenance(db, "tags", reason)
+		tagProv.Scoped = true
+		return data, tagProv, nil
+	}
 	// An item-list path can intentionally fall through when its scope cannot
 	// be reproduced. Preserve its list classification for the generic dump:
 	// collection-items commands otherwise look like keyed collection reads.
@@ -406,6 +415,77 @@ func paginateLocalRows(rows []json.RawMessage, params map[string]string) []json.
 		rows = rows[:limit]
 	}
 	return rows
+}
+
+// resolveLocalTagList reproduces /tags and /collections/{key}/tags through the
+// dedicated tag read model. Unknown filters fail instead of falling through to
+// a collection read whose last path segment would be misread as an item key.
+func resolveLocalTagList(ctx context.Context, db *store.Store, path string, params map[string]string) (json.RawMessage, bool, error) {
+	collectionKey, isList, err := parseTagListPath(path)
+	if err != nil {
+		return nil, true, err
+	}
+	if !isList {
+		return nil, false, nil
+	}
+	supported := map[string]bool{"q": true, "qmode": true, "limit": true, "start": true}
+	for key, value := range params {
+		if value != "" && !supported[key] {
+			return nil, true, fmt.Errorf("unsupported local tag parameter %q", key)
+		}
+	}
+
+	limit, start, err := parseLocalPagination(params)
+	if err != nil {
+		return nil, true, err
+	}
+	rows, err := db.QueryTagsContext(ctx, store.TagQuery{
+		Query:      params["q"],
+		QueryMode:  params["qmode"],
+		Collection: collectionKey,
+		Limit:      limit,
+		Start:      start,
+	})
+	if err != nil {
+		return nil, true, fmt.Errorf("local tag query: %w", err)
+	}
+	if len(rows) == 0 {
+		totalRows, countErr := db.Count("tags")
+		if countErr != nil {
+			return nil, true, fmt.Errorf("counting local tags: %w", countErr)
+		}
+		if totalRows == 0 {
+			_, lastSynced, _, stateErr := db.GetSyncState("tags")
+			if stateErr != nil {
+				return nil, true, fmt.Errorf("querying local tag sync state: %w", stateErr)
+			}
+			if lastSynced.IsZero() {
+				return nil, true, fmt.Errorf("no local data for %q. Run 'zotio sync' first", "tags")
+			}
+		}
+		return json.RawMessage("[]"), true, nil
+	}
+	data, err := json.Marshal(rows)
+	if err != nil {
+		return nil, true, fmt.Errorf("marshaling local tags: %w", err)
+	}
+	return data, true, nil
+}
+
+func parseTagListPath(path string) (collectionKey string, isList bool, err error) {
+	segs := strings.Split(strings.Trim(path, "/"), "/")
+	switch {
+	case len(segs) == 1 && segs[0] == "tags":
+		return "", true, nil
+	case len(segs) == 3 && segs[0] == "collections" && segs[2] == "tags":
+		key, unescapeErr := url.PathUnescape(segs[1])
+		if unescapeErr != nil {
+			return "", true, fmt.Errorf("unescaping local collection key %q: %w", segs[1], unescapeErr)
+		}
+		return key, true, nil
+	default:
+		return "", false, nil
+	}
 }
 
 // resolveLocalTrashList reproduces the live /items/trash list's default order

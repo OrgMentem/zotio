@@ -11,7 +11,10 @@ import (
 )
 
 func newCollectionsTagsCmd(flags *rootFlags) *cobra.Command {
-
+	var flagLimit int
+	var flagStart int
+	var flagQ string
+	var flagQMode string
 	cmd := &cobra.Command{
 		Use:   "tags <collectionKey>",
 		Short: "List tags used within a collection",
@@ -29,11 +32,15 @@ func newCollectionsTagsCmd(flags *rootFlags) *cobra.Command {
 
 			path := "/collections/{collectionKey}/tags"
 			path = replacePathParam(path, "collectionKey", args[0])
-			params := map[string]string{}
+			params, err := tagListParams(flagLimit, flagStart, flagQ, flagQMode)
+			if err != nil {
+				return usageErr(err)
+			}
 			data, prov, err := resolveRead(cmd.Context(), c, flags, "collections", false, path, params, nil)
 			if err != nil {
 				return classifyAPIError(err, flags)
 			}
+			data = truncateJSONArray(data, flagLimit)
 			// Print provenance to stderr for human-facing output
 			printProvenance(cmd, countResultItems(data), prov)
 			// For JSON output, wrap with provenance envelope before passing through flags.
@@ -68,6 +75,10 @@ func newCollectionsTagsCmd(flags *rootFlags) *cobra.Command {
 			return printOutputWithFlags(cmd.OutOrStdout(), data, flags)
 		},
 	}
+	cmd.Flags().IntVar(&flagLimit, "limit", 0, "Maximum number of tags to return")
+	cmd.Flags().IntVar(&flagStart, "start", 0, "Pagination offset")
+	cmd.Flags().StringVar(&flagQ, "query", "", "Filter tags by name substring")
+	cmd.Flags().StringVar(&flagQMode, "query-mode", "contains", "Tag query mode: contains or startsWith")
 
 	return cmd
 }
