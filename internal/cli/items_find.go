@@ -3,10 +3,12 @@
 package cli
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	neturl "net/url"
 	"os"
+	"regexp"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -43,12 +45,10 @@ func newItemsFindCmd(flags *rootFlags) *cobra.Command {
 			defer rawDB.Close()
 			db := localQueryStore{Store: rawDB}
 
-			sqlQuery, sqlArgs := findItemsCandidateSQL(normalizedQuery)
-			rows, err := db.QueryRaw(sqlQuery, sqlArgs...)
+			rows, err := queryFindItemsExact(cmd.Context(), db, normalizedQuery)
 			if err != nil {
 				return fmt.Errorf("querying local items: %w", err)
 			}
-			rows = filterFindRowsExact(rows, normalizedQuery)
 			data, err := json.Marshal(extractItemDataRows(rows))
 			if err != nil {
 				return err
@@ -110,7 +110,11 @@ type findItemsQuery struct {
 
 func (q findItemsQuery) normalized() (findItemsQuery, error) {
 	q.DOI = normalizeDOI(q.DOI)
-	q.ArXiv = normalizeFindArxivID(q.ArXiv)
+	rawArXiv := strings.TrimSpace(q.ArXiv)
+	q.ArXiv = normalizeFindArxivID(rawArXiv)
+	if rawArXiv != "" && q.ArXiv == "" {
+		return findItemsQuery{}, fmt.Errorf("--arxiv must be an ID such as 2401.00001 or an arxiv.org abs/pdf URL")
+	}
 	q.ISBN = strings.TrimSpace(q.ISBN)
 	q.PMID = strings.TrimSpace(q.PMID)
 	q.Citekey = strings.TrimSpace(q.Citekey)
@@ -133,8 +137,8 @@ func findItemsCandidateSQL(q findItemsQuery) (string, []any) {
 	clauses := make([]string, 0, 8)
 	args := make([]any, 0, 12)
 	if q.DOI != "" {
-		clauses = append(clauses, `LOWER(TRIM(COALESCE(json_extract(data, '$.data.DOI'), ''))) = LOWER(?)`)
-		args = append(args, q.DOI)
+		// DOI normalization happens in Go. Keep URL-form and bare DOI rows.
+		clauses = append(clauses, `COALESCE(json_extract(data, '$.data.DOI'), '') <> ''`)
 	}
 	if q.ArXiv != "" {
 		clauses = append(clauses, `(
@@ -146,8 +150,7 @@ func findItemsCandidateSQL(q findItemsQuery) (string, []any) {
 		args = append(args, escaped, escaped, escaped)
 	}
 	if q.ISBN != "" {
-		clauses = append(clauses, `TRIM(COALESCE(json_extract(data, '$.data.ISBN'), '')) = ?`)
-		args = append(args, q.ISBN)
+		clauses = append(clauses, `COALESCE(json_extract(data, '$.data.ISBN'), '') <> ''`)
 	}
 	if q.PMID != "" {
 		clauses = append(clauses, `COALESCE(json_extract(data, '$.data.extra'), '') LIKE '%' || ? || '%' ESCAPE '\'`)
@@ -156,9 +159,9 @@ func findItemsCandidateSQL(q findItemsQuery) (string, []any) {
 	if q.Citekey != "" {
 		clauses = append(clauses, `(
 			COALESCE(json_extract(data, '$.data.extra'), '') LIKE '%' || ? || '%' ESCAPE '\'
-			OR TRIM(COALESCE(json_extract(data, '$.data.citationKey'), '')) = ?
+			OR COALESCE(json_extract(data, '$.data.citationKey'), '') <> ''
 		)`)
-		args = append(args, escapeSQLiteLikeLiteral(q.Citekey), q.Citekey)
+		args = append(args, escapeSQLiteLikeLiteral(q.Citekey))
 	}
 	if q.URL != "" {
 		// URL normalization happens in Go. Keep every URL-bearing candidate
@@ -177,8 +180,8 @@ func findItemsCandidateSQL(q findItemsQuery) (string, []any) {
 		args = append(args, escaped, escaped, escaped, escaped, escaped)
 	}
 	if q.Title != "" {
-		clauses = append(clauses, `LOWER(TRIM(COALESCE(json_extract(data, '$.data.title'), ''))) = LOWER(?)`)
-		args = append(args, q.Title)
+		// SQLite TRIM/LOWER is narrower than Go's Unicode-aware exact check.
+		clauses = append(clauses, `COALESCE(json_extract(data, '$.data.title'), '') <> ''`)
 	}
 	return `
 SELECT id, data
@@ -189,15 +192,63 @@ WHERE resource_type = 'items'
 ORDER BY id`, args
 }
 
-func normalizeFindArxivID(value string) string {
-	if id := extractArxivIDFromString(value); id != "" {
-		return id
+// queryFindItemsExact streams broad normalization candidates under the command
+// context and retains only exact matches. URL and title equivalence cannot be
+// expressed safely with SQLite's narrower case and whitespace rules.
+func queryFindItemsExact(ctx context.Context, db localQueryStore, query findItemsQuery) ([]map[string]any, error) {
+	sqlQuery, sqlArgs := findItemsCandidateSQL(query)
+	cursor, err := db.QueryContext(ctx, sqlQuery, sqlArgs...)
+	if err != nil {
+		return nil, err
 	}
+	defer cursor.Close()
+
+	matches := make([]map[string]any, 0)
+	for cursor.Next() {
+		var id, data string
+		if err := cursor.Scan(&id, &data); err != nil {
+			return nil, err
+		}
+		row := map[string]any{"id": id, "data": data}
+		if findRowMatchesExact(row, query) {
+			matches = append(matches, row)
+		}
+	}
+	return matches, cursor.Err()
+}
+
+var findArxivIDInputPattern = regexp.MustCompile(`(?i)^([a-z-]+/[0-9]{7}|[0-9]{4}\.[0-9]{4,5})(?:v[0-9]+)?(?:\.pdf)?$`)
+
+func normalizeFindArxivID(value string) string {
 	value = strings.TrimSpace(value)
+	if value == "" {
+		return ""
+	}
 	if strings.HasPrefix(strings.ToLower(value), "arxiv:") {
 		value = strings.TrimSpace(value[len("arxiv:"):])
+	} else if parsed, err := neturl.Parse(value); err == nil && parsed.Scheme != "" {
+		scheme := strings.ToLower(parsed.Scheme)
+		host := strings.ToLower(parsed.Hostname())
+		if (scheme != "http" && scheme != "https") ||
+			(host != "arxiv.org" && host != "www.arxiv.org" && host != "export.arxiv.org") {
+			return ""
+		}
+		path := strings.Trim(parsed.Path, "/")
+		lowerPath := strings.ToLower(path)
+		switch {
+		case strings.HasPrefix(lowerPath, "abs/"):
+			value = path[len("abs/"):]
+		case strings.HasPrefix(lowerPath, "pdf/"):
+			value = path[len("pdf/"):]
+		default:
+			return ""
+		}
 	}
-	return normalizeArxivID(value)
+	matches := findArxivIDInputPattern.FindStringSubmatch(value)
+	if len(matches) != 2 {
+		return ""
+	}
+	return normalizeArxivID(matches[1])
 }
 
 func normalizeFindURL(value string) string {
@@ -213,12 +264,16 @@ func normalizeFindURL(value string) string {
 	parsed.Host = strings.ToLower(parsed.Host)
 	parsed.Fragment = ""
 	parsed.RawFragment = ""
-	if parsed.Path == "/" {
+	if parsed.Path == "/" && parsed.RawPath == "" {
 		parsed.Path = ""
-		parsed.RawPath = ""
+	} else if parsed.RawPath != "" {
+		// RawPath distinguishes a literal terminal slash from an encoded %2F.
+		if strings.HasSuffix(parsed.RawPath, "/") {
+			parsed.Path = strings.TrimSuffix(parsed.Path, "/")
+			parsed.RawPath = strings.TrimSuffix(parsed.RawPath, "/")
+		}
 	} else {
-		parsed.Path = strings.TrimRight(parsed.Path, "/")
-		parsed.RawPath = ""
+		parsed.Path = strings.TrimSuffix(parsed.Path, "/")
 	}
 	return parsed.String()
 }
@@ -288,27 +343,41 @@ func filterFindRowsExact(rows []map[string]any, query findItemsQuery) []map[stri
 func findRowMatchesExact(row map[string]any, query findItemsQuery) bool {
 	raw, ok := row["data"].(string)
 	if !ok {
-		// Keep a candidate whose payload cannot be checked. The caller still
-		// returns the stored row instead of silently losing corrupt evidence.
-		return true
+		return false
 	}
-	var decoded struct {
-		Data struct {
-			DOI             string `json:"DOI"`
-			ISBN            string `json:"ISBN"`
-			ArchiveID       string `json:"archiveID"`
-			ArchiveLocation string `json:"archiveLocation"`
-			Repository      string `json:"repository"`
-			CitationKey     string `json:"citationKey"`
-			Title           string `json:"title"`
-			URL             string `json:"url"`
-			Extra           string `json:"extra"`
-		} `json:"data"`
-	}
+	var decoded map[string]any
 	if json.Unmarshal([]byte(raw), &decoded) != nil {
-		return true
+		return false
 	}
-	d := decoded.Data
+	fields := decoded
+	if inner, ok := decoded["data"].(map[string]any); ok {
+		fields = inner
+	}
+	stringField := func(name string) string {
+		value, _ := fields[name].(string)
+		return value
+	}
+	d := struct {
+		DOI             string
+		ISBN            string
+		ArchiveID       string
+		ArchiveLocation string
+		Repository      string
+		CitationKey     string
+		Title           string
+		URL             string
+		Extra           string
+	}{
+		DOI:             stringField("DOI"),
+		ISBN:            stringField("ISBN"),
+		ArchiveID:       stringField("archiveID"),
+		ArchiveLocation: stringField("archiveLocation"),
+		Repository:      stringField("repository"),
+		CitationKey:     stringField("citationKey"),
+		Title:           stringField("title"),
+		URL:             stringField("url"),
+		Extra:           stringField("extra"),
+	}
 	if query.DOI != "" && strings.EqualFold(normalizeDOI(d.DOI), query.DOI) {
 		return true
 	}
@@ -317,7 +386,7 @@ func findRowMatchesExact(row map[string]any, query findItemsQuery) bool {
 	}
 	if query.ArXiv != "" {
 		if normalizeFindArxivID(d.ArchiveID) == query.ArXiv ||
-			extractArxivIDFromString(d.URL) == query.ArXiv ||
+			normalizeFindArxivID(d.URL) == query.ArXiv ||
 			extractArxivIDFromString(d.Extra) == query.ArXiv {
 			return true
 		}
@@ -370,10 +439,9 @@ func extraContainsExactToken(extra, prefix, token string) bool {
 	if token == "" {
 		return false
 	}
-	// Extra is a set of newline-separated lines; we scan for the exact
-	// "<prefix><token>" and verify the token ends at a boundary (end of
-	// string, newline, or whitespace) so "smith2023" does not match
-	// "smith2023a" and "123" does not match "12345".
+	// Extra is line-oriented. Require both the label and token to end at a
+	// whitespace boundary so labels embedded in words and token prefixes do not
+	// match.
 	needle := prefix + token
 	searchFrom := 0
 	for {
@@ -382,16 +450,21 @@ func extraContainsExactToken(extra, prefix, token string) bool {
 			return false
 		}
 		pos := searchFrom + idx
+		beforeOK := pos == 0 || isFindTokenBoundary(extra[pos-1])
 		after := pos + len(needle)
-		if after >= len(extra) {
+		afterOK := after >= len(extra) || isFindTokenBoundary(extra[after])
+		if beforeOK && afterOK {
 			return true
 		}
-		switch extra[after] {
-		case '\n', '\r', ' ', '\t':
-			return true
-		default:
-			// Prefix match only — continue searching past this occurrence.
-			searchFrom = after
-		}
+		searchFrom = pos + 1
+	}
+}
+
+func isFindTokenBoundary(ch byte) bool {
+	switch ch {
+	case '\n', '\r', ' ', '\t':
+		return true
+	default:
+		return false
 	}
 }

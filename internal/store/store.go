@@ -28,7 +28,7 @@ import (
 // shape — adding columns, dropping indexes, changing FTS5 tokenizers —
 // so an older binary refuses to open a newer database rather than silently
 // producing wrong results against a schema it cannot read.
-const StoreSchemaVersion = 5
+const StoreSchemaVersion = 6
 
 type Store struct {
 	db *sql.DB
@@ -548,6 +548,11 @@ func (s *Store) migrate(ctx context.Context) error {
 				return fmt.Errorf("migration failed: %w", err)
 			}
 		}
+		if current < 6 {
+			if err := reindexLegacyFulltextResources(ctx, conn); err != nil {
+				return fmt.Errorf("reindexing legacy fulltext resources: %w", err)
+			}
+		}
 		if current < 5 {
 			if err := resetLegacyTagResources(ctx, conn); err != nil {
 				return fmt.Errorf("resetting legacy tag resources: %w", err)
@@ -587,6 +592,62 @@ func (s *Store) migrate(ctx context.Context) error {
 		}
 		return nil
 	})
+}
+
+// reindexLegacyFulltextResources is the version-6 data migration. Earlier
+// versions indexed the raw fulltext JSON, and some used an older FTS rowid
+// algorithm. Remove every legacy fulltext index row, then rebuild one PDF body
+// at a time so large libraries do not materialize every document in memory.
+func reindexLegacyFulltextResources(ctx context.Context, conn *sql.Conn) error {
+	rows, err := conn.QueryContext(ctx, `SELECT rowid FROM resources_fts WHERE resource_type = 'fulltext'`)
+	if err != nil {
+		return err
+	}
+	var legacyRowIDs []int64
+	for rows.Next() {
+		var rowid int64
+		if err := rows.Scan(&rowid); err != nil {
+			_ = rows.Close()
+			return err
+		}
+		legacyRowIDs = append(legacyRowIDs, rowid)
+	}
+	if err := rows.Close(); err != nil {
+		return err
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	for _, rowid := range legacyRowIDs {
+		if _, err := conn.ExecContext(ctx, `DELETE FROM resources_fts WHERE rowid = ?`, rowid); err != nil {
+			return err
+		}
+	}
+
+	var lastResourceRowID int64
+	for {
+		var resourceRowID int64
+		var id, data string
+		err := conn.QueryRowContext(ctx, `
+SELECT rowid, id, data
+FROM resources
+WHERE resource_type = 'fulltext' AND rowid > ?
+ORDER BY rowid
+LIMIT 1`, lastResourceRowID).Scan(&resourceRowID, &id, &data)
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		if _, err := conn.ExecContext(ctx,
+			`INSERT INTO resources_fts (rowid, id, resource_type, content) VALUES (?, ?, 'fulltext', ?)`,
+			ftsRowID("fulltext", id), id, buildSearchDocument("fulltext", json.RawMessage(data)),
+		); err != nil {
+			return err
+		}
+		lastResourceRowID = resourceRowID
+	}
 }
 
 // resetLegacyTagResources invalidates the name-keyed tag cache. That cache has
@@ -1052,6 +1113,9 @@ func extractIndexedColumnsFromObj(obj map[string]any) (parentKey, itemType, colo
 }
 
 func buildSearchDocumentFromObj(resourceType string, data json.RawMessage, obj map[string]any) string {
+	if resourceType == "fulltext" {
+		return fulltextSearchContent(obj)
+	}
 	if resourceType != "items" {
 		return string(data)
 	}

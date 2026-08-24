@@ -13,6 +13,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"unicode/utf8"
 )
 
 // ItemQuery describes a scoped local item query mirroring the parameters of the
@@ -360,6 +361,8 @@ ORDER BY att.parent_key, ft.id`)
 	return rows.Err()
 }
 
+const maxFulltextSnippetBytes = 4096
+
 // FulltextSearchResult identifies one matching attachment and its parent
 // bibliographic item. Snippet contains a bounded excerpt from synced PDF text.
 type FulltextSearchResult struct {
@@ -384,7 +387,7 @@ SELECT
 	parent.id,
 	attachment.id,
 	COALESCE(json_extract(parent.data, '$.data.title'), ''),
-	snippet(resources_fts, 2, '', '', ' … ', 24)
+	substr(snippet(resources_fts, 2, '', '', ' … ', 24), 1, 4096)
 FROM resources_fts
 JOIN resources attachment
 	ON attachment.resource_type = 'items'
@@ -401,7 +404,7 @@ WHERE resources_fts MATCH ?
 			AND trashed.id = parent.id
 	)
 ORDER BY rank, parent.id, attachment.id
-LIMIT ?`, ftsMatchQuery(query), limit)
+LIMIT ?`, "content : ("+ftsMatchQuery(query)+")", limit)
 	if err != nil {
 		return nil, err
 	}
@@ -413,9 +416,22 @@ LIMIT ?`, ftsMatchQuery(query), limit)
 		if err := rows.Scan(&result.ItemKey, &result.AttachmentKey, &result.Title, &result.Snippet); err != nil {
 			return nil, err
 		}
+		result.Snippet = truncateFulltextSnippet(result.Snippet)
 		results = append(results, result)
 	}
 	return results, rows.Err()
+}
+
+func truncateFulltextSnippet(snippet string) string {
+	if len(snippet) <= maxFulltextSnippetBytes {
+		return snippet
+	}
+	const suffix = " …"
+	cut := maxFulltextSnippetBytes - len(suffix)
+	for cut > 0 && !utf8.ValidString(snippet[:cut]) {
+		cut--
+	}
+	return snippet[:cut] + suffix
 }
 
 // itemOrderBy builds the ORDER BY clause for a sort field + direction, always
@@ -445,16 +461,19 @@ var itemSearchFields = []string{
 }
 
 // buildSearchDocument returns the text indexed into resources_fts for a record.
-// For items it builds a curated Zotero-aware document (key, bibliographic
-// fields, creator names, tag names, annotation text) so search matches real
-// content rather than JSON structure. For every other resource type it keeps
-// the previous behavior of indexing the raw JSON. Falls back to the raw JSON
-// whenever the curated document would be empty so a row is never unindexed.
+// Items use a curated Zotero-aware document. Fulltext rows index only the PDF
+// body, never their JSON keys. Other resource types keep the raw JSON behavior.
 func buildSearchDocument(resourceType string, data json.RawMessage) string {
+	var obj map[string]any
+	if resourceType == "fulltext" {
+		if err := json.Unmarshal(data, &obj); err != nil {
+			return ""
+		}
+		return fulltextSearchContent(obj)
+	}
 	if resourceType != "items" {
 		return string(data)
 	}
-	var obj map[string]any
 	if err := json.Unmarshal(data, &obj); err != nil {
 		return string(data)
 	}
@@ -496,6 +515,15 @@ func buildSearchDocument(resourceType string, data json.RawMessage) string {
 		return string(data)
 	}
 	return doc
+}
+
+func fulltextSearchContent(obj map[string]any) string {
+	fields := obj
+	if inner, ok := obj["data"].(map[string]any); ok {
+		fields = inner
+	}
+	content, _ := fields["content"].(string)
+	return content
 }
 
 // ftsMatchQuery turns a user quick-search string into a bounded FTS5 MATCH

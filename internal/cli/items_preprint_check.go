@@ -47,8 +47,8 @@ const (
 )
 
 var (
-	arxivURLPattern   = regexp.MustCompile(`(?i)arxiv\.org/(?:abs|pdf)/([a-z-]+/[0-9]{7}|[0-9]{4}\.[0-9]{4,5})(?:v[0-9]+)?`)
-	arxivExtraPattern = regexp.MustCompile(`(?i)arxiv\s*:\s*([a-z-]+/[0-9]{7}|[0-9]{4}\.[0-9]{4,5})(?:v[0-9]+)?`)
+	arxivURLPattern   = regexp.MustCompile(`(?i)(?:^|[^a-z0-9_])https?://(?:(?:www|export)\.)?arxiv\.org/(?:abs|pdf)/([a-z-]+/[0-9]{7}|[0-9]{4}\.[0-9]{4,5})(?:v[0-9]+)?(?:\.pdf)?(?:/?$|[?#\s\]\[(),;])`)
+	arxivExtraPattern = regexp.MustCompile(`(?i)(?:^|\s)arxiv\s*:\s*([a-z-]+/[0-9]{7}|[0-9]{4}\.[0-9]{4,5})(?:v[0-9]+)?(?:\.pdf)?(?:$|[\s\]\[(),;])`)
 	arxivVersionTail  = regexp.MustCompile(`(?i)v[0-9]+$`)
 )
 

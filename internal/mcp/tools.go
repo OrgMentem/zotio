@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"strings"
@@ -21,6 +22,8 @@ import (
 	"github.com/mark3labs/mcp-go/server"
 )
 
+const mcpSearchMaxResults = 100
+
 // RegisterTools registers the MCP framework tools plus the selected Cobra command surface.
 func RegisterTools(s *server.MCPServer) {
 	cobratree.StateGuard = cli.SnapshotGlobals
@@ -28,7 +31,7 @@ func RegisterTools(s *server.MCPServer) {
 		mcplib.NewTool("search",
 			mcplib.WithDescription("Full-text search across synced data. Set fulltext to resolve synced PDF-text hits to parent items. Requires sync first. Large responses are bounded to the MCP tool-result budget."),
 			mcplib.WithString("query", mcplib.Required(), mcplib.Description("Search query (supports FTS5 syntax: AND, OR, NOT, quotes for phrases)")),
-			mcplib.WithNumber("limit", mcplib.Description("Max results (default 25)")),
+			mcplib.WithNumber("limit", mcplib.Description("Max results (default 25, maximum 100)"), mcplib.Min(1), mcplib.Max(mcpSearchMaxResults)),
 			mcplib.WithBoolean("fulltext", mcplib.Description("Search only synced PDF text and return parent item context")),
 			mcplib.WithReadOnlyHintAnnotation(true),
 			mcplib.WithDestructiveHintAnnotation(false),
@@ -116,7 +119,11 @@ func handleSearch(ctx context.Context, req mcplib.CallToolRequest) (*mcplib.Call
 	}
 
 	limit := 25
-	if v, ok := args["limit"].(float64); ok && v > 0 {
+	if rawLimit, exists := args["limit"]; exists {
+		v, ok := rawLimit.(float64)
+		if !ok || math.IsNaN(v) || math.IsInf(v, 0) || math.Trunc(v) != v || v < 1 || v > mcpSearchMaxResults {
+			return mcplib.NewToolResultError(fmt.Sprintf("limit must be an integer from 1 through %d", mcpSearchMaxResults)), nil
+		}
 		limit = int(v)
 	}
 

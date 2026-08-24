@@ -176,26 +176,25 @@ func queryLibraryItemsAdded(db localQueryStore, addedBy string) ([]libraryAddedC
 	if addedBy == "" {
 		return nil, nil
 	}
+	const dateAddedExpression = `TRIM(COALESCE(json_extract(data,'$.data.dateAdded'),''))`
 	var periodExpression string
-	var periodPattern string
 	switch addedBy {
 	case "month":
-		periodExpression = `SUBSTR(COALESCE(json_extract(data,'$.data.dateAdded'),''), 1, 7)`
-		periodPattern = `[12][0-9][0-9][0-9]-[01][0-9]`
+		periodExpression = `SUBSTR(` + dateAddedExpression + `, 1, 7)`
 	case "year":
-		periodExpression = `SUBSTR(COALESCE(json_extract(data,'$.data.dateAdded'),''), 1, 4)`
-		periodPattern = `[12][0-9][0-9][0-9]`
+		periodExpression = `SUBSTR(` + dateAddedExpression + `, 1, 4)`
 	default:
 		return nil, fmt.Errorf("unsupported item-intake bucket %q", addedBy)
 	}
 	rows, err := db.QueryRaw(`
-SELECT `+periodExpression+` AS period, COUNT(*) AS count
+SELECT ` + periodExpression + ` AS period, COUNT(*) AS count
 FROM resources
 WHERE resource_type='items'
-	AND json_extract(data,'$.data.itemType') NOT IN ('attachment','note','annotation')
-	AND `+periodExpression+` GLOB ?
+	AND ` + libraryTopLevelItemsPredicate + `
+	AND LENGTH(` + dateAddedExpression + `) = 20
+	AND strftime('%Y-%m-%dT%H:%M:%SZ', ` + dateAddedExpression + `) = ` + dateAddedExpression + `
 GROUP BY period
-ORDER BY period DESC`, periodPattern)
+ORDER BY period DESC`)
 	if err != nil {
 		return nil, err
 	}

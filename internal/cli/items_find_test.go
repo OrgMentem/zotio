@@ -3,11 +3,13 @@ package cli
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"path/filepath"
 	"strings"
 	"testing"
-
 	"zotio/internal/store"
 )
 
@@ -33,6 +35,7 @@ func TestExtraContainsExactTokenBoundary(t *testing.T) {
 		{"empty token no match", "Citation Key: smith2023", "Citation Key: ", "", false},
 		{"token with tab boundary", "PMID: 123\tother", "PMID: ", "123", true},
 		{"token with cr boundary", "PMID: 123\rother", "PMID: ", "123", true},
+		{"embedded label rejected", "NotPMID: 123", "PMID: ", "123", false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -88,6 +91,13 @@ func TestFindRowMatchesExact_ArXivPrefixOverMatch(t *testing.T) {
 	}
 	if !findRowMatchesExact(rows[1], findItemsQuery{ArXiv: "2006.11239"}) {
 		t.Fatal("arXiv 2006.11239 exact row should match")
+	}
+
+	for _, extra := range []string{"arXiv: 2006.11abc", "https://arxiv.org/abs/2006.11abc"} {
+		row := map[string]any{"data": `{"data":{"extra":` + fmt.Sprintf("%q", extra) + `}}`}
+		if findRowMatchesExact(row, findItemsQuery{ArXiv: "2006.11"}) {
+			t.Fatalf("stored arXiv prefix %q matched 2006.11", extra)
+		}
 	}
 }
 func TestFindRowMatchesExact_ExtraIdentifierSpellings(t *testing.T) {
@@ -204,12 +214,12 @@ func TestFilterFindRowsExact_CitationKeyFieldExact(t *testing.T) {
 
 func TestFilterFindRowsExact_ArchiveIDExact(t *testing.T) {
 	rows := []map[string]any{
-		{"id": "X", "data": `{"data":{"key":"X","itemType":"journalArticle","archiveID":"arXiv:2006.11"}}`},
-		{"id": "Y", "data": `{"data":{"key":"Y","itemType":"journalArticle","archiveID":"arXiv:2006.11239"}}`},
+		{"id": "X", "data": `{"data":{"key":"X","itemType":"journalArticle","archiveID":"arXiv:2006.1100"}}`},
+		{"id": "Y", "data": `{"data":{"key":"Y","itemType":"journalArticle","archiveID":"arXiv:2006.11001"}}`},
 	}
-	got := filterFindRowsExact(rows, findItemsQuery{ArXiv: "2006.11"})
+	got := filterFindRowsExact(rows, findItemsQuery{ArXiv: "2006.1100"})
 	if len(got) != 1 || got[0]["id"] != "X" {
-		t.Fatalf("archiveID filter 2006.11 = %v, want [X]", got)
+		t.Fatalf("archiveID filter 2006.1100 = %v, want [X]", got)
 	}
 }
 
@@ -274,12 +284,40 @@ func TestFindRowMatchesExactURLTitleAndOpenAlex(t *testing.T) {
 			}
 		})
 	}
+	spoof := map[string]any{"data": `{"data":{"extra":"NotOpenAlex: W2741809807"}}`}
+	if findRowMatchesExact(spoof, findItemsQuery{OpenAlex: "W2741809807"}) {
+		t.Fatal("OpenAlex label embedded in another label matched")
+	}
+}
+func TestNormalizeFindURLOnlyRemovesOneLiteralTrailingSlash(t *testing.T) {
+	canonical := normalizeFindURL("https://example.org/paper")
+	if got := normalizeFindURL("HTTPS://Example.ORG/paper/#fragment"); got != canonical {
+		t.Fatalf("literal trailing slash = %q, want %q", got, canonical)
+	}
+	for _, distinct := range []string{
+		"https://example.org/paper//",
+		"https://example.org/paper%2F",
+	} {
+		if got := normalizeFindURL(distinct); got == canonical {
+			t.Fatalf("distinct URL %q normalized to %q", distinct, got)
+		}
+	}
+}
+
+func TestFindRowMatchesExactIgnoresMalformedUnrelatedFields(t *testing.T) {
+	row := map[string]any{"data": `{"data":{"DOI":"10.9999/other","title":[]}}`}
+	if findRowMatchesExact(row, findItemsQuery{DOI: "10.1234/query"}) {
+		t.Fatal("malformed unrelated title made a different DOI match")
+	}
+	if !findRowMatchesExact(row, findItemsQuery{DOI: "10.9999/other"}) {
+		t.Fatal("malformed unrelated title hid the exact DOI match")
+	}
 }
 
 func TestFindItemsQueryNormalizesExternalIdentifiers(t *testing.T) {
 	query, err := (findItemsQuery{
 		DOI:      "https://doi.org/10.1234/ABC",
-		ArXiv:    "https://arxiv.org/pdf/2401.00001v3.pdf",
+		ArXiv:    "https://ARXIV.ORG/PDF/2401.00001v3.pdf",
 		URL:      "HTTPS://Example.ORG/path/#fragment",
 		OpenAlex: "https://openalex.org/w2741809807",
 	}).normalized()
@@ -295,6 +333,56 @@ func TestFindItemsQueryNormalizesExternalIdentifiers(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "--openalex must be a work ID") {
 		t.Fatalf("invalid OpenAlex error = %v", err)
 	}
+	for _, invalid := range []string{
+		"https://arxiv.org/abs/2401.00001junk",
+		"arXiv:2401.00001junk",
+		"https://notarxiv.org/abs/2401.00001",
+	} {
+		_, err := (findItemsQuery{ArXiv: invalid}).normalized()
+		if err == nil || !strings.Contains(err.Error(), "--arxiv must be an ID") {
+			t.Fatalf("invalid arXiv input %q error = %v", invalid, err)
+		}
+	}
+}
+
+func TestExtractArxivIDFromStringRequiresHostAndIDBoundaries(t *testing.T) {
+	for input, want := range map[string]string{
+		"See https://arxiv.org/abs/2401.00001v2 for details": "2401.00001",
+		"https://arxiv.org/abs/2401.00001/":                  "2401.00001",
+		"arXiv: 0910.4514 [math-ph]":                         "0910.4514",
+		"https://notarxiv.org/abs/2401.00001":                "",
+		"https://not_arxiv.org/abs/2401.00001":               "",
+		"https://evil.example/arxiv.org/abs/2401.00001":      "",
+		"https://arxiv.org/abs/2401.00001junk":               "",
+		"https://arxiv.org/abs/2401.00001/evil":              "",
+		"arXiv: 2401.00001junk":                              "",
+		"arXiv: 2401.00001/evil":                             "",
+		"not_arXiv: 2401.00001":                              "",
+	} {
+		if got := extractArxivIDFromString(input); got != want {
+			t.Fatalf("extractArxivIDFromString(%q) = %q, want %q", input, got, want)
+		}
+	}
+}
+
+func TestQueryFindItemsExactHonorsCancellation(t *testing.T) {
+	db, err := store.OpenWithContext(t.Context(), filepath.Join(t.TempDir(), "data.db"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer db.Close()
+	noMatches, err := queryFindItemsExact(t.Context(), localQueryStore{Store: db}, findItemsQuery{URL: "https://example.org"})
+	if err != nil {
+		t.Fatalf("queryFindItemsExact empty: %v", err)
+	}
+	if noMatches == nil || len(noMatches) != 0 {
+		t.Fatalf("empty exact lookup = %#v, want non-nil empty slice", noMatches)
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	if _, err := queryFindItemsExact(ctx, localQueryStore{Store: db}, findItemsQuery{URL: "https://example.org"}); !errors.Is(err, context.Canceled) {
+		t.Fatalf("queryFindItemsExact canceled error = %v, want context.Canceled", err)
+	}
 }
 
 func TestItemsFindCommandLooksUpURLTitleAndOpenAlex(t *testing.T) {
@@ -306,8 +394,8 @@ func TestItemsFindCommandLooksUpURLTitleAndOpenAlex(t *testing.T) {
 		t.Fatalf("open store: %v", err)
 	}
 	if _, _, err := db.UpsertBatch("items", []json.RawMessage{
-		json.RawMessage(`{"key":"MATCH","data":{"key":"MATCH","itemType":"journalArticle","title":"The Exact Title","url":"HTTPS://Example.ORG/paper/#section","extra":"OpenAlex ID: W2741809807"}}`),
-		json.RawMessage(`{"key":"OTHER","data":{"key":"OTHER","itemType":"journalArticle","title":"The Exact Title Extended","url":"https://example.org/other","extra":"OpenAlex ID: W27418098070"}}`),
+		json.RawMessage(`{"key":"MATCH","data":{"key":"MATCH","itemType":"journalArticle","title":"\tThe Exact Title\u00a0","url":"HTTPS://Example.ORG/paper/#section","DOI":"https://doi.org/10.1234/ABC","extra":"OpenAlex ID: W2741809807"}}`),
+		json.RawMessage(`{"key":"OTHER","data":{"key":"OTHER","itemType":"journalArticle","title":"The Exact Title Extended","url":"https://example.org/other","DOI":"10.1234/ABCD","extra":"OpenAlex ID: W27418098070"}}`),
 	}); err != nil {
 		t.Fatalf("seed lookup items: %v", err)
 	}
@@ -322,6 +410,7 @@ func TestItemsFindCommandLooksUpURLTitleAndOpenAlex(t *testing.T) {
 		{name: "URL", args: []string{"--url", "https://example.org/paper"}},
 		{name: "title", args: []string{"--title", " the exact title "}},
 		{name: "OpenAlex", args: []string{"--openalex", "https://openalex.org/W2741809807"}},
+		{name: "normalized DOI", args: []string{"--doi", "10.1234/ABC"}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

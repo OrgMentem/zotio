@@ -12,6 +12,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 )
 
 func queryTestStore(t *testing.T) *Store {
@@ -369,7 +370,10 @@ func TestBuildSearchDocument(t *testing.T) {
 			t.Errorf("item doc %q missing %q", doc, want)
 		}
 	}
-	// Non-item resources keep raw JSON indexing.
+	if got := buildSearchDocument("fulltext", json.RawMessage(`{"content":"PDF body","indexedPages":1}`)); got != "PDF body" {
+		t.Errorf("fulltext doc = %q, want PDF body", got)
+	}
+	// Other non-item resources keep raw JSON indexing.
 	raw := `{"id":"x","field":"value"}`
 	if got := buildSearchDocument("papers", json.RawMessage(raw)); got != raw {
 		t.Errorf("non-item doc = %q, want raw JSON", got)
@@ -495,6 +499,33 @@ func TestSearchFulltextResolvesParentItemContext(t *testing.T) {
 	}
 	if !strings.Contains(got[0].Snippet, "uniquely searchable") {
 		t.Fatalf("full-text snippet = %q, want matching passage", got[0].Snippet)
+	}
+
+	for _, structuralToken := range []string{"content", "fulltext"} {
+		unrelated, err := s.SearchFulltextContext(context.Background(), structuralToken, 10)
+		if err != nil {
+			t.Fatalf("SearchFulltextContext(%q): %v", structuralToken, err)
+		}
+		if len(unrelated) != 0 {
+			t.Fatalf("structural token %q returned unrelated results: %+v", structuralToken, unrelated)
+		}
+	}
+
+	oversized := strings.Repeat("界", maxFulltextSnippetBytes) + " boundaryneedle " + strings.Repeat("界", maxFulltextSnippetBytes)
+	if err := s.UpsertKeyed("fulltext", []string{"AKEEP"}, []json.RawMessage{
+		json.RawMessage(fmt.Sprintf(`{"content":%q}`, oversized)),
+	}); err != nil {
+		t.Fatalf("replace oversized full text: %v", err)
+	}
+	bounded, err := s.SearchFulltextContext(context.Background(), "boundaryneedle", 10)
+	if err != nil {
+		t.Fatalf("SearchFulltextContext oversized: %v", err)
+	}
+	if len(bounded) != 1 {
+		t.Fatalf("bounded full-text results = %+v, want one", bounded)
+	}
+	if len(bounded[0].Snippet) > maxFulltextSnippetBytes || !utf8.ValidString(bounded[0].Snippet) {
+		t.Fatalf("bounded full-text snippet = bytes %d valid %v", len(bounded[0].Snippet), utf8.ValidString(bounded[0].Snippet))
 	}
 }
 func TestSearchByType(t *testing.T) {

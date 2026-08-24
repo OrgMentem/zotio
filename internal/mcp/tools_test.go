@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -358,7 +359,7 @@ func TestHandleSearchBoundsLargeResult(t *testing.T) {
 	}
 
 	req := mcplib.CallToolRequest{}
-	req.Params.Arguments = map[string]any{"query": "budgetneedle", "limit": float64(len(items))}
+	req.Params.Arguments = map[string]any{"query": "budgetneedle", "limit": float64(mcpSearchMaxResults)}
 	res, err := handleSearch(context.Background(), req)
 	if err != nil {
 		t.Fatalf("handleSearch protocol error: %v", err)
@@ -381,8 +382,8 @@ func TestHandleSearchBoundsLargeResult(t *testing.T) {
 	if err := json.Unmarshal([]byte(text), &got); err != nil {
 		t.Fatalf("decode bounded search result %q: %v", text, err)
 	}
-	if got.Count != len(items) {
-		t.Fatalf("count = %d, want %d", got.Count, len(items))
+	if got.Count != mcpSearchMaxResults {
+		t.Fatalf("count = %d, want %d", got.Count, mcpSearchMaxResults)
 	}
 	if !got.Truncated {
 		t.Fatalf("truncated = false, want true")
@@ -395,6 +396,28 @@ func TestHandleSearchBoundsLargeResult(t *testing.T) {
 	}
 	if len(got.Items) > bound.MaxItems {
 		t.Fatalf("items returned = %d, want <= %d", len(got.Items), bound.MaxItems)
+	}
+}
+
+func TestHandleSearchRejectsUnsafeLimits(t *testing.T) {
+	for name, limit := range map[string]any{
+		"zero":        float64(0),
+		"fractional":  1.5,
+		"oversized":   float64(mcpSearchMaxResults + 1),
+		"infinite":    math.Inf(1),
+		"not numeric": "100",
+	} {
+		t.Run(name, func(t *testing.T) {
+			req := mcplib.CallToolRequest{}
+			req.Params.Arguments = map[string]any{"query": "needle", "limit": limit, "fulltext": true}
+			res, err := handleSearch(t.Context(), req)
+			if err != nil {
+				t.Fatalf("handleSearch protocol error: %v", err)
+			}
+			if res == nil || !res.IsError || !strings.Contains(toolResultText(t, res), "limit must be an integer from 1 through") {
+				t.Fatalf("handleSearch result = %+v, want bounded-limit error", res)
+			}
+		})
 	}
 }
 

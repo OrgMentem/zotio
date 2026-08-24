@@ -3286,7 +3286,9 @@
           "type": "boolean"
         },
         "limit": {
-          "description": "Max results (default 25)",
+          "description": "Max results (default 25, maximum 100)",
+          "maximum": 100,
+          "minimum": 1,
           "type": "number"
         },
         "query": {

@@ -539,3 +539,69 @@ func TestMigrateVersion5InvalidatesLegacyTagCacheForTypedRehydration(t *testing.
 		t.Fatalf("rehydrated tag count = %d, %v; want 2", count, err)
 	}
 }
+
+func TestMigrateVersion6ReindexesFulltextBodyOnly(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "data.db")
+	s, err := OpenWithContext(t.Context(), dbPath)
+	if err != nil {
+		t.Fatalf("create current store: %v", err)
+	}
+	if err := s.Close(); err != nil {
+		t.Fatalf("close current store: %v", err)
+	}
+
+	raw, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("open raw store: %v", err)
+	}
+	const attachmentKey = "ATTACH"
+	const payload = `{"content":"only PDF prose is searchable","indexedPages":1}`
+	if _, err := raw.Exec(
+		`INSERT INTO resources (id, resource_type, data) VALUES (?, 'fulltext', ?)`,
+		attachmentKey, payload,
+	); err != nil {
+		_ = raw.Close()
+		t.Fatalf("seed fulltext resource: %v", err)
+	}
+	legacyRowID := ftsRowID("fulltext", attachmentKey) + 1
+	if _, err := raw.Exec(
+		`INSERT INTO resources_fts (rowid, id, resource_type, content) VALUES (?, ?, 'fulltext', ?)`,
+		legacyRowID, attachmentKey, payload,
+	); err != nil {
+		_ = raw.Close()
+		t.Fatalf("seed legacy fulltext index: %v", err)
+	}
+	if _, err := raw.Exec(`PRAGMA user_version = 5`); err != nil {
+		_ = raw.Close()
+		t.Fatalf("stamp version 5: %v", err)
+	}
+	if err := raw.Close(); err != nil {
+		t.Fatalf("close raw store: %v", err)
+	}
+
+	migrated, err := OpenWithContext(t.Context(), dbPath)
+	if err != nil {
+		t.Fatalf("migrate version 5 store: %v", err)
+	}
+	defer migrated.Close()
+	var indexedRows int
+	if err := migrated.DB().QueryRow(
+		`SELECT count(*) FROM resources_fts WHERE id = ? AND resource_type = 'fulltext'`,
+		attachmentKey,
+	).Scan(&indexedRows); err != nil {
+		t.Fatalf("count migrated fulltext rows: %v", err)
+	}
+	if indexedRows != 1 {
+		t.Fatalf("migrated fulltext row count = %d, want 1", indexedRows)
+	}
+	var indexed string
+	if err := migrated.DB().QueryRow(
+		`SELECT content FROM resources_fts WHERE rowid = ?`,
+		ftsRowID("fulltext", attachmentKey),
+	).Scan(&indexed); err != nil {
+		t.Fatalf("read migrated fulltext index: %v", err)
+	}
+	if indexed != "only PDF prose is searchable" {
+		t.Fatalf("migrated fulltext index = %q", indexed)
+	}
+}

@@ -93,9 +93,9 @@ Resolve a DOI, ISBN, PMID, arXiv ID, citation key, URL, OpenAlex work ID, or exa
 
 ### `items enrich`
 
-Fill missing DOIs and abstracts, and attach open-access PDFs as links or downloaded files from CrossRef, OpenAlex, Semantic Scholar, and Unpaywall — preview-first, with provenance appended to each item.
+Fill missing DOIs and abstracts from CrossRef, OpenAlex, or Semantic Scholar; fill missing citation fields from CrossRef; and attach open-access PDFs from Unpaywall — preview-first, with provenance.
 
-> **Why it matters** — Turn the audit's missing-metadata queue into applied fixes; --validate cross-checks stored DOIs read-only.
+> **Why it matters** — Turn audit findings into applied fixes; --validate reports CrossRef citation discrepancies and OpenCitations DOI registration failures without writing.
 
 ### `attachments add`
 

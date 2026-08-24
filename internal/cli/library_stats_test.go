@@ -23,6 +23,11 @@ func TestQueryLibraryItemsAddedGroupsCiteableItems(t *testing.T) {
 		json.RawMessage(`{"key":"C","data":{"key":"C","itemType":"report","dateAdded":"2026-07-31T23:00:00Z"}}`),
 		json.RawMessage(`{"key":"ATT","data":{"key":"ATT","itemType":"attachment","parentItem":"A","dateAdded":"2026-08-24T01:01:00Z"}}`),
 		json.RawMessage(`{"key":"NO-DATE","data":{"key":"NO-DATE","itemType":"document"}}`),
+		json.RawMessage(`{"key":"CHILD","data":{"key":"CHILD","itemType":"book","parentItem":"A","dateAdded":"2026-08-24T01:02:00Z"}}`),
+		json.RawMessage(`{"key":"MONTH-ZERO","data":{"key":"MONTH-ZERO","itemType":"journalArticle","dateAdded":"2026-00-01T00:00:00Z"}}`),
+		json.RawMessage(`{"key":"MONTH-THIRTEEN","data":{"key":"MONTH-THIRTEEN","itemType":"journalArticle","dateAdded":"2026-13-01T00:00:00Z"}}`),
+		json.RawMessage(`{"key":"INVALID-DAY","data":{"key":"INVALID-DAY","itemType":"journalArticle","dateAdded":"2026-02-30T00:00:00Z"}}`),
+		json.RawMessage(`{"key":"MALFORMED","data":{"key":"MALFORMED","itemType":"journalArticle","dateAdded":"2026garbage"}}`),
 	}); err != nil {
 		t.Fatalf("seed statistics items: %v", err)
 	}
