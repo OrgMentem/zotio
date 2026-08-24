@@ -353,7 +353,8 @@ func TestResolveReadLocalTagGetUnescapesPathSegment(t *testing.T) {
 		t.Fatalf("open store: %v", err)
 	}
 	if _, _, err := db.UpsertBatch("tags", []json.RawMessage{
-		json.RawMessage(`{"tag":"needs/review","type":0}`),
+		json.RawMessage(`{"tag":"needs/review","meta":{"type":0}}`),
+		json.RawMessage(`{"tag":"needs/review","meta":{"type":1}}`),
 	}); err != nil {
 		_ = db.Close()
 		t.Fatalf("seed tag: %v", err)
@@ -368,14 +369,14 @@ func TestResolveReadLocalTagGetUnescapesPathSegment(t *testing.T) {
 		t.Fatalf("resolveRead tag get: %v", err)
 	}
 
-	var got struct {
+	var got []struct {
 		Tag string `json:"tag"`
 	}
 	if err := json.Unmarshal(data, &got); err != nil {
 		t.Fatalf("decode tag %q: %v", string(data), err)
 	}
-	if got.Tag != tagName {
-		t.Fatalf("tag = %q, want %q", got.Tag, tagName)
+	if len(got) != 2 || got[0].Tag != tagName || got[1].Tag != tagName {
+		t.Fatalf("tags = %#v, want two typed %q rows", got, tagName)
 	}
 }
 
@@ -386,8 +387,8 @@ func TestResolveReadLocalGetRejectsMalformedEscapedPathSegment(t *testing.T) {
 	if err == nil {
 		t.Fatal("resolveRead malformed tag path returned nil error")
 	}
-	if !strings.Contains(err.Error(), `unescaping local resource ID "bad%2"`) {
-		t.Fatalf("malformed tag path error = %q, want wrapped unescape error", err)
+	if !strings.Contains(err.Error(), `unescaping local tag name "bad%2"`) {
+		t.Fatalf("malformed tag path error = %q, want wrapped tag-name error", err)
 	}
 }
 
@@ -1104,6 +1105,59 @@ func TestCollectionsTagsLiveLocalParity(t *testing.T) {
 	}
 	if prov.Source != "local" || prov.ResourceType != "tags" || !prov.Scoped {
 		t.Fatalf("local collection-tag provenance = %+v, want scoped local tags", prov)
+	}
+}
+
+func TestResolveLocalCollectionTagsRequiresItemsHydration(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("ZOTERO_CONFIG", filepath.Join(t.TempDir(), "missing.toml"))
+	dbPath := helpersTestDefaultDBPath(t, "zotio")
+	if err := os.MkdirAll(filepath.Dir(dbPath), 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	db, err := store.OpenWithContext(context.Background(), dbPath)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	if _, _, err := db.UpsertBatch("tags", []json.RawMessage{
+		json.RawMessage(`{"tag":"Known","meta":{"type":0}}`),
+	}); err != nil {
+		_ = db.Close()
+		t.Fatalf("seed tags: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close store: %v", err)
+	}
+
+	flags := &rootFlags{dataSource: "local"}
+	if _, _, err := resolveRead(context.Background(), nil, flags, "collections", false, "/collections/COL1/tags", nil, nil); err == nil ||
+		!strings.Contains(err.Error(), `no local data for "items"`) {
+		t.Fatalf("collection tags without items error = %v, want items hydration error", err)
+	}
+
+	db, err = store.OpenWithContext(context.Background(), dbPath)
+	if err != nil {
+		t.Fatalf("reopen store: %v", err)
+	}
+	if err := db.SaveSyncState("items", "", 0); err != nil {
+		_ = db.Close()
+		t.Fatalf("save empty items sync: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close synced store: %v", err)
+	}
+	data, prov, err := resolveRead(context.Background(), nil, flags, "collections", false, "/collections/COL1/tags", nil, nil)
+	if err != nil {
+		t.Fatalf("collection tags after empty items sync: %v", err)
+	}
+	if string(data) != "[]" || !prov.Scoped {
+		t.Fatalf("completed empty collection tags = %q, provenance=%+v, want scoped []", data, prov)
+	}
+}
+
+func TestParseTagListPathRejectsEmptyCollectionKey(t *testing.T) {
+	if _, handled, err := parseTagListPath("/collections//tags"); !handled || err == nil {
+		t.Fatalf("empty collection path = handled %v, err %v; want handled error", handled, err)
 	}
 }
 

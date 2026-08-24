@@ -262,6 +262,15 @@ func resolveLocal(ctx context.Context, resourceType string, isList bool, path st
 		tagProv.Scoped = true
 		return data, tagProv, nil
 	}
+
+	if data, handled, qErr := resolveLocalTagGet(ctx, db, path); handled {
+		if qErr != nil {
+			return nil, DataProvenance{}, qErr
+		}
+		tagProv := localProvenance(db, "tags", reason)
+		tagProv.Scoped = true
+		return data, tagProv, nil
+	}
 	// An item-list path can intentionally fall through when its scope cannot
 	// be reproduced. Preserve its list classification for the generic dump:
 	// collection-items commands otherwise look like keyed collection reads.
@@ -428,6 +437,11 @@ func resolveLocalTagList(ctx context.Context, db *store.Store, path string, para
 	if !isList {
 		return nil, false, nil
 	}
+	if collectionKey != "" {
+		if err := requireLocalResourceHydrated(db, "items"); err != nil {
+			return nil, true, fmt.Errorf("collection tag scope: %w", err)
+		}
+	}
 	supported := map[string]bool{"q": true, "qmode": true, "limit": true, "start": true}
 	for key, value := range params {
 		if value != "" && !supported[key] {
@@ -450,18 +464,8 @@ func resolveLocalTagList(ctx context.Context, db *store.Store, path string, para
 		return nil, true, fmt.Errorf("local tag query: %w", err)
 	}
 	if len(rows) == 0 {
-		totalRows, countErr := db.Count("tags")
-		if countErr != nil {
-			return nil, true, fmt.Errorf("counting local tags: %w", countErr)
-		}
-		if totalRows == 0 {
-			_, lastSynced, _, stateErr := db.GetSyncState("tags")
-			if stateErr != nil {
-				return nil, true, fmt.Errorf("querying local tag sync state: %w", stateErr)
-			}
-			if lastSynced.IsZero() {
-				return nil, true, fmt.Errorf("no local data for %q. Run 'zotio sync' first", "tags")
-			}
+		if err := requireLocalResourceHydrated(db, "tags"); err != nil {
+			return nil, true, err
 		}
 		return json.RawMessage("[]"), true, nil
 	}
@@ -482,10 +486,62 @@ func parseTagListPath(path string) (collectionKey string, isList bool, err error
 		if unescapeErr != nil {
 			return "", true, fmt.Errorf("unescaping local collection key %q: %w", segs[1], unescapeErr)
 		}
+		if key == "" {
+			return "", true, fmt.Errorf("local collection key cannot be empty")
+		}
 		return key, true, nil
 	default:
 		return "", false, nil
 	}
+}
+
+// resolveLocalTagGet reproduces /tags/{name}, whose live response is a list
+// because one name can exist as both a manual and an automatic tag.
+func resolveLocalTagGet(ctx context.Context, db *store.Store, path string) (json.RawMessage, bool, error) {
+	segs := strings.Split(strings.Trim(path, "/"), "/")
+	if len(segs) != 2 || segs[0] != "tags" {
+		return nil, false, nil
+	}
+	name, err := url.PathUnescape(segs[1])
+	if err != nil {
+		return nil, true, fmt.Errorf("unescaping local tag name %q: %w", segs[1], err)
+	}
+	if name == "" {
+		return nil, true, fmt.Errorf("local tag name cannot be empty")
+	}
+	rows, err := db.QueryTagsContext(ctx, store.TagQuery{Name: name})
+	if err != nil {
+		return nil, true, fmt.Errorf("local tag query: %w", err)
+	}
+	if len(rows) == 0 {
+		if err := requireLocalResourceHydrated(db, "tags"); err != nil {
+			return nil, true, err
+		}
+		return json.RawMessage("[]"), true, nil
+	}
+	data, err := json.Marshal(rows)
+	if err != nil {
+		return nil, true, fmt.Errorf("marshaling local tags: %w", err)
+	}
+	return data, true, nil
+}
+
+func requireLocalResourceHydrated(db *store.Store, resourceType string) error {
+	totalRows, err := db.Count(resourceType)
+	if err != nil {
+		return fmt.Errorf("counting local %s: %w", resourceType, err)
+	}
+	if totalRows > 0 {
+		return nil
+	}
+	_, lastSynced, _, err := db.GetSyncState(resourceType)
+	if err != nil {
+		return fmt.Errorf("querying local %s sync state: %w", resourceType, err)
+	}
+	if lastSynced.IsZero() {
+		return fmt.Errorf("no local data for %q. Run 'zotio sync --resources %s' first", resourceType, resourceType)
+	}
+	return nil
 }
 
 // resolveLocalTrashList reproduces the live /items/trash list's default order

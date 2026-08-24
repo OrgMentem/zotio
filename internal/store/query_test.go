@@ -567,6 +567,7 @@ func TestQueryTagsFiltersOrdersAndPaginates(t *testing.T) {
 		json.RawMessage(`{"tag":"Alpha","meta":{"type":0,"numItems":1}}`),
 		json.RawMessage(`{"tag":"100% reviewed","meta":{"type":0,"numItems":1}}`),
 		json.RawMessage(`{"tag":"Under_score","meta":{"type":0,"numItems":1}}`),
+		json.RawMessage(`{"tag":"A B","meta":{"type":0,"numItems":1}}`),
 	}
 	if _, _, err := s.UpsertBatch("tags", tags); err != nil {
 		t.Fatalf("seed tags: %v", err)
@@ -588,6 +589,14 @@ func TestQueryTagsFiltersOrdersAndPaginates(t *testing.T) {
 		t.Fatalf("startsWith page = %v, want [alphabet]", names)
 	}
 
+	got, err = s.QueryTagsContext(context.Background(), TagQuery{Query: " B", QueryMode: "contains"})
+	if err != nil {
+		t.Fatalf("whitespace query: %v", err)
+	}
+	if names := tagNames(t, got); !equalStrings(names, []string{"A B"}) {
+		t.Fatalf("whitespace query names = %v, want [A B]", names)
+	}
+
 	for query, want := range map[string]string{"100%": "100% reviewed", "Under_": "Under_score"} {
 		got, err = s.QueryTagsContext(context.Background(), TagQuery{Query: query})
 		if err != nil {
@@ -607,6 +616,7 @@ func TestQueryTagsCollectionScopeUsesItemTagMembership(t *testing.T) {
 	s := queryTestStore(t)
 	tags := []json.RawMessage{
 		json.RawMessage(`{"tag":"Manual","meta":{"type":0,"numItems":1}}`),
+		json.RawMessage(`{"tag":"Shared","meta":{"type":0,"numItems":1}}`),
 		json.RawMessage(`{"tag":"Shared","meta":{"type":1,"numItems":1}}`),
 		json.RawMessage(`{"tag":"Elsewhere","meta":{"type":0,"numItems":1}}`),
 	}
@@ -621,12 +631,20 @@ func TestQueryTagsCollectionScopeUsesItemTagMembership(t *testing.T) {
 		t.Fatalf("seed items: %v", err)
 	}
 
-	got, err := s.QueryTagsContext(context.Background(), TagQuery{Collection: "COL1"})
+	got, err := s.QueryTagsContext(context.Background(), TagQuery{Name: "Shared"})
+	if err != nil {
+		t.Fatalf("exact duplicate-name query: %v", err)
+	}
+	if names := tagNamesWithTypes(t, got); !equalStrings(names, []string{"Shared:0", "Shared:1"}) {
+		t.Fatalf("exact duplicate-name tags = %v, want [Shared:0 Shared:1]", names)
+	}
+
+	got, err = s.QueryTagsContext(context.Background(), TagQuery{Collection: "COL1"})
 	if err != nil {
 		t.Fatalf("collection query: %v", err)
 	}
-	if names := tagNames(t, got); !equalStrings(names, []string{"Manual", "Shared"}) {
-		t.Fatalf("collection tags = %v, want [Manual Shared]", names)
+	if names := tagNamesWithTypes(t, got); !equalStrings(names, []string{"Manual:0", "Shared:1"}) {
+		t.Fatalf("collection tags = %v, want [Manual:0 Shared:1]", names)
 	}
 }
 
@@ -641,6 +659,24 @@ func tagNames(t *testing.T, rows []json.RawMessage) []string {
 			t.Fatalf("decode tag %s: %v", string(row), err)
 		}
 		names = append(names, tag.Tag)
+	}
+	return names
+}
+
+func tagNamesWithTypes(t *testing.T, rows []json.RawMessage) []string {
+	t.Helper()
+	names := make([]string, 0, len(rows))
+	for _, row := range rows {
+		var tag struct {
+			Tag  string `json:"tag"`
+			Meta struct {
+				Type int `json:"type"`
+			} `json:"meta"`
+		}
+		if err := json.Unmarshal(row, &tag); err != nil {
+			t.Fatalf("decode tag %s: %v", string(row), err)
+		}
+		names = append(names, fmt.Sprint(tag.Tag, ":", tag.Meta.Type))
 	}
 	return names
 }

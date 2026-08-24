@@ -121,7 +121,8 @@ func (s *Store) QueryItemsContext(ctx context.Context, q ItemQuery) ([]json.RawM
 // TagQuery describes a scoped local tag-resource query. Tags are separate
 // synced resources, while collection membership lives on item rows.
 type TagQuery struct {
-	Query      string // tag-name filter
+	Name       string // exact tag name, used by /tags/{name}
+	Query      string // literal tag-name filter
 	QueryMode  string // "contains" | "startsWith"
 	Collection string // collection key whose item tags are returned
 	Limit      int    // 0 = no limit
@@ -158,8 +159,11 @@ func (s *Store) QueryTagsContext(ctx context.Context, q TagQuery) ([]json.RawMes
 FROM resources t
 WHERE t.resource_type = 'tags'`)
 
-	if query := strings.TrimSpace(q.Query); query != "" {
-		pattern := escapeTagLikeLiteral(query)
+	if q.Name != "" {
+		sb.WriteString("\nAND " + tagName + " = ?")
+		args = append(args, q.Name)
+	} else if q.Query != "" {
+		pattern := escapeTagLikeLiteral(q.Query)
 		if mode == "startsWith" {
 			pattern += "%"
 		} else {
@@ -179,6 +183,7 @@ AND EXISTS (
 	WHERE i.resource_type = 'items'
 		AND c.value = ?
 		AND json_extract(it.value, '$.tag') = ` + tagName + `
+		AND COALESCE(json_extract(it.value, '$.type'), 0) = ` + tagType + `
 )`)
 		args = append(args, q.Collection)
 	}

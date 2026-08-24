@@ -1467,11 +1467,6 @@ func syncResourcePath(resource string) (string, error) {
 // store's UpsertBatch must key rows identically, so there is one definition.
 var resourceIDFieldOverrides = store.ResourceIDFieldOverrides
 
-// genericIDFieldFallbacks is the runtime safety net for resources that did
-// NOT receive a templated IDField. API-specific names belong in spec
-// annotations (x-resource-id), not this list.
-var genericIDFieldFallbacks = []string{"id", "ID", "name", "uuid", "slug", "key", "code", "uid"}
-
 // criticalResources is the template-time projection of per-resource Critical
 // (set by the profiler from the spec's path-item x-critical extension). It
 // is consulted at error-aggregation time so a non-critical failure can be
@@ -1482,31 +1477,8 @@ var genericIDFieldFallbacks = []string{"id", "ID", "name", "uuid", "slug", "key"
 // flat-resource critical failure.
 var criticalResources = map[string]bool{}
 
-// extractID resolves an item's primary-key field. It consults the
-// per-resource templated override first; on miss, it falls through to the
-// generic fallback list. resource may be empty for callers that don't have
-// a resource context (only the generic list applies in that case).
-//
-// Field lookups go through store.LookupFieldValue so snake_case overrides
-// match camelCase JSON renderings. UpsertBatch resolves fields the same
-// way — divergence between the two paths produces silent drops on
-// heterogeneous payloads.
+// extractID delegates to the store's identity function so sync-owned keyed
+// writes and direct UpsertBatch calls cannot disagree about composite tag IDs.
 func extractID(resource string, obj map[string]any) string {
-	if override, ok := resourceIDFieldOverrides[resource]; ok && override != "" {
-		if v := store.LookupFieldValue(obj, override); v != nil {
-			s := fmt.Sprintf("%v", v)
-			if s != "" && s != "<nil>" {
-				return s
-			}
-		}
-	}
-	for _, key := range genericIDFieldFallbacks {
-		if v := store.LookupFieldValue(obj, key); v != nil {
-			s := fmt.Sprintf("%v", v)
-			if s != "" && s != "<nil>" {
-				return s
-			}
-		}
-	}
-	return ""
+	return store.ExtractResourceID(resource, obj)
 }

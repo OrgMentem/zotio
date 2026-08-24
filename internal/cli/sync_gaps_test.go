@@ -527,14 +527,14 @@ func TestSyncDefaultAndResourceHelpers(t *testing.T) {
 		t.Fatalf("extractID missing = %q, want empty", got)
 	}
 
-	// Zotero tags and global schema lists use domain-name
-	// keys that are not in the generic ID fallback list.
+	// Zotero tags use a composite (name,type) identity; global schema lists use
+	// domain-name keys that are not in the generic ID fallback list.
 	idCases := []struct {
 		resource string
 		obj      map[string]any
 		want     string
 	}{
-		{"tags", map[string]any{"tag": "foo"}, "foo"},
+		{"tags", map[string]any{"tag": "foo"}, "3:foo:0"},
 		{"schema", map[string]any{"itemType": "journalArticle"}, "journalArticle"},
 		{"schema-item-fields", map[string]any{"field": "title"}, "title"},
 		{"schema-creator-fields", map[string]any{"field": "firstName"}, "firstName"},

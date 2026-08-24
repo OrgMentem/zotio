@@ -5,6 +5,7 @@ package store
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"path/filepath"
 	"sync"
@@ -463,4 +464,78 @@ func TestMigrate_ItemLifecycleCanonicalizesPreVersion4DB(t *testing.T) {
 	assertCanonicalItemState(t, reopened, "LIVE-WINS", "items", "items-trash")
 	assertCanonicalItemState(t, reopened, "TRASH-TIE", "items-trash", "items")
 	assertCanonicalItemState(t, reopened, "INVALID-VERSION", "items-trash", "items")
+}
+
+func TestMigrateVersion5InvalidatesLegacyTagCacheForTypedRehydration(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "data.db")
+	s, err := OpenWithContext(context.Background(), dbPath)
+	if err != nil {
+		t.Fatalf("create current store: %v", err)
+	}
+	if err := s.Close(); err != nil {
+		t.Fatalf("close current store: %v", err)
+	}
+
+	raw, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("open raw: %v", err)
+	}
+	const oldID = "Depression"
+	const payload = `{"tag":"Depression","meta":{"type":1,"numItems":10}}`
+	if _, err := raw.Exec(
+		`INSERT INTO resources (id, resource_type, data) VALUES (?, 'tags', ?)`,
+		oldID, payload,
+	); err != nil {
+		_ = raw.Close()
+		t.Fatalf("seed legacy tag: %v", err)
+	}
+	if _, err := raw.Exec(
+		`INSERT INTO resources_fts (id, resource_type, content) VALUES (?, 'tags', ?)`,
+		oldID, payload,
+	); err != nil {
+		_ = raw.Close()
+		t.Fatalf("seed legacy tag FTS: %v", err)
+	}
+	if _, err := raw.Exec(
+		`INSERT INTO sync_state (resource_type, last_synced_at, total_count) VALUES ('tags', CURRENT_TIMESTAMP, 1)`,
+	); err != nil {
+		_ = raw.Close()
+		t.Fatalf("seed legacy tag sync state: %v", err)
+	}
+	if _, err := raw.Exec(`PRAGMA user_version = 4`); err != nil {
+		_ = raw.Close()
+		t.Fatalf("stamp version 4: %v", err)
+	}
+	if err := raw.Close(); err != nil {
+		t.Fatalf("close raw: %v", err)
+	}
+
+	migrated, err := OpenWithContext(context.Background(), dbPath)
+	if err != nil {
+		t.Fatalf("migrate version 4 store: %v", err)
+	}
+	defer migrated.Close()
+	for label, query := range map[string]string{
+		"resources":  `SELECT count(*) FROM resources WHERE resource_type = 'tags'`,
+		"FTS":        `SELECT count(*) FROM resources_fts WHERE resource_type = 'tags'`,
+		"sync state": `SELECT count(*) FROM sync_state WHERE resource_type = 'tags'`,
+	} {
+		var count int
+		if err := migrated.DB().QueryRow(query).Scan(&count); err != nil {
+			t.Fatalf("count migrated %s: %v", label, err)
+		}
+		if count != 0 {
+			t.Fatalf("migrated %s count = %d, want 0 before tag rehydration", label, count)
+		}
+	}
+
+	if _, _, err := migrated.UpsertBatch("tags", []json.RawMessage{
+		json.RawMessage(`{"tag":"Depression","meta":{"type":0,"numItems":5}}`),
+		json.RawMessage(`{"tag":"Depression","meta":{"type":1,"numItems":10}}`),
+	}); err != nil {
+		t.Fatalf("rehydrate typed tags: %v", err)
+	}
+	if count, err := migrated.Count("tags"); err != nil || count != 2 {
+		t.Fatalf("rehydrated tag count = %d, %v; want 2", count, err)
+	}
 }

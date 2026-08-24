@@ -28,7 +28,7 @@ import (
 // shape — adding columns, dropping indexes, changing FTS5 tokenizers —
 // so an older binary refuses to open a newer database rather than silently
 // producing wrong results against a schema it cannot read.
-const StoreSchemaVersion = 4
+const StoreSchemaVersion = 5
 
 type Store struct {
 	db *sql.DB
@@ -548,6 +548,11 @@ func (s *Store) migrate(ctx context.Context) error {
 				return fmt.Errorf("migration failed: %w", err)
 			}
 		}
+		if current < 5 {
+			if err := resetLegacyTagResources(ctx, conn); err != nil {
+				return fmt.Errorf("resetting legacy tag resources: %w", err)
+			}
+		}
 		if current < 4 {
 			if err := reconcileExistingItemLifecycle(ctx, conn); err != nil {
 				return fmt.Errorf("reconciling item lifecycle: %w", err)
@@ -582,6 +587,44 @@ func (s *Store) migrate(ctx context.Context) error {
 		}
 		return nil
 	})
+}
+
+// resetLegacyTagResources invalidates the name-keyed tag cache. That cache has
+// already collapsed same-name manual and automatic rows, so no data migration
+// can restore the missing row. Removing its sync checkpoint forces the next
+// tag sync to hydrate both typed identities from Zotero.
+func resetLegacyTagResources(ctx context.Context, conn *sql.Conn) error {
+	rows, err := conn.QueryContext(ctx, `SELECT rowid FROM resources_fts WHERE resource_type = 'tags'`)
+	if err != nil {
+		return err
+	}
+	var rowids []int64
+	for rows.Next() {
+		var rowid int64
+		if err := rows.Scan(&rowid); err != nil {
+			_ = rows.Close()
+			return err
+		}
+		rowids = append(rowids, rowid)
+	}
+	if err := rows.Close(); err != nil {
+		return err
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	for _, rowid := range rowids {
+		if _, err := conn.ExecContext(ctx, `DELETE FROM resources_fts WHERE rowid = ?`, rowid); err != nil {
+			return err
+		}
+	}
+	if _, err := conn.ExecContext(ctx, `DELETE FROM resources WHERE resource_type = 'tags'`); err != nil {
+		return err
+	}
+	if _, err := conn.ExecContext(ctx, `DELETE FROM sync_state WHERE resource_type = 'tags'`); err != nil {
+		return err
+	}
+	return nil
 }
 
 func (s *Store) purgeAliasResources(ctx context.Context, conn *sql.Conn) error {
@@ -1340,12 +1383,11 @@ func lookupFieldValue(obj map[string]any, snakeKey string) any {
 	return LookupFieldValue(obj, snakeKey)
 }
 
-// ResourceIDFieldOverrides maps resources whose primary key is a domain-name
-// field rather than a generic id/name/key field. prepareResourceItem consults
-// this first so the domain field wins over the generic fallback list; sync
-// shares it so both ingest paths key rows identically.
+// ResourceIDFieldOverrides maps resources whose primary key comes from a
+// domain field. Tags still appear here so sync chooses its keyed path, but
+// ExtractResourceID combines tag name and type because Zotero can return one
+// manual and one automatic row with the same name.
 var ResourceIDFieldOverrides = map[string]string{
-	// Zotero tags and global schema lists are keyed by domain-name fields.
 	"tags":                  "tag",
 	"schema":                "itemType",
 	"schema-creator-fields": "field",
@@ -1356,6 +1398,42 @@ var ResourceIDFieldOverrides = map[string]string{
 // NOT receive a templated IDField. API-specific names belong in spec
 // annotations (x-resource-id), not this list.
 var genericIDFieldFallbacks = []string{"id", "ID", "name", "uuid", "slug", "key", "code", "uid"}
+
+// ExtractResourceID is the single resource identity function shared by sync
+// and direct store upserts.
+func ExtractResourceID(resourceType string, obj map[string]any) string {
+	if resourceType == "tags" {
+		if value := lookupFieldValue(obj, "tag"); value != nil {
+			tag := fmt.Sprintf("%v", value)
+			if tag != "" && tag != "<nil>" {
+				typeID := "0"
+				if meta, ok := obj["meta"].(map[string]any); ok && meta["type"] != nil {
+					typeID = fmt.Sprintf("%v", meta["type"])
+				} else if value := lookupFieldValue(obj, "type"); value != nil {
+					typeID = fmt.Sprintf("%v", value)
+				}
+				return fmt.Sprintf("%d:%s:%s", len(tag), tag, typeID)
+			}
+		}
+	}
+	if override, ok := ResourceIDFieldOverrides[resourceType]; ok && override != "" {
+		if value := lookupFieldValue(obj, override); value != nil {
+			id := fmt.Sprintf("%v", value)
+			if id != "" && id != "<nil>" {
+				return id
+			}
+		}
+	}
+	for _, key := range genericIDFieldFallbacks {
+		if value := lookupFieldValue(obj, key); value != nil {
+			id := fmt.Sprintf("%v", value)
+			if id != "" && id != "<nil>" {
+				return id
+			}
+		}
+	}
+	return ""
+}
 
 type preparedResourceItem struct {
 	id   string
@@ -1369,29 +1447,7 @@ func prepareResourceItem(resourceType string, item json.RawMessage) (preparedRes
 		return preparedResourceItem{}, false, false
 	}
 
-	// Templated IDField wins; generic fallback list runs second when the
-	// override is empty OR the override field is absent on this particular item
-	// (response shape mismatches happen even when the spec declares x-resource-id).
-	var id string
-	if override, ok := ResourceIDFieldOverrides[resourceType]; ok && override != "" {
-		if v := lookupFieldValue(obj, override); v != nil {
-			s := fmt.Sprintf("%v", v)
-			if s != "" && s != "<nil>" {
-				id = s
-			}
-		}
-	}
-	if id == "" {
-		for _, key := range genericIDFieldFallbacks {
-			if v := lookupFieldValue(obj, key); v != nil {
-				s := fmt.Sprintf("%v", v)
-				if s != "" && s != "<nil>" {
-					id = s
-					break
-				}
-			}
-		}
-	}
+	id := ExtractResourceID(resourceType, obj)
 	if id == "" {
 		return preparedResourceItem{}, false, true
 	}
