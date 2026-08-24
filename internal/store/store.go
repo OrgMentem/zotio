@@ -621,8 +621,24 @@ func resetLegacyTagResources(ctx context.Context, conn *sql.Conn) error {
 	if _, err := conn.ExecContext(ctx, `DELETE FROM resources WHERE resource_type = 'tags'`); err != nil {
 		return err
 	}
-	if _, err := conn.ExecContext(ctx, `DELETE FROM sync_state WHERE resource_type = 'tags'`); err != nil {
+	hasResourceType, err := tableHasColumn(ctx, conn, "sync_state", "resource_type")
+	if err != nil {
 		return err
+	}
+	if hasResourceType {
+		if _, err := conn.ExecContext(ctx, `DELETE FROM sync_state WHERE resource_type = 'tags'`); err != nil {
+			return err
+		}
+	} else {
+		hasID, err := tableHasColumn(ctx, conn, "sync_state", "id")
+		if err != nil {
+			return err
+		}
+		if hasID {
+			if _, err := conn.ExecContext(ctx, `DELETE FROM sync_state WHERE id = 'tags'`); err != nil {
+				return err
+			}
+		}
 	}
 	return nil
 }
