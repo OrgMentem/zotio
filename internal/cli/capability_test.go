@@ -6,7 +6,12 @@
 
 package cli
 
-import "testing"
+import (
+	"strings"
+	"testing"
+
+	"github.com/spf13/cobra"
+)
 
 func TestCapabilityOverridesResolveToRealCommands(t *testing.T) {
 	entries := buildCapabilityRegistry(RootCmd())
@@ -163,18 +168,51 @@ func TestConnectorBackedCreateCommandsCarryBothRoutes(t *testing.T) {
 	}
 }
 
-func TestItemsNewRemainsWebOnlyBecauseItsTemplateNeedsAKey(t *testing.T) {
+func TestItemsNewCarriesConnectorRouteWithTemplateKey(t *testing.T) {
 	for _, entry := range buildCapabilityRegistry(RootCmd()) {
 		if entry.Path != "items new" {
 			continue
 		}
-		if len(entry.Routes) != 0 {
-			t.Fatalf("items new routes = %+v, want none", entry.Routes)
+		if len(entry.Routes) != 2 {
+			t.Fatalf("items new routes = %+v, want default and connector", entry.Routes)
 		}
-		if entry.WriteTarget != "web_api" || !stringSliceContains(entry.Requires, preconditionWebAPIKey) {
-			t.Fatalf("items new = %+v, want Web-only with web_api_key", entry)
+		connector := entry.Routes[1]
+		if connector.Via != "connector" ||
+			!stringSliceContains(connector.Requires, preconditionWebAPIKey) ||
+			!stringSliceContains(connector.Requires, preconditionDesktopConnector) {
+			t.Fatalf("items new connector route = %+v, want web_api_key and desktop_connector", connector)
+		}
+		if !stringSliceContains(entry.DataSources, "web") || !stringSliceContains(entry.DataSources, "live") {
+			t.Fatalf("items new data_sources = %v, want web and live", entry.DataSources)
 		}
 		return
 	}
 	t.Fatal("capability registry omitted items new")
+}
+
+func TestRoutedCapabilitiesAnnotateMCPRouteSelectors(t *testing.T) {
+	root := RootCmd()
+	byPath := make(map[string]*cobra.Command)
+	var walk func(*cobra.Command)
+	walk = func(parent *cobra.Command) {
+		for _, cmd := range parent.Commands() {
+			byPath[strings.TrimPrefix(cmd.CommandPath(), root.Name()+" ")] = cmd
+			walk(cmd)
+		}
+	}
+	walk(root)
+
+	for path, entry := range capabilityOverrides {
+		if len(entry.Routes) < 2 {
+			continue
+		}
+		cmd := byPath[path]
+		if cmd == nil {
+			t.Errorf("routed capability %q has no command", path)
+			continue
+		}
+		if got := cmd.Annotations["mcp:inherited-flags"]; got != "via,connector-target" {
+			t.Errorf("%s MCP inherited flags = %q, want via,connector-target", path, got)
+		}
+	}
 }

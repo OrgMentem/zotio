@@ -64,6 +64,19 @@ var connectorCreateCapability = capabilityEntry{
 	},
 }
 
+// items new needs the Web API key even on its connector route because it
+// fetches the global /items/new template before routeCreateItem creates the
+// validated item through Zotero desktop.
+var connectorTemplateCreateCapability = capabilityEntry{
+	Operation:   "write",
+	WriteTarget: "web_api",
+	Requires:    []string{preconditionWebAPIKey},
+	Routes: []capabilityRoute{
+		{Via: "default", Requires: []string{preconditionWebAPIKey}},
+		{Via: "connector", Requires: []string{preconditionWebAPIKey, preconditionDesktopConnector}},
+	},
+}
+
 // capabilityOverrides carries the safety-critical metadata that cannot be
 // derived from Cobra annotations: preconditions, write targets, and
 // destructiveness. Keys are full command paths (root name stripped). The
@@ -125,8 +138,8 @@ var capabilityOverrides = map[string]capabilityEntry{
 	"import pdf":               {Operation: "write", WriteTarget: "desktop_connector", Requires: []string{preconditionDesktopConnector}},
 	"import targets":           {Operation: "read", Requires: []string{preconditionDesktopConnector}},
 	"import translators":       {Operation: "read", Requires: []string{preconditionDesktopConnector}},
-	// items new validates against /items/new (Web-only) then POSTs.
-	"items new":                {Operation: "write", WriteTarget: "web_api", Requires: []string{preconditionWebAPIKey}},
+	// items new fetches /items/new from the Web API before either create route.
+	"items new":                connectorTemplateCreateCapability,
 	"items preprint-check fix": {Operation: "write", WriteTarget: "web_api", Requires: []string{preconditionWebAPIKey}},
 	// import apply can create items through either route. Some manifest
 	// actions add stronger runtime checks, but every connector create needs
@@ -205,14 +218,16 @@ func dataSourcesForRequires(requires []string) []string {
 		return false
 	}
 	switch {
+	case has(preconditionDesktopConnector):
+		// A connector route can also require a Web key for a prerequisite read
+		// such as /items/new. The route's data plane is still the live desktop.
+		return []string{"live"}
 	case has(preconditionWebAPIKey):
 		return []string{"web"}
 	case has(preconditionLiveLocalAPI):
 		return []string{"live"}
 	case has(preconditionSyncedStore):
 		return []string{"local", "live"}
-	case has(preconditionDesktopConnector):
-		return []string{"live"}
 	default:
 		return nil
 	}
@@ -256,6 +271,30 @@ func buildCapabilityRegistry(rootCmd *cobra.Command) []capabilityEntry {
 
 	sort.Slice(entries, func(i, j int) bool { return entries[i].Path < entries[j].Path })
 	return entries
+}
+
+// annotateCapabilityRouteFlags makes route selectors available to the MCP
+// facade only on commands whose capability metadata declares multiple routes.
+// The MCP walker still validates each named inherited flag against its compiled
+// unsafe list.
+func annotateCapabilityRouteFlags(rootCmd *cobra.Command) {
+	if rootCmd == nil {
+		return
+	}
+	var walk func(*cobra.Command)
+	walk = func(parent *cobra.Command) {
+		for _, cmd := range parent.Commands() {
+			path := strings.TrimPrefix(cmd.CommandPath(), rootCmd.Name()+" ")
+			if entry, ok := capabilityOverrides[path]; ok && len(entry.Routes) > 1 {
+				if cmd.Annotations == nil {
+					cmd.Annotations = make(map[string]string)
+				}
+				cmd.Annotations["mcp:inherited-flags"] = "via,connector-target"
+			}
+			walk(cmd)
+		}
+	}
+	walk(rootCmd)
 }
 
 // newCapabilitiesCmd emits the capability registry as JSON so agents and MCP

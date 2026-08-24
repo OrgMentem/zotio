@@ -195,3 +195,41 @@ func TestStripValidateRejectsUnregisteredHiddenGlobals(t *testing.T) {
 		})
 	}
 }
+
+func TestAnnotatedInheritedRouteFlagsAreExposedAndAccepted(t *testing.T) {
+	root, child := stripNewRoot(false)
+	root.PersistentFlags().String("via", "auto", "route")
+	root.PersistentFlags().String("connector-target", "", "target")
+	child.Annotations = map[string]string{
+		inheritedMirrorFlagsAnnotation: "via,connector-target",
+	}
+
+	allowed := safeFlagNames(child)
+	for _, name := range []string{"via", "connector-target"} {
+		if _, ok := allowed[name]; !ok {
+			t.Errorf("annotated route flag %q is not exposed", name)
+			continue
+		}
+		if err := validateMirrorArguments(map[string]any{name: "connector"}, allowed); err != nil {
+			t.Errorf("annotated route flag %q was rejected: %v", name, err)
+		}
+	}
+}
+
+func TestUnannotatedInheritedRouteFlagRemainsRejected(t *testing.T) {
+	root, child := stripNewRoot(false)
+	root.PersistentFlags().String("via", "auto", "route")
+	allowed := safeFlagNames(child)
+	if err := validateMirrorArguments(map[string]any{"via": "connector"}, allowed); err == nil {
+		t.Fatal("unannotated inherited route flag was accepted")
+	}
+}
+
+func TestAnnotatedUnsafeInheritedFlagRemainsRejected(t *testing.T) {
+	root, child := stripNewRoot(false)
+	root.PersistentFlags().String("config", "", "config")
+	child.Annotations = map[string]string{inheritedMirrorFlagsAnnotation: "config"}
+	if _, ok := safeFlagNames(child)["config"]; ok {
+		t.Fatal("unsafe config flag was exposed through an annotation")
+	}
+}

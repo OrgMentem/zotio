@@ -106,6 +106,10 @@
           "description": "Additional positional arguments to append to the command. Raw CLI flags are rejected.",
           "type": "string"
         },
+        "connector-target": {
+          "description": "Desktop connector save target ID (for example C78); overrides --collection target mapping",
+          "type": "string"
+        },
         "continue-on-error": {
           "description": "On bulk mutations, continue past per-item failures/conflicts instead of stopping at the first (default: false)",
           "type": "boolean"
@@ -128,6 +132,10 @@
         },
         "title": {
           "description": "Attachment title (default: the file name)",
+          "type": "string"
+        },
+        "via": {
+          "description": "Item-creation route: auto (connector when local+reachable), connector (desktop), or web (api.zotero.org) (default: auto)",
           "type": "string"
         },
         "yes": {
@@ -893,6 +901,10 @@
           "description": "Attachment handling: none, linked-file, or stored (default: none)",
           "type": "string"
         },
+        "connector-target": {
+          "description": "Desktop connector save target ID (for example C78); overrides --collection target mapping",
+          "type": "string"
+        },
         "continue-on-error": {
           "description": "On bulk mutations, continue past per-item failures/conflicts instead of stopping at the first (default: false)",
           "type": "boolean"
@@ -912,6 +924,10 @@
         "max-failures": {
           "description": "With --continue-on-error, stop after this many failures (0 = unlimited) (default: 0)",
           "type": "number"
+        },
+        "via": {
+          "description": "Item-creation route: auto (connector when local+reachable), connector (desktop), or web (api.zotero.org) (default: auto)",
+          "type": "string"
         },
         "yes": {
           "description": "Skip confirmation prompts (for agents and scripts) (default: false)",
@@ -943,6 +959,10 @@
           "description": "Collection key to add the item to",
           "type": "string"
         },
+        "connector-target": {
+          "description": "Desktop connector save target ID (for example C78); overrides --collection target mapping",
+          "type": "string"
+        },
         "continue-on-error": {
           "description": "On bulk mutations, continue past per-item failures/conflicts instead of stopping at the first (default: false)",
           "type": "boolean"
@@ -962,6 +982,10 @@
         "max-failures": {
           "description": "With --continue-on-error, stop after this many failures (0 = unlimited) (default: 0)",
           "type": "number"
+        },
+        "via": {
+          "description": "Item-creation route: auto (connector when local+reachable), connector (desktop), or web (api.zotero.org) (default: auto)",
+          "type": "string"
         },
         "yes": {
           "description": "Skip confirmation prompts (for agents and scripts) (default: false)",
@@ -1026,6 +1050,10 @@
           "description": "Collection key to add the item to",
           "type": "string"
         },
+        "connector-target": {
+          "description": "Desktop connector save target ID (for example C78); overrides --collection target mapping",
+          "type": "string"
+        },
         "continue-on-error": {
           "description": "On bulk mutations, continue past per-item failures/conflicts instead of stopping at the first (default: false)",
           "type": "boolean"
@@ -1045,6 +1073,10 @@
         "max-failures": {
           "description": "With --continue-on-error, stop after this many failures (0 = unlimited) (default: 0)",
           "type": "number"
+        },
+        "via": {
+          "description": "Item-creation route: auto (connector when local+reachable), connector (desktop), or web (api.zotero.org) (default: auto)",
+          "type": "string"
         },
         "yes": {
           "description": "Skip confirmation prompts (for agents and scripts) (default: false)",
@@ -1076,6 +1108,10 @@
           "description": "Collection key to add imported items to",
           "type": "string"
         },
+        "connector-target": {
+          "description": "Desktop connector save target ID (for example C78); overrides --collection target mapping",
+          "type": "string"
+        },
         "continue-on-error": {
           "description": "On bulk mutations, continue past per-item failures/conflicts instead of stopping at the first (default: false)",
           "type": "boolean"
@@ -1095,6 +1131,10 @@
         "max-failures": {
           "description": "With --continue-on-error, stop after this many failures (0 = unlimited) (default: 0)",
           "type": "number"
+        },
+        "via": {
+          "description": "Item-creation route: auto (connector when local+reachable), connector (desktop), or web (api.zotero.org) (default: auto)",
+          "type": "string"
         },
         "yes": {
           "description": "Skip confirmation prompts (for agents and scripts) (default: false)",
@@ -1126,6 +1166,10 @@
           "description": "Collection key to add the item to",
           "type": "string"
         },
+        "connector-target": {
+          "description": "Desktop connector save target ID (for example C78); overrides --collection target mapping",
+          "type": "string"
+        },
         "continue-on-error": {
           "description": "On bulk mutations, continue past per-item failures/conflicts instead of stopping at the first (default: false)",
           "type": "boolean"
@@ -1145,6 +1189,10 @@
         "max-failures": {
           "description": "With --continue-on-error, stop after this many failures (0 = unlimited) (default: 0)",
           "type": "number"
+        },
+        "via": {
+          "description": "Item-creation route: auto (connector when local+reachable), connector (desktop), or web (api.zotero.org) (default: auto)",
+          "type": "string"
         },
         "yes": {
           "description": "Skip confirmation prompts (for agents and scripts) (default: false)",
@@ -1226,6 +1274,10 @@
           "description": "Collection key to add the item to",
           "type": "string"
         },
+        "connector-target": {
+          "description": "Desktop connector save target ID (for example C78); overrides --collection target mapping",
+          "type": "string"
+        },
         "continue-on-error": {
           "description": "On bulk mutations, continue past per-item failures/conflicts instead of stopping at the first (default: false)",
           "type": "boolean"
@@ -1245,6 +1297,10 @@
         "max-failures": {
           "description": "With --continue-on-error, stop after this many failures (0 = unlimited) (default: 0)",
           "type": "number"
+        },
+        "via": {
+          "description": "Item-creation route: auto (connector when local+reachable), connector (desktop), or web (api.zotero.org) (default: auto)",
+          "type": "string"
         },
         "yes": {
           "description": "Skip confirmation prompts (for agents and scripts) (default: false)",
@@ -1339,6 +1395,10 @@
           "description": "Collection key to add the item to",
           "type": "string"
         },
+        "connector-target": {
+          "description": "Desktop connector save target ID (for example C78); overrides --collection target mapping",
+          "type": "string"
+        },
         "continue-on-error": {
           "description": "On bulk mutations, continue past per-item failures/conflicts instead of stopping at the first (default: false)",
           "type": "boolean"
@@ -1358,6 +1418,10 @@
         "max-failures": {
           "description": "With --continue-on-error, stop after this many failures (0 = unlimited) (default: 0)",
           "type": "number"
+        },
+        "via": {
+          "description": "Item-creation route: auto (connector when local+reachable), connector (desktop), or web (api.zotero.org) (default: auto)",
+          "type": "string"
         },
         "yes": {
           "description": "Skip confirmation prompts (for agents and scripts) (default: false)",
@@ -1663,6 +1727,10 @@
           "description": "Allow stored attachment uploads into Zotero's cloud storage even when Zotero desktop keeps files elsewhere (for example WebDAV) (default: false)",
           "type": "boolean"
         },
+        "connector-target": {
+          "description": "Desktop connector save target ID (for example C78); overrides --collection target mapping",
+          "type": "string"
+        },
         "continue-on-error": {
           "description": "On bulk mutations, continue past per-item failures/conflicts instead of stopping at the first (default: false)",
           "type": "boolean"
@@ -1686,6 +1754,10 @@
         "stdin": {
           "description": "Read request body as JSON from stdin (default: false)",
           "type": "boolean"
+        },
+        "via": {
+          "description": "Item-creation route: auto (connector when local+reachable), connector (desktop), or web (api.zotero.org) (default: auto)",
+          "type": "string"
         },
         "yes": {
           "description": "Skip confirmation prompts (for agents and scripts) (default: false)",
@@ -2131,6 +2203,10 @@
           "description": "Collection key to add the item to",
           "type": "string"
         },
+        "connector-target": {
+          "description": "Desktop connector save target ID (for example C78); overrides --collection target mapping",
+          "type": "string"
+        },
         "continue-on-error": {
           "description": "On bulk mutations, continue past per-item failures/conflicts instead of stopping at the first (default: false)",
           "type": "boolean"
@@ -2161,6 +2237,10 @@
         "stdin": {
           "description": "Read a JSON object of item fields from stdin (default: false)",
           "type": "boolean"
+        },
+        "via": {
+          "description": "Item-creation route: auto (connector when local+reachable), connector (desktop), or web (api.zotero.org) (default: auto)",
+          "type": "string"
         },
         "yes": {
           "description": "Skip confirmation prompts (for agents and scripts) (default: false)",

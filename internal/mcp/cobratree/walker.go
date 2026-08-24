@@ -121,6 +121,8 @@ var writeGatingMCPFlags = []string{
 	"max-failures",
 }
 
+const inheritedMirrorFlagsAnnotation = "mcp:inherited-flags"
+
 func visitSafeMirrorFlags(cmd *cobra.Command, visit func(*pflag.Flag)) {
 	seen := map[string]struct{}{}
 	emit := func(flag *pflag.Flag) {
@@ -145,6 +147,17 @@ func visitSafeMirrorFlags(cmd *cobra.Command, visit func(*pflag.Flag)) {
 				emit(flag)
 			}
 		}
+	}
+	// A command can opt specific inherited selectors back in. Capability route
+	// commands use this for --via and --connector-target. Compiled annotations
+	// remain subject to the same hidden, deprecated, and unsafe checks as every
+	// other mirrored flag.
+	for _, name := range strings.Split(cmd.Annotations[inheritedMirrorFlagsAnnotation], ",") {
+		name = strings.TrimSpace(name)
+		if name == "" {
+			continue
+		}
+		emit(cmd.InheritedFlags().Lookup(name))
 	}
 }
 
