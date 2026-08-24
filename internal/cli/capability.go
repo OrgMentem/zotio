@@ -50,6 +50,20 @@ type capabilityRoute struct {
 	Requires []string `json:"requires,omitempty"`
 }
 
+// connectorCreateCapability describes item-creation commands whose default
+// machine-readable contract remains the Web API route, but which can also
+// create in a personal library through a running Zotero desktop connector.
+// Keep this value immutable: capabilityOverrides shares its route slices.
+var connectorCreateCapability = capabilityEntry{
+	Operation:   "write",
+	WriteTarget: "web_api",
+	Requires:    []string{preconditionWebAPIKey},
+	Routes: []capabilityRoute{
+		{Via: "default", Requires: []string{preconditionWebAPIKey}},
+		{Via: "connector", Requires: []string{preconditionDesktopConnector}},
+	},
+}
+
 // capabilityOverrides carries the safety-critical metadata that cannot be
 // derived from Cobra annotations: preconditions, write targets, and
 // destructiveness. Keys are full command paths (root name stripped). The
@@ -81,7 +95,7 @@ var capabilityOverrides = map[string]capabilityEntry{
 	// Schema templates are built from global endpoints served by the local API.
 	"schema new-item-template": {Requires: []string{preconditionLiveLocalAPI}},
 	// Mutations: auto-routed to the Web API, so they need a key.
-	"items create":             {Operation: "write", WriteTarget: "web_api", Requires: []string{preconditionWebAPIKey}},
+	"items create":             connectorCreateCapability,
 	"items update":             {Operation: "write", WriteTarget: "web_api", Requires: []string{preconditionWebAPIKey}},
 	"items move":               {Operation: "write", WriteTarget: "web_api", Requires: []string{preconditionWebAPIKey}},
 	"items add-to-collection":  {Operation: "write", WriteTarget: "web_api", Requires: []string{preconditionWebAPIKey}},
@@ -101,12 +115,12 @@ var capabilityOverrides = map[string]capabilityEntry{
 	"reading-list start":       {Operation: "write", WriteTarget: "web_api", Requires: []string{preconditionWebAPIKey}},
 	"reading-list done":        {Operation: "write", WriteTarget: "web_api", Requires: []string{preconditionWebAPIKey}},
 	"searches materialize":     {Operation: "write", WriteTarget: "web_api", Requires: []string{preconditionWebAPIKey}},
-	"import doi":               {Operation: "write", WriteTarget: "web_api", Requires: []string{preconditionWebAPIKey}},
-	"import url":               {Operation: "write", WriteTarget: "web_api", Requires: []string{preconditionWebAPIKey}},
-	"import file":              {Operation: "write", WriteTarget: "web_api", Requires: []string{preconditionWebAPIKey}},
-	"import pmid":              {Operation: "write", WriteTarget: "web_api", Requires: []string{preconditionWebAPIKey}},
-	"import arxiv":             {Operation: "write", WriteTarget: "web_api", Requires: []string{preconditionWebAPIKey}},
-	"import isbn":              {Operation: "write", WriteTarget: "web_api", Requires: []string{preconditionWebAPIKey}},
+	"import doi":               connectorCreateCapability,
+	"import url":               connectorCreateCapability,
+	"import file":              connectorCreateCapability,
+	"import pmid":              connectorCreateCapability,
+	"import arxiv":             connectorCreateCapability,
+	"import isbn":              connectorCreateCapability,
 	"import discover":          {Operation: "read", Requires: []string{preconditionSyncedStore}},
 	"import pdf":               {Operation: "write", WriteTarget: "desktop_connector", Requires: []string{preconditionDesktopConnector}},
 	"import targets":           {Operation: "read", Requires: []string{preconditionDesktopConnector}},
@@ -114,8 +128,10 @@ var capabilityOverrides = map[string]capabilityEntry{
 	// items new validates against /items/new (Web-only) then POSTs.
 	"items new":                {Operation: "write", WriteTarget: "web_api", Requires: []string{preconditionWebAPIKey}},
 	"items preprint-check fix": {Operation: "write", WriteTarget: "web_api", Requires: []string{preconditionWebAPIKey}},
-	// import apply creates items / linked-file attachments via the Web API.
-	"import apply": {Operation: "write", WriteTarget: "web_api", Requires: []string{preconditionWebAPIKey}},
+	// import apply can create items through either route. Some manifest
+	// actions add stronger runtime checks, but every connector create needs
+	// only the desktop_connector precondition at the registry level.
+	"import apply": connectorCreateCapability,
 	// attachments add uploads stored files via the Zotero Web API file-upload
 	// protocol. That always targets Zotero's cloud storage, so the upload is
 	// refused when Zotero keeps its files elsewhere. `--via connector` bypasses

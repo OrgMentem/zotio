@@ -119,3 +119,62 @@ func TestAttachmentsAddCarriesConnectorRoute(t *testing.T) {
 	}
 	t.Fatal("capability registry omitted attachments add")
 }
+
+func TestConnectorBackedCreateCommandsCarryBothRoutes(t *testing.T) {
+	want := map[string]bool{
+		"items create": false,
+		"import apply": false,
+		"import arxiv": false,
+		"import doi":   false,
+		"import file":  false,
+		"import isbn":  false,
+		"import pmid":  false,
+		"import url":   false,
+	}
+	for _, entry := range buildCapabilityRegistry(RootCmd()) {
+		if _, ok := want[entry.Path]; !ok {
+			continue
+		}
+		want[entry.Path] = true
+		if entry.WriteTarget != "web_api" {
+			t.Errorf("%s write_target = %q, want the compatible default web_api", entry.Path, entry.WriteTarget)
+		}
+		if len(entry.Routes) != 2 {
+			t.Errorf("%s routes = %+v, want default and connector", entry.Path, entry.Routes)
+			continue
+		}
+		if entry.Routes[0].Via != "default" || !stringSliceContains(entry.Routes[0].Requires, preconditionWebAPIKey) {
+			t.Errorf("%s default route = %+v, want web_api_key", entry.Path, entry.Routes[0])
+		}
+		if entry.Routes[1].Via != "connector" || !stringSliceContains(entry.Routes[1].Requires, preconditionDesktopConnector) {
+			t.Errorf("%s connector route = %+v, want desktop_connector", entry.Path, entry.Routes[1])
+		}
+		if stringSliceContains(entry.Routes[1].Requires, preconditionWebAPIKey) {
+			t.Errorf("%s connector route requires a Web API key: %+v", entry.Path, entry.Routes[1])
+		}
+		if !stringSliceContains(entry.DataSources, "web") || !stringSliceContains(entry.DataSources, "live") {
+			t.Errorf("%s data_sources = %v, want web and live", entry.Path, entry.DataSources)
+		}
+	}
+	for path, found := range want {
+		if !found {
+			t.Errorf("capability registry omitted connector-backed create command %q", path)
+		}
+	}
+}
+
+func TestItemsNewRemainsWebOnlyBecauseItsTemplateNeedsAKey(t *testing.T) {
+	for _, entry := range buildCapabilityRegistry(RootCmd()) {
+		if entry.Path != "items new" {
+			continue
+		}
+		if len(entry.Routes) != 0 {
+			t.Fatalf("items new routes = %+v, want none", entry.Routes)
+		}
+		if entry.WriteTarget != "web_api" || !stringSliceContains(entry.Requires, preconditionWebAPIKey) {
+			t.Fatalf("items new = %+v, want Web-only with web_api_key", entry)
+		}
+		return
+	}
+	t.Fatal("capability registry omitted items new")
+}
