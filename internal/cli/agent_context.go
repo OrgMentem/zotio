@@ -125,7 +125,7 @@ func buildAgentContext(rootCmd *cobra.Command) agentContext {
 		SchemaVersion: agentContextSchemaVersion,
 		CLI: agentContextCLI{
 			Name:        "zotio",
-			Description: "Every Zotero feature in the terminal, plus offline search, annotation export, and library analytics no existing tool...",
+			Description: "Zotero library checks and safe automation: retracted-paper, citekey, and duplicate checks, CI-gateable health, local-first search, and preview-first journaled writes.",
 			Version:     rootCmd.Version,
 		},
 		Auth: agentContextAuth{
