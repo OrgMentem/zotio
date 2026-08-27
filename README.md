@@ -8,8 +8,8 @@
 
 <p align="center">
   <strong>
-    The trust-and-automation layer for
-    <a href="https://www.zotero.org/">Zotero</a>
+    Find retracted papers, broken citekeys, and duplicates in your
+    <a href="https://www.zotero.org/">Zotero</a> library — before your reviewers do
   </strong>
 </p>
 
@@ -50,28 +50,47 @@
 </p>
 
 <p align="center">
-  Local-fast reads, preview-first writes, and bounded, provenance-tagged context
-  — for you, your scripts, and your AI agents. <code>zotio</code> reads straight
-  from your running Zotero desktop app (no API key), mirrors your library to
-  local SQLite for offline search and analytics, and routes every change through
-  a preview-first safety envelope so nothing mutates your library by accident.
+  <code>zotio</code> checks a Zotero library the way CI checks code — retracted
+  papers, citekey conflicts, duplicates, missing metadata — and fixes what it
+  finds through a preview-first safety envelope. Reads are keyless, straight from
+  your running Zotero desktop app and a local SQLite mirror that works offline;
+  no write touches your library without a previewed plan and an explicit
+  <code>--yes</code>.
 </p>
 
 ```bash
-brew install orgmentem/tap/zotio                      # or grab a signed binary from Releases
-zotio init                                            # guided setup: detect Zotero, key, first sync, health check
-zotio library health --for citation --fail-on high   # is this library fit to cite? (exit 11 if not)
-zotio items retract-check                             # are you citing retracted papers?
-zotio items bibcheck thesis.tex --fail-on-unknown     # does every \cite{} resolve to your library?
-zotio search 'automation trust' --fulltext --data-source local  # resolve PDF-text hits to papers
-zotio items enrich --missing-doi --dry-run            # resolve DOIs from CrossRef/OpenAlex — preview only
+brew install orgmentem/tap/zotio        # or grab a signed binary from Releases
+zotio demo                              # bundled sandbox: 34 classic papers, one genuinely retracted
+ZOTIO_DEMO=1 zotio items retract-check  # check every DOI against Crossref's Retraction Watch data
 ```
 
-**No Zotero yet? Try the sandbox** — a bundled sample library (34 classic papers, one genuinely retracted) that needs no desktop app and no API key:
+```console
+KEY         STATUS      TYPE        NOTICE DOI                     DATE        SOURCE            TITLE
+WAKEFLD98   correction  correction  10.1016/s0140-6736(04)15715-2  2004-03-06  retraction-watch  Ileal-Lymphoid-Nodular Hyperplasia, Non-Speci...
+WAKEFLD98   retracted   retraction  10.1016/s0140-6736(10)60175-4  2010-02-06  retraction-watch  Ileal-Lymphoid-Nodular Hyperplasia, Non-Speci...
+FAIR002016  correction  addendum    10.1038/s41597-019-0009-6      2019-03-19  publisher         The FAIR Guiding Principles for Scientific Da...
+Checked 21 DOI-bearing items; 3 update notices flagged; 2 DOI(s) not registered with CrossRef.
+```
+
+That is the sandbox catching the retracted Wakefield 1998 MMR paper — with no
+Zotero install and no API key (the check itself queries Crossref live).
+`zotio demo --reset` removes the sandbox.
+
+Zotero itself alerts you when an item in your library is retracted — a red flag
+on the item, powered by the same Retraction Watch data. `zotio` covers what the
+desktop app does not: corrections and expressions of concern as well as
+retractions, a report across a whole library or collection that scripts can
+consume, a check of every `\cite{}` in your manuscript, and an exit code your
+CI can fail on — so the check runs on every commit, not only when you happen to
+open the item.
+
+**Point it at your real library:**
 
 ```bash
-zotio demo          # seed the sandbox + print a tour
-ZOTIO_DEMO=1 zotio library health --for citation
+zotio init                                            # guided setup: detect Zotero, key, first sync, health check
+zotio items retract-check                             # every DOI-bearing item, against Retraction Watch data
+zotio library health --for citation --fail-on high   # is this library fit to cite? (exit 11 if not)
+zotio items bibcheck thesis.tex --fail-on-unknown     # does every \cite{} resolve to your library? (exit 11 if not)
 ```
 
 <p align="center">
@@ -90,7 +109,7 @@ Zotero's GUI is great for reading and citing. It is painful the moment you need 
 - **Writes are preview-first.** Every mutation shows a plan before it touches anything. Gates cap blast radius; irreversible ops require an explicit opt-in; an append-only journal lets you undo the reversible ones.
 - **Context is bounded and provenance-tagged.** Every result says where it came from and how fresh it is — so a human or an agent knows whether to trust it. `zotio` **never calls an LLM**; it does the assembly and budgeting a model is bad at, then hands off.
 
-It is not "every Zotero endpoint in a terminal." It is the tool you reach for when the GUI gets too manual: **find the problems that bite downstream, fix them safely, ingest with review, and give agents a surface they can trust.**
+It is the tool you reach for when the GUI gets too manual: **find the problems that bite downstream, fix them safely, ingest with review, and give agents a surface they can trust.**
 
 ---
 

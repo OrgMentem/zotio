@@ -2,7 +2,7 @@
 template: home.html
 ---
 
-Zotero's GUI is great for reading and citing. It gets painful the moment you need to *operate* on a library at scale: find every article missing a PDF, catch duplicate `\cite{}` keys before a submission, export a week of highlights, keep an Obsidian vault in sync, or hand an AI agent trustworthy context. `zotio` owns that glue — and the risk that comes with it.
+`zotio` checks a Zotero library the way CI checks code — retracted papers, citekey conflicts, duplicates, missing metadata — with exit codes a build can fail on, and fixes what it finds through preview-first, journaled writes. Zotero's GUI is great for reading and citing; `zotio` is for *operating* on a library at scale: prove it is fit to cite, catch duplicate `\cite{}` keys before a submission, export a week of highlights, keep an Obsidian vault in sync, or hand an AI agent trustworthy context.
 
 ## How it works
 
@@ -27,12 +27,13 @@ Run [`zotio doctor`](reference/commands.md) any time to see connectivity, cache 
 ```bash
 zotio doctor                       # verify Zotero is running and reachable
 zotio sync                         # mirror your library to local SQLite
-zotio library stats                # see the shape of your library
+zotio items retract-check          # check every DOI against Crossref's Retraction Watch data
+zotio library health --for citation --fail-on high   # fit to cite? (exit 11 if not)
+zotio items bibcheck paper.tex --fail-on-unknown     # every \cite{} resolves? (exit 11 if not)
 zotio search 'automation trust' --data-source local --json
-zotio annotations timeline --since 2026-05-01 --format markdown > this-week.md
 ```
 
-**No Zotero yet?** `zotio demo` seeds a sandboxed sample library — 34 classic papers, one genuinely retracted — so every command above works with no desktop app and no API key (`ZOTIO_DEMO=1` activates it):
+**No Zotero yet?** `zotio demo` seeds a sandboxed sample library — 34 classic papers, one genuinely retracted — so the checks above (`retract-check`, `library health`, `bibcheck`, `search`) run with no desktop app and no API key under `ZOTIO_DEMO=1`; `doctor` and `sync` still need the real desktop. `ZOTIO_DEMO=1 zotio items retract-check` catches the sandbox's retracted paper on the spot:
 
 ![zotio demo tour](assets/demos/demo-tour.gif)
 
