@@ -138,4 +138,9 @@ recording must start from a restored pristine data directory, not from the curre
   Zotero needs a fault-injection proxy in front of port 23119. NOT ESTABLISHED: no such harness
   exists in this repo.
 * Finding 2 needs a decision before `journal undo` can be described as covering imports.
-* Finding 3 needs the pristine-snapshot step written into the papio demo storyboard.
+* Finding 3 is CLOSED downstream. papio now provisions the environment with a committed script
+  (`papio/scripts/launch-demo-env.sh`, `make launch-demo-env`), and the plan moved out of a
+  gitignored scratch directory to `papio/dev/active/launch-demo.md`. Its `snapshot` and `restore`
+  subcommands were verified on 2026-08-28 against a durable root: pristine at 0 item rows, one
+  connector import creating parent `Q6URBQB3` with attachment `2WI9HVP2`, then `restore` returning
+  the library, the trash, and the storage directory to empty.
