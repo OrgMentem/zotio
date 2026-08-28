@@ -4,6 +4,7 @@
 package cli
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -197,6 +198,47 @@ func manifestHasAttachEntries(m importManifest) bool {
 	return false
 }
 
+// storedConnectorCreateResult resolves both permanent keys after the file
+// lands. A connector write is already committed at this point, so an
+// unresolved or ambiguous read-back is a conflict, never an applied success.
+func storedConnectorCreateResult(ctx context.Context, flags *rootFlags, item map[string]any, res itemCreateResult, entryTitle string) (string, map[string]any, error) {
+	detail := map[string]any{"via": "connector"}
+	parentKey := res.WebKey
+	if parentKey == "" {
+		if res.CreatedAfter.IsZero() {
+			detail["recovery_target"] = "parent_key"
+			detail["message"] = "stored connector import applied, but no recovery time bound was recorded"
+			return "conflict", detail, nil
+		}
+		resolved, matched, err := confirmConnectorCreate(flags, item, res.CreatedAfter)
+		if err != nil || matched != 1 || resolved == "" {
+			detail["recovery_target"] = "parent_key"
+			detail["matched"] = matched
+			if err != nil {
+				detail["message"] = fmt.Sprintf("stored connector import applied, but the permanent parent key could not be confirmed: %v", err)
+			} else {
+				detail["message"] = fmt.Sprintf("stored connector import applied, but parent-key recovery found %d matching items", matched)
+			}
+			return "conflict", detail, nil
+		}
+		parentKey = resolved
+	}
+	detail["key"] = parentKey
+	detail["parent_key"] = parentKey
+	attachmentKey, err := soleAttachmentChild(ctx, flags, parentKey, entryTitle)
+	if err != nil || attachmentKey == "" {
+		detail["recovery_target"] = "attachment_key"
+		if err != nil {
+			detail["message"] = fmt.Sprintf("stored connector import applied under Zotero item %s, but the attachment key could not be confirmed: %v", parentKey, err)
+		} else {
+			detail["message"] = fmt.Sprintf("stored connector import applied under Zotero item %s, but attachment-key recovery returned no key", parentKey)
+		}
+		return "conflict", detail, nil
+	}
+	detail["attachment_key"] = attachmentKey
+	return "applied", detail, nil
+}
+
 // Build mutation ops without network or disk I/O.
 func importApplyOps(cmd *cobra.Command, flags *rootFlags, writeClient importApplyPoster, storedClient *client.Client, m importManifest, attachMode string, fetchPDF bool) []mutation.Op {
 	ops := make([]mutation.Op, 0, len(m.Entries))
@@ -274,7 +316,7 @@ func importApplyOps(cmd *cobra.Command, flags *rootFlags, writeClient importAppl
 							if fetchPDF {
 								attachResolverPDF(cmd.Context(), flags, &res)
 							}
-							return "applied", map[string]any{"via": "connector"}, nil
+							return storedConnectorCreateResult(cmd.Context(), flags, item, res, entryTitle)
 						case "web":
 							req, err := newStoredUploadRequest(res.WebKey, entryPath, "")
 							if err != nil {

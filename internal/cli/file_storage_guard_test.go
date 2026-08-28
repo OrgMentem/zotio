@@ -924,6 +924,14 @@ func TestImportApplyConnectorSendsFileURLForSourcelessPDF(t *testing.T) {
 	if err != nil {
 		t.Skipf("port 23119 is unavailable: %v", err)
 	}
+	oldRecoveryWindow := connectorCreateRecoveryWindow
+	oldRecoveryInterval := connectorCreateRecoveryInterval
+	connectorCreateRecoveryWindow = 0
+	connectorCreateRecoveryInterval = time.Millisecond
+	t.Cleanup(func() {
+		connectorCreateRecoveryWindow = oldRecoveryWindow
+		connectorCreateRecoveryInterval = oldRecoveryInterval
+	})
 	var gotMetadata string
 	var saveItems, saveAttachments int
 	srv := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -937,6 +945,19 @@ func TestImportApplyConnectorSendsFileURLForSourcelessPDF(t *testing.T) {
 			saveAttachments++
 			gotMetadata = r.Header.Get("X-Metadata")
 			w.WriteHeader(http.StatusCreated)
+		case "/api/users/0/items/top":
+			if saveAttachments == 0 {
+				_, _ = w.Write([]byte(`[]`))
+				return
+			}
+			_ = json.NewEncoder(w).Encode([]any{map[string]any{
+				"key": "PARENT23", "title": "Sourceless Scan",
+				"itemType": "journalArticle", "dateAdded": time.Now().UTC().Format(time.RFC3339),
+			}})
+		case "/api/users/0/items/PARENT23/children":
+			_ = json.NewEncoder(w).Encode([]any{map[string]any{
+				"key": "ATTACH23", "data": map[string]any{"itemType": "attachment"},
+			}})
 		default:
 			w.Header().Set("Last-Modified-Version", "0")
 			_, _ = w.Write([]byte(`[]`))
@@ -972,8 +993,14 @@ func TestImportApplyConnectorSendsFileURLForSourcelessPDF(t *testing.T) {
 		maxChanges: -1,
 		configPath: testConfigFile(t, "http://127.0.0.1:23119/api/users/0"),
 	}
-	if _, stderr, err := runImportApplyTestCmdWithFlags(t, flags, []string{"--attach-mode", "stored", manifestPath}); err != nil {
+	env, stderr, err := runImportApplyTestCmdWithFlags(t, flags, []string{"--attach-mode", "stored", manifestPath})
+	if err != nil {
 		t.Fatalf("connector apply: %v; stderr=%s", err, stderr)
+	}
+	reason, ok := env.Result.Items[0].Reason.(map[string]any)
+	if !ok || env.Result.Items[0].Key != "PARENT23" ||
+		reason["parent_key"] != "PARENT23" || reason["attachment_key"] != "ATTACH23" {
+		t.Fatalf("connector result = %+v, want permanent parent and attachment keys", env.Result.Items[0])
 	}
 
 	if saveItems != 1 || saveAttachments != 1 {

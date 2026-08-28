@@ -200,6 +200,163 @@ func TestImportApplyStoredWebCreateAppliesParentAndAttachment(t *testing.T) {
 	}
 }
 
+func TestImportApplyStoredConnectorCreateReturnsPermanentKeys(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:23119")
+	if err != nil {
+		t.Skipf("port 23119 is unavailable: %v", err)
+	}
+	oldRecoveryWindow := connectorCreateRecoveryWindow
+	oldRecoveryInterval := connectorCreateRecoveryInterval
+	connectorCreateRecoveryWindow = 0
+	connectorCreateRecoveryInterval = time.Millisecond
+	t.Cleanup(func() {
+		connectorCreateRecoveryWindow = oldRecoveryWindow
+		connectorCreateRecoveryInterval = oldRecoveryInterval
+	})
+	var saveItemRequests, saveAttachmentRequests, topRequests, childRequests int
+	connectorServer := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/connector/ping":
+			w.WriteHeader(http.StatusOK)
+		case "/connector/saveItems":
+			saveItemRequests++
+			w.WriteHeader(http.StatusCreated)
+		case "/connector/saveAttachment":
+			saveAttachmentRequests++
+			w.WriteHeader(http.StatusCreated)
+		case "/api/users/0/items":
+			w.Header().Set("Last-Modified-Version", "1")
+			_ = json.NewEncoder(w).Encode([]any{})
+		case "/api/users/0/items/top":
+			topRequests++
+			if saveAttachmentRequests == 0 {
+				_ = json.NewEncoder(w).Encode([]any{})
+				return
+			}
+			_ = json.NewEncoder(w).Encode([]any{map[string]any{
+				"key": "PARENT23", "title": "Connector Paper",
+				"itemType": "journalArticle", "dateAdded": time.Now().UTC().Format(time.RFC3339),
+			}})
+		case "/api/users/0/items/PARENT23/children":
+			childRequests++
+			_ = json.NewEncoder(w).Encode([]any{map[string]any{
+				"key": "ATTACH23", "data": map[string]any{"itemType": "attachment"},
+			}})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	connectorServer.Listener = listener
+	connectorServer.Start()
+	t.Cleanup(connectorServer.Close)
+
+	pdf := writeUploadFixture(t, "connector-paper.pdf", []byte("%PDF-1.4\nconnector\n%%EOF"))
+	manifestPath := writeImportApplyTestManifest(t, importManifest{
+		SchemaVersion: importManifestSchemaVersion,
+		Dir:           filepath.Dir(pdf),
+		Entries: []importManifestEntry{{
+			Path: pdf, Action: "create", Status: "resolved", Title: "Connector Paper",
+			Item: map[string]any{"itemType": "journalArticle", "title": "Connector Paper"},
+		}},
+	})
+	flags := &rootFlags{
+		asJSON: true, yes: true, via: "connector", timeout: time.Second, maxChanges: -1,
+		configPath: testConfigFile(t, "http://127.0.0.1:23119/api/users/0"),
+	}
+	env, stderr, err := runImportApplyTestCmdWithFlags(t, flags, []string{"--attach-mode", "stored", manifestPath})
+	if err != nil {
+		t.Fatalf("stored connector apply: %v; stderr=%s", err, stderr)
+	}
+	if !env.OK || env.Result == nil || env.Result.Summary.Applied != 1 || len(env.Result.Items) != 1 {
+		t.Fatalf("env = %+v, want one applied connector import", env)
+	}
+	item := env.Result.Items[0]
+	reason, ok := item.Reason.(map[string]any)
+	if !ok || item.Key != "PARENT23" || reason["parent_key"] != "PARENT23" || reason["attachment_key"] != "ATTACH23" {
+		t.Fatalf("item = %+v, want permanent parent and attachment keys", item)
+	}
+	if saveItemRequests != 1 || saveAttachmentRequests != 1 || topRequests < 2 || childRequests != 1 {
+		t.Fatalf("requests saveItems=%d saveAttachment=%d top=%d children=%d, want 1,1,>=2,1",
+			saveItemRequests, saveAttachmentRequests, topRequests, childRequests)
+	}
+}
+
+func TestImportApplyStoredConnectorCreateRefusesAmbiguousParent(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:23119")
+	if err != nil {
+		t.Skipf("port 23119 is unavailable: %v", err)
+	}
+	oldRecoveryWindow := connectorCreateRecoveryWindow
+	oldRecoveryInterval := connectorCreateRecoveryInterval
+	connectorCreateRecoveryWindow = 0
+	connectorCreateRecoveryInterval = time.Millisecond
+	t.Cleanup(func() {
+		connectorCreateRecoveryWindow = oldRecoveryWindow
+		connectorCreateRecoveryInterval = oldRecoveryInterval
+	})
+	var saveItemRequests, saveAttachmentRequests int
+	connectorServer := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/connector/ping":
+			w.WriteHeader(http.StatusOK)
+		case "/connector/saveItems":
+			saveItemRequests++
+			w.WriteHeader(http.StatusCreated)
+		case "/connector/saveAttachment":
+			saveAttachmentRequests++
+			w.WriteHeader(http.StatusCreated)
+		case "/api/users/0/items":
+			w.Header().Set("Last-Modified-Version", "1")
+			_ = json.NewEncoder(w).Encode([]any{})
+		case "/api/users/0/items/top":
+			if saveAttachmentRequests == 0 {
+				_ = json.NewEncoder(w).Encode([]any{})
+				return
+			}
+			added := time.Now().UTC().Format(time.RFC3339)
+			_ = json.NewEncoder(w).Encode([]any{
+				map[string]any{"key": "PARENT23", "title": "Ambiguous Paper", "itemType": "journalArticle", "dateAdded": added},
+				map[string]any{"key": "PARENT24", "title": "Ambiguous Paper", "itemType": "journalArticle", "dateAdded": added},
+			})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	connectorServer.Listener = listener
+	connectorServer.Start()
+	t.Cleanup(connectorServer.Close)
+
+	pdf := writeUploadFixture(t, "ambiguous-paper.pdf", []byte("%PDF-1.4\nambiguous\n%%EOF"))
+	manifestPath := writeImportApplyTestManifest(t, importManifest{
+		SchemaVersion: importManifestSchemaVersion,
+		Dir:           filepath.Dir(pdf),
+		Entries: []importManifestEntry{{
+			Path: pdf, Action: "create", Status: "resolved", Title: "Ambiguous Paper",
+			Item: map[string]any{"itemType": "journalArticle", "title": "Ambiguous Paper"},
+		}},
+	})
+	flags := &rootFlags{
+		asJSON: true, yes: true, via: "connector", timeout: time.Second, maxChanges: -1,
+		configPath: testConfigFile(t, "http://127.0.0.1:23119/api/users/0"),
+	}
+	env, _, err := runImportApplyTestCmdWithFlags(t, flags, []string{"--attach-mode", "stored", manifestPath})
+	if err == nil {
+		t.Fatalf("ambiguous stored connector apply succeeded: %+v", env)
+	}
+	if env.Result == nil || env.Result.Summary.Conflicts != 1 || len(env.Result.Items) != 1 {
+		t.Fatalf("env = %+v, want one connector conflict", env)
+	}
+	item := env.Result.Items[0]
+	reason, ok := item.Reason.(map[string]any)
+	if !ok || item.Status != "conflict" || reason["recovery_target"] != "parent_key" || reason["matched"] != float64(2) {
+		t.Fatalf("item = %+v, want ambiguous parent-key conflict", item)
+	}
+	if _, returned := reason["parent_key"]; returned || saveItemRequests != 1 || saveAttachmentRequests != 1 {
+		t.Fatalf("reason=%#v requests saveItems=%d saveAttachment=%d, want no guessed key and one write each",
+			reason, saveItemRequests, saveAttachmentRequests)
+	}
+}
+
 // A stored create commits the parent before it uploads the file, and nothing
 // rolls that back. When the upload then fails, the operator is left with an
 // item that has no file, so the failure must hand back enough to find it.

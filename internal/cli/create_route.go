@@ -30,14 +30,18 @@ var connectorForCreate = func(flags *rootFlags) (*connector.Client, error) {
 }
 
 type itemCreateResult struct {
-	Via         string
-	WebKey      string
-	WebData     json.RawMessage
-	Session     string
-	ConnKey     string
-	OAPDFStatus string
-	OAPDFTitle  string
-	OAPDFError  string
+	Via     string
+	WebKey  string
+	WebData json.RawMessage
+	Session string
+	ConnKey string
+	// CreatedAfter bounds post-attachment recovery of the permanent Zotero key.
+	// Connector writes can remain invisible until SaveAttachment completes, so
+	// import apply must be able to repeat the same title/type lookup afterwards.
+	CreatedAfter time.Time
+	OAPDFStatus  string
+	OAPDFTitle   string
+	OAPDFError   string
 	// ConnectorError records that the connector reported a failure for a write
 	// that nevertheless landed, so the result can say so instead of claiming a
 	// clean create.
@@ -247,6 +251,7 @@ func routeCreateItemVia(ctx context.Context, flags *rootFlags, via string, webCl
 				Session:        sessionID,
 				ConnKey:        connectorKey,
 				WebKey:         recovered,
+				CreatedAfter:   createdAfter,
 				ConnectorError: saveErr.Error(),
 			}, nil
 		}
@@ -260,7 +265,7 @@ func routeCreateItemVia(ctx context.Context, flags *rootFlags, via string, webCl
 				// populated result alongside the filing error so the create is
 				// journaled and the target failure is reported separately.
 				resolved, _, _ := confirmConnectorCreate(flags, item, createdAfter)
-				return itemCreateResult{Via: "connector", Session: sessionID, ConnKey: connectorKey, WebKey: resolved, FilingFailed: true}, err
+				return itemCreateResult{Via: "connector", Session: sessionID, ConnKey: connectorKey, WebKey: resolved, CreatedAfter: createdAfter, FilingFailed: true}, err
 			}
 		}
 		// Resolve the real Zotero key on success as well, not only when the
@@ -271,7 +276,7 @@ func routeCreateItemVia(ctx context.Context, flags *rootFlags, via string, webCl
 		// so an unresolved lookup is reported as such rather than failing a write
 		// that already succeeded.
 		resolved, _, _ := confirmConnectorCreate(flags, item, createdAfter)
-		return itemCreateResult{Via: "connector", Session: sessionID, ConnKey: connectorKey, WebKey: resolved}, nil
+		return itemCreateResult{Via: "connector", Session: sessionID, ConnKey: connectorKey, WebKey: resolved, CreatedAfter: createdAfter}, nil
 	default:
 		return itemCreateResult{}, fmt.Errorf("unsupported create route %q", via)
 	}

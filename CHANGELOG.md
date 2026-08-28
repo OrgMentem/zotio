@@ -2,6 +2,18 @@
 
 Notable changes to zotio. Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow [SemVer](https://semver.org/).
 
+## [Unreleased]
+
+### Fixed
+
+- **Connector imports now return permanent parent and attachment keys.** Zotero
+  can expose a connector-created item only after its stored PDF finishes
+  attaching. zotio previously checked before that attachment, reported the
+  write as applied without keys, and left acquisition clients unable to record
+  the successful import. It now repeats the bounded title-and-type lookup after
+  the file lands, confirms the one attachment child, and returns both keys.
+  Missing or ambiguous read-back becomes a conflict instead of false success.
+
 ## [0.21.0] — 2026-08-24
 
 ### Changed — breaking
