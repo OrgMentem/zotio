@@ -14,12 +14,45 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"zotio/internal/connector"
 	"zotio/internal/mutation"
 )
+
+func connectorAttachmentURLFromRequest(r *http.Request) (string, error) {
+	var metadata struct {
+		URL string `json:"url"`
+	}
+	if err := json.Unmarshal([]byte(r.Header.Get("X-Metadata")), &metadata); err != nil {
+		return "", err
+	}
+	return metadata.URL, nil
+}
+
+type connectorAttachmentTestState struct {
+	mu  sync.Mutex
+	url string
+}
+
+func (s *connectorAttachmentTestState) record(r *http.Request) error {
+	value, err := connectorAttachmentURLFromRequest(r)
+	if err != nil {
+		return err
+	}
+	s.mu.Lock()
+	s.url = value
+	s.mu.Unlock()
+	return nil
+}
+
+func (s *connectorAttachmentTestState) snapshot() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.url
+}
 
 func TestImportApplyPreviewPlansCreateAndLinkedAttach(t *testing.T) {
 	manifestPath := writeImportApplyTestManifest(t, importApplyTestManifest())
@@ -200,88 +233,159 @@ func TestImportApplyStoredWebCreateAppliesParentAndAttachment(t *testing.T) {
 	}
 }
 
-func TestImportApplyStoredConnectorCreateReturnsPermanentKeys(t *testing.T) {
+func TestImportApplyStoredConnectorCreatePreservesUnresolvedSaveItemsEvidence(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	mutationJournalRecorder = recordMutationJournal
+	t.Cleanup(func() { mutationJournalRecorder = nil })
 	listener, err := net.Listen("tcp", "127.0.0.1:23119")
 	if err != nil {
 		t.Skipf("port 23119 is unavailable: %v", err)
 	}
-	oldRecoveryWindow := connectorCreateRecoveryWindow
-	oldRecoveryInterval := connectorCreateRecoveryInterval
-	connectorCreateRecoveryWindow = 0
-	connectorCreateRecoveryInterval = time.Millisecond
-	t.Cleanup(func() {
-		connectorCreateRecoveryWindow = oldRecoveryWindow
-		connectorCreateRecoveryInterval = oldRecoveryInterval
-	})
-	var saveItemRequests, saveAttachmentRequests, topRequests, childRequests int
-	connectorServer := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	var saveItems, saveAttachments int
+	server := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/connector/ping":
 			w.WriteHeader(http.StatusOK)
 		case "/connector/saveItems":
-			saveItemRequests++
-			w.WriteHeader(http.StatusCreated)
+			saveItems++
+			http.Error(w, "simulated post-commit connector failure", http.StatusInternalServerError)
 		case "/connector/saveAttachment":
-			saveAttachmentRequests++
+			saveAttachments++
 			w.WriteHeader(http.StatusCreated)
-		case "/api/users/0/items":
-			w.Header().Set("Last-Modified-Version", "1")
-			_ = json.NewEncoder(w).Encode([]any{})
-		case "/api/users/0/items/top":
-			topRequests++
-			if saveAttachmentRequests == 0 {
-				_ = json.NewEncoder(w).Encode([]any{})
-				return
-			}
-			_ = json.NewEncoder(w).Encode([]any{map[string]any{
-				"key": "PARENT23", "title": "Connector Paper",
-				"itemType": "journalArticle", "dateAdded": time.Now().UTC().Format(time.RFC3339),
-			}})
-		case "/api/users/0/items/PARENT23/children":
-			childRequests++
-			_ = json.NewEncoder(w).Encode([]any{map[string]any{
-				"key": "ATTACH23", "data": map[string]any{"itemType": "attachment"},
-			}})
 		default:
 			http.NotFound(w, r)
 		}
 	}))
-	connectorServer.Listener = listener
-	connectorServer.Start()
-	t.Cleanup(connectorServer.Close)
+	server.Listener = listener
+	server.Start()
+	t.Cleanup(server.Close)
 
-	pdf := writeUploadFixture(t, "connector-paper.pdf", []byte("%PDF-1.4\nconnector\n%%EOF"))
+	pdf := writeUploadFixture(t, "unresolved-parent.pdf", []byte("%PDF-1.4\nunresolved\n%%EOF"))
 	manifestPath := writeImportApplyTestManifest(t, importManifest{
 		SchemaVersion: importManifestSchemaVersion,
 		Dir:           filepath.Dir(pdf),
 		Entries: []importManifestEntry{{
-			Path: pdf, Action: "create", Status: "resolved", Title: "Connector Paper",
-			Item: map[string]any{"itemType": "journalArticle", "title": "Connector Paper"},
+			Path: pdf, Action: "create", Status: "resolved", Title: "Unresolved Parent",
+			Item: map[string]any{"itemType": "journalArticle", "title": "Unresolved Parent"},
 		}},
 	})
 	flags := &rootFlags{
 		asJSON: true, yes: true, via: "connector", timeout: time.Second, maxChanges: -1,
 		configPath: testConfigFile(t, "http://127.0.0.1:23119/api/users/0"),
 	}
-	env, stderr, err := runImportApplyTestCmdWithFlags(t, flags, []string{"--attach-mode", "stored", manifestPath})
+	env, _, err := runImportApplyTestCmdWithFlags(t, flags, []string{"--attach-mode", "stored", manifestPath})
+	if err == nil || env.Result == nil || env.Result.Summary.Conflicts != 1 {
+		t.Fatalf("unresolved SaveItems result = %+v err=%v, want one committed conflict", env, err)
+	}
+	reason, ok := env.Result.Items[0].Reason.(map[string]any)
+	if !ok || reason["committed"] != true || reason["session"] == "" ||
+		reason["connector_key"] == "" || reason["title"] != "Unresolved Parent" {
+		t.Fatalf("reason = %#v, want recoverable connector evidence", env.Result.Items[0].Reason)
+	}
+	if _, guessed := reason["parent_key"]; guessed || saveItems != 1 || saveAttachments != 0 {
+		t.Fatalf("reason=%#v writes=%d/%d, want no guessed key or automatic retry", reason, saveItems, saveAttachments)
+	}
+	entries, listErr := mutation.ListEntries(helpersTestJournalDir(t))
+	if listErr != nil || len(entries) != 1 || entries[0].Ops[0].Status != "conflict" {
+		t.Fatalf("journal=%+v err=%v, want unresolved committed write recorded", entries, listErr)
+	}
+}
+
+func TestImportApplyStoredConnectorCreateRejectsPreexistingSamePDF(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:23119")
 	if err != nil {
-		t.Fatalf("stored connector apply: %v; stderr=%s", err, stderr)
+		t.Skipf("port 23119 is unavailable: %v", err)
 	}
-	if !env.OK || env.Result == nil || env.Result.Summary.Applied != 1 || len(env.Result.Items) != 1 {
-		t.Fatalf("env = %+v, want one applied connector import", env)
+	oldRecoveryWindow := connectorCreateRecoveryWindow
+	oldRecoveryInterval := connectorCreateRecoveryInterval
+	oldVisibilityTimeout := storedConnectorRecoveryTimeout
+	oldReparentInterval := connectorReparentPollInterval
+	connectorCreateRecoveryWindow = 0
+	connectorCreateRecoveryInterval = time.Millisecond
+	storedConnectorRecoveryTimeout = 0
+	connectorReparentPollInterval = time.Millisecond
+	t.Cleanup(func() {
+		connectorCreateRecoveryWindow = oldRecoveryWindow
+		connectorCreateRecoveryInterval = oldRecoveryInterval
+		storedConnectorRecoveryTimeout = oldVisibilityTimeout
+		connectorReparentPollInterval = oldReparentInterval
+	})
+	var saveItems, saveAttachments int
+	var wantMD5 string
+	attachmentState := &connectorAttachmentTestState{}
+	server := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/connector/ping":
+			w.WriteHeader(http.StatusOK)
+		case "/connector/saveItems":
+			saveItems++
+			w.WriteHeader(http.StatusCreated)
+		case "/connector/saveAttachment":
+			saveAttachments++
+			w.WriteHeader(http.StatusCreated)
+			if err := attachmentState.record(r); err != nil {
+				t.Errorf("record connector attachment URL: %v", err)
+			}
+		case "/api/users/0/items":
+			w.Header().Set("Last-Modified-Version", "1")
+			_ = json.NewEncoder(w).Encode([]any{})
+		case "/api/users/0/items/top":
+			_ = json.NewEncoder(w).Encode([]any{map[string]any{
+				"key": "STALE123", "title": "Same PDF Paper",
+				"itemType": "journalArticle", "dateAdded": time.Now().UTC().Format(time.RFC3339),
+			}})
+		case "/api/users/0/items/STALE123/children":
+			_ = json.NewEncoder(w).Encode([]any{map[string]any{
+				"key": "OLDPDF23", "data": map[string]any{
+					"itemType": "attachment", "md5": wantMD5, "url": "https://doi.org/old-unmarked-copy",
+				},
+			}})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	server.Listener = listener
+	server.Start()
+	t.Cleanup(server.Close)
+
+	pdf := writeUploadFixture(t, "same-paper.pdf", []byte("%PDF-1.4\nsame\n%%EOF"))
+	wantMD5, err = fileMD5(pdf)
+	if err != nil {
+		t.Fatal(err)
 	}
-	item := env.Result.Items[0]
-	reason, ok := item.Reason.(map[string]any)
-	if !ok || item.Key != "PARENT23" || reason["parent_key"] != "PARENT23" || reason["attachment_key"] != "ATTACH23" {
-		t.Fatalf("item = %+v, want permanent parent and attachment keys", item)
+	manifestPath := writeImportApplyTestManifest(t, importManifest{
+		SchemaVersion: importManifestSchemaVersion,
+		Dir:           filepath.Dir(pdf),
+		Entries: []importManifestEntry{{
+			Path: pdf, Action: "create", Status: "resolved", Title: "Same PDF Paper",
+			Item: map[string]any{"itemType": "journalArticle", "title": "Same PDF Paper"},
+		}},
+	})
+	flags := &rootFlags{
+		asJSON: true, yes: true, via: "connector", timeout: time.Second, maxChanges: -1,
+		configPath: testConfigFile(t, "http://127.0.0.1:23119/api/users/0"),
 	}
-	if saveItemRequests != 1 || saveAttachmentRequests != 1 || topRequests < 2 || childRequests != 1 {
-		t.Fatalf("requests saveItems=%d saveAttachment=%d top=%d children=%d, want 1,1,>=2,1",
-			saveItemRequests, saveAttachmentRequests, topRequests, childRequests)
+	env, _, err := runImportApplyTestCmdWithFlags(t, flags, []string{"--attach-mode", "stored", manifestPath})
+	if err == nil || env.Result == nil || env.Result.Summary.Conflicts != 1 {
+		t.Fatalf("same-PDF stale parent result = %+v err=%v, want one conflict", env, err)
+	}
+	reason, ok := env.Result.Items[0].Reason.(map[string]any)
+	if !ok || reason["parent_matches"] != float64(1) || reason["file_matches"] != float64(0) {
+		t.Fatalf("reason = %#v, want the same-PDF parent rejected without this write's URL marker", env.Result.Items[0].Reason)
+	}
+	if _, guessed := reason["parent_key"]; guessed || saveItems != 1 || saveAttachments != 1 {
+		t.Fatalf("reason=%#v writes=%d/%d, want no stale key and one committed write", reason, saveItems, saveAttachments)
+	}
+	marker, _ := reason["attachment_marker"].(string)
+	if markedURL := attachmentState.snapshot(); marker == "" || !attachmentURLHasMarker(markedURL, marker) {
+		t.Fatalf("marked URL=%q marker=%q, want unresolved write evidence retained", markedURL, marker)
 	}
 }
 
 func TestImportApplyStoredConnectorCreateRefusesAmbiguousParent(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	mutationJournalRecorder = recordMutationJournal
+	t.Cleanup(func() { mutationJournalRecorder = nil })
 	listener, err := net.Listen("tcp", "127.0.0.1:23119")
 	if err != nil {
 		t.Skipf("port 23119 is unavailable: %v", err)
@@ -295,6 +399,8 @@ func TestImportApplyStoredConnectorCreateRefusesAmbiguousParent(t *testing.T) {
 		connectorCreateRecoveryInterval = oldRecoveryInterval
 	})
 	var saveItemRequests, saveAttachmentRequests int
+	var wantMD5 string
+	attachmentState := &connectorAttachmentTestState{}
 	connectorServer := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/connector/ping":
@@ -305,6 +411,9 @@ func TestImportApplyStoredConnectorCreateRefusesAmbiguousParent(t *testing.T) {
 		case "/connector/saveAttachment":
 			saveAttachmentRequests++
 			w.WriteHeader(http.StatusCreated)
+			if err := attachmentState.record(r); err != nil {
+				t.Errorf("record connector attachment URL: %v", err)
+			}
 		case "/api/users/0/items":
 			w.Header().Set("Last-Modified-Version", "1")
 			_ = json.NewEncoder(w).Encode([]any{})
@@ -318,6 +427,18 @@ func TestImportApplyStoredConnectorCreateRefusesAmbiguousParent(t *testing.T) {
 				map[string]any{"key": "PARENT23", "title": "Ambiguous Paper", "itemType": "journalArticle", "dateAdded": added},
 				map[string]any{"key": "PARENT24", "title": "Ambiguous Paper", "itemType": "journalArticle", "dateAdded": added},
 			})
+		case "/api/users/0/items/PARENT23/children":
+			_ = json.NewEncoder(w).Encode([]any{map[string]any{
+				"key": "ATTACH23", "data": map[string]any{
+					"itemType": "attachment", "md5": wantMD5, "url": attachmentState.snapshot(),
+				},
+			}})
+		case "/api/users/0/items/PARENT24/children":
+			_ = json.NewEncoder(w).Encode([]any{map[string]any{
+				"key": "ATTACH24", "data": map[string]any{
+					"itemType": "attachment", "md5": wantMD5, "url": attachmentState.snapshot(),
+				},
+			}})
 		default:
 			http.NotFound(w, r)
 		}
@@ -327,6 +448,10 @@ func TestImportApplyStoredConnectorCreateRefusesAmbiguousParent(t *testing.T) {
 	t.Cleanup(connectorServer.Close)
 
 	pdf := writeUploadFixture(t, "ambiguous-paper.pdf", []byte("%PDF-1.4\nambiguous\n%%EOF"))
+	wantMD5, err = fileMD5(pdf)
+	if err != nil {
+		t.Fatal(err)
+	}
 	manifestPath := writeImportApplyTestManifest(t, importManifest{
 		SchemaVersion: importManifestSchemaVersion,
 		Dir:           filepath.Dir(pdf),
@@ -348,12 +473,33 @@ func TestImportApplyStoredConnectorCreateRefusesAmbiguousParent(t *testing.T) {
 	}
 	item := env.Result.Items[0]
 	reason, ok := item.Reason.(map[string]any)
-	if !ok || item.Status != "conflict" || reason["recovery_target"] != "parent_key" || reason["matched"] != float64(2) {
-		t.Fatalf("item = %+v, want ambiguous parent-key conflict", item)
+	if !ok || item.Status != "conflict" ||
+		reason["recovery_target"] != "parent_attachment_keys" ||
+		reason["parent_matches"] != float64(2) || reason["file_matches"] != float64(2) ||
+		reason["committed"] != true || reason["title"] != "Ambiguous Paper" ||
+		reason["session"] == "" || reason["connector_key"] == "" {
+		t.Fatalf("item = %+v, want committed ambiguous key-recovery conflict", item)
 	}
 	if _, returned := reason["parent_key"]; returned || saveItemRequests != 1 || saveAttachmentRequests != 1 {
 		t.Fatalf("reason=%#v requests saveItems=%d saveAttachment=%d, want no guessed key and one write each",
 			reason, saveItemRequests, saveAttachmentRequests)
+	}
+	entries, listErr := mutation.ListEntries(helpersTestJournalDir(t))
+	if listErr != nil {
+		t.Fatalf("list committed conflict journal: %v", listErr)
+	}
+	if len(entries) != 1 || len(entries[0].Ops) != 1 || entries[0].Ops[0].Status != "conflict" {
+		t.Fatalf("journal = %+v, want one committed conflict operation", entries)
+	}
+	journalReason, ok := entries[0].Ops[0].Reason.(map[string]any)
+	if !ok || journalReason["title"] != "Ambiguous Paper" || journalReason["session"] == "" ||
+		journalReason["connector_key"] == "" || journalReason["committed"] != true ||
+		journalReason["attachment_marker"] == "" {
+		t.Fatalf("journal reason = %#v, want recoverable committed-write evidence", entries[0].Ops[0].Reason)
+	}
+	marker, _ := reason["attachment_marker"].(string)
+	if markedURL := attachmentState.snapshot(); marker == "" || !attachmentURLHasMarker(markedURL, marker) {
+		t.Fatalf("marked URL=%q marker=%q, want ambiguous write evidence retained", markedURL, marker)
 	}
 }
 
@@ -440,8 +586,8 @@ func TestOrphanedConnectorParentDetailCarriesFindableEvidence(t *testing.T) {
 		t.Fatalf("detail = %#v, must not invent a parent_key the connector never returned", detail)
 	}
 	res.WebKey = "ABCD1234"
-	if got := orphanedConnectorParentDetail(res, "Scanned Paper", cause)["parent_key"]; got != "ABCD1234" {
-		t.Fatalf("parent_key = %v, want the resolved key reported when one is known", got)
+	if _, present := orphanedConnectorParentDetail(res, "Scanned Paper", cause)["parent_key"]; present {
+		t.Fatal("title-only WebKey was reported as committed parent evidence")
 	}
 	// The whole point of "message": reasonText prints only that key, so its
 	// absence renders the failure as a bare Go map. With the integration test
@@ -544,11 +690,23 @@ func TestImportApplyLinkedFileWebCreateReturnsParentAndAttachmentKeys(t *testing
 // SaveAttachment then fails, the operator must be told the parent already
 // exists and given evidence to find it, not a bare error.
 func TestImportApplyStoredConnectorCreateReportsOrphanedParentOnAttachFailure(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	mutationJournalRecorder = recordMutationJournal
+	t.Cleanup(func() { mutationJournalRecorder = nil })
 	listener, err := net.Listen("tcp", "127.0.0.1:23119")
 	if err != nil {
 		t.Skipf("port 23119 is unavailable: %v", err)
 	}
+	oldRecoveryWindow := connectorCreateRecoveryWindow
+	oldRecoveryInterval := connectorCreateRecoveryInterval
+	connectorCreateRecoveryWindow = 0
+	connectorCreateRecoveryInterval = time.Millisecond
+	t.Cleanup(func() {
+		connectorCreateRecoveryWindow = oldRecoveryWindow
+		connectorCreateRecoveryInterval = oldRecoveryInterval
+	})
 	var saveItemRequests, saveAttachmentRequests int
+	attachmentState := &connectorAttachmentTestState{}
 	connectorServer := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/connector/ping":
@@ -558,7 +716,15 @@ func TestImportApplyStoredConnectorCreateReportsOrphanedParentOnAttachFailure(t 
 			w.WriteHeader(http.StatusCreated)
 		case "/connector/saveAttachment":
 			saveAttachmentRequests++
+			if err := attachmentState.record(r); err != nil {
+				t.Errorf("record connector attachment URL: %v", err)
+			}
 			http.Error(w, "simulated WebDAV filing failure", http.StatusInternalServerError)
+		case "/api/users/0/items":
+			w.Header().Set("Last-Modified-Version", "1")
+			_ = json.NewEncoder(w).Encode([]any{})
+		case "/api/users/0/items/top":
+			_ = json.NewEncoder(w).Encode([]any{})
 		default:
 			http.NotFound(w, r)
 		}
@@ -588,8 +754,8 @@ func TestImportApplyStoredConnectorCreateReportsOrphanedParentOnAttachFailure(t 
 	if saveItemRequests != 1 || saveAttachmentRequests != 1 {
 		t.Fatalf("connector requests = saveItems:%d saveAttachment:%d, want one each", saveItemRequests, saveAttachmentRequests)
 	}
-	if env.Result == nil || env.Result.Summary.Failed != 1 || len(env.Result.Items) != 1 {
-		t.Fatalf("env = %+v, want one failed operation", env)
+	if env.Result == nil || env.Result.Summary.Conflicts != 1 || len(env.Result.Items) != 1 {
+		t.Fatalf("env = %+v, want one committed conflict", env)
 	}
 	reason, ok := env.Result.Items[0].Reason.(map[string]any)
 	if !ok {
@@ -606,6 +772,9 @@ func TestImportApplyStoredConnectorCreateReportsOrphanedParentOnAttachFailure(t 
 	if reason["title"] != "Orphan Paper" {
 		t.Fatalf("reason[title] = %v, want %q", reason["title"], "Orphan Paper")
 	}
+	if reason["committed"] != true || reason["attachment_marker"] == "" || env.Result.Items[0].Status != "conflict" {
+		t.Fatalf("reason = %#v, want committed conflict with attachment marker", reason)
+	}
 	message, _ := reason["message"].(string)
 	// Both routes share one orphan contract, so the sentence cannot say "in
 	// Zotero desktop": that is false for the Web API route, which creates the
@@ -619,6 +788,32 @@ func TestImportApplyStoredConnectorCreateReportsOrphanedParentOnAttachFailure(t 
 	if !strings.Contains(message, "simulated WebDAV filing failure") {
 		t.Fatalf("reason[message] = %q, want the underlying connector error wrapped in", message)
 	}
+	marker, _ := reason["attachment_marker"].(string)
+	if markedURL := attachmentState.snapshot(); marker == "" || !attachmentURLHasMarker(markedURL, marker) {
+		t.Fatalf("marked URL=%q marker=%q, want failed-attachment evidence retained", markedURL, marker)
+	}
+	entries, listErr := mutation.ListEntries(helpersTestJournalDir(t))
+	if listErr != nil || len(entries) != 1 || len(entries[0].Ops) != 1 ||
+		entries[0].Ops[0].Status != "conflict" {
+		t.Fatalf("journal entries = %+v, err=%v; want committed attachment conflict", entries, listErr)
+	}
+}
+
+func TestMarkedConnectorAttachmentURL(t *testing.T) {
+	marked, marker, err := markedConnectorAttachmentURL(
+		"https://doi.org/10.1234/example#page=2",
+		"connector123",
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if marker != "zotio-write-connector123" || !attachmentURLHasMarker(marked, marker) ||
+		!strings.HasPrefix(marked, "https://doi.org/10.1234/example#page=2&") {
+		t.Fatalf("marked URL=%q marker=%q", marked, marker)
+	}
+	if _, _, err := markedConnectorAttachmentURL("not-a-url", "connector123"); err == nil {
+		t.Fatal("relative source URL accepted for connector marker")
+	}
 }
 
 func TestImportApplyUploadModeIsInvalid(t *testing.T) {
@@ -629,15 +824,55 @@ func TestImportApplyUploadModeIsInvalid(t *testing.T) {
 	}
 }
 
+func TestImportApplyStoredRejectsFetchPDF(t *testing.T) {
+	manifestPath := writeImportApplyTestManifest(t, importApplyTestManifest())
+	_, _, err := runImportApplyTestCmd(t, []string{"--attach-mode", "stored", "--fetch-pdf", manifestPath})
+	if err == nil || !strings.Contains(err.Error(), "--fetch-pdf cannot be combined with --attach-mode stored") {
+		t.Fatalf("err = %v, want redundant PDF sources rejected before writes", err)
+	}
+}
+
+func TestImportApplyStoredRejectsMissingTitleBeforeRoute(t *testing.T) {
+	manifest := importApplyTestManifest()
+	manifest.Entries[0].Item["title"] = ""
+	manifestPath := writeImportApplyTestManifest(t, manifest)
+	_, _, err := runImportApplyTestCmd(t, []string{"--attach-mode", "stored", manifestPath})
+	if err == nil || !strings.Contains(err.Error(), "stored create missing title") {
+		t.Fatalf("err = %v, want missing title rejected before connector routing", err)
+	}
+}
+
+func TestStoredConnectorCreateResultPropagatesCancellation(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	status, detail, err := storedConnectorCreateResult(
+		ctx,
+		&rootFlags{},
+		map[string]any{"itemType": "journalArticle", "title": "Cancelled Paper"},
+		itemCreateResult{Via: "connector", Session: "session-1", ConnKey: "connector-1", CreatedAfter: time.Now()},
+		"Cancelled Paper",
+		"zotio:write:connector-1",
+		"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+	)
+	if status != "conflict" || !errors.Is(err, context.Canceled) {
+		t.Fatalf("status=%q err=%v, want committed conflict with context cancellation", status, err)
+	}
+	if detail["committed"] != true || detail["title"] != "Cancelled Paper" ||
+		detail["session"] != "session-1" || detail["connector_key"] != "connector-1" {
+		t.Fatalf("detail = %#v, want recoverable committed-write evidence", detail)
+	}
+}
+
 func TestLinkedFileAttachmentItem(t *testing.T) {
 	path := filepath.Join(string(filepath.Separator), "tmp", "Paper.pdf")
 	item := linkedFileAttachmentItem("PARENT1", path)
 	want := map[string]any{
-		"itemType":    "attachment",
-		"linkMode":    "linked_file",
-		"parentItem":  "PARENT1",
-		"title":       "Paper.pdf",
-		"path":        path,
+		"itemType":   "attachment",
+		"linkMode":   "linked_file",
+		"parentItem": "PARENT1",
+		"title":      "Paper.pdf",
+		"path":       path,
+
 		"contentType": "application/pdf",
 	}
 	if len(item) != len(want) {
@@ -647,6 +882,17 @@ func TestLinkedFileAttachmentItem(t *testing.T) {
 		if item[key] != wantValue {
 			t.Fatalf("item[%s] = %v, want %v; item=%+v", key, item[key], wantValue, item)
 		}
+	}
+}
+func TestOrphanedConnectorParentDetailOmitsUnprovenKey(t *testing.T) {
+	detail := orphanedConnectorParentDetail(itemCreateResult{
+		Via: "connector", WebKey: "UNPROVEN", Session: "session-1", ConnKey: "connector-1",
+	}, "New Paper", errors.New("target filing failed"))
+	if _, ok := detail["parent_key"]; ok {
+		t.Fatalf("detail = %#v, must not claim a title-only match as the created parent", detail)
+	}
+	if detail["committed"] != true || detail["session"] != "session-1" || detail["connector_key"] != "connector-1" {
+		t.Fatalf("detail = %#v, want committed connector evidence without a guessed key", detail)
 	}
 }
 

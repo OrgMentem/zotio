@@ -154,15 +154,28 @@ func ensureJournalLibraryMatches(entry mutation.JournalEntry) error {
 	return fmt.Errorf("journal library mismatch for run %s: entry belongs to %s, current scope is %s", entry.RunID, humanJournalLibrary(entryLibrary), humanJournalLibrary(currentLibrary))
 }
 
-// recordMutationJournal appends an entry for any run that applied at least one
-// change, and reports the resulting run ID back through the envelope so a caller
-// can undo its own write from the write's own response instead of scanning
-// `journal list` and guessing which run was its own by timestamp.
+func resultHasCommittedWrite(result *mutation.Result) bool {
+	if result == nil {
+		return false
+	}
+	for _, item := range result.Items {
+		detail, ok := item.Reason.(map[string]any)
+		if ok && detail["committed"] == true {
+			return true
+		}
+	}
+	return false
+}
+
+// recordMutationJournal appends an entry for any run that applied a change or
+// committed a write whose final identity could not be confirmed. It reports
+// the resulting run ID through the envelope so callers can inspect or undo the
+// write without guessing from timestamps.
 func recordMutationJournal(env *mutation.Envelope) error {
 	if env == nil || env.Result == nil {
 		return nil
 	}
-	if env.Result.Summary.Applied == 0 {
+	if env.Result.Summary.Applied == 0 && !resultHasCommittedWrite(env.Result) {
 		// Nothing was written, so there is no run to record — but leave a journal
 		// object rather than null so one extraction path (`.journal.run_id`) works
 		// across every outcome of a command instead of throwing on no-ops.

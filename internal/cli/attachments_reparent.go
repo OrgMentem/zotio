@@ -678,6 +678,7 @@ type attachmentChildRow struct {
 	Data struct {
 		ItemType string `json:"itemType"`
 		MD5      string `json:"md5"`
+		URL      string `json:"url"`
 		Deleted  int    `json:"deleted"`
 	} `json:"data"`
 }

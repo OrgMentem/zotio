@@ -22,7 +22,7 @@ import (
 var journalRandRead = rand.Read
 
 // JournalSchemaVersion versions the on-disk journal-entry format.
-const JournalSchemaVersion = 1
+const JournalSchemaVersion = 2
 
 // JournalFileName is the append-only log within the journal directory.
 const JournalFileName = "journal.jsonl"
@@ -36,6 +36,7 @@ type JournalOp struct {
 	Status      string   `json:"status"`
 	Destructive bool     `json:"destructive,omitempty"`
 	Changes     []Change `json:"changes"`
+	Reason      any      `json:"reason,omitempty"`
 }
 
 // JournalEntry records one applied mutation run. WorkflowRunID groups the
@@ -102,6 +103,10 @@ func BuildJournalEntry(env Envelope, now time.Time) (JournalEntry, bool) {
 		} else if item.Key != "" {
 			key = item.Key
 		}
+		var reason any
+		if detail, ok := item.Reason.(map[string]any); ok && detail["committed"] == true {
+			reason = detail
+		}
 		ops = append(ops, JournalOp{
 			ID:          op.ID,
 			Key:         key,
@@ -109,6 +114,7 @@ func BuildJournalEntry(env Envelope, now time.Time) (JournalEntry, bool) {
 			Status:      item.Status,
 			Destructive: op.Destructive,
 			Changes:     op.Changes,
+			Reason:      reason,
 		})
 	}
 	return JournalEntry{

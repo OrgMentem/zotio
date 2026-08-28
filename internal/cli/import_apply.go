@@ -5,11 +5,15 @@ package cli
 
 import (
 	"context"
+	"crypto/md5" //nolint:gosec // Zotero exposes stored-file identity as MD5.
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/spf13/cobra"
 
@@ -66,9 +70,18 @@ pace your own invocations.`,
 				return fmt.Errorf("--attach-mode must be one of none, linked-file, stored")
 			}
 
+			if attachMode == "stored" && fetchPDF {
+				return fmt.Errorf("--fetch-pdf cannot be combined with --attach-mode stored; the manifest already supplies the PDF")
+			}
+
 			m, err := readImportManifest(args[0], cmd.InOrStdin())
 			if err != nil {
 				return err
+			}
+			if attachMode == "stored" {
+				if err := validateStoredCreateTitles(m); err != nil {
+					return err
+				}
 			}
 			// Stored CREATES, PDF recognition, and resolver fetches require the desktop
 			// Connector API; stored attach to an EXISTING item uses the Web API
@@ -188,6 +201,19 @@ func manifestHasResolvedCreate(m importManifest) bool {
 	return false
 }
 
+func validateStoredCreateTitles(m importManifest) error {
+	for i, entry := range m.Entries {
+		if entry.Action != "create" || entry.Status != "resolved" || entry.Item == nil {
+			continue
+		}
+		title, _ := entry.Item["title"].(string)
+		if strings.TrimSpace(title) == "" {
+			return fmt.Errorf("manifest entry %d stored create missing title", i+1)
+		}
+	}
+	return nil
+}
+
 // manifestHasAttachEntries reports whether any entry attaches to an existing item.
 func manifestHasAttachEntries(m importManifest) bool {
 	for _, entry := range m.Entries {
@@ -198,45 +224,143 @@ func manifestHasAttachEntries(m importManifest) bool {
 	return false
 }
 
+var storedConnectorRecoveryTimeout = connectorReparentVisibilityTimeout
+
+func markedConnectorAttachmentURL(rawURL, connectorKey string) (markedURL, marker string, err error) {
+	parsed, err := url.Parse(strings.TrimSpace(rawURL))
+	if err != nil || parsed.Scheme == "" || strings.TrimSpace(connectorKey) == "" {
+		return "", "", fmt.Errorf("building connector attachment marker from %q: %w", rawURL, err)
+	}
+	marker = "zotio-write-" + connectorKey
+	if parsed.Fragment == "" {
+		parsed.Fragment = marker
+	} else {
+		parsed.Fragment += "&" + marker
+	}
+	return parsed.String(), marker, nil
+}
+
+func attachmentURLHasMarker(rawURL, marker string) bool {
+	parsed, err := url.Parse(rawURL)
+	if err != nil {
+		return false
+	}
+	for _, part := range strings.Split(parsed.Fragment, "&") {
+		if part == marker {
+			return true
+		}
+	}
+	return false
+}
+
+// confirmStoredConnectorKeys binds this write to the exact source URL marker
+// and file bytes supplied to SaveAttachment. Title and type only bound the
+// recent parent set; neither can make a concurrent identical write qualify.
+func confirmStoredConnectorKeys(ctx context.Context, flags *rootFlags, item map[string]any, createdAfter time.Time, marker, wantMD5 string) (parentKey, attachmentKey string, parentMatches, fileMatches int, err error) {
+	if createdAfter.IsZero() || strings.TrimSpace(marker) == "" || strings.TrimSpace(wantMD5) == "" {
+		return "", "", 0, 0, fmt.Errorf("connector recovery requires a creation bound, URL marker, and file MD5")
+	}
+	title, _ := item["title"].(string)
+	itemType, _ := item["itemType"].(string)
+	if err := ctx.Err(); err != nil {
+		return "", "", 0, 0, err
+	}
+	local, err := localClientForRoute(ctx, flags)
+	if err != nil {
+		return "", "", 0, 0, err
+	}
+	deadline := time.Now().Add(storedConnectorRecoveryTimeout)
+	if routeDeadline, ok := ctx.Deadline(); ok && routeDeadline.Before(deadline) {
+		deadline = routeDeadline
+	}
+	var lastChildErr error
+	for {
+		if err := ctx.Err(); err != nil {
+			return "", "", parentMatches, fileMatches, err
+		}
+		parents, err := findRecentlyAddedItemKeys(local, title, itemType, createdAfter)
+		if err != nil {
+			return "", "", 0, 0, err
+		}
+		parentMatches = len(parents)
+		fileMatches = 0
+		parentKey, attachmentKey = "", ""
+		lastChildErr = nil
+		for _, candidate := range parents {
+			if candidate == "" {
+				lastChildErr = fmt.Errorf("a matching parent did not expose its permanent key")
+				continue
+			}
+			rows, childErr := attachmentChildRows(local, candidate)
+			if childErr != nil {
+				lastChildErr = childErr
+				continue
+			}
+			for _, row := range rows {
+				if row.Data.ItemType != "attachment" || !zoteroItemKeyRE.MatchString(row.Key) ||
+					!strings.EqualFold(strings.TrimSpace(row.Data.MD5), wantMD5) ||
+					!attachmentURLHasMarker(row.Data.URL, marker) {
+					continue
+				}
+				fileMatches++
+				parentKey, attachmentKey = candidate, row.Key
+			}
+		}
+		switch {
+		case fileMatches == 1 && lastChildErr == nil:
+			return parentKey, attachmentKey, parentMatches, fileMatches, nil
+		case fileMatches > 1:
+			return "", "", parentMatches, fileMatches, fmt.Errorf("%d recent title/type matches hold the marked manifest PDF; refusing to guess", fileMatches)
+		case time.Now().After(deadline):
+			if lastChildErr != nil {
+				return "", "", parentMatches, fileMatches, lastChildErr
+			}
+			return "", "", parentMatches, fileMatches, fmt.Errorf("the marked manifest PDF did not appear under a recent matching parent within %s", storedConnectorRecoveryTimeout)
+		}
+		if err := sleepWithContext(ctx, connectorReparentPollInterval); err != nil {
+			return "", "", parentMatches, fileMatches, err
+		}
+	}
+}
+
 // storedConnectorCreateResult resolves both permanent keys after the file
 // lands. A connector write is already committed at this point, so an
-// unresolved or ambiguous read-back is a conflict, never an applied success.
-func storedConnectorCreateResult(ctx context.Context, flags *rootFlags, item map[string]any, res itemCreateResult, entryTitle string) (string, map[string]any, error) {
-	detail := map[string]any{"via": "connector"}
-	parentKey := res.WebKey
-	if parentKey == "" {
-		if res.CreatedAfter.IsZero() {
-			detail["recovery_target"] = "parent_key"
-			detail["message"] = "stored connector import applied, but no recovery time bound was recorded"
-			return "conflict", detail, nil
-		}
-		resolved, matched, err := confirmConnectorCreate(flags, item, res.CreatedAfter)
-		if err != nil || matched != 1 || resolved == "" {
-			detail["recovery_target"] = "parent_key"
-			detail["matched"] = matched
-			if err != nil {
-				detail["message"] = fmt.Sprintf("stored connector import applied, but the permanent parent key could not be confirmed: %v", err)
-			} else {
-				detail["message"] = fmt.Sprintf("stored connector import applied, but parent-key recovery found %d matching items", matched)
-			}
-			return "conflict", detail, nil
-		}
-		parentKey = resolved
+// unresolved or ambiguous read-back is a committed conflict, never success.
+func storedConnectorCreateResult(ctx context.Context, flags *rootFlags, item map[string]any, res itemCreateResult, entryTitle, marker, wantMD5 string) (string, map[string]any, error) {
+	detail := map[string]any{
+		"via": "connector", "committed": true, "title": entryTitle,
+		"session": res.Session, "connector_key": res.ConnKey,
+		"attachment_marker": marker,
 	}
-	detail["key"] = parentKey
-	detail["parent_key"] = parentKey
-	attachmentKey, err := soleAttachmentChild(ctx, flags, parentKey, entryTitle)
-	if err != nil || attachmentKey == "" {
-		detail["recovery_target"] = "attachment_key"
-		if err != nil {
-			detail["message"] = fmt.Sprintf("stored connector import applied under Zotero item %s, but the attachment key could not be confirmed: %v", parentKey, err)
-		} else {
-			detail["message"] = fmt.Sprintf("stored connector import applied under Zotero item %s, but attachment-key recovery returned no key", parentKey)
+	if res.ConnectorError != "" {
+		detail["connector_error"] = res.ConnectorError
+	}
+	parentKey, attachmentKey, parentMatches, fileMatches, err :=
+		confirmStoredConnectorKeys(ctx, flags, item, res.CreatedAfter, marker, wantMD5)
+	if err != nil {
+		detail["recovery_target"] = "parent_attachment_keys"
+		detail["parent_matches"] = parentMatches
+		detail["file_matches"] = fileMatches
+		detail["message"] = fmt.Sprintf("stored connector import %q committed in session %s with connector key %s and attachment marker %q, but its permanent keys could not be confirmed: %v. Do not retry; inspect Zotero for that attachment URL marker",
+			sanitizeForTerminal(entryTitle), res.Session, res.ConnKey, marker, err)
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return "conflict", detail, ctxErr
 		}
 		return "conflict", detail, nil
 	}
+	detail["key"] = parentKey
+	detail["parent_key"] = parentKey
 	detail["attachment_key"] = attachmentKey
 	return "applied", detail, nil
+}
+
+func storedConnectorCommittedDetail(res itemCreateResult, entryTitle, marker, message string) map[string]any {
+	return map[string]any{
+		"via": "connector", "committed": true, "title": entryTitle,
+		"session": res.Session, "connector_key": res.ConnKey,
+		"attachment_marker": marker, "recovery_target": "parent_attachment_keys",
+		"message": message,
+	}
 }
 
 // Build mutation ops without network or disk I/O.
@@ -274,7 +398,7 @@ func importApplyOps(cmd *cobra.Command, flags *rootFlags, writeClient importAppl
 						if err := validateImportStoredAttachment(entryPath); err != nil {
 							return "failed", nil, err
 						}
-						res, err := routeCreateItem(cmd.Context(), flags, writeClient, item, importEntrySourceURL(entry, item), connectorCollectionKeyFromItem(item) != "" || strings.TrimSpace(flags.connectorTarget) != "")
+						res, err := routeCreateStoredItem(cmd.Context(), flags, writeClient, item, importEntrySourceURL(entry, item), connectorCollectionKeyFromItem(item) != "" || strings.TrimSpace(flags.connectorTarget) != "")
 						if err != nil {
 							// routeCreateItem deliberately returns a POPULATED
 							// result alongside its error when the item was
@@ -284,39 +408,45 @@ func importApplyOps(cmd *cobra.Command, flags *rootFlags, writeClient importAppl
 							// would discard the only evidence of that parent
 							// and report a clean failure over an orphan.
 							if res.Session != "" || res.WebKey != "" {
-								return "failed", orphanedParentDetail(res, entryTitle, err), orphanedParentError(entryTitle, err)
+								return "conflict", orphanedParentDetail(res, entryTitle, err), err
 							}
 							return "failed", nil, err
 						}
 						switch res.Via {
 						case "connector":
+							conn, err := flags.newConnector()
+							if err != nil {
+								return "conflict", orphanedConnectorParentDetail(res, entryTitle, err), err
+							}
 							data, err := os.ReadFile(entryPath)
 							if err != nil {
 								cause := fmt.Errorf("reading attachment %s: %w", entryPath, err)
-								return "failed", orphanedConnectorParentDetail(res, entryTitle, cause), orphanedParentError(entryTitle, cause)
+								return "conflict", orphanedConnectorParentDetail(res, entryTitle, cause), cause
 							}
-							conn, err := flags.newConnector()
-							if err != nil {
-								return "failed", orphanedConnectorParentDetail(res, entryTitle, err), orphanedParentError(entryTitle, err)
-							}
+							digest := md5.Sum(data) //nolint:gosec // Zotero registers stored-file identity as MD5.
+							attachmentMD5 := hex.EncodeToString(digest[:])
 							// Zotero's importFromNetworkStream hard-rejects an
 							// empty url ("'url' not provided"), which the
 							// connector surfaces as an opaque HTTP 500 AFTER the
 							// parent item was already created. A locally scanned
 							// PDF has no DOI or web source, so fall back to the
-							// file's own URI — the same provenance import pdf
-							// already records for standalone attachments.
+							// file's own URI.
 							attachmentURL := importEntrySourceURL(entry, item)
 							if strings.TrimSpace(attachmentURL) == "" {
 								attachmentURL = localFileURL(entryPath)
 							}
-							if err := conn.SaveAttachment(cmd.Context(), res.Session, res.ConnKey, "Full Text PDF", attachmentURL, "application/pdf", data); err != nil {
-								return "failed", orphanedConnectorParentDetail(res, entryTitle, err), orphanedParentError(entryTitle, err)
+							markedURL, marker, err := markedConnectorAttachmentURL(attachmentURL, res.ConnKey)
+							if err != nil {
+								return "conflict", orphanedConnectorParentDetail(res, entryTitle, err), err
 							}
-							if fetchPDF {
-								attachResolverPDF(cmd.Context(), flags, &res)
+							if err := conn.SaveAttachment(cmd.Context(), res.Session, res.ConnKey, "Full Text PDF", markedURL, "application/pdf", data); err != nil {
+								cause := orphanedParentError(entryTitle, err)
+								detail := storedConnectorCommittedDetail(res, entryTitle, marker,
+									fmt.Sprintf("%s Connector evidence: session %s, connector key %s, attachment marker %s.",
+										cause.Error(), res.Session, res.ConnKey, marker))
+								return "conflict", detail, err
 							}
-							return storedConnectorCreateResult(cmd.Context(), flags, item, res, entryTitle)
+							return storedConnectorCreateResult(cmd.Context(), flags, item, res, entryTitle, marker, attachmentMD5)
 						case "web":
 							req, err := newStoredUploadRequest(res.WebKey, entryPath, "")
 							if err != nil {
@@ -491,17 +621,16 @@ func validateImportStoredAttachment(path string) error {
 // item key for it (SaveAttachment takes only the connector-local ConnKey), so
 // session/key/title is the best available correlation.
 func orphanedConnectorParentDetail(res itemCreateResult, entryTitle string, cause error) map[string]any {
-	detail := map[string]any{
+	message := fmt.Sprintf("%s Connector evidence: session %s, connector key %s. Do not retry until the library is reconciled.",
+		orphanedParentError(entryTitle, cause).Error(), res.Session, res.ConnKey)
+	return map[string]any{
+		"committed":     true,
 		"via":           "connector",
 		"session":       res.Session,
 		"connector_key": res.ConnKey,
 		"title":         entryTitle,
-		"message":       orphanedParentError(entryTitle, cause).Error(),
+		"message":       message,
 	}
-	if res.WebKey != "" {
-		detail["parent_key"] = res.WebKey
-	}
-	return detail
 }
 
 // orphanedWebParentDetail reports the same for the Web API route, which does
@@ -510,6 +639,8 @@ func orphanedConnectorParentDetail(res itemCreateResult, entryTitle string, caus
 func orphanedWebParentDetail(parentKey, entryTitle string, cause error) map[string]any {
 	return map[string]any{
 		"via":        "web",
+		"committed":  true,
+		"key":        parentKey,
 		"parent_key": parentKey,
 		"title":      entryTitle,
 		"message":    orphanedParentError(entryTitle, cause).Error(),

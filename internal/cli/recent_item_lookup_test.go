@@ -34,6 +34,14 @@ func TestFindRecentlyAddedItemKey(t *testing.T) {
 			wantN: 2,
 		},
 		{
+			name: "keyless match keeps result ambiguous",
+			entries: []map[string]any{
+				{"key": "A", "title": "Paper", "itemType": "journalArticle", "dateAdded": after},
+				{"title": "Paper", "itemType": "journalArticle", "dateAdded": after},
+			},
+			wantN: 2,
+		},
+		{
 			name: "one recent match returns its key",
 			entries: []map[string]any{
 				{"key": "A", "title": "Paper", "itemType": "journalArticle", "dateAdded": after},

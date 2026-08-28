@@ -3,7 +3,10 @@
 
 package mutation
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestInvertChange(t *testing.T) {
 	if got, ok := InvertChange(Change{Field: "tags", Add: "ml"}); !ok || got.Remove != "ml" || got.Add != nil {
@@ -59,6 +62,28 @@ func TestInverseOps(t *testing.T) {
 	for _, op := range inverse {
 		if op.Key == "K6" {
 			t.Error("already-trashed merge (K6, []string membership add) must not be inverted")
+		}
+	}
+}
+
+func TestInverseOpsRefusesCommittedConflict(t *testing.T) {
+	entry := JournalEntry{Ops: []JournalOp{{
+		ID: "create", Kind: "import_create", Status: "conflict",
+		Changes: []Change{{Field: "item", Add: "Ambiguous Paper"}},
+		Reason: map[string]any{
+			"committed": true, "title": "Ambiguous Paper",
+			"session": "session-1", "connector_key": "connector-1",
+			"attachment_marker": "zotio-write-connector-1", "message": "two stored files matched",
+		},
+	}}}
+	inverse, refused := InverseOps(entry)
+	if len(inverse) != 0 || len(refused) != 1 {
+		t.Fatalf("inverse=%+v refused=%+v, want one explicit refusal", inverse, refused)
+	}
+	reason := refused[0].Reason
+	for _, want := range []string{"Ambiguous Paper", "session-1", "connector-1", "zotio-write-connector-1", "two stored files matched"} {
+		if !strings.Contains(reason, want) {
+			t.Fatalf("refusal = %q, want %q", reason, want)
 		}
 	}
 }

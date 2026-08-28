@@ -52,13 +52,25 @@ type itemCreateResult struct {
 	FilingFailed bool
 }
 
+type routeCreateOptions struct {
+	preserveUnresolvedConnectorWrite bool
+}
+
 // routeCreateItem creates one Zotero item via the selected route.
 func routeCreateItem(ctx context.Context, flags *rootFlags, webClient itemPoster, item map[string]any, sourceURI string, collectionRequested bool) (itemCreateResult, error) {
+	return routeCreateItemWithOptions(ctx, flags, webClient, item, sourceURI, collectionRequested, routeCreateOptions{})
+}
+
+func routeCreateStoredItem(ctx context.Context, flags *rootFlags, webClient itemPoster, item map[string]any, sourceURI string, collectionRequested bool) (itemCreateResult, error) {
+	return routeCreateItemWithOptions(ctx, flags, webClient, item, sourceURI, collectionRequested, routeCreateOptions{preserveUnresolvedConnectorWrite: true})
+}
+
+func routeCreateItemWithOptions(ctx context.Context, flags *rootFlags, webClient itemPoster, item map[string]any, sourceURI string, collectionRequested bool, opt routeCreateOptions) (itemCreateResult, error) {
 	via, err := flags.resolveCreateVia(ctx, collectionRequested)
 	if err != nil {
 		return itemCreateResult{}, err
 	}
-	return routeCreateItemVia(ctx, flags, via, webClient, item, sourceURI, collectionRequested)
+	return routeCreateItemViaWithOptions(ctx, flags, via, webClient, item, sourceURI, collectionRequested, opt)
 }
 
 // singleItemCreate describes one proposed item create for the commands that
@@ -179,6 +191,10 @@ func singleItemCreateApplyResult(res itemCreateResult, err error, fallbackKey st
 
 // routeCreateItemVia creates one Zotero item through an already resolved route.
 func routeCreateItemVia(ctx context.Context, flags *rootFlags, via string, webClient itemPoster, item map[string]any, sourceURI string, collectionRequested bool) (itemCreateResult, error) {
+	return routeCreateItemViaWithOptions(ctx, flags, via, webClient, item, sourceURI, collectionRequested, routeCreateOptions{})
+}
+
+func routeCreateItemViaWithOptions(ctx context.Context, flags *rootFlags, via string, webClient itemPoster, item map[string]any, sourceURI string, collectionRequested bool, opt routeCreateOptions) (itemCreateResult, error) {
 	switch via {
 	case "web":
 		if webClient == nil {
@@ -239,6 +255,12 @@ func routeCreateItemVia(ctx context.Context, flags *rootFlags, via string, webCl
 		// make no progress, so confirm against the library before believing it.
 		createdAfter := time.Now().UTC().Add(-recentItemClockSkew)
 		if saveErr := conn.SaveItems(ctx, sessionID, sourceURI, []map[string]any{item}); saveErr != nil {
+			if opt.preserveUnresolvedConnectorWrite {
+				return itemCreateResult{
+					Via: "connector", Session: sessionID, ConnKey: connectorKey,
+					CreatedAfter: createdAfter, ConnectorError: saveErr.Error(),
+				}, fmt.Errorf("connector save outcome is unresolved; refusing an automatic retry: %w", saveErr)
+			}
 			recovered, matched, lookupErr := confirmConnectorCreate(flags, item, createdAfter)
 			if lookupErr != nil || recovered == "" {
 				if matched > 1 {
@@ -265,6 +287,9 @@ func routeCreateItemVia(ctx context.Context, flags *rootFlags, via string, webCl
 				// populated result alongside the filing error so the create is
 				// journaled and the target failure is reported separately.
 				resolved, _, _ := confirmConnectorCreate(flags, item, createdAfter)
+				if opt.preserveUnresolvedConnectorWrite {
+					resolved = ""
+				}
 				return itemCreateResult{Via: "connector", Session: sessionID, ConnKey: connectorKey, WebKey: resolved, CreatedAfter: createdAfter, FilingFailed: true}, err
 			}
 		}

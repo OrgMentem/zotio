@@ -10,9 +10,15 @@ Notable changes to zotio. Format follows [Keep a Changelog](https://keepachangel
   can expose a connector-created item only after its stored PDF finishes
   attaching. zotio previously checked before that attachment, reported the
   write as applied without keys, and left acquisition clients unable to record
-  the successful import. It now repeats the bounded title-and-type lookup after
-  the file lands, confirms the one attachment child, and returns both keys.
-  Missing or ambiguous read-back becomes a conflict instead of false success.
+  the successful import. It now adds a random fragment to the attachment's
+  provenance URL before the connector write, then selects the one recent parent
+  and child carrying both that marker and the manifest PDF's registered MD5.
+  The fragment never changes the network destination and remains as permanent
+  per-write evidence, so an identical concurrent import cannot supply the wrong
+  keys. Missing or ambiguous read-back is a committed conflict with title,
+  session, marker, and connector evidence in the journal, not false success.
+  `--fetch-pdf` is rejected with stored mode because the manifest already
+  supplies the PDF.
 
 ## [0.21.0] — 2026-08-24
 

@@ -34,8 +34,22 @@ const recentItemClockSkew = 2 * time.Minute
 // Returns the key and how many recently added items matched the title, so a
 // caller can distinguish "not there" from "ambiguous" and refuse to guess.
 func findRecentlyAddedItemKey(c *client.Client, title, itemType string, floor time.Time) (key string, matched int, err error) {
+	keys, err := findRecentlyAddedItemKeys(c, title, itemType, floor)
+	if err != nil {
+		return "", 0, err
+	}
+	if len(keys) != 1 {
+		return "", len(keys), nil
+	}
+	return keys[0], 1, nil
+}
+
+// findRecentlyAddedItemKeys returns every recent title/type match. Callers that
+// hold stronger per-write evidence, such as the stored file's MD5, can use the
+// full set without guessing from title alone.
+func findRecentlyAddedItemKeys(c *client.Client, title, itemType string, floor time.Time) ([]string, error) {
 	if strings.TrimSpace(title) == "" || itemType == "" {
-		return "", 0, nil
+		return nil, nil
 	}
 	// The item was created seconds ago; a cached list would not contain it.
 	c.NoCache = true
@@ -45,14 +59,14 @@ func findRecentlyAddedItemKey(c *client.Client, title, itemType string, floor ti
 		"limit":     strconv.Itoa(recentItemLookupLimit),
 	})
 	if err != nil {
-		return "", 0, err
+		return nil, err
 	}
 	var top []json.RawMessage
 	if err := json.Unmarshal(data, &top); err != nil {
-		return "", 0, err
+		return nil, err
 	}
 
-	var found string
+	keys := make([]string, 0, len(top))
 	for _, entry := range top {
 		if !strings.EqualFold(strings.TrimSpace(jsonStringField(entry, "title")), strings.TrimSpace(title)) {
 			continue
@@ -63,12 +77,7 @@ func findRecentlyAddedItemKey(c *client.Client, title, itemType string, floor ti
 		if !addedAfter(entry, floor) {
 			continue
 		}
-		matched++
-		found = jsonStringField(entry, "key")
+		keys = append(keys, jsonStringField(entry, "key"))
 	}
-	// Reporting a guessed key is worse than reporting none.
-	if matched != 1 {
-		return "", matched, nil
-	}
-	return found, matched, nil
+	return keys, nil
 }

@@ -934,6 +934,8 @@ func TestImportApplyConnectorSendsFileURLForSourcelessPDF(t *testing.T) {
 	})
 	var gotMetadata string
 	var saveItems, saveAttachments int
+	var wantMD5 string
+	attachmentState := &connectorAttachmentTestState{}
 	srv := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/connector/ping":
@@ -945,6 +947,9 @@ func TestImportApplyConnectorSendsFileURLForSourcelessPDF(t *testing.T) {
 			saveAttachments++
 			gotMetadata = r.Header.Get("X-Metadata")
 			w.WriteHeader(http.StatusCreated)
+			if err := attachmentState.record(r); err != nil {
+				t.Errorf("record connector attachment URL: %v", err)
+			}
 		case "/api/users/0/items/top":
 			if saveAttachments == 0 {
 				_, _ = w.Write([]byte(`[]`))
@@ -956,7 +961,9 @@ func TestImportApplyConnectorSendsFileURLForSourcelessPDF(t *testing.T) {
 			}})
 		case "/api/users/0/items/PARENT23/children":
 			_ = json.NewEncoder(w).Encode([]any{map[string]any{
-				"key": "ATTACH23", "data": map[string]any{"itemType": "attachment"},
+				"key": "ATTACH23", "data": map[string]any{
+					"itemType": "attachment", "md5": wantMD5, "url": attachmentState.snapshot(),
+				},
 			}})
 		default:
 			w.Header().Set("Last-Modified-Version", "0")
@@ -972,6 +979,10 @@ func TestImportApplyConnectorSendsFileURLForSourcelessPDF(t *testing.T) {
 	dir := t.TempDir()
 	pdfPath := filepath.Join(dir, "scanned paper.pdf")
 	if err := os.WriteFile(pdfPath, []byte(uploadFixturePDF), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	wantMD5, err = fileMD5(pdfPath)
+	if err != nil {
 		t.Fatal(err)
 	}
 
@@ -1015,8 +1026,12 @@ func TestImportApplyConnectorSendsFileURLForSourcelessPDF(t *testing.T) {
 	if meta.URL == "" {
 		t.Fatal("connector received an empty url; Zotero answers 500 after creating the parent")
 	}
-	if want := localFileURL(pdfPath); meta.URL != want {
-		t.Fatalf("connector url = %q, want the escaped file URI %q", meta.URL, want)
+	marker, _ := reason["attachment_marker"].(string)
+	if marker == "" || !attachmentURLHasMarker(meta.URL, marker) {
+		t.Fatalf("connector url = %q marker=%q, want persistent per-write marker", meta.URL, marker)
+	}
+	if want := localFileURL(pdfPath); strings.Split(meta.URL, "#")[0] != want {
+		t.Fatalf("connector url = %q, want base file URI %q", meta.URL, want)
 	}
 	if !strings.Contains(meta.URL, "%20") {
 		t.Fatalf("connector url = %q, want the space percent-escaped", meta.URL)

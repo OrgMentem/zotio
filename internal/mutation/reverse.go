@@ -46,15 +46,25 @@ type ReversalRefusal struct {
 	Reason string `json:"reason"`
 }
 
-// InverseOps derives the inverse operations for the applied, reversible ops in a
-// journal entry, and a refusal list for ops that cannot be safely reversed. Only
-// ops recorded with status "applied" are considered (a no-op/conflict/failed op
-// changed nothing). Item creates are safely reversed by trashing their recorded
-// key; membership changes carry inverted Changes but no Apply closure, which the
-// cli attaches.
+// InverseOps derives the inverse operations for reversible writes in a journal
+// entry, and a refusal list for everything that changed state but cannot be
+// undone safely. Ordinary no-op/conflict/failed operations changed nothing and
+// are skipped. A non-applied operation whose reason says `committed: true` is
+// an unresolved write, so it becomes an explicit refusal with its recovery
+// evidence instead of disappearing as "nothing reversible".
 func InverseOps(entry JournalEntry) (inverse []Op, refused []ReversalRefusal) {
 	for _, op := range entry.Ops {
-		if op.Status != "applied" || len(op.Changes) == 0 {
+		if op.Status != "applied" {
+			if detail, ok := op.Reason.(map[string]any); ok && detail["committed"] == true {
+				refused = append(refused, ReversalRefusal{
+					OpID: op.ID, Key: op.Key, Kind: op.Kind,
+					Reason: fmt.Sprintf("write committed but cannot be undone without confirmed keys; title=%v session=%v connector_key=%v attachment_marker=%v: %v",
+						detail["title"], detail["session"], detail["connector_key"], detail["attachment_marker"], detail["message"]),
+				})
+			}
+			continue
+		}
+		if len(op.Changes) == 0 {
 			continue
 		}
 		if op.Kind == "item_create" {
