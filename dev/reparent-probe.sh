@@ -188,8 +188,16 @@ jq '{writes, file_storage}' "${DOCTOR_JSON}" ||
 	die "doctor returned invalid JSON; see ${DOCTOR_JSON}"
 FILE_STORAGE="$(jq -er '.file_storage | strings' "${DOCTOR_JSON}")" ||
 	die "doctor returned no usable file_storage value"
-[ "${FILE_STORAGE}" = "webdav" ] ||
-	die "doctor reports file_storage=${FILE_STORAGE}; this probe requires webdav"
+# doctor's file_storage is a human-readable sentence, not an enum: it leads with
+# the mode and then names the host and the consequence, e.g.
+#   "WebDAV (host) (personal library) — stored uploads ... are refused".
+# An equality test against "webdav" can therefore never hold. Match the leading
+# mode word so the check still fails closed on a Zotero-cloud store, which is
+# the case this probe must refuse: it would bill the operator's plan.
+case "${FILE_STORAGE}" in
+[Ww][Ee][Bb][Dd][Aa][Vv]*) ;;
+*) die "doctor reports file_storage=${FILE_STORAGE}; this probe requires a WebDAV file store" ;;
+esac
 
 # ----------------------------------------------------------------- snapshot ---
 
@@ -276,8 +284,20 @@ record "RECEIVER_B=${RECEIVER_B}"
 # Confirm the key identifies the receiver this run created. This protects every
 # existing library item from a mistaken paste during the final cleanup.
 RECEIVER_JSON="${WORK}/receiver-verify.json"
-curl -fsS -H "Zotero-API-Key: ${ZOTERO_API_KEY}" \
-	"${API}/items/${RECEIVER_B}" >"${RECEIVER_JSON}" ||
+# The GET is retried. api.zotero.org hands back the new key before that item is
+# readable on this endpoint, so a single-shot check reports 404 for a receiver
+# that was in fact created correctly a moment earlier — measured on 2026-08-31.
+# The identity assertion below is unchanged; only its input is now awaited.
+RECEIVER_VERIFIED=0
+for _ in 1 2 3 4 5 6; do
+	if curl -fsS -H "Zotero-API-Key: ${ZOTERO_API_KEY}" \
+		"${API}/items/${RECEIVER_B}" >"${RECEIVER_JSON}" 2>/dev/null; then
+		RECEIVER_VERIFIED=1
+		break
+	fi
+	sleep 3
+done
+[ "${RECEIVER_VERIFIED}" = "1" ] ||
 	die "could not verify receiving item ${RECEIVER_B} on the write plane"
 RECEIVER_ACTUAL_TITLE="$(jq -er '.data.title | strings' "${RECEIVER_JSON}")" ||
 	die "could not read the title of receiving item ${RECEIVER_B}"
