@@ -21,6 +21,33 @@ Notable changes to zotio. Format follows [Keep a Changelog](https://keepachangel
   landed and its reply was lost), and one that has moved anywhere else
   abandons with the original conflict rather than being wrenched back. See
   `dev/field-report-2026-08-30-connector-reparent-live.md`.
+- **`attachments add --via connector` no longer orphans its own attachment when
+  another run wins the race.** Zotero's server does not cascade a trash to
+  children, which is the fact that makes the re-parent safe in the first place,
+  and the route was reading it the wrong way round on one path: after losing the
+  race it trashed only its temporary parent, leaving its redundant copy live
+  beneath a trashed parent, unreachable from the trash and still holding its
+  stored bytes. It now trashes the attachment explicitly and first, and
+  `trashTemporaryParent` refuses outright while any live child remains, so no
+  future caller can reintroduce the same leak. The refusal also covers a parent
+  another actor trashed while a child still hung beneath it, which previously
+  reported success over exactly that broken state. Cleanup now fails closed
+  throughout: a read it cannot complete, including a 404 on a child list, is
+  treated as unknown rather than as proof of absence, because the next step is
+  destructive.
+- **The re-parent retry can no longer duplicate content onto the target.** The
+  reconciliation that checks whether another run already attached the same file
+  ran once, before the first `PATCH`. A competing run finishing inside the retry
+  window went unnoticed, because the ownership check proves the attachment is
+  still this run's, not that the target is still free. The retry now
+  re-establishes all three facts before every replay: the attachment is still
+  under this run's temporary parent, it has not been trashed by another actor's
+  cleanup, and the target has not gained the content. A target check that fails
+  is not permission to replay. When the target did gain the content, the winning
+  key travels with the error rather than being looked up again, and the winner is
+  re-confirmed live immediately before this run destroys its own copy — so the
+  worst case is litter the operator can see, never content that quietly
+  disappeared.
 - **`vault push` no longer reports a deleted Zotero note as synchronised.** The
   batch note-version map was fetched through the cached read path, while the
   single-note read beside it correctly bypassed the cache. Absence from that map

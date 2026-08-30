@@ -4,6 +4,7 @@ package cli
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -29,6 +30,14 @@ type reparentConflictFake struct {
 	// the way the desktop's file registration does.
 	onConflict func(f *reparentConflictFake)
 
+	// targetWinnerMD5, when set, makes the TARGET already hold an attachment
+	// with that hash, which is how a competing run finishing inside the retry
+	// window looks to this route.
+	targetWinnerMD5 string
+	// attachTrashed makes the attachment read back as trashed, which is how
+	// another actor's cleanup looks.
+	attachTrashed int
+
 	patchVersions []string
 	gets          int
 }
@@ -37,11 +46,28 @@ func (f *reparentConflictFake) server(t *testing.T) *httptest.Server {
 	t.Helper()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
+		// The retry re-checks the target for a winner before each replay, and a
+		// re-check it cannot complete fails closed. Serving an empty child list
+		// is what "the target is still winner-free" looks like; targetWinnerMD5
+		// lets a test make another run win mid-window instead.
+		case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/children"):
+			w.Header().Set("Last-Modified-Version", fmt.Sprint(f.version))
+			rows := []map[string]any{}
+			if f.targetWinnerMD5 != "" {
+				rows = append(rows, map[string]any{
+					"key":     "WINNER01",
+					"version": f.version,
+					"data": map[string]any{
+						"key": "WINNER01", "itemType": "attachment", "md5": f.targetWinnerMD5,
+					},
+				})
+			}
+			_ = json.NewEncoder(w).Encode(rows)
 		case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/users/0/items/"):
 			f.gets++
 			w.Header().Set("Last-Modified-Version", fmt.Sprint(f.version))
 			body := map[string]any{"version": f.version, "data": map[string]any{
-				"itemType": "attachment", "parentItem": f.parent,
+				"itemType": "attachment", "parentItem": f.parent, "deleted": f.attachTrashed,
 			}}
 			_ = json.NewEncoder(w).Encode(body)
 		case r.Method == http.MethodPatch:
@@ -81,7 +107,7 @@ func TestReparentRetriesTheDesktopsOwnVersionBump(t *testing.T) {
 		t.Fatalf("newWriteClient: %v", err)
 	}
 
-	if err := reparentAttachment(c, "ATTACH01", "TARGET01", "TEMP0001", 15136); err != nil {
+	if err := reparentAttachment(c, "ATTACH01", "TARGET01", "TEMP0001", "deadbeef", 15136); err != nil {
 		t.Fatalf("reparentAttachment: %v, want success after one retry", err)
 	}
 	if got, want := fake.patchVersions, []string{"15136", "15137"}; !equalStrings(got, want) {
@@ -100,7 +126,7 @@ func TestReparentTreatsAlreadyMovedAsSuccess(t *testing.T) {
 	flags := reparentFlags(t, srv)
 	c, _ := flags.newWriteClient()
 
-	if err := reparentAttachment(c, "ATTACH01", "TARGET01", "TEMP0001", 900); err != nil {
+	if err := reparentAttachment(c, "ATTACH01", "TARGET01", "TEMP0001", "deadbeef", 900); err != nil {
 		t.Fatalf("reparentAttachment: %v, want success when the item is already on the target", err)
 	}
 	if len(fake.patchVersions) != 1 {
@@ -123,7 +149,7 @@ func TestReparentAbandonsWhenSomethingElseOwnsTheAttachment(t *testing.T) {
 	flags := reparentFlags(t, srv)
 	c, _ := flags.newWriteClient()
 
-	err := reparentAttachment(c, "ATTACH01", "TARGET01", "TEMP0001", 900)
+	err := reparentAttachment(c, "ATTACH01", "TARGET01", "TEMP0001", "deadbeef", 900)
 	if err == nil {
 		t.Fatal("reparentAttachment succeeded, want the original conflict returned")
 	}
@@ -141,7 +167,7 @@ func TestReparentDoesNotSpinOnAStaticVersion(t *testing.T) {
 	flags := reparentFlags(t, srv)
 	c, _ := flags.newWriteClient()
 
-	if err := reparentAttachment(c, "ATTACH01", "TARGET01", "TEMP0001", 900); err == nil {
+	if err := reparentAttachment(c, "ATTACH01", "TARGET01", "TEMP0001", "deadbeef", 900); err == nil {
 		t.Fatal("reparentAttachment succeeded, want the conflict returned")
 	}
 	if len(fake.patchVersions) != 1 {
@@ -159,11 +185,101 @@ func TestReparentRetryIsBounded(t *testing.T) {
 	flags := reparentFlags(t, srv)
 	c, _ := flags.newWriteClient()
 
-	if err := reparentAttachment(c, "ATTACH01", "TARGET01", "TEMP0001", 900); err == nil {
+	if err := reparentAttachment(c, "ATTACH01", "TARGET01", "TEMP0001", "deadbeef", 900); err == nil {
 		t.Fatal("reparentAttachment succeeded, want the conflict returned")
 	}
 	if got, want := len(fake.patchVersions), connectorReparentConflictRetries+1; got != want {
 		t.Fatalf("PATCHes = %d, want %d (retries capped by connectorReparentConflictRetries)", got, want)
+	}
+}
+
+// TestReparentAbandonsWhenTheTargetGainsTheContentMidRetry pins the fix for a
+// hazard found in review of the retry itself. The reconciliation that checks the
+// target for a winner runs ONCE, before the first PATCH. A competing run can
+// finish inside the retry window, and the ownership check does not notice: it
+// proves the attachment is still ours, not that the target is still winner-free.
+// Replaying blindly would put a second identical attachment on the operator's
+// item.
+//
+// Without the re-check this test sees a successful second PATCH instead of the
+// race-lost signal, which is exactly the duplicate.
+func TestReparentAbandonsWhenTheTargetGainsTheContentMidRetry(t *testing.T) {
+	fake := &reparentConflictFake{parent: "TEMP0001", version: 15136, conflictsLeft: 1}
+	fake.onConflict = func(f *reparentConflictFake) {
+		f.version++
+		// Another run completed while we were being rejected.
+		f.targetWinnerMD5 = "deadbeef"
+	}
+	srv := fake.server(t)
+	flags := reparentFlags(t, srv)
+	c, _ := flags.newWriteClient()
+
+	err := reparentAttachment(c, "ATTACH01", "TARGET01", "TEMP0001", "deadbeef", 15136)
+	var raceLost *reparentRaceLostError
+	if !errors.As(err, &raceLost) {
+		t.Fatalf("err = %v, want a reparentRaceLostError so the caller cleans up instead of duplicating", err)
+	}
+	if raceLost.winner != "WINNER01" {
+		t.Errorf("winner = %q, want WINNER01 carried with the error rather than looked up again", raceLost.winner)
+	}
+	if len(fake.patchVersions) != 1 {
+		t.Errorf("PATCHes = %d, want 1: the replay must not happen once the target has the content", len(fake.patchVersions))
+	}
+}
+
+// TestReparentDoesNotResurrectATrashedAttachment pins that another actor's
+// cleanup is respected. If our attachment was deliberately trashed between the
+// PATCH and the re-read, replaying the move would resurrect it onto the target,
+// undoing a decision some other run made on purpose.
+func TestReparentDoesNotResurrectATrashedAttachment(t *testing.T) {
+	fake := &reparentConflictFake{parent: "TEMP0001", version: 900, conflictsLeft: 1}
+	fake.onConflict = func(f *reparentConflictFake) {
+		f.version++
+		f.attachTrashed = 1
+	}
+	srv := fake.server(t)
+	flags := reparentFlags(t, srv)
+	c, _ := flags.newWriteClient()
+
+	if err := reparentAttachment(c, "ATTACH01", "TARGET01", "TEMP0001", "deadbeef", 900); err == nil {
+		t.Fatal("reparentAttachment succeeded, want the conflict returned for a trashed attachment")
+	}
+	if len(fake.patchVersions) != 1 {
+		t.Errorf("PATCHes = %d, want 1: a trashed attachment must not be moved", len(fake.patchVersions))
+	}
+}
+
+// TestReparentFailsClosedWhenTheTargetCannotBeRechecked pins that a re-check it
+// cannot complete is not permission to replay. Without a completed read there is
+// no proof the target is winner-free, and guessing wrong duplicates content onto
+// the operator's item.
+func TestReparentFailsClosedWhenTheTargetCannotBeRechecked(t *testing.T) {
+	var patches int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/children"):
+			// A transport-level failure, not a 404: no answer either way.
+			w.WriteHeader(http.StatusInternalServerError)
+		case r.Method == http.MethodPatch:
+			patches++
+			w.Header().Set("Last-Modified-Version", "901")
+			w.WriteHeader(http.StatusPreconditionFailed)
+			_, _ = w.Write([]byte("Item has been modified since specified version"))
+		default:
+			w.Header().Set("Last-Modified-Version", "901")
+			_ = json.NewEncoder(w).Encode(map[string]any{"version": 901,
+				"data": map[string]any{"itemType": "attachment", "parentItem": "TEMP0001"}})
+		}
+	}))
+	t.Cleanup(srv.Close)
+	flags := reparentFlags(t, srv)
+	c, _ := flags.newWriteClient()
+
+	if err := reparentAttachment(c, "ATTACH01", "TARGET01", "TEMP0001", "deadbeef", 900); err == nil {
+		t.Fatal("reparentAttachment succeeded despite being unable to re-check the target")
+	}
+	if patches != 1 {
+		t.Errorf("PATCHes = %d, want 1: an unverifiable target must not be replayed onto", patches)
 	}
 }
 
@@ -185,7 +301,7 @@ func TestReparentDoesNotRetryANonConflict(t *testing.T) {
 	flags := reparentFlags(t, srv)
 	c, _ := flags.newWriteClient()
 
-	if err := reparentAttachment(c, "ATTACH01", "TARGET01", "TEMP0001", 900); err == nil {
+	if err := reparentAttachment(c, "ATTACH01", "TARGET01", "TEMP0001", "deadbeef", 900); err == nil {
 		t.Fatal("reparentAttachment succeeded on a 403, want the error")
 	}
 	if patches != 1 {

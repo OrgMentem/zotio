@@ -52,6 +52,14 @@ type reparentFake struct {
 	// reparentStatus lets a test make the PATCH fail.
 	reparentStatus int
 
+	// childDetached and childTrashed make the fake model what a re-parent and a
+	// trash actually do to the temporary parent's child list. Without them the
+	// fake reported the attachment as a live child forever, including after the
+	// route moved it away, so a caller could not tell a cleaned-up parent from
+	// one still holding the operator's file.
+	childDetached map[string]bool
+	childTrashed  map[string]bool
+
 	// calls records every mutating step in order.
 	calls []string
 	// patched records the bodies and version headers of each PATCH.
@@ -217,14 +225,20 @@ func (f *reparentFake) server(t *testing.T) *httptest.Server {
 				return
 			}
 			if key == f.tempParentKey {
+				f.mu.Lock()
 				rows := make([]map[string]any, 0, len(f.attachChildren))
 				for _, k := range f.attachChildren {
-					rows = append(rows, map[string]any{
-						"key":     k,
-						"version": f.version,
-						"data":    map[string]any{"key": k, "itemType": "attachment"},
-					})
+					if f.childDetached[k] {
+						// Moved onto another parent, so no longer a child here.
+						continue
+					}
+					data := map[string]any{"key": k, "itemType": "attachment"}
+					if f.childTrashed[k] {
+						data["deleted"] = 1
+					}
+					rows = append(rows, map[string]any{"key": k, "version": f.version, "data": data})
 				}
+				f.mu.Unlock()
 				_ = json.NewEncoder(w).Encode(rows)
 				return
 			}
@@ -273,8 +287,23 @@ func (f *reparentFake) server(t *testing.T) *httptest.Server {
 					w.WriteHeader(f.reparentStatus)
 					return
 				}
+				// The attachment now belongs to another parent, so it leaves the
+				// temporary parent's child list. Modelling this is what lets a
+				// test tell a cleaned-up parent from one still holding a file.
+				f.mu.Lock()
+				if f.childDetached == nil {
+					f.childDetached = map[string]bool{}
+				}
+				f.childDetached[path] = true
+				f.mu.Unlock()
 				f.record("web.reparent")
 			case strings.Contains(body, "deleted"):
+				f.mu.Lock()
+				if f.childTrashed == nil {
+					f.childTrashed = map[string]bool{}
+				}
+				f.childTrashed[path] = true
+				f.mu.Unlock()
 				f.record("web.trash:" + path)
 			}
 			w.WriteHeader(http.StatusNoContent)
@@ -810,7 +839,7 @@ func TestReparentAttachmentRefusesWithoutAVersion(t *testing.T) {
 	flags := reparentFlags(t, srv)
 	c, _ := flags.newWriteClient()
 
-	if err := reparentAttachment(c, "ATTACH01", "TARGET01", "TEMP0001", 0); err == nil {
+	if err := reparentAttachment(c, "ATTACH01", "TARGET01", "TEMP0001", "deadbeef", 0); err == nil {
 		t.Fatal("reparentAttachment accepted version 0, want a refusal")
 	}
 	if calls := fake.sequence(); len(calls) != 0 {

@@ -32,8 +32,8 @@
 # Safety
 # ------
 # Every object this script touches is created by this script. It never reads or
-# writes an item that existed beforehand. Worst case is a few junk objects in
-# your trash, which `zotio items restore` can bring back.
+# writes an item that existed beforehand. Worst case is recoverable junk objects.
+# The recovery hint records known keys and prints before every abnormal exit.
 #
 # It stops before every write and tells you what to look for. Answering anything
 # other than "y" aborts and prints exactly what to clean up.
@@ -42,7 +42,7 @@
 #   ZOTERO_API_KEY   your Zotero Web API key (the re-parent PATCH needs it)
 #   PROBE_PDF        optional: a real PDF to use instead of the generated stub
 #   Zotero desktop running, with the local API enabled
-#   jq, curl
+#   jq, curl, md5 or md5sum
 #
 # Usage
 #   ZOTERO_API_KEY=... ./dev/reparent-probe.sh
@@ -76,21 +76,52 @@ load() { # shellcheck disable=SC1090
 }
 
 cleanup_hint() {
+	CLEANUP_REPORTED=1
 	load 2>/dev/null || true
 	bold "State recorded so far"
 	if [ -s "${STATE}" ]; then cat "${STATE}"; else info "(nothing created)"; fi
-	if [ -n "${RECEIVER_B:-}" ] || [ -n "${TEMP_PARENT:-}" ]; then
+	if [ -n "${ATTACH:-}" ] || [ -n "${TEMP_PARENT:-}" ] || [ -n "${RECEIVER_B:-}" ]; then
 		bold "To clean up, trash what this probe created"
+		[ -n "${ATTACH:-}" ] && info "zotio items delete ${ATTACH} --yes   # attachment; delete first"
+		[ -n "${TEMP_PARENT:-}" ] && info "zotio items delete ${TEMP_PARENT} --yes   # temporary parent"
 		[ -n "${RECEIVER_B:-}" ] && info "zotio items delete ${RECEIVER_B} --yes   # receiving item"
-		[ -n "${TEMP_PARENT:-}" ] && info "zotio items delete ${TEMP_PARENT} --yes   # temporary parent, if the command left it"
-		info "Both are reversible with 'zotio items restore <key>'."
-		info "The attachment follows whichever parent still holds it."
+		info "All are reversible with 'zotio items restore <key>'."
+		[ "${TEMP_PARENT_MISSING:-0}" = "1" ] &&
+			warn "the command omitted its temporary parent key; do not assume it was trashed"
+		[ -z "${ATTACH:-}" ] && [ -n "${RECEIVER_TITLE:-}" ] &&
+			warn "if the route was interrupted, inspect ${RECEIVER_TITLE} for its attachment"
+	elif [ -n "${RECEIVER_TITLE:-}" ]; then
+		bold "The receiving item may need recovery"
+		warn "Search Zotero for the exact title: ${RECEIVER_TITLE}"
+		warn "The create command did not report a key, so this probe cannot name it."
 	else
 		bold "Nothing to clean up"
 		info "No item was created, so your library is untouched."
 	fi
 	[ -n "${SNAPSHOT:-}" ] && info "Snapshot for reference: ${SNAPSHOT}"
 	info "Probe working directory: ${WORK}"
+}
+
+# Print recovery keys for every abnormal exit. The route can create objects
+# before it returns, so an interrupt must not discard the only recovery record.
+on_exit() {
+	local rc=$?
+	if [ "${rc}" -ne 0 ] && [ "${CLEANUP_REPORTED:-0}" != "1" ]; then
+		cleanup_hint
+	fi
+	exit "${rc}"
+}
+trap on_exit EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
+receiver_by_title() {
+	curl -fsSG -H "Zotero-API-Key: ${ZOTERO_API_KEY}" \
+		--data-urlencode "q=${RECEIVER_TITLE}" \
+		--data "qmode=title" "${API}/items" |
+		jq -r --arg title "${RECEIVER_TITLE}" \
+			'[.[] | select(.data.title == $title) | .key] | unique |
+			 if length == 1 then .[0] else empty end'
 }
 
 checkpoint() {
@@ -129,6 +160,13 @@ bold "Step 0 — preflight"
 for bin in zotio jq curl; do
 	command -v "${bin}" >/dev/null || die "${bin} is not on PATH"
 done
+if command -v md5 >/dev/null; then
+	HASHER=md5
+elif command -v md5sum >/dev/null; then
+	HASHER=md5sum
+else
+	die "neither md5 nor md5sum is on PATH"
+fi
 [ -n "${ZOTERO_API_KEY:-}" ] || die "ZOTERO_API_KEY is not set; the re-parent request needs it"
 
 # Resolve the user ID from the key itself. This is the write plane, and an
@@ -143,13 +181,15 @@ info "user ID ${USER_ID}"
 API="https://api.zotero.org/users/${USER_ID}"
 
 bold "Your setup, as zotio sees it"
-zotio doctor --json 2>/dev/null | jq '{writes, file_storage}' ||
-	warn "doctor did not return JSON; check 'zotio doctor' by hand"
-
-checkpoint "your library must keep files on WebDAV for this probe to mean anything" \
-	"file_storage above should name webdav. If it says zotero, this probe tests" \
-	"the wrong storage backend and its result will not apply to your case." \
-	"writes should be available, otherwise the connector step cannot run."
+DOCTOR_JSON="${WORK}/doctor.json"
+zotio doctor --json >"${DOCTOR_JSON}" 2>"${WORK}/doctor.err" ||
+	die "doctor did not return JSON; see ${WORK}/doctor.err"
+jq '{writes, file_storage}' "${DOCTOR_JSON}" ||
+	die "doctor returned invalid JSON; see ${DOCTOR_JSON}"
+FILE_STORAGE="$(jq -er '.file_storage | strings' "${DOCTOR_JSON}")" ||
+	die "doctor returned no usable file_storage value"
+[ "${FILE_STORAGE}" = "webdav" ] ||
+	die "doctor reports file_storage=${FILE_STORAGE}; this probe requires webdav"
 
 # ----------------------------------------------------------------- snapshot ---
 
@@ -171,41 +211,78 @@ fi
 bold "Step 2 — create the receiving item"
 info "This stands in for 'an item that already exists and is missing its PDF'."
 
-RECV_JSON="$(printf '[{"itemType":"journalArticle","title":"%s — RECEIVER"}]' "${TAG}")"
+RECEIVER_TITLE="${TAG} — RECEIVER"
+RECV_JSON="$(printf '[{"itemType":"journalArticle","title":"%s"}]' "${RECEIVER_TITLE}")"
 
 checkpoint "about to create ONE new junk item" \
-	"Title: ${TAG} — RECEIVER" \
+	"Title: ${RECEIVER_TITLE}" \
 	"Nothing existing is touched."
 
 # stdout and stderr separated here for the same reason as step 3 below: a
 # stderr routing notice folded into the JSON breaks every extraction.
 RECV_OUT="${WORK}/receiver.json"
 RECV_ERR="${WORK}/receiver.err"
+RECV_RC=0
 zotio --agent items create --items "${RECV_JSON}" --yes >"${RECV_OUT}" 2>"${RECV_ERR}" ||
+	RECV_RC=$?
+
+# A connector create can commit before its confirmation lookup reports an error.
+# Search the write plane by the exact title so the recovery hint still has a key.
+if [ "${RECV_RC}" -ne 0 ]; then
+	if ! RECEIVER_B="$(receiver_by_title)"; then
+		die "items create failed and the write plane could not reconcile ${RECEIVER_TITLE}"
+	fi
+	if [ -n "${RECEIVER_B}" ]; then
+		record "RECEIVER_B=${RECEIVER_B}"
+	fi
 	die "items create failed; stdout ${RECV_OUT}, stderr ${RECV_ERR}: $(tail -1 "${RECV_ERR}" 2>/dev/null)"
+fi
 
 # Three shapes are possible, so try all of them rather than assuming one:
 #   zotio connector create -> {"count":1,"key":"KEY","keys":["KEY"],"via":"connector"}
 #   Zotero POST /items      -> {"success":{"0":"KEY"},"successful":{"0":{...}}}
 #   either, wrapped by zotio's {meta,results} read envelope
-# "failed" is never read: a rejected entry can carry a key, and proceeding with
-# the key of a create that FAILED would probe a nonexistent item. Written to run
-# on both jq and jaq, so it avoids delpaths/walk.
-RECEIVER_B="$(jq -r '
-    [ .. | objects | (.key? // empty) | select(type=="string") ] as $direct
-  | [ .. | objects | (.success? // empty) | .["0"]? // empty ] as $s
-  | [ .. | objects | (.successful? // empty) | (.["0"]? // empty) | (.key? // empty) ] as $k
-  | ($s + $k + $direct | map(select(type=="string" and length>0))) | first // empty
-  ' "${RECV_OUT}" || true)"
+# Only success envelopes are read. A failed entry can carry a key, but that key
+# does not name an item this probe may attach to or later trash.
+if ! RECEIVER_B="$(jq -r '
+	def result_keys:
+		[
+			.key?,
+			.keys?[0]?,
+			.success?["0"]?,
+			.successful?["0"]?.key?,
+			(.results? | if type == "object" then result_keys[] else empty end)
+		];
+	[result_keys[] | select(type == "string" and length > 0)] | first // empty
+	' "${RECV_OUT}")"; then
+	die "could not extract the receiving item key from ${RECV_OUT}"
+fi
 
 if [ -z "${RECEIVER_B}" ] || [ "${RECEIVER_B}" = "null" ]; then
 	warn "could not read the new item key automatically. Raw output:"
 	cat "${RECV_OUT}"
+	if [ "${PROBE_YES:-}" = "1" ]; then
+		die "items create returned no key under PROBE_YES; no TTY fallback is safe"
+	fi
 	printf '\n  Paste the created item key: '
-	read -r RECEIVER_B </dev/tty
+	read -r RECEIVER_B </dev/tty ||
+		die "could not read a receiving item key from the TTY"
 fi
 [ -n "${RECEIVER_B}" ] || die "no receiving item key"
+[[ "${RECEIVER_B}" =~ ^[A-Z0-9]{8}$ ]] ||
+	die "receiving item key is not a Zotero key: ${RECEIVER_B}"
 record "RECEIVER_B=${RECEIVER_B}"
+
+# Confirm the key identifies the receiver this run created. This protects every
+# existing library item from a mistaken paste during the final cleanup.
+RECEIVER_JSON="${WORK}/receiver-verify.json"
+curl -fsS -H "Zotero-API-Key: ${ZOTERO_API_KEY}" \
+	"${API}/items/${RECEIVER_B}" >"${RECEIVER_JSON}" ||
+	die "could not verify receiving item ${RECEIVER_B} on the write plane"
+RECEIVER_ACTUAL_TITLE="$(jq -er '.data.title | strings' "${RECEIVER_JSON}")" ||
+	die "could not read the title of receiving item ${RECEIVER_B}"
+[ "${RECEIVER_ACTUAL_TITLE}" = "${RECEIVER_TITLE}" ] ||
+	die "receiving item ${RECEIVER_B} is not this probe's receiver"
 info "receiving item ${RECEIVER_B}"
 
 # ------------------------------------------------------------- the file -------
@@ -228,9 +305,19 @@ else
 	[ -f "${PROBE_FILE}" ] || die "PROBE_PDF is not a file: ${PROBE_FILE}"
 	info "using your PDF: ${PROBE_FILE}"
 fi
-PROBE_ABS="$(cd "$(dirname "${PROBE_FILE}")" && pwd)/$(basename "${PROBE_FILE}")"
-PROBE_MD5="$(md5sum <"${PROBE_ABS}" | cut -d' ' -f1)"
-PROBE_BYTES="$(wc -c <"${PROBE_ABS}" | tr -d ' ')"
+if ! PROBE_DIR="$(cd "$(dirname "${PROBE_FILE}")" && pwd)"; then
+	die "could not resolve the directory for ${PROBE_FILE}"
+fi
+PROBE_ABS="${PROBE_DIR}/$(basename "${PROBE_FILE}")"
+if [ "${HASHER}" = "md5" ]; then
+	PROBE_MD5="$(md5 -q "${PROBE_ABS}")" ||
+		die "could not hash ${PROBE_ABS} with md5"
+else
+	PROBE_MD5="$(md5sum "${PROBE_ABS}" | cut -d' ' -f1)" ||
+		die "could not hash ${PROBE_ABS} with md5sum"
+fi
+PROBE_BYTES="$(wc -c <"${PROBE_ABS}" | tr -d ' ')" ||
+	die "could not count bytes in ${PROBE_ABS}"
 record "PROBE_MD5=${PROBE_MD5}"
 info "file md5 ${PROBE_MD5} (${PROBE_BYTES} bytes)"
 
@@ -269,18 +356,28 @@ cat "${ADD_OUT}"
 
 # Fail loudly if stdout is not JSON, rather than letting every extraction below
 # return empty and be misread as "the command reported nothing".
-jq -e . "${ADD_OUT}" >/dev/null 2>&1 || {
-	warn "stdout is not valid JSON; the extractions below cannot be trusted"
-	cleanup_hint
-	exit 4
-}
+if ! jq -e . "${ADD_OUT}" >/dev/null 2>&1; then
+	die "stdout is not valid JSON; the extractions cannot be trusted"
+fi
 
 # Pull the route's own report of what it did. Absent fields stay empty rather
 # than defaulting, so a missing key is visible instead of being read as "none".
-ATTACH="$(jq -r '[.. | objects | (.attachment_key? // empty)] | map(select(type=="string" and length>0)) | first // empty' "${ADD_OUT}" 2>/dev/null || true)"
-TEMP_PARENT="$(jq -r '[.. | objects | (.temp_parent_key? // empty)] | map(select(type=="string" and length>0)) | first // empty' "${ADD_OUT}" 2>/dev/null || true)"
-TEMP_TRASHED="$(jq -r '[.. | objects | (.temp_parent_trashed? // empty)] | first // empty' "${ADD_OUT}" 2>/dev/null || true)"
-STATUS="$(jq -r '[.. | objects | (.status? // empty)] | map(select(type=="string")) | first // empty' "${ADD_OUT}" 2>/dev/null || true)"
+if ! ATTACH="$(jq -r '[.. | objects | (.attachment_key? // empty)] |
+	map(select(type == "string" and length > 0)) | first // empty' "${ADD_OUT}")"; then
+	die "could not extract attachment_key from ${ADD_OUT}"
+fi
+if ! TEMP_PARENT="$(jq -r '[.. | objects | (.temp_parent_key? // empty)] |
+	map(select(type == "string" and length > 0)) | first // empty' "${ADD_OUT}")"; then
+	die "could not extract temp_parent_key from ${ADD_OUT}"
+fi
+if ! TEMP_TRASHED="$(jq -r '[.. | objects | (.temp_parent_trashed? // empty)] |
+	first // empty' "${ADD_OUT}")"; then
+	die "could not extract temp_parent_trashed from ${ADD_OUT}"
+fi
+if ! STATUS="$(jq -r '[.. | objects | (.status? // empty)] |
+	map(select(type == "string")) | first // empty' "${ADD_OUT}")"; then
+	die "could not extract status from ${ADD_OUT}"
+fi
 [ -n "${ATTACH}" ] && record "ATTACH=${ATTACH}"
 [ -n "${TEMP_PARENT}" ] && record "TEMP_PARENT=${TEMP_PARENT}"
 
@@ -297,6 +394,10 @@ if [ "${ADD_RC}" -ne 0 ] || [ "${STATUS}" != "applied" ]; then
 	cleanup_hint
 	exit 2
 fi
+if [ -z "${TEMP_PARENT}" ]; then
+	TEMP_PARENT_MISSING=1
+	die "applied result omitted temp_parent_key; the temporary parent cannot be checked or cleaned"
+fi
 
 # --------------------------------------------------- independent oracle -------
 
@@ -310,10 +411,18 @@ A_JSON="${WORK}/attach.json"
 curl -fsS -H "Zotero-API-Key: ${ZOTERO_API_KEY}" "${API}/items/${ATTACH}" >"${A_JSON}" ||
 	die "could not read attachment ${ATTACH} from the write plane"
 
-NEW_PARENT="$(jq -r '.data.parentItem // "none"' "${A_JSON}")"
-A_DELETED="$(jq -r '.data.deleted // 0' "${A_JSON}")"
-A_MD5="$(jq -r '.data.md5 // "none"' "${A_JSON}")"
-A_MODE="$(jq -r '.data.linkMode // "none"' "${A_JSON}")"
+if ! NEW_PARENT="$(jq -r '.data.parentItem // "none"' "${A_JSON}")"; then
+	die "could not read parentItem from ${A_JSON}"
+fi
+if ! A_DELETED="$(jq -r '.data.deleted // 0' "${A_JSON}")"; then
+	die "could not read deleted from ${A_JSON}"
+fi
+if ! A_MD5="$(jq -r '.data.md5 // "none"' "${A_JSON}")"; then
+	die "could not read md5 from ${A_JSON}"
+fi
+if ! A_MODE="$(jq -r '.data.linkMode // "none"' "${A_JSON}")"; then
+	die "could not read linkMode from ${A_JSON}"
+fi
 
 info "parentItem  ${NEW_PARENT}   (want ${RECEIVER_B})"
 info "deleted     ${A_DELETED}   (want 0)"
@@ -334,53 +443,99 @@ FAILED=0
 	warn "the registered md5 does not match the file that was uploaded"
 	FAILED=1
 }
+[ "${A_MODE}" = "imported_file" ] || [ "${A_MODE}" = "imported_url" ] || {
+	warn "the attachment has an unexpected linkMode"
+	FAILED=1
+}
 
-if [ -n "${TEMP_PARENT}" ]; then
-	T_DELETED="$(curl -fsS -H "Zotero-API-Key: ${ZOTERO_API_KEY}" \
-		"${API}/items/${TEMP_PARENT}" | jq -r '.data.deleted // 0')"
-	T_KIDS="$(curl -fsS -H "Zotero-API-Key: ${ZOTERO_API_KEY}" \
-		"${API}/items/${TEMP_PARENT}/children" | jq 'length')"
-	info "temp parent deleted  ${T_DELETED}   (want 1)"
-	info "temp parent children ${T_KIDS}   (want 0)"
-	[ "${T_DELETED}" = "1" ] || {
-		warn "the temporary parent was left in the library"
-		FAILED=1
-	}
-	[ "${T_KIDS}" = "0" ] || {
-		warn "the temporary parent still has children"
-		FAILED=1
-	}
+if ! T_DELETED="$(curl -fsS -H "Zotero-API-Key: ${ZOTERO_API_KEY}" \
+	"${API}/items/${TEMP_PARENT}" | jq -r '.data.deleted // 0')"; then
+	die "could not read the temporary parent ${TEMP_PARENT} from the write plane"
 fi
+if ! T_KIDS="$(curl -fsS -H "Zotero-API-Key: ${ZOTERO_API_KEY}" \
+	"${API}/items/${TEMP_PARENT}/children" | jq 'length')"; then
+	die "could not read children of temporary parent ${TEMP_PARENT}"
+fi
+info "temp parent deleted  ${T_DELETED}   (want 1)"
+info "temp parent children ${T_KIDS}   (want 0)"
+[ "${T_DELETED}" = "1" ] || {
+	warn "the temporary parent was left in the library"
+	FAILED=1
+}
+[ "${T_KIDS}" = "0" ] || {
+	warn "the temporary parent still has children"
+	FAILED=1
+}
 
 # The storage-naming invariant, checked locally: the directory must be named for
 # the ATTACHMENT's key, never its parent's. This is what makes re-parenting free.
 STORAGE_DIR=""
-for cand in "${HOME}/Zotero/storage" "${ZOTERO_DATA_DIR:-}/storage"; do
-	[ -n "${cand}" ] && [ -d "${cand}" ] && STORAGE_DIR="${cand}" && break
-done
+if [ -n "${ZOTERO_DATA_DIR:-}" ]; then
+	STORAGE_CANDIDATE="${ZOTERO_DATA_DIR}/storage"
+elif [ -n "${HOME:-}" ]; then
+	STORAGE_CANDIDATE="${HOME}/Zotero/storage"
+else
+	STORAGE_CANDIDATE=""
+fi
+[ -n "${STORAGE_CANDIDATE}" ] && [ -d "${STORAGE_CANDIDATE}" ] &&
+	STORAGE_DIR="${STORAGE_CANDIDATE}"
 if [ -n "${STORAGE_DIR}" ]; then
 	if [ -d "${STORAGE_DIR}/${ATTACH}" ]; then
 		info "storage dir ${STORAGE_DIR}/${ATTACH} exists — named for the ATTACHMENT"
-		find "${STORAGE_DIR}/${ATTACH}" -maxdepth 1 -mindepth 1 -exec basename {} \; | sed 's/^/      /'
+		if ! find "${STORAGE_DIR}/${ATTACH}" -maxdepth 1 -mindepth 1 \
+			-exec basename {} \; | sed 's/^/      /'; then
+			die "could not inspect storage directory ${STORAGE_DIR}/${ATTACH}"
+		fi
+		STORAGE_LIST="${WORK}/storage-files.txt"
+		if ! find "${STORAGE_DIR}/${ATTACH}" -maxdepth 1 -type f -print >"${STORAGE_LIST}"; then
+			die "could not list files in ${STORAGE_DIR}/${ATTACH}"
+		fi
+		STORAGE_MATCH=0
+		while IFS= read -r STORAGE_FILE; do
+			if [ "${HASHER}" = "md5" ]; then
+				STORAGE_MD5="$(md5 -q "${STORAGE_FILE}")" ||
+					die "could not hash storage file ${STORAGE_FILE}"
+			else
+				STORAGE_MD5="$(md5sum "${STORAGE_FILE}" | cut -d' ' -f1)" ||
+					die "could not hash storage file ${STORAGE_FILE}"
+			fi
+			if [ "${STORAGE_MD5}" = "${PROBE_MD5}" ]; then
+				STORAGE_MATCH=1
+				break
+			fi
+		done <"${STORAGE_LIST}"
+		if [ "${STORAGE_MATCH}" != "1" ]; then
+			warn "storage directory ${STORAGE_DIR}/${ATTACH} does not contain this run's file"
+			FAILED=1
+			INCOMPLETE=1
+		fi
 	else
 		warn "no storage directory named ${ATTACH}; the desktop may not have"
 		warn "written it yet, or your data directory is elsewhere"
+		FAILED=1
+		INCOMPLETE=1
 	fi
-	[ -n "${TEMP_PARENT}" ] && [ -d "${STORAGE_DIR}/${TEMP_PARENT}" ] && {
+	if [ -d "${STORAGE_DIR}/${TEMP_PARENT}" ]; then
 		warn "a storage directory exists for the TEMPORARY PARENT key — the"
 		warn "naming invariant this route depends on does not hold"
 		FAILED=1
-	}
+	fi
 else
-	warn "could not locate a Zotero storage directory; skipped the naming check"
+	warn "could not locate the active Zotero storage directory"
+	FAILED=1
+	INCOMPLETE=1
 fi
 
-[ "${FAILED}" = "0" ] || {
-	warn "verification failed; see above"
+if [ "${FAILED}" != "0" ]; then
+	if [ "${INCOMPLETE:-0}" = "1" ]; then
+		warn "Server-side verification INCOMPLETE; see above"
+	else
+		warn "server-side verification failed; see above"
+	fi
 	cleanup_hint
 	exit 3
-}
-bold "Server-side verification PASSED"
+fi
+info "Server-side verification completed. Cleaning up the probe objects next."
 
 manual_checkpoint "sync Zotero, then check the FILE and WebDAV" \
 	"Press sync in Zotero and let it finish." \
@@ -410,19 +565,62 @@ checkpoint "about to trash the attachment ${ATTACH} and the receiving item ${REC
 # which a revert detector caught as +3 items against a baseline that was
 # otherwise byte-identical. Trashing the child first also matches the route's own
 # ordering rule: never let an attachment follow a parent into the trash.
-zotio --agent items delete "${ATTACH}" --yes >"${WORK}/trash-attach.json" 2>"${WORK}/trash-attach.err" ||
+ATTACH_TRASHED=0
+if zotio --agent items delete "${ATTACH}" --yes \
+	>"${WORK}/trash-attach.json" 2>"${WORK}/trash-attach.err"; then
+	if ATTACH_DELETED="$(curl -fsS -H "Zotero-API-Key: ${ZOTERO_API_KEY}" \
+		"${API}/items/${ATTACH}" | jq -r '.data.deleted // 0')" &&
+		[ "${ATTACH_DELETED}" = "1" ]; then
+		ATTACH_TRASHED=1
+	else
+		warn "could not verify the attachment is trashed after delete"
+		FAILED=$((FAILED + 1))
+	fi
+else
 	warn "trashing the attachment failed; see ${WORK}/trash-attach.err"
+	FAILED=$((FAILED + 1))
+fi
 
-zotio --agent items delete "${RECEIVER_B}" --yes >"${WORK}/trash-b.json" 2>"${WORK}/trash-b.err" ||
-	warn "trashing the receiving item failed; see ${WORK}/trash-b.err"
+# Never trash a parent after an attachment cleanup failure. That would hide a
+# live attachment beneath a trashed parent, which Zotero does not cascade.
+if [ "${ATTACH_TRASHED}" = "1" ]; then
+	if zotio --agent items delete "${RECEIVER_B}" --yes \
+		>"${WORK}/trash-b.json" 2>"${WORK}/trash-b.err"; then
+		if RECEIVER_DELETED="$(curl -fsS -H "Zotero-API-Key: ${ZOTERO_API_KEY}" \
+			"${API}/items/${RECEIVER_B}" | jq -r '.data.deleted // 0')" &&
+			[ "${RECEIVER_DELETED}" = "1" ]; then
+			:
+		else
+			warn "could not verify the receiving item is trashed after delete"
+			FAILED=$((FAILED + 1))
+		fi
+	else
+		warn "trashing the receiving item failed; see ${WORK}/trash-b.err"
+		FAILED=$((FAILED + 1))
+	fi
+else
+	warn "did not trash the receiving item because the attachment may still be live"
+	FAILED=$((FAILED + 1))
+fi
 
-bold "Done"
+if [ "${FAILED}" != "0" ]; then
+	warn "cleanup INCOMPLETE; the recovery commands below name every recorded object"
+	cleanup_hint
+	exit 1
+fi
+
+if [ "${PROBE_YES:-}" = "1" ]; then
+	bold "Probe complete with manual checks SKIPPED"
+else
+	bold "Probe PASSED"
+fi
 info "Everything the probe created is now in your trash."
 info "Empty the trash in Zotero when you are satisfied, and sync once more so"
 info "the WebDAV files are removed too."
 info ""
-info "Verify nothing was left live:"
-info "  zotio items trash --data-source live --json   # the probe's objects should be here"
+info "Verify both created live objects are trashed with independent GETs:"
+info "  curl -fsS -H \"Zotero-API-Key: \$ZOTERO_API_KEY\" ${API}/items/${ATTACH} | jq -e '.data.deleted == 1'"
+info "  curl -fsS -H \"Zotero-API-Key: \$ZOTERO_API_KEY\" ${API}/items/${RECEIVER_B} | jq -e '.data.deleted == 1'"
 info ""
 info "Keys, for the record:"
 cat "${STATE}"
