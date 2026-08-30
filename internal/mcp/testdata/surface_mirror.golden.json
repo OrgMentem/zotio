@@ -695,11 +695,11 @@
   },
   {
     "name": "demo",
-    "description": "Seed a bundled sample library into a separate demo store and print a\nshort tour of commands to try.\n\nThe sandbox is a self-contained SQLite database (demo.db) beside your real\nstore. Set ZOTIO_DEMO=1 on any command to read from it with a pristine,\nkey-less config -- your real library, config, and API key are never touched.\nNo Zotero desktop and no API key are required.",
+    "description": "Seed a bundled sample library into a separate demo store and print a\nshort tour of commands to try.\n\nThe demo library is a separate SQLite database (demo.db) beside your real\nstore. Set ZOTIO_DEMO=1 and pass --data-source local to keep reads inside it.\nWithout that flag, the default auto source can query a running Zotero desktop.\nNo Zotero desktop and no API key are required for local demo reads.",
     "inputSchema": {
       "properties": {
         "reset": {
-          "description": "Delete and re-seed the sandbox (also removes demo.db) (default: false)",
+          "description": "Delete and re-seed the demo library (also removes demo.db) (default: false)",
           "type": "boolean"
         }
       },
