@@ -2,7 +2,7 @@
 template: home.html
 ---
 
-`zotio` checks a Zotero library the way CI checks code — retracted papers, citekey conflicts, duplicates, missing metadata — with exit codes a build can fail on, and fixes what it finds through preview-first, journaled writes. Zotero's GUI is great for reading and citing; `zotio` is for *operating* on a library at scale: prove it is fit to cite, catch duplicate `\cite{}` keys before a submission, export a week of highlights, keep an Obsidian vault in sync, or hand an AI agent trustworthy context.
+`zotio` is **the trust-and-automation layer for Zotero**: local-first search and auditing, preview-first Web API writes for safe change, and bounded, provenance-tagged context for humans, scripts, and MCP agents. Use it to prove a library is ready, fix it safely, ingest material with review, or give agents and vaults trustworthy context.
 
 ## How it works
 
@@ -33,7 +33,7 @@ zotio items bibcheck paper.tex --fail-on-unknown     # every \cite{} resolves? (
 zotio search 'automation trust' --data-source local --json
 ```
 
-**No Zotero yet?** `zotio demo` seeds a sandboxed sample library — 34 classic papers, one genuinely retracted — so the checks above (`retract-check`, `library health`, `bibcheck`, `search`) run with no desktop app and no API key under `ZOTIO_DEMO=1`; `doctor` and `sync` still need the real desktop. `ZOTIO_DEMO=1 zotio items retract-check` catches the sandbox's retracted paper on the spot:
+**No Zotero yet?** `zotio demo` seeds a bundled sample library — 34 classic papers, one genuinely retracted — so local checks (`retract-check`, `library health`, `bibcheck`, `search`) run with no desktop app and no API key under `ZOTIO_DEMO=1` and `--data-source local`; `doctor` and `sync` still need the real desktop. `ZOTIO_DEMO=1 zotio --data-source local items retract-check` catches the bundled library's retracted paper on the spot:
 
 ![zotio demo tour](assets/demos/demo-tour.gif)
 

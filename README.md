@@ -8,8 +8,8 @@
 
 <p align="center">
   <strong>
-    Find retracted papers, broken citekeys, and duplicates in your
-    <a href="https://www.zotero.org/">Zotero</a> library — before your reviewers do
+    The trust-and-automation layer for
+    <a href="https://www.zotero.org/">Zotero</a>
   </strong>
 </p>
 
@@ -50,18 +50,17 @@
 </p>
 
 <p align="center">
-  <code>zotio</code> checks a Zotero library the way CI checks code — retracted
-  papers, citekey conflicts, duplicates, missing metadata — and fixes what it
-  finds through a preview-first safety envelope. Reads are keyless, straight from
-  your running Zotero desktop app and a local SQLite mirror that works offline;
-  no write touches your library without a previewed plan and an explicit
-  <code>--yes</code>.
+  <code>zotio</code> gives humans, scripts, and MCP agents local-first search
+  and auditing, preview-first writes, and bounded, provenance-tagged context
+  for Zotero libraries.
 </p>
+
+**Fast proof:** check a bundled library before trying zotio on your own data.
 
 ```bash
 brew install orgmentem/tap/zotio        # or grab a signed binary from Releases
-zotio demo                              # bundled sandbox: 34 classic papers, one genuinely retracted
-ZOTIO_DEMO=1 zotio items retract-check  # check every DOI against Crossref's Retraction Watch data
+zotio demo                              # bundled library: 34 classic papers, one genuinely retracted
+ZOTIO_DEMO=1 zotio --data-source local items retract-check  # check every DOI against Retraction Watch data
 ```
 
 ```console
@@ -72,9 +71,9 @@ FAIR002016  correction  addendum    10.1038/s41597-019-0009-6      2019-03-19  p
 Checked 21 DOI-bearing items; 3 update notices flagged; 2 DOI(s) not registered with CrossRef.
 ```
 
-That is the sandbox catching the retracted Wakefield 1998 MMR paper — with no
-Zotero install and no API key (the check itself queries Crossref live).
-`zotio demo --reset` removes the sandbox.
+That is the bundled library catching the retracted Wakefield 1998 MMR paper —
+with no Zotero install and no API key (the check itself queries Crossref live).
+`zotio demo --reset` removes the bundled library.
 
 Zotero itself alerts you when an item in your library is retracted — a red flag
 on the item, powered by the same Retraction Watch data. `zotio` covers what the
@@ -94,7 +93,7 @@ zotio items bibcheck thesis.tex --fail-on-unknown     # does every \cite{} resol
 ```
 
 <p align="center">
-  <img src="docs/assets/demos/demo-tour.gif" alt="zotio demo tour: seeding the sandbox, full-text search cards, duplicate detection, library stats with bar charts, and resolving the goal 'retracted papers' to a command" width="740">
+  <img src="docs/assets/demos/demo-tour.gif" alt="zotio demo tour: seeding the bundled sample library, full-text search cards, duplicate detection, library stats with bar charts, and resolving the goal 'retracted papers' to a command" width="740">
 </p>
 
 ---

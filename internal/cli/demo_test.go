@@ -76,6 +76,19 @@ func runReadCmd(t *testing.T, cmd *cobra.Command, args []string) []byte {
 	return out.Bytes()
 }
 
+func TestDemoTourCommandsPinLocalDataSource(t *testing.T) {
+	const prefix = "ZOTIO_DEMO=1 zotio --data-source local "
+	commands := demoTourCommands()
+	if len(commands) == 0 {
+		t.Fatal("demo tour has no commands")
+	}
+	for _, command := range commands {
+		if !strings.HasPrefix(command, prefix) {
+			t.Errorf("demo command %q does not pin the local data source", command)
+		}
+	}
+}
+
 // TestDefaultDBPathRoutesToDemoDBWhenActive defends the store-path safety seam:
 // ZOTIO_DEMO in {1, true, ...} routes to demo.db regardless of the group scope,
 // while {0, unset} preserves the exact real-store path (data.db, or the group

@@ -111,7 +111,7 @@ Find arXiv preprints that have since been published in a journal (via CrossRef) 
 
 ### `journal undo`
 
-Every applied write is journaled; `journal undo <run-id>` reverses reversible runs (tag renames, collection moves) and loudly refuses the rest.
+Applied mutation-envelope runs are journaled; `journal undo <run-id>` reverses supported tag, collection-membership, and item-create runs, and refuses the rest.
 
 > **Why it matters** — Batch writes are only safe when you can see what ran and take it back; this is the take-it-back.
 
@@ -161,9 +161,9 @@ Guided first run: detect Zotero, enable the local API, set the Web API key, firs
 
 ### `demo`
 
-Zero-setup trial: seed a bundled sample library (34 classic papers, one genuinely retracted) into a sandbox and try every local command with ZOTIO_DEMO=1 — no Zotero, no API key.
+Zero-setup trial: seed a bundled sample library (34 classic papers, one genuinely retracted) and run local reads with ZOTIO_DEMO=1 --data-source local — no Zotero or API key.
 
-> **Why it matters** — Evaluate zotio in 30 seconds before pointing it at a real library; the sandbox never touches your real store or credentials.
+> **Why it matters** — Evaluate zotio before pointing it at a real library; force --data-source local because auto can query a running Zotero desktop.
 
 ## Export & citations
 

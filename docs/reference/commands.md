@@ -688,10 +688,10 @@ Seed a zero-setup sample library and print a guided tour
 Seed a bundled sample library into a separate demo store and print a
 short tour of commands to try.
 
-The sandbox is a self-contained SQLite database (demo.db) beside your real
-store. Set ZOTIO_DEMO=1 on any command to read from it with a pristine,
-key-less config -- your real library, config, and API key are never touched.
-No Zotero desktop and no API key are required.
+The demo library is a separate SQLite database (demo.db) beside your real
+store. Set ZOTIO_DEMO=1 and pass --data-source local to keep reads inside it.
+Without that flag, the default auto source can query a running Zotero desktop.
+No Zotero desktop and no API key are required for local demo reads.
 
 ```
 zotio demo [flags]
@@ -699,7 +699,7 @@ zotio demo [flags]
 
 | Flag | Type | Default | Description |
 | --- | --- | --- | --- |
-| `--reset` | `bool` | `false` | Delete and re-seed the sandbox (also removes demo.db) |
+| `--reset` | `bool` | `false` | Delete and re-seed the demo library (also removes demo.db) |
 
 ## `zotio doctor`
 

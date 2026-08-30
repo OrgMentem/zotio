@@ -3,7 +3,7 @@
 `zotio` comes in three pieces you can install independently: the **CLI** (the engine — everything runs through it), the **agent skill** (drives the CLI inside coding agents), and the **MCP server** (exposes the CLI to MCP hosts). Most people want the CLI; add the skill or MCP server for your agent of choice.
 
 !!! tip "Try it before wiring anything"
-    `zotio demo` seeds a sandboxed sample library (no Zotero desktop, no API key); `ZOTIO_DEMO=1 zotio <command>` runs any command against it. When you're convinced, `zotio init` sets up the real thing.
+    `zotio demo` seeds a bundled sample library with no Zotero desktop or API key. Use `ZOTIO_DEMO=1 zotio --data-source local <command>` to keep reads inside it. When you are convinced, `zotio init` sets up the real library.
 
 ## 1. The CLI — `zotio`
 

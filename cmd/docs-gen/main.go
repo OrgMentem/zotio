@@ -484,7 +484,7 @@ func llmsDesc(body string) string {
 func renderLLMSIndex(pages []llmsPage) string {
 	var b strings.Builder
 	b.WriteString("# zotio\n\n")
-	b.WriteString("> Find retracted papers, broken citekeys, and duplicates in a Zotero library — before your reviewers do: CI-gateable health checks, local-first search, preview-first writes, and an MCP server, in the terminal.\n\n")
+	b.WriteString("> The trust-and-automation layer for Zotero: local-first search and auditing, preview-first writes, and bounded context for humans, scripts, and MCP agents.\n\n")
 	b.WriteString("For AI agents: the most token-efficient way to use zotio is NOT scraping these HTML docs. Prefer, in order:\n")
 	b.WriteString("1. The bundled agent skill — https://raw.githubusercontent.com/OrgMentem/zotio/main/SKILL.md\n")
 	b.WriteString("2. The local CLI: `zotio which \"<goal>\"` resolves a goal to a command; add `--agent` for JSON; `zotio agent-context` and `zotio capabilities` describe the surface.\n")
@@ -510,7 +510,7 @@ func renderLLMSIndex(pages []llmsPage) string {
 func renderLLMSFull(pages []llmsPage) string {
 	var b strings.Builder
 	b.WriteString("# zotio — full documentation\n\n")
-	b.WriteString("zotio finds retracted papers, broken citekeys, and duplicates in a Zotero library, and fixes them with preview-first writes. This file concatenates the complete docs as Markdown for AI agents. Source: " + llmsSiteURL + "\n")
+	b.WriteString("zotio is the trust-and-automation layer for Zotero: local-first search and auditing, preview-first writes, and bounded context for humans, scripts, and MCP agents. This file concatenates the complete docs as Markdown for AI agents. Source: " + llmsSiteURL + "\n")
 	b.WriteString("For the token-efficient path, prefer the bundled SKILL.md and the local CLI (`zotio which`, `--agent`) over consuming this whole file.\n")
 	for _, p := range pages {
 		b.WriteString("\n\n---\n\n> Source: " + p.url + "\n\n")

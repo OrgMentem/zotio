@@ -1,8 +1,7 @@
 // Copyright 2026 OrgMentem. Licensed under MIT. See LICENSE.
-// zero-setup demo sandbox. `zotio demo` seeds a bundled
-// sample library into a separate SQLite store; ZOTIO_DEMO=1 reroutes every
-// zotio read to that sandbox with a pristine, key-less config, so anyone can
-// try the local-read hero commands with no Zotero desktop and no API key.
+// Zero-setup demo library. `zotio demo` seeds a bundled sample library into a
+// separate SQLite store. ZOTIO_DEMO=1 supplies a pristine, keyless config, and
+// --data-source local keeps reads in that store without a Zotero desktop.
 
 package cli
 
@@ -66,20 +65,20 @@ type demoReport struct {
 }
 
 // demoTourCommands are the copy-pasteable commands printed after seeding.
-// Each is prefixed ZOTIO_DEMO=1 so it targets the sandbox, and each is
-// guaranteed non-empty against the bundled fixture.
+// Each pins both demo mode and the local data source so a running Zotero
+// desktop cannot satisfy an automatic fallback.
 func demoTourCommands() []string {
 	return []string{
-		"ZOTIO_DEMO=1 zotio library health --for citation",
-		"ZOTIO_DEMO=1 zotio items retract-check --limit 10",
-		"ZOTIO_DEMO=1 zotio items duplicates",
-		"ZOTIO_DEMO=1 zotio tags audit",
-		"ZOTIO_DEMO=1 zotio library stats",
-		"ZOTIO_DEMO=1 zotio library wrapped --year 2026",
-		"ZOTIO_DEMO=1 zotio search 'attention' --data-source local",
-		"ZOTIO_DEMO=1 zotio items citekey-conflicts",
-		"ZOTIO_DEMO=1 zotio reading-list --data-source local",
-		"ZOTIO_DEMO=1 zotio annotations timeline",
+		"ZOTIO_DEMO=1 zotio --data-source local library health --for citation",
+		"ZOTIO_DEMO=1 zotio --data-source local items retract-check --limit 10",
+		"ZOTIO_DEMO=1 zotio --data-source local items duplicates",
+		"ZOTIO_DEMO=1 zotio --data-source local tags audit",
+		"ZOTIO_DEMO=1 zotio --data-source local library stats",
+		"ZOTIO_DEMO=1 zotio --data-source local library wrapped --year 2026",
+		"ZOTIO_DEMO=1 zotio --data-source local search 'attention'",
+		"ZOTIO_DEMO=1 zotio --data-source local items citekey-conflicts",
+		"ZOTIO_DEMO=1 zotio --data-source local reading-list",
+		"ZOTIO_DEMO=1 zotio --data-source local annotations timeline",
 	}
 }
 
@@ -92,10 +91,10 @@ func newDemoCmd(flags *rootFlags) *cobra.Command {
 		Long: `Seed a bundled sample library into a separate demo store and print a
 short tour of commands to try.
 
-The sandbox is a self-contained SQLite database (demo.db) beside your real
-store. Set ZOTIO_DEMO=1 on any command to read from it with a pristine,
-key-less config -- your real library, config, and API key are never touched.
-No Zotero desktop and no API key are required.`,
+The demo library is a separate SQLite database (demo.db) beside your real
+store. Set ZOTIO_DEMO=1 and pass --data-source local to keep reads inside it.
+Without that flag, the default auto source can query a running Zotero desktop.
+No Zotero desktop and no API key are required for local demo reads.`,
 		Args:        cobra.NoArgs,
 		Annotations: map[string]string{"mcp:read-only": "true", "zotio:preflight": "skip"},
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -145,7 +144,7 @@ No Zotero desktop and no API key are required.`,
 			return nil
 		},
 	}
-	cmd.Flags().BoolVar(&reset, "reset", false, "Delete and re-seed the sandbox (also removes demo.db)")
+	cmd.Flags().BoolVar(&reset, "reset", false, "Delete and re-seed the demo library (also removes demo.db)")
 	return cmd
 }
 
@@ -230,15 +229,16 @@ func removeSandboxFiles(dbPath string) error {
 func printDemoTour(cmd *cobra.Command, report demoReport) {
 	out := cmd.OutOrStdout()
 	if report.Seeded {
-		fmt.Fprintf(out, "Seeded the zotio demo sandbox with %d sample papers.\n", report.Items)
+		fmt.Fprintf(out, "Seeded the zotio demo library with %d sample papers.\n", report.Items)
 	} else {
-		fmt.Fprintf(out, "Demo sandbox ready (%d sample papers).\n", report.Items)
+		fmt.Fprintf(out, "Demo library ready (%d sample papers).\n", report.Items)
 	}
 	fmt.Fprintln(out)
-	fmt.Fprintln(out, "This is a self-contained sample library in a separate store, so you can")
-	fmt.Fprintln(out, "try zotio's local-read commands with no Zotero desktop and no API key.")
-	fmt.Fprintln(out, "Set ZOTIO_DEMO=1 on any command to read from the sandbox; your real")
-	fmt.Fprintln(out, "library, config, and API key are never touched.")
+	fmt.Fprintln(out, "This sample library lives in a separate local store. You can use zotio's")
+	fmt.Fprintln(out, "local-read commands with no Zotero desktop and no API key.")
+	fmt.Fprintln(out, "Set ZOTIO_DEMO=1 and pass --data-source local to keep reads in this store.")
+	fmt.Fprintln(out, "The default auto source can query a running Zotero desktop, so do not omit")
+	fmt.Fprintln(out, "that flag when you need an isolated demo.")
 	fmt.Fprintln(out)
 	fmt.Fprintln(out, "Try these (copy-paste):")
 	for _, c := range report.Commands {
@@ -246,5 +246,5 @@ func printDemoTour(cmd *cobra.Command, report demoReport) {
 	}
 	fmt.Fprintln(out)
 	fmt.Fprintln(out, "For a real library, run: zotio init")
-	fmt.Fprintf(out, "Remove the sandbox: zotio demo --reset  (or delete %s)\n", report.DBPath)
+	fmt.Fprintf(out, "Remove the demo library: zotio demo --reset  (or delete %s)\n", report.DBPath)
 }

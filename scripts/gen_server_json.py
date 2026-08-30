@@ -82,7 +82,7 @@ def main() -> None:
         "$schema": SCHEMA,
         "name": NAMESPACE,
         "title": "zotio",
-        "description": "Zotero MCP server: preview-first, journaled writes and keyless local reads for AI agents.",
+        "description": "Zotero MCP server: local-first search, library checks, preview-first writes, and bounded context for AI agents.",
         "websiteUrl": REPO_URL,
         "repository": {"url": REPO_URL, "source": "github"},
         "version": version,
