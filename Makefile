@@ -93,8 +93,23 @@ cross-build:
 	  done; \
 	done
 
+# The MCP Registry rejects a description over 100 characters with a 422, and it
+# does so in the publish_registry job — after GoReleaser has already shipped the
+# GitHub release, Homebrew, Scoop and WinGet. v0.22.0 failed exactly there, and a
+# tagged commit cannot be re-published, so 0.22.0 is permanently absent from the
+# registry. The string lives in scripts/gen_server_json.py and was grown from 89
+# to 111 characters by a docs commit that touched 14 unrelated files. This target
+# runs the generator's own validation here instead, where a fix is still free.
+registry-manifest:
+	@python3 -c "import importlib.util, sys; \
+	spec = importlib.util.spec_from_file_location('g', 'scripts/gen_server_json.py'); \
+	g = importlib.util.module_from_spec(spec); spec.loader.exec_module(g); \
+	n = len(g.DESCRIPTION); \
+	sys.exit('registry description is %d characters; limit is %d' % (n, g.DESCRIPTION_LIMIT)) \
+	  if n > g.DESCRIPTION_LIMIT else print('registry description ok (%d/%d chars)' % (n, g.DESCRIPTION_LIMIT))"
+
 # Every ci.yml gate, in roughly ascending cost. Run before pushing.
-ci: tidy lockstep format lint test-race cross-build docs-drift notices-drift secrets
+ci: tidy lockstep format lint test-race cross-build docs-drift notices-drift registry-manifest secrets
 
 # The full local gate: CI plus the dependency scan from vuln.yml. `vet` is not
 # listed because cross-build already runs it for all six targets.

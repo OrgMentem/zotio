@@ -67,6 +67,18 @@ jobs:
       - name: Check for drift
         run: git diff --exit-code THIRD_PARTY_LICENSES.txt
 
+  # The MCP Registry rejects a description over 100 characters, and it does so in
+  # release.yml's publish_registry job — after GoReleaser has already shipped the
+  # GitHub release, Homebrew, Scoop and WinGet. v0.22.0 failed exactly there and a
+  # tagged commit cannot be re-published, so 0.22.0 never reached the registry.
+  # Needs no Go toolchain; the check is the generator's own constant.
+  registry-manifest:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Validate the registry manifest description
+        run: make registry-manifest
+
   format:
     runs-on: ubuntu-latest
     steps:
