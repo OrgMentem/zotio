@@ -362,7 +362,7 @@ func TestApplyMirrorWriteThrough_RestoreReinstatesLiveRow(t *testing.T) {
 		t.Fatalf("open store: %v", err)
 	}
 	raw := json.RawMessage(`{"key":"R1","version":9,"data":{"key":"R1","itemType":"book","title":"Restored","deleted":1,"version":9,"dateModified":"2026-01-01T00:00:00Z"}}`)
-	if err := db.UpsertKeyed("items-trash", []string{"R1"}, []json.RawMessage{raw}); err != nil {
+	if _, err := db.UpsertKeyed("items-trash", []string{"R1"}, []json.RawMessage{raw}); err != nil {
 		_ = db.Close()
 		t.Fatalf("seed trash: %v", err)
 	}
@@ -541,7 +541,7 @@ func TestApplyMirrorWriteThrough_RestoreWhenLivePresentDoesNotOverwrite(t *testi
 		t.Fatalf("seed live: %v", err)
 	}
 	// Use UpsertKeyed for trash to avoid reconcile deleting live (mirrors real write-through)
-	if err := db.UpsertKeyed("items-trash", []string{"R2"}, []json.RawMessage{trashRaw}); err != nil {
+	if _, err := db.UpsertKeyed("items-trash", []string{"R2"}, []json.RawMessage{trashRaw}); err != nil {
 		_ = db.Close()
 		t.Fatalf("seed trash: %v", err)
 	}
@@ -601,7 +601,7 @@ func TestApplyMirrorWriteThrough_RestoreStaleCacheEmitsDegradedWarning(t *testin
 		t.Fatalf("open store: %v", err)
 	}
 	raw := json.RawMessage(`{"key":"SA1","version":3,"data":{"key":"SA1","itemType":"book","title":"StaleBeforeTrash","version":3}}`)
-	if err := db.UpsertKeyed("items-trash", []string{"SA1"}, []json.RawMessage{raw}); err != nil {
+	if _, err := db.UpsertKeyed("items-trash", []string{"SA1"}, []json.RawMessage{raw}); err != nil {
 		_ = db.Close()
 		t.Fatalf("seed trash: %v", err)
 	}
@@ -653,7 +653,7 @@ func TestApplyMirrorWriteThrough_RestoreRequiresNoObservableBothRowsWindow(t *te
 		t.Fatalf("open store: %v", err)
 	}
 	raw := json.RawMessage(`{"key":"AW1","version":5,"data":{"key":"AW1","itemType":"book","title":"AtomicWindow","version":5}}`)
-	if err := db.UpsertKeyed("items-trash", []string{"AW1"}, []json.RawMessage{raw}); err != nil {
+	if _, err := db.UpsertKeyed("items-trash", []string{"AW1"}, []json.RawMessage{raw}); err != nil {
 		_ = db.Close()
 		t.Fatalf("seed trash: %v", err)
 	}
@@ -697,7 +697,7 @@ func TestApplyMirrorWriteThrough_RestoreLiveQueryErrorRetainsTrashRow(t *testing
 		t.Fatalf("open store: %v", err)
 	}
 	raw := json.RawMessage(`{"key":"EC1","version":2,"data":{"key":"EC1","itemType":"book","title":"ErrorPath","version":2}}`)
-	if err := db.UpsertKeyed("items-trash", []string{"EC1"}, []json.RawMessage{raw}); err != nil {
+	if _, err := db.UpsertKeyed("items-trash", []string{"EC1"}, []json.RawMessage{raw}); err != nil {
 		_ = db.Close()
 		t.Fatalf("seed trash: %v", err)
 	}

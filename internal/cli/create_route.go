@@ -261,7 +261,7 @@ func routeCreateItemViaWithOptions(ctx context.Context, flags *rootFlags, via st
 					CreatedAfter: createdAfter, ConnectorError: saveErr.Error(),
 				}, fmt.Errorf("connector save outcome is unresolved; refusing an automatic retry: %w", saveErr)
 			}
-			recovered, matched, lookupErr := confirmConnectorCreate(flags, item, createdAfter)
+			recovered, matched, lookupErr := confirmConnectorCreate(ctx, flags, item, createdAfter)
 			if lookupErr != nil || recovered == "" {
 				if matched > 1 {
 					return itemCreateResult{}, fmt.Errorf("connector reported %w, and %d recently added items share this title, so whether it was created is unresolved; check the library before retrying", saveErr, matched)
@@ -286,7 +286,7 @@ func routeCreateItemViaWithOptions(ctx context.Context, flags *rootFlags, via st
 				// retry. Recover the best-effort WebKey and return the
 				// populated result alongside the filing error so the create is
 				// journaled and the target failure is reported separately.
-				resolved, _, _ := confirmConnectorCreate(flags, item, createdAfter)
+				resolved, _, _ := confirmConnectorCreate(ctx, flags, item, createdAfter)
 				if opt.preserveUnresolvedConnectorWrite {
 					resolved = ""
 				}
@@ -300,7 +300,7 @@ func routeCreateItemViaWithOptions(ctx context.Context, flags *rootFlags, via st
 		// had no item to trash. The item is created asynchronously by the desktop,
 		// so an unresolved lookup is reported as such rather than failing a write
 		// that already succeeded.
-		resolved, _, _ := confirmConnectorCreate(flags, item, createdAfter)
+		resolved, _, _ := confirmConnectorCreate(ctx, flags, item, createdAfter)
 		return itemCreateResult{Via: "connector", Session: sessionID, ConnKey: connectorKey, WebKey: resolved, CreatedAfter: createdAfter}, nil
 	default:
 		return itemCreateResult{}, fmt.Errorf("unsupported create route %q", via)
@@ -310,7 +310,13 @@ func routeCreateItemViaWithOptions(ctx context.Context, flags *rootFlags, via st
 // confirmConnectorCreate asks the library whether a connector write that
 // reported an error actually landed. Best-effort: an unresolvable answer leaves
 // the original error in place.
-func confirmConnectorCreate(flags *rootFlags, item map[string]any, createdAfter time.Time) (string, int, error) {
+//
+// ctx bounds the whole poll, not only the HTTP probes. The inter-probe sleep
+// used context.Background(), so a cancelled run could not shorten a wait in
+// progress: on the CLI an interrupt was delayed one interval per iteration, and
+// under the MCP server a cancelled command_run still held its mirrored-command
+// slot for the rest of the recovery window.
+func confirmConnectorCreate(ctx context.Context, flags *rootFlags, item map[string]any, createdAfter time.Time) (string, int, error) {
 	title, _ := item["title"].(string)
 	itemType, _ := item["itemType"].(string)
 	if title == "" || itemType == "" {
@@ -328,13 +334,17 @@ func confirmConnectorCreate(flags *rootFlags, item map[string]any, createdAfter 
 	//
 	// Ambiguity is NOT retried: more than one match will not resolve itself, and
 	// waiting only delays a refusal that is already correct.
+	c.SetContext(ctx)
 	deadline := time.Now().Add(connectorCreateRecoveryWindow)
+	if ctxDeadline, ok := ctx.Deadline(); ok && ctxDeadline.Before(deadline) {
+		deadline = ctxDeadline
+	}
 	for {
 		key, matched, err := findRecentlyAddedItemKey(c, title, itemType, createdAfter)
 		if err != nil || key != "" || matched > 1 || time.Now().After(deadline) {
 			return key, matched, err
 		}
-		if err := sleepWithContext(context.Background(), connectorCreateRecoveryInterval); err != nil {
+		if err := sleepWithContext(ctx, connectorCreateRecoveryInterval); err != nil {
 			return "", 0, err
 		}
 	}

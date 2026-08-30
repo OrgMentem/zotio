@@ -473,6 +473,72 @@ func TestConnectorReparentMovesAttachmentThenTrashesParent(t *testing.T) {
 	}
 }
 
+// TestConnectorReparentRestoresCallerContext pins client ownership. The route
+// installs its own 5-minute deadline on the caller's write client so the polls'
+// HTTP calls are bounded, then cancels it. Without restoring what it found, the
+// op hands the caller back a client permanently bound to a CANCELLED context:
+// every later request on it fails with context.Canceled, which looks like an
+// unrelated transient error. Latent while `attachments add` builds one client
+// per command; a second op in the same run, or a reconcile re-read added to
+// runMutation, would break immediately.
+func TestConnectorReparentRestoresCallerContext(t *testing.T) {
+	// A value-bearing context, so the assertion is IDENTITY, not merely "some
+	// context that is not cancelled": restoring context.Background() instead of
+	// what the caller installed would also leave a usable client.
+	type ctxKey struct{}
+	for _, tc := range []struct {
+		name        string
+		fake        *reparentFake
+		wantRouteOK bool
+	}{
+		{
+			name:        "successful route",
+			fake:        &reparentFake{tempParentKey: "TEMP0001", attachChildren: []string{"ATTACH01"}},
+			wantRouteOK: true,
+		},
+		{
+			// The borrow is installed BEFORE runConnectorReparent, so a route
+			// that fails partway must still hand the context back.
+			name: "failing route",
+			fake: &reparentFake{
+				tempParentKey:  "TEMP0001",
+				attachChildren: []string{"ATTACH01"},
+				reparentStatus: http.StatusPreconditionFailed,
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := tc.fake.server(t)
+			flags := reparentFlags(t, srv)
+			c, err := flags.newWriteClient()
+			if err != nil {
+				t.Fatalf("newWriteClient: %v", err)
+			}
+			callerCtx := context.WithValue(context.Background(), ctxKey{}, "caller")
+			c.SetContext(callerCtx)
+
+			_, _, routeErr := applyConnectorReparentUpload(callerCtx, reparentCmd(t), flags, c, reparentRequest(t, "TARGET01"))
+			if tc.wantRouteOK && routeErr != nil {
+				t.Fatalf("route failed: %v", routeErr)
+			}
+			if !tc.wantRouteOK && routeErr == nil {
+				t.Fatal("route succeeded, but this case must fail to exercise the error path")
+			}
+
+			if got := c.Context(); got != callerCtx {
+				t.Fatalf("client base context = %v, want the caller's own context back (identity)", got)
+			}
+			if err := c.Context().Err(); err != nil {
+				t.Fatalf("client base context is %v after the route; the borrow was never given back", err)
+			}
+			// The real proof: the client still works for a follow-up request.
+			if _, _, err := c.GetWithVersion("/items/TARGET01", nil); err != nil {
+				t.Fatalf("follow-up request on the caller's client failed: %v", err)
+			}
+		})
+	}
+}
+
 // TestConnectorReparentGuardsThePatchWithAVersion pins the precondition header.
 // Without it Zotero would accept a blind overwrite of an item that changed under
 // us, and items_delete.go already records what an unguarded write costs.
@@ -1137,7 +1203,7 @@ func TestConfirmConnectorCreatePollsForItsKey(t *testing.T) {
 	flags := &rootFlags{configPath: testConfigFile(t, srv.URL+"/users/0"), timeout: 5 * time.Second}
 	item := map[string]any{"title": "Delayed Item", "itemType": "document"}
 
-	key, matched, err := confirmConnectorCreate(flags, item, time.Now().Add(-time.Minute))
+	key, matched, err := confirmConnectorCreate(t.Context(), flags, item, time.Now().Add(-time.Minute))
 	if err != nil {
 		t.Fatalf("confirmConnectorCreate: %v", err)
 	}
@@ -1178,7 +1244,7 @@ func TestConfirmConnectorCreateDoesNotRetryAmbiguity(t *testing.T) {
 
 	flags := &rootFlags{configPath: testConfigFile(t, srv.URL+"/users/0"), timeout: 5 * time.Second}
 	start := time.Now()
-	key, matched, err := confirmConnectorCreate(flags, map[string]any{"title": "Twin", "itemType": "document"}, time.Now().Add(-time.Minute))
+	key, matched, err := confirmConnectorCreate(t.Context(), flags, map[string]any{"title": "Twin", "itemType": "document"}, time.Now().Add(-time.Minute))
 	if err != nil {
 		t.Fatalf("confirmConnectorCreate: %v", err)
 	}
@@ -1190,5 +1256,72 @@ func TestConfirmConnectorCreateDoesNotRetryAmbiguity(t *testing.T) {
 	}
 	if elapsed := time.Since(start); elapsed > 5*time.Second {
 		t.Errorf("took %s: ambiguity must return at once", elapsed)
+	}
+}
+
+// TestConfirmConnectorCreateHonorsCancellationDuringSleep pins the poll to the
+// caller's context. The inter-probe sleep used context.Background(), so a
+// cancellation arriving mid-sleep was only noticed on the NEXT probe: on the CLI
+// Ctrl-C was delayed one interval per iteration, and under the MCP server a
+// cancelled command_run still held its mirrored-command slot, blocking every
+// later mirrored command behind acquireMirroredSlot.
+func TestConfirmConnectorCreateHonorsCancellationDuringSleep(t *testing.T) {
+	oldWindow, oldInterval := connectorCreateRecoveryWindow, connectorCreateRecoveryInterval
+	connectorCreateRecoveryWindow, connectorCreateRecoveryInterval = time.Minute, 10*time.Second
+	t.Cleanup(func() {
+		connectorCreateRecoveryWindow, connectorCreateRecoveryInterval = oldWindow, oldInterval
+	})
+
+	// Cancel only AFTER the first probe has been fully served, so the run is
+	// provably inside the inter-probe sleep. A fixed delay is not enough: if
+	// cancellation lands before or during the first GET, the client's own
+	// context aborts that request and even a context.Background() sleep returns
+	// promptly, so the regression would slip through.
+	probed := make(chan struct{})
+	var probedOnce sync.Once
+	mux := http.NewServeMux()
+	mux.HandleFunc("/users/0/items/top", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Last-Modified-Version", "1")
+		// Never matches, so the loop always reaches the sleep.
+		_, _ = w.Write([]byte(`[]`))
+		probedOnce.Do(func() { close(probed) })
+	})
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	done := make(chan time.Duration, 1)
+	go func() {
+		flags := &rootFlags{configPath: testConfigFile(t, srv.URL+"/users/0"), timeout: 5 * time.Second}
+		start := time.Now()
+		_, _, err := confirmConnectorCreate(ctx, flags, map[string]any{"title": "Never", "itemType": "document"}, time.Now().Add(-time.Minute))
+		if err == nil {
+			t.Error("confirmConnectorCreate returned nil error after cancellation")
+		}
+		done <- time.Since(start)
+	}()
+
+	select {
+	case <-probed:
+	case <-time.After(30 * time.Second):
+		t.Fatal("the first probe never reached the server")
+	}
+	// The handler has written its response, so the loop is in (or entering) the
+	// 10s sleep. Give the client a moment to finish reading it, then cancel.
+	time.Sleep(20 * time.Millisecond)
+	cancelledAt := time.Now()
+	cancel()
+
+	select {
+	case <-done:
+	case <-time.After(30 * time.Second):
+		t.Fatal("confirmConnectorCreate did not return; the sleep ignored the cancelled context")
+	}
+	// A cancellation-aware sleep wakes immediately. A context.Background() sleep
+	// would run out the remainder of the 10s interval. Half an interval is a
+	// wide margin that still fails the regression.
+	if since := time.Since(cancelledAt); since >= connectorCreateRecoveryInterval/2 {
+		t.Fatalf("returned %v after cancellation, want well under the %v interval: the sleep ignored the cancelled context", since, connectorCreateRecoveryInterval)
 	}
 }

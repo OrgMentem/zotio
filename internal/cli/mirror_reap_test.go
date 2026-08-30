@@ -47,7 +47,7 @@ func TestPermanentDeleteReapsMirrorRow(t *testing.T) {
 		t.Fatalf("seed mirror: %v", err)
 	}
 	// It was also in the trash, as a permanently deleted item often is.
-	if err := db.UpsertKeyed("items-trash", []string{"GONE"},
+	if _, err := db.UpsertKeyed("items-trash", []string{"GONE"},
 		[]json.RawMessage{json.RawMessage(`{"key":"GONE","data":{"key":"GONE"}}`)}); err != nil {
 		t.Fatalf("seed trash mirror: %v", err)
 	}

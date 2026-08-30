@@ -153,7 +153,7 @@ API requests and does not pace connector calls.`,
 							refreshItemsFromLocalAPI(cmd.Context(), flags)
 							var recovered []string
 							for _, it := range items {
-								if k, _, _ := confirmConnectorCreate(flags, it, createdAfter); k != "" {
+								if k, _, _ := confirmConnectorCreate(cmd.Context(), flags, it, createdAfter); k != "" {
 									recovered = append(recovered, k)
 								}
 							}
@@ -190,7 +190,7 @@ API requests and does not pace connector calls.`,
 						// keys may be empty but session is still present.
 						var recovered []string
 						for _, it := range items {
-							if k, _, _ := confirmConnectorCreate(flags, it, createdAfter); k != "" {
+							if k, _, _ := confirmConnectorCreate(cmd.Context(), flags, it, createdAfter); k != "" {
 								recovered = append(recovered, k)
 							}
 						}

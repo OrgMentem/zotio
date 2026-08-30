@@ -88,8 +88,11 @@ type Client struct {
 	NoCache    bool
 	cacheDir   string
 	limiter    *cliutil.AdaptiveLimiter
-	// base context for wrapper calls; tests may replace it.
-	ctx context.Context
+	// base context for wrapper calls; tests may replace it. It is atomic because
+	// one Client is shared across sync workers and fanout goroutines while
+	// SetContext can rebind it, and CloneForRead hands the same value to further
+	// clients. Every other mutable shared field here is already locked or atomic.
+	ctx atomic.Pointer[context.Context]
 	// WriteBaseURL, when set, receives all non-GET requests while reads continue to
 	// use BaseURL — the Zotero local API is read-only, so writes route to the Web
 	// API. ResolveWriteBase lazily computes it on the first write (kept in the CLI
@@ -209,14 +212,15 @@ func New(cfg *config.Config, timeout time.Duration, rateLimit float64) *Client {
 	}
 	httpClient := newHTTPClient(timeout, nil)
 	baseURL := sanitizeClientBaseURL(cfg.BaseURL)
-	return &Client{
+	c := &Client{
 		BaseURL:    baseURL,
 		Config:     cfg,
 		HTTPClient: httpClient,
 		cacheDir:   cacheDir,
 		limiter:    cliutil.NewAdaptiveLimiter(rateLimit),
-		ctx:        sigintContext(),
 	}
+	c.SetContext(sigintContext())
+	return c
 }
 
 // CloneForRead returns a read-only client targeting baseURL, sharing the config,
@@ -225,7 +229,7 @@ func New(cfg *config.Config, timeout time.Duration, rateLimit float64) *Client {
 // sync.Once values and mutexes; global schema endpoints need the library prefix
 // stripped from BaseURL, so clone explicitly instead.
 func (c *Client) CloneForRead(baseURL string) *Client {
-	return &Client{
+	clone := &Client{
 		BaseURL:    baseURL,
 		Config:     c.Config,
 		HTTPClient: c.HTTPClient,
@@ -233,15 +237,26 @@ func (c *Client) CloneForRead(baseURL string) *Client {
 		NoCache:    c.NoCache,
 		cacheDir:   c.cacheDir,
 		limiter:    c.limiter,
-		ctx:        c.ctx,
 	}
+	clone.SetContext(c.Context())
+	return clone
+}
+
+// Context returns the base context used by the signature-stable wrappers. It is
+// never nil, so a caller that borrows the context (see SetContext) can always
+// restore what it found.
+func (c *Client) Context() context.Context {
+	return c.baseCtx()
 }
 
 func (c *Client) baseCtx() context.Context {
 	// tolerate zero-value clients while still giving
 	// normal clients a SIGINT/SIGTERM-cancellable context.
-	if c != nil && c.ctx != nil {
-		return c.ctx
+	if c == nil {
+		return context.Background()
+	}
+	if ctx := c.ctx.Load(); ctx != nil && *ctx != nil {
+		return *ctx
 	}
 	return context.Background()
 }
@@ -250,11 +265,15 @@ func (c *Client) baseCtx() context.Context {
 // wrappers (Get/Post/...). Entry points pass cmd.Context() so per-command
 // deadlines and MCP request cancellation abort in-flight HTTP work, not only
 // process interrupts. A nil ctx is ignored, preserving the interrupt default.
+//
+// The context is owned by whoever built the client. A callee that installs a
+// shorter deadline for one route MUST capture Context() first and restore it,
+// otherwise it hands the caller back a client bound to a cancelled context.
 func (c *Client) SetContext(ctx context.Context) {
 	if c == nil || ctx == nil {
 		return
 	}
-	c.ctx = ctx
+	c.ctx.Store(&ctx)
 }
 
 // RateLimit returns the current effective rate limit in req/s. Returns 0 if disabled.

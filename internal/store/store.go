@@ -939,7 +939,10 @@ func isSQLiteBusy(err error) bool {
 		strings.Contains(msg, "database table is locked")
 }
 
-func (s *Store) upsertGenericResourceTx(tx *sql.Tx, resourceType, id string, data json.RawMessage, obj map[string]any) error {
+// upsertGenericResourceTx reports written=false when the version-monotonic
+// guard retained a newer stored row, so callers can count rows that actually
+// landed rather than rows they merely offered.
+func (s *Store) upsertGenericResourceTx(tx *sql.Tx, resourceType, id string, data json.RawMessage, obj map[string]any) (written bool, err error) {
 	// populate indexed dependent-resource columns from the
 	// payload so annotation/attachment queries avoid scanning JSON. Non-item
 	// rows (collections, tags) leave these empty, which is harmless.
@@ -960,7 +963,7 @@ func (s *Store) upsertGenericResourceTx(tx *sql.Tx, resourceType, id string, dat
 	// zoteroObjectVersion; keep this SQL guard in lockstep with its top-level
 	// version and nested data.version fallback. Rows lacking a version (or equal
 	// versions) still update, preserving the prior always-overwrite behavior.
-	res, err := tx.Exec(
+	res, execErr := tx.Exec(
 		`INSERT INTO resources (id, resource_type, data, parent_key, item_type, annotation_color, item_date, synced_at, updated_at)
 		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
 		 ON CONFLICT(resource_type, id) DO UPDATE SET data = excluded.data, parent_key = excluded.parent_key, item_type = excluded.item_type, annotation_color = excluded.annotation_color, item_date = excluded.item_date, synced_at = excluded.synced_at, updated_at = excluded.updated_at
@@ -969,13 +972,13 @@ func (s *Store) upsertGenericResourceTx(tx *sql.Tx, resourceType, id string, dat
 		    OR CAST(COALESCE(json_extract(excluded.data, '$.version'), json_extract(excluded.data, '$.data.version')) AS INTEGER) >= CAST(COALESCE(json_extract(resources.data, '$.version'), json_extract(resources.data, '$.data.version')) AS INTEGER)`,
 		id, resourceType, string(data), parentKey, itemType, color, itemDate, time.Now(), time.Now(),
 	)
-	if err != nil {
-		return err
+	if execErr != nil {
+		return false, execErr
 	}
 	// A retained older version is a no-op update (0 rows affected); leave the
 	// existing FTS document in place so it stays consistent with the kept row.
 	if affected, aerr := res.RowsAffected(); aerr == nil && affected == 0 {
-		return nil
+		return false, nil
 	}
 
 	ftsRowid := ftsRowID(resourceType, id)
@@ -987,7 +990,7 @@ func (s *Store) upsertGenericResourceTx(tx *sql.Tx, resourceType, id string, dat
 	// fires on genuine corruption/lock. Explicit rowid is used for FTS5
 	// compatibility with modernc.org/sqlite (DELETE WHERE column=? may not work).
 	if _, err = tx.Exec(`DELETE FROM resources_fts WHERE rowid = ?`, ftsRowid); err != nil {
-		return fmt.Errorf("fts index cleanup for %s/%s: %w", resourceType, id, err)
+		return false, fmt.Errorf("fts index cleanup for %s/%s: %w", resourceType, id, err)
 	}
 
 	searchDocument := buildSearchDocument(resourceType, data)
@@ -1004,10 +1007,10 @@ func (s *Store) upsertGenericResourceTx(tx *sql.Tx, resourceType, id string, dat
 		// instead of the raw JSON blob (raw JSON retained for other types).
 		ftsRowid, id, resourceType, searchDocument,
 	); err != nil {
-		return fmt.Errorf("fts index update for %s/%s: %w", resourceType, id, err)
+		return false, fmt.Errorf("fts index update for %s/%s: %w", resourceType, id, err)
 	}
 
-	return nil
+	return true, nil
 }
 
 // reconcileItemLifecycleTx enforces the single canonical item state after an
@@ -1174,7 +1177,7 @@ func (s *Store) Upsert(resourceType, id string, data json.RawMessage) error {
 			return fmt.Errorf("upsert %s/%s: unmarshal item payload: %w", resourceType, id, err)
 		}
 	}
-	if err := s.upsertGenericResourceTx(tx, resourceType, id, data, obj); err != nil {
+	if _, err := s.upsertGenericResourceTx(tx, resourceType, id, data, obj); err != nil {
 		return err
 	}
 	if err := reconcileItemLifecycleTx(tx, resourceType, id, obj); err != nil {
@@ -1190,26 +1193,38 @@ func (s *Store) Upsert(resourceType, id string, data json.RawMessage) error {
 // fulltext, where the response is {content, indexedChars, ...} with no id field.
 // Uses a single batched transaction instead of one writeMu-serialized Upsert
 // per item, avoiding many tiny transactions and lock contention.
-func (s *Store) UpsertKeyed(resourceType string, ids []string, data []json.RawMessage) error {
+//
+// The returned count is rows that actually landed, matching UpsertBatch: the
+// version-monotonic guard retains a newer stored row and writes nothing, so a
+// caller that counted the ids it offered overstated its sync totals.
+func (s *Store) UpsertKeyed(resourceType string, ids []string, data []json.RawMessage) (int, error) {
 	if len(ids) != len(data) {
-		return fmt.Errorf("UpsertKeyed: ids/data length mismatch (%d vs %d)", len(ids), len(data))
+		return 0, fmt.Errorf("UpsertKeyed: ids/data length mismatch (%d vs %d)", len(ids), len(data))
 	}
 	if len(ids) == 0 {
-		return nil
+		return 0, nil
 	}
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
 	tx, err := s.db.Begin()
 	if err != nil {
-		return fmt.Errorf("starting keyed batch transaction: %w", err)
+		return 0, fmt.Errorf("starting keyed batch transaction: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
+	var stored int
 	for i, id := range ids {
-		if err := s.upsertGenericResourceTx(tx, resourceType, id, data[i], nil); err != nil {
-			return fmt.Errorf("upserting %s/%s: %w", resourceType, id, err)
+		written, err := s.upsertGenericResourceTx(tx, resourceType, id, data[i], nil)
+		if err != nil {
+			return 0, fmt.Errorf("upserting %s/%s: %w", resourceType, id, err)
+		}
+		if written {
+			stored++
 		}
 	}
-	return tx.Commit()
+	if err := tx.Commit(); err != nil {
+		return 0, err
+	}
+	return stored, nil
 }
 
 func (s *Store) Get(resourceType, id string) (json.RawMessage, error) {
@@ -1319,10 +1334,15 @@ func (s *Store) ItemsByType(itemType string, limit int) ([]json.RawMessage, erro
 // top-level item, so this joins annotation -> attachment -> top item.
 // backs local-first annotation export/timeline.
 func (s *Store) AnnotationsForItem(topItemKey string) ([]json.RawMessage, error) {
+	// Both aliases are pinned to resource_type 'items'. Ids are unique only
+	// WITHIN a resource_type (see the composite primary key), and
+	// mirrorTrashedItem deliberately leaves an attachment in both 'items' and
+	// 'items-trash' for the whole write-through window, so an unpinned join
+	// matches the attachment twice and emits every annotation twice.
 	rows, err := s.db.Query(
 		`SELECT a.data FROM resources a
-		 JOIN resources att ON a.parent_key = att.id
-		 WHERE a.item_type = 'annotation' AND att.parent_key = ?`,
+		 JOIN resources att ON a.parent_key = att.id AND att.resource_type = 'items'
+		 WHERE a.resource_type = 'items' AND a.item_type = 'annotation' AND att.parent_key = ?`,
 		topItemKey,
 	)
 	if err != nil {
@@ -1363,11 +1383,15 @@ func (s *Store) AnnotationsForItems(topItemKeys []string) (map[string][]json.Raw
 			placeholders[i] = "?"
 			args[i] = k
 		}
+		// Pinned to resource_type 'items' on both aliases, for the reason given
+		// on AnnotationsForItem.
+		//
 		// #nosec G202 -- placeholder count is dynamic but values are safe questions marks
 		rows, err := s.db.Query(
 			`SELECT att.parent_key, a.data FROM resources a
-			 JOIN resources att ON a.parent_key = att.id
-			 WHERE a.item_type = 'annotation' AND att.parent_key IN (`+strings.Join(placeholders, ",")+`)`,
+			 JOIN resources att ON a.parent_key = att.id AND att.resource_type = 'items'
+			 WHERE a.resource_type = 'items' AND a.item_type = 'annotation'
+			   AND att.parent_key IN (`+strings.Join(placeholders, ",")+`)`,
 			args...,
 		)
 		if err != nil {
@@ -1578,16 +1602,20 @@ func (s *Store) UpsertBatch(resourceType string, items []json.RawMessage) (int, 
 		if s.upsertBatchHook != nil {
 			s.upsertBatchHook()
 		}
-		if err := s.upsertGenericResourceTx(tx, resourceType, item.id, item.data, item.obj); err != nil {
+		// stored counts rows that actually landed. A page the plane re-sent at an
+		// older version is retained-as-newer by the version-monotonic guard and
+		// writes nothing, so counting the offer instead of the write overstated
+		// sync totals and softened the stored-vs-consumed diagnostic signal.
+		written, err := s.upsertGenericResourceTx(tx, resourceType, item.id, item.data, item.obj)
+		if err != nil {
 			return 0, extractFailures, fmt.Errorf("upserting %s/%s: %w", resourceType, item.id, err)
 		}
 		if err := reconcileItemLifecycleTx(tx, resourceType, item.id, item.obj); err != nil {
 			return 0, extractFailures, fmt.Errorf("reconciling %s/%s: %w", resourceType, item.id, err)
 		}
-
-		switch resourceType {
+		if written {
+			stored++
 		}
-		stored++
 	}
 
 	// Warn when most items in a batch lack an extractable ID — this likely
@@ -1970,7 +1998,7 @@ func (s *Store) RestoreMirroredItem(key string, payload json.RawMessage) error {
 	if err := json.Unmarshal(payload, &obj); err != nil {
 		return fmt.Errorf("restore %s: unmarshal item payload: %w", key, err)
 	}
-	if err := s.upsertGenericResourceTx(tx, "items", key, payload, obj); err != nil {
+	if _, err := s.upsertGenericResourceTx(tx, "items", key, payload, obj); err != nil {
 		return fmt.Errorf("restoring %s: %w", key, err)
 	}
 	if _, err := tx.Exec(`DELETE FROM resources_fts WHERE rowid = ?`, ftsRowID("items-trash", key)); err != nil {

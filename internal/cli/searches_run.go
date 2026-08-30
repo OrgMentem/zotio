@@ -41,7 +41,11 @@ func newSearchesRunCmd(flags *rootFlags) *cobra.Command {
 			}
 
 			results, resultErr := c.Get("/searches/"+searchKey+"/items", nil)
-			if resultErr == nil && !zoteroResultIsEmpty(results) {
+			// An empty page is a legitimate answer from a working endpoint: the
+			// saved search currently matches nothing. Reporting it as
+			// "unavailable" left a caller unable to tell a 0-item search from an
+			// unsupported plane. Only a transport/HTTP failure is unavailable.
+			if resultErr == nil {
 				return printOutputWithFlags(cmd.OutOrStdout(), results, flags)
 			}
 

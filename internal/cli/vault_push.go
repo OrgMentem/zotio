@@ -292,7 +292,8 @@ func patchWithConflict(c *client.Client, outDir string, n *pushNote, srcHash, de
 	switch {
 	case sha256hex(liveHTML) == n.state.RemoteHash:
 		// Remote body unchanged; only item version moved (metadata). Retry once.
-		if rerr := patchNote(c, n.state.NoteKey, desiredHTML, liveVer); rerr == nil {
+		rerr := patchNote(c, n.state.NoteKey, desiredHTML, liveVer)
+		if rerr == nil {
 			if ferr := finalizeState(n, n.state.NoteKey, srcHash, c); ferr != nil {
 				res.Status = "error"
 				res.Note = ferr.Error()
@@ -301,19 +302,23 @@ func patchWithConflict(c *client.Client, outDir string, n *pushNote, srcHash, de
 			res.Status = "updated"
 			return res
 		}
-		fallthrough
+		// The retry failed. Exactly one situation still counts as success: the
+		// live body already IS the desired content, so nothing is left to
+		// write. Every other retry failure is a failed write and must be
+		// reported. This branch used to `fallthrough`, which enters the next
+		// case body without evaluating its condition, so any transport error
+		// was recorded as "converged" with RemoteHash pinned to the OLD remote
+		// body and SourceHash to the NEW local one. That baseline claims the
+		// remote holds content it does not hold, and no later push retries it.
+		if sha256hex(liveHTML) == sha256hex(desiredHTML) {
+			return convergeNote(n, res, liveVer, liveHTML, srcHash)
+		}
+		res.Status = "error"
+		res.Note = pushErr(rerr, flags)
+		return res
 	case sha256hex(liveHTML) == sha256hex(desiredHTML):
 		// Another device already wrote our exact content; fast-forward baseline.
-		n.state.NoteVersion = liveVer
-		n.state.RemoteHash = sha256hex(liveHTML)
-		n.state.SourceHash = srcHash
-		if werr := writeNoteState(n.path, n.state); werr != nil {
-			res.Status = "error"
-			res.Note = werr.Error()
-			return res
-		}
-		res.Status = "converged"
-		return res
+		return convergeNote(n, res, liveVer, liveHTML, srcHash)
 	default:
 		artifact, werr := writeConflictArtifact(outDir, n, liveVer, liveHTML)
 		res.Status = "conflict"
@@ -324,6 +329,24 @@ func patchWithConflict(c *client.Client, outDir string, n *pushNote, srcHash, de
 		}
 		return res
 	}
+}
+
+// convergeNote fast-forwards the recorded baseline onto a remote that already
+// holds the desired content, then reports the push as converged. Callers MUST
+// establish that sha256hex(liveHTML) equals the hash of the desired body:
+// recording this baseline against any other remote body tells every later push
+// that the vault file is already synced, so the divergence is never retried.
+func convergeNote(n *pushNote, res pushResult, liveVer int, liveHTML, srcHash string) pushResult {
+	n.state.NoteVersion = liveVer
+	n.state.RemoteHash = sha256hex(liveHTML)
+	n.state.SourceHash = srcHash
+	if werr := writeNoteState(n.path, n.state); werr != nil {
+		res.Status = "error"
+		res.Note = werr.Error()
+		return res
+	}
+	res.Status = "converged"
+	return res
 }
 
 // finalizeState fetches the just-written note to capture the sanitized remote

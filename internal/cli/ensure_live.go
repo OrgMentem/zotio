@@ -47,8 +47,14 @@ func launchURI(uri string) error {
 }
 
 // classify Zotero local API reachability by transport success, not HTTP status.
+//
+// ProbeGet, not Get: Get reads through the response cache, which serves any GET
+// younger than 5 minutes straight off disk with no network contact. A probe that
+// answers from the cache reports the desktop reachable after it has exited, so
+// doctor --ensure-live and init never offer the --launch remediation and the
+// live_local_api precondition passes for a plane nothing can reach.
 func localAPIReachable(c *client.Client) bool {
-	_, err := c.Get("/", nil)
+	_, err := c.ProbeGet("/")
 	if err == nil {
 		return true
 	}

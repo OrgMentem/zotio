@@ -435,7 +435,7 @@ func TestVisitSimilarityFulltextDocumentsExcludesTrashedParents(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("seed trashed parent: %v", err)
 	}
-	if err := s.UpsertKeyed(
+	if _, err := s.UpsertKeyed(
 		"fulltext",
 		[]string{"ATRASH", "AKEEP"},
 		[]json.RawMessage{
@@ -475,7 +475,7 @@ func TestSearchFulltextResolvesParentItemContext(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("seed full-text search trash: %v", err)
 	}
-	if err := s.UpsertKeyed(
+	if _, err := s.UpsertKeyed(
 		"fulltext",
 		[]string{"AKEEP", "ATRASH", "ORPHAN"},
 		[]json.RawMessage{
@@ -512,7 +512,7 @@ func TestSearchFulltextResolvesParentItemContext(t *testing.T) {
 	}
 
 	oversized := strings.Repeat("界", maxFulltextSnippetBytes) + " boundaryneedle " + strings.Repeat("界", maxFulltextSnippetBytes)
-	if err := s.UpsertKeyed("fulltext", []string{"AKEEP"}, []json.RawMessage{
+	if _, err := s.UpsertKeyed("fulltext", []string{"AKEEP"}, []json.RawMessage{
 		json.RawMessage(fmt.Sprintf(`{"content":%q}`, oversized)),
 	}); err != nil {
 		t.Fatalf("replace oversized full text: %v", err)

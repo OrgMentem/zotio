@@ -434,7 +434,7 @@ func TestHandleSearchFulltextResolvesParentItem(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("seed full-text parents: %v", err)
 	}
-	if err := db.UpsertKeyed("fulltext", []string{"ATTACH"}, []json.RawMessage{
+	if _, err := db.UpsertKeyed("fulltext", []string{"ATTACH"}, []json.RawMessage{
 		json.RawMessage(`{"content":"distinctive fulltext tool passage"}`),
 	}); err != nil {
 		t.Fatalf("seed full text: %v", err)

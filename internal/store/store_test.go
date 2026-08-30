@@ -23,7 +23,7 @@ func TestRestoreMirroredItem_Atomicity(t *testing.T) {
 	// Seed only the trash mirror to simulate the sync-reconciled case where
 	// reconcileItemLifecycleTx deleted the live row (trash had higher version).
 	trashRaw := json.RawMessage(`{"key":"ATOMIC1","version":5,"data":{"key":"ATOMIC1","itemType":"book","title":"AtomicPayload","version":5}}`)
-	if err := s.UpsertKeyed("items-trash", []string{"ATOMIC1"}, []json.RawMessage{trashRaw}); err != nil {
+	if _, err := s.UpsertKeyed("items-trash", []string{"ATOMIC1"}, []json.RawMessage{trashRaw}); err != nil {
 		t.Fatalf("seed trash: %v", err)
 	}
 	// Ensure pre-call state is items=0, items-trash=1.
@@ -124,7 +124,7 @@ func TestRestoreMirroredItem_HappyPathDoesNotNeedTrigger(t *testing.T) {
 	defer s.Close()
 
 	trashRaw := json.RawMessage(`{"key":"HAPPY1","version":3,"data":{"key":"HAPPY1","itemType":"book","title":"HappyPath"}}`)
-	if err := s.UpsertKeyed("items-trash", []string{"HAPPY1"}, []json.RawMessage{trashRaw}); err != nil {
+	if _, err := s.UpsertKeyed("items-trash", []string{"HAPPY1"}, []json.RawMessage{trashRaw}); err != nil {
 		t.Fatalf("seed trash: %v", err)
 	}
 	restored := json.RawMessage(`{"key":"HAPPY1","data":{"key":"HAPPY1","itemType":"book","title":"HappyRestored"}}`)

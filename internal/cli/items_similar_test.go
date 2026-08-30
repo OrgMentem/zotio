@@ -198,7 +198,7 @@ func TestBuildItemSimilarFulltextCorpusCountsEmptyDocuments(t *testing.T) {
 	if _, _, err := db.UpsertBatch("items", items); err != nil {
 		t.Fatalf("seed items: %v", err)
 	}
-	if err := db.UpsertKeyed("fulltext", []string{"ASRC", "AOTHER", "AEMPTY"}, []json.RawMessage{
+	if _, err := db.UpsertKeyed("fulltext", []string{"ASRC", "AOTHER", "AEMPTY"}, []json.RawMessage{
 		json.RawMessage(`{"content":"alpha"}`),
 		json.RawMessage(`{"content":"beta"}`),
 		json.RawMessage(`{"content":"a ! 2"}`),
@@ -270,7 +270,7 @@ func seedItemsSimilarFixture(t *testing.T, dbPath string) *store.Store {
 		json.RawMessage(`{"content":"noisetwo common"}`),
 		json.RawMessage(`{"content":"noisethree common"}`),
 	}
-	if err := db.UpsertKeyed("fulltext", ids, fulltexts); err != nil {
+	if _, err := db.UpsertKeyed("fulltext", ids, fulltexts); err != nil {
 		db.Close()
 		t.Fatalf("seed fulltext: %v", err)
 	}

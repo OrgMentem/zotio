@@ -109,10 +109,12 @@ func TestSearchesRunReportsUnavailableInsteadOfWholeLibrary(t *testing.T) {
 	}
 }
 
-// TestSearchesRunReportsUnavailableOnEmptyResults covers the other trigger for
+// TestSearchesRunReturnsEmptyArrayOnEmptyResults covers the other trigger for
 // the old fallback: the endpoint exists but returns an empty page. An empty
-// saved search is a legitimate answer, so it must not become a library dump.
-func TestSearchesRunReportsUnavailableOnEmptyResults(t *testing.T) {
+// saved search is a legitimate answer, so it must neither become a library dump
+// NOR be reported as an unavailable endpoint — a caller has to be able to tell
+// "ran, 0 hits" from "could not run".
+func TestSearchesRunReturnsEmptyArrayOnEmptyResults(t *testing.T) {
 	srv := newSearchesRunTestServer(t, http.StatusOK, []string{"AAAA1111", "BBBB2222"})
 	srv.server.Config.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
@@ -128,7 +130,7 @@ func TestSearchesRunReportsUnavailableOnEmptyResults(t *testing.T) {
 		}
 	})
 
-	out, _, err := runSearchesRunTestCmd(t, srv, "SK")
+	out, errOut, err := runSearchesRunTestCmd(t, srv, "SK")
 	if err != nil {
 		t.Fatalf("searches run returned error: %v", err)
 	}
@@ -137,5 +139,15 @@ func TestSearchesRunReportsUnavailableOnEmptyResults(t *testing.T) {
 	}
 	if strings.Contains(out, "leaked") {
 		t.Fatalf("library item leaked into output for an empty saved search: %q", out)
+	}
+	var items []json.RawMessage
+	if err := json.Unmarshal([]byte(out), &items); err != nil {
+		t.Fatalf("output is not a JSON array (%v); an empty search must not become an unavailable envelope: %q", err, out)
+	}
+	if len(items) != 0 {
+		t.Fatalf("output = %q, want an empty array", out)
+	}
+	if strings.Contains(errOut, "warning:") {
+		t.Fatalf("a working endpoint with 0 hits must not warn about unavailability: %q", errOut)
 	}
 }

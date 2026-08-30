@@ -187,7 +187,7 @@ func applyMirrorWriteThrough(env *mutation.Envelope) {
 			warnMirrorUpdateFailed(it.Key, err)
 			continue
 		}
-		if err := db.UpsertKeyed("items", []string{it.Key}, []json.RawMessage{raw}); err != nil {
+		if _, err := db.UpsertKeyed("items", []string{it.Key}, []json.RawMessage{raw}); err != nil {
 			warnMirrorUpdateFailed(it.Key, err)
 			continue
 		}
@@ -241,7 +241,7 @@ func mirrorTrashedItem(db *store.Store, qs localQueryStore, key string) {
 	// it; only a permanent delete removes the row (see reapMirroredItem). The
 	// store's reconcileItemLifecycleTx arbitrates which of items/items-trash
 	// survives once a synced payload carries a newer version.
-	if err := db.UpsertKeyed("items-trash", []string{key}, []json.RawMessage{raw}); err != nil {
+	if _, err := db.UpsertKeyed("items-trash", []string{key}, []json.RawMessage{raw}); err != nil {
 		warnMirrorUpdateFailed(key, err)
 	}
 }

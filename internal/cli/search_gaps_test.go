@@ -275,7 +275,7 @@ func TestSearchCommandFulltextReturnsParentContext(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("seed parent and attachment: %v", err)
 	}
-	if err := db.UpsertKeyed("fulltext", []string{"ATTACH"}, []json.RawMessage{
+	if _, err := db.UpsertKeyed("fulltext", []string{"ATTACH"}, []json.RawMessage{
 		json.RawMessage(`{"content":"A distinctive calibration passage in the PDF."}`),
 	}); err != nil {
 		t.Fatalf("seed full text: %v", err)

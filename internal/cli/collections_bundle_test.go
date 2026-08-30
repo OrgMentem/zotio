@@ -224,7 +224,7 @@ func seedCollectionBundleStoreOpen(t *testing.T) *store.Store {
 	if _, _, err := db.UpsertBatch("items", items); err != nil {
 		t.Fatalf("seed items: %v", err)
 	}
-	if err := db.UpsertKeyed("fulltext", []string{"ATT1"}, []json.RawMessage{
+	if _, err := db.UpsertKeyed("fulltext", []string{"ATT1"}, []json.RawMessage{
 		json.RawMessage(`{"content":"transformer full text"}`),
 	}); err != nil {
 		t.Fatalf("seed fulltext: %v", err)

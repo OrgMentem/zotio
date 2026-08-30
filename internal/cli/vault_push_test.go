@@ -832,6 +832,110 @@ func TestPatchWithConflictStateMachine(t *testing.T) {
 		}
 	})
 
+	// The retry after a 412 can fail for reasons that have nothing to do with
+	// convergence (network, 5xx, rate limit, a second concurrent edit). That is
+	// a FAILED WRITE. It used to `fallthrough` into the converged arm, which
+	// recorded RemoteHash = the old remote body and SourceHash = the new local
+	// body: a baseline claiming the remote holds content it does not hold, so
+	// no later push ever retried and the divergence became permanent.
+	t.Run("412 then GET baseline then retry PATCH fails -> error, baseline untouched", func(t *testing.T) {
+		fastRetryBackoff(t)
+		outDir := t.TempDir()
+		n := newVaultNote(t, outDir)
+		before, _ := os.ReadFile(n.path)
+
+		liveVer := 9
+		var patchCount int
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.Method == http.MethodPatch {
+				patchCount++
+				if patchCount == 1 {
+					http.Error(w, "precondition failed", http.StatusPreconditionFailed)
+					return
+				}
+				// The retry fails: the write never lands.
+				http.Error(w, "boom", http.StatusInternalServerError)
+				return
+			}
+			if r.Method == http.MethodGet {
+				// Remote body still equals the recorded baseline, so the
+				// classifier takes the retry arm — and the live body is NOT the
+				// desired body, so nothing has converged.
+				w.Header().Set("Last-Modified-Version", fmt.Sprintf("%d", liveVer))
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(noteBody(liveVer, baselineHTML)))
+				return
+			}
+			t.Errorf("unexpected %s %s", r.Method, r.URL.Path)
+			http.Error(w, "unexpected", http.StatusInternalServerError)
+		}))
+		t.Cleanup(srv.Close)
+
+		res := patchWithConflict(newClient(srv), outDir, n, srcHash, desiredHTML, &rootFlags{})
+		if res.Status != "error" {
+			t.Fatalf("status = %q (%s), want error: a failed retry is a failed write", res.Status, res.Note)
+		}
+		after, _ := os.ReadFile(n.path)
+		if !bytes.Equal(before, after) {
+			t.Fatal("a failed retry must not rewrite the vault baseline; a poisoned baseline is never retried")
+		}
+	})
+
+	// The one retry failure that IS success: the live body already equals what
+	// we wanted to write, so there is nothing left to land.
+	//
+	// This case is only reachable when the desired body EQUALS the recorded
+	// baseline, because the retry arm requires sha(liveHTML) == RemoteHash and
+	// this arm requires sha(liveHTML) == sha(desiredHTML). Serving a desired
+	// body that differs from the baseline would take the second switch case
+	// directly and never run a retry at all, which is what the neighbouring
+	// "412 then GET desired" subtest already covers.
+	t.Run("412 then retry fails but remote already holds desired -> converged", func(t *testing.T) {
+		fastRetryBackoff(t)
+		outDir := t.TempDir()
+		n := newVaultNote(t, outDir)
+
+		liveVer := 11
+		var patchCount int
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.Method == http.MethodPatch {
+				patchCount++
+				if patchCount == 1 {
+					http.Error(w, "precondition failed", http.StatusPreconditionFailed)
+					return
+				}
+				// The retry fails, but the remote already holds our content.
+				http.Error(w, "boom", http.StatusInternalServerError)
+				return
+			}
+			if r.Method == http.MethodGet {
+				w.Header().Set("Last-Modified-Version", fmt.Sprintf("%d", liveVer))
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(noteBody(liveVer, baselineHTML)))
+				return
+			}
+			t.Errorf("unexpected %s %s", r.Method, r.URL.Path)
+			http.Error(w, "unexpected", http.StatusInternalServerError)
+		}))
+		t.Cleanup(srv.Close)
+
+		// desired == baseline, so the retry arm is entered AND its hashes match.
+		res := patchWithConflict(newClient(srv), outDir, n, srcHash, baselineHTML, &rootFlags{})
+		if patchCount < 2 {
+			t.Fatalf("PATCH attempts = %d, want a retry: this subtest must exercise the post-retry arm", patchCount)
+		}
+		if res.Status != "converged" {
+			t.Fatalf("status = %q (%s), want converged", res.Status, res.Note)
+		}
+		after, _ := parseStateComment(readNote(t, n.path))
+		if after.RemoteHash != sha256hex(baselineHTML) {
+			t.Errorf("RemoteHash = %q, want the live body's hash", after.RemoteHash)
+		}
+		if after.SourceHash != srcHash {
+			t.Errorf("SourceHash = %q, want %q", after.SourceHash, srcHash)
+		}
+	})
+
 	t.Run("412 then GET diverged -> conflict, artifact, private dir, naming", func(t *testing.T) {
 		outDir := t.TempDir()
 		n := newVaultNote(t, outDir)

@@ -5,6 +5,7 @@ package cobratree
 import (
 	"encoding/json"
 	"strings"
+	"sync"
 	"testing"
 
 	"zotio/internal/mcp/bound"
@@ -72,5 +73,57 @@ func TestTextCapturePassesSmallOutputThroughUnchanged(t *testing.T) {
 
 	if got := bound.TextCapture(capture.String(), capture.Total()); got != payload {
 		t.Errorf("TextCapture = %q, want the payload unchanged", got)
+	}
+}
+
+// TestBoundedCaptureConcurrentWrites pins the writer contract. One instance
+// receives BOTH stdout and stderr of every mirrored command
+// (runMirroredInProcess), and a command may write from its own goroutines:
+// sync's worker pool already emits stderr warnings off the main goroutine.
+// strings.Builder is not safe for concurrent use, so without the mutex this
+// tears the buffer and races the counter. Run under -race to see the failure.
+func TestBoundedCaptureConcurrentWrites(t *testing.T) {
+	const writers = 8
+	const perWriter = 50
+	line := []byte("warning: cursor save failed\n")
+
+	var capture boundedCapture
+	var wg sync.WaitGroup
+	// A start gate, so the writers actually overlap instead of finishing in
+	// spawn order; without it the race is easy to miss.
+	start := make(chan struct{})
+	errs := make(chan error, writers)
+	for range writers {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			for range perWriter {
+				if _, err := capture.Write(line); err != nil {
+					errs <- err
+					return
+				}
+			}
+		}()
+	}
+	close(start)
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		t.Fatalf("Write: %v", err)
+	}
+
+	want := int64(writers * perWriter * len(line))
+	if got := capture.Total(); got != want {
+		t.Errorf("Total() = %d, want %d: the counter lost writes", got, want)
+	}
+	// Every retained byte belongs to some copy of the line; a torn buffer would
+	// leave a partial or interleaved fragment.
+	retained := capture.String()
+	if len(retained) > bound.MaxBytes {
+		t.Fatalf("retained %d bytes, want at most %d", len(retained), bound.MaxBytes)
+	}
+	if rest := strings.ReplaceAll(retained, string(line), ""); rest != "" {
+		t.Errorf("retained output contains a torn fragment: %q", rest)
 	}
 }

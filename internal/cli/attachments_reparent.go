@@ -186,7 +186,14 @@ func applyConnectorReparentUpload(ctx context.Context, cmd *cobra.Command, flags
 	// A client carries its own base context, so the budget above bounds nothing
 	// until the client is told about it. Without this the deadline caps only the
 	// sleeps between polls, not the HTTP calls they wrap.
+	//
+	// The client belongs to the caller, so the borrow is given back: without the
+	// restore this op returns a client permanently bound to a cancelled context,
+	// and any later request on it fails with context.Canceled for no visible
+	// reason.
+	callerCtx := webClient.Context()
 	webClient.SetContext(routeCtx)
+	defer webClient.SetContext(callerCtx)
 
 	out, err := runConnectorReparent(routeCtx, cmd, flags, webClient, req)
 	detail := map[string]any{"via": "connector"}

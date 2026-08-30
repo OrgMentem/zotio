@@ -5,6 +5,7 @@
 package store
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"os"
@@ -123,7 +124,7 @@ func TestUpsertKeyed(t *testing.T) {
 		json.RawMessage(`{"content":"alpha","indexedChars":5}`),
 		json.RawMessage(`{"content":"beta","indexedChars":4}`),
 	}
-	if err := s.UpsertKeyed("fulltext", ids, data); err != nil {
+	if _, err := s.UpsertKeyed("fulltext", ids, data); err != nil {
 		t.Fatalf("UpsertKeyed: %v", err)
 	}
 	for _, id := range ids {
@@ -137,7 +138,7 @@ func TestUpsertKeyed(t *testing.T) {
 	}
 
 	// Re-keying the same id replaces rather than duplicates.
-	if err := s.UpsertKeyed("fulltext", []string{"ATT1"}, []json.RawMessage{json.RawMessage(`{"content":"alpha2"}`)}); err != nil {
+	if _, err := s.UpsertKeyed("fulltext", []string{"ATT1"}, []json.RawMessage{json.RawMessage(`{"content":"alpha2"}`)}); err != nil {
 		t.Fatalf("UpsertKeyed replace: %v", err)
 	}
 	var count int
@@ -149,10 +150,10 @@ func TestUpsertKeyed(t *testing.T) {
 	}
 
 	// Length mismatch is rejected; empty input is a no-op.
-	if err := s.UpsertKeyed("fulltext", []string{"X"}, nil); err == nil {
+	if _, err := s.UpsertKeyed("fulltext", []string{"X"}, nil); err == nil {
 		t.Error("UpsertKeyed mismatch: want error, got nil")
 	}
-	if err := s.UpsertKeyed("fulltext", nil, nil); err != nil {
+	if _, err := s.UpsertKeyed("fulltext", nil, nil); err != nil {
 		t.Errorf("UpsertKeyed empty: %v", err)
 	}
 }
@@ -200,6 +201,141 @@ func TestAnnotationsForItems(t *testing.T) {
 	}
 	if empty == nil || len(empty) != 0 {
 		t.Errorf("AnnotationsForItems(nil) = %v, want empty map", empty)
+	}
+}
+
+// TestAnnotationsIgnoreTrashMirrorDuplicates pins the resource_type predicate on
+// the annotation joins. Ids are unique only WITHIN a resource_type, and
+// mirrorTrashedItem (internal/cli/write_through.go) deliberately leaves a
+// trashed attachment in BOTH 'items' and 'items-trash' until the read plane
+// catches up. Without the predicate the attachment alias matched twice and every
+// annotation under it was emitted twice, into `items summarize`, vault sync,
+// `collections bundle`, and the MCP annotation resource.
+func TestAnnotationsIgnoreTrashMirrorDuplicates(t *testing.T) {
+	s, err := OpenWithContext(context.Background(), filepath.Join(t.TempDir(), "data.db"))
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer s.Close()
+
+	attachment := json.RawMessage(`{"key":"ATT1","version":1,"data":{"key":"ATT1","itemType":"attachment","parentItem":"TOP1","contentType":"application/pdf"}}`)
+	items := []json.RawMessage{
+		json.RawMessage(`{"key":"TOP1","version":1,"data":{"key":"TOP1","itemType":"journalArticle","title":"A"}}`),
+		attachment,
+		json.RawMessage(`{"key":"AN1","version":1,"data":{"key":"AN1","itemType":"annotation","parentItem":"ATT1"}}`),
+	}
+	if _, _, err := s.UpsertBatch("items", items); err != nil {
+		t.Fatalf("UpsertBatch items: %v", err)
+	}
+	// Exactly what `items delete ATT1` leaves behind: the same id in both
+	// partitions for the whole write-through window. This duplicate exercises
+	// the `att.resource_type` predicate.
+	if _, err := s.UpsertKeyed("items-trash", []string{"ATT1"}, []json.RawMessage{attachment}); err != nil {
+		t.Fatalf("UpsertKeyed items-trash: %v", err)
+	}
+	// A trashed annotation under the SAME live attachment exercises the OTHER
+	// predicate, `a.resource_type`. Without it this row joins the live
+	// attachment and is emitted as if it were current.
+	if _, err := s.UpsertKeyed("items-trash", []string{"AN2"}, []json.RawMessage{
+		json.RawMessage(`{"key":"AN2","version":1,"data":{"key":"AN2","itemType":"annotation","parentItem":"ATT1"}}`),
+	}); err != nil {
+		t.Fatalf("UpsertKeyed trashed annotation: %v", err)
+	}
+
+	single, err := s.AnnotationsForItem("TOP1")
+	if err != nil {
+		t.Fatalf("AnnotationsForItem: %v", err)
+	}
+	if len(single) != 1 {
+		t.Errorf("AnnotationsForItem returned %d rows, want 1 (only the live AN1)", len(single))
+	}
+	if len(single) > 0 && !bytes.Contains(single[0], []byte(`"AN1"`)) {
+		t.Errorf("AnnotationsForItem returned %s, want the live annotation AN1", single[0])
+	}
+
+	// Ask across two batches as well, so the chunked query path is covered with
+	// the duplicate present.
+	grouped, err := s.AnnotationsForItems([]string{"TOP1", "TOP_ABSENT"})
+	if err != nil {
+		t.Fatalf("AnnotationsForItems: %v", err)
+	}
+	if len(grouped["TOP1"]) != 1 {
+		t.Errorf("AnnotationsForItems returned %d rows for TOP1, want 1", len(grouped["TOP1"]))
+	}
+	if len(grouped["TOP1"]) > 0 && !bytes.Contains(grouped["TOP1"][0], []byte(`"AN1"`)) {
+		t.Errorf("AnnotationsForItems returned %s for TOP1, want the live annotation AN1", grouped["TOP1"][0])
+	}
+}
+
+// UpsertKeyed reports rows that landed, like UpsertBatch. sync's
+// upsertResourceBatchWithExtractedIDs feeds that number straight into the sync
+// total, so counting the ids it offered would overstate the pass whenever the
+// version-monotonic guard retains a newer stored row.
+func TestUpsertKeyedCountsOnlyRowsThatLanded(t *testing.T) {
+	s, err := OpenWithContext(context.Background(), filepath.Join(t.TempDir(), "data.db"))
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer s.Close()
+
+	newer := json.RawMessage(`{"key":"K1","version":10,"data":{"key":"K1","itemType":"book","title":"newer"}}`)
+	if stored, err := s.UpsertKeyed("items", []string{"K1"}, []json.RawMessage{newer}); err != nil || stored != 1 {
+		t.Fatalf("seed UpsertKeyed = (%d, %v), want (1, nil)", stored, err)
+	}
+
+	older := json.RawMessage(`{"key":"K1","version":5,"data":{"key":"K1","itemType":"book","title":"older"}}`)
+	fresh := json.RawMessage(`{"key":"K2","version":1,"data":{"key":"K2","itemType":"book","title":"fresh"}}`)
+	stored, err := s.UpsertKeyed("items", []string{"K1", "K2"}, []json.RawMessage{older, fresh})
+	if err != nil {
+		t.Fatalf("UpsertKeyed: %v", err)
+	}
+	if stored != 1 {
+		t.Errorf("stored = %d, want 1: K1 was retained at the newer version, only K2 landed", stored)
+	}
+
+	kept, err := s.Get("items", "K1")
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if !bytes.Contains(kept, []byte(`"newer"`)) {
+		t.Errorf("stored row = %s, want the version-10 payload retained", kept)
+	}
+}
+
+// TestUpsertBatchCountsOnlyRowsThatLanded pins `stored` to writes, not offers.
+// The version-monotonic guard retains a newer stored row and writes nothing, so
+// counting prepared items instead overstated sync totals and softened the
+// stored-vs-consumed diagnostic that F4b relies on.
+func TestUpsertBatchCountsOnlyRowsThatLanded(t *testing.T) {
+	s, err := OpenWithContext(context.Background(), filepath.Join(t.TempDir(), "data.db"))
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer s.Close()
+
+	newer := json.RawMessage(`{"key":"K1","version":10,"data":{"key":"K1","itemType":"book","title":"newer"}}`)
+	if stored, _, err := s.UpsertBatch("items", []json.RawMessage{newer}); err != nil || stored != 1 {
+		t.Fatalf("seed UpsertBatch = (%d, %v), want (1, nil)", stored, err)
+	}
+
+	older := json.RawMessage(`{"key":"K1","version":5,"data":{"key":"K1","itemType":"book","title":"older"}}`)
+	stored, extractFailures, err := s.UpsertBatch("items", []json.RawMessage{older})
+	if err != nil {
+		t.Fatalf("UpsertBatch older: %v", err)
+	}
+	if stored != 0 {
+		t.Errorf("stored = %d, want 0: the older version was retained, so nothing was written", stored)
+	}
+	if extractFailures != 0 {
+		t.Errorf("extractFailures = %d, want 0: a retained row is not an extraction failure", extractFailures)
+	}
+
+	kept, err := s.Get("items", "K1")
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if !bytes.Contains(kept, []byte(`"newer"`)) {
+		t.Errorf("stored row = %s, want the version-10 payload retained", kept)
 	}
 }
 

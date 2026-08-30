@@ -461,7 +461,7 @@ func syncFulltext(ctx context.Context, c *client.Client, db *store.Store, full b
 				ids = append(ids, r.Source)
 				payloads = append(payloads, r.Value)
 			}
-			if uerr := db.UpsertKeyed("fulltext", ids, payloads); uerr != nil {
+			if _, uerr := db.UpsertKeyed("fulltext", ids, payloads); uerr != nil {
 				return fmt.Errorf("persisting fulltext: %w", uerr)
 			}
 		}
@@ -1324,10 +1324,13 @@ func upsertResourceBatchWithExtractedIDs(db *store.Store, resource string, items
 		ids = append(ids, id)
 		payloads = append(payloads, item)
 	}
-	if err := db.UpsertKeyed(resource, ids, payloads); err != nil {
+	stored, err := db.UpsertKeyed(resource, ids, payloads)
+	if err != nil {
 		return 0, extractFailures, err
 	}
-	return len(ids), extractFailures, nil
+	// stored, not len(ids): a row the plane re-sent at an older version is
+	// retained as newer and writes nothing.
+	return stored, extractFailures, nil
 }
 
 func canonicalStoreResource(resource string) string {

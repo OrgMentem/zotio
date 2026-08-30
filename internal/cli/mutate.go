@@ -55,7 +55,14 @@ func runMutation(ctx context.Context, flags *rootFlags, operation string, ops []
 	if mutationJournalRecorder != nil {
 		if journalErr := mutationJournalRecorder(&env); journalErr != nil {
 			env.Warnings = append(env.Warnings, fmt.Sprintf("applied but not journaled: %v (journal undo unavailable for this run)", journalErr))
-			err = degradedErr(fmt.Errorf("%s: %d warnings; results incomplete", operation, len(env.Warnings)))
+			// Only a run the engine considered successful is downgraded to
+			// "degraded". When the engine already failed (conflict, or a
+			// failure without --continue-on-error), overwriting its error
+			// erased the conflict signal that CI and MCP callers branch on and
+			// replaced it with a generic exit 13 naming neither cause.
+			if err == nil {
+				err = degradedErr(fmt.Errorf("%s: %d warnings; results incomplete", operation, len(env.Warnings)))
+			}
 		}
 	}
 	return env, err

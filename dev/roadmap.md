@@ -135,9 +135,13 @@ Skipped: broken_attachment_file — needs Zotero desktop (local API).
 
 This unifies three existing ad-hoc guards under one contract rather than inventing a mechanism:
 `classifyAPIError`/`isLocalWriteRejection` (read-only write guard), the `searchesRunFallback`
-shape in `searches run`, and `doctor`'s `writes:` reporting. Today `searches run` can't distinguish
-"couldn't execute (Zotero closed)" from "ran, 0 hits" (`zoteroResultIsEmpty`) — the contract fixes
-exactly that ambiguity.
+shape in `searches run`, and `doctor`'s `writes:` reporting. `searches run` no longer conflates
+"couldn't execute (Zotero closed)" with "ran, 0 hits": an empty page from a working endpoint now
+returns `[]`, and the `searchesRunFallback` envelope is reserved for a failed request (404 from a
+plane without the endpoint, but also a cancelled context or a credential error, which the envelope
+reports verbatim in `result_error`). `zoteroResultIsEmpty` is retained for `searches materialize`,
+which needs the empty check for pagination rather than for availability. The contract generalizes
+that rule to every live-only command.
 
 ## Contract specifications
 

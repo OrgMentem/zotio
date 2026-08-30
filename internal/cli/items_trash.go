@@ -62,7 +62,16 @@ func newItemsTrashCmd(flags *rootFlags) *cobra.Command {
 				if fetchErr != nil {
 					return fetchErr
 				}
-				data, prov = unionMirroredTrash(ctx, cmd, flags, data, prov, flagStart, flagLimit)
+				// The union is auto mode's self-healing answer for the
+				// write-through window. Only an explicit --data-source live opts
+				// out: resolveRead defines that mode as "the API only", so
+				// merging mirror rows there returned trashed items the plane
+				// never reported. An empty value is auto, matching resolveRead.
+				if flags.dataSource == "live" {
+					data = sortAndPaginateTrash(data, flagStart, flagLimit)
+				} else {
+					data, prov = unionMirroredTrash(ctx, cmd, flags, data, prov, flagStart, flagLimit)
+				}
 			}
 			// Print provenance to stderr for human-facing output
 			printProvenance(cmd, countResultItems(data), prov)
@@ -202,21 +211,11 @@ func unionMirroredTrash(ctx context.Context, cmd *cobra.Command, flags *rootFlag
 	if err != nil {
 		// No mirror — still sort and paginate the live set so ordering and
 		// missing-date handling are consistent even without a union.
-		liveItems = sortTrashItems(liveItems)
-		liveItems = paginateTrashItems(liveItems, start, limit)
-		if data, err := json.Marshal(liveItems); err == nil {
-			return data, prov
-		}
-		return live, prov
+		return sortAndPaginateTrash(live, start, limit), prov
 	}
 	var mirroredItems []json.RawMessage
 	if err := json.Unmarshal(mirrored, &mirroredItems); err != nil {
-		liveItems = sortTrashItems(liveItems)
-		liveItems = paginateTrashItems(liveItems, start, limit)
-		if data, err := json.Marshal(liveItems); err == nil {
-			return data, prov
-		}
-		return live, prov
+		return sortAndPaginateTrash(live, start, limit), prov
 	}
 
 	added := 0
@@ -250,6 +249,26 @@ func unionMirroredTrash(ctx context.Context, cmd *cobra.Command, flags *rootFlag
 		"note: %d trashed item(s) came from the local mirror; the Zotero read API has not caught up with them yet\n", added)
 	prov.Source = "live+local"
 	return merged, prov
+}
+
+// sortAndPaginateTrash applies the trash ordering and page window to a live
+// result that is not being unioned with the mirror, so an explicit
+// --data-source live sees the same ordering contract as auto mode. A payload
+// that does not decode as a JSON array (an error envelope, say) is returned
+// untouched. A literal `null` DOES decode, as a nil slice, and is normalized to
+// `[]` — deliberately, because unionMirroredTrash coerces it the same way, and
+// auto and live must not disagree about the shape of an empty trash.
+func sortAndPaginateTrash(live json.RawMessage, start, limit int) json.RawMessage {
+	var items []json.RawMessage
+	if err := json.Unmarshal(live, &items); err != nil {
+		return live
+	}
+	items = paginateTrashItems(sortTrashItems(items), start, limit)
+	data, err := json.Marshal(items)
+	if err != nil {
+		return live
+	}
+	return data
 }
 
 // trashDateModified extracts dateModified (nested under data or flat) and parses
