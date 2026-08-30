@@ -4,6 +4,27 @@ Notable changes to zotio. Format follows [Keep a Changelog](https://keepachangel
 
 ## [Unreleased]
 
+## [0.23.0] — 2026-08-30
+
+### Changed — breaking
+
+Both entries below are bug fixes whose whole point is that the previous value
+was wrong. They are listed here rather than under Fixed because a scripted
+consumer keys on exit codes and error text, and this repo treats any change to
+those as breaking regardless of which value is correct.
+
+- **`vault push` now exits non-zero when a managed note was deleted remotely.**
+  It previously reported `1 unchanged` and exit 0 for a note that no longer
+  existed in Zotero. It now reports `remote_deleted` and exits non-zero. A
+  caller that treated exit 0 as "vault and library agree" was being told the
+  wrong thing; a caller that treats non-zero as fatal will now stop on a note
+  that needs `vault resolve --recreate`.
+- **The MCP item bundle no longer reports a database failure as a missing
+  item.** A genuine local-store read error surfaced as
+  `item %s not found locally; run sync`, which sent the caller to fix the wrong
+  problem. It now returns the read error. A consumer matching that exact string
+  to detect an unsynced item still gets it for a genuinely missing row.
+
 ### Fixed
 
 - **`attachments add --via connector` no longer loses a race against Zotero's
@@ -71,9 +92,15 @@ Notable changes to zotio. Format follows [Keep a Changelog](https://keepachangel
   read.** `store.Get` signalled absence with a nil body and no error, so a
   caller that skipped the nil check hit an opaque "unexpected end of JSON
   input" instead, and not-found could not be classified with `errors.Is`. It now
-  returns `store.ErrNotFound`, and every caller is migrated. One user-visible
-  improvement falls out: the MCP item bundle reported a genuine database failure
-  as "item not found locally; run sync", and now reports the read error.
+  returns `store.ErrNotFound`, and every caller is migrated. The MCP item-bundle
+  consequence is in the breaking section above.
+- **The connector re-parent harness cannot report success over a failed
+  cleanup.** `dev/reparent-probe.sh` now installs an exit trap, so an interrupt
+  after the connector created objects still prints every recorded key; refuses
+  to trash the receiver when the attachment trash failed, which is precisely how
+  an orphan gets manufactured; verifies each delete against the API; and reports
+  INCOMPLETE rather than PASSED when the storage check cannot be tied to this
+  run's own file. Developer tooling only, not shipped in the binaries.
 
 ## [0.22.1] — 2026-08-30
 
@@ -2150,7 +2177,8 @@ First tagged release: the trust-and-automation layer for Zotero.
 - **Onboarding** — `zotio init` guided setup (Zotero detection, local API, key, first sync, health check).
 - Release engineering: goreleaser builds for 6 platforms, cosign-signed checksums, SBOMs, Homebrew tap.
 
-[Unreleased]: https://github.com/OrgMentem/zotio/compare/v0.22.1...HEAD
+[Unreleased]: https://github.com/OrgMentem/zotio/compare/v0.23.0...HEAD
+[0.23.0]: https://github.com/OrgMentem/zotio/compare/v0.22.1...v0.23.0
 [0.22.1]: https://github.com/OrgMentem/zotio/compare/v0.22.0...v0.22.1
 [0.22.0]: https://github.com/OrgMentem/zotio/compare/v0.21.0...v0.22.0
 [0.21.0]: https://github.com/OrgMentem/zotio/compare/v0.20.1...v0.21.0
