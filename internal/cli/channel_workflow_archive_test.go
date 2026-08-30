@@ -242,10 +242,8 @@ func TestWorkflowArchivePaginatesWithStartAndUsesZoteroKeys(t *testing.T) {
 	if item, err := db.Get("items", "ITEM-100"); err != nil || item == nil {
 		t.Fatalf("get item by Zotero key: item=%s, err=%v", item, err)
 	}
-	if item, err := db.Get("items", "items-100"); err != nil {
-		t.Fatalf("get synthetic item ID: %v", err)
-	} else if item != nil {
-		t.Fatal("archive stored a synthetic item ID")
+	if item, err := db.Get("items", "items-100"); item != nil || !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("synthetic item ID read = (%s, %v), want (nil, ErrNotFound)", item, err)
 	}
 }
 

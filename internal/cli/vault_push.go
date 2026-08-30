@@ -905,6 +905,15 @@ func getNote(c *client.Client, noteKey string) (int, string, error) {
 // fetchNoteVersions returns a key->version map for the given note keys, batched
 // (Zotero accepts up to 50 itemKey values per request). Missing keys are absent
 // from the map (treated as remotely deleted).
+//
+// The read MUST bypass the response cache. Every version here becomes either a
+// skip decision or an If-Unmodified-Since-Version precondition, and a cached
+// map makes both wrong: a push that writes nothing leaves the map cached, so a
+// remote edit inside the next five minutes is invisible to the diff, producing
+// a silently skipped note or a guarded PATCH that 412s on a conflict that does
+// not exist. GetWithVersion is the cache-bypassing read (see its doc comment);
+// the header version it also returns describes the whole library rather than
+// any one note, so it is discarded here. getNote above reads the same way.
 func fetchNoteVersions(c *client.Client, keys []string) (map[string]int, error) {
 	out := make(map[string]int, len(keys))
 	for start := 0; start < len(keys); start += 50 {
@@ -921,7 +930,7 @@ func fetchNoteVersions(c *client.Client, keys []string) (map[string]int, error) 
 			"itemKey": strings.Join(keys[start:end], ","),
 			"format":  "versions",
 		}
-		data, err := c.Get("/items", params)
+		data, _, err := c.GetWithVersion("/items", params)
 		if err != nil {
 			// A failed version fetch is unknown state, not absence; propagating
 			// prevents false remote_deleted.

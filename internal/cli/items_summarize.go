@@ -10,6 +10,7 @@ package cli
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"unicode/utf8"
@@ -98,14 +99,17 @@ structured bundle; otherwise a readable Markdown brief you can paste into any LL
 				fmt.Fprintln(cmd.OutOrStdout(), "Run 'zotio sync' first.")
 				return nil
 			}
+			defer db.Close()
 			// database/sql opens SQLite lazily. Force the read-only connection now
 			// so a corrupt existing database is reported as an open failure rather
 			// than being mistaken for a missing local mirror when no item query is
 			// needed (for example, `items summarize` with no arguments).
-			if _, err := db.Get("items", ""); err != nil {
+			//
+			// An absent row is a successful probe: the point is that the connection
+			// opened and the schema is readable, and the empty key never matches.
+			if _, err := db.Get("items", ""); err != nil && !errors.Is(err, store.ErrNotFound) {
 				return fmt.Errorf("opening local database: %w", err)
 			}
-			defer db.Close()
 
 			opts := summarizeOpts{
 				maxChars:       flagMaxChars,
@@ -120,11 +124,11 @@ structured bundle; otherwise a readable Markdown brief you can paste into any LL
 				return cmd.Help()
 			}
 			raw, err := db.Get("items", args[0])
+			if errors.Is(err, store.ErrNotFound) {
+				return fmt.Errorf("item %s not found locally; run 'zotio sync' (or check the key)", args[0])
+			}
 			if err != nil {
 				return fmt.Errorf("reading item: %w", err)
-			}
-			if raw == nil {
-				return fmt.Errorf("item %s not found locally; run 'zotio sync' (or check the key)", args[0])
 			}
 
 			var warnings []string

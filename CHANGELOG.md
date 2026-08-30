@@ -21,6 +21,32 @@ Notable changes to zotio. Format follows [Keep a Changelog](https://keepachangel
   landed and its reply was lost), and one that has moved anywhere else
   abandons with the original conflict rather than being wrenched back. See
   `dev/field-report-2026-08-30-connector-reparent-live.md`.
+- **`vault push` no longer reports a deleted Zotero note as synchronised.** The
+  batch note-version map was fetched through the cached read path, while the
+  single-note read beside it correctly bypassed the cache. Absence from that map
+  is how the command decides a managed note was deleted remotely, so a run that
+  wrote nothing left the map cached for five minutes and a remote deletion
+  inside that window became invisible. Measured on a real library: with the
+  note confirmed gone by an independent `404`, the command reported
+  `1 unchanged` and exit 0. It now reports `remote_deleted`, names the
+  `vault resolve --recreate` command that repairs it, and exits non-zero. The
+  same staleness could also send a stale `If-Unmodified-Since-Version`, turning
+  a healthy note into a spurious conflict. See
+  `dev/field-report-2026-08-30-vault-push-version-cache.md`.
+- **A refused mutation now explains itself to callers that read the error.** A
+  gate rejection returned only the machine code, so a caller surfacing the error
+  rather than rendering the envelope saw `max_changes_exceeded` with no
+  remediation, while the actionable message ("planned N change(s), which exceeds
+  the cap of M; raise the limit with `--max-changes`") stayed in the envelope.
+  The returned error is now the structured gate error itself, so its text
+  carries both code and message and callers can classify it with `errors.As`.
+- **A missing row in the local mirror is now distinguishable from a failed
+  read.** `store.Get` signalled absence with a nil body and no error, so a
+  caller that skipped the nil check hit an opaque "unexpected end of JSON
+  input" instead, and not-found could not be classified with `errors.Is`. It now
+  returns `store.ErrNotFound`, and every caller is migrated. One user-visible
+  improvement falls out: the MCP item bundle reported a genuine database failure
+  as "item not found locally; run sync", and now reports the read error.
 
 ## [0.22.1] — 2026-08-30
 

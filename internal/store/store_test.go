@@ -5,11 +5,37 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 )
+
+// TestGetMissingRowReturnsErrNotFound pins missing rows to an identifiable error.
+// Without the sentinel, Get returns nil, nil and hides a missing row as success.
+func TestGetMissingRowReturnsErrNotFound(t *testing.T) {
+	s := queryTestStore(t)
+
+	raw, err := s.Get("items", "MISSING")
+	if raw != nil {
+		t.Fatalf("Get missing row returned %s, want nil", raw)
+	}
+	if !errors.Is(err, ErrNotFound) {
+		t.Fatalf("Get missing row error = %v, want errors.Is(err, ErrNotFound)", err)
+	}
+
+	if err := s.Close(); err != nil {
+		t.Fatalf("close store: %v", err)
+	}
+	raw, err = s.Get("items", "MISSING")
+	if raw != nil {
+		t.Fatalf("Get from closed store returned %s, want nil", raw)
+	}
+	if err == nil || errors.Is(err, ErrNotFound) {
+		t.Fatalf("Get from closed store error = %v, want a non-not-found read error", err)
+	}
+}
 
 func TestRestoreMirroredItem_Atomicity(t *testing.T) {
 	ctx := context.Background()
@@ -63,11 +89,11 @@ func TestRestoreMirroredItem_Atomicity(t *testing.T) {
 
 	// Atomicity assertion: NEITHER the live upsert NOR the trash deletion
 	// is committed. Pre-call state (items=0, items-trash=1) must be intact.
-	if got, _ := s.Get("items", "ATOMIC1"); got != nil {
-		t.Fatalf("atomicity violation: live row was committed despite transaction failure, got %s", string(got))
+	if got, err := s.Get("items", "ATOMIC1"); got != nil || !errors.Is(err, ErrNotFound) {
+		t.Fatalf("atomicity violation: live row = %s, err = %v; want nil and ErrNotFound", got, err)
 	}
-	if got, _ := s.Get("items-trash", "ATOMIC1"); got == nil {
-		t.Fatalf("atomicity violation: trash row was deleted despite transaction rollback")
+	if got, err := s.Get("items-trash", "ATOMIC1"); got == nil || err != nil {
+		t.Fatalf("atomicity violation: trash row was deleted despite transaction rollback: got=%s err=%v", got, err)
 	}
 	if cnt, _ := s.Count("items"); cnt != 0 {
 		t.Fatalf("items count after failed restore = %d, want 0 (atomic rollback)", cnt)
@@ -100,11 +126,11 @@ func TestRestoreMirroredItem_Atomicity(t *testing.T) {
 	if err := s.RestoreMirroredItem("ATOMIC1", restored); err != nil {
 		t.Fatalf("RestoreMirroredItem after dropping trigger: %v", err)
 	}
-	if got, _ := s.Get("items", "ATOMIC1"); got == nil {
-		t.Fatalf("live row should exist after successful restore")
+	if got, err := s.Get("items", "ATOMIC1"); got == nil || err != nil {
+		t.Fatalf("live row should exist after successful restore: got=%s err=%v", got, err)
 	}
-	if got, _ := s.Get("items-trash", "ATOMIC1"); got != nil {
-		t.Fatalf("trash row should be gone after successful restore, got %s", string(got))
+	if got, err := s.Get("items-trash", "ATOMIC1"); got != nil || !errors.Is(err, ErrNotFound) {
+		t.Fatalf("trash row should be gone after successful restore: got=%s err=%v", got, err)
 	}
 	if cnt, _ := s.Count("items"); cnt != 1 {
 		t.Fatalf("items count after successful restore = %d, want 1", cnt)
@@ -131,13 +157,13 @@ func TestRestoreMirroredItem_HappyPathDoesNotNeedTrigger(t *testing.T) {
 	if err := s.RestoreMirroredItem("HAPPY1", restored); err != nil {
 		t.Fatalf("RestoreMirroredItem: %v", err)
 	}
-	live, _ := s.Get("items", "HAPPY1")
-	if live == nil || !strings.Contains(string(live), "HappyRestored") {
-		t.Fatalf("live row after restore: %v", string(live))
+	live, err := s.Get("items", "HAPPY1")
+	if err != nil || live == nil || !strings.Contains(string(live), "HappyRestored") {
+		t.Fatalf("live row after restore: %v, err=%v", string(live), err)
 	}
-	trash, _ := s.Get("items-trash", "HAPPY1")
-	if trash != nil {
-		t.Fatalf("trash row should be reaped, got %s", string(trash))
+	trash, err := s.Get("items-trash", "HAPPY1")
+	if trash != nil || !errors.Is(err, ErrNotFound) {
+		t.Fatalf("trash row should be reaped: got=%s err=%v", trash, err)
 	}
 }
 func TestPendingWritesRoundtrip(t *testing.T) {
@@ -455,10 +481,8 @@ func TestSweepMissingReapsUnseenRows(t *testing.T) {
 	} else if raw == nil {
 		t.Fatal("SweepMissing removed seen row")
 	}
-	if raw, err := s.Get(resourceType, "SWEEP_GONE"); err != nil {
-		t.Fatalf("get reaped row: %v", err)
-	} else if raw != nil {
-		t.Fatalf("SweepMissing retained unseen row: %s", string(raw))
+	if raw, err := s.Get(resourceType, "SWEEP_GONE"); raw != nil || !errors.Is(err, ErrNotFound) {
+		t.Fatalf("SweepMissing retained unseen row: got=%s err=%v", string(raw), err)
 	}
 
 	var orphanFTS int

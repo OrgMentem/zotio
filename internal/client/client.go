@@ -351,6 +351,11 @@ func (c *Client) getWithHeadersContext(ctx context.Context, path string, params 
 	return result, err
 }
 
+// ProbeGet issues a GET and discards the body, returning only the HTTP STATUS
+// code. It is for reachability and capability checks (does this endpoint exist,
+// is this plane up), where the body is irrelevant and a non-2xx is the answer
+// rather than a failure. It bypasses the response cache, since a cached status
+// would defeat the purpose.
 func (c *Client) ProbeGet(path string) (int, error) {
 	_, status, err := c.do(c.baseCtx(), "GET", path, nil, nil, nil)
 	return status, err
@@ -569,41 +574,68 @@ type RawBody struct {
 	Data        []byte
 }
 
+// The mutating verbs below all return (body, status, error), where the int is
+// the HTTP STATUS CODE the server replied with.
+//
+// That is worth stating because this type also exposes reads returning
+// (body, int, error) where the int is a Zotero OBJECT VERSION, not a status:
+// GetWithVersion and GetFromWriteBaseWithVersion. The two shapes are identical
+// to the compiler, so a caller that confuses them type-checks cleanly and then
+// misreads the number - a version of 0 looks like "no status", and a high
+// version looks like nothing at all. Read the method you are calling.
+//
+// Status is returned rather than folded into the error because a Zotero write
+// can fail meaningfully with a body: 412 carries the conflict, 409 the target
+// state, and 200 with a per-object failures map is a partial success.
+
+// Post sends a JSON body. The int is the HTTP status code.
 func (c *Client) Post(path string, body any) (json.RawMessage, int, error) {
 	return c.do(c.baseCtx(), "POST", path, nil, body, nil)
 }
 
 // PostFormWithHeaders sends application/x-www-form-urlencoded values, for the
-// Zotero file-upload protocol endpoints that reject JSON bodies.
+// Zotero file-upload protocol endpoints that reject JSON bodies. The int is the
+// HTTP status code.
 func (c *Client) PostFormWithHeaders(path string, form url.Values, headers map[string]string) (json.RawMessage, int, error) {
 	body := RawBody{ContentType: "application/x-www-form-urlencoded", Data: []byte(form.Encode())}
 	return c.do(c.baseCtx(), "POST", path, nil, body, headers)
 }
 
+// PostWithHeaders sends a JSON body with per-request headers. The int is the
+// HTTP status code.
 func (c *Client) PostWithHeaders(path string, body any, headers map[string]string) (json.RawMessage, int, error) {
 	return c.do(c.baseCtx(), "POST", path, nil, body, headers)
 }
 
+// Delete removes the object at path. The int is the HTTP status code.
 func (c *Client) Delete(path string) (json.RawMessage, int, error) {
 	return c.do(c.baseCtx(), "DELETE", path, nil, nil, nil)
 }
 
+// DeleteWithHeaders removes the object at path, carrying per-request headers
+// such as If-Unmodified-Since-Version. The int is the HTTP status code.
 func (c *Client) DeleteWithHeaders(path string, headers map[string]string) (json.RawMessage, int, error) {
 	return c.do(c.baseCtx(), "DELETE", path, nil, nil, headers)
 }
 
+// Put replaces the object at path. The int is the HTTP status code.
 func (c *Client) Put(path string, body any) (json.RawMessage, int, error) {
 	return c.do(c.baseCtx(), "PUT", path, nil, body, nil)
 }
 
+// PutWithHeaders replaces the object at path, carrying per-request headers.
+// The int is the HTTP status code.
 func (c *Client) PutWithHeaders(path string, body any, headers map[string]string) (json.RawMessage, int, error) {
 	return c.do(c.baseCtx(), "PUT", path, nil, body, headers)
 }
 
+// Patch updates fields of the object at path. The int is the HTTP status code.
 func (c *Client) Patch(path string, body any) (json.RawMessage, int, error) {
 	return c.do(c.baseCtx(), "PATCH", path, nil, body, nil)
 }
 
+// PatchWithHeaders updates fields of the object at path, carrying per-request
+// headers such as If-Unmodified-Since-Version. The int is the HTTP status code.
 func (c *Client) PatchWithHeaders(path string, body any, headers map[string]string) (json.RawMessage, int, error) {
 	return c.do(c.baseCtx(), "PATCH", path, nil, body, headers)
 }
@@ -1061,8 +1093,13 @@ func verifyShortCircuitEnvelope(method, path string) json.RawMessage {
 // Last-Modified-Version response header parsed as an int (0 when absent or
 // unparseable). Version-based incremental sync needs the response header that
 // the cached Get/do path discards. Bypasses the read cache so the caller always
-// observes a live value. Live header-reading helpers use the same cancellable
-// base context as the public Get wrapper.
+// observes a live value, which is also why callers needing a live read with no
+// interest in the version use this and discard it. Live header-reading helpers
+// use the same cancellable base context as the public Get wrapper.
+//
+// The int is a Zotero OBJECT VERSION, not an HTTP status code, even though the
+// mutating verbs return the same (body, int, error) shape with a status in that
+// position. A caller that confuses the two compiles cleanly.
 func (c *Client) GetWithVersion(path string, params map[string]string) (json.RawMessage, int, error) {
 	return c.GetWithVersionContext(c.baseCtx(), path, params)
 }

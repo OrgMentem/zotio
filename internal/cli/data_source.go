@@ -5,6 +5,7 @@ package cli
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"net/url"
@@ -356,11 +357,11 @@ func resolveLocal(ctx context.Context, resourceType string, isList bool, path st
 	}
 
 	item, err := db.Get(resourceType, id)
+	if errors.Is(err, store.ErrNotFound) {
+		return nil, DataProvenance{}, fmt.Errorf("resource %q with ID %q not found in local store. Run 'zotio sync' first", resourceType, id)
+	}
 	if err != nil {
 		return nil, DataProvenance{}, fmt.Errorf("querying local store: %w", err)
-	}
-	if item == nil {
-		return nil, DataProvenance{}, fmt.Errorf("resource %q with ID %q not found in local store. Run 'zotio sync' first", resourceType, id)
 	}
 	return item, prov, nil
 }

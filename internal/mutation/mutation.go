@@ -78,6 +78,11 @@ type Error struct {
 	Message string `json:"message"`
 }
 
+// Error returns the gate code and actionable message for error-only callers.
+func (e *Error) Error() string {
+	return fmt.Sprintf("%s: %s", e.Code, e.Message)
+}
+
 // Plan is the previewed set of operations.
 type Plan struct {
 	Summary    PlanSummary `json:"summary"`
@@ -201,7 +206,7 @@ func Run(o Options, operation string, ops []Op) (Envelope, error) {
 	if gateErr := CheckGates(o, ops); gateErr != nil {
 		env.OK = false
 		env.Error = gateErr
-		return env, errors.New(gateErr.Code)
+		return env, gateErr
 	}
 
 	result := Result{Items: make([]ResultItem, 0, len(ops))}

@@ -6,10 +6,13 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/url"
 	"sort"
 	"strings"
+
+	"zotio/internal/store"
 
 	"github.com/spf13/cobra"
 )
@@ -92,11 +95,11 @@ func itemRelatedReportFromLocalStore(ctx context.Context, key string) (itemRelat
 func buildItemRelatedReport(db localQueryStore, key string, cap int) (itemRelatedReport, bool, error) {
 	report := itemRelatedReport{Key: key, Related: []itemRelationEdge{}}
 	raw, err := db.Get("items", key)
+	if errors.Is(err, store.ErrNotFound) {
+		return report, false, nil
+	}
 	if err != nil {
 		return report, false, fmt.Errorf("loading source item: %w", err)
-	}
-	if raw == nil {
-		return report, false, nil
 	}
 
 	outgoing, err := outgoingRelationEdges(raw, key)

@@ -5,6 +5,7 @@ package cli
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"sort"
 	"strconv"
@@ -12,6 +13,7 @@ import (
 
 	"zotio/internal/client"
 	"zotio/internal/mutation"
+	"zotio/internal/store"
 
 	"github.com/spf13/cobra"
 )
@@ -304,11 +306,11 @@ func duplicateResolveItemsForKeys(db localQueryStore, keys []string, pdfByParent
 	items := make([]duplicateResolveItem, 0, len(keys))
 	for _, key := range keys {
 		raw, err := db.Get("items", key)
+		if errors.Is(err, store.ErrNotFound) {
+			return nil, fmt.Errorf("duplicate item %s missing from local store", key)
+		}
 		if err != nil {
 			return nil, fmt.Errorf("reading duplicate item %s: %w", key, err)
-		}
-		if raw == nil {
-			return nil, fmt.Errorf("duplicate item %s missing from local store", key)
 		}
 		item, err := duplicateResolveItemFromRaw(key, raw, pdfByParent[key])
 		if err != nil {

@@ -5,6 +5,7 @@ package cli
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math"
 	"sort"
@@ -156,18 +157,18 @@ func itemSimilarReportFromLocalStore(ctx context.Context, key string, opts itemS
 func buildItemSimilarReport(ctx context.Context, db localQueryStore, key string, opts itemSimilarOptions) (itemSimilarReport, bool, error) {
 	report := itemSimilarReport{Similar: []itemSimilarEntry{}}
 	trashed, err := db.Get("items-trash", key)
-	if err != nil {
+	if err != nil && !errors.Is(err, store.ErrNotFound) {
 		return report, false, fmt.Errorf("checking source item trash status: %w", err)
 	}
 	if trashed != nil {
 		return report, false, fmt.Errorf("item is in trash: %s", key)
 	}
 	raw, err := db.Get("items", key)
+	if errors.Is(err, store.ErrNotFound) {
+		return report, false, nil
+	}
 	if err != nil {
 		return report, false, fmt.Errorf("loading source item: %w", err)
-	}
-	if raw == nil {
-		return report, false, nil
 	}
 
 	source, err := itemSimilarRecordFromRaw(raw)

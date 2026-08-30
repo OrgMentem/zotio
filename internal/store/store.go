@@ -30,6 +30,9 @@ import (
 // producing wrong results against a schema it cannot read.
 const StoreSchemaVersion = 6
 
+// ErrNotFound identifies a resource read that found no matching row.
+var ErrNotFound = errors.New("store: resource not found")
+
 type Store struct {
 	db *sql.DB
 	// writeMu serializes all DB writes. Read paths bypass the lock and run
@@ -1234,7 +1237,7 @@ func (s *Store) Get(resourceType, id string) (json.RawMessage, error) {
 		resourceType, id,
 	).Scan(&data)
 	if err == sql.ErrNoRows {
-		return nil, nil
+		return nil, fmt.Errorf("%w: %s/%s", ErrNotFound, resourceType, id)
 	}
 	if err != nil {
 		return nil, err

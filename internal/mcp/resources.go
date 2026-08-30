@@ -613,7 +613,9 @@ func collectionManifest(ctx context.Context, key string) (map[string]any, error)
 
 	manifest := map[string]any{"key": key}
 	col, gerr := db.Get("collections", key)
-	if gerr != nil {
+	// A missing row is not an error here: the manifest still reports the item
+	// count for a collection that is empty or not yet synchronized.
+	if gerr != nil && !errors.Is(gerr, store.ErrNotFound) {
 		return nil, gerr
 	}
 	if col != nil {
@@ -641,8 +643,11 @@ func itemBundle(ctx context.Context, key string) (map[string]any, error) {
 
 	bundle := map[string]any{"key": key}
 	item, gerr := db.Get("items", key)
-	if gerr != nil || item == nil {
+	if errors.Is(gerr, store.ErrNotFound) {
 		return nil, fmt.Errorf("item %s not found locally; run sync", key)
+	}
+	if gerr != nil {
+		return nil, fmt.Errorf("reading item %s: %w", key, gerr)
 	}
 	bundle["item"] = json.RawMessage(item)
 	annotations, aerr := db.AnnotationsForItem(key)

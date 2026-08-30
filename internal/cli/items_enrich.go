@@ -30,6 +30,7 @@ import (
 	"zotio/internal/client"
 	"zotio/internal/cliutil"
 	"zotio/internal/mutation"
+	"zotio/internal/store"
 
 	"github.com/spf13/cobra"
 )
@@ -363,11 +364,11 @@ func buildEnrichProposals(ctx context.Context, db localQueryStore, httpClient *h
 		func(ctx context.Context, row map[string]any) (outcome, error) {
 			key := sqlStringValue(row["key"])
 			raw, gerr := db.Get("items", key)
+			if errors.Is(gerr, store.ErrNotFound) {
+				return outcome{skip: enrichSkip{Key: key, Category: category, Reason: "item not found in local store"}, skipped: true}, nil
+			}
 			if gerr != nil {
 				return outcome{}, &enrichLocalReadError{err: gerr}
-			}
-			if raw == nil {
-				return outcome{skip: enrichSkip{Key: key, Category: category, Reason: "item not found in local store"}, skipped: true}, nil
 			}
 			version, data := enrichItemFields(raw)
 			title := stringFromMap(data, "title")
@@ -572,7 +573,10 @@ func validateEnrichItems(ctx context.Context, db localQueryStore, httpClient *ht
 	for _, row := range rows {
 		key := sqlStringValue(row["key"])
 		raw, gerr := db.Get("items", key)
-		if gerr != nil || raw == nil {
+		// Absence and read failure are both skipped here: this pass validates
+		// what it can read and reports the count, so a row it cannot load is
+		// simply not validated.
+		if gerr != nil {
 			continue
 		}
 		_, data := enrichItemFields(raw)

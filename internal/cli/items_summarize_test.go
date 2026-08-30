@@ -199,6 +199,30 @@ func TestSummaryWarningsEmitResultThenDegrade(t *testing.T) {
 	}
 }
 
+// TestItemsSummarizeEmptyStoreProbeAllowsHelp pins the probe's missing-row path.
+// Without the ErrNotFound exception, an empty valid store reports an open failure.
+func TestItemsSummarizeEmptyStoreProbeAllowsHelp(t *testing.T) {
+	isolateDemoEnv(t, "0")
+	db, err := store.OpenWithContext(context.Background(), helpersTestDefaultDBPath(t, "zotio"))
+	if err != nil {
+		t.Fatalf("create empty store: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close empty store: %v", err)
+	}
+
+	cmd := newItemsSummarizeCmd(&rootFlags{})
+	cmd.SilenceErrors, cmd.SilenceUsage = true, true
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("summarize against empty store: %v", err)
+	}
+	if !strings.Contains(out.String(), "Usage:") {
+		t.Fatalf("stdout = %q, want command help", out.String())
+	}
+}
+
 func TestItemsSummarizeMissingStoreGuidesSync(t *testing.T) {
 	isolateDemoEnv(t, "0")
 	cmd := newItemsSummarizeCmd(&rootFlags{})

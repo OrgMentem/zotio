@@ -74,6 +74,32 @@ func TestCheckGates(t *testing.T) {
 	}
 }
 
+// TestRunGateErrorIncludesActionableMessage pins zotio-085603ea0268d08f.
+// Without this fix, Run returns the bare "max_changes_exceeded" code, which hides the cap and remediation hint.
+func TestRunGateErrorIncludesActionableMessage(t *testing.T) {
+	ops := []Op{
+		{ID: "one", Changes: []Change{{Field: "title", Add: "A"}}},
+		{ID: "two", Changes: []Change{{Field: "title", Add: "B"}}},
+	}
+
+	env, err := Run(Options{Yes: true, MaxChanges: 1}, "test", ops)
+	if err == nil {
+		t.Fatal("Run gate err = nil, want max-changes refusal")
+	}
+	for _, want := range []string{"cap of 1", "raise the limit with --max-changes"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("Run gate error = %q, want %q", err, want)
+		}
+	}
+	var gateErr *Error
+	if !errors.As(err, &gateErr) || gateErr != env.Error {
+		t.Fatalf("Run gate error = %v, envelope error = %+v, want the same typed gate error", err, env.Error)
+	}
+	if env.OK || env.Error == nil || env.Error.Code != "max_changes_exceeded" {
+		t.Fatalf("Run gate envelope = %+v, want unchanged max-changes refusal", env)
+	}
+}
+
 func TestRunPreviewDoesNotApply(t *testing.T) {
 	called := 0
 	ops := []Op{{ID: "op", Key: "K", Kind: "test", Changes: []Change{{Field: "title", Add: "T"}}, Apply: func() (string, any, error) {
