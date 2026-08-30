@@ -4,6 +4,23 @@ Notable changes to zotio. Format follows [Keep a Changelog](https://keepachangel
 
 ## [Unreleased]
 
+## [0.22.1] — 2026-08-30
+
+### Fixed
+
+- **zotio is published to the Official MCP Registry again.** The registry
+  rejects a server description longer than 100 characters, and it does so at
+  publish time — after the GitHub release, Homebrew, Scoop and WinGet have
+  already shipped. The description had been 89 characters since the registry
+  integration landed, then grew to 111 in a documentation change, so v0.22.0
+  reached every channel except the registry and cannot be republished under its
+  own tag. The description is now 94 characters, and its length is asserted both
+  in `scripts/gen_server_json.py` and by a `registry-manifest` CI job, so an
+  over-long string now fails on push instead of after four channels have
+  shipped. **v0.22.0 is absent from the registry permanently; 0.22.1 is the
+  first registry version of this line.** Every other channel already carries
+  0.22.0, and nothing in the CLI or the MCP surface changed.
+
 ## [0.22.0] — 2026-08-30
 
 ### Changed — breaking
@@ -2062,7 +2079,8 @@ First tagged release: the trust-and-automation layer for Zotero.
 - **Onboarding** — `zotio init` guided setup (Zotero detection, local API, key, first sync, health check).
 - Release engineering: goreleaser builds for 6 platforms, cosign-signed checksums, SBOMs, Homebrew tap.
 
-[Unreleased]: https://github.com/OrgMentem/zotio/compare/v0.22.0...HEAD
+[Unreleased]: https://github.com/OrgMentem/zotio/compare/v0.22.1...HEAD
+[0.22.1]: https://github.com/OrgMentem/zotio/compare/v0.22.0...v0.22.1
 [0.22.0]: https://github.com/OrgMentem/zotio/compare/v0.21.0...v0.22.0
 [0.21.0]: https://github.com/OrgMentem/zotio/compare/v0.20.1...v0.21.0
 [0.20.1]: https://github.com/OrgMentem/zotio/compare/v0.20.0...v0.20.1
