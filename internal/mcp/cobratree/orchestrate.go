@@ -249,7 +249,7 @@ func isMirrorableCommand(cmd *cobra.Command) bool {
 		return false
 	}
 	switch classify(cmd) {
-	case commandHidden, commandEndpoint, commandFramework:
+	case commandHidden, commandFramework:
 		return false
 	default:
 		return true

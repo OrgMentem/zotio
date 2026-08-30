@@ -24,9 +24,6 @@ type commandKind int
 
 const (
 	commandNovel commandKind = iota
-	// commandEndpoint is retained for the walkers' legacy switch cases. Endpoint
-	// annotations now remain CLI metadata rather than excluding a command from MCP.
-	commandEndpoint
 	commandFramework
 	commandHidden
 )

@@ -28,9 +28,7 @@ func RegisterAll(s *server.MCPServer, rootFactory func() *cobra.Command) {
 	}
 	walk(root, nil, func(cmd *cobra.Command, path []string) {
 		switch classify(cmd) {
-		case commandHidden:
-			return
-		case commandEndpoint, commandFramework:
+		case commandHidden, commandFramework:
 			return
 		}
 		if !cmd.Runnable() {
