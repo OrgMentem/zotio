@@ -165,95 +165,39 @@ func TestFindRowMatchesExact_ExtraIdentifierSpellings(t *testing.T) {
 	}
 }
 
-func TestFilterFindRowsExact_Citekey(t *testing.T) {
-	rows := []map[string]any{
-		{"id": "A", "data": `{"data":{"key":"A","itemType":"journalArticle","extra":"Citation Key: smith2023"}}`},
-		{"id": "B", "data": `{"data":{"key":"B","itemType":"journalArticle","extra":"Citation Key: smith2023a"}}`},
+// The dedicated citationKey field is a separate matcher branch from the
+// "Citation Key:" token in extra, which TestFindRowMatchesExact_CitekeyPrefixOverMatch
+// already covers. Boundary, not prefix, in both directions.
+func TestFindRowMatchesExact_CitationKeyFieldExact(t *testing.T) {
+	exact := map[string]any{"data": `{"data":{"key":"A","itemType":"journalArticle","citationKey":"smith2023"}}`}
+	longer := map[string]any{"data": `{"data":{"key":"B","itemType":"journalArticle","citationKey":"smith2023a"}}`}
+
+	if !findRowMatchesExact(exact, findItemsQuery{Citekey: "smith2023"}) {
+		t.Fatal("citationKey smith2023 should match query smith2023")
 	}
-	got := filterFindRowsExact(rows, findItemsQuery{Citekey: "smith2023"})
-	if len(got) != 1 || got[0]["id"] != "A" {
-		t.Fatalf("filter smith2023 = %v, want [A]", got)
+	if findRowMatchesExact(longer, findItemsQuery{Citekey: "smith2023"}) {
+		t.Fatal("citationKey smith2023a must NOT match query smith2023 — prefix over-match")
+	}
+	if !findRowMatchesExact(longer, findItemsQuery{Citekey: "smith2023a"}) {
+		t.Fatal("citationKey smith2023a should match query smith2023a")
 	}
 }
 
-func TestFilterFindRowsExact_LegitimateMatchStillSucceeds(t *testing.T) {
-	// Regression: exact search with a single item must still return it.
-	rows := []map[string]any{
-		{"id": "A", "data": `{"data":{"key":"A","itemType":"journalArticle","extra":"Citation Key: smith2023"}}`},
-	}
-	got := filterFindRowsExact(rows, findItemsQuery{Citekey: "smith2023"})
-	if len(got) != 1 {
-		t.Fatalf("exact citekey filter with single exact item = %d rows, want 1", len(got))
-	}
-	rows2 := []map[string]any{
-		{"id": "C", "data": `{"data":{"key":"C","itemType":"journalArticle","extra":"PMID: 123"}}`},
-	}
-	got2 := filterFindRowsExact(rows2, findItemsQuery{PMID: "123"})
-	if len(got2) != 1 {
-		t.Fatalf("exact PMID filter = %d rows, want 1", len(got2))
-	}
-	rows3 := []map[string]any{
-		{"id": "E", "data": `{"data":{"key":"E","itemType":"journalArticle","extra":"arXiv: 2006.11"}}`},
-	}
-	got3 := filterFindRowsExact(rows3, findItemsQuery{ArXiv: "2006.11"})
-	if len(got3) != 1 {
-		t.Fatalf("exact arXiv filter = %d rows, want 1", len(got3))
-	}
-}
+// archiveID is likewise its own branch, and it carries the "arXiv:" prefix inline
+// rather than as a separate extra token.
+func TestFindRowMatchesExact_ArchiveIDExact(t *testing.T) {
+	exact := map[string]any{"data": `{"data":{"key":"X","itemType":"journalArticle","archiveID":"arXiv:2006.1100"}}`}
+	longer := map[string]any{"data": `{"data":{"key":"Y","itemType":"journalArticle","archiveID":"arXiv:2006.11001"}}`}
 
-func TestFilterFindRowsExact_CitationKeyFieldExact(t *testing.T) {
-	rows := []map[string]any{
-		{"id": "A", "data": `{"data":{"key":"A","itemType":"journalArticle","citationKey":"smith2023"}}`},
-		{"id": "B", "data": `{"data":{"key":"B","itemType":"journalArticle","citationKey":"smith2023a"}}`},
+	if !findRowMatchesExact(exact, findItemsQuery{ArXiv: "2006.1100"}) {
+		t.Fatal("archiveID arXiv:2006.1100 should match query 2006.1100")
 	}
-	got := filterFindRowsExact(rows, findItemsQuery{Citekey: "smith2023"})
-	if len(got) != 1 || got[0]["id"] != "A" {
-		t.Fatalf("citationKey field filter = %v, want [A]", got)
+	if findRowMatchesExact(longer, findItemsQuery{ArXiv: "2006.1100"}) {
+		t.Fatal("archiveID arXiv:2006.11001 must NOT match query 2006.1100 — prefix over-match")
 	}
-}
-
-func TestFilterFindRowsExact_ArchiveIDExact(t *testing.T) {
-	rows := []map[string]any{
-		{"id": "X", "data": `{"data":{"key":"X","itemType":"journalArticle","archiveID":"arXiv:2006.1100"}}`},
-		{"id": "Y", "data": `{"data":{"key":"Y","itemType":"journalArticle","archiveID":"arXiv:2006.11001"}}`},
+	if !findRowMatchesExact(longer, findItemsQuery{ArXiv: "2006.11001"}) {
+		t.Fatal("archiveID arXiv:2006.11001 should match query 2006.11001")
 	}
-	got := filterFindRowsExact(rows, findItemsQuery{ArXiv: "2006.1100"})
-	if len(got) != 1 || got[0]["id"] != "X" {
-		t.Fatalf("archiveID filter 2006.1100 = %v, want [X]", got)
-	}
-}
-
-func TestFilterFindRowsExact_RequiresBoundaryNotPrefix(t *testing.T) {
-	t.Run("citekey", func(t *testing.T) {
-		rows := []map[string]any{
-			{"id": "A", "data": `{"data":{"key":"A","itemType":"journalArticle","extra":"Citation Key: smith2023"}}`},
-			{"id": "B", "data": `{"data":{"key":"B","itemType":"journalArticle","extra":"Citation Key: smith2023a"}}`},
-		}
-		// Candidate set as returned by the LIKE pre-filter would contain both;
-		// post-filter must reduce to exactly the queried one.
-		filtered := filterFindRowsExact(rows, findItemsQuery{Citekey: "smith2023"})
-		if len(filtered) != 1 || filtered[0]["id"] != "A" {
-			t.Fatalf("citekey smith2023 filtered = %v, want single A", filtered)
-		}
-		filtered2 := filterFindRowsExact(rows, findItemsQuery{Citekey: "smith2023a"})
-		if len(filtered2) != 1 || filtered2[0]["id"] != "B" {
-			t.Fatalf("citekey smith2023a filtered = %v, want single B", filtered2)
-		}
-	})
-	t.Run("pmid", func(t *testing.T) {
-		rows := []map[string]any{
-			{"id": "C", "data": `{"data":{"key":"C","itemType":"journalArticle","extra":"PMID: 123"}}`},
-			{"id": "D", "data": `{"data":{"key":"D","itemType":"journalArticle","extra":"PMID: 12345"}}`},
-		}
-		filtered := filterFindRowsExact(rows, findItemsQuery{PMID: "123"})
-		if len(filtered) != 1 || filtered[0]["id"] != "C" {
-			t.Fatalf("pmid 123 filtered = %v, want single C", filtered)
-		}
-		filtered2 := filterFindRowsExact(rows, findItemsQuery{PMID: "12345"})
-		if len(filtered2) != 1 || filtered2[0]["id"] != "D" {
-			t.Fatalf("pmid 12345 filtered = %v, want single D", filtered2)
-		}
-	})
 }
 
 func TestFindRowMatchesExactURLTitleAndOpenAlex(t *testing.T) {
@@ -435,18 +379,4 @@ func TestItemsFindCommandLooksUpURLTitleAndOpenAlex(t *testing.T) {
 			}
 		})
 	}
-}
-
-// filterFindRowsExact lives here, not in items_find.go, because production has no
-// caller: runItemsFind applies findRowMatchesExact per row as it streams the
-// cursor. The slice form survives only as a convenience for the table tests below,
-// so it stays out of the production package.
-func filterFindRowsExact(rows []map[string]any, query findItemsQuery) []map[string]any {
-	out := make([]map[string]any, 0, len(rows))
-	for _, row := range rows {
-		if findRowMatchesExact(row, query) {
-			out = append(out, row)
-		}
-	}
-	return out
 }

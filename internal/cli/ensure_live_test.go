@@ -6,8 +6,10 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"reflect"
 	"strings"
 	"testing"
@@ -107,6 +109,8 @@ func TestLocalAPIReachableTreatsHTTPErrorsAsReachable(t *testing.T) {
 
 func runEnsureLiveTest(t *testing.T, baseURL string, flags *rootFlags, launch bool) (string, error) {
 	t.Helper()
+	t.Setenv("ZOTIO_DEMO", "")
+	t.Setenv("ZOTERO_BASE_URL", "")
 	flags.configPath = testConfigFile(t, baseURL)
 	cmd := &cobra.Command{Use: "doctor"}
 	cmd.SetContext(context.Background())
@@ -170,9 +174,9 @@ func TestEnsureLiveReportsAReachableDesktop(t *testing.T) {
 func TestEnsureLiveWithoutLaunchIsAPrecondition(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
-	baseURL := srv.URL + "/users/0"
-	srv.Close() // nothing is listening: the desktop is not running
+	// Port zero is not a usable destination, so another test cannot reuse this
+	// address and make the probe succeed.
+	baseURL := "http://127.0.0.1:0/users/0"
 
 	_, err := runEnsureLiveTest(t, baseURL, &rootFlags{}, false)
 	if err == nil {
@@ -193,11 +197,44 @@ func TestEnsureLiveUnderVerifyEnvNeverLaunches(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	t.Setenv(cliutil.VerifyEnvVar, "1")
 
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
-	baseURL := srv.URL + "/users/0"
-	srv.Close()
+	// Port zero is not a usable destination, so another test cannot reuse this
+	// address and make the probe succeed.
+	baseURL := "http://127.0.0.1:0/users/0"
 
-	if _, err := runEnsureLiveTest(t, baseURL, &rootFlags{}, true); err != nil {
+	var err error
+	stdout := captureEnsureLiveStdout(t, func() {
+		_, err = runEnsureLiveTest(t, baseURL, &rootFlags{}, true)
+	})
+	if err != nil {
 		t.Fatalf("ensureLive --launch under verify env: %v", err)
 	}
+	if strings.Contains(stdout, "would open:") {
+		t.Fatalf("ensureLive --launch under verify env emitted a launch request: %q", stdout)
+	}
+}
+
+func captureEnsureLiveStdout(t *testing.T, fn func()) string {
+	t.Helper()
+	oldStdout := os.Stdout
+	stdoutR, stdoutW, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("open stdout pipe: %v", err)
+	}
+	os.Stdout = stdoutW
+	t.Cleanup(func() {
+		os.Stdout = oldStdout
+		_ = stdoutR.Close()
+		_ = stdoutW.Close()
+	})
+
+	fn()
+	if err := stdoutW.Close(); err != nil {
+		t.Fatalf("close stdout pipe: %v", err)
+	}
+	os.Stdout = oldStdout
+	stdout, err := io.ReadAll(stdoutR)
+	if err != nil {
+		t.Fatalf("read stdout pipe: %v", err)
+	}
+	return string(stdout)
 }

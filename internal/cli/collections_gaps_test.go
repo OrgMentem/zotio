@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
 	"path/filepath"
 	"reflect"
 	"strings"
@@ -199,7 +200,21 @@ func TestCollectionsGapsCmdRejectsOutOfRangeFlags(t *testing.T) {
 // remediation, not as a nil-store panic inside the report builder: exit 9 is the
 // code that tells CI to run sync and retry.
 func TestCollectionsGapsCmdRequiresASyncedStore(t *testing.T) {
+	restore := SnapshotGlobals()
+	defer restore()
+	setActiveGroupID("")
 	t.Setenv("HOME", t.TempDir())
+	t.Setenv("ZOTIO_DEMO", "")
+	t.Setenv("ZOTERO_HOME", "")
+	t.Setenv("ZOTERO_DATA_DIR", "")
+	dbPath, pathErr := defaultDBPath("zotio")
+	if pathErr != nil {
+		t.Fatalf("defaultDBPath: %v", pathErr)
+	}
+	wantDBPath := filepath.Join(os.Getenv("HOME"), ".local", "share", "zotio", "data.db")
+	if dbPath != wantDBPath {
+		t.Fatalf("defaultDBPath = %q, want %q under the test HOME", dbPath, wantDBPath)
+	}
 
 	_, err := runCollectionsGapsTestCmd(t, "COL")
 	if err == nil {

@@ -5,8 +5,11 @@ package cli
 import (
 	"bytes"
 	"encoding/json"
+	"reflect"
 	"strings"
 	"testing"
+
+	"github.com/spf13/cobra"
 )
 
 func TestBuildAgentDiscoveryContext(t *testing.T) {
@@ -67,8 +70,18 @@ func TestAgentContextCmdEmitsTheVersionedEnvelope(t *testing.T) {
 			if got.CLI.Name != "zotio" {
 				t.Fatalf("cli.name = %q, want zotio", got.CLI.Name)
 			}
-			if got.Auth.Mode != "api_key" || len(got.Auth.EnvVars) == 0 {
-				t.Fatalf("auth = %+v, want api_key mode with env vars", got.Auth)
+			// Pin the metadata, not just its presence: an agent that gets the wrong
+			// variable name or loses the sensitive flag has unusable credential
+			// guidance, and a length check accepts exactly that regression.
+			wantEnv := []agentContextAuthEnvVar{{
+				Name:        "ZOTERO_API_KEY",
+				Kind:        "per_call",
+				Required:    true,
+				Sensitive:   true,
+				Description: "Set to your API credential.",
+			}}
+			if got.Auth.Mode != "api_key" || !reflect.DeepEqual(got.Auth.EnvVars, wantEnv) {
+				t.Fatalf("auth = %+v, want api_key mode with %+v", got.Auth, wantEnv)
 			}
 			if len(got.Commands) == 0 {
 				t.Fatal("commands is empty; the cobra tree was not collected")
@@ -77,48 +90,82 @@ func TestAgentContextCmdEmitsTheVersionedEnvelope(t *testing.T) {
 				t.Fatal("available_profiles is null; agents parse it as a list")
 			}
 
-			// --pretty is the documented flag, so its only observable effect must hold.
-			indented := strings.Contains(out, "\n  \"cli\": {")
-			if want := name == "pretty"; indented != want {
-				t.Fatalf("indented = %v, want %v; output=%s", indented, want, out)
+			// Assert indentation STRUCTURALLY. Matching a literal like
+			// "\n  \"cli\": {" would pin the field order too, so a harmless
+			// reordering of the struct would fail a test about whitespace.
+			lines := strings.Count(strings.TrimSuffix(out, "\n"), "\n") + 1
+			if name == "pretty" && lines < 2 {
+				t.Fatalf("--pretty produced %d line(s), want an indented document; output=%s", lines, out)
+			}
+			if name == "compact" && lines != 1 {
+				t.Fatalf("compact produced %d lines, want exactly 1; output=%s", lines, out)
 			}
 		})
 	}
 }
 
-// collectAgentCommands skips hidden commands and agent-context itself, and sorts
-// by name. All three are contract: agents diff the payload across releases, and a
-// self-referencing tree would recurse.
-func TestCollectAgentCommandsSkipsHiddenAndSelfAndSorts(t *testing.T) {
-	out := runAgentContextTestCmd(t)
-	var got agentContext
-	if err := json.Unmarshal([]byte(out), &got); err != nil {
-		t.Fatalf("payload is not JSON: %v", err)
+// collectAgentCommands skips hidden commands, skips agent-context itself, and
+// sorts by name at EVERY level. Drive it with a synthetic tree, not the real one:
+// the repo currently declares no hidden cobra command, so a real-tree assertion
+// is vacuous and would survive deleting the Hidden filter outright.
+func TestCollectAgentCommandsSkipsHiddenAndSelfAndSortsRecursively(t *testing.T) {
+	// cobra.Commands() sorts by name on its own while EnableCommandSorting is
+	// true, which makes the sort in collectAgentCommands unobservable: deleting it
+	// changes nothing and any ordering assertion passes for the wrong reason.
+	// Turn the global off so the production sort is the ONLY thing that can order
+	// the payload. It is a package global, so restore it; no test in this package
+	// that runs in parallel touches a cobra tree.
+	cobra.EnableCommandSorting = false
+	t.Cleanup(func() { cobra.EnableCommandSorting = true })
+
+	newLeaf := func(name string) *cobra.Command {
+		return &cobra.Command{Use: name, Run: func(*cobra.Command, []string) {}}
 	}
 
-	names := make([]string, 0, len(got.Commands))
-	for _, c := range got.Commands {
-		names = append(names, c.Name)
-	}
-	for i := 1; i < len(names); i++ {
-		if names[i-1] >= names[i] {
-			t.Fatalf("commands not sorted ascending at %d: %v", i, names)
-		}
-	}
+	parent := newLeaf("parent")
+	// Deliberately out of order, and with a hidden child one level down.
+	parent.AddCommand(newLeaf("zeta"), newLeaf("alpha"))
+	nestedHidden := newLeaf("nested-hidden")
+	nestedHidden.Hidden = true
+	parent.AddCommand(nestedHidden)
 
-	root := newRootCmd(&rootFlags{})
-	hidden := map[string]bool{}
-	for _, c := range root.Commands() {
-		if c.Hidden {
-			hidden[c.Name()] = true
+	topHidden := newLeaf("top-hidden")
+	topHidden.Hidden = true
+
+	root := &cobra.Command{Use: "zotio"}
+	root.AddCommand(newLeaf("zulu"), newLeaf("bravo"), topHidden, newLeaf("agent-context"), parent)
+
+	got := collectAgentCommands(root)
+
+	var walk func(level string, cmds []agentContextCommand)
+	walk = func(level string, cmds []agentContextCommand) {
+		for i, c := range cmds {
+			if c.Name == "agent-context" {
+				t.Fatalf("%s: agent-context collected itself; the tree self-references", level)
+			}
+			if c.Name == "top-hidden" || c.Name == "nested-hidden" {
+				t.Fatalf("%s: hidden command %q leaked into the payload", level, c.Name)
+			}
+			if i > 0 && cmds[i-1].Name >= c.Name {
+				t.Fatalf("%s: not sorted ascending at %d: %q then %q", level, i, cmds[i-1].Name, c.Name)
+			}
+			walk(level+"/"+c.Name, c.Subcommands)
 		}
 	}
-	for _, name := range names {
-		if name == "agent-context" {
-			t.Fatal("agent-context collected itself; the tree self-references")
+	walk("root", got)
+
+	// Guard the fixture itself: if nothing survived the filters the walk above
+	// asserts nothing, and if the recursion never descends the nested cases are
+	// unclaimed.
+	if want := []string{"bravo", "parent", "zulu"}; len(got) != len(want) {
+		t.Fatalf("top level = %+v, want exactly %v", got, want)
+	}
+	for i, c := range got {
+		if c.Name != []string{"bravo", "parent", "zulu"}[i] {
+			t.Fatalf("top level = %+v, want bravo, parent, zulu", got)
 		}
-		if hidden[name] {
-			t.Fatalf("hidden command %q leaked into the payload", name)
-		}
+	}
+	if len(got[1].Subcommands) != 2 {
+		t.Fatalf("parent subcommands = %+v, want alpha and zeta only", got[1].Subcommands)
 	}
 }
