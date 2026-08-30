@@ -810,7 +810,7 @@ func TestReparentAttachmentRefusesWithoutAVersion(t *testing.T) {
 	flags := reparentFlags(t, srv)
 	c, _ := flags.newWriteClient()
 
-	if err := reparentAttachment(c, "ATTACH01", "TARGET01", 0); err == nil {
+	if err := reparentAttachment(c, "ATTACH01", "TARGET01", "TEMP0001", 0); err == nil {
 		t.Fatal("reparentAttachment accepted version 0, want a refusal")
 	}
 	if calls := fake.sequence(); len(calls) != 0 {

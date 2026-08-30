@@ -4,6 +4,24 @@ Notable changes to zotio. Format follows [Keep a Changelog](https://keepachangel
 
 ## [Unreleased]
 
+### Fixed
+
+- **`attachments add --via connector` no longer loses a race against Zotero's
+  own file registration.** The route creates the attachment through the desktop
+  connector, and moments later the desktop registers the stored file by writing
+  `md5` and `mtime`. That bump invalidated the version the route had resolved
+  for its re-parent `PATCH`, so the move failed with a 412 and left the file
+  under the temporary parent — recoverable, and reported as such, but the
+  attachment did not reach the item the operator named. Measured on a real
+  WebDAV library as "expected 15136, found 15137", where 15137 was the
+  desktop's own registration of the very file the run had just created.
+  A 412 is now retried against a freshly read version, at most twice, and only
+  while the attachment is still a child of the temporary parent this run
+  created; an attachment already on the target reports success (the `PATCH`
+  landed and its reply was lost), and one that has moved anywhere else
+  abandons with the original conflict rather than being wrenched back. See
+  `dev/field-report-2026-08-30-connector-reparent-live.md`.
+
 ## [0.22.1] — 2026-08-30
 
 ### Fixed

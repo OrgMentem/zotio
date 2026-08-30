@@ -1,24 +1,33 @@
 #!/usr/bin/env bash
 #
-# reparent-probe.sh — does Zotero accept re-parenting an ALREADY-STORED
-# attachment, on a library whose files live on personal WebDAV?
+# reparent-probe.sh — does `zotio attachments add --via connector` actually
+# attach a stored file to an item that ALREADY EXISTS, on a library whose files
+# live on personal WebDAV?
 #
 # Why this exists
 # ---------------
-# `attachments add` refuses a stored upload on a WebDAV library, because a Web
-# API upload always lands in Zotero's own cloud storage, and the desktop
-# connector cannot attach to an item that already exists. That leaves no route
-# for the commonest repair: an item that exists but is missing its PDF.
+# A Web API stored upload always lands in Zotero's own cloud storage, and the
+# desktop connector cannot attach to an item that already exists
+# (POST /connector/saveAttachment resolves parentItemID only through its own
+# save session). That left no route for the commonest repair: an item that
+# exists but is missing its PDF.
 #
-# The proposed route is: create a temporary parent AND its file in one connector
-# session (bytes reach your own file store), re-parent the attachment onto the
-# real item, then trash the temporary parent.
+# `attachments add <key> <file> --via connector` is that route. In ONE connector
+# session it creates a temporary parent plus the file (so the bytes reach your
+# own file store), moves the attachment with a single
+# PATCH {"parentItem": …} guarded by If-Unmodified-Since-Version, then trashes
+# the temporary parent. Re-parenting relocates no bytes, because every storage
+# name — the local directory, the upload zip, and both WebDAV remote names —
+# derives from the ATTACHMENT's key rather than its parent's.
 #
-# Zotero's server source says step 2 is permitted, and says every storage name
-# derives from the ATTACHMENT's key rather than its parent — so the bytes should
-# not move. See dev/field-report-2026-08-22-papio-round2.md for the citations.
-# This script tests that empirically, and settles the one thing the source did
-# NOT answer: whether the Zotero DESKTOP client cascades a trash to children.
+# History of this script. It first proved the ROUTE, before the feature existed,
+# by driving the choreography by hand and issuing the re-parent PATCH with curl.
+# That answered "does Zotero permit this" — see
+# dev/field-report-2026-08-22-papio-round2.md for the citations and the live
+# HTTP 204. The route then shipped as a command, which made the hand
+# choreography the wrong thing to test: it exercised Zotero rather than zotio.
+# So the probe now drives the SHIPPED COMMAND end to end and checks the result
+# against an independent oracle.
 #
 # Safety
 # ------
@@ -30,13 +39,18 @@
 # other than "y" aborts and prints exactly what to clean up.
 #
 # Requirements
-#   ZOTERO_API_KEY   your Zotero Web API key (needed for the re-parent request)
+#   ZOTERO_API_KEY   your Zotero Web API key (the re-parent PATCH needs it)
 #   PROBE_PDF        optional: a real PDF to use instead of the generated stub
 #   Zotero desktop running, with the local API enabled
 #   jq, curl
 #
 # Usage
 #   ZOTERO_API_KEY=... ./dev/reparent-probe.sh
+#
+#   PROBE_YES=1 auto-confirms every checkpoint, for an automated rehearsal. The
+#   checkpoints that ask YOU to look at Zotero or at your WebDAV server cannot be
+#   automated; under PROBE_YES they are printed as SKIPPED, and what they would
+#   have verified is left unestablished rather than silently assumed.
 
 set -euo pipefail
 
@@ -49,6 +63,7 @@ STATE="${WORK}/state.env"
 bold() { printf '\n\033[1m%s\033[0m\n' "$*"; }
 info() { printf '  %s\n' "$*"; }
 warn() { printf '\033[33m  ! %s\033[0m\n' "$*"; }
+skip() { printf '\033[36m  SKIPPED (PROBE_YES): %s\033[0m\n' "$*"; }
 die() {
 	printf '\033[31m\nABORT: %s\033[0m\n' "$*"
 	cleanup_hint
@@ -64,10 +79,10 @@ cleanup_hint() {
 	load 2>/dev/null || true
 	bold "State recorded so far"
 	if [ -s "${STATE}" ]; then cat "${STATE}"; else info "(nothing created)"; fi
-	if [ -n "${PARENT_A:-}" ] || [ -n "${RECEIVER_B:-}" ]; then
+	if [ -n "${RECEIVER_B:-}" ] || [ -n "${TEMP_PARENT:-}" ]; then
 		bold "To clean up, trash what this probe created"
-		[ -n "${PARENT_A:-}" ] && info "zotio items delete ${PARENT_A} --yes   # temporary parent"
 		[ -n "${RECEIVER_B:-}" ] && info "zotio items delete ${RECEIVER_B} --yes   # receiving item"
+		[ -n "${TEMP_PARENT:-}" ] && info "zotio items delete ${TEMP_PARENT} --yes   # temporary parent, if the command left it"
 		info "Both are reversible with 'zotio items restore <key>'."
 		info "The attachment follows whichever parent still holds it."
 	else
@@ -82,12 +97,30 @@ checkpoint() {
 	bold "CHECK — $1"
 	shift
 	for line in "$@"; do info "$line"; done
+	if [ "${PROBE_YES:-}" = "1" ]; then
+		info "auto-confirmed (PROBE_YES=1)"
+		return
+	fi
 	printf '\n  Continue? [y/N] '
 	read -r reply </dev/tty || reply=""
 	case "${reply}" in
 	y | Y) ;;
 	*) die "stopped at your request" ;;
 	esac
+}
+
+# A checkpoint that only YOU can satisfy: it asks you to look at the Zotero
+# desktop or at your WebDAV server. Automating it is impossible, so under
+# PROBE_YES it is announced as skipped and its claim stays unestablished.
+manual_checkpoint() {
+	if [ "${PROBE_YES:-}" = "1" ]; then
+		bold "MANUAL CHECK — $1"
+		shift
+		for line in "$@"; do info "$line"; done
+		skip "requires a human looking at Zotero or at the WebDAV server"
+		return
+	fi
+	checkpoint "$@"
 }
 
 # ---------------------------------------------------------------- preflight ---
@@ -144,9 +177,12 @@ checkpoint "about to create ONE new junk item" \
 	"Title: ${TAG} — RECEIVER" \
 	"Nothing existing is touched."
 
+# stdout and stderr separated here for the same reason as step 3 below: a
+# stderr routing notice folded into the JSON breaks every extraction.
 RECV_OUT="${WORK}/receiver.json"
-zotio --agent items create --items "${RECV_JSON}" --yes >"${RECV_OUT}" 2>&1 ||
-	die "items create failed; see ${RECV_OUT}"
+RECV_ERR="${WORK}/receiver.err"
+zotio --agent items create --items "${RECV_JSON}" --yes >"${RECV_OUT}" 2>"${RECV_ERR}" ||
+	die "items create failed; stdout ${RECV_OUT}, stderr ${RECV_ERR}: $(tail -1 "${RECV_ERR}" 2>/dev/null)"
 
 # Three shapes are possible, so try all of them rather than assuming one:
 #   zotio connector create -> {"count":1,"key":"KEY","keys":["KEY"],"via":"connector"}
@@ -172,17 +208,13 @@ fi
 record "RECEIVER_B=${RECEIVER_B}"
 info "receiving item ${RECEIVER_B}"
 
-# ----------------------------------- connector create of parent + file (A) ----
-
-bold "Step 3 — create a temporary parent AND its file in one connector session"
-info "This is the only route whose bytes reach your own file store."
+# ------------------------------------------------------------- the file -------
 
 PROBE_FILE="${PROBE_PDF:-}"
 if [ -z "${PROBE_FILE}" ]; then
 	PROBE_FILE="${WORK}/probe.pdf"
-	# A minimal one-page PDF. This path uses /connector/saveAttachment against a
-	# same-session parent, which does NOT invoke Zotero's recognizer, so the
-	# file's contents are never parsed for metadata.
+	# A minimal one-page PDF. The connector may reject a stub; PROBE_PDF exists
+	# so you can hand it a real one.
 	{
 		printf '%%PDF-1.4\n'
 		printf '1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj\n'
@@ -196,202 +228,201 @@ else
 	[ -f "${PROBE_FILE}" ] || die "PROBE_PDF is not a file: ${PROBE_FILE}"
 	info "using your PDF: ${PROBE_FILE}"
 fi
+PROBE_ABS="$(cd "$(dirname "${PROBE_FILE}")" && pwd)/$(basename "${PROBE_FILE}")"
+PROBE_MD5="$(md5sum <"${PROBE_ABS}" | cut -d' ' -f1)"
+PROBE_BYTES="$(wc -c <"${PROBE_ABS}" | tr -d ' ')"
+record "PROBE_MD5=${PROBE_MD5}"
+info "file md5 ${PROBE_MD5} (${PROBE_BYTES} bytes)"
 
-MANIFEST="${WORK}/manifest.json"
-jq -n --arg p "$(cd "$(dirname "${PROBE_FILE}")" && pwd)/$(basename "${PROBE_FILE}")" \
-	--arg t "${TAG} — TEMP PARENT" '
-  {schema_version:2, entries:[
-    {path:$p, classification:"new", action:"create", status:"resolved",
-     item:{itemType:"journalArticle", title:$t}}]}' >"${MANIFEST}"
+# ------------------------------------------- the command under test -----------
+
+bold "Step 3 — attach the file to the EXISTING item, in one command"
+info "zotio attachments add ${RECEIVER_B} <file> --via connector"
+info "Internally: connector session creates a temporary parent plus the file,"
+info "then one guarded PATCH moves the attachment, then the temporary parent is"
+info "trashed. This is the command under test — not a hand-rolled equivalent."
 
 bold "Preview (no changes yet)"
-zotio --agent import apply "${MANIFEST}" --attach-mode stored --via connector ||
+zotio --agent attachments add "${RECEIVER_B}" "${PROBE_ABS}" --via connector ||
 	warn "preview returned non-zero; read the message above before continuing"
 
-checkpoint "about to create ONE junk parent plus ONE stored attachment" \
-	"Title: ${TAG} — TEMP PARENT" \
+checkpoint "about to attach ONE stored file to ${RECEIVER_B}" \
 	"The bytes go through the running Zotero desktop into your own file store." \
+	"A temporary parent is created and trashed as part of the route." \
 	"Zotero will show its own progress window that zotio cannot dismiss." \
 	"This runs ONCE. Do not loop this step."
 
-APPLY_OUT="${WORK}/apply.json"
-zotio --agent import apply "${MANIFEST}" --attach-mode stored --via connector --yes \
-	>"${APPLY_OUT}" 2>&1 || {
-	cat "${APPLY_OUT}"
-	die "import apply failed; if a parent was created without its file, the message above names it"
+# stdout and stderr MUST go to different files. zotio prints a one-time routing
+# notice to stderr ("→ writing via Zotero Web API: …"); folding it into the JSON
+# with 2>&1 makes every jq extraction below silently return empty, which reads
+# exactly like a command that returned no keys. That happened on the first live
+# run: the route had fully succeeded and the probe reported "did not report
+# success", then skipped its own cleanup.
+ADD_OUT="${WORK}/add.json"
+ADD_ERR="${WORK}/add.err"
+ADD_RC=0
+zotio --agent attachments add "${RECEIVER_B}" "${PROBE_ABS}" --via connector --yes \
+	>"${ADD_OUT}" 2>"${ADD_ERR}" || ADD_RC=$?
+info "exit ${ADD_RC}; stdout in ${ADD_OUT}, stderr in ${ADD_ERR}"
+[ -s "${ADD_ERR}" ] && sed 's/^/  stderr: /' "${ADD_ERR}"
+cat "${ADD_OUT}"
+
+# Fail loudly if stdout is not JSON, rather than letting every extraction below
+# return empty and be misread as "the command reported nothing".
+jq -e . "${ADD_OUT}" >/dev/null 2>&1 || {
+	warn "stdout is not valid JSON; the extractions below cannot be trusted"
+	cleanup_hint
+	exit 4
 }
-info "applied; output in ${APPLY_OUT}"
 
-# The connector branch reports only {"via":"connector"} — no item key and no
-# attachment key. Both have to be discovered, which is itself a finding: any
-# real implementation of this route needs a discovery step.
-bold "Step 4 — discover the keys the connector did not return"
-info "Waiting 20s: propagation between the desktop read plane and api.zotero.org"
-sleep 20
+# Pull the route's own report of what it did. Absent fields stay empty rather
+# than defaulting, so a missing key is visible instead of being read as "none".
+ATTACH="$(jq -r '[.. | objects | (.attachment_key? // empty)] | map(select(type=="string" and length>0)) | first // empty' "${ADD_OUT}" 2>/dev/null || true)"
+TEMP_PARENT="$(jq -r '[.. | objects | (.temp_parent_key? // empty)] | map(select(type=="string" and length>0)) | first // empty' "${ADD_OUT}" 2>/dev/null || true)"
+TEMP_TRASHED="$(jq -r '[.. | objects | (.temp_parent_trashed? // empty)] | first // empty' "${ADD_OUT}" 2>/dev/null || true)"
+STATUS="$(jq -r '[.. | objects | (.status? // empty)] | map(select(type=="string")) | first // empty' "${ADD_OUT}" 2>/dev/null || true)"
+[ -n "${ATTACH}" ] && record "ATTACH=${ATTACH}"
+[ -n "${TEMP_PARENT}" ] && record "TEMP_PARENT=${TEMP_PARENT}"
 
-PARENT_A="$(curl -fsS -H "Zotero-API-Key: ${ZOTERO_API_KEY}" \
-	--get --data-urlencode "q=${TAG} — TEMP PARENT" --data-urlencode "qmode=titleCreatorYear" \
-	--data-urlencode "limit=5" "${API}/items" |
-	jq -r --arg t "${TAG} — TEMP PARENT" \
-		'[.[] | select(.data.title==$t) | .key] | first // empty')" || true
+bold "What the command reported"
+info "status              ${STATUS:-<none>}"
+info "attachment_key      ${ATTACH:-<none>}"
+info "temp_parent_key     ${TEMP_PARENT:-<none>}"
+info "temp_parent_trashed ${TEMP_TRASHED:-<none>}"
 
-if [ -z "${PARENT_A}" ]; then
-	warn "could not find the temporary parent by title."
-	printf '  Paste the temporary parent key (from Zotero): '
-	read -r PARENT_A </dev/tty
+if [ "${ADD_RC}" -ne 0 ] || [ "${STATUS}" != "applied" ]; then
+	warn "The command did not report success."
+	warn "If temp_parent_trashed is false, the route refused to trash a parent"
+	warn "whose attachment was still beneath it — that is fail-closed, not a leak."
+	cleanup_hint
+	exit 2
 fi
-[ -n "${PARENT_A}" ] || die "no temporary parent key"
-record "PARENT_A=${PARENT_A}"
-info "temporary parent ${PARENT_A}"
 
-ATTACH="$(curl -fsS -H "Zotero-API-Key: ${ZOTERO_API_KEY}" \
-	"${API}/items/${PARENT_A}/children" |
-	jq -r '[.[] | select(.data.itemType=="attachment") | .key] | first // empty')" || true
-if [ -z "${ATTACH}" ]; then
-	warn "the temporary parent has no attachment child. The file did not land."
-	die "nothing to re-parent"
+# --------------------------------------------------- independent oracle -------
+
+bold "Step 4 — verify against api.zotero.org directly"
+info "The server, not another zotio command."
+sleep 5
+
+[ -n "${ATTACH}" ] || die "the command reported success but returned no attachment key"
+
+A_JSON="${WORK}/attach.json"
+curl -fsS -H "Zotero-API-Key: ${ZOTERO_API_KEY}" "${API}/items/${ATTACH}" >"${A_JSON}" ||
+	die "could not read attachment ${ATTACH} from the write plane"
+
+NEW_PARENT="$(jq -r '.data.parentItem // "none"' "${A_JSON}")"
+A_DELETED="$(jq -r '.data.deleted // 0' "${A_JSON}")"
+A_MD5="$(jq -r '.data.md5 // "none"' "${A_JSON}")"
+A_MODE="$(jq -r '.data.linkMode // "none"' "${A_JSON}")"
+
+info "parentItem  ${NEW_PARENT}   (want ${RECEIVER_B})"
+info "deleted     ${A_DELETED}   (want 0)"
+info "md5         ${A_MD5}"
+info "            ${PROBE_MD5}   (the file on disk)"
+info "linkMode    ${A_MODE}   (want imported_file or imported_url)"
+
+FAILED=0
+[ "${NEW_PARENT}" = "${RECEIVER_B}" ] || {
+	warn "the attachment did NOT end up on the receiving item"
+	FAILED=1
+}
+[ "${A_DELETED}" = "0" ] || {
+	warn "the attachment is trashed; the temporary parent's trash cascaded"
+	FAILED=1
+}
+[ "${A_MD5}" = "${PROBE_MD5}" ] || {
+	warn "the registered md5 does not match the file that was uploaded"
+	FAILED=1
+}
+
+if [ -n "${TEMP_PARENT}" ]; then
+	T_DELETED="$(curl -fsS -H "Zotero-API-Key: ${ZOTERO_API_KEY}" \
+		"${API}/items/${TEMP_PARENT}" | jq -r '.data.deleted // 0')"
+	T_KIDS="$(curl -fsS -H "Zotero-API-Key: ${ZOTERO_API_KEY}" \
+		"${API}/items/${TEMP_PARENT}/children" | jq 'length')"
+	info "temp parent deleted  ${T_DELETED}   (want 1)"
+	info "temp parent children ${T_KIDS}   (want 0)"
+	[ "${T_DELETED}" = "1" ] || {
+		warn "the temporary parent was left in the library"
+		FAILED=1
+	}
+	[ "${T_KIDS}" = "0" ] || {
+		warn "the temporary parent still has children"
+		FAILED=1
+	}
 fi
-record "ATTACH=${ATTACH}"
 
-ATTACH_MODE="$(curl -fsS -H "Zotero-API-Key: ${ZOTERO_API_KEY}" \
-	"${API}/items/${ATTACH}" | jq -r '.data.linkMode')"
-info "attachment ${ATTACH} (linkMode ${ATTACH_MODE})"
-[ "${ATTACH_MODE}" = "imported_file" ] || [ "${ATTACH_MODE}" = "imported_url" ] ||
-	warn "linkMode is ${ATTACH_MODE}; this probe is about STORED files"
+# The storage-naming invariant, checked locally: the directory must be named for
+# the ATTACHMENT's key, never its parent's. This is what makes re-parenting free.
+STORAGE_DIR=""
+for cand in "${HOME}/Zotero/storage" "${ZOTERO_DATA_DIR:-}/storage"; do
+	[ -n "${cand}" ] && [ -d "${cand}" ] && STORAGE_DIR="${cand}" && break
+done
+if [ -n "${STORAGE_DIR}" ]; then
+	if [ -d "${STORAGE_DIR}/${ATTACH}" ]; then
+		info "storage dir ${STORAGE_DIR}/${ATTACH} exists — named for the ATTACHMENT"
+		find "${STORAGE_DIR}/${ATTACH}" -maxdepth 1 -mindepth 1 -exec basename {} \; | sed 's/^/      /'
+	else
+		warn "no storage directory named ${ATTACH}; the desktop may not have"
+		warn "written it yet, or your data directory is elsewhere"
+	fi
+	[ -n "${TEMP_PARENT}" ] && [ -d "${STORAGE_DIR}/${TEMP_PARENT}" ] && {
+		warn "a storage directory exists for the TEMPORARY PARENT key — the"
+		warn "naming invariant this route depends on does not hold"
+		FAILED=1
+	}
+else
+	warn "could not locate a Zotero storage directory; skipped the naming check"
+fi
 
-# ------------------------------------------------ WebDAV oracle, before -------
+[ "${FAILED}" = "0" ] || {
+	warn "verification failed; see above"
+	cleanup_hint
+	exit 3
+}
+bold "Server-side verification PASSED"
 
-checkpoint "sync Zotero, then check your WebDAV server DIRECTLY" \
+manual_checkpoint "sync Zotero, then check the FILE and WebDAV" \
 	"Press sync in Zotero and let it finish." \
 	"" \
-	"On your WebDAV server, inside the zotero/ directory, you should now see:" \
-	"    ${ATTACH}.zip" \
-	"    ${ATTACH}.prop" \
-	"" \
-	"Both names come from the ATTACHMENT's key, never its parent — that is the" \
-	"property the re-parent depends on. Confirm they exist before continuing," \
-	"otherwise the next step tests a file that never reached WebDAV, which is" \
-	"the weaker claim and not your case." \
+	"1. In Zotero, the attachment sits under: ${TAG} — RECEIVER" \
+	"2. Double-click it. THE FILE MUST STILL OPEN. This is the whole point:" \
+	"   re-parenting must not strand the bytes." \
+	"3. On your WebDAV server, inside zotero/, you should see EXACTLY ONE pair:" \
+	"     ${ATTACH}.zip" \
+	"     ${ATTACH}.prop" \
+	"   Both names come from the ATTACHMENT's key, never its parent." \
+	"   No orphan, no duplicate, no rename." \
 	"" \
 	"Check the server itself, not another zotio command: an independent oracle."
 
-# ------------------------------------------------------------- the re-parent ---
-
-bold "Step 5 — re-parent the attachment"
-VERSION="$(curl -fsS -H "Zotero-API-Key: ${ZOTERO_API_KEY}" \
-	"${API}/items/${ATTACH}" | jq -r '.version')"
-[ -n "${VERSION}" ] && [ "${VERSION}" != "null" ] || die "could not read the attachment's version"
-info "attachment version ${VERSION}"
-
-checkpoint "about to move attachment ${ATTACH} from ${PARENT_A} to ${RECEIVER_B}" \
-	"PATCH ${API}/items/${ATTACH}" \
-	'Body: {"parentItem":"'"${RECEIVER_B}"'"}' \
-	"Guarded by If-Unmodified-Since-Version: ${VERSION}." \
-	"A 412 here means something else changed the item; that is the guard working."
-
-HTTP="$(curl -sS -o "${WORK}/patch.out" -w '%{http_code}' \
-	-X PATCH "${API}/items/${ATTACH}" \
-	-H "Zotero-API-Key: ${ZOTERO_API_KEY}" \
-	-H "Content-Type: application/json" \
-	-H "If-Unmodified-Since-Version: ${VERSION}" \
-	-d "{\"parentItem\":\"${RECEIVER_B}\"}")"
-
-bold "Re-parent result: HTTP ${HTTP}"
-cat "${WORK}/patch.out" 2>/dev/null || true
-echo
-case "${HTTP}" in
-20*)
-	info "Zotero ACCEPTED the re-parent."
-	;;
-412)
-	die "precondition failed: the attachment changed under us. Re-run the probe."
-	;;
-*)
-	warn "Zotero REFUSED the re-parent with HTTP ${HTTP}."
-	warn "That is the answer: the route does not work, and the refusal in"
-	warn "attachments add should be restated as a permanent property."
-	cleanup_hint
-	exit 2
-	;;
-esac
-
-# --------------------------------------------------------------- verify -------
-
-bold "Step 6 — verify the move server-side"
-sleep 5
-NEW_PARENT="$(curl -fsS -H "Zotero-API-Key: ${ZOTERO_API_KEY}" \
-	"${API}/items/${ATTACH}" | jq -r '.data.parentItem // "none"')"
-info "attachment's parentItem is now: ${NEW_PARENT}"
-[ "${NEW_PARENT}" = "${RECEIVER_B}" ] ||
-	warn "expected ${RECEIVER_B}; the write reported success but did not stick"
-
-A_KIDS="$(curl -fsS -H "Zotero-API-Key: ${ZOTERO_API_KEY}" \
-	"${API}/items/${PARENT_A}/children" | jq 'length')"
-info "temporary parent now has ${A_KIDS} child(ren) — expected 0"
-
-checkpoint "sync Zotero, then check the FILE and WebDAV again" \
-	"Press sync in Zotero and let it finish." \
-	"" \
-	"1. In Zotero, the attachment now sits under:" \
-	"     ${TAG} — RECEIVER" \
-	"2. Double-click it. THE FILE MUST STILL OPEN. This is the whole point:" \
-	"   re-parenting must not strand the bytes." \
-	"3. On your WebDAV server, you should still see EXACTLY ONE pair," \
-	"   with the SAME names as before:" \
-	"     ${ATTACH}.zip" \
-	"     ${ATTACH}.prop" \
-	"   No orphan, no duplicate, no rename."
-
-# ------------------------------- the unknown: does trash cascade locally? -----
-
-bold "Step 7 — the question the source could not answer"
-info "Zotero's SERVER shows no child cascade when a parent is trashed."
-info "The DESKTOP CLIENT is separate code that was not inspected."
-info "The attachment has already been moved, so this should be safe."
-
-checkpoint "about to trash ONLY the temporary parent ${PARENT_A}" \
-	"The attachment now belongs to ${RECEIVER_B}, not to this item." \
-	"'zotio items restore ${PARENT_A}' reverses it."
-
-zotio --agent items delete "${PARENT_A}" --yes >"${WORK}/trash.json" 2>&1 ||
-	warn "trashing the temporary parent failed; see ${WORK}/trash.json"
-
-sleep 5
-STILL="$(curl -fsS -H "Zotero-API-Key: ${ZOTERO_API_KEY}" \
-	"${API}/items/${ATTACH}" | jq -r '.data.parentItem // "none"')"
-DELETED="$(curl -fsS -H "Zotero-API-Key: ${ZOTERO_API_KEY}" \
-	"${API}/items/${ATTACH}" | jq -r '.data.deleted // 0')"
-
-bold "Result after trashing the old parent"
-info "attachment parentItem: ${STILL}   (want ${RECEIVER_B})"
-info "attachment deleted flag: ${DELETED}   (want 0)"
-if [ "${STILL}" = "${RECEIVER_B}" ] && [ "${DELETED}" = "0" ]; then
-	info "No cascade. Trashing the old parent left the moved attachment alone."
-else
-	warn "The attachment was affected by trashing its former parent."
-	warn "Re-parent BEFORE trashing is then not sufficient on its own."
-fi
-
-checkpoint "sync Zotero, then confirm in the desktop client" \
-	"Press sync and let it finish." \
-	"The attachment must still be present and openable under:" \
-	"    ${TAG} — RECEIVER" \
-	"The server says one thing; the client is what you actually use."
-
 # -------------------------------------------------------------- cleanup -------
 
-bold "Step 8 — clean up"
-checkpoint "about to trash the receiving item ${RECEIVER_B} and its attachment" \
-	"This removes the last object the probe created." \
-	"Reversible with 'zotio items restore ${RECEIVER_B}'."
+bold "Step 5 — clean up"
+checkpoint "about to trash the attachment ${ATTACH} and the receiving item ${RECEIVER_B}" \
+	"This removes the last objects the probe created." \
+	"Reversible with 'zotio items restore <key>'."
 
-zotio --agent items delete "${RECEIVER_B}" --yes >"${WORK}/trash-b.json" 2>&1 ||
-	warn "trashing the receiving item failed; see ${WORK}/trash-b.json"
+# The attachment MUST be trashed explicitly, and first. Zotero's server does not
+# cascade a trash to children: trashing only the parent leaves the attachment
+# LIVE, so it keeps appearing in /items while its parent sits in the trash.
+# Measured on 2026-08-30 — three probe runs left three live orphan attachments,
+# which a revert detector caught as +3 items against a baseline that was
+# otherwise byte-identical. Trashing the child first also matches the route's own
+# ordering rule: never let an attachment follow a parent into the trash.
+zotio --agent items delete "${ATTACH}" --yes >"${WORK}/trash-attach.json" 2>"${WORK}/trash-attach.err" ||
+	warn "trashing the attachment failed; see ${WORK}/trash-attach.err"
+
+zotio --agent items delete "${RECEIVER_B}" --yes >"${WORK}/trash-b.json" 2>"${WORK}/trash-b.err" ||
+	warn "trashing the receiving item failed; see ${WORK}/trash-b.err"
 
 bold "Done"
 info "Everything the probe created is now in your trash."
 info "Empty the trash in Zotero when you are satisfied, and sync once more so"
 info "the WebDAV files are removed too."
+info ""
+info "Verify nothing was left live:"
+info "  zotio items trash --data-source live --json   # the probe's objects should be here"
 info ""
 info "Keys, for the record:"
 cat "${STATE}"

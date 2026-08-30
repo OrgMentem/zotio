@@ -369,7 +369,7 @@ func finishConnectorReparent(ctx context.Context, cmd *cobra.Command, webClient 
 		return out, nil
 	}
 
-	if err := reparentAttachment(webClient, out.AttachmentKey, req.ParentKey, version); err != nil {
+	if err := reparentAttachment(webClient, out.AttachmentKey, req.ParentKey, out.TempParentKey, version); err != nil {
 		return out, fmt.Errorf("attachment %s is stored under temporary parent %s but could not be moved to %s: %w",
 			out.AttachmentKey, out.TempParentKey, req.ParentKey, err)
 	}
@@ -775,24 +775,101 @@ func isNotFoundOrLag(err error) bool {
 	return false
 }
 
+// isPreconditionFailed reports whether Zotero rejected a guarded write because
+// the object moved on under us (HTTP 412).
+func isPreconditionFailed(err error) bool {
+	var respErr *client.APIError
+	if errors.As(err, &respErr) {
+		return respErr.StatusCode == http.StatusPreconditionFailed
+	}
+	return false
+}
+
+// attachmentParentVersion reads an attachment's current parent and version in
+// one request. The 412 retry path needs to tell three states apart: already
+// moved (the PATCH landed and its response was lost), still under the temporary
+// parent (safe to retry), or sitting somewhere else entirely (abandon).
+func attachmentParentVersion(c *client.Client, key string) (string, int, error) {
+	body, version, err := c.GetWithVersion("/items/"+key, nil)
+	if err != nil {
+		return "", 0, err
+	}
+	if version <= 0 {
+		return "", 0, fmt.Errorf("attachment %s was read without a version", key)
+	}
+	var envelope struct {
+		Data struct {
+			ParentItem string `json:"parentItem"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(body, &envelope); err != nil {
+		return "", 0, fmt.Errorf("decoding attachment %s: %w", key, err)
+	}
+	return envelope.Data.ParentItem, version, nil
+}
+
+// connectorReparentConflictRetries bounds the re-reads after a 412 on the
+// re-parent PATCH. The desktop's file registration is one bump, not a stream,
+// so a couple of retries covers it; more would mean something else is writing
+// and the route should stop rather than fight it.
+const connectorReparentConflictRetries = 2
+
 // reparentAttachment moves an existing attachment onto a different parent.
 //
 // This is the whole point of the route, and it is one guarded PATCH. Zotero
 // accepts it for an already-stored, already-synced attachment, and it relocates
 // no bytes: md5 and mtime are unchanged and the storage directory keeps the
 // attachment's own key.
-func reparentAttachment(c *client.Client, attachKey, newParentKey string, version int) error {
+//
+// The 412 retry is not defensive padding; it is the failure this route hits in
+// practice. The connector creates the attachment, and moments later the DESKTOP
+// registers the stored file by writing md5 and mtime, which bumps the version
+// the route resolved just before its PATCH. Measured live on 2026-08-30:
+// "expected 15136, found 15137", where 15137 was the desktop's own registration
+// of the very file this run had created, and a PATCH replayed against the fresh
+// version returned 204. See
+// dev/field-report-2026-08-30-connector-reparent-live.md.
+//
+// Retrying is safe here precisely because it is checked, not blind: the
+// attachment must still be a child of the temporary parent this run created, so
+// the only edit being absorbed is one to an object the route owns. An
+// attachment that has moved elsewhere abandons with the original conflict
+// rather than being wrenched back.
+func reparentAttachment(c *client.Client, attachKey, newParentKey, tempParentKey string, version int) error {
 	if version <= 0 {
 		return fmt.Errorf("refusing to move attachment %s without a version to guard the write", attachKey)
 	}
 	if !zoteroItemKeyRE.MatchString(attachKey) || !zoteroItemKeyRE.MatchString(newParentKey) {
 		return fmt.Errorf("refusing to move %q onto %q: not both valid item keys", attachKey, newParentKey)
 	}
-	headers := map[string]string{"If-Unmodified-Since-Version": strconv.Itoa(version)}
-	if _, _, err := c.PatchWithHeaders("/items/"+attachKey, map[string]any{"parentItem": newParentKey}, headers); err != nil {
-		return err
+	for attempt := 0; ; attempt++ {
+		headers := map[string]string{"If-Unmodified-Since-Version": strconv.Itoa(version)}
+		_, _, err := c.PatchWithHeaders("/items/"+attachKey, map[string]any{"parentItem": newParentKey}, headers)
+		if err == nil {
+			return nil
+		}
+		if attempt >= connectorReparentConflictRetries || !isPreconditionFailed(err) {
+			return err
+		}
+		// Every branch below returns the ORIGINAL 412 rather than a read error,
+		// so the operator sees the conflict that actually stopped the route.
+		currentParent, fresh, readErr := attachmentParentVersion(c, attachKey)
+		switch {
+		case readErr != nil:
+			return err
+		case currentParent == newParentKey:
+			// The PATCH did land; only its response was lost.
+			return nil
+		case tempParentKey == "" || currentParent != tempParentKey:
+			// Someone else owns it now. Do not fight for it.
+			return err
+		case fresh <= version:
+			// A 412 with no version movement is not the race this handles, and
+			// retrying the same precondition would spin.
+			return err
+		}
+		version = fresh
 	}
-	return nil
 }
 
 // trashTemporaryParent trashes the throwaway item, reversibly, and ONLY after
