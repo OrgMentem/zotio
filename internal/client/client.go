@@ -97,6 +97,14 @@ type Client struct {
 	// use BaseURL — the Zotero local API is read-only, so writes route to the Web
 	// API. ResolveWriteBase lazily computes it on the first write (kept in the CLI
 	// layer so the client stays generic); writeRouteMu serializes that resolution.
+	//
+	// ResolveWriteBase must never call back into the same Client. writeRouteMu is
+	// held for the whole resolution and is not reentrant, so a resolver that
+	// issued a request through this client would deadlock; use a separate HTTP
+	// client, as internal/cli's resolveWebWriteBase does. Holding the lock across
+	// the round trip is deliberate single-flight: concurrent writes then share one
+	// keys/current lookup and one cfg.SaveUserID config save instead of racing N
+	// whole-file saves (see ADR-0005 and resolveWebWriteBaseWithoutPersist).
 	WriteBaseURL     string
 	ResolveWriteBase func(context.Context) (string, error)
 	// protect lazy hybrid write-route resolution.
