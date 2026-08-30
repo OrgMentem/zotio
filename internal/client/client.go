@@ -746,6 +746,19 @@ func (c *Client) doRequestOnBase(ctx context.Context, baseOverride, method, path
 		for k, v := range headerOverrides {
 			req.Header.Set(k, v)
 		}
+		// Rehearsal affordance: force the precondition stale so a live run can
+		// provoke Zotero's own 412 and exercise the conflict contract end to
+		// end. Applied here, after headerOverrides, because this is the single
+		// point every write's If-Unmodified-Since-Version passes through — and
+		// only when the request already carries one, so it can never ADD a
+		// precondition to a write that deliberately omits it, nor turn an
+		// unguarded write into a guarded one. No-op unless
+		// ZOTIO_TEST_STALE_VERSION is set. See cliutil.StaleVersionEnvVar.
+		if req.Header.Get("If-Unmodified-Since-Version") != "" {
+			if stale, ok := cliutil.StaleVersionOverride(); ok {
+				req.Header.Set("If-Unmodified-Since-Version", strconv.Itoa(stale))
+			}
+		}
 		// also strip any custom
 		// config/override auth headers from untrusted base URLs.
 		if !shouldSendZoteroAuth(req.URL) {
