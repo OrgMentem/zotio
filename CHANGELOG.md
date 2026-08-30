@@ -13,12 +13,14 @@ was wrong. They are listed here rather than under Fixed because a scripted
 consumer keys on exit codes and error text, and this repo treats any change to
 those as breaking regardless of which value is correct.
 
-- **`vault push` now exits non-zero when a managed note was deleted remotely.**
-  It previously reported `1 unchanged` and exit 0 for a note that no longer
-  existed in Zotero. It now reports `remote_deleted` and exits non-zero. A
-  caller that treated exit 0 as "vault and library agree" was being told the
-  wrong thing; a caller that treats non-zero as fatal will now stop on a note
-  that needs `vault resolve --recreate`.
+- **`vault push` now exits 13 when a managed note was deleted remotely.** It
+  previously reported `1 unchanged` and exit 0 for a note that no longer existed
+  in Zotero. It now reports `remote_deleted` and exits 13, the standard
+  "results incomplete" code, with a `vault resolve --recreate` command naming the
+  note. Measured with the release binary against a real library. A caller that
+  treated exit 0 as "vault and library agree" was being told the wrong thing; a
+  caller that treats non-zero as fatal will now stop on a note that needs
+  repair.
 - **The MCP item bundle no longer reports a database failure as a missing
   item.** A genuine local-store read error surfaced as
   `item %s not found locally; run sync`, which sent the caller to fix the wrong
