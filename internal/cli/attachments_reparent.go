@@ -119,6 +119,10 @@ type connectorReparentResult struct {
 	// Resumed records that this run adopted a previous run's stranded temporary
 	// parent instead of creating one, so no second copy of the bytes was made.
 	Resumed bool
+	// SaveReplyLost records that the connector's save reply never arrived but the
+	// desktop had already committed the child, so this run adopted that child
+	// instead of reporting a failure it would have posted the bytes again to fix.
+	SaveReplyLost bool
 }
 
 // newConnectorReparentNonce returns a short random tag identifying one run.
@@ -213,6 +217,11 @@ func applyConnectorReparentUpload(ctx context.Context, cmd *cobra.Command, flags
 	if out.Resumed {
 		detail["resumed"] = true
 		detail["note"] = "adopted a temporary parent left by an interrupted run instead of creating another"
+	}
+	if out.SaveReplyLost {
+		detail["save_reply_lost"] = true
+		detail["note"] = "the connector's save reply never arrived but the file was already committed; " +
+			"this run adopted it instead of attaching a second copy"
 	}
 	if err != nil {
 		// The detail map carries everything needed to finish by hand, including
@@ -313,16 +322,32 @@ func runConnectorReparent(ctx context.Context, cmd *cobra.Command, flags *rootFl
 	// Put the file in the same session, so it becomes a child of the temporary
 	// parent. This is the step the Web API cannot perform against an item that
 	// already exists.
-	if err := saveConnectorAttachment(ctx, flags, res, req); err != nil {
-		return out, err
-	}
-
-	// The desktop's own database is authoritative the moment the connector
-	// returns, and the temporary parent has exactly one attachment child by
-	// construction — so this is deterministic, not a recency guess.
-	attachKey, err := soleAttachmentChild(ctx, flags, out.TempParentKey, out.TempTitle)
-	if err != nil {
-		return out, err
+	var attachKey string
+	if saveErr := saveConnectorAttachment(ctx, flags, res, req); saveErr != nil {
+		// The connector protocol has no endpoint that closes a save session, so a
+		// reply lost AFTER the desktop committed the child is indistinguishable
+		// from a save that never landed. Reconcile before reporting: returning
+		// here would strand a live attachment under a live temporary parent, and
+		// the obvious retry would post the same bytes a second time.
+		adopted, adoptErr := adoptLostConnectorSave(ctx, flags, out.TempParentKey)
+		if adoptErr != nil {
+			return out, errors.Join(saveErr, adoptErr)
+		}
+		if adopted == "" {
+			// Nothing was committed, so the save error is the whole truth.
+			return out, saveErr
+		}
+		out.SaveReplyLost = true
+		attachKey = adopted
+	} else {
+		// The desktop's own database is authoritative the moment the connector
+		// returns, and the temporary parent has exactly one attachment child by
+		// construction — so this is deterministic, not a recency guess.
+		var childErr error
+		attachKey, childErr = soleAttachmentChild(ctx, flags, out.TempParentKey, out.TempTitle)
+		if childErr != nil {
+			return out, childErr
+		}
 	}
 	out.AttachmentKey = attachKey
 
@@ -763,6 +788,61 @@ func soleAttachmentChild(ctx context.Context, flags *rootFlags, tempParentKey, t
 			return "", err
 		}
 	}
+}
+
+// connectorSaveReconcileAttempts bounds the reconcile after a lost save reply.
+// The desktop commits the child before it answers, so if the save did land the
+// child is already there or arrives within a poll or two. A full visibility
+// window here would instead make every genuinely failed save wait it out before
+// reporting the real cause.
+const connectorSaveReconcileAttempts = 3
+
+// adoptLostConnectorSave looks for the child that a lost save reply may have
+// left behind. It returns that attachment's key when the desktop committed
+// exactly one live child, "" when nothing was committed and the caller should
+// report its original error, and an error only when the children cannot be
+// listed or when more than one of them makes adoption unsafe.
+//
+// It matches on parentage alone — this run's own nonce-marked temporary parent,
+// which no other run can address — deliberately NOT on md5. The desktop
+// registers the hash a moment AFTER creating the attachment (measured live on
+// 2026-08-30, see dev/field-report-2026-08-30-connector-reparent-live.md), so a
+// hash lookup inside this window reports absence for a file that does exist,
+// which is the false negative that would duplicate the bytes on retry.
+//
+// A trashed child is not adopted: liveAttachmentChildren excludes it, so an
+// earlier run's cleaned-up litter cannot be mistaken for this run's file.
+func adoptLostConnectorSave(ctx context.Context, flags *rootFlags, tempParentKey string) (string, error) {
+	if strings.TrimSpace(tempParentKey) == "" {
+		// Without a parent key there is nothing addressable to reconcile against.
+		return "", nil
+	}
+	local, err := localClientForRoute(ctx, flags)
+	if err != nil {
+		return "", fmt.Errorf("reading children of temporary parent %s: %w", tempParentKey, err)
+	}
+	for attempt := range connectorSaveReconcileAttempts {
+		if attempt > 0 {
+			if sleepErr := sleepWithContext(ctx, connectorReparentPollInterval); sleepErr != nil {
+				return "", sleepErr
+			}
+		}
+		live, listErr := liveAttachmentChildren(local, tempParentKey)
+		if listErr != nil {
+			return "", fmt.Errorf("reading children of temporary parent %s: %w", tempParentKey, listErr)
+		}
+		switch len(live) {
+		case 0:
+			// Keep waiting: the commit may still be propagating.
+		case 1:
+			return live[0], nil
+		default:
+			return "", fmt.Errorf("temporary parent %s has %d live attachment children after a lost save reply, "+
+				"expected at most one; refusing to guess which file to move — inspect it in Zotero",
+				tempParentKey, len(live))
+		}
+	}
+	return "", nil
 }
 
 // attachmentChildKeys lists a parent's attachment children, paged.

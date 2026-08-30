@@ -52,6 +52,11 @@ type reparentFake struct {
 	// reparentStatus lets a test make the PATCH fail.
 	reparentStatus int
 
+	// saveAttachmentStatus makes the connector's saveAttachment reply fail with
+	// this status while the child it committed is controlled by attachChildren,
+	// which is what a lost reply after a successful commit looks like.
+	saveAttachmentStatus int
+
 	// childDetached and childTrashed make the fake model what a re-parent and a
 	// trash actually do to the temporary parent's child list. Without them the
 	// fake reported the attachment as a live child forever, including after the
@@ -147,6 +152,14 @@ func (f *reparentFake) server(t *testing.T) *httptest.Server {
 		f.attachBytes = len(body)
 		f.mu.Unlock()
 		f.record("connector.saveAttachment")
+		// saveAttachmentStatus models the reply being lost or refused. The child
+		// it commits is controlled separately, because the whole hazard is that
+		// the desktop commits BEFORE it answers: a failed reply says nothing
+		// about whether the file landed.
+		if f.saveAttachmentStatus != 0 {
+			w.WriteHeader(f.saveAttachmentStatus)
+			return
+		}
 		w.WriteHeader(http.StatusCreated)
 		_, _ = w.Write([]byte(`{}`))
 	})
@@ -1352,5 +1365,153 @@ func TestConfirmConnectorCreateHonorsCancellationDuringSleep(t *testing.T) {
 	// wide margin that still fails the regression.
 	if since := time.Since(cancelledAt); since >= connectorCreateRecoveryInterval/2 {
 		t.Fatalf("returned %v after cancellation, want well under the %v interval: the sleep ignored the cancelled context", since, connectorCreateRecoveryInterval)
+	}
+}
+
+// TestConnectorReparentAdoptsAChildAfterALostSaveReply is the regression test
+// for the defect this route shipped with: the connector protocol has no
+// endpoint that closes a save session, so a reply lost AFTER the desktop
+// committed the child was reported as a plain failure. That stranded a live
+// attachment under a live temporary parent, and the obvious retry attached the
+// same bytes a second time onto the operator's item.
+func TestConnectorReparentAdoptsAChildAfterALostSaveReply(t *testing.T) {
+	// The reply fails, and the child exists anyway. That combination IS the bug.
+	fake := &reparentFake{
+		tempParentKey:        "TEMP0001",
+		attachChildren:       []string{"ATTACH01"},
+		saveAttachmentStatus: http.StatusInternalServerError,
+	}
+	srv := fake.server(t)
+	flags := reparentFlags(t, srv)
+	c, err := flags.newWriteClient()
+	if err != nil {
+		t.Fatalf("newWriteClient: %v", err)
+	}
+
+	status, detail, err := applyConnectorReparentUpload(context.Background(), reparentCmd(t), flags, c, reparentRequest(t, "TARGET01"))
+	if err != nil {
+		t.Fatalf("route failed after a lost save reply: %v (detail %v)", err, detail)
+	}
+	if status != "applied" {
+		t.Fatalf("status = %q, want applied: the file was committed, so the run succeeded", status)
+	}
+
+	// The route must still complete the move and the cleanup, exactly once.
+	got := fake.sequence()
+	want := []string{"connector.saveItems", "connector.saveAttachment", "web.reparent", "web.trash:TEMP0001"}
+	if len(got) != len(want) {
+		t.Fatalf("call sequence = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("call sequence = %v, want %v (differs at %d)", got, want, i)
+		}
+	}
+
+	d, ok := detail.(map[string]any)
+	if !ok {
+		t.Fatalf("detail is %T, want map[string]any", detail)
+	}
+	if d["attachment_key"] != "ATTACH01" {
+		t.Errorf("attachment_key = %v, want ATTACH01: the adopted child must be named", d["attachment_key"])
+	}
+	// Adopting silently would hide a real desktop fault, so it must be reported.
+	if d["save_reply_lost"] != true {
+		t.Errorf("save_reply_lost = %v, want true: an adopted save must be visible", d["save_reply_lost"])
+	}
+}
+
+// TestConnectorReparentReportsAGenuinelyFailedSave pins the other half: when
+// nothing was committed, the original save error is the whole truth and must
+// not be replaced by a reconcile error or masked as success.
+func TestConnectorReparentReportsAGenuinelyFailedSave(t *testing.T) {
+	// Reply fails and NO child exists — the save really did not land.
+	fake := &reparentFake{
+		tempParentKey:        "TEMP0001",
+		attachChildren:       nil,
+		saveAttachmentStatus: http.StatusInternalServerError,
+	}
+	srv := fake.server(t)
+	flags := reparentFlags(t, srv)
+	c, err := flags.newWriteClient()
+	if err != nil {
+		t.Fatalf("newWriteClient: %v", err)
+	}
+
+	status, detail, err := applyConnectorReparentUpload(context.Background(), reparentCmd(t), flags, c, reparentRequest(t, "TARGET01"))
+	if err == nil {
+		t.Fatalf("route succeeded with no file attached (status %q, detail %v)", status, detail)
+	}
+	if status != "failed" {
+		t.Fatalf("status = %q, want failed", status)
+	}
+	// The operator needs the real cause, not the reconcile's own wording.
+	if !strings.Contains(err.Error(), "did not attach") {
+		t.Errorf("error = %q, want the original save failure", err)
+	}
+
+	// Nothing may be moved or trashed when no file was committed.
+	for _, call := range fake.sequence() {
+		if strings.HasPrefix(call, "web.reparent") || strings.HasPrefix(call, "web.trash") {
+			t.Errorf("sequence = %v, want no move or trash after a failed save", fake.sequence())
+			break
+		}
+	}
+
+	d, ok := detail.(map[string]any)
+	if !ok {
+		t.Fatalf("detail is %T, want map[string]any", detail)
+	}
+	// The temporary parent must still be named so the litter is findable.
+	if d["temp_parent_key"] != "TEMP0001" {
+		t.Errorf("temp_parent_key = %v, want TEMP0001", d["temp_parent_key"])
+	}
+	if d["save_reply_lost"] == true {
+		t.Error("save_reply_lost = true, but nothing was adopted")
+	}
+}
+
+// TestAdoptLostConnectorSaveRefusesMultipleChildren pins that adoption never
+// guesses. Two live children means something else wrote into this item, and
+// picking one could move the wrong file onto the operator's paper.
+func TestAdoptLostConnectorSaveRefusesMultipleChildren(t *testing.T) {
+	fake := &reparentFake{tempParentKey: "TEMP0001", attachChildren: []string{"ATTACH01", "ATTACH02"}}
+	srv := fake.server(t)
+	flags := reparentFlags(t, srv)
+
+	got, err := adoptLostConnectorSave(context.Background(), flags, "TEMP0001")
+	if err == nil {
+		t.Fatalf("adopted %q from two children, want a refusal", got)
+	}
+	if got != "" {
+		t.Errorf("returned key %q alongside an error, want empty", got)
+	}
+	if !strings.Contains(err.Error(), "refusing to guess") {
+		t.Errorf("error = %q, want it to name the refusal", err)
+	}
+}
+
+// TestAdoptLostConnectorSaveIgnoresATrashedChild pins that an earlier run's
+// cleaned-up litter is not mistaken for this run's file. Adopting a trashed
+// attachment would move an item the operator had already discarded.
+func TestAdoptLostConnectorSaveIgnoresATrashedChild(t *testing.T) {
+	fake := &reparentFake{
+		tempParentKey:  "TEMP0001",
+		attachChildren: []string{"ATTACH01"},
+		childTrashed:   map[string]bool{"ATTACH01": true},
+	}
+	srv := fake.server(t)
+	flags := reparentFlags(t, srv)
+
+	oldInterval := connectorReparentPollInterval
+	connectorReparentPollInterval = time.Millisecond
+	t.Cleanup(func() { connectorReparentPollInterval = oldInterval })
+
+	got, err := adoptLostConnectorSave(context.Background(), flags, "TEMP0001")
+	if err != nil {
+		t.Fatalf("adoptLostConnectorSave: %v", err)
+	}
+	if got != "" {
+		t.Errorf("adopted trashed child %q, want no adoption", got)
 	}
 }

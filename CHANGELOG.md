@@ -29,6 +29,21 @@ those as breaking regardless of which value is correct.
 
 ### Fixed
 
+- **`attachments add --via connector` no longer strands a file when the
+  connector's save reply is lost.** Zotero's connector protocol has no endpoint
+  that closes a save session, so a reply lost *after* the desktop had already
+  committed the attachment was indistinguishable from a save that never landed.
+  The route reported a plain failure, which left a live attachment under a live
+  temporary parent, and the obvious retry attached the same bytes a second time
+  onto the operator's item. A failed save now reconciles before reporting: if
+  this run's own nonce-marked temporary parent already holds exactly one live
+  attachment child, that child is adopted and the move completes, reported as
+  `save_reply_lost`. Reconciliation matches on parentage, never on `md5`,
+  because the desktop registers the hash a moment after creating the
+  attachment — a hash lookup inside that window reports absence for a file that
+  exists, which is the false negative that caused the duplicate. A genuinely
+  failed save still returns its original error, and a parent holding more than
+  one live child is refused rather than guessed.
 - **`attachments add --via connector` no longer loses a race against Zotero's
   own file registration.** The route creates the attachment through the desktop
   connector, and moments later the desktop registers the stored file by writing
