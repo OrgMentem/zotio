@@ -21,6 +21,17 @@ NAMESPACE = "io.github.OrgMentem/zotio"
 REPO_URL = "https://github.com/OrgMentem/zotio"
 DL_BASE = "https://github.com/OrgMentem/zotio/releases/download"
 
+# The registry rejects a description over 100 characters with a 422 at publish
+# time, after GoReleaser has already published every other channel — v0.22.0
+# shipped to GitHub, Homebrew, Scoop and WinGet and then failed here at 111
+# characters, and a tagged commit cannot be re-published. DESCRIPTION_LIMIT is
+# asserted below so an over-long string fails locally and in CI instead.
+DESCRIPTION_LIMIT = 100
+DESCRIPTION = (
+    "Zotero MCP server: local-first search, library checks, "
+    "and preview-first writes for AI agents."
+)
+
 # Optional for read-only local-desktop use (the local API needs no key); set it
 # to enable writes and reach group libraries. Mirrors the mcpb manifest's
 # ZOTERO_API_KEY user_config.
@@ -78,11 +89,17 @@ def main() -> None:
             }
         )
 
+    if len(DESCRIPTION) > DESCRIPTION_LIMIT:
+        sys.exit(
+            f"description is {len(DESCRIPTION)} characters; the registry rejects "
+            f"more than {DESCRIPTION_LIMIT} with a 422 at publish time"
+        )
+
     doc = {
         "$schema": SCHEMA,
         "name": NAMESPACE,
         "title": "zotio",
-        "description": "Zotero MCP server: local-first search, library checks, preview-first writes, and bounded context for AI agents.",
+        "description": DESCRIPTION,
         "websiteUrl": REPO_URL,
         "repository": {"url": REPO_URL, "source": "github"},
         "version": version,
