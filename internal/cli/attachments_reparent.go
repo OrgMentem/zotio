@@ -403,6 +403,11 @@ func finishConnectorReparent(ctx context.Context, cmd *cobra.Command, webClient 
 	// untrashed parent holding the attachment, rather than a trashed parent with
 	// a live child and the file apparently nowhere.
 	orphaned, err := trashTemporaryParent(ctx, webClient, out.TempParentKey, trashNonce, req.ParentKey)
+	// Report the orphans whatever the trash returned. A guarded PATCH can be
+	// dispatched and commit while its response is lost, so an error here does not
+	// prove the parent survived - and if it was trashed, these keys are the only
+	// way back to the children left beneath it.
+	warnOrphanedChildren(cmd, out.TempParentKey, orphaned)
 	if err != nil {
 		// The real work succeeded. Report the litter without failing the run,
 		// since re-running would create a second temporary parent rather than
@@ -414,7 +419,6 @@ func finishConnectorReparent(ctx context.Context, cmd *cobra.Command, webClient 
 		return out, nil
 	}
 	out.TempTrashed = true
-	warnOrphanedChildren(cmd, out.TempParentKey, orphaned)
 	return out, nil
 }
 
@@ -484,9 +488,12 @@ func abandonToWinner(ctx context.Context, cmd *cobra.Command, webClient *client.
 		return out, nil
 	}
 	orphaned, trashErr := trashTemporaryParent(ctx, webClient, out.TempParentKey, trashNonce, req.ParentKey)
+	// Reported whatever the trash returned, for the same reason as the other
+	// call site: an ambiguous guarded PATCH may have committed, and these keys
+	// are the only route back to anything left beneath the parent.
+	warnOrphanedChildren(cmd, out.TempParentKey, orphaned)
 	if trashErr == nil {
 		out.TempTrashed = true
-		warnOrphanedChildren(cmd, out.TempParentKey, orphaned)
 	} else {
 		fmt.Fprintf(cmd.ErrOrStderr(),
 			"warning: another run attached this file first; the temporary parent %s could not be trashed: %v\n"+
@@ -508,8 +515,14 @@ func warnOrphanedChildren(cmd *cobra.Command, tempParentKey string, orphaned []s
 	fmt.Fprintf(cmd.ErrOrStderr(),
 		"warning: temporary parent %s was trashed while still holding %d live non-attachment child item(s) (%s), "+
 			"which Zotero leaves live because it does not cascade a trash to children\n"+
-			"         they hold no file, but they are now reachable only by key: zotio items delete %s --yes\n",
-		tempParentKey, len(orphaned), strings.Join(orphaned, ", "), strings.Join(orphaned, " "))
+			"         they hold no file, but they are now reachable only by key:\n",
+		tempParentKey, len(orphaned), strings.Join(orphaned, ", "))
+	// One command per key. `items delete` takes a single <itemKey> and reads only
+	// args[0], so a joined list would delete the first and silently ignore the
+	// rest while appearing to name them all.
+	for _, key := range orphaned {
+		fmt.Fprintf(cmd.ErrOrStderr(), "           zotio items delete %s --yes\n", key)
+	}
 }
 
 // attachmentIsLiveWithHash reports whether key names a live attachment whose

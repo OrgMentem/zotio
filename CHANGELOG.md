@@ -58,7 +58,12 @@ any change to those as breaking regardless of which value is correct.
   remains, because that would strand stored bytes; a note carries none, so
   refusing on one would let any note added to this route's scratch item block
   the route's own cleanup forever. Notes are therefore reported rather than
-  obeyed: the run warns and names each one, so nothing is orphaned silently.
+  obeyed: each one the read observes is named, with the exact command that
+  removes it, and the keys are printed whether or not the trash itself
+  succeeded — an ambiguous write may have committed anyway, and then those keys
+  are the only route back. The read and the trash are separate requests, so a
+  note added between them is still missed; Zotero offers no transaction that
+  would close that gap.
 - **`attachments add --via connector` no longer strands a file when the
   connector's save reply is lost.** Zotero's connector protocol has no endpoint
   that closes a save session, so a reply lost *after* the desktop had already

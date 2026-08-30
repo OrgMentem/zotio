@@ -60,6 +60,23 @@ func (f *cleanupFake) start(t *testing.T) *httptest.Server {
 				_, _ = w.Write([]byte(`{"message":"Not found"}`))
 				return
 			}
+			// Honour itemType, as Zotero does. Without this the fake returns
+			// notes even to an attachment-filtered request, so a regression that
+			// re-added itemType=attachment to the orphan read would still see the
+			// note here and pass, while the real API would filter it away.
+			if want := r.URL.Query().Get("itemType"); want != "" {
+				var kept []map[string]any
+				for _, row := range rows {
+					data, _ := row["data"].(map[string]any)
+					if itemType, _ := data["itemType"].(string); itemType == want {
+						kept = append(kept, row)
+					}
+				}
+				rows = kept
+			}
+			if rows == nil {
+				rows = []map[string]any{}
+			}
 			_ = json.NewEncoder(w).Encode(rows)
 			return
 		}
