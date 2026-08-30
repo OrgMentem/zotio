@@ -363,6 +363,10 @@ func codeList(items []string) string {
 
 const llmsSiteURL = "https://orgmentem.github.io/zotio/"
 
+// productDesc is the one product sentence both llms files open with. Keep it
+// here so the index and the full file cannot drift apart.
+const productDesc = "trust-and-automation layer for Zotero: local-first search and auditing, preview-first writes, and bounded context for humans, scripts, and MCP agents."
+
 var llmsSectionRank = map[string]int{"guide": 1, "concepts": 2, "reference": 3, "contributing": 4}
 
 var llmsCommentRE = regexp.MustCompile(`(?s)<!--.*?-->\n?`)
@@ -484,7 +488,7 @@ func llmsDesc(body string) string {
 func renderLLMSIndex(pages []llmsPage) string {
 	var b strings.Builder
 	b.WriteString("# zotio\n\n")
-	b.WriteString("> The trust-and-automation layer for Zotero: local-first search and auditing, preview-first writes, and bounded context for humans, scripts, and MCP agents.\n\n")
+	b.WriteString("> The " + productDesc + "\n\n")
 	b.WriteString("For AI agents: the most token-efficient way to use zotio is NOT scraping these HTML docs. Prefer, in order:\n")
 	b.WriteString("1. The bundled agent skill — https://raw.githubusercontent.com/OrgMentem/zotio/main/SKILL.md\n")
 	b.WriteString("2. The local CLI: `zotio which \"<goal>\"` resolves a goal to a command; add `--agent` for JSON; `zotio agent-context` and `zotio capabilities` describe the surface.\n")
@@ -510,7 +514,7 @@ func renderLLMSIndex(pages []llmsPage) string {
 func renderLLMSFull(pages []llmsPage) string {
 	var b strings.Builder
 	b.WriteString("# zotio — full documentation\n\n")
-	b.WriteString("zotio is the trust-and-automation layer for Zotero: local-first search and auditing, preview-first writes, and bounded context for humans, scripts, and MCP agents. This file concatenates the complete docs as Markdown for AI agents. Source: " + llmsSiteURL + "\n")
+	b.WriteString("zotio is the " + productDesc + " This file concatenates the complete docs as Markdown for AI agents. Source: " + llmsSiteURL + "\n")
 	b.WriteString("For the token-efficient path, prefer the bundled SKILL.md and the local CLI (`zotio which`, `--agent`) over consuming this whole file.\n")
 	for _, p := range pages {
 		b.WriteString("\n\n---\n\n> Source: " + p.url + "\n\n")

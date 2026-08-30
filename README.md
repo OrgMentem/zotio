@@ -71,25 +71,22 @@ FAIR002016  correction  addendum    10.1038/s41597-019-0009-6      2019-03-19  p
 Checked 21 DOI-bearing items; 3 update notices flagged; 2 DOI(s) not registered with CrossRef.
 ```
 
-That is the bundled library catching the retracted Wakefield 1998 MMR paper —
-with no Zotero install and no API key (the check itself queries Crossref live).
-`zotio demo --reset` removes the bundled library.
+That is the bundled library catching the retracted Wakefield 1998 MMR paper,
+with no Zotero install and no API key (the check queries Crossref live).
+`zotio demo --reset` removes it.
 
-Zotero itself alerts you when an item in your library is retracted — a red flag
-on the item, powered by the same Retraction Watch data. `zotio` covers what the
-desktop app does not: corrections and expressions of concern as well as
-retractions, a report across a whole library or collection that scripts can
-consume, a check of every `\cite{}` in your manuscript, and an exit code your
-CI can fail on — so the check runs on every commit, not only when you happen to
-open the item.
+Zotero itself red-flags a retracted item when you open it, from the same
+Retraction Watch data. `zotio` adds what the desktop app does not: corrections
+and expressions of concern, a report across a whole library that scripts can
+consume, and an exit code CI can fail on.
 
 **Point it at your real library:**
 
 ```bash
-zotio init                                            # guided setup: detect Zotero, key, first sync, health check
-zotio items retract-check                             # every DOI-bearing item, against Retraction Watch data
-zotio library health --for citation --fail-on high   # is this library fit to cite? (exit 11 if not)
-zotio items bibcheck thesis.tex --fail-on-unknown     # does every \cite{} resolve to your library? (exit 11 if not)
+zotio init                                         # guided setup: detect Zotero, key, first sync, health check
+zotio items retract-check                          # the same check, against your real library
+zotio library health --for citation --fail-on high # fit to cite? (exit 11 if not)
+zotio items bibcheck thesis.tex --fail-on-unknown  # every \cite{} resolves? (exit 11 if not)
 ```
 
 <p align="center">
@@ -252,11 +249,6 @@ format = "obsidian"      # or "logseq"
 ## More that the GUI and `pyzotero` don't give you
 
 ### Library hygiene, integrity & analytics
-
-
-<p align="center">
-  <img src="docs/assets/demos/retract-check.gif" alt="zotio items retract-check catching the retracted Wakefield 1998 paper via Crossref's Retraction Watch data" width="740">
-</p>
 
 - **`items retract-check`** — check every DOI against **Crossref's Retraction Watch data**: retractions, expressions of concern, and corrections, with notice DOIs and dates. Opt into the `library health` gate with `--check-retractions`. *(This one reads the network.)*
 - **`collections gaps`** — citation-graph gap analysis: rank the papers your collection cites most that are **missing from your library** (OpenCitations + Semantic Scholar), then `import doi` them. *(Network too.)*

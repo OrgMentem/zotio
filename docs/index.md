@@ -33,7 +33,7 @@ zotio items bibcheck paper.tex --fail-on-unknown     # every \cite{} resolves? (
 zotio search 'automation trust' --data-source local --json
 ```
 
-**No Zotero yet?** `zotio demo` seeds a bundled sample library — 34 classic papers, one genuinely retracted — so local checks (`retract-check`, `library health`, `bibcheck`, `search`) run with no desktop app and no API key under `ZOTIO_DEMO=1` and `--data-source local`; `doctor` and `sync` still need the real desktop. `ZOTIO_DEMO=1 zotio --data-source local items retract-check` catches the bundled library's retracted paper on the spot:
+**No Zotero yet?** `zotio demo` seeds a bundled sample library — 34 classic papers, one genuinely retracted. Local checks (`retract-check`, `library health`, `bibcheck`, `search`) then run with no desktop app and no API key under `ZOTIO_DEMO=1` and `--data-source local`; `doctor` and `sync` still need the real desktop. `ZOTIO_DEMO=1 zotio --data-source local items retract-check` catches the retracted paper on the spot:
 
 ![zotio demo tour](assets/demos/demo-tour.gif)
 

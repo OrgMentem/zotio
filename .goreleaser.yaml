@@ -112,7 +112,9 @@ homebrew_casks:
     # xattr — otherwise Gatekeeper blocks first run on macOS.
     directory: Casks
     homepage: "https://github.com/OrgMentem/zotio"
-    description: "Zotero library checks and automation: local-first search, CI health gates, preview-first writes, workflows, and MCP"
+    # One product description for every store front; aliased below so the
+    # channels cannot drift apart.
+    description: &store_description "Zotero library checks and automation: local-first search, CI health gates, preview-first writes, workflows, and MCP"
     binaries:
       - zotio
       - zotio-mcp
@@ -132,7 +134,7 @@ scoops:
     directory: bucket
     commit_msg_template: "zotio {{ .Tag }}"
     homepage: "https://github.com/OrgMentem/zotio"
-    description: "Zotero library checks and automation: local-first search, CI health gates, preview-first writes, workflows, and MCP"
+    description: *store_description
     license: MIT
 # Windows: WinGet manifests, PR'd from a fork into microsoft/winget-pkgs.
 winget:
@@ -140,7 +142,7 @@ winget:
     publisher: OrgMentem
     license: MIT
     homepage: "https://github.com/OrgMentem/zotio"
-    short_description: "Zotero library checks and automation: local-first search, CI health gates, preview-first writes, workflows, and MCP"
+    short_description: *store_description
     # Author winget commits as the CLA-signed account (not goreleaserbot), so
     # Microsoft's per-PR CLA check matches and doesn't re-flag Needs-CLA.
     commit_author:
@@ -172,7 +174,7 @@ nfpms:
       - apk
     maintainer: "OrgMentem <zotio@orgmentem.com>"
     homepage: "https://github.com/OrgMentem/zotio"
-    description: "Zotero library checks and automation: local-first search, CI health gates, preview-first writes, workflows, and MCP"
+    description: *store_description
     license: MIT
     bindir: /usr/bin
     # `license: MIT` above names zotio's own license. Distro policy also wants
