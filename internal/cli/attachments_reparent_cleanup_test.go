@@ -139,7 +139,7 @@ func TestTrashTemporaryParentRefusesWhileALiveChildRemains(t *testing.T) {
 	srv := f.start(t)
 	c := f.client(t, srv)
 
-	err := trashTemporaryParent(context.Background(), c, "TEMP0001", cleanupNonce, "TARGET01")
+	_, err := trashTemporaryParent(context.Background(), c, "TEMP0001", cleanupNonce, "TARGET01")
 	if err == nil {
 		t.Fatal("trashTemporaryParent trashed a parent still holding a live attachment")
 	}
@@ -162,7 +162,7 @@ func TestTrashTemporaryParentIgnoresATrashedChild(t *testing.T) {
 	srv := f.start(t)
 	c := f.client(t, srv)
 
-	if err := trashTemporaryParent(context.Background(), c, "TEMP0001", cleanupNonce, "TARGET01"); err != nil {
+	if _, err := trashTemporaryParent(context.Background(), c, "TEMP0001", cleanupNonce, "TARGET01"); err != nil {
 		t.Fatalf("trashTemporaryParent refused despite the only child being trashed: %v", err)
 	}
 	if len(f.patched) != 1 || !strings.Contains(f.patched[0], "TEMP0001") {
@@ -183,7 +183,7 @@ func TestTrashTemporaryParentFailsClosedWhenChildrenCannotBeListed(t *testing.T)
 	srv := f.start(t)
 	c := f.client(t, srv)
 
-	err := trashTemporaryParent(context.Background(), c, "TEMP0001", cleanupNonce, "TARGET01")
+	_, err := trashTemporaryParent(context.Background(), c, "TEMP0001", cleanupNonce, "TARGET01")
 	if err == nil {
 		t.Fatal("trashTemporaryParent trashed a parent whose children it could not list")
 	}
@@ -208,7 +208,7 @@ func TestTrashTemporaryParentDoesNotReportSuccessForATrashedParentWithALiveChild
 	srv := f.start(t)
 	c := f.client(t, srv)
 
-	err := trashTemporaryParent(context.Background(), c, "TEMP0001", cleanupNonce, "TARGET01")
+	_, err := trashTemporaryParent(context.Background(), c, "TEMP0001", cleanupNonce, "TARGET01")
 	if err == nil {
 		t.Fatal("trashTemporaryParent reported success for an already-trashed parent still holding a live child")
 	}
@@ -317,5 +317,65 @@ func TestTrashRedundantAttachmentRefusesAMismatchedHash(t *testing.T) {
 	}
 	if len(f.patched) != 0 {
 		t.Errorf("patched = %v, want none", f.patched)
+	}
+}
+
+// noteRow builds a live note child, which Zotero permits beneath a document.
+func noteRow(key, parent string, deleted int) map[string]any {
+	return map[string]any{
+		"key":     key,
+		"version": 500,
+		"data": map[string]any{
+			"key": key, "itemType": "note", "parentItem": parent,
+			"note": "operator's note", "deleted": deleted,
+		},
+	}
+}
+
+// TestTrashTemporaryParentReportsALiveNote pins the guard's SCOPE, which is a
+// deliberate asymmetry. A live attachment refuses the trash, because it strands
+// stored bytes the operator may be paying WebDAV to host. A live note does not,
+// because refusing on one would let any note a plugin or the operator adds to
+// this route's temporary parent permanently block the route's own cleanup —
+// trading a rare orphan for certain litter on every run. But Zotero does not
+// cascade a trash, so the note IS now live under a trashed parent, and it must
+// be named rather than vanish quietly.
+func TestTrashTemporaryParentReportsALiveNote(t *testing.T) {
+	f := &cleanupFake{
+		items:    map[string]map[string]any{"TEMP0001": tempParent(cleanupNonce, "TARGET01", false)},
+		children: map[string][]map[string]any{"TEMP0001": {noteRow("NOTE0001", "TEMP0001", 0)}},
+	}
+	srv := f.start(t)
+	c := f.client(t, srv)
+
+	orphaned, err := trashTemporaryParent(context.Background(), c, "TEMP0001", cleanupNonce, "TARGET01")
+	if err != nil {
+		t.Fatalf("a live note blocked the cleanup: %v", err)
+	}
+	if len(orphaned) != 1 || orphaned[0] != "NOTE0001" {
+		t.Fatalf("orphaned = %v, want [NOTE0001]: an orphan must never be silent", orphaned)
+	}
+	// The parent must still actually be trashed.
+	if len(f.patched) != 1 || !strings.Contains(f.patched[0], "TEMP0001") {
+		t.Errorf("patched = %v, want one trash of TEMP0001", f.patched)
+	}
+}
+
+// TestTrashTemporaryParentIgnoresATrashedNote pins that an already-trashed note
+// is not reported as an orphan: it is reversible and reachable from the trash.
+func TestTrashTemporaryParentIgnoresATrashedNote(t *testing.T) {
+	f := &cleanupFake{
+		items:    map[string]map[string]any{"TEMP0001": tempParent(cleanupNonce, "TARGET01", false)},
+		children: map[string][]map[string]any{"TEMP0001": {noteRow("NOTE0001", "TEMP0001", 1)}},
+	}
+	srv := f.start(t)
+	c := f.client(t, srv)
+
+	orphaned, err := trashTemporaryParent(context.Background(), c, "TEMP0001", cleanupNonce, "TARGET01")
+	if err != nil {
+		t.Fatalf("trashTemporaryParent: %v", err)
+	}
+	if len(orphaned) != 0 {
+		t.Errorf("orphaned = %v, want none: a trashed note is already recoverable", orphaned)
 	}
 }

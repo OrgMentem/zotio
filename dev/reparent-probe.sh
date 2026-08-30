@@ -83,13 +83,19 @@ cleanup_hint() {
 	if [ -n "${ATTACH:-}" ] || [ -n "${TEMP_PARENT:-}" ] || [ -n "${RECEIVER_B:-}" ]; then
 		bold "To clean up, trash what this probe created"
 		[ -n "${ATTACH:-}" ] && info "zotio items delete ${ATTACH} --yes   # attachment; delete first"
-		[ -n "${TEMP_PARENT:-}" ] && info "zotio items delete ${TEMP_PARENT} --yes   # temporary parent"
+		[ -n "${TEMP_PARENT:-}" ] &&
+			info "zotio items delete ${TEMP_PARENT} --yes   # temporary parent; inspect children first"
 		[ -n "${RECEIVER_B:-}" ] && info "zotio items delete ${RECEIVER_B} --yes   # receiving item"
 		info "All are reversible with 'zotio items restore <key>'."
 		[ "${TEMP_PARENT_MISSING:-0}" = "1" ] &&
 			warn "the command omitted its temporary parent key; do not assume it was trashed"
-		[ -z "${ATTACH:-}" ] && [ -n "${RECEIVER_TITLE:-}" ] &&
-			warn "if the route was interrupted, inspect ${RECEIVER_TITLE} for its attachment"
+		if [ -z "${ATTACH:-}" ] && [ -n "${RECEIVER_TITLE:-}" ]; then
+			if [ -n "${TEMP_PARENT:-}" ]; then
+				warn "if the route was interrupted, inspect children of temporary parent ${TEMP_PARENT} before trashing it"
+			else
+				warn "if the route was interrupted, locate its temporary parent and inspect its children before trashing it"
+			fi
+		fi
 	elif [ -n "${RECEIVER_TITLE:-}" ]; then
 		bold "The receiving item may need recovery"
 		warn "Search Zotero for the exact title: ${RECEIVER_TITLE}"
@@ -115,13 +121,43 @@ trap on_exit EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
 
+await_write_plane_read() {
+	local output="$1"
+	shift
+	local predicate=""
+	if [ "${1:-}" = "--until" ]; then
+		predicate="$2"
+		shift 2
+	fi
+	local attempt
+	for attempt in {1..9}; do
+		if curl -fsS -H "Zotero-API-Key: ${ZOTERO_API_KEY}" "$@" >"${output}" 2>/dev/null &&
+			{ [ -z "${predicate}" ] || "${predicate}" "${output}"; }; then
+			return 0
+		fi
+		[ "${attempt}" -lt 9 ] && sleep 3
+	done
+	return 1
+}
+
+receiver_title_visible() {
+	jq -e --arg title "${RECEIVER_TITLE}" \
+		'[.[] | select(.data.title == $title) | .key] | unique | length == 1' \
+		"$1" >/dev/null
+}
+
+item_is_trashed() {
+	jq -e '.data.deleted == 1' "$1" >/dev/null
+}
+
 receiver_by_title() {
-	curl -fsSG -H "Zotero-API-Key: ${ZOTERO_API_KEY}" \
-		--data-urlencode "q=${RECEIVER_TITLE}" \
-		--data "qmode=title" "${API}/items" |
-		jq -r --arg title "${RECEIVER_TITLE}" \
-			'[.[] | select(.data.title == $title) | .key] | unique |
-			 if length == 1 then .[0] else empty end'
+	local receiver_json="${WORK}/receiver-by-title.json"
+	await_write_plane_read "${receiver_json}" --until receiver_title_visible \
+		-G --data-urlencode "q=${RECEIVER_TITLE}" \
+		--data "qmode=title" "${API}/items" || return 1
+	jq -r --arg title "${RECEIVER_TITLE}" \
+		'[.[] | select(.data.title == $title) | .key] | unique |
+		 if length == 1 then .[0] else empty end' "${receiver_json}"
 }
 
 checkpoint() {
@@ -288,17 +324,10 @@ RECEIVER_JSON="${WORK}/receiver-verify.json"
 # readable on this endpoint, so a single-shot check reports 404 for a receiver
 # that was in fact created correctly a moment earlier — measured on 2026-08-31.
 # The identity assertion below is unchanged; only its input is now awaited.
-RECEIVER_VERIFIED=0
-for _ in 1 2 3 4 5 6; do
-	if curl -fsS -H "Zotero-API-Key: ${ZOTERO_API_KEY}" \
-		"${API}/items/${RECEIVER_B}" >"${RECEIVER_JSON}" 2>/dev/null; then
-		RECEIVER_VERIFIED=1
-		break
-	fi
-	sleep 3
-done
-[ "${RECEIVER_VERIFIED}" = "1" ] ||
+
+if ! await_write_plane_read "${RECEIVER_JSON}" "${API}/items/${RECEIVER_B}"; then
 	die "could not verify receiving item ${RECEIVER_B} on the write plane"
+fi
 RECEIVER_ACTUAL_TITLE="$(jq -er '.data.title | strings' "${RECEIVER_JSON}")" ||
 	die "could not read the title of receiving item ${RECEIVER_B}"
 [ "${RECEIVER_ACTUAL_TITLE}" = "${RECEIVER_TITLE}" ] ||
@@ -377,6 +406,7 @@ cat "${ADD_OUT}"
 # Fail loudly if stdout is not JSON, rather than letting every extraction below
 # return empty and be misread as "the command reported nothing".
 if ! jq -e . "${ADD_OUT}" >/dev/null 2>&1; then
+	warn "the route may have created a temporary parent and child; inspect its children before trashing it"
 	die "stdout is not valid JSON; the extractions cannot be trusted"
 fi
 
@@ -428,8 +458,9 @@ sleep 5
 [ -n "${ATTACH}" ] || die "the command reported success but returned no attachment key"
 
 A_JSON="${WORK}/attach.json"
-curl -fsS -H "Zotero-API-Key: ${ZOTERO_API_KEY}" "${API}/items/${ATTACH}" >"${A_JSON}" ||
+if ! await_write_plane_read "${A_JSON}" "${API}/items/${ATTACH}"; then
 	die "could not read attachment ${ATTACH} from the write plane"
+fi
 
 if ! NEW_PARENT="$(jq -r '.data.parentItem // "none"' "${A_JSON}")"; then
 	die "could not read parentItem from ${A_JSON}"
@@ -468,13 +499,20 @@ FAILED=0
 	FAILED=1
 }
 
-if ! T_DELETED="$(curl -fsS -H "Zotero-API-Key: ${ZOTERO_API_KEY}" \
-	"${API}/items/${TEMP_PARENT}" | jq -r '.data.deleted // 0')"; then
+T_JSON="${WORK}/temp-parent.json"
+if ! await_write_plane_read "${T_JSON}" "${API}/items/${TEMP_PARENT}"; then
 	die "could not read the temporary parent ${TEMP_PARENT} from the write plane"
 fi
-if ! T_KIDS="$(curl -fsS -H "Zotero-API-Key: ${ZOTERO_API_KEY}" \
-	"${API}/items/${TEMP_PARENT}/children" | jq 'length')"; then
+if ! T_DELETED="$(jq -r '.data.deleted // 0' "${T_JSON}")"; then
+	die "could not read the temporary parent ${TEMP_PARENT} from the write plane"
+fi
+T_KIDS_JSON="${WORK}/temp-parent-children.json"
+if ! await_write_plane_read "${T_KIDS_JSON}" "${API}/items/${TEMP_PARENT}/children"; then
 	die "could not read children of temporary parent ${TEMP_PARENT}"
+fi
+if ! T_KIDS="$(jq -er 'if type == "array" then length else error("expected array") end' \
+	"${T_KIDS_JSON}")"; then
+	die "temporary parent children response is not an array"
 fi
 info "temp parent deleted  ${T_DELETED}   (want 1)"
 info "temp parent children ${T_KIDS}   (want 0)"
@@ -490,15 +528,11 @@ info "temp parent children ${T_KIDS}   (want 0)"
 # The storage-naming invariant, checked locally: the directory must be named for
 # the ATTACHMENT's key, never its parent's. This is what makes re-parenting free.
 STORAGE_DIR=""
-if [ -n "${ZOTERO_DATA_DIR:-}" ]; then
-	STORAGE_CANDIDATE="${ZOTERO_DATA_DIR}/storage"
-elif [ -n "${HOME:-}" ]; then
-	STORAGE_CANDIDATE="${HOME}/Zotero/storage"
-else
-	STORAGE_CANDIDATE=""
+if [ -n "${ZOTERO_DATA_DIR:-}" ] && [ -d "${ZOTERO_DATA_DIR}/storage" ]; then
+	STORAGE_DIR="${ZOTERO_DATA_DIR}/storage"
+elif [ -n "${HOME:-}" ] && [ -d "${HOME}/Zotero/storage" ]; then
+	STORAGE_DIR="${HOME}/Zotero/storage"
 fi
-[ -n "${STORAGE_CANDIDATE}" ] && [ -d "${STORAGE_CANDIDATE}" ] &&
-	STORAGE_DIR="${STORAGE_CANDIDATE}"
 if [ -n "${STORAGE_DIR}" ]; then
 	if [ -d "${STORAGE_DIR}/${ATTACH}" ]; then
 		info "storage dir ${STORAGE_DIR}/${ATTACH} exists — named for the ATTACHMENT"
@@ -588,8 +622,9 @@ checkpoint "about to trash the attachment ${ATTACH} and the receiving item ${REC
 ATTACH_TRASHED=0
 if zotio --agent items delete "${ATTACH}" --yes \
 	>"${WORK}/trash-attach.json" 2>"${WORK}/trash-attach.err"; then
-	if ATTACH_DELETED="$(curl -fsS -H "Zotero-API-Key: ${ZOTERO_API_KEY}" \
-		"${API}/items/${ATTACH}" | jq -r '.data.deleted // 0')" &&
+	if await_write_plane_read "${WORK}/trash-attach-verify.json" --until item_is_trashed \
+		"${API}/items/${ATTACH}" &&
+		ATTACH_DELETED="$(jq -r '.data.deleted // 0' "${WORK}/trash-attach-verify.json")" &&
 		[ "${ATTACH_DELETED}" = "1" ]; then
 		ATTACH_TRASHED=1
 	else
@@ -606,8 +641,9 @@ fi
 if [ "${ATTACH_TRASHED}" = "1" ]; then
 	if zotio --agent items delete "${RECEIVER_B}" --yes \
 		>"${WORK}/trash-b.json" 2>"${WORK}/trash-b.err"; then
-		if RECEIVER_DELETED="$(curl -fsS -H "Zotero-API-Key: ${ZOTERO_API_KEY}" \
-			"${API}/items/${RECEIVER_B}" | jq -r '.data.deleted // 0')" &&
+		if await_write_plane_read "${WORK}/trash-receiver-verify.json" --until item_is_trashed \
+			"${API}/items/${RECEIVER_B}" &&
+			RECEIVER_DELETED="$(jq -r '.data.deleted // 0' "${WORK}/trash-receiver-verify.json")" &&
 			[ "${RECEIVER_DELETED}" = "1" ]; then
 			:
 		else

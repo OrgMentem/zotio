@@ -381,7 +381,7 @@ func finishConnectorReparent(ctx context.Context, cmd *cobra.Command, webClient 
 	// between this read and the PATCH. If another run won, abandon rather than
 	// duplicate, and clean up both objects this run created.
 	if winner, checkErr := findAttachmentByMD5(webClient, req.ParentKey, req.MD5); checkErr == nil && winner != "" {
-		return abandonToWinner(ctx, cmd, webClient, req, out, trashNonce, winner), nil
+		return abandonToWinner(ctx, cmd, webClient, req, out, trashNonce, winner)
 	}
 
 	if err := reparentAttachment(webClient, out.AttachmentKey, req.ParentKey, out.TempParentKey, req.MD5, version); err != nil {
@@ -391,7 +391,7 @@ func finishConnectorReparent(ctx context.Context, cmd *cobra.Command, webClient 
 			// back with the error rather than from a second lookup. The operator's
 			// item has the content; ours is redundant, so clean up and report a
 			// no-op rather than a conflict.
-			return abandonToWinner(ctx, cmd, webClient, req, out, trashNonce, raceLost.winner), nil
+			return abandonToWinner(ctx, cmd, webClient, req, out, trashNonce, raceLost.winner)
 		}
 		return out, fmt.Errorf("attachment %s is stored under temporary parent %s but could not be moved to %s: %w",
 			out.AttachmentKey, out.TempParentKey, req.ParentKey, err)
@@ -402,7 +402,8 @@ func finishConnectorReparent(ctx context.Context, cmd *cobra.Command, webClient 
 	// failed re-parent must leave the operator a coherent pair to recover, an
 	// untrashed parent holding the attachment, rather than a trashed parent with
 	// a live child and the file apparently nowhere.
-	if err := trashTemporaryParent(ctx, webClient, out.TempParentKey, trashNonce, req.ParentKey); err != nil {
+	orphaned, err := trashTemporaryParent(ctx, webClient, out.TempParentKey, trashNonce, req.ParentKey)
+	if err != nil {
 		// The real work succeeded. Report the litter without failing the run,
 		// since re-running would create a second temporary parent rather than
 		// clean this one up.
@@ -413,21 +414,27 @@ func finishConnectorReparent(ctx context.Context, cmd *cobra.Command, webClient 
 		return out, nil
 	}
 	out.TempTrashed = true
+	warnOrphanedChildren(cmd, out.TempParentKey, orphaned)
 	return out, nil
 }
 
-// abandonToWinner cleans up after losing the race to another run, and reports a
+// abandonToWinner cleans up after losing the race to another run and reports a
 // no-op. It is reached from two places: the reconciliation just before the PATCH,
 // and a retry that discovers the target gained the content mid-window.
 //
 // Order is not incidental. Zotero's server does not cascade a trash to children,
 // so this run's own attachment must be trashed FIRST; trashing only the
 // temporary parent leaves the copy live beneath it, unreachable from the trash
-// and still holding its stored bytes. Neither failure fails the run, because the
-// operator's item already has the content they asked for - but each names the
-// object and the exact command that removes it, since a re-run would create a
-// second temporary parent rather than clean this one up.
-func abandonToWinner(ctx context.Context, cmd *cobra.Command, webClient *client.Client, req storedUploadRequest, out connectorReparentResult, trashNonce, winner string) connectorReparentResult {
+// and still holding its stored bytes.
+//
+// The returned error distinguishes two outcomes that must never be conflated.
+// A CLEANUP failure returns nil: the operator's item already holds the content
+// they asked for, so the run achieved what was asked and only litter remains,
+// which each branch names along with the command that removes it. An ABORTED
+// abandon returns an error: the target does not hold the content, this run did
+// not put it there, and nothing was trashed - reporting that as applied would
+// tell a scripted caller the file reached the item when it did not.
+func abandonToWinner(ctx context.Context, cmd *cobra.Command, webClient *client.Client, req storedUploadRequest, out connectorReparentResult, trashNonce, winner string) (connectorReparentResult, error) {
 	// Capture our own key before reporting the winner's: the objects to clean up
 	// are ours, and out.AttachmentKey is about to name someone else's.
 	ours := out.AttachmentKey
@@ -435,30 +442,36 @@ func abandonToWinner(ctx context.Context, cmd *cobra.Command, webClient *client.
 		// Never reached with a confirmed winner absent, and refusing rather than
 		// trusting the caller is the difference between litter and data loss:
 		// trashing our copy when the target holds none leaves the operator's item
-		// with nothing at all. Keep both objects and say so.
-		fmt.Fprintf(cmd.ErrOrStderr(),
-			"warning: abandoning to another run was requested without naming the winning attachment, "+
-				"so nothing was trashed; attachment %s remains under temporary parent %s\n",
-			ours, out.TempParentKey)
-		return out
+		// with nothing at all. Keep both objects and fail.
+		return out, fmt.Errorf("abandoning to another run was requested without naming the winning attachment, "+
+			"so nothing was trashed and %s was not attached to %s; "+
+			"attachment %s remains under temporary parent %s",
+			req.Path, req.ParentKey, ours, out.TempParentKey)
 	}
 	out.AttachmentKey = winner
 	out.RaceLost = true
-	// Confirm the winner is STILL live and still carries this content, as late as
-	// possible before destroying our own copy. Zotero offers no multi-object
-	// transaction, so a residual window remains: the winner could be trashed
-	// between this read and the PATCH below, leaving the target empty. Narrowing
-	// that window to a single round trip is the best available, and keeping both
+	// Confirm the winner is STILL live, still on the target, and still carries
+	// this content, as late as possible before destroying our own copy. Zotero
+	// offers no multi-object transaction, so a residual window remains: the
+	// winner could be trashed or moved between this read and the PATCH below.
+	// Narrowing it to a single round trip is the best available, and keeping both
 	// objects when the check fails turns the worst case into litter the operator
 	// can see rather than content that quietly disappeared.
-	if live, liveErr := attachmentIsLiveWithHash(webClient, winner, req.MD5); liveErr != nil || !live {
-		fmt.Fprintf(cmd.ErrOrStderr(),
-			"warning: another run appeared to attach this file first, but attachment %s no longer holds it "+
-				"(%v), so nothing was trashed; this run's copy %s remains under temporary parent %s\n",
-			winner, liveErr, ours, out.TempParentKey)
+	if live, liveErr := attachmentIsLiveWithHash(webClient, winner, req.ParentKey, req.MD5); liveErr != nil || !live {
+		// The abandon is off. Restore this run's own key so the envelope names
+		// the object that actually exists, and fail: the target does not hold
+		// the content, so this is not a no-op and certainly not applied.
 		out.RaceLost = false
 		out.AttachmentKey = ours
-		return out
+		detail := "it is no longer a live child of that item carrying this content"
+		if liveErr != nil {
+			detail = liveErr.Error()
+		}
+		return out, fmt.Errorf("another run appeared to attach this file to %s first, but attachment %s "+
+			"could not be confirmed on it (%s), so nothing was trashed; "+
+			"this run's copy %s remains under temporary parent %s - "+
+			"attach it by hand or re-run once the item settles",
+			req.ParentKey, winner, detail, ours, out.TempParentKey)
 	}
 	if trashErr := trashRedundantAttachment(ctx, webClient, ours, out.TempParentKey, req.MD5); trashErr != nil {
 		fmt.Fprintf(cmd.ErrOrStderr(),
@@ -468,24 +481,42 @@ func abandonToWinner(ctx context.Context, cmd *cobra.Command, webClient *client.
 		// The temporary parent deliberately stays: trashTemporaryParent refuses
 		// while a live child remains, and reporting that refusal on top of the
 		// warning above would only repeat it.
-		return out
+		return out, nil
 	}
-	if trashErr := trashTemporaryParent(ctx, webClient, out.TempParentKey, trashNonce, req.ParentKey); trashErr == nil {
+	orphaned, trashErr := trashTemporaryParent(ctx, webClient, out.TempParentKey, trashNonce, req.ParentKey)
+	if trashErr == nil {
 		out.TempTrashed = true
+		warnOrphanedChildren(cmd, out.TempParentKey, orphaned)
 	} else {
 		fmt.Fprintf(cmd.ErrOrStderr(),
 			"warning: another run attached this file first; the temporary parent %s could not be trashed: %v\n"+
 				"         delete it by hand: zotio items delete %s --yes\n",
 			out.TempParentKey, trashErr, out.TempParentKey)
 	}
-	return out
+	return out, nil
+}
+
+// warnOrphanedChildren names any live non-attachment child left beneath a
+// temporary parent this route just trashed. Zotero does not cascade a trash, so
+// such a child is now live under a trashed parent and invisible from the trash.
+// It carries no stored bytes, so it does not justify blocking the cleanup - but
+// it must never disappear quietly either.
+func warnOrphanedChildren(cmd *cobra.Command, tempParentKey string, orphaned []string) {
+	if len(orphaned) == 0 {
+		return
+	}
+	fmt.Fprintf(cmd.ErrOrStderr(),
+		"warning: temporary parent %s was trashed while still holding %d live non-attachment child item(s) (%s), "+
+			"which Zotero leaves live because it does not cascade a trash to children\n"+
+			"         they hold no file, but they are now reachable only by key: zotio items delete %s --yes\n",
+		tempParentKey, len(orphaned), strings.Join(orphaned, ", "), strings.Join(orphaned, " "))
 }
 
 // attachmentIsLiveWithHash reports whether key names a live attachment whose
 // registered content hash matches. It is the last check before this route
 // destroys its own copy, so an unreadable answer is reported as an error rather
 // than as either outcome.
-func attachmentIsLiveWithHash(c *client.Client, key, md5hex string) (bool, error) {
+func attachmentIsLiveWithHash(c *client.Client, key, wantParent, md5hex string) (bool, error) {
 	if key == "" {
 		return false, fmt.Errorf("no attachment key to confirm")
 	}
@@ -501,11 +532,21 @@ func attachmentIsLiveWithHash(c *client.Client, key, md5hex string) (bool, error
 	}
 	var row struct {
 		Data struct {
-			MD5 string `json:"md5"`
+			ParentItem string `json:"parentItem"`
+			MD5        string `json:"md5"`
 		} `json:"data"`
 	}
 	if uerr := json.Unmarshal(body, &row); uerr != nil {
 		return false, fmt.Errorf("parsing attachment %s: %w", key, uerr)
+	}
+	// Parentage must be re-asserted, not assumed. findAttachmentByMD5 located
+	// this key by reading the TARGET's children, so it was on the target then.
+	// Between that read and this one another actor can re-parent it elsewhere
+	// while leaving it live with the same hash. Checking only deleted and md5
+	// would pass such a winner, and the caller would then destroy this run's
+	// copy on the strength of content that had already left the target.
+	if wantParent != "" && !strings.EqualFold(row.Data.ParentItem, wantParent) {
+		return false, nil
 	}
 	// An unregistered hash is not a mismatch: the desktop writes md5 a moment
 	// after the file is stored, exactly as it does for this run's own copy.
@@ -873,13 +914,28 @@ type attachmentChildRow struct {
 // attachmentChildRows reads every attachment child, following pages. Zotero's
 // default page is 25, so an unpaged read truncates silently.
 func attachmentChildRows(c *client.Client, parentKey string) ([]attachmentChildRow, error) {
+	return childRows(c, parentKey, "attachment")
+}
+
+// allChildRows reads every child of parentKey regardless of item type. Zotero
+// permits notes beneath a regular document, and its trash does not cascade, so
+// the cleanup path needs to see children the attachment-filtered read hides.
+func allChildRows(c *client.Client, parentKey string) ([]attachmentChildRow, error) {
+	return childRows(c, parentKey, "")
+}
+
+// childRows pages one children endpoint. An empty itemType omits the filter.
+func childRows(c *client.Client, parentKey, itemType string) ([]attachmentChildRow, error) {
 	var all []attachmentChildRow
 	for start := 0; ; start += connectorChildrenPageSize {
-		data, _, err := c.GetWithVersion("/items/"+parentKey+"/children", map[string]string{
-			"itemType": "attachment",
-			"limit":    strconv.Itoa(connectorChildrenPageSize),
-			"start":    strconv.Itoa(start),
-		})
+		params := map[string]string{
+			"limit": strconv.Itoa(connectorChildrenPageSize),
+			"start": strconv.Itoa(start),
+		}
+		if itemType != "" {
+			params["itemType"] = itemType
+		}
+		data, _, err := c.GetWithVersion("/items/"+parentKey+"/children", params)
 		if err != nil {
 			var respErr *client.APIError
 			if errors.As(err, &respErr) && respErr.StatusCode == http.StatusNotFound {
@@ -1119,12 +1175,12 @@ func reparentAttachment(c *client.Client, attachKey, newParentKey, tempParentKey
 // library that was otherwise byte-identical, and only a revert detector noticed.
 // Every caller must therefore move or trash the child FIRST, and this refusal is
 // what keeps a future caller from forgetting.
-func trashTemporaryParent(ctx context.Context, c *client.Client, key, nonce, targetKey string) error {
+func trashTemporaryParent(ctx context.Context, c *client.Client, key, nonce, targetKey string) ([]string, error) {
 	if key == "" || key == targetKey {
-		return fmt.Errorf("refusing to trash %q: it is the target item, not a temporary parent", key)
+		return nil, fmt.Errorf("refusing to trash %q: it is the target item, not a temporary parent", key)
 	}
 	if !zoteroItemKeyRE.MatchString(key) {
-		return fmt.Errorf("refusing to trash %q: not a valid item key", key)
+		return nil, fmt.Errorf("refusing to trash %q: not a valid item key", key)
 	}
 	deadline := pollDeadline(ctx)
 	for {
@@ -1132,7 +1188,7 @@ func trashTemporaryParent(ctx context.Context, c *client.Client, key, nonce, tar
 		switch {
 		case err == nil && version > 0:
 			if !bodyIsTemporaryParentFor(body, targetKey, nonce) {
-				return fmt.Errorf("refusing to trash %s: it does not carry this run's marker, "+
+				return nil, fmt.Errorf("refusing to trash %s: it does not carry this run's marker, "+
 					"so it is not the temporary parent this route created", key)
 			}
 			// Checked BEFORE the already-trashed short-circuit, deliberately. A
@@ -1141,30 +1197,41 @@ func trashTemporaryParent(ctx context.Context, c *client.Client, key, nonce, tar
 			// there would report success over the broken state.
 			live, liveErr := liveAttachmentChildren(c, key)
 			if liveErr != nil {
-				return fmt.Errorf("cannot confirm temporary parent %s holds no live child, so refusing to trash it: %w", key, liveErr)
+				return nil, fmt.Errorf("cannot confirm temporary parent %s holds no live child, so refusing to trash it: %w", key, liveErr)
 			}
 			if len(live) > 0 {
-				return fmt.Errorf("refusing to trash temporary parent %s: it still holds %d live attachment(s) (%s), "+
+				return nil, fmt.Errorf("refusing to trash temporary parent %s: it still holds %d live attachment(s) (%s), "+
 					"which Zotero would leave live and orphaned because it does not cascade a trash to children; "+
 					"move or trash them first",
 					key, len(live), strings.Join(live, ", "))
 			}
+			// A live child of any OTHER type is reported but does not refuse.
+			// The refusal above exists to protect STORED BYTES: an attachment
+			// left beneath a trashed parent strands a file the operator may be
+			// paying WebDAV to host. A note has no bytes, so blocking on one
+			// would trade a theoretical orphan for guaranteed litter on every
+			// run - this route must always be able to clean up after itself.
+			// Naming it is what keeps the orphan from being silent.
+			orphaned, orphanErr := liveNonAttachmentChildren(c, key)
+			if orphanErr != nil {
+				return nil, fmt.Errorf("cannot confirm what temporary parent %s still holds, so refusing to trash it: %w", key, orphanErr)
+			}
 			if itemAlreadyTrashed(body) {
-				return nil
+				return orphaned, nil
 			}
 			headers := map[string]string{"If-Unmodified-Since-Version": strconv.Itoa(version)}
 			_, _, writeErr := c.PatchWithHeaders("/items/"+key, map[string]any{"deleted": 1}, headers)
-			return writeErr
+			return orphaned, writeErr
 		case err == nil:
-			return fmt.Errorf("item %s was read from the write plane without a version, so the trash cannot be guarded", key)
+			return nil, fmt.Errorf("item %s was read from the write plane without a version, so the trash cannot be guarded", key)
 		case !isNotFoundOrLag(err):
-			return err
+			return nil, err
 		}
 		if time.Now().After(deadline) {
-			return fmt.Errorf("temporary parent %s never became visible on the write plane", key)
+			return nil, fmt.Errorf("temporary parent %s never became visible on the write plane", key)
 		}
 		if err := sleepWithContext(ctx, connectorReparentPollInterval); err != nil {
-			return err
+			return nil, err
 		}
 	}
 }
@@ -1191,6 +1258,31 @@ func liveAttachmentChildren(c *client.Client, parentKey string) ([]string, error
 	var live []string
 	for _, row := range rows {
 		if row.Data.ItemType == "attachment" && row.Data.Deleted == 0 {
+			live = append(live, row.Key)
+		}
+	}
+	return live, nil
+}
+
+// liveNonAttachmentChildren returns the keys of live children of parentKey that
+// are NOT attachments - in practice notes, which Zotero permits beneath a
+// regular document.
+//
+// These do not block trashing the parent. The refusal in trashTemporaryParent
+// guards stored bytes: an attachment stranded under a trashed parent leaves a
+// file the operator may be paying WebDAV to host. A note carries no bytes, and
+// refusing on one would mean any note a plugin or the operator adds to this
+// route's temporary parent permanently blocks the route's own cleanup, trading a
+// rare orphan for certain litter on every run. So they are named, not obeyed:
+// the caller reports them, and nothing is orphaned silently.
+func liveNonAttachmentChildren(c *client.Client, parentKey string) ([]string, error) {
+	rows, err := allChildRows(c, parentKey)
+	if err != nil {
+		return nil, err
+	}
+	var live []string
+	for _, row := range rows {
+		if row.Data.ItemType != "attachment" && row.Data.Deleted == 0 {
 			live = append(live, row.Key)
 		}
 	}

@@ -117,7 +117,7 @@ so local uncommitted changes never enter a release.
    go run github.com/goreleaser/goreleaser/v2@latest release --snapshot --clean --skip=sbom,sign
    ```
    Then inspect `dist/scoop/bucket/zotio.json`, `dist/winget/manifests/.../*.yaml`,
-   `dist/homebrew/Formula/zotio.rb`. (`--skip=sbom,sign` bypasses `syft`/`cosign`,
+   `dist/homebrew/Casks/zotio.rb`. (`--skip=sbom,sign` bypasses `syft`/`cosign`,
    which aren't needed locally; CI installs them.)
 
 **Tag & push**

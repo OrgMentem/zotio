@@ -94,7 +94,14 @@ type reparentFake struct {
 	// children reads, simulating another run winning mid-route.
 	targetGainsMD5After int
 	targetGainedMD5     string
-	targetChildReads    int
+	// winnerParent is the parent the fake reports for WINNER01. Empty means the
+	// target, i.e. the winner is where it was found. Setting it elsewhere models
+	// another actor re-parenting the winner away between discovery and the
+	// route's revalidation.
+	winnerParent string
+	// winnerTrashed makes the fake report WINNER01 as trashed.
+	winnerTrashed    int
+	targetChildReads int
 }
 
 func (f *reparentFake) record(s string) {
@@ -357,6 +364,22 @@ func (f *reparentFake) server(t *testing.T) *httptest.Server {
 				data = map[string]any{
 					"itemType": "attachment", "linkMode": "imported_url",
 					"parentItem": f.tempParentKey,
+				}
+			} else if path == "WINNER01" {
+				// The winner is an attachment on the TARGET, and the route now
+				// re-asserts that parentage before destroying its own copy. A
+				// fake that omitted parentItem made every abandon look like a
+				// winner that had moved away. winnerParent lets a test model
+				// exactly that drift.
+				winnerParent := f.winnerParent
+				if winnerParent == "" {
+					winnerParent = "TARGET01"
+				}
+				data = map[string]any{
+					"itemType": "attachment", "linkMode": "imported_url",
+					"parentItem": winnerParent,
+					"md5":        f.targetGainedMD5,
+					"deleted":    f.winnerTrashed,
 				}
 			} else if path == f.strandedParentKey && f.strandedParentKey != "" {
 				data = map[string]any{
@@ -907,7 +930,7 @@ func TestConnectorReparentRefusesToTrashAnUnmarkedItem(t *testing.T) {
 	c, _ := flags.newWriteClient()
 
 	// An item with no marker: exactly what a mis-recovered key would name.
-	err := trashTemporaryParent(context.Background(), c, "TARGET01", "somenonce", "OTHER001")
+	_, err := trashTemporaryParent(context.Background(), c, "TARGET01", "somenonce", "OTHER001")
 	if err == nil {
 		t.Fatal("trashed an item that carries no marker")
 	}
@@ -929,7 +952,7 @@ func TestConnectorReparentNeverTrashesTheTarget(t *testing.T) {
 	flags := reparentFlags(t, srv)
 	c, _ := flags.newWriteClient()
 
-	err := trashTemporaryParent(context.Background(), c, "TARGET01", "n", "TARGET01")
+	_, err := trashTemporaryParent(context.Background(), c, "TARGET01", "n", "TARGET01")
 	if err == nil || !strings.Contains(err.Error(), "target item") {
 		t.Fatalf("error = %v, want a refusal naming the target", err)
 	}
@@ -1513,5 +1536,119 @@ func TestAdoptLostConnectorSaveIgnoresATrashedChild(t *testing.T) {
 	}
 	if got != "" {
 		t.Errorf("adopted trashed child %q, want no adoption", got)
+	}
+}
+
+// TestAbandonFailsWhenTheWinnerLeftTheTarget is the regression test for the
+// data-loss half of the abandon defect. The route discovers a winner by reading
+// the TARGET's children, so the winner is on the target at that moment. Its
+// revalidation then re-read the attachment standalone and checked only trashed
+// and md5 — so a winner another actor re-parented elsewhere still validated, and
+// the route trashed this run's copy on the strength of content that had already
+// left the target, leaving the operator's item with nothing.
+func TestAbandonFailsWhenTheWinnerLeftTheTarget(t *testing.T) {
+	fake := &reparentFake{tempParentKey: "TEMP0001", attachChildren: []string{"ATTACH01"}}
+	srv := fake.server(t)
+	flags := reparentFlags(t, srv)
+	c, err := flags.newWriteClient()
+	if err != nil {
+		t.Fatalf("newWriteClient: %v", err)
+	}
+	req := reparentRequest(t, "TARGET01")
+	// The target is empty at the opening check and gains the file mid-route, so
+	// the route reaches the abandon rather than short-circuiting at the top.
+	fake.targetGainsMD5After = 1
+	fake.targetGainedMD5 = req.MD5
+	// The winner has moved off the target by the time the route revalidates.
+	fake.winnerParent = "ELSEWHERE"
+
+	status, detail, err := applyConnectorReparentUpload(context.Background(), reparentCmd(t), flags, c, req)
+	if err == nil {
+		t.Fatalf("route reported success though the target lost the content (status %q, detail %v)", status, detail)
+	}
+	if status != "failed" {
+		t.Fatalf("status = %q, want failed: the target holds no copy and this run did not put one there", status)
+	}
+
+	// Our own copy must survive: it is the only copy of the operator's file.
+	for _, call := range fake.sequence() {
+		if strings.HasPrefix(call, "web.trash") {
+			t.Errorf("sequence = %v, want no trash: our copy is the only one left", fake.sequence())
+			break
+		}
+	}
+
+	d, ok := detail.(map[string]any)
+	if !ok {
+		t.Fatalf("detail is %T, want map[string]any", detail)
+	}
+	// The envelope must name OUR object, not the winner that walked away.
+	if d["attachment_key"] != "ATTACH01" {
+		t.Errorf("attachment_key = %v, want ATTACH01: the surviving object must be named", d["attachment_key"])
+	}
+	if d["temp_parent_key"] != "TEMP0001" {
+		t.Errorf("temp_parent_key = %v, want TEMP0001", d["temp_parent_key"])
+	}
+}
+
+// TestAbandonFailsWhenTheWinnerIsTrashed pins the same contract for the other
+// way a winner can stop holding the content.
+func TestAbandonFailsWhenTheWinnerIsTrashed(t *testing.T) {
+	fake := &reparentFake{tempParentKey: "TEMP0001", attachChildren: []string{"ATTACH01"}}
+	srv := fake.server(t)
+	flags := reparentFlags(t, srv)
+	c, err := flags.newWriteClient()
+	if err != nil {
+		t.Fatalf("newWriteClient: %v", err)
+	}
+	req := reparentRequest(t, "TARGET01")
+	fake.targetGainsMD5After = 1
+	fake.targetGainedMD5 = req.MD5
+	fake.winnerTrashed = 1
+
+	status, _, err := applyConnectorReparentUpload(context.Background(), reparentCmd(t), flags, c, req)
+	if err == nil {
+		t.Fatalf("route reported success though the winner was trashed (status %q)", status)
+	}
+	if status != "failed" {
+		t.Errorf("status = %q, want failed", status)
+	}
+	for _, call := range fake.sequence() {
+		if strings.HasPrefix(call, "web.trash") {
+			t.Errorf("sequence = %v, want no trash after an aborted abandon", fake.sequence())
+			break
+		}
+	}
+}
+
+// TestAbandonToWinnerRefusesAnUnnamedWinner pins the defensive branch. Its
+// comment says it is never reached, which is an argument for keeping the guard,
+// not for reporting success from it: trashing this run's copy with no winner
+// leaves the operator's item empty.
+func TestAbandonToWinnerRefusesAnUnnamedWinner(t *testing.T) {
+	fake := &reparentFake{tempParentKey: "TEMP0001", attachChildren: []string{"ATTACH01"}}
+	srv := fake.server(t)
+	flags := reparentFlags(t, srv)
+	c, err := flags.newWriteClient()
+	if err != nil {
+		t.Fatalf("newWriteClient: %v", err)
+	}
+	out := connectorReparentResult{AttachmentKey: "ATTACH01", TempParentKey: "TEMP0001"}
+
+	got, err := abandonToWinner(context.Background(), reparentCmd(t), c, reparentRequest(t, "TARGET01"), out, "nonce", "")
+	if err == nil {
+		t.Fatal("abandonToWinner accepted an unnamed winner, want a refusal")
+	}
+	if got.RaceLost {
+		t.Error("RaceLost = true with no winner named")
+	}
+	if got.AttachmentKey != "ATTACH01" {
+		t.Errorf("AttachmentKey = %q, want ATTACH01: this run's own object must stay named", got.AttachmentKey)
+	}
+	for _, call := range fake.sequence() {
+		if strings.HasPrefix(call, "web.trash") {
+			t.Errorf("sequence = %v, want nothing trashed", fake.sequence())
+			break
+		}
 	}
 }

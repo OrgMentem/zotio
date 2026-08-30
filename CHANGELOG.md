@@ -8,10 +8,10 @@ Notable changes to zotio. Format follows [Keep a Changelog](https://keepachangel
 
 ### Changed — breaking
 
-Both entries below are bug fixes whose whole point is that the previous value
+The entries below are bug fixes whose whole point is that the previous value
 was wrong. They are listed here rather than under Fixed because a scripted
-consumer keys on exit codes and error text, and this repo treats any change to
-those as breaking regardless of which value is correct.
+consumer keys on exit codes, result status, and error text, and this repo treats
+any change to those as breaking regardless of which value is correct.
 
 - **`vault push` now exits 13 when a managed note was deleted remotely.** It
   previously reported `1 unchanged` and exit 0 for a note that no longer existed
@@ -26,9 +26,39 @@ those as breaking regardless of which value is correct.
   `item %s not found locally; run sync`, which sent the caller to fix the wrong
   problem. It now returns the read error. A consumer matching that exact string
   to detect an unsynced item still gets it for a genuinely missing row.
+- **A connector save that committed before its reply was lost now reports
+  `applied`, not `failed`.** Its detail also now includes
+  `save_reply_lost: true`, so a consumer that handled the former failure can
+  distinguish this recovered success.
+- **A re-parent `PATCH` that succeeded before its reply was lost now reports
+  `applied`, not a conflict.**
+- **A re-parent run that loses the 412 retry race now reports `no_op`, not a
+  conflict.** Another run already attached the identical content, and this run
+  adds nothing.
+- **A refused mutation error now has `code: message` text, not the former bare
+  code.** Callers that match stderr must update their expected text. In-process
+  callers can now also classify the typed error with `errors.As`.
 
 ### Fixed
 
+- **A re-parent run no longer destroys its own copy on the strength of a winner
+  that left the target.** The route finds a competing run's attachment by
+  reading the target's children, then re-confirms it immediately before trashing
+  its own copy. That re-confirmation checked only that the winner was untrashed
+  and carried the same hash — never that it was still a child of the target — so
+  an attachment another actor re-parented elsewhere in between still passed, and
+  the operator's item was left with nothing. Parentage is now re-asserted, and a
+  winner that cannot be confirmed on the target aborts the abandon: nothing is
+  trashed, both of this run's objects are named, and the run reports a failure
+  rather than `applied`. The same applies when the winning attachment is named
+  by nobody, which the code treats as a defensive refusal instead of a success.
+- **The temporary parent's cleanup now names a note it would orphan.** Zotero
+  permits notes beneath a document and does not cascade a trash to children. The
+  cleanup guard refuses to trash the temporary parent while a live *attachment*
+  remains, because that would strand stored bytes; a note carries none, so
+  refusing on one would let any note added to this route's scratch item block
+  the route's own cleanup forever. Notes are therefore reported rather than
+  obeyed: the run warns and names each one, so nothing is orphaned silently.
 - **`attachments add --via connector` no longer strands a file when the
   connector's save reply is lost.** Zotero's connector protocol has no endpoint
   that closes a save session, so a reply lost *after* the desktop had already
@@ -73,19 +103,20 @@ those as breaking regardless of which value is correct.
   throughout: a read it cannot complete, including a 404 on a child list, is
   treated as unknown rather than as proof of absence, because the next step is
   destructive.
-- **The re-parent retry can no longer duplicate content onto the target.** The
-  reconciliation that checks whether another run already attached the same file
-  ran once, before the first `PATCH`. A competing run finishing inside the retry
-  window went unnoticed, because the ownership check proves the attachment is
-  still this run's, not that the target is still free. The retry now
-  re-establishes all three facts before every replay: the attachment is still
-  under this run's temporary parent, it has not been trashed by another actor's
-  cleanup, and the target has not gained the content. A target check that fails
-  is not permission to replay. When the target did gain the content, the winning
-  key travels with the error rather than being looked up again, and the winner is
-  re-confirmed live immediately before this run destroys its own copy — so the
-  worst case is litter the operator can see, never content that quietly
-  disappeared.
+- **The re-parent retry rechecks attachment and target state before every
+  replay.** The reconciliation that checks whether another run already attached
+  the same file ran once, before the first `PATCH`. A competing run finishing
+  inside the retry window went unnoticed, because the ownership check proves the
+  attachment is still this run's, not that the target is still free. The retry
+  now re-establishes all three facts before every replay: the attachment is
+  still under this run's temporary parent, it has not been trashed by another
+  actor's cleanup, and the target has not gained the content. A target check
+  that fails is not permission to replay. When the target did gain the content,
+  the winning key travels with the error rather than being looked up again, and
+  the winner is re-confirmed live immediately before this run destroys its own
+  copy. These checks narrow known windows; they do not close them. The target
+  check and replay `PATCH` are separate requests, and Zotero offers no
+  multi-object transaction.
 - **`vault push` no longer reports a deleted Zotero note as synchronised.** The
   batch note-version map was fetched through the cached read path, while the
   single-note read beside it correctly bypassed the cache. Absence from that map
