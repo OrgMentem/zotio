@@ -57,13 +57,15 @@ any change to those as breaking regardless of which value is correct.
   cleanup guard refuses to trash the temporary parent while a live *attachment*
   remains, because that would strand stored bytes; a note carries none, so
   refusing on one would let any note added to this route's scratch item block
-  the route's own cleanup forever. Notes are therefore reported rather than
-  obeyed: each one the read observes is named, with the exact command that
-  removes it, and the keys are printed whether or not the trash itself
-  succeeded — an ambiguous write may have committed anyway, and then those keys
-  are the only route back. The read and the trash are separate requests, so a
-  note added between them is still missed; Zotero offers no transaction that
-  would close that gap.
+  the route's own cleanup forever. Notes observed during the check are reported
+  rather than obeyed. After a confirmed parent trash, the warning names each
+  one, gives the parent-restore command, and emits one inspect-first delete
+  command per child key. If the trash returns an error, the warning still names
+  the observed keys but does not claim the parent was trashed or suggest
+  deleting a child: the write may have failed or committed before its response
+  was lost. The known temporary-parent key remains another recovery route. The
+  read and trash are separate requests, so a note added between them is still
+  missed; Zotero offers no transaction that would close that gap.
 - **`attachments add --via connector` no longer strands a file when the
   connector's save reply is lost.** Zotero's connector protocol has no endpoint
   that closes a save session, so a reply lost *after* the desktop had already

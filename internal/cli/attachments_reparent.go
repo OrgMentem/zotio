@@ -403,11 +403,10 @@ func finishConnectorReparent(ctx context.Context, cmd *cobra.Command, webClient 
 	// untrashed parent holding the attachment, rather than a trashed parent with
 	// a live child and the file apparently nowhere.
 	orphaned, err := trashTemporaryParent(ctx, webClient, out.TempParentKey, trashNonce, req.ParentKey)
-	// Report the orphans whatever the trash returned. A guarded PATCH can be
-	// dispatched and commit while its response is lost, so an error here does not
-	// prove the parent survived - and if it was trashed, these keys are the only
-	// way back to the children left beneath it.
-	warnOrphanedChildren(cmd, out.TempParentKey, orphaned)
+	// Report the observed children whatever the trash returned. On error the
+	// helper names them without assuming that the guarded PATCH committed or
+	// suggesting deletion; on confirmed trash it gives both recovery routes.
+	warnOrphanedChildren(cmd, out.TempParentKey, orphaned, err)
 	if err != nil {
 		// The real work succeeded. Report the litter without failing the run,
 		// since re-running would create a second temporary parent rather than
@@ -488,10 +487,9 @@ func abandonToWinner(ctx context.Context, cmd *cobra.Command, webClient *client.
 		return out, nil
 	}
 	orphaned, trashErr := trashTemporaryParent(ctx, webClient, out.TempParentKey, trashNonce, req.ParentKey)
-	// Reported whatever the trash returned, for the same reason as the other
-	// call site: an ambiguous guarded PATCH may have committed, and these keys
-	// are the only route back to anything left beneath the parent.
-	warnOrphanedChildren(cmd, out.TempParentKey, orphaned)
+	// Report the observed children whatever the trash returned, with wording
+	// that preserves the unknown parent state on an error.
+	warnOrphanedChildren(cmd, out.TempParentKey, orphaned, trashErr)
 	if trashErr == nil {
 		out.TempTrashed = true
 	} else {
@@ -503,20 +501,28 @@ func abandonToWinner(ctx context.Context, cmd *cobra.Command, webClient *client.
 	return out, nil
 }
 
-// warnOrphanedChildren names any live non-attachment child left beneath a
-// temporary parent this route just trashed. Zotero does not cascade a trash, so
-// such a child is now live under a trashed parent and invisible from the trash.
-// It carries no stored bytes, so it does not justify blocking the cleanup - but
-// it must never disappear quietly either.
-func warnOrphanedChildren(cmd *cobra.Command, tempParentKey string, orphaned []string) {
+// warnOrphanedChildren reports live non-attachment children observed before a
+// temporary-parent trash. A nil trashErr confirms the parent is trashed. A
+// non-nil trashErr does not: the write might have failed before dispatch or
+// committed before its response was lost, so the warning must not claim either
+// state or suggest deleting a child that may still be normally reachable.
+func warnOrphanedChildren(cmd *cobra.Command, tempParentKey string, orphaned []string, trashErr error) {
 	if len(orphaned) == 0 {
 		return
 	}
+	if trashErr != nil {
+		fmt.Fprintf(cmd.ErrOrStderr(),
+			"warning: cleanup observed %d live non-attachment child item(s) beneath temporary parent %s (%s), "+
+				"but its trash request returned an error and did not confirm the parent's state\n"+
+				"         inspect the parent and each observed child before deleting anything\n",
+			len(orphaned), tempParentKey, strings.Join(orphaned, ", "))
+		return
+	}
 	fmt.Fprintf(cmd.ErrOrStderr(),
-		"warning: temporary parent %s was trashed while still holding %d live non-attachment child item(s) (%s), "+
-			"which Zotero leaves live because it does not cascade a trash to children\n"+
-			"         they hold no file, but they are now reachable only by key:\n",
-		tempParentKey, len(orphaned), strings.Join(orphaned, ", "))
+		"warning: temporary parent %s was trashed after cleanup observed %d live non-attachment child item(s) (%s)\n"+
+			"         Zotero does not cascade a trash to children; restore the parent with: zotio items restore %s --yes\n"+
+			"         inspect each child first; if it still belongs to this temporary parent and should be removed:\n",
+		tempParentKey, len(orphaned), strings.Join(orphaned, ", "), tempParentKey)
 	// One command per key. `items delete` takes a single <itemKey> and reads only
 	// args[0], so a joined list would delete the first and silently ignore the
 	// rest while appearing to name them all.

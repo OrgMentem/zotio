@@ -3,6 +3,7 @@
 package cli
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -37,7 +38,9 @@ type cleanupFake struct {
 	itemGets         map[string]int
 	// patched records every PATCH as "<key>:<body>".
 	patched []string
-	version int
+	// patchStatus overrides the default 204 response per item key.
+	patchStatus map[string]int
+	version     int
 }
 
 func (f *cleanupFake) start(t *testing.T) *httptest.Server {
@@ -84,6 +87,11 @@ func (f *cleanupFake) start(t *testing.T) *httptest.Server {
 		if r.Method == http.MethodPatch {
 			body, _ := readAllBody(r)
 			f.patched = append(f.patched, path+":"+body)
+			if status := f.patchStatus[path]; status != 0 {
+				w.WriteHeader(status)
+				_, _ = w.Write([]byte(`{"message":"forced PATCH failure"}`))
+				return
+			}
 			w.WriteHeader(http.StatusNoContent)
 			return
 		}
@@ -394,5 +402,96 @@ func TestTrashTemporaryParentIgnoresATrashedNote(t *testing.T) {
 	}
 	if len(orphaned) != 0 {
 		t.Errorf("orphaned = %v, want none: a trashed note is already recoverable", orphaned)
+	}
+}
+
+// TestFinishConnectorReparentReportsObservedNotesByTrashOutcome pins both
+// caller-level warning contracts. A confirmed trash can offer recovery and
+// per-key cleanup commands. A failed guarded PATCH must still name the observed
+// children, but it cannot claim they are orphaned or suggest deleting them.
+func TestFinishConnectorReparentReportsObservedNotesByTrashOutcome(t *testing.T) {
+	tests := []struct {
+		name            string
+		tempPatchStatus int
+		wantTempTrashed bool
+		want            []string
+		notWant         []string
+	}{
+		{
+			name:            "confirmed trash",
+			wantTempTrashed: true,
+			want: []string{
+				"temporary parent TEMP0001 was trashed",
+				"zotio items restore TEMP0001 --yes",
+				"zotio items delete NOTE0001 --yes",
+				"zotio items delete NOTE0002 --yes",
+			},
+			notWant: []string{"zotio items delete NOTE0001 NOTE0002 --yes"},
+		},
+		{
+			name:            "explicit rejection",
+			tempPatchStatus: http.StatusPreconditionFailed,
+			want: []string{
+				"NOTE0001, NOTE0002",
+				"did not confirm the parent's state",
+				"temporary parent TEMP0001 could not be trashed",
+			},
+			notWant: []string{
+				"temporary parent TEMP0001 was trashed",
+				"zotio items delete NOTE0001 --yes",
+				"zotio items delete NOTE0002 --yes",
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			f := &cleanupFake{
+				items: map[string]map[string]any{
+					"ATTACH01": {
+						"itemType": "attachment", "parentItem": "TEMP0001", "md5": "deadbeef",
+					},
+					"TEMP0001": tempParent(cleanupNonce, "TARGET01", false),
+				},
+				children: map[string][]map[string]any{
+					"TARGET01": {},
+					"TEMP0001": {
+						noteRow("NOTE0001", "TEMP0001", 0),
+						noteRow("NOTE0002", "TEMP0001", 0),
+					},
+				},
+				patchStatus: map[string]int{"TEMP0001": tt.tempPatchStatus},
+			}
+			srv := f.start(t)
+			c := f.client(t, srv)
+			cmd := reparentCmd(t)
+			var stderr bytes.Buffer
+			cmd.SetErr(&stderr)
+
+			out, err := finishConnectorReparent(
+				context.Background(),
+				cmd,
+				c,
+				storedUploadRequest{Path: "paper.pdf", ParentKey: "TARGET01", MD5: "deadbeef"},
+				connectorReparentResult{AttachmentKey: "ATTACH01", TempParentKey: "TEMP0001"},
+				cleanupNonce,
+			)
+			if err != nil {
+				t.Fatalf("finishConnectorReparent: %v", err)
+			}
+			if out.TempTrashed != tt.wantTempTrashed {
+				t.Fatalf("TempTrashed = %v, want %v", out.TempTrashed, tt.wantTempTrashed)
+			}
+			got := stderr.String()
+			for _, want := range tt.want {
+				if !strings.Contains(got, want) {
+					t.Errorf("stderr = %q, want %q", got, want)
+				}
+			}
+			for _, notWant := range tt.notWant {
+				if strings.Contains(got, notWant) {
+					t.Errorf("stderr = %q, must not contain %q", got, notWant)
+				}
+			}
+		})
 	}
 }
