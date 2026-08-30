@@ -4,21 +4,81 @@ Notable changes to zotio. Format follows [Keep a Changelog](https://keepachangel
 
 ## [Unreleased]
 
+## [0.22.0] — 2026-08-30
+
+### Changed — breaking
+
+- **A mutation that hits a conflict now returns the conflict, not exit 13.** A
+  failure to record the mutation journal used to overwrite the engine's own
+  error, so a real conflict without `--continue-on-error` surfaced as the
+  generic "results incomplete" exit code. CI gates and MCP callers that branch
+  on exit 13 to mean "partial run" will now see the specific conflict error
+  instead. A journal failure degrades only a run the engine already considered
+  successful.
+- **`searches run` returns `[]` for an empty page.** A working endpoint that
+  returned no hits used to produce an "endpoint unavailable" envelope, so a
+  caller could not distinguish "ran, 0 hits" from "could not run". Decoders that
+  treated the envelope as the empty case must handle an empty array.
+- **`items trash --data-source live` no longer unions local mirror rows.** An
+  explicit live source returned trashed items the plane never reported. The
+  union is now applied only under `--data-source auto`, so an explicit live
+  query can return fewer items than before.
+- **Sync counts now report rows written, not rows offered.** `UpsertBatch` and
+  `UpsertKeyed` counted every row they submitted, but the version-monotonic
+  guard writes nothing when it retains a newer row. Reported totals therefore
+  drop to the rows that actually landed. Consumers asserting on exact sync
+  counts must re-baseline.
+- **A connector import that cannot confirm its keys is now a conflict.** It
+  previously reported the write as applied with no keys, which was false
+  success. Missing or ambiguous read-back is a committed conflict carrying
+  title, session, marker, and connector evidence in the journal.
+- **`--fetch-pdf` is rejected with `--attach-mode stored`.** The manifest
+  already supplies the PDF, so the combination was never meaningful. Scripts
+  passing both flags now fail instead of silently preferring one.
+
 ### Fixed
 
 - **Connector imports now return permanent parent and attachment keys.** Zotero
   can expose a connector-created item only after its stored PDF finishes
-  attaching. zotio previously checked before that attachment, reported the
-  write as applied without keys, and left acquisition clients unable to record
-  the successful import. It now adds a random fragment to the attachment's
-  provenance URL before the connector write, then selects the one recent parent
-  and child carrying both that marker and the manifest PDF's registered MD5.
-  The fragment never changes the network destination and remains as permanent
-  per-write evidence, so an identical concurrent import cannot supply the wrong
-  keys. Missing or ambiguous read-back is a committed conflict with title,
-  session, marker, and connector evidence in the journal, not false success.
-  `--fetch-pdf` is rejected with stored mode because the manifest already
-  supplies the PDF.
+  attaching. zotio previously checked before that attachment and left
+  acquisition clients unable to record the successful import. It now adds a
+  random fragment to the attachment's provenance URL before the connector
+  write, then selects the one recent parent and child carrying both that marker
+  and the manifest PDF's registered MD5. The fragment never changes the network
+  destination and remains as permanent per-write evidence, so an identical
+  concurrent import cannot supply the wrong keys.
+- **`vault push` no longer records a baseline claiming content the remote does
+  not hold.** A `fallthrough` let a failed retry `PATCH` be reported as
+  converged, storing `RemoteHash` from the old remote body next to `SourceHash`
+  from the new local one. No later push retried, so the divergence became
+  permanent. The converged fast-forward is now reachable only when the live body
+  already equals the desired body.
+- **Local annotation reads no longer emit every row twice.** The annotation
+  joins matched on a bare id, but ids are unique only within a `resource_type`
+  and a trashed attachment deliberately stays in both partitions, so every
+  annotation beneath one was duplicated. Both aliases are now pinned.
+- **`doctor --ensure-live`, `init`, and preflight no longer report a desktop
+  that has exited as reachable.** The reachability probe read through the
+  five-minute response cache. It now uses the cache-free `ProbeGet`.
+- **`attachments add --via connector` no longer hands back an unusable write
+  client.** The route installed its own deadline on the caller's client and then
+  cancelled it. It now restores the borrowed context.
+- **Cancelling a connector create now shortens a wait already in progress.**
+  The inter-probe sleep used `context.Background()`, so a cancelled MCP
+  `command_run` held its mirrored slot until the sleep expired.
+- **Concurrent MCP command output no longer races.** One `boundedCapture`
+  receives both stdout and stderr of every mirrored command, and
+  `strings.Builder` is not concurrency-safe. The writer is now guarded.
+- **The client's base context is no longer a racing plain field.** `SetContext`
+  wrote it while every request goroutine read it. It is now an
+  `atomic.Pointer`, with a `Context()` accessor so a borrower can restore what
+  it found.
+- **`agent-context` writes its payload to the command's own writer.** The
+  output previously bypassed the cobra writer, so callers that captured the
+  command's output saw nothing.
+- **`agent-context` no longer advertises a stale generator-era description.**
+  The text described behavior the command does not have, including a
+  "journaled" claim.
 
 ## [0.21.0] — 2026-08-24
 
@@ -2002,7 +2062,8 @@ First tagged release: the trust-and-automation layer for Zotero.
 - **Onboarding** — `zotio init` guided setup (Zotero detection, local API, key, first sync, health check).
 - Release engineering: goreleaser builds for 6 platforms, cosign-signed checksums, SBOMs, Homebrew tap.
 
-[Unreleased]: https://github.com/OrgMentem/zotio/compare/v0.21.0...HEAD
+[Unreleased]: https://github.com/OrgMentem/zotio/compare/v0.22.0...HEAD
+[0.22.0]: https://github.com/OrgMentem/zotio/compare/v0.21.0...v0.22.0
 [0.21.0]: https://github.com/OrgMentem/zotio/compare/v0.20.1...v0.21.0
 [0.20.1]: https://github.com/OrgMentem/zotio/compare/v0.20.0...v0.20.1
 [0.20.0]: https://github.com/OrgMentem/zotio/compare/v0.19.0...v0.20.0
