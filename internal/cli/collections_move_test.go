@@ -70,18 +70,38 @@ func runCollectionsMoveTestCmd(t *testing.T, srv *collectionMoveTestServer, flag
 	return out.String(), errOut.String(), err
 }
 
-func TestCollectionsMovePreviewWithoutYesWritesNothing(t *testing.T) {
-	srv := newCollectionMoveTestServer(t)
+// TestCollectionsMovePreviewWritesNothing pins one contract across every
+// preview mode: print the "would move" line (nothing at all under --quiet) and
+// issue not one HTTP request. The three modes are distinct inputs to
+// resolveMutationMode and flags.quiet, so each stays a case, but the shared
+// server, output, and no-request assertions exist exactly once.
+func TestCollectionsMovePreviewWritesNothing(t *testing.T) {
+	const wouldMove = "Would move collection COLL under parent PARENT\n"
+	tests := []struct {
+		name    string
+		flags   *rootFlags
+		wantOut string
+	}{
+		{name: "default_preview", flags: &rootFlags{}, wantOut: wouldMove},
+		{name: "dry_run", flags: &rootFlags{dryRun: true}, wantOut: wouldMove},
+		{name: "quiet_preview", flags: &rootFlags{quiet: true}, wantOut: ""},
+	}
 
-	out, stderr, err := runCollectionsMoveTestCmd(t, srv, &rootFlags{}, "--to", "PARENT", "COLL")
-	if err != nil {
-		t.Fatalf("collections move preview: %v; stderr=%s", err, stderr)
-	}
-	if got, want := out, "Would move collection COLL under parent PARENT\n"; got != want {
-		t.Fatalf("stdout = %q, want %q", got, want)
-	}
-	if srv.getCount != 0 || srv.putCount != 0 || len(srv.requestPaths) != 0 {
-		t.Fatalf("requests = %v (GET=%d PUT=%d), want no HTTP calls", srv.requestPaths, srv.getCount, srv.putCount)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			srv := newCollectionMoveTestServer(t)
+
+			out, stderr, err := runCollectionsMoveTestCmd(t, srv, tt.flags, "--to", "PARENT", "COLL")
+			if err != nil {
+				t.Fatalf("collections move preview: %v; stderr=%s", err, stderr)
+			}
+			if out != tt.wantOut {
+				t.Fatalf("stdout = %q, want %q", out, tt.wantOut)
+			}
+			if srv.getCount != 0 || srv.putCount != 0 || len(srv.requestPaths) != 0 {
+				t.Fatalf("requests = %v (GET=%d PUT=%d), want no HTTP calls", srv.requestPaths, srv.getCount, srv.putCount)
+			}
+		})
 	}
 }
 
@@ -103,21 +123,6 @@ func TestCollectionsMoveApplyGetsThenPutsWithVersionPrecondition(t *testing.T) {
 	}
 	if srv.putBody["parentCollection"] != "PARENT" {
 		t.Fatalf("PUT body = %+v, want parentCollection PARENT", srv.putBody)
-	}
-}
-
-func TestCollectionsMoveDryRunWritesNothing(t *testing.T) {
-	srv := newCollectionMoveTestServer(t)
-
-	out, stderr, err := runCollectionsMoveTestCmd(t, srv, &rootFlags{dryRun: true}, "--to", "PARENT", "COLL")
-	if err != nil {
-		t.Fatalf("collections move dry-run: %v; stderr=%s", err, stderr)
-	}
-	if got, want := out, "Would move collection COLL under parent PARENT\n"; got != want {
-		t.Fatalf("stdout = %q, want %q", got, want)
-	}
-	if srv.getCount != 0 || srv.putCount != 0 || len(srv.requestPaths) != 0 {
-		t.Fatalf("requests = %v (GET=%d PUT=%d), want no HTTP calls", srv.requestPaths, srv.getCount, srv.putCount)
 	}
 }
 

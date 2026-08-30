@@ -436,3 +436,17 @@ func TestItemsFindCommandLooksUpURLTitleAndOpenAlex(t *testing.T) {
 		})
 	}
 }
+
+// filterFindRowsExact lives here, not in items_find.go, because production has no
+// caller: runItemsFind applies findRowMatchesExact per row as it streams the
+// cursor. The slice form survives only as a convenience for the table tests below,
+// so it stays out of the production package.
+func filterFindRowsExact(rows []map[string]any, query findItemsQuery) []map[string]any {
+	out := make([]map[string]any, 0, len(rows))
+	for _, row := range rows {
+		if findRowMatchesExact(row, query) {
+			out = append(out, row)
+		}
+	}
+	return out
+}

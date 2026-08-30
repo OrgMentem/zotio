@@ -330,16 +330,6 @@ func extractItemDataRows(rows []map[string]any) []map[string]any {
 	return out
 }
 
-func filterFindRowsExact(rows []map[string]any, query findItemsQuery) []map[string]any {
-	out := make([]map[string]any, 0, len(rows))
-	for _, row := range rows {
-		if findRowMatchesExact(row, query) {
-			out = append(out, row)
-		}
-	}
-	return out
-}
-
 func findRowMatchesExact(row map[string]any, query findItemsQuery) bool {
 	raw, ok := row["data"].(string)
 	if !ok {

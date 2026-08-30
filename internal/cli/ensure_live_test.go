@@ -3,10 +3,16 @@
 package cli
 
 import (
+	"bytes"
+	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"strings"
 	"testing"
+
+	"github.com/spf13/cobra"
 
 	"zotio/internal/cliutil"
 )
@@ -96,5 +102,102 @@ func TestLocalAPIReachableTreatsHTTPErrorsAsReachable(t *testing.T) {
 	}
 	if !localAPIReachable(c) {
 		t.Fatal("a 404 from a running desktop must still count as reachable")
+	}
+}
+
+func runEnsureLiveTest(t *testing.T, baseURL string, flags *rootFlags, launch bool) (string, error) {
+	t.Helper()
+	flags.configPath = testConfigFile(t, baseURL)
+	cmd := &cobra.Command{Use: "doctor"}
+	cmd.SetContext(context.Background())
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&out)
+	err := ensureLive(cmd, flags, launch)
+	return out.String(), err
+}
+
+// ensureLive is the remediation primitive behind `doctor --ensure-live` and the
+// live_local_api precondition, so its reachable branch must render on the Cobra
+// writer in both shapes doctor can be asked for.
+func TestEnsureLiveReportsAReachableDesktop(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{}`))
+	}))
+	defer srv.Close()
+
+	tests := []struct {
+		name  string
+		flags *rootFlags
+	}{
+		{name: "text", flags: &rootFlags{}},
+		{name: "json", flags: &rootFlags{asJSON: true}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			out, err := runEnsureLiveTest(t, srv.URL+"/users/0", tt.flags, false)
+			if err != nil {
+				t.Fatalf("ensureLive against a reachable server: %v", err)
+			}
+			if !tt.flags.asJSON {
+				if want := "Zotero local API: reachable\n"; out != want {
+					t.Fatalf("output = %q, want %q", out, want)
+				}
+				return
+			}
+			// Assert the decoded status, not the byte layout: printOutputWithFlags
+			// owns indentation, and the contract agents read is the field.
+			var got struct {
+				Status string `json:"status"`
+			}
+			if err := json.Unmarshal([]byte(out), &got); err != nil {
+				t.Fatalf("JSON output %q: %v", out, err)
+			}
+			if got.Status != "reachable" {
+				t.Fatalf("status = %q, want reachable", got.Status)
+			}
+		})
+	}
+}
+
+// Without --launch, an unreachable desktop must be a PRECONDITION (exit 9), not a
+// generic error: exit 9 is the code that tells a caller the remedy is to start
+// Zotero, and the message must name the --launch remediation doctor advertises.
+func TestEnsureLiveWithoutLaunchIsAPrecondition(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	baseURL := srv.URL + "/users/0"
+	srv.Close() // nothing is listening: the desktop is not running
+
+	_, err := runEnsureLiveTest(t, baseURL, &rootFlags{}, false)
+	if err == nil {
+		t.Fatal("ensureLive against a dead server = nil error, want a precondition error")
+	}
+	if got := ExitCode(err); got != 9 {
+		t.Fatalf("exit code = %d, want 9 (precondition); err=%v", got, err)
+	}
+	if !strings.Contains(err.Error(), "--launch") {
+		t.Fatalf("error = %q, want it to name the --launch remediation", err.Error())
+	}
+}
+
+// The verify pipeline runs every command for real, so ensureLive --launch must
+// return before it ever asks the OS to open zotero://, even though the local API
+// is unreachable in that environment.
+func TestEnsureLiveUnderVerifyEnvNeverLaunches(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv(cliutil.VerifyEnvVar, "1")
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	baseURL := srv.URL + "/users/0"
+	srv.Close()
+
+	if _, err := runEnsureLiveTest(t, baseURL, &rootFlags{}, true); err != nil {
+		t.Fatalf("ensureLive --launch under verify env: %v", err)
 	}
 }

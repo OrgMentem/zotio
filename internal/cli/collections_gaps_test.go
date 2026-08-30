@@ -3,6 +3,7 @@
 package cli
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"net/http"
@@ -150,5 +151,64 @@ func TestFetchOutgoingReferenceDOIsFallsBackToSemanticScholarOnCOCIEmptyOrError(
 				t.Fatalf("titles = %v, want Semantic Scholar reference title", refs.Titles)
 			}
 		})
+	}
+}
+
+func runCollectionsGapsTestCmd(t *testing.T, args ...string) (string, error) {
+	t.Helper()
+	cmd := newCollectionsGapsCmd(&rootFlags{})
+	cmd.SilenceErrors, cmd.SilenceUsage = true, true
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&out)
+	cmd.SetArgs(args)
+	err := cmd.Execute()
+	return out.String(), err
+}
+
+// The command handler owns two flag bounds that buildCollectionGapsReportWithCache
+// never sees: a negative --limit would make the scan query nonsensical and a
+// --top below 1 would slice an empty ranking. Both must surface as usage errors
+// (exit 2), which is what shells and CI branch on to tell a caller mistake apart
+// from a real failure.
+func TestCollectionsGapsCmdRejectsOutOfRangeFlags(t *testing.T) {
+	tests := []struct {
+		name string
+		flag string
+		want string
+	}{
+		{name: "negative_limit", flag: "--limit=-1", want: "--limit must be >= 0"},
+		{name: "zero_top", flag: "--top=0", want: "--top must be >= 1"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if _, err := runCollectionsGapsTestCmd(t, tt.flag, "COL"); err == nil {
+				t.Fatalf("%s = nil error, want a usage error", tt.flag)
+			} else if got := ExitCode(err); got != 2 {
+				t.Fatalf("exit code = %d, want 2 (usage); err=%v", got, err)
+			} else if !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("error = %q, want it to name %q", err.Error(), tt.want)
+			}
+		})
+	}
+}
+
+// No sync has run, so openStoreForRead finds no database file and returns a nil
+// store. That must reach the caller as a precondition (exit 9) carrying the sync
+// remediation, not as a nil-store panic inside the report builder: exit 9 is the
+// code that tells CI to run sync and retry.
+func TestCollectionsGapsCmdRequiresASyncedStore(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	_, err := runCollectionsGapsTestCmd(t, "COL")
+	if err == nil {
+		t.Fatal("gaps against an unsynced store = nil error, want a precondition error")
+	}
+	if got := ExitCode(err); got != 9 {
+		t.Fatalf("exit code = %d, want 9 (precondition); err=%v", got, err)
+	}
+	if !strings.Contains(err.Error(), "zotio sync") {
+		t.Fatalf("error = %q, want the sync remediation", err.Error())
 	}
 }
