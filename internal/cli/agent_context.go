@@ -4,7 +4,6 @@ package cli
 
 import (
 	"encoding/json"
-	"os"
 	"sort"
 
 	"github.com/spf13/cobra"
@@ -92,7 +91,11 @@ agents can introspect this CLI at runtime without parsing --help or
 reading source. Schema is versioned via schema_version.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := buildAgentContext(rootCmd)
-			enc := json.NewEncoder(os.Stdout)
+			// cmd.OutOrStdout(), not os.Stdout: every other command writes through
+			// the Cobra writer, which is what --deliver-spool tees and what
+			// in-process callers (tests, capture wrappers) redirect. Writing the
+			// payload straight to the process stdout escaped all of them.
+			enc := json.NewEncoder(cmd.OutOrStdout())
 			if pretty {
 				enc.SetIndent("", "  ")
 			}
