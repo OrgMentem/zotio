@@ -4,6 +4,15 @@ Notable changes to zotio. Format follows [Keep a Changelog](https://keepachangel
 
 ## [Unreleased]
 
+### Changed — breaking
+
+- **Conditional writes no longer auto-retry ambiguous failures from an HTTP
+  precondition alone.** A write that committed but lost its response could
+  replay a stale precondition and report a false HTTP 412 conflict. The client
+  now returns the original transport or server error. Explicit HTTP 429 rate
+  limits still retry. Writes with a `Zotero-Write-Token` still retry because
+  their endpoint can reconcile the token-replay response.
+
 ## [0.23.0] — 2026-08-30
 
 ### Changed — breaking

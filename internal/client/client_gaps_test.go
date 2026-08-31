@@ -668,3 +668,100 @@ func TestGetWithHeadersCacheKeyIncludesHeaders(t *testing.T) {
 		t.Fatalf("server hits = %d, want 2 for different request headers", got)
 	}
 }
+
+func TestConditionalWritesDoNotRetryAmbiguousTransportFailures(t *testing.T) {
+	for header, value := range map[string]string{
+		"If-Unmodified-Since-Version": "42",
+		"If-Match":                    `"item-etag"`,
+		"If-None-Match":               "*",
+	} {
+		t.Run(header, func(t *testing.T) {
+			var calls int32
+			transport := clientRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+				if atomic.AddInt32(&calls, 1) == 1 {
+					return nil, errors.New("response lost after commit")
+				}
+				return &http.Response{
+					StatusCode: http.StatusPreconditionFailed,
+					Header:     make(http.Header),
+					Body:       io.NopCloser(strings.NewReader("precondition failed")),
+					Request:    req,
+				}, nil
+			})
+
+			c := clientTestNewClient(t, "https://example.test")
+			c.NoCache = true
+			c.HTTPClient = &http.Client{Transport: transport}
+			_, status, _, err := c.doRequest(
+				context.Background(),
+				http.MethodPatch,
+				"/items/ITEM0001",
+				nil,
+				map[string]any{"title": "updated"},
+				map[string]string{header: value},
+			)
+			if err == nil {
+				t.Fatal("doRequest returned nil after the response was lost")
+			}
+			if status != 0 {
+				t.Fatalf("status = %d, want 0 from the original transport failure", status)
+			}
+			var apiErr *APIError
+			if errors.As(err, &apiErr) {
+				t.Fatalf("error = %v, want the original ambiguous transport failure, not a replay conflict", err)
+			}
+			if !strings.Contains(err.Error(), "response lost after commit") {
+				t.Fatalf("error = %q, want the original transport failure", err)
+			}
+			if got := atomic.LoadInt32(&calls); got != 1 {
+				t.Fatalf("transport calls = %d, want 1; replaying the stale precondition can create a false conflict", got)
+			}
+		})
+	}
+}
+
+func TestConditionalWriteDoesNotRetryAmbiguousServerError(t *testing.T) {
+	restore := SetRetryBackoffBaseForTest(time.Millisecond)
+	t.Cleanup(restore)
+
+	var calls int32
+	transport := clientRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+		status := http.StatusInternalServerError
+		body := "response lost after commit"
+		if atomic.AddInt32(&calls, 1) > 1 {
+			status = http.StatusPreconditionFailed
+			body = "precondition failed"
+		}
+		return &http.Response{
+			StatusCode: status,
+			Header:     make(http.Header),
+			Body:       io.NopCloser(strings.NewReader(body)),
+			Request:    req,
+		}, nil
+	})
+
+	c := clientTestNewClient(t, "https://example.test")
+	c.NoCache = true
+	c.HTTPClient = &http.Client{Transport: transport}
+	_, status, _, err := c.doRequest(
+		context.Background(),
+		http.MethodPatch,
+		"/items/ITEM0001",
+		nil,
+		map[string]any{"title": "updated"},
+		map[string]string{"If-Unmodified-Since-Version": "42"},
+	)
+	if err == nil {
+		t.Fatal("doRequest returned nil for HTTP 500")
+	}
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) {
+		t.Fatalf("error type = %T, want *APIError", err)
+	}
+	if status != http.StatusInternalServerError || apiErr.StatusCode != http.StatusInternalServerError {
+		t.Fatalf("status = %d (APIError %d), want the original HTTP 500", status, apiErr.StatusCode)
+	}
+	if got := atomic.LoadInt32(&calls); got != 1 {
+		t.Fatalf("transport calls = %d, want 1; replaying the stale precondition can create a false conflict", got)
+	}
+}
