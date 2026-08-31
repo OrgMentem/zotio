@@ -800,13 +800,16 @@ func (c *Client) doRequestOnBase(ctx context.Context, baseOverride, method, path
 		if req.Header.Get("User-Agent") == "" {
 			req.Header.Set("User-Agent", "zotio/0.1.0")
 		}
-		// A write is safe to retry only when it is idempotent: GET/HEAD, or it
-		// carries an idempotency guard — a Zotero write token, or an RFC
-		// conditional precondition (If-Unmodified-Since-Version, If-Match, or
-		// If-None-Match, which Zotero's file-upload protocol relies on for safe
-		// authorization/registration retries).
-		retrySafe := method == http.MethodGet || method == http.MethodHead ||
-			req.Header.Get("Zotero-Write-Token") != "" ||
+		// A conditional precondition makes a write at-most-once, but does not
+		// make an ambiguous response safe to replay. If the first write commits
+		// and its response is lost, replaying the stale precondition produces a
+		// 412 that looks like a concurrency conflict. Transport and 5xx retries
+		// therefore require GET/HEAD or Zotero's write token, whose endpoint
+		// owner can reconcile the token-replay response. An explicit 429 is not
+		// ambiguous, so conditional requests can still retry that response.
+		ambiguousRetrySafe := method == http.MethodGet || method == http.MethodHead ||
+			req.Header.Get("Zotero-Write-Token") != ""
+		rateLimitRetrySafe := ambiguousRetrySafe ||
 			req.Header.Get("If-Unmodified-Since-Version") != "" ||
 			req.Header.Get("If-Match") != "" ||
 			req.Header.Get("If-None-Match") != ""
@@ -817,7 +820,7 @@ func (c *Client) doRequestOnBase(ctx context.Context, baseOverride, method, path
 				return nil, 0, nil, fmt.Errorf("%s %s: %w", method, path, ctxErr)
 			}
 			lastErr = fmt.Errorf("%s %s: %w", method, path, err)
-			if !retrySafe {
+			if !ambiguousRetrySafe {
 				return nil, 0, nil, lastErr
 			}
 			continue
@@ -863,7 +866,7 @@ func (c *Client) doRequestOnBase(ctx context.Context, baseOverride, method, path
 		}
 
 		// Rate limited - adjust adaptive limiter and retry
-		if retrySafe && resp.StatusCode == 429 && attempt < maxRetries {
+		if rateLimitRetrySafe && resp.StatusCode == 429 && attempt < maxRetries {
 			c.limiter.OnRateLimit()
 			wait, synthetic := cliutil.RetryAfterOrFallback(resp)
 			// A server-supplied Retry-After is honoured exactly as sent. Only
@@ -885,7 +888,7 @@ func (c *Client) doRequestOnBase(ctx context.Context, baseOverride, method, path
 		// Server error - retry with backoff. 501 Not Implemented is never transient
 		// (e.g. writes against the read-only Zotero local API), so don't retry it.
 		// avoid a pointless 3x backoff storm on local-API write rejections.
-		if retrySafe && resp.StatusCode >= 500 && resp.StatusCode != 501 && attempt < maxRetries {
+		if ambiguousRetrySafe && resp.StatusCode >= 500 && resp.StatusCode != 501 && attempt < maxRetries {
 			wait := time.Duration(math.Pow(2, float64(attempt))) * retryBackoffBase()
 			fmt.Fprintf(os.Stderr, "server error %d, retrying in %s (attempt %d/%d)\n", resp.StatusCode, wait, attempt+1, maxRetries)
 			if err := sleepWithContext(ctx, wait); err != nil {
