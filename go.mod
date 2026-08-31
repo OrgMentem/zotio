@@ -14,8 +14,8 @@ require (
 )
 
 require (
-	github.com/gofrs/flock v0.13.0
-	golang.org/x/text v0.40.0
+	github.com/gofrs/flock v0.13.1
+	golang.org/x/text v0.41.0
 )
 
 require (
@@ -30,7 +30,7 @@ require (
 	github.com/santhosh-tekuri/jsonschema/v6 v6.0.2 // indirect
 	github.com/spf13/cast v1.7.1 // indirect
 	github.com/yosida95/uritemplate/v3 v3.0.2 // indirect
-	golang.org/x/sys v0.46.0 // indirect
+	golang.org/x/sys v0.47.0 // indirect
 	modernc.org/libc v1.72.3 // indirect; MUST equal the version modernc.org/sqlite's go.mod pins (gitlab.com/cznic/sqlite#177) — gated by `make lockstep`
 	modernc.org/mathutil v1.7.1 // indirect
 	modernc.org/memory v1.11.0 // indirect
