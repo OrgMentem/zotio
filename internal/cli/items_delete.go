@@ -5,7 +5,6 @@ package cli
 import (
 	"encoding/json"
 	"fmt"
-	"strconv"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -111,15 +110,18 @@ cannot be undone by 'items restore' and requires --allow-destructive.`,
 							"message": "item is already in the trash",
 						}, nil
 					}
-					headers := map[string]string{"If-Unmodified-Since-Version": strconv.Itoa(version)}
-					var writeErr error
+					var (
+						status   string
+						detail   any
+						writeErr error
+					)
 					if permanent {
-						_, _, writeErr = c.DeleteWithHeaders(path, headers)
+						_, _, status, detail, writeErr = deleteWithVersionGuard(c, path, version)
 					} else {
 						// The trash flag, which items restore clears and items trash lists.
 						// A hard DELETE here destroyed the item and its child attachments
 						// outright while the help promised the trash.
-						_, _, writeErr = c.PatchWithHeaders(path, map[string]any{"deleted": 1}, headers)
+						status, detail, writeErr = patchWithVersionGuard(c, path, map[string]any{"deleted": 1}, version)
 					}
 					if writeErr != nil {
 						// The rare GET-then-write race: the item vanished in the moment
@@ -131,9 +133,9 @@ cannot be undone by 'items restore' and requires --allow-destructive.`,
 							}, nil
 						}
 						applyErr = writeErr
-						return "failed", nil, writeErr
+						return status, detail, writeErr
 					}
-					return "applied", nil, nil
+					return status, detail, nil
 				},
 			}}
 			env, runErr := runMutation(cmd.Context(), flags, "items.delete", ops)

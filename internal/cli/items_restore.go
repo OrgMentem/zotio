@@ -4,7 +4,6 @@ package cli
 
 import (
 	"fmt"
-	"strconv"
 
 	"github.com/spf13/cobra"
 
@@ -60,17 +59,11 @@ func newItemsRestoreCmd(flags *rootFlags) *cobra.Command {
 						applyErr = apiErr(fmt.Errorf("reading item version for %s: response did not include a version", args[0]))
 						return "failed", nil, applyErr
 					}
-					headers := map[string]string{"If-Unmodified-Since-Version": strconv.Itoa(version)}
-					_, statusCode, patchErr := writeClient.PatchWithHeaders(path, map[string]any{"deleted": 0}, headers)
+					status, detail, patchErr := patchWithVersionGuard(writeClient, path, map[string]any{"deleted": 0}, version)
 					if patchErr != nil {
 						applyErr = patchErr
-						return "failed", nil, patchErr
 					}
-					if statusCode < 200 || statusCode >= 300 {
-						applyErr = apiErr(fmt.Errorf("restore returned HTTP %d", statusCode))
-						return "failed", nil, applyErr
-					}
-					return "applied", nil, nil
+					return status, detail, patchErr
 				},
 			}}
 			// Shared envelope, not a bespoke {action,resource,key,status,success}

@@ -128,7 +128,7 @@ wins over --yes.`,
 					if err != nil {
 						return "failed", nil, err
 					}
-					return "applied", map[string]any{"via": res.Via}, nil
+					return "applied", map[string]any{"via": res.Via, "key": createdItemKeyOf(res)}, nil
 				},
 			}}
 			if flagFetchPDF {
@@ -144,16 +144,8 @@ wins over --yes.`,
 						},
 					}},
 					Apply: func() (string, any, error) {
-						attachResolverPDF(cmd.Context(), flags, &res)
-						detail := map[string]any{
-							"status": res.OAPDFStatus,
-							"title":  res.OAPDFTitle,
-							"error":  res.OAPDFError,
-						}
-						if res.OAPDFStatus == "attached" {
-							return "applied", detail, nil
-						}
-						return "no_op", detail, nil
+						outcome, err := attachResolverPDF(cmd.Context(), flags, &res)
+						return resolverPDFApplyResult(res, outcome, err)
 					},
 				})
 			}

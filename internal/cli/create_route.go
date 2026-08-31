@@ -124,16 +124,8 @@ func runSingleItemCreate(cmd *cobra.Command, flags *rootFlags, spec singleItemCr
 				if res.Via != "connector" {
 					return "failed", nil, preconditionErr(fmt.Errorf("--fetch-pdf requires the desktop connector; use --via connector"))
 				}
-				attachResolverPDF(cmd.Context(), flags, &res)
-				detail := map[string]any{
-					"status": res.OAPDFStatus,
-					"title":  res.OAPDFTitle,
-					"error":  res.OAPDFError,
-				}
-				if res.OAPDFStatus == "attached" {
-					return "applied", detail, nil
-				}
-				return "no_op", detail, nil
+				outcome, err := attachResolverPDF(cmd.Context(), flags, &res)
+				return resolverPDFApplyResult(res, outcome, err)
 			},
 		})
 	}
@@ -157,6 +149,14 @@ func runSingleItemCreate(cmd *cobra.Command, flags *rootFlags, spec singleItemCr
 // non-undoable instead of journaling a misleading target.
 func createdItemKeyOf(res itemCreateResult) string {
 	return res.WebKey
+}
+
+func itemCreateCommitted(res itemCreateResult) bool {
+	if res.WebKey != "" || res.FilingFailed {
+		return true
+	}
+	return res.Via == "connector" && res.ConnectorError == "" &&
+		res.Session != "" && res.ConnKey != ""
 }
 
 func singleItemCreateApplyResult(res itemCreateResult, err error, fallbackKey string) (string, any, error) {
@@ -359,36 +359,83 @@ var connectorCreateRecoveryWindow = 30 * time.Second
 // exercise the loop without spending real seconds in it.
 var connectorCreateRecoveryInterval = 2 * time.Second
 
-// attachResolverPDF adds an open-access PDF to a connector-created item when
-// Zotero reports an attachment resolver for the same save session.
-func attachResolverPDF(ctx context.Context, flags *rootFlags, res *itemCreateResult) {
-	if res == nil || res.Via != "connector" || res.Session == "" || res.ConnKey == "" {
-		return
+type resolverPDFOutcome string
+
+const (
+	resolverPDFNoOp    resolverPDFOutcome = "no_op"
+	resolverPDFApplied resolverPDFOutcome = "applied"
+)
+
+// attachResolverPDF distinguishes normal resolver absence from operational
+// failure. The parent item already exists on every call.
+func attachResolverPDF(ctx context.Context, flags *rootFlags, res *itemCreateResult) (resolverPDFOutcome, error) {
+	fail := func(err error) (resolverPDFOutcome, error) {
+		if res != nil {
+			res.OAPDFStatus = "error"
+			res.OAPDFError = err.Error()
+		}
+		return "", err
+	}
+	if res == nil {
+		return fail(fmt.Errorf("cannot attach a resolver PDF without a committed parent result"))
+	}
+	if res.Via != "connector" {
+		return fail(preconditionErr(fmt.Errorf("--fetch-pdf requires the desktop connector; use --via connector")))
+	}
+	if res.Session == "" || res.ConnKey == "" {
+		return fail(fmt.Errorf("committed connector parent is missing its save-session identity"))
 	}
 	conn, err := flags.newConnector()
 	if err != nil {
-		res.OAPDFStatus = "error"
-		res.OAPDFError = err.Error()
-		return
+		return fail(fmt.Errorf("initializing the connector PDF resolver: %w", err))
 	}
 	ok, err := conn.HasAttachmentResolvers(ctx, res.Session, res.ConnKey)
 	if err != nil {
-		res.OAPDFStatus = "error"
-		res.OAPDFError = err.Error()
-		return
+		return fail(fmt.Errorf("checking connector PDF resolvers: %w", err))
 	}
 	if !ok {
 		res.OAPDFStatus = "none"
-		return
+		return resolverPDFNoOp, nil
 	}
 	title, err := conn.SaveAttachmentFromResolver(ctx, res.Session, res.ConnKey)
 	if err != nil {
-		res.OAPDFStatus = "error"
-		res.OAPDFError = err.Error()
-		return
+		return fail(fmt.Errorf("saving the resolver PDF: %w", err))
 	}
 	res.OAPDFStatus = "attached"
 	res.OAPDFTitle = title
+	return resolverPDFApplied, nil
+}
+
+func resolverPDFApplyResult(res itemCreateResult, outcome resolverPDFOutcome, err error) (string, any, error) {
+	committed := itemCreateCommitted(res)
+	detail := map[string]any{
+		"status":        res.OAPDFStatus,
+		"title":         res.OAPDFTitle,
+		"error":         res.OAPDFError,
+		"via":           res.Via,
+		"session":       res.Session,
+		"connector_key": res.ConnKey,
+		"committed":     committed,
+	}
+	if res.WebKey != "" {
+		detail["key"] = res.WebKey
+		detail["parent_key"] = res.WebKey
+	}
+	if err != nil {
+		if committed {
+			detail["message"] = fmt.Sprintf(
+				"parent item committed, but the requested resolver PDF failed: %v; do not recreate the parent",
+				err,
+			)
+		} else {
+			detail["message"] = fmt.Sprintf(
+				"parent item was not confirmed, and the requested resolver PDF failed: %v; inspect Zotero before retrying",
+				err,
+			)
+		}
+		return "failed", detail, err
+	}
+	return string(outcome), detail, nil
 }
 
 func itemCreateSourceURI(item map[string]any) string {

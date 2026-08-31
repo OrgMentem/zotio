@@ -568,8 +568,11 @@ func collectCacheReport(ctx context.Context, staleAfterSpec string) map[string]a
 	}
 	defer s.Close()
 
+	var warnings []string
 	if v, verr := s.SchemaVersion(); verr == nil {
 		report["schema_version"] = v
+	} else {
+		warnings = append(warnings, fmt.Sprintf("reading schema version: %v", verr))
 	}
 
 	// Report what the connection actually negotiated, not what the DSN asked
@@ -584,6 +587,8 @@ func collectCacheReport(ctx context.Context, staleAfterSpec string) map[string]a
 		if pragmas["busy_timeout"] == "0" {
 			report["busy_timeout_hint"] = "busy_timeout is 0: contention returns SQLITE_BUSY immediately instead of waiting"
 		}
+	} else {
+		warnings = append(warnings, fmt.Sprintf("reading runtime pragmas: %v", perr))
 	}
 
 	staleAfter := 6 * time.Hour
@@ -593,13 +598,13 @@ func collectCacheReport(ctx context.Context, staleAfterSpec string) map[string]a
 		}
 	}
 
-	var warnings []string
-
 	// Rows carrying a write that landed on the write plane but that the read
 	// plane has not reported back yet. Sync preserves them; surfacing the count
 	// makes the gap between the two planes visible instead of invisible.
-	if pending, perr := s.PendingWriteCount(); perr == nil && pending > 0 {
+	if pending, perr := s.PendingWriteCount(); perr == nil {
 		report["pending_writes"] = pending
+	} else {
+		warnings = append(warnings, fmt.Sprintf("counting pending writes: %v", perr))
 	}
 
 	// `rows` must report what the store actually holds. sync_state.total_count is
@@ -621,21 +626,18 @@ func collectCacheReport(ctx context.Context, staleAfterSpec string) map[string]a
 			warnings = append(warnings, fmt.Sprintf("counting resource rows: %v", err))
 		}
 		countRows.Close()
+	} else {
+		warnings = append(warnings, fmt.Sprintf("counting resource rows: %v", cerr))
 	}
 
 	rows, qerr := s.DB().Query(`SELECT resource_type, COALESCE(total_count, 0), last_synced_at,
 		COALESCE(library_version, 0), COALESCE(cursor_source, ''), last_changed_at
 		FROM sync_state ORDER BY resource_type`)
 	if qerr != nil {
-		// sync_state may not exist on a fresh DB that has migrated but not
-		// yet had any sync runs — treat as unknown rather than error.
-		report["status"] = "unknown"
-		report["hint"] = "No sync state recorded; run 'zotio sync' to populate."
-		// Any warning the row-count query already produced is still diagnostic
-		// information; returning here must not discard it.
-		if len(warnings) > 0 {
-			report["warnings"] = warnings
-		}
+		warnings = append(warnings, fmt.Sprintf("reading sync state: %v", qerr))
+		report["status"] = "error"
+		report["warnings"] = warnings
+		report["hint"] = "Some cache diagnostics could not be read; results are incomplete."
 		return report
 	}
 	defer rows.Close()

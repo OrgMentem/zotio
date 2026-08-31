@@ -4,11 +4,14 @@ package cli
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 )
@@ -437,5 +440,55 @@ func TestImportDoiFetchPDFUsesResolvedConnectorRoute(t *testing.T) {
 	}
 	if webPosts != 0 {
 		t.Fatalf("Web API item POSTs = %d, want connector-only import", webPosts)
+	}
+}
+
+func TestResolverPDFOperationalFailurePreservesCommittedParent(t *testing.T) {
+	res := itemCreateResult{
+		Via:    "connector",
+		WebKey: "PARENT01",
+		// A missing session models committed-parent evidence that is too
+		// incomplete to contact the resolver.
+	}
+	outcome, err := attachResolverPDF(context.Background(), &rootFlags{}, &res)
+	if err == nil {
+		t.Fatal("attachResolverPDF accepted a committed parent without save-session identity")
+	}
+	status, reason, applyErr := resolverPDFApplyResult(res, outcome, err)
+	if status != "failed" || applyErr == nil {
+		t.Fatalf("resolver mutation = status %q error %v, want failed operational result", status, applyErr)
+	}
+	detail, ok := reason.(map[string]any)
+	if !ok {
+		t.Fatalf("resolver failure detail type = %T, want map", reason)
+	}
+	if detail["key"] != "PARENT01" || detail["parent_key"] != "PARENT01" {
+		t.Fatalf("resolver failure lost committed parent evidence: %#v", detail)
+	}
+	if !strings.Contains(fmt.Sprint(detail["message"]), "do not recreate the parent") {
+		t.Fatalf("resolver failure message lacks retry safety: %#v", detail)
+	}
+}
+
+func TestResolverPDFFailureDoesNotClaimUncommittedParent(t *testing.T) {
+	res := itemCreateResult{
+		Via:            "connector",
+		Session:        "SESSION01",
+		ConnKey:        "CONNECTOR01",
+		ConnectorError: "save outcome unresolved",
+	}
+	status, reason, applyErr := resolverPDFApplyResult(res, "", fmt.Errorf("resolver unavailable"))
+	if status != "failed" || applyErr == nil {
+		t.Fatalf("resolver mutation = status %q error %v, want failed operational result", status, applyErr)
+	}
+	detail, ok := reason.(map[string]any)
+	if !ok {
+		t.Fatalf("resolver failure detail type = %T, want map", reason)
+	}
+	if detail["committed"] != false {
+		t.Fatalf("resolver failure committed = %v, want false", detail["committed"])
+	}
+	if strings.Contains(fmt.Sprint(detail["message"]), "parent item committed") {
+		t.Fatalf("resolver failure falsely claimed a committed parent: %#v", detail)
 	}
 }

@@ -28,7 +28,7 @@ import (
 // shape — adding columns, dropping indexes, changing FTS5 tokenizers —
 // so an older binary refuses to open a newer database rather than silently
 // producing wrong results against a schema it cannot read.
-const StoreSchemaVersion = 6
+const StoreSchemaVersion = 7
 
 // ErrNotFound identifies a resource read that found no matching row.
 var ErrNotFound = errors.New("store: resource not found")
@@ -307,6 +307,9 @@ func (s *Store) ensureColumn(ctx context.Context, conn *sql.Conn, table, column,
 func (s *Store) backfillColumns(ctx context.Context, conn *sql.Conn) error {
 	for _, c := range []struct{ table, column, decl string }{
 		{table: "sync_state", column: "last_cursor", decl: "TEXT"},
+		// Exact request identity for last_cursor. A pagination cursor is valid
+		// only against the plane and filtered query that issued it.
+		{table: "sync_state", column: "cursor_scope", decl: "TEXT"},
 		{table: "sync_state", column: "last_synced_at", decl: "DATETIME"},
 		{table: "sync_state", column: "total_count", decl: "INTEGER DEFAULT 0"},
 		// Zotero incremental sync is keyed on an
@@ -478,6 +481,8 @@ func (s *Store) migrate(ctx context.Context) error {
 		`CREATE TABLE IF NOT EXISTS sync_state (
 			resource_type TEXT PRIMARY KEY,
 			last_cursor TEXT,
+			-- Exact plane and filtered-query identity for last_cursor.
+			cursor_scope TEXT,
 			last_synced_at DATETIME,
 			total_count INTEGER DEFAULT 0,
 			library_version INTEGER DEFAULT 0,
@@ -1633,43 +1638,74 @@ func (s *Store) UpsertBatch(resourceType string, items []json.RawMessage) (int, 
 	return stored, extractFailures, nil
 }
 
-// SaveSyncState records the outcome of a sync pass. last_synced_at advances on
-// every pass, but last_changed_at advances only when the pass actually brought
-// records back: without that distinction "Cache: fresh" reported a recent poll
-// even when the mirror had received nothing for weeks.
+// SaveSyncState records an unqualified sync outcome. Callers that persist a
+// resumable Zotero cursor must use SaveSyncResumeState instead.
 func (s *Store) SaveSyncState(resourceType, cursor string, count int) error {
+	return s.saveSyncState(resourceType, cursor, "", count)
+}
+
+// SaveSyncResumeState records a pagination cursor and its exact request scope
+// in one statement. A cleared cursor also clears its scope.
+func (s *Store) SaveSyncResumeState(resourceType, cursor, scope string, count int) error {
+	if cursor != "" && scope == "" {
+		return fmt.Errorf("sync cursor for %s requires request provenance", resourceType)
+	}
+	return s.saveSyncState(resourceType, cursor, scope, count)
+}
+
+func (s *Store) saveSyncState(resourceType, cursor, scope string, count int) error {
+	if cursor == "" {
+		scope = ""
+	}
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
 	_, err := s.db.Exec(
-		`INSERT INTO sync_state (resource_type, last_cursor, last_synced_at, total_count, last_changed_at)
-		 VALUES (?, ?, ?, ?, CASE WHEN ? > 0 THEN ? ELSE NULL END)
+		`INSERT INTO sync_state (resource_type, last_cursor, cursor_scope, last_synced_at, total_count, last_changed_at)
+		 VALUES (?, ?, ?, ?, ?, CASE WHEN ? > 0 THEN ? ELSE NULL END)
 		 ON CONFLICT(resource_type) DO UPDATE SET last_cursor = excluded.last_cursor,
-		 last_synced_at = excluded.last_synced_at, total_count = excluded.total_count,
+		 cursor_scope = excluded.cursor_scope, last_synced_at = excluded.last_synced_at,
+		 total_count = excluded.total_count,
 		 last_changed_at = COALESCE(excluded.last_changed_at, sync_state.last_changed_at)`,
-		resourceType, cursor, time.Now(), count, count, time.Now(),
+		resourceType, cursor, scope, time.Now(), count, count, time.Now(),
 	)
 	return err
 }
 
-// GetSyncState reads a resource's pagination cursor, last poll time and last
-// delta count. Every column is nullable: SaveLibraryVersion can create the row
-// before any pass has stored a cursor, so scanning last_cursor into a plain
-// string failed with "converting NULL to string is unsupported".
+// ClearSyncCursor invalidates pagination state without claiming that a sync
+// pass ran. It is used for scope changes, --full, and --latest-only.
+func (s *Store) ClearSyncCursor(resourceType string) error {
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+	_, err := s.db.Exec(
+		`UPDATE sync_state SET last_cursor = NULL, cursor_scope = NULL WHERE resource_type = ?`,
+		resourceType,
+	)
+	return err
+}
+
+// GetSyncState reads the cursor, last poll time, and last delta count.
 func (s *Store) GetSyncState(resourceType string) (cursor string, lastSynced time.Time, count int, err error) {
-	var rawCursor sql.NullString
+	cursor, _, lastSynced, count, err = s.GetSyncResumeState(resourceType)
+	return cursor, lastSynced, count, err
+}
+
+// GetSyncResumeState also returns the cursor's request provenance. Every column
+// is nullable because SaveLibraryVersion can create the row first.
+func (s *Store) GetSyncResumeState(resourceType string) (cursor, scope string, lastSynced time.Time, count int, err error) {
+	var rawCursor, rawScope sql.NullString
 	var rawSynced sql.NullTime
 	var rawCount sql.NullInt64
 	err = s.db.QueryRow(
-		`SELECT last_cursor, last_synced_at, total_count FROM sync_state WHERE resource_type = ?`,
+		`SELECT last_cursor, cursor_scope, last_synced_at, total_count FROM sync_state WHERE resource_type = ?`,
 		resourceType,
-	).Scan(&rawCursor, &rawSynced, &rawCount)
+	).Scan(&rawCursor, &rawScope, &rawSynced, &rawCount)
 	if err == sql.ErrNoRows {
-		return "", time.Time{}, 0, nil
+		return "", "", time.Time{}, 0, nil
 	}
 	if err != nil {
-		return "", time.Time{}, 0, err
+		return "", "", time.Time{}, 0, err
 	}
-	return rawCursor.String, rawSynced.Time, int(rawCount.Int64), nil
+	return rawCursor.String, rawScope.String, rawSynced.Time, int(rawCount.Int64), nil
 }
 
 // RecordPendingWrite marks a resource row as carrying a write that landed on the

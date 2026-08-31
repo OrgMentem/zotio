@@ -5,6 +5,7 @@ package cli
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -99,6 +100,132 @@ func TestWriteToken(t *testing.T) {
 	}
 	if a == writeToken("P", "other") {
 		t.Errorf("write token should differ for different payloads")
+	}
+}
+func TestVaultPushReconcilesLostCreateResponse(t *testing.T) {
+	const parentKey = "PARENT01"
+	const noteKey = "NOTE0001"
+	const citekey = "smith2024"
+	const region = "recovered notes"
+	desiredHTML := markdownToNoteHTML(citekey, region)
+
+	var posts, childReads int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodPost && r.URL.Path == "/items":
+			posts++
+			if posts == 1 {
+				hijacker, ok := w.(http.Hijacker)
+				if !ok {
+					t.Error("test server cannot drop the committed response")
+					return
+				}
+				conn, _, err := hijacker.Hijack()
+				if err != nil {
+					t.Errorf("hijack committed response: %v", err)
+					return
+				}
+				_ = conn.Close()
+				return
+			}
+			http.Error(w, "write token already used", http.StatusPreconditionFailed)
+		case r.Method == http.MethodGet && r.URL.Path == "/items/"+parentKey+"/children":
+			childReads++
+			_ = json.NewEncoder(w).Encode([]map[string]any{{
+				"key": noteKey,
+				"data": map[string]any{
+					"itemType": "note", "parentItem": parentKey, "note": desiredHTML,
+				},
+			}})
+		case r.Method == http.MethodGet && r.URL.Path == "/items/"+noteKey:
+			w.Header().Set("Last-Modified-Version", "7")
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"key": noteKey, "version": 7, "data": map[string]any{"note": desiredHTML},
+			})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(srv.Close)
+	c := client.New(&config.Config{BaseURL: srv.URL}, time.Second, 0)
+	c.NoCache = true
+
+	dir := t.TempDir()
+	notePath := filepath.Join(dir, "note.md")
+	writeFile(t, notePath, "## Notes\n"+vaultNotesBegin+"\n"+region+"\n"+vaultNotesEnd+"\n")
+	n := &pushNote{
+		path: notePath, citekey: citekey, itemKey: parentKey,
+		region: region, hasRegion: true,
+	}
+	result := pushOne(c, dir, "", n, nil, &rootFlags{}, false)
+	if result.Status != "converged" || result.NoteKey != noteKey {
+		t.Fatalf("push result = %+v, want the committed child adopted", result)
+	}
+	if posts != 2 || childReads != 1 {
+		t.Fatalf("writes=%d child reads=%d, want one lost POST, one replay, and one reconciliation read", posts, childReads)
+	}
+	if n.state.NoteKey != noteKey || n.state.NoteVersion != 7 {
+		t.Fatalf("persisted state = %+v, want recovered note key and version", n.state)
+	}
+	if state, err := parseStateComment(readNote(t, notePath)); err != nil || state.NoteKey != noteKey {
+		t.Fatalf("vault state = %+v, %v; want recovered key", state, err)
+	}
+
+	second := pushOne(c, dir, "", n, map[string]int{noteKey: 7}, &rootFlags{}, false)
+	if second.Status != "unchanged" || posts != 2 {
+		t.Fatalf("second push = %+v, posts=%d; want no duplicate create", second, posts)
+	}
+}
+
+func TestCreateChildNoteRefusesUnresolvedOrAmbiguousReplay(t *testing.T) {
+	const parentKey = "PARENT01"
+	const noteHTML = "<h1>Obsidian notes — cite</h1><p><em>Managed from the vault by zotio. Edit in Obsidian.</em></p><p>body</p>"
+	for _, tc := range []struct {
+		name string
+		keys []string
+	}{
+		{name: "zero matches"},
+		{name: "multiple matches", keys: []string{"NOTE0001", "NOTE0002"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var posts, childReads int
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				switch r.Method {
+				case http.MethodPost:
+					posts++
+					http.Error(w, "write token already used", http.StatusPreconditionFailed)
+				case http.MethodGet:
+					childReads++
+					rows := make([]map[string]any, 0, len(tc.keys))
+					for _, key := range tc.keys {
+						rows = append(rows, map[string]any{
+							"key": key,
+							"data": map[string]any{
+								"itemType": "note", "parentItem": parentKey, "note": noteHTML,
+							},
+						})
+					}
+					_ = json.NewEncoder(w).Encode(rows)
+				default:
+					http.NotFound(w, r)
+				}
+			}))
+			t.Cleanup(srv.Close)
+			c := client.New(&config.Config{BaseURL: srv.URL}, time.Second, 0)
+			c.NoCache = true
+
+			_, err := createChildNote(c, parentKey, noteHTML)
+			var conflict *childNoteCreateConflict
+			if !errors.As(err, &conflict) {
+				t.Fatalf("error = %v, want structured committed-create conflict", err)
+			}
+			if posts != 1 || childReads != 1 {
+				t.Fatalf("posts=%d child reads=%d, want one refused create and one reconciliation read", posts, childReads)
+			}
+			if got := conflict.Evidence.CandidateKeys; strings.Join(got, ",") != strings.Join(tc.keys, ",") {
+				t.Fatalf("candidate keys = %v, want %v", got, tc.keys)
+			}
+		})
 	}
 }
 

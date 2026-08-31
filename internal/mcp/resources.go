@@ -13,6 +13,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"sort"
 	"strconv"
 	"strings"
@@ -475,16 +476,28 @@ func templateKey(uri, prefix string) string {
 	return strings.TrimSuffix(strings.TrimPrefix(uri, prefix), "/")
 }
 
-// archiveStatus reports the local store's sync state. A missing/unopenable
-// store yields a graceful "not synced" payload rather than an error unless
-// the caller's context is canceled.
+// archiveStatus reports the local store's sync state. Only a genuinely absent
+// store yields "not initialized". An existing store that cannot open is an
+// operational failure because callers can need to repair permissions or
+// recover corruption before a sync writer can safely use it.
 func archiveStatus(ctx context.Context) (map[string]any, error) {
-	db, err := store.OpenReadOnlyDiagnosticContext(ctx, dbPath())
+	path := dbPath()
+	if _, err := os.Stat(path); err != nil {
+		if os.IsNotExist(err) {
+			return map[string]any{"db_path": path, "synced": false, "note": "local store not initialized; run sync"}, nil
+		}
+		return nil, fmt.Errorf("inspecting local archive %s: %w", path, err)
+	}
+	db, err := store.OpenReadOnlyDiagnosticContext(ctx, path)
 	if err != nil {
 		if ctxErr := ctx.Err(); ctxErr != nil {
 			return nil, ctxErr
 		}
-		return map[string]any{"db_path": dbPath(), "synced": false, "note": "local store not initialized; run sync"}, nil
+		// The file can disappear between Stat and the SQLite open.
+		if _, statErr := os.Stat(path); os.IsNotExist(statErr) {
+			return map[string]any{"db_path": path, "synced": false, "note": "local store not initialized; run sync"}, nil
+		}
+		return nil, fmt.Errorf("opening local archive %s: %w", path, err)
 	}
 	defer db.Close()
 

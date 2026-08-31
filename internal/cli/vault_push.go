@@ -59,12 +59,20 @@ type pushNote struct {
 	state     pushState
 }
 
+type pushRecoveryEvidence struct {
+	State         string   `json:"state"`
+	ParentKey     string   `json:"parent_key"`
+	ContentSHA256 string   `json:"content_sha256"`
+	CandidateKeys []string `json:"candidate_keys,omitempty"`
+}
+
 type pushResult struct {
-	File    string `json:"file"`
-	ItemKey string `json:"item_key,omitempty"`
-	NoteKey string `json:"note_key,omitempty"`
-	Status  string `json:"status"`
-	Note    string `json:"note,omitempty"`
+	File     string                `json:"file"`
+	ItemKey  string                `json:"item_key,omitempty"`
+	NoteKey  string                `json:"note_key,omitempty"`
+	Status   string                `json:"status"`
+	Note     string                `json:"note,omitempty"`
+	Recovery *pushRecoveryEvidence `json:"recovery,omitempty"`
 }
 
 func newVaultPushCmd(flags *rootFlags) *cobra.Command {
@@ -211,19 +219,36 @@ func pushOne(c *client.Client, outDir, targetLib string, n *pushNote, versions m
 			res.Status = "would create"
 			return res
 		}
-		key, err := createChildNote(c, n.itemKey, desiredHTML)
+		created, err := createChildNote(c, n.itemKey, desiredHTML)
 		if err != nil {
 			res.Status = "error"
 			res.Note = pushErr(err, flags)
+			var conflict *childNoteCreateConflict
+			if errors.As(err, &conflict) {
+				res.Status = "conflict"
+				res.Recovery = &conflict.Evidence
+			}
 			return res
 		}
-		res.NoteKey = key
-		if err := finalizeState(n, key, srcHash, c); err != nil {
+		res.NoteKey = created.Key
+		if created.Reconciled {
+			res.Recovery = &pushRecoveryEvidence{
+				State:         "adopted",
+				ParentKey:     n.itemKey,
+				ContentSHA256: sha256hex(desiredHTML),
+				CandidateKeys: []string{created.Key},
+			}
+		}
+		if err := finalizeState(n, created.Key, srcHash, c); err != nil {
 			res.Status = "error"
 			res.Note = err.Error()
 			return res
 		}
-		res.Status = "created"
+		if created.Reconciled {
+			res.Status = "converged"
+		} else {
+			res.Status = "created"
+		}
 		return res
 	}
 
@@ -266,14 +291,18 @@ func pushOne(c *client.Client, outDir, targetLib string, n *pushNote, versions m
 func patchWithConflict(c *client.Client, outDir string, n *pushNote, srcHash, desiredHTML string, flags *rootFlags) pushResult {
 	res := pushResult{File: filepath.Base(n.path), ItemKey: n.itemKey, NoteKey: n.state.NoteKey}
 
-	err := patchNote(c, n.state.NoteKey, desiredHTML, n.state.NoteVersion)
+	reconciled, err := patchNote(c, n.state.NoteKey, desiredHTML, n.state.NoteVersion)
 	if err == nil {
 		if ferr := finalizeState(n, n.state.NoteKey, srcHash, c); ferr != nil {
 			res.Status = "error"
 			res.Note = ferr.Error()
 			return res
 		}
-		res.Status = "updated"
+		if reconciled {
+			res.Status = "converged"
+		} else {
+			res.Status = "updated"
+		}
 		return res
 	}
 	if apiStatus(err) != 412 {
@@ -292,14 +321,18 @@ func patchWithConflict(c *client.Client, outDir string, n *pushNote, srcHash, de
 	switch {
 	case sha256hex(liveHTML) == n.state.RemoteHash:
 		// Remote body unchanged; only item version moved (metadata). Retry once.
-		rerr := patchNote(c, n.state.NoteKey, desiredHTML, liveVer)
+		reconciled, rerr := patchNote(c, n.state.NoteKey, desiredHTML, liveVer)
 		if rerr == nil {
 			if ferr := finalizeState(n, n.state.NoteKey, srcHash, c); ferr != nil {
 				res.Status = "error"
 				res.Note = ferr.Error()
 				return res
 			}
-			res.Status = "updated"
+			if reconciled {
+				res.Status = "converged"
+			} else {
+				res.Status = "updated"
+			}
 			return res
 		}
 		// The retry failed. Exactly one situation still counts as success: the
@@ -541,15 +574,19 @@ against --max-changes.`,
 					if gateFailure := mutation.CheckGates(mutationOptions(flags), vaultResolveGateOps()); gateFailure != nil {
 						return fmt.Errorf("%s", gateFailure.Message)
 					}
-					key, cerr := createChildNote(c, n.itemKey, desiredHTML)
+					created, cerr := createChildNote(c, n.itemKey, desiredHTML)
 					if cerr != nil {
 						return classifyAPIError(cerr, flags)
 					}
-					if ferr := finalizeState(n, key, srcHash, c); ferr != nil {
+					if ferr := finalizeState(n, created.Key, srcHash, c); ferr != nil {
 						return ferr
 					}
 					removeConflictArtifacts(outDir, n)
-					fmt.Fprintf(out, "Recreated child note %s for %s\n", key, n.citekey)
+					verb := "Recreated"
+					if created.Reconciled {
+						verb = "Reconciled"
+					}
+					fmt.Fprintf(out, "%s child note %s for %s\n", verb, created.Key, n.citekey)
 					return nil
 				}
 
@@ -565,7 +602,7 @@ against --max-changes.`,
 				if gateFailure := mutation.CheckGates(mutationOptions(flags), vaultResolveGateOps()); gateFailure != nil {
 					return fmt.Errorf("%s", gateFailure.Message)
 				}
-				if perr := patchNote(c, n.state.NoteKey, desiredHTML, liveVer); perr != nil {
+				if _, perr := patchNote(c, n.state.NoteKey, desiredHTML, liveVer); perr != nil {
 					return classifyAPIError(perr, flags)
 				}
 				if ferr := finalizeState(n, n.state.NoteKey, srcHash, c); ferr != nil {
@@ -820,34 +857,118 @@ func removeConflictArtifacts(outDir string, n *pushNote) {
 
 // --- Zotero note API ---
 
-func createChildNote(c *client.Client, parentKey, noteHTML string) (string, error) {
+type childNoteCreateResult struct {
+	Key        string
+	Reconciled bool
+}
+
+type childNoteCreateConflict struct {
+	Evidence pushRecoveryEvidence
+	Cause    error
+}
+
+func (e *childNoteCreateConflict) Error() string {
+	return fmt.Sprintf(
+		"note create may have committed, but reconciliation found %d matching child note(s) under %s; candidates: %v",
+		len(e.Evidence.CandidateKeys), e.Evidence.ParentKey, e.Evidence.CandidateKeys,
+	)
+}
+
+func (e *childNoteCreateConflict) Unwrap() error {
+	return e.Cause
+}
+
+func createChildNote(c *client.Client, parentKey, noteHTML string) (childNoteCreateResult, error) {
 	body := []map[string]any{{
 		"itemType":   "note",
 		"parentItem": parentKey,
 		"note":       noteHTML,
 	}}
-	// Deterministic write token makes an immediate retry (after a lost response)
-	// a no-op within Zotero's dedup window, preventing a duplicate child note.
 	headers := map[string]string{"Zotero-Write-Token": writeToken(parentKey, noteHTML)}
 	data, _, err := c.PostWithHeaders("/items", body, headers)
 	if err != nil {
-		return "", err
+		if apiStatus(err) == 412 || client.IsAmbiguousWriteError(err) {
+			return reconcileChildNoteCreate(c, parentKey, noteHTML, err)
+		}
+		return childNoteCreateResult{}, err
 	}
 	var resp struct {
 		Success map[string]string          `json:"success"`
 		Failed  map[string]json.RawMessage `json:"failed"`
 	}
 	if uerr := json.Unmarshal(data, &resp); uerr != nil {
-		return "", fmt.Errorf("parsing create response: %w", uerr)
+		return reconcileChildNoteCreate(c, parentKey, noteHTML, fmt.Errorf("parsing create response: %w", uerr))
 	}
 	if len(resp.Failed) > 0 {
-		return "", fmt.Errorf("Zotero rejected the note: %s", string(data))
+		return childNoteCreateResult{}, fmt.Errorf("Zotero rejected the note: %s", string(data))
 	}
 	key := resp.Success["0"]
 	if key == "" {
-		return "", fmt.Errorf("create succeeded but no note key returned: %s", string(data))
+		return reconcileChildNoteCreate(c, parentKey, noteHTML, fmt.Errorf("create succeeded but no note key returned: %s", string(data)))
 	}
-	return key, nil
+	return childNoteCreateResult{Key: key}, nil
+}
+
+func reconcileChildNoteCreate(c *client.Client, parentKey, noteHTML string, createErr error) (childNoteCreateResult, error) {
+	if err := validateZoteroKey(parentKey); err != nil {
+		return childNoteCreateResult{}, errors.Join(createErr, err)
+	}
+	const pageSize = 100
+	desiredHash := sha256hex(noteHTML)
+	var matches []string
+	for start := 0; ; start += pageSize {
+		data, _, err := c.GetFromWriteBaseWithVersion(
+			"/items/"+url.PathEscape(parentKey)+"/children",
+			map[string]string{
+				"itemType": "note",
+				"limit":    strconv.Itoa(pageSize),
+				"start":    strconv.Itoa(start),
+			},
+		)
+		if err != nil {
+			return childNoteCreateResult{}, fmt.Errorf("reconciling a possibly committed note create: %w", errors.Join(createErr, err))
+		}
+		var rows []struct {
+			Key  string `json:"key"`
+			Data struct {
+				ItemType   string `json:"itemType"`
+				ParentItem string `json:"parentItem"`
+				Note       string `json:"note"`
+				Deleted    int    `json:"deleted"`
+			} `json:"data"`
+		}
+		if err := json.Unmarshal(data, &rows); err != nil {
+			return childNoteCreateResult{}, fmt.Errorf("parsing child notes while reconciling a possibly committed create: %w", errors.Join(createErr, err))
+		}
+		for _, row := range rows {
+			if row.Data.ItemType != "note" || row.Data.Deleted != 0 || row.Data.ParentItem != parentKey {
+				continue
+			}
+			if !isManagedNoteHTML(row.Data.Note) || sha256hex(row.Data.Note) != desiredHash {
+				continue
+			}
+			if err := validateZoteroKey(row.Key); err != nil {
+				continue
+			}
+			matches = append(matches, row.Key)
+		}
+		if len(rows) < pageSize {
+			break
+		}
+	}
+	sort.Strings(matches)
+	if len(matches) == 1 {
+		return childNoteCreateResult{Key: matches[0], Reconciled: true}, nil
+	}
+	return childNoteCreateResult{}, &childNoteCreateConflict{
+		Evidence: pushRecoveryEvidence{
+			State:         "committed_unknown",
+			ParentKey:     parentKey,
+			ContentSHA256: desiredHash,
+			CandidateKeys: matches,
+		},
+		Cause: createErr,
+	}
 }
 
 // validateZoteroKey rejects state-derived note keys that cannot be Zotero item-key
@@ -864,17 +985,20 @@ func validateZoteroKey(key string) error {
 	return nil
 }
 
-func patchNote(c *client.Client, noteKey, noteHTML string, version int) error {
+func patchNote(c *client.Client, noteKey, noteHTML string, version int) (bool, error) {
 	// Note keys come from vault state comments; encode the path segment before
 	// building the Zotero API path.
 	if err := validateZoteroKey(noteKey); err != nil {
-		return err
+		return false, err
 	}
 	path := "/items/" + url.PathEscape(noteKey)
 	body := map[string]any{"note": noteHTML}
-	headers := map[string]string{"If-Unmodified-Since-Version": strconv.Itoa(version)}
-	_, _, err := c.PatchWithHeaders(path, body, headers)
-	return err
+	_, detail, err := patchWithVersionGuard(c, path, body, version)
+	if err != nil {
+		return false, err
+	}
+	evidence, _ := detail.(map[string]any)
+	return evidence["reconciled"] == true, nil
 }
 
 func getNote(c *client.Client, noteKey string) (int, string, error) {

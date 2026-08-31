@@ -5,10 +5,9 @@ package cli
 
 import (
 	"context"
-	"crypto/md5" //nolint:gosec // Zotero exposes stored-file identity as MD5.
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -377,6 +376,7 @@ func importApplyOps(cmd *cobra.Command, flags *rootFlags, writeClient importAppl
 			entryTitle := importApplyEntryTitle(entry, item)
 			entryPath := entry.Path
 			entryNumber := i + 1
+			var resolverCreate itemCreateResult
 			ops = append(ops, mutation.Op{
 				ID:      fmt.Sprintf("import.apply:%03d:create", entryNumber),
 				Kind:    "import_create",
@@ -398,7 +398,27 @@ func importApplyOps(cmd *cobra.Command, flags *rootFlags, writeClient importAppl
 						if err := validateImportStoredAttachment(entryPath); err != nil {
 							return "failed", nil, err
 						}
-						res, err := routeCreateStoredItem(cmd.Context(), flags, writeClient, item, importEntrySourceURL(entry, item), connectorCollectionKeyFromItem(item) != "" || strings.TrimSpace(flags.connectorTarget) != "")
+						attachmentReq, err := newStoredUploadRequest("", entryPath, "")
+						if err != nil {
+							return "failed", nil, err
+						}
+						collectionRequested := connectorCollectionKeyFromItem(item) != "" || strings.TrimSpace(flags.connectorTarget) != ""
+						via, err := flags.resolveCreateVia(cmd.Context(), collectionRequested)
+						if err != nil {
+							return "failed", nil, err
+						}
+						var connectorSource io.ReadCloser
+						if via == "connector" {
+							connectorSource, err = openVerifiedAttachmentSource(attachmentReq)
+							if err != nil {
+								return "failed", nil, fmt.Errorf("opening connector attachment before creating its parent: %w", err)
+							}
+							defer func() { _ = connectorSource.Close() }()
+						}
+						res, err := routeCreateItemViaWithOptions(
+							cmd.Context(), flags, via, writeClient, item, importEntrySourceURL(entry, item),
+							collectionRequested, routeCreateOptions{preserveUnresolvedConnectorWrite: true},
+						)
 						if err != nil {
 							// routeCreateItem deliberately returns a POPULATED
 							// result alongside its error when the item was
@@ -418,13 +438,7 @@ func importApplyOps(cmd *cobra.Command, flags *rootFlags, writeClient importAppl
 							if err != nil {
 								return "conflict", orphanedConnectorParentDetail(res, entryTitle, err), err
 							}
-							data, err := os.ReadFile(entryPath)
-							if err != nil {
-								cause := fmt.Errorf("reading attachment %s: %w", entryPath, err)
-								return "conflict", orphanedConnectorParentDetail(res, entryTitle, cause), cause
-							}
-							digest := md5.Sum(data) //nolint:gosec // Zotero registers stored-file identity as MD5.
-							attachmentMD5 := hex.EncodeToString(digest[:])
+							attachmentMD5 := attachmentReq.MD5
 							// Zotero's importFromNetworkStream hard-rejects an
 							// empty url ("'url' not provided"), which the
 							// connector surfaces as an opaque HTTP 500 AFTER the
@@ -439,7 +453,7 @@ func importApplyOps(cmd *cobra.Command, flags *rootFlags, writeClient importAppl
 							if err != nil {
 								return "conflict", orphanedConnectorParentDetail(res, entryTitle, err), err
 							}
-							if err := conn.SaveAttachment(cmd.Context(), res.Session, res.ConnKey, "Full Text PDF", markedURL, "application/pdf", data); err != nil {
+							if err := conn.SaveAttachment(cmd.Context(), res.Session, res.ConnKey, "Full Text PDF", markedURL, "application/pdf", connectorSource, attachmentReq.Size); err != nil {
 								cause := orphanedParentError(entryTitle, err)
 								detail := storedConnectorCommittedDetail(res, entryTitle, marker,
 									fmt.Sprintf("%s Connector evidence: session %s, connector key %s, attachment marker %s.",
@@ -448,10 +462,8 @@ func importApplyOps(cmd *cobra.Command, flags *rootFlags, writeClient importAppl
 							}
 							return storedConnectorCreateResult(cmd.Context(), flags, item, res, entryTitle, marker, attachmentMD5)
 						case "web":
-							req, err := newStoredUploadRequest(res.WebKey, entryPath, "")
-							if err != nil {
-								return "failed", orphanedWebParentDetail(res.WebKey, entryTitle, err), orphanedParentError(entryTitle, err)
-							}
+							req := attachmentReq
+							bindStoredUploadParent(&req, res.WebKey)
 							status, reason, err := applyStoredUpload(cmd.Context(), storedClient, req, flags)
 							if err != nil {
 								return "failed", orphanedWebParentDetail(res.WebKey, entryTitle, err), orphanedParentError(entryTitle, err)
@@ -483,15 +495,16 @@ func importApplyOps(cmd *cobra.Command, flags *rootFlags, writeClient importAppl
 						}
 					}
 					if fetchPDF {
-						res, err := routeCreateItem(cmd.Context(), flags, nil, item, importEntrySourceURL(entry, item), connectorCollectionKeyFromItem(item) != "" || strings.TrimSpace(flags.connectorTarget) != "")
-						if err != nil {
-							return "failed", nil, err
-						}
-						if res.Via != "connector" {
-							return "failed", nil, fmt.Errorf("--fetch-pdf requires the desktop connector")
-						}
-						attachResolverPDF(cmd.Context(), flags, &res)
-						return "applied", map[string]any{"via": "connector", "oa_pdf": map[string]any{"status": res.OAPDFStatus, "title": res.OAPDFTitle, "error": res.OAPDFError}}, nil
+						created, createErr := routeCreateItem(
+							cmd.Context(),
+							flags,
+							nil,
+							item,
+							importEntrySourceURL(entry, item),
+							connectorCollectionKeyFromItem(item) != "" || strings.TrimSpace(flags.connectorTarget) != "",
+						)
+						resolverCreate = created
+						return singleItemCreateApplyResult(resolverCreate, createErr, entryTitle)
 					}
 					if writeClient == nil {
 						return "failed", nil, fmt.Errorf("missing write client")
@@ -524,6 +537,24 @@ func importApplyOps(cmd *cobra.Command, flags *rootFlags, writeClient importAppl
 					return "applied", detail, nil
 				},
 			})
+			if fetchPDF {
+				ops = append(ops, mutation.Op{
+					ID:   fmt.Sprintf("import.apply:%03d:resolver-pdf", entryNumber),
+					Key:  entryTitle,
+					Kind: "attachment_create",
+					Changes: []mutation.Change{{
+						Field: "attachment",
+						Add: map[string]any{
+							"source":    "resolver",
+							"condition": "when an open-access PDF resolver is available",
+						},
+					}},
+					Apply: func() (string, any, error) {
+						outcome, err := attachResolverPDF(cmd.Context(), flags, &resolverCreate)
+						return resolverPDFApplyResult(resolverCreate, outcome, err)
+					},
+				})
+			}
 		case "recognize":
 			if entry.Path == "" {
 				continue

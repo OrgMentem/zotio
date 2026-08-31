@@ -5,9 +5,9 @@ package cli
 import (
 	"context"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
-	"os"
 	"sort"
 	"strings"
 	"time"
@@ -108,31 +108,42 @@ func newImportDiscoverCmd(flags *rootFlags) *cobra.Command {
 				return usageErr(fmt.Errorf("--min-count must be >= 1"))
 			}
 
-			manifest, report, err := buildImportDiscoverManifestWithDirection(cmd.Context(), flags, flagScope, flagOut, flagLimit, flagMinCount, flagDirection)
+			lockPath, canonicalTarget, err := outputWriterLockPath(flagOut)
 			if err != nil {
-				return err
+				return fmt.Errorf("resolving manifest output: %w", err)
 			}
-			f, err := os.Create(flagOut)
-			if err != nil {
-				return fmt.Errorf("creating manifest: %w", err)
-			}
-			defer f.Close()
-			if err := writeImportManifest(f, manifest); err != nil {
-				return fmt.Errorf("writing manifest: %w", err)
-			}
-			if flags.asJSON {
-				return printCommandJSON(cmd.OutOrStdout(), report, flags)
-			}
-			fmt.Fprintf(cmd.OutOrStdout(), "Wrote %d manifest entries to %s\n", report.Summary.Entries, flagOut)
-			fmt.Fprintf(cmd.OutOrStdout(), "Summary: items scanned=%d; references seen=%d; unique cited DOIs=%d; candidates=%d; already in library=%d; title duplicates=%d\n",
-				report.Summary.ItemsScanned,
-				report.Summary.ReferencesSeen,
-				report.Summary.UniqueCitedDOIs,
-				report.Summary.Candidates,
-				report.Summary.SkippedAlreadyInLibrary,
-				report.Summary.SkippedTitleDuplicate,
-			)
-			return nil
+			return withPathWriterLock(cmd, lockPath, "import discover", func() error {
+				manifest, report, err := buildImportDiscoverManifestWithDirection(
+					cmd.Context(),
+					flags,
+					flagScope,
+					flagOut,
+					flagLimit,
+					flagMinCount,
+					flagDirection,
+				)
+				if err != nil {
+					return err
+				}
+				if err := withAtomicOutputFile(canonicalTarget, 0o600, func(w io.Writer) error {
+					return writeImportManifest(w, manifest)
+				}); err != nil {
+					return fmt.Errorf("writing manifest: %w", err)
+				}
+				if flags.asJSON {
+					return printCommandJSON(cmd.OutOrStdout(), report, flags)
+				}
+				fmt.Fprintf(cmd.OutOrStdout(), "Wrote %d manifest entries to %s\n", report.Summary.Entries, flagOut)
+				fmt.Fprintf(cmd.OutOrStdout(), "Summary: items scanned=%d; references seen=%d; unique cited DOIs=%d; candidates=%d; already in library=%d; title duplicates=%d\n",
+					report.Summary.ItemsScanned,
+					report.Summary.ReferencesSeen,
+					report.Summary.UniqueCitedDOIs,
+					report.Summary.Candidates,
+					report.Summary.SkippedAlreadyInLibrary,
+					report.Summary.SkippedTitleDuplicate,
+				)
+				return nil
+			})
 		},
 	}
 	cmd.Flags().StringVar(&flagScope, "scope", "", "Scope expression to discover from (required; e.g. collection:<key>, tag:<tag>, item:<key>, query:<text>, library)")

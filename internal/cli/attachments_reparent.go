@@ -9,8 +9,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
-	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -274,12 +274,21 @@ func runConnectorReparent(ctx context.Context, cmd *cobra.Command, flags *rootFl
 	// Any run's marker is accepted here, not just this one's, because the point
 	// is to adopt a previous run's orphan. It is still identified by the marker
 	// and by the target key it names, never by title.
-	if adoptKey, adoptAttach, adoptErr := findResumableTemporaryParent(ctx, flags, req.ParentKey, req.MD5); adoptErr == nil && adoptKey != "" {
+	adoptKey, adoptAttach, adoptErr := findResumableTemporaryParent(ctx, flags, req.ParentKey, req.MD5)
+	if adoptErr != nil {
+		return out, fmt.Errorf("checking for a resumable connector attachment: %w", adoptErr)
+	}
+	if adoptKey != "" {
 		out.TempParentKey = adoptKey
 		out.AttachmentKey = adoptAttach
 		out.Resumed = true
 		return finishConnectorReparent(ctx, cmd, webClient, req, out, "")
 	}
+	source, err := openVerifiedAttachmentSource(req)
+	if err != nil {
+		return out, fmt.Errorf("opening connector attachment before creating its temporary parent: %w", err)
+	}
+	defer func() { _ = source.Close() }()
 
 	// A "document" is the most neutral regular item type: it carries no
 	// bibliographic claim that could be mistaken for a real record if a run dies
@@ -323,7 +332,7 @@ func runConnectorReparent(ctx context.Context, cmd *cobra.Command, flags *rootFl
 	// parent. This is the step the Web API cannot perform against an item that
 	// already exists.
 	var attachKey string
-	if saveErr := saveConnectorAttachment(ctx, flags, res, req); saveErr != nil {
+	if saveErr := saveConnectorAttachment(ctx, flags, res, req, source); saveErr != nil {
 		// The connector protocol has no endpoint that closes a save session, so a
 		// reply lost AFTER the desktop committed the child is indistinguishable
 		// from a save that never landed. Reconcile before reporting: returning
@@ -380,7 +389,12 @@ func finishConnectorReparent(ctx context.Context, cmd *cobra.Command, webClient 
 	// Re-checking here shrinks the window from the whole route to the moment
 	// between this read and the PATCH. If another run won, abandon rather than
 	// duplicate, and clean up both objects this run created.
-	if winner, checkErr := findAttachmentByMD5(webClient, req.ParentKey, req.MD5); checkErr == nil && winner != "" {
+	winner, checkErr := findAttachmentByMD5(webClient, req.ParentKey, req.MD5)
+	if checkErr != nil {
+		return out, fmt.Errorf("checking target %s for a competing attachment before moving %s: %w",
+			req.ParentKey, out.AttachmentKey, checkErr)
+	}
+	if winner != "" {
 		return abandonToWinner(ctx, cmd, webClient, req, out, trashNonce, winner)
 	}
 
@@ -782,13 +796,9 @@ func verifyReparentTarget(ctx context.Context, c *client.Client, parentKey strin
 	return envelope.Data.Title, nil
 }
 
-// saveConnectorAttachment posts the bytes into the connector session that
-// created the temporary parent.
-func saveConnectorAttachment(ctx context.Context, flags *rootFlags, res itemCreateResult, req storedUploadRequest) error {
-	data, err := os.ReadFile(req.Path)
-	if err != nil {
-		return fmt.Errorf("temporary parent %s was created but its file could not be read: %w", res.WebKey, err)
-	}
+// saveConnectorAttachment streams bytes into the connector session that
+// created the temporary parent. The connector takes ownership of source.
+func saveConnectorAttachment(ctx context.Context, flags *rootFlags, res itemCreateResult, req storedUploadRequest, source io.ReadCloser) error {
 	conn, err := connectorForCreate(flags)
 	if err != nil {
 		return fmt.Errorf("temporary parent %s was created but the connector is unavailable: %w", res.WebKey, err)
@@ -796,7 +806,7 @@ func saveConnectorAttachment(ctx context.Context, flags *rootFlags, res itemCrea
 	// Zotero's importFromNetworkStream hard-rejects an empty url with an opaque
 	// HTTP 500 AFTER the parent exists, so a local file always sends its own URI
 	// — the same provenance import pdf records for standalone attachments.
-	if err := conn.SaveAttachment(ctx, res.Session, res.ConnKey, req.Title, localFileURL(req.Path), req.ContentType, data); err != nil {
+	if err := conn.SaveAttachment(ctx, res.Session, res.ConnKey, req.Title, localFileURL(req.Path), req.ContentType, source, req.Size); err != nil {
 		return fmt.Errorf("temporary parent %s was created but its file did not attach: %w", res.WebKey, err)
 	}
 	return nil
@@ -920,32 +930,36 @@ func attachmentChildKeys(c *client.Client, parentKey string) ([]string, error) {
 	return keys, nil
 }
 
-type attachmentChildRow struct {
+type childRow struct {
 	Key  string `json:"key"`
 	Data struct {
 		ItemType string `json:"itemType"`
+		LinkMode string `json:"linkMode"`
+		Filename string `json:"filename"`
+		Path     string `json:"path"`
 		MD5      string `json:"md5"`
 		URL      string `json:"url"`
+		Note     string `json:"note"`
 		Deleted  int    `json:"deleted"`
 	} `json:"data"`
 }
 
 // attachmentChildRows reads every attachment child, following pages. Zotero's
 // default page is 25, so an unpaged read truncates silently.
-func attachmentChildRows(c *client.Client, parentKey string) ([]attachmentChildRow, error) {
+func attachmentChildRows(c *client.Client, parentKey string) ([]childRow, error) {
 	return childRows(c, parentKey, "attachment")
 }
 
 // allChildRows reads every child of parentKey regardless of item type. Zotero
 // permits notes beneath a regular document, and its trash does not cascade, so
 // the cleanup path needs to see children the attachment-filtered read hides.
-func allChildRows(c *client.Client, parentKey string) ([]attachmentChildRow, error) {
+func allChildRows(c *client.Client, parentKey string) ([]childRow, error) {
 	return childRows(c, parentKey, "")
 }
 
 // childRows pages one children endpoint. An empty itemType omits the filter.
-func childRows(c *client.Client, parentKey, itemType string) ([]attachmentChildRow, error) {
-	var all []attachmentChildRow
+func childRows(c *client.Client, parentKey, itemType string) ([]childRow, error) {
+	var all []childRow
 	for start := 0; ; start += connectorChildrenPageSize {
 		params := map[string]string{
 			"limit": strconv.Itoa(connectorChildrenPageSize),
@@ -958,11 +972,11 @@ func childRows(c *client.Client, parentKey, itemType string) ([]attachmentChildR
 		if err != nil {
 			var respErr *client.APIError
 			if errors.As(err, &respErr) && respErr.StatusCode == http.StatusNotFound {
-				return nil, notFoundErr(fmt.Errorf("item %s not found", parentKey))
+				return nil, notFoundErr(fmt.Errorf("parent item %s not found", parentKey))
 			}
 			return nil, fmt.Errorf("listing children of %s: %w", parentKey, err)
 		}
-		var page []attachmentChildRow
+		var page []childRow
 		if err := json.Unmarshal(data, &page); err != nil {
 			return nil, fmt.Errorf("parsing children of %s: %w", parentKey, err)
 		}
@@ -1123,8 +1137,7 @@ func reparentAttachment(c *client.Client, attachKey, newParentKey, tempParentKey
 		return fmt.Errorf("refusing to move %q onto %q: not both valid item keys", attachKey, newParentKey)
 	}
 	for attempt := 0; ; attempt++ {
-		headers := map[string]string{"If-Unmodified-Since-Version": strconv.Itoa(version)}
-		_, _, err := c.PatchWithHeaders("/items/"+attachKey, map[string]any{"parentItem": newParentKey}, headers)
+		_, _, err := patchWithVersionGuard(c, "/items/"+attachKey, map[string]any{"parentItem": newParentKey}, version)
 		if err == nil {
 			return nil
 		}
@@ -1238,8 +1251,7 @@ func trashTemporaryParent(ctx context.Context, c *client.Client, key, nonce, tar
 			if itemAlreadyTrashed(body) {
 				return orphaned, nil
 			}
-			headers := map[string]string{"If-Unmodified-Since-Version": strconv.Itoa(version)}
-			_, _, writeErr := c.PatchWithHeaders("/items/"+key, map[string]any{"deleted": 1}, headers)
+			_, _, writeErr := patchWithVersionGuard(c, "/items/"+key, map[string]any{"deleted": 1}, version)
 			return orphaned, writeErr
 		case err == nil:
 			return nil, fmt.Errorf("item %s was read from the write plane without a version, so the trash cannot be guarded", key)
@@ -1389,8 +1401,7 @@ func trashRedundantAttachment(ctx context.Context, c *client.Client, attachKey, 
 		return fmt.Errorf("refusing to trash attachment %s: its content hash %q is not the one this run uploaded",
 			attachKey, row.Data.MD5)
 	}
-	headers := map[string]string{"If-Unmodified-Since-Version": strconv.Itoa(version)}
-	_, _, writeErr := c.PatchWithHeaders("/items/"+attachKey, map[string]any{"deleted": 1}, headers)
+	_, _, writeErr := patchWithVersionGuard(c, "/items/"+attachKey, map[string]any{"deleted": 1}, version)
 	return writeErr
 }
 
@@ -1444,6 +1455,16 @@ func findAttachmentByMD5(c *client.Client, parentKey, md5hex string) (string, er
 // Any run's marker qualifies — the point is to adopt an orphan — but identity is
 // still the marker plus the target key it names, never the title. It returns ""
 // when there is nothing to resume, and refuses when several orphans qualify.
+type resumableTemporaryParentAmbiguityError struct {
+	targetKey string
+	matches   int
+}
+
+func (e *resumableTemporaryParentAmbiguityError) Error() string {
+	return fmt.Sprintf("%d resumable temporary attachments match target %s; refusing to choose one",
+		e.matches, e.targetKey)
+}
+
 func findResumableTemporaryParent(ctx context.Context, flags *rootFlags, targetKey, md5hex string) (string, string, error) {
 	if strings.TrimSpace(md5hex) == "" {
 		return "", "", nil
@@ -1463,7 +1484,7 @@ func findResumableTemporaryParent(ctx context.Context, flags *rootFlags, targetK
 	for _, candidate := range candidates {
 		rows, err := attachmentChildRows(c, candidate)
 		if err != nil {
-			continue
+			return "", "", fmt.Errorf("reading children of resumable temporary parent %s: %w", candidate, err)
 		}
 		for _, row := range rows {
 			if row.Data.ItemType != "attachment" || row.Data.Deleted != 0 {
@@ -1476,10 +1497,14 @@ func findResumableTemporaryParent(ctx context.Context, flags *rootFlags, targetK
 		}
 	}
 	// Adopting the wrong orphan would move a file the operator did not name.
-	if matched != 1 {
+	switch matched {
+	case 0:
 		return "", "", nil
+	case 1:
+		return tempKey, attachKey, nil
+	default:
+		return "", "", &resumableTemporaryParentAmbiguityError{targetKey: targetKey, matches: matched}
 	}
-	return tempKey, attachKey, nil
 }
 
 // markedTemporaryParents lists recent items carrying this route's marker for one

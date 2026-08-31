@@ -147,7 +147,7 @@ backwards-compatible resource exports.`,
 					return writeExport(writer, format, data, limit)
 				}
 				items := make([]json.RawMessage, 0)
-				fetched, fetchErr := resumablePaginatedFetch(cmd.Context(), c, path, nil, 100, limit, "", func(page []json.RawMessage) error {
+				fetched, fetchErr := resumablePaginatedFetch(cmd.Context(), c, path, nil, 100, limit, "", flags.profileName, func(page []json.RawMessage) error {
 					if format != "jsonl" {
 						items = append(items, page...)
 						return nil

@@ -138,6 +138,28 @@ func (e *APIError) Error() string {
 	return fmt.Sprintf("%s %s returned HTTP %d: %s", e.Method, e.Path, e.StatusCode, e.Body)
 }
 
+// AmbiguousWriteError means the request reached the transport, but no response
+// proves whether the server committed it. Callers must reconcile before retrying.
+type AmbiguousWriteError struct {
+	Method   string
+	Path     string
+	Attempts int
+	Err      error
+}
+
+func (e *AmbiguousWriteError) Error() string {
+	return fmt.Sprintf("%s %s write outcome is ambiguous after %d attempt(s): %v", e.Method, e.Path, e.Attempts, e.Err)
+}
+
+func (e *AmbiguousWriteError) Unwrap() error {
+	return e.Err
+}
+
+func IsAmbiguousWriteError(err error) bool {
+	var ambiguous *AmbiguousWriteError
+	return errors.As(err, &ambiguous)
+}
+
 func checkRedirect(req *http.Request, via []*http.Request) error {
 	if len(via) == 0 {
 		return nil
@@ -177,6 +199,16 @@ func newHTTPClient(timeout time.Duration, jar http.CookieJar) *http.Client {
 		Jar:           jar,
 		CheckRedirect: checkRedirect,
 	}
+}
+
+type dispatchTrackingTransport struct {
+	base       http.RoundTripper
+	dispatched *atomic.Bool
+}
+
+func (t dispatchTrackingTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	t.dispatched.Store(true)
+	return t.base.RoundTrip(req)
 }
 
 func (c *Client) requestHTTPClient() *http.Client {
@@ -732,13 +764,27 @@ func (c *Client) doRequestOnBase(ctx context.Context, baseOverride, method, path
 
 	const maxRetries = 3
 	var lastErr error
+	var ambiguousFailures []error
+	wrapAmbiguous := func(attempts int, final error) error {
+		if !isMutatingMethod(method) || len(ambiguousFailures) == 0 {
+			return final
+		}
+		causes := make([]error, 0, len(ambiguousFailures)+1)
+		if final != nil {
+			causes = append(causes, final)
+		}
+		causes = append(causes, ambiguousFailures...)
+		return &AmbiguousWriteError{
+			Method: method, Path: path, Attempts: attempts, Err: errors.Join(causes...),
+		}
+	}
 
 	for attempt := 0; attempt <= maxRetries; attempt++ {
 		// proactive rate limiting must honor context
 		// cancellation before dialing.
 		c.limiter.WaitContext(ctx)
 		if err := ctx.Err(); err != nil {
-			return nil, 0, nil, err
+			return nil, 0, nil, wrapAmbiguous(attempt, err)
 		}
 		var bodyReader io.Reader
 		if bodyBytes != nil {
@@ -800,10 +846,11 @@ func (c *Client) doRequestOnBase(ctx context.Context, baseOverride, method, path
 		if req.Header.Get("User-Agent") == "" {
 			req.Header.Set("User-Agent", "zotio/0.1.0")
 		}
+		if err := ctx.Err(); err != nil {
+			return nil, 0, nil, wrapAmbiguous(attempt, err)
+		}
 		// A conditional precondition makes a write at-most-once, but does not
-		// make an ambiguous response safe to replay. If the first write commits
-		// and its response is lost, replaying the stale precondition produces a
-		// 412 that looks like a concurrency conflict. Transport and 5xx retries
+		// make an ambiguous response safe to replay. Transport and 5xx retries
 		// therefore require GET/HEAD or Zotero's write token, whose endpoint
 		// owner can reconcile the token-replay response. An explicit 429 is not
 		// ambiguous, so conditional requests can still retry that response.
@@ -813,14 +860,32 @@ func (c *Client) doRequestOnBase(ctx context.Context, baseOverride, method, path
 			req.Header.Get("If-Unmodified-Since-Version") != "" ||
 			req.Header.Get("If-Match") != "" ||
 			req.Header.Get("If-None-Match") != ""
-
-		resp, err := c.requestHTTPClient().Do(req)
+		httpClient := c.requestHTTPClient()
+		var dispatched atomic.Bool
+		transport := httpClient.Transport
+		if transport == nil {
+			transport = http.DefaultTransport
+		}
+		httpClient.Transport = dispatchTrackingTransport{base: transport, dispatched: &dispatched}
+		resp, err := httpClient.Do(req)
 		if err != nil {
 			if ctxErr := ctx.Err(); ctxErr != nil {
+				if isMutatingMethod(method) && dispatched.Load() {
+					return nil, 0, nil, &AmbiguousWriteError{
+						Method: method, Path: path, Attempts: attempt + 1,
+						Err: fmt.Errorf("%s %s: %w", method, path, ctxErr),
+					}
+				}
 				return nil, 0, nil, fmt.Errorf("%s %s: %w", method, path, ctxErr)
 			}
 			lastErr = fmt.Errorf("%s %s: %w", method, path, err)
+			if isMutatingMethod(method) {
+				ambiguousFailures = append(ambiguousFailures, lastErr)
+			}
 			if !ambiguousRetrySafe {
+				if isMutatingMethod(method) {
+					return nil, 0, nil, &AmbiguousWriteError{Method: method, Path: path, Attempts: attempt + 1, Err: lastErr}
+				}
 				return nil, 0, nil, lastErr
 			}
 			continue
@@ -831,10 +896,18 @@ func (c *Client) doRequestOnBase(ctx context.Context, baseOverride, method, path
 		respBody, err := io.ReadAll(io.LimitReader(resp.Body, maxZoteroResponseBytes+1))
 		resp.Body.Close()
 		if err != nil {
-			return nil, 0, nil, fmt.Errorf("reading response: %w", err)
+			readErr := fmt.Errorf("reading response: %w", err)
+			if isMutatingMethod(method) {
+				return nil, 0, nil, &AmbiguousWriteError{Method: method, Path: path, Attempts: attempt + 1, Err: readErr}
+			}
+			return nil, 0, nil, readErr
 		}
 		if int64(len(respBody)) > maxZoteroResponseBytes {
-			return nil, 0, nil, fmt.Errorf("response exceeded %d bytes", maxZoteroResponseBytes)
+			limitErr := fmt.Errorf("response exceeded %d bytes", maxZoteroResponseBytes)
+			if isMutatingMethod(method) {
+				return nil, 0, nil, &AmbiguousWriteError{Method: method, Path: path, Attempts: attempt + 1, Err: limitErr}
+			}
+			return nil, 0, nil, limitErr
 		}
 		respBody = sanitizeJSONResponse(respBody)
 
@@ -879,7 +952,7 @@ func (c *Client) doRequestOnBase(ctx context.Context, baseOverride, method, path
 			}
 			fmt.Fprintf(os.Stderr, "rate limited, waiting %s (attempt %d/%d, rate adjusted to %.1f req/s)\n", wait, attempt+1, maxRetries, c.limiter.Rate())
 			if err := sleepWithContext(ctx, wait); err != nil {
-				return nil, 0, nil, err
+				return nil, 0, nil, wrapAmbiguous(attempt+1, err)
 			}
 			lastErr = apiErr
 			continue
@@ -889,12 +962,15 @@ func (c *Client) doRequestOnBase(ctx context.Context, baseOverride, method, path
 		// (e.g. writes against the read-only Zotero local API), so don't retry it.
 		// avoid a pointless 3x backoff storm on local-API write rejections.
 		if ambiguousRetrySafe && resp.StatusCode >= 500 && resp.StatusCode != 501 && attempt < maxRetries {
+			lastErr = apiErr
+			if isMutatingMethod(method) {
+				ambiguousFailures = append(ambiguousFailures, apiErr)
+			}
 			wait := time.Duration(math.Pow(2, float64(attempt))) * retryBackoffBase()
 			fmt.Fprintf(os.Stderr, "server error %d, retrying in %s (attempt %d/%d)\n", resp.StatusCode, wait, attempt+1, maxRetries)
 			if err := sleepWithContext(ctx, wait); err != nil {
-				return nil, 0, nil, err
+				return nil, 0, nil, wrapAmbiguous(attempt+1, err)
 			}
-			lastErr = apiErr
 			continue
 		}
 
@@ -911,10 +987,13 @@ func (c *Client) doRequestOnBase(ctx context.Context, baseOverride, method, path
 				return nil, resp.StatusCode, resp.Header, fmt.Errorf("could not resolve Zotero Web API write route: %w: %w", routeErr, apiErr)
 			}
 		}
+		if wrapped := wrapAmbiguous(attempt+1, apiErr); wrapped != apiErr {
+			return nil, resp.StatusCode, resp.Header, wrapped
+		}
 		return nil, resp.StatusCode, resp.Header, apiErr
 	}
 
-	return nil, 0, nil, lastErr
+	return nil, 0, nil, wrapAmbiguous(maxRetries+1, lastErr)
 }
 
 func sleepWithContext(ctx context.Context, d time.Duration) error {

@@ -33,6 +33,8 @@ type cleanupFake struct {
 	// children maps a parent key to its child rows. A key absent from this map
 	// 404s on /children, which is what a parent still propagating looks like.
 	children map[string][]map[string]any
+	// childrenStatus forces one parent's child listing to fail.
+	childrenStatus map[string]int
 	// itemVisibleAfter makes a key 404 for its first N reads.
 	itemVisibleAfter map[string]int
 	itemGets         map[string]int
@@ -57,6 +59,11 @@ func (f *cleanupFake) start(t *testing.T) *httptest.Server {
 		w.Header().Set("Last-Modified-Version", fmt.Sprint(f.version))
 
 		if key, ok := strings.CutSuffix(path, "/children"); ok {
+			if status := f.childrenStatus[key]; status != 0 {
+				w.WriteHeader(status)
+				_, _ = w.Write([]byte(`{"message":"forced children failure"}`))
+				return
+			}
 			rows, present := f.children[key]
 			if !present {
 				w.WriteHeader(http.StatusNotFound)
@@ -402,6 +409,36 @@ func TestTrashTemporaryParentIgnoresATrashedNote(t *testing.T) {
 	}
 	if len(orphaned) != 0 {
 		t.Errorf("orphaned = %v, want none: a trashed note is already recoverable", orphaned)
+	}
+}
+
+// TestFinishConnectorReparentStopsWhenFinalReconciliationFails pins the
+// duplicate-prevention boundary: an incomplete read never permits the move.
+func TestFinishConnectorReparentStopsWhenFinalReconciliationFails(t *testing.T) {
+	f := &cleanupFake{
+		items: map[string]map[string]any{
+			"ATTACH01": {
+				"itemType": "attachment", "parentItem": "TEMP0001", "md5": "deadbeef",
+			},
+		},
+		childrenStatus: map[string]int{"TARGET01": http.StatusInternalServerError},
+	}
+	srv := f.start(t)
+	c := f.client(t, srv)
+
+	_, err := finishConnectorReparent(
+		context.Background(),
+		reparentCmd(t),
+		c,
+		storedUploadRequest{Path: "paper.pdf", ParentKey: "TARGET01", MD5: "deadbeef"},
+		connectorReparentResult{AttachmentKey: "ATTACH01", TempParentKey: "TEMP0001"},
+		cleanupNonce,
+	)
+	if err == nil || !strings.Contains(err.Error(), "checking target TARGET01") {
+		t.Fatalf("error = %v, want final reconciliation failure", err)
+	}
+	if len(f.patched) != 0 {
+		t.Fatalf("PATCHes = %v, want none after an incomplete winner lookup", f.patched)
 	}
 }
 

@@ -149,7 +149,8 @@ Exit codes & warnings:
   line carrying status, reason, and message fields, and a final
   {"event":"sync_summary",...} aggregates the run.
 
-  Exit 0 when at least one resource synced and no resource flagged in
+  A full sync exits non-zero when any selected resource does not complete.
+  Exit 0 otherwise when at least one resource synced and no resource flagged in
   the spec as critical (x-critical: true) failed. Pass --strict to exit
   non-zero on any per-resource failure. Exit is always
   non-zero when every selected resource failed, regardless of --strict.`,
@@ -198,10 +199,11 @@ Exit codes & warnings:
 			// or worker scheduling so an items sync can provide local parity.
 			resources = normalizeSyncResources(resources)
 
-			// --full: clear all sync cursors before starting
+			// --full always starts from page zero. Do not update freshness until
+			// a complete pass reaches its terminal page.
 			if full {
 				for _, resource := range resources {
-					if err := db.SaveSyncState(resource, "", 0); err != nil {
+					if err := db.ClearSyncCursor(resource); err != nil {
 						return fmt.Errorf("clearing sync cursor for %s (--full): %w", resource, err)
 					}
 				}
@@ -225,7 +227,7 @@ Exit codes & warnings:
 							return fmt.Errorf("reading sync cursor for %s (--latest-only): %w", resource, gerr)
 						}
 						if existing != "" {
-							if err := db.SaveSyncState(resource, "", 0); err != nil {
+							if err := db.ClearSyncCursor(resource); err != nil {
 								return fmt.Errorf("clearing sync cursor for %s (--latest-only): %w", resource, err)
 							}
 						}
@@ -278,6 +280,7 @@ Exit codes & warnings:
 
 			var totalSynced int
 			var errCount int
+			var fullIncompleteResources []string
 			var criticalErrCount int
 			var warnCount int
 			// keep structured per-resource
@@ -295,6 +298,9 @@ Exit codes & warnings:
 						fmt.Fprintf(os.Stderr, "  %s: error: %v\n", res.Resource, res.Err)
 					}
 					errCount++
+					if full {
+						fullIncompleteResources = append(fullIncompleteResources, detail)
+					}
 					if criticalResources[res.Resource] {
 						criticalErrCount++
 						criticalFailedResources = append(criticalFailedResources, detail)
@@ -306,6 +312,9 @@ Exit codes & warnings:
 						fmt.Fprintf(os.Stderr, "  %s: warning: %v\n", res.Resource, res.Warn)
 					}
 					warnCount++
+					if full {
+						fullIncompleteResources = append(fullIncompleteResources, detail)
+					}
 				} else {
 					if humanFriendly {
 						fmt.Fprintf(os.Stderr, "  %s: %d synced (done)\n", res.Resource, res.Count)
@@ -338,6 +347,9 @@ Exit codes & warnings:
 			if humanFriendly {
 				if fulltextErr != nil {
 					fmt.Fprintf(os.Stderr, "Sync incomplete: fulltext: %v\n", fulltextErr)
+				} else if len(fullIncompleteResources) > 0 {
+					fmt.Fprintf(os.Stderr, "Sync incomplete: %d records across %d resources (%d resource(s) incomplete, %.1fs)\n",
+						totalSynced, totalResources, len(fullIncompleteResources), elapsed.Seconds())
 				} else if warnCount > 0 {
 					fmt.Fprintf(os.Stderr, "Sync complete: %d records across %d resources (%d warned, %.1fs)\n",
 						totalSynced, totalResources, warnCount, elapsed.Seconds())
@@ -373,10 +385,15 @@ Exit codes & warnings:
 			}
 
 			// Exit-code policy:
-			//   1. --strict + any error  -> non-zero
-			//   2. any critical failure  -> non-zero regardless of --strict
-			//   3. nothing synced        -> non-zero (preserves "all-warned" / "all-errored" exit)
-			//   4. otherwise             -> exit 0 (any data synced + no critical failed)
+			//   1. --full + any incomplete resource -> non-zero
+			//   2. --strict + any error          -> non-zero
+			//   3. any critical failure          -> non-zero regardless of --strict
+			//   4. nothing synced                 -> non-zero (preserves "all-warned" / "all-errored" exit)
+			//   5. otherwise                      -> exit 0 (any data synced + no critical failed)
+			if full && len(fullIncompleteResources) > 0 {
+				return fmt.Errorf("%d resource(s) incomplete during full sync: %s",
+					len(fullIncompleteResources), strings.Join(fullIncompleteResources, "; "))
+			}
 			if fulltextErr != nil {
 				return degradedErr(fmt.Errorf("fulltext sync incomplete: %w", fulltextErr))
 			}
@@ -507,8 +524,23 @@ func isSchemaSyncResource(resource string) bool {
 	}
 }
 
-// syncResource handles the full paginated sync of a single resource.
-// It resumes from the last cursor unless sinceVersion or full mode overrides it.
+type syncCursorProvenance struct {
+	Plane string `json:"plane"`
+	Mode  string `json:"mode"`
+	Since int    `json:"since"`
+}
+
+func syncCursorScope(plane string, full bool, since int) string {
+	mode := "incremental"
+	if full {
+		mode = "full"
+	}
+	data, _ := json.Marshal(syncCursorProvenance{Plane: plane, Mode: mode, Since: since})
+	return string(data)
+}
+
+// syncResource handles one complete or resumable paginated resource pass.
+// Resumption requires exact plane, mode, and since-filter provenance.
 func syncResource(ctx context.Context, c syncHTTPClient, db *store.Store, resource string, sinceVersion int, full bool, maxPages int, inlineProgress bool) syncResult {
 	started := time.Now()
 
@@ -530,13 +562,12 @@ func syncResource(ctx context.Context, c syncHTTPClient, db *store.Store, resour
 	// must use a client whose base URL has the library segment stripped.
 	requestClient := syncClientForResource(c, resource)
 
-	// Resume cursor from sync_state unless a full sync explicitly starts over.
+	// The effective filter must be known before a saved cursor can be trusted.
+	// A cursor from another plane, mode, or since checkpoint starts at page zero.
 	existingCursor := ""
-	if !full {
-		var stateErr error
-		existingCursor, _, _, stateErr = db.GetSyncState(resource)
-		if stateErr != nil {
-			return syncResult{Resource: resource, Err: fmt.Errorf("reading sync cursor for %s: %w", resource, stateErr), Duration: time.Since(started)}
+	if full {
+		if clearErr := db.ClearSyncCursor(resource); clearErr != nil {
+			return syncResult{Resource: resource, Err: fmt.Errorf("clearing full-sync cursor for %s: %w", resource, clearErr), Duration: time.Since(started)}
 		}
 	}
 
@@ -574,6 +605,20 @@ func syncResource(ctx context.Context, c syncHTTPClient, db *store.Store, resour
 			return syncResult{Resource: resource, Err: fmt.Errorf("clearing stale-plane versions for %s: %w", resource, clearErr), Duration: time.Since(started)}
 		}
 	}
+	cursorScope := syncCursorScope(c.Plane(), full, effectiveSince)
+	if !full {
+		savedCursor, savedScope, _, _, stateErr := db.GetSyncResumeState(resource)
+		if stateErr != nil {
+			return syncResult{Resource: resource, Err: fmt.Errorf("reading sync cursor for %s: %w", resource, stateErr), Duration: time.Since(started)}
+		}
+		if savedCursor != "" && savedScope == cursorScope {
+			existingCursor = savedCursor
+		} else if savedCursor != "" {
+			if clearErr := db.ClearSyncCursor(resource); clearErr != nil {
+				return syncResult{Resource: resource, Err: fmt.Errorf("discarding mismatched sync cursor for %s: %w", resource, clearErr), Duration: time.Since(started)}
+			}
+		}
+	}
 	libraryVersion := 0
 
 	cursor := existingCursor
@@ -595,6 +640,7 @@ func syncResource(ctx context.Context, c syncHTTPClient, db *store.Store, resour
 	var totalCount int
 	anomalyEmitted := false
 	completedNaturally := false
+	incompleteReason := ""
 
 	// Keys the plane reported during a full pass; drives the sweep below.
 	seenKeys := map[string]bool{}
@@ -863,10 +909,13 @@ func syncResource(ctx context.Context, c syncHTTPClient, db *store.Store, resour
 			}
 		}
 
-		// Save cursor after each page for resumability
-		if err := db.SaveSyncState(resource, nextCursor, totalCount); err != nil {
-			// Non-fatal: log and continue
-			fmt.Fprintf(os.Stderr, "\nwarning: failed to save sync state for %s: %v\n", resource, err)
+		// Incremental passes can resume only against this exact request.
+		// Full passes never persist partial cursors: the seen-key sweep also
+		// requires every prior page, so another process cannot resume it safely.
+		if !full {
+			if err := db.SaveSyncResumeState(resource, nextCursor, cursorScope, totalCount); err != nil {
+				fmt.Fprintf(os.Stderr, "\nwarning: failed to save sync state for %s: %v\n", resource, err)
+			}
 		}
 
 		pagesFetched++
@@ -894,6 +943,7 @@ func syncResource(ctx context.Context, c syncHTTPClient, db *store.Store, resour
 					Message:  fmt.Sprintf("reached --max-pages cap of %d; data may be truncated. Re-run with --max-pages 0 (unlimited) or higher to verify.", maxPages),
 				})
 			}
+			incompleteReason = fmt.Sprintf("reached --max-pages cap of %d", maxPages)
 			break
 		}
 
@@ -918,6 +968,7 @@ func syncResource(ctx context.Context, c syncHTTPClient, db *store.Store, resour
 					Message:  fmt.Sprintf("API returned the same next cursor across two pages for resource %s; aborting to prevent budget waste.", resource),
 				})
 			}
+			incompleteReason = "the API returned a repeated pagination cursor"
 			break
 		}
 		lastNextCursor = nextCursor
@@ -925,12 +976,11 @@ func syncResource(ctx context.Context, c syncHTTPClient, db *store.Store, resour
 		cursor = nextCursor
 	}
 
-	// Final sync state only advances checkpoints after natural pagination
-	// completion.: defensive exits
-	// (--max-pages or stuck cursor) leave the resume cursor and since-version
-	// checkpoint intact so a later sync cannot skip unfetched pages.
+	// Advance checkpoints only after natural pagination completion. Incremental
+	// defensive exits keep their scoped resume cursor. Full defensive exits keep
+	// no cursor because they also lack the earlier seen-key set.
 	if completedNaturally {
-		if serr := db.SaveSyncState(resource, "", totalCount); serr != nil {
+		if serr := db.SaveSyncResumeState(resource, "", "", totalCount); serr != nil {
 			return syncResult{Resource: resource, Count: totalCount, Err: fmt.Errorf("persisting sync checkpoint: %w", serr), Duration: time.Since(started)}
 		}
 		// Stamp the plane unconditionally, even when no page carried a usable
@@ -966,6 +1016,14 @@ func syncResource(ctx context.Context, c syncHTTPClient, db *store.Store, resour
 			} else if reaped > 0 && humanFriendly {
 				fmt.Fprintf(os.Stderr, "  reaped %d %s row(s) for objects that no longer exist\n", reaped, storeResource)
 			}
+		}
+	}
+	if full && !completedNaturally {
+		return syncResult{
+			Resource: resource,
+			Count:    totalCount,
+			Err:      fmt.Errorf("full sync incomplete: %s; restart with --full --max-pages 0", incompleteReason),
+			Duration: time.Since(started),
 		}
 	}
 

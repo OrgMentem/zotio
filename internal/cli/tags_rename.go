@@ -6,8 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"net/http"
-	"strconv"
 
 	"zotio/internal/client"
 	"zotio/internal/mutation"
@@ -230,21 +228,7 @@ func applyTagRenameUpdate(c *client.Client, update tagRenameUpdate) (string, any
 		err := fmt.Errorf("no write-plane version for item %s; refusing to write without an If-Unmodified-Since-Version precondition", update.key)
 		return "failed", err.Error(), err
 	}
-	headers := map[string]string{"If-Unmodified-Since-Version": strconv.Itoa(currentVersion)}
-	_, statusCode, err := c.PatchWithHeaders(path, map[string]any{
-		"tags": tags,
-	}, headers)
-	if err != nil {
-		var apiErr *client.APIError
-		if errors.As(err, &apiErr) && (apiErr.StatusCode == http.StatusPreconditionFailed || apiErr.StatusCode == http.StatusPreconditionRequired) {
-			return "conflict", apiErr.Body, err
-		}
-		return "failed", err.Error(), err
-	}
-	if statusCode < 200 || statusCode >= 300 {
-		return "failed", fmt.Sprintf("HTTP %d", statusCode), fmt.Errorf("patch returned HTTP %d", statusCode)
-	}
-	return "applied", nil, nil
+	return patchWithVersionGuard(c, path, map[string]any{"tags": tags}, currentVersion)
 }
 
 func tagRenameSingleLine(oldName, newName string) func(mutation.Envelope) string {

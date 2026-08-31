@@ -10,7 +10,6 @@ import (
 	"fmt"
 	"net/http"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"time"
 
@@ -469,20 +468,14 @@ func applyUndoCreate(c *client.Client, path string) (string, any, error) {
 		err := fmt.Errorf("reading created item version: response did not include a version")
 		return "failed", err.Error(), err
 	}
-	headers := map[string]string{"If-Unmodified-Since-Version": strconv.Itoa(version)}
-	_, statusCode, err := c.PatchWithHeaders(path, map[string]any{"deleted": 1}, headers)
+	status, detail, err := patchWithVersionGuard(c, path, map[string]any{"deleted": 1}, version)
 	if err != nil {
-		var apiErr *client.APIError
-		if errors.As(err, &apiErr) && (apiErr.StatusCode == http.StatusPreconditionFailed || apiErr.StatusCode == http.StatusPreconditionRequired) {
-			return "conflict", apiErr.Body, err
-		}
-		return "failed", err.Error(), err
+		return status, detail, err
 	}
-	if statusCode < 200 || statusCode >= 300 {
-		err := fmt.Errorf("trash returned HTTP %d", statusCode)
-		return "failed", err.Error(), err
+	if detail == nil {
+		detail = map[string]any{"deleted": true}
 	}
-	return "applied", map[string]any{"deleted": true}, nil
+	return status, detail, nil
 }
 
 // applyUndoMembership re-reads the item and applies the inverse tag/collection

@@ -81,7 +81,7 @@ func TestResumablePaginatedFetchFullFetch(t *testing.T) {
 	}
 
 	var got []json.RawMessage
-	fetched, err := resumablePaginatedFetch(context.Background(), c, "/items", nil, 100, 0, "", func(page []json.RawMessage) error {
+	fetched, err := resumablePaginatedFetch(context.Background(), c, "/items", nil, 100, 0, "", "", func(page []json.RawMessage) error {
 		got = append(got, page...)
 		return nil
 	})
@@ -129,13 +129,14 @@ func TestResumablePaginatedFetchResumesFromCheckpoint(t *testing.T) {
 	}
 
 	checkpointFile := filepath.Join(t.TempDir(), "export.checkpoint.json")
-	scope := exportCheckpointScope("/items", map[string]string{"format": "json"}, 100, 0)
-	if err := writeExportCheckpoint(checkpointFile, exportCheckpoint{Path: "/items", Scope: scope, NextStart: 200, Fetched: 200}); err != nil {
+	source := exportReadSource(c, "")
+	scope := exportCheckpointScope(source, "/items", map[string]string{"format": "json"}, 100, 0)
+	if err := writeExportCheckpoint(checkpointFile, exportCheckpoint{Path: "/items", Scope: scope, Source: source, NextStart: 200, Fetched: 200}); err != nil {
 		t.Fatalf("write checkpoint: %v", err)
 	}
 
 	var got []json.RawMessage
-	fetched, err := resumablePaginatedFetch(context.Background(), c, "/items", map[string]string{"format": "json"}, 100, 0, checkpointFile, func(page []json.RawMessage) error {
+	fetched, err := resumablePaginatedFetch(context.Background(), c, "/items", map[string]string{"format": "json"}, 100, 0, checkpointFile, "", func(page []json.RawMessage) error {
 		got = append(got, page...)
 		return nil
 	})
@@ -159,7 +160,7 @@ func TestResumablePaginatedFetchResumesFromCheckpoint(t *testing.T) {
 	if !ok {
 		t.Fatalf("checkpoint not readable after fetch")
 	}
-	if cp != (exportCheckpoint{Path: "/items", Scope: scope, NextStart: 250, Fetched: 250, Done: true}) {
+	if cp != (exportCheckpoint{Path: "/items", Scope: scope, Source: source, NextStart: 250, Fetched: 250, Done: true}) {
 		t.Fatalf("checkpoint = %+v, want done at 250", cp)
 	}
 	assertFileMode(t, checkpointFile, 0o600)
@@ -176,16 +177,18 @@ func TestResumablePaginatedFetchRejectsMismatchedCheckpointScope(t *testing.T) {
 		t.Fatalf("new client: %v", err)
 	}
 	checkpointFile := filepath.Join(t.TempDir(), "export.checkpoint.json")
+	source := exportReadSource(c, "")
 	if err := writeExportCheckpoint(checkpointFile, exportCheckpoint{
 		Path:      "/items",
-		Scope:     exportCheckpointScope("/items", map[string]string{"tag": "old"}, 100, 0),
+		Scope:     exportCheckpointScope(source, "/items", map[string]string{"tag": "old"}, 100, 0),
+		Source:    source,
 		NextStart: 100,
 		Fetched:   100,
 	}); err != nil {
 		t.Fatalf("write checkpoint: %v", err)
 	}
 
-	_, err = resumablePaginatedFetch(context.Background(), c, "/items", map[string]string{"tag": "new"}, 100, 0, checkpointFile, func([]json.RawMessage) error {
+	_, err = resumablePaginatedFetch(context.Background(), c, "/items", map[string]string{"tag": "new"}, 100, 0, checkpointFile, "", func([]json.RawMessage) error {
 		return nil
 	})
 	if err == nil || !strings.Contains(err.Error(), "checkpoint scope does not match") {

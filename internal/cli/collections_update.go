@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"strconv"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -100,23 +99,22 @@ func newCollectionsUpdateCmd(flags *rootFlags) *cobra.Command {
 			if err != nil {
 				return classifyAPIError(err, flags)
 			}
-			headers := map[string]string{}
-			if version > 0 {
-				headers["If-Unmodified-Since-Version"] = strconv.Itoa(version)
-			}
 			// Only the PUT itself is the write; routing just this call through the
 			// mutation engine journals it and (best-effort) mirror-replays it.
 			var data json.RawMessage
 			var statusCode int
 			var applyErr error
 			ops[0].Apply = func() (string, any, error) {
-				var putErr error
-				data, statusCode, putErr = c.PutWithHeaders(path, body, headers)
+				var (
+					status string
+					detail any
+					putErr error
+				)
+				data, statusCode, status, detail, putErr = putWithVersionGuard(c, path, body, version)
 				if putErr != nil {
-					applyErr = classifyAPIError(putErr, flags)
-					return "failed", nil, applyErr
+					applyErr = putErr
 				}
-				return "applied", nil, nil
+				return status, detail, putErr
 			}
 			if _, runErr := runMutation(cmd.Context(), flags, "collections.update", ops); runErr != nil {
 				if applyErr != nil {

@@ -239,7 +239,7 @@ func ensureLinkedAttachment(c *client.Client, req storedUploadRequest, flags *ro
 	resp, _, err := c.PostWithHeaders("/items", []map[string]any{item}, map[string]string{"Zotero-Write-Token": token})
 	if err != nil {
 		var respErr *client.APIError
-		if errors.As(err, &respErr) && respErr.StatusCode == http.StatusPreconditionFailed {
+		if client.IsAmbiguousWriteError(err) || (errors.As(err, &respErr) && respErr.StatusCode == http.StatusPreconditionFailed) {
 			if key, reconcileErr := findLinkedAttachment(c, req.ParentKey, req.Path); reconcileErr == nil && key != "" {
 				return key, false, nil
 			}
@@ -257,27 +257,12 @@ func ensureLinkedAttachment(c *client.Client, req storedUploadRequest, flags *ro
 }
 
 func findLinkedAttachment(c *client.Client, parentKey, path string) (string, error) {
-	data, _, err := c.GetWithVersion("/items/"+parentKey+"/children", map[string]string{"itemType": "attachment"})
+	rows, err := attachmentChildRows(c, parentKey)
 	if err != nil {
-		var respErr *client.APIError
-		if errors.As(err, &respErr) && respErr.StatusCode == http.StatusNotFound {
-			return "", notFoundErr(fmt.Errorf("parent item %s not found", parentKey))
-		}
-		return "", fmt.Errorf("listing children of %s: %w", parentKey, err)
-	}
-	var rows []struct {
-		Key  string `json:"key"`
-		Data struct {
-			ItemType string `json:"itemType"`
-			LinkMode string `json:"linkMode"`
-			Path     string `json:"path"`
-		} `json:"data"`
-	}
-	if err := json.Unmarshal(data, &rows); err != nil {
-		return "", fmt.Errorf("parsing children of %s: %w", parentKey, err)
+		return "", err
 	}
 	for _, row := range rows {
-		if row.Data.ItemType == "attachment" && row.Data.LinkMode == "linked_file" && row.Data.Path == path {
+		if row.Data.ItemType == "attachment" && row.Data.LinkMode == "linked_file" && row.Data.Path == path && row.Data.Deleted == 0 {
 			return row.Key, nil
 		}
 	}
@@ -338,11 +323,7 @@ func newStoredUploadRequest(parentKey, path, title string) (storedUploadRequest,
 	if err != nil {
 		return storedUploadRequest{}, fmt.Errorf("reading attachment: %w", err)
 	}
-	// Deterministic write token: an identical retry replays the same token, so
-	// Zotero rejects a duplicate create (412) instead of making a second child.
-	tok := sha256.Sum256([]byte("zotio.attachments.add\x00" + parentKey + "\x00" + filename + "\x00" + md5hex))
-	return storedUploadRequest{
-		ParentKey:   parentKey,
+	req := storedUploadRequest{
 		Path:        absPath,
 		Filename:    filename,
 		Title:       title,
@@ -350,8 +331,15 @@ func newStoredUploadRequest(parentKey, path, title string) (storedUploadRequest,
 		Size:        info.Size(),
 		MD5:         md5hex,
 		MtimeMS:     info.ModTime().UnixMilli(),
-		WriteToken:  hex.EncodeToString(tok[:16]),
-	}, nil
+	}
+	bindStoredUploadParent(&req, parentKey)
+	return req, nil
+}
+
+func bindStoredUploadParent(req *storedUploadRequest, parentKey string) {
+	req.ParentKey = parentKey
+	token := sha256.Sum256([]byte("zotio.attachments.add\x00" + parentKey + "\x00" + req.Filename + "\x00" + req.MD5))
+	req.WriteToken = hex.EncodeToString(token[:16])
 }
 
 // fileMD5 streams the digest so hashing does not scale memory with file size.
@@ -475,31 +463,16 @@ type storedSibling struct {
 }
 
 func findStoredSibling(c *client.Client, parentKey, filename, md5hex string) (storedSibling, error) {
-	// Live read (bypasses the read cache) so a retry observes a child created
-	// moments ago by a crashed run.
-	data, _, err := c.GetWithVersion("/items/"+parentKey+"/children", map[string]string{"itemType": "attachment"})
+	// Read every live child from the API so retry reconciliation cannot miss a
+	// matching attachment beyond Zotero's default 25-row page.
+	rows, err := attachmentChildRows(c, parentKey)
 	if err != nil {
-		var respErr *client.APIError
-		if errors.As(err, &respErr) && respErr.StatusCode == http.StatusNotFound {
-			return storedSibling{}, notFoundErr(fmt.Errorf("parent item %s not found", parentKey))
-		}
-		return storedSibling{}, fmt.Errorf("listing children of %s: %w", parentKey, err)
-	}
-	var rows []struct {
-		Key  string `json:"key"`
-		Data struct {
-			ItemType string `json:"itemType"`
-			LinkMode string `json:"linkMode"`
-			Filename string `json:"filename"`
-			MD5      string `json:"md5"`
-		} `json:"data"`
-	}
-	if err := json.Unmarshal(data, &rows); err != nil {
-		return storedSibling{}, fmt.Errorf("parsing children of %s: %w", parentKey, err)
+		return storedSibling{}, err
 	}
 	var sibling storedSibling
 	for _, row := range rows {
-		if row.Data.ItemType != "attachment" || row.Data.LinkMode != "imported_file" || row.Data.Filename != filename {
+		if row.Data.ItemType != "attachment" || row.Data.Deleted != 0 ||
+			row.Data.LinkMode != "imported_file" || row.Data.Filename != filename {
 			continue
 		}
 		switch row.Data.MD5 {
@@ -531,7 +504,7 @@ func createStoredAttachmentChild(c *client.Client, req storedUploadRequest, flag
 	resp, _, err := c.PostWithHeaders("/items", []map[string]any{item}, map[string]string{"Zotero-Write-Token": req.WriteToken})
 	if err != nil {
 		var respErr *client.APIError
-		if errors.As(err, &respErr) && respErr.StatusCode == http.StatusPreconditionFailed {
+		if client.IsAmbiguousWriteError(err) || (errors.As(err, &respErr) && respErr.StatusCode == http.StatusPreconditionFailed) {
 			// The deterministic write token was already accepted once (lost
 			// response). Reconcile instead of creating a second child.
 			sibling, rerr := findStoredSibling(c, req.ParentKey, req.Filename, req.MD5)
@@ -616,31 +589,14 @@ func postUploadPayload(ctx context.Context, c *client.Client, uploadURL, content
 		}
 		return fmt.Errorf("refusing file upload to untrusted storage host %s", host)
 	}
-	if err := assertUploadSourceUnchanged(req); err != nil {
-		return err
-	}
 	envelope := func() (io.ReadCloser, error) {
-		file, err := os.Open(req.Path) //nolint:gosec // G304: uploading a user-named local file is the command's purpose.
+		source, err := openVerifiedAttachmentSource(req)
 		if err != nil {
-			return nil, fmt.Errorf("reopening attachment for upload: %w", err)
+			return nil, err
 		}
-		digest := md5.New() //nolint:gosec // G401: Zotero's upload authorization is keyed by MD5.
-		limited := &io.LimitedReader{R: file, N: req.Size}
 		return readerWithCloser{
-			Reader: io.MultiReader(
-				strings.NewReader(prefix),
-				&verifiedUploadSource{
-					Reader:     io.TeeReader(limited, digest),
-					digest:     digest,
-					expected:   req.MD5,
-					filename:   req.Filename,
-					limited:    limited,
-					authorized: req.Size,
-					trailing:   file,
-				},
-				strings.NewReader(suffix),
-			),
-			closer: file,
+			Reader: io.MultiReader(strings.NewReader(prefix), source, strings.NewReader(suffix)),
+			closer: source,
 		}, nil
 	}
 	body, err := envelope()
@@ -672,6 +628,32 @@ func postUploadPayload(ctx context.Context, c *client.Client, uploadURL, content
 		return fmt.Errorf("file payload upload returned HTTP %d", resp.StatusCode)
 	}
 	return nil
+}
+
+// openVerifiedAttachmentSource opens one constant-memory source whose final
+// read proves the file still matches the metadata hashed during planning.
+func openVerifiedAttachmentSource(req storedUploadRequest) (io.ReadCloser, error) {
+	if err := assertUploadSourceUnchanged(req); err != nil {
+		return nil, err
+	}
+	file, err := os.Open(req.Path) //nolint:gosec // G304: uploading a user-named local file is the command's purpose.
+	if err != nil {
+		return nil, fmt.Errorf("opening attachment for upload: %w", err)
+	}
+	digest := md5.New() //nolint:gosec // G401: Zotero identifies stored files by MD5.
+	limited := &io.LimitedReader{R: file, N: req.Size}
+	return readerWithCloser{
+		Reader: &verifiedUploadSource{
+			Reader:     io.TeeReader(limited, digest),
+			digest:     digest,
+			expected:   req.MD5,
+			filename:   req.Filename,
+			limited:    limited,
+			authorized: req.Size,
+			trailing:   file,
+		},
+		closer: file,
+	}, nil
 }
 
 // readerWithCloser pairs an upload envelope with its source file, so the

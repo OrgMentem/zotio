@@ -18,6 +18,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -31,6 +32,7 @@ type fakeUploadChild struct {
 	LinkMode string
 	Filename string
 	Path     string
+	Title    string
 	MD5      string
 }
 
@@ -88,8 +90,17 @@ func (f *fakeZoteroUpload) handle(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, `{"error":"not found"}`, http.StatusNotFound)
 			return
 		}
-		rows := make([]map[string]any, 0, len(f.children))
-		for _, c := range f.children {
+		start, _ := strconv.Atoi(r.URL.Query().Get("start"))
+		limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
+		if limit <= 0 {
+			limit = 25
+		}
+		end := min(start+limit, len(f.children))
+		if start > len(f.children) {
+			start = len(f.children)
+		}
+		rows := make([]map[string]any, 0, end-start)
+		for _, c := range f.children[start:end] {
 			var md5Val any
 			if c.MD5 != "" {
 				md5Val = c.MD5
@@ -143,8 +154,11 @@ func (f *fakeZoteroUpload) handle(w http.ResponseWriter, r *http.Request) {
 		f.nextKey++
 		key := fmt.Sprintf("ATT%d", f.nextKey)
 		filename, _ := item["filename"].(string)
-		path, _ := item["path"].(string)
-		f.children = append(f.children, fakeUploadChild{Key: key, LinkMode: linkMode, Filename: filename, Path: path})
+		itemPath, _ := item["path"].(string)
+		title, _ := item["title"].(string)
+		f.children = append(f.children, fakeUploadChild{
+			Key: key, LinkMode: linkMode, Filename: filename, Path: itemPath, Title: title,
+		})
 		_, _ = fmt.Fprintf(w, `{"success":{"0":%q}}`, key)
 
 	case r.Method == http.MethodPost && strings.HasPrefix(path, "/items/") && strings.HasSuffix(path, "/file"):
@@ -220,6 +234,7 @@ func (f *fakeZoteroUpload) handle(w http.ResponseWriter, r *http.Request) {
 			if _, err := io.CopyN(io.Discard, r.Body, r.ContentLength); err != nil {
 				http.Error(w, "incomplete upload", http.StatusBadRequest)
 				return
+
 			}
 			f.uploads++
 			w.WriteHeader(http.StatusNoContent)
@@ -376,6 +391,103 @@ func TestAttachmentsAddStoredUploadsExactlyOnceAndRetryNoOps(t *testing.T) {
 	creates, uploads, registers = f.snapshot()
 	if creates != 1 || uploads != 1 || registers != 1 {
 		t.Fatalf("retry traffic = creates:%d uploads:%d registers:%d, want unchanged 1/1/1", creates, uploads, registers)
+	}
+}
+func pageTwoUploadChildren(match fakeUploadChild) []fakeUploadChild {
+	children := make([]fakeUploadChild, 0, 26)
+	for i := range 25 {
+		children = append(children, fakeUploadChild{
+			Key:      fmt.Sprintf("FILL%04d", i),
+			LinkMode: "imported_file",
+			Filename: fmt.Sprintf("other-%02d.pdf", i),
+			MD5:      strings.Repeat(fmt.Sprintf("%x", i%16), 32),
+		})
+	}
+	return append(children, match)
+}
+
+func TestAttachmentsAddStoredReconcilesBeyondFirstChildPage(t *testing.T) {
+	pdf := []byte(uploadFixturePDF)
+	digest := md5.Sum(pdf) //nolint:gosec // Zotero identifies stored files by MD5.
+	md5hex := hex.EncodeToString(digest[:])
+	for _, tc := range []struct {
+		name          string
+		match         fakeUploadChild
+		wantStatus    string
+		wantUpload    string
+		wantErr       bool
+		wantPayloads  int
+		wantRegisters int
+	}{
+		{
+			name:       "registered match is reused",
+			match:      fakeUploadChild{Key: "MATCH001", Filename: "paper.pdf", MD5: md5hex},
+			wantStatus: "no_op",
+		},
+		{
+			name:          "pending match is resumed",
+			match:         fakeUploadChild{Key: "MATCH002", Filename: "paper.pdf"},
+			wantStatus:    "applied",
+			wantUpload:    "resumed",
+			wantPayloads:  1,
+			wantRegisters: 1,
+		},
+		{
+			name:       "different content conflicts",
+			match:      fakeUploadChild{Key: "MATCH003", Filename: "paper.pdf", MD5: strings.Repeat("f", 32)},
+			wantStatus: "conflict",
+			wantErr:    true,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newFakeZoteroUpload(t, "PARENT1")
+			f.children = pageTwoUploadChildren(tc.match)
+			setUploadTestEnv(t, f)
+			path := writeUploadFixture(t, "paper.pdf", pdf)
+
+			env, stderr, err := runAttachmentsAdd(t, applyFlags(), []string{"add", "PARENT1", path})
+			if (err != nil) != tc.wantErr {
+				t.Fatalf("err = %v, wantErr %v; stderr=%s", err, tc.wantErr, stderr)
+			}
+			if env.Result == nil || len(env.Result.Items) != 1 || env.Result.Items[0].Status != tc.wantStatus {
+				t.Fatalf("result = %+v, want status %s", env.Result, tc.wantStatus)
+			}
+			if tc.wantStatus != "conflict" {
+				reason, _ := env.Result.Items[0].Reason.(map[string]any)
+				if reason["item_key"] != tc.match.Key {
+					t.Fatalf("reason = %+v, want key %s", reason, tc.match.Key)
+				}
+				if tc.wantUpload != "" && reason["upload"] != tc.wantUpload {
+					t.Fatalf("reason = %+v, want upload %s", reason, tc.wantUpload)
+				}
+			}
+			creates, uploads, registers := f.snapshot()
+			if creates != 0 || uploads != tc.wantPayloads || registers != tc.wantRegisters {
+				t.Fatalf("traffic = creates:%d uploads:%d registers:%d, want 0/%d/%d",
+					creates, uploads, registers, tc.wantPayloads, tc.wantRegisters)
+			}
+		})
+	}
+}
+
+func TestAttachmentsAddLinkedReconcilesBeyondFirstChildPage(t *testing.T) {
+	f := newFakeZoteroUpload(t, "PARENT1")
+	setUploadTestEnv(t, f)
+	path := writeUploadFixture(t, "paper.pdf", []byte(uploadFixturePDF))
+	f.children = pageTwoUploadChildren(fakeUploadChild{
+		Key: "MATCH004", LinkMode: "linked_file", Path: path,
+	})
+
+	env, stderr, err := runAttachmentsAdd(t, applyFlags(), []string{"add", "PARENT1", path, "--mode", "linked-file"})
+	if err != nil {
+		t.Fatalf("linked reconciliation: %v; stderr=%s", err, stderr)
+	}
+	if env.Result == nil || len(env.Result.Items) != 1 || env.Result.Items[0].Status != "no_op" {
+		t.Fatalf("result = %+v, want linked no_op", env.Result)
+	}
+	creates, uploads, registers := f.snapshot()
+	if creates+uploads+registers != 0 {
+		t.Fatalf("linked reconciliation wrote: creates=%d uploads=%d registers=%d", creates, uploads, registers)
 	}
 }
 

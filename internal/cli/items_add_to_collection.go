@@ -156,7 +156,8 @@ func createCollectionByName(c *client.Client, name string) (string, error) {
 	)
 	if err != nil {
 		var apiErr *client.APIError
-		if !errors.As(err, &apiErr) || apiErr.StatusCode != http.StatusPreconditionFailed {
+		if !client.IsAmbiguousWriteError(err) &&
+			(!errors.As(err, &apiErr) || apiErr.StatusCode != http.StatusPreconditionFailed) {
 			return "", err
 		}
 

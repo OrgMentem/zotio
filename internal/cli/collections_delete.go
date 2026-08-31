@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"strconv"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -88,7 +87,6 @@ func newCollectionsDeleteCmd(flags *rootFlags) *cobra.Command {
 				// for idempotent retries; unlike items, a collection has no trash
 				// state to distinguish "already gone" from, so this is the only
 				// no-op path collections delete needs.
-				delHeaders := map[string]string{}
 				_, version, verErr := c.GetWithVersion(path, nil)
 				if verErr != nil {
 					if flags.ignoreMissing && strings.Contains(verErr.Error(), "HTTP 404") {
@@ -104,9 +102,12 @@ func newCollectionsDeleteCmd(flags *rootFlags) *cobra.Command {
 					applyErr = apiErr(fmt.Errorf("reading collection version for %s: response did not include a version", args[0]))
 					return "failed", nil, applyErr
 				}
-				delHeaders["If-Unmodified-Since-Version"] = strconv.Itoa(version)
-				var delErr error
-				data, statusCode, delErr = c.DeleteWithHeaders(path, delHeaders)
+				var (
+					status string
+					detail any
+					delErr error
+				)
+				data, statusCode, status, detail, delErr = deleteWithVersionGuard(c, path, version)
 				if delErr != nil {
 					if flags.ignoreMissing && strings.Contains(delErr.Error(), "HTTP 404") {
 						return "no_op", map[string]any{
@@ -115,9 +116,9 @@ func newCollectionsDeleteCmd(flags *rootFlags) *cobra.Command {
 						}, nil
 					}
 					applyErr = classifyAPIError(delErr, flags)
-					return "failed", nil, applyErr
+					return status, detail, delErr
 				}
-				return "applied", nil, nil
+				return status, detail, nil
 			}
 			env, runErr := runMutation(cmd.Context(), flags, "collections.delete", ops)
 			if runErr != nil {

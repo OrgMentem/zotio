@@ -332,6 +332,32 @@ func TestImportDiscoverCommandErrorsWhenAllSourcesFail(t *testing.T) {
 	}
 }
 
+func TestImportDiscoverRefusesBusyOutputBeforeReadingSource(t *testing.T) {
+	target := filepath.Join(t.TempDir(), "manifest.json")
+	const original = `{"schema_version":2,"entries":[]}`
+	if err := os.WriteFile(target, []byte(original), 0o600); err != nil {
+		t.Fatalf("write original manifest: %v", err)
+	}
+	_ = holdOutputWriterLock(t, target)
+	useUnreachableAPI(t)
+
+	cmd := newImportDiscoverCmd(&rootFlags{asJSON: true, noCache: true, timeout: time.Second})
+	cmd.SilenceErrors, cmd.SilenceUsage = true, true
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetErr(&bytes.Buffer{})
+	cmd.SetArgs([]string{"--scope", "library", "--out", target, "--min-count", "1"})
+	err := cmd.Execute()
+	assertBusyPrecondition(t, err, "import discover")
+
+	got, readErr := os.ReadFile(target)
+	if readErr != nil {
+		t.Fatalf("read preserved manifest: %v", readErr)
+	}
+	if string(got) != original {
+		t.Fatalf("busy import discover changed target to %q, want %q", got, original)
+	}
+}
+
 type importDiscoverProviderCounters struct {
 	coci            atomic.Int64
 	crossref        atomic.Int64

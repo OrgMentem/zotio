@@ -231,6 +231,15 @@ func TestImportApplyStoredWebCreateAppliesParentAndAttachment(t *testing.T) {
 	if fake.parentSnapshot() != 1 || creates != 1 || uploads != 1 || registers != 1 {
 		t.Fatalf("traffic parent=%d attachment=%d upload=%d register=%d, want 1 each", fake.parentSnapshot(), creates, uploads, registers)
 	}
+
+	child := fake.findChild("ATT1")
+	if child == nil || child.Title != filepath.Base(pdf) {
+		var got string
+		if child != nil {
+			got = child.Title
+		}
+		t.Fatalf("stored Web attachment title = %q, want filename %q", got, filepath.Base(pdf))
+	}
 }
 
 func TestImportApplyStoredConnectorCreatePreservesUnresolvedSaveItemsEvidence(t *testing.T) {
@@ -829,6 +838,22 @@ func TestImportApplyStoredRejectsFetchPDF(t *testing.T) {
 	_, _, err := runImportApplyTestCmd(t, []string{"--attach-mode", "stored", "--fetch-pdf", manifestPath})
 	if err == nil || !strings.Contains(err.Error(), "--fetch-pdf cannot be combined with --attach-mode stored") {
 		t.Fatalf("err = %v, want redundant PDF sources rejected before writes", err)
+	}
+}
+
+func TestImportApplyFetchPDFPlansCreateAndResolverSeparately(t *testing.T) {
+	manifestPath := writeImportApplyTestManifest(t, importApplyTestManifest())
+	env, stderr, err := runImportApplyTestCmd(t, []string{"--fetch-pdf", manifestPath})
+	if err != nil {
+		t.Fatalf("import apply --fetch-pdf preview: %v; stderr=%s", err, stderr)
+	}
+	if len(env.Plan.Operations) < 2 {
+		t.Fatalf("plan = %+v, want separate parent and resolver operations", env.Plan)
+	}
+	if env.Plan.Operations[0].ID != "import.apply:001:create" ||
+		env.Plan.Operations[1].ID != "import.apply:001:resolver-pdf" ||
+		env.Plan.Operations[1].Kind != "attachment_create" {
+		t.Fatalf("first operations = %+v, want parent create then conditional resolver attachment", env.Plan.Operations[:2])
 	}
 }
 

@@ -17,6 +17,16 @@ import (
 	"time"
 )
 
+type trackedReadCloser struct {
+	io.Reader
+	closed atomic.Bool
+}
+
+func (r *trackedReadCloser) Close() error {
+	r.closed.Store(true)
+	return nil
+}
+
 func TestConnectorSaveItemsRequest(t *testing.T) {
 	t.Parallel()
 
@@ -362,6 +372,11 @@ func TestConnectorSaveAttachmentRequest(t *testing.T) {
 			http.Error(w, "unexpected metadata", http.StatusBadRequest)
 			return
 		}
+		if r.ContentLength != int64(len("%PDF-1.4")) {
+			t.Errorf("Content-Length = %d, want %d", r.ContentLength, len("%PDF-1.4"))
+			http.Error(w, "unexpected content length", http.StatusBadRequest)
+			return
+		}
 		data, err := io.ReadAll(r.Body)
 		if err != nil {
 			t.Errorf("read body: %v", err)
@@ -378,8 +393,12 @@ func TestConnectorSaveAttachmentRequest(t *testing.T) {
 	defer server.Close()
 
 	c := New(server.URL+"/connector", time.Second)
-	if err := c.SaveAttachment(context.Background(), "session", "connector-key", "Café PDF", "https://example.test/source.pdf", "application/pdf", []byte("%PDF-1.4")); err != nil {
+	body := &trackedReadCloser{Reader: strings.NewReader("%PDF-1.4")}
+	if err := c.SaveAttachment(context.Background(), "session", "connector-key", "Café PDF", "https://example.test/source.pdf", "application/pdf", body, int64(len("%PDF-1.4"))); err != nil {
 		t.Fatalf("SaveAttachment returned error: %v", err)
+	}
+	if !body.closed.Load() {
+		t.Fatal("SaveAttachment did not close the owned body")
 	}
 }
 
@@ -708,7 +727,7 @@ func TestConnectorNonCreatedErrors(t *testing.T) {
 	}
 	// A real source URL keeps this exercising the HTTP 400 path; an empty one
 	// is now rejected before the request is sent.
-	if err := c.SaveAttachment(context.Background(), "session", "id", "PDF", "https://example.test/p.pdf", "application/pdf", nil); err == nil {
+	if err := c.SaveAttachment(context.Background(), "session", "id", "PDF", "https://example.test/p.pdf", "application/pdf", nil, 0); err == nil {
 		t.Fatal("SaveAttachment returned nil error for HTTP 400")
 	}
 }
@@ -727,12 +746,16 @@ func TestConnectorSaveAttachmentRejectsEmptySourceURL(t *testing.T) {
 	defer server.Close()
 
 	c := New(server.URL+"/connector", time.Second)
-	err := c.SaveAttachment(context.Background(), "session", "id", "PDF", "   ", "application/pdf", []byte("%PDF-1.4"))
+	body := &trackedReadCloser{Reader: strings.NewReader("%PDF-1.4")}
+	err := c.SaveAttachment(context.Background(), "session", "id", "PDF", "   ", "application/pdf", body, int64(len("%PDF-1.4")))
 	if err == nil || !strings.Contains(err.Error(), "requires a source URL") {
 		t.Fatalf("err = %v, want a named empty-source-URL refusal", err)
 	}
 	if called {
 		t.Fatal("SaveAttachment sent a request Zotero would have rejected with HTTP 500")
+	}
+	if !body.closed.Load() {
+		t.Fatal("SaveAttachment did not close the body after local validation failed")
 	}
 }
 

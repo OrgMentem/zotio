@@ -5,7 +5,6 @@ package cli
 import (
 	"encoding/json"
 	"fmt"
-	"strconv"
 
 	"github.com/spf13/cobra"
 
@@ -55,10 +54,6 @@ func newCollectionsMoveCmd(flags *rootFlags) *cobra.Command {
 			if err != nil {
 				return classifyAPIError(err, flags)
 			}
-			headers := map[string]string{}
-			if version > 0 {
-				headers["If-Unmodified-Since-Version"] = strconv.Itoa(version)
-			}
 
 			// Only the PUT itself is the write; routing just this call through the
 			// mutation engine journals it and (best-effort) mirror-replays it.
@@ -74,13 +69,16 @@ func newCollectionsMoveCmd(flags *rootFlags) *cobra.Command {
 				// reverse.go's reversibleFields, so undo correctly refuses it.
 				Changes: []mutation.Change{{Field: "collection", Add: map[string]any{"parentCollection": parentCollection}}},
 				Apply: func() (string, any, error) {
-					var putErr error
-					data, statusCode, putErr = c.PutWithHeaders(path, map[string]any{"parentCollection": parentCollection}, headers)
+					var (
+						status string
+						detail any
+						putErr error
+					)
+					data, statusCode, status, detail, putErr = putWithVersionGuard(c, path, map[string]any{"parentCollection": parentCollection}, version)
 					if putErr != nil {
-						applyErr = classifyAPIError(putErr, flags)
-						return "failed", nil, applyErr
+						applyErr = putErr
 					}
-					return "applied", nil, nil
+					return status, detail, putErr
 				},
 			}}
 			if _, runErr := runMutation(cmd.Context(), flags, "collections.move", ops); runErr != nil {

@@ -36,6 +36,40 @@ func TestGetMissingRowReturnsErrNotFound(t *testing.T) {
 		t.Fatalf("Get from closed store error = %v, want a non-not-found read error", err)
 	}
 }
+func TestSyncResumeStateBindsCursorToRequestScope(t *testing.T) {
+	s := queryTestStore(t)
+	defer s.Close()
+
+	const scope = `{"plane":"https://api.zotero.org/users/1","mode":"incremental","since":42}`
+	if err := s.SaveSyncResumeState("items", "100", scope, 100); err != nil {
+		t.Fatalf("SaveSyncResumeState: %v", err)
+	}
+	cursor, gotScope, syncedAt, count, err := s.GetSyncResumeState("items")
+	if err != nil {
+		t.Fatalf("GetSyncResumeState: %v", err)
+	}
+	if cursor != "100" || gotScope != scope || syncedAt.IsZero() || count != 100 {
+		t.Fatalf("resume state = (%q, %q, %v, %d), want cursor and scope preserved", cursor, gotScope, syncedAt, count)
+	}
+
+	if err := s.SaveSyncState("items", "legacy", 1); err != nil {
+		t.Fatalf("SaveSyncState: %v", err)
+	}
+	cursor, gotScope, _, _, err = s.GetSyncResumeState("items")
+	if err != nil || cursor != "legacy" || gotScope != "" {
+		t.Fatalf("unqualified state = (%q, %q, %v), want a cursor without resumable provenance", cursor, gotScope, err)
+	}
+	if err := s.ClearSyncCursor("items"); err != nil {
+		t.Fatalf("ClearSyncCursor: %v", err)
+	}
+	cursor, gotScope, _, _, err = s.GetSyncResumeState("items")
+	if err != nil || cursor != "" || gotScope != "" {
+		t.Fatalf("cleared state = (%q, %q, %v), want no cursor or scope", cursor, gotScope, err)
+	}
+	if err := s.SaveSyncResumeState("items", "200", "", 200); err == nil {
+		t.Fatal("SaveSyncResumeState accepted a cursor without request provenance")
+	}
+}
 
 func TestRestoreMirroredItem_Atomicity(t *testing.T) {
 	ctx := context.Background()

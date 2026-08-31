@@ -12,6 +12,47 @@ Notable changes to zotio. Format follows [Keep a Changelog](https://keepachangel
   now returns the original transport or server error. Explicit HTTP 429 rate
   limits still retry. Writes with a `Zotero-Write-Token` still retry because
   their endpoint can reconcile the token-replay response.
+- **Incomplete full syncs now fail instead of leaving a resumable cursor.**
+  `sync --full` always restarts at page zero, and a capped or interrupted pass
+  exits non-zero until an uncapped full pass completes. Incremental cursors now
+  carry their read plane and effective query; a cursor from another plane,
+  mode, or `since` checkpoint is discarded instead of being replayed against a
+  different result set.
+- **Operational `--fetch-pdf` failures now fail the attachment operation.**
+  Resolver absence remains a successful `no_op`, but connector setup, resolver
+  checks, and attachment saves no longer report success. The result keeps the
+  committed parent key or connector session and tells callers not to recreate
+  the parent.
+- **Diagnostics no longer describe unreadable state as healthy or absent.**
+  `doctor` reports `cache.status: error` when any cache query fails, and the MCP
+  archive status returns an error for a corrupt or inaccessible existing
+  database. Only a missing database reports `not initialized`.
+- **A conditional write that may have committed is reconciled before its final
+  status is reported.** A retry that receives 412 after a lost response can now
+  report `applied` or `converged` when a write-plane read confirms the requested
+  fields. A non-matching object remains a conflict.
+
+### Fixed
+
+- Attachment reconciliation now pages every child of the target. Stored and
+  linked attachments beyond Zotero's first 25 rows are reused, resumed, or
+  rejected on content conflict instead of being duplicated.
+- Connector re-parent retries now stop when resume lookup is incomplete or
+  ambiguous. The final duplicate check also stops on read failure instead of
+  moving a second copy.
+- Connector attachment bodies now stream from a verified file with an explicit
+  content length. Large files no longer require one allocation as large as the
+  attachment, and the file opens before any temporary Zotero parent is created.
+- Vault note creation now reconciles a burned write token or lost response by
+  paging the parent's child notes on the write plane. Exactly one matching
+  managed note is adopted; zero or multiple matches return recovery evidence
+  without creating another note.
+- Snapshot checkpoints now bind to the normalized read base, library, and
+  profile. `--resume` rejects a legacy or foreign checkpoint before any request
+  or output append.
+- `import discover` now acquires the canonical output lock before reading its
+  sources and publishes the private manifest through a temporary file. A busy
+  target exits 9, and a failed run preserves the previous manifest.
 
 ## [0.23.0] — 2026-08-30
 

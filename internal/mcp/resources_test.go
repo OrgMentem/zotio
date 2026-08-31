@@ -8,6 +8,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"math"
 	"os"
 	"path/filepath"
@@ -354,6 +355,36 @@ func TestLibraryJSONContentsPropagatesEncodingErrors(t *testing.T) {
 	if _, err := libraryJSONContentsValue("zotero://items/TOP1", math.Inf(1)); err == nil {
 		t.Fatal("libraryJSONContentsValue accepted an unencodable value")
 	}
+}
+
+func TestArchiveStatusClassifiesOnlyAbsentStoreAsUninitialized(t *testing.T) {
+	t.Run("absent", func(t *testing.T) {
+		t.Setenv("HOME", t.TempDir())
+		status, err := archiveStatus(context.Background())
+		if err != nil {
+			t.Fatalf("archiveStatus for absent store: %v", err)
+		}
+		if status["synced"] != false || !strings.Contains(fmt.Sprint(status["note"]), "not initialized") {
+			t.Fatalf("absent status = %#v, want not initialized", status)
+		}
+	})
+
+	t.Run("invalid sqlite", func(t *testing.T) {
+		t.Setenv("HOME", t.TempDir())
+		if err := os.MkdirAll(filepath.Dir(dbPath()), 0o755); err != nil {
+			t.Fatalf("mkdir: %v", err)
+		}
+		if err := os.WriteFile(dbPath(), []byte("not a sqlite database"), 0o600); err != nil {
+			t.Fatalf("write invalid store: %v", err)
+		}
+		status, err := archiveStatus(context.Background())
+		if err == nil || !strings.Contains(err.Error(), "opening local archive") {
+			t.Fatalf("archiveStatus error = %v, want classified open failure", err)
+		}
+		if status != nil {
+			t.Fatalf("invalid store returned authoritative status: %#v", status)
+		}
+	})
 }
 
 // A local store that opens but has a corrupt/missing sync_state table must

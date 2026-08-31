@@ -85,13 +85,16 @@ func exportSnapshot(cmd *cobra.Command, flags *rootFlags, outputFile, path strin
 	}
 
 	checkpointFile := outputFile + ".checkpoint.json"
-	// only append when a checkpoint for THIS scope is
-	// genuinely resumable (matching path, not done). --resume on a finished,
-	// missing, or mismatched checkpoint must truncate, else the fetch restarts
-	// at offset 0 while appending and silently duplicates the snapshot.
+	source := exportReadSource(c, flags.profileName)
+	expectedScope := exportCheckpointScope(source, path, params, normalizedExportPageSize(pageSize), limit)
+	// Append only when every request and library identity field matches.
+	// Reject legacy or foreign incomplete checkpoints before opening the output.
 	resumable := false
 	if resume {
-		if cp, ok := readExportCheckpoint(checkpointFile); ok && cp.Path == path && !cp.Done {
+		if cp, ok := readExportCheckpoint(checkpointFile); ok && !cp.Done {
+			if cp.Path != path || cp.Source != source || cp.Scope != expectedScope {
+				return fmt.Errorf("checkpoint scope does not match this export; remove the checkpoint or rerun without --resume")
+			}
 			resumable = true
 		}
 	}
@@ -127,7 +130,7 @@ func exportSnapshot(cmd *cobra.Command, flags *rootFlags, outputFile, path strin
 		return w.Flush()
 	}
 
-	fetched, fetchErr := resumablePaginatedFetch(cmd.Context(), c, path, params, pageSize, limit, checkpointFile, onPage)
+	fetched, fetchErr := resumablePaginatedFetch(cmd.Context(), c, path, params, pageSize, limit, checkpointFile, flags.profileName, onPage)
 	flushErr := w.Flush()
 	closeErr := f.Close()
 	if fetchErr != nil {

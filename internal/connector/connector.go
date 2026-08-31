@@ -165,8 +165,7 @@ func creatorHasNoName(creator map[string]any) bool {
 	return true
 }
 
-// SaveAttachment imports raw attachment bytes as a stored child of a
-// connector-created parent.
+// SaveAttachment streams a stored child into a connector save session.
 //
 // parentConnectorKey must be the "id" a same-session SaveItems call assigned to
 // the parent, NOT a Zotero item key. Zotero resolves it through
@@ -174,7 +173,18 @@ func creatorHasNoName(creator map[string]any) bool {
 // that already exists in the library is not addressable here: Zotero answers
 // HTTP 500 for a live session and 400 SESSION_NOT_FOUND otherwise. Verified
 // against Zotero 7 on 2026-08-17.
-func (c *Client) SaveAttachment(ctx context.Context, sessionID, parentConnectorKey, title, sourceURL, contentType string, data []byte) error {
+//
+// SaveAttachment takes ownership of body and closes it on every return path.
+// contentLength must name the exact byte count because the connector must not
+// receive an unbounded, chunked local-file request.
+func (c *Client) SaveAttachment(ctx context.Context, sessionID, parentConnectorKey, title, sourceURL, contentType string, body io.ReadCloser, contentLength int64) error {
+	if body == nil {
+		body = io.NopCloser(bytes.NewReader(nil))
+	}
+	defer func() { _ = body.Close() }()
+	if contentLength < 0 {
+		return fmt.Errorf("connector saveAttachment requires a non-negative content length")
+	}
 	// Zotero's Attachments.importFromNetworkStream throws "'url' not provided"
 	// on an empty url and the connector reports that as a bare HTTP 500 —
 	// after the parent item has already been created, so the caller is left
@@ -195,10 +205,11 @@ func (c *Client) SaveAttachment(ctx context.Context, sessionID, parentConnectorK
 	if contentType == "" {
 		contentType = "application/octet-stream"
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.endpoint("/saveAttachment"), bytes.NewReader(data))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.endpoint("/saveAttachment"), body)
 	if err != nil {
 		return err
 	}
+	req.ContentLength = contentLength
 	c.setVersion(req)
 	req.Header.Set("Content-Type", contentType)
 	req.Header.Set("X-Metadata", meta)

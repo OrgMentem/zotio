@@ -10,8 +10,10 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -105,6 +107,147 @@ func TestSyncResourceDiscardsForeignPlaneCheckpoint(t *testing.T) {
 	// the monotonic guard.
 	if v, _, err := db.StoredLibraryVersion("items"); err != nil || v != 71 {
 		t.Fatalf("stored version = %d (err %v), want 71 from the current plane", v, err)
+	}
+}
+func TestSyncResourceDiscardsCursorFromAnotherPlane(t *testing.T) {
+	syncTestWithHumanFriendly(t, false)
+	db := syncTestOpenStore(t)
+	defer db.Close()
+
+	first := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprintf(w, `{"data":%s,"next_cursor":"100","has_more":true}`, syncTestItemsJSON("first", 100))
+	}))
+	defer first.Close()
+	if res := syncResource(context.Background(), syncTestClient(first.URL), db, "items", 0, false, 1, false); res.Err != nil {
+		t.Fatalf("first capped sync error: %v", res.Err)
+	}
+
+	var start, since string
+	second := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		start = r.URL.Query().Get("start")
+		since = r.URL.Query().Get("since")
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`[{"key":"SECOND","data":{"key":"SECOND","itemType":"book"}}]`))
+	}))
+	defer second.Close()
+	if res := syncResource(context.Background(), syncTestClient(second.URL), db, "items", 0, false, 0, false); res.Err != nil {
+		t.Fatalf("second-plane sync error: %v", res.Err)
+	}
+	if start != "0" || since != "" {
+		t.Fatalf("second-plane query start=%q since=%q, want page zero without a foreign filter", start, since)
+	}
+}
+
+func TestSyncResourceDoesNotResumePartialFullPassAsIncremental(t *testing.T) {
+	syncTestWithHumanFriendly(t, false)
+	db := syncTestOpenStore(t)
+	defer db.Close()
+
+	var queries []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		queries = append(queries, r.URL.RawQuery)
+		w.Header().Set("Content-Type", "application/json")
+		if len(queries) == 1 {
+			fmt.Fprintf(w, `{"data":%s,"next_cursor":"100","has_more":true}`, syncTestItemsJSON("full", 100))
+			return
+		}
+		_, _ = w.Write([]byte(`[]`))
+	}))
+	defer server.Close()
+	client := syncTestClient(server.URL)
+	if err := db.SaveLibraryVersion("items", client.Plane(), 40); err != nil {
+		t.Fatalf("seed library version: %v", err)
+	}
+
+	first := syncResource(context.Background(), client, db, "items", 0, true, 1, false)
+	if first.Err == nil || !strings.Contains(first.Err.Error(), "full sync incomplete") {
+		t.Fatalf("partial full result = %+v, want a hard incomplete error", first)
+	}
+	if cursor, _, _, err := db.GetSyncState("items"); err != nil || cursor != "" {
+		t.Fatalf("cursor after partial full pass = %q, %v; want none", cursor, err)
+	}
+
+	if second := syncResource(context.Background(), client, db, "items", 0, false, 0, false); second.Err != nil {
+		t.Fatalf("incremental sync error: %v", second.Err)
+	}
+	if len(queries) != 2 {
+		t.Fatalf("queries = %v, want two requests", queries)
+	}
+	secondQuery, err := url.ParseQuery(queries[1])
+	if err != nil {
+		t.Fatalf("parse second query: %v", err)
+	}
+	if got := secondQuery.Get("start"); got != "0" {
+		t.Fatalf("incremental start = %q, want 0 after a partial full pass", got)
+	}
+	if got := secondQuery.Get("since"); got != "40" {
+		t.Fatalf("incremental since = %q, want the prior complete checkpoint 40", got)
+	}
+}
+
+func TestSyncFullFailureExitsNonZeroWithSuccessfulResource(t *testing.T) {
+	syncTestWithHumanFriendly(t, false)
+	fastRetryBackoff(t)
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/users/0/items":
+			_, _ = w.Write([]byte(`[{"key":"ITEM1","version":1,"data":{"key":"ITEM1","itemType":"book"}}]`))
+		case "/users/0/collections":
+			http.Error(w, "simulated full-sync failure", http.StatusInternalServerError)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	cmd := newSyncCmd(&rootFlags{
+		configPath: testConfigFile(t, srv.URL+"/users/0"),
+		timeout:    time.Second,
+	})
+	cmd.SilenceErrors = true
+	cmd.SilenceUsage = true
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetErr(&bytes.Buffer{})
+	cmd.SetArgs([]string{"--full", "--resources", "items,collections", "--db", filepath.Join(t.TempDir(), "sync.db")})
+
+	err := cmd.Execute()
+	if err == nil || !strings.Contains(err.Error(), "incomplete during full sync") {
+		t.Fatalf("full sync error = %v, want non-zero incomplete result when one resource succeeds", err)
+	}
+}
+
+func TestSyncFullAccessWarningExitsNonZeroWithSuccessfulResource(t *testing.T) {
+	syncTestWithHumanFriendly(t, false)
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/users/0/items":
+			_, _ = w.Write([]byte(`[{"key":"ITEM1","version":1,"data":{"key":"ITEM1","itemType":"book"}}]`))
+		case "/users/0/collections":
+			http.Error(w, "simulated access denial", http.StatusForbidden)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	cmd := newSyncCmd(&rootFlags{
+		configPath: testConfigFile(t, srv.URL+"/users/0"),
+		timeout:    time.Second,
+	})
+	cmd.SilenceErrors = true
+	cmd.SilenceUsage = true
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetErr(&bytes.Buffer{})
+	cmd.SetArgs([]string{"--full", "--resources", "items,collections", "--db", filepath.Join(t.TempDir(), "sync.db")})
+
+	err := cmd.Execute()
+	if err == nil || !strings.Contains(err.Error(), "incomplete during full sync") {
+		t.Fatalf("full sync error = %v, want non-zero incomplete result for an access warning", err)
 	}
 }
 

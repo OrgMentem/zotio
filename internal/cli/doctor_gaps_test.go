@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -252,6 +253,47 @@ func TestDoctorCacheScanFailureDegradesReportAndExit(t *testing.T) {
 	}
 	if stderr.Len() != 0 {
 		t.Fatalf("JSON mode should not print cache warnings to stderr: %s", stderr.String())
+	}
+}
+
+func TestDoctorCacheDiagnosticQueryFailuresDegradeReport(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		dropTable   string
+		wantWarning string
+	}{
+		{name: "resource count", dropTable: "resources", wantWarning: "counting resource rows"},
+		{name: "pending writes", dropTable: "pending_writes", wantWarning: "counting pending writes"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			home := t.TempDir()
+			t.Setenv("HOME", home)
+			dbPath := filepath.Join(home, ".local", "share", "zotio", "data.db")
+			s, err := store.OpenWithContext(context.Background(), dbPath)
+			if err != nil {
+				t.Fatalf("open store: %v", err)
+			}
+			if err := s.SaveSyncState("items", "", 1); err != nil {
+				t.Fatalf("save sync state: %v", err)
+			}
+			if _, err := s.DB().Exec(`DROP TABLE ` + tc.dropTable); err != nil {
+				t.Fatalf("drop %s: %v", tc.dropTable, err)
+			}
+			if err := s.Close(); err != nil {
+				t.Fatalf("close store: %v", err)
+			}
+
+			rep := collectCacheReport(context.Background(), "1h")
+			if got := rep["status"]; got != "error" {
+				t.Fatalf("status = %v, want error; report=%#v", got, rep)
+			}
+			warnings, _ := rep["warnings"].([]string)
+			if !slices.ContainsFunc(warnings, func(warning string) bool {
+				return strings.Contains(warning, tc.wantWarning)
+			}) {
+				t.Fatalf("warnings = %#v, want %q", warnings, tc.wantWarning)
+			}
+		})
 	}
 }
 

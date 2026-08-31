@@ -12,6 +12,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -71,19 +72,30 @@ type reparentFake struct {
 	patched []map[string]string
 	// version is handed out for If-Unmodified-Since-Version checks.
 	version int
-	// createdTitle is the title the route actually generated, captured from
-	// the saveItems body so the recovery lookup can match on it.
+	// createdTitle is the title the route generated, captured from the
+	// saveItems body so the recovery lookup can match on it.
 	createdTitle string
-	// createdAbstract is the temporary parent's abstractNote, which carries the
-	// self-describing marker once the title is borrowed from the target.
+	// createdAbstract is the temporary parent's abstractNote, which carries
+	// the self-describing marker once the title is borrowed from the target.
 	createdAbstract string
-	// attachMeta and attachBytes record what saveAttachment actually received.
-	attachMeta  string
-	attachBytes int
+	// createdSession and createdConnectorKey capture the connector-local
+	// identity that saveAttachment must repeat in X-Metadata.
+	createdSession      string
+	createdConnectorKey string
+	// attachMeta, attachBytes, and attachPayload record saveAttachment input.
+	attachMeta    string
+	attachBytes   int
+	attachPayload []byte
 	// strandedParentKey simulates a previous run's orphan, for resume tests.
 	strandedParentKey string
 	// strandedChildMD5 is the content held under that orphan.
 	strandedChildMD5 string
+	// strandedParents adds further resumable parents keyed by their child MD5.
+	strandedParents map[string]string
+	// childrenStatus forces one parent's children read to fail.
+	childrenStatus map[string]int
+	// topItemsStatus forces markedTemporaryParents to fail.
+	topItemsStatus int
 	// blockUntilCancelled makes item reads hang so a deadline can be exercised.
 	blockUntilCancelled bool
 	// targetVisibleAfter makes the target 404 for its first N reads, as a
@@ -134,15 +146,18 @@ func (f *reparentFake) server(t *testing.T) *httptest.Server {
 		f.record("connector.saveItems")
 		// Capture the title the route generated. confirmConnectorCreate matches
 		// the recovery lookup on it, so the fake must echo back the real one
-		// rather than a guess.
 		var payload struct {
-			Items []struct {
+			SessionID string `json:"sessionID"`
+			Items     []struct {
+				ID           string `json:"id"`
 				Title        string `json:"title"`
 				AbstractNote string `json:"abstractNote"`
 			} `json:"items"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&payload); err == nil && len(payload.Items) > 0 {
 			f.mu.Lock()
+			f.createdSession = payload.SessionID
+			f.createdConnectorKey = payload.Items[0].ID
 			f.createdTitle = payload.Items[0].Title
 			f.createdAbstract = payload.Items[0].AbstractNote
 			f.mu.Unlock()
@@ -151,12 +166,11 @@ func (f *reparentFake) server(t *testing.T) *httptest.Server {
 		_, _ = w.Write([]byte(`{}`))
 	})
 	mux.HandleFunc("/connector/saveAttachment", func(w http.ResponseWriter, r *http.Request) {
-		// Record what was actually sent. Counting the call alone let a wrong
-		// session, a wrong parent, or an empty payload pass as success.
-		body, _ := io.ReadAll(r.Body)
+		received, _ := io.ReadAll(r.Body)
 		f.mu.Lock()
 		f.attachMeta = r.Header.Get("X-Metadata")
-		f.attachBytes = len(body)
+		f.attachBytes = len(received)
+		f.attachPayload = append([]byte(nil), received...)
 		f.mu.Unlock()
 		f.record("connector.saveAttachment")
 		// saveAttachmentStatus models the reply being lost or refused. The child
@@ -175,6 +189,11 @@ func (f *reparentFake) server(t *testing.T) *httptest.Server {
 	// findRecentlyAddedItemKey reads /items/top to recover the key of an item
 	// the connector created without reporting one.
 	mux.HandleFunc("/users/0/items/top", func(w http.ResponseWriter, _ *http.Request) {
+		if f.topItemsStatus != 0 {
+			w.WriteHeader(f.topItemsStatus)
+			_, _ = w.Write([]byte(`{"message":"forced top-items failure"}`))
+			return
+		}
 		w.Header().Set("Last-Modified-Version", fmt.Sprint(f.version))
 		if f.tempParentKey == "" {
 			_, _ = w.Write([]byte(`[]`))
@@ -211,6 +230,17 @@ func (f *reparentFake) server(t *testing.T) *httptest.Server {
 				},
 			})
 		}
+		for parentKey := range f.strandedParents {
+			rows = append(rows, map[string]any{
+				"key":     parentKey,
+				"version": f.version,
+				"data": map[string]any{
+					"key": parentKey, "itemType": "document", "title": "Real Paper",
+					"abstractNote": connectorTempParentMarker("feedfacefeedface", "TARGET01"),
+					"dateAdded":    added,
+				},
+			})
+		}
 		_ = json.NewEncoder(w).Encode(rows)
 	})
 	mux.HandleFunc("/users/0/items/", func(w http.ResponseWriter, r *http.Request) {
@@ -220,6 +250,11 @@ func (f *reparentFake) server(t *testing.T) *httptest.Server {
 		switch {
 		case strings.HasSuffix(path, "/children"):
 			key := strings.TrimSuffix(path, "/children")
+			if status := f.childrenStatus[key]; status != 0 {
+				w.WriteHeader(status)
+				_, _ = w.Write([]byte(`{"message":"forced children failure"}`))
+				return
+			}
 			if key == "TARGET01" && f.targetVisibleAfter > 0 {
 				f.mu.Lock()
 				f.targetGets++
@@ -240,6 +275,17 @@ func (f *reparentFake) server(t *testing.T) *httptest.Server {
 					"data": map[string]any{
 						"key": "STRANDED1", "itemType": "attachment",
 						"md5": f.strandedChildMD5, "parentItem": f.strandedParentKey,
+					},
+				}})
+				return
+			}
+			if md5hex, ok := f.strandedParents[key]; ok {
+				_ = json.NewEncoder(w).Encode([]map[string]any{{
+					"key":     "EXTRA001",
+					"version": f.version,
+					"data": map[string]any{
+						"key": "EXTRA001", "itemType": "attachment",
+						"md5": md5hex, "parentItem": key,
 					},
 				}})
 				return
@@ -434,10 +480,10 @@ func sameSequence(got, want []string) bool {
 	return true
 }
 
-func (f *reparentFake) savedAttachment() (string, int) {
+func (f *reparentFake) savedAttachment() (string, int, []byte, string, string) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	return f.attachMeta, f.attachBytes
+	return f.attachMeta, f.attachBytes, append([]byte(nil), f.attachPayload...), f.createdSession, f.createdConnectorKey
 }
 
 func (f *reparentFake) currentAbstract() string {
@@ -1002,19 +1048,57 @@ func TestConnectorReparentSendsTheFileToTheSession(t *testing.T) {
 	flags := reparentFlags(t, srv)
 	c, _ := flags.newWriteClient()
 	req := reparentRequest(t, "TARGET01")
-
 	if _, _, err := applyConnectorReparentUpload(context.Background(), reparentCmd(t), flags, c, req); err != nil {
 		t.Fatalf("route failed: %v", err)
 	}
-	meta, n := fake.savedAttachment()
+
+	meta, n, payload, wantSession, wantConnectorKey := fake.savedAttachment()
 	if n == 0 {
 		t.Error("saveAttachment received an empty payload")
 	}
 	if int64(n) != req.Size {
 		t.Errorf("saveAttachment received %d bytes, want %d", n, req.Size)
 	}
+	wantPayload, err := os.ReadFile(req.Path)
+	if err != nil {
+		t.Fatalf("read expected payload: %v", err)
+	}
+	if !bytes.Equal(payload, wantPayload) {
+		t.Fatalf("saveAttachment payload = %q, want %q", payload, wantPayload)
+	}
+	var gotMeta struct {
+		SessionID    string `json:"sessionID"`
+		ParentItemID string `json:"parentItemID"`
+	}
+	if err := json.Unmarshal([]byte(meta), &gotMeta); err != nil {
+		t.Fatalf("decode X-Metadata %q: %v", meta, err)
+	}
+	if wantSession == "" || wantConnectorKey == "" ||
+		gotMeta.SessionID != wantSession || gotMeta.ParentItemID != wantConnectorKey {
+		t.Fatalf("X-Metadata = %+v, want sessionID=%q parentItemID=%q", gotMeta, wantSession, wantConnectorKey)
+	}
 	if !strings.Contains(meta, "sessionID") {
 		t.Errorf("X-Metadata = %q, want it to name the session", meta)
+	}
+}
+func TestConnectorReparentOpensFileBeforeCreatingTemporaryParent(t *testing.T) {
+	req := reparentRequest(t, "TARGET01")
+	if err := os.Remove(req.Path); err != nil {
+		t.Fatalf("remove attachment: %v", err)
+	}
+	fake := &reparentFake{tempParentKey: "TEMP0001"}
+	srv := fake.server(t)
+	flags := reparentFlags(t, srv)
+	c, _ := flags.newWriteClient()
+
+	status, _, err := applyConnectorReparentUpload(context.Background(), reparentCmd(t), flags, c, req)
+	if err == nil || status != "failed" || !strings.Contains(err.Error(), "before creating its temporary parent") {
+		t.Fatalf("status=%q error=%v, want pre-create open failure", status, err)
+	}
+	for _, call := range fake.sequence() {
+		if strings.HasPrefix(call, "connector.") {
+			t.Fatalf("called %s after the attachment could not be opened", call)
+		}
 	}
 }
 
@@ -1194,6 +1278,60 @@ func TestConnectorReparentResumesAnInterruptedRun(t *testing.T) {
 		if strings.HasPrefix(call, "connector.") {
 			t.Errorf("called %s: a resumed run must not create a second parent or copy", call)
 		}
+	}
+}
+func TestConnectorReparentResumeLookupFailsClosed(t *testing.T) {
+	for _, tc := range []struct {
+		name          string
+		configure     func(*reparentFake, storedUploadRequest)
+		wantAmbiguous bool
+	}{
+		{
+			name: "marked parent lookup fails",
+			configure: func(fake *reparentFake, _ storedUploadRequest) {
+				fake.topItemsStatus = http.StatusInternalServerError
+			},
+		},
+		{
+			name: "candidate child lookup fails",
+			configure: func(fake *reparentFake, req storedUploadRequest) {
+				fake.strandedParentKey = "ORPHAN01"
+				fake.strandedChildMD5 = req.MD5
+				fake.childrenStatus = map[string]int{"ORPHAN01": http.StatusInternalServerError}
+			},
+		},
+		{
+			name: "multiple matching orphans",
+			configure: func(fake *reparentFake, req storedUploadRequest) {
+				fake.strandedParentKey = "ORPHAN01"
+				fake.strandedChildMD5 = req.MD5
+				fake.strandedParents = map[string]string{"ORPHAN02": req.MD5}
+			},
+			wantAmbiguous: true,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			req := reparentRequest(t, "TARGET01")
+			fake := &reparentFake{tempParentKey: "TEMP0001"}
+			tc.configure(fake, req)
+			srv := fake.server(t)
+			flags := reparentFlags(t, srv)
+			c, _ := flags.newWriteClient()
+
+			status, _, err := applyConnectorReparentUpload(context.Background(), reparentCmd(t), flags, c, req)
+			if err == nil || status != "failed" {
+				t.Fatalf("status=%q error=%v, want failed lookup", status, err)
+			}
+			var ambiguous *resumableTemporaryParentAmbiguityError
+			if errors.As(err, &ambiguous) != tc.wantAmbiguous {
+				t.Fatalf("ambiguity error = %v, want %v; error=%v", ambiguous, tc.wantAmbiguous, err)
+			}
+			for _, call := range fake.sequence() {
+				if strings.HasPrefix(call, "connector.") {
+					t.Fatalf("called %s after incomplete resume lookup", call)
+				}
+			}
+		})
 	}
 }
 

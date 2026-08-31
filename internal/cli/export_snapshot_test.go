@@ -222,6 +222,53 @@ func TestExportSnapshotPaginatesAndLocks(t *testing.T) {
 		t.Errorf("checkpoint sidecar should be removed on success, stat err = %v", err)
 	}
 }
+func TestExportSnapshotRejectsForeignLibraryCheckpointBeforeRequestOrAppend(t *testing.T) {
+	var requests int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		_, _ = w.Write([]byte(`[]`))
+	}))
+	t.Cleanup(srv.Close)
+	t.Setenv("ZOTERO_BASE_URL", srv.URL+"/users/0")
+	t.Setenv("ZOTERO_CONFIG", filepath.Join(t.TempDir(), "missing.toml"))
+
+	output := filepath.Join(t.TempDir(), "snapshot.jsonl")
+	original := []byte("{\"key\":\"A\",\"version\":1}\n")
+	if err := os.WriteFile(output, original, 0o600); err != nil {
+		t.Fatalf("seed output: %v", err)
+	}
+	foreign := exportCheckpointSource{
+		ReadBase: "https://api.zotero.org/groups/12345",
+		Library:  "groups:12345",
+		Profile:  "foreign-profile",
+	}
+	if err := writeExportCheckpoint(output+".checkpoint.json", exportCheckpoint{
+		Path:      "/items",
+		Scope:     exportCheckpointScope(foreign, "/items", map[string]string{}, 100, 0),
+		Source:    foreign,
+		NextStart: 1,
+		Fetched:   1,
+	}); err != nil {
+		t.Fatalf("seed checkpoint: %v", err)
+	}
+
+	cmd := newExportSnapshotCmd(&rootFlags{})
+	cmd.SilenceErrors, cmd.SilenceUsage = true, true
+	cmd.SetArgs([]string{"--output", output, "--resume"})
+	if err := cmd.Execute(); err == nil || !strings.Contains(err.Error(), "checkpoint scope does not match") {
+		t.Fatalf("resume error = %v, want foreign-library refusal", err)
+	}
+	if requests != 0 {
+		t.Fatalf("source requests = %d, want zero before the checkpoint refusal", requests)
+	}
+	got, err := os.ReadFile(output)
+	if err != nil {
+		t.Fatalf("read preserved output: %v", err)
+	}
+	if !bytes.Equal(got, original) {
+		t.Fatalf("output changed on checkpoint refusal: got %q want %q", got, original)
+	}
+}
 
 func TestExportSnapshotSameOutputReturnsBusyBeforeSecondRequest(t *testing.T) {
 	firstRequest := make(chan struct{})
