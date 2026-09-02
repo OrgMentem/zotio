@@ -191,3 +191,130 @@ func TestLibraryPDFCoverageExcludesZeroPDFItems(t *testing.T) {
 		t.Fatalf("Pct = %d, want 50", coverage.Pct)
 	}
 }
+
+// TestQueryCollectionTopVenuesFallbackAndOrdering pins the whole observable
+// contract of queryCollectionTopVenues, which no other test names: the
+// publicationTitle -> bookTitle -> publisher COALESCE precedence, the HAVING
+// that drops null and empty venues, the json_each collection-membership test,
+// the shared eligibility predicate, ORDER BY count DESC, and LIMIT.
+//
+// Every counted venue gets a distinct count (4, 3, 2, 1) so the descending
+// order is fully determined. Each losing fallback field carries an "Ignored…"
+// value, so reversing the COALESCE arms renames the venues and fails here.
+func TestQueryCollectionTopVenuesFallbackAndOrdering(t *testing.T) {
+	items := []json.RawMessage{
+		// publicationTitle must win over the competing publisher: 4 items.
+		json.RawMessage(`{"key":"VJ1","version":1,"data":{"key":"VJ1","itemType":"journalArticle","title":"VJ1","collections":["COL1"],"publicationTitle":"Nature","publisher":"Ignored Springer"}}`),
+		json.RawMessage(`{"key":"VJ2","version":1,"data":{"key":"VJ2","itemType":"journalArticle","title":"VJ2","collections":["COL1"],"publicationTitle":"Nature","publisher":"Ignored Springer"}}`),
+		json.RawMessage(`{"key":"VJ3","version":1,"data":{"key":"VJ3","itemType":"journalArticle","title":"VJ3","collections":["COL1"],"publicationTitle":"Nature","publisher":"Ignored Springer"}}`),
+		json.RawMessage(`{"key":"VJ4","version":1,"data":{"key":"VJ4","itemType":"journalArticle","title":"VJ4","collections":["COL1"],"publicationTitle":"Nature","publisher":"Ignored Springer"}}`),
+		// No publicationTitle: bookTitle must win over the publisher. 3 items.
+		json.RawMessage(`{"key":"VB1","version":1,"data":{"key":"VB1","itemType":"bookSection","title":"VB1","collections":["COL1"],"bookTitle":"Handbook of Optics","publisher":"Ignored Elsevier"}}`),
+		json.RawMessage(`{"key":"VB2","version":1,"data":{"key":"VB2","itemType":"bookSection","title":"VB2","collections":["COL1"],"bookTitle":"Handbook of Optics","publisher":"Ignored Elsevier"}}`),
+		json.RawMessage(`{"key":"VB3","version":1,"data":{"key":"VB3","itemType":"bookSection","title":"VB3","collections":["COL1"],"bookTitle":"Handbook of Optics","publisher":"Ignored Elsevier"}}`),
+		// Publisher is the last resort. 2 items.
+		json.RawMessage(`{"key":"VP1","version":1,"data":{"key":"VP1","itemType":"book","title":"VP1","collections":["COL1"],"publisher":"MIT Press"}}`),
+		json.RawMessage(`{"key":"VP2","version":1,"data":{"key":"VP2","itemType":"book","title":"VP2","collections":["COL1"],"publisher":"MIT Press"}}`),
+		// All three fields present: precedence must select publicationTitle.
+		json.RawMessage(`{"key":"VM1","version":1,"data":{"key":"VM1","itemType":"journalArticle","title":"VM1","collections":["COL1"],"publicationTitle":"Science","bookTitle":"Ignored Book","publisher":"Ignored Press"}}`),
+
+		// Venueless items in COL1: empty, whitespace-only, and absent. All
+		// three collapse into the NULL group that HAVING must drop.
+		json.RawMessage(`{"key":"VZ1","version":1,"data":{"key":"VZ1","itemType":"journalArticle","title":"VZ1","collections":["COL1"],"publicationTitle":""}}`),
+		json.RawMessage(`{"key":"VZ2","version":1,"data":{"key":"VZ2","itemType":"journalArticle","title":"VZ2","collections":["COL1"],"publicationTitle":"   ","bookTitle":"  ","publisher":" "}}`),
+		json.RawMessage(`{"key":"VZ3","version":1,"data":{"key":"VZ3","itemType":"journalArticle","title":"VZ3","collections":["COL1"]}}`),
+
+		// A venue outside the target collection: VO1-VO4 carry it, and VO5
+		// belongs to no collection at all. A broken collection-membership
+		// test is caught by the full-result length assertion, which expects
+		// exactly the four in-collection venues. Rank alone would not catch
+		// it: four copies tie with Nature, and a tie has no defined order.
+		json.RawMessage(`{"key":"VO1","version":1,"data":{"key":"VO1","itemType":"journalArticle","title":"VO1","collections":["COL2"],"publicationTitle":"Other Library Journal"}}`),
+		json.RawMessage(`{"key":"VO2","version":1,"data":{"key":"VO2","itemType":"journalArticle","title":"VO2","collections":["COL2"],"publicationTitle":"Other Library Journal"}}`),
+		json.RawMessage(`{"key":"VO3","version":1,"data":{"key":"VO3","itemType":"journalArticle","title":"VO3","collections":["COL2"],"publicationTitle":"Other Library Journal"}}`),
+		json.RawMessage(`{"key":"VO4","version":1,"data":{"key":"VO4","itemType":"journalArticle","title":"VO4","collections":["COL2"],"publicationTitle":"Other Library Journal"}}`),
+		json.RawMessage(`{"key":"VO5","version":1,"data":{"key":"VO5","itemType":"journalArticle","title":"VO5","collections":[]}}`),
+
+		// Ineligible item types in COL1: collectionStatsEligibleItemPredicate
+		// rejects item_type IN ('attachment','note','annotation'). Five notes,
+		// so a broken predicate would rank "Notes Digest" first.
+		json.RawMessage(`{"key":"VN1","version":1,"data":{"key":"VN1","itemType":"note","note":"n1","collections":["COL1"],"publicationTitle":"Notes Digest"}}`),
+		json.RawMessage(`{"key":"VN2","version":1,"data":{"key":"VN2","itemType":"note","note":"n2","collections":["COL1"],"publicationTitle":"Notes Digest"}}`),
+		json.RawMessage(`{"key":"VN3","version":1,"data":{"key":"VN3","itemType":"note","note":"n3","collections":["COL1"],"publicationTitle":"Notes Digest"}}`),
+		json.RawMessage(`{"key":"VN4","version":1,"data":{"key":"VN4","itemType":"note","note":"n4","collections":["COL1"],"publicationTitle":"Notes Digest"}}`),
+		json.RawMessage(`{"key":"VN5","version":1,"data":{"key":"VN5","itemType":"note","note":"n5","collections":["COL1"],"publicationTitle":"Notes Digest"}}`),
+		json.RawMessage(`{"key":"VA1","version":1,"data":{"key":"VA1","itemType":"attachment","parentItem":"VJ1","contentType":"application/pdf","collections":["COL1"],"publicationTitle":"Attachment Venue"}}`),
+		json.RawMessage(`{"key":"VAN1","version":1,"data":{"key":"VAN1","itemType":"annotation","parentItem":"VA1","annotationText":"a1","collections":["COL1"],"publicationTitle":"Annotation Venue"}}`),
+	}
+	db := seedStoreWithItems(t, items)
+
+	type venueCount struct {
+		venue string
+		count int64
+	}
+	read := func(t *testing.T, top int) []venueCount {
+		t.Helper()
+		rows, err := queryCollectionTopVenues(db, "COL1", top)
+		if err != nil {
+			t.Fatalf("queryCollectionTopVenues(top=%d): %v", top, err)
+		}
+		out := make([]venueCount, 0, len(rows))
+		for i, row := range rows {
+			venue, ok := row["venue"].(string)
+			if !ok {
+				t.Fatalf("row %d venue = %#v, want a string; HAVING venue IS NOT NULL must drop venueless items", i, row["venue"])
+			}
+			if venue == "" {
+				t.Fatalf("row %d venue is empty; HAVING venue != '' must drop empty and whitespace-only venues", i)
+			}
+			n, err := toInt64(row["count"])
+			if err != nil {
+				t.Fatalf("row %d count %#v: %v", i, row["count"], err)
+			}
+			out = append(out, venueCount{venue: venue, count: n})
+		}
+		return out
+	}
+
+	got := read(t, 10)
+	want := []venueCount{
+		{venue: "Nature", count: 4},             // publicationTitle beats publisher
+		{venue: "Handbook of Optics", count: 3}, // bookTitle beats publisher
+		{venue: "MIT Press", count: 2},          // publisher is the last arm
+		{venue: "Science", count: 1},            // publicationTitle beats both others
+	}
+	if len(got) != len(want) {
+		t.Fatalf("queryCollectionTopVenues returned %d venues %+v, want %d %+v", len(got), got, len(want), want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("venue %d = %+v, want %+v (COALESCE precedence and ORDER BY count DESC); full result %+v", i, got[i], want[i], got)
+		}
+	}
+	for _, forbidden := range []string{
+		"Ignored Springer", "Ignored Elsevier", "Ignored Book", "Ignored Press",
+		"Other Library Journal", "Notes Digest", "Attachment Venue", "Annotation Venue",
+	} {
+		for _, vc := range got {
+			if vc.venue == forbidden {
+				t.Fatalf("venue %q must never be selected; full result %+v", forbidden, got)
+			}
+		}
+	}
+
+	// LIMIT truncates at a strict count boundary, so the retained venues are
+	// deterministic.
+	truncated := read(t, 2)
+	wantTruncated := []venueCount{
+		{venue: "Nature", count: 4},
+		{venue: "Handbook of Optics", count: 3},
+	}
+	if len(truncated) != len(wantTruncated) {
+		t.Fatalf("top=2 returned %d venues %+v, want %d %+v", len(truncated), truncated, len(wantTruncated), wantTruncated)
+	}
+	for i := range wantTruncated {
+		if truncated[i] != wantTruncated[i] {
+			t.Fatalf("top=2 venue %d = %+v, want %+v (LIMIT must keep the highest counts); full result %+v", i, truncated[i], wantTruncated[i], truncated)
+		}
+	}
+}

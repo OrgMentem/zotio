@@ -98,6 +98,13 @@ type reparentFake struct {
 	topItemsStatus int
 	// blockUntilCancelled makes item reads hang so a deadline can be exercised.
 	blockUntilCancelled bool
+	// blockedRequests reports the path of every read the blocking arm holds
+	// open, so a test can wait until the route is genuinely inside that read
+	// instead of sleeping and hoping. server() creates it when
+	// blockUntilCancelled is set; it is never written after that, so the
+	// handler may read it without the mutex, exactly as it reads
+	// blockUntilCancelled itself.
+	blockedRequests chan string
 	// targetVisibleAfter makes the target 404 for its first N reads, as a
 	// connector-created item does until it reaches the write plane.
 	targetVisibleAfter int
@@ -135,6 +142,11 @@ func (f *reparentFake) server(t *testing.T) *httptest.Server {
 	}
 	if f.targetItem == nil {
 		f.targetItem = map[string]any{"itemType": "journalArticle", "title": "Real Paper"}
+	}
+	if f.blockUntilCancelled && f.blockedRequests == nil {
+		// Buffered so the blocking arm can announce itself without waiting for
+		// a reader; the arm must reach its <-Done() even if nobody listens.
+		f.blockedRequests = make(chan string, 8)
 	}
 	mux := http.NewServeMux()
 
@@ -376,6 +388,13 @@ func (f *reparentFake) server(t *testing.T) *httptest.Server {
 			return
 
 		case r.Method == http.MethodGet && f.blockUntilCancelled:
+			// Recorded and announced before blocking, so a test can prove the
+			// route really entered this read rather than failing earlier.
+			f.record("web.blocked:" + path)
+			select {
+			case f.blockedRequests <- path:
+			default:
+			}
 			<-r.Context().Done()
 			return
 
@@ -1132,10 +1151,92 @@ func TestConnectorReparentAbandonsWhenAnotherRunWins(t *testing.T) {
 	}
 }
 
-// TestConnectorReparentHonoursACancelledContext pins that a hung desktop cannot
-// keep the route alive, and that the temporary parent stays findable when it is
-// cut short.
+// TestConnectorReparentHonoursACancelledContext covers the IN-FLIGHT branch:
+// the route is already inside a read that never answers, which is what a hung
+// desktop or a stalled api.zotero.org connection looks like, and cancellation
+// must travel into that live HTTP request. The fake holds the target read open
+// until the request context dies, so nothing except cancellation propagation
+// can end this call. The already-cancelled entry check is a different branch
+// and lives in TestConnectorReparentRefusesAnAlreadyCancelledContext.
 func TestConnectorReparentHonoursACancelledContext(t *testing.T) {
+	fake := &reparentFake{
+		tempParentKey:       "TEMP0001",
+		attachChildren:      []string{"ATTACH01"},
+		blockUntilCancelled: true,
+	}
+	srv := fake.server(t)
+	flags := reparentFlags(t, srv)
+	c, _ := flags.newWriteClient()
+	cmd := reparentCmd(t)
+	req := reparentRequest(t, "TARGET01")
+
+	ctx, cancel := context.WithCancel(context.Background())
+	// Cancelled on every exit path, including a t.Fatal below: httptest's Close
+	// waits for outstanding requests, and the blocking arm only returns when
+	// its request context is done.
+	defer cancel()
+
+	type outcome struct {
+		status string
+		err    error
+	}
+	done := make(chan outcome, 1)
+	go func() {
+		// Only fake accessors are touched here, and they take the fake's own
+		// mutex, so the route may run under -race alongside the assertions.
+		status, _, err := applyConnectorReparentUpload(ctx, cmd, flags, c, req)
+		done <- outcome{status: status, err: err}
+	}()
+
+	// Synchronise on the fake observing the read, never on a sleep: without
+	// this the test could cancel before the route dialled and would silently
+	// degrade into the already-cancelled check again.
+	var blocked string
+	select {
+	case blocked = <-fake.blockedRequests:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the route never reached the hung read, so in-flight cancellation was never exercised")
+	}
+	if blocked != "TARGET01" {
+		t.Fatalf("blocked on %q, want the target item read TARGET01", blocked)
+	}
+	before := fake.sequence()
+	if !containsCall(before, "web.blocked:TARGET01") {
+		t.Fatalf("recorded calls = %v, want the blocked read web.blocked:TARGET01 before cancelling", before)
+	}
+	t.Logf("cancelling while the fake holds %q open; recorded so far: %v", blocked, before)
+
+	cancel()
+
+	var got outcome
+	select {
+	case got = <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the route did not return within 5s of cancellation: a hung read keeps it alive")
+	}
+	if got.err == nil {
+		t.Fatalf("route succeeded (status %q) although its read was cancelled mid-flight", got.status)
+	}
+	if !errors.Is(got.err, context.Canceled) {
+		t.Errorf("err = %v, want an error satisfying errors.Is(err, context.Canceled)", got.err)
+	}
+	if got.status != "failed" {
+		t.Errorf("status = %q, want failed", got.status)
+	}
+	for _, call := range fake.sequence() {
+		if strings.HasPrefix(call, "web.trash") {
+			t.Errorf("trashed something (%s) after being cancelled mid-flight", call)
+		}
+		if call == "web.reparent" {
+			t.Errorf("completed a re-parent (%s) after being cancelled mid-flight", call)
+		}
+	}
+}
+
+// TestConnectorReparentRefusesAnAlreadyCancelledContext covers the ENTRY
+// branch: a context that is dead before the first call must stop the route
+// before it writes anything at all. It exercises no in-flight cancellation.
+func TestConnectorReparentRefusesAnAlreadyCancelledContext(t *testing.T) {
 	fake := &reparentFake{tempParentKey: "TEMP0001", attachChildren: []string{"ATTACH01"}}
 	srv := fake.server(t)
 	flags := reparentFlags(t, srv)
@@ -1144,19 +1245,32 @@ func TestConnectorReparentHonoursACancelledContext(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel() // already cancelled: no loop may proceed
 
-	start := time.Now()
 	_, _, err := applyConnectorReparentUpload(ctx, reparentCmd(t), flags, c, reparentRequest(t, "TARGET01"))
 	if err == nil {
 		t.Fatal("route succeeded with a cancelled context")
 	}
-	if elapsed := time.Since(start); elapsed > 30*time.Second {
-		t.Errorf("took %s to honour cancellation", elapsed)
+	if !errors.Is(err, context.Canceled) {
+		t.Errorf("err = %v, want an error satisfying errors.Is(err, context.Canceled)", err)
 	}
+	// Nothing may be created, moved, or trashed: the route stops before it
+	// asks the desktop for anything.
 	for _, call := range fake.sequence() {
-		if strings.HasPrefix(call, "web.trash") {
-			t.Error("trashed something while cancelled")
+		if strings.HasPrefix(call, "connector.") || strings.HasPrefix(call, "web.") {
+			t.Errorf("performed %s with an already cancelled context", call)
 		}
 	}
+}
+
+// containsCall reports whether the fake's recorded sequence holds one exact
+// call, so an assertion can name the step it needs instead of restating the
+// whole order.
+func containsCall(calls []string, want string) bool {
+	for _, call := range calls {
+		if call == want {
+			return true
+		}
+	}
+	return false
 }
 
 // TestConnectorRouteWaiverIsScoped pins the storage-guard waiver. The guard

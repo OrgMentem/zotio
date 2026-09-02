@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -454,44 +455,306 @@ func TestRunSingleItemCreateConnectorFilingFailureWithoutWebKeyStillApplied(t *t
 	}
 }
 
-// TestItemsCreateConnectorBatchFilingFailureJSONIsStructural guards the batch
-// branch that remains UNJOURNALLED (it runs outside runMutation). Its JSON
-// must at minimum carry keys/session/filing_failed/message structurally so a
-// caller can file without re-creating. This test proves that contract on a
-// payload shaped exactly like the production branch emits.
-func TestItemsCreateConnectorBatchFilingFailureJSONIsStructural(t *testing.T) {
-	msg := fmt.Sprintf("created %d item(s) via connector (session %s, keys %v) but target %q filing failed: %v; retry filing only, do not re-create the item", 2, "sess-1", []string{"A", "B"}, "TESTCOLL", fmt.Errorf("500"))
-	payload, err := json.Marshal(map[string]any{
-		"via":           "connector",
-		"status":        "created",
-		"count":         2,
-		"keys":          []string{"A", "B"},
-		"session":       "sess-1",
-		"target":        "TESTCOLL",
-		"filing_failed": true,
-		"filing_error":  "500",
-		"message":       msg,
+// TestItemsCreateConnectorBatchFilingFailureReportsRecoverableKeys drives the
+// real command through the batch connector branch that stays UNJOURNALLED
+// (it runs outside runMutation): conn.SaveItems commits, the follow-up
+// conn.UpdateSession target filing fails, and the only durable record of the
+// committed write is the JSON this branch prints plus the retry guidance in
+// its error. Both must survive, and the batch must not be re-sent -- a caller
+// that re-creates instead of re-filing duplicates every item in the library.
+//
+// The fixture is reached by redirecting dials for the desktop connector port
+// (see redirectConnectorDialsToFixture) because this branch builds its client
+// through flags.newConnector(), which accepts only 127.0.0.1:23119, and not
+// through the connectorForCreate seam the single-item route uses.
+func TestItemsCreateConnectorBatchFilingFailureReportsRecoverableKeys(t *testing.T) {
+	const target = "C1234567"
+	created := []struct{ key, title string }{
+		{key: "BATCHIT1", title: "Batch Filing One"},
+		{key: "BATCHIT2", title: "Batch Filing Two"},
+	}
+	for _, tc := range []struct {
+		name     string
+		surfaced bool
+		wantKeys []any
+		wantErr  string
+		denyErr  string
+	}{
+		// Both recovery outcomes of the same failure: /items/top has already
+		// surfaced the committed items, or has not surfaced them yet.
+		{
+			name:     "keys recovered",
+			surfaced: true,
+			wantKeys: []any{"BATCHIT1", "BATCHIT2"},
+			wantErr:  "retry filing only, do not re-create the item",
+			denyErr:  "retry filing, not creation",
+		},
+		{
+			name:     "no keys recovered",
+			surfaced: false,
+			wantKeys: nil,
+			wantErr:  "items remain; retry filing, not creation",
+			denyErr:  "keys [",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("HOME", t.TempDir())
+			// config.Load applies ZOTERO_BASE_URL AFTER reading configPath, so an
+			// inherited value silently redirects this test's base URL away from
+			// the fixture. Clear the ambient credentials too.
+			t.Setenv("ZOTIO_DEMO", "")
+			t.Setenv("ZOTERO_BASE_URL", "")
+			t.Setenv("ZOTERO_API_KEY", "")
+			oldWindow, oldInterval := connectorCreateRecoveryWindow, connectorCreateRecoveryInterval
+			connectorCreateRecoveryWindow = 0
+			connectorCreateRecoveryInterval = time.Millisecond
+			t.Cleanup(func() {
+				connectorCreateRecoveryWindow = oldWindow
+				connectorCreateRecoveryInterval = oldInterval
+			})
+
+			var saveItems, updateSessions int
+			var savedIDs, savedTitles []string
+			var gotTarget string
+			var saveSession, filedSession string
+			var refreshMethods, recoveryRequests []string
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				switch r.URL.Path {
+				case "/connector/ping":
+					w.WriteHeader(http.StatusOK)
+				case "/connector/saveItems":
+					saveItems++
+					var payload struct {
+						SessionID string `json:"sessionID"`
+						Items     []struct {
+							ID    string `json:"id"`
+							Title string `json:"title"`
+						} `json:"items"`
+					}
+					if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+						t.Errorf("decode saveItems body: %v", err)
+					}
+					saveSession = payload.SessionID
+					for _, item := range payload.Items {
+						savedIDs = append(savedIDs, item.ID)
+						savedTitles = append(savedTitles, item.Title)
+					}
+					w.WriteHeader(http.StatusCreated)
+				case "/connector/updateSession":
+					updateSessions++
+					var payload struct {
+						SessionID string `json:"sessionID"`
+						Target    string `json:"target"`
+					}
+					if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+						t.Errorf("decode updateSession body: %v", err)
+					}
+					filedSession = payload.SessionID
+					gotTarget = payload.Target
+					http.Error(w, "simulated target filing failure", http.StatusInternalServerError)
+				case "/api/users/0/items":
+					// refreshItemsFromLocalAPI's incremental store sync.
+					refreshMethods = append(refreshMethods, r.Method)
+					w.Header().Set("Last-Modified-Version", "1")
+					_ = json.NewEncoder(w).Encode([]any{})
+				case "/api/users/0/items/top":
+					// confirmConnectorCreate's per-item key recovery. Its sorted,
+					// bounded shape is what keeps recovery from matching a stale
+					// same-title item, so record the exact request it sends.
+					recoveryRequests = append(recoveryRequests, r.Method+" "+r.URL.Path+"?"+r.URL.Query().Encode())
+					rows := []any{}
+					if tc.surfaced {
+						added := time.Now().UTC().Format(time.RFC3339)
+						for _, item := range created {
+							rows = append(rows, map[string]any{
+								"key": item.key, "title": item.title,
+								"itemType": "journalArticle", "dateAdded": added,
+							})
+						}
+					}
+					_ = json.NewEncoder(w).Encode(rows)
+				default:
+					http.NotFound(w, r)
+				}
+			}))
+			t.Cleanup(srv.Close)
+			redirectConnectorDialsToFixture(t, srv)
+
+			flags := &rootFlags{
+				asJSON: true, yes: true, via: "connector", connectorTarget: target,
+				timeout: 5 * time.Second, maxChanges: -1,
+				configPath: testConfigFile(t, "http://127.0.0.1:23119/api/users/0"),
+			}
+			cmd := newItemsCreateCmd(flags)
+			var out bytes.Buffer
+			cmd.SetOut(&out)
+			cmd.SetErr(io.Discard)
+			cmd.SilenceErrors, cmd.SilenceUsage = true, true
+			cmd.SetArgs([]string{"--items", fmt.Sprintf(
+				`[{"itemType":"journalArticle","title":%q},{"itemType":"journalArticle","title":%q}]`,
+				created[0].title, created[1].title)})
+			err := cmd.Execute()
+
+			if err == nil {
+				t.Fatalf("items create succeeded; want a filing failure. stdout=%s", out.String())
+			}
+			for _, want := range []string{"created 2 item(s) via connector", tc.wantErr} {
+				if !strings.Contains(err.Error(), want) {
+					t.Fatalf("error = %q, want it to contain %q", err, want)
+				}
+			}
+			if strings.Contains(err.Error(), tc.denyErr) {
+				t.Fatalf("error = %q, must not contain %q for this recovery outcome", err, tc.denyErr)
+			}
+
+			dec := json.NewDecoder(&out)
+			var got map[string]any
+			if decErr := dec.Decode(&got); decErr != nil {
+				t.Fatalf("stdout is not one JSON object: %v; stdout=%q", decErr, out.String())
+			}
+			var trailing any
+			if decErr := dec.Decode(&trailing); decErr != io.EOF {
+				t.Fatalf("stdout carries a second JSON value (%+v, err=%v), want exactly one object", trailing, decErr)
+			}
+			if got["filing_failed"] != true {
+				t.Fatalf("filing_failed = %v, want true", got["filing_failed"])
+			}
+			if got["status"] != "created" {
+				t.Fatalf("status = %v, want created (SaveItems committed)", got["status"])
+			}
+			if got["count"] != float64(2) {
+				t.Fatalf("count = %v, want 2", got["count"])
+			}
+			if got["via"] != "connector" {
+				t.Fatalf("via = %v, want connector", got["via"])
+			}
+			if got["target"] != target {
+				t.Fatalf("target = %v, want %q", got["target"], target)
+			}
+			session, _ := got["session"].(string)
+			if session == "" {
+				t.Fatalf("session = %v, want the connector save session that holds the committed items", got["session"])
+			}
+			if !strings.Contains(err.Error(), session) {
+				t.Fatalf("error = %q, want it to name session %q so the JSON and the error correlate", err, session)
+			}
+			filingError, _ := got["filing_error"].(string)
+			if !strings.Contains(filingError, "connector updateSession: HTTP 500") {
+				t.Fatalf("filing_error = %q, want the updateSession failure", got["filing_error"])
+			}
+			message, _ := got["message"].(string)
+			if !strings.Contains(message, "retry filing only") {
+				t.Fatalf("message = %q, want retry-filing guidance", got["message"])
+			}
+			// A nil recovered slice marshals to JSON null (items_create.go:169),
+			// so "keys" must be PRESENT and null. A payload that omits the field
+			// entirely is a different, undocumented shape.
+			keys, present := got["keys"]
+			if !present {
+				t.Fatalf("keys field absent from %v, want it present on every filing-failure payload", got)
+			}
+			if tc.wantKeys == nil {
+				if keys != nil {
+					t.Fatalf("keys = %v, want null when no committed item has surfaced yet", keys)
+				}
+			} else if gotKeys, ok := keys.([]any); !ok || fmt.Sprint(gotKeys) != fmt.Sprint(tc.wantKeys) {
+				t.Fatalf("keys = %v, want %v", keys, tc.wantKeys)
+			}
+			for _, key := range tc.wantKeys {
+				if !strings.Contains(err.Error(), key.(string)) {
+					t.Fatalf("error = %q, want it to name recovered key %v", err, key)
+				}
+			}
+
+			if saveItems != 1 {
+				t.Fatalf("saveItems requests = %d, want exactly 1 -- a filing failure must never re-create the batch", saveItems)
+			}
+			if updateSessions != 1 {
+				t.Fatalf("updateSession requests = %d, want exactly 1", updateSessions)
+			}
+			if gotTarget != target {
+				t.Fatalf("updateSession target = %q, want %q", gotTarget, target)
+			}
+			if len(savedIDs) != 2 {
+				t.Fatalf("saveItems connector ids = %v, want exactly two ids in one call", savedIDs)
+			}
+			if savedIDs[0] == "" || savedIDs[1] == "" {
+				t.Fatalf("saveItems connector ids = %v, want every item to carry a non-empty connector id", savedIDs)
+			}
+			if savedIDs[0] == savedIDs[1] {
+				t.Fatalf("saveItems connector ids = %v, want two distinct ids", savedIDs)
+			}
+			if fmt.Sprint(savedTitles) != fmt.Sprint([]string{created[0].title, created[1].title}) {
+				t.Fatalf("saveItems titles = %v, want both items in one call", savedTitles)
+			}
+
+			// The filing must run against the session the batch was saved into:
+			// filing another session files nothing from the committed batch, yet
+			// still fails exactly like this fixture's forced 500.
+			if saveSession == "" || filedSession == "" {
+				t.Fatalf("saveItems sessionID = %q, updateSession sessionID = %q, want both non-empty", saveSession, filedSession)
+			}
+			if saveSession != filedSession {
+				t.Fatalf("updateSession sessionID = %q, want the saveItems session %q", filedSession, saveSession)
+			}
+			if saveSession != session {
+				t.Fatalf("reported session = %q, want the session the batch was saved into (%q)", session, saveSession)
+			}
+			// The mirror refresh is best-effort, so require at least one GET
+			// rather than an exact count: it must have run, but its page count
+			// belongs to sync, not to this contract.
+			if len(refreshMethods) == 0 {
+				t.Fatal("no request to /api/users/0/items; a committed batch must refresh the local mirror even when filing fails")
+			}
+			for _, method := range refreshMethods {
+				if method != http.MethodGet {
+					t.Fatalf("store refresh method = %q, want GET", method)
+				}
+			}
+			// Key recovery is one sorted, bounded lookup per committed item; the
+			// recovery window is collapsed to zero above, so it cannot re-poll.
+			wantRecovery := fmt.Sprintf("GET /api/users/0/items/top?direction=desc&limit=%d&sort=dateAdded", recentItemLookupLimit)
+			if len(recoveryRequests) != len(created) {
+				t.Fatalf("key-recovery requests = %v, want one per committed item (%d)", recoveryRequests, len(created))
+			}
+			for _, req := range recoveryRequests {
+				if req != wantRecovery {
+					t.Fatalf("key-recovery request = %q, want %q -- an unsorted or unbounded lookup can match a stale same-title item", req, wantRecovery)
+				}
+			}
+		})
+	}
+}
+
+// redirectConnectorDialsToFixture points every dial for the Zotero desktop
+// ports at srv and refuses any other address, so a connector command runs
+// hermetically against the fixture.
+//
+// flags.newConnector() hardcodes 127.0.0.1:23119, so a command-level connector
+// test cannot be handed an httptest port. Binding 23119 is not an option
+// either: a running Zotero desktop owns it, which turns the test into a skip
+// on a developer machine -- and a dial that did reach the real desktop would
+// create real items in the operator's library.
+func redirectConnectorDialsToFixture(t *testing.T, srv *httptest.Server) {
+	t.Helper()
+	fixture := srv.Listener.Addr().String()
+	dialer := &net.Dialer{Timeout: 5 * time.Second}
+	redirect := &http.Transport{
+		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+			switch addr {
+			case "127.0.0.1:23119", "localhost:23119", "[::1]:23119":
+				return dialer.DialContext(ctx, network, fixture)
+			default:
+				return nil, fmt.Errorf("test transport refused a dial to %s", addr)
+			}
+		},
+	}
+	old := http.DefaultTransport
+	http.DefaultTransport = redirect
+	t.Cleanup(func() {
+		http.DefaultTransport = old
+		redirect.CloseIdleConnections()
 	})
-	if err != nil {
-		t.Fatalf("marshal: %v", err)
-	}
-	var got map[string]any
-	if err := json.Unmarshal(payload, &got); err != nil {
-		t.Fatalf("unmarshal: %v", err)
-	}
-	if got["filing_failed"] != true {
-		t.Fatalf("filing_failed = %v, want true", got["filing_failed"])
-	}
-	if got["session"] != "sess-1" {
-		t.Fatalf("session = %v, want sess-1", got["session"])
-	}
-	keys, ok := got["keys"].([]any)
-	if !ok || len(keys) != 2 {
-		t.Fatalf("keys = %v, want 2", got["keys"])
-	}
-	if !strings.Contains(got["message"].(string), "retry filing only") {
-		t.Fatalf("message = %q, want retry guidance", got["message"])
-	}
 }
 
 // TestConnectorCreateAmbiguousRecovery proves that a failed connector write
