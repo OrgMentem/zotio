@@ -987,10 +987,10 @@ func (c *Client) doRequestOnBase(ctx context.Context, baseOverride, method, path
 				return nil, resp.StatusCode, resp.Header, fmt.Errorf("could not resolve Zotero Web API write route: %w: %w", routeErr, apiErr)
 			}
 		}
-		if wrapped := wrapAmbiguous(attempt+1, apiErr); wrapped != apiErr {
-			return nil, resp.StatusCode, resp.Header, wrapped
-		}
-		return nil, resp.StatusCode, resp.Header, apiErr
+		// wrapAmbiguous returns apiErr unchanged when this request has no
+		// ambiguous prior attempt, so one return covers both cases. Comparing
+		// the two values instead would be an error identity test.
+		return nil, resp.StatusCode, resp.Header, wrapAmbiguous(attempt+1, apiErr)
 	}
 
 	return nil, 0, nil, wrapAmbiguous(maxRetries+1, lastErr)

@@ -53,6 +53,13 @@ Notable changes to zotio. Format follows [Keep a Changelog](https://keepachangel
 - `import discover` now acquires the canonical output lock before reading its
   sources and publishes the private manifest through a temporary file. A busy
   target exits 9, and a failed run preserves the previous manifest.
+- A permanent delete now clears the local mirror in one transaction. The live
+  row, the trash row, both search-index documents, and both pending-write
+  markers are removed together, so no read observes the item gone from the
+  library but still in the trash, and a failure part-way no longer leaves the
+  trash row behind with no further attempt to remove it. Resurrection by a sync
+  that runs before Zotero has synced the delete down is unchanged: a reap still
+  leaves no tombstone.
 
 ## [0.23.0] — 2026-08-30
 

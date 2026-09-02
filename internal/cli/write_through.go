@@ -209,13 +209,16 @@ func applyMirrorWriteThrough(env *mutation.Envelope) {
 // item mirror and the trash mirror. Nothing did this before, so a row survived
 // its own object: offline reads served items that 404 on both planes, and every
 // mirror-derived count included them.
+//
+// One store call, not two. Both lifecycle rows go in a single transaction under
+// the store's write lock, so no reader observes the item gone from items while
+// it is still in items-trash, and a failure cannot leave the trash row behind.
+//
+// Resurrection is a separate, still-open problem: a reap leaves no tombstone, so
+// a sync that runs before Zotero has synced the delete down re-inserts the item
+// from the local read plane.
 func reapMirroredItem(db *store.Store, key string) {
-	if err := db.ReapResource("items", key); err != nil {
-		warnMirrorUpdateFailed(key, err)
-		return
-	}
-	// A permanently deleted item cannot be in the trash either.
-	if err := db.ReapResource("items-trash", key); err != nil {
+	if err := db.ReapMirroredItem(key); err != nil {
 		warnMirrorUpdateFailed(key, err)
 	}
 }

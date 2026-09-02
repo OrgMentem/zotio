@@ -6,8 +6,10 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -198,6 +200,143 @@ func TestRestoreMirroredItem_HappyPathDoesNotNeedTrigger(t *testing.T) {
 	trash, err := s.Get("items-trash", "HAPPY1")
 	if trash != nil || !errors.Is(err, ErrNotFound) {
 		t.Fatalf("trash row should be reaped: got=%s err=%v", trash, err)
+	}
+}
+
+// TestReapMirroredItem_Atomicity pins the permanent-delete cleanup to one
+// transaction. The former implementation called ReapResource twice, committing
+// and releasing writeMu in between, so a failure on the second resource left
+// the live row already deleted and the trash row behind for good. Injecting
+// that failure is the only deterministic way to tell one transaction from two.
+func TestReapMirroredItem_Atomicity(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "data.db")
+	s, err := OpenWithContext(ctx, path)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer s.Close()
+
+	// A permanently deleted item is commonly in both mirrors: it was trashed
+	// first, and mirrorTrashedItem deliberately keeps the live row.
+	liveRaw := json.RawMessage(`{"key":"REAP1","version":7,"data":{"key":"REAP1","itemType":"book","title":"ReapLive"}}`)
+	if _, err := s.UpsertKeyed("items", []string{"REAP1"}, []json.RawMessage{liveRaw}); err != nil {
+		t.Fatalf("seed live: %v", err)
+	}
+	trashRaw := json.RawMessage(`{"key":"REAP1","version":7,"data":{"key":"REAP1","itemType":"book","title":"ReapTrash"}}`)
+	if _, err := s.UpsertKeyed("items-trash", []string{"REAP1"}, []json.RawMessage{trashRaw}); err != nil {
+		t.Fatalf("seed trash: %v", err)
+	}
+	if err := s.RecordPendingWrite("items", "REAP1", []byte(`[{"field":"title","add":"ReapLive"}]`)); err != nil {
+		t.Fatalf("seed pending write: %v", err)
+	}
+
+	// Abort the trash deletion, which is the second resource the helper
+	// touches. One transaction rolls the live deletion back with it; two
+	// transactions would have committed the live deletion already.
+	if _, err := s.DB().Exec(`CREATE TRIGGER fail_reap_trash BEFORE DELETE ON resources WHEN OLD.resource_type='items-trash' AND OLD.id='REAP1' BEGIN SELECT RAISE(ABORT, 'injected reap failure'); END`); err != nil {
+		t.Fatalf("create trigger: %v", err)
+	}
+	err = s.ReapMirroredItem("REAP1")
+	if err == nil {
+		t.Fatal("ReapMirroredItem succeeded despite the injected trigger")
+	}
+	if !strings.Contains(err.Error(), "injected reap failure") && !strings.Contains(err.Error(), "items-trash/REAP1") {
+		t.Fatalf("error from injected failure = %v, want it to name the trash resource", err)
+	}
+	if got, err := s.Get("items", "REAP1"); got == nil || err != nil {
+		t.Fatalf("atomicity violation: live row was deleted despite rollback: got=%s err=%v", got, err)
+	}
+	if got, err := s.Get("items-trash", "REAP1"); got == nil || err != nil {
+		t.Fatalf("atomicity violation: trash row = %s, err = %v; want it retained", got, err)
+	}
+	if hits, err := s.Search("ReapLive", 10); err != nil || len(hits) == 0 {
+		t.Fatalf("live FTS document = %d hits, err = %v; want the rollback to keep it", len(hits), err)
+	}
+	pending, err := s.PendingWrites("items")
+	if err != nil {
+		t.Fatalf("PendingWrites: %v", err)
+	}
+	if _, ok := pending["REAP1"]; !ok {
+		t.Fatal("atomicity violation: the pending-write marker was cleared despite rollback")
+	}
+
+	if _, err := s.DB().Exec(`DROP TRIGGER fail_reap_trash`); err != nil {
+		t.Fatalf("drop trigger: %v", err)
+	}
+	if err := s.ReapMirroredItem("REAP1"); err != nil {
+		t.Fatalf("ReapMirroredItem after dropping the trigger: %v", err)
+	}
+	if got, err := s.Get("items", "REAP1"); got != nil || !errors.Is(err, ErrNotFound) {
+		t.Fatalf("live row after reap: got=%s err=%v, want ErrNotFound", got, err)
+	}
+	if got, err := s.Get("items-trash", "REAP1"); got != nil || !errors.Is(err, ErrNotFound) {
+		t.Fatalf("trash row after reap: got=%s err=%v, want ErrNotFound", got, err)
+	}
+	if hits, err := s.Search("ReapLive", 10); err != nil || len(hits) != 0 {
+		t.Fatalf("live FTS document after reap = %d hits, err = %v; want 0", len(hits), err)
+	}
+	if hits, err := s.Search("ReapTrash", 10); err != nil || len(hits) != 0 {
+		t.Fatalf("trash FTS document after reap = %d hits, err = %v; want 0", len(hits), err)
+	}
+	pending, err = s.PendingWrites("items")
+	if err != nil {
+		t.Fatalf("PendingWrites after reap: %v", err)
+	}
+	if _, ok := pending["REAP1"]; ok {
+		t.Fatal("pending-write marker survived the reap")
+	}
+}
+
+// TestReapMirroredItem_TrashRowNeverSurvivesContention runs the reap against
+// the stale sync upsert it competes with in production. The trash row must be
+// gone every time the call returns, whichever order the two writers take.
+// Resurrection of the LIVE row is a separate, still-open gap: a reap leaves no
+// tombstone, so an upsert that lands after it wins. This test therefore pins
+// the invariant the split implementation broke, not the tombstone it never had.
+func TestReapMirroredItem_TrashRowNeverSurvivesContention(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "data.db")
+	s, err := OpenWithContext(ctx, path)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer s.Close()
+
+	const iterations = 40
+	for i := 0; i < iterations; i++ {
+		key := fmt.Sprintf("RACE%04d", i)
+		live := json.RawMessage(fmt.Sprintf(`{"key":%q,"version":1,"data":{"key":%q,"itemType":"book","title":"Racing"}}`, key, key))
+		if _, err := s.UpsertKeyed("items", []string{key}, []json.RawMessage{live}); err != nil {
+			t.Fatalf("seed live %s: %v", key, err)
+		}
+		if _, err := s.UpsertKeyed("items-trash", []string{key}, []json.RawMessage{live}); err != nil {
+			t.Fatalf("seed trash %s: %v", key, err)
+		}
+
+		// The stale sync: Zotero's local read plane still lists the item, so
+		// sync upserts it back into the live mirror while the delete cleans up.
+		var wg sync.WaitGroup
+		wg.Add(2)
+		var upsertErr, reapErr error
+		go func() {
+			defer wg.Done()
+			_, upsertErr = s.UpsertKeyed("items", []string{key}, []json.RawMessage{live})
+		}()
+		go func() {
+			defer wg.Done()
+			reapErr = s.ReapMirroredItem(key)
+		}()
+		wg.Wait()
+		if upsertErr != nil {
+			t.Fatalf("stale sync upsert %s: %v", key, upsertErr)
+		}
+		if reapErr != nil {
+			t.Fatalf("ReapMirroredItem %s: %v", key, reapErr)
+		}
+		if got, err := s.Get("items-trash", key); got != nil || !errors.Is(err, ErrNotFound) {
+			t.Fatalf("trash row for %s survived the reap: got=%s err=%v", key, got, err)
+		}
 	}
 }
 func TestPendingWritesRoundtrip(t *testing.T) {

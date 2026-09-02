@@ -841,9 +841,19 @@ func TestImportApplyStoredRejectsFetchPDF(t *testing.T) {
 	}
 }
 
+// TestImportApplyFetchPDFPlansCreateAndResolverSeparately previews the two ops
+// --fetch-pdf must plan. The connector ping is stubbed and the base URL pinned
+// like every other connector preview in this file: the default rootFlags route
+// resolves via "auto", which probes the real desktop on port 23119, so the test
+// otherwise passed only on a machine running Zotero and failed everywhere else.
 func TestImportApplyFetchPDFPlansCreateAndResolverSeparately(t *testing.T) {
+	oldPing := connectorPing
+	defer func() { connectorPing = oldPing }()
+	connectorPing = func(ctx context.Context, c *connector.Client) error { return nil }
+
 	manifestPath := writeImportApplyTestManifest(t, importApplyTestManifest())
-	env, stderr, err := runImportApplyTestCmd(t, []string{"--fetch-pdf", manifestPath})
+	flags := &rootFlags{asJSON: true, via: "connector", configPath: testConfigFile(t, "http://localhost:23119/api/users/0")}
+	env, stderr, err := runImportApplyTestCmdWithFlags(t, flags, []string{"--fetch-pdf", manifestPath})
 	if err != nil {
 		t.Fatalf("import apply --fetch-pdf preview: %v; stderr=%s", err, stderr)
 	}

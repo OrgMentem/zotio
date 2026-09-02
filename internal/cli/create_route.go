@@ -61,10 +61,6 @@ func routeCreateItem(ctx context.Context, flags *rootFlags, webClient itemPoster
 	return routeCreateItemWithOptions(ctx, flags, webClient, item, sourceURI, collectionRequested, routeCreateOptions{})
 }
 
-func routeCreateStoredItem(ctx context.Context, flags *rootFlags, webClient itemPoster, item map[string]any, sourceURI string, collectionRequested bool) (itemCreateResult, error) {
-	return routeCreateItemWithOptions(ctx, flags, webClient, item, sourceURI, collectionRequested, routeCreateOptions{preserveUnresolvedConnectorWrite: true})
-}
-
 func routeCreateItemWithOptions(ctx context.Context, flags *rootFlags, webClient itemPoster, item map[string]any, sourceURI string, collectionRequested bool, opt routeCreateOptions) (itemCreateResult, error) {
 	via, err := flags.resolveCreateVia(ctx, collectionRequested)
 	if err != nil {

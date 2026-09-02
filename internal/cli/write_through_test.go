@@ -638,14 +638,12 @@ func TestApplyMirrorWriteThrough_RestoreStaleCacheEmitsDegradedWarning(t *testin
 }
 
 // TestApplyMirrorWriteThrough_RestoreRequiresNoObservableBothRowsWindow verifies
-// Defect B's final-state contract. The restore does an UpsertKeyed(items) then
-// ReapResource(items-trash) as separate transactions; a concurrent reader could
-// briefly observe both rows, but the committed final state must be exactly one
-// live row and zero trash rows. This test asserts the final state invariant so
-// a regression that leaves both rows (or neither) is caught. Full atomicity
-// requires a store-side helper (Store.RestoreMirroredItem or TransactRestore)
-// that this file cannot add because it does not own store.go; until that helper
-// exists the observable-window is documented but not eliminated.
+// Defect B's final-state contract: exactly one live row and zero trash rows, so
+// a regression that leaves both rows (or neither) is caught. The write-through
+// path now reaches that state through Store.RestoreMirroredItem, one
+// transaction under the store write lock, so no reader can observe both
+// canonical rows any more. This test pins the observable outcome; the store's
+// TestRestoreMirroredItem_Atomicity pins the transaction boundary itself.
 func TestApplyMirrorWriteThrough_RestoreRequiresNoObservableBothRowsWindow(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	db, err := store.OpenWithContext(context.Background(), helpersTestDefaultDBPath(t, "zotio"))

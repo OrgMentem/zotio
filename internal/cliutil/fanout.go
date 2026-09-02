@@ -28,17 +28,17 @@ type FanoutResult[T any] struct {
 	Value  T
 }
 
-// FanoutOption configures a FanoutRun call. Use the With* constructors.
-type FanoutOption func(*fanoutOptions)
-
-type fanoutOptions struct {
-	concurrency int
-}
-
-// defaultFanoutConcurrency is the worker count when the caller passes no
-// WithConcurrency option. 4 matches the existing sync.go worker-pool idiom
-// and is safe for scraping CLIs where per-host 429 pressure is real.
-const defaultFanoutConcurrency = 4
+// fanoutConcurrency is the worker count. 4 matches the existing sync.go
+// worker-pool idiom and is safe for scraping CLIs where per-host 429 pressure
+// is real.
+//
+// Deliberately a constant, not an option. FanoutRun used to take
+// `opts ...FanoutOption`, where FanoutOption wrapped an unexported struct and
+// no With* constructor was ever written, so no caller inside or outside this
+// package could build one: a functional-options signature that accepted
+// nothing (zotio-caaace76). Give it back only when a caller needs per-host
+// tuning, and export the constructor in the same change.
+const fanoutConcurrency = 4
 
 // FanoutRun invokes fn concurrently for each source and collects successful
 // results plus per-source errors. It never returns a top-level error and
@@ -65,16 +65,7 @@ func FanoutRun[S, T any](
 	sources []S,
 	name func(S) string,
 	fn func(context.Context, S) (T, error),
-	opts ...FanoutOption,
 ) ([]FanoutResult[T], []FanoutError) {
-	cfg := fanoutOptions{concurrency: defaultFanoutConcurrency}
-	for _, o := range opts {
-		o(&cfg)
-	}
-	if cfg.concurrency < 1 {
-		cfg.concurrency = 1
-	}
-
 	// Parallel slices indexed by source position so output stays in source
 	// order regardless of completion order. Using pointers lets us detect
 	// "no result and no error" (shouldn't happen but is a defensive signal).
@@ -85,10 +76,10 @@ func FanoutRun[S, T any](
 	slots := make([]slot, len(sources))
 
 	type job struct{ idx int }
-	jobs := make(chan job, cfg.concurrency*2)
+	jobs := make(chan job, fanoutConcurrency*2)
 
 	var wg sync.WaitGroup
-	for w := 0; w < cfg.concurrency; w++ {
+	for w := 0; w < fanoutConcurrency; w++ {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()

@@ -2013,6 +2013,41 @@ func (s *Store) ReapResource(resourceType, id string) error {
 	return tx.Commit()
 }
 
+// ReapMirroredItem removes every trace of one permanently deleted item in a
+// single transaction: the live row, the trash row, both FTS documents, and both
+// pending-write markers. It is the atomic replacement for the former
+// ReapResource("items", key) + ReapResource("items-trash", key) pair, which
+// committed twice and released writeMu in between. That split carried two
+// defects: a reader could observe the item gone from items while it was still
+// present in items-trash, and a failure on the first call left the trash row
+// behind with no further attempt to remove it.
+//
+// A reap needs no lifecycle arbitration, unlike RestoreMirroredItem. A
+// permanent delete removes the object from Zotero altogether, so neither
+// canonical row can legitimately survive and there is nothing to choose
+// between.
+//
+// This eliminates the torn intermediate state only. It does not stop a sync
+// inside Zotero's read-plane lag window from re-inserting the item, because a
+// reap deliberately leaves no tombstone: pending_writes records field changes,
+// not deletions.
+func (s *Store) ReapMirroredItem(key string) error {
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	if err := reapResourceLocked(tx, "items", key); err != nil {
+		return err
+	}
+	if err := reapResourceLocked(tx, "items-trash", key); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
 // RestoreMirroredItem atomically reinstates a trashed item into the live
 // mirror and removes its trash row. It is the single-transaction replacement
 // for the former UpsertKeyed("items", ...) + ReapResource("items-trash", ...)
