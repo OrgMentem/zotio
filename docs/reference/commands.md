@@ -2675,7 +2675,8 @@ Exit codes & warnings:
   line carrying status, reason, and message fields, and a final
   {"event":"sync_summary",...} aggregates the run.
 
-  Exit 0 when at least one resource synced and no resource flagged in
+  A full sync exits non-zero when any selected resource does not complete.
+  Exit 0 otherwise when at least one resource synced and no resource flagged in
   the spec as critical (x-critical: true) failed. Pass --strict to exit
   non-zero on any per-resource failure. Exit is always
   non-zero when every selected resource failed, regardless of --strict.
