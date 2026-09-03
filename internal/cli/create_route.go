@@ -86,8 +86,9 @@ type singleItemCreate struct {
 
 // runSingleItemCreate previews the create by default and writes only under
 // --yes, so every one-item importer shares the same gate, envelope, journal
-// entry, and --max-changes accounting. The local mirror is refreshed when the
-// desktop connector handled the write, since that path bypasses the Web API.
+// entry, and --max-changes accounting. Write-through mirrors the created item,
+// so the incremental resync is a fallback for the one case it cannot cover: a
+// create whose Zotero key never resolved.
 func runSingleItemCreate(cmd *cobra.Command, flags *rootFlags, spec singleItemCreate) error {
 	var res itemCreateResult
 	ops := []mutation.Op{{
@@ -132,7 +133,7 @@ func runSingleItemCreate(cmd *cobra.Command, flags *rootFlags, spec singleItemCr
 	if renderErr := renderMutation(cmd, flags, env, nil); renderErr != nil {
 		return renderErr
 	}
-	if runErr == nil && res.Via == "connector" {
+	if res.Via == "connector" && createNeedsMirrorRefresh(env) {
 		refreshItemsFromLocalAPI(cmd.Context(), flags)
 	}
 	return runErr
@@ -155,6 +156,41 @@ func itemCreateCommitted(res itemCreateResult) bool {
 		res.Session != "" && res.ConnKey != ""
 }
 
+// itemCreateAppliedReason is the reason every applied create reports, on both
+// routes and from every create command. mutation.Run adopts "key" into the
+// result item, which is what the journal targets and what write-through mirrors
+// the new row under; "via" records which plane accepted the write. Both are
+// always present and always strings -- an absent or differently-typed field
+// would force an agent to branch on the route it cannot see.
+func itemCreateAppliedReason(via, key string) map[string]any {
+	message := fmt.Sprintf("created via %s", via)
+	if key == "" {
+		// The connector commits asynchronously, so a key can stay unresolved
+		// for a write that certainly landed. Say so instead of implying the
+		// create is undoable.
+		message += " (key unconfirmed; journal undo unavailable for this item)"
+	}
+	return map[string]any{"via": via, "key": key, "message": message}
+}
+
+// createNeedsMirrorRefresh reports whether an applied create left an item that
+// write-through could not mirror. mirrorCreatedItem keys the mirrored row on the
+// confirmed Zotero key, so an applied create whose key never resolved has
+// nothing to write and only an incremental sync can surface it locally. Every
+// other create is already mirrored, and refreshing would re-pull the whole items
+// resource to re-learn a row the mirror already holds.
+func createNeedsMirrorRefresh(env mutation.Envelope) bool {
+	if env.Result == nil {
+		return false
+	}
+	for _, item := range env.Result.Items {
+		if item.Status == "applied" && item.Key == "" {
+			return true
+		}
+	}
+	return false
+}
+
 func singleItemCreateApplyResult(res itemCreateResult, err error, fallbackKey string) (string, any, error) {
 	if err != nil {
 		if res.FilingFailed {
@@ -170,19 +206,14 @@ func singleItemCreateApplyResult(res itemCreateResult, err error, fallbackKey st
 			if display == "" {
 				display = fallbackKey
 			}
-			reason := map[string]any{
-				"via":     res.Via,
-				"session": res.Session,
-				"message": fmt.Sprintf("created item %s; target filing failed: %v; retry filing only, do not re-create the item", display, err),
-			}
-			if k != "" {
-				reason["key"] = k
-			}
+			reason := itemCreateAppliedReason(res.Via, k)
+			reason["session"] = res.Session
+			reason["message"] = fmt.Sprintf("created item %s; target filing failed: %v; retry filing only, do not re-create the item", display, err)
 			return "applied", reason, nil
 		}
 		return "failed", nil, err
 	}
-	return "applied", map[string]any{"via": res.Via, "key": createdItemKeyOf(res)}, nil
+	return "applied", itemCreateAppliedReason(res.Via, createdItemKeyOf(res)), nil
 }
 
 // routeCreateItemVia creates one Zotero item through an already resolved route.
@@ -455,8 +486,13 @@ func importEntrySourceURL(entry importManifestEntry, item map[string]any) string
 	return itemCreateSourceURI(item)
 }
 
-// refreshItemsFromLocalAPI performs a best-effort incremental sync after a
-// connector write so local-store reads can see desktop-created items promptly.
+// refreshItemsFromLocalAPI performs a best-effort incremental sync of the whole
+// items resource. It is the FALLBACK reconcile for a connector write, not the
+// primary one: mirrorCreatedItem (write_through.go) writes the created row
+// directly and needs no network call, so this runs only when the create's Zotero
+// key never resolved and there is nothing to key a mirrored row on. The desktop
+// commits asynchronously, so the item may not have surfaced on the read plane
+// either — hence best-effort, with every failure reported as a warning.
 func refreshItemsFromLocalAPI(ctx context.Context, flags *rootFlags) {
 	c, err := flags.newClient()
 	if err != nil {

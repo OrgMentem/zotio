@@ -295,6 +295,191 @@ func TestApplyMirrorWriteThroughWarnsOnMirrorOpenFailure(t *testing.T) {
 	}
 }
 
+// TestApplyMirrorWriteThroughNoticesAPurgeOnANeverSyncedInstall covers ADR-0007's
+// documented bound: with no mirror FILE there is nowhere to record a deletion
+// marker, so the first sync can store the row the read plane still lists. The
+// store is deliberately NOT created here — a command that removes something must
+// not leave a local mirror behind as a side effect — so the user gets a notice
+// naming what happened and the one command that clears it.
+func TestApplyMirrorWriteThroughNoticesAPurgeOnANeverSyncedInstall(t *testing.T) {
+	t.Run("purge on a never-synced install", func(t *testing.T) {
+		t.Setenv("HOME", t.TempDir())
+		env := mutation.Envelope{
+			Plan: mutation.Plan{Operations: []mutation.Op{
+				{ID: "d1", Key: "GONE0001", Kind: "item_delete", Destructive: true, Changes: []mutation.Change{{Field: "deleted", Add: 1}}},
+				{ID: "d2", Key: "GONE0002", Kind: "item_delete", Destructive: true, Changes: []mutation.Change{{Field: "deleted", Add: 1}}},
+			}},
+			Result: &mutation.Result{Items: []mutation.ResultItem{
+				{OpID: "d1", Key: "GONE0001", Status: "applied"},
+				{OpID: "d2", Key: "GONE0002", Status: "applied"},
+			}},
+		}
+		stderr := captureWriteThroughStderr(t, func() { applyMirrorWriteThrough(&env) })
+
+		if !strings.Contains(stderr, "no local mirror yet") || !strings.Contains(stderr, "zotio sync --full") {
+			t.Fatalf("stderr = %q, want the never-synced purge notice naming the remedy", stderr)
+		}
+		// One notice per run: a 50-item purge has one cause and one remedy.
+		if got := strings.Count(stderr, "notice:"); got != 1 {
+			t.Fatalf("stderr carries %d notices for a 2-item purge, want exactly 1: %q", got, stderr)
+		}
+		if _, err := os.Stat(helpersTestDefaultDBPath(t, "zotio")); !os.IsNotExist(err) {
+			t.Fatalf("the delete created a local mirror as a side effect (stat err = %v)", err)
+		}
+	})
+
+	t.Run("non-delete write on a never-synced install stays silent", func(t *testing.T) {
+		t.Setenv("HOME", t.TempDir())
+		env := mutation.Envelope{
+			Plan: mutation.Plan{Operations: []mutation.Op{
+				{ID: "op", Key: "P1", Kind: "enrich", Changes: []mutation.Change{{Field: "DOI", Add: "10.1/x"}}},
+			}},
+			Result: &mutation.Result{Items: []mutation.ResultItem{{OpID: "op", Key: "P1", Status: "applied"}}},
+		}
+		if stderr := captureWriteThroughStderr(t, func() { applyMirrorWriteThrough(&env) }); stderr != "" {
+			t.Fatalf("stderr = %q, want silence: only a purge leaves an unrecordable local effect", stderr)
+		}
+	})
+
+	t.Run("a purge that did not apply stays silent", func(t *testing.T) {
+		t.Setenv("HOME", t.TempDir())
+		env := mutation.Envelope{
+			Plan: mutation.Plan{Operations: []mutation.Op{
+				{ID: "d1", Key: "GONE0001", Kind: "item_delete", Destructive: true, Changes: []mutation.Change{{Field: "deleted", Add: 1}}},
+			}},
+			Result: &mutation.Result{Items: []mutation.ResultItem{{OpID: "d1", Key: "GONE0001", Status: "failed"}}},
+		}
+		if stderr := captureWriteThroughStderr(t, func() { applyMirrorWriteThrough(&env) }); stderr != "" {
+			t.Fatalf("stderr = %q, want silence: nothing was purged", stderr)
+		}
+	})
+}
+
+// TestMirrorCreatedItemRetiresADeletionMarkerForTheSameKey covers the one
+// interaction between a create and ADR-0007. A permanent delete leaves a
+// deletion marker, and reconcilePendingWrites drops any read-plane row whose key
+// carries one — so a marker still standing when the same key is created would
+// suppress an object that now exists, on every sync, until the marker expires.
+//
+// The collision cannot be reached through the product: Zotero mints item keys
+// server-side and does not reuse them, and no create command chooses its own
+// key. It is constructed here by marking a key deleted and then creating under
+// it, because "unreachable" is a property of Zotero's key allocation rather than
+// anything this code enforces, and the failure it would cause — an item that
+// silently never mirrors — gives the user nothing to go on.
+func TestMirrorCreatedItemRetiresADeletionMarkerForTheSameKey(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	seedWriteThroughItem(t, "GHOST001", `{"key":"GHOST001","version":1,"data":{"key":"GHOST001","itemType":"book","title":"Purged"}}`)
+
+	db, err := store.OpenWithContext(context.Background(), helpersTestDefaultDBPath(t, "zotio"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	// ReapMirroredItem is the production path that writes the marker, in the
+	// same transaction as the reap (ADR-0007).
+	if err := db.ReapMirroredItem("GHOST001"); err != nil {
+		t.Fatalf("reap: %v", err)
+	}
+	pending, err := db.PendingWrites("items")
+	if err != nil {
+		t.Fatalf("read pending writes: %v", err)
+	}
+	if mark, ok := pending["GHOST001"]; !ok || !mark.Deleted {
+		t.Fatalf("pending writes = %+v, want a deletion marker for GHOST001", pending)
+	}
+
+	item, ok := mirrorCreatedItem(db, "GHOST001", []mutation.Change{
+		{Field: "item", Add: map[string]any{"itemType": "journalArticle", "title": "Recreated"}},
+	})
+	if !ok {
+		t.Fatal("mirrorCreatedItem reported no row written")
+	}
+	if data, _ := item["data"].(map[string]any); data["key"] != "GHOST001" {
+		t.Fatalf("mirrored item = %+v, want the created key in its data", item)
+	}
+
+	after, err := db.PendingWrites("items")
+	if err != nil {
+		t.Fatalf("re-read pending writes: %v", err)
+	}
+	if mark, ok := after["GHOST001"]; ok && mark.Deleted {
+		t.Fatal("the deletion marker survived the create; every sync would drop the row for a key that now exists")
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close store: %v", err)
+	}
+
+	// Prove the effect, not just the marker: a sync page listing the created key
+	// must now be stored rather than suppressed.
+	db2, err := store.OpenWithContext(context.Background(), helpersTestDefaultDBPath(t, "zotio"))
+	if err != nil {
+		t.Fatalf("reopen store: %v", err)
+	}
+	defer db2.Close()
+	page := []json.RawMessage{json.RawMessage(`{"key":"GHOST001","version":9,"data":{"key":"GHOST001","itemType":"journalArticle","title":"Recreated"}}`)}
+	merged, _ := reconcilePendingWrites(db2, "items", page)
+	if len(merged) != 1 {
+		t.Fatalf("reconciled page = %v, want the created row kept", merged)
+	}
+}
+
+// TestMirrorCreatedItemNeedsARecordedBody covers the creates that must NOT be
+// mirrored: an op recording no item body has nothing to write, and an "item"
+// change that is not a Zotero item body would put a row with no Zotero fields
+// into the mirror, which offline reads and every mirror-derived count would
+// then serve as an item.
+func TestMirrorCreatedItemNeedsARecordedBody(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	seedWriteThroughItem(t, "SEED0001", `{"key":"SEED0001","version":1,"data":{"key":"SEED0001","itemType":"book","title":"Seed"}}`)
+	db, err := store.OpenWithContext(context.Background(), helpersTestDefaultDBPath(t, "zotio"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer db.Close()
+
+	for _, changes := range [][]mutation.Change{
+		nil,
+		{{Field: "source", Add: "PubMed (1)"}},
+		{{Field: "item", Add: "not an object"}},
+		// import file --via connector records a per-record descriptor, not a
+		// Zotero item: the desktop translator produces the items.
+		{{Field: "item", Add: map[string]any{"file": "/tmp/refs.ris", "via": "connector", "record": 1}}},
+	} {
+		if item, ok := mirrorCreatedItem(db, "NOBODY01", changes); ok {
+			t.Fatalf("changes %+v mirrored %+v, want no row", changes, item)
+		}
+	}
+	rows, err := (localQueryStore{db}).QueryRaw("SELECT id FROM resources WHERE resource_type='items' AND id='NOBODY01'")
+	if err != nil {
+		t.Fatalf("read back: %v", err)
+	}
+	if len(rows) != 0 {
+		t.Fatalf("mirror holds %d row(s) for a create with no recorded body", len(rows))
+	}
+}
+
+// TestMirrorCreatedItemDoesNotEditTheRecordedChange proves the mirrored row's
+// "key" is added to a copy. The change's map is the op's own recorded body,
+// shared with the rendered plan and the journal entry, so writing into it would
+// put a Zotero key inside the record of what was REQUESTED.
+func TestMirrorCreatedItemDoesNotEditTheRecordedChange(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	seedWriteThroughItem(t, "SEED0001", `{"key":"SEED0001","version":1,"data":{"key":"SEED0001","itemType":"book","title":"Seed"}}`)
+	db, err := store.OpenWithContext(context.Background(), helpersTestDefaultDBPath(t, "zotio"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer db.Close()
+
+	body := map[string]any{"itemType": "journalArticle", "title": "Requested"}
+	if _, ok := mirrorCreatedItem(db, "COPY0001", []mutation.Change{{Field: "item", Add: body}}); !ok {
+		t.Fatal("mirrorCreatedItem reported no row written")
+	}
+	if _, present := body["key"]; present {
+		t.Fatalf("the recorded change was edited in place: %+v", body)
+	}
+}
+
 func seedWriteThroughItem(t *testing.T, key, raw string) {
 	t.Helper()
 	db, err := store.OpenWithContext(context.Background(), helpersTestDefaultDBPath(t, "zotio"))

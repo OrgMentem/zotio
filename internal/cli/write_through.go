@@ -1,10 +1,11 @@
 // Copyright 2026 OrgMentem. Licensed under MIT. See LICENSE.
-// After a write succeeds in the cloud via the Web API, write-through replays the
+// After a write succeeds on the write plane -- api.zotero.org for a Web write,
+// the desktop connector for a connector create -- write-through replays the
 // just-applied changes onto the local SQLite mirror so `--data-source local`
 // reads-your-own-writes WITHOUT a `sync`, and surfaces the resulting item state
 // in the mutation envelope so agents need no follow-up read. Best-effort: changes
-// it can't confidently replay (merges, trash, creates) are left for the next
-// `sync` to reconcile authoritatively.
+// it can't confidently replay (merges, bulk adds) are left for the next `sync`
+// to reconcile authoritatively.
 
 package cli
 
@@ -61,6 +62,14 @@ func applyMirrorWriteThrough(env *mutation.Envelope) {
 		return
 	}
 	if db == nil {
+		// A delete on a never-synced install cannot leave a deletion marker, so
+		// the first sync can store the row the read plane still lists.
+		// Deliberately not fixed by creating the store here: a command that
+		// removes something must not have "and now you have a local mirror" as a
+		// side effect (ADR-0007).
+		if envHasAppliedPermanentDelete(env) {
+			fmt.Fprintln(os.Stderr, "notice: this machine has no local mirror yet, so the permanent delete could not be recorded locally; the first `zotio sync` may still list the deleted item(s), and `zotio sync --full` clears them")
+		}
 		return // not synced yet — nothing to update; next sync establishes the mirror
 	}
 	defer db.Close()
@@ -79,6 +88,17 @@ func applyMirrorWriteThrough(env *mutation.Envelope) {
 		// had just trashed, and a permanent delete left a row that offline reads
 		// still served and every count still included.
 		switch kindByOp[it.OpID] {
+		case "item_create":
+			// A create has no cached row to replay onto, so the generic path
+			// below bails out and the item stayed invisible to
+			// `--data-source local` until the next sync (dev/roadmap.md Phase 8).
+			// The op already carries the body that was sent and the engine has
+			// adopted the key the write plane confirmed, which is everything a
+			// row needs.
+			if item, ok := mirrorCreatedItem(db, it.Key, changesByOp[it.OpID]); ok && singleWrite {
+				it.Item = item
+			}
+			continue
 		case "item_delete":
 			reapMirroredItem(db, it.Key)
 			continue
@@ -177,7 +197,7 @@ func applyMirrorWriteThrough(env *mutation.Envelope) {
 			continue
 		}
 		if !ok {
-			continue // create / unsupported change shape — leave for sync to reconcile
+			continue // unsupported change shape — leave for sync to reconcile
 		}
 		// Avoid surfacing or caching stale pre-write Zotero versions; the Web
 		// API's advanced version is not available here.
@@ -203,6 +223,97 @@ func applyMirrorWriteThrough(env *mutation.Envelope) {
 			it.Item = item
 		}
 	}
+}
+
+// mirrorCreatedItem writes the row for an item this run just created, so a
+// `--data-source local` read sees it without waiting for a sync. It returns the
+// stored item object and whether a row was written.
+//
+// The payload is the item body the create actually sent, carried on the op's
+// "item" change (itemsCreatePreflightOps, runSingleItemCreate), plus the key the
+// write plane confirmed. Both create routes record that same change, so the
+// mirrored row does not depend on which route ran.
+//
+// The row deliberately carries NO version. Zotero assigns one this process never
+// sees, and upsertGenericResourceTx's version-monotonic guard accepts any
+// incoming row over a version-less one -- so the first sync that lists the item
+// replaces this row with the server's authoritative copy. That is the same
+// property Store.ClearResourceVersions relies on, and the reason
+// dropStaleItemVersion strips the version from every other replayed row.
+// dateAdded, dateModified and meta are server-assigned; they stay absent rather
+// than being fabricated from this machine's clock, so a local read reports what
+// was created and nothing zotio cannot know.
+func mirrorCreatedItem(db *store.Store, key string, changes []mutation.Change) (map[string]any, bool) {
+	data, ok := createdItemData(changes)
+	if !ok {
+		return nil, false // no recorded body — the next sync reconciles the create
+	}
+	data["key"] = key
+	item := map[string]any{"key": key, "data": data}
+	raw, err := json.Marshal(item)
+	if err != nil {
+		warnMirrorUpdateFailed(key, err)
+		return nil, false
+	}
+	// A deletion marker for this key would make reconcilePendingWrites drop the
+	// row from every synced page for as long as the marker stands, suppressing
+	// an object that now exists. Nothing retires a deletion marker on a clock —
+	// only a total-observation pass that stops listing the key does (ADR-0007) —
+	// so without this the suppression would outlast the create indefinitely on
+	// an installation that never runs a full sync. A create the write plane
+	// confirmed under the key is strictly newer evidence than a marker saying
+	// the key is gone, so the marker is retired here. Zotero mints item keys and
+	// does not reuse them, so no real create can land on a purged key; the two
+	// DELETEs are cheap and the failure they rule out — an item that silently
+	// never mirrors — is invisible to the user until it is chased down.
+	for _, resource := range []string{"items", "items-trash"} {
+		if err := db.ClearPendingWrite(resource, key); err != nil {
+			warnMirrorUpdateFailed(key, err)
+		}
+	}
+	if _, err := db.UpsertKeyed("items", []string{key}, []json.RawMessage{raw}); err != nil {
+		warnMirrorUpdateFailed(key, err)
+		return nil, false
+	}
+	// The read plane does not list the item until Zotero syncs it down, so the
+	// create is an unconfirmed local write like any other: the marker makes it
+	// visible to doctor and retires itself on the first page that carries the
+	// key, because an "item" change is not replayable and reconcilePendingWrites
+	// then accepts the read plane's authoritative copy.
+	recordPendingWrite(db, key, changes)
+	return item, true
+}
+
+// createdItemData copies the created item's body out of the op's changes. The
+// copy is load-bearing: that map is the op's own recorded change, shared with
+// the rendered plan and the journal entry, and the mirrored row has to add its
+// own "key" without editing either.
+//
+// Fail-closed on anything that is not a Zotero item body. An "item" change does
+// not always carry one: import file --via connector records a per-record
+// descriptor ({file, via, record}) because the desktop translator, not zotio,
+// produces the items. Mirroring that would store a row whose data has no Zotero
+// fields at all, which offline reads and every mirror-derived count would then
+// serve as an item. itemType is the discriminator because Zotero requires it on
+// every item and the store indexes it ($.data.itemType); a body without one
+// could not produce a usable row anyway, so it is skipped and the next sync
+// reconciles the create as it did before.
+func createdItemData(changes []mutation.Change) (map[string]any, bool) {
+	for _, change := range changes {
+		body, ok := change.Add.(map[string]any)
+		if change.Field != "item" || !ok {
+			continue
+		}
+		if itemType, ok := body["itemType"].(string); !ok || itemType == "" {
+			return nil, false
+		}
+		data := make(map[string]any, len(body)+1)
+		for field, value := range body {
+			data[field] = value
+		}
+		return data, true
+	}
+	return nil, false
 }
 
 // reapMirroredItem removes an item the caller permanently deleted, from both the
@@ -254,7 +365,8 @@ func mirrorTrashedItem(db *store.Store, qs localQueryStore, key string) {
 
 // replayItemChanges loads the cached mirror item, applies the changes to its
 // inner data, and returns the full updated item object. ok=false when the item
-// is not in the mirror (a create) or a change can't be confidently replayed.
+// is not in the mirror or a change can't be confidently replayed. A create no
+// longer reaches here: mirrorCreatedItem writes its row from the op's own body.
 // Errors are reserved for real local-mirror failures/corruption that should be
 // warned about without failing the already-successful cloud write.
 func replayItemChanges(qs localQueryStore, key string, changes []mutation.Change) (map[string]any, bool, error) {
@@ -283,6 +395,28 @@ func replayItemChanges(qs localQueryStore, key string, changes []mutation.Change
 	}
 	item["data"] = data
 	return item, true, nil
+}
+
+// envHasAppliedPermanentDelete reports whether the run purged at least one item.
+// It answers a yes/no question rather than returning the keys because the notice
+// it gates is emitted once per run: a 50-item purge has one cause and one
+// remedy, and 50 identical lines would bury the command's real output.
+func envHasAppliedPermanentDelete(env *mutation.Envelope) bool {
+	if env == nil || env.Result == nil {
+		return false
+	}
+	purges := make(map[string]bool, len(env.Plan.Operations))
+	for _, op := range env.Plan.Operations {
+		if op.Kind == "item_delete" {
+			purges[op.ID] = true
+		}
+	}
+	for _, item := range env.Result.Items {
+		if item.Status == "applied" && purges[item.OpID] {
+			return true
+		}
+	}
+	return false
 }
 
 func warnMirrorOpenFailed(env *mutation.Envelope, err error) {

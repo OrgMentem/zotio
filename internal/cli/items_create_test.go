@@ -14,12 +14,15 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"sort"
 	"strings"
 	"testing"
 	"time"
 
+	"zotio/internal/config"
 	"zotio/internal/connector"
 	"zotio/internal/mutation"
+	"zotio/internal/store"
 )
 
 func TestItemsCreateSendsBareArray(t *testing.T) {
@@ -455,28 +458,170 @@ func TestRunSingleItemCreateConnectorFilingFailureWithoutWebKeyStillApplied(t *t
 	}
 }
 
-// TestItemsCreateConnectorBatchFilingFailureReportsRecoverableKeys drives the
-// real command through the batch connector branch that stays UNJOURNALLED
-// (it runs outside runMutation): conn.SaveItems commits, the follow-up
-// conn.UpdateSession target filing fails, and the only durable record of the
-// committed write is the JSON this branch prints plus the retry guidance in
-// its error. Both must survive, and the batch must not be re-sent -- a caller
-// that re-creates instead of re-filing duplicates every item in the library.
+// itemsCreateFixtureItem is one item the fixture's read plane reports once the
+// connector has committed it.
+type itemsCreateFixtureItem struct{ key, title string }
+
+// itemsCreateConnectorFixture stands in for Zotero desktop: the connector
+// endpoints items create writes through, plus the read-plane endpoints key
+// recovery (/items/top) and the fallback mirror refresh (/items) use.
+type itemsCreateConnectorFixture struct {
+	srv            *httptest.Server
+	filingStatus   int
+	surfaced       []itemsCreateFixtureItem
+	saveItems      int
+	updateSessions int
+	savedIDs       []string
+	savedTitles    []string
+	saveSession    string
+	filedSession   string
+	filedTarget    string
+	refreshMethods []string
+	recoveryReqs   []string
+}
+
+// newItemsCreateConnectorFixture serves a desktop that accepts every save and,
+// when filingStatus is non-zero, rejects the follow-up target filing with it.
 //
 // The fixture is reached by redirecting dials for the desktop connector port
-// (see redirectConnectorDialsToFixture) because this branch builds its client
+// (see redirectConnectorDialsToFixture) because this route builds its client
 // through flags.newConnector(), which accepts only 127.0.0.1:23119, and not
 // through the connectorForCreate seam the single-item route uses.
-func TestItemsCreateConnectorBatchFilingFailureReportsRecoverableKeys(t *testing.T) {
+func newItemsCreateConnectorFixture(t *testing.T, surfaced []itemsCreateFixtureItem, filingStatus int) *itemsCreateConnectorFixture {
+	t.Helper()
+	fixture := &itemsCreateConnectorFixture{filingStatus: filingStatus, surfaced: surfaced}
+	fixture.srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/connector/ping":
+			w.WriteHeader(http.StatusOK)
+		case "/connector/saveItems":
+			fixture.saveItems++
+			var payload struct {
+				SessionID string `json:"sessionID"`
+				Items     []struct {
+					ID    string `json:"id"`
+					Title string `json:"title"`
+				} `json:"items"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+				t.Errorf("decode saveItems body: %v", err)
+			}
+			fixture.saveSession = payload.SessionID
+			for _, item := range payload.Items {
+				fixture.savedIDs = append(fixture.savedIDs, item.ID)
+				fixture.savedTitles = append(fixture.savedTitles, item.Title)
+			}
+			w.WriteHeader(http.StatusCreated)
+		case "/connector/updateSession":
+			fixture.updateSessions++
+			var payload struct {
+				SessionID string `json:"sessionID"`
+				Target    string `json:"target"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+				t.Errorf("decode updateSession body: %v", err)
+			}
+			fixture.filedSession = payload.SessionID
+			fixture.filedTarget = payload.Target
+			if fixture.filingStatus != 0 {
+				http.Error(w, "simulated target filing failure", fixture.filingStatus)
+				return
+			}
+			w.WriteHeader(http.StatusOK)
+		case "/api/users/0/items":
+			// refreshItemsFromLocalAPI's incremental store sync.
+			fixture.refreshMethods = append(fixture.refreshMethods, r.Method)
+			w.Header().Set("Last-Modified-Version", "1")
+			_ = json.NewEncoder(w).Encode([]any{})
+		case "/api/users/0/items/top":
+			// confirmConnectorCreate's per-item key recovery. Its sorted,
+			// bounded shape is what keeps recovery from matching a stale
+			// same-title item, so record the exact request it sends.
+			fixture.recoveryReqs = append(fixture.recoveryReqs, r.Method+" "+r.URL.Path+"?"+r.URL.Query().Encode())
+			rows := []any{}
+			added := time.Now().UTC().Format(time.RFC3339)
+			for _, item := range fixture.surfaced {
+				rows = append(rows, map[string]any{
+					"key": item.key, "title": item.title,
+					"itemType": "journalArticle", "dateAdded": added,
+				})
+			}
+			_ = json.NewEncoder(w).Encode(rows)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(fixture.srv.Close)
+	redirectConnectorDialsToFixture(t, fixture.srv)
+	return fixture
+}
+
+// isolateItemsCreateConnectorEnv clears the ambient Zotero environment.
+// config.Load applies ZOTERO_BASE_URL AFTER reading configPath, so an inherited
+// value silently redirects the test's base URL away from the fixture, and an
+// inherited key would let a Web write escape the fixture entirely.
+func isolateItemsCreateConnectorEnv(t *testing.T) {
+	t.Helper()
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("ZOTIO_DEMO", "")
+	t.Setenv("ZOTERO_BASE_URL", "")
+	t.Setenv("ZOTERO_API_KEY", "")
+	oldWindow, oldInterval := connectorCreateRecoveryWindow, connectorCreateRecoveryInterval
+	connectorCreateRecoveryWindow = 0
+	connectorCreateRecoveryInterval = time.Millisecond
+	t.Cleanup(func() {
+		connectorCreateRecoveryWindow = oldWindow
+		connectorCreateRecoveryInterval = oldInterval
+	})
+}
+
+// runItemsCreate drives the real command and returns its stdout and error.
+func runItemsCreate(t *testing.T, flags *rootFlags, args ...string) (string, error) {
+	t.Helper()
+	cmd := newItemsCreateCmd(flags)
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(io.Discard)
+	cmd.SilenceErrors, cmd.SilenceUsage = true, true
+	cmd.SetArgs(args)
+	err := cmd.Execute()
+	return out.String(), err
+}
+
+// decodeSingleJSONObject fails unless stdout is exactly one JSON object. Two
+// objects would mean the command emitted a second, route-specific payload
+// alongside the mutation envelope.
+func decodeSingleJSONObject(t *testing.T, stdout string) map[string]any {
+	t.Helper()
+	dec := json.NewDecoder(strings.NewReader(stdout))
+	var got map[string]any
+	if err := dec.Decode(&got); err != nil {
+		t.Fatalf("stdout is not one JSON object: %v; stdout=%q", err, stdout)
+	}
+	var trailing any
+	if err := dec.Decode(&trailing); err != io.EOF {
+		t.Fatalf("stdout carries a second JSON value (%+v, err=%v), want exactly one object", trailing, err)
+	}
+	return got
+}
+
+// TestItemsCreateConnectorBatchFilingFailureIsAppliedAndJournaled drives the
+// real command through the connector route when conn.SaveItems commits and the
+// follow-up conn.UpdateSession target filing fails. There is no transaction
+// across the two calls, so the items exist: the run must be journaled with the
+// recovered keys, every item must report applied, and the error must say to
+// retry the filing rather than the create -- a caller that re-creates instead of
+// re-files duplicates every item in the library.
+func TestItemsCreateConnectorBatchFilingFailureIsAppliedAndJournaled(t *testing.T) {
 	const target = "C1234567"
-	created := []struct{ key, title string }{
+	created := []itemsCreateFixtureItem{
 		{key: "BATCHIT1", title: "Batch Filing One"},
 		{key: "BATCHIT2", title: "Batch Filing Two"},
 	}
 	for _, tc := range []struct {
 		name     string
-		surfaced bool
-		wantKeys []any
+		surfaced []itemsCreateFixtureItem
+		wantKeys []string
 		wantErr  string
 		denyErr  string
 	}{
@@ -484,119 +629,36 @@ func TestItemsCreateConnectorBatchFilingFailureReportsRecoverableKeys(t *testing
 		// surfaced the committed items, or has not surfaced them yet.
 		{
 			name:     "keys recovered",
-			surfaced: true,
-			wantKeys: []any{"BATCHIT1", "BATCHIT2"},
+			surfaced: created,
+			wantKeys: []string{"BATCHIT1", "BATCHIT2"},
 			wantErr:  "retry filing only, do not re-create the item",
 			denyErr:  "retry filing, not creation",
 		},
 		{
 			name:     "no keys recovered",
-			surfaced: false,
-			wantKeys: nil,
+			surfaced: nil,
+			wantKeys: []string{"", ""},
 			wantErr:  "items remain; retry filing, not creation",
 			denyErr:  "keys [",
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			t.Setenv("HOME", t.TempDir())
-			// config.Load applies ZOTERO_BASE_URL AFTER reading configPath, so an
-			// inherited value silently redirects this test's base URL away from
-			// the fixture. Clear the ambient credentials too.
-			t.Setenv("ZOTIO_DEMO", "")
-			t.Setenv("ZOTERO_BASE_URL", "")
-			t.Setenv("ZOTERO_API_KEY", "")
-			oldWindow, oldInterval := connectorCreateRecoveryWindow, connectorCreateRecoveryInterval
-			connectorCreateRecoveryWindow = 0
-			connectorCreateRecoveryInterval = time.Millisecond
-			t.Cleanup(func() {
-				connectorCreateRecoveryWindow = oldWindow
-				connectorCreateRecoveryInterval = oldInterval
-			})
-
-			var saveItems, updateSessions int
-			var savedIDs, savedTitles []string
-			var gotTarget string
-			var saveSession, filedSession string
-			var refreshMethods, recoveryRequests []string
-			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				switch r.URL.Path {
-				case "/connector/ping":
-					w.WriteHeader(http.StatusOK)
-				case "/connector/saveItems":
-					saveItems++
-					var payload struct {
-						SessionID string `json:"sessionID"`
-						Items     []struct {
-							ID    string `json:"id"`
-							Title string `json:"title"`
-						} `json:"items"`
-					}
-					if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
-						t.Errorf("decode saveItems body: %v", err)
-					}
-					saveSession = payload.SessionID
-					for _, item := range payload.Items {
-						savedIDs = append(savedIDs, item.ID)
-						savedTitles = append(savedTitles, item.Title)
-					}
-					w.WriteHeader(http.StatusCreated)
-				case "/connector/updateSession":
-					updateSessions++
-					var payload struct {
-						SessionID string `json:"sessionID"`
-						Target    string `json:"target"`
-					}
-					if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
-						t.Errorf("decode updateSession body: %v", err)
-					}
-					filedSession = payload.SessionID
-					gotTarget = payload.Target
-					http.Error(w, "simulated target filing failure", http.StatusInternalServerError)
-				case "/api/users/0/items":
-					// refreshItemsFromLocalAPI's incremental store sync.
-					refreshMethods = append(refreshMethods, r.Method)
-					w.Header().Set("Last-Modified-Version", "1")
-					_ = json.NewEncoder(w).Encode([]any{})
-				case "/api/users/0/items/top":
-					// confirmConnectorCreate's per-item key recovery. Its sorted,
-					// bounded shape is what keeps recovery from matching a stale
-					// same-title item, so record the exact request it sends.
-					recoveryRequests = append(recoveryRequests, r.Method+" "+r.URL.Path+"?"+r.URL.Query().Encode())
-					rows := []any{}
-					if tc.surfaced {
-						added := time.Now().UTC().Format(time.RFC3339)
-						for _, item := range created {
-							rows = append(rows, map[string]any{
-								"key": item.key, "title": item.title,
-								"itemType": "journalArticle", "dateAdded": added,
-							})
-						}
-					}
-					_ = json.NewEncoder(w).Encode(rows)
-				default:
-					http.NotFound(w, r)
-				}
-			}))
-			t.Cleanup(srv.Close)
-			redirectConnectorDialsToFixture(t, srv)
+			isolateItemsCreateConnectorEnv(t)
+			mutationJournalRecorder = recordMutationJournal
+			t.Cleanup(func() { mutationJournalRecorder = nil })
+			fixture := newItemsCreateConnectorFixture(t, tc.surfaced, http.StatusInternalServerError)
 
 			flags := &rootFlags{
 				asJSON: true, yes: true, via: "connector", connectorTarget: target,
 				timeout: 5 * time.Second, maxChanges: -1,
 				configPath: testConfigFile(t, "http://127.0.0.1:23119/api/users/0"),
 			}
-			cmd := newItemsCreateCmd(flags)
-			var out bytes.Buffer
-			cmd.SetOut(&out)
-			cmd.SetErr(io.Discard)
-			cmd.SilenceErrors, cmd.SilenceUsage = true, true
-			cmd.SetArgs([]string{"--items", fmt.Sprintf(
+			stdout, err := runItemsCreate(t, flags, "--items", fmt.Sprintf(
 				`[{"itemType":"journalArticle","title":%q},{"itemType":"journalArticle","title":%q}]`,
-				created[0].title, created[1].title)})
-			err := cmd.Execute()
+				created[0].title, created[1].title))
 
 			if err == nil {
-				t.Fatalf("items create succeeded; want a filing failure. stdout=%s", out.String())
+				t.Fatalf("items create succeeded; want a filing failure. stdout=%s", stdout)
 			}
 			for _, want := range []string{"created 2 item(s) via connector", tc.wantErr} {
 				if !strings.Contains(err.Error(), want) {
@@ -607,120 +669,423 @@ func TestItemsCreateConnectorBatchFilingFailureReportsRecoverableKeys(t *testing
 				t.Fatalf("error = %q, must not contain %q for this recovery outcome", err, tc.denyErr)
 			}
 
-			dec := json.NewDecoder(&out)
-			var got map[string]any
-			if decErr := dec.Decode(&got); decErr != nil {
-				t.Fatalf("stdout is not one JSON object: %v; stdout=%q", decErr, out.String())
+			var env mutation.Envelope
+			if decErr := json.Unmarshal([]byte(stdout), &env); decErr != nil {
+				t.Fatalf("stdout is not a mutation envelope: %v; stdout=%q", decErr, stdout)
 			}
-			var trailing any
-			if decErr := dec.Decode(&trailing); decErr != io.EOF {
-				t.Fatalf("stdout carries a second JSON value (%+v, err=%v), want exactly one object", trailing, decErr)
+			decodeSingleJSONObject(t, stdout)
+			if env.Result == nil || env.Result.Summary.Applied != 2 || env.Result.Summary.Failed != 0 {
+				t.Fatalf("result = %+v, want 2 applied and 0 failed -- SaveItems committed", env.Result)
 			}
-			if got["filing_failed"] != true {
-				t.Fatalf("filing_failed = %v, want true", got["filing_failed"])
-			}
-			if got["status"] != "created" {
-				t.Fatalf("status = %v, want created (SaveItems committed)", got["status"])
-			}
-			if got["count"] != float64(2) {
-				t.Fatalf("count = %v, want 2", got["count"])
-			}
-			if got["via"] != "connector" {
-				t.Fatalf("via = %v, want connector", got["via"])
-			}
-			if got["target"] != target {
-				t.Fatalf("target = %v, want %q", got["target"], target)
-			}
-			session, _ := got["session"].(string)
-			if session == "" {
-				t.Fatalf("session = %v, want the connector save session that holds the committed items", got["session"])
-			}
-			if !strings.Contains(err.Error(), session) {
-				t.Fatalf("error = %q, want it to name session %q so the JSON and the error correlate", err, session)
-			}
-			filingError, _ := got["filing_error"].(string)
-			if !strings.Contains(filingError, "connector updateSession: HTTP 500") {
-				t.Fatalf("filing_error = %q, want the updateSession failure", got["filing_error"])
-			}
-			message, _ := got["message"].(string)
-			if !strings.Contains(message, "retry filing only") {
-				t.Fatalf("message = %q, want retry-filing guidance", got["message"])
-			}
-			// A nil recovered slice marshals to JSON null (items_create.go:169),
-			// so "keys" must be PRESENT and null. A payload that omits the field
-			// entirely is a different, undocumented shape.
-			keys, present := got["keys"]
-			if !present {
-				t.Fatalf("keys field absent from %v, want it present on every filing-failure payload", got)
-			}
-			if tc.wantKeys == nil {
-				if keys != nil {
-					t.Fatalf("keys = %v, want null when no committed item has surfaced yet", keys)
+			for i, item := range env.Result.Items {
+				if item.Status != "applied" {
+					t.Fatalf("item %d status = %q, want applied", i, item.Status)
 				}
-			} else if gotKeys, ok := keys.([]any); !ok || fmt.Sprint(gotKeys) != fmt.Sprint(tc.wantKeys) {
-				t.Fatalf("keys = %v, want %v", keys, tc.wantKeys)
+				if item.Key != tc.wantKeys[i] {
+					t.Fatalf("item %d key = %q, want %q", i, item.Key, tc.wantKeys[i])
+				}
+				reason, ok := item.Reason.(map[string]any)
+				if !ok {
+					t.Fatalf("item %d reason = %+v, want an object", i, item.Reason)
+				}
+				if reason["via"] != "connector" || reason["filing_failed"] != true || reason["target"] != target {
+					t.Fatalf("item %d reason = %+v, want the connector filing-failure detail", i, reason)
+				}
+				if reason["session"] != fixture.saveSession {
+					t.Fatalf("item %d session = %v, want the session the batch was saved into (%q)", i, reason["session"], fixture.saveSession)
+				}
+				if message, _ := reason["message"].(string); !strings.Contains(message, "retry filing only") {
+					t.Fatalf("item %d message = %v, want retry-filing guidance", i, reason["message"])
+				}
+				if filingError, _ := reason["filing_error"].(string); !strings.Contains(filingError, "connector updateSession: HTTP 500") {
+					t.Fatalf("item %d filing_error = %v, want the updateSession failure", i, reason["filing_error"])
+				}
 			}
-			for _, key := range tc.wantKeys {
-				if !strings.Contains(err.Error(), key.(string)) {
-					t.Fatalf("error = %q, want it to name recovered key %v", err, key)
+			if !strings.Contains(err.Error(), fixture.saveSession) {
+				t.Fatalf("error = %q, want it to name session %q so the envelope and the error correlate", err, fixture.saveSession)
+			}
+
+			// The committed batch must be journaled. Before this change the
+			// connector route ran outside runMutation, so a filing failure left
+			// no record at all and `journal undo` had nothing to reverse.
+			entries, listErr := mutation.ListEntries(helpersTestJournalDir(t))
+			if listErr != nil {
+				t.Fatalf("list journal entries: %v", listErr)
+			}
+			if len(entries) != 1 {
+				t.Fatalf("journal entries = %d, want 1 recorded run for a committed connector batch", len(entries))
+			}
+			if entries[0].Summary.Applied != 2 {
+				t.Fatalf("journaled summary = %+v, want 2 applied", entries[0].Summary)
+			}
+			for i, op := range entries[0].Ops {
+				if op.Key != tc.wantKeys[i] {
+					t.Fatalf("journaled op %d key = %q, want %q", i, op.Key, tc.wantKeys[i])
 				}
 			}
 
-			if saveItems != 1 {
-				t.Fatalf("saveItems requests = %d, want exactly 1 -- a filing failure must never re-create the batch", saveItems)
+			if fixture.saveItems != 1 {
+				t.Fatalf("saveItems requests = %d, want exactly 1 -- a filing failure must never re-create the batch", fixture.saveItems)
 			}
-			if updateSessions != 1 {
-				t.Fatalf("updateSession requests = %d, want exactly 1", updateSessions)
+			if fixture.updateSessions != 1 {
+				t.Fatalf("updateSession requests = %d, want exactly 1", fixture.updateSessions)
 			}
-			if gotTarget != target {
-				t.Fatalf("updateSession target = %q, want %q", gotTarget, target)
+			if fixture.filedTarget != target {
+				t.Fatalf("updateSession target = %q, want %q", fixture.filedTarget, target)
 			}
-			if len(savedIDs) != 2 {
-				t.Fatalf("saveItems connector ids = %v, want exactly two ids in one call", savedIDs)
+			if len(fixture.savedIDs) != 2 {
+				t.Fatalf("saveItems connector ids = %v, want exactly two ids in one call", fixture.savedIDs)
 			}
-			if savedIDs[0] == "" || savedIDs[1] == "" {
-				t.Fatalf("saveItems connector ids = %v, want every item to carry a non-empty connector id", savedIDs)
+			if fixture.savedIDs[0] == "" || fixture.savedIDs[1] == "" {
+				t.Fatalf("saveItems connector ids = %v, want every item to carry a non-empty connector id", fixture.savedIDs)
 			}
-			if savedIDs[0] == savedIDs[1] {
-				t.Fatalf("saveItems connector ids = %v, want two distinct ids", savedIDs)
+			if fixture.savedIDs[0] == fixture.savedIDs[1] {
+				t.Fatalf("saveItems connector ids = %v, want two distinct ids", fixture.savedIDs)
 			}
-			if fmt.Sprint(savedTitles) != fmt.Sprint([]string{created[0].title, created[1].title}) {
-				t.Fatalf("saveItems titles = %v, want both items in one call", savedTitles)
+			if fmt.Sprint(fixture.savedTitles) != fmt.Sprint([]string{created[0].title, created[1].title}) {
+				t.Fatalf("saveItems titles = %v, want both items in one call", fixture.savedTitles)
 			}
-
 			// The filing must run against the session the batch was saved into:
 			// filing another session files nothing from the committed batch, yet
 			// still fails exactly like this fixture's forced 500.
-			if saveSession == "" || filedSession == "" {
-				t.Fatalf("saveItems sessionID = %q, updateSession sessionID = %q, want both non-empty", saveSession, filedSession)
-			}
-			if saveSession != filedSession {
-				t.Fatalf("updateSession sessionID = %q, want the saveItems session %q", filedSession, saveSession)
-			}
-			if saveSession != session {
-				t.Fatalf("reported session = %q, want the session the batch was saved into (%q)", session, saveSession)
-			}
-			// The mirror refresh is best-effort, so require at least one GET
-			// rather than an exact count: it must have run, but its page count
-			// belongs to sync, not to this contract.
-			if len(refreshMethods) == 0 {
-				t.Fatal("no request to /api/users/0/items; a committed batch must refresh the local mirror even when filing fails")
-			}
-			for _, method := range refreshMethods {
-				if method != http.MethodGet {
-					t.Fatalf("store refresh method = %q, want GET", method)
-				}
+			if fixture.saveSession == "" || fixture.saveSession != fixture.filedSession {
+				t.Fatalf("updateSession sessionID = %q, want the saveItems session %q", fixture.filedSession, fixture.saveSession)
 			}
 			// Key recovery is one sorted, bounded lookup per committed item; the
 			// recovery window is collapsed to zero above, so it cannot re-poll.
 			wantRecovery := fmt.Sprintf("GET /api/users/0/items/top?direction=desc&limit=%d&sort=dateAdded", recentItemLookupLimit)
-			if len(recoveryRequests) != len(created) {
-				t.Fatalf("key-recovery requests = %v, want one per committed item (%d)", recoveryRequests, len(created))
+			if len(fixture.recoveryReqs) != len(created) {
+				t.Fatalf("key-recovery requests = %v, want one per committed item (%d)", fixture.recoveryReqs, len(created))
 			}
-			for _, req := range recoveryRequests {
+			for _, req := range fixture.recoveryReqs {
 				if req != wantRecovery {
 					t.Fatalf("key-recovery request = %q, want %q -- an unsorted or unbounded lookup can match a stale same-title item", req, wantRecovery)
 				}
+			}
+			// The whole-resource resync is the fallback for a create whose key
+			// never resolved; write-through covers the rest without a network
+			// call, so it must not run when every key came back.
+			wantRefresh := 0
+			if tc.wantKeys[0] == "" {
+				wantRefresh = 1
+			}
+			if len(fixture.refreshMethods) < wantRefresh {
+				t.Fatalf("store refreshes = %v, want at least %d", fixture.refreshMethods, wantRefresh)
+			}
+			if wantRefresh == 0 && len(fixture.refreshMethods) != 0 {
+				t.Fatalf("store refreshes = %v, want none: write-through already mirrored every created item", fixture.refreshMethods)
+			}
+		})
+	}
+}
+
+// jsonShape renders a decoded JSON value's key structure and value types,
+// discarding the values. Two envelopes with the same shape can be parsed by one
+// piece of agent code; two that differ force the caller to branch on the route,
+// which is the defect this guards.
+//
+// A heterogeneous array collapses to the union of its element shapes joined by
+// "|", so a field that is sometimes a string and sometimes an array is reported
+// as the union it is rather than silently matching whichever element came first.
+func jsonShape(value any) string {
+	switch typed := value.(type) {
+	case map[string]any:
+		fields := make([]string, 0, len(typed))
+		for field := range typed {
+			fields = append(fields, field+":"+jsonShape(typed[field]))
+		}
+		sort.Strings(fields)
+		return "{" + strings.Join(fields, ",") + "}"
+	case []any:
+		seen := map[string]bool{}
+		shapes := make([]string, 0, len(typed))
+		for _, element := range typed {
+			shape := jsonShape(element)
+			if !seen[shape] {
+				seen[shape] = true
+				shapes = append(shapes, shape)
+			}
+		}
+		sort.Strings(shapes)
+		return "[" + strings.Join(shapes, "|") + "]"
+	case string:
+		return "string"
+	case float64:
+		return "number"
+	case bool:
+		return "bool"
+	case nil:
+		return "null"
+	default:
+		return fmt.Sprintf("%T", value)
+	}
+}
+
+// TestItemsCreateEnvelopeShapeIsIdenticalAcrossRoutes is the route-parity
+// contract: one command, one output shape. The connector route used to print
+// {via,status,count,keys,session,key} while the Web route printed
+// {action,resource,path,status,success,data}, so an agent could not parse
+// `items create` without first working out which plane had accepted the write —
+// something the output itself did not reliably say.
+func TestItemsCreateEnvelopeShapeIsIdenticalAcrossRoutes(t *testing.T) {
+	const items = `[{"itemType":"journalArticle","title":"Route Parity One"},{"itemType":"journalArticle","title":"Route Parity Two"}]`
+	shapes := map[string]string{}
+	decoded := map[string]map[string]any{}
+
+	t.Run("web", func(t *testing.T) {
+		t.Setenv("HOME", t.TempDir())
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"success":{"0":"WEBKEY01","1":"WEBKEY02"},"successful":{},"unchanged":{},"failed":{}}`))
+		}))
+		t.Cleanup(srv.Close)
+		t.Setenv("ZOTERO_BASE_URL", srv.URL+"/users/0")
+
+		flags := &rootFlags{asJSON: true, yes: true, via: "web", maxChanges: -1}
+		stdout, err := runItemsCreate(t, flags, "--items", items)
+		if err != nil {
+			t.Fatalf("items create via web: %v; stdout=%s", err, stdout)
+		}
+		decoded["web"] = decodeSingleJSONObject(t, stdout)
+		shapes["web"] = jsonShape(decoded["web"])
+	})
+
+	t.Run("connector", func(t *testing.T) {
+		isolateItemsCreateConnectorEnv(t)
+		newItemsCreateConnectorFixture(t, []itemsCreateFixtureItem{
+			{key: "CONKEY01", title: "Route Parity One"},
+			{key: "CONKEY02", title: "Route Parity Two"},
+		}, 0)
+
+		flags := &rootFlags{
+			asJSON: true, yes: true, via: "connector", maxChanges: -1,
+			timeout: 5 * time.Second, configPath: testConfigFile(t, "http://127.0.0.1:23119/api/users/0"),
+		}
+		stdout, err := runItemsCreate(t, flags, "--items", items)
+		if err != nil {
+			t.Fatalf("items create via connector: %v; stdout=%s", err, stdout)
+		}
+		decoded["connector"] = decodeSingleJSONObject(t, stdout)
+		shapes["connector"] = jsonShape(decoded["connector"])
+	})
+
+	if len(shapes) != 2 {
+		t.Fatalf("only %d route(s) produced an envelope: %v", len(shapes), shapes)
+	}
+	if shapes["web"] != shapes["connector"] {
+		t.Fatalf("envelope shapes differ.\n  web:       %s\n  connector: %s", shapes["web"], shapes["connector"])
+	}
+
+	// Field by field on the parts an agent reads, so a future change that keeps
+	// the shape identical while moving the meaning still fails.
+	for _, route := range []string{"web", "connector"} {
+		env := decoded[route]
+		if env["operation"] != "items.create" || env["mode"] != "apply" || env["ok"] != true {
+			t.Fatalf("%s envelope = %+v, want operation=items.create mode=apply ok=true", route, env)
+		}
+		result, ok := env["result"].(map[string]any)
+		if !ok {
+			t.Fatalf("%s envelope has no result object: %+v", route, env)
+		}
+		resultItems, ok := result["items"].([]any)
+		if !ok || len(resultItems) != 2 {
+			t.Fatalf("%s result items = %+v, want 2", route, result["items"])
+		}
+		for i, raw := range resultItems {
+			item, ok := raw.(map[string]any)
+			if !ok {
+				t.Fatalf("%s result item %d = %+v, want an object", route, i, raw)
+			}
+			if item["status"] != "applied" {
+				t.Fatalf("%s result item %d status = %v, want applied", route, i, item["status"])
+			}
+			// The created key is the one field every caller needs, and it must
+			// be a plain string on both routes. The connector route used to
+			// report it as string|array|null depending on how many keys it had
+			// recovered -- a union no agent can rely on.
+			key, ok := item["key"].(string)
+			if !ok || key == "" {
+				t.Fatalf("%s result item %d key = %#v, want a non-empty string", route, i, item["key"])
+			}
+			reason, ok := item["reason"].(map[string]any)
+			if !ok {
+				t.Fatalf("%s result item %d reason = %+v, want an object", route, i, item["reason"])
+			}
+			if _, ok := reason["key"].(string); !ok {
+				t.Fatalf("%s result item %d reason key = %#v, want a string", route, i, reason["key"])
+			}
+			if _, ok := reason["via"].(string); !ok {
+				t.Fatalf("%s result item %d reason via = %#v, want a string", route, i, reason["via"])
+			}
+		}
+	}
+	if via := decoded["web"]["result"].(map[string]any)["items"].([]any)[0].(map[string]any)["reason"].(map[string]any)["via"]; via != "web" {
+		t.Fatalf("web route reported via = %v, want web", via)
+	}
+	if via := decoded["connector"]["result"].(map[string]any)["items"].([]any)[0].(map[string]any)["reason"].(map[string]any)["via"]; via != "connector" {
+		t.Fatalf("connector route reported via = %v, want connector", via)
+	}
+}
+
+// TestItemsCreateConnectorRouteJournalsWithoutAPIKey holds the connector route's
+// reason to exist: it writes to the desktop over localhost, so it must keep
+// working with no Zotero Web API key configured (doctor reports Web writes as
+// unavailable in exactly this state). Routing it through the mutation engine
+// must not introduce a key requirement, and the run must now be journaled --
+// before this change a connector batch left no journal entry and no undo handle.
+func TestItemsCreateConnectorRouteJournalsWithoutAPIKey(t *testing.T) {
+	isolateItemsCreateConnectorEnv(t)
+	mutationJournalRecorder = recordMutationJournal
+	t.Cleanup(func() { mutationJournalRecorder = nil })
+	fixture := newItemsCreateConnectorFixture(t, []itemsCreateFixtureItem{
+		{key: "NOKEYIT1", title: "Keyless One"},
+		{key: "NOKEYIT2", title: "Keyless Two"},
+	}, 0)
+
+	configPath := testConfigFile(t, "http://127.0.0.1:23119/api/users/0")
+	cfg, err := config.Load(configPath)
+	if err != nil {
+		t.Fatalf("load test config: %v", err)
+	}
+	if cfg.AuthHeader() != "" {
+		t.Fatalf("test config carries an API key (%q); this test must run with none", cfg.AuthSource)
+	}
+
+	flags := &rootFlags{
+		asJSON: true, yes: true, via: "connector", maxChanges: -1,
+		timeout: 5 * time.Second, configPath: configPath,
+	}
+	stdout, err := runItemsCreate(t, flags,
+		"--items", `[{"itemType":"journalArticle","title":"Keyless One"},{"itemType":"journalArticle","title":"Keyless Two"}]`)
+	if err != nil {
+		t.Fatalf("items create via connector without an API key: %v; stdout=%s", err, stdout)
+	}
+	if fixture.saveItems != 1 {
+		t.Fatalf("saveItems requests = %d, want exactly 1", fixture.saveItems)
+	}
+	if fixture.updateSessions != 0 {
+		t.Fatalf("updateSession requests = %d, want 0 when no --connector-target is set", fixture.updateSessions)
+	}
+
+	var env mutation.Envelope
+	if decErr := json.Unmarshal([]byte(stdout), &env); decErr != nil {
+		t.Fatalf("stdout is not a mutation envelope: %v; stdout=%q", decErr, stdout)
+	}
+	if env.Result == nil || env.Result.Summary.Applied != 2 {
+		t.Fatalf("result = %+v, want 2 applied", env.Result)
+	}
+
+	entries, listErr := mutation.ListEntries(helpersTestJournalDir(t))
+	if listErr != nil {
+		t.Fatalf("list journal entries: %v", listErr)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("journal entries = %d, want 1 -- a connector create must be undoable", len(entries))
+	}
+	gotKeys := []string{}
+	for _, op := range entries[0].Ops {
+		gotKeys = append(gotKeys, op.Key)
+	}
+	if fmt.Sprint(gotKeys) != fmt.Sprint([]string{"NOKEYIT1", "NOKEYIT2"}) {
+		t.Fatalf("journaled keys = %v, want the two recovered Zotero keys", gotKeys)
+	}
+}
+
+// TestItemsCreateMirrorsCreatedItemsForLocalReads is the read-your-writes
+// contract for creates on both routes: dev/roadmap.md recorded "creates ...
+// reconcile on the next sync" as a Phase 8 limitation, so an item created a
+// second ago was invisible to `--data-source local` until a sync ran.
+func TestItemsCreateMirrorsCreatedItemsForLocalReads(t *testing.T) {
+	for _, tc := range []struct {
+		route string
+		key   string
+	}{
+		{route: "web", key: "WEBMIRR1"},
+		{route: "connector", key: "CONMIRR1"},
+	} {
+		t.Run(tc.route, func(t *testing.T) {
+			const title = "Mirrored On Create"
+			var flags *rootFlags
+			if tc.route == "web" {
+				t.Setenv("HOME", t.TempDir())
+				srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					w.Header().Set("Content-Type", "application/json")
+					fmt.Fprintf(w, `{"success":{"0":%q},"successful":{},"unchanged":{},"failed":{}}`, tc.key)
+				}))
+				t.Cleanup(srv.Close)
+				t.Setenv("ZOTERO_BASE_URL", srv.URL+"/users/0")
+				flags = &rootFlags{asJSON: true, yes: true, via: "web", maxChanges: -1}
+			} else {
+				isolateItemsCreateConnectorEnv(t)
+				newItemsCreateConnectorFixture(t, []itemsCreateFixtureItem{{key: tc.key, title: title}}, 0)
+				flags = &rootFlags{
+					asJSON: true, yes: true, via: "connector", maxChanges: -1,
+					timeout: 5 * time.Second, configPath: testConfigFile(t, "http://127.0.0.1:23119/api/users/0"),
+				}
+			}
+			// The mirror only exists once something has synced; seed an
+			// unrelated row so openExistingStoreForWrite finds a database.
+			seedWriteThroughItem(t, "OTHER001", `{"key":"OTHER001","version":1,"data":{"key":"OTHER001","itemType":"book","title":"Already Synced"}}`)
+			mirrorWriteThrough = applyMirrorWriteThrough
+			t.Cleanup(func() { mirrorWriteThrough = nil })
+
+			stdout, err := runItemsCreate(t, flags, "--items",
+				fmt.Sprintf(`[{"itemType":"journalArticle","title":%q}]`, title))
+			if err != nil {
+				t.Fatalf("items create via %s: %v; stdout=%s", tc.route, err, stdout)
+			}
+
+			db, openErr := store.OpenWithContext(context.Background(), helpersTestDefaultDBPath(t, "zotio"))
+			if openErr != nil {
+				t.Fatalf("reopen store: %v", openErr)
+			}
+			defer db.Close()
+			rows, queryErr := (localQueryStore{db}).QueryRaw(
+				"SELECT json_extract(data,'$.data.title') AS title, json_extract(data,'$.data.itemType') AS item_type, json_extract(data,'$.version') AS version FROM resources WHERE resource_type='items' AND id=?", tc.key)
+			if queryErr != nil || len(rows) != 1 {
+				t.Fatalf("created item %s is not in the mirror without a sync: rows=%v err=%v", tc.key, rows, queryErr)
+			}
+			if got := sqlStringValue(rows[0]["title"]); got != title {
+				t.Fatalf("mirrored title = %q, want %q", got, title)
+			}
+			if got := sqlStringValue(rows[0]["item_type"]); got != "journalArticle" {
+				t.Fatalf("mirrored itemType = %q, want journalArticle", got)
+			}
+			// No version: Zotero assigns one this process never sees, and the
+			// store's version-monotonic upsert guard only lets the authoritative
+			// synced row replace this placeholder while the placeholder has none.
+			if rows[0]["version"] != nil {
+				t.Fatalf("mirrored row carries version %v, want none so the next sync's row always wins", rows[0]["version"])
+			}
+			// The connector correlation id is a save-session handle, not a
+			// Zotero field; it must never reach the mirror.
+			idRows, idErr := (localQueryStore{db}).QueryRaw(
+				"SELECT json_extract(data,'$.data.id') AS connector_id FROM resources WHERE resource_type='items' AND id=?", tc.key)
+			if idErr != nil {
+				t.Fatalf("read back connector id: %v", idErr)
+			}
+			if idRows[0]["connector_id"] != nil {
+				t.Fatalf("mirrored row carries the connector correlation id %v", idRows[0]["connector_id"])
+			}
+
+			// The acceptance is a local READ, not a row: drive the same
+			// resolveLocal dispatch `--data-source local` uses.
+			listed, _, readErr := resolveLocal(context.Background(), "items", true, "/items", nil, "test")
+			if readErr != nil {
+				t.Fatalf("local items read: %v", readErr)
+			}
+			var localItems []map[string]any
+			if unmarshalErr := json.Unmarshal(listed, &localItems); unmarshalErr != nil {
+				t.Fatalf("local items read is not a list: %v; %s", unmarshalErr, listed)
+			}
+			found := false
+			for _, item := range localItems {
+				if item["key"] == tc.key {
+					found = true
+				}
+			}
+			if !found {
+				t.Fatalf("`--data-source local` does not see %s without a sync; got %s", tc.key, listed)
 			}
 		})
 	}
