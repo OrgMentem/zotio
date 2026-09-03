@@ -378,11 +378,16 @@ zotio collections delete COLLECTIONKEY
 
 ### `zotio collections export`
 
-Export a collection (and subcollections) as BibTeX, RIS, or CSL-JSON
+Export a collection (and subcollections) as BibTeX, RIS, CSL-JSON, or item JSON
 
 Recursively walks a collection and all its subcollections, then emits a
 single combined export in the requested format. Use --flat to export only
 the top-level collection without recursing into subcollections.
+
+bibtex, ris, and csljson are rendered by Zotero's export translators, so they
+need Zotero desktop running. --format json emits the structured item JSON the
+synced mirror already holds, so it also works with Zotero closed
+(--data-source local, or auto once the local API stops answering).
 
 ```
 zotio collections export <collectionKey> [flags]
@@ -397,6 +402,9 @@ Examples:
   # Export as RIS to a file
   zotio collections export ABCD1234 --format ris --output refs.ris
 
+  # Export the whole subtree's item JSON from the synced mirror, Zotero closed
+  zotio collections export ABCD1234 --format json --data-source local
+
   # Export without descending into subcollections
   zotio collections export ABCD1234 --flat
 ```
@@ -404,7 +412,7 @@ Examples:
 | Flag | Type | Default | Description |
 | --- | --- | --- | --- |
 | `--flat` | `bool` | `false` | Export only the top-level collection, skip subcollections |
-| `--format` | `string` | `bibtex` | Export format: bibtex, ris, csljson |
+| `--format` | `string` | `bibtex` | Export format: bibtex, ris, csljson, json (json is the offline-capable format) |
 | `--limit` | `int` | `100` | Items fetched per API request (max 100); the export always walks every page |
 | `--output` | `string` |  | Write output to file instead of stdout |
 
@@ -611,7 +619,7 @@ zotio creators audit
 | --- | --- | --- | --- |
 | `--include-ambiguous` | `bool` | `false` | Include unsafe same-surname groups as review-only evidence; no rename commands are emitted |
 | `--orcid` | `bool` | `false` | Fetch CrossRef author ORCIDs into the local-only sidecar table; never writes ORCIDs to Zotero |
-| `--scope` | `string` | `library` | Item scope: library, collection:<key>, tag:<tag>, item:<key>, or query:<text> |
+| `--scope` | `string` | `library` | Item cohort: library \| collection:KEY \| tag:NAME \| item:KEY \| query:TEXT \| saved-search:KEY |
 
 #### `zotio creators audit fix`
 
@@ -646,7 +654,7 @@ zotio creators audit fix
 | Flag | Type | Default | Description |
 | --- | --- | --- | --- |
 | `--map` | `stringArray` | `[]` | Tier-2 alias mapping alias=canonical; repeatable |
-| `--scope` | `string` | `library` | Item scope: library, collection:<key>, tag:<tag>, item:<key>, or query:<text> |
+| `--scope` | `string` | `library` | Item cohort: library \| collection:KEY \| tag:NAME \| item:KEY \| query:TEXT \| saved-search:KEY |
 
 ### `zotio creators rename`
 
@@ -678,7 +686,7 @@ zotio creators rename --from "Adam J Rock" --to "Adam J. Rock"
 | Flag | Type | Default | Description |
 | --- | --- | --- | --- |
 | `--from` | `string` |  | Old creator display name |
-| `--scope` | `string` | `library` | Item scope: library, collection:<key>, tag:<tag>, item:<key>, or query:<text> |
+| `--scope` | `string` | `library` | Item cohort: library \| collection:KEY \| tag:NAME \| item:KEY \| query:TEXT \| saved-search:KEY |
 | `--to` | `string` |  | New creator display name |
 
 ## `zotio demo`
@@ -995,7 +1003,7 @@ zotio import discover [flags]
 | `--limit` | `int` | `25` | Maximum manifest entries to emit |
 | `--min-count` | `int` | `2` | Minimum number of source items citing a DOI |
 | `--out` | `string` |  | Path to write the reviewable import manifest |
-| `--scope` | `string` |  | Scope expression to discover from (required; e.g. collection:<key>, tag:<tag>, item:<key>, query:<text>, library) |
+| `--scope` | `string` |  | Item cohort: library \| collection:KEY \| tag:NAME \| item:KEY \| query:TEXT \| saved-search:KEY (required) |
 
 ### `zotio import doi`
 
@@ -1300,6 +1308,7 @@ zotio items audit [flags]
 | `--missing-doi` | `bool` | `false` | List journal articles, conference papers, and preprints with no DOI |
 | `--missing-pdf` | `bool` | `false` | List items that should have an attached PDF but do not |
 | `--missing-tags` | `bool` | `false` | List items with no tags |
+| `--scope` | `string` |  | Item cohort: library \| collection:KEY \| tag:NAME \| item:KEY \| query:TEXT \| saved-search:KEY (default: the whole library) |
 | `--verify-files` | `bool` | `false` | Verify each PDF attachment's file exists on disk (one local-API lookup per attachment) |
 
 ### `zotio items authors`
@@ -1369,7 +1378,7 @@ zotio items bibliography --scope collection:ABCD1234 --style apa
 | Flag | Type | Default | Description |
 | --- | --- | --- | --- |
 | `--format` | `string` | `bib` | Output format: bib, csljson, bibtex, biblatex, or ris |
-| `--scope` | `string` | `library` | Shared scope expression (library, collection:KEY, tag:NAME, item:KEY, query:TEXT) |
+| `--scope` | `string` | `library` | Item cohort: library \| collection:KEY \| tag:NAME \| item:KEY \| query:TEXT \| saved-search:KEY (saved-search is not renderable here: export goes through the Web API) |
 | `--style` | `string` |  | CSL style ID for --format bib (default uses Zotero's default bibliography style) |
 
 ### `zotio items children`
@@ -1569,9 +1578,11 @@ retro-attachment is handled by 'zotio attachments add <item-key> <file>', which
 uploads through the Zotero Web API file-upload protocol.
 
 By default this previews the proposed changes (a patch plan) and never downloads
-PDF bytes. Pass --collection to scope the work queue to items in a single
-collection, or --keys/--keys-from to scope to exact item keys. Pass --yes to
-apply via the Zotero API; --dry-run always previews.
+PDF bytes. Pass --scope to select the cohort through the shared grammar
+(collection:KEY, tag:NAME, item:KEY, query:TEXT, saved-search:KEY); --collection
+is the older spelling of --scope collection:KEY and still works. Pass
+--keys/--keys-from to scope to exact item keys. Pass --yes to apply via the
+Zotero API; --dry-run always previews.
 Applied field changes record provenance in the item's Extra field.
 
 ```
@@ -1593,6 +1604,7 @@ zotio items enrich [flags]
 | `--no-openalex` | `bool` | `false` | Disable the OpenAlex fallback for --missing-doi/--missing-abstract |
 | `--no-semantic-scholar` | `bool` | `false` | Disable the Semantic Scholar fallback for --missing-doi/--missing-abstract |
 | `--pdf-dir` | `string` |  | Directory for linked-file PDF downloads; responses must be PDF/octet-stream/unspecified Content-Type plus %PDF- magic |
+| `--scope` | `string` |  | Item cohort: library \| collection:KEY \| tag:NAME \| item:KEY \| query:TEXT \| saved-search:KEY (default: the whole library) |
 | `--validate` | `bool` | `false` | Read-only DOI discrepancy report against CrossRef and OpenCitations |
 
 ### `zotio items file`
@@ -1949,6 +1961,7 @@ Examples:
 zotio items summarize 9UXV5R7L
   zotio items summarize 9UXV5R7L --agent --max-chars 6000
   zotio items summarize --collection MAR7RFQN --no-fulltext
+  zotio items summarize --scope tag:to-read --agent
 ```
 
 | Flag | Type | Default | Description |
@@ -1957,6 +1970,7 @@ zotio items summarize 9UXV5R7L
 | `--max-annotations` | `int` | `40` | Max annotations included per item |
 | `--max-chars` | `int` | `8000` | Max characters of fulltext excerpt per item |
 | `--no-fulltext` | `bool` | `false` | Omit the fulltext excerpt (abstract + annotations only) |
+| `--scope` | `string` |  | Item cohort: library \| collection:KEY \| tag:NAME \| item:KEY \| query:TEXT \| saved-search:KEY (default: the whole library) |
 
 ### `zotio items tags`
 
@@ -2196,7 +2210,7 @@ zotio library health [flags]
 | `--limit` | `int` | `0` | Max findings listed per kind (0 = all); also caps the live attachment scan |
 | `--report` | `string` |  | Write the full JSON health report to this file in addition to stdout/badge output |
 | `--require-fresh` | `duration` | `0s` | Refuse (exit 12) when the local store is staler than this (e.g. 24h); 0 = disabled |
-| `--scope` | `string` |  | Limit to a cohort: collection:KEY \| tag:NAME \| item:KEY \| query:TEXT \| saved-search:KEY (default: whole library) |
+| `--scope` | `string` |  | Item cohort: library \| collection:KEY \| tag:NAME \| item:KEY \| query:TEXT \| saved-search:KEY (default: the whole library) |
 | `--verify-files` | `bool` | `false` | Run the live broken-attachment check (needs Zotero desktop running) |
 | `--write-baseline` | `string` |  | Write current health finding identities to this baseline JSON after checks |
 
@@ -2219,7 +2233,7 @@ zotio library prisma [flags]
 | Flag | Type | Default | Description |
 | --- | --- | --- | --- |
 | `--by` | `string` | `all` | Duplicate detector to run (doi, title, all) |
-| `--scope` | `string` |  | Limit to library, collection:<key>, tag:<name>, item:<key>, or query:<text> |
+| `--scope` | `string` |  | Item cohort: library \| collection:KEY \| tag:NAME \| item:KEY \| query:TEXT \| saved-search:KEY (default: the whole library) |
 
 ### `zotio library stats`
 
@@ -2648,6 +2662,13 @@ zotio searches materialize <searchKey> --to <collectionKey> [flags]
 
 Run a saved Zotero search when the API exposes results
 
+Executes a saved search and returns the matching items.
+
+Sync mirrors saved-search DEFINITIONS, never their result membership, so the
+result read runs against Zotero desktop's local API. With Zotero closed, or on
+a plane without /searches/{key}/items, the command refuses with a
+precondition_unmet envelope (exit 9) instead of an empty-looking answer.
+
 ```
 zotio searches run <searchKey>
 ```
@@ -2761,10 +2782,12 @@ Examples:
 ```bash
 zotio tags audit fix --yes
   zotio tags audit fix --prefer title --yes
+  zotio tags audit --json | zotio tags audit fix --keys-from - --yes
 ```
 
 | Flag | Type | Default | Description |
 | --- | --- | --- | --- |
+| `--keys-from` | `string` |  | Read item keys from a file or '-' for stdin (the `tags audit --json` finding envelope is accepted directly), then rename tags only on those items |
 | `--prefer` | `string` | `frequency` | Canonical spelling policy for duplicate groups: frequency, sentence, title, or lower. Must match the --prefer used for `tags audit` to apply the same targets shown there. |
 
 ### `zotio tags get`
@@ -3033,6 +3056,12 @@ Previews by default, showing create/update/unchanged without writing. Pass --yes
 to write; --dry-run always wins over --yes. Each note that would be created or
 updated counts as one change against --max-changes.
 
+--collection, --tag and --item-type combine (collection AND tag AND type).
+--scope selects one cohort through the shared grammar instead
+(collection:KEY, tag:NAME, item:KEY, query:TEXT, saved-search:KEY); the grammar
+has no conjunction, so --scope is refused alongside a filter that means a
+different cohort.
+
 ```
 zotio vault sync [--out <dir>] [flags]
 ```
@@ -3043,6 +3072,7 @@ Examples:
 zotio vault sync                 # uses [vault] root/notes_dir from config
   zotio vault sync --out ~/vault/refs --yes
   zotio vault sync --out ~/vault/refs --collection ABCD1234 --dry-run
+  zotio vault sync --out ~/vault/refs --scope query:transformer --dry-run
 ```
 
 | Flag | Type | Default | Description |
@@ -3052,6 +3082,7 @@ zotio vault sync                 # uses [vault] root/notes_dir from config
 | `--item-type` | `string` |  | Only sync items of this type |
 | `--limit` | `int` | `0` | Maximum items to sync (0 = all) |
 | `--out` | `string` |  | Vault directory (overrides [vault].root + notes_dir from config) |
+| `--scope` | `string` |  | Item cohort: library \| collection:KEY \| tag:NAME \| item:KEY \| query:TEXT \| saved-search:KEY (default: the whole library) |
 | `--tag` | `string` |  | Only sync items with this tag |
 
 ## `zotio version`

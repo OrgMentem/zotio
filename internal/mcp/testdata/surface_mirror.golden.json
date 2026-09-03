@@ -275,7 +275,7 @@
   },
   {
     "name": "collections_export",
-    "description": "Recursively walks a collection and all its subcollections, then emits a\nsingle combined export in the requested format. Use --flat to export only\nthe top-level collection without recursing into subcollections.",
+    "description": "Recursively walks a collection and all its subcollections, then emits a\nsingle combined export in the requested format. Use --flat to export only\nthe top-level collection without recursing into subcollections.\n\nbibtex, ris, and csljson are rendered by Zotero's export translators, so they\nneed Zotero desktop running. --format json emits the structured item JSON the\nsynced mirror already holds, so it also works with Zotero closed\n(--data-source local, or auto once the local API stops answering).",
     "inputSchema": {
       "properties": {
         "args": {
@@ -287,7 +287,7 @@
           "type": "boolean"
         },
         "format": {
-          "description": "Export format: bibtex, ris, csljson (default: bibtex)",
+          "description": "Export format: bibtex, ris, csljson, json (json is the offline-capable format) (default: bibtex)",
           "type": "string"
         },
         "limit": {
@@ -582,7 +582,7 @@
           "type": "boolean"
         },
         "scope": {
-          "description": "Item scope: library, collection:\u003ckey\u003e, tag:\u003ctag\u003e, item:\u003ckey\u003e, or query:\u003ctext\u003e (default: library)",
+          "description": "Item cohort: library | collection:KEY | tag:NAME | item:KEY | query:TEXT | saved-search:KEY (default: library)",
           "type": "string"
         }
       },
@@ -627,7 +627,7 @@
           "type": "number"
         },
         "scope": {
-          "description": "Item scope: library, collection:\u003ckey\u003e, tag:\u003ctag\u003e, item:\u003ckey\u003e, or query:\u003ctext\u003e (default: library)",
+          "description": "Item cohort: library | collection:KEY | tag:NAME | item:KEY | query:TEXT | saved-search:KEY (default: library)",
           "type": "string"
         },
         "yes": {
@@ -677,7 +677,7 @@
           "type": "number"
         },
         "scope": {
-          "description": "Item scope: library, collection:\u003ckey\u003e, tag:\u003ctag\u003e, item:\u003ckey\u003e, or query:\u003ctext\u003e (default: library)",
+          "description": "Item cohort: library | collection:KEY | tag:NAME | item:KEY | query:TEXT | saved-search:KEY (default: library)",
           "type": "string"
         },
         "to": {
@@ -1018,7 +1018,7 @@
           "type": "string"
         },
         "scope": {
-          "description": "Scope expression to discover from (required; e.g. collection:\u003ckey\u003e, tag:\u003ctag\u003e, item:\u003ckey\u003e, query:\u003ctext\u003e, library)",
+          "description": "Item cohort: library | collection:KEY | tag:NAME | item:KEY | query:TEXT | saved-search:KEY (required)",
           "type": "string"
         }
       },
@@ -1571,6 +1571,10 @@
           "description": "List items with no tags (default: false)",
           "type": "boolean"
         },
+        "scope": {
+          "description": "Item cohort: library | collection:KEY | tag:NAME | item:KEY | query:TEXT | saved-search:KEY (default: the whole library)",
+          "type": "string"
+        },
         "verify-files": {
           "description": "Verify each PDF attachment's file exists on disk (one local-API lookup per attachment) (default: false)",
           "type": "boolean"
@@ -1634,7 +1638,7 @@
           "type": "string"
         },
         "scope": {
-          "description": "Shared scope expression (library, collection:KEY, tag:NAME, item:KEY, query:TEXT) (default: library)",
+          "description": "Item cohort: library | collection:KEY | tag:NAME | item:KEY | query:TEXT | saved-search:KEY (saved-search is not renderable here: export goes through the Web API) (default: library)",
           "type": "string"
         },
         "style": {
@@ -1880,7 +1884,7 @@
   },
   {
     "name": "items_enrich",
-    "description": "Resolve missing metadata for locally synced items and apply it back to Zotero.\n\nWork queues come from the same checks as 'items audit':\n  --missing-doi       resolve a DOI by title from CrossRef, then OpenAlex/Semantic Scholar (exact title match)\n  --missing-abstract  fill the abstract from CrossRef, then OpenAlex/Semantic Scholar (requires the item's DOI)\n  --missing-pdf       attach an open-access PDF from Unpaywall (requires DOI)\n  --missing-citation  fill the core citation fields from CrossRef (requires DOI):\n                      creators, title, date and the venue field of the item's\n                      own type, plus volume/issue/pages when CrossRef carries\n                      them and the item's copy is blank. A blank volume is only\n                      a defect if the venue actually has one, so those fields\n                      are reported by --validate, not by 'library health'.\n\nPDF attachment modes:\n  linked-url   create a linked_url attachment (default; no download)\n  linked-file  download the PDF to --pdf-dir and create a linked_file child item; linked files do not sync to other devices\n\nDownloaded PDFs accept application/pdf, application/octet-stream, or an absent\nContent-Type, then must pass a %PDF- magic check. Stored (imported-file)\nretro-attachment is handled by 'zotio attachments add \u003citem-key\u003e \u003cfile\u003e', which\nuploads through the Zotero Web API file-upload protocol.\n\nBy default this previews the proposed changes (a patch plan) and never downloads\nPDF bytes. Pass --collection to scope the work queue to items in a single\ncollection, or --keys/--keys-from to scope to exact item keys. Pass --yes to\napply via the Zotero API; --dry-run always previews.\nApplied field changes record provenance in the item's Extra field.",
+    "description": "Resolve missing metadata for locally synced items and apply it back to Zotero.\n\nWork queues come from the same checks as 'items audit':\n  --missing-doi       resolve a DOI by title from CrossRef, then OpenAlex/Semantic Scholar (exact title match)\n  --missing-abstract  fill the abstract from CrossRef, then OpenAlex/Semantic Scholar (requires the item's DOI)\n  --missing-pdf       attach an open-access PDF from Unpaywall (requires DOI)\n  --missing-citation  fill the core citation fields from CrossRef (requires DOI):\n                      creators, title, date and the venue field of the item's\n                      own type, plus volume/issue/pages when CrossRef carries\n                      them and the item's copy is blank. A blank volume is only\n                      a defect if the venue actually has one, so those fields\n                      are reported by --validate, not by 'library health'.\n\nPDF attachment modes:\n  linked-url   create a linked_url attachment (default; no download)\n  linked-file  download the PDF to --pdf-dir and create a linked_file child item; linked files do not sync to other devices\n\nDownloaded PDFs accept application/pdf, application/octet-stream, or an absent\nContent-Type, then must pass a %PDF- magic check. Stored (imported-file)\nretro-attachment is handled by 'zotio attachments add \u003citem-key\u003e \u003cfile\u003e', which\nuploads through the Zotero Web API file-upload protocol.\n\nBy default this previews the proposed changes (a patch plan) and never downloads\nPDF bytes. Pass --scope to select the cohort through the shared grammar\n(collection:KEY, tag:NAME, item:KEY, query:TEXT, saved-search:KEY); --collection\nis the older spelling of --scope collection:KEY and still works. Pass\n--keys/--keys-from to scope to exact item keys. Pass --yes to apply via the\nZotero API; --dry-run always previews.\nApplied field changes record provenance in the item's Extra field.",
     "inputSchema": {
       "properties": {
         "allow-destructive": {
@@ -1957,6 +1961,10 @@
         },
         "pdf-dir": {
           "description": "Directory for linked-file PDF downloads; responses must be PDF/octet-stream/unspecified Content-Type plus %PDF- magic",
+          "type": "string"
+        },
+        "scope": {
+          "description": "Item cohort: library | collection:KEY | tag:NAME | item:KEY | query:TEXT | saved-search:KEY (default: the whole library)",
           "type": "string"
         },
         "validate": {
@@ -2555,6 +2563,10 @@
         "no-fulltext": {
           "description": "Omit the fulltext excerpt (abstract + annotations only) (default: false)",
           "type": "boolean"
+        },
+        "scope": {
+          "description": "Item cohort: library | collection:KEY | tag:NAME | item:KEY | query:TEXT | saved-search:KEY (default: the whole library)",
+          "type": "string"
         }
       },
       "required": [],
@@ -2973,7 +2985,7 @@
           "type": "string"
         },
         "scope": {
-          "description": "Limit to a cohort: collection:KEY | tag:NAME | item:KEY | query:TEXT | saved-search:KEY (default: whole library)",
+          "description": "Item cohort: library | collection:KEY | tag:NAME | item:KEY | query:TEXT | saved-search:KEY (default: the whole library)",
           "type": "string"
         },
         "verify-files": {
@@ -2999,7 +3011,7 @@
           "type": "string"
         },
         "scope": {
-          "description": "Limit to library, collection:\u003ckey\u003e, tag:\u003cname\u003e, item:\u003ckey\u003e, or query:\u003ctext\u003e",
+          "description": "Item cohort: library | collection:KEY | tag:NAME | item:KEY | query:TEXT | saved-search:KEY (default: the whole library)",
           "type": "string"
         }
       },
@@ -3378,7 +3390,7 @@
   },
   {
     "name": "searches_run",
-    "description": "Run a saved Zotero search when the API exposes results",
+    "description": "Executes a saved search and returns the matching items.\n\nSync mirrors saved-search DEFINITIONS, never their result membership, so the\nresult read runs against Zotero desktop's local API. With Zotero closed, or on\na plane without /searches/{key}/items, the command refuses with a\nprecondition_unmet envelope (exit 9) instead of an empty-looking answer.",
     "inputSchema": {
       "properties": {
         "args": {
@@ -3517,6 +3529,10 @@
         "dry-run": {
           "description": "Show request without sending (default: false)",
           "type": "boolean"
+        },
+        "keys-from": {
+          "description": "Read item keys from a file or '-' for stdin (the `tags audit --json` finding envelope is accepted directly), then rename tags only on those items",
+          "type": "string"
         },
         "max-changes": {
           "description": "Max write operations a single mutation may apply before refusing (-1 = default: 500, or 50 under --agent) (default: -1)",
@@ -3835,7 +3851,7 @@
   },
   {
     "name": "vault_sync",
-    "description": "Materialize literature notes into an Obsidian or Logseq vault from the local\nstore (run 'sync' first). Notes are named from the citation key, carry zotero://\nbacklinks, and embed current annotations in a managed block.\n\nRe-running is idempotent and non-destructive: only the managed frontmatter keys\nand the fenced annotations block change; your prose and other frontmatter keys\nare preserved.\n\nPreviews by default, showing create/update/unchanged without writing. Pass --yes\nto write; --dry-run always wins over --yes. Each note that would be created or\nupdated counts as one change against --max-changes.",
+    "description": "Materialize literature notes into an Obsidian or Logseq vault from the local\nstore (run 'sync' first). Notes are named from the citation key, carry zotero://\nbacklinks, and embed current annotations in a managed block.\n\nRe-running is idempotent and non-destructive: only the managed frontmatter keys\nand the fenced annotations block change; your prose and other frontmatter keys\nare preserved.\n\nPreviews by default, showing create/update/unchanged without writing. Pass --yes\nto write; --dry-run always wins over --yes. Each note that would be created or\nupdated counts as one change against --max-changes.\n\n--collection, --tag and --item-type combine (collection AND tag AND type).\n--scope selects one cohort through the shared grammar instead\n(collection:KEY, tag:NAME, item:KEY, query:TEXT, saved-search:KEY); the grammar\nhas no conjunction, so --scope is refused alongside a filter that means a\ndifferent cohort.",
     "inputSchema": {
       "properties": {
         "allow-destructive": {
@@ -3884,6 +3900,10 @@
         },
         "out": {
           "description": "Vault directory (overrides [vault].root + notes_dir from config)",
+          "type": "string"
+        },
+        "scope": {
+          "description": "Item cohort: library | collection:KEY | tag:NAME | item:KEY | query:TEXT | saved-search:KEY (default: the whole library)",
           "type": "string"
         },
         "tag": {

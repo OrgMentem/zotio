@@ -16,7 +16,7 @@ The machine-readable registry every command is classified against — read vs. w
 | `collections bundle` | read |  |  |  |
 | `collections create` | write | `web_api` |  | `web_api_key` |
 | `collections delete` | write | `web_api` | yes | `web_api_key` |
-| `collections export` | read |  |  |  |
+| `collections export` | read |  |  | `live_local_api` |
 | `collections gaps` | read |  |  |  |
 | `collections get` | read |  |  |  |
 | `collections items` | read |  |  |  |
@@ -71,7 +71,7 @@ The machine-readable registry every command is classified against — read vs. w
 | `items enrich` | write | `web_api` |  | `web_api_key` |
 | `items file` | read |  |  | `live_local_api` |
 | `items find` | read |  |  |  |
-| `items fulltext` | read |  |  | `live_local_api` |
+| `items fulltext` | read |  |  |  |
 | `items get` | read |  |  |  |
 | `items list` | read |  |  |  |
 | `items missing-pdf` | read |  |  | `synced_store` |
@@ -123,7 +123,7 @@ The machine-readable registry every command is classified against — read vs. w
 | `search` | read |  |  |  |
 | `searches get` | read |  |  |  |
 | `searches list` | read |  |  |  |
-| `searches materialize` | write | `web_api` |  | `web_api_key` |
+| `searches materialize` | write | `web_api` |  | `live_local_api`, `web_api_key` |
 | `searches run` | read |  |  | `live_local_api` |
 | `sync` | sync |  |  |  |
 | `tags audit` | read |  |  | `synced_store` |

@@ -266,7 +266,10 @@ P6  reproducible export  ->  P7  packaging & niceties
   replayed into the mirror immediately (`--data-source local` reads-your-own-writes, no `sync`) and the
   post-write item state is returned in the mutation envelope (agents need no follow-up read). Best-effort
   for the writer's own changes; cross-client staleness stays handled by the freshness contract
-  (`--require-fresh`, provenance). Creates and bulk/trash shapes reconcile on the next `sync`.
+  (`--require-fresh`, provenance). Creates joined this in 2026-09-03 (`zotio-e62e952b429c45ca`): both the
+  Web and connector routes now run through the mutation engine, so a created item is mirrored
+  immediately and `--data-source local` sees it with no `sync`. Bulk and trash shapes still reconcile
+  on the next `sync`.
 
 ## Phase 9–11 (added 2026-07-09)
 
