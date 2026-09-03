@@ -113,7 +113,12 @@ type Client struct {
 	writeRouteWarnOnce sync.Once
 	// cacheMu serializes cache invalidation with the final publication of a
 	// fetched response. It deliberately does not cover cache reads or HTTP I/O.
-	cacheMu         sync.Mutex
+	cacheMu sync.Mutex
+	// cacheGeneration is the highest generation this process has issued for any
+	// cache namespace. It stays a single counter rather than one per namespace
+	// because it only gates an optional publication: an in-flight GET whose
+	// token predates any local invalidation skips its cache write, and skipping
+	// one write for an unrelated resource type costs a re-fetch, not staleness.
 	cacheGeneration uint64
 	// cachePublishBeforeWrite is a test-only hook run after the shared
 	// generation check while the publication lock is held.
@@ -356,19 +361,25 @@ func (c *Client) getWithHeadersContext(ctx context.Context, path string, params 
 	if ctx == nil {
 		ctx = c.baseCtx()
 	}
-	cacheable := !c.NoCache && !c.DryRun && c.cacheDir != ""
+	// A path whose resource type this build does not recognize is deliberately
+	// uncacheable. Invalidation is per resource type now, so an unclassified
+	// entry could only ever be dropped by the unclassified-write full clear; a
+	// classified write (PATCH /items) would leave it in place and a later read
+	// would serve pre-write bytes. Refusing to cache it costs one re-fetch.
+	namespace, classified := cacheNamespace(path)
+	cacheable := classified && !c.NoCache && !c.DryRun && c.cacheDir != ""
 	var generation cacheGenerationToken
 	if cacheable {
 		// Capture before either a cache lookup or HTTP work. A mutation advances
-		// this generation before removing the cache, preventing this GET from
-		// publishing a response that predates that mutation.
+		// this namespace's generation before removing its entries, preventing
+		// this GET from publishing a response that predates that mutation.
 		var snapshotErr error
-		generation, snapshotErr = c.cacheGenerationSnapshot()
+		generation, snapshotErr = c.cacheGenerationSnapshot(namespace)
 		if snapshotErr != nil {
 			// A cache-generation marker we cannot read cannot safely coordinate
 			// this process with other clients, so bypass this optional cache.
 			cacheable = false
-		} else if cached, ok := c.readCache(path, params, headers); ok {
+		} else if cached, ok := c.readCache(generation, path, params, headers); ok {
 			return cached, nil
 		}
 	}
@@ -426,8 +437,130 @@ func (c *Client) cacheKey(path string, params map[string]string, headers map[str
 	return hex.EncodeToString(h[:8])
 }
 
-func (c *Client) readCache(path string, params map[string]string, headers map[string]string) (json.RawMessage, bool) {
-	cacheFile := filepath.Join(c.cacheDir, c.cacheKey(path, params, headers)+".json")
+// cacheInvalidationTargets maps the Zotero resource type a mutation wrote to
+// every resource type whose cached reads that write can change. It doubles as
+// the namespace allowlist: a leading path segment that is not a key here is
+// unclassified.
+//
+// The edges are measured coupling in this codebase and in the Zotero data
+// model, not guesses:
+//
+//   - An item write clears nearly every library read namespace, because
+//     almost everything is stored on items. zotio writes tags by PATCHing the
+//     owning item (`internal/cli/items_tags_write.go`, `tags_rename.go`), so an
+//     item write changes the library tag vocabulary that GET /tags returns.
+//     Collection membership is likewise an item field, so it changes a
+//     collection's item list. Saved-search results are recomputed from item
+//     state, /fulltext content belongs to attachment items, /publications is a
+//     filtered item projection, and /deleted enumerates deleted objects.
+//   - Selectivity therefore pays off on the non-item writes: a collection,
+//     saved search, or settings write leaves the tag vocabulary, the schema
+//     endpoints, and every other unrelated resource type cached.
+//   - Schema endpoints (/itemTypes, /itemFields, ...) are global Zotero
+//     metadata that no library write can change, so they clear only themselves.
+//
+// Every entry must list itself: invalidateCache uses this list verbatim.
+var cacheInvalidationTargets = map[string][]string{
+	"items":                {"items", "collections", "tags", "searches", "fulltext", "publications", "deleted"},
+	"collections":          {"collections", "items", "deleted"},
+	"tags":                 {"tags", "items", "searches", "deleted"},
+	"searches":             {"searches", "deleted"},
+	"fulltext":             {"fulltext", "items"},
+	"publications":         {"publications", "items"},
+	"deleted":              {"deleted"},
+	"settings":             {"settings"},
+	"groups":               {"groups"},
+	"keys":                 {"keys"},
+	"itemTypes":            {"itemTypes"},
+	"itemFields":           {"itemFields"},
+	"itemTypeFields":       {"itemTypeFields"},
+	"itemTypeCreatorTypes": {"itemTypeCreatorTypes"},
+	"creatorFields":        {"creatorFields"},
+}
+
+// cacheNamespace derives a request's cache namespace from the leading segment
+// of its path, which is the Zotero resource type: /items/ABCD/children yields
+// "items", /tags yields "tags". It reports false for a segment absent from
+// cacheInvalidationTargets.
+//
+// The set is an allowlist rather than "whatever the first segment happens to
+// be" for three reasons: the dependency graph above is only defined for types
+// this build knows; an unknown type has no safe invalidation scope, only a full
+// clear; and an allowlist keeps the segment usable as a directory name, with no
+// path traversal, no reserved Windows name, and no two namespaces colliding
+// under the case-insensitive filesystems on macOS and Windows.
+func cacheNamespace(path string) (string, bool) {
+	segment := strings.TrimPrefix(path, "/")
+	if end := strings.IndexAny(segment, "/?#"); end >= 0 {
+		segment = segment[:end]
+	}
+	if _, known := cacheInvalidationTargets[segment]; !known {
+		return "", false
+	}
+	return segment, true
+}
+
+// cacheFilePath locates one cached response. The namespace subdirectory is what
+// makes selective invalidation possible at all: cacheKey is a truncated sha256
+// of path, base URL, auth, params and headers, so the resource type cannot be
+// recovered from the file name — it has to be recorded in the layout.
+func (c *Client) cacheFilePath(namespace, path string, params map[string]string, headers map[string]string) string {
+	return filepath.Join(c.cacheDir, namespace, c.cacheKey(path, params, headers)+".json")
+}
+
+// cacheEntryVersion prefixes every cache file. A cached response is framed as
+// "<version> <generation>\n<body>".
+//
+// The generation tag is what closes the invalidation race: invalidateCache
+// publishes the new generation before it removes any file, and readers take no
+// publication lock, so a GET can snapshot the new generation and still find a
+// file written before the mutation — inside the RemoveAll window, or forever if
+// the RemoveAll partly failed. An entry's mtime and JSON validity cannot detect
+// that; a recorded generation can.
+//
+// Widening the publication lock to cover readers was rejected: it would
+// serialize every read behind every writer to protect a window one RemoveAll
+// long, and it still would not cover a partly failed RemoveAll, whose stale
+// files outlive the lock.
+//
+// The frame is a line prefix instead of a JSON envelope so the read path can
+// return the body as a subslice of the file bytes. A large item list is then
+// neither re-encoded on write nor unmarshaled and re-marshaled on read, and the
+// bytes a caller sees stay byte-identical to the live response, which a
+// json.RawMessage round trip would silently compact.
+const cacheEntryVersion = "zotio-cache/1"
+
+func encodeCacheEntry(generation uint64, body json.RawMessage) []byte {
+	header := cacheEntryVersion + " " + strconv.FormatUint(generation, 10) + "\n"
+	framed := make([]byte, 0, len(header)+len(body))
+	framed = append(framed, header...)
+	return append(framed, body...)
+}
+
+// decodeCacheEntry splits a cache file into its generation tag and body,
+// reporting false for anything this build did not write.
+func decodeCacheEntry(data []byte) (uint64, json.RawMessage, bool) {
+	newline := bytes.IndexByte(data, '\n')
+	if newline < 0 {
+		return 0, nil, false
+	}
+	version, tag, split := strings.Cut(string(data[:newline]), " ")
+	if !split || version != cacheEntryVersion {
+		return 0, nil, false
+	}
+	generation, err := strconv.ParseUint(tag, 10, 64)
+	if err != nil {
+		return 0, nil, false
+	}
+	body := data[newline+1:]
+	if len(body) == 0 {
+		return 0, nil, false
+	}
+	return generation, json.RawMessage(body), true
+}
+
+func (c *Client) readCache(generation cacheGenerationToken, path string, params map[string]string, headers map[string]string) (json.RawMessage, bool) {
+	cacheFile := c.cacheFilePath(generation.namespace, path, params, headers)
 	info, err := os.Stat(cacheFile)
 	if err != nil {
 		return nil, false
@@ -440,12 +573,26 @@ func (c *Client) readCache(path string, params map[string]string, headers map[st
 	if err != nil {
 		return nil, false
 	}
-	return json.RawMessage(data), true
+	entryGeneration, body, ok := decodeCacheEntry(data)
+	if !ok {
+		return nil, false
+	}
+	if entryGeneration < generation.marker {
+		// Written before the last invalidation of this namespace. That the file
+		// still exists means this read either raced the removal or is looking at
+		// a removal that failed; either way the bytes predate the mutation.
+		return nil, false
+	}
+	return body, true
 }
 
+// cacheGenerationToken is the snapshot a GET takes before it looks at the
+// cache: which namespace it reads, the process-shared generation of that
+// namespace, and this process's own counter.
 type cacheGenerationToken struct {
-	memory uint64
-	marker uint64
+	namespace string
+	memory    uint64
+	marker    uint64
 }
 
 func (c *Client) cacheGenerationMarkerPath() string {
@@ -456,30 +603,51 @@ func (c *Client) cachePublicationLockPath() string {
 	return c.cacheDir + ".publish.lock"
 }
 
-func (c *Client) readCacheGenerationMarker() (uint64, error) {
+// readCacheGenerations reads the process-shared generation marker: a JSON
+// object mapping cache namespace to its current generation. Unknown keys are
+// preserved by callers rewriting the whole map, so a namespace this build does
+// not know cannot have its counter rolled back.
+func (c *Client) readCacheGenerations() (map[string]uint64, error) {
 	data, err := os.ReadFile(c.cacheGenerationMarkerPath())
 	if errors.Is(err, os.ErrNotExist) {
-		return 0, nil
+		return map[string]uint64{}, nil
 	}
 	if err != nil {
-		return 0, fmt.Errorf("reading cache generation marker: %w", err)
+		return nil, fmt.Errorf("reading cache generation marker: %w", err)
 	}
-	generation, err := strconv.ParseUint(strings.TrimSpace(string(data)), 10, 64)
-	if err != nil {
-		return 0, fmt.Errorf("parsing cache generation marker: %w", err)
+	trimmed := strings.TrimSpace(string(data))
+	generations := map[string]uint64{}
+	jsonErr := json.Unmarshal([]byte(trimmed), &generations)
+	if jsonErr == nil {
+		return generations, nil
 	}
-	return generation, nil
+	// A marker written before the cache was namespaced holds a single decimal
+	// counter. Read it as a floor for every namespace instead of rejecting it:
+	// an unreadable marker disables the response cache for the whole install
+	// and makes every mutation warn, and the read path cannot repair the file
+	// because it holds no publication lock. Only the counter has to carry over
+	// — pre-namespace entries are flat files under cacheDir that this build
+	// never looks at.
+	legacy, legacyErr := strconv.ParseUint(trimmed, 10, 64)
+	if legacyErr != nil {
+		return nil, fmt.Errorf("parsing cache generation marker: %w", errors.Join(jsonErr, legacyErr))
+	}
+	generations = make(map[string]uint64, len(cacheInvalidationTargets))
+	for namespace := range cacheInvalidationTargets {
+		generations[namespace] = legacy
+	}
+	return generations, nil
 }
 
-func (c *Client) cacheGenerationSnapshot() (cacheGenerationToken, error) {
+func (c *Client) cacheGenerationSnapshot(namespace string) (cacheGenerationToken, error) {
 	c.cacheMu.Lock()
 	defer c.cacheMu.Unlock()
 
-	marker, err := c.readCacheGenerationMarker()
+	generations, err := c.readCacheGenerations()
 	if err != nil {
 		return cacheGenerationToken{}, err
 	}
-	return cacheGenerationToken{memory: c.cacheGeneration, marker: marker}, nil
+	return cacheGenerationToken{namespace: namespace, memory: c.cacheGeneration, marker: generations[namespace]}, nil
 }
 
 func (c *Client) acquireCachePublicationLock(operation string, wait time.Duration) (*cliutil.WriterLock, error) {
@@ -498,6 +666,14 @@ func (c *Client) acquireCachePublicationLock(operation string, wait time.Duratio
 }
 
 func (c *Client) writeCacheAtGeneration(generation cacheGenerationToken, path string, params map[string]string, headers map[string]string, data json.RawMessage) error {
+	if generation.namespace == "" {
+		// An entry written flat into cacheDir is exactly the file layout a
+		// pre-namespace zotio reads, so it would hand this framed body to a
+		// caller as an API response, and no selective invalidation could reach
+		// it. Callers derive the namespace before deciding a GET is cacheable;
+		// an empty one is a programming error, not a cache miss to swallow.
+		return fmt.Errorf("caching %s: no cache namespace in generation token", path)
+	}
 	// Never cache an empty list. zotio reads the local desktop API while writes
 	// route to api.zotero.org, so for a few seconds after a write a filtered
 	// query legitimately returns nothing — and caching that pinned the emptiness
@@ -508,18 +684,24 @@ func (c *Client) writeCacheAtGeneration(generation cacheGenerationToken, path st
 	}
 	// Chmod as well as MkdirAll: cached Zotero API payloads contain private
 	// library metadata, so keep the directory and files private even when they
-	// already existed with older world-readable permissions.
+	// already existed with older world-readable permissions. Both levels are
+	// chmodded because MkdirAll leaves an existing directory's mode alone and
+	// cacheDir can predate this build.
 	//
 	// Directory preparation is intentionally outside cacheMu. The mutex only
 	// protects the generation check and atomic file publication; it never
 	// serializes network requests.
-	if err := os.MkdirAll(c.cacheDir, 0o700); err != nil {
+	namespaceDir := filepath.Join(c.cacheDir, generation.namespace)
+	if err := os.MkdirAll(namespaceDir, 0o700); err != nil {
 		return err
 	}
 	if err := os.Chmod(c.cacheDir, 0o700); err != nil {
 		return err
 	}
-	cacheFile := filepath.Join(c.cacheDir, c.cacheKey(path, params, headers)+".json")
+	if err := os.Chmod(namespaceDir, 0o700); err != nil {
+		return err
+	}
+	cacheFile := c.cacheFilePath(generation.namespace, path, params, headers)
 
 	c.cacheMu.Lock()
 	defer c.cacheMu.Unlock()
@@ -537,10 +719,11 @@ func (c *Client) writeCacheAtGeneration(generation cacheGenerationToken, path st
 		}
 		return err
 	}
-	marker, markerErr := c.readCacheGenerationMarker()
+	generations, markerErr := c.readCacheGenerations()
 	if markerErr != nil {
 		return errors.Join(markerErr, lock.Release())
 	}
+	marker := generations[generation.namespace]
 	if generation.marker != marker {
 		return lock.Release()
 	}
@@ -549,7 +732,7 @@ func (c *Client) writeCacheAtGeneration(generation cacheGenerationToken, path st
 	if c.cachePublishBeforeWrite != nil {
 		c.cachePublishBeforeWrite()
 	}
-	writeErr := cliutil.AtomicWriteFile(cacheFile, data, 0o600, 0o700)
+	writeErr := cliutil.AtomicWriteFile(cacheFile, encodeCacheEntry(marker, data), 0o600, 0o700)
 	return errors.Join(writeErr, lock.Release())
 }
 
@@ -563,10 +746,28 @@ func isEmptyJSONList(data json.RawMessage) bool {
 	return len(bytes.TrimSpace(trimmed[1:len(trimmed)-1])) == 0 && trimmed[len(trimmed)-1] == ']'
 }
 
-// invalidateCache wholesale-removes the cache directory so the next read
-// after a mutation cannot return a stale snapshot. Selective per-resource
-// invalidation rejected: cache keys are opaque sha256 hashes.
-func (c *Client) invalidateCache() error {
+// invalidateCache drops the cached reads that a mutation of path can have
+// changed, so the next read cannot return a pre-mutation snapshot.
+//
+// The rule: clear the mutation's own resource type plus the resource types
+// whose reads project its state, per cacheInvalidationTargets. A path whose
+// resource type this build does not recognize clears the whole cache directory
+// and advances every namespace — under-invalidating an unclassified write would
+// silently serve pre-write data, which is far worse than dropping a cache that
+// is regenerable by definition. Note the scale of the item edge set: an item
+// write clears almost every library namespace, because tags, collection
+// membership, search results and fulltext all live on items. The selectivity
+// pays off on non-item writes, which leave unrelated resource types cached.
+//
+// This replaced a wholesale clear of the entire cache on every mutation, which
+// the opaque sha256 cache keys used to force; entries now live under a
+// subdirectory named for their resource type, so the type is recoverable from
+// the layout without decoding a key.
+//
+// Only the namespaces being cleared advance their generation. A single global
+// counter would strand an untouched resource type's entries behind an
+// advanced marker, turning every selective clear into a full one.
+func (c *Client) invalidateCache(path string) error {
 	if c.cacheDir == "" {
 		return nil
 	}
@@ -574,27 +775,56 @@ func (c *Client) invalidateCache() error {
 	c.cacheMu.Lock()
 	defer c.cacheMu.Unlock()
 
+	namespace, classified := cacheNamespace(path)
+	targets := cacheInvalidationTargets[namespace]
+	if !classified {
+		targets = make([]string, 0, len(cacheInvalidationTargets))
+		for known := range cacheInvalidationTargets {
+			targets = append(targets, known)
+		}
+	}
+
 	lock, err := c.acquireCachePublicationLock("invalidating response cache", 250*time.Millisecond)
 	if err != nil {
 		return err
 	}
-	marker, markerErr := c.readCacheGenerationMarker()
+	generations, markerErr := c.readCacheGenerations()
 	if markerErr != nil {
 		return errors.Join(markerErr, lock.Release())
 	}
-	next := marker + 1
-	if next <= c.cacheGeneration {
-		next = c.cacheGeneration + 1
+	// One generation above every counter this process has issued and every
+	// counter the targets currently hold, so a marker that somehow went
+	// backwards cannot let this process reissue a generation whose entries are
+	// still on disk.
+	next := c.cacheGeneration
+	for _, target := range targets {
+		if generations[target] > next {
+			next = generations[target]
+		}
+	}
+	next++
+	for _, target := range targets {
+		generations[target] = next
+	}
+	marker, markerErr := json.Marshal(generations)
+	if markerErr != nil {
+		return errors.Join(markerErr, lock.Release())
 	}
 	// AtomicWriteFile intentionally does not fsync; this marker only prevents
 	// stale cache publication and the response cache is regenerable.
-	if markerErr = cliutil.AtomicWriteFile(c.cacheGenerationMarkerPath(), []byte(strconv.FormatUint(next, 10)), 0o600, 0o700); markerErr != nil {
+	if markerErr = cliutil.AtomicWriteFile(c.cacheGenerationMarkerPath(), marker, 0o600, 0o700); markerErr != nil {
 		return errors.Join(markerErr, lock.Release())
 	}
 	// Advance in memory after publishing the process-shared marker and before
 	// removal. GETs holding the prior token must skip their later writes.
 	c.cacheGeneration = next
-	removeErr := os.RemoveAll(c.cacheDir)
+	if !classified {
+		return errors.Join(os.RemoveAll(c.cacheDir), lock.Release())
+	}
+	var removeErr error
+	for _, target := range targets {
+		removeErr = errors.Join(removeErr, os.RemoveAll(filepath.Join(c.cacheDir, target)))
+	}
 	return errors.Join(removeErr, lock.Release())
 }
 
@@ -696,7 +926,7 @@ func (c *Client) doRequestOnBase(ctx context.Context, baseOverride, method, path
 	mutationSucceeded := false
 	defer func() {
 		if retErr != nil && !mutationSucceeded && method != http.MethodGet && !c.DryRun {
-			if err := c.invalidateCache(); err != nil {
+			if err := c.invalidateCache(path); err != nil {
 				retErr = errors.Join(retErr, err)
 			}
 		}
@@ -917,7 +1147,7 @@ func (c *Client) doRequestOnBase(ctx context.Context, baseOverride, method, path
 			c.limiter.OnSuccess()
 			if method != http.MethodGet && !c.DryRun {
 				mutationSucceeded = true
-				if ierr := c.invalidateCache(); ierr != nil {
+				if ierr := c.invalidateCache(path); ierr != nil {
 					// The mutation applied. A failed cache invalidation must NOT
 					// be returned as an error: callers check err before status and
 					// would treat the successful write as failed, risking a retry

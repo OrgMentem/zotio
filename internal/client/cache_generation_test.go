@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -284,7 +285,7 @@ func TestPublicationLockPreventsInvalidationBetweenCheckAndRename(t *testing.T) 
 
 	invalidated := make(chan error, 1)
 	go func() {
-		invalidated <- invalidator.invalidateCache()
+		invalidated <- invalidator.invalidateCache("/items")
 	}()
 	select {
 	case err := <-invalidated:
@@ -321,6 +322,87 @@ func TestPublicationLockPreventsInvalidationBetweenCheckAndRename(t *testing.T) 
 	}
 	if got := atomic.LoadInt32(&getHits); got != 2 {
 		t.Fatalf("GET hits = %d, want 2 after invalidation", got)
+	}
+}
+
+// An entry that survives its namespace's invalidation must not be served. The
+// marker advances before any file is removed and readers hold no publication
+// lock, so a reader can legitimately observe the new generation next to a file
+// written under the old one: inside the RemoveAll window, or permanently if the
+// RemoveAll failed. This drives that state directly by advancing the marker
+// while leaving the file in place.
+func TestReadCacheRejectsEntryWrittenBeforeGenerationAdvanced(t *testing.T) {
+	c := clientTestNewClient(t, "http://example.test")
+	c.cacheDir = t.TempDir()
+	params := map[string]string{"q": "stale"}
+	body := []byte(`{"version":"pre-mutation"}`)
+
+	written, err := c.cacheGenerationSnapshot("items")
+	if err != nil {
+		t.Fatalf("cacheGenerationSnapshot: %v", err)
+	}
+	if err := c.writeCacheAtGeneration(written, "/items", params, nil, body); err != nil {
+		t.Fatalf("writeCacheAtGeneration: %v", err)
+	}
+	cacheFile := c.cacheFilePath("items", "/items", params, nil)
+	if got, ok := c.readCache(written, "/items", params, nil); !ok || !bytes.Equal(got, body) {
+		t.Fatalf("readCache at the writing generation = (%s, %v), want the written body", got, ok)
+	}
+
+	// Advance only the marker: the file stays exactly where it is, with a fresh
+	// mtime and valid JSON, which is all the pre-generation reader checked.
+	advanced := written
+	advanced.marker = written.marker + 1
+	if err := os.WriteFile(c.cacheGenerationMarkerPath(), []byte(`{"items":`+strconv.FormatUint(advanced.marker, 10)+`}`), 0o600); err != nil {
+		t.Fatalf("advancing generation marker: %v", err)
+	}
+	if _, err := os.Stat(cacheFile); err != nil {
+		t.Fatalf("cache file must still exist for this test to mean anything: %v", err)
+	}
+	if got, ok := c.readCache(advanced, "/items", params, nil); ok {
+		t.Fatalf("readCache served a pre-mutation entry with body %s at generation %d", got, advanced.marker)
+	}
+
+	// The reverse must not fire: an entry another process published at a newer
+	// generation is fresher than this reader's snapshot, not stale.
+	if err := os.WriteFile(cacheFile, encodeCacheEntry(written.marker+5, body), 0o600); err != nil {
+		t.Fatalf("writing newer-generation entry: %v", err)
+	}
+	if got, ok := c.readCache(written, "/items", params, nil); !ok || !bytes.Equal(got, body) {
+		t.Fatalf("readCache at a newer entry generation = (%s, %v), want the entry served", got, ok)
+	}
+}
+
+// A marker written by a pre-namespace zotio is a bare decimal counter. It has
+// to be read as a floor for every namespace: rejecting it would disable the
+// response cache for the whole install and make every mutation warn.
+func TestLegacyGenerationMarkerBecomesFloorForEveryNamespace(t *testing.T) {
+	c := clientTestNewClient(t, "http://example.test")
+	c.cacheDir = t.TempDir() + "/cache"
+	if err := os.WriteFile(c.cacheGenerationMarkerPath(), []byte("7\n"), 0o600); err != nil {
+		t.Fatalf("writing legacy marker: %v", err)
+	}
+
+	for _, namespace := range []string{"items", "tags", "itemTypes"} {
+		token, err := c.cacheGenerationSnapshot(namespace)
+		if err != nil {
+			t.Fatalf("cacheGenerationSnapshot(%q): %v", namespace, err)
+		}
+		if token.marker != 7 {
+			t.Fatalf("namespace %q generation = %d, want the legacy counter 7", namespace, token.marker)
+		}
+	}
+	// The next invalidation must climb above the legacy counter, or an entry
+	// tagged at the legacy generation would survive it.
+	if err := c.invalidateCache("/items"); err != nil {
+		t.Fatalf("invalidateCache: %v", err)
+	}
+	token, err := c.cacheGenerationSnapshot("items")
+	if err != nil {
+		t.Fatalf("cacheGenerationSnapshot after invalidation: %v", err)
+	}
+	if token.marker <= 7 {
+		t.Fatalf("items generation after invalidation = %d, want > 7", token.marker)
 	}
 }
 

@@ -14,7 +14,6 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"os"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -247,14 +246,14 @@ func TestReadCacheHonorsFreshness(t *testing.T) {
 	// writeCache was a deleted wrapper around writeCacheAtGeneration; this
 	// test now drives the live atom directly so the freshness assertions
 	// defend real behavior.
-	gen, err := c.cacheGenerationSnapshot()
+	gen, err := c.cacheGenerationSnapshot("items")
 	if err != nil {
 		t.Fatalf("cacheGenerationSnapshot: %v", err)
 	}
 	if err := c.writeCacheAtGeneration(gen, "/items", params, nil, want); err != nil {
 		t.Fatalf("writeCacheAtGeneration: %v", err)
 	}
-	got, ok := c.readCache("/items", params, nil)
+	got, ok := c.readCache(gen, "/items", params, nil)
 	if !ok {
 		t.Fatal("readCache missed immediately after writeCacheAtGeneration")
 	}
@@ -262,12 +261,12 @@ func TestReadCacheHonorsFreshness(t *testing.T) {
 		t.Fatalf("cached body = %s, want %s", got, want)
 	}
 
-	cacheFile := filepath.Join(c.cacheDir, c.cacheKey("/items", params, nil)+".json")
+	cacheFile := c.cacheFilePath("items", "/items", params, nil)
 	old := time.Now().Add(-6 * time.Minute)
 	if err := os.Chtimes(cacheFile, old, old); err != nil {
 		t.Fatalf("aging cache file: %v", err)
 	}
-	if got, ok := c.readCache("/items", params, nil); ok {
+	if got, ok := c.readCache(gen, "/items", params, nil); ok {
 		t.Fatalf("readCache hit expired cache with body %s", got)
 	}
 	if _, err := os.Stat(cacheFile); !os.IsNotExist(err) {
