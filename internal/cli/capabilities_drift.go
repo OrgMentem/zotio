@@ -13,16 +13,46 @@ import (
 	"github.com/spf13/cobra"
 )
 
-type capabilitiesDriftFinding struct {
-	Path  string `json:"path"`
-	Error string `json:"error"`
+// capabilitiesDriftReport stays report-shaped rather than a {meta, results}
+// list read: checked/ok are the probe denominators, and the drift itself is
+// carried in the shared diagnostic envelope every other zotio diagnostic
+// emits, so `capabilities drift --json` is readable by the same consumers.
+type capabilitiesDriftReport struct {
+	Checked     int    `json:"checked"`
+	OK          int    `json:"ok"`
+	GeneratedAt string `json:"generated_at"`
+	FindingsReport
 }
 
-type capabilitiesDriftReport struct {
-	Checked     int                        `json:"checked"`
-	OK          int                        `json:"ok"`
-	Drifted     []capabilitiesDriftFinding `json:"drifted"`
-	GeneratedAt string                     `json:"generated_at"`
+// capabilitiesDriftFinding renders one failed probe into the finding
+// envelope. Two details are load-bearing:
+//
+//   - Identity is (kind, evidence group, evidence value): watchHealthFindingKey
+//     falls back to the grouped evidence keys when no single Zotero item owns
+//     the finding, so the probed path keys it and the error text does not. A
+//     probe error carries per-request detail (timeout durations, HTTP status
+//     lines), which would otherwise make one permanently broken endpoint look
+//     like a brand-new finding on every run and defeat the cross-run diff in
+//     library_health_baseline.go.
+//   - Severity is critical because the capability registry declares this
+//     endpoint readable. While it errors, every read routed through it fails,
+//     so it outranks per-item data-quality findings.
+//   - The source is "live", the provenance vocabulary for an API read
+//     (data_source.go), not "web_api": newClient honours a configured Zotero
+//     desktop base, so this probe may have hit the local API instead, and
+//     nothing here is served from the synced mirror.
+func capabilitiesDriftFinding(path string, probeErr error) Finding {
+	return Finding{
+		Kind:     "api_drift",
+		Severity: sevCritical,
+		Title:    "Read endpoint " + path + " no longer answers",
+		Evidence: map[string]any{"group": "path", "value": path, "error": probeErr.Error()},
+		Source:   FindingSource{Kind: "live"},
+		RecommendedAction: &RecommendedAction{
+			Command: "zotio doctor",
+			Text:    "Every non-nil GET error counts as drift, so credential and connectivity failures land here too; doctor separates those from a real Zotero API change, which needs a zotio upgrade.",
+		},
+	}
 }
 
 type capabilitiesDriftProbe struct {
@@ -70,9 +100,9 @@ and network failures.`,
 			}
 
 			report := capabilitiesDriftReport{
-				Checked:     len(probes),
-				Drifted:     make([]capabilitiesDriftFinding, 0, len(probes)),
-				GeneratedAt: time.Now().UTC().Format(time.RFC3339),
+				Checked:        len(probes),
+				GeneratedAt:    time.Now().UTC().Format(time.RFC3339),
+				FindingsReport: FindingsReport{Findings: make([]Finding, 0, len(probes))},
 			}
 			for _, probe := range probes {
 				getter := c
@@ -80,7 +110,7 @@ and network failures.`,
 					getter = sc
 				}
 				if _, err := getter.Get(probe.path, probe.params); err != nil {
-					report.Drifted = append(report.Drifted, capabilitiesDriftFinding{Path: probe.path, Error: err.Error()})
+					report.Findings = append(report.Findings, capabilitiesDriftFinding(probe.path, err))
 					continue
 				}
 				report.OK++
@@ -95,9 +125,9 @@ and network failures.`,
 			}
 
 			w := cmd.OutOrStdout()
-			fmt.Fprintf(w, "%d endpoints checked, %d ok, %d drifted\n", report.Checked, report.OK, len(report.Drifted))
-			for _, drift := range report.Drifted {
-				fmt.Fprintf(w, "%s: %s\n", drift.Path, drift.Error)
+			fmt.Fprintf(w, "%d endpoints checked, %d ok, %d drifted\n", report.Checked, report.OK, len(report.Findings))
+			for _, finding := range report.Findings {
+				fmt.Fprintf(w, "%s: %s\n", sqlStringValue(finding.Evidence["value"]), sqlStringValue(finding.Evidence["error"]))
 			}
 			return nil
 		},

@@ -6,6 +6,7 @@ package cli
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -48,12 +49,9 @@ func TestCapabilitiesDriftReportsSchemaEndpointDrift(t *testing.T) {
 	}
 
 	var report struct {
-		Checked int `json:"checked"`
-		OK      int `json:"ok"`
-		Drifted []struct {
-			Path  string `json:"path"`
-			Error string `json:"error"`
-		} `json:"drifted"`
+		Checked  int       `json:"checked"`
+		OK       int       `json:"ok"`
+		Findings []Finding `json:"findings"`
 	}
 	if err := json.Unmarshal(out.Bytes(), &report); err != nil {
 		t.Fatalf("decode report: %v\n%s", err, out.String())
@@ -64,20 +62,70 @@ func TestCapabilitiesDriftReportsSchemaEndpointDrift(t *testing.T) {
 	if report.OK != 5 {
 		t.Fatalf("ok = %d, want 5", report.OK)
 	}
-
-	var sawItemFields bool
-	for _, drift := range report.Drifted {
-		if drift.Path == "/itemFields" {
-			sawItemFields = true
-			if drift.Error == "" {
-				t.Fatal("/itemFields drift has empty error")
-			}
-		}
-		if drift.Path == "/items" {
-			t.Fatal("/items unexpectedly reported as drifted")
-		}
+	if len(report.Findings) != 1 {
+		t.Fatalf("findings = %+v, want exactly the /itemFields drift", report.Findings)
 	}
-	if !sawItemFields {
-		t.Fatalf("drifted = %+v, want /itemFields", report.Drifted)
+
+	finding := report.Findings[0]
+	if finding.Kind != "api_drift" || finding.Severity != sevCritical {
+		t.Fatalf("finding kind/severity = %q/%q, want api_drift/%s", finding.Kind, finding.Severity, sevCritical)
+	}
+	if got := sqlStringValue(finding.Evidence["value"]); got != "/itemFields" {
+		t.Fatalf("finding evidence value = %q, want /itemFields", got)
+	}
+	if sqlStringValue(finding.Evidence["error"]) == "" {
+		t.Fatal("/itemFields drift carries an empty error")
+	}
+	// "live", not "web_api": the probe follows the configured base, which may
+	// be Zotero desktop's local API.
+	if finding.Source.Kind != "live" {
+		t.Fatalf("finding source = %q, want live", finding.Source.Kind)
+	}
+	// The registry declares the endpoint readable and nothing here repairs it,
+	// so the action must triage rather than claim an autofix.
+	if finding.Autofixable {
+		t.Fatal("api_drift must not claim to be autofixable")
+	}
+	if finding.RecommendedAction == nil || finding.RecommendedAction.Command != "zotio doctor" {
+		t.Fatalf("finding action = %+v, want the doctor triage command", finding.RecommendedAction)
+	}
+
+	// The human report now renders from the finding's evidence rather than a
+	// second private struct; a wrong evidence key would silently print an
+	// empty path and an empty reason.
+	humanCmd := newCapabilitiesCmd(&cobra.Command{Use: "zotio"}, &rootFlags{})
+	humanCmd.SilenceErrors, humanCmd.SilenceUsage = true, true
+	humanCmd.SetArgs([]string{"drift"})
+	var humanOut bytes.Buffer
+	humanCmd.SetOut(&humanOut)
+	humanCmd.SetErr(&bytes.Buffer{})
+	if err := humanCmd.Execute(); err != nil {
+		t.Fatalf("capabilities drift (human): %v", err)
+	}
+	human := humanOut.String()
+	if !strings.Contains(human, "6 endpoints checked, 5 ok, 1 drifted") {
+		t.Fatalf("human drift summary missing:\n%s", human)
+	}
+	if !strings.Contains(human, "/itemFields: ") || strings.Contains(human, "/itemFields: \n") {
+		t.Fatalf("human drift line lacks the path and its error:\n%s", human)
+	}
+}
+
+// A permanently broken endpoint must keep one identity across runs. The probe
+// error text carries per-request detail (timeouts, status lines), so keying on
+// it would report the same dead endpoint as a brand-new finding every run and
+// break the cross-run diff FindingIdentities feeds.
+func TestCapabilitiesDriftFindingIdentityIgnoresErrorText(t *testing.T) {
+	first := capabilitiesDriftFinding("/itemFields", errors.New("GET /itemFields: 404 Not Found"))
+	second := capabilitiesDriftFinding("/itemFields", errors.New("GET /itemFields: dial tcp 127.0.0.1:1: connect: connection refused"))
+	if watchHealthFindingKey(first) != watchHealthFindingKey(second) {
+		t.Fatalf("identity changed with the error text: %q vs %q", watchHealthFindingKey(first), watchHealthFindingKey(second))
+	}
+	if got := watchHealthFindingKey(first); got != "api_drift\x00group\x00path\x00/itemFields" {
+		t.Fatalf("identity = %q, want the (kind, path) grouped key", got)
+	}
+	other := capabilitiesDriftFinding("/items", errors.New("GET /items: 404 Not Found"))
+	if watchHealthFindingKey(first) == watchHealthFindingKey(other) {
+		t.Fatal("two different endpoints must not share one identity")
 	}
 }

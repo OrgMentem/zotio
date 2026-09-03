@@ -58,6 +58,16 @@ type countedTag struct {
 	count int
 }
 
+// tagAuditResult is one read of the tag-drift plane: the plan a user reads,
+// and the same drift restated as findings. Both come from one store open, so
+// the plan and the findings can never disagree about what drifted.
+type tagAuditResult struct {
+	TotalTags int
+	Plans     []tagAuditPlan
+	Findings  []Finding
+	Prov      DataProvenance
+}
+
 func newTagsAuditCmd(flags *rootFlags) *cobra.Command {
 	var prefer string
 	cmd := &cobra.Command{
@@ -72,7 +82,7 @@ func newTagsAuditCmd(flags *rootFlags) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			totalTags, plans, ok, prov, err := readTagAuditPlans(cmd, policy)
+			res, ok, err := readTagAudit(cmd, policy)
 			if err != nil {
 				return err
 			}
@@ -80,20 +90,24 @@ func newTagsAuditCmd(flags *rootFlags) *cobra.Command {
 				return nil
 			}
 			if flags.asJSON && wantsJSONEnvelope(cmd.OutOrStdout(), flags) {
-				data, err := json.Marshal(plans)
+				data, err := json.Marshal(res.Plans)
 				if err != nil {
 					return err
 				}
 				if flags.selectFields != "" {
 					data = filterFields(data, flags.selectFields)
 				}
-				wrapped, err := wrapWithProvenance(json.RawMessage(data), prov)
+				wrapped, err := wrapWithProvenance(json.RawMessage(data), res.Prov)
+				if err != nil {
+					return err
+				}
+				wrapped, err = tagAuditEnvelopeWithFindings(wrapped, res.Findings)
 				if err != nil {
 					return err
 				}
 				return printOutput(cmd.OutOrStdout(), wrapped, true)
 			}
-			return printTagAuditReport(cmd, totalTags, plans, policy, flags.dryRun)
+			return printTagAuditReport(cmd, res.TotalTags, res.Plans, policy, flags.dryRun)
 		},
 	}
 	cmd.Flags().StringVar(&prefer, "prefer", string(tagAuditPreferFrequency),
@@ -104,11 +118,13 @@ func newTagsAuditCmd(flags *rootFlags) *cobra.Command {
 
 func newTagsAuditFixCmd(flags *rootFlags) *cobra.Command {
 	var prefer string
+	var keysFrom string
 	cmd := &cobra.Command{
 		Use:   "fix",
 		Short: "Apply the tag rename plan produced by tags audit",
 		Example: `  zotio tags audit fix --yes
-  zotio tags audit fix --prefer title --yes`,
+  zotio tags audit fix --prefer title --yes
+  zotio tags audit --json | zotio tags audit fix --keys-from - --yes`,
 		Annotations: map[string]string{
 			"mcp:read-only":                    "false",
 			"zotio:destructive":                "false",
@@ -121,7 +137,20 @@ func newTagsAuditFixCmd(flags *rootFlags) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			_, plans, ok, _, err := readTagAuditPlans(cmd, policy)
+			// Resolve the key filter before opening the store so a malformed
+			// pipe fails before any read work.
+			var keyFilter map[string]bool
+			if strings.TrimSpace(keysFrom) != "" {
+				keys, err := resolveKeys(nil, keysFrom, cmd.InOrStdin())
+				if err != nil {
+					return err
+				}
+				keyFilter = make(map[string]bool, len(keys))
+				for _, key := range keys {
+					keyFilter[key] = true
+				}
+			}
+			res, ok, err := readTagAudit(cmd, policy)
 			if err != nil {
 				return err
 			}
@@ -138,7 +167,7 @@ func newTagsAuditFixCmd(flags *rootFlags) *cobra.Command {
 				return nil
 			}
 			defer rawDB.Close()
-			ops, err := buildTagAuditFixOps(localQueryStore{rawDB}, plans, func(update tagRenameUpdate) (string, any, error) {
+			ops, err := buildTagAuditFixOps(localQueryStore{rawDB}, res.Plans, func(update tagRenameUpdate) (string, any, error) {
 				if renameApply == nil {
 					err := fmt.Errorf("write client not initialized")
 					return "failed", err.Error(), err
@@ -147,6 +176,11 @@ func newTagsAuditFixCmd(flags *rootFlags) *cobra.Command {
 			})
 			if err != nil {
 				return err
+			}
+			// --max-changes counts what will actually be written, so narrow the
+			// plan before the mutation engine sees it.
+			if keyFilter != nil {
+				ops = filterTagAuditFixOps(ops, keyFilter)
 			}
 
 			if resolveMutationMode(flags).Apply && len(ops) > 0 {
@@ -175,6 +209,8 @@ func newTagsAuditFixCmd(flags *rootFlags) *cobra.Command {
 	}
 	cmd.Flags().StringVar(&prefer, "prefer", string(tagAuditPreferFrequency),
 		"Canonical spelling policy for duplicate groups: frequency, sentence, title, or lower. Must match the --prefer used for `tags audit` to apply the same targets shown there.")
+	cmd.Flags().StringVar(&keysFrom, "keys-from", "",
+		"Read item keys from a file or '-' for stdin (the `tags audit --json` finding envelope is accepted directly), then rename tags only on those items")
 	return cmd
 }
 
@@ -204,14 +240,25 @@ FROM resources, json_each(json_extract(data, '$.data.tags')) AS tags
 WHERE resource_type = 'items' AND tag_name IS NOT NULL AND tag_name != ''
 	AND CAST(json_extract(tags.value, '$.type') AS INTEGER) = 1`
 
-func readTagAuditPlans(cmd *cobra.Command, prefer tagAuditPrefer) (int, []tagAuditPlan, bool, DataProvenance, error) {
+// tagAuditDriftItemKeysQuery names every item carrying one of the drifted
+// spellings. It deliberately applies no item-type filter, matching
+// tagAuditAliasItemsQuery: `tags audit fix` renames the alias on every item
+// that carries it, attachments and notes included, so a finding that named a
+// narrower set would promise a fix the fixer does not perform.
+const tagAuditDriftItemKeysQuery = `
+SELECT DISTINCT json_extract(tags.value, '$.tag') AS tag_name, r.id AS item_key
+FROM resources r, json_each(json_extract(r.data, '$.data.tags')) AS tags
+WHERE r.resource_type = 'items' AND tag_name IN (%s)
+ORDER BY r.id ASC`
+
+func readTagAudit(cmd *cobra.Command, prefer tagAuditPrefer) (tagAuditResult, bool, error) {
 	rawDB, err := openStoreForRead(cmd.Context(), "zotio")
 	if err != nil {
-		return 0, nil, false, DataProvenance{}, fmt.Errorf("opening database: %w", err)
+		return tagAuditResult{}, false, fmt.Errorf("opening database: %w", err)
 	}
 	if rawDB == nil {
 		fmt.Fprintln(cmd.OutOrStdout(), "Run 'zotio sync' first.")
-		return 0, nil, false, DataProvenance{}, nil
+		return tagAuditResult{}, false, nil
 	}
 	defer rawDB.Close()
 	prov := localProvenance(rawDB, "tags", "local_only")
@@ -219,17 +266,17 @@ func readTagAuditPlans(cmd *cobra.Command, prefer tagAuditPrefer) (int, []tagAud
 
 	tagRows, err := db.QueryRaw(tagAuditDistinctQuery)
 	if err != nil {
-		return 0, nil, false, DataProvenance{}, fmt.Errorf("querying tags: %w", err)
+		return tagAuditResult{}, false, fmt.Errorf("querying tags: %w", err)
 	}
 	countRows, err := db.QueryRaw(tagAuditCountQuery)
 	if err != nil {
-		return 0, nil, false, DataProvenance{}, fmt.Errorf("querying tag counts: %w", err)
+		return tagAuditResult{}, false, fmt.Errorf("querying tag counts: %w", err)
 	}
 	automaticTags := map[string]bool{}
 	if prefer != tagAuditPreferFrequency {
 		automaticRows, err := db.QueryRaw(tagAuditAutomaticQuery)
 		if err != nil {
-			return 0, nil, false, DataProvenance{}, fmt.Errorf("querying automatic tags: %w", err)
+			return tagAuditResult{}, false, fmt.Errorf("querying automatic tags: %w", err)
 		}
 		for _, row := range automaticRows {
 			if name := sqlStringValue(row["tag_name"]); name != "" {
@@ -238,7 +285,106 @@ func readTagAuditPlans(cmd *cobra.Command, prefer tagAuditPrefer) (int, []tagAud
 		}
 	}
 
-	return len(tagRows), buildTagAuditPlans(tagRows, countRows, prefer, automaticTags), true, prov, nil
+	plans := buildTagAuditPlans(tagRows, countRows, prefer, automaticTags)
+	findings, err := tagAuditFindings(db, plans, FindingSource{Kind: prov.Source, SyncedAt: prov.SyncedAt})
+	if err != nil {
+		return tagAuditResult{}, false, fmt.Errorf("querying drifted tag items: %w", err)
+	}
+	return tagAuditResult{TotalTags: len(tagRows), Plans: plans, Findings: findings, Prov: prov}, true, nil
+}
+
+// tagAuditFindings restates the merge plan as the shared finding envelope,
+// one finding per (drifted spelling, item) pair. `library health` reports the
+// same condition grouped by canonical name; this command fans it out per item
+// exactly as `items duplicates` does against `library health`'s grouped
+// duplicate_candidates, because a per-item finding is what carries the
+// (kind, item_key) identity and what `--keys-from` can pipe into the fixer.
+// The kind, severity and recommended action are the ones runTagDrift emits;
+// one condition must not grow two vocabularies.
+func tagAuditFindings(db localQueryStore, plans []tagAuditPlan, source FindingSource) ([]Finding, error) {
+	aliases := make([]any, 0, len(plans))
+	for _, plan := range plans {
+		for _, alias := range plan.Aliases {
+			aliases = append(aliases, alias)
+		}
+	}
+	if len(aliases) == 0 {
+		return []Finding{}, nil
+	}
+	rows, err := db.QueryRaw(fmt.Sprintf(tagAuditDriftItemKeysQuery, placeholders(len(aliases))), aliases...)
+	if err != nil {
+		return nil, err
+	}
+	keysByAlias := make(map[string][]string, len(aliases))
+	for _, row := range rows {
+		alias := sqlStringValue(row["tag_name"])
+		key := sqlStringValue(row["item_key"])
+		if alias == "" || key == "" {
+			continue
+		}
+		keysByAlias[alias] = append(keysByAlias[alias], key)
+	}
+
+	findings := make([]Finding, 0, len(rows))
+	for _, plan := range plans {
+		for _, alias := range plan.Aliases {
+			// One evidence map per alias, shared by that alias's items: the
+			// group-level facts are identical for all of them.
+			evidence := map[string]any{
+				"canonical":   plan.Canonical,
+				"aliases":     plan.Aliases,
+				"total_items": plan.TotalItems,
+				"tag":         alias,
+			}
+			for _, key := range keysByAlias[alias] {
+				findings = append(findings, Finding{
+					Kind:              "tag_drift",
+					Severity:          sevHigh,
+					ItemKey:           key,
+					Evidence:          evidence,
+					Source:            source,
+					Autofixable:       true,
+					RecommendedAction: &RecommendedAction{Command: "zotio tags audit fix"},
+				})
+			}
+		}
+	}
+	return findings, nil
+}
+
+// tagAuditEnvelopeWithFindings puts the finding envelope beside .results
+// instead of replacing it. `tags audit` is a list read whose .results array
+// holds the merge plan (walktest N-1 wrapped it for exactly that reason, and
+// RenameCommands inside it is the manual escape hatch users copy), while
+// --keys-from reads a top-level `findings` key (addJSONObjectKeys). Both keys
+// therefore ship: the plan stays the user-facing output, the findings carry
+// the pipeable identity. Findings are never passed through --select, whose
+// field paths name plan fields; stripping item_key out of them would silently
+// break the pipe.
+func tagAuditEnvelopeWithFindings(wrapped json.RawMessage, findings []Finding) (json.RawMessage, error) {
+	envelope := map[string]json.RawMessage{}
+	if err := json.Unmarshal(wrapped, &envelope); err != nil {
+		return nil, err
+	}
+	data, err := json.Marshal(findings)
+	if err != nil {
+		return nil, err
+	}
+	envelope["findings"] = data
+	return json.Marshal(envelope)
+}
+
+// filterTagAuditFixOps narrows the library-wide plan to the items --keys-from
+// named. `tags audit fix` otherwise has no item selector at all, so the pipe
+// is also the only way to bound its blast radius.
+func filterTagAuditFixOps(ops []mutation.Op, keys map[string]bool) []mutation.Op {
+	kept := ops[:0]
+	for _, op := range ops {
+		if keys[op.Key] {
+			kept = append(kept, op)
+		}
+	}
+	return kept
 }
 
 const tagAuditAliasItemsQuery = `

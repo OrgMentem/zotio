@@ -3,6 +3,7 @@ package cli
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -11,6 +12,7 @@ import (
 	"testing"
 
 	"zotio/internal/mutation"
+	"zotio/internal/store"
 )
 
 // tagAuditFixtureRows builds the tagRows/countRows shape QueryRaw returns for
@@ -418,4 +420,241 @@ func jsonRMList(items []jsonRM) []json.RawMessage {
 		out = append(out, json.RawMessage(it.raw))
 	}
 	return out
+}
+
+// runTagsAuditJSONCmd runs `zotio tags audit --json` against a seeded store
+// and returns the raw envelope bytes.
+func runTagsAuditJSONCmd(t *testing.T, args ...string) []byte {
+	t.Helper()
+	cmd := newTagsAuditCmd(&rootFlags{asJSON: true})
+	cmd.SilenceErrors, cmd.SilenceUsage = true, true
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(io.Discard)
+	cmd.SetArgs(args)
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("tags audit --json: %v", err)
+	}
+	return out.Bytes()
+}
+
+// tagAuditEnvelope decodes both halves of the `tags audit --json` output: the
+// merge plan its existing consumers read from .results, and the finding
+// envelope --keys-from ingests from .findings.
+type tagAuditEnvelope struct {
+	Results  []map[string]any `json:"results"`
+	Findings []Finding        `json:"findings"`
+}
+
+func decodeTagAuditEnvelope(t *testing.T, out []byte) tagAuditEnvelope {
+	t.Helper()
+	var env tagAuditEnvelope
+	if err := json.Unmarshal(out, &env); err != nil {
+		t.Fatalf("decode tags audit envelope %s: %v", out, err)
+	}
+	return env
+}
+
+// TestTagsAuditEmitsTagDriftFindingsBesidePlan is the migration contract:
+// `tags audit --json` used to emit only the plan shape, which carried no
+// kind, no severity and no recommended action, so nothing downstream could
+// treat it as a finding. The findings must appear WITHOUT displacing the
+// plan: .results is the documented list-read shape (walktest N-1) and
+// rename_commands inside it is the manual escape hatch users copy.
+func TestTagsAuditEmitsTagDriftFindingsBesidePlan(t *testing.T) {
+	seedTagsAuditFixStore(t, duplicateTagAuditItems())
+
+	env := decodeTagAuditEnvelope(t, runTagsAuditJSONCmd(t))
+	if len(env.Results) != 1 {
+		t.Fatalf("results = %+v, want the one duplicate group", env.Results)
+	}
+	if env.Results[0]["canonical"] != "Data Science" {
+		t.Fatalf("results[0] canonical = %v, want Data Science", env.Results[0]["canonical"])
+	}
+	if commands, ok := env.Results[0]["rename_commands"].([]any); !ok || len(commands) != 2 {
+		t.Fatalf("results[0] rename_commands = %v, want the two rename commands preserved", env.Results[0]["rename_commands"])
+	}
+
+	// K2 carries the alias "data science", K3 carries "Data  Science"; K1
+	// already carries the canonical spelling and is not drifted.
+	wantKeys := map[string]string{"K2": "data science", "K3": "Data  Science"}
+	if len(env.Findings) != len(wantKeys) {
+		t.Fatalf("findings = %+v, want one per drifted item", env.Findings)
+	}
+	identities := map[string]bool{}
+	for _, finding := range env.Findings {
+		wantTag, ok := wantKeys[finding.ItemKey]
+		if !ok {
+			t.Fatalf("finding on unexpected item %q: %+v", finding.ItemKey, finding)
+		}
+		if finding.Kind == "" {
+			t.Fatalf("finding %+v has an empty kind", finding)
+		}
+		if got := sqlStringValue(finding.Evidence["tag"]); got != wantTag {
+			t.Errorf("finding %s evidence tag = %q, want %q", finding.ItemKey, got, wantTag)
+		}
+		if got := sqlStringValue(finding.Evidence["canonical"]); got != "Data Science" {
+			t.Errorf("finding %s evidence canonical = %q, want Data Science", finding.ItemKey, got)
+		}
+		// Identity is (kind, item_key): stable across runs even when the
+		// group's item counts move, which library_health_baseline.go diffs.
+		identity := watchHealthFindingKey(finding)
+		if identity != "tag_drift\x00item\x00"+finding.ItemKey {
+			t.Errorf("finding identity = %q, want the (kind, item_key) key", identity)
+		}
+		if identities[identity] {
+			t.Errorf("duplicate identity %q: cross-run diffs would collapse two findings", identity)
+		}
+		identities[identity] = true
+	}
+}
+
+// TestTagsAuditFindingsMatchLibraryHealthVocabulary holds the two commands to
+// one vocabulary for one condition. `library health` groups tag drift by
+// canonical name and `tags audit` fans it out per item, but the kind,
+// severity and recommended action must be identical, or an agent would have
+// to learn two names for the same problem and two fixers for it.
+func TestTagsAuditFindingsMatchLibraryHealthVocabulary(t *testing.T) {
+	seedTagsAuditFixStore(t, duplicateTagAuditItems())
+	db := openTagAuditTestStore(t)
+
+	tagRows, err := db.QueryRaw(tagAuditDistinctQuery)
+	if err != nil {
+		t.Fatalf("tag distinct query: %v", err)
+	}
+	countRows, err := db.QueryRaw(tagAuditCountQuery)
+	if err != nil {
+		t.Fatalf("tag count query: %v", err)
+	}
+	plans := buildTagAuditPlans(tagRows, countRows, tagAuditPreferFrequency, nil)
+
+	auditFindings, err := tagAuditFindings(db, plans, FindingSource{Kind: "local"})
+	if err != nil {
+		t.Fatalf("tagAuditFindings: %v", err)
+	}
+	healthFindings, _, err := runTagDrift(db, newHealthCtx("quick", false))
+	if err != nil {
+		t.Fatalf("runTagDrift: %v", err)
+	}
+	if len(auditFindings) == 0 || len(healthFindings) == 0 {
+		t.Fatalf("need findings from both sides, got %d audit and %d health", len(auditFindings), len(healthFindings))
+	}
+
+	want := healthFindings[0]
+	for _, finding := range auditFindings {
+		if finding.Kind != want.Kind || finding.Severity != want.Severity {
+			t.Fatalf("audit finding kind/severity = %q/%q, want library health's %q/%q",
+				finding.Kind, finding.Severity, want.Kind, want.Severity)
+		}
+		if finding.Autofixable != want.Autofixable {
+			t.Fatalf("audit finding autofixable = %v, want library health's %v", finding.Autofixable, want.Autofixable)
+		}
+		if finding.RecommendedAction == nil || want.RecommendedAction == nil ||
+			*finding.RecommendedAction != *want.RecommendedAction {
+			t.Fatalf("audit finding action = %+v, want library health's %+v", finding.RecommendedAction, want.RecommendedAction)
+		}
+	}
+}
+
+func openTagAuditTestStore(t *testing.T) localQueryStore {
+	t.Helper()
+	db, err := store.OpenWithContext(context.Background(), helpersTestDefaultDBPath(t, "zotio"))
+	if err != nil {
+		t.Fatalf("open seeded store: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	return localQueryStore{db}
+}
+
+// TestTagsAuditFindingPipesIntoItsFixer closes the loop the finding envelope
+// exists for: the diagnostic names the fixer in recommended_action, and its
+// findings feed that fixer's --keys-from directly. Piping ONE finding must
+// also bound the batch to that item -- `tags audit fix` otherwise applies the
+// whole library-wide plan, so the pipe is the only item selector it has.
+func TestTagsAuditFindingPipesIntoItsFixer(t *testing.T) {
+	items := duplicateTagAuditItems()
+	seedTagsAuditFixStore(t, items)
+
+	env := decodeTagAuditEnvelope(t, runTagsAuditJSONCmd(t))
+	var selected Finding
+	for _, finding := range env.Findings {
+		if finding.ItemKey == "K3" {
+			selected = finding
+		}
+	}
+	if selected.ItemKey == "" {
+		t.Fatalf("no finding for K3 to pipe: %+v", env.Findings)
+	}
+	if selected.RecommendedAction == nil || selected.RecommendedAction.Command != "zotio tags audit fix" {
+		t.Fatalf("finding action = %+v, want the tags audit fix command", selected.RecommendedAction)
+	}
+	piped, err := json.Marshal(FindingsReport{Findings: []Finding{selected}})
+	if err != nil {
+		t.Fatalf("marshal piped finding: %v", err)
+	}
+
+	patches := map[string]map[string]any{}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if serveTagAuditFixItem(w, r, items) {
+			return
+		}
+		if r.Method != http.MethodPatch {
+			http.Error(w, "unexpected method", http.StatusMethodNotAllowed)
+			return
+		}
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		patches[r.URL.Path] = body
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer srv.Close()
+
+	mutationEnv, out, err := runTagsAuditFixCmdStdin(t, &rootFlags{asJSON: true, yes: true, maxChanges: -1}, srv.URL, piped, "--keys-from", "-")
+	if err != nil {
+		t.Fatalf("tags audit fix --keys-from -: %v\n%s", err, out)
+	}
+	if !mutationEnv.OK || mutationEnv.Mode != "apply" {
+		t.Fatalf("envelope = %+v, want ok apply", mutationEnv)
+	}
+	if mutationEnv.Plan.Summary.Planned != 1 {
+		t.Fatalf("planned = %d, want only the piped item (the unfiltered plan writes 2)", mutationEnv.Plan.Summary.Planned)
+	}
+	if _, ok := patches["/users/0/items/K3"]; !ok {
+		t.Fatalf("piped finding did not reach its fixer; patches = %#v", patches)
+	}
+	if _, ok := patches["/users/0/items/K2"]; ok {
+		t.Fatalf("--keys-from did not bound the batch: K2 was written too; patches = %#v", patches)
+	}
+	tags, _ := patches["/users/0/items/K3"]["tags"].([]any)
+	if len(tags) != 1 {
+		t.Fatalf("K3 tags = %#v, want the single canonical tag", patches["/users/0/items/K3"]["tags"])
+	}
+	if tag, _ := tags[0].(map[string]any); tag["tag"] != "Data Science" {
+		t.Fatalf("K3 renamed to %v, want the canonical Data Science", tag["tag"])
+	}
+}
+
+// runTagsAuditFixCmdStdin is runTagsAuditFixCmdArgs with a piped stdin, so a
+// test can hand `tags audit fix` the finding envelope on `--keys-from -`.
+func runTagsAuditFixCmdStdin(t *testing.T, flags *rootFlags, baseURL string, stdin []byte, extra ...string) (mutation.Envelope, string, error) {
+	t.Helper()
+	t.Setenv("ZOTERO_BASE_URL", baseURL+"/users/0")
+	cmd := newTagsAuditCmd(flags)
+	cmd.SilenceErrors, cmd.SilenceUsage = true, true
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(io.Discard)
+	cmd.SetIn(bytes.NewReader(stdin))
+	cmd.SetArgs(append([]string{"fix"}, extra...))
+	err := cmd.Execute()
+	var env mutation.Envelope
+	if out.Len() > 0 {
+		if decodeErr := json.Unmarshal(out.Bytes(), &env); decodeErr != nil {
+			t.Fatalf("decode envelope %q: %v", out.String(), decodeErr)
+		}
+	}
+	return env, out.String(), err
 }
