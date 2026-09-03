@@ -20,6 +20,10 @@
 // (ADR-0007). Confirmation is the mirror image of the field case: the read
 // plane no longer listing the key is what proves the delete landed, and only a
 // complete pass can establish that, so store.SweepMissing retires the marker.
+// Confirmation is also ALL that retires it. A field marker holds a local guess
+// and yields to the read plane after pendingWriteTTL; a deletion marker holds a
+// fact the write plane already confirmed, so no clock may retire it — past the
+// TTL zotio warns that the delete has not propagated and keeps suppressing.
 
 package cli
 
@@ -51,18 +55,66 @@ func recordPendingWrite(db *store.Store, key string, changes []mutation.Change) 
 	}
 }
 
-// pendingWriteTTL bounds how long a marker can hold the mirror against the read
-// plane. The gap it covers is normally seconds to minutes — however long Zotero
-// takes to sync the write down. A marker still outstanding after this long means
-// the write never propagated (Zotero sync disabled, say) or that replaying it can
-// never converge; either way upstream truth must win rather than the row staying
-// pinned to a local copy indefinitely.
+// pendingWriteTTL bounds how long a FIELD-CHANGE marker can hold the mirror
+// against the read plane. The gap it covers is normally seconds to minutes —
+// however long Zotero takes to sync the write down. A field marker still
+// outstanding after this long means the write never propagated (Zotero sync
+// disabled, say) or that replaying it can never converge; either way upstream
+// truth must win rather than the row staying pinned to a local copy
+// indefinitely.
 //
-// It is also the backstop for a deletion marker, whose normal confirmation
-// (a complete pass that no longer lists the key) only arrives when a full sync
-// runs. Expiry means the same thing there: upstream wins, and the row the read
-// plane keeps reporting is stored again with a warning.
+// For a DELETION marker the same clock is a diagnostic only, never a deadline.
+// See checkPendingWriteAges.
 const pendingWriteTTL = 7 * 24 * time.Hour
+
+// checkPendingWriteAges does the two age-driven things a sync owes, for one
+// resource, before it fetches anything: it retires field-change markers that
+// have outlived pendingWriteTTL, and it reports deletion markers that have
+// outlived it without retiring them.
+//
+// The asymmetry is the point. A field marker holds a local guess: replaying a
+// recorded change is not guaranteed to converge, so past the TTL the read
+// plane's copy is the better answer and the marker goes. A deletion marker
+// holds a confirmed fact: it is written only after the write plane reported the
+// delete applied, so the object IS gone. Retiring that on a clock would let
+// elapsed time overrule the write plane and put a purged item back into offline
+// reads and search — and it would do it in the exact situation the marker
+// exists for, a desktop that has not synced. A warning does not undo a ghost.
+// So a deletion marker retires on confirmation alone (store.SweepMissing), and
+// past the TTL all that changes is that zotio starts saying the delete has not
+// propagated.
+//
+// Neither half can live in reconcilePendingWrites, which only ever inspects
+// keys a fetched page contains. The row a marker guards is precisely the row
+// the read plane is not reporting yet, and a sync with nothing to report
+// returns an empty page that breaks out of the paging loop before the
+// reconciliation runs at all — the common case on a quiet installation.
+//
+// This retires; it never confirms. Absence from a pass is not evidence that the
+// write landed, so store.SweepMissing keeps sole ownership of confirmation
+// behind its complete-pass precondition.
+func checkPendingWriteAges(db *store.Store, resource string) {
+	cutoff := time.Now().Add(-pendingWriteTTL)
+	expired, err := db.ExpirePendingWrites(resource, cutoff)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "warning: could not retire expired pending writes for %s: %v\n", resource, err)
+	}
+	for _, id := range expired {
+		fmt.Fprintf(os.Stderr,
+			"warning: %s/%s still unconfirmed after %s; accepting the read plane's copy. Check that Zotero sync is enabled.\n",
+			resource, id, pendingWriteTTL)
+	}
+	stale, err := db.UnconfirmedDeletions(resource, cutoff)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "warning: could not check unconfirmed deletions for %s: %v\n", resource, err)
+		return
+	}
+	for _, id := range stale {
+		fmt.Fprintf(os.Stderr,
+			"warning: %s/%s was permanently deleted more than %s ago and zotero.org confirmed it, but the read plane still lists it; the mirror keeps suppressing the row. Check that the Zotero desktop is running and syncing.\n",
+			resource, id, pendingWriteTTL)
+	}
+}
 
 // reconcilePendingWrites merges unconfirmed local writes into a page of rows
 // pulled from the read plane, returning the rows to store and how many markers
@@ -101,37 +153,20 @@ func reconcilePendingWrites(db *store.Store, resource string, items []json.RawMe
 		if !ok {
 			continue
 		}
-		expired := !mark.WrittenAt.IsZero() && time.Since(mark.WrittenAt) > pendingWriteTTL
 		if mark.Deleted {
-			if expired {
-				// The read plane has listed a key zotio purged for longer than
-				// the whole window is meant to last, so the delete never
-				// propagated — Zotero sync is off, or the object still exists
-				// there. Upstream truth wins, exactly as it does for an expired
-				// field marker: the row is stored again. Loud, never silent,
-				// because a reappearing item is otherwise indistinguishable
-				// from a failed delete.
-				fmt.Fprintf(os.Stderr,
-					"warning: %s/%s was permanently deleted but the read plane still lists it after %s; restoring the read plane's copy to the mirror. Check that Zotero sync is enabled and that the delete reached zotero.org.\n",
-					resource, id, pendingWriteTTL)
-				clearPendingWrite(db, resource, id)
-				continue
-			}
-			// Inside the window: the object is gone on the write plane and the
-			// read plane has not caught up. Storing this row would resurrect it.
-			// nil marks the slot for compaction below; a decoded JSON array
-			// element is never nil, so the sentinel cannot collide with a row.
+			// The object is gone on the write plane and the read plane has not
+			// caught up. Storing this row would resurrect it. nil marks the
+			// slot for compaction below; a decoded JSON array element is never
+			// nil, so the sentinel cannot collide with a row.
+			//
+			// No TTL check here, and none anywhere for a deletion marker: it
+			// records a delete the write plane already confirmed, so age is
+			// never a reason to store the row. The marker goes when a
+			// total-observation pass stops listing the key, and only then.
 			ensureCopy()
 			merged[i] = nil
 			dropped++
 			stillPending++
-			continue
-		}
-		if expired {
-			fmt.Fprintf(os.Stderr,
-				"warning: %s/%s still unconfirmed after %s; accepting the read plane's copy. Check that Zotero sync is enabled.\n",
-				resource, id, pendingWriteTTL)
-			clearPendingWrite(db, resource, id)
 			continue
 		}
 		replayed, changed, ok := replayPendingChanges(raw, mark.Changes)

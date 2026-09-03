@@ -76,14 +76,15 @@ func TestReconcilePendingWritesDropsRowsMarkedDeleted(t *testing.T) {
 	}
 }
 
-// Documented TTL behaviour. A read plane that still lists a purged key after
-// the whole TTL is not lagging any more: the delete never reached zotero.org,
-// or Zotero sync is off, so the object really does still exist upstream.
-// Upstream then wins, exactly as it does for an expired field marker — the row
-// is stored again. It must NOT come back silently: a reappearing item is
-// otherwise indistinguishable from a delete that failed, and the marker must go
-// so the row is not re-dropped on every later sync forever.
-func TestReconcilePendingWritesYieldsToTheReadPlaneWhenADeletionMarkerExpires(t *testing.T) {
+// Documented TTL behaviour for a DELETION marker: the clock reports, it does
+// not retire. The marker is written only after the write plane reported the
+// delete applied, so a read plane still listing the key after the whole TTL
+// means the desktop never synced — not that the object is back. Retiring on
+// age would let elapsed time overrule a confirmed delete and put the item into
+// offline reads and search in exactly the situation the marker exists for, and
+// a warning does not undo a ghost. So the marker stays, the row stays
+// suppressed, and zotio says the delete has not propagated.
+func TestPendingWriteAgeCheckKeepsAConfirmedDeletionMarkerPastItsTTL(t *testing.T) {
 	db := syncTestOpenStore(t)
 	defer db.Close()
 
@@ -98,24 +99,83 @@ func TestReconcilePendingWritesYieldsToTheReadPlaneWhenADeletionMarkerExpires(t 
 		t.Fatalf("age deletion marker: %v", err)
 	}
 
-	page := []json.RawMessage{pendingWritesTestItem("STUCK")}
-	var merged []json.RawMessage
 	stderr := captureStderr(t, func() {
-		merged, _ = reconcilePendingWrites(db, "items", page)
+		checkPendingWriteAges(db, "items")
 	})
-
-	if got := pendingWritesTestKeys(t, merged); len(got) != 1 || got[0] != "STUCK" {
-		t.Fatalf("stored page = %v, want [STUCK]: an expired marker must yield to the read plane, not suppress the row forever", got)
-	}
 	if !strings.Contains(stderr, "STUCK") || !strings.Contains(stderr, "permanently deleted") {
-		t.Errorf("stderr = %q, want a warning naming the key and the failed delete: the row must never reappear silently", stderr)
+		t.Errorf("stderr = %q, want a warning naming the key and the unpropagated delete: an indefinite suppression the user is never told about is its own bug", stderr)
 	}
 	pending, err := db.PendingWrites("items")
 	if err != nil {
 		t.Fatalf("PendingWrites: %v", err)
 	}
-	if _, ok := pending["STUCK"]; ok {
-		t.Error("expired deletion marker survived; it would re-drop the row on every later sync")
+	if !pending["STUCK"].Deleted {
+		t.Fatal("the age check retired a confirmed deletion marker; the next stale listing would resurrect a purged item")
+	}
+
+	// And the row stays suppressed, which is the whole reason not to retire it.
+	merged, stillPending := reconcilePendingWrites(db, "items", []json.RawMessage{pendingWritesTestItem("STUCK")})
+	if got := pendingWritesTestKeys(t, merged); len(got) != 0 {
+		t.Fatalf("stored page = %v, want empty: a purged item must not be stored because a week passed", got)
+	}
+	if stillPending != 1 {
+		t.Errorf("stillPending = %d, want 1: the deletion is still unconfirmed", stillPending)
+	}
+}
+
+// The field-change half of the same pass keeps the old rule: a local guess that
+// may never converge yields to the read plane once the TTL is up. Retiring it
+// does not contradict any confirmed fact — the write plane confirmed a field
+// value, not the absence of the object.
+func TestPendingWriteAgeCheckRetiresAnExpiredFieldMarker(t *testing.T) {
+	db := syncTestOpenStore(t)
+	defer db.Close()
+
+	if err := db.RecordPendingWrite("items", "DRIFTED", []byte(`[{"field":"collections","add":"TARGET"}]`)); err != nil {
+		t.Fatalf("record pending write: %v", err)
+	}
+	if _, err := db.DB().Exec(`UPDATE pending_writes SET written_at = ? WHERE id = 'DRIFTED'`,
+		time.Now().Add(-2*pendingWriteTTL)); err != nil {
+		t.Fatalf("age field marker: %v", err)
+	}
+
+	stderr := captureStderr(t, func() {
+		checkPendingWriteAges(db, "items")
+	})
+	if !strings.Contains(stderr, "DRIFTED") {
+		t.Errorf("stderr = %q, want a warning naming the abandoned write", stderr)
+	}
+	pending, err := db.PendingWrites("items")
+	if err != nil {
+		t.Fatalf("PendingWrites: %v", err)
+	}
+	if _, ok := pending["DRIFTED"]; ok {
+		t.Fatal("an expired field marker survived; it would pin the row to a local copy indefinitely")
+	}
+}
+
+// A marker whose written_at is NULL cannot be aged, so the pass must leave it
+// alone rather than treat an unrecorded clock as infinitely old and retire a
+// marker that has held for no time at all.
+func TestPendingWriteAgeCheckKeepsAFieldMarkerWithNoRecordedClock(t *testing.T) {
+	db := syncTestOpenStore(t)
+	defer db.Close()
+
+	if err := db.RecordPendingWrite("items", "NOCLOCK", []byte(`[{"field":"collections","add":"TARGET"}]`)); err != nil {
+		t.Fatalf("record pending write: %v", err)
+	}
+	if _, err := db.DB().Exec(`UPDATE pending_writes SET written_at = NULL WHERE id = 'NOCLOCK'`); err != nil {
+		t.Fatalf("clear written_at: %v", err)
+	}
+
+	checkPendingWriteAges(db, "items")
+
+	pending, err := db.PendingWrites("items")
+	if err != nil {
+		t.Fatalf("PendingWrites: %v", err)
+	}
+	if _, ok := pending["NOCLOCK"]; !ok {
+		t.Fatal("the pass retired a marker with no recorded written_at; an unknown clock is not an expired one")
 	}
 }
 

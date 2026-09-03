@@ -539,6 +539,34 @@ func syncCursorScope(plane string, full bool, since int) string {
 	return string(data)
 }
 
+// syncRequestObservesEveryObject reports whether one page request could witness
+// every object of its resource, i.e. whether the response's absences mean
+// "deleted" rather than "filtered out".
+//
+// Default-deny by design. Pagination params choose WHICH SLICE of the whole set
+// comes back, one page at a time, and a completed pass walks every slice; any
+// other param chooses WHICH OBJECTS QUALIFY, and no amount of paging recovers
+// the ones it excluded. So the two pagination params are allowlisted and
+// everything else counts as narrowing, including params that do not exist yet.
+//
+// That inversion is deliberate. The predicate this replaced was the `full`
+// flag, which names the user's intent and stopped tracking reality the moment
+// `--full --since N` became expressible: full stayed true while every request
+// carried a since filter, and the sweep reaped almost the whole mirror. A new
+// narrowing param now disables the sweep on its own, and a genuinely
+// non-narrowing one has to be added here, next to this reasoning.
+func syncRequestObservesEveryObject(params map[string]string, limitParam, cursorParam string) bool {
+	for key := range params {
+		switch key {
+		case limitParam, cursorParam:
+			// Pagination only: a completed pass covers every page.
+		default:
+			return false
+		}
+	}
+	return true
+}
+
 // syncResource handles one complete or resumable paginated resource pass.
 // Resumption requires exact plane, mode, and since-filter provenance.
 func syncResource(ctx context.Context, c syncHTTPClient, db *store.Store, resource string, sinceVersion int, full bool, maxPages int, inlineProgress bool) syncResult {
@@ -642,8 +670,39 @@ func syncResource(ctx context.Context, c syncHTTPClient, db *store.Store, resour
 	completedNaturally := false
 	incompleteReason := ""
 
+	// Age-driven pending-write bookkeeping, before fetching anything: retire
+	// field-change markers past their TTL, and warn about deletion markers past
+	// theirs without retiring them (a delete the write plane confirmed is not
+	// something a clock may overrule — see checkPendingWriteAges).
+	//
+	// Unconditional, and deliberately not folded into reconcilePendingWrites or
+	// into the SweepMissing block below. Both of those only ever see keys a
+	// fetched page contained, and a marker guards precisely the row the read
+	// plane is NOT reporting yet: a sync with nothing changed returns an empty
+	// page, breaks out at the `isPage && len(items) == 0` check below before
+	// upsertResourceBatch, and never reaches the reconciliation at all. That is
+	// the common case on a quiet installation, not an edge, so a marker aged
+	// only against page members never aged at all. Do not tidy this call back
+	// into the reconciliation; it would read as correct and do nothing.
+	//
+	// Before the loop rather than after it, because an expired field marker
+	// must not hold the mirror against this pass too: the reconciliation below
+	// must see a marker set already free of expired entries, so the row the
+	// read plane reports lands now instead of one sync later.
+	//
+	// It never confirms. Absence from a pass is not evidence the write landed,
+	// so confirmation stays with the SweepMissing call below and its
+	// total-observation precondition.
+	checkPendingWriteAges(db, canonicalStoreResource(resource))
+
 	// Keys the plane reported during a full pass; drives the sweep below.
 	seenKeys := map[string]bool{}
+	// observedEveryObject reports whether every request in this pass could
+	// witness the resource's WHOLE key set, which is what the sweep needs and
+	// what the `full` flag does not establish. See syncRequestObservesEveryObject.
+	// ANDed across pages: one narrowed request is enough to make the pass's
+	// absences meaningless.
+	observedEveryObject := true
 	for {
 		params := map[string]string{}
 
@@ -660,6 +719,12 @@ func syncResource(ctx context.Context, c syncHTTPClient, db *store.Store, resour
 		// Set since filter (integer Zotero library version)
 		if effectiveSince > 0 {
 			params[sinceParam] = strconv.Itoa(effectiveSince)
+		}
+
+		// Evaluate the request as SENT, not the flags that produced it: the
+		// sweep's correctness depends on what the plane was actually asked for.
+		if !syncRequestObservesEveryObject(params, pageSize.limitParam, pageSize.cursorParam) {
+			observedEveryObject = false
 		}
 
 		data, respVersion, err := requestClient.GetWithVersionContext(ctx, path, params)
@@ -993,20 +1058,40 @@ func syncResource(ctx context.Context, c syncHTTPClient, db *store.Store, resour
 		if serr := db.SaveLibraryVersion(resource, c.Plane(), libraryVersion); serr != nil {
 			return syncResult{Resource: resource, Count: totalCount, Err: fmt.Errorf("persisting library-version checkpoint: %w", serr), Duration: time.Since(started)}
 		}
-		// Reap rows for objects that no longer exist upstream. Only valid after a
-		// COMPLETE full pass: an incremental sync sees only what changed, so
-		// absence means unchanged, not deleted. Nothing reaped before this, so
-		// zotio's own permanent deletes and any deletion made elsewhere left rows
-		// behind that offline reads happily served and every count included.
+		// Reap rows for objects that no longer exist upstream, and retire the
+		// deletion markers this pass confirmed (store.SweepMissing does both).
 		//
-		// Gated on `full`, not on len(seenKeys) > 0: a genuinely empty resource
-		// (e.g. an empty trash) completes naturally with zero keys, and that is a
-		// real answer, not a failed fetch — any request or decode error returns
-		// early above, well before completedNaturally can become true, so nothing
-		// here can misread "fetch failed" as "resource is empty". Requiring a
-		// non-empty seenKeys left a phantom items-trash row unreapable forever,
-		// because the live trash was legitimately empty on every pass.
-		if full && canonicalStoreResource(resource) == resource {
+		// The whole rule, in one predicate, because it is one rule: absence is
+		// evidence of deletion only when presence was possible, and that takes
+		// BOTH halves of a total observation.
+		//
+		//   completedNaturally  — pagination reached the end. Truncation is not
+		//     a request param, so the param check below cannot see it:
+		//     `--full --max-pages 1` over a multi-page resource issues perfectly
+		//     unfiltered requests and still observes only a prefix. This is
+		//     also enforced by the enclosing block, and restated here anyway so
+		//     the pair reads as a rule rather than as two accidents 35 lines
+		//     apart — a reviewer already misread the nesting once.
+		//   observedEveryObject — no request narrowed WHICH objects could come
+		//     back. Gated on this and NOT on `full`, because `full` is the
+		//     user's intent while this is the property: `--full --since N`
+		//     keeps full true while every request carries a since filter, so
+		//     the plane omits unchanged objects. The sweep then read those
+		//     absences as deletions, reaped almost the whole mirror, and (once
+		//     markers existed) retired every deletion marker as confirmed,
+		//     reopening the resurrection window through a documented flag
+		//     combination. Do not reintroduce a flag-shaped gate here.
+		//
+		// Deliberately NOT gated on len(seenKeys) > 0: a genuinely empty
+		// resource (e.g. an empty trash) completes naturally with zero keys, and
+		// that is a real answer, not a failed fetch — any request or decode
+		// error returns early above, well before completedNaturally can become
+		// true, so nothing here can misread "fetch failed" as "resource is
+		// empty". Requiring a non-empty seenKeys left a phantom items-trash row
+		// unreapable forever, because the live trash was legitimately empty on
+		// every pass.
+		observedEverything := completedNaturally && observedEveryObject
+		if full && observedEverything && canonicalStoreResource(resource) == resource {
 			// SweepMissing requires a complete pass over the swept resource
 			// type. A top-level alias fetches a strict subset, so the storage
 			// alias is correct for upserts but wrong for reaps.
@@ -1015,6 +1100,32 @@ func syncResource(ctx context.Context, c syncHTTPClient, db *store.Store, resour
 				fmt.Fprintf(os.Stderr, "warning: reaping deleted %s rows: %v\n", storeResource, rerr)
 			} else if reaped > 0 && humanFriendly {
 				fmt.Fprintf(os.Stderr, "  reaped %d %s row(s) for objects that no longer exist\n", reaped, storeResource)
+			}
+		} else if full && !observedEverything && canonicalStoreResource(resource) == resource {
+			// The user asked for --full and is not getting the sweep. Say so:
+			// silence here is what let a filtered pass masquerade as a complete
+			// one. Everything else --full means (cursor reset, stored-version
+			// invalidation, authoritative re-fetch) still happened.
+			//
+			// Same two channels every other sync warning uses — stderr prose
+			// when human-friendly, a sync_anomaly event otherwise — rather than
+			// a third path that an --agent run would never see.
+			if humanFriendly {
+				fmt.Fprintf(os.Stderr,
+					"warning: skipped reaping deleted %s rows because this pass was filtered (--since narrows the response, so absent objects are unchanged, not deleted); run `zotio sync --full` without --since to reap\n",
+					canonicalStoreResource(resource))
+			} else {
+				emitSyncEvent(ctx, struct {
+					Event    string `json:"event"`
+					Resource string `json:"resource"`
+					Reason   string `json:"reason"`
+					Message  string `json:"message"`
+				}{
+					Event:    "sync_anomaly",
+					Resource: canonicalStoreResource(resource),
+					Reason:   "sweep_skipped_filtered_pass",
+					Message:  "--full combined with a narrowing filter (--since): absent objects are unchanged, not deleted, so no rows were reaped and no deletion markers were confirmed",
+				})
 			}
 		}
 	}

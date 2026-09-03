@@ -4,6 +4,7 @@ package store
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -561,6 +562,153 @@ func TestPendingWritesDeletedColumnIsBackfilledOnUpgrade(t *testing.T) {
 	}
 	if !pending["LEGACY"].Deleted {
 		t.Error("the upgraded database cannot record a deletion marker")
+	}
+}
+
+// The version gate has to refuse the very NEXT version, not merely an
+// obviously-alien one. That is the case a staged rollout actually produces: one
+// machine writes version 8 with pending_writes.deleted, an older zotio still on
+// PATH declares 7, and its three-column read of the table turns a deletion
+// marker into a field-change marker with an empty change set — after which its
+// reconcile stores the read-plane row the marker exists to suppress, silently
+// resurrecting a permanently deleted item (ADR-0007). A guard with any
+// tolerance window, or one that only trips on a far-future stamp, lets that
+// through. TestSchemaVersion_RefusesNewerDB pins the far case with 999; this
+// pins the adjacent case, on BOTH open paths, because MCP and local reads go
+// through the read-only one (readiness.go's readOnlySchemaReady).
+func TestSchemaVersionRefusesTheNextVersionOnBothOpenPaths(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "data.db")
+
+	// A genuine, fully migrated database, so the refusal can only come from the
+	// version stamp and not from a missing table or column.
+	s, err := OpenWithContext(ctx, path)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	if err := s.Close(); err != nil {
+		t.Fatalf("close: %v", err)
+	}
+	raw, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatalf("open raw: %v", err)
+	}
+	if _, err := raw.Exec(fmt.Sprintf(`PRAGMA user_version = %d`, StoreSchemaVersion+1)); err != nil {
+		raw.Close()
+		t.Fatalf("stamp next version: %v", err)
+	}
+	if err := raw.Close(); err != nil {
+		t.Fatalf("close raw: %v", err)
+	}
+
+	rw, err := OpenWithContext(ctx, path)
+	if err == nil {
+		rw.Close()
+		t.Fatal("OpenWithContext accepted a database one version newer than this binary; an older zotio would read deletion markers as empty field-change markers and resurrect purged items")
+	}
+	if !strings.Contains(err.Error(), "newer than supported") {
+		t.Errorf("read-write open error = %v, want it to name the version mismatch", err)
+	}
+
+	ro, err := OpenReadOnlyContext(ctx, path)
+	if err == nil {
+		ro.Close()
+		t.Fatal("OpenReadOnlyContext accepted a database one version newer than this binary; MCP and local reads would serve rows from a schema they cannot read")
+	}
+	if !strings.Contains(err.Error(), "newer than supported") {
+		t.Errorf("read-only open error = %v, want it to name the version mismatch", err)
+	}
+}
+
+// Expiry is a property of the marker and the clock, so the sweep must retire on
+// age alone — and only field-change markers. A deletion marker is written after
+// the write plane confirmed the delete, so retiring it on a clock would let
+// elapsed time overrule a confirmed fact and put a purged item back into
+// offline reads, precisely when the desktop is not syncing. The clock reports
+// it instead.
+func TestExpirePendingWritesRetiresAgedFieldMarkersAndNeverDeletionMarkers(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "data.db")
+	s, err := OpenWithContext(ctx, path)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer s.Close()
+
+	if err := s.RecordPendingWrite("items", "AGED-FIELD", []byte(`[{"field":"title","add":"Old"}]`)); err != nil {
+		t.Fatalf("seed aged field marker: %v", err)
+	}
+	if err := s.RecordPendingWrite("items", "NOCLOCK", []byte(`[{"field":"title","add":"New"}]`)); err != nil {
+		t.Fatalf("seed clockless marker: %v", err)
+	}
+	if err := s.RecordPendingWrite("collections", "OTHER-RESOURCE", []byte(`[{"field":"name","add":"Old"}]`)); err != nil {
+		t.Fatalf("seed other resource: %v", err)
+	}
+	live := json.RawMessage(`{"key":"AGED-DELETE","version":1,"data":{"key":"AGED-DELETE","itemType":"book","title":"Purged"}}`)
+	if _, err := s.UpsertKeyed("items", []string{"AGED-DELETE"}, []json.RawMessage{live}); err != nil {
+		t.Fatalf("seed purged row: %v", err)
+	}
+	if err := s.ReapMirroredItem("AGED-DELETE"); err != nil {
+		t.Fatalf("ReapMirroredItem: %v", err)
+	}
+	aged := time.Now().Add(-48 * time.Hour)
+	if _, err := s.DB().Exec(
+		`UPDATE pending_writes SET written_at = ? WHERE id IN ('AGED-FIELD', 'AGED-DELETE', 'OTHER-RESOURCE')`, aged,
+	); err != nil {
+		t.Fatalf("age markers: %v", err)
+	}
+	// A marker whose clock was never recorded cannot be aged, so it must not be
+	// treated as infinitely old.
+	if _, err := s.DB().Exec(`UPDATE pending_writes SET written_at = NULL WHERE id = 'NOCLOCK'`); err != nil {
+		t.Fatalf("clear written_at: %v", err)
+	}
+
+	cutoff := time.Now().Add(-24 * time.Hour)
+	expired, err := s.ExpirePendingWrites("items", cutoff)
+	if err != nil {
+		t.Fatalf("ExpirePendingWrites: %v", err)
+	}
+	if len(expired) != 1 || expired[0] != "AGED-FIELD" {
+		t.Fatalf("retired %v, want exactly [AGED-FIELD]", expired)
+	}
+
+	// What was reported retired is exactly what was deleted, and nothing else
+	// moved.
+	pending, err := s.PendingWrites("items")
+	if err != nil {
+		t.Fatalf("PendingWrites: %v", err)
+	}
+	if _, ok := pending["AGED-FIELD"]; ok {
+		t.Error("AGED-FIELD was reported retired but survived in the table")
+	}
+	if !pending["AGED-DELETE"].Deleted {
+		t.Error("the sweep retired a deletion marker on age; the purged item would be stored again from the read plane's stale listing")
+	}
+	if _, ok := pending["NOCLOCK"]; !ok {
+		t.Error("the sweep retired a marker with no recorded written_at; an unknown clock is not an expired one")
+	}
+	other, err := s.PendingWrites("collections")
+	if err != nil {
+		t.Fatalf("PendingWrites(collections): %v", err)
+	}
+	if _, ok := other["OTHER-RESOURCE"]; !ok {
+		t.Error("the sweep crossed resource types; each sync retires only its own resource's markers")
+	}
+
+	// The clock's only remaining job for a deletion: report it.
+	stale, err := s.UnconfirmedDeletions("items", cutoff)
+	if err != nil {
+		t.Fatalf("UnconfirmedDeletions: %v", err)
+	}
+	if len(stale) != 1 || stale[0] != "AGED-DELETE" {
+		t.Fatalf("unconfirmed deletions = %v, want exactly [AGED-DELETE]: without this the user is never told the delete has not propagated", stale)
+	}
+	fresh, err := s.UnconfirmedDeletions("items", time.Now().Add(-72*time.Hour))
+	if err != nil {
+		t.Fatalf("UnconfirmedDeletions before the marker: %v", err)
+	}
+	if len(fresh) != 0 {
+		t.Errorf("unconfirmed deletions against an older cutoff = %v, want none: a marker inside its window is not news", fresh)
 	}
 }
 func TestPendingWritesRoundtrip(t *testing.T) {

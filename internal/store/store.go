@@ -28,7 +28,16 @@ import (
 // shape — adding columns, dropping indexes, changing FTS5 tokenizers —
 // so an older binary refuses to open a newer database rather than silently
 // producing wrong results against a schema it cannot read.
-const StoreSchemaVersion = 7
+//
+// Version 8 added `pending_writes.deleted` (ADR-0007). That bump is
+// load-bearing rather than bookkeeping: the column changes what an existing
+// pending_writes row MEANS. An older binary reads the table with a
+// three-column SELECT, so it sees a deletion marker as a field-change marker
+// carrying an empty change set, replays nothing, and upserts the very
+// read-plane row the marker exists to suppress — silently resurrecting a
+// permanently deleted item. During a staged rollout an older zotio on PATH is
+// a normal state, so the version gate has to turn that into a loud refusal.
+const StoreSchemaVersion = 8
 
 // ErrNotFound identifies a resource read that found no matching row.
 var ErrNotFound = errors.New("store: resource not found")
@@ -334,8 +343,14 @@ func (s *Store) backfillColumns(ctx context.Context, conn *sql.Conn) error {
 		// api.zotero.org while reads come from the local desktop API, which
 		// keeps listing the item until Zotero syncs the delete down; without a
 		// marker recording "this key no longer exists", the next sync re-insert
-		// resurrected the row (see ADR-0007). Older binaries insert without
-		// this column and the DEFAULT covers them.
+		// resurrected the row (see ADR-0007).
+		//
+		// This IS the 7-to-8 migration: a database an older binary created has
+		// the table without the column, and gains it here, before the
+		// migrations slice and before the version stamp. The DEFAULT covers
+		// its existing rows, which were all field-change markers and read back
+		// as deleted=0. There is no accompanying data repair, so version 8 has
+		// no `current < 8` block below.
 		{table: "pending_writes", column: "deleted", decl: "INTEGER NOT NULL DEFAULT 0"},
 	} {
 		if err := s.ensureColumn(ctx, conn, c.table, c.column, c.decl); err != nil {
@@ -505,14 +520,23 @@ func (s *Store) migrate(ctx context.Context) error {
 		// (api.zotero.org) but that the read plane (the local desktop API) has
 		// not reported back yet. Sync pulls from the read plane, so without
 		// this it re-applied the pre-write copy over the mirror and silently
-		// rolled the write back for every later read. Additive: older binaries
-		// simply ignore the table, so no schema-version bump is required.
+		// rolled the write back for every later read. The table itself was
+		// additive: an older binary that had never heard of it simply ignored
+		// it, so introducing it needed no schema-version bump.
 		//
 		// deleted=1 turns the row into a DELETION marker: the key no longer
 		// exists on the write plane, so a row the read plane still reports for
 		// it must be dropped rather than merged (ADR-0007). changes stays '[]'
 		// there — a deletion is not expressible as a field change, which is why
 		// the flag is a column and not a sentinel inside the JSON.
+		//
+		// That column DID require a bump, to version 8, and the earlier "no
+		// bump required" reasoning does not extend to it. An older binary does
+		// not ignore this change: it still reads the table, with a SELECT that
+		// omits the column, and therefore reads a deletion marker as a
+		// field-change marker with an empty change set. It then stores the
+		// read-plane row the marker exists to suppress. Reinterpreting an
+		// existing row is a shape change, not an addition.
 		`CREATE TABLE IF NOT EXISTS pending_writes (
 			resource_type TEXT NOT NULL,
 			id TEXT NOT NULL,
@@ -1797,6 +1821,94 @@ func (s *Store) PendingWrites(resourceType string) (map[string]PendingWrite, err
 	return pending, rows.Err()
 }
 
+// ExpirePendingWrites retires every FIELD-CHANGE marker of a resource type
+// written before cutoff, returning the ids it removed.
+//
+// Deletion markers are deliberately out of scope, and the predicate says so
+// with `deleted = 0`. A field marker can legitimately expire: replaying a
+// recorded change is not guaranteed to converge, so after long enough the read
+// plane's copy is the better answer. A deletion marker is a different kind of
+// claim — it is written only after the write plane reported the delete applied,
+// so the key IS gone, authoritatively. Retiring it on a clock would let elapsed
+// time overrule a confirmed fact and put a purged item back into offline reads
+// and search, in precisely the situation the marker exists for: a desktop that
+// has not synced. Only confirmation removes one; see SweepMissing.
+//
+// Expiry is a property of the marker and the clock, NOT of what a fetched page
+// happened to contain, so it cannot be folded into the per-row reconciliation.
+// The row a marker guards is exactly the row the read plane is not reporting
+// yet: an incremental sync that finds nothing changed returns an empty page and
+// never reaches the reconciliation at all, so a marker checked only against
+// page members never ages out.
+//
+// A NULL written_at never expires. It cannot be aged, so treating it as
+// infinitely old would retire a marker whose clock was simply never recorded.
+func (s *Store) ExpirePendingWrites(resourceType string, cutoff time.Time) ([]string, error) {
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+	tx, err := s.db.Begin()
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = tx.Rollback() }()
+	expired, err := pendingWriteIDsLocked(tx,
+		`SELECT id FROM pending_writes
+		 WHERE resource_type = ? AND deleted = 0 AND written_at IS NOT NULL AND written_at < ?`,
+		resourceType, cutoff)
+	if err != nil {
+		return nil, err
+	}
+	if len(expired) == 0 {
+		return nil, nil
+	}
+	// Same predicate as the SELECT, in the same transaction: what the caller is
+	// told was retired is exactly what was deleted.
+	if _, err := tx.Exec(
+		`DELETE FROM pending_writes
+		 WHERE resource_type = ? AND deleted = 0 AND written_at IS NOT NULL AND written_at < ?`,
+		resourceType, cutoff,
+	); err != nil {
+		return nil, fmt.Errorf("retiring expired pending writes for %s: %w", resourceType, err)
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, err
+	}
+	return expired, nil
+}
+
+// UnconfirmedDeletions lists the keys of a resource type whose deletion marker
+// was written before cutoff and is still outstanding.
+//
+// Purely diagnostic: the marker is correct and stays. Past the TTL it means the
+// write plane confirmed the delete but the read plane has never stopped listing
+// the key, which in practice means the Zotero desktop is not syncing. The
+// caller says so; nothing here changes state.
+func (s *Store) UnconfirmedDeletions(resourceType string, cutoff time.Time) ([]string, error) {
+	return pendingWriteIDsLocked(s.db,
+		`SELECT id FROM pending_writes
+		 WHERE resource_type = ? AND deleted = 1 AND written_at IS NOT NULL AND written_at < ?`,
+		resourceType, cutoff)
+}
+
+// pendingWriteIDsLocked runs an id-selecting pending_writes query on the
+// caller's handle, so the same scan serves a transaction and a plain read.
+func pendingWriteIDsLocked(queryer resourceIDQueryer, query string, args ...any) ([]string, error) {
+	rows, err := queryer.Query(query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
+}
+
 // ClearPendingWrite drops the marker once the read plane reports the written
 // state, so a row is never pinned to a local copy indefinitely.
 func (s *Store) ClearPendingWrite(resourceType, id string) error {
@@ -2183,13 +2295,15 @@ func (s *Store) ResourceIDs(resourceType string) (map[string]bool, error) {
 // local desktop API implements no /deleted feed, so a full pass is the only way
 // zotio can learn that an object it mirrors is gone.
 //
-// That same property is the only sound confirmation signal for a deletion
-// marker. A marker suppresses re-insertion of a purged key while the read plane
-// still lists it; once a complete pass stops listing the key, Zotero has synced
-// the delete down and the marker has nothing left to suppress, so holding it
-// would only inflate doctor's pending_writes count. An incremental pass cannot
-// clear it, because absence there means unchanged, not gone — which is why a
-// marker also carries the pendingWriteTTL backstop in internal/cli.
+// That same property makes this the ONLY thing that retires a deletion marker.
+// A marker suppresses re-insertion of a purged key while the read plane still
+// lists it; once a pass that could have observed every object stops listing the
+// key, Zotero has synced the delete down and the marker has nothing left to
+// suppress. Nothing else removes one — in particular no clock does, because the
+// marker records a delete the write plane already confirmed, so letting elapsed
+// time retire it would resurrect a purged item exactly when the desktop is not
+// syncing (ADR-0007). An incremental pass cannot retire one either: absence
+// there means unchanged, not gone.
 func (s *Store) SweepMissing(resourceType string, seen map[string]bool) (int, error) {
 	// Hold writeMu for the full snapshot-and-reap transaction. Without one
 	// critical section, a row inserted after the snapshot could be reaped as
@@ -2215,7 +2329,8 @@ func (s *Store) SweepMissing(resourceType string, seen map[string]bool) (int, er
 		}
 		reaped++
 	}
-	marked, err := deletionMarkerIDsLocked(tx, resourceType)
+	marked, err := pendingWriteIDsLocked(tx,
+		`SELECT id FROM pending_writes WHERE resource_type = ? AND deleted = 1`, resourceType)
 	if err != nil {
 		return reaped, err
 	}
@@ -2234,25 +2349,4 @@ func (s *Store) SweepMissing(resourceType string, seen map[string]bool) (int, er
 		return reaped, err
 	}
 	return reaped, nil
-}
-
-// deletionMarkerIDsLocked lists the row ids of a resource type that carry a
-// deletion marker, using the caller's query handle so the read shares
-// SweepMissing's transaction.
-func deletionMarkerIDsLocked(queryer resourceIDQueryer, resourceType string) ([]string, error) {
-	rows, err := queryer.Query(
-		`SELECT id FROM pending_writes WHERE resource_type = ? AND deleted = 1`, resourceType)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var ids []string
-	for rows.Next() {
-		var id string
-		if err := rows.Scan(&id); err != nil {
-			return nil, err
-		}
-		ids = append(ids, id)
-	}
-	return ids, rows.Err()
 }
