@@ -40,8 +40,15 @@ type vaultAuditReport struct {
 func newVaultAuditCmd(flags *rootFlags) *cobra.Command {
 	var flagOut string
 	cmd := &cobra.Command{
-		Use:         "audit [--out <dir>]",
-		Short:       "Audit managed vault notes without writing",
+		Use:   "audit [--out <dir>]",
+		Short: "Audit managed vault notes without writing",
+		Long: `Audit managed vault notes without writing: notes whose Zotero item is gone, notes
+that drifted behind the store, notes missing a '## Notes' boundary, and notes on the
+old zotero-select link shape.
+
+Run 'zotio library health --for vault' first. A note filename comes from the citation
+key, so a missing or duplicated citekey renames or collides notes on the next
+'vault push'; this audit only sees the damage afterwards.`,
 		Args:        cobra.NoArgs,
 		Annotations: map[string]string{"mcp:read-only": "true"},
 		RunE: func(cmd *cobra.Command, args []string) error {

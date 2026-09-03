@@ -40,7 +40,7 @@ func newWatchHealthMonitor(flags *rootFlags, enabled bool, presetRaw string, web
 	}
 	kinds, ok := healthPresets[preset]
 	if !ok {
-		return nil, usageErr(fmt.Errorf("invalid --health-for %q: must be quick, citation, systematic-review, or all", presetRaw))
+		return nil, usageErr(fmt.Errorf("invalid --health-for %q: must be quick, citation, systematic-review, vault, or all", presetRaw))
 	}
 	webhook = strings.TrimSpace(webhook)
 	if enabled && webhook != "" {

@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -904,5 +905,273 @@ func TestRetractedItem_RespectsCancellation(t *testing.T) {
 				t.Logf("retErr = %v", retErr)
 			}
 		}
+	}
+}
+
+// vaultPresetItems seeds the exact hazards the "vault" preset exists for:
+// V1/V2 collide on one Better BibTeX key, V3 has no key so its note would be
+// named after its opaque Zotero key, and V4 is the clean control. Every item
+// carries complete citation-core metadata (creators, title, date,
+// publicationTitle) so missing_citation stays silent and the assertions below
+// are about note filenames alone.
+func vaultPresetItems() []json.RawMessage {
+	return []json.RawMessage{
+		json.RawMessage(`{"key":"V1","version":1,"data":{"key":"V1","itemType":"journalArticle","title":"Vault One","creators":[{"lastName":"A"}],"date":"2024","publicationTitle":"J","extra":"Citation Key: shared2024"}}`),
+		json.RawMessage(`{"key":"V2","version":1,"data":{"key":"V2","itemType":"journalArticle","title":"Vault Two","creators":[{"lastName":"B"}],"date":"2024","publicationTitle":"J","extra":"Citation Key: shared2024"}}`),
+		json.RawMessage(`{"key":"V3","version":1,"data":{"key":"V3","itemType":"journalArticle","title":"Vault Three","creators":[{"lastName":"C"}],"date":"2024","publicationTitle":"J"}}`),
+		json.RawMessage(`{"key":"V4","version":1,"data":{"key":"V4","itemType":"journalArticle","title":"Vault Four","creators":[{"lastName":"D"}],"date":"2024","publicationTitle":"J","extra":"Citation Key: solo2024"}}`),
+	}
+}
+
+func findingItemKeys(report healthReport, kind string) []string {
+	keys := []string{}
+	for _, f := range report.Findings {
+		if f.Kind == kind && f.ItemKey != "" {
+			keys = append(keys, f.ItemKey)
+		}
+	}
+	slices.Sort(keys)
+	return keys
+}
+
+// TestHealthVaultPresetMembership pins what `--for vault` means. The preset is
+// the vault-sync filename contract expressed as checks, so widening or
+// narrowing it silently changes the meaning of a gate somebody already put in
+// CI. Membership is therefore asserted exactly, not by containment.
+func TestHealthVaultPresetMembership(t *testing.T) {
+	want := []string{"citekey_missing", "citekey_conflict", "missing_citation"}
+	if got := healthPresets["vault"]; !slices.Equal(got, want) {
+		t.Fatalf("healthPresets[\"vault\"] = %v, want exactly %v", got, want)
+	}
+	// The preset must stay decidable offline: a live check would make the gate
+	// indeterminate (exit 9) at exactly the moment a user wants a yes/no answer
+	// before `vault push`.
+	for _, kind := range healthPresets["vault"] {
+		switch kind {
+		case "broken_attachment_file", "retracted_item":
+			t.Errorf("vault preset includes live check %q; the preset must run offline", kind)
+		}
+	}
+	// Same default gate as the other readiness presets, not a vault-specific bar.
+	if got := healthPresetFailOn["vault"]; got != healthPresetFailOn["citation"] {
+		t.Errorf("healthPresetFailOn[\"vault\"] = %q, want %q like the other readiness presets", got, healthPresetFailOn["citation"])
+	}
+}
+
+func TestLibraryHealthForFlagAdvertisesEveryPreset(t *testing.T) {
+	cmd := newLibraryHealthCmd(&rootFlags{})
+	flag := cmd.Flags().Lookup("for")
+	if flag == nil {
+		t.Fatal("library health is missing the --for flag")
+	}
+	// A preset nobody can discover is a preset nobody uses, so the flag usage
+	// and the long description must both name every key in the registry.
+	for preset := range healthPresets {
+		if !strings.Contains(flag.Usage, preset) {
+			t.Errorf("--for usage %q does not list preset %q", flag.Usage, preset)
+		}
+		if !strings.Contains(cmd.Long, "--for "+preset) {
+			t.Errorf("long description does not document --for %s", preset)
+		}
+	}
+}
+
+func TestLibraryHealthRejectsUnknownForPreset(t *testing.T) {
+	cmd := newLibraryHealthCmd(&rootFlags{})
+	cmd.SilenceErrors, cmd.SilenceUsage = true, true
+	cmd.SetArgs([]string{"--for", "obsidian"})
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetErr(&bytes.Buffer{})
+
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("unknown --for value was accepted")
+	}
+	if code := ExitCode(err); code != 2 {
+		t.Errorf("unknown --for exit code = %d, want 2 (usage error)", code)
+	}
+	for preset := range healthPresets {
+		if !strings.Contains(err.Error(), preset) {
+			t.Errorf("error %q does not list valid preset %q", err, preset)
+		}
+	}
+}
+
+func TestLibraryHealthVaultPresetRunsOnlyFilenameChecks(t *testing.T) {
+	got := []string{}
+	for _, c := range selectHealthChecks(healthPresets["vault"]) {
+		got = append(got, c.kind)
+	}
+	// vault kinds, in registry order (conflict before missing).
+	want := []string{"citekey_conflict", "citekey_missing", "missing_citation"}
+	if !slices.Equal(got, want) {
+		t.Fatalf("selected = %v, want %v", got, want)
+	}
+
+	// The seeded store trips every registered local check (duplicates, tag
+	// drift, missing DOI/PDF/abstract/tags). A vault run must still report only
+	// the three kinds its preset selects.
+	db := seedHealthStore(t)
+	report, err := assembleHealthReport(db, newHealthCtx("vault", false), "vault", healthPresets["vault"], healthPresetFailOn["vault"], scopeResult{All: true, Expr: "library"})
+	if err != nil {
+		t.Fatalf("assembleHealthReport: %v", err)
+	}
+	kinds := findingKinds(report)
+	for kind := range kinds {
+		if !slices.Contains(want, kind) {
+			t.Errorf("vault run produced out-of-preset finding kind %q (%v)", kind, kinds)
+		}
+	}
+	for _, kind := range want {
+		if kinds[kind] == 0 {
+			t.Errorf("expected at least one %q finding, got none (%v)", kind, kinds)
+		}
+	}
+	if len(report.Skipped) != 0 {
+		t.Errorf("vault preset must be decidable offline, got skips %+v", report.Skipped)
+	}
+	if report.Gate == nil || report.Gate.Status != "failed" {
+		t.Fatalf("gate = %+v, want status failed at the preset default", report.Gate)
+	}
+	if code := ExitCode(healthGateExitError(report)); code != 11 {
+		t.Errorf("vault gate failure exit code = %d, want 11", code)
+	}
+}
+
+// TestLibraryHealthVaultPresetMatchesVaultFilenameCollisions ties the preset to
+// the writer it protects. The expected finding set is derived by running the
+// seeded payloads through vaultItemMeta + vaultFilename — the same two
+// functions `vault sync` uses to name a note — rather than restated by hand, so
+// the test fails if either side of the correspondence drifts.
+func TestLibraryHealthVaultPresetMatchesVaultFilenameCollisions(t *testing.T) {
+	items := vaultPresetItems()
+	db, err := store.OpenWithContext(context.Background(), filepath.Join(t.TempDir(), "data.db"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	if _, _, err := db.UpsertBatch("items", items); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	qs := localQueryStore{db}
+
+	filenames := func(raws []json.RawMessage) (colliding []string, keyless []string) {
+		byFile := map[string][]string{}
+		for _, raw := range raws {
+			meta := vaultItemMeta(raw)
+			fn := vaultFilename(meta)
+			byFile[fn] = append(byFile[fn], meta.Key)
+			if meta.CiteKey == "" {
+				keyless = append(keyless, meta.Key)
+			}
+		}
+		for _, keys := range byFile {
+			if len(keys) > 1 {
+				colliding = append(colliding, keys...)
+			}
+		}
+		slices.Sort(colliding)
+		slices.Sort(keyless)
+		return colliding, keyless
+	}
+
+	wantColliding, wantKeyless := filenames(items)
+	if len(wantColliding) == 0 || len(wantKeyless) == 0 {
+		t.Fatalf("fixture no longer exercises the hazard: colliding=%v keyless=%v", wantColliding, wantKeyless)
+	}
+
+	report, err := assembleHealthReport(qs, newHealthCtx("vault", false), "vault", healthPresets["vault"], healthPresetFailOn["vault"], scopeResult{All: true, Expr: "library"})
+	if err != nil {
+		t.Fatalf("assembleHealthReport: %v", err)
+	}
+	if got := findingItemKeys(report, "citekey_conflict"); !slices.Equal(got, wantColliding) {
+		t.Errorf("citekey_conflict items = %v, want the colliding note filenames %v", got, wantColliding)
+	}
+	if got := findingItemKeys(report, "citekey_missing"); !slices.Equal(got, wantKeyless) {
+		t.Errorf("citekey_missing items = %v, want the citekey-less notes %v", got, wantKeyless)
+	}
+	if n := len(report.Findings); n != len(wantColliding)+len(wantKeyless) {
+		t.Errorf("vault run reported %d findings (%v), want only the %d filename hazards", n, findingKinds(report), len(wantColliding)+len(wantKeyless))
+	}
+
+	// Fix both hazards: V2 gets its own key, V3 gets a key at all. The store's
+	// upsert is version-monotonic, so a correction needs a higher version or it
+	// is retained-as-newer and silently dropped.
+	fixed := []json.RawMessage{
+		json.RawMessage(`{"key":"V2","version":2,"data":{"key":"V2","itemType":"journalArticle","title":"Vault Two","creators":[{"lastName":"B"}],"date":"2024","publicationTitle":"J","extra":"Citation Key: second2024"}}`),
+		json.RawMessage(`{"key":"V3","version":2,"data":{"key":"V3","itemType":"journalArticle","title":"Vault Three","creators":[{"lastName":"C"}],"date":"2024","publicationTitle":"J","extra":"Citation Key: third2024"}}`),
+	}
+	if stored, _, err := db.UpsertBatch("items", fixed); err != nil || stored != len(fixed) {
+		t.Fatalf("apply fixes: stored=%d err=%v", stored, err)
+	}
+	if colliding, keyless := filenames([]json.RawMessage{items[0], fixed[0], fixed[1], items[3]}); len(colliding) != 0 || len(keyless) != 0 {
+		t.Fatalf("fixed payloads still collide: colliding=%v keyless=%v", colliding, keyless)
+	}
+
+	// A fresh context is required: healthContext memoizes the citekey scan.
+	clean, err := assembleHealthReport(qs, newHealthCtx("vault", false), "vault", healthPresets["vault"], healthPresetFailOn["vault"], scopeResult{All: true, Expr: "library"})
+	if err != nil {
+		t.Fatalf("assembleHealthReport after fixes: %v", err)
+	}
+	if clean.Summary.Total != 0 {
+		t.Errorf("fixed library still reports %d findings (%v)", clean.Summary.Total, findingKinds(clean))
+	}
+	if clean.Gate == nil || clean.Gate.Status != "passed" {
+		t.Fatalf("gate after fixes = %+v, want status passed", clean.Gate)
+	}
+}
+
+// TestLibraryHealthVaultPresetCommandEndToEnd drives the real command, not just
+// the assembler: `--for vault` must reach the store, report only the three
+// preset kinds, and gate at the preset default without an explicit --fail-on.
+func TestLibraryHealthVaultPresetCommandEndToEnd(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("ZOTERO_CONFIG", filepath.Join(t.TempDir(), "missing.toml"))
+	t.Setenv("ZOTIO_DEMO", "")
+	savedGroup := activeGroupIDLocked()
+	setActiveGroupID("")
+	t.Cleanup(func() { setActiveGroupID(savedGroup) })
+
+	db, err := store.OpenWithContext(context.Background(), helpersTestDefaultDBPath(t, "zotio"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	if _, _, err := db.UpsertBatch("items", vaultPresetItems()); err != nil {
+		t.Fatalf("seed items: %v", err)
+	}
+	if err := db.SaveSyncState("items", "cursor", len(vaultPresetItems())); err != nil {
+		t.Fatalf("save sync state: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close store: %v", err)
+	}
+
+	cmd := newLibraryHealthCmd(&rootFlags{asJSON: true, dataSource: "local"})
+	cmd.SilenceErrors, cmd.SilenceUsage = true, true
+	cmd.SetArgs([]string{"--for", "vault"})
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&bytes.Buffer{})
+
+	// The preset default gate is high and the fixture holds a critical citekey
+	// conflict, so the report prints and the process exits 11.
+	if code := ExitCode(cmd.Execute()); code != 11 {
+		t.Fatalf("library health --for vault exit code = %d, want 11; output=%s", code, out.String())
+	}
+	var report healthReport
+	if err := json.Unmarshal(out.Bytes(), &report); err != nil {
+		t.Fatalf("decode report: %v; output=%s", err, out.String())
+	}
+	if report.Preset != "vault" {
+		t.Errorf("report preset = %q, want vault", report.Preset)
+	}
+	if got := findingItemKeys(report, "citekey_conflict"); !slices.Equal(got, []string{"V1", "V2"}) {
+		t.Errorf("citekey_conflict items = %v, want [V1 V2]", got)
+	}
+	if got := findingItemKeys(report, "citekey_missing"); !slices.Equal(got, []string{"V3"}) {
+		t.Errorf("citekey_missing items = %v, want [V3]", got)
+	}
+	if n := len(report.Findings); n != 3 {
+		t.Errorf("report has %d findings (%v), want the 3 filename hazards", n, findingKinds(report))
 	}
 }

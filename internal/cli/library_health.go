@@ -305,10 +305,27 @@ func healthCheckRegistry() []healthCheck {
 
 // healthPresets defines the "--for" intent selectors. They are tool-curated
 // check-sets, distinct from the user-defined --profile flag bundles.
+//
+// "vault" is the PKM/Obsidian preflight — the day-one question of the vault
+// audience is "will vault sync be trustworthy?" (dev/roadmap.md, "Build
+// first"). It carries only the checks that decide a note *filename*, because a
+// filename is the one thing a vault push cannot correct later:
+// resolveNoteFilename reuses the managed note already recorded for an item key
+// and otherwise falls back to vaultFilename, which is meta.CiteKey with the
+// bare item key as fallback plus ".md". So citekey_missing means a note named
+// after an opaque Zotero key, which is renamed the moment the citekey is
+// filled in; citekey_conflict means two items competing for one name, where
+// the loser is disambiguated to "<citekey>--<KEY>.md" and which item wins the
+// plain name depends on processing order — every existing wikilink to the
+// plain name then resolves to the other item. missing_citation covers
+// frontmatter completeness. Duplicates and attachment checks are deliberately
+// out: neither changes a filename, and leaving the live attachment check out
+// keeps this preset offline so its gate is decidable before a push.
 var healthPresets = map[string][]string{
 	"quick":             {"citekey_conflict", "duplicate_candidates", "broken_attachment_file"},
 	"citation":          {"citekey_missing", "citekey_conflict", "missing_citation", "duplicate_candidates"},
 	"systematic-review": {"duplicate_candidates", "missing_abstract", "missing_pdf", "broken_attachment_file"},
+	"vault":             {"citekey_missing", "citekey_conflict", "missing_citation"},
 	"all": {
 		"citekey_conflict", "citekey_missing", "duplicate_candidates", "missing_citation",
 		"missing_doi", "missing_pdf", "missing_abstract", "missing_tags", "tag_drift",
@@ -317,11 +334,16 @@ var healthPresets = map[string][]string{
 }
 
 // healthPresetFailOn is the default gate threshold per preset; an explicit
-// --fail-on overrides it.
+// --fail-on overrides it. The readiness presets gate at high and the
+// exploratory ones do not gate at all: "vault" therefore matches citation and
+// systematic-review rather than inventing its own bar, since all three of its
+// checks are critical/high and a colliding note filename is not something to
+// discover after `vault push` has already written the vault.
 var healthPresetFailOn = map[string]string{
 	"quick":             "",
 	"citation":          sevHigh,
 	"systematic-review": sevHigh,
+	"vault":             sevHigh,
 	"all":               "",
 }
 
@@ -354,6 +376,7 @@ with --for:
 
   --for citation           manuscript/bibliography readiness (citekeys, core fields, duplicates)
   --for systematic-review  PRISMA screening corpus (duplicates, screenable metadata, full text)
+  --for vault              PKM vault sync readiness (stable note filenames from citekeys)
   --for quick   (default)  anything obviously broken (citekey conflicts, duplicates, attachments)
   --for all                every check
 
@@ -376,7 +399,7 @@ its precondition is unmet, the command refuses loudly (exit 9) rather than passi
 			}
 			kinds, ok := healthPresets[preset]
 			if !ok {
-				return usageErr(fmt.Errorf("invalid --for %q: must be quick, citation, systematic-review, or all", flagFor))
+				return usageErr(fmt.Errorf("invalid --for %q: must be quick, citation, systematic-review, vault, or all", flagFor))
 			}
 			// retracted_item is opt-in (network). It lives
 			// only in the "all" preset (loud skip without the flag, like
@@ -519,7 +542,7 @@ its precondition is unmet, the command refuses loudly (exit 9) rather than passi
 			return healthNewGateExitError(report)
 		},
 	}
-	cmd.Flags().StringVar(&flagFor, "for", "quick", "Check preset: quick, citation, systematic-review, all")
+	cmd.Flags().StringVar(&flagFor, "for", "quick", "Check preset: quick, citation, systematic-review, vault, all")
 	cmd.Flags().StringVar(&flagFailOn, "fail-on", "", "Exit 11 if findings reach this severity: critical, high, info/any; none disables the gate (default: the preset's)")
 	cmd.Flags().IntVar(&flagLimit, "limit", 0, "Max findings listed per kind (0 = all); also caps the live attachment scan")
 	cmd.Flags().BoolVar(&flagVerifyFiles, "verify-files", false, "Run the live broken-attachment check (needs Zotero desktop running)")

@@ -124,7 +124,7 @@ until it is resumed or deleted with zotio workflow run <spec> --yes --resume.`,
 	cmd.Flags().DurationVar(&interval, "interval", 5*time.Minute, "Sync interval")
 	cmd.Flags().BoolVar(&once, "once", false, "Run one sync cycle and exit")
 	cmd.Flags().BoolVar(&health, "health", false, "Run quick library health checks after each successful sync")
-	cmd.Flags().StringVar(&healthFor, "health-for", "quick", "Health preset for --health: quick, citation, systematic-review, all")
+	cmd.Flags().StringVar(&healthFor, "health-for", "quick", "Health preset for --health: quick, citation, systematic-review, vault, all")
 	cmd.Flags().StringVar(&healthWebhook, "health-webhook", "", "POST health drift JSON to this webhook URL")
 	cmd.Flags().StringVar(&workflowPath, "workflow", "", "Run this workflow after every successful sync; previews unless --yes, and failed applied runs require zotio workflow run <spec> --yes --resume")
 
