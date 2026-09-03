@@ -52,8 +52,15 @@ type rootFlags struct {
 	via             string
 	connectorTarget string
 	freshnessMeta   any
-	// numeric group ID selected via --group ("" = personal).
+	// numeric group ID selected via --group ("" = personal). Under --group all
+	// the fan-out wrapper owns this field: it holds the library currently being
+	// executed, never the "all" sentinel.
 	group string
+	// groupFanout records that --group named every library rather than one.
+	// The sentinel is kept here instead of in group so that newClient and
+	// defaultDBPath, which read group directly, can never see a value that is
+	// not a real library scope.
+	groupFanout bool
 
 	// deliverSpool streams command output to disk when --deliver names a
 	// non-stdout sink, so a library-sized result is never held on the heap.
@@ -275,8 +282,9 @@ See README.md or the bundled SKILL.md for recipes.`,
 	rootCmd.PersistentFlags().StringVar(&flags.profileName, "profile", "", "Apply values from a saved profile (see 'zotio profile list')")
 	rootCmd.PersistentFlags().StringVar(&flags.deliverSpec, "deliver", "", "Route output to a sink: stdout (default), file:<path>, webhook:<url>")
 	rootCmd.PersistentFlags().Float64Var(&flags.rateLimit, "rate-limit", 0, "Max requests per second (0 to disable)")
-	// operate on a group library instead of the personal one.
-	rootCmd.PersistentFlags().StringVar(&flags.group, "group", "", "Operate on a Zotero group library by numeric group ID (default: personal library)")
+	// operate on a group library instead of the personal one, or on every
+	// accessible library at once for reads and diagnostics.
+	rootCmd.PersistentFlags().StringVar(&flags.group, "group", "", "Operate on a Zotero group library by numeric group ID, or 'all' to fan one read/diagnostic out across the personal library and every accessible group (default: personal library)")
 	// route item creates through the desktop connector when local.
 	rootCmd.PersistentFlags().StringVar(&flags.via, "via", "auto", "Item-creation route: auto (connector when local+reachable), connector (desktop), or web (api.zotero.org)")
 	rootCmd.PersistentFlags().StringVar(&flags.connectorTarget, "connector-target", "", "Desktop connector save target ID (for example C78); overrides --collection target mapping")
@@ -333,8 +341,20 @@ See README.md or the bundled SKILL.md for recipes.`,
 		}
 		// validate --group and publish it to the package so
 		// defaultDBPath and newClient scope storage and the API prefix to it.
-		if flags.group != "" && !isAllDigits(flags.group) {
-			return usageErr(fmt.Errorf("invalid --group value %q: expected a numeric Zotero group ID", flags.group))
+		//
+		// "all" is a fan-out request, not a library: it is moved out of
+		// flags.group here so that neither reader can be handed a scope that
+		// resolves to /groups/all or data-group-all.db, and the wrapper
+		// installed by installGroupFanout drives flags.group per library.
+		flags.groupFanout = flags.group == groupFanoutAll
+		switch {
+		case flags.groupFanout:
+			if err := groupFanoutRefusal(cmd); err != nil {
+				return err
+			}
+			flags.group = ""
+		case flags.group != "" && !isAllDigits(flags.group):
+			return usageErr(fmt.Errorf("invalid --group value %q: expected a numeric Zotero group ID or 'all'", flags.group))
 		}
 		setActiveGroupID(flags.group)
 		switch flags.dataSource {
@@ -353,6 +373,14 @@ See README.md or the bundled SKILL.md for recipes.`,
 		// Registry-driven preflight: refuse loudly (exit 9, precondition_unmet)
 		// when the running command declares a precondition the environment does
 		// not satisfy. Opt out per command via Annotations["zotio:preflight"]="skip".
+		//
+		// Under a fan-out the same preflight runs per library instead (see
+		// runFanoutLibrary): checking it once here would judge every library by
+		// the personal library's environment, so an un-synced personal mirror
+		// would refuse the run and hide two groups that are synced.
+		if flags.groupFanout {
+			return nil
+		}
 		return runCapabilityPreflight(cmd, flags)
 	}
 	rootCmd.AddCommand(newCollectionsCmd(flags))
@@ -388,6 +416,10 @@ See README.md or the bundled SKILL.md for recipes.`,
 	rootCmd.AddCommand(newVersionCliCmd())
 	annotateCapabilityRouteFlags(rootCmd)
 	installInstallationWriterLocks(rootCmd, flags)
+	// Installed after the writer locks so the fan-out is the outermost wrapper:
+	// each library's execution then passes through the lock boundary on its own,
+	// which is what an installation lock means for a per-library store write.
+	installGroupFanout(rootCmd, flags)
 
 	return rootCmd
 }

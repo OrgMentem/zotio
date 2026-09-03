@@ -193,7 +193,64 @@ func TestGroupsList_RejectsGroupBaseURL(t *testing.T) {
 	cmd.SetArgs(nil)
 	cmd.SilenceErrors = true
 	cmd.SilenceUsage = true
-	if err := cmd.Execute(); err == nil {
+	err := cmd.Execute()
+	if err == nil {
 		t.Fatal("expected error when listing groups from a group base URL")
+	}
+	if code := ExitCode(err); code != 2 {
+		t.Fatalf("exit code = %d, want 2 (usage); err=%v", code, err)
+	}
+	if !strings.Contains(err.Error(), "to list groups") {
+		t.Errorf("error = %q, want the refusal to name the caller's purpose", err.Error())
+	}
+}
+
+// groups inspect enumerates through the same shared helper as groups list, so
+// it must refuse a group-scoped base URL the same way — with its own purpose
+// in the message, not the other command's.
+func TestGroupsInspect_RejectsGroupBaseURL(t *testing.T) {
+	t.Setenv("ZOTERO_BASE_URL", "http://localhost:23119/api/groups/12345")
+	cmd := newGroupsInspectCmd(&rootFlags{asJSON: true})
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetArgs([]string{"12345"})
+	cmd.SilenceErrors = true
+	cmd.SilenceUsage = true
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("expected error when inspecting groups from a group base URL")
+	}
+	if code := ExitCode(err); code != 2 {
+		t.Fatalf("exit code = %d, want 2 (usage); err=%v", code, err)
+	}
+	if !strings.Contains(err.Error(), "to inspect groups") {
+		t.Errorf("error = %q, want the refusal to name the caller's purpose", err.Error())
+	}
+}
+
+// fetchAccessibleGroups is the one enumeration both groups commands and the
+// --group all fan-out share; it must hit the personal-library prefix exactly
+// once per call, whatever the caller.
+func TestFetchAccessibleGroups_UsesThePersonalLibraryPrefix(t *testing.T) {
+	var paths []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		paths = append(paths, r.URL.Path)
+		_, _ = io.WriteString(w, `[{"id":99,"data":{"name":"Lab","type":"Private"},"meta":{"numItems":7}}]`)
+	}))
+	defer srv.Close()
+	t.Setenv("ZOTERO_BASE_URL", srv.URL+"/users/0")
+
+	data, err := fetchAccessibleGroups(&rootFlags{}, "list groups")
+	if err != nil {
+		t.Fatalf("fetchAccessibleGroups: %v", err)
+	}
+	var groups []map[string]any
+	if err := json.Unmarshal(data, &groups); err != nil {
+		t.Fatalf("decoding %s: %v", data, err)
+	}
+	if len(groups) != 1 || groupFieldString(groups[0], "id") != "99" {
+		t.Fatalf("groups = %s, want the single group 99", data)
+	}
+	if len(paths) != 1 || paths[0] != "/users/0/groups" {
+		t.Fatalf("requests = %v, want one /users/0/groups", paths)
 	}
 }

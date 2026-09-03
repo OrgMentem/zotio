@@ -130,7 +130,14 @@ Use --fulltext to search synced PDF text and resolve hits to parent items.`,
 
   # JSON output for piping
   zotio search "critical" --json --limit 20`,
-		Annotations: map[string]string{"mcp:hidden": "true"},
+		// mcp:read-only is what the capability registry reads to type this
+		// command as a read. Without it the registry falls back to
+		// operation="other" and the conservative `--group all` gate refuses to
+		// fan a plain search across libraries, which is the one read a
+		// multi-library user reaches for first. mcp:hidden stays: the MCP
+		// surface exposes search through the command facade, not as a mirrored
+		// tool.
+		Annotations: map[string]string{"mcp:hidden": "true", "mcp:read-only": "true"},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if len(args) == 0 {
 				return cmd.Help()

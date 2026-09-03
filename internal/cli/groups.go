@@ -35,19 +35,9 @@ func newGroupsListCmd(flags *rootFlags) *cobra.Command {
   zotio search --group <id> <query>`,
 		Annotations: map[string]string{"mcp:read-only": "true"},
 		RunE: func(cmd *cobra.Command, args []string) error {
-			c, err := flags.newClient()
+			data, err := fetchAccessibleGroups(flags, "list groups")
 			if err != nil {
 				return err
-			}
-			// Groups are enumerated under the personal-library prefix
-			// (<base>/users/<id>/groups, which c.Get reaches via "/groups").
-			// A group-scoped base URL has no user segment to list from.
-			if _, ok := userIDFromBaseURL(c.BaseURL); !ok {
-				return usageErr(fmt.Errorf("set a personal-library base URL (…/users/<id>) to list groups; the current base URL targets a group library"))
-			}
-			data, err := c.Get("/groups", nil)
-			if err != nil {
-				return classifyAPIError(err, flags)
 			}
 			if flags.asJSON && wantsJSONEnvelope(cmd.OutOrStdout(), flags) {
 				filtered := data
@@ -80,19 +70,9 @@ func newGroupsInspectCmd(flags *rootFlags) *cobra.Command {
 		Annotations: map[string]string{"mcp:read-only": "true"},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			groupID := args[0]
-			c, err := flags.newClient()
+			data, err := fetchAccessibleGroups(flags, "inspect groups")
 			if err != nil {
 				return err
-			}
-			// Groups are enumerated under the personal-library prefix
-			// (<base>/users/<id>/groups, which c.Get reaches via "/groups").
-			// A group-scoped base URL has no user segment to list from.
-			if _, ok := userIDFromBaseURL(c.BaseURL); !ok {
-				return usageErr(fmt.Errorf("set a personal-library base URL (…/users/<id>) to inspect groups; the current base URL targets a group library"))
-			}
-			data, err := c.Get("/groups", nil)
-			if err != nil {
-				return classifyAPIError(err, flags)
 			}
 
 			var groups []map[string]any

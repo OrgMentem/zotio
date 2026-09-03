@@ -88,6 +88,15 @@ func ApplyGroupScopeFromEnv() error {
 	if v == "" {
 		return nil
 	}
+	// "all" is a legal --group value for the CLI, where the fan-out wrapper
+	// runs a read command once per library. The MCP surface has no such
+	// wrapper: its native handlers read this global directly and would serve
+	// one library under the name of "all", so the value stays refused here —
+	// only the reason has to say so, or the operator reads "malformed" about a
+	// value the CLI documents.
+	if v == groupFanoutAll {
+		return fmt.Errorf("invalid ZOTERO_GROUP value %q: %s fans reads out across libraries in the CLI only; the MCP server needs one library: set a numeric group ID or unset it", v, groupFanoutAll)
+	}
 	if !isAllDigits(v) {
 		return fmt.Errorf("invalid ZOTERO_GROUP value %q: expected a numeric Zotero group ID", v)
 	}
