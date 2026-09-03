@@ -11,6 +11,20 @@ import (
 
 const collectionStatsEligibleItemPredicate = "item_type NOT IN ('attachment','note','annotation')"
 
+// sqlWhitespaceCharSet is the character set every TRIM() over user-supplied
+// Zotero JSON text must pass explicitly. SQLite's one-argument TRIM(X) strips
+// only U+0020, so it is not the SQL equivalent of Go's strings.TrimSpace:
+// `sqlite3 :memory: "SELECT length(TRIM(char(9)));"` returns 1, not 0. With
+// the one-argument form, a field whose entire content is a tab, a newline, or
+// a carriage return cleared the NULLIF blank guard and was reported as a real
+// venue or creator. The set lists exactly the ASCII characters that Go's
+// unicode.IsSpace also treats as space — space, tab, newline, vertical
+// tab, form feed, carriage return — so the SQL group key and the Go display
+// formatters agree on what "blank" means for the whitespace Zotero JSON
+// actually carries. Any new TRIM() on JSON text in this package references this
+// constant rather than restating the set, so the layers cannot drift apart.
+const sqlWhitespaceCharSet = `char(32)||char(9)||char(10)||char(11)||char(12)||char(13)`
+
 func queryCollectionStatsSummary(db localQueryStore, collKey string) (total int, minYear, maxYear string, err error) {
 	rows, err := db.QueryRaw(`
 SELECT
@@ -78,13 +92,16 @@ WHERE a.resource_type='items'
 	return int(n), nil
 }
 
+// queryCollectionTopVenues trims inside SQL on purpose: the trimmed value is
+// the GROUP BY key, so trimming after the scan would keep the grouping on
+// untrimmed text and split "Nature" from "\tNature" into two venues.
 func queryCollectionTopVenues(db localQueryStore, collKey string, top int) ([]map[string]any, error) {
 	return db.QueryRaw(`
 SELECT
   COALESCE(
-    NULLIF(TRIM(json_extract(data,'$.data.publicationTitle')),''),
-    NULLIF(TRIM(json_extract(data,'$.data.bookTitle')),''),
-    NULLIF(TRIM(json_extract(data,'$.data.publisher')),'')
+    NULLIF(TRIM(json_extract(data,'$.data.publicationTitle'), `+sqlWhitespaceCharSet+`),''),
+    NULLIF(TRIM(json_extract(data,'$.data.bookTitle'), `+sqlWhitespaceCharSet+`),''),
+    NULLIF(TRIM(json_extract(data,'$.data.publisher'), `+sqlWhitespaceCharSet+`),'')
   ) AS venue,
   COUNT(*) AS count
 FROM resources

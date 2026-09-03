@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"zotio/internal/store"
@@ -315,6 +316,77 @@ func TestQueryCollectionTopVenuesFallbackAndOrdering(t *testing.T) {
 	for i := range wantTruncated {
 		if truncated[i] != wantTruncated[i] {
 			t.Fatalf("top=2 venue %d = %+v, want %+v (LIMIT must keep the highest counts); full result %+v", i, truncated[i], wantTruncated[i], truncated)
+		}
+	}
+}
+
+// TestQueryCollectionTopVenuesTrimsNonSpaceWhitespace pins the blank guard
+// against SQLite's one-argument TRIM(), which strips only U+0020:
+// `SELECT length(TRIM(char(9)));` returns 1, so a publisher whose entire
+// content is a tab used to clear both the NULLIF blank guard and the HAVING
+// non-empty guard, and got reported as a real venue. The trim also has to
+// happen in SQL because the trimmed value is the GROUP BY key: "\tNature\t"
+// and "Nature" must land in one group, which no post-scan trim could achieve.
+//
+// The whitespace-only fixtures cover every character in sqlWhitespaceCharSet
+// except the plain space that the one-argument form already handled, so
+// shrinking that constant fails here.
+func TestQueryCollectionTopVenuesTrimsNonSpaceWhitespace(t *testing.T) {
+	items := []json.RawMessage{
+		// Whitespace-only venues, one character class each. Every one of these
+		// must collapse into the NULL group that HAVING drops.
+		json.RawMessage(`{"key":"WT1","version":1,"data":{"key":"WT1","itemType":"book","title":"WT1","collections":["COL1"],"publisher":"\t"}}`),
+		json.RawMessage(`{"key":"WN1","version":1,"data":{"key":"WN1","itemType":"journalArticle","title":"WN1","collections":["COL1"],"publicationTitle":"\n"}}`),
+		json.RawMessage(`{"key":"WR1","version":1,"data":{"key":"WR1","itemType":"bookSection","title":"WR1","collections":["COL1"],"bookTitle":"\r"}}`),
+		json.RawMessage(`{"key":"WV1","version":1,"data":{"key":"WV1","itemType":"book","title":"WV1","collections":["COL1"],"publisher":"\u000b"}}`),
+		json.RawMessage(`{"key":"WF1","version":1,"data":{"key":"WF1","itemType":"book","title":"WF1","collections":["COL1"],"publisher":"\f"}}`),
+		// A tab-only publisher must not shadow the later COALESCE arms either:
+		// WM1 has a real bookTitle, so it counts under that.
+		json.RawMessage(`{"key":"WM1","version":1,"data":{"key":"WM1","itemType":"bookSection","title":"WM1","collections":["COL1"],"publicationTitle":"\t","bookTitle":"Handbook of Optics"}}`),
+		json.RawMessage(`{"key":"WM2","version":1,"data":{"key":"WM2","itemType":"bookSection","title":"WM2","collections":["COL1"],"bookTitle":"Handbook of Optics"}}`),
+		json.RawMessage(`{"key":"WM3","version":1,"data":{"key":"WM3","itemType":"bookSection","title":"WM3","collections":["COL1"],"bookTitle":"\tHandbook of Optics\t"}}`),
+		// Surrounded by non-space whitespace: must count under the trimmed
+		// spelling and share the group with the untabbed one.
+		json.RawMessage(`{"key":"WS1","version":1,"data":{"key":"WS1","itemType":"journalArticle","title":"WS1","collections":["COL1"],"publicationTitle":"\tNature\t"}}`),
+		json.RawMessage(`{"key":"WS2","version":1,"data":{"key":"WS2","itemType":"journalArticle","title":"WS2","collections":["COL1"],"publicationTitle":"Nature"}}`),
+		json.RawMessage(`{"key":"WS3","version":1,"data":{"key":"WS3","itemType":"journalArticle","title":"WS3","collections":["COL1"],"publicationTitle":"\r\nNature\r\n"}}`),
+		json.RawMessage(`{"key":"WS4","version":1,"data":{"key":"WS4","itemType":"journalArticle","title":"WS4","collections":["COL1"],"publicationTitle":" Nature "}}`),
+	}
+	db := seedStoreWithItems(t, items)
+
+	rows, err := queryCollectionTopVenues(db, "COL1", 10)
+	if err != nil {
+		t.Fatalf("queryCollectionTopVenues: %v", err)
+	}
+	got := make(map[string]int64, len(rows))
+	for i, row := range rows {
+		venue, ok := row["venue"].(string)
+		if !ok {
+			t.Fatalf("row %d venue = %#v, want a string", i, row["venue"])
+		}
+		if strings.TrimSpace(venue) == "" {
+			t.Fatalf("row %d venue = %q: a whitespace-only field must not become a venue; SQLite TRIM(X) strips only U+0020, so pass sqlWhitespaceCharSet", i, venue)
+		}
+		if venue != strings.TrimSpace(venue) {
+			t.Fatalf("row %d venue = %q, want the trimmed spelling %q", i, venue, strings.TrimSpace(venue))
+		}
+		n, err := toInt64(row["count"])
+		if err != nil {
+			t.Fatalf("row %d count %#v: %v", i, row["count"], err)
+		}
+		got[venue] = n
+	}
+
+	want := map[string]int64{
+		"Nature":             4, // WS1 tabs, WS2 bare, WS3 CRLF, WS4 spaces
+		"Handbook of Optics": 3, // WM1 tab-only publicationTitle, WM2 bare, WM3 tabs
+	}
+	if len(got) != len(want) {
+		t.Fatalf("got %d venue groups %+v, want %d %+v (whitespace-only venues must be dropped, and tabbed spellings must merge)", len(got), got, len(want), want)
+	}
+	for venue, wantCount := range want {
+		if gotCount, ok := got[venue]; !ok || gotCount != wantCount {
+			t.Fatalf("venue %q count = %d (present=%t), want %d; full result %+v", venue, gotCount, ok, wantCount, got)
 		}
 	}
 }

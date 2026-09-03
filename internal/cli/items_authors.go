@@ -59,12 +59,17 @@ func newItemsAuthorsCmd(flags *rootFlags) *cobra.Command {
 	return cmd
 }
 
+// queryItemAuthors trims inside SQL on purpose: the trimmed name fields are the
+// GROUP BY key, so trimming after the scan would keep the grouping on untrimmed
+// text and split "Curie" from "\tCurie" into two creators with separate counts.
+// SQL therefore owns the normalization for this path; see sqlWhitespaceCharSet
+// for why the character set is spelled out.
 func queryItemAuthors(db localQueryStore, creatorType, collectionKey string, top int) ([]map[string]any, error) {
 	query := `
 SELECT
-	COALESCE(TRIM(json_extract(creator.value,'$.lastName')),'') AS last_name,
-	COALESCE(TRIM(json_extract(creator.value,'$.firstName')),'') AS first_name,
-	COALESCE(TRIM(json_extract(creator.value,'$.name')),'') AS name,
+	COALESCE(TRIM(json_extract(creator.value,'$.lastName'), ` + sqlWhitespaceCharSet + `),'') AS last_name,
+	COALESCE(TRIM(json_extract(creator.value,'$.firstName'), ` + sqlWhitespaceCharSet + `),'') AS first_name,
+	COALESCE(TRIM(json_extract(creator.value,'$.name'), ` + sqlWhitespaceCharSet + `),'') AS name,
 	json_extract(creator.value,'$.creatorType') AS creator_type,
 	COUNT(DISTINCT i.id) AS item_count
 FROM resources i, json_each(json_extract(i.data,'$.data.creators')) AS creator
@@ -112,6 +117,14 @@ func normalizeItemAuthorRows(rows []map[string]any) ([]itemAuthorRow, error) {
 	return out, nil
 }
 
+// formatCreatorDisplayName keeps its own strings.TrimSpace even though the
+// queryItemAuthors rows arrive already trimmed by SQL: items_note_template.go
+// calls it with creator fields decoded straight from item JSON, which no SQL
+// TRIM ever touched. So SQL owns the normalization wherever a trimmed value is
+// a grouping key, and this function owns it for the raw-JSON callers. The two
+// agree on ASCII whitespace by construction (see sqlWhitespaceCharSet); the
+// second pass over already-trimmed SQL output is therefore a no-op, not a
+// competing rule.
 func formatCreatorDisplayName(lastName, firstName, name string) string {
 	lastName = strings.TrimSpace(lastName)
 	firstName = strings.TrimSpace(firstName)

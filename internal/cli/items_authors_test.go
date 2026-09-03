@@ -236,3 +236,64 @@ func TestNormalizeItemAuthorRowsDisplayNames(t *testing.T) {
 		}
 	}
 }
+
+// TestQueryItemAuthorsTrimsNonSpaceWhitespace pins creator-name normalization
+// against SQLite's one-argument TRIM(), which strips only U+0020:
+// `SELECT length(TRIM(char(9)));` returns 1, so a creator whose lastName is a
+// lone newline used to survive as its own group with its own count instead of
+// being treated like the empty creator it is.
+//
+// The trim must stay in SQL because the trimmed fields are the GROUP BY key: a
+// post-scan trim would still group "\tCurie\t" apart from "Curie" and report
+// one creator twice. The whitespace-only fixtures cover every character in
+// sqlWhitespaceCharSet except the plain space the one-argument form already
+// handled, so shrinking that constant fails here.
+func TestQueryItemAuthorsTrimsNonSpaceWhitespace(t *testing.T) {
+	items := []json.RawMessage{
+		// Whitespace-only creators. Each must normalize to the same blank
+		// identity as WEmpty, sharing its group and its count.
+		json.RawMessage(`{"key":"WA1","version":1,"data":{"key":"WA1","itemType":"journalArticle","title":"WA1","creators":[{"creatorType":"author","lastName":"\n","firstName":"","name":""}]}}`),
+		json.RawMessage(`{"key":"WA2","version":1,"data":{"key":"WA2","itemType":"journalArticle","title":"WA2","creators":[{"creatorType":"author","lastName":"","firstName":"","name":""}]}}`),
+		json.RawMessage(`{"key":"WA3","version":1,"data":{"key":"WA3","itemType":"journalArticle","title":"WA3","creators":[{"creatorType":"author","lastName":"\t","firstName":"\r","name":"\u000b\f"}]}}`),
+		// Real person, spelled three ways. One group, count 3.
+		json.RawMessage(`{"key":"WP1","version":1,"data":{"key":"WP1","itemType":"journalArticle","title":"WP1","creators":[{"creatorType":"author","lastName":"\tCurie\t","firstName":"\nMarie\n"}]}}`),
+		json.RawMessage(`{"key":"WP2","version":1,"data":{"key":"WP2","itemType":"journalArticle","title":"WP2","creators":[{"creatorType":"author","lastName":"Curie","firstName":"Marie"}]}}`),
+		json.RawMessage(`{"key":"WP3","version":1,"data":{"key":"WP3","itemType":"journalArticle","title":"WP3","creators":[{"creatorType":"author","lastName":" Curie ","firstName":" Marie "}]}}`),
+		// Single-field organization, spelled two ways. One group, count 2.
+		json.RawMessage(`{"key":"WO1","version":1,"data":{"key":"WO1","itemType":"report","title":"WO1","creators":[{"creatorType":"author","name":"\rWorld Health Organization\r\n"}]}}`),
+		json.RawMessage(`{"key":"WO2","version":1,"data":{"key":"WO2","itemType":"report","title":"WO2","creators":[{"creatorType":"author","name":"World Health Organization"}]}}`),
+	}
+	db := seedStoreWithItems(t, items)
+
+	rows, err := queryItemAuthors(db, "", "", 0)
+	if err != nil {
+		t.Fatalf("queryItemAuthors: %v", err)
+	}
+	got, err := normalizeItemAuthorRows(rows)
+	if err != nil {
+		t.Fatalf("normalizeItemAuthorRows: %v", err)
+	}
+	counts := make(map[string]int64, len(got))
+	for _, r := range got {
+		if _, dup := counts[r.DisplayName]; dup {
+			t.Fatalf("display name %q appears in two groups %+v: whitespace differences must not split a creator", r.DisplayName, got)
+		}
+		counts[r.DisplayName] = r.ItemCount
+	}
+	// The blank creator keeps whatever treatment an all-empty creator already
+	// gets — one blank-named group — and the whitespace-only creators join it
+	// instead of forming groups of their own.
+	want := map[string]int64{
+		"":                          3, // WA1 newline, WA2 empty, WA3 tab/CR/VT/FF
+		"Curie, Marie":              3, // WP1 tabs, WP2 bare, WP3 spaces
+		"World Health Organization": 2, // WO1 CR/CRLF, WO2 bare
+	}
+	if len(counts) != len(want) {
+		t.Fatalf("got %d creator groups %+v, want %d %+v (whitespace-only names must collapse into the blank identity; SQLite TRIM(X) strips only U+0020)", len(counts), counts, len(want), want)
+	}
+	for name, wantCount := range want {
+		if gotCount, ok := counts[name]; !ok || gotCount != wantCount {
+			t.Fatalf("creator %q count = %d (present=%t), want %d; full result %+v", name, gotCount, ok, wantCount, counts)
+		}
+	}
+}
