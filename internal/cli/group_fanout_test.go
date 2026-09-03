@@ -11,11 +11,14 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/spf13/cobra"
 
 	"zotio/internal/client"
 	"zotio/internal/store"
@@ -250,34 +253,87 @@ func TestGroupFanoutAggregatesEveryAccessibleLibrary(t *testing.T) {
 	}
 }
 
-// A caller who asked for CSV must get CSV, not a JSON aggregate: the fan-out
-// picks its format from what the libraries actually printed. Each library's
-// text is then labelled with its own heading, which is where the library
-// dimension and the freshness distinction live outside JSON.
-func TestGroupFanoutLabelsEachLibraryInNonJSONOutput(t *testing.T) {
-	fx := newFanoutFixture(t, "")
-	dataDir := isolateFanoutEnv(t, fx.server.URL+"/users/0")
-	synced := time.Now().Add(-30 * time.Minute).Truncate(time.Second)
-	seedFanoutLibraryStore(t, dataDir, "data-group-99.db", synced, nil)
+// A line-oriented format has nowhere to put the library dimension, so the
+// fan-out refuses it instead of interleaving headings into a stream something
+// is parsing.
+func TestGroupFanoutRefusesStreamFormats(t *testing.T) {
+	for _, format := range []string{"--csv", "--plain"} {
+		t.Run(format, func(t *testing.T) {
+			fx := newFanoutFixture(t, "")
+			isolateFanoutEnv(t, fx.server.URL+"/users/0")
+			out, _, err := runFanoutCmd(t, "collections", "list", "--group", "all", format, "--data-source", "live")
+			if err == nil || ExitCode(err) != 2 {
+				t.Fatalf("%s fan-out = %v (exit %d), want usage exit 2; out=%s", format, err, ExitCode(err), out)
+			}
+			if !strings.Contains(err.Error(), format) || !strings.Contains(err.Error(), "--json") {
+				t.Errorf("error = %q, want it to name %s and point at --json", err.Error(), format)
+			}
+			if got := fx.requested(); len(got) != 0 {
+				t.Errorf("requests = %v, want none before the refusal", got)
+			}
+		})
+	}
+}
 
-	out, _, err := runFanoutCmd(t, "collections", "list", "--group", "all", "--csv", "--data-source", "live")
-	if err != nil {
-		t.Fatalf("collections list --group all --csv: %v (out=%s)", err, out)
+// writeFanoutReport's text branch carries the library dimension and the
+// freshness distinction for payloads that are legitimately textual (markdown
+// exports, rendered tables). Exercised directly: no allowlisted command emits
+// non-JSON into the capture buffer, since the buffer is not a terminal.
+func TestWriteFanoutReportLabelsEachLibraryInTextMode(t *testing.T) {
+	synced := time.Date(2026, 9, 1, 10, 0, 0, 0, time.UTC)
+	report := fanoutReport{
+		Libraries: []fanoutLibraryResult{
+			{
+				Library: fanoutLibrary{Type: "user", ID: "0", Name: personalLibraryName},
+				Status:  "ok",
+				Store:   fanoutStoreState{NeverSynced: true},
+				Output:  "# Personal notes",
+			},
+			{
+				Library: fanoutLibrary{Type: "group", ID: "99", Name: "Lab"},
+				Status:  "ok",
+				Store:   fanoutStoreState{SyncedAt: &synced},
+				Output:  "# Lab notes",
+			},
+			{
+				Library: fanoutLibrary{Type: "group", ID: "100", Name: "Reading Group"},
+				Status:  "failed",
+				Store:   fanoutStoreState{NeverSynced: true},
+				// A classified API error carries multi-line remediation hints.
+				Error: "GET /items returned HTTP 403: Forbidden\nhint: permission denied.\n      Check your key.",
+			},
+		},
+		Meta: fanoutMeta{LibrariesTotal: 3, LibrariesOK: 2, LibrariesFail: 1},
 	}
-	if strings.HasPrefix(strings.TrimSpace(out), "{") {
-		t.Fatalf("output = %s, want CSV under per-library headings, not a JSON aggregate", out)
+	var out bytes.Buffer
+	if err := writeFanoutReport(&out, &rootFlags{csv: true}, report, false); err != nil {
+		t.Fatalf("writeFanoutReport: %v", err)
 	}
+	got := out.String()
 	for _, want := range []string{
 		"== My Library (user 0) — never synced ==",
-		"== Lab (group 99) — synced " + synced.UTC().Format(time.RFC3339) + " ==",
-		"== Reading Group (group 100) — never synced ==",
-		"PERSONAL1",
-		"LAB1",
-		"3 libraries: 3 ok, 0 failed",
+		"# Personal notes",
+		"== Lab (group 99) — synced 2026-09-01T10:00:00Z ==",
+		"# Lab notes",
+		"3 libraries: 2 ok, 1 failed",
 	} {
-		if !strings.Contains(out, want) {
-			t.Errorf("output missing %q:\n%s", want, out)
+		if !strings.Contains(got, want) {
+			t.Errorf("output missing %q:\n%s", want, got)
 		}
+	}
+	// The failure heading stays one self-contained line: the full text lives in
+	// the block's error field and in the command error.
+	var heading string
+	for _, line := range strings.Split(got, "\n") {
+		if strings.Contains(line, "group 100") {
+			heading = line
+		}
+	}
+	if !strings.HasPrefix(heading, "== ") || !strings.HasSuffix(heading, " ==") || !strings.Contains(heading, "failed: GET /items returned HTTP 403") {
+		t.Errorf("group 100 heading = %q, want one line naming the failure", heading)
+	}
+	if strings.Contains(got, "hint: permission denied") {
+		t.Errorf("heading leaked the multi-line remediation:\n%s", got)
 	}
 }
 
@@ -316,26 +372,6 @@ func TestGroupFanoutReportsOneUnreachableGroupAndKeepsTheRest(t *testing.T) {
 	}
 	if fanoutBlock(t, report, "99").Status != "ok" {
 		t.Errorf("group 99 block = %+v, want ok", fanoutBlock(t, report, "99"))
-	}
-
-	// The same failure in the human format keeps its heading on one line: the
-	// classified API error carries multi-line remediation hints, and the full
-	// text stays in the block's error field and in the command error.
-	textOut, _, textErr := runFanoutCmd(t, "collections", "list", "--group", "all", "--csv", "--data-source", "live")
-	if ExitCode(textErr) != 13 {
-		t.Fatalf("csv fan-out = %v (exit %d), want exit 13", textErr, ExitCode(textErr))
-	}
-	var heading string
-	for _, line := range strings.Split(textOut, "\n") {
-		if strings.Contains(line, "group 100") {
-			heading = line
-		}
-	}
-	if !strings.HasPrefix(heading, "== ") || !strings.HasSuffix(heading, " ==") {
-		t.Errorf("group 100 heading = %q, want a single self-contained heading line; out=\n%s", heading, textOut)
-	}
-	if !strings.Contains(heading, "failed:") {
-		t.Errorf("group 100 heading = %q, want the failure named", heading)
 	}
 }
 
@@ -386,19 +422,31 @@ func TestGroupFanoutRunsPreconditionsPerLibrary(t *testing.T) {
 	}
 }
 
-func TestGroupFanoutRefusesCommandsThatAreNotReads(t *testing.T) {
+// The gate is an allowlist: the default is NOT fanned out, and each refusal
+// names the property repetition would break.
+func TestGroupFanoutRefusesCommandsNotOnTheAllowlist(t *testing.T) {
 	fx := newFanoutFixture(t, "")
 	isolateFanoutEnv(t, fx.server.URL+"/users/0")
 
 	cases := []struct {
 		name string
 		args []string
-		want string
+		want []string
 	}{
-		{name: "destructive write", args: []string{"items", "delete", "ABCD1234", "--yes"}, want: "items delete"},
-		{name: "write", args: []string{"tags", "rename", "old", "new", "--yes"}, want: "tags rename"},
-		{name: "sync", args: []string{"sync"}, want: "sync"},
-		{name: "introspect", args: []string{"doctor"}, want: "doctor"},
+		{name: "destructive write", args: []string{"items", "delete", "ABCD1234", "--yes"}, want: []string{"items delete", fanoutSideEffectFree}},
+		{name: "write", args: []string{"tags", "rename", "old", "new", "--yes"}, want: []string{"tags rename", fanoutSideEffectFree}},
+		{name: "sync", args: []string{"sync"}, want: []string{"sync", fanoutSideEffectFree}},
+		{name: "introspect", args: []string{"doctor"}, want: []string{"doctor", fanoutLibraryScoped}},
+		// Closure-cached mirror path: repeating the body reuses library one's
+		// database, so this is not library-scoped under repetition.
+		{name: "closure-cached db path", args: []string{"analytics", "--type", "items"}, want: []string{"analytics", fanoutLibraryScoped}},
+		// --follow never returns, so library two is unreachable.
+		{name: "unbounded follow", args: []string{"tail"}, want: []string{"tail", fanoutFinite}},
+		// Account-level: it answers only under the personal prefix.
+		{name: "account level", args: []string{"groups", "list"}, want: []string{"groups list", fanoutLibraryScoped}},
+		// Line-oriented JSONL stream: no place for a per-library label.
+		{name: "stream export", args: []string{"export", "items"}, want: []string{"export", fanoutOutputNamespaceSafe}},
+		{name: "global schema", args: []string{"schema", "item-types"}, want: []string{"schema item-types", fanoutLibraryScoped}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -410,11 +458,10 @@ func TestGroupFanoutRefusesCommandsThatAreNotReads(t *testing.T) {
 			if code := ExitCode(err); code != 2 {
 				t.Fatalf("exit code = %d, want 2 (usage: no environment makes this flag value legal); err=%v", code, err)
 			}
-			if !strings.Contains(err.Error(), "--group all") || !strings.Contains(err.Error(), tc.want) {
-				t.Errorf("error = %q, want it to name --group all and %q", err.Error(), tc.want)
-			}
-			if !strings.Contains(err.Error(), "--group <id>") {
-				t.Errorf("error = %q, want the single-library alternative named", err.Error())
+			for _, want := range append([]string{"--group all", "--group <id>"}, tc.want...) {
+				if !strings.Contains(err.Error(), want) {
+					t.Errorf("error = %q, want it to name %q", err.Error(), want)
+				}
 			}
 		})
 	}
@@ -422,6 +469,167 @@ func TestGroupFanoutRefusesCommandsThatAreNotReads(t *testing.T) {
 	// resolved: a mutation must not reach the API to find out it is refused.
 	if got := fx.requested(); len(got) != 0 {
 		t.Fatalf("requests = %v, want none before the refusal", got)
+	}
+}
+
+// ReviewFanout's reproduction, turned into the guarantee: two mirrors with
+// different contents, and `analytics --group all` with no --db. Before the
+// allowlist this reported the PERSONAL library's counts under the group's
+// name, because analytics assigns its resolved path back into a closure
+// variable (analytics.go:43) that survives the second iteration.
+func TestGroupFanoutRefusesAnalyticsWhoseMirrorPathIsClosureCached(t *testing.T) {
+	fx := newFanoutFixture(t, "")
+	dataDir := isolateFanoutEnv(t, fx.server.URL+"/users/0")
+	seedFanoutLibraryStore(t, dataDir, "data.db", time.Now().Add(-time.Hour).Truncate(time.Second),
+		[]json.RawMessage{
+			json.RawMessage(`{"key":"P1","version":1,"data":{"key":"P1","itemType":"journalArticle","title":"Personal A"}}`),
+			json.RawMessage(`{"key":"P2","version":1,"data":{"key":"P2","itemType":"journalArticle","title":"Personal B"}}`),
+		})
+	seedFanoutLibraryStore(t, dataDir, "data-group-99.db", time.Now().Add(-time.Hour).Truncate(time.Second),
+		[]json.RawMessage{json.RawMessage(`{"key":"L1","version":1,"data":{"key":"L1","itemType":"book","title":"Lab Only"}}`)})
+
+	out, _, err := runFanoutCmd(t, "analytics", "--type", "items", "--group", "all", "--json")
+	if err == nil || ExitCode(err) != 2 {
+		t.Fatalf("analytics --group all = %v (exit %d), want usage exit 2; out=%s", err, ExitCode(err), out)
+	}
+	if !strings.Contains(err.Error(), fanoutLibraryScoped) {
+		t.Errorf("error = %q, want the library-scoped property named", err.Error())
+	}
+	// Nothing was aggregated, so no per-library count can be mislabelled.
+	if strings.Contains(out, "libraries") {
+		t.Errorf("output = %q, want no aggregate at all", out)
+	}
+}
+
+// ReviewFanout's second reproduction: a command whose output is one
+// caller-named file. Every library would write that path and the last would
+// win, leaving one library's file looking like a backup of all of them.
+func TestGroupFanoutRefusesCommandsWritingOneCallerNamedFile(t *testing.T) {
+	fx := newFanoutFixture(t, "")
+	isolateFanoutEnv(t, fx.server.URL+"/users/0")
+	target := filepath.Join(t.TempDir(), "backup.jsonl")
+
+	cases := []struct {
+		name string
+		args []string
+		// flag is the file-output flag the refusal must name. It is empty for
+		// commands kept off the allowlist entirely, whose refusal names the
+		// property and the reason instead of one flag.
+		flag string
+	}{
+		{name: "export snapshot", args: []string{"export", "snapshot", "--output", target}},
+		{name: "collections bundle", args: []string{"collections", "bundle", "COL1"}},
+		{name: "library health report", args: []string{"library", "health", "--report", target}, flag: "--report"},
+		{name: "library health baseline", args: []string{"library", "health", "--write-baseline", target}, flag: "--write-baseline"},
+		{name: "library wrapped card", args: []string{"library", "wrapped", "--card", target}, flag: "--card"},
+		{name: "annotations export", args: []string{"annotations", "export", "--output", target}, flag: "--output"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			args := append(append([]string{}, tc.args...), "--group", "all", "--json")
+			out, _, err := runFanoutCmd(t, args...)
+			if err == nil || ExitCode(err) != 2 {
+				t.Fatalf("%v = %v (exit %d), want usage exit 2; out=%s", tc.args, err, ExitCode(err), out)
+			}
+			if !strings.Contains(err.Error(), fanoutOutputNamespaceSafe) {
+				t.Errorf("error = %q, want it to name %s", err.Error(), fanoutOutputNamespaceSafe)
+			}
+			if tc.flag != "" && !strings.Contains(err.Error(), tc.flag) {
+				t.Errorf("error = %q, want it to name %s", err.Error(), tc.flag)
+			}
+			if _, statErr := os.Stat(target); statErr == nil {
+				t.Fatalf("%s was created: the refusal must land before any library writes", target)
+			}
+		})
+	}
+	if got := fx.requested(); len(got) != 0 {
+		t.Fatalf("requests = %v, want none before the refusal", got)
+	}
+}
+
+// The MCP surface runs this command tree in-process while its native handlers
+// read the library-scope global on concurrent requests, so the fan-out shape
+// is refused there whatever the command.
+func TestGroupFanoutRefusesUnderTheMCPSurface(t *testing.T) {
+	fx := newFanoutFixture(t, "")
+	isolateFanoutEnv(t, fx.server.URL+"/users/0")
+	mcpSurface.Store(true)
+	t.Cleanup(func() { mcpSurface.Store(false) })
+
+	out, _, err := runFanoutCmd(t, "collections", "list", "--group", "all", "--json", "--data-source", "live")
+	if err == nil || ExitCode(err) != 2 {
+		t.Fatalf("allowlisted read under the MCP surface = %v (exit %d), want usage exit 2; out=%s", err, ExitCode(err), out)
+	}
+	for _, want := range []string{"CLI-only", "--group <id>"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error = %q, want it to name %q", err.Error(), want)
+		}
+	}
+	if got := fx.requested(); len(got) != 0 {
+		t.Fatalf("requests = %v, want none before the refusal", got)
+	}
+	// Numeric --group is untouched: one scope for one command is the exposure
+	// the server already accepts.
+	if _, _, numericErr := runFanoutCmd(t, "collections", "list", "--group", "99", "--json", "--data-source", "live"); numericErr != nil {
+		t.Fatalf("--group 99 under the MCP surface = %v, want it to still work", numericErr)
+	}
+}
+
+// The allowlist is keyed by command path, so a rename or removal must not
+// leave a dead entry that silently stops fanning out.
+func TestFanoutSafeCommandsAllResolveToRunnableCommands(t *testing.T) {
+	root := newRootCmd(&rootFlags{})
+	found := make(map[string]bool, len(fanoutSafeCommands))
+	var walk func(*cobra.Command)
+	walk = func(parent *cobra.Command) {
+		for _, cmd := range parent.Commands() {
+			path := strings.TrimPrefix(cmd.CommandPath(), root.Name()+" ")
+			if _, ok := fanoutSafeCommands[path]; ok && cmd.Runnable() {
+				found[path] = true
+			}
+			walk(cmd)
+		}
+	}
+	walk(root)
+	for path, entry := range fanoutSafeCommands {
+		if !found[path] {
+			t.Errorf("fanoutSafeCommands[%q] resolves to no runnable command", path)
+			continue
+		}
+		for _, flag := range entry.fileOutputFlags {
+			cmd, _, err := root.Find(append([]string{}, strings.Fields(path)...))
+			if err != nil {
+				t.Fatalf("finding %q: %v", path, err)
+			}
+			if cmd.Flags().Lookup(flag) == nil {
+				t.Errorf("fanoutSafeCommands[%q] names file-output flag --%s, which the command does not define", path, flag)
+			}
+		}
+	}
+}
+
+// A group ID becomes a URL segment and a database file name, so a misbehaving
+// server must not be able to reintroduce the sentinel or escape the data
+// directory.
+func TestGroupFanoutRefusesNonNumericGroupIDsFromTheAPI(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/users/0/groups" {
+			t.Errorf("unexpected request path %q", r.URL.Path)
+		}
+		_, _ = w.Write([]byte(`[{"id":"all","version":1,"data":{"name":"Sneaky","type":"PrivateGroup"}}]`))
+	}))
+	defer srv.Close()
+	dataDir := isolateFanoutEnv(t, srv.URL+"/users/0")
+
+	_, _, err := runFanoutCmd(t, "collections", "list", "--group", "all", "--json", "--data-source", "live")
+	if err == nil {
+		t.Fatal("non-numeric group ID = nil error, want a refusal")
+	}
+	if !strings.Contains(err.Error(), `"all"`) || !strings.Contains(err.Error(), "numeric") {
+		t.Errorf("error = %q, want it to name the offending value", err.Error())
+	}
+	if _, statErr := os.Stat(filepath.Join(dataDir, "data-group-all.db")); statErr == nil {
+		t.Fatal("data-group-all.db was created from an unvalidated group ID")
 	}
 }
 

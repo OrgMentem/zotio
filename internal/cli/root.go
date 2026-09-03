@@ -349,7 +349,7 @@ See README.md or the bundled SKILL.md for recipes.`,
 		flags.groupFanout = flags.group == groupFanoutAll
 		switch {
 		case flags.groupFanout:
-			if err := groupFanoutRefusal(cmd); err != nil {
+			if err := groupFanoutRefusal(cmd, flags); err != nil {
 				return err
 			}
 			flags.group = ""

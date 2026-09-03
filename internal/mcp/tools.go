@@ -27,6 +27,12 @@ const mcpSearchMaxResults = 100
 // RegisterTools registers the MCP framework tools plus the selected Cobra command surface.
 func RegisterTools(s *server.MCPServer) {
 	cobratree.StateGuard = cli.SnapshotGlobals
+	// The native tools below (search, sql, resources) read the CLI's
+	// process-global library scope on concurrent requests without taking the
+	// mirrored-run slot, so a command iterating libraries in-process would
+	// hand them a scope no caller asked for. This tells the CLI that its
+	// --group all fan-out must refuse on this surface.
+	cli.MarkMCPSurfaceActive()
 	s.AddTool(
 		mcplib.NewTool("search",
 			mcplib.WithDescription("Full-text search across synced data. Set fulltext to resolve synced PDF-text hits to parent items. Requires sync first. Large responses are bounded to the MCP tool-result budget."),

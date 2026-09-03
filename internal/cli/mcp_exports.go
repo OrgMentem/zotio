@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"sync/atomic"
 )
 
 // AgentContextJSON builds the structured agent-context description from a fresh
@@ -52,6 +53,33 @@ func CommandOverrideCapability(path string) (operation string, requires []string
 // for the personal library.
 func ActiveGroupID() string {
 	return activeGroupIDLocked()
+}
+
+// mcpSurface records that this process serves the MCP surface. It is a
+// process-level marker rather than an argument check at the facade because
+// the facade is not the only in-process executor: `workflow run` executes each
+// step through its own root command (workflow_run.go
+// executeWorkflowRunStepWithRoot), so a step reading `--group all` would slip
+// past any argv inspection done where command_run dispatches. A marker cannot
+// be routed around.
+var mcpSurface atomic.Bool
+
+// MarkMCPSurfaceActive is called once by the MCP server at startup. It refuses
+// the --group all fan-out for the rest of the process: the fan-out cycles the
+// process-global library scope through one library after another, while the
+// server's native sql/search/resource handlers read that same global on
+// concurrent requests without taking the mirrored-run slot that serializes
+// command execution. Those handlers never opted into an iteration they cannot
+// see, and serializing the whole server behind a fan-out would cost more than
+// the feature is worth. Numeric --group is unaffected: it establishes one
+// scope for one command, which is the exposure the server already accepts.
+func MarkMCPSurfaceActive() {
+	mcpSurface.Store(true)
+}
+
+// mcpSurfaceActive reports whether this process serves the MCP surface.
+func mcpSurfaceActive() bool {
+	return mcpSurface.Load()
 }
 
 // DefaultDBPath returns the canonical local SQLite database path for name,

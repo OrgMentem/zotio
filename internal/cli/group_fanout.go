@@ -163,29 +163,142 @@ func resolveFanoutLibraries(flags *rootFlags) ([]fanoutLibrary, error) {
 		if id == "" {
 			continue
 		}
+		// A group ID becomes both a URL path segment (/groups/<id>) and a file
+		// name (data-group-<id>.db), so it is validated here rather than
+		// trusted: a server that answered with "all", "..", or a path
+		// separator would otherwise re-enter the sentinel it is being kept
+		// away from, or point the mirror outside the data directory. Refusing
+		// the run is the only safe answer — skipping the entry would silently
+		// report fewer libraries than the account has.
+		if !isAllDigits(id) {
+			return nil, apiErr(fmt.Errorf("the groups response contains a non-numeric group ID %q; a Zotero group ID is always numeric, and this one would be used as both a URL segment and a database file name", id))
+		}
 		libs = append(libs, fanoutLibrary{Type: "group", ID: id, Name: groupFieldString(g, "name")})
 	}
 	return libs, nil
 }
 
-// installGroupFanout wraps every read command once, after the tree is complete
-// so the capability registry can be consulted. Only read commands are wrapped:
-// they are exactly the set groupFanoutRefusal lets through, so a command that
-// is not wrapped can never silently answer for the personal library alone.
+// The four properties a command must have before it can be fanned out. A
+// fan-out repeats a command it does not understand, so each property is about
+// what repetition does to it rather than what the command does once.
+const (
+	// fanoutFinite: the command terminates on its own. A follow/watch loop
+	// never reaches library two.
+	fanoutFinite = "finite"
+	// fanoutLibraryScoped: the answer is a property of ONE library, and every
+	// library-dependent input (API prefix, mirror path) is resolved per run
+	// rather than memoized in the command's closure. A command that caches the
+	// resolved database path reports library one's rows under library two's
+	// name, which is worse than refusing.
+	fanoutLibraryScoped = "library-scoped"
+	// fanoutSideEffectFree: repeating it changes nothing. Anything that
+	// mutates a library, a mirror, or installation state is out.
+	fanoutSideEffectFree = "side-effect-free"
+	// fanoutOutputNamespaceSafe: the output goes to stdout in a form the
+	// aggregate can label per library. A command writing one caller-named file
+	// has N libraries overwriting one path, and the user keeps the last
+	// library's file believing it covers all of them.
+	fanoutOutputNamespaceSafe = "output-namespace-safe"
+)
+
+// fanoutSafeCommand is one entry in the allowlist: a command reviewed against
+// all four properties, plus the flags that disqualify a single invocation.
+type fanoutSafeCommand struct {
+	// fileOutputFlags name a single caller-chosen path. Set on an invocation,
+	// they break fanoutOutputNamespaceSafe, and the answer is a refusal rather
+	// than an invented per-library filename scheme.
+	fileOutputFlags []string
+}
+
+// fanoutSafeCommands is the allowlist. The default is NOT fanned out: adding a
+// command here is a deliberate act that asserts all four properties hold, and
+// a reviewer should be able to check each claim by reading that command.
+//
+// What the allowlist deliberately keeps out, and why, so the next person does
+// not have to rediscover it:
+//
+//   - analytics, tail, workflow status, search, sync — NOT library-scoped
+//     under repetition. Each assigns its resolved database path back into a
+//     closure variable (`dbPath, err = defaultDBPath(...)`, analytics.go:43,
+//     tail.go:111, channel_workflow.go:55 and :278, search.go:184,
+//     sync.go:182), so the second library reuses the FIRST library's mirror
+//     while the aggregate labels those rows with the second library. tail also
+//     fails fanoutFinite: --follow never returns.
+//   - export snapshot, export snapshot verify, import discover, collections
+//     bundle, collections export — NOT output-namespace-safe: each writes one
+//     caller-named path, so every library overwrites the last and the
+//     aggregate still reports success.
+//   - export (stdout) — NOT output-namespace-safe even without --output. Its
+//     output is JSONL, a line-oriented stream, and the only way to label a
+//     stream per library is to interleave headings into it, which corrupts the
+//     format for the `| jq` consumer the command exists to serve. It is
+//     therefore not annotated mcp:read-only either: the annotation is the MCP
+//     write gate, not a fan-out switch.
+//   - groups list, groups inspect — NOT library-scoped: they are account-level
+//     and answer only under the personal prefix (they refuse a group-scoped
+//     base URL), so fanning them out returns the personal answer plus one
+//     refusal per group.
+//   - schema * — NOT library-scoped: the schema endpoints are global and carry
+//     no library prefix at all (see AGENTS.md).
+//   - journal *, vault *, profile *, auth *, doctor, which, demo, init —
+//     installation- or account-level, not per library.
+//   - single-key lookups (items get, items children, items cite, collections
+//     get, items similar, ...) — a key belongs to exactly one library, so the
+//     aggregate would be one hit plus one not-found per remaining library.
+//   - creators audit — NOT side-effect-free with --orcid, which opens the
+//     mirror for write.
+var fanoutSafeCommands = map[string]fanoutSafeCommand{
+	// Library-wide listings. Finite (paginated or capped), read-only, mirror
+	// path resolved per call through resolveRead/openStoreForRead, stdout only.
+	"collections list":     {},
+	"collections top":      {},
+	"items list":           {},
+	"items recent":         {},
+	"items top":            {},
+	"items trash":          {},
+	"items unfiled":        {},
+	"items find":           {},
+	"items stale":          {},
+	"items authors":        {},
+	"items venues":         {},
+	"tags list":            {},
+	"tags inventory":       {},
+	"searches list":        {},
+	"reading-list":         {},
+	"annotations search":   {},
+	"annotations timeline": {},
+
+	// Diagnostics: the reason the fan-out exists. Same four properties; each
+	// reports findings for one library and nothing else.
+	"items audit":             {},
+	"items duplicates":        {},
+	"items missing-pdf":       {},
+	"items citekey-conflicts": {},
+	"items bibcheck":          {},
+	"tags audit":              {},
+	"library stats":           {},
+	"library prisma":          {},
+
+	// Conditionally safe: fine on stdout, refused when a flag names one file.
+	// library health's --baseline is included because a missing baseline file
+	// is established (written) rather than reported.
+	"library health":     {fileOutputFlags: []string{"report", "write-baseline", "baseline"}},
+	"library wrapped":    {fileOutputFlags: []string{"card"}},
+	"annotations export": {fileOutputFlags: []string{"output"}},
+}
+
+// installGroupFanout wraps the allowlisted commands once, after the tree is
+// complete. Only allowlisted commands are wrapped: they are exactly the set
+// groupFanoutRefusal lets through, so a command that is not wrapped can never
+// silently answer for the personal library alone.
 func installGroupFanout(rootCmd *cobra.Command, flags *rootFlags) {
 	if rootCmd == nil || flags == nil {
 		return
 	}
-	readable := make(map[string]bool)
-	for _, entry := range buildCapabilityRegistry(rootCmd) {
-		if entry.Operation == "read" {
-			readable[entry.Path] = true
-		}
-	}
 	var walk func(*cobra.Command)
 	walk = func(parent *cobra.Command) {
 		for _, cmd := range parent.Commands() {
-			if cmd.RunE != nil && readable[strings.TrimPrefix(cmd.CommandPath(), rootCmd.Name()+" ")] {
+			if _, ok := fanoutSafeCommands[strings.TrimPrefix(cmd.CommandPath(), rootCmd.Name()+" ")]; ok && cmd.RunE != nil {
 				wrapGroupFanoutCommand(cmd, flags)
 			}
 			walk(cmd)
@@ -204,50 +317,120 @@ func wrapGroupFanoutCommand(cmd *cobra.Command, flags *rootFlags) {
 	}
 }
 
-// capabilityEntryForCommand resolves cmd's registry entry. It reads the built
-// registry rather than re-deriving operation from annotations, so the fan-out
-// gate and `zotio capabilities` can never disagree about what a command does.
-func capabilityEntryForCommand(cmd *cobra.Command) (capabilityEntry, bool) {
-	if cmd == nil || cmd.Root() == nil {
-		return capabilityEntry{}, false
-	}
-	path := commandRegistryPath(cmd)
-	if path == "" {
-		return capabilityEntry{}, false
-	}
-	for _, entry := range buildCapabilityRegistry(cmd.Root()) {
-		if entry.Path == path {
-			return entry, true
-		}
-	}
-	return capabilityEntry{}, false
-}
-
-// groupFanoutRefusal reports why cmd may not fan out, or nil when it may.
-//
-// The verdict comes from the capability registry, never from the command body:
-// operation is "read" only for a command annotated mcp:read-only (or declared
-// read in capabilityOverrides), which is the same metadata the MCP surface and
-// the writer locks trust. Anything else — write, sync, introspect, other, or a
-// command the registry does not cover at all — is refused, because "we could
-// not prove this only reads" and "this writes" deserve the same answer when
-// the alternative is a mutation replayed across every library the key can see.
+// groupFanoutRefusal reports why this invocation may not fan out, or nil when
+// it may. Every refusal names the property that fails, so the message teaches
+// the shape of the restriction instead of only blocking.
 //
 // Exit 2 (usage), not 9 (precondition): a precondition refusal promises that
 // provisioning the environment and retrying will work, and no environment
 // makes `items delete --group all` legal. The flag value is wrong for this
 // command, which is what exit 2 means.
-func groupFanoutRefusal(cmd *cobra.Command) error {
-	entry, ok := capabilityEntryForCommand(cmd)
-	switch {
-	case !ok:
-		return usageErr(fmt.Errorf("--group all is not supported by %q: it has no capability entry, so zotio cannot prove it only reads; re-run it once per library with --group <id>", cmd.CommandPath()))
-	case entry.Operation != "read":
-		return usageErr(fmt.Errorf("--group all fans out reads and diagnostics only; %q is a %s command, so it must name one library: re-run it with --group <id> (or no --group for the personal library)", cmd.CommandPath(), entry.Operation))
-	case cmd.RunE == nil:
-		return usageErr(fmt.Errorf("--group all is not supported by %q: the command cannot be repeated per library; re-run it with --group <id>", cmd.CommandPath()))
+func groupFanoutRefusal(cmd *cobra.Command, flags *rootFlags) error {
+	// The MCP surface runs this same command tree in-process (ADR-0001), and
+	// its native sql/search/resource handlers read the library scope from the
+	// package global without taking the mirrored-run slot. A fan-out cycles
+	// that global through N scopes inside one request, so a concurrent native
+	// read would open, say, data-group-99.db for a caller that asked for
+	// nothing of the sort. Serializing the whole server behind a fan-out would
+	// be a worse cure, so the shape is refused on that surface instead.
+	if mcpSurfaceActive() {
+		return usageErr(fmt.Errorf("--group all is a CLI-only shape: the MCP surface serves concurrent readers of one process-global library scope, so it cannot iterate libraries; run one command per library with --group <id>"))
+	}
+	if flags != nil && (flags.csv || flags.plain) {
+		// CSV and tab-separated output are line-oriented streams with no place
+		// to put the library dimension: the aggregate would have to interleave
+		// headings, which corrupts the format for whatever is parsing it.
+		return usageErr(fmt.Errorf("--group all cannot render %s: the format has no column for the library each row came from; use --json, whose rows and findings each carry a library block", fanoutStreamFormatName(flags)))
+	}
+	path := commandRegistryPath(cmd)
+	entry, ok := fanoutSafeCommands[path]
+	if !ok {
+		return usageErr(fanoutNotAllowlistedError(cmd, path))
+	}
+	if cmd.RunE == nil {
+		return usageErr(fmt.Errorf("--group all is not supported by %q: the command body cannot be repeated per library; run it with --group <id>", cmd.CommandPath()))
+	}
+	for _, name := range entry.fileOutputFlags {
+		if cmd.Flags().Changed(name) {
+			return usageErr(fmt.Errorf("--group all is not %s with --%s: every library would write the same file and the last one would win, leaving one library's output looking like all of them; drop --%s to aggregate on stdout, or run one library at a time with --group <id>",
+				fanoutOutputNamespaceSafe, name, name))
+		}
 	}
 	return nil
+}
+
+// fanoutStreamFormatName names the refused format for the message.
+func fanoutStreamFormatName(flags *rootFlags) string {
+	if flags.csv {
+		return "--csv"
+	}
+	return "--plain"
+}
+
+// fanoutRefusalReason explains, for a command a user is likely to reach for,
+// WHICH of the four properties repetition breaks. Absent an entry the refusal
+// falls back to naming all four, since "we did not review this" is the honest
+// reason there.
+type fanoutRefusalReason struct {
+	property string
+	detail   string
+}
+
+var fanoutRefusalReasons = map[string]fanoutRefusalReason{
+	"analytics": {fanoutLibraryScoped,
+		"it memoizes the resolved mirror path in its command closure (analytics.go), so the second library would be counted from the first library's database"},
+	"tail": {fanoutFinite,
+		"--follow holds the first library open indefinitely, so no later library is ever reached"},
+	"workflow status": {fanoutLibraryScoped,
+		"it memoizes the resolved mirror path in its command closure (channel_workflow.go), so later libraries would be read from the first library's database"},
+	"search": {fanoutLibraryScoped,
+		"it memoizes the resolved mirror path in its command closure (search.go), so later libraries would be searched in the first library's database"},
+	"export": {fanoutOutputNamespaceSafe,
+		"its JSONL output is a line-oriented stream with no place for a per-library label, and interleaving headings would corrupt it for whatever is parsing the stream"},
+	"export snapshot": {fanoutOutputNamespaceSafe,
+		"it writes one caller-named snapshot plus lockfile, so each library would overwrite the last"},
+	"export snapshot verify": {fanoutOutputNamespaceSafe,
+		"it verifies one caller-named snapshot, which belongs to exactly one library"},
+	"collections bundle": {fanoutOutputNamespaceSafe,
+		"it writes one caller-named bundle, so each library would overwrite the last"},
+	"collections export": {fanoutOutputNamespaceSafe,
+		"it writes one caller-named export, so each library would overwrite the last"},
+	"import discover": {fanoutOutputNamespaceSafe,
+		"it writes one caller-named manifest, so each library would overwrite the last"},
+	"groups list": {fanoutLibraryScoped,
+		"it is account-level: groups are only listable under the personal-library prefix, so every group iteration would refuse"},
+	"groups inspect": {fanoutLibraryScoped,
+		"it is account-level: it reads the account's group membership, not a library"},
+	"doctor": {fanoutLibraryScoped,
+		"it reports installation, auth and desktop state rather than anything belonging to one library"},
+	"which":   {fanoutLibraryScoped, "it reads the capability index, which has no library dimension"},
+	"version": {fanoutLibraryScoped, "it prints the binary version, which has no library dimension"},
+	"creators audit": {fanoutSideEffectFree,
+		"--orcid opens the mirror for write, so repeating it would write into every library's database"},
+}
+
+// fanoutNotAllowlistedError builds the refusal for a command outside the
+// allowlist, naming the specific property when it is known.
+func fanoutNotAllowlistedError(cmd *cobra.Command, path string) error {
+	if reason, ok := fanoutRefusalReasons[path]; ok {
+		return fmt.Errorf("--group all is not %s for %q: %s; run it once per library with --group <id>", reason.property, cmd.CommandPath(), reason.detail)
+	}
+	// The schema endpoints are global (no /users|groups prefix at all), so
+	// there is nothing per-library to repeat. See AGENTS.md.
+	if strings.HasPrefix(path, "schema ") {
+		return fmt.Errorf("--group all is not %s for %q: the Zotero schema endpoints are global and carry no library prefix; run it once with --group <id> if you need it group-scoped", fanoutLibraryScoped, cmd.CommandPath())
+	}
+	// Writes and syncs are typed in the capability registry, so the property
+	// they break is derived rather than restated per command.
+	if op, _, _, ok := CommandOverrideCapability(path); ok && (op == "write" || op == "sync") {
+		target := "the library"
+		if op == "sync" {
+			target = "the local mirror"
+		}
+		return fmt.Errorf("--group all is not %s for %q: it mutates %s, and a fan-out would replay that change against every library the key can reach; run it once per library with --group <id>", fanoutSideEffectFree, cmd.CommandPath(), target)
+	}
+	return fmt.Errorf("--group all is not supported by %q: fanning a command out requires it to be %s, %s, %s and %s under repetition, and %q is not on the reviewed allowlist (fanoutSafeCommands in internal/cli/group_fanout.go); run it once per library with --group <id>",
+		cmd.CommandPath(), fanoutFinite, fanoutLibraryScoped, fanoutSideEffectFree, fanoutOutputNamespaceSafe, path)
 }
 
 // withLibraryScope pins the process-wide library scope to lib for the duration
@@ -263,6 +446,23 @@ func groupFanoutRefusal(cmd *cobra.Command) error {
 // signature instead is the refactor dev/roadmap.md declined, so the global is
 // set and restored around each library's execution and the sentinel value
 // "all" never reaches either reader — flags.group always holds a real scope.
+//
+// Who else reads this global, established by walking every in-process caller,
+// because the next person changing it needs the list:
+//
+//   - defaultDBPath / DefaultDBPath — the mirror file, so a stale scope reads
+//     the wrong library's database.
+//   - the MCP server's native handlers (internal/mcp/tools.go handleSearch and
+//     handleSQL through dbPath(), and the resource handlers) read it on
+//     concurrent requests WITHOUT taking the mirrored-run slot that serializes
+//     command execution. That is why the fan-out refuses under the MCP surface
+//     (MarkMCPSurfaceActive): the iteration is invisible to them.
+//   - the in-process command executors, all of which snapshot and restore it:
+//     cobratree.runMirroredInProcess (mirror + command_run facade, via
+//     StateGuard = cli.SnapshotGlobals) and workflow_run.go's
+//     executeWorkflowRunStepWithRoot (via snapshotCLIGlobals). The MCP server
+//     is the only place where one of those runs concurrently with a reader
+//     that never snapshots; the CLI runs one command per process.
 func withLibraryScope(flags *rootFlags, lib fanoutLibrary, fn func() error) error {
 	savedFlagScope := flags.group
 	savedGlobalScope := activeGroupIDLocked()
