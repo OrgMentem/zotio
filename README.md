@@ -140,6 +140,7 @@ One command that answers a real question — *"is this library fit for the next 
 | `quick` *(default)* | anything obviously broken | citekey conflicts, duplicates, broken attachments |
 | `citation` | a manuscript bibliography | missing/duplicate citekeys, citation-core fields, duplicates |
 | `systematic-review` | a PRISMA screening corpus | duplicates, screenable metadata (title/abstract), full-text PDFs |
+| `vault` | a trustworthy Obsidian/PKM vault sync | missing/duplicate citekeys (note filenames), citation-core fields |
 | `all` | a full sweep | every registered check |
 
 ```console

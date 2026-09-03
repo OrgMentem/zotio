@@ -2929,7 +2929,7 @@
   },
   {
     "name": "library_health",
-    "description": "Run a ranked, finding-typed health report over the locally synced library.\n\nComposes the existing audit primitives (citekey conflicts, duplicates, missing\nmetadata, tag drift, broken attachments) into one report. Pick what \"ready\" means\nwith --for:\n\n  --for citation           manuscript/bibliography readiness (citekeys, core fields, duplicates)\n  --for systematic-review  PRISMA screening corpus (duplicates, screenable metadata, full text)\n  --for quick   (default)  anything obviously broken (citekey conflicts, duplicates, attachments)\n  --for all                every check\n\nGate CI with --fail-on critical|high|info (or legacy any) (exit 11 when the bar is not met).\n\nThe broken-attachment and retraction checks are live checks that need Zotero\ndesktop or CrossRef network access respectively; pass --verify-files and/or\n--check-retractions to run them. When a gate-relevant check can't run because\nits precondition is unmet, the command refuses loudly (exit 9) rather than passing.",
+    "description": "Run a ranked, finding-typed health report over the locally synced library.\n\nComposes the existing audit primitives (citekey conflicts, duplicates, missing\nmetadata, tag drift, broken attachments) into one report. Pick what \"ready\" means\nwith --for:\n\n  --for citation           manuscript/bibliography readiness (citekeys, core fields, duplicates)\n  --for systematic-review  PRISMA screening corpus (duplicates, screenable metadata, full text)\n  --for vault              PKM vault sync readiness (stable note filenames from citekeys)\n  --for quick   (default)  anything obviously broken (citekey conflicts, duplicates, attachments)\n  --for all                every check\n\nGate CI with --fail-on critical|high|info (or legacy any) (exit 11 when the bar is not met).\n\nThe broken-attachment and retraction checks are live checks that need Zotero\ndesktop or CrossRef network access respectively; pass --verify-files and/or\n--check-retractions to run them. When a gate-relevant check can't run because\nits precondition is unmet, the command refuses loudly (exit 9) rather than passing.",
     "inputSchema": {
       "properties": {
         "badge": {
@@ -2957,7 +2957,7 @@
           "type": "string"
         },
         "for": {
-          "description": "Check preset: quick, citation, systematic-review, all (default: quick)",
+          "description": "Check preset: quick, citation, systematic-review, vault, all (default: quick)",
           "type": "string"
         },
         "limit": {
@@ -3649,7 +3649,7 @@
   },
   {
     "name": "vault_audit",
-    "description": "Audit managed vault notes without writing",
+    "description": "Audit managed vault notes without writing: notes whose Zotero item is gone, notes\nthat drifted behind the store, notes missing a '## Notes' boundary, and notes on the\nold zotero-select link shape.\n\nRun 'zotio library health --for vault' first. A note filename comes from the citation\nkey, so a missing or duplicated citekey renames or collides notes on the next\n'vault push'; this audit only sees the damage afterwards.",
     "inputSchema": {
       "properties": {
         "args": {

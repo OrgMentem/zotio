@@ -49,6 +49,7 @@ itself submitted; it *feeds* something that is. The preset names that something.
 |---|---|---|---|
 | `citation` | manuscript/thesis bibliography → journal/committee (via Better BibTeX `.bib`, the Word/Docs plugin, or CSL-JSON) | citekey conflicts/missing, citation-core fields, duplicates | `high` |
 | `systematic-review` | PRISMA screening corpus → review manuscript + flow diagram (+ dataset) → journal / PROSPERO / OSF | duplicates (with dedup count), screenable metadata (title/abstract), full-text PDF present | `high` |
+| `vault` | Obsidian/PKM vault → daily notes and wikilinks (via `vault push`) | citekey missing/conflict (a note filename is the citekey, so both rename or collide notes), citation-core fields | `high` |
 | `quick` *(default)* | "anything obviously broken" | citekey conflicts, broken attachments, duplicates | none |
 
 Failures prevented are concrete: undefined/duplicate `\cite{}` keys, references rendered with blank
@@ -354,7 +355,7 @@ it expressive, expressive before wiring triggers. Triggered runs stay preview-on
 |---|---|---|
 | **Defer** | Journal before-images / broader undo | Relitigates the recorded "defer universal undo"; no demand evidence. Before-images are the principled path *if* demand shows. |
 | **Defer** | Stored-file upload protocol | Still the riskiest import edge; the attach-mode contract already reserves `upload`. Revisit on group-library demand. |
-| **Decline** | Multi-library workspace model | A workspace registry is architecture without a user. The intended cheap 80% is `--group all` read/diagnostic fan-out — **not yet built** (`--group` accepts a numeric ID only; `--group all` exits 2), tracked as `zotio-e93e08d3268d422a`. Corrected 2026-08-17: this row previously implied the fan-out already shipped, so the decline rested on an unbuilt alternative. |
+| **Decline** | Multi-library workspace model | A workspace registry is architecture without a user. The cheap 80% is `--group all` read/diagnostic fan-out, **SHIPPED 2026-09-03** (`zotio-e93e08d3268d422a`): the root pre-run accepts `all`, resolves the personal library plus every accessible group, runs the command once per library with the scope global set and restored around each, and merges one report with a `library` dimension on every row. Reads and diagnostics only — a non-read command refuses at exit 2 before any request, because no environment makes `items delete --group all` legal. One unreachable group is reported against that group and the rest still return. Corrected 2026-08-17: this row previously implied the fan-out already shipped, so the decline rested on an unbuilt alternative; it is now real. |
 | **Decline** | Beacon recurring scheduler | `watch --interval` + OS schedulers/CI cover it; a resident daemon is a large operational surface against the composability thesis. |
 | **Park** | BYO-vector seam | The sanctioned form of the semantic-search cut, but build nothing until a host actually shows up with vectors. |
 | **Park** | P3 long tail (analytics, digests, ZotFile-style renaming, notes, collaboration) | Promote individual items only on user signal from the outreach channels. |

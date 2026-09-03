@@ -120,7 +120,7 @@ The machine-readable registry every command is classified against — read vs. w
 | `schema item-type-fields` | read |  |  |  |
 | `schema item-types` | read |  |  |  |
 | `schema new-item-template` | read |  |  | `live_local_api` |
-| `search` | other |  |  |  |
+| `search` | read |  |  |  |
 | `searches get` | read |  |  |  |
 | `searches list` | read |  |  |  |
 | `searches materialize` | write | `web_api` |  | `web_api_key` |

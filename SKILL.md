@@ -63,7 +63,7 @@ The curated feature set. `zotio which "<goal>"` resolves natural-language querie
 
 ### Library trust & health
 
-- **`library health`** — Ranked, CI-gateable report (citekey conflicts, duplicates, missing metadata, tag drift, broken attachments). `--for` takes `quick`, `citation`, `systematic-review`, or `all`; gate CI with `--fail-on` (exit 11). `--badge` publishes a shields.io badge and is refused under `--json`/`--agent`, so run it plain.
+- **`library health`** — Ranked, CI-gateable report (citekey conflicts, duplicates, missing metadata, tag drift, broken attachments). `--for` takes `quick`, `citation`, `systematic-review`, `vault`, or `all`; gate CI with `--fail-on` (exit 11). `--badge` publishes a shields.io badge and is refused under `--json`/`--agent`, so run it plain.
 - **`items duplicates`** — Detect likely duplicates by DOI or normalized title; `items duplicates resolve` merges them preview-first, and since it accepts no key selector that means *every* detected pair. Duplicates corrupt PRISMA counts before a manuscript.
 - **`items retract-check`** — Check DOI-bearing items against Crossref's Retraction Watch data; also gates `library health` via `--check-retractions`. Catch a retracted citation before a reviewer does.
 - **`collections gaps`** — Rank most-cited papers missing from your library (citation-graph gap analysis via OpenCitations + Semantic Scholar).

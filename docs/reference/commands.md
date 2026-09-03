@@ -22,7 +22,7 @@ These flags are available on every command.
 | `--data-source` | `string` | `auto` | Data source for read commands: auto (live with local fallback), live (API only), local (synced data only) |
 | `--deliver` | `string` |  | Route output to a sink: stdout (default), file:<path>, webhook:<url> |
 | `--dry-run` | `bool` | `false` | Show request without sending |
-| `--group` | `string` |  | Operate on a Zotero group library by numeric group ID (default: personal library) |
+| `--group` | `string` |  | Operate on a Zotero group library by numeric group ID, or 'all' to fan one read/diagnostic out across the personal library and every accessible group (default: personal library) |
 | `--human-friendly` | `bool` | `false` | Force colored output (auto-enabled on terminals; NO_COLOR and --no-color still win) |
 | `--idempotent` | `bool` | `false` | Treat already-existing create results as a successful no-op |
 | `--ignore-missing` | `bool` | `false` | Treat missing delete targets as a successful no-op |
@@ -2169,6 +2169,7 @@ with --for:
 
   --for citation           manuscript/bibliography readiness (citekeys, core fields, duplicates)
   --for systematic-review  PRISMA screening corpus (duplicates, screenable metadata, full text)
+  --for vault              PKM vault sync readiness (stable note filenames from citekeys)
   --for quick   (default)  anything obviously broken (citekey conflicts, duplicates, attachments)
   --for all                every check
 
@@ -2191,7 +2192,7 @@ zotio library health [flags]
 | `--check-retractions` | `bool` | `false` | Run the live CrossRef retraction check (network; DOI-bearing items) |
 | `--fail-on` | `string` |  | Exit 11 if findings reach this severity: critical, high, info/any; none disables the gate (default: the preset's) |
 | `--fail-on-new` | `string` |  | Exit 11 if new baseline-diff findings reach this severity: critical, high, info/any (requires --baseline) |
-| `--for` | `string` | `quick` | Check preset: quick, citation, systematic-review, all |
+| `--for` | `string` | `quick` | Check preset: quick, citation, systematic-review, vault, all |
 | `--limit` | `int` | `0` | Max findings listed per kind (0 = all); also caps the live attachment scan |
 | `--report` | `string` |  | Write the full JSON health report to this file in addition to stdout/badge output |
 | `--require-fresh` | `duration` | `0s` | Refuse (exit 12) when the local store is staler than this (e.g. 24h); 0 = disabled |
@@ -2887,6 +2888,14 @@ zotio vault
 
 Audit managed vault notes without writing
 
+Audit managed vault notes without writing: notes whose Zotero item is gone, notes
+that drifted behind the store, notes missing a '## Notes' boundary, and notes on the
+old zotero-select link shape.
+
+Run 'zotio library health --for vault' first. A note filename comes from the citation
+key, so a missing or duplicated citekey renames or collides notes on the next
+'vault push'; this audit only sees the damage afterwards.
+
 ```
 zotio vault audit [--out <dir>] [flags]
 ```
@@ -3074,7 +3083,7 @@ zotio watch [resource...] [flags]
 | Flag | Type | Default | Description |
 | --- | --- | --- | --- |
 | `--health` | `bool` | `false` | Run quick library health checks after each successful sync |
-| `--health-for` | `string` | `quick` | Health preset for --health: quick, citation, systematic-review, all |
+| `--health-for` | `string` | `quick` | Health preset for --health: quick, citation, systematic-review, vault, all |
 | `--health-webhook` | `string` |  | POST health drift JSON to this webhook URL |
 | `--interval` | `duration` | `5m0s` | Sync interval |
 | `--once` | `bool` | `false` | Run one sync cycle and exit |
