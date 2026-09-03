@@ -766,3 +766,63 @@ func equalStrings(got, want []string) bool {
 	}
 	return true
 }
+
+// A single-character term matches a large share of any library through the
+// porter tokenizer while telling nothing about which item is meant, so it is
+// dropped before the OR expression is built. Asserted on the query AND on a
+// real search, because the query is only interesting for what it stops
+// matching.
+func TestTitleCandidatesDropSingleCharacterTerms(t *testing.T) {
+	if got, want := titleCandidateMatchQuery("A Study of X Networks"), `"Study" OR "of" OR "Networks"`; got != want {
+		t.Errorf("match query = %s, want %s", got, want)
+	}
+
+	s := queryTestStore(t)
+	if _, _, err := s.UpsertBatch("items", []json.RawMessage{
+		json.RawMessage(`{"key":"SNGL","version":1,"data":{"key":"SNGL","itemType":"journalArticle","title":"A Study of Random Forests"}}`),
+	}); err != nil {
+		t.Fatalf("seed single-letter title: %v", err)
+	}
+	// The index really does hold "a" for that item, so the drop is what keeps
+	// it out of the candidate set rather than the tokenizer never matching.
+	var indexed int
+	row := s.DB().QueryRowContext(context.Background(),
+		`SELECT count(*) FROM resources_fts WHERE resources_fts MATCH '"a"'`)
+	if err := row.Scan(&indexed); err != nil {
+		t.Fatalf("probing the index for a one-character term: %v", err)
+	}
+	if indexed == 0 {
+		t.Fatal(`the index holds no "a" term, so this test cannot show what the drop prevents`)
+	}
+	rows, err := s.TitleCandidates(context.Background(), "A", 10)
+	if err != nil {
+		t.Fatalf("TitleCandidates: %v", err)
+	}
+	if len(rows) != 0 {
+		t.Errorf("candidates = %d, want none: a one-character title names no item", len(rows))
+	}
+}
+
+// Past roughly two dozen terms the extra words add candidates without changing
+// which candidate ranks first, so the OR expression is capped rather than
+// growing one clause per word of a very long title.
+func TestTitleCandidateMatchQueryCapsTheTermCount(t *testing.T) {
+	words := make([]string, 0, titleCandidateMaxTerms*2)
+	for i := range titleCandidateMaxTerms * 2 {
+		words = append(words, fmt.Sprintf("term%02d", i))
+	}
+	query := titleCandidateMatchQuery(strings.Join(words, " "))
+
+	terms := strings.Split(query, " OR ")
+	if len(terms) != titleCandidateMaxTerms {
+		t.Fatalf("terms = %d, want the cap of %d", len(terms), titleCandidateMaxTerms)
+	}
+	// The cap keeps the leading terms: a title is truncated from the end, not
+	// sampled, so the query stays the prefix of what the caller typed.
+	if terms[0] != `"term00"` || terms[len(terms)-1] != fmt.Sprintf(`"term%02d"`, titleCandidateMaxTerms-1) {
+		t.Errorf("terms = %v, want term00..term%02d", terms, titleCandidateMaxTerms-1)
+	}
+	if strings.Contains(query, fmt.Sprintf("term%02d", titleCandidateMaxTerms)) {
+		t.Errorf("query kept a term past the cap: %s", query)
+	}
+}

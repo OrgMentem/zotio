@@ -7,14 +7,18 @@
 package cli
 
 import (
+	"math"
 	"sort"
 	"strings"
 	"unicode"
+
+	"golang.org/x/text/unicode/norm"
 )
 
 // Scoring constants. These are the only tunable numbers in approximate title
 // matching, and they live together so tuning is one edit against one corpus
-// (TestTitleSimilarityCorpus) rather than a scatter of literals.
+// (TestTitleSimilarityCorpus, TestTitleSimilarityScoreBounds) rather than a
+// scatter of literals.
 const (
 	// nearTitleMatchLimit caps how many near matches are reported. The cap is
 	// by RANK, not by similarity, so the output cannot become a wall of weak
@@ -51,8 +55,45 @@ const (
 	// titleInformativeMinCount is how many informative words a title must have
 	// before the function words are dropped. Below it there is nothing left to
 	// compare: "War and Peace" has one, so discarding "war" and "and" would
-	// score it identical to every other title ending in "Peace".
+	// score it identical to every other title ending in "Peace". The count is
+	// tested against BOTH titles of a comparison; titleComparableTokens says
+	// why.
 	titleInformativeMinCount = 2
+
+	// titleDistinctMaxScore is the ceiling for a pair that is not the same
+	// title under normalizeExactTitle. 1.00 has to mean "the same title,
+	// written differently", because the near-match list is printed under a
+	// heading that says the titles DIFFER: a one-token title against a
+	// one-edit typo of itself scored 1.0000, which reads as an exact hit that
+	// the exact search somehow missed. The ceiling says instead "as close as
+	// the tokens can tell".
+	titleDistinctMaxScore = 0.99
+
+	// nearTitleScoreScale rounds a reported score to two decimals. The score
+	// is advisory, and JSON published 0.6666666666666666 for it, which invites
+	// a caller to compare it against a precision it does not have.
+	nearTitleScoreScale = 100
+
+	// exactTitleTrailingPunctuation is stripped from the end of a folded
+	// title. A trailing stop or separator is an artefact of the citation the
+	// title was copied out of ("Title." / "Title: "), not part of the name of
+	// the work.
+	exactTitleTrailingPunctuation = " .,;:!?"
+)
+
+// exactTitlePunctuationFold folds the punctuation variants that say nothing
+// about which work is meant: the same title typed by hand, exported from a
+// publisher and copied out of a PDF differs by exactly these. Soft hyphens and
+// zero-width marks are removed rather than folded to ASCII, because they are
+// line-breaking artefacts that sit INSIDE a word. Being a package-level
+// replacer, the table is built once rather than per title.
+var exactTitlePunctuationFold = strings.NewReplacer(
+	"\u2018", "'", "\u2019", "'", "\u201a", "'", "\u201b", "'", "\u2032", "'",
+	"\u201c", `"`, "\u201d", `"`, "\u201e", `"`, "\u201f", `"`, "\u2033", `"`,
+	"\u2010", "-", "\u2011", "-", "\u2012", "-", "\u2013", "-", "\u2014", "-",
+	"\u2015", "-", "\u2212", "-",
+	"\u2026", "...",
+	"\u00ad", "", "\u200b", "", "\u200c", "", "\u200d", "", "\ufeff", "",
 )
 
 // titleCandidate is one item considered as a near match.
@@ -68,7 +109,12 @@ type nearTitleMatch struct {
 	Key   string  `json:"key"`
 	Title string  `json:"title"`
 	Score float64 `json:"score"`
-	Year  string  `json:"year,omitempty"`
+	// Year is published even when it is empty. A person saw "----" for an
+	// undated item while a JSON caller got no key at all and had to guess
+	// whether the field was missing or the date was.
+	Year     string `json:"year"`
+	ItemType string `json:"item_type,omitempty"`
+	Trashed  bool   `json:"trashed,omitempty"`
 }
 
 // rankNearTitleMatches scores candidates against the query title and returns
@@ -79,8 +125,8 @@ type nearTitleMatch struct {
 // which can reorder equally-scored rows, and an unstable list cannot be
 // reproduced from a bug report.
 func rankNearTitleMatches(query string, candidates []titleCandidate, limit int) []nearTitleMatch {
-	normalizedQuery := titleMatchTokens(query)
-	if len(normalizedQuery) == 0 {
+	queryTokens := titleMatchTokens(query)
+	if len(queryTokens.all) == 0 {
 		return nil
 	}
 	if limit <= 0 {
@@ -89,7 +135,13 @@ func rankNearTitleMatches(query string, candidates []titleCandidate, limit int) 
 
 	scored := make([]nearTitleMatch, 0, len(candidates))
 	for _, candidate := range candidates {
-		score := titleTokenSimilarity(normalizedQuery, titleMatchTokens(candidate.Title))
+		// Rounded here, where the number is produced, so the score that is
+		// printed, serialised and compared is the same score the floor
+		// tested. Rounding cannot manufacture 1.00 out of a near match:
+		// titleTokenSimilarity has already pulled every non-identical pair
+		// down to titleDistinctMaxScore.
+		raw := titleTokenSimilarity(queryTokens, titleMatchTokens(candidate.Title))
+		score := math.Round(raw*nearTitleScoreScale) / nearTitleScoreScale
 		if score < nearTitleMinScore {
 			continue
 		}
@@ -107,32 +159,108 @@ func rankNearTitleMatches(query string, candidates []titleCandidate, limit int) 
 	return scored
 }
 
-// titleMatchTokens lowercases a title, splits it on everything that is not a
-// letter or a digit, and keeps the words worth scoring on. Splitting that way
-// means punctuation, dashes and quoting styles cannot change a score. It is
-// deliberately more aggressive than normalizeDuplicateTitle, which backs an
-// EXACT equality contract and must not fold two distinct titles together; here
-// folding is the point.
+// titleTokens is one title prepared for comparison. Both token lists are kept
+// because whether the function words are worth scoring on is a question about
+// the PAIR, not about one title; titleComparableTokens answers it.
+type titleTokens struct {
+	// exact is the title under normalizeExactTitle, kept so a comparison can
+	// tell "the same title written differently" from "nearly the same title"
+	// without re-folding either side.
+	exact string
+	// all is every word, function words included.
+	all []string
+	// informative is all without the function words. It aliases all when the
+	// title has none, so the common case allocates nothing.
+	informative []string
+}
+
+// titleMatchTokens folds a title with normalizeExactTitle, splits it on
+// everything that is not a letter or a digit, and reports both the whole word
+// list and the words worth scoring on. Splitting that way means punctuation,
+// dashes and quoting styles cannot change a score. Folding first means an NFD
+// title tokenises the same as its NFC twin: NFD "Nação Brasileira" scored
+// 0.3333 against the NFC form, because the combining marks split "nação" into
+// three tokens, and the FTS store really does return that candidate — so the
+// ranker was discarding a row the query had found.
 //
-// Function words are dropped once the title has titleInformativeMinCount real
-// words left. Counting them was measurably wrong, not merely noisy: "The Study
-// of Networks" and "The Theory of Games" share "the" and "of" and scored 0.50
-// with nothing else in common. Titles too short to spare them keep everything,
-// because a title whose only long word is "Peace" has no other signal.
-func titleMatchTokens(title string) []string {
-	fields := strings.FieldsFunc(strings.ToLower(title), func(r rune) bool {
+// A word made only of digits is informative however short it is. "Volume 12
+// Studies" against "Volume 13 Studies" scored 1.0000 while "12" was dropped
+// for being under titleInformativeMinLen, and that number is the only thing
+// that tells the two volumes apart.
+//
+// What NFC folding does NOT fix, and why neither is fixed here:
+//
+//   - "Theatre" against "Théâtre" still scores 0. Folding diacritics would
+//     pair them, but candidate generation is FTS over the stored title
+//     (titleCandidateMatchQuery in internal/store/query.go), which keeps
+//     letters as they are, so the row never arrives to be scored; folding in
+//     Go would change nothing a user can see. It would also merge words that a
+//     diacritic separates ("schon"/"schön", "laska"/"łaska"), which changes
+//     what counts as the same word. The recall gap belongs in candidate
+//     generation, not in the ranker.
+//   - A CJK title has no spaces, so it is one token: one changed character
+//     stays inside the edit budget for a token that long, and the pair reaches
+//     titleDistinctMaxScore. That score is unreachable in practice, because
+//     the same one-character change returns no candidate row from FTS at all.
+//     Splitting it needs a segmenter, and it would have to be the segmenter
+//     the FTS tokenizer uses or the two ends would disagree again.
+func titleMatchTokens(title string) titleTokens {
+	exact := normalizeExactTitle(title)
+	fields := strings.FieldsFunc(exact, func(r rune) bool {
 		return !unicode.IsLetter(r) && !unicode.IsDigit(r)
 	})
-	informative := make([]string, 0, len(fields))
+	informative := fields
 	for _, field := range fields {
-		if len([]rune(field)) >= titleInformativeMinLen {
-			informative = append(informative, field)
+		if titleWordIsInformative(field) {
+			continue
 		}
+		informative = make([]string, 0, len(fields)-1)
+		for _, keep := range fields {
+			if titleWordIsInformative(keep) {
+				informative = append(informative, keep)
+			}
+		}
+		break
 	}
-	if len(informative) >= titleInformativeMinCount {
-		return informative
+	return titleTokens{exact: exact, all: fields, informative: informative}
+}
+
+// titleWordIsInformative reports whether a word carries enough signal to score
+// on. Length is the test, except for a numeral: "12" is short because volume
+// numbers are short, never because it is a function word.
+func titleWordIsInformative(word string) bool {
+	return len([]rune(word)) >= titleInformativeMinLen || isTitleNumeral(word)
+}
+
+// normalizeExactTitle folds a title to the form used for EXACT title equality:
+// NFC, lowercase, single spaces, ASCII punctuation, no trailing separator. It
+// never drops a word, so two titles that fold together differ only in how they
+// were typed or exported — "ATTENTION IS ALL YOU NEED." against "Attention Is
+// All You Need", or an en dash against a hyphen.
+//
+// It is also the boundary between "the same title" and "a near match":
+// titleTokenSimilarity may report 1.00 only for a pair that is equal here.
+func normalizeExactTitle(title string) string {
+	folded := exactTitlePunctuationFold.Replace(norm.NFC.String(title))
+	collapsed := strings.Join(strings.Fields(strings.ToLower(folded)), " ")
+	return strings.TrimRight(collapsed, exactTitleTrailingPunctuation)
+}
+
+// titleComparableTokens decides, once per comparison, which word lists the two
+// titles are scored on. The decision has to be JOINT.
+//
+// Deciding it per title tokenised "The Art of War: Complete Edition" to
+// [complete edition] and "The Art of War" to [the art of war]. Those share
+// nothing, so the pair scored 0.0000 and the feature dropped the very candidate
+// it exists to surface — the silence it was written to remove came straight
+// back. Deciding it jointly scores that pair 0.8000, and still scores "The
+// Study of Networks" against "The Theory of Games" 0.0000, which is the pair
+// the function-word filter exists for.
+func titleComparableTokens(a, b titleTokens) (left, right []string) {
+	if len(a.informative) >= titleInformativeMinCount && len(b.informative) >= titleInformativeMinCount {
+		return a.informative, b.informative
 	}
-	return fields
+	return a.all, b.all
 }
 
 // titleTokenSimilarity returns a Sørensen–Dice coefficient over tokens that are
@@ -147,45 +275,103 @@ func titleMatchTokens(title string) []string {
 // scores 2*2/(2+4) = 0.67 here, and near 0.6 under plain edit distance.
 //
 // Each token pairs at most once, so a repeated word cannot inflate the count.
-func titleTokenSimilarity(a, b []string) float64 {
-	if len(a) == 0 || len(b) == 0 {
+func titleTokenSimilarity(a, b titleTokens) float64 {
+	left, right := titleComparableTokens(a, b)
+	if len(left) == 0 || len(right) == 0 {
 		return 0
 	}
-	used := make([]bool, len(b))
+	score := 2 * float64(countTitleWordPairs(left, right)) / float64(len(left)+len(right))
+	if a.exact == b.exact {
+		return score
+	}
+	// Approximate pairing can make two different titles look identical: one
+	// token one edit apart, or a volume whose number is the only difference.
+	// A list headed "no exact match" must never print 1.00, so anything that
+	// is not the same title comes back under the ceiling.
+	return min(score, titleDistinctMaxScore)
+}
+
+// countTitleWordPairs returns how many words the two titles share, where two
+// words are shared when titleWordsMatch calls them the same word. Each word
+// pairs at most once.
+//
+// Identical words pair first and the leftovers go through augmenting paths, so
+// the result is the MAXIMUM number of pairs. Greedy first-best pairing was both
+// wrong and asymmetric: [word words] against [words world] paired "word" with
+// "words", had nothing left for "words", and scored 0.5000 one way against
+// 1.0000 reversed — so a ranking depended on which of the two titles was the
+// query. Maximum cardinality is a property of the pair rather than of the
+// order, which makes the score symmetric by construction.
+func countTitleWordPairs(left, right []string) int {
+	pairedWith := make([]int, len(right))
+	for i := range pairedWith {
+		pairedWith[i] = -1
+	}
 	shared := 0
-	for _, left := range a {
-		best := -1
-		bestDistance := 0
-		for i, right := range b {
-			if used[i] {
-				continue
-			}
-			distance, ok := fuzzyTokenDistance(left, right)
-			if !ok {
-				continue
-			}
-			if best < 0 || distance < bestDistance {
-				best, bestDistance = i, distance
-				if distance == 0 {
-					break
-				}
+	var unpaired []int
+	for i, word := range left {
+		paired := false
+		for j, other := range right {
+			if pairedWith[j] < 0 && word == other {
+				pairedWith[j] = i
+				shared++
+				paired = true
+				break
 			}
 		}
-		if best >= 0 {
-			used[best] = true
+		if !paired {
+			unpaired = append(unpaired, i)
+		}
+	}
+	if len(unpaired) == 0 {
+		return shared
+	}
+	// Only the words with no identical partner pay for edit distance, so two
+	// identical titles never run the expensive pass at all.
+	visited := make([]bool, len(right))
+	for _, i := range unpaired {
+		for j := range visited {
+			visited[j] = false
+		}
+		if augmentTitleWordPairs(i, left, right, pairedWith, visited) {
 			shared++
 		}
 	}
-	return 2 * float64(shared) / float64(len(a)+len(b))
+	return shared
 }
 
-// fuzzyTokenDistance reports whether two tokens are close enough to be the same
-// word, and how close. The edit budget grows with length because one edit in a
-// three-letter word changes which word it is, while one edit in a ten-letter
-// word is a typo.
-func fuzzyTokenDistance(a, b string) (int, bool) {
+// augmentTitleWordPairs looks for an augmenting path from left word i: either a
+// free partner, or a partner whose current owner can move elsewhere. Returning
+// true means the matching grew by one pair.
+func augmentTitleWordPairs(i int, left, right []string, pairedWith []int, visited []bool) bool {
+	for j, other := range right {
+		if visited[j] || !titleWordsMatch(left[i], other) {
+			continue
+		}
+		visited[j] = true
+		if pairedWith[j] < 0 || augmentTitleWordPairs(pairedWith[j], left, right, pairedWith, visited) {
+			pairedWith[j] = i
+			return true
+		}
+	}
+	return false
+}
+
+// titleWordsMatch reports whether two words are close enough to be the same
+// word. The edit budget grows with length because one edit in a three-letter
+// word changes which word it is, while one edit in a ten-letter word is a typo.
+//
+// A word made only of digits gets no budget: it matches itself or nothing.
+// "World Development Report 2019" scored 1.0000 against the 2018 edition
+// because four digits are long enough for one edit, and a year, volume or
+// edition number is the one part of a title where a single changed character
+// means a different work.
+func titleWordsMatch(a, b string) bool {
 	if a == b {
-		return 0, true
+		return true
+	}
+	if isTitleNumeral(a) || isTitleNumeral(b) {
+		return false
 	}
 	ra, rb := []rune(a), []rune(b)
 	budget := 0
@@ -194,17 +380,24 @@ func fuzzyTokenDistance(a, b string) (int, bool) {
 	} else if shorter >= fuzzyTokenMinLen {
 		budget = 1
 	}
-	if budget == 0 {
-		return 0, false
+	if budget == 0 || abs(len(ra)-len(rb)) > budget {
+		return false
 	}
-	if abs(len(ra)-len(rb)) > budget {
-		return 0, false
+	return boundedLevenshtein(ra, rb, budget) <= budget
+}
+
+// isTitleNumeral reports whether a word is nothing but digits: a year, a
+// volume, an edition, a part number.
+func isTitleNumeral(word string) bool {
+	if word == "" {
+		return false
 	}
-	distance := boundedLevenshtein(ra, rb, budget)
-	if distance > budget {
-		return 0, false
+	for _, r := range word {
+		if !unicode.IsDigit(r) {
+			return false
+		}
 	}
-	return distance, true
+	return true
 }
 
 // boundedLevenshtein returns the edit distance between two rune slices, giving

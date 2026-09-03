@@ -766,10 +766,12 @@ func (s *Store) TitleCandidates(ctx context.Context, title string, limit int) ([
 	return results, rows.Err()
 }
 
-// titleCandidateMatchQuery turns a title into a quoted OR expression. Every
-// term is quoted so punctuation inside a title cannot become MATCH syntax.
-// Single characters are dropped: they match a large share of any library
-// through the porter tokenizer while telling nothing about which item is meant.
+// titleCandidateMatchQuery turns a title into a quoted OR expression, or "" for
+// a title with no usable term — strings.Join over no terms already returns "",
+// which is the empty-match sentinel TitleCandidates checks. Every term is
+// quoted so punctuation inside a title cannot become MATCH syntax. Single
+// characters are dropped: they match a large share of any library through the
+// porter tokenizer while telling nothing about which item is meant.
 func titleCandidateMatchQuery(title string) string {
 	terms := make([]string, 0, titleCandidateMaxTerms)
 	for _, field := range strings.FieldsFunc(title, func(r rune) bool {
@@ -782,9 +784,6 @@ func titleCandidateMatchQuery(title string) string {
 		if len(terms) == titleCandidateMaxTerms {
 			break
 		}
-	}
-	if len(terms) == 0 {
-		return ""
 	}
 	return strings.Join(terms, " OR ")
 }
