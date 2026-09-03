@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -286,5 +287,135 @@ func TestCacheNamespaceClassification(t *testing.T) {
 		if !self {
 			t.Errorf("namespace %q does not clear itself", namespace)
 		}
+	}
+}
+
+// Each case is a reproduction from the cache review. They are written read-first
+// — the stale READ is the subject, the write is what reaches it — because that
+// is the direction that found the two edges an earlier pass missed.
+func TestCrossResourceEdgesReachTheStaleRead(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		staleRead string
+		write     func(*Client) error
+	}{
+		{
+			// `collections delete` writes DELETE /collections/<key>; a saved
+			// search scoped to that collection (including its recursive
+			// descendants) then returns different items, so `searches run` must
+			// not serve its pre-delete membership.
+			name:      "collection delete reaches saved-search results",
+			staleRead: "/searches/SAVED/items",
+			write: func(c *Client) error {
+				_, _, err := c.Delete("/collections/COLL")
+				return err
+			},
+		},
+		{
+			// `items create --group G` writes /items with the base URL rewritten
+			// to /groups/G, while the stale read is /groups under /users/<id>,
+			// whose meta.numItems counts those items. Written path and stale
+			// read live under different library prefixes.
+			name:      "group item create reaches the group list item count",
+			staleRead: "/groups",
+			write: func(c *Client) error {
+				_, _, err := c.Post("/items", map[string]any{"itemType": "book"})
+				return err
+			},
+		},
+		{
+			// A tag delete or rename changes the tag list of every collection
+			// holding a tagged item.
+			name:      "tag write reaches a collection tag list",
+			staleRead: "/collections/COLL/tags",
+			write: func(c *Client) error {
+				_, _, err := c.Delete("/tags")
+				return err
+			},
+		},
+		{
+			// Zotero's delete log spans settings too, not just objects.
+			name:      "settings write reaches the delete log",
+			staleRead: "/deleted",
+			write: func(c *Client) error {
+				_, _, err := c.Put("/settings/tagColors", map[string]any{"value": []any{}})
+				return err
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			c := mutationTestServer(t)
+			stale := warmCacheEntry(t, c, tc.staleRead, `[{"key":"WARM"}]`)
+			schema := warmCacheEntry(t, c, "/itemTypes", `[{"itemType":"book"}]`)
+
+			if err := tc.write(c); err != nil {
+				t.Fatalf("write: %v", err)
+			}
+
+			if _, err := os.Stat(stale); !os.IsNotExist(err) {
+				t.Fatalf("%s cache entry survived the write that changes it: %v", tc.staleRead, err)
+			}
+			if cacheEntryReadable(t, c, tc.staleRead) {
+				t.Fatalf("%s is still served from cache after the write that changes it", tc.staleRead)
+			}
+			// The write must stay selective: a global Zotero schema read cannot
+			// be changed by any library write.
+			if _, err := os.Stat(schema); err != nil {
+				t.Fatalf("/itemTypes entry was removed by a library write: %v", err)
+			}
+		})
+	}
+}
+
+// A marker holding JSON null unmarshals into a nil map without error. Assigning
+// into it used to panic, so one damaged marker crashed every subsequent write.
+// It must fail closed instead: report the error and leave nothing cached.
+func TestNullGenerationMarkerFailsClosedWithoutPanic(t *testing.T) {
+	c := mutationTestServer(t)
+	entry := warmCacheEntry(t, c, "/items", `[{"key":"WARM"}]`)
+	if err := os.WriteFile(c.cacheGenerationMarkerPath(), []byte("null\n"), 0o600); err != nil {
+		t.Fatalf("writing null marker: %v", err)
+	}
+
+	err := c.invalidateCache("/items")
+	if err == nil {
+		t.Fatal(`invalidateCache with a null marker = nil, want an error`)
+	}
+	if !strings.Contains(err.Error(), "cache generation marker") {
+		t.Fatalf("error = %v, want it to name the generation marker", err)
+	}
+	if _, statErr := os.Stat(entry); !os.IsNotExist(statErr) {
+		t.Fatalf("cache entry survived an unreadable marker: %v", statErr)
+	}
+	if _, statErr := os.Stat(c.cacheDir); !os.IsNotExist(statErr) {
+		t.Fatalf("cache directory survived an unreadable marker: %v", statErr)
+	}
+	// A successful mutation must still be reported as a success; only a warning
+	// carries the invalidation failure.
+	if _, status, postErr := c.Post("/items", map[string]any{"itemType": "book"}); postErr != nil || status != http.StatusOK {
+		t.Fatalf("Post after a damaged marker = (%d, %v), want a reported success", status, postErr)
+	}
+}
+
+// Pre-namespace entries sat flat in cacheDir. This build never reads them, so
+// their TTL removal never runs and a selective clear only touches namespace
+// subdirectories: without an explicit sweep they would outlive every upgrade.
+func TestLegacyFlatCacheEntriesAreSweptOnInvalidation(t *testing.T) {
+	c := mutationTestServer(t)
+	kept := warmCacheEntry(t, c, "/itemTypes", `[{"itemType":"book"}]`)
+	legacy := filepath.Join(c.cacheDir, c.cacheKey("/items", nil, nil)+".json")
+	if err := os.WriteFile(legacy, []byte(`[{"key":"PRE-NAMESPACE"}]`), 0o600); err != nil {
+		t.Fatalf("writing legacy flat entry: %v", err)
+	}
+
+	if _, _, err := c.Post("/items", map[string]any{"itemType": "book"}); err != nil {
+		t.Fatalf("item POST: %v", err)
+	}
+
+	if _, err := os.Stat(legacy); !os.IsNotExist(err) {
+		t.Fatalf("legacy flat cache entry survived a mutation: %v", err)
+	}
+	if _, err := os.Stat(kept); err != nil {
+		t.Fatalf("the sweep removed a live namespaced entry: %v", err)
 	}
 }

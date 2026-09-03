@@ -4,6 +4,7 @@ package client
 
 import (
 	"bytes"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -403,6 +404,80 @@ func TestLegacyGenerationMarkerBecomesFloorForEveryNamespace(t *testing.T) {
 	}
 	if token.marker <= 7 {
 		t.Fatalf("items generation after invalidation = %d, want > 7", token.marker)
+	}
+}
+
+// A cache hit skips HTTP and its bytes are returned to the caller AS the API
+// response, so a frame whose header parses but whose body is damaged would make
+// a command render a truncated library and report success. Every damaged frame
+// must fail closed.
+func TestDecodeCacheEntryRejectsDamagedFrames(t *testing.T) {
+	body := json.RawMessage(`[{"key":"A"},{"key":"B"}]`)
+	intact := encodeCacheEntry(3, body)
+	if generation, got, ok := decodeCacheEntry(intact); !ok || generation != 3 || !bytes.Equal(got, body) {
+		t.Fatalf("decodeCacheEntry(intact) = (%d, %s, %v), want (3, %s, true)", generation, got, ok, body)
+	}
+
+	header := string(intact[:bytes.IndexByte(intact, '\n')])
+	for _, tc := range []struct {
+		name  string
+		frame []byte
+	}{
+		{name: "truncated body", frame: intact[:len(intact)-6]},
+		{name: "extended body", frame: append(append([]byte{}, intact...), '!')},
+		{name: "same-length corruption", frame: append(append([]byte{}, intact[:len(intact)-2]...), 'X', '}')},
+		{name: "empty body", frame: []byte(header + "\n")},
+		{name: "no newline", frame: []byte(header)},
+		{name: "foreign format", frame: append([]byte("{\"key\":\"A\"}\n"), body...)},
+		{name: "wrong version", frame: []byte("zotio-cache/9 3 25 0\n" + string(body))},
+		{name: "missing checksum field", frame: []byte("zotio-cache/1 3 25\n" + string(body))},
+		{name: "unparseable generation", frame: []byte("zotio-cache/1 x 25 0\n" + string(body))},
+		{name: "unparseable length", frame: []byte("zotio-cache/1 3 x 0\n" + string(body))},
+	} {
+		if generation, got, ok := decodeCacheEntry(tc.frame); ok {
+			t.Errorf("decodeCacheEntry(%s) = (%d, %s, true), want a rejection", tc.name, generation, got)
+		}
+	}
+}
+
+// End to end: a damaged cache file must send the GET to the server instead of
+// handing the fragment back as the response.
+func TestGetRefetchesInsteadOfServingATruncatedCacheEntry(t *testing.T) {
+	var reads int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&reads, 1)
+		_, _ = w.Write([]byte(`[{"key":"A"},{"key":"B"}]`))
+	}))
+	defer server.Close()
+
+	c := clientTestNewClient(t, server.URL)
+	c.cacheDir = t.TempDir()
+	first, err := c.Get("/items", nil)
+	if err != nil {
+		t.Fatalf("first GET: %v", err)
+	}
+	if got := atomic.LoadInt32(&reads); got != 1 {
+		t.Fatalf("server reads after the first GET = %d, want 1", got)
+	}
+
+	cacheFile := c.cacheFilePath("items", "/items", nil, nil)
+	framed, err := os.ReadFile(cacheFile)
+	if err != nil {
+		t.Fatalf("reading cache entry: %v", err)
+	}
+	if err := os.WriteFile(cacheFile, framed[:len(framed)-8], 0o600); err != nil {
+		t.Fatalf("truncating cache entry: %v", err)
+	}
+
+	second, err := c.Get("/items", nil)
+	if err != nil {
+		t.Fatalf("second GET: %v", err)
+	}
+	if !bytes.Equal(second, first) {
+		t.Fatalf("second GET body = %s, want the full response %s", second, first)
+	}
+	if got := atomic.LoadInt32(&reads); got != 2 {
+		t.Fatalf("server reads after a truncated cache entry = %d, want 2 (the fragment was served)", got)
 	}
 }
 

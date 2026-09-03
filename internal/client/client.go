@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"hash/crc32"
 	"io"
 	"math"
 	"net/http"
@@ -442,33 +443,56 @@ func (c *Client) cacheKey(path string, params map[string]string, headers map[str
 // the namespace allowlist: a leading path segment that is not a key here is
 // unclassified.
 //
-// The edges are measured coupling in this codebase and in the Zotero data
-// model, not guesses:
+// The map was derived by enumerating it in the direction that finds misses:
+// for each cached READ, which writes can change its body — including a write
+// made under a different library prefix. Asking the opposite question, what
+// each write touches, hid two edges (`collections` -> `searches` and
+// `items` -> `groups`) through a whole review pass. When an edge is arguable,
+// it belongs in the map: over-invalidation costs one re-fetch of a cache that
+// is regenerable by definition, while under-invalidation serves pre-write data.
 //
-//   - An item write clears nearly every library read namespace, because
-//     almost everything is stored on items. zotio writes tags by PATCHing the
-//     owning item (`internal/cli/items_tags_write.go`, `tags_rename.go`), so an
-//     item write changes the library tag vocabulary that GET /tags returns.
-//     Collection membership is likewise an item field, so it changes a
-//     collection's item list. Saved-search results are recomputed from item
-//     state, /fulltext content belongs to attachment items, /publications is a
-//     filtered item projection, and /deleted enumerates deleted objects.
-//   - Selectivity therefore pays off on the non-item writes: a collection,
-//     saved search, or settings write leaves the tag vocabulary, the schema
-//     endpoints, and every other unrelated resource type cached.
-//   - Schema endpoints (/itemTypes, /itemFields, ...) are global Zotero
-//     metadata that no library write can change, so they clear only themselves.
+// Read by read, with the write that reaches it:
+//
+//   - `/items*` (also `/items/<k>/children`, `/tags`, `/fulltext`): item
+//     writes; collection writes, because membership is an item field; tag
+//     writes, because `tags rename` and `tags delete` rewrite the owning items.
+//   - `/collections*` (also `/collections/<k>/items`, `/collections/<k>/tags`):
+//     collection writes; item writes, which change a collection's item list and
+//     its `meta.numItems`; tag writes, which change the collection's tag list.
+//   - `/tags`: tag writes; item writes, because zotio writes tags by PATCHing
+//     the owning item (`internal/cli/items_tags_write.go`, `tags_rename.go`),
+//     so an item write changes the library tag vocabulary.
+//   - `/searches/<k>/items`: search writes; item and tag writes, because saved
+//     searches are recomputed from item state; collection writes, because a
+//     search scoped to a collection follows that collection and its recursive
+//     descendants, so `collections delete` changes what `searches run` returns.
+//   - `/groups` under the user prefix: item writes. This is the shape that hides
+//     misses, because the written path and the stale read live under different
+//     library prefixes: `items create --group G` writes `/items` with the base
+//     URL rewritten to `/groups/G` (see internal/cli/helpers.go), while the
+//     stale read is `/groups` under `/users/<id>`, whose `meta.numItems` counts
+//     those items. Cache keys hash the base URL but namespace directories do
+//     not, so clearing a namespace clears it for every library at once, which
+//     is exactly what this edge needs.
+//   - `/deleted`: every deletion. Zotero's delete log spans items, collections,
+//     searches, tags and settings, so all five clear it.
+//   - `/publications/items`: item writes; it is a filtered item projection.
+//   - `/settings`: settings writes.
+//   - `/keys/current` and the schema endpoints (`/itemTypes`, `/itemFields`,
+//     ...): nothing zotio writes changes them. Key metadata is account state,
+//     and the schema endpoints are global Zotero metadata outside the library,
+//     so they clear only themselves.
 //
 // Every entry must list itself: invalidateCache uses this list verbatim.
 var cacheInvalidationTargets = map[string][]string{
-	"items":                {"items", "collections", "tags", "searches", "fulltext", "publications", "deleted"},
-	"collections":          {"collections", "items", "deleted"},
-	"tags":                 {"tags", "items", "searches", "deleted"},
+	"items":                {"items", "collections", "tags", "searches", "fulltext", "publications", "groups", "deleted"},
+	"collections":          {"collections", "items", "searches", "deleted"},
+	"tags":                 {"tags", "items", "collections", "searches", "deleted"},
 	"searches":             {"searches", "deleted"},
 	"fulltext":             {"fulltext", "items"},
 	"publications":         {"publications", "items"},
+	"settings":             {"settings", "deleted"},
 	"deleted":              {"deleted"},
-	"settings":             {"settings"},
 	"groups":               {"groups"},
 	"keys":                 {"keys"},
 	"itemTypes":            {"itemTypes"},
@@ -509,7 +533,7 @@ func (c *Client) cacheFilePath(namespace, path string, params map[string]string,
 }
 
 // cacheEntryVersion prefixes every cache file. A cached response is framed as
-// "<version> <generation>\n<body>".
+// "<version> <generation> <length> <crc32c>\n<body>".
 //
 // The generation tag is what closes the invalidation race: invalidateCache
 // publishes the new generation before it removes any file, and readers take no
@@ -523,6 +547,19 @@ func (c *Client) cacheFilePath(namespace, path string, params map[string]string,
 // long, and it still would not cover a partly failed RemoveAll, whose stale
 // files outlive the lock.
 //
+// The length and checksum make a damaged file fail closed. A cache hit skips
+// HTTP entirely and its bytes are returned to the caller AS the API response,
+// so a frame whose header parses but whose body is short — say
+// `zotio-cache/1 3 512 …` over `[{"key":"A"` — would render a truncated library
+// and report success. Nothing else on the read path can catch that: the atomic
+// rename protects against a torn write by this build, but the marker publication
+// deliberately does not fsync, so a crash or a full disk can still leave a
+// renamed file whose bytes are not the ones we wrote. The length catches
+// truncation and extension deterministically; crc32c (hardware-accelerated on
+// both release architectures) catches same-length corruption for one pass over
+// bytes the caller is about to parse anyway. Validating the body as JSON instead
+// would cost a full parse and still accept a fragment that happens to parse.
+//
 // The frame is a line prefix instead of a JSON envelope so the read path can
 // return the body as a subslice of the file bytes. A large item list is then
 // neither re-encoded on write nor unmarshaled and re-marshaled on read, and the
@@ -530,30 +567,48 @@ func (c *Client) cacheFilePath(namespace, path string, params map[string]string,
 // json.RawMessage round trip would silently compact.
 const cacheEntryVersion = "zotio-cache/1"
 
+// cacheEntryChecksum is Castagnoli CRC-32, the polynomial with SSE 4.2 and
+// ARMv8 CRC instruction support, so the integrity check costs a single fast
+// pass rather than a second JSON parse.
+var cacheEntryChecksum = crc32.MakeTable(crc32.Castagnoli)
+
 func encodeCacheEntry(generation uint64, body json.RawMessage) []byte {
-	header := cacheEntryVersion + " " + strconv.FormatUint(generation, 10) + "\n"
+	header := cacheEntryVersion + " " + strconv.FormatUint(generation, 10) +
+		" " + strconv.Itoa(len(body)) +
+		" " + strconv.FormatUint(uint64(crc32.Checksum(body, cacheEntryChecksum)), 10) + "\n"
 	framed := make([]byte, 0, len(header)+len(body))
 	framed = append(framed, header...)
 	return append(framed, body...)
 }
 
 // decodeCacheEntry splits a cache file into its generation tag and body,
-// reporting false for anything this build did not write.
+// reporting false for anything this build did not write byte for byte.
 func decodeCacheEntry(data []byte) (uint64, json.RawMessage, bool) {
 	newline := bytes.IndexByte(data, '\n')
 	if newline < 0 {
 		return 0, nil, false
 	}
-	version, tag, split := strings.Cut(string(data[:newline]), " ")
-	if !split || version != cacheEntryVersion {
+	fields := strings.Split(string(data[:newline]), " ")
+	if len(fields) != 4 || fields[0] != cacheEntryVersion {
 		return 0, nil, false
 	}
-	generation, err := strconv.ParseUint(tag, 10, 64)
+	generation, err := strconv.ParseUint(fields[1], 10, 64)
+	if err != nil {
+		return 0, nil, false
+	}
+	length, err := strconv.Atoi(fields[2])
+	if err != nil {
+		return 0, nil, false
+	}
+	checksum, err := strconv.ParseUint(fields[3], 10, 32)
 	if err != nil {
 		return 0, nil, false
 	}
 	body := data[newline+1:]
-	if len(body) == 0 {
+	if len(body) == 0 || len(body) != length {
+		return 0, nil, false
+	}
+	if crc32.Checksum(body, cacheEntryChecksum) != uint32(checksum) {
 		return 0, nil, false
 	}
 	return generation, json.RawMessage(body), true
@@ -619,6 +674,13 @@ func (c *Client) readCacheGenerations() (map[string]uint64, error) {
 	generations := map[string]uint64{}
 	jsonErr := json.Unmarshal([]byte(trimmed), &generations)
 	if jsonErr == nil {
+		if generations == nil {
+			// Top-level JSON `null` unmarshals into a nil map without error, and
+			// a nil map panics on assignment in invalidateCache — a damaged
+			// marker would crash every write, not just fail one. Treat it as
+			// unreadable so callers take their fail-closed path.
+			return nil, fmt.Errorf("parsing cache generation marker: %s holds JSON null", c.cacheGenerationMarkerPath())
+		}
 		return generations, nil
 	}
 	// A marker written before the cache was namespaced holds a single decimal
@@ -790,7 +852,16 @@ func (c *Client) invalidateCache(path string) error {
 	}
 	generations, markerErr := c.readCacheGenerations()
 	if markerErr != nil {
-		return errors.Join(markerErr, lock.Release())
+		// Fail closed. A marker this process cannot read cannot be advanced, so
+		// nothing would stop a later read from serving a pre-mutation entry;
+		// remove the whole cache directory instead of leaving entries behind a
+		// marker nobody can interpret. The marker itself is deliberately NOT
+		// repaired: rewriting it with a counter this process invented could
+		// publish a value below one already recorded in a surviving entry, and
+		// that entry would then pass the generation check. Leaving it unreadable
+		// keeps every other client bypassing the cache instead. The error still
+		// propagates, so the caller warns.
+		return errors.Join(markerErr, os.RemoveAll(c.cacheDir), lock.Release())
 	}
 	// One generation above every counter this process has issued and every
 	// counter the targets currently hold, so a marker that somehow went
@@ -825,7 +896,39 @@ func (c *Client) invalidateCache(path string) error {
 	for _, target := range targets {
 		removeErr = errors.Join(removeErr, os.RemoveAll(filepath.Join(c.cacheDir, target)))
 	}
+	c.removeLegacyFlatCacheEntries()
 	return errors.Join(removeErr, lock.Release())
+}
+
+// removeLegacyFlatCacheEntries deletes the pre-namespace cache layout: entries
+// written directly into cacheDir as <key>.json, before entries moved one level
+// down into a per-resource-type subdirectory.
+//
+// They have to be swept explicitly. This build never reads them, so their TTL
+// removal in readCache never runs, and a selective invalidation only removes
+// namespace subdirectories — so after an upgrade a flat entry for every read
+// the user had cached would sit in ~/.cache/zotio until an unclassified write
+// happened to force a full clear, or forever. Sweeping here bounds it: the
+// first mutation after the upgrade clears them, and every later sweep finds an
+// empty listing. Only regular top-level *.json files match, which the new
+// layout never creates; the generation marker and publication lock are
+// siblings of cacheDir, not entries inside it.
+//
+// Errors are deliberately ignored rather than joined into the invalidation
+// result. These files are unreachable, so failing to delete one is not a
+// staleness risk, and reporting it would raise the caller's "a later read may
+// return stale data" warning for a housekeeping problem.
+func (c *Client) removeLegacyFlatCacheEntries() {
+	entries, err := os.ReadDir(c.cacheDir)
+	if err != nil {
+		return
+	}
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
+			continue
+		}
+		_ = os.Remove(filepath.Join(c.cacheDir, entry.Name()))
+	}
 }
 
 // RawBody carries a pre-encoded request payload with an explicit content type.
