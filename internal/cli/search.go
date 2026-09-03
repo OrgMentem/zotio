@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"os"
 	"strings"
 
 	"zotio/internal/store"
@@ -196,7 +197,35 @@ Use --fulltext to search synced PDF text and resolve hits to parent items.`,
 				return err
 			}
 
-			db, err := store.OpenWithContext(cmd.Context(), dbPath)
+			reason := "user_requested"
+			if flags.dataSource == "auto" && !fulltextOnly {
+				reason = "api_unreachable"
+			}
+			// The provenance resource names the mirror that answered, so
+			// meta.synced_at reports the freshness of the data actually
+			// searched. Cross-resource FTS has no single sync checkpoint and
+			// keeps the index's own name.
+			provenanceResource := "search"
+			switch {
+			case fulltextOnly:
+				provenanceResource = "fulltext"
+			case resourceType != "":
+				provenanceResource = resourceType
+			}
+
+			// Stat before opening. store.OpenWithContext CREATES and migrates
+			// the file, so a library that was never synced would gain a mirror
+			// as a side effect of being read — and `--group all` fans this
+			// command across every accessible group, so one search would leave
+			// an empty data-group-<id>.db behind for each of them. A missing
+			// mirror is an empty local answer, the shape analytics and workflow
+			// status already report, not a file to create.
+			if _, statErr := os.Stat(dbPath); statErr != nil && os.IsNotExist(statErr) {
+				fmt.Fprintf(cmd.ErrOrStderr(), "No local mirror for this library. Run 'zotio sync' to populate it.\n")
+				return outputSearchResults(cmd, flags, make([]json.RawMessage, 0), limit,
+					DataProvenance{Source: "local", Reason: reason, ResourceType: provenanceResource, Scoped: true})
+			}
+			db, err := store.OpenReadOnlyContext(cmd.Context(), dbPath)
 			if err != nil {
 				return fmt.Errorf("opening local database: %w\nRun 'zotio sync' first to populate the local database.", err)
 			}
@@ -227,21 +256,6 @@ Use --fulltext to search synced PDF text and resolve hits to parent items.`,
 				return fmt.Errorf("search failed: %w", err)
 			}
 
-			reason := "user_requested"
-			if flags.dataSource == "auto" && !fulltextOnly {
-				reason = "api_unreachable"
-			}
-			// The provenance resource names the mirror that answered, so
-			// meta.synced_at reports the freshness of the data actually
-			// searched. Cross-resource FTS has no single sync checkpoint and
-			// keeps the index's own name.
-			provenanceResource := "search"
-			switch {
-			case fulltextOnly:
-				provenanceResource = "fulltext"
-			case resourceType != "":
-				provenanceResource = resourceType
-			}
 			prov := attachFreshness(localProvenance(db, provenanceResource, reason), flags)
 			// FTS applies the request's query, type filter, and limit, so this
 			// is a planner-served read rather than the generic dump the Scoped

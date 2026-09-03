@@ -287,13 +287,13 @@ func TestWriteFanoutReportLabelsEachLibraryInTextMode(t *testing.T) {
 				Library: fanoutLibrary{Type: "user", ID: "0", Name: personalLibraryName},
 				Status:  "ok",
 				Store:   fanoutStoreState{NeverSynced: true},
-				Output:  "# Personal notes",
+				printed: []byte("# Personal notes"),
 			},
 			{
 				Library: fanoutLibrary{Type: "group", ID: "99", Name: "Lab"},
 				Status:  "ok",
 				Store:   fanoutStoreState{SyncedAt: &synced},
-				Output:  "# Lab notes",
+				printed: []byte("# Lab notes"),
 			},
 			{
 				Library: fanoutLibrary{Type: "group", ID: "100", Name: "Reading Group"},
@@ -444,6 +444,14 @@ func TestGroupFanoutRefusesCommandsNotOnTheAllowlist(t *testing.T) {
 		// Line-oriented JSONL stream: no place for a per-library label.
 		{name: "stream export", args: []string{"export", "items"}, want: []string{"export", fanoutOutputNamespaceSafe}},
 		{name: "global schema", args: []string{"schema", "item-types"}, want: []string{"schema item-types", fanoutLibraryScoped}},
+		// These two still write a resolved value back into a flag-bound
+		// closure variable (vault_sync.go flagOut, attachments.go mode), which
+		// is the trap resolveDBPath removed for --db. Fan-out reuses ONE
+		// cobra.Command instance, so allowlisting either without converting it
+		// first would resurrect the bug. Pinned here so that becomes a test
+		// failure rather than a rediscovery.
+		{name: "vault sync writeback", args: []string{"vault", "sync"}, want: []string{"vault sync", fanoutSideEffectFree}},
+		{name: "attachments writeback", args: []string{"attachments", "add", "ABCD1234", "/tmp/x.pdf"}, want: []string{"attachments add", fanoutSideEffectFree}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -653,6 +661,11 @@ func TestGroupFanoutRefusesAnExplicitDBPath(t *testing.T) {
 				t.Errorf("output = %q, want no aggregate at all", out)
 			}
 		})
+	}
+	// The stronger claim the sibling refusal tests already make: the gate runs
+	// in the root pre-run, so the library set is never even enumerated.
+	if got := fx.requested(); len(got) != 0 {
+		t.Fatalf("requests = %v, want none before the refusal", got)
 	}
 }
 
@@ -1028,4 +1041,191 @@ func equalStringSlices(got, want []string) bool {
 		}
 	}
 	return true
+}
+
+// The fan-out decoded `results`, `findings` and `meta` and discarded every
+// other top-level key, so a fanned-out `items find` lost its near-title report
+// even though each library printed one — and the multi-library user is exactly
+// the person who cannot otherwise tell "absent from this library" from
+// "mistyped". The near rows must reach the per-library block, and must NOT be
+// merged into one list: a similarity score ranks candidates inside the library
+// that produced it, and two libraries' scores were never computed against each
+// other.
+func TestGroupFanoutKeepsEachLibrarysNearTitleReport(t *testing.T) {
+	fx := newFanoutFixture(t, "")
+	dataDir := isolateFanoutEnv(t, fx.server.URL+"/users/0")
+	synced := time.Now().Add(-time.Hour).Truncate(time.Second)
+	// Only the personal library holds the paper the query misspells. Group 99
+	// holds one that shares no vocabulary with it and group 100 holds nothing,
+	// so a per-library report and a merged one look different here.
+	seedFanoutLibraryStore(t, dataDir, "data.db", synced, []json.RawMessage{
+		json.RawMessage(`{"key":"ATTN","version":1,"data":{"key":"ATTN","itemType":"journalArticle","title":"Attention Is All You Need","date":"2017-06-12"}}`),
+	})
+	seedFanoutLibraryStore(t, dataDir, "data-group-99.db", synced, []json.RawMessage{
+		json.RawMessage(`{"key":"FRST","version":1,"data":{"key":"FRST","itemType":"journalArticle","title":"Random Forests","date":"2001"}}`),
+	})
+	seedFanoutLibraryStore(t, dataDir, "data-group-100.db", synced, nil)
+
+	out, _, err := runFanoutCmd(t, "items", "find", "--group", "all", "--json", "--title", "Attention Is All You Nead")
+	if err != nil {
+		t.Fatalf("items find --group all: %v (out=%s)", err, out)
+	}
+	report := decodeFanoutReport(t, out)
+	if len(report.Results) != 0 {
+		t.Fatalf("results = %v, want none: a near title is not an item the query matched", report.Results)
+	}
+
+	personal := fanoutBlock(t, report, "0")
+	rawNear, carried := personal.Extra["near_title_matches"]
+	if !carried {
+		t.Fatalf("personal block dropped the near-title report: %+v", personal)
+	}
+	var near []struct {
+		Key   string  `json:"key"`
+		Title string  `json:"title"`
+		Score float64 `json:"score"`
+	}
+	if err := json.Unmarshal(rawNear, &near); err != nil {
+		t.Fatalf("decoding near_title_matches %s: %v", rawNear, err)
+	}
+	found := false
+	for _, row := range near {
+		if row.Key != "ATTN" {
+			continue
+		}
+		found = true
+		if row.Title != "Attention Is All You Need" {
+			t.Errorf("near row title = %q, want the stored title", row.Title)
+		}
+		// The score is the number a bug report about ranking has to carry, so
+		// it has to survive the aggregation too.
+		if row.Score <= 0 {
+			t.Errorf("near row score = %v, want the ranking score kept", row.Score)
+		}
+	}
+	if !found {
+		t.Errorf("near rows = %+v, want the mistyped paper ATTN among them", near)
+	}
+
+	// A library with nothing close to the query reports nothing, so the block
+	// is per library rather than a copy of one library's answer.
+	for _, id := range []string{"99", "100"} {
+		block := fanoutBlock(t, report, id)
+		if raw, present := block.Extra["near_title_matches"]; present {
+			t.Errorf("library %s reported near titles %s for a query nothing in it resembles", id, raw)
+		}
+	}
+
+	// Never a global list: an aggregate-level key would invite reading its top
+	// row as the best match across the account.
+	var aggregate map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(out), &aggregate); err != nil {
+		t.Fatalf("decoding aggregate: %v", err)
+	}
+	if raw, merged := aggregate["near_title_matches"]; merged {
+		t.Errorf("aggregate merged per-library scores into one list: %s", raw)
+	}
+}
+
+// One library answering in prose selects the text render for the whole run.
+// Every OTHER library's answer has to survive that: printing only a heading
+// for a library that answered reads as "this library holds nothing", which is
+// the aggregator throwing away data the command gathered.
+func TestGroupFanoutTextModeKeepsTheLibrariesThatAnswered(t *testing.T) {
+	fx := newFanoutFixture(t, "")
+	dataDir := isolateFanoutEnv(t, fx.server.URL+"/users/0")
+	synced := time.Now().Add(-time.Hour).Truncate(time.Second)
+	// The personal library has no mirror at all, so `items find` answers it in
+	// prose ("Run 'zotio sync' first"), which the aggregate cannot parse. Group
+	// 99 holds the paper and answers with a JSON envelope.
+	seedFanoutLibraryStore(t, dataDir, "data-group-99.db", synced, []json.RawMessage{
+		json.RawMessage(`{"key":"ATTN","version":1,"data":{"key":"ATTN","itemType":"journalArticle","title":"Attention Is All You Need","date":"2017-06-12"}}`),
+	})
+	seedFanoutLibraryStore(t, dataDir, "data-group-100.db", synced, nil)
+
+	out, _, err := runFanoutCmd(t, "items", "find", "--group", "all", "--json", "--title", "Attention Is All You Need")
+	if err != nil {
+		t.Fatalf("items find --group all: %v (out=%s)", err, out)
+	}
+	// Text render, not the JSON aggregate: one library printed prose.
+	if strings.HasPrefix(strings.TrimSpace(out), "{") {
+		t.Fatalf("aggregate was serialized as JSON despite an unparseable payload:\n%s", out)
+	}
+	if !strings.Contains(out, "Run 'zotio sync' first") {
+		t.Errorf("the un-synced library's own message is missing:\n%s", out)
+	}
+	labHeading := strings.Index(out, "Lab (group 99)")
+	answer := strings.Index(out, "ATTN")
+	if labHeading < 0 {
+		t.Fatalf("group 99 heading is missing:\n%s", out)
+	}
+	if answer < 0 {
+		t.Fatalf("group 99 answered with the paper and the aggregate printed only its heading:\n%s", out)
+	}
+	if answer < labHeading {
+		t.Errorf("group 99's answer printed above its own heading:\n%s", out)
+	}
+	if !strings.Contains(out, "3 libraries: 3 ok, 0 failed") {
+		t.Errorf("summary line missing or wrong:\n%s", out)
+	}
+}
+
+// The three keys the aggregate folds into its own dimensions stay out of the
+// per-library sibling map, so `extra` never duplicates data reported elsewhere
+// in the same block.
+func TestGroupFanoutMergeSeparatesSiblingKeysFromAggregatedOnes(t *testing.T) {
+	lib := fanoutLibrary{Type: "group", ID: "99", Name: "Lab"}
+	report := fanoutReport{Results: []json.RawMessage{}}
+	block := fanoutLibraryResult{Library: lib, Status: "ok"}
+
+	mergeFanoutPayload(&report, &block, json.RawMessage(`{
+		"results":[{"key":"LAB1"}],
+		"findings":[{"kind":"duplicate"}],
+		"meta":{"source":"local"},
+		"near_title_matches":[{"key":"ATTN","score":0.8}],
+		"warnings":["unreadable note"]
+	}`), lib)
+
+	if block.ResultCount != 1 || block.FindingCount != 1 {
+		t.Fatalf("counts = %d results / %d findings, want 1 and 1", block.ResultCount, block.FindingCount)
+	}
+	if len(report.Results) != 1 || len(report.Findings) != 1 {
+		t.Fatalf("aggregate = %d results / %d findings, want 1 and 1", len(report.Results), len(report.Findings))
+	}
+	if string(block.Meta) != `{"source":"local"}` {
+		t.Errorf("block meta = %s, want the library's own provenance block", block.Meta)
+	}
+	wantExtra := map[string]string{
+		"near_title_matches": `[{"key":"ATTN","score":0.8}]`,
+		"warnings":           `["unreadable note"]`,
+	}
+	if len(block.Extra) != len(wantExtra) {
+		t.Fatalf("extra = %v, want exactly %v", block.Extra, wantExtra)
+	}
+	for key, want := range wantExtra {
+		if got := string(block.Extra[key]); got != want {
+			t.Errorf("extra[%q] = %s, want %s", key, got, want)
+		}
+	}
+}
+
+// A payload whose `results` field is not an array is not this envelope: it is a
+// command printing its own object, and it stays one aggregated row instead of
+// being mistaken for an envelope with no rows.
+func TestGroupFanoutMergeTreatsANonArrayResultsFieldAsOneRow(t *testing.T) {
+	lib := fanoutLibrary{Type: "user", ID: "0", Name: personalLibraryName}
+	report := fanoutReport{Results: []json.RawMessage{}}
+	block := fanoutLibraryResult{Library: lib, Status: "ok"}
+
+	mergeFanoutPayload(&report, &block, json.RawMessage(`{"results":42,"meta":{"source":"local"}}`), lib)
+
+	if block.ResultCount != 1 || len(report.Results) != 1 {
+		t.Fatalf("counts = %d block / %d aggregate, want the object kept as one row", block.ResultCount, len(report.Results))
+	}
+	if block.Extra != nil {
+		t.Errorf("extra = %v, want none: the payload was not an envelope", block.Extra)
+	}
+	if block.Meta != nil {
+		t.Errorf("meta = %s, want none: the payload was not an envelope", block.Meta)
+	}
 }

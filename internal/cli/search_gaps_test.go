@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -409,5 +410,48 @@ func TestSearchCommandLocalProvenanceMatchesListCommands(t *testing.T) {
 	// the freshness of the data actually searched.
 	if got.Meta.ResourceType != "papers" || got.Meta.SyncedAt == "" {
 		t.Fatalf("meta = %+v, want resource_type papers with a synced_at", got.Meta)
+	}
+}
+
+// A local search against a library that was never synced must not create the
+// mirror it failed to find. `--group all` fans search across every accessible
+// group, so a creating open would leave an empty data-group-<id>.db behind for
+// each of them — a write performed by a read the fan-out allowlist certifies as
+// side-effect-free.
+func TestSearchLocalDoesNotCreateAMissingMirror(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "never-synced.db")
+	t.Setenv("ZOTERO_BASE_URL", "http://127.0.0.1:1/api/users/0")
+	t.Setenv("ZOTERO_CONFIG", filepath.Join(t.TempDir(), "missing.toml"))
+
+	cmd := newSearchCmd(&rootFlags{asJSON: true, dataSource: "local", noCache: true, timeout: time.Second})
+	cmd.SetArgs([]string{"anything", "--db", dbPath})
+	var stdout, stderr bytes.Buffer
+	cmd.SetOut(&stdout)
+	cmd.SetErr(&stderr)
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("Execute() error = %v; a missing mirror is an empty answer, not a failure", err)
+	}
+	if _, err := os.Stat(dbPath); err == nil {
+		t.Fatalf("search created %s; reading a library must not write one", dbPath)
+	} else if !os.IsNotExist(err) {
+		t.Fatalf("stat %s: %v", dbPath, err)
+	}
+
+	var got struct {
+		Results []json.RawMessage `json:"results"`
+		Meta    struct {
+			Source string `json:"source"`
+		} `json:"meta"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &got); err != nil {
+		t.Fatalf("unmarshal output %q: %v", stdout.String(), err)
+	}
+	if len(got.Results) != 0 || got.Meta.Source != "local" {
+		t.Fatalf("output = %s, want an empty local result set", stdout.String())
+	}
+	// Silence would be indistinguishable from "nothing matched", which is the
+	// failure mode the near-title work exists to remove.
+	if !strings.Contains(stderr.String(), "zotio sync") {
+		t.Fatalf("stderr = %q, want a notice naming the remedy", stderr.String())
 	}
 }
