@@ -214,9 +214,12 @@ func applyMirrorWriteThrough(env *mutation.Envelope) {
 // the store's write lock, so no reader observes the item gone from items while
 // it is still in items-trash, and a failure cannot leave the trash row behind.
 //
-// Resurrection is a separate, still-open problem: a reap leaves no tombstone, so
-// a sync that runs before Zotero has synced the delete down re-inserts the item
-// from the local read plane.
+// The same transaction records a deletion marker per canonical resource, which
+// is what stops the resurrection this reap used to leave open: the delete goes
+// to api.zotero.org while sync reads the local desktop API, so until Zotero
+// syncs the delete down the read plane keeps listing the item and any sync in
+// that window re-inserted it. reconcilePendingWrites now drops a listed row
+// whose key is marked deleted (ADR-0007).
 func reapMirroredItem(db *store.Store, key string) {
 	if err := db.ReapMirroredItem(key); err != nil {
 		warnMirrorUpdateFailed(key, err)

@@ -257,8 +257,12 @@ func TestReapMirroredItem_Atomicity(t *testing.T) {
 	if err != nil {
 		t.Fatalf("PendingWrites: %v", err)
 	}
-	if _, ok := pending["REAP1"]; !ok {
+	rolled, ok := pending["REAP1"]
+	if !ok {
 		t.Fatal("atomicity violation: the pending-write marker was cleared despite rollback")
+	}
+	if rolled.Deleted {
+		t.Fatal("atomicity violation: a deletion marker was committed while the rows it guards were rolled back")
 	}
 
 	if _, err := s.DB().Exec(`DROP TRIGGER fail_reap_trash`); err != nil {
@@ -283,17 +287,31 @@ func TestReapMirroredItem_Atomicity(t *testing.T) {
 	if err != nil {
 		t.Fatalf("PendingWrites after reap: %v", err)
 	}
-	if _, ok := pending["REAP1"]; ok {
-		t.Fatal("pending-write marker survived the reap")
+	mark, ok := pending["REAP1"]
+	if !ok {
+		t.Fatal("no deletion marker after the reap: the read plane still lists the key, so the next sync resurrects it")
+	}
+	if !mark.Deleted {
+		t.Fatal("the reap left the field-change marker instead of a deletion marker; reconcilePendingWrites would merge into a resurrected row")
+	}
+	trashMark, err := s.PendingWrites("items-trash")
+	if err != nil {
+		t.Fatalf("PendingWrites(items-trash) after reap: %v", err)
+	}
+	if !trashMark["REAP1"].Deleted {
+		t.Fatal("no deletion marker for items-trash: /items/trash keeps listing a purged item, so the trash row comes back")
 	}
 }
 
 // TestReapMirroredItem_TrashRowNeverSurvivesContention runs the reap against
 // the stale sync upsert it competes with in production. The trash row must be
 // gone every time the call returns, whichever order the two writers take.
-// Resurrection of the LIVE row is a separate, still-open gap: a reap leaves no
-// tombstone, so an upsert that lands after it wins. This test therefore pins
-// the invariant the split implementation broke, not the tombstone it never had.
+// A raw UpsertKeyed that lands after the reap still wins the LIVE row: the
+// deletion marker is consulted by reconcilePendingWrites on the sync path, not
+// by the store's unconditional upsert, which local write-through needs to stay
+// authoritative. This test therefore pins the ordering invariant the split
+// implementation broke; suppression of the sync re-insert is pinned in
+// internal/cli's mirror_reap_test.go.
 func TestReapMirroredItem_TrashRowNeverSurvivesContention(t *testing.T) {
 	ctx := context.Background()
 	path := filepath.Join(t.TempDir(), "data.db")
@@ -337,6 +355,212 @@ func TestReapMirroredItem_TrashRowNeverSurvivesContention(t *testing.T) {
 		if got, err := s.Get("items-trash", key); got != nil || !errors.Is(err, ErrNotFound) {
 			t.Fatalf("trash row for %s survived the reap: got=%s err=%v", key, got, err)
 		}
+	}
+}
+
+// The deletion marker and the row removal it guards must commit as one unit.
+// If the rows could go without the marker, the very next sync — which still
+// reads a plane that lists the key — would re-insert the item with nothing left
+// to suppress it, which is the resurrection this marker exists to prevent.
+// Aborting the marker insert is the only deterministic way to prove the reap
+// does not treat it as a best-effort afterthought.
+func TestReapMirroredItemRollsBackWhenTheDeletionMarkerCannotBeWritten(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "data.db")
+	s, err := OpenWithContext(ctx, path)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer s.Close()
+
+	live := json.RawMessage(`{"key":"MARK1","version":3,"data":{"key":"MARK1","itemType":"book","title":"MarkLive"}}`)
+	if _, err := s.UpsertKeyed("items", []string{"MARK1"}, []json.RawMessage{live}); err != nil {
+		t.Fatalf("seed live: %v", err)
+	}
+
+	if _, err := s.DB().Exec(`CREATE TRIGGER fail_reap_marker BEFORE INSERT ON pending_writes WHEN NEW.deleted=1 AND NEW.id='MARK1' BEGIN SELECT RAISE(ABORT, 'injected marker failure'); END`); err != nil {
+		t.Fatalf("create trigger: %v", err)
+	}
+	if err := s.ReapMirroredItem("MARK1"); err == nil {
+		t.Fatal("ReapMirroredItem succeeded despite the injected marker failure")
+	}
+	if got, err := s.Get("items", "MARK1"); got == nil || err != nil {
+		t.Fatalf("live row is gone but no deletion marker was written: got=%s err=%v", got, err)
+	}
+
+	if _, err := s.DB().Exec(`DROP TRIGGER fail_reap_marker`); err != nil {
+		t.Fatalf("drop trigger: %v", err)
+	}
+	if err := s.ReapMirroredItem("MARK1"); err != nil {
+		t.Fatalf("ReapMirroredItem after dropping the trigger: %v", err)
+	}
+	pending, err := s.PendingWrites("items")
+	if err != nil {
+		t.Fatalf("PendingWrites: %v", err)
+	}
+	if !pending["MARK1"].Deleted {
+		t.Fatal("deletion marker missing after a successful reap")
+	}
+}
+
+// A deletion outranks a field change for the same key. One mutation envelope
+// can carry both (a title update and a permanent delete of the same item), and
+// the applied order inside the envelope is not the store's to choose. The
+// deletion marker must come out of that collision untouched: an overwritten
+// payload puts replayable changes behind a flag that says the key is gone, and
+// a refreshed written_at silently restarts the TTL clock that bounds how long
+// the suppression may last.
+func TestRecordPendingWriteNeverOverwritesADeletionMarker(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "data.db")
+	s, err := OpenWithContext(ctx, path)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer s.Close()
+
+	live := json.RawMessage(`{"key":"ORD1","version":1,"data":{"key":"ORD1","itemType":"book","title":"Ordered"}}`)
+	if _, err := s.UpsertKeyed("items", []string{"ORD1"}, []json.RawMessage{live}); err != nil {
+		t.Fatalf("seed live: %v", err)
+	}
+	if err := s.ReapMirroredItem("ORD1"); err != nil {
+		t.Fatalf("ReapMirroredItem: %v", err)
+	}
+	// Age the marker so a refreshed written_at is detectable.
+	aged := time.Now().Add(-48 * time.Hour).UTC()
+	if _, err := s.DB().Exec(`UPDATE pending_writes SET written_at = ? WHERE id = 'ORD1'`, aged); err != nil {
+		t.Fatalf("age marker: %v", err)
+	}
+	if err := s.RecordPendingWrite("items", "ORD1", []byte(`[{"field":"title","add":"Ordered"}]`)); err != nil {
+		t.Fatalf("RecordPendingWrite: %v", err)
+	}
+
+	pending, err := s.PendingWrites("items")
+	if err != nil {
+		t.Fatalf("PendingWrites: %v", err)
+	}
+	mark := pending["ORD1"]
+	if !mark.Deleted {
+		t.Fatal("a field-change marker overwrote the deletion marker; the purged item can be resurrected again")
+	}
+	if string(mark.Changes) != "[]" {
+		t.Errorf("deletion marker changes = %s, want []: field changes must not be parked behind a deletion flag", mark.Changes)
+	}
+	if time.Since(mark.WrittenAt) < 24*time.Hour {
+		t.Errorf("deletion marker written_at = %v, want the aged value: recording a field write must not restart the suppression TTL", mark.WrittenAt)
+	}
+
+	// A key with no deletion marker still records normally.
+	if err := s.RecordPendingWrite("items", "ORD2", []byte(`[{"field":"title","add":"Kept"}]`)); err != nil {
+		t.Fatalf("RecordPendingWrite ORD2: %v", err)
+	}
+	pending, err = s.PendingWrites("items")
+	if err != nil {
+		t.Fatalf("PendingWrites: %v", err)
+	}
+	if mark, ok := pending["ORD2"]; !ok || mark.Deleted {
+		t.Fatalf("ordinary pending write for ORD2 = %+v, ok=%v; the guard must only protect deletion markers", mark, ok)
+	}
+}
+
+// A deletion marker retires when a COMPLETE pass stops listing the key: that is
+// the only evidence available that Zotero synced the delete down, because the
+// local desktop API implements no /deleted feed. While the pass still lists the
+// key the marker must stay, or the next page would re-insert the item.
+func TestSweepMissingRetiresOnlyConfirmedDeletionMarkers(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "data.db")
+	s, err := OpenWithContext(ctx, path)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer s.Close()
+
+	for _, key := range []string{"LANDED", "LAGGING"} {
+		raw := json.RawMessage(fmt.Sprintf(`{"key":%q,"version":1,"data":{"key":%q,"itemType":"book","title":"Purged"}}`, key, key))
+		if _, err := s.UpsertKeyed("items", []string{key}, []json.RawMessage{raw}); err != nil {
+			t.Fatalf("seed %s: %v", key, err)
+		}
+		if err := s.ReapMirroredItem(key); err != nil {
+			t.Fatalf("ReapMirroredItem %s: %v", key, err)
+		}
+	}
+	// A full pass that still reports LAGGING: Zotero has not synced that delete
+	// down yet. LANDED is absent, so its delete has landed.
+	if _, err := s.SweepMissing("items", map[string]bool{"LAGGING": true}); err != nil {
+		t.Fatalf("SweepMissing: %v", err)
+	}
+
+	pending, err := s.PendingWrites("items")
+	if err != nil {
+		t.Fatalf("PendingWrites: %v", err)
+	}
+	if _, ok := pending["LANDED"]; ok {
+		t.Error("confirmed deletion marker leaked: the read plane no longer lists the key, so it can never be cleared by a later page")
+	}
+	if !pending["LAGGING"].Deleted {
+		t.Error("deletion marker retired while the read plane still lists the key; the next page resurrects the item")
+	}
+}
+
+// pending_writes predates the deleted column, and CREATE TABLE IF NOT EXISTS is
+// a no-op against a database an older binary created. Without the backfill,
+// every PendingWrites call on such a database fails with "no such column:
+// deleted" — which is every sync, not a corner case. A legacy row must also
+// survive as an ordinary field-change marker rather than reading as a deletion.
+func TestPendingWritesDeletedColumnIsBackfilledOnUpgrade(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "data.db")
+	s, err := OpenWithContext(ctx, path)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	// Re-create the table exactly as the pre-ADR-0007 binary declared it.
+	for _, stmt := range []string{
+		`DROP TABLE pending_writes`,
+		`CREATE TABLE pending_writes (
+			resource_type TEXT NOT NULL,
+			id TEXT NOT NULL,
+			changes JSON NOT NULL,
+			written_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+			PRIMARY KEY (resource_type, id)
+		)`,
+		`INSERT INTO pending_writes (resource_type, id, changes, written_at)
+		 VALUES ('items', 'LEGACY', '[{"field":"title","add":"Legacy"}]', CURRENT_TIMESTAMP)`,
+	} {
+		if _, err := s.DB().Exec(stmt); err != nil {
+			t.Fatalf("simulate legacy schema (%s): %v", stmt, err)
+		}
+	}
+	if err := s.Close(); err != nil {
+		t.Fatalf("close: %v", err)
+	}
+
+	s2, err := OpenWithContext(ctx, path)
+	if err != nil {
+		t.Fatalf("reopen: %v", err)
+	}
+	defer s2.Close()
+	pending, err := s2.PendingWrites("items")
+	if err != nil {
+		t.Fatalf("PendingWrites on an upgraded database: %v", err)
+	}
+	mark, ok := pending["LEGACY"]
+	if !ok {
+		t.Fatal("the upgrade dropped a legacy pending write")
+	}
+	if mark.Deleted {
+		t.Error("a legacy field-change marker read back as a deletion marker; it would suppress the row instead of merging into it")
+	}
+	if err := s2.ReapMirroredItem("LEGACY"); err != nil {
+		t.Fatalf("ReapMirroredItem on an upgraded database: %v", err)
+	}
+	pending, err = s2.PendingWrites("items")
+	if err != nil {
+		t.Fatalf("PendingWrites after reap: %v", err)
+	}
+	if !pending["LEGACY"].Deleted {
+		t.Error("the upgraded database cannot record a deletion marker")
 	}
 }
 func TestPendingWritesRoundtrip(t *testing.T) {

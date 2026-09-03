@@ -330,6 +330,13 @@ func (s *Store) backfillColumns(ctx context.Context, conn *sql.Conn) error {
 		{table: "resources", column: "item_type", decl: "TEXT"},
 		{table: "resources", column: "annotation_color", decl: "TEXT"},
 		{table: "resources", column: "item_date", decl: "TEXT"},
+		// Deletion markers in pending_writes. A permanent delete lands on
+		// api.zotero.org while reads come from the local desktop API, which
+		// keeps listing the item until Zotero syncs the delete down; without a
+		// marker recording "this key no longer exists", the next sync re-insert
+		// resurrected the row (see ADR-0007). Older binaries insert without
+		// this column and the DEFAULT covers them.
+		{table: "pending_writes", column: "deleted", decl: "INTEGER NOT NULL DEFAULT 0"},
 	} {
 		if err := s.ensureColumn(ctx, conn, c.table, c.column, c.decl); err != nil {
 			return err
@@ -500,11 +507,18 @@ func (s *Store) migrate(ctx context.Context) error {
 		// this it re-applied the pre-write copy over the mirror and silently
 		// rolled the write back for every later read. Additive: older binaries
 		// simply ignore the table, so no schema-version bump is required.
+		//
+		// deleted=1 turns the row into a DELETION marker: the key no longer
+		// exists on the write plane, so a row the read plane still reports for
+		// it must be dropped rather than merged (ADR-0007). changes stays '[]'
+		// there — a deletion is not expressible as a field change, which is why
+		// the flag is a column and not a sentinel inside the JSON.
 		`CREATE TABLE IF NOT EXISTS pending_writes (
 			resource_type TEXT NOT NULL,
 			id TEXT NOT NULL,
 			changes JSON NOT NULL,
 			written_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+			deleted INTEGER NOT NULL DEFAULT 0,
 			PRIMARY KEY (resource_type, id)
 		)`,
 		// Repair: an empty list response was once stored keyed by its own resource
@@ -1712,29 +1726,60 @@ func (s *Store) GetSyncResumeState(resourceType string) (cursor, scope string, l
 // write plane but that the read plane has not reported back yet. changes is the
 // serialized []mutation.Change the caller applied, so a later sync can tell
 // whether the read plane has caught up. Re-recording replaces the prior entry.
+//
+// A deletion marker outranks it. One envelope can carry a field update and a
+// permanent delete for the same key, and the delete already removed the row, so
+// recording changes to replay onto a resurrected copy would defeat the marker
+// that suppresses the resurrection. The DO UPDATE therefore skips a row with
+// deleted = 1 instead of overwriting it.
 func (s *Store) RecordPendingWrite(resourceType, id string, changes []byte) error {
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
 	_, err := s.db.Exec(
-		`INSERT INTO pending_writes (resource_type, id, changes, written_at)
-		 VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+		`INSERT INTO pending_writes (resource_type, id, changes, written_at, deleted)
+		 VALUES (?, ?, ?, CURRENT_TIMESTAMP, 0)
 		 ON CONFLICT(resource_type, id) DO UPDATE SET changes = excluded.changes,
-		 written_at = CURRENT_TIMESTAMP`,
+		 written_at = CURRENT_TIMESTAMP
+		 WHERE pending_writes.deleted = 0`,
 		resourceType, id, string(changes),
 	)
 	return err
 }
 
-// PendingWrite is one unconfirmed write: the changes that were applied and when.
+// markPendingDeletionLocked replaces any marker for a row with a DELETION
+// marker inside the caller's transaction. The caller must hold writeMu.
+//
+// It runs in the same transaction as the reap it accompanies, so no reader and
+// no concurrent sync can observe the mirror row gone while the marker that
+// suppresses its re-insertion is not yet written. changes is '[]' because a
+// deletion is not a field change; the deleted flag carries the whole meaning.
+func markPendingDeletionLocked(tx *sql.Tx, resourceType, id string) error {
+	if _, err := tx.Exec(
+		`INSERT INTO pending_writes (resource_type, id, changes, written_at, deleted)
+		 VALUES (?, ?, '[]', CURRENT_TIMESTAMP, 1)
+		 ON CONFLICT(resource_type, id) DO UPDATE SET changes = '[]',
+		 written_at = CURRENT_TIMESTAMP, deleted = 1`,
+		resourceType, id,
+	); err != nil {
+		return fmt.Errorf("marking %s/%s deleted: %w", resourceType, id, err)
+	}
+	return nil
+}
+
+// PendingWrite is one unconfirmed write: the changes that were applied, when,
+// and whether the write was a deletion rather than a field change.
 type PendingWrite struct {
 	Changes   []byte
 	WrittenAt time.Time
+	// Deleted reports a deletion marker: the key is gone on the write plane, so
+	// a row the read plane still reports for it must be dropped, not merged.
+	Deleted bool
 }
 
 // PendingWrites returns every unconfirmed write of a resource type, keyed by row
 // id. An empty map means the mirror agrees with the read plane.
 func (s *Store) PendingWrites(resourceType string) (map[string]PendingWrite, error) {
-	rows, err := s.db.Query(`SELECT id, changes, written_at FROM pending_writes WHERE resource_type = ?`, resourceType)
+	rows, err := s.db.Query(`SELECT id, changes, written_at, deleted FROM pending_writes WHERE resource_type = ?`, resourceType)
 	if err != nil {
 		return nil, err
 	}
@@ -1743,10 +1788,11 @@ func (s *Store) PendingWrites(resourceType string) (map[string]PendingWrite, err
 	for rows.Next() {
 		var id, changes string
 		var writtenAt sql.NullTime
-		if err := rows.Scan(&id, &changes, &writtenAt); err != nil {
+		var deleted int
+		if err := rows.Scan(&id, &changes, &writtenAt, &deleted); err != nil {
 			return nil, err
 		}
-		pending[id] = PendingWrite{Changes: []byte(changes), WrittenAt: writtenAt.Time}
+		pending[id] = PendingWrite{Changes: []byte(changes), WrittenAt: writtenAt.Time, Deleted: deleted != 0}
 	}
 	return pending, rows.Err()
 }
@@ -2014,8 +2060,9 @@ func (s *Store) ReapResource(resourceType, id string) error {
 }
 
 // ReapMirroredItem removes every trace of one permanently deleted item in a
-// single transaction: the live row, the trash row, both FTS documents, and both
-// pending-write markers. It is the atomic replacement for the former
+// single transaction: the live row, the trash row, both FTS documents, and — in
+// place of the field-change markers it clears — a deletion marker per canonical
+// resource. It is the atomic replacement for the former
 // ReapResource("items", key) + ReapResource("items-trash", key) pair, which
 // committed twice and released writeMu in between. That split carried two
 // defects: a reader could observe the item gone from items while it was still
@@ -2027,10 +2074,15 @@ func (s *Store) ReapResource(resourceType, id string) error {
 // canonical row can legitimately survive and there is nothing to choose
 // between.
 //
-// This eliminates the torn intermediate state only. It does not stop a sync
-// inside Zotero's read-plane lag window from re-inserting the item, because a
-// reap deliberately leaves no tombstone: pending_writes records field changes,
-// not deletions.
+// The deletion markers close the resurrection window (ADR-0007). The delete
+// lands on api.zotero.org while sync reads the local desktop API, which keeps
+// listing the item until Zotero syncs the delete down; reconcilePendingWrites
+// drops a listed row whose key is marked deleted, so no sync inside that lag
+// window can re-insert it. Both canonical resources get a marker because both
+// planes keep listing the key: /items during the lag, and /items/trash when the
+// item was trashed before it was purged. The markers are written in THIS
+// transaction, so there is no instant at which the rows are gone and the
+// suppression is not yet in force.
 func (s *Store) ReapMirroredItem(key string) error {
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
@@ -2039,11 +2091,13 @@ func (s *Store) ReapMirroredItem(key string) error {
 		return err
 	}
 	defer func() { _ = tx.Rollback() }()
-	if err := reapResourceLocked(tx, "items", key); err != nil {
-		return err
-	}
-	if err := reapResourceLocked(tx, "items-trash", key); err != nil {
-		return err
+	for _, resourceType := range []string{"items", "items-trash"} {
+		if err := reapResourceLocked(tx, resourceType, key); err != nil {
+			return err
+		}
+		if err := markPendingDeletionLocked(tx, resourceType, key); err != nil {
+			return err
+		}
 	}
 	return tx.Commit()
 }
@@ -2121,12 +2175,21 @@ func (s *Store) ResourceIDs(resourceType string) (map[string]bool, error) {
 }
 
 // SweepMissing reaps every mirrored row of a resource type whose id is not in
-// seen, returning how many it removed.
+// seen, returning how many it removed, and retires the deletion markers the
+// pass has confirmed.
 //
 // Only safe after a COMPLETE pass over the resource: an incremental sync sees
 // only what changed, so anything absent is unchanged rather than deleted. The
 // local desktop API implements no /deleted feed, so a full pass is the only way
 // zotio can learn that an object it mirrors is gone.
+//
+// That same property is the only sound confirmation signal for a deletion
+// marker. A marker suppresses re-insertion of a purged key while the read plane
+// still lists it; once a complete pass stops listing the key, Zotero has synced
+// the delete down and the marker has nothing left to suppress, so holding it
+// would only inflate doctor's pending_writes count. An incremental pass cannot
+// clear it, because absence there means unchanged, not gone — which is why a
+// marker also carries the pendingWriteTTL backstop in internal/cli.
 func (s *Store) SweepMissing(resourceType string, seen map[string]bool) (int, error) {
 	// Hold writeMu for the full snapshot-and-reap transaction. Without one
 	// critical section, a row inserted after the snapshot could be reaped as
@@ -2152,8 +2215,44 @@ func (s *Store) SweepMissing(resourceType string, seen map[string]bool) (int, er
 		}
 		reaped++
 	}
+	marked, err := deletionMarkerIDsLocked(tx, resourceType)
+	if err != nil {
+		return reaped, err
+	}
+	for _, id := range marked {
+		if seen[id] {
+			continue // the read plane still lists it; keep suppressing
+		}
+		if _, err := tx.Exec(
+			`DELETE FROM pending_writes WHERE resource_type = ? AND id = ? AND deleted = 1`,
+			resourceType, id,
+		); err != nil {
+			return reaped, fmt.Errorf("retiring deletion marker for %s/%s: %w", resourceType, id, err)
+		}
+	}
 	if err := tx.Commit(); err != nil {
 		return reaped, err
 	}
 	return reaped, nil
+}
+
+// deletionMarkerIDsLocked lists the row ids of a resource type that carry a
+// deletion marker, using the caller's query handle so the read shares
+// SweepMissing's transaction.
+func deletionMarkerIDsLocked(queryer resourceIDQueryer, resourceType string) ([]string, error) {
+	rows, err := queryer.Query(
+		`SELECT id FROM pending_writes WHERE resource_type = ? AND deleted = 1`, resourceType)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
 }

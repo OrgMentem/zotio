@@ -6,6 +6,9 @@ package cli
 import (
 	"context"
 	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"zotio/internal/mutation"
@@ -191,5 +194,149 @@ func TestWriteThroughDispatchesTrashAndDelete(t *testing.T) {
 	}
 	if !mirroredItemKeys(t, db2, "items")["T1"] {
 		t.Error("a trash must not remove the item row itself; only a permanent delete does")
+	}
+}
+
+// zotio-ec7c129c5d58bd24. A permanent delete goes to api.zotero.org while sync
+// reads Zotero's LOCAL desktop API, which is GET-only, implements no /deleted
+// feed, and only learns the delete when Zotero itself syncs down. Any sync
+// inside that lag window used to re-insert the purged item into `resources`,
+// after which offline reads, search and every mirror-derived count served an
+// item that 404s on BOTH planes until a later full pass swept it.
+//
+// The reap now leaves a deletion marker, and reconcilePendingWrites drops the
+// listed row instead of storing it.
+func TestSyncDoesNotResurrectAPermanentlyDeletedItem(t *testing.T) {
+	syncTestWithHumanFriendly(t, false)
+	db := syncTestOpenStore(t)
+	defer db.Close()
+
+	if _, _, err := db.UpsertBatch("items", []json.RawMessage{
+		json.RawMessage(`{"key":"PURGED","version":1,"data":{"key":"PURGED","itemType":"book","title":"Purged"}}`),
+	}); err != nil {
+		t.Fatalf("seed mirror: %v", err)
+	}
+	if _, err := db.UpsertKeyed("items-trash", []string{"PURGED"},
+		[]json.RawMessage{json.RawMessage(`{"key":"PURGED","version":1,"data":{"key":"PURGED","itemType":"book","title":"Purged"}}`)}); err != nil {
+		t.Fatalf("seed trash mirror: %v", err)
+	}
+
+	reapMirroredItem(db, "PURGED")
+
+	// The local desktop API still lists the deleted item on both listings,
+	// exactly as it does until Zotero syncs the delete down. Only /items
+	// carries the unrelated item: a trash listing that also reported it would
+	// legitimately trash it through reconcileItemLifecycleTx, which is a
+	// different mechanism than the one under test.
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		purged := `{"key":"PURGED","version":1,"data":{"key":"PURGED","itemType":"book","title":"Purged"}}`
+		if strings.HasSuffix(r.URL.Path, "/items/trash") {
+			_, _ = w.Write([]byte(`[` + purged + `]`))
+			return
+		}
+		_, _ = w.Write([]byte(`[` + purged + `,` +
+			`{"key":"SURVIVOR","version":1,"data":{"key":"SURVIVOR","itemType":"book","title":"Untouched"}}]`))
+	}))
+	defer server.Close()
+
+	// Assert the live row BEFORE syncing the trash listing. Storing a trash row
+	// makes reconcileItemLifecycleTx delete the live row on equal versions, so a
+	// combined check would let trash arbitration mask a live-row resurrection.
+	if res := syncResource(context.Background(), syncTestClient(server.URL), db, "items", 0, false, 1, false); res.Err != nil {
+		t.Fatalf("sync items: %v", res.Err)
+	}
+	if mirroredItemKeys(t, db, "items")["PURGED"] {
+		t.Error("sync resurrected a permanently deleted item into resources; offline reads and every mirror-derived count now serve an item that 404s on both planes")
+	}
+
+	if res := syncResource(context.Background(), syncTestClient(server.URL), db, "items-trash", 0, false, 1, false); res.Err != nil {
+		t.Fatalf("sync items-trash: %v", res.Err)
+	}
+	if mirroredItemKeys(t, db, "items-trash")["PURGED"] {
+		t.Error("sync resurrected the trash row of a permanently deleted item")
+	}
+	// Suppression must be per key, not per page: everything else the plane
+	// reported still has to land.
+	if !mirroredItemKeys(t, db, "items")["SURVIVOR"] {
+		t.Error("an unrelated row on the same page was dropped; the deletion marker must suppress one key, not the page")
+	}
+}
+
+// The marker retires the moment the read plane stops listing the key: that is
+// the delete landing, and the only evidence of it available, since the local
+// API has no /deleted feed. Nothing may be left behind to inflate doctor's
+// pending_writes count or to suppress a legitimate future row under that key.
+func TestSyncRetiresTheDeletionMarkerOnceTheDeleteLands(t *testing.T) {
+	syncTestWithHumanFriendly(t, false)
+	db := syncTestOpenStore(t)
+	defer db.Close()
+
+	if _, _, err := db.UpsertBatch("items", []json.RawMessage{
+		json.RawMessage(`{"key":"PURGED","version":1,"data":{"key":"PURGED","itemType":"book","title":"Purged"}}`),
+	}); err != nil {
+		t.Fatalf("seed mirror: %v", err)
+	}
+	reapMirroredItem(db, "PURGED")
+
+	// Zotero has synced the delete down: a complete pass no longer lists it.
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`[{"key":"SURVIVOR","version":1,"data":{"key":"SURVIVOR","itemType":"book","title":"Untouched"}}]`))
+	}))
+	defer server.Close()
+
+	for _, resource := range []string{"items", "items-trash"} {
+		if res := syncResource(context.Background(), syncTestClient(server.URL), db, resource, 0, true, 1, false); res.Err != nil {
+			t.Fatalf("full sync %s: %v", resource, res.Err)
+		}
+	}
+
+	pending, err := db.PendingWriteCount()
+	if err != nil {
+		t.Fatalf("PendingWriteCount: %v", err)
+	}
+	if pending != 0 {
+		t.Fatalf("deletion markers outstanding after the delete landed = %d, want 0: the marker leaks", pending)
+	}
+	if mirroredItemKeys(t, db, "items")["PURGED"] {
+		t.Error("the purged item is back in the mirror")
+	}
+}
+
+// An INCREMENTAL pass must not retire the marker. There, a key the plane did
+// not report is unchanged, not gone — the same asymmetry that makes
+// SweepMissing safe only after a complete pass. Retiring on absence would
+// clear the marker on the very first incremental sync after the delete, which
+// is precisely when the read plane is still lagging, and the next full page
+// would resurrect the item.
+func TestIncrementalSyncKeepsAnUnconfirmedDeletionMarker(t *testing.T) {
+	syncTestWithHumanFriendly(t, false)
+	db := syncTestOpenStore(t)
+	defer db.Close()
+
+	if _, _, err := db.UpsertBatch("items", []json.RawMessage{
+		json.RawMessage(`{"key":"PURGED","version":1,"data":{"key":"PURGED","itemType":"book","title":"Purged"}}`),
+	}); err != nil {
+		t.Fatalf("seed mirror: %v", err)
+	}
+	reapMirroredItem(db, "PURGED")
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`[{"key":"OTHER","version":9,"data":{"key":"OTHER","itemType":"book","title":"Edited elsewhere"}}]`))
+	}))
+	defer server.Close()
+
+	if res := syncResource(context.Background(), syncTestClient(server.URL), db, "items", 1, false, 1, false); res.Err != nil {
+		t.Fatalf("incremental sync: %v", res.Err)
+	}
+
+	pending, err := db.PendingWrites("items")
+	if err != nil {
+		t.Fatalf("PendingWrites: %v", err)
+	}
+	if !pending["PURGED"].Deleted {
+		t.Fatal("an incremental pass retired the deletion marker; absence there means unchanged, not deleted")
 	}
 }
