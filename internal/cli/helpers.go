@@ -1508,6 +1508,17 @@ type DataProvenance struct {
 	// {value, count} rows can tell whether value is a year, a tag, or a
 	// creator without re-reading its own command line.
 	GroupBy string `json:"group_by,omitempty"`
+	// MetaExtra carries command-specific annotations that belong INSIDE meta
+	// rather than beside it: a statement about how this answer was produced,
+	// never data the command matched. It exists because `extra` in
+	// wrapWithProvenanceExtra means "sibling TOP-LEVEL key", and a command
+	// that needs one meta field should not have to open a second top-level
+	// key on the shared read envelope to get it.
+	//
+	// Not serialized under its own name: wrapWithProvenanceExtra merges the
+	// keys into meta, and refuses a key provenance already owns rather than
+	// letting a caller relabel where the data came from.
+	MetaExtra map[string]any `json:"-"`
 }
 
 // printProvenance writes a one-line provenance message to stderr for TTY users.
@@ -1563,11 +1574,23 @@ func wrapWithProvenance(data json.RawMessage, prov DataProvenance) (json.RawMess
 	return wrapWithProvenanceExtra(data, prov, nil)
 }
 
+// envelopeReservedKeys are the top-level keys the read envelope owns. They are
+// checked in a fixed order so two colliding keys still produce the same error
+// on every run, which is what makes the failure reproducible from a report.
+var envelopeReservedKeys = [2]string{"meta", "results"}
+
 // wrapWithProvenanceExtra wraps data in the same envelope and adds sibling
 // top-level keys. Sibling, never inside .results: extra keys exist for data
 // that is NOT what the command matched — advisory rows a caller must opt into
 // reading — so folding them into .results would break the one invariant every
-// jq pipeline depends on. "results" and "meta" are reserved and ignored here.
+// jq pipeline depends on.
+//
+// "results" and "meta" are reserved: supplying either in extra returns an
+// error naming it. This used to skip the key silently, which turned a caller
+// bug into missing output with no signal on any surface — the reserved key was
+// dropped, the command still exited 0, and the data the caller asked to publish
+// simply was not there. A command that needs a meta field passes it through
+// DataProvenance.MetaExtra, which merges into meta by design.
 func wrapWithProvenanceExtra(data json.RawMessage, prov DataProvenance, extra map[string]any) (json.RawMessage, error) {
 	meta := map[string]any{"source": prov.Source}
 	if prov.SyncedAt != nil {
@@ -1589,14 +1612,32 @@ func wrapWithProvenanceExtra(data json.RawMessage, prov DataProvenance, extra ma
 	if prov.GroupBy != "" {
 		meta["group_by"] = prov.GroupBy
 	}
+	// Command-specific meta annotations, merged last. Provenance keys are
+	// authoritative: a caller colliding on one is trying to relabel where the
+	// data came from, which is a bug in the caller and not a value to merge.
+	if len(prov.MetaExtra) > 0 {
+		keys := make([]string, 0, len(prov.MetaExtra))
+		for key := range prov.MetaExtra {
+			keys = append(keys, key)
+		}
+		sort.Strings(keys)
+		for _, key := range keys {
+			if _, taken := meta[key]; taken {
+				return nil, fmt.Errorf("meta key %q is owned by the provenance envelope and cannot be overridden by a command annotation", key)
+			}
+			meta[key] = prov.MetaExtra[key]
+		}
+	}
 	envelope := map[string]any{
 		"results": normalizeResultsArray(data),
 		"meta":    meta,
 	}
-	for key, value := range extra {
-		if key == "results" || key == "meta" {
-			continue
+	for _, reserved := range envelopeReservedKeys {
+		if _, taken := extra[reserved]; taken {
+			return nil, fmt.Errorf("envelope key %q is reserved: pass a meta annotation through DataProvenance.MetaExtra, or name the sibling key after the data it carries", reserved)
 		}
+	}
+	for key, value := range extra {
 		envelope[key] = value
 	}
 	return json.Marshal(envelope)

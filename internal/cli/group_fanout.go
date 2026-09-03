@@ -86,9 +86,47 @@ type fanoutLibraryResult struct {
 	// where one library read live and another read a stale mirror has no single
 	// honest provenance block.
 	Meta json.RawMessage `json:"meta,omitempty"`
-	// Output holds a non-JSON payload (a rendered table or plain text) verbatim.
-	Output string `json:"output,omitempty"`
-	Error  string `json:"error,omitempty"`
+	// Extra carries the payload's remaining top-level keys — the sibling
+	// blocks wrapWithProvenanceExtra adds next to `results`, such as `items
+	// find`'s near_title_matches. Without it the aggregate showed LESS than
+	// each library printed: the fan-out decoded `results`, `findings` and
+	// `meta` and dropped everything else, so a fanned-out `items find` lost
+	// the near-title report entirely — and a multi-library user is exactly the
+	// person who cannot otherwise tell "absent from this library" from
+	// "mistyped".
+	//
+	// Per library, never merged into the aggregate's own top level: a
+	// near-title similarity score ranks candidates within the one library's
+	// index that produced it, so scores from two libraries were never computed
+	// against each other and a merged list would invite reading its top row as
+	// the best match across the account.
+	//
+	// Carried verbatim rather than through a key whitelist: the fan-out
+	// repeats a command it does not understand (see the file header), so a
+	// whitelist would need extending every time any command grew a sibling
+	// key, and the cost of forgetting is silent data loss — the defect this
+	// field exists to fix. The price is that a stray key from any command
+	// reaches the aggregate, which is bounded by nesting it here: a key inside
+	// this map can never shadow a field of this block or of the report.
+	Extra map[string]json.RawMessage `json:"extra,omitempty"`
+	// printed is what this library actually wrote, verbatim. It is unexported
+	// on purpose: in the JSON aggregate the parsed form is already there under
+	// results/findings/meta/extra, so re-emitting the raw bytes would
+	// duplicate every row, and a payload the aggregate could NOT parse forces
+	// the text render anyway (any unparseable payload clears `structured` in
+	// runGroupFanout), where this field is printed under the library heading.
+	//
+	// It replaced an exported `output` field that could never appear in the
+	// aggregate for exactly that reason, and its absence was the bug: the text
+	// render is chosen for the WHOLE run as soon as ONE library prints
+	// something unparseable, and a library whose payload parsed fine then had
+	// nothing to print — a heading and no body. One never-synced library
+	// answering in prose therefore made every other library look empty, which
+	// is the same data loss as dropping a sibling key and harder to notice,
+	// because the reader sees a heading and concludes the library holds
+	// nothing.
+	printed []byte
+	Error   string `json:"error,omitempty"`
 	// ExitCode is the exit code the same command would have returned had it run
 	// against this library alone.
 	ExitCode int             `json:"exit_code,omitempty"`
@@ -593,6 +631,9 @@ func runGroupFanout(cmd *cobra.Command, args []string, flags *rootFlags, run fun
 		outcome := runFanoutLibrary(cmd, args, flags, lib, run)
 		block := fanoutLibraryResult{Library: lib, Status: "ok", Store: outcome.store}
 		payload := bytes.TrimSpace(outcome.payload)
+		// Retained, not copied: runFanoutLibrary gives each library its own
+		// buffer, so nothing writes over these bytes afterwards.
+		block.printed = payload
 		valid := len(payload) > 0 && json.Valid(payload)
 		switch {
 		case valid:
@@ -606,11 +647,11 @@ func runGroupFanout(cmd *cobra.Command, args []string, flags *rootFlags, run fun
 			block.ExitCode = ExitCode(outcome.err)
 			// A failed library's payload is diagnostic (a precondition envelope,
 			// a partial render), never data: merging it into results would make
-			// a refusal look like a row the library returned.
+			// a refusal look like a row the library returned. An unparseable
+			// one needs no field of its own — it forces the text render, which
+			// prints block.printed verbatim under this library's heading.
 			if valid {
 				block.Detail = json.RawMessage(payload)
-			} else if len(payload) > 0 {
-				block.Output = string(payload)
 			}
 			failures = append(failures, outcome.err)
 			report.Libraries = append(report.Libraries, block)
@@ -618,8 +659,6 @@ func runGroupFanout(cmd *cobra.Command, args []string, flags *rootFlags, run fun
 		}
 		if valid {
 			mergeFanoutPayload(&report, &block, json.RawMessage(payload), lib)
-		} else if len(payload) > 0 {
-			block.Output = string(payload)
 		}
 		report.Libraries = append(report.Libraries, block)
 	}
@@ -641,22 +680,32 @@ func runGroupFanout(cmd *cobra.Command, args []string, flags *rootFlags, run fun
 
 // mergeFanoutPayload folds one library's JSON payload into the aggregate.
 func mergeFanoutPayload(report *fanoutReport, block *fanoutLibraryResult, payload json.RawMessage, lib fanoutLibrary) {
-	var envelope struct {
-		Results  []json.RawMessage `json:"results"`
-		Findings []json.RawMessage `json:"findings"`
-		Meta     json.RawMessage   `json:"meta"`
-	}
-	if err := json.Unmarshal(payload, &envelope); err == nil && (envelope.Results != nil || envelope.Findings != nil) {
-		block.Meta = envelope.Meta
-		for _, row := range envelope.Results {
-			report.Results = append(report.Results, tagWithLibrary(row, lib))
+	// Decoded key by key rather than into a struct, so the keys this function
+	// does not know about survive into the per-library block instead of being
+	// discarded (see fanoutLibraryResult.Extra). Still one decode and not two:
+	// an item list is large enough that re-parsing the whole payload just to
+	// find its sibling keys is work the answer does not need.
+	var envelope map[string]json.RawMessage
+	if err := json.Unmarshal(payload, &envelope); err == nil {
+		results, resultsErr := fanoutEnvelopeRows(envelope["results"])
+		findings, findingsErr := fanoutEnvelopeRows(envelope["findings"])
+		// This is an envelope when one of the two row keys holds an array, and
+		// neither holds something else: a `results` field of another shape
+		// belongs to a command printing its own object, which the bare-payload
+		// path below reports as a single row.
+		if resultsErr == nil && findingsErr == nil && (results != nil || findings != nil) {
+			block.Meta = envelope["meta"]
+			block.Extra = fanoutSiblingKeys(envelope)
+			for _, row := range results {
+				report.Results = append(report.Results, tagWithLibrary(row, lib))
+			}
+			for _, finding := range findings {
+				report.Findings = append(report.Findings, tagWithLibrary(finding, lib))
+			}
+			block.ResultCount = len(results)
+			block.FindingCount = len(findings)
+			return
 		}
-		for _, finding := range envelope.Findings {
-			report.Findings = append(report.Findings, tagWithLibrary(finding, lib))
-		}
-		block.ResultCount = len(envelope.Results)
-		block.FindingCount = len(envelope.Findings)
-		return
 	}
 	// A bare array is a list read printed without the provenance envelope; a
 	// bare object (a report, a single resource) is one row.
@@ -670,6 +719,40 @@ func mergeFanoutPayload(report *fanoutReport, block *fanoutLibraryResult, payloa
 	}
 	report.Results = append(report.Results, tagWithLibrary(payload, lib))
 	block.ResultCount = 1
+}
+
+// fanoutEnvelopeRows decodes one array-valued envelope key. An absent key and
+// a JSON null both decode to no rows and no error, which keeps the envelope
+// test above deciding exactly what the struct decode it replaced decided.
+func fanoutEnvelopeRows(raw json.RawMessage) ([]json.RawMessage, error) {
+	if len(raw) == 0 {
+		return nil, nil
+	}
+	var rows []json.RawMessage
+	if err := json.Unmarshal(raw, &rows); err != nil {
+		return nil, err
+	}
+	return rows, nil
+}
+
+// fanoutSiblingKeys returns the envelope keys the aggregate does not fold into
+// a dimension of its own. Exactly three are excluded, and each is excluded
+// because it is already reported elsewhere: `results` and `findings` are
+// aggregated across libraries, and `meta` is kept as this library's own
+// provenance block.
+func fanoutSiblingKeys(envelope map[string]json.RawMessage) map[string]json.RawMessage {
+	var siblings map[string]json.RawMessage
+	for key, value := range envelope {
+		switch key {
+		case "results", "findings", "meta":
+			continue
+		}
+		if siblings == nil {
+			siblings = make(map[string]json.RawMessage, len(envelope)-1)
+		}
+		siblings[key] = value
+	}
+	return siblings
 }
 
 // tagWithLibrary attaches the library dimension to one aggregated element.
@@ -748,8 +831,12 @@ func writeFanoutReport(w io.Writer, flags *rootFlags, report fanoutReport, struc
 		if _, err := fmt.Fprintf(w, "== %s ==\n", bold(heading)); err != nil {
 			return err
 		}
-		if block.Output != "" {
-			if _, err := fmt.Fprintln(w, strings.TrimRight(block.Output, "\n")); err != nil {
+		// EVERY payload, including one the aggregate parsed: this branch runs
+		// because some OTHER library printed something unparseable, and a
+		// library that answered fine must not be reduced to a heading a reader
+		// would take for "this library holds nothing".
+		if len(block.printed) > 0 {
+			if _, err := fmt.Fprintf(w, "%s\n", bytes.TrimRight(block.printed, "\n")); err != nil {
 				return err
 			}
 		}
