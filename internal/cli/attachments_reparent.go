@@ -151,9 +151,31 @@ func applyConnectorReparentUpload(ctx context.Context, cmd *cobra.Command, flags
 		return "failed", nil, fmt.Errorf("missing write client")
 	}
 
-	// Retry-safety first, and against the TARGET rather than the temporary
-	// parent: a re-run must no-op instead of leaving a second throwaway item and
-	// a duplicate file behind.
+	// One deadline for the whole route. Without it, four visibility loops plus a
+	// client configured with `--timeout 0` could hang indefinitely.
+	routeCtx, cancel := context.WithTimeout(ctx, connectorReparentRouteTimeout)
+	defer cancel()
+	// A client carries its own base context, so the budget above bounds nothing
+	// until the client is told about it. Without this the deadline caps only the
+	// sleeps between polls, not the HTTP calls they wrap.
+	//
+	// The client belongs to the caller, so the borrow is given back: without the
+	// restore this op returns a client permanently bound to a cancelled context,
+	// and any later request on it fails with context.Canceled for no visible
+	// reason.
+	callerCtx := webClient.Context()
+	webClient.SetContext(routeCtx)
+	defer webClient.SetContext(callerCtx)
+
+	// Retry-safety before anything is created, and against the TARGET rather
+	// than the temporary parent: a re-run must no-op instead of leaving a second
+	// throwaway item and a duplicate file behind.
+	//
+	// It reads through the borrow above, so it is sequenced after it rather than
+	// before. The client's own base context is scoped to SIGINT/SIGTERM, not to
+	// the command, so running this read first spent one live GET on
+	// /items/<parent>/children even when the caller's context was already
+	// cancelled — a request the caller had already asked not to make.
 	//
 	// This route cannot reuse findStoredSibling, which matches on filename and
 	// linkMode "imported_file". Neither holds here. Zotero renames a saved file
@@ -182,22 +204,6 @@ func applyConnectorReparentUpload(ctx context.Context, cmd *cobra.Command, flags
 			"note":           "an attachment with identical content is already on this item",
 		}, nil
 	}
-
-	// One deadline for the whole route. Without it, four visibility loops plus a
-	// client configured with `--timeout 0` could hang indefinitely.
-	routeCtx, cancel := context.WithTimeout(ctx, connectorReparentRouteTimeout)
-	defer cancel()
-	// A client carries its own base context, so the budget above bounds nothing
-	// until the client is told about it. Without this the deadline caps only the
-	// sleeps between polls, not the HTTP calls they wrap.
-	//
-	// The client belongs to the caller, so the borrow is given back: without the
-	// restore this op returns a client permanently bound to a cancelled context,
-	// and any later request on it fails with context.Canceled for no visible
-	// reason.
-	callerCtx := webClient.Context()
-	webClient.SetContext(routeCtx)
-	defer webClient.SetContext(callerCtx)
 
 	out, err := runConnectorReparent(routeCtx, cmd, flags, webClient, req)
 	detail := map[string]any{"via": "connector"}

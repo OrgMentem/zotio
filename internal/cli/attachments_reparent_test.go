@@ -21,6 +21,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -117,10 +118,16 @@ type reparentFake struct {
 	// target, i.e. the winner is where it was found. Setting it elsewhere models
 	// another actor re-parenting the winner away between discovery and the
 	// route's revalidation.
-	winnerParent string
-	// winnerTrashed makes the fake report WINNER01 as trashed.
+	winnerParent     string
 	winnerTrashed    int
 	targetChildReads int
+
+	// requests counts EVERY request that reaches the fake, read or write. The
+	// recorded call sequence names only the steps whose ORDER matters, so a
+	// read the route should never have issued at all left no trace in it —
+	// which is how a duplicate check that ignored the caller's cancellation
+	// stayed invisible to this file's assertions.
+	requests atomic.Int64
 }
 
 func (f *reparentFake) record(s string) {
@@ -476,7 +483,12 @@ func (f *reparentFake) server(t *testing.T) *httptest.Server {
 		w.WriteHeader(http.StatusMethodNotAllowed)
 	})
 
-	srv := httptest.NewServer(mux)
+	// Counted in front of the mux, so the total covers the connector plane, the
+	// API plane, and any path the fake does not model.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		f.requests.Add(1)
+		mux.ServeHTTP(w, r)
+	}))
 	t.Cleanup(srv.Close)
 	return srv
 }
@@ -809,19 +821,43 @@ func TestConnectorReparentNoOpsWhenAlreadyAttached(t *testing.T) {
 	srv := fake.server(t)
 	flags := reparentFlags(t, srv)
 	c, _ := flags.newWriteClient()
+	// The duplicate check now runs inside the route's borrowed deadline, so this
+	// early return is an exit path the restore has to cover as well.
+	type ctxKey struct{}
+	callerCtx := context.WithValue(context.Background(), ctxKey{}, "caller")
+	c.SetContext(callerCtx)
 
-	status, detail, err := applyConnectorReparentUpload(context.Background(), reparentCmd(t), flags, c, req)
+	status, detail, err := applyConnectorReparentUpload(callerCtx, reparentCmd(t), flags, c, req)
 	if err != nil {
 		t.Fatalf("route failed: %v", err)
 	}
 	if status != "no_op" {
 		t.Fatalf("status = %q, want no_op for an identical retry", status)
 	}
-	if m, _ := detail.(map[string]any); m["item_key"] != "EXISTING1" {
-		t.Errorf("detail = %v, want the existing attachment key", m)
+	m, ok := detail.(map[string]any)
+	if !ok {
+		t.Fatalf("detail = %T, want map", detail)
+	}
+	// The whole envelope, key by key. A consumer reads attachment_key; item_key
+	// exists only for symmetry with the Web route, and parent_key/via/note are
+	// what a scripted caller reports. Dropping any one of them silently changes
+	// the contract of a status that reports "nothing to do".
+	for key, want := range map[string]any{
+		"attachment_key": "EXISTING1",
+		"item_key":       "EXISTING1",
+		"parent_key":     "TARGET01",
+		"via":            "connector",
+		"note":           "an attachment with identical content is already on this item",
+	} {
+		if m[key] != want {
+			t.Errorf("detail[%q] = %v, want %v", key, m[key], want)
+		}
 	}
 	if calls := fake.sequence(); len(calls) != 0 {
 		t.Errorf("calls = %v, want none: a retry must create nothing", calls)
+	}
+	if got := c.Context(); got != callerCtx {
+		t.Errorf("client base context = %v, want the caller's own context back (identity)", got)
 	}
 }
 
@@ -1234,23 +1270,51 @@ func TestConnectorReparentHonoursACancelledContext(t *testing.T) {
 }
 
 // TestConnectorReparentRefusesAnAlreadyCancelledContext covers the ENTRY
-// branch: a context that is dead before the first call must stop the route
-// before it writes anything at all. It exercises no in-flight cancellation.
+// branch: a caller whose context is dead before the first call must stop the
+// route before it touches the network at all. It exercises no in-flight
+// cancellation.
+//
+// The two contexts here are deliberately DIFFERENT, and that is the whole
+// point. A client carries its own base context, seeded by client.New from a
+// SIGINT/SIGTERM scope, so it stays live while the caller's context is
+// cancelled. The route's duplicate check used to run before the route bound its
+// own deadline to the client, so it read through that still-live base context
+// and spent one GET on /items/<parent>/children for a caller that had already
+// cancelled. Binding the client to the caller's context in this test instead
+// would hide exactly that defect: the read would then be stopped by the client,
+// not by the route.
+//
+// The request COUNT is therefore the load-bearing assertion, not the recorded
+// call sequence: the fake records the steps whose ORDER matters, and never
+// recorded that stray read at all.
 func TestConnectorReparentRefusesAnAlreadyCancelledContext(t *testing.T) {
 	fake := &reparentFake{tempParentKey: "TEMP0001", attachChildren: []string{"ATTACH01"}}
 	srv := fake.server(t)
 	flags := reparentFlags(t, srv)
 	c, _ := flags.newWriteClient()
+	// The client's own base context: live, and value-bearing so the restore
+	// assertion at the end is IDENTITY rather than "some context that works".
+	// The borrow is installed before the duplicate check now, so this early
+	// exit path has to give it back too.
+	type ctxKey struct{}
+	clientCtx := context.WithValue(context.Background(), ctxKey{}, "client owner")
+	c.SetContext(clientCtx)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel() // already cancelled: no loop may proceed
 
-	_, _, err := applyConnectorReparentUpload(ctx, reparentCmd(t), flags, c, reparentRequest(t, "TARGET01"))
+	status, _, err := applyConnectorReparentUpload(ctx, reparentCmd(t), flags, c, reparentRequest(t, "TARGET01"))
 	if err == nil {
 		t.Fatal("route succeeded with a cancelled context")
 	}
 	if !errors.Is(err, context.Canceled) {
 		t.Errorf("err = %v, want an error satisfying errors.Is(err, context.Canceled)", err)
+	}
+	if status != "failed" {
+		t.Errorf("status = %q, want failed", status)
+	}
+	if n := fake.requests.Load(); n != 0 {
+		t.Errorf("route issued %d HTTP request(s) for an already cancelled caller, want 0", n)
 	}
 	// Nothing may be created, moved, or trashed: the route stops before it
 	// asks the desktop for anything.
@@ -1258,6 +1322,9 @@ func TestConnectorReparentRefusesAnAlreadyCancelledContext(t *testing.T) {
 		if strings.HasPrefix(call, "connector.") || strings.HasPrefix(call, "web.") {
 			t.Errorf("performed %s with an already cancelled context", call)
 		}
+	}
+	if got := c.Context(); got != clientCtx {
+		t.Errorf("client base context = %v, want the client owner's own context back (identity)", got)
 	}
 }
 
