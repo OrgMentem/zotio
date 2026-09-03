@@ -147,6 +147,12 @@ func readFileString(t *testing.T, path string) string {
 // legacy auth_header in both credential locations, then reloads from disk. The
 // operator must end up authenticated as the new token, with no legacy value
 // left anywhere that config.Load could resurrect it from.
+//
+// The command itself no longer touches the legacy slot: Config.SaveCredential
+// is the single owner of that clear. So every assertion below deliberately
+// reads the persisted state (a reload, then the two files) rather than the
+// in-memory Config the command handed to SaveCredential, which is the only
+// layer that still fails when that owner stops clearing.
 func TestAuthSetTokenClearsLegacyHeaderAndActivatesSavedToken(t *testing.T) {
 	home := isolateAuthHome(t)
 	configPath := writeAuthTestConfigFile(t, "base_url = \""+authTestBaseURL+"\"\nauth_header = \""+authTestLegacyConfigHeader+"\"\n")
@@ -177,6 +183,10 @@ func TestAuthSetTokenClearsLegacyHeaderAndActivatesSavedToken(t *testing.T) {
 	if got := reloaded.AuthHeader(); got != authTestNewToken {
 		t.Fatalf("reloaded AuthHeader() = %q, want %q", got, authTestNewToken)
 	}
+	// Not vacuous despite config.Load zeroing AuthHeaderVal at parse time:
+	// LoadCredentials is applied afterwards, so a credentials.toml that still
+	// declared auth_header would hand back a live legacy slot here — which is
+	// exactly how the fixture above seeds one.
 	if reloaded.AuthHeaderVal != "" {
 		t.Fatalf("reloaded AuthHeaderVal = %q, want empty legacy slot", reloaded.AuthHeaderVal)
 	}
@@ -264,13 +274,17 @@ func TestAuthSetTokenRejectsUnsafeInput(t *testing.T) {
 	}
 }
 
-// TestInitAPIKeyStepClearsLegacyHeader guards the clear-then-save pair that
-// init.go duplicates from auth.go. `zotio init` prompts for the same secret and
-// stores it through the same Config.SaveCredential path, so it must leave the
-// legacy auth_header slot just as empty as `auth set-token` does.
+// TestInitAPIKeyStepClearsLegacyHeader covers the `zotio init` prompt, which
+// stores the pasted secret through the same Config.SaveCredential path as
+// `auth set-token` and, like it, clears nothing itself. The step must therefore
+// leave the legacy auth_header slot just as empty as `auth set-token` does,
+// proven the same way: reload from disk and read the persisted files.
 func TestInitAPIKeyStepClearsLegacyHeader(t *testing.T) {
 	home := isolateAuthHome(t)
-	writeAuthTestConfigFile(t, "base_url = \""+authTestBaseURL+"\"\n")
+	// No auth_header in config.toml: config.Load would migrate it into api_key
+	// and AuthHeader() would resolve, short-circuiting the prompt. Only a
+	// credentials.toml auth_header presents a live legacy slot to this step.
+	configPath := writeAuthTestConfigFile(t, "base_url = \""+authTestBaseURL+"\"\n")
 	credentialsPath := writeAuthTestCredentialsFile(t, "auth_header = \""+authTestLegacyCredHeader+"\"\n")
 
 	cfg, err := config.Load("")
@@ -307,8 +321,18 @@ func TestInitAPIKeyStepClearsLegacyHeader(t *testing.T) {
 	if got := reloaded.AuthHeader(); got != authTestNewToken {
 		t.Fatalf("reloaded AuthHeader() = %q, want %q", got, authTestNewToken)
 	}
+	// The reload is the assertion that catches a SaveCredential which stops
+	// clearing: with that clear removed, the save rewrites credentials.toml
+	// with the legacy auth_header still in it and this reload hands it back
+	// (measured — the mutant fails right here).
 	if reloaded.AuthHeaderVal != "" {
 		t.Fatalf("reloaded AuthHeaderVal = %q, want empty legacy slot", reloaded.AuthHeaderVal)
+	}
+	// Saving routes every credential to credentials.toml and strips it from
+	// config.toml, so the legacy key must not appear in the plain config store
+	// either — not even as an empty leftover key.
+	if got := readFileString(t, configPath); strings.Contains(got, "auth_header") {
+		t.Fatalf("config file now declares auth_header:\n%s", got)
 	}
 	if got := readFileString(t, credentialsPath); strings.Contains(got, "auth_header") {
 		t.Fatalf("credentials file still declares auth_header:\n%s", got)

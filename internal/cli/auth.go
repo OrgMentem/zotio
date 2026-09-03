@@ -103,13 +103,6 @@ func newAuthSetTokenCmd(flags *rootFlags) *cobra.Command {
 				return authErr(fmt.Errorf("empty token on stdin"))
 			}
 
-			// Clear any legacy auth_header so AuthHeader() falls through to
-			// the newly-saved credential. Without this, a pre-existing
-			// auth_header value (common in older configs) shadows the saved
-			// token and set-token silently has no effect. Silent clear (no
-			// log line): a masked-tail variant could leak token bytes through
-			// scripted runs that capture stderr.
-			cfg.AuthHeaderVal = ""
 			// api_key auth: AuthHeader() reads the env-var-derived field, not
 			// AccessToken. Writing the token to AccessToken would persist the
 			// bytes but leave doctor reporting "not configured" — the slot the

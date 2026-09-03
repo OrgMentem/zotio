@@ -224,7 +224,6 @@ func runInitAPIKeyStep(cmd *cobra.Command, flags *rootFlags, cfg *config.Config)
 	if token == "" {
 		return false, initStepReport{Step: initStepAPIKey, OK: false, Status: "missing", Remediation: remediation}
 	}
-	cfg.AuthHeaderVal = ""
 	if err := cfg.SaveCredential(token); err != nil {
 		return false, initStepReport{Step: initStepAPIKey, OK: false, Status: "save_error", Remediation: remediation, Detail: err.Error()}
 	}
