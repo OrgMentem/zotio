@@ -258,3 +258,121 @@ func TestItemsSummarizeStoreOpenFailureDoesNotLookMissing(t *testing.T) {
 		t.Fatalf("stdout = %q, must not misclassify corrupt store as missing", out.String())
 	}
 }
+
+// seedSummarizeScopeStore seeds a cohort collection plus a tagged member and an
+// outsider, so the two spellings and the non-collection arms are all reachable.
+func seedSummarizeScopeStore(t *testing.T) {
+	t.Helper()
+	isolateDemoEnv(t, "0")
+	db, err := store.OpenWithContext(context.Background(), helpersTestDefaultDBPath(t, "zotio"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	items := []json.RawMessage{
+		json.RawMessage(`{"key":"S1","version":1,"data":{"key":"S1","itemType":"journalArticle","title":"Alpha","abstractNote":"A","collections":["COLS"],"tags":[{"tag":"to-read"}]}}`),
+		json.RawMessage(`{"key":"S2","version":1,"data":{"key":"S2","itemType":"journalArticle","title":"Beta","abstractNote":"B","collections":["COLS"]}}`),
+		json.RawMessage(`{"key":"S3","version":1,"data":{"key":"S3","itemType":"journalArticle","title":"Gamma","abstractNote":"G","tags":[{"tag":"to-read"}]}}`),
+	}
+	if _, _, err := db.UpsertBatch("items", items); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close store: %v", err)
+	}
+}
+
+func runSummarize(t *testing.T, flags *rootFlags, args ...string) (string, error) {
+	t.Helper()
+	cmd := newItemsSummarizeCmd(flags)
+	cmd.SilenceErrors, cmd.SilenceUsage = true, true
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&bytes.Buffer{})
+	cmd.SetArgs(args)
+	err := cmd.Execute()
+	return out.String(), err
+}
+
+// --collection lowers to --scope collection:KEY, so both spellings must emit
+// the same bundle byte for byte. Anything less means the cohort was assembled
+// twice, and the two copies can drift.
+func TestItemsSummarizeScopeCollectionMatchesCollectionFlag(t *testing.T) {
+	seedSummarizeScopeStore(t)
+	flags := &rootFlags{asJSON: true}
+
+	viaFlag, err := runSummarize(t, flags, "--collection", "COLS", "--no-fulltext")
+	if err != nil {
+		t.Fatalf("--collection: %v", err)
+	}
+	viaScope, err := runSummarize(t, flags, "--scope", "collection:COLS", "--no-fulltext")
+	if err != nil {
+		t.Fatalf("--scope collection: %v", err)
+	}
+	if viaFlag != viaScope {
+		t.Fatalf("--collection produced\n%s\n--scope collection: produced\n%s", viaFlag, viaScope)
+	}
+
+	var bundle summarizeCollectionBundle
+	if err := json.Unmarshal([]byte(viaScope), &bundle); err != nil {
+		t.Fatalf("decode bundle %q: %v", viaScope, err)
+	}
+	if bundle.Scope != "collection:COLS" || bundle.Collection != "COLS" {
+		t.Fatalf("bundle scope/collection = %q/%q, want collection:COLS/COLS", bundle.Scope, bundle.Collection)
+	}
+	keys := make([]string, 0, len(bundle.Items))
+	for _, item := range bundle.Items {
+		keys = append(keys, item.Key)
+	}
+	if len(keys) != 2 || keys[0] != "S1" || keys[1] != "S2" {
+		t.Fatalf("bundle keys = %v, want [S1 S2] in title order", keys)
+	}
+}
+
+// A tag cohort has no collection key to report, so it is headed by the
+// expression that produced it rather than by an empty collection name.
+func TestItemsSummarizeScopeTagCohort(t *testing.T) {
+	seedSummarizeScopeStore(t)
+
+	out, err := runSummarize(t, &rootFlags{asJSON: true}, "--scope", "tag:to-read", "--no-fulltext")
+	if err != nil {
+		t.Fatalf("--scope tag: %v", err)
+	}
+	var bundle summarizeCollectionBundle
+	if err := json.Unmarshal([]byte(out), &bundle); err != nil {
+		t.Fatalf("decode bundle %q: %v", out, err)
+	}
+	if bundle.Scope != "tag:to-read" || bundle.Collection != "" {
+		t.Fatalf("bundle scope/collection = %q/%q, want tag:to-read and no collection", bundle.Scope, bundle.Collection)
+	}
+	keys := make([]string, 0, len(bundle.Items))
+	for _, item := range bundle.Items {
+		keys = append(keys, item.Key)
+	}
+	if len(keys) != 2 || keys[0] != "S1" || keys[1] != "S3" {
+		t.Fatalf("bundle keys = %v, want [S1 S3]", keys)
+	}
+
+	human, err := runSummarize(t, &rootFlags{}, "--scope", "tag:to-read", "--no-fulltext")
+	if err != nil {
+		t.Fatalf("--scope tag (human): %v", err)
+	}
+	if !strings.Contains(human, "# Scope `tag:to-read` — 2 item(s)") {
+		t.Fatalf("human heading missing the cohort expression:\n%s", human)
+	}
+}
+
+func TestItemsSummarizeScopeAndCollectionMustAgree(t *testing.T) {
+	seedSummarizeScopeStore(t)
+
+	_, err := runSummarize(t, &rootFlags{asJSON: true}, "--scope", "collection:COLS", "--collection", "OTHER")
+	if err == nil {
+		t.Fatal("disagreeing --scope/--collection was accepted")
+	}
+	if ExitCode(err) != 2 || !strings.Contains(err.Error(), "disagree") {
+		t.Fatalf("error = %v (exit %d), want a usage refusal naming the disagreement", err, ExitCode(err))
+	}
+
+	if _, err := runSummarize(t, &rootFlags{asJSON: true}, "--scope", "collection:COLS", "--collection", "COLS", "--no-fulltext"); err != nil {
+		t.Fatalf("agreeing --scope/--collection was refused: %v", err)
+	}
+}

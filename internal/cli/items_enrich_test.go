@@ -2256,3 +2256,197 @@ func TestResolveDOIViaSemanticScholar_PunctuationOnlyLocalTitleReturnsNoMatch(t 
 		t.Fatal("expected no match for punctuation-only local title via Semantic Scholar")
 	}
 }
+
+// enrichScopeParityItems seeds one collection whose members exercise a
+// different arm of every work queue, plus rows that must stay out of all of
+// them: NOTEP and ATTP carry the collection but are not top-level items, and
+// OUTP is a perfect candidate that simply is not in the collection.
+func enrichScopeParityItems() []json.RawMessage {
+	return []json.RawMessage{
+		json.RawMessage(`{"key":"PA","version":1,"data":{"key":"PA","itemType":"journalArticle","title":"Alpha","dateAdded":"2020-01-01T00:00:00Z","collections":["COLP"]}}`),
+		json.RawMessage(`{"key":"PB","version":1,"data":{"key":"PB","itemType":"journalArticle","title":"Beta","DOI":"10.1/b","dateAdded":"2020-01-02T00:00:00Z","collections":["COLP"],"creators":[{"lastName":"Doe","creatorType":"author"}],"date":"2020","publicationTitle":"J"}}`),
+		json.RawMessage(`{"key":"NOTEP","version":1,"data":{"key":"NOTEP","itemType":"note","note":"standalone","dateAdded":"2020-01-03T00:00:00Z","collections":["COLP"]}}`),
+		json.RawMessage(`{"key":"ATTP","version":1,"data":{"key":"ATTP","itemType":"attachment","linkMode":"linked_url","url":"http://x","dateAdded":"2020-01-04T00:00:00Z","collections":["COLP"]}}`),
+		json.RawMessage(`{"key":"OUTP","version":1,"data":{"key":"OUTP","itemType":"journalArticle","title":"Gamma","dateAdded":"2030-01-01T00:00:00Z"}}`),
+	}
+}
+
+func enrichQueueKeys(t *testing.T, rows []map[string]any) map[string]bool {
+	t.Helper()
+	keys := make(map[string]bool, len(rows))
+	for _, row := range rows {
+		keys[sqlStringValue(row["key"])] = true
+	}
+	return keys
+}
+
+// A cohort is a filter over the work queue, never a second definition of
+// "missing". Every category must therefore select the same keys whether the
+// collection arrives as the bespoke --collection predicate or as a resolved
+// --scope key set. missing_abstract is the arm that used to disagree: the keyed
+// chunk query omitted libraryTopLevelItemsPredicate, so a standalone note named
+// in the key set joined the queue and enrichment proposed an abstract for it.
+func TestEnrichWorkQueueScopeMatchesCollectionFlag(t *testing.T) {
+	db := seedEnrichWorkQueueStore(t, enrichScopeParityItems())
+
+	scope, err := resolveScope(db, scopeSpec{Type: "collection", Value: "COLP"})
+	if err != nil {
+		t.Fatalf("resolveScope: %v", err)
+	}
+	keyFilter := make(map[string]bool, len(scope.Keys))
+	for _, key := range scope.Keys {
+		keyFilter[key] = true
+	}
+	if len(keyFilter) == 0 {
+		t.Fatal("collection scope resolved no keys; the seed is wrong")
+	}
+
+	matched := 0
+	for _, category := range []string{"missing_doi", "missing_abstract", "missing_pdf", "missing_citation"} {
+		viaFlag, err := enrichWorkQueue(db, category, 0, "COLP")
+		if err != nil {
+			t.Fatalf("%s via --collection: %v", category, err)
+		}
+		viaScope, err := enrichWorkQueueForKeys(db, category, 0, "", keyFilter)
+		if err != nil {
+			t.Fatalf("%s via --scope: %v", category, err)
+		}
+		flagKeys, scopeKeys := enrichQueueKeys(t, viaFlag), enrichQueueKeys(t, viaScope)
+		if !reflect.DeepEqual(flagKeys, scopeKeys) {
+			t.Errorf("%s: --collection selected %v, --scope selected %v", category, flagKeys, scopeKeys)
+		}
+		if flagKeys["NOTEP"] || flagKeys["ATTP"] || scopeKeys["NOTEP"] || scopeKeys["ATTP"] {
+			t.Errorf("%s admitted a non-top-level row: --collection %v, --scope %v", category, flagKeys, scopeKeys)
+		}
+		if scopeKeys["OUTP"] {
+			t.Errorf("%s leaked the out-of-cohort item: %v", category, scopeKeys)
+		}
+		if len(flagKeys) > 0 {
+			matched++
+		}
+	}
+	if matched == 0 {
+		t.Fatal("every category selected nothing; the parity assertions proved nothing")
+	}
+}
+
+// The acceptance case at the command boundary: --scope collection:KEY must
+// target the same items as --collection KEY, asserted as set equality against
+// the cohort rather than as a non-empty result.
+func TestItemsEnrichScopeCollectionTargetsSameKeysAsCollectionFlag(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"message":{"items":[` +
+			`{"title":["Alpha"],"DOI":"10.1/alpha"},` +
+			`{"title":["Beta"],"DOI":"10.1/beta"},` +
+			`{"title":["Gamma"],"DOI":"10.1/gamma"}` +
+			`]}}`))
+	}))
+	t.Cleanup(srv.Close)
+	withBase(t, &enrichCrossRefBase, srv.URL)
+	seedEnrichWorkQueueStore(t, enrichScopeParityItems())
+
+	plannedKeys := func(t *testing.T, args ...string) map[string]bool {
+		t.Helper()
+		cmd := newItemsEnrichCmd(&rootFlags{asJSON: true})
+		cmd.SilenceErrors, cmd.SilenceUsage = true, true
+		var out bytes.Buffer
+		cmd.SetOut(&out)
+		cmd.SetErr(&bytes.Buffer{})
+		cmd.SetArgs(args)
+		if err := cmd.Execute(); err != nil {
+			t.Fatalf("enrich %v: %v", args, err)
+		}
+		var env mutation.Envelope
+		if err := json.Unmarshal(out.Bytes(), &env); err != nil {
+			t.Fatalf("decode %q: %v", out.String(), err)
+		}
+		keys := make(map[string]bool, len(env.Plan.Operations))
+		for _, op := range env.Plan.Operations {
+			keys[op.Key] = true
+		}
+		return keys
+	}
+
+	viaFlag := plannedKeys(t, "--missing-doi", "--collection", "COLP")
+	viaScope := plannedKeys(t, "--missing-doi", "--scope", "collection:COLP")
+	if !reflect.DeepEqual(viaFlag, viaScope) {
+		t.Fatalf("--collection targeted %v, --scope collection: targeted %v", viaFlag, viaScope)
+	}
+	// PA is the only cohort member missing a DOI; PB already has one and OUTP is
+	// outside the cohort, so an equality that held over the empty set would not
+	// prove anything.
+	want := map[string]bool{"PA": true}
+	if !reflect.DeepEqual(viaScope, want) {
+		t.Fatalf("scoped target set = %v, want %v", viaScope, want)
+	}
+}
+
+// --collection is sugar for --scope collection:KEY, so the two spellings may
+// appear together only when they name the same cohort. Silently preferring one
+// would enrich a set the caller never asked for.
+func TestItemsEnrichScopeAndCollectionMustAgree(t *testing.T) {
+	seedEnrichWorkQueueStore(t, enrichScopeParityItems())
+
+	run := func(args ...string) error {
+		cmd := newItemsEnrichCmd(&rootFlags{asJSON: true})
+		cmd.SilenceErrors, cmd.SilenceUsage = true, true
+		cmd.SetOut(&bytes.Buffer{})
+		cmd.SetErr(&bytes.Buffer{})
+		cmd.SetArgs(args)
+		return cmd.Execute()
+	}
+
+	err := run("--missing-doi", "--scope", "collection:COLP", "--collection", "OTHER")
+	if err == nil {
+		t.Fatal("disagreeing --scope/--collection was accepted")
+	}
+	if ExitCode(err) != 2 || !strings.Contains(err.Error(), "disagree") {
+		t.Fatalf("error = %v (exit %d), want a usage refusal naming the disagreement", err, ExitCode(err))
+	}
+
+	if err := run("--missing-doi", "--scope", "collection:COLP", "--collection", "COLP"); err != nil {
+		t.Fatalf("agreeing --scope/--collection was refused: %v", err)
+	}
+
+	err = run("--missing-doi", "--scope", "collection:COLP", "--keys", "PA")
+	if err == nil {
+		t.Fatal("--scope with --keys was accepted")
+	}
+	if ExitCode(err) != 2 || !strings.Contains(err.Error(), "--keys") {
+		t.Fatalf("error = %v (exit %d), want a usage refusal naming --keys", err, ExitCode(err))
+	}
+}
+
+// --validate consumes the same allow-set as the remediation queues, so a
+// cohort has to reach it too. The SQL LIMIT has to come off when a selection is
+// present: DOUT is the newest DOI-bearing row, so a LIMIT 1 applied before the
+// filter would validate nothing at all.
+func TestValidateEnrichItemsAppliesLimitAfterCohortFilter(t *testing.T) {
+	db := seedEnrichWorkQueueStore(t, []json.RawMessage{
+		json.RawMessage(`{"key":"DIN","version":1,"data":{"key":"DIN","itemType":"journalArticle","title":"Alpha","DOI":"10.1/alpha","dateAdded":"2020-01-01T00:00:00Z","collections":["COLD"]}}`),
+		json.RawMessage(`{"key":"DOUT","version":1,"data":{"key":"DOUT","itemType":"journalArticle","title":"Gamma","DOI":"10.1/gamma","dateAdded":"2030-01-01T00:00:00Z"}}`),
+	})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"message":{"DOI":"10.1/alpha","title":["Alpha"]}}`))
+	}))
+	t.Cleanup(srv.Close)
+	withBase(t, &enrichCrossRefBase, srv.URL)
+	withBase(t, &enrichOpenCitationsBase, srv.URL)
+
+	scope, err := resolveScope(db, scopeSpec{Type: "collection", Value: "COLD"})
+	if err != nil {
+		t.Fatalf("resolveScope: %v", err)
+	}
+	keyFilter := map[string]bool{}
+	for _, key := range scope.Keys {
+		keyFilter[key] = true
+	}
+
+	report, err := validateEnrichItems(context.Background(), db, srv.Client(), 1, "", keyFilter)
+	if err != nil {
+		t.Fatalf("validateEnrichItems: %v", err)
+	}
+	if report.Validated != 1 {
+		t.Fatalf("validated = %d, want 1 (the cohort member, not the newest library row)", report.Validated)
+	}
+}

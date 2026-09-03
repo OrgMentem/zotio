@@ -146,7 +146,7 @@ func newImportDiscoverCmd(flags *rootFlags) *cobra.Command {
 			})
 		},
 	}
-	cmd.Flags().StringVar(&flagScope, "scope", "", "Scope expression to discover from (required; e.g. collection:<key>, tag:<tag>, item:<key>, query:<text>, library)")
+	cmd.Flags().StringVar(&flagScope, "scope", scopeFlagDefaultUnset, scopeFlagUsageRequired)
 	cmd.Flags().StringVar(&flagOut, "out", "", "Path to write the reviewable import manifest")
 	cmd.Flags().IntVar(&flagLimit, "limit", 25, "Maximum manifest entries to emit")
 	cmd.Flags().IntVar(&flagMinCount, "min-count", 2, "Minimum number of source items citing a DOI")

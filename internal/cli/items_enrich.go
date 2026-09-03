@@ -110,6 +110,7 @@ func newItemsEnrichCmd(flags *rootFlags) *cobra.Command {
 		flagNoSemanticScholar bool
 		flagValidate          bool
 		flagCollection        string
+		flagScope             string
 		flagAttachMode        string
 		flagPDFDir            string
 		// Exact remediation from `library health`
@@ -122,7 +123,7 @@ func newItemsEnrichCmd(flags *rootFlags) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "enrich",
 		Short: "Fill or validate item metadata (DOI, abstract, open-access PDF attachment) from CrossRef, OpenAlex, Semantic Scholar, Unpaywall, and OpenCitations",
-		// --agent no longer implies --yes; help names --yes as the apply switch. --collection scopes enrichment queues.
+		// --agent no longer implies --yes; help names --yes as the apply switch. --scope selects the enrichment cohort.
 		Long: `Resolve missing metadata for locally synced items and apply it back to Zotero.
 
 Work queues come from the same checks as 'items audit':
@@ -146,9 +147,11 @@ retro-attachment is handled by 'zotio attachments add <item-key> <file>', which
 uploads through the Zotero Web API file-upload protocol.
 
 By default this previews the proposed changes (a patch plan) and never downloads
-PDF bytes. Pass --collection to scope the work queue to items in a single
-collection, or --keys/--keys-from to scope to exact item keys. Pass --yes to
-apply via the Zotero API; --dry-run always previews.
+PDF bytes. Pass --scope to select the cohort through the shared grammar
+(collection:KEY, tag:NAME, item:KEY, query:TEXT, saved-search:KEY); --collection
+is the older spelling of --scope collection:KEY and still works. Pass
+--keys/--keys-from to scope to exact item keys. Pass --yes to apply via the
+Zotero API; --dry-run always previews.
 Applied field changes record provenance in the item's Extra field.`,
 		Annotations: map[string]string{"mcp:read-only": "false"},
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -196,9 +199,28 @@ Applied field changes record provenance in the item's Extra field.`,
 			if strings.TrimSpace(keys) != "" && strings.TrimSpace(keysFrom) != "" {
 				return usageErr(fmt.Errorf("--keys cannot be combined with --keys-from"))
 			}
+			// --scope and --keys/--keys-from both hand the work queue an exact key
+			// set, and the grammar has no multi-key arm to reconcile them through,
+			// so there is no expression that could prove they agree.
+			if strings.TrimSpace(flagScope) != "" && (strings.TrimSpace(keys) != "" || strings.TrimSpace(keysFrom) != "") {
+				return usageErr(fmt.Errorf("--scope cannot be combined with --keys/--keys-from: both select exact item keys and the scope grammar has no multi-key arm to reconcile them; pass one of them"))
+			}
+			effectiveScope, err := reconcileScopeFlags(flagScope, scopeSugarFor("collection", "collection", flagCollection))
+			if err != nil {
+				return err
+			}
+			sel, err := resolveScopeSelection(cmd, flags, "items enrich", db, effectiveScope)
+			if err != nil {
+				return err
+			}
 			keyFilter, err := enrichKeyFilter(keys, keysFrom, cmd.InOrStdin())
 			if err != nil {
 				return err
+			}
+			// A resolved cohort enters the same allow-set --keys-from feeds, so the
+			// two spellings share one selection path instead of two.
+			if sel.restricted() {
+				keyFilter = sel.Keys
 			}
 
 			httpClient := &http.Client{Timeout: enrichTimeout(flags.timeout)}
@@ -281,7 +303,9 @@ Applied field changes record provenance in the item's Extra field.`,
 	cmd.Flags().StringVar(&flagAttachMode, "attach-mode", "linked-url", "PDF attachment handling: linked-url or linked-file; stored retro-attachment is handled by `zotio attachments add`")
 	cmd.Flags().StringVar(&flagPDFDir, "pdf-dir", "", "Directory for linked-file PDF downloads; responses must be PDF/octet-stream/unspecified Content-Type plus %PDF- magic")
 	cmd.Flags().IntVar(&flagLimit, "limit", 25, "Maximum items to process per category")
-	// Expose collection scoping for the local work queue.
+	cmd.Flags().StringVar(&flagScope, "scope", scopeFlagDefaultUnset, scopeFlagUsageDefaultLibrary)
+	// --collection predates --scope and stays supported; it lowers to
+	// --scope collection:KEY (see reconcileScopeFlags).
 	cmd.Flags().StringVar(&flagCollection, "collection", "", "Scope the work queue to items in a collection key")
 	cmd.Flags().StringVar(&keys, "keys", "", "Comma-separated exact item keys to enrich")
 	cmd.Flags().StringVar(&keysFrom, "keys-from", "", "Read exact item keys from a file or '-' for stdin, then enrich only matching queued items")
@@ -468,6 +492,13 @@ func applyEnrichQueueLimit(rows []map[string]any, limit int) []map[string]any {
 	return rows
 }
 
+// queryEnrichWorkQueueKeyChunk must select exactly what the unkeyed queue in
+// enrichWorkQueue selects, only narrowed to the given keys: a cohort passed
+// through --scope/--keys is a filter on the queue, never a second definition of
+// "missing". Both arms therefore carry libraryTopLevelItemsPredicate, the same
+// guard queryMissingDOIItems/queryMissingAbstractItems apply. Without it a
+// child attachment or a standalone note named in the key set joined the
+// missing-abstract queue, and enrichment proposed an abstract for a PDF.
 func queryEnrichWorkQueueKeyChunk(db localQueryStore, category, collection string, keys []string) ([]map[string]any, error) {
 	switch category {
 	case "missing_doi":
@@ -480,7 +511,8 @@ SELECT
 	json_extract(data, '$.data.dateAdded') AS date_added
 FROM resources
 WHERE resource_type = 'items'
-	AND json_extract(data, '$.data.itemType') IN ('journalArticle', 'conferencePaper', 'preprint')
+	AND ` + libraryTopLevelItemsPredicate + `
+	AND item_type IN ('journalArticle', 'conferencePaper', 'preprint')
 	AND (json_extract(data, '$.data.DOI') IS NULL OR TRIM(json_extract(data, '$.data.DOI')) = '')`
 		args := enrichCollectionFilterArgs(&query, "data", collection)
 		query += `
@@ -500,6 +532,7 @@ SELECT
 	json_extract(data, '$.data.dateAdded') AS date_added
 FROM resources
 WHERE resource_type = 'items'
+	AND ` + libraryTopLevelItemsPredicate + `
 	AND (json_extract(data, '$.data.abstractNote') IS NULL OR TRIM(json_extract(data, '$.data.abstractNote')) = '')`
 		args := enrichCollectionFilterArgs(&query, "data", collection)
 		query += `
@@ -565,11 +598,18 @@ func validateEnrichItems(ctx context.Context, db localQueryStore, httpClient *ht
 		Findings:       []Finding{},
 		UnverifiedDOIs: []string{},
 	}
-	rows, err := queryEnrichValidationItems(db, limit, collection)
+	// The key filter runs in Go, so a SQL LIMIT has to come off whenever a
+	// selection is present: it would spend the budget on rows the filter then
+	// drops and validate fewer items than the selection actually holds.
+	queueLimit := limit
+	if keyFilter != nil {
+		queueLimit = 0
+	}
+	rows, err := queryEnrichValidationItems(db, queueLimit, collection)
 	if err != nil {
 		return report, fmt.Errorf("querying validation work queue: %w", err)
 	}
-	rows = filterEnrichRowsByKeys(rows, keyFilter)
+	rows = applyEnrichQueueLimit(filterEnrichRowsByKeys(rows, keyFilter), limit)
 	for _, row := range rows {
 		key := sqlStringValue(row["key"])
 		raw, gerr := db.Get("items", key)

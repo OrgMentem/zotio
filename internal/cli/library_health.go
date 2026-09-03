@@ -547,7 +547,7 @@ its precondition is unmet, the command refuses loudly (exit 9) rather than passi
 	cmd.Flags().IntVar(&flagLimit, "limit", 0, "Max findings listed per kind (0 = all); also caps the live attachment scan")
 	cmd.Flags().BoolVar(&flagVerifyFiles, "verify-files", false, "Run the live broken-attachment check (needs Zotero desktop running)")
 	cmd.Flags().BoolVar(&flagCheckRetractions, "check-retractions", false, "Run the live CrossRef retraction check (network; DOI-bearing items)")
-	cmd.Flags().StringVar(&flagScope, "scope", "", "Limit to a cohort: collection:KEY | tag:NAME | item:KEY | query:TEXT | saved-search:KEY (default: whole library)")
+	cmd.Flags().StringVar(&flagScope, "scope", scopeFlagDefaultUnset, scopeFlagUsageDefaultLibrary)
 	cmd.Flags().DurationVar(&flagRequireFresh, "require-fresh", 0, "Refuse (exit 12) when the local store is staler than this (e.g. 24h); 0 = disabled")
 	cmd.Flags().BoolVar(&flagBadge, "badge", false, "Emit a shields.io endpoint JSON badge instead of the report")
 	cmd.Flags().StringVar(&flagBadgeLabel, "badge-label", "bibliography", "Label for the shields.io endpoint badge")

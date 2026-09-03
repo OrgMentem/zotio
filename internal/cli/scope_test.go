@@ -7,7 +7,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"path/filepath"
+	"strings"
 	"testing"
+
+	"github.com/spf13/cobra"
+	"github.com/spf13/pflag"
 
 	"zotio/internal/store"
 )
@@ -176,5 +180,96 @@ func TestResolveScopeQueryReturnsAllMatches(t *testing.T) {
 	}
 	if len(r.Keys) != want {
 		t.Errorf("query scope resolved %d keys, want %d (cohort must not be capped at 50)", len(r.Keys), want)
+	}
+}
+
+// walkScopeFlags collects every --scope flag registered anywhere in the command
+// tree, keyed by command path, so a new adopter is covered without being listed
+// here by hand.
+func walkScopeFlags(t *testing.T) map[string]*pflag.Flag {
+	t.Helper()
+	found := map[string]*pflag.Flag{}
+	var walk func(*cobra.Command)
+	walk = func(cmd *cobra.Command) {
+		if f := cmd.Flags().Lookup("scope"); f != nil {
+			found[cmd.CommandPath()] = f
+		}
+		for _, child := range cmd.Commands() {
+			walk(child)
+		}
+	}
+	walk(newRootCmd(&rootFlags{}))
+	if len(found) == 0 {
+		t.Fatal("no --scope flags found; the walk is wrong, not the tree")
+	}
+	return found
+}
+
+// One grammar means one help string. Four separately worded copies of this
+// flag had already drifted apart (three named `library` but not
+// `saved-search`, one the reverse, two used `collection:<key>` instead of
+// `collection:KEY`), so a reader comparing two --help outputs saw two
+// grammars. This is the gate that stops the fifth wording: a command may
+// append command-specific truth the shared string cannot carry, but it may not
+// restate the grammar in its own words.
+func TestScopeFlagUsesTheOneCanonicalHelpString(t *testing.T) {
+	for path, flag := range walkScopeFlags(t) {
+		t.Run(path, func(t *testing.T) {
+			switch {
+			case flag.Usage == scopeFlagUsage,
+				flag.Usage == scopeFlagUsageDefaultLibrary,
+				flag.Usage == scopeFlagUsageRequired:
+			case strings.HasPrefix(flag.Usage, scopeFlagUsage+" ("):
+				// A command-specific suffix is allowed; a reworded grammar is not.
+			default:
+				t.Errorf("--scope usage = %q\nwant scopeFlagUsage (scope.go), optionally with a command-specific suffix appended", flag.Usage)
+			}
+		})
+	}
+}
+
+// The two defaults are a real fork, not drift: a command that parses --scope
+// unconditionally needs a parseable expression, and a command that reconciles
+// an older selection flag against --scope needs to tell "unset" from
+// "library". Any third default would be one of those two mislabelled.
+func TestScopeFlagUsesACanonicalDefault(t *testing.T) {
+	for path, flag := range walkScopeFlags(t) {
+		t.Run(path, func(t *testing.T) {
+			if flag.DefValue != scopeFlagDefaultLibrary && flag.DefValue != scopeFlagDefaultUnset {
+				t.Errorf("--scope default = %q, want %q or %q (scope.go)", flag.DefValue, scopeFlagDefaultLibrary, scopeFlagDefaultUnset)
+			}
+			// A non-empty default has to parse: cobra hands it straight to
+			// parseScopeSpec on a run that omits the flag.
+			if flag.DefValue != "" {
+				if _, err := parseScopeSpec(flag.DefValue); err != nil {
+					t.Errorf("default %q does not parse: %v", flag.DefValue, err)
+				}
+			}
+		})
+	}
+}
+
+// Every arm the shared help string advertises must be an arm the parser
+// accepts. A string that names a scope type parseScopeSpec rejects is a
+// documented flag that cannot be used.
+func TestScopeFlagUsageNamesOnlyRealArms(t *testing.T) {
+	arms, ok := strings.CutPrefix(scopeFlagUsage, "Item cohort: ")
+	if !ok {
+		t.Fatalf("scopeFlagUsage = %q, want it to start with the cohort prefix", scopeFlagUsage)
+	}
+	seen := map[string]bool{}
+	for _, arm := range strings.Split(arms, "|") {
+		arm = strings.TrimSpace(arm)
+		spec, err := parseScopeSpec(arm)
+		if err != nil {
+			t.Errorf("advertised arm %q is rejected by parseScopeSpec: %v", arm, err)
+			continue
+		}
+		seen[spec.Type] = true
+	}
+	for _, want := range []string{"library", "collection", "tag", "item", "query", "saved-search"} {
+		if !seen[want] {
+			t.Errorf("scopeFlagUsage does not advertise the %q arm, which parseScopeSpec accepts", want)
+		}
 	}
 }

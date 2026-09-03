@@ -9,6 +9,51 @@ import (
 	"strings"
 )
 
+// --- the one --scope flag registration ---
+//
+// Eleven commands register a --scope flag against the grammar below. Before
+// this was centralized they carried four separately worded copies of the same
+// help text, and the wordings had drifted apart: three named `library` but not
+// `saved-search`, one named `saved-search` but not `library`, and two spelled
+// the same arms as `collection:<key>` rather than `collection:KEY`. A reader
+// comparing two --help outputs read them as two grammars. The text therefore
+// lives beside parseScopeSpec, which is what actually defines it, and every arm
+// named here is an arm parseScopeSpec accepts.
+//
+// Runtime preconditions are deliberately absent from this string.
+// saved-search:KEY has no local mirror, so resolveScope reports
+// live_local_api and each adopter refuses with exit 9 plus a remediation
+// envelope — louder and more precise than a caveat in a flag description. A
+// command whose limitation is permanent rather than environmental appends it
+// (see items_bibliography.go, which can never render a saved search).
+const scopeFlagUsage = "Item cohort: library | collection:KEY | tag:NAME | item:KEY | query:TEXT | saved-search:KEY"
+
+// scopeFlagUsageDefaultLibrary is for the adopters whose flag defaults to the
+// empty string. Cobra prints "(default ...)" only for a non-empty default, so
+// without this clause their help never says what omitting --scope does.
+const scopeFlagUsageDefaultLibrary = scopeFlagUsage + " (default: the whole library)"
+
+// scopeFlagUsageRequired is for `import discover`, which has no meaningful
+// library-wide run: it mines candidate DOIs out of a chosen cohort, and the
+// whole library would be neither bounded nor reviewable.
+const scopeFlagUsageRequired = scopeFlagUsage + " (required)"
+
+// Both default spellings are live and they are NOT interchangeable.
+//
+// scopeFlagDefaultLibrary is for a command that parses --scope
+// unconditionally: it needs a parseable expression, and "" would fail with
+// `unknown scope type ""`.
+//
+// scopeFlagDefaultUnset is for a command that has to tell "no cohort was
+// asked for" from "the library cohort was asked for". `items enrich` and
+// `vault sync` reconcile their older selection flags against --scope, so an
+// expression default would make `--collection KEY` alone look like a
+// disagreement and be refused.
+const (
+	scopeFlagDefaultLibrary = "library"
+	scopeFlagDefaultUnset   = ""
+)
+
 // captures one parsed item-cohort scope expression before store resolution.
 type scopeSpec struct {
 	Type  string

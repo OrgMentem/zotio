@@ -164,7 +164,11 @@ The Web API limits itemKey batches, so large scopes are fetched in stable
 			return printRawTextOutput(cmd, flags, text)
 		},
 	}
-	cmd.Flags().StringVar(&flagScope, "scope", "library", "Shared scope expression (library, collection:KEY, tag:NAME, item:KEY, query:TEXT)")
+	// A saved search is materialized by Zotero and this command renders through
+	// the Web API, so the limitation is permanent rather than environmental (see
+	// bibliographyScopeSelection). That is command-specific truth the shared
+	// string cannot carry, so it is appended rather than folded in.
+	cmd.Flags().StringVar(&flagScope, "scope", scopeFlagDefaultLibrary, scopeFlagUsage+" (saved-search is not renderable here: export goes through the Web API)")
 	cmd.Flags().StringVar(&flagStyle, "style", "", "CSL style ID for --format bib (default uses Zotero's default bibliography style)")
 	cmd.Flags().StringVar(&flagFormat, "format", "bib", "Output format: bib, csljson, bibtex, biblatex, or ris")
 

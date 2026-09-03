@@ -56,6 +56,11 @@ type summarizeBundle struct {
 }
 
 type summarizeCollectionBundle struct {
+	// Scope is the resolved cohort expression. Collection stays populated for a
+	// collection cohort under either spelling, so `--scope collection:KEY` and
+	// `--collection KEY` emit the same payload. It is omitted when the bundle was
+	// not assembled from a scope expression (collections_bundle.go).
+	Scope      string            `json:"scope,omitempty"`
 	Collection string            `json:"collection"`
 	ItemCount  int               `json:"item_count"`
 	Items      []summarizeBundle `json:"items"`
@@ -72,6 +77,7 @@ func collectionSynthesisPrompt(n int) string {
 func newItemsSummarizeCmd(flags *rootFlags) *cobra.Command {
 	var (
 		flagCollection     string
+		flagScope          string
 		flagMaxChars       int
 		flagMaxAnnotations int
 		flagNoFulltext     bool
@@ -88,7 +94,8 @@ is bad at, then hands off. Reads are local only. With --agent/--json it emits th
 structured bundle; otherwise a readable Markdown brief you can paste into any LLM.`,
 		Example: `  zotio items summarize 9UXV5R7L
   zotio items summarize 9UXV5R7L --agent --max-chars 6000
-  zotio items summarize --collection MAR7RFQN --no-fulltext`,
+  zotio items summarize --collection MAR7RFQN --no-fulltext
+  zotio items summarize --scope tag:to-read --agent`,
 		Annotations: map[string]string{"mcp:read-only": "true"},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			db, err := openStoreForRead(cmd.Context(), "zotio")
@@ -117,6 +124,17 @@ structured bundle; otherwise a readable Markdown brief you can paste into any LL
 				noFulltext:     flagNoFulltext,
 			}
 
+			effectiveScope, err := reconcileScopeFlags(flagScope, scopeSugarFor("collection", "collection", flagCollection))
+			if err != nil {
+				return err
+			}
+			if effectiveScope != "" {
+				sel, serr := resolveScopeSelection(cmd, flags, "items summarize", localQueryStore{db}, effectiveScope)
+				if serr != nil {
+					return serr
+				}
+				return runSummarizeCohort(cmd.Context(), cmd, db, sel, opts, flags)
+			}
 			if flagCollection != "" {
 				return runSummarizeCollection(cmd.Context(), cmd, db, flagCollection, opts, flags)
 			}
@@ -148,13 +166,20 @@ structured bundle; otherwise a readable Markdown brief you can paste into any LL
 			return finishItemSummary(cmd, bundle, flags)
 		},
 	}
+	// --collection predates --scope and stays supported; it lowers to
+	// --scope collection:KEY (see reconcileScopeFlags).
 	cmd.Flags().StringVar(&flagCollection, "collection", "", "Summarize every item in this collection key")
+	cmd.Flags().StringVar(&flagScope, "scope", scopeFlagDefaultUnset, scopeFlagUsageDefaultLibrary)
 	cmd.Flags().IntVar(&flagMaxChars, "max-chars", 8000, "Max characters of fulltext excerpt per item")
 	cmd.Flags().IntVar(&flagMaxAnnotations, "max-annotations", 40, "Max annotations included per item")
 	cmd.Flags().BoolVar(&flagNoFulltext, "no-fulltext", false, "Omit the fulltext excerpt (abstract + annotations only)")
 	return cmd
 }
 
+// runSummarizeCollection keeps --collection on its indexed SQL path: the
+// collection predicate is pushed into the query rather than resolved to a key
+// set first, which matters because this command already scans the attachment
+// table once for fulltext.
 func runSummarizeCollection(ctx context.Context, cmd *cobra.Command, db *store.Store, collKey string, opts summarizeOpts, flags *rootFlags) error {
 	items, err := db.QueryItemsContext(ctx, store.ItemQuery{
 		Collection: collKey,
@@ -165,7 +190,35 @@ func runSummarizeCollection(ctx context.Context, cmd *cobra.Command, db *store.S
 	if err != nil {
 		return fmt.Errorf("querying collection items: %w", err)
 	}
+	return summarizeCohort(ctx, cmd, db, scopeSelection{Expr: "collection:" + collKey, Type: "collection", Value: collKey}, items, opts, flags)
+}
 
+// runSummarizeCohort is the --scope arm. A cohort is a key set with no SQL
+// predicate behind it, so the items are read in the store's own order and then
+// narrowed. Re-deriving the ordering in Go would be a second implementation of
+// the query planner's ORDER BY, and `--scope collection:KEY` would stop matching
+// `--collection KEY` the moment either changed.
+func runSummarizeCohort(ctx context.Context, cmd *cobra.Command, db *store.Store, sel scopeSelection, opts summarizeOpts, flags *rootFlags) error {
+	items, err := db.QueryItemsContext(ctx, store.ItemQuery{
+		TopOnly:   true,
+		Sort:      "title",
+		Direction: "asc",
+	})
+	if err != nil {
+		return fmt.Errorf("querying scoped items: %w", err)
+	}
+	scoped := make([]json.RawMessage, 0, len(items))
+	for _, raw := range items {
+		if sel.allows(vaultItemMeta(raw).Key) {
+			scoped = append(scoped, raw)
+		}
+	}
+	return summarizeCohort(ctx, cmd, db, sel, scoped, opts, flags)
+}
+
+// summarizeCohort assembles the multi-item bundle for an already-selected set,
+// so both spellings produce the same payload from the same code.
+func summarizeCohort(ctx context.Context, cmd *cobra.Command, db *store.Store, sel scopeSelection, items []json.RawMessage, opts summarizeOpts, flags *rootFlags) error {
 	keys := make([]string, 0, len(items))
 	for _, raw := range items {
 		keys = append(keys, vaultItemMeta(raw).Key)
@@ -173,19 +226,22 @@ func runSummarizeCollection(ctx context.Context, cmd *cobra.Command, db *store.S
 	var warnings []string
 	annByKey, err := db.AnnotationsForItems(keys)
 	if err != nil {
-		warnings = append(warnings, fmt.Sprintf("reading annotations for collection %s: %v", collKey, err))
+		warnings = append(warnings, fmt.Sprintf("reading annotations for scope %s: %v", sel.Expr, err))
 	}
-	// Batch fulltext once (parent item key -> content) so a collection does not
+	// Batch fulltext once (parent item key -> content) so a cohort does not
 	// re-scan the attachment table per item.
 	var ftByItem map[string]string
 	if !opts.noFulltext {
 		ftByItem, err = fulltextByParentItemWithErr(ctx, db)
 		if err != nil {
-			warnings = append(warnings, fmt.Sprintf("reading fulltext for collection %s: %v", collKey, err))
+			warnings = append(warnings, fmt.Sprintf("reading fulltext for scope %s: %v", sel.Expr, err))
 		}
 	}
 
-	cb := summarizeCollectionBundle{Collection: collKey, ItemCount: len(items), Warnings: warnings}
+	cb := summarizeCollectionBundle{Scope: sel.Expr, ItemCount: len(items), Warnings: warnings}
+	if sel.Type == "collection" {
+		cb.Collection = sel.Value
+	}
 	for _, raw := range items {
 		key := vaultItemMeta(raw).Key
 		cb.Items = append(cb.Items, buildItemBundle(raw, annByKey[key], ftByItem[key], opts))
@@ -193,6 +249,7 @@ func runSummarizeCollection(ctx context.Context, cmd *cobra.Command, db *store.S
 	cb.Prompt = collectionSynthesisPrompt(len(items))
 	return finishCollectionSummary(cmd, cb, flags)
 }
+
 func finishItemSummary(cmd *cobra.Command, bundle summarizeBundle, flags *rootFlags) error {
 	if flags.asJSON {
 		data, err := json.Marshal(bundle)
@@ -535,7 +592,14 @@ func summarizeFence(s string) string {
 
 func renderCollectionMarkdown(cb summarizeCollectionBundle) string {
 	var sb strings.Builder
-	fmt.Fprintf(&sb, "# Collection `%s` — %d item(s)\n", cb.Collection, cb.ItemCount)
+	// A collection cohort keeps its "Collection <key>" heading under either
+	// spelling; a tag/query/item cohort has no collection key to print, so it is
+	// headed by the scope expression that produced it.
+	if cb.Collection != "" {
+		fmt.Fprintf(&sb, "# Collection `%s` — %d item(s)\n", cb.Collection, cb.ItemCount)
+	} else {
+		fmt.Fprintf(&sb, "# Scope `%s` — %d item(s)\n", cb.Scope, cb.ItemCount)
+	}
 	for _, item := range cb.Items {
 		sb.WriteString("\n")
 		sb.WriteString(renderBundleMarkdown(item, 2, false))

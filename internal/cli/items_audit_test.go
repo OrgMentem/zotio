@@ -14,6 +14,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/spf13/cobra"
+
 	"zotio/internal/store"
 )
 
@@ -107,11 +109,11 @@ func decodeAuditFindings(t *testing.T, raw json.RawMessage) []Finding {
 func TestItemsAuditCmd(t *testing.T) {
 	// Area 2 helper: verify selectedItemsAuditChecks default set.
 	t.Run("no_flag_default_set", func(t *testing.T) {
-		checks := selectedItemsAuditChecks(false, false, false, false, false)
+		checks := selectedItemsAuditChecks(false, false, false, false, false, scopeSelection{})
 		if len(checks) != 0 {
 			t.Fatalf("selectedItemsAuditChecks() = %v, want empty (summary mode)", checks)
 		}
-		all := selectedItemsAuditChecks(true, true, true, true, true)
+		all := selectedItemsAuditChecks(true, true, true, true, true, scopeSelection{})
 		if len(all) != 5 {
 			t.Fatalf("all checks = %d, want 5", len(all))
 		}
@@ -586,4 +588,252 @@ func TestItemsAuditCmd(t *testing.T) {
 			t.Fatalf("dirty summary missing_pdf = %d, want >0", sum.MissingPDF)
 		}
 	})
+}
+
+// scopeCohortItems is the seed the --scope adoption tests share: two items in
+// the cohort, one outside it, plus a standalone note that carries the same
+// collection. The note is the case the top-level predicate has to exclude, and
+// OUT1 is deliberately the newest row so a LIMIT applied before the cohort
+// filter would return it and hide the whole cohort.
+func scopeCohortItems() []json.RawMessage {
+	return []json.RawMessage{
+		json.RawMessage(`{"key":"IN1","version":1,"data":{"key":"IN1","itemType":"journalArticle","title":"Alpha","dateAdded":"2020-01-01T00:00:00Z","collections":["COLA"]}}`),
+		json.RawMessage(`{"key":"IN2","version":1,"data":{"key":"IN2","itemType":"journalArticle","title":"Beta","dateAdded":"2020-01-02T00:00:00Z","collections":["COLA"],"tags":[{"tag":"read"}]}}`),
+		json.RawMessage(`{"key":"OUT1","version":1,"data":{"key":"OUT1","itemType":"journalArticle","title":"Gamma","dateAdded":"2030-01-01T00:00:00Z"}}`),
+		json.RawMessage(`{"key":"NOTE1","version":1,"data":{"key":"NOTE1","itemType":"note","note":"standalone","dateAdded":"2029-01-01T00:00:00Z","collections":["COLA"]}}`),
+	}
+}
+
+func auditRowKeys(t *testing.T, rows []map[string]any) map[string]bool {
+	t.Helper()
+	keys := make(map[string]bool, len(rows))
+	for _, row := range rows {
+		keys[fmt.Sprint(row["key"])] = true
+	}
+	return keys
+}
+
+// items audit had no cohort scoping at all, so --scope has to narrow both the
+// per-check lists and the default summary. A summary that kept reporting
+// library-wide counters under --scope would be a silent lie about which items
+// were examined.
+func TestItemsAuditScopeNarrowsChecksAndSummary(t *testing.T) {
+	auditIsolateEnv(t, "")
+	auditSeedDB(t, scopeCohortItems())
+	flags := &rootFlags{asJSON: true, timeout: 2 * time.Second}
+
+	out, _, err := runItemsAudit(t, flags, "--missing-doi", "--scope", "collection:COLA")
+	if err != nil {
+		t.Fatalf("scoped audit: %v", err)
+	}
+	rows := decodeAuditSlice(t, decodeAuditMap(t, out)["missing_doi"])
+	got := auditRowKeys(t, rows)
+	if len(got) != 2 || !got["IN1"] || !got["IN2"] {
+		t.Fatalf("scoped missing_doi keys = %v, want {IN1, IN2}", got)
+	}
+
+	summaryOut, _, err := runItemsAudit(t, flags, "--scope", "collection:COLA")
+	if err != nil {
+		t.Fatalf("scoped summary: %v", err)
+	}
+	var summary itemsAuditSummary
+	if err := json.Unmarshal([]byte(summaryOut), &summary); err != nil {
+		t.Fatalf("decode scoped summary %q: %v", summaryOut, err)
+	}
+	if summary.TopLevelItems != 2 {
+		t.Fatalf("scoped top_level_items = %d, want 2 (the cohort, not the library)", summary.TopLevelItems)
+	}
+	if summary.MissingDOI != 2 {
+		t.Fatalf("scoped missing_doi = %d, want 2", summary.MissingDOI)
+	}
+	if summary.MissingTags != 1 {
+		t.Fatalf("scoped missing_tags = %d, want 1 (IN2 carries a tag)", summary.MissingTags)
+	}
+
+	unscoped, _, err := runItemsAudit(t, flags)
+	if err != nil {
+		t.Fatalf("unscoped summary: %v", err)
+	}
+	var all itemsAuditSummary
+	if err := json.Unmarshal([]byte(unscoped), &all); err != nil {
+		t.Fatalf("decode unscoped summary %q: %v", unscoped, err)
+	}
+	if all.TopLevelItems != 3 {
+		t.Fatalf("unscoped top_level_items = %d, want 3 (the note is not a top-level item)", all.TopLevelItems)
+	}
+}
+
+// The cohort filter runs after the query, so --limit has to be applied after it
+// too. OUT1 is the newest row: a SQL LIMIT 1 would spend the limit on an
+// out-of-cohort item and report an empty cohort.
+func TestItemsAuditScopeAppliesLimitAfterCohortFilter(t *testing.T) {
+	auditIsolateEnv(t, "")
+	auditSeedDB(t, scopeCohortItems())
+	flags := &rootFlags{asJSON: true, timeout: 2 * time.Second}
+
+	out, _, err := runItemsAudit(t, flags, "--missing-doi", "--scope", "collection:COLA", "--limit", "1")
+	if err != nil {
+		t.Fatalf("scoped audit with limit: %v", err)
+	}
+	rows := decodeAuditSlice(t, decodeAuditMap(t, out)["missing_doi"])
+	if len(rows) != 1 {
+		t.Fatalf("scoped rows = %d, want exactly 1", len(rows))
+	}
+	if key := fmt.Sprint(rows[0]["key"]); key != "IN1" && key != "IN2" {
+		t.Fatalf("scoped row key = %q, want a cohort member", key)
+	}
+}
+
+type scopeAdopter struct {
+	capability string
+	build      func(*rootFlags) *cobra.Command
+	args       func(scope string) []string
+}
+
+// scopeAdopters is every command this change taught the shared grammar. The
+// tests below drive all four through one expression, so a per-command
+// reimplementation of the resolver would surface as a different parse error or
+// a different refusal.
+func scopeAdopters(vault string) []scopeAdopter {
+	return []scopeAdopter{
+		{"items audit", newItemsAuditCmd, func(scope string) []string {
+			return []string{"--missing-doi", "--scope", scope}
+		}},
+		{"items enrich", newItemsEnrichCmd, func(scope string) []string {
+			return []string{"--missing-doi", "--scope", scope}
+		}},
+		{"items summarize", newItemsSummarizeCmd, func(scope string) []string {
+			return []string{"--scope", scope}
+		}},
+		{"vault sync", newVaultSyncCmd, func(scope string) []string {
+			return []string{"--out", vault, "--scope", scope}
+		}},
+	}
+}
+
+func runScopeAdopter(t *testing.T, build func(*rootFlags) *cobra.Command, flags *rootFlags, args []string) (string, error) {
+	t.Helper()
+	cmd := build(flags)
+	cmd.SilenceErrors, cmd.SilenceUsage = true, true
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&bytes.Buffer{})
+	cmd.SetArgs(args)
+	err := cmd.Execute()
+	return out.String(), err
+}
+
+// Every adopter must reject an unknown scope type with the one message
+// parseScopeSpec produces. A command that parsed the expression itself would
+// word this differently, or accept it.
+func TestScopeAdoptersShareOneGrammar(t *testing.T) {
+	auditIsolateEnv(t, "")
+	auditSeedDB(t, scopeCohortItems())
+	vault := filepath.Join(t.TempDir(), "vault")
+
+	for _, adopter := range scopeAdopters(vault) {
+		t.Run(adopter.capability, func(t *testing.T) {
+			_, err := runScopeAdopter(t, adopter.build, &rootFlags{asJSON: true, timeout: 2 * time.Second}, adopter.args("bogus:X"))
+			if err == nil {
+				t.Fatal("unknown scope type was accepted")
+			}
+			if got := ExitCode(err); got != 2 {
+				t.Fatalf("ExitCode = %d, want 2 (usage)", got)
+			}
+			if !strings.Contains(err.Error(), `unknown scope type "bogus"`) {
+				t.Fatalf("error = %q, want parseScopeSpec's message", err.Error())
+			}
+		})
+	}
+}
+
+// saved-search:KEY is evaluated by Zotero and has no local mirror, so every
+// adopter must refuse with the precondition_unmet envelope rather than treat
+// the empty local result as "no items matched".
+func TestScopeAdoptersRefuseSavedSearchWithoutLiveAPI(t *testing.T) {
+	auditIsolateEnv(t, "")
+	auditSeedDB(t, scopeCohortItems())
+	vault := filepath.Join(t.TempDir(), "vault")
+
+	for _, adopter := range scopeAdopters(vault) {
+		t.Run(adopter.capability, func(t *testing.T) {
+			out, err := runScopeAdopter(t, adopter.build, &rootFlags{asJSON: true, timeout: 2 * time.Second}, adopter.args("saved-search:SS1"))
+			if err == nil {
+				t.Fatal("saved-search scope resolved without the live local API")
+			}
+			if got := ExitCode(err); got != 9 {
+				t.Fatalf("ExitCode = %d, want 9 (precondition)", got)
+			}
+			var env preconditionUnmetEnvelope
+			if derr := json.Unmarshal([]byte(out), &env); derr != nil {
+				t.Fatalf("decode envelope %q: %v", out, derr)
+			}
+			if env.Kind != "precondition_unmet" {
+				t.Fatalf("kind = %q, want precondition_unmet", env.Kind)
+			}
+			if env.Precondition != preconditionLiveLocalAPI {
+				t.Fatalf("precondition = %q, want %s", env.Precondition, preconditionLiveLocalAPI)
+			}
+			if env.Capability != adopter.capability {
+				t.Fatalf("capability = %q, want %q", env.Capability, adopter.capability)
+			}
+			if len(env.Remediation) == 0 || !env.RetryAfterRemediation {
+				t.Fatalf("envelope = %+v, want actionable remediation", env)
+			}
+		})
+	}
+}
+
+// A cohort names items, not attachments, so --scope narrows --verify-files to
+// the PDF children of the cohort's items. Ignoring the cohort would stat every
+// attachment in the library through the live client after the operator asked
+// for one collection.
+func TestItemsAuditVerifyFilesRespectsScope(t *testing.T) {
+	missing := filepath.Join(t.TempDir(), "gone.pdf")
+	_ = os.Remove(missing)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, "file://"+missing)
+	}))
+	t.Cleanup(srv.Close)
+	auditIsolateEnv(t, srv.URL)
+	auditSeedDB(t, []json.RawMessage{
+		json.RawMessage(`{"key":"PIN","version":1,"data":{"key":"PIN","itemType":"journalArticle","title":"Alpha","dateAdded":"2020-01-01T00:00:00Z","collections":["COLA"]}}`),
+		json.RawMessage(`{"key":"POUT","version":1,"data":{"key":"POUT","itemType":"journalArticle","title":"Gamma","dateAdded":"2030-01-01T00:00:00Z"}}`),
+		json.RawMessage(`{"key":"ATIN","version":1,"data":{"key":"ATIN","itemType":"attachment","parentItem":"PIN","contentType":"application/pdf","linkMode":"imported_file","filename":"in.pdf","dateAdded":"2020-01-02T00:00:00Z"}}`),
+		json.RawMessage(`{"key":"ATOUT","version":1,"data":{"key":"ATOUT","itemType":"attachment","parentItem":"POUT","contentType":"application/pdf","linkMode":"imported_file","filename":"out.pdf","dateAdded":"2030-01-02T00:00:00Z"}}`),
+	})
+	flags := &rootFlags{asJSON: true, timeout: 2 * time.Second}
+
+	type payload struct {
+		Checked int              `json:"checked"`
+		Broken  []map[string]any `json:"broken"`
+	}
+	decode := func(t *testing.T, out string) payload {
+		t.Helper()
+		var got payload
+		if err := json.Unmarshal([]byte(out), &got); err != nil {
+			t.Fatalf("decode verify-files %q: %v", out, err)
+		}
+		return got
+	}
+
+	unscoped, _, err := runItemsAudit(t, flags, "--verify-files")
+	if err != nil {
+		t.Fatalf("unscoped verify-files: %v", err)
+	}
+	if got := decode(t, unscoped); got.Checked != 2 {
+		t.Fatalf("unscoped checked = %d, want both attachments", got.Checked)
+	}
+
+	scoped, _, err := runItemsAudit(t, flags, "--verify-files", "--scope", "collection:COLA")
+	if err != nil {
+		t.Fatalf("scoped verify-files: %v", err)
+	}
+	got := decode(t, scoped)
+	if got.Checked != 1 {
+		t.Fatalf("scoped checked = %d, want only PIN's attachment", got.Checked)
+	}
+	if len(got.Broken) != 1 || fmt.Sprint(got.Broken[0]["key"]) != "ATIN" {
+		t.Fatalf("scoped broken = %v, want ATIN only", got.Broken)
+	}
 }

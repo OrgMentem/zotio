@@ -149,7 +149,7 @@ supported.`,
 			return runErr
 		},
 	}
-	cmd.Flags().StringVar(&flagScope, "scope", "library", "Item scope: library, collection:<key>, tag:<tag>, item:<key>, or query:<text>")
+	cmd.Flags().StringVar(&flagScope, "scope", scopeFlagDefaultLibrary, scopeFlagUsage)
 	cmd.Flags().StringArrayVar(&flagMaps, "map", nil, "Tier-2 alias mapping alias=canonical; repeatable")
 	return cmd
 }

@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -604,5 +605,136 @@ func TestScanVaultIndexNonENOENTErrorSurfaces(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "reading vault dir") {
 		t.Fatalf("error should name the cause, got: %v", err)
+	}
+}
+
+// seedVaultScopeStore seeds three literature items across a collection, a tag
+// and an item type so every combination the three bespoke filters can express
+// stays reachable.
+func seedVaultScopeStore(t *testing.T) {
+	t.Helper()
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("ZOTERO_CONFIG", filepath.Join(t.TempDir(), "scope.toml"))
+	db, err := store.OpenWithContext(context.Background(), helpersTestDefaultDBPath(t, "zotio"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	items := []json.RawMessage{
+		json.RawMessage(`{"key":"V1","version":1,"data":{"key":"V1","itemType":"journalArticle","title":"Alpha","citationKey":"alpha2020","collections":["COLV"],"tags":[{"tag":"AI"}]}}`),
+		json.RawMessage(`{"key":"V2","version":1,"data":{"key":"V2","itemType":"book","title":"Beta","citationKey":"beta2021","collections":["COLV"]}}`),
+		json.RawMessage(`{"key":"V3","version":1,"data":{"key":"V3","itemType":"journalArticle","title":"Gamma","citationKey":"gamma2022","tags":[{"tag":"AI"}]}}`),
+	}
+	if _, _, err := db.UpsertBatch("items", items); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	_ = db.Close()
+}
+
+func vaultSyncNoteNames(t *testing.T, report string) map[string]bool {
+	t.Helper()
+	var decoded struct {
+		Results []vaultSyncResult `json:"results"`
+	}
+	if err := json.Unmarshal([]byte(report), &decoded); err != nil {
+		t.Fatalf("decode vault sync report %q: %v", report, err)
+	}
+	names := make(map[string]bool, len(decoded.Results))
+	for _, res := range decoded.Results {
+		names[res.File] = true
+	}
+	return names
+}
+
+// --collection lowers to --scope collection:KEY, so the preview must classify
+// exactly the same notes under either spelling.
+func TestVaultSyncScopeCollectionMatchesCollectionFlag(t *testing.T) {
+	seedVaultScopeStore(t)
+	vault := filepath.Join(t.TempDir(), "vault")
+	flags := &rootFlags{asJSON: true, maxChanges: -1}
+
+	viaFlag := vaultSyncNoteNames(t, runVaultSync(t, flags, []string{"--out", vault, "--collection", "COLV"}))
+	viaScope := vaultSyncNoteNames(t, runVaultSync(t, flags, []string{"--out", vault, "--scope", "collection:COLV"}))
+	if len(viaFlag) != 2 {
+		t.Fatalf("--collection classified %v, want the two collection members", viaFlag)
+	}
+	if !reflect.DeepEqual(viaFlag, viaScope) {
+		t.Fatalf("--collection classified %v, --scope collection: classified %v", viaFlag, viaScope)
+	}
+}
+
+// The three bespoke filters combined before --scope existed and must keep
+// combining: --scope is refused alongside them rather than replacing the
+// conjunction, so no existing script changes meaning.
+func TestVaultSyncBespokeFiltersStillCombine(t *testing.T) {
+	seedVaultScopeStore(t)
+	vault := filepath.Join(t.TempDir(), "vault")
+	flags := &rootFlags{asJSON: true, maxChanges: -1}
+
+	names := vaultSyncNoteNames(t, runVaultSync(t, flags, []string{
+		"--out", vault,
+		"--collection", "COLV",
+		"--tag", "AI",
+		"--item-type", "journalArticle",
+	}))
+	// Only V1 is in COLV and tagged AI and a journalArticle. V2 fails tag and
+	// type, V3 fails the collection.
+	if len(names) != 1 || !names["alpha2020.md"] {
+		t.Fatalf("combined filters classified %v, want only alpha2020.md", names)
+	}
+}
+
+// A single scope expression cannot express "collection AND tag AND type". The
+// refusal is explicit so the conjunction is never silently narrowed to one arm.
+func TestVaultSyncScopeRefusesUnreconcilableFilters(t *testing.T) {
+	seedVaultScopeStore(t)
+	vault := filepath.Join(t.TempDir(), "vault")
+
+	run := func(args ...string) error {
+		cmd := newVaultSyncCmd(&rootFlags{asJSON: true, maxChanges: -1})
+		cmd.SilenceErrors, cmd.SilenceUsage = true, true
+		cmd.SetOut(&bytes.Buffer{})
+		cmd.SetErr(&bytes.Buffer{})
+		cmd.SetArgs(args)
+		return cmd.Execute()
+	}
+
+	// --item-type has no arm in the grammar at all, so no expression could ever
+	// agree with it.
+	err := run("--out", vault, "--scope", "collection:COLV", "--item-type", "journalArticle")
+	if err == nil {
+		t.Fatal("--scope with --item-type was accepted")
+	}
+	if ExitCode(err) != 2 || !strings.Contains(err.Error(), "--item-type") {
+		t.Fatalf("error = %v (exit %d), want a usage refusal naming --item-type", err, ExitCode(err))
+	}
+
+	// --tag does have an arm, so this is a disagreement rather than a missing
+	// spelling, and it says so.
+	err = run("--out", vault, "--scope", "collection:COLV", "--tag", "AI")
+	if err == nil {
+		t.Fatal("--scope with a different --tag cohort was accepted")
+	}
+	if ExitCode(err) != 2 || !strings.Contains(err.Error(), "disagree") {
+		t.Fatalf("error = %v (exit %d), want a usage refusal naming the disagreement", err, ExitCode(err))
+	}
+
+	if err := run("--out", vault, "--scope", "tag:AI", "--tag", "AI"); err != nil {
+		t.Fatalf("agreeing --scope/--tag was refused: %v", err)
+	}
+}
+
+// The cohort filter runs after the query, so --limit has to be applied after it
+// as well; a SQL LIMIT would spend the budget on out-of-cohort rows.
+func TestVaultSyncScopeAppliesLimitAfterCohortFilter(t *testing.T) {
+	seedVaultScopeStore(t)
+	vault := filepath.Join(t.TempDir(), "vault")
+	flags := &rootFlags{asJSON: true, maxChanges: -1}
+
+	names := vaultSyncNoteNames(t, runVaultSync(t, flags, []string{"--out", vault, "--scope", "collection:COLV", "--limit", "1"}))
+	if len(names) != 1 {
+		t.Fatalf("limited cohort classified %v, want exactly one note", names)
+	}
+	if !names["alpha2020.md"] && !names["beta2021.md"] {
+		t.Fatalf("limited cohort classified %v, want a COLV member", names)
 	}
 }

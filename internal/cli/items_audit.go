@@ -15,6 +15,150 @@ import (
 	"zotio/internal/client"
 )
 
+// --- shared --scope adoption ---
+//
+// `items audit`, `items enrich`, `items summarize` and `vault sync` all pick an
+// item cohort out of the synced local store, so they reach the one grammar in
+// scope.go instead of each growing its own selection dialect. The flag's help
+// text and defaults live beside that grammar (scopeFlagUsage and friends in
+// scope.go); these are the resolution helpers the four share. They live here
+// because `items audit` is the read that defines the work queues, and this file
+// already hosts the selection SQL the audit/enrich pair shares
+// (enrichCollectionFilterArgs, the citation predicates, sqlStringValue).
+
+// scopeSelection is a resolved cohort in the form these commands consume: an
+// allow-set of item keys. A nil Keys map means unrestricted, which is what both
+// `--scope library` and an absent --scope produce, so an unscoped run keeps
+// taking exactly the query path it took before --scope existed.
+type scopeSelection struct {
+	Expr  string
+	Type  string
+	Value string
+	Keys  map[string]bool
+}
+
+func (s scopeSelection) restricted() bool { return s.Keys != nil }
+
+// allows reports cohort membership. A nil Keys map admits every key, so callers
+// can filter with one predicate instead of branching on restricted() first.
+func (s scopeSelection) allows(key string) bool {
+	return s.Keys == nil || s.Keys[key]
+}
+
+// queryLimit drops the SQL LIMIT for a query whose rows still have to pass the
+// cohort filter: LIMIT would cut rows before the filter runs and report fewer
+// items than the cohort actually holds.
+func (s scopeSelection) queryLimit(limit int) int {
+	if s.restricted() {
+		return 0
+	}
+	return limit
+}
+
+// resolveScopeSelection is the single adoption point for --scope across these
+// four commands. An empty expr means no --scope and yields an unrestricted
+// selection.
+//
+// saved-search:KEY carries scope.go's live_local_api precondition because a
+// saved search is evaluated by Zotero and has no local mirror. It therefore
+// refuses through the shared precondition_unmet emitter rather than operating on
+// the empty cohort resolveScope hands back.
+func resolveScopeSelection(cmd *cobra.Command, flags *rootFlags, capability string, db localQueryStore, expr string) (scopeSelection, error) {
+	expr = strings.TrimSpace(expr)
+	if expr == "" {
+		return scopeSelection{}, nil
+	}
+	spec, err := parseScopeSpec(expr)
+	if err != nil {
+		return scopeSelection{}, usageErr(err)
+	}
+	result, err := resolveScope(db, spec)
+	if err != nil {
+		return scopeSelection{}, err
+	}
+	if result.Precondition != "" {
+		out := cmd.OutOrStdout()
+		if flags != nil && flags.quiet {
+			out = nil
+		}
+		return scopeSelection{}, emitPreconditionUnmetWithRemediation(
+			out,
+			flags,
+			capability,
+			result.Precondition,
+			fmt.Sprintf("scope %q is evaluated by Zotero and has no local mirror, so it resolves no items while the desktop local API is unreachable", result.Expr),
+			remediationFor(cmd.Context(), flags, result.Precondition),
+		)
+	}
+	sel := scopeSelection{Expr: result.Expr, Type: result.Type, Value: spec.Value}
+	if !result.All {
+		sel.Keys = make(map[string]bool, len(result.Keys))
+		for _, key := range result.Keys {
+			sel.Keys[key] = true
+		}
+	}
+	return sel, nil
+}
+
+// scopeSugarFlag pairs one of a command's own cohort flags with the scope
+// expression it means. Both spellings stay supported — README.md, SKILL.md and
+// docs/ document the older one — but a run that sets both and means two
+// different cohorts is a caller bug: silently preferring either would operate on
+// a set the author never asked for.
+type scopeSugarFlag struct {
+	name string
+	set  bool
+	// expr is empty when the grammar has no arm for this flag, which makes the
+	// combination unreconcilable rather than merely disagreeing.
+	expr string
+}
+
+// scopeSugarFor lowers a bespoke cohort flag to its scope expression.
+func scopeSugarFor(name, scopeType, value string) scopeSugarFlag {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return scopeSugarFlag{name: name}
+	}
+	return scopeSugarFlag{name: name, set: true, expr: scopeType + ":" + value}
+}
+
+// reconcileScopeFlags returns the effective scope expression for a run. It is
+// empty when --scope was absent, which leaves the bespoke flags on the query
+// path they already had.
+func reconcileScopeFlags(scopeExpr string, sugar ...scopeSugarFlag) (string, error) {
+	scopeExpr = strings.TrimSpace(scopeExpr)
+	if scopeExpr == "" {
+		return "", nil
+	}
+	for _, s := range sugar {
+		if !s.set {
+			continue
+		}
+		if s.expr == "" {
+			return "", usageErr(fmt.Errorf("--%s cannot be combined with --scope: the scope grammar has no --%s arm, so the two selections cannot be reconciled; select the whole cohort with --scope, or drop --scope and keep --%s", s.name, s.name, s.name))
+		}
+		if s.expr != scopeExpr {
+			return "", usageErr(fmt.Errorf("--%s and --scope disagree: --%s selects %q while --scope selects %q; pass one of them", s.name, s.name, s.expr, scopeExpr))
+		}
+	}
+	return scopeExpr, nil
+}
+
+// scopedAuditRows runs a work-queue query and narrows it to the cohort. The
+// cohort filter runs in Go rather than as a SQL IN-list because a cohort has no
+// size ceiling while SQLite's bound-variable count does (enrichKeyChunkSize
+// exists for the same reason), so the LIMIT has to move after the filter.
+func scopedAuditRows(sel scopeSelection, limit int, query func(int) ([]map[string]any, error)) ([]map[string]any, error) {
+	rows, err := query(sel.queryLimit(limit))
+	if err != nil {
+		return nil, err
+	}
+	if !sel.restricted() {
+		return rows, nil
+	}
+	return applyEnrichQueueLimit(filterEnrichRowsByKeys(rows, sel.Keys), limit), nil
+}
+
 type itemsAuditSummary struct {
 	// TopLevelItems is the denominator every count below is measured against.
 	// Without it the counts read as fractions of an unstated whole.
@@ -39,6 +183,7 @@ func newItemsAuditCmd(flags *rootFlags) *cobra.Command {
 	var flagCitations bool
 	var flagLimit int
 	var flagVerifyFiles bool
+	var flagScope string
 
 	cmd := &cobra.Command{
 		Use:         "audit",
@@ -56,13 +201,18 @@ func newItemsAuditCmd(flags *rootFlags) *cobra.Command {
 			defer rawDB.Close()
 			db := localQueryStore{rawDB}
 
-			if flagVerifyFiles {
-				return runVerifyAttachmentFiles(cmd, db, flags, flagLimit)
+			sel, err := resolveScopeSelection(cmd, flags, "items audit", db, flagScope)
+			if err != nil {
+				return err
 			}
 
-			checks := selectedItemsAuditChecks(flagMissingPDF, flagMissingAbstract, flagMissingDOI, flagMissingTags, flagCitations)
+			if flagVerifyFiles {
+				return runVerifyAttachmentFiles(cmd, db, flags, flagLimit, sel)
+			}
+
+			checks := selectedItemsAuditChecks(flagMissingPDF, flagMissingAbstract, flagMissingDOI, flagMissingTags, flagCitations, sel)
 			if len(checks) == 0 {
-				summary, err := queryItemsAuditSummary(db)
+				summary, err := itemsAuditSummaryForScope(db, sel)
 				if err != nil {
 					return fmt.Errorf("querying item audit summary: %w", err)
 				}
@@ -118,6 +268,7 @@ func newItemsAuditCmd(flags *rootFlags) *cobra.Command {
 	cmd.Flags().BoolVar(&flagCitations, "missing-citation", false, "List citeable items missing core citation fields (creators, title, date, venue)")
 	cmd.Flags().IntVar(&flagLimit, "limit", 0, "Maximum number of items per category (0 = no limit)")
 	cmd.Flags().BoolVar(&flagVerifyFiles, "verify-files", false, "Verify each PDF attachment's file exists on disk (one local-API lookup per attachment)")
+	cmd.Flags().StringVar(&flagScope, "scope", scopeFlagDefaultUnset, scopeFlagUsageDefaultLibrary)
 
 	return cmd
 }
@@ -127,31 +278,47 @@ type itemsAuditCheck struct {
 	query func(localQueryStore, int) ([]map[string]any, error)
 }
 
-func selectedItemsAuditChecks(missingPDF, missingAbstract, missingDOI, missingTags, missingCitation bool) []itemsAuditCheck {
+// selectedItemsAuditChecks binds the requested checks to one resolved cohort.
+// The cohort is baked into each closure so every check narrows through the same
+// scopedAuditRows path and the per-check limit keeps applying to the cohort
+// rather than to the whole library.
+func selectedItemsAuditChecks(missingPDF, missingAbstract, missingDOI, missingTags, missingCitation bool, sel scopeSelection) []itemsAuditCheck {
 	checks := make([]itemsAuditCheck, 0, 5)
 	if missingPDF {
 		checks = append(checks, itemsAuditCheck{name: "missing_pdf", query: func(db localQueryStore, limit int) ([]map[string]any, error) {
-			return queryMissingPDFItems(db, "", limit, "")
+			return scopedAuditRows(sel, limit, func(queryLimit int) ([]map[string]any, error) {
+				return queryMissingPDFItems(db, "", queryLimit, "")
+			})
 		}})
 	}
 	if missingAbstract {
 		checks = append(checks, itemsAuditCheck{name: "missing_abstract", query: func(db localQueryStore, limit int) ([]map[string]any, error) {
-			return queryMissingAbstractItems(db, limit, "")
+			return scopedAuditRows(sel, limit, func(queryLimit int) ([]map[string]any, error) {
+				return queryMissingAbstractItems(db, queryLimit, "")
+			})
 		}})
 	}
 	if missingDOI {
 		checks = append(checks, itemsAuditCheck{name: "missing_doi", query: func(db localQueryStore, limit int) ([]map[string]any, error) {
-			return queryMissingDOIItems(db, limit, "")
+			return scopedAuditRows(sel, limit, func(queryLimit int) ([]map[string]any, error) {
+				return queryMissingDOIItems(db, queryLimit, "")
+			})
 		}})
 	}
 	if missingTags {
-		checks = append(checks, itemsAuditCheck{name: "missing_tags", query: queryMissingTagsItems})
+		checks = append(checks, itemsAuditCheck{name: "missing_tags", query: func(db localQueryStore, limit int) ([]map[string]any, error) {
+			return scopedAuditRows(sel, limit, func(queryLimit int) ([]map[string]any, error) {
+				return queryMissingTagsItems(db, queryLimit)
+			})
+		}})
 	}
 	// Citation-readiness check — items that cannot be cited
 	// because a core field is missing.
 	if missingCitation {
 		checks = append(checks, itemsAuditCheck{name: "missing_citation", query: func(db localQueryStore, limit int) ([]map[string]any, error) {
-			return queryCitationIncompleteItems(db, limit, "")
+			return scopedAuditRows(sel, limit, func(queryLimit int) ([]map[string]any, error) {
+				return queryCitationIncompleteItems(db, queryLimit, "")
+			})
 		}})
 	}
 	return checks
@@ -225,6 +392,45 @@ func itemsAuditFindingAction(kind string) *RecommendedAction {
 // Attachments, notes and annotations cannot carry an abstract, a DOI or tags,
 // so counting them made every denominator meaningless — a 928-item library
 // reported 4018 "missing tags", mostly PDFs.
+
+// itemsAuditSummaryForScope keeps the unscoped summary on its folded
+// single-scan aggregate below. A scoped summary cannot use it: the cohort is a
+// key set, not a SQL predicate, and an IN-list sized to an arbitrary cohort
+// would exceed SQLite's bound-variable ceiling. It counts exactly the rows the
+// list mode returns for the same cohort, so a summary counter can never
+// disagree with the list that explains it.
+func itemsAuditSummaryForScope(db localQueryStore, sel scopeSelection) (itemsAuditSummary, error) {
+	if !sel.restricted() {
+		return queryItemsAuditSummary(db)
+	}
+	topLevel, err := db.QueryRaw(`
+SELECT id AS key
+FROM resources
+WHERE resource_type = 'items'
+	AND ` + libraryTopLevelItemsPredicate)
+	if err != nil {
+		return itemsAuditSummary{}, err
+	}
+	summary := itemsAuditSummary{TopLevelItems: len(filterEnrichRowsByKeys(topLevel, sel.Keys))}
+	counters := []struct {
+		into  *int
+		query func(int) ([]map[string]any, error)
+	}{
+		{&summary.MissingPDF, func(limit int) ([]map[string]any, error) { return queryMissingPDFItems(db, "", limit, "") }},
+		{&summary.MissingAbstract, func(limit int) ([]map[string]any, error) { return queryMissingAbstractItems(db, limit, "") }},
+		{&summary.MissingDOI, func(limit int) ([]map[string]any, error) { return queryMissingDOIItems(db, limit, "") }},
+		{&summary.MissingTags, func(limit int) ([]map[string]any, error) { return queryMissingTagsItems(db, limit) }},
+		{&summary.MissingCitation, func(limit int) ([]map[string]any, error) { return queryCitationIncompleteItems(db, limit, "") }},
+	}
+	for _, counter := range counters {
+		rows, err := scopedAuditRows(sel, 0, counter.query)
+		if err != nil {
+			return itemsAuditSummary{}, err
+		}
+		*counter.into = len(rows)
+	}
+	return summary, nil
+}
 
 func queryItemsAuditSummary(db localQueryStore) (itemsAuditSummary, error) {
 	missingPDF, err := queryMissingPDFCount(db)
@@ -580,14 +786,21 @@ func citationMissingFields(r map[string]any) []string {
 
 // runVerifyAttachmentFiles checks that every PDF attachment's file is present on
 // disk, resolving each path via the local API and stat-ing it.
-func runVerifyAttachmentFiles(cmd *cobra.Command, db localQueryStore, flags *rootFlags, limit int) error {
+//
+// A cohort names items, never attachments, so --scope narrows this to the PDF
+// children of the cohort's items. Ignoring the cohort here would silently stat
+// the whole library after the operator asked for one collection.
+func runVerifyAttachmentFiles(cmd *cobra.Command, db localQueryStore, flags *rootFlags, limit int, sel scopeSelection) error {
 	c, err := flags.newClient()
 	if err != nil {
 		return err
 	}
-	attachments, err := queryPDFAttachments(db, limit)
+	attachments, err := queryPDFAttachments(db, sel.queryLimit(limit))
 	if err != nil {
 		return fmt.Errorf("querying PDF attachments: %w", err)
+	}
+	if sel.restricted() {
+		attachments = applyEnrichQueueLimit(filterAuditRowsByParent(attachments, sel), limit)
 	}
 	broken := make([]map[string]any, 0)
 	for _, a := range attachments {
@@ -678,4 +891,17 @@ WHERE resource_type = 'items'
 	AND COALESCE(json_extract(data, '$.data.linkMode'), '') IN ('imported_file', 'linked_file', 'imported_url')
 ORDER BY date_added DESC`
 	return queryItemsAuditRows(db, query, limit)
+}
+
+// filterAuditRowsByParent narrows attachment rows to the cohort that owns them.
+// filterEnrichRowsByKeys cannot serve here: it matches the row's own key, and an
+// attachment's key is never a member of an item cohort.
+func filterAuditRowsByParent(rows []map[string]any, sel scopeSelection) []map[string]any {
+	filtered := make([]map[string]any, 0, len(rows))
+	for _, row := range rows {
+		if sel.allows(sqlStringValue(row["parent"])) {
+			filtered = append(filtered, row)
+		}
+	}
+	return filtered
 }

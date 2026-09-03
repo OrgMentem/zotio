@@ -103,7 +103,7 @@ before exporting the certified corpus.`,
 			return printLibraryPrisma(cmd, report)
 		},
 	}
-	cmd.Flags().StringVar(&flagScope, "scope", "", "Limit to library, collection:<key>, tag:<name>, item:<key>, or query:<text>")
+	cmd.Flags().StringVar(&flagScope, "scope", scopeFlagDefaultUnset, scopeFlagUsageDefaultLibrary)
 	cmd.Flags().StringVar(&flagBy, "by", "all", "Duplicate detector to run (doi, title, all)")
 
 	return cmd

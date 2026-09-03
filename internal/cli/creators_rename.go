@@ -114,7 +114,7 @@ field.`,
 	}
 	cmd.Flags().StringVar(&flagFrom, "from", "", "Old creator display name")
 	cmd.Flags().StringVar(&flagTo, "to", "", "New creator display name")
-	cmd.Flags().StringVar(&flagScope, "scope", "library", "Item scope: library, collection:<key>, tag:<tag>, item:<key>, or query:<text>")
+	cmd.Flags().StringVar(&flagScope, "scope", scopeFlagDefaultLibrary, scopeFlagUsage)
 	return cmd
 }
 

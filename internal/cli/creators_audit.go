@@ -145,7 +145,7 @@ no creator ORCID field.`,
 			return printCreatorsAuditReport(cmd, report)
 		},
 	}
-	cmd.Flags().StringVar(&flagScope, "scope", "library", "Item scope: library, collection:<key>, tag:<tag>, item:<key>, or query:<text>")
+	cmd.Flags().StringVar(&flagScope, "scope", scopeFlagDefaultLibrary, scopeFlagUsage)
 	cmd.Flags().BoolVar(&flagORCID, "orcid", false, "Fetch CrossRef author ORCIDs into the local-only sidecar table; never writes ORCIDs to Zotero")
 	cmd.Flags().BoolVar(&flagIncludeAmbiguous, "include-ambiguous", false, "Include unsafe same-surname groups as review-only evidence; no rename commands are emitted")
 	cmd.AddCommand(newCreatorsAuditFixCmd(flags))

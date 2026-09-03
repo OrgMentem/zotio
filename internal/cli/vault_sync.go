@@ -97,6 +97,7 @@ func newVaultSyncCmd(flags *rootFlags) *cobra.Command {
 		flagTag        string
 		flagItemType   string
 		flagLimit      int
+		flagScope      string
 	)
 
 	cmd := &cobra.Command{
@@ -112,10 +113,17 @@ are preserved.
 
 Previews by default, showing create/update/unchanged without writing. Pass --yes
 to write; --dry-run always wins over --yes. Each note that would be created or
-updated counts as one change against --max-changes.`,
+updated counts as one change against --max-changes.
+
+--collection, --tag and --item-type combine (collection AND tag AND type).
+--scope selects one cohort through the shared grammar instead
+(collection:KEY, tag:NAME, item:KEY, query:TEXT, saved-search:KEY); the grammar
+has no conjunction, so --scope is refused alongside a filter that means a
+different cohort.`,
 		Example: `  zotio vault sync                 # uses [vault] root/notes_dir from config
   zotio vault sync --out ~/vault/refs --yes
-  zotio vault sync --out ~/vault/refs --collection ABCD1234 --dry-run`,
+  zotio vault sync --out ~/vault/refs --collection ABCD1234 --dry-run
+  zotio vault sync --out ~/vault/refs --scope query:transformer --dry-run`,
 		Annotations: map[string]string{"mcp:read-only": "false"},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			outDir := strings.TrimSpace(flagOut)
@@ -141,11 +149,26 @@ updated counts as one change against --max-changes.`,
 			}
 			flagOut = outDir
 
+			// --collection and --tag lower to scope expressions, so a run that sets
+			// both spellings must mean one cohort. --item-type has no arm in the
+			// grammar at all: a cohort cannot express "and of this type", and
+			// intersecting it with --scope here would give --scope a meaning in this
+			// one command that it has nowhere else. Refuse instead; the three
+			// filters keep combining exactly as before whenever --scope is absent.
+			effectiveScope, err := reconcileScopeFlags(flagScope,
+				scopeSugarFor("collection", "collection", flagCollection),
+				scopeSugarFor("tag", "tag", flagTag),
+				scopeSugarFlag{name: "item-type", set: strings.TrimSpace(flagItemType) != ""},
+			)
+			if err != nil {
+				return err
+			}
+
 			// .Apply is true only under --yes without --dry-run, so preview
 			// defaults to true and --dry-run always beats --yes.
 			preview := !resolveMutationMode(flags).Apply
 			run := func() error {
-				return executeVaultSync(cmd, flags, outDir, format, flagCollection, flagTag, flagItemType, flagLimit, preview)
+				return executeVaultSync(cmd, flags, outDir, format, flagCollection, flagTag, flagItemType, effectiveScope, flagLimit, preview)
 			}
 			if preview {
 				return run()
@@ -161,10 +184,14 @@ updated counts as one change against --max-changes.`,
 
 	cmd.Flags().StringVar(&flagOut, "out", "", "Vault directory (overrides [vault].root + notes_dir from config)")
 	cmd.Flags().StringVar(&flagFormat, "format", "obsidian", "Note format: obsidian or logseq")
+	// --collection and --tag predate --scope and stay supported; they lower to
+	// --scope collection:KEY / tag:NAME (see reconcileScopeFlags). --item-type has
+	// no scope spelling, so it is only usable without --scope.
 	cmd.Flags().StringVar(&flagCollection, "collection", "", "Only sync items in this collection key")
 	cmd.Flags().StringVar(&flagTag, "tag", "", "Only sync items with this tag")
 	cmd.Flags().StringVar(&flagItemType, "item-type", "", "Only sync items of this type")
 	cmd.Flags().IntVar(&flagLimit, "limit", 0, "Maximum items to sync (0 = all)")
+	cmd.Flags().StringVar(&flagScope, "scope", scopeFlagDefaultUnset, scopeFlagUsageDefaultLibrary)
 
 	return cmd
 }
@@ -185,7 +212,7 @@ func withVaultWriterLock(cmd *cobra.Command, outDir, operation string, fn func()
 // writes, no mkdir) so --max-changes can refuse an oversized run before it
 // touches the filesystem. When preview is false it then re-runs the same
 // items in apply mode, reusing the filenames the first pass already resolved.
-func executeVaultSync(cmd *cobra.Command, flags *rootFlags, outDir, format, collection, tag, itemType string, limit int, preview bool) error {
+func executeVaultSync(cmd *cobra.Command, flags *rootFlags, outDir, format, collection, tag, itemType, scopeExpr string, limit int, preview bool) error {
 	rawDB, err := openStoreForRead(cmd.Context(), "zotio")
 	if err != nil {
 		return fmt.Errorf("opening database: %w", err)
@@ -196,7 +223,12 @@ func executeVaultSync(cmd *cobra.Command, flags *rootFlags, outDir, format, coll
 	}
 	defer rawDB.Close()
 
-	items, err := rawDB.QueryItemsContext(cmd.Context(), store.ItemQuery{
+	sel, err := resolveScopeSelection(cmd, flags, "vault sync", localQueryStore{rawDB}, scopeExpr)
+	if err != nil {
+		return err
+	}
+
+	query := store.ItemQuery{
 		ItemType:   itemType,
 		Tag:        tag,
 		Collection: collection,
@@ -204,9 +236,31 @@ func executeVaultSync(cmd *cobra.Command, flags *rootFlags, outDir, format, coll
 		Sort:       "title",
 		Direction:  "asc",
 		Limit:      limit,
-	})
+	}
+	// A cohort is a key set, so it is applied after the query returns. The SQL
+	// LIMIT has to come off for that: it would cut rows before the cohort filter
+	// and sync fewer notes than the cohort holds.
+	if sel.restricted() {
+		query.Limit = 0
+	}
+	items, err := rawDB.QueryItemsContext(cmd.Context(), query)
 	if err != nil {
 		return fmt.Errorf("querying items: %w", err)
+	}
+	if sel.restricted() {
+		scoped := make([]json.RawMessage, 0, len(items))
+		for _, raw := range items {
+			if sel.allows(vaultItemMeta(raw).Key) {
+				scoped = append(scoped, raw)
+			}
+		}
+		// Cap where the SQL LIMIT used to cap: before the literature filter, so
+		// --limit keeps meaning "consider this many items", not "write this many
+		// notes".
+		if limit > 0 && len(scoped) > limit {
+			scoped = scoped[:limit]
+		}
+		items = scoped
 	}
 
 	// Select literature items first, then batch-load annotations for all of
