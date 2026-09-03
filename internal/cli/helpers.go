@@ -1560,6 +1560,15 @@ func printProvenance(cmd *cobra.Command, count int, prov DataProvenance) {
 //     json.Marshal doesn't choke on "invalid character '<'" while still
 //     passing the raw payload through to the consumer.
 func wrapWithProvenance(data json.RawMessage, prov DataProvenance) (json.RawMessage, error) {
+	return wrapWithProvenanceExtra(data, prov, nil)
+}
+
+// wrapWithProvenanceExtra wraps data in the same envelope and adds sibling
+// top-level keys. Sibling, never inside .results: extra keys exist for data
+// that is NOT what the command matched — advisory rows a caller must opt into
+// reading — so folding them into .results would break the one invariant every
+// jq pipeline depends on. "results" and "meta" are reserved and ignored here.
+func wrapWithProvenanceExtra(data json.RawMessage, prov DataProvenance, extra map[string]any) (json.RawMessage, error) {
 	meta := map[string]any{"source": prov.Source}
 	if prov.SyncedAt != nil {
 		meta["synced_at"] = prov.SyncedAt.UTC().Format(time.RFC3339)
@@ -1583,6 +1592,12 @@ func wrapWithProvenance(data json.RawMessage, prov DataProvenance) (json.RawMess
 	envelope := map[string]any{
 		"results": normalizeResultsArray(data),
 		"meta":    meta,
+	}
+	for key, value := range extra {
+		if key == "results" || key == "meta" {
+			continue
+		}
+		envelope[key] = value
 	}
 	return json.Marshal(envelope)
 }

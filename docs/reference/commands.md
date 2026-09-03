@@ -1661,7 +1661,7 @@ zotio items find --doi 10.1145/3290605.3300709
 | `--isbn` | `string` |  | Find items with this ISBN |
 | `--openalex` | `string` |  | Find items with this OpenAlex work ID or URL |
 | `--pmid` | `string` |  | Find items with this PMID in Extra |
-| `--title` | `string` |  | Find items with this exact title, ignoring case and surrounding whitespace |
+| `--title` | `string` |  | Find items with this exact title, ignoring case and surrounding whitespace; when nothing matches, near titles are reported separately |
 | `--url` | `string` |  | Find items with this normalized URL |
 
 ### `zotio items fulltext`

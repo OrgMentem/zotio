@@ -10,6 +10,9 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/spf13/cobra"
+
 	"zotio/internal/store"
 )
 
@@ -378,5 +381,233 @@ func TestItemsFindCommandLooksUpURLTitleAndOpenAlex(t *testing.T) {
 				t.Fatalf("results = %+v, want MATCH", got.Results)
 			}
 		})
+	}
+}
+
+// seedNearTitleStore builds a store whose titles exercise the three outcomes
+// the near-match block has to separate: an exact hit, a mistyped hit, and an
+// item that merely shares vocabulary.
+func seedNearTitleStore(t *testing.T) {
+	t.Helper()
+	dataHome := t.TempDir()
+	t.Setenv("XDG_DATA_HOME", dataHome)
+	db, err := store.OpenWithContext(t.Context(), filepath.Join(dataHome, "zotio", "data.db"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	if _, _, err := db.UpsertBatch("items", []json.RawMessage{
+		json.RawMessage(`{"key":"ATTN","data":{"key":"ATTN","itemType":"journalArticle","title":"Attention Is All You Need","date":"2017-06-12"}}`),
+		json.RawMessage(`{"key":"SUBT","data":{"key":"SUBT","itemType":"journalArticle","title":"Attention Is All You Need: A Transformer Study","date":"n.d."}}`),
+		json.RawMessage(`{"key":"FRST","data":{"key":"FRST","itemType":"journalArticle","title":"Random Forests","date":"2001"}}`),
+	}); err != nil {
+		t.Fatalf("seed items: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close store: %v", err)
+	}
+}
+
+func runItemsFind(t *testing.T, flags *rootFlags, args ...string) (string, string) {
+	t.Helper()
+	cmd := newItemsFindCmd(flags)
+	cmd.SetArgs(args)
+	var stdout, stderr bytes.Buffer
+	cmd.SetOut(&stdout)
+	cmd.SetErr(&stderr)
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("Execute(%v) error = %v", args, err)
+	}
+	return stdout.String(), stderr.String()
+}
+
+type findEnvelope struct {
+	Results []struct {
+		Key string `json:"key"`
+	} `json:"results"`
+	Near []nearTitleMatch `json:"near_title_matches"`
+}
+
+func decodeFindEnvelope(t *testing.T, out string) findEnvelope {
+	t.Helper()
+	var got findEnvelope
+	if err := json.Unmarshal([]byte(out), &got); err != nil {
+		t.Fatalf("decode %q: %v", out, err)
+	}
+	return got
+}
+
+func TestItemsFindReportsNearTitlesWhenExactMisses(t *testing.T) {
+	seedNearTitleStore(t)
+	stdout, _ := runItemsFind(t, &rootFlags{asJSON: true}, "--title", "Attention Is All You Nead")
+	got := decodeFindEnvelope(t, stdout)
+
+	if len(got.Results) != 0 {
+		t.Fatalf("results = %+v, want empty: a mistyped title is not an exact match", got.Results)
+	}
+	if len(got.Near) == 0 {
+		t.Fatalf("near_title_matches empty; the typo case is the reason this exists")
+	}
+	if got.Near[0].Key != "ATTN" {
+		t.Fatalf("best near match = %s, want ATTN", got.Near[0].Key)
+	}
+	if got.Near[0].Year != "2017" {
+		t.Fatalf("near match year = %q, want 2017", got.Near[0].Year)
+	}
+	if got.Near[0].Score <= 0 || got.Near[0].Score > 1 {
+		t.Fatalf("score = %v, want a reported value in (0,1]", got.Near[0].Score)
+	}
+	for _, match := range got.Near {
+		if match.Key == "FRST" {
+			t.Fatalf("unrelated item reported as a near title: %+v", got.Near)
+		}
+	}
+}
+
+// The identity contract: an exact hit must not be diluted by advisory rows, and
+// callers such as `import resolve` must keep seeing exact equality in .results.
+func TestItemsFindOmitsNearTitlesWhenExactMatches(t *testing.T) {
+	seedNearTitleStore(t)
+	stdout, _ := runItemsFind(t, &rootFlags{asJSON: true}, "--title", "attention is all you need")
+	got := decodeFindEnvelope(t, stdout)
+
+	if len(got.Results) != 1 || got.Results[0].Key != "ATTN" {
+		t.Fatalf("results = %+v, want exactly ATTN", got.Results)
+	}
+	if got.Near != nil {
+		t.Fatalf("near_title_matches = %+v, want absent when the title matched", got.Near)
+	}
+}
+
+// A lookup by identifier must never grow a title block; the near-match path is
+// keyed on --title alone.
+func TestItemsFindOmitsNearTitlesWithoutTitleQuery(t *testing.T) {
+	seedNearTitleStore(t)
+	stdout, _ := runItemsFind(t, &rootFlags{asJSON: true}, "--doi", "10.9999/absent")
+	got := decodeFindEnvelope(t, stdout)
+
+	if len(got.Results) != 0 {
+		t.Fatalf("results = %+v, want empty", got.Results)
+	}
+	if got.Near != nil {
+		t.Fatalf("near_title_matches = %+v, want absent for an identifier lookup", got.Near)
+	}
+}
+
+// --plain and --csv route through printOutputWithFlags, so the prose block must
+// not appear. A test writer cannot reach the terminal branch (a bytes.Buffer is
+// never a char device), so the mode gate itself is asserted separately below.
+func TestItemsFindNearTitlesStayOutOfMachineFormats(t *testing.T) {
+	for _, tt := range []struct {
+		name  string
+		flags *rootFlags
+	}{
+		{name: "plain", flags: &rootFlags{plain: true}},
+		{name: "csv", flags: &rootFlags{csv: true}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			seedNearTitleStore(t)
+			stdout, _ := runItemsFind(t, tt.flags, "--title", "Attention Is All You Nead")
+			if strings.Contains(stdout, "near titles") || strings.Contains(stdout, "ATTN") {
+				t.Fatalf("%s stdout carries the prose block, which corrupts what the caller parses:\n%s", tt.name, stdout)
+			}
+		})
+	}
+}
+
+func TestWantsNearTitleProseRefusesMachineAndQuietModes(t *testing.T) {
+	cases := map[string]struct {
+		flags *rootFlags
+		want  bool
+	}{
+		"default":   {flags: &rootFlags{}, want: true},
+		"nil flags": {flags: nil, want: true},
+		"plain":     {flags: &rootFlags{plain: true}, want: false},
+		"csv":       {flags: &rootFlags{csv: true}, want: false},
+		"quiet":     {flags: &rootFlags{quiet: true}, want: false},
+	}
+	for name, tc := range cases {
+		if got := wantsNearTitleProse(tc.flags); got != tc.want {
+			t.Fatalf("wantsNearTitleProse(%s) = %v, want %v", name, got, tc.want)
+		}
+	}
+}
+
+// --quiet still receives the rows in the JSON envelope: the flag trims prose,
+// it does not withhold an answer a caller asked for.
+func TestItemsFindQuietKeepsNearTitlesInTheEnvelope(t *testing.T) {
+	seedNearTitleStore(t)
+	stdout, _ := runItemsFind(t, &rootFlags{quiet: true}, "--title", "Attention Is All You Nead")
+	got := decodeFindEnvelope(t, stdout)
+	if len(got.Near) == 0 || got.Near[0].Key != "ATTN" {
+		t.Fatalf("near_title_matches = %+v, want ATTN present under --quiet", got.Near)
+	}
+}
+
+func TestPrintNearTitleMatchesNamesItsUncertainty(t *testing.T) {
+	cmd := &cobra.Command{}
+	var stdout, stderr bytes.Buffer
+	cmd.SetOut(&stdout)
+	cmd.SetErr(&stderr)
+	matches := []nearTitleMatch{
+		{Key: "ATTN", Title: "Attention Is All You Need", Score: 1, Year: "2017"},
+		{Key: "SUBT", Title: "Attention Is All You Need: A Transformer Study", Score: 0.67},
+	}
+	if err := printNearTitleMatches(cmd, "Attention Is All You Nead", matches); err != nil {
+		t.Fatalf("printNearTitleMatches: %v", err)
+	}
+	for _, want := range []string{"matched: none", "near titles", "ATTN", "2017", "1.00", "0.67"} {
+		if !strings.Contains(stdout.String(), want) {
+			t.Fatalf("stdout missing %q:\n%s", want, stdout.String())
+		}
+	}
+	if !strings.Contains(stdout.String(), "confirm before using") {
+		t.Fatalf("block does not warn that these are different titles:\n%s", stdout.String())
+	}
+	if !strings.Contains(stdout.String(), "----") {
+		t.Fatalf("a dateless item must still render a year column:\n%s", stdout.String())
+	}
+	if !strings.Contains(stderr.String(), "No item has the title") {
+		t.Fatalf("stderr does not state the exact answer:\n%s", stderr.String())
+	}
+}
+
+func TestTitleCandidatesSurviveAMistypedWord(t *testing.T) {
+	db, err := store.OpenWithContext(t.Context(), filepath.Join(t.TempDir(), "data.db"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer db.Close()
+	if _, _, err := db.UpsertBatch("items", []json.RawMessage{
+		json.RawMessage(`{"key":"ATTN","data":{"key":"ATTN","itemType":"journalArticle","title":"Attention Is All You Need"}}`),
+		json.RawMessage(`{"key":"CHLD","data":{"key":"CHLD","itemType":"attachment","parentItem":"ATTN","title":"Attention Is All You Need PDF"}}`),
+	}); err != nil {
+		t.Fatalf("seed items: %v", err)
+	}
+	// One word is wrong. Under FTS5's implicit AND this returns nothing, which
+	// is exactly the lookup the OR expression exists to keep alive.
+	rows, err := db.TitleCandidates(t.Context(), "Attention Is All You Nead", titleCandidateLimit)
+	if err != nil {
+		t.Fatalf("TitleCandidates: %v", err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("candidates = %d, want 1 top-level item (child attachments excluded)", len(rows))
+	}
+	if !strings.Contains(string(rows[0]), `"ATTN"`) {
+		t.Fatalf("candidate = %s, want ATTN", rows[0])
+	}
+}
+
+func TestTitleCandidatesRejectATokenodyTitle(t *testing.T) {
+	db, err := store.OpenWithContext(t.Context(), filepath.Join(t.TempDir(), "data.db"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer db.Close()
+	rows, err := db.TitleCandidates(t.Context(), " -- ,, ", titleCandidateLimit)
+	if err != nil {
+		t.Fatalf("TitleCandidates punctuation-only: %v", err)
+	}
+	if len(rows) != 0 {
+		t.Fatalf("candidates = %d, want none for a title with no usable term", len(rows))
 	}
 }

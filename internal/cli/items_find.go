@@ -12,6 +12,8 @@ import (
 	"strings"
 
 	"github.com/spf13/cobra"
+
+	"zotio/internal/store"
 )
 
 func newItemsFindCmd(flags *rootFlags) *cobra.Command {
@@ -53,6 +55,21 @@ func newItemsFindCmd(flags *rootFlags) *cobra.Command {
 			if err != nil {
 				return err
 			}
+			// An exact title lookup that finds nothing cannot say whether the
+			// paper is absent or the title was mistyped, and that silence is
+			// the whole failure. Near matches answer it. They are gathered
+			// only when the lookup found nothing at all, and they never enter
+			// .results: `import resolve` and every caller that treats a hit as
+			// identity must keep reading an exact-equality answer.
+			var near []nearTitleMatch
+			if normalizedQuery.Title != "" && len(rows) == 0 {
+				near, err = queryNearTitleMatches(cmd.Context(), rawDB, normalizedQuery.Title)
+				if err != nil {
+					// Advisory data. Name the failure instead of silently
+					// reverting to the empty answer this exists to explain.
+					fmt.Fprintf(cmd.ErrOrStderr(), "near-title lookup unavailable: %v\n", err)
+				}
+			}
 			// Item lookup has no live API equivalent, so it always reads the
 			// local mirror. Use the shared envelope to keep `.results` stable.
 			prov := localProvenance(rawDB, "items", "local_only")
@@ -64,7 +81,13 @@ func newItemsFindCmd(flags *rootFlags) *cobra.Command {
 				} else if flags.compact {
 					filtered = compactFields(filtered)
 				}
-				wrapped, wrapErr := wrapWithProvenance(filtered, prov)
+				// Sibling key, never inside .results: the envelope invariant
+				// is that .results holds items matched by identity.
+				var extra map[string]any
+				if len(near) > 0 {
+					extra = map[string]any{"near_title_matches": near}
+				}
+				wrapped, wrapErr := wrapWithProvenanceExtra(filtered, prov, extra)
 				if wrapErr != nil {
 					return wrapErr
 				}
@@ -82,6 +105,9 @@ func newItemsFindCmd(flags *rootFlags) *cobra.Command {
 					return nil
 				}
 			}
+			if len(near) > 0 && wantsNearTitleProse(flags) {
+				return printNearTitleMatches(cmd, normalizedQuery.Title, near)
+			}
 			return printOutputWithFlags(cmd.OutOrStdout(), data, flags)
 		},
 	}
@@ -92,9 +118,90 @@ func newItemsFindCmd(flags *rootFlags) *cobra.Command {
 	cmd.Flags().StringVar(&query.Citekey, "citekey", "", "Find items with this Better BibTeX citation key")
 	cmd.Flags().StringVar(&query.URL, "url", "", "Find items with this normalized URL")
 	cmd.Flags().StringVar(&query.OpenAlex, "openalex", "", "Find items with this OpenAlex work ID or URL")
-	cmd.Flags().StringVar(&query.Title, "title", "", "Find items with this exact title, ignoring case and surrounding whitespace")
+	cmd.Flags().StringVar(&query.Title, "title", "", "Find items with this exact title, ignoring case and surrounding whitespace; when nothing matches, near titles are reported separately")
 
 	return cmd
+}
+
+// queryNearTitleMatches gathers approximate title matches for a title that
+// matched nothing exactly. Candidate generation is the store's FTS index
+// (bm25 order); ranking is titleTokenSimilarity. Splitting it that way keeps
+// the scan in SQLite — a Go-side edit distance over every item would read the
+// whole library to answer a lookup that found nothing.
+func queryNearTitleMatches(ctx context.Context, db *store.Store, title string) ([]nearTitleMatch, error) {
+	rows, err := db.TitleCandidates(ctx, title, titleCandidateLimit)
+	if err != nil {
+		return nil, err
+	}
+	candidates := make([]titleCandidate, 0, len(rows))
+	years := make(map[string]string, len(rows))
+	for _, row := range rows {
+		var payload struct {
+			Key  string `json:"key"`
+			Data struct {
+				Key   string `json:"key"`
+				Title string `json:"title"`
+				Date  string `json:"date"`
+			} `json:"data"`
+		}
+		if json.Unmarshal(row, &payload) != nil {
+			continue
+		}
+		key := payload.Data.Key
+		if key == "" {
+			key = payload.Key
+		}
+		if key == "" || strings.TrimSpace(payload.Data.Title) == "" {
+			continue
+		}
+		candidates = append(candidates, titleCandidate{Key: key, Title: payload.Data.Title})
+		years[key] = findItemYear(payload.Data.Date)
+	}
+	matches := rankNearTitleMatches(title, candidates, nearTitleMatchLimit)
+	for i := range matches {
+		matches[i].Year = years[matches[i].Key]
+	}
+	return matches, nil
+}
+
+var findItemYearPattern = regexp.MustCompile(`\b((?:1[5-9]|20)[0-9]{2})\b`)
+
+// findItemYear pulls a four-digit year out of a Zotero date field. The field is
+// free text and holds everything from "2017" to "March 3, 2017" to "n.d.", so a
+// year is reported only when one is unambiguously present.
+func findItemYear(date string) string {
+	return findItemYearPattern.FindString(date)
+}
+
+// wantsNearTitleProse reports whether the near-match block may be written to
+// stdout as prose. --plain and --csv are machine formats with no column for a
+// score, and --quiet asked for less output; interleaving a prose block into any
+// of them corrupts what the caller is parsing. The JSON envelope carries the
+// same rows under near_title_matches, so nothing is lost in those modes.
+func wantsNearTitleProse(flags *rootFlags) bool {
+	if flags == nil {
+		return true
+	}
+	return !flags.plain && !flags.csv && !flags.quiet
+}
+
+// printNearTitleMatches renders the near-match block. It states that these are
+// NOT matches, because the reader arrived here by asking for one title and is
+// being shown different titles; a list that looks like a result set invites
+// treating the top row as the answer.
+func printNearTitleMatches(cmd *cobra.Command, title string, matches []nearTitleMatch) error {
+	out := cmd.OutOrStdout()
+	fmt.Fprintf(out, "matched: none\n\n")
+	fmt.Fprintf(out, "near titles (different titles — confirm before using):\n")
+	for _, match := range matches {
+		year := match.Year
+		if year == "" {
+			year = "----"
+		}
+		fmt.Fprintf(out, "  %.2f  %-9s %s  %s\n", match.Score, match.Key, year, match.Title)
+	}
+	fmt.Fprintf(cmd.ErrOrStderr(), "\nNo item has the title %q. Confirm one above, then look it up by key.\n", title)
+	return nil
 }
 
 type findItemsQuery struct {

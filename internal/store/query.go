@@ -13,6 +13,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"unicode"
 	"unicode/utf8"
 )
 
@@ -711,4 +712,79 @@ func (s *Store) SearchByType(query, resourceType string, limit int) ([]json.RawM
 		results = append(results, json.RawMessage(data))
 	}
 	return results, rows.Err()
+}
+
+// titleCandidateMaxTerms bounds the OR expression built from a title. A very
+// long title would otherwise produce a MATCH clause with one clause per word,
+// and past roughly two dozen terms the extra words add candidates without
+// changing which candidate ranks first.
+const titleCandidateMaxTerms = 24
+
+// TitleCandidates returns top-level items whose indexed document shares any
+// word with the supplied title, best match first.
+//
+// The terms are joined with OR, not FTS5's implicit AND, because the caller is
+// looking for a title the user may have mistyped: under AND a single wrong word
+// eliminates the very item being looked for. OR keeps recall, and bm25 (SQLite
+// exposes it as `rank`) supplies the precision by weighting rare words above
+// common ones — which is what stops a query for a short generic title from
+// ranking every item that happens to contain "the".
+//
+// This is candidate generation only. The caller re-ranks these rows by actual
+// title similarity; the document indexed here spans creators, tags and
+// identifiers as well as the title, so bm25 order alone is not title order.
+func (s *Store) TitleCandidates(ctx context.Context, title string, limit int) ([]json.RawMessage, error) {
+	match := titleCandidateMatchQuery(title)
+	if match == "" {
+		return nil, nil
+	}
+	if limit <= 0 {
+		limit = 50
+	}
+	rows, err := s.queryWithBusyRetryContext(ctx,
+		`SELECT r.data FROM resources r
+		 JOIN resources_fts f ON r.id = f.id AND r.resource_type = f.resource_type
+		 WHERE resources_fts MATCH ? AND f.resource_type = 'items'
+		 AND (r.parent_key IS NULL OR r.parent_key = '')
+		 ORDER BY rank
+		 LIMIT ?`,
+		match, limit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	results := make([]json.RawMessage, 0, limit)
+	for rows.Next() {
+		var data string
+		if err := rows.Scan(&data); err != nil {
+			return nil, err
+		}
+		results = append(results, json.RawMessage(data))
+	}
+	return results, rows.Err()
+}
+
+// titleCandidateMatchQuery turns a title into a quoted OR expression. Every
+// term is quoted so punctuation inside a title cannot become MATCH syntax.
+// Single characters are dropped: they match a large share of any library
+// through the porter tokenizer while telling nothing about which item is meant.
+func titleCandidateMatchQuery(title string) string {
+	terms := make([]string, 0, titleCandidateMaxTerms)
+	for _, field := range strings.FieldsFunc(title, func(r rune) bool {
+		return !unicode.IsLetter(r) && !unicode.IsDigit(r)
+	}) {
+		if len([]rune(field)) < 2 {
+			continue
+		}
+		terms = append(terms, quoteFTSTerm(field))
+		if len(terms) == titleCandidateMaxTerms {
+			break
+		}
+	}
+	if len(terms) == 0 {
+		return ""
+	}
+	return strings.Join(terms, " OR ")
 }
