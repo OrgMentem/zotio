@@ -164,6 +164,72 @@ func TestSearchesMaterializeEmptySearchYieldsEmptyPlan(t *testing.T) {
 	}
 }
 
+// TestSearchesMaterializeRefusesWhenTheSearchCannotBeExecuted closes the silent
+// degradation next to TestSearchesMaterializeEmptySearchYieldsEmptyPlan: a
+// plane that cannot execute the saved search used to render the SAME empty
+// preview plan at exit 0 as a search that genuinely matches nothing. An
+// operator or CI gate reading that plan concludes the collection needs no
+// items, when in fact nothing was ever evaluated.
+func TestSearchesMaterializeRefusesWhenTheSearchCannotBeExecuted(t *testing.T) {
+	tests := []struct {
+		name  string
+		setup func(t *testing.T)
+	}{
+		{
+			name: "endpoint absent on this plane",
+			setup: func(t *testing.T) {
+				srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					http.Error(w, `{"message":"No endpoint found"}`, http.StatusNotFound)
+				}))
+				t.Cleanup(srv.Close)
+				t.Setenv("ZOTERO_BASE_URL", srv.URL+"/users/0")
+				t.Setenv("ZOTERO_CONFIG", filepath.Join(t.TempDir(), "missing.toml"))
+			},
+		},
+		{
+			name: "zotero closed",
+			setup: func(t *testing.T) {
+				t.Setenv("ZOTERO_BASE_URL", "http://127.0.0.1:1/api/users/0")
+				t.Setenv("ZOTERO_CONFIG", filepath.Join(t.TempDir(), "missing.toml"))
+			},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			tc.setup(t)
+			cmd := newSearchesMaterializeCmd(&rootFlags{asJSON: true, maxChanges: -1})
+			cmd.SilenceErrors, cmd.SilenceUsage = true, true
+			var out bytes.Buffer
+			cmd.SetOut(&out)
+			cmd.SetErr(&bytes.Buffer{})
+			cmd.SetArgs([]string{"SK", "--to", "TARGET"})
+			err := cmd.Execute()
+			if err == nil {
+				t.Fatalf("searches materialize succeeded without executing the search; output %q", out.String())
+			}
+			assertPreconditionExitCode(t, err, 9)
+			var env preconditionUnmetEnvelope
+			if decodeErr := json.Unmarshal(out.Bytes(), &env); decodeErr != nil {
+				t.Fatalf("output is not a precondition_unmet envelope; decode %q: %v", out.String(), decodeErr)
+			}
+			if env.Kind != "precondition_unmet" || env.Precondition != preconditionLiveLocalAPI {
+				t.Fatalf("envelope = %+v, want precondition_unmet/live_local_api", env)
+			}
+			if env.Capability != "searches materialize" {
+				t.Fatalf("capability = %q, want searches materialize", env.Capability)
+			}
+			if len(env.Remediation) == 0 {
+				t.Fatalf("refusal carries no remediation: %+v", env)
+			}
+			// A preview plan here is the bug: it is indistinguishable from a
+			// legitimately empty saved search.
+			if strings.Contains(out.String(), `"mode":"preview"`) {
+				t.Fatalf("refusal still rendered a preview plan: %q", out.String())
+			}
+		})
+	}
+}
+
 func TestSearchesMaterializeRequiresTo(t *testing.T) {
 	newSearchesMaterializeTestServer(t, []string{"K1"}, map[string]string{"K1": "42"}, map[string][]string{
 		"K1": {"SOURCE"},

@@ -13,6 +13,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -1201,4 +1202,121 @@ func runTagCommand(t *testing.T, cmd interface {
 		names = append(names, tag.Tag)
 	}
 	return names, env.Meta
+}
+
+// localSubcollectionTree is a two-level tree plus a sibling root, so a planner
+// that ignored parentCollection would return the sibling and fail visibly.
+var localSubcollectionTree = []json.RawMessage{
+	json.RawMessage(`{"key":"ROOT","version":1,"data":{"key":"ROOT","name":"Root","parentCollection":false}}`),
+	json.RawMessage(`{"key":"KIDB","version":2,"data":{"key":"KIDB","name":"Beta","parentCollection":"ROOT"}}`),
+	json.RawMessage(`{"key":"KIDA","version":3,"data":{"key":"KIDA","name":"Alpha","parentCollection":"ROOT"}}`),
+	json.RawMessage(`{"key":"GRAND","version":4,"data":{"key":"GRAND","name":"Grandchild","parentCollection":"KIDA"}}`),
+	json.RawMessage(`{"key":"OTHER","version":5,"data":{"key":"OTHER","name":"Other root","parentCollection":false}}`),
+}
+
+func seedLocalSubcollectionTree(t *testing.T) *rootFlags {
+	t.Helper()
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("ZOTERO_CONFIG", filepath.Join(t.TempDir(), "missing.toml"))
+	t.Setenv("ZOTERO_BASE_URL", "http://127.0.0.1:1/api/users/0") // unused in local mode
+	dbPath := helpersTestDefaultDBPath(t, "zotio")
+	if err := os.MkdirAll(filepath.Dir(dbPath), 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	db, err := store.OpenWithContext(context.Background(), dbPath)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	if _, _, err := db.UpsertBatch("collections", localSubcollectionTree); err != nil {
+		t.Fatalf("seed collections: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close: %v", err)
+	}
+	return &rootFlags{dataSource: "local", noCache: true, timeout: time.Second}
+}
+
+func localSubcollectionKeys(t *testing.T, data json.RawMessage) []string {
+	t.Helper()
+	var rows []struct {
+		Key string `json:"key"`
+	}
+	if err := json.Unmarshal(data, &rows); err != nil {
+		t.Fatalf("decode subcollections %q: %v", string(data), err)
+	}
+	keys := make([]string, 0, len(rows))
+	for _, row := range rows {
+		keys = append(keys, row.Key)
+	}
+	return keys
+}
+
+// TestResolveReadLocalSubcollectionsReproducesChildScope covers the planner
+// added for /collections/{key}/collections. Before it existed, the generic
+// fallback read the trailing "collections" segment as a collection key and
+// reported the resource missing, so no recursive local collection walk was
+// possible at all.
+func TestResolveReadLocalSubcollectionsReproducesChildScope(t *testing.T) {
+	flags := seedLocalSubcollectionTree(t)
+
+	data, prov, err := resolveRead(context.Background(), nil, flags, "collections", false, "/collections/ROOT/collections", nil, nil)
+	if err != nil {
+		t.Fatalf("resolveRead subcollections: %v", err)
+	}
+	if prov.Source != "local" || prov.ResourceType != "collections" || !prov.Scoped {
+		t.Fatalf("provenance = %+v, want a scoped local collections read", prov)
+	}
+	// Ordered by name, so the walk is reproducible run to run.
+	if got := localSubcollectionKeys(t, data); !reflect.DeepEqual(got, []string{"KIDA", "KIDB"}) {
+		t.Fatalf("children of ROOT = %v, want [KIDA KIDB] ordered by name", got)
+	}
+
+	grandchildren, _, err := resolveRead(context.Background(), nil, flags, "collections", false, "/collections/KIDA/collections", nil, nil)
+	if err != nil {
+		t.Fatalf("resolveRead grandchildren: %v", err)
+	}
+	if got := localSubcollectionKeys(t, grandchildren); !reflect.DeepEqual(got, []string{"GRAND"}) {
+		t.Fatalf("children of KIDA = %v, want [GRAND]", got)
+	}
+}
+
+// A leaf collection has no children, which is a valid answer and must not be
+// confused with an unsynced mirror. The tree is seeded here, so the empty list
+// is the honest result.
+func TestResolveReadLocalSubcollectionsEmptyLeafIsNotAnError(t *testing.T) {
+	flags := seedLocalSubcollectionTree(t)
+
+	data, _, err := resolveRead(context.Background(), nil, flags, "collections", false, "/collections/GRAND/collections", nil, nil)
+	if err != nil {
+		t.Fatalf("resolveRead leaf subcollections: %v", err)
+	}
+	if got := strings.TrimSpace(string(data)); got != "[]" {
+		t.Fatalf("leaf subcollections = %q, want []", got)
+	}
+}
+
+func TestResolveReadLocalSubcollectionsPaginateAndRejectUnsupportedParams(t *testing.T) {
+	flags := seedLocalSubcollectionTree(t)
+
+	data, _, err := resolveRead(context.Background(), nil, flags, "collections", false, "/collections/ROOT/collections", map[string]string{"limit": "1"}, nil)
+	if err != nil {
+		t.Fatalf("resolveRead limit=1: %v", err)
+	}
+	if got := localSubcollectionKeys(t, data); !reflect.DeepEqual(got, []string{"KIDA"}) {
+		t.Fatalf("limit=1 children = %v, want [KIDA]", got)
+	}
+
+	data, _, err = resolveRead(context.Background(), nil, flags, "collections", false, "/collections/ROOT/collections", map[string]string{"start": "1"}, nil)
+	if err != nil {
+		t.Fatalf("resolveRead start=1: %v", err)
+	}
+	if got := localSubcollectionKeys(t, data); !reflect.DeepEqual(got, []string{"KIDB"}) {
+		t.Fatalf("start=1 children = %v, want [KIDB]", got)
+	}
+
+	// An unreproducible filter must fail loudly rather than return the full
+	// child list as if the filter had been applied.
+	if _, _, err := resolveRead(context.Background(), nil, flags, "collections", false, "/collections/ROOT/collections", map[string]string{"since": "40"}, nil); err == nil {
+		t.Fatal("resolveRead with ?since returned no error; an unapplied filter must refuse")
+	}
 }

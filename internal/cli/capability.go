@@ -84,13 +84,56 @@ var connectorTemplateCreateCapability = capabilityEntry{
 // key resolves to a real runnable command so the table never goes stale.
 var capabilityOverrides = map[string]capabilityEntry{
 	// Reads that need the live Zotero desktop / local API.
-	"searches run":   {Requires: []string{preconditionLiveLocalAPI}},
-	"items file":     {Requires: []string{preconditionLiveLocalAPI}},
-	"items fulltext": {Requires: []string{preconditionLiveLocalAPI}},
+	//
+	// `searches run` executes a saved search. Sync mirrors saved-search
+	// definitions but never their result membership, and evaluating the
+	// condition set is Zotero's job (ADR-0002 defers local evaluation), so the
+	// read has exactly one plane.
+	"searches run": {Requires: []string{preconditionLiveLocalAPI}},
+	// `items file` resolves /items/{key}/file/view/url, a local-API-only
+	// endpoint the Web API does not serve.
+	"items file": {Requires: []string{preconditionLiveLocalAPI}},
+	// `collections export` renders bibtex/ris/csljson through Zotero's export
+	// translators, so its default invocation is live-only — but --format json
+	// enumerates the same subtree from the mirror. The top-level requires
+	// describes the default (rendered) route; the json route carries the
+	// offline truth. Enforcement is in the command, not at preflight, because
+	// preflight cannot see --format: see the zotio:preflight annotation in
+	// collections_export.go.
+	"collections export": {
+		Requires: []string{preconditionLiveLocalAPI},
+		Routes: []capabilityRoute{
+			{Via: "default", Requires: []string{preconditionLiveLocalAPI}},
+			{Via: "json", Requires: []string{preconditionSyncedStore}},
+		},
+	},
+	// `items fulltext` is local-first: it serves synced PDF text from the
+	// mirror and only reaches the live API when the mirror lacks it, or when
+	// --refresh forces it. Neither precondition is unconditional, so the
+	// top-level requires stays empty: declaring either one would make
+	// preflight refuse an invocation the other route can serve. The routes
+	// carry the per-plane truth, and data_sources still reports local+live.
+	"items fulltext": {
+		Routes: []capabilityRoute{
+			{Via: "default"},
+			{Via: "local", Requires: []string{preconditionSyncedStore}},
+			{Via: "refresh", Requires: []string{preconditionLiveLocalAPI}},
+		},
+	},
 	// Reads backed by the synced local store.
-	"library health":         {Requires: []string{preconditionSyncedStore}},
-	"library stats":          {Requires: []string{preconditionSyncedStore}},
-	"items audit":            {Requires: []string{preconditionSyncedStore}},
+	"library health": {Requires: []string{preconditionSyncedStore}},
+	"library stats":  {Requires: []string{preconditionSyncedStore}},
+	// `items audit` reads the store on every route, and --verify-files
+	// additionally resolves each attachment's path through the local API
+	// (runVerifyAttachmentFiles -> attachmentFileStatus), so that route needs
+	// Zotero running as well.
+	"items audit": {
+		Requires: []string{preconditionSyncedStore},
+		Routes: []capabilityRoute{
+			{Via: "default", Requires: []string{preconditionSyncedStore}},
+			{Via: "verify-files", Requires: []string{preconditionSyncedStore, preconditionLiveLocalAPI}},
+		},
+	},
 	"items missing-pdf":      {Requires: []string{preconditionSyncedStore}},
 	"items duplicates":       {Requires: []string{preconditionSyncedStore}},
 	"library prisma":         {Requires: []string{preconditionSyncedStore}},
@@ -127,17 +170,21 @@ var capabilityOverrides = map[string]capabilityEntry{
 	"reading-list add":         {Operation: "write", WriteTarget: "web_api", Requires: []string{preconditionWebAPIKey}},
 	"reading-list start":       {Operation: "write", WriteTarget: "web_api", Requires: []string{preconditionWebAPIKey}},
 	"reading-list done":        {Operation: "write", WriteTarget: "web_api", Requires: []string{preconditionWebAPIKey}},
-	"searches materialize":     {Operation: "write", WriteTarget: "web_api", Requires: []string{preconditionWebAPIKey}},
-	"import doi":               connectorCreateCapability,
-	"import url":               connectorCreateCapability,
-	"import file":              connectorCreateCapability,
-	"import pmid":              connectorCreateCapability,
-	"import arxiv":             connectorCreateCapability,
-	"import isbn":              connectorCreateCapability,
-	"import discover":          {Operation: "read", Requires: []string{preconditionSyncedStore}},
-	"import pdf":               {Operation: "write", WriteTarget: "desktop_connector", Requires: []string{preconditionDesktopConnector}},
-	"import targets":           {Operation: "read", Requires: []string{preconditionDesktopConnector}},
-	"import translators":       {Operation: "read", Requires: []string{preconditionDesktopConnector}},
+	// searches materialize writes through the Web API, but it first has to READ
+	// the saved search's membership from /searches/{key}/items, which only
+	// Zotero can evaluate. Without that read there is no plan to preview, so
+	// the live precondition is declared and enforced even for --dry-run.
+	"searches materialize": {Operation: "write", WriteTarget: "web_api", Requires: []string{preconditionLiveLocalAPI, preconditionWebAPIKey}},
+	"import doi":           connectorCreateCapability,
+	"import url":           connectorCreateCapability,
+	"import file":          connectorCreateCapability,
+	"import pmid":          connectorCreateCapability,
+	"import arxiv":         connectorCreateCapability,
+	"import isbn":          connectorCreateCapability,
+	"import discover":      {Operation: "read", Requires: []string{preconditionSyncedStore}},
+	"import pdf":           {Operation: "write", WriteTarget: "desktop_connector", Requires: []string{preconditionDesktopConnector}},
+	"import targets":       {Operation: "read", Requires: []string{preconditionDesktopConnector}},
+	"import translators":   {Operation: "read", Requires: []string{preconditionDesktopConnector}},
 	// items new fetches /items/new from the Web API before either create route.
 	"items new":                connectorTemplateCreateCapability,
 	"items preprint-check fix": {Operation: "write", WriteTarget: "web_api", Requires: []string{preconditionWebAPIKey}},
@@ -274,9 +321,15 @@ func buildCapabilityRegistry(rootCmd *cobra.Command) []capabilityEntry {
 }
 
 // annotateCapabilityRouteFlags makes route selectors available to the MCP
-// facade only on commands whose capability metadata declares multiple routes.
-// The MCP walker still validates each named inherited flag against its compiled
-// unsafe list.
+// facade only on commands whose capability metadata declares multiple WRITE
+// routes. The MCP walker still validates each named inherited flag against its
+// compiled unsafe list.
+//
+// The write-target test matters: `via` and `connector-target` select a write
+// plane. A read command whose routes describe data planes instead (e.g.
+// `collections export`'s rendered vs. mirror route) has no such flags, and
+// advertising them would put selectors on the MCP surface that the command
+// cannot honor.
 func annotateCapabilityRouteFlags(rootCmd *cobra.Command) {
 	if rootCmd == nil {
 		return
@@ -285,7 +338,7 @@ func annotateCapabilityRouteFlags(rootCmd *cobra.Command) {
 	walk = func(parent *cobra.Command) {
 		for _, cmd := range parent.Commands() {
 			path := strings.TrimPrefix(cmd.CommandPath(), rootCmd.Name()+" ")
-			if entry, ok := capabilityOverrides[path]; ok && len(entry.Routes) > 1 {
+			if entry, ok := capabilityOverrides[path]; ok && len(entry.Routes) > 1 && entry.WriteTarget != "" {
 				if cmd.Annotations == nil {
 					cmd.Annotations = make(map[string]string)
 				}

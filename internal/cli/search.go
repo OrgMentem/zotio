@@ -160,14 +160,24 @@ Use --fulltext to search synced PDF text and resolve hits to parent items.`,
 				if limit > 0 {
 					params["limit"] = fmt.Sprintf("%d", limit)
 				}
-				data, getErr := c.Get("/items", params)
+				// The live attempt goes through resolveRead so this read reports
+				// the same provenance envelope (source plus --require-fresh
+				// metadata) as every other list read.
+				//
+				// It is pinned to "live" rather than passing auto through:
+				// resolveRead's own auto fallback is the item query planner,
+				// which searches items only, while this command's fallback below
+				// is cross-resource FTS. Letting auto fall back inside resolveRead
+				// would silently narrow `search` to items on the exact invocation
+				// where the user cannot see the API is gone.
+				liveFlags := *flags
+				liveFlags.dataSource = "live"
+				data, prov, getErr := resolveRead(cmd.Context(), c, &liveFlags, "items", true, "/items", params, nil)
 				if getErr == nil {
-					// Live search succeeded.
 					results, err := extractSearchResults(data)
 					if err != nil {
 						return fmt.Errorf("decoding live search response: %w", err)
 					}
-					prov := DataProvenance{Source: "live"}
 					return outputSearchResults(cmd, flags, results, limit, prov)
 				}
 				// Check if it's a network error for auto-mode fallback
@@ -222,11 +232,22 @@ Use --fulltext to search synced PDF text and resolve hits to parent items.`,
 			if flags.dataSource == "auto" && !fulltextOnly {
 				reason = "api_unreachable"
 			}
+			// The provenance resource names the mirror that answered, so
+			// meta.synced_at reports the freshness of the data actually
+			// searched. Cross-resource FTS has no single sync checkpoint and
+			// keeps the index's own name.
 			provenanceResource := "search"
-			if fulltextOnly {
+			switch {
+			case fulltextOnly:
 				provenanceResource = "fulltext"
+			case resourceType != "":
+				provenanceResource = resourceType
 			}
-			prov := localProvenance(db, provenanceResource, reason)
+			prov := attachFreshness(localProvenance(db, provenanceResource, reason), flags)
+			// FTS applies the request's query, type filter, and limit, so this
+			// is a planner-served read rather than the generic dump the Scoped
+			// flag exists to distinguish (ADR-0002).
+			prov.Scoped = true
 
 			return outputSearchResults(cmd, flags, results, limit, prov)
 		},

@@ -5,14 +5,43 @@ package cli
 import (
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"net/url"
 	"strconv"
+	"strings"
 
 	"zotio/internal/client"
 	"zotio/internal/mutation"
 
 	"github.com/spf13/cobra"
 )
+
+// zoteroResultIsEmpty reports whether a saved-search result page carries no
+// items. It is a pagination terminator, not an availability check: an
+// unreachable plane is refused as a precondition before this runs.
+func zoteroResultIsEmpty(data json.RawMessage) bool {
+	if len(strings.TrimSpace(string(data))) == 0 {
+		return true
+	}
+	var items []json.RawMessage
+	if err := json.Unmarshal(data, &items); err == nil {
+		return len(items) == 0
+	}
+	var obj map[string]json.RawMessage
+	if err := json.Unmarshal(data, &obj); err != nil {
+		return false
+	}
+	for _, key := range []string{"data", "items", "results"} {
+		raw, ok := obj[key]
+		if !ok {
+			continue
+		}
+		if json.Unmarshal(raw, &items) == nil {
+			return len(items) == 0
+		}
+	}
+	return false
+}
 
 func newSearchesMaterializeCmd(flags *rootFlags) *cobra.Command {
 	var toCollection string
@@ -55,6 +84,10 @@ func runSearchesMaterializeMutation(cmd *cobra.Command, flags *rootFlags, search
 	// paginates with limit/start (default ~25, max zoteroPageMax=100), so a
 	// single unpaginated fetch silently truncates any search larger than one
 	// page. Accumulate every page before building the mutation plan.
+	//
+	// Result membership is not mirrored (sync stores saved-search definitions
+	// only), so this read has one plane: Zotero desktop's local API. There is
+	// no resolveRead dispatch to make here, and no local fallback to offer.
 	var allKeys []string
 	seen := make(map[string]bool, zoteroPageMax)
 	for start := 0; ; start += zoteroPageMax {
@@ -64,8 +97,14 @@ func runSearchesMaterializeMutation(cmd *cobra.Command, flags *rootFlags, search
 		}
 		data, err := c.Get(searchPath, params)
 		if err != nil {
-			if start == 0 {
-				return renderEmptySearchesMaterializePlan(cmd, flags, fmt.Sprintf("saved search items unavailable: %v", err))
+			// A plane that cannot execute the search is a precondition, not an
+			// empty plan. Rendering an empty plan here made "Zotero is closed"
+			// look exactly like "the search matches nothing", and the operator
+			// would conclude the collection needed no items.
+			if start == 0 && (isNetworkError(err) || isAPIStatus(err, http.StatusNotFound)) {
+				return emitPreconditionUnmetWithRemediation(cmd.OutOrStdout(), flags, "searches materialize", preconditionLiveLocalAPI,
+					fmt.Sprintf("saved search %s could not be executed, so no membership is known to materialize: %v", searchKey, err),
+					remediationFor(cmd.Context(), flags, preconditionLiveLocalAPI))
 			}
 			return fmt.Errorf("fetching saved search %s items at start %d: %w", searchKey, start, err)
 		}

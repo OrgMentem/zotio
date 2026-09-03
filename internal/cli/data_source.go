@@ -272,6 +272,15 @@ func resolveLocal(ctx context.Context, resourceType string, isList bool, path st
 		tagProv.Scoped = true
 		return data, tagProv, nil
 	}
+
+	if data, handled, qErr := resolveLocalCollectionChildren(ctx, db, path, params); handled {
+		if qErr != nil {
+			return nil, DataProvenance{}, qErr
+		}
+		childProv := localProvenance(db, "collections", reason)
+		childProv.Scoped = true
+		return data, childProv, nil
+	}
 	// An item-list path can intentionally fall through when its scope cannot
 	// be reproduced. Preserve its list classification for the generic dump:
 	// collection-items commands otherwise look like keyed collection reads.
@@ -525,6 +534,80 @@ func resolveLocalTagGet(ctx context.Context, db *store.Store, path string) (json
 		return nil, true, fmt.Errorf("marshaling local tags: %w", err)
 	}
 	return data, true, nil
+}
+
+// resolveLocalCollectionChildren reproduces /collections/{key}/collections, the
+// subcollection list a recursive collection walk depends on. Without it the
+// generic fallback reads the trailing "collections" segment as a collection key
+// and reports the resource missing, so an offline `collections export` could
+// never descend past the root collection.
+//
+// Child rows are ordered by name then key, matching mcp_graph.go's collection
+// tree so both surfaces present one subcollection order.
+func resolveLocalCollectionChildren(ctx context.Context, db *store.Store, path string, params map[string]string) (json.RawMessage, bool, error) {
+	parentKey, isList, err := parseCollectionChildrenPath(path)
+	if err != nil {
+		return nil, true, err
+	}
+	if !isList {
+		return nil, false, nil
+	}
+	for key, value := range params {
+		if value != "" && !reproducibleLocalParams[key] {
+			return nil, true, fmt.Errorf("unsupported local subcollection parameter %q", key)
+		}
+	}
+	if _, _, err := parseLocalPagination(params); err != nil {
+		return nil, true, err
+	}
+	qs := localQueryStore{db}
+	rows, err := qs.QueryRawContext(ctx, `
+SELECT data, json_extract(data,'$.data.name') AS name
+FROM resources
+WHERE resource_type='collections' AND json_extract(data,'$.data.parentCollection')=?
+ORDER BY name, id`, parentKey)
+	if err != nil {
+		return nil, true, fmt.Errorf("local subcollection query: %w", err)
+	}
+	children := make([]json.RawMessage, 0, len(rows))
+	for _, row := range rows {
+		if raw := sqlStringValue(row["data"]); raw != "" {
+			children = append(children, json.RawMessage(raw))
+		}
+	}
+	if len(children) == 0 {
+		// A collection with no children is a valid answer, but an unsynced
+		// mirror is not: both look like zero rows, so the sync checkpoint
+		// decides which one this is.
+		if err := requireLocalResourceHydrated(db, "collections"); err != nil {
+			return nil, true, err
+		}
+		return json.RawMessage("[]"), true, nil
+	}
+	children = paginateLocalRows(children, params)
+	if len(children) == 0 {
+		return json.RawMessage("[]"), true, nil
+	}
+	data, err := json.Marshal(children)
+	if err != nil {
+		return nil, true, fmt.Errorf("marshaling local subcollections: %w", err)
+	}
+	return data, true, nil
+}
+
+func parseCollectionChildrenPath(path string) (parentKey string, isList bool, err error) {
+	segs := strings.Split(strings.Trim(path, "/"), "/")
+	if len(segs) != 3 || segs[0] != "collections" || segs[2] != "collections" {
+		return "", false, nil
+	}
+	key, unescapeErr := url.PathUnescape(segs[1])
+	if unescapeErr != nil {
+		return "", true, fmt.Errorf("unescaping local collection key %q: %w", segs[1], unescapeErr)
+	}
+	if key == "" {
+		return "", true, fmt.Errorf("local collection key cannot be empty")
+	}
+	return key, true, nil
 }
 
 func requireLocalResourceHydrated(db *store.Store, resourceType string) error {

@@ -348,3 +348,66 @@ func TestSearchCommandFulltextRejectsLiveAndTypeModes(t *testing.T) {
 		})
 	}
 }
+
+// TestSearchCommandLocalProvenanceMatchesListCommands pins the envelope the
+// unified read path now emits. `search` used to build its own provenance by
+// hand, so it reported neither the scoped flag every other planner-served
+// local read sets nor the freshness metadata resolveRead attaches — an agent
+// could not tell a reproduced local read from a best-effort dump.
+func TestSearchCommandLocalProvenanceMatchesListCommands(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "search.db")
+	db, err := store.OpenWithContext(context.Background(), dbPath)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	if err := db.Upsert("papers", "local-1", json.RawMessage(`{"id":"local-1","title":"Local Paper","abstract":"contains provenanceneedle"}`)); err != nil {
+		t.Fatalf("upsert search fixture: %v", err)
+	}
+	if err := db.SaveSyncState("papers", "", 1); err != nil {
+		t.Fatalf("save sync state: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close store: %v", err)
+	}
+
+	t.Setenv("ZOTERO_BASE_URL", "http://127.0.0.1:1/api/users/0")
+	t.Setenv("ZOTERO_CONFIG", filepath.Join(t.TempDir(), "missing.toml"))
+	cmd := newSearchCmd(&rootFlags{asJSON: true, dataSource: "local", noCache: true, timeout: time.Second})
+	cmd.SetArgs([]string{"provenanceneedle", "--type", "papers", "--db", dbPath})
+	var stdout bytes.Buffer
+	cmd.SetOut(&stdout)
+	cmd.SetErr(&bytes.Buffer{})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+
+	var got struct {
+		Results []json.RawMessage `json:"results"`
+		Meta    struct {
+			Source       string `json:"source"`
+			Reason       string `json:"reason"`
+			ResourceType string `json:"resource_type"`
+			SyncedAt     string `json:"synced_at"`
+			Scoped       bool   `json:"scoped"`
+		} `json:"meta"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &got); err != nil {
+		t.Fatalf("unmarshal output %q: %v", stdout.String(), err)
+	}
+	if len(got.Results) != 1 {
+		t.Fatalf("results = %d, want the seeded match; output %s", len(got.Results), stdout.String())
+	}
+	if got.Meta.Source != "local" || got.Meta.Reason != "user_requested" {
+		t.Fatalf("meta = %+v, want a user-requested local read", got.Meta)
+	}
+	// The query and type filter were applied, so this is a reproduced scope,
+	// not the generic dump the flag exists to distinguish (ADR-0002).
+	if !got.Meta.Scoped {
+		t.Fatalf("meta.scoped = false; a filtered FTS read is a scoped local read: %+v", got.Meta)
+	}
+	// The resource type names the mirror that answered, so synced_at reports
+	// the freshness of the data actually searched.
+	if got.Meta.ResourceType != "papers" || got.Meta.SyncedAt == "" {
+		t.Fatalf("meta = %+v, want resource_type papers with a synced_at", got.Meta)
+	}
+}

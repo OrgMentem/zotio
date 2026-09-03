@@ -4,12 +4,22 @@ package cli
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"reflect"
+	"sort"
 	"strconv"
 	"strings"
 	"testing"
+	"time"
+
+	"zotio/internal/store"
 )
 
 type exportResponse struct {
@@ -552,5 +562,217 @@ func TestExportCollectionDeduplicatesBibTeXKeysAcrossSubcollections(t *testing.T
 	}
 	if got := out.String(); strings.Count(got, "@article{same,") != 1 || strings.Count(got, "@article{same-1,") != 1 {
 		t.Fatalf("BibTeX keys = %q, want same and same-1", got)
+	}
+}
+
+// collectionExportFixtureItems are stored exactly as the API serves them, so a
+// mirror-backed export and a live export can be compared on identical rows.
+var collectionExportFixtureItems = []json.RawMessage{
+	json.RawMessage(`{"key":"IROOT","version":3,"data":{"key":"IROOT","itemType":"journalArticle","title":"Root Item","collections":["ROOT"]}}`),
+	json.RawMessage(`{"key":"ISUB","version":4,"data":{"key":"ISUB","itemType":"book","title":"Sub Item","collections":["SUB"]}}`),
+	json.RawMessage(`{"key":"IELSE","version":5,"data":{"key":"IELSE","itemType":"book","title":"Unrelated","collections":["OTHER"]}}`),
+}
+
+var collectionExportFixtureCollections = []json.RawMessage{
+	json.RawMessage(`{"key":"ROOT","version":1,"data":{"key":"ROOT","name":"Root","parentCollection":false}}`),
+	json.RawMessage(`{"key":"SUB","version":2,"data":{"key":"SUB","name":"Sub","parentCollection":"ROOT"}}`),
+	json.RawMessage(`{"key":"OTHER","version":6,"data":{"key":"OTHER","name":"Other","parentCollection":false}}`),
+}
+
+// seedCollectionExportStore mirrors a two-level collection tree plus one
+// unrelated collection, so a local export that ignored the requested scope
+// would show up as a leaked item rather than as a passing test.
+func seedCollectionExportStore(t *testing.T) {
+	t.Helper()
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("ZOTERO_CONFIG", filepath.Join(t.TempDir(), "missing.toml"))
+	dbPath := helpersTestDefaultDBPath(t, "zotio")
+	if err := os.MkdirAll(filepath.Dir(dbPath), 0o755); err != nil {
+		t.Fatalf("mkdir store dir: %v", err)
+	}
+	db, err := store.OpenWithContext(context.Background(), dbPath)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	if _, _, err := db.UpsertBatch("items", collectionExportFixtureItems); err != nil {
+		t.Fatalf("seed items: %v", err)
+	}
+	if _, _, err := db.UpsertBatch("collections", collectionExportFixtureCollections); err != nil {
+		t.Fatalf("seed collections: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close store: %v", err)
+	}
+}
+
+// newCollectionExportServer serves the same subtree the mirror holds, using the
+// package's httptest Zotero pattern.
+func newCollectionExportServer(t *testing.T) *httptest.Server {
+	t.Helper()
+	byCollection := map[string][]json.RawMessage{
+		"ROOT": {collectionExportFixtureItems[0]},
+		"SUB":  {collectionExportFixtureItems[1]},
+	}
+	children := map[string][]json.RawMessage{
+		"ROOT": {collectionExportFixtureCollections[1]},
+		"SUB":  {},
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		encode := func(rows []json.RawMessage) {
+			if rows == nil {
+				rows = []json.RawMessage{}
+			}
+			w.Header().Set("Total-Results", strconv.Itoa(len(rows)))
+			if start := r.URL.Query().Get("start"); start != "" && start != "0" {
+				rows = []json.RawMessage{}
+			}
+			body, err := json.Marshal(rows)
+			if err != nil {
+				t.Errorf("encode fixture rows: %v", err)
+				return
+			}
+			_, _ = w.Write(body)
+		}
+		switch path := strings.TrimPrefix(r.URL.Path, "/users/0"); path {
+		case "/collections/ROOT/items", "/collections/SUB/items":
+			encode(byCollection[strings.Split(path, "/")[2]])
+		case "/collections/ROOT/collections", "/collections/SUB/collections":
+			encode(children[strings.Split(path, "/")[2]])
+		default:
+			t.Errorf("unexpected live request %q", r.URL.Path)
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+func runCollectionsExportCmd(t *testing.T, flags *rootFlags, args ...string) (string, error) {
+	t.Helper()
+	cmd := newCollectionsExportCmd(flags)
+	cmd.SilenceErrors, cmd.SilenceUsage = true, true
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&bytes.Buffer{})
+	cmd.SetArgs(args)
+	err := cmd.Execute()
+	return out.String(), err
+}
+
+func exportedItemKeys(t *testing.T, out string) []string {
+	t.Helper()
+	var rows []struct {
+		Key string `json:"key"`
+	}
+	if err := json.Unmarshal([]byte(out), &rows); err != nil {
+		t.Fatalf("export output is not a JSON array (%v): %q", err, out)
+	}
+	keys := make([]string, 0, len(rows))
+	for _, row := range rows {
+		keys = append(keys, row.Key)
+	}
+	sort.Strings(keys)
+	return keys
+}
+
+// TestCollectionsExportJSONLocalMatchesLivePath is the offline promise: with
+// Zotero closed and a synced store, the subtree export still resolves the same
+// items. It compares the mirror-backed run against the live run rather than
+// against a hand-written expectation, so a scope bug on either side fails here.
+func TestCollectionsExportJSONLocalMatchesLivePath(t *testing.T) {
+	seedCollectionExportStore(t)
+	srv := newCollectionExportServer(t)
+	t.Setenv("ZOTERO_BASE_URL", srv.URL+"/users/0")
+
+	liveOut, err := runCollectionsExportCmd(t, &rootFlags{dataSource: "live", noCache: true, timeout: 5 * time.Second}, "ROOT", "--format", "json")
+	if err != nil {
+		t.Fatalf("live export: %v", err)
+	}
+	liveKeys := exportedItemKeys(t, liveOut)
+	if len(liveKeys) != 2 {
+		t.Fatalf("live export keys = %v, want the root item and the subcollection item", liveKeys)
+	}
+
+	// Zotero closed: the base URL now points at a port nothing serves, so any
+	// live read would fail rather than quietly answer.
+	t.Setenv("ZOTERO_BASE_URL", "http://127.0.0.1:1/api/users/0")
+	localOut, err := runCollectionsExportCmd(t, &rootFlags{dataSource: "local", noCache: true, timeout: 5 * time.Second}, "ROOT", "--format", "json")
+	if err != nil {
+		t.Fatalf("local export with Zotero closed: %v", err)
+	}
+	localKeys := exportedItemKeys(t, localOut)
+	if !reflect.DeepEqual(localKeys, liveKeys) {
+		t.Fatalf("local export keys = %v, live = %v", localKeys, liveKeys)
+	}
+	if strings.Contains(localOut, "IELSE") {
+		t.Fatalf("local export leaked an item from an unrelated collection: %q", localOut)
+	}
+}
+
+// TestCollectionsExportJSONLocalHonorsFlat proves the local subcollection
+// planner is what descends the tree: --flat must stop at the root.
+func TestCollectionsExportJSONLocalHonorsFlat(t *testing.T) {
+	seedCollectionExportStore(t)
+	t.Setenv("ZOTERO_BASE_URL", "http://127.0.0.1:1/api/users/0")
+
+	out, err := runCollectionsExportCmd(t, &rootFlags{dataSource: "local", noCache: true, timeout: 5 * time.Second}, "ROOT", "--format", "json", "--flat")
+	if err != nil {
+		t.Fatalf("flat local export: %v", err)
+	}
+	if got := exportedItemKeys(t, out); !reflect.DeepEqual(got, []string{"IROOT"}) {
+		t.Fatalf("flat local export keys = %v, want [IROOT]", got)
+	}
+}
+
+// TestCollectionsExportTranslatorFormatsRefuseOffline covers the deliberate
+// non-goal: bibtex/ris/csljson come from Zotero's export translators, which the
+// mirror cannot render. A local .bib would carry citation keys that Better
+// BibTeX never assigned, so the refusal is the product decision — and it has to
+// name the offline route rather than just failing.
+func TestCollectionsExportTranslatorFormatsRefuseOffline(t *testing.T) {
+	for _, format := range []string{"bibtex", "ris", "csljson"} {
+		t.Run(format, func(t *testing.T) {
+			seedCollectionExportStore(t)
+			t.Setenv("ZOTERO_BASE_URL", "http://127.0.0.1:1/api/users/0")
+
+			out, err := runCollectionsExportCmd(t, &rootFlags{asJSON: true, dataSource: "local", noCache: true, timeout: 5 * time.Second}, "ROOT", "--format", format)
+			if err == nil {
+				t.Fatalf("--format %s --data-source local succeeded; output %q", format, out)
+			}
+			assertPreconditionExitCode(t, err, 9)
+			var env preconditionUnmetEnvelope
+			if decodeErr := json.Unmarshal([]byte(out), &env); decodeErr != nil {
+				t.Fatalf("output is not a precondition_unmet envelope; decode %q: %v", out, decodeErr)
+			}
+			if env.Kind != "precondition_unmet" || env.Precondition != preconditionLiveLocalAPI {
+				t.Fatalf("envelope = %+v, want precondition_unmet/live_local_api", env)
+			}
+			if env.Capability != "collections export" {
+				t.Fatalf("capability = %q, want collections export", env.Capability)
+			}
+			if !strings.Contains(strings.Join(env.Remediation, " "), "--format json") {
+				t.Fatalf("remediation does not name the offline route: %v", env.Remediation)
+			}
+		})
+	}
+}
+
+// TestCollectionsExportTranslatorFormatRefusesWhenZoteroGoesAway covers auto
+// mode: a translator export must not degrade into a mirror dump when the
+// desktop stops answering mid-flight.
+func TestCollectionsExportTranslatorFormatRefusesWhenZoteroGoesAway(t *testing.T) {
+	seedCollectionExportStore(t)
+	t.Setenv("ZOTERO_BASE_URL", "http://127.0.0.1:1/api/users/0")
+
+	out, err := runCollectionsExportCmd(t, &rootFlags{asJSON: true, dataSource: "auto", noCache: true, timeout: 5 * time.Second}, "ROOT", "--format", "bibtex")
+	if err == nil {
+		t.Fatalf("auto-mode bibtex export succeeded with Zotero unreachable; output %q", out)
+	}
+	assertPreconditionExitCode(t, err, 9)
+	if !strings.Contains(out, "precondition_unmet") {
+		t.Fatalf("output = %q, want a precondition_unmet envelope", out)
+	}
+	if strings.Contains(out, "Root Item") {
+		t.Fatalf("translator export degraded into mirrored item JSON: %q", out)
 	}
 }
