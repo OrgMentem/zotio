@@ -118,7 +118,7 @@ func newSyncCmd(flags *rootFlags) *cobra.Command {
 	var full bool
 	var sinceVersion int
 	var concurrency int
-	var dbPath string
+	var dbFlag string
 	var maxPages int
 	var latestOnly bool
 	var strict bool
@@ -178,11 +178,11 @@ Exit codes & warnings:
 			}
 			c.NoCache = true
 
-			if dbPath == "" {
-				dbPath, err = defaultDBPath("zotio")
-				if err != nil {
-					return err
-				}
+			// The mirror path is a local, resolved on every invocation and
+			// never written back into dbFlag: see resolveDBPath.
+			dbPath, err := resolveDBPath(dbFlag, "zotio")
+			if err != nil {
+				return err
 			}
 
 			db, err := store.OpenWithContext(cmd.Context(), dbPath)
@@ -419,7 +419,7 @@ Exit codes & warnings:
 	cmd.Flags().BoolVar(&full, "full", false, "Full resync (ignore previous checkpoint)")
 	cmd.Flags().IntVar(&sinceVersion, "since", 0, "Only sync objects modified since this Zotero library version (0 = use stored checkpoint). Get versions from a prior sync or 'items list --since'.")
 	cmd.Flags().IntVar(&concurrency, "concurrency", 4, "Number of parallel sync workers")
-	cmd.Flags().StringVar(&dbPath, "db", "", "Database path (default: ~/.local/share/zotio/data.db)")
+	cmd.Flags().StringVar(&dbFlag, "db", "", "Database path (default: ~/.local/share/zotio/data.db)")
 	cmd.Flags().IntVar(&maxPages, "max-pages", 100, "Maximum pages to fetch per resource (0 = unlimited; cap-hit emits a sync_warning event)")
 	cmd.Flags().BoolVar(&latestOnly, "latest-only", false, "Refresh head of each resource only; clears resume cursor and caps pages at 1. Mutually exclusive with --since (--since wins).")
 	cmd.Flags().BoolVar(&strict, "strict", false, "Exit non-zero on any per-resource failure (default: only critical failures or all-resource failure exit non-zero).")

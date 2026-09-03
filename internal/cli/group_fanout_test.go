@@ -437,9 +437,6 @@ func TestGroupFanoutRefusesCommandsNotOnTheAllowlist(t *testing.T) {
 		{name: "write", args: []string{"tags", "rename", "old", "new", "--yes"}, want: []string{"tags rename", fanoutSideEffectFree}},
 		{name: "sync", args: []string{"sync"}, want: []string{"sync", fanoutSideEffectFree}},
 		{name: "introspect", args: []string{"doctor"}, want: []string{"doctor", fanoutLibraryScoped}},
-		// Closure-cached mirror path: repeating the body reuses library one's
-		// database, so this is not library-scoped under repetition.
-		{name: "closure-cached db path", args: []string{"analytics", "--type", "items"}, want: []string{"analytics", fanoutLibraryScoped}},
 		// --follow never returns, so library two is unreachable.
 		{name: "unbounded follow", args: []string{"tail"}, want: []string{"tail", fanoutFinite}},
 		// Account-level: it answers only under the personal prefix.
@@ -472,32 +469,237 @@ func TestGroupFanoutRefusesCommandsNotOnTheAllowlist(t *testing.T) {
 	}
 }
 
-// ReviewFanout's reproduction, turned into the guarantee: two mirrors with
-// different contents, and `analytics --group all` with no --db. Before the
-// allowlist this reported the PERSONAL library's counts under the group's
-// name, because analytics assigns its resolved path back into a closure
-// variable (analytics.go:43) that survives the second iteration.
-func TestGroupFanoutRefusesAnalyticsWhoseMirrorPathIsClosureCached(t *testing.T) {
+// seedTwoDistinctMirrors gives the personal library two journal articles and
+// group 99 one book, with titles that only overlap on the FTS query term.
+// Group 100 is deliberately left without a mirror, so "0 rows" and "the first
+// library's rows" cannot be confused for one another.
+func seedTwoDistinctMirrors(t *testing.T, dataDir string) {
+	t.Helper()
+	synced := time.Now().Add(-time.Hour).Truncate(time.Second)
+	seedFanoutLibraryStore(t, dataDir, "data.db", synced,
+		[]json.RawMessage{
+			json.RawMessage(`{"key":"P1","version":1,"data":{"key":"P1","itemType":"journalArticle","title":"Calibration Personal A"}}`),
+			json.RawMessage(`{"key":"P2","version":1,"data":{"key":"P2","itemType":"journalArticle","title":"Calibration Personal B"}}`),
+		})
+	seedFanoutLibraryStore(t, dataDir, "data-group-99.db", synced,
+		[]json.RawMessage{json.RawMessage(`{"key":"L1","version":1,"data":{"key":"L1","itemType":"book","title":"Calibration Lab Only"}}`)})
+}
+
+// fanoutRowsByLibrary indexes aggregated rows by the library each came from.
+// analytics and workflow status answer counts rather than keyed resources, so
+// the library dimension is the only stable index into their rows.
+func fanoutRowsByLibrary(t *testing.T, rows []json.RawMessage) map[string][]map[string]any {
+	t.Helper()
+	byLib := make(map[string][]map[string]any, len(rows))
+	for _, raw := range rows {
+		var tagged struct {
+			Library fanoutLibrary `json:"library"`
+		}
+		if err := json.Unmarshal(raw, &tagged); err != nil {
+			t.Fatalf("decoding aggregated row %s: %v", raw, err)
+		}
+		var fields map[string]any
+		if err := json.Unmarshal(raw, &fields); err != nil {
+			t.Fatalf("decoding aggregated row %s: %v", raw, err)
+		}
+		byLib[tagged.Library.ID] = append(byLib[tagged.Library.ID], fields)
+	}
+	return byLib
+}
+
+// fanoutRowCount reads the single count row one library contributed.
+func fanoutRowCount(t *testing.T, byLib map[string][]map[string]any, libraryID, field string) float64 {
+	t.Helper()
+	rows := byLib[libraryID]
+	if len(rows) != 1 {
+		t.Fatalf("library %s contributed %d rows, want exactly 1: %v", libraryID, len(rows), rows)
+	}
+	value, ok := rows[0][field]
+	if !ok {
+		t.Fatalf("library %s row %v has no %q field", libraryID, rows[0], field)
+	}
+	count, ok := value.(float64)
+	if !ok {
+		t.Fatalf("library %s field %q = %#v, want a number", libraryID, field, value)
+	}
+	return count
+}
+
+// ReviewFanout's reproduction, turned into the guarantee it was refused for:
+// two mirrors holding DIFFERENT data, and each command run with no --db. Each
+// of these three commands used to assign its resolved path back into the
+// closure variable behind --db (analytics.go, channel_workflow.go, search.go),
+// so the second library was read from the FIRST library's database while the
+// aggregate labelled those rows with the second library. Asserting only that
+// two blocks appeared would pass against that bug, so every assertion here is
+// on the group's own numbers or keys. They now resolve through resolveDBPath.
+func TestGroupFanoutReadsEachLibrarysOwnMirror(t *testing.T) {
+	t.Run("analytics", func(t *testing.T) {
+		fx := newFanoutFixture(t, "")
+		dataDir := isolateFanoutEnv(t, fx.server.URL+"/users/0")
+		seedTwoDistinctMirrors(t, dataDir)
+
+		out, _, err := runFanoutCmd(t, "analytics", "--type", "items", "--group", "all", "--json")
+		if err != nil {
+			t.Fatalf("analytics --group all: %v (out=%s)", err, out)
+		}
+		report := decodeFanoutReport(t, out)
+		byLib := fanoutRowsByLibrary(t, report.Results)
+		// 2 personal, 1 group 99, 0 for the group with no mirror at all.
+		for _, want := range []struct {
+			library string
+			count   float64
+		}{{"0", 2}, {"99", 1}, {"100", 0}} {
+			if got := fanoutRowCount(t, byLib, want.library, "count"); got != want.count {
+				t.Errorf("library %s count = %v, want %v (the first library's count is 2, so 2 here means the mirror path leaked)", want.library, got, want.count)
+			}
+		}
+	})
+
+	t.Run("workflow status", func(t *testing.T) {
+		fx := newFanoutFixture(t, "")
+		dataDir := isolateFanoutEnv(t, fx.server.URL+"/users/0")
+		seedTwoDistinctMirrors(t, dataDir)
+
+		out, _, err := runFanoutCmd(t, "workflow", "status", "--group", "all", "--json")
+		if err != nil {
+			t.Fatalf("workflow status --group all: %v (out=%s)", err, out)
+		}
+		report := decodeFanoutReport(t, out)
+		byLib := fanoutRowsByLibrary(t, report.Results)
+		if got := fanoutRowCount(t, byLib, "0", "items"); got != 2 {
+			t.Errorf("personal items = %v, want 2", got)
+		}
+		if got := fanoutRowCount(t, byLib, "99", "items"); got != 1 {
+			t.Errorf("group 99 items = %v, want 1 (2 means it re-read the personal mirror)", got)
+		}
+		// The un-synced group reports an empty status object rather than the
+		// previous library's resource counts.
+		if rows := byLib["100"]; len(rows) != 1 || len(rows[0]) != 1 {
+			t.Errorf("group 100 rows = %v, want one row carrying only the library dimension", rows)
+		}
+	})
+
+	t.Run("search", func(t *testing.T) {
+		fx := newFanoutFixture(t, "")
+		dataDir := isolateFanoutEnv(t, fx.server.URL+"/users/0")
+		seedTwoDistinctMirrors(t, dataDir)
+
+		// --data-source local pins the read to the mirror, which is the input
+		// the memoized path used to leak; the live branch is scoped by
+		// rootFlags.group, which withLibraryScope already drives per library.
+		out, _, err := runFanoutCmd(t, "search", "calibration", "--group", "all", "--json", "--data-source", "local")
+		if err != nil {
+			t.Fatalf("search --group all: %v (out=%s)", err, out)
+		}
+		report := decodeFanoutReport(t, out)
+		byKey := decodeFanoutRows(t, report.Results)
+		if len(byKey) != 3 {
+			t.Fatalf("aggregated keys = %v, want P1, P2 and L1", byKey)
+		}
+		for key, wantLibrary := range map[string]string{"P1": "0", "P2": "0", "L1": "99"} {
+			row, ok := byKey[key]
+			if !ok {
+				t.Errorf("no aggregated row for %s", key)
+				continue
+			}
+			if row.Library.ID != wantLibrary {
+				t.Errorf("row %s library = %s, want %s", key, row.Library.ID, wantLibrary)
+			}
+		}
+		// The group's block must count only the group's own hit: three would
+		// mean it searched the personal mirror under the group's name.
+		if got := fanoutBlock(t, report, "99").ResultCount; got != 1 {
+			t.Errorf("group 99 result_count = %d, want 1", got)
+		}
+		if got := fanoutBlock(t, report, "0").ResultCount; got != 2 {
+			t.Errorf("personal result_count = %d, want 2", got)
+		}
+	})
+}
+
+// --db names ONE library's mirror, and a mirror file holds exactly one
+// library, so honouring it across a fan-out would read identical rows N times
+// and stamp each copy with a different library's name — the very failure the
+// library-scoped property exists to prevent, only requested explicitly.
+func TestGroupFanoutRefusesAnExplicitDBPath(t *testing.T) {
 	fx := newFanoutFixture(t, "")
 	dataDir := isolateFanoutEnv(t, fx.server.URL+"/users/0")
-	seedFanoutLibraryStore(t, dataDir, "data.db", time.Now().Add(-time.Hour).Truncate(time.Second),
-		[]json.RawMessage{
-			json.RawMessage(`{"key":"P1","version":1,"data":{"key":"P1","itemType":"journalArticle","title":"Personal A"}}`),
-			json.RawMessage(`{"key":"P2","version":1,"data":{"key":"P2","itemType":"journalArticle","title":"Personal B"}}`),
-		})
-	seedFanoutLibraryStore(t, dataDir, "data-group-99.db", time.Now().Add(-time.Hour).Truncate(time.Second),
-		[]json.RawMessage{json.RawMessage(`{"key":"L1","version":1,"data":{"key":"L1","itemType":"book","title":"Lab Only"}}`)})
+	seedTwoDistinctMirrors(t, dataDir)
+	explicit := filepath.Join(dataDir, "data.db")
 
-	out, _, err := runFanoutCmd(t, "analytics", "--type", "items", "--group", "all", "--json")
-	if err == nil || ExitCode(err) != 2 {
-		t.Fatalf("analytics --group all = %v (exit %d), want usage exit 2; out=%s", err, ExitCode(err), out)
+	for _, tc := range []struct {
+		name string
+		args []string
+	}{
+		{name: "search", args: []string{"search", "calibration"}},
+		{name: "analytics", args: []string{"analytics", "--type", "items"}},
+		{name: "workflow status", args: []string{"workflow", "status"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			full := append(append([]string{}, tc.args...), "--db", explicit, "--group", "all", "--json")
+			out, _, err := runFanoutCmd(t, full...)
+			if err == nil || ExitCode(err) != 2 {
+				t.Fatalf("%v = %v (exit %d), want usage exit 2; out=%s", full, err, ExitCode(err), out)
+			}
+			for _, want := range []string{fanoutLibraryScoped, "--db", "--group <id>"} {
+				if !strings.Contains(err.Error(), want) {
+					t.Errorf("error = %q, want it to name %q", err.Error(), want)
+				}
+			}
+			// Refused before any library ran, so no aggregate can imply the
+			// same file answered for three libraries.
+			if strings.Contains(out, "libraries") {
+				t.Errorf("output = %q, want no aggregate at all", out)
+			}
+		})
 	}
-	if !strings.Contains(err.Error(), fanoutLibraryScoped) {
-		t.Errorf("error = %q, want the library-scoped property named", err.Error())
+}
+
+// The single-library paths must not change: --db still wins, and it wins
+// against the group scope that would otherwise pick data-group-99.db.
+func TestExplicitDBPathStillWinsForOneLibrary(t *testing.T) {
+	fx := newFanoutFixture(t, "")
+	dataDir := isolateFanoutEnv(t, fx.server.URL+"/users/0")
+	seedTwoDistinctMirrors(t, dataDir)
+	personal := filepath.Join(dataDir, "data.db")
+
+	for _, tc := range []struct {
+		name  string
+		args  []string
+		count float64
+	}{
+		{name: "no group", args: []string{"analytics", "--type", "items", "--db", personal, "--json"}, count: 2},
+		// --db points at the personal mirror while --group selects group 99:
+		// the explicit file wins, so the answer is the personal count.
+		{name: "explicit db beats group scope", args: []string{"analytics", "--type", "items", "--db", personal, "--group", "99", "--json"}, count: 2},
+		// Without --db the same group scope reads data-group-99.db.
+		{name: "group scope without db", args: []string{"analytics", "--type", "items", "--group", "99", "--json"}, count: 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			out, _, err := runFanoutCmd(t, tc.args...)
+			if err != nil {
+				t.Fatalf("%v: %v (out=%s)", tc.args, err, out)
+			}
+			var envelope struct {
+				Results []map[string]any `json:"results"`
+			}
+			if jsonErr := json.Unmarshal([]byte(out), &envelope); jsonErr != nil {
+				t.Fatalf("decoding %q: %v", out, jsonErr)
+			}
+			if len(envelope.Results) != 1 {
+				t.Fatalf("results = %v, want exactly one count row", envelope.Results)
+			}
+			if got := envelope.Results[0]["count"]; got != tc.count {
+				t.Errorf("count = %#v, want %v", got, tc.count)
+			}
+			if _, taken := envelope.Results[0]["library"]; taken {
+				t.Errorf("row %v carries a library dimension: the single-library path must not gain the fan-out shape", envelope.Results[0])
+			}
+		})
 	}
-	// Nothing was aggregated, so no per-library count can be mislabelled.
-	if strings.Contains(out, "libraries") {
-		t.Errorf("output = %q, want no aggregate at all", out)
+	if got := fx.requested(); len(got) != 0 {
+		t.Fatalf("requests = %v, want none: analytics is a mirror-only read", got)
 	}
 }
 
@@ -596,13 +798,18 @@ func TestFanoutSafeCommandsAllResolveToRunnableCommands(t *testing.T) {
 			t.Errorf("fanoutSafeCommands[%q] resolves to no runnable command", path)
 			continue
 		}
-		for _, flag := range entry.fileOutputFlags {
-			cmd, _, err := root.Find(append([]string{}, strings.Fields(path)...))
-			if err != nil {
-				t.Fatalf("finding %q: %v", path, err)
-			}
-			if cmd.Flags().Lookup(flag) == nil {
-				t.Errorf("fanoutSafeCommands[%q] names file-output flag --%s, which the command does not define", path, flag)
+		cmd, _, findErr := root.Find(append([]string{}, strings.Fields(path)...))
+		if findErr != nil {
+			t.Fatalf("finding %q: %v", path, findErr)
+		}
+		for kind, flags := range map[string][]string{
+			"file-output":  entry.fileOutputFlags,
+			"library-path": entry.libraryPathFlags,
+		} {
+			for _, flag := range flags {
+				if cmd.Flags().Lookup(flag) == nil {
+					t.Errorf("fanoutSafeCommands[%q] names %s flag --%s, which the command does not define", path, kind, flag)
+				}
 			}
 		}
 	}

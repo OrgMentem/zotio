@@ -102,7 +102,7 @@ func extractSearchResults(data json.RawMessage) ([]json.RawMessage, error) {
 func newSearchCmd(flags *rootFlags) *cobra.Command {
 	var resourceType string
 	var limit int
-	var dbPath string
+	var dbFlag string
 	var fulltextOnly bool
 
 	cmd := &cobra.Command{
@@ -188,13 +188,12 @@ Use --fulltext to search synced PDF text and resolve hits to parent items.`,
 				fmt.Fprintf(cmd.ErrOrStderr(), "API unreachable, falling back to local search.\n")
 			}
 
-			// Local FTS search
-			var err error
-			if dbPath == "" {
-				dbPath, err = defaultDBPath("zotio")
-				if err != nil {
-					return err
-				}
+			// Local FTS search. The mirror path is resolved into a local on
+			// every invocation and never written back into dbFlag, so a
+			// `--group all` re-entry reads its own library: see resolveDBPath.
+			dbPath, err := resolveDBPath(dbFlag, "zotio")
+			if err != nil {
+				return err
 			}
 
 			db, err := store.OpenWithContext(cmd.Context(), dbPath)
@@ -255,7 +254,7 @@ Use --fulltext to search synced PDF text and resolve hits to parent items.`,
 
 	cmd.Flags().StringVar(&resourceType, "type", "", "Filter by resource type")
 	cmd.Flags().IntVar(&limit, "limit", 50, "Maximum results to return")
-	cmd.Flags().StringVar(&dbPath, "db", "", "Database path (default: ~/.local/share/zotio/data.db)")
+	cmd.Flags().StringVar(&dbFlag, "db", "", "Database path (default: ~/.local/share/zotio/data.db)")
 	cmd.Flags().BoolVar(&fulltextOnly, "fulltext", false, "Search synced PDF full text and return parent item context")
 
 	return cmd

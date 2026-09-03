@@ -17,7 +17,7 @@ import (
 func newAnalyticsCmd(flags *rootFlags) *cobra.Command {
 	var resourceType string
 	var groupBy string
-	var dbPath string
+	var dbFlag string
 	var limit int
 
 	cmd := &cobra.Command{
@@ -38,12 +38,12 @@ the item rows are grouped by year, itemType, collection, creator, or tag.`,
   zotio analytics --type items --group-by year
   zotio analytics --type items --group-by collection --limit 10 --json`,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			var err error
-			if dbPath == "" {
-				dbPath, err = defaultDBPath("zotio")
-				if err != nil {
-					return err
-				}
+			// The mirror path is a local, resolved on every invocation and
+			// never written back into dbFlag, so a `--group all` re-entry
+			// counts its own library: see resolveDBPath.
+			dbPath, err := resolveDBPath(dbFlag, "zotio")
+			if err != nil {
+				return err
 			}
 
 			var rows []map[string]any
@@ -213,7 +213,7 @@ the item rows are grouped by year, itemType, collection, creator, or tag.`,
 
 	cmd.Flags().StringVar(&resourceType, "type", "", "Resource kind or Zotero item type to analyze")
 	cmd.Flags().StringVar(&groupBy, "group-by", "", "Group items by year, itemType, collection, creator, or tag")
-	cmd.Flags().StringVar(&dbPath, "db", "", "Database path")
+	cmd.Flags().StringVar(&dbFlag, "db", "", "Database path")
 	cmd.Flags().IntVar(&limit, "limit", 25, "Maximum groups to show with --group-by")
 
 	return cmd

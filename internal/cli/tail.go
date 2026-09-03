@@ -35,8 +35,9 @@ func newTailCmd(flags *rootFlags) *cobra.Command {
 	var interval time.Duration
 	var follow bool
 	var workflowPath string
-	// dbPath stores the per-resource version cursor.
-	var dbPath string
+	// dbFlag is the caller's --db override for the store holding the
+	// per-resource version cursor; the resolved path never lands back here.
+	var dbFlag string
 
 	cmd := &cobra.Command{
 		Use:         "tail [resource]",
@@ -106,12 +107,11 @@ native streaming instead of polling.`,
 			}
 
 			// Open the local store so each poll resumes from the per-resource
-			// version cursor instead of re-fetching all.
-			if dbPath == "" {
-				dbPath, err = defaultDBPath("zotio")
-				if err != nil {
-					return err
-				}
+			// version cursor instead of re-fetching all. The path is a local,
+			// resolved on every invocation: see resolveDBPath.
+			dbPath, err := resolveDBPath(dbFlag, "zotio")
+			if err != nil {
+				return err
 			}
 			db, err := store.OpenWithContext(cmd.Context(), dbPath)
 			if err != nil {
@@ -179,7 +179,7 @@ native streaming instead of polling.`,
 	cmd.Flags().DurationVar(&interval, "interval", 10*time.Second, "Poll interval")
 	cmd.Flags().BoolVar(&follow, "follow", true, "Keep running (set --follow=false for single poll)")
 	// Cursor persistence location.
-	cmd.Flags().StringVar(&dbPath, "db", "", "Database path (default: ~/.local/share/zotio/data.db)")
+	cmd.Flags().StringVar(&dbFlag, "db", "", "Database path (default: ~/.local/share/zotio/data.db)")
 	cmd.Flags().StringVar(&workflowPath, "workflow", "", "Run this workflow once after an event-bearing poll; previews unless --yes, and failed applied runs require zotio workflow run <spec> --yes --resume")
 
 	return cmd

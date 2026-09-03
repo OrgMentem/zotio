@@ -1659,6 +1659,29 @@ func defaultDBPath(name string) (string, error) {
 	return defaultDBPathFor(activeGroupIDLocked(), name)
 }
 
+// resolveDBPath returns the mirror path for THIS invocation: the --db value
+// the caller named, or the active library's own mirror when they named none.
+//
+// Every command with a --db flag must resolve through this function from
+// inside RunE and keep the result in a local, because the shorter-looking
+// alternative is silently wrong under `--group all`:
+//
+//	if dbPath == "" { dbPath, err = defaultDBPath("zotio") }   // WRONG
+//
+// That writes the resolved path back into the closure variable cobra binds to
+// --db. The fan-out reuses ONE cobra.Command instance and re-enters its RunE
+// once per library (withLibraryScope, group_fanout.go), so on the second
+// library the variable is no longer empty: the command reads the FIRST
+// library's database while the aggregate labels those rows with the second
+// library's name. Two independent reviews found that shape at six call sites,
+// which is why the resolution lives here instead of being repeated per command.
+func resolveDBPath(dbFlag, name string) (string, error) {
+	if dbFlag != "" {
+		return dbFlag, nil
+	}
+	return defaultDBPath(name)
+}
+
 // rewriteLibraryPrefix rewrites a Zotero API base URL's library prefix to a
 // group library. It replaces an existing /users/<id> or /groups/<id> segment
 // with /groups/<groupID>; when no such segment exists it appends /groups/<id>

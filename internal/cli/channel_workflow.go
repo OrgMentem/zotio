@@ -30,7 +30,7 @@ func newWorkflowCmd(flags *rootFlags) *cobra.Command {
 }
 
 func newWorkflowArchiveCmd(flags *rootFlags) *cobra.Command {
-	var dbPath string
+	var dbFlag string
 	var full bool
 
 	cmd := &cobra.Command{
@@ -51,11 +51,11 @@ and full resync. After archiving, use 'search' for instant full-text search.`,
 			}
 			c.NoCache = true
 
-			if dbPath == "" {
-				dbPath, err = defaultDBPath("zotio")
-				if err != nil {
-					return err
-				}
+			// The mirror path is a local, resolved on every invocation and
+			// never written back into dbFlag: see resolveDBPath.
+			dbPath, err := resolveDBPath(dbFlag, "zotio")
+			if err != nil {
+				return err
 			}
 			s, err := store.OpenWithContext(cmd.Context(), dbPath)
 			if err != nil {
@@ -254,14 +254,14 @@ and full resync. After archiving, use 'search' for instant full-text search.`,
 		},
 	}
 
-	cmd.Flags().StringVar(&dbPath, "db", "", "Database path (default: ~/.local/share/zotio/data.db)")
+	cmd.Flags().StringVar(&dbFlag, "db", "", "Database path (default: ~/.local/share/zotio/data.db)")
 	cmd.Flags().BoolVar(&full, "full", false, "Full re-archive (ignore previous sync state)")
 
 	return cmd
 }
 
 func newWorkflowStatusCmd(flags *rootFlags) *cobra.Command {
-	var dbPath string
+	var dbFlag string
 
 	cmd := &cobra.Command{
 		Use:         "status",
@@ -273,12 +273,12 @@ func newWorkflowStatusCmd(flags *rootFlags) *cobra.Command {
   # Show status as JSON
   zotio workflow status --json`,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if dbPath == "" {
-				var err error
-				dbPath, err = defaultDBPath("zotio")
-				if err != nil {
-					return err
-				}
+			// The mirror path is a local, resolved on every invocation and
+			// never written back into dbFlag, so a `--group all` re-entry
+			// reports its own library: see resolveDBPath.
+			dbPath, err := resolveDBPath(dbFlag, "zotio")
+			if err != nil {
+				return err
 			}
 			if _, err := os.Stat(dbPath); err != nil {
 				if os.IsNotExist(err) {
@@ -325,9 +325,9 @@ func newWorkflowStatusCmd(flags *rootFlags) *cobra.Command {
 		},
 	}
 
-	cmd.Flags().StringVar(&dbPath, "db", "", "Database path")
+	cmd.Flags().StringVar(&dbFlag, "db", "", "Database path")
 
 	return cmd
 }
 
-// defaultDBPath is defined in helpers.go
+// resolveDBPath and defaultDBPath are defined in helpers.go

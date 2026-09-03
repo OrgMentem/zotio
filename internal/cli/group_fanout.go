@@ -189,7 +189,8 @@ const (
 	// library-dependent input (API prefix, mirror path) is resolved per run
 	// rather than memoized in the command's closure. A command that caches the
 	// resolved database path reports library one's rows under library two's
-	// name, which is worse than refusing.
+	// name, which is worse than refusing. The mirror path is resolved through
+	// resolveDBPath (helpers.go) for exactly that reason.
 	fanoutLibraryScoped = "library-scoped"
 	// fanoutSideEffectFree: repeating it changes nothing. Anything that
 	// mutates a library, a mirror, or installation state is out.
@@ -208,6 +209,16 @@ type fanoutSafeCommand struct {
 	// they break fanoutOutputNamespaceSafe, and the answer is a refusal rather
 	// than an invented per-library filename scheme.
 	fileOutputFlags []string
+	// libraryPathFlags name a single caller-chosen path that IS a library's
+	// data rather than a place to put output. Set on an invocation, they break
+	// fanoutLibraryScoped: one mirror file holds exactly one library (see
+	// defaultDBPathFor, which gives each group its own data-group-<id>.db so a
+	// group sync never mixes into the personal data.db), so every iteration
+	// would read the SAME rows and the aggregate would stamp each copy with a
+	// different library's name. That is the silent-wrong-data outcome this
+	// property exists to prevent, requested explicitly instead of by accident,
+	// so it is refused rather than honoured for library one and ignored after.
+	libraryPathFlags []string
 }
 
 // fanoutSafeCommands is the allowlist. The default is NOT fanned out: adding a
@@ -217,13 +228,10 @@ type fanoutSafeCommand struct {
 // What the allowlist deliberately keeps out, and why, so the next person does
 // not have to rediscover it:
 //
-//   - analytics, tail, workflow status, search, sync — NOT library-scoped
-//     under repetition. Each assigns its resolved database path back into a
-//     closure variable (`dbPath, err = defaultDBPath(...)`, analytics.go:43,
-//     tail.go:111, channel_workflow.go:55 and :278, search.go:184,
-//     sync.go:182), so the second library reuses the FIRST library's mirror
-//     while the aggregate labels those rows with the second library. tail also
-//     fails fanoutFinite: --follow never returns.
+//   - tail — NOT finite: --follow defaults true and never returns, so library
+//     two is never reached.
+//   - sync — NOT side-effect-free: it writes the local mirror, so a fan-out
+//     would replay that write against every library the key can reach.
 //   - export snapshot, export snapshot verify, import discover, collections
 //     bundle, collections export — NOT output-namespace-safe: each writes one
 //     caller-named path, so every library overwrites the last and the
@@ -285,6 +293,15 @@ var fanoutSafeCommands = map[string]fanoutSafeCommand{
 	"library health":     {fileOutputFlags: []string{"report", "write-baseline", "baseline"}},
 	"library wrapped":    {fileOutputFlags: []string{"card"}},
 	"annotations export": {fileOutputFlags: []string{"output"}},
+
+	// Local-mirror reads. Each resolves its mirror path per invocation through
+	// resolveDBPath (helpers.go) instead of memoizing it in the closure
+	// variable behind --db, so library two is read from library two's
+	// database. --db itself names ONE library's mirror, so it is refused here
+	// rather than silently applied to all of them.
+	"search":          {libraryPathFlags: []string{"db"}},
+	"analytics":       {libraryPathFlags: []string{"db"}},
+	"workflow status": {libraryPathFlags: []string{"db"}},
 }
 
 // installGroupFanout wraps the allowlisted commands once, after the tree is
@@ -356,6 +373,12 @@ func groupFanoutRefusal(cmd *cobra.Command, flags *rootFlags) error {
 				fanoutOutputNamespaceSafe, name, name))
 		}
 	}
+	for _, name := range entry.libraryPathFlags {
+		if cmd.Flags().Changed(name) {
+			return usageErr(fmt.Errorf("--group all is not %s with --%s: one mirror file holds exactly one library, so every library would be read from that same file and the aggregate would label one library's rows with every library's name; drop --%s to read each library's own mirror, or name the file and the library together with --%s <path> --group <id>",
+				fanoutLibraryScoped, name, name, name))
+		}
+	}
 	return nil
 }
 
@@ -377,14 +400,8 @@ type fanoutRefusalReason struct {
 }
 
 var fanoutRefusalReasons = map[string]fanoutRefusalReason{
-	"analytics": {fanoutLibraryScoped,
-		"it memoizes the resolved mirror path in its command closure (analytics.go), so the second library would be counted from the first library's database"},
 	"tail": {fanoutFinite,
 		"--follow holds the first library open indefinitely, so no later library is ever reached"},
-	"workflow status": {fanoutLibraryScoped,
-		"it memoizes the resolved mirror path in its command closure (channel_workflow.go), so later libraries would be read from the first library's database"},
-	"search": {fanoutLibraryScoped,
-		"it memoizes the resolved mirror path in its command closure (search.go), so later libraries would be searched in the first library's database"},
 	"export": {fanoutOutputNamespaceSafe,
 		"its JSONL output is a line-oriented stream with no place for a per-library label, and interleaving headings would corrupt it for whatever is parsing the stream"},
 	"export snapshot": {fanoutOutputNamespaceSafe,
