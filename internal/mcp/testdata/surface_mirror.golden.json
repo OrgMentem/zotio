@@ -2024,7 +2024,7 @@
           "type": "string"
         },
         "title": {
-          "description": "Find items with this exact title, ignoring case and surrounding whitespace; when nothing matches, near titles are reported separately",
+          "description": "Find items with this exact title, ignoring case, whitespace, quote and dash styling, and a trailing full stop; when the lookup as a whole matches nothing, the closest titles are reported separately (near_title_matches in JSON) and never as results",
           "type": "string"
         },
         "url": {

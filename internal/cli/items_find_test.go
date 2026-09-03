@@ -386,12 +386,14 @@ func TestItemsFindCommandLooksUpURLTitleAndOpenAlex(t *testing.T) {
 
 // seedNearTitleStore builds a store whose titles exercise the three outcomes
 // the near-match block has to separate: an exact hit, a mistyped hit, and an
-// item that merely shares vocabulary.
-func seedNearTitleStore(t *testing.T) {
+// item that merely shares vocabulary. It returns the store path so a test can
+// damage the store itself.
+func seedNearTitleStore(t *testing.T) string {
 	t.Helper()
 	dataHome := t.TempDir()
 	t.Setenv("XDG_DATA_HOME", dataHome)
-	db, err := store.OpenWithContext(t.Context(), filepath.Join(dataHome, "zotio", "data.db"))
+	dbPath := filepath.Join(dataHome, "zotio", "data.db")
+	db, err := store.OpenWithContext(t.Context(), dbPath)
 	if err != nil {
 		t.Fatalf("open store: %v", err)
 	}
@@ -405,6 +407,7 @@ func seedNearTitleStore(t *testing.T) {
 	if err := db.Close(); err != nil {
 		t.Fatalf("close store: %v", err)
 	}
+	return dbPath
 }
 
 func runItemsFind(t *testing.T, flags *rootFlags, args ...string) (string, string) {
@@ -425,6 +428,9 @@ type findEnvelope struct {
 		Key string `json:"key"`
 	} `json:"results"`
 	Near []nearTitleMatch `json:"near_title_matches"`
+	Meta struct {
+		TitleLookup string `json:"title_lookup"`
+	} `json:"meta"`
 }
 
 func decodeFindEnvelope(t *testing.T, out string) findEnvelope {
@@ -480,6 +486,12 @@ func TestItemsFindOmitsNearTitlesWhenExactMatches(t *testing.T) {
 
 // A lookup by identifier must never grow a title block; the near-match path is
 // keyed on --title alone.
+//
+// Asserting only that near_title_matches is absent passes for the wrong
+// reason: with an empty title, titleCandidateMatchQuery returns "" and
+// store.TitleCandidates short-circuits before touching the index, so the rows
+// are empty whether or not the gate exists. meta.title_lookup is what actually
+// defends it — reaching the near lookup at all would set no_near_matches.
 func TestItemsFindOmitsNearTitlesWithoutTitleQuery(t *testing.T) {
 	seedNearTitleStore(t)
 	stdout, _ := runItemsFind(t, &rootFlags{asJSON: true}, "--doi", "10.9999/absent")
@@ -490,6 +502,9 @@ func TestItemsFindOmitsNearTitlesWithoutTitleQuery(t *testing.T) {
 	}
 	if got.Near != nil {
 		t.Fatalf("near_title_matches = %+v, want absent for an identifier lookup", got.Near)
+	}
+	if got.Meta.TitleLookup != "" {
+		t.Fatalf("meta.title_lookup = %q, want empty: the near lookup must not run without --title", got.Meta.TitleLookup)
 	}
 }
 
@@ -519,11 +534,10 @@ func TestWantsNearTitleProseRefusesMachineAndQuietModes(t *testing.T) {
 		flags *rootFlags
 		want  bool
 	}{
-		"default":   {flags: &rootFlags{}, want: true},
-		"nil flags": {flags: nil, want: true},
-		"plain":     {flags: &rootFlags{plain: true}, want: false},
-		"csv":       {flags: &rootFlags{csv: true}, want: false},
-		"quiet":     {flags: &rootFlags{quiet: true}, want: false},
+		"default": {flags: &rootFlags{}, want: true},
+		"plain":   {flags: &rootFlags{plain: true}, want: false},
+		"csv":     {flags: &rootFlags{csv: true}, want: false},
+		"quiet":   {flags: &rootFlags{quiet: true}, want: false},
 	}
 	for name, tc := range cases {
 		if got := wantsNearTitleProse(tc.flags); got != tc.want {
@@ -532,8 +546,10 @@ func TestWantsNearTitleProseRefusesMachineAndQuietModes(t *testing.T) {
 	}
 }
 
-// --quiet still receives the rows in the JSON envelope: the flag trims prose,
-// it does not withhold an answer a caller asked for.
+// --quiet still receives the rows in the JSON envelope WHEN STDOUT IS NOT A
+// TERMINAL, which is the case here and the case for every scripted caller:
+// the flag trims prose, it does not withhold an answer a caller asked for. On
+// a real terminal --quiet builds no envelope, and the exit code is the answer.
 func TestItemsFindQuietKeepsNearTitlesInTheEnvelope(t *testing.T) {
 	seedNearTitleStore(t)
 	stdout, _ := runItemsFind(t, &rootFlags{quiet: true}, "--title", "Attention Is All You Nead")
@@ -543,31 +559,101 @@ func TestItemsFindQuietKeepsNearTitlesInTheEnvelope(t *testing.T) {
 	}
 }
 
-func TestPrintNearTitleMatchesNamesItsUncertainty(t *testing.T) {
+// The block a human reads. Leading with the score put the least actionable
+// column first, and a bare float said nothing about which of two identical
+// rows to pick; the reader's next act is passing a key to another command, so
+// the key leads and the command is named outright.
+func TestPrintNearTitleMatchesLeadsWithTheActionableColumns(t *testing.T) {
 	cmd := &cobra.Command{}
 	var stdout, stderr bytes.Buffer
 	cmd.SetOut(&stdout)
 	cmd.SetErr(&stderr)
 	matches := []nearTitleMatch{
-		{Key: "ATTN", Title: "Attention Is All You Need", Score: 1, Year: "2017"},
+		{Key: "ATTN", Title: "Attention Is All You Need", Score: 0.95, Year: "2017", ItemType: "journalArticle"},
+		{Key: "PREP", Title: "Attention Is All You Need", Score: 0.95, Year: "2017", ItemType: "preprint", Trashed: true},
 		{Key: "SUBT", Title: "Attention Is All You Need: A Transformer Study", Score: 0.67},
 	}
-	if err := printNearTitleMatches(cmd, "Attention Is All You Nead", matches); err != nil {
-		t.Fatalf("printNearTitleMatches: %v", err)
+	if err := printTitleLookupMiss(cmd, "Attention Is All You Nead", matches, 8, titleLookupNear); err != nil {
+		t.Fatalf("printTitleLookupMiss: %v", err)
 	}
-	for _, want := range []string{"matched: none", "near titles", "ATTN", "2017", "1.00", "0.67"} {
-		if !strings.Contains(stdout.String(), want) {
-			t.Fatalf("stdout missing %q:\n%s", want, stdout.String())
+	out := stdout.String()
+	for _, want := range []string{"matched: none", "near titles", "KEY", "YEAR", "TYPE", "TITLE", "SCORE", "ATTN", "2017", "0.95", "0.67"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("stdout missing %q:\n%s", want, out)
 		}
 	}
-	if !strings.Contains(stdout.String(), "confirm before using") {
-		t.Fatalf("block does not warn that these are different titles:\n%s", stdout.String())
+	if !strings.Contains(out, "confirm before using") {
+		t.Fatalf("block does not warn that these are different titles:\n%s", out)
 	}
-	if !strings.Contains(stdout.String(), "----") {
-		t.Fatalf("a dateless item must still render a year column:\n%s", stdout.String())
+	if !strings.Contains(out, nearTitleMissingField) {
+		t.Fatalf("a dateless, typeless item must still render both columns:\n%s", out)
+	}
+	// PREP and ATTN differ in nothing a reader can see except type and trash
+	// state, which is exactly when those two markers decide the answer.
+	if !strings.Contains(out, "preprint") || !strings.Contains(out, "journalArticle") {
+		t.Fatalf("item type absent, so two same-title same-year rows are indistinguishable:\n%s", out)
+	}
+	if !strings.Contains(out, "(trashed)") {
+		t.Fatalf("a trashed near match is unmarked while the exact path prints a DELETED column:\n%s", out)
+	}
+	if !strings.Contains(out, "(3 of 8 shown)") {
+		t.Fatalf("truncation unreported, so the reader cannot know row 4 exists:\n%s", out)
+	}
+	keyColumn := strings.Index(out, "ATTN")
+	scoreColumn := strings.Index(out, "0.95")
+	if keyColumn < 0 || scoreColumn < 0 || keyColumn > scoreColumn {
+		t.Fatalf("score leads the row; the key the reader acts on must come first:\n%s", out)
 	}
 	if !strings.Contains(stderr.String(), "No item has the title") {
 		t.Fatalf("stderr does not state the exact answer:\n%s", stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "zotio items get ATTN") {
+		t.Fatalf("stderr does not name the next command concretely:\n%s", stderr.String())
+	}
+}
+
+// The genuinely-absent answer. Before this the zero-near path fell through to
+// the generic writer and printed a bare `[]`, which reads as a broken command.
+func TestPrintTitleLookupMissAnswersAnAbsentTitle(t *testing.T) {
+	for _, tt := range []struct {
+		name    string
+		lookup  string
+		wantErr string
+	}{
+		{name: "nothing close", lookup: titleLookupNoNear, wantErr: "no title in your library is close to it"},
+		{name: "lookup broke", lookup: titleLookupFailed, wantErr: "near-title lookup failed"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			cmd := &cobra.Command{}
+			var stdout, stderr bytes.Buffer
+			cmd.SetOut(&stdout)
+			cmd.SetErr(&stderr)
+			if err := printTitleLookupMiss(cmd, "Quantum Gravity in Eleven Dimensions", nil, 0, tt.lookup); err != nil {
+				t.Fatalf("printTitleLookupMiss: %v", err)
+			}
+			if !strings.Contains(stdout.String(), "matched: none") {
+				t.Fatalf("an absent title still prints no answer on stdout:\n%q", stdout.String())
+			}
+			if strings.Contains(stdout.String(), "[]") {
+				t.Fatalf("stdout still carries the bare empty array:\n%q", stdout.String())
+			}
+			if !strings.Contains(stderr.String(), tt.wantErr) {
+				t.Fatalf("stderr = %q, want it to name %q", stderr.String(), tt.wantErr)
+			}
+		})
+	}
+	// The two states must not share a sentence: reporting "nothing is close"
+	// when the search never ran is a confident negative the command did not
+	// earn.
+	cmd := &cobra.Command{}
+	var stderr bytes.Buffer
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetErr(&stderr)
+	if err := printTitleLookupMiss(cmd, "Anything", nil, 0, titleLookupFailed); err != nil {
+		t.Fatalf("printTitleLookupMiss: %v", err)
+	}
+	if strings.Contains(stderr.String(), "close to it") {
+		t.Fatalf("a failed lookup claims nothing is close:\n%s", stderr.String())
 	}
 }
 
@@ -597,7 +683,240 @@ func TestTitleCandidatesSurviveAMistypedWord(t *testing.T) {
 	}
 }
 
-func TestTitleCandidatesRejectATokenodyTitle(t *testing.T) {
+// A title copied out of a reference list carries a trailing full stop, and a
+// title copied out of a PDF carries whatever whitespace the layout produced.
+// Both used to miss: the exact test folded only case and surrounding
+// whitespace, so the near block then reported the SAME paper under a heading
+// that says "different titles". These belong in .results.
+func TestItemsFindMatchesATitleTypedFromAReferenceList(t *testing.T) {
+	for _, tt := range []struct {
+		name  string
+		title string
+	}{
+		{name: "trailing full stop", title: "Attention is all you need."},
+		{name: "internal whitespace run", title: "Attention  Is All   You Need"},
+		{name: "both", title: "  Attention  is all you need.  "},
+		{name: "newline for a space", title: "Attention Is All You\nNeed"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			seedNearTitleStore(t)
+			stdout, _ := runItemsFind(t, &rootFlags{asJSON: true}, "--title", tt.title)
+			got := decodeFindEnvelope(t, stdout)
+			if len(got.Results) != 1 || got.Results[0].Key != "ATTN" {
+				t.Fatalf("results = %+v, want exactly ATTN for %q", got.Results, tt.title)
+			}
+			if got.Meta.TitleLookup != titleLookupExactHit {
+				t.Fatalf("meta.title_lookup = %q, want %q", got.Meta.TitleLookup, titleLookupExactHit)
+			}
+			if got.Near != nil {
+				t.Fatalf("near_title_matches = %+v, want absent: this is an exact hit", got.Near)
+			}
+		})
+	}
+}
+
+// Four outcomes used to be one absent key, and an agent could not tell "the
+// paper is not here" from "the near lookup broke".
+func TestItemsFindReportsTitleLookupState(t *testing.T) {
+	for _, tt := range []struct {
+		name string
+		args []string
+		want string
+	}{
+		{name: "exact hit", args: []string{"--title", "attention is all you need"}, want: titleLookupExactHit},
+		{name: "near matches", args: []string{"--title", "Attention Is All You Nead"}, want: titleLookupNear},
+		{name: "nothing close", args: []string{"--title", "Quantum Gravity in Eleven Dimensions"}, want: titleLookupNoNear},
+		{name: "not a title lookup", args: []string{"--doi", "10.9999/absent"}, want: ""},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			seedNearTitleStore(t)
+			stdout, _ := runItemsFind(t, &rootFlags{asJSON: true}, tt.args...)
+			if got := decodeFindEnvelope(t, stdout).Meta.TitleLookup; got != tt.want {
+				t.Fatalf("meta.title_lookup = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+// The state that used to be indistinguishable from "nothing is close": the
+// near lookup itself failing. Deleting the fts5 structure record corrupts the
+// index while leaving every column the readiness probe requires, which is what
+// a damaged store looks like from here — the exact lookup still answers, and
+// only the MATCH query fails, with "fts5: corruption found reading blob 10".
+func TestItemsFindReportsAFailedNearLookup(t *testing.T) {
+	dbPath := seedNearTitleStore(t)
+	db, err := store.OpenWithContext(t.Context(), dbPath)
+	if err != nil {
+		t.Fatalf("reopen store: %v", err)
+	}
+	if _, err := db.DB().Exec(`DELETE FROM resources_fts_data WHERE id = 10`); err != nil {
+		t.Fatalf("corrupt fts index: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close store: %v", err)
+	}
+
+	stdout, stderr := runItemsFind(t, &rootFlags{asJSON: true}, "--title", "Attention Is All You Nead")
+	got := decodeFindEnvelope(t, stdout)
+	if got.Meta.TitleLookup != titleLookupFailed {
+		t.Fatalf("meta.title_lookup = %q, want %q: a broken lookup must not read as a confident negative",
+			got.Meta.TitleLookup, titleLookupFailed)
+	}
+	if got.Near != nil {
+		t.Fatalf("near_title_matches = %+v, want absent when the lookup failed", got.Near)
+	}
+	if !strings.Contains(stderr, "warning: near-title lookup unavailable") {
+		t.Fatalf("stderr = %q, want the failure named", stderr)
+	}
+}
+
+// --plain and --csv build no envelope (wantsJSONEnvelope refuses them), so
+// before this the near rows reached neither stream: empty stdout, empty
+// stderr, exit 0. The code comment claimed the envelope carried them.
+func TestItemsFindNotesNearTitlesItCannotShow(t *testing.T) {
+	for _, tt := range []struct {
+		name  string
+		flags *rootFlags
+	}{
+		{name: "plain", flags: &rootFlags{plain: true}},
+		{name: "csv", flags: &rootFlags{csv: true}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			seedNearTitleStore(t)
+			stdout, stderr := runItemsFind(t, tt.flags, "--title", "Attention Is All You Nead")
+			if strings.Contains(stdout, "near titles") || strings.Contains(stdout, "ATTN") {
+				t.Fatalf("%s stdout carries the prose block, which corrupts what the caller parses:\n%s", tt.name, stdout)
+			}
+			if !strings.Contains(stderr, "near titles found") {
+				t.Fatalf("%s drops the rows silently; stderr = %q", tt.name, stderr)
+			}
+			if !strings.Contains(stderr, "--json") {
+				t.Fatalf("%s note does not say how to see them; stderr = %q", tt.name, stderr)
+			}
+		})
+	}
+}
+
+// --quiet is exempt: there the exit code is the whole answer, and the envelope
+// carries the rows whenever stdout is not a terminal.
+func TestItemsFindQuietPrintsNoNearTitleNote(t *testing.T) {
+	seedNearTitleStore(t)
+	_, stderr := runItemsFind(t, &rootFlags{quiet: true}, "--title", "Attention Is All You Nead")
+	if strings.Contains(stderr, "near titles found") {
+		t.Fatalf("--quiet asked for silence but got a note: %q", stderr)
+	}
+}
+
+// year was omitempty, so a human saw the `----` placeholder while an agent got
+// no key at all for the same row. Both halves now report the same gap.
+func TestItemsFindNearTitleRowsAlwaysCarryYear(t *testing.T) {
+	seedNearTitleStore(t)
+	stdout, _ := runItemsFind(t, &rootFlags{asJSON: true}, "--title", "Attention Is All You Nead")
+	if !strings.Contains(stdout, `"year": ""`) {
+		t.Fatalf("SUBT has date \"n.d.\", so its year key must be present and empty:\n%s", stdout)
+	}
+}
+
+// The near list is rank-capped at five. Without the count an agent reads "not
+// in the five" as "not in the library" — the same human/agent asymmetry the
+// year field had, and the prose block already prints "(5 of 8 shown)".
+func TestItemsFindReportsTheNearTitleTotalWhenTruncated(t *testing.T) {
+	dataHome := t.TempDir()
+	t.Setenv("XDG_DATA_HOME", dataHome)
+	db, err := store.OpenWithContext(t.Context(), filepath.Join(dataHome, "zotio", "data.db"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	rows := make([]json.RawMessage, 0, nearTitleMatchLimit+2)
+	for i := range nearTitleMatchLimit + 2 {
+		rows = append(rows, json.RawMessage(fmt.Sprintf(
+			`{"key":"ATTN%04d","data":{"key":"ATTN%04d","itemType":"journalArticle","title":"Attention Is All You Need on Corpus %d","date":"20%02d"}}`,
+			i, i, i, i+10)))
+	}
+	if _, _, err := db.UpsertBatch("items", rows); err != nil {
+		t.Fatalf("seed items: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close store: %v", err)
+	}
+
+	stdout, _ := runItemsFind(t, &rootFlags{asJSON: true}, "--title", "Attention Is All You Nead")
+	var got struct {
+		Near []nearTitleMatch `json:"near_title_matches"`
+		Meta struct {
+			Total int `json:"near_title_total"`
+		} `json:"meta"`
+	}
+	if err := json.Unmarshal([]byte(stdout), &got); err != nil {
+		t.Fatalf("decode %q: %v", stdout, err)
+	}
+	if len(got.Near) != nearTitleMatchLimit {
+		t.Fatalf("near rows = %d, want the rank cap %d", len(got.Near), nearTitleMatchLimit)
+	}
+	if got.Meta.Total != len(rows) {
+		t.Fatalf("meta.near_title_total = %d, want %d: the reader cannot tell the list was capped", got.Meta.Total, len(rows))
+	}
+}
+
+// The selectors are OR-ed. A --doi hit beside a --title miss returns rows, so
+// calling that an exact title hit would report a title match that never
+// happened — and the near lookup does not run once anything matched, so the
+// title question is genuinely unanswered and the key must stay absent.
+func TestItemsFindDoesNotClaimATitleHitFromAnotherSelector(t *testing.T) {
+	dataHome := t.TempDir()
+	t.Setenv("XDG_DATA_HOME", dataHome)
+	db, err := store.OpenWithContext(t.Context(), filepath.Join(dataHome, "zotio", "data.db"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	if _, _, err := db.UpsertBatch("items", []json.RawMessage{
+		json.RawMessage(`{"key":"ATTN","data":{"key":"ATTN","itemType":"journalArticle","title":"Attention Is All You Need","DOI":"10.48550/arXiv.1706.03762"}}`),
+	}); err != nil {
+		t.Fatalf("seed items: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close store: %v", err)
+	}
+
+	stdout, _ := runItemsFind(t, &rootFlags{asJSON: true},
+		"--doi", "10.48550/arXiv.1706.03762", "--title", "Some Entirely Different Paper")
+	got := decodeFindEnvelope(t, stdout)
+	if len(got.Results) != 1 || got.Results[0].Key != "ATTN" {
+		t.Fatalf("results = %+v, want ATTN matched by DOI", got.Results)
+	}
+	if got.Meta.TitleLookup != "" {
+		t.Fatalf("meta.title_lookup = %q, want empty: the title never matched and no near lookup ran", got.Meta.TitleLookup)
+	}
+
+	// The same command when the title IS the thing that matched.
+	stdout, _ = runItemsFind(t, &rootFlags{asJSON: true},
+		"--doi", "10.9999/absent", "--title", "attention is all you need.")
+	if got := decodeFindEnvelope(t, stdout).Meta.TitleLookup; got != titleLookupExactHit {
+		t.Fatalf("meta.title_lookup = %q, want %q", got, titleLookupExactHit)
+	}
+}
+
+// Every selector is a flag, so a positional argument is a mistake — most often
+// a shell that ate the quotes around a title. It used to be ignored in silence.
+func TestItemsFindRejectsPositionalArguments(t *testing.T) {
+	seedNearTitleStore(t)
+	cmd := newItemsFindCmd(&rootFlags{asJSON: true})
+	cmd.SetArgs([]string{"--title", "Random Forests", "extra", "junk", "args"})
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetErr(&bytes.Buffer{})
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("Execute with positional arguments = nil, want a refusal naming them")
+	}
+	if !strings.Contains(err.Error(), "extra") {
+		t.Fatalf("error = %v, want it to name the unexpected arguments", err)
+	}
+}
+
+// A title with no term of two or more characters produces an empty MATCH
+// expression, and TitleCandidates returns before it queries the index rather
+// than building `MATCH ”`, which fts5 rejects.
+func TestTitleCandidatesRejectATitleWithNoUsableTerm(t *testing.T) {
 	db, err := store.OpenWithContext(t.Context(), filepath.Join(t.TempDir(), "data.db"))
 	if err != nil {
 		t.Fatalf("open store: %v", err)

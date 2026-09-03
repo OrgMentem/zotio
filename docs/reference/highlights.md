@@ -87,9 +87,9 @@ Turn a DOI, PMID, arXiv ID, or ISBN into a schema-valid Zotero item — one comm
 
 ### `items find`
 
-Resolve a DOI, ISBN, PMID, arXiv ID, citation key, URL, OpenAlex work ID, or exact title against the local mirror.
+Resolve a DOI, ISBN, PMID, arXiv ID, citation key, URL, OpenAlex work ID, or exact title against the local mirror — and when an exact title matches nothing, list the closest titles in the library with a similarity score, so a typo is distinguishable from an absent paper.
 
-> **Why it matters** — Check whether a paper already exists before an import creates a duplicate.
+> **Why it matters** — Check whether a paper already exists before an import creates a duplicate; a mistyped title reports near titles to confirm instead of a bare empty answer.
 
 ### `items enrich`
 

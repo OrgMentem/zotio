@@ -259,7 +259,7 @@ format = "obsidian"      # or "logseq"
 - **`items audit`** — count and list items missing PDFs, abstracts, DOIs, tags, or citation-core fields; `--verify-files` checks PDFs actually exist on disk.
 - **`items duplicates`** — detect likely duplicates by DOI or title (attachments/notes excluded), then `duplicates resolve` to merge safely.
 - **`items citekey-conflicts`** — find missing or duplicate Better BibTeX keys before they break a LaTeX build.
-- **`items find`** — resolve a DOI, ISBN, PMID, arXiv ID, citation key, URL, OpenAlex work ID, or exact title against the local mirror before importing a duplicate. When a title matches nothing, the closest titles in the library are listed separately with a score, so a typo is distinguishable from an absent paper; they are suggestions to confirm, never matches.
+- **`items find`** — resolve a DOI, ISBN, PMID, arXiv ID, citation key, URL, OpenAlex work ID, or exact title against the local mirror before importing a duplicate. A title matches whatever its case, whitespace, quote and dash styling, or trailing full stop, so a title pasted from a reference list resolves. When it still matches nothing, the closest titles in the library are listed separately with a score, so a typo is distinguishable from an absent paper; they are suggestions to confirm, never matches.
 
 ### Reading & synthesis
 

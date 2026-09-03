@@ -5,9 +5,9 @@ package cli
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	neturl "net/url"
-	"os"
 	"regexp"
 	"strings"
 
@@ -27,6 +27,12 @@ func newItemsFindCmd(flags *rootFlags) *cobra.Command {
   zotio items find --openalex W2741809807
   zotio items find --title "Attention Is All You Need"
   zotio items find --citekey smith2023 --json`,
+		// Every selector is a flag, so a positional argument is always a
+		// mistake — a shell that ate the quotes around a title, most often.
+		// Without this, `find --title "Random Forests" extra junk` returned
+		// Random Forests and never mentioned the junk. `items similar` already
+		// declares its arity (items_similar.go), so the convention exists.
+		Args:        cobra.NoArgs,
 		Annotations: map[string]string{"mcp:read-only": "true"},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			normalizedQuery, err := query.normalized()
@@ -62,17 +68,61 @@ func newItemsFindCmd(flags *rootFlags) *cobra.Command {
 			// .results: `import resolve` and every caller that treats a hit as
 			// identity must keep reading an exact-equality answer.
 			var near []nearTitleMatch
-			if normalizedQuery.Title != "" && len(rows) == 0 {
-				near, err = queryNearTitleMatches(cmd.Context(), rawDB, normalizedQuery.Title)
-				if err != nil {
-					// Advisory data. Name the failure instead of silently
-					// reverting to the empty answer this exists to explain.
-					fmt.Fprintf(cmd.ErrOrStderr(), "near-title lookup unavailable: %v\n", err)
+			nearTotal := 0
+			// Four outcomes used to collapse into one absent envelope key, and
+			// one of them was a failure: a caller could not tell "nothing is
+			// close" from "the near lookup broke". Name the state so an agent
+			// branches on data instead of on absence.
+			titleLookup := ""
+			if normalizedQuery.Title != "" {
+				if len(rows) > 0 {
+					// The selectors are OR-ed, so a --doi hit alongside a
+					// --title miss still returns rows. Test the title itself
+					// rather than call any hit an exact title hit: the near
+					// lookup deliberately does not run once anything matched,
+					// so in that case this command never answered the title
+					// question and the key stays absent, which is what absence
+					// has always meant here.
+					if findRowsMatchTitleExactly(rows, normalizedQuery.Title) {
+						titleLookup = titleLookupExactHit
+					}
+				} else {
+					var nearErr error
+					near, nearTotal, nearErr = queryNearTitleMatches(cmd.Context(), rawDB, normalizedQuery.Title)
+					switch {
+					case errors.Is(nearErr, context.Canceled), errors.Is(nearErr, context.DeadlineExceeded):
+						// Not advisory: the command was interrupted or timed
+						// out. Degrading to a warning and exiting 0 would
+						// report "not found" for a lookup that never finished.
+						return nearErr
+					case nearErr != nil:
+						// Advisory data. Name the failure instead of silently
+						// reverting to the empty answer this exists to explain.
+						fmt.Fprintf(cmd.ErrOrStderr(), "warning: near-title lookup unavailable: %v\n", nearErr)
+						titleLookup = titleLookupFailed
+					case len(near) == 0:
+						titleLookup = titleLookupNoNear
+					default:
+						titleLookup = titleLookupNear
+					}
 				}
 			}
 			// Item lookup has no live API equivalent, so it always reads the
 			// local mirror. Use the shared envelope to keep `.results` stable.
 			prov := localProvenance(rawDB, "items", "local_only")
+			if titleLookup != "" {
+				// Inside meta, not beside it: this annotates the read rather
+				// than adding data, and `extra` is reserved for top-level
+				// sibling payloads.
+				prov.MetaExtra = map[string]any{"title_lookup": titleLookup}
+				if nearTotal > len(near) {
+					// The prose block says "(5 of 8 shown)". Without the same
+					// number here an agent would read "not in the five" as
+					// "not in the library", which is the asymmetry between the
+					// two halves of this output that the year field also had.
+					prov.MetaExtra["near_title_total"] = nearTotal
+				}
+			}
 			printProvenance(cmd, countResultItems(data), prov)
 			if wantsJSONEnvelope(cmd.OutOrStdout(), flags) {
 				filtered := data
@@ -83,6 +133,13 @@ func newItemsFindCmd(flags *rootFlags) *cobra.Command {
 				}
 				// Sibling key, never inside .results: the envelope invariant
 				// is that .results holds items matched by identity.
+				//
+				// --select and --compact deliberately do NOT reach it. That
+				// runs against printOutputWithFlags, where an explicit field
+				// list is the caller's authoritative request, but this block
+				// is not the caller's data: it is rank-capped at five, its
+				// shape is fixed, and a caller that selected `key` still needs
+				// the title to decide whether the row is their paper.
 				var extra map[string]any
 				if len(near) > 0 {
 					extra = map[string]any{"near_title_matches": near}
@@ -100,13 +157,28 @@ func newItemsFindCmd(flags *rootFlags) *cobra.Command {
 						return err
 					}
 					if len(items) >= 25 {
-						fmt.Fprintf(os.Stderr, "\nShowing %d results. To narrow: add --json --select or more lookup flags.\n", len(items))
+						fmt.Fprintf(cmd.ErrOrStderr(), "\nShowing %d results. To narrow: add --json --select or more lookup flags.\n", len(items))
 					}
 					return nil
 				}
 			}
-			if len(near) > 0 && wantsNearTitleProse(flags) {
-				return printNearTitleMatches(cmd, normalizedQuery.Title, near)
+			// The whole human answer to a title that matched nothing. `[]` was
+			// printed whenever nothing was close, so the human half of this
+			// fix only worked when a near match existed.
+			if titleLookup != "" && titleLookup != titleLookupExactHit && wantsNearTitleProse(flags) {
+				return printTitleLookupMiss(cmd, normalizedQuery.Title, near, nearTotal, titleLookup)
+			}
+			// Reaching here with rows in hand means nothing carried them:
+			// --plain and --csv keep wantsJSONEnvelope false, so those callers
+			// saw nothing on either stream. --quiet is exempt because there
+			// the exit code is the whole answer (helpers.go printOutputWithFlags).
+			if len(near) > 0 && !flags.quiet {
+				// len(near), not nearTotal: this promises what --json will
+				// actually hand back, and the envelope carries the rank-capped
+				// list. The full count belongs to the prose block, where the
+				// reader can act on it.
+				fmt.Fprintf(cmd.ErrOrStderr(), "note: %s found and not shown in this format; re-run with --json to see them.\n",
+					pluralCount(len(near), "near title", "near titles"))
 			}
 			return printOutputWithFlags(cmd.OutOrStdout(), data, flags)
 		},
@@ -118,9 +190,35 @@ func newItemsFindCmd(flags *rootFlags) *cobra.Command {
 	cmd.Flags().StringVar(&query.Citekey, "citekey", "", "Find items with this Better BibTeX citation key")
 	cmd.Flags().StringVar(&query.URL, "url", "", "Find items with this normalized URL")
 	cmd.Flags().StringVar(&query.OpenAlex, "openalex", "", "Find items with this OpenAlex work ID or URL")
-	cmd.Flags().StringVar(&query.Title, "title", "", "Find items with this exact title, ignoring case and surrounding whitespace; when nothing matches, near titles are reported separately")
+	cmd.Flags().StringVar(&query.Title, "title", "", "Find items with this exact title, ignoring case, whitespace, quote and dash styling, and a trailing full stop; when the lookup as a whole matches nothing, the closest titles are reported separately (near_title_matches in JSON) and never as results")
 
 	return cmd
+}
+
+// titleLookup* name the outcome of a --title lookup, reported as
+// meta.title_lookup. Without them all four outcomes were one absent key, and
+// one of the four is a failure: a caller could not distinguish "no title in
+// the library is close" from "the near-title lookup itself broke", so an agent
+// had to treat a broken feature as a confident negative.
+const (
+	titleLookupExactHit = "exact_hit"
+	titleLookupNear     = "near_matches"
+	titleLookupNoNear   = "no_near_matches"
+	titleLookupFailed   = "near_lookup_failed"
+)
+
+// findRowsMatchTitleExactly reports whether any returned row matched on the
+// title itself, reusing the one exact matcher rather than a second folding.
+// The selectors are OR-ed, so "rows came back" and "the title matched" are
+// different facts, and meta.title_lookup must report the second.
+func findRowsMatchTitleExactly(rows []map[string]any, title string) bool {
+	titleOnly := findItemsQuery{Title: title}
+	for _, row := range rows {
+		if findRowMatchesExact(row, titleOnly) {
+			return true
+		}
+	}
+	return false
 }
 
 // queryNearTitleMatches gathers approximate title matches for a title that
@@ -128,20 +226,30 @@ func newItemsFindCmd(flags *rootFlags) *cobra.Command {
 // (bm25 order); ranking is titleTokenSimilarity. Splitting it that way keeps
 // the scan in SQLite — a Go-side edit distance over every item would read the
 // whole library to answer a lookup that found nothing.
-func queryNearTitleMatches(ctx context.Context, db *store.Store, title string) ([]nearTitleMatch, error) {
+//
+// The second return value is how many candidates cleared the junk floor before
+// the rank cap, so the reader can be told the list was truncated. Ranking the
+// full set and slicing here costs nothing: rankNearTitleMatches sorts every
+// scored candidate before it slices either way.
+func queryNearTitleMatches(ctx context.Context, db *store.Store, title string) ([]nearTitleMatch, int, error) {
 	rows, err := db.TitleCandidates(ctx, title, titleCandidateLimit)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	candidates := make([]titleCandidate, 0, len(rows))
-	years := make(map[string]string, len(rows))
+	details := make(map[string]nearTitleMatch, len(rows))
 	for _, row := range rows {
 		var payload struct {
 			Key  string `json:"key"`
 			Data struct {
-				Key   string `json:"key"`
-				Title string `json:"title"`
-				Date  string `json:"date"`
+				Key      string `json:"key"`
+				Title    string `json:"title"`
+				Date     string `json:"date"`
+				ItemType string `json:"itemType"`
+				// Zotero writes the trash marker as 1, and other paths in
+				// this package have seen `true`, so decode it loosely rather
+				// than let one row shape drop the candidate entirely.
+				Deleted any `json:"deleted"`
 			} `json:"data"`
 		}
 		if json.Unmarshal(row, &payload) != nil {
@@ -155,13 +263,27 @@ func queryNearTitleMatches(ctx context.Context, db *store.Store, title string) (
 			continue
 		}
 		candidates = append(candidates, titleCandidate{Key: key, Title: payload.Data.Title})
-		years[key] = findItemYear(payload.Data.Date)
+		details[key] = nearTitleMatch{
+			Year:     findItemYear(payload.Data.Date),
+			ItemType: payload.Data.ItemType,
+			// TitleCandidates does not filter the trash, and the exact path
+			// prints a DELETED column, so an unmarked trashed near match hid
+			// information the other half of this command already shows.
+			Trashed: duplicateResolveTruthy(payload.Data.Deleted),
+		}
 	}
-	matches := rankNearTitleMatches(title, candidates, nearTitleMatchLimit)
-	for i := range matches {
-		matches[i].Year = years[matches[i].Key]
+	ranked := rankNearTitleMatches(title, candidates, len(candidates))
+	total := len(ranked)
+	if total > nearTitleMatchLimit {
+		ranked = ranked[:nearTitleMatchLimit]
 	}
-	return matches, nil
+	for i := range ranked {
+		detail := details[ranked[i].Key]
+		ranked[i].Year = detail.Year
+		ranked[i].ItemType = detail.ItemType
+		ranked[i].Trashed = detail.Trashed
+	}
+	return ranked, total, nil
 }
 
 var findItemYearPattern = regexp.MustCompile(`\b((?:1[5-9]|20)[0-9]{2})\b`)
@@ -176,31 +298,105 @@ func findItemYear(date string) string {
 // wantsNearTitleProse reports whether the near-match block may be written to
 // stdout as prose. --plain and --csv are machine formats with no column for a
 // score, and --quiet asked for less output; interleaving a prose block into any
-// of them corrupts what the caller is parsing. The JSON envelope carries the
-// same rows under near_title_matches, so nothing is lost in those modes.
+// of them corrupts what the caller is parsing.
+//
+// Those callers do NOT get the rows another way. --plain and --csv keep
+// wantsJSONEnvelope false (helpers.go), so no envelope is ever built and the
+// rows reach neither stream; the command prints a stderr note naming the count
+// and --json instead. --quiet reaches the envelope only when stdout is not a
+// terminal.
+//
+// flags is never nil here: RunE dereferences it (flags.selectFields,
+// flags.asJSON) long before this is consulted, so a nil-guard would have been
+// a branch no run can reach.
 func wantsNearTitleProse(flags *rootFlags) bool {
-	if flags == nil {
-		return true
-	}
 	return !flags.plain && !flags.csv && !flags.quiet
+}
+
+// nearTitleMissingField is the placeholder for a column a row cannot fill. A
+// blank cell reads as a rendering bug, and the envelope reports the same gap as
+// an empty string, so the two halves describe the same row.
+const nearTitleMissingField = "----"
+
+// printTitleLookupMiss is the human answer to a --title lookup that matched
+// nothing. "matched: none" belongs here rather than inside the near-match
+// renderer: a genuinely absent title has no rows to render, and printing the
+// bare `[]` that fell out of the generic writer told the reader the command
+// was broken instead of answering their question.
+func printTitleLookupMiss(cmd *cobra.Command, title string, matches []nearTitleMatch, total int, lookup string) error {
+	fmt.Fprint(cmd.OutOrStdout(), "matched: none\n\n")
+	if len(matches) == 0 {
+		return printNoNearTitleMatches(cmd, title, lookup)
+	}
+	return printNearTitleMatches(cmd, title, matches, total)
 }
 
 // printNearTitleMatches renders the near-match block. It states that these are
 // NOT matches, because the reader arrived here by asking for one title and is
 // being shown different titles; a list that looks like a result set invites
 // treating the top row as the answer.
-func printNearTitleMatches(cmd *cobra.Command, title string, matches []nearTitleMatch) error {
+//
+// Columns lead with what the reader acts on — the key they will pass to the
+// next command — and end with the score, which is advisory. That is also the
+// house shape for a ranked local list (printItemSimilarReport in
+// items_similar.go: tab-separated, uppercase header, score beside the row it
+// explains). Item type is always shown because two rows can otherwise be
+// identical in every printed column: a preprint and its journal version share
+// a title and a year.
+//
+// total is the count before the rank cap. Printing five of eight with nothing
+// to say so tells the reader their paper is absent when it is on row six.
+//
+// matches is never empty: printTitleLookupMiss owns that branch, because an
+// empty list is a different answer rather than a table with no rows.
+func printNearTitleMatches(cmd *cobra.Command, title string, matches []nearTitleMatch, total int) error {
 	out := cmd.OutOrStdout()
-	fmt.Fprintf(out, "matched: none\n\n")
-	fmt.Fprintf(out, "near titles (different titles — confirm before using):\n")
+	fmt.Fprint(out, "near titles (different titles — confirm before using):\n")
+	tw := newTabWriter(out)
+	fmt.Fprintln(tw, "KEY\tYEAR\tTYPE\tTITLE\tSCORE")
 	for _, match := range matches {
 		year := match.Year
 		if year == "" {
-			year = "----"
+			year = nearTitleMissingField
 		}
-		fmt.Fprintf(out, "  %.2f  %-9s %s  %s\n", match.Score, match.Key, year, match.Title)
+		itemType := match.ItemType
+		if itemType == "" {
+			itemType = nearTitleMissingField
+		}
+		shownTitle := match.Title
+		if match.Trashed {
+			// The exact path prints a DELETED column, so an unmarked trashed
+			// row here would hide what the other half of this command shows.
+			shownTitle += " (trashed)"
+		}
+		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%.2f\n", match.Key, year, itemType, shownTitle, match.Score)
 	}
-	fmt.Fprintf(cmd.ErrOrStderr(), "\nNo item has the title %q. Confirm one above, then look it up by key.\n", title)
+	if err := tw.Flush(); err != nil {
+		return err
+	}
+	if total > len(matches) {
+		fmt.Fprintf(out, "(%d of %d shown)\n", len(matches), total)
+	}
+	fmt.Fprintf(cmd.ErrOrStderr(), "\nNo item has the title %q. If one above is the paper you meant, then run: zotio items get %s\n",
+		title, matches[0].Key)
+	return nil
+}
+
+// printNoNearTitleMatches answers a title lookup that found nothing and had
+// nothing close. The rows are the interesting case, so this branch used to fall
+// through to a bare `[]` — which reads as a broken command rather than as the
+// answer "that paper is not here". Name the state and the remedy.
+//
+// A failed near lookup is kept distinct: reporting "nothing is close" when the
+// search never ran would be a confident negative the command did not earn.
+func printNoNearTitleMatches(cmd *cobra.Command, title, lookup string) error {
+	if lookup == titleLookupFailed {
+		fmt.Fprintf(cmd.ErrOrStderr(),
+			"No item has the title %q. The near-title lookup failed (reported above), so whether a close title exists is unknown.\n", title)
+		return nil
+	}
+	fmt.Fprintf(cmd.ErrOrStderr(),
+		"No item has the title %q, and no title in your library is close to it. This reads the local mirror only, so run 'zotio sync' if you expected a hit.\n", title)
 	return nil
 }
 
@@ -522,7 +718,14 @@ func findRowMatchesExact(row map[string]any, query findItemsQuery) bool {
 			return true
 		}
 	}
-	if query.Title != "" && normalizeDuplicateTitle(d.Title) == normalizeDuplicateTitle(query.Title) {
+	// normalizeExactTitle, not normalizeDuplicateTitle: the latter is only
+	// lowercase + TrimSpace because items_duplicates.go groups on
+	// LOWER(TRIM(...)) in SQL and the two layers must not drift. That folding
+	// is too narrow for a title a person typed or pasted, so
+	// `--title "Attention is all you need."` — one trailing full stop, exactly
+	// what a reference list gives you — missed, and the near block then
+	// reported the same paper under a heading saying "different titles".
+	if query.Title != "" && normalizeExactTitle(d.Title) == normalizeExactTitle(query.Title) {
 		return true
 	}
 	return false
