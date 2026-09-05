@@ -2,7 +2,7 @@
 
 Notable changes to zotio. Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow [SemVer](https://semver.org/).
 
-## [Unreleased]
+## [0.24.0] — 2026-09-05
 
 ### Changed — breaking
 
@@ -31,9 +31,158 @@ Notable changes to zotio. Format follows [Keep a Changelog](https://keepachangel
   status is reported.** A retry that receives 412 after a lost response can now
   report `applied` or `converged` when a write-plane read confirms the requested
   fields. A non-matching object remains a conflict.
+- **`--group all` now runs only allowlisted commands, and refuses the rest
+  loudly.** Fan-out repeats one command per library, which is safe only for a
+  read that is finite, library-scoped, side-effect-free and
+  output-namespace-safe. A command outside that allowlist exits 2 naming the
+  property it breaks, rather than being repeated and producing plausible wrong
+  output. `items duplicates --group all` additionally requires `--json` (or
+  `--agent`), because its advisory rows exist only in the JSON report.
+- **The `--group all` aggregate no longer carries a per-library `output`
+  field.** Each library's payload is now printed verbatim under its own heading
+  in text mode. The removed field could never appear in the JSON aggregate, and
+  its absence was why a library whose payload parsed printed a heading and
+  nothing else.
+- **`items create`, `items new` and `import apply` now emit one write
+  envelope.** Creates route through the shared mutation engine on both the Web
+  and connector paths, so they are journaled, undoable, and mirrored for
+  immediate `--data-source local` reads. The three previous bespoke output
+  shapes (a preview envelope, a connector object, and a Web object) are gone.
+- **A pinned Better BibTeX key written by Zotero itself is now recognised
+  everywhere.** zotio parsed only `Citation Key: ` with a space, while Zotero
+  writes `Citation Key:` colon-tight. Five surfaces read that field and
+  disagreed. `items citekey-conflicts` therefore stops reporting a colon-tight
+  key as missing and starts reporting two of them as the conflict pair;
+  `library health`, `items bibcheck` grouping, CSL-JSON citekey selection,
+  `items note-template` and vault note filenames all change to the same
+  corrected answer.
+- **Webhook and feedback delivery now treat only 2xx as delivered.** Redirects
+  are refused rather than followed, so a 301 or 302 meant the payload was never
+  delivered while the command reported success. The error names the status.
+- **`tail --interval 0` or a negative interval now exits 2.** It previously
+  panicked in `time.NewTicker` and printed a Go stack trace. `--follow=false`
+  ignores the interval and polls once, as it always should have.
+- **The local store schema version is now 8.** A binary built before this
+  release refuses a store this one has opened, which is the existing forward
+  guard, not new behaviour. No data repair is needed in either direction.
+
+### Added
+
+- **`items find` answers a near miss instead of returning nothing.** When an
+  exact `--title` or `--citekey` lookup matches nothing, the closest candidates
+  in the library are reported under a sibling top-level key
+  (`near_title_matches`, `near_citekey_matches`) with a score, never inside
+  `.results`, so a typo is distinguishable from an absent paper.
+  `meta.title_lookup` and `meta.citekey_lookup` name the outcome, including
+  when the near search itself failed, so that is never read as a confident
+  negative. Titles are ranked over the FTS index; citekeys by edit distance
+  over the whole key, where a differing digit costs double a differing letter
+  because a wrong year is a different work.
+- **An exact title lookup now matches a title typed from a reference list.**
+  Case, whitespace runs, quote and dash styling, Unicode form and a trailing
+  full stop all fold, so `--title "Attention is all you need."` resolves into
+  `.results` instead of being reported as a near miss of itself. `import
+  discover` uses the same folding for its skip decision, so a provider title
+  differing only in punctuation no longer imports a duplicate.
+- **`items bibcheck` suggests the key you meant.** An unknown citekey carries
+  the closest library keys as an advisory `suggestions` array when any is close
+  enough to name. Status stays `unknown`: a suggestion is never a resolution.
+- **`items duplicates` reports titles that are close but not equal.**
+  `--by title` and `--by all` add scored `near_title_groups` requiring review,
+  beside the byte-identical exact pass. `duplicates resolve --title` will not
+  merge them, and `library health` and `library prisma` ignore them, so
+  published screening counts cannot move. `meta.near_title_scan` says whether
+  the comparison was complete, so `no_near_matches` cannot be misread as a
+  clean library when common words prevented some pairs from being compared.
+- **`--group all` fans reads and diagnostics across every library.** One
+  invocation resolves the personal library plus every accessible group, runs
+  the command per library against its own scoped store and base URL, and merges
+  one report with a `library` dimension on every row and finding.
+- **`library health --for vault` predicts whether a vault push is
+  trustworthy.** The preset composes the three shipped checks that decide a
+  note filename — `citekey_missing`, `citekey_conflict`, `missing_citation` —
+  so the damage is caught before `vault push` renames or collides notes rather
+  than after.
+- **The shared `--scope` grammar now reaches `items audit`, `items enrich`,
+  `items summarize` and `vault sync`.** One selection vocabulary
+  (`collection:`, `tag:`, `item:`, `query:`, `saved-search:`) works across
+  them, with a uniform `precondition_unmet` envelope and exit 9 when Zotero is
+  closed. The existing per-command flags keep working; a disagreeing
+  combination exits 2.
+
+### Changed
+
+- **`collections export`, `searches run`, `searches materialize` and `search`
+  now read through the shared local-parity path**, so they work with Zotero
+  closed where the data is mirrored. `--format json` is the offline route for
+  `collections export`; `bibtex`, `ris` and `csljson` refuse with a
+  `live_local_api` precondition, because those bytes come from Zotero's own
+  translators and a hand-written `.bib` would emit different citation keys.
+  The capability registry's declared preconditions are now checked against
+  runtime behaviour by a test, so agents pre-flighting a command are not
+  misled in either direction.
+- **`capabilities drift` and `tags audit` now emit the shared finding
+  envelope**, so every diagnostic in the trust surface has one diff-able,
+  fixer-routable shape.
+- **The client read cache is invalidated per resource type.** A write clears
+  the affected namespace and its declared dependents instead of the whole
+  cache, so warm reads survive a write-heavy agent session. Entries carry the
+  generation they were written at and a reader rejects an older one, so a file
+  surviving an interrupted clear can never be served.
 
 ### Fixed
 
+- A permanent delete is no longer resurrected by the next sync. The delete
+  lands on the Web API while sync reads the local desktop plane, which has no
+  deletion feed, so a sync inside that lag window re-inserted the item. The
+  reap now writes a deletion marker in the same transaction that removes the
+  mirror rows; sync drops a read-plane row whose key is marked and retires the
+  marker once the read plane stops reporting it. Reasoning is recorded in
+  `dev/adr/0007-permanent-delete-tombstones.md`.
+- A local `search` no longer creates the mirror it failed to find. It used the
+  creating store opener while being certified side-effect-free for fan-out, so
+  one `search --group all` left an empty database behind for every library that
+  had never been synced. A missing mirror is now an empty answer with a stderr
+  notice naming the remedy.
+- `--deliver` no longer leaks a file descriptor and a temporary file on
+  in-process executions. The spool was cleaned up only in the CLI entrypoint,
+  which the MCP server and the workflow runner bypass, so a persistent server
+  accumulated both and never delivered the captured output to the requested
+  sink. Delivery and cleanup now happen for every execution path, including
+  when the command returns an error, and a step that exceeds the output ceiling
+  delivers everything it wrote instead of a truncated prefix.
+- Command output no longer leaks into the MCP JSON-RPC stream. The `--deliver`
+  spool multiplexed onto the process's real stdout rather than the command's
+  writer, which under the stdio transport injected library output into the
+  protocol stream and emptied the workflow step output feeding
+  `${steps.<name>.output}`, `StdinFrom` and the resume checkpoint.
+- `items enrich` no longer reports a refused attachment write as applied. The
+  linked-url path discarded the batch-write response body, and the Zotero
+  endpoint answers HTTP 200 with a `failed` object for per-item rejections, so
+  the failure never reached the operator's exit code.
+- Analytics no longer report a whitespace-only venue or creator as real.
+  SQLite's one-argument `TRIM()` strips only the space character, so a value
+  made entirely of a tab or newline survived both guards. The whitespace set is
+  now passed explicitly in SQL, where the trimmed value is the grouping key.
+- Near-title duplicate groups are reported in a stable order, so a truncated
+  report lists the same pairs on every run against unchanged data and a bug
+  report against it reproduces.
+- Advisory rows and `meta` survive `--select` and `--compact` on
+  `items duplicates`; the field selection applies to the report it selects
+  from, not to the advisory keys beside it.
+- A near-key suggestion list counts distinct citation keys against its cap and
+  orders them deterministically, so one key held by three items is one
+  suggestion rather than three rows filling the list.
+- `items find --title` no longer scores unrelated titles as a match, and no
+  longer discards the correct one. Function words are dropped only when both
+  titles keep enough informative words, numerals must match exactly, titles
+  fold to NFC before tokenising, token pairing is symmetric, and only a title
+  that is equal after folding can score `1.00`.
+- A connector re-parent no longer issues an HTTP request after its caller has
+  cancelled: the route deadline is bound before the duplicate-detection read.
+- The legacy `auth_header` slot is cleared in exactly one place.
+  `Config.SaveCredential` owns the invariant; two unreachable call-site copies
+  are gone.
 - Attachment reconciliation now pages every child of the target. Stored and
   linked attachments beyond Zotero's first 25 rows are reused, resumed, or
   rejected on content conflict instead of being duplicated.
@@ -2289,7 +2438,7 @@ First tagged release: the trust-and-automation layer for Zotero.
 - **Onboarding** — `zotio init` guided setup (Zotero detection, local API, key, first sync, health check).
 - Release engineering: goreleaser builds for 6 platforms, cosign-signed checksums, SBOMs, Homebrew tap.
 
-[Unreleased]: https://github.com/OrgMentem/zotio/compare/v0.23.0...HEAD
+[0.24.0]: https://github.com/OrgMentem/zotio/compare/v0.23.0...v0.24.0
 [0.23.0]: https://github.com/OrgMentem/zotio/compare/v0.22.1...v0.23.0
 [0.22.1]: https://github.com/OrgMentem/zotio/compare/v0.22.0...v0.22.1
 [0.22.0]: https://github.com/OrgMentem/zotio/compare/v0.21.0...v0.22.0
