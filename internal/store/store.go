@@ -37,7 +37,20 @@ import (
 // read-plane row the marker exists to suppress — silently resurrecting a
 // permanently deleted item. During a staged rollout an older zotio on PATH is
 // a normal state, so the version gate has to turn that into a loud refusal.
-const StoreSchemaVersion = 8
+//
+// Version 9 reaps orphaned resources_fts rows. ftsRowID has been changed twice
+// (id-only multiplier hash, then sha256 over resource_type and id), and the
+// writer deletes an index row by rowid before inserting the new document, so
+// every row written under a superseded scheme survived as a second document
+// for the same resource. A real 4906-item library carried two 'items'
+// documents for 4063 of its items, and every reader that joins the index
+// counted that item twice: `search` listed it twice, `items list --query`
+// listed it twice and mis-paginated, and `items find --title` spent two of its
+// five near-title suggestion slots on one item. Only the fulltext rows had
+// ever been reaped (version 6), and only for that one resource type. This bump
+// is what makes an existing mirror heal itself on open instead of asking the
+// operator to delete it.
+const StoreSchemaVersion = 9
 
 // ErrNotFound identifies a resource read that found no matching row.
 var ErrNotFound = errors.New("store: resource not found")
@@ -623,6 +636,15 @@ func (s *Store) migrate(ctx context.Context) error {
 		if err := s.purgeAliasResources(ctx, conn); err != nil {
 			return fmt.Errorf("purging alias resources: %w", err)
 		}
+		// Runs after the alias purge on purpose: an alias resource that is
+		// about to be deleted must not be reindexed under its current rowid
+		// first, and every earlier data migration has finished writing index
+		// rows by here.
+		if current < 9 {
+			if err := reapOrphanedFTSIndexRows(ctx, conn); err != nil {
+				return fmt.Errorf("reaping orphaned FTS index rows: %w", err)
+			}
+		}
 		// run novel-feature auxiliary-table
 		// migrations after the generated migrations and before the version
 		// stamp, as migrateExtras documents. Currently a no-op (empty slice);
@@ -638,6 +660,105 @@ func (s *Store) migrate(ctx context.Context) error {
 		}
 		return nil
 	})
+}
+
+// reapOrphanedFTSIndexRows is the version-9 data migration. Every write path
+// removes a resource's index row by `DELETE ... WHERE rowid = ftsRowID(type,
+// id)` before inserting the new document, so a row written under a superseded
+// rowid scheme is never addressed again: it stays in the index as a second,
+// stale document for a resource that already has a current one. Readers join
+// the index on (id, resource_type) rather than on rowid, so both documents
+// match and the resource is returned twice.
+//
+// The repair deletes the rows whose rowid disagrees with the current scheme
+// rather than rebuilding the whole index. A rebuild would have to re-read and
+// re-render every resource document, including synced PDF bodies, which is
+// most of the bytes in a large mirror — minutes of work and a WAL the size of
+// the library, to reproduce documents that are already correct. It would also
+// throw away any document whose `resources` row has since been deleted
+// without deleting the resource, hiding rather than fixing an inconsistency.
+// Reaping touches only the rows that are provably unreachable.
+//
+// Deleting alone is not enough. A resource that was last written by the older
+// binary has its ONLY document under the stale rowid, and dropping it would
+// silently make that resource unsearchable, so a resource left without a
+// current document is reindexed here from its stored payload. A stale row
+// whose resource no longer exists is pure residue and is simply dropped —
+// that is how the pre-canonicalization items-top/collections-top index rows,
+// which purgeAliasResources could not address by rowid, finally leave.
+//
+// The scan reads the whole index once, which is the price of finding rows that
+// cannot be found by key. Only the mismatching triples are held in memory, so
+// the cost is one pass and a slice proportional to the damage, not to the
+// library.
+func reapOrphanedFTSIndexRows(ctx context.Context, conn *sql.Conn) error {
+	type orphanRow struct {
+		rowid        int64
+		id           string
+		resourceType string
+	}
+	rows, err := conn.QueryContext(ctx, `SELECT rowid, id, resource_type FROM resources_fts`)
+	if err != nil {
+		return err
+	}
+	var orphans []orphanRow
+	for rows.Next() {
+		var rowid int64
+		// A legacy row may hold NULL where a column is expected. NULL folds to
+		// "" here, which cannot match any rowid the current scheme produces
+		// for a real resource, so such a row is reaped like any other orphan
+		// and finds no payload to reindex from.
+		var id, resourceType sql.NullString
+		if err := rows.Scan(&rowid, &id, &resourceType); err != nil {
+			_ = rows.Close()
+			return err
+		}
+		if rowid == ftsRowID(resourceType.String, id.String) {
+			continue
+		}
+		orphans = append(orphans, orphanRow{rowid: rowid, id: id.String, resourceType: resourceType.String})
+	}
+	if err := rows.Close(); err != nil {
+		return err
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+
+	for _, orphan := range orphans {
+		if _, err := conn.ExecContext(ctx, `DELETE FROM resources_fts WHERE rowid = ?`, orphan.rowid); err != nil {
+			return err
+		}
+		current := ftsRowID(orphan.resourceType, orphan.id)
+		var present int
+		if err := conn.QueryRowContext(ctx,
+			`SELECT count(*) FROM resources_fts WHERE rowid = ?`, current,
+		).Scan(&present); err != nil {
+			return err
+		}
+		if present > 0 {
+			continue
+		}
+		var data string
+		err := conn.QueryRowContext(ctx,
+			`SELECT data FROM resources WHERE resource_type = ? AND id = ?`,
+			orphan.resourceType, orphan.id,
+		).Scan(&data)
+		if errors.Is(err, sql.ErrNoRows) {
+			continue
+		}
+		if err != nil {
+			return err
+		}
+		if _, err := conn.ExecContext(ctx,
+			`INSERT INTO resources_fts (rowid, id, resource_type, content) VALUES (?, ?, ?, ?)`,
+			current, orphan.id, orphan.resourceType,
+			buildSearchDocument(orphan.resourceType, json.RawMessage(data)),
+		); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // reindexLegacyFulltextResources is the version-6 data migration. Earlier
@@ -1819,6 +1940,31 @@ func (s *Store) PendingWrites(resourceType string) (map[string]PendingWrite, err
 		pending[id] = PendingWrite{Changes: []byte(changes), WrittenAt: writtenAt.Time, Deleted: deleted != 0}
 	}
 	return pending, rows.Err()
+}
+
+// PendingDeletion reports whether one key carries a DELETION marker for a
+// resource type. It answers about a single key rather than loading every
+// marker, because the delete path asks about exactly one.
+//
+// A deletion marker is evidence about the WRITE plane, not the read plane, and
+// that is why the delete path consults it. The marker is written only after
+// the write plane reported the delete applied (ADR-0007), so the key IS gone
+// there. A later 404 from the same plane for the same key is therefore
+// confirmation of that delete rather than a fresh failure, and a repeated
+// permanent delete can report the idempotent no-op it actually is instead of
+// an error that contradicts the mirror.
+func (s *Store) PendingDeletion(resourceType, id string) (bool, error) {
+	var deleted int
+	err := s.db.QueryRow(
+		`SELECT deleted FROM pending_writes WHERE resource_type = ? AND id = ?`,
+		resourceType, id).Scan(&deleted)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return deleted != 0, nil
 }
 
 // ExpirePendingWrites retires every FIELD-CHANGE marker of a resource type

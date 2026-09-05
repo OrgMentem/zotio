@@ -118,12 +118,24 @@ type nearTitleMatch struct {
 }
 
 // rankNearTitleMatches scores candidates against the query title and returns
-// the best ones, strongest first.
+// the best ones, strongest first, with each DISTINCT item key listed once.
 //
-// Ordering is (score desc, key asc). The key tiebreak is what makes two runs
-// over the same library print the same list: candidate order arrives from bm25,
-// which can reorder equally-scored rows, and an unstable list cannot be
-// reproduced from a bug report.
+// Ordering is (score desc, key asc, title asc), which is a strict total order
+// over the whole row once one key appears once. The tiebreaks are what make
+// two runs over the same library print the same list: candidate order arrives
+// from bm25, which can reorder equally-scored rows, sort.Slice is not stable,
+// and an unstable list cannot be reproduced from a bug report. The title
+// settles the case where the same key arrives twice carrying different text,
+// so which row SURVIVES the deduplication is decided by the row itself rather
+// than by the order the rows arrived in.
+//
+// The cap counts distinct KEYS, not rows, exactly as rankNearCiteKeys counts
+// distinct keys: the cap is a promise about how many SUGGESTIONS the reader
+// gets, and one item listed twice is one suggestion. A real library produced
+// the duplicate — the FTS index held two documents for one item, so candidate
+// generation offered it twice and two of five slots printed the same key,
+// title and score. store.TitleCandidates no longer emits that pair, and this
+// stays because the cap must hold whatever the caller hands it.
 func rankNearTitleMatches(query string, candidates []titleCandidate, limit int) []nearTitleMatch {
 	queryTokens := titleMatchTokens(query)
 	if len(queryTokens.all) == 0 {
@@ -151,12 +163,24 @@ func rankNearTitleMatches(query string, candidates []titleCandidate, limit int) 
 		if scored[i].Score != scored[j].Score {
 			return scored[i].Score > scored[j].Score
 		}
-		return scored[i].Key < scored[j].Key
+		if scored[i].Key != scored[j].Key {
+			return scored[i].Key < scored[j].Key
+		}
+		return scored[i].Title < scored[j].Title
 	})
-	if len(scored) > limit {
-		scored = scored[:limit]
+	ranked := make([]nearTitleMatch, 0, min(limit, len(scored)))
+	seen := make(map[string]struct{}, len(scored))
+	for _, row := range scored {
+		if _, duplicate := seen[row.Key]; duplicate {
+			continue
+		}
+		seen[row.Key] = struct{}{}
+		ranked = append(ranked, row)
+		if len(ranked) == limit {
+			break
+		}
 	}
-	return scored
+	return ranked
 }
 
 // titleTokens is one title prepared for comparison. Both token lists are kept

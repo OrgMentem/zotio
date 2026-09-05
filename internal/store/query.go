@@ -721,7 +721,8 @@ func (s *Store) SearchByType(query, resourceType string, limit int) ([]json.RawM
 const titleCandidateMaxTerms = 24
 
 // TitleCandidates returns top-level items whose indexed document shares any
-// word with the supplied title, best match first.
+// word with the supplied title, best match first, with each ITEM returned
+// once.
 //
 // The terms are joined with OR, not FTS5's implicit AND, because the caller is
 // looking for a title the user may have mistyped: under AND a single wrong word
@@ -729,6 +730,18 @@ const titleCandidateMaxTerms = 24
 // exposes it as `rank`) supplies the precision by weighting rare words above
 // common ones — which is what stops a query for a short generic title from
 // ranking every item that happens to contain "the".
+//
+// The match is grouped by item id before it reaches `resources`, because the
+// index can hold more than one document for one item and a plain join then
+// emits the item once per document. That is not hypothetical: a library synced
+// by an older binary keeps its FTS row under that binary's rowid scheme, the
+// current writer inserts a second row under the current scheme, and the join
+// returned the same item twice — same key, same title, same score — which
+// spent two of the caller's five suggestion slots on one suggestion. Grouping
+// also makes LIMIT mean "this many items", which is what the caller's cap is
+// counted against. min(rank) keeps the best-scoring document of the group:
+// bm25 is negative, so the smallest value is the strongest match, which is why
+// the outer ORDER BY is ascending.
 //
 // This is candidate generation only. The caller re-ranks these rows by actual
 // title similarity; the document indexed here spans creators, tags and
@@ -743,10 +756,15 @@ func (s *Store) TitleCandidates(ctx context.Context, title string, limit int) ([
 	}
 	rows, err := s.queryWithBusyRetryContext(ctx,
 		`SELECT r.data FROM resources r
-		 JOIN resources_fts f ON r.id = f.id AND r.resource_type = f.resource_type
-		 WHERE resources_fts MATCH ? AND f.resource_type = 'items'
+		 JOIN (
+		   SELECT f.id AS item_id, min(f.rank) AS best_rank
+		   FROM resources_fts f
+		   WHERE resources_fts MATCH ? AND f.resource_type = 'items'
+		   GROUP BY f.id
+		 ) m ON m.item_id = r.id
+		 WHERE r.resource_type = 'items'
 		 AND (r.parent_key IS NULL OR r.parent_key = '')
-		 ORDER BY rank
+		 ORDER BY m.best_rank
 		 LIMIT ?`,
 		match, limit,
 	)

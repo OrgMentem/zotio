@@ -5,6 +5,7 @@ package cli
 import (
 	"math"
 	"math/rand/v2"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -378,6 +379,82 @@ func TestRankNearTitleMatchesCapsByRank(t *testing.T) {
 	got := rankNearTitleMatches("Attention Is All You Need", candidates, nearTitleMatchLimit)
 	if len(got) != nearTitleMatchLimit {
 		t.Fatalf("len(matches) = %d, want the rank cap %d", len(got), nearTitleMatchLimit)
+	}
+}
+
+// The field case, from a real 4906-item library: `items find --title
+// "Bushfire investigations in AustraliX"` printed
+//
+//	FB2YZV5Z  Bushfire investigations in Australia  0.99
+//	FB2YZV5Z  Bushfire investigations in Australia  0.99
+//
+// One item, offered twice by candidate generation because the FTS index held
+// two documents for it, and a reader was told to compare two things that are
+// the same thing. The index no longer holds the pair, and the ranker still
+// has to survive it, because the cap is a promise about how many SUGGESTIONS
+// the reader gets.
+func TestRankNearTitleMatchesListsAnItemOnce(t *testing.T) {
+	duplicated := titleCandidate{Key: "FB2YZV5Z", Title: "Bushfire investigations in Australia"}
+	got := rankNearTitleMatches(
+		"Bushfire investigations in AustraliX",
+		[]titleCandidate{duplicated, duplicated},
+		nearTitleMatchLimit,
+	)
+	if len(got) != 1 {
+		t.Fatalf("matches = %+v, want the one item once", got)
+	}
+	if got[0].Key != "FB2YZV5Z" || got[0].Score != 0.99 {
+		t.Fatalf("match = %+v, want FB2YZV5Z at 0.99", got[0])
+	}
+}
+
+// The cap counts distinct ITEMS, exactly as rankNearCiteKeys counts distinct
+// keys. The duplicated key sorts first here, so a cap counted by row spends
+// three of the five slots on one suggestion and the reader never sees K03,
+// K04 or K05.
+func TestRankNearTitleMatchesCapsByDistinctItem(t *testing.T) {
+	candidates := []titleCandidate{
+		{Key: "AAAA", Title: "Attention Is All You Need"},
+		{Key: "K03", Title: "Attention Is All You Need"},
+		{Key: "AAAA", Title: "Attention Is All You Need"},
+		{Key: "K01", Title: "Attention Is All You Need"},
+		{Key: "K05", Title: "Attention Is All You Need"},
+		{Key: "AAAA", Title: "Attention Is All You Need"},
+		{Key: "K02", Title: "Attention Is All You Need"},
+		{Key: "K04", Title: "Attention Is All You Need"},
+	}
+	got := rankNearTitleMatches("Attention Is All You Need", candidates, nearTitleMatchLimit)
+	if len(got) != nearTitleMatchLimit {
+		t.Fatalf("matches = %d, want the rank cap %d: %+v", len(got), nearTitleMatchLimit, got)
+	}
+	keys := make([]string, 0, len(got))
+	for _, row := range got {
+		keys = append(keys, row.Key)
+	}
+	want := []string{"AAAA", "K01", "K02", "K03", "K04"}
+	if !reflect.DeepEqual(keys, want) {
+		t.Fatalf("ranked keys = %#v, want %#v: %d slots must hold %d DISTINCT items",
+			keys, want, nearTitleMatchLimit, nearTitleMatchLimit)
+	}
+}
+
+// Which row survives the deduplication must be a property of the rows, not of
+// the order they arrived in. Candidates arrive in bm25 order and sort.Slice is
+// not stable, so with the score and the key equal there has to be a third
+// comparison — otherwise the same library prints a different title on the next
+// run and the list cannot be reproduced from a bug report.
+func TestRankNearTitleMatchesSurvivorIsIndependentOfArrivalOrder(t *testing.T) {
+	candidates := []titleCandidate{
+		{Key: "SAME", Title: "Attention Is All You Need Bravo"},
+		{Key: "SAME", Title: "Attention Is All You Need Alpha"},
+	}
+	forward := rankNearTitleMatches("Attention Is All You Need", candidates, nearTitleMatchLimit)
+	if len(forward) != 1 || forward[0].Title != "Attention Is All You Need Alpha" {
+		t.Fatalf("matches = %+v, want only the title-ascending row", forward)
+	}
+	reversed := []titleCandidate{candidates[1], candidates[0]}
+	if again := rankNearTitleMatches("Attention Is All You Need", reversed, nearTitleMatchLimit); !reflect.DeepEqual(again, forward) {
+		t.Fatalf("reversed arrival order ranked %+v, want the same list as %+v", again, forward)
 	}
 }
 

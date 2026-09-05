@@ -8,6 +8,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"hash/fnv"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -824,5 +825,57 @@ func TestTitleCandidateMatchQueryCapsTheTermCount(t *testing.T) {
 	}
 	if strings.Contains(query, fmt.Sprintf("term%02d", titleCandidateMaxTerms)) {
 		t.Errorf("query kept a term past the cap: %s", query)
+	}
+}
+
+// A library synced by an older binary keeps its FTS row under that binary's
+// rowid scheme; the current writer deletes only the row under the current
+// scheme and inserts its own, so one item ends up with two indexed documents.
+// A real 4906-item library held two 'items' documents for 4063 of its items —
+// one rowid from sha256(resource_type\x00id), one from an FNV-1a hash of the
+// same string — and `items find --title` printed the same key, title and score
+// twice in near_title_matches, spending two of five suggestion slots on one
+// suggestion.
+//
+// So the candidate query must return one row per ITEM, not one per document.
+// The second document is seeded the way the residue really looks, and the
+// count is asserted first: without it the test would pass on a store that
+// never held the duplicate at all.
+func TestTitleCandidatesReturnAnItemOnceWhenTheIndexHoldsTwoDocuments(t *testing.T) {
+	s := queryTestStore(t)
+	if _, _, err := s.UpsertBatch("items", []json.RawMessage{
+		json.RawMessage(`{"key":"FB2YZV5Z","version":1,"data":{"key":"FB2YZV5Z","itemType":"journalArticle","title":"Bushfire investigations in Australia"}}`),
+	}); err != nil {
+		t.Fatalf("seed item: %v", err)
+	}
+	legacy := fnv.New64a()
+	_, _ = legacy.Write([]byte("items\x00FB2YZV5Z"))
+	legacyRowID := int64(legacy.Sum64() & 0x7FFFFFFFFFFFFFFF)
+	if legacyRowID == ftsRowID("items", "FB2YZV5Z") {
+		t.Fatal("the legacy rowid collides with the current one, so this seeds no second document")
+	}
+	if _, err := s.DB().ExecContext(context.Background(),
+		`INSERT INTO resources_fts (rowid, id, resource_type, content) VALUES (?, 'FB2YZV5Z', 'items', ?)`,
+		legacyRowID, "Bushfire investigations in Australia journalArticle FB2YZV5Z",
+	); err != nil {
+		t.Fatalf("seed the legacy index row: %v", err)
+	}
+
+	var documents int
+	if err := s.DB().QueryRowContext(context.Background(),
+		`SELECT count(*) FROM resources_fts WHERE id = 'FB2YZV5Z' AND resource_type = 'items'`,
+	).Scan(&documents); err != nil {
+		t.Fatalf("count indexed documents: %v", err)
+	}
+	if documents != 2 {
+		t.Fatalf("indexed documents = %d, want 2: the duplicate this defends against is not present", documents)
+	}
+
+	rows, err := s.TitleCandidates(context.Background(), "Bushfire investigations in Australia", 10)
+	if err != nil {
+		t.Fatalf("TitleCandidates: %v", err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("candidates = %d, want 1: two indexed documents are still one item\n%s", len(rows), rows)
 	}
 }
