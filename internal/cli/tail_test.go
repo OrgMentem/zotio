@@ -4,11 +4,13 @@ package cli
 import (
 	"bytes"
 	"context"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -275,5 +277,115 @@ func TestEmitChanges_DeletionsFetchFailureRetainsCursor(t *testing.T) {
 	}
 	if v, src, _ := db.StoredLibraryVersion("tail:items"); v != 10 || src != srv.URL {
 		t.Fatalf("cursor = (%d,%q), want (10,%q): unread deletions must be retried, not skipped", v, src, srv.URL)
+	}
+}
+
+// A non-positive --interval used to reach time.NewTicker in follow mode and
+// panic with a Go runtime message plus a stack trace. Bad flag input must be
+// a usage error (exit 2), like watch's own interval check, and must never
+// panic. The server is live so that, without the check, the initial poll
+// succeeds and execution reaches the ticker exactly as the operator saw it;
+// the request counter pins that a valid invocation is rejected before any
+// work, not after a poll.
+func TestTailRejectsNonPositiveIntervalInFollowMode(t *testing.T) {
+	var requests atomic.Int64
+	mux := http.NewServeMux()
+	mux.HandleFunc("/items", func(w http.ResponseWriter, r *http.Request) {
+		requests.Add(1)
+		w.Header().Set("Last-Modified-Version", "1")
+		_, _ = io.WriteString(w, `[{"key":"X","version":1,"data":{"title":"hello"}}]`)
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("ZOTERO_BASE_URL", srv.URL)
+	t.Setenv("ZOTERO_CONFIG", filepath.Join(t.TempDir(), "missing.toml"))
+	savedGroup := activeGroupIDLocked()
+	setActiveGroupID("")
+	t.Cleanup(func() { setActiveGroupID(savedGroup) })
+
+	for _, arg := range []string{"0", "0s", "-5s"} {
+		t.Run(arg, func(t *testing.T) {
+			cmd := RootCmd()
+			cmd.SilenceErrors, cmd.SilenceUsage = true, true
+			var out, errOut bytes.Buffer
+			cmd.SetOut(&out)
+			cmd.SetErr(&errOut)
+			cmd.SetArgs([]string{"tail", "items", "--follow=true", "--interval=" + arg, "--db", filepath.Join(t.TempDir(), "tail.db")})
+
+			var err error
+			func() {
+				defer func() {
+					if r := recover(); r != nil {
+						t.Fatalf("tail items --follow=true --interval=%s panicked: %v", arg, r)
+					}
+				}()
+				err = cmd.ExecuteContext(context.Background())
+			}()
+
+			if err == nil {
+				t.Fatalf("tail items --interval=%s returned nil, want usage error", arg)
+			}
+			var cliErr *cliError
+			if !errors.As(err, &cliErr) || cliErr.code != 2 {
+				t.Fatalf("tail items --interval=%s error = %T %[2]v, want usageErr code 2", arg, err)
+			}
+			if !strings.Contains(err.Error(), "--interval must be positive") {
+				t.Fatalf("tail items --interval=%s error = %q, want the positive-interval message", arg, err.Error())
+			}
+			if got := requests.Load(); got != 0 {
+				t.Fatalf("requests = %d, want 0: a rejected interval must not poll", got)
+			}
+		})
+	}
+}
+
+// --follow=false is the one-shot mode: it never builds a ticker and never
+// reads the interval, so a zero interval is legitimate there and must poll
+// once instead of being rejected or panicking. A positive interval takes the
+// same path unchanged.
+func TestTailOneShotIntervalDoesNotReachTicker(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/items", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Last-Modified-Version", "1")
+		_, _ = io.WriteString(w, `[{"key":"X","version":1,"data":{"title":"hello"}}]`)
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("ZOTERO_BASE_URL", srv.URL)
+	t.Setenv("ZOTERO_CONFIG", filepath.Join(t.TempDir(), "missing.toml"))
+	savedGroup := activeGroupIDLocked()
+	setActiveGroupID("")
+	t.Cleanup(func() { setActiveGroupID(savedGroup) })
+
+	for _, arg := range []string{"0", "-5s", "5ms"} {
+		t.Run(arg, func(t *testing.T) {
+			cmd := RootCmd()
+			cmd.SilenceErrors, cmd.SilenceUsage = true, true
+			var out, errOut bytes.Buffer
+			cmd.SetOut(&out)
+			cmd.SetErr(&errOut)
+			cmd.SetArgs([]string{"tail", "items", "--follow=false", "--interval=" + arg, "--db", filepath.Join(t.TempDir(), "tail.db")})
+
+			var err error
+			func() {
+				defer func() {
+					if r := recover(); r != nil {
+						t.Fatalf("tail items --follow=false --interval=%s panicked: %v", arg, r)
+					}
+				}()
+				err = cmd.ExecuteContext(context.Background())
+			}()
+			if err != nil {
+				t.Fatalf("tail items --follow=false --interval=%s: %v (stderr %q)", arg, err, errOut.String())
+			}
+			events := ndjsonEvents(t, out.String())
+			if len(events) != 1 || events[0]["event"] != "upsert" || events[0]["key"] != "X" {
+				t.Fatalf("events = %v, want a single upsert of X", events)
+			}
+		})
 	}
 }

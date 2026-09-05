@@ -70,6 +70,16 @@ native streaming instead of polling.`,
   # Pipe to jq for filtering
   zotio tail events --interval 30s | jq 'select(.type == "error")'`,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			// --interval feeds time.NewTicker below, which panics on a
+			// non-positive duration, so reject it as usage input rather
+			// than crash with a Go runtime stack. Same shape as watch's
+			// interval check (watch.go); tail keeps no minimum because
+			// sub-10s polls are a documented tail use.
+			// --follow=false never builds a ticker and never reads the
+			// interval, so that mode is left alone.
+			if follow && interval <= 0 {
+				return usageErr(fmt.Errorf("--interval must be positive"))
+			}
 			if workflowPath != "" {
 				if _, err := readWorkflowRunSpec(workflowPath); err != nil {
 					return err
@@ -130,9 +140,6 @@ native streaming instead of polling.`,
 			signal.Notify(sig, syscall.SIGTERM, syscall.SIGINT)
 			defer signal.Stop(sig)
 
-			ticker := time.NewTicker(interval)
-			defer ticker.Stop()
-
 			fmt.Fprintf(os.Stderr, "Tailing %s every %s (Ctrl+C to stop)\n", resource, interval)
 
 			// Initial poll
@@ -151,6 +158,12 @@ native streaming instead of polling.`,
 			if !follow {
 				return nil
 			}
+
+			// The ticker exists only for the follow loop, so it is built
+			// after the one-shot exit: no path can hand an unvalidated
+			// interval to time.NewTicker.
+			ticker := time.NewTicker(interval)
+			defer ticker.Stop()
 
 			for {
 				select {
