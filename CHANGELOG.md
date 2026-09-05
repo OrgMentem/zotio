@@ -62,9 +62,16 @@ Notable changes to zotio. Format follows [Keep a Changelog](https://keepachangel
 - **`tail --interval 0` or a negative interval now exits 2.** It previously
   panicked in `time.NewTicker` and printed a Go stack trace. `--follow=false`
   ignores the interval and polls once, as it always should have.
-- **The local store schema version is now 8.** A binary built before this
-  release refuses a store this one has opened, which is the existing forward
-  guard, not new behaviour. No data repair is needed in either direction.
+- **The local store schema version is now 9, and the first run after upgrading
+  must be `zotio sync`.** Read commands refuse a store below the required
+  version and name that remedy, which is the existing forward guard rather than
+  new behaviour; the released 0.23.0 store is version 6, so a sync was already
+  required. The version-9 migration repairs the search index in place — see the
+  duplicate-result fix below — and takes about 1.5 seconds on a 289 MB mirror.
+- **`items delete` now rejects more than one key instead of silently dropping
+  the rest.** The command was built entirely from the first argument, so
+  `items delete K1 K2 --permanent` purged `K1` and discarded `K2` with no
+  message. It is a usage error now. Pass one key per invocation.
 
 ### Added
 
@@ -132,6 +139,38 @@ Notable changes to zotio. Format follows [Keep a Changelog](https://keepachangel
 
 ### Fixed
 
+- `search`, `items list --query` and `search --fulltext` no longer return the
+  same record more than once. Every write path deleted an item's old search-index
+  row by its computed row id, so a row written under a superseded row-id scheme
+  was never addressed again: it stayed in the index, kept matching, and every
+  reader that joined on it returned that record twice. Found only by running the
+  hero command against a real 4906-item library, where 4134 records carried a
+  duplicate index document and `search` listed a hit twice. The version-9
+  migration deletes the stale rows and reindexes any record whose only document
+  was one of them, so no store can present a duplicate; a test pins the row-id
+  scheme so changing it again has to be a migration rather than a silent leak.
+  Pagination was wrong for the same reason: `--limit` counted rows, so a page
+  held fewer distinct records than asked for.
+- A near-title suggestion list no longer spends two of its five slots on one
+  item. The rank cap now counts distinct items, matching the citekey ranker.
+- Library and remote text can no longer forge or recolour zotio's own output.
+  A title carrying a tab, a newline or an ANSI escape was printed straight into
+  the aligned tables of the advisory blocks and of `items similar`,
+  `items related`, `collections gaps`, `reading-list` and the `items bibcheck`
+  findings prose, where a newline forged what looked like another row, a tab
+  pushed every later value under the wrong header, and an escape reached the
+  terminal. All of those now use the sanitize-and-truncate treatment
+  `printTable` already applied. JSON output is unchanged, because a consumer
+  needs those bytes verbatim.
+- A permanent delete of a key the write plane has already purged is reported as
+  a no-op naming the recorded purge, instead of a bare `HTTP 404` that gave the
+  operator no way to tell a completed delete from a failed one. A key that is
+  still live in the mirror with no recorded purge remains a failure, so the
+  reported status and the mirror state always agree. `dev/adr/0007` records the
+  inverse propagation window this exposed: a key the read plane has and the
+  write plane never had.
+- `tail --follow=false` no longer prints a banner naming an interval it does not
+  use and offering a Ctrl+C for a command that returns immediately.
 - A permanent delete is no longer resurrected by the next sync. The delete
   lands on the Web API while sync reads the local desktop plane, which has no
   deletion feed, so a sync inside that lag window re-inserted the item. The
