@@ -969,6 +969,46 @@ func TestExecuteWorkflowRunStepDoesNotRaceWithConcurrentStdoutWriter(t *testing.
 	}
 }
 
+// A workflow step's args are Cobra args, so a step may carry the global
+// --deliver. The step runner therefore has to own the spool the way the CLI
+// entrypoint does: deliver the captured output, keep the step's own output for
+// ${steps.<name>.output}, and leave no temp file behind in a runner that
+// executes many steps in one process.
+func TestExecuteWorkflowRunStepDeliversAndRemovesDeliverSpool(t *testing.T) {
+	target := filepath.Join(t.TempDir(), "step.json")
+
+	output, stderr, err := executeWorkflowRunStepWithRoot(context.Background(), RootCmd(),
+		[]string{"which", "citation", "--deliver", "file:" + target}, nil)
+	if err != nil {
+		t.Fatalf("executeWorkflowRunStep --deliver: %v; stderr=%s", err, stderr)
+	}
+
+	delivered, err := os.ReadFile(target)
+	if err != nil {
+		t.Fatalf("deliver sink: %v", err)
+	}
+	if len(delivered) == 0 {
+		t.Fatal("deliver sink is empty: the step's output never reached it")
+	}
+	if output != string(delivered) {
+		t.Fatalf("step output = %q, delivered = %q; want identical", output, delivered)
+	}
+	assertNoDeliverTemp(t, target)
+}
+
+func TestExecuteWorkflowRunStepRemovesDeliverSpoolWhenStepFails(t *testing.T) {
+	target := filepath.Join(t.TempDir(), "step.json")
+
+	if _, _, err := executeWorkflowRunStepWithRoot(context.Background(), RootCmd(),
+		[]string{"which", "citation", "--deliver", "file:" + target, "--data-source", "bogus"}, nil); err == nil {
+		t.Fatal("failing step returned no error; --data-source bogus must fail after the spool is opened")
+	}
+	if _, err := os.Stat(target); !os.IsNotExist(err) {
+		t.Fatalf("target exists after a failed step: %v", err)
+	}
+	assertNoDeliverTemp(t, target)
+}
+
 func TestWorkflowRunDryRunWinsOverYes(t *testing.T) {
 	path := writeWorkflowRunTestSpec(t, workflowRunSpec{Steps: []workflowRunStepSpec{
 		{Args: []string{"version"}},

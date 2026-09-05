@@ -3,6 +3,8 @@
 package cli
 
 import (
+	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -442,4 +444,63 @@ func TestPureGroupCommandsStayNonRunnable(t *testing.T) {
 				"unknownSubcommandErr would stop rejecting its mistyped subcommands", path[0])
 		}
 	}
+}
+
+// ExecuteRootInProcess is the only place that owns the --deliver spool, so an
+// in-process caller that never goes through Execute() must still see the
+// captured output delivered to the sink, keep its own capture, and be left with
+// no spool temp file.
+func TestExecuteRootInProcessDeliversCapturedOutputAndRemovesSpool(t *testing.T) {
+	// Not parallel: RootCmd() binds package-level globals.
+	target := filepath.Join(t.TempDir(), "out.json")
+	root := RootCmd()
+	var captured, capturedErr bytes.Buffer
+	root.SetOut(&captured)
+	root.SetErr(&capturedErr)
+	root.SetArgs([]string{"which", "citation", "--deliver", "file:" + target})
+
+	if err := ExecuteRootInProcess(context.Background(), root); err != nil {
+		t.Fatalf("ExecuteRootInProcess: %v (stderr %q)", err, capturedErr.String())
+	}
+
+	delivered, err := os.ReadFile(target)
+	if err != nil {
+		t.Fatalf("deliver sink: %v", err)
+	}
+	if len(delivered) == 0 {
+		t.Fatal("deliver sink is empty: the captured output never reached it")
+	}
+	// The spool is a copy, not a diversion: an in-process caller reads the same
+	// bytes from the writer it installed.
+	if captured.String() != string(delivered) {
+		t.Fatalf("caller capture = %q, delivered = %q; want identical", captured.String(), delivered)
+	}
+	assertNoDeliverTemp(t, target)
+}
+
+// The case a PersistentPostRunE hook cannot cover: Cobra abandons the execution
+// as soon as a persistent pre-run hook, flag validation or RunE returns an
+// error, so no post-run hook fires — and the spool is opened by that very
+// pre-run hook, one statement before this failure. --data-source is validated
+// after the spool is created, which makes it the smallest reproduction.
+func TestExecuteRootInProcessRemovesSpoolWhenCommandFails(t *testing.T) {
+	// Not parallel: RootCmd() binds package-level globals.
+	target := filepath.Join(t.TempDir(), "out.json")
+	root := RootCmd()
+	var captured bytes.Buffer
+	root.SetOut(&captured)
+	root.SetErr(&captured)
+	root.SetArgs([]string{"which", "citation", "--deliver", "file:" + target, "--data-source", "bogus"})
+
+	err := ExecuteRootInProcess(context.Background(), root)
+	if err == nil {
+		t.Fatal("ExecuteRootInProcess succeeded; --data-source bogus must fail after the spool is opened")
+	}
+	if !strings.Contains(err.Error(), "--data-source") {
+		t.Fatalf("error = %v, want the --data-source validation failure", err)
+	}
+	if _, statErr := os.Stat(target); !os.IsNotExist(statErr) {
+		t.Fatalf("target exists after a failed command: %v", statErr)
+	}
+	assertNoDeliverTemp(t, target)
 }

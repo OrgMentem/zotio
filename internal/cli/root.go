@@ -107,17 +107,16 @@ func Execute() error {
 	var flags rootFlags
 	rootCmd := newRootCmd(&flags)
 
-	// Run under the interrupt context so cmd.Context() is Ctrl-C/SIGTERM-cancellable
-	// on the CLI path; newClient seeds the client base context from it.
-	defer func() {
-		flags.deliverSpool.cleanup()
-	}()
 	// Before Cobra can answer a mistyped subcommand with help text and success.
 	// Returned, not printed: main is the only writer of the error line.
 	if err := unknownSubcommandErr(rootCmd, os.Args[1:]); err != nil {
 		return err
 	}
-	err := rootCmd.ExecuteContext(client.InterruptContext())
+	// Run under the interrupt context so cmd.Context() is Ctrl-C/SIGTERM-cancellable
+	// on the CLI path; newClient seeds the client base context from it. The
+	// execution goes through ExecuteRootInProcess like every other in-process
+	// one, so spool delivery and cleanup live in exactly one place.
+	err := ExecuteRootInProcess(client.InterruptContext(), rootCmd)
 	if err != nil && strings.Contains(err.Error(), "unknown flag") {
 		msg := err.Error()
 		// Extract the flag name from the error message (e.g., "unknown flag: --foob")
@@ -135,8 +134,88 @@ func Execute() error {
 		// through to 1, clobbering the conventional code-2 for usage errors.
 		err = usageErr(err)
 	}
-	deliverCapturedOutput(err, rootCmd.Context(), flags.deliverSink, flags.deliverSpool, flags.compact)
 	return err
+}
+
+// rootExecutionKey addresses the rootExecution that ExecuteRootInProcess plants
+// in the execution context.
+type rootExecutionKey struct{}
+
+// rootExecution carries one execution's flag state back out to
+// ExecuteRootInProcess. Cobra runs PersistentPreRunE on the leaf command, with
+// a *rootFlags that only the tree's builder holds, so an in-process caller that
+// has nothing but the *cobra.Command cannot otherwise reach the deliver spool
+// its own arguments caused to be opened.
+type rootExecution struct {
+	flags *rootFlags
+}
+
+// publishRootExecution hands the executing tree's flag state to the enclosing
+// ExecuteRootInProcess call. Executions started some other way (unit tests that
+// call ExecuteContext on a subcommand directly) simply have no listener.
+func publishRootExecution(ctx context.Context, flags *rootFlags) {
+	if ctx == nil {
+		return
+	}
+	if execution, ok := ctx.Value(rootExecutionKey{}).(*rootExecution); ok {
+		execution.flags = flags
+	}
+}
+
+// ExecuteRootInProcess runs a root command from RootCmd and owns the resources
+// its flag handling allocates. It is the only correct way to execute the tree
+// in-process: --deliver opens an os.CreateTemp-backed spool in
+// PersistentPreRunE, and both the delivery to the requested sink and the
+// close+unlink of that spool happen here — on the success path and the error
+// path alike. The CLI entrypoint, the MCP mirror
+// (internal/mcp/cobratree.runMirroredInProcess) and the workflow step runner
+// (executeWorkflowRunStepWithRoot) all route through it, so a persistent server
+// cannot accumulate one leaked descriptor and temp file per --deliver call.
+//
+// A PersistentPostRunE hook cannot do this job: Cobra skips post-run hooks when
+// PersistentPreRunE, flag validation or RunE returns an error, and a failing
+// command is exactly when an unclaimed spool is most likely.
+func ExecuteRootInProcess(ctx context.Context, root *cobra.Command) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	execution := &rootExecution{}
+	// Read execution.flags at defer time, not now: PersistentPreRunE publishes
+	// it during the call below. Deferred rather than inline so a panic escaping
+	// the command tree — the MCP server recovers those and keeps serving — still
+	// closes and unlinks the spool. Running after the body also fixes the
+	// ordering delivery needs: the spool is still readable while it streams.
+	defer func() { execution.flags.cleanupDeliverSpool() }()
+	err := root.ExecuteContext(context.WithValue(ctx, rootExecutionKey{}, execution))
+	flags := execution.flags
+	if flags == nil {
+		return err
+	}
+	deliverCtx := root.Context()
+	if deliverCtx == nil {
+		deliverCtx = ctx
+	}
+	// Classify before deciding, not after: Cobra/pflag usage errors never pass
+	// through usageErr, and shouldDeliverCapturedOutput reads the exit code to
+	// decide that a usage failure's help text is not a result worth delivering.
+	// The error itself is returned unchanged; each caller keeps its own wrapping.
+	deliverErr := err
+	if deliverErr != nil && isCobraUsageError(deliverErr) {
+		deliverErr = usageErr(deliverErr)
+	}
+	deliverCapturedOutput(deliverErr, deliverCtx, flags.deliverSink, flags.deliverSpool, flags.compact)
+	return err
+}
+
+// cleanupDeliverSpool closes and unlinks the spool this execution opened, if it
+// opened one. Nil-safe on both levels: most executions never set --deliver, and
+// an execution that failed before PersistentPreRunE published anything has no
+// flags at all.
+func (flags *rootFlags) cleanupDeliverSpool() {
+	if flags == nil {
+		return
+	}
+	flags.deliverSpool.cleanup()
 }
 
 func deliverCapturedOutput(commandErr error, ctx context.Context, sink DeliverSink, spool *deliverSpool, compact bool) {
@@ -293,6 +372,12 @@ See README.md or the bundled SKILL.md for recipes.`,
 		// Capture the command context so newClient can propagate per-command
 		// deadlines and MCP request cancellation into client HTTP work.
 		flags.ctx = cmd.Context()
+		// Hand this state to the enclosing ExecuteRootInProcess before anything
+		// below can fail: from the deliver spool onwards this hook allocates
+		// resources that only the wrapper closes, and every return path from
+		// here on — including the error ones Cobra's post-run hooks never see —
+		// must leave them reachable.
+		publishRootExecution(flags.ctx, flags)
 		// Drop any memoized Zotero desktop storage reading: under the MCP
 		// server this Cobra tree is long-lived, so a cached value would
 		// outlive the desktop configuration it described.
@@ -317,7 +402,14 @@ See README.md or the bundled SKILL.md for recipes.`,
 					return err
 				}
 				flags.deliverSpool = spool
-				cmd.SetOut(io.MultiWriter(os.Stdout, spool))
+				// Multiplex onto the writers this execution was handed, not
+				// os.Stdout: in-process callers capture output through them (the
+				// MCP mirror's bounded buffer, the workflow runner's step
+				// buffer). Writing to the process's real stdout instead would
+				// blank the caller's capture, and under the stdio MCP transport
+				// it would inject command output into the JSON-RPC stream. On
+				// the CLI path OutOrStdout() is os.Stdout, so nothing changes.
+				cmd.SetOut(io.MultiWriter(cmd.OutOrStdout(), spool))
 			}
 		}
 		// retain the final Cobra writers so nested helpers preserve in-process capture.

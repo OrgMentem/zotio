@@ -14,6 +14,7 @@ import (
 	"github.com/mark3labs/mcp-go/server"
 	"github.com/spf13/cobra"
 
+	"zotio/internal/cli"
 	"zotio/internal/mcp/bound"
 )
 
@@ -114,7 +115,12 @@ func runMirroredInProcess(ctx context.Context, rootFactory func() *cobra.Command
 	root.SetOut(&buf)
 	root.SetErr(&buf)
 	root.SetArgs(finalArgs)
-	if err := root.ExecuteContext(ctx); err != nil {
+	// cli.ExecuteRootInProcess, not root.ExecuteContext: mirrored args are
+	// arbitrary and may include the global --deliver, whose spool is opened
+	// during flag handling and closed only by that wrapper. A bare Cobra tree
+	// (the tests' echo root) allocates nothing, so the wrapper is a plain
+	// execution for it.
+	if err := cli.ExecuteRootInProcess(ctx, root); err != nil {
 		return mcplib.NewToolResultError(mirroredErrorText(&buf, err.Error()))
 	}
 	// The capture retains only the transport cap, while the formatter reserves

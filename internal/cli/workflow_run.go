@@ -1028,7 +1028,10 @@ func executeWorkflowRunStepWithRoot(ctx context.Context, root *cobra.Command, ar
 
 	restore := snapshotCLIGlobals()
 	defer restore()
-	err := root.ExecuteContext(ctx)
+	// ExecuteRootInProcess, not ExecuteContext: a step's args are Cobra args and
+	// may carry the global --deliver, whose spool this process would otherwise
+	// keep open and never unlink.
+	err := ExecuteRootInProcess(ctx, root)
 
 	// A command that ignores its write errors would otherwise finish with
 	// silently truncated output, and truncated output here is not cosmetic:
