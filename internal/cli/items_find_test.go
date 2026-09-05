@@ -427,9 +427,11 @@ type findEnvelope struct {
 	Results []struct {
 		Key string `json:"key"`
 	} `json:"results"`
-	Near []nearTitleMatch `json:"near_title_matches"`
-	Meta struct {
-		TitleLookup string `json:"title_lookup"`
+	Near     []nearTitleMatch   `json:"near_title_matches"`
+	NearKeys []nearCiteKeyMatch `json:"near_citekey_matches"`
+	Meta     struct {
+		TitleLookup   string `json:"title_lookup"`
+		CitekeyLookup string `json:"citekey_lookup"`
 	} `json:"meta"`
 }
 
@@ -529,7 +531,7 @@ func TestItemsFindNearTitlesStayOutOfMachineFormats(t *testing.T) {
 	}
 }
 
-func TestWantsNearTitleProseRefusesMachineAndQuietModes(t *testing.T) {
+func TestWantsNearMatchProseRefusesMachineAndQuietModes(t *testing.T) {
 	cases := map[string]struct {
 		flags *rootFlags
 		want  bool
@@ -540,8 +542,8 @@ func TestWantsNearTitleProseRefusesMachineAndQuietModes(t *testing.T) {
 		"quiet":   {flags: &rootFlags{quiet: true}, want: false},
 	}
 	for name, tc := range cases {
-		if got := wantsNearTitleProse(tc.flags); got != tc.want {
-			t.Fatalf("wantsNearTitleProse(%s) = %v, want %v", name, got, tc.want)
+		if got := wantsNearMatchProse(tc.flags); got != tc.want {
+			t.Fatalf("wantsNearMatchProse(%s) = %v, want %v", name, got, tc.want)
 		}
 	}
 }
@@ -573,8 +575,9 @@ func TestPrintNearTitleMatchesLeadsWithTheActionableColumns(t *testing.T) {
 		{Key: "PREP", Title: "Attention Is All You Need", Score: 0.95, Year: "2017", ItemType: "preprint", Trashed: true},
 		{Key: "SUBT", Title: "Attention Is All You Need: A Transformer Study", Score: 0.67},
 	}
-	if err := printTitleLookupMiss(cmd, "Attention Is All You Nead", matches, 8, titleLookupNear); err != nil {
-		t.Fatalf("printTitleLookupMiss: %v", err)
+	if err := printFindLookupMiss(cmd, findItemsQuery{Title: "Attention Is All You Nead"},
+		nearTitleBlock{matches: matches, total: 8, lookup: titleLookupNear}, nearCiteKeyBlock{}); err != nil {
+		t.Fatalf("printFindLookupMiss: %v", err)
 	}
 	out := stdout.String()
 	for _, want := range []string{"matched: none", "near titles", "KEY", "YEAR", "TYPE", "TITLE", "SCORE", "ATTN", "2017", "0.95", "0.67"} {
@@ -585,7 +588,7 @@ func TestPrintNearTitleMatchesLeadsWithTheActionableColumns(t *testing.T) {
 	if !strings.Contains(out, "confirm before using") {
 		t.Fatalf("block does not warn that these are different titles:\n%s", out)
 	}
-	if !strings.Contains(out, nearTitleMissingField) {
+	if !strings.Contains(out, nearMatchMissingField) {
 		t.Fatalf("a dateless, typeless item must still render both columns:\n%s", out)
 	}
 	// PREP and ATTN differ in nothing a reader can see except type and trash
@@ -628,8 +631,9 @@ func TestPrintTitleLookupMissAnswersAnAbsentTitle(t *testing.T) {
 			var stdout, stderr bytes.Buffer
 			cmd.SetOut(&stdout)
 			cmd.SetErr(&stderr)
-			if err := printTitleLookupMiss(cmd, "Quantum Gravity in Eleven Dimensions", nil, 0, tt.lookup); err != nil {
-				t.Fatalf("printTitleLookupMiss: %v", err)
+			if err := printFindLookupMiss(cmd, findItemsQuery{Title: "Quantum Gravity in Eleven Dimensions"},
+				nearTitleBlock{lookup: tt.lookup}, nearCiteKeyBlock{}); err != nil {
+				t.Fatalf("printFindLookupMiss: %v", err)
 			}
 			if !strings.Contains(stdout.String(), "matched: none") {
 				t.Fatalf("an absent title still prints no answer on stdout:\n%q", stdout.String())
@@ -649,8 +653,9 @@ func TestPrintTitleLookupMissAnswersAnAbsentTitle(t *testing.T) {
 	var stderr bytes.Buffer
 	cmd.SetOut(&bytes.Buffer{})
 	cmd.SetErr(&stderr)
-	if err := printTitleLookupMiss(cmd, "Anything", nil, 0, titleLookupFailed); err != nil {
-		t.Fatalf("printTitleLookupMiss: %v", err)
+	if err := printFindLookupMiss(cmd, findItemsQuery{Title: "Anything"},
+		nearTitleBlock{lookup: titleLookupFailed}, nearCiteKeyBlock{}); err != nil {
+		t.Fatalf("printFindLookupMiss: %v", err)
 	}
 	if strings.Contains(stderr.String(), "close to it") {
 		t.Fatalf("a failed lookup claims nothing is close:\n%s", stderr.String())
@@ -928,5 +933,352 @@ func TestTitleCandidatesRejectATitleWithNoUsableTerm(t *testing.T) {
 	}
 	if len(rows) != 0 {
 		t.Fatalf("candidates = %d, want none for a title with no usable term", len(rows))
+	}
+}
+
+// seedNearCiteKeyStore builds a store whose citekeys exercise the outcomes the
+// near-key block has to separate: the key itself, a key that is one typo away
+// from it, and a key that merely has the same shape (an author and a year).
+func seedNearCiteKeyStore(t *testing.T) {
+	t.Helper()
+	dataHome := t.TempDir()
+	t.Setenv("XDG_DATA_HOME", dataHome)
+	db, err := store.OpenWithContext(t.Context(), filepath.Join(dataHome, "zotio", "data.db"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	if _, _, err := db.UpsertBatch("items", []json.RawMessage{
+		json.RawMessage(`{"key":"ATTN","data":{"key":"ATTN","itemType":"journalArticle","title":"Attention Is All You Need","date":"2023","citationKey":"smith2023"}}`),
+		json.RawMessage(`{"key":"JONE","data":{"key":"JONE","itemType":"journalArticle","title":"Something Else Entirely","date":"2023","extra":"Citation Key: jones2023"}}`),
+	}); err != nil {
+		t.Fatalf("seed items: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close store: %v", err)
+	}
+}
+
+// The citekey half of the same failure the title half fixed: a key is copied
+// out of a manuscript by hand, so it carries typos at the same rate, and zero
+// results could not tell an absent item from a mistyped key.
+func TestItemsFindReportsNearCiteKeysWhenExactMisses(t *testing.T) {
+	seedNearCiteKeyStore(t)
+	stdout, _ := runItemsFind(t, &rootFlags{asJSON: true}, "--citekey", "smith2032")
+	got := decodeFindEnvelope(t, stdout)
+
+	if len(got.Results) != 0 {
+		t.Fatalf("results = %+v, want empty: a mistyped citekey is not an exact match", got.Results)
+	}
+	if len(got.NearKeys) == 0 {
+		t.Fatalf("near_citekey_matches empty; the typo case is the reason this exists")
+	}
+	if got.NearKeys[0].CiteKey != "smith2023" || got.NearKeys[0].ItemKey != "ATTN" {
+		t.Fatalf("best near key = %+v, want smith2023 on item ATTN", got.NearKeys[0])
+	}
+	if got.NearKeys[0].Title != "Attention Is All You Need" {
+		t.Fatalf("near key row = %+v, want the title a reader confirms the row with", got.NearKeys[0])
+	}
+	if got.NearKeys[0].Score <= 0 || got.NearKeys[0].Score >= 1 {
+		t.Fatalf("score = %v, want a reported value in (0,1): the heading says these keys differ", got.NearKeys[0].Score)
+	}
+	for _, match := range got.NearKeys {
+		if match.CiteKey == "jones2023" {
+			t.Fatalf("an unrelated key from the same year was reported: %+v", got.NearKeys)
+		}
+	}
+	if got.Meta.CitekeyLookup != citekeyLookupNear {
+		t.Fatalf("meta.citekey_lookup = %q, want %q", got.Meta.CitekeyLookup, citekeyLookupNear)
+	}
+}
+
+// The identity contract: an exact hit must not be diluted by advisory rows,
+// so the near lookup does not even run.
+func TestItemsFindOmitsNearCiteKeysWhenExactMatches(t *testing.T) {
+	seedNearCiteKeyStore(t)
+	stdout, _ := runItemsFind(t, &rootFlags{asJSON: true}, "--citekey", "smith2023")
+	got := decodeFindEnvelope(t, stdout)
+	if len(got.Results) != 1 || got.Results[0].Key != "ATTN" {
+		t.Fatalf("results = %+v, want exactly ATTN", got.Results)
+	}
+	if got.NearKeys != nil {
+		t.Fatalf("near_citekey_matches = %+v, want absent when the key matched", got.NearKeys)
+	}
+	if got.Meta.CitekeyLookup != citekeyLookupExactHit {
+		t.Fatalf("meta.citekey_lookup = %q, want %q", got.Meta.CitekeyLookup, citekeyLookupExactHit)
+	}
+}
+
+// A citekey is matched as stored, because that is the string LaTeX and the
+// .bib file have to agree on: a key that differs only in case is a genuine
+// miss and stays out of .results. The near block is what makes that miss
+// answerable, and it is the one case where a suggestion may score 1.00 — the
+// library really does hold that key, spelled in another case.
+func TestItemsFindReportsACaseOnlyCiteKeyMissAtFullScore(t *testing.T) {
+	seedNearCiteKeyStore(t)
+	stdout, _ := runItemsFind(t, &rootFlags{asJSON: true}, "--citekey", "Smith2023")
+	got := decodeFindEnvelope(t, stdout)
+	if len(got.Results) != 0 {
+		t.Fatalf("results = %+v, want empty: the stored key is smith2023", got.Results)
+	}
+	if len(got.NearKeys) != 1 || got.NearKeys[0].CiteKey != "smith2023" {
+		t.Fatalf("near_citekey_matches = %+v, want smith2023", got.NearKeys)
+	}
+	if got.NearKeys[0].Score != 1 {
+		t.Fatalf("score = %v, want exactly 1: the same key in another case is the one suggestion that needs no judgement",
+			got.NearKeys[0].Score)
+	}
+}
+
+// Four outcomes must not collapse into one absent key, and the key must stay
+// absent when no --citekey was given at all.
+func TestItemsFindReportsCiteKeyLookupState(t *testing.T) {
+	for _, tt := range []struct {
+		name string
+		args []string
+		want string
+	}{
+		{name: "exact hit", args: []string{"--citekey", "smith2023"}, want: citekeyLookupExactHit},
+		{name: "near matches", args: []string{"--citekey", "smith2032"}, want: citekeyLookupNear},
+		{name: "nothing close", args: []string{"--citekey", "einstein1905"}, want: citekeyLookupNoNear},
+		{name: "not a citekey lookup", args: []string{"--doi", "10.9999/absent"}, want: ""},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			seedNearCiteKeyStore(t)
+			stdout, _ := runItemsFind(t, &rootFlags{asJSON: true}, tt.args...)
+			if got := decodeFindEnvelope(t, stdout).Meta.CitekeyLookup; got != tt.want {
+				t.Fatalf("meta.citekey_lookup = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+// The selectors are OR-ed. A --doi hit beside a --citekey miss returns rows,
+// so calling that an exact citekey hit would report a match that never
+// happened — and the near lookup does not run once anything matched, so the
+// citekey question is genuinely unanswered and the key must stay absent.
+func TestItemsFindDoesNotClaimACiteKeyHitFromAnotherSelector(t *testing.T) {
+	dataHome := t.TempDir()
+	t.Setenv("XDG_DATA_HOME", dataHome)
+	db, err := store.OpenWithContext(t.Context(), filepath.Join(dataHome, "zotio", "data.db"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	if _, _, err := db.UpsertBatch("items", []json.RawMessage{
+		json.RawMessage(`{"key":"ATTN","data":{"key":"ATTN","itemType":"journalArticle","title":"Attention Is All You Need","DOI":"10.48550/arXiv.1706.03762","citationKey":"smith2023"}}`),
+	}); err != nil {
+		t.Fatalf("seed items: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close store: %v", err)
+	}
+
+	stdout, _ := runItemsFind(t, &rootFlags{asJSON: true},
+		"--doi", "10.48550/arXiv.1706.03762", "--citekey", "wildly1899different")
+	got := decodeFindEnvelope(t, stdout)
+	if len(got.Results) != 1 || got.Results[0].Key != "ATTN" {
+		t.Fatalf("results = %+v, want ATTN matched by DOI", got.Results)
+	}
+	if got.Meta.CitekeyLookup != "" {
+		t.Fatalf("meta.citekey_lookup = %q, want empty: the citekey never matched and no near lookup ran", got.Meta.CitekeyLookup)
+	}
+	if got.NearKeys != nil {
+		t.Fatalf("near_citekey_matches = %+v, want absent: the lookup returned rows", got.NearKeys)
+	}
+}
+
+// --plain and --csv build no envelope (wantsJSONEnvelope refuses them), so
+// without the note the rows reach neither stream: empty stdout, empty stderr,
+// exit 0. --quiet is exempt, because there the exit code is the whole answer.
+func TestItemsFindNotesNearCiteKeysItCannotShow(t *testing.T) {
+	for _, tt := range []struct {
+		name  string
+		flags *rootFlags
+	}{
+		{name: "plain", flags: &rootFlags{plain: true}},
+		{name: "csv", flags: &rootFlags{csv: true}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			seedNearCiteKeyStore(t)
+			stdout, stderr := runItemsFind(t, tt.flags, "--citekey", "smith2032")
+			if strings.Contains(stdout, "near citekeys") || strings.Contains(stdout, "smith2023") {
+				t.Fatalf("%s stdout carries the prose block, which corrupts what the caller parses:\n%s", tt.name, stdout)
+			}
+			if !strings.Contains(stderr, "near citekey found") {
+				t.Fatalf("%s drops the rows silently; stderr = %q", tt.name, stderr)
+			}
+			if !strings.Contains(stderr, "--json") {
+				t.Fatalf("%s note does not say how to see them; stderr = %q", tt.name, stderr)
+			}
+		})
+	}
+
+	t.Run("quiet", func(t *testing.T) {
+		seedNearCiteKeyStore(t)
+		stdout, stderr := runItemsFind(t, &rootFlags{quiet: true}, "--citekey", "smith2032")
+		if strings.Contains(stderr, "near citekey found") {
+			t.Fatalf("--quiet asked for silence but got a note: %q", stderr)
+		}
+		// The rows still reach a scripted caller: --quiet trims prose, it
+		// does not withhold an answer that was asked for.
+		got := decodeFindEnvelope(t, stdout)
+		if len(got.NearKeys) == 0 || got.NearKeys[0].CiteKey != "smith2023" {
+			t.Fatalf("near_citekey_matches = %+v, want smith2023 present under --quiet", got.NearKeys)
+		}
+	})
+}
+
+// The block a human reads. It leads with the key they will paste into the
+// manuscript, keeps the score last because it is advisory, and says outright
+// that these keys are different.
+func TestPrintNearCiteKeyMatchesLeadsWithTheActionableColumns(t *testing.T) {
+	cmd := &cobra.Command{}
+	var stdout, stderr bytes.Buffer
+	cmd.SetOut(&stdout)
+	cmd.SetErr(&stderr)
+	matches := []nearCiteKeyMatch{
+		{CiteKey: "smith2023", ItemKey: "ATTN", Title: "Attention Is All You Need", Score: 0.56},
+		{CiteKey: "smith2023a", ItemKey: "SMITA", Score: 0.5},
+	}
+	if err := printFindLookupMiss(cmd, findItemsQuery{Citekey: "smith2032"},
+		nearTitleBlock{}, nearCiteKeyBlock{matches: matches, total: 4, lookup: citekeyLookupNear}); err != nil {
+		t.Fatalf("printFindLookupMiss: %v", err)
+	}
+	out := stdout.String()
+	for _, want := range []string{"matched: none", "near citekeys", "CITEKEY", "KEY", "TITLE", "SCORE", "smith2023", "ATTN", "0.56", "(2 of 4 shown)"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("stdout missing %q:\n%s", want, out)
+		}
+	}
+	if !strings.Contains(out, "confirm before using") {
+		t.Fatalf("block does not warn that these are different keys:\n%s", out)
+	}
+	if !strings.Contains(out, nearMatchMissingField) {
+		t.Fatalf("a titleless item must still render the column:\n%s", out)
+	}
+	if keyColumn, scoreColumn := strings.Index(out, "smith2023"), strings.Index(out, "0.56"); keyColumn > scoreColumn {
+		t.Fatalf("score leads the row; the key the reader acts on must come first:\n%s", out)
+	}
+	if !strings.Contains(stderr.String(), `No item has the citation key "smith2032"`) {
+		t.Fatalf("stderr does not state the exact answer:\n%s", stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "zotio items get ATTN") {
+		t.Fatalf("stderr does not name the next command concretely:\n%s", stderr.String())
+	}
+}
+
+// The genuinely-absent answer, and the state that must stay distinct from it:
+// reporting "nothing is close" when the search never ran is a confident
+// negative the command did not earn.
+func TestPrintCiteKeyLookupMissAnswersAnAbsentKey(t *testing.T) {
+	for _, tt := range []struct {
+		name    string
+		lookup  string
+		wantErr string
+		notWant string
+	}{
+		{name: "nothing close", lookup: citekeyLookupNoNear, wantErr: "no citation key in your library is close to it"},
+		{name: "lookup broke", lookup: citekeyLookupFailed, wantErr: "near-citekey lookup failed", notWant: "close to it"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			cmd := &cobra.Command{}
+			var stdout, stderr bytes.Buffer
+			cmd.SetOut(&stdout)
+			cmd.SetErr(&stderr)
+			if err := printFindLookupMiss(cmd, findItemsQuery{Citekey: "einstein1905"},
+				nearTitleBlock{}, nearCiteKeyBlock{lookup: tt.lookup}); err != nil {
+				t.Fatalf("printFindLookupMiss: %v", err)
+			}
+			if !strings.Contains(stdout.String(), "matched: none") {
+				t.Fatalf("an absent key still prints no answer on stdout:\n%q", stdout.String())
+			}
+			if strings.Contains(stdout.String(), "[]") {
+				t.Fatalf("stdout still carries the bare empty array:\n%q", stdout.String())
+			}
+			if !strings.Contains(stderr.String(), tt.wantErr) {
+				t.Fatalf("stderr = %q, want it to name %q", stderr.String(), tt.wantErr)
+			}
+			if tt.notWant != "" && strings.Contains(stderr.String(), tt.notWant) {
+				t.Fatalf("stderr = %q, must not claim %q", stderr.String(), tt.notWant)
+			}
+		})
+	}
+}
+
+// Both hand-typed selectors can miss in one run. Each is a separate answer:
+// a close citekey does not make the title present, so both blocks are
+// printed, "matched: none" is the answer to the command and is printed once,
+// and both meta states are reported.
+func TestItemsFindAnswersATitleAndACiteKeyMissTogether(t *testing.T) {
+	cmd := &cobra.Command{}
+	var stdout bytes.Buffer
+	cmd.SetOut(&stdout)
+	cmd.SetErr(&bytes.Buffer{})
+	if err := printFindLookupMiss(cmd, findItemsQuery{Title: "Attention Is All You Nead", Citekey: "smith2032"},
+		nearTitleBlock{matches: []nearTitleMatch{{Key: "ATTN", Title: "Attention Is All You Need", Score: 0.95, Year: "2023"}}, total: 1, lookup: titleLookupNear},
+		nearCiteKeyBlock{matches: []nearCiteKeyMatch{{CiteKey: "smith2023", ItemKey: "ATTN", Score: 0.56}}, total: 1, lookup: citekeyLookupNear}); err != nil {
+		t.Fatalf("printFindLookupMiss: %v", err)
+	}
+	out := stdout.String()
+	if strings.Count(out, "matched: none") != 1 {
+		t.Fatalf("matched: none printed %d times, want exactly one answer to the command:\n%s",
+			strings.Count(out, "matched: none"), out)
+	}
+	if !strings.Contains(out, "near titles") || !strings.Contains(out, "near citekeys") {
+		t.Fatalf("both selectors missed; each needs its own block:\n%s", out)
+	}
+
+	seedNearCiteKeyStore(t)
+	stdout2, _ := runItemsFind(t, &rootFlags{asJSON: true},
+		"--title", "Attention Is All You Nead", "--citekey", "smith2032")
+	got := decodeFindEnvelope(t, stdout2)
+	if len(got.Results) != 0 {
+		t.Fatalf("results = %+v, want empty", got.Results)
+	}
+	if len(got.Near) == 0 || len(got.NearKeys) == 0 {
+		t.Fatalf("envelope carries only one advisory block: near titles %+v, near citekeys %+v", got.Near, got.NearKeys)
+	}
+	if got.Meta.TitleLookup != titleLookupNear || got.Meta.CitekeyLookup != citekeyLookupNear {
+		t.Fatalf("meta = title %q citekey %q, want both %q", got.Meta.TitleLookup, got.Meta.CitekeyLookup, titleLookupNear)
+	}
+}
+
+// The near-key list is rank-capped. Without the total an agent reads "not in
+// the three" as "not in the library", the same asymmetry between the two
+// halves of this output that the near-title total closed.
+func TestItemsFindReportsTheNearCiteKeyTotalWhenTruncated(t *testing.T) {
+	dataHome := t.TempDir()
+	t.Setenv("XDG_DATA_HOME", dataHome)
+	db, err := store.OpenWithContext(t.Context(), filepath.Join(dataHome, "zotio", "data.db"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	rows := make([]json.RawMessage, 0, nearCiteKeyMatchLimit+2)
+	for i := range nearCiteKeyMatchLimit + 2 {
+		rows = append(rows, json.RawMessage(fmt.Sprintf(
+			`{"key":"SMIT%04d","data":{"key":"SMIT%04d","itemType":"journalArticle","title":"Attention %d","citationKey":"smith2023%c"}}`,
+			i, i, i, 'a'+i)))
+	}
+	if _, _, err := db.UpsertBatch("items", rows); err != nil {
+		t.Fatalf("seed items: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close store: %v", err)
+	}
+
+	stdout, _ := runItemsFind(t, &rootFlags{asJSON: true}, "--citekey", "smith2023")
+	var got struct {
+		NearKeys []nearCiteKeyMatch `json:"near_citekey_matches"`
+		Meta     struct {
+			Total int `json:"near_citekey_total"`
+		} `json:"meta"`
+	}
+	if err := json.Unmarshal([]byte(stdout), &got); err != nil {
+		t.Fatalf("decode %q: %v", stdout, err)
+	}
+	if len(got.NearKeys) != nearCiteKeyMatchLimit {
+		t.Fatalf("near key rows = %d, want the rank cap %d", len(got.NearKeys), nearCiteKeyMatchLimit)
+	}
+	if got.Meta.Total != len(rows) {
+		t.Fatalf("meta.near_citekey_total = %d, want %d: the reader cannot tell the list was capped", got.Meta.Total, len(rows))
 	}
 }

@@ -5,12 +5,14 @@ package cli
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"regexp"
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"unicode"
 
 	"github.com/spf13/cobra"
@@ -54,6 +56,12 @@ type bibcheckKeyResult struct {
 	ItemKey     string          `json:"item_key,omitempty"`
 	Title       string          `json:"title,omitempty"`
 	Matches     []bibcheckMatch `json:"matches,omitempty"`
+	// Suggestions are the closest citekeys in the library to a key that
+	// matched nothing. They are advisory and deliberately NOT Matches:
+	// Matches means the library really holds those items under this key, and
+	// folding a guess into it would report a broken citation as resolved.
+	// Status stays "unknown" for the same reason — the key really is unknown.
+	Suggestions []nearCiteKeyMatch `json:"suggestions,omitempty"`
 }
 
 type bibcheckFileReport struct {
@@ -416,9 +424,21 @@ func summarizeBibcheckOccurrences(occurrences []bibcheckOccurrence) ([]string, m
 	return order, counts, locationsByCiteKey, occurrencesByFile
 }
 
+// buildBibcheckKeyResults resolves each cited key against the library
+// inventory. A key that resolves to nothing is where this command is read
+// most and used to answer least: bibcheck exists to catch a broken citation
+// before a LaTeX build fails, and a key that is one character off is the
+// commonest such break. So an unknown key also carries the closest keys in
+// the library, ranked; the near-key data was already in the store.
 func buildBibcheckKeyResults(order []string, counts map[string]int, byCiteKey map[string][]citekeyItem) ([]bibcheckKeyResult, bibcheckSummary) {
 	keys := make([]bibcheckKeyResult, 0, len(order))
 	var summary bibcheckSummary
+	// Built at most once per call, and only when a key is actually unknown: a
+	// manuscript whose citations all resolve must not pay for a walk over the
+	// whole library, and this runs once per file as well as once overall.
+	candidates := sync.OnceValue(func() []citeKeyCandidate {
+		return bibcheckCiteKeyCandidates(byCiteKey)
+	})
 	for _, key := range order {
 		matches := byCiteKey[key]
 		result := bibcheckKeyResult{
@@ -428,6 +448,7 @@ func buildBibcheckKeyResults(order []string, counts map[string]int, byCiteKey ma
 		switch len(matches) {
 		case 0:
 			result.Status = "unknown"
+			result.Suggestions = rankNearCiteKeys(key, candidates(), nearCiteKeyMatchLimit)
 			summary.Unknown++
 		case 1:
 			result.Status = "ok"
@@ -446,6 +467,26 @@ func buildBibcheckKeyResults(order []string, counts map[string]int, byCiteKey ma
 	}
 	summary.Total = len(keys)
 	return keys, summary
+}
+
+// bibcheckCiteKeyCandidates flattens the citekey inventory to one candidate
+// per key. Where a key is held by several items the first is used, which is
+// deterministic because bibcheckItemsByCiteKey has already sorted them: a
+// suggestion names the key to type, and an ambiguous key is a separate
+// problem this command already reports on its own row.
+func bibcheckCiteKeyCandidates(byCiteKey map[string][]citekeyItem) []citeKeyCandidate {
+	candidates := make([]citeKeyCandidate, 0, len(byCiteKey))
+	for citeKey, items := range byCiteKey {
+		if len(items) == 0 {
+			continue
+		}
+		candidates = append(candidates, citeKeyCandidate{
+			CiteKey: citeKey,
+			ItemKey: items[0].Key,
+			Title:   items[0].Title,
+		})
+	}
+	return candidates
 }
 
 func buildBibcheckFindings(order []string, locationsByCiteKey map[string][]bibcheckLocation, byCiteKey map[string][]citekeyItem, incompleteRows []map[string]any, source FindingSource) ([]Finding, map[string]int) {
@@ -615,6 +656,9 @@ func printBibcheckReport(cmd *cobra.Command, flags *rootFlags, report bibcheckRe
 	if err := flags.printTable(cmd, []string{"CITEKEY", "STATUS", "ITEM", "TITLE"}, rows); err != nil {
 		return err
 	}
+	if err := printBibcheckKeySuggestions(out, report.Keys); err != nil {
+		return err
+	}
 	if len(report.Findings) == 0 {
 		return nil
 	}
@@ -636,6 +680,43 @@ func printBibcheckReport(cmd *cobra.Command, flags *rootFlags, report bibcheckRe
 			}
 		}
 	}
+	return nil
+}
+
+// printBibcheckKeySuggestions renders the closest library keys for the keys
+// that resolved to nothing. It is a block of its own rather than a cell on
+// the unknown row, because the table's ITEM and TITLE columns mean "the
+// library entry this citation resolves to": a guess printed there would
+// report a broken citation as resolved. The heading says outright that these
+// are not matches, and the row keeps the cited key beside the suggestion so
+// the reader can see the one character that differs.
+func printBibcheckKeySuggestions(out io.Writer, keys []bibcheckKeyResult) error {
+	printed := 0
+	tw := newTabWriter(out)
+	for _, key := range keys {
+		if key.Status != "unknown" {
+			continue
+		}
+		for _, suggestion := range key.Suggestions {
+			if printed == 0 {
+				fmt.Fprint(out, "\nUnknown keys — closest keys in your library (NOT matches; confirm before editing):\n")
+				fmt.Fprintln(tw, "CITED\tSUGGESTION\tITEM\tTITLE\tSCORE")
+			}
+			title := suggestion.Title
+			if title == "" {
+				title = nearMatchMissingField
+			}
+			fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%.2f\n", key.CiteKey, suggestion.CiteKey, suggestion.ItemKey, title, suggestion.Score)
+			printed++
+		}
+	}
+	if printed == 0 {
+		return nil
+	}
+	if err := tw.Flush(); err != nil {
+		return err
+	}
+	fmt.Fprint(out, "Fix the citation in the manuscript, or pin that key in Zotero. To read one: zotio items get <ITEM>\n")
 	return nil
 }
 

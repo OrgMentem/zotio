@@ -419,3 +419,130 @@ func citeKeysFromOccurrences(occurrences []bibcheckOccurrence) []string {
 	}
 	return keys
 }
+
+// bibcheck exists to catch a broken citation before a LaTeX build fails, and a
+// key one character off is the commonest such break. It used to be the case
+// the command answered least usefully: "unknown", and stop, so the author
+// grepped the .bib by hand. The near-key data was already in the store.
+func TestBibcheckSuggestsTheClosestKeyForAnUnknownCitekey(t *testing.T) {
+	home := bibcheckIsolatedHome(t)
+	seedBibcheckItems(t, []json.RawMessage{
+		json.RawMessage(`{"key":"ATTN","version":1,"data":{"key":"ATTN","itemType":"journalArticle","title":"Attention Is All You Need","creators":[{"lastName":"Vaswani"}],"date":"2023","publicationTitle":"NeurIPS","extra":"Citation Key: smith2023"}}`),
+		json.RawMessage(`{"key":"JONE","version":1,"data":{"key":"JONE","itemType":"journalArticle","title":"Something Else","creators":[{"lastName":"Jones"}],"date":"2023","publicationTitle":"Journal B","extra":"Citation Key: jones2023"}}`),
+	})
+	manuscript := filepath.Join(home, "paper.tex")
+	writeTestFile(t, manuscript, `\cite{smith2032}\cite{quantumfoam1899}`)
+
+	report, _, err := runBibcheckJSON(t, manuscript)
+	if err != nil {
+		t.Fatalf("items bibcheck returned error: %v; a suggestion is advisory and must not change the exit code", err)
+	}
+	byKey := map[string]bibcheckKeyResult{}
+	for _, result := range report.Keys {
+		byKey[result.CiteKey] = result
+	}
+
+	typo := byKey["smith2032"]
+	if typo.Status != "unknown" {
+		t.Fatalf("smith2032 status = %q, want unknown: the key really is not in the library", typo.Status)
+	}
+	if len(typo.Suggestions) == 0 {
+		t.Fatalf("smith2032 result = %+v, want a suggestion naming smith2023", typo)
+	}
+	if typo.Suggestions[0].CiteKey != "smith2023" || typo.Suggestions[0].ItemKey != "ATTN" {
+		t.Fatalf("smith2032 top suggestion = %+v, want smith2023 on item ATTN", typo.Suggestions[0])
+	}
+	if typo.Suggestions[0].Title != "Attention Is All You Need" {
+		t.Fatalf("suggestion = %+v, want the title the author confirms the row with", typo.Suggestions[0])
+	}
+	if typo.Suggestions[0].Score <= 0 || typo.Suggestions[0].Score >= 1 {
+		t.Fatalf("suggestion score = %v, want a reported value in (0,1)", typo.Suggestions[0].Score)
+	}
+	// A suggestion must never be reported as a resolution: ITEM and TITLE on
+	// the key row mean "the entry this citation resolves to".
+	if typo.ItemKey != "" || typo.Title != "" || len(typo.Matches) != 0 {
+		t.Fatalf("smith2032 result = %+v, want no item metadata on an unknown key", typo)
+	}
+	// An unrelated key differing in the author part is a different source,
+	// and offering one would teach the author to distrust the column.
+	if unrelated := byKey["quantumfoam1899"]; unrelated.Status != "unknown" || len(unrelated.Suggestions) != 0 {
+		t.Fatalf("quantumfoam1899 result = %+v, want unknown with no suggestion", unrelated)
+	}
+	if report.Summary != (bibcheckSummary{Total: 2, Unknown: 2}) {
+		t.Fatalf("summary = %+v, want two unknown keys and nothing reclassified", report.Summary)
+	}
+}
+
+// The command's own human answer, not just the renderer: an author reading
+// the default output is the reader this finding is about, and the block has
+// to reach them without --json.
+func TestBibcheckHumanOutputCarriesTheSuggestion(t *testing.T) {
+	home := bibcheckIsolatedHome(t)
+	seedBibcheckItems(t, []json.RawMessage{
+		json.RawMessage(`{"key":"ATTN","version":1,"data":{"key":"ATTN","itemType":"journalArticle","title":"Attention Is All You Need","creators":[{"lastName":"Vaswani"}],"date":"2023","publicationTitle":"NeurIPS","extra":"Citation Key: smith2023"}}`),
+	})
+	manuscript := filepath.Join(home, "paper.tex")
+	writeTestFile(t, manuscript, `\cite{smith2032}`)
+
+	cmd := newItemsCmd(&rootFlags{})
+	cmd.SilenceErrors = true
+	cmd.SilenceUsage = true
+	cmd.SetArgs([]string{"bibcheck", manuscript})
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&bytes.Buffer{})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("items bibcheck: %v", err)
+	}
+	text := out.String()
+	if !strings.Contains(text, "NOT matches") || !strings.Contains(text, "smith2023") {
+		t.Fatalf("default output does not offer the near key:\n%s", text)
+	}
+	block := strings.Index(text, "NOT matches")
+	status := strings.Index(text, "unknown")
+	if status < 0 || status > block {
+		t.Fatalf("the key row must still report unknown, above the advisory block:\n%s", text)
+	}
+}
+
+// The human half. The guess may not sit in the table's ITEM and TITLE
+// columns, which mean "the entry this citation resolves to", so it gets a
+// block that says outright these are not matches and names the next step.
+func TestPrintBibcheckKeySuggestionsSeparatesGuessesFromMatches(t *testing.T) {
+	var out bytes.Buffer
+	keys := []bibcheckKeyResult{
+		{CiteKey: "alpha", Status: "ok", ItemKey: "OK1", Title: "Known Alpha"},
+		{CiteKey: "smith2032", Status: "unknown", Occurrences: 2, Suggestions: []nearCiteKeyMatch{
+			{CiteKey: "smith2023", ItemKey: "ATTN", Title: "Attention Is All You Need", Score: 0.56},
+			{CiteKey: "smith2023a", ItemKey: "SMITA", Score: 0.5},
+		}},
+		{CiteKey: "quantumfoam1899", Status: "unknown", Occurrences: 1},
+	}
+	if err := printBibcheckKeySuggestions(&out, keys); err != nil {
+		t.Fatalf("printBibcheckKeySuggestions: %v", err)
+	}
+	text := out.String()
+	for _, want := range []string{"NOT matches", "CITED", "SUGGESTION", "ITEM", "TITLE", "SCORE", "smith2032", "smith2023", "ATTN", "0.56", "zotio items get"} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("block missing %q:\n%s", want, text)
+		}
+	}
+	if !strings.Contains(text, nearMatchMissingField) {
+		t.Fatalf("a titleless suggestion must still render the column:\n%s", text)
+	}
+	if strings.Contains(text, "quantumfoam1899") {
+		t.Fatalf("a key with no suggestion is listed in the suggestion block:\n%s", text)
+	}
+	if strings.Contains(text, "alpha") {
+		t.Fatalf("a resolved key appears in the suggestion block:\n%s", text)
+	}
+
+	// No unknown key carries a suggestion: no block, not an empty heading.
+	var quiet bytes.Buffer
+	if err := printBibcheckKeySuggestions(&quiet, keys[2:]); err != nil {
+		t.Fatalf("printBibcheckKeySuggestions: %v", err)
+	}
+	if quiet.Len() != 0 {
+		t.Fatalf("block printed with nothing to suggest:\n%s", quiet.String())
+	}
+}

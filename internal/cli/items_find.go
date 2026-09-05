@@ -61,12 +61,14 @@ func newItemsFindCmd(flags *rootFlags) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			// An exact title lookup that finds nothing cannot say whether the
-			// paper is absent or the title was mistyped, and that silence is
-			// the whole failure. Near matches answer it. They are gathered
-			// only when the lookup found nothing at all, and they never enter
-			// .results: `import resolve` and every caller that treats a hit as
-			// identity must keep reading an exact-equality answer.
+			// An exact lookup that finds nothing cannot say whether the item
+			// is absent or the input was mistyped, and that silence is the
+			// whole failure. Near matches answer it, for the two selectors a
+			// person types by hand: the title and the citekey. Both are
+			// gathered only when the lookup found nothing at all, and neither
+			// ever enters .results: `import resolve` and every caller that
+			// treats a hit as identity must keep reading an exact-equality
+			// answer.
 			var near []nearTitleMatch
 			nearTotal := 0
 			// Four outcomes used to collapse into one absent envelope key, and
@@ -89,39 +91,60 @@ func newItemsFindCmd(flags *rootFlags) *cobra.Command {
 				} else {
 					var nearErr error
 					near, nearTotal, nearErr = queryNearTitleMatches(cmd.Context(), rawDB, normalizedQuery.Title)
-					switch {
-					case errors.Is(nearErr, context.Canceled), errors.Is(nearErr, context.DeadlineExceeded):
-						// Not advisory: the command was interrupted or timed
-						// out. Degrading to a warning and exiting 0 would
-						// report "not found" for a lookup that never finished.
-						return nearErr
-					case nearErr != nil:
-						// Advisory data. Name the failure instead of silently
-						// reverting to the empty answer this exists to explain.
-						fmt.Fprintf(cmd.ErrOrStderr(), "warning: near-title lookup unavailable: %v\n", nearErr)
-						titleLookup = titleLookupFailed
-					case len(near) == 0:
-						titleLookup = titleLookupNoNear
-					default:
-						titleLookup = titleLookupNear
+					state, fatal := nearLookupState(cmd, "title", len(near), nearErr)
+					if fatal != nil {
+						return fatal
 					}
+					titleLookup = state
+				}
+			}
+			var nearKeys []nearCiteKeyMatch
+			nearKeysTotal := 0
+			citekeyLookup := ""
+			if normalizedQuery.Citekey != "" {
+				if len(rows) > 0 {
+					// Same rule as the title, for the same reason: --doi X
+					// --citekey Y can return rows while the citekey missed,
+					// and calling that an exact hit would report a match that
+					// never happened.
+					if findRowsMatchCitekeyExactly(rows, normalizedQuery.Citekey) {
+						citekeyLookup = citekeyLookupExactHit
+					}
+				} else {
+					var nearErr error
+					nearKeys, nearKeysTotal, nearErr = queryNearCiteKeyMatches(cmd.Context(), db, normalizedQuery.Citekey)
+					state, fatal := nearLookupState(cmd, "citekey", len(nearKeys), nearErr)
+					if fatal != nil {
+						return fatal
+					}
+					citekeyLookup = state
 				}
 			}
 			// Item lookup has no live API equivalent, so it always reads the
 			// local mirror. Use the shared envelope to keep `.results` stable.
 			prov := localProvenance(rawDB, "items", "local_only")
+			// Inside meta, not beside it: these annotate the read rather than
+			// adding data, and `extra` is reserved for top-level sibling
+			// payloads.
+			metaExtra := make(map[string]any, 4)
 			if titleLookup != "" {
-				// Inside meta, not beside it: this annotates the read rather
-				// than adding data, and `extra` is reserved for top-level
-				// sibling payloads.
-				prov.MetaExtra = map[string]any{"title_lookup": titleLookup}
+				metaExtra["title_lookup"] = titleLookup
 				if nearTotal > len(near) {
 					// The prose block says "(5 of 8 shown)". Without the same
 					// number here an agent would read "not in the five" as
 					// "not in the library", which is the asymmetry between the
 					// two halves of this output that the year field also had.
-					prov.MetaExtra["near_title_total"] = nearTotal
+					metaExtra["near_title_total"] = nearTotal
 				}
+			}
+			if citekeyLookup != "" {
+				metaExtra["citekey_lookup"] = citekeyLookup
+				if nearKeysTotal > len(nearKeys) {
+					metaExtra["near_citekey_total"] = nearKeysTotal
+				}
+			}
+			if len(metaExtra) > 0 {
+				prov.MetaExtra = metaExtra
 			}
 			printProvenance(cmd, countResultItems(data), prov)
 			if wantsJSONEnvelope(cmd.OutOrStdout(), flags) {
@@ -131,18 +154,24 @@ func newItemsFindCmd(flags *rootFlags) *cobra.Command {
 				} else if flags.compact {
 					filtered = compactFields(filtered)
 				}
-				// Sibling key, never inside .results: the envelope invariant
+				// Sibling keys, never inside .results: the envelope invariant
 				// is that .results holds items matched by identity.
 				//
-				// --select and --compact deliberately do NOT reach it. That
+				// --select and --compact deliberately do NOT reach them. That
 				// runs against printOutputWithFlags, where an explicit field
-				// list is the caller's authoritative request, but this block
-				// is not the caller's data: it is rank-capped at five, its
-				// shape is fixed, and a caller that selected `key` still needs
-				// the title to decide whether the row is their paper.
+				// list is the caller's authoritative request, but these blocks
+				// are not the caller's data: they are rank-capped, their shape
+				// is fixed, and a caller that selected `key` still needs the
+				// title to decide whether the row is their paper.
 				var extra map[string]any
-				if len(near) > 0 {
-					extra = map[string]any{"near_title_matches": near}
+				if len(near) > 0 || len(nearKeys) > 0 {
+					extra = make(map[string]any, 2)
+					if len(near) > 0 {
+						extra["near_title_matches"] = near
+					}
+					if len(nearKeys) > 0 {
+						extra["near_citekey_matches"] = nearKeys
+					}
 				}
 				wrapped, wrapErr := wrapWithProvenanceExtra(filtered, prov, extra)
 				if wrapErr != nil {
@@ -162,23 +191,32 @@ func newItemsFindCmd(flags *rootFlags) *cobra.Command {
 					return nil
 				}
 			}
-			// The whole human answer to a title that matched nothing. `[]` was
-			// printed whenever nothing was close, so the human half of this
-			// fix only worked when a near match existed.
-			if titleLookup != "" && titleLookup != titleLookupExactHit && wantsNearTitleProse(flags) {
-				return printTitleLookupMiss(cmd, normalizedQuery.Title, near, nearTotal, titleLookup)
+			// The whole human answer to a hand-typed selector that matched
+			// nothing. `[]` was printed whenever nothing was close, so the
+			// human half of this fix only worked when a near match existed.
+			if wantsNearMatchProse(flags) && (findLookupMissed(titleLookup) || findLookupMissed(citekeyLookup)) {
+				return printFindLookupMiss(cmd, normalizedQuery,
+					nearTitleBlock{matches: near, total: nearTotal, lookup: titleLookup},
+					nearCiteKeyBlock{matches: nearKeys, total: nearKeysTotal, lookup: citekeyLookup})
 			}
 			// Reaching here with rows in hand means nothing carried them:
 			// --plain and --csv keep wantsJSONEnvelope false, so those callers
 			// saw nothing on either stream. --quiet is exempt because there
 			// the exit code is the whole answer (helpers.go printOutputWithFlags).
-			if len(near) > 0 && !flags.quiet {
-				// len(near), not nearTotal: this promises what --json will
-				// actually hand back, and the envelope carries the rank-capped
-				// list. The full count belongs to the prose block, where the
-				// reader can act on it.
-				fmt.Fprintf(cmd.ErrOrStderr(), "note: %s found and not shown in this format; re-run with --json to see them.\n",
-					pluralCount(len(near), "near title", "near titles"))
+			//
+			// The counts are the rank-capped lengths, not the totals: this
+			// promises what --json will actually hand back, and the envelope
+			// carries the capped lists. The full count belongs to the prose
+			// block, where the reader can act on it.
+			if !flags.quiet {
+				if len(near) > 0 {
+					fmt.Fprintf(cmd.ErrOrStderr(), "note: %s found and not shown in this format; re-run with --json to see them.\n",
+						pluralCount(len(near), "near title", "near titles"))
+				}
+				if len(nearKeys) > 0 {
+					fmt.Fprintf(cmd.ErrOrStderr(), "note: %s found and not shown in this format; re-run with --json to see them.\n",
+						pluralCount(len(nearKeys), "near citekey", "near citekeys"))
+				}
 			}
 			return printOutputWithFlags(cmd.OutOrStdout(), data, flags)
 		},
@@ -187,7 +225,7 @@ func newItemsFindCmd(flags *rootFlags) *cobra.Command {
 	cmd.Flags().StringVar(&query.ArXiv, "arxiv", "", "Find items with this arXiv ID or URL")
 	cmd.Flags().StringVar(&query.ISBN, "isbn", "", "Find items with this ISBN")
 	cmd.Flags().StringVar(&query.PMID, "pmid", "", "Find items with this PMID in Extra")
-	cmd.Flags().StringVar(&query.Citekey, "citekey", "", "Find items with this Better BibTeX citation key")
+	cmd.Flags().StringVar(&query.Citekey, "citekey", "", "Find items with this Better BibTeX citation key; when the lookup as a whole matches nothing, the closest citation keys are reported separately (near_citekey_matches in JSON) and never as results")
 	cmd.Flags().StringVar(&query.URL, "url", "", "Find items with this normalized URL")
 	cmd.Flags().StringVar(&query.OpenAlex, "openalex", "", "Find items with this OpenAlex work ID or URL")
 	cmd.Flags().StringVar(&query.Title, "title", "", "Find items with this exact title, ignoring case, whitespace, quote and dash styling, and a trailing full stop; when the lookup as a whole matches nothing, the closest titles are reported separately (near_title_matches in JSON) and never as results")
@@ -207,6 +245,48 @@ const (
 	titleLookupFailed   = "near_lookup_failed"
 )
 
+// citekeyLookup* name the outcome of a --citekey lookup, reported as
+// meta.citekey_lookup. The vocabulary is deliberately the SAME four words as
+// the title lookup: both selectors are typed by hand, both answer the same
+// four questions, and an agent that learned to branch on one must not have to
+// learn a second spelling for the other.
+const (
+	citekeyLookupExactHit = titleLookupExactHit
+	citekeyLookupNear     = titleLookupNear
+	citekeyLookupNoNear   = titleLookupNoNear
+	citekeyLookupFailed   = titleLookupFailed
+)
+
+// findLookupMissed reports whether a lookup state means "the thing you asked
+// for is not here". An empty state means the question was never answered (no
+// such selector, or another selector matched first), which is not a miss.
+func findLookupMissed(lookup string) bool {
+	return lookup != "" && lookup != titleLookupExactHit
+}
+
+// nearLookupState classifies a near lookup that ran because the exact lookup
+// matched nothing. Both selectors share it so the four states cannot drift
+// into two vocabularies, and label names the lookup in the warning.
+//
+// The second return value is fatal: a cancelled or timed-out context is NOT
+// advisory data. Degrading it to a warning and exiting 0 would report "not
+// found" for a lookup that never finished.
+func nearLookupState(cmd *cobra.Command, label string, rows int, err error) (string, error) {
+	switch {
+	case errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):
+		return "", err
+	case err != nil:
+		// Advisory data. Name the failure instead of silently reverting to
+		// the empty answer this exists to explain.
+		fmt.Fprintf(cmd.ErrOrStderr(), "warning: near-%s lookup unavailable: %v\n", label, err)
+		return titleLookupFailed, nil
+	case rows == 0:
+		return titleLookupNoNear, nil
+	default:
+		return titleLookupNear, nil
+	}
+}
+
 // findRowsMatchTitleExactly reports whether any returned row matched on the
 // title itself, reusing the one exact matcher rather than a second folding.
 // The selectors are OR-ed, so "rows came back" and "the title matched" are
@@ -219,6 +299,54 @@ func findRowsMatchTitleExactly(rows []map[string]any, title string) bool {
 		}
 	}
 	return false
+}
+
+// findRowsMatchCitekeyExactly reports whether any returned row matched on the
+// citekey itself, for the same reason as the title: the selectors are OR-ed,
+// so "rows came back" and "the citekey matched" are different facts, and
+// meta.citekey_lookup must report the second.
+func findRowsMatchCitekeyExactly(rows []map[string]any, citekey string) bool {
+	citekeyOnly := findItemsQuery{Citekey: citekey}
+	for _, row := range rows {
+		if findRowMatchesExact(row, citekeyOnly) {
+			return true
+		}
+	}
+	return false
+}
+
+// queryNearCiteKeyMatches gathers approximate citekey matches for a citekey
+// that matched nothing exactly. Unlike a title, a citekey has no index to
+// generate candidates from — it is a short opaque string inside `extra` or
+// the citationKey field, and no prefix of it is meaningful, so there is
+// nothing for SQLite to narrow with. The whole citekey inventory is therefore
+// read and ranked in Go. That is affordable exactly here: the read happens
+// only when the lookup found nothing, one row per item, three columns wide,
+// and it is the same query `items citekey-conflicts` and `library health`
+// already run (citekeyAuditQuery), so the two layers cannot disagree about
+// what a citekey is or where it lives.
+//
+// The second return value is how many candidates cleared the admission bound
+// before the rank cap, so the reader can be told the list was truncated.
+func queryNearCiteKeyMatches(ctx context.Context, db localQueryStore, citekey string) ([]nearCiteKeyMatch, int, error) {
+	rows, err := db.QueryRawContext(ctx, citekeyAuditQuery)
+	if err != nil {
+		return nil, 0, err
+	}
+	items := buildCitekeyItems(rows)
+	candidates := make([]citeKeyCandidate, 0, len(items))
+	for _, item := range items {
+		if item.CiteKey == "" {
+			continue
+		}
+		candidates = append(candidates, citeKeyCandidate{CiteKey: item.CiteKey, ItemKey: item.Key, Title: item.Title})
+	}
+	ranked := rankNearCiteKeys(citekey, candidates, len(candidates))
+	total := len(ranked)
+	if total > nearCiteKeyMatchLimit {
+		ranked = ranked[:nearCiteKeyMatchLimit]
+	}
+	return ranked, total, nil
 }
 
 // queryNearTitleMatches gathers approximate title matches for a title that
@@ -295,7 +423,7 @@ func findItemYear(date string) string {
 	return findItemYearPattern.FindString(date)
 }
 
-// wantsNearTitleProse reports whether the near-match block may be written to
+// wantsNearMatchProse reports whether a near-match block may be written to
 // stdout as prose. --plain and --csv are machine formats with no column for a
 // score, and --quiet asked for less output; interleaving a prose block into any
 // of them corrupts what the caller is parsing.
@@ -309,26 +437,121 @@ func findItemYear(date string) string {
 // flags is never nil here: RunE dereferences it (flags.selectFields,
 // flags.asJSON) long before this is consulted, so a nil-guard would have been
 // a branch no run can reach.
-func wantsNearTitleProse(flags *rootFlags) bool {
+func wantsNearMatchProse(flags *rootFlags) bool {
 	return !flags.plain && !flags.csv && !flags.quiet
 }
 
-// nearTitleMissingField is the placeholder for a column a row cannot fill. A
+// nearMatchMissingField is the placeholder for a column a row cannot fill. A
 // blank cell reads as a rendering bug, and the envelope reports the same gap as
 // an empty string, so the two halves describe the same row.
-const nearTitleMissingField = "----"
+const nearMatchMissingField = "----"
 
-// printTitleLookupMiss is the human answer to a --title lookup that matched
-// nothing. "matched: none" belongs here rather than inside the near-match
-// renderer: a genuinely absent title has no rows to render, and printing the
+// nearTitleBlock and nearCiteKeyBlock each group the three values a miss
+// answer needs: the ranked rows, how many there were before the rank cap, and
+// the lookup state. They always travel together, and one selector missing
+// says nothing about the other.
+type nearTitleBlock struct {
+	matches []nearTitleMatch
+	total   int
+	lookup  string
+}
+
+type nearCiteKeyBlock struct {
+	matches []nearCiteKeyMatch
+	total   int
+	lookup  string
+}
+
+// printFindLookupMiss is the human answer to a lookup that matched nothing.
+// "matched: none" belongs here rather than in either renderer: it is the
+// answer to the command, printed once, while each selector then explains
+// itself. A genuinely absent title or citekey has no rows to render, and the
 // bare `[]` that fell out of the generic writer told the reader the command
 // was broken instead of answering their question.
-func printTitleLookupMiss(cmd *cobra.Command, title string, matches []nearTitleMatch, total int, lookup string) error {
+//
+// Both selectors can miss in the same run (--title X --citekey Y), and each
+// block is a separate answer: a close citekey does not make the title
+// present, so neither may stand in for the other.
+func printFindLookupMiss(cmd *cobra.Command, query findItemsQuery, title nearTitleBlock, citekey nearCiteKeyBlock) error {
 	fmt.Fprint(cmd.OutOrStdout(), "matched: none\n\n")
+	titleMissed := findLookupMissed(title.lookup)
+	if titleMissed {
+		if err := printTitleLookupMiss(cmd, query.Title, title.matches, title.total, title.lookup); err != nil {
+			return err
+		}
+	}
+	if !findLookupMissed(citekey.lookup) {
+		return nil
+	}
+	if titleMissed {
+		fmt.Fprintln(cmd.OutOrStdout())
+	}
+	return printCiteKeyLookupMiss(cmd, query.Citekey, citekey.matches, citekey.total, citekey.lookup)
+}
+
+// printTitleLookupMiss explains a --title lookup that matched nothing.
+func printTitleLookupMiss(cmd *cobra.Command, title string, matches []nearTitleMatch, total int, lookup string) error {
 	if len(matches) == 0 {
 		return printNoNearTitleMatches(cmd, title, lookup)
 	}
 	return printNearTitleMatches(cmd, title, matches, total)
+}
+
+// printCiteKeyLookupMiss explains a --citekey lookup that matched nothing.
+func printCiteKeyLookupMiss(cmd *cobra.Command, citekey string, matches []nearCiteKeyMatch, total int, lookup string) error {
+	if len(matches) == 0 {
+		return printNoNearCiteKeyMatches(cmd, citekey, lookup)
+	}
+	return printNearCiteKeyMatches(cmd, citekey, matches, total)
+}
+
+// printNearCiteKeyMatches renders the near-citekey block, the same shape as
+// the near-title block and for the same reason: the reader asked for one key
+// and is being shown different keys, so a list that looks like a result set
+// invites treating the top row as the answer.
+//
+// Columns lead with what the reader acts on. The suggested citekey comes
+// first because it is what they will paste into the manuscript, then the item
+// key for the next command, then the title that tells them whether the row is
+// their source, and the advisory score last.
+//
+// matches is never empty: printCiteKeyLookupMiss owns that branch.
+func printNearCiteKeyMatches(cmd *cobra.Command, citekey string, matches []nearCiteKeyMatch, total int) error {
+	out := cmd.OutOrStdout()
+	fmt.Fprint(out, "near citekeys (different keys — confirm before using):\n")
+	tw := newTabWriter(out)
+	fmt.Fprintln(tw, "CITEKEY\tKEY\tTITLE\tSCORE")
+	for _, match := range matches {
+		title := match.Title
+		if title == "" {
+			title = nearMatchMissingField
+		}
+		fmt.Fprintf(tw, "%s\t%s\t%s\t%.2f\n", match.CiteKey, match.ItemKey, title, match.Score)
+	}
+	if err := tw.Flush(); err != nil {
+		return err
+	}
+	if total > len(matches) {
+		fmt.Fprintf(out, "(%d of %d shown)\n", len(matches), total)
+	}
+	fmt.Fprintf(cmd.ErrOrStderr(), "\nNo item has the citation key %q. If one above is the paper you meant, then run: zotio items get %s\n",
+		citekey, matches[0].ItemKey)
+	return nil
+}
+
+// printNoNearCiteKeyMatches answers a citekey lookup that found nothing and
+// had nothing close. A failed near lookup is kept distinct: reporting
+// "nothing is close" when the search never ran would be a confident negative
+// the command did not earn.
+func printNoNearCiteKeyMatches(cmd *cobra.Command, citekey, lookup string) error {
+	if lookup == citekeyLookupFailed {
+		fmt.Fprintf(cmd.ErrOrStderr(),
+			"No item has the citation key %q. The near-citekey lookup failed (reported above), so whether a close key exists is unknown.\n", citekey)
+		return nil
+	}
+	fmt.Fprintf(cmd.ErrOrStderr(),
+		"No item has the citation key %q, and no citation key in your library is close to it. This reads the local mirror only, so run 'zotio sync' if you expected a hit.\n", citekey)
+	return nil
 }
 
 // printNearTitleMatches renders the near-match block. It states that these are
@@ -357,11 +580,11 @@ func printNearTitleMatches(cmd *cobra.Command, title string, matches []nearTitle
 	for _, match := range matches {
 		year := match.Year
 		if year == "" {
-			year = nearTitleMissingField
+			year = nearMatchMissingField
 		}
 		itemType := match.ItemType
 		if itemType == "" {
-			itemType = nearTitleMissingField
+			itemType = nearMatchMissingField
 		}
 		shownTitle := match.Title
 		if match.Trashed {
@@ -718,13 +941,13 @@ func findRowMatchesExact(row map[string]any, query findItemsQuery) bool {
 			return true
 		}
 	}
-	// normalizeExactTitle, not normalizeDuplicateTitle: the latter is only
-	// lowercase + TrimSpace because items_duplicates.go groups on
-	// LOWER(TRIM(...)) in SQL and the two layers must not drift. That folding
-	// is too narrow for a title a person typed or pasted, so
-	// `--title "Attention is all you need."` — one trailing full stop, exactly
-	// what a reference list gives you — missed, and the near block then
-	// reported the same paper under a heading saying "different titles".
+	// normalizeExactTitle, not the SQL grouping key: items_duplicates.go groups
+	// exact title duplicates on LOWER(TRIM(...)) in SQL, which is lowercase and
+	// trim only. That folding is too narrow for a title a person typed or
+	// pasted, so `--title "Attention is all you need."` — one trailing full
+	// stop, exactly what a reference list gives you — missed, and the near
+	// block then reported the same paper under a heading saying "different
+	// titles".
 	if query.Title != "" && normalizeExactTitle(d.Title) == normalizeExactTitle(query.Title) {
 		return true
 	}
