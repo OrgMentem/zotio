@@ -361,8 +361,18 @@ func postDeliverWebhook(ctx context.Context, url string, body io.ReadSeeker, len
 		return fmt.Errorf("posting to webhook: %w", err)
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode >= 400 {
-		return fmt.Errorf("webhook returned %s", resp.Status)
+	return externalHTTPPostStatusError("webhook", resp)
+}
+
+// externalHTTPPostStatusError accepts only a 2xx response. Both outbound POST
+// helpers install http.ErrUseLastResponse, so net/http hands back the 3xx
+// itself instead of following it: a redirect means the body was never
+// delivered, and reporting it as success hides a stale endpoint URL. The status
+// line is named so the operator sees which redirect to fix. operation keeps the
+// callsite's own wording in the message.
+func externalHTTPPostStatusError(operation string, resp *http.Response) error {
+	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+		return nil
 	}
-	return nil
+	return fmt.Errorf("%s returned %s", operation, resp.Status)
 }

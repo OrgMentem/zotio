@@ -107,10 +107,7 @@ func postFeedback(url string, entry FeedbackEntry) error {
 		return fmt.Errorf("posting feedback: %w", err)
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode >= 400 {
-		return fmt.Errorf("feedback endpoint returned %s", resp.Status)
-	}
-	return nil
+	return externalHTTPPostStatusError("feedback endpoint", resp)
 }
 
 func newFeedbackCmd(flags *rootFlags) *cobra.Command {
