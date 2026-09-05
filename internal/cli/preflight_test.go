@@ -206,6 +206,37 @@ func TestCapabilityPreflightBetterBibTeXPassesWithCitationKeyFieldOnlyItems(t *t
 	}
 }
 
+// A library whose keys Zotero pinned holds them colon-tight
+// ("Citation Key:tight2023") and exposes no citationKey field at all. That is
+// a fully keyed Better BibTeX library, so the gate must let it through:
+// refusing it made `items bibcheck` and `items citekey-conflicts` unreachable
+// for exactly the libraries whose keys the shared parser understands.
+//
+// The refusal itself is still load-bearing and is pinned by
+// TestCapabilityPreflightBetterBibTeXFailsEnvelopeWhenNoCitationKeySourceExists,
+// which seeds Extra text carrying no key at all.
+func TestCapabilityPreflightBetterBibTeXPassesWithColonTightExtraKeysOnly(t *testing.T) {
+	root, _, _, _ := newPreflightTestRoot(t)
+	seedSyncedBibcheckItems(t, []json.RawMessage{
+		json.RawMessage(`{"key":"TIGHT1","version":1,"data":{"key":"TIGHT1","itemType":"journalArticle","title":"Tight Pinned Key","extra":"Citation Key:tight2023"}}`),
+	})
+
+	citekeys := mustFindPreflightCommand(t, root, "items", "citekey-conflicts")
+	runExecuted := false
+	citekeys.RunE = func(cmd *cobra.Command, args []string) error {
+		runExecuted = true
+		return nil
+	}
+
+	root.SetArgs([]string{"--json", "items", "citekey-conflicts"})
+	if err := root.Execute(); err != nil {
+		t.Fatalf("Better BibTeX preflight rejected a library whose keys are all colon-tight: %v", err)
+	}
+	if !runExecuted {
+		t.Fatal("items citekey-conflicts RunE did not execute for a colon-tight-keyed library")
+	}
+}
+
 func TestCapabilityPreflightBetterBibTeXFailsEnvelopeWhenNoCitationKeySourceExists(t *testing.T) {
 	root, _, out, _ := newPreflightTestRoot(t)
 	seedSyncedBibcheckItems(t, []json.RawMessage{

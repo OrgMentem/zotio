@@ -117,14 +117,30 @@ func buildCitekeyItems(rows []map[string]any) []citekeyItem {
 // dynamic (unpinned) keys as a top-level citationKey data field via the local
 // API; only pinned keys live as "Citation Key:" lines in Extra. Prefer the
 // field, fall back to Extra so libraries without pinned keys still resolve.
+//
+// Both Extra spellings resolve: "Citation Key: smith2023" and the colon-tight
+// "Citation Key:smith2023". Both occur in real libraries — Zotero itself
+// writes the tight form, zotio's importer writes the spaced one — and
+// findRowMatchesExact has accepted both since ac8ea71. Recognising only the
+// spaced form here made every layer built on this inventory (citekey
+// conflicts, library health, bibcheck, the near-key rescue behind
+// `items find --citekey`) blind to keys the exact lookup can already match.
+// One parser, so there is one answer to "what is this item's citekey".
 func resolveCiteKey(citationKey, extra string) string {
 	if key := strings.TrimSpace(citationKey); key != "" {
 		return key
 	}
+	const label = "Citation Key:"
 	for _, line := range strings.Split(extra, "\n") {
 		trimmed := strings.TrimSpace(line)
-		if strings.HasPrefix(trimmed, "Citation Key: ") {
-			return strings.TrimSpace(strings.TrimPrefix(trimmed, "Citation Key: "))
+		if !strings.HasPrefix(trimmed, label) {
+			continue
+		}
+		// A label with nothing after it is not a key, so keep reading the
+		// remaining lines instead of returning "": Extra is free text, and a
+		// bare label above a real one would otherwise hide it.
+		if key := strings.TrimSpace(strings.TrimPrefix(trimmed, label)); key != "" {
+			return key
 		}
 	}
 	return ""

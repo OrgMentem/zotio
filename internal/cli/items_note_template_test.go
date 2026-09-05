@@ -33,6 +33,47 @@ func TestYearFromDate(t *testing.T) {
 	}
 }
 
+// Zotero pins a citekey colon-tight ("Citation Key:tight2026") while zotio's
+// own importer writes the spaced form. The note template read only the spaced
+// spelling and silently rendered an empty cite_key for every Zotero-pinned
+// item. Both spellings are asserted here so the fix cannot be a swap of one
+// narrow parse for another.
+func TestNoteTemplateRendersBothExtraCiteKeySpellings(t *testing.T) {
+	tests := []struct {
+		name  string
+		extra string
+		want  string
+	}{
+		{name: "colon-tight", extra: "Citation Key:tight2026", want: "tight2026"},
+		{name: "spaced", extra: "Citation Key: spaced2026", want: "spaced2026"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			raw, err := json.Marshal(map[string]any{
+				"data": map[string]any{
+					"title":    "A Study of Foos",
+					"itemType": "journalArticle",
+					"date":     "2026",
+					"extra":    "some prior note\n" + tc.extra,
+				},
+			})
+			if err != nil {
+				t.Fatalf("marshal item: %v", err)
+			}
+			meta, err := noteMetadataFromItem(raw)
+			if err != nil {
+				t.Fatalf("noteMetadataFromItem: %v", err)
+			}
+			rendered := renderStandardNoteTemplate(meta, false, time.Date(2026, 9, 5, 0, 0, 0, 0, time.UTC))
+			wantLine := `cite_key: "` + tc.want + `"`
+			if !strings.Contains(rendered, wantLine) {
+				t.Fatalf("note template for Extra %q missing %q; rendered:\n%s", tc.extra, wantLine, rendered)
+			}
+		})
+	}
+}
+
 func TestNoteMetadataFromItem(t *testing.T) {
 	tests := []struct {
 		name string

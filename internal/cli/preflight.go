@@ -301,10 +301,25 @@ func checkBetterBibTeXPrecondition(ctx context.Context, _ *rootFlags, _ *cobra.C
 	defer s.Close()
 	var citeable int
 	var keyed int
+	// The Extra probe searches for 'Citation Key:' without a trailing space so
+	// that it recognises both spellings a real library holds: Zotero itself
+	// pins keys colon-tight ("Citation Key:smith2023") while zotio's importer
+	// writes the spaced form, and the spaced form contains the tight label as a
+	// substring. Matching only 'Citation Key: ' refused every Zotero-pinned
+	// library outright, so `items bibcheck` and `items citekey-conflicts` never
+	// reached resolveCiteKey — which has understood both spellings since the
+	// parser was unified — for exactly the libraries that needed them.
+	//
+	// This gate is deliberately a cheaper, more permissive test than
+	// resolveCiteKey: a bare label with no key after it counts as keyed here.
+	// That is the safe direction. Passing lets the command run and report the
+	// item as missing a key, which is the answer the operator asked for;
+	// refusing hides the whole library behind an exit-9 that names a cause the
+	// operator cannot act on.
 	err = s.DB().QueryRowContext(ctx, `
 SELECT
 	COUNT(*) AS citeable,
-	COUNT(CASE WHEN instr(COALESCE(json_extract(data,'$.data.extra'), ''), 'Citation Key: ') > 0
+	COUNT(CASE WHEN instr(COALESCE(json_extract(data,'$.data.extra'), ''), 'Citation Key:') > 0
 		OR COALESCE(json_extract(data,'$.data.citationKey'), '') != '' THEN 1 END) AS keyed
 FROM resources
 WHERE resource_type='items'

@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -1280,5 +1281,128 @@ func TestItemsFindReportsTheNearCiteKeyTotalWhenTruncated(t *testing.T) {
 	}
 	if got.Meta.Total != len(rows) {
 		t.Fatalf("meta.near_citekey_total = %d, want %d: the reader cannot tell the list was capped", got.Meta.Total, len(rows))
+	}
+}
+
+// seedColonTightCiteKeyStore is a library whose pinned keys are written the
+// way Zotero writes them — "Citation Key:key", no space — beside one written
+// the way zotio's importer writes them. Both spellings occur in real
+// libraries, and both halves of this command have to agree about them.
+func seedColonTightCiteKeyStore(t *testing.T) {
+	t.Helper()
+	dataHome := t.TempDir()
+	t.Setenv("XDG_DATA_HOME", dataHome)
+	db, err := store.OpenWithContext(t.Context(), filepath.Join(dataHome, "zotio", "data.db"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	if _, _, err := db.UpsertBatch("items", []json.RawMessage{
+		json.RawMessage(`{"key":"TIGHT","data":{"key":"TIGHT","itemType":"journalArticle","title":"Tight Pinned Key","date":"2023","extra":"Citation Key:tight2023"}}`),
+		json.RawMessage(`{"key":"SPACED","data":{"key":"SPACED","itemType":"journalArticle","title":"Spaced Pinned Key","date":"2023","extra":"Citation Key: spaced2023"}}`),
+	}); err != nil {
+		t.Fatalf("seed items: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close store: %v", err)
+	}
+}
+
+// The two halves of --citekey have to mean one thing by "citekey".
+// findRowMatchesExact has accepted the colon-tight spelling since ac8ea71,
+// but the near path read the inventory through resolveCiteKey, which only
+// knew the spaced form: `--citekey tight2023` matched the item, while
+// `--citekey tight2032` said nothing was close to it. The rescue path was
+// blind to exactly the keys Zotero writes.
+func TestItemsFindSuggestsCiteKeysInBothExtraSpellings(t *testing.T) {
+	t.Run("colon-tight key is offered for a typo", func(t *testing.T) {
+		seedColonTightCiteKeyStore(t)
+		got := decodeFindEnvelope(t, mustFindStdout(t, "--citekey", "tight2032"))
+		if len(got.NearKeys) != 1 || got.NearKeys[0].CiteKey != "tight2023" || got.NearKeys[0].ItemKey != "TIGHT" {
+			t.Fatalf("near_citekey_matches = %+v, want tight2023 on item TIGHT", got.NearKeys)
+		}
+		if got.Meta.CitekeyLookup != citekeyLookupNear {
+			t.Fatalf("meta.citekey_lookup = %q, want %q", got.Meta.CitekeyLookup, citekeyLookupNear)
+		}
+	})
+
+	t.Run("spaced key is still offered", func(t *testing.T) {
+		seedColonTightCiteKeyStore(t)
+		got := decodeFindEnvelope(t, mustFindStdout(t, "--citekey", "spaced2032"))
+		if len(got.NearKeys) != 1 || got.NearKeys[0].CiteKey != "spaced2023" || got.NearKeys[0].ItemKey != "SPACED" {
+			t.Fatalf("near_citekey_matches = %+v, want spaced2023 on item SPACED", got.NearKeys)
+		}
+	})
+
+	// The other side of the agreement: the exact path already matched this
+	// key, and it still does, so the two paths now answer one question the
+	// same way.
+	t.Run("colon-tight key still matches exactly", func(t *testing.T) {
+		seedColonTightCiteKeyStore(t)
+		got := decodeFindEnvelope(t, mustFindStdout(t, "--citekey", "tight2023"))
+		if len(got.Results) != 1 || got.Results[0].Key != "TIGHT" {
+			t.Fatalf("results = %+v, want the colon-tight item matched exactly", got.Results)
+		}
+		if got.Meta.CitekeyLookup != citekeyLookupExactHit {
+			t.Fatalf("meta.citekey_lookup = %q, want %q", got.Meta.CitekeyLookup, citekeyLookupExactHit)
+		}
+	})
+}
+
+func mustFindStdout(t *testing.T, args ...string) string {
+	t.Helper()
+	stdout, _ := runItemsFind(t, &rootFlags{asJSON: true}, args...)
+	return stdout
+}
+
+// Two items holding one citekey is the library state `items citekey-conflicts`
+// exists for, and it used to break this list twice: the duplicate rows tie
+// completely, so which item and title were shown followed row order (the
+// inventory query has no ORDER BY), and three of them filled the rank cap
+// before any other key appeared. The person who mistyped a key needs the
+// list of KEYS they might have meant, so a shared key is one row — the row
+// naming the lowest item key, on every run — and the cap is spent on other
+// keys.
+func TestItemsFindListsADuplicateCiteKeyOnceAndKeepsOtherKeys(t *testing.T) {
+	dataHome := t.TempDir()
+	t.Setenv("XDG_DATA_HOME", dataHome)
+	db, err := store.OpenWithContext(t.Context(), filepath.Join(dataHome, "zotio", "data.db"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	// Inserted so that row order and item-key order disagree: DUPC is read
+	// first, and only the item tiebreak puts DUPA in the list.
+	if _, _, err := db.UpsertBatch("items", []json.RawMessage{
+		json.RawMessage(`{"key":"DUPC","data":{"key":"DUPC","itemType":"journalArticle","title":"Third Copy","date":"2023","citationKey":"smith2023"}}`),
+		json.RawMessage(`{"key":"DUPB","data":{"key":"DUPB","itemType":"journalArticle","title":"Second Copy","date":"2023","citationKey":"smith2023"}}`),
+		json.RawMessage(`{"key":"DUPA","data":{"key":"DUPA","itemType":"journalArticle","title":"First Copy","date":"2023","citationKey":"smith2023"}}`),
+		json.RawMessage(`{"key":"LATER","data":{"key":"LATER","itemType":"journalArticle","title":"A Later Year","date":"2024","citationKey":"smith2024"}}`),
+	}); err != nil {
+		t.Fatalf("seed items: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close store: %v", err)
+	}
+
+	first := decodeFindEnvelope(t, mustFindStdout(t, "--citekey", "smith2032")).NearKeys
+	wantKeys := []string{"smith2023", "smith2024"}
+	gotKeys := make([]string, 0, len(first))
+	for _, row := range first {
+		gotKeys = append(gotKeys, row.CiteKey)
+	}
+	if !reflect.DeepEqual(gotKeys, wantKeys) {
+		t.Fatalf("near citekeys = %#v, want %#v: one key held by three items must be one suggestion, and must not spend the cap of %d",
+			gotKeys, wantKeys, nearCiteKeyMatchLimit)
+	}
+	if first[0].ItemKey != "DUPA" || first[0].Title != "First Copy" {
+		t.Fatalf("shared-key row = %+v, want the lowest item key so the row does not follow row order", first[0])
+	}
+
+	// Repeated runs over one library print one list. The store cannot supply
+	// that: citekeyAuditQuery has no ORDER BY and sort.Slice is not stable.
+	for run := range 3 {
+		again := decodeFindEnvelope(t, mustFindStdout(t, "--citekey", "smith2032")).NearKeys
+		if !reflect.DeepEqual(again, first) {
+			t.Fatalf("run %d listed %+v, want the same list as the first run %+v", run+2, again, first)
+		}
 	}
 }

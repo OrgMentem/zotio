@@ -546,3 +546,51 @@ func TestPrintBibcheckKeySuggestionsSeparatesGuessesFromMatches(t *testing.T) {
 		t.Fatalf("block printed with nothing to suggest:\n%s", quiet.String())
 	}
 }
+
+// bibcheck reads the same inventory as `items find --citekey`, so it had the
+// same blind spot: a library whose keys Zotero pinned holds them as
+// "Citation Key:key" with no space, and the shared parser only knew the
+// spaced spelling. An author who mistyped a key in a Zotero-pinned library
+// got "unknown" and no suggestion, which is the answer this command exists
+// to improve on. Both spellings are cited here, so the fix cannot be a swap
+// of one blind spot for the other.
+func TestBibcheckSuggestsKeysInBothExtraSpellings(t *testing.T) {
+	home := bibcheckIsolatedHome(t)
+	seedBibcheckItems(t, []json.RawMessage{
+		json.RawMessage(`{"key":"TIGHT","version":1,"data":{"key":"TIGHT","itemType":"journalArticle","title":"Tight Pinned Key","creators":[{"lastName":"Smith"}],"date":"2023","publicationTitle":"Journal A","extra":"Citation Key:smith2023"}}`),
+		json.RawMessage(`{"key":"SPACED","version":1,"data":{"key":"SPACED","itemType":"journalArticle","title":"Spaced Pinned Key","creators":[{"lastName":"Jones"}],"date":"2023","publicationTitle":"Journal B","extra":"Citation Key: jones2023"}}`),
+	})
+	manuscript := filepath.Join(home, "paper.tex")
+	writeTestFile(t, manuscript, `\cite{smith2032}\cite{jones2032}`)
+
+	report, _, err := runBibcheckJSON(t, manuscript)
+	if err != nil {
+		t.Fatalf("items bibcheck returned error: %v", err)
+	}
+	byKey := map[string]bibcheckKeyResult{}
+	for _, result := range report.Keys {
+		byKey[result.CiteKey] = result
+	}
+	for _, tc := range []struct {
+		cited      string
+		wantKey    string
+		wantItem   string
+		wantTitle  string
+		wantSource string
+	}{
+		{cited: "smith2032", wantKey: "smith2023", wantItem: "TIGHT", wantTitle: "Tight Pinned Key", wantSource: "colon-tight"},
+		{cited: "jones2032", wantKey: "jones2023", wantItem: "SPACED", wantTitle: "Spaced Pinned Key", wantSource: "spaced"},
+	} {
+		result := byKey[tc.cited]
+		if result.Status != "unknown" {
+			t.Fatalf("%s status = %q, want unknown: the mistyped key really is not in the library", tc.cited, result.Status)
+		}
+		if len(result.Suggestions) != 1 {
+			t.Fatalf("%s suggestions = %+v, want one naming the %s pinned key %s", tc.cited, result.Suggestions, tc.wantSource, tc.wantKey)
+		}
+		got := result.Suggestions[0]
+		if got.CiteKey != tc.wantKey || got.ItemKey != tc.wantItem || got.Title != tc.wantTitle {
+			t.Fatalf("%s suggestion = %+v, want %s on item %s (%s Extra spelling)", tc.cited, got, tc.wantKey, tc.wantItem, tc.wantSource)
+		}
+	}
+}

@@ -39,6 +39,46 @@ func seedVaultStore(t *testing.T) {
 	_ = db.Close()
 }
 
+// A vault note's filename comes from the citekey, so losing a colon-tight
+// pinned key is not a blank frontmatter field: vaultFilename falls back to the
+// raw Zotero item key, which renames every note in a Zotero-pinned library and
+// is the collision damage `library health --for vault` exists to predict.
+// Both Extra spellings are asserted so the fix cannot be a swap.
+func TestVaultItemMetaResolvesBothExtraCiteKeySpellingsIntoFilename(t *testing.T) {
+	tests := []struct {
+		name  string
+		extra string
+		want  string
+	}{
+		{name: "colon-tight", extra: "Citation Key:tight2023", want: "tight2023"},
+		{name: "spaced", extra: "Citation Key: spaced2023", want: "spaced2023"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			raw, err := json.Marshal(map[string]any{
+				"key": "ITEMKEY01",
+				"data": map[string]any{
+					"key":      "ITEMKEY01",
+					"itemType": "journalArticle",
+					"title":    "Tight Pinned Key",
+					"extra":    "prior note\n" + tc.extra,
+				},
+			})
+			if err != nil {
+				t.Fatalf("marshal item: %v", err)
+			}
+			meta := vaultItemMeta(raw)
+			if meta.CiteKey != tc.want {
+				t.Errorf("vaultItemMeta CiteKey = %q, want %q", meta.CiteKey, tc.want)
+			}
+			if got, want := vaultFilename(meta), tc.want+".md"; got != want {
+				t.Fatalf("vaultFilename = %q, want %q (falling back to the item key renames the note)", got, want)
+			}
+		})
+	}
+}
+
 func runVaultSync(t *testing.T, flags *rootFlags, args []string) string {
 	t.Helper()
 	cmd := newVaultSyncCmd(flags)

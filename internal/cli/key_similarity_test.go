@@ -10,6 +10,7 @@ package cli
 import (
 	"math"
 	"math/rand/v2"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -85,6 +86,13 @@ func TestCiteKeySimilarityScoreBounds(t *testing.T) {
 		{"one wrong digit", "smith2024", "smith2023", 1 - 2.0/9},
 		{"transposed year", "smith2032", "smith2023", 1 - 4.0/9},
 		{"disambiguation suffix", "smith2023a", "smith2023", 1 - 1.0/9},
+		// An all-digit key at the minimum length is the worst pair the bound
+		// admits: every edit in it is a digit edit, priced double, over the
+		// fewest runes that may match approximately at all. It lands exactly
+		// on the 0.5 floor the whole model promises, so this row is where a
+		// change to citeKeyDigitEditCost or citeKeyFuzzyMinLen shows up as a
+		// broken promise rather than as a slightly different number.
+		{"all-digit key at the minimum length", "2023", "2024", 0.5},
 		{"rejected", "jones2023", "smith2023", 0},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -148,6 +156,28 @@ func TestCiteKeySimilarityReservesOneForAFoldedEqualKey(t *testing.T) {
 	}
 }
 
+// The other half of the 1.00 promise, and the only one nothing pinned: the
+// comment on normalizeMatchCiteKey says a folded-equal pair may differ "in
+// case or in unicode encoding", and a key with an accented author name is
+// stored either way depending on which client wrote it. A composed key and
+// its decomposed spelling are the same key, and a reader told they differ
+// would go looking for a second entry that does not exist.
+func TestCiteKeySimilarityFoldsAUnicodeEncodingDifference(t *testing.T) {
+	composed := "müller2023"         // NFC: U+00FC
+	decomposed := "mu\u0308ller2023" // NFD: u + combining diaeresis
+	if composed == decomposed {
+		t.Fatal("the fixture is not two spellings; the test would prove nothing")
+	}
+	if got := citeKeySimilarity(composed, decomposed); got != 1 {
+		t.Fatalf("citeKeySimilarity over one key in two encodings = %.4f, want exactly 1", got)
+	}
+	// And the accent itself is still a difference, not noise the fold eats:
+	// "muller2023" is a key someone else may hold.
+	if got := citeKeySimilarity(composed, "muller2023"); got >= 1 {
+		t.Fatalf("dropping the diaeresis scored %.4f, want a near key below 1", got)
+	}
+}
+
 // Two invariants over the whole input space rather than over one table.
 // Symmetry, because which key is the query must not change a ranking. And a
 // non-zero score of at least 0.5, which is what makes the admission bound the
@@ -187,13 +217,20 @@ func TestCiteKeySimilarityIsSymmetricAndNeverWeak(t *testing.T) {
 	}
 }
 
+// The fixture puts the two equally-scored suffix keys in REVERSE key order,
+// and gives them item keys that disagree with key order too. Both are
+// deliberate. sort.Slice over five rows runs an insertion sort, which happens
+// to preserve input order, so a fixture already sorted by key proved nothing:
+// deleting the key comparison left the test passing. Item keys sorted the
+// same way hid it just as well, since the later tiebreak then produced the
+// same list. Only the key tiebreak orders this fixture.
 func TestRankNearCiteKeysRanksCapsAndRounds(t *testing.T) {
 	candidates := []citeKeyCandidate{
 		{CiteKey: "smith2024", ItemKey: "Y2024", Title: "Attention, Later"},
 		{CiteKey: "jones2023", ItemKey: "JONE", Title: "Unrelated Work"},
+		{CiteKey: "smith2023b", ItemKey: "AB3N9P5B", Title: "Attention, Once More"},
 		{CiteKey: "smith2023", ItemKey: "SMIT", Title: "Attention Is All You Need"},
-		{CiteKey: "smith2023a", ItemKey: "SMITA", Title: "Attention, Again"},
-		{CiteKey: "smith2023b", ItemKey: "SMITB", Title: "Attention, Once More"},
+		{CiteKey: "smith2023a", ItemKey: "ZQ7K2M4A", Title: "Attention, Again"},
 	}
 	ranked := rankNearCiteKeys("smith2023", candidates, nearCiteKeyMatchLimit)
 	if len(ranked) != nearCiteKeyMatchLimit {
@@ -208,7 +245,7 @@ func TestRankNearCiteKeysRanksCapsAndRounds(t *testing.T) {
 		t.Fatalf("rows 2 and 3 = %q, %q; want the two equally-scored suffixes in key order",
 			ranked[1].CiteKey, ranked[2].CiteKey)
 	}
-	if ranked[1].ItemKey != "SMITA" || ranked[1].Title != "Attention, Again" {
+	if ranked[1].ItemKey != "ZQ7K2M4A" || ranked[1].Title != "Attention, Again" {
 		t.Fatalf("row = %+v, want the item key and title a reader confirms the row with", ranked[1])
 	}
 	for _, row := range ranked {
@@ -218,6 +255,50 @@ func TestRankNearCiteKeysRanksCapsAndRounds(t *testing.T) {
 		if rounded := math.Round(row.Score*nearCiteKeyScoreScale) / nearCiteKeyScoreScale; row.Score != rounded {
 			t.Fatalf("score %v is published unrounded; an advisory number must not claim sixteen digits", row.Score)
 		}
+	}
+}
+
+// Two items holding ONE citekey is the conflict `items citekey-conflicts`
+// exists for, and it is the case where this ranker had no answer: the rows
+// score identically, tie on the key, and citekeyAuditQuery has no ORDER BY,
+// so which item and title were shown moved with row order — and three
+// duplicate rows filled a cap of three, hiding every other candidate behind
+// one key repeated. A suggestion list answers "which key should I have
+// typed", so the key is listed once, and the item tiebreak decides which
+// row's title travels with it.
+func TestRankNearCiteKeysListsADuplicateKeyOnceAndCapsByDistinctKey(t *testing.T) {
+	// Three items share smith2023, deliberately not in item-key order, and
+	// two further keys are close enough to be admitted behind them.
+	candidates := []citeKeyCandidate{
+		{CiteKey: "smith2023", ItemKey: "DUP3", Title: "Third Copy"},
+		{CiteKey: "smith2024", ItemKey: "Y2024", Title: "Attention, Later"},
+		{CiteKey: "smith2023", ItemKey: "DUP1", Title: "First Copy"},
+		{CiteKey: "smith2023a", ItemKey: "SMITA", Title: "Attention, Again"},
+		{CiteKey: "smith2023", ItemKey: "DUP2", Title: "Second Copy"},
+	}
+	ranked := rankNearCiteKeys("Smith2023", candidates, nearCiteKeyMatchLimit)
+
+	gotKeys := make([]string, 0, len(ranked))
+	for _, row := range ranked {
+		gotKeys = append(gotKeys, row.CiteKey)
+	}
+	wantKeys := []string{"smith2023", "smith2023a", "smith2024"}
+	if !reflect.DeepEqual(gotKeys, wantKeys) {
+		t.Fatalf("ranked keys = %#v, want %#v: the cap counts distinct keys, so one key held by three items must not fill it",
+			gotKeys, wantKeys)
+	}
+	if ranked[0].ItemKey != "DUP1" || ranked[0].Title != "First Copy" {
+		t.Fatalf("duplicate-key row = %+v, want the lowest item key so the row is the same on every run", ranked[0])
+	}
+
+	// The same library read in another row order prints the same list. This
+	// is the property the store cannot supply: the query has no ORDER BY.
+	reversed := make([]citeKeyCandidate, 0, len(candidates))
+	for i := len(candidates) - 1; i >= 0; i-- {
+		reversed = append(reversed, candidates[i])
+	}
+	if again := rankNearCiteKeys("Smith2023", reversed, nearCiteKeyMatchLimit); !reflect.DeepEqual(again, ranked) {
+		t.Fatalf("reversed candidate order ranked %+v, want the same list as %+v", again, ranked)
 	}
 }
 

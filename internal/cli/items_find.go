@@ -326,8 +326,11 @@ func findRowsMatchCitekeyExactly(rows []map[string]any, citekey string) bool {
 // already run (citekeyAuditQuery), so the two layers cannot disagree about
 // what a citekey is or where it lives.
 //
-// The second return value is how many candidates cleared the admission bound
-// before the rank cap, so the reader can be told the list was truncated.
+// The second return value is how many DISTINCT keys cleared the admission
+// bound before the rank cap, so the reader can be told the list was
+// truncated. Distinct keys, because that is what the capped list holds:
+// rankNearCiteKeys reports a key held by several items once, so counting
+// rows here would print "(3 of 5 shown)" for a library with three keys in it.
 func queryNearCiteKeyMatches(ctx context.Context, db localQueryStore, citekey string) ([]nearCiteKeyMatch, int, error) {
 	rows, err := db.QueryRawContext(ctx, citekeyAuditQuery)
 	if err != nil {

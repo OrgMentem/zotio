@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/json"
 	"path/filepath"
+	"reflect"
 	"testing"
 
 	"zotio/internal/store"
@@ -45,6 +46,26 @@ func TestResolveCiteKeyPrefersFieldWithExtraFallback(t *testing.T) {
 			want:        "pinnedKey",
 		},
 		{
+			// Zotero itself writes the pinned line without the space, while
+			// zotio's importer writes it with one. findRowMatchesExact has
+			// accepted both spellings since ac8ea71, so a parser that read
+			// only the spaced form left every inventory built on this
+			// function — conflicts, health, bibcheck, near-key suggestions —
+			// blind to keys the exact lookup can already match.
+			name:        "colon-tight Extra fallback",
+			citationKey: "",
+			extra:       "notes\nCitation Key:tightKey\nmore notes",
+			want:        "tightKey",
+		},
+		{
+			// Extra is free text, so a bare label can precede the real line.
+			// Returning "" at the first label would hide the key below it.
+			name:        "bare label does not shadow a later key",
+			citationKey: "",
+			extra:       "Citation Key:\nCitation Key: realKey",
+			want:        "realKey",
+		},
+		{
 			name:        "empty when neither source exists",
 			citationKey: "",
 			extra:       "ordinary Extra notes",
@@ -61,6 +82,58 @@ func TestResolveCiteKeyPrefersFieldWithExtraFallback(t *testing.T) {
 	}
 }
 
+// runCitekeyConflicts runs `items citekey-conflicts` with the given flags and
+// decodes the rows it prints.
+func runCitekeyConflicts(t *testing.T, args ...string) []citekeyConflictRow {
+	t.Helper()
+	cmd := newItemsCitekeyConflictsCmd(&rootFlags{})
+	cmd.SilenceErrors, cmd.SilenceUsage = true, true
+	cmd.SetArgs(args)
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&bytes.Buffer{})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("items citekey-conflicts %v: %v", args, err)
+	}
+	var rows []citekeyConflictRow
+	if err := json.Unmarshal(out.Bytes(), &rows); err != nil {
+		t.Fatalf("decode citekey-conflicts rows %q: %v", out.String(), err)
+	}
+	return rows
+}
+
+// Reading the colon-tight spelling changes this command's answer, and the new
+// answer is the correct one: an item whose Extra holds "Citation Key:same2023"
+// DOES carry a pinned key, so calling it missing was a false negative, and two
+// items carrying that one key really are the conflict this command reports.
+// That is what a library Zotero pinned the keys in looks like.
+func TestItemsCitekeyConflictsReadsColonTightPinnedKeys(t *testing.T) {
+	bibcheckIsolatedHome(t)
+	seedBibcheckItems(t, []json.RawMessage{
+		json.RawMessage(`{"key":"TIGHT1","version":1,"data":{"key":"TIGHT1","itemType":"journalArticle","title":"Tight One","extra":"Citation Key:same2023"}}`),
+		json.RawMessage(`{"key":"TIGHT2","version":1,"data":{"key":"TIGHT2","itemType":"journalArticle","title":"Tight Two","extra":"Citation Key:same2023"}}`),
+		json.RawMessage(`{"key":"SPACED","version":1,"data":{"key":"SPACED","itemType":"journalArticle","title":"Spaced One","extra":"Citation Key: solo2023"}}`),
+		json.RawMessage(`{"key":"NOKEY","version":1,"data":{"key":"NOKEY","itemType":"journalArticle","title":"No Key","extra":"just a note"}}`),
+	})
+
+	missing := runCitekeyConflicts(t, "--missing")
+	if len(missing) != 1 || missing[0].Key != "NOKEY" {
+		t.Fatalf("missing rows = %+v, want only NOKEY: a colon-tight pinned key is a key", missing)
+	}
+
+	conflicts := runCitekeyConflicts(t, "--conflicts")
+	gotKeys := make([]string, 0, len(conflicts))
+	for _, row := range conflicts {
+		if row.CiteKey != "same2023" {
+			t.Fatalf("conflict row = %+v, want the shared colon-tight key same2023", row)
+		}
+		gotKeys = append(gotKeys, row.Key)
+	}
+	if !reflect.DeepEqual(gotKeys, []string{"TIGHT1", "TIGHT2"}) {
+		t.Fatalf("conflict items = %#v, want both items holding same2023", gotKeys)
+	}
+}
+
 func TestItemsCitekeyConflictsUsesCitationKeyFieldOnlyItems(t *testing.T) {
 	bibcheckIsolatedHome(t)
 	seedBibcheckItems(t, []json.RawMessage{
@@ -68,36 +141,12 @@ func TestItemsCitekeyConflictsUsesCitationKeyFieldOnlyItems(t *testing.T) {
 		json.RawMessage(`{"key":"FIELD2","version":1,"data":{"key":"FIELD2","itemType":"journalArticle","title":"Field Two","citationKey":"fielddup"}}`),
 	})
 
-	missingCmd := newItemsCitekeyConflictsCmd(&rootFlags{})
-	missingCmd.SilenceErrors, missingCmd.SilenceUsage = true, true
-	missingCmd.SetArgs([]string{"--missing"})
-	var missingOut bytes.Buffer
-	missingCmd.SetOut(&missingOut)
-	missingCmd.SetErr(&bytes.Buffer{})
-	if err := missingCmd.Execute(); err != nil {
-		t.Fatalf("items citekey-conflicts --missing: %v", err)
-	}
-	var missing []citekeyConflictRow
-	if err := json.Unmarshal(missingOut.Bytes(), &missing); err != nil {
-		t.Fatalf("decode missing rows %q: %v", missingOut.String(), err)
-	}
+	missing := runCitekeyConflicts(t, "--missing")
 	if len(missing) != 0 {
 		t.Fatalf("citationKey-field-only items reported missing citekeys: %+v", missing)
 	}
 
-	conflictCmd := newItemsCitekeyConflictsCmd(&rootFlags{})
-	conflictCmd.SilenceErrors, conflictCmd.SilenceUsage = true, true
-	conflictCmd.SetArgs([]string{"--conflicts"})
-	var conflictOut bytes.Buffer
-	conflictCmd.SetOut(&conflictOut)
-	conflictCmd.SetErr(&bytes.Buffer{})
-	if err := conflictCmd.Execute(); err != nil {
-		t.Fatalf("items citekey-conflicts --conflicts: %v", err)
-	}
-	var conflicts []citekeyConflictRow
-	if err := json.Unmarshal(conflictOut.Bytes(), &conflicts); err != nil {
-		t.Fatalf("decode conflict rows %q: %v", conflictOut.String(), err)
-	}
+	conflicts := runCitekeyConflicts(t, "--conflicts")
 	if len(conflicts) != 2 {
 		t.Fatalf("conflicts = %+v, want two rows sharing fielddup", conflicts)
 	}

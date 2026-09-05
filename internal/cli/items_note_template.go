@@ -95,7 +95,10 @@ func noteMetadataFromItem(raw json.RawMessage) (itemNoteMetadata, error) {
 		Year:     yearFromDate(date),
 		DOI:      doi,
 		Abstract: strings.TrimSpace(abstractNote),
-		CiteKey:  citationKeyFromExtra(extra),
+		// One parser for "what is this item's citekey": resolveCiteKey reads
+		// the Better BibTeX citationKey field first and falls back to both
+		// Extra spellings. This callsite has no field to offer, only Extra.
+		CiteKey: resolveCiteKey("", extra),
 	}
 	return meta, nil
 }
@@ -128,16 +131,6 @@ func noteAuthors(raw any) []string {
 
 func yearFromDate(date string) string {
 	return dateYearPattern.FindString(date)
-}
-
-func citationKeyFromExtra(extra string) string {
-	for _, line := range strings.Split(extra, "\n") {
-		trimmed := strings.TrimSpace(line)
-		if strings.HasPrefix(trimmed, "Citation Key: ") {
-			return strings.TrimSpace(strings.TrimPrefix(trimmed, "Citation Key: "))
-		}
-	}
-	return ""
 }
 
 func renderStandardNoteTemplate(meta itemNoteMetadata, obsidian bool, now time.Time) string {

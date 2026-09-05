@@ -737,11 +737,13 @@ func vaultItemMeta(raw json.RawMessage) vaultMeta {
 	if key == "" {
 		key = zoteroString(data, "key")
 	}
-	citekey := strings.TrimSpace(jsonStringFieldFromMap(obj, "citationKey"))
-	if citekey == "" {
-		extra, _ := stringValue(data["extra"])
-		citekey = citationKeyFromExtra(extra)
-	}
+	extra, _ := stringValue(data["extra"])
+	// Route citekey resolution through the one shared parser. Reading only the
+	// spaced Extra spelling here lost the key for every Zotero-pinned library,
+	// and a note filename is derived from the citekey (vaultFilename), so the
+	// loss was not a blank field: notes fell back to the raw item key, which
+	// renames every note and collides items that share a fallback.
+	citekey := resolveCiteKey(jsonStringFieldFromMap(obj, "citationKey"), extra)
 	title, _ := stringValue(data["title"])
 	doi, _ := stringValue(data["DOI"])
 	url, _ := stringValue(data["url"])

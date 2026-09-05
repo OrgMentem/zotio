@@ -102,12 +102,23 @@ type nearCiteKeyMatch struct {
 }
 
 // rankNearCiteKeys scores candidates against the query key and returns the
-// best ones, strongest first.
+// best ones, strongest first, with each DISTINCT key listed once.
 //
-// Ordering is (score desc, cite_key asc). The key tiebreak is what makes two
-// runs over the same library print the same list: candidates arrive in map or
-// row order, which can reorder equally-scored rows, and an unstable list
-// cannot be reproduced from a bug report.
+// Ordering is (score desc, cite_key asc, item_key asc). The two tiebreaks are
+// what makes two runs over the same library print the same list: candidates
+// arrive in map or row order, citekeyAuditQuery has no ORDER BY, and
+// sort.Slice is not stable, so equally-scored rows would otherwise reorder
+// and an unstable list cannot be reproduced from a bug report. The key alone
+// is not enough to settle it, because two items CAN hold one key — that is
+// the conflict `items citekey-conflicts` exists for — and then the item key
+// decides which row's title is shown.
+//
+// The cap counts distinct KEYS, not rows: the reader mistyped a key and is
+// being told which key to type instead, so a key held by three items is one
+// suggestion, and letting it fill a cap of three would hide every other
+// candidate behind a single answer repeated. Keys are compared AS STORED, not
+// folded, because "Smith2023" and "smith2023" are two different strings for
+// a .bib file to contain, so they are genuinely two suggestions.
 func rankNearCiteKeys(query string, candidates []citeKeyCandidate, limit int) []nearCiteKeyMatch {
 	if normalizeMatchCiteKey(query) == "" {
 		return nil
@@ -138,12 +149,24 @@ func rankNearCiteKeys(query string, candidates []citeKeyCandidate, limit int) []
 		if scored[i].Score != scored[j].Score {
 			return scored[i].Score > scored[j].Score
 		}
-		return scored[i].CiteKey < scored[j].CiteKey
+		if scored[i].CiteKey != scored[j].CiteKey {
+			return scored[i].CiteKey < scored[j].CiteKey
+		}
+		return scored[i].ItemKey < scored[j].ItemKey
 	})
-	if len(scored) > limit {
-		scored = scored[:limit]
+	ranked := make([]nearCiteKeyMatch, 0, min(limit, len(scored)))
+	seen := make(map[string]struct{}, len(scored))
+	for _, row := range scored {
+		if _, duplicate := seen[row.CiteKey]; duplicate {
+			continue
+		}
+		seen[row.CiteKey] = struct{}{}
+		ranked = append(ranked, row)
+		if len(ranked) == limit {
+			break
+		}
 	}
-	return scored
+	return ranked
 }
 
 // normalizeMatchCiteKey folds a citekey to the form used for approximate
@@ -161,6 +184,19 @@ func rankNearCiteKeys(query string, candidates []citeKeyCandidate, limit int) []
 // the exact test, and a near key scoring 1.00 says something precise: the
 // library holds that key differing only in case or in unicode encoding, which
 // is the most actionable suggestion this can produce.
+//
+// strings.ToLower is per-rune mapping, not full Unicode case folding, so a
+// rune whose fold is not one-to-one is left alone: "ΟΔΥΣΣΕΥΣ" lowercases to
+// "οδυσσευσ" with a medial sigma, which is a different string from the
+// "οδυσσευς" a Greek writer types with the final sigma. The pair is priced as
+// one letter edit — 0.88 over an eight-rune key — where full folding would
+// call it the same key at 1.00. That is recorded rather than fixed. A Better
+// BibTeX key is generated from an ASCII-folded author name and a year, and a
+// .bib file and LaTeX are typed in that alphabet, so the pair does not
+// arise; and if it ever did, the only consequence is a pessimistic score —
+// the row is still admitted, still ranked and still shown, it just does not
+// claim to be the same key. Buying that exact 1.00 costs a full case-folding
+// dependency inside the ranker.
 func normalizeMatchCiteKey(key string) string {
 	return strings.ToLower(norm.NFC.String(strings.TrimSpace(key)))
 }
