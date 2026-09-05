@@ -1824,7 +1824,7 @@
     "inputSchema": {
       "properties": {
         "by": {
-          "description": "Duplicate detector to run (doi, title, all) (default: all)",
+          "description": "Duplicate detector to run (doi, title, all); title and all also report titles that are close but not equal, scored and separately (near_title_groups in JSON, with meta.title_lookup naming the state), never as duplicate groups and never as something 'duplicates resolve' will merge (default: all)",
           "type": "string"
         }
       },
@@ -2004,7 +2004,7 @@
           "type": "string"
         },
         "citekey": {
-          "description": "Find items with this Better BibTeX citation key",
+          "description": "Find items with this Better BibTeX citation key; when the lookup as a whole matches nothing, the closest citation keys are reported separately (near_citekey_matches in JSON) and never as results",
           "type": "string"
         },
         "doi": {

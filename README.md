@@ -253,13 +253,13 @@ format = "obsidian"      # or "logseq"
 
 - **`items retract-check`** — check every DOI against **Crossref's Retraction Watch data**: retractions, expressions of concern, and corrections, with notice DOIs and dates. Opt into the `library health` gate with `--check-retractions`. *(This one reads the network.)*
 - **`collections gaps`** — citation-graph gap analysis: rank the papers your collection cites most that are **missing from your library** (OpenCitations + Semantic Scholar), then `import doi` them. *(Network too.)*
-- **`items bibcheck <manuscript>`** — parse `\cite{}`/`@citekey` from `.tex` or pandoc Markdown and resolve every key against your library — unknown and ambiguous keys flagged, `--fail-on-unknown` exits 11 for CI.
+- **`items bibcheck <manuscript>`** — parse `\cite{}`/`@citekey` from `.tex` or pandoc Markdown and resolve every key against your library — unknown and ambiguous keys flagged, and an unknown key carries the closest keys in your library as an advisory suggestion, so a one-character typo is a named fix rather than a hand-grep of the `.bib`. `--fail-on-unknown` exits 11 for CI.
 - **`tags audit`** — group tags that differ only by case or variant, with item counts and **ready-to-run merge commands**. On a real 840-tag library it surfaced 53 duplicate groups in one pass.
 - **`library stats`** — a one-command dashboard: items by type and year, top venues, PDF coverage, and optional intake buckets with `--added-by month|year`.
 - **`items audit`** — count and list items missing PDFs, abstracts, DOIs, tags, or citation-core fields; `--verify-files` checks PDFs actually exist on disk.
 - **`items duplicates`** — detect likely duplicates by DOI or title (attachments/notes excluded), then `duplicates resolve` to merge safely.
 - **`items citekey-conflicts`** — find missing or duplicate Better BibTeX keys before they break a LaTeX build.
-- **`items find`** — resolve a DOI, ISBN, PMID, arXiv ID, citation key, URL, OpenAlex work ID, or exact title against the local mirror before importing a duplicate. A title matches whatever its case, whitespace, quote and dash styling, or trailing full stop, so a title pasted from a reference list resolves. When it still matches nothing, the closest titles in the library are listed separately with a score, so a typo is distinguishable from an absent paper; they are suggestions to confirm, never matches.
+- **`items find`** — resolve a DOI, ISBN, PMID, arXiv ID, citation key, URL, OpenAlex work ID, or exact title against the local mirror before importing a duplicate. A title matches whatever its case, whitespace, quote and dash styling, or trailing full stop, so a title pasted from a reference list resolves. When a title or a citation key still matches nothing, the closest titles or keys in the library are listed separately with a score, so a typo is distinguishable from an absent paper; they are suggestions to confirm, never matches.
 
 ### Reading & synthesis
 
