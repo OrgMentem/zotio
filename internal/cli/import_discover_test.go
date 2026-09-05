@@ -79,6 +79,79 @@ func TestImportDiscoverBackwardManifestSkipsHeldAndTitleDuplicate(t *testing.T) 
 	}
 }
 
+// TestImportDiscoverSkipsTitleDuplicateAcrossTypographicFolding pins the WRITE
+// decision. A provider title that differs from the held copy only in how it was
+// typed or exported — a reference-list full stop, a curly apostrophe, an en
+// dash, a decomposed accent — names the same work, so the entry must be a skip.
+// The held items carry no DOI, so the DOI index cannot make the skip and the
+// title comparison is the only thing under test.
+func TestImportDiscoverSkipsTitleDuplicateAcrossTypographicFolding(t *testing.T) {
+	seedImportDiscoverStore(t, []json.RawMessage{
+		json.RawMessage(`{"key":"SRC1","version":1,"data":{"key":"SRC1","itemType":"journalArticle","title":"Scope One","DOI":"10.7000/source1","collections":["FOLD"],"dateModified":"2026-01-05T00:00:00Z"}}`),
+		json.RawMessage(`{"key":"HELD1","version":1,"data":{"key":"HELD1","itemType":"journalArticle","title":"Attention Is All You Need","dateModified":"2026-01-04T00:00:00Z"}}`),
+		json.RawMessage(`{"key":"HELD2","version":1,"data":{"key":"HELD2","itemType":"journalArticle","title":"Bayes\u2019 Rule for Citation Graphs","dateModified":"2026-01-03T00:00:00Z"}}`),
+		json.RawMessage(`{"key":"HELD3","version":1,"data":{"key":"HELD3","itemType":"journalArticle","title":"U\u0308ber Netzwerke","dateModified":"2026-01-02T00:00:00Z"}}`),
+		json.RawMessage(`{"key":"HELD4","version":1,"data":{"key":"HELD4","itemType":"journalArticle","title":"Sparse Attention 2010-2020","dateModified":"2026-01-01T00:00:00Z"}}`),
+	})
+	withImportDiscoverProviderMocks(t,
+		map[string][]string{
+			"10.7000/source1": {"10.7200/stop", "10.7200/quote", "10.7200/nfd", "10.7200/dash", "10.7200/novel"},
+		},
+		map[string]string{
+			// Trailing full stop and sentence case, exactly what a reference
+			// list gives you.
+			"10.7200/stop": "Attention is all you need.",
+			// Straight apostrophe against the curly one the library holds.
+			"10.7200/quote": "Bayes' Rule for Citation Graphs",
+			// Composed accent against the decomposed one the library holds.
+			"10.7200/nfd": "\u00dcber Netzwerke",
+			// En dash against the ASCII hyphen the library holds.
+			"10.7200/dash": "Sparse Attention 2010\u20132020",
+			// A work the library genuinely does not hold.
+			"10.7200/novel": "A Genuinely Different Paper",
+		},
+	)
+
+	manifestPath := filepath.Join(t.TempDir(), "discover.json")
+	manifest, report := runImportDiscoverTestCmd(t, &rootFlags{asJSON: true, noCache: true, timeout: 5 * time.Second},
+		"--scope", "collection:FOLD", "--out", manifestPath, "--limit", "10", "--min-count", "1")
+
+	if report.Summary.SkippedTitleDuplicate != 4 || report.Summary.SkippedAlreadyInLibrary != 0 {
+		t.Fatalf("skip summary = %+v, want four title skips and no DOI skip", report.Summary)
+	}
+	if report.Summary.Entries != 5 {
+		t.Fatalf("entries = %d, want five (four skips plus one create)", report.Summary.Entries)
+	}
+
+	byDOI := importDiscoverEntriesByDOI(manifest.Entries)
+	for _, tc := range []struct {
+		doi  string
+		want string
+	}{
+		{"10.7200/stop", "trailing full stop and case"},
+		{"10.7200/quote", "curly against straight apostrophe"},
+		{"10.7200/nfd", "decomposed against composed accent"},
+		{"10.7200/dash", "en dash against hyphen"},
+	} {
+		entry, ok := byDOI[tc.doi]
+		if !ok {
+			t.Fatalf("missing entry for %s (%s) in %+v", tc.doi, tc.want, manifest.Entries)
+		}
+		if entry.Action != "skip" || entry.Item != nil || entry.Note != "title already exists in library" {
+			t.Errorf("%s (%s) = action %q status %q note %q item %v, want a skip: import apply would write a duplicate",
+				tc.doi, tc.want, entry.Action, entry.Status, entry.Note, entry.Item != nil)
+		}
+	}
+
+	novel, ok := byDOI["10.7200/novel"]
+	if !ok {
+		t.Fatalf("missing entry for the non-duplicate in %+v", manifest.Entries)
+	}
+	if novel.Action != "create" || novel.Status != "resolved" || novel.Item == nil {
+		t.Fatalf("non-duplicate entry = %+v, want a resolved create", novel)
+	}
+}
+
 func TestImportDiscoverMinCountAndLimit(t *testing.T) {
 	seedImportDiscoverStore(t, []json.RawMessage{
 		json.RawMessage(`{"key":"SRC1","version":1,"data":{"key":"SRC1","itemType":"journalArticle","title":"Scope One","DOI":"10.6000/source1","collections":["LIMIT"],"dateModified":"2026-01-03T00:00:00Z"}}`),

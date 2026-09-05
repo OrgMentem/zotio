@@ -279,7 +279,10 @@ func buildImportDiscoverManifestWithDirection(ctx context.Context, flags *rootFl
 		if title, _ := stringValue(item["title"]); strings.TrimSpace(title) != "" {
 			entry.Title = strings.TrimSpace(title)
 		}
-		if libraryTitles[normalizeDuplicateTitle(entry.Title)] {
+		// Folded with normalizeExactTitle, the same folding the index uses;
+		// queryLibraryTitleSet says why this path folds wider than the
+		// duplicate detector.
+		if libraryTitles[normalizeExactTitle(entry.Title)] {
 			entry.Action = "skip"
 			entry.Item = nil
 			entry.Note = "title already exists in library"
@@ -328,6 +331,19 @@ WHERE resource_type = 'items'
 	return items, nil
 }
 
+// queryLibraryTitleSet indexes every library title under normalizeExactTitle,
+// the wide folding: NFC, curly quotes, dash variants, whitespace runs and a
+// trailing terminal stop. The index answers "do I already hold this work?" for
+// a title that a provider exported, and that answer decides whether import
+// apply WRITES a new item. A CrossRef or OpenAlex title differing from the held
+// copy by a full stop or a curly apostrophe is the same work, so folding
+// narrowly here imports a duplicate.
+//
+// This is NOT the folding items duplicates uses. That command groups exact
+// titles with LOWER(TRIM(...)) in SQL, and the SQL is the single owner of that
+// grouping. Do not "unify" the two by pushing this wide folding into the
+// duplicate detector's Go half: a Go fold that the query cannot reproduce makes
+// the detector's groups disagree with its own SQL.
 func queryLibraryTitleSet(db localQueryStore) (map[string]bool, error) {
 	rows, err := db.QueryRaw(`
 SELECT json_extract(data, '$.data.title') AS title
@@ -340,7 +356,7 @@ WHERE resource_type = 'items'
 	}
 	out := make(map[string]bool, len(rows))
 	for _, row := range rows {
-		if title := normalizeDuplicateTitle(sqlStringValue(row["title"])); title != "" {
+		if title := normalizeExactTitle(sqlStringValue(row["title"])); title != "" {
 			out[title] = true
 		}
 	}
