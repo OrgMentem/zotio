@@ -1395,3 +1395,78 @@ func TestWorkflowOutputCeilingIsWellAboveTheDisplayCap(t *testing.T) {
 		t.Errorf("ceiling %d is too close to the %d display cap", workflowRunStepOutputCeiling, workflowRunOutputLimit)
 	}
 }
+
+// A step's args are Cobra args, so a step may carry --deliver, and the step
+// output ceiling then sits in front of the spool as one io.Writer. The ceiling
+// bounds what the runner retains and pipes onward -- it is not a cap on the
+// file the user asked for. Ordered as io.MultiWriter(capture, spool), the
+// capture's ceiling error stops the fan-out before the spool ever sees the
+// offending chunk or any later one, so the sink got a truncated prefix, or no
+// file at all when the very first write was already over the cap, with the
+// delivery still reported as successful.
+func TestWorkflowStepPastTheCeilingStillDeliversEverythingItWrote(t *testing.T) {
+	// Not parallel: RootCmd() binds package-level globals, and the ceiling is
+	// package state.
+	oldCeiling := workflowRunStepOutputCeiling
+	workflowRunStepOutputCeiling = 4096
+	t.Cleanup(func() { workflowRunStepOutputCeiling = oldCeiling })
+
+	cases := []struct {
+		name   string
+		chunk  int
+		writes int
+	}{
+		// Crosses the ceiling mid-stream: the wrong order truncates.
+		{name: "crosses mid stream", chunk: 1024, writes: 8},
+		// Over the cap on the first write: the wrong order delivers nothing at
+		// all, because an empty spool is not delivered.
+		{name: "first write over the cap", chunk: 8192, writes: 1},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			target := filepath.Join(t.TempDir(), "step.out")
+			var lastWriteErr error
+			root := RootCmd()
+			root.AddCommand(&cobra.Command{
+				Use: "flood-probe",
+				RunE: func(cmd *cobra.Command, _ []string) error {
+					// Keep writing past the tripwire, the way a command that
+					// fires and forgets its output does, but record the last
+					// write error: the ceiling has to stay loud for the
+					// command too, so feeding the spool cannot be bought by
+					// swallowing the capture's failure.
+					for range tc.writes {
+						_, lastWriteErr = cmd.OutOrStdout().Write([]byte(strings.Repeat("x", tc.chunk)))
+					}
+					return nil
+				},
+			})
+
+			output, stderr, err := executeWorkflowRunStepWithRoot(context.Background(), root,
+				[]string{"flood-probe", "--deliver", "file:" + target}, nil)
+			if err == nil {
+				t.Fatal("step past the output ceiling succeeded")
+			}
+			if !strings.Contains(err.Error(), "narrow the step") {
+				t.Fatalf("err = %v (stderr %q), want the ceiling error", err, stderr)
+			}
+			if lastWriteErr == nil || !strings.Contains(lastWriteErr.Error(), "narrow the step") {
+				t.Fatalf("write past the ceiling returned %v, want the ceiling error reported to the command", lastWriteErr)
+			}
+			if output != "" {
+				t.Fatalf("step retained %d bytes, want none past the ceiling", len(output))
+			}
+
+			delivered, readErr := os.ReadFile(target)
+			if readErr != nil {
+				t.Fatalf("deliver sink: %v", readErr)
+			}
+			want := strings.Repeat("x", tc.chunk*tc.writes)
+			if string(delivered) != want {
+				t.Fatalf("delivered %d bytes, want the full %d the step wrote: the ceiling caps "+
+					"what the runner pipes onward, not the sink the user named", len(delivered), len(want))
+			}
+			assertNoDeliverTemp(t, target)
+		})
+	}
+}

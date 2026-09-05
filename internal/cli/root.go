@@ -218,6 +218,45 @@ func (flags *rootFlags) cleanupDeliverSpool() {
 	flags.deliverSpool.cleanup()
 }
 
+// deliverTee fans one command's output to the writers the execution was handed
+// and to the --deliver spool, and — unlike io.MultiWriter — never lets one of
+// the two silence the other.
+//
+// io.MultiWriter stops at the first writer that returns an error. Under the
+// workflow step runner the primary writer is a ceilingBuffer, which refuses
+// every chunk once the step output ceiling is passed, so with the spool behind
+// it a step that crossed the ceiling delivered only the prefix — or no file at
+// all, when the very first write was already over the cap — while the delivery
+// path still ran and reported success. Silent truncation of a file the user
+// asked for is the one outcome worse than a loud failure.
+//
+// Both writers therefore see every chunk, and the primary's error is still
+// returned unchanged, so the capture ceiling keeps failing the step exactly as
+// before: the ceiling bounds what the runner retains in memory and hands to
+// ${steps.<name>.output}, StdinFrom and the resume checkpoint, not what the
+// sink the user named receives.
+type deliverTee struct {
+	primary io.Writer
+	spool   *deliverSpool
+}
+
+func (t deliverTee) Write(p []byte) (int, error) {
+	n, err := t.primary.Write(p)
+	// Unconditional, and its result deliberately dropped: deliverSpool.Write
+	// always reports success and records its first failure in writeErr, which
+	// surfaces at delivery time rather than truncating the primary output.
+	_, _ = t.spool.Write(p)
+	if err != nil {
+		return n, err
+	}
+	if n != len(p) {
+		// io.MultiWriter's contract, kept: a short write without an error is
+		// still a failure to deliver the chunk.
+		return n, io.ErrShortWrite
+	}
+	return len(p), nil
+}
+
 func deliverCapturedOutput(commandErr error, ctx context.Context, sink DeliverSink, spool *deliverSpool, compact bool) {
 	if shouldDeliverCapturedOutput(commandErr, spool) {
 		if err := Deliver(ctx, sink, spool, compact); err != nil {
@@ -409,7 +448,9 @@ See README.md or the bundled SKILL.md for recipes.`,
 				// blank the caller's capture, and under the stdio MCP transport
 				// it would inject command output into the JSON-RPC stream. On
 				// the CLI path OutOrStdout() is os.Stdout, so nothing changes.
-				cmd.SetOut(io.MultiWriter(cmd.OutOrStdout(), spool))
+				//
+				// deliverTee, not io.MultiWriter: see its doc comment.
+				cmd.SetOut(deliverTee{primary: cmd.OutOrStdout(), spool: spool})
 			}
 		}
 		// retain the final Cobra writers so nested helpers preserve in-process capture.

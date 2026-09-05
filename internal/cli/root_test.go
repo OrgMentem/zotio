@@ -13,6 +13,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/spf13/cobra"
 )
 
 // TestIsCobraUsageError covers the six pre-RunE error shapes Cobra and
@@ -501,6 +503,51 @@ func TestExecuteRootInProcessRemovesSpoolWhenCommandFails(t *testing.T) {
 	}
 	if _, statErr := os.Stat(target); !os.IsNotExist(statErr) {
 		t.Fatalf("target exists after a failed command: %v", statErr)
+	}
+	assertNoDeliverTemp(t, target)
+}
+
+// The lifecycle case no persistent post-run hook can reach, and the one the
+// pre-run failure above cannot prove: Cobra abandons the execution the moment
+// RunE returns an error, so a spool claimed in a PersistentPostRunE would leak
+// its temp file AND drop output the command had already written — output the
+// user asked to have delivered. A leaf added to the real tree here because no
+// shipped command writes and then fails without a live library.
+func TestExecuteRootInProcessDeliversAndRemovesSpoolAfterRunEError(t *testing.T) {
+	// Not parallel: RootCmd() binds package-level globals.
+	target := filepath.Join(t.TempDir(), "out.json")
+	const payload = "{\"probe\":\"written before the failure\"}\n"
+	failure := errors.New("probe failed after writing its output")
+
+	root := RootCmd()
+	root.AddCommand(&cobra.Command{
+		Use: "run-failure-probe",
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			if _, err := io.WriteString(cmd.OutOrStdout(), payload); err != nil {
+				return err
+			}
+			return failure
+		},
+	})
+	var captured, capturedErr bytes.Buffer
+	root.SetOut(&captured)
+	root.SetErr(&capturedErr)
+	root.SetArgs([]string{"run-failure-probe", "--deliver", "file:" + target})
+
+	err := ExecuteRootInProcess(context.Background(), root)
+	if !errors.Is(err, failure) {
+		t.Fatalf("error = %v (stderr %q), want the RunE failure", err, capturedErr.String())
+	}
+
+	delivered, readErr := os.ReadFile(target)
+	if readErr != nil {
+		t.Fatalf("deliver sink after a RunE error: %v", readErr)
+	}
+	if string(delivered) != payload {
+		t.Fatalf("delivered = %q, want the output the failing command produced (%q)", delivered, payload)
+	}
+	if captured.String() != payload {
+		t.Fatalf("caller capture = %q, want %q", captured.String(), payload)
 	}
 	assertNoDeliverTemp(t, target)
 }
