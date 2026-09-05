@@ -7,6 +7,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"hash/fnv"
 	"path/filepath"
 	"sync"
 	"testing"
@@ -603,5 +604,191 @@ func TestMigrateVersion6ReindexesFulltextBodyOnly(t *testing.T) {
 	}
 	if indexed != "only PDF prose is searchable" {
 		t.Fatalf("migrated fulltext index = %q", indexed)
+	}
+}
+
+// legacyFNVFTSRowID is the rowid scheme a superseded binary used for
+// resources_fts: FNV-1a over the same resource-qualified key the current
+// sha256 scheme hashes, masked to 63 bits. It is reproduced here because it is
+// the scheme found in a real 4906-item mirror, where it left a second indexed
+// document for 4063 items. Test-only: no production path may write it.
+func legacyFNVFTSRowID(resourceType, id string) int64 {
+	h := fnv.New64a()
+	_, _ = h.Write([]byte(resourceType + "\x00" + id))
+	return int64(h.Sum64() & 0x7FFFFFFFFFFFFFFF)
+}
+
+// ftsRowID is the address every write path uses to delete a resource's old
+// index document before inserting the new one. Changing it therefore orphans
+// every row already in the index — the rows become unaddressable, stay
+// matchable, and every reader that joins the index returns the resource twice.
+// That has happened twice already, which is what version 9 repairs.
+//
+// So the scheme is pinned. A change that breaks this test is not wrong, but it
+// is a MIGRATION: bump StoreSchemaVersion and reap under the new scheme, the
+// way version 9 does, or the next mirror silently double-counts.
+func TestFTSRowIDSchemeIsPinned(t *testing.T) {
+	for _, c := range []struct {
+		resourceType string
+		id           string
+		want         int64
+	}{
+		{resourceType: "items", id: "FB2YZV5Z", want: 7435646800143279193},
+		{resourceType: "items-trash", id: "FB2YZV5Z", want: 4609749548917306032},
+		{resourceType: "fulltext", id: "FB2YZV5Z", want: 1065665020847398669},
+		{resourceType: "collections", id: "ABCD1234", want: 5567516239958249985},
+	} {
+		if got := ftsRowID(c.resourceType, c.id); got != c.want {
+			t.Errorf("ftsRowID(%q, %q) = %d, want %d — see the doc comment before changing this",
+				c.resourceType, c.id, got, c.want)
+		}
+	}
+	// The resource type is part of the key, so one id in two types addresses
+	// two rows. Without that, a trashed copy would overwrite the live item's
+	// document.
+	if ftsRowID("items", "FB2YZV5Z") == ftsRowID("items-trash", "FB2YZV5Z") {
+		t.Error("ftsRowID ignores the resource type, so two resources share one index row")
+	}
+}
+
+// A row written under a superseded rowid scheme is never deleted again,
+// because every write path deletes by the CURRENT rowid. The row stays in the
+// index and keeps matching, so a reader that joins on (id, resource_type) sees
+// the resource twice. Version 9 reaps those rows, and it must do it without
+// losing the only document a resource has.
+func TestMigrate_ReapsOrphanedFTSIndexRows(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "data.db")
+	raw, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("open raw: %v", err)
+	}
+	if _, err := raw.Exec(`CREATE TABLE resources (
+		id TEXT NOT NULL,
+		resource_type TEXT NOT NULL,
+		data JSON NOT NULL,
+		parent_key TEXT,
+		item_type TEXT,
+		synced_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+		updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+		PRIMARY KEY (resource_type, id)
+	)`); err != nil {
+		raw.Close()
+		t.Fatalf("create pre-version-9 resources: %v", err)
+	}
+	if _, err := raw.Exec(`CREATE VIRTUAL TABLE resources_fts USING fts5(
+		id, resource_type, content, tokenize='porter unicode61'
+	)`); err != nil {
+		raw.Close()
+		t.Fatalf("create pre-version-9 FTS: %v", err)
+	}
+	seedResource := func(resourceType, id, payload string) {
+		t.Helper()
+		if _, err := raw.Exec(
+			`INSERT INTO resources (id, resource_type, data) VALUES (?, ?, ?)`,
+			id, resourceType, payload,
+		); err != nil {
+			t.Fatalf("seed %s/%s: %v", resourceType, id, err)
+		}
+	}
+	seedIndex := func(rowid int64, resourceType, id, content string) {
+		t.Helper()
+		if _, err := raw.Exec(
+			`INSERT INTO resources_fts (rowid, id, resource_type, content) VALUES (?, ?, ?, ?)`,
+			rowid, id, resourceType, content,
+		); err != nil {
+			t.Fatalf("seed index %s/%s at %d: %v", resourceType, id, rowid, err)
+		}
+	}
+
+	// DOUBLED: written by both binaries, so it holds two documents and is
+	// returned twice by every reader.
+	seedResource("items", "DOUBLED", `{"key":"DOUBLED","version":1,"data":{"key":"DOUBLED","itemType":"journalArticle","title":"Bushfire investigations in Australia"}}`)
+	seedIndex(ftsRowID("items", "DOUBLED"), "items", "DOUBLED", "Bushfire investigations in Australia")
+	seedIndex(legacyFNVFTSRowID("items", "DOUBLED"), "items", "DOUBLED", "Bushfire investigations in Australia stale")
+	// STALEONLY: last written by the older binary, so the orphan is its ONLY
+	// document. Reaping without reindexing would make it unsearchable.
+	seedResource("items", "STALEONLY", `{"key":"STALEONLY","version":1,"data":{"key":"STALEONLY","itemType":"journalArticle","title":"Ember attack mechanisms"}}`)
+	seedIndex(legacyFNVFTSRowID("items", "STALEONLY"), "items", "STALEONLY", "Ember attack mechanisms")
+	// HEALTHY: one current document, and the migration must not touch it.
+	seedResource("items", "HEALTHY", `{"key":"HEALTHY","version":1,"data":{"key":"HEALTHY","itemType":"journalArticle","title":"Prescribed burning policy"}}`)
+	seedIndex(ftsRowID("items", "HEALTHY"), "items", "HEALTHY", "hand written document kept verbatim")
+	// Residue from the pre-canonicalization items-top alias: no resource row
+	// backs it, and purgeAliasResources could not address it by rowid.
+	seedIndex(legacyFNVFTSRowID("items-top", "ALIASGONE"), "items-top", "ALIASGONE", "Bushfire investigations alias residue")
+
+	if _, err := raw.Exec(`PRAGMA user_version = 8`); err != nil {
+		raw.Close()
+		t.Fatalf("stamp pre-version-9 schema: %v", err)
+	}
+	if err := raw.Close(); err != nil {
+		t.Fatalf("close raw: %v", err)
+	}
+
+	s, err := OpenWithContext(context.Background(), dbPath)
+	if err != nil {
+		t.Fatalf("open and migrate pre-version-9 db: %v", err)
+	}
+	defer s.Close()
+
+	orphans := map[string]int{}
+	rows, err := s.DB().Query(`SELECT rowid, id, resource_type FROM resources_fts`)
+	if err != nil {
+		t.Fatalf("scan migrated index: %v", err)
+	}
+	documents := map[string]int{}
+	for rows.Next() {
+		var rowid int64
+		var id, resourceType string
+		if err := rows.Scan(&rowid, &id, &resourceType); err != nil {
+			rows.Close()
+			t.Fatalf("scan index row: %v", err)
+		}
+		documents[resourceType+"/"+id]++
+		if rowid != ftsRowID(resourceType, id) {
+			orphans[resourceType]++
+		}
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		t.Fatalf("scan migrated index: %v", err)
+	}
+	if len(orphans) != 0 {
+		t.Errorf("orphaned index rows by resource type after migrating = %v, want none", orphans)
+	}
+	if got := documents["items/DOUBLED"]; got != 1 {
+		t.Errorf("DOUBLED index documents = %d, want 1", got)
+	}
+	if got := documents["items/STALEONLY"]; got != 1 {
+		t.Errorf("STALEONLY index documents = %d, want 1", got)
+	}
+	if got := documents["items-top/ALIASGONE"]; got != 0 {
+		t.Errorf("alias residue documents = %d, want 0: no resource backs them", got)
+	}
+
+	// The reaped item is searchable exactly once, which is the user-visible
+	// half: `search` and `items list --query` join this index.
+	found, err := s.Search("Bushfire", 50)
+	if err != nil {
+		t.Fatalf("search migrated store: %v", err)
+	}
+	if len(found) != 1 {
+		t.Errorf("search hits = %d, want 1 item once: %s", len(found), found)
+	}
+	// The item whose only document was stale keeps its recall, rebuilt from
+	// the stored payload rather than from the stale text.
+	if found, err := s.Search("Ember", 50); err != nil {
+		t.Fatalf("search reindexed item: %v", err)
+	} else if len(found) != 1 {
+		t.Errorf("reindexed item hits = %d, want 1: reaping dropped its only document", len(found))
+	}
+	// A current document is left alone: no needless rewrite of the index.
+	var healthy string
+	if err := s.DB().QueryRow(
+		`SELECT content FROM resources_fts WHERE rowid = ?`, ftsRowID("items", "HEALTHY"),
+	).Scan(&healthy); err != nil {
+		t.Fatalf("read healthy document: %v", err)
+	}
+	if healthy != "hand written document kept verbatim" {
+		t.Errorf("healthy document = %q, want it untouched", healthy)
 	}
 }
