@@ -1824,7 +1824,7 @@
     "inputSchema": {
       "properties": {
         "by": {
-          "description": "Duplicate detector to run (doi, title, all); title and all also report titles that are close but not equal, scored and separately (near_title_groups in JSON, with meta.title_lookup naming the state), never as duplicate groups and never as something 'duplicates resolve' will merge (default: all)",
+          "description": "Duplicate detector to run (doi, title, all); title and all also report titles that are close but not equal, scored and separately (near_title_groups in JSON, with meta.title_lookup naming the state of that advisory pass and meta.near_title_scan saying whether blocking compared everything), never as duplicate groups and never as something 'duplicates resolve' will merge (default: all)",
           "type": "string"
         }
       },
