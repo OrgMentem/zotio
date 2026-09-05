@@ -257,6 +257,18 @@ type fanoutSafeCommand struct {
 	// property exists to prevent, requested explicitly instead of by accident,
 	// so it is refused rather than honoured for library one and ignored after.
 	libraryPathFlags []string
+	// jsonOnlyRows names rows the command reports ONLY inside its --json
+	// report, and where they go otherwise. UNSET on an invocation — the mirror
+	// image of the two lists above, which refuse a flag that is present —
+	// they break fanoutOutputNamespaceSafe: the fan-out captures stdout only,
+	// so rows the command diverts to a stderr note (`items duplicates` prints
+	// the bare exact-group array and names its advisory near-title rows in
+	// prose) never reach the aggregate, and the per-library block reports less
+	// than the command found with no sign that anything is missing. That is
+	// the silent-partial-answer outcome, so it is refused; the refusal also
+	// keeps groupFanoutRefusal's --csv/--plain message ("use --json") true,
+	// since --json is now the only shape that fans this command out.
+	jsonOnlyRows string
 }
 
 // fanoutSafeCommands is the allowlist. The default is NOT fanned out: adding a
@@ -317,13 +329,23 @@ var fanoutSafeCommands = map[string]fanoutSafeCommand{
 	// Diagnostics: the reason the fan-out exists. Same four properties; each
 	// reports findings for one library and nothing else.
 	"items audit":             {},
-	"items duplicates":        {},
 	"items missing-pdf":       {},
 	"items citekey-conflicts": {},
 	"items bibcheck":          {},
 	"tags audit":              {},
 	"library stats":           {},
 	"library prisma":          {},
+
+	// `items duplicates` is the one allowlisted command that holds part of its
+	// answer back from every format but --json: `--by title|all` reports the
+	// advisory near-title rows in the sibling near_title_groups key, and
+	// anywhere else names them in a stderr note instead. `items find` has the
+	// same sibling keys and needs no declaration here, because it gates them
+	// on wantsJSONEnvelope, which is true for the fan-out's captured
+	// (non-terminal) stdout. Every other allowlisted command prints its whole
+	// answer to stdout in one format or another, which the aggregate either
+	// parses or passes through verbatim under the library's heading.
+	"items duplicates": {jsonOnlyRows: "its advisory near-title rows (near_title_groups) are in the JSON report only, and every other format names them in a stderr note the aggregate cannot attach to a library"},
 
 	// Conditionally safe: fine on stdout, refused when a flag names one file.
 	// library health's --baseline is included because a missing baseline file
@@ -416,6 +438,14 @@ func groupFanoutRefusal(cmd *cobra.Command, flags *rootFlags) error {
 			return usageErr(fmt.Errorf("--group all is not %s with --%s: one mirror file holds exactly one library, so every library would be read from that same file and the aggregate would label one library's rows with every library's name; drop --%s to read each library's own mirror, or name the file and the library together with --%s <path> --group <id>",
 				fanoutLibraryScoped, name, name, name))
 		}
+	}
+	// Read from the resolved output state, not from pflag: --agent turns
+	// --json on without marking the flag as changed (root.go), and refusing
+	// an invocation that does emit the envelope would teach the restriction
+	// wrongly. This runs after that resolution.
+	if entry.jsonOnlyRows != "" && (flags == nil || !flags.asJSON) {
+		return usageErr(fmt.Errorf("--group all is not %s for %q without --json: %s, so each library would be aggregated with less than the command found and nothing in the output would say so; add --json (--agent implies it), or run one library at a time with --group <id>",
+			fanoutOutputNamespaceSafe, cmd.CommandPath(), entry.jsonOnlyRows))
 	}
 	return nil
 }

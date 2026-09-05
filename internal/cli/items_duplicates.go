@@ -8,7 +8,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"math"
+	"slices"
 	"sort"
 	"strings"
 
@@ -128,12 +130,11 @@ func newItemsDuplicatesCmd(flags *rootFlags) *cobra.Command {
 			// what four consumers already treat as "these records ARE the
 			// same", one of which merges them (items_duplicates_resolve.go).
 			// See queryNearDuplicateTitles.
-			var nearGroups []nearDuplicateTitleGroup
-			nearTotal := 0
+			var scan nearTitleScan
 			titleLookup := titleLookupNotRequested
 			if flagBy == "title" || flagBy == "all" {
 				var nearErr error
-				nearGroups, nearTotal, nearErr = queryNearDuplicateTitles(cmd.Context(), db)
+				scan, nearErr = queryNearDuplicateTitles(cmd.Context(), db)
 				switch {
 				case errors.Is(nearErr, context.Canceled), errors.Is(nearErr, context.DeadlineExceeded):
 					// Not advisory: the pass never finished. Degrading this to
@@ -145,40 +146,62 @@ func newItemsDuplicatesCmd(flags *rootFlags) *cobra.Command {
 					// failure rather than let it read as a clean library.
 					fmt.Fprintf(cmd.ErrOrStderr(), "warning: near-duplicate title pass unavailable: %v\n", nearErr)
 					titleLookup = titleLookupFailed
-				case len(nearGroups) == 0:
+				case len(scan.groups) == 0:
 					titleLookup = titleLookupNoNear
 				default:
 					titleLookup = titleLookupNear
 				}
 			}
 			if flags.asJSON {
-				payload := map[string]any{
-					"groups":   groups,
-					"findings": duplicateItemFindings(groups),
-					// meta.title_lookup, the same key and the same words
-					// `items find` publishes: how the title question ended.
-					// A caller branches on data instead of on an absent key
-					// that would mean "clean", "not run" and "broken" at once.
-					"meta": map[string]any{"title_lookup": titleLookup},
+				// meta.title_lookup, the same key and the same words
+				// `items find` publishes: how the title question ended.
+				// A caller branches on data instead of on an absent key
+				// that would mean "clean", "not run" and "broken" at once.
+				//
+				// It reports the NEAR pass and nothing else, and that is why
+				// titleLookupExactHit is unreachable here: this command looks
+				// no title up, so there is no selector that could hit. The
+				// exact answer is the report itself — `.groups`, always
+				// present, always the complete equality answer — and folding
+				// it into this key would have to overwrite `near_matches` on
+				// the run where both are true, destroying the one state the
+				// key exists to publish. See queryNearDuplicateTitles.
+				meta := map[string]any{"title_lookup": titleLookup}
+				if titleLookup == titleLookupNear || titleLookup == titleLookupNoNear {
+					// Only on a pass that finished: after a failure the
+					// blocking stage never reported, so claiming complete
+					// coverage would be the same false negative
+					// titleLookupFailed exists to prevent.
+					meta["near_title_scan"] = scan.coverage()
 				}
-				if len(nearGroups) > 0 {
+				siblings := map[string]any{"meta": meta}
+				if len(scan.groups) > 0 {
 					// Sibling key, never inside `groups`: these records are
 					// candidates for review, not duplicates the command found.
 					// Named for what it returns — groups, where `items find`
 					// returns near_title_matches.
-					payload["near_title_groups"] = nearGroups
-					if nearTotal > len(nearGroups) {
+					siblings["near_title_groups"] = scan.groups
+					if scan.total > len(scan.groups) {
 						// Same number the prose block prints, under the same
 						// name `items find` uses. Without it a caller reads
 						// "not in these 25" as "not in the library".
-						payload["meta"].(map[string]any)["near_title_total"] = nearTotal
+						meta["near_title_total"] = scan.total
 					}
 				}
-				data, err := json.Marshal(payload)
+				data, err := duplicateReportPayload(map[string]any{
+					"groups":   groups,
+					"findings": duplicateItemFindings(groups),
+				}, siblings, flags)
 				if err != nil {
 					return err
 				}
-				return printOutputWithFlags(cmd.OutOrStdout(), data, flags)
+				// Format only: duplicateReportPayload already ran the field
+				// selection over the report, and running it again over the
+				// merged object would strip the siblings straight back off.
+				formatOnly := *flags
+				formatOnly.selectFields = ""
+				formatOnly.compact = false
+				return printOutputWithFlags(cmd.OutOrStdout(), data, &formatOnly)
 			}
 			// A human reading a bare `[]` cannot tell a clean library from a
 			// broken command, which is the same silence the `matched: none`
@@ -197,10 +220,17 @@ func newItemsDuplicatesCmd(flags *rootFlags) *cobra.Command {
 				}
 			}
 			switch {
-			case len(nearGroups) == 0:
-				return nil
 			case wantsHumanTable(cmd.OutOrStdout(), flags):
-				return printNearDuplicateTitleGroups(cmd, nearGroups, nearTotal)
+				if len(scan.groups) > 0 {
+					if err := printNearDuplicateTitleGroups(cmd, scan.groups, scan.total); err != nil {
+						return err
+					}
+				}
+				// Not conditional on rows, unlike everything above it: a
+				// reader who was shown nothing is exactly the reader who
+				// must be told the corpus was not fully compared.
+				printNearTitleScanGap(cmd.OutOrStdout(), scan)
+				return nil
 			case flags.quiet:
 				// --quiet asked for less output and the exit code is the whole
 				// answer there (helpers.go printOutputWithFlags).
@@ -209,17 +239,56 @@ func newItemsDuplicatesCmd(flags *rootFlags) *cobra.Command {
 				// --plain and --csv have no column for a score, and a piped
 				// run without --json gets the bare exact-group array, so
 				// nothing on either stream would carry these rows.
-				fmt.Fprintf(cmd.ErrOrStderr(), "note: %s found and not shown in this format; re-run with --json to see them.\n",
-					pluralCount(len(nearGroups), "near-duplicate title group", "near-duplicate title groups"))
+				if len(scan.groups) > 0 {
+					fmt.Fprintf(cmd.ErrOrStderr(), "note: %s found and not shown in this format; re-run with --json to see them.\n",
+						pluralCount(len(scan.groups), "near-duplicate title group", "near-duplicate title groups"))
+				}
+				printNearTitleScanGap(cmd.ErrOrStderr(), scan)
 				return nil
 			}
 		},
 	}
-	cmd.Flags().StringVar(&flagBy, "by", "all", "Duplicate detector to run (doi, title, all); title and all also report titles that are close but not equal, scored and separately (near_title_groups in JSON, with meta.title_lookup naming the state), never as duplicate groups and never as something 'duplicates resolve' will merge")
+	cmd.Flags().StringVar(&flagBy, "by", "all", "Duplicate detector to run (doi, title, all); title and all also report titles that are close but not equal, scored and separately (near_title_groups in JSON, with meta.title_lookup naming the state of that advisory pass and meta.near_title_scan saying whether blocking compared everything), never as duplicate groups and never as something 'duplicates resolve' will merge")
 	// Keep the bare duplicate report intact while adding the write-safe resolver subcommand.
 	cmd.AddCommand(newItemsDuplicatesResolveCmd(flags))
 
 	return cmd
+}
+
+// duplicateReportPayload applies the caller's --select/--compact choice to the
+// exact report, then attaches the advisory siblings.
+//
+// The order is the whole point. printOutputWithFlags filters whatever object it
+// is handed, so building the payload first and filtering afterwards made
+// `--select groups` answer with the groups alone: near_title_groups and
+// meta.title_lookup went out with the keys the caller had not named, and a
+// caller who narrowed the report they were reading silently lost both the
+// advisory rows and the state that explains them. A selection is a statement
+// about the report, never about the rows beside it — the same rule
+// wrapWithProvenanceExtra enforces for `items find`, which filters its results
+// and wraps the siblings after (helpers.go).
+func duplicateReportPayload(report, siblings map[string]any, flags *rootFlags) (json.RawMessage, error) {
+	data, err := json.Marshal(report)
+	if err != nil {
+		return nil, err
+	}
+	if flags.selectFields != "" {
+		data = filterFields(data, flags.selectFields)
+	} else if flags.compact {
+		data = compactFields(data)
+	}
+	var merged map[string]json.RawMessage
+	if err := json.Unmarshal(data, &merged); err != nil {
+		return nil, fmt.Errorf("duplicate report is no longer an object after --select: %w", err)
+	}
+	for key, value := range siblings {
+		raw, err := json.Marshal(value)
+		if err != nil {
+			return nil, err
+		}
+		merged[key] = raw
+	}
+	return json.Marshal(merged)
 }
 
 func queryDuplicateDOIs(db localQueryStore, scopes ...map[string]struct{}) ([]map[string]any, error) {
@@ -391,6 +460,36 @@ const (
 	// the title to reason about edit distance; a rank cap plus the score on
 	// every row asks them to read two titles and decide.
 	nearDuplicateTitleGroupLimit = 25
+
+	// nearTitleScanComplete and nearTitleScanCommonWordsSkipped are published
+	// as meta.near_title_scan: whether blocking compared every candidate pair
+	// it was given, or gave up on at least one word.
+	//
+	// The cap that produces the second state is sound and stays — a word
+	// carried by a third of the library buckets nothing useful — but its
+	// consequence used to be invisible. A deliberately unsearched corpus
+	// answered `title_lookup: no_near_matches`, which a reader takes for "the
+	// library is clean": the exact failure the near pass was built to remove.
+	// Two states, so a caller can tell "nothing is close" from "not
+	// everything was compared", and the second names its cause rather than
+	// only its existence.
+	//
+	// The skipped-word state is conservative: a word too common to block on
+	// does not prove a pair went uncompared, because the pair may share a
+	// rarer word and be compared through that. It says exactly what happened
+	// — words were skipped — and never claims a miss it cannot demonstrate.
+	nearTitleScanComplete           = "complete"
+	nearTitleScanCommonWordsSkipped = "common_words_skipped"
+
+	// nearDuplicateTitleBlockKeys is how many blocking words one title takes,
+	// rather than one, because a typo lands inside a word and would otherwise
+	// change which single bucket its title chose.
+	nearDuplicateTitleBlockKeys = 3
+	// nearDuplicateTitleBlockMaxCohorts is the cohort cap: a word carried by
+	// more units than this is too common to block on. It is named in the
+	// human note, so the reader learns the actual boundary and not that some
+	// unspecified pruning happened.
+	nearDuplicateTitleBlockMaxCohorts = 32
 )
 
 // nearDuplicateTitleGroup is one advisory row: titles that fold together, or a
@@ -420,6 +519,72 @@ type nearDuplicateTitleGroup struct {
 	RequiresReview bool `json:"requires_review"`
 }
 
+// less orders one advisory row before another: strongest score first, then the
+// whole row.
+//
+// The whole row, because a partial key made the truncated report
+// irreproducible. Score plus Titles[0] plus Keys[0] leaves the rows that share
+// their FIRST unit — one title paired with many equally scored variants, A~B
+// and A~C — comparing false in both directions, and a bug report against a
+// top-25 that changes between runs on the same library cannot be acted on.
+// nearTitleBlocks iterates a map and sort.Slice is unstable, so nothing else
+// pinned the order.
+//
+// Every field a reader can see takes part, so two rows that tie here are
+// indistinguishable in the output: Group and RequiresReview are constants, and
+// Count is len(Keys).
+func (g nearDuplicateTitleGroup) less(other nearDuplicateTitleGroup) bool {
+	if g.Score != other.Score {
+		return g.Score > other.Score
+	}
+	if order := slices.Compare(g.Titles, other.Titles); order != 0 {
+		return order < 0
+	}
+	if order := slices.Compare(g.Keys, other.Keys); order != 0 {
+		return order < 0
+	}
+	return g.ItemType < other.ItemType
+}
+
+// nearTitleScan is one advisory pass: the rows it reports, how many it found
+// before the rank cap, and what blocking could not compare.
+//
+// The third field travels with the first two because it qualifies them. An
+// empty groups slice means "nothing close" only when the pass compared
+// everything it was given; when blocking skipped a word, the same empty slice
+// means "nothing close among the pairs that were compared", and a caller
+// handed only the rows cannot tell those apart.
+type nearTitleScan struct {
+	groups []nearDuplicateTitleGroup
+	total  int
+	// skippedCommonWords counts the distinct title words blocking refused as
+	// too common to pair on (carried by more than
+	// nearDuplicateTitleBlockMaxCohorts units).
+	skippedCommonWords int
+}
+
+// coverage names the completeness of the compared set for meta.near_title_scan.
+func (s nearTitleScan) coverage() string {
+	if s.skippedCommonWords > 0 {
+		return nearTitleScanCommonWordsSkipped
+	}
+	return nearTitleScanComplete
+}
+
+// printNearTitleScanGap names the pass's one blind spot on the runs where it
+// applied, and says nothing on the runs where it did not.
+//
+// It prints even when no rows were found, which is the case that matters: the
+// reader who is shown nothing is the one about to conclude the library is
+// clean.
+func printNearTitleScanGap(w io.Writer, scan nearTitleScan) {
+	if scan.skippedCommonWords == 0 {
+		return
+	}
+	fmt.Fprintf(w, "\nnote: %s too common to pair on (each carried by more than %d titles), so two titles whose only shared words are those were not compared; this is not a complete comparison of the library.\n",
+		pluralCount(scan.skippedCommonWords, "title word is", "title words are"), nearDuplicateTitleBlockMaxCohorts)
+}
+
 // queryNearDuplicateTitles reports title cohorts that are close but not equal,
 // strongest first, with the pre-cap total.
 //
@@ -447,7 +612,7 @@ type nearDuplicateTitleGroup struct {
 // the bucket cap scores 774,872 pairs in 1.9s while holding only the reported
 // rows. The naive all-pairs pass over those 50,000 titles is 1.25e9
 // comparisons.
-func queryNearDuplicateTitles(ctx context.Context, db localQueryStore) ([]nearDuplicateTitleGroup, int, error) {
+func queryNearDuplicateTitles(ctx context.Context, db localQueryStore) (nearTitleScan, error) {
 	rows, err := db.QueryRawContext(ctx, `
 SELECT
 	MIN(title) AS value,
@@ -467,13 +632,13 @@ FROM (
 GROUP BY normalized_title, item_type
 ORDER BY normalized_title, item_type`)
 	if err != nil {
-		return nil, 0, err
+		return nearTitleScan{}, err
 	}
 	units := buildNearTitleUnits(normalizeDuplicateRows(rows))
 	collector := &nearTitleGroupCollector{}
 	nearTitleFoldGroups(units, collector)
-	nearTitleScoredGroups(units, collector)
-	return collector.ranked(), collector.total, nil
+	skipped := nearTitleScoredGroups(units, collector)
+	return nearTitleScan{groups: collector.ranked(), total: collector.total, skippedCommonWords: skipped}, nil
 }
 
 // nearTitleGroupCollector keeps the top nearDuplicateTitleGroupLimit rows by
@@ -507,17 +672,10 @@ func (c *nearTitleGroupCollector) ranked() []nearDuplicateTitleGroup {
 }
 
 func (c *nearTitleGroupCollector) truncate() {
-	sort.Slice(c.groups, func(i, j int) bool {
-		if c.groups[i].Score != c.groups[j].Score {
-			return c.groups[i].Score > c.groups[j].Score
-		}
-		if c.groups[i].Titles[0] != c.groups[j].Titles[0] {
-			return c.groups[i].Titles[0] < c.groups[j].Titles[0]
-		}
-		// Keys break the last tie so two runs over one library print the same
-		// list: the pair set is built by iterating a map.
-		return c.groups[i].Keys[0] < c.groups[j].Keys[0]
-	})
+	// nearDuplicateTitleGroup.less is a strict total order over the whole row,
+	// which is what makes the kept set independent of arrival order and the
+	// printed list identical between runs on one library.
+	sort.Slice(c.groups, func(i, j int) bool { return c.groups[i].less(c.groups[j]) })
 	if len(c.groups) > nearDuplicateTitleGroupLimit {
 		c.groups = c.groups[:nearDuplicateTitleGroupLimit]
 	}
@@ -593,9 +751,13 @@ func nearTitleFoldGroups(units []nearTitleUnit, collector *nearTitleGroupCollect
 // how a review list becomes a wrong merge — A close to B and B close to C says
 // nothing about A and C — and the person confirming needs to see the two titles
 // that produced the number.
-func nearTitleScoredGroups(units []nearTitleUnit, collector *nearTitleGroupCollector) {
+//
+// The count it returns is nearTitleBlocks's: how many words were too common to
+// pair on, which is the pass's own account of what it did not compare.
+func nearTitleScoredGroups(units []nearTitleUnit, collector *nearTitleGroupCollector) int {
 	compared := make(map[[2]int]struct{})
-	for _, block := range nearTitleBlocks(units) {
+	blocks, skippedCommonWords := nearTitleBlocks(units)
+	for _, block := range blocks {
 		for i := range block {
 			for j := i + 1; j < len(block); j++ {
 				left, right := block[i], block[j]
@@ -627,6 +789,7 @@ func nearTitleScoredGroups(units []nearTitleUnit, collector *nearTitleGroupColle
 			}
 		}
 	}
+	return skippedCommonWords
 }
 
 // nearTitleBlocks buckets units by their rarest SHARED informative words, so
@@ -650,13 +813,12 @@ func nearTitleScoredGroups(units []nearTitleUnit, collector *nearTitleGroupColle
 // nearDuplicateTitleBlockKeys buckets, so the compared pairs are
 // O(n * keys * maxCohorts) — linear in the number of titles, where the naive
 // pass is quadratic.
-func nearTitleBlocks(units []nearTitleUnit) map[string][]int {
-	const (
-		// A title contributes at most this many blocking words.
-		nearDuplicateTitleBlockKeys = 3
-		// A word carried by more units than this is too common to block on.
-		nearDuplicateTitleBlockMaxCohorts = 32
-	)
+//
+// The count of words skipped for exceeding the cohort cap is returned rather
+// than left in a comment: the report publishes it (meta.near_title_scan) so a
+// reader can tell an empty answer over a fully compared corpus from an empty
+// answer over a corpus that was deliberately not.
+func nearTitleBlocks(units []nearTitleUnit) (map[string][]int, int) {
 	words := make([][]string, len(units))
 	frequency := make(map[string]int)
 	for i, unit := range units {
@@ -682,6 +844,15 @@ func nearTitleBlocks(units []nearTitleUnit) map[string][]int {
 		}
 		words[i] = distinct
 	}
+	// Counted over the corpus rather than inside the slot loop below, which
+	// stops after nearDuplicateTitleBlockKeys words: being too common to pair
+	// on is a property of the word, not of how far one title's list was read.
+	skippedCommonWords := 0
+	for _, df := range frequency {
+		if df > nearDuplicateTitleBlockMaxCohorts {
+			skippedCommonWords++
+		}
+	}
 	blocks := make(map[string][]int)
 	for i, distinct := range words {
 		sort.Slice(distinct, func(a, b int) bool {
@@ -702,7 +873,7 @@ func nearTitleBlocks(units []nearTitleUnit) map[string][]int {
 			}
 		}
 	}
-	return blocks
+	return blocks, skippedCommonWords
 }
 
 func newNearDuplicateTitleGroup(score float64, itemType string, titles, keys []string) nearDuplicateTitleGroup {

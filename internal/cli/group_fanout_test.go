@@ -1229,3 +1229,104 @@ func TestGroupFanoutMergeTreatsANonArrayResultsFieldAsOneRow(t *testing.T) {
 		t.Errorf("meta = %s, want none: the payload was not an envelope", block.Meta)
 	}
 }
+
+// `items duplicates` keeps its advisory near-title rows for the JSON report
+// and names them in a stderr note everywhere else. The fan-out captures stdout
+// only, so a non-JSON run aggregated the bare exact-group array while those
+// rows went to the user's terminal with no library attached: every library was
+// summarized with less than the command found, and nothing in the aggregate
+// said so. It is refused instead of half-answered, which is also what makes
+// the --csv/--plain refusal's "use --json" true for this command.
+func TestGroupFanoutRefusesItemsDuplicatesWithoutTheJSONReport(t *testing.T) {
+	fx := newFanoutFixture(t, "")
+	dataDir := isolateFanoutEnv(t, fx.server.URL+"/users/0")
+	synced := time.Now().Add(-time.Hour).Truncate(time.Second)
+	// One near pair in the personal library: the rows a fanned-out run has to
+	// carry, and the ones the old shape lost.
+	seedFanoutLibraryStore(t, dataDir, "data.db", synced, []json.RawMessage{
+		json.RawMessage(`{"key":"NEAR1","version":1,"data":{"key":"NEAR1","itemType":"journalArticle","title":"Attention Is All You Need"}}`),
+		json.RawMessage(`{"key":"NEAR2","version":1,"data":{"key":"NEAR2","itemType":"journalArticle","title":"Attention is all you need."}}`),
+	})
+	// Both groups hold one unrelated item, so every library passes the
+	// synced-store precondition and the run's only variable is the format.
+	seedFanoutLibraryStore(t, dataDir, "data-group-99.db", synced, []json.RawMessage{
+		json.RawMessage(`{"key":"LAB1","version":1,"data":{"key":"LAB1","itemType":"journalArticle","title":"Random Forests"}}`),
+	})
+	seedFanoutLibraryStore(t, dataDir, "data-group-100.db", synced, []json.RawMessage{
+		json.RawMessage(`{"key":"RG1","version":1,"data":{"key":"RG1","itemType":"journalArticle","title":"Gradient Boosting Machines"}}`),
+	})
+
+	out, errOut, err := runFanoutCmd(t, "items", "duplicates", "--group", "all", "--by", "title")
+	if err == nil || ExitCode(err) != 2 {
+		t.Fatalf("--group all without --json = %v (exit %d), want usage exit 2; out=%s", err, ExitCode(err), out)
+	}
+	for _, want := range []string{fanoutOutputNamespaceSafe, "--json", "near_title_groups", "--group <id>"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error = %q, want it to name %q", err.Error(), want)
+		}
+	}
+	if out != "" || strings.Contains(errOut, "near-duplicate title group") {
+		t.Errorf("refused run printed out=%q err=%q, want the refusal to land before any library runs", out, errOut)
+	}
+
+	// --json is the shape that carries them, so it still fans out and the rows
+	// arrive in the library's own block rather than merged across libraries.
+	out, _, err = runFanoutCmd(t, "items", "duplicates", "--group", "all", "--by", "title", "--json")
+	if err != nil {
+		t.Fatalf("--group all --json = %v; out=%s", err, out)
+	}
+	personal := fanoutBlock(t, decodeFanoutReport(t, out), "0")
+	if raw, carried := personal.Extra["near_title_groups"]; !carried || !strings.Contains(string(raw), "NEAR1") {
+		t.Errorf("personal block extra = %v, want the near pair", personal.Extra)
+	}
+
+	// --agent sets --json without marking the flag as changed (root.go), so a
+	// refusal keyed on pflag rather than on the resolved output state would
+	// reject a run that does emit the envelope.
+	if agentOut, _, agentErr := runFanoutCmd(t, "items", "duplicates", "--group", "all", "--by", "title", "--agent"); agentErr != nil {
+		t.Errorf("--group all --agent = %v; out=%s", agentErr, agentOut)
+	}
+
+	// One library at a time is untouched: the refusal is about the aggregate,
+	// and the piped bare-array shape existing callers parse stays reachable.
+	oneOut, _, oneErr := runFanoutCmd(t, "items", "duplicates", "--group", "99", "--by", "title")
+	if oneErr != nil {
+		t.Errorf("--group 99 without --json = %v; out=%s", oneErr, oneOut)
+	}
+}
+
+// The declaration lives on the allowlist entry, so it must apply to that entry
+// alone. Every other allowlisted command prints its whole answer to stdout,
+// which the aggregate either parses or passes through verbatim under the
+// library heading. `items find` carries the same sibling keys and still needs
+// no declaration: it gates them on wantsJSONEnvelope, true for the fan-out's
+// captured (non-terminal) stdout.
+func TestGroupFanoutRequiresJSONOnlyWhereRowsLiveOnlyThere(t *testing.T) {
+	root := newRootCmd(&rootFlags{})
+	byPath := make(map[string]*cobra.Command, len(fanoutSafeCommands))
+	var walk func(*cobra.Command)
+	walk = func(parent *cobra.Command) {
+		for _, cmd := range parent.Commands() {
+			byPath[strings.TrimPrefix(cmd.CommandPath(), root.Name()+" ")] = cmd
+			walk(cmd)
+		}
+	}
+	walk(root)
+
+	for path := range fanoutSafeCommands {
+		cmd, found := byPath[path]
+		if !found {
+			t.Fatalf("allowlisted %q is not in the command tree", path)
+		}
+		err := groupFanoutRefusal(cmd, &rootFlags{})
+		if path == "items duplicates" {
+			if err == nil {
+				t.Errorf("%q fanned out without --json, dropping its advisory rows", path)
+			}
+			continue
+		}
+		if err != nil {
+			t.Errorf("%q refused a terminal-format fan-out: %v", path, err)
+		}
+	}
+}

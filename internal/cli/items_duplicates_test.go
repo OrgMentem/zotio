@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"path/filepath"
+	"sort"
 	"strings"
 	"testing"
 
@@ -72,12 +73,13 @@ func TestQueryNearDuplicateTitlesReportsFoldEqualPairSeparately(t *testing.T) {
 		t.Fatalf("exact title groups = %v, want only the Deep Residual Learning pair", exact)
 	}
 
-	near, total, err := queryNearDuplicateTitles(context.Background(), db)
+	scan, err := queryNearDuplicateTitles(context.Background(), db)
 	if err != nil {
 		t.Fatalf("queryNearDuplicateTitles: %v", err)
 	}
-	if len(near) != 1 || total != 1 {
-		t.Fatalf("near groups = %+v (total %d), want exactly the Attention pair", near, total)
+	near := scan.groups
+	if len(near) != 1 || scan.total != 1 {
+		t.Fatalf("near groups = %+v (total %d), want exactly the Attention pair", near, scan.total)
 	}
 	group := near[0]
 	if group.Group != "title_near" || !group.RequiresReview {
@@ -106,10 +108,11 @@ func TestQueryNearDuplicateTitlesScoresDifferentTitlesBelowOne(t *testing.T) {
 		json.RawMessage(`{"key":"P2","version":1,"data":{"key":"P2","itemType":"journalArticle","title":"Attention Is All You Need: Transformer Networks"}}`),
 	)
 
-	near, _, err := queryNearDuplicateTitles(context.Background(), db)
+	scan, err := queryNearDuplicateTitles(context.Background(), db)
 	if err != nil {
 		t.Fatalf("queryNearDuplicateTitles: %v", err)
 	}
+	near := scan.groups
 	if len(near) != 1 {
 		t.Fatalf("near groups = %+v, want the subtitle pair", near)
 	}
@@ -130,12 +133,12 @@ func TestQueryNearDuplicateTitlesLeavesIncidentalWordOverlapAlone(t *testing.T) 
 		json.RawMessage(`{"key":"P2","version":1,"data":{"key":"P2","itemType":"journalArticle","title":"Attention Deficit in Rats"}}`),
 	)
 
-	near, total, err := queryNearDuplicateTitles(context.Background(), db)
+	scan, err := queryNearDuplicateTitles(context.Background(), db)
 	if err != nil {
 		t.Fatalf("queryNearDuplicateTitles: %v", err)
 	}
-	if len(near) != 0 || total != 0 {
-		t.Fatalf("near groups = %+v (total %d), want none", near, total)
+	if len(scan.groups) != 0 || scan.total != 0 {
+		t.Fatalf("near groups = %+v (total %d), want none", scan.groups, scan.total)
 	}
 }
 
@@ -149,12 +152,12 @@ func TestQueryNearDuplicateTitlesBlocksOnSharedWordsNotUniqueOnes(t *testing.T) 
 		json.RawMessage(`{"key":"P2","version":1,"data":{"key":"P2","itemType":"journalArticle","title":"Attention Is All You Need: Zqxwvu Plontar Grimbold"}}`),
 	)
 
-	near, _, err := queryNearDuplicateTitles(context.Background(), db)
+	scan, err := queryNearDuplicateTitles(context.Background(), db)
 	if err != nil {
 		t.Fatalf("queryNearDuplicateTitles: %v", err)
 	}
-	if len(near) != 1 || strings.Join(near[0].Keys, ",") != "P1,P2" {
-		t.Fatalf("near groups = %+v, want the subtitled pair", near)
+	if len(scan.groups) != 1 || strings.Join(scan.groups[0].Keys, ",") != "P1,P2" {
+		t.Fatalf("near groups = %+v, want the subtitled pair", scan.groups)
 	}
 }
 
@@ -462,6 +465,183 @@ func TestLibraryHealthDuplicateCandidatesIgnoreNearTitles(t *testing.T) {
 	}
 }
 
+// `--select` narrows the report the caller is reading. It must not reach the
+// advisory rows beside that report or the state that explains them: filtering
+// the finished payload answered `--select groups` with the groups ALONE, so a
+// caller who narrowed the exact report silently lost both the near rows and
+// meta.title_lookup — the two keys they could not have named, because they are
+// not fields of the thing being selected.
+func TestItemsDuplicatesSelectAndCompactKeepTheAdvisorySiblings(t *testing.T) {
+	for _, tt := range []struct {
+		name string
+		// flags carries the narrowing the caller asked for.
+		flags *rootFlags
+		// wantFindings is whether the selection leaves `findings` in place:
+		// the selection DOES apply to the report, and this is what proves the
+		// siblings survive for a reason other than the filter being skipped.
+		wantFindings bool
+	}{
+		{name: "select groups", flags: &rootFlags{asJSON: true, selectFields: "groups"}},
+		{name: "select findings", flags: &rootFlags{asJSON: true, selectFields: "findings"}, wantFindings: true},
+		{name: "compact", flags: &rootFlags{asJSON: true, compact: true}, wantFindings: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			seedDuplicateResolveStore(t, []json.RawMessage{
+				json.RawMessage(`{"key":"P1","version":1,"data":{"key":"P1","itemType":"journalArticle","title":"Attention Is All You Need"}}`),
+				json.RawMessage(`{"key":"P2","version":1,"data":{"key":"P2","itemType":"journalArticle","title":"Attention is all you need."}}`),
+				json.RawMessage(`{"key":"E1","version":1,"data":{"key":"E1","itemType":"journalArticle","title":"Deep Residual Learning"}}`),
+				json.RawMessage(`{"key":"E2","version":1,"data":{"key":"E2","itemType":"journalArticle","title":"Deep Residual Learning"}}`),
+			})
+
+			out, _ := runItemsDuplicatesReport(t, tt.flags, "--by", "title")
+			keys := decodeDuplicatesReportKeys(t, out)
+			for _, sibling := range []string{"near_title_groups", "meta"} {
+				if _, kept := keys[sibling]; !kept {
+					t.Errorf("%s dropped by the field selection; keys = %v", sibling, sortedPayloadKeys(keys))
+				}
+			}
+			if _, kept := keys["findings"]; kept != tt.wantFindings {
+				t.Errorf("findings kept = %v, want %v: the selection applies to the report; keys = %v", kept, tt.wantFindings, sortedPayloadKeys(keys))
+			}
+			payload := decodeDuplicatesReport(t, out)
+			if len(payload.NearGroups) != 1 || payload.NearGroups[0].Group != "title_near" {
+				t.Errorf("near_title_groups = %+v, want the advisory row intact", payload.NearGroups)
+			}
+			if got := payload.Meta["title_lookup"]; got != "near_matches" {
+				t.Errorf("meta.title_lookup = %v, want near_matches", got)
+			}
+		})
+	}
+}
+
+// meta.title_lookup on this command reports the NEAR pass and nothing else, so
+// a library the exact detector found duplicate groups in still reads
+// no_near_matches when nothing is merely close. `exact_hit` is unreachable
+// here by design: the command looks no title up, so no selector can hit, and
+// the exact answer is `.groups` — a state string that reported it would have
+// to overwrite near_matches on the runs where both are true, which is the one
+// fact this key exists to publish.
+func TestItemsDuplicatesTitleLookupReportsOnlyTheNearPass(t *testing.T) {
+	seedDuplicateResolveStore(t, []json.RawMessage{
+		json.RawMessage(`{"key":"E1","version":1,"data":{"key":"E1","itemType":"journalArticle","title":"Deep Residual Learning"}}`),
+		json.RawMessage(`{"key":"E2","version":1,"data":{"key":"E2","itemType":"journalArticle","title":"Deep Residual Learning"}}`),
+	})
+
+	out, _ := runItemsDuplicatesReport(t, &rootFlags{asJSON: true}, "--by", "title")
+	payload := decodeDuplicatesReport(t, out)
+	if len(payload.Groups) != 1 {
+		t.Fatalf("groups = %v, want the exact duplicate pair", payload.Groups)
+	}
+	if got := payload.Meta["title_lookup"]; got != "no_near_matches" {
+		t.Errorf("meta.title_lookup = %v, want no_near_matches: this key describes the near pass, and the exact answer is .groups", got)
+	}
+	if got := payload.Meta["near_title_scan"]; got != nearTitleScanComplete {
+		t.Errorf("meta.near_title_scan = %v, want %q", got, nearTitleScanComplete)
+	}
+}
+
+// The cohort cap is sound and stays, but its consequence was invisible: a
+// corpus whose only shared words are too common to pair on was never compared,
+// and the report said no_near_matches — which a reader takes for a clean
+// library, the exact failure this feature was built to remove. meta and the
+// prose must say the comparison was incomplete, and must NOT say it when
+// everything was compared.
+func TestItemsDuplicatesReportsWhenTheCohortCapSuppressedComparisons(t *testing.T) {
+	for _, tt := range []struct {
+		name     string
+		items    []json.RawMessage
+		wantScan string
+	}{
+		{name: "one word over the cohort cap", items: commonWordTitleCorpus(nearDuplicateTitleBlockMaxCohorts + 1), wantScan: nearTitleScanCommonWordsSkipped},
+		{name: "cohort cap not reached", items: commonWordTitleCorpus(nearDuplicateTitleBlockMaxCohorts), wantScan: nearTitleScanComplete},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			seedDuplicateResolveStore(t, tt.items)
+			out, errOut := runItemsDuplicatesReport(t, &rootFlags{asJSON: true}, "--by", "title")
+			payload := decodeDuplicatesReport(t, out)
+			if got := payload.Meta["title_lookup"]; got != "no_near_matches" {
+				t.Fatalf("meta.title_lookup = %v, want no_near_matches: the fixture holds nothing close", got)
+			}
+			if got := payload.Meta["near_title_scan"]; got != tt.wantScan {
+				t.Errorf("meta.near_title_scan = %v, want %q", got, tt.wantScan)
+			}
+			if strings.Contains(errOut, "too common to pair on") {
+				t.Errorf("stderr = %q, want the note only where the format carries no meta", errOut)
+			}
+
+			// The same fact for a reader with no JSON: the note names the
+			// boundary and prints with no rows at all, because the reader who
+			// was shown nothing is the one about to call the library clean.
+			_, plainErr := runItemsDuplicatesReport(t, &rootFlags{}, "--by", "title")
+			hasNote := strings.Contains(plainErr, "too common to pair on") &&
+				strings.Contains(plainErr, "not a complete comparison")
+			if hasNote != (tt.wantScan == nearTitleScanCommonWordsSkipped) {
+				t.Errorf("stderr note = %v, want %v; stderr=%q", hasNote, tt.wantScan == nearTitleScanCommonWordsSkipped, plainErr)
+			}
+		})
+	}
+}
+
+// DupReview's corpus: one hub title against 26 variants that each add two
+// informative words of their own, so every hub~variant pair scores the same
+// and 26 rows compete for a 25-row report.
+//
+// Those rows tie on score, on their first title (the hub title sorts before
+// every variant) and on their first key (the hub key), so a comparator reading
+// only those three called neither row less than the other. sort.Slice is
+// unstable and the pairs arrive from a map iteration, so which 25 of the 26
+// survived depended on arrival order, and a bug report against the report
+// could not be reproduced from the same library.
+//
+// Both halves are pinned. The pipeline must answer the same rows on every run
+// over the corpus, and the collector — where the arrival order actually enters,
+// since it compacts every 4 * the cap — must keep one set whichever order the
+// same rows arrive in.
+func TestNearTitleGroupCollectorRanksATiedCorpusTheSameEveryRun(t *testing.T) {
+	hubKey, hubTitle, variantKeys, variantTitles := nearTiedTitleCorpus()
+	items := []json.RawMessage{nearDuplicateItem(hubKey, hubTitle)}
+	for i, key := range variantKeys {
+		items = append(items, nearDuplicateItem(key, variantTitles[i]))
+	}
+	db := seedNearDuplicateStore(t, items...)
+
+	first, err := queryNearDuplicateTitles(context.Background(), db)
+	if err != nil {
+		t.Fatalf("queryNearDuplicateTitles: %v", err)
+	}
+	if len(first.groups) != nearDuplicateTitleGroupLimit {
+		t.Fatalf("reported rows = %d, want the rank cap %d", len(first.groups), nearDuplicateTitleGroupLimit)
+	}
+	want := nearTitleRowFingerprint(first.groups)
+	for run := range 4 {
+		again, againErr := queryNearDuplicateTitles(context.Background(), db)
+		if againErr != nil {
+			t.Fatalf("queryNearDuplicateTitles run %d: %v", run, againErr)
+		}
+		if got := nearTitleRowFingerprint(again.groups); got != want {
+			t.Fatalf("run %d reported different rows for one library:\n%s\nwant:\n%s", run, got, want)
+		}
+	}
+
+	// Every pair the corpus produces, in the order the pipeline offers them
+	// and in the opposite order. The kept set is a property of the rows, so
+	// the two must be identical.
+	offered := nearTiedCorpusRows(hubKey, hubTitle, variantKeys, variantTitles)
+	forward, reverse := &nearTitleGroupCollector{}, &nearTitleGroupCollector{}
+	for _, row := range offered {
+		forward.offer(row)
+	}
+	for i := len(offered) - 1; i >= 0; i-- {
+		reverse.offer(offered[i])
+	}
+	if got, mirrored := nearTitleRowFingerprint(forward.ranked()), nearTitleRowFingerprint(reverse.ranked()); got != mirrored {
+		t.Errorf("arrival order changed the retained rows:\nforward:\n%s\nreversed:\n%s", got, mirrored)
+	}
+	if got := nearTitleRowFingerprint(forward.ranked()); got != want {
+		t.Errorf("collector kept different rows than the pipeline over the same corpus:\n%s\nwant:\n%s", got, want)
+	}
+}
+
 func seedNearDuplicateStore(t *testing.T, items ...json.RawMessage) localQueryStore {
 	t.Helper()
 	db, err := store.OpenWithContext(context.Background(), filepath.Join(t.TempDir(), "data.db"))
@@ -510,4 +690,103 @@ func decodeDuplicatesReport(t *testing.T, out string) duplicatesReportPayload {
 		t.Fatalf("decode report %q: %v", out, err)
 	}
 	return payload
+}
+
+// decodeDuplicatesReportKeys returns the payload's top-level keys, which is
+// what a --select assertion is really about: which keys survived, not what is
+// inside them.
+func decodeDuplicatesReportKeys(t *testing.T, out string) map[string]json.RawMessage {
+	t.Helper()
+	var keys map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(out), &keys); err != nil {
+		t.Fatalf("decode report keys %q: %v", out, err)
+	}
+	return keys
+}
+
+func sortedPayloadKeys(obj map[string]json.RawMessage) []string {
+	names := make([]string, 0, len(obj))
+	for name := range obj {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
+}
+
+func nearDuplicateItem(key, title string) json.RawMessage {
+	item, err := json.Marshal(map[string]any{
+		"key":     key,
+		"version": 1,
+		"data":    map[string]any{"key": key, "itemType": "journalArticle", "title": title},
+	})
+	if err != nil {
+		panic(err)
+	}
+	return item
+}
+
+// commonWordTitleCorpus builds count distinct titles whose ONLY shared word is
+// "networks". Every other word appears in exactly one title, so nothing can be
+// blocked on except the shared word: at count > the cohort cap that word is
+// skipped and no pair is compared at all, and at count == the cap the same
+// corpus is compared in full. Nothing in it is close, either way — the
+// difference the marker has to expose is what was COMPARED, not what was found.
+func commonWordTitleCorpus(count int) []json.RawMessage {
+	items := make([]json.RawMessage, 0, count)
+	for i := range count {
+		// Three unique words per title, so a pair sharing only "networks"
+		// scores 2*1/(4+4) = 0.25 and lands under the junk floor: what the
+		// two cases must differ in is whether the pair was compared at all.
+		words := make([]string, 0, 3)
+		for w := 3 * i; w < 3*i+3; w++ {
+			words = append(words, strings.Repeat(string(rune('a'+w/26)), 3)+strings.Repeat(string(rune('a'+w%26)), 3))
+		}
+		items = append(items, nearDuplicateItem(fmt.Sprintf("C%03d", i), "Networks "+strings.Join(words, " ")))
+	}
+	return items
+}
+
+// nearTiedTitleCorpus is one hub title plus 26 variants, each adding two
+// informative words carried by no other title. The added words are runs of one
+// repeated letter, so no two variants' words are within the approximate-token
+// edit budget of each other and every hub~variant pair scores identically.
+func nearTiedTitleCorpus() (hubKey, hubTitle string, variantKeys, variantTitles []string) {
+	hubKey, hubTitle = "HUB0", "Attention Is All You Need"
+	for i := range 26 {
+		letter := string(rune('a' + i))
+		variantKeys = append(variantKeys, fmt.Sprintf("V%03d", i))
+		variantTitles = append(variantTitles, fmt.Sprintf("%s: %s %s", hubTitle, strings.Repeat(letter, 6), strings.Repeat(letter, 5)))
+	}
+	return hubKey, hubTitle, variantKeys, variantTitles
+}
+
+// nearTiedCorpusRows is every row the scored pass builds from that corpus: the
+// tied hub pairs first, then the weaker variant pairs, in the order the block
+// enumeration offers them.
+func nearTiedCorpusRows(hubKey, hubTitle string, variantKeys, variantTitles []string) []nearDuplicateTitleGroup {
+	rows := make([]nearDuplicateTitleGroup, 0, len(variantKeys)*(len(variantKeys)+1)/2)
+	for i := range variantKeys {
+		rows = append(rows, newNearDuplicateTitleGroup(nearTiedHubScore, "journalArticle",
+			[]string{hubTitle, variantTitles[i]}, []string{hubKey, variantKeys[i]}))
+	}
+	for i := range variantKeys {
+		for j := i + 1; j < len(variantKeys); j++ {
+			rows = append(rows, newNearDuplicateTitleGroup(nearTitleMinScore, "journalArticle",
+				[]string{variantTitles[i], variantTitles[j]}, []string{variantKeys[i], variantKeys[j]}))
+		}
+	}
+	return rows
+}
+
+// nearTiedHubScore is 2*2/(2+4) rounded to the published two decimals: the hub
+// contributes two informative words, each variant those two plus two of its
+// own.
+const nearTiedHubScore = 0.67
+
+func nearTitleRowFingerprint(groups []nearDuplicateTitleGroup) string {
+	lines := make([]string, 0, len(groups))
+	for _, group := range groups {
+		lines = append(lines, fmt.Sprintf("%.2f %s | %s", group.Score, strings.Join(group.Keys, ","), strings.Join(group.Titles, " / ")))
+	}
+	return strings.Join(lines, "\n")
 }
