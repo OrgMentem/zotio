@@ -337,6 +337,79 @@ func reapMirroredItem(db *store.Store, key string) {
 	}
 }
 
+// writePlaneAbsence classifies what this machine's mirror knows about a key the
+// write plane answers 404 for. That one status code covers three states, and
+// they need three different reports.
+//
+// ADR-0007 reasoned about one direction of the plane lag: a write that landed
+// on api.zotero.org and has not reached the desktop yet. This is the INVERSE
+// window, which it did not cover. An item created through the desktop
+// connector exists on the read plane, and in this mirror, while api.zotero.org
+// has never heard of its key (~15-20s observed), so a delete routed to the Web
+// API 404s for an item that is demonstrably alive. A repeated permanent delete
+// 404s for the opposite reason: the key is gone there because an earlier run of
+// this very command removed it.
+type writePlaneAbsence int
+
+const (
+	// absenceUnknown: the mirror has nothing to say — no mirror file, no row,
+	// no marker, or a mirror read that failed. The 404 stands on its own and is
+	// reported as it always was.
+	absenceUnknown writePlaneAbsence = iota
+	// absencePurgedHere: a deletion marker exists, so THIS installation already
+	// applied a permanent delete for the key against the write plane — a marker
+	// is written only after that plane reported the delete applied (ADR-0007).
+	// The 404 is that delete seen a second time, and the mirror is already in
+	// the purged state, so the honest report is an idempotent no-op.
+	absencePurgedHere
+	// absenceMirroredOnly: a canonical row exists and carries no deletion
+	// marker, so the key is live on the read plane and absent from the write
+	// plane. Either it has not propagated up yet, or the mirror row is stale;
+	// both are failures, and both leave the mirror untouched.
+	absenceMirroredOnly
+)
+
+// classifyWritePlaneAbsence reads the mirror for one key's absence evidence.
+//
+// It runs only where write-through itself runs: mirrorWriteThrough is installed
+// by the production entry points (root.go, cmd/zotio-mcp) and left nil by unit
+// tests that drive commands without a mirror. That gate is the rule, not a test
+// convenience — the classification exists to keep the reported status and the
+// mirror in agreement, so where no mirror is being maintained there is nothing
+// to agree with and the plain 404 is the whole truth.
+//
+// Every failure answers absenceUnknown. A mirror this path cannot read is not
+// evidence, and a permanent delete must never soften a 404 on a guess.
+func classifyWritePlaneAbsence(key string) writePlaneAbsence {
+	if mirrorWriteThrough == nil || key == "" {
+		return absenceUnknown
+	}
+	db, err := openExistingStoreForWrite(context.Background(), "zotio")
+	if err != nil || db == nil {
+		return absenceUnknown
+	}
+	defer db.Close()
+	// The marker outranks the row: a purge reaps both canonical rows in the
+	// same transaction as it writes the markers, so the two states cannot be
+	// confused, and asking about the marker first keeps a resurrected row from
+	// masking a confirmed delete.
+	for _, resource := range []string{"items", "items-trash"} {
+		marked, err := db.PendingDeletion(resource, key)
+		if err != nil {
+			return absenceUnknown
+		}
+		if marked {
+			return absencePurgedHere
+		}
+	}
+	for _, resource := range []string{"items", "items-trash"} {
+		if _, err := db.Get(resource, key); err == nil {
+			return absenceMirroredOnly
+		}
+	}
+	return absenceUnknown
+}
+
 // mirrorTrashedItem copies an item's mirrored row into the trash mirror, so
 // `items trash` can see it before Zotero has synced the trash down.
 //

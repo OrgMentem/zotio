@@ -452,3 +452,35 @@ func TestDeleteIgnoreMissingIsAStructuredNoOp(t *testing.T) {
 		})
 	}
 }
+
+// A destructive command must not silently do less than it was asked. Cobra
+// defaults a command with no subcommands to ArbitraryArgs, so
+// `items delete K1 K2 --permanent` purged K1 and dropped K2 with no mention of
+// it: the request path, the op id and the whole envelope are built from args[0]
+// alone. The operator sees one applied delete and reads it as two.
+func TestItemsDeleteRefusesMoreThanOneKey(t *testing.T) {
+	requests := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		w.Header().Set("Last-Modified-Version", "3")
+		_, _ = w.Write([]byte(`{"key":"K1","version":3,"data":{}}`))
+	}))
+	defer srv.Close()
+
+	cmd := newItemsDeleteCmd(&rootFlags{asJSON: true, yes: true, allowDestructive: true, maxChanges: -1})
+	cmd.SilenceErrors, cmd.SilenceUsage = true, true
+	if err := runDeleteCmd(t, cmd, srv.URL, "--permanent", "K1", "K2"); err == nil {
+		t.Fatal("items delete accepted two keys; it acts on the first and drops the rest without saying so")
+	}
+	if requests != 0 {
+		t.Errorf("requests = %d, want 0: a refused argument list must not delete anything", requests)
+	}
+
+	// Zero args still renders help rather than erroring, which is why the
+	// bound is MaximumNArgs and not ExactArgs.
+	help := newItemsDeleteCmd(&rootFlags{asJSON: true})
+	help.SilenceErrors, help.SilenceUsage = true, true
+	if err := runDeleteCmd(t, help, srv.URL); err != nil {
+		t.Errorf("items delete with no key = %v, want the help output", err)
+	}
+}

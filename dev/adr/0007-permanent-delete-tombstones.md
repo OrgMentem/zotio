@@ -1,7 +1,7 @@
 # ADR 0007 — Permanent deletes are tombstoned in `pending_writes`
 
-- **Status:** Accepted (2026-09-03).
-- **Scope:** `Store.ReapMirroredItem`, `Store.SweepMissing` and the `pending_writes` table in `internal/store/store.go`; `reconcilePendingWrites` in `internal/cli/pending_writes.go`; the `item_delete` write-through path in `internal/cli/write_through.go`.
+- **Status:** Accepted (2026-09-03); extended 2026-09-05 with the inverse propagation window.
+- **Scope:** `Store.ReapMirroredItem`, `Store.SweepMissing`, `Store.PendingDeletion` and the `pending_writes` table in `internal/store/store.go`; `reconcilePendingWrites` in `internal/cli/pending_writes.go`; the `item_delete` write-through path and `classifyWritePlaneAbsence` in `internal/cli/write_through.go`; the write-plane 404 classification in `internal/cli/items_delete.go`.
 - **Deciders:** enieuwy.
 
 ## Context
@@ -210,6 +210,57 @@ only way zotio learns an object is gone.
 exist, naming what happened, what the user will see, and the remedy. That notice
 lives in `write_through.go`, which this slice does not own.
 
+### The inverse window: a key the read plane has and the write plane never had
+
+Everything above reasons about one direction of the plane lag — a write that
+landed on api.zotero.org and has not reached the desktop. Live testing of
+0.24.0 exercised the other direction, which this ADR did not cover.
+
+An item created through the **desktop connector** is born on the read plane. It
+is mirrored immediately by `mirrorCreatedItem`, and api.zotero.org has never
+heard of its key until Zotero syncs (~15-20s observed). A delete is routed to
+the write plane, so it 404s for an item that is demonstrably alive. The same
+404 also arrives for the opposite reason: a permanent delete this installation
+already applied. One status code, three states, and one bare
+`Error: GET /items/<key> returned HTTP 404: Item does not exist` was reported
+for all of them. In run `20260905T113310Z-5c1f3af3` that told the operator the
+permanent delete had failed while the mirror had already purged the row and
+written its markers — the report and the mirror answering the same question
+differently.
+
+**Decision. A write-plane 404 on the delete path is classified against the
+mirror, and the report always agrees with the mirror state.**
+
+1. **A deletion marker for the key means the 404 confirms a delete this
+   installation already applied.** A marker is written only after the write
+   plane reported the delete applied (decision 8), so the key is authoritatively
+   gone there. The run is the idempotent no-op it actually is
+   (`code: already_deleted`), and the mirror is left exactly as the applied
+   delete left it: rows reaped, markers intact for the sync that still lists the
+   key. Nothing about the ADR's confirmation lifetime changes — a repeat delete
+   neither confirms nor retires a marker, because it observed one key, not every
+   object.
+2. **A live mirror row with no marker is the inverse window, and it stays a
+   failure.** The item is alive on the read plane, so reporting success would be
+   the false success `SDLDFA9W` produced. The mirror keeps its row and gets no
+   marker: a marker asserts the write plane no longer has the key, and no write
+   ever established that here. The error names the state and stderr carries the
+   remedy (wait for Zotero to sync and retry; if it has already synced, the row
+   is stale and `zotio sync --full` drops it).
+3. **No mirror, no row and no marker is unchanged**: the plain 404 failure, as
+   before. The classification reads the mirror only where the mirror is being
+   maintained — it is gated on the same `mirrorWriteThrough` hook that gates
+   write-through itself — because its purpose is agreement with the mirror, and
+   where there is no mirror there is nothing to agree with. Every failure to
+   read one answers "unknown": a permanent delete must not soften a 404 on a
+   guess.
+
+The reconciliation inside `deleteWithVersionGuard` is untouched and stays
+sound. It treats a 404 from its post-write read as "applied", which is correct
+**there** and only there: the pre-write version GET already proved the key was
+on that plane moments earlier, so its absence can only mean the delete landed.
+An inverse-window key never reaches that code — the version GET fails first.
+
 ## Consequences
 
 - A sync inside the read-plane lag window can no longer resurrect a permanently
@@ -265,6 +316,10 @@ lives in `write_through.go`, which this slice does not own.
 | **Allowlist known narrowing params instead of default-deny** | Puts the next filter's author in charge of remembering to disable the sweep. Default-deny fails safe: an unrecognized param costs one skipped reap and a warning, while a missed one costs mirror rows and a reopened resurrection window. |
 | **Refuse `--full --since N` as a contradiction** | Only the sweep needs a total observation; the rest of `--full` (cursor reset, stored-version invalidation, authoritative re-fetch of the selected objects) is coherent under a filter. Refusing would break a combination the flags accept today to withhold one component of it, and it has no precedent here: `--latest-only` plus `--since` warns and degrades. The defect was the silence, so the fix is the warning. |
 | **Create the mirror from the delete path so a never-synced install gets a marker** | A command that removes something must not have "and now you have a local mirror" as a side effect, and it would put store creation on a path with no other reason to touch the store. The bound is documented instead, with a stderr notice at delete time. |
+| **Keep reporting every write-plane 404 on the delete path as a plain error** | It answers three different states with one sentence, and for one of them the sentence is false. A key carrying a deletion marker is gone because this installation's own confirmed delete removed it, so the error contradicted the mirror it had itself purged; the operator who hit this read it as "the delete failed" and went looking for a live item. Correctness of a report is not cosmetic when the report is the only thing the operator can see. |
+| **Treat any write-plane 404 as a reconciled success** | Reintroduces the false success `SDLDFA9W` produced. Inside the inverse window the item is alive on the read plane and the write plane has simply not heard of it yet; reporting the delete as done leaves an untouched item the operator believes is destroyed. Absence on one plane is not absence. |
+| **Consult the read plane over HTTP instead of the mirror** | The mirror already holds both facts the classification needs, and one of them — a deletion marker — exists nowhere else: it is the record of what this installation confirmed with the write plane. A read-plane GET would add a request on a failure path, would need the desktop to be up to say anything, and still could not distinguish "already purged here" from "never existed". |
+| **Reap the mirror whenever a delete is attempted, and let sync sort it out** | This is the shape the live evidence first suggested and it is the one thing that must not happen. A marker asserts that the write plane no longer has the key; written for a key that still exists, it suppresses a live item from offline reads, `search` and every mirror-derived count until a total-observation pass sweeps it. The status gate in `applyMirrorWriteThrough` (only `applied` items reach the reap) is what keeps that impossible, per item, so one key failing in a batch cannot reap another's row. |
 
 ## Validation
 
@@ -304,6 +359,17 @@ lives in `write_through.go`, which this slice does not own.
   marker, so the gate is not "never sweep".
 - `--full --max-pages 1` over a multi-page resource must reap no rows and retire
   no markers, and must report itself incomplete.
+- A repeat permanent delete against a write plane that 404s, for a key carrying
+  a deletion marker, must report a no-op and must leave the mirror exactly as
+  the applied delete left it: rows still reaped, both markers still present. It
+  must dispatch no DELETE.
+- A permanent delete against a write plane that 404s, for a key that is still
+  mirrored and carries no marker, must FAIL, must keep the mirror row, and must
+  write no marker. The error must name the mirrored row and stderr must name the
+  connector propagation window.
+- A permanent delete the write plane rejects outright (HTTP 500) must keep the
+  mirror row and write no marker. A marker for a key that still exists is worse
+  than no reap at all.
 
 ## References
 

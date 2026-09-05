@@ -29,6 +29,13 @@ cannot be undone by 'items restore' and requires --allow-destructive.`,
 		// Use an item key placeholder, not a token.
 		Example:     "  zotio items delete ABC12345",
 		Annotations: map[string]string{"zotio:endpoint": "items.delete", "zotio:method": "PATCH", "zotio:path": "/items/{itemKey}"},
+		// One key per run. Cobra's default for a command with no subcommands is
+		// ArbitraryArgs, so `items delete K1 K2` used to purge K1 and drop K2 on
+		// the floor: the path, the op id and the whole envelope are built from
+		// args[0] alone, and nothing reported the ignored keys. A destructive
+		// command must not silently do less than it was asked. Zero args still
+		// renders help, which MaximumNArgs allows and ExactArgs would not.
+		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if len(args) == 0 {
 				return cmd.Help()
@@ -84,13 +91,47 @@ cannot be undone by 'items restore' and requires --allow-destructive.`,
 					// instead, exactly like items tags add / items move already do on the
 					// identical 404 — UNLESS the caller opted into --ignore-missing,
 					// which exists precisely to accept that risk for idempotent retries.
+					//
+					// Which of those states holds is asked, not guessed. A bare 404 was
+					// reported for all three, and one of them is not a failure at all: a
+					// permanent delete this installation already applied leaves a
+					// deletion marker, written only after the write plane reported the
+					// delete applied (ADR-0007), so a 404 for a marked key CONFIRMS that
+					// delete. Reporting it as an error told the operator the delete had
+					// failed while the mirror had already purged the row — the report and
+					// the mirror disagreeing about the same fact. A live mirror row with
+					// no marker is the inverse propagation window instead, and it stays a
+					// failure: the item is alive on the read plane, so the message names
+					// that rather than reading as "no such item".
 					body, version, verErr := c.GetWithVersion(path, nil)
 					if verErr != nil {
-						if flags.ignoreMissing && strings.Contains(verErr.Error(), "HTTP 404") {
-							return "no_op", map[string]any{
-								"code":    "already_deleted",
-								"message": "item does not exist on the write plane; --ignore-missing treats this as already done",
-							}, nil
+						if strings.Contains(verErr.Error(), "HTTP 404") {
+							if flags.ignoreMissing {
+								return "no_op", map[string]any{
+									"code":    "already_deleted",
+									"message": "item does not exist on the write plane; --ignore-missing treats this as already done",
+								}, nil
+							}
+							switch classifyWritePlaneAbsence(args[0]) {
+							case absencePurgedHere:
+								return "no_op", map[string]any{
+									"code": "already_deleted",
+									"message": fmt.Sprintf("%s was already permanently deleted from the write plane by this installation, and the local mirror already records that; there is nothing left to delete",
+										args[0]),
+								}, nil
+							case absenceMirroredOnly:
+								// The remedy goes to stderr, not into the error: an
+								// error body is sanitized and truncated at 200 bytes
+								// (cliutil.SanitizeErrorBodyWithSecrets), and the
+								// 404 evidence has to stay inside that budget so
+								// classifyAPIError still reads the status and keeps
+								// this in the not-found exit family.
+								fmt.Fprintf(cmd.ErrOrStderr(),
+									"notice: %s is in this machine's local mirror, so it exists on the read plane while the write plane does not have it. An item created through the desktop connector reaches api.zotero.org only once Zotero syncs (~15-20s observed); retry after that. If Zotero has already synced, the mirror row is stale and `zotio sync --full` drops it.\n",
+									args[0])
+								applyErr = fmt.Errorf("%s is mirrored on this machine but absent from the write plane, so nothing was deleted: %w", args[0], verErr)
+								return "failed", nil, applyErr
+							}
 						}
 						applyErr = verErr
 						return "failed", nil, verErr
@@ -116,6 +157,12 @@ cannot be undone by 'items restore' and requires --allow-destructive.`,
 						writeErr error
 					)
 					if permanent {
+						// deleteWithVersionGuard reconciles an AMBIGUOUS delete by
+						// re-reading the key and treating a 404 as applied. That is sound
+						// here, and only here, because the version GET above already
+						// proved the key was on this plane moments earlier: the absence
+						// can only mean the delete landed. The inverse-window 404 never
+						// reaches it — that GET fails first.
 						_, _, status, detail, writeErr = deleteWithVersionGuard(c, path, version)
 					} else {
 						// The trash flag, which items restore clears and items trash lists.

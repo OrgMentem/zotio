@@ -4,12 +4,15 @@
 package cli
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/spf13/cobra"
 
 	"zotio/internal/mutation"
 	"zotio/internal/store"
@@ -338,5 +341,340 @@ func TestIncrementalSyncKeepsAnUnconfirmedDeletionMarker(t *testing.T) {
 	}
 	if !pending["PURGED"].Deleted {
 		t.Fatal("an incremental pass retired the deletion marker; absence there means unchanged, not deleted")
+	}
+}
+
+// installMirrorWriteThrough installs the mirror hook exactly as the production
+// entry points do (root.go, cmd/zotio-mcp), so a command test exercises the
+// real mirror path instead of the hook-less unit path.
+func installMirrorWriteThrough(t *testing.T) {
+	t.Helper()
+	previous := mirrorWriteThrough
+	mirrorWriteThrough = applyMirrorWriteThrough
+	t.Cleanup(func() { mirrorWriteThrough = previous })
+}
+
+func deletionMarkers(t *testing.T, db *store.Store, resource string) map[string]bool {
+	t.Helper()
+	pending, err := db.PendingWrites(resource)
+	if err != nil {
+		t.Fatalf("PendingWrites(%s): %v", resource, err)
+	}
+	marked := map[string]bool{}
+	for id, write := range pending {
+		if write.Deleted {
+			marked[id] = true
+		}
+	}
+	return marked
+}
+
+func newPermanentDeleteCmd() *cobra.Command {
+	cmd := newItemsDeleteCmd(&rootFlags{asJSON: true, yes: true, allowDestructive: true, maxChanges: -1})
+	cmd.SilenceErrors, cmd.SilenceUsage = true, true
+	return cmd
+}
+
+// writePlane404Server answers every GET the way api.zotero.org answered for
+// the connector-created key AZAZLHRV: HTTP 404 "Item does not exist". It
+// records whether a DELETE was ever dispatched, because a key the write plane
+// does not have must never be written to.
+func writePlane404Server(t *testing.T, deleteIssued *bool) *httptest.Server {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodDelete {
+			*deleteIssued = true
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		http.Error(w, "Item does not exist", http.StatusNotFound)
+	}))
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+// The report and the mirror must describe the same world. Live run
+// 20260905T113310Z-5c1f3af3 purged a connector-created item and the reap wrote
+// its deletion markers; a REPEAT of that command then printed a bare
+// `Error: GET /items/AZAZLHRV returned HTTP 404: Item does not exist`, which
+// the operator read as "the permanent delete failed" while
+// `items get --data-source local` reported the item gone. Two answers to one
+// question, and the error was the wrong one: a deletion marker is written only
+// after the write plane reported the delete applied (ADR-0007), so that plane's
+// 404 CONFIRMS the recorded delete.
+//
+// The fix changed the REPORT — an idempotent no-op instead of a failure. The
+// mirror behaviour is unchanged and is asserted here to prove they now agree.
+func TestRepeatedPermanentDeleteReportsTheConfirmedPurgeInsteadOfABare404(t *testing.T) {
+	db, dbPath := reapTestStore(t)
+	if _, _, err := db.UpsertBatch("items", []json.RawMessage{
+		json.RawMessage(`{"key":"AZAZ0001","version":1,"data":{"key":"AZAZ0001","itemType":"journalArticle","title":"zotio release probe"}}`),
+	}); err != nil {
+		t.Fatalf("seed mirror: %v", err)
+	}
+	// The earlier run that DID apply: rows reaped, deletion markers written.
+	reapMirroredItem(db, "AZAZ0001")
+	if err := db.Close(); err != nil {
+		t.Fatalf("close seed store: %v", err)
+	}
+
+	installMirrorWriteThrough(t)
+	deleteIssued := false
+	srv := writePlane404Server(t, &deleteIssued)
+
+	cmd := newPermanentDeleteCmd()
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&bytes.Buffer{})
+	t.Setenv("ZOTERO_BASE_URL", srv.URL+"/users/0")
+	cmd.SetArgs([]string{"--permanent", "AZAZ0001"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("repeat permanent delete reported a failure for a key its own deletion marker confirms is gone: %v", err)
+	}
+	var env mutation.Envelope
+	if err := json.Unmarshal(out.Bytes(), &env); err != nil {
+		t.Fatalf("decode envelope: %v\noutput: %s", err, out.String())
+	}
+	if deleteIssued {
+		t.Error("dispatched a DELETE for a key the write plane already reports as gone")
+	}
+	if env.Result == nil || env.Result.Summary.NoOp != 1 || env.Result.Summary.Failed != 0 {
+		t.Fatalf("summary = %+v, want one no_op and no failures", env.Result)
+	}
+	detail, _ := env.Result.Items[0].Reason.(map[string]any)
+	if detail["code"] != "already_deleted" {
+		t.Errorf("reason = %#v, want code already_deleted naming the recorded purge", env.Result.Items[0].Reason)
+	}
+
+	db2, err := store.OpenWithContext(context.Background(), dbPath)
+	if err != nil {
+		t.Fatalf("reopen store: %v", err)
+	}
+	defer db2.Close()
+	if mirroredItemKeys(t, db2, "items")["AZAZ0001"] {
+		t.Error("the no-op report restored a purged row; the mirror must stay exactly as the applied delete left it")
+	}
+	if !deletionMarkers(t, db2, "items")["AZAZ0001"] || !deletionMarkers(t, db2, "items-trash")["AZAZ0001"] {
+		t.Error("the no-op run dropped the deletion markers that suppress the still-listed read-plane row")
+	}
+}
+
+// The inverse of the window ADR-0007 reasoned about: a key that reached the
+// READ plane and never reached the write plane. An item created through the
+// desktop connector is mirrored immediately and stays invisible to
+// api.zotero.org for ~15-20s, so a permanent delete 404s for an item that is
+// demonstrably alive. That is a real failure and stays one — reporting success
+// there is the false success N4-2 caught — but the mirror must keep the row and
+// write no deletion marker, and the message must say which state it found
+// rather than "Item does not exist" for an item this machine can serve.
+func TestPermanentDeleteOfAnUnpropagatedItemFailsAndKeepsTheMirrorRow(t *testing.T) {
+	db, dbPath := reapTestStore(t)
+	// The row mirrorCreatedItem writes for a connector create: no version,
+	// because Zotero assigns one this process never sees.
+	if _, err := db.UpsertKeyed("items", []string{"AZAZ0002"},
+		[]json.RawMessage{json.RawMessage(`{"key":"AZAZ0002","data":{"key":"AZAZ0002","itemType":"journalArticle","title":"zotio release probe"}}`)}); err != nil {
+		t.Fatalf("seed mirror: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close seed store: %v", err)
+	}
+
+	installMirrorWriteThrough(t)
+	deleteIssued := false
+	srv := writePlane404Server(t, &deleteIssued)
+
+	cmd := newPermanentDeleteCmd()
+	var stderr bytes.Buffer
+	cmd.SetErr(&stderr)
+	cmd.SetOut(&bytes.Buffer{})
+	t.Setenv("ZOTERO_BASE_URL", srv.URL+"/users/0")
+	cmd.SetArgs([]string{"--permanent", "AZAZ0002"})
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("permanent delete reported success for an item that is still live on the read plane")
+	}
+	if ExitCode(err) != 3 {
+		t.Errorf("ExitCode = %d, want 3 — the same not-found family the 404 contract pins; err = %v", ExitCode(err), err)
+	}
+	// The error body is truncated at 200 bytes, so it carries the verdict and
+	// the 404 evidence; the remedy is on stderr.
+	if !strings.Contains(err.Error(), "mirrored on this machine") || !strings.Contains(err.Error(), "nothing was deleted") {
+		t.Errorf("error = %v, want it to name the mirrored row rather than reading as a bare 404", err)
+	}
+	if !strings.Contains(stderr.String(), "connector") || !strings.Contains(stderr.String(), "read plane") {
+		t.Errorf("stderr = %q, want the connector propagation window and its remedy", stderr.String())
+	}
+	if deleteIssued {
+		t.Error("dispatched a DELETE after the version read 404'd")
+	}
+
+	db2, err2 := store.OpenWithContext(context.Background(), dbPath)
+	if err2 != nil {
+		t.Fatalf("reopen store: %v", err2)
+	}
+	defer db2.Close()
+	if !mirroredItemKeys(t, db2, "items")["AZAZ0002"] {
+		t.Error("a failed delete reaped the mirror row of an item that is still live on both the read plane and Zotero")
+	}
+	if len(deletionMarkers(t, db2, "items")) != 0 || len(deletionMarkers(t, db2, "items-trash")) != 0 {
+		t.Error("a failed delete wrote a deletion marker; a marker claims the write plane no longer has the key, which no write ever established here")
+	}
+}
+
+// A delete that genuinely fails on the write plane must leave the mirror
+// untouched: the object still exists, so reaping its row would blind every
+// mirror-derived read, and a deletion marker would suppress the row on top of
+// that for as long as the desktop keeps listing it.
+func TestFailedPermanentDeleteLeavesTheMirrorRowAndWritesNoMarker(t *testing.T) {
+	fastRetryBackoff(t)
+	db, dbPath := reapTestStore(t)
+	if _, _, err := db.UpsertBatch("items", []json.RawMessage{
+		json.RawMessage(`{"key":"AZAZ0003","version":7,"data":{"key":"AZAZ0003","itemType":"book","title":"Still there"}}`),
+	}); err != nil {
+		t.Fatalf("seed mirror: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close seed store: %v", err)
+	}
+
+	installMirrorWriteThrough(t)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodDelete {
+			http.Error(w, "Internal Server Error", http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Last-Modified-Version", "7")
+		_, _ = w.Write([]byte(`{"key":"AZAZ0003","version":7,"data":{"key":"AZAZ0003","itemType":"book"}}`))
+	}))
+	defer srv.Close()
+
+	if err := runDeleteCmd(t, newPermanentDeleteCmd(), srv.URL, "--permanent", "AZAZ0003"); err == nil {
+		t.Fatal("permanent delete reported success though the write plane returned HTTP 500")
+	}
+
+	db2, err := store.OpenWithContext(context.Background(), dbPath)
+	if err != nil {
+		t.Fatalf("reopen store: %v", err)
+	}
+	defer db2.Close()
+	if !mirroredItemKeys(t, db2, "items")["AZAZ0003"] {
+		t.Error("a failed delete reaped the mirror row of an item that still exists")
+	}
+	if len(deletionMarkers(t, db2, "items")) != 0 || len(deletionMarkers(t, db2, "items-trash")) != 0 {
+		t.Error("a failed delete wrote a deletion marker, which would suppress a live item from every mirror-derived read")
+	}
+}
+
+// The trash path shares the classification and the same per-item status gate.
+// A trash that fails must not mirror the item into items-trash: `items trash`
+// exists to show what was just trashed, and showing an item no write ever
+// touched is the same class of lie in the other direction.
+func TestFailedTrashAddsNoTrashRow(t *testing.T) {
+	db, dbPath := reapTestStore(t)
+	if _, err := db.UpsertKeyed("items", []string{"AZAZ0005"},
+		[]json.RawMessage{json.RawMessage(`{"key":"AZAZ0005","data":{"key":"AZAZ0005","itemType":"journalArticle","title":"zotio release probe"}}`)}); err != nil {
+		t.Fatalf("seed mirror: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close seed store: %v", err)
+	}
+
+	installMirrorWriteThrough(t)
+	patched := false
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPatch {
+			patched = true
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		http.Error(w, "Item does not exist", http.StatusNotFound)
+	}))
+	defer srv.Close()
+
+	cmd := newItemsDeleteCmd(&rootFlags{asJSON: true, yes: true, maxChanges: -1})
+	cmd.SilenceErrors, cmd.SilenceUsage = true, true
+	if err := runDeleteCmd(t, cmd, srv.URL, "AZAZ0005"); err == nil {
+		t.Fatal("trash reported success though the write plane never had the item")
+	}
+	if patched {
+		t.Error("dispatched a trash PATCH after the version read 404'd")
+	}
+
+	db2, err := store.OpenWithContext(context.Background(), dbPath)
+	if err != nil {
+		t.Fatalf("reopen store: %v", err)
+	}
+	defer db2.Close()
+	if mirroredItemKeys(t, db2, "items-trash")["AZAZ0005"] {
+		t.Error("a failed trash mirrored the item into items-trash, so `items trash` would list an item nothing trashed")
+	}
+	if !mirroredItemKeys(t, db2, "items")["AZAZ0005"] {
+		t.Error("a failed trash disturbed the live mirror row")
+	}
+}
+
+// ADR-0007's original case, end to end through the command rather than through
+// reapMirroredItem alone: a delete the write plane APPLIES writes the markers,
+// and the next sync — reading the desktop, which keeps listing the key until
+// Zotero syncs the delete down — must not resurrect the row.
+func TestAppliedPermanentDeleteWritesTheMarkerAndSuppressesTheStaleRow(t *testing.T) {
+	syncTestWithHumanFriendly(t, false)
+	db, dbPath := reapTestStore(t)
+	if _, _, err := db.UpsertBatch("items", []json.RawMessage{
+		json.RawMessage(`{"key":"AZAZ0004","version":7,"data":{"key":"AZAZ0004","itemType":"book","title":"Purged"}}`),
+	}); err != nil {
+		t.Fatalf("seed mirror: %v", err)
+	}
+	if _, err := db.UpsertKeyed("items-trash", []string{"AZAZ0004"},
+		[]json.RawMessage{json.RawMessage(`{"key":"AZAZ0004","version":7,"data":{"key":"AZAZ0004","itemType":"book","title":"Purged"}}`)}); err != nil {
+		t.Fatalf("seed trash mirror: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close seed store: %v", err)
+	}
+
+	installMirrorWriteThrough(t)
+	writePlane := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodDelete {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		w.Header().Set("Last-Modified-Version", "7")
+		_, _ = w.Write([]byte(`{"key":"AZAZ0004","version":7,"data":{"key":"AZAZ0004","itemType":"book"}}`))
+	}))
+	defer writePlane.Close()
+
+	if err := runDeleteCmd(t, newPermanentDeleteCmd(), writePlane.URL, "--permanent", "AZAZ0004"); err != nil {
+		t.Fatalf("permanent delete: %v", err)
+	}
+
+	db2, err := store.OpenWithContext(context.Background(), dbPath)
+	if err != nil {
+		t.Fatalf("reopen store: %v", err)
+	}
+	defer db2.Close()
+	if mirroredItemKeys(t, db2, "items")["AZAZ0004"] {
+		t.Fatal("an applied permanent delete left its mirror row; offline reads would keep serving an item that 404s on both planes")
+	}
+	if !deletionMarkers(t, db2, "items")["AZAZ0004"] || !deletionMarkers(t, db2, "items-trash")["AZAZ0004"] {
+		t.Fatal("an applied permanent delete wrote no deletion marker, so the next sync can resurrect the purged row")
+	}
+
+	// The read plane still lists the purged key, exactly as the desktop does
+	// until Zotero syncs the delete down.
+	readPlane := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`[{"key":"AZAZ0004","version":7,"data":{"key":"AZAZ0004","itemType":"book","title":"Purged"}},` +
+			`{"key":"SURVIVOR","version":7,"data":{"key":"SURVIVOR","itemType":"book","title":"Untouched"}}]`))
+	}))
+	defer readPlane.Close()
+	if res := syncResource(context.Background(), syncTestClient(readPlane.URL), db2, "items", 0, false, 1, false); res.Err != nil {
+		t.Fatalf("sync items: %v", res.Err)
+	}
+	if mirroredItemKeys(t, db2, "items")["AZAZ0004"] {
+		t.Error("sync resurrected the permanently deleted item inside the read-plane lag window")
+	}
+	if !mirroredItemKeys(t, db2, "items")["SURVIVOR"] {
+		t.Error("suppression must be per key, not per page: every other row the plane reported has to land")
 	}
 }
