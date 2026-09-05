@@ -952,8 +952,21 @@ func applyEnrichProposalWithContext(ctx context.Context, downloader enrichPDFDow
 				err := errors.New("missing API client")
 				return "failed", err.Error(), err
 			}
-			if _, _, err := c.Post("/items", []map[string]any{p.Attachment}); err != nil {
+			resp, _, err := c.Post("/items", []map[string]any{p.Attachment})
+			if err != nil {
 				return enrichErrorStatus(err)
+			}
+			// A Zotero batch write answers HTTP 200 even when it rejects the
+			// element, so the only record of the outcome is the body. Require
+			// the created key, exactly as ensureLinkedAttachment does for the
+			// linked-file sibling: a `failed` entry or a response naming no
+			// key means no attachment exists, and "applied" would journal a
+			// write that never happened.
+			if failErr := batchWriteFailuresError("creating linked-url attachment", decodeBatchWriteResponse(resp).Failed); failErr != nil {
+				return enrichErrorStatus(failErr)
+			}
+			if _, ok := createdItemKey(resp); !ok {
+				return enrichErrorStatus(errors.New("could not read created linked-url attachment key from /items response"))
 			}
 			return "applied", nil, nil
 		case "linked-file":

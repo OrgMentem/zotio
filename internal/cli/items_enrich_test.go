@@ -762,7 +762,9 @@ func (f *fakeMutator) Post(path string, body any) (json.RawMessage, int, error) 
 	if f.postErr != nil {
 		return nil, http.StatusInternalServerError, f.postErr
 	}
-	return json.RawMessage(`{}`), 200, nil
+	// Zotero reports the per-element outcome of a batch create in the body,
+	// so the fake answers the accepted shape: index 0 created key CHILD1.
+	return json.RawMessage(`{"success":{"0":"CHILD1"}}`), 200, nil
 }
 
 func newEnrichWriteClient(t *testing.T, baseURL string) *client.Client {
@@ -969,6 +971,80 @@ func TestApplyEnrichProposal_AttachPostsChild(t *testing.T) {
 	arr, ok := f.postBody.([]map[string]any)
 	if !ok || len(arr) != 1 || arr[0]["linkMode"] != "linked_url" {
 		t.Errorf("post body = %v, want one linked_url attachment", f.postBody)
+	}
+}
+
+// A Zotero batch write answers HTTP 200 and reports a rejected element only in
+// the body, so the transport error is nil for a write that never landed. The
+// linked-url attach must read that body instead of assuming success.
+func TestApplyEnrichProposalLinkedURLReadsBatchOutcome(t *testing.T) {
+	tests := []struct {
+		name       string
+		response   string
+		wantStatus string
+		wantErr    bool
+		wantDetail string
+	}{
+		{
+			name:       "per-element rejection",
+			response:   `{"successful":{},"success":{},"unchanged":{},"failed":{"0":{"code":400,"message":"Invalid URL"}}}`,
+			wantStatus: "failed",
+			wantErr:    true,
+			wantDetail: "Invalid URL",
+		},
+		{
+			name:       "no outcome for the element",
+			response:   `{}`,
+			wantStatus: "failed",
+			wantErr:    true,
+			wantDetail: "could not read created linked-url attachment key",
+		},
+		{
+			name:       "created",
+			response:   `{"successful":{"0":{"key":"ATTACH1"}},"success":{"0":"ATTACH1"},"unchanged":{},"failed":{}}`,
+			wantStatus: "applied",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			posts := 0
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Method != http.MethodPost || r.URL.Path != "/items" {
+					http.NotFound(w, r)
+					return
+				}
+				posts++
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(tt.response))
+			}))
+			t.Cleanup(srv.Close)
+
+			p := enrichProposal{
+				Key: "ABC", Category: "missing_pdf", Action: enrichActionAttach, Source: "Unpaywall",
+				AttachMode: "linked-url",
+				Attachment: map[string]any{"itemType": "attachment", "linkMode": "linked_url", "url": "https://oa/p.pdf", "parentItem": "ABC"},
+			}
+			status, reason, err := applyEnrichProposalWithContext(context.Background(), enrichPDFDownloaderFactory(http.DefaultClient), newEnrichWriteClient(t, srv.URL), &p, &rootFlags{})
+			if posts != 1 {
+				t.Fatalf("POST /items requests = %d, want 1", posts)
+			}
+			if status != tt.wantStatus {
+				t.Fatalf("status = %q reason %v err %v, want %q", status, reason, err, tt.wantStatus)
+			}
+			if tt.wantErr {
+				if err == nil {
+					t.Fatalf("err = nil, want the batch rejection to reach the operator's exit code")
+				}
+				if !strings.Contains(fmt.Sprint(reason), tt.wantDetail) {
+					t.Fatalf("reason = %v, want it to contain %q", reason, tt.wantDetail)
+				}
+				return
+			}
+			if err != nil || reason != nil {
+				t.Fatalf("apply = (%q, %v, %v), want (applied, nil, nil)", status, reason, err)
+			}
+		})
 	}
 }
 
