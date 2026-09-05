@@ -594,3 +594,64 @@ func TestBibcheckSuggestsKeysInBothExtraSpellings(t *testing.T) {
 		}
 	}
 }
+
+// Every cell in the suggestion block is text zotio did not write: the cited
+// key came out of the manuscript, where latexCitationRE captures whatever
+// bytes sit between the braces, and the suggested key, item key and title
+// came out of the library. None of them may forge a row or reach the
+// terminal as an escape sequence.
+func TestPrintBibcheckKeySuggestionsRendersHostileTextAsInertData(t *testing.T) {
+	var out bytes.Buffer
+	keys := []bibcheckKeyResult{
+		{CiteKey: "smith2032", Status: "unknown", Occurrences: 1, Suggestions: []nearCiteKeyMatch{
+			{CiteKey: "smith2023", ItemKey: "ATTN", Title: "Attention Is All You Need", Score: 0.56},
+			{CiteKey: "smith2023a", ItemKey: "EVIL", Title: hostileLibraryText, Score: 0.5},
+		}},
+		{CiteKey: "hostile\t== FAKE HEADING ==\x1b[31m", Status: "unknown", Occurrences: 1, Suggestions: []nearCiteKeyMatch{
+			{CiteKey: "jones2023", ItemKey: "JONE", Title: "Plain Title", Score: 0.41},
+		}},
+	}
+	if err := printBibcheckKeySuggestions(&out, keys); err != nil {
+		t.Fatalf("printBibcheckKeySuggestions: %v", err)
+	}
+	text := out.String()
+	assertNoTerminalInjection(t, "bibcheck suggestions", text)
+	assertAdvisoryRowShape(t, "bibcheck suggestions", text, []string{"0.56", "0.50", "0.41"})
+}
+
+// The prose findings block is older than the suggestion block and had the
+// same hole: the cited key is printed straight from the manuscript, so a
+// \cite{} argument holding a newline and an escape forged a finding line of
+// its own and recoloured the terminal.
+func TestPrintBibcheckReportRendersHostileFindingsAsInertData(t *testing.T) {
+	cmd := newItemsBibcheckCmd(&rootFlags{})
+	var out, errOut bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&errOut)
+	hostileKey := "smith2032\n== FAKE HEADING ==\x1b[31m"
+	report := bibcheckReport{
+		Manuscript: "paper\x1b[31m.tex",
+		Format:     "latex",
+		Keys:       []bibcheckKeyResult{{CiteKey: hostileKey, Status: "unknown", Occurrences: 1}},
+		Findings: []Finding{{
+			Kind:     "undefined_citekey",
+			Severity: "high",
+			Evidence: map[string]any{
+				"citekey":   hostileKey,
+				"locations": []bibcheckLocation{{File: "paper\x1b[32m.tex", Line: 12}},
+			},
+		}},
+	}
+	if err := printBibcheckReport(cmd, &rootFlags{}, report); err != nil {
+		t.Fatalf("printBibcheckReport: %v", err)
+	}
+	assertNoTerminalInjection(t, "bibcheck report", out.String())
+	if !strings.Contains(out.String(), "undefined_citekey high") {
+		t.Fatalf("the finding line is gone:\n%s", out.String())
+	}
+	// Prose, not a table: the path and the line number a reader has to open
+	// stay whole.
+	if !strings.Contains(out.String(), ":12") {
+		t.Fatalf("the manuscript location was truncated away:\n%s", out.String())
+	}
+}

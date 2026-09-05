@@ -8,7 +8,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"path/filepath"
+	"strings"
 	"testing"
+
+	"github.com/spf13/cobra"
 
 	"zotio/internal/store"
 )
@@ -221,5 +224,41 @@ func TestItemsRelatedRelationArrayProducesOneEdgePerURI(t *testing.T) {
 	}
 	if len(want) != 0 {
 		t.Fatalf("missing expected array target(s): %v", want)
+	}
+}
+
+// Only DIRECTION is zotio's own word. The predicate is a key of the item's own
+// relations object, the key is percent-decoded out of a target URI, and the
+// title is the stored title at the other end, so the related table must render
+// all three as inert data. The hostile key here is not hand-written: it comes
+// back from parseZoteroItemURIKey, which is where "%09" and "%0A" in a URI
+// turn into a real tab and a real newline.
+func TestPrintItemRelatedReportRendersHostileLibraryTextAsInertData(t *testing.T) {
+	decoded := parseZoteroItemURIKey("https://zotero.org/users/123/items/K1%09X%0A==%20FAKE%20HEADING%20==%1b[31m")
+	if !strings.ContainsAny(decoded, "\t\n\x1b") {
+		t.Fatalf("parseZoteroItemURIKey(%q) = %q, want the decoded control bytes this test drives", "…%09…%0A…%1b…", decoded)
+	}
+
+	cmd := &cobra.Command{}
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+
+	report := itemRelatedReport{
+		Key: "K1",
+		Related: []itemRelationEdge{
+			{Direction: "outgoing", Predicate: "dc:relation", TargetKey: "K2", TargetPresent: true, Title: "Target Two"},
+			{Direction: "outgoing", Predicate: "dc:relation", parsedTargetKey: decoded, Title: hostileLibraryText},
+			{Direction: "incoming", Predicate: "owl:sameAs\t== FAKE HEADING ==", SourceKey: "K3\x1b[31m", TargetPresent: true, Title: "Citing\nPaper"},
+		},
+		Truncated: true,
+	}
+	if err := printItemRelatedReport(cmd, report); err != nil {
+		t.Fatalf("printItemRelatedReport: %v", err)
+	}
+	body := out.String()
+	assertNoTerminalInjection(t, "items related", body)
+	assertOneRowPerRecord(t, "items related", body, "DIRECTION", 3)
+	if !strings.Contains(body, "Truncated at ") {
+		t.Fatalf("the truncation notice is gone:\n%q", body)
 	}
 }

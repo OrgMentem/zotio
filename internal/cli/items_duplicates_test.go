@@ -372,6 +372,38 @@ func TestPrintNearDuplicateTitleGroupsExplainsAPerfectScore(t *testing.T) {
 	}
 }
 
+// The titles in an advisory group are library data, and this block prints two
+// of them in one cell. A newline inside either one split the group across
+// lines and orphaned the score; an escape recoloured the terminal from a data
+// field. Each title is treated on its own so the second one, the whole point
+// of a comparison, is still readable beside the first.
+func TestPrintNearDuplicateTitleGroupsRendersHostileTitlesAsInertData(t *testing.T) {
+	cmd := newItemsDuplicatesCmd(&rootFlags{})
+	var out, errOut bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&errOut)
+	groups := []nearDuplicateTitleGroup{
+		newNearDuplicateTitleGroup(0.91, "journalArticle",
+			[]string{"Attention Is All You Need", hostileLibraryText},
+			[]string{"P1", "P2"}),
+		newNearDuplicateTitleGroup(0.8, "journalArticle",
+			[]string{"A Survey of Reinforcement Learning", "A Survey of Reinforcement Methods"},
+			[]string{"Q1", "Q2\x1b[31m"}),
+	}
+
+	if err := printNearDuplicateTitleGroups(cmd, groups, 2); err != nil {
+		t.Fatalf("printNearDuplicateTitleGroups: %v", err)
+	}
+	assertNoTerminalInjection(t, "duplicate titles stdout", out.String())
+	assertNoTerminalInjection(t, "duplicate titles stderr", errOut.String())
+	assertAdvisoryRowShape(t, "duplicate titles", out.String(), []string{"0.91", "0.80"})
+	// Per title, not per cell: truncating the joined cell would cut the
+	// second title off exactly when the reader needs to compare the two.
+	if !strings.Contains(out.String(), "A Survey of Reinforcement Learning | A Survey of Reinforcement Methods") {
+		t.Fatalf("both titles in a clean group must stay readable:\n%s", out.String())
+	}
+}
+
 // The human branch replaces a bare `[]` with a sentence, because `[]` cannot be
 // told apart from a broken command — the silence `matched: none` removed from
 // `items find`. That branch needs a real terminal, so what is pinned here is

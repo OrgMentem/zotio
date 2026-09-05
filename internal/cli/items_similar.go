@@ -582,15 +582,39 @@ func itemSimilarEntryReasons(entry itemSimilarEntry) []string {
 	return reasons
 }
 
+// printItemSimilarReport renders the human table. Every cell but the rank and
+// the score quotes the library: the key and the title come from the stored
+// item, and each reason quotes a collection name, a tag, a creator display
+// name or a publicationTitle. All of it is publisher- or user-supplied text,
+// so all of it goes through advisoryCell (items_find.go) — sanitizeForTerminal
+// plus a tab fold plus truncation. The tab fold is the part sanitizeForTerminal
+// cannot do for us: it keeps tabs by design, and a tab inside a cell here
+// opens a column in newTabWriter and shifts every later value under the wrong
+// header. Truncation is display-only; --json keeps every value verbatim.
 func printItemSimilarReport(cmd *cobra.Command, report itemSimilarReport) error {
 	if len(report.Similar) == 0 {
-		fmt.Fprintf(cmd.OutOrStdout(), "No similar items found for %s.\n", report.Source.Key)
+		fmt.Fprintf(cmd.OutOrStdout(), "No similar items found for %s.\n", advisoryCell(report.Source.Key))
 		return nil
 	}
 	tw := newTabWriter(cmd.OutOrStdout())
 	fmt.Fprintln(tw, "RANK\tSCORE\tKEY\tTITLE\tWHY")
 	for _, entry := range report.Similar {
-		fmt.Fprintf(tw, "%d\t%.2f\t%s\t%s\t%s\n", entry.Rank, entry.Score, entry.Key, entry.Title, strings.Join(entry.Reasons, "; "))
+		fmt.Fprintf(tw, "%d\t%.2f\t%s\t%s\t%s\n", entry.Rank, entry.Score, advisoryCell(entry.Key), advisoryCell(entry.Title), itemSimilarWhyCell(entry.Reasons))
 	}
 	return tw.Flush()
+}
+
+// itemSimilarWhyCell folds each reason separately rather than the joined cell.
+// The cap is advisoryCell's, unchanged; what differs is what it is applied to.
+// A reason is one quoted library value wrapped in zotio's own words, and up to
+// five of them travel here, so capping the join at one cell budget would drop
+// most of the signals and leave the column unable to answer the only question
+// it exists for. Per reason, the cap still bounds every untrusted fragment,
+// which is what keeps one enormous tag name from destroying the layout.
+func itemSimilarWhyCell(reasons []string) string {
+	cells := make([]string, len(reasons))
+	for i, reason := range reasons {
+		cells[i] = advisoryCell(reason)
+	}
+	return strings.Join(cells, "; ")
 }

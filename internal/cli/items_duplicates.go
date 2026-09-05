@@ -911,7 +911,7 @@ func printNearDuplicateTitleGroups(cmd *cobra.Command, groups []nearDuplicateTit
 		if group.Score >= 1 {
 			foldEqual = true
 		}
-		fmt.Fprintf(tw, "%s\t%s\t%.2f\n", strings.Join(group.Keys, ", "), strings.Join(group.Titles, " | "), group.Score)
+		fmt.Fprintf(tw, "%s\t%s\t%.2f\n", advisoryCells(group.Keys, ", "), advisoryCells(group.Titles, " | "), group.Score)
 	}
 	if err := tw.Flush(); err != nil {
 		return err
@@ -926,6 +926,21 @@ func printNearDuplicateTitleGroups(cmd *cobra.Command, groups []nearDuplicateTit
 	}
 	fmt.Fprintf(cmd.ErrOrStderr(),
 		"\nThese are not duplicate groups: 'items duplicates resolve --title' matches equal titles only and will not merge them. Compare a pair first: zotio items get %s\n",
-		groups[0].Keys[0])
+		// Sanitized, never truncated: this line is a command to paste, and
+		// half an item key is a command that fails.
+		sanitizeForTerminal(groups[0].Keys[0]))
 	return nil
+}
+
+// advisoryCells renders several library-supplied values into one advisory
+// cell. Per value rather than per cell: a group holds two or more titles, and
+// truncating the joined string would cut the second title off exactly when
+// the reader needs to compare it against the first. The cell is bounded by
+// the group's own size, which nearDuplicateTitleBlockMaxCohorts caps.
+func advisoryCells(values []string, sep string) string {
+	cells := make([]string, len(values))
+	for i, value := range values {
+		cells[i] = advisoryCell(value)
+	}
+	return strings.Join(cells, sep)
 }

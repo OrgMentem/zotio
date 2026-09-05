@@ -113,7 +113,7 @@ func buildCollectionGapsReportWithCache(ctx context.Context, db localQueryStore,
 			alreadyInLibrary++
 			continue
 		}
-		candidates = append(candidates, collectionGapRow{Count: candidate.Count, DOI: candidate.DOI, Title: candidate.Title, Action: "zotio import doi " + candidate.DOI})
+		candidates = append(candidates, collectionGapRow{Count: candidate.Count, DOI: candidate.DOI, Title: candidate.Title, Action: gapImportActionPrefix + candidate.DOI})
 	}
 	if top > len(candidates) {
 		top = len(candidates)
@@ -258,11 +258,31 @@ func fetchGapTitleFromCrossRef(ctx context.Context, httpClient *http.Client, doi
 	return strings.TrimSpace(resp.Message.Title[0])
 }
 
+// gapImportActionPrefix is the trusted half of the ACTION cell. The renderer
+// rebuilds the cell from this prefix and the folded DOI instead of printing
+// row.Action, so that the display budget applies to the remote DOI alone and
+// zotio's own command name is never what gets truncated away.
+const gapImportActionPrefix = "zotio import doi "
+
+// printCollectionGapsReport renders the human table. Both the DOI and the
+// title here are remote text: the DOI arrives from COCI or Semantic Scholar
+// and the title from Semantic Scholar or Crossref, so a third party, not the
+// operator's own library, chooses these bytes. normalizedGapDOI only trims
+// the edges, so an interior tab, newline or ANSI escape survives it. Each
+// cell therefore goes through advisoryCell (items_find.go), which sanitizes,
+// folds the tab that newTabWriter would read as a column break, and truncates
+// for display only; --json keeps every value verbatim.
+//
+// The ACTION cell is a command the operator pastes, which makes a newline
+// there worse than a broken column: it would forge a second command line in
+// the operator's own terminal. It is built from the folded DOI so the one
+// remote value is folded once and shown identically in both columns.
 func printCollectionGapsReport(cmd *cobra.Command, report collectionGapsReport) error {
 	tw := newTabWriter(cmd.OutOrStdout())
 	fmt.Fprintln(tw, "RANK\tCOUNT\tDOI\tTITLE\tACTION")
 	for _, row := range report.Rows {
-		fmt.Fprintf(tw, "%d\t%d\t%s\t%s\t%s\n", row.Rank, row.Count, row.DOI, row.Title, row.Action)
+		doi := advisoryCell(row.DOI)
+		fmt.Fprintf(tw, "%d\t%d\t%s\t%s\t%s\n", row.Rank, row.Count, doi, advisoryCell(row.Title), gapImportActionPrefix+doi)
 	}
 	if err := tw.Flush(); err != nil {
 		return err

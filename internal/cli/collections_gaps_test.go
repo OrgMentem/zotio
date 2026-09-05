@@ -15,6 +15,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/spf13/cobra"
+
 	"zotio/internal/store"
 )
 
@@ -225,5 +227,50 @@ func TestCollectionsGapsCmdRequiresASyncedStore(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "zotio sync") {
 		t.Fatalf("error = %q, want the sync remediation", err.Error())
+	}
+}
+
+// A gap row is remote text end to end: the DOI arrives from COCI or Semantic
+// Scholar and the title from Semantic Scholar or Crossref, so a third party,
+// not the operator's own library, chooses these bytes. normalizedGapDOI only
+// trims the edges, so an interior control byte survives it and the renderer
+// has to fold it.
+func TestPrintCollectionGapsReportRendersHostileRemoteTextAsInertData(t *testing.T) {
+	const hostileDOI = "10.1000/a\tb\n== FAKE HEADING ==\x1b[31m"
+	if got := normalizedGapDOI(hostileDOI); !strings.ContainsAny(got, "\t\n\x1b") {
+		t.Fatalf("normalizedGapDOI(%q) = %q, want the control bytes this test drives to survive it", hostileDOI, got)
+	}
+
+	cmd := &cobra.Command{}
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+
+	report := collectionGapsReport{
+		CollectionKey: "COL",
+		Summary:       collectionGapsSummary{ItemsScanned: 2, ReferencesSeen: 3, UniqueCitedDOIs: 3, AlreadyInLibrary: 1, Gaps: 2},
+		Rows: []collectionGapRow{
+			{Rank: 1, Count: 2, DOI: "10.1000/beta", Title: "Beta Gap Title", Action: gapImportActionPrefix + "10.1000/beta"},
+			{Rank: 2, Count: 1, DOI: hostileDOI, Title: hostileLibraryText, Action: gapImportActionPrefix + hostileDOI},
+		},
+	}
+	if err := printCollectionGapsReport(cmd, report); err != nil {
+		t.Fatalf("printCollectionGapsReport: %v", err)
+	}
+	body := out.String()
+	assertNoTerminalInjection(t, "collections gaps", body)
+	assertOneRowPerRecord(t, "collections gaps", body, "RANK", 2)
+	if !strings.Contains(body, "Summary: items scanned=2") {
+		t.Fatalf("the summary line is gone:\n%q", body)
+	}
+	// The ACTION cell is pasted into a shell, so a newline there would forge a
+	// second command line. The trusted command name is never what truncation
+	// eats: it is printed whole beside the folded DOI.
+	for _, line := range strings.Split(body, "\n") {
+		if strings.HasPrefix(strings.TrimSpace(line), gapImportActionPrefix) {
+			t.Fatalf("a line begins with the import command, so a row forged a pasteable line of its own:\n%q", body)
+		}
+	}
+	if got := strings.Count(body, gapImportActionPrefix); got != 2 {
+		t.Fatalf("the ACTION column names %q %d times, want once per row:\n%q", gapImportActionPrefix, got, body)
 	}
 }

@@ -7,10 +7,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"hash/fnv"
 	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/spf13/cobra"
 
@@ -469,6 +471,60 @@ func TestItemsFindReportsNearTitlesWhenExactMisses(t *testing.T) {
 		if match.Key == "FRST" {
 			t.Fatalf("unrelated item reported as a near title: %+v", got.Near)
 		}
+	}
+}
+
+// End to end over a seeded store: no key may appear twice in
+// near_title_matches. The duplicate is injected the way a real mirror carries
+// it — a second FTS document for one item, under a rowid no write path
+// addresses — and it is injected AFTER the store has migrated, so this asserts
+// the read path alone, not the repair migration.
+func TestItemsFindReportsEachNearTitleKeyOnce(t *testing.T) {
+	dbPath := seedNearTitleStore(t)
+	db, err := store.OpenWithContext(t.Context(), dbPath)
+	if err != nil {
+		t.Fatalf("reopen store: %v", err)
+	}
+	// FNV-1a over the resource-qualified key: the scheme a superseded binary
+	// used, which is why these rows exist in the field. Any rowid the current
+	// writer does not compute would do.
+	legacy := fnv.New64a()
+	_, _ = legacy.Write([]byte("items\x00ATTN"))
+	if _, err := db.DB().ExecContext(t.Context(),
+		`INSERT INTO resources_fts (rowid, id, resource_type, content) VALUES (?, 'ATTN', 'items', ?)`,
+		int64(legacy.Sum64()&0x7FFFFFFFFFFFFFFF), "Attention Is All You Need journalArticle ATTN",
+	); err != nil {
+		t.Fatalf("inject the second index document: %v", err)
+	}
+	var documents int
+	if err := db.DB().QueryRowContext(t.Context(),
+		`SELECT count(*) FROM resources_fts WHERE id = 'ATTN' AND resource_type = 'items'`,
+	).Scan(&documents); err != nil {
+		t.Fatalf("count ATTN documents: %v", err)
+	}
+	if documents != 2 {
+		t.Fatalf("ATTN index documents = %d, want 2: the duplication this defends against is not present", documents)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close store: %v", err)
+	}
+
+	stdout, _ := runItemsFind(t, &rootFlags{asJSON: true}, "--title", "Attention Is All You Nead")
+	got := decodeFindEnvelope(t, stdout)
+	if len(got.Near) == 0 {
+		t.Fatalf("near_title_matches empty; the typo case is the reason this exists")
+	}
+	seen := map[string]int{}
+	for _, match := range got.Near {
+		seen[match.Key]++
+	}
+	for key, count := range seen {
+		if count > 1 {
+			t.Fatalf("key %s appears %d times in near_title_matches: %+v", key, count, got.Near)
+		}
+	}
+	if seen["ATTN"] != 1 {
+		t.Fatalf("ATTN appears %d times, want once: %+v", seen["ATTN"], got.Near)
 	}
 }
 
@@ -1404,5 +1460,169 @@ func TestItemsFindListsADuplicateCiteKeyOnceAndKeepsOtherKeys(t *testing.T) {
 		if !reflect.DeepEqual(again, first) {
 			t.Fatalf("run %d listed %+v, want the same list as the first run %+v", run+2, again, first)
 		}
+	}
+}
+
+// hostileLibraryText is text a Zotero library can really hold in a title, and
+// that a pinned citation key can hold too because Extra is a free-text field:
+// a tab, which is the delimiter every advisory block's tabwriter reads as a
+// column break; a newline followed by text shaped like a heading of zotio's
+// own; and an ANSI colour escape. Rendered untreated on a terminal it broke
+// one candidate across two lines, started a line with a heading zotio never
+// wrote, left the score under the wrong header, and recoloured the terminal
+// from a data field.
+const hostileLibraryText = "Attention Is All You\tNeed\n== FAKE HEADING ==\x1b[31m RED"
+
+// assertNoTerminalInjection fails when library data reached the terminal as
+// anything but inert text: a raw escape or carriage return, or a line that
+// the library, not zotio, decided to start.
+func assertNoTerminalInjection(t *testing.T, where, body string) {
+	t.Helper()
+	if i := strings.IndexAny(body, "\x1b\r"); i >= 0 {
+		t.Fatalf("%s: raw control byte %q at offset %d reaches the terminal:\n%q", where, body[i], i, body)
+	}
+	for n, line := range strings.Split(body, "\n") {
+		if strings.HasPrefix(strings.TrimSpace(line), "== FAKE HEADING ==") {
+			t.Fatalf("%s: line %d is text the library injected, so it can forge zotio's own output:\n%q", where, n+1, body)
+		}
+	}
+}
+
+// assertAdvisoryRowShape fails unless the block prints exactly one row per
+// candidate, each carrying its score under the SCORE header. Both halves
+// matter: a newline inside a cell splits one candidate into two lines, and a
+// tab inside a cell opens a column that shifts the score under the header
+// beside it. Offsets are counted in runes, which is what tabwriter pads by.
+func assertAdvisoryRowShape(t *testing.T, where, body string, scores []string) {
+	t.Helper()
+	lines := strings.Split(strings.TrimRight(body, "\n"), "\n")
+	header := -1
+	for i, line := range lines {
+		if strings.Contains(line, "SCORE") {
+			header = i
+			break
+		}
+	}
+	if header < 0 {
+		t.Fatalf("%s: no header row:\n%q", where, body)
+	}
+	wantCol := utf8.RuneCountInString(lines[header][:strings.Index(lines[header], "SCORE")])
+	for i, score := range scores {
+		row := header + 1 + i
+		if row >= len(lines) {
+			t.Fatalf("%s: candidate %d has no row; the block is %d lines:\n%q", where, i+1, len(lines), body)
+		}
+		at := strings.LastIndex(lines[row], score)
+		if at < 0 {
+			t.Fatalf("%s: row %d does not carry score %s, so the candidate spans more than one line:\n%q", where, i+1, score, body)
+		}
+		if got := utf8.RuneCountInString(lines[row][:at]); got != wantCol {
+			t.Fatalf("%s: row %d prints score %s at column %d, want %d (under the SCORE header):\n%q", where, i+1, score, got, wantCol, body)
+		}
+	}
+	if rest := lines[header+1+len(scores):]; len(rest) > 0 && strings.Contains(rest[0], "FAKE") {
+		t.Fatalf("%s: an extra row follows the %d candidates:\n%q", where, len(scores), body)
+	}
+}
+
+// A title is publisher- or user-supplied text, so the near-title block must
+// render it as inert data. Every other cell here is library data too — the
+// item key, the date the year is derived from, the item type — and each is
+// driven with a control byte so none of them is left as the next hole.
+func TestPrintNearTitleMatchesRendersHostileLibraryTextAsInertData(t *testing.T) {
+	cmd := &cobra.Command{}
+	var stdout, stderr bytes.Buffer
+	cmd.SetOut(&stdout)
+	cmd.SetErr(&stderr)
+	long := strings.Repeat("x", 200)
+	matches := []nearTitleMatch{
+		{Key: "A1", Title: "Attention Is All You Need", Score: 0.99, Year: "2017", ItemType: "journalArticle"},
+		{Key: "EVIL", Title: hostileLibraryText, Score: 0.67, Year: "2018", ItemType: "journalArticle"},
+		{Key: "K3\x1b[32m", Title: "Plain Title", Score: 0.51, Year: "2019\n", ItemType: "book\tfake"},
+		{Key: "LONG", Title: long, Score: 0.42, Year: "2020", ItemType: "book", Trashed: true},
+	}
+	if err := printNearTitleMatches(cmd, "Attention Is All You Nead", matches, 4); err != nil {
+		t.Fatalf("printNearTitleMatches: %v", err)
+	}
+	out, errOut := stdout.String(), stderr.String()
+	assertNoTerminalInjection(t, "stdout", out)
+	assertNoTerminalInjection(t, "stderr", errOut)
+	assertAdvisoryRowShape(t, "near titles", out, []string{"0.99", "0.67", "0.51", "0.42"})
+	if strings.Contains(out, long[:60]) {
+		t.Fatalf("a 200-character title is printed whole, so one row destroys the column layout:\n%q", out)
+	}
+	if !strings.Contains(out, "(trashed)") {
+		t.Fatalf("truncation dropped the trashed marker the exact path shows as a DELETED column:\n%q", out)
+	}
+	// The next-command line is pasted, so the key is sanitized and never
+	// truncated: half a key is a command that fails.
+	if !strings.Contains(errOut, "zotio items get A1\n") {
+		t.Fatalf("stderr does not name the next command with the whole key:\n%q", errOut)
+	}
+}
+
+// A pinned citation key comes from Extra, a free-text field, so it is exactly
+// as untrusted as the title beside it.
+func TestPrintNearCiteKeyMatchesRendersHostileLibraryTextAsInertData(t *testing.T) {
+	cmd := &cobra.Command{}
+	var stdout, stderr bytes.Buffer
+	cmd.SetOut(&stdout)
+	cmd.SetErr(&stderr)
+	matches := []nearCiteKeyMatch{
+		{CiteKey: "smith2023", ItemKey: "ATTN", Title: "Attention Is All You Need", Score: 0.56},
+		{CiteKey: "smith2023\t== FAKE HEADING ==\x1b[31m", ItemKey: "EVIL", Title: hostileLibraryText, Score: 0.5},
+	}
+	if err := printNearCiteKeyMatches(cmd, "smith2032", matches, 2); err != nil {
+		t.Fatalf("printNearCiteKeyMatches: %v", err)
+	}
+	out, errOut := stdout.String(), stderr.String()
+	assertNoTerminalInjection(t, "stdout", out)
+	assertNoTerminalInjection(t, "stderr", errOut)
+	assertAdvisoryRowShape(t, "near citekeys", out, []string{"0.56", "0.50"})
+	if !strings.Contains(errOut, "zotio items get ATTN\n") {
+		t.Fatalf("stderr does not name the next command with the whole key:\n%q", errOut)
+	}
+}
+
+// The terminal treatment is display-only. --json must hand the stored title
+// back byte for byte: a consumer diffing it against its own record needs the
+// bytes, an escape sequence inside a JSON string is inert, and truncating or
+// replacing anything there would corrupt data rather than protect a terminal.
+func TestItemsFindKeepsHostileTitleByteIdenticalInJSON(t *testing.T) {
+	dataHome := t.TempDir()
+	t.Setenv("XDG_DATA_HOME", dataHome)
+	db, err := store.OpenWithContext(t.Context(), filepath.Join(dataHome, "zotio", "data.db"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	item, err := json.Marshal(map[string]any{
+		"key": "EVIL",
+		"data": map[string]any{
+			"key":      "EVIL",
+			"itemType": "journalArticle",
+			"title":    hostileLibraryText,
+			"date":     "2018",
+		},
+	})
+	if err != nil {
+		t.Fatalf("marshal item: %v", err)
+	}
+	if _, _, err := db.UpsertBatch("items", []json.RawMessage{item}); err != nil {
+		t.Fatalf("seed items: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close store: %v", err)
+	}
+
+	stdout, _ := runItemsFind(t, &rootFlags{asJSON: true}, "--title", "Attention Is All You Nead")
+	got := decodeFindEnvelope(t, stdout)
+	if len(got.Near) != 1 {
+		t.Fatalf("near_title_matches = %+v, want the seeded item", got.Near)
+	}
+	if got.Near[0].Title != hostileLibraryText {
+		t.Fatalf("near_title_matches[0].title = %q, want the stored bytes %q", got.Near[0].Title, hostileLibraryText)
+	}
+	if strings.ContainsRune(stdout, '\uFFFD') {
+		t.Fatalf("JSON output carries a replacement rune, so a machine reader was handed a sanitized title:\n%s", stdout)
 	}
 }

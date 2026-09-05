@@ -121,12 +121,27 @@ func readingQueueDefaultTag() string {
 	return "to-read"
 }
 
+// printReadingList renders the human table. Every cell is library text — the
+// key, title, first author, year, dateAdded and itemType all come from the
+// stored item, and so does the "oldest" date in the header line — so each one
+// goes through advisoryCell (items_find.go).
+//
+// The title column used to be sanitized and truncated at 80. The 80 was
+// inherited from the CLI this command was imported from and never justified,
+// and sanitizeForTerminal alone left the hole this fold closes: it keeps tabs
+// by design, so a tab in a title still opened a column in newTabWriter and
+// shifted the author, year and date under the wrong headers. Fixing that
+// means folding tabs here, and the fold and the cell budget live together in
+// advisoryCell, so the column now matches printTable and every other ranked
+// item list at 48 rather than carrying a third width of its own. A reading
+// queue is a pick-what-to-read-next view, which is the same job `items list`
+// does at 48, so nothing here needs the longer column.
 func printReadingList(cmd *cobra.Command, result readingListResult) error {
 	oldest := result.Oldest
 	if oldest == "" {
 		oldest = "n/a"
 	}
-	fmt.Fprintf(cmd.OutOrStdout(), "Reading queue: %d items (oldest: %s)\n", result.Count, oldest)
+	fmt.Fprintf(cmd.OutOrStdout(), "Reading queue: %d items (oldest: %s)\n", result.Count, advisoryCell(oldest))
 	if len(result.Items) == 0 {
 		return nil
 	}
@@ -134,12 +149,12 @@ func printReadingList(cmd *cobra.Command, result readingListResult) error {
 	fmt.Fprintln(tw, "Key\tTitle\tAuthor\tYear\tDate Added\tType")
 	for _, item := range result.Items {
 		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\n",
-			item.Key,
-			sanitizeForTerminal(truncate(item.Title, 80)),
-			sanitizeForTerminal(item.Author),
-			sanitizeForTerminal(item.Year),
-			sanitizeForTerminal(item.DateAdded),
-			sanitizeForTerminal(item.ItemType),
+			advisoryCell(item.Key),
+			advisoryCell(item.Title),
+			advisoryCell(item.Author),
+			advisoryCell(item.Year),
+			advisoryCell(item.DateAdded),
+			advisoryCell(item.ItemType),
 		)
 	}
 	return tw.Flush()

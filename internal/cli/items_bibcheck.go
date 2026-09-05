@@ -628,13 +628,13 @@ func printBibcheckReport(cmd *cobra.Command, flags *rootFlags, report bibcheckRe
 
 	out := cmd.OutOrStdout()
 	if len(report.Files) == 0 {
-		fmt.Fprintf(out, "Manuscript: %s (%s)\n", report.Manuscript, report.Format)
+		fmt.Fprintf(out, "Manuscript: %s (%s)\n", sanitizeForTerminal(report.Manuscript), report.Format)
 	} else {
 		fmt.Fprintf(out, "Manuscripts: %d files\n", len(report.Files))
 	}
 	fmt.Fprintf(out, "Summary: %d ok, %d unknown, %d ambiguous, %d incomplete (%d cited keys)\n\n", report.Summary.OK, report.Summary.Unknown, report.Summary.Ambiguous, report.Summary.Incomplete, report.Summary.Total)
 	for _, file := range report.Files {
-		fmt.Fprintf(out, "  %s (%s): %d ok, %d unknown, %d ambiguous, %d incomplete (%d cited keys)\n", file.File, file.Format, file.Summary.OK, file.Summary.Unknown, file.Summary.Ambiguous, file.Summary.Incomplete, file.Summary.Total)
+		fmt.Fprintf(out, "  %s (%s): %d ok, %d unknown, %d ambiguous, %d incomplete (%d cited keys)\n", sanitizeForTerminal(file.File), file.Format, file.Summary.OK, file.Summary.Unknown, file.Summary.Ambiguous, file.Summary.Incomplete, file.Summary.Total)
 	}
 	if len(report.Files) > 0 {
 		fmt.Fprintln(out)
@@ -666,17 +666,25 @@ func printBibcheckReport(cmd *cobra.Command, flags *rootFlags, report bibcheckRe
 	fmt.Fprintln(out)
 	fmt.Fprintln(out, "Findings:")
 	for _, finding := range report.Findings {
+		// Prose, not a table: sanitized so a manuscript cannot forge a
+		// finding line or recolour the terminal, and never truncated,
+		// because a shortened key or path is a wrong report. latexCitationRE
+		// captures everything between the braces, so a \cite{} argument
+		// reaches here with whatever bytes the file holds; the path comes
+		// from the filesystem. The key table above gets the same treatment
+		// through flags.printTable (root.go).
 		citeKey, _ := finding.Evidence["citekey"].(string)
-		locationText := formatBibcheckLocations(finding.Evidence["locations"])
+		citeKey = sanitizeForTerminal(citeKey)
+		locationText := sanitizeForTerminal(formatBibcheckLocations(finding.Evidence["locations"]))
 		switch finding.Kind {
 		case "undefined_citekey":
 			fmt.Fprintf(out, "  undefined_citekey high %s — %s\n", citeKey, locationText)
 		case "incomplete_citation":
 			missing, _ := finding.Evidence["missing"].(string)
 			if missing != "" {
-				fmt.Fprintf(out, "  incomplete_citation high %s (%s) missing %s — %s\n", citeKey, finding.ItemKey, missing, locationText)
+				fmt.Fprintf(out, "  incomplete_citation high %s (%s) missing %s — %s\n", citeKey, sanitizeForTerminal(finding.ItemKey), missing, locationText)
 			} else {
-				fmt.Fprintf(out, "  incomplete_citation high %s (%s) — %s\n", citeKey, finding.ItemKey, locationText)
+				fmt.Fprintf(out, "  incomplete_citation high %s (%s) — %s\n", citeKey, sanitizeForTerminal(finding.ItemKey), locationText)
 			}
 		}
 	}
@@ -702,11 +710,16 @@ func printBibcheckKeySuggestions(out io.Writer, keys []bibcheckKeyResult) error 
 				fmt.Fprint(out, "\nUnknown keys — closest keys in your library (NOT matches; confirm before editing):\n")
 				fmt.Fprintln(tw, "CITED\tSUGGESTION\tITEM\tTITLE\tSCORE")
 			}
-			title := suggestion.Title
+			// Every cell here is text zotio did not write: the cited key came
+			// out of the manuscript, the rest out of the library. advisoryCell
+			// (items_find.go) is the same treatment flags.printTable gives the
+			// key table above, plus the tab this tabwriter reads as a column
+			// break.
+			title := advisoryCell(suggestion.Title)
 			if title == "" {
 				title = nearMatchMissingField
 			}
-			fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%.2f\n", key.CiteKey, suggestion.CiteKey, suggestion.ItemKey, title, suggestion.Score)
+			fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%.2f\n", advisoryCell(key.CiteKey), advisoryCell(suggestion.CiteKey), advisoryCell(suggestion.ItemKey), title, suggestion.Score)
 			printed++
 		}
 	}

@@ -358,10 +358,13 @@ func queryNearCiteKeyMatches(ctx context.Context, db localQueryStore, citekey st
 // the scan in SQLite — a Go-side edit distance over every item would read the
 // whole library to answer a lookup that found nothing.
 //
-// The second return value is how many candidates cleared the junk floor before
-// the rank cap, so the reader can be told the list was truncated. Ranking the
-// full set and slicing here costs nothing: rankNearTitleMatches sorts every
-// scored candidate before it slices either way.
+// The second return value is how many DISTINCT items cleared the junk floor
+// before the rank cap, so the reader can be told the list was truncated.
+// Distinct items for the same reason the citekey path counts distinct keys:
+// rankNearTitleMatches reports one item once, so counting scored rows here
+// would print "(6 of 5 shown)" for a library holding five near titles.
+// Ranking the full set and slicing here costs nothing: rankNearTitleMatches
+// sorts every scored candidate before it slices either way.
 func queryNearTitleMatches(ctx context.Context, db *store.Store, title string) ([]nearTitleMatch, int, error) {
 	rows, err := db.TitleCandidates(ctx, title, titleCandidateLimit)
 	if err != nil {
@@ -449,6 +452,36 @@ func wantsNearMatchProse(flags *rootFlags) bool {
 // an empty string, so the two halves describe the same row.
 const nearMatchMissingField = "----"
 
+// advisoryCellWidth is printTable's cell budget (root.go). The advisory blocks
+// print beside those tables, so a title has one display length in this
+// command, not one per renderer.
+const advisoryCellWidth = 48
+
+// advisoryCell prepares one library-supplied value for a tab-separated
+// advisory row: the treatment flags.printTable already gives every table cell
+// (sanitizeForTerminal, then truncate to advisoryCellWidth), plus the tab.
+//
+// A title, a citation key and an item type are publisher- or user-supplied
+// text, so any of them can carry a control byte. Unsanitized, a newline ended
+// the row early and printed the rest of the title as a line of its own — text
+// the library chose, rendered where zotio's own output goes — and an ANSI
+// escape recoloured the terminal from a data field.
+//
+// The tab is the one addition. printTable renders through renderColumns,
+// which aligns by display width and treats a tab as an ordinary rune;
+// these blocks feed text/tabwriter, where a tab inside a cell opens a column
+// and shifts every later value under the wrong header, so the delimiter has
+// to go. sanitizeForTerminal deliberately keeps tabs (helpers.go), hence the
+// replacement here rather than there.
+//
+// Truncation is display-only and never reaches JSON: near_title_matches and
+// near_citekey_matches carry the stored value verbatim, because a consumer
+// diffing a title against its own record needs the bytes, and an escape
+// sequence in a JSON string is inert.
+func advisoryCell(s string) string {
+	return truncate(sanitizeForTerminal(strings.ReplaceAll(s, "\t", " ")), advisoryCellWidth)
+}
+
 // nearTitleBlock and nearCiteKeyBlock each group the three values a miss
 // answer needs: the ranked rows, how many there were before the rank cap, and
 // the lookup state. They always travel together, and one selector missing
@@ -525,11 +558,11 @@ func printNearCiteKeyMatches(cmd *cobra.Command, citekey string, matches []nearC
 	tw := newTabWriter(out)
 	fmt.Fprintln(tw, "CITEKEY\tKEY\tTITLE\tSCORE")
 	for _, match := range matches {
-		title := match.Title
+		title := advisoryCell(match.Title)
 		if title == "" {
 			title = nearMatchMissingField
 		}
-		fmt.Fprintf(tw, "%s\t%s\t%s\t%.2f\n", match.CiteKey, match.ItemKey, title, match.Score)
+		fmt.Fprintf(tw, "%s\t%s\t%s\t%.2f\n", advisoryCell(match.CiteKey), advisoryCell(match.ItemKey), title, match.Score)
 	}
 	if err := tw.Flush(); err != nil {
 		return err
@@ -537,8 +570,12 @@ func printNearCiteKeyMatches(cmd *cobra.Command, citekey string, matches []nearC
 	if total > len(matches) {
 		fmt.Fprintf(out, "(%d of %d shown)\n", len(matches), total)
 	}
+	// The item key is library data too, and this line is the command the
+	// reader pastes: sanitized, never truncated, because half a key is a
+	// command that fails. The queried citekey is the reader's own input and
+	// %q escapes it already.
 	fmt.Fprintf(cmd.ErrOrStderr(), "\nNo item has the citation key %q. If one above is the paper you meant, then run: zotio items get %s\n",
-		citekey, matches[0].ItemKey)
+		citekey, sanitizeForTerminal(matches[0].ItemKey))
 	return nil
 }
 
@@ -581,21 +618,23 @@ func printNearTitleMatches(cmd *cobra.Command, title string, matches []nearTitle
 	tw := newTabWriter(out)
 	fmt.Fprintln(tw, "KEY\tYEAR\tTYPE\tTITLE\tSCORE")
 	for _, match := range matches {
-		year := match.Year
+		year := advisoryCell(match.Year)
 		if year == "" {
 			year = nearMatchMissingField
 		}
-		itemType := match.ItemType
+		itemType := advisoryCell(match.ItemType)
 		if itemType == "" {
 			itemType = nearMatchMissingField
 		}
-		shownTitle := match.Title
+		// Truncated before the marker is appended, so a long title cannot
+		// push "(trashed)" out of the cell that has to carry it.
+		shownTitle := advisoryCell(match.Title)
 		if match.Trashed {
 			// The exact path prints a DELETED column, so an unmarked trashed
 			// row here would hide what the other half of this command shows.
 			shownTitle += " (trashed)"
 		}
-		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%.2f\n", match.Key, year, itemType, shownTitle, match.Score)
+		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%.2f\n", advisoryCell(match.Key), year, itemType, shownTitle, match.Score)
 	}
 	if err := tw.Flush(); err != nil {
 		return err
@@ -604,7 +643,7 @@ func printNearTitleMatches(cmd *cobra.Command, title string, matches []nearTitle
 		fmt.Fprintf(out, "(%d of %d shown)\n", len(matches), total)
 	}
 	fmt.Fprintf(cmd.ErrOrStderr(), "\nNo item has the title %q. If one above is the paper you meant, then run: zotio items get %s\n",
-		title, matches[0].Key)
+		title, sanitizeForTerminal(matches[0].Key))
 	return nil
 }
 

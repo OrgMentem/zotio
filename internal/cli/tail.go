@@ -140,7 +140,7 @@ native streaming instead of polling.`,
 			signal.Notify(sig, syscall.SIGTERM, syscall.SIGINT)
 			defer signal.Stop(sig)
 
-			fmt.Fprintf(os.Stderr, "Tailing %s every %s (Ctrl+C to stop)\n", resource, interval)
+			fmt.Fprintln(cmd.ErrOrStderr(), tailStartBanner(resource, interval, follow))
 
 			// Initial poll
 			if events, err := emitChanges(cmd.Context(), c, db, resource, path, sink, cmd.OutOrStdout()); err != nil {
@@ -196,6 +196,21 @@ native streaming instead of polling.`,
 	cmd.Flags().StringVar(&workflowPath, "workflow", "", "Run this workflow once after an event-bearing poll; previews unless --yes, and failed applied runs require zotio workflow run <spec> --yes --resume")
 
 	return cmd
+}
+
+// tailStartBanner announces what this invocation will actually do.
+//
+// One-shot mode gets its own sentence. It returns after the initial poll, so
+// it never builds a ticker and never reads --interval (see newTailCmd), and
+// the follow banner therefore named an interval the run does not use and
+// offered a Ctrl+C for a command that has already exited. That wording
+// described a different command, and it is reachable in this release now
+// that --follow=false --interval 0 is accepted instead of rejected.
+func tailStartBanner(resource string, interval time.Duration, follow bool) string {
+	if !follow {
+		return fmt.Sprintf("Polling %s once (--follow=false); no interval is used", resource)
+	}
+	return fmt.Sprintf("Tailing %s every %s (Ctrl+C to stop)", resource, interval)
 }
 
 // tailKnownResources returns the change-feed resources tail can stream: the

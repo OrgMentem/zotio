@@ -8,8 +8,11 @@ import (
 	"encoding/json"
 	"math"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
+
+	"github.com/spf13/cobra"
 
 	"zotio/internal/store"
 )
@@ -301,4 +304,175 @@ func runItemsSimilarCommand(t *testing.T, flags *rootFlags, args ...string) []by
 		t.Fatalf("items command %v: %v; stdout=%s", args, err, out.String())
 	}
 	return out.Bytes()
+}
+
+// tabwriterColumnGap matches the run of spaces newTabWriter puts between two
+// cells. Its padding is 2, so two or more spaces is always a column break and
+// never content, as long as a fixture keeps single spaces inside a cell.
+var tabwriterColumnGap = regexp.MustCompile("  +")
+
+// assertOneRowPerRecord fails unless the table prints exactly one line per
+// record, each with the same number of columns as its header, and nothing
+// record-shaped after them. Those are the two shapes a control byte in a cell
+// destroys: a newline inside a cell adds a line the record does not own and
+// splits its cells across two lines, and a tab inside a cell opens a column,
+// which pushes every later value one header to the right. header is the first
+// header word; trailing prose such as the gaps summary is not record-shaped,
+// so it is ignored. printItemRelatedReport, printCollectionGapsReport and
+// printReadingList assert with this too.
+func assertOneRowPerRecord(t *testing.T, where, body, header string, records int) {
+	t.Helper()
+	lines := strings.Split(strings.TrimRight(body, "\n"), "\n")
+	at := -1
+	for i, line := range lines {
+		if strings.HasPrefix(line, header) {
+			at = i
+			break
+		}
+	}
+	if at < 0 {
+		t.Fatalf("%s: no header row starting with %q:\n%q", where, header, body)
+	}
+	columns := func(line string) int {
+		return len(tabwriterColumnGap.Split(strings.TrimRight(line, " "), -1))
+	}
+	want := columns(lines[at])
+	for i := range records {
+		row := at + 1 + i
+		if row >= len(lines) {
+			t.Fatalf("%s: record %d has no row; the table is %d lines:\n%q", where, i+1, len(lines), body)
+		}
+		if got := columns(lines[row]); got != want {
+			t.Fatalf("%s: row %d has %d columns, want %d, so a cell opened a column of its own:\n%q", where, i+1, got, want, body)
+		}
+	}
+	for i, line := range lines[min(at+1+records, len(lines)):] {
+		if columns(line) == want {
+			t.Fatalf("%s: line %d after the %d records is record-shaped, so a cell forged a row:\n%q", where, i+1, records, body)
+		}
+	}
+}
+
+// A stored title, a stored item key and every reason quoting a collection, a
+// tag, a creator or a venue are all publisher- or user-supplied text, so the
+// similar table must render each of them as inert data.
+func TestPrintItemSimilarReportRendersHostileLibraryTextAsInertData(t *testing.T) {
+	cmd := &cobra.Command{}
+	var out, errOut bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&errOut)
+
+	report := itemSimilarReport{
+		Source: itemSimilarSummary{Key: "SRC"},
+		Similar: []itemSimilarEntry{
+			{Rank: 1, Key: "SIM", Title: "Similar Paper", Score: 0.46, Reasons: []string{"1 shared collection (C1)", "same venue (Journal of Tests)"}},
+			{Rank: 2, Key: "EVIL\x1b[32m", Title: hostileLibraryText, Score: 0.31, Reasons: []string{"1 shared tag (" + hostileLibraryText + ")", "same venue (V\tW)"}},
+		},
+	}
+	if err := printItemSimilarReport(cmd, report); err != nil {
+		t.Fatalf("printItemSimilarReport: %v", err)
+	}
+	body := out.String()
+	assertNoTerminalInjection(t, "items similar", body)
+	assertNoTerminalInjection(t, "items similar stderr", errOut.String())
+	assertAdvisoryRowShape(t, "items similar", body, []string{"0.46", "0.31"})
+	assertOneRowPerRecord(t, "items similar", body, "RANK", 2)
+	// Each reason is folded on its own, so the cap bounds one quoted library
+	// value at a time and the signals behind a hostile one still print. Folding
+	// the joined cell instead would leave the column unable to answer why.
+	if !strings.Contains(body, "1 shared tag (") {
+		t.Fatalf("the WHY column dropped the tag signal:\n%q", body)
+	}
+	if !strings.Contains(body, "same venue (V W)") {
+		t.Fatalf("the WHY column dropped the venue signal behind the hostile one, or left its tab:\n%q", body)
+	}
+}
+
+// The empty-result line names the source key, which is stored text too.
+func TestPrintItemSimilarReportSanitizesTheSourceKeyOnTheEmptyLine(t *testing.T) {
+	cmd := &cobra.Command{}
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+
+	if err := printItemSimilarReport(cmd, itemSimilarReport{Source: itemSimilarSummary{Key: hostileLibraryText}}); err != nil {
+		t.Fatalf("printItemSimilarReport: %v", err)
+	}
+	assertNoTerminalInjection(t, "items similar empty", out.String())
+	if lines := strings.Split(strings.TrimRight(out.String(), "\n"), "\n"); len(lines) != 1 {
+		t.Fatalf("the empty answer is %d lines, so the key forged one:\n%q", len(lines), out.String())
+	}
+}
+
+// Folding is display-only. --json carries the stored bytes, because a consumer
+// diffing a title against its own record needs them, and an escape sequence
+// inside a JSON string is inert. The same store drives both paths here, so the
+// human table cannot be safe by having lost the data.
+func TestItemsSimilarKeepsHostileLibraryTextByteIdenticalInJSON(t *testing.T) {
+	isolateItemsSimilarStore(t)
+	db, err := store.OpenWithContext(context.Background(), helpersTestDefaultDBPath(t, "zotio"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	items := make([]json.RawMessage, 0, 3)
+	for _, item := range []struct {
+		key, title string
+	}{
+		{"SRC", "Source Paper"},
+		{"EVIL", hostileLibraryText},
+		{"SIM", "Similar Paper"},
+	} {
+		raw, err := json.Marshal(map[string]any{
+			"key":     item.key,
+			"version": 1,
+			"data": map[string]any{
+				"key":         item.key,
+				"itemType":    "journalArticle",
+				"title":       item.title,
+				"collections": []string{"C1"},
+				"tags":        []map[string]string{{"tag": hostileLibraryText}},
+			},
+		})
+		if err != nil {
+			t.Fatalf("marshal %s: %v", item.key, err)
+		}
+		items = append(items, raw)
+	}
+	if _, _, err := db.UpsertBatch("items", items); err != nil {
+		db.Close()
+		t.Fatalf("seed items: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close store: %v", err)
+	}
+
+	raw := runItemsSimilarCommand(t, &rootFlags{asJSON: true}, "similar", "SRC", "--limit", "5")
+	var report itemSimilarReport
+	if err := json.Unmarshal(raw, &report); err != nil {
+		t.Fatalf("decode JSON %q: %v", raw, err)
+	}
+	var hostile *itemSimilarEntry
+	for i := range report.Similar {
+		if report.Similar[i].Key == "EVIL" {
+			hostile = &report.Similar[i]
+		}
+	}
+	if hostile == nil {
+		t.Fatalf("EVIL is not in the JSON report: %+v", report.Similar)
+	}
+	if hostile.Title != hostileLibraryText {
+		t.Fatalf("JSON title = %q, want the stored bytes %q", hostile.Title, hostileLibraryText)
+	}
+	if joined := strings.Join(hostile.Reasons, "\n"); !strings.Contains(joined, hostileLibraryText) {
+		t.Fatalf("JSON reasons dropped or folded the stored tag: %q", joined)
+	}
+	if !bytes.Contains(raw, []byte(`\u001b`)) {
+		t.Fatalf("JSON does not carry the escape as its own \\u001b, so the value was rewritten:\n%s", raw)
+	}
+	if bytes.Contains(raw, []byte("\uFFFD")) {
+		t.Fatalf("JSON carries a replacement rune, so display folding leaked into the data path:\n%s", raw)
+	}
+
+	body := string(runItemsSimilarCommand(t, &rootFlags{}, "similar", "SRC", "--limit", "5"))
+	assertNoTerminalInjection(t, "items similar end to end", body)
+	assertOneRowPerRecord(t, "items similar end to end", body, "RANK", len(report.Similar))
 }

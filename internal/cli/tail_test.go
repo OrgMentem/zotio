@@ -389,3 +389,52 @@ func TestTailOneShotIntervalDoesNotReachTicker(t *testing.T) {
 		})
 	}
 }
+
+// The banner has to describe the run the operator asked for. One-shot mode
+// never builds a ticker and never reads --interval, so naming an interval and
+// offering a Ctrl+C described a command that keeps polling and can be
+// interrupted — neither of which is true of a command that has already
+// returned. Reachable in this release now that --follow=false --interval 0 is
+// accepted rather than rejected.
+func TestTailOneShotBannerDescribesASinglePoll(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/items", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Last-Modified-Version", "1")
+		_, _ = io.WriteString(w, `[{"key":"X","version":1,"data":{"title":"hello"}}]`)
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("ZOTERO_BASE_URL", srv.URL)
+	t.Setenv("ZOTERO_CONFIG", filepath.Join(t.TempDir(), "missing.toml"))
+	savedGroup := activeGroupIDLocked()
+	setActiveGroupID("")
+	t.Cleanup(func() { setActiveGroupID(savedGroup) })
+
+	cmd := RootCmd()
+	cmd.SilenceErrors, cmd.SilenceUsage = true, true
+	var out, errOut bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&errOut)
+	cmd.SetArgs([]string{"tail", "items", "--follow=false", "--interval=0", "--db", filepath.Join(t.TempDir(), "tail.db")})
+
+	if err := cmd.ExecuteContext(context.Background()); err != nil {
+		t.Fatalf("tail items --follow=false --interval=0: %v (stderr %q)", err, errOut.String())
+	}
+	banner := errOut.String()
+	if !strings.Contains(banner, "Polling items once") {
+		t.Fatalf("banner = %q, want it to say the command polls once", banner)
+	}
+	for _, unwanted := range []string{"every", "Ctrl+C", "0s"} {
+		if strings.Contains(banner, unwanted) {
+			t.Fatalf("banner = %q, must not mention %q: one-shot mode reads no interval and cannot be interrupted", banner, unwanted)
+		}
+	}
+
+	// Follow mode is unchanged: it does poll on an interval and it does stop
+	// on Ctrl+C, so its banner still says both.
+	if got := tailStartBanner("items", 10*time.Second, true); got != "Tailing items every 10s (Ctrl+C to stop)" {
+		t.Fatalf("follow banner = %q, want the unchanged wording", got)
+	}
+}

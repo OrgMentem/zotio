@@ -364,11 +364,19 @@ func parseZoteroItemURIKey(rawURI string) string {
 	return strings.TrimSpace(key)
 }
 
+// printItemRelatedReport renders the human table. Only DIRECTION is zotio's
+// own word; every other cell is library text. The predicate is a JSON object
+// key from the item's own relations map, the key is percent-decoded out of a
+// target URI (parseZoteroItemURIKey, so a "%09" or "%0A" in the URI arrives
+// as a real tab or newline), and the title is the stored title of the item at
+// the other end. Each goes through advisoryCell (items_find.go), which
+// sanitizes, folds the tab that newTabWriter would read as a column break,
+// and truncates for display only; --json keeps every value verbatim.
 func printItemRelatedReport(cmd *cobra.Command, report itemRelatedReport) error {
 	tw := newTabWriter(cmd.OutOrStdout())
 	fmt.Fprintln(tw, "DIRECTION\tPREDICATE\tKEY\tPRESENT\tTITLE")
 	for _, edge := range report.Related {
-		fmt.Fprintf(tw, "%s\t%s\t%s\t%t\t%s\n", edge.Direction, edge.Predicate, itemRelationDisplayKey(edge), edge.TargetPresent, edge.Title)
+		fmt.Fprintf(tw, "%s\t%s\t%s\t%t\t%s\n", edge.Direction, advisoryCell(edge.Predicate), advisoryCell(itemRelationDisplayKey(edge)), edge.TargetPresent, advisoryCell(edge.Title))
 	}
 	if err := tw.Flush(); err != nil {
 		return err
