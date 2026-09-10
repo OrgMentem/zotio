@@ -103,6 +103,7 @@ func newItemsEnrichCmd(flags *rootFlags) *cobra.Command {
 		flagMissingDOI        bool
 		flagMissingAbstract   bool
 		flagMissingPDF        bool
+		flagRepairPDF         bool
 		flagMissingCitation   bool
 		flagLimit             int
 		flagEmail             string
@@ -130,6 +131,11 @@ Work queues come from the same checks as 'items audit':
   --missing-doi       resolve a DOI by title from CrossRef, then OpenAlex/Semantic Scholar (exact title match)
   --missing-abstract  fill the abstract from CrossRef, then OpenAlex/Semantic Scholar (requires the item's DOI)
   --missing-pdf       attach an open-access PDF from Unpaywall (requires DOI)
+  --repair-pdf        re-attach an open-access PDF for items whose EXISTING attachment
+                      file is missing or broken on disk (requires DOI and an exact key
+                      set from --keys/--keys-from, since "broken" is a live fact this
+                      command cannot observe locally). Feed it the broken_attachment_file
+                      findings from 'zotio library health --verify-files --json'.
   --missing-citation  fill the core citation fields from CrossRef (requires DOI):
                       creators, title, date and the venue field of the item's
                       own type, plus volume/issue/pages when CrossRef carries
@@ -163,21 +169,32 @@ Applied field changes record provenance in the item's Extra field.`,
 			default:
 				return usageErr(fmt.Errorf("--attach-mode must be one of linked-url, linked-file"))
 			}
-			if cmd.Flags().Changed("attach-mode") && !flagMissingPDF {
-				return usageErr(fmt.Errorf("--attach-mode is only valid with --missing-pdf"))
+			// --repair-pdf shares every part of the missing-pdf attach path
+			// except its work queue, so the attachment flags gate on both.
+			wantsPDF := flagMissingPDF || flagRepairPDF
+			if cmd.Flags().Changed("attach-mode") && !wantsPDF {
+				return usageErr(fmt.Errorf("--attach-mode is only valid with --missing-pdf or --repair-pdf"))
 			}
-			if cmd.Flags().Changed("pdf-dir") && !flagMissingPDF {
-				return usageErr(fmt.Errorf("--pdf-dir is only valid with --missing-pdf"))
+			if cmd.Flags().Changed("pdf-dir") && !wantsPDF {
+				return usageErr(fmt.Errorf("--pdf-dir is only valid with --missing-pdf or --repair-pdf"))
 			}
-			if flagMissingPDF && attachMode == "linked-file" && strings.TrimSpace(flagPDFDir) == "" {
-				return usageErr(fmt.Errorf("--pdf-dir is required with --missing-pdf --attach-mode linked-file"))
+			if wantsPDF && attachMode == "linked-file" && strings.TrimSpace(flagPDFDir) == "" {
+				return usageErr(fmt.Errorf("--pdf-dir is required with --attach-mode linked-file"))
 			}
-			if !flagValidate && !flagMissingDOI && !flagMissingAbstract && !flagMissingPDF && !flagMissingCitation {
-				return fmt.Errorf("specify at least one of --missing-doi, --missing-abstract, --missing-pdf, --missing-citation, or --validate")
+			if !flagValidate && !flagMissingDOI && !flagMissingAbstract && !wantsPDF && !flagMissingCitation {
+				return fmt.Errorf("specify at least one of --missing-doi, --missing-abstract, --missing-pdf, --repair-pdf, --missing-citation, or --validate")
+			}
+			// Whether an attachment file is broken is only knowable from the
+			// live desktop API, which this command does not call. Without an
+			// exact key set the queue would be "every item that HAS a PDF",
+			// and applying that would attach a second copy to a healthy
+			// library. Fail closed instead of guessing the cohort.
+			if flagRepairPDF && strings.TrimSpace(keys) == "" && strings.TrimSpace(keysFrom) == "" && strings.TrimSpace(flagScope) == "" {
+				return usageErr(fmt.Errorf("--repair-pdf requires --keys, --keys-from, or --scope: a broken attachment file is a live fact this command cannot detect, so it repairs only the items you name (pipe `zotio library health --verify-files --json` findings in)"))
 			}
 
 			pdfDir := ""
-			if flagMissingPDF && attachMode == "linked-file" {
+			if wantsPDF && attachMode == "linked-file" {
 				abs, err := filepath.Abs(flagPDFDir)
 				if err != nil {
 					return usageErr(fmt.Errorf("resolving --pdf-dir: %w", err))
@@ -260,6 +277,13 @@ Applied field changes record provenance in the item's Extra field.`,
 					proposalErrs = append(proposalErrs, buildErr)
 				}
 			}
+			if flagRepairPDF {
+				p, s, buildErr := buildEnrichProposals(cmd.Context(), db, httpClient, "repair_pdf", flagLimit, flagCollection, keyFilter, flagEmail, useOpenAlex, useSemanticScholar, attachMode, pdfDir)
+				proposals, skipped = append(proposals, p...), append(skipped, s...)
+				if buildErr != nil {
+					proposalErrs = append(proposalErrs, buildErr)
+				}
+			}
 			if flagMissingCitation {
 				p, s, buildErr := buildEnrichProposals(cmd.Context(), db, httpClient, "missing_citation", flagLimit, flagCollection, keyFilter, flagEmail, useOpenAlex, useSemanticScholar, "linked-url", "")
 				proposals, skipped = append(proposals, p...), append(skipped, s...)
@@ -280,7 +304,7 @@ Applied field changes record provenance in the item's Extra field.`,
 			}
 			ops := enrichPlannedOps(cmd.Context(), proposals, mutator, flags, httpClient)
 			restoreContinue := flags.continueOnError
-			if flagMissingPDF && attachMode != "linked-url" {
+			if wantsPDF && attachMode != "linked-url" {
 				flags.continueOnError = true
 				defer func() { flags.continueOnError = restoreContinue }()
 			}
@@ -299,6 +323,7 @@ Applied field changes record provenance in the item's Extra field.`,
 	cmd.Flags().BoolVar(&flagMissingDOI, "missing-doi", false, "Resolve and add a DOI from CrossRef, OpenAlex, or Semantic Scholar")
 	cmd.Flags().BoolVar(&flagMissingAbstract, "missing-abstract", false, "Fill the abstract from CrossRef, OpenAlex, or Semantic Scholar (uses the item's DOI)")
 	cmd.Flags().BoolVar(&flagMissingPDF, "missing-pdf", false, "Attach an open-access PDF from Unpaywall as a link or download (uses the item's DOI)")
+	cmd.Flags().BoolVar(&flagRepairPDF, "repair-pdf", false, "Re-attach an open-access PDF for named items whose existing attachment file is broken or missing on disk (uses the item's DOI; requires --keys/--keys-from/--scope)")
 	cmd.Flags().BoolVar(&flagMissingCitation, "missing-citation", false, "Fill the core citation fields from CrossRef: creators, title, date, venue, plus volume/issue/pages when the provider has them and the item does not (uses the item's DOI)")
 	cmd.Flags().StringVar(&flagAttachMode, "attach-mode", "linked-url", "PDF attachment handling: linked-url or linked-file; stored retro-attachment is handled by `zotio attachments add`")
 	cmd.Flags().StringVar(&flagPDFDir, "pdf-dir", "", "Directory for linked-file PDF downloads; responses must be PDF/octet-stream/unspecified Content-Type plus %PDF- magic")
@@ -544,6 +569,8 @@ ORDER BY date_added DESC`
 		return db.QueryRaw(query, args...)
 	case "missing_pdf":
 		return queryMissingPDFItemsForKeys(db, "", 0, collection, keys)
+	case "repair_pdf":
+		return queryRepairPDFItemsForKeys(db, 0, collection, keys)
 	default:
 		return nil, fmt.Errorf("unknown category %q", category)
 	}
@@ -560,6 +587,11 @@ func enrichWorkQueue(db localQueryStore, category string, limit int, collection 
 		return queryMissingAbstractItems(db, limit, collection)
 	case "missing_pdf":
 		return queryMissingPDFItems(db, "", limit, collection)
+	case "repair_pdf":
+		// Unreachable in practice: the command refuses --repair-pdf without a
+		// key set or scope, so this arm never sees an unkeyed queue. Name it
+		// anyway rather than returning "unknown category" for a real one.
+		return nil, fmt.Errorf("repair_pdf has no library-wide work queue: name the broken items with --keys/--keys-from/--scope")
 	case "missing_citation":
 		return queryCitationEnrichCandidates(db, limit, collection)
 	default:
@@ -784,7 +816,12 @@ func resolveEnrichment(ctx context.Context, httpClient *http.Client, category, k
 			extra:   stringFromMap(data, "extra"),
 		}, ""
 
-	case "missing_pdf":
+	// repair_pdf resolves and attaches exactly as missing_pdf does; only the
+	// work queue differs, because the item already HAS a PDF child whose file
+	// is broken. The new child is an additional attachment: Zotero has no
+	// re-point operation for a broken one, and deleting it would discard the
+	// annotations stored against it.
+	case "missing_pdf", "repair_pdf":
 		doi := normalizeDOI(stringFromMap(data, "DOI"))
 		if doi == "" {
 			return enrichProposal{}, "no DOI to look up open-access PDF"

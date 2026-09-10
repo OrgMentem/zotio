@@ -1571,6 +1571,11 @@ Work queues come from the same checks as 'items audit':
   --missing-doi       resolve a DOI by title from CrossRef, then OpenAlex/Semantic Scholar (exact title match)
   --missing-abstract  fill the abstract from CrossRef, then OpenAlex/Semantic Scholar (requires the item's DOI)
   --missing-pdf       attach an open-access PDF from Unpaywall (requires DOI)
+  --repair-pdf        re-attach an open-access PDF for items whose EXISTING attachment
+                      file is missing or broken on disk (requires DOI and an exact key
+                      set from --keys/--keys-from, since "broken" is a live fact this
+                      command cannot observe locally). Feed it the broken_attachment_file
+                      findings from 'zotio library health --verify-files --json'.
   --missing-citation  fill the core citation fields from CrossRef (requires DOI):
                       creators, title, date and the venue field of the item's
                       own type, plus volume/issue/pages when CrossRef carries
@@ -1614,6 +1619,7 @@ zotio items enrich [flags]
 | `--no-openalex` | `bool` | `false` | Disable the OpenAlex fallback for --missing-doi/--missing-abstract |
 | `--no-semantic-scholar` | `bool` | `false` | Disable the Semantic Scholar fallback for --missing-doi/--missing-abstract |
 | `--pdf-dir` | `string` |  | Directory for linked-file PDF downloads; responses must be PDF/octet-stream/unspecified Content-Type plus %PDF- magic |
+| `--repair-pdf` | `bool` | `false` | Re-attach an open-access PDF for named items whose existing attachment file is broken or missing on disk (uses the item's DOI; requires --keys/--keys-from/--scope) |
 | `--scope` | `string` |  | Item cohort: library \| collection:KEY \| tag:NAME \| item:KEY \| query:TEXT \| saved-search:KEY (default: the whole library) |
 | `--validate` | `bool` | `false` | Read-only DOI discrepancy report against CrossRef and OpenCitations |
 

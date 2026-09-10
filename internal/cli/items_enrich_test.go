@@ -1778,6 +1778,32 @@ func TestItemsEnrichLinkedFileRequiresPDFDir(t *testing.T) {
 	}
 }
 
+// --repair-pdf must never infer its own cohort. Its queue is "named items that
+// HAVE a PDF", so an unscoped apply would attach a second open-access copy to
+// every healthy item in the library.
+func TestItemsEnrichRepairPDFRefusesAnUnnamedCohort(t *testing.T) {
+	cmd := newItemsEnrichCmd(&rootFlags{asJSON: true})
+	cmd.SetArgs([]string{"--repair-pdf"})
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetErr(&bytes.Buffer{})
+	err := cmd.Execute()
+	if err == nil || ExitCode(err) != 2 || !strings.Contains(err.Error(), "--repair-pdf requires --keys") {
+		t.Fatalf("err = %v, code=%d; want a usage error demanding an explicit key set", err, ExitCode(err))
+	}
+}
+
+// The attachment flags belong to the PDF path, and --repair-pdf is on it.
+func TestItemsEnrichRepairPDFAcceptsAttachmentFlags(t *testing.T) {
+	cmd := newItemsEnrichCmd(&rootFlags{asJSON: true})
+	cmd.SetArgs([]string{"--repair-pdf", "--keys", "P1", "--attach-mode", "linked-file"})
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetErr(&bytes.Buffer{})
+	err := cmd.Execute()
+	if err == nil || !strings.Contains(err.Error(), "--pdf-dir is required") {
+		t.Fatalf("err = %v; want the linked-file --pdf-dir demand, not a rejection of --attach-mode", err)
+	}
+}
+
 func TestItemsEnrichStoredModePointsAtAttachmentsAdd(t *testing.T) {
 	cmd := newItemsEnrichCmd(&rootFlags{asJSON: true, via: "web"})
 	cmd.SetArgs([]string{"--missing-pdf", "--attach-mode", "stored"})
@@ -1826,6 +1852,63 @@ func TestItemsEnrichLinkedFilePreviewDoesNotDownload(t *testing.T) {
 	got := fmt.Sprint(env.Plan.Operations[0].Changes[0].Add)
 	if !strings.Contains(got, "linked-file ->") || !strings.Contains(got, filepath.Join(destDir, "KPDF.pdf")) || !strings.Contains(got, pdfSrv.URL+"/paper.pdf") {
 		t.Fatalf("preview change = %q, want mode, destination, and download URL", got)
+	}
+}
+
+// End to end: the item already owns a broken PDF child, which is exactly the
+// shape --missing-pdf refuses. This is the whole handoff from
+// broken_attachment_file to a runnable fixer, so it is asserted through the
+// command, not the queue.
+func TestItemsEnrichRepairPDFProposesForAnAlreadyAttachedItem(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("ZOTERO_CONFIG", filepath.Join(t.TempDir(), "missing.toml"))
+	db, err := store.OpenWithContext(context.Background(), helpersTestDefaultDBPath(t, "zotio"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	items := []json.RawMessage{
+		json.RawMessage(`{"key":"KPDF","version":4,"data":{"key":"KPDF","itemType":"journalArticle","title":"PDF Paper","DOI":"10.1/pdf"}}`),
+		json.RawMessage(`{"key":"ATBROKE","version":4,"data":{"key":"ATBROKE","itemType":"attachment","parentItem":"KPDF","contentType":"application/pdf","linkMode":"imported_file","filename":"gone.pdf"}}`),
+	}
+	if _, _, err := db.UpsertBatch("items", items); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close store: %v", err)
+	}
+
+	upw := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"best_oa_location":{"url":"https://example.org/oa.pdf"}}`))
+	}))
+	t.Cleanup(upw.Close)
+	withBase(t, &enrichUnpaywallBase, upw.URL)
+
+	run := func(flag string) mutation.Envelope {
+		t.Helper()
+		cmd := newItemsEnrichCmd(&rootFlags{asJSON: true})
+		cmd.SetArgs([]string{flag, "--keys", "KPDF", "--email", "me@example.com"})
+		var out bytes.Buffer
+		cmd.SetOut(&out)
+		cmd.SetErr(&bytes.Buffer{})
+		if err := cmd.Execute(); err != nil {
+			t.Fatalf("enrich %s: %v; out=%s", flag, err, out.String())
+		}
+		var env mutation.Envelope
+		if err := json.Unmarshal(out.Bytes(), &env); err != nil {
+			t.Fatalf("decode %s envelope: %v", flag, err)
+		}
+		return env
+	}
+
+	if env := run("--missing-pdf"); env.Plan.Summary.Planned != 0 {
+		t.Fatalf("--missing-pdf planned %d, want 0: the item already has a PDF child", env.Plan.Summary.Planned)
+	}
+	env := run("--repair-pdf")
+	if env.Plan.Summary.Planned != 1 || len(env.Plan.Operations) != 1 {
+		t.Fatalf("--repair-pdf plan = %+v ops=%+v, want one attachment proposal", env.Plan.Summary, env.Plan.Operations)
+	}
+	if got := fmt.Sprint(env.Plan.Operations[0].Changes[0].Add); !strings.Contains(got, "https://example.org/oa.pdf") {
+		t.Fatalf("planned change = %q, want the resolved open-access URL", got)
 	}
 }
 

@@ -131,6 +131,46 @@ LIMIT ?`
 	return db.QueryRaw(query, args...)
 }
 
+// queryRepairPDFItemsForKeys selects named top-level items REGARDLESS of
+// whether they already own a PDF child. That inversion of the missing-pdf
+// predicate is the whole point: a broken attachment means the child row
+// exists and its file does not, which no local query can see. The caller must
+// therefore supply the keys, and the command refuses to run without them.
+func queryRepairPDFItemsForKeys(db localQueryStore, limit int, collection string, keys []string) ([]map[string]any, error) {
+	if len(keys) == 0 {
+		return nil, nil
+	}
+	query := `
+SELECT
+	i.id AS key,
+	json_extract(i.data, '$.data.title') AS title,
+	i.item_type AS item_type,
+	json_extract(i.data, '$.data.DOI') AS doi,
+	json_extract(i.data, '$.data.dateAdded') AS date_added
+FROM resources i
+WHERE i.resource_type = 'items'
+	AND i.item_type IN (` + missingPDFItemTypesSQL + `)`
+	args := make([]any, 0, len(keys)+2)
+	if collection != "" {
+		query += `
+	AND EXISTS (SELECT 1 FROM json_each(json_extract(i.data,'$.data.collections')) WHERE value = ?)`
+		args = append(args, collection)
+	}
+	query += `
+	AND i.id IN (` + strings.TrimSuffix(strings.Repeat("?,", len(keys)), ",") + `)`
+	for _, key := range keys {
+		args = append(args, key)
+	}
+	query += `
+ORDER BY date_added DESC`
+	if limit > 0 {
+		query += `
+LIMIT ?`
+		args = append(args, limit)
+	}
+	return db.QueryRaw(query, args...)
+}
+
 func queryMissingPDFCount(db localQueryStore) (int, error) {
 	rows, err := db.QueryRaw(`
 SELECT COUNT(*) AS count

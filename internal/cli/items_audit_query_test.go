@@ -296,6 +296,11 @@ func TestQueryPDFAttachments(t *testing.T) {
 		json.RawMessage(`{"key":"AT3","version":1,"data":{"key":"AT3","itemType":"attachment","parentItem":"P2","contentType":"text/html","linkMode":"imported_url"}}`),
 		json.RawMessage(`{"key":"AT4","version":1,"data":{"key":"AT4","itemType":"attachment","parentItem":"P2","contentType":"application/pdf","linkMode":"linked_file","filename":"b.pdf"}}`),
 		json.RawMessage(`{"key":"IT1","version":1,"data":{"key":"IT1","itemType":"journalArticle","title":"T"}}`),
+		// P1 carries a DOI, P2 does not: the broken-attachment fixer is only
+		// offered for the resolvable half, so the parent's DOI has to travel
+		// with the attachment row.
+		json.RawMessage(`{"key":"P1","version":1,"data":{"key":"P1","itemType":"journalArticle","title":"Parent one","DOI":"10.1/x"}}`),
+		json.RawMessage(`{"key":"P2","version":1,"data":{"key":"P2","itemType":"journalArticle","title":"Parent two"}}`),
 	}
 	if _, _, err := db.UpsertBatch("items", items); err != nil {
 		t.Fatalf("seed: %v", err)
@@ -316,5 +321,113 @@ func TestQueryPDFAttachments(t *testing.T) {
 	}
 	if len(got) != 2 {
 		t.Errorf("count = %d, want 2 (%v)", len(got), got)
+	}
+	byKey := map[string]map[string]any{}
+	for _, r := range rows {
+		byKey[sqlStringValue(r["key"])] = r
+	}
+	if got := sqlStringValue(byKey["AT1"]["parent_doi"]); got != "10.1/x" {
+		t.Errorf("AT1 parent_doi = %q, want the parent's 10.1/x", got)
+	}
+	if got := sqlStringValue(byKey["AT4"]["parent_doi"]); got != "" {
+		t.Errorf("AT4 parent_doi = %q, want empty: P2 has no DOI", got)
+	}
+}
+
+// A broken PDF whose parent has a DOI is repairable by command; one without a
+// DOI has no Unpaywall lookup and must still be REPORTED, as manual work. A
+// silent skip would hide the library's only remaining sevCritical defect.
+func TestBrokenAttachmentFindingOffersRepairOnlyWhenResolvable(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		row         map[string]any
+		wantCommand string
+		wantManual  bool
+	}{
+		{
+			name:        "parent has a DOI",
+			row:         map[string]any{"key": "AT1", "parent": "P1", "parent_doi": "10.1/x", "name": "a.pdf"},
+			wantCommand: "zotio items enrich --repair-pdf --keys-from -",
+		},
+		{
+			name:       "parent has no DOI",
+			row:        map[string]any{"key": "AT4", "parent": "P2", "parent_doi": nil, "name": "b.pdf"},
+			wantManual: true,
+		},
+		{
+			name:       "parent DOI is blank padding",
+			row:        map[string]any{"key": "AT5", "parent": "P3", "parent_doi": "   ", "name": "c.pdf"},
+			wantManual: true,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := brokenAttachmentFinding(tc.row, "/tmp/gone.pdf", "missing", FindingSource{Kind: "local"})
+			if f.Kind != "broken_attachment_file" || f.Severity != sevCritical {
+				t.Fatalf("finding = %+v, want a critical broken_attachment_file", f)
+			}
+			// The fixer reads ItemKey through --keys-from, and an attachment
+			// key is never a member of an item cohort.
+			if f.ItemKey != sqlStringValue(tc.row["parent"]) {
+				t.Errorf("ItemKey = %q, want the parent item key", f.ItemKey)
+			}
+			if f.Evidence["attachment"] != sqlStringValue(tc.row["key"]) {
+				t.Errorf("evidence attachment = %v, want the attachment key kept for a human re-link", f.Evidence["attachment"])
+			}
+			if tc.wantManual {
+				if f.Autofixable || f.RecommendedAction.Command != "" || f.RecommendedAction.Text == "" {
+					t.Fatalf("action = %+v (autofix %v), want manual-only prose", f.RecommendedAction, f.Autofixable)
+				}
+				return
+			}
+			if !f.Autofixable || f.RecommendedAction.Command != tc.wantCommand {
+				t.Fatalf("action = %+v (autofix %v), want command %q", f.RecommendedAction, f.Autofixable, tc.wantCommand)
+			}
+		})
+	}
+}
+
+// --repair-pdf inverts the missing-pdf predicate: the item it repairs already
+// owns a PDF child, so the queue that finds "no PDF" can never reach it. This
+// is the gap that left broken_attachment_file with no fixer.
+func TestRepairPDFQueueReachesItemsThatAlreadyHaveAPDF(t *testing.T) {
+	db, err := store.OpenWithContext(context.Background(), filepath.Join(t.TempDir(), "data.db"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	items := []json.RawMessage{
+		json.RawMessage(`{"key":"P1","version":1,"data":{"key":"P1","itemType":"journalArticle","title":"Has a broken pdf","DOI":"10.1/x","dateAdded":"2026-01-01T00:00:00Z"}}`),
+		json.RawMessage(`{"key":"AT1","version":1,"data":{"key":"AT1","itemType":"attachment","parentItem":"P1","contentType":"application/pdf","linkMode":"imported_file","filename":"a.pdf"}}`),
+		json.RawMessage(`{"key":"P9","version":1,"data":{"key":"P9","itemType":"journalArticle","title":"Not named","DOI":"10.1/y","dateAdded":"2026-01-02T00:00:00Z"}}`),
+	}
+	if _, _, err := db.UpsertBatch("items", items); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	q := localQueryStore{db}
+
+	missing, err := queryMissingPDFItemsForKeys(q, "", 0, "", []string{"P1"})
+	if err != nil {
+		t.Fatalf("queryMissingPDFItemsForKeys: %v", err)
+	}
+	if len(missing) != 0 {
+		t.Fatalf("missing-pdf queue = %+v, want nothing: P1 already owns a PDF child", missing)
+	}
+
+	repair, err := queryRepairPDFItemsForKeys(q, 0, "", []string{"P1"})
+	if err != nil {
+		t.Fatalf("queryRepairPDFItemsForKeys: %v", err)
+	}
+	if len(repair) != 1 || sqlStringValue(repair[0]["key"]) != "P1" {
+		t.Fatalf("repair queue = %+v, want exactly P1", repair)
+	}
+	if got := sqlStringValue(repair[0]["doi"]); got != "10.1/x" {
+		t.Errorf("doi = %q, want the DOI the Unpaywall lookup needs", got)
+	}
+
+	// The queue is a filter on the named keys, never a broadening: an unnamed
+	// item must not be repaired, or a health run on one broken file would
+	// re-attach PDFs across the library.
+	if empty, err := queryRepairPDFItemsForKeys(q, 0, "", nil); err != nil || len(empty) != 0 {
+		t.Fatalf("unkeyed repair queue = %+v (err %v), want empty", empty, err)
 	}
 }

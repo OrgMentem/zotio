@@ -461,8 +461,14 @@ func TestItemsAuditCmd(t *testing.T) {
 			if f.Severity != sevCritical {
 				t.Fatalf("finding severity = %q, want %q", f.Severity, sevCritical)
 			}
-			if f.ItemKey != "BAD1" {
-				t.Fatalf("finding item_key = %q, want BAD1", f.ItemKey)
+			// The fixer consumes item_key through --keys-from, which selects
+			// item cohorts, so the finding names the PARENT and keeps the
+			// attachment key as evidence for a human re-link.
+			if f.ItemKey != "P1" {
+				t.Fatalf("finding item_key = %q, want the parent P1", f.ItemKey)
+			}
+			if got := fmt.Sprintf("%v", f.Evidence["attachment"]); got != "BAD1" {
+				t.Fatalf("evidence attachment = %q, want BAD1", got)
 			}
 			if got := fmt.Sprintf("%v", payload.Broken[0]["reason"]); got != "missing" {
 				t.Fatalf("broken reason = %q, want missing", got)

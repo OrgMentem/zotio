@@ -18,6 +18,27 @@ Notable changes to zotio. Format follows [Keep a Changelog](https://keepachangel
   annotation shape. Note that `parent_item` is the annotation's direct parent,
   which for a PDF highlight is the **attachment** key, not the source item;
   the source item is the bundle's own `key`.
+- **`broken_attachment_file` findings are now keyed by the parent item.**
+  `item_key` was the attachment's own key, which no fixer can consume:
+  `--keys-from` selects item cohorts, and an attachment key is never a member
+  of one. The attachment key moves into `evidence.attachment`, where a human
+  re-linking the file still reads it.
+
+### Added
+
+- **`items enrich --repair-pdf` re-attaches an open-access PDF for items whose
+  existing attachment file is broken.** `broken_attachment_file` is the only
+  `sevCritical` health check with no runnable fixer, because `--missing-pdf`
+  selects items with NO PDF child and a broken attachment is a child whose
+  file is gone. `--repair-pdf` inverts that predicate, so the finding now
+  carries `zotio items enrich --repair-pdf --keys-from -` whenever the parent
+  item has a DOI to resolve; without a DOI the finding stays manual prose
+  rather than recommending a command that could only skip. The repair
+  requires `--keys`, `--keys-from` or `--scope`: whether a file is broken is
+  only knowable from the live desktop API, so an unnamed cohort would mean
+  "every item that has a PDF". The new attachment is an addition, not a
+  replacement — Zotero cannot re-point a broken attachment, and deleting the
+  old child would discard the annotations stored against it.
 
 ## [0.24.0] — 2026-09-05
 

@@ -836,22 +836,15 @@ func runVerifyAttachmentFiles(cmd *cobra.Command, db localQueryStore, flags *roo
 	return nil
 }
 
+// brokenAttachmentFindings renders the `items audit --verify-files` rows through
+// the same builder `library health` uses. Two producers of one finding kind
+// must not disagree about its item key or its fixer.
 func brokenAttachmentFindings(broken []map[string]any) []Finding {
 	findings := make([]Finding, 0, len(broken))
 	for _, b := range broken {
-		findings = append(findings, Finding{
-			Kind:     "broken_attachment_file",
-			Severity: sevCritical,
-			ItemKey:  sqlStringValue(b["key"]),
-			Title:    sqlStringValue(b["name"]),
-			Evidence: map[string]any{
-				"parent": sqlStringValue(b["parent"]),
-				"path":   sqlStringValue(b["path"]),
-				"reason": sqlStringValue(b["reason"]),
-			},
-			Source:            FindingSource{Kind: "local"},
-			RecommendedAction: &RecommendedAction{Text: "Re-link the file in Zotero or re-download the attachment"},
-		})
+		findings = append(findings, brokenAttachmentFinding(b,
+			sqlStringValue(b["path"]), sqlStringValue(b["reason"]),
+			FindingSource{Kind: "local"}))
 	}
 	return findings
 }
@@ -882,6 +875,8 @@ func queryPDFAttachments(db localQueryStore, limit int) ([]map[string]any, error
 SELECT
 	id AS key,
 	json_extract(data, '$.data.parentItem') AS parent,
+	(SELECT json_extract(p.data, '$.data.DOI') FROM resources p
+		WHERE p.resource_type = 'items' AND p.id = json_extract(resources.data, '$.data.parentItem')) AS parent_doi,
 	COALESCE(json_extract(data, '$.data.filename'), json_extract(data, '$.data.title'), '') AS name,
 	json_extract(data, '$.data.dateAdded') AS date_added
 FROM resources

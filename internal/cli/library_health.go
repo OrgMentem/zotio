@@ -952,21 +952,47 @@ func runBrokenAttachmentFile(db localQueryStore, ctx *healthContext) ([]Finding,
 		if reason == "" {
 			continue
 		}
-		findings = append(findings, Finding{
-			Kind:     "broken_attachment_file",
-			Severity: sevCritical,
-			ItemKey:  key,
-			Title:    sqlStringValue(a["name"]),
-			Evidence: map[string]any{
-				"parent": sqlStringValue(a["parent"]),
-				"path":   path,
-				"reason": reason,
-			},
-			Source:            ctx.src,
-			RecommendedAction: &RecommendedAction{Text: "Re-link the file in Zotero or re-download the attachment"},
-		})
+		findings = append(findings, brokenAttachmentFinding(a, path, reason, ctx.src))
 	}
 	return findings, nil, nil
+}
+
+// brokenAttachmentFinding builds one broken-attachment finding. It is separate
+// from the run loop because the loop can only execute against the Zotero
+// desktop on port 23119, which no test can bind.
+func brokenAttachmentFinding(a map[string]any, path, reason string, src FindingSource) Finding {
+	// A repair needs a DOI: the re-attach path resolves an open-access PDF
+	// through Unpaywall, which is keyed by DOI. With one, the finding carries
+	// a runnable fixer for the parent item; without one it stays manual,
+	// rather than recommending a command that could only skip. A DOI proves
+	// only that the lookup is POSSIBLE — Unpaywall may hold no open-access
+	// copy, which enrich reports as a skip.
+	parent := sqlStringValue(a["parent"])
+	action := &RecommendedAction{Text: "Re-link the file in Zotero or re-download the attachment"}
+	autofixable := false
+	if parent != "" && strings.TrimSpace(sqlStringValue(a["parent_doi"])) != "" {
+		action = &RecommendedAction{Command: "zotio items enrich --repair-pdf --keys-from -"}
+		autofixable = true
+	}
+	return Finding{
+		Kind:     "broken_attachment_file",
+		Severity: sevCritical,
+		// The fixer works on the PARENT item, and --keys-from reads ItemKey,
+		// so a finding keyed by the attachment would feed the repair a key
+		// that is never a member of an item cohort. The attachment key stays
+		// in the evidence, which is what a human re-links by.
+		ItemKey: parent,
+		Title:   sqlStringValue(a["name"]),
+		Evidence: map[string]any{
+			"attachment": sqlStringValue(a["key"]),
+			"parent":     parent,
+			"path":       path,
+			"reason":     reason,
+		},
+		Source:            src,
+		Autofixable:       autofixable,
+		RecommendedAction: action,
+	}
 }
 
 func runRetractedItem(db localQueryStore, ctx *healthContext) ([]Finding, *healthSkip, error) {
