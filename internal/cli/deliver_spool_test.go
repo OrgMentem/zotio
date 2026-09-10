@@ -162,6 +162,52 @@ func TestDeliverWebhookStreamsTheSpoolWithADeclaredLength(t *testing.T) {
 	}
 }
 
+// TestDeliverSpoolReaderTakesTheSameStreamPathAsARetry pins the first
+// attempt and the retry onto one code path. net/http selects a zero-copy
+// sendfile only when the body IS an *os.File; postDeliverWebhook's GetBody
+// hands back an io.NopCloser, so a retry never took that path. The first
+// attempt must not either, or the two attempts differ by a syscall under a
+// sandbox that permits loopback but denies sendfile.
+func TestDeliverSpoolReaderTakesTheSameStreamPathAsARetry(t *testing.T) {
+	spool, err := newDeliverSpool(DeliverSink{Scheme: "webhook", Target: "https://example.com/hook"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(spool.cleanup)
+	const payload = "one\ntwo\n"
+	if _, err := io.WriteString(spool, payload); err != nil {
+		t.Fatal(err)
+	}
+
+	body, err := spool.reader()
+	if err != nil {
+		t.Fatalf("reader: %v", err)
+	}
+	if _, isFile := body.(*os.File); isFile {
+		t.Fatal("reader() returned an *os.File: net/http would sendfile on the first attempt and stream on the retry")
+	}
+
+	// Hiding the file must not cost the two properties the caller relies on:
+	// the full body reads back, and GetBody can rewind it for a retry.
+	got, err := io.ReadAll(body)
+	if err != nil {
+		t.Fatalf("read spool: %v", err)
+	}
+	if string(got) != payload {
+		t.Fatalf("read %q, want %q", got, payload)
+	}
+	if _, err := body.Seek(0, io.SeekStart); err != nil {
+		t.Fatalf("rewind for retry: %v", err)
+	}
+	again, err := io.ReadAll(body)
+	if err != nil {
+		t.Fatalf("reread spool: %v", err)
+	}
+	if string(again) != payload {
+		t.Fatalf("reread %q, want %q", again, payload)
+	}
+}
+
 // stdout is the primary output. A spool that cannot write -- full disk, revoked
 // permissions -- must not truncate it, so Write always reports success and the
 // failure surfaces at delivery instead.

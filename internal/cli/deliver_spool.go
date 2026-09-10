@@ -98,6 +98,17 @@ func (s *deliverSpool) commitFile() error {
 
 // reader rewinds the spool for a streamed, length-delimited HTTP body without
 // retaining another copy in memory.
+//
+// The returned value deliberately hides the *os.File behind spoolReader.
+// net/http's transport takes a zero-copy sendfile path when a request body IS
+// an *os.File, but only on the FIRST attempt: the retry path in
+// postDeliverWebhook hands net/http an io.NopCloser, which is not an
+// *os.File, so a retry already streams through userspace. The first attempt
+// therefore used a syscall the retry never used, which is a difference no
+// caller asked for and no test covered. Measured 2026-09-10: under a
+// deny-network macOS Seatbelt profile that grants loopback, a POST of an
+// *os.File body fails with "sendfile: operation not permitted" while the
+// identical POST of a wrapped reader succeeds. One path for both attempts.
 func (s *deliverSpool) reader() (io.ReadSeeker, error) {
 	if s.writeErr != nil {
 		return nil, fmt.Errorf("writing deliver spool: %w", s.writeErr)
@@ -108,7 +119,15 @@ func (s *deliverSpool) reader() (io.ReadSeeker, error) {
 	if _, err := s.file.Seek(0, io.SeekStart); err != nil {
 		return nil, fmt.Errorf("rewinding deliver spool: %w", err)
 	}
-	return s.file, nil
+	return spoolReader{s.file}, nil
+}
+
+// spoolReader is an io.ReadSeeker over the spool file that is not itself an
+// *os.File. Embedding the interface rather than the concrete type is the
+// whole point: it forwards Read and Seek and nothing else, so no consumer can
+// type-assert its way back to a file descriptor.
+type spoolReader struct {
+	io.ReadSeeker
 }
 
 // cleanup removes whatever the spool left behind. Safe to call twice, and safe
