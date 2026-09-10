@@ -430,6 +430,10 @@ func TestItemsAuditCmd(t *testing.T) {
 			t.Cleanup(srv.Close)
 			auditIsolateEnv(t, srv.URL)
 			auditSeedDB(t, []json.RawMessage{
+				// The parent carries a DOI so the finding's fixer is
+				// resolvable: the audit path must reach the same verdict as
+				// library health for the same data.
+				json.RawMessage(`{"key":"P1","version":1,"data":{"key":"P1","itemType":"journalArticle","title":"P1","DOI":"10.1/p1"}}`),
 				json.RawMessage(`{"key":"BAD1","version":1,"data":{"key":"BAD1","itemType":"attachment","parentItem":"P1","contentType":"application/pdf","linkMode":"imported_file","filename":"bad.pdf"}}`),
 			})
 			flags := &rootFlags{asJSON: true, timeout: 2 * time.Second}
@@ -472,6 +476,13 @@ func TestItemsAuditCmd(t *testing.T) {
 			}
 			if got := fmt.Sprintf("%v", payload.Broken[0]["reason"]); got != "missing" {
 				t.Fatalf("broken reason = %q, want missing", got)
+			}
+			// Both producers of this finding kind must agree on the fixer.
+			// The audit path built its rows by hand and dropped parent_doi,
+			// so every DOI-bearing broken attachment was reported manual
+			// while the identical health finding carried the command.
+			if f.RecommendedAction == nil || f.RecommendedAction.Command == "" {
+				t.Errorf("action = %+v, want the repair command: P1 has a DOI", f.RecommendedAction)
 			}
 			// Also directly exercise brokenAttachmentFindings and attachmentFileStatus helpers.
 			broken := []map[string]any{{"key": "BAD1", "parent": "P1", "name": "bad.pdf", "path": brokenPath, "reason": "missing"}}

@@ -18,8 +18,10 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"zotio/internal/client"
+	"zotio/internal/config"
 	"zotio/internal/mutation"
 	"zotio/internal/store"
 )
@@ -2025,13 +2027,20 @@ func TestItemsEnrichMissingSubjectsPlansAutomaticConceptTags(t *testing.T) {
 	if op.Key != "KBARE" {
 		t.Fatalf("planned key = %q, want KBARE", op.Key)
 	}
-	if len(op.Changes) != 1 {
-		t.Fatalf("changes = %+v, want one tag addition", op.Changes)
+	if len(op.Changes) != 2 {
+		t.Fatalf("changes = %+v, want a tag addition plus the Extra provenance line", op.Changes)
 	}
 	// A managed subject term must be automatic (type 1) so it stays
 	// distinguishable from a tag the operator typed.
 	if op.Changes[0].Field != "tags" || op.Changes[0].Add != "concept/Computer science" || op.Changes[0].TagType != 1 {
 		t.Fatalf("change = %+v, want an automatic concept/ tag addition", op.Changes[0])
+	}
+	// Every other enrich category records where a change came from, and the
+	// help promises it. The tag type marks a tag managed but names neither
+	// the provider nor the date.
+	provenance := fmt.Sprint(op.Changes[1].Add)
+	if op.Changes[1].Field != "extra" || !strings.Contains(provenance, "via OpenAlex") || !strings.Contains(provenance, "concept/Computer science") {
+		t.Fatalf("change = %+v, want Extra provenance naming OpenAlex and the term", op.Changes[1])
 	}
 }
 
@@ -2061,14 +2070,16 @@ func TestItemsEnrichMissingSubjectsApplyMergesLiveTags(t *testing.T) {
 	withBase(t, &enrichOpenAlexBase, oa.URL)
 
 	var patched map[string]any
+	var patchPrecondition string
 	zsrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodGet {
 			// The live item carries a tag the mirror never saw.
 			w.Header().Set("Last-Modified-Version", "11")
-			_, _ = w.Write([]byte(`{"key":"KBARE","version":11,"data":{"key":"KBARE","itemType":"journalArticle","tags":[{"tag":"typed-by-hand"}]}}`))
+			_, _ = w.Write([]byte(`{"key":"KBARE","version":11,"data":{"key":"KBARE","itemType":"journalArticle","extra":"Citation Key: mine2020","tags":[{"tag":"typed-by-hand"}]}}`))
 			return
 		}
 		if r.Method == http.MethodPatch {
+			patchPrecondition = r.Header.Get("If-Unmodified-Since-Version")
 			_ = json.NewDecoder(r.Body).Decode(&patched)
 			w.WriteHeader(http.StatusNoContent)
 			return
@@ -2113,6 +2124,203 @@ func TestItemsEnrichMissingSubjectsApplyMergesLiveTags(t *testing.T) {
 	}
 	if got, present := types["concept/Computer science"]; !present || got != 1 {
 		t.Fatalf("PATCH tags = %v, want the concept tag added with automatic type 1", types)
+	}
+	// The precondition must be the version the WRITE plane reported (11), not
+	// the mirror's 4: enrich builds its client with newClient, so under
+	// hybrid routing a plain GET would read the desktop plane while the PATCH
+	// lands on the Web API, guarding a Web write with a local version.
+	if patchPrecondition != "11" {
+		t.Errorf("If-Unmodified-Since-Version = %q, want the write plane's 11", patchPrecondition)
+	}
+	// Tags and provenance go in ONE patch, so a partial apply cannot leave a
+	// managed tag with no record of where it came from. Extra the operator
+	// already had must survive.
+	extra := fmt.Sprint(patched["extra"])
+	if !strings.Contains(extra, "Citation Key: mine2020") {
+		t.Errorf("PATCH extra = %q, want the pre-existing Extra preserved", extra)
+	}
+	if !strings.Contains(extra, "via OpenAlex") || !strings.Contains(extra, "concept/Computer science") {
+		t.Errorf("PATCH extra = %q, want provenance naming OpenAlex and the term", extra)
+	}
+}
+
+// Two planes, deliberately disagreeing. Under hybrid routing reads go to the
+// Zotero desktop and writes to the Web API, and the two version spaces are
+// independent. A tag write that read its current tags and version from the
+// READ plane would guard a Web PATCH with a desktop version and merge against
+// desktop tags. `items tags add` avoids this by holding a newWriteClient;
+// enrich builds its client with newClient, so this path must pin the read.
+func TestApplyEnrichSubjectTagsReadsFromTheWritePlane(t *testing.T) {
+	readHits := 0
+	readPlane := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		readHits++
+		w.Header().Set("Last-Modified-Version", "4")
+		_, _ = w.Write([]byte(`{"key":"K1","version":4,"data":{"key":"K1","tags":[{"tag":"desktop-only"}]}}`))
+	}))
+	t.Cleanup(readPlane.Close)
+
+	var precondition string
+	var body map[string]any
+	writePlane := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet {
+			w.Header().Set("Last-Modified-Version", "77")
+			_, _ = w.Write([]byte(`{"key":"K1","version":77,"data":{"key":"K1","extra":"Citation Key: web2020","tags":[{"tag":"web-only"}]}}`))
+			return
+		}
+		precondition = r.Header.Get("If-Unmodified-Since-Version")
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	t.Cleanup(writePlane.Close)
+
+	c := client.New(&config.Config{BaseURL: readPlane.URL}, time.Second, 0)
+	c.NoCache = true
+	c.WriteBaseURL = writePlane.URL
+
+	p := enrichProposal{
+		Key: "K1", Category: "missing_subjects", Action: enrichActionTag,
+		Source: "OpenAlex", Tags: []string{"concept/Computer science"},
+		extra: "stale mirror extra",
+	}
+	status, detail, err := applyEnrichSubjectTags(context.Background(), c, &p, &rootFlags{})
+	if err != nil || status != "applied" {
+		t.Fatalf("status=%q detail=%v err=%v, want applied", status, detail, err)
+	}
+	if readHits != 0 {
+		t.Errorf("read plane received %d request(s); the tag read must be pinned to the write plane", readHits)
+	}
+	if precondition != "77" {
+		t.Errorf("If-Unmodified-Since-Version = %q, want the write plane's 77", precondition)
+	}
+	tags, _ := body["tags"].([]any)
+	names := map[string]bool{}
+	for _, raw := range tags {
+		if obj, ok := raw.(map[string]any); ok {
+			name, _ := obj["tag"].(string)
+			names[name] = true
+		}
+	}
+	if !names["web-only"] || names["desktop-only"] {
+		t.Errorf("merged tags = %v, want the write plane's tags merged, not the read plane's", names)
+	}
+	// Extra is a wholesale replace, so it must be appended to the LIVE value,
+	// not the mirror's copy.
+	if extra := fmt.Sprint(body["extra"]); !strings.Contains(extra, "Citation Key: web2020") || strings.Contains(extra, "stale mirror extra") {
+		t.Errorf("extra = %q, want the write plane's Extra preserved and the mirror's discarded", extra)
+	}
+}
+
+// --collection is the older spelling of --scope collection:KEY. A queue that
+// ignored it would write provider tags onto items outside the collection the
+// operator named, which is the worst failure mode this command has.
+func TestMissingTagsQueueHonorsCollectionScope(t *testing.T) {
+	db, err := store.OpenWithContext(context.Background(), filepath.Join(t.TempDir(), "data.db"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	items := []json.RawMessage{
+		json.RawMessage(`{"key":"KIN","version":1,"data":{"key":"KIN","itemType":"journalArticle","title":"In scope","tags":[],"collections":["COLX"],"dateAdded":"2026-01-01T00:00:00Z"}}`),
+		json.RawMessage(`{"key":"KOUT","version":1,"data":{"key":"KOUT","itemType":"journalArticle","title":"Out of scope","tags":[],"collections":["COLY"],"dateAdded":"2026-01-02T00:00:00Z"}}`),
+	}
+	if _, _, err := db.UpsertBatch("items", items); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	q := localQueryStore{db}
+
+	// The library-wide report keeps both: audit and health are unscoped.
+	all, err := queryMissingTagsItems(q, 0)
+	if err != nil {
+		t.Fatalf("queryMissingTagsItems: %v", err)
+	}
+	if len(all) != 2 {
+		t.Fatalf("unscoped queue = %+v, want both untagged items", all)
+	}
+
+	// The enrich queue, which WRITES, must respect the collection.
+	scoped, err := enrichWorkQueue(q, "missing_subjects", 0, "COLX")
+	if err != nil {
+		t.Fatalf("enrichWorkQueue: %v", err)
+	}
+	if len(scoped) != 1 || sqlStringValue(scoped[0]["key"]) != "KIN" {
+		t.Fatalf("collection-scoped queue = %+v, want only KIN", scoped)
+	}
+}
+
+// The repair queue re-selects the same parent on every run, so without a
+// reconcile the second run stacks another copy of the same link on the item.
+func TestItemsEnrichRepairPDFIsIdempotent(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("ZOTERO_CONFIG", filepath.Join(t.TempDir(), "missing.toml"))
+	db, err := store.OpenWithContext(context.Background(), helpersTestDefaultDBPath(t, "zotio"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	items := []json.RawMessage{
+		json.RawMessage(`{"key":"KPDF","version":4,"data":{"key":"KPDF","itemType":"journalArticle","title":"Broken","DOI":"10.1/pdf"}}`),
+		json.RawMessage(`{"key":"ATBROKE","version":4,"data":{"key":"ATBROKE","itemType":"attachment","parentItem":"KPDF","contentType":"application/pdf","linkMode":"imported_file","filename":"gone.pdf"}}`),
+	}
+	if _, _, err := db.UpsertBatch("items", items); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close store: %v", err)
+	}
+
+	const oaURL = "https://example.org/oa.pdf"
+	upw := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"best_oa_location":{"url":"` + oaURL + `"}}`))
+	}))
+	t.Cleanup(upw.Close)
+	withBase(t, &enrichUnpaywallBase, upw.URL)
+
+	// The library starts with the broken child only, and gains the repaired
+	// link once. The second run must see it and stop.
+	children := []string{`{"key":"ATBROKE","data":{"itemType":"attachment","linkMode":"imported_file","filename":"gone.pdf"}}`}
+	posts := 0
+	zsrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/children") {
+			_, _ = w.Write([]byte("[" + strings.Join(children, ",") + "]"))
+			return
+		}
+		if r.Method == http.MethodPost && r.URL.Path == "/items" {
+			posts++
+			children = append(children, `{"key":"ATFIXED","data":{"itemType":"attachment","linkMode":"linked_url","url":"`+oaURL+`"}}`)
+			_, _ = w.Write([]byte(`{"success":{"0":"ATFIXED"}}`))
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("{}"))
+	}))
+	t.Cleanup(zsrv.Close)
+	t.Setenv("ZOTERO_BASE_URL", zsrv.URL)
+
+	run := func() mutation.Envelope {
+		t.Helper()
+		cmd := newItemsEnrichCmd(&rootFlags{asJSON: true, yes: true, maxChanges: -1})
+		cmd.SetArgs([]string{"--repair-pdf", "--keys", "KPDF", "--email", "me@example.com"})
+		var out bytes.Buffer
+		cmd.SetOut(&out)
+		cmd.SetErr(&bytes.Buffer{})
+		if err := cmd.Execute(); err != nil {
+			t.Fatalf("repair: %v; out=%s", err, out.String())
+		}
+		var env mutation.Envelope
+		if err := json.Unmarshal(out.Bytes(), &env); err != nil {
+			t.Fatalf("decode envelope: %v", err)
+		}
+		return env
+	}
+
+	if env := run(); env.Result == nil || env.Result.Summary.Applied != 1 {
+		t.Fatalf("first run result = %+v, want one applied attachment", env.Result)
+	}
+	second := run()
+	if second.Result == nil || second.Result.Summary.NoOp != 1 {
+		t.Fatalf("second run result = %+v, want a no-op: the repair already exists", second.Result)
+	}
+	if posts != 1 {
+		t.Fatalf("POST /items count = %d, want 1: a repeated repair must not stack duplicate links", posts)
 	}
 }
 

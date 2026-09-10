@@ -269,6 +269,26 @@ func findLinkedAttachment(c *client.Client, parentKey, path string) (string, err
 	return "", nil
 }
 
+// findLinkedURLAttachment reports an existing, untrashed linked_url child of
+// parentKey pointing at url. `items enrich --repair-pdf` reconciles against it:
+// its queue re-selects the same parent on every run, so without this check a
+// repeated repair would stack duplicate links on one item.
+func findLinkedURLAttachment(c *client.Client, parentKey, url string) (string, error) {
+	if url == "" {
+		return "", nil
+	}
+	rows, err := attachmentChildRows(c, parentKey)
+	if err != nil {
+		return "", err
+	}
+	for _, row := range rows {
+		if row.Data.ItemType == "attachment" && row.Data.LinkMode == "linked_url" && row.Data.URL == url && row.Data.Deleted == 0 {
+			return row.Key, nil
+		}
+	}
+	return "", nil
+}
+
 // storedUploadRequest carries everything the upload protocol needs for one file.
 type storedUploadRequest struct {
 	ParentKey   string

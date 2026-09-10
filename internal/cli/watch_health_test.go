@@ -60,6 +60,54 @@ func TestWatchHealthFindingKeyUsesStableTaxonomyIdentity(t *testing.T) {
 	}
 }
 
+// One item can own several broken attachments, and the finding is keyed by the
+// PARENT so the repair command can consume it. Without the attachment in the
+// identity, watch and the baseline diff lose one of the two.
+func TestWatchHealthFindingKeySeparatesTwoBrokenAttachmentsOfOneParent(t *testing.T) {
+	first := Finding{Kind: "broken_attachment_file", ItemKey: "P1", Evidence: map[string]any{"attachment": "ATT1", "reason": "missing"}}
+	second := Finding{Kind: "broken_attachment_file", ItemKey: "P1", Evidence: map[string]any{"attachment": "ATT2", "reason": "missing"}}
+	if watchHealthFindingKey(first) == watchHealthFindingKey(second) {
+		t.Fatal("two broken children of one parent collapsed into one identity")
+	}
+	if got := FindingIdentities([]Finding{first, second}); len(got) != 2 {
+		t.Fatalf("baseline identities = %v, want both broken attachments", got)
+	}
+	// The reason changing must not invent a new finding.
+	moved := Finding{Kind: "broken_attachment_file", ItemKey: "P1", Evidence: map[string]any{"attachment": "ATT1", "reason": "unresolved"}}
+	if watchHealthFindingKey(first) != watchHealthFindingKey(moved) {
+		t.Fatal("identity must stay stable when only the failure reason changes")
+	}
+}
+
+// A finding that advertises a command must appear in the plan, and one that
+// only offers manual prose must not: a plan step that no-ops on its own keys
+// is worse than no step.
+func TestHealthRemediationPlanCoversTheNewFixers(t *testing.T) {
+	steps := buildHealthRemediationPlan([]Finding{
+		{Kind: "missing_tags", ItemKey: "T1", RecommendedAction: &RecommendedAction{Command: "zotio items enrich --missing-subjects --keys-from -"}},
+		{Kind: "broken_attachment_file", ItemKey: "P1", Evidence: map[string]any{"attachment": "ATT1"}, RecommendedAction: &RecommendedAction{Command: "zotio items enrich --repair-pdf --keys-from -"}},
+		{Kind: "broken_attachment_file", ItemKey: "P1", Evidence: map[string]any{"attachment": "ATT2"}, RecommendedAction: &RecommendedAction{Command: "zotio items enrich --repair-pdf --keys-from -"}},
+		{Kind: "broken_attachment_file", ItemKey: "PNODOI", Evidence: map[string]any{"attachment": "ATT3"}, RecommendedAction: &RecommendedAction{Text: "Re-link the file in Zotero or re-download the attachment"}},
+	})
+	byKind := map[string]healthRemediationPlanStep{}
+	for _, s := range steps {
+		byKind[s.Kind] = s
+	}
+	tags, ok := byKind["missing_tags"]
+	if !ok || len(tags.Keys) != 1 || tags.Keys[0] != "T1" {
+		t.Fatalf("missing_tags step = %+v, want T1", tags)
+	}
+	broken, ok := byKind["broken_attachment_file"]
+	if !ok {
+		t.Fatal("no broken_attachment_file plan step; the finding advertises a command")
+	}
+	// One repair covers the parent, so two broken children collapse to one
+	// key here — the opposite of the watch identity, and correct.
+	if len(broken.Keys) != 1 || broken.Keys[0] != "P1" {
+		t.Fatalf("broken step keys = %v, want P1 once and PNODOI excluded", broken.Keys)
+	}
+}
+
 func TestWatchHealthRunReportsBaselineThenOnlyNewAndResolvedFindings(t *testing.T) {
 	seedWatchHealthDefaultStore(t, []json.RawMessage{
 		json.RawMessage(`{"key":"OLD","version":1,"data":{"key":"OLD","itemType":"journalArticle","title":"Old Missing","dateAdded":"2026-01-01T00:00:00Z"}}`),

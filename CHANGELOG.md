@@ -34,11 +34,16 @@ Notable changes to zotio. Format follows [Keep a Changelog](https://keepachangel
   carries `zotio items enrich --repair-pdf --keys-from -` whenever the parent
   item has a DOI to resolve; without a DOI the finding stays manual prose
   rather than recommending a command that could only skip. The repair
-  requires `--keys`, `--keys-from` or `--scope`: whether a file is broken is
-  only knowable from the live desktop API, so an unnamed cohort would mean
-  "every item that has a PDF". The new attachment is an addition, not a
-  replacement — Zotero cannot re-point a broken attachment, and deleting the
-  old child would discard the annotations stored against it.
+  requires `--keys`, `--keys-from`, `--scope`, or `--collection`: whether a
+  file is broken is only knowable from the live desktop API, so an unnamed
+  cohort would mean "every item that has a PDF". The new attachment is an
+  addition, not a replacement — Zotero cannot re-point a broken attachment,
+  and deleting the old child would discard the annotations stored against it.
+  A repeated repair is a no-op: it reconciles against an existing linked-URL
+  child for the same parent and URL instead of stacking duplicates. Both
+  `library health` and `items audit --verify-files` now surface the repair,
+  and it appears in the health `remediation_plan` alongside the other
+  enrich fixers.
 - **`items enrich --missing-subjects` proposes OpenAlex subject terms as tags.**
   `missing_tags` was the only health check with a nil `recommended_action` —
   an untagged item was a report with no next step. It now carries
@@ -46,10 +51,12 @@ Notable changes to zotio. Format follows [Keep a Changelog](https://keepachangel
   OpenAlex scores at or above 0.50 are proposed, the strongest six at most,
   written as automatic `concept/<term>` tags so a managed subject term stays
   distinguishable from a tag you typed and is removable by one prefix. The
-  write merges against the item's live tags through the same applier
-  `items tags add` uses: the Zotero tag array is replace-only, so a PATCH
-  assembled from the local mirror would delete anything tagged since the last
-  sync.
+  write merges against the item's live tags read from the plane the PATCH
+  lands on: the Zotero tag array is replace-only, so a write built from the
+  local mirror would delete anything tagged since the last sync. Like every
+  other enrich category it records provenance in the item's Extra field,
+  naming the provider, the date, and the terms, in the same PATCH as the
+  tags.
 
 ## [0.24.0] — 2026-09-05
 

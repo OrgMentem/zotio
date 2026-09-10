@@ -197,12 +197,18 @@ Applied field changes record provenance in the item's Extra field.`,
 				return fmt.Errorf("specify at least one of --missing-doi, --missing-abstract, --missing-pdf, --repair-pdf, --missing-citation, --missing-subjects, or --validate")
 			}
 			// Whether an attachment file is broken is only knowable from the
-			// live desktop API, which this command does not call. Without an
-			// exact key set the queue would be "every item that HAS a PDF",
+			// live desktop API, which this command does not call. Without a
+			// bounded cohort the queue would be "every item that HAS a PDF",
 			// and applying that would attach a second copy to a healthy
 			// library. Fail closed instead of guessing the cohort.
-			if flagRepairPDF && strings.TrimSpace(keys) == "" && strings.TrimSpace(keysFrom) == "" && strings.TrimSpace(flagScope) == "" {
-				return usageErr(fmt.Errorf("--repair-pdf requires --keys, --keys-from, or --scope: a broken attachment file is a live fact this command cannot detect, so it repairs only the items you name (pipe `zotio library health --verify-files --json` findings in)"))
+			//
+			// --collection counts: it is the older spelling of
+			// --scope collection:KEY (reconcileScopeFlags lowers it below),
+			// and it names just as bounded a cohort. Checking only the raw
+			// --scope string here would reject the documented spelling.
+			if flagRepairPDF && strings.TrimSpace(keys) == "" && strings.TrimSpace(keysFrom) == "" &&
+				strings.TrimSpace(flagScope) == "" && strings.TrimSpace(flagCollection) == "" {
+				return usageErr(fmt.Errorf("--repair-pdf requires --keys, --keys-from, --scope, or --collection: a broken attachment file is a live fact this command cannot detect, so it repairs only the items you name (pipe `zotio library health --verify-files --json` findings in)"))
 			}
 
 			pdfDir := ""
@@ -615,7 +621,7 @@ func enrichWorkQueue(db localQueryStore, category string, limit int, collection 
 		// anyway rather than returning "unknown category" for a real one.
 		return nil, fmt.Errorf("repair_pdf has no library-wide work queue: name the broken items with --keys/--keys-from/--scope")
 	case "missing_subjects":
-		return queryMissingTagsItems(db, limit)
+		return queryMissingTagsItemsScoped(db, limit, collection)
 	case "missing_citation":
 		return queryCitationEnrichCandidates(db, limit, collection)
 	default:
@@ -1037,6 +1043,26 @@ func applyEnrichProposalWithContext(ctx context.Context, downloader enrichPDFDow
 				err := errors.New("missing API client")
 				return "failed", err.Error(), err
 			}
+			// A repair runs against an item that already owns children, and
+			// the queue re-selects that parent on every run: without a
+			// reconcile step, each repair would hang another copy of the same
+			// open-access link on the item while the broken child stays put.
+			// The one-shot missing-pdf case cannot hit this (its queue
+			// requires NO pdf child), but the code path is shared.
+			if p.Category == "repair_pdf" {
+				readClient, ok := c.(*client.Client)
+				if !ok || readClient == nil {
+					err := errors.New("repairing an attachment requires the Zotero write client to reconcile existing children")
+					return "failed", err.Error(), err
+				}
+				existing, reconcileErr := findLinkedURLAttachment(readClient, p.Key, p.DownloadURL)
+				if reconcileErr != nil {
+					return enrichErrorStatus(reconcileErr)
+				}
+				if existing != "" {
+					return "no_op", map[string]any{"existing_attachment": existing, "url": p.DownloadURL}, nil
+				}
+			}
 			resp, _, err := c.Post("/items", []map[string]any{p.Attachment})
 			if err != nil {
 				return enrichErrorStatus(err)
@@ -1104,19 +1130,64 @@ func applyEnrichProposalWithContext(ctx context.Context, downloader enrichPDFDow
 			return "failed", err.Error(), err
 		}
 	case enrichActionTag:
-		// The tag array is replace-only in the Zotero API, so the write has to
-		// merge against the item's CURRENT tags read from the write plane —
-		// exactly what `items tags add --automatic` does. Reuse that applier
-		// rather than PATCHing a tags array assembled from the local mirror,
-		// which would drop any tag added since the last sync.
 		writeClient, ok := c.(*client.Client)
 		if !ok || writeClient == nil {
 			err := errors.New("subject tags require the Zotero write client")
 			return "failed", err.Error(), err
 		}
-		return applyItemTagAdd(writeClient, replacePathParam("/items/{itemKey}", "itemKey", p.Key), p.Tags, true)
+		return applyEnrichSubjectTags(ctx, writeClient, p, flags)
 	}
 	return "no_op", "unknown enrichment action", nil
+}
+
+// applyEnrichSubjectTags merges subject tags into an item and records
+// provenance in the same PATCH.
+//
+// It cannot reuse applyItemTagAdd: that helper reads the current tags with a
+// plain GET, which under hybrid routing hits the DESKTOP plane while the PATCH
+// is routed to the Web API. `items tags add` is safe because it holds a client
+// built by newWriteClient; enrich builds its client with newClient, so the
+// read must be pinned to the write plane here (write_precondition.go:16-33).
+//
+// It also writes Extra. Every other enrich category records where a change
+// came from, and the help promises it; the automatic tag type and the
+// `concept/` prefix mark a tag as managed but name neither the provider nor
+// the date. Tags and Extra go in ONE patch so a partial apply cannot leave a
+// tag with no provenance.
+func applyEnrichSubjectTags(ctx context.Context, c *client.Client, p *enrichProposal, flags *rootFlags) (string, any, error) {
+	path := replacePathParam("/items/{itemKey}", "itemKey", p.Key)
+	currentData, _, err := c.GetFromWriteBaseWithVersionContext(ctx, path, nil)
+	if err != nil {
+		return "failed", err.Error(), err
+	}
+	currentTags, err := itemDataTags(currentData)
+	if err != nil {
+		return "failed", err.Error(), err
+	}
+	nextTags := copyItemTags(currentTags)
+	added := make([]string, 0, len(p.Tags))
+	for _, tag := range p.Tags {
+		if itemHasTag(currentTags, tag) {
+			continue
+		}
+		nextTags = append(nextTags, map[string]any{"tag": tag, "type": 1})
+		added = append(added, tag)
+	}
+	if len(added) == 0 {
+		// The mirror said the item was untagged; the live item already has
+		// every proposed term. Nothing to write, and no provenance to record
+		// for a write that did not happen.
+		return "no_op", map[string]any{"tags": "already present"}, nil
+	}
+	// Extra is a wholesale replace, so the provenance line must be appended
+	// to the LIVE value. `p.extra` came from the mirror, which can be older
+	// than the item; using it would delete anything written to Extra since
+	// the last sync, such as a Better BibTeX "Citation Key:" line.
+	live := *p
+	_, liveData := enrichItemFields(currentData)
+	live.extra = stringFromMap(liveData, "extra")
+	body := map[string]any{"tags": nextTags, "extra": appendEnrichProvenance(&live, flags)}
+	return patchWithWritePlaneVersion(ctx, c, path, body)
 }
 
 // enrichPDFHasMagic validates a retained PDF before it is reused on retry,
@@ -1237,6 +1308,10 @@ func enrichProposalChanges(p enrichProposal) []mutation.Change {
 		for _, tag := range p.Tags {
 			changes = append(changes, mutation.Change{Field: "tags", Add: tag, TagType: 1})
 		}
+		// The same PATCH rewrites Extra with the provenance line, exactly as
+		// the field-patch path does; record the RESULTING value so a mirror
+		// replay lands on the state Zotero now holds.
+		changes = append(changes, mutation.Change{Field: "extra", Add: appendEnrichProvenance(&p, nil)})
 		return changes
 	default:
 		return nil
@@ -1276,6 +1351,12 @@ func enrichProvenanceLine(p *enrichProposal) string {
 		field = "abstract"
 	case "missing_citation":
 		field = strings.Join(sortedFieldNames(p.Fields), "+")
+	case "missing_subjects":
+		// Name the terms, not just "tags": the point of the line is that a
+		// reader can tell which tags came from a provider rather than them,
+		// and the automatic tag type alone does not say which provider or
+		// when.
+		field = "subject tags " + strings.Join(p.Tags, "+")
 	}
 	return fmt.Sprintf("zotio: %s added via %s on %s", field, p.Source, time.Now().UTC().Format("2006-01-02"))
 }

@@ -527,7 +527,16 @@ ORDER BY date_added DESC`
 	return queryItemsAuditRows(db, query, limit, args...)
 }
 
+// queryMissingTagsItems is the unscoped untagged queue used by `items audit`
+// and `library health`, which report library-wide.
 func queryMissingTagsItems(db localQueryStore, limit int) ([]map[string]any, error) {
+	return queryMissingTagsItemsScoped(db, limit, "")
+}
+
+// queryMissingTagsItemsScoped adds the collection predicate `items enrich`
+// needs: --collection lowers to a scope the enrich queue must honour, and a
+// queue that ignored it would tag items outside the named collection.
+func queryMissingTagsItemsScoped(db localQueryStore, limit int, collection string) ([]map[string]any, error) {
 	query := `
 SELECT
 	id AS key,
@@ -538,9 +547,11 @@ SELECT
 FROM resources
 WHERE resource_type = 'items'
 	AND ` + libraryTopLevelItemsPredicate + `
-	AND COALESCE(json_array_length(json_extract(data, '$.data.tags')), 0) = 0
+	AND COALESCE(json_array_length(json_extract(data, '$.data.tags')), 0) = 0`
+	args := enrichCollectionFilterArgs(&query, "data", collection)
+	query += `
 ORDER BY date_added DESC`
-	return queryItemsAuditRows(db, query, limit)
+	return queryItemsAuditRows(db, query, limit, args...)
 }
 
 // queryMissingTagsItemsForKeys narrows the untagged queue to named keys. It
@@ -841,9 +852,14 @@ func runVerifyAttachmentFiles(cmd *cobra.Command, db localQueryStore, flags *roo
 		broken = append(broken, map[string]any{
 			"key":    key,
 			"parent": sqlStringValue(a["parent"]),
-			"name":   sqlStringValue(a["name"]),
-			"path":   path,
-			"reason": reason,
+			// The shared finding builder decides between a runnable repair
+			// and manual prose by the parent's DOI. Dropping it here made
+			// every audit finding manual while the identical health finding
+			// carried the command.
+			"parent_doi": sqlStringValue(a["parent_doi"]),
+			"name":       sqlStringValue(a["name"]),
+			"path":       path,
+			"reason":     reason,
 		})
 	}
 	if flags.asJSON {

@@ -431,3 +431,37 @@ func TestRepairPDFQueueReachesItemsThatAlreadyHaveAPDF(t *testing.T) {
 		t.Fatalf("unkeyed repair queue = %+v (err %v), want empty", empty, err)
 	}
 }
+
+// The live check reports a broken PDF under ANY parent type, and the finding
+// offers the repair for any DOI-bearing parent. A repair queue narrowed to the
+// missing-pdf report allowlist would accept the piped key and return nothing.
+func TestRepairPDFQueueAcceptsEveryParentTypeTheCheckReports(t *testing.T) {
+	db, err := store.OpenWithContext(context.Background(), filepath.Join(t.TempDir(), "data.db"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	items := []json.RawMessage{
+		json.RawMessage(`{"key":"PMAG","version":1,"data":{"key":"PMAG","itemType":"magazineArticle","title":"Mag","DOI":"10.1/m","dateAdded":"2026-01-01T00:00:00Z"}}`),
+		json.RawMessage(`{"key":"PWEB","version":1,"data":{"key":"PWEB","itemType":"webpage","title":"Web","DOI":"10.1/w","dateAdded":"2026-01-02T00:00:00Z"}}`),
+		// A child key must still be refused: the repair writes to a parent.
+		json.RawMessage(`{"key":"ATT9","version":1,"data":{"key":"ATT9","itemType":"attachment","parentItem":"PMAG","contentType":"application/pdf","linkMode":"imported_file"}}`),
+	}
+	if _, _, err := db.UpsertBatch("items", items); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	rows, err := queryRepairPDFItemsForKeys(localQueryStore{db}, 0, "", []string{"PMAG", "PWEB", "ATT9"})
+	if err != nil {
+		t.Fatalf("queryRepairPDFItemsForKeys: %v", err)
+	}
+	got := map[string]bool{}
+	for _, r := range rows {
+		got[sqlStringValue(r["key"])] = true
+	}
+	if !got["PMAG"] || !got["PWEB"] {
+		t.Errorf("repair queue = %v, want both non-journal parents the check can report", got)
+	}
+	if got["ATT9"] {
+		t.Errorf("repair queue = %v, must not accept an attachment key", got)
+	}
+}

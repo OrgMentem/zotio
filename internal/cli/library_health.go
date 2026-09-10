@@ -1157,10 +1157,20 @@ func buildHealthRemediationPlan(findings []Finding) []healthRemediationPlanStep 
 		"missing_doi":      {command: "zotio items enrich --missing-doi --keys-from -", seen: map[string]bool{}},
 		"missing_abstract": {command: "zotio items enrich --missing-abstract --keys-from -", seen: map[string]bool{}},
 		"missing_pdf":      {command: "zotio items enrich --missing-pdf --keys-from -", seen: map[string]bool{}},
+		"missing_tags":     {command: "zotio items enrich --missing-subjects --keys-from -", seen: map[string]bool{}},
+		// Only the DOI-bearing half of these findings carries a command; the
+		// rest are manual re-links. The Command guard below keeps them out of
+		// a plan step that would silently no-op on them. Deduping by parent
+		// key is right here even though two broken children of one parent are
+		// two findings: one repair covers the parent.
+		"broken_attachment_file": {command: "zotio items enrich --repair-pdf --keys-from -", seen: map[string]bool{}},
 	}
 	var hasDOIDups, hasTitleDups, hasTagDrift bool
 	for _, f := range findings {
 		if b, ok := exact[f.Kind]; ok && f.ItemKey != "" {
+			if f.RecommendedAction == nil || f.RecommendedAction.Command == "" {
+				continue
+			}
 			if !b.seen[f.ItemKey] {
 				b.seen[f.ItemKey] = true
 				b.keys = append(b.keys, f.ItemKey)
@@ -1181,7 +1191,7 @@ func buildHealthRemediationPlan(findings []Finding) []healthRemediationPlanStep 
 	}
 
 	steps := make([]healthRemediationPlanStep, 0, 6)
-	for _, kind := range []string{"missing_doi", "missing_abstract", "missing_pdf"} {
+	for _, kind := range []string{"missing_doi", "missing_abstract", "missing_pdf", "missing_tags", "broken_attachment_file"} {
 		b := exact[kind]
 		if len(b.keys) == 0 {
 			continue

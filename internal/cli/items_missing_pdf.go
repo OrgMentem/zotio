@@ -136,6 +136,14 @@ LIMIT ?`
 // predicate is the whole point: a broken attachment means the child row
 // exists and its file does not, which no local query can see. The caller must
 // therefore supply the keys, and the command refuses to run without them.
+//
+// It deliberately does NOT reuse missingPDFItemTypesSQL. That allowlist exists
+// to keep the missing-pdf REPORT from nagging about item types nobody expects
+// a PDF on, but the broken-attachment check reports a broken PDF under any
+// parent type, and its finding offers this repair for any DOI-bearing parent.
+// Narrowing here would accept the piped key and silently return no row. The
+// cohort is named explicitly, so the report-shaping allowlist buys nothing;
+// the top-level predicate still keeps an attachment or note key out.
 func queryRepairPDFItemsForKeys(db localQueryStore, limit int, collection string, keys []string) ([]map[string]any, error) {
 	if len(keys) == 0 {
 		return nil, nil
@@ -149,7 +157,8 @@ SELECT
 	json_extract(i.data, '$.data.dateAdded') AS date_added
 FROM resources i
 WHERE i.resource_type = 'items'
-	AND i.item_type IN (` + missingPDFItemTypesSQL + `)`
+	AND COALESCE(i.parent_key, '') = ''
+	AND i.item_type NOT IN ('attachment', 'note', 'annotation')`
 	args := make([]any, 0, len(keys)+2)
 	if collection != "" {
 		query += `

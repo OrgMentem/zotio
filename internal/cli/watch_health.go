@@ -152,6 +152,14 @@ func watchHealthFindingSet(findings []Finding) map[string]Finding {
 // watchHealthFindingKey preserves (kind,item_key), with grouped evidence keys for aggregate findings.
 func watchHealthFindingKey(f Finding) string {
 	if f.ItemKey != "" {
+		// One item can own several broken attachments, and the finding names
+		// the PARENT so the repair command can consume it. Without the
+		// attachment key the second broken child of one parent collapses
+		// into the first, and watch reports one fewer new/resolved than the
+		// health summary counts.
+		if attachment := sqlStringValue(f.Evidence["attachment"]); attachment != "" {
+			return f.Kind + "\x00item\x00" + f.ItemKey + "\x00attachment\x00" + attachment
+		}
 		return f.Kind + "\x00item\x00" + f.ItemKey
 	}
 	group := sqlStringValue(f.Evidence["group"])
