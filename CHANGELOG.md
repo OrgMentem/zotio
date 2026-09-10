@@ -4,15 +4,20 @@ Notable changes to zotio. Format follows [Keep a Changelog](https://keepachangel
 
 ## [Unreleased]
 
-### Changed
+### Changed — breaking
 
-- **`items summarize` annotations now carry the highlight's identity.** Each
-  annotation in a summary or collection bundle adds `key`, `parent_item`,
+- **`items summarize` emits a different annotation shape.** Each annotation in
+  a summary or collection bundle now carries `key`, `parent_item`,
   `date_added` and `color` beside the existing `page`, `type`, `text` and
-  `comment`. The bundle is handed to a model that may quote a highlight, and
-  the previous shape dropped everything needed to verify the quote. It also
-  disagreed with what `annotations export` emitted for the same highlight;
-  both now use one annotation shape.
+  `comment`, and every one of those fields is always present, including when
+  empty. The previous shape omitted empty values, so a consumer that
+  enumerated keys or rejected unknown fields must be updated. The bundle goes
+  to a model that may quote a highlight, and the old shape dropped the
+  annotation key needed to verify the quote; it also disagreed with what
+  `annotations export` emitted for the same highlight. Both now use one
+  annotation shape. Note that `parent_item` is the annotation's direct parent,
+  which for a PDF highlight is the **attachment** key, not the source item;
+  the source item is the bundle's own `key`.
 
 ## [0.24.0] — 2026-09-05
 

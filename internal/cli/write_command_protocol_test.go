@@ -30,7 +30,18 @@ type writeCommandCase struct {
 	// when the envelope carries a Result for the caller to assert against.
 	run func(t *testing.T, srv *writePlaneTestServer, flags *rootFlags, args ...string) mutation.Envelope
 	// argSets each plan exactly one change against item K1.
-	argSets [][]string
+	argSets []writeCommandArgs
+}
+
+// writeCommandArgs is one invocation plus the plan detail that only that
+// invocation can witness.
+type writeCommandArgs struct {
+	args []string
+	// wantTagType, when non-zero, is the tag type the plan must carry. It
+	// exists because a dry run PLANS the change without writing it, so the
+	// automatic-tag flag is only observable in the plan on this path; the
+	// apply-mode tests assert it from the PATCH body instead.
+	wantTagType int
 }
 
 func writeCommandCases() []writeCommandCase {
@@ -50,7 +61,7 @@ func writeCommandCases() []writeCommandCase {
 				}
 				return env
 			},
-			argSets: [][]string{{"--to", "TARGET", "K1"}},
+			argSets: []writeCommandArgs{{args: []string{"--to", "TARGET", "K1"}}},
 		},
 		{
 			name: "items tags",
@@ -65,9 +76,10 @@ func writeCommandCases() []writeCommandCase {
 				return env
 			},
 			// Add and remove reach the write plane by different plan paths.
-			argSets: [][]string{
-				{"add", "--tag", "fresh", "K1"},
-				{"remove", "--tag", "existing", "K1"},
+			argSets: []writeCommandArgs{
+				{args: []string{"add", "--tag", "fresh", "K1"}},
+				{args: []string{"add", "--automatic", "--tag", "fresh", "K1"}, wantTagType: 1},
+				{args: []string{"remove", "--tag", "existing", "K1"}},
 			},
 		},
 	}
@@ -77,10 +89,10 @@ func writeCommandCases() []writeCommandCase {
 // so the planned count is asserted beside the absence of any write.
 func TestWriteCommandsPreviewWriteNothing(t *testing.T) {
 	for _, tc := range writeCommandCases() {
-		for _, args := range tc.argSets {
-			t.Run(tc.name+" "+strings.Join(args, " "), func(t *testing.T) {
+		for _, set := range tc.argSets {
+			t.Run(tc.name+" "+strings.Join(set.args, " "), func(t *testing.T) {
 				srv := tc.newServer(t, "42")
-				env := tc.run(t, srv, &rootFlags{asJSON: true, maxChanges: -1}, args...)
+				env := tc.run(t, srv, &rootFlags{asJSON: true, maxChanges: -1}, set.args...)
 				if !env.OK || env.Mode != "preview" || env.Result != nil || env.Plan.Summary.Planned != 1 {
 					t.Fatalf("env = %+v, want preview plan with one change", env)
 				}
@@ -97,12 +109,15 @@ func TestWriteCommandsPreviewWriteNothing(t *testing.T) {
 // fails when the API is down, which is when people reach for it.
 func TestWriteCommandsDryRunTouchesNoNetwork(t *testing.T) {
 	for _, tc := range writeCommandCases() {
-		for _, args := range tc.argSets {
-			t.Run(tc.name+" "+strings.Join(args, " "), func(t *testing.T) {
+		for _, set := range tc.argSets {
+			t.Run(tc.name+" "+strings.Join(set.args, " "), func(t *testing.T) {
 				srv := tc.newServer(t, "42")
-				env := tc.run(t, srv, &rootFlags{asJSON: true, dryRun: true, maxChanges: -1}, args...)
+				env := tc.run(t, srv, &rootFlags{asJSON: true, dryRun: true, maxChanges: -1}, set.args...)
 				if !env.OK || env.Mode != "preview" || env.PreviewReason != "dry_run" || env.Result != nil || env.Plan.Summary.Planned != 1 {
 					t.Fatalf("env = %+v, want dry-run preview with one planned change", env)
+				}
+				if set.wantTagType != 0 && env.Plan.Operations[0].Changes[0].TagType != set.wantTagType {
+					t.Fatalf("planned tag type = %d, want %d", env.Plan.Operations[0].Changes[0].TagType, set.wantTagType)
 				}
 				if srv.getCounts["K1"] != 0 || srv.patchCounts["K1"] != 0 {
 					t.Fatalf("requests: GET=%d PATCH=%d, want none", srv.getCounts["K1"], srv.patchCounts["K1"])
@@ -120,7 +135,7 @@ func TestWriteCommandsFailClosedOnZeroVersion(t *testing.T) {
 	for _, tc := range writeCommandCases() {
 		t.Run(tc.name, func(t *testing.T) {
 			srv := tc.newServer(t, "0")
-			env := tc.run(t, srv, &rootFlags{asJSON: true, yes: true, maxChanges: -1}, tc.argSets[0]...)
+			env := tc.run(t, srv, &rootFlags{asJSON: true, yes: true, maxChanges: -1}, tc.argSets[0].args...)
 			if env.Result == nil || len(env.Result.Items) != 1 {
 				t.Fatalf("env = %+v, want one result", env)
 			}

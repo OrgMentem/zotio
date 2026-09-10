@@ -912,7 +912,11 @@ func TestWithoutPlaceholderCreators(t *testing.T) {
 			if tc.creators != nil {
 				item["creators"] = tc.creators
 			}
-			originalCreators, hadCreators := item["creators"]
+			// Snapshot by value, not by reference: originalCreators would
+			// alias the same slice and the same nested creator maps, so an
+			// in-place compaction or edit would mutate the "before" copy too
+			// and the comparison below could never fail.
+			before := mustMarshalJSON(t, item)
 
 			cleaned := withoutPlaceholderCreators([]map[string]any{item})
 			if len(cleaned) != 1 {
@@ -930,10 +934,20 @@ func TestWithoutPlaceholderCreators(t *testing.T) {
 			}
 			// Copy-on-write: the manifest entry the caller still holds must
 			// read exactly as it did before the save.
-			after, stillHas := item["creators"]
-			if stillHas != hadCreators || !reflect.DeepEqual(after, originalCreators) {
-				t.Fatalf("input creators mutated: %#v, want %#v", after, originalCreators)
+			if after := mustMarshalJSON(t, item); after != before {
+				t.Fatalf("input mutated:\n before %s\n after  %s", before, after)
 			}
 		})
 	}
+}
+
+// mustMarshalJSON snapshots a value by content so an aliased slice or nested
+// map cannot make a mutation check vacuously pass.
+func mustMarshalJSON(t *testing.T, value any) string {
+	t.Helper()
+	data, err := json.Marshal(value)
+	if err != nil {
+		t.Fatalf("marshal snapshot: %v", err)
+	}
+	return string(data)
 }

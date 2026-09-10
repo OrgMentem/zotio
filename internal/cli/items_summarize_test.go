@@ -17,8 +17,12 @@ import (
 
 func TestBuildItemBundle(t *testing.T) {
 	raw := json.RawMessage(`{"key":"K1","data":{"key":"K1","itemType":"journalArticle","title":"Attention Is All You Need","creators":[{"lastName":"Vaswani","firstName":"Ashish","creatorType":"author"}],"date":"2017-06-12","publicationTitle":"NeurIPS","DOI":"10.1/x","url":"http://x","abstractNote":"We propose the Transformer."}}`)
+	// A real PDF highlight hangs off the ATTACHMENT, not the paper: the store
+	// join walks annotation -> attachment -> top item, but returns the
+	// annotation payload unchanged. A fixture that parents the annotation
+	// directly to K1 would hide that.
 	ann := []json.RawMessage{
-		json.RawMessage(`{"key":"A1","data":{"itemType":"annotation","parentItem":"K1","annotationType":"highlight","annotationText":"self-attention","annotationComment":"key","annotationPageLabel":"3"}}`),
+		json.RawMessage(`{"key":"A1","data":{"itemType":"annotation","parentItem":"ATT1","annotationType":"highlight","annotationText":"self-attention","annotationComment":"key","annotationPageLabel":"3"}}`),
 	}
 	b := buildItemBundle(raw, ann, "Full body text here.", summarizeOpts{maxChars: 8000, maxAnnotations: 40})
 
@@ -36,12 +40,12 @@ func TestBuildItemBundle(t *testing.T) {
 	if len(b.Annotations) != 1 || b.Annotations[0].Text != "self-attention" || b.Annotations[0].Page != "3" {
 		t.Errorf("annotations = %+v", b.Annotations)
 	}
-	// A quoted highlight must stay attributable. The bundle is handed to an LLM
-	// that may cite it, so dropping the annotation key or its source item makes
-	// the quote unverifiable, and it also makes the bundle disagree with what
-	// annotations export emits for the same highlight.
-	if got := b.Annotations[0]; got.Key != "A1" || got.ParentItem != "K1" || got.Type != "highlight" {
-		t.Errorf("annotation identity = %+v, want key A1 sourced to K1 as a highlight", got)
+	// A quoted highlight must stay attributable. The bundle is handed to a
+	// model that may cite it, so dropping the annotation key makes the quote
+	// unverifiable. parent_item is the annotation's DIRECT parent, i.e. the
+	// attachment; the source item is the bundle's own Key.
+	if got := b.Annotations[0]; got.Key != "A1" || got.ParentItem != "ATT1" || got.Type != "highlight" {
+		t.Errorf("annotation identity = %+v, want key A1 parented to attachment ATT1 as a highlight", got)
 	}
 	if b.Fulltext != "Full body text here." || b.Truncated.Fulltext {
 		t.Errorf("fulltext = %q truncated = %v", b.Fulltext, b.Truncated.Fulltext)

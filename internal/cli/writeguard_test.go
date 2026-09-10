@@ -279,6 +279,12 @@ func TestGuardedDeleteReconcilesLostCommittedResponse(t *testing.T) {
 		wantCode    int
 		wantDeleted bool
 		wantErr     bool
+		// wantErrText and wantNoErrText separate the two failure rows. Both
+		// end as "failed", so asserting the status alone would also pass if
+		// the guard skipped the read-back entirely and just relabelled the
+		// original ambiguous error.
+		wantErrText   string
+		wantNoErrText string
 	}{
 		{
 			name:        "target is gone",
@@ -294,12 +300,17 @@ func TestGuardedDeleteReconcilesLostCommittedResponse(t *testing.T) {
 			},
 			wantStatus: "failed",
 			wantErr:    true,
+			// The read-back succeeded and found the item, so this is an
+			// unproven delete, NOT a reconciliation that could not run.
+			wantErrText:   "ambiguous after",
+			wantNoErrText: "reconciliation failed",
 		},
 		{
-			name:       "read-back fails",
-			serveGet:   func(w http.ResponseWriter) { http.Error(w, "unavailable", http.StatusServiceUnavailable) },
-			wantStatus: "failed",
-			wantErr:    true,
+			name:        "read-back fails",
+			serveGet:    func(w http.ResponseWriter) { http.Error(w, "unavailable", http.StatusServiceUnavailable) },
+			wantStatus:  "failed",
+			wantErr:     true,
+			wantErrText: "reconciliation failed",
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -323,6 +334,12 @@ func TestGuardedDeleteReconcilesLostCommittedResponse(t *testing.T) {
 				if !ok || evidence["reconciled"] != true || evidence["deleted"] != true {
 					t.Fatalf("detail = %#v, want reconciled deletion evidence", detail)
 				}
+			}
+			if tc.wantErrText != "" && !strings.Contains(err.Error(), tc.wantErrText) {
+				t.Errorf("error = %q, want it to mention %q", err, tc.wantErrText)
+			}
+			if tc.wantNoErrText != "" && strings.Contains(err.Error(), tc.wantNoErrText) {
+				t.Errorf("error = %q, must not claim %q when the read-back succeeded", err, tc.wantNoErrText)
 			}
 		})
 	}

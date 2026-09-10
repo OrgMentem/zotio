@@ -59,10 +59,11 @@ func TestBuildExportLockfileHashIsOrderInvariant(t *testing.T) {
 
 // The lockfile hash must track item CONTENT, not the fields Zotero rewrites on
 // its own. export snapshot verify reports drift from this hash, and Zotero
-// bumps version and dateModified whenever the desktop re-touches an item, so a
-// hash that followed them would report drift for every idle sync.
-// exportVolatileItemField strips four fields; each needs a witness here, or
-// dropping one silently widens the hash and produces false drift.
+// bumps version, dateAdded and dateModified whenever the desktop re-touches an
+// item, so a hash that followed them would report drift for every idle sync.
+// This witnesses three of the four fields exportVolatileItemField strips; the
+// fourth, key, is witnessed by the empty-item test below, which only reaches
+// its fallback because a key-only item normalizes to nothing.
 func TestBuildExportLockfileHashTracksContentNotVolatileFields(t *testing.T) {
 	items := []json.RawMessage{
 		json.RawMessage(`{"key":"A","version":1,"data":{"key":"A","version":1,"title":"First","dateAdded":"2026-01-01T00:00:00Z","dateModified":"2026-01-01T00:00:00Z"}}`),
