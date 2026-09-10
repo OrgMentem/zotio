@@ -344,13 +344,15 @@ Applied field changes record provenance in the item's Extra field.`,
 			return errors.Join(runErr, errors.Join(proposalErrs...))
 		},
 	}
-
 	cmd.Flags().BoolVar(&flagMissingDOI, "missing-doi", false, "Resolve and add a DOI from CrossRef, OpenAlex, or Semantic Scholar")
 	cmd.Flags().BoolVar(&flagMissingAbstract, "missing-abstract", false, "Fill the abstract from CrossRef, OpenAlex, or Semantic Scholar (uses the item's DOI)")
 	cmd.Flags().BoolVar(&flagMissingPDF, "missing-pdf", false, "Attach an open-access PDF from Unpaywall as a link or download (uses the item's DOI)")
-	cmd.Flags().BoolVar(&flagRepairPDF, "repair-pdf", false, "Re-attach an open-access PDF for named items whose existing attachment file is broken or missing on disk (uses the item's DOI; requires --keys/--keys-from/--scope)")
+	cmd.Flags().BoolVar(&flagRepairPDF, "repair-pdf", false, "Re-attach an open-access PDF for named items whose existing attachment file is broken or missing on disk (uses the item's DOI; requires --keys/--keys-from/--scope/--collection)")
 	cmd.Flags().BoolVar(&flagMissingCitation, "missing-citation", false, "Fill the core citation fields from CrossRef: creators, title, date, venue, plus volume/issue/pages when the provider has them and the item does not (uses the item's DOI)")
-	cmd.Flags().BoolVar(&flagMissingSubjects, "missing-subjects", false, "Propose OpenAlex subject terms as automatic `concept/<term>` tags for untagged items (uses the item's DOI)")
+	// No backticks in this usage string: cobra reads a backquoted word as the
+	// flag's value placeholder, so `concept/<term>` rendered as if this bool
+	// flag took an argument.
+	cmd.Flags().BoolVar(&flagMissingSubjects, "missing-subjects", false, "Propose OpenAlex subject terms as automatic concept/<term> tags for untagged items (uses the item's DOI)")
 	cmd.Flags().StringVar(&flagAttachMode, "attach-mode", "linked-url", "PDF attachment handling: linked-url or linked-file; stored retro-attachment is handled by `zotio attachments add`")
 	cmd.Flags().StringVar(&flagPDFDir, "pdf-dir", "", "Directory for linked-file PDF downloads; responses must be PDF/octet-stream/unspecified Content-Type plus %PDF- magic")
 	cmd.Flags().IntVar(&flagLimit, "limit", 25, "Maximum items to process per category")

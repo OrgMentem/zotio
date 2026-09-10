@@ -4,6 +4,8 @@ Notable changes to zotio. Format follows [Keep a Changelog](https://keepachangel
 
 ## [Unreleased]
 
+## [0.25.0] — 2026-09-10
+
 ### Changed — breaking
 
 - **`items summarize` emits a different annotation shape.** Each annotation in
@@ -57,6 +59,14 @@ Notable changes to zotio. Format follows [Keep a Changelog](https://keepachangel
   other enrich category it records provenance in the item's Extra field,
   naming the provider, the date, and the terms, in the same PATCH as the
   tags.
+
+### Fixed
+
+- **Webhook delivery streams the spool the same way on the first attempt and
+  on a retry.** The first attempt handed `net/http` the spool file itself,
+  which selects a zero-copy `sendfile`, while a retry streamed through
+  userspace. The two attempts differed by a syscall that no caller asked for,
+  and `sendfile` is denied under a sandbox that permits loopback.
 
 ## [0.24.0] — 2026-09-05
 
@@ -2533,6 +2543,8 @@ First tagged release: the trust-and-automation layer for Zotero.
 - **Onboarding** — `zotio init` guided setup (Zotero detection, local API, key, first sync, health check).
 - Release engineering: goreleaser builds for 6 platforms, cosign-signed checksums, SBOMs, Homebrew tap.
 
+[Unreleased]: https://github.com/OrgMentem/zotio/compare/v0.25.0...HEAD
+[0.25.0]: https://github.com/OrgMentem/zotio/compare/v0.24.0...v0.25.0
 [0.24.0]: https://github.com/OrgMentem/zotio/compare/v0.23.0...v0.24.0
 [0.23.0]: https://github.com/OrgMentem/zotio/compare/v0.22.1...v0.23.0
 [0.22.1]: https://github.com/OrgMentem/zotio/compare/v0.22.0...v0.22.1

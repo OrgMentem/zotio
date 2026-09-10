@@ -1952,7 +1952,7 @@
           "type": "boolean"
         },
         "missing-subjects": {
-          "description": "Propose OpenAlex subject terms as automatic `concept/\u003cterm\u003e` tags for untagged items (uses the item's DOI) (default: false)",
+          "description": "Propose OpenAlex subject terms as automatic concept/\u003cterm\u003e tags for untagged items (uses the item's DOI) (default: false)",
           "type": "boolean"
         },
         "no-openalex": {
@@ -1968,7 +1968,7 @@
           "type": "string"
         },
         "repair-pdf": {
-          "description": "Re-attach an open-access PDF for named items whose existing attachment file is broken or missing on disk (uses the item's DOI; requires --keys/--keys-from/--scope) (default: false)",
+          "description": "Re-attach an open-access PDF for named items whose existing attachment file is broken or missing on disk (uses the item's DOI; requires --keys/--keys-from/--scope/--collection) (default: false)",
           "type": "boolean"
         },
         "scope": {

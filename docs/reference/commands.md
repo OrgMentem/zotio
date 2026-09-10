@@ -1621,11 +1621,11 @@ zotio items enrich [flags]
 | `--missing-citation` | `bool` | `false` | Fill the core citation fields from CrossRef: creators, title, date, venue, plus volume/issue/pages when the provider has them and the item does not (uses the item's DOI) |
 | `--missing-doi` | `bool` | `false` | Resolve and add a DOI from CrossRef, OpenAlex, or Semantic Scholar |
 | `--missing-pdf` | `bool` | `false` | Attach an open-access PDF from Unpaywall as a link or download (uses the item's DOI) |
-| `--missing-subjects` | `bool` | `false` | Propose OpenAlex subject terms as automatic `concept/<term>` tags for untagged items (uses the item's DOI) |
+| `--missing-subjects` | `bool` | `false` | Propose OpenAlex subject terms as automatic concept/<term> tags for untagged items (uses the item's DOI) |
 | `--no-openalex` | `bool` | `false` | Disable the OpenAlex fallback for --missing-doi/--missing-abstract |
 | `--no-semantic-scholar` | `bool` | `false` | Disable the Semantic Scholar fallback for --missing-doi/--missing-abstract |
 | `--pdf-dir` | `string` |  | Directory for linked-file PDF downloads; responses must be PDF/octet-stream/unspecified Content-Type plus %PDF- magic |
-| `--repair-pdf` | `bool` | `false` | Re-attach an open-access PDF for named items whose existing attachment file is broken or missing on disk (uses the item's DOI; requires --keys/--keys-from/--scope) |
+| `--repair-pdf` | `bool` | `false` | Re-attach an open-access PDF for named items whose existing attachment file is broken or missing on disk (uses the item's DOI; requires --keys/--keys-from/--scope/--collection) |
 | `--scope` | `string` |  | Item cohort: library \| collection:KEY \| tag:NAME \| item:KEY \| query:TEXT \| saved-search:KEY (default: the whole library) |
 | `--validate` | `bool` | `false` | Read-only DOI discrepancy report against CrossRef and OpenCitations |
 
