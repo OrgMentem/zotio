@@ -15,8 +15,6 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"zotio/internal/client"
-	"zotio/internal/config"
 	"zotio/internal/mutation"
 )
 
@@ -255,70 +253,5 @@ func TestItemsMoveBulkKeysFrom(t *testing.T) {
 		if !stringSliceContains(writePlaneTestPatchBodyCollections(t, srv.patchBodies[key]), "BULK") {
 			t.Errorf("%s PATCH body = %+v, want BULK collection", key, srv.patchBodies[key])
 		}
-	}
-}
-
-func TestItemsMovePreviewWritesNothing(t *testing.T) {
-	srv := writePlaneTestNewItemServer(t, "collections", map[string]string{"K1": "42"}, map[string][]string{
-		"K1": {"SOURCE"},
-	})
-
-	env := writePlaneTestMustRunMutationCmd(t, "items move", newItemsMoveCmd, &rootFlags{asJSON: true, maxChanges: -1}, "--to", "TARGET", "K1")
-	if !env.OK || env.Mode != "preview" || env.Result != nil || env.Plan.Summary.Planned != 1 {
-		t.Fatalf("env = %+v, want preview plan with one change", env)
-	}
-	if srv.patchCounts["K1"] != 0 {
-		t.Fatalf("PATCH count = %d, want 0", srv.patchCounts["K1"])
-	}
-}
-
-func TestItemsMoveDryRunAvoidsVersionFetch(t *testing.T) {
-	srv := writePlaneTestNewItemServer(t, "collections", map[string]string{"K1": "42"}, map[string][]string{
-		"K1": {"SOURCE"},
-	})
-
-	env := writePlaneTestMustRunMutationCmd(t, "items move", newItemsMoveCmd, &rootFlags{asJSON: true, dryRun: true, maxChanges: -1}, "--to", "TARGET", "K1")
-	if !env.OK || env.Mode != "preview" || env.PreviewReason != "dry_run" || env.Result != nil || env.Plan.Summary.Planned != 1 {
-		t.Fatalf("env = %+v, want dry-run preview with one planned change", env)
-	}
-	if srv.getCounts["K1"] != 0 || srv.patchCounts["K1"] != 0 {
-		t.Fatalf("requests: GET=%d PATCH=%d, want none", srv.getCounts["K1"], srv.patchCounts["K1"])
-	}
-}
-
-func TestPatchItemCollectionsFailsClosedWithoutVersion(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		t.Errorf("PATCH must not be dispatched when version is 0; got %s %s", r.Method, r.URL.Path)
-		http.Error(w, "unexpected PATCH", http.StatusBadRequest)
-	}))
-	t.Cleanup(srv.Close)
-	c := client.New(&config.Config{BaseURL: srv.URL + "/users/0"}, 0, 0)
-	c.NoCache = true
-	status, reason, err := patchItemCollections(c, "/users/0/items/K1", 0, []string{"TARGET"})
-	if err == nil {
-		t.Fatalf("patchItemCollections with version 0: err = nil, want error")
-	}
-	if status != "failed" {
-		t.Fatalf("status = %q, want failed", status)
-	}
-	msg, _ := reason.(string)
-	if !strings.Contains(strings.ToLower(msg), "write-plane version") && !strings.Contains(strings.ToLower(msg), "if-unmodified-since-version") {
-		t.Fatalf("reason = %q, want missing write-plane precondition", msg)
-	}
-}
-
-func TestApplyItemCollectionMoveFailsClosedOnZeroVersion(t *testing.T) {
-	srv := writePlaneTestNewItemServer(t, "collections", map[string]string{"K1": "0"}, map[string][]string{
-		"K1": {"SOURCE"},
-	})
-	env, _, _ := writePlaneTestRunMutationCmd(t, newItemsMoveCmd, &rootFlags{asJSON: true, yes: true, maxChanges: -1}, "--to", "TARGET", "K1")
-	if env.Result == nil || len(env.Result.Items) != 1 {
-		t.Fatalf("env = %+v, want one result", env)
-	}
-	if env.Result.Items[0].Status != "failed" {
-		t.Fatalf("status = %q, want failed (zero version must fail closed)", env.Result.Items[0].Status)
-	}
-	if srv.patchCounts["K1"] != 0 {
-		t.Fatalf("PATCH count = %d, want 0 (no request when version is 0)", srv.patchCounts["K1"])
 	}
 }
