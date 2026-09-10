@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/http/cookiejar"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -848,5 +849,91 @@ func TestConnectorNonOKBodyReadFailurePreservesDetail(t *testing.T) {
 	}
 	if !strings.Contains(perr.Error(), "HTTP 400") {
 		t.Fatalf("Ping error missing status code: %v", perr)
+	}
+}
+
+// Zotero's ItemSaver answers HTTP 500 for a creator whose name fields are all
+// empty, so SaveItems strips those entries first. It must strip ONLY those: a
+// dropped real creator loses metadata the save cannot recover, and an entry
+// kept by mistake fails the whole save. The caller's map is shared with the
+// import manifest, so the filter copies before it edits.
+func TestWithoutPlaceholderCreators(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name string
+		// creators is the value stored under "creators"; nil omits the key.
+		creators any
+		// want is the expected surviving list; nil means the key must be gone.
+		want []any
+		// wantKey reports whether "creators" must still be present.
+		wantKey bool
+	}{
+		{
+			name:     "every entry is blank",
+			creators: []any{map[string]any{"firstName": "", "lastName": ""}, map[string]any{"name": "   "}},
+		},
+		{
+			name: "blank entry dropped, named entry kept",
+			creators: []any{
+				map[string]any{"creatorType": "author", "firstName": "", "lastName": ""},
+				map[string]any{"creatorType": "author", "firstName": "Ada", "lastName": "Lovelace"},
+			},
+			want:    []any{map[string]any{"creatorType": "author", "firstName": "Ada", "lastName": "Lovelace"}},
+			wantKey: true,
+		},
+		{
+			name:     "single-field name is a name",
+			creators: []any{map[string]any{"creatorType": "author", "name": "The Zotero Project"}},
+			want:     []any{map[string]any{"creatorType": "author", "name": "The Zotero Project"}},
+			wantKey:  true,
+		},
+		{
+			name:     "surname alone is a name",
+			creators: []any{map[string]any{"creatorType": "author", "firstName": "", "lastName": "Lovelace"}},
+			want:     []any{map[string]any{"creatorType": "author", "firstName": "", "lastName": "Lovelace"}},
+			wantKey:  true,
+		},
+		{
+			// A non-string name carries no name Zotero can save, and reading it
+			// as one would send back the entry that produces the 500.
+			name:     "non-string name is not a name",
+			creators: []any{map[string]any{"creatorType": "author", "name": float64(42)}},
+		},
+		{
+			name:    "item without creators is untouched",
+			wantKey: false,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			item := map[string]any{"id": "connector-key", "itemType": "journalArticle"}
+			if tc.creators != nil {
+				item["creators"] = tc.creators
+			}
+			originalCreators, hadCreators := item["creators"]
+
+			cleaned := withoutPlaceholderCreators([]map[string]any{item})
+			if len(cleaned) != 1 {
+				t.Fatalf("cleaned %d items, want 1", len(cleaned))
+			}
+			got, present := cleaned[0]["creators"]
+			if present != tc.wantKey {
+				t.Fatalf("creators present = %v (%#v), want %v", present, got, tc.wantKey)
+			}
+			if tc.wantKey && !reflect.DeepEqual(got, tc.want) {
+				t.Fatalf("creators = %#v, want %#v", got, tc.want)
+			}
+			if cleaned[0]["itemType"] != "journalArticle" {
+				t.Errorf("itemType = %v, want the unrelated fields carried over", cleaned[0]["itemType"])
+			}
+			// Copy-on-write: the manifest entry the caller still holds must
+			// read exactly as it did before the save.
+			after, stillHas := item["creators"]
+			if stillHas != hadCreators || !reflect.DeepEqual(after, originalCreators) {
+				t.Fatalf("input creators mutated: %#v, want %#v", after, originalCreators)
+			}
+		})
 	}
 }
