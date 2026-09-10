@@ -1582,6 +1582,11 @@ Work queues come from the same checks as 'items audit':
                       them and the item's copy is blank. A blank volume is only
                       a defect if the venue actually has one, so those fields
                       are reported by --validate, not by 'library health'.
+  --missing-subjects  propose OpenAlex subject terms as automatic "concept/<term>"
+                      tags for untagged items (requires DOI). Only concepts
+                      OpenAlex scores at or above 0.50 are proposed, the
+                      strongest six at most, so an untagged library becomes
+                      facetable without burying the operator's own tags.
 
 PDF attachment modes:
   linked-url   create a linked_url attachment (default; no download)
@@ -1616,6 +1621,7 @@ zotio items enrich [flags]
 | `--missing-citation` | `bool` | `false` | Fill the core citation fields from CrossRef: creators, title, date, venue, plus volume/issue/pages when the provider has them and the item does not (uses the item's DOI) |
 | `--missing-doi` | `bool` | `false` | Resolve and add a DOI from CrossRef, OpenAlex, or Semantic Scholar |
 | `--missing-pdf` | `bool` | `false` | Attach an open-access PDF from Unpaywall as a link or download (uses the item's DOI) |
+| `--missing-subjects` | `bool` | `false` | Propose OpenAlex subject terms as automatic `concept/<term>` tags for untagged items (uses the item's DOI) |
 | `--no-openalex` | `bool` | `false` | Disable the OpenAlex fallback for --missing-doi/--missing-abstract |
 | `--no-semantic-scholar` | `bool` | `false` | Disable the Semantic Scholar fallback for --missing-doi/--missing-abstract |
 | `--pdf-dir` | `string` |  | Directory for linked-file PDF downloads; responses must be PDF/octet-stream/unspecified Content-Type plus %PDF- magic |

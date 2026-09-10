@@ -543,6 +543,35 @@ ORDER BY date_added DESC`
 	return queryItemsAuditRows(db, query, limit)
 }
 
+// queryMissingTagsItemsForKeys narrows the untagged queue to named keys. It
+// must reproduce the unkeyed predicate exactly — including
+// libraryTopLevelItemsPredicate — or a child attachment named in a key set
+// would join the queue and get subject tags of its own.
+func queryMissingTagsItemsForKeys(db localQueryStore, limit int, collection string, keys []string) ([]map[string]any, error) {
+	if len(keys) == 0 {
+		return nil, nil
+	}
+	query := `
+SELECT
+	id AS key,
+	json_extract(data, '$.data.title') AS title,
+	json_extract(data, '$.data.itemType') AS item_type,
+	json_extract(data, '$.data.DOI') AS doi,
+	json_extract(data, '$.data.dateAdded') AS date_added
+FROM resources
+WHERE resource_type = 'items'
+	AND ` + libraryTopLevelItemsPredicate + `
+	AND COALESCE(json_array_length(json_extract(data, '$.data.tags')), 0) = 0`
+	args := enrichCollectionFilterArgs(&query, "data", collection)
+	query += `
+	AND id IN (` + strings.TrimSuffix(strings.Repeat("?,", len(keys)), ",") + `)
+ORDER BY date_added DESC`
+	for _, key := range keys {
+		args = append(args, key)
+	}
+	return queryItemsAuditRows(db, query, limit, args...)
+}
+
 func queryItemsAuditRows(db localQueryStore, query string, limit int, args ...any) ([]map[string]any, error) {
 	if limit > 0 {
 		query += `

@@ -39,6 +39,17 @@ Notable changes to zotio. Format follows [Keep a Changelog](https://keepachangel
   "every item that has a PDF". The new attachment is an addition, not a
   replacement — Zotero cannot re-point a broken attachment, and deleting the
   old child would discard the annotations stored against it.
+- **`items enrich --missing-subjects` proposes OpenAlex subject terms as tags.**
+  `missing_tags` was the only health check with a nil `recommended_action` —
+  an untagged item was a report with no next step. It now carries
+  `zotio items enrich --missing-subjects --keys-from -`. Only concepts
+  OpenAlex scores at or above 0.50 are proposed, the strongest six at most,
+  written as automatic `concept/<term>` tags so a managed subject term stays
+  distinguishable from a tag you typed and is removable by one prefix. The
+  write merges against the item's live tags through the same applier
+  `items tags add` uses: the Zotero tag array is replace-only, so a PATCH
+  assembled from the local mirror would delete anything tagged since the last
+  sync.
 
 ## [0.24.0] — 2026-09-05
 

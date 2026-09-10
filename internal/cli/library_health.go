@@ -293,9 +293,13 @@ func healthCheckRegistry() []healthCheck {
 			func(db localQueryStore) ([]map[string]any, error) { return queryMissingAbstractItems(db, 0, "") },
 			"missing_abstract", sevInfo, true,
 			&RecommendedAction{Command: "zotio items enrich --missing-abstract --keys-from -"})},
+		// missing_tags was the one content check with no next step at all.
+		// The fixer is DOI-gated like the other enrich routes: an item with
+		// no DOI is reported as a skip, not silently dropped.
 		{kind: "missing_tags", severity: sevInfo, run: itemCheckRunner(
 			func(db localQueryStore) ([]map[string]any, error) { return queryMissingTagsItems(db, 0) },
-			"missing_tags", sevInfo, false, nil)},
+			"missing_tags", sevInfo, true,
+			&RecommendedAction{Command: "zotio items enrich --missing-subjects --keys-from -"})},
 		{kind: "tag_drift", severity: sevHigh, run: runTagDrift},
 		{kind: "broken_attachment_file", severity: sevCritical, run: runBrokenAttachmentFile},
 		// gate DOI-bearing items against CrossRef retraction notices.

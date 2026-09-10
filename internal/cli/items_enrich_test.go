@@ -1912,6 +1912,210 @@ func TestItemsEnrichRepairPDFProposesForAnAlreadyAttachedItem(t *testing.T) {
 	}
 }
 
+// Subject tags are written into the operator's library, so the selection rule
+// is the contract: confident concepts only, strongest first, capped, and
+// namespaced so a managed term never looks like a hand-typed tag.
+func TestResolveSubjectsViaOpenAlexKeepsConfidentTermsOnly(t *testing.T) {
+	var gotQuery string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotQuery = r.URL.RawQuery
+		_, _ = w.Write([]byte(`{"results":[{"concepts":[
+			{"display_name":"Weak","score":0.49},
+			{"display_name":"Machine learning","score":0.62},
+			{"display_name":"Computer science","score":0.98},
+			{"display_name":"Attention","score":0.71},
+			{"display_name":"","score":0.99},
+			{"display_name":"Machine learning","score":0.55},
+			{"display_name":"A","score":0.9},
+			{"display_name":"B","score":0.9},
+			{"display_name":"C","score":0.9},
+			{"display_name":"D","score":0.9}
+		]}]}`))
+	}))
+	t.Cleanup(srv.Close)
+	withBase(t, &enrichOpenAlexBase, srv.URL)
+
+	tags, ok := resolveSubjectsViaOpenAlex(context.Background(), http.DefaultClient, "10.1/x", "me@example.com")
+	if !ok {
+		t.Fatal("want concepts resolved")
+	}
+	// Strongest first, and exactly the cap: the response deliberately offers
+	// more qualifying concepts than the cap allows.
+	want := []string{
+		"concept/Computer science", "concept/A", "concept/B",
+		"concept/C", "concept/D", "concept/Attention",
+	}
+	if len(tags) != len(want) {
+		t.Fatalf("tags = %v, want %d capped entries", tags, len(want))
+	}
+	for _, tag := range tags {
+		if !strings.HasPrefix(tag, "concept/") {
+			t.Errorf("tag %q is not namespaced", tag)
+		}
+		if tag == "concept/Weak" || tag == "concept/" {
+			t.Errorf("tag %q should have been filtered", tag)
+		}
+	}
+	// "Machine learning" scores 0.62, above the threshold, yet loses its slot
+	// to six stronger terms: proof the sort runs before the cap.
+	if tags[0] != "concept/Computer science" {
+		t.Errorf("tags[0] = %q, want the highest-scoring concept first", tags[0])
+	}
+	if !strings.Contains(gotQuery, "mailto=me%40example.com") {
+		t.Errorf("query = %q, want the polite-pool mailto", gotQuery)
+	}
+
+	// An unscored or weakly scored work yields no proposal at all, which the
+	// caller reports as a skip rather than writing empty tags.
+	weak := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"results":[{"concepts":[{"display_name":"Weak","score":0.1}]}]}`))
+	}))
+	t.Cleanup(weak.Close)
+	withBase(t, &enrichOpenAlexBase, weak.URL)
+	if tags, ok := resolveSubjectsViaOpenAlex(context.Background(), http.DefaultClient, "10.1/x", ""); ok {
+		t.Fatalf("tags = %v, want no proposal below the score threshold", tags)
+	}
+}
+
+// The whole point of the finding: missing_tags had a nil RecommendedAction, so
+// an untagged item was a dead-end report. Assert the plan an operator gets by
+// piping that finding into the fixer.
+func TestItemsEnrichMissingSubjectsPlansAutomaticConceptTags(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("ZOTERO_CONFIG", filepath.Join(t.TempDir(), "missing.toml"))
+	db, err := store.OpenWithContext(context.Background(), helpersTestDefaultDBPath(t, "zotio"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	items := []json.RawMessage{
+		json.RawMessage(`{"key":"KBARE","version":4,"data":{"key":"KBARE","itemType":"journalArticle","title":"Untagged","DOI":"10.1/bare","tags":[]}}`),
+		json.RawMessage(`{"key":"KTAGGED","version":4,"data":{"key":"KTAGGED","itemType":"journalArticle","title":"Tagged","DOI":"10.1/tagged","tags":[{"tag":"mine"}]}}`),
+	}
+	if _, _, err := db.UpsertBatch("items", items); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close store: %v", err)
+	}
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"results":[{"concepts":[{"display_name":"Computer science","score":0.9}]}]}`))
+	}))
+	t.Cleanup(srv.Close)
+	withBase(t, &enrichOpenAlexBase, srv.URL)
+
+	cmd := newItemsEnrichCmd(&rootFlags{asJSON: true})
+	cmd.SetArgs([]string{"--missing-subjects"})
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&bytes.Buffer{})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("enrich --missing-subjects: %v; out=%s", err, out.String())
+	}
+	var env mutation.Envelope
+	if err := json.Unmarshal(out.Bytes(), &env); err != nil {
+		t.Fatalf("decode envelope: %v", err)
+	}
+	// Only the untagged item is a candidate: an item the operator already
+	// tagged is not missing tags.
+	if env.Plan.Summary.Planned != 1 || len(env.Plan.Operations) != 1 {
+		t.Fatalf("plan = %+v ops=%+v, want one proposal for KBARE alone", env.Plan.Summary, env.Plan.Operations)
+	}
+	op := env.Plan.Operations[0]
+	if op.Key != "KBARE" {
+		t.Fatalf("planned key = %q, want KBARE", op.Key)
+	}
+	if len(op.Changes) != 1 {
+		t.Fatalf("changes = %+v, want one tag addition", op.Changes)
+	}
+	// A managed subject term must be automatic (type 1) so it stays
+	// distinguishable from a tag the operator typed.
+	if op.Changes[0].Field != "tags" || op.Changes[0].Add != "concept/Computer science" || op.Changes[0].TagType != 1 {
+		t.Fatalf("change = %+v, want an automatic concept/ tag addition", op.Changes[0])
+	}
+}
+
+// Applying a subject proposal must MERGE against the item's live tags. The
+// Zotero tag array is replace-only, so a PATCH built from the local mirror
+// would silently delete any tag added since the last sync.
+func TestItemsEnrichMissingSubjectsApplyMergesLiveTags(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("ZOTERO_CONFIG", filepath.Join(t.TempDir(), "missing.toml"))
+	db, err := store.OpenWithContext(context.Background(), helpersTestDefaultDBPath(t, "zotio"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	// The mirror believes this item has no tags at all.
+	item := json.RawMessage(`{"key":"KBARE","version":4,"data":{"key":"KBARE","itemType":"journalArticle","title":"Untagged","DOI":"10.1/bare","tags":[]}}`)
+	if _, _, err := db.UpsertBatch("items", []json.RawMessage{item}); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close store: %v", err)
+	}
+
+	oa := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"results":[{"concepts":[{"display_name":"Computer science","score":0.9}]}]}`))
+	}))
+	t.Cleanup(oa.Close)
+	withBase(t, &enrichOpenAlexBase, oa.URL)
+
+	var patched map[string]any
+	zsrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet {
+			// The live item carries a tag the mirror never saw.
+			w.Header().Set("Last-Modified-Version", "11")
+			_, _ = w.Write([]byte(`{"key":"KBARE","version":11,"data":{"key":"KBARE","itemType":"journalArticle","tags":[{"tag":"typed-by-hand"}]}}`))
+			return
+		}
+		if r.Method == http.MethodPatch {
+			_ = json.NewDecoder(r.Body).Decode(&patched)
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("{}"))
+	}))
+	t.Cleanup(zsrv.Close)
+	t.Setenv("ZOTERO_BASE_URL", zsrv.URL)
+
+	cmd := newItemsEnrichCmd(&rootFlags{asJSON: true, yes: true, maxChanges: -1})
+	cmd.SetArgs([]string{"--missing-subjects"})
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&bytes.Buffer{})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("apply: %v; out=%s", err, out.String())
+	}
+	var env mutation.Envelope
+	if err := json.Unmarshal(out.Bytes(), &env); err != nil {
+		t.Fatalf("decode envelope: %v", err)
+	}
+	if env.Result == nil || env.Result.Summary.Applied != 1 {
+		t.Fatalf("result = %+v, want one applied tag write", env.Result)
+	}
+	rawTags, ok := patched["tags"].([]any)
+	if !ok {
+		t.Fatalf("PATCH body = %+v, want a tags array", patched)
+	}
+	types := map[string]float64{}
+	for _, raw := range rawTags {
+		obj, ok := raw.(map[string]any)
+		if !ok {
+			t.Fatalf("tag entry = %#v, want an object", raw)
+		}
+		name, _ := obj["tag"].(string)
+		typ, _ := obj["type"].(float64)
+		types[name] = typ
+	}
+	if _, kept := types["typed-by-hand"]; !kept {
+		t.Fatalf("PATCH tags = %v, want the live hand-typed tag preserved", types)
+	}
+	if got, present := types["concept/Computer science"]; !present || got != 1 {
+		t.Fatalf("PATCH tags = %v, want the concept tag added with automatic type 1", types)
+	}
+}
+
 func TestItemsEnrichLinkedFileApplyDownloadsAndPostsAttachment(t *testing.T) {
 	withPDFSafety(t, nil)
 	seedEnrichPDFStore(t)

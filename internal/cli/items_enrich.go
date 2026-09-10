@@ -58,6 +58,11 @@ type enrichAction string
 const (
 	enrichActionPatch  enrichAction = "patch"
 	enrichActionAttach enrichAction = "attach"
+	// enrichActionTag writes tags, which a field PATCH cannot do safely: the
+	// tag array is replace-only, so the write has to re-read the item's
+	// current tags and merge. It therefore reuses the tag-write applier
+	// instead of the field-patch path.
+	enrichActionTag enrichAction = "tag"
 )
 
 // enrichProposal is one proposed remediation for one item.
@@ -73,6 +78,7 @@ type enrichProposal struct {
 	AttachMode  string         `json:"attach_mode,omitempty"` // missing-pdf: linked-url or linked-file
 	DownloadURL string         `json:"download_url,omitempty"`
 	PDFPath     string         `json:"pdf_path,omitempty"`
+	Tags        []string       `json:"tags,omitempty"` // subject enrichment: namespaced tags to add
 	// Statuses now live in mutation.Result items, not proposal JSON.
 	version any    // item version for the PATCH conflict guard (not serialized)
 	extra   string // item's current Extra so provenance appends instead of replacing (not serialized)
@@ -105,6 +111,7 @@ func newItemsEnrichCmd(flags *rootFlags) *cobra.Command {
 		flagMissingPDF        bool
 		flagRepairPDF         bool
 		flagMissingCitation   bool
+		flagMissingSubjects   bool
 		flagLimit             int
 		flagEmail             string
 		flagNoOpenAlex        bool
@@ -142,6 +149,11 @@ Work queues come from the same checks as 'items audit':
                       them and the item's copy is blank. A blank volume is only
                       a defect if the venue actually has one, so those fields
                       are reported by --validate, not by 'library health'.
+  --missing-subjects  propose OpenAlex subject terms as automatic "concept/<term>"
+                      tags for untagged items (requires DOI). Only concepts
+                      OpenAlex scores at or above 0.50 are proposed, the
+                      strongest six at most, so an untagged library becomes
+                      facetable without burying the operator's own tags.
 
 PDF attachment modes:
   linked-url   create a linked_url attachment (default; no download)
@@ -181,8 +193,8 @@ Applied field changes record provenance in the item's Extra field.`,
 			if wantsPDF && attachMode == "linked-file" && strings.TrimSpace(flagPDFDir) == "" {
 				return usageErr(fmt.Errorf("--pdf-dir is required with --attach-mode linked-file"))
 			}
-			if !flagValidate && !flagMissingDOI && !flagMissingAbstract && !wantsPDF && !flagMissingCitation {
-				return fmt.Errorf("specify at least one of --missing-doi, --missing-abstract, --missing-pdf, --repair-pdf, --missing-citation, or --validate")
+			if !flagValidate && !flagMissingDOI && !flagMissingAbstract && !wantsPDF && !flagMissingCitation && !flagMissingSubjects {
+				return fmt.Errorf("specify at least one of --missing-doi, --missing-abstract, --missing-pdf, --repair-pdf, --missing-citation, --missing-subjects, or --validate")
 			}
 			// Whether an attachment file is broken is only knowable from the
 			// live desktop API, which this command does not call. Without an
@@ -291,6 +303,13 @@ Applied field changes record provenance in the item's Extra field.`,
 					proposalErrs = append(proposalErrs, buildErr)
 				}
 			}
+			if flagMissingSubjects {
+				p, s, buildErr := buildEnrichProposals(cmd.Context(), db, httpClient, "missing_subjects", flagLimit, flagCollection, keyFilter, flagEmail, useOpenAlex, useSemanticScholar, "linked-url", "")
+				proposals, skipped = append(proposals, p...), append(skipped, s...)
+				if buildErr != nil {
+					proposalErrs = append(proposalErrs, buildErr)
+				}
+			}
 
 			// Preserve proposal building and route preview/apply through the shared mutation helper.
 			mode := resolveMutationMode(flags)
@@ -325,6 +344,7 @@ Applied field changes record provenance in the item's Extra field.`,
 	cmd.Flags().BoolVar(&flagMissingPDF, "missing-pdf", false, "Attach an open-access PDF from Unpaywall as a link or download (uses the item's DOI)")
 	cmd.Flags().BoolVar(&flagRepairPDF, "repair-pdf", false, "Re-attach an open-access PDF for named items whose existing attachment file is broken or missing on disk (uses the item's DOI; requires --keys/--keys-from/--scope)")
 	cmd.Flags().BoolVar(&flagMissingCitation, "missing-citation", false, "Fill the core citation fields from CrossRef: creators, title, date, venue, plus volume/issue/pages when the provider has them and the item does not (uses the item's DOI)")
+	cmd.Flags().BoolVar(&flagMissingSubjects, "missing-subjects", false, "Propose OpenAlex subject terms as automatic `concept/<term>` tags for untagged items (uses the item's DOI)")
 	cmd.Flags().StringVar(&flagAttachMode, "attach-mode", "linked-url", "PDF attachment handling: linked-url or linked-file; stored retro-attachment is handled by `zotio attachments add`")
 	cmd.Flags().StringVar(&flagPDFDir, "pdf-dir", "", "Directory for linked-file PDF downloads; responses must be PDF/octet-stream/unspecified Content-Type plus %PDF- magic")
 	cmd.Flags().IntVar(&flagLimit, "limit", 25, "Maximum items to process per category")
@@ -571,6 +591,8 @@ ORDER BY date_added DESC`
 		return queryMissingPDFItemsForKeys(db, "", 0, collection, keys)
 	case "repair_pdf":
 		return queryRepairPDFItemsForKeys(db, 0, collection, keys)
+	case "missing_subjects":
+		return queryMissingTagsItemsForKeys(db, 0, collection, keys)
 	default:
 		return nil, fmt.Errorf("unknown category %q", category)
 	}
@@ -592,6 +614,8 @@ func enrichWorkQueue(db localQueryStore, category string, limit int, collection 
 		// key set or scope, so this arm never sees an unkeyed queue. Name it
 		// anyway rather than returning "unknown category" for a real one.
 		return nil, fmt.Errorf("repair_pdf has no library-wide work queue: name the broken items with --keys/--keys-from/--scope")
+	case "missing_subjects":
+		return queryMissingTagsItems(db, limit)
 	case "missing_citation":
 		return queryCitationEnrichCandidates(db, limit, collection)
 	default:
@@ -812,6 +836,30 @@ func resolveEnrichment(ctx context.Context, httpClient *http.Client, category, k
 			Key: key, Title: title, Category: category, Action: enrichActionPatch,
 			Source: "CrossRef", Note: "citation fields " + strings.Join(sortedFieldNames(fields), ", "),
 			Fields:  fields,
+			version: version,
+			extra:   stringFromMap(data, "extra"),
+		}, ""
+
+	case "missing_subjects":
+		// OpenAlex only. CrossRef carries no subject vocabulary, and the
+		// concepts OpenAlex assigns are discipline-agnostic, which is what an
+		// untagged library needs; the PubMed MeSH route covers biomedicine
+		// only and is a separate, still-open ask.
+		doi := normalizeDOI(stringFromMap(data, "DOI"))
+		if doi == "" {
+			return enrichProposal{}, "no DOI to look up subject terms; run --missing-doi first"
+		}
+		if !useOpenAlex {
+			return enrichProposal{}, "subject terms come from OpenAlex, which --no-openalex disabled"
+		}
+		tags, ok := resolveSubjectsViaOpenAlex(ctx, httpClient, doi, email)
+		if !ok {
+			return enrichProposal{}, fmt.Sprintf("OpenAlex has no concepts scoring at least %.2f for this DOI", minOpenAlexConceptScore)
+		}
+		return enrichProposal{
+			Key: key, Title: title, Category: category, Action: enrichActionTag,
+			Source: "OpenAlex", Note: "subject tags " + strings.Join(tags, ", "),
+			Tags:    tags,
 			version: version,
 			extra:   stringFromMap(data, "extra"),
 		}, ""
@@ -1055,6 +1103,18 @@ func applyEnrichProposalWithContext(ctx context.Context, downloader enrichPDFDow
 			err := fmt.Errorf("unsupported PDF attach mode %q", p.AttachMode)
 			return "failed", err.Error(), err
 		}
+	case enrichActionTag:
+		// The tag array is replace-only in the Zotero API, so the write has to
+		// merge against the item's CURRENT tags read from the write plane —
+		// exactly what `items tags add --automatic` does. Reuse that applier
+		// rather than PATCHing a tags array assembled from the local mirror,
+		// which would drop any tag added since the last sync.
+		writeClient, ok := c.(*client.Client)
+		if !ok || writeClient == nil {
+			err := errors.New("subject tags require the Zotero write client")
+			return "failed", err.Error(), err
+		}
+		return applyItemTagAdd(writeClient, replacePathParam("/items/{itemKey}", "itemKey", p.Key), p.Tags, true)
 	}
 	return "no_op", "unknown enrichment action", nil
 }
@@ -1110,7 +1170,8 @@ type apiMutator interface {
 
 func enrichNeedsAPIMutator(proposals []enrichProposal) bool {
 	for _, proposal := range proposals {
-		if proposal.Action == enrichActionPatch || proposal.Action == enrichActionAttach {
+		switch proposal.Action {
+		case enrichActionPatch, enrichActionAttach, enrichActionTag:
 			return true
 		}
 	}
@@ -1168,6 +1229,15 @@ func enrichProposalChanges(p enrichProposal) []mutation.Change {
 			// parent-item field and replay it onto the parent's data.
 			return []mutation.Change{{Field: "attachment", Add: p.Attachment}}
 		}
+	case enrichActionTag:
+		// TagType 1 marks the tag automatic, which is how a managed subject
+		// term stays distinguishable from a tag the operator typed. The
+		// mirror replays these as tag additions, never as a tags array.
+		changes := make([]mutation.Change, 0, len(p.Tags))
+		for _, tag := range p.Tags {
+			changes = append(changes, mutation.Change{Field: "tags", Add: tag, TagType: 1})
+		}
+		return changes
 	default:
 		return nil
 	}
@@ -1649,6 +1719,14 @@ type openAlexWork struct {
 	Title                 string               `json:"title"`
 	AbstractInvertedIndex map[string][]int     `json:"abstract_inverted_index"`
 	Authorships           []openAlexAuthorship `json:"authorships"`
+	Concepts              []openAlexConcept    `json:"concepts"`
+}
+
+// openAlexConcept is one subject term OpenAlex assigns to a work, with the
+// confidence it assigns to that term.
+type openAlexConcept struct {
+	DisplayName string  `json:"display_name"`
+	Score       float64 `json:"score"`
 }
 
 type openAlexAuthorship struct {
@@ -1720,6 +1798,61 @@ func resolveAbstractViaOpenAlex(ctx context.Context, httpClient *http.Client, do
 		return "", false
 	}
 	return abstract, true
+}
+
+const (
+	// OpenAlex scores every concept it assigns, including weak ones. A low
+	// threshold turns a facetable subject list into noise, and these tags are
+	// written into the operator's library, so the bar is deliberately high.
+	minOpenAlexConceptScore = 0.5
+	// Zotero shows tags inline on the item; a long tail buries the operator's
+	// own tags. Keep the strongest handful.
+	maxEnrichSubjectTags = 6
+	// Tags are namespaced so a managed subject term stays distinguishable
+	// from a tag the operator typed, and so removing them again is a single
+	// selectable prefix.
+	enrichSubjectTagPrefix = "concept/"
+)
+
+// resolveSubjectsViaOpenAlex returns namespaced subject tags for a DOI, keeping
+// only concepts OpenAlex is confident about, strongest first.
+func resolveSubjectsViaOpenAlex(ctx context.Context, httpClient *http.Client, doi, email string) ([]string, bool) {
+	var resp openAlexSearchResponse
+	if err := getJSON(ctx, httpClient, openAlexWorksURL("doi:"+openAlexFilterLiteral(strings.ToLower(doi)), email), &resp); err != nil {
+		return nil, false
+	}
+	if len(resp.Results) == 0 {
+		return nil, false
+	}
+	concepts := append([]openAlexConcept(nil), resp.Results[0].Concepts...)
+	// OpenAlex documents no ordering guarantee, and the cap keeps only the
+	// leading entries, so sort before truncating or the cap would drop
+	// stronger terms in favour of whatever arrived first.
+	sort.SliceStable(concepts, func(i, j int) bool { return concepts[i].Score > concepts[j].Score })
+	tags := make([]string, 0, maxEnrichSubjectTags)
+	seen := make(map[string]bool, maxEnrichSubjectTags)
+	for _, concept := range concepts {
+		if concept.Score < minOpenAlexConceptScore {
+			continue
+		}
+		name := strings.TrimSpace(concept.DisplayName)
+		if name == "" {
+			continue
+		}
+		tag := enrichSubjectTagPrefix + name
+		if seen[tag] {
+			continue
+		}
+		seen[tag] = true
+		tags = append(tags, tag)
+		if len(tags) == maxEnrichSubjectTags {
+			break
+		}
+	}
+	if len(tags) == 0 {
+		return nil, false
+	}
+	return tags, true
 }
 
 const (
