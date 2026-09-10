@@ -2,6 +2,18 @@
 
 Notable changes to zotio. Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow [SemVer](https://semver.org/).
 
+## [Unreleased]
+
+### Changed
+
+- **`items summarize` annotations now carry the highlight's identity.** Each
+  annotation in a summary or collection bundle adds `key`, `parent_item`,
+  `date_added` and `color` beside the existing `page`, `type`, `text` and
+  `comment`. The bundle is handed to a model that may quote a highlight, and
+  the previous shape dropped everything needed to verify the quote. It also
+  disagreed with what `annotations export` emitted for the same highlight;
+  both now use one annotation shape.
+
 ## [0.24.0] — 2026-09-05
 
 ### Changed — breaking

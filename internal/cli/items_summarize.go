@@ -26,13 +26,6 @@ type summarizeOpts struct {
 	noFulltext     bool
 }
 
-type summarizeAnnot struct {
-	Page    string `json:"page,omitempty"`
-	Type    string `json:"type,omitempty"`
-	Text    string `json:"text,omitempty"`
-	Comment string `json:"comment,omitempty"`
-}
-
 type summarizeTruncation struct {
 	Fulltext         bool `json:"fulltext"`
 	Annotations      bool `json:"annotations"`
@@ -41,13 +34,18 @@ type summarizeTruncation struct {
 }
 
 type summarizeBundle struct {
-	Key         string              `json:"key"`
-	Citation    string              `json:"citation"`
-	ItemType    string              `json:"item_type,omitempty"`
-	DOI         string              `json:"doi,omitempty"`
-	URL         string              `json:"url,omitempty"`
-	Abstract    string              `json:"abstract,omitempty"`
-	Annotations []summarizeAnnot    `json:"annotations,omitempty"`
+	Key      string `json:"key"`
+	Citation string `json:"citation"`
+	ItemType string `json:"item_type,omitempty"`
+	DOI      string `json:"doi,omitempty"`
+	URL      string `json:"url,omitempty"`
+	Abstract string `json:"abstract,omitempty"`
+	// Annotations carry the shared annotationSummary (annotations_export.go),
+	// not a private shape. The private one dropped the key, the source item,
+	// the date and the colour, so a bundle could not cite the highlight it
+	// quoted and disagreed with what annotations export emitted for the
+	// same item.
+	Annotations []annotationSummary `json:"annotations,omitempty"`
 	Fulltext    string              `json:"fulltext_excerpt,omitempty"`
 	Gaps        []string            `json:"gaps,omitempty"`
 	Warnings    []string            `json:"warnings,omitempty"`
@@ -317,7 +315,7 @@ func buildItemBundle(raw json.RawMessage, annRows []json.RawMessage, fulltext st
 		if strings.TrimSpace(a.Text) == "" && strings.TrimSpace(a.Comment) == "" {
 			continue
 		}
-		b.Annotations = append(b.Annotations, summarizeAnnot{Page: a.Page, Type: a.Type, Text: a.Text, Comment: a.Comment})
+		b.Annotations = append(b.Annotations, a)
 	}
 	if b.Truncated.Annotations {
 		b.Truncated.AnnotationsKept = len(b.Annotations)

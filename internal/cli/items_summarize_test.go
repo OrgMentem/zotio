@@ -36,6 +36,13 @@ func TestBuildItemBundle(t *testing.T) {
 	if len(b.Annotations) != 1 || b.Annotations[0].Text != "self-attention" || b.Annotations[0].Page != "3" {
 		t.Errorf("annotations = %+v", b.Annotations)
 	}
+	// A quoted highlight must stay attributable. The bundle is handed to an LLM
+	// that may cite it, so dropping the annotation key or its source item makes
+	// the quote unverifiable, and it also makes the bundle disagree with what
+	// annotations export emits for the same highlight.
+	if got := b.Annotations[0]; got.Key != "A1" || got.ParentItem != "K1" || got.Type != "highlight" {
+		t.Errorf("annotation identity = %+v, want key A1 sourced to K1 as a highlight", got)
+	}
 	if b.Fulltext != "Full body text here." || b.Truncated.Fulltext {
 		t.Errorf("fulltext = %q truncated = %v", b.Fulltext, b.Truncated.Fulltext)
 	}
