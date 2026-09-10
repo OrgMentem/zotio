@@ -88,6 +88,10 @@ func TestHealthRemediationPlanCoversTheNewFixers(t *testing.T) {
 		{Kind: "broken_attachment_file", ItemKey: "P1", Evidence: map[string]any{"attachment": "ATT1"}, RecommendedAction: &RecommendedAction{Command: "zotio items enrich --repair-pdf --keys-from -"}},
 		{Kind: "broken_attachment_file", ItemKey: "P1", Evidence: map[string]any{"attachment": "ATT2"}, RecommendedAction: &RecommendedAction{Command: "zotio items enrich --repair-pdf --keys-from -"}},
 		{Kind: "broken_attachment_file", ItemKey: "PNODOI", Evidence: map[string]any{"attachment": "ATT3"}, RecommendedAction: &RecommendedAction{Text: "Re-link the file in Zotero or re-download the attachment"}},
+		// A stale mirror row DOES carry a command, just a different one.
+		// Bucketing by kind alone would pipe PSTALE into --repair-pdf, which
+		// re-attaches nothing for an attachment the desktop no longer has.
+		{Kind: "broken_attachment_file", ItemKey: "PSTALE", Evidence: map[string]any{"attachment": "ATT4", "reason": brokenAttachmentStaleMirror}, RecommendedAction: &RecommendedAction{Command: "zotio sync"}},
 	})
 	byKind := map[string]healthRemediationPlanStep{}
 	for _, s := range steps {
@@ -105,6 +109,11 @@ func TestHealthRemediationPlanCoversTheNewFixers(t *testing.T) {
 	// key here — the opposite of the watch identity, and correct.
 	if len(broken.Keys) != 1 || broken.Keys[0] != "P1" {
 		t.Fatalf("broken step keys = %v, want P1 once and PNODOI excluded", broken.Keys)
+	}
+	for _, k := range broken.Keys {
+		if k == "PSTALE" {
+			t.Errorf("broken step keys = %v; a stale-mirror finding recommends sync, not --repair-pdf", broken.Keys)
+		}
 	}
 }
 

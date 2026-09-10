@@ -334,36 +334,69 @@ func TestQueryPDFAttachments(t *testing.T) {
 	}
 }
 
-// A broken PDF whose parent has a DOI is repairable by command; one without a
-// DOI has no Unpaywall lookup and must still be REPORTED, as manual work. A
-// silent skip would hide the library's only remaining sevCritical defect.
-func TestBrokenAttachmentFindingOffersRepairOnlyWhenResolvable(t *testing.T) {
+// Three classes of unreadable file, three remedies. Measured on a real
+// 4,912-item library: 175 attachments never had a file, and 4 were
+// unresolvable because the mirror still held rows the desktop had deleted.
+// Both once reported "missing" and the same repair command, which
+// re-attaches nothing for a row whose item is gone.
+//
+// file_vanished had no member in that library. It keeps its own branch
+// because an md5 proves a real file existed, so an open-access re-fetch
+// would substitute a different PDF than the one the library refers to.
+func TestBrokenAttachmentFindingPicksRemedyPerClass(t *testing.T) {
 	for _, tc := range []struct {
 		name        string
 		row         map[string]any
+		reason      string
+		wantReason  string
 		wantCommand string
 		wantManual  bool
 	}{
 		{
-			name:        "parent has a DOI",
-			row:         map[string]any{"key": "AT1", "parent": "P1", "parent_doi": "10.1/x", "name": "a.pdf"},
+			name:        "never downloaded, parent has a DOI",
+			row:         map[string]any{"key": "AT1", "parent": "P1", "parent_doi": "10.1/x", "md5": "", "name": "a.pdf"},
+			reason:      "missing",
+			wantReason:  brokenAttachmentNeverDownloaded,
 			wantCommand: "zotio items enrich --repair-pdf --keys-from -",
 		},
 		{
-			name:       "parent has no DOI",
-			row:        map[string]any{"key": "AT4", "parent": "P2", "parent_doi": nil, "name": "b.pdf"},
+			name:       "never downloaded, no DOI to look up",
+			row:        map[string]any{"key": "AT4", "parent": "P2", "parent_doi": nil, "md5": "", "name": "b.pdf"},
+			reason:     "missing",
+			wantReason: brokenAttachmentNeverDownloaded,
 			wantManual: true,
 		},
 		{
 			name:       "parent DOI is blank padding",
-			row:        map[string]any{"key": "AT5", "parent": "P3", "parent_doi": "   ", "name": "c.pdf"},
+			row:        map[string]any{"key": "AT5", "parent": "P3", "parent_doi": "   ", "md5": "", "name": "c.pdf"},
+			reason:     "missing",
+			wantReason: brokenAttachmentNeverDownloaded,
 			wantManual: true,
+		},
+		{
+			// The checksum proves a real file existed. Unpaywall would
+			// substitute a different copy, so the DOI must NOT win here.
+			name:       "file vanished, and the parent has a DOI",
+			row:        map[string]any{"key": "AT6", "parent": "P4", "parent_doi": "10.1/y", "md5": "d41d8cd98f00", "name": "d.pdf"},
+			reason:     "missing",
+			wantReason: brokenAttachmentFileVanished,
+			wantManual: true,
+		},
+		{
+			name:        "mirror holds an attachment the desktop does not",
+			row:         map[string]any{"key": "AT7", "parent": "P5", "parent_doi": "10.1/z", "md5": "", "name": "e.pdf"},
+			reason:      "unresolved",
+			wantReason:  brokenAttachmentStaleMirror,
+			wantCommand: "zotio sync",
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			f := brokenAttachmentFinding(tc.row, "/tmp/gone.pdf", "missing", FindingSource{Kind: "local"})
+			f := brokenAttachmentFinding(tc.row, "/tmp/gone.pdf", tc.reason, FindingSource{Kind: "local"})
 			if f.Kind != "broken_attachment_file" || f.Severity != sevCritical {
 				t.Fatalf("finding = %+v, want a critical broken_attachment_file", f)
+			}
+			if got := sqlStringValue(f.Evidence["reason"]); got != tc.wantReason {
+				t.Errorf("reason = %q, want %q", got, tc.wantReason)
 			}
 			// The fixer reads ItemKey through --keys-from, and an attachment
 			// key is never a member of an item cohort.
@@ -383,6 +416,37 @@ func TestBrokenAttachmentFindingOffersRepairOnlyWhenResolvable(t *testing.T) {
 				t.Fatalf("action = %+v (autofix %v), want command %q", f.RecommendedAction, f.Autofixable, tc.wantCommand)
 			}
 		})
+	}
+}
+
+// The md5 column is what separates the classes, so it has to reach the builder
+// from SQL, not just exist in Zotero.
+func TestQueryPDFAttachmentsCarriesMD5(t *testing.T) {
+	db, err := store.OpenWithContext(context.Background(), filepath.Join(t.TempDir(), "data.db"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	items := []json.RawMessage{
+		json.RawMessage(`{"key":"AHAS","version":1,"data":{"key":"AHAS","itemType":"attachment","parentItem":"P1","contentType":"application/pdf","linkMode":"imported_file","filename":"h.pdf","md5":"abc123"}}`),
+		json.RawMessage(`{"key":"ANONE","version":1,"data":{"key":"ANONE","itemType":"attachment","parentItem":"P1","contentType":"application/pdf","linkMode":"imported_file","filename":"n.pdf"}}`),
+	}
+	if _, _, err := db.UpsertBatch("items", items); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	rows, err := queryPDFAttachments(localQueryStore{db}, 0)
+	if err != nil {
+		t.Fatalf("queryPDFAttachments: %v", err)
+	}
+	got := map[string]string{}
+	for _, r := range rows {
+		got[sqlStringValue(r["key"])] = sqlStringValue(r["md5"])
+	}
+	if got["AHAS"] != "abc123" {
+		t.Errorf("AHAS md5 = %q, want abc123", got["AHAS"])
+	}
+	if got["ANONE"] != "" {
+		t.Errorf("ANONE md5 = %q, want empty: an absent md5 must not read as a checksum", got["ANONE"])
 	}
 }
 

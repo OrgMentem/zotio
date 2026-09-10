@@ -79,7 +79,7 @@ lockstep:
 # locally is not merely slower but blind: a green plain suite proves nothing
 # about concurrent access.
 test-race:
-	go test -race ./...
+	go test -race -count=1 ./...
 
 # ci.yml: cross-build. GoReleaser ships 6 targets; the host build never
 # compiles the other platforms' files, so a platform-only break reaches the

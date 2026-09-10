@@ -4,6 +4,29 @@ Notable changes to zotio. Format follows [Keep a Changelog](https://keepachangel
 
 ## [Unreleased]
 
+### Changed — breaking
+
+- **`broken_attachment_file` reports one of three reasons instead of
+  `missing`/`unresolved`, and each gets its own remedy.** `evidence.reason` is
+  now `never_downloaded`, `file_vanished`, or `stale_mirror`, and
+  `evidence.has_md5` is new. Previously every class recommended
+  `--repair-pdf`, which re-attaches nothing for a mirror row whose item
+  Zotero has deleted, and which would fetch a *different* PDF for an
+  attachment whose real file is recoverable from storage. A stale row now
+  recommends `zotio sync`; a vanished file points at storage, not Unpaywall,
+  because the library's page numbers and annotations refer to the original.
+  Measured on a 4,912-item library: 175 `never_downloaded`, 4 `stale_mirror`.
+
+### Fixed
+
+- **The health remediation plan bucketed findings by kind alone**, so a
+  finding recommending `zotio sync` had its key piped into the `--repair-pdf`
+  step. A finding now enters a plan step only when its own recommended
+  command is that step's command.
+- **`make test-race` omits `-count=1`, so a cached pass could satisfy the
+  release gate.** `dev/releasing.md` warns in plain words to distrust a
+  cached pass; the gate enforcing it did not pass the flag.
+
 ## [0.25.0] — 2026-09-10
 
 ### Changed — breaking

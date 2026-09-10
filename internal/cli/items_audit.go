@@ -857,9 +857,12 @@ func runVerifyAttachmentFiles(cmd *cobra.Command, db localQueryStore, flags *roo
 			// every audit finding manual while the identical health finding
 			// carried the command.
 			"parent_doi": sqlStringValue(a["parent_doi"]),
-			"name":       sqlStringValue(a["name"]),
-			"path":       path,
-			"reason":     reason,
+			// md5 carries the never-downloaded / vanished distinction to the
+			// shared builder, which picks the remedy from it.
+			"md5":    sqlStringValue(a["md5"]),
+			"name":   sqlStringValue(a["name"]),
+			"path":   path,
+			"reason": reason,
 		})
 	}
 	if flags.asJSON {
@@ -923,6 +926,12 @@ SELECT
 	(SELECT json_extract(p.data, '$.data.DOI') FROM resources p
 		WHERE p.resource_type = 'items' AND p.id = json_extract(resources.data, '$.data.parentItem')) AS parent_doi,
 	COALESCE(json_extract(data, '$.data.filename'), json_extract(data, '$.data.title'), '') AS name,
+	-- md5 is the only local signal that separates a file that never existed
+	-- from one that existed and vanished. Zotero sets it once the bytes are
+	-- in the storage remote, so NULL means no copy was ever uploaded and an
+	-- open-access re-fetch is the only route; non-NULL means a real file is
+	-- recoverable from storage and Unpaywall would substitute a different PDF.
+	COALESCE(json_extract(data, '$.data.md5'), '') AS md5,
 	json_extract(data, '$.data.dateAdded') AS date_added
 FROM resources
 WHERE resource_type = 'items'

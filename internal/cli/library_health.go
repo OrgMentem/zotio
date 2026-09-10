@@ -984,23 +984,64 @@ func runBrokenAttachmentFile(db localQueryStore, ctx *healthContext) ([]Finding,
 	return findings, nil, nil
 }
 
+// Reasons a stored PDF attachment has no readable file. They are separate
+// because their remedies are separate, which the single "missing" reason hid.
+const (
+	// brokenAttachmentNeverDownloaded: Zotero recorded no md5, so the bytes
+	// were never in the storage remote and there is nothing to re-download.
+	// An open-access re-fetch is the only route.
+	brokenAttachmentNeverDownloaded = "never_downloaded"
+	// brokenAttachmentFileVanished: Zotero has an md5, so a real file existed
+	// and can be recovered from storage. An Unpaywall re-fetch would
+	// substitute a DIFFERENT PDF than the one whose page numbers and
+	// annotations the library already refers to, so it is not offered here.
+	brokenAttachmentFileVanished = "file_vanished"
+	// brokenAttachmentStaleMirror: the local mirror still holds an attachment
+	// the desktop no longer has, so no file path can be resolved. This is
+	// mirror staleness, not a broken file.
+	brokenAttachmentStaleMirror = "stale_mirror"
+)
+
 // brokenAttachmentFinding builds one broken-attachment finding. It is separate
 // from the run loop because the loop can only execute against the Zotero
 // desktop on port 23119, which no test can bind.
 func brokenAttachmentFinding(a map[string]any, path, reason string, src FindingSource) Finding {
-	// A repair needs a DOI: the re-attach path resolves an open-access PDF
-	// through Unpaywall, which is keyed by DOI. With one, the finding carries
-	// a runnable fixer for the parent item; without one it stays manual,
-	// rather than recommending a command that could only skip. A DOI proves
-	// only that the lookup is POSSIBLE — Unpaywall may hold no open-access
-	// copy, which enrich reports as a skip.
 	parent := sqlStringValue(a["parent"])
-	action := &RecommendedAction{Text: "Re-link the file in Zotero or re-download the attachment"}
+	hasDOI := parent != "" && strings.TrimSpace(sqlStringValue(a["parent_doi"])) != ""
+	hasMD5 := strings.TrimSpace(sqlStringValue(a["md5"])) != ""
+
+	// Classify before recommending. Measured on a real 4,912-item library:
+	// 175 attachments had no md5 and no file, and 4 could not be resolved at
+	// all because the mirror still held rows the desktop had deleted. Both
+	// classes previously reported "missing" and the same repair command,
+	// which re-attaches nothing for a row whose item is gone.
+	//
+	// file_vanished had no member in that library, and is still worth its own
+	// branch: an md5 means a real file existed, so an Unpaywall re-fetch
+	// would substitute a DIFFERENT PDF than the one the library's page
+	// numbers and annotations refer to. The checksum therefore outranks the
+	// DOI in the order below.
+	var action *RecommendedAction
 	autofixable := false
-	if parent != "" && strings.TrimSpace(sqlStringValue(a["parent_doi"])) != "" {
+	switch {
+	case reason == "unresolved":
+		reason = brokenAttachmentStaleMirror
+		action = &RecommendedAction{Command: "zotio sync"}
+		autofixable = true
+	case hasMD5:
+		reason = brokenAttachmentFileVanished
+		action = &RecommendedAction{Text: "Zotero has this file's checksum, so the original is recoverable: re-download it from your Zotero or WebDAV storage rather than fetching a different copy"}
+	case hasDOI:
+		// A DOI proves the lookup is POSSIBLE, not that an open-access copy
+		// exists; Unpaywall reports that as a skip.
+		reason = brokenAttachmentNeverDownloaded
 		action = &RecommendedAction{Command: "zotio items enrich --repair-pdf --keys-from -"}
 		autofixable = true
+	default:
+		reason = brokenAttachmentNeverDownloaded
+		action = &RecommendedAction{Text: "Re-link the file in Zotero or re-download the attachment; without a DOI on the parent item there is no open-access lookup to run"}
 	}
+
 	return Finding{
 		Kind:     "broken_attachment_file",
 		Severity: sevCritical,
@@ -1015,6 +1056,7 @@ func brokenAttachmentFinding(a map[string]any, path, reason string, src FindingS
 			"parent":     parent,
 			"path":       path,
 			"reason":     reason,
+			"has_md5":    hasMD5,
 		},
 		Source:            src,
 		Autofixable:       autofixable,
@@ -1191,7 +1233,12 @@ func buildHealthRemediationPlan(findings []Finding) []healthRemediationPlanStep 
 	var hasDOIDups, hasTitleDups, hasTagDrift bool
 	for _, f := range findings {
 		if b, ok := exact[f.Kind]; ok && f.ItemKey != "" {
-			if f.RecommendedAction == nil || f.RecommendedAction.Command == "" {
+			// The finding's OWN command must be the bucket's. One kind can
+			// now recommend different commands per class: a broken
+			// attachment whose file merely vanished points at storage, and a
+			// stale mirror row points at sync. Bucketing by kind alone would
+			// pipe those keys into --repair-pdf, which is wrong for both.
+			if f.RecommendedAction == nil || f.RecommendedAction.Command != b.command {
 				continue
 			}
 			if !b.seen[f.ItemKey] {
