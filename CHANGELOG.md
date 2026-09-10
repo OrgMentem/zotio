@@ -62,6 +62,14 @@ Notable changes to zotio. Format follows [Keep a Changelog](https://keepachangel
 
 ### Fixed
 
+- **`library health --verify-files` never actually ran.** The check probed
+  `/`, which resolves against a base ending in `/users/0`, and Zotero answers
+  `/api/users/0/` with 404 — only `/api/` returns 200. The probe therefore
+  failed whether or not Zotero was running, so `broken_attachment_file`, the
+  only `sevCritical` check, emitted its "Zotero desktop is not reachable"
+  skip forever. It now probes a library endpoint. On the first real run after
+  the fix it reported 179 broken attachments in a 4,912-item library. The
+  same bug applies to `items audit --verify-files`.
 - **Webhook delivery streams the spool the same way on the first attempt and
   on a retry.** The first attempt handed `net/http` the spool file itself,
   which selects a zero-copy `sendfile`, while a retry streamed through

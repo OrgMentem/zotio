@@ -898,6 +898,23 @@ func runTagDrift(db localQueryStore, ctx *healthContext) ([]Finding, *healthSkip
 	return findings, nil, nil
 }
 
+// brokenAttachmentProbe names the endpoint that proves the Zotero desktop is
+// serving THIS library. It is a function so a test can pin the choice without
+// binding port 23119, which the running Zotero holds.
+//
+// The path must be library-relative and must exist. Measured live against
+// Zotero 7 on 2026-09-10 with the local API enabled:
+//
+//	/api/users/0/            -> 404 No endpoint found
+//	/api/                    -> 200
+//	/api/users/0/items?limit=1 -> 200
+//
+// A probe of "/" resolves to the first of those, so it failed whether or not
+// Zotero was running and this check skipped forever.
+func brokenAttachmentProbe() (string, map[string]string) {
+	return "/items", map[string]string{"limit": "1"}
+}
+
 // runBrokenAttachmentFile is the one live_local_api check. It runs only when
 // --verify-files is set AND Zotero desktop is reachable; otherwise it returns a
 // loud skip with remediation rather than silently omitting itself.
@@ -931,10 +948,16 @@ func runBrokenAttachmentFile(db localQueryStore, ctx *healthContext) ([]Finding,
 			},
 		}, nil
 	}
-	if _, probeErr := c.Get("/", nil); probeErr != nil {
-		// Only a successful probe proves the desktop connector is present.
-		// Any error — APIError (e.g. local 404) or transport failure — means
-		// the local API is not usable.
+	// Probe a real library endpoint, not "/". The client resolves a relative
+	// path against the configured base, and the local base ends in /users/0,
+	// so "/" asked Zotero for /api/users/0/ — which it answers 404 (only
+	// /api/ itself is a 200). The probe therefore failed whether or not
+	// Zotero was running, and this check skipped forever.
+	probePath, probeParams := brokenAttachmentProbe()
+	if _, probeErr := c.Get(probePath, probeParams); probeErr != nil {
+		// Only a successful probe proves the desktop connector is present
+		// AND serving this library. Any error — APIError or transport
+		// failure — means the local API is not usable.
 		return nil, &healthSkip{
 			Kind:         "broken_attachment_file",
 			Precondition: "live_local_api",

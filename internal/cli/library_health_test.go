@@ -206,6 +206,28 @@ func TestLibraryHealthCleanStorePassesGate(t *testing.T) {
 	}
 }
 
+// The live check probed "/", which the client resolves against a base ending
+// in /users/0. Zotero answers /api/users/0/ with 404 and only /api/ with 200,
+// so the probe failed whether or not Zotero was running and this sevCritical
+// check skipped forever. Verified live on 2026-09-10: with Zotero running,
+// the old probe still skipped; the library endpoint reported 179 broken
+// attachments. Port 23119 belongs to the running Zotero, so the endpoint
+// choice is pinned here rather than exercised over a socket.
+func TestBrokenAttachmentProbeUsesALibraryEndpoint(t *testing.T) {
+	path, params := brokenAttachmentProbe()
+	if path == "/" || path == "" {
+		t.Fatalf("probe path = %q; a bare root resolves to /api/users/0/, which Zotero 404s", path)
+	}
+	if !strings.HasPrefix(path, "/") {
+		t.Fatalf("probe path = %q, want a library-relative path", path)
+	}
+	// Cheap: the probe proves reachability, so it must not pull a page of
+	// items on every health run.
+	if params["limit"] != "1" {
+		t.Errorf("probe params = %v, want limit=1", params)
+	}
+}
+
 func TestBrokenAttachmentSkipsLoudlyWithoutVerifyFiles(t *testing.T) {
 	findings, skip, err := runBrokenAttachmentFile(localQueryStore{}, newHealthCtx("systematic-review", false))
 	if err != nil {
@@ -750,25 +772,24 @@ func TestBrokenAttachmentFile_LocalProbeErrorYieldsSkip(t *testing.T) {
 	// return true, so determinism does not mean "use any free port" but
 	// "make the probe fail while staying on 23119."
 	//
-	// Zotero desktop occupies exactly that port on developer machines (the
-	// bug this test fixes), so we attempt to hold 23119 ourselves with a
-	// raw TCP listener that never speaks HTTP; GET / then fails with a
-	// transport error even when Zotero would otherwise answer. If the bind
-	// fails (Zotero already owns 23119, as on this machine), we verify
-	// determinism differently: Zotero's data API returns 404 for "/" (curl-
-	// verified above), which the client surfaces as non-nil error and maps
-	// to the same live_local_api skip. Either way we exercise the probeErr
-	// != nil branch that the assignment requires, and prove independence
-	// from the port being free.
+	// Zotero desktop occupies exactly that port on developer machines, so we
+	// hold 23119 ourselves with a raw TCP listener that never speaks HTTP;
+	// the probe then fails with a transport error.
+	//
+	// When the bind fails, a real Zotero owns the port — and a real Zotero
+	// ANSWERS the probe, so there is no skip to assert. This branch used to
+	// claim the occupant 404s the probe, which was only true while the probe
+	// asked for "/" (resolving to /api/users/0/). Fixing that endpoint made
+	// the claim false, so the branch is a skip rather than a second
+	// assertion; TestBrokenAttachmentProbeUsesALibraryEndpoint pins the
+	// endpoint choice, and the _NoHeldPort sibling covers the rest.
 	ln, bindErr := net.Listen("tcp", "127.0.0.1:23119")
-	if bindErr == nil {
-		// We hold the port: nothing speaks HTTP, so the probe must fail.
-		t.Cleanup(func() { _ = ln.Close() })
-		t.Logf("held 127.0.0.1:23119 with throwaway listener — verifying transport-error path")
-	} else {
-		t.Logf("127.0.0.1:23119 already occupied (%v) — verifying alternate-occupant 404 path", bindErr)
+	if bindErr != nil {
+		t.Skipf("127.0.0.1:23119 is occupied by a real local API (%v); this test needs to hold the port to force a transport error", bindErr)
 	}
-	// In both cases the base is the real local port so isLocal passes.
+	// Nothing speaks HTTP on the held port, so the probe must fail.
+	t.Cleanup(func() { _ = ln.Close() })
+	// The base is the real local port so isLocal passes.
 	if !isLocalZoteroAPI("http://127.0.0.1:23119/api/users/0") {
 		t.Fatalf("isLocalZoteroAPI unexpectedly false for 127.0.0.1:23119")
 	}
@@ -791,11 +812,6 @@ func TestBrokenAttachmentFile_LocalProbeErrorYieldsSkip(t *testing.T) {
 	}
 	if skip == nil || skip.Precondition != "live_local_api" {
 		t.Fatalf("want live_local_api skip when probe fails, got %+v", skip)
-	}
-	if bindErr == nil {
-		t.Logf("verified with throwaway listener on 23119 (port free)")
-	} else {
-		t.Logf("verified with real occupant on 23119 (port occupied) — probeErr from unexpected HTTP responder")
 	}
 }
 
