@@ -2616,6 +2616,10 @@
           "description": "Write added tags as Zotero automatic tags (type 1) (default: false)",
           "type": "boolean"
         },
+        "batch": {
+          "description": "Write up to 50 items per request instead of one request per item. Much faster over large key sets, but every item in a request reaches Zotero together, so the run cannot stop at the first failure and --max-failures does not apply. (default: false)",
+          "type": "boolean"
+        },
         "continue-on-error": {
           "description": "On bulk mutations, continue past per-item failures/conflicts instead of stopping at the first (default: false)",
           "type": "boolean"
@@ -2685,6 +2689,10 @@
         },
         "automatic-only": {
           "description": "Remove only matching Zotero automatic tags (type 1) (default: false)",
+          "type": "boolean"
+        },
+        "batch": {
+          "description": "Write up to 50 items per request instead of one request per item. Much faster over large key sets, but every item in a request reaches Zotero together, so the run cannot stop at the first failure and --max-failures does not apply. (default: false)",
           "type": "boolean"
         },
         "continue-on-error": {

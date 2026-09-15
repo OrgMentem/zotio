@@ -91,6 +91,12 @@ Notable changes to zotio. Format follows [Keep a Changelog](https://keepachangel
   finding recommending `zotio sync` had its key piped into the `--repair-pdf`
   step. A finding now enters a plan step only when its own recommended
   command is that step's command.
+- **`import pmid` did not record the PMID it imported**, so the item was not
+  findable by its own identifier afterwards. `items find --pmid` matches a
+  `PMID: <id>` token in Extra, and Zotero has no PMID field on
+  `journalArticle`, so Extra is the only place it can live — `import arxiv`
+  already stored `arXiv: <id>` there. The import path and the lookup path now
+  agree.
 - **`make test-race` omits `-count=1`, so a cached pass could satisfy the
   release gate.** `dev/releasing.md` warns in plain words to distrust a
   cached pass; the gate enforcing it did not pass the flag.
@@ -168,6 +174,22 @@ Notable changes to zotio. Format follows [Keep a Changelog](https://keepachangel
   the mirror, the way `vault sync` and `items summarize` already did, instead
   of emitting prose telling the reader to run `annotations export` and paste
   the result. An item with no annotations keeps the labelled, empty section.
+- **`items tags add --batch` and `items tags remove --batch` write up to 50
+  items per request.** A bulk tag run previously cost three requests per item
+  — a planning read, an apply-time re-read, and a PATCH — so a 200-item sweep
+  made 600 requests and, at the 0.95s per item measured in
+  `dev/field-report-2026-08-08-verification.md`, took over three minutes. The
+  batched path reuses the planning read and groups the writes: the same 200
+  items cost 204 requests. Each object carries its own `version`, so the
+  precondition is per item and a stale one comes back as that item's own
+  `conflict` with Zotero's own message; every other item in the request still
+  reports its own status. The flag is opt-in because it changes two things
+  the default path guarantees: the precondition travels in the object body
+  rather than an `If-Unmodified-Since-Version` header (one header cannot
+  express many versions), and the run cannot stop at the first failure, since
+  every object in a request reaches Zotero together. `--batch` with
+  `--max-failures` is therefore refused rather than silently ignored. Reads
+  are unchanged at one per item: tag merging needs each item's current tags.
 
 ### Changed
 
