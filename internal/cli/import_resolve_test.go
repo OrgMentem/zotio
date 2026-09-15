@@ -4,7 +4,9 @@ package cli
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -179,4 +181,88 @@ func importResolveCrossRefWorkServer(t *testing.T, title, doi string) *httptest.
 	}))
 	t.Cleanup(srv.Close)
 	return srv
+}
+
+func TestImportManifestFanoutPreservesSequentialOrderAndReportsErrors(t *testing.T) {
+	const entryCount = 24
+	const failingIndex = 7
+
+	dir := t.TempDir()
+	for i := range entryCount {
+		name := fmt.Sprintf("10.5555%%2Forder-%02d.pdf", i)
+		if err := os.WriteFile(filepath.Join(dir, name), nil, 0o600); err != nil {
+			t.Fatalf("write fixture %d: %v", i, err)
+		}
+	}
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		doi := strings.TrimPrefix(r.URL.Path, "/works/")
+		var index int
+		if _, err := fmt.Sscanf(doi, "10.5555/order-%02d", &index); err != nil {
+			http.Error(w, "unexpected DOI "+doi, http.StatusBadRequest)
+			return
+		}
+		// Reverse delays force completion order away from source order.
+		time.Sleep(time.Duration(entryCount-index) * time.Millisecond)
+		if index == failingIndex {
+			http.Error(w, "mock registry failure", http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"message": map[string]any{
+				"type":  "journal-article",
+				"title": []string{fmt.Sprintf("Title %02d", index)},
+				"DOI":   doi,
+			},
+		})
+	}))
+	t.Cleanup(srv.Close)
+	withBase(t, &enrichCrossRefBase, srv.URL)
+	t.Setenv("HOME", t.TempDir())
+
+	paths, err := listPDFs(dir, 0)
+	if err != nil {
+		t.Fatalf("list fixtures: %v", err)
+	}
+	idx := libraryDOIIndex{byDOI: map[string]libItem{}}
+	httpClient := &http.Client{Timeout: 5 * time.Second}
+	want := importManifest{
+		SchemaVersion: importManifestSchemaVersion,
+		Dir:           dir,
+		Entries:       make([]importManifestEntry, 0, len(paths)),
+	}
+	for _, path := range paths {
+		result, err := resolveImportManifestEntry(context.Background(), path, idx, httpClient)
+		if err != nil {
+			t.Fatalf("sequential reference %q: %v", path, err)
+		}
+		want.Entries = append(want.Entries, result.Entry)
+	}
+
+	flags := &rootFlags{timeout: 5 * time.Second}
+	cmd := newImportResolveCmd(flags)
+	cmd.SetContext(context.Background())
+	got, gotErr := buildImportManifestFromDir(cmd, flags, dir, 0)
+	if gotErr == nil {
+		t.Fatal("fanout error was dropped")
+	}
+	failingPath := filepath.Join(dir, fmt.Sprintf("10.5555%%2Forder-%02d.pdf", failingIndex))
+	if !strings.Contains(gotErr.Error(), failingPath) || !strings.Contains(gotErr.Error(), "HTTP 500") {
+		t.Fatalf("fanout error = %q, want source path and provider failure", gotErr)
+	}
+
+	var wantJSON, gotJSON bytes.Buffer
+	if err := writeImportManifest(&wantJSON, want); err != nil {
+		t.Fatalf("encode sequential reference: %v", err)
+	}
+	if err := writeImportManifest(&gotJSON, got); err != nil {
+		t.Fatalf("encode fanout result: %v", err)
+	}
+	if !bytes.Equal(gotJSON.Bytes(), wantJSON.Bytes()) {
+		t.Fatalf("fanout manifest order differs from sequential reference\nwant:\n%s\ngot:\n%s", wantJSON.Bytes(), gotJSON.Bytes())
+	}
+	if got.Entries[failingIndex].Status != "unresolved" || !strings.Contains(got.Entries[failingIndex].Note, "HTTP 500") {
+		t.Fatalf("failed entry = %#v, want unresolved status with the provider error", got.Entries[failingIndex])
+	}
 }
