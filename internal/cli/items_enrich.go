@@ -240,6 +240,11 @@ Applied field changes record provenance in the item's Extra field.`,
 			if strings.TrimSpace(flagScope) != "" && (strings.TrimSpace(keys) != "" || strings.TrimSpace(keysFrom) != "") {
 				return usageErr(fmt.Errorf("--scope cannot be combined with --keys/--keys-from: both select exact item keys and the scope grammar has no multi-key arm to reconcile them; pass one of them"))
 			}
+			// --collection lowers to an exact scope key set below, so combining it
+			// with an explicit key set has the same ambiguity as --scope.
+			if strings.TrimSpace(flagCollection) != "" && (strings.TrimSpace(keys) != "" || strings.TrimSpace(keysFrom) != "") {
+				return usageErr(fmt.Errorf("--collection cannot be combined with --keys/--keys-from: both select exact item keys; pass one of them"))
+			}
 			collectionScope := scopeSugarFor("collection", "collection", flagCollection)
 			effectiveScope, err := reconcileScopeFlags(flagScope, collectionScope)
 			if err != nil {
@@ -1372,12 +1377,9 @@ func enrichProposalChanges(p enrichProposal) []mutation.Change {
 		for _, key := range keys {
 			changes = append(changes, mutation.Change{Field: key, Add: p.Fields[key]})
 		}
-		// The PATCH also rewrites Extra by appending the provenance line to
-		// whatever Extra already holds; record that RESULTING value (not just
-		// the new line) so a mirror replay lands on the same state Zotero now
-		// holds instead of discarding prior Extra content such as Better
-		// BibTeX "Citation Key:" lines.
-		changes = append(changes, mutation.Change{Field: "extra", Add: appendEnrichProvenance(&p, nil)})
+		// Extra is built from a fresh write-plane read during Apply. The mirror
+		// value in p.extra can be stale, so omit Extra from the planned replay.
+		// The next sync then accepts the write plane's authoritative value.
 		return changes
 	case enrichActionAttach:
 		switch p.AttachMode {
@@ -1399,10 +1401,9 @@ func enrichProposalChanges(p enrichProposal) []mutation.Change {
 		for _, tag := range p.Tags {
 			changes = append(changes, mutation.Change{Field: "tags", Add: tag, TagType: 1})
 		}
-		// The same PATCH rewrites Extra with the provenance line, exactly as
-		// the field-patch path does; record the RESULTING value so a mirror
-		// replay lands on the state Zotero now holds.
-		changes = append(changes, mutation.Change{Field: "extra", Add: appendEnrichProvenance(&p, nil)})
+		// Extra is built from a fresh write-plane read during Apply. Do not
+		// replay the mirror-derived p.extra; the next sync supplies the
+		// authoritative value.
 		return changes
 	default:
 		return nil

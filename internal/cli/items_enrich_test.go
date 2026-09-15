@@ -1054,35 +1054,6 @@ func TestApplyEnrichProposalLinkedURLReadsBatchOutcome(t *testing.T) {
 	}
 }
 
-// TestEnrichProposalChangesExtraRecordsFullAppendedValue guards the mirror
-// against replaying a bare provenance-delta line over an item's Extra field:
-// the recorded Change must equal the post-PATCH Extra (existing content plus
-// the new line), matching exactly what appendEnrichProvenance sends.
-func TestEnrichProposalChangesExtraRecordsFullAppendedValue(t *testing.T) {
-	existing := "Citation Key: smith2020\nsome user note"
-	p := enrichProposal{
-		Key: "K1", Category: "missing_doi", Action: enrichActionPatch,
-		Source: "CrossRef", Fields: map[string]any{"DOI": "10.1/x"}, extra: existing,
-	}
-	changes := enrichProposalChanges(p)
-	if len(changes) != 2 || changes[0].Field != "DOI" || changes[1].Field != "extra" {
-		t.Fatalf("changes = %+v, want DOI add + extra change", changes)
-	}
-	got, ok := changes[1].Add.(string)
-	if !ok {
-		t.Fatalf("extra Change Add = %v (%T), want string", changes[1].Add, changes[1].Add)
-	}
-	// The bug under test recorded only the delta line; guard explicitly
-	// against regressing to that value.
-	if got == enrichProvenanceLine(&p) {
-		t.Fatalf("extra Change = %q, recorded only the delta line and dropped existing Extra content", got)
-	}
-	want := existing + "\n" + enrichProvenanceLine(&p)
-	if got != want {
-		t.Fatalf("extra Change = %q, want %q (existing Extra preserved with provenance appended)", got, want)
-	}
-}
-
 // TestEnrichProposalChangesAttachNeverNamesParentField guards against
 // attributing the child-attachment POST to the parent item's own schema
 // fields (e.g. "url") in the mirror-replayed Change: the linked-url attach
@@ -1760,49 +1731,8 @@ func TestItemsEnrichPreviewEnvelope(t *testing.T) {
 		t.Fatalf("expected 1 planned proposal, got summary=%+v ops=%+v", env.Plan.Summary, env.Plan.Operations)
 	}
 	got := env.Plan.Operations[0].Changes
-	if len(got) != 2 || got[0].Field != "DOI" || got[0].Add != "10.1/attention" {
-		t.Errorf("proposal changes = %+v, want DOI add + extra provenance", got)
-	}
-	if got[1].Field != "extra" || !strings.Contains(fmt.Sprint(got[1].Add), "zotio: DOI added via") {
-		t.Errorf("second change = %+v, want extra provenance line in the preview", got[1])
-	}
-}
-
-// TestItemsEnrichPreviewEnvelopePreservesExistingExtra is the end-to-end
-// counterpart of TestEnrichProposalChangesExtraRecordsFullAppendedValue: the
-// previewed "extra" Change must be the item's pre-existing Extra (including
-// Better BibTeX "Citation Key:" content) with the provenance line appended,
-// not the bare delta line, since that is what a mirror replay would apply.
-func TestItemsEnrichPreviewEnvelopePreservesExistingExtra(t *testing.T) {
-	srv := crossRefSearchServer(t, "Attention Is All You Need", "10.1/attention")
-	withBase(t, &enrichCrossRefBase, srv.URL)
-	existingExtra := "Citation Key: smith2020\nsome user note"
-	_ = seedEnrichStore(t, existingExtra) // sets HOME to the seeded store
-
-	flags := &rootFlags{asJSON: true} // no yes -> preview only
-	cmd := newItemsEnrichCmd(flags)
-	cmd.SetArgs([]string{"--missing-doi", "--no-openalex", "--no-semantic-scholar"})
-	var out bytes.Buffer
-	cmd.SetOut(&out)
-	cmd.SetErr(&bytes.Buffer{})
-	if err := cmd.Execute(); err != nil {
-		t.Fatalf("enrich: %v", err)
-	}
-
-	var env mutation.Envelope
-	if err := json.Unmarshal(out.Bytes(), &env); err != nil {
-		t.Fatalf("decode %q: %v", out.String(), err)
-	}
-	if len(env.Plan.Operations) != 1 || len(env.Plan.Operations[0].Changes) != 2 {
-		t.Fatalf("expected 1 planned proposal with 2 changes, got ops=%+v", env.Plan.Operations)
-	}
-	extraChange := env.Plan.Operations[0].Changes[1]
-	got, ok := extraChange.Add.(string)
-	if extraChange.Field != "extra" || !ok {
-		t.Fatalf("extra change = %+v, want a string extra Change", extraChange)
-	}
-	if !strings.HasPrefix(got, existingExtra+"\n") {
-		t.Errorf("previewed extra = %q, want it to start with the pre-existing Extra %q (not just the delta line)", got, existingExtra)
+	if len(got) != 1 || got[0].Field != "DOI" || got[0].Add != "10.1/attention" {
+		t.Errorf("proposal changes = %+v, want only the DOI change that write-through can replay safely", got)
 	}
 }
 
@@ -2075,20 +2005,13 @@ func TestItemsEnrichMissingSubjectsPlansAutomaticConceptTags(t *testing.T) {
 	if op.Key != "KBARE" {
 		t.Fatalf("planned key = %q, want KBARE", op.Key)
 	}
-	if len(op.Changes) != 2 {
-		t.Fatalf("changes = %+v, want a tag addition plus the Extra provenance line", op.Changes)
+	if len(op.Changes) != 1 {
+		t.Fatalf("changes = %+v, want only the automatic tag addition that write-through can replay safely", op.Changes)
 	}
 	// A managed subject term must be automatic (type 1) so it stays
 	// distinguishable from a tag the operator typed.
 	if op.Changes[0].Field != "tags" || op.Changes[0].Add != "concept/Computer science" || op.Changes[0].TagType != 1 {
 		t.Fatalf("change = %+v, want an automatic concept/ tag addition", op.Changes[0])
-	}
-	// Every other enrich category records where a change came from, and the
-	// help promises it. The tag type marks a tag managed but names neither
-	// the provider nor the date.
-	provenance := fmt.Sprint(op.Changes[1].Add)
-	if op.Changes[1].Field != "extra" || !strings.Contains(provenance, "via OpenAlex") || !strings.Contains(provenance, "concept/Computer science") {
-		t.Fatalf("change = %+v, want Extra provenance naming OpenAlex and the term", op.Changes[1])
 	}
 }
 
@@ -2491,7 +2414,7 @@ func TestItemsEnrichApplyViaAPI(t *testing.T) {
 	}
 }
 
-func captureItemsEnrichApplyPatch(t *testing.T, localExtra, liveExtra string) (map[string]any, string, int) {
+func captureItemsEnrichApplyPatch(t *testing.T, localExtra, liveExtra string) (map[string]any, string) {
 	t.Helper()
 	crsrv := crossRefSearchServer(t, "Attention Is All You Need", "10.1/attention")
 	withBase(t, &enrichCrossRefBase, crsrv.URL)
@@ -2499,7 +2422,6 @@ func captureItemsEnrichApplyPatch(t *testing.T, localExtra, liveExtra string) (m
 
 	var gotBody map[string]any
 	var gotHeader string
-	gets := 0
 	zsrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodPatch && r.URL.Path == "/items/K1" {
 			gotHeader = r.Header.Get("If-Unmodified-Since-Version")
@@ -2508,7 +2430,6 @@ func captureItemsEnrichApplyPatch(t *testing.T, localExtra, liveExtra string) (m
 			return
 		}
 		if r.Method == http.MethodGet && r.URL.Path == "/items/K1" {
-			gets++
 			w.Header().Set("Last-Modified-Version", "42")
 			w.Header().Set("Content-Type", "application/json")
 			data := map[string]any{"key": "K1"}
@@ -2535,16 +2456,13 @@ func captureItemsEnrichApplyPatch(t *testing.T, localExtra, liveExtra string) (m
 	if gotBody == nil {
 		t.Fatal("Zotero server never received the PATCH")
 	}
-	return gotBody, gotHeader, gets
+	return gotBody, gotHeader
 }
 
 func TestItemsEnrichApplyPreservesWritePlaneExtra(t *testing.T) {
 	localExtra := "stale mirror note"
 	liveExtra := "Citation Key: smith2020\nlive user note"
-	gotBody, gotHeader, gets := captureItemsEnrichApplyPatch(t, localExtra, liveExtra)
-	if gets != 1 {
-		t.Fatalf("write-plane GETs = %d, want one shared Extra and version read", gets)
-	}
+	gotBody, gotHeader := captureItemsEnrichApplyPatch(t, localExtra, liveExtra)
 	if gotHeader != "42" {
 		t.Fatalf("If-Unmodified-Since-Version = %q, want the write plane's 42", gotHeader)
 	}
@@ -2561,11 +2479,97 @@ func TestItemsEnrichApplyPreservesWritePlaneExtra(t *testing.T) {
 	}
 }
 
-func TestItemsEnrichApplyEmptyExtraWritesOnlyProvenance(t *testing.T) {
-	gotBody, gotHeader, gets := captureItemsEnrichApplyPatch(t, "", "")
-	if gets != 1 {
-		t.Fatalf("write-plane GETs = %d, want one shared Extra and version read", gets)
+func TestItemsEnrichWriteThroughDoesNotReplayMirrorExtra(t *testing.T) {
+	localExtra := "stale mirror note"
+	liveExtra := "Citation Key: smith2020\nlive user note"
+	crsrv := crossRefSearchServer(t, "Attention Is All You Need", "10.1/attention")
+	withBase(t, &enrichCrossRefBase, crsrv.URL)
+	db := seedEnrichStore(t, localExtra)
+
+	var patchedExtra string
+	zsrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/items/K1":
+			w.Header().Set("Last-Modified-Version", "42")
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"key":     "K1",
+				"version": 42,
+				"data": map[string]any{
+					"key":   "K1",
+					"extra": liveExtra,
+				},
+			})
+		case r.Method == http.MethodPatch && r.URL.Path == "/items/K1":
+			var body map[string]any
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Errorf("decode PATCH body: %v", err)
+			}
+			patchedExtra = fmt.Sprint(body["extra"])
+			w.WriteHeader(http.StatusNoContent)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(zsrv.Close)
+	t.Setenv("ZOTERO_BASE_URL", zsrv.URL)
+
+	oldMirror := mirrorWriteThrough
+	mirrorWriteThrough = applyMirrorWriteThrough
+	t.Cleanup(func() { mirrorWriteThrough = oldMirror })
+
+	cmd := newItemsEnrichCmd(&rootFlags{asJSON: true, yes: true, maxChanges: -1})
+	cmd.SetArgs([]string{"--missing-doi", "--no-openalex", "--no-semantic-scholar"})
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetErr(&bytes.Buffer{})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("enrich apply: %v", err)
 	}
+
+	wantPatchedExtra := liveExtra + "\n" + enrichProvenanceLine(&enrichProposal{Category: "missing_doi", Source: "CrossRef"})
+	if patchedExtra != wantPatchedExtra {
+		t.Fatalf("patched extra = %q, want the live write-plane value %q", patchedExtra, wantPatchedExtra)
+	}
+
+	rows, err := db.QueryRaw("SELECT json_extract(data,'$.data.DOI') AS doi, json_extract(data,'$.data.extra') AS extra FROM resources WHERE resource_type='items' AND id='K1'")
+	if err != nil || len(rows) != 1 {
+		t.Fatalf("read mirror row: rows=%v err=%v", rows, err)
+	}
+	if got := sqlStringValue(rows[0]["doi"]); got != "10.1/attention" {
+		t.Fatalf("mirror DOI = %q, want the applied DOI", got)
+	}
+	if got := sqlStringValue(rows[0]["extra"]); got != localExtra {
+		t.Fatalf("mirror Extra = %q, want unchanged mirror value %q until sync supplies the authoritative value", got, localExtra)
+	}
+
+	pending, err := db.PendingWrites("items")
+	if err != nil {
+		t.Fatalf("read pending writes: %v", err)
+	}
+	mark, ok := pending["K1"]
+	if !ok {
+		t.Fatal("pending write for K1 was not recorded")
+	}
+	var changes []mutation.Change
+	if err := json.Unmarshal(mark.Changes, &changes); err != nil {
+		t.Fatalf("decode pending changes: %v", err)
+	}
+	foundDOI := false
+	for _, change := range changes {
+		if change.Field == "extra" {
+			t.Fatalf("pending changes replay mirror-derived Extra: %+v", changes)
+		}
+		if change.Field == "DOI" && change.Add == "10.1/attention" {
+			foundDOI = true
+		}
+	}
+	if !foundDOI {
+		t.Fatalf("pending changes = %+v, want the applied DOI change", changes)
+	}
+}
+
+func TestItemsEnrichApplyEmptyExtraWritesOnlyProvenance(t *testing.T) {
+	gotBody, gotHeader := captureItemsEnrichApplyPatch(t, "", "")
 	if gotHeader != "42" {
 		t.Fatalf("If-Unmodified-Since-Version = %q, want %q", gotHeader, "42")
 	}
@@ -3049,6 +3053,23 @@ func TestItemsEnrichScopeAndCollectionMustAgree(t *testing.T) {
 	}
 	if ExitCode(err) != 2 || !strings.Contains(err.Error(), "--keys") {
 		t.Fatalf("error = %v (exit %d), want a usage refusal naming --keys", err, ExitCode(err))
+	}
+}
+
+func TestItemsEnrichCollectionCannotCombineWithExplicitKeys(t *testing.T) {
+	seedEnrichWorkQueueStore(t, enrichScopeParityItems())
+
+	cmd := newItemsEnrichCmd(&rootFlags{asJSON: true})
+	cmd.SilenceErrors, cmd.SilenceUsage = true, true
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetErr(&bytes.Buffer{})
+	cmd.SetArgs([]string{"--missing-doi", "--collection", "COLP", "--keys", "KOUT"})
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("--collection with --keys was accepted and could widen the explicit key filter to the whole collection")
+	}
+	if ExitCode(err) != 2 || !strings.Contains(err.Error(), "--collection cannot be combined with --keys/--keys-from") {
+		t.Fatalf("error = %v (exit %d), want a usage refusal for --collection with explicit keys", err, ExitCode(err))
 	}
 }
 
