@@ -25,7 +25,7 @@ func TestPubMedItemFromSummary(t *testing.T) {
 		"issue":           "2",
 		"pages":           "3-9",
 		"articleids":      []any{map[string]any{"idtype": "doi", "value": "10.1000/pmid"}},
-	})
+	}, "12345678")
 
 	if item["itemType"] != "journalArticle" || item["title"] != "PubMed Title" {
 		t.Fatalf("pubmed item = %v", item)
@@ -33,12 +33,37 @@ func TestPubMedItemFromSummary(t *testing.T) {
 	if item["DOI"] != "10.1000/pmid" || item["date"] != "1843" {
 		t.Errorf("pubmed DOI/date = %v/%v", item["DOI"], item["date"])
 	}
+	if item["extra"] != "PMID: 12345678" {
+		t.Errorf("pubmed extra = %v, want the PMID token items find --pmid searches for", item["extra"])
+	}
 	creators, ok := item["creators"].([]map[string]any)
 	if !ok || len(creators) != 1 {
 		t.Fatalf("creators = %v, want one creator", item["creators"])
 	}
 	if creators[0]["lastName"] != "Lovelace" || creators[0]["firstName"] != "A" {
 		t.Errorf("creator[0] = %v", creators[0])
+	}
+}
+
+// An item imported by PMID must stay findable by that same PMID. `items find
+// --pmid` matches a "PMID: <id>" token in Extra, so the import path and the
+// lookup path have to agree on where the identifier lives; they did not, and
+// every PMID import was unresolvable by its own identifier afterwards.
+func TestImportedPubMedItemIsFoundByItsOwnPMID(t *testing.T) {
+	const pmid = "12345678"
+	item := pubmedItemFromSummary(map[string]any{"title": "PubMed Title"}, pmid)
+
+	encoded, err := json.Marshal(map[string]any{"data": item})
+	if err != nil {
+		t.Fatalf("encode item: %v", err)
+	}
+	row := map[string]any{"data": string(encoded)}
+
+	if !findRowMatchesExact(row, findItemsQuery{PMID: pmid}) {
+		t.Fatalf("imported item is not findable by --pmid %s; extra = %q", pmid, item["extra"])
+	}
+	if findRowMatchesExact(row, findItemsQuery{PMID: "1234567"}) {
+		t.Errorf("a PMID prefix matched; the token must be exact")
 	}
 }
 

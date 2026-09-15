@@ -117,12 +117,20 @@ func fetchPubMedItem(cmd *cobra.Command, timeout time.Duration, pmid string) (ma
 	if !ok || len(rec) == 0 {
 		return nil, fmt.Errorf("PubMed ID not found: %s", pmid)
 	}
-	return pubmedItemFromSummary(rec), nil
+	return pubmedItemFromSummary(rec, pmid), nil
 }
 
-// Convert a PubMed eSummary record into a Zotero journalArticle map.
-func pubmedItemFromSummary(rec map[string]any) map[string]any {
+// Convert a PubMed eSummary record into a Zotero journalArticle map. The
+// requested PMID is recorded in Extra as "PMID: <id>", the token `items find
+// --pmid` searches for, so an imported item stays resolvable by the
+// identifier it was imported with. Zotero has no PMID field for
+// journalArticle, so Extra is the only place it can live; `import arxiv`
+// records its identifier the same way.
+func pubmedItemFromSummary(rec map[string]any, pmid string) map[string]any {
 	item := map[string]any{"itemType": "journalArticle"}
+	if pmid = strings.TrimSpace(pmid); pmid != "" {
+		item["extra"] = "PMID: " + pmid
+	}
 	if title := importIdentifierString(rec["title"]); title != "" {
 		item["title"] = title
 	}
