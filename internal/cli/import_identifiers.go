@@ -120,16 +120,21 @@ func fetchPubMedItem(cmd *cobra.Command, timeout time.Duration, pmid string) (ma
 	return pubmedItemFromSummary(rec, pmid), nil
 }
 
-// Convert a PubMed eSummary record into a Zotero journalArticle map. The
-// requested PMID is recorded in Extra as "PMID: <id>", the token `items find
-// --pmid` searches for, so an imported item stays resolvable by the
-// identifier it was imported with. Zotero has no PMID field for
-// journalArticle, so Extra is the only place it can live; `import arxiv`
-// records its identifier the same way.
+// Convert a PubMed eSummary record into a Zotero journalArticle map.
+//
+// The PMID goes in the item's own `PMID` field, which Zotero carries as a
+// first-class field on journalArticle (confirmed live against both
+// /api/itemTypeFields and a Web API write). An earlier version of this
+// function wrote "PMID: <id>" into Extra instead, on the belief that no such
+// field existed. Measured on 2026-09-15, that is worse than merely redundant:
+// the desktop connector — the default route while Zotero is running — parses
+// a recognized Extra token out into its real field and leaves Extra empty, so
+// the token the importer wrote survived only on the Web API route, and only
+// as a stale duplicate of a field the UI shows separately.
 func pubmedItemFromSummary(rec map[string]any, pmid string) map[string]any {
 	item := map[string]any{"itemType": "journalArticle"}
 	if pmid = strings.TrimSpace(pmid); pmid != "" {
-		item["extra"] = "PMID: " + pmid
+		item["PMID"] = pmid
 	}
 	if title := importIdentifierString(rec["title"]); title != "" {
 		item["title"] = title

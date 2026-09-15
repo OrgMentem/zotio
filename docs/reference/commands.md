@@ -1682,7 +1682,7 @@ zotio items find --doi 10.1145/3290605.3300709
 | `--doi` | `string` |  | Find items with this DOI |
 | `--isbn` | `string` |  | Find items with this ISBN |
 | `--openalex` | `string` |  | Find items with this OpenAlex work ID or URL |
-| `--pmid` | `string` |  | Find items with this PMID in Extra |
+| `--pmid` | `string` |  | Find items with this PMID (Zotero's PMID field, or a legacy "PMID:" line in Extra) |
 | `--title` | `string` |  | Find items with this exact title, ignoring case, whitespace, quote and dash styling, and a trailing full stop; when the lookup as a whole matches nothing, the closest titles are reported separately (near_title_matches in JSON) and never as results |
 | `--url` | `string` |  | Find items with this normalized URL |
 

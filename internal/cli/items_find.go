@@ -224,7 +224,7 @@ func newItemsFindCmd(flags *rootFlags) *cobra.Command {
 	cmd.Flags().StringVar(&query.DOI, "doi", "", "Find items with this DOI")
 	cmd.Flags().StringVar(&query.ArXiv, "arxiv", "", "Find items with this arXiv ID or URL")
 	cmd.Flags().StringVar(&query.ISBN, "isbn", "", "Find items with this ISBN")
-	cmd.Flags().StringVar(&query.PMID, "pmid", "", "Find items with this PMID in Extra")
+	cmd.Flags().StringVar(&query.PMID, "pmid", "", "Find items with this PMID (Zotero's PMID field, or a legacy \"PMID:\" line in Extra)")
 	cmd.Flags().StringVar(&query.Citekey, "citekey", "", "Find items with this Better BibTeX citation key; when the lookup as a whole matches nothing, the closest citation keys are reported separately (near_citekey_matches in JSON) and never as results")
 	cmd.Flags().StringVar(&query.URL, "url", "", "Find items with this normalized URL")
 	cmd.Flags().StringVar(&query.OpenAlex, "openalex", "", "Find items with this OpenAlex work ID or URL")
@@ -721,7 +721,13 @@ func findItemsCandidateSQL(q findItemsQuery) (string, []any) {
 		clauses = append(clauses, `COALESCE(json_extract(data, '$.data.ISBN'), '') <> ''`)
 	}
 	if q.PMID != "" {
-		clauses = append(clauses, `COALESCE(json_extract(data, '$.data.extra'), '') LIKE '%' || ? || '%' ESCAPE '\'`)
+		// The prefilter must admit both homes for the identifier, or the Go
+		// matcher never sees the row: Zotero's own `PMID` field, and the
+		// legacy "PMID:" Extra token. Exactness is decided in Go.
+		clauses = append(clauses, `(
+			COALESCE(json_extract(data, '$.data.extra'), '') LIKE '%' || ? || '%' ESCAPE '\'
+			OR COALESCE(json_extract(data, '$.data.PMID'), '') <> ''
+		)`)
 		args = append(args, escapeSQLiteLikeLiteral(q.PMID))
 	}
 	if q.Citekey != "" {
@@ -918,6 +924,7 @@ func findRowMatchesExact(row map[string]any, query findItemsQuery) bool {
 	d := struct {
 		DOI             string
 		ISBN            string
+		PMID            string
 		ArchiveID       string
 		ArchiveLocation string
 		Repository      string
@@ -928,6 +935,7 @@ func findRowMatchesExact(row map[string]any, query findItemsQuery) bool {
 	}{
 		DOI:             stringField("DOI"),
 		ISBN:            stringField("ISBN"),
+		PMID:            stringField("PMID"),
 		ArchiveID:       stringField("archiveID"),
 		ArchiveLocation: stringField("archiveLocation"),
 		Repository:      stringField("repository"),
@@ -953,10 +961,18 @@ func findRowMatchesExact(row map[string]any, query findItemsQuery) bool {
 			return true
 		}
 	}
-	if query.PMID != "" &&
-		(extraContainsExactToken(d.Extra, "PMID: ", query.PMID) ||
-			extraContainsExactToken(d.Extra, "PMID:", query.PMID)) {
-		return true
+	if query.PMID != "" {
+		// Zotero carries PMID as a first-class field, and the desktop moves a
+		// recognized "PMID:" Extra line into it. Match the field first, then
+		// the token, so an item written by either route — or by a tool that
+		// still uses Extra — resolves by its own identifier.
+		if strings.TrimSpace(d.PMID) == query.PMID {
+			return true
+		}
+		if extraContainsExactToken(d.Extra, "PMID: ", query.PMID) ||
+			extraContainsExactToken(d.Extra, "PMID:", query.PMID) {
+			return true
+		}
 	}
 	if query.Citekey != "" {
 		if strings.TrimSpace(d.CitationKey) == query.Citekey {

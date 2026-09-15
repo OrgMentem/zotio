@@ -33,8 +33,11 @@ func TestPubMedItemFromSummary(t *testing.T) {
 	if item["DOI"] != "10.1000/pmid" || item["date"] != "1843" {
 		t.Errorf("pubmed DOI/date = %v/%v", item["DOI"], item["date"])
 	}
-	if item["extra"] != "PMID: 12345678" {
-		t.Errorf("pubmed extra = %v, want the PMID token items find --pmid searches for", item["extra"])
+	if item["PMID"] != "12345678" {
+		t.Errorf("pubmed PMID = %v, want Zotero's own PMID field", item["PMID"])
+	}
+	if item["extra"] != nil {
+		t.Errorf("pubmed extra = %v, want the identifier in its real field, not duplicated in Extra", item["extra"])
 	}
 	creators, ok := item["creators"].([]map[string]any)
 	if !ok || len(creators) != 1 {
@@ -45,25 +48,38 @@ func TestPubMedItemFromSummary(t *testing.T) {
 	}
 }
 
-// An item imported by PMID must stay findable by that same PMID. `items find
-// --pmid` matches a "PMID: <id>" token in Extra, so the import path and the
-// lookup path have to agree on where the identifier lives; they did not, and
-// every PMID import was unresolvable by its own identifier afterwards.
+// An item imported by PMID must stay findable by that same PMID, wherever the
+// identifier ended up living. The importer writes Zotero's own `PMID` field;
+// the desktop connector also migrates a recognized "PMID:" Extra line into
+// that field, while older imports and other tools leave the token in Extra.
+// The lookup has to accept both, and it accepted only Extra — so a PMID
+// import through the default route was unresolvable by its own identifier.
 func TestImportedPubMedItemIsFoundByItsOwnPMID(t *testing.T) {
 	const pmid = "12345678"
-	item := pubmedItemFromSummary(map[string]any{"title": "PubMed Title"}, pmid)
 
-	encoded, err := json.Marshal(map[string]any{"data": item})
-	if err != nil {
-		t.Fatalf("encode item: %v", err)
+	rowFor := func(t *testing.T, item map[string]any) map[string]any {
+		t.Helper()
+		encoded, err := json.Marshal(map[string]any{"data": item})
+		if err != nil {
+			t.Fatalf("encode item: %v", err)
+		}
+		return map[string]any{"data": string(encoded)}
 	}
-	row := map[string]any{"data": string(encoded)}
 
-	if !findRowMatchesExact(row, findItemsQuery{PMID: pmid}) {
-		t.Fatalf("imported item is not findable by --pmid %s; extra = %q", pmid, item["extra"])
+	native := rowFor(t, pubmedItemFromSummary(map[string]any{"title": "PubMed Title"}, pmid))
+	if !findRowMatchesExact(native, findItemsQuery{PMID: pmid}) {
+		t.Fatalf("imported item is not findable by --pmid %s", pmid)
 	}
-	if findRowMatchesExact(row, findItemsQuery{PMID: "1234567"}) {
-		t.Errorf("a PMID prefix matched; the token must be exact")
+	if findRowMatchesExact(native, findItemsQuery{PMID: "1234567"}) {
+		t.Errorf("a PMID prefix matched; the identifier must be exact")
+	}
+
+	legacy := rowFor(t, map[string]any{"itemType": "journalArticle", "extra": "PMID: " + pmid})
+	if !findRowMatchesExact(legacy, findItemsQuery{PMID: pmid}) {
+		t.Errorf("an item carrying the legacy Extra token is not findable by --pmid")
+	}
+	if findRowMatchesExact(legacy, findItemsQuery{PMID: "1234567"}) {
+		t.Errorf("a PMID prefix matched the Extra token; it must be exact")
 	}
 }
 

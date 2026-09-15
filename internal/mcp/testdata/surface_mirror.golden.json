@@ -2028,7 +2028,7 @@
           "type": "string"
         },
         "pmid": {
-          "description": "Find items with this PMID in Extra",
+          "description": "Find items with this PMID (Zotero's PMID field, or a legacy \"PMID:\" line in Extra)",
           "type": "string"
         },
         "title": {
