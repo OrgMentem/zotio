@@ -17,6 +17,7 @@ func newItemsTagsAddCmd(flags *rootFlags) *cobra.Command {
 	var tagNames []string
 	var keysFrom string
 	var automatic bool
+	var batch bool
 
 	cmd := &cobra.Command{
 		Use:   "add --tag <tag> [itemKeys...]",
@@ -29,12 +30,13 @@ func newItemsTagsAddCmd(flags *rootFlags) *cobra.Command {
 			"zotio:default-max-changes":        "500",
 		},
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runItemsTagsMutation(cmd, flags, "items.tags.add", "tag_add", tagNames, keysFrom, args, true, automatic)
+			return runItemsTagsMutation(cmd, flags, "items.tags.add", "tag_add", tagNames, keysFrom, args, true, automatic, batch)
 		},
 	}
 	cmd.Flags().StringArrayVar(&tagNames, "tag", nil, "Tag to add (repeatable)")
 	cmd.Flags().StringVar(&keysFrom, "keys-from", "", "Read item keys from a file, '-' for stdin, or positional args when omitted")
 	cmd.Flags().BoolVar(&automatic, "automatic", false, "Write added tags as Zotero automatic tags (type 1)")
+	cmd.Flags().BoolVar(&batch, "batch", false, batchTagFlagHelp)
 	return cmd
 }
 
@@ -42,6 +44,7 @@ func newItemsTagsRemoveCmd(flags *rootFlags) *cobra.Command {
 	var tagNames []string
 	var keysFrom string
 	var automaticOnly bool
+	var batch bool
 
 	cmd := &cobra.Command{
 		Use:   "remove --tag <tag> [itemKeys...]",
@@ -54,16 +57,23 @@ func newItemsTagsRemoveCmd(flags *rootFlags) *cobra.Command {
 			"zotio:default-max-changes":        "500",
 		},
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runItemsTagsMutation(cmd, flags, "items.tags.remove", "tag_remove", tagNames, keysFrom, args, false, automaticOnly)
+			return runItemsTagsMutation(cmd, flags, "items.tags.remove", "tag_remove", tagNames, keysFrom, args, false, automaticOnly, batch)
 		},
 	}
 	cmd.Flags().StringArrayVar(&tagNames, "tag", nil, "Tag to remove (repeatable)")
 	cmd.Flags().StringVar(&keysFrom, "keys-from", "", "Read item keys from a file, '-' for stdin, or positional args when omitted")
 	cmd.Flags().BoolVar(&automaticOnly, "automatic-only", false, "Remove only matching Zotero automatic tags (type 1)")
+	cmd.Flags().BoolVar(&batch, "batch", false, batchTagFlagHelp)
 	return cmd
 }
 
-func runItemsTagsMutation(cmd *cobra.Command, flags *rootFlags, operation, kind string, rawTags []string, keysFrom string, args []string, add, automatic bool) error {
+// batchTagFlagHelp states the contract change up front: the speedup is real
+// and so is the loss of fail-fast.
+const batchTagFlagHelp = "Write up to 50 items per request instead of one request per item. " +
+	"Much faster over large key sets, but every item in a request reaches Zotero together, " +
+	"so the run cannot stop at the first failure and --max-failures does not apply."
+
+func runItemsTagsMutation(cmd *cobra.Command, flags *rootFlags, operation, kind string, rawTags []string, keysFrom string, args []string, add, automatic, batch bool) error {
 	tagNames, err := normalizeTagNames(rawTags)
 	if err != nil {
 		return err
@@ -109,7 +119,11 @@ func runItemsTagsMutation(cmd *cobra.Command, flags *rootFlags, operation, kind 
 	if err != nil {
 		return err
 	}
+	if batch && flags.maxFailures > 0 {
+		return fmt.Errorf("--max-failures cannot be honoured with --batch: up to %d items travel in one request, so a failure cannot stop the items sent alongside it; drop one of the two flags", zoteroBatchWriteMax)
+	}
 	ops := make([]mutation.Op, 0, len(keys))
+	batchObjects := make([]map[string]any, 0, len(keys))
 	for _, key := range keys {
 		path := replacePathParam("/items/{itemKey}", "itemKey", key)
 		data, version, err := c.GetWithVersion(path, nil)
@@ -136,11 +150,37 @@ func runItemsTagsMutation(cmd *cobra.Command, flags *rootFlags, operation, kind 
 		if add && len(changes) == 0 {
 			op.NoOpReason = map[string]any{"tag_types": observedTagTypes(currentTags, tagNames)}
 		}
-		if add {
+		switch {
+		case batch:
+			// The engine never calls Apply for a no-op op, so an item with
+			// nothing to change must not consume a batch slot either.
+			if len(changes) == 0 {
+				break
+			}
+			nextTags := nextTagsForAdd(currentTags, tagNames, automatic)
+			if !add {
+				nextTags = nextTagsForRemove(currentTags, tagNames, automatic)
+			}
+			if nextTags == nil {
+				op.Changes = nil
+				break
+			}
+			if version <= 0 {
+				// Same fail-closed rule as patchWithVersionGuard: without a
+				// precondition the write would silently overwrite a
+				// concurrent edit.
+				return fmt.Errorf("no write-plane version for %s; refusing to write without a version precondition", path)
+			}
+			batchObjects = append(batchObjects, map[string]any{
+				"key":     keyCopy,
+				"version": version,
+				"tags":    nextTags,
+			})
+		case add:
 			op.Apply = func() (string, any, error) {
 				return applyItemTagAdd(c, pathCopy, tagsCopy, automatic)
 			}
-		} else {
+		default:
 			op.Apply = func() (string, any, error) {
 				return applyItemTagRemove(c, pathCopy, tagsCopy, automatic)
 			}
@@ -148,10 +188,36 @@ func runItemsTagsMutation(cmd *cobra.Command, flags *rootFlags, operation, kind 
 		ops = append(ops, op)
 	}
 
-	env, runErr := runMutation(cmd.Context(), flags, operation, ops)
+	var updater *batchItemUpdater
+	runOptions := []func(*mutation.Options){}
+	if batch {
+		updater = newBatchItemUpdater(c, "/items", operation, batchObjects)
+		slot := 0
+		for i := range ops {
+			if len(ops[i].Changes) == 0 {
+				continue
+			}
+			index := slot
+			slot++
+			ops[i].Apply = func() (string, any, error) {
+				return updater.outcome(index)
+			}
+		}
+		// A rejected object travelled to Zotero alongside its batch-mates and
+		// cannot un-send them, so stopping early would report applied items as
+		// not_attempted — the same lie collections create refuses to tell.
+		runOptions = append(runOptions, func(o *mutation.Options) { o.ContinueOnError = true })
+	}
+
+	env, runErr := runMutation(cmd.Context(), flags, operation, ops, runOptions...)
 	renderErr := renderMutation(cmd, flags, env, itemTagsSingleLine(add, tagNames))
 	if renderErr != nil {
 		return renderErr
+	}
+	if updater != nil {
+		if batchErr := updater.Err(); batchErr != nil {
+			return batchErr
+		}
 	}
 	return runErr
 }
@@ -267,6 +333,53 @@ func observedTagTypes(currentTags []map[string]any, tagNames []string) map[strin
 	return types
 }
 
+// nextTagsForAdd returns the tag array with every missing tag appended, or nil
+// when the item already carries all of them. Both the per-item and the batched
+// path compute the new array with this, so they cannot drift.
+func nextTagsForAdd(currentTags []map[string]any, tagNames []string, automatic bool) []map[string]any {
+	missing := make([]string, 0, len(tagNames))
+	for _, tagName := range tagNames {
+		if !itemHasTag(currentTags, tagName) {
+			missing = append(missing, tagName)
+		}
+	}
+	if len(missing) == 0 {
+		return nil
+	}
+	nextTags := copyItemTags(currentTags)
+	for _, tagName := range missing {
+		tag := map[string]any{"tag": tagName}
+		if automatic {
+			tag["type"] = 1
+		}
+		nextTags = append(nextTags, tag)
+	}
+	return nextTags
+}
+
+// nextTagsForRemove returns the tag array with every targeted tag dropped, or
+// nil when none of them were present.
+func nextTagsForRemove(currentTags []map[string]any, tagNames []string, automaticOnly bool) []map[string]any {
+	targets := make(map[string]struct{}, len(tagNames))
+	for _, tagName := range tagNames {
+		targets[tagName] = struct{}{}
+	}
+	nextTags := make([]map[string]any, 0, len(currentTags))
+	removed := 0
+	for _, tagObj := range currentTags {
+		tagName, _ := tagObj["tag"].(string)
+		if _, targeted := targets[tagName]; targeted && (!automaticOnly || itemTagType(tagObj) == 1) {
+			removed++
+			continue
+		}
+		nextTags = append(nextTags, copyItemTag(tagObj))
+	}
+	if removed == 0 {
+		return nil
+	}
+	return nextTags
+}
+
 func applyItemTagAdd(c *client.Client, path string, tagNames []string, automatic bool) (string, any, error) {
 	currentData, currentVersion, err := c.GetWithVersion(path, nil)
 	if err != nil {
@@ -276,23 +389,9 @@ func applyItemTagAdd(c *client.Client, path string, tagNames []string, automatic
 	if err != nil {
 		return "failed", err.Error(), err
 	}
-	missing := make([]string, 0, len(tagNames))
-	tagTypes := observedTagTypes(currentTags, tagNames)
-	for _, tagName := range tagNames {
-		if !itemHasTag(currentTags, tagName) {
-			missing = append(missing, tagName)
-		}
-	}
-	if len(missing) == 0 {
-		return "no_op", map[string]any{"tag_types": tagTypes}, nil
-	}
-	nextTags := copyItemTags(currentTags)
-	for _, tagName := range missing {
-		tag := map[string]any{"tag": tagName}
-		if automatic {
-			tag["type"] = 1
-		}
-		nextTags = append(nextTags, tag)
+	nextTags := nextTagsForAdd(currentTags, tagNames, automatic)
+	if nextTags == nil {
+		return "no_op", map[string]any{"tag_types": observedTagTypes(currentTags, tagNames)}, nil
 	}
 	return patchItemTags(c, path, currentVersion, nextTags)
 }
@@ -306,22 +405,8 @@ func applyItemTagRemove(c *client.Client, path string, tagNames []string, automa
 	if err != nil {
 		return "failed", err.Error(), err
 	}
-	targets := make(map[string]struct{}, len(tagNames))
-	for _, tagName := range tagNames {
-		targets[tagName] = struct{}{}
-	}
-	nextTags := make([]map[string]any, 0, len(currentTags))
-	removed := 0
-	for _, tagObj := range currentTags {
-		tagName, _ := tagObj["tag"].(string)
-		_, targeted := targets[tagName]
-		if targeted && (!automaticOnly || itemTagType(tagObj) == 1) {
-			removed++
-			continue
-		}
-		nextTags = append(nextTags, copyItemTag(tagObj))
-	}
-	if removed == 0 {
+	nextTags := nextTagsForRemove(currentTags, tagNames, automaticOnly)
+	if nextTags == nil {
 		return "no_op", "tag not present", nil
 	}
 	return patchItemTags(c, path, currentVersion, nextTags)
