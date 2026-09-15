@@ -32,20 +32,47 @@ Batched writes ship as an **opt-in** `--batch` flag, starting with
 `Apply` issues the array request and caches the decoded response, and every
 other op reads its own outcome from that cache.
 
-Two contract differences are accepted and documented at the flag, not hidden:
+**Zotero's multi-object update merges.** Every prior batched write in this
+repo is a create, so nothing established what an *update* does with omitted
+fields. If it replaced them, `{key, version, tags}` would clear the title,
+date and creators of up to 50 items per request, and the test fake could
+never reveal it. Measured live on 2026-09-15 against api.zotero.org:
+omitted fields are preserved and the submitted field is replaced wholesale.
+See `dev/field-report-2026-09-15-batch-write-semantics.md`. The `tags` array
+must therefore always be the item's complete intended tag set.
+
+Three contract differences are accepted and documented at the flag, not
+hidden:
 
 1. **The precondition moves into the object body.** `write_precondition.go`
    deliberately prefers `If-Unmodified-Since-Version` over a body `version` to
    avoid two preconditions that can disagree. One header cannot express many
    versions, so a heterogeneous batch has no alternative. A lost precondition
    returns code 412 in `failed` and is reported as that item's `conflict`,
-   exactly as the per-item path reports it.
+   exactly as the per-item path reports it — at exit 1, not the degraded
+   exit 13.
 
 2. **Fail-fast cannot hold.** Every object in a request reaches Zotero
    together, so an early rejection cannot un-send its batch-mates. Reporting
    them as `not_attempted` would be false and would invite a duplicating
-   retry. `--batch` therefore forces `ContinueOnError`, and `--batch` combined
-   with `--max-failures` is **refused** rather than silently ignored.
+   retry. `--batch` therefore forces `ContinueOnError`, and both
+   `--max-failures` and an explicit `--continue-on-error=false` are
+   **refused** rather than silently ignored or silently overridden. The
+   refusal is checked before the dry-run branch, so a preview cannot succeed
+   for a flag set the apply rejects.
+
+3. **Retry safety must be declared.** Only four request headers mark a write
+   rate-limit retry-safe, and a body-carried precondition sets none of them.
+   Left alone, a batched write would lose the 429 retry and the adaptive
+   limiter back-off that every per-item guarded PATCH gets — and lose it
+   exactly on the large sweeps `--batch` exists for, failing 50 items per
+   429. `Client.PostVersionedObjects` declares the request conditional, which
+   is true: replaying a per-object conditional write is at-most-once.
+
+Cancellation remains the one stop the engine can still apply mid-run. Because
+the chunk carrying the remaining ops has already been sent, those items are
+reported `failed` with an explicit unknown-outcome reason rather than
+`not_attempted`, which would be the same lie point 2 refuses.
 
 The batched path also reuses the planning read instead of re-reading at apply
 time. This is what removes the second request per item. It widens the window
@@ -53,8 +80,10 @@ in which a concurrent edit can land; that edit loses the precondition and is
 reported as a conflict, never as a silent overwrite.
 
 **Reads are not batched.** Tag merging needs each item's current tags, so the
-saving is in writes only: 200 items go from 600 requests to 204, not to 4.
-Claiming a 50x speedup would be dishonest.
+saving is in writes only: 200 items that all need a write go from 600
+requests to 204, not to 4. An item that already carries the tag is planned as
+a no-op and costs only its one planning read. Claiming a 50x speedup would be
+dishonest.
 
 ## Consequences
 

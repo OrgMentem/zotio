@@ -153,6 +153,13 @@ Notable changes to zotio. Format follows [Keep a Changelog](https://keepachangel
   buffered before a single write transaction. Zotero ships roughly 36 item
   types; more than 512 is now refused by name and count, and rows are written
   in bounded groups rather than accumulated.
+- **Mutation result rows reached the terminal unsanitized.** Every write
+  command prints one row per item, splicing in server-controlled text — an
+  API error body, a per-object rejection message. Terminal sanitization was
+  added to the process error sink but not to that row printer, so an escape
+  sequence in a Zotero response could still rewrite the operator's screen.
+  Rows are now sanitized for every mutation command. JSON output was never
+  affected: encoding escapes control bytes.
 
 ### Added
 
@@ -175,21 +182,33 @@ Notable changes to zotio. Format follows [Keep a Changelog](https://keepachangel
   of emitting prose telling the reader to run `annotations export` and paste
   the result. An item with no annotations keeps the labelled, empty section.
 - **`items tags add --batch` and `items tags remove --batch` write up to 50
-  items per request.** A bulk tag run previously cost three requests per item
-  — a planning read, an apply-time re-read, and a PATCH — so a 200-item sweep
-  made 600 requests and, at the 0.95s per item measured in
-  `dev/field-report-2026-08-08-verification.md`, took over three minutes. The
-  batched path reuses the planning read and groups the writes: the same 200
-  items cost 204 requests. Each object carries its own `version`, so the
-  precondition is per item and a stale one comes back as that item's own
-  `conflict` with Zotero's own message; every other item in the request still
-  reports its own status. The flag is opt-in because it changes two things
-  the default path guarantees: the precondition travels in the object body
-  rather than an `If-Unmodified-Since-Version` header (one header cannot
-  express many versions), and the run cannot stop at the first failure, since
-  every object in a request reaches Zotero together. `--batch` with
-  `--max-failures` is therefore refused rather than silently ignored. Reads
-  are unchanged at one per item: tag merging needs each item's current tags.
+  items per request.** A tag run costs three requests for each item it
+  changes — a planning read, an apply-time re-read, and a PATCH — so a
+  200-item sweep where every item changes made 600 requests and, at the 0.95s
+  per item measured in `dev/field-report-2026-08-08-verification.md`, took
+  over three minutes. The batched path reuses the planning read and groups
+  the writes: the same 200 items cost 204 requests. An item that already
+  carries the tag is a no-op and always cost only its one planning read.
+  Reads are still one per item, because tag merging needs each item's current
+  tags, so the saving is in writes alone.
+
+  Each object carries its own `version`, so the precondition is per item and a
+  stale one comes back as that item's own `conflict`, at exit 1, carrying
+  Zotero's own message; every other item in the request still reports its own
+  status. Zotero's multi-object update merges rather than replaces — measured
+  live and recorded in `dev/field-report-2026-09-15-batch-write-semantics.md`
+  — so fields the request omits are preserved.
+
+  The flag is opt-in because it waives guarantees the default path makes. The
+  precondition travels in the object body rather than an
+  `If-Unmodified-Since-Version` header, since one header cannot express many
+  versions. And the run cannot stop at the first failure, because every object
+  in a request reaches Zotero together: both `--max-failures` and an explicit
+  `--continue-on-error=false` are refused rather than silently ignored, and
+  the refusal is checked before the preview so a dry run cannot succeed for a
+  flag set the apply rejects. If the run is cancelled after a request was
+  sent, its items report `failed` with an unknown-outcome reason rather than
+  `not_attempted`, which would invite a duplicating retry.
 
 ### Changed
 

@@ -2617,7 +2617,7 @@
           "type": "boolean"
         },
         "batch": {
-          "description": "Write up to 50 items per request instead of one request per item. Much faster over large key sets, but every item in a request reaches Zotero together, so the run cannot stop at the first failure and --max-failures does not apply. (default: false)",
+          "description": "Write up to 50 items per request instead of one request per item. Much faster over large key sets, but every item in a request reaches Zotero together, so the run always continues past a failure: --max-failures and --continue-on-error=false are rejected rather than ignored. Each item still reports its own status and its own conflict. (default: false)",
           "type": "boolean"
         },
         "continue-on-error": {
@@ -2692,7 +2692,7 @@
           "type": "boolean"
         },
         "batch": {
-          "description": "Write up to 50 items per request instead of one request per item. Much faster over large key sets, but every item in a request reaches Zotero together, so the run cannot stop at the first failure and --max-failures does not apply. (default: false)",
+          "description": "Write up to 50 items per request instead of one request per item. Much faster over large key sets, but every item in a request reaches Zotero together, so the run always continues past a failure: --max-failures and --continue-on-error=false are rejected rather than ignored. Each item still reports its own status and its own conflict. (default: false)",
           "type": "boolean"
         },
         "continue-on-error": {

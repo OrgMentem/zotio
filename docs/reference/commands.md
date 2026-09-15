@@ -2019,7 +2019,7 @@ zotio items tags add --tag <tag> [itemKeys...] [flags]
 | Flag | Type | Default | Description |
 | --- | --- | --- | --- |
 | `--automatic` | `bool` | `false` | Write added tags as Zotero automatic tags (type 1) |
-| `--batch` | `bool` | `false` | Write up to 50 items per request instead of one request per item. Much faster over large key sets, but every item in a request reaches Zotero together, so the run cannot stop at the first failure and --max-failures does not apply. |
+| `--batch` | `bool` | `false` | Write up to 50 items per request instead of one request per item. Much faster over large key sets, but every item in a request reaches Zotero together, so the run always continues past a failure: --max-failures and --continue-on-error=false are rejected rather than ignored. Each item still reports its own status and its own conflict. |
 | `--keys-from` | `string` |  | Read item keys from a file, '-' for stdin, or positional args when omitted |
 | `--tag` | `stringArray` | `[]` | Tag to add (repeatable) |
 
@@ -2048,7 +2048,7 @@ zotio items tags remove --tag <tag> [itemKeys...] [flags]
 | Flag | Type | Default | Description |
 | --- | --- | --- | --- |
 | `--automatic-only` | `bool` | `false` | Remove only matching Zotero automatic tags (type 1) |
-| `--batch` | `bool` | `false` | Write up to 50 items per request instead of one request per item. Much faster over large key sets, but every item in a request reaches Zotero together, so the run cannot stop at the first failure and --max-failures does not apply. |
+| `--batch` | `bool` | `false` | Write up to 50 items per request instead of one request per item. Much faster over large key sets, but every item in a request reaches Zotero together, so the run always continues past a failure: --max-failures and --continue-on-error=false are rejected rather than ignored. Each item still reports its own status and its own conflict. |
 | `--keys-from` | `string` |  | Read item keys from a file, '-' for stdin, or positional args when omitted |
 | `--tag` | `stringArray` | `[]` | Tag to remove (repeatable) |
 
