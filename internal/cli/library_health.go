@@ -18,6 +18,8 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
+
+	"zotio/internal/client"
 )
 
 const (
@@ -911,8 +913,8 @@ func runTagDrift(db localQueryStore, ctx *healthContext) ([]Finding, *healthSkip
 //
 // A probe of "/" resolves to the first of those, so it failed whether or not
 // Zotero was running and this check skipped forever.
-func brokenAttachmentProbe() (string, map[string]string) {
-	return "/items", map[string]string{"limit": "1"}
+func brokenAttachmentProbe() string {
+	return "/items?limit=1"
 }
 
 // runBrokenAttachmentFile is the one live_local_api check. It runs only when
@@ -934,6 +936,10 @@ func runBrokenAttachmentFile(db localQueryStore, ctx *healthContext) ([]Finding,
 	if err != nil {
 		return nil, nil, err
 	}
+	return runBrokenAttachmentFileWithClient(db, ctx, c)
+}
+
+func runBrokenAttachmentFileWithClient(db localQueryStore, ctx *healthContext, c *client.Client) ([]Finding, *healthSkip, error) {
 	// --verify-files requires the local Zotero desktop API. Fail closed:
 	// if the configured base is not local (Web API), return a loud skip so
 	// the gate does not flood with spurious critical findings from the
@@ -942,7 +948,7 @@ func runBrokenAttachmentFile(db localQueryStore, ctx *healthContext) ([]Finding,
 		return nil, &healthSkip{
 			Kind:         "broken_attachment_file",
 			Precondition: "live_local_api",
-			Detail:       fmt.Sprintf("--verify-files requires the Zotero desktop local API, but the configured base is the Web API (%s).", c.BaseURL),
+			Detail:       fmt.Sprintf("--verify-files requires the Zotero desktop local API, but the configured base is the Web API (%s).", redactURL(c.BaseURL)),
 			Remediation: []healthRemediation{
 				{Action: "open_zotero", Text: "Open Zotero desktop and enable Settings -> Advanced -> 'Allow other applications to communicate with Zotero', then re-run with a local API base"},
 			},
@@ -953,15 +959,14 @@ func runBrokenAttachmentFile(db localQueryStore, ctx *healthContext) ([]Finding,
 	// so "/" asked Zotero for /api/users/0/ — which it answers 404 (only
 	// /api/ itself is a 200). The probe therefore failed whether or not
 	// Zotero was running, and this check skipped forever.
-	probePath, probeParams := brokenAttachmentProbe()
-	if _, probeErr := c.Get(probePath, probeParams); probeErr != nil {
-		// Only a successful probe proves the desktop connector is present
-		// AND serving this library. Any error — APIError or transport
-		// failure — means the local API is not usable.
+	probePath := brokenAttachmentProbe()
+	if _, probeErr := c.ProbeGet(probePath); probeErr != nil {
+		// Only a successful uncached probe proves the desktop connector is
+		// present and serving this library now.
 		return nil, &healthSkip{
 			Kind:         "broken_attachment_file",
 			Precondition: "live_local_api",
-			Detail:       fmt.Sprintf("Zotero desktop is not reachable on the local API (%s).", probeErr),
+			Detail:       "Zotero desktop is not reachable on the local API (" + localAPIRequestFailure("GET", probePath, probeErr) + ").",
 			Remediation: []healthRemediation{
 				{Action: "open_zotero", Text: "Open Zotero desktop and enable Settings -> Advanced -> 'Allow other applications to communicate with Zotero', then re-run"},
 			},
@@ -975,7 +980,17 @@ func runBrokenAttachmentFile(db localQueryStore, ctx *healthContext) ([]Finding,
 	findings := make([]Finding, 0)
 	for _, a := range attachments {
 		key := sqlStringValue(a["key"])
-		path, reason := attachmentFileStatus(c, key)
+		path, reason, statusErr := attachmentFileStatusWithError(c, key)
+		if statusErr != nil {
+			return nil, &healthSkip{
+				Kind:         "broken_attachment_file",
+				Precondition: "live_local_api",
+				Detail:       fmt.Sprintf("Zotero desktop became unavailable while checking attachment %s (%s).", key, localAPIRequestFailure("GET", "/items/"+key+"/file/view/url", statusErr)),
+				Remediation: []healthRemediation{
+					{Action: "open_zotero", Text: "Open Zotero desktop and enable Settings -> Advanced -> 'Allow other applications to communicate with Zotero', then re-run"},
+				},
+			}, nil
+		}
 		if reason == "" {
 			continue
 		}

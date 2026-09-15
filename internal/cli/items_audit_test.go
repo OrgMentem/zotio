@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -16,6 +17,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"zotio/internal/client"
 	"zotio/internal/store"
 )
 
@@ -82,17 +84,38 @@ func (f auditRoundTripFunc) RoundTrip(req *http.Request) (*http.Response, error)
 	return f(req)
 }
 
-func redirectAuditLocalAPI(t *testing.T, srv *httptest.Server) {
+func redirectAuditLocalAPI(t *testing.T, srv *httptest.Server, c *client.Client) {
 	t.Helper()
-	old := http.DefaultTransport
 	targetHost := strings.TrimPrefix(srv.URL, "http://")
-	http.DefaultTransport = auditRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+	base := srv.Client().Transport
+	c.HTTPClient.Transport = auditRoundTripFunc(func(req *http.Request) (*http.Response, error) {
 		clone := req.Clone(req.Context())
 		clone.URL.Scheme = "http"
 		clone.URL.Host = targetHost
-		return old.RoundTrip(clone)
+		return base.RoundTrip(clone)
 	})
-	t.Cleanup(func() { http.DefaultTransport = old })
+}
+
+func auditOpenDB(t *testing.T) localQueryStore {
+	t.Helper()
+	db, err := store.OpenWithContext(t.Context(), helpersTestDefaultDBPath(t, "zotio"))
+	if err != nil {
+		t.Fatalf("open audit store: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	return localQueryStore{db}
+}
+
+func runItemsAuditVerifyFiles(t *testing.T, flags *rootFlags, c *client.Client, limit int, sel scopeSelection) (string, error) {
+	t.Helper()
+	var out, errOut bytes.Buffer
+	cmd := &cobra.Command{}
+	cmd.SetOut(&out)
+	cmd.SetErr(&errOut)
+	flags.output = &out
+	flags.errorOutput = &errOut
+	err := runVerifyAttachmentFilesWithClient(cmd, auditOpenDB(t), flags, c, limit, sel)
+	return out.String(), err
 }
 
 func assertVerifyFilesPrecondition(t *testing.T, out string, err error) {
@@ -122,28 +145,82 @@ func TestItemsAuditVerifyFilesRefusesUnavailablePlane(t *testing.T) {
 	attachment := json.RawMessage(`{"key":"PDF1","version":1,"data":{"key":"PDF1","itemType":"attachment","parentItem":"P1","contentType":"application/pdf","linkMode":"imported_file","filename":"paper.pdf"}}`)
 
 	t.Run("unreachable_local_API", func(t *testing.T) {
-		auditIsolateEnv(t, "http://localhost:23119/api/users/0")
+		const secret = "SECRET-PROBE-KEY"
+		auditIsolateEnv(t, "http://localhost:23119/api/users/0?api_key="+secret)
 		auditSeedDB(t, []json.RawMessage{attachment})
-		old := http.DefaultTransport
-		http.DefaultTransport = auditRoundTripFunc(func(req *http.Request) (*http.Response, error) {
-			return nil, fmt.Errorf("test transport cannot reach %s", req.URL.Host)
+		flags := &rootFlags{asJSON: true, timeout: time.Second}
+		c, clientErr := flags.newClient()
+		if clientErr != nil {
+			t.Fatalf("new client: %v", clientErr)
+		}
+		c.HTTPClient.Transport = auditRoundTripFunc(func(*http.Request) (*http.Response, error) {
+			return nil, fmt.Errorf("connection refused")
 		})
-		t.Cleanup(func() { http.DefaultTransport = old })
 
-		out, _, err := runItemsAudit(t, &rootFlags{asJSON: true, timeout: time.Second}, "--verify-files")
+		out, err := runItemsAuditVerifyFiles(t, flags, c, 0, scopeSelection{})
 		assertVerifyFilesPrecondition(t, out, err)
+		if strings.Contains(out, secret) || strings.Contains(err.Error(), secret) {
+			t.Fatalf("probe refusal leaked the API key: output=%q error=%q", out, err)
+		}
+		if !strings.Contains(out, "GET /items?limit=1 failed: connection refused") {
+			t.Fatalf("probe detail = %q, want method, relative path, and transport cause", out)
+		}
 	})
 
 	t.Run("Web_API_base", func(t *testing.T) {
 		auditIsolateEnv(t, "https://api.zotero.org/users/123")
 		auditSeedDB(t, []json.RawMessage{attachment})
+		flags := &rootFlags{asJSON: true, timeout: time.Second}
+		c, clientErr := flags.newClient()
+		if clientErr != nil {
+			t.Fatalf("new client: %v", clientErr)
+		}
 
-		out, _, err := runItemsAudit(t, &rootFlags{asJSON: true, timeout: time.Second}, "--verify-files")
+		out, err := runItemsAuditVerifyFiles(t, flags, c, 0, scopeSelection{})
 		assertVerifyFilesPrecondition(t, out, err)
 	})
 }
 
+func TestItemsAuditVerifyFilesProbeBypassesCache(t *testing.T) {
+	auditIsolateEnv(t, "http://localhost:23119/api/users/0")
+	auditSeedDB(t, nil)
+	flags := &rootFlags{asJSON: true, timeout: time.Second}
+	c, err := flags.newClient()
+	if err != nil {
+		t.Fatalf("new client: %v", err)
+	}
+	var requests int
+	c.HTTPClient.Transport = auditRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+		requests++
+		status := http.StatusOK
+		body := "[]"
+		if requests > 1 {
+			status = http.StatusNotFound
+			body = "desktop stopped"
+		}
+		return &http.Response{
+			StatusCode: status,
+			Status:     fmt.Sprintf("%d %s", status, http.StatusText(status)),
+			Header:     make(http.Header),
+			Body:       io.NopCloser(strings.NewReader(body)),
+			Request:    req,
+		}, nil
+	})
+	probePath := brokenAttachmentProbe()
+	if _, warmErr := c.Get(probePath, nil); warmErr != nil {
+		t.Fatalf("warm probe cache: %v", warmErr)
+	}
+
+	out, runErr := runItemsAuditVerifyFiles(t, flags, c, 0, scopeSelection{})
+	assertVerifyFilesPrecondition(t, out, runErr)
+	if requests != 2 {
+		t.Fatalf("transport requests = %d, want an uncached probe after the cached GET", requests)
+	}
+}
+
 func TestItemsAuditVerifyFilesPropagatesAttachmentRequestError(t *testing.T) {
+	restoreBackoff := client.SetRetryBackoffBaseForTest(time.Millisecond)
+	t.Cleanup(restoreBackoff)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case strings.HasSuffix(r.URL.Path, "/items"):
@@ -155,18 +232,36 @@ func TestItemsAuditVerifyFilesPropagatesAttachmentRequestError(t *testing.T) {
 		}
 	}))
 	t.Cleanup(srv.Close)
-	redirectAuditLocalAPI(t, srv)
 	auditIsolateEnv(t, "http://localhost:23119/api/users/0")
 	auditSeedDB(t, []json.RawMessage{
 		json.RawMessage(`{"key":"PDF1","version":1,"data":{"key":"PDF1","itemType":"attachment","parentItem":"P1","contentType":"application/pdf","linkMode":"imported_file","filename":"paper.pdf"}}`),
 	})
+	flags := &rootFlags{asJSON: true, timeout: time.Second}
+	c, clientErr := flags.newClient()
+	if clientErr != nil {
+		t.Fatalf("new client: %v", clientErr)
+	}
+	redirectAuditLocalAPI(t, srv, c)
 
-	out, _, err := runItemsAudit(t, &rootFlags{asJSON: true, timeout: time.Second}, "--verify-files")
+	out, err := runItemsAuditVerifyFiles(t, flags, c, 0, scopeSelection{})
 	if err == nil {
 		t.Fatalf("verify-files output a false broken-file report: %s", out)
 	}
+	if code := ExitCode(err); code != 5 {
+		t.Fatalf("exit code = %d, want API failure exit 5: %v", code, err)
+	}
 	if !strings.Contains(err.Error(), "resolving attachment PDF1 file status") {
 		t.Fatalf("error = %v, want attachment request context", err)
+	}
+	var envelope struct {
+		Error string `json:"error"`
+		Code  int    `json:"code"`
+	}
+	if decodeErr := json.Unmarshal([]byte(out), &envelope); decodeErr != nil {
+		t.Fatalf("decode API error envelope %q: %v", out, decodeErr)
+	}
+	if envelope.Code != 5 || envelope.Error != err.Error() {
+		t.Fatalf("API error envelope = %+v, want code=5 error=%q", envelope, err)
 	}
 	if strings.Contains(out, `"broken"`) {
 		t.Fatalf("request failure became a broken-file report: %s", out)
@@ -529,7 +624,6 @@ func TestItemsAuditCmd(t *testing.T) {
 				http.NotFound(w, r)
 			}))
 			t.Cleanup(srv.Close)
-			redirectAuditLocalAPI(t, srv)
 			auditIsolateEnv(t, "http://localhost:23119/api/users/0")
 			auditSeedDB(t, []json.RawMessage{
 				// The parent carries a DOI so the finding's fixer is
@@ -539,7 +633,12 @@ func TestItemsAuditCmd(t *testing.T) {
 				json.RawMessage(`{"key":"BAD1","version":1,"data":{"key":"BAD1","itemType":"attachment","parentItem":"P1","contentType":"application/pdf","linkMode":"imported_file","filename":"bad.pdf"}}`),
 			})
 			flags := &rootFlags{asJSON: true, timeout: 2 * time.Second}
-			out, _, err := runItemsAudit(t, flags, "--verify-files")
+			c, clientErr := flags.newClient()
+			if clientErr != nil {
+				t.Fatalf("new client: %v", clientErr)
+			}
+			redirectAuditLocalAPI(t, srv, c)
+			out, err := runItemsAuditVerifyFiles(t, flags, c, 0, scopeSelection{})
 			if err != nil {
 				t.Fatalf("verify-files broken: %v", err)
 			}
@@ -623,13 +722,17 @@ func TestItemsAuditCmd(t *testing.T) {
 				http.NotFound(w, r)
 			}))
 			t.Cleanup(srv.Close)
-			redirectAuditLocalAPI(t, srv)
 			auditIsolateEnv(t, "http://localhost:23119/api/users/0")
 			auditSeedDB(t, []json.RawMessage{
 				json.RawMessage(`{"key":"GOOD1","version":1,"data":{"key":"GOOD1","itemType":"attachment","parentItem":"P1","contentType":"application/pdf","linkMode":"imported_file","filename":"real.pdf"}}`),
 			})
 			flags := &rootFlags{asJSON: true, timeout: 2 * time.Second}
-			out, _, err := runItemsAudit(t, flags, "--verify-files")
+			c, clientErr := flags.newClient()
+			if clientErr != nil {
+				t.Fatalf("new client: %v", clientErr)
+			}
+			redirectAuditLocalAPI(t, srv, c)
+			out, err := runItemsAuditVerifyFiles(t, flags, c, 0, scopeSelection{})
 			if err != nil {
 				t.Fatalf("verify-files good: %v", err)
 			}
@@ -923,7 +1026,6 @@ func TestItemsAuditVerifyFilesRespectsScope(t *testing.T) {
 		fmt.Fprint(w, "file://"+missing)
 	}))
 	t.Cleanup(srv.Close)
-	redirectAuditLocalAPI(t, srv)
 	auditIsolateEnv(t, "http://localhost:23119/api/users/0")
 	auditSeedDB(t, []json.RawMessage{
 		json.RawMessage(`{"key":"PIN","version":1,"data":{"key":"PIN","itemType":"journalArticle","title":"Alpha","dateAdded":"2020-01-01T00:00:00Z","collections":["COLA"]}}`),
@@ -932,6 +1034,11 @@ func TestItemsAuditVerifyFilesRespectsScope(t *testing.T) {
 		json.RawMessage(`{"key":"ATOUT","version":1,"data":{"key":"ATOUT","itemType":"attachment","parentItem":"POUT","contentType":"application/pdf","linkMode":"imported_file","filename":"out.pdf","dateAdded":"2030-01-02T00:00:00Z"}}`),
 	})
 	flags := &rootFlags{asJSON: true, timeout: 2 * time.Second}
+	c, clientErr := flags.newClient()
+	if clientErr != nil {
+		t.Fatalf("new client: %v", clientErr)
+	}
+	redirectAuditLocalAPI(t, srv, c)
 
 	type payload struct {
 		Checked int              `json:"checked"`
@@ -946,7 +1053,7 @@ func TestItemsAuditVerifyFilesRespectsScope(t *testing.T) {
 		return got
 	}
 
-	unscoped, _, err := runItemsAudit(t, flags, "--verify-files")
+	unscoped, err := runItemsAuditVerifyFiles(t, flags, c, 0, scopeSelection{})
 	if err != nil {
 		t.Fatalf("unscoped verify-files: %v", err)
 	}
@@ -954,7 +1061,7 @@ func TestItemsAuditVerifyFilesRespectsScope(t *testing.T) {
 		t.Fatalf("unscoped checked = %d, want both attachments", got.Checked)
 	}
 
-	scoped, _, err := runItemsAudit(t, flags, "--verify-files", "--scope", "collection:COLA")
+	scoped, err := runItemsAuditVerifyFiles(t, flags, c, 0, scopeSelection{Keys: map[string]bool{"PIN": true}})
 	if err != nil {
 		t.Fatalf("scoped verify-files: %v", err)
 	}

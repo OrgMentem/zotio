@@ -6,18 +6,18 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"net"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
 	"slices"
 	"strings"
-	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/spf13/cobra"
 
+	"zotio/internal/client"
 	"zotio/internal/store"
 )
 
@@ -38,7 +38,7 @@ func seedHealthStore(t *testing.T) localQueryStore {
 	items := []json.RawMessage{
 		json.RawMessage(`{"key":"P1","version":1,"data":{"key":"P1","itemType":"journalArticle","title":"P1"}}`),
 		json.RawMessage(`{"key":"P2","version":1,"data":{"key":"P2","itemType":"journalArticle","title":"Complete","creators":[{"lastName":"Doe"}],"date":"2020","publicationTitle":"Journal X","DOI":"10/p2","abstractNote":"abs","tags":[{"tag":"x"}],"extra":"Citation Key: doe2020"}}`),
-		json.RawMessage(`{"key":"A2","version":1,"data":{"key":"A2","itemType":"attachment","parentItem":"P2","contentType":"application/pdf"}}`),
+		json.RawMessage(`{"key":"A2","version":1,"data":{"key":"A2","itemType":"attachment","parentItem":"P2","contentType":"application/pdf","linkMode":"imported_file","filename":"paper.pdf"}}`),
 		json.RawMessage(`{"key":"C1","version":1,"data":{"key":"C1","itemType":"journalArticle","title":"Conflict One","creators":[{"lastName":"A"}],"date":"2021","publicationTitle":"J","DOI":"10/c1","abstractNote":"a","tags":[{"tag":"y"}],"extra":"Citation Key: same2021"}}`),
 		json.RawMessage(`{"key":"C2","version":1,"data":{"key":"C2","itemType":"journalArticle","title":"Conflict Two","creators":[{"lastName":"B"}],"date":"2021","publicationTitle":"J","DOI":"10/c2","abstractNote":"a","tags":[{"tag":"y"}],"extra":"Citation Key: same2021"}}`),
 		json.RawMessage(`{"key":"D1","version":1,"data":{"key":"D1","itemType":"journalArticle","title":"Dup A","creators":[{"lastName":"C"}],"date":"2018","publicationTitle":"J","DOI":"10/dup","abstractNote":"a","tags":[{"tag":"z"}],"extra":"Citation Key: dupa2018"}}`),
@@ -214,17 +214,17 @@ func TestLibraryHealthCleanStorePassesGate(t *testing.T) {
 // attachments. Port 23119 belongs to the running Zotero, so the endpoint
 // choice is pinned here rather than exercised over a socket.
 func TestBrokenAttachmentProbeUsesALibraryEndpoint(t *testing.T) {
-	path, params := brokenAttachmentProbe()
+	path := brokenAttachmentProbe()
 	if path == "/" || path == "" {
 		t.Fatalf("probe path = %q; a bare root resolves to /api/users/0/, which Zotero 404s", path)
 	}
-	if !strings.HasPrefix(path, "/") {
-		t.Fatalf("probe path = %q, want a library-relative path", path)
+	if !strings.HasPrefix(path, "/items?") {
+		t.Fatalf("probe path = %q, want a library-relative items path", path)
 	}
 	// Cheap: the probe proves reachability, so it must not pull a page of
 	// items on every health run.
-	if params["limit"] != "1" {
-		t.Errorf("probe params = %v, want limit=1", params)
+	if !strings.Contains(path, "limit=1") {
+		t.Errorf("probe path = %q, want limit=1", path)
 	}
 }
 
@@ -725,149 +725,128 @@ func TestLibraryHealthScopeLineScopedRunOmitsMirroredRows(t *testing.T) {
 
 // zotio-4062cb6: a Web API base must not be probed for file verification; it
 // must yield a loud live_local_api skip with zero broken-attachment findings.
-func TestBrokenAttachmentFile_WebBaseYieldsSkip(t *testing.T) {
-	// Any non-local base should short-circuit before the probe. No server
-	// needed — isLocalZoteroAPI returns false for this port/host, so the
-	// guard returns a skip without issuing GET /.
-	web := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		t.Errorf("Web base must not be probed: %s %s", r.Method, r.URL.Path)
-		http.Error(w, "unexpected probe", http.StatusBadRequest)
-	}))
-	t.Cleanup(web.Close)
-
-	t.Setenv("ZOTERO_BASE_URL", web.URL+"/users/0")
-	t.Setenv("ZOTERO_API_KEY", "testkey")
+func TestBrokenAttachmentFile_WebBaseYieldsRedactedSkip(t *testing.T) {
+	const secret = "HEALTH-URL-SECRET"
+	t.Setenv("ZOTERO_BASE_URL", "https://api.zotero.org/users/123?api_key="+secret)
 	t.Setenv("ZOTERO_CONFIG", filepath.Join(t.TempDir(), "missing.toml"))
+	flags := &rootFlags{timeout: time.Second}
+	c, clientErr := flags.newClient()
+	if clientErr != nil {
+		t.Fatalf("new client: %v", clientErr)
+	}
+	requests := 0
+	c.HTTPClient.Transport = auditRoundTripFunc(func(*http.Request) (*http.Response, error) {
+		requests++
+		return nil, fmt.Errorf("unexpected request")
+	})
 
 	db := seedHealthStore(t)
 	ctx := &healthContext{
 		src:         FindingSource{Kind: "local"},
 		preset:      "quick",
 		verifyFiles: true,
-		flags:       &rootFlags{timeout: time.Second},
+		flags:       flags,
 	}
-	findings, skip, err := runBrokenAttachmentFile(db, ctx)
+	findings, skip, err := runBrokenAttachmentFileWithClient(db, ctx, c)
 	if err != nil {
 		t.Fatalf("runBrokenAttachmentFile: %v", err)
 	}
 	if len(findings) != 0 {
 		t.Fatalf("want zero findings on Web base, got %d: %+v", len(findings), findings)
 	}
-	if skip == nil {
-		t.Fatal("want live_local_api skip on Web base, got nil")
-	}
-	if skip.Precondition != "live_local_api" || skip.Kind != "broken_attachment_file" {
+	if skip == nil || skip.Precondition != "live_local_api" || skip.Kind != "broken_attachment_file" {
 		t.Fatalf("skip = %+v, want live_local_api broken_attachment_file", skip)
 	}
 	if !strings.Contains(skip.Detail, "Web API") {
 		t.Fatalf("skip.Detail = %q, want mention of Web API", skip.Detail)
 	}
+	if strings.Contains(skip.Detail, secret) {
+		t.Fatalf("skip.Detail leaked the API key: %q", skip.Detail)
+	}
+	if requests != 0 {
+		t.Fatalf("Web base was probed %d times, want 0", requests)
+	}
 }
+
 func TestBrokenAttachmentFile_LocalProbeErrorYieldsSkip(t *testing.T) {
-	// Local base whose probe cannot connect must also skip rather than
-	// proceeding to check attachments via the local-only file endpoint.
-	//
-	// isLocalZoteroAPI hardcodes port 23119 (doctor.go:37) as part of its
-	// predicate — httptest.NewServer's ephemeral port can never make isLocal
-	// return true, so determinism does not mean "use any free port" but
-	// "make the probe fail while staying on 23119."
-	//
-	// Zotero desktop occupies exactly that port on developer machines, so we
-	// hold 23119 ourselves with a raw TCP listener that never speaks HTTP;
-	// the probe then fails with a transport error.
-	//
-	// When the bind fails, a real Zotero owns the port — and a real Zotero
-	// ANSWERS the probe, so there is no skip to assert. This branch used to
-	// claim the occupant 404s the probe, which was only true while the probe
-	// asked for "/" (resolving to /api/users/0/). Fixing that endpoint made
-	// the claim false, so the branch is a skip rather than a second
-	// assertion; TestBrokenAttachmentProbeUsesALibraryEndpoint pins the
-	// endpoint choice, and the _NoHeldPort sibling covers the rest.
-	ln, bindErr := net.Listen("tcp", "127.0.0.1:23119")
-	if bindErr != nil {
-		t.Skipf("127.0.0.1:23119 is occupied by a real local API (%v); this test needs to hold the port to force a transport error", bindErr)
-	}
-	// Nothing speaks HTTP on the held port, so the probe must fail.
-	t.Cleanup(func() { _ = ln.Close() })
-	// The base is the real local port so isLocal passes.
-	if !isLocalZoteroAPI("http://127.0.0.1:23119/api/users/0") {
-		t.Fatalf("isLocalZoteroAPI unexpectedly false for 127.0.0.1:23119")
-	}
-	t.Setenv("ZOTERO_BASE_URL", "http://127.0.0.1:23119/api/users/0")
+	t.Setenv("ZOTERO_BASE_URL", "http://localhost:23119/api/users/0")
 	t.Setenv("ZOTERO_CONFIG", filepath.Join(t.TempDir(), "missing.toml"))
-	t.Setenv("ZOTERO_API_KEY", "")
+	flags := &rootFlags{timeout: time.Second}
+	c, clientErr := flags.newClient()
+	if clientErr != nil {
+		t.Fatalf("new client: %v", clientErr)
+	}
+	c.HTTPClient.Transport = auditRoundTripFunc(func(*http.Request) (*http.Response, error) {
+		return nil, fmt.Errorf("connection refused")
+	})
+
 	db := seedHealthStore(t)
 	ctx := &healthContext{
 		src:         FindingSource{Kind: "local"},
 		preset:      "quick",
 		verifyFiles: true,
-		flags:       &rootFlags{timeout: 200 * time.Millisecond},
+		flags:       flags,
 	}
-	findings, skip, runErr := runBrokenAttachmentFile(db, ctx)
+	findings, skip, runErr := runBrokenAttachmentFileWithClient(db, ctx, c)
 	if runErr != nil {
 		t.Fatalf("runBrokenAttachmentFile: %v", runErr)
 	}
 	if len(findings) != 0 {
 		t.Fatalf("want zero findings when local probe fails, got %d", len(findings))
 	}
-	if skip == nil || skip.Precondition != "live_local_api" {
-		t.Fatalf("want live_local_api skip when probe fails, got %+v", skip)
+	if skip == nil || skip.Kind != "broken_attachment_file" || skip.Precondition != "live_local_api" {
+		t.Fatalf("want live_local_api broken_attachment_file skip, got %+v", skip)
+	}
+	if !strings.Contains(skip.Detail, "GET /items?limit=1 failed: connection refused") {
+		t.Fatalf("skip.Detail = %q, want safe request context", skip.Detail)
 	}
 }
 
-func TestBrokenAttachmentFile_LocalProbeErrorYieldsSkip_NoHeldPort(t *testing.T) {
-	// Documents inability to avoid 23119 per assignment: if the probe is
-	// forced to use 23119 by isLocalZoteroAPI, the port genuinely cannot be
-	// avoided. This companion check records that fact without depending on
-	// the port being free.
-	if !isLocalZoteroAPI("http://127.0.0.1:23119/api/users/0") {
-		t.Fatalf("isLocal unexpectedly false for 127.0.0.1:23119")
-	}
-	if isLocalZoteroAPI("http://127.0.0.1:0/api/users/0") {
-		t.Fatalf("isLocal unexpectedly true for ephemeral port")
-	}
-	// Prove an ephemeral local base would take the OTHER skip path
-	// (Web API) and never reach the probe, so it cannot substitute for
-	// the 23119 probe-error path exercised by the sibling test.
-	var requests atomic.Int64
+func TestBrokenAttachmentFile_AttachmentRequestErrorYieldsSkip(t *testing.T) {
+	restoreBackoff := client.SetRetryBackoffBaseForTest(time.Millisecond)
+	t.Cleanup(restoreBackoff)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		requests.Add(1)
-		t.Errorf("ephemeral local base must not be probed: %s %s", r.Method, r.URL.Path)
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/items"):
+			fmt.Fprint(w, `[]`)
+		case strings.HasSuffix(r.URL.Path, "/items/A2/file/view/url"):
+			http.Error(w, "temporary failure", http.StatusServiceUnavailable)
+		default:
+			http.NotFound(w, r)
+		}
 	}))
 	t.Cleanup(srv.Close)
-
-	t.Setenv("ZOTERO_BASE_URL", srv.URL+"/users/0")
-	t.Setenv("ZOTERO_API_KEY", "testkey")
+	t.Setenv("ZOTERO_BASE_URL", "http://localhost:23119/api/users/0")
 	t.Setenv("ZOTERO_CONFIG", filepath.Join(t.TempDir(), "missing.toml"))
+	flags := &rootFlags{timeout: time.Second}
+	c, clientErr := flags.newClient()
+	if clientErr != nil {
+		t.Fatalf("new client: %v", clientErr)
+	}
+	redirectAuditLocalAPI(t, srv, c)
 
 	db := seedHealthStore(t)
 	ctx := &healthContext{
 		src:         FindingSource{Kind: "local"},
 		preset:      "quick",
 		verifyFiles: true,
-		flags:       &rootFlags{timeout: time.Second},
+		flags:       flags,
 	}
-	findings, skip, err := runBrokenAttachmentFile(db, ctx)
-	if err != nil {
-		t.Fatalf("runBrokenAttachmentFile: %v", err)
+	findings, skip, runErr := runBrokenAttachmentFileWithClient(db, ctx, c)
+	if runErr != nil {
+		t.Fatalf("runBrokenAttachmentFile: %v", runErr)
 	}
 	if len(findings) != 0 {
-		t.Fatalf("want zero findings on ephemeral Web base, got %d: %+v", len(findings), findings)
+		t.Fatalf("attachment API failure produced partial findings: %+v", findings)
 	}
-	if skip == nil {
-		t.Fatal("want skip on ephemeral Web base, got nil")
+	if skip == nil || skip.Kind != "broken_attachment_file" || skip.Precondition != "live_local_api" {
+		t.Fatalf("skip = %+v, want loud live_local_api broken_attachment_file skip", skip)
 	}
-	if skip.Kind != "broken_attachment_file" {
-		t.Fatalf("skip.Kind = %q, want broken_attachment_file", skip.Kind)
+	if !strings.Contains(skip.Detail, "attachment A2") || !strings.Contains(skip.Detail, "HTTP 503") {
+		t.Fatalf("skip.Detail = %q, want attachment context and HTTP status", skip.Detail)
 	}
-	if skip.Precondition != "live_local_api" {
-		t.Fatalf("skip.Precondition = %q, want live_local_api", skip.Precondition)
-	}
-	if !strings.Contains(skip.Detail, "Web API") {
-		t.Fatalf("skip.Detail = %q, want mention of Web API (proves Web-API guard fired, not probe failure)", skip.Detail)
-	}
-	if got := requests.Load(); got != 0 {
-		t.Fatalf("ephemeral server was probed %d times, want 0 (must short-circuit before GET /)", got)
+	if len(skip.Remediation) == 0 {
+		t.Fatalf("skip = %+v, want remediation", skip)
 	}
 }
 

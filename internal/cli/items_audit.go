@@ -4,7 +4,9 @@ package cli
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"sort"
 	"strconv"
@@ -835,14 +837,18 @@ func runVerifyAttachmentFiles(cmd *cobra.Command, db localQueryStore, flags *roo
 	if err != nil {
 		return err
 	}
+	return runVerifyAttachmentFilesWithClient(cmd, db, flags, c, limit, sel)
+}
+
+func runVerifyAttachmentFilesWithClient(cmd *cobra.Command, db localQueryStore, flags *rootFlags, c *client.Client, limit int, sel scopeSelection) error {
 	if !isLocalZoteroAPI(c.BaseURL) {
 		return refuseVerifyAttachmentFiles(cmd, flags,
 			fmt.Sprintf("configured base URL %q is not the Zotero desktop local API", redactURL(c.BaseURL)))
 	}
-	probePath, probeParams := brokenAttachmentProbe()
-	if _, probeErr := c.Get(probePath, probeParams); probeErr != nil {
+	probePath := brokenAttachmentProbe()
+	if _, probeErr := c.ProbeGet(probePath); probeErr != nil {
 		return refuseVerifyAttachmentFiles(cmd, flags,
-			fmt.Sprintf("Zotero desktop local API is not reachable: %v", probeErr))
+			"Zotero desktop local API is not reachable: "+localAPIRequestFailure("GET", probePath, probeErr))
 	}
 	attachments, err := queryPDFAttachments(db, sel.queryLimit(limit))
 	if err != nil {
@@ -856,7 +862,9 @@ func runVerifyAttachmentFiles(cmd *cobra.Command, db localQueryStore, flags *roo
 		key := sqlStringValue(a["key"])
 		path, reason, statusErr := attachmentFileStatusWithError(c, key)
 		if statusErr != nil {
-			return classifyAPIError(fmt.Errorf("resolving attachment %s file status: %w", key, statusErr), flags)
+			classified := classifyAPIError(fmt.Errorf("resolving attachment %s file status: %w", key, statusErr), flags)
+			writeAPIErrorEnvelope(cmd.OutOrStdout(), flags, classified, ExitCode(classified))
+			return classified
 		}
 		if reason == "" {
 			continue
@@ -924,13 +932,15 @@ func brokenAttachmentFindings(broken []map[string]any) []Finding {
 	return findings
 }
 
-// attachmentFileStatus resolves and stats an attachment for callers whose live
-// API reachability is already established. The compatibility wrapper keeps the
-// health check's two-value contract; items audit uses the error-aware core so a
-// request failure cannot become a broken-file finding.
-func attachmentFileStatus(c *client.Client, key string) (path, reason string) {
-	path, reason, _ = attachmentFileStatusWithError(c, key)
-	return path, reason
+// localAPIRequestFailure reports a known method and relative path without
+// repeating the absolute request URL carried by net/url transport errors.
+func localAPIRequestFailure(method, path string, err error) string {
+	cause := err
+	var urlErr *url.Error
+	for errors.As(cause, &urlErr) {
+		cause = urlErr.Err
+	}
+	return fmt.Sprintf("%s %s failed: %v", method, path, cause)
 }
 
 func attachmentFileStatusWithError(c *client.Client, key string) (path, reason string, err error) {
