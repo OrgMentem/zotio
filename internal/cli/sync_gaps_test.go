@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -748,6 +749,122 @@ func TestSyncResourceSchemaUsesGlobalBaseAndSchemaID(t *testing.T) {
 	syncTestAssertStoreCount(t, db, "schema", 1)
 	if data, err := db.Get("schema", "book"); err != nil || len(data) == 0 {
 		t.Fatalf("stored schema book = %s (err %v), want row", string(data), err)
+	}
+}
+
+func TestSyncDependentSchemaResourceFansOutAndSkipsUnchangedVersion(t *testing.T) {
+	syncTestWithHumanFriendly(t, false)
+	var mu sync.Mutex
+	itemTypes := []string{"book", "journalArticle"}
+	hits := map[string]map[string]int{
+		"/itemTypeFields":       {},
+		"/itemTypeCreatorTypes": {},
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Zotero-Schema-Version", "100")
+		switch r.URL.Path {
+		case "/itemTypes":
+			fmt.Fprint(w, `[{"itemType":"book"},{"itemType":"journalArticle"}]`)
+		case "/itemTypeFields", "/itemTypeCreatorTypes":
+			itemType := r.URL.Query().Get("itemType")
+			mu.Lock()
+			hits[r.URL.Path][itemType]++
+			mu.Unlock()
+			if itemType != "book" && itemType != "journalArticle" {
+				http.Error(w, "unexpected itemType", http.StatusBadRequest)
+				return
+			}
+			if r.URL.Path == "/itemTypeFields" {
+				if itemType == "book" {
+					fmt.Fprint(w, `[{"field":"title"},{"field":"ISBN"}]`)
+				} else {
+					fmt.Fprint(w, `[{"field":"title"},{"field":"DOI"}]`)
+				}
+			} else if itemType == "book" {
+				fmt.Fprint(w, `[{"creatorType":"author"},{"creatorType":"editor"}]`)
+			} else {
+				fmt.Fprint(w, `[{"creatorType":"author"}]`)
+			}
+		case "/users/0/itemTypes", "/users/0/itemTypeFields", "/users/0/itemTypeCreatorTypes":
+			http.Error(w, "schema endpoint must use global base", http.StatusNotFound)
+		default:
+			http.Error(w, "unexpected path "+r.URL.Path, http.StatusNotFound)
+		}
+	}))
+	defer server.Close()
+
+	db := syncTestOpenStore(t)
+	defer db.Close()
+	c := syncTestClient(server.URL + "/users/0")
+	if result := syncResource(context.Background(), c, db, "schema", 0, false, 0, false); result.Err != nil {
+		t.Fatalf("schema prerequisite sync: %v", result.Err)
+	}
+	result := syncResource(context.Background(), c, db, "schema-item-type-fields", 0, false, 0, false)
+	if result.Err != nil || result.Count != len(itemTypes) {
+		t.Fatalf("dependent schema sync = %+v, want %d rows and no error", result, len(itemTypes))
+	}
+	creatorResult := syncResource(context.Background(), c, db, "schema-item-type-creator-types", 0, false, 0, false)
+	if creatorResult.Err != nil || creatorResult.Count != len(itemTypes) {
+		t.Fatalf("dependent creator schema sync = %+v, want %d rows and no error", creatorResult, len(itemTypes))
+	}
+
+	for _, itemType := range itemTypes {
+		mu.Lock()
+		gotFieldHits := hits["/itemTypeFields"][itemType]
+		gotCreatorHits := hits["/itemTypeCreatorTypes"][itemType]
+		mu.Unlock()
+		if gotFieldHits != 1 {
+			t.Errorf("/itemTypeFields?itemType=%s hits = %d, want 1", itemType, gotFieldHits)
+		}
+		if gotCreatorHits != 1 {
+			t.Errorf("/itemTypeCreatorTypes?itemType=%s hits = %d, want 1", itemType, gotCreatorHits)
+		}
+		row, err := db.SchemaItemTypeFields(itemType)
+		if err != nil {
+			t.Fatalf("cached fields for %s: %v", itemType, err)
+		}
+		fields, err := decodeSchemaList(row, "/itemTypeFields", "field")
+		if err != nil || len(fields) != 2 {
+			t.Fatalf("cached fields for %s = %v, %v; want two fields", itemType, fields, err)
+		}
+		if _, err := db.SchemaItemTypeCreatorTypes(itemType); err != nil {
+			t.Fatalf("cached creator types for %s: %v", itemType, err)
+		}
+	}
+
+	// Refresh the prerequisite version. The unchanged header proves the cached
+	// dependent rows are current, so the second incremental pass makes no
+	// per-item-type requests.
+	if result := syncResource(context.Background(), c, db, "schema", 0, false, 0, false); result.Err != nil {
+		t.Fatalf("second schema prerequisite sync: %v", result.Err)
+	}
+	result = syncResource(context.Background(), c, db, "schema-item-type-fields", 0, false, 0, false)
+	if result.Err != nil || result.Count != 0 {
+		t.Fatalf("unchanged dependent schema sync = %+v, want zero reads and no error", result)
+	}
+	creatorResult = syncResource(context.Background(), c, db, "schema-item-type-creator-types", 0, false, 0, false)
+	if creatorResult.Err != nil || creatorResult.Count != 0 {
+		t.Fatalf("unchanged dependent creator schema sync = %+v, want zero reads and no error", creatorResult)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	for _, itemType := range itemTypes {
+		if got := hits["/itemTypeFields"][itemType]; got != 1 {
+			t.Errorf("unchanged schema re-read fields for %s: total hits = %d, want 1", itemType, got)
+		}
+		if got := hits["/itemTypeCreatorTypes"][itemType]; got != 1 {
+			t.Errorf("unchanged schema re-read creator types for %s: total hits = %d, want 1", itemType, got)
+		}
+	}
+}
+
+func TestPerItemTypeSchemaResourcesAreNotDefault(t *testing.T) {
+	for _, resource := range defaultSyncResources() {
+		switch resource {
+		case "schema-item-type-fields", "schema-item-type-creator-types":
+			t.Fatalf("costly per-item-type resource %q must not be in defaults", resource)
+		}
 	}
 }
 

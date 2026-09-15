@@ -4,6 +4,7 @@ package cli
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -12,6 +13,8 @@ import (
 	"strings"
 	"sync"
 	"testing"
+
+	"zotio/internal/store"
 )
 
 // schemaServer serves the global Zotero schema endpoints from the given sets.
@@ -380,7 +383,41 @@ func deepSchemaServer(t *testing.T, version string, itemTypes []string, hits map
 	}))
 }
 
-func TestSchemaDriftShallowThenDeepFetchesPerTypeEndpoints(t *testing.T) {
+func seedDeepSchemaCache(t *testing.T, dbPath, version string, fields, creatorTypes map[string][]string) {
+	t.Helper()
+	db, err := store.OpenWithContext(context.Background(), dbPath)
+	if err != nil {
+		t.Fatalf("open deep schema cache: %v", err)
+	}
+	defer db.Close()
+
+	seed := func(resource string, values map[string][]string, key string) {
+		ids := make([]string, 0, len(values))
+		rows := make([]json.RawMessage, 0, len(values))
+		for itemType, names := range values {
+			payload := make([]map[string]string, 0, len(names))
+			for _, name := range names {
+				payload = append(payload, map[string]string{key: name})
+			}
+			raw, err := json.Marshal(payload)
+			if err != nil {
+				t.Fatalf("marshal %s/%s: %v", resource, itemType, err)
+			}
+			ids = append(ids, itemType)
+			rows = append(rows, raw)
+		}
+		if _, err := db.UpsertKeyed(resource, ids, rows); err != nil {
+			t.Fatalf("seed %s: %v", resource, err)
+		}
+		if err := db.SaveZoteroSchemaVersion(resource, version); err != nil {
+			t.Fatalf("seed %s version: %v", resource, err)
+		}
+	}
+	seed("schema-item-type-fields", fields, "field")
+	seed("schema-item-type-creator-types", creatorTypes, "creatorType")
+}
+
+func TestSchemaDriftShallowThenDeepUsesCachedPerTypeSchema(t *testing.T) {
 	var mu sync.Mutex
 	srv1 := versionedSchemaServer("100", []string{"book"}, map[string]int{}, &mu)
 	baseline := filepath.Join(t.TempDir(), "baseline.json")
@@ -396,18 +433,24 @@ func TestSchemaDriftShallowThenDeepFetchesPerTypeEndpoints(t *testing.T) {
 	if baseLoaded.TypeFields != nil || baseLoaded.TypeCreators != nil {
 		t.Fatalf("expected shallow baseline, got deep maps: %#v", baseLoaded)
 	}
+
+	dbPath := filepath.Join(t.TempDir(), "schema.db")
+	seedDeepSchemaCache(t, dbPath, "100",
+		map[string][]string{"book": {"title", "ISBN"}},
+		map[string][]string{"book": {"author"}},
+	)
 	hits := map[string]int{}
 	srv2 := deepSchemaServer(t, "100", []string{"book"}, hits, &mu)
 	defer srv2.Close()
-	out, err := runSchemaDrift(t, srv2.URL, baseline, true, "--deep")
+	out, err := runSchemaDrift(t, srv2.URL, baseline, true, "--deep", "--db", dbPath)
 	if err != nil {
 		t.Fatalf("deep drift: %v", err)
 	}
 	mu.Lock()
-	gotDeep := hits["/itemTypeFields"] > 0 && hits["/itemTypeCreatorTypes"] > 0
+	gotDeepRequests := hits["/itemTypeFields"] + hits["/itemTypeCreatorTypes"]
 	mu.Unlock()
-	if !gotDeep {
-		t.Fatalf("expected --deep after shallow baseline to fetch per-type endpoints, hits=%v output=%s", hits, out)
+	if gotDeepRequests != 0 {
+		t.Fatalf("deep drift fetched per-type endpoints instead of using the cache: hits=%v output=%s", hits, out)
 	}
 	var res map[string]any
 	if err := json.Unmarshal([]byte(out), &res); err != nil {
@@ -421,7 +464,7 @@ func TestSchemaDriftShallowThenDeepFetchesPerTypeEndpoints(t *testing.T) {
 	}
 }
 
-func TestSchemaDriftDeepPerTypeFieldChangeIsReported(t *testing.T) {
+func TestSchemaDriftDeepPerTypeFieldChangeIsReportedFromCache(t *testing.T) {
 	var mu sync.Mutex
 	srv1 := versionedSchemaServer("100", []string{"book"}, map[string]int{}, &mu)
 	baseline := filepath.Join(t.TempDir(), "baseline.json")
@@ -430,33 +473,25 @@ func TestSchemaDriftDeepPerTypeFieldChangeIsReported(t *testing.T) {
 		t.Fatalf("shallow capture: %v", err)
 	}
 	srv1.Close()
+
+	dbPath := filepath.Join(t.TempDir(), "schema.db")
+	seedDeepSchemaCache(t, dbPath, "100",
+		map[string][]string{"book": {"title", "ISBN", "DOI"}},
+		map[string][]string{"book": {"author"}},
+	)
 	hits := map[string]int{}
-	srv2 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		mu.Lock()
-		hits[r.URL.Path]++
-		mu.Unlock()
-		w.Header().Set("Zotero-Schema-Version", "100")
-		switch r.URL.Path {
-		case "/itemTypes":
-			writeSchemaRows(w, "itemType", []string{"book"})
-		case "/itemFields":
-			writeSchemaRows(w, "field", []string{"title"})
-		case "/creatorFields":
-			writeSchemaRows(w, "field", []string{"firstName"})
-		case "/itemTypeFields":
-			writeSchemaRows(w, "field", []string{"title", "ISBN", "DOI"})
-		case "/itemTypeCreatorTypes":
-			writeSchemaRows(w, "creatorType", []string{"author"})
-		default:
-			http.Error(w, "unexpected "+r.URL.Path, http.StatusNotFound)
-		}
-	}))
+	srv2 := deepSchemaServer(t, "100", []string{"book"}, hits, &mu)
 	defer srv2.Close()
-	out, err := runSchemaDrift(t, srv2.URL, baseline, true, "--deep")
+	out, err := runSchemaDrift(t, srv2.URL, baseline, true, "--deep", "--db", dbPath)
 	if err != nil {
 		t.Fatalf("deep drift: %v", err)
 	}
-	_ = hits
+	mu.Lock()
+	gotDeepRequests := hits["/itemTypeFields"] + hits["/itemTypeCreatorTypes"]
+	mu.Unlock()
+	if gotDeepRequests != 0 {
+		t.Errorf("deep drift fetched per-type endpoints instead of using the cache: hits=%v", hits)
+	}
 	var res struct {
 		Drift  bool `json:"drift"`
 		Deltas []struct {

@@ -1409,6 +1409,54 @@ func (s *Store) Get(resourceType, id string) (json.RawMessage, error) {
 	return json.RawMessage(data), nil
 }
 
+// SchemaItemTypes returns the cached global /itemTypes rows.
+func (s *Store) SchemaItemTypes() ([]json.RawMessage, error) {
+	return s.List("schema", -1)
+}
+
+// SchemaItemTypeFields returns the cached /itemTypeFields row for itemType.
+func (s *Store) SchemaItemTypeFields(itemType string) (json.RawMessage, error) {
+	return s.Get("schema-item-type-fields", itemType)
+}
+
+// SchemaItemTypeCreatorTypes returns the cached /itemTypeCreatorTypes row for itemType.
+func (s *Store) SchemaItemTypeCreatorTypes(itemType string) (json.RawMessage, error) {
+	return s.Get("schema-item-type-creator-types", itemType)
+}
+
+// SaveZoteroSchemaVersion records the Zotero-Schema-Version used to populate a
+// schema resource. The checkpoint advances only after the resource rows land.
+func (s *Store) SaveZoteroSchemaVersion(resourceType, version string) error {
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+	_, err := s.db.Exec(
+		`INSERT INTO schema_sync_versions (resource_type, schema_version, updated_at)
+		 VALUES (?, ?, CURRENT_TIMESTAMP)
+		 ON CONFLICT(resource_type) DO UPDATE SET
+			schema_version = excluded.schema_version,
+			updated_at = excluded.updated_at`,
+		resourceType, version,
+	)
+	return err
+}
+
+// ZoteroSchemaVersion returns the Zotero-Schema-Version recorded for resourceType.
+// An absent checkpoint is reported as an empty version.
+func (s *Store) ZoteroSchemaVersion(resourceType string) (string, error) {
+	var version string
+	err := s.db.QueryRow(
+		`SELECT schema_version FROM schema_sync_versions WHERE resource_type = ?`,
+		resourceType,
+	).Scan(&version)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", nil
+	}
+	if err != nil {
+		return "", err
+	}
+	return version, nil
+}
+
 func (s *Store) List(resourceType string, limit int) ([]json.RawMessage, error) {
 	query := `SELECT data FROM resources WHERE resource_type = ? ORDER BY updated_at DESC`
 	args := []any{resourceType}

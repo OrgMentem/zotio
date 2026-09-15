@@ -20,6 +20,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"zotio/internal/client"
+	"zotio/internal/store"
 )
 
 // schemaSnapshot is an order-independent fingerprint of a Zotero install's
@@ -47,6 +48,7 @@ func newSchemaDriftCmd(flags *rootFlags) *cobra.Command {
 	var deep bool
 	var update bool
 	var baselinePath string
+	var dbFlag string
 
 	cmd := &cobra.Command{
 		Use:   "drift",
@@ -57,17 +59,19 @@ to see which item types, fields, or creator fields a new version added or remove
 — the deltas the CLI may not yet model.
 
 The first run captures the baseline. Re-run after an upgrade to see drift. Pass
---update to adopt the current live schema as the new baseline. The baseline is
-stored at ~/.local/share/zotio/schema-baseline.json (override with
---baseline) and is shared across libraries because the schema is global to the
-Zotero install.`,
+--update to adopt the current live schema as the new baseline. Deep checks read
+the per-item-type snapshot from the local mirror. Refresh it in two steps:
+'zotio sync --resources schema', then 'zotio sync --resources schema-item-type-fields,schema-item-type-creator-types'.
+The baseline is stored at ~/.local/share/zotio/schema-baseline.json (override
+with --baseline) and is shared across libraries because the schema is global to
+the Zotero install.`,
 		Example: `  # Capture a baseline on the current Zotero version
   zotio schema drift
 
   # After upgrading Zotero, see what changed
   zotio schema drift
 
-  # Include per-item-type field/creator validity (many extra API calls)
+  # Include cached per-item-type field/creator validity
   zotio schema drift --deep
 
   # Re-baseline to the current schema
@@ -80,6 +84,19 @@ Zotero install.`,
 				return err
 			}
 			c.NoCache = true
+
+			var schemaDB *store.Store
+			if deep {
+				dbPath, err := resolveDBPath(dbFlag, "zotio")
+				if err != nil {
+					return err
+				}
+				schemaDB, err = store.OpenReadOnlyContext(cmd.Context(), dbPath)
+				if err != nil {
+					return fmt.Errorf("opening cached schema snapshot: %w\nRun 'zotio sync --resources schema', then 'zotio sync --resources schema-item-type-fields,schema-item-type-creator-types'.", err)
+				}
+				defer schemaDB.Close()
+			}
 
 			itemTypes, schemaVersion, err := probeSchemaVersion(cmd.Context(), c)
 			if err != nil {
@@ -97,7 +114,7 @@ Zotero install.`,
 
 			// First run: capture a full baseline.
 			if !ok {
-				live, err := completeSnapshot(c, itemTypes, schemaVersion, deep)
+				live, err := completeSnapshot(c, schemaDB, itemTypes, schemaVersion, deep)
 				if err != nil {
 					return classifyAPIError(err, flags)
 				}
@@ -118,7 +135,7 @@ Zotero install.`,
 				return renderSchemaDrift(cmd, flags, false, nil, path, base)
 			}
 
-			live, err := completeSnapshot(c, itemTypes, schemaVersion, deep)
+			live, err := completeSnapshot(c, schemaDB, itemTypes, schemaVersion, deep)
 			if err != nil {
 				return classifyAPIError(err, flags)
 			}
@@ -131,9 +148,10 @@ Zotero install.`,
 			return renderSchemaDrift(cmd, flags, false, deltas, path, live)
 		},
 	}
-	cmd.Flags().BoolVar(&deep, "deep", false, "Also diff per-item-type field and creator-type validity (many extra API calls)")
+	cmd.Flags().BoolVar(&deep, "deep", false, "Also diff cached per-item-type field and creator-type validity (requires explicit schema resource sync)")
 	cmd.Flags().BoolVar(&update, "update", false, "Adopt the current live schema as the new baseline after reporting")
 	cmd.Flags().StringVar(&baselinePath, "baseline", "", "Baseline file path (default: ~/.local/share/zotio/schema-baseline.json)")
+	cmd.Flags().StringVar(&dbFlag, "db", "", "Database path containing the cached deep schema (default: ~/.local/share/zotio/data.db)")
 	return cmd
 }
 
@@ -149,9 +167,9 @@ func probeSchemaVersion(ctx context.Context, c *client.Client) (itemTypes []stri
 	return itemTypes, version, err
 }
 
-// completeSnapshot fills in the remaining schema lists (and, under deep, per-type
-// fields and creator types) given the already-probed item types and schema version.
-func completeSnapshot(c *client.Client, itemTypes []string, schemaVersion string, deep bool) (schemaSnapshot, error) {
+// completeSnapshot fills in the remaining schema lists and, under deep, reads
+// per-type fields and creator types from the explicitly synced local snapshot.
+func completeSnapshot(c *client.Client, db *store.Store, itemTypes []string, schemaVersion string, deep bool) (schemaSnapshot, error) {
 	snap := schemaSnapshot{SchemaVersion: schemaVersion, ItemTypes: itemTypes}
 	var err error
 	if snap.ItemFields, err = fetchSchemaList(c, "/itemFields", nil, "field"); err != nil {
@@ -163,20 +181,43 @@ func completeSnapshot(c *client.Client, itemTypes []string, schemaVersion string
 	if !deep {
 		return snap, nil
 	}
+	if db == nil {
+		return snap, errors.New("deep schema drift requires a cached schema snapshot")
+	}
+	fieldsVersion, err := db.ZoteroSchemaVersion("schema-item-type-fields")
+	if err != nil {
+		return snap, fmt.Errorf("reading cached item-type-fields version: %w", err)
+	}
+	creatorsVersion, err := db.ZoteroSchemaVersion("schema-item-type-creator-types")
+	if err != nil {
+		return snap, fmt.Errorf("reading cached item-type-creator-types version: %w", err)
+	}
+	if schemaVersion != "" && (fieldsVersion != schemaVersion || creatorsVersion != schemaVersion) {
+		return snap, fmt.Errorf(
+			"cached deep schema is stale (live %q, fields %q, creator types %q); run `zotio sync --resources schema`, then `zotio sync --resources schema-item-type-fields,schema-item-type-creator-types`",
+			schemaVersion, fieldsVersion, creatorsVersion,
+		)
+	}
+
 	snap.TypeFields = make(map[string][]string, len(itemTypes))
 	snap.TypeCreators = make(map[string][]string, len(itemTypes))
-	for _, it := range itemTypes {
-		params := map[string]string{"itemType": it}
-		tf, err := fetchSchemaList(c, "/itemTypeFields", params, "field")
+	for _, itemType := range itemTypes {
+		fields, err := db.SchemaItemTypeFields(itemType)
+		if err != nil {
+			return snap, fmt.Errorf("reading cached fields for item type %s: %w", itemType, err)
+		}
+		snap.TypeFields[itemType], err = decodeSchemaList(fields, "/itemTypeFields", "field")
 		if err != nil {
 			return snap, err
 		}
-		snap.TypeFields[it] = tf
-		tc, err := fetchSchemaList(c, "/itemTypeCreatorTypes", params, "creatorType")
+		creatorTypes, err := db.SchemaItemTypeCreatorTypes(itemType)
+		if err != nil {
+			return snap, fmt.Errorf("reading cached creator types for item type %s: %w", itemType, err)
+		}
+		snap.TypeCreators[itemType], err = decodeSchemaList(creatorTypes, "/itemTypeCreatorTypes", "creatorType")
 		if err != nil {
 			return snap, err
 		}
-		snap.TypeCreators[it] = tc
 	}
 	return snap, nil
 }

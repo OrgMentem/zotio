@@ -28,6 +28,11 @@ func (s *Store) migrateExtras(ctx context.Context, conn *sql.Conn) error {
 		)`,
 		`CREATE INDEX IF NOT EXISTS creator_orcids_name_hash_idx ON creator_orcids(name_hash)`,
 		`CREATE INDEX IF NOT EXISTS creator_orcids_orcid_idx ON creator_orcids(orcid)`,
+		`CREATE TABLE IF NOT EXISTS schema_sync_versions (
+			resource_type TEXT PRIMARY KEY,
+			schema_version TEXT NOT NULL,
+			updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+		)`,
 	}
 	for _, m := range migrations {
 		if _, err := conn.ExecContext(ctx, m); err != nil {

@@ -11,6 +11,7 @@ import (
 	"io"
 	"net/url"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -142,6 +143,11 @@ Supports resumable incremental sync (only fetches new data since the last sync)
 and full resync (--full, which also discards stored per-row versions).
 Once synced, use the 'search' command for instant full-text search.
 
+Per-item-type schema resources are excluded from the default sync because each
+selected resource makes one request per cached item type. Select
+schema-item-type-fields or schema-item-type-creator-types explicitly after the
+schema resource has populated the item-type list.
+
 Exit codes & warnings:
   Resources the API denies access to (HTTP 403, or HTTP 400 with an
   access-policy body) are reported as warnings rather than failing the
@@ -159,6 +165,9 @@ Exit codes & warnings:
 
   # Sync specific resources only
   zotio sync --resources channels,messages
+
+  # Cache per-item-type field validity (one request per cached item type)
+  zotio sync --resources schema-item-type-fields
 
   # Full resync (ignore previous checkpoint)
   zotio sync --full
@@ -415,7 +424,7 @@ Exit codes & warnings:
 		},
 	}
 
-	cmd.Flags().StringSliceVar(&resources, "resources", nil, "Comma-separated resource types to sync (selecting items also syncs items-trash)")
+	cmd.Flags().StringSliceVar(&resources, "resources", nil, "Comma-separated resource types to sync (items also syncs items-trash; per-item-type schema resources are explicit and cost one request per item type)")
 	cmd.Flags().BoolVar(&full, "full", false, "Full resync (ignore previous checkpoint)")
 	cmd.Flags().IntVar(&sinceVersion, "since", 0, "Only sync objects modified since this Zotero library version (0 = use stored checkpoint). Get versions from a prior sync or 'items list --since'.")
 	cmd.Flags().IntVar(&concurrency, "concurrency", 4, "Number of parallel sync workers")
@@ -505,6 +514,10 @@ type syncHTTPClient interface {
 	Plane() string
 }
 
+type syncHeaderHTTPClient interface {
+	GetWithHeaderContext(context.Context, string, map[string]string, string) (json.RawMessage, string, error)
+}
+
 func syncClientForResource(c syncHTTPClient, resource string) syncHTTPClient {
 	if !isSchemaSyncResource(resource) {
 		return c
@@ -517,11 +530,192 @@ func syncClientForResource(c syncHTTPClient, resource string) syncHTTPClient {
 
 func isSchemaSyncResource(resource string) bool {
 	switch resource {
-	case "schema", "schema-item-fields", "schema-creator-fields":
+	case "schema", "schema-item-fields", "schema-creator-fields",
+		"schema-item-type-fields", "schema-item-type-creator-types":
 		return true
 	default:
 		return false
 	}
+}
+
+type dependentSchemaSyncSpec struct {
+	endpoint string
+	get      func(*store.Store, string) (json.RawMessage, error)
+}
+
+var dependentSchemaSyncResources = map[string]dependentSchemaSyncSpec{
+	"schema-item-type-fields": {
+		endpoint: "/itemTypeFields",
+		get:      (*store.Store).SchemaItemTypeFields,
+	},
+	"schema-item-type-creator-types": {
+		endpoint: "/itemTypeCreatorTypes",
+		get:      (*store.Store).SchemaItemTypeCreatorTypes,
+	},
+}
+
+// FanoutReportErrors joins FanoutRun's ordered per-source failures into one
+// error. Callers can persist successful results first, but must not advance
+// their checkpoint when this reports a partial failure.
+func FanoutReportErrors(errs []cliutil.FanoutError) error {
+	if len(errs) == 0 {
+		return nil
+	}
+	details := make([]string, 0, len(errs))
+	for _, fanoutErr := range errs {
+		details = append(details, fmt.Sprintf("%s: %v", fanoutErr.Source, fanoutErr.Err))
+	}
+	return fmt.Errorf("%d fanout request(s) failed: %s", len(errs), strings.Join(details, "; "))
+}
+
+func cachedSchemaItemTypes(db *store.Store) ([]string, error) {
+	rows, err := db.SchemaItemTypes()
+	if err != nil {
+		return nil, err
+	}
+	itemTypes := make([]string, 0, len(rows))
+	seen := make(map[string]struct{}, len(rows))
+	for _, row := range rows {
+		var itemType struct {
+			Name string `json:"itemType"`
+		}
+		if err := json.Unmarshal(row, &itemType); err != nil {
+			return nil, fmt.Errorf("decoding cached item type: %w", err)
+		}
+		if itemType.Name == "" {
+			return nil, fmt.Errorf("decoding cached item type: missing itemType")
+		}
+		if _, exists := seen[itemType.Name]; exists {
+			continue
+		}
+		seen[itemType.Name] = struct{}{}
+		itemTypes = append(itemTypes, itemType.Name)
+	}
+	sort.Strings(itemTypes)
+	return itemTypes, nil
+}
+
+func dependentSchemaCacheComplete(db *store.Store, spec dependentSchemaSyncSpec, itemTypes []string) (bool, error) {
+	for _, itemType := range itemTypes {
+		if _, err := spec.get(db, itemType); err != nil {
+			if errors.Is(err, store.ErrNotFound) {
+				return false, nil
+			}
+			return false, err
+		}
+	}
+	return true, nil
+}
+
+func syncDependentSchemaResource(ctx context.Context, c syncHTTPClient, db *store.Store, resource string, full bool, started time.Time) syncResult {
+	spec := dependentSchemaSyncResources[resource]
+	fail := func(err error, count int) syncResult {
+		if !humanFriendly {
+			emitSyncEvent(ctx, struct {
+				Event    string `json:"event"`
+				Resource string `json:"resource"`
+				Error    string `json:"error"`
+			}{
+				Event:    "sync_error",
+				Resource: resource,
+				Error:    err.Error(),
+			})
+		}
+		return syncResult{Resource: resource, Count: count, Err: err, Duration: time.Since(started)}
+	}
+	itemTypes, err := cachedSchemaItemTypes(db)
+	if err != nil {
+		return fail(fmt.Errorf("reading cached item types: %w", err), 0)
+	}
+	if len(itemTypes) == 0 {
+		return fail(fmt.Errorf("cached item-type list is empty; run `zotio sync --resources schema` first"), 0)
+	}
+
+	schemaVersion, err := db.ZoteroSchemaVersion("schema")
+	if err != nil {
+		return fail(fmt.Errorf("reading cached Zotero schema version: %w", err), 0)
+	}
+	cachedVersion, err := db.ZoteroSchemaVersion(resource)
+	if err != nil {
+		return fail(fmt.Errorf("reading %s schema checkpoint: %w", resource, err), 0)
+	}
+	if !full && schemaVersion != "" && cachedVersion == schemaVersion {
+		complete, err := dependentSchemaCacheComplete(db, spec, itemTypes)
+		if err != nil {
+			return fail(fmt.Errorf("checking %s cache: %w", resource, err), 0)
+		}
+		if complete {
+			if err := db.SaveSyncState(resource, "", 0); err != nil {
+				return fail(fmt.Errorf("persisting sync checkpoint: %w", err), 0)
+			}
+			if !humanFriendly {
+				emitSyncEvent(ctx, struct {
+					Event      string `json:"event"`
+					Resource   string `json:"resource"`
+					Total      int    `json:"total"`
+					DurationMS int64  `json:"duration_ms"`
+				}{
+					Event:      "sync_complete",
+					Resource:   resource,
+					Total:      0,
+					DurationMS: time.Since(started).Milliseconds(),
+				})
+			}
+			return syncResult{Resource: resource, Duration: time.Since(started)}
+		}
+	}
+
+	results, fanoutErrs := cliutil.FanoutRun(ctx, itemTypes,
+		func(itemType string) string { return itemType },
+		func(fctx context.Context, itemType string) (json.RawMessage, error) {
+			data, _, err := c.GetWithVersionContext(fctx, spec.endpoint, map[string]string{"itemType": itemType})
+			return data, err
+		})
+
+	if len(results) > 0 {
+		ids := make([]string, 0, len(results))
+		payloads := make([]json.RawMessage, 0, len(results))
+		for _, result := range results {
+			ids = append(ids, result.Source)
+			payloads = append(payloads, result.Value)
+		}
+		if _, err := db.UpsertKeyed(resource, ids, payloads); err != nil {
+			return fail(fmt.Errorf("persisting %s rows: %w", resource, err), 0)
+		}
+	}
+	if err := FanoutReportErrors(fanoutErrs); err != nil {
+		return fail(err, len(results))
+	}
+
+	seen := make(map[string]bool, len(itemTypes))
+	for _, itemType := range itemTypes {
+		seen[itemType] = true
+	}
+	if _, err := db.SweepMissing(resource, seen); err != nil {
+		return fail(fmt.Errorf("reaping stale %s rows: %w", resource, err), len(results))
+	}
+	if schemaVersion != "" {
+		if err := db.SaveZoteroSchemaVersion(resource, schemaVersion); err != nil {
+			return fail(fmt.Errorf("persisting %s schema checkpoint: %w", resource, err), len(results))
+		}
+	}
+	if err := db.SaveSyncState(resource, "", len(results)); err != nil {
+		return fail(fmt.Errorf("persisting sync checkpoint: %w", err), len(results))
+	}
+	if !humanFriendly {
+		emitSyncEvent(ctx, struct {
+			Event      string `json:"event"`
+			Resource   string `json:"resource"`
+			Total      int    `json:"total"`
+			DurationMS int64  `json:"duration_ms"`
+		}{
+			Event:      "sync_complete",
+			Resource:   resource,
+			Total:      len(results),
+			DurationMS: time.Since(started).Milliseconds(),
+		})
+	}
+	return syncResult{Resource: resource, Count: len(results), Duration: time.Since(started)}
 }
 
 type syncCursorProvenance struct {
@@ -580,6 +774,10 @@ func syncResource(ctx context.Context, c syncHTTPClient, db *store.Store, resour
 			Event:    "sync_start",
 			Resource: resource,
 		})
+	}
+
+	if _, dependent := dependentSchemaSyncResources[resource]; dependent {
+		return syncDependentSchemaResource(ctx, syncClientForResource(c, resource), db, resource, full, started)
 	}
 
 	path, err := syncResourcePath(resource)
@@ -648,6 +846,7 @@ func syncResource(ctx context.Context, c syncHTTPClient, db *store.Store, resour
 		}
 	}
 	libraryVersion := 0
+	zoteroSchemaVersion := ""
 
 	cursor := existingCursor
 	pageSize := determinePaginationDefaults()
@@ -727,7 +926,22 @@ func syncResource(ctx context.Context, c syncHTTPClient, db *store.Store, resour
 			observedEveryObject = false
 		}
 
-		data, respVersion, err := requestClient.GetWithVersionContext(ctx, path, params)
+		var data json.RawMessage
+		var respVersion int
+		var err error
+		if resource == "schema" {
+			if headerClient, ok := requestClient.(syncHeaderHTTPClient); ok {
+				var pageSchemaVersion string
+				data, pageSchemaVersion, err = headerClient.GetWithHeaderContext(ctx, path, params, "Zotero-Schema-Version")
+				if zoteroSchemaVersion == "" {
+					zoteroSchemaVersion = pageSchemaVersion
+				}
+			} else {
+				data, respVersion, err = requestClient.GetWithVersionContext(ctx, path, params)
+			}
+		} else {
+			data, respVersion, err = requestClient.GetWithVersionContext(ctx, path, params)
+		}
 		// Capture the library version from the first response that reports one;
 		// using the earliest avoids missing objects changed mid-sync.
 		if libraryVersion == 0 && respVersion > 0 {
@@ -850,10 +1064,10 @@ func syncResource(ctx context.Context, c syncHTTPClient, db *store.Store, resour
 		// fails, and the F4b "stored_count_zero_after_extraction"
 		// probe when extraction succeeded but rows still didn't land.
 		// During a full pass, record every key the plane reported so the sweep
-		// below can reap rows for objects that no longer exist. The local desktop
-		// API implements no /deleted feed, so a complete pass is the only way to
-		// learn that a mirrored object is gone.
-		if full {
+		// below can reap rows for objects that no longer exist. The global
+		// item-type endpoint is also a complete snapshot on every unfiltered
+		// pass, so keep its keys current for dependent schema fan-out.
+		if full || resource == "schema" {
 			for _, entry := range items {
 				if key := pendingWriteID(canonicalStoreResource(resource), entry); key != "" {
 					seenKeys[key] = true
@@ -1091,12 +1305,16 @@ func syncResource(ctx context.Context, c syncHTTPClient, db *store.Store, resour
 		// unreapable forever, because the live trash was legitimately empty on
 		// every pass.
 		observedEverything := completedNaturally && observedEveryObject
-		if full && observedEverything && canonicalStoreResource(resource) == resource {
+		shouldSweep := full || resource == "schema"
+		if shouldSweep && observedEverything && canonicalStoreResource(resource) == resource {
 			// SweepMissing requires a complete pass over the swept resource
 			// type. A top-level alias fetches a strict subset, so the storage
 			// alias is correct for upserts but wrong for reaps.
 			storeResource := canonicalStoreResource(resource)
 			if reaped, rerr := db.SweepMissing(storeResource, seenKeys); rerr != nil {
+				if resource == "schema" {
+					return syncResult{Resource: resource, Count: totalCount, Err: fmt.Errorf("reaping stale schema rows: %w", rerr), Duration: time.Since(started)}
+				}
 				fmt.Fprintf(os.Stderr, "warning: reaping deleted %s rows: %v\n", storeResource, rerr)
 			} else if reaped > 0 && humanFriendly {
 				fmt.Fprintf(os.Stderr, "  reaped %d %s row(s) for objects that no longer exist\n", reaped, storeResource)
@@ -1126,6 +1344,11 @@ func syncResource(ctx context.Context, c syncHTTPClient, db *store.Store, resour
 					Reason:   "sweep_skipped_filtered_pass",
 					Message:  "--full combined with a narrowing filter (--since): absent objects are unchanged, not deleted, so no rows were reaped and no deletion markers were confirmed",
 				})
+			}
+		}
+		if resource == "schema" && zoteroSchemaVersion != "" && observedEverything {
+			if serr := db.SaveZoteroSchemaVersion(resource, zoteroSchemaVersion); serr != nil {
+				return syncResult{Resource: resource, Count: totalCount, Err: fmt.Errorf("persisting Zotero schema version: %w", serr), Duration: time.Since(started)}
 			}
 		}
 	}
