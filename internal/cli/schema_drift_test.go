@@ -548,3 +548,130 @@ func TestSchemaDriftShallowFastPathStillFires(t *testing.T) {
 		t.Errorf("drift = %v, want false", res["drift"])
 	}
 }
+
+func TestSchemaDriftDeepWithoutDBFetchesPerTypeSchemaLive(t *testing.T) {
+	var mu sync.Mutex
+	hits := map[string]int{}
+	srv := deepSchemaServer(t, "100", []string{"book"}, hits, &mu)
+	defer srv.Close()
+
+	baseline := filepath.Join(t.TempDir(), "baseline.json")
+	if _, err := runSchemaDrift(t, srv.URL, baseline, true, "--deep"); err != nil {
+		t.Fatalf("deep live capture: %v", err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if hits["/itemTypeFields"] != 1 || hits["/itemTypeCreatorTypes"] != 1 {
+		t.Fatalf("deep live endpoint hits = %v, want one request per endpoint", hits)
+	}
+}
+
+func TestSchemaDriftDeepFastPathRejectsPartialExplicitCache(t *testing.T) {
+	var mu sync.Mutex
+	hits := map[string]int{}
+	srv := deepSchemaServer(t, "100", []string{"book", "journalArticle"}, hits, &mu)
+	defer srv.Close()
+
+	baseline := filepath.Join(t.TempDir(), "baseline.json")
+	if _, err := runSchemaDrift(t, srv.URL, baseline, true, "--deep"); err != nil {
+		t.Fatalf("deep baseline capture: %v", err)
+	}
+
+	dbPath := filepath.Join(t.TempDir(), "schema.db")
+	seedDeepSchemaCache(t, dbPath, "100",
+		map[string][]string{"book": {"title", "ISBN"}},
+		map[string][]string{"book": {"author"}},
+	)
+	mu.Lock()
+	hits["/itemTypeFields"] = 0
+	hits["/itemTypeCreatorTypes"] = 0
+	mu.Unlock()
+
+	out, err := runSchemaDrift(t, srv.URL, baseline, true, "--deep", "--db", dbPath)
+	if err == nil || ExitCode(err) != 9 {
+		t.Fatalf("partial cache error = %v (exit %d), want precondition exit 9; output=%s", err, ExitCode(err), out)
+	}
+	var env preconditionUnmetEnvelope
+	if decodeErr := json.Unmarshal([]byte(out), &env); decodeErr != nil {
+		t.Fatalf("decode precondition envelope %q: %v", out, decodeErr)
+	}
+	if env.Kind != "precondition_unmet" || env.Precondition != preconditionSyncedStore {
+		t.Fatalf("envelope = %+v, want precondition_unmet/%s", env, preconditionSyncedStore)
+	}
+	if !strings.Contains(env.Detail, "journalArticle") {
+		t.Fatalf("precondition detail = %q, want the missing item type", env.Detail)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if hits["/itemTypeFields"] != 0 || hits["/itemTypeCreatorTypes"] != 0 {
+		t.Fatalf("partial explicit cache silently fell back instead of refusing: hits=%v", hits)
+	}
+}
+
+func TestSchemaDriftDeepWithNoLiveVersionFallsBackFromCacheToLive(t *testing.T) {
+	var mu sync.Mutex
+	baselineServer := deepSchemaServer(t, "100", []string{"book"}, map[string]int{}, &mu)
+	baseline := filepath.Join(t.TempDir(), "baseline.json")
+	if _, err := runSchemaDrift(t, baselineServer.URL, baseline, true, "--deep"); err != nil {
+		baselineServer.Close()
+		t.Fatalf("deep baseline capture: %v", err)
+	}
+	baselineServer.Close()
+
+	dbPath := filepath.Join(t.TempDir(), "schema.db")
+	seedDeepSchemaCache(t, dbPath, "100",
+		map[string][]string{"book": {"title", "ISBN"}},
+		map[string][]string{"book": {"author"}},
+	)
+	hits := map[string]int{}
+	liveServer := deepSchemaServer(t, "", []string{"book"}, hits, &mu)
+	defer liveServer.Close()
+
+	if _, err := runSchemaDrift(t, liveServer.URL, baseline, true, "--deep", "--db", dbPath); err != nil {
+		t.Fatalf("deep drift without live version: %v", err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if hits["/itemTypeFields"] != 1 || hits["/itemTypeCreatorTypes"] != 1 {
+		t.Fatalf("unverifiable cache did not use live per-type endpoints: hits=%v", hits)
+	}
+}
+
+func TestSchemaDriftDeepMissingCheckpointTableFallsBackToLive(t *testing.T) {
+	var mu sync.Mutex
+	hits := map[string]int{}
+	srv := deepSchemaServer(t, "100", []string{"book"}, hits, &mu)
+	defer srv.Close()
+
+	baseline := filepath.Join(t.TempDir(), "baseline.json")
+	if _, err := runSchemaDrift(t, srv.URL, baseline, true, "--deep"); err != nil {
+		t.Fatalf("deep baseline capture: %v", err)
+	}
+
+	dbPath := filepath.Join(t.TempDir(), "old.db")
+	db, err := store.OpenWithContext(context.Background(), dbPath)
+	if err != nil {
+		t.Fatalf("create old store: %v", err)
+	}
+	if _, err := db.DB().Exec(`DROP TABLE schema_sync_versions`); err != nil {
+		db.Close()
+		t.Fatalf("drop optional checkpoint table: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close old store: %v", err)
+	}
+	mu.Lock()
+	hits["/itemTypeFields"] = 0
+	hits["/itemTypeCreatorTypes"] = 0
+	mu.Unlock()
+
+	if _, err := runSchemaDrift(t, srv.URL, baseline, true, "--deep", "--db", dbPath); err != nil {
+		t.Fatalf("deep drift with pre-feature store: %v", err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if hits["/itemTypeFields"] != 1 || hits["/itemTypeCreatorTypes"] != 1 {
+		t.Fatalf("missing checkpoint table did not fall back live: hits=%v", hits)
+	}
+}

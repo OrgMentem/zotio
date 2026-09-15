@@ -16,10 +16,12 @@ import (
 	"path/filepath"
 	"regexp"
 	"sort"
+	"strings"
 
 	"github.com/spf13/cobra"
 
 	"zotio/internal/client"
+	"zotio/internal/cliutil"
 	"zotio/internal/store"
 )
 
@@ -59,20 +61,25 @@ to see which item types, fields, or creator fields a new version added or remove
 — the deltas the CLI may not yet model.
 
 The first run captures the baseline. Re-run after an upgrade to see drift. Pass
---update to adopt the current live schema as the new baseline. Deep checks read
-the per-item-type snapshot from the local mirror. Refresh it in two steps:
-'zotio sync --resources schema', then 'zotio sync --resources schema-item-type-fields,schema-item-type-creator-types'.
-The baseline is stored at ~/.local/share/zotio/schema-baseline.json (override
-with --baseline) and is shared across libraries because the schema is global to
-the Zotero install.`,
+--update to adopt the current live schema as the new baseline. Deep checks fetch
+per-item-type fields and creator types from Zotero in parallel by default. Pass
+--db to read those values from an explicitly synced local snapshot instead. The
+snapshot must be complete and match Zotero's live schema version. Refresh it in
+two steps: 'zotio sync --resources schema', then 'zotio sync --resources
+schema-item-type-fields,schema-item-type-creator-types'. The baseline is stored
+at ~/.local/share/zotio/schema-baseline.json (override with --baseline) and is
+shared across libraries because the schema is global to the Zotero install.`,
 		Example: `  # Capture a baseline on the current Zotero version
   zotio schema drift
 
   # After upgrading Zotero, see what changed
   zotio schema drift
 
-  # Include cached per-item-type field/creator validity
+  # Include live per-item-type field/creator validity
   zotio schema drift --deep
+
+  # Use an explicitly synced deep snapshot instead
+  zotio schema drift --deep --db ~/.local/share/zotio/data.db
 
   # Re-baseline to the current schema
   zotio schema drift --update`,
@@ -86,14 +93,14 @@ the Zotero install.`,
 			c.NoCache = true
 
 			var schemaDB *store.Store
-			if deep {
+			if deep && dbFlag != "" {
 				dbPath, err := resolveDBPath(dbFlag, "zotio")
 				if err != nil {
 					return err
 				}
 				schemaDB, err = store.OpenReadOnlyContext(cmd.Context(), dbPath)
 				if err != nil {
-					return fmt.Errorf("opening cached schema snapshot: %w\nRun 'zotio sync --resources schema', then 'zotio sync --resources schema-item-type-fields,schema-item-type-creator-types'.", err)
+					return refuseDeepSchemaCache(cmd, flags, fmt.Sprintf("the cached deep schema at %s cannot be opened: %v", dbPath, err))
 				}
 				defer schemaDB.Close()
 			}
@@ -114,9 +121,9 @@ the Zotero install.`,
 
 			// First run: capture a full baseline.
 			if !ok {
-				live, err := completeSnapshot(c, schemaDB, itemTypes, schemaVersion, deep)
+				live, err := completeSnapshot(cmd.Context(), c, schemaDB, itemTypes, schemaVersion, deep)
 				if err != nil {
-					return classifyAPIError(err, flags)
+					return classifySchemaSnapshotError(cmd, flags, err)
 				}
 				if err := saveSchemaBaseline(path, live); err != nil {
 					return err
@@ -125,19 +132,32 @@ the Zotero install.`,
 			}
 
 			// Fast path: the Zotero-Schema-Version header covers the whole schema
-			// (types, fields, per-type validity), so a matching version means no drift
-			// — skip the remaining fetches. Only when both sides report a
-			// version and we are not re-baselining. When --deep was requested we
-			// must have deep data in the baseline; a shallow baseline cannot
-			// prove a clean deep audit, so force a full deep fetch and compare.
+			// (types, fields, per-type validity), so a matching version means no
+			// drift. An explicitly selected deep cache must still be read and
+			// validated before it can support that conclusion.
 			if !update && schemaVersion != "" && base.SchemaVersion == schemaVersion && (!deep || (base.TypeFields != nil && base.TypeCreators != nil)) {
+				if deep && schemaDB != nil {
+					_, _, available, cacheErr := cachedDeepSchema(schemaDB, itemTypes, schemaVersion)
+					if cacheErr != nil {
+						return classifySchemaSnapshotError(cmd, flags, cacheErr)
+					}
+					if !available {
+						// Older version-9 stores can lack schema_sync_versions.
+						// Treat that as no cache and retain the live path.
+						live, liveErr := completeSnapshot(cmd.Context(), c, nil, itemTypes, schemaVersion, true)
+						if liveErr != nil {
+							return classifySchemaSnapshotError(cmd, flags, liveErr)
+						}
+						return renderSchemaDrift(cmd, flags, false, diffSnapshots(base, live), path, live)
+					}
+				}
 				base.SchemaVersion = schemaVersion
 				return renderSchemaDrift(cmd, flags, false, nil, path, base)
 			}
 
-			live, err := completeSnapshot(c, schemaDB, itemTypes, schemaVersion, deep)
+			live, err := completeSnapshot(cmd.Context(), c, schemaDB, itemTypes, schemaVersion, deep)
 			if err != nil {
-				return classifyAPIError(err, flags)
+				return classifySchemaSnapshotError(cmd, flags, err)
 			}
 			deltas := diffSnapshots(base, live)
 			if update {
@@ -148,10 +168,10 @@ the Zotero install.`,
 			return renderSchemaDrift(cmd, flags, false, deltas, path, live)
 		},
 	}
-	cmd.Flags().BoolVar(&deep, "deep", false, "Also diff cached per-item-type field and creator-type validity (requires explicit schema resource sync)")
+	cmd.Flags().BoolVar(&deep, "deep", false, "Also diff per-item-type field and creator-type validity (live by default; use --db for an explicit cache)")
 	cmd.Flags().BoolVar(&update, "update", false, "Adopt the current live schema as the new baseline after reporting")
 	cmd.Flags().StringVar(&baselinePath, "baseline", "", "Baseline file path (default: ~/.local/share/zotio/schema-baseline.json)")
-	cmd.Flags().StringVar(&dbFlag, "db", "", "Database path containing the cached deep schema (default: ~/.local/share/zotio/data.db)")
+	cmd.Flags().StringVar(&dbFlag, "db", "", "Read the deep schema from this explicitly synced database instead of Zotero")
 	return cmd
 }
 
@@ -167,65 +187,131 @@ func probeSchemaVersion(ctx context.Context, c *client.Client) (itemTypes []stri
 	return itemTypes, version, err
 }
 
-// completeSnapshot fills in the remaining schema lists and, under deep, reads
-// per-type fields and creator types from the explicitly synced local snapshot.
-func completeSnapshot(c *client.Client, db *store.Store, itemTypes []string, schemaVersion string, deep bool) (schemaSnapshot, error) {
+var errDeepSchemaCachePrecondition = errors.New("cached deep schema precondition unmet")
+
+// completeSnapshot fills in the global schema lists. A deep run reads an
+// explicitly selected, verified cache when possible. Otherwise it retains the
+// live per-type path and fans those requests out to avoid serial latency.
+func completeSnapshot(ctx context.Context, c *client.Client, db *store.Store, itemTypes []string, schemaVersion string, deep bool) (schemaSnapshot, error) {
 	snap := schemaSnapshot{SchemaVersion: schemaVersion, ItemTypes: itemTypes}
 	var err error
-	if snap.ItemFields, err = fetchSchemaList(c, "/itemFields", nil, "field"); err != nil {
+	if snap.ItemFields, err = fetchSchemaListContext(ctx, c, "/itemFields", nil, "field"); err != nil {
 		return snap, err
 	}
-	if snap.CreatorFields, err = fetchSchemaList(c, "/creatorFields", nil, "field"); err != nil {
+	if snap.CreatorFields, err = fetchSchemaListContext(ctx, c, "/creatorFields", nil, "field"); err != nil {
 		return snap, err
 	}
 	if !deep {
 		return snap, nil
 	}
-	if db == nil {
-		return snap, errors.New("deep schema drift requires a cached schema snapshot")
-	}
-	fieldsVersion, err := db.ZoteroSchemaVersion("schema-item-type-fields")
-	if err != nil {
-		return snap, fmt.Errorf("reading cached item-type-fields version: %w", err)
-	}
-	creatorsVersion, err := db.ZoteroSchemaVersion("schema-item-type-creator-types")
-	if err != nil {
-		return snap, fmt.Errorf("reading cached item-type-creator-types version: %w", err)
-	}
-	if schemaVersion != "" && (fieldsVersion != schemaVersion || creatorsVersion != schemaVersion) {
-		return snap, fmt.Errorf(
-			"cached deep schema is stale (live %q, fields %q, creator types %q); run `zotio sync --resources schema`, then `zotio sync --resources schema-item-type-fields,schema-item-type-creator-types`",
-			schemaVersion, fieldsVersion, creatorsVersion,
-		)
+	if db != nil && schemaVersion != "" {
+		fields, creators, available, err := cachedDeepSchema(db, itemTypes, schemaVersion)
+		if err != nil {
+			return snap, err
+		}
+		if available {
+			snap.TypeFields = fields
+			snap.TypeCreators = creators
+			return snap, nil
+		}
 	}
 
+	type liveTypeSchema struct {
+		fields   []string
+		creators []string
+	}
+	results, fanoutErrs := cliutil.FanoutRun(ctx, itemTypes,
+		func(itemType string) string { return itemType },
+		func(fctx context.Context, itemType string) (liveTypeSchema, error) {
+			fields, err := fetchSchemaListContext(fctx, c, "/itemTypeFields", map[string]string{"itemType": itemType}, "field")
+			if err != nil {
+				return liveTypeSchema{}, err
+			}
+			creators, err := fetchSchemaListContext(fctx, c, "/itemTypeCreatorTypes", map[string]string{"itemType": itemType}, "creatorType")
+			return liveTypeSchema{fields: fields, creators: creators}, err
+		})
+	if err := FanoutReportErrors(fanoutErrs); err != nil {
+		return snap, fmt.Errorf("fetching live deep schema: %w", err)
+	}
 	snap.TypeFields = make(map[string][]string, len(itemTypes))
 	snap.TypeCreators = make(map[string][]string, len(itemTypes))
-	for _, itemType := range itemTypes {
-		fields, err := db.SchemaItemTypeFields(itemType)
-		if err != nil {
-			return snap, fmt.Errorf("reading cached fields for item type %s: %w", itemType, err)
-		}
-		snap.TypeFields[itemType], err = decodeSchemaList(fields, "/itemTypeFields", "field")
-		if err != nil {
-			return snap, err
-		}
-		creatorTypes, err := db.SchemaItemTypeCreatorTypes(itemType)
-		if err != nil {
-			return snap, fmt.Errorf("reading cached creator types for item type %s: %w", itemType, err)
-		}
-		snap.TypeCreators[itemType], err = decodeSchemaList(creatorTypes, "/itemTypeCreatorTypes", "creatorType")
-		if err != nil {
-			return snap, err
-		}
+	for _, result := range results {
+		snap.TypeFields[result.Source] = result.Value.fields
+		snap.TypeCreators[result.Source] = result.Value.creators
 	}
 	return snap, nil
 }
 
-// fetchSchemaList GETs a Zotero schema endpoint returning an array of objects and
-// extracts the string value of `key` from each, sorted and de-duplicated.
-func fetchSchemaList(c *client.Client, path string, params map[string]string, key string) ([]string, error) {
-	data, err := c.Get(path, params)
+// cachedDeepSchema returns available=false when the optional checkpoint table
+// cannot be read. Version-9 stores created before deep schema sync can have that
+// shape, and a concurrent migration can expose it briefly. Both cases retain the
+// live path. A readable but stale or partial cache is an explicit precondition
+// failure because --db selected that cache.
+func cachedDeepSchema(db *store.Store, itemTypes []string, schemaVersion string) (map[string][]string, map[string][]string, bool, error) {
+	fieldsVersion, err := db.ZoteroSchemaVersion("schema-item-type-fields")
+	if err != nil {
+		return nil, nil, false, nil
+	}
+	creatorsVersion, err := db.ZoteroSchemaVersion("schema-item-type-creator-types")
+	if err != nil {
+		return nil, nil, false, nil
+	}
+	if fieldsVersion != schemaVersion || creatorsVersion != schemaVersion {
+		return nil, nil, true, fmt.Errorf(
+			"%w: cached deep schema is stale (live %q, fields %q, creator types %q)",
+			errDeepSchemaCachePrecondition, schemaVersion, fieldsVersion, creatorsVersion,
+		)
+	}
+
+	fieldsByType := make(map[string][]string, len(itemTypes))
+	creatorsByType := make(map[string][]string, len(itemTypes))
+	for _, itemType := range itemTypes {
+		fields, err := db.SchemaItemTypeFields(itemType)
+		if err != nil {
+			return nil, nil, true, fmt.Errorf("%w: cached fields for item type %s are missing or unreadable: %w", errDeepSchemaCachePrecondition, itemType, err)
+		}
+		fieldsByType[itemType], err = decodeSchemaList(fields, "/itemTypeFields", "field")
+		if err != nil {
+			return nil, nil, true, fmt.Errorf("%w: %w", errDeepSchemaCachePrecondition, err)
+		}
+		creatorTypes, err := db.SchemaItemTypeCreatorTypes(itemType)
+		if err != nil {
+			return nil, nil, true, fmt.Errorf("%w: cached creator types for item type %s are missing or unreadable: %w", errDeepSchemaCachePrecondition, itemType, err)
+		}
+		creatorsByType[itemType], err = decodeSchemaList(creatorTypes, "/itemTypeCreatorTypes", "creatorType")
+		if err != nil {
+			return nil, nil, true, fmt.Errorf("%w: %w", errDeepSchemaCachePrecondition, err)
+		}
+	}
+	return fieldsByType, creatorsByType, true, nil
+}
+
+func classifySchemaSnapshotError(cmd *cobra.Command, flags *rootFlags, err error) error {
+	if errors.Is(err, errDeepSchemaCachePrecondition) {
+		return refuseDeepSchemaCache(cmd, flags, strings.TrimPrefix(err.Error(), errDeepSchemaCachePrecondition.Error()+": "))
+	}
+	return classifyAPIError(err, flags)
+}
+
+func refuseDeepSchemaCache(cmd *cobra.Command, flags *rootFlags, detail string) error {
+	return emitPreconditionUnmetWithRemediation(
+		cmd.OutOrStdout(),
+		flags,
+		"schema drift --deep --db",
+		preconditionSyncedStore,
+		detail,
+		[]string{
+			"Run 'zotio sync --resources schema' to refresh the live item-type schema.",
+			"Run 'zotio sync --resources schema-item-type-fields,schema-item-type-creator-types' to refresh the deep snapshot.",
+			"Retry 'zotio schema drift --deep --db <path>', or omit --db to fetch the deep schema live.",
+		},
+	)
+}
+
+// fetchSchemaListContext GETs a Zotero schema endpoint returning an array of
+// objects and extracts the sorted, de-duplicated string value of key.
+func fetchSchemaListContext(ctx context.Context, c *client.Client, path string, params map[string]string, key string) ([]string, error) {
+	data, _, err := c.GetWithVersionContext(ctx, path, params)
 	if err != nil {
 		return nil, err
 	}

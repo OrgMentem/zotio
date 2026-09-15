@@ -859,12 +859,309 @@ func TestSyncDependentSchemaResourceFansOutAndSkipsUnchangedVersion(t *testing.T
 	}
 }
 
-func TestPerItemTypeSchemaResourcesAreNotDefault(t *testing.T) {
-	for _, resource := range defaultSyncResources() {
-		switch resource {
-		case "schema-item-type-fields", "schema-item-type-creator-types":
-			t.Fatalf("costly per-item-type resource %q must not be in defaults", resource)
+func TestSyncDependentSchemaRefusesStaleItemTypePrerequisite(t *testing.T) {
+	syncTestWithHumanFriendly(t, false)
+
+	var mu sync.Mutex
+	deepHits := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/itemTypes":
+			w.Header().Set("Zotero-Schema-Version", "101")
+			fmt.Fprint(w, `[{"itemType":"book"}]`)
+		case "/itemTypeFields":
+			mu.Lock()
+			deepHits++
+			mu.Unlock()
+			fmt.Fprint(w, `[{"field":"title"}]`)
+		default:
+			http.Error(w, "unexpected path "+r.URL.Path, http.StatusNotFound)
 		}
+	}))
+	defer server.Close()
+
+	dbPath := filepath.Join(t.TempDir(), "sync.db")
+	db, err := store.OpenWithContext(context.Background(), dbPath)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	if _, err := db.UpsertKeyed("schema", []string{"book"}, []json.RawMessage{json.RawMessage(`{"itemType":"book"}`)}); err != nil {
+		db.Close()
+		t.Fatalf("seed item types: %v", err)
+	}
+	if _, err := db.UpsertKeyed("schema-item-type-fields", []string{"book"}, []json.RawMessage{json.RawMessage(`[{"field":"title"}]`)}); err != nil {
+		db.Close()
+		t.Fatalf("seed dependent row: %v", err)
+	}
+	if err := db.SaveZoteroSchemaVersion("schema", "100"); err != nil {
+		db.Close()
+		t.Fatalf("seed schema version: %v", err)
+	}
+	if err := db.SaveZoteroSchemaVersion("schema-item-type-fields", "100"); err != nil {
+		db.Close()
+		t.Fatalf("seed dependent version: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close seed store: %v", err)
+	}
+
+	flags := &rootFlags{
+		asJSON:     true,
+		configPath: testConfigFile(t, server.URL+"/users/0"),
+		timeout:    time.Second,
+	}
+	cmd := newSyncCmd(flags)
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&bytes.Buffer{})
+	cmd.SilenceErrors = true
+	cmd.SilenceUsage = true
+	cmd.SetArgs([]string{"--resources", "schema-item-type-fields", "--db", dbPath})
+	err = cmd.Execute()
+	if err == nil || ExitCode(err) != 9 {
+		t.Fatalf("stale prerequisite error = %v (exit %d), want exit 9; output=%s", err, ExitCode(err), out.String())
+	}
+	var env preconditionUnmetEnvelope
+	if decodeErr := json.Unmarshal(out.Bytes(), &env); decodeErr != nil {
+		t.Fatalf("decode precondition envelope %q: %v", out.String(), decodeErr)
+	}
+	if env.Kind != "precondition_unmet" || env.Precondition != preconditionSyncedStore {
+		t.Fatalf("envelope = %+v, want precondition_unmet/%s", env, preconditionSyncedStore)
+	}
+	if !strings.Contains(env.Detail, `live version "101"`) || !strings.Contains(env.Detail, `cached version "100"`) {
+		t.Fatalf("precondition detail = %q, want live and cached versions", env.Detail)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if deepHits != 0 {
+		t.Fatalf("stale prerequisite made %d dependent request(s), want 0", deepHits)
+	}
+}
+
+func TestSyncDependentSchemaPartialFanoutIsDegradedAndRetried(t *testing.T) {
+	syncTestWithHumanFriendly(t, false)
+	fastRetryBackoff(t)
+
+	var mu sync.Mutex
+	failJournal := true
+	journalHits := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/itemTypes":
+			w.Header().Set("Zotero-Schema-Version", "100")
+			fmt.Fprint(w, `[{"itemType":"book"},{"itemType":"journalArticle"}]`)
+		case "/itemTypeFields":
+			itemType := r.URL.Query().Get("itemType")
+			if itemType == "journalArticle" {
+				mu.Lock()
+				journalHits++
+				fail := failJournal
+				mu.Unlock()
+				if fail {
+					http.Error(w, "simulated item-type failure", http.StatusInternalServerError)
+					return
+				}
+			}
+			fmt.Fprint(w, `[{"field":"title"}]`)
+		case "/users/0/items":
+			fmt.Fprint(w, `[{"key":"ITEM1","version":1,"data":{"key":"ITEM1","itemType":"book"}}]`)
+		case "/users/0/items/trash":
+			fmt.Fprint(w, `[]`)
+		default:
+			http.Error(w, "unexpected path "+r.URL.Path, http.StatusNotFound)
+		}
+	}))
+	defer server.Close()
+
+	dbPath := filepath.Join(t.TempDir(), "sync.db")
+	db, err := store.OpenWithContext(context.Background(), dbPath)
+	if err != nil {
+		t.Fatalf("open seed store: %v", err)
+	}
+	itemTypes := []json.RawMessage{
+		json.RawMessage(`{"itemType":"book"}`),
+		json.RawMessage(`{"itemType":"journalArticle"}`),
+	}
+	if _, err := db.UpsertKeyed("schema", []string{"book", "journalArticle"}, itemTypes); err != nil {
+		db.Close()
+		t.Fatalf("seed item types: %v", err)
+	}
+	if err := db.SaveZoteroSchemaVersion("schema", "100"); err != nil {
+		db.Close()
+		t.Fatalf("seed schema version: %v", err)
+	}
+	if err := db.SaveZoteroSchemaVersion("schema-item-type-fields", "99"); err != nil {
+		db.Close()
+		t.Fatalf("seed old dependent checkpoint: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close seed store: %v", err)
+	}
+
+	run := func() error {
+		cmd := newSyncCmd(&rootFlags{
+			asJSON:     true,
+			configPath: testConfigFile(t, server.URL+"/users/0"),
+			timeout:    time.Second,
+		})
+		cmd.SetOut(&bytes.Buffer{})
+		cmd.SetErr(&bytes.Buffer{})
+		cmd.SilenceErrors = true
+		cmd.SilenceUsage = true
+		cmd.SetArgs([]string{
+			"--resources", "schema-item-type-fields,items",
+			"--concurrency", "1",
+			"--db", dbPath,
+		})
+		return cmd.Execute()
+	}
+
+	err = run()
+	if err == nil || ExitCode(err) != 13 {
+		t.Fatalf("partial fan-out error = %v (exit %d), want degraded exit 13", err, ExitCode(err))
+	}
+	db, err = store.OpenWithContext(context.Background(), dbPath)
+	if err != nil {
+		t.Fatalf("reopen partial store: %v", err)
+	}
+	if version, err := db.ZoteroSchemaVersion("schema-item-type-fields"); err != nil || version != "99" {
+		db.Close()
+		t.Fatalf("checkpoint after partial fan-out = %q, %v; want old version 99", version, err)
+	}
+	if _, err := db.SchemaItemTypeFields("book"); err != nil {
+		db.Close()
+		t.Fatalf("successful fan-out row was not stored: %v", err)
+	}
+	if _, err := db.SchemaItemTypeFields("journalArticle"); !errors.Is(err, store.ErrNotFound) {
+		db.Close()
+		t.Fatalf("failed fan-out row error = %v, want ErrNotFound", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close partial store: %v", err)
+	}
+	mu.Lock()
+	firstJournalHits := journalHits
+	failJournal = false
+	mu.Unlock()
+
+	if err := run(); err != nil {
+		t.Fatalf("retry partial fan-out: %v", err)
+	}
+	db, err = store.OpenWithContext(context.Background(), dbPath)
+	if err != nil {
+		t.Fatalf("reopen retried store: %v", err)
+	}
+	defer db.Close()
+	if version, err := db.ZoteroSchemaVersion("schema-item-type-fields"); err != nil || version != "100" {
+		t.Fatalf("checkpoint after retry = %q, %v; want live version 100", version, err)
+	}
+	if _, err := db.SchemaItemTypeFields("journalArticle"); err != nil {
+		t.Fatalf("failed item type was not stored on retry: %v", err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if journalHits <= firstJournalHits {
+		t.Fatalf("failed item type was not retried: hits before=%d after=%d", firstJournalHits, journalHits)
+	}
+}
+
+func TestSyncDependentSchemaRejectsExcessiveItemTypeCardinality(t *testing.T) {
+	syncTestWithHumanFriendly(t, false)
+	db := syncTestOpenStore(t)
+	defer db.Close()
+
+	ids := make([]string, maxDependentSchemaItemTypes+1)
+	rows := make([]json.RawMessage, maxDependentSchemaItemTypes+1)
+	for i := range ids {
+		ids[i] = fmt.Sprintf("type-%03d", i)
+		rows[i] = json.RawMessage(fmt.Sprintf(`{"itemType":%q}`, ids[i]))
+	}
+	if _, err := db.UpsertKeyed("schema", ids, rows); err != nil {
+		t.Fatalf("seed excessive item types: %v", err)
+	}
+
+	result := syncResource(
+		context.Background(),
+		syncTestClient("http://127.0.0.1:1"),
+		db,
+		"schema-item-type-fields",
+		0,
+		false,
+		0,
+		false,
+	)
+	if result.Err == nil {
+		t.Fatal("excessive item-type fan-out succeeded")
+	}
+	if !strings.Contains(result.Err.Error(), fmt.Sprintf("count %d", maxDependentSchemaItemTypes+1)) ||
+		!strings.Contains(result.Err.Error(), fmt.Sprintf("ceiling of %d", maxDependentSchemaItemTypes)) {
+		t.Fatalf("cardinality error = %q, want observed count and ceiling", result.Err)
+	}
+}
+
+func TestPerItemTypeSchemaResourcesAreNotRequestedImplicitly(t *testing.T) {
+	syncTestWithHumanFriendly(t, false)
+
+	var mu sync.Mutex
+	deepHits := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/itemTypeFields", "/itemTypeCreatorTypes":
+			mu.Lock()
+			deepHits++
+			mu.Unlock()
+			fmt.Fprint(w, `[]`)
+		case "/itemTypes":
+			w.Header().Set("Zotero-Schema-Version", "100")
+			fmt.Fprint(w, `[]`)
+		case "/itemFields", "/creatorFields",
+			"/users/0/collections", "/users/0/items", "/users/0/items/trash",
+			"/users/0/searches", "/users/0/tags":
+			fmt.Fprint(w, `[]`)
+		default:
+			http.Error(w, "unexpected path "+r.URL.Path, http.StatusNotFound)
+		}
+	}))
+	defer server.Close()
+
+	tests := []struct {
+		name string
+		args []string
+	}{
+		{name: "default"},
+		{name: "full", args: []string{"--full"}},
+		{name: "items", args: []string{"--resources", "items"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			mu.Lock()
+			deepHits = 0
+			mu.Unlock()
+
+			cmd := newSyncCmd(&rootFlags{
+				asJSON:     true,
+				configPath: testConfigFile(t, server.URL+"/users/0"),
+				timeout:    time.Second,
+			})
+			cmd.SilenceErrors = true
+			cmd.SilenceUsage = true
+			cmd.SetOut(&bytes.Buffer{})
+			cmd.SetErr(&bytes.Buffer{})
+			cmd.SetArgs(append(tt.args, "--db", filepath.Join(t.TempDir(), "sync.db")))
+			if err := cmd.Execute(); err != nil {
+				t.Fatalf("sync %s: %v", tt.name, err)
+			}
+
+			mu.Lock()
+			got := deepHits
+			mu.Unlock()
+			if got != 0 {
+				t.Fatalf("sync %s made %d implicit deep schema request(s), want 0", tt.name, got)
+			}
+		})
 	}
 }
 

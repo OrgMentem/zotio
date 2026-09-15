@@ -146,7 +146,9 @@ Once synced, use the 'search' command for instant full-text search.
 Per-item-type schema resources are excluded from the default sync because each
 selected resource makes one request per cached item type. Select
 schema-item-type-fields or schema-item-type-creator-types explicitly after the
-schema resource has populated the item-type list.
+schema resource has populated the item-type list. Each dependent run probes the
+live /itemTypes endpoint and exits 9 with remediation when that cached
+prerequisite is stale.
 
 Exit codes & warnings:
   Resources the API denies access to (HTTP 403, or HTTP 400 with an
@@ -155,10 +157,11 @@ Exit codes & warnings:
   line carrying status, reason, and message fields, and a final
   {"event":"sync_summary",...} aggregates the run.
 
-  A full sync exits non-zero when any selected resource does not complete.
-  Exit 0 otherwise when at least one resource synced and no resource flagged in
-  the spec as critical (x-critical: true) failed. Pass --strict to exit
-  non-zero on any per-resource failure. Exit is always
+  A dependent per-item-type schema resource exits 13 when any fan-out request
+  fails after another request succeeds. A full sync exits non-zero when any
+  selected resource does not complete. Exit 0 otherwise when at least one
+  resource synced and no resource flagged in the spec as critical failed. Pass
+  --strict to exit non-zero on any other per-resource failure. Exit is always
   non-zero when every selected resource failed, regardless of --strict.`,
 		Example: `  # Sync all resources
   zotio sync
@@ -208,6 +211,42 @@ Exit codes & warnings:
 			// or worker scheduling so an items sync can provide local parity.
 			resources = normalizeSyncResources(resources)
 
+			// Resolve dependent schema prerequisites before any resource starts.
+			// A stale item-type snapshot is a setup failure, not a partial sync.
+			dependentPrereqs := make(map[string]dependentSchemaPrerequisite)
+			for _, resource := range resources {
+				if _, dependent := dependentSchemaSyncResources[resource]; !dependent {
+					continue
+				}
+				prereq, prereqErr := prepareDependentSchemaPrerequisite(
+					cmd.Context(),
+					syncClientForResource(c, resource),
+					db,
+					resource,
+					full,
+				)
+				if prereqErr != nil {
+					var cardinality *dependentSchemaCardinalityError
+					if errors.As(prereqErr, &cardinality) {
+						dependentPrereqs[resource] = dependentSchemaPrerequisite{refusal: prereqErr}
+						continue
+					}
+					var unmet *dependentSchemaPreconditionError
+					if errors.As(prereqErr, &unmet) {
+						return emitPreconditionUnmetWithRemediation(
+							cmd.OutOrStdout(),
+							flags,
+							"sync --resources "+resource,
+							preconditionSyncedStore,
+							unmet.detail,
+							unmet.remediation,
+						)
+					}
+					return classifyAPIError(fmt.Errorf("preparing %s sync: %w", resource, prereqErr), flags)
+				}
+				dependentPrereqs[resource] = prereq
+			}
+
 			// --full always starts from page zero. Do not update freshness until
 			// a complete pass reaches its terminal page.
 			if full {
@@ -251,7 +290,8 @@ Exit codes & warnings:
 				concurrency = 4
 			}
 
-			ctx := context.WithValue(cmd.Context(), syncEventWriterContextKey{}, &syncEventWriter{w: cmd.OutOrStdout()})
+			ctx := context.WithValue(cmd.Context(), dependentSchemaPrerequisiteContextKey{}, dependentPrereqs)
+			ctx = context.WithValue(ctx, syncEventWriterContextKey{}, &syncEventWriter{w: cmd.OutOrStdout()})
 			started := time.Now()
 			work := make(chan string, len(resources))
 			results := make(chan syncResult, len(resources))
@@ -299,6 +339,7 @@ Exit codes & warnings:
 			var criticalFailedResources []string
 			var warnedResources []string
 			var successCount int
+			var degradedResources []string
 			for res := range results {
 				if res.Err != nil {
 					detail := fmt.Sprintf("%s: %v", res.Resource, res.Err)
@@ -313,6 +354,9 @@ Exit codes & warnings:
 					if criticalResources[res.Resource] {
 						criticalErrCount++
 						criticalFailedResources = append(criticalFailedResources, detail)
+					}
+					if ExitCode(res.Err) == 13 {
+						degradedResources = append(degradedResources, detail)
 					}
 				} else if res.Warn != nil {
 					detail := fmt.Sprintf("%s: %v", res.Resource, res.Warn)
@@ -356,6 +400,9 @@ Exit codes & warnings:
 			if humanFriendly {
 				if fulltextErr != nil {
 					fmt.Fprintf(os.Stderr, "Sync incomplete: fulltext: %v\n", fulltextErr)
+				} else if len(degradedResources) > 0 {
+					fmt.Fprintf(os.Stderr, "Sync incomplete: %d records across %d resources (%d resource(s) degraded, %.1fs)\n",
+						totalSynced, totalResources, len(degradedResources), elapsed.Seconds())
 				} else if len(fullIncompleteResources) > 0 {
 					fmt.Fprintf(os.Stderr, "Sync incomplete: %d records across %d resources (%d resource(s) incomplete, %.1fs)\n",
 						totalSynced, totalResources, len(fullIncompleteResources), elapsed.Seconds())
@@ -394,17 +441,22 @@ Exit codes & warnings:
 			}
 
 			// Exit-code policy:
-			//   1. --full + any incomplete resource -> non-zero
-			//   2. --strict + any error          -> non-zero
-			//   3. any critical failure          -> non-zero regardless of --strict
-			//   4. nothing synced                 -> non-zero (preserves "all-warned" / "all-errored" exit)
-			//   5. otherwise                      -> exit 0 (any data synced + no critical failed)
+			//   1. any degraded resource           -> exit 13
+			//   2. --full + any other incomplete   -> non-zero
+			//   3. --strict + any error             -> non-zero
+			//   4. any critical failure             -> non-zero regardless of --strict
+			//   5. nothing synced                   -> non-zero (preserves all-failed exits)
+			//   6. otherwise                        -> exit 0
+			if fulltextErr != nil {
+				return degradedErr(fmt.Errorf("fulltext sync incomplete: %w", fulltextErr))
+			}
+			if len(degradedResources) > 0 {
+				return degradedErr(fmt.Errorf("%d resource(s) produced partial results: %s",
+					len(degradedResources), strings.Join(degradedResources, "; ")))
+			}
 			if full && len(fullIncompleteResources) > 0 {
 				return fmt.Errorf("%d resource(s) incomplete during full sync: %s",
 					len(fullIncompleteResources), strings.Join(fullIncompleteResources, "; "))
-			}
-			if fulltextErr != nil {
-				return degradedErr(fmt.Errorf("fulltext sync incomplete: %w", fulltextErr))
 			}
 			if strict && errCount > 0 {
 				return fmt.Errorf("%d resource(s) failed to sync: %s", errCount, strings.Join(failedResources, "; "))
@@ -431,7 +483,7 @@ Exit codes & warnings:
 	cmd.Flags().StringVar(&dbFlag, "db", "", "Database path (default: ~/.local/share/zotio/data.db)")
 	cmd.Flags().IntVar(&maxPages, "max-pages", 100, "Maximum pages to fetch per resource (0 = unlimited; cap-hit emits a sync_warning event)")
 	cmd.Flags().BoolVar(&latestOnly, "latest-only", false, "Refresh head of each resource only; clears resume cursor and caps pages at 1. Mutually exclusive with --since (--since wins).")
-	cmd.Flags().BoolVar(&strict, "strict", false, "Exit non-zero on any per-resource failure (default: only critical failures or all-resource failure exit non-zero).")
+	cmd.Flags().BoolVar(&strict, "strict", false, "Exit non-zero on any per-resource failure (partial per-item-type schema fan-out always exits 13).")
 	cmd.Flags().BoolVar(&fulltext, "fulltext", false, "Also sync PDF full-text content (slower; one request per attachment)")
 
 	return cmd
@@ -595,6 +647,129 @@ func cachedSchemaItemTypes(db *store.Store) ([]string, error) {
 	return itemTypes, nil
 }
 
+const (
+	maxDependentSchemaItemTypes   = 512
+	dependentSchemaWriteChunkSize = 4
+)
+
+type dependentSchemaPrerequisite struct {
+	itemTypes     []string
+	schemaVersion string
+	canSkip       bool
+	refusal       error
+}
+
+type dependentSchemaPrerequisiteContextKey struct{}
+
+type dependentSchemaPreconditionError struct {
+	detail      string
+	remediation []string
+}
+
+func (e *dependentSchemaPreconditionError) Error() string { return e.detail }
+
+type dependentSchemaCardinalityError struct {
+	count int
+}
+
+func (e *dependentSchemaCardinalityError) Error() string {
+	return fmt.Sprintf(
+		"cached item-type count %d exceeds the safety ceiling of %d; refusing per-item-type fan-out",
+		e.count,
+		maxDependentSchemaItemTypes,
+	)
+}
+
+func newDependentSchemaPrecondition(resource, detail string) error {
+	return &dependentSchemaPreconditionError{
+		detail: detail,
+		remediation: []string{
+			"Run 'zotio sync --resources schema' to refresh the live item-type schema.",
+			"Retry 'zotio sync --resources " + resource + "'.",
+		},
+	}
+}
+
+func sameStrings(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
+// prepareDependentSchemaPrerequisite verifies that the cached /itemTypes
+// dependency still represents the live schema before a dependent resource can
+// skip or fan out. A missing schema-version header disables the skip. It never
+// makes an unverifiable cache look current.
+func prepareDependentSchemaPrerequisite(ctx context.Context, c syncHTTPClient, db *store.Store, resource string, full bool) (dependentSchemaPrerequisite, error) {
+	itemTypes, err := cachedSchemaItemTypes(db)
+	if err != nil {
+		return dependentSchemaPrerequisite{}, fmt.Errorf("reading cached item types: %w", err)
+	}
+	if len(itemTypes) == 0 {
+		return dependentSchemaPrerequisite{}, newDependentSchemaPrecondition(
+			resource,
+			"the cached item-type list is empty",
+		)
+	}
+	if len(itemTypes) > maxDependentSchemaItemTypes {
+		return dependentSchemaPrerequisite{}, &dependentSchemaCardinalityError{count: len(itemTypes)}
+	}
+
+	schemaVersion, err := db.ZoteroSchemaVersion("schema")
+	if err != nil {
+		return dependentSchemaPrerequisite{}, fmt.Errorf("reading cached Zotero schema version: %w", err)
+	}
+	cachedVersion, err := db.ZoteroSchemaVersion(resource)
+	if err != nil {
+		return dependentSchemaPrerequisite{}, fmt.Errorf("reading %s schema checkpoint: %w", resource, err)
+	}
+
+	liveVersion := ""
+	liveVerified := false
+	if headerClient, ok := c.(syncHeaderHTTPClient); ok {
+		body, version, err := headerClient.GetWithHeaderContext(ctx, "/itemTypes", nil, "Zotero-Schema-Version")
+		if err != nil {
+			return dependentSchemaPrerequisite{}, fmt.Errorf("probing live Zotero schema version: %w", err)
+		}
+		liveItemTypes, err := decodeSchemaList(body, "/itemTypes", "itemType")
+		if err != nil {
+			return dependentSchemaPrerequisite{}, err
+		}
+		if !sameStrings(liveItemTypes, itemTypes) {
+			return dependentSchemaPrerequisite{}, newDependentSchemaPrecondition(
+				resource,
+				fmt.Sprintf("the cached item-type list differs from the live /itemTypes list (cached %d, live %d)", len(itemTypes), len(liveItemTypes)),
+			)
+		}
+		liveVersion = version
+		liveVerified = liveVersion != "" && schemaVersion != "" && liveVersion == schemaVersion
+		if liveVersion != "" && liveVersion != schemaVersion {
+			return dependentSchemaPrerequisite{}, newDependentSchemaPrecondition(
+				resource,
+				fmt.Sprintf("the cached item-type schema is stale (live version %q, cached version %q)", liveVersion, schemaVersion),
+			)
+		}
+	}
+
+	return dependentSchemaPrerequisite{
+		itemTypes:     itemTypes,
+		schemaVersion: schemaVersion,
+		canSkip:       !full && liveVerified && cachedVersion == schemaVersion,
+	}, nil
+}
+
+func dependentSchemaPrerequisiteFromContext(ctx context.Context, resource string) (dependentSchemaPrerequisite, bool) {
+	prereqs, _ := ctx.Value(dependentSchemaPrerequisiteContextKey{}).(map[string]dependentSchemaPrerequisite)
+	prereq, ok := prereqs[resource]
+	return prereq, ok
+}
+
 func dependentSchemaCacheComplete(db *store.Store, spec dependentSchemaSyncSpec, itemTypes []string) (bool, error) {
 	for _, itemType := range itemTypes {
 		if _, err := spec.get(db, itemType); err != nil {
@@ -623,24 +798,24 @@ func syncDependentSchemaResource(ctx context.Context, c syncHTTPClient, db *stor
 		}
 		return syncResult{Resource: resource, Count: count, Err: err, Duration: time.Since(started)}
 	}
-	itemTypes, err := cachedSchemaItemTypes(db)
-	if err != nil {
-		return fail(fmt.Errorf("reading cached item types: %w", err), 0)
-	}
-	if len(itemTypes) == 0 {
-		return fail(fmt.Errorf("cached item-type list is empty; run `zotio sync --resources schema` first"), 0)
-	}
 
-	schemaVersion, err := db.ZoteroSchemaVersion("schema")
-	if err != nil {
-		return fail(fmt.Errorf("reading cached Zotero schema version: %w", err), 0)
+	prereq, ok := dependentSchemaPrerequisiteFromContext(ctx, resource)
+	if !ok {
+		var err error
+		prereq, err = prepareDependentSchemaPrerequisite(ctx, c, db, resource, full)
+		if err != nil {
+			var unmet *dependentSchemaPreconditionError
+			if errors.As(err, &unmet) {
+				err = preconditionErr(err)
+			}
+			return fail(err, 0)
+		}
 	}
-	cachedVersion, err := db.ZoteroSchemaVersion(resource)
-	if err != nil {
-		return fail(fmt.Errorf("reading %s schema checkpoint: %w", resource, err), 0)
+	if prereq.refusal != nil {
+		return fail(prereq.refusal, 0)
 	}
-	if !full && schemaVersion != "" && cachedVersion == schemaVersion {
-		complete, err := dependentSchemaCacheComplete(db, spec, itemTypes)
+	if prereq.canSkip {
+		complete, err := dependentSchemaCacheComplete(db, spec, prereq.itemTypes)
 		if err != nil {
 			return fail(fmt.Errorf("checking %s cache: %w", resource, err), 0)
 		}
@@ -665,14 +840,21 @@ func syncDependentSchemaResource(ctx context.Context, c syncHTTPClient, db *stor
 		}
 	}
 
-	results, fanoutErrs := cliutil.FanoutRun(ctx, itemTypes,
-		func(itemType string) string { return itemType },
-		func(fctx context.Context, itemType string) (json.RawMessage, error) {
-			data, _, err := c.GetWithVersionContext(fctx, spec.endpoint, map[string]string{"itemType": itemType})
-			return data, err
-		})
+	totalFetched := 0
+	fanoutErrs := make([]cliutil.FanoutError, 0)
+	for start := 0; start < len(prereq.itemTypes); start += dependentSchemaWriteChunkSize {
+		end := min(start+dependentSchemaWriteChunkSize, len(prereq.itemTypes))
+		results, chunkErrs := cliutil.FanoutRun(ctx, prereq.itemTypes[start:end],
+			func(itemType string) string { return itemType },
+			func(fctx context.Context, itemType string) (json.RawMessage, error) {
+				data, _, err := c.GetWithVersionContext(fctx, spec.endpoint, map[string]string{"itemType": itemType})
+				return data, err
+			})
+		fanoutErrs = append(fanoutErrs, chunkErrs...)
 
-	if len(results) > 0 {
+		if len(results) == 0 {
+			continue
+		}
 		ids := make([]string, 0, len(results))
 		payloads := make([]json.RawMessage, 0, len(results))
 		for _, result := range results {
@@ -680,27 +862,31 @@ func syncDependentSchemaResource(ctx context.Context, c syncHTTPClient, db *stor
 			payloads = append(payloads, result.Value)
 		}
 		if _, err := db.UpsertKeyed(resource, ids, payloads); err != nil {
-			return fail(fmt.Errorf("persisting %s rows: %w", resource, err), 0)
+			return fail(fmt.Errorf("persisting %s rows: %w", resource, err), totalFetched)
 		}
+		totalFetched += len(results)
 	}
 	if err := FanoutReportErrors(fanoutErrs); err != nil {
-		return fail(err, len(results))
+		if totalFetched > 0 {
+			return fail(degradedErr(err), totalFetched)
+		}
+		return fail(err, 0)
 	}
 
-	seen := make(map[string]bool, len(itemTypes))
-	for _, itemType := range itemTypes {
+	seen := make(map[string]bool, len(prereq.itemTypes))
+	for _, itemType := range prereq.itemTypes {
 		seen[itemType] = true
 	}
 	if _, err := db.SweepMissing(resource, seen); err != nil {
-		return fail(fmt.Errorf("reaping stale %s rows: %w", resource, err), len(results))
+		return fail(fmt.Errorf("reaping stale %s rows: %w", resource, err), totalFetched)
 	}
-	if schemaVersion != "" {
-		if err := db.SaveZoteroSchemaVersion(resource, schemaVersion); err != nil {
-			return fail(fmt.Errorf("persisting %s schema checkpoint: %w", resource, err), len(results))
+	if prereq.schemaVersion != "" {
+		if err := db.SaveZoteroSchemaVersion(resource, prereq.schemaVersion); err != nil {
+			return fail(fmt.Errorf("persisting %s schema checkpoint: %w", resource, err), totalFetched)
 		}
 	}
-	if err := db.SaveSyncState(resource, "", len(results)); err != nil {
-		return fail(fmt.Errorf("persisting sync checkpoint: %w", err), len(results))
+	if err := db.SaveSyncState(resource, "", totalFetched); err != nil {
+		return fail(fmt.Errorf("persisting sync checkpoint: %w", err), totalFetched)
 	}
 	if !humanFriendly {
 		emitSyncEvent(ctx, struct {
@@ -711,11 +897,11 @@ func syncDependentSchemaResource(ctx context.Context, c syncHTTPClient, db *stor
 		}{
 			Event:      "sync_complete",
 			Resource:   resource,
-			Total:      len(results),
+			Total:      totalFetched,
 			DurationMS: time.Since(started).Milliseconds(),
 		})
 	}
-	return syncResult{Resource: resource, Count: len(results), Duration: time.Since(started)}
+	return syncResult{Resource: resource, Count: totalFetched, Duration: time.Since(started)}
 }
 
 type syncCursorProvenance struct {
