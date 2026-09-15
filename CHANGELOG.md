@@ -4,6 +4,8 @@ Notable changes to zotio. Format follows [Keep a Changelog](https://keepachangel
 
 ## [Unreleased]
 
+## [0.26.0] — 2026-09-15
+
 ### Changed — breaking
 
 - **`broken_attachment_file` reports one of three reasons instead of
@@ -92,11 +94,17 @@ Notable changes to zotio. Format follows [Keep a Changelog](https://keepachangel
   step. A finding now enters a plan step only when its own recommended
   command is that step's command.
 - **`import pmid` did not record the PMID it imported**, so the item was not
-  findable by its own identifier afterwards. `items find --pmid` matches a
-  `PMID: <id>` token in Extra, and Zotero has no PMID field on
-  `journalArticle`, so Extra is the only place it can live — `import arxiv`
-  already stored `arXiv: <id>` there. The import path and the lookup path now
-  agree.
+  findable by its own identifier afterwards, and **`items find --pmid` looked
+  in the wrong place.** Zotero carries `PMID` as a first-class field on
+  `journalArticle`; the importer now writes it there. The lookup previously
+  matched only a `PMID: <id>` token in Extra — and its SQL prefilter selected
+  only Extra-bearing rows — so it could not see an item whose identifier sat
+  in the real field. That is what the desktop produces: saving through the
+  Zotero connector, the default route while Zotero is running, moves a
+  recognized `PMID:` Extra line into the field and leaves Extra empty. The
+  lookup now accepts both homes, so items written by either route, by an
+  older zotio, or by another tool all resolve; matching stays exact, and a
+  prefix still does not match.
 - **`make test-race` omits `-count=1`, so a cached pass could satisfy the
   release gate.** `dev/releasing.md` warns in plain words to distrust a
   cached pass; the gate enforcing it did not pass the flag.
@@ -2765,7 +2773,8 @@ First tagged release: the trust-and-automation layer for Zotero.
 - **Onboarding** — `zotio init` guided setup (Zotero detection, local API, key, first sync, health check).
 - Release engineering: goreleaser builds for 6 platforms, cosign-signed checksums, SBOMs, Homebrew tap.
 
-[Unreleased]: https://github.com/OrgMentem/zotio/compare/v0.25.0...HEAD
+[Unreleased]: https://github.com/OrgMentem/zotio/compare/v0.26.0...HEAD
+[0.26.0]: https://github.com/OrgMentem/zotio/compare/v0.25.0...v0.26.0
 [0.25.0]: https://github.com/OrgMentem/zotio/compare/v0.24.0...v0.25.0
 [0.24.0]: https://github.com/OrgMentem/zotio/compare/v0.23.0...v0.24.0
 [0.23.0]: https://github.com/OrgMentem/zotio/compare/v0.22.1...v0.23.0
