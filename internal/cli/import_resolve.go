@@ -26,6 +26,12 @@ func newImportResolveCmd(flags *rootFlags) *cobra.Command {
 		Annotations: map[string]string{"mcp:read-only": "true"},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			m, resolveErr := resolveImportManifest(cmd, flags, args[0], flagLimit)
+			// A manifest is a durable input to import apply. If cancellation
+			// leaves any source unresolved, emit no artifact rather than a
+			// manifest whose missing entries look intentional.
+			if ctxErr := cmd.Context().Err(); ctxErr != nil {
+				return errors.Join(resolveErr, ctxErr)
+			}
 			if m.SchemaVersion == 0 {
 				return resolveErr
 			}

@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -16,6 +17,17 @@ import (
 )
 
 const providerCacheTTL = 7 * 24 * time.Hour
+
+// providerErrorBodyLimit keeps upstream error details useful without letting a
+// provider amplify one failed request into megabytes of manifest and terminal
+// output. No caller parses these details.
+const providerErrorBodyLimit = 512
+
+// SanitizeForTerminal exposes the CLI's terminal-safety boundary to the binary
+// entry point. Structured output keeps its normal encoding.
+func SanitizeForTerminal(s string) string {
+	return sanitizeForTerminal(s)
+}
 
 const (
 	providerCOCI            = "coci"
@@ -75,12 +87,24 @@ func getCappedProviderJSON(ctx context.Context, httpClient *http.Client, provide
 		return err
 	}
 	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		body, err := io.ReadAll(io.LimitReader(resp.Body, int64(providerErrorBodyLimit+1)))
+		if err != nil {
+			return err
+		}
+		truncated := len(body) > providerErrorBodyLimit
+		if truncated {
+			body = body[:providerErrorBodyLimit]
+		}
+		message := strings.TrimSpace(string(body))
+		if truncated {
+			message += "... (truncated)"
+		}
+		return fmt.Errorf("HTTP %d: %s", resp.StatusCode, message)
+	}
 	body, err := readCappedExternalBody(resp.Body, 4<<20)
 	if err != nil {
 		return err
-	}
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return fmt.Errorf("HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
 	}
 	pc.set(provider, rawURL, json.RawMessage(body))
 	return json.Unmarshal(body, out)

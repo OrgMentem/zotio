@@ -45,19 +45,19 @@ func isLocalZoteroAPI(baseURL string) bool {
 	}
 }
 
+const unparseableBaseURLPlaceholder = "<unparseable base URL redacted>"
+
 func redactURL(raw string) string {
 	parsed, err := url.Parse(raw)
 	if err != nil {
-		return raw
+		return unparseableBaseURLPlaceholder
 	}
 	redacted := false
-	redactedPassword := false
-	if parsed.User != nil {
-		if _, ok := parsed.User.Password(); ok {
-			parsed.User = url.UserPassword(parsed.User.Username(), "***")
-			redacted = true
-			redactedPassword = true
-		}
+	redactedUserinfo := false
+	if parsed.User != nil && parsed.User.String() != "" {
+		parsed.User = url.User("***")
+		redacted = true
+		redactedUserinfo = true
 	}
 	if parsed.RawQuery != "" {
 		if rawQuery, ok := redactSensitiveURLQuery(parsed.RawQuery); ok {
@@ -69,8 +69,8 @@ func redactURL(raw string) string {
 		return raw
 	}
 	out := parsed.String()
-	if redactedPassword {
-		out = strings.Replace(out, ":%2A%2A%2A@", ":***@", 1)
+	if redactedUserinfo {
+		out = strings.Replace(out, "%2A%2A%2A@", "***@", 1)
 	}
 	return out
 }

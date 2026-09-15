@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -264,5 +265,98 @@ func TestImportManifestFanoutPreservesSequentialOrderAndReportsErrors(t *testing
 	}
 	if got.Entries[failingIndex].Status != "unresolved" || !strings.Contains(got.Entries[failingIndex].Note, "HTTP 500") {
 		t.Fatalf("failed entry = %#v, want unresolved status with the provider error", got.Entries[failingIndex])
+	}
+}
+
+func TestProviderErrorBodyIsBoundedAndCannotReachTerminalUnsanitized(t *testing.T) {
+	body := "\x1b]0;owned\x07" +
+		strings.Repeat("x", providerErrorBodyLimit+1024) +
+		"TAIL_SECRET"
+	transport := externalHTTPRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+		return externalHTTPTestResponse(req, http.StatusBadGateway, "", body), nil
+	})
+
+	var decoded map[string]any
+	err := getCappedProviderJSON(
+		context.Background(),
+		&http.Client{Transport: transport},
+		providerCrossRef,
+		"https://8.8.8.8/provider",
+		nil,
+		&decoded,
+	)
+	if err == nil {
+		t.Fatal("provider failure returned no error")
+	}
+	if len(err.Error()) > providerErrorBodyLimit+64 {
+		t.Fatalf("provider error length = %d, want at most %d: %q", len(err.Error()), providerErrorBodyLimit+64, err)
+	}
+	if strings.Contains(err.Error(), "TAIL_SECRET") || !strings.Contains(err.Error(), "(truncated)") {
+		t.Fatalf("provider error was not truncated before rendering: %q", err)
+	}
+
+	var stderr bytes.Buffer
+	fmt.Fprintf(&stderr, "Error: %s\n", SanitizeForTerminal(err.Error()))
+	if strings.ContainsAny(stderr.String(), "\x1b\x07") {
+		t.Fatalf("terminal error contains an ANSI or OSC control byte: %q", stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "HTTP 502") {
+		t.Fatalf("terminal error lost the useful HTTP status: %q", stderr.String())
+	}
+}
+
+func TestImportResolveCancellationWritesNoPartialManifest(t *testing.T) {
+	dir := t.TempDir()
+	for i := range 40 {
+		name := fmt.Sprintf("10.5555%%2Fcancel-%02d.pdf", i)
+		if err := os.WriteFile(filepath.Join(dir, name), nil, 0o600); err != nil {
+			t.Fatalf("write fixture %d: %v", i, err)
+		}
+	}
+
+	started := make(chan struct{}, 1)
+	srv := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+		select {
+		case started <- struct{}{}:
+		default:
+		}
+		<-r.Context().Done()
+	}))
+	t.Cleanup(srv.Close)
+	withBase(t, &enrichCrossRefBase, srv.URL)
+	t.Setenv("HOME", t.TempDir())
+
+	ctx, cancel := context.WithCancel(context.Background())
+	flags := &rootFlags{timeout: 30 * time.Second}
+	cmd := newImportResolveCmd(flags)
+	cmd.SilenceErrors, cmd.SilenceUsage = true, true
+	cmd.SetContext(ctx)
+	cmd.SetArgs([]string{dir})
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&bytes.Buffer{})
+
+	done := make(chan error, 1)
+	go func() {
+		done <- cmd.Execute()
+	}()
+	select {
+	case <-started:
+		cancel()
+	case <-time.After(3 * time.Second):
+		cancel()
+		t.Fatal("import resolve did not start a provider request")
+	}
+
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("import resolve error = %v, want context cancellation", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("import resolve did not stop after cancellation")
+	}
+	if out.Len() != 0 {
+		t.Fatalf("cancelled import resolve wrote a partial manifest:\n%s", out.String())
 	}
 }

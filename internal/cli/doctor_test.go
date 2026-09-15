@@ -55,9 +55,9 @@ func TestRedactURL(t *testing.T) {
 		want string
 	}{
 		{
-			name: "password and query token",
+			name: "userinfo and query token",
 			raw:  "https://u:sekret@example.com/api?token=abc&x=1",
-			want: "https://u:***@example.com/api?token=***&x=1",
+			want: "https://***@example.com/api?token=***&x=1",
 		},
 		{
 			name: "plain local URL",
@@ -65,9 +65,9 @@ func TestRedactURL(t *testing.T) {
 			want: "http://localhost:23119/api/users/0",
 		},
 		{
-			name: "malformed",
-			raw:  "http://[::1/api/users/0?token=abc",
-			want: "http://[::1/api/users/0?token=abc",
+			name: "bare userinfo",
+			raw:  "https://sekret@api.zotero.org/users/123",
+			want: "https://***@api.zotero.org/users/123",
 		},
 	}
 
@@ -77,6 +77,17 @@ func TestRedactURL(t *testing.T) {
 				t.Fatalf("redactURL(%q): want %q, got %q", tt.raw, tt.want, got)
 			}
 		})
+	}
+}
+
+func TestRedactURLFailsClosedOnUnparseableInput(t *testing.T) {
+	const raw = "http://[::1/api/users/0?token=abc"
+	got := redactURL(raw)
+	if got != unparseableBaseURLPlaceholder {
+		t.Fatalf("redactURL(%q): want fixed placeholder %q, got %q", raw, unparseableBaseURLPlaceholder, got)
+	}
+	if strings.Contains(got, "token=abc") || strings.Contains(got, raw) {
+		t.Fatalf("redactURL(%q) leaked the unparseable input: %q", raw, got)
 	}
 }
 
@@ -115,7 +126,7 @@ func TestDoctorReportRedactsBaseURL(t *testing.T) {
 		t.Fatalf("decode doctor report: %v; stdout=%s", err, out.String())
 	}
 
-	wantBaseURL := "http://u:***@localhost:23119/api/users/0?token=***&x=1"
+	wantBaseURL := "http://***@localhost:23119/api/users/0?token=***&x=1"
 	if got := report["base_url"]; got != wantBaseURL {
 		t.Fatalf("report base_url: want %q, got %v", wantBaseURL, got)
 	}
