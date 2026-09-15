@@ -2472,10 +2472,12 @@ to see which item types, fields, or creator fields a new version added or remove
 — the deltas the CLI may not yet model.
 
 The first run captures the baseline. Re-run after an upgrade to see drift. Pass
---update to adopt the current live schema as the new baseline. The baseline is
-stored at ~/.local/share/zotio/schema-baseline.json (override with
---baseline) and is shared across libraries because the schema is global to the
-Zotero install.
+--update to adopt the current live schema as the new baseline. Deep checks read
+the per-item-type snapshot from the local mirror. Refresh it in two steps:
+'zotio sync --resources schema', then 'zotio sync --resources schema-item-type-fields,schema-item-type-creator-types'.
+The baseline is stored at ~/.local/share/zotio/schema-baseline.json (override
+with --baseline) and is shared across libraries because the schema is global to
+the Zotero install.
 
 ```
 zotio schema drift [flags]
@@ -2490,7 +2492,7 @@ Examples:
   # After upgrading Zotero, see what changed
   zotio schema drift
 
-  # Include per-item-type field/creator validity (many extra API calls)
+  # Include cached per-item-type field/creator validity
   zotio schema drift --deep
 
   # Re-baseline to the current schema
@@ -2500,7 +2502,8 @@ Examples:
 | Flag | Type | Default | Description |
 | --- | --- | --- | --- |
 | `--baseline` | `string` |  | Baseline file path (default: ~/.local/share/zotio/schema-baseline.json) |
-| `--deep` | `bool` | `false` | Also diff per-item-type field and creator-type validity (many extra API calls) |
+| `--db` | `string` |  | Database path containing the cached deep schema (default: ~/.local/share/zotio/data.db) |
+| `--deep` | `bool` | `false` | Also diff cached per-item-type field and creator-type validity (requires explicit schema resource sync) |
 | `--update` | `bool` | `false` | Adopt the current live schema as the new baseline after reporting |
 
 ### `zotio schema item-fields`
@@ -2712,6 +2715,11 @@ Supports resumable incremental sync (only fetches new data since the last sync)
 and full resync (--full, which also discards stored per-row versions).
 Once synced, use the 'search' command for instant full-text search.
 
+Per-item-type schema resources are excluded from the default sync because each
+selected resource makes one request per cached item type. Select
+schema-item-type-fields or schema-item-type-creator-types explicitly after the
+schema resource has populated the item-type list.
+
 Exit codes & warnings:
   Resources the API denies access to (HTTP 403, or HTTP 400 with an
   access-policy body) are reported as warnings rather than failing the
@@ -2738,6 +2746,9 @@ Examples:
   # Sync specific resources only
   zotio sync --resources channels,messages
 
+  # Cache per-item-type field validity (one request per cached item type)
+  zotio sync --resources schema-item-type-fields
+
   # Full resync (ignore previous checkpoint)
   zotio sync --full
 
@@ -2759,7 +2770,7 @@ Examples:
 | `--fulltext` | `bool` | `false` | Also sync PDF full-text content (slower; one request per attachment) |
 | `--latest-only` | `bool` | `false` | Refresh head of each resource only; clears resume cursor and caps pages at 1. Mutually exclusive with --since (--since wins). |
 | `--max-pages` | `int` | `100` | Maximum pages to fetch per resource (0 = unlimited; cap-hit emits a sync_warning event) |
-| `--resources` | `stringSlice` | `[]` | Comma-separated resource types to sync (selecting items also syncs items-trash) |
+| `--resources` | `stringSlice` | `[]` | Comma-separated resource types to sync (items also syncs items-trash; per-item-type schema resources are explicit and cost one request per item type) |
 | `--since` | `int` | `0` | Only sync objects modified since this Zotero library version (0 = use stored checkpoint). Get versions from a prior sync or 'items list --since'. |
 | `--strict` | `bool` | `false` | Exit non-zero on any per-resource failure (default: only critical failures or all-resource failure exit non-zero). |
 

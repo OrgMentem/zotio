@@ -16,6 +16,25 @@ Notable changes to zotio. Format follows [Keep a Changelog](https://keepachangel
   recommends `zotio sync`; a vanished file points at storage, not Unpaywall,
   because the library's page numbers and annotations refer to the original.
   Measured on a 4,912-item library: 175 `never_downloaded`, 4 `stale_mirror`.
+- **`items audit --verify-files` refuses instead of reporting the whole
+  library broken.** It now checks that the configured base URL is the Zotero
+  desktop local API and probes a library endpoint before it walks
+  attachments; an unmet condition returns the standard `precondition_unmet`
+  envelope with the `live_local_api` precondition and exits 9, where it
+  previously exited 0. With Zotero closed, or with the base pointed at
+  `api.zotero.org`, every request failed and every PDF attachment in the
+  mirror was reported missing on disk — a clean exit code announcing
+  catastrophic library corruption that had not happened. A per-attachment
+  request failure is now an error too, rather than a broken-file finding: only
+  a resolved path that does not stat is broken. A reachable run keeps the
+  previous audit envelope and exit behavior.
+- **`import resolve` on a directory exits non-zero when a provider lookup
+  fails.** The manifest is still written and the failed entry still carries
+  its `unresolved` status and provider error in `note`, but the command now
+  also reports `N fanout request(s) failed: <path>: <error>` instead of
+  exiting 0. A transient CrossRef or DataCite failure previously left a
+  silently incomplete manifest behind a successful exit. A PDF with no
+  discoverable DOI is unchanged: that is a note, not a failure.
 
 ### Fixed
 
@@ -26,6 +45,49 @@ Notable changes to zotio. Format follows [Keep a Changelog](https://keepachangel
 - **`make test-race` omits `-count=1`, so a cached pass could satisfy the
   release gate.** `dev/releasing.md` warns in plain words to distrust a
   cached pass; the gate enforcing it did not pass the flag.
+- **`items enrich` overwrote the live Extra field with the mirror's stale
+  copy.** A Zotero `PATCH` replaces `extra` wholesale, and the apply path
+  built the new value from the proposal, which comes from the local mirror.
+  Applying `--missing-doi`, `--missing-abstract` or `--missing-citation`
+  therefore destroyed anything written to Extra since the last sync — a
+  Better BibTeX citekey, a reader's own note. The provenance line is now
+  appended to the Extra read from the write plane, reusing the single
+  write-plane read that already resolves the `If-Unmodified-Since-Version`
+  precondition.
+- **`items enrich --repair-pdf --collection <KEY>` refused to run.** The
+  shared scope reconciliation returns an empty expression when `--scope` is
+  absent, so `--collection` never became an exact key set, `repair_pdf` saw
+  an unkeyed queue, and the command failed with `repair_pdf has no
+  library-wide work queue` — the opposite of what its own help text
+  promises. Enrich now lowers its collection sugar to a scope expression
+  before resolving the selection.
+
+### Added
+
+- **`zotio sync --resources schema-item-type-fields` and
+  `--resources schema-item-type-creator-types` cache the per-item-type schema
+  endpoints.** Both are parameterised by item type, so each reads the synced
+  `/itemTypes` list and fans one bounded request out per type through
+  `cliutil.FanoutRun`, storing rows keyed by item type. Neither is in the
+  default resource set: one full pass costs one request per item type, so
+  they must be named explicitly. An incremental sync whose
+  `Zotero-Schema-Version` is unchanged re-reads nothing.
+- **`zotio schema drift --db` reads the deep comparison from the cached
+  snapshot.** The deep path previously re-fetched `/itemTypeFields` and
+  `/itemTypeCreatorTypes` once per item type on every run.
+- **`items note-template` renders the item's own annotations.** Both the
+  standard and Logseq templates now fill the managed annotation region from
+  the mirror, the way `vault sync` and `items summarize` already did, instead
+  of emitting prose telling the reader to run `annotations export` and paste
+  the result. An item with no annotations keeps the labelled, empty section.
+
+### Changed
+
+- **`items enrich --validate` and the two `import resolve` manifest loops fan
+  out.** All three ran one network round trip per item while the bounded,
+  order-preserving `cliutil.FanoutRun` already backed `buildEnrichProposals`.
+  Result ordering is unchanged; apply and manifest-write steps stay
+  sequential.
 
 ## [0.25.0] — 2026-09-10
 
