@@ -102,8 +102,8 @@ control: it prevents torn and destroyed artifacts, never lost updates.
 ### Mechanism and hygiene
 
 - The lock is an OS advisory lock implemented cross-platform with
-  `github.com/gofrs/flock` v0.13.0. Process death releases it, so there is no
-  stale-lock recovery protocol.
+  `github.com/gofrs/flock`; `go.mod` is the single source of truth for the
+  pin. Process death releases it, so there is no stale-lock recovery protocol.
 - **zotio never removes a lock file.** Unlinking one can drop an inode a concurrent
   acquirer has already locked, letting a third writer lock a fresh inode under the
   same name and split the namespace. Acquisition creates the file with mode `0600`

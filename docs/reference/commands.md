@@ -2472,12 +2472,14 @@ to see which item types, fields, or creator fields a new version added or remove
 — the deltas the CLI may not yet model.
 
 The first run captures the baseline. Re-run after an upgrade to see drift. Pass
---update to adopt the current live schema as the new baseline. Deep checks read
-the per-item-type snapshot from the local mirror. Refresh it in two steps:
-'zotio sync --resources schema', then 'zotio sync --resources schema-item-type-fields,schema-item-type-creator-types'.
-The baseline is stored at ~/.local/share/zotio/schema-baseline.json (override
-with --baseline) and is shared across libraries because the schema is global to
-the Zotero install.
+--update to adopt the current live schema as the new baseline. Deep checks fetch
+per-item-type fields and creator types from Zotero in parallel by default. Pass
+--db to read those values from an explicitly synced local snapshot instead. The
+snapshot must be complete and match Zotero's live schema version. Refresh it in
+two steps: 'zotio sync --resources schema', then 'zotio sync --resources
+schema-item-type-fields,schema-item-type-creator-types'. The baseline is stored
+at ~/.local/share/zotio/schema-baseline.json (override with --baseline) and is
+shared across libraries because the schema is global to the Zotero install.
 
 ```
 zotio schema drift [flags]
@@ -2492,8 +2494,11 @@ Examples:
   # After upgrading Zotero, see what changed
   zotio schema drift
 
-  # Include cached per-item-type field/creator validity
+  # Include live per-item-type field/creator validity
   zotio schema drift --deep
+
+  # Use an explicitly synced deep snapshot instead
+  zotio schema drift --deep --db ~/.local/share/zotio/data.db
 
   # Re-baseline to the current schema
   zotio schema drift --update
@@ -2502,8 +2507,8 @@ Examples:
 | Flag | Type | Default | Description |
 | --- | --- | --- | --- |
 | `--baseline` | `string` |  | Baseline file path (default: ~/.local/share/zotio/schema-baseline.json) |
-| `--db` | `string` |  | Database path containing the cached deep schema (default: ~/.local/share/zotio/data.db) |
-| `--deep` | `bool` | `false` | Also diff cached per-item-type field and creator-type validity (requires explicit schema resource sync) |
+| `--db` | `string` |  | Read the deep schema from this explicitly synced database instead of Zotero |
+| `--deep` | `bool` | `false` | Also diff per-item-type field and creator-type validity (live by default; use --db for an explicit cache) |
 | `--update` | `bool` | `false` | Adopt the current live schema as the new baseline after reporting |
 
 ### `zotio schema item-fields`
@@ -2718,7 +2723,9 @@ Once synced, use the 'search' command for instant full-text search.
 Per-item-type schema resources are excluded from the default sync because each
 selected resource makes one request per cached item type. Select
 schema-item-type-fields or schema-item-type-creator-types explicitly after the
-schema resource has populated the item-type list.
+schema resource has populated the item-type list. Each dependent run probes the
+live /itemTypes endpoint and exits 9 with remediation when that cached
+prerequisite is stale.
 
 Exit codes & warnings:
   Resources the API denies access to (HTTP 403, or HTTP 400 with an
@@ -2727,10 +2734,11 @@ Exit codes & warnings:
   line carrying status, reason, and message fields, and a final
   {"event":"sync_summary",...} aggregates the run.
 
-  A full sync exits non-zero when any selected resource does not complete.
-  Exit 0 otherwise when at least one resource synced and no resource flagged in
-  the spec as critical (x-critical: true) failed. Pass --strict to exit
-  non-zero on any per-resource failure. Exit is always
+  A dependent per-item-type schema resource exits 13 when any fan-out request
+  fails after another request succeeds. A full sync exits non-zero when any
+  selected resource does not complete. Exit 0 otherwise when at least one
+  resource synced and no resource flagged in the spec as critical failed. Pass
+  --strict to exit non-zero on any other per-resource failure. Exit is always
   non-zero when every selected resource failed, regardless of --strict.
 
 ```
@@ -2772,7 +2780,7 @@ Examples:
 | `--max-pages` | `int` | `100` | Maximum pages to fetch per resource (0 = unlimited; cap-hit emits a sync_warning event) |
 | `--resources` | `stringSlice` | `[]` | Comma-separated resource types to sync (items also syncs items-trash; per-item-type schema resources are explicit and cost one request per item type) |
 | `--since` | `int` | `0` | Only sync objects modified since this Zotero library version (0 = use stored checkpoint). Get versions from a prior sync or 'items list --since'. |
-| `--strict` | `bool` | `false` | Exit non-zero on any per-resource failure (default: only critical failures or all-resource failure exit non-zero). |
+| `--strict` | `bool` | `false` | Exit non-zero on any per-resource failure (partial per-item-type schema fan-out always exits 13). |
 
 ## `zotio tags`
 

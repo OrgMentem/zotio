@@ -25,16 +25,65 @@ Notable changes to zotio. Format follows [Keep a Changelog](https://keepachangel
   `api.zotero.org`, every request failed and every PDF attachment in the
   mirror was reported missing on disk — a clean exit code announcing
   catastrophic library corruption that had not happened. A per-attachment
-  request failure is now an error too, rather than a broken-file finding: only
-  a resolved path that does not stat is broken. A reachable run keeps the
-  previous audit envelope and exit behavior.
-- **`import resolve` on a directory exits non-zero when a provider lookup
-  fails.** The manifest is still written and the failed entry still carries
-  its `unresolved` status and provider error in `note`, but the command now
-  also reports `N fanout request(s) failed: <path>: <error>` instead of
-  exiting 0. A transient CrossRef or DataCite failure previously left a
-  silently incomplete manifest behind a successful exit. A PDF with no
-  discoverable DOI is unchanged: that is a note, not a failure.
+  request failure now exits 5 with the API-error envelope rather than
+  producing a broken-file finding: only a resolved path that does not stat is
+  broken. A reachable run keeps the previous audit envelope and exit
+  behavior.
+- **`library health --verify-files` reports an indeterminate check instead of
+  quietly dropping attachments.** The reachability probe only proved the
+  desktop was answering *before* the scan. If Zotero exited mid-scan, or a
+  single attachment request failed transiently, that attachment was silently
+  omitted from the check — up to the whole PDF corpus could vanish from the
+  result at a passing exit code, in the command the CI gate runs. The first
+  lookup failure is now a loud `broken_attachment_file` skip carrying the
+  `live_local_api` precondition and its remediation, and no partial findings
+  are emitted. Both this probe and the `items audit` one now bypass the
+  response cache, so a warm `/items` entry can no longer make an unreachable
+  desktop look alive.
+- **`items enrich` rejects `--collection` combined with `--keys` or
+  `--keys-from`.** Lowering `--collection` to a scope expression made the
+  selection key-restricted, which overwrote an explicit key filter instead of
+  intersecting with it: `--missing-doi --collection COL --keys KOUT` would
+  have enriched every item in `COL`. The pair is now a usage error at exit 2,
+  matching the existing `--scope` guard. `--repair-pdf --collection COL`
+  without explicit keys is unaffected.
+- **`import resolve` exits non-zero when a provider lookup fails, in both
+  modes.** Directory resolution and manifest refresh each write their
+  manifest and then report `N fanout request(s) failed: <path>: <error>`,
+  where both previously exited 0. A transient CrossRef or DataCite failure
+  used to leave a silently incomplete manifest behind a successful exit. A
+  PDF with no discoverable DOI is unchanged: that is a note, not a failure.
+  A cancelled or timed-out run now writes **no** manifest at all rather than
+  a truncated one, because the artifact is later consumed by `import apply`
+  and carried no record of its own incompleteness.
+- **`items enrich --validate` fails on a local store read error.** The
+  pre-existing loop skipped an unreadable mirror row and exited 0, validating
+  a silently smaller set than the operator asked for. A genuine read failure
+  is now reported. A row the mirror no longer holds — pruned by a concurrent
+  sync — is still skipped, which is the documented behavior.
+- **`items note-template` declares the `synced_store` precondition.**
+  Annotations are read from the mirror, so on an install with no local
+  database the command used to emit a successful note with a silently empty
+  annotation section for an item that has annotations in Zotero. It now
+  refuses with the `precondition_unmet` envelope and `zotio sync`
+  remediation, at exit 9. An item with a healthy mirror and genuinely zero
+  annotations still renders the labelled, empty section.
+- **`schema drift --deep` reads the cache only when `--db` selects it.** The
+  cached deep path was applied unconditionally, so the command acquired an
+  undeclared mirror requirement and a fresh install could no longer run
+  `--deep` at all. It fetches per-item-type schema live and in parallel by
+  default. With `--db <path>`, a stale, partial or unverifiable cache now
+  returns exit 9 and `precondition_unmet` rather than reporting clean; when
+  the live `Zotero-Schema-Version` header is absent — as it is against the
+  Web API — or the cache table is missing, the command falls back to live
+  requests instead of trusting an uncertifiable snapshot.
+- **A partial per-item-type schema fan-out exits 13, not 0.** Successful rows
+  landed before the fan-out error surfaced, so a sibling resource succeeding
+  was enough for the whole `sync` to return 0 and print `Sync complete` over
+  an incomplete snapshot. Such a run now carries `degradedErr` through
+  aggregation, prints `Sync incomplete`, and leaves the checkpoint unadvanced
+  so the failed item types are retried. `--strict` is unchanged; a partial
+  fan-out exits 13 with or without it.
 
 ### Fixed
 
@@ -53,7 +102,12 @@ Notable changes to zotio. Format follows [Keep a Changelog](https://keepachangel
   Better BibTeX citekey, a reader's own note. The provenance line is now
   appended to the Extra read from the write plane, reusing the single
   write-plane read that already resolves the `If-Unmodified-Since-Version`
-  precondition.
+  precondition. The mutation plan no longer records an `extra` change at all:
+  it is computed before the live read, so replaying it through the mirror
+  write-through and the pending-write marker reintroduced exactly the stale
+  value on the local plane, and re-applied it on every sync until the marker
+  expired. A missing Extra in the mirror self-heals on the next sync; a wrong
+  one does not.
 - **`items enrich --repair-pdf --collection <KEY>` refused to run.** The
   shared scope reconciliation returns an empty expression when `--scope` is
   absent, so `--collection` never became an exact key set, `repair_pdf` saw
@@ -61,6 +115,38 @@ Notable changes to zotio. Format follows [Keep a Changelog](https://keepachangel
   library-wide work queue` — the opposite of what its own help text
   promises. Enrich now lowers its collection sugar to a scope expression
   before resolving the selection.
+- **`redactURL` failed open, so a credential could reach a machine-readable
+  envelope.** An unparseable URL was returned verbatim, query string
+  included, and userinfo was masked only when it carried a password — a bare
+  `https://<secret>@host/` passed through. It now returns a fixed placeholder
+  on a parse failure and masks any userinfo. The `library health
+  --verify-files` skip detail, which the CI gate persists, was printing the
+  configured base URL with no redaction at all while its `items audit` twin
+  redacted it; both now redact. A probe transport failure no longer
+  interpolates the absolute request URL, which carried the query string.
+- **A provider error could rewrite the operator's terminal.** A non-2xx
+  provider response was rendered into the error verbatim against a 4 MiB
+  body ceiling, and the single stderr sink printed it without sanitizing, so
+  ANSI and OSC escapes in a third-party response body reached the terminal —
+  duplicated per failed entry, up to `--limit`. Bodies are now capped at 512
+  bytes and marked when truncated, and every top-level CLI error is
+  terminal-sanitized, which closes the class for all commands.
+- **An abstract containing a managed fence marker could delete a reader's
+  notes.** `items note-template` became a second producer of managed regions,
+  but wrote the Zotero abstract unsanitized above them, and
+  `replaceManagedBlock` binds to the *first* marker. A later `vault sync`
+  would replace everything from inside the Abstract section to the real end
+  marker. Both renderers now neutralize fence markers in the abstract, as
+  `vault sync` already did.
+- **Logseq annotations rendered outside their own section.** The Logseq
+  template emits a bullet heading, but inserted the shared annotation block
+  unindented, so every annotation parsed as a top-level sibling and the
+  labelled section rendered empty. Annotations are now indented as children.
+- **The per-item-type schema fan-out had no cardinality ceiling.** The work
+  list came from whatever `/itemTypes` returned, and every response was
+  buffered before a single write transaction. Zotero ships roughly 36 item
+  types; more than 512 is now refused by name and count, and rows are written
+  in bounded groups rather than accumulated.
 
 ### Added
 
@@ -72,9 +158,11 @@ Notable changes to zotio. Format follows [Keep a Changelog](https://keepachangel
   default resource set: one full pass costs one request per item type, so
   they must be named explicitly. An incremental sync whose
   `Zotero-Schema-Version` is unchanged re-reads nothing.
-- **`zotio schema drift --db` reads the deep comparison from the cached
-  snapshot.** The deep path previously re-fetched `/itemTypeFields` and
-  `/itemTypeCreatorTypes` once per item type on every run.
+- **`zotio schema drift --deep --db <path>` reads the deep comparison from
+  the cached snapshot.** Without `--db`, `--deep` still fetches
+  `/itemTypeFields` and `/itemTypeCreatorTypes` live, now fanned out in
+  parallel instead of one sequential request per item type. The cache path's
+  new refusal behavior is described under *Changed — breaking*.
 - **`items note-template` renders the item's own annotations.** Both the
   standard and Logseq templates now fill the managed annotation region from
   the mirror, the way `vault sync` and `items summarize` already did, instead
