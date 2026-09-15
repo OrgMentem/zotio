@@ -3,10 +3,15 @@
 package cli
 
 import (
+	"bytes"
+	"context"
 	"encoding/json"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
+
+	"zotio/internal/store"
 )
 
 func TestYearFromDate(t *testing.T) {
@@ -65,7 +70,7 @@ func TestNoteTemplateRendersBothExtraCiteKeySpellings(t *testing.T) {
 			if err != nil {
 				t.Fatalf("noteMetadataFromItem: %v", err)
 			}
-			rendered := renderStandardNoteTemplate(meta, false, time.Date(2026, 9, 5, 0, 0, 0, 0, time.UTC))
+			rendered := renderStandardNoteTemplate(meta, nil, false, time.Date(2026, 9, 5, 0, 0, 0, 0, time.UTC))
 			wantLine := `cite_key: "` + tc.want + `"`
 			if !strings.Contains(rendered, wantLine) {
 				t.Fatalf("note template for Extra %q missing %q; rendered:\n%s", tc.extra, wantLine, rendered)
@@ -278,7 +283,8 @@ The abstract.
 
 ## Annotations
 
-<!-- Export annotations with: zotio items annotations <itemKey> -->
+<!-- zotio:annotations (auto-generated; edits here are overwritten on sync) -->
+<!-- /zotio:annotations -->
 
 ## Notes
 `,
@@ -306,7 +312,8 @@ The abstract.
 
 ## Annotations
 
-<!-- Export annotations with: zotio items annotations <itemKey> -->
+<!-- zotio:annotations (auto-generated; edits here are overwritten on sync) -->
+<!-- /zotio:annotations -->
 
 ## Notes
 `,
@@ -334,7 +341,8 @@ The abstract.
 
 ## Annotations
 
-<!-- Export annotations with: zotio items annotations <itemKey> -->
+<!-- zotio:annotations (auto-generated; edits here are overwritten on sync) -->
+<!-- /zotio:annotations -->
 
 ## Notes
 `,
@@ -362,7 +370,8 @@ date_read: 2026-08-22
 
 ## Annotations
 
-<!-- Export annotations with: zotio items annotations <itemKey> -->
+<!-- zotio:annotations (auto-generated; edits here are overwritten on sync) -->
+<!-- /zotio:annotations -->
 
 ## Notes
 `,
@@ -380,7 +389,7 @@ date_read: 2026-08-22
 			if tc.name == "empty abstract placeholder" {
 				m.Abstract = ""
 			}
-			got := renderStandardNoteTemplate(m, tc.obsidian, fixed)
+			got := renderStandardNoteTemplate(m, nil, tc.obsidian, fixed)
 			if got != tc.want {
 				t.Fatalf("renderStandardNoteTemplate %s mismatch\n got:\n%s\nwant:\n%s", tc.name, got, tc.want)
 			}
@@ -404,8 +413,8 @@ date_read: 2026-08-22
 
 	// Explicit difference between variants: obsidian wraps each author in [[ ]].
 	t.Run("difference between standard and obsidian", func(t *testing.T) {
-		standard := renderStandardNoteTemplate(meta, false, fixed)
-		obsidian := renderStandardNoteTemplate(meta, true, fixed)
+		standard := renderStandardNoteTemplate(meta, nil, false, fixed)
+		obsidian := renderStandardNoteTemplate(meta, nil, true, fixed)
 		if standard == obsidian {
 			t.Fatalf("standard and obsidian outputs are equal, want different wikilink wrapping")
 		}
@@ -422,7 +431,7 @@ date_read: 2026-08-22
 	})
 
 	t.Run("authors yaml is quoted", func(t *testing.T) {
-		got := renderStandardNoteTemplate(meta, false, fixed)
+		got := renderStandardNoteTemplate(meta, nil, false, fixed)
 		// Authors array must use yamlStringArray quoting.
 		if !strings.Contains(got, `authors: ["Smith, Jane", "Doe, John"]`) {
 			t.Fatalf("authors line not quoted YAML array, got %q", got)
@@ -460,7 +469,8 @@ func TestRenderLogseqNoteTemplate(t *testing.T) {
 - ## Key Points
   - 
 - ## Annotations
-  - Export annotations with: zotio items annotations <itemKey>
+<!-- zotio:annotations (auto-generated; edits here are overwritten on sync) -->
+<!-- /zotio:annotations -->
 - ## Notes
   - 
 `,
@@ -487,7 +497,8 @@ func TestRenderLogseqNoteTemplate(t *testing.T) {
 - ## Key Points
   - 
 - ## Annotations
-  - Export annotations with: zotio items annotations <itemKey>
+<!-- zotio:annotations (auto-generated; edits here are overwritten on sync) -->
+<!-- /zotio:annotations -->
 - ## Notes
   - 
 `,
@@ -514,7 +525,8 @@ func TestRenderLogseqNoteTemplate(t *testing.T) {
 - ## Key Points
   - 
 - ## Annotations
-  - Export annotations with: zotio items annotations <itemKey>
+<!-- zotio:annotations (auto-generated; edits here are overwritten on sync) -->
+<!-- /zotio:annotations -->
 - ## Notes
   - 
 `,
@@ -523,7 +535,7 @@ func TestRenderLogseqNoteTemplate(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			got := renderLogseqNoteTemplate(tc.meta, fixed)
+			got := renderLogseqNoteTemplate(tc.meta, nil, fixed)
 			if got != tc.want {
 				t.Fatalf("renderLogseqNoteTemplate %s mismatch\n got:\n%s\nwant:\n%s", tc.name, got, tc.want)
 			}
@@ -552,7 +564,7 @@ func TestRenderLogseqNoteTemplate(t *testing.T) {
 			Abstract: "abs",
 			CiteKey:  "",
 		}
-		got := renderLogseqNoteTemplate(meta, fixed)
+		got := renderLogseqNoteTemplate(meta, nil, fixed)
 		if !strings.Contains(got, "- authors:: [[Smith, Jane]]") {
 			t.Fatalf("logseq authors not wikilinked [[author]], got %q", got)
 		}
@@ -565,11 +577,127 @@ func TestRenderLogseqNoteTemplate(t *testing.T) {
 			Year:     "2026",
 			Abstract: "abs",
 		}
-		got := renderLogseqNoteTemplate(meta, fixed)
+		got := renderLogseqNoteTemplate(meta, nil, fixed)
 		if !strings.Contains(got, "- authors::\n") {
 			t.Fatalf("empty authors should emit \"- authors::\\n\", got %q", got)
 		}
 	})
+}
+
+func TestNoteTemplateRendersMirroredAnnotations(t *testing.T) {
+	seedNoteTemplateMirror(t, []json.RawMessage{
+		json.RawMessage(`{"key":"PAPER1","version":1,"data":{"key":"PAPER1","itemType":"journalArticle","title":"Annotated Paper","date":"2026"}}`),
+		json.RawMessage(`{"key":"PDF1","version":1,"data":{"key":"PDF1","itemType":"attachment","parentItem":"PAPER1","contentType":"application/pdf"}}`),
+		json.RawMessage(`{"key":"ANN12","version":1,"data":{"key":"ANN12","itemType":"annotation","parentItem":"PDF1","annotationType":"highlight","annotationText":"A later highlight","annotationPageLabel":"12","dateAdded":"2026-02-01T00:00:00Z"}}`),
+		json.RawMessage(`{"key":"ANN3","version":1,"data":{"key":"ANN3","itemType":"annotation","parentItem":"PDF1","annotationType":"highlight","annotationText":"An earlier highlight","annotationPageLabel":"3","dateAdded":"2026-01-01T00:00:00Z"}}`),
+	})
+
+	for _, tc := range []struct {
+		name string
+		args []string
+	}{
+		{name: "standard", args: []string{"PAPER1"}},
+		{name: "logseq", args: []string{"PAPER1", "--format", "logseq"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			out := runNoteTemplateTestCommand(t, tc.args...)
+			section := noteTemplateAnnotationSection(t, out)
+			for _, want := range []string{
+				"An earlier highlight",
+				"[p. 3]",
+				"A later highlight",
+				"[p. 12]",
+				vaultAnnBegin,
+				vaultAnnEnd,
+			} {
+				if !strings.Contains(section, want) {
+					t.Errorf("Annotations section missing %q:\n%s", want, section)
+				}
+			}
+			if strings.Index(section, "An earlier highlight") > strings.Index(section, "A later highlight") {
+				t.Errorf("annotations are not sorted by page:\n%s", section)
+			}
+		})
+	}
+}
+
+func TestNoteTemplateWithoutAnnotationsRendersEmptyManagedSection(t *testing.T) {
+	seedNoteTemplateMirror(t, []json.RawMessage{
+		json.RawMessage(`{"key":"EMPTY1","version":1,"data":{"key":"EMPTY1","itemType":"journalArticle","title":"Paper Without Annotations","date":"2026"}}`),
+	})
+
+	for _, tc := range []struct {
+		name string
+		args []string
+	}{
+		{name: "standard", args: []string{"EMPTY1"}},
+		{name: "logseq", args: []string{"EMPTY1", "--format", "logseq"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			out := runNoteTemplateTestCommand(t, tc.args...)
+			section := noteTemplateAnnotationSection(t, out)
+			if !strings.Contains(section, "## Annotations") {
+				t.Fatalf("output missing Annotations section:\n%s", out)
+			}
+			if strings.Contains(out, "annotations export") || strings.Contains(out, "Export annotations") {
+				t.Fatalf("output contains the obsolete annotations export instruction:\n%s", out)
+			}
+			want := vaultAnnBegin + "\n" + vaultAnnEnd
+			if !strings.Contains(section, want) {
+				t.Fatalf("empty Annotations section does not contain an empty managed region:\n%s", section)
+			}
+			if strings.Contains(section, "_No annotations._") {
+				t.Fatalf("empty Annotations section contains placeholder text:\n%s", section)
+			}
+		})
+	}
+}
+
+func seedNoteTemplateMirror(t *testing.T, items []json.RawMessage) {
+	t.Helper()
+	savedGroup := activeGroupIDLocked()
+	setActiveGroupID("")
+	t.Cleanup(func() { setActiveGroupID(savedGroup) })
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("ZOTERO_CONFIG", filepath.Join(t.TempDir(), "missing.toml"))
+
+	db, err := store.OpenWithContext(context.Background(), helpersTestDefaultDBPath(t, "zotio"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	if _, _, err := db.UpsertBatch("items", items); err != nil {
+		_ = db.Close()
+		t.Fatalf("seed items: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close store: %v", err)
+	}
+}
+
+func runNoteTemplateTestCommand(t *testing.T, args ...string) string {
+	t.Helper()
+	cmd := newItemsNoteTemplateCmd(&rootFlags{dataSource: "local"})
+	cmd.SetArgs(args)
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&bytes.Buffer{})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("note-template %v: %v", args, err)
+	}
+	return out.String()
+}
+
+func noteTemplateAnnotationSection(t *testing.T, out string) string {
+	t.Helper()
+	start := strings.Index(out, "## Annotations")
+	if start < 0 {
+		t.Fatalf("output missing Annotations section:\n%s", out)
+	}
+	end := strings.Index(out[start:], "## Notes")
+	if end < 0 {
+		t.Fatalf("output missing Notes section after Annotations:\n%s", out)
+	}
+	return out[start : start+end]
 }
 
 func TestYAMLStringArray(t *testing.T) {

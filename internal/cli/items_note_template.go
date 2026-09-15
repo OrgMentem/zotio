@@ -53,14 +53,28 @@ func newItemsNoteTemplateCmd(flags *rootFlags) *cobra.Command {
 				return err
 			}
 
+			var anns []annotationSummary
+			rawDB, err := openStoreForRead(cmd.Context(), "zotio")
+			if err != nil {
+				return fmt.Errorf("opening local database: %w", err)
+			}
+			if rawDB != nil {
+				defer rawDB.Close()
+				annByKey, queryErr := rawDB.AnnotationsForItems([]string{args[0]})
+				if queryErr != nil {
+					return fmt.Errorf("querying annotations: %w", queryErr)
+				}
+				anns = annotationSummariesSorted(annByKey[args[0]])
+			}
+
 			var out string
 			switch strings.ToLower(strings.TrimSpace(flagFormat)) {
 			case "", "standard":
-				out = renderStandardNoteTemplate(meta, false, time.Now())
+				out = renderStandardNoteTemplate(meta, anns, false, time.Now())
 			case "obsidian":
-				out = renderStandardNoteTemplate(meta, true, time.Now())
+				out = renderStandardNoteTemplate(meta, anns, true, time.Now())
 			case "logseq":
-				out = renderLogseqNoteTemplate(meta, time.Now())
+				out = renderLogseqNoteTemplate(meta, anns, time.Now())
 			default:
 				return fmt.Errorf("invalid --format value %q: must be standard, obsidian, or logseq", flagFormat)
 			}
@@ -133,7 +147,7 @@ func yearFromDate(date string) string {
 	return dateYearPattern.FindString(date)
 }
 
-func renderStandardNoteTemplate(meta itemNoteMetadata, obsidian bool, now time.Time) string {
+func renderStandardNoteTemplate(meta itemNoteMetadata, anns []annotationSummary, obsidian bool, now time.Time) string {
 	authors := meta.Authors
 	if obsidian {
 		authors = wikilinkAuthors(authors)
@@ -163,12 +177,12 @@ func renderStandardNoteTemplate(meta itemNoteMetadata, obsidian bool, now time.T
 	b.WriteString(abstract)
 	b.WriteString("\n\n## Key Points\n\n-\n\n")
 	b.WriteString("## Annotations\n\n")
-	b.WriteString("<!-- Export annotations with: zotio items annotations <itemKey> -->\n\n")
-	b.WriteString("## Notes\n")
+	b.WriteString(renderNoteTemplateAnnotationBlock(anns))
+	b.WriteString("\n\n## Notes\n")
 	return b.String()
 }
 
-func renderLogseqNoteTemplate(meta itemNoteMetadata, now time.Time) string {
+func renderLogseqNoteTemplate(meta itemNoteMetadata, anns []annotationSummary, now time.Time) string {
 	abstract := meta.Abstract
 	if abstract == "" {
 		abstract = "(no abstract)"
@@ -194,10 +208,17 @@ func renderLogseqNoteTemplate(meta itemNoteMetadata, now time.Time) string {
 	b.WriteString("- ## Key Points\n")
 	b.WriteString("  - \n")
 	b.WriteString("- ## Annotations\n")
-	b.WriteString("  - Export annotations with: zotio items annotations <itemKey>\n")
-	b.WriteString("- ## Notes\n")
+	b.WriteString(renderNoteTemplateAnnotationBlock(anns))
+	b.WriteString("\n- ## Notes\n")
 	b.WriteString("  - \n")
 	return b.String()
+}
+
+func renderNoteTemplateAnnotationBlock(anns []annotationSummary) string {
+	if len(anns) == 0 {
+		return vaultAnnBegin + "\n" + vaultAnnEnd
+	}
+	return renderAnnotationBlock(anns)
 }
 
 func yamlStringArray(values []string) string {
