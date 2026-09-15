@@ -152,7 +152,7 @@ func renderStandardNoteTemplate(meta itemNoteMetadata, anns []annotationSummary,
 	if obsidian {
 		authors = wikilinkAuthors(authors)
 	}
-	abstract := meta.Abstract
+	abstract := sanitizeManagedFenceMarkers(meta.Abstract)
 	if abstract == "" {
 		abstract = "(no abstract)"
 	}
@@ -177,13 +177,13 @@ func renderStandardNoteTemplate(meta itemNoteMetadata, anns []annotationSummary,
 	b.WriteString(abstract)
 	b.WriteString("\n\n## Key Points\n\n-\n\n")
 	b.WriteString("## Annotations\n\n")
-	b.WriteString(renderNoteTemplateAnnotationBlock(anns))
+	b.WriteString(renderNoteTemplateAnnotationBlock(anns, ""))
 	b.WriteString("\n\n## Notes\n")
 	return b.String()
 }
 
 func renderLogseqNoteTemplate(meta itemNoteMetadata, anns []annotationSummary, now time.Time) string {
-	abstract := meta.Abstract
+	abstract := sanitizeManagedFenceMarkers(meta.Abstract)
 	if abstract == "" {
 		abstract = "(no abstract)"
 	}
@@ -208,17 +208,21 @@ func renderLogseqNoteTemplate(meta itemNoteMetadata, anns []annotationSummary, n
 	b.WriteString("- ## Key Points\n")
 	b.WriteString("  - \n")
 	b.WriteString("- ## Annotations\n")
-	b.WriteString(renderNoteTemplateAnnotationBlock(anns))
+	b.WriteString(renderNoteTemplateAnnotationBlock(anns, "  "))
 	b.WriteString("\n- ## Notes\n")
 	b.WriteString("  - \n")
 	return b.String()
 }
 
-func renderNoteTemplateAnnotationBlock(anns []annotationSummary) string {
-	if len(anns) == 0 {
-		return vaultAnnBegin + "\n" + vaultAnnEnd
+func renderNoteTemplateAnnotationBlock(anns []annotationSummary, prefix string) string {
+	block := vaultAnnBegin + "\n" + vaultAnnEnd
+	if len(anns) > 0 {
+		block = renderAnnotationBlock(anns)
 	}
-	return renderAnnotationBlock(anns)
+	if prefix == "" {
+		return block
+	}
+	return prefix + strings.ReplaceAll(block, "\n", "\n"+prefix)
 }
 
 func yamlStringArray(values []string) string {

@@ -11,6 +11,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/spf13/cobra"
+
 	"zotio/internal/store"
 )
 
@@ -439,6 +441,41 @@ date_read: 2026-08-22
 	})
 }
 
+func TestNoteTemplateSanitizesAbstractManagedFenceMarkers(t *testing.T) {
+	fixed := time.Date(2026, 8, 22, 10, 30, 0, 0, time.UTC)
+	meta := itemNoteMetadata{
+		Title:    "A Study of Foos",
+		Abstract: "Operator text\n" + vaultAnnBegin + "\nMore operator text",
+	}
+
+	for _, tc := range []struct {
+		name   string
+		render func() string
+	}{
+		{name: "standard", render: func() string {
+			return renderStandardNoteTemplate(meta, nil, false, fixed)
+		}},
+		{name: "logseq", render: func() string {
+			return renderLogseqNoteTemplate(meta, nil, fixed)
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := tc.render()
+			annotationsHeading := strings.Index(got, "## Annotations")
+			firstFence := strings.Index(got, vaultAnnBegin)
+			if firstFence < annotationsHeading {
+				t.Fatalf("abstract opened an annotations region before the labelled section:\n%s", got)
+			}
+			if count := strings.Count(got, vaultAnnBegin); count != 1 {
+				t.Fatalf("begin fence count = %d, want only the managed annotations fence:\n%s", count, got)
+			}
+			if !strings.Contains(got, "[zotio annotations marker removed]") {
+				t.Fatalf("abstract fence marker was not neutralized:\n%s", got)
+			}
+		})
+	}
+}
+
 func TestRenderLogseqNoteTemplate(t *testing.T) {
 	fixed := time.Date(2026, 8, 22, 10, 30, 0, 0, time.UTC)
 
@@ -469,8 +506,8 @@ func TestRenderLogseqNoteTemplate(t *testing.T) {
 - ## Key Points
   - 
 - ## Annotations
-<!-- zotio:annotations (auto-generated; edits here are overwritten on sync) -->
-<!-- /zotio:annotations -->
+  <!-- zotio:annotations (auto-generated; edits here are overwritten on sync) -->
+  <!-- /zotio:annotations -->
 - ## Notes
   - 
 `,
@@ -497,8 +534,8 @@ func TestRenderLogseqNoteTemplate(t *testing.T) {
 - ## Key Points
   - 
 - ## Annotations
-<!-- zotio:annotations (auto-generated; edits here are overwritten on sync) -->
-<!-- /zotio:annotations -->
+  <!-- zotio:annotations (auto-generated; edits here are overwritten on sync) -->
+  <!-- /zotio:annotations -->
 - ## Notes
   - 
 `,
@@ -525,8 +562,8 @@ func TestRenderLogseqNoteTemplate(t *testing.T) {
 - ## Key Points
   - 
 - ## Annotations
-<!-- zotio:annotations (auto-generated; edits here are overwritten on sync) -->
-<!-- /zotio:annotations -->
+  <!-- zotio:annotations (auto-generated; edits here are overwritten on sync) -->
+  <!-- /zotio:annotations -->
 - ## Notes
   - 
 `,
@@ -582,6 +619,64 @@ func TestRenderLogseqNoteTemplate(t *testing.T) {
 			t.Fatalf("empty authors should emit \"- authors::\\n\", got %q", got)
 		}
 	})
+}
+
+func TestRenderLogseqNoteTemplateNestsAnnotationsUnderHeading(t *testing.T) {
+	fixed := time.Date(2026, 8, 22, 10, 30, 0, 0, time.UTC)
+	got := renderLogseqNoteTemplate(itemNoteMetadata{Title: "T", Abstract: "abs"}, []annotationSummary{{
+		Key:        "ANN1",
+		ParentItem: "PDF1",
+		Text:       "A highlight",
+		Comment:    "Reader note",
+		Page:       "4",
+	}}, fixed)
+
+	for _, want := range []string{
+		"- ## Annotations\n  " + vaultAnnBegin,
+		"\n  - A highlight ",
+		"\n    - Note: Reader note",
+		"\n  " + vaultAnnEnd + "\n- ## Notes",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("Logseq annotation block missing child indentation %q:\n%s", want, got)
+		}
+	}
+	if strings.Contains(got, "\n- A highlight ") {
+		t.Fatalf("Logseq annotation rendered as a top-level sibling:\n%s", got)
+	}
+}
+
+func TestNoteTemplateRequiresSyncedStore(t *testing.T) {
+	root, _, out, _ := newPreflightTestRoot(t)
+	noteTemplate := mustFindPreflightCommand(t, root, "items", "note-template")
+	runExecuted := false
+	noteTemplate.RunE = func(cmd *cobra.Command, args []string) error {
+		runExecuted = true
+		return nil
+	}
+
+	root.SetArgs([]string{"--json", "items", "note-template", "ITEM1"})
+	err := root.Execute()
+	if err == nil {
+		t.Fatal("items note-template without a synced store succeeded, want precondition error")
+	}
+	if runExecuted {
+		t.Fatal("items note-template RunE executed after synced_store preflight failed")
+	}
+	if got := ExitCode(err); got != 9 {
+		t.Fatalf("exit code = %d, want 9; err=%v", got, err)
+	}
+
+	var env preconditionUnmetEnvelope
+	if decodeErr := json.Unmarshal(out.Bytes(), &env); decodeErr != nil {
+		t.Fatalf("decode precondition envelope: %v; output=%q", decodeErr, out.String())
+	}
+	if env.Kind != "precondition_unmet" || env.Capability != "items note-template" || env.Precondition != preconditionSyncedStore {
+		t.Fatalf("envelope = %+v, want items note-template / synced_store refusal", env)
+	}
+	if len(env.Remediation) == 0 || !strings.Contains(strings.Join(env.Remediation, " "), "zotio sync") {
+		t.Fatalf("remediation = %v, want zotio sync guidance", env.Remediation)
+	}
 }
 
 func TestNoteTemplateRendersMirroredAnnotations(t *testing.T) {
@@ -643,6 +738,9 @@ func TestNoteTemplateWithoutAnnotationsRendersEmptyManagedSection(t *testing.T) 
 				t.Fatalf("output contains the obsolete annotations export instruction:\n%s", out)
 			}
 			want := vaultAnnBegin + "\n" + vaultAnnEnd
+			if tc.name == "logseq" {
+				want = "  " + vaultAnnBegin + "\n  " + vaultAnnEnd
+			}
 			if !strings.Contains(section, want) {
 				t.Fatalf("empty Annotations section does not contain an empty managed region:\n%s", section)
 			}

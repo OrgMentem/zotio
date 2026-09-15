@@ -121,8 +121,9 @@ var capabilityOverrides = map[string]capabilityEntry{
 		},
 	},
 	// Reads backed by the synced local store.
-	"library health": {Requires: []string{preconditionSyncedStore}},
-	"library stats":  {Requires: []string{preconditionSyncedStore}},
+	"library health":      {Requires: []string{preconditionSyncedStore}},
+	"library stats":       {Requires: []string{preconditionSyncedStore}},
+	"items note-template": {Requires: []string{preconditionSyncedStore}},
 	// `items audit` reads the store on every route, and --verify-files
 	// additionally resolves each attachment's path through the local API
 	// (runVerifyAttachmentFiles -> attachmentFileStatus), so that route needs
