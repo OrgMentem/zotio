@@ -71,7 +71,8 @@ func newItemsTagsRemoveCmd(flags *rootFlags) *cobra.Command {
 // and so is the loss of fail-fast.
 const batchTagFlagHelp = "Write up to 50 items per request instead of one request per item. " +
 	"Much faster over large key sets, but every item in a request reaches Zotero together, " +
-	"so the run cannot stop at the first failure and --max-failures does not apply."
+	"so the run always continues past a failure: --max-failures and --continue-on-error=false " +
+	"are rejected rather than ignored. Each item still reports its own status and its own conflict."
 
 func runItemsTagsMutation(cmd *cobra.Command, flags *rootFlags, operation, kind string, rawTags []string, keysFrom string, args []string, add, automatic, batch bool) error {
 	tagNames, err := normalizeTagNames(rawTags)
@@ -81,6 +82,17 @@ func runItemsTagsMutation(cmd *cobra.Command, flags *rootFlags, operation, kind 
 	keys, err := resolveKeys(args, keysFrom, cmd.InOrStdin())
 	if err != nil {
 		return err
+	}
+	// Checked before the dry-run branch and before the write route is
+	// resolved, so a preview cannot succeed for a flag set the apply refuses,
+	// and the refusal cannot be pre-empted by a route or auth error.
+	if batch {
+		if flags.maxFailures > 0 {
+			return fmt.Errorf("--max-failures cannot be honoured with --batch: up to %d items travel in one request, so a failure cannot stop the items sent alongside it; drop one of the two flags", zoteroBatchWriteMax)
+		}
+		if cmd.Flags().Changed("continue-on-error") && !flags.continueOnError {
+			return fmt.Errorf("--continue-on-error=false cannot be honoured with --batch: up to %d items travel in one request, so the run cannot stop before the items already sent; drop one of the two flags", zoteroBatchWriteMax)
+		}
 	}
 	if flags.dryRun {
 		ops := make([]mutation.Op, 0, len(keys))
@@ -118,9 +130,6 @@ func runItemsTagsMutation(cmd *cobra.Command, flags *rootFlags, operation, kind 
 	c, err := flags.newWriteClient()
 	if err != nil {
 		return err
-	}
-	if batch && flags.maxFailures > 0 {
-		return fmt.Errorf("--max-failures cannot be honoured with --batch: up to %d items travel in one request, so a failure cannot stop the items sent alongside it; drop one of the two flags", zoteroBatchWriteMax)
 	}
 	ops := make([]mutation.Op, 0, len(keys))
 	batchObjects := make([]map[string]any, 0, len(keys))
@@ -166,10 +175,16 @@ func runItemsTagsMutation(cmd *cobra.Command, flags *rootFlags, operation, kind 
 				break
 			}
 			if version <= 0 {
-				// Same fail-closed rule as patchWithVersionGuard: without a
-				// precondition the write would silently overwrite a
-				// concurrent edit.
-				return fmt.Errorf("no write-plane version for %s; refusing to write without a version precondition", path)
+				// Same fail-closed rule as patchWithVersionGuard, and the
+				// same blast radius: the item fails, the run continues. An
+				// unversioned item must not discard every planning read
+				// already paid for.
+				op.Apply = func() (string, any, error) {
+					err := fmt.Errorf("no write-plane version for %s; refusing to write without a version precondition", pathCopy)
+					return "failed", err.Error(), err
+				}
+				ops = append(ops, op)
+				continue
 			}
 			batchObjects = append(batchObjects, map[string]any{
 				"key":     keyCopy,
@@ -190,15 +205,19 @@ func runItemsTagsMutation(cmd *cobra.Command, flags *rootFlags, operation, kind 
 
 	var updater *batchItemUpdater
 	runOptions := []func(*mutation.Options){}
+	opObjectIndex := make(map[int]int, len(batchObjects))
 	if batch {
 		updater = newBatchItemUpdater(c, "/items", operation, batchObjects)
 		slot := 0
 		for i := range ops {
-			if len(ops[i].Changes) == 0 {
+			// An op that already has an Apply is the unversioned-item
+			// refusal above; it holds no batch slot.
+			if len(ops[i].Changes) == 0 || ops[i].Apply != nil {
 				continue
 			}
 			index := slot
 			slot++
+			opObjectIndex[i] = index
 			ops[i].Apply = func() (string, any, error) {
 				return updater.outcome(index)
 			}
@@ -210,16 +229,66 @@ func runItemsTagsMutation(cmd *cobra.Command, flags *rootFlags, operation, kind 
 	}
 
 	env, runErr := runMutation(cmd.Context(), flags, operation, ops, runOptions...)
+	if updater != nil {
+		correctDispatchedNotAttempted(&env, ops, opObjectIndex, updater)
+	}
 	renderErr := renderMutation(cmd, flags, env, itemTagsSingleLine(add, tagNames))
 	if renderErr != nil {
 		return renderErr
 	}
+	// The engine's own error wins. A conflict is already reported per item and
+	// exits 1; replacing it with the batch aggregate would downgrade it to the
+	// generic degraded exit 13 and name neither cause. Same rule as the
+	// journal downgrade in runMutation.
+	if runErr != nil {
+		return runErr
+	}
 	if updater != nil {
+		// A request-level failure (transport, or an unattributable response)
+		// carries information the engine's generic error does not, and
+		// classifyAPIError maps an HTTP status onto the CLI's own exit code.
 		if batchErr := updater.Err(); batchErr != nil {
-			return batchErr
+			return classifyAPIError(batchErr, flags)
 		}
 	}
-	return runErr
+	return nil
+}
+
+// correctDispatchedNotAttempted rewrites the engine's not_attempted verdict for
+// any item whose request had already been sent.
+//
+// The engine stops between operations when the context is cancelled, but in
+// batch mode the first op of a chunk dispatches all 50 objects. Everything
+// after the cancellation point in that chunk already reached Zotero and may
+// well have been applied, so reporting it as never attempted is false and
+// invites the duplicating retry --batch exists to avoid.
+func correctDispatchedNotAttempted(env *mutation.Envelope, ops []mutation.Op, opObjectIndex map[int]int, updater *batchItemUpdater) {
+	if env.Result == nil {
+		return
+	}
+	byOpID := make(map[string]int, len(ops))
+	for i := range ops {
+		byOpID[ops[i].ID] = i
+	}
+	for i := range env.Result.Items {
+		item := &env.Result.Items[i]
+		if item.Status != "not_attempted" {
+			continue
+		}
+		opIndex, ok := byOpID[item.OpID]
+		if !ok {
+			continue
+		}
+		objectIndex, ok := opObjectIndex[opIndex]
+		if !ok || !updater.dispatched(objectIndex) {
+			continue
+		}
+		item.Status = "failed"
+		item.Reason = "the request carrying this item was already sent when the run stopped; its outcome is unknown, so verify before retrying"
+		env.Result.Summary.NotAttempted--
+		env.Result.Summary.Failed++
+		env.OK = false
+	}
 }
 
 func normalizeTagNames(rawTags []string) ([]string, error) {

@@ -972,6 +972,21 @@ func (c *Client) PostWithHeaders(path string, body any, headers map[string]strin
 	return c.do(c.baseCtx(), "POST", path, nil, body, headers)
 }
 
+// conditionalBodyHeader marks a request whose precondition lives in the body
+// rather than a header. It is consumed and removed by doRequestOnBase and is
+// never sent.
+const conditionalBodyHeader = "X-Zotio-Conditional-Body"
+
+// PostVersionedObjects sends a multi-object write whose every element carries
+// its own `version` precondition. Unlike a plain Post it is rate-limit
+// retry-safe: an explicit 429 is unambiguous, and replaying a per-object
+// conditional write is at-most-once, so a retry cannot double-apply. Without
+// this a batched write loses both the 429 retry and the adaptive limiter's
+// back-off that every per-item guarded PATCH gets.
+func (c *Client) PostVersionedObjects(path string, body any) (json.RawMessage, int, error) {
+	return c.do(c.baseCtx(), "POST", path, nil, body, map[string]string{conditionalBodyHeader: "1"})
+}
+
 // Delete removes the object at path. The int is the HTTP status code.
 func (c *Client) Delete(path string) (json.RawMessage, int, error) {
 	return c.do(c.baseCtx(), "DELETE", path, nil, nil, nil)
@@ -1020,6 +1035,24 @@ func (c *Client) doRequestOnBase(ctx context.Context, baseOverride, method, path
 	// non-nil context so callers can cancel request creation, dialing, and reads.
 	if ctx == nil {
 		ctx = context.Background()
+	}
+	// A multi-object write carries its precondition as each object's body
+	// `version` because one If-Unmodified-Since-Version header cannot express
+	// many versions. That is still a conditional write — a replay after an
+	// explicit 429 is at-most-once per object, exactly as a header
+	// precondition is — so callers declare it with this internal marker and
+	// the request becomes rate-limit-retry-safe. The marker never reaches the
+	// wire or the dry-run rendering.
+	conditionalBody := false
+	if _, marked := headerOverrides[conditionalBodyHeader]; marked {
+		conditionalBody = true
+		filtered := make(map[string]string, len(headerOverrides))
+		for name, value := range headerOverrides {
+			if name != conditionalBodyHeader {
+				filtered[name] = value
+			}
+		}
+		headerOverrides = filtered
 	}
 	// A mutating request that fails after dispatch may still have committed
 	// server-side (a retried 5xx whose success response was lost, a write-token
@@ -1189,7 +1222,7 @@ func (c *Client) doRequestOnBase(ctx context.Context, baseOverride, method, path
 		// ambiguous, so conditional requests can still retry that response.
 		ambiguousRetrySafe := method == http.MethodGet || method == http.MethodHead ||
 			req.Header.Get("Zotero-Write-Token") != ""
-		rateLimitRetrySafe := ambiguousRetrySafe ||
+		rateLimitRetrySafe := ambiguousRetrySafe || conditionalBody ||
 			req.Header.Get("If-Unmodified-Since-Version") != "" ||
 			req.Header.Get("If-Match") != "" ||
 			req.Header.Get("If-None-Match") != ""

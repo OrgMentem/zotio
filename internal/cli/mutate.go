@@ -100,13 +100,18 @@ func renderMutation(cmd *cobra.Command, flags *rootFlags, env mutation.Envelope,
 		fmt.Fprintf(out, "Error: %s — %s\n", env.Error.Code, env.Error.Message)
 	}
 
+	// Row text splices server-controlled strings — a rejection message, an
+	// API error body — into the terminal. The process error sink sanitizes
+	// the returned error, but nothing sanitized stdout, so an escape sequence
+	// in a server message could rewrite the operator's terminal. Sanitizing
+	// here covers every mutation command at once.
 	rows := mutation.Rows(env)
 	for i, row := range rows {
 		if i == 50 {
 			fmt.Fprintf(out, "… %d more\n", len(rows)-50)
 			break
 		}
-		fmt.Fprintln(out, row)
+		fmt.Fprintln(out, SanitizeForTerminal(row))
 	}
 	return nil
 }
