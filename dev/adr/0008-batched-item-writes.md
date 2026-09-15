@@ -89,7 +89,9 @@ dishonest.
 
 - Bulk tag hygiene gets roughly a 3x request reduction, opt-in, with per-item
   status, per-item conflicts, and Zotero's own per-object error messages
-  intact.
+  intact. Measured on a real 59-item library sweep: 2.8x fewer requests and
+  2.5x faster wall clock, with a live 412 exiting 1 and attributed to the
+  edited item (`dev/field-report-2026-09-15-batch-write-semantics.md`).
 - The default path is unchanged, so no existing caller loses fail-fast.
 - `items enrich` is **not** batched. Its apply path resolves each field change
   against a live write-plane read and composes Extra provenance per item;
