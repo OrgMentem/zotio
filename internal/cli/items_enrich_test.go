@@ -732,6 +732,7 @@ type fakeMutator struct {
 	// writeVersion is the version the fake's write plane reports; 0 models a
 	// response that carries no usable version.
 	writeVersion  int
+	writeData     json.RawMessage
 	writeVerErr   error
 	writeVerPaths []string
 }
@@ -745,6 +746,9 @@ func (f *fakeMutator) GetFromWriteBaseWithVersionContext(_ context.Context, path
 	f.writeVerPaths = append(f.writeVerPaths, path)
 	if f.writeVerErr != nil {
 		return nil, 0, f.writeVerErr
+	}
+	if f.writeData != nil {
+		return f.writeData, f.writeVersion, nil
 	}
 	return json.RawMessage(`{}`), f.writeVersion, nil
 }
@@ -1378,6 +1382,50 @@ func TestItemsEnrichMissingDOICollectionScope(t *testing.T) {
 	}
 	if env.Journal != nil {
 		t.Errorf("unexpected skipped journal from out-of-collection item: %+v", env.Journal)
+	}
+}
+
+// repair_pdf has no unkeyed queue. The legacy collection flag must therefore
+// lower to an exact scope before the queue is built.
+func TestItemsEnrichRepairPDFCollectionScope(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("ZOTERO_CONFIG", filepath.Join(t.TempDir(), "repair-collection.toml"))
+	db, err := store.OpenWithContext(context.Background(), helpersTestDefaultDBPath(t, "zotio"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	items := []json.RawMessage{
+		json.RawMessage(`{"key":"KPDF","version":4,"data":{"key":"KPDF","itemType":"journalArticle","title":"Broken","DOI":"10.1/pdf","collections":["COLX"]}}`),
+		json.RawMessage(`{"key":"ATBROKE","version":4,"data":{"key":"ATBROKE","itemType":"attachment","parentItem":"KPDF","contentType":"application/pdf","linkMode":"imported_file","filename":"gone.pdf"}}`),
+	}
+	if _, _, err := db.UpsertBatch("items", items); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close store: %v", err)
+	}
+
+	upw := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"best_oa_location":{"url":"https://example.org/oa.pdf"}}`))
+	}))
+	t.Cleanup(upw.Close)
+	withBase(t, &enrichUnpaywallBase, upw.URL)
+
+	cmd := newItemsEnrichCmd(&rootFlags{asJSON: true})
+	cmd.SetArgs([]string{"--repair-pdf", "--collection", "COLX", "--email", "me@example.com"})
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&bytes.Buffer{})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("repair with collection scope: %v; out=%s", err, out.String())
+	}
+
+	var env mutation.Envelope
+	if err := json.Unmarshal(out.Bytes(), &env); err != nil {
+		t.Fatalf("decode %q: %v", out.String(), err)
+	}
+	if env.Plan.Summary.Planned != 1 || len(env.Plan.Operations) != 1 || env.Plan.Operations[0].Key != "KPDF" {
+		t.Fatalf("plan = %+v, want one repair for collection item KPDF", env.Plan)
 	}
 }
 
@@ -2443,14 +2491,15 @@ func TestItemsEnrichApplyViaAPI(t *testing.T) {
 	}
 }
 
-func captureItemsEnrichApplyPatch(t *testing.T, extra ...string) (map[string]any, string) {
+func captureItemsEnrichApplyPatch(t *testing.T, localExtra, liveExtra string) (map[string]any, string, int) {
 	t.Helper()
 	crsrv := crossRefSearchServer(t, "Attention Is All You Need", "10.1/attention")
 	withBase(t, &enrichCrossRefBase, crsrv.URL)
-	_ = seedEnrichStore(t, extra...)
+	_ = seedEnrichStore(t, localExtra)
 
 	var gotBody map[string]any
 	var gotHeader string
+	gets := 0
 	zsrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodPatch && r.URL.Path == "/items/K1" {
 			gotHeader = r.Header.Get("If-Unmodified-Since-Version")
@@ -2459,9 +2508,14 @@ func captureItemsEnrichApplyPatch(t *testing.T, extra ...string) (map[string]any
 			return
 		}
 		if r.Method == http.MethodGet && r.URL.Path == "/items/K1" {
+			gets++
 			w.Header().Set("Last-Modified-Version", "42")
 			w.Header().Set("Content-Type", "application/json")
-			_, _ = w.Write([]byte(`{"key":"K1","version":42,"data":{"key":"K1"}}`))
+			data := map[string]any{"key": "K1"}
+			if liveExtra != "" {
+				data["extra"] = liveExtra
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{"key": "K1", "version": 42, "data": data})
 			return
 		}
 		w.WriteHeader(http.StatusOK)
@@ -2481,27 +2535,37 @@ func captureItemsEnrichApplyPatch(t *testing.T, extra ...string) (map[string]any
 	if gotBody == nil {
 		t.Fatal("Zotero server never received the PATCH")
 	}
-	return gotBody, gotHeader
+	return gotBody, gotHeader, gets
 }
 
-func TestItemsEnrichApplyPreservesExistingExtra(t *testing.T) {
-	existingExtra := "Citation Key: smith2020\nsome user note"
-	gotBody, gotHeader := captureItemsEnrichApplyPatch(t, existingExtra)
+func TestItemsEnrichApplyPreservesWritePlaneExtra(t *testing.T) {
+	localExtra := "stale mirror note"
+	liveExtra := "Citation Key: smith2020\nlive user note"
+	gotBody, gotHeader, gets := captureItemsEnrichApplyPatch(t, localExtra, liveExtra)
+	if gets != 1 {
+		t.Fatalf("write-plane GETs = %d, want one shared Extra and version read", gets)
+	}
 	if gotHeader != "42" {
-		t.Fatalf("If-Unmodified-Since-Version = %q, want %q", gotHeader, "42")
+		t.Fatalf("If-Unmodified-Since-Version = %q, want the write plane's 42", gotHeader)
 	}
 	if _, ok := gotBody["version"]; ok {
 		t.Fatalf("PATCH body must not contain version key; gotBody=%v", gotBody)
 	}
 
-	want := existingExtra + "\n" + enrichProvenanceLine(&enrichProposal{Category: "missing_doi", Source: "CrossRef"})
+	want := liveExtra + "\n" + enrichProvenanceLine(&enrichProposal{Category: "missing_doi", Source: "CrossRef"})
 	if gotBody["extra"] != want {
 		t.Fatalf("patched extra = %q, want %q", gotBody["extra"], want)
+	}
+	if strings.Contains(fmt.Sprint(gotBody["extra"]), localExtra) {
+		t.Fatalf("patched extra = %q, must not use stale mirror content", gotBody["extra"])
 	}
 }
 
 func TestItemsEnrichApplyEmptyExtraWritesOnlyProvenance(t *testing.T) {
-	gotBody, gotHeader := captureItemsEnrichApplyPatch(t)
+	gotBody, gotHeader, gets := captureItemsEnrichApplyPatch(t, "", "")
+	if gets != 1 {
+		t.Fatalf("write-plane GETs = %d, want one shared Extra and version read", gets)
+	}
 	if gotHeader != "42" {
 		t.Fatalf("If-Unmodified-Since-Version = %q, want %q", gotHeader, "42")
 	}

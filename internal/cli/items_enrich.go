@@ -240,9 +240,17 @@ Applied field changes record provenance in the item's Extra field.`,
 			if strings.TrimSpace(flagScope) != "" && (strings.TrimSpace(keys) != "" || strings.TrimSpace(keysFrom) != "") {
 				return usageErr(fmt.Errorf("--scope cannot be combined with --keys/--keys-from: both select exact item keys and the scope grammar has no multi-key arm to reconcile them; pass one of them"))
 			}
-			effectiveScope, err := reconcileScopeFlags(flagScope, scopeSugarFor("collection", "collection", flagCollection))
+			collectionScope := scopeSugarFor("collection", "collection", flagCollection)
+			effectiveScope, err := reconcileScopeFlags(flagScope, collectionScope)
 			if err != nil {
 				return err
+			}
+			// reconcileScopeFlags intentionally leaves bespoke flags on their
+			// existing query paths when --scope is absent. Enrich also needs the
+			// collection as an exact key allow-set for repair_pdf, whose queue has
+			// no safe library-wide form, so lower this command's sugar here.
+			if effectiveScope == "" && collectionScope.set {
+				effectiveScope = collectionScope.expr
 			}
 			sel, err := resolveScopeSelection(cmd, flags, "items enrich", db, effectiveScope)
 			if err != nil {
@@ -674,54 +682,81 @@ func validateEnrichItems(ctx context.Context, db localQueryStore, httpClient *ht
 		return report, fmt.Errorf("querying validation work queue: %w", err)
 	}
 	rows = applyEnrichQueueLimit(filterEnrichRowsByKeys(rows, keyFilter), limit)
-	for _, row := range rows {
-		key := sqlStringValue(row["key"])
-		raw, gerr := db.Get("items", key)
-		// Absence and read failure are both skipped here: this pass validates
-		// what it can read and reports the count, so a row it cannot load is
-		// simply not validated.
-		if gerr != nil {
-			continue
-		}
-		_, data := enrichItemFields(raw)
-		doi := normalizeDOI(stringFromMap(data, "DOI"))
-		if doi == "" {
+
+	type outcome struct {
+		validated     bool
+		findings      []Finding
+		unverifiedDOI string
+	}
+	results, fanoutErrs := cliutil.FanoutRun(ctx, rows,
+		func(row map[string]any) string { return sqlStringValue(row["key"]) },
+		func(ctx context.Context, row map[string]any) (outcome, error) {
+			key := sqlStringValue(row["key"])
+			raw, err := db.Get("items", key)
+			// Absence stays a skip, as it was before the fan-out: this pass
+			// validates what it can read, and a row the mirror no longer holds
+			// (pruned by a concurrent sync) is not a validation failure. A real
+			// read failure is still reported rather than silently dropped.
+			if errors.Is(err, store.ErrNotFound) {
+				return outcome{}, nil
+			}
+			if err != nil {
+				return outcome{}, fmt.Errorf("loading validation item: %w", err)
+			}
+			_, data := enrichItemFields(raw)
+			doi := normalizeDOI(stringFromMap(data, "DOI"))
+			if doi == "" {
+				return outcome{}, nil
+			}
+
+			result := outcome{validated: true}
+			if work, ok := fetchCrossRefWorkByDOI(ctx, httpClient, doi); ok {
+				storedTitle := strings.TrimSpace(stringFromMap(data, "title"))
+				providerTitle := ""
+				if len(work.Title) > 0 {
+					providerTitle = strings.TrimSpace(work.Title[0])
+				}
+				if providerTitle != "" && normalizeTitleForMatch(storedTitle) != normalizeTitleForMatch(providerTitle) {
+					result.findings = append(result.findings, enrichValidationFinding(key, storedTitle, "title", storedTitle, providerTitle, "crossref"))
+				}
+				storedYear := firstFourDigitYear(stringFromMap(data, "date"))
+				providerYear := crossRefYear(work.Published)
+				if providerYear != "" && storedYear != providerYear {
+					result.findings = append(result.findings, enrichValidationFinding(key, stringFromMap(data, "title"), "year", storedYear, providerYear, "crossref"))
+				}
+				// Render gaps: CrossRef carries the value and the item's copy is
+				// blank. This is the measuring surface for the fields
+				// citationIncompletePredicate deliberately refuses to assert
+				// locally, so the fixer writes nothing no check has verified.
+				for _, field := range citationRenderFields[stringFromMap(data, "itemType")] {
+					if strings.TrimSpace(stringFromMap(data, field)) != "" {
+						continue
+					}
+					if value := citationRenderFromCrossRef(field, work); value != "" {
+						result.findings = append(result.findings, enrichValidationFinding(key, stringFromMap(data, "title"), field, "", value, "crossref"))
+					}
+				}
+			}
+			if registered, known := resolveDOIRegisteredViaOpenCitations(ctx, httpClient, doi); known && !registered {
+				result.unverifiedDOI = key + ":" + doi
+				result.findings = append(result.findings, enrichValidationFinding(key, stringFromMap(data, "title"), "doi_registration", doi, "not_registered", "opencitations"))
+			}
+			return result, nil
+		})
+
+	// FanoutRun returns successful outcomes in row order. Merge them here so
+	// report ordering stays byte-identical and no worker mutates shared slices.
+	for _, result := range results {
+		if !result.Value.validated {
 			continue
 		}
 		report.Validated++
-		if work, ok := fetchCrossRefWorkByDOI(ctx, httpClient, doi); ok {
-			storedTitle := strings.TrimSpace(stringFromMap(data, "title"))
-			providerTitle := ""
-			if len(work.Title) > 0 {
-				providerTitle = strings.TrimSpace(work.Title[0])
-			}
-			if providerTitle != "" && normalizeTitleForMatch(storedTitle) != normalizeTitleForMatch(providerTitle) {
-				report.Findings = append(report.Findings, enrichValidationFinding(key, storedTitle, "title", storedTitle, providerTitle, "crossref"))
-			}
-			storedYear := firstFourDigitYear(stringFromMap(data, "date"))
-			providerYear := crossRefYear(work.Published)
-			if providerYear != "" && storedYear != providerYear {
-				report.Findings = append(report.Findings, enrichValidationFinding(key, stringFromMap(data, "title"), "year", storedYear, providerYear, "crossref"))
-			}
-			// Render gaps: CrossRef carries the value and the item's copy is
-			// blank. This is the measuring surface for the fields
-			// citationIncompletePredicate deliberately refuses to assert
-			// locally, so the fixer writes nothing no check has verified.
-			for _, field := range citationRenderFields[stringFromMap(data, "itemType")] {
-				if strings.TrimSpace(stringFromMap(data, field)) != "" {
-					continue
-				}
-				if value := citationRenderFromCrossRef(field, work); value != "" {
-					report.Findings = append(report.Findings, enrichValidationFinding(key, stringFromMap(data, "title"), field, "", value, "crossref"))
-				}
-			}
-		}
-		if registered, known := resolveDOIRegisteredViaOpenCitations(ctx, httpClient, doi); known && !registered {
-			report.UnverifiedDOIs = append(report.UnverifiedDOIs, key+":"+doi)
-			report.Findings = append(report.Findings, enrichValidationFinding(key, stringFromMap(data, "title"), "doi_registration", doi, "not_registered", "opencitations"))
+		report.Findings = append(report.Findings, result.Value.findings...)
+		if result.Value.unverifiedDOI != "" {
+			report.UnverifiedDOIs = append(report.UnverifiedDOIs, result.Value.unverifiedDOI)
 		}
 	}
-	return report, nil
+	return report, FanoutReportErrors(fanoutErrs)
 }
 
 func enrichValidationFinding(key, title, field, stored, provider, source string) Finding {
@@ -1026,18 +1061,11 @@ func applyEnrichProposalWithContext(ctx context.Context, downloader enrichPDFDow
 			err := errors.New("missing API client")
 			return "failed", err.Error(), err
 		}
-		// The version in the proposal was read from the LOCAL plane; the write
-		// is routed to the Web API where versions are an independent number
-		// space. Re-read the precondition from the plane the PATCH lands on
-		// and send it as If-Unmodified-Since-Version rather than a body
-		// `version` property.
-		body := map[string]any{}
-		for k, v := range p.Fields {
-			body[k] = v
-		}
-		body["extra"] = appendEnrichProvenance(p, flags)
-		path := replacePathParam("/items/{itemKey}", "itemKey", p.Key)
-		return patchWithWritePlaneVersion(ctx, c, path, body)
+		// The proposal came from the local mirror. Resolve both Extra and the
+		// version from the write plane so this wholesale field replacement
+		// preserves live content and guards the PATCH in the write plane's
+		// independent version space.
+		return applyEnrichFieldPatch(ctx, c, p, flags)
 	case enrichActionAttach:
 		switch p.AttachMode {
 		case "", "linked-url":
@@ -1239,6 +1267,67 @@ type apiMutator interface {
 	Patch(path string, body any) (json.RawMessage, int, error)
 	PatchWithHeaders(path string, body any, headers map[string]string) (json.RawMessage, int, error)
 	Post(path string, body any) (json.RawMessage, int, error)
+}
+
+// enrichWriteSnapshotMutator lets patchWithWritePlaneVersion consume a
+// write-plane item read that the enrich path already needed for live Extra.
+// Only the first matching read uses the snapshot. A retry after an ambiguous
+// PATCH delegates to the real reader so reconciliation observes current state.
+type enrichWriteSnapshotMutator struct {
+	apiMutator
+	reader  writePlaneReader
+	path    string
+	data    json.RawMessage
+	version int
+	pending bool
+}
+
+func (m *enrichWriteSnapshotMutator) GetFromWriteBaseWithVersionContext(ctx context.Context, path string, params map[string]string) (json.RawMessage, int, error) {
+	if m.pending && path == m.path {
+		m.pending = false
+		return m.data, m.version, nil
+	}
+	return m.reader.GetFromWriteBaseWithVersionContext(ctx, path, params)
+}
+
+func applyEnrichFieldPatch(ctx context.Context, c apiMutator, p *enrichProposal, flags *rootFlags) (string, any, error) {
+	path := replacePathParam("/items/{itemKey}", "itemKey", p.Key)
+	reader, ok := c.(writePlaneReader)
+	if !ok {
+		err := fmt.Errorf("client for %s cannot read the write plane; refusing to write without an If-Unmodified-Since-Version precondition", path)
+		return "failed", err.Error(), err
+	}
+	currentData, version, err := reader.GetFromWriteBaseWithVersionContext(ctx, path, nil)
+	if err != nil {
+		return classifyWriteError(err)
+	}
+	var current map[string]any
+	if err := json.Unmarshal(currentData, &current); err != nil {
+		err = fmt.Errorf("decoding write-plane item %s: %w", path, err)
+		return "failed", err.Error(), err
+	}
+	liveData := current
+	if inner, ok := current["data"].(map[string]any); ok {
+		liveData = inner
+	}
+
+	live := *p
+	live.extra = stringFromMap(liveData, "extra")
+	body := make(map[string]any, len(p.Fields)+1)
+	for k, v := range p.Fields {
+		body[k] = v
+	}
+	body["extra"] = appendEnrichProvenance(&live, flags)
+
+	snapshot := &enrichWriteSnapshotMutator{
+		apiMutator: c,
+		reader:     reader,
+		path:       path,
+		data:       currentData,
+		version:    version,
+		pending:    true,
+	}
+	return patchWithWritePlaneVersion(ctx, snapshot, path, body)
 }
 
 func enrichNeedsAPIMutator(proposals []enrichProposal) bool {
