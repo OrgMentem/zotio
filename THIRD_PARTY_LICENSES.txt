@@ -91,7 +91,7 @@ SOFTWARE.
 <http://www.opensource.org/licenses/mit-license.php>
 
 ================================================================================
-github.com/gofrs/flock v0.13.0
+github.com/gofrs/flock v0.13.1
 LICENSE
 
 Copyright (c) 2018-2025, The Gofrs
@@ -961,7 +961,7 @@ THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 ================================================================================
-golang.org/x/sys v0.46.0
+golang.org/x/sys v0.47.0
 LICENSE, PATENTS
 
 Copyright 2009 The Go Authors.
@@ -1018,7 +1018,7 @@ rights granted to you under this License for this implementation of Go
 shall terminate as of the date such litigation is filed.
 
 ================================================================================
-golang.org/x/text v0.40.0
+golang.org/x/text v0.42.0
 LICENSE, PATENTS
 
 Copyright 2009 The Go Authors.
