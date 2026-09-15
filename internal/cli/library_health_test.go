@@ -757,8 +757,12 @@ func TestBrokenAttachmentFile_WebBaseYieldsRedactedSkip(t *testing.T) {
 	if skip == nil || skip.Precondition != "live_local_api" || skip.Kind != "broken_attachment_file" {
 		t.Fatalf("skip = %+v, want live_local_api broken_attachment_file", skip)
 	}
-	if !strings.Contains(skip.Detail, "Web API") {
-		t.Fatalf("skip.Detail = %q, want mention of Web API", skip.Detail)
+	// The detail must state the requirement and name the base it rejected.
+	// It deliberately does not assert the phrase "Web API": the base here is
+	// remote, but an unreachable localhost port is equally "not the desktop
+	// local API", and calling that the Web API was wrong.
+	if !strings.Contains(skip.Detail, "local API") || !strings.Contains(skip.Detail, "api.zotero.org") {
+		t.Fatalf("skip.Detail = %q, want the requirement and the rejected base", skip.Detail)
 	}
 	if strings.Contains(skip.Detail, secret) {
 		t.Fatalf("skip.Detail leaked the API key: %q", skip.Detail)

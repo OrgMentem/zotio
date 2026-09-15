@@ -948,7 +948,7 @@ func runBrokenAttachmentFileWithClient(db localQueryStore, ctx *healthContext, c
 		return nil, &healthSkip{
 			Kind:         "broken_attachment_file",
 			Precondition: "live_local_api",
-			Detail:       fmt.Sprintf("--verify-files requires the Zotero desktop local API, but the configured base is the Web API (%s).", redactURL(c.BaseURL)),
+			Detail:       fmt.Sprintf("--verify-files requires the Zotero desktop local API, but the configured base is not it (%s).", redactURL(c.BaseURL)),
 			Remediation: []healthRemediation{
 				{Action: "open_zotero", Text: "Open Zotero desktop and enable Settings -> Advanced -> 'Allow other applications to communicate with Zotero', then re-run with a local API base"},
 			},
