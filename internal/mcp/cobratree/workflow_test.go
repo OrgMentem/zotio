@@ -79,6 +79,7 @@ func workflowSubmitTestRoot() *cobra.Command {
 				return err
 			}
 			report := map[string]any{
+				"spec":  json.RawMessage(raw),
 				"steps": []map[string]any{{"status": "ok"}},
 				"ok":    true,
 				"mode":  "preview",
@@ -285,6 +286,93 @@ func TestWorkflowSubmitAppliesWithRunID(t *testing.T) {
 	}
 	if !sameWorkflowSubmitTempFiles(before, after) {
 		t.Fatalf("workflow temp files after run = %v, want %v", after, before)
+	}
+}
+
+func TestWorkflowSubmitWhen(t *testing.T) {
+	tests := []struct {
+		name      string
+		steps     []any
+		wantWhen  *workflowSubmitStepWhen
+		wantError string
+	}{
+		{
+			name: "preserves valid condition",
+			steps: []any{map[string]any{
+				"command": "inspect",
+				"when": map[string]any{
+					"step": "prepare",
+					"is":   "ok",
+				},
+			}},
+			wantWhen: &workflowSubmitStepWhen{Step: "prepare", Is: "ok"},
+		},
+		{
+			name: "rejects non-object condition",
+			steps: []any{
+				map[string]any{"command": "inspect"},
+				map[string]any{"command": "inspect", "when": "after prepare"},
+			},
+			wantError: "workflow_submit step 2: when must be an object",
+		},
+		{
+			name: "rejects non-string step",
+			steps: []any{
+				map[string]any{"command": "inspect"},
+				map[string]any{
+					"command": "inspect",
+					"when":    map[string]any{"step": 1, "is": "ok"},
+				},
+			},
+			wantError: "workflow_submit step 2: when.step must be a string",
+		},
+		{
+			name: "rejects non-string state",
+			steps: []any{
+				map[string]any{"command": "inspect"},
+				map[string]any{
+					"command": "inspect",
+					"when":    map[string]any{"step": "prepare", "is": true},
+				},
+			},
+			wantError: "workflow_submit step 2: when.is must be a string",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			h := workflowSubmitHandler(workflowSubmitTestRoot)
+			res, err := h(context.Background(), workflowSubmitRequest(map[string]any{
+				"steps": tt.steps,
+			}))
+			if err != nil {
+				t.Fatalf("handler returned protocol error: %v", err)
+			}
+			if tt.wantError != "" {
+				if !res.IsError {
+					t.Fatalf("expected error result, got %q", workflowSubmitResText(res))
+				}
+				if got := workflowSubmitResText(res); got != tt.wantError {
+					t.Fatalf("error = %q, want %q", got, tt.wantError)
+				}
+				return
+			}
+			if res.IsError {
+				t.Fatalf("unexpected error result: %q", workflowSubmitResText(res))
+			}
+			var report struct {
+				Spec workflowSubmitSpec `json:"spec"`
+			}
+			if err := json.Unmarshal([]byte(workflowSubmitResText(res)), &report); err != nil {
+				t.Fatalf("workflow result is not a JSON report: %v; text=%q", err, workflowSubmitResText(res))
+			}
+			if len(report.Spec.Steps) != 1 {
+				t.Fatalf("generated spec has %d steps, want 1", len(report.Spec.Steps))
+			}
+			if got := report.Spec.Steps[0].When; got == nil || *got != *tt.wantWhen {
+				t.Fatalf("generated spec when = %#v, want %#v", got, tt.wantWhen)
+			}
+		})
 	}
 }
 
