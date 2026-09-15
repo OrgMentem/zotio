@@ -106,22 +106,9 @@ func resolveAttachmentFileURL(c *client.Client, itemKey string) (string, string,
 	return pdfKey, fileURL, nil
 }
 
-// fetchAttachmentFileURL GETs the local-API file URL for an attachment key. The
-// endpoint returns the file:// URL as plain text. A request error (e.g. the key
-// is a regular item with no file) reports ok=false so the caller can fall back.
-// This wrapper preserves the old (string,bool) signature for callers that treat
-// every error as "no file" (e.g. health probes that are already gated by
-// isLocalZoteroAPI). New code that must distinguish transient failures from
-// genuine absence should call fetchAttachmentFileURLError.
-func fetchAttachmentFileURL(c *client.Client, key string) (string, bool) {
-	url, ok, _ := fetchAttachmentFileURLError(c, key)
-	return url, ok
-}
-
-// fetchAttachmentFileURLError is the error-aware core of fetchAttachmentFileURL.
-// It distinguishes "endpoint unavailable on this plane" (non-local base) and
-// "no file for this key" (404) from transient failures. Only transient failures
-// on the local plane are returned as errors.
+// fetchAttachmentFileURLError GETs the local-API file URL for an attachment
+// key. It distinguishes an unavailable endpoint or missing file from transient
+// local API failures.
 func fetchAttachmentFileURLError(c *client.Client, key string) (string, bool, error) {
 	// replacePathParam encodes the attachment key as one Zotero path segment.
 	path := replacePathParam("/items/{key}/file/view/url", "key", key)
@@ -153,7 +140,7 @@ func fetchAttachmentFileURLError(c *client.Client, key string) (string, bool, er
 // fileURLToPath converts a file:// URL to a filesystem path, percent-decoding it.
 // Non-file URLs (e.g. a linked web attachment) are returned unchanged.
 func fileURLToPath(u string) string {
-	// Normalize quoted URL strings even when callers bypass fetchAttachmentFileURL.
+	// Normalize quoted URL strings even when callers supply the URL directly.
 	if strings.HasPrefix(u, `"`) {
 		var quoted string
 		if err := json.Unmarshal([]byte(u), &quoted); err == nil {

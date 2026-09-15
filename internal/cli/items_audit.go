@@ -835,6 +835,15 @@ func runVerifyAttachmentFiles(cmd *cobra.Command, db localQueryStore, flags *roo
 	if err != nil {
 		return err
 	}
+	if !isLocalZoteroAPI(c.BaseURL) {
+		return refuseVerifyAttachmentFiles(cmd, flags,
+			fmt.Sprintf("configured base URL %q is not the Zotero desktop local API", redactURL(c.BaseURL)))
+	}
+	probePath, probeParams := brokenAttachmentProbe()
+	if _, probeErr := c.Get(probePath, probeParams); probeErr != nil {
+		return refuseVerifyAttachmentFiles(cmd, flags,
+			fmt.Sprintf("Zotero desktop local API is not reachable: %v", probeErr))
+	}
 	attachments, err := queryPDFAttachments(db, sel.queryLimit(limit))
 	if err != nil {
 		return fmt.Errorf("querying PDF attachments: %w", err)
@@ -845,7 +854,10 @@ func runVerifyAttachmentFiles(cmd *cobra.Command, db localQueryStore, flags *roo
 	broken := make([]map[string]any, 0)
 	for _, a := range attachments {
 		key := sqlStringValue(a["key"])
-		path, reason := attachmentFileStatus(c, key)
+		path, reason, statusErr := attachmentFileStatusWithError(c, key)
+		if statusErr != nil {
+			return classifyAPIError(fmt.Errorf("resolving attachment %s file status: %w", key, statusErr), flags)
+		}
 		if reason == "" {
 			continue
 		}
@@ -884,6 +896,21 @@ func runVerifyAttachmentFiles(cmd *cobra.Command, db localQueryStore, flags *roo
 	return nil
 }
 
+func refuseVerifyAttachmentFiles(cmd *cobra.Command, flags *rootFlags, detail string) error {
+	out := cmd.OutOrStdout()
+	if flags != nil && flags.quiet {
+		out = nil
+	}
+	return emitPreconditionUnmetWithRemediation(
+		out,
+		flags,
+		"items audit",
+		preconditionLiveLocalAPI,
+		detail,
+		remediationFor(cmd.Context(), flags, preconditionLiveLocalAPI),
+	)
+}
+
 // brokenAttachmentFindings renders the `items audit --verify-files` rows through
 // the same builder `library health` uses. Two producers of one finding kind
 // must not disagree about its item key or its fixer.
@@ -897,22 +924,32 @@ func brokenAttachmentFindings(broken []map[string]any) []Finding {
 	return findings
 }
 
-// attachmentFileStatus resolves an attachment's on-disk path via the local API
-// and stats it. reason is "" when the file is present, else the failure cause.
+// attachmentFileStatus resolves and stats an attachment for callers whose live
+// API reachability is already established. The compatibility wrapper keeps the
+// health check's two-value contract; items audit uses the error-aware core so a
+// request failure cannot become a broken-file finding.
 func attachmentFileStatus(c *client.Client, key string) (path, reason string) {
-	fileURL, ok := fetchAttachmentFileURL(c, key)
+	path, reason, _ = attachmentFileStatusWithError(c, key)
+	return path, reason
+}
+
+func attachmentFileStatusWithError(c *client.Client, key string) (path, reason string, err error) {
+	fileURL, ok, err := fetchAttachmentFileURLError(c, key)
+	if err != nil {
+		return "", "", err
+	}
 	if !ok || fileURL == "" {
-		return "", "unresolved"
+		return "", "unresolved", nil
 	}
 	path = fileURLToPath(fileURL)
 	info, err := os.Stat(path)
 	switch {
 	case err != nil:
-		return path, "missing"
+		return path, "missing", nil
 	case info.IsDir():
-		return path, "not-a-file"
+		return path, "not-a-file", nil
 	default:
-		return path, ""
+		return path, "", nil
 	}
 }
 

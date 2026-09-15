@@ -76,6 +76,103 @@ func runItemsAudit(t *testing.T, flags *rootFlags, args ...string) (string, stri
 	return out.String(), errBuf.String(), err
 }
 
+type auditRoundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f auditRoundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
+	return f(req)
+}
+
+func redirectAuditLocalAPI(t *testing.T, srv *httptest.Server) {
+	t.Helper()
+	old := http.DefaultTransport
+	targetHost := strings.TrimPrefix(srv.URL, "http://")
+	http.DefaultTransport = auditRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+		clone := req.Clone(req.Context())
+		clone.URL.Scheme = "http"
+		clone.URL.Host = targetHost
+		return old.RoundTrip(clone)
+	})
+	t.Cleanup(func() { http.DefaultTransport = old })
+}
+
+func assertVerifyFilesPrecondition(t *testing.T, out string, err error) {
+	t.Helper()
+	if err == nil {
+		t.Fatal("verify-files succeeded, want live_local_api refusal")
+	}
+	if code := ExitCode(err); code != 9 {
+		t.Fatalf("exit code = %d, want 9: %v", code, err)
+	}
+	var env preconditionUnmetEnvelope
+	if decodeErr := json.Unmarshal([]byte(out), &env); decodeErr != nil {
+		t.Fatalf("decode precondition envelope %q: %v", out, decodeErr)
+	}
+	if env.Kind != "precondition_unmet" || env.Precondition != preconditionLiveLocalAPI {
+		t.Fatalf("envelope = %+v, want precondition_unmet/live_local_api", env)
+	}
+	if env.Capability != "items audit" {
+		t.Fatalf("capability = %q, want items audit", env.Capability)
+	}
+	if strings.Contains(out, `"broken"`) || strings.Contains(out, `"checked"`) {
+		t.Fatalf("refusal included a file-verification report: %s", out)
+	}
+}
+
+func TestItemsAuditVerifyFilesRefusesUnavailablePlane(t *testing.T) {
+	attachment := json.RawMessage(`{"key":"PDF1","version":1,"data":{"key":"PDF1","itemType":"attachment","parentItem":"P1","contentType":"application/pdf","linkMode":"imported_file","filename":"paper.pdf"}}`)
+
+	t.Run("unreachable_local_API", func(t *testing.T) {
+		auditIsolateEnv(t, "http://localhost:23119/api/users/0")
+		auditSeedDB(t, []json.RawMessage{attachment})
+		old := http.DefaultTransport
+		http.DefaultTransport = auditRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+			return nil, fmt.Errorf("test transport cannot reach %s", req.URL.Host)
+		})
+		t.Cleanup(func() { http.DefaultTransport = old })
+
+		out, _, err := runItemsAudit(t, &rootFlags{asJSON: true, timeout: time.Second}, "--verify-files")
+		assertVerifyFilesPrecondition(t, out, err)
+	})
+
+	t.Run("Web_API_base", func(t *testing.T) {
+		auditIsolateEnv(t, "https://api.zotero.org/users/123")
+		auditSeedDB(t, []json.RawMessage{attachment})
+
+		out, _, err := runItemsAudit(t, &rootFlags{asJSON: true, timeout: time.Second}, "--verify-files")
+		assertVerifyFilesPrecondition(t, out, err)
+	})
+}
+
+func TestItemsAuditVerifyFilesPropagatesAttachmentRequestError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/items"):
+			fmt.Fprint(w, `[]`)
+		case strings.HasSuffix(r.URL.Path, "/items/PDF1/file/view/url"):
+			http.Error(w, "temporary failure", http.StatusInternalServerError)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(srv.Close)
+	redirectAuditLocalAPI(t, srv)
+	auditIsolateEnv(t, "http://localhost:23119/api/users/0")
+	auditSeedDB(t, []json.RawMessage{
+		json.RawMessage(`{"key":"PDF1","version":1,"data":{"key":"PDF1","itemType":"attachment","parentItem":"P1","contentType":"application/pdf","linkMode":"imported_file","filename":"paper.pdf"}}`),
+	})
+
+	out, _, err := runItemsAudit(t, &rootFlags{asJSON: true, timeout: time.Second}, "--verify-files")
+	if err == nil {
+		t.Fatalf("verify-files output a false broken-file report: %s", out)
+	}
+	if !strings.Contains(err.Error(), "resolving attachment PDF1 file status") {
+		t.Fatalf("error = %v, want attachment request context", err)
+	}
+	if strings.Contains(out, `"broken"`) {
+		t.Fatalf("request failure became a broken-file report: %s", out)
+	}
+}
+
 func decodeAuditMap(t *testing.T, s string) map[string]json.RawMessage {
 	t.Helper()
 	var m map[string]json.RawMessage
@@ -413,6 +510,10 @@ func TestItemsAuditCmd(t *testing.T) {
 				"BAD1": "file://" + brokenPath,
 			}
 			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if strings.HasSuffix(r.URL.Path, "/items") {
+					fmt.Fprint(w, `[]`)
+					return
+				}
 				parts := strings.Split(r.URL.Path, "/")
 				var key string
 				for i, p := range parts {
@@ -428,7 +529,8 @@ func TestItemsAuditCmd(t *testing.T) {
 				http.NotFound(w, r)
 			}))
 			t.Cleanup(srv.Close)
-			auditIsolateEnv(t, srv.URL)
+			redirectAuditLocalAPI(t, srv)
+			auditIsolateEnv(t, "http://localhost:23119/api/users/0")
 			auditSeedDB(t, []json.RawMessage{
 				// The parent carries a DOI so the finding's fixer is
 				// resolvable: the audit path must reach the same verdict as
@@ -502,6 +604,10 @@ func TestItemsAuditCmd(t *testing.T) {
 				"GOOD1": "file://" + realPath,
 			}
 			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if strings.HasSuffix(r.URL.Path, "/items") {
+					fmt.Fprint(w, `[]`)
+					return
+				}
 				parts := strings.Split(r.URL.Path, "/")
 				var key string
 				for i, p := range parts {
@@ -517,7 +623,8 @@ func TestItemsAuditCmd(t *testing.T) {
 				http.NotFound(w, r)
 			}))
 			t.Cleanup(srv.Close)
-			auditIsolateEnv(t, srv.URL)
+			redirectAuditLocalAPI(t, srv)
+			auditIsolateEnv(t, "http://localhost:23119/api/users/0")
 			auditSeedDB(t, []json.RawMessage{
 				json.RawMessage(`{"key":"GOOD1","version":1,"data":{"key":"GOOD1","itemType":"attachment","parentItem":"P1","contentType":"application/pdf","linkMode":"imported_file","filename":"real.pdf"}}`),
 			})
@@ -809,10 +916,15 @@ func TestItemsAuditVerifyFilesRespectsScope(t *testing.T) {
 	missing := filepath.Join(t.TempDir(), "gone.pdf")
 	_ = os.Remove(missing)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/items") {
+			fmt.Fprint(w, `[]`)
+			return
+		}
 		fmt.Fprint(w, "file://"+missing)
 	}))
 	t.Cleanup(srv.Close)
-	auditIsolateEnv(t, srv.URL)
+	redirectAuditLocalAPI(t, srv)
+	auditIsolateEnv(t, "http://localhost:23119/api/users/0")
 	auditSeedDB(t, []json.RawMessage{
 		json.RawMessage(`{"key":"PIN","version":1,"data":{"key":"PIN","itemType":"journalArticle","title":"Alpha","dateAdded":"2020-01-01T00:00:00Z","collections":["COLA"]}}`),
 		json.RawMessage(`{"key":"POUT","version":1,"data":{"key":"POUT","itemType":"journalArticle","title":"Gamma","dateAdded":"2030-01-01T00:00:00Z"}}`),

@@ -248,14 +248,7 @@ type capabilityOfflineProbe struct {
 	// plane for commands that refuse in their own words instead of through the
 	// shared precondition_unmet envelope.
 	planeErr map[string]string
-	// degradesQuietly names routes whose command still exits 0 with Zotero
-	// closed, and says what that costs. The registry claim is right — the route
-	// does need the live plane — while the command's silent degradation is a
-	// separate defect owned by that command. The gate asserts the note is
-	// current: it fails as soon as the route starts refusing, which is the
-	// signal to delete the note.
-	degradesQuietly map[string]string
-	skip            string
+	skip     string
 }
 
 // Placeholders resolved from the seeded mirror, so probes reference rows that
@@ -304,14 +297,6 @@ var capabilityOfflineProbes = map[string]capabilityOfflineProbe{
 	"items audit": {
 		args:   []string{"items", "audit"},
 		routes: map[string][]string{"verify-files": {"items", "audit", "--verify-files"}},
-		degradesQuietly: map[string]string{
-			// attachmentFileStatus (items_audit.go) resolves each path through
-			// fetchAttachmentFileURL, the error-DISCARDING wrapper, so an
-			// unreachable local API reads as "unresolved" and every PDF
-			// attachment in the mirror is reported broken at exit 0. The route
-			// declaration is right; the command's loudness is the open defect.
-			"verify-files": "reports every mirrored PDF attachment as broken instead of refusing when the local API is unreachable",
-		},
 	},
 	"items citekey-conflicts": {args: []string{"items", "citekey-conflicts"}},
 	"items bibcheck":          {args: []string{"items", "bibcheck", probeTempFile}},
@@ -433,15 +418,6 @@ func assertCapabilityOfflineClaim(t *testing.T, path, via string, requires []str
 		if planeFailure {
 			t.Fatalf("%s (route %q) declares %v, which includes a mirror-served plane, but it failed offline on the plane: %s\noutput: %s",
 				path, via, requires, detail, out)
-		}
-		return
-	}
-	if note := probe.degradesQuietly[via]; note != "" {
-		// A recorded quiet degradation must stay current: once the route
-		// refuses, the note is stale and has to go.
-		if err != nil {
-			t.Fatalf("%s (route %q) is recorded as degrading quietly (%s) but now fails offline (%v) — delete that degradesQuietly entry",
-				path, via, note, err)
 		}
 		return
 	}
