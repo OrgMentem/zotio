@@ -242,6 +242,47 @@ func TestRunApplyContinueOnError(t *testing.T) {
 	}
 }
 
+func TestRunApplyContinueOnErrorMaxFailures(t *testing.T) {
+	executed := 0
+	ops := []Op{
+		{ID: "op1", Key: "K1", Kind: "test", Changes: []Change{{Field: "title", Add: "A"}}, Apply: func() (string, any, error) {
+			executed++
+			return "failed", "first failure", errors.New("first failure")
+		}},
+		{ID: "op2", Key: "K2", Kind: "test", Changes: []Change{{Field: "title", Add: "B"}}, Apply: func() (string, any, error) {
+			executed++
+			return "failed", "second failure", errors.New("second failure")
+		}},
+		{ID: "op3", Key: "K3", Kind: "test", Changes: []Change{{Field: "title", Add: "C"}}, Apply: func() (string, any, error) {
+			executed++
+			return "applied", nil, nil
+		}},
+		{ID: "op4", Key: "K4", Kind: "test", Changes: []Change{{Field: "title", Add: "D"}}, Apply: func() (string, any, error) {
+			executed++
+			return "applied", nil, nil
+		}},
+	}
+
+	env, err := Run(Options{Yes: true, MaxChanges: -1, ContinueOnError: true, MaxFailures: 2}, "test", ops)
+	if err == nil {
+		t.Fatal("Run max-failures err = nil, want non-nil")
+	}
+	if executed != 2 {
+		t.Fatalf("executed = %d, want exactly 2 operations before the failure ceiling", executed)
+	}
+	if env.OK || env.Result == nil {
+		t.Fatalf("max-failures envelope = %+v, want an incomplete result", env)
+	}
+	if env.Result.Summary.Failed != 2 || env.Result.Summary.Applied != 0 || env.Result.Summary.NotAttempted != 2 {
+		t.Fatalf("summary = %+v, want 2 failed and 2 not attempted", env.Result.Summary)
+	}
+	for i := 2; i < 4; i++ {
+		if got := env.Result.Items[i].Status; got != "not_attempted" {
+			t.Errorf("item %d status = %q, want not_attempted", i, got)
+		}
+	}
+}
+
 func TestRunApplyAppliedWithErrorIsFailed(t *testing.T) {
 	op := Op{ID: "x", Key: "K1", Kind: "test", Changes: []Change{{Field: "title", Add: "A"}}, Apply: func() (string, any, error) {
 		return "applied", nil, errors.New("post-condition write failed")

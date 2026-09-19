@@ -236,20 +236,18 @@ func runItemsTagsMutation(cmd *cobra.Command, flags *rootFlags, operation, kind 
 	if renderErr != nil {
 		return renderErr
 	}
-	// The engine's own error wins. A conflict is already reported per item and
-	// exits 1; replacing it with the batch aggregate would downgrade it to the
-	// generic degraded exit 13 and name neither cause. Same rule as the
-	// journal downgrade in runMutation.
-	if runErr != nil {
-		return runErr
-	}
+	// A request-level failure carries information the engine's generic error
+	// cannot express. It must win over runErr, because the same request failure
+	// also marks its items failed and therefore always makes runErr non-nil.
+	// Per-object rejections never enter updater.Err(), so their own conflict or
+	// failed status still uses the engine's exit contract.
 	if updater != nil {
-		// A request-level failure (transport, or an unattributable response)
-		// carries information the engine's generic error does not, and
-		// classifyAPIError maps an HTTP status onto the CLI's own exit code.
 		if batchErr := updater.Err(); batchErr != nil {
 			return classifyAPIError(batchErr, flags)
 		}
+	}
+	if runErr != nil {
+		return runErr
 	}
 	return nil
 }

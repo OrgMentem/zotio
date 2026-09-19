@@ -3,8 +3,14 @@
 package cli
 
 import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"path/filepath"
 	"strings"
 	"testing"
+
+	"zotio/internal/store"
 )
 
 func TestFilterAnnotationSummaries(t *testing.T) {
@@ -297,5 +303,97 @@ func TestAnnotationColorMatches(t *testing.T) {
 				t.Fatalf("annotationColorMatches(%q,%q) = %v, want %v", tc.actual, tc.requested, got, tc.want)
 			}
 		})
+	}
+}
+
+func TestAnnotationsSearchReadsLocalStoreWithLocalProvenance(t *testing.T) {
+	seedAnnotationSearchStore(t, []json.RawMessage{
+		json.RawMessage(`{"key":"ANN1","version":1,"data":{"key":"ANN1","itemType":"annotation","parentItem":"PDF1","annotationText":"Local needle passage","annotationComment":"kept","annotationColor":"#ffd400"}}`),
+		json.RawMessage(`{"key":"ANN2","version":1,"data":{"key":"ANN2","itemType":"annotation","parentItem":"PDF2","annotationText":"Unrelated passage","annotationColor":"#ff6666"}}`),
+	})
+
+	for _, dataSource := range []string{"auto", "local"} {
+		t.Run(dataSource, func(t *testing.T) {
+			cmd := newAnnotationsSearchCmd(&rootFlags{asJSON: true, dataSource: dataSource})
+			cmd.SetArgs([]string{"needle"})
+			var out bytes.Buffer
+			cmd.SetOut(&out)
+			cmd.SetErr(&bytes.Buffer{})
+			if err := cmd.Execute(); err != nil {
+				t.Fatalf("annotations search with %s source: %v", dataSource, err)
+			}
+
+			var env struct {
+				Results []annotationSummary `json:"results"`
+				Meta    DataProvenance      `json:"meta"`
+			}
+			if err := json.Unmarshal(out.Bytes(), &env); err != nil {
+				t.Fatalf("decode annotations search envelope: %v; output=%q", err, out.String())
+			}
+			if len(env.Results) != 1 || env.Results[0].Key != "ANN1" || env.Results[0].Text != "Local needle passage" {
+				t.Fatalf("results = %+v, want only local annotation ANN1", env.Results)
+			}
+			if env.Meta.Source != "local" || env.Meta.ResourceType != "annotations" {
+				t.Fatalf("provenance = %+v, want local annotations", env.Meta)
+			}
+		})
+	}
+}
+
+func TestAnnotationsSearchLocalWithoutMirrorHasSyncGuidance(t *testing.T) {
+	savedGroup := activeGroupIDLocked()
+	setActiveGroupID("")
+	t.Cleanup(func() { setActiveGroupID(savedGroup) })
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("ZOTERO_CONFIG", filepath.Join(t.TempDir(), "missing.toml"))
+
+	cmd := newAnnotationsSearchCmd(&rootFlags{dataSource: "local"})
+	cmd.SetArgs([]string{"needle"})
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetErr(&bytes.Buffer{})
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("annotations search --data-source local without a mirror succeeded")
+	}
+	if !strings.Contains(err.Error(), "zotio sync") {
+		t.Fatalf("missing-mirror error = %q, want zotio sync guidance", err)
+	}
+}
+
+func TestAnnotationsSearchRejectsRefreshWithLocalSource(t *testing.T) {
+	cmd := newAnnotationsSearchCmd(&rootFlags{dataSource: "local"})
+	cmd.SetArgs([]string{"needle", "--refresh"})
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetErr(&bytes.Buffer{})
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("annotations search accepted --refresh with --data-source local")
+	}
+	if !strings.Contains(err.Error(), "--refresh cannot be used with --data-source local") {
+		t.Fatalf("conflict error = %q", err)
+	}
+	if got := ExitCode(err); got != 2 {
+		t.Fatalf("conflict exit code = %d, want 2", got)
+	}
+}
+
+func seedAnnotationSearchStore(t *testing.T, items []json.RawMessage) {
+	t.Helper()
+	savedGroup := activeGroupIDLocked()
+	setActiveGroupID("")
+	t.Cleanup(func() { setActiveGroupID(savedGroup) })
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("ZOTERO_CONFIG", filepath.Join(t.TempDir(), "missing.toml"))
+
+	db, err := store.OpenWithContext(context.Background(), helpersTestDefaultDBPath(t, "zotio"))
+	if err != nil {
+		t.Fatalf("open annotation search store: %v", err)
+	}
+	if _, _, err := db.UpsertBatch("items", items); err != nil {
+		_ = db.Close()
+		t.Fatalf("seed annotation search items: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close annotation search store: %v", err)
 	}
 }

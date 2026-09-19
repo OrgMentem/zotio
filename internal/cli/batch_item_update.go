@@ -3,6 +3,8 @@
 package cli
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"strconv"
 
@@ -80,7 +82,18 @@ func (b *batchItemUpdater) dispatched(index int) bool {
 	if index < 0 || index >= len(b.objects) {
 		return false
 	}
-	return b.done[chunkStart(index)]
+	start := chunkStart(index)
+	if !b.done[start] {
+		return false
+	}
+	// The client preserves ambiguity once a mutating request reaches its
+	// transport. A plain context error means cancellation before dispatch
+	// (or after a definitive rejection), so untouched siblings are retryable.
+	err := b.transport[start]
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return client.IsAmbiguousWriteError(err)
+	}
+	return true
 }
 
 // outcome reports one object's result, sending its chunk on first use. The

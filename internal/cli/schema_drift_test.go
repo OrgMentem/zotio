@@ -516,6 +516,65 @@ func TestSchemaDriftDeepPerTypeFieldChangeIsReportedFromCache(t *testing.T) {
 	}
 }
 
+func TestSchemaDriftDeepFastPathUsesSelectedCacheContents(t *testing.T) {
+	var mu sync.Mutex
+	hits := map[string]int{}
+	srv := deepSchemaServer(t, "100", []string{"book"}, hits, &mu)
+	defer srv.Close()
+
+	baseline := filepath.Join(t.TempDir(), "baseline.json")
+	dbA := filepath.Join(t.TempDir(), "schema-a.db")
+	seedDeepSchemaCache(t, dbA, "100",
+		map[string][]string{"book": {"title", "ISBN"}},
+		map[string][]string{"book": {"author"}},
+	)
+	if _, err := runSchemaDrift(t, srv.URL, baseline, true, "--deep", "--db", dbA); err != nil {
+		t.Fatalf("capture deep baseline from cache A: %v", err)
+	}
+
+	dbB := filepath.Join(t.TempDir(), "schema-b.db")
+	seedDeepSchemaCache(t, dbB, "100",
+		map[string][]string{"book": {"title", "DOI"}},
+		map[string][]string{"book": {"editor"}},
+	)
+	out, err := runSchemaDrift(t, srv.URL, baseline, true, "--deep", "--db", dbB)
+	if err != nil {
+		t.Fatalf("compare selected cache B: %v", err)
+	}
+
+	var res struct {
+		Drift  bool `json:"drift"`
+		Deltas []struct {
+			Section string   `json:"section"`
+			Added   []string `json:"added"`
+			Removed []string `json:"removed"`
+		} `json:"deltas"`
+	}
+	if err := json.Unmarshal([]byte(out), &res); err != nil {
+		t.Fatalf("decode %q: %v", out, err)
+	}
+	if !res.Drift {
+		t.Fatalf("selected cache B differs from baseline cache A but reported no drift: %s", out)
+	}
+	var fieldsFromB, creatorsFromB bool
+	for _, delta := range res.Deltas {
+		switch delta.Section {
+		case "type-fields:book":
+			fieldsFromB = contains(delta.Added, "DOI") && contains(delta.Removed, "ISBN")
+		case "type-creators:book":
+			creatorsFromB = contains(delta.Added, "editor") && contains(delta.Removed, "author")
+		}
+	}
+	if !fieldsFromB || !creatorsFromB {
+		t.Fatalf("deltas = %+v, want cache B values (+DOI, +editor) against cache A (-ISBN, -author)", res.Deltas)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if hits["/itemTypeFields"] != 0 || hits["/itemTypeCreatorTypes"] != 0 {
+		t.Fatalf("explicit valid caches should supply both deep snapshots, hits=%v", hits)
+	}
+}
+
 func TestSchemaDriftShallowFastPathStillFires(t *testing.T) {
 	var mu sync.Mutex
 	hits := map[string]int{}

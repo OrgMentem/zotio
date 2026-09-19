@@ -95,7 +95,7 @@ The curated feature set. `zotio which "<goal>"` resolves natural-language querie
 - **`annotations export`** — Export highlights and notes from a collection or tag set as one markdown/JSON file, one section per paper.
 - **`annotations timeline`** — Annotations ordered by date — reconstruct what you read in any time window.
 - **`items open`** — Jump from CLI results to the item in the Zotero desktop app (`--launch`).
-- **`items note-template`** — Generate a pre-filled markdown reading note (frontmatter + abstract + empty Annotations section) for Obsidian/Logseq.
+- **`items note-template`** — Generate a pre-filled markdown reading note with frontmatter, abstract, and annotations for Obsidian/Logseq. Metadata and annotations use the same live or local source.
 - **`library wrapped`** — Your Zotero year in review (items by month/type, top venues/authors, annotation activity, PDF coverage) with a shareable SVG card.
 
 ### Export & citations

@@ -120,10 +120,19 @@ var capabilityOverrides = map[string]capabilityEntry{
 			{Via: "refresh", Requires: []string{preconditionLiveLocalAPI}},
 		},
 	},
+	// `items note-template` pins metadata and annotations to one selected
+	// source. Auto can use either plane, so only the explicit routes carry
+	// preconditions.
+	"items note-template": {
+		Routes: []capabilityRoute{
+			{Via: "default"},
+			{Via: "local", Requires: []string{preconditionSyncedStore}},
+			{Via: "live", Requires: []string{preconditionLiveLocalAPI}},
+		},
+	},
 	// Reads backed by the synced local store.
-	"library health":      {Requires: []string{preconditionSyncedStore}},
-	"library stats":       {Requires: []string{preconditionSyncedStore}},
-	"items note-template": {Requires: []string{preconditionSyncedStore}},
+	"library health": {Requires: []string{preconditionSyncedStore}},
+	"library stats":  {Requires: []string{preconditionSyncedStore}},
 	// `items audit` reads the store on every route, and --verify-files
 	// additionally resolves each attachment's path through the local API
 	// (runVerifyAttachmentFiles -> attachmentFileStatus), so that route needs

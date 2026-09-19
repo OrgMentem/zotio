@@ -415,6 +415,7 @@ func TestTrashTemporaryParentIgnoresATrashedNote(t *testing.T) {
 // TestFinishConnectorReparentStopsWhenFinalReconciliationFails pins the
 // duplicate-prevention boundary: an incomplete read never permits the move.
 func TestFinishConnectorReparentStopsWhenFinalReconciliationFails(t *testing.T) {
+	fastRetryBackoff(t)
 	f := &cleanupFake{
 		items: map[string]map[string]any{
 			"ATTACH01": {
