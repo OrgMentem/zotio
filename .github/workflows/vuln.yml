@@ -47,7 +47,7 @@ jobs:
       # names docker://ghcr.io/google/osv-scanner-action:v2.5.1, a mutable tag.
       # Accepted deliberately — the job holds only a contents:read token and no
       # secrets, so the blast radius is public-read.
-      - uses: google/osv-scanner-action/osv-scanner-action@6e4298ebc4db23e847df9b2e2de2939d6f066c67 # v2.5.1
+      - uses: google/osv-scanner-action/osv-scanner-action@a345acffa64b0eaede81a3d9aae6141214d9c8fc # v2.6.0
         with:
           scan-args: |-
             --lockfile=go.mod
