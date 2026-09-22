@@ -113,6 +113,52 @@ func TestReadingListTransitionsApplies(t *testing.T) {
 	}
 }
 
+// An idempotent re-run of a reading-list transition must report no_op with the
+// transition's own reason and issue no PATCH: replaying `reading-list start`
+// on an item that already carries "reading" (or `done` on one that already
+// carries "read") must not bump the item version. The consolidated table
+// above asserts Applied == 1 for every case, so this witness lives outside
+// it: the table cannot express a no-op row.
+func TestReadingListIdempotentReRunIsNoOp(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		args      []string
+		operation string
+		seedTags  []map[string]any
+	}{
+		{
+			name:      "start",
+			args:      []string{"start", "K1"},
+			operation: "reading-list.start",
+			seedTags:  []map[string]any{{"tag": "reading", "type": float64(0)}},
+		},
+		{
+			name:      "done",
+			args:      []string{"done", "K1"},
+			operation: "reading-list.done",
+			seedTags:  []map[string]any{{"tag": "read", "type": float64(0)}},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := newItemTagTestServer(t, map[string]string{"K1": "42"}, map[string][]map[string]any{"K1": tc.seedTags})
+
+			env := runReadingListStateTestCmd(t, srv, &rootFlags{asJSON: true, yes: true, maxChanges: -1}, tc.args...)
+			if !env.OK || env.Operation != tc.operation || env.Result == nil || env.Result.Summary.NoOp != 1 || env.Result.Summary.Applied != 0 {
+				t.Fatalf("env = %+v, want one no_op %s", env, tc.operation)
+			}
+			if env.Result.Items[0].Status != "no_op" {
+				t.Fatalf("status = %q, want no_op", env.Result.Items[0].Status)
+			}
+			if got, _ := env.Result.Items[0].Reason.(string); got != "reading tags already in requested state" {
+				t.Fatalf("reason = %q, want the reading-list no_op reason", env.Result.Items[0].Reason)
+			}
+			if srv.patchCounts["K1"] != 0 {
+				t.Fatalf("PATCH count = %d, want 0: an idempotent re-run must not bump the item version", srv.patchCounts["K1"])
+			}
+		})
+	}
+}
+
 func TestReadingListPreviewWritesNothing(t *testing.T) {
 	srv := newItemTagTestServer(t, map[string]string{"K1": "42"}, map[string][]map[string]any{
 		"K1": {{"tag": "to-read", "type": float64(0)}},

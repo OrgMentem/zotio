@@ -154,7 +154,7 @@ func handleSearch(ctx context.Context, req mcplib.CallToolRequest) (*mcplib.Call
 			results = append(results, raw)
 		}
 	} else {
-		results, err = db.Search(query, limit)
+		results, err = db.SearchContext(ctx, query, limit)
 		if err != nil {
 			return mcplib.NewToolResultError(fmt.Sprintf("search failed: %v", err)), nil
 		}

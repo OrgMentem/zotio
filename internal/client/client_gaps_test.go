@@ -764,3 +764,61 @@ func TestConditionalWriteDoesNotRetryAmbiguousServerError(t *testing.T) {
 		t.Fatalf("transport calls = %d, want 1; replaying the stale precondition can create a false conflict", got)
 	}
 }
+
+// A clone aimed at a base the original never validated must not carry the API
+// key or any configured header to that host. CloneForRead runs the same
+// trusted-base validation as New, so an untrusted base falls back to the
+// default and the untrusted host observes no request at all.
+func TestCloneForReadUntrustedBaseSendsNoCredentials(t *testing.T) {
+	type seenRequest struct {
+		host          string
+		zoteroAPIKey  string
+		authorization string
+		customToken   string
+	}
+	var seen []seenRequest
+	transport := clientRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+		seen = append(seen, seenRequest{
+			host:          req.URL.Host,
+			zoteroAPIKey:  req.Header.Get("Zotero-API-Key"),
+			authorization: req.Header.Get("Authorization"),
+			customToken:   req.Header.Get("X-Custom-Token"),
+		})
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     make(http.Header),
+			Body:       io.NopCloser(strings.NewReader(`{"ok":true}`)),
+		}, nil
+	})
+	cfg := &config.Config{
+		BaseURL:      "http://localhost:23119/api/users/0",
+		ZoteroApiKey: "secret-key",
+		Headers: map[string]string{
+			"Authorization":  "Bearer custom-secret",
+			"X-Custom-Token": "custom-secret",
+		},
+	}
+	c := New(cfg, 5*time.Second, 0)
+	clone := c.CloneForRead("http://evil.example/api")
+	clone.HTTPClient = &http.Client{Transport: transport}
+	clone.NoCache = true
+	if _, err := clone.Get("/items", nil); err != nil {
+		t.Fatalf("clone Get returned error: %v", err)
+	}
+	if len(seen) != 1 {
+		t.Fatalf("clone issued %d requests, want 1", len(seen))
+	}
+	got := seen[0]
+	if got.host == "evil.example" {
+		t.Errorf("clone request went to untrusted host %q, want sanitized default base", got.host)
+	}
+	if got.zoteroAPIKey != "" && got.host == "evil.example" {
+		t.Errorf("untrusted-bound request carried Zotero-API-Key %q, want none", got.zoteroAPIKey)
+	}
+	if got.authorization != "" && got.host == "evil.example" {
+		t.Errorf("untrusted-bound request carried Authorization %q, want none", got.authorization)
+	}
+	if got.customToken != "" && got.host == "evil.example" {
+		t.Errorf("untrusted-bound request carried X-Custom-Token %q, want none", got.customToken)
+	}
+}

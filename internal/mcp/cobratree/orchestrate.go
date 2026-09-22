@@ -120,7 +120,10 @@ func commandRunHandler(rootFactory func() *cobra.Command) server.ToolHandlerFunc
 				execArgs[key] = value
 			}
 		}
-		if rawArgs, ok := args["args"].(string); ok && rawArgs != "" {
+		// Pass args through untouched (including non-string values) so the shared
+		// validateMirrorArguments guard refuses malformed positionals with a
+		// clear error instead of dropping them silently here.
+		if rawArgs, exists := args["args"]; exists && rawArgs != nil {
 			execArgs["args"] = rawArgs
 		}
 

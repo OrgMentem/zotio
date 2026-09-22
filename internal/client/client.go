@@ -274,9 +274,15 @@ func New(cfg *config.Config, timeout time.Duration, rateLimit float64) *Client {
 // synchronization state. A Client must never be copied by value because it holds
 // sync.Once values and mutexes; global schema endpoints need the library prefix
 // stripped from BaseURL, so clone explicitly instead.
+//
+// The base URL runs through the same trusted-base validation as New: a base the
+// original client never validated falls back to the default instead of
+// receiving the API key and configured headers. Both in-tree callers derive the
+// clone base from the already-validated BaseURL, so the validation passes
+// through unchanged for them.
 func (c *Client) CloneForRead(baseURL string) *Client {
 	clone := &Client{
-		BaseURL:    baseURL,
+		BaseURL:    sanitizeClientBaseURL(baseURL),
 		Config:     c.Config,
 		HTTPClient: c.HTTPClient,
 		DryRun:     c.DryRun,
@@ -621,7 +627,7 @@ func (c *Client) readCache(generation cacheGenerationToken, path string, params 
 		return nil, false
 	}
 	if time.Since(info.ModTime()) > 5*time.Minute {
-		_ = os.Remove(cacheFile)
+		removeExpiredCacheEntry(cacheFile, info)
 		return nil, false
 	}
 	data, err := os.ReadFile(cacheFile)
@@ -639,6 +645,23 @@ func (c *Client) readCache(generation cacheGenerationToken, path string, params 
 		return nil, false
 	}
 	return body, true
+}
+
+// removeExpiredCacheEntry deletes cacheFile only when it still holds the expired
+// entry described by observed. A concurrent GET publishes a fresh response by
+// atomic rename, which carries a new modification time, so an entry whose mtime
+// no longer matches is a fresh publication that must survive this cleanup, not
+// the expired entry this caller observed. Deleting by key alone would drop that
+// fresh response and force a needless re-fetch.
+func removeExpiredCacheEntry(cacheFile string, observed os.FileInfo) {
+	current, err := os.Stat(cacheFile)
+	if err != nil {
+		return
+	}
+	if !current.ModTime().Equal(observed.ModTime()) {
+		return
+	}
+	_ = os.Remove(cacheFile)
 }
 
 // cacheGenerationToken is the snapshot a GET takes before it looks at the

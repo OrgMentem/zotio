@@ -4,6 +4,7 @@ package cli
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strconv"
@@ -50,8 +51,10 @@ type batchItemUpdater struct {
 	done      map[int]bool              // chunk start index -> executed
 	failed    map[int]batchWriteFailure // absolute object index -> failure
 	transport map[int]error             // chunk start index -> request failure
-	// unattributable marks a chunk whose response named an index that cannot
-	// belong to it. Every object in that chunk has an unknown outcome.
+	// unattributable marks a chunk whose response cannot prove its objects'
+	// outcomes: it named an index that cannot belong to the chunk, or it was
+	// not the batch envelope at all. Every object in that chunk has an unknown
+	// outcome.
 	unattributable map[int]bool
 
 	// err aggregates whatever the command should return as its own error.
@@ -141,7 +144,23 @@ func (b *batchItemUpdater) send(start int) {
 		}
 		return
 	}
-	for index, failure := range decodeBatchWriteResponse(data).Failed {
+	// A 2xx without the batch envelope proves nothing: it may be a proxy
+	// error page, a singleton object, or truncated JSON. Decoding only Failed
+	// would read all of those as zero failures and report the whole chunk
+	// applied, so the envelope must be verified first.
+	if envErr := checkBatchEnvelope(data, end-start); envErr != nil {
+		b.unattributable[start] = true
+		if b.err == nil {
+			b.err = fmt.Errorf("%s: %v; the outcome of the %d item(s) in that request is unknown", b.operation, envErr, end-start)
+		}
+		return
+	}
+	resp := decodeBatchWriteResponse(data)
+	// checkBatchEnvelope already proved every index is claimed exactly once,
+	// so this loop only distributes failures. The range guard stays as
+	// defence in depth: a response that contradicts the verified envelope
+	// must fail the chunk, never poison the failure map.
+	for index, failure := range resp.Failed {
 		offset, convErr := strconv.Atoi(index)
 		// Compare inside the chunk: start+offset would overflow for an
 		// offset near MaxInt and wrap past this bound.
@@ -154,6 +173,56 @@ func (b *batchItemUpdater) send(start int) {
 		}
 		b.failed[start+offset] = failure
 	}
+}
+
+// checkBatchEnvelope verifies that a 2xx batch response proves the per-index
+// contract for a chunk of want objects: a JSON object whose successful,
+// success, unchanged and failed maps are themselves objects keyed by exactly
+// the chunk-relative indices 0..want-1, each claimed once.
+//
+// Anything else — malformed JSON, a singleton object, a proxy error page, or
+// partial coverage — leaves at least one outcome unproven, so the caller must
+// mark the chunk unattributable rather than report its objects applied.
+func checkBatchEnvelope(data []byte, want int) error {
+	var body map[string]json.RawMessage
+	if err := json.Unmarshal(data, &body); err != nil {
+		return fmt.Errorf("batch response is not valid JSON: %v", err)
+	}
+	present := false
+	for _, field := range []string{"successful", "success", "unchanged", "failed"} {
+		if raw, ok := body[field]; ok && string(raw) != "null" {
+			present = true
+			break
+		}
+	}
+	if !present {
+		return fmt.Errorf("batch response is not a batch envelope: missing successful/success/unchanged/failed")
+	}
+	seen := make(map[int]string, want)
+	for _, field := range []string{"successful", "success", "unchanged", "failed"} {
+		raw, ok := body[field]
+		if !ok || string(raw) == "null" {
+			continue
+		}
+		var entries map[string]json.RawMessage
+		if err := json.Unmarshal(raw, &entries); err != nil {
+			return fmt.Errorf("batch response field %q is not an object", field)
+		}
+		for key := range entries {
+			offset, convErr := strconv.Atoi(key)
+			if convErr != nil || offset < 0 || offset >= want {
+				return fmt.Errorf("batch response reported unattributable index %q", key)
+			}
+			if prev, dup := seen[offset]; dup {
+				return fmt.Errorf("batch response attributed index %q twice (%s and %s)", key, prev, field)
+			}
+			seen[offset] = field
+		}
+	}
+	if len(seen) != want {
+		return fmt.Errorf("batch response attributed %d of %d object(s)", len(seen), want)
+	}
+	return nil
 }
 
 // Err returns a request-level failure that the engine's generic "mutation

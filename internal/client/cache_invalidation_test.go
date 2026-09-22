@@ -3,6 +3,7 @@
 package client
 
 import (
+	"bytes"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -10,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func unremovableCacheDir(t *testing.T) string {
@@ -417,5 +419,61 @@ func TestLegacyFlatCacheEntriesAreSweptOnInvalidation(t *testing.T) {
 	}
 	if _, err := os.Stat(kept); err != nil {
 		t.Fatalf("the sweep removed a live namespaced entry: %v", err)
+	}
+}
+
+// Expired-entry cleanup must not delete a concurrently published fresh
+// response. Publication replaces the file by atomic rename with a fresh mtime,
+// so a cleanup that observed the expired entry has to re-check identity before
+// removing: deleting by key alone drops the fresh response.
+func TestExpiredCleanupKeepsConcurrentFreshPublication(t *testing.T) {
+	c := clientTestNewClient(t, "http://example.test")
+	c.cacheDir = t.TempDir()
+	const path = "/items"
+	staleFile := warmCacheEntry(t, c, path, `[{"key":"OLD"}]`)
+	expired := time.Now().Add(-10 * time.Minute)
+	if err := os.Chtimes(staleFile, expired, expired); err != nil {
+		t.Fatalf("backdating stale entry: %v", err)
+	}
+	observed, err := os.Stat(staleFile)
+	if err != nil {
+		t.Fatalf("stat expired entry: %v", err)
+	}
+	// A concurrent GET publishes a fresh response over the expired file after
+	// the cleanup observed it.
+	if freshFile := warmCacheEntry(t, c, path, `[{"key":"FRESH"}]`); freshFile != staleFile {
+		t.Fatalf("fresh publication wrote %q, want same cache file %q", freshFile, staleFile)
+	}
+	removeExpiredCacheEntry(staleFile, observed)
+	data, err := os.ReadFile(staleFile)
+	if err != nil {
+		t.Fatalf("expired cleanup deleted a concurrently published fresh entry: %v", err)
+	}
+	_, body, ok := decodeCacheEntry(data)
+	if !ok {
+		t.Fatal("fresh entry unreadable after expired cleanup")
+	}
+	if !bytes.Equal(body, []byte(`[{"key":"FRESH"}]`)) {
+		t.Fatalf("entry body = %s, want fresh response", body)
+	}
+}
+
+// The conditional removal still collects an entry nobody replaced: without
+// that, expired responses would accumulate on disk forever.
+func TestExpiredCleanupRemovesStillExpiredEntry(t *testing.T) {
+	c := clientTestNewClient(t, "http://example.test")
+	c.cacheDir = t.TempDir()
+	file := warmCacheEntry(t, c, "/items", `[{"key":"OLD"}]`)
+	expired := time.Now().Add(-10 * time.Minute)
+	if err := os.Chtimes(file, expired, expired); err != nil {
+		t.Fatalf("backdating stale entry: %v", err)
+	}
+	observed, err := os.Stat(file)
+	if err != nil {
+		t.Fatalf("stat expired entry: %v", err)
+	}
+	removeExpiredCacheEntry(file, observed)
+	if _, err := os.Stat(file); !os.IsNotExist(err) {
+		t.Fatalf("expired entry survived cleanup, stat err = %v", err)
 	}
 }

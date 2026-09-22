@@ -9,9 +9,13 @@ import (
 )
 
 func TestClassifyEndpointAsNovelMCPCommand(t *testing.T) {
+	// Endpoint-annotated commands are ordinary CLI metadata since ADR-0003
+	// retired the typed endpoint tools; the walker mirrors them as novel
+	// commands. The annotation key is a plain string: no cobratree constant
+	// names it.
 	cmd := &cobra.Command{
 		Use:         "list",
-		Annotations: map[string]string{EndpointAnnotation: "items.list"},
+		Annotations: map[string]string{"zotio:endpoint": "items.list"},
 		Run:         func(*cobra.Command, []string) {},
 	}
 	if got := classify(cmd); got != commandNovel {

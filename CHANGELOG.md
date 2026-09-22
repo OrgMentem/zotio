@@ -28,6 +28,74 @@ Notable changes to zotio. Format follows [Keep a Changelog](https://keepachangel
   the schema version matches.** The fast path previously validated the cache
   but reused the baseline's per-type fields and creator types, hiding changes
   in another valid cache.
+- **Single-target commands refuse surplus positional arguments.** `items get`,
+  `items open`, `items update`, `items restore`, `collections get`,
+  `collections update`, `collections move`, `collections delete`,
+  `searches get` and `tags get` now fail before any request when given more
+  than one key. Previously they acted on the first key and dropped the rest
+  in silence.
+- **`items create --via connector` refuses a non-array body instead of
+  writing through the Web API.** A silent fall back sent bytes to Zotero's
+  cloud when the operator asked for the desktop's own file store. A single
+  item object is now normalised to a one-element array on every route, so
+  `--items '{…}'` and `--stdin` succeed where Zotero previously rejected the
+  body, and still charge one operation against `--max-changes`.
+- **A failed `items create --via connector` commit reports per item.** A
+  `SaveItems` error used to fail the whole batch. Items the session already
+  committed now report `applied` with recovery detail; unconfirmed items
+  report `conflict` with `committed: true`, so no retry blindly re-creates
+  them.
+- **`tags rename` separates a write-route failure from an empty match.** A
+  resolution failure now exits with the code for its error class and names
+  the cause. Previously it reported "nothing matched", so a real error looked
+  like a successful no-op.
+- **A failed requested attachment is visible in the `import apply`
+  envelope.** The created parent carries its key, `committed: true`, the
+  title and a created-but-unattached message, so the half-made item is
+  reconcilable. The status stays `failed` and the command still exits 1.
+- **`Store.DB()` returns a `*GuardedDB`, not a `*sql.DB`.** Reads keep the
+  busy-retry path and writes go through `ExecWrite` under the write mutex, so
+  no caller can take an unguarded handle past the single-writer contract of
+  ADR-0005. `Exec`, `Query`, `QueryRow` and their `Context` forms keep their
+  names; raw `Begin`, `Conn` and `Close` are gone, and `WithWriteTx` covers
+  multi-statement work.
+- **The MCP command mirror refuses non-string positional arguments.** A
+  numeric, boolean, array or object `args` value now returns an input error
+  naming the string contract. Previously the facade dropped it and ran the
+  command with no positionals. Absent, null and string values are unchanged.
+
+### Fixed
+
+- **Batch item writes no longer read a non-batch body as blanket success.**
+  A 2xx response that is not the documented batch envelope, or whose indices
+  do not cover the request exactly once, now marks the chunk unattributable
+  with an unknown outcome instead of reporting every object applied.
+- **Collection child reads stop corrupting the local mirror.** An auto-mode
+  `collections items` cached item payloads under the `collections` resource,
+  and `collections tags` did the same with tags. Each now caches under its
+  real resource, and a rendered child response caches nothing.
+- **`items update --tags/--collections` replacements survive plane lag.**
+  A whole-list replacement now replays into the mirror through the existing
+  write-through and pending-write path, and the marker retires only once the
+  read plane matches the write.
+- **Connector import keeps response positions.** A keyless response entry was
+  dropped from the slice, which attributed every later item to the wrong
+  input. The slot is now kept and reported as a committed conflict.
+- **`CloneForRead` validates its base URL.** A clone aimed at an untrusted
+  base carried the API key and configured headers. It now runs the same
+  trusted-base validation the constructor runs, warns on stderr and targets
+  the default base.
+- **Expired cache cleanup keeps a concurrently published fresh entry.** The
+  delete is now conditional on the entry still being the expired one.
+- **A failed `SetUpdateChecksEnabled` persist leaves the live config
+  unchanged.** The change is staged and committed only after the save
+  succeeds.
+- **Cancelled MCP search, `zotero://status` reads and sync persistence stop
+  work instead of running to completion.** The request context now reaches
+  the FTS read, the status reads and the SQLite write wait; a cancelled sync
+  rolls its batch back.
+- **The auto data source falls back to the mirror on a timeout.** User
+  cancellation still never falls back.
 
 ## [0.26.0] — 2026-09-15
 

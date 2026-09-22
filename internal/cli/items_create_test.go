@@ -221,10 +221,17 @@ func TestItemsCreateReadsStdinFromCommandReader(t *testing.T) {
 	}
 }
 
-func TestItemsCreateAcceptsSingleObjectResponse(t *testing.T) {
+// TestItemsCreateAdoptsBatchResponseKey is the response-side contract behind
+// the request-side single-object fix: Zotero answers a batched POST /items with
+// the batch shape (success/successful), never a single {"key":...} object, and
+// the created key must reach the mutation item so the journal and write-through
+// can target it. The previous version of this test returned exactly that
+// malformed fixture and asserted only a nil error, pinning acceptance of a
+// response that cannot identify the created element.
+func TestItemsCreateAdoptsBatchResponseKey(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"key":"NEWKEY11","version":1}`))
+		_, _ = w.Write([]byte(`{"success":{"0":"NEWKEY11"},"successful":{},"unchanged":{},"failed":{}}`))
 	}))
 	defer srv.Close()
 	t.Setenv("ZOTERO_BASE_URL", srv.URL+"/users/0")
@@ -232,9 +239,196 @@ func TestItemsCreateAcceptsSingleObjectResponse(t *testing.T) {
 	cmd := newItemsCreateCmd(&rootFlags{asJSON: true, yes: true, maxChanges: -1})
 	cmd.SilenceErrors, cmd.SilenceUsage = true, true
 	cmd.SetErr(io.Discard)
+	var out bytes.Buffer
+	cmd.SetOut(&out)
 	cmd.SetArgs([]string{"--items", `[{"itemType":"journalArticle","title":"x"}]`})
 	if err := cmd.Execute(); err != nil {
-		t.Fatalf("items create with a single-object response: %v", err)
+		t.Fatalf("items create with a batch response: %v", err)
+	}
+	var env mutation.Envelope
+	if err := json.Unmarshal(out.Bytes(), &env); err != nil {
+		t.Fatalf("stdout is not a mutation envelope: %v; stdout=%q", err, out.String())
+	}
+	if env.Result == nil || len(env.Result.Items) != 1 {
+		t.Fatalf("result = %+v, want exactly 1 item", env.Result)
+	}
+	if env.Result.Items[0].Key != "NEWKEY11" {
+		t.Fatalf("result item key = %q, want NEWKEY11 from the batch response", env.Result.Items[0].Key)
+	}
+}
+
+// TestItemsCreateNormalizesSingleObjectInput proves the single-object contract:
+// one JSON object through --items or --stdin reaches POST /items as a
+// one-element array, charges exactly one operation against --max-changes, and
+// carries the created key back onto the one mutation item.
+func TestItemsCreateNormalizesSingleObjectInput(t *testing.T) {
+	const single = `{"itemType":"journalArticle","title":"Single Object"}`
+	for _, tc := range []struct {
+		name  string
+		args  []string
+		stdin string
+	}{
+		{name: "items flag", args: []string{"--items", single}},
+		{name: "stdin", args: []string{"--stdin"}, stdin: single},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var gotBodies [][]byte
+			requestCount := 0
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				requestCount++
+				body, _ := io.ReadAll(r.Body)
+				gotBodies = append(gotBodies, body)
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(`{"success":{"0":"SINGLE01"},"successful":{},"unchanged":{},"failed":{}}`))
+			}))
+			defer srv.Close()
+			t.Setenv("ZOTERO_BASE_URL", srv.URL+"/users/0")
+
+			cmd := newItemsCreateCmd(&rootFlags{asJSON: true, yes: true, maxChanges: -1})
+			cmd.SilenceErrors, cmd.SilenceUsage = true, true
+			cmd.SetErr(io.Discard)
+			var out bytes.Buffer
+			cmd.SetOut(&out)
+			if tc.stdin != "" {
+				cmd.SetIn(strings.NewReader(tc.stdin))
+			}
+			cmd.SetArgs(tc.args)
+			if err := cmd.Execute(); err != nil {
+				t.Fatalf("items create with a single object (%s): %v", tc.name, err)
+			}
+			if requestCount != 1 {
+				t.Fatalf("requests = %d, want exactly 1 batched POST", requestCount)
+			}
+			// The wire body must be the array shape POST /items requires, not
+			// the single object the operator supplied.
+			var arr []map[string]any
+			if err := json.Unmarshal(gotBodies[0], &arr); err != nil {
+				t.Fatalf("create body is not a JSON array: %s (%v)", gotBodies[0], err)
+			}
+			if len(arr) != 1 || arr[0]["itemType"] != "journalArticle" || arr[0]["title"] != "Single Object" {
+				t.Fatalf("posted body = %s, want the single object wrapped as a one-element array", gotBodies[0])
+			}
+			var env mutation.Envelope
+			if err := json.Unmarshal(out.Bytes(), &env); err != nil {
+				t.Fatalf("stdout is not a mutation envelope: %v; stdout=%q", err, out.String())
+			}
+			if env.Result == nil || len(env.Result.Items) != 1 {
+				t.Fatalf("result = %+v, want exactly 1 item for one object", env.Result)
+			}
+			if env.Result.Summary.Applied != 1 {
+				t.Fatalf("summary = %+v, want 1 applied", env.Result.Summary)
+			}
+			if env.Result.Items[0].Key != "SINGLE01" {
+				t.Fatalf("result item key = %q, want SINGLE01", env.Result.Items[0].Key)
+			}
+		})
+	}
+}
+
+// TestItemsCreateSingleObjectCountsOneAgainstMaxChanges holds the gate side of
+// the single-object contract: one object charges one operation, so a cap of
+// zero refuses it before any request, while a cap of one lets it through in a
+// single POST.
+func TestItemsCreateSingleObjectCountsOneAgainstMaxChanges(t *testing.T) {
+	const single = `{"itemType":"journalArticle","title":"Single Object"}`
+
+	t.Run("refused under cap", func(t *testing.T) {
+		requestCount := 0
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			requestCount++
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"success":{"0":"SINGLE01"},"successful":{},"unchanged":{},"failed":{}}`))
+		}))
+		defer srv.Close()
+		t.Setenv("ZOTERO_BASE_URL", srv.URL+"/users/0")
+
+		cmd := newItemsCreateCmd(&rootFlags{asJSON: true, yes: true, maxChanges: 0})
+		cmd.SilenceErrors, cmd.SilenceUsage = true, true
+		cmd.SetErr(io.Discard)
+		cmd.SetArgs([]string{"--items", single})
+		err := cmd.Execute()
+		if err == nil {
+			t.Fatal("items create single object under a zero cap succeeded, want max_changes_exceeded refusal")
+		}
+		if !strings.Contains(err.Error(), "planned 1 change(s)") || !strings.Contains(err.Error(), "cap of 0") {
+			t.Fatalf("error = %q, want the single planned operation and the cap", err)
+		}
+		if requestCount != 0 {
+			t.Fatalf("requests = %d, want 0 -- refusal must happen before the POST", requestCount)
+		}
+	})
+
+	t.Run("one post at cap", func(t *testing.T) {
+		requestCount := 0
+		var gotBody []byte
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			requestCount++
+			gotBody, _ = io.ReadAll(r.Body)
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"success":{"0":"SINGLE01"},"successful":{},"unchanged":{},"failed":{}}`))
+		}))
+		defer srv.Close()
+		t.Setenv("ZOTERO_BASE_URL", srv.URL+"/users/0")
+
+		cmd := newItemsCreateCmd(&rootFlags{asJSON: true, yes: true, maxChanges: 1})
+		cmd.SilenceErrors, cmd.SilenceUsage = true, true
+		cmd.SetErr(io.Discard)
+		cmd.SetArgs([]string{"--items", single})
+		if err := cmd.Execute(); err != nil {
+			t.Fatalf("items create single object at cap 1: %v", err)
+		}
+		if requestCount != 1 {
+			t.Fatalf("requests = %d, want exactly 1 POST", requestCount)
+		}
+		var arr []map[string]any
+		if err := json.Unmarshal(gotBody, &arr); err != nil || len(arr) != 1 {
+			t.Fatalf("posted body = %s, want a one-element array", gotBody)
+		}
+	})
+}
+
+// TestItemsCreateViaConnectorSingleObjectRoutesToConnector proves the routing
+// side of the single-object contract: --via connector with one object must
+// reach the desktop connector, never silently fall back to the Web API. It
+// drives the real command against the connector fixture and refuses any Web
+// traffic by pointing the base URL at an unroutable address.
+func TestItemsCreateViaConnectorSingleObjectRoutesToConnector(t *testing.T) {
+	isolateItemsCreateConnectorEnv(t)
+	mutationJournalRecorder = recordMutationJournal
+	t.Cleanup(func() { mutationJournalRecorder = nil })
+	fixture := newItemsCreateConnectorFixture(t, []itemsCreateFixtureItem{
+		{key: "SINGLEC1", title: "Single Connector Object"},
+	}, 0)
+
+	flags := &rootFlags{
+		asJSON: true, yes: true, via: "connector", maxChanges: -1,
+		timeout: 5 * time.Second, configPath: testConfigFile(t, "http://127.0.0.1:23119/api/users/0"),
+	}
+	stdout, err := runItemsCreate(t, flags,
+		"--items", `{"itemType":"journalArticle","title":"Single Connector Object"}`)
+	if err != nil {
+		t.Fatalf("items create single object via connector: %v; stdout=%s", err, stdout)
+	}
+	if fixture.saveItems != 1 {
+		t.Fatalf("saveItems requests = %d, want exactly 1 -- a silent Web fall back would leave zero", fixture.saveItems)
+	}
+	if len(fixture.savedTitles) != 1 || fixture.savedTitles[0] != "Single Connector Object" {
+		t.Fatalf("saveItems titles = %v, want the single object in one call", fixture.savedTitles)
+	}
+	var env mutation.Envelope
+	if decErr := json.Unmarshal([]byte(stdout), &env); decErr != nil {
+		t.Fatalf("stdout is not a mutation envelope: %v; stdout=%q", decErr, stdout)
+	}
+	decodeSingleJSONObject(t, stdout)
+	if env.Result == nil || env.Result.Summary.Applied != 1 || env.Result.Summary.Failed != 0 {
+		t.Fatalf("result = %+v, want 1 applied and 0 failed", env.Result)
+	}
+	if env.Result.Items[0].Key != "SINGLEC1" {
+		t.Fatalf("result item key = %q, want SINGLEC1", env.Result.Items[0].Key)
+	}
+	reason, ok := env.Result.Items[0].Reason.(map[string]any)
+	if !ok || reason["via"] != "connector" {
+		t.Fatalf("reason = %+v, want via=connector", env.Result.Items[0].Reason)
 	}
 }
 
@@ -468,6 +662,7 @@ type itemsCreateFixtureItem struct{ key, title string }
 type itemsCreateConnectorFixture struct {
 	srv            *httptest.Server
 	filingStatus   int
+	saveStatus     int
 	surfaced       []itemsCreateFixtureItem
 	saveItems      int
 	updateSessions int
@@ -510,6 +705,14 @@ func newItemsCreateConnectorFixture(t *testing.T, surfaced []itemsCreateFixtureI
 			for _, item := range payload.Items {
 				fixture.savedIDs = append(fixture.savedIDs, item.ID)
 				fixture.savedTitles = append(fixture.savedTitles, item.Title)
+			}
+			// A non-zero saveStatus simulates a post-commit SaveItems error:
+			// the desktop committed, but the response reports failure -- the
+			// route must reconcile against the read plane instead of marking
+			// the whole batch failed.
+			if fixture.saveStatus != 0 {
+				http.Error(w, "simulated post-commit saveItems failure", fixture.saveStatus)
+				return
 			}
 			w.WriteHeader(http.StatusCreated)
 		case "/connector/updateSession":
@@ -586,6 +789,146 @@ func runItemsCreate(t *testing.T, flags *rootFlags, args ...string) (string, err
 	cmd.SetArgs(args)
 	err := cmd.Execute()
 	return out.String(), err
+}
+
+// TestItemsCreateConnectorBatchSaveItemsErrorIsReconciled drives the real
+// command through the connector route when conn.SaveItems reports an error
+// after the desktop already committed. A lost or late connector response must
+// not collapse to total failure: each item is reconciled against the library,
+// recovered keys stay applied, and only the unconfirmed items report an
+// unknown outcome -- a conflict carrying the session evidence, so the journal
+// records it and the operator inspects Zotero instead of blindly re-creating
+// (which would duplicate every committed item).
+func TestItemsCreateConnectorBatchSaveItemsErrorIsReconciled(t *testing.T) {
+	created := []itemsCreateFixtureItem{
+		{key: "SAVEIT01", title: "Save Error One"},
+		{key: "SAVEIT02", title: "Save Error Two"},
+	}
+	for _, tc := range []struct {
+		name          string
+		surfaced      []itemsCreateFixtureItem
+		wantKeys      []string
+		wantApplied   int
+		wantConflicts int
+		wantErr       string
+	}{
+		{
+			name:          "all committed",
+			surfaced:      created,
+			wantKeys:      []string{"SAVEIT01", "SAVEIT02"},
+			wantApplied:   2,
+			wantConflicts: 0,
+		},
+		{
+			name:          "none confirmed",
+			surfaced:      nil,
+			wantKeys:      []string{"", ""},
+			wantApplied:   0,
+			wantConflicts: 2,
+			wantErr:       "inspect Zotero before retrying",
+		},
+		{
+			name:          "partial commit",
+			surfaced:      created[:1],
+			wantKeys:      []string{"SAVEIT01", ""},
+			wantApplied:   1,
+			wantConflicts: 1,
+			wantErr:       "inspect Zotero before retrying",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			isolateItemsCreateConnectorEnv(t)
+			mutationJournalRecorder = recordMutationJournal
+			t.Cleanup(func() { mutationJournalRecorder = nil })
+			fixture := newItemsCreateConnectorFixture(t, tc.surfaced, 0)
+			fixture.saveStatus = http.StatusInternalServerError
+
+			flags := &rootFlags{
+				asJSON: true, yes: true, via: "connector", maxChanges: -1,
+				timeout: 5 * time.Second, configPath: testConfigFile(t, "http://127.0.0.1:23119/api/users/0"),
+			}
+			stdout, err := runItemsCreate(t, flags, "--items", fmt.Sprintf(
+				`[{"itemType":"journalArticle","title":%q},{"itemType":"journalArticle","title":%q}]`,
+				created[0].title, created[1].title))
+
+			if tc.wantErr == "" {
+				if err != nil {
+					t.Fatalf("items create with every item committed: %v; stdout=%s", err, stdout)
+				}
+			} else {
+				if err == nil {
+					t.Fatalf("items create with unconfirmed items succeeded; want an ambiguity error. stdout=%s", stdout)
+				}
+				if !strings.Contains(err.Error(), tc.wantErr) {
+					t.Fatalf("error = %q, want it to contain %q", err, tc.wantErr)
+				}
+			}
+
+			var env mutation.Envelope
+			if decErr := json.Unmarshal([]byte(stdout), &env); decErr != nil {
+				t.Fatalf("stdout is not a mutation envelope: %v; stdout=%q", decErr, stdout)
+			}
+			decodeSingleJSONObject(t, stdout)
+			if env.Result == nil || env.Result.Summary.Applied != tc.wantApplied || env.Result.Summary.Conflicts != tc.wantConflicts {
+				t.Fatalf("result = %+v, want %d applied and %d conflicts -- committed items stay applied", env.Result, tc.wantApplied, tc.wantConflicts)
+			}
+			for i, item := range env.Result.Items {
+				if item.Key != tc.wantKeys[i] {
+					t.Fatalf("item %d key = %q, want %q", i, item.Key, tc.wantKeys[i])
+				}
+				reason, ok := item.Reason.(map[string]any)
+				if !ok {
+					t.Fatalf("item %d reason = %+v, want an object", i, item.Reason)
+				}
+				if tc.wantKeys[i] != "" {
+					if item.Status != "applied" {
+						t.Fatalf("item %d status = %q, want applied for a committed item", i, item.Status)
+					}
+					if reason["via"] != "connector" || reason["recovered_after_save_error"] != true {
+						t.Fatalf("item %d reason = %+v, want the connector post-commit recovery detail", i, reason)
+					}
+					if saveErr, _ := reason["save_error"].(string); !strings.Contains(saveErr, "saveItems") {
+						t.Fatalf("item %d save_error = %v, want the SaveItems failure", i, reason["save_error"])
+					}
+				} else {
+					if item.Status != "conflict" {
+						t.Fatalf("item %d status = %q, want conflict for an unconfirmed write, not failed", i, item.Status)
+					}
+					if reason["via"] != "connector" || reason["committed"] != true {
+						t.Fatalf("item %d reason = %+v, want committed connector evidence", i, reason)
+					}
+					if reason["session"] != fixture.saveSession {
+						t.Fatalf("item %d session = %v, want the session the batch was saved into (%q)", i, reason["session"], fixture.saveSession)
+					}
+				}
+			}
+
+			// Every outcome must be journaled: applied items for undo, and
+			// conflicts for their committed-write evidence. Before this change
+			// a SaveItems error marked the whole batch failed with no
+			// recoverable identity, inviting a duplicating re-create.
+			entries, listErr := mutation.ListEntries(helpersTestJournalDir(t))
+			if listErr != nil {
+				t.Fatalf("list journal entries: %v", listErr)
+			}
+			if len(entries) != 1 {
+				t.Fatalf("journal entries = %d, want 1 recorded run for a possibly committed batch", len(entries))
+			}
+			if entries[0].Summary.Applied != tc.wantApplied || entries[0].Summary.Conflicts != tc.wantConflicts {
+				t.Fatalf("journaled summary = %+v, want %d applied and %d conflicts", entries[0].Summary, tc.wantApplied, tc.wantConflicts)
+			}
+
+			if fixture.saveItems != 1 {
+				t.Fatalf("saveItems requests = %d, want exactly 1", fixture.saveItems)
+			}
+			if fixture.updateSessions != 0 {
+				t.Fatalf("updateSession requests = %d, want 0 -- no filing runs after a SaveItems error", fixture.updateSessions)
+			}
+			if len(fixture.recoveryReqs) != len(created) {
+				t.Fatalf("key-recovery requests = %v, want one per item in the failed save", fixture.recoveryReqs)
+			}
+		})
+	}
 }
 
 // decodeSingleJSONObject fails unless stdout is exactly one JSON object. Two

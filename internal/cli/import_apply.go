@@ -529,7 +529,17 @@ func importApplyOps(cmd *cobra.Command, flags *rootFlags, writeClient importAppl
 					if attachMode == "linked-file" && entryPath != "" {
 						attachmentKey, err := postLinkedFileAttachment(writeClient, createdKey, entryPath, flags)
 						if err != nil {
+							// The parent is already committed and nothing rolls it back, so the
+							// failure must carry the evidence to reconcile by hand: "key" lets
+							// the engine journal the created parent, "committed" keeps the
+							// reason in the journal, and "message" is the only thing the
+							// human renderer prints. Status stays "failed" (no new status
+							// string): the envelope is not OK and the exit is non-zero.
+							detail["key"] = createdKey
+							detail["committed"] = true
+							detail["title"] = entryTitle
 							detail["attachment_error"] = err.Error()
+							detail["message"] = fmt.Sprintf("item %q was created (%s) but the linked file was not attached: %v; find it by key, then either attach the file by hand or delete the item and re-run", entryTitle, createdKey, err)
 							return "failed", detail, nil
 						}
 						detail["attachment_key"] = attachmentKey

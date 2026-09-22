@@ -1491,8 +1491,8 @@ zotio items create
 
 | Flag | Type | Default | Description |
 | --- | --- | --- | --- |
-| `--items` | `string` |  | Array of item objects to create (use item-types and item-type-fields for schema) |
-| `--stdin` | `bool` | `false` | Read request body as JSON from stdin |
+| `--items` | `string` |  | Array of item objects to create, or a single item object (sent as a one-element array; use item-types and item-type-fields for schema) |
+| `--stdin` | `bool` | `false` | Read request body as JSON from stdin (array or single object, as --items) |
 
 ### `zotio items delete`
 

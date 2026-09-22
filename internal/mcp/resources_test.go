@@ -456,6 +456,53 @@ func TestArchiveStatusCancellationStopsBeforeStateReads(t *testing.T) {
 	}
 }
 
+// The per-resource state reads previously used contextless store APIs, so a
+// cancelled request kept running to completion. With an already-cancelled
+// context each helper must return the context error without executing; the
+// legacy background-context reads would succeed, so this fails iff the
+// request context is dropped.
+func TestArchiveStatusStateReadsHonorCancelledContext(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	db, err := store.OpenWithContext(context.Background(), dbPath())
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	if err := db.Upsert("items", "STATUS1", json.RawMessage(`{"key":"STATUS1","version":1,"data":{"key":"STATUS1","itemType":"book","title":"Status probe"}}`)); err != nil {
+		t.Fatalf("seed item: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close store: %v", err)
+	}
+
+	ro, err := store.OpenReadOnlyDiagnosticContext(context.Background(), dbPath())
+	if err != nil {
+		t.Fatalf("open diagnostic db: %v", err)
+	}
+	t.Cleanup(func() { _ = ro.Close() })
+
+	isCanceled := func(err error) bool {
+		return err != nil && (errors.Is(err, context.Canceled) || strings.Contains(strings.ToLower(err.Error()), "canceled"))
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, _, _, syncErr := ro.GetSyncStateContext(ctx, "items"); !isCanceled(syncErr) {
+		t.Fatalf("cancelled sync-state read error = %v, want context.Canceled", syncErr)
+	}
+
+	ctx, cancel = context.WithCancel(context.Background())
+	cancel()
+	if _, _, verErr := ro.StoredLibraryVersionContext(ctx, "items"); !isCanceled(verErr) {
+		t.Fatalf("cancelled library-version read error = %v, want context.Canceled", verErr)
+	}
+
+	ctx, cancel = context.WithCancel(context.Background())
+	cancel()
+	if _, schemaErr := ro.SchemaVersionContext(ctx); !isCanceled(schemaErr) {
+		t.Fatalf("cancelled schema-version read error = %v, want context.Canceled", schemaErr)
+	}
+}
+
 func TestDiagnosticResourcesReadPartialSchemaButStrictReadsDoNot(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	if err := os.MkdirAll(filepath.Dir(dbPath()), 0o755); err != nil {

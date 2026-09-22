@@ -19,7 +19,7 @@ func TestSyncSingleObject_PreservesLargeIntegerResourceIDs(t *testing.T) {
 	}
 	defer db.Close()
 
-	if err := upsertSingleObject(db, "numeric_ids", json.RawMessage(`{"id": 55043301, "name": "large"}`)); err != nil {
+	if err := upsertSingleObject(context.Background(), db, "numeric_ids", json.RawMessage(`{"id": 55043301, "name": "large"}`)); err != nil {
 		t.Fatalf("upsertSingleObject: %v", err)
 	}
 

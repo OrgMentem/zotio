@@ -7,11 +7,14 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"net/http"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
+	"zotio/internal/client"
+	"zotio/internal/config"
 	"zotio/internal/store"
 )
 
@@ -75,5 +78,72 @@ func TestResolveLocalItemList_CancelledContextAbortsContendedQuery(t *testing.T)
 	}
 	if !errors.Is(err, context.Canceled) && !strings.Contains(strings.ToLower(err.Error()), "canceled") {
 		t.Fatalf("expected context.Canceled, got %v", err)
+	}
+}
+
+// dataSourceBacklogHangRoundTripper never answers: the request hangs until the
+// caller's context fires, so the resulting error carries the context's own
+// timeout/cancellation semantics instead of a transport failure.
+type dataSourceBacklogHangRoundTripper struct{}
+
+func (dataSourceBacklogHangRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
+	<-req.Context().Done()
+	return nil, req.Context().Err()
+}
+
+func dataSourceBacklogHangClient() *client.Client {
+	c := client.New(&config.Config{BaseURL: "http://127.0.0.1:1/api/users/0"}, time.Second, 0)
+	c.NoCache = true
+	c.HTTPClient = &http.Client{Transport: dataSourceBacklogHangRoundTripper{}}
+	return c
+}
+
+// TestDataSourceAutoFallsBackOnTimeout holds a live read open until the
+// request context times out: auto mode must serve the seeded mirror instead
+// of failing with the deadline error.
+func TestDataSourceAutoFallsBackOnTimeout(t *testing.T) {
+	seedLocalQueryPlannerDB(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	flags := &rootFlags{asJSON: true, dataSource: "auto", noCache: true, timeout: 5 * time.Second}
+	data, prov, err := resolveRead(ctx, dataSourceBacklogHangClient(), flags, "items", false, "/items", nil, nil)
+	if err != nil {
+		t.Fatalf("auto read on timeout: %v", err)
+	}
+	if prov.Source != "local" || prov.Reason != "api_unreachable" {
+		t.Fatalf("provenance = %+v, want a local api_unreachable fallback", prov)
+	}
+	got := itemKeysFromRawList(t, data)
+	for _, want := range []string{"A", "B", "C"} {
+		found := false
+		for _, key := range got {
+			if key == want {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Fatalf("fallback keys = %v, want the seeded [A B C]", got)
+		}
+	}
+	if len(got) != 3 {
+		t.Fatalf("fallback keys = %v, want exactly the seeded [A B C]", got)
+	}
+}
+
+// TestDataSourceAutoPreservesCancellation cancels the request context before
+// the live read: auto mode must propagate the cancellation instead of
+// serving local rows the user interrupted away from.
+func TestDataSourceAutoPreservesCancellation(t *testing.T) {
+	seedLocalQueryPlannerDB(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	flags := &rootFlags{asJSON: true, dataSource: "auto", noCache: true, timeout: 5 * time.Second}
+	_, _, err := resolveRead(ctx, dataSourceBacklogHangClient(), flags, "items", false, "/items", nil, nil)
+	if err == nil {
+		t.Fatal("canceled auto read fell back to local data; want the cancellation to propagate")
+	}
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("auto read error = %v, want context.Canceled", err)
 	}
 }

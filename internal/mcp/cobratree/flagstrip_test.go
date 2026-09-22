@@ -3,6 +3,7 @@
 package cobratree
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/spf13/cobra"
@@ -179,6 +180,45 @@ func TestStripValidateAcceptsLocalFlag(t *testing.T) {
 
 	if err := validateMirrorArguments(map[string]any{"limit": "5"}, allowed); err != nil {
 		t.Fatalf("validateMirrorArguments rejected valid local flag: %v", err)
+	}
+}
+
+// A non-string positional-args value is a malformed call, never a silent
+// no-op: the executor would otherwise drop it and run a different command
+// shape. Null stays absent (matching workflow_submit), every other
+// non-string is refused with a clear error.
+func TestStripValidateRejectsNonStringPositionalArgs(t *testing.T) {
+	_, child := stripNewRoot(false)
+	allowed := safeFlagNames(child)
+
+	for name, value := range map[string]any{
+		"numeric": float64(123),
+		"boolean": true,
+		"array":   []any{"KEY1"},
+		"object":  map[string]any{"key": "KEY1"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			err := validateMirrorArguments(map[string]any{"args": value}, allowed)
+			if err == nil {
+				t.Fatalf("validateMirrorArguments accepted %T positional args", value)
+			}
+			if !strings.Contains(err.Error(), "must be a string") {
+				t.Fatalf("validateMirrorArguments error = %q, want it to name the string contract", err)
+			}
+		})
+	}
+
+	for name, args := range map[string]map[string]any{
+		"absent":       {},
+		"null":         {"args": nil},
+		"empty string": {"args": ""},
+		"string":       {"args": "KEY1"},
+	} {
+		t.Run("accepts "+name, func(t *testing.T) {
+			if err := validateMirrorArguments(args, allowed); err != nil {
+				t.Fatalf("validateMirrorArguments(%v) = %v, want nil", args, err)
+			}
+		})
 	}
 }
 

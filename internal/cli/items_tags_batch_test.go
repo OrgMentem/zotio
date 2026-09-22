@@ -457,6 +457,105 @@ func TestItemsTagsBatchUnattributableIndexFailsClosed(t *testing.T) {
 	}
 }
 
+// A 2xx body that is not the batch envelope proves nothing. A singleton
+// object, a proxy error page, or truncated JSON must fail the chunk with an
+// unknown outcome, never report its items applied.
+func TestItemsTagsBatchNonEnvelopeBodyFailsClosed(t *testing.T) {
+	bodies := map[string]string{
+		"singleton": `{"key":"K1","version":101}`,
+		"empty":     `{}`,
+		"truncated": `{"successful":{"0":{}`,
+		"partial":   `{"successful":{"0":{"key":"K1"}},"unchanged":{},"failed":{}}`,
+	}
+	for name, body := range bodies {
+		t.Run(name, func(t *testing.T) {
+			keys := []string{"K1", "K2"}
+			b := newBatchTagServer(t, keys)
+			b.server.Close()
+			b.server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Method == http.MethodGet {
+					key := r.URL.Path[strings.LastIndex(r.URL.Path, "/")+1:]
+					w.Header().Set("Last-Modified-Version", "100")
+					_ = json.NewEncoder(w).Encode(map[string]any{
+						"key": key, "version": 100,
+						"data": map[string]any{"key": key, "version": 100, "tags": []any{}},
+					})
+					return
+				}
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(body))
+			}))
+			t.Cleanup(b.server.Close)
+
+			env, err := runBatchTagCmd(t, b, append([]string{"add", "--batch", "--tag", "sweep"}, keys...)...)
+			if err == nil {
+				t.Fatal("a non-envelope batch body must make the run report an error")
+			}
+			if env.OK {
+				t.Error("envelope reports ok:true for a body that proves no outcome")
+			}
+			for _, item := range env.Result.Items {
+				if item.Status == "applied" {
+					t.Errorf("%s reported applied though the response proved no outcome", item.Key)
+				}
+			}
+			var cliErr *cliError
+			if !errors.As(err, &cliErr) || cliErr.code != 5 {
+				t.Fatalf("error = %T %[1]v, want classified request error with exit 5", err)
+			}
+			if strings.Contains(err.Error(), "mutation incomplete") {
+				t.Errorf("error = %q, request failure was masked by the mutation engine", err)
+			}
+		})
+	}
+}
+
+// A transport failure is a request-level error with its own classification,
+// not a generic mutation-incomplete. The envelope marks the items failed and
+// the command keeps the request detail and exit code.
+func TestItemsTagsBatchTransportFailureKeepsRequestError(t *testing.T) {
+	keys := []string{"K1", "K2", "K3"}
+	b := newBatchTagServer(t, keys)
+	b.server.Close()
+	b.server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet {
+			key := r.URL.Path[strings.LastIndex(r.URL.Path, "/")+1:]
+			w.Header().Set("Last-Modified-Version", "100")
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"key": key, "version": 100,
+				"data": map[string]any{"key": key, "version": 100, "tags": []any{}},
+			})
+			return
+		}
+		// Close the connection mid-body so the client reports a transport
+		// failure rather than an HTTP status.
+		hj, ok := w.(http.Hijacker)
+		if !ok {
+			t.Error("test server does not support hijacking")
+			return
+		}
+		conn, _, hijackErr := hj.Hijack()
+		if hijackErr != nil {
+			t.Errorf("hijack: %v", hijackErr)
+			return
+		}
+		_ = conn.Close()
+	}))
+	t.Cleanup(b.server.Close)
+
+	env, err := runBatchTagCmd(t, b, append([]string{"add", "--batch", "--tag", "sweep"}, keys...)...)
+	if err == nil {
+		t.Fatal("a transport failure must make the run report an error")
+	}
+	var cliErr *cliError
+	if !errors.As(err, &cliErr) || cliErr.code != 5 {
+		t.Fatalf("error = %T %[1]v, want classified request error with exit 5", err)
+	}
+	if env.Result == nil || env.Result.Summary.Failed != len(keys) || env.OK {
+		t.Errorf("envelope = %+v, want every request item failed and ok:false", env)
+	}
+}
+
 // Cancellation after dispatch must not make sent siblings safe to retry.
 // The first chunk reached the server as one request, while the second chunk
 // never left the process.

@@ -297,3 +297,84 @@ func TestImportFileConnectorPartialResultOnFilingFailure(t *testing.T) {
 		t.Fatalf("journal applied %d, want 2", journal.Summary.Applied)
 	}
 }
+
+// Regression: zotio-4518195ba271d683 — a translator response entry without a
+// key must keep its position so later entries are never attributed to the
+// wrong record. The middle entry is keyless: op 2 reports a committed
+// conflict with no key, and op 3 keeps its own key.
+func TestImportFileConnectorKeylessEntryKeepsPosition(t *testing.T) {
+	raw := []json.RawMessage{
+		json.RawMessage(`{"key":"AAA11111"}`),
+		json.RawMessage(`{"title":"no key here"}`),
+		json.RawMessage(`{"key":"CCC33333"}`),
+	}
+	keys := connectorImportKeys(raw)
+	if len(keys) != 3 || keys[0] != "AAA11111" || keys[1] != "" || keys[2] != "CCC33333" {
+		t.Fatalf("connectorImportKeys = %q, want [AAA11111 \"\" CCC33333]", keys)
+	}
+
+	s := &importFileConnectorSession{
+		flags:     &rootFlags{},
+		records:   3,
+		imported:  3,
+		sessionID: "SESSKEY",
+		keys:      keys,
+		done:      true,
+	}
+	cmd := newImportFileCmd(&rootFlags{asJSON: true})
+	cmd.SetOut(io.Discard)
+	cmd.SetErr(io.Discard)
+
+	ops := make([]mutation.Op, 0, 3)
+	for index := range 3 {
+		idx := index
+		ops = append(ops, mutation.Op{
+			ID:      fmt.Sprintf("import.file:connector:%03d", idx+1),
+			Key:     "record",
+			Kind:    "item_create",
+			Changes: []mutation.Change{{Field: "item", Add: map[string]any{"record": idx + 1}}},
+			Apply: func() (string, any, error) {
+				return s.apply(cmd, idx)
+			},
+		})
+	}
+	env, err := mutation.Run(mutation.Options{Yes: true, MaxChanges: -1, ContinueOnError: true}, "import.file", ops)
+	if err == nil {
+		t.Fatalf("keyless entry must fail the envelope, got ok=%v result=%+v", env.OK, env.Result)
+	}
+	if env.Result == nil || len(env.Result.Items) != 3 {
+		t.Fatalf("env = %+v, want three result items", env)
+	}
+	if got := env.Result.Items[0].Status; got != "applied" {
+		t.Fatalf("item 0 status = %q, want applied", got)
+	}
+	if got := env.Result.Items[0].Key; got != "AAA11111" {
+		t.Fatalf("item 0 key = %q, want AAA11111", got)
+	}
+	if got := env.Result.Items[1].Status; got != "conflict" {
+		t.Fatalf("item 1 status = %q, want conflict (keyless entry is committed, not applied)", got)
+	}
+	if got := env.Result.Items[1].Key; got != "" {
+		t.Fatalf("item 1 key = %q, want empty (no key to attribute)", got)
+	}
+	detail, ok := env.Result.Items[1].Reason.(map[string]any)
+	if !ok || detail["committed"] != true {
+		t.Fatalf("item 1 reason = %#v, want committed conflict detail", env.Result.Items[1].Reason)
+	}
+	if got := env.Result.Items[2].Status; got != "applied" {
+		t.Fatalf("item 2 status = %q, want applied", got)
+	}
+	if got := env.Result.Items[2].Key; got != "CCC33333" {
+		t.Fatalf("item 2 key = %q, want CCC33333 (not shifted)", got)
+	}
+	journal, ok := mutation.BuildJournalEntry(env, time.Now())
+	if !ok {
+		t.Fatalf("BuildJournalEntry ok false")
+	}
+	if journal.Ops[1].Key != "" {
+		t.Fatalf("journal op 1 key = %q, want empty", journal.Ops[1].Key)
+	}
+	if journal.Ops[2].Key != "CCC33333" {
+		t.Fatalf("journal op 2 key = %q, want CCC33333", journal.Ops[2].Key)
+	}
+}

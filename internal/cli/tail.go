@@ -330,6 +330,23 @@ func emitChanges(ctx context.Context, c *client.Client, db *store.Store, resourc
 		}
 	}
 
+	// Delivery is all-or-nothing per batch from the cursor's perspective.
+	// The cursor below advances only after the stdout write, every
+	// configured sink acknowledgment (a 2xx webhook response, a completed
+	// file write+close), and the cursor save itself all succeed. Any failure
+	// returns before the save, so the next poll re-fetches the same window
+	// via since and redelivers the whole batch: duplicates are possible
+	// (at-least-once; webhook receivers must be idempotent, and a file
+	// append that fails mid-write can leave a trailing partial batch ahead
+	// of the retried full one), but a batch is never half-acknowledged and
+	// events are never skipped. There is deliberately no per-event
+	// checkpoint and no durable pending-batch state: the held cursor IS the
+	// retry state. This per-cycle delivery bypasses the shared deliver_spool
+	// path on purpose (newTailCmd drops the spool so the post-run flush
+	// never fires), so a batch reaches its sink here and never again
+	// through root.go; postDeliverWebhook makes a single POST attempt with
+	// no application retry, so no hidden retry can deliver after the cursor
+	// has moved.
 	out := buf.Bytes()
 	if len(out) > 0 {
 		if _, err := w.Write(out); err != nil {

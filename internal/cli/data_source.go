@@ -20,9 +20,20 @@ import (
 
 // isNetworkError returns true for errors caused by network connectivity issues
 // (DNS, connection refused, timeout). HTTP 4xx/5xx errors are NOT network errors.
+//
+// Timeouts (context deadlines, http.Client timeouts) count as network errors:
+// a slow API should serve the mirror, not fail the read. User cancellation
+// never counts — an interrupted read must stay interrupted instead of
+// printing local rows the user did not ask for.
 func isNetworkError(err error) bool {
 	if err == nil {
 		return false
+	}
+	if errors.Is(err, context.Canceled) {
+		return false
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return true
 	}
 	var urlErr *url.Error
 	if As(err, &urlErr) {
@@ -35,6 +46,13 @@ func isNetworkError(err error) bool {
 	}
 	var dnsErr *net.DNSError
 	if As(err, &dnsErr) {
+		return true
+	}
+	// Timeout-indicating errors that carry no net.OpError (http.Client
+	// timeouts, TLS handshake timeouts, context deadlines surviving the
+	// url.Error unwrap above).
+	var timeoutErr interface{ Timeout() bool }
+	if As(err, &timeoutErr) && timeoutErr.Timeout() {
 		return true
 	}
 	// Check for common network error strings
@@ -146,15 +164,20 @@ func resolveRead(ctx context.Context, c *client.Client, flags *rootFlags, resour
 	default: // "auto"
 		data, err := c.GetWithHeadersContext(ctx, path, params, headers)
 		if err == nil {
-			writeThroughCache(ctx, resourceType, data)
+			writeThroughCacheForPath(ctx, resourceType, path, data)
 			return data, attachFreshness(DataProvenance{Source: "live"}, flags), nil
 		}
 		if !isNetworkError(err) {
 			// HTTP 4xx/5xx errors propagate — not a fallback case
 			return nil, DataProvenance{}, err
 		}
-		// Network error — try local fallback
-		fallbackData, fallbackProv, fallbackErr := resolveLocal(ctx, resourceType, isList, path, params, "api_unreachable")
+		// Network error — try local fallback. The live attempt may have
+		// consumed the caller's deadline, so the mirror read runs detached
+		// from it: a timeout that still failed the fallback would make the
+		// documented offline resilience unreachable. Cancellation never
+		// reaches this branch (it is not a network error), so detaching only
+		// drops an already-expired timeout, never a user interrupt.
+		fallbackData, fallbackProv, fallbackErr := resolveLocal(context.WithoutCancel(ctx), resourceType, isList, path, params, "api_unreachable")
 		if fallbackErr != nil {
 			return nil, DataProvenance{}, fmt.Errorf("API unreachable and no local data. Run 'zotio sync' to enable offline access.\n\nOriginal error: %w", err)
 		}
@@ -167,12 +190,23 @@ func resolveRead(ctx context.Context, c *client.Client, flags *rootFlags, resour
 // Best-effort: the live result already succeeded, so a cache write failure is
 // non-fatal and only emits a stderr warning (it never fails the read path).
 func writeThroughCache(ctx context.Context, resourceType string, data json.RawMessage) {
+	writeThroughCacheForPath(ctx, resourceType, "", data)
+}
+
+// writeThroughCacheForPath is writeThroughCache with the endpoint path, so the
+// stored resource is derived from the endpoint instead of the caller's label.
+// Collection child endpoints (/collections/{key}/items, /collections/{key}/tags)
+// return item and tag rows while their commands label the read "collections";
+// upserting those rows under "collections" poisoned the mirror until the next
+// full collections sync, so the path decides the stored resource here.
+func writeThroughCacheForPath(ctx context.Context, resourceType, path string, data json.RawMessage) {
 	// schema/type lists (itemTypes, itemFields, …) are read-only reference
 	// data, not library content — skip the cache. Tags flow through: the
 	// store's ResourceIDFieldOverrides keys them by tag name.
 	if resourceType == "schema" {
 		return
 	}
+	target := cacheTargetResource(resourceType, path)
 	dbPath, err := defaultDBPath("zotio")
 	if err != nil {
 		return
@@ -183,12 +217,12 @@ func writeThroughCache(ctx context.Context, resourceType string, data json.RawMe
 	}
 	defer db.Close()
 
-	// Collect items to upsert from various response shapes
-	var items []json.RawMessage
+	// Collect candidate rows to upsert from various response shapes
+	var candidates []json.RawMessage
 
 	// Try direct array first
-	if json.Unmarshal(data, &items) != nil || len(items) == 0 {
-		items = nil
+	if json.Unmarshal(data, &candidates) != nil || len(candidates) == 0 {
+		candidates = nil
 		// Try object — check for common envelope patterns (results, data, items)
 		var envelope map[string]json.RawMessage
 		if json.Unmarshal(data, &envelope) == nil {
@@ -196,32 +230,91 @@ func writeThroughCache(ctx context.Context, resourceType string, data json.RawMe
 				if raw, ok := envelope[key]; ok {
 					var arr []json.RawMessage
 					if json.Unmarshal(raw, &arr) == nil && len(arr) > 0 {
-						items = arr
+						candidates = arr
 						break
 					}
 				}
 			}
 			// Single-object Zotero detail responses are keyed by "key";
-			// some non-Zotero resources still use "id".
-			if items == nil {
+			// tag rows by "tag"; some non-Zotero resources still use "id".
+			// Anything else (rendered formats, error text) is not rows.
+			if candidates == nil {
 				if _, ok := envelope["id"]; !ok {
 					if _, ok := envelope["key"]; !ok {
-						return
+						if _, ok := envelope["tag"]; !ok {
+							return
+						}
 					}
 				}
-				if _, _, err := db.UpsertBatch(resourceType, []json.RawMessage{data}); err != nil {
-					fmt.Fprintf(os.Stderr, "warning: write-through cache failed for %q: %v\n", resourceType, err)
-				}
-				return
+				candidates = []json.RawMessage{data}
 			}
 		}
 	}
 
-	if len(items) > 0 {
-		if _, _, err := db.UpsertBatch(resourceType, items); err != nil {
-			fmt.Fprintf(os.Stderr, "warning: write-through cache failed for %q: %v\n", resourceType, err)
-		}
+	// Only rows shaped like the target resource are stored: a scoped child
+	// read must never land rows under a resource they do not belong to, and
+	// rendered formats (bibtex, ris, …) carry no row identity at all.
+	rows := filterWriteThroughRows(target, candidates)
+	if len(rows) == 0 {
+		return
 	}
+	if _, _, err := db.UpsertBatch(target, rows); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: write-through cache failed for %q: %v\n", target, err)
+	}
+}
+
+// cacheTargetResource maps a live read endpoint to the mirror resource its
+// response rows belong to. Item-list and tag-list child endpoints return rows
+// of another resource than the collection label their commands carry, so they
+// resolve to that resource here; every other endpoint keeps the caller's
+// label. An empty path (the label-only wrapper) never remaps.
+func cacheTargetResource(resourceType, path string) string {
+	if _, isList, err := parseTagListPath(path); err == nil && isList {
+		return "tags"
+	}
+	if _, _, _, itemList := parseItemListPath(path); itemList {
+		return "items"
+	}
+	if segs := strings.Split(strings.Trim(path, "/"), "/"); len(segs) == 2 && segs[0] == "tags" {
+		return "tags"
+	}
+	return resourceType
+}
+
+// writeThroughIDMarkers is the row-identity field each mirrored Zotero
+// resource is keyed by. Rows missing it are not cacheable under that resource.
+var writeThroughIDMarkers = map[string]string{
+	"items":       "key",
+	"items-trash": "key",
+	"collections": "key",
+	"tags":        "tag",
+}
+
+// filterWriteThroughRows drops response rows that do not carry the target
+// resource's identity field. Resources without a known marker keep every
+// candidate, preserving the historical behavior for non-Zotero shapes.
+func filterWriteThroughRows(target string, candidates []json.RawMessage) []json.RawMessage {
+	marker, known := writeThroughIDMarkers[target]
+	if !known {
+		return candidates
+	}
+	rows := make([]json.RawMessage, 0, len(candidates))
+	for _, raw := range candidates {
+		var obj map[string]json.RawMessage
+		if err := json.Unmarshal(raw, &obj); err != nil {
+			continue
+		}
+		rawID, ok := obj[marker]
+		if !ok {
+			continue
+		}
+		var id string
+		if err := json.Unmarshal(rawID, &id); err != nil || strings.TrimSpace(id) == "" {
+			continue
+		}
+		rows = append(rows, raw)
+	}
+	return rows
 }
 
 // resolveLocal reads data from the local SQLite store.

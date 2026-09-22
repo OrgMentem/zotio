@@ -203,10 +203,15 @@ func validateMirrorArguments(args map[string]any, allowedFlags map[string]struct
 			return fmt.Errorf("MCP command mirror does not expose --%s for this command", name)
 		}
 	}
-	raw, _ := args["args"].(string)
-	for _, token := range splitShellArgs(raw) {
-		if strings.HasPrefix(token, "-") {
-			return fmt.Errorf("MCP command mirror args accepts positional arguments only; raw flag %q is not allowed", token)
+	if rawValue, exists := args["args"]; exists && rawValue != nil {
+		raw, ok := rawValue.(string)
+		if !ok {
+			return mirrorArgsTypeError(rawValue)
+		}
+		for _, token := range splitShellArgs(raw) {
+			if strings.HasPrefix(token, "-") {
+				return fmt.Errorf("MCP command mirror args accepts positional arguments only; raw flag %q is not allowed", token)
+			}
 		}
 	}
 	return nil

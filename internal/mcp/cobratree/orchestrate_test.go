@@ -316,3 +316,52 @@ func TestOrchCommandRunRejectsWriteGatingOnReadOnly(t *testing.T) {
 		t.Fatalf("expected --yes rejected on read-only command, got %q", orchResText(res))
 	}
 }
+
+// The facade must behave exactly like the mirror: a non-string positional
+// argument is refused with a clear error instead of being dropped silently
+// by the pre-filter (which used to ignore any non-string args value).
+func TestOrchCommandRunRefusesNonStringPositionalArgs(t *testing.T) {
+	h := commandRunHandler(orchNewRoot)
+	for name, value := range map[string]any{
+		"numeric": float64(123),
+		"boolean": true,
+		"array":   []any{"KEY1"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			req := mcplib.CallToolRequest{}
+			req.Params.Arguments = map[string]any{"name": "items demo", "args": value}
+			res, err := h(context.Background(), req)
+			if err != nil {
+				t.Fatalf("handler returned protocol error: %v", err)
+			}
+			if !res.IsError {
+				t.Fatalf("expected error result for %T args, got text %q", value, orchResText(res))
+			}
+			if !strings.Contains(orchResText(res), "must be a string") {
+				t.Fatalf("error result = %q, want it to name the string contract", orchResText(res))
+			}
+		})
+	}
+}
+
+// Null positionals stay absent (matching workflow_submit), so an explicit
+// JSON null does not fail a call that would succeed without the key.
+func TestOrchCommandRunTreatsNullPositionalArgsAsAbsent(t *testing.T) {
+	h := commandRunHandler(orchNewRoot)
+	req := mcplib.CallToolRequest{}
+	req.Params.Arguments = map[string]any{
+		"name":  "items demo",
+		"flags": map[string]any{"title": "hi"},
+		"args":  nil,
+	}
+	res, err := h(context.Background(), req)
+	if err != nil {
+		t.Fatalf("handler returned protocol error: %v", err)
+	}
+	if res.IsError {
+		t.Fatalf("unexpected error result for null args: %q", orchResText(res))
+	}
+	if got := orchResText(res); !strings.Contains(got, "title=hi") {
+		t.Fatalf("run result = %q, want title=hi", got)
+	}
+}

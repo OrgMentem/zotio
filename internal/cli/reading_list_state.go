@@ -149,6 +149,11 @@ func runReadingListTransition(cmd *cobra.Command, flags *rootFlags, keysFrom str
 			ExpectedVersion: version,
 			Changes:         readingListTagChanges(currentTags, removeCopy, addCopy),
 			Destructive:     false,
+			// An op planned with no changes never reaches Apply, so the
+			// reading-list no-op reason has to travel with the op: a bare
+			// {"status":"no_op"} is indistinguishable from a
+			// version-skipped or a naturally empty transition.
+			NoOpReason: "reading tags already in requested state",
 		}
 		if transition.addOnly {
 			op.Apply = func() (string, any, error) {

@@ -28,6 +28,14 @@ func newCollectionsDeleteCmd(flags *rootFlags) *cobra.Command {
 			"zotio:supports-dry-run":           "true",
 			"zotio:requires-allow-destructive": "true",
 		},
+		// One key per run. Cobra's default for a command with no subcommands is
+		// ArbitraryArgs, so `collections delete K1 K2` used to delete K1 and drop
+		// K2 on the floor: the path, the op id and the whole envelope are built
+		// from args[0] alone, and nothing reported the ignored keys. A
+		// destructive command must not silently do less than it was asked. Zero
+		// args still renders help, which MaximumNArgs allows and ExactArgs would
+		// not.
+		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if len(args) == 0 {
 				return cmd.Help()
