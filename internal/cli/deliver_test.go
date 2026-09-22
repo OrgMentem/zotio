@@ -14,9 +14,9 @@ import (
 // bounce into a private service. net/http therefore hands back the 3xx itself
 // and the body is never delivered, so only a 2xx may be reported as success.
 func TestDeliverWebhookStatusHandling(t *testing.T) {
-	oldAllowPrivateOutbound := allowPrivateOutboundForTests
-	allowPrivateOutboundForTests = true
-	t.Cleanup(func() { allowPrivateOutboundForTests = oldAllowPrivateOutbound })
+	oldAllowPrivateOutbound := allowPrivateOutboundForTests.Load()
+	allowPrivateOutboundForTests.Store(true)
+	t.Cleanup(func() { allowPrivateOutboundForTests.Store(oldAllowPrivateOutbound) })
 
 	tests := []struct {
 		name    string

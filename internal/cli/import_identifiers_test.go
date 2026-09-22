@@ -450,9 +450,9 @@ func TestIdentifierProvidersRedirectPolicy(t *testing.T) {
 
 func allowPrivateMetadataProviderServers(t *testing.T) {
 	t.Helper()
-	old := allowPrivateOutboundForTests
-	allowPrivateOutboundForTests = true
-	t.Cleanup(func() { allowPrivateOutboundForTests = old })
+	old := allowPrivateOutboundForTests.Load()
+	allowPrivateOutboundForTests.Store(true)
+	t.Cleanup(func() { allowPrivateOutboundForTests.Store(old) })
 }
 
 type identifierPreview struct {

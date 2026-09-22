@@ -211,9 +211,9 @@ func TestEmitChanges_WebhookDelivery(t *testing.T) {
 	c.NoCache = true
 	db := tailTestStore(t)
 
-	oldAllowPrivateOutbound := allowPrivateOutboundForTests
-	allowPrivateOutboundForTests = true
-	t.Cleanup(func() { allowPrivateOutboundForTests = oldAllowPrivateOutbound })
+	oldAllowPrivateOutbound := allowPrivateOutboundForTests.Load()
+	allowPrivateOutboundForTests.Store(true)
+	t.Cleanup(func() { allowPrivateOutboundForTests.Store(oldAllowPrivateOutbound) })
 
 	var buf bytes.Buffer
 	if _, err := emitChanges(context.Background(), c, db, "items", "/items", DeliverSink{Scheme: "webhook", Target: hook.URL}, &buf); err != nil {
@@ -246,9 +246,9 @@ func TestEmitChanges_WebhookFailureRetainsCursor(t *testing.T) {
 	c.NoCache = true
 	db := tailTestStore(t)
 
-	oldAllowPrivateOutbound := allowPrivateOutboundForTests
-	allowPrivateOutboundForTests = true
-	t.Cleanup(func() { allowPrivateOutboundForTests = oldAllowPrivateOutbound })
+	oldAllowPrivateOutbound := allowPrivateOutboundForTests.Load()
+	allowPrivateOutboundForTests.Store(true)
+	t.Cleanup(func() { allowPrivateOutboundForTests.Store(oldAllowPrivateOutbound) })
 
 	var buf bytes.Buffer
 	if _, err := emitChanges(context.Background(), c, db, "items", "/items", DeliverSink{Scheme: "webhook", Target: hook.URL}, &buf); err == nil {

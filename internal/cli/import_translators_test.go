@@ -12,9 +12,9 @@ import (
 )
 
 func TestFetchTranslatorHTML_NormalSizeSucceeds(t *testing.T) {
-	old := allowPrivateOutboundForTests
-	allowPrivateOutboundForTests = true
-	t.Cleanup(func() { allowPrivateOutboundForTests = old })
+	old := allowPrivateOutboundForTests.Load()
+	allowPrivateOutboundForTests.Store(true)
+	t.Cleanup(func() { allowPrivateOutboundForTests.Store(old) })
 
 	body := "<html><head><title>ok</title></head><body>hello</body></html>"
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -34,9 +34,9 @@ func TestFetchTranslatorHTML_NormalSizeSucceeds(t *testing.T) {
 }
 
 func TestFetchTranslatorHTML_ExceedsLimitErrors(t *testing.T) {
-	old := allowPrivateOutboundForTests
-	allowPrivateOutboundForTests = true
-	t.Cleanup(func() { allowPrivateOutboundForTests = old })
+	old := allowPrivateOutboundForTests.Load()
+	allowPrivateOutboundForTests.Store(true)
+	t.Cleanup(func() { allowPrivateOutboundForTests.Store(old) })
 
 	over := strings.Repeat("a", 4<<20+10)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

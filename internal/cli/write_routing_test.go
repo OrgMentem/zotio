@@ -34,9 +34,9 @@ func TestResolveWebWriteBase(t *testing.T) {
 }
 
 func TestResolveWebWriteBaseResolvesAndCachesUserID(t *testing.T) {
-	oldAllowPrivateOutbound := allowPrivateOutboundForTests
-	allowPrivateOutboundForTests = true
-	t.Cleanup(func() { allowPrivateOutboundForTests = oldAllowPrivateOutbound })
+	oldAllowPrivateOutbound := allowPrivateOutboundForTests.Load()
+	allowPrivateOutboundForTests.Store(true)
+	t.Cleanup(func() { allowPrivateOutboundForTests.Store(oldAllowPrivateOutbound) })
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/keys/current" {
@@ -111,9 +111,9 @@ func TestKeyGroupWriteAccessHonorsCanceledContext(t *testing.T) {
 }
 
 func TestKeyGroupWriteAccessPermissionBoundaries(t *testing.T) {
-	oldAllowPrivateOutbound := allowPrivateOutboundForTests
-	allowPrivateOutboundForTests = true
-	t.Cleanup(func() { allowPrivateOutboundForTests = oldAllowPrivateOutbound })
+	oldAllowPrivateOutbound := allowPrivateOutboundForTests.Load()
+	allowPrivateOutboundForTests.Store(true)
+	t.Cleanup(func() { allowPrivateOutboundForTests.Store(oldAllowPrivateOutbound) })
 
 	tests := []struct {
 		name         string
@@ -178,9 +178,9 @@ func TestKeyGroupWriteAccessPermissionBoundaries(t *testing.T) {
 }
 
 func TestKeyMetadataReadersRefuseCrossOriginRedirects(t *testing.T) {
-	oldAllowPrivateOutbound := allowPrivateOutboundForTests
-	allowPrivateOutboundForTests = true
-	t.Cleanup(func() { allowPrivateOutboundForTests = oldAllowPrivateOutbound })
+	oldAllowPrivateOutbound := allowPrivateOutboundForTests.Load()
+	allowPrivateOutboundForTests.Store(true)
+	t.Cleanup(func() { allowPrivateOutboundForTests.Store(oldAllowPrivateOutbound) })
 
 	readers := []struct {
 		name string
@@ -240,9 +240,9 @@ func TestKeyMetadataReadersRefuseCrossOriginRedirects(t *testing.T) {
 }
 
 func TestKeyMetadataReadersFollowSameOriginRedirect(t *testing.T) {
-	oldAllowPrivateOutbound := allowPrivateOutboundForTests
-	allowPrivateOutboundForTests = true
-	t.Cleanup(func() { allowPrivateOutboundForTests = oldAllowPrivateOutbound })
+	oldAllowPrivateOutbound := allowPrivateOutboundForTests.Load()
+	allowPrivateOutboundForTests.Store(true)
+	t.Cleanup(func() { allowPrivateOutboundForTests.Store(oldAllowPrivateOutbound) })
 
 	redirectHits := 0
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -279,9 +279,9 @@ func TestKeyMetadataReadersFollowSameOriginRedirect(t *testing.T) {
 }
 
 func TestKeyMetadataReadersBoundAndValidateResponse(t *testing.T) {
-	oldAllowPrivateOutbound := allowPrivateOutboundForTests
-	allowPrivateOutboundForTests = true
-	t.Cleanup(func() { allowPrivateOutboundForTests = oldAllowPrivateOutbound })
+	oldAllowPrivateOutbound := allowPrivateOutboundForTests.Load()
+	allowPrivateOutboundForTests.Store(true)
+	t.Cleanup(func() { allowPrivateOutboundForTests.Store(oldAllowPrivateOutbound) })
 
 	valid := `{"userID":99,"access":{"groups":{"123":{"write":true}}}}`
 	atLimit := valid + strings.Repeat(" ", int(maxKeyMetadataResponseBytes)-len(valid))
@@ -384,9 +384,9 @@ func testConfigFile(t *testing.T, baseURL string) string {
 }
 
 func TestNewWriteClientDryRunSkipsHybridRouteResolution(t *testing.T) {
-	oldAllowPrivateOutbound := allowPrivateOutboundForTests
-	allowPrivateOutboundForTests = true
-	t.Cleanup(func() { allowPrivateOutboundForTests = oldAllowPrivateOutbound })
+	oldAllowPrivateOutbound := allowPrivateOutboundForTests.Load()
+	allowPrivateOutboundForTests.Store(true)
+	t.Cleanup(func() { allowPrivateOutboundForTests.Store(oldAllowPrivateOutbound) })
 
 	var keyMetadataRequests int
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

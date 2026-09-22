@@ -69,9 +69,9 @@ func newFakeZoteroUpload(t *testing.T, parentKey string) *fakeZoteroUpload {
 	t.Helper()
 	// The upload payload POST now goes through the public-IP dial guard; the
 	// fake server is on loopback, so enable the sanctioned test escape.
-	oldAllowPrivateOutbound := allowPrivateOutboundForTests
-	allowPrivateOutboundForTests = true
-	t.Cleanup(func() { allowPrivateOutboundForTests = oldAllowPrivateOutbound })
+	oldAllowPrivateOutbound := allowPrivateOutboundForTests.Load()
+	allowPrivateOutboundForTests.Store(true)
+	t.Cleanup(func() { allowPrivateOutboundForTests.Store(oldAllowPrivateOutbound) })
 	f := &fakeZoteroUpload{t: t, parentKey: parentKey, authorizedMD5: map[string]string{}}
 	f.srv = httptest.NewServer(http.HandlerFunc(f.handle))
 	t.Cleanup(f.srv.Close)
@@ -292,9 +292,9 @@ func setUploadTestEnv(t *testing.T, f *fakeZoteroUpload) {
 	t.Setenv("ZOTERO_BASE_URL", f.srv.URL+"/users/0")
 	t.Setenv("ZOTERO_API_KEY", "")
 	t.Setenv("ZOTERO_CONFIG", filepath.Join(t.TempDir(), "missing.toml"))
-	oldAllowPrivateOutbound := allowPrivateOutboundForTests
-	allowPrivateOutboundForTests = true
-	t.Cleanup(func() { allowPrivateOutboundForTests = oldAllowPrivateOutbound })
+	oldAllowPrivateOutbound := allowPrivateOutboundForTests.Load()
+	allowPrivateOutboundForTests.Store(true)
+	t.Cleanup(func() { allowPrivateOutboundForTests.Store(oldAllowPrivateOutbound) })
 }
 
 func runAttachmentsAdd(t *testing.T, flags *rootFlags, args []string) (mutation.Envelope, string, error) {
@@ -766,9 +766,9 @@ func TestStoredAttachmentContentTypeRequiresPDFMagic(t *testing.T) {
 }
 
 func TestPostUploadPayloadGuardsPrivateDials(t *testing.T) {
-	oldAllowPrivateOutbound := allowPrivateOutboundForTests
-	allowPrivateOutboundForTests = false
-	t.Cleanup(func() { allowPrivateOutboundForTests = oldAllowPrivateOutbound })
+	oldAllowPrivateOutbound := allowPrivateOutboundForTests.Load()
+	allowPrivateOutboundForTests.Store(false)
+	t.Cleanup(func() { allowPrivateOutboundForTests.Store(oldAllowPrivateOutbound) })
 
 	err := postUploadPayload(context.Background(), &client.Client{}, "https://127.0.0.1:1/upload", "", "", "", uploadRequestFor(t, []byte("payload")))
 	if err == nil || !strings.Contains(err.Error(), "local or private") {
@@ -784,9 +784,9 @@ func TestPostUploadPayloadAllowsLoopbackTestEscape(t *testing.T) {
 		w.WriteHeader(http.StatusNoContent)
 	}))
 	t.Cleanup(srv.Close)
-	oldAllowPrivateOutbound := allowPrivateOutboundForTests
-	allowPrivateOutboundForTests = true
-	t.Cleanup(func() { allowPrivateOutboundForTests = oldAllowPrivateOutbound })
+	oldAllowPrivateOutbound := allowPrivateOutboundForTests.Load()
+	allowPrivateOutboundForTests.Store(true)
+	t.Cleanup(func() { allowPrivateOutboundForTests.Store(oldAllowPrivateOutbound) })
 
 	if err := postUploadPayload(context.Background(), &client.Client{HTTPClient: srv.Client()}, srv.URL+"/upload", "", "", "", uploadRequestFor(t, []byte("payload"))); err != nil {
 		t.Fatalf("loopback upload with test escape: %v", err)
@@ -811,9 +811,9 @@ func TestPostUploadPayloadSendsTheWholeEnvelopeWithADeclaredLength(t *testing.T)
 		w.WriteHeader(http.StatusNoContent)
 	}))
 	t.Cleanup(srv.Close)
-	oldAllowPrivateOutbound := allowPrivateOutboundForTests
-	allowPrivateOutboundForTests = true
-	t.Cleanup(func() { allowPrivateOutboundForTests = oldAllowPrivateOutbound })
+	oldAllowPrivateOutbound := allowPrivateOutboundForTests.Load()
+	allowPrivateOutboundForTests.Store(true)
+	t.Cleanup(func() { allowPrivateOutboundForTests.Store(oldAllowPrivateOutbound) })
 
 	if err := postUploadPayload(context.Background(), &client.Client{HTTPClient: srv.Client()}, srv.URL+"/upload", "text/plain", prefix, suffix, uploadRequestFor(t, data)); err != nil {
 		t.Fatalf("upload: %v", err)
@@ -950,9 +950,9 @@ func TestPostUploadPayloadRefusesAFileChangedAfterHashing(t *testing.T) {
 		w.WriteHeader(http.StatusNoContent)
 	}))
 	t.Cleanup(srv.Close)
-	oldAllowPrivateOutbound := allowPrivateOutboundForTests
-	allowPrivateOutboundForTests = true
-	t.Cleanup(func() { allowPrivateOutboundForTests = oldAllowPrivateOutbound })
+	oldAllowPrivateOutbound := allowPrivateOutboundForTests.Load()
+	allowPrivateOutboundForTests.Store(true)
+	t.Cleanup(func() { allowPrivateOutboundForTests.Store(oldAllowPrivateOutbound) })
 
 	req := uploadRequestFor(t, []byte("original contents"))
 	if err := os.WriteFile(req.Path, []byte("contents rewritten after hashing"), 0o600); err != nil {
@@ -975,9 +975,9 @@ func TestPostUploadPayloadRefusesSourceShrunkAfterPreflight(t *testing.T) {
 		w.WriteHeader(http.StatusNoContent)
 	}))
 	t.Cleanup(srv.Close)
-	oldAllowPrivateOutbound := allowPrivateOutboundForTests
-	allowPrivateOutboundForTests = true
-	t.Cleanup(func() { allowPrivateOutboundForTests = oldAllowPrivateOutbound })
+	oldAllowPrivateOutbound := allowPrivateOutboundForTests.Load()
+	allowPrivateOutboundForTests.Store(true)
+	t.Cleanup(func() { allowPrivateOutboundForTests.Store(oldAllowPrivateOutbound) })
 
 	mutated := false
 	httpClient := &http.Client{Transport: externalHTTPRoundTripFunc(func(r *http.Request) (*http.Response, error) {
@@ -1034,9 +1034,9 @@ func TestPostUploadPayloadRejectsSameMetadataDifferentContent(t *testing.T) {
 		w.WriteHeader(http.StatusNoContent)
 	}))
 	t.Cleanup(srv.Close)
-	oldAllowPrivateOutbound := allowPrivateOutboundForTests
-	allowPrivateOutboundForTests = true
-	t.Cleanup(func() { allowPrivateOutboundForTests = oldAllowPrivateOutbound })
+	oldAllowPrivateOutbound := allowPrivateOutboundForTests.Load()
+	allowPrivateOutboundForTests.Store(true)
+	t.Cleanup(func() { allowPrivateOutboundForTests.Store(oldAllowPrivateOutbound) })
 
 	err = postUploadPayload(context.Background(), &client.Client{HTTPClient: srv.Client()}, srv.URL+"/upload", "", "", "", req)
 	if err == nil || !strings.Contains(err.Error(), "does not match authorized MD5") {
@@ -1087,9 +1087,9 @@ func TestPostUploadPayloadRejectsChangedRedirectReplay(t *testing.T) {
 		}
 	}))
 	t.Cleanup(srv.Close)
-	oldAllowPrivateOutbound := allowPrivateOutboundForTests
-	allowPrivateOutboundForTests = true
-	t.Cleanup(func() { allowPrivateOutboundForTests = oldAllowPrivateOutbound })
+	oldAllowPrivateOutbound := allowPrivateOutboundForTests.Load()
+	allowPrivateOutboundForTests.Store(true)
+	t.Cleanup(func() { allowPrivateOutboundForTests.Store(oldAllowPrivateOutbound) })
 
 	err = postUploadPayload(context.Background(), &client.Client{HTTPClient: srv.Client()}, srv.URL+"/first", "", "", "", req)
 	if err == nil || !strings.Contains(err.Error(), "does not match authorized MD5") {

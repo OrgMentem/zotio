@@ -131,9 +131,9 @@ func TestDeliverWebhookStreamsTheSpoolWithADeclaredLength(t *testing.T) {
 		w.WriteHeader(http.StatusNoContent)
 	}))
 	t.Cleanup(srv.Close)
-	oldAllowPrivateOutbound := allowPrivateOutboundForTests
-	allowPrivateOutboundForTests = true
-	t.Cleanup(func() { allowPrivateOutboundForTests = oldAllowPrivateOutbound })
+	oldAllowPrivateOutbound := allowPrivateOutboundForTests.Load()
+	allowPrivateOutboundForTests.Store(true)
+	t.Cleanup(func() { allowPrivateOutboundForTests.Store(oldAllowPrivateOutbound) })
 
 	sink := DeliverSink{Scheme: "webhook", Target: srv.URL + "/hook"}
 	spool, err := newDeliverSpool(sink)
