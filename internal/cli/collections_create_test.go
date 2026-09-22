@@ -88,3 +88,35 @@ func TestCollectionsCreatePartialBatchIsJournaled(t *testing.T) {
 		t.Fatalf("journaled summary = %+v, want 2 applied and 1 failed", entries[0].Summary)
 	}
 }
+
+// A 2xx body that is not the batch envelope proves nothing: a proxy error
+// page must fail the create with an unknown outcome, never report the
+// collection applied. Fails before the fix, which decoded only Failed and
+// read the error page as zero failures.
+func TestCollectionsCreateNonEnvelopeBodyFailsClosed(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"error":"proxy error"}`))
+	}))
+	defer srv.Close()
+	t.Setenv("ZOTERO_BASE_URL", srv.URL+"/users/0")
+
+	cmd := newCollectionsCreateCmd(&rootFlags{asJSON: true, yes: true, maxChanges: -1})
+	cmd.SilenceErrors, cmd.SilenceUsage = true, true
+	cmd.SetErr(io.Discard)
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetArgs([]string{"--name", "Example"})
+	err := cmd.Execute()
+	if err == nil || ExitCode(err) != 13 {
+		t.Fatalf("collections create error = %v, exit=%d; want degraded failure", err, ExitCode(err))
+	}
+	for _, want := range []string{"collections create", "not a batch envelope", "outcome of the 1 collection(s) in that request is unknown"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("collections create error = %q, want %q", err, want)
+		}
+	}
+	if out.Len() != 0 {
+		t.Fatalf("collections output = %q, must not report a failed batch as successful", out.String())
+	}
+}

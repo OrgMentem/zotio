@@ -180,7 +180,11 @@ func safeToolOptionsForFlags(cmd *cobra.Command) []mcplib.ToolOption {
 func safeInProcessHandler(rootFactory func() *cobra.Command, commandPath []string, allowedFlags map[string]struct{}) server.ToolHandlerFunc {
 	inner := inProcessHandler(rootFactory, commandPath)
 	return func(ctx context.Context, req mcplib.CallToolRequest) (*mcplib.CallToolResult, error) {
-		if err := validateMirrorArguments(req.GetArguments(), allowedFlags); err != nil {
+		callArgs := req.GetArguments()
+		if err := validateMirrorArguments(callArgs, allowedFlags); err != nil {
+			return mcplib.NewToolResultError(err.Error()), nil
+		}
+		if err := positionalBindingError(rootFactory, commandPath, positionalPathForArgs(commandPath, callArgs)); err != nil {
 			return mcplib.NewToolResultError(err.Error()), nil
 		}
 		return inner(ctx, req)
@@ -203,10 +207,15 @@ func validateMirrorArguments(args map[string]any, allowedFlags map[string]struct
 			return fmt.Errorf("MCP command mirror does not expose --%s for this command", name)
 		}
 	}
-	raw, _ := args["args"].(string)
-	for _, token := range splitShellArgs(raw) {
-		if strings.HasPrefix(token, "-") {
-			return fmt.Errorf("MCP command mirror args accepts positional arguments only; raw flag %q is not allowed", token)
+	if rawValue, exists := args["args"]; exists && rawValue != nil {
+		raw, ok := rawValue.(string)
+		if !ok {
+			return mirrorArgsTypeError(rawValue)
+		}
+		for _, token := range splitShellArgs(raw) {
+			if strings.HasPrefix(token, "-") {
+				return fmt.Errorf("MCP command mirror args accepts positional arguments only; raw flag %q is not allowed", token)
+			}
 		}
 	}
 	return nil

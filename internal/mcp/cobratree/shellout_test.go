@@ -5,8 +5,10 @@ package cobratree
 import (
 	"context"
 	"errors"
+	"fmt"
 	"reflect"
 	"runtime"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -168,5 +170,47 @@ func TestSplitShellArgsSupportsMixedQuotingAndEscapes(t *testing.T) {
 	}
 	if got := splitShellArgs(input); !reflect.DeepEqual(got, want) {
 		t.Fatalf("splitShellArgs(%q) = %#v, want %#v", input, got, want)
+	}
+}
+
+// nonStringArgsEchoRoot records whether the command body ran, proving a
+// refused call never reaches Cobra.
+func nonStringArgsEchoRoot(called *bool) *cobra.Command {
+	root := &cobra.Command{Use: "zotio", SilenceUsage: true, SilenceErrors: true}
+	root.AddCommand(&cobra.Command{
+		Use: "echo",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			*called = true
+			fmt.Fprint(cmd.OutOrStdout(), "echoed")
+			return nil
+		},
+	})
+	return root
+}
+
+// A numeric or boolean positional argument must be refused with a clear
+// error, never dropped silently: the old core ran the command with no
+// positionals and reported only the command's result.
+func TestRunMirroredInProcessRefusesNonStringPositionalArgs(t *testing.T) {
+	for name, value := range map[string]any{
+		"numeric": float64(123),
+		"boolean": true,
+		"array":   []any{"KEY1"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			var called bool
+			res := runMirroredInProcess(context.Background(), func() *cobra.Command {
+				return nonStringArgsEchoRoot(&called)
+			}, []string{"echo"}, map[string]any{"args": value})
+			if res == nil || !res.IsError {
+				t.Fatalf("runMirroredInProcess with %T args = %+v, want error tool result", value, res)
+			}
+			if called {
+				t.Fatalf("refused call with %T args still executed the command", value)
+			}
+			if text := toolResultText(t, res); !strings.Contains(text, "must be a string") {
+				t.Fatalf("error result = %q, want it to name the string contract", text)
+			}
+		})
 	}
 }

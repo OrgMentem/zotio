@@ -247,10 +247,11 @@ Use --fulltext to search synced PDF text and resolve hits to parent items.`,
 					results = append(results, raw)
 				}
 			case resourceType == "":
-				// Default local search runs cross-resource FTS.
-				results, err = db.Search(query, limit)
+				// Default local search runs cross-resource FTS. Context-bound so
+				// a Ctrl+C aborts the SQLite read like the fulltext and MCP paths.
+				results, err = db.SearchContext(cmd.Context(), query, limit)
 			default:
-				results, err = db.SearchByType(query, resourceType, limit)
+				results, err = db.SearchByTypeContext(cmd.Context(), query, resourceType, limit)
 			}
 			if err != nil {
 				return fmt.Errorf("search failed: %w", err)

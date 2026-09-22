@@ -692,6 +692,101 @@ func TestImportApplyLinkedFileWebCreateReturnsParentAndAttachmentKeys(t *testing
 	}
 }
 
+// Regression: zotio-6b08d890f386c71b — a linked-file attachment that fails
+// after the parent item is created must not report applied. The envelope is
+// not OK, the item journals the created parent key for reconciliation, and a
+// retry can address the parent instead of minting a duplicate.
+func TestImportApplyLinkedFileWebCreateReportsFailedAttachment(t *testing.T) {
+	fastRetryBackoff(t)
+	t.Setenv("HOME", t.TempDir())
+	mutationJournalRecorder = recordMutationJournal
+	t.Cleanup(func() { mutationJournalRecorder = nil })
+	// The parent create succeeds; every attachment child POST fails.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		path := strings.TrimPrefix(r.URL.Path, "/users/0")
+		switch {
+		case r.Method == http.MethodGet && path == "/items/new":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = fmt.Fprint(w, `{"itemType":"journalArticle","title":"","creators":[],"date":"","DOI":"","publicationTitle":""}`)
+		case r.Method == http.MethodPost && path == "/items":
+			var items []map[string]any
+			if err := json.NewDecoder(r.Body).Decode(&items); err != nil || len(items) != 1 {
+				http.Error(w, `{"error":"bad body"}`, http.StatusBadRequest)
+				return
+			}
+			if items[0]["itemType"] == "attachment" {
+				http.Error(w, `{"error":"parent item not found"}`, http.StatusNotFound)
+				return
+			}
+			_, _ = fmt.Fprint(w, `{"success":{"0":"PARENT1"}}`)
+		default:
+			http.Error(w, fmt.Sprintf(`{"error":"unexpected %s %s"}`, r.Method, r.URL.Path), http.StatusInternalServerError)
+		}
+	}))
+	t.Cleanup(srv.Close)
+	pdf := writeUploadFixture(t, "linked-fail.pdf", []byte("%PDF-1.4\nlinked\n%%EOF"))
+	manifest := importManifest{
+		SchemaVersion: importManifestSchemaVersion,
+		Dir:           filepath.Dir(pdf),
+		Entries: []importManifestEntry{{
+			Path: pdf, Action: "create", Status: "resolved", Title: "Linked Fail",
+			Item: map[string]any{"itemType": "journalArticle", "title": "Linked Fail"},
+		}},
+	}
+	manifestPath := writeImportApplyTestManifest(t, manifest)
+	flags := &rootFlags{
+		asJSON: true, yes: true, via: "web", maxChanges: -1,
+		configPath: testConfigFile(t, srv.URL+"/users/0"),
+	}
+	env, stderr, err := runImportApplyTestCmdWithFlags(t, flags, []string{"--attach-mode", "linked-file", manifestPath})
+	if err == nil {
+		t.Fatalf("linked-file create with failing attachment succeeded; env=%+v stderr=%s", env, stderr)
+	}
+	if env.OK {
+		t.Fatalf("envelope OK with a failed requested attachment; env=%+v", env)
+	}
+	if code := ExitCode(err); code == 0 {
+		t.Fatalf("exit code 0 with a failed requested attachment; err=%v", err)
+	}
+	if env.Result == nil || len(env.Result.Items) != 1 {
+		t.Fatalf("env = %+v, want one result item", env)
+	}
+	item := env.Result.Items[0]
+	if item.Status != "failed" {
+		t.Fatalf("item status = %q, want failed (not applied)", item.Status)
+	}
+	if item.Key != "PARENT1" {
+		t.Fatalf("item key = %q, want PARENT1 (the created parent, for reconciliation)", item.Key)
+	}
+	reason, ok := item.Reason.(map[string]any)
+	if !ok {
+		t.Fatalf("reason = %#v, want a structured detail map", item.Reason)
+	}
+	if reason["parent_key"] != "PARENT1" || reason["key"] != "PARENT1" {
+		t.Fatalf("reason = %#v, want the created parent key under parent_key and key", reason)
+	}
+	if _, has := reason["attachment_error"]; !has {
+		t.Fatalf("reason = %#v, want the attachment failure named", reason)
+	}
+	if _, has := reason["attachment_key"]; has {
+		t.Fatalf("reason = %#v, must not claim an attachment key that was never created", reason)
+	}
+	message, _ := reason["message"].(string)
+	if !strings.Contains(message, "was created") || !strings.Contains(message, "was not attached") {
+		t.Fatalf("message = %q, want the created-but-unattached condition stated", message)
+	}
+	if rendered := mutation.Rows(env); !strings.Contains(strings.Join(rendered, " "), "was not attached") {
+		t.Fatalf("human rows = %q, want the attachment failure rendered", rendered)
+	}
+	entries, listErr := mutation.ListEntries(helpersTestJournalDir(t))
+	if listErr != nil || len(entries) != 1 || len(entries[0].Ops) != 1 {
+		t.Fatalf("journal entries = %+v, err=%v; want one recorded op", entries, listErr)
+	}
+	if entries[0].Ops[0].Key != "PARENT1" || entries[0].Ops[0].Status != "failed" {
+		t.Fatalf("journal op = %+v, want failed op keyed on the created parent", entries[0].Ops[0])
+	}
+}
+
 // TestImportApplyStoredConnectorCreateReportsOrphanedParentOnAttachFailure
 // covers zotio-orphan-evidence: routeCreateItem's SaveItems call commits the
 // parent in Zotero desktop before SaveAttachment ever runs, and the two calls

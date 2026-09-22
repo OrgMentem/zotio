@@ -14,6 +14,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"strings"
 
 	"zotio/internal/mutation"
 	"zotio/internal/store"
@@ -578,18 +579,23 @@ var mirrorIdentityFields = map[string]bool{
 }
 
 // applyChangeToItemData forward-applies one change to an item's data map. It
-// handles tag/collection membership (scalar values only), creator display-name
-// renames over the ordered creators array, and scalar field set/clear for a
-// conservative, explicit allowlist of known Zotero item fields; anything else
-// (bulk []string adds, "deleted"/trash, structural edits, unrecognized or
-// identity field names) returns false so the caller skips write-through for
-// that item and leaves it for the next `sync`.
+// handles tag/collection membership (scalar values only), whole-list tag and
+// collection replacements ("tags_set"/"collections_set" as sent by items
+// update), creator display-name renames over the ordered creators array, and
+// scalar field set/clear for a conservative, explicit allowlist of known
+// Zotero item fields; anything else ("deleted"/trash, structural edits,
+// unrecognized or identity field names) returns false so the caller skips
+// write-through for that item and leaves it for the next `sync`.
 func applyChangeToItemData(data map[string]any, c mutation.Change) bool {
 	switch c.Field {
 	case "tags":
 		return applyTagChangeToData(data, c)
 	case "collections":
 		return applyCollectionChangeToData(data, c)
+	case "tags_set":
+		return applyTagsSetChangeToData(data, c)
+	case "collections_set":
+		return applyCollectionsSetChangeToData(data, c)
 	case "creators":
 		return applyCreatorRenameChangeToData(data, c)
 	default:
@@ -731,5 +737,124 @@ func applyCollectionChangeToData(data map[string]any, c mutation.Change) bool {
 		cols = kept
 	}
 	data["collections"] = cols
+	return true
+}
+
+// applyTagsSetChangeToData replays a whole-list tag replacement (Field
+// "tags_set", as recorded by itemsUpdateChanges) onto the mirror. The Add
+// value is the full tag array the PATCH set, so the mirror row is overwritten
+// with exactly that list rather than merged: merging would keep tags the write
+// just removed. Validation is fail-closed -- any malformed element returns
+// false and the row is left for the next `sync`, exactly like any other
+// unreplayable change. A nil Add is not a valid replacement (an empty clear
+// arrives as an empty array), and a non-nil Remove alongside a set is a shape
+// no producer emits, so both return false rather than guessing.
+func applyTagsSetChangeToData(data map[string]any, c mutation.Change) bool {
+	if c.Add == nil || c.Remove != nil {
+		return false
+	}
+	raw, err := json.Marshal(c.Add)
+	if err != nil {
+		return false
+	}
+	var tags []map[string]any
+	if err := json.Unmarshal(raw, &tags); err != nil {
+		return false
+	}
+	// json.Unmarshal leaves a nil slice for JSON null, which c.Add == nil
+	// already rules out, but an explicitly null element array must still not
+	// become a JSON null in the mirror row: it would read back as "no tags
+	// key" rather than "no tags".
+	if tags == nil {
+		tags = []map[string]any{}
+	}
+	replaced := make([]any, 0, len(tags))
+	for _, t := range tags {
+		name, ok := t["tag"].(string)
+		if !ok || strings.TrimSpace(name) == "" {
+			return false
+		}
+		tag := map[string]any{"tag": name}
+		// Manual tags carry no type in the Zotero API; automatic ones carry
+		// type 1. Store the canonical shape so a later read-plane row already
+		// carrying the write compares equal and the pending-write marker can
+		// retire instead of pinning the row.
+		if rawType, present := t["type"]; present && rawType != nil {
+			tagType, ok := mirrorTagTypeNumber(rawType)
+			if !ok {
+				return false
+			}
+			if tagType != 0 {
+				tag["type"] = tagType
+			}
+		}
+		replaced = append(replaced, tag)
+	}
+	data["tags"] = replaced
+	return true
+}
+
+// mirrorTagTypeNumber reads a Zotero tag type coercion-free: JSON numbers
+// decode as float64, but a Go-built change may carry any int width. Only the
+// two types the API defines (0 manual, 1 automatic) are accepted.
+func mirrorTagTypeNumber(v any) (int, bool) {
+	switch n := v.(type) {
+	case float64:
+		if n == 0 || n == 1 {
+			return int(n), true
+		}
+	case int:
+		if n == 0 || n == 1 {
+			return n, true
+		}
+	case int8:
+		if n == 0 || n == 1 {
+			return int(n), true
+		}
+	case int16:
+		if n == 0 || n == 1 {
+			return int(n), true
+		}
+	case int32:
+		if n == 0 || n == 1 {
+			return int(n), true
+		}
+	case int64:
+		if n == 0 || n == 1 {
+			return int(n), true
+		}
+	}
+	return 0, false
+}
+
+// applyCollectionsSetChangeToData replays a whole-list collection replacement
+// (Field "collections_set", as recorded by itemsUpdateChanges) onto the
+// mirror. Same contract as applyTagsSetChangeToData: the Add value is the
+// full key list the PATCH assigned, it overwrites rather than merges, and any
+// malformed element returns false for the next `sync` to reconcile
+// authoritatively.
+func applyCollectionsSetChangeToData(data map[string]any, c mutation.Change) bool {
+	if c.Add == nil || c.Remove != nil {
+		return false
+	}
+	raw, err := json.Marshal(c.Add)
+	if err != nil {
+		return false
+	}
+	var keys []string
+	if err := json.Unmarshal(raw, &keys); err != nil {
+		return false
+	}
+	if keys == nil {
+		keys = []string{}
+	}
+	replaced := make([]any, 0, len(keys))
+	for _, k := range keys {
+		if strings.TrimSpace(k) == "" {
+			return false
+		}
+		replaced = append(replaced, k)
+	}
+	data["collections"] = replaced
 	return true
 }

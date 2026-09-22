@@ -41,6 +41,13 @@ func newCollectionsWriteRecorder(t *testing.T) *collectionsWriteRecorder {
 		rec.mutating = append(rec.mutating, request)
 		w.Header().Set("Last-Modified-Version", "8")
 		w.WriteHeader(http.StatusOK)
+		if r.Method == http.MethodPost {
+			// A real batch create answers with the object keyed by its
+			// request index. An empty envelope attributes nothing, which
+			// the batch-envelope gate now refuses as an unknown outcome.
+			_, _ = w.Write([]byte(`{"success":{"0":"NEWCOLL1"},"successful":{"0":{"key":"NEWCOLL1","version":8,"data":{"key":"NEWCOLL1","name":"New"}}},"unchanged":{},"failed":{}}`))
+			return
+		}
 		_, _ = w.Write([]byte(`{"successful":{}}`))
 	}))
 	t.Cleanup(rec.server.Close)

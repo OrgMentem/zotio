@@ -151,3 +151,54 @@ func TestConfigUpdateChecksAreOptIn(t *testing.T) {
 		t.Fatal("[updates].check = true did not enable checks")
 	}
 }
+
+func TestSetUpdateChecksEnabledFailedPersistLeavesLiveUnchanged(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "config.toml")
+
+	cfg, err := Load(cfgPath)
+	if err != nil {
+		t.Fatalf("Load absent config: %v", err)
+	}
+	if cfg.UpdateChecksEnabled() {
+		t.Fatal("absent [updates] config enabled checks")
+	}
+
+	// Point the save at a directory: the persist must fail.
+	cfg.Path = dir
+	if err := cfg.SetUpdateChecksEnabled(true); err == nil {
+		t.Fatal("SetUpdateChecksEnabled to a directory succeeded, want an error")
+	}
+	if cfg.UpdateChecksEnabled() {
+		t.Fatal("live config reports checks enabled after a failed persist")
+	}
+
+	// The same failed write in the other direction must not stick either.
+	cfg.Path = cfgPath
+	if err := cfg.SetUpdateChecksEnabled(true); err != nil {
+		t.Fatalf("SetUpdateChecksEnabled: %v", err)
+	}
+	if !cfg.UpdateChecksEnabled() {
+		t.Fatal("live config does not report checks after a successful persist")
+	}
+	cfg.Path = dir
+	if err := cfg.SetUpdateChecksEnabled(false); err == nil {
+		t.Fatal("SetUpdateChecksEnabled(false) to a directory succeeded, want an error")
+	}
+	if !cfg.UpdateChecksEnabled() {
+		t.Fatal("live config reports checks disabled after a failed persist")
+	}
+
+	// A healthy path still persists and reloads.
+	cfg.Path = cfgPath
+	if err := cfg.SetUpdateChecksEnabled(false); err != nil {
+		t.Fatalf("SetUpdateChecksEnabled(false): %v", err)
+	}
+	reloaded, err := Load(cfgPath)
+	if err != nil {
+		t.Fatalf("reload: %v", err)
+	}
+	if reloaded.UpdateChecksEnabled() {
+		t.Fatal("reloaded config enabled checks after persisting false")
+	}
+}

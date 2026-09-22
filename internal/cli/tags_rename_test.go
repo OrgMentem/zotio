@@ -440,3 +440,73 @@ func TestTagRenameChangeReplaysOntoMirroredItemTags(t *testing.T) {
 		})
 	}
 }
+
+// TestTagsRenameWriteRouteFailureIsNotAnEmptySelection guards the finding that
+// a failed hybrid write-route resolution surfaced as "nothing matched": with a
+// local base URL plus a key, a keys/current failure must exit non-zero naming
+// the cause instead of planning an empty rename.
+func TestTagsRenameWriteRouteFailureIsNotAnEmptySelection(t *testing.T) {
+	oldAllowPrivateOutbound := allowPrivateOutboundForTests.Load()
+	allowPrivateOutboundForTests.Store(true)
+	t.Cleanup(func() { allowPrivateOutboundForTests.Store(oldAllowPrivateOutbound) })
+
+	// Expired credentials: the key-metadata lookup answers 401.
+	webAPI := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/keys/current" {
+			http.NotFound(w, r)
+			return
+		}
+		http.Error(w, `{"error": "invalid key"}`, http.StatusUnauthorized)
+	}))
+	defer webAPI.Close()
+	oldWebBase := zoteroWebAPIBase
+	zoteroWebAPIBase = webAPI.URL
+	t.Cleanup(func() { zoteroWebAPIBase = oldWebBase })
+
+	t.Setenv("ZOTERO_BASE_URL", "http://localhost:23119/api/users/0")
+	t.Setenv("ZOTERO_API_KEY", "expired-key")
+	t.Setenv("ZOTERO_USER_ID", "")
+	t.Setenv("ZOTERO_CONFIG", filepath.Join(t.TempDir(), "missing.toml"))
+
+	_, _, err := writePlaneTestRunMutationCmd(t, newTagsRenameCmd, &rootFlags{maxChanges: -1, timeout: 5 * time.Second}, "--from", "foo", "--to", "bar")
+	if err == nil {
+		t.Fatal("tags rename with a failing write route succeeded, want the resolution error")
+	}
+	if code := ExitCode(err); code == 0 {
+		t.Fatalf("exit code = 0, want non-zero for a write-route resolution failure (%v)", err)
+	}
+	for _, want := range []string{"could not resolve Zotero Web API write route", "keys/current", "HTTP 401"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error = %q, want it to name the underlying cause %q", err.Error(), want)
+		}
+	}
+}
+
+// TestTagsRenameEmptyMatchStillReportsEmptySelection proves a genuine empty
+// match keeps today's empty-selection behavior: exit 0 with a planned no-op
+// naming the absent tag, not an error.
+func TestTagsRenameEmptyMatchStillReportsEmptySelection(t *testing.T) {
+	srv := newTagRenameCommandTestServer(t, nil)
+
+	env, stderr, err := writePlaneTestRunMutationCmd(t, newTagsRenameCmd, &rootFlags{maxChanges: -1}, "--from", "foo", "--to", "bar")
+	if err != nil {
+		t.Fatalf("tags rename empty preview: %v; stderr=%s", err, stderr)
+	}
+	if !env.OK || env.Mode != "preview" {
+		t.Fatalf("env = %+v, want an ok preview", env)
+	}
+	summary := env.Plan.Summary
+	if summary.Selected != 1 || summary.NoOp != 1 || summary.Planned != 0 {
+		t.Fatalf("plan summary = %+v, want one selected no-op and nothing planned", summary)
+	}
+	if total := totalTagRenamePatchCount(srv); total != 0 {
+		t.Fatalf("PATCH count = %d, want 0", total)
+	}
+	reason := emptyTagRenameReason(false, "foo", "bar", 0)
+	if reason["code"] != "tag_not_found" {
+		t.Fatalf("reason = %+v, want code tag_not_found", reason)
+	}
+	if want := `no item carries tag "foo" on the plane this write targets`; reason["message"] != want {
+		t.Fatalf("reason message = %q, want %q", reason["message"], want)
+	}
+}

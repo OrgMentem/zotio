@@ -1744,7 +1744,7 @@
           "type": "boolean"
         },
         "items": {
-          "description": "Array of item objects to create (use item-types and item-type-fields for schema)",
+          "description": "Array of item objects to create, or a single item object (sent as a one-element array; use item-types and item-type-fields for schema)",
           "type": "string"
         },
         "max-changes": {
@@ -1756,7 +1756,7 @@
           "type": "number"
         },
         "stdin": {
-          "description": "Read request body as JSON from stdin (default: false)",
+          "description": "Read request body as JSON from stdin (array or single object, as --items) (default: false)",
           "type": "boolean"
         },
         "via": {

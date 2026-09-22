@@ -18,6 +18,12 @@ func newCollectionsMoveCmd(flags *rootFlags) *cobra.Command {
 		Use:         "move <collectionKey> --to <parentKey>",
 		Short:       "Move a collection under a new parent",
 		Annotations: map[string]string{"zotio:method": "PUT", "zotio:path": "/collections/{collectionKey}"},
+		// One key per run. Cobra's default for a command with no subcommands is
+		// ArbitraryArgs, so `collections move K1 K2 --to P` used to move K1 and
+		// drop K2 on the floor: the path and the whole envelope are built from
+		// args[0] alone, and nothing reported the ignored keys. Zero args still
+		// renders help, which MaximumNArgs allows and ExactArgs would not.
+		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if len(args) == 0 {
 				return cmd.Help()

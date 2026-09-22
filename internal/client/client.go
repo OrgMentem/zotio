@@ -274,9 +274,15 @@ func New(cfg *config.Config, timeout time.Duration, rateLimit float64) *Client {
 // synchronization state. A Client must never be copied by value because it holds
 // sync.Once values and mutexes; global schema endpoints need the library prefix
 // stripped from BaseURL, so clone explicitly instead.
+//
+// The base URL runs through the same trusted-base validation as New: a base the
+// original client never validated falls back to the default instead of
+// receiving the API key and configured headers. Both in-tree callers derive the
+// clone base from the already-validated BaseURL, so the validation passes
+// through unchanged for them.
 func (c *Client) CloneForRead(baseURL string) *Client {
 	clone := &Client{
-		BaseURL:    baseURL,
+		BaseURL:    sanitizeClientBaseURL(baseURL),
 		Config:     c.Config,
 		HTTPClient: c.HTTPClient,
 		DryRun:     c.DryRun,
@@ -621,7 +627,7 @@ func (c *Client) readCache(generation cacheGenerationToken, path string, params 
 		return nil, false
 	}
 	if time.Since(info.ModTime()) > 5*time.Minute {
-		_ = os.Remove(cacheFile)
+		removeExpiredCacheEntry(cacheFile, info)
 		return nil, false
 	}
 	data, err := os.ReadFile(cacheFile)
@@ -639,6 +645,23 @@ func (c *Client) readCache(generation cacheGenerationToken, path string, params 
 		return nil, false
 	}
 	return body, true
+}
+
+// removeExpiredCacheEntry deletes cacheFile only when it still holds the expired
+// entry described by observed. A concurrent GET publishes a fresh response by
+// atomic rename, which carries a new modification time, so an entry whose mtime
+// no longer matches is a fresh publication that must survive this cleanup, not
+// the expired entry this caller observed. Deleting by key alone would drop that
+// fresh response and force a needless re-fetch.
+func removeExpiredCacheEntry(cacheFile string, observed os.FileInfo) {
+	current, err := os.Stat(cacheFile)
+	if err != nil {
+		return
+	}
+	if !current.ModTime().Equal(observed.ModTime()) {
+		return
+	}
+	_ = os.Remove(cacheFile)
 }
 
 // cacheGenerationToken is the snapshot a GET takes before it looks at the
@@ -1178,11 +1201,19 @@ func (c *Client) doRequestOnBase(ctx context.Context, baseOverride, method, path
 		// only attach the Zotero API
 		// key to trusted Zotero/local API origins, so a hostile ZOTERO_BASE_URL
 		// override cannot harvest credentials.
-		if authHeader != "" && shouldSendZoteroAuth(req.URL) {
+		trustedForAuth := shouldSendZoteroAuth(req.URL)
+		if authHeader != "" && trustedForAuth {
 			req.Header.Set("Zotero-API-Key", authHeader)
 		}
 		if c.Config != nil {
 			for k, v := range c.Config.Headers {
+				// Positive rule: user-configured headers are secret-bearing
+				// by default (Authorization, tokens). Only a small
+				// non-secret allowlist merges onto a destination that is
+				// not trusted for auth (e.g. the local loopback plane).
+				if !trustedForAuth && !isUntrustedSafeConfigHeader(k) {
+					continue
+				}
 				req.Header.Set(k, v)
 			}
 		}
@@ -1203,9 +1234,10 @@ func (c *Client) doRequestOnBase(ctx context.Context, baseOverride, method, path
 				req.Header.Set("If-Unmodified-Since-Version", strconv.Itoa(stale))
 			}
 		}
-		// also strip any custom
-		// config/override auth headers from untrusted base URLs.
-		if !shouldSendZoteroAuth(req.URL) {
+		// Backstop for per-request overrides: never let an auth header reach
+		// a destination that is not trusted for auth, even if a caller put
+		// it in headerOverrides directly.
+		if !trustedForAuth {
 			req.Header.Del("Zotero-API-Key")
 			req.Header.Del("Authorization")
 		}
@@ -1382,8 +1414,10 @@ func shouldSendZoteroAuth(u *url.URL) bool {
 		return false
 	}
 	// Local Zotero HTTP does not need the Web API key; only the canonical HTTPS
-	// Web API should receive it.
-	return u.Scheme == "https" && strings.EqualFold(u.Hostname(), "api.zotero.org")
+	// Web API should receive it. The hostname goes through the same
+	// canonicalisation as the base-URL sanitiser so a base one accepts the
+	// other cannot reject (an accepted-but-unauthenticated base 403s).
+	return u.Scheme == "https" && canonicalZoteroHostname(u.Hostname()) == "api.zotero.org"
 }
 
 func sanitizeClientBaseURL(raw string) string {
@@ -1398,11 +1432,35 @@ func sanitizeClientBaseURL(raw string) string {
 	return defaultZoteroBaseURL
 }
 
+// isUntrustedSafeConfigHeader reports whether a user-configured header may
+// still merge onto a request whose destination is not trusted for auth (the
+// local loopback plane). The allowlist holds only non-secret Zotero protocol
+// headers; every other configured header (Authorization, tokens, ...) is
+// secret-bearing by default and stays off the wire there.
+func isUntrustedSafeConfigHeader(name string) bool {
+	switch strings.ToLower(name) {
+	case "zotero-api-version",
+		"zotero-write-token",
+		"if-unmodified-since-version",
+		"if-match",
+		"if-none-match":
+		return true
+	}
+	return false
+}
+
+// canonicalZoteroHostname lowercases the host and strips one trailing dot so
+// the trust predicates agree on "api.zotero.org." — the single shared
+// normalisation for both base-URL sanitising and per-request auth gating.
+func canonicalZoteroHostname(host string) string {
+	return strings.TrimSuffix(strings.ToLower(host), ".")
+}
+
 func trustedZoteroBaseURL(u *url.URL) bool {
 	if u == nil {
 		return false
 	}
-	host := strings.TrimSuffix(strings.ToLower(u.Hostname()), ".")
+	host := canonicalZoteroHostname(u.Hostname())
 	if u.Scheme == "https" && host == "api.zotero.org" {
 		return true
 	}

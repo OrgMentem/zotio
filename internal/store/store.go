@@ -235,19 +235,235 @@ func (s *Store) Close() error {
 	return s.db.Close()
 }
 
-// DB exposes the underlying *sql.DB for callers that need to run ad-hoc
-// queries (e.g., doctor's cache inspection, share snapshot import).
-// Callers must not call Close on the returned handle.
-func (s *Store) DB() *sql.DB {
-	return s.db
+// GuardedDB is the only ad-hoc SQL handle a Store exposes. It offers the
+// read methods production callers need (doctor's cache inspection, preflight
+// probes, import health checks) plus single-statement writes that serialize
+// through the store's single-writer lock. It deliberately exposes no raw
+// *sql.DB: no caller can Begin/Conn against the pool and interleave an
+// auxiliary write with sync's batch transactions (ADR-0005). The read
+// methods (Query, QueryContext, QueryRow, QueryRowContext) only accept
+// read statements (SELECT, WITH-form SELECT, PRAGMA, EXPLAIN) and refuse
+// anything else so a DELETE/UPDATE/INSERT ... RETURNING cannot slip a write
+// through the read path that bypasses the single-writer lock. Writes belong
+// in Exec/ExecContext/ExecWrite. Multi-statement auxiliary work belongs in
+// WithWriteTx, which holds the same lock across the whole transaction.
+type GuardedDB struct {
+	s *Store
+}
+
+// DB returns the store's guarded ad-hoc handle. Reads run through the
+// store's busy-retry path and stay concurrent under WAL; writes run through
+// ExecWrite and share the in-process serialization of every other writer.
+// The returned handle must not be retained past Store.Close.
+func (s *Store) DB() *GuardedDB {
+	return &GuardedDB{s: s}
+}
+
+// Exec runs a single write statement under the store's write serialization
+// lock. It is the contextless convenience over ExecWrite for callers with
+// an explicit background-context contract (notably tests).
+func (g *GuardedDB) Exec(query string, args ...any) (sql.Result, error) {
+	return g.s.ExecWrite(context.Background(), query, args...)
+}
+
+// ExecContext runs a single write statement under the store's write
+// serialization lock, honouring cancellation while waiting for the lock and
+// while SQLite waits on the WAL writer.
+func (g *GuardedDB) ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error) {
+	return g.s.ExecWrite(ctx, query, args...)
+}
+
+// Query runs a read through the store's busy-retry path. Only read
+// statements (SELECT, WITH, PRAGMA, EXPLAIN) are accepted; anything else is
+// refused so a write cannot slip through the read path past the
+// single-writer lock — use ExecWrite or WithWriteTx for those.
+func (g *GuardedDB) Query(query string, args ...any) (*sql.Rows, error) {
+	if err := validateGuardedRead(query); err != nil {
+		return nil, err
+	}
+	return g.s.Query(query, args...)
+}
+
+// QueryContext runs a cancellable read through the store's busy-retry path.
+// It enforces the same read-only statement gate as Query.
+func (g *GuardedDB) QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error) {
+	if err := validateGuardedRead(query); err != nil {
+		return nil, err
+	}
+	return g.s.QueryContext(ctx, query, args...)
+}
+
+// QueryRow runs a single-row read. The returned row retries SQLite
+// contention on Scan, like Store.QueryRowContext. A refused statement
+// surfaces as the Scan error, since database/sql defers row errors until
+// the caller consumes the row.
+func (g *GuardedDB) QueryRow(query string, args ...any) *Row {
+	if err := validateGuardedRead(query); err != nil {
+		return &Row{store: g.s, ctx: context.Background(), query: query, args: args, err: err}
+	}
+	return g.s.QueryRowContext(context.Background(), query, args...)
+}
+
+// QueryRowContext runs a cancellable single-row read. Busy errors surface
+// during Scan, so the scan itself is retried. A refused statement surfaces
+// as the Scan error.
+func (g *GuardedDB) QueryRowContext(ctx context.Context, query string, args ...any) *Row {
+	if err := validateGuardedRead(query); err != nil {
+		if ctx == nil {
+			ctx = context.Background()
+		}
+		return &Row{store: g.s, ctx: ctx, query: query, args: args, err: err}
+	}
+	return g.s.QueryRowContext(ctx, query, args...)
+}
+
+// validateGuardedRead enforces the GuardedDB read contract: the statement
+// must lead with SELECT, WITH, PRAGMA or EXPLAIN once leading whitespace
+// and SQL comments are stripped, so a DELETE/UPDATE/INSERT (including
+// INSERT ... RETURNING, which SQLite executes through a Query call) cannot
+// bypass the single-writer lock. The keyword match is case-insensitive and
+// requires a word boundary so a write hiding behind a read prefix (for
+// example "-- setup\nDELETE ...") is still refused.
+func validateGuardedRead(query string) error {
+	rest := stripGuardedReadPrefix(query)
+	upper := strings.ToUpper(rest)
+	for _, kw := range []string{"SELECT", "WITH", "PRAGMA", "EXPLAIN"} {
+		if strings.HasPrefix(upper, kw) {
+			if len(rest) == len(kw) || !isGuardedReadIdentChar(rest[len(kw)]) {
+				return nil
+			}
+			break
+		}
+	}
+	return fmt.Errorf("store: GuardedDB read methods accept only SELECT, WITH, PRAGMA and EXPLAIN statements; use ExecWrite or WithWriteTx for writes")
+}
+
+// stripGuardedReadPrefix removes the leading whitespace, statement
+// separators and SQL comments SQLite itself skips before parsing the first
+// keyword, so the read gate judges the same statement the driver runs.
+func stripGuardedReadPrefix(s string) string {
+	for {
+		s = strings.TrimLeft(s, " \t\n\r\f\v;")
+		switch {
+		case strings.HasPrefix(s, "--"):
+			if idx := strings.IndexByte(s, '\n'); idx >= 0 {
+				s = s[idx+1:]
+				continue
+			}
+			return ""
+		case strings.HasPrefix(s, "/*"):
+			if idx := strings.Index(s[2:], "*/"); idx >= 0 {
+				s = s[2+idx+2:]
+				continue
+			}
+			return ""
+		default:
+			return s
+		}
+	}
+}
+
+func isGuardedReadIdentChar(c byte) bool {
+	return c == '_' || c == '$' ||
+		(c >= '0' && c <= '9') ||
+		(c >= 'A' && c <= 'Z') ||
+		(c >= 'a' && c <= 'z')
+}
+
+// PingContext probes liveness without taking the writer lock.
+func (g *GuardedDB) PingContext(ctx context.Context) error {
+	return g.s.db.PingContext(ctx)
+}
+
+// acquireWrite serializes writers honouring cancellation. A plain
+// writeMu.Lock ignores the context, so a cancelled sync stuck behind a slow
+// writer would wait out the whole transaction; TryLock polling lets it fail
+// fast with ctx.Err instead. A nil context reads as Background.
+func (s *Store) acquireWrite(ctx context.Context) (release func(), err error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if s.writeMu.TryLock() {
+		return s.writeMu.Unlock, nil
+	}
+	backoff := 2 * time.Millisecond
+	for {
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-time.After(backoff):
+		}
+		if s.writeMu.TryLock() {
+			return s.writeMu.Unlock, nil
+		}
+		if backoff < 20*time.Millisecond {
+			backoff *= 2
+		}
+	}
+}
+
+// WithWriteTx runs fn inside a single SQLite transaction holding the
+// store's write serialization lock. It is the guarded path for auxiliary
+// multi-statement mutations that cannot fit in one ExecWrite: the whole
+// callback holds writeMu, the transaction opens with BeginTx so SQLite
+// waits honour ctx, and a cancelled context rolls everything back instead
+// of committing a half-written batch.
+//
+// It has no production caller and is not re-entrant: fn must not call back
+// into ExecWrite, WithWriteTx, or any other path that acquires the write
+// lock, because the lock is already held and the inner call would poll until
+// ctx dies instead of failing fast.
+func (s *Store) WithWriteTx(ctx context.Context, fn func(tx *sql.Tx) error) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	release, err := s.acquireWrite(ctx)
+	if err != nil {
+		return err
+	}
+	defer release()
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	if err := fn(tx); err != nil {
+		return err
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+// ExecWrite runs a write statement under the store's write serialization lock,
+// so auxiliary writers (e.g. creators-audit ORCID evidence) share the same
+// in-process serialization as sync's batch writers instead of racing them via
+// a raw handle that bypasses writeMu. The lock wait honours ctx: a cancelled
+// caller fails fast with ctx.Err instead of waiting out the holding writer.
+func (s *Store) ExecWrite(ctx context.Context, query string, args ...any) (sql.Result, error) {
+	release, err := s.acquireWrite(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer release()
+	return s.db.ExecContext(ctx, query, args...)
 }
 
 // SchemaVersion reads PRAGMA user_version, which is stamped by migrate().
 // A zero value means the database predates the schema-version gate — not
 // a bug, but the caller may want to warn.
 func (s *Store) SchemaVersion() (int, error) {
+	return s.SchemaVersionContext(context.Background())
+}
+
+// SchemaVersionContext is SchemaVersion bound to a request context.
+func (s *Store) SchemaVersionContext(ctx context.Context) (int, error) {
 	var v int
-	if err := s.db.QueryRow(`PRAGMA user_version`).Scan(&v); err != nil {
+	if err := s.QueryRowContext(ctx, `PRAGMA user_version`).Scan(&v); err != nil {
 		return 0, fmt.Errorf("read user_version: %w", err)
 	}
 	return v, nil
@@ -1108,8 +1324,10 @@ func isSQLiteBusy(err error) bool {
 
 // upsertGenericResourceTx reports written=false when the version-monotonic
 // guard retained a newer stored row, so callers can count rows that actually
-// landed rather than rows they merely offered.
-func (s *Store) upsertGenericResourceTx(tx *sql.Tx, resourceType, id string, data json.RawMessage, obj map[string]any) (written bool, err error) {
+// landed rather than rows they merely offered. Statements run with ctx so a
+// cancelled sync aborts the batch instead of writing past its deadline; the
+// caller's transaction rollback then discards the whole batch.
+func (s *Store) upsertGenericResourceTx(ctx context.Context, tx *sql.Tx, resourceType, id string, data json.RawMessage, obj map[string]any) (written bool, err error) {
 	// populate indexed dependent-resource columns from the
 	// payload so annotation/attachment queries avoid scanning JSON. Non-item
 	// rows (collections, tags) leave these empty, which is harmless.
@@ -1130,7 +1348,7 @@ func (s *Store) upsertGenericResourceTx(tx *sql.Tx, resourceType, id string, dat
 	// zoteroObjectVersion; keep this SQL guard in lockstep with its top-level
 	// version and nested data.version fallback. Rows lacking a version (or equal
 	// versions) still update, preserving the prior always-overwrite behavior.
-	res, execErr := tx.Exec(
+	res, execErr := tx.ExecContext(ctx,
 		`INSERT INTO resources (id, resource_type, data, parent_key, item_type, annotation_color, item_date, synced_at, updated_at)
 		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
 		 ON CONFLICT(resource_type, id) DO UPDATE SET data = excluded.data, parent_key = excluded.parent_key, item_type = excluded.item_type, annotation_color = excluded.annotation_color, item_date = excluded.item_date, synced_at = excluded.synced_at, updated_at = excluded.updated_at
@@ -1156,7 +1374,7 @@ func (s *Store) upsertGenericResourceTx(tx *sql.Tx, resourceType, id string, dat
 	// A DELETE that matches no rowid is not an error in SQLite, so this only
 	// fires on genuine corruption/lock. Explicit rowid is used for FTS5
 	// compatibility with modernc.org/sqlite (DELETE WHERE column=? may not work).
-	if _, err = tx.Exec(`DELETE FROM resources_fts WHERE rowid = ?`, ftsRowid); err != nil {
+	if _, err = tx.ExecContext(ctx, `DELETE FROM resources_fts WHERE rowid = ?`, ftsRowid); err != nil {
 		return false, fmt.Errorf("fts index cleanup for %s/%s: %w", resourceType, id, err)
 	}
 
@@ -1167,7 +1385,7 @@ func (s *Store) upsertGenericResourceTx(tx *sql.Tx, resourceType, id string, dat
 		// parsing every synced item a second time while the SQLite write lock is held.
 		searchDocument = buildSearchDocumentFromObj(resourceType, data, obj)
 	}
-	if _, err = tx.Exec(
+	if _, err = tx.ExecContext(ctx,
 		`INSERT INTO resources_fts (rowid, id, resource_type, content)
 		 VALUES (?, ?, ?, ?)`,
 		// index a curated Zotero-aware document for items
@@ -1185,7 +1403,7 @@ func (s *Store) upsertGenericResourceTx(tx *sql.Tx, resourceType, id string, dat
 // the top-level field taking precedence over the nested data.version fallback;
 // absent and non-numeric versions compare as zero. Trash wins equal versions so
 // a late live page cannot resurrect a deletion.
-func reconcileItemLifecycleTx(tx *sql.Tx, resourceType, id string, incoming map[string]any) error {
+func reconcileItemLifecycleTx(ctx context.Context, tx *sql.Tx, resourceType, id string, incoming map[string]any) error {
 	if resourceType != "items" && resourceType != "items-trash" {
 		return nil
 	}
@@ -1195,7 +1413,7 @@ func reconcileItemLifecycleTx(tx *sql.Tx, resourceType, id string, incoming map[
 	}
 
 	var oppositeData string
-	err := tx.QueryRow(
+	err := tx.QueryRowContext(ctx,
 		`SELECT data FROM resources WHERE resource_type = ? AND id = ?`,
 		oppositeType, id,
 	).Scan(&oppositeData)
@@ -1217,13 +1435,13 @@ func reconcileItemLifecycleTx(tx *sql.Tx, resourceType, id string, incoming map[
 		(incomingVersion == oppositeVersion && resourceType == "items-trash") {
 		loserType = oppositeType
 	}
-	if _, err := tx.Exec(
+	if _, err := tx.ExecContext(ctx,
 		`DELETE FROM resources WHERE resource_type = ? AND id = ?`,
 		loserType, id,
 	); err != nil {
 		return fmt.Errorf("deleting losing item state %s/%s: %w", loserType, id, err)
 	}
-	if _, err := tx.Exec(
+	if _, err := tx.ExecContext(ctx,
 		`DELETE FROM resources_fts WHERE rowid = ?`,
 		ftsRowID(loserType, id),
 	); err != nil {
@@ -1330,27 +1548,46 @@ func buildSearchDocumentFromObj(resourceType string, data json.RawMessage, obj m
 }
 
 func (s *Store) Upsert(resourceType, id string, data json.RawMessage) error {
-	s.writeMu.Lock()
-	defer s.writeMu.Unlock()
-	tx, err := s.db.Begin()
-	if err != nil {
+	return s.UpsertContext(context.Background(), resourceType, id, data)
+}
+
+// UpsertContext stores one record honouring cancellation. A cancelled context
+// rolls the transaction back, so the row and its FTS document land together
+// or not at all.
+func (s *Store) UpsertContext(ctx context.Context, resourceType, id string, data json.RawMessage) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
 		return err
 	}
-	defer func() { _ = tx.Rollback() }()
-
 	var obj map[string]any
 	if resourceType == "items" || resourceType == "items-trash" {
 		if err := json.Unmarshal(data, &obj); err != nil {
 			return fmt.Errorf("upsert %s/%s: unmarshal item payload: %w", resourceType, id, err)
 		}
 	}
-	if _, err := s.upsertGenericResourceTx(tx, resourceType, id, data, obj); err != nil {
+	release, err := s.acquireWrite(ctx)
+	if err != nil {
 		return err
 	}
-	if err := reconcileItemLifecycleTx(tx, resourceType, id, obj); err != nil {
+	defer release()
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	if _, err := s.upsertGenericResourceTx(ctx, tx, resourceType, id, data, obj); err != nil {
+		return err
+	}
+	if err := reconcileItemLifecycleTx(ctx, tx, resourceType, id, obj); err != nil {
 		return err
 	}
 
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	return tx.Commit()
 }
 
@@ -1365,28 +1602,50 @@ func (s *Store) Upsert(resourceType, id string, data json.RawMessage) error {
 // version-monotonic guard retains a newer stored row and writes nothing, so a
 // caller that counted the ids it offered overstated its sync totals.
 func (s *Store) UpsertKeyed(resourceType string, ids []string, data []json.RawMessage) (int, error) {
+	return s.UpsertKeyedContext(context.Background(), resourceType, ids, data)
+}
+
+// UpsertKeyedContext stores a caller-keyed batch honouring cancellation. A
+// cancelled context rolls the transaction back, so no half-written batch
+// survives: rows the plane sent either all land or none do.
+func (s *Store) UpsertKeyedContext(ctx context.Context, resourceType string, ids []string, data []json.RawMessage) (int, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	if len(ids) != len(data) {
 		return 0, fmt.Errorf("UpsertKeyed: ids/data length mismatch (%d vs %d)", len(ids), len(data))
 	}
 	if len(ids) == 0 {
 		return 0, nil
 	}
-	s.writeMu.Lock()
-	defer s.writeMu.Unlock()
-	tx, err := s.db.Begin()
+	if err := ctx.Err(); err != nil {
+		return 0, err
+	}
+	release, err := s.acquireWrite(ctx)
+	if err != nil {
+		return 0, err
+	}
+	defer release()
+	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return 0, fmt.Errorf("starting keyed batch transaction: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
 	var stored int
 	for i, id := range ids {
-		written, err := s.upsertGenericResourceTx(tx, resourceType, id, data[i], nil)
+		if err := ctx.Err(); err != nil {
+			return 0, err
+		}
+		written, err := s.upsertGenericResourceTx(ctx, tx, resourceType, id, data[i], nil)
 		if err != nil {
 			return 0, fmt.Errorf("upserting %s/%s: %w", resourceType, id, err)
 		}
 		if written {
 			stored++
 		}
+	}
+	if err := ctx.Err(); err != nil {
+		return 0, err
 	}
 	if err := tx.Commit(); err != nil {
 		return 0, err
@@ -1427,9 +1686,18 @@ func (s *Store) SchemaItemTypeCreatorTypes(itemType string) (json.RawMessage, er
 // SaveZoteroSchemaVersion records the Zotero-Schema-Version used to populate a
 // schema resource. The checkpoint advances only after the resource rows land.
 func (s *Store) SaveZoteroSchemaVersion(resourceType, version string) error {
-	s.writeMu.Lock()
-	defer s.writeMu.Unlock()
-	_, err := s.db.Exec(
+	return s.SaveZoteroSchemaVersionContext(context.Background(), resourceType, version)
+}
+
+// SaveZoteroSchemaVersionContext records the Zotero-Schema-Version honouring
+// cancellation while waiting on the SQLite write.
+func (s *Store) SaveZoteroSchemaVersionContext(ctx context.Context, resourceType, version string) error {
+	release, err := s.acquireWrite(ctx)
+	if err != nil {
+		return err
+	}
+	defer release()
+	_, err = s.db.ExecContext(ctx,
 		`INSERT INTO schema_sync_versions (resource_type, schema_version, updated_at)
 		 VALUES (?, ?, CURRENT_TIMESTAMP)
 		 ON CONFLICT(resource_type) DO UPDATE SET
@@ -1489,10 +1757,16 @@ func (s *Store) List(resourceType string, limit int) ([]json.RawMessage, error) 
 // interactive default of 50; a negative limit means no limit (SQLite LIMIT -1),
 // letting callers such as resolveScope enumerate the full match cohort.
 func (s *Store) Search(query string, limit int) ([]json.RawMessage, error) {
+	return s.SearchContext(context.Background(), query, limit)
+}
+
+// SearchContext is Search bound to a request context, so a cancelled caller
+// stops the SQLite read instead of running it to completion.
+func (s *Store) SearchContext(ctx context.Context, query string, limit int) ([]json.RawMessage, error) {
 	if limit == 0 {
 		limit = 50
 	}
-	rows, err := s.queryWithBusyRetry(
+	rows, err := s.queryWithBusyRetryContext(ctx,
 		`SELECT r.data FROM resources r
 		 JOIN resources_fts f ON r.id = f.id AND r.resource_type = f.resource_type
 		 WHERE resources_fts MATCH ?
@@ -1500,6 +1774,41 @@ func (s *Store) Search(query string, limit int) ([]json.RawMessage, error) {
 		 LIMIT ?`,
 		// ftsMatchQuery preserves documented boolean operators and phrases.
 		ftsMatchQuery(query), limit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	results := make([]json.RawMessage, 0)
+	for rows.Next() {
+		var data string
+		if err := rows.Scan(&data); err != nil {
+			return nil, err
+		}
+		results = append(results, json.RawMessage(data))
+	}
+	return results, rows.Err()
+}
+
+// SearchByTypeContext is the type-filtered FTS path bound to a request
+// context, so the CLI --type search aborts on Ctrl+C like the cross-resource
+// and fulltext paths. Yes, the type-filtered path needed the same treatment:
+// it runs the same FTS read and previously used the background context.
+func (s *Store) SearchByTypeContext(ctx context.Context, query, resourceType string, limit int) ([]json.RawMessage, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if limit == 0 {
+		limit = 50
+	}
+	rows, err := s.queryWithBusyRetryContext(ctx,
+		`SELECT r.data FROM resources r
+		 JOIN resources_fts f ON r.id = f.id AND r.resource_type = f.resource_type
+		 WHERE resources_fts MATCH ? AND f.resource_type = ?
+		 ORDER BY rank
+		 LIMIT ?`,
+		ftsMatchQuery(query), resourceType, limit,
 	)
 	if err != nil {
 		return nil, err
@@ -1787,12 +2096,26 @@ func prepareResourceItem(resourceType string, item json.RawMessage) (preparedRes
 // only populate the generic resources table — typed tables (and indexed
 // columns like parent_id added by dependent-resource sync) would stay empty.
 func (s *Store) UpsertBatch(resourceType string, items []json.RawMessage) (int, int, error) {
+	return s.UpsertBatchContext(context.Background(), resourceType, items)
+}
+
+// UpsertBatchContext inserts or replaces multiple records in a single
+// transaction honouring cancellation. Parsing stays outside the write lock
+// so concurrent sync workers serialize only for SQLite; a cancelled context
+// rolls the transaction back, so no half-written batch survives.
+func (s *Store) UpsertBatchContext(ctx context.Context, resourceType string, items []json.RawMessage) (int, int, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	// parse JSON and extract
-	// primary keys before taking writeMu so concurrent sync workers are only
+	// primary keys before taking the write lock so concurrent sync workers are only
 	// serialized for the SQLite transaction, not CPU-heavy unmarshalling.
 	prepared := make([]preparedResourceItem, 0, len(items))
 	var skippedCount, extractFailures int
 	for _, item := range items {
+		if err := ctx.Err(); err != nil {
+			return 0, extractFailures, err
+		}
 		row, ok, parsed := prepareResourceItem(resourceType, item)
 		if !ok {
 			skippedCount++
@@ -1804,9 +2127,12 @@ func (s *Store) UpsertBatch(resourceType string, items []json.RawMessage) (int, 
 		prepared = append(prepared, row)
 	}
 
-	s.writeMu.Lock()
-	defer s.writeMu.Unlock()
-	tx, err := s.db.Begin()
+	release, err := s.acquireWrite(ctx)
+	if err != nil {
+		return 0, extractFailures, err
+	}
+	defer release()
+	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return 0, extractFailures, fmt.Errorf("starting batch transaction: %w", err)
 	}
@@ -1814,6 +2140,9 @@ func (s *Store) UpsertBatch(resourceType string, items []json.RawMessage) (int, 
 
 	var stored int
 	for _, item := range prepared {
+		if err := ctx.Err(); err != nil {
+			return 0, extractFailures, err
+		}
 		if s.upsertBatchHook != nil {
 			s.upsertBatchHook()
 		}
@@ -1821,11 +2150,11 @@ func (s *Store) UpsertBatch(resourceType string, items []json.RawMessage) (int, 
 		// older version is retained-as-newer by the version-monotonic guard and
 		// writes nothing, so counting the offer instead of the write overstated
 		// sync totals and softened the stored-vs-consumed diagnostic signal.
-		written, err := s.upsertGenericResourceTx(tx, resourceType, item.id, item.data, item.obj)
+		written, err := s.upsertGenericResourceTx(ctx, tx, resourceType, item.id, item.data, item.obj)
 		if err != nil {
 			return 0, extractFailures, fmt.Errorf("upserting %s/%s: %w", resourceType, item.id, err)
 		}
-		if err := reconcileItemLifecycleTx(tx, resourceType, item.id, item.obj); err != nil {
+		if err := reconcileItemLifecycleTx(ctx, tx, resourceType, item.id, item.obj); err != nil {
 			return 0, extractFailures, fmt.Errorf("reconciling %s/%s: %w", resourceType, item.id, err)
 		}
 		if written {
@@ -1839,6 +2168,9 @@ func (s *Store) UpsertBatch(resourceType string, items []json.RawMessage) (int, 
 		fmt.Fprintf(os.Stderr, "warning: %d/%d %s items skipped (no extractable ID field found)\n", skippedCount, len(items), resourceType)
 	}
 
+	if err := ctx.Err(); err != nil {
+		return 0, extractFailures, err
+	}
 	if err := tx.Commit(); err != nil {
 		return 0, extractFailures, err
 	}
@@ -1848,25 +2180,43 @@ func (s *Store) UpsertBatch(resourceType string, items []json.RawMessage) (int, 
 // SaveSyncState records an unqualified sync outcome. Callers that persist a
 // resumable Zotero cursor must use SaveSyncResumeState instead.
 func (s *Store) SaveSyncState(resourceType, cursor string, count int) error {
-	return s.saveSyncState(resourceType, cursor, "", count)
+	return s.saveSyncStateContext(context.Background(), resourceType, cursor, "", count)
+}
+
+// SaveSyncStateContext records an unqualified sync outcome honouring
+// cancellation while waiting on the SQLite write.
+func (s *Store) SaveSyncStateContext(ctx context.Context, resourceType, cursor string, count int) error {
+	return s.saveSyncStateContext(ctx, resourceType, cursor, "", count)
 }
 
 // SaveSyncResumeState records a pagination cursor and its exact request scope
 // in one statement. A cleared cursor also clears its scope.
 func (s *Store) SaveSyncResumeState(resourceType, cursor, scope string, count int) error {
+	return s.SaveSyncResumeStateContext(context.Background(), resourceType, cursor, scope, count)
+}
+
+// SaveSyncResumeStateContext records a pagination cursor and its exact
+// request scope honouring cancellation while waiting on the SQLite write.
+func (s *Store) SaveSyncResumeStateContext(ctx context.Context, resourceType, cursor, scope string, count int) error {
 	if cursor != "" && scope == "" {
 		return fmt.Errorf("sync cursor for %s requires request provenance", resourceType)
 	}
-	return s.saveSyncState(resourceType, cursor, scope, count)
+	return s.saveSyncStateContext(ctx, resourceType, cursor, scope, count)
 }
 
-func (s *Store) saveSyncState(resourceType, cursor, scope string, count int) error {
+func (s *Store) saveSyncStateContext(ctx context.Context, resourceType, cursor, scope string, count int) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	if cursor == "" {
 		scope = ""
 	}
-	s.writeMu.Lock()
-	defer s.writeMu.Unlock()
-	_, err := s.db.Exec(
+	release, err := s.acquireWrite(ctx)
+	if err != nil {
+		return err
+	}
+	defer release()
+	_, err = s.db.ExecContext(ctx,
 		`INSERT INTO sync_state (resource_type, last_cursor, cursor_scope, last_synced_at, total_count, last_changed_at)
 		 VALUES (?, ?, ?, ?, ?, CASE WHEN ? > 0 THEN ? ELSE NULL END)
 		 ON CONFLICT(resource_type) DO UPDATE SET last_cursor = excluded.last_cursor,
@@ -1881,9 +2231,18 @@ func (s *Store) saveSyncState(resourceType, cursor, scope string, count int) err
 // ClearSyncCursor invalidates pagination state without claiming that a sync
 // pass ran. It is used for scope changes, --full, and --latest-only.
 func (s *Store) ClearSyncCursor(resourceType string) error {
-	s.writeMu.Lock()
-	defer s.writeMu.Unlock()
-	_, err := s.db.Exec(
+	return s.ClearSyncCursorContext(context.Background(), resourceType)
+}
+
+// ClearSyncCursorContext invalidates pagination state honouring cancellation
+// while waiting on the SQLite write.
+func (s *Store) ClearSyncCursorContext(ctx context.Context, resourceType string) error {
+	release, err := s.acquireWrite(ctx)
+	if err != nil {
+		return err
+	}
+	defer release()
+	_, err = s.db.ExecContext(ctx,
 		`UPDATE sync_state SET last_cursor = NULL, cursor_scope = NULL WHERE resource_type = ?`,
 		resourceType,
 	)
@@ -1892,21 +2251,31 @@ func (s *Store) ClearSyncCursor(resourceType string) error {
 
 // GetSyncState reads the cursor, last poll time, and last delta count.
 func (s *Store) GetSyncState(resourceType string) (cursor string, lastSynced time.Time, count int, err error) {
-	cursor, _, lastSynced, count, err = s.GetSyncResumeState(resourceType)
+	return s.GetSyncStateContext(context.Background(), resourceType)
+}
+
+// GetSyncStateContext is GetSyncState bound to a request context.
+func (s *Store) GetSyncStateContext(ctx context.Context, resourceType string) (cursor string, lastSynced time.Time, count int, err error) {
+	cursor, _, lastSynced, count, err = s.GetSyncResumeStateContext(ctx, resourceType)
 	return cursor, lastSynced, count, err
 }
 
 // GetSyncResumeState also returns the cursor's request provenance. Every column
 // is nullable because SaveLibraryVersion can create the row first.
 func (s *Store) GetSyncResumeState(resourceType string) (cursor, scope string, lastSynced time.Time, count int, err error) {
+	return s.GetSyncResumeStateContext(context.Background(), resourceType)
+}
+
+// GetSyncResumeStateContext is GetSyncResumeState bound to a request context.
+func (s *Store) GetSyncResumeStateContext(ctx context.Context, resourceType string) (cursor, scope string, lastSynced time.Time, count int, err error) {
 	var rawCursor, rawScope sql.NullString
 	var rawSynced sql.NullTime
 	var rawCount sql.NullInt64
-	err = s.db.QueryRow(
+	err = s.QueryRowContext(ctx,
 		`SELECT last_cursor, cursor_scope, last_synced_at, total_count FROM sync_state WHERE resource_type = ?`,
 		resourceType,
 	).Scan(&rawCursor, &rawScope, &rawSynced, &rawCount)
-	if err == sql.ErrNoRows {
+	if errors.Is(err, sql.ErrNoRows) {
 		return "", "", time.Time{}, 0, nil
 	}
 	if err != nil {
@@ -1946,8 +2315,8 @@ func (s *Store) RecordPendingWrite(resourceType, id string, changes []byte) erro
 // no concurrent sync can observe the mirror row gone while the marker that
 // suppresses its re-insertion is not yet written. changes is '[]' because a
 // deletion is not a field change; the deleted flag carries the whole meaning.
-func markPendingDeletionLocked(tx *sql.Tx, resourceType, id string) error {
-	if _, err := tx.Exec(
+func markPendingDeletionLocked(ctx context.Context, tx *sql.Tx, resourceType, id string) error {
+	if _, err := tx.ExecContext(ctx,
 		`INSERT INTO pending_writes (resource_type, id, changes, written_at, deleted)
 		 VALUES (?, ?, '[]', CURRENT_TIMESTAMP, 1)
 		 ON CONFLICT(resource_type, id) DO UPDATE SET changes = '[]',
@@ -2103,6 +2472,28 @@ func pendingWriteIDsLocked(queryer resourceIDQueryer, query string, args ...any)
 	return ids, rows.Err()
 }
 
+// pendingWriteIDsLockedContext runs an id-selecting pending_writes query
+// honouring cancellation.
+func pendingWriteIDsLockedContext(ctx context.Context, queryer resourceIDQueryerContext, query string, args ...any) ([]string, error) {
+	rows, err := queryer.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var ids []string
+	for rows.Next() {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
+}
+
 // ClearPendingWrite drops the marker once the read plane reports the written
 // state, so a row is never pinned to a local copy indefinitely.
 func (s *Store) ClearPendingWrite(resourceType, id string) error {
@@ -2128,15 +2519,24 @@ func (s *Store) PendingWriteCount() (int, error) {
 // base URL): version numbers are per-plane, so a checkpoint is only valid against
 // the plane it came from.
 func (s *Store) SaveLibraryVersion(resourceType, source string, version int) error {
-	s.writeMu.Lock()
-	defer s.writeMu.Unlock()
+	return s.SaveLibraryVersionContext(context.Background(), resourceType, source, version)
+}
+
+// SaveLibraryVersionContext records the Last-Modified-Version checkpoint
+// honouring cancellation while waiting on the SQLite write.
+func (s *Store) SaveLibraryVersionContext(ctx context.Context, resourceType, source string, version int) error {
+	release, err := s.acquireWrite(ctx)
+	if err != nil {
+		return err
+	}
+	defer release()
 	// Monotonic checkpoint WITHIN one plane: a slower concurrent sync/tail run
 	// completing with an older Last-Modified-Version must not regress the stored
 	// checkpoint, or the next incremental pass would replay already-seen changes.
 	// Across planes the guard must NOT apply — a web-API version (12689) would
 	// otherwise outrank every local version (71) forever and freeze incremental
 	// sync, because `?since=12689` against the local plane matches nothing.
-	_, err := s.db.Exec(
+	_, err = s.db.ExecContext(ctx,
 		`INSERT INTO sync_state (resource_type, library_version, cursor_source)
 		 VALUES (?, ?, ?)
 		 ON CONFLICT(resource_type) DO UPDATE SET
@@ -2179,13 +2579,18 @@ func (s *Store) GetLibraryVersion(resourceType, source string) (int, error) {
 // it, without filtering by plane. For status reporting only — a sync decision
 // must use GetLibraryVersion so a foreign cursor is never replayed as `since`.
 func (s *Store) StoredLibraryVersion(resourceType string) (int, string, error) {
+	return s.StoredLibraryVersionContext(context.Background(), resourceType)
+}
+
+// StoredLibraryVersionContext is StoredLibraryVersion bound to a request context.
+func (s *Store) StoredLibraryVersionContext(ctx context.Context, resourceType string) (int, string, error) {
 	var v sql.NullInt64
 	var source sql.NullString
-	err := s.db.QueryRow(
+	err := s.QueryRowContext(ctx,
 		`SELECT library_version, cursor_source FROM sync_state WHERE resource_type = ?`,
 		resourceType,
 	).Scan(&v, &source)
-	if err == sql.ErrNoRows {
+	if errors.Is(err, sql.ErrNoRows) {
 		return 0, "", nil
 	}
 	if err != nil {
@@ -2224,9 +2629,18 @@ func (s *Store) PlaneChanged(resourceType, source string) (bool, error) {
 // guard's null branch accept the fresh data — the same reasoning by which
 // write-through drops the version from rows it replays.
 func (s *Store) ClearResourceVersions(resourceType string) error {
-	s.writeMu.Lock()
-	defer s.writeMu.Unlock()
-	_, err := s.db.Exec(
+	return s.ClearResourceVersionsContext(context.Background(), resourceType)
+}
+
+// ClearResourceVersionsContext strips stored object versions honouring
+// cancellation while waiting on the SQLite write.
+func (s *Store) ClearResourceVersionsContext(ctx context.Context, resourceType string) error {
+	release, err := s.acquireWrite(ctx)
+	if err != nil {
+		return err
+	}
+	defer release()
+	_, err = s.db.ExecContext(ctx,
 		`UPDATE resources
 		 SET data = json_remove(data, '$.version', '$.data.version')
 		 WHERE resource_type = ?
@@ -2236,15 +2650,8 @@ func (s *Store) ClearResourceVersions(resourceType string) error {
 	return err
 }
 
-// ExecWrite runs a write statement under the store's write serialization lock,
-// so auxiliary writers (e.g. creators-audit ORCID evidence) share the same
-// in-process serialization as sync's batch writers instead of racing them via
-// a raw DB().ExecContext that bypasses writeMu.
-func (s *Store) ExecWrite(ctx context.Context, query string, args ...any) (sql.Result, error) {
-	s.writeMu.Lock()
-	defer s.writeMu.Unlock()
-	return s.db.ExecContext(ctx, query, args...)
-}
+// (ExecWrite lives next to DB/WithWriteTx above so the whole guarded write
+// surface reads in one place.)
 
 // Query executes a raw SQL query and returns the rows.
 // Used by workflow commands that need custom queries against the local store.
@@ -2259,6 +2666,7 @@ type Row struct {
 	ctx   context.Context
 	query string
 	args  []any
+	err   error
 }
 
 // QueryRowContext executes a raw SQL query for one row with cancellation.
@@ -2271,7 +2679,11 @@ func (s *Store) QueryRowContext(ctx context.Context, query string, args ...any) 
 }
 
 // Scan reads the query row, retrying SQLite contention until the store deadline.
+// A refused GuardedDB read surfaces its gate error here without touching SQLite.
 func (r *Row) Scan(dest ...any) error {
+	if r.err != nil {
+		return r.err
+	}
 	deadline := time.Now().Add(migrationLockTimeout)
 	return retryOnBusy(r.ctx, deadline, "querying local store", func() error {
 		return r.store.db.QueryRowContext(r.ctx, r.query, r.args...).Scan(dest...)
@@ -2329,15 +2741,15 @@ func (s *Store) Status() (map[string]int, error) {
 // reapResourceLocked removes a mirror row and its FTS document within the
 // caller's transaction. The caller must hold writeMu when the transaction
 // participates in a read-then-modify operation.
-func reapResourceLocked(tx *sql.Tx, resourceType, id string) error {
+func reapResourceLocked(ctx context.Context, tx *sql.Tx, resourceType, id string) error {
 	// Explicit rowid for FTS5 compatibility with modernc.org/sqlite.
-	if _, err := tx.Exec(`DELETE FROM resources_fts WHERE rowid = ?`, ftsRowID(resourceType, id)); err != nil {
+	if _, err := tx.ExecContext(ctx, `DELETE FROM resources_fts WHERE rowid = ?`, ftsRowID(resourceType, id)); err != nil {
 		return fmt.Errorf("fts cleanup for %s/%s: %w", resourceType, id, err)
 	}
-	if _, err := tx.Exec(`DELETE FROM resources WHERE resource_type = ? AND id = ?`, resourceType, id); err != nil {
+	if _, err := tx.ExecContext(ctx, `DELETE FROM resources WHERE resource_type = ? AND id = ?`, resourceType, id); err != nil {
 		return fmt.Errorf("reaping %s/%s: %w", resourceType, id, err)
 	}
-	if _, err := tx.Exec(`DELETE FROM pending_writes WHERE resource_type = ? AND id = ?`, resourceType, id); err != nil {
+	if _, err := tx.ExecContext(ctx, `DELETE FROM pending_writes WHERE resource_type = ? AND id = ?`, resourceType, id); err != nil {
 		return fmt.Errorf("clearing pending write for %s/%s: %w", resourceType, id, err)
 	}
 	return nil
@@ -2359,7 +2771,7 @@ func (s *Store) ReapResource(resourceType, id string) error {
 		return err
 	}
 	defer func() { _ = tx.Rollback() }()
-	if err := reapResourceLocked(tx, resourceType, id); err != nil {
+	if err := reapResourceLocked(context.Background(), tx, resourceType, id); err != nil {
 		return err
 	}
 	return tx.Commit()
@@ -2398,10 +2810,10 @@ func (s *Store) ReapMirroredItem(key string) error {
 	}
 	defer func() { _ = tx.Rollback() }()
 	for _, resourceType := range []string{"items", "items-trash"} {
-		if err := reapResourceLocked(tx, resourceType, key); err != nil {
+		if err := reapResourceLocked(context.Background(), tx, resourceType, key); err != nil {
 			return err
 		}
-		if err := markPendingDeletionLocked(tx, resourceType, key); err != nil {
+		if err := markPendingDeletionLocked(context.Background(), tx, resourceType, key); err != nil {
 			return err
 		}
 	}
@@ -2432,7 +2844,7 @@ func (s *Store) RestoreMirroredItem(key string, payload json.RawMessage) error {
 	if err := json.Unmarshal(payload, &obj); err != nil {
 		return fmt.Errorf("restore %s: unmarshal item payload: %w", key, err)
 	}
-	if _, err := s.upsertGenericResourceTx(tx, "items", key, payload, obj); err != nil {
+	if _, err := s.upsertGenericResourceTx(context.Background(), tx, "items", key, payload, obj); err != nil {
 		return fmt.Errorf("restoring %s: %w", key, err)
 	}
 	if _, err := tx.Exec(`DELETE FROM resources_fts WHERE rowid = ?`, ftsRowID("items-trash", key)); err != nil {
@@ -2451,6 +2863,10 @@ type resourceIDQueryer interface {
 	Query(query string, args ...any) (*sql.Rows, error)
 }
 
+type resourceIDQueryerContext interface {
+	QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error)
+}
+
 // resourceIDsLocked lists every mirrored row id for a resource type using the
 // caller's query handle. The caller must hold writeMu when it shares a
 // transaction with subsequent reaping.
@@ -2462,6 +2878,27 @@ func resourceIDsLocked(queryer resourceIDQueryer, resourceType string) (map[stri
 	defer rows.Close()
 	ids := map[string]bool{}
 	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		ids[id] = true
+	}
+	return ids, rows.Err()
+}
+
+// resourceIDsLockedContext lists mirrored row ids honouring cancellation.
+func resourceIDsLockedContext(ctx context.Context, queryer resourceIDQueryerContext, resourceType string) (map[string]bool, error) {
+	rows, err := queryer.QueryContext(ctx, `SELECT id FROM resources WHERE resource_type = ?`, resourceType)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	ids := map[string]bool{}
+	for rows.Next() {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		var id string
 		if err := rows.Scan(&id); err != nil {
 			return nil, err
@@ -2499,45 +2936,68 @@ func (s *Store) ResourceIDs(resourceType string) (map[string]bool, error) {
 // syncing (ADR-0007). An incremental pass cannot retire one either: absence
 // there means unchanged, not gone.
 func (s *Store) SweepMissing(resourceType string, seen map[string]bool) (int, error) {
-	// Hold writeMu for the full snapshot-and-reap transaction. Without one
+	return s.SweepMissingContext(context.Background(), resourceType, seen)
+}
+
+// SweepMissingContext reaps mirrored rows absent from a complete pass,
+// honouring cancellation. The snapshot-and-reap stays one transaction under
+// the write lock; a cancelled context rolls it back, so the mirror keeps
+// every row instead of a half-reaped prefix.
+func (s *Store) SweepMissingContext(ctx context.Context, resourceType string, seen map[string]bool) (int, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	// Hold the write lock for the full snapshot-and-reap transaction. Without one
 	// critical section, a row inserted after the snapshot could be reaped as
 	// missing even though it was written before the delete.
-	s.writeMu.Lock()
-	defer s.writeMu.Unlock()
-	tx, err := s.db.Begin()
+	release, err := s.acquireWrite(ctx)
+	if err != nil {
+		return 0, err
+	}
+	defer release()
+	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return 0, err
 	}
 	defer func() { _ = tx.Rollback() }()
-	existing, err := resourceIDsLocked(tx, resourceType)
+	existing, err := resourceIDsLockedContext(ctx, tx, resourceType)
 	if err != nil {
 		return 0, err
 	}
 	reaped := 0
 	for id := range existing {
+		if err := ctx.Err(); err != nil {
+			return reaped, err
+		}
 		if seen[id] {
 			continue
 		}
-		if err := reapResourceLocked(tx, resourceType, id); err != nil {
+		if err := reapResourceLocked(ctx, tx, resourceType, id); err != nil {
 			return reaped, err
 		}
 		reaped++
 	}
-	marked, err := pendingWriteIDsLocked(tx,
+	marked, err := pendingWriteIDsLockedContext(ctx, tx,
 		`SELECT id FROM pending_writes WHERE resource_type = ? AND deleted = 1`, resourceType)
 	if err != nil {
 		return reaped, err
 	}
 	for _, id := range marked {
+		if err := ctx.Err(); err != nil {
+			return reaped, err
+		}
 		if seen[id] {
 			continue // the read plane still lists it; keep suppressing
 		}
-		if _, err := tx.Exec(
+		if _, err := tx.ExecContext(ctx,
 			`DELETE FROM pending_writes WHERE resource_type = ? AND id = ? AND deleted = 1`,
 			resourceType, id,
 		); err != nil {
 			return reaped, fmt.Errorf("retiring deletion marker for %s/%s: %w", resourceType, id, err)
 		}
+	}
+	if err := ctx.Err(); err != nil {
+		return reaped, err
 	}
 	if err := tx.Commit(); err != nil {
 		return reaped, err

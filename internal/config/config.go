@@ -68,12 +68,21 @@ func (c *Config) UpdateChecksEnabled() bool {
 }
 
 // SetUpdateChecksEnabled persists the user's update-check preference.
+// It stages the change on a copy and only commits it to the live struct
+// after the persist succeeds, so a failed write never leaves the
+// in-memory config disagreeing with disk.
 func (c *Config) SetUpdateChecksEnabled(enabled bool) error {
 	if c == nil {
 		return fmt.Errorf("saving update-check preference: nil config")
 	}
+	candidate := *c
+	candidate.Updates = &UpdatesConfig{Check: enabled}
+	if err := candidate.save(); err != nil {
+		return err
+	}
 	c.Updates = &UpdatesConfig{Check: enabled}
-	return c.save()
+	c.fileConfig = candidate.fileConfig
+	return nil
 }
 
 // demoModeFromEnv mirrors cli.demoActive. The config package

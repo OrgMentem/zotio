@@ -539,11 +539,11 @@ func archiveStatus(ctx context.Context) (map[string]any, error) {
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
-		_, lastSynced, _, syncErr := db.GetSyncState(t)
+		_, lastSynced, _, syncErr := db.GetSyncStateContext(ctx, t)
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
-		ver, cursorSource, verErr := db.StoredLibraryVersion(t)
+		ver, cursorSource, verErr := db.StoredLibraryVersionContext(ctx, t)
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
@@ -570,7 +570,7 @@ func archiveStatus(ctx context.Context) (map[string]any, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	schemaVer, schemaErr := db.SchemaVersion()
+	schemaVer, schemaErr := db.SchemaVersionContext(ctx)
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}

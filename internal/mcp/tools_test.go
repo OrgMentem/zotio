@@ -5,11 +5,13 @@ package mcp
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"zotio/internal/cli"
 	"zotio/internal/mcp/bound"
@@ -704,5 +706,91 @@ func TestDBPathDoesNotReturnCWDRelativePath(t *testing.T) {
 	}
 	if strings.HasPrefix(p, ".local") || p == ".local/share/zotio/data.db" {
 		t.Fatalf("dbPath() = %q is CWD-relative", p)
+	}
+}
+
+// End-to-end proof that boolean operators survive the context-aware search
+// path: with naive quoting, OR becomes a literal term (implicit AND) and
+// matches nothing.
+func TestHandleSearchPreservesBooleanOperators(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("ZOTERO_DATA_DIR", t.TempDir())
+	db, err := store.OpenWithContext(context.Background(), dbPath())
+	if err != nil {
+		t.Fatalf("open writable db: %v", err)
+	}
+	if _, _, err := db.UpsertBatch("items", []json.RawMessage{
+		json.RawMessage(`{"key":"REDWOOD1","version":1,"data":{"key":"REDWOOD1","itemType":"journalArticle","title":"Redwood forest ecology"}}`),
+		json.RawMessage(`{"key":"SEQUOIA1","version":1,"data":{"key":"SEQUOIA1","itemType":"journalArticle","title":"Sequoia grove survey"}}`),
+		json.RawMessage(`{"key":"QUANTUM1","version":1,"data":{"key":"QUANTUM1","itemType":"journalArticle","title":"Quantum dot synthesis"}}`),
+	}); err != nil {
+		t.Fatalf("seed items: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close writable db: %v", err)
+	}
+
+	req := mcplib.CallToolRequest{}
+	req.Params.Arguments = map[string]any{"query": "redwood OR sequoia"}
+	res, err := handleSearch(context.Background(), req)
+	if err != nil {
+		t.Fatalf("handleSearch protocol error: %v", err)
+	}
+	if res == nil || res.IsError {
+		t.Fatalf("handleSearch result = %+v, want success", res)
+	}
+	var got struct {
+		Count int `json:"count"`
+		Items []struct {
+			Data struct {
+				Title string `json:"title"`
+			} `json:"data"`
+		} `json:"items"`
+	}
+	if err := json.Unmarshal([]byte(toolResultText(t, res)), &got); err != nil {
+		t.Fatalf("decode search result: %v", err)
+	}
+	if got.Count != 2 || len(got.Items) != 2 {
+		t.Fatalf("search result count/items = %d/%d, want 2/2", got.Count, len(got.Items))
+	}
+}
+
+// A cancelled request must abort the normal FTS search instead of running
+// to completion on a background context. With an already-cancelled context
+// the context-aware query returns the context error without executing; the
+// legacy background-context search would succeed, so this test fails iff
+// the request context is dropped on the normal path.
+func TestSearchStoreContextHonorsCancelledContext(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("ZOTERO_DATA_DIR", t.TempDir())
+	db, err := store.OpenWithContext(context.Background(), dbPath())
+	if err != nil {
+		t.Fatalf("open writable db: %v", err)
+	}
+	if _, _, err := db.UpsertBatch("items", []json.RawMessage{
+		json.RawMessage(`{"key":"CANCEL1","version":1,"data":{"key":"CANCEL1","itemType":"journalArticle","title":"cancelneedle paper"}}`),
+	}); err != nil {
+		t.Fatalf("seed items: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close writable db: %v", err)
+	}
+
+	ro, err := store.OpenReadOnlyContext(context.Background(), dbPath())
+	if err != nil {
+		t.Fatalf("open read-only db: %v", err)
+	}
+	t.Cleanup(func() { _ = ro.Close() })
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	start := time.Now()
+	_, err = ro.SearchContext(ctx, "cancelneedle", 25)
+	elapsed := time.Since(start)
+	if elapsed > 8*time.Second {
+		t.Fatalf("cancelled search took %v, want prompt abort", elapsed)
+	}
+	if err == nil || (!errors.Is(err, context.Canceled) && !strings.Contains(strings.ToLower(err.Error()), "canceled")) {
+		t.Fatalf("cancelled search error = %v, want context.Canceled", err)
 	}
 }

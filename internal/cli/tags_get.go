@@ -17,6 +17,12 @@ func newTagsGetCmd(flags *rootFlags) *cobra.Command {
 		Short:       "Get a specific tag by name",
 		Example:     "  zotio tags get example-resource",
 		Annotations: map[string]string{"zotio:endpoint": "tags.get", "zotio:method": "GET", "zotio:path": "/tags/{tagName}", "mcp:read-only": "true"},
+		// One key per run. Cobra's default for a command with no subcommands is
+		// ArbitraryArgs, so `tags get A B` used to read A and drop B on the
+		// floor: the request path is built from args[0] alone, and nothing
+		// reported the ignored names. Zero args still renders help, which
+		// MaximumNArgs allows and ExactArgs would not.
+		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if len(args) == 0 {
 				return cmd.Help()
