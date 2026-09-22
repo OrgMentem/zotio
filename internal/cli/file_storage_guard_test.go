@@ -1217,8 +1217,8 @@ func TestConnectorPingFailureIsClassifiedNotCollapsed(t *testing.T) {
 // Zotero from a running one.
 func TestUnreachableConnectorProducesTheStartZoteroRefusal(t *testing.T) {
 	stubZoteroFileStorage(t, "webdav", true)
-	allowPrivateOutboundForTests = true
-	t.Cleanup(func() { allowPrivateOutboundForTests = false })
+	allowPrivateOutboundForTests.Store(true)
+	t.Cleanup(func() { allowPrivateOutboundForTests.Store(false) })
 
 	// Bind and immediately release a port so the address is genuinely closed
 	// but routable, giving a deterministic connection-refused.

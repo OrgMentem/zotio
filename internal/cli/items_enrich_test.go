@@ -84,19 +84,19 @@ func TestGuardedClientSharesTransportWithoutDialGuard(t *testing.T) {
 func withBase(t *testing.T, target *string, value string) {
 	t.Helper()
 	saved := *target
-	oldAllowPrivateOutbound := allowPrivateOutboundForTests
+	oldAllowPrivateOutbound := allowPrivateOutboundForTests.Load()
 	*target = value
-	allowPrivateOutboundForTests = true
+	allowPrivateOutboundForTests.Store(true)
 	t.Cleanup(func() {
 		*target = saved
-		allowPrivateOutboundForTests = oldAllowPrivateOutbound
+		allowPrivateOutboundForTests.Store(oldAllowPrivateOutbound)
 	})
 }
 
 func TestGetJSONRedirectPolicy(t *testing.T) {
-	oldAllowPrivateOutbound := allowPrivateOutboundForTests
-	allowPrivateOutboundForTests = true
-	t.Cleanup(func() { allowPrivateOutboundForTests = oldAllowPrivateOutbound })
+	oldAllowPrivateOutbound := allowPrivateOutboundForTests.Load()
+	allowPrivateOutboundForTests.Store(true)
+	t.Cleanup(func() { allowPrivateOutboundForTests.Store(oldAllowPrivateOutbound) })
 
 	t.Run("refuses cross-origin 307 before target request", func(t *testing.T) {
 		targetContact := make(chan struct{}, 1)

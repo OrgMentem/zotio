@@ -62,9 +62,9 @@ func TestFeedbackListReportsCorruptJournalLines(t *testing.T) {
 // redirect feedback into an internal target. The refused 3xx response is
 // therefore a send that never happened and must not be reported as delivered.
 func TestPostFeedbackStatusHandling(t *testing.T) {
-	oldAllowPrivateOutbound := allowPrivateOutboundForTests
-	allowPrivateOutboundForTests = true
-	t.Cleanup(func() { allowPrivateOutboundForTests = oldAllowPrivateOutbound })
+	oldAllowPrivateOutbound := allowPrivateOutboundForTests.Load()
+	allowPrivateOutboundForTests.Store(true)
+	t.Cleanup(func() { allowPrivateOutboundForTests.Store(oldAllowPrivateOutbound) })
 
 	tests := []struct {
 		name    string

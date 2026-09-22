@@ -538,9 +538,9 @@ func joinStrings(parts []string, sep string) string {
 // The resolved ID is still usable in-memory for the current invocation, so
 // the command succeeds and renders the bibliography.
 func TestItemsBibliographyReadOnlyDoesNotPersistUserID(t *testing.T) {
-	oldAllowPrivateOutbound := allowPrivateOutboundForTests
-	allowPrivateOutboundForTests = true
-	t.Cleanup(func() { allowPrivateOutboundForTests = oldAllowPrivateOutbound })
+	oldAllowPrivateOutbound := allowPrivateOutboundForTests.Load()
+	allowPrivateOutboundForTests.Store(true)
+	t.Cleanup(func() { allowPrivateOutboundForTests.Store(oldAllowPrivateOutbound) })
 
 	// Web API mock: userID resolution plus a BIB render.
 	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

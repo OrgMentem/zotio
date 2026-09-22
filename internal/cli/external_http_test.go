@@ -299,9 +299,9 @@ func TestPostFeedbackRevalidatesHostAtDialTime(t *testing.T) {
 }
 
 func TestDeliverWebhookHonorsContextCancellation(t *testing.T) {
-	oldAllowPrivateOutbound := allowPrivateOutboundForTests
-	allowPrivateOutboundForTests = true
-	t.Cleanup(func() { allowPrivateOutboundForTests = oldAllowPrivateOutbound })
+	oldAllowPrivateOutbound := allowPrivateOutboundForTests.Load()
+	allowPrivateOutboundForTests.Store(true)
+	t.Cleanup(func() { allowPrivateOutboundForTests.Store(oldAllowPrivateOutbound) })
 
 	started := make(chan struct{})
 	release := make(chan struct{})
