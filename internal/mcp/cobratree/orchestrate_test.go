@@ -365,3 +365,65 @@ func TestOrchCommandRunTreatsNullPositionalArgsAsAbsent(t *testing.T) {
 		t.Fatalf("run result = %q, want title=hi", got)
 	}
 }
+
+// Witness for the hidden-subcommand bypass: a positional that names a hidden
+// subcommand must be refused on the facade, while ordinary positionals still
+// run. The mirror-side witness lives in inprocess_test.go; both must name
+// the command the positionals actually selected.
+func TestOrchCommandRunRejectsHiddenSubcommandViaArgs(t *testing.T) {
+	newRoot := func() *cobra.Command {
+		root := &cobra.Command{Use: "zotio", SilenceUsage: true, SilenceErrors: true}
+		root.PersistentFlags().Bool("agent", false, "Run in agent mode")
+		capabilities := &cobra.Command{
+			Use:         "capabilities",
+			Short:       "Emit the capability registry",
+			Args:        cobra.ArbitraryArgs,
+			Annotations: map[string]string{ReadOnlyAnnotation: "true"},
+			RunE: func(c *cobra.Command, args []string) error {
+				fmt.Fprintf(c.OutOrStdout(), "capabilities:%s", strings.Join(args, ","))
+				return nil
+			},
+		}
+		drift := &cobra.Command{
+			Use:         "drift",
+			Short:       "Probe capability drift",
+			Annotations: map[string]string{ReadOnlyAnnotation: "true", HiddenAnnotation: "true"},
+			RunE: func(c *cobra.Command, _ []string) error {
+				fmt.Fprint(c.OutOrStdout(), "drifted")
+				return nil
+			},
+		}
+		capabilities.AddCommand(drift)
+		root.AddCommand(capabilities)
+		return root
+	}
+	h := commandRunHandler(newRoot)
+	req := mcplib.CallToolRequest{}
+	req.Params.Arguments = map[string]any{"name": "capabilities", "args": "drift"}
+	res, err := h(context.Background(), req)
+	if err != nil {
+		t.Fatalf("handler returned protocol error: %v", err)
+	}
+	if !res.IsError {
+		t.Fatalf("facade accepted args that resolve to a hidden subcommand, got %q", orchResText(res))
+	}
+	if got := orchResText(res); !strings.Contains(got, `"capabilities drift"`) || !strings.Contains(got, `"capabilities"`) {
+		t.Fatalf("error = %q, want it to name the selected and validated commands", got)
+	}
+	if !strings.Contains(orchResText(res), "different or hidden command") {
+		t.Fatalf("error = %q, want the shared binding rejection", orchResText(res))
+	}
+
+	ordinary := mcplib.CallToolRequest{}
+	ordinary.Params.Arguments = map[string]any{"name": "capabilities", "args": "some-key"}
+	ordinaryRes, err := h(context.Background(), ordinary)
+	if err != nil {
+		t.Fatalf("handler returned protocol error: %v", err)
+	}
+	if ordinaryRes.IsError {
+		t.Fatalf("facade refused an ordinary positional: %q", orchResText(ordinaryRes))
+	}
+	if got := orchResText(ordinaryRes); !strings.Contains(got, "capabilities:some-key") {
+		t.Fatalf("run result = %q, want the ordinary positional to reach the command", got)
+	}
+}

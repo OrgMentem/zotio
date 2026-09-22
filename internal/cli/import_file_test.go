@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -59,6 +60,25 @@ func writeImportFixture(t *testing.T, content string) string {
 	return filePath
 }
 
+// importFileFullSuccessBatch renders a batch envelope that attributes every
+// index of an n-record window as created, so a fixture proves the whole
+// window's outcome instead of only its first record's.
+func importFileFullSuccessBatch(n int) string {
+	successful := make(map[string]any, n)
+	for i := range n {
+		successful[strconv.Itoa(i)] = map[string]any{"key": fmt.Sprintf("K%04d", i)}
+	}
+	data, err := json.Marshal(map[string]any{
+		"successful": successful,
+		"success":    map[string]any{},
+		"unchanged":  map[string]any{},
+		"failed":     map[string]any{},
+	})
+	if err != nil {
+		panic(err)
+	}
+	return string(data)
+}
 func runImportFile(t *testing.T, flags *rootFlags, args ...string) (importFileEnvelope, string, error) {
 	t.Helper()
 	cmd := newImportFileCmd(flags)
@@ -198,7 +218,7 @@ func TestImportFileOffsetsLaterBatchWriteFailureIndexes(t *testing.T) {
 			_, _ = w.Write([]byte(`{"successful":{},"success":{},"unchanged":{},"failed":{"0":{"code":400,"message":"title is required"}}}`))
 			return
 		}
-		_, _ = w.Write([]byte(`{"successful":{"0":{"key":"NEWKEY11"}},"success":{},"unchanged":{},"failed":{}}`))
+		_, _ = w.Write([]byte(importFileFullSuccessBatch(importFileBatchSize)))
 	}))
 	defer srv.Close()
 	t.Setenv("ZOTERO_BASE_URL", srv.URL+"/users/0")
@@ -239,7 +259,7 @@ func TestImportFilePreservesNonNumericBatchWriteFailureIndexes(t *testing.T) {
 			_, _ = w.Write([]byte(`{"successful":{},"success":{},"unchanged":{},"failed":{"unexpected":{"code":400,"message":"title is required"}}}`))
 			return
 		}
-		_, _ = w.Write([]byte(`{"successful":{"0":{"key":"NEWKEY11"}},"success":{},"unchanged":{},"failed":{}}`))
+		_, _ = w.Write([]byte(importFileFullSuccessBatch(importFileBatchSize)))
 	}))
 	defer srv.Close()
 	t.Setenv("ZOTERO_BASE_URL", srv.URL+"/users/0")
@@ -257,14 +277,16 @@ func TestImportFilePreservesNonNumericBatchWriteFailureIndexes(t *testing.T) {
 	if requestCount != 2 {
 		t.Fatalf("import requests = %d, want 2 batches", requestCount)
 	}
-	if env.Result == nil || env.Result.Summary.Failed != 1 {
-		t.Fatalf("result = %s, want the non-numeric rejection reported once", raw)
+	if env.Result == nil || env.Result.Summary.Failed != 1 || env.Result.Summary.Applied != importFileBatchSize {
+		t.Fatalf("result = %s, want %d applied and 1 failed", raw, importFileBatchSize)
 	}
-	// A non-numeric element index cannot name a record, so it is charged to the
-	// batch's first record rather than dropped.
+	// A non-numeric element index cannot name a record, so the envelope gate
+	// rejects the window: no record in it has a proven outcome.
 	reason, _ := env.Result.Items[importFileBatchSize].Reason.(string)
-	if !strings.Contains(reason, "index unexpected") {
-		t.Fatalf("failure reason = %q, want the preserved non-numeric index", reason)
+	for _, want := range []string{`unattributable index "unexpected"`, "outcome of the 1 record(s) in that request is unknown"} {
+		if !strings.Contains(reason, want) {
+			t.Fatalf("failure reason = %q, want %q", reason, want)
+		}
 	}
 }
 
@@ -286,6 +308,34 @@ func TestImportFileReportsSuccessfulBatch(t *testing.T) {
 	}
 	if env.Result == nil || env.Result.Summary.Applied != 1 || env.Result.Summary.Failed != 0 {
 		t.Fatalf("result = %s, want one applied batch", raw)
+	}
+}
+
+// A 2xx body that is not the batch envelope proves nothing: a proxy error
+// page must fail the record with an unknown outcome, never report it
+// applied. Fails before the fix, which decoded only Failed and read the
+// error page as zero failures.
+func TestImportFileNonEnvelopeBodyFailsClosed(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"error":"proxy error"}`))
+	}))
+	defer srv.Close()
+	t.Setenv("ZOTERO_BASE_URL", srv.URL+"/users/0")
+
+	filePath := writeImportFixture(t, "@article{example,\n  title = {Example}\n}\n")
+	env, raw, err := runImportFile(t, &rootFlags{asJSON: true, yes: true, maxChanges: -1}, filePath)
+	if err == nil || ExitCode(err) != 13 {
+		t.Fatalf("import error = %v, exit=%d; want degraded failure", err, ExitCode(err))
+	}
+	if env.Result == nil || env.Result.Summary.Applied != 0 || env.Result.Summary.Failed != 1 {
+		t.Fatalf("result = %s, want 0 applied and 1 failed", raw)
+	}
+	reason, _ := env.Result.Items[0].Reason.(string)
+	for _, want := range []string{"import file", "not a batch envelope", "outcome of the 1 record(s) in that request is unknown"} {
+		if !strings.Contains(reason, want) {
+			t.Fatalf("failure reason = %q, want %q", reason, want)
+		}
 	}
 }
 
@@ -346,7 +396,7 @@ func TestImportFileBatchWindowIsolationOnPostRejection(t *testing.T) {
 		requests++
 		if requests == 1 {
 			w.Header().Set("Content-Type", "application/json")
-			_, _ = w.Write([]byte(`{"successful": {}, "success": {}, "unchanged": {}, "failed": {}}`))
+			_, _ = w.Write([]byte(importFileFullSuccessBatch(importFileBatchSize)))
 			return
 		}
 		http.Error(w, `internal error`, http.StatusInternalServerError)

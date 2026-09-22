@@ -208,3 +208,70 @@ func TestRegisterAll_RegistersMirrorTools(t *testing.T) {
 	s := server.NewMCPServer("test", "0.0.0")
 	RegisterAll(s, newEchoRoot)
 }
+
+// Mirror-side witness for the hidden-subcommand bypass: safeInProcessHandler
+// must refuse positionals that resolve to a hidden subcommand, while ordinary
+// positionals still run. Mirrors TestOrchCommandRunRejectsHiddenSubcommandViaArgs
+// on the facade; both go through positionalBindingError per ADR-0001.
+func TestSafeInProcessHandlerRejectsHiddenSubcommandViaArgs(t *testing.T) {
+	var drifted bool
+	newRoot := func() *cobra.Command {
+		root := &cobra.Command{Use: "zotio", SilenceUsage: true, SilenceErrors: true}
+		capabilities := &cobra.Command{
+			Use:         "capabilities",
+			Short:       "Emit the capability registry",
+			Args:        cobra.ArbitraryArgs,
+			Annotations: map[string]string{ReadOnlyAnnotation: "true"},
+			RunE: func(c *cobra.Command, args []string) error {
+				fmt.Fprintf(c.OutOrStdout(), "capabilities:%s", strings.Join(args, ","))
+				return nil
+			},
+		}
+		drift := &cobra.Command{
+			Use:         "drift",
+			Short:       "Probe capability drift",
+			Annotations: map[string]string{ReadOnlyAnnotation: "true", HiddenAnnotation: "true"},
+			RunE: func(*cobra.Command, []string) error {
+				drifted = true
+				return nil
+			},
+		}
+		capabilities.AddCommand(drift)
+		root.AddCommand(capabilities)
+		return root
+	}
+	allowed := safeFlagNames((&cobra.Command{Use: "capabilities"}))
+	h := safeInProcessHandler(newRoot, []string{"capabilities"}, allowed)
+	req := mcplib.CallToolRequest{Params: mcplib.CallToolParams{
+		Name:      "capabilities",
+		Arguments: map[string]any{"args": "drift"},
+	}}
+	res, err := h(context.Background(), req)
+	if err != nil {
+		t.Fatalf("handler returned protocol error: %v", err)
+	}
+	if !res.IsError {
+		t.Fatalf("mirror accepted args that resolve to a hidden subcommand, got %q", toolResultText(t, res))
+	}
+	if drifted {
+		t.Fatal("refused call still executed the hidden subcommand")
+	}
+	if got := toolResultText(t, res); !strings.Contains(got, `"capabilities drift"`) || !strings.Contains(got, `"capabilities"`) {
+		t.Fatalf("error = %q, want it to name the selected and validated commands", got)
+	}
+
+	ordinary := mcplib.CallToolRequest{Params: mcplib.CallToolParams{
+		Name:      "capabilities",
+		Arguments: map[string]any{"args": "some-key"},
+	}}
+	ordinaryRes, err := h(context.Background(), ordinary)
+	if err != nil {
+		t.Fatalf("handler returned protocol error: %v", err)
+	}
+	if ordinaryRes.IsError {
+		t.Fatalf("mirror refused an ordinary positional: %q", toolResultText(t, ordinaryRes))
+	}
+	if got := toolResultText(t, ordinaryRes); !strings.Contains(got, "capabilities:some-key") {
+		t.Fatalf("run result = %q, want the ordinary positional to reach the command", got)
+	}
+}

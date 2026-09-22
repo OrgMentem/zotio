@@ -131,6 +131,9 @@ func commandRunHandler(rootFactory func() *cobra.Command) server.ToolHandlerFunc
 		if err := validateMirrorArguments(execArgs, allowed); err != nil {
 			return mcplib.NewToolResultError(err.Error()), nil
 		}
+		if err := positionalBindingError(rootFactory, path, positionalPathForArgs(path, execArgs)); err != nil {
+			return mcplib.NewToolResultError(err.Error()), nil
+		}
 		return runMirroredInProcess(ctx, rootFactory, path, execArgs), nil
 	}
 }

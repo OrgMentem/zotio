@@ -53,23 +53,40 @@ Notable changes to zotio. Format follows [Keep a Changelog](https://keepachangel
   envelope.** The created parent carries its key, `committed: true`, the
   title and a created-but-unattached message, so the half-made item is
   reconcilable. The status stays `failed` and the command still exits 1.
-- **`Store.DB()` returns a `*GuardedDB`, not a `*sql.DB`.** Reads keep the
-  busy-retry path and writes go through `ExecWrite` under the write mutex, so
-  no caller can take an unguarded handle past the single-writer contract of
-  ADR-0005. `Exec`, `Query`, `QueryRow` and their `Context` forms keep their
-  names; raw `Begin`, `Conn` and `Close` are gone, and `WithWriteTx` covers
-  multi-statement work.
-- **The MCP command mirror refuses non-string positional arguments.** A
-  numeric, boolean, array or object `args` value now returns an input error
-  naming the string contract. Previously the facade dropped it and ran the
-  command with no positionals. Absent, null and string values are unchanged.
+- **`Store.DB()` returns a `*GuardedDB`, not a `*sql.DB`.** Writes go through
+  `ExecWrite` under the write mutex, and the read methods accept only
+  `SELECT`, `WITH`, `PRAGMA` and `EXPLAIN`, so a write smuggled through
+  `Query` or `QueryRow` is refused instead of running past the single-writer
+  contract of ADR-0005. `Exec`, `Query`, `QueryRow` and their `Context` forms
+  keep their names; raw `Begin`, `Conn` and `Close` are gone, and
+  `WithWriteTx` covers multi-statement work.
+- **The MCP command mirror refuses non-string positional arguments, and
+  positional arguments that select another command.** A numeric, boolean,
+  array or object `args` value now returns an input error naming the string
+  contract; previously the facade dropped it and ran the command with no
+  positionals. Positional arguments that resolve to a different or
+  `mcp:hidden` subcommand — `command_run {"name":"capabilities","args":
+  "drift"}` reached the hidden drift probe — are refused on the mirror, the
+  facade and `workflow_submit` alike. Ordinary positional arguments are
+  unchanged.
+- **Configured custom headers no longer reach a destination that is not
+  trusted for authentication.** Only `Zotero-API-Version`,
+  `Zotero-Write-Token`, `If-Unmodified-Since-Version`, `If-Match` and
+  `If-None-Match` are merged for the local plane and for a sanitised fallback
+  base. Previously every `config.Headers` entry was merged and only
+  `Zotero-API-Key` and `Authorization` were stripped afterwards, so a custom
+  token header reached the local plane.
 
 ### Fixed
 
-- **Batch item writes no longer read a non-batch body as blanket success.**
-  A 2xx response that is not the documented batch envelope, or whose indices
-  do not cover the request exactly once, now marks the chunk unattributable
-  with an unknown outcome instead of reporting every object applied.
+- **Batch writes and the create paths no longer read a non-envelope body as
+  blanket success.** A 2xx response that is not the documented batch
+  envelope, or whose claimed indices do not cover the request exactly, now
+  fails closed with an unknown outcome for every object in that request. The
+  gate covers `items tags add/remove --batch`, `items create`,
+  `collections create` and the `import file` batch path, and accepts the
+  legitimate create shape that repeats an index in `success` and
+  `successful`.
 - **Collection child reads stop corrupting the local mirror.** An auto-mode
   `collections items` cached item payloads under the `collections` resource,
   and `collections tags` did the same with tags. Each now caches under its
@@ -90,12 +107,16 @@ Notable changes to zotio. Format follows [Keep a Changelog](https://keepachangel
 - **A failed `SetUpdateChecksEnabled` persist leaves the live config
   unchanged.** The change is staged and committed only after the save
   succeeds.
-- **Cancelled MCP search, `zotero://status` reads and sync persistence stop
-  work instead of running to completion.** The request context now reaches
-  the FTS read, the status reads and the SQLite write wait; a cancelled sync
-  rolls its batch back.
+- **Cancelled reads and writes stop instead of running to completion.** The
+  request context now reaches the MCP FTS search, the `zotero://status`
+  reads, the local `search` and `search --type` reads on the CLI, and the
+  SQLite write wait in sync; a cancelled sync rolls its batch back.
 - **The auto data source falls back to the mirror on a timeout.** User
   cancellation still never falls back.
+- **A base URL written with a trailing dot receives the API key.**
+  `https://api.zotero.org./users/0` passed base-URL validation but failed the
+  authentication gate, so every request went out unauthenticated and returned
+  403. Both checks now canonicalise the host the same way.
 
 ## [0.26.0] — 2026-09-15
 

@@ -1520,3 +1520,106 @@ func TestConnectorCreateAmbiguousRecovery(t *testing.T) {
 		t.Fatalf("attachment resolver calls = %d, want none after ambiguous recovery", attachmentResolverCalls)
 	}
 }
+
+// A 2xx body that is not the batch envelope proves nothing: a proxy error
+// page must fail the create with an unknown outcome, never report the item
+// applied with an empty key. Fails before the fix, which decoded only Failed
+// and read the error page as zero failures.
+func TestItemsCreateNonEnvelopeBodyFailsClosed(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"error":"proxy error"}`))
+	}))
+	defer srv.Close()
+	t.Setenv("ZOTERO_BASE_URL", srv.URL+"/users/0")
+
+	cmd := newItemsCreateCmd(&rootFlags{asJSON: true, yes: true, maxChanges: -1})
+	cmd.SilenceErrors, cmd.SilenceUsage = true, true
+	cmd.SetErr(io.Discard)
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetArgs([]string{"--items", `[{"itemType":"journalArticle","title":"x"}]`})
+	err := cmd.Execute()
+	if err == nil || ExitCode(err) != 13 {
+		t.Fatalf("items create error = %v, exit=%d; want degraded failure", err, ExitCode(err))
+	}
+	for _, want := range []string{"items create", "not a batch envelope", "outcome of the 1 item(s) in that request is unknown"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("items create error = %q, want %q", err, want)
+		}
+	}
+	var env mutation.Envelope
+	if err := json.Unmarshal(out.Bytes(), &env); err != nil {
+		t.Fatalf("stdout is not a mutation envelope: %v; stdout=%q", err, out.String())
+	}
+	if env.OK || env.Result == nil || env.Result.Summary.Applied != 0 || env.Result.Summary.Failed != 1 {
+		t.Fatalf("result = %s, want 0 applied and 1 failed", out.String())
+	}
+	if key := env.Result.Items[0].Key; key != "" {
+		t.Fatalf("result item key = %q, want empty: a non-envelope body proves no key", key)
+	}
+}
+
+// A create response legitimately carries the same index in both success (the
+// assigned key) and successful (the full object). The shared envelope gate
+// must accept that pair as one claim, not reject it as a double claim.
+// Fails if the gate is copied from the update path without the success /
+// successful overlap rule.
+func TestItemsCreateAcceptsSuccessSuccessfulOverlap(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"success":{"0":"NEWKEY11"},"successful":{"0":{"key":"NEWKEY11","version":1}},"unchanged":{},"failed":{}}`))
+	}))
+	defer srv.Close()
+	t.Setenv("ZOTERO_BASE_URL", srv.URL+"/users/0")
+
+	cmd := newItemsCreateCmd(&rootFlags{asJSON: true, yes: true, maxChanges: -1})
+	cmd.SilenceErrors, cmd.SilenceUsage = true, true
+	cmd.SetErr(io.Discard)
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetArgs([]string{"--items", `[{"itemType":"journalArticle","title":"x"}]`})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("items create with success/successful overlap: %v", err)
+	}
+	var env mutation.Envelope
+	if err := json.Unmarshal(out.Bytes(), &env); err != nil {
+		t.Fatalf("stdout is not a mutation envelope: %v; stdout=%q", err, out.String())
+	}
+	if env.Result == nil || len(env.Result.Items) != 1 || env.Result.Items[0].Key != "NEWKEY11" {
+		t.Fatalf("result = %s, want the created key NEWKEY11 on the one item", out.String())
+	}
+}
+
+// The same index in both successful and failed is a conflicting claim: the
+// response says the object was both created and rejected. The gate must
+// refuse it rather than report the item applied.
+func TestItemsCreateRejectsConflictingClaim(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"successful":{"0":{"key":"NEWKEY11"}},"success":{},"unchanged":{},"failed":{"0":{"code":400,"message":"bad"}}}`))
+	}))
+	defer srv.Close()
+	t.Setenv("ZOTERO_BASE_URL", srv.URL+"/users/0")
+
+	cmd := newItemsCreateCmd(&rootFlags{asJSON: true, yes: true, maxChanges: -1})
+	cmd.SilenceErrors, cmd.SilenceUsage = true, true
+	cmd.SetErr(io.Discard)
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetArgs([]string{"--items", `[{"itemType":"journalArticle","title":"x"}]`})
+	err := cmd.Execute()
+	if err == nil || ExitCode(err) != 13 {
+		t.Fatalf("items create error = %v, exit=%d; want degraded failure", err, ExitCode(err))
+	}
+	if !strings.Contains(err.Error(), `attributed index "0" twice`) {
+		t.Fatalf("items create error = %q, want the double-claim detail", err)
+	}
+	var env mutation.Envelope
+	if err := json.Unmarshal(out.Bytes(), &env); err != nil {
+		t.Fatalf("stdout is not a mutation envelope: %v; stdout=%q", err, out.String())
+	}
+	if env.OK || env.Result == nil || env.Result.Summary.Applied != 0 {
+		t.Fatalf("result = %s, want no applied item for a conflicting claim", out.String())
+	}
+}

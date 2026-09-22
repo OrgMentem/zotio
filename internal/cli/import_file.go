@@ -141,6 +141,10 @@ type importFileBatch struct {
 	executed map[int]bool
 	failed   map[int]batchWriteFailure
 	fatal    map[int]error
+	// envelope marks a batch window whose 2xx body was not the batch envelope:
+	// no record in that window has a proven outcome, so every Apply there
+	// reports the same unknown-outcome error instead of "applied".
+	envelope map[int]error
 }
 
 func newImportFileBatch(flags *rootFlags, items []map[string]any) *importFileBatch {
@@ -150,6 +154,7 @@ func newImportFileBatch(flags *rootFlags, items []map[string]any) *importFileBat
 		executed: make(map[int]bool),
 		failed:   make(map[int]batchWriteFailure),
 		fatal:    make(map[int]error),
+		envelope: make(map[int]error),
 	}
 }
 
@@ -161,6 +166,9 @@ func (b *importFileBatch) apply(index int) (string, any, error) {
 	}
 	if err := b.fatal[index]; err != nil {
 		return "failed", nil, err
+	}
+	if err := b.envelope[index]; err != nil {
+		return "failed", err.Error(), err
 	}
 	if failure, ok := b.failed[index]; ok {
 		return "failed", fmt.Sprintf("index %d: code %d: %s", index, failure.Code, failure.Message), nil
@@ -181,6 +189,17 @@ func (b *importFileBatch) runBatch(start int) {
 	data, _, err := b.client.Post("/items", b.items[start:end])
 	if err != nil {
 		b.failRange(start, end, classifyAPIError(err, b.flags))
+		return
+	}
+	// A 2xx without the batch envelope proves nothing: it may be a proxy
+	// error page, a singleton object, or truncated JSON. Decoding only Failed
+	// would read all of those as zero failures and report every record
+	// applied, so the envelope must be verified first.
+	if envErr := checkBatchEnvelope(data, end-start); envErr != nil {
+		envelopeErr := fmt.Errorf("import file: %w; the outcome of the %d record(s) in that request is unknown", envErr, end-start)
+		for i := start; i < end; i++ {
+			b.envelope[i] = envelopeErr
+		}
 		return
 	}
 	for key, failure := range importFileFailureIndexes(decodeBatchWriteResponse(data).Failed, start) {

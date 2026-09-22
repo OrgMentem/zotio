@@ -73,7 +73,7 @@ func TestApplyChangeToItemData(t *testing.T) {
 // belong in the mirrored item's data map, so applyChangeToItemData must
 // refuse to replay them instead of injecting a bogus key.
 func TestMirrorSkipsUnknownFieldNames(t *testing.T) {
-	for _, field := range []string{"tag", "tags_set", "record", "note", "attachment"} {
+	for _, field := range []string{"tag", "record", "note", "attachment"} {
 		t.Run(field, func(t *testing.T) {
 			d := map[string]any{}
 			if applyChangeToItemData(d, mutation.Change{Field: field, Add: "x"}) {
@@ -84,6 +84,74 @@ func TestMirrorSkipsUnknownFieldNames(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestMirrorTagsSetRejectsMalformedAddValues pins the fail-closed half of the
+// tags_set contract: the whole-list replacement only replays a canonical tag
+// array. A scalar, a missing Add, or a Remove alongside the set must refuse
+// so the row is left for the next sync instead of landing a corrupt tags
+// value in the mirror.
+func TestMirrorTagsSetRejectsMalformedAddValues(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		change mutation.Change
+	}{
+		{"scalar string", mutation.Change{Field: "tags_set", Add: "x"}},
+		{"nil add", mutation.Change{Field: "tags_set"}},
+		{"remove alongside set", mutation.Change{Field: "tags_set", Add: []any{map[string]any{"tag": "x"}}, Remove: "x"}},
+		{"blank tag name", mutation.Change{Field: "tags_set", Add: []any{map[string]any{"tag": "  "}}}},
+		{"missing tag name", mutation.Change{Field: "tags_set", Add: []any{map[string]any{"type": 1}}}},
+		{"unknown tag type", mutation.Change{Field: "tags_set", Add: []any{map[string]any{"tag": "x", "type": 7}}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			d := map[string]any{"tags": []any{map[string]any{"tag": "keep"}}}
+			if applyChangeToItemData(d, tc.change) {
+				t.Fatalf("malformed tags_set change %+v should not replay", tc.change)
+			}
+			kept, _ := d["tags"].([]any)
+			if len(kept) != 1 || kept[0].(map[string]any)["tag"] != "keep" {
+				t.Fatalf("malformed tags_set change mutated the mirror tags: %v", d["tags"])
+			}
+		})
+	}
+}
+
+// TestMirrorTagsSetReplaysCanonicalArrayValues pins the live half the old
+// unknown-field list hid: a canonical array Add replaces the whole tag list
+// exactly, manual tags keep no type, and automatic tags keep type 1. An
+// empty array is a valid clear, not a refusal.
+func TestMirrorTagsSetReplaysCanonicalArrayValues(t *testing.T) {
+	t.Run("replace with canonical tags", func(t *testing.T) {
+		d := map[string]any{"tags": []any{map[string]any{"tag": "old"}}}
+		add := []any{map[string]any{"tag": "new"}, map[string]any{"tag": "auto", "type": 1}}
+		if !applyChangeToItemData(d, mutation.Change{Field: "tags_set", Add: add}) {
+			t.Fatalf("canonical tags_set array should replay: %v", d["tags"])
+		}
+		tags, _ := d["tags"].([]any)
+		if len(tags) != 2 {
+			t.Fatalf("replayed tags = %v, want 2 tags", d["tags"])
+		}
+		first, _ := tags[0].(map[string]any)
+		if first["tag"] != "new" {
+			t.Fatalf("first replayed tag = %v, want new", tags[0])
+		}
+		if _, present := first["type"]; present {
+			t.Fatalf("manual tag should carry no type: %v", first)
+		}
+		second, _ := tags[1].(map[string]any)
+		if second["tag"] != "auto" || second["type"] != 1 {
+			t.Fatalf("automatic tag = %v, want {tag:auto type:1}", tags[1])
+		}
+	})
+	t.Run("empty array clears", func(t *testing.T) {
+		d := map[string]any{"tags": []any{map[string]any{"tag": "old"}}}
+		if !applyChangeToItemData(d, mutation.Change{Field: "tags_set", Add: []any{}}) {
+			t.Fatalf("empty tags_set array should replay as a clear: %v", d["tags"])
+		}
+		if tags, _ := d["tags"].([]any); len(tags) != 0 {
+			t.Fatalf("cleared tags = %v, want empty", d["tags"])
+		}
+	})
 }
 
 // TestMirrorRejectsIdentityFields covers bookkeeping/identity fields, which

@@ -151,13 +151,13 @@ func (b *batchItemUpdater) send(start int) {
 	if envErr := checkBatchEnvelope(data, end-start); envErr != nil {
 		b.unattributable[start] = true
 		if b.err == nil {
-			b.err = fmt.Errorf("%s: %v; the outcome of the %d item(s) in that request is unknown", b.operation, envErr, end-start)
+			b.err = fmt.Errorf("%s: %w; the outcome of the %d item(s) in that request is unknown", b.operation, envErr, end-start)
 		}
 		return
 	}
 	resp := decodeBatchWriteResponse(data)
-	// checkBatchEnvelope already proved every index is claimed exactly once,
-	// so this loop only distributes failures. The range guard stays as
+	// checkBatchEnvelope already proved the union of claimed indices covers the
+	// chunk, so this loop only distributes failures. The range guard stays as
 	// defence in depth: a response that contradicts the verified envelope
 	// must fail the chunk, never poison the failure map.
 	for index, failure := range resp.Failed {
@@ -177,8 +177,13 @@ func (b *batchItemUpdater) send(start int) {
 
 // checkBatchEnvelope verifies that a 2xx batch response proves the per-index
 // contract for a chunk of want objects: a JSON object whose successful,
-// success, unchanged and failed maps are themselves objects keyed by exactly
-// the chunk-relative indices 0..want-1, each claimed once.
+// success, unchanged and failed maps are themselves objects whose claimed
+// indices cover exactly the chunk-relative indices 0..want-1 in union.
+//
+// A create response legitimately carries the same index in both success (the
+// assigned key) and successful (the full object), so that pair is one claim,
+// not a double claim. Any other overlap -- for example the same index in
+// both successful and failed -- is a conflicting claim and is rejected.
 //
 // Anything else — malformed JSON, a singleton object, a proxy error page, or
 // partial coverage — leaves at least one outcome unproven, so the caller must
@@ -186,7 +191,7 @@ func (b *batchItemUpdater) send(start int) {
 func checkBatchEnvelope(data []byte, want int) error {
 	var body map[string]json.RawMessage
 	if err := json.Unmarshal(data, &body); err != nil {
-		return fmt.Errorf("batch response is not valid JSON: %v", err)
+		return fmt.Errorf("batch response is not valid JSON: %w", err)
 	}
 	present := false
 	for _, field := range []string{"successful", "success", "unchanged", "failed"} {
@@ -214,6 +219,9 @@ func checkBatchEnvelope(data []byte, want int) error {
 				return fmt.Errorf("batch response reported unattributable index %q", key)
 			}
 			if prev, dup := seen[offset]; dup {
+				if (prev == "success" && field == "successful") || (prev == "successful" && field == "success") {
+					continue
+				}
 				return fmt.Errorf("batch response attributed index %q twice (%s and %s)", key, prev, field)
 			}
 			seen[offset] = field

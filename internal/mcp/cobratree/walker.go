@@ -180,7 +180,11 @@ func safeToolOptionsForFlags(cmd *cobra.Command) []mcplib.ToolOption {
 func safeInProcessHandler(rootFactory func() *cobra.Command, commandPath []string, allowedFlags map[string]struct{}) server.ToolHandlerFunc {
 	inner := inProcessHandler(rootFactory, commandPath)
 	return func(ctx context.Context, req mcplib.CallToolRequest) (*mcplib.CallToolResult, error) {
-		if err := validateMirrorArguments(req.GetArguments(), allowedFlags); err != nil {
+		callArgs := req.GetArguments()
+		if err := validateMirrorArguments(callArgs, allowedFlags); err != nil {
+			return mcplib.NewToolResultError(err.Error()), nil
+		}
+		if err := positionalBindingError(rootFactory, commandPath, positionalPathForArgs(commandPath, callArgs)); err != nil {
 			return mcplib.NewToolResultError(err.Error()), nil
 		}
 		return inner(ctx, req)

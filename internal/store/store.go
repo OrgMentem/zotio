@@ -240,9 +240,13 @@ func (s *Store) Close() error {
 // probes, import health checks) plus single-statement writes that serialize
 // through the store's single-writer lock. It deliberately exposes no raw
 // *sql.DB: no caller can Begin/Conn against the pool and interleave an
-// auxiliary write with sync's batch transactions (ADR-0005). Multi-statement
-// auxiliary work belongs in WithWriteTx, which holds the same lock across
-// the whole transaction.
+// auxiliary write with sync's batch transactions (ADR-0005). The read
+// methods (Query, QueryContext, QueryRow, QueryRowContext) only accept
+// read statements (SELECT, WITH-form SELECT, PRAGMA, EXPLAIN) and refuse
+// anything else so a DELETE/UPDATE/INSERT ... RETURNING cannot slip a write
+// through the read path that bypasses the single-writer lock. Writes belong
+// in Exec/ExecContext/ExecWrite. Multi-statement auxiliary work belongs in
+// WithWriteTx, which holds the same lock across the whole transaction.
 type GuardedDB struct {
 	s *Store
 }
@@ -269,26 +273,101 @@ func (g *GuardedDB) ExecContext(ctx context.Context, query string, args ...any) 
 	return g.s.ExecWrite(ctx, query, args...)
 }
 
-// Query runs a read through the store's busy-retry path.
+// Query runs a read through the store's busy-retry path. Only read
+// statements (SELECT, WITH, PRAGMA, EXPLAIN) are accepted; anything else is
+// refused so a write cannot slip through the read path past the
+// single-writer lock — use ExecWrite or WithWriteTx for those.
 func (g *GuardedDB) Query(query string, args ...any) (*sql.Rows, error) {
+	if err := validateGuardedRead(query); err != nil {
+		return nil, err
+	}
 	return g.s.Query(query, args...)
 }
 
 // QueryContext runs a cancellable read through the store's busy-retry path.
+// It enforces the same read-only statement gate as Query.
 func (g *GuardedDB) QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error) {
+	if err := validateGuardedRead(query); err != nil {
+		return nil, err
+	}
 	return g.s.QueryContext(ctx, query, args...)
 }
 
 // QueryRow runs a single-row read. The returned row retries SQLite
-// contention on Scan, like Store.QueryRowContext.
+// contention on Scan, like Store.QueryRowContext. A refused statement
+// surfaces as the Scan error, since database/sql defers row errors until
+// the caller consumes the row.
 func (g *GuardedDB) QueryRow(query string, args ...any) *Row {
+	if err := validateGuardedRead(query); err != nil {
+		return &Row{store: g.s, ctx: context.Background(), query: query, args: args, err: err}
+	}
 	return g.s.QueryRowContext(context.Background(), query, args...)
 }
 
 // QueryRowContext runs a cancellable single-row read. Busy errors surface
-// during Scan, so the scan itself is retried.
+// during Scan, so the scan itself is retried. A refused statement surfaces
+// as the Scan error.
 func (g *GuardedDB) QueryRowContext(ctx context.Context, query string, args ...any) *Row {
+	if err := validateGuardedRead(query); err != nil {
+		if ctx == nil {
+			ctx = context.Background()
+		}
+		return &Row{store: g.s, ctx: ctx, query: query, args: args, err: err}
+	}
 	return g.s.QueryRowContext(ctx, query, args...)
+}
+
+// validateGuardedRead enforces the GuardedDB read contract: the statement
+// must lead with SELECT, WITH, PRAGMA or EXPLAIN once leading whitespace
+// and SQL comments are stripped, so a DELETE/UPDATE/INSERT (including
+// INSERT ... RETURNING, which SQLite executes through a Query call) cannot
+// bypass the single-writer lock. The keyword match is case-insensitive and
+// requires a word boundary so a write hiding behind a read prefix (for
+// example "-- setup\nDELETE ...") is still refused.
+func validateGuardedRead(query string) error {
+	rest := stripGuardedReadPrefix(query)
+	upper := strings.ToUpper(rest)
+	for _, kw := range []string{"SELECT", "WITH", "PRAGMA", "EXPLAIN"} {
+		if strings.HasPrefix(upper, kw) {
+			if len(rest) == len(kw) || !isGuardedReadIdentChar(rest[len(kw)]) {
+				return nil
+			}
+			break
+		}
+	}
+	return fmt.Errorf("store: GuardedDB read methods accept only SELECT, WITH, PRAGMA and EXPLAIN statements; use ExecWrite or WithWriteTx for writes")
+}
+
+// stripGuardedReadPrefix removes the leading whitespace, statement
+// separators and SQL comments SQLite itself skips before parsing the first
+// keyword, so the read gate judges the same statement the driver runs.
+func stripGuardedReadPrefix(s string) string {
+	for {
+		s = strings.TrimLeft(s, " \t\n\r\f\v;")
+		switch {
+		case strings.HasPrefix(s, "--"):
+			if idx := strings.IndexByte(s, '\n'); idx >= 0 {
+				s = s[idx+1:]
+				continue
+			}
+			return ""
+		case strings.HasPrefix(s, "/*"):
+			if idx := strings.Index(s[2:], "*/"); idx >= 0 {
+				s = s[2+idx+2:]
+				continue
+			}
+			return ""
+		default:
+			return s
+		}
+	}
+}
+
+func isGuardedReadIdentChar(c byte) bool {
+	return c == '_' || c == '$' ||
+		(c >= '0' && c <= '9') ||
+		(c >= 'A' && c <= 'Z') ||
+		(c >= 'a' && c <= 'z')
 }
 
 // PingContext probes liveness without taking the writer lock.
@@ -332,6 +411,11 @@ func (s *Store) acquireWrite(ctx context.Context) (release func(), err error) {
 // callback holds writeMu, the transaction opens with BeginTx so SQLite
 // waits honour ctx, and a cancelled context rolls everything back instead
 // of committing a half-written batch.
+//
+// It has no production caller and is not re-entrant: fn must not call back
+// into ExecWrite, WithWriteTx, or any other path that acquires the write
+// lock, because the lock is already held and the inner call would poll until
+// ctx dies instead of failing fast.
 func (s *Store) WithWriteTx(ctx context.Context, fn func(tx *sql.Tx) error) error {
 	if ctx == nil {
 		ctx = context.Background()
@@ -1707,6 +1791,41 @@ func (s *Store) SearchContext(ctx context.Context, query string, limit int) ([]j
 	return results, rows.Err()
 }
 
+// SearchByTypeContext is the type-filtered FTS path bound to a request
+// context, so the CLI --type search aborts on Ctrl+C like the cross-resource
+// and fulltext paths. Yes, the type-filtered path needed the same treatment:
+// it runs the same FTS read and previously used the background context.
+func (s *Store) SearchByTypeContext(ctx context.Context, query, resourceType string, limit int) ([]json.RawMessage, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if limit == 0 {
+		limit = 50
+	}
+	rows, err := s.queryWithBusyRetryContext(ctx,
+		`SELECT r.data FROM resources r
+		 JOIN resources_fts f ON r.id = f.id AND r.resource_type = f.resource_type
+		 WHERE resources_fts MATCH ? AND f.resource_type = ?
+		 ORDER BY rank
+		 LIMIT ?`,
+		ftsMatchQuery(query), resourceType, limit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	results := make([]json.RawMessage, 0)
+	for rows.Next() {
+		var data string
+		if err := rows.Scan(&data); err != nil {
+			return nil, err
+		}
+		results = append(results, json.RawMessage(data))
+	}
+	return results, rows.Err()
+}
+
 // ItemsByType returns the stored payloads of all items with the given
 // itemType (e.g. "annotation", "attachment"). limit <= 0 means no limit.
 // backs local-first annotation listing.
@@ -2083,10 +2202,6 @@ func (s *Store) SaveSyncResumeStateContext(ctx context.Context, resourceType, cu
 		return fmt.Errorf("sync cursor for %s requires request provenance", resourceType)
 	}
 	return s.saveSyncStateContext(ctx, resourceType, cursor, scope, count)
-}
-
-func (s *Store) saveSyncState(resourceType, cursor, scope string, count int) error {
-	return s.saveSyncStateContext(context.Background(), resourceType, cursor, scope, count)
 }
 
 func (s *Store) saveSyncStateContext(ctx context.Context, resourceType, cursor, scope string, count int) error {
@@ -2551,6 +2666,7 @@ type Row struct {
 	ctx   context.Context
 	query string
 	args  []any
+	err   error
 }
 
 // QueryRowContext executes a raw SQL query for one row with cancellation.
@@ -2563,7 +2679,11 @@ func (s *Store) QueryRowContext(ctx context.Context, query string, args ...any) 
 }
 
 // Scan reads the query row, retrying SQLite contention until the store deadline.
+// A refused GuardedDB read surfaces its gate error here without touching SQLite.
 func (r *Row) Scan(dest ...any) error {
+	if r.err != nil {
+		return r.err
+	}
 	deadline := time.Now().Add(migrationLockTimeout)
 	return retryOnBusy(r.ctx, deadline, "querying local store", func() error {
 		return r.store.db.QueryRowContext(r.ctx, r.query, r.args...).Scan(dest...)

@@ -775,6 +775,7 @@ func TestCloneForReadUntrustedBaseSendsNoCredentials(t *testing.T) {
 		zoteroAPIKey  string
 		authorization string
 		customToken   string
+		apiVersion    string
 	}
 	var seen []seenRequest
 	transport := clientRoundTripFunc(func(req *http.Request) (*http.Response, error) {
@@ -783,6 +784,7 @@ func TestCloneForReadUntrustedBaseSendsNoCredentials(t *testing.T) {
 			zoteroAPIKey:  req.Header.Get("Zotero-API-Key"),
 			authorization: req.Header.Get("Authorization"),
 			customToken:   req.Header.Get("X-Custom-Token"),
+			apiVersion:    req.Header.Get("Zotero-API-Version"),
 		})
 		return &http.Response{
 			StatusCode: http.StatusOK,
@@ -794,12 +796,16 @@ func TestCloneForReadUntrustedBaseSendsNoCredentials(t *testing.T) {
 		BaseURL:      "http://localhost:23119/api/users/0",
 		ZoteroApiKey: "secret-key",
 		Headers: map[string]string{
-			"Authorization":  "Bearer custom-secret",
-			"X-Custom-Token": "custom-secret",
+			"Authorization":      "Bearer custom-secret",
+			"X-Custom-Token":     "custom-secret",
+			"Zotero-API-Version": "3",
 		},
 	}
 	c := New(cfg, 5*time.Second, 0)
 	clone := c.CloneForRead("http://evil.example/api")
+	if clone.BaseURL != defaultZoteroBaseURL {
+		t.Fatalf("clone BaseURL = %q, want sanitized default %q", clone.BaseURL, defaultZoteroBaseURL)
+	}
 	clone.HTTPClient = &http.Client{Transport: transport}
 	clone.NoCache = true
 	if _, err := clone.Get("/items", nil); err != nil {
@@ -809,16 +815,117 @@ func TestCloneForReadUntrustedBaseSendsNoCredentials(t *testing.T) {
 		t.Fatalf("clone issued %d requests, want 1", len(seen))
 	}
 	got := seen[0]
-	if got.host == "evil.example" {
-		t.Errorf("clone request went to untrusted host %q, want sanitized default base", got.host)
+	wantHost := mustParseURLHost(t, defaultZoteroBaseURL)
+	if got.host != wantHost {
+		t.Errorf("clone request host = %q, want sanitized default base host %q", got.host, wantHost)
 	}
-	if got.zoteroAPIKey != "" && got.host == "evil.example" {
+	if got.zoteroAPIKey != "" {
 		t.Errorf("untrusted-bound request carried Zotero-API-Key %q, want none", got.zoteroAPIKey)
 	}
-	if got.authorization != "" && got.host == "evil.example" {
+	if got.authorization != "" {
 		t.Errorf("untrusted-bound request carried Authorization %q, want none", got.authorization)
 	}
-	if got.customToken != "" && got.host == "evil.example" {
+	if got.customToken != "" {
 		t.Errorf("untrusted-bound request carried X-Custom-Token %q, want none", got.customToken)
 	}
+	// The non-secret protocol allowlist still merges on the loopback plane.
+	if got.apiVersion != "3" {
+		t.Errorf("loopback-bound request Zotero-API-Version = %q, want 3", got.apiVersion)
+	}
+}
+
+// A base the sanitiser accepts but which is not the Web API (an http loopback
+// server standing in for the local desktop plane) must receive no API key and
+// no secret-bearing configured header. Only the non-secret protocol allowlist
+// goes out there.
+func TestLoopbackBaseReceivesNoCredentials(t *testing.T) {
+	var gotKey, gotAuth, gotCustom, gotVersion string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotKey = r.Header.Get("Zotero-API-Key")
+		gotAuth = r.Header.Get("Authorization")
+		gotCustom = r.Header.Get("X-Custom-Token")
+		gotVersion = r.Header.Get("Zotero-API-Version")
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	}))
+	defer server.Close()
+
+	cfg := &config.Config{
+		BaseURL:      server.URL,
+		ZoteroApiKey: "secret-key",
+		Headers: map[string]string{
+			"Authorization":      "Bearer custom-secret",
+			"X-Custom-Token":     "custom-secret",
+			"Zotero-API-Version": "3",
+		},
+	}
+	c := New(cfg, 5*time.Second, 0)
+	if c.BaseURL != server.URL {
+		t.Fatalf("client BaseURL = %q, want accepted loopback base %q", c.BaseURL, server.URL)
+	}
+	c.NoCache = true
+	if _, err := c.Get("/items", nil); err != nil {
+		t.Fatalf("loopback Get returned error: %v", err)
+	}
+	if gotKey != "" {
+		t.Errorf("loopback-bound request carried Zotero-API-Key %q, want none", gotKey)
+	}
+	if gotAuth != "" {
+		t.Errorf("loopback-bound request carried Authorization %q, want none", gotAuth)
+	}
+	if gotCustom != "" {
+		t.Errorf("loopback-bound request carried X-Custom-Token %q, want none", gotCustom)
+	}
+	if gotVersion != "3" {
+		t.Errorf("loopback-bound request Zotero-API-Version = %q, want 3", gotVersion)
+	}
+}
+
+// A trailing-dot Web API base ("https://api.zotero.org.") is trusted by the
+// sanitiser, so it must also be trusted by the per-request auth gate: the
+// request has to carry the API key rather than 403 on a missing credential.
+func TestTrailingDotWebAPIBaseReceivesAPIKey(t *testing.T) {
+	u, err := url.Parse("https://api.zotero.org./users/0")
+	if err != nil {
+		t.Fatalf("parsing trailing-dot base: %v", err)
+	}
+	if !trustedZoteroBaseURL(u) {
+		t.Fatalf("trailing-dot base not trusted by the sanitiser")
+	}
+	if !shouldSendZoteroAuth(u) {
+		t.Fatalf("trailing-dot base trusted by the sanitiser but rejected by the auth gate")
+	}
+	var gotKey string
+	transport := clientRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+		gotKey = req.Header.Get("Zotero-API-Key")
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     make(http.Header),
+			Body:       io.NopCloser(strings.NewReader(`{"ok":true}`)),
+		}, nil
+	})
+	cfg := &config.Config{
+		BaseURL:      "https://api.zotero.org./users/0",
+		ZoteroApiKey: "secret-key",
+	}
+	c := New(cfg, 5*time.Second, 0)
+	if c.BaseURL != "https://api.zotero.org./users/0" {
+		t.Fatalf("client BaseURL = %q, want the accepted trailing-dot base kept", c.BaseURL)
+	}
+	c.HTTPClient = &http.Client{Transport: transport}
+	c.NoCache = true
+	if _, err := c.Get("/items", nil); err != nil {
+		t.Fatalf("trailing-dot Get returned error: %v", err)
+	}
+	if gotKey != "secret-key" {
+		t.Errorf("trailing-dot request Zotero-API-Key = %q, want the configured key", gotKey)
+	}
+}
+
+func mustParseURLHost(t *testing.T, raw string) string {
+	t.Helper()
+	u, err := url.Parse(raw)
+	if err != nil {
+		t.Fatalf("parsing base URL %q: %v", raw, err)
+	}
+	return u.Host
 }

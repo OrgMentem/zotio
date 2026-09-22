@@ -209,6 +209,7 @@ func (b *itemsCreateBatch) attachWeb(flags *rootFlags, c itemPoster, path string
 	var (
 		executed  bool
 		transport error // set only when the POST itself failed, not on a per-element rejection
+		envelope  error // set when the 2xx body is not the batch envelope: no outcome is proven
 		failed    map[string]batchWriteFailure
 		keys      map[string]string
 	)
@@ -223,6 +224,15 @@ func (b *itemsCreateBatch) attachWeb(flags *rootFlags, c itemPoster, path string
 			b.err = transport
 			return
 		}
+		// A 2xx without the batch envelope proves nothing: it may be a proxy
+		// error page, a singleton object, or truncated JSON. Decoding only Failed
+		// would read all of those as zero failures and report the whole batch
+		// applied, so the envelope must be verified first.
+		if envErr := checkBatchEnvelope(data, len(ops)); envErr != nil {
+			envelope = fmt.Errorf("items create: %w; the outcome of the %d item(s) in that request is unknown", envErr, len(ops))
+			b.err = degradedErr(envelope)
+			return
+		}
 		failed = decodeBatchWriteResponse(data).Failed
 		keys = itemsCreateKeysByIndex(data)
 		if bwErr := batchWriteFailuresError("items create", failed); bwErr != nil {
@@ -235,6 +245,9 @@ func (b *itemsCreateBatch) attachWeb(flags *rootFlags, c itemPoster, path string
 			post()
 			if transport != nil {
 				return "failed", nil, transport
+			}
+			if envelope != nil {
+				return "failed", envelope.Error(), envelope
 			}
 			if failure, ok := failed[strconv.Itoa(index)]; ok {
 				return "failed", fmt.Sprintf("index %d: code %d: %s", index, failure.Code, failure.Message), nil
