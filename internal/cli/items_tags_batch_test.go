@@ -4,7 +4,9 @@ package cli
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -12,6 +14,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"zotio/internal/mutation"
 )
@@ -31,11 +34,13 @@ type batchTagServer struct {
 	// object whose submitted version is not the item's current version is
 	// rejected with 412, the way Zotero does.
 	enforceVersion bool
-	// failPost makes the array write itself fail at the transport level.
-	failPost bool
-
-	posts    [][]map[string]any
-	getCount int
+	// postFailureStatus makes the array write fail at the request level.
+	postFailureStatus int
+	// postStarted blocks the array write until its request context is
+	// cancelled, after signalling that the full chunk reached the server.
+	postStarted chan struct{}
+	posts       [][]map[string]any
+	getCount    int
 }
 
 func newBatchTagServer(t *testing.T, keys []string) *batchTagServer {
@@ -65,8 +70,8 @@ func newBatchTagServer(t *testing.T, keys []string) *batchTagServer {
 				"data": map[string]any{"key": key, "version": version, "tags": b.tagsFor(key)},
 			})
 		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/items"):
-			if b.failPost {
-				http.Error(w, "upstream exploded", http.StatusBadGateway)
+			if b.postFailureStatus != 0 {
+				http.Error(w, "upstream exploded", b.postFailureStatus)
 				return
 			}
 			var objects []map[string]any
@@ -74,6 +79,11 @@ func newBatchTagServer(t *testing.T, keys []string) *batchTagServer {
 				t.Errorf("decode array write: %v", err)
 			}
 			b.posts = append(b.posts, objects)
+			if b.postStarted != nil {
+				close(b.postStarted)
+				<-r.Context().Done()
+				return
+			}
 			successful := map[string]any{}
 			failed := map[string]any{}
 			for i, obj := range objects {
@@ -207,6 +217,10 @@ func TestItemsTagsBatchAttributesRejectionToItsOwnItem(t *testing.T) {
 	// surface; the message belongs on the item, checked below.
 	if code := ExitCode(err); code != 1 {
 		t.Errorf("exit code = %d, want 1 for a pure conflict", code)
+	}
+	var cliErr *cliError
+	if errors.As(err, &cliErr) {
+		t.Errorf("conflict error = %v, want the mutation engine's exit 1, not classified request error %d", err, cliErr.code)
 	}
 	reason := fmt.Sprint(byKey["K2"].Reason)
 	if !strings.Contains(reason, "rejected K2") {
@@ -344,7 +358,7 @@ func TestItemsTagsBatchStaleVersionBecomesThatItemsConflict(t *testing.T) {
 func TestItemsTagsBatchTransportFailureFailsEveryItemInTheRequest(t *testing.T) {
 	keys := []string{"K1", "K2", "K3"}
 	b := newBatchTagServer(t, keys)
-	b.failPost = true
+	b.postFailureStatus = http.StatusBadGateway
 
 	env, err := runBatchTagCmd(t, b, append([]string{"add", "--batch", "--tag", "sweep"}, keys...)...)
 	if err == nil {
@@ -355,6 +369,35 @@ func TestItemsTagsBatchTransportFailureFailsEveryItemInTheRequest(t *testing.T) 
 	}
 	if env.OK {
 		t.Error("envelope reports ok for a run whose only request failed")
+	}
+}
+
+// Request-level authorization failures keep the API classification and hint.
+// The engine also marks every item failed, so this checks that its generic
+// "mutation incomplete" error cannot mask the request error.
+func TestItemsTagsBatchClassifiesAuthorizationFailure(t *testing.T) {
+	keys := []string{"K1", "K2", "K3"}
+	b := newBatchTagServer(t, keys)
+	b.postFailureStatus = http.StatusUnauthorized
+
+	env, err := runBatchTagCmd(t, b, append([]string{"add", "--batch", "--tag", "sweep"}, keys...)...)
+	if err == nil {
+		t.Fatal("unauthorized request returned nil error")
+	}
+	var cliErr *cliError
+	if !errors.As(err, &cliErr) || cliErr.code != 4 {
+		t.Fatalf("error = %T %[1]v, want classified authorization error with exit 4", err)
+	}
+	for _, want := range []string{"HTTP 401", "check your API key", "zotio doctor"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error = %q, want request detail %q", err, want)
+		}
+	}
+	if strings.Contains(err.Error(), "mutation incomplete") {
+		t.Errorf("error = %q, request failure was masked by the mutation engine", err)
+	}
+	if env.Result == nil || env.Result.Summary.Failed != len(keys) || env.OK {
+		t.Errorf("envelope = %+v, want every request item failed and ok:false", env)
 	}
 }
 
@@ -404,6 +447,127 @@ func TestItemsTagsBatchUnattributableIndexFailsClosed(t *testing.T) {
 		if item.Status == "applied" {
 			t.Errorf("%s reported applied though no outcome could be attributed", item.Key)
 		}
+	}
+	var cliErr *cliError
+	if !errors.As(err, &cliErr) || cliErr.code != 5 {
+		t.Fatalf("error = %T %[1]v, want classified request error with exit 5", err)
+	}
+	if !strings.Contains(err.Error(), "unattributable index") || strings.Contains(err.Error(), "mutation incomplete") {
+		t.Errorf("error = %q, want the unattributable response detail instead of the engine error", err)
+	}
+}
+
+// Cancellation after dispatch must not make sent siblings safe to retry.
+// The first chunk reached the server as one request, while the second chunk
+// never left the process.
+func TestItemsTagsBatchCancellationPreservesDispatchedSiblingStatus(t *testing.T) {
+	keys := make([]string, 0, zoteroBatchWriteMax+1)
+	for i := range zoteroBatchWriteMax + 1 {
+		keys = append(keys, fmt.Sprintf("K%03d", i))
+	}
+	b := newBatchTagServer(t, keys)
+	b.postStarted = make(chan struct{})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	t.Setenv("ZOTERO_BASE_URL", b.server.URL+"/users/0")
+	t.Setenv("ZOTERO_CONFIG", filepath.Join(t.TempDir(), "missing.toml"))
+	flags := &rootFlags{ctx: ctx, asJSON: true, yes: true, maxChanges: -1}
+	cmd := newItemsTagsCmd(flags)
+	cmd.SilenceErrors, cmd.SilenceUsage = true, true
+	var out, errOut bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&errOut)
+	cmd.SetArgs(append([]string{"add", "--batch", "--tag", "sweep"}, keys...))
+
+	done := make(chan error, 1)
+	go func() { done <- cmd.ExecuteContext(ctx) }()
+	select {
+	case <-b.postStarted:
+		cancel()
+	case <-time.After(3 * time.Second):
+		cancel()
+		t.Fatal("batch request was not dispatched")
+	}
+
+	var err error
+	select {
+	case err = <-done:
+	case <-time.After(3 * time.Second):
+		t.Fatal("batch command did not stop after cancellation")
+	}
+	if err == nil {
+		t.Fatal("cancelled batch returned nil error")
+	}
+	var env mutation.Envelope
+	if decodeErr := json.Unmarshal(out.Bytes(), &env); decodeErr != nil {
+		t.Fatalf("decode envelope %q: %v", out.String(), decodeErr)
+	}
+	if env.OK || env.Result == nil {
+		t.Fatalf("cancelled envelope = %+v, want ok:false with a result", env)
+	}
+	if env.Result.Summary.Failed != zoteroBatchWriteMax || env.Result.Summary.NotAttempted != 1 {
+		t.Fatalf("summary = %+v, want dispatched chunk failed and later chunk not attempted", env.Result.Summary)
+	}
+	byKey := make(map[string]mutation.ResultItem, len(env.Result.Items))
+	for _, item := range env.Result.Items {
+		byKey[item.Key] = item
+	}
+	for _, key := range []string{"K001", "K049"} {
+		item := byKey[key]
+		if item.Status != "failed" || !strings.Contains(fmt.Sprint(item.Reason), "already sent") ||
+			!strings.Contains(fmt.Sprint(item.Reason), "verify before retrying") {
+			t.Errorf("%s = %+v, want failed unknown outcome for a dispatched sibling", key, item)
+		}
+	}
+	if item := byKey["K050"]; item.Status != "not_attempted" {
+		t.Errorf("K050 = %+v, want not_attempted because its later chunk was never dispatched", item)
+	}
+}
+
+func TestItemsTagsBatchCancellationBeforeTransportKeepsSiblingsNotAttempted(t *testing.T) {
+	b := newBatchTagServer(t, []string{"K1", "K2"})
+	t.Setenv("ZOTERO_BASE_URL", b.server.URL+"/users/0")
+	t.Setenv("ZOTERO_CONFIG", filepath.Join(t.TempDir(), "missing.toml"))
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	c, err := (&rootFlags{ctx: ctx}).newClient()
+	if err != nil {
+		t.Fatal(err)
+	}
+	updater := newBatchItemUpdater(c, "/items", "items.tags.add", []map[string]any{
+		{"key": "K1", "version": 1, "tags": []map[string]any{{"tag": "sweep"}}},
+		{"key": "K2", "version": 1, "tags": []map[string]any{{"tag": "sweep"}}},
+	})
+	ops := make([]mutation.Op, 0, 2)
+	for index, key := range []string{"K1", "K2"} {
+		ops = append(ops, mutation.Op{
+			ID: key, Key: key, Kind: "tag_add",
+			Changes: []mutation.Change{{Field: "tags", Add: "sweep"}},
+			Apply: func() (string, any, error) {
+				// Cancel after the engine admits the operation, before the
+				// client can dispatch it. This makes the boundary deterministic.
+				cancel()
+				return updater.outcome(index)
+			},
+		})
+	}
+	env, err := mutation.Run(mutation.Options{
+		Context: ctx, Yes: true, MaxChanges: -1, ContinueOnError: true,
+	}, "items.tags.add", ops)
+	correctDispatchedNotAttempted(&env, ops, map[int]int{0: 0, 1: 1}, updater)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("error = %v, want cancellation", err)
+	}
+	if len(b.posts) != 0 {
+		t.Fatalf("batch requests = %d, want no transport dispatch", len(b.posts))
+	}
+	if env.Result == nil || env.Result.Summary.Attempted != 1 ||
+		env.Result.Summary.Failed != 1 || env.Result.Summary.NotAttempted != 1 {
+		t.Fatalf("result = %+v, want only the admitted operation failed", env.Result)
+	}
+	if item := env.Result.Items[1]; item.Key != "K2" || item.Status != "not_attempted" {
+		t.Fatalf("sibling = %+v, want K2 not_attempted", item)
 	}
 }
 

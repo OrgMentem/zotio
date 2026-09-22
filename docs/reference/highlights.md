@@ -207,7 +207,7 @@ See your annotations ordered by date — find what you were reading and highligh
 
 ### `items note-template`
 
-Generate a pre-filled markdown reading note (frontmatter + abstract + empty Annotations section) for any item — paste into Obsidian or Logseq.
+Generate a pre-filled markdown reading note with frontmatter, abstract, and annotations from the same live or local source for Obsidian or Logseq.
 
 > **Why it matters** — Use this to initialize a reading note in a PKM system without manually copying fields from the Zotero UI.
 

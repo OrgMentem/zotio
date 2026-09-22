@@ -74,7 +74,7 @@ func newSearchesMaterializeCmd(flags *rootFlags) *cobra.Command {
 }
 
 func runSearchesMaterializeMutation(cmd *cobra.Command, flags *rootFlags, searchKey, toCollection string) error {
-	c, err := flags.newWriteClient()
+	readClient, err := flags.newClient()
 	if err != nil {
 		return err
 	}
@@ -85,9 +85,9 @@ func runSearchesMaterializeMutation(cmd *cobra.Command, flags *rootFlags, search
 	// single unpaginated fetch silently truncates any search larger than one
 	// page. Accumulate every page before building the mutation plan.
 	//
-	// Result membership is not mirrored (sync stores saved-search definitions
-	// only), so this read has one plane: Zotero desktop's local API. There is
-	// no resolveRead dispatch to make here, and no local fallback to offer.
+	// Saved-search membership comes from the configured read plane. Under
+	// hybrid routing this is Zotero desktop, while apply-time version reads
+	// and PATCHes use a separate client pinned to the Web API write plane.
 	var allKeys []string
 	seen := make(map[string]bool, zoteroPageMax)
 	for start := 0; ; start += zoteroPageMax {
@@ -95,7 +95,7 @@ func runSearchesMaterializeMutation(cmd *cobra.Command, flags *rootFlags, search
 			"limit": strconv.Itoa(zoteroPageMax),
 			"start": strconv.Itoa(start),
 		}
-		data, err := c.Get(searchPath, params)
+		data, err := readClient.Get(searchPath, params)
 		if err != nil {
 			// A plane that cannot execute the search is a precondition, not an
 			// empty plan. Rendering an empty plan here made "Zotero is closed"
@@ -155,6 +155,13 @@ func runSearchesMaterializeMutation(cmd *cobra.Command, flags *rootFlags, search
 	if len(allKeys) == 0 {
 		return renderEmptySearchesMaterializePlan(cmd, flags, "saved search returned no item keys")
 	}
+	var writeClient *client.Client
+	if resolveMutationMode(flags).Apply {
+		writeClient, err = flags.newWriteClient()
+		if err != nil {
+			return err
+		}
+	}
 
 	ops := make([]mutation.Op, 0, len(allKeys))
 	for _, key := range allKeys {
@@ -168,7 +175,7 @@ func runSearchesMaterializeMutation(cmd *cobra.Command, flags *rootFlags, search
 			Changes:     []mutation.Change{{Field: "collections", Add: toCollection}},
 			Destructive: false,
 			Apply: func() (string, any, error) {
-				return applySearchesMaterializeCollectionAdd(c, pathCopy, toCopy)
+				return applySearchesMaterializeCollectionAdd(writeClient, pathCopy, toCopy)
 			},
 		})
 	}

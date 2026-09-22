@@ -6,12 +6,12 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
-
-	"github.com/spf13/cobra"
 
 	"zotio/internal/store"
 )
@@ -646,36 +646,107 @@ func TestRenderLogseqNoteTemplateNestsAnnotationsUnderHeading(t *testing.T) {
 	}
 }
 
-func TestNoteTemplateRequiresSyncedStore(t *testing.T) {
-	root, _, out, _ := newPreflightTestRoot(t)
-	noteTemplate := mustFindPreflightCommand(t, root, "items", "note-template")
-	runExecuted := false
-	noteTemplate.RunE = func(cmd *cobra.Command, args []string) error {
-		runExecuted = true
-		return nil
-	}
+func TestNoteTemplateLocalWithoutMirrorHasSyncGuidance(t *testing.T) {
+	savedGroup := activeGroupIDLocked()
+	setActiveGroupID("")
+	t.Cleanup(func() { setActiveGroupID(savedGroup) })
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("ZOTERO_CONFIG", filepath.Join(t.TempDir(), "missing.toml"))
 
-	root.SetArgs([]string{"--json", "items", "note-template", "ITEM1"})
-	err := root.Execute()
+	cmd := newItemsNoteTemplateCmd(&rootFlags{dataSource: "local"})
+	cmd.SetArgs([]string{"ITEM1"})
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetErr(&bytes.Buffer{})
+	err := cmd.Execute()
 	if err == nil {
-		t.Fatal("items note-template without a synced store succeeded, want precondition error")
+		t.Fatal("items note-template --data-source local without a mirror succeeded")
 	}
-	if runExecuted {
-		t.Fatal("items note-template RunE executed after synced_store preflight failed")
+	if !strings.Contains(err.Error(), "zotio sync") {
+		t.Fatalf("local missing-mirror error = %q, want zotio sync guidance", err)
 	}
-	if got := ExitCode(err); got != 9 {
-		t.Fatalf("exit code = %d, want 9; err=%v", got, err)
-	}
+}
 
-	var env preconditionUnmetEnvelope
-	if decodeErr := json.Unmarshal(out.Bytes(), &env); decodeErr != nil {
-		t.Fatalf("decode precondition envelope: %v; output=%q", decodeErr, out.String())
+func TestNoteTemplateLiveWorksWithoutMirror(t *testing.T) {
+	savedGroup := activeGroupIDLocked()
+	setActiveGroupID("")
+	t.Cleanup(func() { setActiveGroupID(savedGroup) })
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("ZOTERO_CONFIG", filepath.Join(t.TempDir(), "missing.toml"))
+	srv := startNoteTemplateLiveServer(t, http.StatusOK)
+	t.Setenv("ZOTERO_BASE_URL", srv.URL+"/users/0")
+
+	out := runNoteTemplateTestCommandWithFlags(t, &rootFlags{dataSource: "live"}, "PAPER1")
+	for _, want := range []string{"Live Paper", "LIVE ANNOTATION"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("live note template missing %q:\n%s", want, out)
+		}
 	}
-	if env.Kind != "precondition_unmet" || env.Capability != "items note-template" || env.Precondition != preconditionSyncedStore {
-		t.Fatalf("envelope = %+v, want items note-template / synced_store refusal", env)
+}
+
+func TestNoteTemplateAutoUsesLiveAnnotationsInsteadOfStaleMirror(t *testing.T) {
+	seedNoteTemplateMirror(t, []json.RawMessage{
+		json.RawMessage(`{"key":"PAPER1","version":1,"data":{"key":"PAPER1","itemType":"journalArticle","title":"STALE LOCAL TITLE","date":"2025"}}`),
+		json.RawMessage(`{"key":"LOCALPDF","version":1,"data":{"key":"LOCALPDF","itemType":"attachment","parentItem":"PAPER1","contentType":"application/pdf"}}`),
+		json.RawMessage(`{"key":"LOCALANN","version":1,"data":{"key":"LOCALANN","itemType":"annotation","parentItem":"LOCALPDF","annotationType":"highlight","annotationText":"STALE LOCAL ANNOTATION","annotationPageLabel":"1"}}`),
+	})
+	srv := startNoteTemplateLiveServer(t, http.StatusOK)
+	t.Setenv("ZOTERO_BASE_URL", srv.URL+"/users/0")
+
+	out := runNoteTemplateTestCommandWithFlags(t, &rootFlags{dataSource: "auto"}, "PAPER1")
+	for _, want := range []string{"Live Paper", "LIVE ANNOTATION"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("auto live note template missing %q:\n%s", want, out)
+		}
 	}
-	if len(env.Remediation) == 0 || !strings.Contains(strings.Join(env.Remediation, " "), "zotio sync") {
-		t.Fatalf("remediation = %v, want zotio sync guidance", env.Remediation)
+	for _, stale := range []string{"STALE LOCAL TITLE", "STALE LOCAL ANNOTATION"} {
+		if strings.Contains(out, stale) {
+			t.Fatalf("auto live note template mixed in %q:\n%s", stale, out)
+		}
+	}
+}
+
+func TestNoteTemplateAutoFallbackKeepsMetadataAndAnnotationsLocal(t *testing.T) {
+	seedNoteTemplateMirror(t, []json.RawMessage{
+		json.RawMessage(`{"key":"PAPER1","version":1,"data":{"key":"PAPER1","itemType":"journalArticle","title":"Fallback Local Paper","date":"2026"}}`),
+		json.RawMessage(`{"key":"LOCALPDF","version":1,"data":{"key":"LOCALPDF","itemType":"attachment","parentItem":"PAPER1","contentType":"application/pdf"}}`),
+		json.RawMessage(`{"key":"LOCALANN","version":1,"data":{"key":"LOCALANN","itemType":"annotation","parentItem":"LOCALPDF","annotationType":"highlight","annotationText":"FALLBACK LOCAL ANNOTATION","annotationPageLabel":"2"}}`),
+	})
+	srv := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	baseURL := srv.URL + "/users/0"
+	srv.Close()
+	t.Setenv("ZOTERO_BASE_URL", baseURL)
+
+	out := runNoteTemplateTestCommandWithFlags(t, &rootFlags{dataSource: "auto"}, "PAPER1")
+	for _, want := range []string{"Fallback Local Paper", "FALLBACK LOCAL ANNOTATION"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("auto fallback note template missing %q:\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, "LIVE ANNOTATION") {
+		t.Fatalf("auto fallback note template mixed live annotations:\n%s", out)
+	}
+}
+
+func TestNoteTemplateDoesNotFallbackAnnotationsAfterLiveMetadata(t *testing.T) {
+	seedNoteTemplateMirror(t, []json.RawMessage{
+		json.RawMessage(`{"key":"PAPER1","version":1,"data":{"key":"PAPER1","itemType":"journalArticle","title":"STALE LOCAL TITLE","date":"2025"}}`),
+		json.RawMessage(`{"key":"LOCALPDF","version":1,"data":{"key":"LOCALPDF","itemType":"attachment","parentItem":"PAPER1","contentType":"application/pdf"}}`),
+		json.RawMessage(`{"key":"LOCALANN","version":1,"data":{"key":"LOCALANN","itemType":"annotation","parentItem":"LOCALPDF","annotationType":"highlight","annotationText":"STALE LOCAL ANNOTATION","annotationPageLabel":"1"}}`),
+	})
+	srv := startNoteTemplateLiveServer(t, 0)
+	t.Setenv("ZOTERO_BASE_URL", srv.URL+"/users/0")
+
+	cmd := newItemsNoteTemplateCmd(&rootFlags{dataSource: "auto"})
+	cmd.SetArgs([]string{"PAPER1"})
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&bytes.Buffer{})
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatalf("note template succeeded by mixing stale local annotations after a live metadata read:\n%s", out.String())
+	}
+	if strings.Contains(out.String(), "STALE LOCAL ANNOTATION") {
+		t.Fatalf("failed live annotation read emitted a stale local annotation:\n%s", out.String())
 	}
 }
 
@@ -772,9 +843,60 @@ func seedNoteTemplateMirror(t *testing.T, items []json.RawMessage) {
 	}
 }
 
+// An annotationStatus of zero closes the annotation connection without a response.
+func startNoteTemplateLiveServer(t *testing.T, annotationStatus int) *httptest.Server {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/users/0/items/PAPER1":
+			_, _ = w.Write([]byte(`{"key":"PAPER1","version":9,"data":{"key":"PAPER1","itemType":"journalArticle","title":"Live Paper","date":"2026"}}`))
+		case "/users/0/items/PAPER1/children":
+			if got := r.URL.Query().Get("itemType"); got != "attachment" {
+				t.Errorf("item children itemType = %q, want attachment", got)
+			}
+			_, _ = w.Write([]byte(`[{"key":"LIVEPDF","version":9,"data":{"key":"LIVEPDF","itemType":"attachment","parentItem":"PAPER1","contentType":"application/pdf"}}]`))
+		case "/users/0/items/LIVEPDF/children":
+			if got := r.URL.Query().Get("itemType"); got != "annotation" {
+				t.Errorf("attachment children itemType = %q, want annotation", got)
+			}
+			if annotationStatus == 0 {
+				hijacker, ok := w.(http.Hijacker)
+				if !ok {
+					t.Error("test server does not support connection hijacking")
+					http.Error(w, "cannot simulate network failure", http.StatusInternalServerError)
+					return
+				}
+				conn, _, err := hijacker.Hijack()
+				if err != nil {
+					t.Errorf("hijack annotation connection: %v", err)
+					return
+				}
+				_ = conn.Close()
+				return
+			}
+			if annotationStatus != http.StatusOK {
+				http.Error(w, `{"message":"annotation read unavailable"}`, annotationStatus)
+				return
+			}
+			_, _ = w.Write([]byte(`[{"key":"LIVEANN","version":9,"data":{"key":"LIVEANN","itemType":"annotation","parentItem":"LIVEPDF","annotationType":"highlight","annotationText":"LIVE ANNOTATION","annotationPageLabel":"4"}}]`))
+		default:
+			t.Errorf("unexpected note-template request path %q", r.URL.Path)
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(srv.Close)
+	return srv
+}
+
 func runNoteTemplateTestCommand(t *testing.T, args ...string) string {
 	t.Helper()
-	cmd := newItemsNoteTemplateCmd(&rootFlags{dataSource: "local"})
+	return runNoteTemplateTestCommandWithFlags(t, &rootFlags{dataSource: "local"}, args...)
+}
+
+func runNoteTemplateTestCommandWithFlags(t *testing.T, flags *rootFlags, args ...string) string {
+	t.Helper()
+	cmd := newItemsNoteTemplateCmd(flags)
 	cmd.SetArgs(args)
 	var out bytes.Buffer
 	cmd.SetOut(&out)

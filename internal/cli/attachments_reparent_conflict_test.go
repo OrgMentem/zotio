@@ -254,6 +254,7 @@ func TestReparentDoesNotResurrectATrashedAttachment(t *testing.T) {
 // no proof the target is winner-free, and guessing wrong duplicates content onto
 // the operator's item.
 func TestReparentFailsClosedWhenTheTargetCannotBeRechecked(t *testing.T) {
+	fastRetryBackoff(t)
 	var patches int
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {

@@ -97,6 +97,13 @@ type reparentFake struct {
 	childrenStatus map[string]int
 	// topItemsStatus forces markedTemporaryParents to fail.
 	topItemsStatus int
+	// topItemsEmptyFor controls how many deterministic /items/top responses are
+	// empty before this run's marker appears. topItemsMatches controls how many
+	// items carry that marker once it appears.
+	topItemsEmptyFor int64
+	topItemsMatches  int
+	topItemsGets     atomic.Int64
+	topItemsObserved chan int64
 	// blockUntilCancelled makes item reads hang so a deadline can be exercised.
 	blockUntilCancelled bool
 	// blockedRequests reports the path of every read the blocking arm holds
@@ -208,12 +215,25 @@ func (f *reparentFake) server(t *testing.T) *httptest.Server {
 	// findRecentlyAddedItemKey reads /items/top to recover the key of an item
 	// the connector created without reporting one.
 	mux.HandleFunc("/users/0/items/top", func(w http.ResponseWriter, _ *http.Request) {
+		seen := f.topItemsGets.Add(1)
+		defer func() {
+			if f.topItemsObserved != nil {
+				select {
+				case f.topItemsObserved <- seen:
+				default:
+				}
+			}
+		}()
 		if f.topItemsStatus != 0 {
 			w.WriteHeader(f.topItemsStatus)
 			_, _ = w.Write([]byte(`{"message":"forced top-items failure"}`))
 			return
 		}
 		w.Header().Set("Last-Modified-Version", fmt.Sprint(f.version))
+		if seen <= f.topItemsEmptyFor {
+			_, _ = w.Write([]byte(`[]`))
+			return
+		}
 		if f.tempParentKey == "" {
 			_, _ = w.Write([]byte(`[]`))
 			return
@@ -235,6 +255,21 @@ func (f *reparentFake) server(t *testing.T) *httptest.Server {
 				"dateAdded":    added,
 			},
 		}}
+		matches := f.topItemsMatches
+		if matches == 0 {
+			matches = 1
+		}
+		for i := 1; i < matches; i++ {
+			key := fmt.Sprintf("TEMP%04d", i+1)
+			rows = append(rows, map[string]any{
+				"key":     key,
+				"version": f.version,
+				"data": map[string]any{
+					"key": key, "itemType": "document", "title": f.currentTitle(),
+					"abstractNote": f.currentAbstract(), "dateAdded": added,
+				},
+			})
+		}
 		if f.strandedParentKey != "" {
 			rows = append(rows, map[string]any{
 				"key":     f.strandedParentKey,
@@ -1462,6 +1497,7 @@ func TestConnectorReparentResumesAnInterruptedRun(t *testing.T) {
 	}
 }
 func TestConnectorReparentResumeLookupFailsClosed(t *testing.T) {
+	fastRetryBackoff(t)
 	for _, tc := range []struct {
 		name          string
 		configure     func(*reparentFake, storedUploadRequest)
@@ -1513,6 +1549,193 @@ func TestConnectorReparentResumeLookupFailsClosed(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// TestConnectorReparentResumesByMarkerAfterSaveReturnsNoCandidate covers the
+// second recovery layer. SaveItems commits once, title recovery returns no key,
+// and the nonce-marked parent appears only after another empty marker probe.
+func TestConnectorReparentResumesByMarkerAfterSaveReturnsNoCandidate(t *testing.T) {
+	oldWindow := connectorCreateRecoveryWindow
+	connectorCreateRecoveryWindow = 0
+	t.Cleanup(func() { connectorCreateRecoveryWindow = oldWindow })
+
+	fake := &reparentFake{
+		tempParentKey:    "TEMP0001",
+		attachChildren:   []string{"ATTACH01"},
+		topItemsEmptyFor: 3,
+	}
+	srv := fake.server(t)
+	flags := reparentFlags(t, srv)
+	c, _ := flags.newWriteClient()
+
+	status, detail, err := applyConnectorReparentUpload(context.Background(), reparentCmd(t), flags, c, reparentRequest(t, "TARGET01"))
+	if err != nil || status != "applied" {
+		t.Fatalf("status=%q error=%v detail=%v, want marker recovery to apply", status, err, detail)
+	}
+	m, _ := detail.(map[string]any)
+	if m["temp_parent_key"] != "TEMP0001" {
+		t.Fatalf("detail = %v, want the nonce-marked parent TEMP0001", detail)
+	}
+	if gets := fake.topItemsGets.Load(); gets != 4 {
+		t.Fatalf("/items/top calls = %d, want 4: resume, empty title recovery, empty marker probe, match", gets)
+	}
+	var saveItems, saveAttachments int
+	for _, call := range fake.sequence() {
+		switch call {
+		case "connector.saveItems":
+			saveItems++
+		case "connector.saveAttachment":
+			saveAttachments++
+		}
+	}
+	if saveItems != 1 || saveAttachments != 1 {
+		t.Fatalf("connector saves = items:%d attachment:%d, want exactly 1/1", saveItems, saveAttachments)
+	}
+}
+
+// TestConnectorReparentRefusesAmbiguousMarkerAfterSaveReturnsNoCandidate
+// proves that marker recovery never chooses between two parents from one save.
+func TestConnectorReparentRefusesAmbiguousMarkerAfterSaveReturnsNoCandidate(t *testing.T) {
+	oldWindow := connectorCreateRecoveryWindow
+	connectorCreateRecoveryWindow = 0
+	t.Cleanup(func() { connectorCreateRecoveryWindow = oldWindow })
+
+	fake := &reparentFake{
+		tempParentKey:    "TEMP0001",
+		topItemsEmptyFor: 2,
+		topItemsMatches:  2,
+	}
+	srv := fake.server(t)
+	flags := reparentFlags(t, srv)
+	c, _ := flags.newWriteClient()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	t.Cleanup(cancel)
+	status, _, err := applyConnectorReparentUpload(ctx, reparentCmd(t), flags, c, reparentRequest(t, "TARGET01"))
+	if err == nil || status != "failed" || !strings.Contains(err.Error(), "refusing to guess") {
+		t.Fatalf("status=%q error=%v, want an ambiguity refusal", status, err)
+	}
+	if gets := fake.topItemsGets.Load(); gets != 3 {
+		t.Fatalf("/items/top calls = %d, want 3: resume, empty title recovery, ambiguous marker probe", gets)
+	}
+	var saveItems, saveAttachments int
+	for _, call := range fake.sequence() {
+		switch call {
+		case "connector.saveItems":
+			saveItems++
+		case "connector.saveAttachment":
+			saveAttachments++
+		}
+	}
+	if saveItems != 1 || saveAttachments != 0 {
+		t.Fatalf("connector saves = items:%d attachment:%d, want exactly 1/0", saveItems, saveAttachments)
+	}
+}
+
+// TestConnectorReparentCancelsMarkerPollingAfterSaveReturnsNoCandidate proves
+// that a caller can stop the marker-only wait without starting a second save.
+func TestConnectorReparentCancelsMarkerPollingAfterSaveReturnsNoCandidate(t *testing.T) {
+	oldWindow := connectorCreateRecoveryWindow
+	connectorCreateRecoveryWindow = 0
+	t.Cleanup(func() { connectorCreateRecoveryWindow = oldWindow })
+
+	fake := &reparentFake{
+		tempParentKey:    "TEMP0001",
+		topItemsEmptyFor: 100,
+		topItemsObserved: make(chan int64, 8),
+	}
+	srv := fake.server(t)
+	flags := reparentFlags(t, srv)
+	oldInterval := connectorReparentPollInterval
+	connectorReparentPollInterval = time.Minute
+	t.Cleanup(func() { connectorReparentPollInterval = oldInterval })
+	c, _ := flags.newWriteClient()
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	cmd := reparentCmd(t)
+	req := reparentRequest(t, "TARGET01")
+
+	type outcome struct {
+		status string
+		err    error
+	}
+	done := make(chan outcome, 1)
+	go func() {
+		status, _, err := applyConnectorReparentUpload(ctx, cmd, flags, c, req)
+		done <- outcome{status: status, err: err}
+	}()
+
+	for seen := int64(0); seen < 3; {
+		select {
+		case seen = <-fake.topItemsObserved:
+		case <-time.After(5 * time.Second):
+			t.Fatal("marker probe did not reach the server")
+		}
+	}
+	cancel()
+
+	var got outcome
+	select {
+	case got = <-done:
+	case <-time.After(time.Second):
+		t.Fatal("marker polling did not stop after cancellation")
+	}
+	if got.status != "failed" || !errors.Is(got.err, context.Canceled) {
+		t.Fatalf("status=%q error=%v, want context cancellation", got.status, got.err)
+	}
+	if gets := fake.topItemsGets.Load(); gets != 3 {
+		t.Fatalf("/items/top calls = %d, want 3 with no probe after cancellation", gets)
+	}
+	var saveItems, saveAttachments int
+	for _, call := range fake.sequence() {
+		switch call {
+		case "connector.saveItems":
+			saveItems++
+		case "connector.saveAttachment":
+			saveAttachments++
+		}
+	}
+	if saveItems != 1 || saveAttachments != 0 {
+		t.Fatalf("connector saves = items:%d attachment:%d, want exactly 1/0", saveItems, saveAttachments)
+	}
+}
+
+// TestConnectorReparentDeadlineStopsMarkerPollingAfterSaveReturnsNoCandidate
+// proves that the route budget also bounds marker-only recovery.
+func TestConnectorReparentDeadlineStopsMarkerPollingAfterSaveReturnsNoCandidate(t *testing.T) {
+	oldWindow := connectorCreateRecoveryWindow
+	connectorCreateRecoveryWindow = 0
+	t.Cleanup(func() { connectorCreateRecoveryWindow = oldWindow })
+
+	fake := &reparentFake{tempParentKey: "TEMP0001", topItemsEmptyFor: 100}
+	srv := fake.server(t)
+	flags := reparentFlags(t, srv)
+	oldInterval := connectorReparentPollInterval
+	connectorReparentPollInterval = time.Minute
+	t.Cleanup(func() { connectorReparentPollInterval = oldInterval })
+	c, _ := flags.newWriteClient()
+	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	t.Cleanup(cancel)
+
+	status, _, err := applyConnectorReparentUpload(ctx, reparentCmd(t), flags, c, reparentRequest(t, "TARGET01"))
+	if status != "failed" || !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("status=%q error=%v, want deadline termination", status, err)
+	}
+	if gets := fake.topItemsGets.Load(); gets != 3 {
+		t.Fatalf("/items/top calls = %d, want 3 with no probe after the deadline", gets)
+	}
+	var saveItems, saveAttachments int
+	for _, call := range fake.sequence() {
+		switch call {
+		case "connector.saveItems":
+			saveItems++
+		case "connector.saveAttachment":
+			saveAttachments++
+		}
+	}
+	if saveItems != 1 || saveAttachments != 0 {
+		t.Fatalf("connector saves = items:%d attachment:%d, want exactly 1/0", saveItems, saveAttachments)
 	}
 }
 

@@ -131,13 +131,13 @@ shared across libraries because the schema is global to the Zotero install.`,
 				return renderSchemaDrift(cmd, flags, true, nil, path, live)
 			}
 
-			// Fast path: the Zotero-Schema-Version header covers the whole schema
-			// (types, fields, per-type validity), so a matching version means no
-			// drift. An explicitly selected deep cache must still be read and
-			// validated before it can support that conclusion.
+			// Fast path: the Zotero-Schema-Version header covers the live schema,
+			// so a matching version avoids the remaining live fetches. An explicitly
+			// selected deep cache is a separate snapshot source: its valid per-type
+			// values must still be read and compared with the baseline.
 			if !update && schemaVersion != "" && base.SchemaVersion == schemaVersion && (!deep || (base.TypeFields != nil && base.TypeCreators != nil)) {
 				if deep && schemaDB != nil {
-					_, _, available, cacheErr := cachedDeepSchema(schemaDB, itemTypes, schemaVersion)
+					fields, creators, available, cacheErr := cachedDeepSchema(schemaDB, itemTypes, schemaVersion)
 					if cacheErr != nil {
 						return classifySchemaSnapshotError(cmd, flags, cacheErr)
 					}
@@ -150,6 +150,16 @@ shared across libraries because the schema is global to the Zotero install.`,
 						}
 						return renderSchemaDrift(cmd, flags, false, diffSnapshots(base, live), path, live)
 					}
+					// The matching live version makes the baseline's global lists
+					// reusable, but --db selects the per-type snapshot for this run.
+					// Compare those selected values instead of returning the baseline's
+					// cached maps after merely validating the selected store.
+					live := base
+					live.SchemaVersion = schemaVersion
+					live.ItemTypes = itemTypes
+					live.TypeFields = fields
+					live.TypeCreators = creators
+					return renderSchemaDrift(cmd, flags, false, diffSnapshots(base, live), path, live)
 				}
 				base.SchemaVersion = schemaVersion
 				return renderSchemaDrift(cmd, flags, false, nil, path, base)

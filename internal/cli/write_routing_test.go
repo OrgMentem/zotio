@@ -110,6 +110,73 @@ func TestKeyGroupWriteAccessHonorsCanceledContext(t *testing.T) {
 	}
 }
 
+func TestKeyGroupWriteAccessPermissionBoundaries(t *testing.T) {
+	oldAllowPrivateOutbound := allowPrivateOutboundForTests
+	allowPrivateOutboundForTests = true
+	t.Cleanup(func() { allowPrivateOutboundForTests = oldAllowPrivateOutbound })
+
+	tests := []struct {
+		name         string
+		groups       string
+		groupID      string
+		wantCanWrite bool
+	}{
+		{
+			name:         "wildcard_all_grants_unlisted_group",
+			groups:       `{"all":{"write":true}}`,
+			groupID:      "999",
+			wantCanWrite: true,
+		},
+		{
+			name:         "absent_group_without_wildcard_is_denied",
+			groups:       `{"123":{"write":true}}`,
+			groupID:      "999",
+			wantCanWrite: false,
+		},
+		{
+			name:         "explicit_deny_precedes_wildcard_grant",
+			groups:       `{"all":{"write":true},"999":{"write":false}}`,
+			groupID:      "999",
+			wantCanWrite: false,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			hits := 0
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				hits++
+				if r.Method != http.MethodGet || r.URL.Path != "/keys/current" {
+					http.Error(w, "unexpected request", http.StatusNotFound)
+					return
+				}
+				if got := r.Header.Get("Zotero-API-Key"); got != "group-access-test-key" {
+					http.Error(w, "missing isolated test credential", http.StatusForbidden)
+					return
+				}
+				_, _ = fmt.Fprintf(w, `{"access":{"groups":%s}}`, tc.groups)
+			}))
+			t.Cleanup(srv.Close)
+			oldBase := zoteroWebAPIBase
+			zoteroWebAPIBase = srv.URL
+			t.Cleanup(func() { zoteroWebAPIBase = oldBase })
+
+			canWrite, known := keyGroupWriteAccess(
+				context.Background(),
+				&config.Config{ZoteroApiKey: "group-access-test-key"},
+				time.Second,
+				tc.groupID,
+			)
+			if canWrite != tc.wantCanWrite || !known {
+				t.Fatalf("keyGroupWriteAccess = (%v, %v), want (%v, true)", canWrite, known, tc.wantCanWrite)
+			}
+			if hits != 1 {
+				t.Fatalf("keys/current hits = %d, want 1", hits)
+			}
+		})
+	}
+}
+
 func TestKeyMetadataReadersRefuseCrossOriginRedirects(t *testing.T) {
 	oldAllowPrivateOutbound := allowPrivateOutboundForTests
 	allowPrivateOutboundForTests = true

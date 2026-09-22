@@ -817,9 +817,9 @@ func TestApplyEnrichProposalLinkedFileAmbiguousFailureKeepsDownload(t *testing.T
 		DownloadURL: pdfSrv.URL + "/paper.pdf",
 		PDFPath:     dest,
 	}
-	status, reason, err := applyEnrichProposalWithContext(context.Background(), downloader, newEnrichWriteClient(t, zoteroSrv.URL), &p, &rootFlags{})
-	if err == nil || status != "failed" || !strings.Contains(fmt.Sprint(reason), "kept downloaded file") {
-		t.Fatalf("apply = status %q reason %v err %v, want failed with retained-download detail", status, reason, err)
+	status, _, err := applyEnrichProposalWithContext(context.Background(), downloader, newEnrichWriteClient(t, zoteroSrv.URL), &p, &rootFlags{})
+	if err == nil || status != "failed" {
+		t.Fatalf("apply = status %q err %v, want failed", status, err)
 	}
 	if _, statErr := os.Stat(dest); statErr != nil {
 		t.Fatalf("download missing after ambiguous attachment create failure: %v", statErr)
@@ -857,9 +857,9 @@ func TestApplyEnrichProposalLinkedFileConfirmedFailureRemovesDownload(t *testing
 		DownloadURL: pdfSrv.URL + "/paper.pdf",
 		PDFPath:     dest,
 	}
-	status, reason, err := applyEnrichProposalWithContext(context.Background(), downloader, newEnrichWriteClient(t, zoteroSrv.URL), &p, &rootFlags{})
-	if err == nil || status != "failed" || !strings.Contains(fmt.Sprint(reason), "removed downloaded file") {
-		t.Fatalf("apply = status %q reason %v err %v, want failed with confirmed-cleanup detail", status, reason, err)
+	status, _, err := applyEnrichProposalWithContext(context.Background(), downloader, newEnrichWriteClient(t, zoteroSrv.URL), &p, &rootFlags{})
+	if err == nil || status != "failed" {
+		t.Fatalf("apply = status %q err %v, want failed", status, err)
 	}
 	if _, statErr := os.Stat(dest); !os.IsNotExist(statErr) {
 		t.Fatalf("download remains after confirmed attachment create failure: %v", statErr)

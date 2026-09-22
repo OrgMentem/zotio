@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -283,18 +284,23 @@ var capabilityOfflineProbes = map[string]capabilityOfflineProbe{
 		},
 	},
 	// Store-backed reads.
-	"library health":      {args: []string{"library", "health"}},
-	"library stats":       {args: []string{"library", "stats"}},
-	"library prisma":      {args: []string{"library", "prisma"}},
-	"items missing-pdf":   {args: []string{"items", "missing-pdf"}},
-	"items duplicates":    {args: []string{"items", "duplicates"}},
-	"items related":       {args: []string{"items", "related", probeItemKey}},
-	"items similar":       {args: []string{"items", "similar", probeItemKey}},
-	"items summarize":     {args: []string{"items", "summarize", probeItemKey}},
-	"items note-template": {args: []string{"items", "note-template", probeItemKey, "--data-source", "local"}},
-	"creators audit":      {args: []string{"creators", "audit"}},
-	"tags audit":          {args: []string{"tags", "audit"}},
-	"tags inventory":      {args: []string{"tags", "inventory"}},
+	"library health":    {args: []string{"library", "health"}},
+	"library stats":     {args: []string{"library", "stats"}},
+	"library prisma":    {args: []string{"library", "prisma"}},
+	"items missing-pdf": {args: []string{"items", "missing-pdf"}},
+	"items duplicates":  {args: []string{"items", "duplicates"}},
+	"items related":     {args: []string{"items", "related", probeItemKey}},
+	"items similar":     {args: []string{"items", "similar", probeItemKey}},
+	"items summarize":   {args: []string{"items", "summarize", probeItemKey}},
+	"items note-template": {
+		routes: map[string][]string{
+			"local": {"items", "note-template", probeItemKey, "--data-source", "local"},
+			"live":  {"items", "note-template", probeItemKey, "--data-source", "live"},
+		},
+	},
+	"creators audit": {args: []string{"creators", "audit"}},
+	"tags audit":     {args: []string{"tags", "audit"}},
+	"tags inventory": {args: []string{"tags", "inventory"}},
 	"items audit": {
 		args:   []string{"items", "audit"},
 		routes: map[string][]string{"verify-files": {"items", "audit", "--verify-files"}},
@@ -323,6 +329,27 @@ func init() {
 		capabilityOfflineProbes[path] = capabilityOfflineProbe{
 			skip: "write route; a missing key is enforced by the apply-time write guard, not by offline behaviour",
 		}
+	}
+}
+
+func TestNoteTemplateCapabilityDeclaresConditionalDataSources(t *testing.T) {
+	entry := capabilityOverrides["items note-template"]
+	if len(entry.Requires) != 0 {
+		t.Fatalf("items note-template requires = %v, want no unconditional precondition", entry.Requires)
+	}
+
+	got := make(map[string][]string, len(entry.Routes))
+	for _, route := range entry.Routes {
+		got[route.Via] = route.Requires
+	}
+	if requires := got["default"]; len(requires) != 0 {
+		t.Fatalf("default route requires = %v, want source-selected fallback", requires)
+	}
+	if requires := got["local"]; !slices.Equal(requires, []string{preconditionSyncedStore}) {
+		t.Fatalf("local route requires = %v, want [%s]", requires, preconditionSyncedStore)
+	}
+	if requires := got["live"]; !slices.Equal(requires, []string{preconditionLiveLocalAPI}) {
+		t.Fatalf("live route requires = %v, want [%s]", requires, preconditionLiveLocalAPI)
 	}
 }
 

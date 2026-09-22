@@ -4,14 +4,17 @@ package cli
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"zotio/internal/mutation"
 )
@@ -91,6 +94,153 @@ func searchMaterializeJSON(t *testing.T, value any) string {
 		t.Fatalf("marshal fixture: %v", err)
 	}
 	return string(data)
+}
+
+func TestSearchesMaterializeSeparatesMembershipReadsFromApplyWrites(t *testing.T) {
+	tests := []struct {
+		name      string
+		flags     rootFlags
+		wantApply bool
+	}{
+		{name: "preview", flags: rootFlags{asJSON: true, maxChanges: -1}},
+		{name: "dry_run", flags: rootFlags{asJSON: true, yes: true, dryRun: true, maxChanges: -1}},
+		{name: "apply", flags: rootFlags{asJSON: true, yes: true, maxChanges: -1}, wantApply: true},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			var localSearchReads, localItemReads, localPatches int
+			localServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				switch {
+				case r.Method == http.MethodGet && r.URL.Path == "/api/users/0/searches/SK/items":
+					localSearchReads++
+					_, _ = fmt.Fprint(w, `[{"key":"LOCAL001","version":11,"data":{"collections":["LOCAL-SOURCE"]}}]`)
+				case strings.HasPrefix(r.URL.Path, "/api/users/0/items/"):
+					switch r.Method {
+					case http.MethodGet:
+						localItemReads++
+					case http.MethodPatch:
+						localPatches++
+					}
+					http.Error(w, "item operations must not use the read plane", http.StatusTeapot)
+				default:
+					http.Error(w, "unexpected local request", http.StatusNotFound)
+				}
+			}))
+			t.Cleanup(localServer.Close)
+
+			var webSearchReads int
+			webItemReads := map[string]int{}
+			webPatches := map[string]int{}
+			var localPatchHeader string
+			var localPatchBody map[string]any
+			webServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				switch {
+				case r.Method == http.MethodGet && r.URL.Path == "/users/0/searches/SK/items":
+					webSearchReads++
+					_, _ = fmt.Fprint(w, `[{"key":"WEB00001","version":81,"data":{"collections":["WEB-SOURCE"]}}]`)
+				case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/users/0/items/"):
+					key := strings.TrimPrefix(r.URL.Path, "/users/0/items/")
+					webItemReads[key]++
+					version := "71"
+					collections := []string{"WRITE-SOURCE"}
+					if key == "WEB00001" {
+						version = "81"
+						collections = []string{"WEB-SOURCE"}
+					}
+					w.Header().Set("Last-Modified-Version", version)
+					_, _ = fmt.Fprintf(w, `{"key":%q,"version":%s,"data":{"collections":%s}}`, key, version, searchMaterializeJSON(t, collections))
+				case r.Method == http.MethodPatch && strings.HasPrefix(r.URL.Path, "/users/0/items/"):
+					key := strings.TrimPrefix(r.URL.Path, "/users/0/items/")
+					webPatches[key]++
+					if key == "LOCAL001" {
+						localPatchHeader = r.Header.Get("If-Unmodified-Since-Version")
+						if err := json.NewDecoder(r.Body).Decode(&localPatchBody); err != nil {
+							t.Errorf("decode LOCAL001 PATCH: %v", err)
+						}
+					}
+					w.WriteHeader(http.StatusNoContent)
+				default:
+					http.Error(w, "unexpected web request", http.StatusNotFound)
+				}
+			}))
+			t.Cleanup(webServer.Close)
+
+			localFixture := localServer.Listener.Addr().String()
+			webFixture := webServer.Listener.Addr().String()
+			dialer := &net.Dialer{Timeout: time.Second}
+			transport := &http.Transport{
+				DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+					switch addr {
+					case "localhost:23119", "127.0.0.1:23119", "[::1]:23119":
+						return dialer.DialContext(ctx, network, localFixture)
+					case webFixture:
+						return dialer.DialContext(ctx, network, webFixture)
+					default:
+						return nil, fmt.Errorf("materialize test refused a dial to %s", addr)
+					}
+				},
+			}
+			oldTransport := http.DefaultTransport
+			http.DefaultTransport = transport
+			t.Cleanup(func() {
+				http.DefaultTransport = oldTransport
+				transport.CloseIdleConnections()
+			})
+			oldWebBase := zoteroWebAPIBase
+			zoteroWebAPIBase = webServer.URL
+			t.Cleanup(func() { zoteroWebAPIBase = oldWebBase })
+
+			t.Setenv("HOME", t.TempDir())
+			t.Setenv("ZOTIO_DEMO", "0")
+			t.Setenv("ZOTERO_BASE_URL", "http://localhost:23119/api/users/0")
+			t.Setenv("ZOTERO_API_KEY", "materialize-test-key")
+			t.Setenv("ZOTERO_USER_ID", "0")
+			t.Setenv("ZOTERO_CONFIG", filepath.Join(t.TempDir(), "missing.toml"))
+
+			flags := tc.flags
+			flags.noCache = true
+			flags.timeout = time.Second
+			env, stderr, err := writePlaneTestRunMutationCmd(t, newSearchesMaterializeCmd, &flags, "SK", "--to", "TARGET")
+			if err != nil {
+				t.Fatalf("materialize: %v; stderr=%s; result=%+v", err, stderr, env.Result)
+			}
+
+			wantMode := "preview"
+			if tc.wantApply {
+				wantMode = "apply"
+			}
+			if env.Mode != wantMode || len(env.Plan.Operations) != 1 || env.Plan.Operations[0].Key != "LOCAL001" {
+				t.Fatalf("env mode/operations = %q/%+v, want %q with LOCAL001", env.Mode, env.Plan.Operations, wantMode)
+			}
+			if localSearchReads != 1 || webSearchReads != 0 {
+				t.Fatalf("membership reads = local:%d web:%d, want local:1 web:0", localSearchReads, webSearchReads)
+			}
+			if localItemReads != 0 || localPatches != 0 {
+				t.Fatalf("read-plane item operations = GET:%d PATCH:%d, want 0/0", localItemReads, localPatches)
+			}
+
+			if !tc.wantApply {
+				if len(webItemReads) != 0 || len(webPatches) != 0 {
+					t.Fatalf("preview write-plane item operations = GET:%v PATCH:%v, want none", webItemReads, webPatches)
+				}
+				return
+			}
+			if env.Result == nil || env.Result.Summary.Applied != 1 {
+				t.Fatalf("apply result = %+v, want one applied item", env.Result)
+			}
+			if webItemReads["LOCAL001"] != 1 || webPatches["LOCAL001"] != 1 || webItemReads["WEB00001"] != 0 || webPatches["WEB00001"] != 0 {
+				t.Fatalf("write-plane item operations = GET:%v PATCH:%v, want one GET and PATCH for LOCAL001 only", webItemReads, webPatches)
+			}
+			if localPatchHeader != "71" {
+				t.Fatalf("LOCAL001 If-Unmodified-Since-Version = %q, want 71 from write plane", localPatchHeader)
+			}
+			collections := writePlaneTestPatchBodyCollections(t, localPatchBody)
+			if !stringSliceContains(collections, "WRITE-SOURCE") || !stringSliceContains(collections, "TARGET") {
+				t.Fatalf("LOCAL001 PATCH collections = %v, want WRITE-SOURCE and TARGET", collections)
+			}
+		})
+	}
 }
 
 func TestSearchesMaterializePreviewListsAddsAndWritesNothing(t *testing.T) {

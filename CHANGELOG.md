@@ -4,6 +4,31 @@ Notable changes to zotio. Format follows [Keep a Changelog](https://keepachangel
 
 ## [Unreleased]
 
+### Changed — breaking
+
+- **`searches materialize` reads membership from the configured read source.**
+  With hybrid routing, the desktop supplies saved-search results; item-version
+  reads and guarded collection writes still use the Web API. Previously the
+  command fetched search results from the Web API as well.
+- **`items tags add/remove --batch` preserves request-level error codes.**
+  An HTTP 401 now exits 4 with authentication guidance instead of the generic
+  mutation-incomplete exit 1. Unattributable responses retain their request
+  error details. Per-item conflicts still exit 1.
+- **Batch cancellation distinguishes unsent siblings from uncertain writes.**
+  Cancellation before transport dispatch leaves untouched siblings
+  `not_attempted`. A request that reaches the transport still reports its
+  remaining siblings as failed with an unknown outcome.
+- **`items note-template` reads metadata and annotations from one source.**
+  Live reads follow the item's attachment and annotation chain without
+  requiring a mirror. Local reads and auto fallback use the mirror for both.
+  A failed live annotation read now fails the command instead of substituting
+  stale local highlights. This replaces the unconditional `synced_store`
+  requirement introduced in 0.26.0.
+- **`schema drift --deep --db` compares the selected cache contents even when
+  the schema version matches.** The fast path previously validated the cache
+  but reused the baseline's per-type fields and creator types, hiding changes
+  in another valid cache.
+
 ## [0.26.0] — 2026-09-15
 
 ### Changed — breaking

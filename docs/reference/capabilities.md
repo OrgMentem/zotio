@@ -77,7 +77,7 @@ The machine-readable registry every command is classified against — read vs. w
 | `items missing-pdf` | read |  |  | `synced_store` |
 | `items move` | write | `web_api` |  | `web_api_key` |
 | `items new` | write | `web_api` |  | `web_api_key` |
-| `items note-template` | read |  |  | `synced_store` |
+| `items note-template` | read |  |  |  |
 | `items open` | other |  |  |  |
 | `items preprint-check` | read |  |  |  |
 | `items preprint-check fix` | write | `web_api` |  | `web_api_key` |
