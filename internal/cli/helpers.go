@@ -1698,11 +1698,7 @@ func defaultDBPathFor(gid, name string) (string, error) {
 	}
 	dataDir, err := cliutil.KindDir(cliutil.PathKindData)
 	if err != nil {
-		home, homeErr := os.UserHomeDir()
-		if homeErr != nil {
-			return "", fmt.Errorf("resolving data directory: %w; and home directory: %w", err, homeErr)
-		}
-		dataDir = filepath.Join(home, ".local", "share", name)
+		return "", fmt.Errorf("resolving data directory: %w", err)
 	}
 	file := "data.db"
 	if gid != "" {

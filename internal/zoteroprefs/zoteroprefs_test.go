@@ -30,6 +30,19 @@ func setGOOS(t *testing.T, value string) {
 	t.Cleanup(func() { goos = old })
 }
 
+func TestProfileRootsRejectRelativeHome(t *testing.T) {
+	setGOOS(t, "darwin")
+	t.Chdir(t.TempDir())
+	t.Setenv("HOME", "rel")
+	roots, err := profileRoots()
+	if err == nil || !strings.Contains(err.Error(), `home directory "rel" is not absolute`) {
+		t.Fatalf("profileRoots = %q, %v; want invalid home error", roots, err)
+	}
+	if len(roots) != 0 {
+		t.Errorf("profileRoots = %q, want no candidate under the working directory", roots)
+	}
+}
+
 // The operator's real configuration: files belong on a personal WebDAV server,
 // so a Web API upload into Zotero's cloud storage is a misroute.
 func TestPersonalLibraryReportsWebDAVWhenProtocolIsWebDAV(t *testing.T) {

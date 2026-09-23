@@ -53,6 +53,8 @@ import (
 	"unicode"
 	"unicode/utf16"
 	"unicode/utf8"
+
+	"zotio/internal/cliutil"
 )
 
 // ProfileDirEnv overrides profile discovery, for operators with a
@@ -732,7 +734,7 @@ func profileFallbackBases(root string) []string {
 func profileRoots() ([]string, error) {
 	switch goos {
 	case "darwin":
-		home, err := os.UserHomeDir()
+		home, err := cliutil.HomeDir()
 		if err != nil {
 			return nil, fmt.Errorf("resolving home dir: %w", err)
 		}
@@ -744,7 +746,7 @@ func profileRoots() ([]string, error) {
 		}
 		return roots, nil
 	default:
-		home, err := os.UserHomeDir()
+		home, err := cliutil.HomeDir()
 		if err != nil {
 			return nil, fmt.Errorf("resolving home dir: %w", err)
 		}

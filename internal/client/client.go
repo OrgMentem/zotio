@@ -144,6 +144,23 @@ func (e *APIError) Error() string {
 	return fmt.Sprintf("%s %s returned HTTP %d: %s", e.Method, e.Path, e.StatusCode, e.Body)
 }
 
+// BodyReadError marks a failed HTTP response-body read, not a JSON parse error.
+type BodyReadError struct {
+	Err error
+}
+
+func (e *BodyReadError) Error() string { return e.Err.Error() }
+func (e *BodyReadError) Unwrap() error { return e.Err }
+
+// ProxyConnectError marks a non-200 response to an HTTPS proxy CONNECT.
+type ProxyConnectError struct {
+	StatusCode int
+}
+
+func (e *ProxyConnectError) Error() string {
+	return fmt.Sprintf("proxy CONNECT returned HTTP %d", e.StatusCode)
+}
+
 // AmbiguousWriteError means the request reached the transport, but no response
 // proves whether the server committed it. Callers must reconcile before retrying.
 type AmbiguousWriteError struct {
@@ -200,10 +217,18 @@ func effectivePort(u *url.URL) string {
 }
 
 func newHTTPClient(timeout time.Duration, jar http.CookieJar) *http.Client {
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport.OnProxyConnectResponse = func(_ context.Context, _ *url.URL, _ *http.Request, resp *http.Response) error {
+		if resp.StatusCode != http.StatusOK {
+			return &ProxyConnectError{StatusCode: resp.StatusCode}
+		}
+		return nil
+	}
 	return &http.Client{
 		Timeout:       timeout,
 		Jar:           jar,
 		CheckRedirect: checkRedirect,
+		Transport:     transport,
 	}
 }
 
@@ -249,16 +274,14 @@ func (c *Client) requestHTTPClient() *http.Client {
 	return &client
 }
 func New(cfg *config.Config, timeout time.Duration, rateLimit float64) *Client {
-	home, err := os.UserHomeDir()
+	// The cache root is deliberately fixed at <home>/.cache/zotio and ignores
+	// path overrides: the cache treats its root as wholly owned and deletes
+	// files in it, so it must never be pointed at a directory zotio did not
+	// create. With no absolute home it is disabled, never shared.
 	cacheDir := ""
-	switch {
-	case err != nil:
-		fmt.Fprintf(os.Stderr, "warning: could not resolve home directory for cache (%v); response cache disabled\n", err)
-	case home == "":
-		fmt.Fprintln(os.Stderr, "warning: home directory is empty; response cache disabled")
-	case !filepath.IsAbs(home):
-		fmt.Fprintf(os.Stderr, "warning: home directory %q is not absolute; response cache disabled\n", home)
-	default:
+	if home, err := cliutil.HomeDir(); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: %v; response cache disabled\n", err)
+	} else {
 		cacheDir = filepath.Join(home, ".cache", "zotio")
 	}
 	httpClient := newHTTPClient(timeout, nil)
@@ -1299,7 +1322,7 @@ func (c *Client) doRequestOnBase(ctx context.Context, baseOverride, method, path
 		respBody, err := io.ReadAll(io.LimitReader(resp.Body, maxZoteroResponseBytes+1))
 		resp.Body.Close()
 		if err != nil {
-			readErr := fmt.Errorf("reading response: %w", err)
+			readErr := fmt.Errorf("reading response: %w", &BodyReadError{Err: err})
 			if isMutatingMethod(method) {
 				return nil, 0, nil, &AmbiguousWriteError{Method: method, Path: path, Attempts: attempt + 1, Err: readErr}
 			}

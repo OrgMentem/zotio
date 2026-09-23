@@ -141,6 +141,27 @@ func TestDefaultDBPathRoutesToDemoDBWhenActive(t *testing.T) {
 	}
 }
 
+func TestDefaultDBPathRejectsRelativeHome(t *testing.T) {
+	cwd := t.TempDir()
+	t.Chdir(cwd)
+	t.Setenv("HOME", "rel")
+	t.Setenv("ZOTIO_DEMO", "0")
+	for _, name := range []string{"ZOTERO_HOME", "ZOTERO_DATA_DIR", "XDG_DATA_HOME"} {
+		t.Setenv(name, "")
+	}
+
+	path, err := DefaultDBPath("zotio")
+	if err == nil || !strings.Contains(err.Error(), `home directory "rel" is not absolute`) {
+		t.Fatalf("DefaultDBPath = %q, %v; want invalid home error", path, err)
+	}
+	if path != "" {
+		t.Errorf("DefaultDBPath = %q, want no path", path)
+	}
+	if _, statErr := os.Stat(filepath.Join(cwd, "rel")); !os.IsNotExist(statErr) {
+		t.Errorf("relative home created under working directory: %v", statErr)
+	}
+}
+
 // TestDemoSeedCreatesSandboxWithFixtureCountsAndIsIdempotent covers the seeding
 // lifecycle: an empty sandbox seeds to the fixture's row counts; a second run
 // does not re-seed; --reset wipes and re-seeds; and seeding never creates the

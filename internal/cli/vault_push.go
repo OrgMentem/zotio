@@ -1162,7 +1162,11 @@ func resolveVaultOutDir(flags *rootFlags, flagOut string) (string, error) {
 	outDir := strings.TrimSpace(flagOut)
 	if outDir == "" {
 		if vc := vaultConfig(flags); vc != nil {
-			outDir = vaultResolveOut(vc)
+			resolved, err := vaultResolveOut(vc)
+			if err != nil {
+				return "", err
+			}
+			outDir = resolved
 		}
 	}
 	if outDir == "" {

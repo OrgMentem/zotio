@@ -63,6 +63,26 @@ func TestKindDirDefaultsMatchLegacyLayout(t *testing.T) {
 	}
 }
 
+func TestKindDirRejectsRelativeHome(t *testing.T) {
+	resetPathEnv(t)
+	cwd := t.TempDir()
+	t.Chdir(cwd)
+	t.Setenv("HOME", "rel")
+
+	for _, kind := range []PathKind{PathKindData, PathKindConfig, PathKindCache} {
+		dir, err := KindDir(kind)
+		if err == nil || !strings.Contains(err.Error(), `home directory "rel" is not absolute`) {
+			t.Errorf("KindDir(%s) = %q, %v; want an invalid home error", kindName(kind), dir, err)
+		}
+		if dir != "" {
+			t.Errorf("KindDir(%s) = %q, want no path", kindName(kind), dir)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(cwd, "rel")); !os.IsNotExist(err) {
+		t.Errorf("relative home created under working directory: %v", err)
+	}
+}
+
 func TestKindDirHomeEnvUsesFlatKindLayout(t *testing.T) {
 	resetPathEnv(t)
 	root := filepath.Join(t.TempDir(), "persist")

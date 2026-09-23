@@ -112,7 +112,10 @@ shared across libraries because the schema is global to the Zotero install.`,
 
 			path := baselinePath
 			if path == "" {
-				path = schemaBaselinePath()
+				path, err = schemaBaselinePath()
+				if err != nil {
+					return err
+				}
 			}
 			base, ok, err := loadSchemaBaseline(path)
 			if err != nil {
@@ -459,9 +462,12 @@ func sortedKeys(m map[string][]string) []string {
 // schemaBaselinePath returns the default baseline location next to the local
 // stores. It is intentionally not group-scoped: the Zotero schema is global to
 // the install, identical across personal and group libraries.
-func schemaBaselinePath() string {
-	home, _ := os.UserHomeDir()
-	return filepath.Join(home, ".local", "share", "zotio", "schema-baseline.json")
+func schemaBaselinePath() (string, error) {
+	home, err := cliutil.HomeDir()
+	if err != nil {
+		return "", fmt.Errorf("resolving schema baseline path: %w", err)
+	}
+	return filepath.Join(home, ".local", "share", "zotio", "schema-baseline.json"), nil
 }
 
 // libraryPrefixRE matches the /users/<id> or /groups/<id> library segment of a

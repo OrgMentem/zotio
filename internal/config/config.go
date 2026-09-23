@@ -271,7 +271,7 @@ func resolveConfigPath(configPath string) (string, bool, error) {
 // per-kind-env location. The app-name component tracks cliutil.AppName so it
 // never drifts from the resolved config dir.
 func LegacyConfigPath() (string, error) {
-	home, err := os.UserHomeDir()
+	home, err := cliutil.HomeDir()
 	if err != nil {
 		return "", fmt.Errorf("resolve legacy config path: %w", err)
 	}

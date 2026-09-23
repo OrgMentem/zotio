@@ -18,6 +18,21 @@ const appName = "zotio"
 // hardcoding the string, so the name has a single source of truth.
 func AppName() string { return appName }
 
+// HomeDir returns a usable absolute home directory for per-user paths.
+func HomeDir() (string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", fmt.Errorf("resolve user home dir: %w", err)
+	}
+	if home == "" {
+		return "", fmt.Errorf("home directory is empty")
+	}
+	if !filepath.IsAbs(home) {
+		return "", fmt.Errorf("home directory %q is not absolute", home)
+	}
+	return home, nil
+}
+
 const envPrefix = "ZOTERO"
 
 type PathKind int
@@ -276,13 +291,13 @@ func CleanPathOverride(raw string) (string, bool) {
 
 func expandTilde(path string) string {
 	if path == "~" {
-		if home, err := os.UserHomeDir(); err == nil {
+		if home, err := HomeDir(); err == nil {
 			return home
 		}
 		return path
 	}
 	if strings.HasPrefix(path, "~/") {
-		if home, err := os.UserHomeDir(); err == nil {
+		if home, err := HomeDir(); err == nil {
 			return filepath.Join(home, strings.TrimPrefix(path, "~/"))
 		}
 	}
@@ -301,9 +316,9 @@ func warnSkippedPathOverride(name, raw string) {
 }
 
 func defaultBase(kind PathKind) (string, error) {
-	home, err := os.UserHomeDir()
+	home, err := HomeDir()
 	if err != nil {
-		return "", fmt.Errorf("resolve user home dir: %w", err)
+		return "", err
 	}
 	switch kind {
 	case PathKindConfig:
