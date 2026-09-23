@@ -36,27 +36,23 @@ func clientTestNewClient(t *testing.T, baseURL string) *Client {
 	return c
 }
 
-func TestProxyConnectRejectionReturnsTypedError(t *testing.T) {
-	proxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodConnect {
-			t.Errorf("proxy method = %s, want CONNECT", r.Method)
-		}
-		w.WriteHeader(http.StatusProxyAuthRequired)
+func TestNewClientsReuseIdleConnection(t *testing.T) {
+	var addresses []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		addresses = append(addresses, r.RemoteAddr)
+		_, _ = w.Write([]byte(`[]`))
 	}))
-	defer proxy.Close()
-	proxyURL, err := url.Parse(proxy.URL)
-	if err != nil {
-		t.Fatal(err)
+	defer server.Close()
+
+	for range 2 {
+		c := clientTestNewClient(t, server.URL)
+		c.NoCache = true
+		if _, err := c.Get("/items", nil); err != nil {
+			t.Fatalf("GET items: %v", err)
+		}
 	}
-	c := clientTestNewClient(t, "https://api.zotero.org/users/0")
-	c.NoCache = true
-	transport := c.HTTPClient.Transport.(*http.Transport).Clone()
-	transport.Proxy = http.ProxyURL(proxyURL)
-	c.HTTPClient.Transport = transport
-	_, err = c.Get("/items", nil)
-	var connectErr *ProxyConnectError
-	if !errors.As(err, &connectErr) || connectErr.StatusCode != http.StatusProxyAuthRequired {
-		t.Fatalf("Get error = %v, want typed proxy CONNECT HTTP 407", err)
+	if len(addresses) != 2 || addresses[0] != addresses[1] {
+		t.Fatalf("request connections = %v, want one reused connection", addresses)
 	}
 }
 

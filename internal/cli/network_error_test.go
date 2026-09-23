@@ -4,8 +4,10 @@ package cli
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -138,6 +140,109 @@ func TestNetworkErrorTruncatedBodyServesMirror(t *testing.T) {
 	}
 	if len(envelope.Results) != 3 || !keys["A"] || !keys["B"] || !keys["C"] {
 		t.Fatalf("mirror keys = %v, want A, B, C", keys)
+	}
+}
+
+func TestNetworkErrorTruncatedErrorStatusDoesNotServeMirror(t *testing.T) {
+	for _, status := range []int{http.StatusForbidden, http.StatusInternalServerError} {
+		t.Run(http.StatusText(status), func(t *testing.T) {
+			seedLocalQueryPlannerDB(t)
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Length", "1000")
+				w.WriteHeader(status)
+				_, _ = w.Write([]byte("short body"))
+				w.(http.Flusher).Flush()
+				conn, _, err := w.(http.Hijacker).Hijack()
+				if err != nil {
+					t.Errorf("hijack: %v", err)
+					return
+				}
+				_ = conn.Close()
+			}))
+			defer srv.Close()
+			t.Setenv("ZOTERO_BASE_URL", srv.URL+"/api/users/0")
+
+			flags := &rootFlags{asJSON: true, dataSource: "auto", noCache: true, timeout: time.Second}
+			cmd := newItemsListCmd(flags)
+			cmd.SilenceUsage, cmd.SilenceErrors = true, true
+			var out bytes.Buffer
+			cmd.SetOut(&out)
+			cmd.SetErr(&bytes.Buffer{})
+			err := cmd.Execute()
+			if err == nil || !strings.Contains(err.Error(), "reading response: unexpected EOF") {
+				t.Fatalf("items list error = %v, want truncated response error", err)
+			}
+			if out.Len() != 0 {
+				t.Fatalf("items list output = %q, want no mirror rows or api_unreachable", out.String())
+			}
+		})
+	}
+}
+
+func TestNetworkErrorInvalidGzipDoesNotServeMirror(t *testing.T) {
+	seedLocalQueryPlannerDB(t)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Encoding", "gzip")
+		_, _ = w.Write([]byte("not gzip data"))
+	}))
+	defer srv.Close()
+	t.Setenv("ZOTERO_BASE_URL", srv.URL+"/api/users/0")
+
+	flags := &rootFlags{asJSON: true, dataSource: "auto", noCache: true, timeout: time.Second}
+	cmd := newItemsListCmd(flags)
+	cmd.SilenceUsage, cmd.SilenceErrors = true, true
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&bytes.Buffer{})
+	err := cmd.Execute()
+	if err == nil || !strings.Contains(err.Error(), "gzip: invalid header") {
+		t.Fatalf("items list error = %v, want invalid gzip error", err)
+	}
+	if out.Len() != 0 {
+		t.Fatalf("items list output = %q, want no mirror rows or api_unreachable", out.String())
+	}
+}
+
+type cancellationReadBody struct {
+	ctx     context.Context
+	started chan struct{}
+}
+
+func (b *cancellationReadBody) Read([]byte) (int, error) {
+	close(b.started)
+	<-b.ctx.Done()
+	return 0, io.ErrUnexpectedEOF
+}
+
+func (b *cancellationReadBody) Close() error { return nil }
+
+func TestNetworkErrorCancellationDuringBodyReadDoesNotServeMirror(t *testing.T) {
+	seedLocalQueryPlannerDB(t)
+	flags := &rootFlags{dataSource: "auto", noCache: true, timeout: time.Second}
+	c, err := flags.newClient()
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	started := make(chan struct{})
+	c.HTTPClient.Transport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Body:       &cancellationReadBody{ctx: ctx, started: started},
+			Header:     make(http.Header),
+			Request:    req,
+		}, nil
+	})
+	done := make(chan error, 1)
+	go func() {
+		_, _, err := resolveRead(ctx, c, flags, "items", true, "/items", nil, nil)
+		done <- err
+	}()
+	<-started
+	cancel()
+	if err := <-done; !errors.Is(err, context.Canceled) {
+		t.Fatalf("auto read after cancellation = %v, want context cancellation without mirror fallback", err)
 	}
 }
 

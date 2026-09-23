@@ -43,6 +43,48 @@ func TestProfileRootsRejectRelativeHome(t *testing.T) {
 	}
 }
 
+func TestWindowsDiscoveryRejectsInvalidAPPDATA(t *testing.T) {
+	setGOOS(t, "windows")
+	t.Chdir(t.TempDir())
+	t.Setenv(ProfileDirEnv, "")
+
+	for _, tt := range []struct {
+		name    string
+		appData string
+	}{
+		{name: "empty", appData: ""},
+		{name: "relative", appData: "rel"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Setenv("APPDATA", tt.appData)
+			if tt.appData != "" {
+				profile := filepath.Join(tt.appData, "Zotero", "Zotero", "Profiles", "planted.default")
+				if err := os.MkdirAll(profile, 0o750); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(filepath.Join(profile, "prefs.js"),
+					[]byte(`user_pref("extensions.zotero.sync.storage.protocol", "zotero");`), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			dirs, _, err := discoverProfiles()
+			if err == nil || !strings.Contains(err.Error(), "APPDATA") {
+				t.Fatalf("discoverProfiles = %q, %v; want invalid APPDATA error", dirs, err)
+			}
+			if len(dirs) != 0 {
+				t.Fatalf("discoverProfiles = %q, want no profile from the working directory", dirs)
+			}
+			fs, err := Load()
+			if err == nil || !strings.Contains(err.Error(), "APPDATA") {
+				t.Fatalf("Load = %+v, %v; want invalid APPDATA error", fs, err)
+			}
+			if fs.Found() {
+				t.Fatal("Load reported a profile under the working directory")
+			}
+		})
+	}
+}
+
 // The operator's real configuration: files belong on a personal WebDAV server,
 // so a Web API upload into Zotero's cloud storage is a misroute.
 func TestPersonalLibraryReportsWebDAVWhenProtocolIsWebDAV(t *testing.T) {

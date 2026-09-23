@@ -740,11 +740,11 @@ func profileRoots() ([]string, error) {
 		}
 		return []string{filepath.Join(home, "Library", "Application Support", "Zotero")}, nil
 	case "windows":
-		var roots []string
-		if appData := strings.TrimSpace(os.Getenv("APPDATA")); appData != "" {
-			roots = append(roots, filepath.Join(appData, "Zotero", "Zotero"))
+		appData, ok := cliutil.CleanPathOverride(os.Getenv("APPDATA"))
+		if !ok {
+			return nil, fmt.Errorf("APPDATA must be a non-empty absolute directory")
 		}
-		return roots, nil
+		return []string{filepath.Join(appData, "Zotero", "Zotero")}, nil
 	default:
 		home, err := cliutil.HomeDir()
 		if err != nil {

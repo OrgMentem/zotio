@@ -13,6 +13,7 @@ import (
 	"hash/crc32"
 	"io"
 	"math"
+	"net"
 	"net/http"
 	"net/netip"
 	"net/url"
@@ -216,13 +217,28 @@ func effectivePort(u *url.URL) string {
 	}
 }
 
+var (
+	proxyTransportOnce   sync.Once
+	proxyTransportSource *http.Transport
+	sharedProxyTransport *http.Transport
+)
+
 func newHTTPClient(timeout time.Duration, jar http.CookieJar) *http.Client {
-	transport := http.DefaultTransport.(*http.Transport).Clone()
-	transport.OnProxyConnectResponse = func(_ context.Context, _ *url.URL, _ *http.Request, resp *http.Response) error {
-		if resp.StatusCode != http.StatusOK {
-			return &ProxyConnectError{StatusCode: resp.StatusCode}
+	var transport http.RoundTripper
+	if current, ok := http.DefaultTransport.(*http.Transport); ok {
+		proxyTransportOnce.Do(func() {
+			proxyTransportSource = current
+			sharedProxyTransport = current.Clone()
+			sharedProxyTransport.OnProxyConnectResponse = func(_ context.Context, _ *url.URL, _ *http.Request, resp *http.Response) error {
+				if resp.StatusCode != http.StatusOK {
+					return &ProxyConnectError{StatusCode: resp.StatusCode}
+				}
+				return nil
+			}
+		})
+		if current == proxyTransportSource {
+			transport = sharedProxyTransport
 		}
-		return nil
 	}
 	return &http.Client{
 		Timeout:       timeout,
@@ -1322,7 +1338,15 @@ func (c *Client) doRequestOnBase(ctx context.Context, baseOverride, method, path
 		respBody, err := io.ReadAll(io.LimitReader(resp.Body, maxZoteroResponseBytes+1))
 		resp.Body.Close()
 		if err != nil {
-			readErr := fmt.Errorf("reading response: %w", &BodyReadError{Err: err})
+			if ctxErr := ctx.Err(); ctxErr != nil {
+				err = ctxErr
+			} else if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+				var netErr net.Error
+				if errors.Is(err, io.ErrUnexpectedEOF) || errors.As(err, &netErr) {
+					err = &BodyReadError{Err: err}
+				}
+			}
+			readErr := fmt.Errorf("reading response: %w", err)
 			if isMutatingMethod(method) {
 				return nil, 0, nil, &AmbiguousWriteError{Method: method, Path: path, Attempts: attempt + 1, Err: readErr}
 			}

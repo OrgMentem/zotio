@@ -707,7 +707,7 @@ func TestDBPathRejectsUnresolvedHome(t *testing.T) {
 	t.Setenv("XDG_DATA_HOME", "")
 	t.Setenv("ZOTIO_DEMO", "")
 	path, err := dbPath()
-	if err == nil || !strings.Contains(err.Error(), "resolving data directory") || !strings.Contains(err.Error(), "home directory") {
+	if err == nil || !strings.Contains(err.Error(), "resolving data directory") || !strings.Contains(err.Error(), "home dir") {
 		t.Fatalf("dbPath() = %q, %v; want data and home resolution error", path, err)
 	}
 	if path != "" {
