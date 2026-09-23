@@ -2130,7 +2130,7 @@ zotio items trash
 
 List top-level items not assigned to any collection
 
-List top-level items without collections from the local mirror. With --suggest, rank existing collections using shared tags, creators, and venue against filed items. Each collection scores the mean of its three best member matches (or all members when fewer than three). Suggestions are read-only and never move items.
+List top-level items without collections from the local mirror. With --suggest, rank existing collections using shared tags, creators, and venue against filed items. Each collection scores the mean of its three best member matches (or all members when fewer than three). Each shared tag, creator, or venue splits its vote across the collections its filed items occupy, so a status tag such as "/unread" or a broad journal that spans many collections is weak evidence, and suggestions scoring below --suggest-min-score are dropped. Suggestions are read-only and never move items.
 
 ```
 zotio items unfiled [flags]
@@ -2150,6 +2150,7 @@ zotio items unfiled --suggest --json
 | `--limit` | `int` | `0` | Maximum number of items to return (0 = no limit) |
 | `--suggest` | `bool` | `false` | Suggest collections from local tags, creators, and venue (read-only) |
 | `--suggest-limit` | `int` | `3` | Maximum collection suggestions per item (requires --suggest) |
+| `--suggest-min-score` | `float64` | `0.05` | Drop collection suggestions scoring below this (requires --suggest) |
 | `--type` | `string` |  | Filter by Zotero item type |
 
 ### `zotio items update`

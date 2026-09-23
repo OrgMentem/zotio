@@ -2826,7 +2826,7 @@
   },
   {
     "name": "items_unfiled",
-    "description": "List top-level items without collections from the local mirror. With --suggest, rank existing collections using shared tags, creators, and venue against filed items. Each collection scores the mean of its three best member matches (or all members when fewer than three). Suggestions are read-only and never move items.",
+    "description": "List top-level items without collections from the local mirror. With --suggest, rank existing collections using shared tags, creators, and venue against filed items. Each collection scores the mean of its three best member matches (or all members when fewer than three). Each shared tag, creator, or venue splits its vote across the collections its filed items occupy, so a status tag such as \"/unread\" or a broad journal that spans many collections is weak evidence, and suggestions scoring below --suggest-min-score are dropped. Suggestions are read-only and never move items.",
     "inputSchema": {
       "properties": {
         "limit": {
@@ -2839,6 +2839,10 @@
         },
         "suggest-limit": {
           "description": "Maximum collection suggestions per item (requires --suggest) (default: 3)",
+          "type": "number"
+        },
+        "suggest-min-score": {
+          "description": "Drop collection suggestions scoring below this (requires --suggest) (default: 0.05)",
           "type": "number"
         },
         "type": {

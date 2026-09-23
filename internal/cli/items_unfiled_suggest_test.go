@@ -119,7 +119,10 @@ func TestItemsUnfiledSuggestRanksAndExplainsCollections(t *testing.T) {
 			row.Action != fmt.Sprintf("zotio items move %s --to %s", row.Key, want[row.Key]) {
 			t.Fatalf("wrong suggestion for %s: %+v", row.Key, row)
 		}
-		if row.Suggestions[0].Score != 1 || row.Suggestions[0].Name == "" {
+		// UA's tag, creator and venue all occur in COLA and COLC, so each
+		// vote is split in two; UB's signals occur only in COLB.
+		wantScore := map[string]float64{"UA": 0.5, "UB": 1}[row.Key]
+		if row.Suggestions[0].Score != wantScore || row.Suggestions[0].Name == "" {
 			t.Fatalf("score/name for %s: %+v", row.Key, row.Suggestions[0])
 		}
 		reasons := strings.Join(row.Suggestions[0].Reasons, " | ")
@@ -129,7 +132,7 @@ func TestItemsUnfiledSuggestRanksAndExplainsCollections(t *testing.T) {
 			}
 		}
 		if row.Key == "UA" && (len(row.Suggestions) != 2 ||
-			row.Suggestions[1].Collection != "COLC" || row.Suggestions[1].Score != 0.33) {
+			row.Suggestions[1].Collection != "COLC" || row.Suggestions[1].Score != 0.17) {
 			t.Fatalf("top-three voting did not discount the one-hit collection: %+v", row)
 		}
 		for _, suggestion := range row.Suggestions {
@@ -216,7 +219,8 @@ func TestItemsUnfiledSuggestKeepsBestThreeAmongManyTies(t *testing.T) {
 				continue
 			}
 			reasons := strings.Join(suggestion.Reasons, " | ")
-			if suggestion.Score != 1 || !strings.Contains(reasons, "matched item T1") ||
+			// The shared signals now span COLA, COLC and COLT: a third each.
+			if suggestion.Score != 0.33 || !strings.Contains(reasons, "matched item T1") ||
 				!strings.Contains(reasons, "matched item T2") || !strings.Contains(reasons, "matched item T3") ||
 				strings.Contains(reasons, "matched item T4") || strings.Contains(reasons, "matched item T5") {
 				t.Fatalf("top three among five members: %+v", suggestion)
@@ -265,5 +269,90 @@ func TestItemsUnfiledSuggestNeedsLocalStore(t *testing.T) {
 	_, err := runUnfiledSuggestCommand(t, "--suggest")
 	if err == nil || ExitCode(err) != 9 || !strings.Contains(err.Error(), "run 'zotio sync' first to enable collection suggestions") {
 		t.Fatalf("missing local store exit 9: %v", err)
+	}
+}
+
+// A status tag every reader's inbox carries ("/unread" on 100 filed items in
+// 18 collections, measured 2026-09-23) must not file an item by itself. Plain
+// Jaccard scored an item sharing only that tag with a member carrying only
+// that tag as identical, so a small collection won most of the inbox.
+func TestItemsUnfiledSuggestDiscountsTagsSpreadAcrossCollections(t *testing.T) {
+	isolateItemsSimilarStore(t)
+	db, err := store.OpenWithContext(context.Background(), helpersTestDefaultDBPath(t, "zotio"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var items, collections []json.RawMessage
+	add := func(key, collection string, tags ...string) {
+		t.Helper()
+		tagObjects := make([]map[string]string, 0, len(tags))
+		for _, tag := range tags {
+			tagObjects = append(tagObjects, map[string]string{"tag": tag})
+		}
+		collectionKeys := []string{}
+		if collection != "" {
+			collectionKeys = append(collectionKeys, collection)
+		}
+		raw, err := json.Marshal(map[string]any{"key": key, "data": map[string]any{
+			"key": key, "itemType": "journalArticle", "title": key,
+			"collections": collectionKeys, "tags": tagObjects,
+		}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		items = append(items, raw)
+	}
+	// Twelve collections each hold one member tagged only "/unread"; one of
+	// them also holds the only "psilocybin" member.
+	for i := 0; i < 12; i++ {
+		key := fmt.Sprintf("C%02d", i)
+		collections = append(collections, json.RawMessage(fmt.Sprintf(`{"key":%q,"data":{"key":%q,"name":%q}}`, key, key, key)))
+		add("M"+key, key, "/unread")
+	}
+	add("TOPIC", "C07", "psilocybin")
+	add("UNREAD", "", "/unread")
+	add("PSI", "", "psilocybin", "/unread")
+	if _, _, err := db.UpsertBatch("items", items); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := db.UpsertBatch("collections", collections); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	suggest := func(args ...string) map[string][]unfiledSuggestion {
+		t.Helper()
+		out, err := runUnfiledSuggestCommand(t, append([]string{"--suggest"}, args...)...)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var envelope struct {
+			Results []struct {
+				Key         string              `json:"key"`
+				Suggestions []unfiledSuggestion `json:"suggestions"`
+			} `json:"results"`
+		}
+		if err := json.Unmarshal(out, &envelope); err != nil {
+			t.Fatal(err)
+		}
+		got := map[string][]unfiledSuggestion{}
+		for _, row := range envelope.Results {
+			got[row.Key] = row.Suggestions
+		}
+		return got
+	}
+	got := suggest()
+	if len(got["UNREAD"]) != 0 {
+		t.Errorf("a tag spread over twelve collections filed an item by itself: %+v", got["UNREAD"])
+	}
+	if len(got["PSI"]) == 0 || got["PSI"][0].Collection != "C07" {
+		t.Errorf("a tag confined to one collection must still win: %+v", got["PSI"])
+	}
+	// The floor, not the ranking, hides the weak match: lowering it shows the
+	// split score (0.56/12, rounded) instead of the old perfect 0.56.
+	weak := suggest("--suggest-min-score", "0")["UNREAD"]
+	if len(weak) == 0 || weak[0].Score != 0.05 {
+		t.Errorf("--suggest-min-score 0 = %+v, want the split score 0.05", weak)
 	}
 }
