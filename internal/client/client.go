@@ -408,6 +408,17 @@ func (c *Client) GetContext(ctx context.Context, path string, params map[string]
 	return c.getWithHeadersContext(ctx, path, params, nil)
 }
 
+// ExpectsJSON reports whether a GET format returns JSON. Zotero defaults to
+// JSON; other formats can return plain text or XML.
+func ExpectsJSON(params map[string]string) bool {
+	switch params["format"] {
+	case "", "json", "csljson", "versions":
+		return true
+	default:
+		return false
+	}
+}
+
 func (c *Client) getWithHeadersContext(ctx context.Context, path string, params map[string]string, headers map[string]string) (json.RawMessage, error) {
 	if ctx == nil {
 		ctx = c.baseCtx()
@@ -431,11 +442,15 @@ func (c *Client) getWithHeadersContext(ctx context.Context, path string, params 
 			// this process with other clients, so bypass this optional cache.
 			cacheable = false
 		} else if cached, ok := c.readCache(generation, path, params, headers); ok {
-			return cached, nil
+			if !ExpectsJSON(params) || json.Valid(cached) {
+				return cached, nil
+			}
+			// Old cache entries can contain a malformed JSON body. Refetch it
+			// instead of pinning that body until the cache entry expires.
 		}
 	}
 	result, _, err := c.do(ctx, "GET", path, params, nil, headers)
-	if err == nil && cacheable {
+	if err == nil && cacheable && (!ExpectsJSON(params) || json.Valid(result)) {
 		if werr := c.writeCacheAtGeneration(generation, path, params, headers, result); werr != nil {
 			c.cacheWarnOnce.Do(func() {
 				fmt.Fprintf(os.Stderr, "warning: caching response failed (%v); continuing without response cache\n", werr)

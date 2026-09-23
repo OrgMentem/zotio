@@ -488,3 +488,32 @@ type unexpectedCacheBodyError struct {
 func (e *unexpectedCacheBodyError) Error() string {
 	return "unexpected cache body: " + string(e.body)
 }
+
+func TestGetRefetchesMalformedLegacyJSONCacheEntry(t *testing.T) {
+	requests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		_, _ = w.Write([]byte(`[{"key":"RECOVERED"}]`))
+	}))
+	defer server.Close()
+
+	c := clientTestNewClient(t, server.URL)
+	c.cacheDir = t.TempDir()
+	params := map[string]string{"format": "versions"}
+	token, err := c.cacheGenerationSnapshot("items")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := c.writeCacheAtGeneration(token, "/items", params, nil, json.RawMessage(`[{"key":"BROKEN"`)); err != nil {
+		t.Fatal(err)
+	}
+	for range 2 {
+		body, err := c.Get("/items", params)
+		if err != nil || string(body) != `[{"key":"RECOVERED"}]` {
+			t.Fatalf("GET = %s, %v; want recovered JSON from the server", body, err)
+		}
+	}
+	if requests != 1 {
+		t.Fatalf("server requests = %d, want one refetch followed by a valid cache hit", requests)
+	}
+}

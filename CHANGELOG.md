@@ -175,8 +175,18 @@ Notable changes to zotio. Format follows [Keep a Changelog](https://keepachangel
   the directory zotio started in, so one setting named different profiles
   from a shell and from an MCP host, and a `prefs.js` placed there could make
   the stored-upload guard permit a cloud upload. The guard now refuses with
-  `ZOTERO_PROFILE_DIR must be an absolute path`. `ZOTERO_CONFIG` stays
+  `ZOTERO_PROFILE_DIR must be an absolute path`, and names `~` when that is
+  the cause: MCP host configs pass it unexpanded. `ZOTERO_CONFIG` stays
   relative-capable on purpose: it is the environment form of `--config`.
+- **A malformed JSON response fails the read instead of printing a string.**
+  A complete successful response whose body did not parse reached the
+  `--json` envelope as `"results": ["<raw bytes>"]` with exit 0, so a script
+  reading `.results[]` got a string where it expected items. Reads that
+  request JSON (no `--format`, or `json`, `csljson`, `versions`) now exit 5
+  with `response body is not valid JSON`, never echo the body, never fall
+  back to the mirror, and never cache it. This covers `items trash` and
+  `groups list`, which read outside the shared path. Text formats such as
+  `bibtex`, `ris` and `keys` still arrive as a string result.
 
 ## [0.26.0] — 2026-09-15
 

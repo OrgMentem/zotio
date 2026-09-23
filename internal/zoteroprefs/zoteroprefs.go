@@ -339,7 +339,13 @@ func Load() (FileStorage, error) {
 		// host, and can name a prefs.js someone else placed there. Refuse it
 		// rather than guess: this pin decides where stored uploads may go.
 		if !filepath.IsAbs(override) {
-			return FileStorage{}, fmt.Errorf("%s must be an absolute path, got %q", ProfileDirEnv, override)
+			hint := ""
+			if override == "~" || strings.HasPrefix(override, "~/") {
+				// MCP host configs and service files pass env values verbatim;
+				// only an interactive shell expands "~".
+				hint = "; \"~\" is not expanded here, write the full home path"
+			}
+			return FileStorage{}, fmt.Errorf("%s must be an absolute path, got %q%s", ProfileDirEnv, override, hint)
 		}
 		fs, err := LoadProfile(override)
 		if err != nil {

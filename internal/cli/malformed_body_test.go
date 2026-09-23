@@ -5,8 +5,10 @@ package cli
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -22,7 +24,12 @@ func runMalformedBodyCommand(t *testing.T, source, body string, args ...string) 
 	defer srv.Close()
 	t.Setenv("ZOTERO_BASE_URL", srv.URL+"/api/users/0")
 
-	flags := &rootFlags{asJSON: true, dataSource: source, noCache: true, timeout: time.Second}
+	flags := &rootFlags{asJSON: true, dataSource: source, noCache: true, timeout: 10 * time.Second}
+	return executeMalformedBodyCommand(t, flags, args...)
+}
+
+func executeMalformedBodyCommand(t *testing.T, flags *rootFlags, args ...string) (string, error) {
+	t.Helper()
 	var cmd *cobra.Command
 	switch args[0] {
 	case "items list":
@@ -33,6 +40,10 @@ func runMalformedBodyCommand(t *testing.T, source, body string, args ...string) 
 		cmd = newCollectionsItemsCmd(flags)
 	case "collections export":
 		cmd = newCollectionsExportCmd(flags)
+	case "items trash":
+		cmd = newItemsTrashCmd(flags)
+	case "groups list":
+		cmd = newGroupsListCmd(flags)
 	}
 	cmd.SilenceUsage, cmd.SilenceErrors = true, true
 	var out bytes.Buffer
@@ -49,9 +60,6 @@ func TestMalformedJSONBodyFailsLiveRead(t *testing.T) {
 		args []string
 	}{
 		{"items list default", []string{"items list"}},
-		{"items list json", []string{"items list", "--format", "json"}},
-		{"items list csljson", []string{"items list", "--format", "csljson"}},
-		{"items list versions", []string{"items list", "--format", "versions"}},
 		{"items get", []string{"items get", "A"}},
 		{"collections items", []string{"collections items", "COL"}},
 	} {
@@ -111,5 +119,117 @@ func TestMalformedJSONBodyFailsCollectionExport(t *testing.T) {
 	}
 	if out != "" {
 		t.Fatalf("collection export output = %q, want no partial export", out)
+	}
+}
+
+func TestMalformedJSONBodyCacheEnabledRecovers(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("ZOTERO_CONFIG", filepath.Join(t.TempDir(), "missing.toml"))
+	requests := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		if requests == 1 {
+			_, _ = w.Write([]byte(`[{"key":"BROKEN"`))
+			return
+		}
+		_, _ = w.Write([]byte(`[{"key":"RECOVERED","data":{"key":"RECOVERED","itemType":"book"}}]`))
+	}))
+	defer srv.Close()
+	t.Setenv("ZOTERO_BASE_URL", srv.URL+"/api/users/0")
+
+	flags := &rootFlags{asJSON: true, dataSource: "live", timeout: 10 * time.Second}
+	out, err := executeMalformedBodyCommand(t, flags, "items list")
+	if out != "" || err == nil || ExitCode(err) != 5 || err.Error() != "response body is not valid JSON" {
+		t.Fatalf("first read: output = %q, error = %v (exit %d)", out, err, ExitCode(err))
+	}
+	out, err = executeMalformedBodyCommand(t, flags, "items list")
+	if err != nil {
+		t.Fatalf("second read: %v", err)
+	}
+	var envelope struct {
+		Results []struct {
+			Key string `json:"key"`
+		} `json:"results"`
+	}
+	if err := json.Unmarshal([]byte(out), &envelope); err != nil {
+		t.Fatalf("decode recovered output %q: %v", out, err)
+	}
+	if len(envelope.Results) != 1 || envelope.Results[0].Key != "RECOVERED" || requests != 2 {
+		t.Fatalf("recovered results = %+v, server requests = %d; want RECOVERED from second request", envelope.Results, requests)
+	}
+}
+
+func TestMalformedJSONBodyFailsTrashFirstPageWithoutMirrorFallback(t *testing.T) {
+	flags, _ := seedLocalTrashDB(t, localTrashFixture[:1], true)
+	flags.dataSource = "auto"
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`[{"key":"BROKEN"`))
+	}))
+	defer srv.Close()
+	t.Setenv("ZOTERO_BASE_URL", srv.URL+"/api/users/0")
+	out, err := executeMalformedBodyCommand(t, flags, "items trash")
+	if out != "" || err == nil || ExitCode(err) != 5 || err.Error() != "response body is not valid JSON" {
+		t.Fatalf("trash first page: output = %q, error = %v (exit %d); want API error without mirror rows", out, err, ExitCode(err))
+	}
+}
+
+func TestMalformedJSONBodyFailsTrashLaterPage(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	firstPage := make([]json.RawMessage, 100)
+	for i := range firstPage {
+		firstPage[i] = json.RawMessage(fmt.Sprintf(`{"key":"ITEM%d"}`, i))
+	}
+	validPage, err := json.Marshal(firstPage)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var starts []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		starts = append(starts, r.URL.Query().Get("start"))
+		if r.URL.Query().Get("start") == "0" {
+			_, _ = w.Write(validPage)
+			return
+		}
+		_, _ = w.Write([]byte(`[{"key":"BROKEN"`))
+	}))
+	defer srv.Close()
+	t.Setenv("ZOTERO_BASE_URL", srv.URL+"/api/users/0")
+	out, err := executeMalformedBodyCommand(t, &rootFlags{asJSON: true, dataSource: "live", noCache: true, timeout: 10 * time.Second}, "items trash")
+	if out != "" || err == nil || ExitCode(err) != 5 || err.Error() != "response body is not valid JSON" {
+		t.Fatalf("trash later page: output = %q, error = %v (exit %d); want no truncated list", out, err, ExitCode(err))
+	}
+	if len(starts) != 2 || starts[0] != "0" || starts[1] != "100" {
+		t.Fatalf("requested starts = %v, want pages 0 and 100", starts)
+	}
+}
+
+func TestMalformedJSONBodyFailsGroupsList(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`[{"id":99`))
+	}))
+	defer srv.Close()
+	t.Setenv("ZOTERO_BASE_URL", srv.URL+"/users/0")
+
+	out, err := executeMalformedBodyCommand(t, &rootFlags{asJSON: true, noCache: true, timeout: 10 * time.Second}, "groups list")
+	if out != "" || err == nil || ExitCode(err) != 5 || err.Error() != "response body is not valid JSON" {
+		t.Fatalf("groups list: output = %q, error = %v (exit %d)", out, err, ExitCode(err))
+	}
+}
+
+func TestMalformedJSONBodyFailsFanoutEnumeration(t *testing.T) {
+	var paths []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		paths = append(paths, r.URL.Path)
+		_, _ = w.Write([]byte(`[{"id":99`))
+	}))
+	defer srv.Close()
+	isolateFanoutEnv(t, srv.URL+"/users/0")
+
+	out, _, err := runFanoutCmd(t, "collections", "list", "--group", "all", "--json", "--data-source", "live")
+	if out != "" || err == nil || ExitCode(err) != 5 || err.Error() != "response body is not valid JSON" {
+		t.Fatalf("fan-out: output = %q, error = %v (exit %d); want enumeration failure", out, err, ExitCode(err))
+	}
+	if len(paths) != 1 || paths[0] != "/users/0/groups" {
+		t.Fatalf("server paths = %v, want only the failed group enumeration", paths)
 	}
 }

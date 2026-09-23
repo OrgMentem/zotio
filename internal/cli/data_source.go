@@ -143,14 +143,10 @@ func isLocalListRead(resourceType string, isList bool, path string) bool {
 }
 
 // validateJSONReadBody rejects a complete but malformed response before it can
-// become a successful read or enter the mirror. Zotero serves JSON by default
-// and for json, csljson, and versions; other formats can be plain text or XML.
+// become a successful read or enter the mirror.
 func validateJSONReadBody(data json.RawMessage, params map[string]string) error {
-	switch params["format"] {
-	case "", "json", "csljson", "versions":
-		if !json.Valid(data) {
-			return apiErr(errors.New("response body is not valid JSON"))
-		}
+	if client.ExpectsJSON(params) && !json.Valid(data) {
+		return apiErr(errors.New("response body is not valid JSON"))
 	}
 	return nil
 }
