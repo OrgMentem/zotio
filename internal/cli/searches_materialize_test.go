@@ -55,6 +55,16 @@ func newSearchesMaterializeTestServer(t *testing.T, searchKeys []string, version
 			_, _ = fmt.Fprint(w, searchMaterializeJSON(t, items))
 			return
 		}
+		if r.URL.Path == "/users/0/collections/TARGET/items" && r.Method == http.MethodGet {
+			items := make([]map[string]any, 0)
+			for key, memberships := range ts.collections {
+				if stringSliceContains(memberships, "TARGET") {
+					items = append(items, map[string]any{"key": key, "data": map[string]any{"collections": memberships}})
+				}
+			}
+			_, _ = fmt.Fprint(w, searchMaterializeJSON(t, items))
+			return
+		}
 		for key := range ts.collections {
 			itemPath := "/users/0/items/" + key
 			if r.URL.Path != itemPath {
@@ -115,6 +125,8 @@ func TestSearchesMaterializeSeparatesMembershipReadsFromApplyWrites(t *testing.T
 				case r.Method == http.MethodGet && r.URL.Path == "/api/users/0/searches/SK/items":
 					localSearchReads++
 					_, _ = fmt.Fprint(w, `[{"key":"LOCAL001","version":11,"data":{"collections":["LOCAL-SOURCE"]}}]`)
+				case r.Method == http.MethodGet && r.URL.Path == "/api/users/0/collections/TARGET/items":
+					_, _ = fmt.Fprint(w, `[]`)
 				case strings.HasPrefix(r.URL.Path, "/api/users/0/items/"):
 					switch r.Method {
 					case http.MethodGet:
@@ -293,8 +305,11 @@ func TestSearchesMaterializeAlreadyInCollectionIsNoOp(t *testing.T) {
 	})
 
 	env := writePlaneTestMustRunMutationCmd(t, "searches materialize", newSearchesMaterializeCmd, &rootFlags{asJSON: true, yes: true, maxChanges: -1}, "SK", "--to", "TARGET")
-	if !env.OK || env.Mode != "apply" || env.Result == nil || env.Result.Summary.NoOp != 1 || env.Result.Items[0].Status != "no_op" {
-		t.Fatalf("env = %+v, want one no_op item", env)
+	if !env.OK || env.Mode != "apply" || env.Result == nil || env.Result.Summary.Applied != 0 || len(env.Plan.Operations) != 0 {
+		t.Fatalf("env = %+v, want no operations for an unchanged item", env)
+	}
+	if summary, ok := env.Journal.(map[string]any); !ok || summary["unchanged_count"] != float64(1) {
+		t.Fatalf("journal = %+v, want unchanged_count 1", env.Journal)
 	}
 	if srv.patchCounts["K1"] != 0 {
 		t.Fatalf("PATCH count = %d, want 0", srv.patchCounts["K1"])
@@ -437,6 +452,10 @@ func TestSearchesMaterializePaginatesAcrossPages(t *testing.T) {
 			return
 		}
 		// Item reads/PATCHes for the mutation apply phase.
+		if r.URL.Path == "/users/0/collections/TARGET/items" && r.Method == http.MethodGet {
+			_, _ = fmt.Fprint(w, `[]`)
+			return
+		}
 		for key := range collections {
 			if r.URL.Path != "/users/0/items/"+key {
 				continue
@@ -511,6 +530,10 @@ func TestSearchesMaterializeDuplicateKeysArePaginationFailure(t *testing.T) {
 			_, _ = fmt.Fprint(w, searchMaterializeJSON(t, items))
 			return
 		}
+		if r.URL.Path == "/users/0/collections/TARGET/items" && r.Method == http.MethodGet {
+			_, _ = fmt.Fprint(w, `[]`)
+			return
+		}
 		http.Error(w, "unexpected "+r.URL.Path, http.StatusNotFound)
 	}))
 	defer ts.Close()
@@ -550,6 +573,10 @@ func TestSearchesMaterializeSamePageDuplicateProducesOneOperation(t *testing.T) 
 				{"key": otherKey, "version": "1", "data": map[string]any{"collections": []string{}}},
 			}
 			_, _ = fmt.Fprint(w, searchMaterializeJSON(t, items))
+			return
+		}
+		if r.URL.Path == "/users/0/collections/TARGET/items" && r.Method == http.MethodGet {
+			_, _ = fmt.Fprint(w, `[]`)
 			return
 		}
 		if r.URL.Path == "/users/0/items/"+dupKey || r.URL.Path == "/users/0/items/"+otherKey {
