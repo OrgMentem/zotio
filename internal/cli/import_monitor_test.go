@@ -205,8 +205,12 @@ func TestImportMonitorPageCapReportsIncompleteFeed(t *testing.T) {
 	requests := 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		requests++
-		if got := r.URL.Query().Get("cursor"); got != fmt.Sprintf("p%d", requests-1) && !(requests == 1 && got == "*") {
-			t.Errorf("cursor = %q on request %d", got, requests)
+		want := fmt.Sprintf("p%d", requests-1)
+		if requests == 1 {
+			want = "*"
+		}
+		if got := r.URL.Query().Get("cursor"); got != want {
+			t.Errorf("cursor = %q on request %d, want %q", got, requests, want)
 		}
 		_ = json.NewEncoder(w).Encode(map[string]any{"meta": map[string]string{"next_cursor": fmt.Sprintf("p%d", requests)}, "results": []map[string]string{{"id": fmt.Sprintf("W%d", requests), "doi": fmt.Sprintf("10.5000/%d", requests), "title": fmt.Sprintf("Work %d", requests), "publication_date": "2026-02-01"}}})
 	}))
