@@ -4,6 +4,8 @@ Notable changes to zotio. Format follows [Keep a Changelog](https://keepachangel
 
 ## [Unreleased]
 
+## [0.27.0] — 2026-09-23
+
 ### Changed — breaking
 
 - **`searches materialize` reads membership from the configured read source.**
@@ -3034,7 +3036,8 @@ First tagged release: the trust-and-automation layer for Zotero.
 - **Onboarding** — `zotio init` guided setup (Zotero detection, local API, key, first sync, health check).
 - Release engineering: goreleaser builds for 6 platforms, cosign-signed checksums, SBOMs, Homebrew tap.
 
-[Unreleased]: https://github.com/OrgMentem/zotio/compare/v0.26.0...HEAD
+[Unreleased]: https://github.com/OrgMentem/zotio/compare/v0.27.0...HEAD
+[0.27.0]: https://github.com/OrgMentem/zotio/compare/v0.26.0...v0.27.0
 [0.26.0]: https://github.com/OrgMentem/zotio/compare/v0.25.0...v0.26.0
 [0.25.0]: https://github.com/OrgMentem/zotio/compare/v0.24.0...v0.25.0
 [0.24.0]: https://github.com/OrgMentem/zotio/compare/v0.23.0...v0.24.0
