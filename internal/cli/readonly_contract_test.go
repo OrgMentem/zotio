@@ -47,6 +47,7 @@ var readOnlyWriters = map[string]string{
 	"newDemoCmd":              "creates and cleans up its own sandbox directory",
 	"newExportSnapshotCmd":    "writes the user's snapshot plus its own adjacent lock and checkpoint artifacts",
 	"newImportDiscoverCmd":    "writes the discovery report to the path the user passes",
+	"newImportMonitorCmd":     "writes the monitor manifest to the path the user passes",
 	"newLibraryWrappedCmd":    "writes the wrapped card to the path the user passes",
 	"newTailCmd":              "builds and dispatches the command tree; the reachable sinks belong to the commands it runs, which carry their own annotations",
 

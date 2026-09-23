@@ -313,6 +313,8 @@ var capabilityOfflineProbes = map[string]capabilityOfflineProbe{
 	"import discover": {
 		skip: "chases citations through external metadata providers, a plane no precondition in this vocabulary describes",
 	},
+	// Refuses on the missing mirror before any provider request or output write.
+	"import monitor": {args: []string{"import", "monitor", "--author", "0000-0002-1825-0097", "--since", "2026-01-01", "--out", probeTempFile}},
 	// Writes: offline behaviour is the write guard's contract, not this test's,
 	// EXCEPT where a write depends on a live READ to build its plan.
 	"searches materialize": {args: []string{"searches", "materialize", "PROBESK", "--to", probeCollectionKey, "--dry-run"}},
