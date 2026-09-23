@@ -8,6 +8,8 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -480,6 +482,54 @@ func TestGetCappedProviderJSONDecodesAndCachesWithCustomTransport(t *testing.T) 
 	}
 	if requests != 1 {
 		t.Fatalf("provider transport requests = %d, want 1 after cache hit", requests)
+	}
+}
+
+func TestProviderCacheRejectsRelativeUserCacheDir(t *testing.T) {
+	t.Chdir(t.TempDir())
+	t.Setenv("HOME", "rel")
+	t.Setenv("XDG_CACHE_HOME", "")
+	dir, err := os.UserCacheDir()
+	if err != nil {
+		t.Fatalf("UserCacheDir: %v", err)
+	}
+	if filepath.IsAbs(dir) {
+		t.Skipf("UserCacheDir resolved to an absolute path on this platform: %q", dir)
+	}
+
+	const seededURL = "https://8.8.8.8/seeded"
+	const freshURL = "https://8.8.8.8/fresh"
+	planted := cache.New(filepath.Join(dir, "zotio", "providers"), providerCacheTTL)
+	if err := planted.Set(providerCrossRef+"|"+seededURL, []byte(`{"value":"planted"}`)); err != nil {
+		t.Fatalf("plant provider cache entry: %v", err)
+	}
+
+	requests := 0
+	transport := externalHTTPRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+		requests++
+		return externalHTTPTestResponse(req, http.StatusOK, "", `{"value":"from provider"}`), nil
+	})
+	pc := newProviderJSONCache(false)
+	for _, rawURL := range []string{seededURL, freshURL} {
+		var got struct {
+			Value string `json:"value"`
+		}
+		if err := getCappedProviderJSON(context.Background(), &http.Client{Transport: transport}, providerCrossRef, rawURL, pc, &got); err != nil {
+			t.Fatalf("fetch %s: %v", rawURL, err)
+		}
+		if got.Value != "from provider" {
+			t.Fatalf("fetch %s returned %q, want provider response", rawURL, got.Value)
+		}
+	}
+	if requests != 2 {
+		t.Fatalf("provider requests = %d, want both requests to reach the provider", requests)
+	}
+	if _, ok := planted.Get(providerCrossRef + "|" + freshURL); ok {
+		t.Fatal("provider response was written under the working directory")
+	}
+	seeded, ok := planted.Get(providerCrossRef + "|" + seededURL)
+	if !ok || string(seeded) != `{"value":"planted"}` {
+		t.Fatalf("planted entry = %s, present %v; want it untouched", seeded, ok)
 	}
 }
 

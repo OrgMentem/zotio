@@ -40,6 +40,14 @@ func isNetworkError(err error) bool {
 		errors.Is(err, syscall.ETIMEDOUT) {
 		return true
 	}
+	var bodyReadErr *client.BodyReadError
+	if errors.As(err, &bodyReadErr) {
+		return true
+	}
+	var proxyConnectErr *client.ProxyConnectError
+	if errors.As(err, &proxyConnectErr) {
+		return true
+	}
 	var urlErr *url.Error
 	if As(err, &urlErr) {
 		// url.Error wraps the underlying network error

@@ -152,6 +152,25 @@ Notable changes to zotio. Format follows [Keep a Changelog](https://keepachangel
   elsewhere. `library_count` is now the number of distinct regular items
   carrying the tag, and `collection_only` compares distinct items in scope
   against it. `collection_count` is unchanged.
+- **The auto data source falls back when a response is cut off or the proxy
+  refuses the tunnel.** A successful response whose body ended before its
+  `Content-Length`, and an HTTPS proxy answering `CONNECT` with a non-200
+  status such as 407, failed the command instead of serving the mirror with
+  `api_unreachable` provenance. Only an interrupted transfer counts: an
+  error status whose body is cut short, a complete body that is malformed
+  JSON or corrupt gzip, and a cancelled request still never fall back.
+- **A relative or empty `HOME` no longer resolves paths against the working
+  directory.** Every home-derived path (data, config, state, the store,
+  the writer lock, the demo store, the schema baseline, the Zotero profile
+  lookup, the Zotero and provider response caches, and `~` in
+  `[vault].root`) now requires an absolute home. Each fails, skips or
+  disables itself as it already did for a missing home. `schema drift` used
+  to discard that error and read and write its baseline under the working
+  directory, and a `[vault].root` of `~/notes` stayed literal and wrote the
+  vault into a directory named `~`. Both now fail with the reason. On
+  Windows, an empty or relative `APPDATA` made the stored-upload storage
+  guard find no Zotero profile and permit a cloud upload; it now refuses, as
+  it already did on macOS and Linux.
 
 ## [0.26.0] — 2026-09-15
 

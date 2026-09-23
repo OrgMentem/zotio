@@ -24,6 +24,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"zotio/internal/cliutil"
 	"zotio/internal/config"
 	"zotio/internal/mutation"
 	"zotio/internal/store"
@@ -133,7 +134,11 @@ different cohort.`,
 			// configured; explicit flags always win.
 			if vc := vaultConfig(flags); vc != nil {
 				if outDir == "" {
-					outDir = vaultResolveOut(vc)
+					resolved, err := vaultResolveOut(vc)
+					if err != nil {
+						return err
+					}
+					outDir = resolved
 				}
 				if !cmd.Flags().Changed("format") && strings.TrimSpace(vc.Format) != "" {
 					format = strings.ToLower(strings.TrimSpace(vc.Format))
@@ -954,24 +959,33 @@ func vaultConfig(flags *rootFlags) *config.VaultConfig {
 
 // vaultResolveOut builds the output dir from [vault].root (+ notes_dir), with ~
 // expansion. Empty when root is unset.
-func vaultResolveOut(vc *config.VaultConfig) string {
-	root := expandHome(strings.TrimSpace(vc.Root))
+func vaultResolveOut(vc *config.VaultConfig) (string, error) {
+	root, err := expandHome(strings.TrimSpace(vc.Root))
+	if err != nil {
+		return "", fmt.Errorf("resolving [vault].root: %w", err)
+	}
 	if root == "" {
-		return ""
+		return "", nil
 	}
 	if nd := strings.TrimSpace(vc.NotesDir); nd != "" {
-		return filepath.Join(root, nd)
+		return filepath.Join(root, nd), nil
 	}
-	return root
+	return root, nil
 }
 
-func expandHome(p string) string {
-	if p == "~" || strings.HasPrefix(p, "~/") {
-		if home, err := os.UserHomeDir(); err == nil {
-			return filepath.Join(home, strings.TrimPrefix(p, "~"))
-		}
+// expandHome expands a leading "~" to the user's home directory. A "~" that
+// cannot be expanded is an error, never the literal path: "~/notes" left as
+// is would write the vault under a directory named "~" in the working
+// directory.
+func expandHome(p string) (string, error) {
+	if p != "~" && !strings.HasPrefix(p, "~/") {
+		return p, nil
 	}
-	return p
+	home, err := cliutil.HomeDir()
+	if err != nil {
+		return "", fmt.Errorf("expanding %q: %w", p, err)
+	}
+	return filepath.Join(home, strings.TrimPrefix(p, "~")), nil
 }
 
 // loadCollectionNames maps collection key -> display name from the local store.

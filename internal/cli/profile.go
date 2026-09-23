@@ -52,7 +52,7 @@ type profileStore struct {
 // through ListProfileNames -> loadProfileStore, so merely describing the CLI
 // created a state directory. Directory creation now belongs to the save path.
 func profileStorePath() (string, error) {
-	home, err := os.UserHomeDir()
+	home, err := cliutil.HomeDir()
 	if err != nil {
 		return "", fmt.Errorf("resolving home dir: %w", err)
 	}

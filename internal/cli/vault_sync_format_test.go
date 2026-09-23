@@ -297,7 +297,10 @@ func TestVaultResolveOut(t *testing.T) {
 		{"~/v", "refs", filepath.Join(home, "v", "refs")},
 	}
 	for _, c := range cases {
-		got := vaultResolveOut(&config.VaultConfig{Root: c.root, NotesDir: c.notesDir})
+		got, err := vaultResolveOut(&config.VaultConfig{Root: c.root, NotesDir: c.notesDir})
+		if err != nil {
+			t.Fatalf("vaultResolveOut(%q,%q): %v", c.root, c.notesDir, err)
+		}
 		if got != c.want {
 			t.Errorf("vaultResolveOut(%q,%q) = %q, want %q", c.root, c.notesDir, got, c.want)
 		}

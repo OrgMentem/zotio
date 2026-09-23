@@ -36,6 +36,26 @@ func clientTestNewClient(t *testing.T, baseURL string) *Client {
 	return c
 }
 
+func TestNewClientsReuseIdleConnection(t *testing.T) {
+	var addresses []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		addresses = append(addresses, r.RemoteAddr)
+		_, _ = w.Write([]byte(`[]`))
+	}))
+	defer server.Close()
+
+	for range 2 {
+		c := clientTestNewClient(t, server.URL)
+		c.NoCache = true
+		if _, err := c.Get("/items", nil); err != nil {
+			t.Fatalf("GET items: %v", err)
+		}
+	}
+	if len(addresses) != 2 || addresses[0] != addresses[1] {
+		t.Fatalf("request connections = %v, want one reused connection", addresses)
+	}
+}
+
 func TestDoReturnsSuccessBody(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/ok" {

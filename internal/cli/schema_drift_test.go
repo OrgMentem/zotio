@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -58,6 +59,63 @@ func runSchemaDrift(t *testing.T, baseURL, baselinePath string, asJSON bool, ext
 	cmd.SetArgs(args)
 	err := cmd.Execute()
 	return out.String(), err
+}
+
+func TestSchemaDriftRejectsRelativeHomeWithoutBaselineWrite(t *testing.T) {
+	srv := schemaServer(t, []string{"book"}, []string{"title"}, []string{"firstName"})
+	defer srv.Close()
+	for _, home := range []string{"rel", ""} {
+		t.Run("HOME="+home, func(t *testing.T) {
+			cwd := t.TempDir()
+			t.Chdir(cwd)
+			t.Setenv("HOME", home)
+			t.Setenv("ZOTERO_BASE_URL", srv.URL)
+
+			cmd := newSchemaDriftCmd(&rootFlags{})
+			cmd.SetOut(io.Discard)
+			cmd.SetErr(io.Discard)
+			cmd.SilenceErrors = true
+			cmd.SilenceUsage = true
+			err := cmd.Execute()
+			if err == nil {
+				t.Fatal("schema drift succeeded without an absolute home")
+			}
+			if home == "rel" && !strings.Contains(err.Error(), `home directory "rel" is not absolute`) {
+				t.Fatalf("schema drift error = %v, want invalid home error", err)
+			}
+			for _, parent := range []string{cwd, filepath.Join(cwd, "rel")} {
+				baseline := filepath.Join(parent, ".local", "share", "zotio", "schema-baseline.json")
+				if _, statErr := os.Stat(baseline); !os.IsNotExist(statErr) {
+					t.Fatalf("baseline created under working directory at %s: %v", baseline, statErr)
+				}
+			}
+		})
+	}
+}
+
+func TestSchemaDriftDefaultBaselineStaysUnderHome(t *testing.T) {
+	srv := schemaServer(t, []string{"book"}, []string{"title"}, []string{"firstName"})
+	defer srv.Close()
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("ZOTERO_BASE_URL", srv.URL)
+	t.Setenv("XDG_DATA_HOME", filepath.Join(t.TempDir(), "other-data"))
+
+	cmd := newSchemaDriftCmd(&rootFlags{})
+	cmd.SetOut(io.Discard)
+	cmd.SetErr(io.Discard)
+	cmd.SilenceErrors = true
+	cmd.SilenceUsage = true
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("schema drift: %v", err)
+	}
+	baseline := filepath.Join(home, ".local", "share", "zotio", "schema-baseline.json")
+	if _, err := os.Stat(baseline); err != nil {
+		t.Fatalf("default baseline %s: %v", baseline, err)
+	}
+	if _, err := os.Stat(filepath.Join(os.Getenv("XDG_DATA_HOME"), "zotio", "schema-baseline.json")); !os.IsNotExist(err) {
+		t.Fatalf("baseline moved to XDG data directory: %v", err)
+	}
 }
 
 func TestSchemaDriftCapturesBaselineThenReportsNoDrift(t *testing.T) {

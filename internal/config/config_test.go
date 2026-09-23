@@ -11,6 +11,18 @@ import (
 	"time"
 )
 
+func TestLegacyConfigPathRejectsRelativeHome(t *testing.T) {
+	t.Chdir(t.TempDir())
+	t.Setenv("HOME", "rel")
+	path, err := LegacyConfigPath()
+	if err == nil || !strings.Contains(err.Error(), `home directory "rel" is not absolute`) {
+		t.Fatalf("LegacyConfigPath = %q, %v; want invalid home error", path, err)
+	}
+	if path != "" {
+		t.Errorf("LegacyConfigPath = %q, want no relative path", path)
+	}
+}
+
 func TestSaveCredentialPersistsAPIKeyWhereAuthHeaderReadsAndScrubsConfigFile(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
