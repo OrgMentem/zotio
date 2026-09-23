@@ -40,6 +40,7 @@ artifact) counts as one change against --max-changes.`,
   zotio vault pull --yes
   zotio vault pull --yes --out ~/vault/refs`,
 		Annotations: map[string]string{"mcp:read-only": "false"},
+		Args:        cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			outDir, err := resolveVaultOutDir(flags, flagOut)
 			if err != nil {

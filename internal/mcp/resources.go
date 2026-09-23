@@ -481,7 +481,10 @@ func templateKey(uri, prefix string) string {
 // operational failure because callers can need to repair permissions or
 // recover corruption before a sync writer can safely use it.
 func archiveStatus(ctx context.Context) (map[string]any, error) {
-	path := dbPath()
+	path, err := dbPath()
+	if err != nil {
+		return nil, fmt.Errorf("opening database: %w", err)
+	}
 	if _, err := os.Stat(path); err != nil {
 		if os.IsNotExist(err) {
 			return map[string]any{"db_path": path, "synced": false, "note": "local store not initialized; run sync"}, nil
@@ -575,7 +578,7 @@ func archiveStatus(ctx context.Context) (map[string]any, error) {
 		return nil, err
 	}
 	status := map[string]any{
-		"db_path":        dbPath(),
+		"db_path":        path,
 		"synced":         qerr == nil && len(counts) > 0,
 		"schema_version": schemaVer,
 		"resources":      resources,
@@ -591,7 +594,11 @@ func archiveStatus(ctx context.Context) (map[string]any, error) {
 
 // localSchemaDDL returns the DDL of the local store's tables and indexes.
 func localSchemaDDL(ctx context.Context) (string, error) {
-	db, err := store.OpenReadOnlyDiagnosticContext(ctx, dbPath())
+	path, err := dbPath()
+	if err != nil {
+		return "", fmt.Errorf("opening database: %w", err)
+	}
+	db, err := store.OpenReadOnlyDiagnosticContext(ctx, path)
 	if err != nil {
 		return "", fmt.Errorf("opening database: %w", err)
 	}
@@ -618,7 +625,11 @@ func collectionManifest(ctx context.Context, key string) (map[string]any, error)
 	if key == "" {
 		return nil, fmt.Errorf("collection key required")
 	}
-	db, err := store.OpenReadOnlyContext(ctx, dbPath())
+	path, err := dbPath()
+	if err != nil {
+		return nil, fmt.Errorf("opening database: %w", err)
+	}
+	db, err := store.OpenReadOnlyContext(ctx, path)
 	if err != nil {
 		return nil, fmt.Errorf("opening database: %w", err)
 	}
@@ -648,7 +659,11 @@ func itemBundle(ctx context.Context, key string) (map[string]any, error) {
 	if key == "" {
 		return nil, fmt.Errorf("item key required")
 	}
-	db, err := store.OpenReadOnlyContext(ctx, dbPath())
+	path, err := dbPath()
+	if err != nil {
+		return nil, fmt.Errorf("opening database: %w", err)
+	}
+	db, err := store.OpenReadOnlyContext(ctx, path)
 	if err != nil {
 		return nil, fmt.Errorf("opening database: %w", err)
 	}

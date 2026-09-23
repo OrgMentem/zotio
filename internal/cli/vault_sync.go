@@ -125,6 +125,7 @@ different cohort.`,
   zotio vault sync --out ~/vault/refs --collection ABCD1234 --dry-run
   zotio vault sync --out ~/vault/refs --scope query:transformer --dry-run`,
 		Annotations: map[string]string{"mcp:read-only": "false"},
+		Args:        cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			outDir := strings.TrimSpace(flagOut)
 			format := strings.ToLower(strings.TrimSpace(flagFormat))

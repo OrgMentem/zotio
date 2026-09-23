@@ -22,6 +22,7 @@ func newItemsFulltextCmd(flags *rootFlags) *cobra.Command {
 		Use:         "fulltext <itemKey>",
 		Short:       "Get full text from an item's PDF attachment",
 		Annotations: map[string]string{"zotio:endpoint": "items.fulltext", "zotio:method": "GET", "zotio:path": "/items/{itemKey}/fulltext", "mcp:read-only": "true"},
+		Args:        cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if len(args) == 0 {
 				return cmd.Help()

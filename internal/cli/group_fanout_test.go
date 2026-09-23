@@ -434,7 +434,7 @@ func TestGroupFanoutRefusesCommandsNotOnTheAllowlist(t *testing.T) {
 		want []string
 	}{
 		{name: "destructive write", args: []string{"items", "delete", "ABCD1234", "--yes"}, want: []string{"items delete", fanoutSideEffectFree}},
-		{name: "write", args: []string{"tags", "rename", "old", "new", "--yes"}, want: []string{"tags rename", fanoutSideEffectFree}},
+		{name: "write", args: []string{"tags", "rename", "--from", "old", "--to", "new", "--yes"}, want: []string{"tags rename", fanoutSideEffectFree}},
 		{name: "sync", args: []string{"sync"}, want: []string{"sync", fanoutSideEffectFree}},
 		{name: "introspect", args: []string{"doctor"}, want: []string{"doctor", fanoutLibraryScoped}},
 		// --follow never returns, so library two is unreachable.

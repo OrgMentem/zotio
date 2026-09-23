@@ -37,6 +37,7 @@ API must be enabled (Settings → Advanced → "Allow other applications…").`,
   # JSON envelope (item key, resolved attachment key, url, path)
   zotio items file ABCD1234 --json`,
 		Annotations: map[string]string{"mcp:read-only": "true"},
+		Args:        cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if len(args) == 0 {
 				return cmd.Help()

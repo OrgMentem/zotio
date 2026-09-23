@@ -143,7 +143,7 @@ Use --fulltext to search synced PDF text and resolve hits to parent items.`,
 			if len(args) == 0 {
 				return cmd.Help()
 			}
-			query := args[0]
+			query := strings.Join(args, " ")
 			if fulltextOnly && resourceType != "" {
 				return fmt.Errorf("--fulltext cannot be combined with --type")
 			}

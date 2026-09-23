@@ -5,9 +5,14 @@ package client
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -121,6 +126,200 @@ func TestWriteRouteResolverErrorSurfacesRealCause(t *testing.T) {
 	c.ResolveWriteBase = func(context.Context) (string, error) { return writeSrv.URL, nil }
 	if _, _, err := c.Post("/items", []any{}); err != nil {
 		t.Fatalf("second POST after resolver recovers: %v", err)
+	}
+}
+
+func TestReadRejectionDoesNotInheritWriteRouteTransportError(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	read := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "Endpoint does not support method", http.StatusMethodNotAllowed)
+	}))
+	defer read.Close()
+	unreachable := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	unreachableURL := unreachable.URL
+	unreachable.Close()
+
+	c := New(&config.Config{BaseURL: read.URL}, 5*time.Second, 0)
+	c.NoCache = true
+	c.ResolveWriteBase = func(ctx context.Context) (string, error) {
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, unreachableURL, nil)
+		if err != nil {
+			return "", err
+		}
+		resp, err := http.DefaultClient.Do(req)
+		if resp != nil {
+			_ = resp.Body.Close()
+		}
+		if err == nil {
+			t.Fatal("closed write-route server accepted a connection")
+		}
+		var transportErr *net.OpError
+		if !errors.As(err, &transportErr) {
+			t.Fatalf("resolver error %T has no transport error: %v", err, err)
+		}
+		return "", err
+	}
+
+	_, _, writeErr := c.Patch("/items/ABCD", map[string]any{"x": 1})
+	if writeErr == nil || !strings.Contains(writeErr.Error(), "could not resolve Zotero Web API write route") {
+		t.Fatalf("PATCH error = %v, want write-route diagnostic", writeErr)
+	}
+	var writeTransportErr *net.OpError
+	if !errors.As(writeErr, &writeTransportErr) {
+		t.Fatalf("PATCH error = %v, want resolver transport error", writeErr)
+	}
+	var writeAPIError *APIError
+	if !errors.As(writeErr, &writeAPIError) || writeAPIError.StatusCode != http.StatusMethodNotAllowed {
+		t.Fatalf("PATCH error = %v, want HTTP 405 API error", writeErr)
+	}
+
+	_, readErr := c.Get("/items/ABCD", nil)
+	var apiErr *APIError
+	if !errors.As(readErr, &apiErr) {
+		t.Fatalf("GET error = %v, want plain API error", readErr)
+	}
+	if apiErr.Method != http.MethodGet || apiErr.StatusCode != http.StatusMethodNotAllowed ||
+		!strings.Contains(apiErr.Body, "Endpoint does not support method") {
+		t.Fatalf("GET error = %v, want server's HTTP 405 rejection", readErr)
+	}
+	var routeTransportErr *net.OpError
+	var routeURLError *url.Error
+	if errors.As(readErr, &routeTransportErr) || errors.As(readErr, &routeURLError) {
+		t.Fatalf("GET error = %v, unexpectedly carries write-route transport error", readErr)
+	}
+}
+
+func TestCacheDisabledWithoutPerUserDirectory(t *testing.T) {
+	tempRoot := filepath.Join(t.TempDir(), "isolated-temp")
+	if err := os.Mkdir(tempRoot, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("TMPDIR", tempRoot)
+	t.Setenv("TMP", tempRoot)
+	t.Setenv("TEMP", tempRoot)
+	for _, name := range []string{"HOME", "XDG_CACHE_HOME", "LocalAppData", "USERPROFILE", "ZOTERO_CACHE_DIR", "ZOTERO_HOME"} {
+		t.Setenv(name, "")
+		if err := os.Unsetenv(name); err != nil {
+			t.Fatalf("unset %s: %v", name, err)
+		}
+	}
+	if got := os.TempDir(); got != tempRoot {
+		t.Fatalf("temp directory = %q, want %q", got, tempRoot)
+	}
+
+	var hits atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprintf(w, `{"hit":%d}`, hits.Add(1))
+	}))
+	defer server.Close()
+	c := clientTestNewClient(t, server.URL)
+
+	// This is a valid entry at the former process-shared cache path. It must
+	// never become an API response, even when no generation marker exists.
+	sharedCache := filepath.Join(tempRoot, "zotio")
+	itemsDir := filepath.Join(sharedCache, "items")
+	if err := os.MkdirAll(itemsDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	plant := filepath.Join(itemsDir, c.cacheKey("/items", nil, nil)+".json")
+	if err := os.WriteFile(plant, encodeCacheEntry(0, []byte(`{"hit":999}`)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	for i, path := range []string{"/items", "/items", "/tags", "/tags"} {
+		body, err := c.Get(path, nil)
+		if err != nil {
+			t.Fatalf("GET %s: %v", path, err)
+		}
+		if want := fmt.Sprintf(`{"hit":%d}`, i+1); string(body) != want {
+			t.Fatalf("GET %s = %s, want live response %s", path, body, want)
+		}
+	}
+	if got := hits.Load(); got != 4 {
+		t.Fatalf("server saw %d GET requests, want 4", got)
+	}
+	if _, err := os.Stat(filepath.Join(sharedCache, "tags")); !os.IsNotExist(err) {
+		t.Fatalf("client wrote a cache entry in shared temp directory: %v", err)
+	}
+	if _, err := os.Stat(sharedCache + ".generation"); !os.IsNotExist(err) {
+		t.Fatalf("client wrote a generation marker in shared temp directory: %v", err)
+	}
+
+	// A relative HOME must not make the response cache relative to the CWD.
+	cwd := t.TempDir()
+	t.Chdir(cwd)
+	t.Setenv("HOME", "rel")
+	relative := clientTestNewClient(t, server.URL)
+	relativeRoot := filepath.Join(cwd, "rel", ".cache", "zotio")
+	relativeItems := filepath.Join(relativeRoot, "items")
+	if err := os.MkdirAll(relativeItems, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	relativeEntry := filepath.Join(relativeItems, relative.cacheKey("/items", nil, nil)+".json")
+	if err := os.WriteFile(relativeEntry, encodeCacheEntry(0, []byte(`{"hit":999}`)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for i := range 2 {
+		body, err := relative.Get("/items", nil)
+		if err != nil {
+			t.Fatalf("GET with relative HOME: %v", err)
+		}
+		if want := fmt.Sprintf(`{"hit":%d}`, i+5); string(body) != want {
+			t.Fatalf("GET with relative HOME = %s, want live response %s", body, want)
+		}
+	}
+	if _, err := os.Stat(relativeRoot + ".generation"); !os.IsNotExist(err) {
+		t.Fatalf("client created a generation marker relative to CWD: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(relativeRoot, "tags")); !os.IsNotExist(err) {
+		t.Fatalf("client created a cache namespace relative to CWD: %v", err)
+	}
+	if got, err := os.ReadFile(relativeEntry); err != nil || string(got) != string(encodeCacheEntry(0, []byte(`{"hit":999}`))) {
+		t.Fatalf("client changed planted CWD cache entry: %q, %v", got, err)
+	}
+}
+
+func TestCacheIgnoresEnvironmentOverrides(t *testing.T) {
+	home := t.TempDir()
+	override := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("ZOTERO_CACHE_DIR", override)
+	t.Setenv("ZOTERO_HOME", override)
+	t.Setenv("XDG_CACHE_HOME", override)
+	t.Setenv("TMPDIR", override)
+	sentinel := filepath.Join(override, "other-app.json")
+	if err := os.WriteFile(sentinel, []byte(`{"keep":true}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	var hits atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet {
+			fmt.Fprintf(w, `{"hit":%d}`, hits.Add(1))
+		} else {
+			fmt.Fprint(w, `{}`)
+		}
+	}))
+	defer server.Close()
+	c := clientTestNewClient(t, server.URL)
+	for range 2 {
+		body, err := c.Get("/items", nil)
+		if err != nil || string(body) != `{"hit":1}` {
+			t.Fatalf("GET /items = %s, %v; want cached first response", body, err)
+		}
+	}
+	if got := hits.Load(); got != 1 {
+		t.Fatalf("server saw %d GET requests, want 1", got)
+	}
+	cacheFile := filepath.Join(home, ".cache", "zotio", "items", c.cacheKey("/items", nil, nil)+".json")
+	if _, err := os.Stat(cacheFile); err != nil {
+		t.Fatalf("cache entry absent from the home cache: %v", err)
+	}
+	if _, _, err := c.Post("/items", []any{}); err != nil {
+		t.Fatalf("POST /items: %v", err)
+	}
+	if contents, err := os.ReadFile(sentinel); err != nil || string(contents) != `{"keep":true}` {
+		t.Fatalf("client changed override directory's other-app file: %q, %v", contents, err)
 	}
 }
 

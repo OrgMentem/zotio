@@ -95,6 +95,7 @@ structured bundle; otherwise a readable Markdown brief you can paste into any LL
   zotio items summarize --collection MAR7RFQN --no-fulltext
   zotio items summarize --scope tag:to-read --agent`,
 		Annotations: map[string]string{"mcp:read-only": "true"},
+		Args:        cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			db, err := openStoreForRead(cmd.Context(), "zotio")
 			if err != nil {

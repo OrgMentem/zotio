@@ -25,6 +25,7 @@ A bare webpage item is used only when no metadata is available.
 The item previews by default and is created only under --yes; --dry-run always
 wins over --yes.`,
 		Annotations: map[string]string{"zotio:method": "POST", "zotio:path": "/items"},
+		Args:        cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if len(args) == 0 {
 				return cmd.Help()
