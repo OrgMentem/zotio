@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -438,6 +439,31 @@ func TestTagRenameChangeReplaysOntoMirroredItemTags(t *testing.T) {
 				t.Errorf("renamed tag type = %v, want %v (rename must not flip manual/automatic)", newType, wantType)
 			}
 		})
+	}
+}
+
+// A malformed explicit config fails client setup before tag selection. Renaming
+// must keep the same configuration exit code as a read command.
+func TestTagsRenamePreservesConfigExitCode(t *testing.T) {
+	t.Setenv("ZOTIO_DEMO", "")
+	configPath := filepath.Join(t.TempDir(), "invalid.toml")
+	if err := os.WriteFile(configPath, []byte("base_url = [\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	_, _, listErr := writePlaneTestRunMutationCmd(t, newTagsListCmd, &rootFlags{configPath: configPath})
+	_, _, renameErr := writePlaneTestRunMutationCmd(t, newTagsRenameCmd, &rootFlags{configPath: configPath}, "--from", "foo", "--to", "bar")
+	if listErr == nil || renameErr == nil {
+		t.Fatalf("list error = %v, rename error = %v; want configuration errors", listErr, renameErr)
+	}
+	if got, want := ExitCode(listErr), 10; got != want {
+		t.Fatalf("tags list exit code = %d (%v), want %d", got, listErr, want)
+	}
+	if got, want := ExitCode(renameErr), ExitCode(listErr); got != want {
+		t.Fatalf("tags rename exit code = %d (%v), want tags list exit code %d", got, renameErr, want)
+	}
+	if renameErr.Error() != listErr.Error() {
+		t.Fatalf("tags rename error = %q, want tags list error %q", renameErr, listErr)
 	}
 }
 

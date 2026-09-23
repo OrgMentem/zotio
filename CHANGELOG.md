@@ -13,7 +13,10 @@ Notable changes to zotio. Format follows [Keep a Changelog](https://keepachangel
 - **`items tags add/remove --batch` preserves request-level error codes.**
   An HTTP 401 now exits 4 with authentication guidance instead of the generic
   mutation-incomplete exit 1. Unattributable responses retain their request
-  error details. Per-item conflicts still exit 1.
+  error details. Per-item conflicts still exit 1. A whole-request HTTP 409
+  now exits 5 with the failed batch envelope as the only JSON document; it
+  used to append a second document and, under `--idempotent`, report an
+  `already_exists` no-op with exit 0.
 - **Batch cancellation distinguishes unsent siblings from uncertain writes.**
   Cancellation before transport dispatch leaves untouched siblings
   `not_attempted`. A request that reaches the transport still reports its
@@ -69,11 +72,13 @@ Notable changes to zotio. Format follows [Keep a Changelog](https://keepachangel
   `SaveItems` error used to fail the whole batch. Items the session already
   committed now report `applied` with recovery detail; unconfirmed items
   report `conflict` with `committed: true`, so no retry blindly re-creates
-  them.
+  them. When every item is recovered, a requested target collection is still
+  filed; before, recovery skipped the filing and reported success.
 - **`tags rename` separates a write-route failure from an empty match.** A
   resolution failure now exits with the code for its error class and names
   the cause. Previously it reported "nothing matched", so a real error looked
-  like a successful no-op.
+  like a successful no-op. Setup errors keep their own code: an invalid
+  config exits 10, as it does for every other command, instead of 5.
 - **A failed requested attachment is visible in the `import apply`
   envelope.** The created parent carries its key, `committed: true`, the
   title and a created-but-unattached message, so the half-made item is

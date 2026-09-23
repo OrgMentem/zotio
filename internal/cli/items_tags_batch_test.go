@@ -180,6 +180,26 @@ func TestItemsTagsBatchSendsOneRequestWithPerItemVersions(t *testing.T) {
 	}
 }
 
+// Verify mode keeps planning reads but must not reject the synthetic write
+// response as an unattributable batch envelope.
+func TestItemsTagsBatchVerifyModeShortCircuitsWrite(t *testing.T) {
+	t.Setenv("ZOTIO_VERIFY", "1")
+	t.Setenv("ZOTIO_VERIFY_LIVE_HTTP", "")
+	keys := []string{"K1", "K2"}
+	b := newBatchTagServer(t, keys)
+
+	env, err := runBatchTagCmd(t, b, append([]string{"add", "--batch", "--tag", "sweep"}, keys...)...)
+	if err != nil {
+		t.Fatalf("verify-mode batch add: %v", err)
+	}
+	if !env.OK || env.Result == nil || env.Result.Summary.Applied != len(keys) {
+		t.Fatalf("envelope = %+v, want both simulated writes applied", env)
+	}
+	if b.getCount != len(keys) || len(b.posts) != 0 {
+		t.Fatalf("reads = %d, writes = %d; want %d planning reads and no writes", b.getCount, len(b.posts), len(keys))
+	}
+}
+
 // Attribution is the claim the whole design rests on: a rejected object must
 // land on its own item, as its own conflict, without disturbing its neighbours.
 func TestItemsTagsBatchAttributesRejectionToItsOwnItem(t *testing.T) {

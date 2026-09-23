@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"zotio/internal/client"
+	"zotio/internal/cliutil"
 	"zotio/internal/mutation"
 
 	"github.com/spf13/cobra"
@@ -243,6 +244,12 @@ func runItemsTagsMutation(cmd *cobra.Command, flags *rootFlags, operation, kind 
 	// failed status still uses the engine's exit contract.
 	if updater != nil {
 		if batchErr := updater.Err(); batchErr != nil {
+			// The mutation envelope already reports every item as failed.
+			// A request-level 409 is not an idempotent create and must not
+			// append another JSON document after that envelope.
+			if cliutil.ClassifyHTTPError(batchErr.Error()) == cliutil.HTTPErrConflict {
+				return apiErr(redactedAPIError(batchErr, batchErr.Error(), liveSecrets(flags), ""))
+			}
 			return classifyAPIError(batchErr, flags)
 		}
 	}

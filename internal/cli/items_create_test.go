@@ -931,6 +931,78 @@ func TestItemsCreateConnectorBatchSaveItemsErrorIsReconciled(t *testing.T) {
 	}
 }
 
+func TestItemsCreateConnectorRecoveredSaveFilesTarget(t *testing.T) {
+	const target = "C1234567"
+	created := []itemsCreateFixtureItem{
+		{key: "RECOVER1", title: "Recovered One"},
+		{key: "RECOVER2", title: "Recovered Two"},
+	}
+	for _, tc := range []struct {
+		name         string
+		surfaced     []itemsCreateFixtureItem
+		filingStatus int
+		wantFiling   int
+		wantError    string
+	}{
+		{name: "filed", surfaced: created, wantFiling: 1},
+		{name: "filing rejected", surfaced: created, filingStatus: http.StatusInternalServerError, wantFiling: 1, wantError: "retry filing only, do not re-create the item"},
+		{name: "unconfirmed item", surfaced: created[:1], wantError: "inspect Zotero before retrying"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			isolateItemsCreateConnectorEnv(t)
+			fixture := newItemsCreateConnectorFixture(t, tc.surfaced, tc.filingStatus)
+			fixture.saveStatus = http.StatusInternalServerError
+			flags := &rootFlags{
+				asJSON: true, yes: true, via: "connector", connectorTarget: target,
+				timeout: 5 * time.Second, maxChanges: -1,
+				configPath: testConfigFile(t, "http://127.0.0.1:23119/api/users/0"),
+			}
+			stdout, err := runItemsCreate(t, flags, "--items", fmt.Sprintf(
+				`[{"itemType":"journalArticle","title":%q,"collections":["COLLECT1"]},{"itemType":"journalArticle","title":%q}]`,
+				created[0].title, created[1].title))
+			if tc.wantError == "" {
+				if err != nil {
+					t.Fatalf("recovered save with target failed: %v; stdout=%s", err, stdout)
+				}
+			} else if err == nil || !strings.Contains(err.Error(), tc.wantError) {
+				t.Fatalf("error = %v, want %q; stdout=%s", err, tc.wantError, stdout)
+			}
+			if fixture.saveItems != 1 || fixture.updateSessions != tc.wantFiling {
+				t.Fatalf("saveItems = %d, updateSession = %d; want 1, %d", fixture.saveItems, fixture.updateSessions, tc.wantFiling)
+			}
+			if tc.wantFiling != 0 && (fixture.filedTarget != target || fixture.filedSession != fixture.saveSession || fixture.saveSession == "") {
+				t.Fatalf("filing target/session = %q/%q; want %q/%q", fixture.filedTarget, fixture.filedSession, target, fixture.saveSession)
+			}
+			var env mutation.Envelope
+			if decErr := json.Unmarshal([]byte(stdout), &env); decErr != nil {
+				t.Fatalf("decode mutation envelope: %v; stdout=%s", decErr, stdout)
+			}
+			decodeSingleJSONObject(t, stdout)
+			if env.Result == nil || env.Result.Summary.Applied != len(tc.surfaced) || env.Result.Summary.Conflicts != len(created)-len(tc.surfaced) {
+				t.Fatalf("result = %+v, want recovered items applied and unrecovered items conflicted", env.Result)
+			}
+			if tc.filingStatus != 0 {
+				for i, item := range env.Result.Items {
+					reason, ok := item.Reason.(map[string]any)
+					if item.Status != "applied" || item.Key != created[i].key || !ok ||
+						reason["recovered_after_save_error"] != true || reason["filing_failed"] != true || reason["target"] != target {
+						t.Fatalf("item %d = %+v, want recovered applied item with filing failure", i, item)
+					}
+					if saveError, _ := reason["save_error"].(string); !strings.Contains(saveError, "saveItems") {
+						t.Fatalf("item %d save_error = %v", i, reason["save_error"])
+					}
+					if filingError, _ := reason["filing_error"].(string); !strings.Contains(filingError, "updateSession: HTTP 500") {
+						t.Fatalf("item %d filing_error = %v", i, reason["filing_error"])
+					}
+					if message, _ := reason["message"].(string); !strings.Contains(message, "retry filing only") {
+						t.Fatalf("item %d message = %v, want retry-filing guidance", i, reason["message"])
+					}
+				}
+			}
+		})
+	}
+}
+
 // decodeSingleJSONObject fails unless stdout is exactly one JSON object. Two
 // objects would mean the command emitted a second, route-specific payload
 // alongside the mutation envelope.
