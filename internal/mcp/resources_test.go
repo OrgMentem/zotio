@@ -191,10 +191,10 @@ func firstResourceText(t *testing.T, result map[string]any) string {
 // (test-isolated) HOME so the template resource handlers have data to read.
 func seedStore(t *testing.T) {
 	t.Helper()
-	if err := os.MkdirAll(filepath.Dir(dbPath()), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(mustDBPath(t)), 0o755); err != nil {
 		t.Fatalf("mkdir: %v", err)
 	}
-	db, err := store.OpenWithContext(context.Background(), dbPath())
+	db, err := store.OpenWithContext(context.Background(), mustDBPath(t))
 	if err != nil {
 		t.Fatalf("open store: %v", err)
 	}
@@ -371,10 +371,10 @@ func TestArchiveStatusClassifiesOnlyAbsentStoreAsUninitialized(t *testing.T) {
 
 	t.Run("invalid sqlite", func(t *testing.T) {
 		t.Setenv("HOME", t.TempDir())
-		if err := os.MkdirAll(filepath.Dir(dbPath()), 0o755); err != nil {
+		if err := os.MkdirAll(filepath.Dir(mustDBPath(t)), 0o755); err != nil {
 			t.Fatalf("mkdir: %v", err)
 		}
-		if err := os.WriteFile(dbPath(), []byte("not a sqlite database"), 0o600); err != nil {
+		if err := os.WriteFile(mustDBPath(t), []byte("not a sqlite database"), 0o600); err != nil {
 			t.Fatalf("write invalid store: %v", err)
 		}
 		status, err := archiveStatus(context.Background())
@@ -392,10 +392,10 @@ func TestArchiveStatusClassifiesOnlyAbsentStoreAsUninitialized(t *testing.T) {
 // state (which would hide DB corruption or permission problems).
 func TestArchiveStatusSurfacesReadErrors(t *testing.T) {
 	t.Setenv("HOME", t.TempDir()) // isolate dbPath() from the real store
-	if err := os.MkdirAll(filepath.Dir(dbPath()), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(mustDBPath(t)), 0o755); err != nil {
 		t.Fatalf("mkdir: %v", err)
 	}
-	db, err := store.OpenWithContext(context.Background(), dbPath())
+	db, err := store.OpenWithContext(context.Background(), mustDBPath(t))
 	if err != nil {
 		t.Fatalf("open store: %v", err)
 	}
@@ -431,10 +431,10 @@ func TestArchiveStatusSurfacesReadErrors(t *testing.T) {
 
 func TestArchiveStatusCancellationStopsBeforeStateReads(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
-	if err := os.MkdirAll(filepath.Dir(dbPath()), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(mustDBPath(t)), 0o755); err != nil {
 		t.Fatalf("mkdir: %v", err)
 	}
-	db, err := store.OpenWithContext(context.Background(), dbPath())
+	db, err := store.OpenWithContext(context.Background(), mustDBPath(t))
 	if err != nil {
 		t.Fatalf("open store: %v", err)
 	}
@@ -463,7 +463,7 @@ func TestArchiveStatusCancellationStopsBeforeStateReads(t *testing.T) {
 // request context is dropped.
 func TestArchiveStatusStateReadsHonorCancelledContext(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
-	db, err := store.OpenWithContext(context.Background(), dbPath())
+	db, err := store.OpenWithContext(context.Background(), mustDBPath(t))
 	if err != nil {
 		t.Fatalf("open store: %v", err)
 	}
@@ -474,7 +474,7 @@ func TestArchiveStatusStateReadsHonorCancelledContext(t *testing.T) {
 		t.Fatalf("close store: %v", err)
 	}
 
-	ro, err := store.OpenReadOnlyDiagnosticContext(context.Background(), dbPath())
+	ro, err := store.OpenReadOnlyDiagnosticContext(context.Background(), mustDBPath(t))
 	if err != nil {
 		t.Fatalf("open diagnostic db: %v", err)
 	}
@@ -505,10 +505,10 @@ func TestArchiveStatusStateReadsHonorCancelledContext(t *testing.T) {
 
 func TestDiagnosticResourcesReadPartialSchemaButStrictReadsDoNot(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
-	if err := os.MkdirAll(filepath.Dir(dbPath()), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(mustDBPath(t)), 0o755); err != nil {
 		t.Fatalf("mkdir: %v", err)
 	}
-	db, err := store.OpenWithContext(context.Background(), dbPath())
+	db, err := store.OpenWithContext(context.Background(), mustDBPath(t))
 	if err != nil {
 		t.Fatalf("open store: %v", err)
 	}
@@ -557,10 +557,10 @@ func TestDiagnosticResourcesReadPartialSchemaButStrictReadsDoNot(t *testing.T) {
 
 func TestCollectionManifestPropagatesStorageError(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
-	if err := os.MkdirAll(filepath.Dir(dbPath()), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(mustDBPath(t)), 0o755); err != nil {
 		t.Fatalf("mkdir: %v", err)
 	}
-	db, err := store.OpenWithContext(context.Background(), dbPath())
+	db, err := store.OpenWithContext(context.Background(), mustDBPath(t))
 	if err != nil {
 		t.Fatalf("open store: %v", err)
 	}

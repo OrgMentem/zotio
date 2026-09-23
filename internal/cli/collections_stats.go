@@ -124,6 +124,7 @@ func newCollectionsStatsCmd(flags *rootFlags) *cobra.Command {
 		Use:         "stats <collectionKey>",
 		Short:       "Show analytics for a collection (item count, PDF coverage, year range, top journals)",
 		Annotations: map[string]string{"mcp:read-only": "true"},
+		Args:        cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if len(args) == 0 {
 				return cmd.Help()

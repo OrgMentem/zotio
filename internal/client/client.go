@@ -249,12 +249,10 @@ func (c *Client) requestHTTPClient() *http.Client {
 	return &client
 }
 func New(cfg *config.Config, timeout time.Duration, rateLimit float64) *Client {
-	homeDir, homeErr := os.UserHomeDir()
-	cacheDir := filepath.Join(homeDir, ".cache", "zotio")
-	if homeErr != nil || homeDir == "" {
-		fallback := filepath.Join(os.TempDir(), "zotio")
-		fmt.Fprintf(os.Stderr, "warning: could not resolve home directory for cache (%v); using %s\n", homeErr, fallback)
-		cacheDir = fallback
+	cacheDir, err := cliutil.CacheDir()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "warning: could not resolve cache directory (%v); response cache disabled\n", err)
+		cacheDir = ""
 	}
 	httpClient := newHTTPClient(timeout, nil)
 	baseURL := sanitizeClientBaseURL(cfg.BaseURL)

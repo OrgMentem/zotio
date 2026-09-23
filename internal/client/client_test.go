@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -121,6 +123,98 @@ func TestWriteRouteResolverErrorSurfacesRealCause(t *testing.T) {
 	c.ResolveWriteBase = func(context.Context) (string, error) { return writeSrv.URL, nil }
 	if _, _, err := c.Post("/items", []any{}); err != nil {
 		t.Fatalf("second POST after resolver recovers: %v", err)
+	}
+}
+
+func TestCacheDisabledWithoutPerUserDirectory(t *testing.T) {
+	tempRoot := filepath.Join(t.TempDir(), "isolated-temp")
+	if err := os.Mkdir(tempRoot, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("TMPDIR", tempRoot)
+	t.Setenv("TMP", tempRoot)
+	t.Setenv("TEMP", tempRoot)
+	for _, name := range []string{"HOME", "XDG_CACHE_HOME", "LocalAppData", "USERPROFILE", "ZOTERO_CACHE_DIR", "ZOTERO_HOME"} {
+		t.Setenv(name, "")
+		if err := os.Unsetenv(name); err != nil {
+			t.Fatalf("unset %s: %v", name, err)
+		}
+	}
+	if got := os.TempDir(); got != tempRoot {
+		t.Fatalf("temp directory = %q, want %q", got, tempRoot)
+	}
+
+	var hits atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprintf(w, `{"hit":%d}`, hits.Add(1))
+	}))
+	defer server.Close()
+	c := clientTestNewClient(t, server.URL)
+
+	// This is a valid entry at the former process-shared cache path. It must
+	// never become an API response, even when no generation marker exists.
+	sharedCache := filepath.Join(tempRoot, "zotio")
+	itemsDir := filepath.Join(sharedCache, "items")
+	if err := os.MkdirAll(itemsDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	plant := filepath.Join(itemsDir, c.cacheKey("/items", nil, nil)+".json")
+	if err := os.WriteFile(plant, encodeCacheEntry(0, []byte(`{"hit":999}`)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	for i, path := range []string{"/items", "/items", "/tags", "/tags"} {
+		body, err := c.Get(path, nil)
+		if err != nil {
+			t.Fatalf("GET %s: %v", path, err)
+		}
+		if want := fmt.Sprintf(`{"hit":%d}`, i+1); string(body) != want {
+			t.Fatalf("GET %s = %s, want live response %s", path, body, want)
+		}
+	}
+	if got := hits.Load(); got != 4 {
+		t.Fatalf("server saw %d GET requests, want 4", got)
+	}
+	if _, err := os.Stat(filepath.Join(sharedCache, "tags")); !os.IsNotExist(err) {
+		t.Fatalf("client wrote a cache entry in shared temp directory: %v", err)
+	}
+	if _, err := os.Stat(sharedCache + ".generation"); !os.IsNotExist(err) {
+		t.Fatalf("client wrote a generation marker in shared temp directory: %v", err)
+	}
+}
+
+func TestCacheUsesXDGOverrideWithoutHome(t *testing.T) {
+	t.Setenv("HOME", "")
+	t.Setenv("ZOTERO_CACHE_DIR", "")
+	t.Setenv("ZOTERO_HOME", "")
+	tempRoot := t.TempDir()
+	t.Setenv("TMPDIR", tempRoot)
+	t.Setenv("TMP", tempRoot)
+	t.Setenv("TEMP", tempRoot)
+	xdgRoot := filepath.Join(tempRoot, "xdg-cache")
+	t.Setenv("XDG_CACHE_HOME", xdgRoot)
+
+	var hits atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprintf(w, `{"hit":%d}`, hits.Add(1))
+	}))
+	defer server.Close()
+	c := clientTestNewClient(t, server.URL)
+	for range 2 {
+		body, err := c.Get("/items", nil)
+		if err != nil {
+			t.Fatalf("GET /items: %v", err)
+		}
+		if string(body) != `{"hit":1}` {
+			t.Fatalf("GET /items = %s, want cached first response", body)
+		}
+	}
+	if got := hits.Load(); got != 1 {
+		t.Fatalf("server saw %d GET requests, want 1", got)
+	}
+	cacheFile := filepath.Join(xdgRoot, "zotio", "items", c.cacheKey("/items", nil, nil)+".json")
+	if _, err := os.Stat(cacheFile); err != nil {
+		t.Fatalf("cache entry absent from XDG override: %v", err)
 	}
 }
 

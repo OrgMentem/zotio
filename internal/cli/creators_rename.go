@@ -42,6 +42,7 @@ field.`,
 			"zotio:requires-allow-destructive": "false",
 			"zotio:default-max-changes":        "500",
 		},
+		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if flagFrom == "" {
 				return usageErr(fmt.Errorf("required flag %q not set", "from"))

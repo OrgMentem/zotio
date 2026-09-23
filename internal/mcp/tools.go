@@ -85,27 +85,24 @@ func RegisterTools(s *server.MCPServer) {
 // group-scoped and demo-scoped path as the CLI's native sql/search/archive
 // commands (see cli.ApplyGroupScopeFromEnv, called at server startup to
 // apply the ZOTERO_GROUP fallback that cobra's PersistentPreRunE would
-// otherwise apply). On error, fall back to the same data-dir computation
-// cli.defaultDBPath uses so behavior on a broken environment is no worse
-// than before.
-func dbPath() string {
+// otherwise apply). If the CLI cannot resolve its path, retry the data-dir
+// and home resolvers without inventing a CWD-relative or shared temp path.
+func dbPath() (string, error) {
 	if path, err := cli.DefaultDBPath("zotio"); err == nil {
-		return path
+		return path, nil
 	}
 	dataDir, err := cliutil.KindDir(cliutil.PathKindData)
 	if err != nil {
 		home, homeErr := os.UserHomeDir()
 		if homeErr != nil || home == "" {
-			// Neither resolver succeeded and we cannot determine a home
-			// directory — do not fabricate a CWD-relative path that would
-			// silently open/seed a different database.
-			// Keep the same error chain shape as cli.defaultDBPathFor so
-			// callers that open the path surface a consistent "opening
-			// database" error rather than a confusing "no such table".
-			dataDir = filepath.Join(os.TempDir(), cliutil.AppName())
-		} else {
-			dataDir = filepath.Join(home, ".local", "share", cliutil.AppName())
+			// A persistent mirror needs a private, resolvable home.
+			// Neither a CWD-relative path nor a shared temp path is safe.
+			if homeErr == nil {
+				homeErr = fmt.Errorf("empty home directory")
+			}
+			return "", fmt.Errorf("resolving data directory: %w; and home directory: %w", err, homeErr)
 		}
+		dataDir = filepath.Join(home, ".local", "share", cliutil.AppName())
 	}
 	// Keep the group suffix on the fallback too: degrading a group-scoped
 	// server to the personal mirror would answer a group library from the
@@ -114,7 +111,7 @@ func dbPath() string {
 	if group := cli.ActiveGroupID(); group != "" {
 		file = "data-group-" + group + ".db"
 	}
-	return filepath.Join(dataDir, file)
+	return filepath.Join(dataDir, file), nil
 }
 
 func handleSearch(ctx context.Context, req mcplib.CallToolRequest) (*mcplib.CallToolResult, error) {
@@ -133,7 +130,11 @@ func handleSearch(ctx context.Context, req mcplib.CallToolRequest) (*mcplib.Call
 		limit = int(v)
 	}
 
-	db, err := store.OpenReadOnlyContext(ctx, dbPath())
+	path, err := dbPath()
+	if err != nil {
+		return mcplib.NewToolResultError(fmt.Sprintf("opening database: %v", err)), nil
+	}
+	db, err := store.OpenReadOnlyContext(ctx, path)
 	if err != nil {
 		return mcplib.NewToolResultError(fmt.Sprintf("opening database: %v", err)), nil
 	}
@@ -308,7 +309,11 @@ func handleSQL(ctx context.Context, req mcplib.CallToolRequest) (*mcplib.CallToo
 		return mcplib.NewToolResultError(err.Error()), nil
 	}
 
-	db, err := store.OpenReadOnlyContext(ctx, dbPath())
+	path, err := dbPath()
+	if err != nil {
+		return mcplib.NewToolResultError(fmt.Sprintf("opening database: %v", err)), nil
+	}
+	db, err := store.OpenReadOnlyContext(ctx, path)
 	if err != nil {
 		return mcplib.NewToolResultError(fmt.Sprintf("opening database: %v", err)), nil
 	}

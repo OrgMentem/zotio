@@ -93,7 +93,14 @@ func TestDBPathIsRaceFreeAgainstConcurrentGroupScopeWrites(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			for range iterations {
-				p := dbPath()
+				p, pathErr := dbPath()
+				if pathErr != nil {
+					select {
+					case errCh <- "dbPath error: " + pathErr.Error():
+					default:
+					}
+					continue
+				}
 				if p == "" {
 					select {
 					case errCh <- "dbPath() returned empty string":

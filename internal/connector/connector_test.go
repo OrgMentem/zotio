@@ -769,7 +769,10 @@ func TestConnectorSuccessBodyLimitExceeded(t *testing.T) {
 	}))
 	defer server.Close()
 
-	c := New(server.URL+"/connector", time.Second)
+	// The server streams 32 MiB past the limit. The timeout only has to
+	// outlast that transfer; a one-second budget raced it under -race when
+	// the package shared the machine with the rest of the suite.
+	c := New(server.URL+"/connector", 30*time.Second)
 	err := c.SaveItems(context.Background(), "session", "", []map[string]any{{"id": "id"}})
 	if err == nil {
 		t.Fatal("SaveItems returned nil error for oversized success body")

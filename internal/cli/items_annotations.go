@@ -19,6 +19,7 @@ func newItemsAnnotationsCmd(flags *rootFlags) *cobra.Command {
 		Use:         "annotations <itemKey>",
 		Short:       "List annotation children for an item",
 		Annotations: map[string]string{"zotio:endpoint": "items.annotations", "zotio:method": "GET", "zotio:path": "/items/{itemKey}/children", "mcp:read-only": "true"},
+		Args:        cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if len(args) == 0 {
 				return cmd.Help()

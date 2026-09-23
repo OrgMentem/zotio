@@ -55,6 +55,7 @@ Records are posted in batches, so a record Zotero rejects cannot un-submit the
 records sent alongside it. Every record therefore reports its own outcome
 instead of the run stopping at the first rejection.`,
 		Annotations: map[string]string{"zotio:method": "POST", "zotio:path": "/items"},
+		Args:        cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if len(args) == 0 {
 				return cmd.Help()

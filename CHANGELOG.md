@@ -28,12 +28,33 @@ Notable changes to zotio. Format follows [Keep a Changelog](https://keepachangel
   the schema version matches.** The fast path previously validated the cache
   but reused the baseline's per-type fields and creator types, hiding changes
   in another valid cache.
-- **Single-target commands refuse surplus positional arguments.** `items get`,
-  `items open`, `items update`, `items restore`, `collections get`,
-  `collections update`, `collections move`, `collections delete`,
-  `searches get` and `tags get` now fail before any request when given more
-  than one key. Previously they acted on the first key and dropped the rest
-  in silence.
+- **Commands refuse positional arguments they would ignore.** Every command
+  that takes one key or identifier now fails before any request when given
+  more than one: `items get/open/update/restore/children/annotations/cite/
+  collections-of/file/fulltext/note-template/summarize`, `collections get/
+  update/move/delete/items/tags/stats/gaps/export/subcollections`,
+  `searches get/run/materialize`, `tags get`, `import doi/url/pmid/arxiv/
+  isbn/file` and `vault resolve`. Flag-only commands (`creators rename`,
+  `items new`, `tags rename`, `vault conflicts/pull/push/sync`) refuse any
+  positional token. Previously they acted on the first key and dropped the
+  rest in silence, and the `import` family did so on a write.
+- **`search` searches every word you pass.** `zotio search machine learning`
+  sent the query `machine` and dropped `learning`. It now joins the tokens,
+  as `annotations search` already did.
+- **The auto data source no longer falls back on text in a server response.**
+  An API error whose body contained `connection refused` or `i/o timeout`
+  was read as a transport failure, so the command served the local mirror
+  and exited 0. It now returns the API error and its exit code. A real
+  refused connection or timeout still falls back.
+- **The response cache is disabled, not shared, when no per-user cache
+  directory resolves.** It used `/tmp/zotio`, which any local user can
+  pre-create and fill with entries zotio served as Zotero responses. The
+  cache now resolves through the same path rules as every other zotio
+  directory, so `ZOTERO_CACHE_DIR` and `XDG_CACHE_HOME` apply to it; the
+  default stays `~/.cache/zotio`.
+- **The MCP server refuses to open the mirror when no data directory
+  resolves.** It placed `data.db` under `/tmp/zotio` instead. Search, SQL
+  and every resource read now return an error naming the unresolved paths.
 - **`items create --via connector` refuses a non-array body instead of
   writing through the Web API.** A silent fall back sent bytes to Zotero's
   cloud when the operator asked for the desktop's own file store. A single
@@ -117,6 +138,12 @@ Notable changes to zotio. Format follows [Keep a Changelog](https://keepachangel
   `https://api.zotero.org./users/0` passed base-URL validation but failed the
   authentication gate, so every request went out unauthenticated and returned
   403. Both checks now canonicalise the host the same way.
+- **`tags inventory` counts and classifies tags correctly.** Library tag names
+  that differ only in surrounding whitespace overwrote each other's count
+  instead of summing, so the library total came out low. `collection_only`
+  compared tag rows, not items, so an item filed in two collections could
+  mask unfiled use of the same tag, or mark a fully filed tag as unfiled. It
+  now compares distinct tagged items in scope against the library count.
 
 ## [0.26.0] — 2026-09-15
 

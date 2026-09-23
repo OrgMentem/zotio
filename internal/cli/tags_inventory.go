@@ -39,6 +39,7 @@ func newTagsInventoryCmd(flags *rootFlags) *cobra.Command {
 
 			scopedRows, err := db.QueryRaw(`
 SELECT
+	i.id AS item_key,
 	json_each_tags.value AS tag_json,
 	json_each_colls.value AS coll_key_json
 FROM resources i,
@@ -78,10 +79,12 @@ func buildTagInventory(scopedRows, libraryRows []map[string]any, collection stri
 		if tag == "" {
 			continue
 		}
-		libraryCounts[tag] = sqlIntValue(row["total"])
+		libraryCounts[tag] += sqlIntValue(row["total"])
 	}
 
 	collectionCounts := map[string]int{}
+	itemCounts := map[string]int{}
+	seenItems := map[struct{ tag, key string }]struct{}{}
 	for _, row := range scopedRows {
 		tag := tagNameFromInventoryJSON(sqlStringValue(row["tag_json"]))
 		collKey := collectionKeyFromInventoryJSON(sqlStringValue(row["coll_key_json"]))
@@ -92,6 +95,11 @@ func buildTagInventory(scopedRows, libraryRows []map[string]any, collection stri
 			continue
 		}
 		collectionCounts[tag]++
+		item := struct{ tag, key string }{tag, sqlStringValue(row["item_key"])}
+		if _, seen := seenItems[item]; !seen {
+			seenItems[item] = struct{}{}
+			itemCounts[tag]++
+		}
 	}
 
 	out := make([]tagInventoryItem, 0, len(collectionCounts))
@@ -101,7 +109,7 @@ func buildTagInventory(scopedRows, libraryRows []map[string]any, collection stri
 			Tag:             tag,
 			CollectionCount: count,
 			LibraryCount:    libraryCount,
-			CollectionOnly:  count == libraryCount,
+			CollectionOnly:  itemCounts[tag] == libraryCount,
 		})
 	}
 	sort.Slice(out, func(i, j int) bool {

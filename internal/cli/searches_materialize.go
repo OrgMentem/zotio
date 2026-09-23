@@ -56,12 +56,10 @@ func newSearchesMaterializeCmd(flags *rootFlags) *cobra.Command {
 			"zotio:requires-allow-destructive": "false",
 			"zotio:default-max-changes":        "500",
 		},
+		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if len(args) == 0 {
 				return cmd.Help()
-			}
-			if len(args) > 1 {
-				return fmt.Errorf("accepts 1 arg(s), received %d", len(args))
 			}
 			if toCollection == "" {
 				return fmt.Errorf("required flag %q not set", "to")

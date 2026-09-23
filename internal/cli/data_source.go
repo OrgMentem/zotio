@@ -12,6 +12,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"zotio/internal/client"
@@ -32,7 +33,11 @@ func isNetworkError(err error) bool {
 	if errors.Is(err, context.Canceled) {
 		return false
 	}
-	if errors.Is(err, context.DeadlineExceeded) {
+	if errors.Is(err, context.DeadlineExceeded) ||
+		errors.Is(err, syscall.ECONNREFUSED) ||
+		errors.Is(err, syscall.ENETUNREACH) ||
+		errors.Is(err, syscall.EHOSTUNREACH) ||
+		errors.Is(err, syscall.ETIMEDOUT) {
 		return true
 	}
 	var urlErr *url.Error
@@ -55,13 +60,9 @@ func isNetworkError(err error) bool {
 	if As(err, &timeoutErr) && timeoutErr.Timeout() {
 		return true
 	}
-	// Check for common network error strings
-	msg := err.Error()
-	return strings.Contains(msg, "connection refused") ||
-		strings.Contains(msg, "no such host") ||
-		strings.Contains(msg, "network is unreachable") ||
-		strings.Contains(msg, "i/o timeout") ||
-		strings.Contains(msg, "TLS handshake timeout")
+	// APIError contains only an HTTP status and response body; it cannot wrap
+	// a transport error. Never inspect its server-controlled text for markers.
+	return false
 }
 
 // openStoreForRead opens the local SQLite store for reading.
