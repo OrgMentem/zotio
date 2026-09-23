@@ -192,6 +192,7 @@ var capabilityOverrides = map[string]capabilityEntry{
 	"import arxiv":         connectorCreateCapability,
 	"import isbn":          connectorCreateCapability,
 	"import discover":      {Operation: "read", Requires: []string{preconditionSyncedStore}},
+	"import monitor":       {Operation: "read", Requires: []string{preconditionSyncedStore}},
 	"import pdf":           {Operation: "write", WriteTarget: "desktop_connector", Requires: []string{preconditionDesktopConnector}},
 	"import targets":       {Operation: "read", Requires: []string{preconditionDesktopConnector}},
 	"import translators":   {Operation: "read", Requires: []string{preconditionDesktopConnector}},

@@ -15,10 +15,17 @@ import (
 const importManifestSchemaVersion = 2
 
 type importDiscovery struct {
-	Direction   string   `json:"direction,omitempty"`
-	Provider    string   `json:"provider,omitempty"`
-	CitedByKeys []string `json:"cited_by_keys,omitempty"`
-	Count       int      `json:"count,omitempty"`
+	Direction       string   `json:"direction,omitempty"`
+	Provider        string   `json:"provider,omitempty"`
+	CitedByKeys     []string `json:"cited_by_keys,omitempty"`
+	Count           int      `json:"count,omitempty"`
+	Mode            string   `json:"mode,omitempty"`
+	Authors         []string `json:"authors,omitempty"`
+	Query           string   `json:"query,omitempty"`
+	Since           string   `json:"since,omitempty"`
+	Until           string   `json:"until,omitempty"`
+	OpenAlexWorkID  string   `json:"openalex_work_id,omitempty"`
+	PublicationDate string   `json:"publication_date,omitempty"`
 }
 
 // importManifestEntry is one proposed import action a user can review and edit

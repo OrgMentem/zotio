@@ -229,6 +229,20 @@ Notable changes to zotio. Format follows [Keep a Changelog](https://keepachangel
   (`skipped_child_keys`) instead of sending a collection change Zotero
   rejects.
 
+### Added
+
+- **`import monitor` finds new work by author or topic.** It searches
+  OpenAlex for works published since `--since` (optionally until `--until`)
+  by one or more `--author` (ORCID or OpenAlex author ID) and/or a `--query`,
+  drops what the library already holds by DOI and then by normalized title,
+  and writes the same reviewable manifest `import resolve` and `import apply`
+  consume, with each entry's OpenAlex work ID, publication date and matching
+  author or query under `discovery`. It stores no state: schedule it with
+  `--since` set to the last run. Works without a DOI are counted and left
+  out, because `import resolve` cannot fetch them. It needs the synced
+  mirror for de-duplication (exit 9 without one), and a provider failure
+  exits 5 and writes no manifest; an empty feed is a valid, empty manifest.
+
 ## [0.26.0] — 2026-09-15
 
 ### Changed — breaking
