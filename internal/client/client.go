@@ -249,10 +249,17 @@ func (c *Client) requestHTTPClient() *http.Client {
 	return &client
 }
 func New(cfg *config.Config, timeout time.Duration, rateLimit float64) *Client {
-	cacheDir, err := cliutil.CacheDir()
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "warning: could not resolve cache directory (%v); response cache disabled\n", err)
-		cacheDir = ""
+	home, err := os.UserHomeDir()
+	cacheDir := ""
+	switch {
+	case err != nil:
+		fmt.Fprintf(os.Stderr, "warning: could not resolve home directory for cache (%v); response cache disabled\n", err)
+	case home == "":
+		fmt.Fprintln(os.Stderr, "warning: home directory is empty; response cache disabled")
+	case !filepath.IsAbs(home):
+		fmt.Fprintf(os.Stderr, "warning: home directory %q is not absolute; response cache disabled\n", home)
+	default:
+		cacheDir = filepath.Join(home, ".cache", "zotio")
 	}
 	httpClient := newHTTPClient(timeout, nil)
 	baseURL := sanitizeClientBaseURL(cfg.BaseURL)
@@ -1374,7 +1381,7 @@ func (c *Client) doRequestOnBase(ctx context.Context, baseOverride, method, path
 		// was routed to the local API only because write-route resolution failed,
 		// wrap the local rejection with the resolver error so the diagnosis names
 		// the real cause instead of "local API is read-only".
-		if isLocalWriteRejection(apiErr.Body) {
+		if isMutatingMethod(method) && isLocalWriteRejection(apiErr.Body) {
 			c.writeRouteMu.RLock()
 			routeErr := c.writeRouteErr
 			hasRoute := c.WriteBaseURL != ""

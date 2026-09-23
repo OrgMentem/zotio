@@ -44,17 +44,21 @@ Notable changes to zotio. Format follows [Keep a Changelog](https://keepachangel
 - **The auto data source no longer falls back on text in a server response.**
   An API error whose body contained `connection refused` or `i/o timeout`
   was read as a transport failure, so the command served the local mirror
-  and exited 0. It now returns the API error and its exit code. A real
-  refused connection or timeout still falls back.
-- **The response cache is disabled, not shared, when no per-user cache
-  directory resolves.** It used `/tmp/zotio`, which any local user can
-  pre-create and fill with entries zotio served as Zotero responses. The
-  cache now resolves through the same path rules as every other zotio
-  directory, so `ZOTERO_CACHE_DIR` and `XDG_CACHE_HOME` apply to it; the
-  default stays `~/.cache/zotio`.
-- **The MCP server refuses to open the mirror when no data directory
-  resolves.** It placed `data.db` under `/tmp/zotio` instead. Search, SQL
-  and every resource read now return an error naming the unresolved paths.
+  and exited 0. A read whose body contained a local write-rejection string
+  could do the same after a failed write-route lookup, because the write
+  diagnostic, and its transport error, was attached to reads too. Both now
+  return the API error and its exit code. A real refused connection or
+  timeout still falls back.
+- **The response cache is disabled, not shared, when no home directory
+  resolves.** It used `/tmp/zotio`, which any local user can pre-create and
+  fill with entries zotio served as Zotero responses. A missing, empty or
+  relative `HOME` now turns the cache off with a warning. The location is
+  unchanged at `~/.cache/zotio`.
+- **The MCP server resolves the mirror exactly as the CLI does.** When no
+  data directory resolved it placed `data.db` under `/tmp/zotio`, and in
+  demo mode without `HOME` it opened the real `data.db` instead of
+  `demo.db`. Search, SQL and every resource read now return the CLI's
+  resolution error.
 - **`items create --via connector` refuses a non-array body instead of
   writing through the Web API.** A silent fall back sent bytes to Zotero's
   cloud when the operator asked for the desktop's own file store. A single
@@ -138,12 +142,16 @@ Notable changes to zotio. Format follows [Keep a Changelog](https://keepachangel
   `https://api.zotero.org./users/0` passed base-URL validation but failed the
   authentication gate, so every request went out unauthenticated and returned
   403. Both checks now canonicalise the host the same way.
-- **`tags inventory` counts and classifies tags correctly.** Library tag names
-  that differ only in surrounding whitespace overwrote each other's count
-  instead of summing, so the library total came out low. `collection_only`
-  compared tag rows, not items, so an item filed in two collections could
-  mask unfiled use of the same tag, or mark a fully filed tag as unfiled. It
-  now compares distinct tagged items in scope against the library count.
+- **`tags inventory` counts and classifies tags correctly.** `library_count`
+  counted tag rows, so whitespace variants of one tag on one item counted
+  twice, variants on different items overwrote each other's totals, and
+  tagged attachments, notes and annotations inflated it even though they can
+  never sit in a collection. `collection_only` compared item-collection rows
+  against that total, so an item filed in two collections could mask
+  unfiled use of the tag, or a fully filed tag was reported as used
+  elsewhere. `library_count` is now the number of distinct regular items
+  carrying the tag, and `collection_only` compares distinct items in scope
+  against it. `collection_count` is unchanged.
 
 ## [0.26.0] — 2026-09-15
 

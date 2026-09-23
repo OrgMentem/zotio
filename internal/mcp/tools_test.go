@@ -715,6 +715,27 @@ func TestDBPathRejectsUnresolvedHome(t *testing.T) {
 	}
 }
 
+// Demo mode resolves demo.db from HOME alone. With HOME unset but a data
+// directory override present, the CLI refuses; MCP used to retry the data
+// directory on its own and hand search and sql the operator's real mirror.
+func TestDBPathInDemoModeNeverFallsBackToTheRealMirror(t *testing.T) {
+	dataDir := t.TempDir()
+	t.Setenv("HOME", "")
+	t.Setenv("USER", "")
+	t.Setenv("ZOTERO_HOME", "")
+	t.Setenv("XDG_DATA_HOME", "")
+	t.Setenv("ZOTERO_DATA_DIR", dataDir)
+	t.Setenv("ZOTIO_DEMO", "1")
+
+	path, err := dbPath()
+	if err == nil {
+		t.Fatalf("dbPath() = %q, nil; want the demo resolution error, not a path under %s", path, dataDir)
+	}
+	if !strings.Contains(err.Error(), "demo db") {
+		t.Errorf("dbPath() error = %v, want the CLI's demo resolution error", err)
+	}
+}
+
 func TestMCPStoreReadsSurfaceUnresolvedHome(t *testing.T) {
 	t.Setenv("HOME", "")
 	t.Setenv("USER", "")

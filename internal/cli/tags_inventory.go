@@ -11,6 +11,9 @@ import (
 	"github.com/spf13/cobra"
 )
 
+// tagInventoryItem counts collection_count as tag occurrences across selected
+// collection memberships, and library_count as distinct eligible tagged items.
+// collection_only reports whether every eligible tagged item is in that scope.
 type tagInventoryItem struct {
 	Tag             string `json:"tag"`
 	CollectionCount int    `json:"collection_count"`
@@ -51,10 +54,10 @@ WHERE i.resource_type='items'
 				return fmt.Errorf("querying collection tag usage: %w", err)
 			}
 			libraryRows, err := db.QueryRaw(`
-SELECT json_extract(t.value,'$.tag') AS tag_name, COUNT(*) AS total
-FROM resources, json_each(json_extract(data,'$.data.tags')) AS t
-WHERE resource_type='items'
-GROUP BY tag_name`)
+SELECT i.id AS item_key, t.value AS tag_json
+FROM resources i, json_each(json_extract(i.data,'$.data.tags')) AS t
+WHERE i.resource_type='items'
+	AND json_extract(i.data,'$.data.itemType') NOT IN ('attachment','note','annotation')`)
 			if err != nil {
 				return fmt.Errorf("querying library tag usage: %w", err)
 			}
@@ -74,12 +77,17 @@ GROUP BY tag_name`)
 
 func buildTagInventory(scopedRows, libraryRows []map[string]any, collection string) []tagInventoryItem {
 	libraryCounts := make(map[string]int, len(libraryRows))
+	seenLibraryItems := map[struct{ tag, key string }]struct{}{}
 	for _, row := range libraryRows {
-		tag := strings.TrimSpace(sqlStringValue(row["tag_name"]))
+		tag := tagNameFromInventoryJSON(sqlStringValue(row["tag_json"]))
 		if tag == "" {
 			continue
 		}
-		libraryCounts[tag] += sqlIntValue(row["total"])
+		item := struct{ tag, key string }{tag, sqlStringValue(row["item_key"])}
+		if _, seen := seenLibraryItems[item]; !seen {
+			seenLibraryItems[item] = struct{}{}
+			libraryCounts[tag]++
+		}
 	}
 
 	collectionCounts := map[string]int{}

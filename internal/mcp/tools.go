@@ -8,12 +8,10 @@ import (
 	"fmt"
 	"math"
 	"os"
-	"path/filepath"
 	"strings"
 	"time"
 
 	"zotio/internal/cli"
-	"zotio/internal/cliutil"
 	"zotio/internal/mcp/bound"
 	"zotio/internal/mcp/cobratree"
 	"zotio/internal/store"
@@ -85,33 +83,12 @@ func RegisterTools(s *server.MCPServer) {
 // group-scoped and demo-scoped path as the CLI's native sql/search/archive
 // commands (see cli.ApplyGroupScopeFromEnv, called at server startup to
 // apply the ZOTERO_GROUP fallback that cobra's PersistentPreRunE would
-// otherwise apply). If the CLI cannot resolve its path, retry the data-dir
-// and home resolvers without inventing a CWD-relative or shared temp path.
+// otherwise apply). There is deliberately no fallback of its own: a second
+// resolver drifts from the CLI's (in demo mode it opened the real data.db
+// instead of demo.db), and a persistent mirror must never land in a shared
+// temp directory. A resolution failure is returned to the caller.
 func dbPath() (string, error) {
-	if path, err := cli.DefaultDBPath("zotio"); err == nil {
-		return path, nil
-	}
-	dataDir, err := cliutil.KindDir(cliutil.PathKindData)
-	if err != nil {
-		home, homeErr := os.UserHomeDir()
-		if homeErr != nil || home == "" {
-			// A persistent mirror needs a private, resolvable home.
-			// Neither a CWD-relative path nor a shared temp path is safe.
-			if homeErr == nil {
-				homeErr = fmt.Errorf("empty home directory")
-			}
-			return "", fmt.Errorf("resolving data directory: %w; and home directory: %w", err, homeErr)
-		}
-		dataDir = filepath.Join(home, ".local", "share", cliutil.AppName())
-	}
-	// Keep the group suffix on the fallback too: degrading a group-scoped
-	// server to the personal mirror would answer a group library from the
-	// wrong database, which is the failure this resolver exists to prevent.
-	file := "data.db"
-	if group := cli.ActiveGroupID(); group != "" {
-		file = "data-group-" + group + ".db"
-	}
-	return filepath.Join(dataDir, file), nil
+	return cli.DefaultDBPath("zotio")
 }
 
 func handleSearch(ctx context.Context, req mcplib.CallToolRequest) (*mcplib.CallToolResult, error) {
