@@ -142,6 +142,15 @@ func isLocalListRead(resourceType string, isList bool, path string) bool {
 	return strings.Trim(path, "/") == resourceType
 }
 
+// validateJSONReadBody rejects a complete but malformed response before it can
+// become a successful read or enter the mirror.
+func validateJSONReadBody(data json.RawMessage, params map[string]string) error {
+	if client.ExpectsJSON(params) && !json.Valid(data) {
+		return apiErr(errors.New("response body is not valid JSON"))
+	}
+	return nil
+}
+
 // resolveRead dispatches a GET request to either the live API or local store
 // based on the --data-source flag. Returns the response data and provenance metadata.
 //
@@ -168,11 +177,17 @@ func resolveRead(ctx context.Context, c *client.Client, flags *rootFlags, resour
 		if err != nil {
 			return nil, DataProvenance{}, err
 		}
+		if err := validateJSONReadBody(data, params); err != nil {
+			return nil, DataProvenance{}, err
+		}
 		return data, attachFreshness(DataProvenance{Source: "live"}, flags), nil
 
 	default: // "auto"
 		data, err := c.GetWithHeadersContext(ctx, path, params, headers)
 		if err == nil {
+			if validationErr := validateJSONReadBody(data, params); validationErr != nil {
+				return nil, DataProvenance{}, validationErr
+			}
 			writeThroughCacheForPath(ctx, resourceType, path, data)
 			return data, attachFreshness(DataProvenance{Source: "live"}, flags), nil
 		}

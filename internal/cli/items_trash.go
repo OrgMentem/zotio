@@ -137,12 +137,12 @@ func fetchAllLiveTrash(ctx context.Context, c *client.Client, flags *rootFlags, 
 			}
 			return nil, DataProvenance{}, classifyAPIError(err, flags)
 		}
+		if err := validateJSONReadBody(pageData, params); err != nil {
+			return nil, DataProvenance{}, err
+		}
 		var pageItems []json.RawMessage
 		if err := json.Unmarshal(pageData, &pageItems); err != nil {
-			if page == 0 {
-				return pageData, attachFreshness(DataProvenance{Source: "live"}, flags), nil
-			}
-			break
+			return nil, DataProvenance{}, apiErr(fmt.Errorf("parsing trash response: %w", err))
 		}
 		if len(pageItems) == 0 {
 			if page == 0 {

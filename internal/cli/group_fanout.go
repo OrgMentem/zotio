@@ -168,6 +168,9 @@ func fetchAccessibleGroups(flags *rootFlags, purpose string) (json.RawMessage, e
 	if err != nil {
 		return nil, classifyAPIError(err, flags)
 	}
+	if err := validateJSONReadBody(data, nil); err != nil {
+		return nil, err
+	}
 	return data, nil
 }
 
