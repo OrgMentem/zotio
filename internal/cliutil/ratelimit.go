@@ -267,7 +267,3 @@ func retryAfterEpochWait(value int64) time.Duration {
 		return 0
 	}
 }
-
-// MaxBackoff caps Backoff so tests stay bounded. Callers needing jitter
-// add their own; the bare exponential keeps the contract deterministic.
-const MaxBackoff = 30 * time.Second

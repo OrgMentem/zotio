@@ -14,6 +14,7 @@ import (
 	neturl "net/url"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"zotio/internal/cliutil"
@@ -27,7 +28,11 @@ type DeliverSink struct {
 }
 
 var (
-	allowPrivateOutboundForTests bool
+	// allowPrivateOutboundForTests lets tests point the outbound guard at a
+	// loopback httptest server. It is atomic because production dial
+	// goroutines read it: an in-flight dial can outlive the test that started
+	// it, so a plain bool raced that test's cleanup write under -race.
+	allowPrivateOutboundForTests atomic.Bool
 	guardedExternalTransports    sync.Map // map[*http.Transport]*http.Transport
 )
 
@@ -127,7 +132,7 @@ func validateExternalHTTPURL(raw string, requireHTTPS bool) error {
 	if host == "" {
 		return fmt.Errorf("URL must include a host")
 	}
-	if !allowPrivateOutboundForTests {
+	if !allowPrivateOutboundForTests.Load() {
 		if outboundHostIsPrivate(host) {
 			return fmt.Errorf("host %q is local or private", host)
 		}
@@ -154,7 +159,7 @@ var publicOutboundIPLookup = publicOutboundIPs
 func publicOutboundIPs(ctx context.Context, host string) ([]string, error) {
 	if addr, err := netip.ParseAddr(strings.TrimSuffix(host, ".")); err == nil {
 		addr = addr.Unmap()
-		if !allowPrivateOutboundForTests && outboundHostIsPrivate(addr.String()) {
+		if !allowPrivateOutboundForTests.Load() && outboundHostIsPrivate(addr.String()) {
 			return nil, fmt.Errorf("host %q is local or private", host)
 		}
 		return []string{addr.String()}, nil
@@ -170,7 +175,7 @@ func publicOutboundIPs(ctx context.Context, host string) ([]string, error) {
 			return nil, fmt.Errorf("host %q resolved to invalid address %q", host, resolved.IP)
 		}
 		addr = addr.Unmap()
-		if !allowPrivateOutboundForTests && outboundHostIsPrivate(addr.String()) {
+		if !allowPrivateOutboundForTests.Load() && outboundHostIsPrivate(addr.String()) {
 			// reject public-looking hostnames that
 			// currently resolve to loopback/private/link-local/multicast ranges.
 			return nil, fmt.Errorf("host %q resolves to local or private address %s", host, addr)

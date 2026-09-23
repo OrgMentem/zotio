@@ -679,9 +679,9 @@ func (f *rootFlags) newWriteClient() (*client.Client, error) {
 // set and the apply that followed served the cache and silently wrote nothing —
 // previewing first, the careful workflow, was what broke the apply.
 //
-// Unlike newWriteClient this prints no write-route notice (it performs no write)
-// and degrades to the read plane when no write route is configured, which is
-// correct: without hybrid routing the two planes are the same.
+// Unlike newWriteClient this prints no write-route notice (it performs no write).
+// A failed resolution is an error, not an empty selection: only an unconfigured
+// route (no key, so both planes are the same) degrades to the read plane.
 func (f *rootFlags) newSelectionClient() (*client.Client, error) {
 	c, err := f.newClient()
 	if err != nil {
@@ -695,7 +695,9 @@ func (f *rootFlags) newSelectionClient() (*client.Client, error) {
 		if ctx == nil {
 			ctx = context.Background()
 		}
-		if base, rerr := c.ResolveWriteBase(ctx); rerr == nil && base != "" {
+		if base, rerr := c.ResolveWriteBase(ctx); rerr != nil {
+			return nil, fmt.Errorf("could not resolve Zotero Web API write route: %w", rerr)
+		} else if base != "" {
 			c.BaseURL = base
 			c.ResolveWriteBase = nil
 		}

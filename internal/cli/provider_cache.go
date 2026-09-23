@@ -47,7 +47,7 @@ func newProviderJSONCache(noCache bool) *providerJSONCache {
 		return &providerJSONCache{bypass: true}
 	}
 	dir, err := os.UserCacheDir()
-	if err != nil || dir == "" {
+	if err != nil || dir == "" || !filepath.IsAbs(dir) {
 		return &providerJSONCache{bypass: true}
 	}
 	return &providerJSONCache{store: cache.New(filepath.Join(dir, "zotio", "providers"), providerCacheTTL)}

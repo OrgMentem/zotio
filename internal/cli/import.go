@@ -180,6 +180,7 @@ wins over --yes. Every parsed record counts against --max-changes.`,
 	// Reviewable-import pipeline.
 	cmd.AddCommand(newImportResolveCmd(flags))
 	cmd.AddCommand(newImportDiscoverCmd(flags))
+	cmd.AddCommand(newImportMonitorCmd(flags))
 	cmd.AddCommand(newImportApplyCmd(flags))
 	// Connector-backed PDF recognition and diagnostics.
 	cmd.AddCommand(newImportPDFCmd(flags))

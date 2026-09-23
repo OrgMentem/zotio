@@ -29,6 +29,7 @@ Fields are checked against the item type's template before anything is sent.
 The item previews by default and is created only under --yes; --dry-run always
 wins over --yes.`,
 		Annotations: map[string]string{"zotio:method": "POST", "zotio:path": "/items"},
+		Args:        cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			itemType := strings.TrimSpace(flagItemType)
 			if itemType == "" {

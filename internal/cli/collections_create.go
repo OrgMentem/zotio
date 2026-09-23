@@ -107,6 +107,7 @@ func newCollectionsCreateCmd(flags *rootFlags) *cobra.Command {
 				applyErr       error // aggregate failure returned as the command's own error
 				batchExecuted  bool
 				batchTransport error // set only when the POST itself failed (not a per-element rejection)
+				batchEnvelope  error // set when the 2xx body is not the batch envelope: no outcome is proven
 				batchFailed    map[string]batchWriteFailure
 			)
 			applyCollection := func(index int) (string, any, error) {
@@ -117,6 +118,14 @@ func newCollectionsCreateCmd(flags *rootFlags) *cobra.Command {
 					if postErr != nil {
 						batchTransport = classifyAPIError(postErr, flags)
 						applyErr = batchTransport
+					} else if envErr := checkBatchEnvelope(data, len(ops)); envErr != nil {
+						// A 2xx without the batch envelope proves nothing: it may
+						// be a proxy error page, a singleton object, or truncated
+						// JSON. Decoding only Failed would read all of those as
+						// zero failures and report every collection applied, so
+						// the envelope must be verified first.
+						batchEnvelope = fmt.Errorf("collections create: %w; the outcome of the %d collection(s) in that request is unknown", envErr, len(ops))
+						applyErr = degradedErr(batchEnvelope)
 					} else {
 						batchFailed = decodeBatchWriteResponse(data).Failed
 						if bwErr := batchWriteFailuresError("collections create", batchFailed); bwErr != nil {
@@ -126,6 +135,9 @@ func newCollectionsCreateCmd(flags *rootFlags) *cobra.Command {
 				}
 				if batchTransport != nil {
 					return "failed", nil, batchTransport
+				}
+				if batchEnvelope != nil {
+					return "failed", batchEnvelope.Error(), batchEnvelope
 				}
 				if failure, ok := batchFailed[strconv.Itoa(index)]; ok {
 					return "failed", fmt.Sprintf("index %d: code %d: %s", index, failure.Code, failure.Message), nil

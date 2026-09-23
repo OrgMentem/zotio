@@ -18,6 +18,12 @@ func newSearchesGetCmd(flags *rootFlags) *cobra.Command {
 		// use a saved-search key placeholder, not a token.
 		Example:     "  zotio searches get SEARCHKEY",
 		Annotations: map[string]string{"zotio:endpoint": "searches.get", "zotio:method": "GET", "zotio:path": "/searches/{searchKey}", "mcp:read-only": "true"},
+		// One key per run. Cobra's default for a command with no subcommands is
+		// ArbitraryArgs, so `searches get K1 K2` used to read K1 and drop K2 on
+		// the floor: the request path is built from args[0] alone, and nothing
+		// reported the ignored keys. Zero args still renders help, which
+		// MaximumNArgs allows and ExactArgs would not.
+		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if len(args) == 0 {
 				return cmd.Help()

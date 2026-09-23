@@ -55,6 +55,7 @@ Records are posted in batches, so a record Zotero rejects cannot un-submit the
 records sent alongside it. Every record therefore reports its own outcome
 instead of the run stopping at the first rejection.`,
 		Annotations: map[string]string{"zotio:method": "POST", "zotio:path": "/items"},
+		Args:        cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if len(args) == 0 {
 				return cmd.Help()
@@ -141,6 +142,10 @@ type importFileBatch struct {
 	executed map[int]bool
 	failed   map[int]batchWriteFailure
 	fatal    map[int]error
+	// envelope marks a batch window whose 2xx body was not the batch envelope:
+	// no record in that window has a proven outcome, so every Apply there
+	// reports the same unknown-outcome error instead of "applied".
+	envelope map[int]error
 }
 
 func newImportFileBatch(flags *rootFlags, items []map[string]any) *importFileBatch {
@@ -150,6 +155,7 @@ func newImportFileBatch(flags *rootFlags, items []map[string]any) *importFileBat
 		executed: make(map[int]bool),
 		failed:   make(map[int]batchWriteFailure),
 		fatal:    make(map[int]error),
+		envelope: make(map[int]error),
 	}
 }
 
@@ -161,6 +167,9 @@ func (b *importFileBatch) apply(index int) (string, any, error) {
 	}
 	if err := b.fatal[index]; err != nil {
 		return "failed", nil, err
+	}
+	if err := b.envelope[index]; err != nil {
+		return "failed", err.Error(), err
 	}
 	if failure, ok := b.failed[index]; ok {
 		return "failed", fmt.Sprintf("index %d: code %d: %s", index, failure.Code, failure.Message), nil
@@ -181,6 +190,17 @@ func (b *importFileBatch) runBatch(start int) {
 	data, _, err := b.client.Post("/items", b.items[start:end])
 	if err != nil {
 		b.failRange(start, end, classifyAPIError(err, b.flags))
+		return
+	}
+	// A 2xx without the batch envelope proves nothing: it may be a proxy
+	// error page, a singleton object, or truncated JSON. Decoding only Failed
+	// would read all of those as zero failures and report every record
+	// applied, so the envelope must be verified first.
+	if envErr := checkBatchEnvelope(data, end-start); envErr != nil {
+		envelopeErr := fmt.Errorf("import file: %w; the outcome of the %d record(s) in that request is unknown", envErr, end-start)
+		for i := start; i < end; i++ {
+			b.envelope[i] = envelopeErr
+		}
 		return
 	}
 	for key, failure := range importFileFailureIndexes(decodeBatchWriteResponse(data).Failed, start) {
@@ -280,29 +300,34 @@ func (s *importFileConnectorSession) apply(cmd *cobra.Command, index int) (strin
 			if index < len(s.keys) {
 				webKey = s.keys[index]
 			}
+			if webKey == "" {
+				// The translator returned this record without a Zotero key. The
+				// item is already committed in Zotero, so this is a committed
+				// conflict, never success and never a clean failure: success
+				// would journal a wrong or empty identity, and a clean failure
+				// would invite a retry that duplicates the item.
+				return "conflict", connectorUnidentifiedDetail(s, index), nil
+			}
 			reason := map[string]any{
 				"via":     "connector",
 				"session": s.sessionID,
 				"target":  s.target,
-			}
-			if webKey != "" {
-				reason["key"] = webKey
+				"key":     webKey,
 			}
 			if s.imported != 0 {
 				reason["imported"] = s.imported
 			}
-			if webKey != "" {
-				reason["message"] = fmt.Sprintf("created item %s; target filing failed: %v; retry filing only, do not re-create the item", webKey, s.err)
-			} else {
-				reason["message"] = fmt.Sprintf("created %d item(s) in session %s; target filing failed: %v; retry filing only, do not re-create the item", s.imported, s.sessionID, s.err)
-			}
+			reason["message"] = fmt.Sprintf("created item %s; target filing failed: %v; retry filing only, do not re-create the item", webKey, s.err)
 			return "applied", reason, nil
 		}
 		return "failed", nil, s.err
 	}
 	// Reconcile the per-op status against the actual imported count: the
 	// translator may return fewer items than were parsed, so only the first
-	// s.imported ops are truly applied.
+	// s.imported ops are truly applied. s.keys is positional (one slot per
+	// translator response entry, empty when the entry carried no key), so
+	// indexing it by the response position can never attribute one record's
+	// key to another record.
 	if index >= s.imported {
 		reason := fmt.Sprintf("translator returned %d item(s) for %d parsed record(s); record %d was not imported", s.imported, s.records, index+1)
 		return "skipped", reason, nil
@@ -311,12 +336,18 @@ func (s *importFileConnectorSession) apply(cmd *cobra.Command, index int) (strin
 	if index < len(s.keys) {
 		webKey = s.keys[index]
 	}
+	if webKey == "" {
+		// The translator returned this record without a Zotero key. The item
+		// is already committed in Zotero, so this is a committed conflict,
+		// never success and never a clean failure: success would journal a
+		// wrong or empty identity, and a clean failure would invite a retry
+		// that duplicates the item.
+		return "conflict", connectorUnidentifiedDetail(s, index), nil
+	}
 	reason := map[string]any{
 		"via":     "connector",
 		"session": s.sessionID,
-	}
-	if webKey != "" {
-		reason["key"] = webKey
+		"key":     webKey,
 	}
 	if index == 0 {
 		reason["imported"] = s.imported
@@ -415,17 +446,40 @@ func connectorImportContentType(format string) string {
 	}
 }
 
+// connectorImportKeys extracts one key slot per translator response entry. The
+// slice is positional: a keyless or malformed entry keeps its position as an
+// empty string so later entries are never attributed to the wrong record.
 func connectorImportKeys(items []json.RawMessage) []string {
-	keys := make([]string, 0, len(items))
-	for _, raw := range items {
+	keys := make([]string, len(items))
+	for i, raw := range items {
 		var item struct {
 			Key string `json:"key"`
 		}
-		if err := json.Unmarshal(raw, &item); err == nil && strings.TrimSpace(item.Key) != "" {
-			keys = append(keys, strings.TrimSpace(item.Key))
+		if err := json.Unmarshal(raw, &item); err == nil {
+			keys[i] = strings.TrimSpace(item.Key)
 		}
 	}
 	return keys
+}
+
+// connectorUnidentifiedDetail reports a translator response entry that carried
+// no Zotero key. The item is already committed in Zotero (Import returns only
+// committed items), so the outcome is a committed conflict: "committed" keeps
+// this evidence in the journal, and the message names the session and record
+// so the operator can find the item without a key to address it by.
+func connectorUnidentifiedDetail(s *importFileConnectorSession, index int) map[string]any {
+	detail := map[string]any{
+		"via":       "connector",
+		"committed": true,
+		"session":   s.sessionID,
+		"record":    index + 1,
+		"imported":  s.imported,
+		"message":   fmt.Sprintf("translator returned record %d without a Zotero key in session %s; the item was created but cannot be addressed by key — find it in Zotero by its metadata, then either file it by hand or delete it and re-import; do not re-import blindly", index+1, s.sessionID),
+	}
+	if s.target != "" {
+		detail["target"] = s.target
+	}
+	return detail
 }
 
 func detectImportFileFormat(path string) string {

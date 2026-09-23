@@ -168,6 +168,9 @@ func fetchAccessibleGroups(flags *rootFlags, purpose string) (json.RawMessage, e
 	if err != nil {
 		return nil, classifyAPIError(err, flags)
 	}
+	if err := validateJSONReadBody(data, nil); err != nil {
+		return nil, err
+	}
 	return data, nil
 }
 
@@ -481,6 +484,8 @@ var fanoutRefusalReasons = map[string]fanoutRefusalReason{
 	"collections export": {fanoutOutputNamespaceSafe,
 		"it writes one caller-named export, so each library would overwrite the last"},
 	"import discover": {fanoutOutputNamespaceSafe,
+		"it writes one caller-named manifest, so each library would overwrite the last"},
+	"import monitor": {fanoutOutputNamespaceSafe,
 		"it writes one caller-named manifest, so each library would overwrite the last"},
 	"groups list": {fanoutLibraryScoped,
 		"it is account-level: groups are only listable under the personal-library prefix, so every group iteration would refuse"},

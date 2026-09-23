@@ -3,14 +3,19 @@
 package cli
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
+
+	"zotio/internal/client"
 )
 
 var dateYearPattern = regexp.MustCompile(`\b(1[5-9]\d{2}|20\d{2})\b`)
@@ -34,6 +39,7 @@ func newItemsNoteTemplateCmd(flags *rootFlags) *cobra.Command {
   zotio items note-template ABCD1234 --format obsidian
   zotio items note-template ABCD1234 --format logseq`,
 		Annotations: map[string]string{"mcp:read-only": "true"},
+		Args:        cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if len(args) == 0 {
 				return cmd.Help()
@@ -44,7 +50,7 @@ func newItemsNoteTemplateCmd(flags *rootFlags) *cobra.Command {
 			}
 
 			path := replacePathParam("/items/{itemKey}", "itemKey", args[0])
-			data, _, err := resolveRead(cmd.Context(), c, flags, "items", false, path, nil, nil)
+			data, provenance, err := resolveRead(cmd.Context(), c, flags, "items", false, path, nil, nil)
 			if err != nil {
 				return classifyAPIError(err, flags)
 			}
@@ -53,18 +59,9 @@ func newItemsNoteTemplateCmd(flags *rootFlags) *cobra.Command {
 				return err
 			}
 
-			var anns []annotationSummary
-			rawDB, err := openStoreForRead(cmd.Context(), "zotio")
+			anns, err := noteTemplateAnnotations(cmd.Context(), c, flags, args[0], provenance)
 			if err != nil {
-				return fmt.Errorf("opening local database: %w", err)
-			}
-			if rawDB != nil {
-				defer rawDB.Close()
-				annByKey, queryErr := rawDB.AnnotationsForItems([]string{args[0]})
-				if queryErr != nil {
-					return fmt.Errorf("querying annotations: %w", queryErr)
-				}
-				anns = annotationSummariesSorted(annByKey[args[0]])
+				return classifyAPIError(err, flags)
 			}
 
 			var out string
@@ -85,6 +82,79 @@ func newItemsNoteTemplateCmd(flags *rootFlags) *cobra.Command {
 	cmd.Flags().StringVar(&flagFormat, "format", "standard", "Template format: standard, obsidian, or logseq")
 
 	return cmd
+}
+
+// noteTemplateAnnotations pins the annotation read to the source that supplied
+// the item metadata. In auto mode this prevents a live item from being combined
+// with stale mirror annotations, while preserving local fallback when the item
+// read already fell back to the mirror.
+func noteTemplateAnnotations(ctx context.Context, c *client.Client, flags *rootFlags, itemKey string, provenance DataProvenance) ([]annotationSummary, error) {
+	switch provenance.Source {
+	case "local":
+		db, err := openStoreForRead(ctx, "zotio")
+		if err != nil {
+			return nil, fmt.Errorf("opening local database: %w\nRun 'zotio sync' first.", err)
+		}
+		if db == nil {
+			return nil, fmt.Errorf("no local data. Run 'zotio sync' first")
+		}
+		defer db.Close()
+		annByKey, err := db.AnnotationsForItems([]string{itemKey})
+		if err != nil {
+			return nil, fmt.Errorf("querying annotations: %w", err)
+		}
+		return annotationSummariesSorted(annByKey[itemKey]), nil
+
+	case "live":
+		liveFlags := *flags
+		liveFlags.dataSource = "live"
+		attachments, _, err := fetchResolvedZoteroItems(
+			ctx,
+			c,
+			&liveFlags,
+			"/items/"+url.PathEscape(itemKey)+"/children",
+			map[string]string{"itemType": "attachment"},
+			0,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("reading attachment children for %s: %w", itemKey, err)
+		}
+
+		var annotationItems []map[string]any
+		for _, attachment := range attachments {
+			if zoteroString(attachment, "itemType") != "attachment" {
+				continue
+			}
+			attachmentKey := zoteroString(attachment, "key")
+			if attachmentKey == "" {
+				continue
+			}
+			items, _, err := fetchResolvedZoteroItems(
+				ctx,
+				c,
+				&liveFlags,
+				"/items/"+url.PathEscape(attachmentKey)+"/children",
+				map[string]string{"itemType": "annotation"},
+				0,
+			)
+			if err != nil {
+				return nil, fmt.Errorf("reading annotation children for %s: %w", attachmentKey, err)
+			}
+			annotationItems = append(annotationItems, items...)
+		}
+		annotations := annotationSummariesFromItems(annotationItems)
+		sort.SliceStable(annotations, func(i, j int) bool {
+			pi, pj := annotationPageNum(annotations[i].Page), annotationPageNum(annotations[j].Page)
+			if pi != pj {
+				return pi < pj
+			}
+			return annotations[i].DateAdded < annotations[j].DateAdded
+		})
+		return annotations, nil
+
+	default:
+		return nil, fmt.Errorf("unsupported note-template data source %q", provenance.Source)
+	}
 }
 
 func noteMetadataFromItem(raw json.RawMessage) (itemNoteMetadata, error) {

@@ -93,6 +93,7 @@ counts against --max-changes.`,
 		Example: `  zotio vault push --dry-run
   zotio vault push --yes --out ~/vault/refs`,
 		Annotations: map[string]string{"mcp:read-only": "false"},
+		Args:        cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			outDir, err := resolveVaultOutDir(flags, flagOut)
 			if err != nil {
@@ -408,6 +409,7 @@ func newVaultConflictsCmd(flags *rootFlags) *cobra.Command {
 		Use:         "conflicts [--out <dir>]",
 		Short:       "List unresolved Zotero note write-back conflicts",
 		Annotations: map[string]string{"mcp:read-only": "true"},
+		Args:        cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			outDir, err := resolveVaultOutDir(flags, flagOut)
 			if err != nil {
@@ -480,6 +482,7 @@ against --max-changes.`,
   zotio vault resolve smith2024 --keep-vault --yes
   zotio vault resolve smith2024 --keep-remote --yes`,
 		Annotations: map[string]string{"mcp:read-only": "false"},
+		Args:        cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if len(args) == 0 {
 				return cmd.Help()
@@ -1159,7 +1162,11 @@ func resolveVaultOutDir(flags *rootFlags, flagOut string) (string, error) {
 	outDir := strings.TrimSpace(flagOut)
 	if outDir == "" {
 		if vc := vaultConfig(flags); vc != nil {
-			outDir = vaultResolveOut(vc)
+			resolved, err := vaultResolveOut(vc)
+			if err != nil {
+				return "", err
+			}
+			outDir = resolved
 		}
 	}
 	if outDir == "" {

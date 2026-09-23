@@ -19,6 +19,12 @@ func newItemsGetCmd(flags *rootFlags) *cobra.Command {
 		// Use an item-key placeholder, not an API-token placeholder.
 		Example:     "  zotio items get ABCD1234",
 		Annotations: map[string]string{"zotio:endpoint": "items.get", "zotio:method": "GET", "zotio:path": "/items/{itemKey}", "mcp:read-only": "true"},
+		// One key per run. Cobra's default for a command with no subcommands is
+		// ArbitraryArgs, so `items get K1 K2` used to read K1 and drop K2 on
+		// the floor: the request path is built from args[0] alone, and nothing
+		// reported the ignored keys. Zero args still renders help, which
+		// MaximumNArgs allows and ExactArgs would not.
+		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if len(args) == 0 {
 				return cmd.Help()

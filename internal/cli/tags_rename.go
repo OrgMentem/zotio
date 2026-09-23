@@ -49,6 +49,7 @@ func newTagsRenameCmd(flags *rootFlags) *cobra.Command {
 			"zotio:requires-allow-destructive": "false",
 			"zotio:default-max-changes":        "500",
 		},
+		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if flagFrom == "" {
 				return fmt.Errorf("required flag %q not set", "from")
@@ -82,7 +83,10 @@ func newTagsRenameCmd(flags *rootFlags) *cobra.Command {
 				// what broke the apply.
 				selectClient, selectErr := flags.newSelectionClient()
 				if selectErr != nil {
-					return selectErr
+					// A failed write-route resolution is a real error, not an empty
+					// selection: classify it like any selection failure so the exit
+					// code names the cause.
+					return classifyAPIError(selectErr, flags)
 				}
 				// --dry-run controls the mutation engine, not the discovery GETs.
 				selectClient.DryRun = false

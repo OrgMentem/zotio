@@ -21,6 +21,7 @@ func newCollectionsItemsCmd(flags *rootFlags) *cobra.Command {
 		// use a collection key placeholder, not a token.
 		Example:     "  zotio collections items COLLECTIONKEY",
 		Annotations: map[string]string{"zotio:endpoint": "collections.items", "zotio:method": "GET", "zotio:path": "/collections/{collectionKey}/items", "mcp:read-only": "true"},
+		Args:        cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if len(args) == 0 {
 				return cmd.Help()

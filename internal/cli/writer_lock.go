@@ -6,7 +6,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"os"
 	"path/filepath"
 	"strings"
 
@@ -32,7 +31,7 @@ type writerLockOwnership struct {
 // journals, or configuration. A distinct user home is an independent
 // installation scope; selecting a config file or data directory is not.
 func installationWriterLockPath(_ *rootFlags) (string, error) {
-	home, err := os.UserHomeDir()
+	home, err := cliutil.HomeDir()
 	if err != nil {
 		return "", fmt.Errorf("resolving home directory for writer lock: %w", err)
 	}

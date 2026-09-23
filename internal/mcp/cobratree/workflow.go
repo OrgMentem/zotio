@@ -186,8 +186,8 @@ func workflowSubmitSteps(rootFactory func() *cobra.Command, raw any) ([]workflow
 			positionalPath = append(positionalPath, positionals...)
 			argv = append(argv, positionals...)
 		}
-		if !workflowSubmitBindsCommand(rootFactory, path, positionalPath) {
-			return nil, workflowSubmitStepError(index, "positional args resolve to a different or hidden command")
+		if err := positionalBindingError(rootFactory, path, positionalPath); err != nil {
+			return nil, workflowSubmitStepError(index, err.Error())
 		}
 
 		steps = append(steps, workflowSubmitStep{
@@ -216,6 +216,50 @@ func workflowSubmitBindsCommand(rootFactory func() *cobra.Command, expectedPath,
 	}
 	expected, _, ok := findMirrorableCommand(func() *cobra.Command { return root }, strings.Join(expectedPath, " "))
 	return ok && resolved == expected
+}
+
+// positionalBindingError reuses workflowSubmitBindsCommand so the mirror, the
+// facade, and workflow_submit stay identical per ADR-0001. It names the
+// command the positionals actually selected.
+func positionalBindingError(rootFactory func() *cobra.Command, expectedPath, positionalPath []string) error {
+	if len(positionalPath) <= len(expectedPath) {
+		return nil
+	}
+	if workflowSubmitBindsCommand(rootFactory, expectedPath, positionalPath) {
+		return nil
+	}
+	selected := ""
+	if rootFactory != nil {
+		if root := orchestrationRoot(rootFactory); root != nil {
+			if resolved, _, err := root.Find(positionalPath); err == nil && resolved != nil {
+				selected = strings.TrimPrefix(resolved.CommandPath(), root.Name()+" ")
+				if selected == "" {
+					selected = resolved.CommandPath()
+				}
+			}
+		}
+	}
+	if selected == "" {
+		selected = strings.Join(positionalPath, " ")
+	}
+	return fmt.Errorf("positional args select command %q, not %q: positional args resolve to a different or hidden command", selected, strings.Join(expectedPath, " "))
+}
+
+// positionalPathForArgs appends the split positional args to the validated
+// command path. Non-string values are left for validateMirrorArguments to
+// refuse; nil and blank stay on the validated path so the binding check is a
+// no-op for calls without positionals.
+func positionalPathForArgs(commandPath []string, args map[string]any) []string {
+	base := append([]string{}, commandPath...)
+	raw, exists := args["args"]
+	if !exists || raw == nil {
+		return base
+	}
+	text, ok := raw.(string)
+	if !ok || strings.TrimSpace(text) == "" {
+		return base
+	}
+	return append(base, splitShellArgs(text)...)
 }
 
 func workflowSubmitVars(raw any) (map[string]string, error) {

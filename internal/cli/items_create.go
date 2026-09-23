@@ -108,8 +108,8 @@ API requests and does not pace connector calls.`,
 			return runErr
 		},
 	}
-	cmd.Flags().StringVar(&bodyItems, "items", "", "Array of item objects to create (use item-types and item-type-fields for schema)")
-	cmd.Flags().BoolVar(&stdinBody, "stdin", false, "Read request body as JSON from stdin")
+	cmd.Flags().StringVar(&bodyItems, "items", "", "Array of item objects to create, or a single item object (sent as a one-element array; use item-types and item-type-fields for schema)")
+	cmd.Flags().BoolVar(&stdinBody, "stdin", false, "Read request body as JSON from stdin (array or single object, as --items)")
 
 	return cmd
 }
@@ -118,8 +118,10 @@ API requests and does not pace connector calls.`,
 //
 // Zotero's POST /items requires a bare JSON array of item objects. The generated
 // shape wrapped it as {"items": [...]}, which the API rejects ("Uploaded data
-// must be a JSON array"), so the parsed value is passed through unwrapped and
-// either an array or a single object is accepted from stdin.
+// must be a JSON array"), so the parsed value is passed through unwrapped. Either
+// an array or a single object is accepted: a single object is normalised to a
+// one-element array here, before planning, so every route below posts the array
+// shape Zotero requires and charges exactly one operation for one item.
 func itemsCreateBody(cmd *cobra.Command, bodyItems string, stdinBody bool) (any, error) {
 	switch {
 	case stdinBody:
@@ -134,16 +136,27 @@ func itemsCreateBody(cmd *cobra.Command, bodyItems string, stdinBody bool) (any,
 		if err := json.Unmarshal(stdinData, &jsonBody); err != nil {
 			return nil, fmt.Errorf("parsing stdin JSON: %w", err)
 		}
-		return jsonBody, nil
+		return normalizeItemsCreateBody(jsonBody), nil
 	case bodyItems != "":
 		var parsedItems any
 		if err := json.Unmarshal([]byte(bodyItems), &parsedItems); err != nil {
 			return nil, fmt.Errorf("parsing --items JSON: %w", err)
 		}
-		return parsedItems, nil
+		return normalizeItemsCreateBody(parsedItems), nil
 	default:
 		return nil, nil
 	}
+}
+
+// normalizeItemsCreateBody wraps a single item object as a one-element array.
+// Anything else -- an array, a scalar, null -- passes through unchanged; the
+// connector route refuses non-array input explicitly, and the Web route lets
+// Zotero reject what it cannot accept.
+func normalizeItemsCreateBody(body any) any {
+	if obj, ok := body.(map[string]any); ok {
+		return []any{obj}
+	}
+	return body
 }
 
 // itemsCreateConnectorBatch reports the items a desktop-connector batch would
@@ -151,12 +164,20 @@ func itemsCreateBody(cmd *cobra.Command, bodyItems string, stdinBody bool) (any,
 // session has exactly one target, so per-item collection arrays cannot be
 // honoured on that route; an explicit --via connector says so rather than
 // silently dropping them, and an automatic route falls back to the Web API.
+// Non-array input is not representable as a save session either: an explicit
+// --via connector is a usage error there, never a silent fall back to the Web
+// API, because the operator asked for the desktop's own file store. An
+// automatic route still falls back to the Web API, which reports what Zotero
+// itself rejects.
 func itemsCreateConnectorBatch(flags *rootFlags, via string, body any) ([]map[string]any, error) {
 	if via != "connector" {
 		return nil, nil
 	}
 	items, ok := itemsCreateObjects(body)
 	if !ok {
+		if flags.via == "connector" {
+			return nil, fmt.Errorf("--via connector requires an array of item objects in items create; the supplied body is not a non-empty item array")
+		}
 		return nil, nil
 	}
 	if itemsCreateHasCollections(items) && strings.TrimSpace(flags.connectorTarget) == "" {
@@ -188,6 +209,7 @@ func (b *itemsCreateBatch) attachWeb(flags *rootFlags, c itemPoster, path string
 	var (
 		executed  bool
 		transport error // set only when the POST itself failed, not on a per-element rejection
+		envelope  error // set when the 2xx body is not the batch envelope: no outcome is proven
 		failed    map[string]batchWriteFailure
 		keys      map[string]string
 	)
@@ -202,6 +224,15 @@ func (b *itemsCreateBatch) attachWeb(flags *rootFlags, c itemPoster, path string
 			b.err = transport
 			return
 		}
+		// A 2xx without the batch envelope proves nothing: it may be a proxy
+		// error page, a singleton object, or truncated JSON. Decoding only Failed
+		// would read all of those as zero failures and report the whole batch
+		// applied, so the envelope must be verified first.
+		if envErr := checkBatchEnvelope(data, len(ops)); envErr != nil {
+			envelope = fmt.Errorf("items create: %w; the outcome of the %d item(s) in that request is unknown", envErr, len(ops))
+			b.err = degradedErr(envelope)
+			return
+		}
 		failed = decodeBatchWriteResponse(data).Failed
 		keys = itemsCreateKeysByIndex(data)
 		if bwErr := batchWriteFailuresError("items create", failed); bwErr != nil {
@@ -214,6 +245,9 @@ func (b *itemsCreateBatch) attachWeb(flags *rootFlags, c itemPoster, path string
 			post()
 			if transport != nil {
 				return "failed", nil, transport
+			}
+			if envelope != nil {
+				return "failed", envelope.Error(), envelope
 			}
 			if failure, ok := failed[strconv.Itoa(index)]; ok {
 				return "failed", fmt.Sprintf("index %d: code %d: %s", index, failure.Code, failure.Message), nil
@@ -237,6 +271,7 @@ func (b *itemsCreateBatch) attachConnector(ctx context.Context, flags *rootFlags
 	var (
 		executed  bool
 		saveErr   error
+		saveCause error // SaveItems reported an error of unknown outcome; per-item reconciliation below decides
 		filingErr error
 		sessionID string
 		keys      []string
@@ -279,7 +314,21 @@ func (b *itemsCreateBatch) attachConnector(ctx context.Context, flags *rootFlags
 		}
 		createdAfter := time.Now().UTC().Add(-recentItemClockSkew)
 		if err := conn.SaveItems(ctx, sessionID, "", payload); err != nil {
-			fail(err)
+			// Zotero's connector can return an error AFTER having already
+			// created the items (observed: HTTP 500 with the item present at
+			// that instant; see routeCreateItemViaWithOptions). Marking the
+			// whole batch failed would lose the committed identities and
+			// invite a duplicating re-create, so reconcile each item against
+			// the library first: recovered keys stay applied, the rest report
+			// an unknown outcome the operator must inspect before retrying.
+			keys = make([]string, len(items))
+			for i, item := range items {
+				keys[i], _, _ = confirmConnectorCreate(ctx, flags, item, createdAfter)
+			}
+			saveCause = err
+			if !itemsCreateAllRecovered(keys) {
+				b.err = connectorSaveAmbiguityError(sessionID, keys, err)
+			}
 			return
 		}
 		// Zotero's connector can succeed at SaveItems and then fail at the
@@ -313,6 +362,29 @@ func (b *itemsCreateBatch) attachConnector(ctx context.Context, flags *rootFlags
 			if index < len(keys) {
 				key = keys[index]
 			}
+			// SaveItems errored but the write may already have committed: the
+			// item was found in the library, so it exists and stays applied
+			// with its recovered key. Anything else is an unknown outcome,
+			// not a proven failure -- report it as a conflict carrying the
+			// session evidence, so the journal records it and the operator
+			// inspects Zotero instead of blindly re-creating.
+			if saveCause != nil {
+				if key != "" {
+					reason := itemCreateAppliedReason("connector", key)
+					reason["session"] = sessionID
+					reason["recovered_after_save_error"] = true
+					reason["save_error"] = saveCause.Error()
+					reason["message"] = fmt.Sprintf("created via connector (session %s) although SaveItems reported an error: %v; the item was found in the library under key %s, do not re-create it", sessionID, saveCause, key)
+					return "applied", reason, nil
+				}
+				detail := map[string]any{
+					"via": "connector", "committed": true,
+					"session":         sessionID,
+					"connector_error": saveCause.Error(),
+					"message":         fmt.Sprintf("connector SaveItems reported an error in session %s and the item could not be found in the library: %v; inspect Zotero before retrying, do not blindly re-create", sessionID, saveCause),
+				}
+				return "conflict", detail, nil
+			}
 			if filingErr != nil {
 				reason := itemCreateAppliedReason("connector", key)
 				reason["session"] = sessionID
@@ -325,6 +397,34 @@ func (b *itemsCreateBatch) attachConnector(ctx context.Context, flags *rootFlags
 			return "applied", itemCreateAppliedReason("connector", key), nil
 		}
 	}
+}
+
+// itemsCreateAllRecovered reports whether every reconciled SaveItems outcome
+// resolved to a library key.
+func itemsCreateAllRecovered(keys []string) bool {
+	for _, key := range keys {
+		if key == "" {
+			return false
+		}
+	}
+	return true
+}
+
+// connectorSaveAmbiguityError reports a SaveItems error whose outcome stayed
+// unknown after reconciliation. It names the session and every key that could
+// be resolved so a retry files or inspects the existing items instead of
+// creating them a second time.
+func connectorSaveAmbiguityError(sessionID string, keys []string, cause error) error {
+	recovered := make([]string, 0, len(keys))
+	for _, key := range keys {
+		if key != "" {
+			recovered = append(recovered, key)
+		}
+	}
+	if len(recovered) > 0 {
+		return fmt.Errorf("created %d item(s) via connector (session %s, keys %v) but SaveItems reported an error: %w; some items could not be confirmed -- inspect Zotero before retrying, do not re-create the batch", len(keys), sessionID, recovered, cause)
+	}
+	return fmt.Errorf("connector SaveItems reported an error (session %s) and no created item could be confirmed: %w; inspect Zotero before retrying, do not blindly re-create the batch", sessionID, cause)
 }
 
 // connectorFilingError reports a save that committed under a filing that did
@@ -374,7 +474,10 @@ func itemsCreateKeysByIndex(data json.RawMessage) map[string]string {
 	return keys
 }
 
-// Direct batch create connector routing requires object-array inspection.
+// itemsCreateObjects reports the object array a batch body holds. Single item
+// objects never reach this as maps: itemsCreateBody normalises them to a
+// one-element array first, so a non-array here is genuinely not representable
+// as a batch (nil, scalar, empty, or a non-object element).
 func itemsCreateObjects(body any) ([]map[string]any, bool) {
 	rawItems, ok := body.([]any)
 	if !ok || len(rawItems) == 0 {
@@ -407,9 +510,10 @@ func itemsCreateHasCollections(items []map[string]any) bool {
 // operations, not the Changes within them, so without this an N-item array
 // would charge as a single planned op no matter how large N is -- these same
 // ops carry the real write's per-item Apply closures below, so the pre-write
-// gate and the journaled result always count the same N. Non-object-array
-// bodies (e.g. a single object from --stdin) still charge, and apply, as one
-// op.
+// gate and the journaled result always count the same N. Single item objects
+// reach this already normalised to a one-element array by itemsCreateBody; a
+// non-array body here (nil, scalar, empty, or a non-object element) still
+// charges, and applies, as one op.
 func itemsCreatePreflightOps(body any) []mutation.Op {
 	items, ok := itemsCreateObjects(body)
 	if !ok {

@@ -15,6 +15,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"zotio/internal/cliutil"
 	"zotio/internal/store"
 )
 
@@ -43,7 +44,7 @@ func demoActive() bool {
 // real store but a distinct demo.db file, so the two never collide. The
 // group-suffix logic in defaultDBPath is irrelevant in demo mode.
 func demoDBPath(name string) (string, error) {
-	home, err := os.UserHomeDir()
+	home, err := cliutil.HomeDir()
 	if err != nil {
 		return "", fmt.Errorf("resolving home directory for demo db: %w", err)
 	}

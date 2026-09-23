@@ -251,7 +251,7 @@ Exit codes & warnings:
 			// a complete pass reaches its terminal page.
 			if full {
 				for _, resource := range resources {
-					if err := db.ClearSyncCursor(resource); err != nil {
+					if err := db.ClearSyncCursorContext(cmd.Context(), resource); err != nil {
 						return fmt.Errorf("clearing sync cursor for %s (--full): %w", resource, err)
 					}
 				}
@@ -275,7 +275,7 @@ Exit codes & warnings:
 							return fmt.Errorf("reading sync cursor for %s (--latest-only): %w", resource, gerr)
 						}
 						if existing != "" {
-							if err := db.ClearSyncCursor(resource); err != nil {
+							if err := db.ClearSyncCursorContext(cmd.Context(), resource); err != nil {
 								return fmt.Errorf("clearing sync cursor for %s (--latest-only): %w", resource, err)
 							}
 						}
@@ -539,7 +539,7 @@ func syncFulltext(ctx context.Context, c *client.Client, db *store.Store, full b
 				ids = append(ids, r.Source)
 				payloads = append(payloads, r.Value)
 			}
-			if _, uerr := db.UpsertKeyed("fulltext", ids, payloads); uerr != nil {
+			if _, uerr := db.UpsertKeyedContext(ctx, "fulltext", ids, payloads); uerr != nil {
 				return fmt.Errorf("persisting fulltext: %w", uerr)
 			}
 		}
@@ -548,7 +548,7 @@ func syncFulltext(ctx context.Context, c *client.Client, db *store.Store, full b
 		}
 	}
 	if newVer > cursor {
-		if err := db.SaveLibraryVersion("fulltext", c.BaseURL, newVer); err != nil {
+		if err := db.SaveLibraryVersionContext(ctx, "fulltext", c.BaseURL, newVer); err != nil {
 			return fmt.Errorf("persisting fulltext checkpoint: %w", err)
 		}
 	}
@@ -820,7 +820,7 @@ func syncDependentSchemaResource(ctx context.Context, c syncHTTPClient, db *stor
 			return fail(fmt.Errorf("checking %s cache: %w", resource, err), 0)
 		}
 		if complete {
-			if err := db.SaveSyncState(resource, "", 0); err != nil {
+			if err := db.SaveSyncStateContext(ctx, resource, "", 0); err != nil {
 				return fail(fmt.Errorf("persisting sync checkpoint: %w", err), 0)
 			}
 			if !humanFriendly {
@@ -861,7 +861,7 @@ func syncDependentSchemaResource(ctx context.Context, c syncHTTPClient, db *stor
 			ids = append(ids, result.Source)
 			payloads = append(payloads, result.Value)
 		}
-		if _, err := db.UpsertKeyed(resource, ids, payloads); err != nil {
+		if _, err := db.UpsertKeyedContext(ctx, resource, ids, payloads); err != nil {
 			return fail(fmt.Errorf("persisting %s rows: %w", resource, err), totalFetched)
 		}
 		totalFetched += len(results)
@@ -877,15 +877,15 @@ func syncDependentSchemaResource(ctx context.Context, c syncHTTPClient, db *stor
 	for _, itemType := range prereq.itemTypes {
 		seen[itemType] = true
 	}
-	if _, err := db.SweepMissing(resource, seen); err != nil {
+	if _, err := db.SweepMissingContext(ctx, resource, seen); err != nil {
 		return fail(fmt.Errorf("reaping stale %s rows: %w", resource, err), totalFetched)
 	}
 	if prereq.schemaVersion != "" {
-		if err := db.SaveZoteroSchemaVersion(resource, prereq.schemaVersion); err != nil {
+		if err := db.SaveZoteroSchemaVersionContext(ctx, resource, prereq.schemaVersion); err != nil {
 			return fail(fmt.Errorf("persisting %s schema checkpoint: %w", resource, err), totalFetched)
 		}
 	}
-	if err := db.SaveSyncState(resource, "", totalFetched); err != nil {
+	if err := db.SaveSyncStateContext(ctx, resource, "", totalFetched); err != nil {
 		return fail(fmt.Errorf("persisting sync checkpoint: %w", err), totalFetched)
 	}
 	if !humanFriendly {
@@ -978,7 +978,7 @@ func syncResource(ctx context.Context, c syncHTTPClient, db *store.Store, resour
 	// A cursor from another plane, mode, or since checkpoint starts at page zero.
 	existingCursor := ""
 	if full {
-		if clearErr := db.ClearSyncCursor(resource); clearErr != nil {
+		if clearErr := db.ClearSyncCursorContext(ctx, resource); clearErr != nil {
 			return syncResult{Resource: resource, Err: fmt.Errorf("clearing full-sync cursor for %s: %w", resource, clearErr), Duration: time.Since(started)}
 		}
 	}
@@ -1013,7 +1013,7 @@ func syncResource(ctx context.Context, c syncHTTPClient, db *store.Store, resour
 		clearVersions = planeChanged
 	}
 	if clearVersions {
-		if clearErr := db.ClearResourceVersions(canonicalStoreResource(resource)); clearErr != nil {
+		if clearErr := db.ClearResourceVersionsContext(ctx, canonicalStoreResource(resource)); clearErr != nil {
 			return syncResult{Resource: resource, Err: fmt.Errorf("clearing stale-plane versions for %s: %w", resource, clearErr), Duration: time.Since(started)}
 		}
 	}
@@ -1026,7 +1026,7 @@ func syncResource(ctx context.Context, c syncHTTPClient, db *store.Store, resour
 		if savedCursor != "" && savedScope == cursorScope {
 			existingCursor = savedCursor
 		} else if savedCursor != "" {
-			if clearErr := db.ClearSyncCursor(resource); clearErr != nil {
+			if clearErr := db.ClearSyncCursorContext(ctx, resource); clearErr != nil {
 				return syncResult{Resource: resource, Err: fmt.Errorf("discarding mismatched sync cursor for %s: %w", resource, clearErr), Duration: time.Since(started)}
 			}
 		}
@@ -1220,7 +1220,7 @@ func syncResource(ctx context.Context, c syncHTTPClient, db *store.Store, resour
 
 		if len(items) == 0 {
 			// A validated object response is a singleton resource record.
-			if err := upsertSingleObject(db, resource, data); err != nil {
+			if err := upsertSingleObject(ctx, db, resource, data); err != nil {
 				if !humanFriendly {
 					emitSyncEvent(ctx, struct {
 						Event    string `json:"event"`
@@ -1260,7 +1260,7 @@ func syncResource(ctx context.Context, c syncHTTPClient, db *store.Store, resour
 				}
 			}
 		}
-		stored, extractFailures, err := upsertResourceBatch(db, resource, items)
+		stored, extractFailures, err := upsertResourceBatch(ctx, db, resource, items)
 		if err != nil {
 			if !humanFriendly {
 				emitSyncEvent(ctx, struct {
@@ -1378,7 +1378,7 @@ func syncResource(ctx context.Context, c syncHTTPClient, db *store.Store, resour
 		// Full passes never persist partial cursors: the seen-key sweep also
 		// requires every prior page, so another process cannot resume it safely.
 		if !full {
-			if err := db.SaveSyncResumeState(resource, nextCursor, cursorScope, totalCount); err != nil {
+			if err := db.SaveSyncResumeStateContext(ctx, resource, nextCursor, cursorScope, totalCount); err != nil {
 				fmt.Fprintf(os.Stderr, "\nwarning: failed to save sync state for %s: %v\n", resource, err)
 			}
 		}
@@ -1445,7 +1445,7 @@ func syncResource(ctx context.Context, c syncHTTPClient, db *store.Store, resour
 	// defensive exits keep their scoped resume cursor. Full defensive exits keep
 	// no cursor because they also lack the earlier seen-key set.
 	if completedNaturally {
-		if serr := db.SaveSyncResumeState(resource, "", "", totalCount); serr != nil {
+		if serr := db.SaveSyncResumeStateContext(ctx, resource, "", "", totalCount); serr != nil {
 			return syncResult{Resource: resource, Count: totalCount, Err: fmt.Errorf("persisting sync checkpoint: %w", serr), Duration: time.Since(started)}
 		}
 		// Stamp the plane unconditionally, even when no page carried a usable
@@ -1455,7 +1455,7 @@ func syncResource(ctx context.Context, c syncHTTPClient, db *store.Store, resour
 		// row versions instead of doing it once — permanently voiding the
 		// version-monotonic guard and rewriting the whole table each run.
 		// library_version legitimately stays 0 here; only the plane converges.
-		if serr := db.SaveLibraryVersion(resource, c.Plane(), libraryVersion); serr != nil {
+		if serr := db.SaveLibraryVersionContext(ctx, resource, c.Plane(), libraryVersion); serr != nil {
 			return syncResult{Resource: resource, Count: totalCount, Err: fmt.Errorf("persisting library-version checkpoint: %w", serr), Duration: time.Since(started)}
 		}
 		// Reap rows for objects that no longer exist upstream, and retire the
@@ -1497,7 +1497,7 @@ func syncResource(ctx context.Context, c syncHTTPClient, db *store.Store, resour
 			// type. A top-level alias fetches a strict subset, so the storage
 			// alias is correct for upserts but wrong for reaps.
 			storeResource := canonicalStoreResource(resource)
-			if reaped, rerr := db.SweepMissing(storeResource, seenKeys); rerr != nil {
+			if reaped, rerr := db.SweepMissingContext(ctx, storeResource, seenKeys); rerr != nil {
 				if resource == "schema" {
 					return syncResult{Resource: resource, Count: totalCount, Err: fmt.Errorf("reaping stale schema rows: %w", rerr), Duration: time.Since(started)}
 				}
@@ -1533,7 +1533,7 @@ func syncResource(ctx context.Context, c syncHTTPClient, db *store.Store, resour
 			}
 		}
 		if resource == "schema" && zoteroSchemaVersion != "" && observedEverything {
-			if serr := db.SaveZoteroSchemaVersion(resource, zoteroSchemaVersion); serr != nil {
+			if serr := db.SaveZoteroSchemaVersionContext(ctx, resource, zoteroSchemaVersion); serr != nil {
 				return syncResult{Resource: resource, Count: totalCount, Err: fmt.Errorf("persisting Zotero schema version: %w", serr), Duration: time.Since(started)}
 			}
 		}
@@ -1836,19 +1836,22 @@ type discriminatorDispatch struct {
 
 var discriminatorDispatchers = map[string]discriminatorDispatch{}
 
-func upsertResourceBatch(db *store.Store, resource string, items []json.RawMessage) (int, int, error) {
+func upsertResourceBatch(ctx context.Context, db *store.Store, resource string, items []json.RawMessage) (int, int, error) {
 	storeResource := canonicalStoreResource(resource)
 	// Rows pulled from the read plane predate any write the read plane has not
 	// caught up with yet; merge those writes back in before they are stored.
 	items, _ = reconcilePendingWrites(db, storeResource, items)
+	if err := ctx.Err(); err != nil {
+		return 0, 0, err
+	}
 	if _, ok := discriminatorDispatchers[resource]; !ok {
 		// store.UpsertBatch has its own generated ID map;
 		// key resources with sync-local overrides here so tags and global schema
 		// rows do not drop as primary_key_unresolved.
 		if _, hasOverride := resourceIDFieldOverrides[storeResource]; hasOverride {
-			return upsertResourceBatchWithExtractedIDs(db, storeResource, items)
+			return upsertResourceBatchWithExtractedIDs(ctx, db, storeResource, items)
 		}
-		return db.UpsertBatch(storeResource, items)
+		return db.UpsertBatchContext(ctx, storeResource, items)
 	}
 
 	grouped := map[string][]json.RawMessage{}
@@ -1867,12 +1870,15 @@ func upsertResourceBatch(db *store.Store, resource string, items []json.RawMessa
 
 	var stored, extractFailures int
 	for _, target := range order {
+		if err := ctx.Err(); err != nil {
+			return stored, extractFailures, err
+		}
 		var targetStored, targetExtractFailures int
 		var err error
 		if _, hasOverride := resourceIDFieldOverrides[target]; hasOverride {
-			targetStored, targetExtractFailures, err = upsertResourceBatchWithExtractedIDs(db, target, grouped[target])
+			targetStored, targetExtractFailures, err = upsertResourceBatchWithExtractedIDs(ctx, db, target, grouped[target])
 		} else {
-			targetStored, targetExtractFailures, err = db.UpsertBatch(target, grouped[target])
+			targetStored, targetExtractFailures, err = db.UpsertBatchContext(ctx, target, grouped[target])
 		}
 		if err != nil {
 			return stored, extractFailures + targetExtractFailures, err
@@ -1885,7 +1891,7 @@ func upsertResourceBatch(db *store.Store, resource string, items []json.RawMessa
 
 // sync-owned ID overrides are applied before keyed batch
 // writes so generated store metadata drift cannot drop name-keyed Zotero rows.
-func upsertResourceBatchWithExtractedIDs(db *store.Store, resource string, items []json.RawMessage) (int, int, error) {
+func upsertResourceBatchWithExtractedIDs(ctx context.Context, db *store.Store, resource string, items []json.RawMessage) (int, int, error) {
 	ids := make([]string, 0, len(items))
 	payloads := make([]json.RawMessage, 0, len(items))
 	var extractFailures int
@@ -1902,7 +1908,7 @@ func upsertResourceBatchWithExtractedIDs(db *store.Store, resource string, items
 		ids = append(ids, id)
 		payloads = append(payloads, item)
 	}
-	stored, err := db.UpsertKeyed(resource, ids, payloads)
+	stored, err := db.UpsertKeyedContext(ctx, resource, ids, payloads)
 	if err != nil {
 		return 0, extractFailures, err
 	}
@@ -1941,7 +1947,7 @@ func resolveDiscriminatedResource(resource string, obj map[string]any) string {
 }
 
 // upsertSingleObject stores a non-array API response as a single record.
-func upsertSingleObject(db *store.Store, resource string, data json.RawMessage) error {
+func upsertSingleObject(ctx context.Context, db *store.Store, resource string, data json.RawMessage) error {
 	// An empty or array payload is a list response with nothing in it, not a
 	// singleton record. Storing it produced rows keyed by the resource name
 	// itself — (items-trash, "[]") — which surfaced in local reads as an entry
@@ -1977,7 +1983,7 @@ func upsertSingleObject(db *store.Store, resource string, data json.RawMessage) 
 
 	switch resource {
 	default:
-		return db.Upsert(canonicalStoreResource(resource), id, data)
+		return db.UpsertContext(ctx, canonicalStoreResource(resource), id, data)
 	}
 }
 

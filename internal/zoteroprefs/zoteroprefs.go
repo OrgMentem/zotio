@@ -53,6 +53,8 @@ import (
 	"unicode"
 	"unicode/utf16"
 	"unicode/utf8"
+
+	"zotio/internal/cliutil"
 )
 
 // ProfileDirEnv overrides profile discovery, for operators with a
@@ -332,6 +334,19 @@ func (f FileStorage) WebDAVHost() string {
 // Zotero's cloud when the running profile actually uses WebDAV — closed.
 func Load() (FileStorage, error) {
 	if override := strings.TrimSpace(os.Getenv(ProfileDirEnv)); override != "" {
+		// A relative pin resolves against whatever directory zotio starts in,
+		// so one setting names different profiles from a shell and from an MCP
+		// host, and can name a prefs.js someone else placed there. Refuse it
+		// rather than guess: this pin decides where stored uploads may go.
+		if !filepath.IsAbs(override) {
+			hint := ""
+			if override == "~" || strings.HasPrefix(override, "~/") {
+				// MCP host configs and service files pass env values verbatim;
+				// only an interactive shell expands "~".
+				hint = "; \"~\" is not expanded here, write the full home path"
+			}
+			return FileStorage{}, fmt.Errorf("%s must be an absolute path, got %q%s", ProfileDirEnv, override, hint)
+		}
 		fs, err := LoadProfile(override)
 		if err != nil {
 			return FileStorage{}, err
@@ -732,19 +747,19 @@ func profileFallbackBases(root string) []string {
 func profileRoots() ([]string, error) {
 	switch goos {
 	case "darwin":
-		home, err := os.UserHomeDir()
+		home, err := cliutil.HomeDir()
 		if err != nil {
 			return nil, fmt.Errorf("resolving home dir: %w", err)
 		}
 		return []string{filepath.Join(home, "Library", "Application Support", "Zotero")}, nil
 	case "windows":
-		var roots []string
-		if appData := strings.TrimSpace(os.Getenv("APPDATA")); appData != "" {
-			roots = append(roots, filepath.Join(appData, "Zotero", "Zotero"))
+		appData, ok := cliutil.CleanPathOverride(os.Getenv("APPDATA"))
+		if !ok {
+			return nil, fmt.Errorf("APPDATA must be a non-empty absolute directory")
 		}
-		return roots, nil
+		return []string{filepath.Join(appData, "Zotero", "Zotero")}, nil
 	default:
-		home, err := os.UserHomeDir()
+		home, err := cliutil.HomeDir()
 		if err != nil {
 			return nil, fmt.Errorf("resolving home dir: %w", err)
 		}

@@ -1,11 +1,7 @@
 // Copyright 2026 OrgMentem. Licensed under MIT. See LICENSE.
-// `export snapshot` — a truly paginated,
-// resumable, reproducible export. Unlike the generated single-page `export`, it
-// walks every page (start/limit) of a structured item set, streams JSONL to a
-// data file (append-resumable via a checkpoint sidecar), and writes a manifest
-// recording each item's key+version plus a content hash so the snapshot is
-// reproducible and drift is detectable. Uses structured item JSON, never the
-// formatted-bibliography mode (which ignores limit/pagination).
+// `export snapshot` walks every page of a structured item set, streams the
+// requested format to a resumable data file, and records canonical item
+// content in a manifest for drift detection.
 
 package cli
 
@@ -29,19 +25,22 @@ func newExportSnapshotCmd(flags *rootFlags) *cobra.Command {
 	var pageSize int
 	var limit int
 	var resume bool
+	var format string
 
 	cmd := &cobra.Command{
 		Use:   "snapshot [scope]",
 		Short: "Reproducible, resumable paginated export with a content manifest",
-		Long: `Export a structured item set (JSONL) across all pages into a data file,
-plus a sidecar manifest (<output>.manifest.json) recording each item's key+version
-and a content hash for reproducibility/drift detection. Resumable: an interrupted
-run can continue with --resume (a <output>.checkpoint.json sidecar tracks progress).
+		Long: `Export every page of a library, collection, or tag scope as JSONL, BibTeX,
+RIS, or CSL-JSON. A sidecar manifest (<output>.manifest.json) records each
+item's key, version, and canonical data hash for drift detection. An
+interrupted run continues with --resume using <output>.checkpoint.json.
+Translator formats need Zotero to return the requested include field.
 
 Scope is one of: library (default), collection:KEY, or tag:NAME.`,
 		Example: `  zotio export snapshot --output backup.jsonl
-  zotio export snapshot collection:ABCD1234 --output coll.jsonl
-  zotio export snapshot --output backup.jsonl --resume`,
+  zotio export snapshot --format bibtex --output library.bib
+  zotio export snapshot collection:ABCD1234 --format ris --output coll.ris
+  zotio export snapshot --format csljson --output library.json --resume`,
 		Args:        cobra.MaximumNArgs(1),
 		Annotations: map[string]string{"mcp:read-only": "true"},
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -52,6 +51,11 @@ Scope is one of: library (default), collection:KEY, or tag:NAME.`,
 			path, params, scopeLabel, err := snapshotScopePath(scopeArg)
 			if err != nil {
 				return err
+			}
+			switch format {
+			case "jsonl", "bibtex", "ris", "csljson":
+			default:
+				return usageErr(fmt.Errorf("unknown snapshot format %q: use jsonl, bibtex, ris, or csljson", format))
 			}
 			if strings.TrimSpace(outputFile) == "" {
 				return usageErr(fmt.Errorf("--output is required for export snapshot (it writes a data file and a .manifest.json sidecar)"))
@@ -66,11 +70,12 @@ Scope is one of: library (default), collection:KEY, or tag:NAME.`,
 			// inode a concurrent acquirer has already flocked, letting a third
 			// writer lock a fresh inode under the same name. See ADR-0005.
 			return withPathWriterLock(cmd, lockPath, "export snapshot", func() error {
-				return exportSnapshot(cmd, flags, outputFile, path, params, scopeLabel, pageSize, limit, resume)
+				return exportSnapshot(cmd, flags, outputFile, path, params, scopeLabel, pageSize, limit, resume, format)
 			})
 		},
 	}
-	cmd.Flags().StringVarP(&outputFile, "output", "o", "", "Output JSONL data file (required); the manifest is written to <output>.manifest.json")
+	cmd.Flags().StringVarP(&outputFile, "output", "o", "", "Output data file (required); the manifest is written to <output>.manifest.json")
+	cmd.Flags().StringVar(&format, "format", "jsonl", "Snapshot format: jsonl, bibtex, ris, or csljson")
 	cmd.Flags().IntVar(&pageSize, "page-size", 100, "Items per API page (1-100)")
 	cmd.Flags().IntVar(&limit, "limit", 0, "Maximum items to export (0 = all)")
 	cmd.Flags().BoolVar(&resume, "resume", false, "Resume an interrupted snapshot from its checkpoint sidecar")
@@ -78,10 +83,14 @@ Scope is one of: library (default), collection:KEY, or tag:NAME.`,
 	return cmd
 }
 
-func exportSnapshot(cmd *cobra.Command, flags *rootFlags, outputFile, path string, params map[string]string, scopeLabel string, pageSize, limit int, resume bool) error {
+func exportSnapshot(cmd *cobra.Command, flags *rootFlags, outputFile, path string, params map[string]string, scopeLabel string, pageSize, limit int, resume bool, format string) error {
 	c, err := flags.newClient()
 	if err != nil {
 		return err
+	}
+	if format != "jsonl" {
+		params["format"] = "json"
+		params["include"] = "data," + format
 	}
 
 	checkpointFile := outputFile + ".checkpoint.json"
@@ -90,24 +99,41 @@ func exportSnapshot(cmd *cobra.Command, flags *rootFlags, outputFile, path strin
 	// Append only when every request and library identity field matches.
 	// Reject legacy or foreign incomplete checkpoints before opening the output.
 	resumable := false
+	var resumeCheckpoint exportCheckpoint
 	if resume {
 		if cp, ok := readExportCheckpoint(checkpointFile); ok && !cp.Done {
-			if cp.Path != path || cp.Source != source || cp.Scope != expectedScope {
+			if cp.Path != path || cp.Source != source || cp.Scope != expectedScope || checkpointFormat(cp) != format {
 				return fmt.Errorf("checkpoint scope does not match this export; remove the checkpoint or rerun without --resume")
 			}
 			resumable = true
+			resumeCheckpoint = cp
 		}
 	}
-	openFlags := os.O_CREATE | os.O_WRONLY
+	if format != "jsonl" {
+		return exportTranslatorSnapshot(cmd, flags, c, outputFile, path, params, scopeLabel, pageSize, limit, checkpointFile, resumable, format)
+	}
+	var committedOffset int64
 	if resumable {
-		openFlags |= os.O_APPEND
+		committedOffset, err = checkpointJSONLOffset(outputFile, resumeCheckpoint)
+		if err != nil {
+			return fmt.Errorf("resuming JSONL snapshot: %w; rerun without --resume to start over", err)
+		}
 	} else {
-		openFlags |= os.O_TRUNC
 		_ = os.Remove(checkpointFile)
+	}
+	openFlags := os.O_WRONLY | os.O_APPEND
+	if !resumable {
+		openFlags = os.O_CREATE | os.O_WRONLY | os.O_TRUNC
 	}
 	f, err := openPrivateOutputFile(outputFile, openFlags)
 	if err != nil {
 		return fmt.Errorf("opening output: %w", err)
+	}
+	if resumable {
+		if err := f.Truncate(committedOffset); err != nil {
+			_ = f.Close()
+			return fmt.Errorf("truncating uncommitted JSONL data: %w", err)
+		}
 	}
 	w := bufio.NewWriter(f)
 
@@ -130,7 +156,9 @@ func exportSnapshot(cmd *cobra.Command, flags *rootFlags, outputFile, path strin
 		return w.Flush()
 	}
 
-	fetched, fetchErr := resumablePaginatedFetch(cmd.Context(), c, path, params, pageSize, limit, checkpointFile, flags.profileName, onPage)
+	fetched, fetchErr := resumablePaginatedFetch(cmd.Context(), c, path, params, pageSize, limit, checkpointFile, flags.profileName, onPage, format, func() (int64, error) {
+		return f.Seek(0, 1)
+	})
 	flushErr := w.Flush()
 	closeErr := f.Close()
 	if fetchErr != nil {
@@ -271,4 +299,37 @@ func readJSONLItems(path string) ([]json.RawMessage, error) {
 		return nil, err
 	}
 	return items, nil
+}
+
+// A new checkpoint records the last committed byte. Older checkpoints carry
+// only an item count, so locate that many complete JSONL lines before resume.
+func checkpointJSONLOffset(path string, cp exportCheckpoint) (int64, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return 0, fmt.Errorf("opening checkpoint data: %w", err)
+	}
+	defer f.Close()
+	size, err := f.Stat()
+	if err != nil {
+		return 0, err
+	}
+	if cp.DataBytes != nil {
+		if *cp.DataBytes < 0 || *cp.DataBytes > size.Size() {
+			return 0, fmt.Errorf("checkpoint byte offset %d exceeds the data file (%d bytes)", *cp.DataBytes, size.Size())
+		}
+		return *cp.DataBytes, nil
+	}
+	reader := bufio.NewReader(f)
+	var offset int64
+	for i := range cp.Fetched {
+		line, err := reader.ReadBytes('\n')
+		if err != nil {
+			return 0, fmt.Errorf("legacy checkpoint records %d items, but item %d has no complete line: %w", cp.Fetched, i+1, err)
+		}
+		if !json.Valid(bytes.TrimSpace(line)) {
+			return 0, fmt.Errorf("legacy checkpoint item %d is not valid JSON", i+1)
+		}
+		offset += int64(len(line))
+	}
+	return offset, nil
 }

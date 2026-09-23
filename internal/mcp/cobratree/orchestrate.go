@@ -120,12 +120,18 @@ func commandRunHandler(rootFactory func() *cobra.Command) server.ToolHandlerFunc
 				execArgs[key] = value
 			}
 		}
-		if rawArgs, ok := args["args"].(string); ok && rawArgs != "" {
+		// Pass args through untouched (including non-string values) so the shared
+		// validateMirrorArguments guard refuses malformed positionals with a
+		// clear error instead of dropping them silently here.
+		if rawArgs, exists := args["args"]; exists && rawArgs != nil {
 			execArgs["args"] = rawArgs
 		}
 
 		allowed := safeFlagNames(cmd)
 		if err := validateMirrorArguments(execArgs, allowed); err != nil {
+			return mcplib.NewToolResultError(err.Error()), nil
+		}
+		if err := positionalBindingError(rootFactory, path, positionalPathForArgs(path, execArgs)); err != nil {
 			return mcplib.NewToolResultError(err.Error()), nil
 		}
 		return runMirroredInProcess(ctx, rootFactory, path, execArgs), nil

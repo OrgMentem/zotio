@@ -8,12 +8,10 @@ import (
 	"fmt"
 	"math"
 	"os"
-	"path/filepath"
 	"strings"
 	"time"
 
 	"zotio/internal/cli"
-	"zotio/internal/cliutil"
 	"zotio/internal/mcp/bound"
 	"zotio/internal/mcp/cobratree"
 	"zotio/internal/store"
@@ -85,36 +83,12 @@ func RegisterTools(s *server.MCPServer) {
 // group-scoped and demo-scoped path as the CLI's native sql/search/archive
 // commands (see cli.ApplyGroupScopeFromEnv, called at server startup to
 // apply the ZOTERO_GROUP fallback that cobra's PersistentPreRunE would
-// otherwise apply). On error, fall back to the same data-dir computation
-// cli.defaultDBPath uses so behavior on a broken environment is no worse
-// than before.
-func dbPath() string {
-	if path, err := cli.DefaultDBPath("zotio"); err == nil {
-		return path
-	}
-	dataDir, err := cliutil.KindDir(cliutil.PathKindData)
-	if err != nil {
-		home, homeErr := os.UserHomeDir()
-		if homeErr != nil || home == "" {
-			// Neither resolver succeeded and we cannot determine a home
-			// directory — do not fabricate a CWD-relative path that would
-			// silently open/seed a different database.
-			// Keep the same error chain shape as cli.defaultDBPathFor so
-			// callers that open the path surface a consistent "opening
-			// database" error rather than a confusing "no such table".
-			dataDir = filepath.Join(os.TempDir(), cliutil.AppName())
-		} else {
-			dataDir = filepath.Join(home, ".local", "share", cliutil.AppName())
-		}
-	}
-	// Keep the group suffix on the fallback too: degrading a group-scoped
-	// server to the personal mirror would answer a group library from the
-	// wrong database, which is the failure this resolver exists to prevent.
-	file := "data.db"
-	if group := cli.ActiveGroupID(); group != "" {
-		file = "data-group-" + group + ".db"
-	}
-	return filepath.Join(dataDir, file)
+// otherwise apply). There is deliberately no fallback of its own: a second
+// resolver drifts from the CLI's (in demo mode it opened the real data.db
+// instead of demo.db), and a persistent mirror must never land in a shared
+// temp directory. A resolution failure is returned to the caller.
+func dbPath() (string, error) {
+	return cli.DefaultDBPath("zotio")
 }
 
 func handleSearch(ctx context.Context, req mcplib.CallToolRequest) (*mcplib.CallToolResult, error) {
@@ -133,7 +107,11 @@ func handleSearch(ctx context.Context, req mcplib.CallToolRequest) (*mcplib.Call
 		limit = int(v)
 	}
 
-	db, err := store.OpenReadOnlyContext(ctx, dbPath())
+	path, err := dbPath()
+	if err != nil {
+		return mcplib.NewToolResultError(fmt.Sprintf("opening database: %v", err)), nil
+	}
+	db, err := store.OpenReadOnlyContext(ctx, path)
 	if err != nil {
 		return mcplib.NewToolResultError(fmt.Sprintf("opening database: %v", err)), nil
 	}
@@ -154,7 +132,7 @@ func handleSearch(ctx context.Context, req mcplib.CallToolRequest) (*mcplib.Call
 			results = append(results, raw)
 		}
 	} else {
-		results, err = db.Search(query, limit)
+		results, err = db.SearchContext(ctx, query, limit)
 		if err != nil {
 			return mcplib.NewToolResultError(fmt.Sprintf("search failed: %v", err)), nil
 		}
@@ -308,7 +286,11 @@ func handleSQL(ctx context.Context, req mcplib.CallToolRequest) (*mcplib.CallToo
 		return mcplib.NewToolResultError(err.Error()), nil
 	}
 
-	db, err := store.OpenReadOnlyContext(ctx, dbPath())
+	path, err := dbPath()
+	if err != nil {
+		return mcplib.NewToolResultError(fmt.Sprintf("opening database: %v", err)), nil
+	}
+	db, err := store.OpenReadOnlyContext(ctx, path)
 	if err != nil {
 		return mcplib.NewToolResultError(fmt.Sprintf("opening database: %v", err)), nil
 	}

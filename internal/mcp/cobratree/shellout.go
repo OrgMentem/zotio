@@ -109,8 +109,14 @@ func runMirroredInProcess(ctx context.Context, rootFactory func() *cobra.Command
 		finalArgs = append(finalArgs, "--agent")
 	}
 	finalArgs = append(finalArgs, cliArgsFromMCP(args)...)
-	if raw, _ := args["args"].(string); strings.TrimSpace(raw) != "" {
-		finalArgs = append(finalArgs, splitShellArgs(raw)...)
+	if rawArgs, exists := args["args"]; exists && rawArgs != nil {
+		text, ok := rawArgs.(string)
+		if !ok {
+			return mcplib.NewToolResultError(mirrorArgsTypeError(rawArgs).Error())
+		}
+		if strings.TrimSpace(text) != "" {
+			finalArgs = append(finalArgs, splitShellArgs(text)...)
+		}
 	}
 	root.SetOut(&buf)
 	root.SetErr(&buf)
@@ -127,6 +133,17 @@ func runMirroredInProcess(ctx context.Context, rootFactory func() *cobra.Command
 	// enough room for opaque-data framing. JSON is classified before a
 	// truncation preview can make opaque data look structured.
 	return mcplib.NewToolResultText(bound.LibraryTextCapture(buf.String(), buf.Total(), bound.MaxBytes))
+}
+
+// mirrorArgsTypeError reports a non-string positional-args value. The mirror
+// schema declares args as a string, and Cobra positionals are strings, so a
+// numeric, boolean, array, or object value is a malformed call, not a value
+// to coerce: coercing only some shapes (numbers) while guessing at others
+// (arrays, objects) would accept different malformed calls differently. The
+// workflow_submit surface already refuses non-string args the same way, so
+// the mirror, the facade, and workflow stay identical per ADR-0001.
+func mirrorArgsTypeError(v any) error {
+	return fmt.Errorf("MCP command mirror args must be a string of positional arguments, got %T", v)
 }
 
 // mirroredErrorText keeps a failing command's library output inside the same

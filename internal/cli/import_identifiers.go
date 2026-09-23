@@ -49,6 +49,7 @@ func newImportPmidCmd(flags *rootFlags) *cobra.Command {
 The item previews by default and is created only under --yes; --dry-run always
 wins over --yes.`,
 		Annotations: map[string]string{"zotio:method": "POST", "zotio:path": "/items"},
+		Args:        cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if len(args) == 0 {
 				return cmd.Help()
@@ -178,6 +179,7 @@ func newImportArxivCmd(flags *rootFlags) *cobra.Command {
 The item previews by default and is created only under --yes; --dry-run always
 wins over --yes.`,
 		Annotations: map[string]string{"zotio:method": "POST", "zotio:path": "/items"},
+		Args:        cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if len(args) == 0 {
 				return cmd.Help()
@@ -285,6 +287,7 @@ func newImportIsbnCmd(flags *rootFlags) *cobra.Command {
 The item previews by default and is created only under --yes; --dry-run always
 wins over --yes.`,
 		Annotations: map[string]string{"zotio:method": "POST", "zotio:path": "/items"},
+		Args:        cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if len(args) == 0 {
 				return cmd.Help()

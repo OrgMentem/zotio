@@ -1566,10 +1566,10 @@ func printProvenance(cmd *cobra.Command, count int, prov DataProvenance) {
 //   - A JSON array (list/search reads) passes through unchanged.
 //   - A JSON object (single-resource reads like `items get`) becomes a
 //     one-element array, not a bare object.
-//   - Non-JSON payloads (e.g. XML/RSS responses, plain text) become a
-//     one-element array holding the raw text as a JSON string, so
-//     json.Marshal doesn't choke on "invalid character '<'" while still
-//     passing the raw payload through to the consumer.
+//   - Text formats (e.g. XML/RSS, BibTeX) become a one-element array
+//     holding the raw text as a JSON string. Live reads expecting JSON
+//     reject malformed bodies in resolveRead before reaching this wrapper.
+//     Direct callers also retain the text fallback.
 func wrapWithProvenance(data json.RawMessage, prov DataProvenance) (json.RawMessage, error) {
 	return wrapWithProvenanceExtra(data, prov, nil)
 }
@@ -1644,10 +1644,10 @@ func wrapWithProvenanceExtra(data json.RawMessage, prov DataProvenance, extra ma
 }
 
 // normalizeResultsArray enforces the read-envelope invariant that .results
-// is always a JSON array (see wrapWithProvenance). It never fully decodes
-// data — a leading-byte check after trimming whitespace is enough to tell
-// an existing JSON array from everything else, so a large item list is not
-// re-parsed just to be wrapped.
+// is always a JSON array (see wrapWithProvenance). Non-JSON data can still
+// arrive from a requested text format or a direct caller; resolveRead rejects
+// malformed live JSON before it reaches this function. Valid arrays need only
+// a leading-byte check after trimming whitespace, not another full decode.
 func normalizeResultsArray(data json.RawMessage) any {
 	if !json.Valid(data) {
 		return []any{string(data)}
@@ -1698,11 +1698,7 @@ func defaultDBPathFor(gid, name string) (string, error) {
 	}
 	dataDir, err := cliutil.KindDir(cliutil.PathKindData)
 	if err != nil {
-		home, homeErr := os.UserHomeDir()
-		if homeErr != nil {
-			return "", fmt.Errorf("resolving data directory: %w; and home directory: %w", err, homeErr)
-		}
-		dataDir = filepath.Join(home, ".local", "share", name)
+		return "", fmt.Errorf("resolving data directory: %w", err)
 	}
 	file := "data.db"
 	if gid != "" {
