@@ -60,7 +60,7 @@ content hash as export snapshot, and separates semantic drift (added, removed,
 changed) from Zotero version churn (touched). Touched items have a newer version
 but identical normalized content and never fail --fail-on-drift.`,
 		Example: `  zotio export snapshot verify backup.jsonl.manifest.json
-  zotio export snapshot verify backup.jsonl.manifest.json --fail-on-drift
+  zotio export snapshot verify library.bib.manifest.json --fail-on-drift
   zotio export snapshot verify backup.jsonl.manifest.json --json`,
 		Args:        cobra.ExactArgs(1),
 		Annotations: map[string]string{"mcp:read-only": "true"},

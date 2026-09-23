@@ -188,6 +188,35 @@ Notable changes to zotio. Format follows [Keep a Changelog](https://keepachangel
   `groups list`, which read outside the shared path. Text formats such as
   `bibtex`, `ris` and `keys` still arrive as a string result.
 
+### Added
+
+- **`export snapshot --format bibtex|ris|csljson`.** A whole library,
+  collection or tag scope can now be snapshotted as one `.bib`, `.ris` or
+  CSL-JSON file with the same resumable paging and the same manifest as the
+  JSONL snapshot. Each page is requested as `format=json&include=data,<format>`,
+  so the manifest still records each item's key, version and data hash, and
+  `export snapshot verify` means the same thing in every format. The manifest
+  and the checkpoint record the format; `--resume` with a different format is
+  refused before any request. A page that lacks the requested field fails
+  with exit 5 and names the item instead of writing an empty entry. JSONL
+  stays the default and is unchanged.
+- **`items unfiled --suggest` ranks collections to file each item into.** It
+  compares each unfiled item's tags, creators and venue with the items already
+  filed, using the same signals as `items similar`, and scores a collection by
+  the mean of its three best-matching members. Each row gains `suggestions`
+  (collection, name, score, reasons; `--suggest-limit`, default 3) and a
+  `recommended_action` such as `zotio items move K1 --to ABCD1234`. An item
+  with no match gets `suggestions: []`. It reads the local mirror only and
+  never moves anything; `--help` shows the pipe into `items move --keys-from`.
+- **`searches materialize` refreshes a collection and can prune it.** It now
+  reads the target collection first and plans an add only for search results
+  that are missing, instead of one operation per result. The output reports
+  `unchanged_count`, `stale_count` and `stale_keys` under `journal`, next to
+  the `run_id` of an applied run. `--prune` also removes stale members, as
+  undoable membership removals, still preview-first. It refuses `--prune`
+  when the search returns nothing but the collection has members, so a
+  closed Zotero or a broken search cannot empty a collection.
+
 ## [0.26.0] — 2026-09-15
 
 ### Changed — breaking

@@ -23,6 +23,7 @@ type exportCheckpointSource struct {
 }
 
 type exportCheckpoint struct {
+	Format    string                 `json:"format,omitempty"`
 	Path      string                 `json:"path"`
 	NextStart int                    `json:"next_start"`
 	Fetched   int                    `json:"fetched"`
@@ -100,14 +101,18 @@ func writeExportCheckpoint(file string, cp exportCheckpoint) error {
 	return os.WriteFile(file, data, 0o600)
 }
 
-func resumablePaginatedFetch(ctx context.Context, c *client.Client, path string, params map[string]string, pageSize, limit int, checkpointFile, profile string, onPage func(page []json.RawMessage) error) (fetched int, err error) {
+func resumablePaginatedFetch(ctx context.Context, c *client.Client, path string, params map[string]string, pageSize, limit int, checkpointFile, profile string, onPage func(page []json.RawMessage) error, format ...string) (fetched int, err error) {
 	pageSize = normalizedExportPageSize(pageSize)
 	source := exportReadSource(c, profile)
 	scope := exportCheckpointScope(source, path, params, pageSize, limit)
+	snapshotFormat := "jsonl"
+	if len(format) > 0 {
+		snapshotFormat = format[0]
+	}
 	start := 0
 	if checkpointFile != "" {
 		if cp, ok := readExportCheckpoint(checkpointFile); ok && !cp.Done {
-			if cp.Path != path || cp.Source != source || cp.Scope != scope {
+			if cp.Path != path || cp.Source != source || cp.Scope != scope || checkpointFormat(cp) != snapshotFormat {
 				return 0, fmt.Errorf("checkpoint scope does not match this export; remove the checkpoint or rerun without --resume")
 			}
 			start = cp.NextStart
@@ -156,7 +161,7 @@ func resumablePaginatedFetch(ctx context.Context, c *client.Client, path string,
 		start += len(page)
 		done := len(page) < thisLimit || (limit > 0 && fetched >= limit)
 		if checkpointFile != "" {
-			cp := exportCheckpoint{Path: path, Scope: scope, Source: source, NextStart: start, Fetched: fetched, Done: done}
+			cp := exportCheckpoint{Path: path, Scope: scope, Source: source, Format: snapshotFormat, NextStart: start, Fetched: fetched, Done: done}
 			if err := writeExportCheckpoint(checkpointFile, cp); err != nil {
 				return fetched, err
 			}
@@ -167,4 +172,11 @@ func resumablePaginatedFetch(ctx context.Context, c *client.Client, path string,
 	}
 
 	return fetched, nil
+}
+
+func checkpointFormat(cp exportCheckpoint) string {
+	if cp.Format == "" {
+		return "jsonl"
+	}
+	return cp.Format
 }

@@ -780,10 +780,11 @@ Examples:
 
 Reproducible, resumable paginated export with a content manifest
 
-Export a structured item set (JSONL) across all pages into a data file,
-plus a sidecar manifest (<output>.manifest.json) recording each item's key+version
-and a content hash for reproducibility/drift detection. Resumable: an interrupted
-run can continue with --resume (a <output>.checkpoint.json sidecar tracks progress).
+Export every page of a library, collection, or tag scope as JSONL, BibTeX,
+RIS, or CSL-JSON. A sidecar manifest (<output>.manifest.json) records each
+item's key, version, and canonical data hash for drift detection. An
+interrupted run continues with --resume using <output>.checkpoint.json.
+Translator formats need Zotero to return the requested include field.
 
 Scope is one of: library (default), collection:KEY, or tag:NAME.
 
@@ -795,16 +796,18 @@ Examples:
 
 ```bash
 zotio export snapshot --output backup.jsonl
-  zotio export snapshot collection:ABCD1234 --output coll.jsonl
-  zotio export snapshot --output backup.jsonl --resume
+  zotio export snapshot --format bibtex --output library.bib
+  zotio export snapshot collection:ABCD1234 --format ris --output coll.ris
+  zotio export snapshot --format csljson --output library.json --resume
 ```
 
 | Flag | Type | Default | Description |
 | --- | --- | --- | --- |
+| `--format` | `string` | `jsonl` | Snapshot format: jsonl, bibtex, ris, or csljson |
 | `--limit` | `int` | `0` | Maximum items to export (0 = all) |
 | `--page-size` | `int` | `100` | Items per API page (1-100) |
 | `--resume` | `bool` | `false` | Resume an interrupted snapshot from its checkpoint sidecar |
-| `-o, --output` | `string` |  | Output JSONL data file (required); the manifest is written to <output>.manifest.json |
+| `-o, --output` | `string` |  | Output data file (required); the manifest is written to <output>.manifest.json |
 
 #### `zotio export snapshot verify`
 
@@ -825,7 +828,7 @@ Examples:
 
 ```bash
 zotio export snapshot verify backup.jsonl.manifest.json
-  zotio export snapshot verify backup.jsonl.manifest.json --fail-on-drift
+  zotio export snapshot verify library.bib.manifest.json --fail-on-drift
   zotio export snapshot verify backup.jsonl.manifest.json --json
 ```
 
@@ -2098,13 +2101,26 @@ zotio items trash
 
 List top-level items not assigned to any collection
 
+List top-level items without collections from the local mirror. With --suggest, rank existing collections using shared tags, creators, and venue against filed items. Each collection scores the mean of its three best member matches (or all members when fewer than three). Suggestions are read-only and never move items.
+
 ```
 zotio items unfiled [flags]
+```
+
+Examples:
+
+```bash
+zotio items unfiled --suggest --json
+  zotio items unfiled --suggest --suggest-limit 5 --type book
+  # File every item whose best suggestion is collection ABCD1234 (preview; add --yes to apply)
+  zotio items unfiled --suggest --json | jq '[.results[] | select(.suggestions[0].collection == "ABCD1234")]' | zotio items move --keys-from - --to ABCD1234
 ```
 
 | Flag | Type | Default | Description |
 | --- | --- | --- | --- |
 | `--limit` | `int` | `0` | Maximum number of items to return (0 = no limit) |
+| `--suggest` | `bool` | `false` | Suggest collections from local tags, creators, and venue (read-only) |
+| `--suggest-limit` | `int` | `3` | Maximum collection suggestions per item (requires --suggest) |
 | `--type` | `string` |  | Filter by Zotero item type |
 
 ### `zotio items update`
@@ -2680,15 +2696,25 @@ zotio searches list
 
 ### `zotio searches materialize`
 
-Add items from a saved search to a collection
+Refresh a collection from a saved search, optionally removing stale members
+
+Refresh a collection from a saved search. Add only missing items; report
+unchanged and stale members. By default, leave stale members in the collection.
+Use --prune to remove stale members; writes still require --yes. Refuse to prune
+when an empty search would remove members of a non-empty collection.
+
+No search-to-collection binding is stored. For a scheduled refresh, put this
+command in refresh.json, then run 'zotio watch --workflow refresh.json --yes'
+after each sync (or run 'zotio workflow run refresh.json --yes').
 
 ```
-zotio searches materialize <searchKey> --to <collectionKey> [flags]
+zotio searches materialize <searchKey> --to <collectionKey> [--prune] [flags]
 ```
 
 | Flag | Type | Default | Description |
 | --- | --- | --- | --- |
-| `--to` | `string` |  | Collection key to add saved-search items into |
+| `--prune` | `bool` | `false` | Remove collection members absent from the saved search (requires --yes to apply) |
+| `--to` | `string` |  | Collection key to refresh from saved-search items |
 
 ### `zotio searches run`
 

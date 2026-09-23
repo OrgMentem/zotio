@@ -41,12 +41,12 @@ func TestExportHelpMatchesSnapshotFlags(t *testing.T) {
 	if err := snapshot.Execute(); err != nil {
 		t.Fatalf("export snapshot --help: %v", err)
 	}
-	for _, flag := range []string{"--output", "--limit", "--page-size", "--resume"} {
+	for _, flag := range []string{"--output", "--format", "--limit", "--page-size", "--resume"} {
 		if !strings.Contains(snapshotHelp.String(), flag) {
 			t.Fatalf("export snapshot --help omits documented %s:\n%s", flag, snapshotHelp.String())
 		}
 	}
-	for _, flag := range []string{"--format", "--no-cache"} {
+	for _, flag := range []string{"--no-cache"} {
 		if strings.Contains(snapshotHelp.String(), flag) {
 			t.Fatalf("export snapshot --help advertises rejected %s:\n%s", flag, snapshotHelp.String())
 		}

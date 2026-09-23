@@ -3,6 +3,7 @@
 package cli
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -16,39 +17,21 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// zoteroResultIsEmpty reports whether a saved-search result page carries no
-// items. It is a pagination terminator, not an availability check: an
-// unreachable plane is refused as a precondition before this runs.
-func zoteroResultIsEmpty(data json.RawMessage) bool {
-	if len(strings.TrimSpace(string(data))) == 0 {
-		return true
-	}
-	var items []json.RawMessage
-	if err := json.Unmarshal(data, &items); err == nil {
-		return len(items) == 0
-	}
-	var obj map[string]json.RawMessage
-	if err := json.Unmarshal(data, &obj); err != nil {
-		return false
-	}
-	for _, key := range []string{"data", "items", "results"} {
-		raw, ok := obj[key]
-		if !ok {
-			continue
-		}
-		if json.Unmarshal(raw, &items) == nil {
-			return len(items) == 0
-		}
-	}
-	return false
-}
-
 func newSearchesMaterializeCmd(flags *rootFlags) *cobra.Command {
 	var toCollection string
+	var prune bool
 
 	cmd := &cobra.Command{
-		Use:   "materialize <searchKey> --to <collectionKey>",
-		Short: "Add items from a saved search to a collection",
+		Use:   "materialize <searchKey> --to <collectionKey> [--prune]",
+		Short: "Refresh a collection from a saved search, optionally removing stale members",
+		Long: `Refresh a collection from a saved search. Add only missing items; report
+unchanged and stale members. By default, leave stale members in the collection.
+Use --prune to remove stale members; writes still require --yes. Refuse to prune
+when an empty search would remove members of a non-empty collection.
+
+No search-to-collection binding is stored. For a scheduled refresh, put this
+command in refresh.json, then run 'zotio watch --workflow refresh.json --yes'
+after each sync (or run 'zotio workflow run refresh.json --yes').`,
 		Annotations: map[string]string{
 			"mcp:read-only":                    "false",
 			"zotio:destructive":                "false",
@@ -64,108 +47,75 @@ func newSearchesMaterializeCmd(flags *rootFlags) *cobra.Command {
 			if toCollection == "" {
 				return fmt.Errorf("required flag %q not set", "to")
 			}
-			return runSearchesMaterializeMutation(cmd, flags, args[0], toCollection)
+			return runSearchesMaterializeMutation(cmd, flags, args[0], toCollection, prune)
 		},
 	}
-	cmd.Flags().StringVar(&toCollection, "to", "", "Collection key to add saved-search items into")
+	cmd.Flags().StringVar(&toCollection, "to", "", "Collection key to refresh from saved-search items")
+	cmd.Flags().BoolVar(&prune, "prune", false, "Remove collection members absent from the saved search (requires --yes to apply)")
 	return cmd
 }
 
-func runSearchesMaterializeMutation(cmd *cobra.Command, flags *rootFlags, searchKey, toCollection string) error {
+func runSearchesMaterializeMutation(cmd *cobra.Command, flags *rootFlags, searchKey, toCollection string, prune bool) error {
 	readClient, err := flags.newClient()
 	if err != nil {
 		return err
 	}
 
+	// Both sets come from the configured read plane. /collections/{key}/items
+	// includes child items that can belong to a collection; /items/top omits
+	// them. Apply-time item reads and PATCHes use the write plane.
 	searchPath := "/searches/" + url.PathEscape(searchKey) + "/items"
-	// Walk the saved-search items endpoint to exhaustion. The Zotero API
-	// paginates with limit/start (default ~25, max zoteroPageMax=100), so a
-	// single unpaginated fetch silently truncates any search larger than one
-	// page. Accumulate every page before building the mutation plan.
-	//
-	// Saved-search membership comes from the configured read plane. Under
-	// hybrid routing this is Zotero desktop, while apply-time version reads
-	// and PATCHes use a separate client pinned to the Web API write plane.
-	var allKeys []string
-	seen := make(map[string]bool, zoteroPageMax)
-	for start := 0; ; start += zoteroPageMax {
-		params := map[string]string{
-			"limit": strconv.Itoa(zoteroPageMax),
-			"start": strconv.Itoa(start),
+	allKeys, err := searchesMaterializeKeys(readClient, searchPath, "saved search "+searchKey)
+	if err != nil {
+		if isNetworkError(err) || isAPIStatus(err, http.StatusNotFound) {
+			return emitPreconditionUnmetWithRemediation(cmd.OutOrStdout(), flags, "searches materialize", preconditionLiveLocalAPI,
+				fmt.Sprintf("saved search %s could not be executed, so no membership is known to materialize: %v", searchKey, err),
+				remediationFor(cmd.Context(), flags, preconditionLiveLocalAPI))
 		}
-		data, err := readClient.Get(searchPath, params)
-		if err != nil {
-			// A plane that cannot execute the search is a precondition, not an
-			// empty plan. Rendering an empty plan here made "Zotero is closed"
-			// look exactly like "the search matches nothing", and the operator
-			// would conclude the collection needed no items.
-			if start == 0 && (isNetworkError(err) || isAPIStatus(err, http.StatusNotFound)) {
-				return emitPreconditionUnmetWithRemediation(cmd.OutOrStdout(), flags, "searches materialize", preconditionLiveLocalAPI,
-					fmt.Sprintf("saved search %s could not be executed, so no membership is known to materialize: %v", searchKey, err),
-					remediationFor(cmd.Context(), flags, preconditionLiveLocalAPI))
-			}
-			return fmt.Errorf("fetching saved search %s items at start %d: %w", searchKey, start, err)
-		}
-		if zoteroResultIsEmpty(data) {
-			if start == 0 {
-				return renderEmptySearchesMaterializePlan(cmd, flags, "saved search returned no items")
-			}
-			break
-		}
+		return err
+	}
+	collectionPath := "/collections/" + url.PathEscape(toCollection) + "/items"
+	currentKeys, err := searchesMaterializeKeys(readClient, collectionPath, "collection "+toCollection)
+	if err != nil {
+		return classifyAPIError(fmt.Errorf("cannot read target collection %s membership; refusing refresh: %w", toCollection, err), flags)
+	}
+	if prune && len(allKeys) == 0 && len(currentKeys) != 0 {
+		return preconditionErr(fmt.Errorf("refusing --prune: saved search %s returned zero items; pruning would empty collection %s (%d members), possibly because Zotero is closed or the search is broken", searchKey, toCollection, len(currentKeys)))
+	}
 
-		keys, err := searchMaterializeItemKeys(data)
-		if err != nil {
-			return err
-		}
-		if len(keys) == 0 {
-			if start == 0 {
-				return renderEmptySearchesMaterializePlan(cmd, flags, "saved search returned no item keys")
-			}
-			break
-		}
-		// A server that ignores start would repeat keys forever and either
-		// loop or double-file items. Treat a cross-page repeat as a
-		// pagination failure rather than silently duplicating operations.
-		// A duplicate *within* a single page is a benign server anomaly:
-		// skip the repeat and emit one operation. This keeps the
-		// pagination-integrity signal (hard error for cross-page repeats)
-		// while preventing duplicate mutation ops from a single-page quirk.
-		pageSeen := make(map[string]bool, len(keys))
-		unique := make([]string, 0, len(keys))
-		for _, key := range keys {
-			if seen[key] {
-				return fmt.Errorf("pagination for saved search %s ignored start %d (duplicate key %s)", searchKey, start, key)
-			}
-			if pageSeen[key] {
-				continue
-			}
-			pageSeen[key] = true
-			unique = append(unique, key)
-		}
-		for _, key := range unique {
-			seen[key] = true
-		}
-		allKeys = append(allKeys, unique...)
-		if len(keys) < zoteroPageMax {
-			break
+	current := make(map[string]bool, len(currentKeys))
+	for _, key := range currentKeys {
+		current[key] = true
+	}
+	matched := make(map[string]bool, len(allKeys))
+	adds := make([]string, 0, len(allKeys))
+	unchanged := 0
+	for _, key := range allKeys {
+		matched[key] = true
+		if current[key] {
+			unchanged++
+		} else {
+			adds = append(adds, key)
 		}
 	}
-	if len(allKeys) == 0 {
-		return renderEmptySearchesMaterializePlan(cmd, flags, "saved search returned no item keys")
+	stale := make([]string, 0)
+	for _, key := range currentKeys {
+		if !matched[key] {
+			stale = append(stale, key)
+		}
 	}
+
 	var writeClient *client.Client
-	if resolveMutationMode(flags).Apply {
+	if resolveMutationMode(flags).Apply && (len(adds) != 0 || (prune && len(stale) != 0)) {
 		writeClient, err = flags.newWriteClient()
 		if err != nil {
 			return err
 		}
 	}
-
-	ops := make([]mutation.Op, 0, len(allKeys))
-	for _, key := range allKeys {
+	ops := make([]mutation.Op, 0, len(adds)+len(stale))
+	for _, key := range adds {
 		keyCopy := key
 		pathCopy := replacePathParam("/items/{itemKey}", "itemKey", keyCopy)
-		toCopy := toCollection
 		ops = append(ops, mutation.Op{
 			ID:          "searches.materialize:" + keyCopy,
 			Key:         keyCopy,
@@ -173,33 +123,103 @@ func runSearchesMaterializeMutation(cmd *cobra.Command, flags *rootFlags, search
 			Changes:     []mutation.Change{{Field: "collections", Add: toCollection}},
 			Destructive: false,
 			Apply: func() (string, any, error) {
-				return applySearchesMaterializeCollectionAdd(writeClient, pathCopy, toCopy)
+				return applySearchesMaterializeCollectionAdd(writeClient, pathCopy, toCollection)
 			},
 		})
 	}
-
+	if prune {
+		for _, key := range stale {
+			keyCopy := key
+			pathCopy := replacePathParam("/items/{itemKey}", "itemKey", keyCopy)
+			ops = append(ops, mutation.Op{
+				ID:          "searches.materialize:" + keyCopy,
+				Key:         keyCopy,
+				Kind:        "collection_remove",
+				Changes:     []mutation.Change{{Field: "collections", Remove: toCollection}},
+				Destructive: false, // As with items move --from, membership removal is reversible.
+				Apply: func() (string, any, error) {
+					return applyItemCollectionMove(writeClient, pathCopy, toCollection, "")
+				},
+			})
+		}
+	}
 	env, runErr := runMutation(cmd.Context(), flags, "searches.materialize", ops)
+	// Merge into the journal object rather than replace it: after an applied
+	// run it already carries the run_id that journal undo and workflow steps
+	// read, and --prune removals must stay undoable by that ID.
+	journal, _ := env.Journal.(map[string]any)
+	if journal == nil {
+		journal = map[string]any{}
+	}
+	journal["unchanged_count"] = unchanged
+	journal["stale_count"] = len(stale)
+	journal["stale_keys"] = stale
+	if len(stale) != 0 && !prune {
+		journal["prune_hint"] = "Run again with --prune to remove stale members (and --yes to apply)."
+	}
+	if len(allKeys) == 0 {
+		journal["message"] = "saved search returned no items"
+	}
+	env.Journal = journal
 	renderErr := renderMutation(cmd, flags, env, searchesMaterializeSingleLine(toCollection))
 	if renderErr != nil {
 		return renderErr
 	}
+	if (flags == nil || !flags.asJSON) && isTerminal(cmd.OutOrStdout()) {
+		fmt.Fprintf(cmd.OutOrStdout(), "%d unchanged; %d stale", unchanged, len(stale))
+		if len(stale) != 0 {
+			fmt.Fprintf(cmd.OutOrStdout(), " (%s)", strings.Join(stale, ", "))
+		}
+		fmt.Fprintln(cmd.OutOrStdout())
+		if hint, ok := journal["prune_hint"]; ok {
+			fmt.Fprintln(cmd.OutOrStdout(), hint)
+		}
+	}
 	return runErr
 }
 
-func renderEmptySearchesMaterializePlan(cmd *cobra.Command, flags *rootFlags, message string) error {
-	env, runErr := runMutation(cmd.Context(), flags, "searches.materialize", nil)
-	env.Journal = map[string]any{"message": message}
-	renderErr := renderMutation(cmd, flags, env, searchesMaterializeSingleLine(""))
-	if renderErr != nil {
-		return renderErr
+// searchesMaterializeKeys reads every page and refuses a cross-page repeat.
+// A duplicate within one page is harmless and produces only one key.
+func searchesMaterializeKeys(c *client.Client, path, label string) ([]string, error) {
+	var allKeys []string
+	seen := make(map[string]bool, zoteroPageMax)
+	for start := 0; ; start += zoteroPageMax {
+		data, err := c.Get(path, map[string]string{
+			"limit": strconv.Itoa(zoteroPageMax),
+			"start": strconv.Itoa(start),
+		})
+		if err != nil {
+			return nil, fmt.Errorf("fetching %s items at start %d: %w", label, start, err)
+		}
+		keys, err := searchMaterializeItemKeys(data)
+		if err != nil {
+			return nil, fmt.Errorf("parsing %s items at start %d: %w", label, start, err)
+		}
+		pageSeen := make(map[string]bool, len(keys))
+		for _, key := range keys {
+			if seen[key] {
+				return nil, fmt.Errorf("pagination for %s ignored start %d (duplicate key %s)", label, start, key)
+			}
+			if !pageSeen[key] {
+				pageSeen[key] = true
+				allKeys = append(allKeys, key)
+			}
+		}
+		for key := range pageSeen {
+			seen[key] = true
+		}
+		if len(keys) < zoteroPageMax {
+			break
+		}
 	}
-	if (flags == nil || !flags.asJSON) && isTerminal(cmd.OutOrStdout()) {
-		fmt.Fprintln(cmd.OutOrStdout(), message)
-	}
-	return runErr
+	return allKeys, nil
 }
 
 func searchMaterializeItemKeys(data json.RawMessage) ([]string, error) {
+	trimmed := bytes.TrimSpace(data)
+	if len(trimmed) == 0 || trimmed[0] != '[' {
+		return nil, fmt.Errorf("expected an item array, not an empty or malformed response")
+	}
 	var items []struct {
 		Key string `json:"key"`
 	}
