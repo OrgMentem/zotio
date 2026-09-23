@@ -485,6 +485,8 @@ var fanoutRefusalReasons = map[string]fanoutRefusalReason{
 		"it writes one caller-named export, so each library would overwrite the last"},
 	"import discover": {fanoutOutputNamespaceSafe,
 		"it writes one caller-named manifest, so each library would overwrite the last"},
+	"import monitor": {fanoutOutputNamespaceSafe,
+		"it writes one caller-named manifest, so each library would overwrite the last"},
 	"groups list": {fanoutLibraryScoped,
 		"it is account-level: groups are only listable under the personal-library prefix, so every group iteration would refuse"},
 	"groups inspect": {fanoutLibraryScoped,

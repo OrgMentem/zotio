@@ -1208,6 +1208,43 @@
     }
   },
   {
+    "name": "import_monitor",
+    "description": "Search OpenAlex for works published since a date, then exclude works already in the synced library (by DOI, then by normalized title). The result is a reviewable import manifest; nothing is written to Zotero.\n\nThere is no saved state. Run this command on a schedule with an OS scheduler or a workflow spec. Set --since a few weeks before the last run to overlap search windows. Library de-duplication removes works you already imported. OpenAlex publication-date filters cannot reliably find newly indexed or backdated works, so this is not a complete feed of newly indexed records. Review the manifest with import resolve, then write it with import apply. Works without a DOI are counted but omitted because import resolve needs a DOI to fetch their metadata.",
+    "inputSchema": {
+      "properties": {
+        "author": {
+          "description": "Author ORCID or OpenAlex author ID (or their https URL); repeat to match any author",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "limit": {
+          "description": "Maximum manifest entries to write (default: 25)",
+          "type": "number"
+        },
+        "out": {
+          "description": "Required reviewable import manifest output path",
+          "type": "string"
+        },
+        "query": {
+          "description": "Free-text topic search; with --author, match both",
+          "type": "string"
+        },
+        "since": {
+          "description": "Required publication date lower bound (YYYY-MM-DD, inclusive)",
+          "type": "string"
+        },
+        "until": {
+          "description": "Publication date upper bound (YYYY-MM-DD, inclusive)",
+          "type": "string"
+        }
+      },
+      "required": [],
+      "type": "object"
+    }
+  },
+  {
     "name": "import_pdf",
     "description": "Create Zotero items from local PDF files by asking the Zotero desktop Connector\nAPI to save each PDF as a standalone attachment and run Zotero's metadata recognizer.\n\nThis command requires a local Zotero base URL, Zotero running, and Zotero's local API\npreference enabled. Recognition failures are reported as unrecognized standalone PDF\nattachments instead of hard errors. The plan phase probes the connector before\npreviewing or applying anything, so a missing desktop fails loudly instead of a\n--dry-run silently planning an import that cannot run.\n\nBefore importing, each PDF is classified against your synced library the same way\n'import scan' does (DOI match). A DOI that already has a copy on file is handled per\n--on-duplicate (skip, attach, or create) instead of always minting a second item; a\nsynced library is required for that check, and its absence only disables the check,\nnever the import.\n\n--collection \u003ckey|name\u003e files the created item into a collection after import,\ncreating a same-named collection when one doesn't already exist (like 'items\nadd-to-collection'). This is a separate step, not part of the connector call: the\nsaveStandaloneAttachment endpoint saves into whatever the desktop pane currently\ntargets and accepts no collection parameter.\n\n--via connector hands work to the running Zotero desktop, which surfaces its\nown progress UI; zotio cannot dismiss it and the connector protocol exposes no\nendpoint that closes or completes a save session. Observed 2026-08-22: roughly\n78 consecutive one-per-item invocations left Zotero unresponsive with progress\nwindows accumulating; no proven mechanism has been established. Prefer one\ninvocation with many PDFs: import file --via connector and items create share\none session (import apply opens one per manifest entry). --rate-limit\ngoverns only Web API requests and does not pace connector calls.",
     "inputSchema": {

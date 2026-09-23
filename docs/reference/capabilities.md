@@ -46,6 +46,7 @@ The machine-readable registry every command is classified against — read vs. w
 | `import doi` | write | `web_api` |  | `web_api_key` |
 | `import file` | write | `web_api` |  | `web_api_key` |
 | `import isbn` | write | `web_api` |  | `web_api_key` |
+| `import monitor` | read |  |  | `synced_store` |
 | `import pdf` | write | `desktop_connector` |  | `desktop_connector` |
 | `import pmid` | write | `web_api` |  | `web_api_key` |
 | `import resolve` | read |  |  |  |

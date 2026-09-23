@@ -550,7 +550,7 @@ func fetchCOCICitationDOIs(ctx context.Context, httpClient *http.Client, doi str
 }
 
 const (
-	openAlexForwardPageSize = 200
+	openAlexForwardPageSize = 100
 	openAlexForwardCap      = 1000
 )
 
@@ -591,7 +591,7 @@ func fetchOpenAlexCitingWorkDOIs(ctx context.Context, httpClient *http.Client, w
 		v := url.Values{
 			"cursor":   {cursor},
 			"filter":   {"cites:" + workID},
-			"per-page": {fmt.Sprintf("%d", openAlexForwardPageSize)},
+			"per_page": {fmt.Sprintf("%d", openAlexForwardPageSize)},
 			// Trim pages to the two fields we consume; full work objects
 			// (abstracts, authorships) overflow the provider response cap.
 			"select": {"id,doi"},

@@ -233,9 +233,9 @@ func TestFetchIncomingReferencesOpenAlexFallbackPaginatesAndTruncatesAtCap(t *te
 				pages := make(map[string]struct {
 					next string
 					dois []string
-				}, 5)
+				}, openAlexForwardCap/openAlexForwardPageSize)
 				cursor := "*"
-				for page := 0; page < 5; page++ {
+				for page := range openAlexForwardCap / openAlexForwardPageSize {
 					dois := make([]string, 0, openAlexForwardPageSize)
 					for i := 0; i < openAlexForwardPageSize; i++ {
 						dois = append(dois, fmt.Sprintf("https://doi.org/10.4200/citing-%03d", page*openAlexForwardPageSize+i))
@@ -249,9 +249,9 @@ func TestFetchIncomingReferencesOpenAlexFallbackPaginatesAndTruncatesAtCap(t *te
 				}
 				return pages
 			}(),
-			wantDOIs:      []string{"10.4200/citing-000", "10.4200/citing-199", "10.4200/citing-200", "10.4200/citing-999"},
+			wantDOIs:      []string{"10.4200/citing-000", "10.4200/citing-099", "10.4200/citing-100", "10.4200/citing-999"},
 			wantTruncated: true,
-			wantCursors:   []string{"*", "c2", "c3", "c4", "c5"},
+			wantCursors:   []string{"*", "c2", "c3", "c4", "c5", "c6", "c7", "c8", "c9", "c10"},
 		},
 		{
 			name:       "COCI error still falls back and collects multiple cursor pages",
@@ -294,8 +294,8 @@ func TestFetchIncomingReferencesOpenAlexFallbackPaginatesAndTruncatesAtCap(t *te
 					if got := r.URL.Query().Get("filter"); got != "cites:W-SOURCE" {
 						t.Errorf("OpenAlex filter = %q, want cites:W-SOURCE", got)
 					}
-					if got := r.URL.Query().Get("per-page"); got != fmt.Sprintf("%d", openAlexForwardPageSize) {
-						t.Errorf("OpenAlex per-page = %q, want %d", got, openAlexForwardPageSize)
+					if got := r.URL.Query().Get("per_page"); got != fmt.Sprintf("%d", openAlexForwardPageSize) || r.URL.Query().Has("per-page") {
+						t.Errorf("OpenAlex per_page = %q, want %d with no deprecated per-page", got, openAlexForwardPageSize)
 					}
 					if got := r.URL.Query().Get("select"); got != "id,doi" {
 						t.Errorf("OpenAlex select = %q, want id,doi", got)
