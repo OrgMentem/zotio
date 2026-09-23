@@ -18,7 +18,12 @@ import (
 
 func runImportMonitorTest(t *testing.T, args ...string) (importMonitorReport, error) {
 	t.Helper()
-	cmd := newImportMonitorCmd(&rootFlags{asJSON: true, noCache: true, timeout: time.Second})
+	return runImportMonitorTestWithFlags(t, &rootFlags{asJSON: true, noCache: true, timeout: time.Second}, args...)
+}
+
+func runImportMonitorTestWithFlags(t *testing.T, flags *rootFlags, args ...string) (importMonitorReport, error) {
+	t.Helper()
+	cmd := newImportMonitorCmd(flags)
 	cmd.SilenceErrors, cmd.SilenceUsage = true, true
 	var out bytes.Buffer
 	cmd.SetOut(&out)
@@ -209,7 +214,43 @@ func TestImportMonitorPageCapReportsIncompleteFeed(t *testing.T) {
 	withBase(t, &enrichOpenAlexBase, server.URL)
 	path := filepath.Join(t.TempDir(), "cap.json")
 	report, err := runImportMonitorTest(t, "--query", "many works", "--since", "2026-01-01", "--out", path)
-	if err != nil || requests != 10 || report.WorksSeen != requests || !report.Truncated || !strings.Contains(report.TruncationReason, "page cap") {
+	if err != nil || requests != 20 || report.WorksSeen != requests || !report.Truncated || !strings.Contains(report.TruncationReason, "page cap") {
 		t.Fatalf("page-cap report = %+v; requests=%d; err=%v", report, requests, err)
+	}
+}
+
+func TestImportMonitorFreshOnRepeatedScheduledRun(t *testing.T) {
+	seedImportDiscoverStore(t, nil)
+	if newProviderJSONCache(false).store == nil {
+		t.Fatal("the test requires the normal provider cache to be available")
+	}
+	requests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		if got := r.URL.Query().Get("per_page"); got != "100" || r.URL.Query().Has("per-page") {
+			t.Errorf("OpenAlex page size = %q; want per_page=100 without legacy per-page", got)
+		}
+		works := []map[string]string{{"id": "W1", "doi": "10.5000/first", "title": "First", "publication_date": "2026-09-01"}}
+		if requests > 1 {
+			works = append(works, map[string]string{"id": "W2", "doi": "10.5000/new", "title": "New", "publication_date": "2026-09-02"})
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"results": works})
+	}))
+	t.Cleanup(server.Close)
+	withBase(t, &enrichOpenAlexBase, server.URL)
+	path := filepath.Join(t.TempDir(), "feed.json")
+	flags := &rootFlags{asJSON: true, timeout: time.Second} // Cache enabled, as on a scheduled run.
+	args := []string{"--query", "graphs", "--since", "2026-08-01", "--out", path}
+	first, err := runImportMonitorTestWithFlags(t, flags, args...)
+	if err != nil || first.Emitted != 1 {
+		t.Fatalf("first run = %+v, %v", first, err)
+	}
+	second, err := runImportMonitorTestWithFlags(t, flags, args...)
+	if err != nil || second.Emitted != 2 || requests != 2 {
+		t.Fatalf("second run = %+v, requests=%d, err=%v; want the newly indexed work", second, requests, err)
+	}
+	manifest, err := readImportManifest(path, nil)
+	if err != nil || len(manifest.Entries) != 2 || manifest.Entries[0].Identifier != "10.5000/new" {
+		t.Fatalf("second manifest = %+v, err=%v", manifest, err)
 	}
 }

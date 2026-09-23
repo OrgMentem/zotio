@@ -17,8 +17,8 @@ import (
 )
 
 const (
-	importMonitorPageSize = 200
-	importMonitorMaxPages = 10 // A provider cursor must never keep a scheduled monitor running forever.
+	importMonitorPageSize = 100
+	importMonitorMaxPages = 20 // Scan at most 2,000 works per author, even if the provider cursor keeps advancing.
 )
 
 var (
@@ -70,8 +70,11 @@ func newImportMonitorCmd(flags *rootFlags) *cobra.Command {
 		Short: "Find new author or topic works and write a reviewable import manifest",
 		Long: "Search OpenAlex for works published since a date, then exclude works already in the synced library " +
 			"(by DOI, then by normalized title). The result is a reviewable import manifest; nothing is written to Zotero.\n\n" +
-			"There is no saved state: run it on a schedule (an OS scheduler or a workflow spec) with --since set to the last run, " +
-			"then review the manifest with import resolve and write it with import apply. " +
+			"There is no saved state. Run this command on a schedule with an OS scheduler or a workflow spec. " +
+			"Set --since a few weeks before the last run to overlap search windows. " +
+			"Library de-duplication removes works you already imported. " +
+			"OpenAlex publication-date filters cannot reliably find newly indexed or backdated works, so this is not a complete feed of newly indexed records. " +
+			"Review the manifest with import resolve, then write it with import apply. " +
 			"Works without a DOI are counted but omitted because import resolve needs a DOI to fetch their metadata.",
 		Example: "  zotio import monitor --author 0000-0002-1825-0097 --since 2026-01-01 --out new-works.json\n" +
 			"  zotio import monitor --query \"bayesian inference\" --author A5023888391 --since 2026-09-01 --out feed.json\n" +
@@ -191,7 +194,6 @@ func buildImportMonitorManifest(ctx context.Context, flags *rootFlags, authors [
 	}
 
 	client := &http.Client{Timeout: enrichTimeout(flags.timeout)}
-	cache := newProviderJSONCache(flags.noCache)
 	if len(authors) == 0 {
 		authors = []monitorAuthor{{}}
 	}
@@ -211,7 +213,7 @@ func buildImportMonitorManifest(ctx context.Context, flags *rootFlags, authors [
 				"filter":   {strings.Join(filters, ",")},
 				"sort":     {"publication_date:desc"},
 				"cursor":   {cursor},
-				"per-page": {fmt.Sprintf("%d", importMonitorPageSize)},
+				"per_page": {fmt.Sprintf("%d", importMonitorPageSize)},
 				"select":   {"id,doi,title,publication_date"},
 			}
 			if query != "" {
@@ -221,7 +223,10 @@ func buildImportMonitorManifest(ctx context.Context, flags *rootFlags, authors [
 				v.Set("mailto", email)
 			}
 			var response monitorWorksPage
-			if err := getCappedProviderJSON(ctx, client, providerOpenAlex, enrichOpenAlexBase+"/works?"+v.Encode(), cache, &response); err != nil {
+			// A scheduled feed must see newly indexed works on every run. The
+			// seven-day provider cache is suitable for metadata lookups, not
+			// for a changing /works listing, so bypass both cache reads and writes.
+			if err := getCappedProviderJSON(ctx, client, providerOpenAlex, enrichOpenAlexBase+"/works?"+v.Encode(), nil, &response); err != nil {
 				return manifest, report, apiErr(fmt.Errorf("fetching OpenAlex works: %w", err))
 			}
 			if response.Results == nil {

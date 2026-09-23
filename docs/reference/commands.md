@@ -1083,6 +1083,35 @@ zotio import isbn <isbn> [flags]
 | `--collection` | `string` |  | Collection key to add the item to |
 | `--fetch-pdf` | `bool` | `false` | Attach an open-access PDF via Zotero's desktop resolver (requires --via connector) |
 
+### `zotio import monitor`
+
+Find new author or topic works and write a reviewable import manifest
+
+Search OpenAlex for works published since a date, then exclude works already in the synced library (by DOI, then by normalized title). The result is a reviewable import manifest; nothing is written to Zotero.
+
+There is no saved state. Run this command on a schedule with an OS scheduler or a workflow spec. Set --since a few weeks before the last run to overlap search windows. Library de-duplication removes works you already imported. OpenAlex publication-date filters cannot reliably find newly indexed or backdated works, so this is not a complete feed of newly indexed records. Review the manifest with import resolve, then write it with import apply. Works without a DOI are counted but omitted because import resolve needs a DOI to fetch their metadata.
+
+```
+zotio import monitor [flags]
+```
+
+Examples:
+
+```bash
+zotio import monitor --author 0000-0002-1825-0097 --since 2026-01-01 --out new-works.json
+  zotio import monitor --query "bayesian inference" --author A5023888391 --since 2026-09-01 --out feed.json
+  zotio import resolve new-works.json > reviewed.json && zotio import apply reviewed.json
+```
+
+| Flag | Type | Default | Description |
+| --- | --- | --- | --- |
+| `--author` | `stringArray` | `[]` | Author ORCID or OpenAlex author ID (or their https URL); repeat to match any author |
+| `--limit` | `int` | `25` | Maximum manifest entries to write |
+| `--out` | `string` |  | Required reviewable import manifest output path |
+| `--query` | `string` |  | Free-text topic search; with --author, match both |
+| `--since` | `string` |  | Required publication date lower bound (YYYY-MM-DD, inclusive) |
+| `--until` | `string` |  | Publication date upper bound (YYYY-MM-DD, inclusive) |
+
 ### `zotio import pdf`
 
 Create items from PDFs using Zotero desktop recognition
