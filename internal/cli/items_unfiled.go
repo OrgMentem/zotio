@@ -138,6 +138,25 @@ type unfiledMemberMatch struct {
 	Venue  float64
 }
 
+// keepBestUnfiledMembers retains at most three matches in score/key order.
+func keepBestUnfiledMembers(members []unfiledMemberMatch, match unfiledMemberMatch) []unfiledMemberMatch {
+	at := 0
+	for at < len(members) &&
+		(members[at].Score > match.Score ||
+			(members[at].Score == match.Score && members[at].Record.Key < match.Record.Key)) {
+		at++
+	}
+	if at == 3 {
+		return members
+	}
+	if len(members) < 3 {
+		members = append(members, unfiledMemberMatch{})
+	}
+	copy(members[at+1:], members[at:len(members)-1])
+	members[at] = match
+	return members
+}
+
 func addUnfiledSuggestions(ctx context.Context, db localQueryStore, rows []map[string]any, limit int) error {
 	if len(rows) == 0 {
 		return nil
@@ -195,17 +214,12 @@ ORDER BY r.id`)
 				match := unfiledMemberMatch{rec, score, sharedTags, sharedPeople, venue}
 				for key := range rec.Collections {
 					if _, exists := names[key]; exists {
-						votes[key] = append(votes[key], match)
+						votes[key] = keepBestUnfiledMembers(votes[key], match)
 					}
 				}
 			}
 			for key, members := range votes {
-				sort.Slice(members, func(i, j int) bool {
-					if members[i].Score == members[j].Score {
-						return members[i].Record.Key < members[j].Record.Key
-					}
-					return members[i].Score > members[j].Score
-				})
+				// The fixed-size list is already in score/key order.
 				// Mean of the top three members, including zero-score members when
 				// available: one accidental match in a large collection cannot win
 				// by itself, while a small collection uses only its actual members.

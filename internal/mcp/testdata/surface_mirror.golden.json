@@ -759,11 +759,15 @@
   },
   {
     "name": "export_snapshot",
-    "description": "Export a structured item set (JSONL) across all pages into a data file,\nplus a sidecar manifest (\u003coutput\u003e.manifest.json) recording each item's key+version\nand a content hash for reproducibility/drift detection. Resumable: an interrupted\nrun can continue with --resume (a \u003coutput\u003e.checkpoint.json sidecar tracks progress).\n\nScope is one of: library (default), collection:KEY, or tag:NAME.",
+    "description": "Export every page of a library, collection, or tag scope as JSONL, BibTeX,\nRIS, or CSL-JSON. A sidecar manifest (\u003coutput\u003e.manifest.json) records each\nitem's key, version, and canonical data hash for drift detection. An\ninterrupted run continues with --resume using \u003coutput\u003e.checkpoint.json.\nTranslator formats need Zotero to return the requested include field.\n\nScope is one of: library (default), collection:KEY, or tag:NAME.",
     "inputSchema": {
       "properties": {
         "args": {
           "description": "Additional positional arguments to append to the command. Raw CLI flags are rejected.",
+          "type": "string"
+        },
+        "format": {
+          "description": "Snapshot format: jsonl, bibtex, ris, or csljson (default: jsonl)",
           "type": "string"
         },
         "limit": {
@@ -771,7 +775,7 @@
           "type": "number"
         },
         "output": {
-          "description": "Output JSONL data file (required); the manifest is written to \u003coutput\u003e.manifest.json",
+          "description": "Output data file (required); the manifest is written to \u003coutput\u003e.manifest.json",
           "type": "string"
         },
         "page-size": {
@@ -2785,11 +2789,19 @@
   },
   {
     "name": "items_unfiled",
-    "description": "List top-level items not assigned to any collection",
+    "description": "List top-level items without collections from the local mirror. With --suggest, rank existing collections using shared tags, creators, and venue against filed items. Each collection scores the mean of its three best member matches (or all members when fewer than three). Suggestions are read-only and never move items.",
     "inputSchema": {
       "properties": {
         "limit": {
           "description": "Maximum number of items to return (0 = no limit) (default: 0)",
+          "type": "number"
+        },
+        "suggest": {
+          "description": "Suggest collections from local tags, creators, and venue (read-only) (default: false)",
+          "type": "boolean"
+        },
+        "suggest-limit": {
+          "description": "Maximum collection suggestions per item (requires --suggest) (default: 3)",
           "type": "number"
         },
         "type": {
@@ -3360,7 +3372,7 @@
   },
   {
     "name": "searches_materialize",
-    "description": "Add items from a saved search to a collection",
+    "description": "Refresh a collection from a saved search. Add only missing items; report\nunchanged and stale members. By default, leave stale members in the collection.\nUse --prune to remove stale members; writes still require --yes. Refuse to prune\nwhen no fileable search items would empty a non-empty collection. Child items\ncannot be filed; add their parents to the saved search instead.\n\nNo search-to-collection binding is stored. For a scheduled refresh, put this\ncommand in refresh.json, then run 'zotio watch --workflow refresh.json --yes'\nafter each sync (or run 'zotio workflow run refresh.json --yes').",
     "inputSchema": {
       "properties": {
         "allow-destructive": {
@@ -3391,8 +3403,12 @@
           "description": "With --continue-on-error, stop after this many failures (0 = unlimited) (default: 0)",
           "type": "number"
         },
+        "prune": {
+          "description": "Remove collection members absent from the saved search (requires --yes to apply) (default: false)",
+          "type": "boolean"
+        },
         "to": {
-          "description": "Collection key to add saved-search items into",
+          "description": "Collection key to refresh from saved-search items",
           "type": "string"
         },
         "yes": {

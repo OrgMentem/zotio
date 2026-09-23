@@ -156,6 +156,78 @@ func TestItemsUnfiledSuggestRanksAndExplainsCollections(t *testing.T) {
 	}
 }
 
+func TestItemsUnfiledSuggestKeepsBestThreeAmongManyTies(t *testing.T) {
+	seedUnfiledSuggestions(t)
+	db, err := store.OpenWithContext(context.Background(), helpersTestDefaultDBPath(t, "zotio"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	members := make([]json.RawMessage, 0, 5)
+	for i := 1; i <= 5; i++ {
+		tag := "botany"
+		if i == 5 {
+			tag = "unrelated"
+		}
+		raw, err := json.Marshal(map[string]any{
+			"key": fmt.Sprintf("T%d", i),
+			"data": map[string]any{
+				"key": fmt.Sprintf("T%d", i), "itemType": "journalArticle",
+				"title": fmt.Sprintf("Member %d", i), "collections": []string{"COLT"},
+				"tags":             []map[string]string{{"tag": tag}},
+				"creators":         []map[string]string{{"name": "Ada Leaf"}},
+				"publicationTitle": "Plant Review",
+			},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		members = append(members, raw)
+	}
+	if _, _, err := db.UpsertBatch("items", members); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := db.UpsertBatch("collections", []json.RawMessage{
+		json.RawMessage(`{"key":"COLT","data":{"key":"COLT","name":"Many ties"}}`),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	output, err := runUnfiledSuggestCommand(t, "--suggest")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var envelope struct {
+		Results []struct {
+			Key         string              `json:"key"`
+			Suggestions []unfiledSuggestion `json:"suggestions"`
+		} `json:"results"`
+	}
+	if err := json.Unmarshal(output, &envelope); err != nil {
+		t.Fatal(err)
+	}
+	for _, row := range envelope.Results {
+		if row.Key != "UA" {
+			continue
+		}
+		for _, suggestion := range row.Suggestions {
+			if suggestion.Collection != "COLT" {
+				continue
+			}
+			reasons := strings.Join(suggestion.Reasons, " | ")
+			if suggestion.Score != 1 || !strings.Contains(reasons, "matched item T1") ||
+				!strings.Contains(reasons, "matched item T2") || !strings.Contains(reasons, "matched item T3") ||
+				strings.Contains(reasons, "matched item T4") || strings.Contains(reasons, "matched item T5") {
+				t.Fatalf("top three among five members: %+v", suggestion)
+			}
+			return
+		}
+		t.Fatalf("COLT not suggested for UA: %+v", row.Suggestions)
+	}
+	t.Fatal("UA missing from unfiled results")
+}
+
 func TestItemsUnfiledSuggestIsOptInAndRespectsFilters(t *testing.T) {
 	seedUnfiledSuggestions(t)
 	plain, err := runUnfiledSuggestCommand(t)

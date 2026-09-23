@@ -2701,7 +2701,8 @@ Refresh a collection from a saved search, optionally removing stale members
 Refresh a collection from a saved search. Add only missing items; report
 unchanged and stale members. By default, leave stale members in the collection.
 Use --prune to remove stale members; writes still require --yes. Refuse to prune
-when an empty search would remove members of a non-empty collection.
+when no fileable search items would empty a non-empty collection. Child items
+cannot be filed; add their parents to the saved search instead.
 
 No search-to-collection binding is stored. For a scheduled refresh, put this
 command in refresh.json, then run 'zotio watch --workflow refresh.json --yes'

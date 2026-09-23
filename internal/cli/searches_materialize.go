@@ -27,7 +27,8 @@ func newSearchesMaterializeCmd(flags *rootFlags) *cobra.Command {
 		Long: `Refresh a collection from a saved search. Add only missing items; report
 unchanged and stale members. By default, leave stale members in the collection.
 Use --prune to remove stale members; writes still require --yes. Refuse to prune
-when an empty search would remove members of a non-empty collection.
+when no fileable search items would empty a non-empty collection. Child items
+cannot be filed; add their parents to the saved search instead.
 
 No search-to-collection binding is stored. For a scheduled refresh, put this
 command in refresh.json, then run 'zotio watch --workflow refresh.json --yes'
@@ -62,10 +63,12 @@ func runSearchesMaterializeMutation(cmd *cobra.Command, flags *rootFlags, search
 	}
 
 	// Both sets come from the configured read plane. /collections/{key}/items
-	// includes child items that can belong to a collection; /items/top omits
-	// them. Apply-time item reads and PATCHes use the write plane.
+	// covers every item the collection endpoint returns; /items/top would
+	// omit child rows and cannot scope to this collection. Zotero can return
+	// child attachments despite their empty data.collections; only explicit
+	// memberships count. Apply-time reads and PATCHes use the write plane.
 	searchPath := "/searches/" + url.PathEscape(searchKey) + "/items"
-	allKeys, err := searchesMaterializeKeys(readClient, searchPath, "saved search "+searchKey)
+	searchItems, err := searchesMaterializeItems(readClient, searchPath, "saved search "+searchKey)
 	if err != nil {
 		if isNetworkError(err) || isAPIStatus(err, http.StatusNotFound) {
 			return emitPreconditionUnmetWithRemediation(cmd.OutOrStdout(), flags, "searches materialize", preconditionLiveLocalAPI,
@@ -75,12 +78,27 @@ func runSearchesMaterializeMutation(cmd *cobra.Command, flags *rootFlags, search
 		return err
 	}
 	collectionPath := "/collections/" + url.PathEscape(toCollection) + "/items"
-	currentKeys, err := searchesMaterializeKeys(readClient, collectionPath, "collection "+toCollection)
+	collectionItems, err := searchesMaterializeItems(readClient, collectionPath, "collection "+toCollection)
 	if err != nil {
 		return classifyAPIError(fmt.Errorf("cannot read target collection %s membership; refusing refresh: %w", toCollection, err), flags)
 	}
+	allKeys := make([]string, 0, len(searchItems))
+	skippedChildren := make([]string, 0)
+	for _, item := range searchItems {
+		if item.Data.ParentItem != "" {
+			skippedChildren = append(skippedChildren, item.Key)
+			continue
+		}
+		allKeys = append(allKeys, item.Key)
+	}
+	currentKeys := make([]string, 0, len(collectionItems))
+	for _, item := range collectionItems {
+		if stringSliceContains(item.Data.Collections, toCollection) {
+			currentKeys = append(currentKeys, item.Key)
+		}
+	}
 	if prune && len(allKeys) == 0 && len(currentKeys) != 0 {
-		return preconditionErr(fmt.Errorf("refusing --prune: saved search %s returned zero items; pruning would empty collection %s (%d members), possibly because Zotero is closed or the search is broken", searchKey, toCollection, len(currentKeys)))
+		return preconditionErr(fmt.Errorf("refusing --prune: saved search %s returned zero fileable items; pruning would empty collection %s (%d members), possibly because Zotero is closed or the search is broken", searchKey, toCollection, len(currentKeys)))
 	}
 
 	current := make(map[string]bool, len(currentKeys))
@@ -154,11 +172,16 @@ func runSearchesMaterializeMutation(cmd *cobra.Command, flags *rootFlags, search
 	journal["unchanged_count"] = unchanged
 	journal["stale_count"] = len(stale)
 	journal["stale_keys"] = stale
+	journal["skipped_child_count"] = len(skippedChildren)
+	journal["skipped_child_keys"] = skippedChildren
+	if len(skippedChildren) != 0 {
+		journal["skipped_child_hint"] = "Child items cannot be filed; include their parents in the saved search to file them."
+	}
 	if len(stale) != 0 && !prune {
 		journal["prune_hint"] = "Run again with --prune to remove stale members (and --yes to apply)."
 	}
 	if len(allKeys) == 0 {
-		journal["message"] = "saved search returned no items"
+		journal["message"] = "saved search returned no fileable items"
 	}
 	env.Journal = journal
 	renderErr := renderMutation(cmd, flags, env, searchesMaterializeSingleLine(toCollection))
@@ -174,14 +197,17 @@ func runSearchesMaterializeMutation(cmd *cobra.Command, flags *rootFlags, search
 		if hint, ok := journal["prune_hint"]; ok {
 			fmt.Fprintln(cmd.OutOrStdout(), hint)
 		}
+		if len(skippedChildren) != 0 {
+			fmt.Fprintf(cmd.OutOrStdout(), "Skipped %d child item(s) (%s): %s\n", len(skippedChildren), strings.Join(skippedChildren, ", "), journal["skipped_child_hint"])
+		}
 	}
 	return runErr
 }
 
-// searchesMaterializeKeys reads every page and refuses a cross-page repeat.
-// A duplicate within one page is harmless and produces only one key.
-func searchesMaterializeKeys(c *client.Client, path, label string) ([]string, error) {
-	var allKeys []string
+// searchesMaterializeItems reads every page and refuses a cross-page repeat.
+// A duplicate within one page is harmless and produces only one item.
+func searchesMaterializeItems(c *client.Client, path, label string) ([]searchMaterializeItem, error) {
+	var allItems []searchMaterializeItem
 	seen := make(map[string]bool, zoteroPageMax)
 	for start := 0; ; start += zoteroPageMax {
 		data, err := c.Get(path, map[string]string{
@@ -191,49 +217,53 @@ func searchesMaterializeKeys(c *client.Client, path, label string) ([]string, er
 		if err != nil {
 			return nil, fmt.Errorf("fetching %s items at start %d: %w", label, start, err)
 		}
-		keys, err := searchMaterializeItemKeys(data)
+		items, err := searchMaterializeItems(data)
 		if err != nil {
 			return nil, fmt.Errorf("parsing %s items at start %d: %w", label, start, err)
 		}
-		pageSeen := make(map[string]bool, len(keys))
-		for _, key := range keys {
-			if seen[key] {
-				return nil, fmt.Errorf("pagination for %s ignored start %d (duplicate key %s)", label, start, key)
+		pageSeen := make(map[string]bool, len(items))
+		for _, item := range items {
+			if seen[item.Key] {
+				return nil, fmt.Errorf("pagination for %s ignored start %d (duplicate key %s)", label, start, item.Key)
 			}
-			if !pageSeen[key] {
-				pageSeen[key] = true
-				allKeys = append(allKeys, key)
+			if !pageSeen[item.Key] {
+				pageSeen[item.Key] = true
+				allItems = append(allItems, item)
 			}
 		}
 		for key := range pageSeen {
 			seen[key] = true
 		}
-		if len(keys) < zoteroPageMax {
+		if len(items) < zoteroPageMax {
 			break
 		}
 	}
-	return allKeys, nil
+	return allItems, nil
 }
 
-func searchMaterializeItemKeys(data json.RawMessage) ([]string, error) {
+type searchMaterializeItem struct {
+	Key  string `json:"key"`
+	Data struct {
+		Collections []string `json:"collections"`
+		ParentItem  string   `json:"parentItem"`
+	} `json:"data"`
+}
+
+func searchMaterializeItems(data json.RawMessage) ([]searchMaterializeItem, error) {
 	trimmed := bytes.TrimSpace(data)
 	if len(trimmed) == 0 || trimmed[0] != '[' {
 		return nil, fmt.Errorf("expected an item array, not an empty or malformed response")
 	}
-	var items []struct {
-		Key string `json:"key"`
-	}
+	var items []searchMaterializeItem
 	if err := json.Unmarshal(data, &items); err != nil {
 		return nil, fmt.Errorf("parsing saved search items: %w", err)
 	}
-	keys := make([]string, 0, len(items))
 	for i, item := range items {
 		if item.Key == "" {
 			return nil, fmt.Errorf("saved search item %d missing key", i)
 		}
-		keys = append(keys, item.Key)
 	}
-	return keys, nil
+	return items, nil
 }
 
 func applySearchesMaterializeCollectionAdd(c *client.Client, path, toCollection string) (string, any, error) {
@@ -259,9 +289,21 @@ func applySearchesMaterializeCollectionAdd(c *client.Client, path, toCollection 
 
 func searchesMaterializeSingleLine(toCollection string) func(mutation.Envelope) string {
 	return func(env mutation.Envelope) string {
-		key := "item"
-		if len(env.Plan.Operations) == 1 {
-			key = env.Plan.Operations[0].Key
+		op := env.Plan.Operations[0]
+		key := op.Key
+		if op.Kind == "collection_remove" {
+			if env.Mode == "apply" {
+				if env.Result != nil && len(env.Result.Items) == 1 {
+					switch env.Result.Items[0].Status {
+					case "no_op":
+						return fmt.Sprintf("%s no longer in %s", key, toCollection)
+					case "conflict", "failed", "not_attempted", "skipped":
+						return fmt.Sprintf("%s %s removing from %s", env.Result.Items[0].Status, key, toCollection)
+					}
+				}
+				return fmt.Sprintf("removed %s from %s", key, toCollection)
+			}
+			return fmt.Sprintf("would remove %s from %s", key, toCollection)
 		}
 		if env.Mode == "apply" {
 			if env.Result != nil && len(env.Result.Items) == 1 {

@@ -158,7 +158,7 @@ backwards-compatible resource exports.`,
 						}
 					}
 					return nil
-				})
+				}, "jsonl", nil)
 				if fetchErr != nil {
 					return fetched, fetchErr
 				}

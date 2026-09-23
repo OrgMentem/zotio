@@ -24,6 +24,7 @@ type exportCheckpointSource struct {
 
 type exportCheckpoint struct {
 	Format    string                 `json:"format,omitempty"`
+	DataBytes *int64                 `json:"data_bytes,omitempty"`
 	Path      string                 `json:"path"`
 	NextStart int                    `json:"next_start"`
 	Fetched   int                    `json:"fetched"`
@@ -101,14 +102,11 @@ func writeExportCheckpoint(file string, cp exportCheckpoint) error {
 	return os.WriteFile(file, data, 0o600)
 }
 
-func resumablePaginatedFetch(ctx context.Context, c *client.Client, path string, params map[string]string, pageSize, limit int, checkpointFile, profile string, onPage func(page []json.RawMessage) error, format ...string) (fetched int, err error) {
+func resumablePaginatedFetch(ctx context.Context, c *client.Client, path string, params map[string]string, pageSize, limit int, checkpointFile, profile string, onPage func(page []json.RawMessage) error, format string, committedBytes func() (int64, error)) (fetched int, err error) {
 	pageSize = normalizedExportPageSize(pageSize)
 	source := exportReadSource(c, profile)
 	scope := exportCheckpointScope(source, path, params, pageSize, limit)
-	snapshotFormat := "jsonl"
-	if len(format) > 0 {
-		snapshotFormat = format[0]
-	}
+	snapshotFormat := format
 	start := 0
 	if checkpointFile != "" {
 		if cp, ok := readExportCheckpoint(checkpointFile); ok && !cp.Done {
@@ -162,6 +160,13 @@ func resumablePaginatedFetch(ctx context.Context, c *client.Client, path string,
 		done := len(page) < thisLimit || (limit > 0 && fetched >= limit)
 		if checkpointFile != "" {
 			cp := exportCheckpoint{Path: path, Scope: scope, Source: source, Format: snapshotFormat, NextStart: start, Fetched: fetched, Done: done}
+			if committedBytes != nil {
+				offset, err := committedBytes()
+				if err != nil {
+					return fetched, err
+				}
+				cp.DataBytes = &offset
+			}
 			if err := writeExportCheckpoint(checkpointFile, cp); err != nil {
 				return fetched, err
 			}

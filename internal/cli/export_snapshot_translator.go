@@ -90,7 +90,7 @@ func exportTranslatorSnapshot(cmd *cobra.Command, flags *rootFlags, c *client.Cl
 		items = append(items, page...)
 		return nil
 	}
-	fetched, err := resumablePaginatedFetch(cmd.Context(), c, path, params, pageSize, limit, checkpointFile, flags.profileName, onPage, format)
+	fetched, err := resumablePaginatedFetch(cmd.Context(), c, path, params, pageSize, limit, checkpointFile, flags.profileName, onPage, format, nil)
 	if err != nil {
 		return err
 	}

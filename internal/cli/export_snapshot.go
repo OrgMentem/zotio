@@ -99,27 +99,41 @@ func exportSnapshot(cmd *cobra.Command, flags *rootFlags, outputFile, path strin
 	// Append only when every request and library identity field matches.
 	// Reject legacy or foreign incomplete checkpoints before opening the output.
 	resumable := false
+	var resumeCheckpoint exportCheckpoint
 	if resume {
 		if cp, ok := readExportCheckpoint(checkpointFile); ok && !cp.Done {
 			if cp.Path != path || cp.Source != source || cp.Scope != expectedScope || checkpointFormat(cp) != format {
 				return fmt.Errorf("checkpoint scope does not match this export; remove the checkpoint or rerun without --resume")
 			}
 			resumable = true
+			resumeCheckpoint = cp
 		}
 	}
 	if format != "jsonl" {
 		return exportTranslatorSnapshot(cmd, flags, c, outputFile, path, params, scopeLabel, pageSize, limit, checkpointFile, resumable, format)
 	}
-	openFlags := os.O_CREATE | os.O_WRONLY
+	var committedOffset int64
 	if resumable {
-		openFlags |= os.O_APPEND
+		committedOffset, err = checkpointJSONLOffset(outputFile, resumeCheckpoint)
+		if err != nil {
+			return fmt.Errorf("resuming JSONL snapshot: %w; rerun without --resume to start over", err)
+		}
 	} else {
-		openFlags |= os.O_TRUNC
 		_ = os.Remove(checkpointFile)
+	}
+	openFlags := os.O_WRONLY | os.O_APPEND
+	if !resumable {
+		openFlags = os.O_CREATE | os.O_WRONLY | os.O_TRUNC
 	}
 	f, err := openPrivateOutputFile(outputFile, openFlags)
 	if err != nil {
 		return fmt.Errorf("opening output: %w", err)
+	}
+	if resumable {
+		if err := f.Truncate(committedOffset); err != nil {
+			_ = f.Close()
+			return fmt.Errorf("truncating uncommitted JSONL data: %w", err)
+		}
 	}
 	w := bufio.NewWriter(f)
 
@@ -142,7 +156,9 @@ func exportSnapshot(cmd *cobra.Command, flags *rootFlags, outputFile, path strin
 		return w.Flush()
 	}
 
-	fetched, fetchErr := resumablePaginatedFetch(cmd.Context(), c, path, params, pageSize, limit, checkpointFile, flags.profileName, onPage, format)
+	fetched, fetchErr := resumablePaginatedFetch(cmd.Context(), c, path, params, pageSize, limit, checkpointFile, flags.profileName, onPage, format, func() (int64, error) {
+		return f.Seek(0, 1)
+	})
 	flushErr := w.Flush()
 	closeErr := f.Close()
 	if fetchErr != nil {
@@ -283,4 +299,37 @@ func readJSONLItems(path string) ([]json.RawMessage, error) {
 		return nil, err
 	}
 	return items, nil
+}
+
+// A new checkpoint records the last committed byte. Older checkpoints carry
+// only an item count, so locate that many complete JSONL lines before resume.
+func checkpointJSONLOffset(path string, cp exportCheckpoint) (int64, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return 0, fmt.Errorf("opening checkpoint data: %w", err)
+	}
+	defer f.Close()
+	size, err := f.Stat()
+	if err != nil {
+		return 0, err
+	}
+	if cp.DataBytes != nil {
+		if *cp.DataBytes < 0 || *cp.DataBytes > size.Size() {
+			return 0, fmt.Errorf("checkpoint byte offset %d exceeds the data file (%d bytes)", *cp.DataBytes, size.Size())
+		}
+		return *cp.DataBytes, nil
+	}
+	reader := bufio.NewReader(f)
+	var offset int64
+	for i := range cp.Fetched {
+		line, err := reader.ReadBytes('\n')
+		if err != nil {
+			return 0, fmt.Errorf("legacy checkpoint records %d items, but item %d has no complete line: %w", cp.Fetched, i+1, err)
+		}
+		if !json.Valid(bytes.TrimSpace(line)) {
+			return 0, fmt.Errorf("legacy checkpoint item %d is not valid JSON", i+1)
+		}
+		offset += int64(len(line))
+	}
+	return offset, nil
 }

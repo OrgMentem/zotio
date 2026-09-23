@@ -59,7 +59,7 @@ func newSearchesMaterializeTestServer(t *testing.T, searchKeys []string, version
 			items := make([]map[string]any, 0)
 			for key, memberships := range ts.collections {
 				if stringSliceContains(memberships, "TARGET") {
-					items = append(items, map[string]any{"key": key})
+					items = append(items, map[string]any{"key": key, "data": map[string]any{"collections": memberships}})
 				}
 			}
 			_, _ = fmt.Fprint(w, searchMaterializeJSON(t, items))
