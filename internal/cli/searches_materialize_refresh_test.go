@@ -142,10 +142,11 @@ func TestSearchesMaterializePruneOnlySingleOperationText(t *testing.T) {
 				case "/users/0/collections/TARGET/items":
 					_, _ = fmt.Fprint(w, `[{"key":"A","data":{"collections":["TARGET"]}},{"key":"C","data":{"collections":["TARGET"]}}]`)
 				case "/users/0/items/C":
-					if r.Method == http.MethodGet {
+					switch r.Method {
+					case http.MethodGet:
 						w.Header().Set("Last-Modified-Version", "12")
 						_, _ = fmt.Fprint(w, `{"key":"C","data":{"collections":["TARGET"]}}`)
-					} else if r.Method == http.MethodPatch {
+					case http.MethodPatch:
 						patches++
 						w.WriteHeader(http.StatusNoContent)
 					}
