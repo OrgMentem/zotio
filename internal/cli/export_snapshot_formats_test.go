@@ -145,6 +145,94 @@ func assertSnapshotFormatManifest(t *testing.T, output, format string, count int
 	}
 }
 
+// Live shapes from Zotero 7 (local API and Web API, 2026-09-23): attachments
+// and notes return blank bibtex/ris and a CSL "document" pseudo-record, and the
+// local API wraps csljson in a string holding an array. A snapshot must write
+// only the bibliographic records, keep every item in the manifest, and stay a
+// valid CSL array when a whole page is skipped.
+func TestExportSnapshotSkipsNonBibliographicItemsInLiveShapes(t *testing.T) {
+	types := []string{"journalArticle", "attachment", "note", "attachment", "book"}
+	item := func(i int) map[string]any {
+		key := fmt.Sprintf("K%03d", i)
+		it := map[string]any{
+			"key": key, "version": i + 1,
+			"data": map[string]any{"key": key, "version": i + 1, "itemType": types[i]},
+		}
+		csl, _ := json.Marshal([]map[string]any{{"id": key, "type": "article"}})
+		if types[i] == "attachment" || types[i] == "note" {
+			it["bibtex"], it["ris"] = "\n\n", ""
+			csl, _ = json.Marshal([]map[string]any{{"id": key, "type": "document"}})
+		} else {
+			it["bibtex"] = fmt.Sprintf("@article{%s}\n", key)
+			it["ris"] = fmt.Sprintf("TY  - JOUR\nID  - %s\nER  - \n", key)
+		}
+		it["csljson"] = string(csl)
+		return it
+	}
+	for _, format := range []string{"bibtex", "ris", "csljson"} {
+		t.Run(format, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				start, _ := strconv.Atoi(r.URL.Query().Get("start"))
+				limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
+				items := make([]map[string]any, 0)
+				for i := start; i < start+limit && i < len(types); i++ {
+					items = append(items, item(i))
+				}
+				_ = json.NewEncoder(w).Encode(items)
+			}))
+			t.Cleanup(srv.Close)
+			t.Setenv("ZOTERO_BASE_URL", srv.URL+"/users/0")
+			t.Setenv("ZOTERO_CONFIG", filepath.Join(t.TempDir(), "missing.toml"))
+			output := filepath.Join(t.TempDir(), "library."+format)
+			cmd := newExportSnapshotCmd(&rootFlags{asJSON: true})
+			cmd.SilenceErrors, cmd.SilenceUsage = true, true
+			cmd.SetArgs([]string{"--output", output, "--page-size", "2", "--format", format})
+			var stdout bytes.Buffer
+			cmd.SetOut(&stdout)
+			cmd.SetErr(&bytes.Buffer{})
+			if err := cmd.Execute(); err != nil {
+				t.Fatal(err)
+			}
+			data, err := os.ReadFile(output)
+			if err != nil {
+				t.Fatal(err)
+			}
+			switch format {
+			case "csljson":
+				var records []map[string]any
+				if err := json.Unmarshal(data, &records); err != nil {
+					t.Fatalf("CSL output is not one JSON array: %v: %s", err, data)
+				}
+				if len(records) != 2 || records[0]["id"] != "K000" || records[1]["id"] != "K004" {
+					t.Fatalf("CSL records = %v, want K000 and K004 only", records)
+				}
+			default:
+				want := item(0)[format].(string) + item(4)[format].(string)
+				if string(data) != want {
+					t.Fatalf("%s output = %q, want %q", format, data, want)
+				}
+			}
+			lf, err := readExportLockfile(output + ".manifest.json")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if lf.Count != len(types) {
+				t.Errorf("manifest count = %d, want every item (%d)", lf.Count, len(types))
+			}
+			var report struct {
+				Entries int `json:"entries"`
+				Skipped int `json:"skipped_non_bibliographic"`
+			}
+			if err := json.Unmarshal(stdout.Bytes(), &report); err != nil {
+				t.Fatalf("report: %v: %s", err, stdout.Bytes())
+			}
+			if report.Entries != 2 || report.Skipped != 3 {
+				t.Errorf("report = %s, want entries 2 and skipped_non_bibliographic 3", stdout.Bytes())
+			}
+		})
+	}
+}
+
 func TestExportSnapshotCSLJSONInterruptedResume(t *testing.T) {
 	var mu sync.Mutex
 	var starts []int

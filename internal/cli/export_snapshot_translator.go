@@ -43,14 +43,19 @@ func exportTranslatorSnapshot(cmd *cobra.Command, flags *rootFlags, c *client.Cl
 			return err
 		}
 	}
+	// entries counts records written to the data file, not items fetched:
+	// non-bibliographic items are fetched and manifested but never written, so
+	// the CSL-JSON separator must follow what the file actually holds.
+	entries, skipped := 0, 0
 	if len(items) > 0 {
-		page, err := snapshotPageBytes(items, format)
+		page, n, s, err := snapshotPageBytes(items, format)
 		if err != nil {
 			return err
 		}
 		if err := appendSnapshotPage(output, page, format, false); err != nil {
 			return err
 		}
+		entries, skipped = n, s
 	}
 
 	metadataFlags := os.O_CREATE | os.O_WRONLY
@@ -67,7 +72,7 @@ func exportTranslatorSnapshot(cmd *cobra.Command, flags *rootFlags, c *client.Cl
 	metadataWriter := bufio.NewWriter(metadata)
 	onPage := func(page []json.RawMessage) error {
 		// Validate the whole page before writing any of it.
-		data, err := snapshotPageBytes(page, format)
+		data, n, s, err := snapshotPageBytes(page, format)
 		if err != nil {
 			return err
 		}
@@ -84,9 +89,13 @@ func exportTranslatorSnapshot(cmd *cobra.Command, flags *rootFlags, c *client.Cl
 		if err := metadataWriter.Flush(); err != nil {
 			return err
 		}
-		if err := appendSnapshotPage(output, data, format, len(items) > 0); err != nil {
-			return err
+		if n > 0 {
+			if err := appendSnapshotPage(output, data, format, entries > 0); err != nil {
+				return err
+			}
 		}
+		entries += n
+		skipped += s
 		items = append(items, page...)
 		return nil
 	}
@@ -121,43 +130,92 @@ func exportTranslatorSnapshot(cmd *cobra.Command, flags *rootFlags, c *client.Cl
 	report, _ := json.Marshal(map[string]any{
 		"scope": scopeLabel, "output": outputFile, "manifest": manifestPath,
 		"fetched": fetched, "count": lf.Count, "content_sha256": lf.ContentSHA256,
+		"entries": entries, "skipped_non_bibliographic": skipped,
 	})
 	return printOutputWithFlags(cmd.OutOrStdout(), json.RawMessage(report), flags)
 }
 
-func snapshotPageBytes(page []json.RawMessage, format string) ([]byte, error) {
+// nonBibliographicItemTypes carry no citation of their own. On both the local
+// and the Web API their bibtex and ris include fields are blank, and csljson
+// renders them as a "document" pseudo-record, so a translator snapshot skips
+// them in every format. The manifest still records them: verify covers the
+// whole scope, not only what the data file contains.
+var nonBibliographicItemTypes = map[string]bool{"attachment": true, "note": true, "annotation": true}
+
+// snapshotPageBytes renders one page in a translator format and returns the
+// bytes, how many records they hold, and how many items were skipped as
+// non-bibliographic.
+func snapshotPageBytes(page []json.RawMessage, format string) ([]byte, int, int, error) {
 	var buf bytes.Buffer
-	for i, item := range page {
+	entries, skipped := 0, 0
+	for _, item := range page {
 		var object map[string]json.RawMessage
 		if err := json.Unmarshal(item, &object); err != nil {
-			return nil, apiErr(fmt.Errorf("decoding snapshot item: %w", err))
+			return nil, 0, 0, apiErr(fmt.Errorf("decoding snapshot item: %w", err))
 		}
 		key := exportItemKey(item)
-		if len(object["data"]) == 0 || bytes.Equal(object["data"], []byte("null")) {
-			return nil, apiErr(fmt.Errorf("item %q lacks data for %s snapshot", key, format))
+		var data struct {
+			ItemType string `json:"itemType"`
+		}
+		if len(object["data"]) == 0 || bytes.Equal(object["data"], []byte("null")) || json.Unmarshal(object["data"], &data) != nil {
+			return nil, 0, 0, apiErr(fmt.Errorf("item %q lacks data for %s snapshot", key, format))
+		}
+		if nonBibliographicItemTypes[data.ItemType] {
+			skipped++
+			continue
 		}
 		value := object[format]
 		if len(value) == 0 || bytes.Equal(value, []byte("null")) {
-			return nil, apiErr(fmt.Errorf("item %q lacks %s include field", key, format))
+			return nil, 0, 0, apiErr(fmt.Errorf("item %q lacks %s include field", key, format))
 		}
 		if format == "csljson" {
-			var objectValue map[string]json.RawMessage
-			if err := json.Unmarshal(value, &objectValue); err != nil || objectValue == nil {
-				return nil, apiErr(fmt.Errorf("item %q has invalid %s include field", key, format))
+			records, ok := cslJSONRecords(value)
+			if !ok {
+				return nil, 0, 0, apiErr(fmt.Errorf("item %q has invalid %s include field", key, format))
 			}
-			if i > 0 {
-				buf.WriteByte(',')
+			for _, record := range records {
+				if entries > 0 {
+					buf.WriteByte(',')
+				}
+				if err := json.Compact(&buf, record); err != nil {
+					return nil, 0, 0, apiErr(fmt.Errorf("item %q has invalid %s include field", key, format))
+				}
+				entries++
 			}
-			buf.Write(value)
 			continue
 		}
 		var text string
 		if err := json.Unmarshal(value, &text); err != nil || strings.TrimSpace(text) == "" {
-			return nil, apiErr(fmt.Errorf("item %q has invalid %s include field", key, format))
+			return nil, 0, 0, apiErr(fmt.Errorf("item %q has invalid %s include field", key, format))
 		}
 		buf.WriteString(text)
+		entries++
 	}
-	return buf.Bytes(), nil
+	return buf.Bytes(), entries, skipped, nil
+}
+
+// cslJSONRecords accepts both shapes Zotero serves for include=csljson: the
+// Web API embeds one CSL object, while the local API embeds a JSON string
+// holding an array of them. Anything else, or an empty result, is invalid.
+func cslJSONRecords(value json.RawMessage) ([]json.RawMessage, bool) {
+	var text string
+	if json.Unmarshal(value, &text) == nil {
+		value = json.RawMessage(text)
+	}
+	var object map[string]json.RawMessage
+	if json.Unmarshal(value, &object) == nil && object != nil {
+		return []json.RawMessage{value}, true
+	}
+	var records []json.RawMessage
+	if json.Unmarshal(value, &records) != nil || len(records) == 0 {
+		return nil, false
+	}
+	for _, record := range records {
+		if json.Unmarshal(record, &object) != nil || object == nil {
+			return nil, false
+		}
+	}
+	return records, true
 }
 
 func appendSnapshotPage(output *os.File, data []byte, format string, preceded bool) error {

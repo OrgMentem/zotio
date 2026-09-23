@@ -209,17 +209,28 @@ Notable changes to zotio. Format follows [Keep a Changelog](https://keepachangel
   so the manifest still records each item's key, version and data hash, and
   `export snapshot verify` means the same thing in every format. The manifest
   and the checkpoint record the format; `--resume` with a different format is
-  refused before any request. A page that lacks the requested field fails
-  with exit 5 and names the item instead of writing an empty entry. JSONL
-  stays the default and is unchanged.
+  refused before any request. Attachments, notes and annotations are counted
+  in the manifest but not written: Zotero renders them as blank BibTeX and RIS
+  and as CSL "document" records on both the desktop and the Web API, so a
+  library or collection scope would otherwise fail on its first child item.
+  The report gives `entries` written and `skipped_non_bibliographic`. CSL-JSON
+  accepts both the Web API's embedded object and the desktop's string-wrapped
+  array. A regular item that lacks the requested field fails with exit 5 and
+  names the item instead of writing an empty entry. JSONL stays the default
+  and is unchanged. Measured on a 4,906-item library: 1,218 BibTeX entries,
+  the same citekeys as Zotero's own top-level `format=bibtex` export.
 - **`items unfiled --suggest` ranks collections to file each item into.** It
   compares each unfiled item's tags, creators and venue with the items already
   filed, using the same signals as `items similar`, and scores a collection by
-  the mean of its three best-matching members. Each row gains `suggestions`
-  (collection, name, score, reasons; `--suggest-limit`, default 3) and a
-  `recommended_action` such as `zotio items move K1 --to ABCD1234`. An item
-  with no match gets `suggestions: []`. It reads the local mirror only and
-  never moves anything; `--help` shows the pipe into `items move --keys-from`.
+  the mean of its three best-matching members. Each shared tag, creator or
+  venue splits its vote across the collections its filed items occupy, so a
+  status tag such as `/unread` or a broad journal that spans many collections
+  is weak evidence, and suggestions below `--suggest-min-score` (default 0.05)
+  are dropped. Each row gains `suggestions` (collection, name, score, reasons;
+  `--suggest-limit`, default 3) and a `recommended_action` such as
+  `zotio items move K1 --to ABCD1234`. An item with no match gets
+  `suggestions: []`. It reads the local mirror only and never moves anything;
+  `--help` shows the pipe into `items move --keys-from`.
 - **`searches materialize` refreshes a collection and can prune it.** It now
   reads the target collection first and plans an add only for search results
   that are missing, instead of one operation per result. The output reports
