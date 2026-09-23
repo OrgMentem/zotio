@@ -10,6 +10,7 @@ import (
 	"strconv"
 
 	"zotio/internal/client"
+	"zotio/internal/cliutil"
 )
 
 // zoteroBatchWriteMax is Zotero's hard ceiling on objects per write request,
@@ -188,10 +189,17 @@ func (b *batchItemUpdater) send(start int) {
 // Anything else — malformed JSON, a singleton object, a proxy error page, or
 // partial coverage — leaves at least one outcome unproven, so the caller must
 // mark the chunk unattributable rather than report its objects applied.
+// The verify-mode synthetic response is the only exception: no write reached
+// Zotero, so its simulated applied result needs no per-object indices.
 func checkBatchEnvelope(data []byte, want int) error {
 	var body map[string]json.RawMessage
 	if err := json.Unmarshal(data, &body); err != nil {
 		return fmt.Errorf("batch response is not valid JSON: %w", err)
+	}
+	// The client returns this reserved marker instead of sending the write in
+	// verify mode. Its no-op response has no per-object Zotero indices.
+	if string(body["__pp_verify_synthetic__"]) == "true" && cliutil.IsVerifyEnv() && !cliutil.IsVerifyLiveHTTPEnv() {
+		return nil
 	}
 	present := false
 	for _, field := range []string{"successful", "success", "unchanged", "failed"} {

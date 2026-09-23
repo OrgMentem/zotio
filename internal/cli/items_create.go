@@ -328,6 +328,12 @@ func (b *itemsCreateBatch) attachConnector(ctx context.Context, flags *rootFlags
 			saveCause = err
 			if !itemsCreateAllRecovered(keys) {
 				b.err = connectorSaveAmbiguityError(sessionID, keys, err)
+				return
+			}
+			if target != "" {
+				if filingErr = conn.UpdateSession(ctx, sessionID, target, nil, ""); filingErr != nil {
+					b.err = connectorFilingError(len(items), sessionID, target, keys, filingErr)
+				}
 			}
 			return
 		}
@@ -375,6 +381,12 @@ func (b *itemsCreateBatch) attachConnector(ctx context.Context, flags *rootFlags
 					reason["recovered_after_save_error"] = true
 					reason["save_error"] = saveCause.Error()
 					reason["message"] = fmt.Sprintf("created via connector (session %s) although SaveItems reported an error: %v; the item was found in the library under key %s, do not re-create it", sessionID, saveCause, key)
+					if filingErr != nil {
+						reason["target"] = target
+						reason["filing_failed"] = true
+						reason["filing_error"] = filingErr.Error()
+						reason["message"] = fmt.Sprintf("created via connector (session %s) although SaveItems reported an error: %v; the item was found in the library under key %s, but target %q filing failed: %v; retry filing only, do not re-create the item", sessionID, saveCause, key, target, filingErr)
+					}
 					return "applied", reason, nil
 				}
 				detail := map[string]any{

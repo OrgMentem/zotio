@@ -5,6 +5,8 @@ package cli
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -59,6 +61,64 @@ func runItemsTagsTestCmd(t *testing.T, srv *writePlaneTestServer, flags *rootFla
 	// still emits a JSON envelope with Result. Return the envelope so callers
 	// can assert per-item status; the error is intentionally not fatal here.
 	return env, errOut.String()
+}
+
+// A request-level conflict cannot turn a failed batch into an idempotent
+// create no-op or append another JSON document after the mutation envelope.
+func TestItemsTagsBatchRequestConflictPreservesSingleEnvelope(t *testing.T) {
+	for _, operation := range []string{"add", "remove"} {
+		for _, status := range []int{http.StatusConflict, http.StatusPreconditionFailed} {
+			for _, idempotent := range []bool{false, true} {
+				t.Run(fmt.Sprintf("%s/%d/idempotent=%t", operation, status, idempotent), func(t *testing.T) {
+					b := newBatchTagServer(t, []string{"K1", "K2"})
+					b.postFailureStatus = status
+					if operation == "remove" {
+						b.existing["K1"] = []map[string]any{{"tag": "sweep"}}
+						b.existing["K2"] = []map[string]any{{"tag": "sweep"}}
+					}
+					t.Setenv("ZOTERO_BASE_URL", b.server.URL+"/users/0")
+					t.Setenv("ZOTERO_CONFIG", filepath.Join(t.TempDir(), "missing.toml"))
+					root := newRootCmd(&rootFlags{})
+					root.SilenceErrors, root.SilenceUsage = true, true
+					var out, errOut bytes.Buffer
+					root.SetOut(&out)
+					root.SetErr(&errOut)
+					args := []string{"items", "tags", operation, "--batch", "--tag", "sweep", "K1", "K2", "--yes", "--json"}
+					if idempotent {
+						args = append(args, "--idempotent")
+					}
+					root.SetArgs(args)
+
+					err := root.Execute()
+					if err == nil || ExitCode(err) != 5 {
+						t.Fatalf("error = %v (exit %d), want request-level API error at exit 5; stdout = %q", err, ExitCode(err), out.String())
+					}
+					if !strings.Contains(err.Error(), fmt.Sprintf("HTTP %d", status)) {
+						t.Errorf("error = %q, want HTTP %d", err, status)
+					}
+					var env mutation.Envelope
+					decoder := json.NewDecoder(&out)
+					if decodeErr := decoder.Decode(&env); decodeErr != nil {
+						t.Fatalf("decode mutation envelope: %v; stdout = %q", decodeErr, out.String())
+					}
+					var extra any
+					if decodeErr := decoder.Decode(&extra); decodeErr != io.EOF {
+						t.Fatalf("extra JSON after mutation envelope: %v (decode error %v); stdout = %q", extra, decodeErr, out.String())
+					}
+					if env.OK || env.Result == nil || env.Result.Summary.Failed != 2 || env.Result.Summary.Applied != 0 {
+						t.Errorf("envelope = %+v, want both items failed and none applied", env)
+					}
+					if env.Result != nil {
+						for _, item := range env.Result.Items {
+							if item.Status != "failed" {
+								t.Errorf("item %s status = %q, want failed", item.Key, item.Status)
+							}
+						}
+					}
+				})
+			}
+		}
+	}
 }
 
 func TestItemsTagsAddNewTagApplies(t *testing.T) {

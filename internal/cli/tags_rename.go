@@ -83,9 +83,12 @@ func newTagsRenameCmd(flags *rootFlags) *cobra.Command {
 				// what broke the apply.
 				selectClient, selectErr := flags.newSelectionClient()
 				if selectErr != nil {
-					// A failed write-route resolution is a real error, not an empty
-					// selection: classify it like any selection failure so the exit
-					// code names the cause.
+					// Keep setup errors with their own exit codes; classify only
+					// untyped write-route resolution failures.
+					var cliErr *cliError
+					if errors.As(selectErr, &cliErr) {
+						return selectErr
+					}
 					return classifyAPIError(selectErr, flags)
 				}
 				// --dry-run controls the mutation engine, not the discovery GETs.
