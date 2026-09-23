@@ -171,6 +171,12 @@ Notable changes to zotio. Format follows [Keep a Changelog](https://keepachangel
   Windows, an empty or relative `APPDATA` made the stored-upload storage
   guard find no Zotero profile and permit a cloud upload; it now refuses, as
   it already did on macOS and Linux.
+- **A relative `ZOTERO_PROFILE_DIR` is refused.** The pin resolved against
+  the directory zotio started in, so one setting named different profiles
+  from a shell and from an MCP host, and a `prefs.js` placed there could make
+  the stored-upload guard permit a cloud upload. The guard now refuses with
+  `ZOTERO_PROFILE_DIR must be an absolute path`. `ZOTERO_CONFIG` stays
+  relative-capable on purpose: it is the environment form of `--config`.
 
 ## [0.26.0] — 2026-09-15
 

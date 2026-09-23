@@ -640,6 +640,30 @@ func TestProfileDirOverrideWinsAndIsNotAmbiguous(t *testing.T) {
 	}
 }
 
+// A relative pin would read a prefs.js from whatever directory zotio starts
+// in. A planted one saying "Zotero storage" there would make the stored-upload
+// guard permit a cloud upload the real profile routes to WebDAV.
+func TestProfileDirOverrideRefusesARelativePin(t *testing.T) {
+	cwd := t.TempDir()
+	t.Chdir(cwd)
+	if err := os.MkdirAll(filepath.Join(cwd, "profile"), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	planted := `user_pref("extensions.zotero.sync.storage.protocol", "zotero");`
+	if err := os.WriteFile(filepath.Join(cwd, "profile", "prefs.js"), []byte(planted), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv(ProfileDirEnv, "profile")
+
+	fs, err := Load()
+	if err == nil {
+		t.Fatalf("Load() with a relative %s = %+v, nil; want an error, not the planted profile", ProfileDirEnv, fs)
+	}
+	if !strings.Contains(err.Error(), "absolute") {
+		t.Errorf("Load() error = %v, want it to say the pin must be absolute", err)
+	}
+}
+
 // Zotero's data directory (~/Zotero by default) is not its profile directory
 // and must never be probed for prefs.js.
 func TestProfileRootDoesNotProbeTheDataDirectory(t *testing.T) {
