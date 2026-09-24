@@ -37,7 +37,8 @@ const (
 	DefaultConfirmMax   = 2 * time.Second
 )
 
-// WaitOptions configures Wait. The startup window is the Prober's.
+// WaitOptions configures Wait. The startup window is the Prober's; zero
+// durations and counts take the package defaults.
 type WaitOptions struct {
 	Prober *Prober
 	// WatchDirs are watched for changes; see Install.WatchDirs.
@@ -46,6 +47,12 @@ type WaitOptions struct {
 	Settle       time.Duration
 	ConfirmFirst time.Duration
 	ConfirmMax   time.Duration
+
+	// Sustained-stall evidence for StateUnresponsive; see DefaultStallSpan.
+	StallSpan        time.Duration
+	StallChecks      int
+	StallRecheck     time.Duration
+	StallPingTimeout time.Duration
 
 	// OnWatching, when set, runs once the watches are installed and the
 	// first probe found the connector down. Tests use it to know that a
@@ -63,6 +70,18 @@ func (o WaitOptions) withDefaults() WaitOptions {
 	if o.ConfirmMax < o.ConfirmFirst {
 		o.ConfirmMax = max(DefaultConfirmMax, o.ConfirmFirst)
 	}
+	if o.StallSpan <= 0 {
+		o.StallSpan = DefaultStallSpan
+	}
+	if o.StallChecks <= 0 {
+		o.StallChecks = DefaultStallChecks
+	}
+	if o.StallRecheck <= 0 {
+		o.StallRecheck = DefaultStallRecheck
+	}
+	if o.StallPingTimeout <= 0 {
+		o.StallPingTimeout = DefaultStallPingTimeout
+	}
 	return o
 }
 
@@ -75,9 +94,17 @@ func (o WaitOptions) withDefaults() WaitOptions {
 // a change settles. While Zotero is starting (lock held, connector silent,
 // lock younger than the startup window) the connector is re-checked on a
 // capped backoff, because it listens seconds after the lock and its start
-// writes no file. When the startup window passes with the connector still
-// silent, or when Zotero is already past it, Wait returns ErrStuck with the
-// unresponsive or connector_off Status.
+// writes no file.
+//
+// Past the startup window a connector that cannot take a request is
+// re-checked every StallRecheck with the longer StallPingTimeout. The wait
+// ends with ErrStuck only once StallChecks consecutive checks have failed
+// across at least StallSpan: as StateUnresponsive if any of them found a
+// listener on the connector port, as StateConnectorOff if none did. Any
+// answer in between ends it as ready, so a sync that stalls Zotero briefly
+// is never reported as a hang. While Zotero is starting or busy, the
+// re-check timer alone drives probes; filesystem events (a sync writes its
+// WAL constantly) do not add more.
 //
 // On cancellation Wait returns the last Status and context.Cause(ctx), so a
 // caller that set a deadline with context.WithTimeoutCause can tell a
@@ -95,16 +122,45 @@ func Wait(ctx context.Context, opts WaitOptions) (Status, error) {
 		defer watcher.Close()
 	}
 
-	// firstSeen stands in for the lock time when the platform reports none.
-	var firstSeen time.Time
-	probe := func() Status {
-		st := o.Prober.probe(ctx, firstSeen)
+	var (
+		// firstSeen stands in for the lock time when the platform reports none.
+		firstSeen  time.Time
+		stallSince time.Time
+		stallFails int
+		// stallHeld: some check in the stall found a listener on the
+		// connector port, so the stall is a hang rather than a connector
+		// that is off.
+		stallHeld bool
+	)
+	probe := func(pingTimeout time.Duration) Status {
+		st := o.Prober.probe(ctx, firstSeen, pingTimeout)
 		switch {
 		case !st.LockHeld():
 			firstSeen = time.Time{}
 		case firstSeen.IsZero():
 			firstSeen = st.CheckedAt
 		}
+		if st.State != StateBusy && st.State != StateConnectorOff {
+			stallSince, stallFails, stallHeld = time.Time{}, 0, false
+			return st
+		}
+		if stallSince.IsZero() {
+			stallSince = st.CheckedAt
+		}
+		stallFails++
+		stallHeld = stallHeld || st.State == StateBusy
+		since := stallSince
+		st.StalledSince = &since
+		if stallFails >= o.StallChecks && st.CheckedAt.Sub(stallSince) >= o.StallSpan {
+			if stallHeld {
+				st.State = StateUnresponsive
+			} else {
+				st.State = StateConnectorOff
+			}
+			return st
+		}
+		// Not proven yet either way: keep waiting.
+		st.State = StateBusy
 		return st
 	}
 	// settled reports whether st ends the wait, and how.
@@ -119,11 +175,11 @@ func Wait(ctx context.Context, opts WaitOptions) (Status, error) {
 		}
 	}
 
-	st := probe()
+	st := probe(0)
 	if done, err := settled(st); done {
 		return st, err
 	}
-	if watcher == nil {
+	if watcher == nil && st.State != StateBusy && st.State != StateStarting {
 		if watchErr == nil {
 			return st, ErrNoProfile
 		}
@@ -135,8 +191,9 @@ func Wait(ctx context.Context, opts WaitOptions) (Status, error) {
 
 	var (
 		settle  *time.Timer
-		confirm *time.Timer
+		recheck *time.Timer
 		backoff time.Duration
+		phase   State
 	)
 	stopTimer := func(t **time.Timer) {
 		if *t != nil {
@@ -145,77 +202,96 @@ func Wait(ctx context.Context, opts WaitOptions) (Status, error) {
 		}
 	}
 	defer stopTimer(&settle)
-	defer stopTimer(&confirm)
+	defer stopTimer(&recheck)
 	timerC := func(t *time.Timer) <-chan time.Time {
 		if t == nil {
 			return nil
 		}
 		return t.C
 	}
-	// nextConfirm schedules the next re-check: the backoff step, but never
-	// past the end of the startup window, so leaving "starting" is noticed
-	// when it happens rather than up to one step later.
-	nextConfirm := func() {
-		delay := backoff
-		if until := time.Until(o.Prober.startingUntil(st, firstSeen)); until < delay {
-			delay = max(until, 0) + 10*time.Millisecond
+	// reschedule arms the re-check timer for the state just observed:
+	// backoff while starting (never past the end of the startup window, so
+	// leaving it is noticed when it happens), the stall cadence while busy
+	// (never past the end of the stall span), nothing otherwise.
+	reschedule := func() {
+		stopTimer(&recheck)
+		var delay time.Duration
+		switch st.State {
+		case StateStarting:
+			if phase == StateStarting {
+				backoff = min(backoff*2, o.ConfirmMax)
+			} else {
+				backoff = o.ConfirmFirst
+			}
+			delay = backoff
+			if until := time.Until(o.Prober.startingUntil(st, firstSeen)); until < delay {
+				delay = max(until, 0) + 10*time.Millisecond
+			}
+		case StateBusy:
+			delay = o.StallRecheck
+			if until := time.Until(stallSince.Add(o.StallSpan)); until > 0 && until < delay {
+				delay = until + 10*time.Millisecond
+			}
 		}
-		confirm = time.NewTimer(delay)
+		phase = st.State
+		if delay > 0 {
+			recheck = time.NewTimer(delay)
+		}
 	}
-	// track keeps the re-checks running exactly while Zotero is starting.
-	track := func() {
-		if st.State != StateStarting {
-			stopTimer(&confirm)
-			return
-		}
-		if confirm == nil {
-			backoff = o.ConfirmFirst
-			nextConfirm()
+	reschedule()
+
+	// A nil watcher (nothing watchable, but Zotero already up) leaves the
+	// event cases blocked forever, which is what they should be.
+	var events <-chan fsnotify.Event
+	var watchErrs <-chan error
+	if watcher != nil {
+		events, watchErrs = watcher.Events, watcher.Errors
+	}
+	onEvent := func() {
+		// While starting or busy the re-check timer drives probes.
+		if recheck == nil && settle == nil {
+			settle = time.NewTimer(o.Settle)
 		}
 	}
-	track()
 
 	for {
 		select {
 		case <-ctx.Done():
 			return st, context.Cause(ctx)
 
-		case _, ok := <-watcher.Events:
+		case _, ok := <-events:
 			if !ok {
 				return st, errors.New("filesystem watcher closed")
 			}
-			if settle == nil {
-				settle = time.NewTimer(o.Settle)
-			}
+			onEvent()
 
-		case _, ok := <-watcher.Errors:
+		case _, ok := <-watchErrs:
 			if !ok {
 				return st, errors.New("filesystem watcher closed")
 			}
 			// An overflow or read error means events may have been lost:
 			// probe as though one arrived rather than trusting the silence.
-			if settle == nil {
-				settle = time.NewTimer(o.Settle)
-			}
+			onEvent()
 
 		case <-timerC(settle):
 			settle = nil
-			st = probe()
+			st = probe(0)
 			if done, err := settled(st); done {
 				return st, err
 			}
-			track()
+			reschedule()
 
-		case <-timerC(confirm):
-			confirm = nil
-			st = probe()
+		case <-timerC(recheck):
+			recheck = nil
+			pingTimeout := time.Duration(0)
+			if phase == StateBusy {
+				pingTimeout = o.StallPingTimeout
+			}
+			st = probe(pingTimeout)
 			if done, err := settled(st); done {
 				return st, err
 			}
-			if st.State == StateStarting {
-				backoff = min(backoff*2, o.ConfirmMax)
-				nextConfirm()
-			}
+			reschedule()
 		}
 	}
 }

@@ -128,13 +128,15 @@ func TestProbeStatesFollowTheTwoSignals(t *testing.T) {
 
 	// The live case, 2026-09-24: Zotero up for well over the startup window,
 	// its connector port accepting connections and never answering.
-	t.Run("unresponsive past the startup window", func(t *testing.T) {
+	// One silent check past the window is not evidence of a hang: a single
+	// probe reports busy, never unresponsive (only Wait can see a stall).
+	t.Run("busy past the startup window", func(t *testing.T) {
 		dir := t.TempDir()
 		startLockHolder(t, dir)
 		for _, startup := range []time.Duration{time.Hour, time.Nanosecond} {
 			p := &Prober{Install: Install{Profiles: []string{dir}}, Ping: noAnswer, StartupWindow: startup}
 			st := p.Probe(t.Context())
-			want := StateUnresponsive
+			want := StateBusy
 			if startup == time.Hour {
 				want = StateStarting // the same silence inside the window is a start
 			}
@@ -281,4 +283,114 @@ func TestConnectorRefusedClassifiesRealPingErrors(t *testing.T) {
 	if err == nil || connectorRefused(err) {
 		t.Fatalf("404 ping error = %v; want a failure that is not a refusal", err)
 	}
+}
+
+// Zotero's connector runs on its main thread, which a large sync can hold for
+// seconds. A connector that stalls for 10s and then answers must end the wait
+// as ready, never as unresponsive, under the production stall evidence
+// (60s span, 3 checks, 10s confirming pings). Only the re-check cadence is
+// shortened, so the test takes about 10s rather than 20s.
+func TestWaitTreatsATenSecondStallAsBusyNotUnresponsive(t *testing.T) {
+	if testing.Short() {
+		t.Skip("runs a real 10s connector stall")
+	}
+	dir := t.TempDir()
+	startLockHolder(t, dir)
+	stallUntil := time.Now().Add(10 * time.Second)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case <-time.After(time.Until(stallUntil)):
+			w.WriteHeader(http.StatusOK)
+		case <-r.Context().Done():
+		}
+	}))
+	defer srv.Close()
+	conn := connector.New(srv.URL+"/connector", time.Minute)
+	prober := &Prober{
+		Install:       Install{Profiles: []string{dir}},
+		Ping:          conn.Ping,
+		StartupWindow: time.Nanosecond, // Zotero has been up for hours
+	}
+	ctx, cancel := context.WithTimeout(t.Context(), 45*time.Second)
+	defer cancel()
+	st, err := Wait(ctx, WaitOptions{Prober: prober, WatchDirs: []string{dir}, StallRecheck: 2 * time.Second})
+	if err != nil || st.State != StateReady {
+		t.Fatalf("Wait across a 10s stall = %+v, %v; want ready", st, err)
+	}
+	if time.Now().Before(stallUntil) {
+		t.Fatal("Wait returned ready before the stall ended")
+	}
+}
+
+// resetListener reproduces the hung Zotero measured 2026-09-24: a listener on
+// 127.0.0.1 only, whose connections complete the handshake and are then
+// reset. Dialled as "localhost", [::1] refuses first.
+func resetListener(t *testing.T) string {
+	t.Helper()
+	ln, err := net.Listen("tcp4", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = ln.Close() })
+	go func() {
+		for {
+			c, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			if tc, ok := c.(*net.TCPConn); ok {
+				_ = tc.SetLinger(0) // close with RST
+			}
+			_ = c.Close()
+		}
+	}()
+	_, port, _ := net.SplitHostPort(ln.Addr().String())
+	return "http://localhost:" + port + "/connector"
+}
+
+func TestListeningOnSeesAListenerBehindARefusedAddress(t *testing.T) {
+	if !ListeningOn(t.Context(), resetListener(t)) {
+		t.Fatal("ListeningOn = false for a port held on 127.0.0.1 behind a refusing [::1]")
+	}
+	closed := realRefusalURL(t)
+	if ListeningOn(t.Context(), closed) {
+		t.Fatalf("ListeningOn(%s) = true for a closed port", closed)
+	}
+}
+
+// The misclassification seen live: the ping reported "connection refused"
+// (from [::1]) while Zotero held the port on 127.0.0.1. That is a hung
+// Zotero, not a disabled connector, and the user must not be told to enable
+// the connector setting.
+func TestARefusedPingWithAListenerBehindItIsBusyNotConnectorOff(t *testing.T) {
+	dir := t.TempDir()
+	startLockHolder(t, dir)
+	base := resetListener(t)
+	misleading := &net.OpError{Op: "dial", Net: "tcp", Err: errors.New("connect: connection refused")}
+	p := &Prober{
+		Install:       Install{Profiles: []string{dir}},
+		Ping:          func(context.Context) error { return fmt.Errorf("connector ping: %w", misleading) },
+		ConnectorURL:  base,
+		StartupWindow: time.Nanosecond,
+		Listening:     func(ctx context.Context) bool { return ListeningOn(ctx, base) },
+	}
+	if st := p.Probe(t.Context()); st.State != StateBusy {
+		t.Fatalf("status = %+v, want busy: something holds the connector port", st)
+	}
+	closed := realRefusalURL(t)
+	p.Listening = func(ctx context.Context) bool { return ListeningOn(ctx, closed) }
+	if st := p.Probe(t.Context()); st.State != StateConnectorOff {
+		t.Fatalf("status = %+v, want connector_off when every address refuses", st)
+	}
+}
+
+func realRefusalURL(t *testing.T) string {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, port, _ := net.SplitHostPort(ln.Addr().String())
+	_ = ln.Close()
+	return "http://localhost:" + port + "/connector"
 }

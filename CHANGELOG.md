@@ -13,18 +13,25 @@ Notable changes to zotio. Format follows [Keep a Changelog](https://keepachangel
   process is up (lock held, or the connector answered); `connector_reachable`
   means the connector accepts requests now, which imports need. `state` is
   `ready`; `starting` (lock held, connector silent, lock younger than the
-  2-minute startup window); `unresponsive` (past the window, the connector
-  port accepts connections but does not answer: Zotero is open but hung);
-  `connector_off` (past the window, nothing listens on the connector port);
-  or `stopped`. The lock age is the lock file's modification time, which
+  2-minute startup window); `busy` (past the window, the connector port
+  accepted the connection but did not answer this check — one silent check
+  is not a hang, since a large sync can hold Zotero's main thread for
+  seconds); `connector_off` (past the window, every address of the
+  connector host refused repeated connects — a hung Zotero's listener can
+  refuse some, so one refused ping is not enough); or `stopped`. `unresponsive` is reported only by
+  `desktop wait`, after a sustained stall. The lock age is the lock file's modification time, which
   Zotero resets when it takes the lock (`profiles[].lock_since`). It exits 0
   whatever it finds.
 - **`zotio desktop wait` blocks until Zotero's connector accepts requests.**
   It returns at once if the connector already answers. While Zotero is closed
   it sleeps on filesystem notifications for the profile and data directories
   instead of polling, and probes only after a change; while Zotero is starting
-  it re-checks the connector on a capped backoff. When Zotero is, or becomes,
-  `unresponsive` or `connector_off`, it returns at once with exit 15 and that
+  it re-checks the connector on a capped backoff. Past the startup window a
+  connector that cannot take a request is re-checked every 20s with a 10s
+  ping; only 60s without an answer, across 3 or more checks, returns exit 15:
+  `unresponsive` if any check found a listener on the connector port,
+  `connector_off` if none did (`stalled_since` set). Any answer in between
+  ends the wait as ready. Exit 15 carries the
   state as `outcome`, because nothing on disk announces a recovery.
   `--timeout` bounds the wait (exit 14, `outcome: "timeout"`); no
   discoverable profile exits 9 (`outcome: "no_profile"`); `--watch-stdin`

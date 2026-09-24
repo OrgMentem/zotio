@@ -99,8 +99,16 @@ of coverage now.
   answers (`internal/desktop`). Mozilla's lock open truncates `.parentlock`, so
   its mtime is the lock time (measured: 3s after process start on a file created
   years earlier); past a 2-minute startup window a silent connector is reported
-  as `unresponsive` (port accepts, no answer: seen live the same day, with the
-  window's accessibility tree also failing) or `connector_off` (refused).
+  as `busy` for one check, `unresponsive` only after 60s of silence across 3+
+  checks (seen live the same day, with the window's accessibility tree also
+  failing), or `connector_off` (refused). The connector runs on Zotero's main
+  thread, so a long sync can stall it for seconds without a hang.
+  The hung listener is also why refusal is weak evidence: Zotero listened on
+  127.0.0.1 only, `[::1]` refused, and Go reports the first address's error, so
+  a ping said "connection refused" for a held port; and 127.0.0.1 itself reset
+  or refused some back-to-back connects. `connector_off` therefore needs every
+  address to refuse repeated dials (`desktop.ListeningOn`), and in `wait` the
+  whole stall span.
 - **Schema/type endpoints are global**, served under `/api` directly, NOT under the
   `/users|groups/<id>` library prefix the configured base URL carries:
   `/api/itemTypes`, `/api/itemFields`, `/api/itemTypeFields`,

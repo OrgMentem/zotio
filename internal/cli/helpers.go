@@ -247,7 +247,8 @@ func degradedErr(err error) error { return &cliError{code: 13, err: err} }
 func timeoutErr(err error) error { return &cliError{code: 14, err: err} }
 
 // Zotero desktop is running past its startup window and its connector cannot
-// take requests (`desktop wait`: unresponsive or connector_off). Unlike a
+// take requests (`desktop wait`: unresponsive after a sustained stall, or
+// connector_off). Unlike a
 // timeout (14), waiting longer does not help until something changes, and
 // unlike a missing precondition (9) the app is not closed: the remedy is to
 // tell the user, whose Zotero is open but hung or has its connector off.

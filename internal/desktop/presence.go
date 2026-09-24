@@ -36,14 +36,23 @@
 // started, on a file created years earlier. On Windows parent.lock is
 // deleted on exit and created again at launch, so its mtime is the launch
 // time by construction. Past the window, a connector that still cannot take
-// requests is reported as one of two states:
+// requests is reported as:
 //
-//   - "unresponsive": the connector port accepts the connection but no
-//     answer arrives within the ping bound (or the answer is not a 200).
-//     Zotero's main thread is blocked: open, but not responding.
+//   - "busy": the connector port accepts the connection but no answer
+//     arrived within this check's ping bound (or the answer was not a 200).
+//     One silent check is not evidence of a hang: Zotero's connector runs on
+//     its main thread, which a large sync or database operation can hold for
+//     seconds. A one-shot Probe never goes further than "busy".
+//   - "unresponsive": only Wait reports it, after the connector has stayed
+//     silent for a sustained stall (StallChecks failed pings, each bounded by
+//     StallPingTimeout, spanning at least StallSpan). Zotero is open but not
+//     responding.
 //   - "connector_off": nothing listens on the connector port. The connector
 //     is disabled (Settings -> Advanced -> "Allow other applications to
-//     communicate with Zotero") or on another port.
+//     communicate with Zotero") or on another port. A hung Zotero's listener
+//     can also refuse some connects, so a one-shot Probe reports it only
+//     when every address refuses repeated dials, and Wait only when that
+//     held on every check of a sustained stall.
 package desktop
 
 import (
@@ -51,6 +60,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"net/url"
 	"slices"
 	"time"
 
@@ -100,9 +110,14 @@ const (
 	// StateStarting means the process holds its profile lock, the connector
 	// does not answer yet, and the lock is younger than the startup window.
 	StateStarting State = "starting"
-	// StateUnresponsive means the lock is older than the startup window and
-	// the connector port accepts connections without answering: Zotero is
-	// open but not responding.
+	// StateBusy means the lock is older than the startup window and the
+	// connector port accepted the connection without answering in this
+	// check. It may be a brief stall (a large sync) or the start of a hang;
+	// Wait tells the two apart.
+	StateBusy State = "busy"
+	// StateUnresponsive means the connector stayed silent through a
+	// sustained stall (see StallSpan): Zotero is open but not responding.
+	// Only Wait reports it.
 	StateUnresponsive State = "unresponsive"
 	// StateConnectorOff means the lock is older than the startup window and
 	// nothing listens on the connector port.
@@ -146,7 +161,10 @@ type Status struct {
 	Profiles           []ProfileStatus `json:"profiles"`
 	DiscoveryError     string          `json:"discovery_error,omitempty"`
 	DataDir            string          `json:"data_dir,omitempty"`
-	CheckedAt          time.Time       `json:"checked_at"`
+	// StalledSince is when Wait first saw the connector silent past the
+	// startup window, set on busy and unresponsive results from Wait.
+	StalledSince *time.Time `json:"stalled_since,omitempty"`
+	CheckedAt    time.Time  `json:"checked_at"`
 }
 
 // LockHeld reports whether any profile lock was held.
@@ -228,8 +246,21 @@ const DefaultPingTimeout = 3 * time.Second
 // DefaultStartupWindow is how long after taking its profile lock a Zotero
 // whose connector does not answer counts as "starting". The connector
 // normally listens within seconds; a database upgrade after a Zotero update
-// can take longer, and is reported as unresponsive once it outlasts this.
+// can take longer, and is reported as busy once it outlasts this.
 const DefaultStartupWindow = 2 * time.Minute
+
+// Sustained-stall evidence Wait needs before it reports StateUnresponsive:
+// at least DefaultStallChecks failed pings, each allowed
+// DefaultStallPingTimeout, the first and last at least DefaultStallSpan
+// apart, with a re-check every DefaultStallRecheck in between. A sync that
+// holds Zotero's main thread for tens of seconds and then answers never
+// meets it.
+const (
+	DefaultStallSpan        = time.Minute
+	DefaultStallChecks      = 3
+	DefaultStallRecheck     = 20 * time.Second
+	DefaultStallPingTimeout = 10 * time.Second
+)
 
 // Prober checks both presence signals.
 type Prober struct {
@@ -243,6 +274,11 @@ type Prober struct {
 	PingTimeout time.Duration
 	// StartupWindow bounds StateStarting; zero means DefaultStartupWindow.
 	StartupWindow time.Duration
+	// Listening reports whether anything holds the connector port. Nil
+	// classifies from the ping error alone; the CLI sets it to ListeningOn,
+	// because a ping's error can name one refused address while another
+	// address has a listener behind it.
+	Listening func(ctx context.Context) bool
 }
 
 func (p *Prober) startupWindow() time.Duration {
@@ -255,13 +291,14 @@ func (p *Prober) startupWindow() time.Duration {
 // Probe runs one presence check. It never fails: an undecidable signal is
 // reported in the Status rather than returned as an error.
 func (p *Prober) Probe(ctx context.Context) Status {
-	return p.probe(ctx, time.Time{})
+	return p.probe(ctx, time.Time{}, 0)
 }
 
 // probe runs one check. firstSeen is when the caller first saw the lock held;
 // it stands in for the lock time when the platform could not report one, so a
 // long-held lock of unknown age still leaves "starting" eventually.
-func (p *Prober) probe(ctx context.Context, firstSeen time.Time) Status {
+// pingTimeout overrides the Prober's bound when positive.
+func (p *Prober) probe(ctx context.Context, firstSeen time.Time, pingTimeout time.Duration) Status {
 	st := Status{
 		ConnectorURL: p.ConnectorURL,
 		Profiles:     make([]ProfileStatus, 0, len(p.Install.Profiles)),
@@ -290,7 +327,10 @@ func (p *Prober) probe(ctx context.Context, firstSeen time.Time) Status {
 			pingErr = ErrConnectorUnavailable
 		}
 	} else {
-		timeout := p.PingTimeout
+		timeout := pingTimeout
+		if timeout <= 0 {
+			timeout = p.PingTimeout
+		}
 		if timeout <= 0 {
 			timeout = DefaultPingTimeout
 		}
@@ -319,11 +359,11 @@ func (p *Prober) probe(ctx context.Context, firstSeen time.Time) Status {
 		switch {
 		case since.IsZero() || now.Sub(since) < p.startupWindow():
 			st.State = StateStarting
-		case p.Ping == nil || connectorRefused(pingErr):
+		case p.Ping == nil || !p.listening(ctx, pingErr):
 			// No connector zotio can address counts as none listening.
 			st.State = StateConnectorOff
 		default:
-			st.State = StateUnresponsive
+			st.State = StateBusy
 		}
 	default:
 		st.State, st.Evidence = StateStopped, EvidenceNone
@@ -340,6 +380,73 @@ func (p *Prober) startingUntil(st Status, firstSeen time.Time) time.Time {
 	}
 	return since.Add(p.startupWindow())
 }
+
+// listening reports whether anything holds the connector port after a
+// failed ping.
+func (p *Prober) listening(ctx context.Context, pingErr error) bool {
+	if p.Listening != nil {
+		return p.Listening(ctx)
+	}
+	return !connectorRefused(pingErr)
+}
+
+// ListeningOn reports whether anything holds the port of rawURL: it dials
+// every address the host resolves to, a few times each, and answers false
+// only when every dial is refused.
+//
+// A ping error is not enough. Measured 2026-09-24 against a hung Zotero 7 on
+// macOS: Zotero listened on 127.0.0.1:23119 only; with its main thread
+// blocked, the kernel completed the handshake on 127.0.0.1 and reset the
+// connection, while [::1] refused. Go dials "localhost" in resolver order and
+// reports the FIRST address's error when all fail, so the ping said
+// "connection refused" for a port Zotero held. A completed connect, a reset
+// after it, or a dial timeout (a full backlog drops SYNs) all mean a
+// listener exists. The same hung listener also REFUSED some connects made
+// right after a reset (2 of 3 back-to-back checks), so each address gets
+// listenAttempts tries before it counts as refused.
+func ListeningOn(ctx context.Context, rawURL string) bool {
+	u, err := url.Parse(rawURL)
+	if err != nil || u.Host == "" {
+		return false
+	}
+	port := u.Port()
+	if port == "" {
+		port = "80"
+		if u.Scheme == "https" {
+			port = "443"
+		}
+	}
+	addrs, err := net.DefaultResolver.LookupHost(ctx, u.Hostname())
+	if err != nil || len(addrs) == 0 {
+		return false
+	}
+	d := net.Dialer{Timeout: time.Second}
+	for attempt := range listenAttempts {
+		if attempt > 0 {
+			select {
+			case <-ctx.Done():
+				return true // undecided: do not claim nothing listens
+			case <-time.After(listenRetryDelay):
+			}
+		}
+		for _, addr := range addrs {
+			conn, err := d.DialContext(ctx, "tcp", net.JoinHostPort(addr, port))
+			if err == nil {
+				_ = conn.Close()
+				return true
+			}
+			if !connectorRefused(err) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+const (
+	listenAttempts   = 5
+	listenRetryDelay = 100 * time.Millisecond
+)
 
 // connectorRefused reports whether a ping failed because nothing listens on
 // the port: the dial itself failed. A timeout, including a dial timeout, is

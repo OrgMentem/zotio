@@ -59,13 +59,19 @@ state:
                  lock is younger than the 2-minute startup window. Zotero
                  takes the lock about 3s after launch and its connector
                  listens a few seconds later.
-  unresponsive   the lock is older than the startup window and the connector
-                 port accepts the connection but does not answer (or answers
-                 with an error): Zotero is open but not responding.
+  busy           the lock is older than the startup window and the connector
+                 port accepted the connection but did not answer in this
+                 check (or answered with an error). One silent check is not
+                 a hang: a large sync can hold Zotero's main thread for
+                 seconds.
+  unresponsive   desktop wait only: the connector stayed silent for at least
+                 60s across 3 or more checks (each allowed 10s): Zotero is
+                 open but not responding.
   connector_off  the lock is older than the startup window and nothing
-                 listens on the connector port: the connector is disabled
-                 (Settings -> Advanced -> "Allow other applications to
-                 communicate with Zotero") or on another port.
+                 listens on the connector port (every address refused
+                 repeated connects): the connector is disabled (Settings ->
+                 Advanced -> "Allow other applications to communicate with
+                 Zotero") or on another port.
   stopped        neither signal holds.
 
 The lock age comes from the lock file's modification time, which Zotero
@@ -129,10 +135,14 @@ filesystem notifications for the Zotero profile and data directories and
 probes only after a change. While Zotero is starting, the connector is
 re-checked on a capped backoff (250ms up to 2s), because it listens a few
 seconds after the lock and its start writes no file. When the startup window
-passes without an answer, or Zotero is already past it (unresponsive or
-connector_off), the command returns at once with exit 15 instead of waiting
-silently: nothing on disk announces a recovery, so the caller tells the user
-and decides when to wait again.
+passes, a connector that cannot take a request is re-checked every 20s with a
+10s ping. Any answer ends the wait as ready. 60s without one, across 3 or more
+checks, ends it with exit 15: unresponsive if any check found a listener on
+the connector port, connector_off if none did (a hung Zotero's listener also
+refuses some connects, so one refusal proves nothing). Exit 15 means Zotero is open
+but stuck: nothing on disk announces a recovery, so the caller tells the user
+and decides when to wait again. While Zotero is starting or busy, filesystem
+events cause no extra checks.
 
 ` + desktopRunningDefinition + `
 
@@ -261,6 +271,7 @@ func newDesktopProber(flags *rootFlags) (*desktop.Prober, error) {
 	conn := connector.New(base, desktop.DefaultPingTimeout)
 	prober.ConnectorURL = base
 	prober.Ping = func(ctx context.Context) error { return connectorPing(ctx, conn) }
+	prober.Listening = func(ctx context.Context) bool { return desktop.ListeningOn(ctx, base) }
 	return prober, nil
 }
 
@@ -287,6 +298,8 @@ func renderDesktopStatus(w io.Writer, st desktop.Status) {
 		fmt.Fprintln(w, "Zotero desktop: starting (the process holds its profile lock; the connector does not answer yet)")
 	case desktop.StateUnresponsive:
 		fmt.Fprintln(w, "Zotero desktop: unresponsive (open, but its connector accepts connections and does not answer)")
+	case desktop.StateBusy:
+		fmt.Fprintln(w, "Zotero desktop: busy (open; its connector accepted the connection but did not answer this check)")
 	case desktop.StateConnectorOff:
 		fmt.Fprintln(w, "Zotero desktop: connector off (open, but nothing listens on the connector port)")
 	default:

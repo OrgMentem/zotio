@@ -194,16 +194,24 @@ func TestWaitConfirmsTheConnectorAfterTheLockWithoutAFurtherEvent(t *testing.T) 
 	h.release(t)
 }
 
+// stallTuning shrinks the sustained-stall evidence to test scale.
+func stallTuning(o *WaitOptions) {
+	o.StallSpan, o.StallChecks = 300*time.Millisecond, 3
+	o.StallRecheck, o.StallPingTimeout = 50*time.Millisecond, 20*time.Millisecond
+}
+
 // The live case: Zotero starts, takes its lock, and hangs before its
-// connector answers. Once the startup window passes, Wait must return the
-// unresponsive status rather than wait silently; no filesystem change would
-// ever announce a recovery.
-func TestWaitReturnsStuckWhenTheStartupWindowPassesWithoutAnAnswer(t *testing.T) {
+// connector answers. After the startup window it is busy; once the silence
+// has lasted the stall span over enough checks, Wait returns the
+// unresponsive status rather than wait silently, since no filesystem change
+// would ever announce a recovery.
+func TestWaitReturnsUnresponsiveOnlyAfterASustainedStall(t *testing.T) {
 	in := newInstall(t)
 	conn := &fakeConnector{fail: errNoAnswer}
 	done := startWait(t, t.Context(), in, conn, func(o *WaitOptions) {
 		o.ConfirmFirst, o.ConfirmMax = 10*time.Millisecond, 40*time.Millisecond
-		o.Prober.StartupWindow = 400 * time.Millisecond
+		o.Prober.StartupWindow = 300 * time.Millisecond
+		stallTuning(o)
 	})
 
 	locked := time.Now()
@@ -212,43 +220,108 @@ func TestWaitReturnsStuckWhenTheStartupWindowPassesWithoutAnAnswer(t *testing.T)
 	if !errors.Is(r.err, ErrStuck) || r.st.State != StateUnresponsive || !r.st.Running {
 		t.Fatalf("Wait = %+v, %v; want ErrStuck with the unresponsive status", r.st, r.err)
 	}
-	// Not before the window: a slow start is still a start.
-	if elapsed := time.Since(locked); elapsed < 300*time.Millisecond {
-		t.Fatalf("Wait gave up %v after the lock, inside the 400ms startup window", elapsed)
+	// Not before the startup window plus the stall span.
+	if elapsed := time.Since(locked); elapsed < 550*time.Millisecond {
+		t.Fatalf("Wait gave up %v after the lock; the window (300ms) plus the stall span (300ms) had not passed", elapsed)
 	}
-	if conn.count() < 3 {
-		t.Fatalf("pings = %d, want re-checks during the startup window", conn.count())
+	if r.st.StalledSince == nil || r.st.CheckedAt.Sub(*r.st.StalledSince) < 300*time.Millisecond {
+		t.Fatalf("stalled_since = %v at %v, want at least the stall span before", r.st.StalledSince, r.st.CheckedAt)
 	}
 }
 
-// Zotero already hung (or running with its connector disabled) when the
-// wait begins: the answer is immediate, and names which of the two it is.
-func TestWaitReturnsStuckAtOnceWhenZoteroIsAlreadyPastItsStart(t *testing.T) {
-	cases := []struct {
-		name string
-		fail func(t *testing.T) error
-		want State
-	}{
-		{"hung", func(*testing.T) error { return errNoAnswer }, StateUnresponsive},
-		{"connector disabled", realRefusal, StateConnectorOff},
+// A stall shorter than the span, followed by an answer, is a busy Zotero,
+// not a hung one: the wait ends as ready.
+func TestWaitRidesOutAStallThatEndsBeforeTheSpan(t *testing.T) {
+	in := newInstall(t)
+	startLockHolder(t, in.profile)
+	conn := &fakeConnector{fail: errNoAnswer}
+	done := startWait(t, t.Context(), in, conn, func(o *WaitOptions) {
+		o.Prober.StartupWindow = time.Nanosecond
+		stallTuning(o)
+		o.StallSpan = 2 * time.Second
+	})
+	time.Sleep(300 * time.Millisecond) // several failed stall checks
+	if conn.count() < 3 {
+		t.Fatalf("pings during the stall = %d, want re-checks", conn.count())
 	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			in := newInstall(t)
-			startLockHolder(t, in.profile)
-			conn := &fakeConnector{fail: tc.fail(t)}
-			prober := &Prober{Install: Install{Profiles: []string{in.profile}, DataDir: in.data}, Ping: conn.ping, StartupWindow: time.Nanosecond}
-			ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
-			defer cancel()
-			st, err := Wait(ctx, WaitOptions{Prober: prober, WatchDirs: []string{in.profile, in.data}})
-			if !errors.Is(err, ErrStuck) || st.State != tc.want {
-				t.Fatalf("Wait = %+v, %v; want ErrStuck in state %s", st, err, tc.want)
-			}
-			if conn.count() != 1 {
-				t.Fatalf("pings = %d, want 1: the first probe already decides", conn.count())
-			}
-		})
+	conn.setUp()
+	if r := awaitResult(t, done); r.err != nil || r.st.State != StateReady {
+		t.Fatalf("Wait = %+v, %v; want ready once the stall ends", r.st, r.err)
 	}
+}
+
+// A connector that is off refuses on every check. That too needs the
+// sustained span, because a hung Zotero's listener also refuses some
+// connects; once proven, the state names the connector, not a hang.
+func TestWaitReturnsConnectorOffAfterASustainedRefusal(t *testing.T) {
+	in := newInstall(t)
+	startLockHolder(t, in.profile)
+	conn := &fakeConnector{fail: realRefusal(t)}
+	done := startWait(t, t.Context(), in, conn, func(o *WaitOptions) {
+		o.Prober.StartupWindow = time.Nanosecond
+		stallTuning(o)
+	})
+	r := awaitResult(t, done)
+	if !errors.Is(r.err, ErrStuck) || r.st.State != StateConnectorOff {
+		t.Fatalf("Wait = %+v, %v; want ErrStuck in state connector_off", r.st, r.err)
+	}
+	if conn.count() < 3 {
+		t.Fatalf("pings = %d, want the sustained-stall checks", conn.count())
+	}
+}
+
+// A stall in which any check found a listener is a hang, even if other
+// checks were refused (the intermittent refusals of a hung listener).
+func TestWaitCallsAMixedStallUnresponsive(t *testing.T) {
+	in := newInstall(t)
+	startLockHolder(t, in.profile)
+	refused := realRefusal(t)
+	var mu sync.Mutex
+	n := 0
+	ping := func(context.Context) error {
+		mu.Lock()
+		defer mu.Unlock()
+		n++
+		if n%2 == 0 {
+			return errNoAnswer
+		}
+		return refused
+	}
+	prober := &Prober{Install: Install{Profiles: []string{in.profile}, DataDir: in.data}, Ping: ping, StartupWindow: time.Nanosecond}
+	opts := WaitOptions{Prober: prober, WatchDirs: []string{in.profile, in.data}}
+	stallTuning(&opts)
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+	defer cancel()
+	st, err := Wait(ctx, opts)
+	if !errors.Is(err, ErrStuck) || st.State != StateUnresponsive {
+		t.Fatalf("Wait = %+v, %v; want ErrStuck in state unresponsive", st, err)
+	}
+}
+
+// Busy re-checks are timer-driven; a sync writing its WAL constantly must
+// not turn every filesystem event into another ping of a busy Zotero.
+func TestWaitIgnoresEventsWhileBusy(t *testing.T) {
+	in := newInstall(t)
+	startLockHolder(t, in.profile)
+	conn := &fakeConnector{fail: errNoAnswer}
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	done := startWait(t, ctx, in, conn, func(o *WaitOptions) {
+		o.Prober.StartupWindow = time.Nanosecond
+		o.StallSpan, o.StallRecheck = time.Hour, time.Hour
+	})
+	for i := range 20 {
+		if err := os.WriteFile(filepath.Join(in.data, "zotero.sqlite-wal"), []byte{byte(i)}, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	assertStillWaiting(t, done, 200*time.Millisecond)
+	if got := conn.count(); got != 1 {
+		t.Fatalf("pings while busy with WAL events = %d, want only the first", got)
+	}
+	cancel()
+	awaitResult(t, done)
 }
 
 func TestWaitTimeoutReturnsItsCause(t *testing.T) {
