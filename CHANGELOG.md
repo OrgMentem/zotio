@@ -4,6 +4,30 @@ Notable changes to zotio. Format follows [Keep a Changelog](https://keepachangel
 
 ## [Unreleased]
 
+### Added
+
+- **`zotio desktop status` reports whether Zotero desktop is running.** It
+  reads the profile lock of every discovered Zotero profile (an fcntl lock on
+  `.parentlock` on macOS and Linux; an exclusive `parent.lock` handle on
+  Windows) and sends one ping to the local connector. `running` means the
+  process is up (lock held, or the connector answered); `connector_reachable`
+  means the connector accepts requests now, which imports need. `state` is
+  `ready`, `starting` (process up, connector not answering: normal for a few
+  seconds after launch, and permanent if the connector is disabled) or
+  `stopped`. It exits 0 whatever it finds.
+- **`zotio desktop wait` blocks until Zotero's connector accepts requests.**
+  It returns at once if the connector already answers. While Zotero is closed
+  it sleeps on filesystem notifications for the profile and data directories
+  instead of polling, and probes only after a change; once the lock is held it
+  re-checks the connector on a capped backoff for up to 2 minutes. `--timeout`
+  bounds the wait (exit 14, `outcome: "timeout"`); no discoverable profile
+  exits 9 (`outcome: "no_profile"`); `--watch-stdin` exits when a supervisor's
+  pipe closes. It is hidden from the MCP surface because it blocks. The
+  notifications come from the new dependency `github.com/fsnotify/fsnotify`
+  (BSD-3-Clause; inotify, kqueue, ReadDirectoryChangesW), whose only
+  dependency, `golang.org/x/sys`, was already linked.
+- **Exit code 14: a bounded wait timed out.** Nothing failed; wait again.
+
 ## [0.27.0] — 2026-09-23
 
 ### Changed — breaking

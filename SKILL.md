@@ -87,6 +87,7 @@ The curated feature set. `zotio which "<goal>"` resolves natural-language querie
 - **`export snapshot`** — Reproducible, resumable full-library JSONL export with a lockfile (key, version, content hash) — diff lockfiles to prove what changed between handoffs, and take one before any bulk write the journal cannot reverse.
 - **`watch`** — Periodic incremental syncs (`--interval`, `--once`); `--health` diffs library health between cycles and reports new findings to stdout or a webhook.
 - **`workflow run`** — Run a declarative multi-step spec (JSON) in-process with per-step status and continue-on-error — replaces brittle shell chains.
+- **`desktop status` / `desktop wait`** — Is Zotero desktop running, and does its connector accept imports (`connector_reachable`)? `wait` blocks on filesystem events, not a poll, until the connector answers (exit 0), or exits 14 at `--timeout`.
 - **`init`** — Guided first run (detect Zotero, check the local API and explain how to enable it, set key, first sync, health check); agent-safe under `--no-input` (unmet steps exit 9 with a step report).
 
 ### Reading workflow
@@ -287,6 +288,7 @@ Explicit flags always win over profile values; profile values win over defaults.
 | 11 | Quality gate failed (`--fail-on`, `--fail-on-unknown`) |
 | 12 | Stale data |
 | 13 | Incomplete — part succeeded, part was rejected; reconcile before retrying |
+| 14 | Timed out — `desktop wait --timeout` ended before Zotero's connector answered; wait again |
 
 ## Argument Parsing
 

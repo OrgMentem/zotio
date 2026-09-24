@@ -240,6 +240,12 @@ func freshnessErr(err error) error { return &cliError{code: 12, err: err} }
 // output), a quality gate (11), a precondition (9), and freshness (12).
 func degradedErr(err error) error { return &cliError{code: 13, err: err} }
 
+// a bounded wait (`desktop wait --timeout`) ran out before the awaited
+// condition held. Nothing failed and nothing needs fixing: the remedy is to
+// wait again, unlike a precondition (9), whose remedy is to change the
+// environment first.
+func timeoutErr(err error) error { return &cliError{code: 14, err: err} }
+
 // dryRunOK reports whether the command should short-circuit without doing any
 // real work because --dry-run was set. The verify pipeline probes hand-written
 // commands with --dry-run; commands that put validation in cobra's `Args:` or

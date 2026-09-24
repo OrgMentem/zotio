@@ -31,6 +31,8 @@ The machine-readable registry every command is classified against — read vs. w
 | `creators audit fix` | write | `web_api` |  | `synced_store`, `web_api_key` |
 | `creators rename` | other |  |  |  |
 | `demo` | read |  |  |  |
+| `desktop status` | read |  |  |  |
+| `desktop wait` | read |  |  |  |
 | `doctor` | introspect |  |  |  |
 | `export` | other |  |  |  |
 | `export snapshot` | read |  |  |  |

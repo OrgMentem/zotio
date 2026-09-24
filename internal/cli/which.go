@@ -103,6 +103,16 @@ var whichAliases = map[string][]string{
 		"tag item into collection",
 		"organise item into collection",
 	},
+	"desktop status": {
+		"is zotero running",
+		"is zotero desktop open",
+		"check whether zotero is running",
+	},
+	"desktop wait": {
+		"wait for zotero to start",
+		"wait until zotero is open",
+		"wait for zotero desktop",
+	},
 }
 
 // whichSkip lists command names invisible to the which index: meta-commands

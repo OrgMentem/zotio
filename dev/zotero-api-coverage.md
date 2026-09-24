@@ -87,6 +87,16 @@ of coverage now.
   created, leaving a childless item and no reason. A locally scanned PDF has no
   web source, so callers must fall back to the file's own `file://` URI;
   `connector.SaveAttachment` rejects an empty one up front so the failure is named.
+- **Zotero's process and its connector come up at different times.** Measured
+  2026-09-24 against Zotero 7 on macOS: the process takes an fcntl write lock on
+  `<profile>/.parentlock` (F_GETLK from another process names the Zotero PID)
+  about 3s after launch, creates `zotero.sqlite-wal`/`-shm` in the data directory
+  about 4s after launch, and `/connector/ping` answers 200 a few seconds later,
+  only while Zotero runs. Windows builds hold `parent.lock` open with share mode 0
+  and delete-on-close instead. Only the connector answering proves an import can
+  proceed; `desktop status` reports both signals and `desktop wait` sleeps on
+  filesystem events for the profile and data directories until the connector
+  answers (`internal/desktop`).
 - **Schema/type endpoints are global**, served under `/api` directly, NOT under the
   `/users|groups/<id>` library prefix the configured base URL carries:
   `/api/itemTypes`, `/api/itemFields`, `/api/itemTypeFields`,
@@ -177,6 +187,10 @@ Run this when a new Zotero version ships, or periodically:
 
 ## Last reviewed
 
+- **2026-09-24** — against the running Zotero 7 desktop on macOS. Confirmed
+  that a read-only descriptor's F_GETLK on `.parentlock` reports the Zotero PID
+  while it runs, recorded the lock/WAL/connector start order under Invariants,
+  and added `desktop status` and `desktop wait` on those signals.
 - **2026-08-17** — against the live Zotero 7 desktop connector. Established that
   `POST /connector/saveAttachment` cannot target an existing library item
   (session-local ids only; `500` live, `400 SESSION_NOT_FOUND` otherwise) and that

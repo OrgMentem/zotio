@@ -708,6 +708,15 @@
     }
   },
   {
+    "name": "desktop_status",
+    "description": "Report whether Zotero desktop is running and whether its connector accepts\nrequests. Cheap and local: it reads the profile lock of every discovered\nZotero profile and sends one ping to the local connector. It exits 0 whatever\nit finds; read the fields, not the exit code.\n\nTwo signals, reported separately:\n\n  running              Zotero's process is up: another process holds the\n                       profile lock (.parentlock via fcntl on macOS and Linux,\n                       parent.lock opened exclusively on Windows), or the\n                       connector answered.\n  connector_reachable  GET \u003cconnector\u003e/ping answered 200 during this check.\n                       Imports and every other connector write need this.\n\nstate is \"ready\" when the connector answers, \"stopped\" when neither signal\nholds, and \"starting\" when the process holds its lock but the connector does\nnot answer. Zotero takes the lock about 3s after launch and its connector\nlistens a few seconds later, so \"starting\" is normal briefly after a launch;\nit persists if the connector is disabled (Settings -\u003e Advanced -\u003e \"Allow other\napplications to communicate with Zotero\"), moved to another port, or Zotero\nis hung. evidence names the strongest signal: connector, profile_lock, none.\n\nProfiles are discovered from profiles.ini in the platform's Zotero directory\n(ZOTERO_PROFILE_DIR pins one); data_dir comes from the profile's prefs.js.",
+    "inputSchema": {
+      "properties": {},
+      "required": [],
+      "type": "object"
+    }
+  },
+  {
     "name": "export",
     "description": "Export paginated API data to a local file. Output defaults to JSONL\n(one JSON object per line, streaming-friendly); JSON output is available for\nbackwards-compatible resource exports.",
     "inputSchema": {

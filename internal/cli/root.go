@@ -526,6 +526,7 @@ See README.md or the bundled SKILL.md for recipes.`,
 	rootCmd.AddCommand(newTagsCmd(flags))
 	rootCmd.AddCommand(newCreatorsCmd(flags))
 	rootCmd.AddCommand(newDoctorCmd(flags))
+	rootCmd.AddCommand(newDesktopCmd(flags))
 	rootCmd.AddCommand(newInitCmd(flags))
 	rootCmd.AddCommand(newDemoCmd(flags))
 	rootCmd.AddCommand(newAuthCmd(flags))
