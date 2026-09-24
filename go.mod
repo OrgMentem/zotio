@@ -14,6 +14,7 @@ require (
 )
 
 require (
+	github.com/fsnotify/fsnotify v1.10.1 // BSD-3-Clause; `desktop wait` sleeps on inotify/kqueue/ReadDirectoryChangesW instead of polling
 	github.com/gofrs/flock v0.13.1
 	golang.org/x/text v0.42.0
 )

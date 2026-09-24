@@ -719,6 +719,161 @@ zotio demo [flags]
 | --- | --- | --- | --- |
 | `--reset` | `bool` | `false` | Delete and re-seed the demo library (also removes demo.db) |
 
+## `zotio desktop`
+
+Report whether Zotero desktop is running, or wait for it to start
+
+```
+zotio desktop
+```
+
+### `zotio desktop status`
+
+Report whether Zotero desktop is running and its connector accepts requests
+
+Report whether Zotero desktop is running and whether its connector accepts
+requests. Cheap and local: it reads the profile lock of every discovered
+Zotero profile and sends one ping to the local connector. It exits 0 whatever
+it finds; read the fields, not the exit code.
+
+Two signals, reported separately:
+
+  running              Zotero's process is up: another process holds the
+                       profile lock (.parentlock via fcntl on macOS and Linux,
+                       parent.lock opened exclusively on Windows), or the
+                       connector answered.
+  connector_reachable  GET <connector>/ping answered 200 within 3s during this
+                       check. Imports and every other connector write need
+                       this.
+
+state:
+  ready          the connector answers.
+  starting       the lock is held, the connector does not answer yet, and the
+                 lock is younger than the 2-minute startup window. Zotero
+                 takes the lock about 3s after launch and its connector
+                 listens a few seconds later.
+  busy           the lock is older than the startup window and the connector
+                 port accepted the connection but did not answer in this
+                 check (or answered with an error). One silent check is not
+                 a hang: a large sync can hold Zotero's main thread for
+                 seconds.
+  unresponsive   desktop wait only: the connector stayed silent for at least
+                 60s across 3 or more checks (each allowed 10s): Zotero is
+                 open but not responding.
+  connector_off  the lock is older than the startup window and nothing
+                 listens on the connector port (every address refused
+                 repeated connects): the connector is disabled (Settings ->
+                 Advanced -> "Allow other applications to communicate with
+                 Zotero") or on another port.
+  stopped        neither signal holds.
+
+The lock age comes from the lock file's modification time, which Zotero
+resets when it takes the lock (profiles[].lock_since). evidence names the
+strongest signal: connector, profile_lock, none.
+
+Profiles are discovered from profiles.ini in the platform's Zotero directory
+(ZOTERO_PROFILE_DIR pins one); data_dir comes from the profile's prefs.js.
+
+```
+zotio desktop status
+```
+
+Examples:
+
+```bash
+zotio desktop status
+  zotio desktop status --agent
+```
+
+### `zotio desktop wait`
+
+Block until Zotero desktop's connector accepts requests
+
+Block until Zotero desktop's connector accepts requests, then print the
+status that proved it. If the connector already answers, it returns at once.
+
+While Zotero is closed nothing runs on a timer: the command sleeps on
+filesystem notifications for the Zotero profile and data directories and
+probes only after a change. While Zotero is starting, the connector is
+re-checked on a capped backoff (250ms up to 2s), because it listens a few
+seconds after the lock and its start writes no file. When the startup window
+passes, a connector that cannot take a request is re-checked every 20s with a
+10s ping. Any answer ends the wait as ready. 60s without one, across 3 or more
+checks, ends it with exit 15: unresponsive if any check found a listener on
+the connector port, connector_off if none did (a hung Zotero's listener also
+refuses some connects, so one refusal proves nothing). Exit 15 means Zotero is open
+but stuck: nothing on disk announces a recovery, so the caller tells the user
+and decides when to wait again. While Zotero is starting or busy, filesystem
+events cause no extra checks.
+
+Two signals, reported separately:
+
+  running              Zotero's process is up: another process holds the
+                       profile lock (.parentlock via fcntl on macOS and Linux,
+                       parent.lock opened exclusively on Windows), or the
+                       connector answered.
+  connector_reachable  GET <connector>/ping answered 200 within 3s during this
+                       check. Imports and every other connector write need
+                       this.
+
+state:
+  ready          the connector answers.
+  starting       the lock is held, the connector does not answer yet, and the
+                 lock is younger than the 2-minute startup window. Zotero
+                 takes the lock about 3s after launch and its connector
+                 listens a few seconds later.
+  busy           the lock is older than the startup window and the connector
+                 port accepted the connection but did not answer in this
+                 check (or answered with an error). One silent check is not
+                 a hang: a large sync can hold Zotero's main thread for
+                 seconds.
+  unresponsive   desktop wait only: the connector stayed silent for at least
+                 60s across 3 or more checks (each allowed 10s): Zotero is
+                 open but not responding.
+  connector_off  the lock is older than the startup window and nothing
+                 listens on the connector port (every address refused
+                 repeated connects): the connector is disabled (Settings ->
+                 Advanced -> "Allow other applications to communicate with
+                 Zotero") or on another port.
+  stopped        neither signal holds.
+
+The lock age comes from the lock file's modification time, which Zotero
+resets when it takes the lock (profiles[].lock_since). evidence names the
+strongest signal: connector, profile_lock, none.
+
+Exit codes and the JSON outcome field:
+  0   outcome "ready": the connector answers.
+  15  outcome "unresponsive" or "connector_off" (the state): Zotero runs past
+      its startup window and its connector cannot take requests.
+  14  outcome "timeout": --timeout passed first; wait again.
+  9   outcome "no_profile" (no Zotero profile found and the connector does not
+      answer) or "watch_failed" (the directories could not be watched).
+  10  the configured base URL is not a local Zotero, so there is no connector
+      to wait for.
+  1   interrupted (SIGINT/SIGTERM) or stdin closed under --watch-stdin; nothing
+      is printed on stdout.
+
+--timeout replaces the global request timeout for this command; a connector
+ping is bounded to 3s, or 10s for the stall re-checks past the startup window.
+
+```
+zotio desktop wait [flags]
+```
+
+Examples:
+
+```bash
+zotio desktop wait
+  zotio desktop wait --agent --timeout 6h
+  # Supervised: exit when the supervisor's pipe closes
+  zotio desktop wait --agent --watch-stdin --timeout 1h
+```
+
+| Flag | Type | Default | Description |
+| --- | --- | --- | --- |
+| `--timeout` | `duration` | `0s` | Give up after this long and exit 14, e.g. 30m or 6h (0 = wait indefinitely) |
+| `--watch-stdin` | `bool` | `false` | Exit when stdin reaches end of file (for supervisors that hold a pipe open); input is discarded |
+
 ## `zotio doctor`
 
 Check CLI health

@@ -11,6 +11,11 @@
 // the desktop's preference is the only way to notice that mismatch before
 // consuming a plan the operator does not use.
 //
+// The same profile discovery also serves Zotero desktop presence detection
+// (internal/desktop): Profiles lists the profile directories whose lock file
+// says whether Zotero is running, and DataDir names the data directory whose
+// database files change when it starts.
+//
 // Only reads. Nothing here writes to a Zotero profile.
 //
 // # Two axes, not one
@@ -70,6 +75,10 @@ const (
 	prefStorageGroupsEnabled = "extensions.zotero.sync.storage.groups.enabled"
 	prefStorageURL           = "extensions.zotero.sync.storage.url"
 	prefStorageVerified      = "extensions.zotero.sync.storage.verified"
+	// Zotero.DataDirectory.init reads dataDir only when useDataDir is true;
+	// otherwise it uses its default location.
+	prefUseDataDir = "extensions.zotero.useDataDir"
+	prefDataDir    = "extensions.zotero.dataDir"
 )
 
 // prefs.js is a small generated file. This bound keeps a corrupt or hostile
@@ -333,20 +342,11 @@ func (f FileStorage) WebDAVHost() string {
 // to WebDAV and sets Ambiguous. That keeps the dangerous direction — assuming
 // Zotero's cloud when the running profile actually uses WebDAV — closed.
 func Load() (FileStorage, error) {
-	if override := strings.TrimSpace(os.Getenv(ProfileDirEnv)); override != "" {
-		// A relative pin resolves against whatever directory zotio starts in,
-		// so one setting names different profiles from a shell and from an MCP
-		// host, and can name a prefs.js someone else placed there. Refuse it
-		// rather than guess: this pin decides where stored uploads may go.
-		if !filepath.IsAbs(override) {
-			hint := ""
-			if override == "~" || strings.HasPrefix(override, "~/") {
-				// MCP host configs and service files pass env values verbatim;
-				// only an interactive shell expands "~".
-				hint = "; \"~\" is not expanded here, write the full home path"
-			}
-			return FileStorage{}, fmt.Errorf("%s must be an absolute path, got %q%s", ProfileDirEnv, override, hint)
-		}
+	override, pinned, err := pinnedProfileDir()
+	if err != nil {
+		return FileStorage{}, err
+	}
+	if pinned {
 		fs, err := LoadProfile(override)
 		if err != nil {
 			return FileStorage{}, err
@@ -367,6 +367,105 @@ func Load() (FileStorage, error) {
 		return FileStorage{}, nil
 	}
 	return loadAcross(dirs, preferred)
+}
+
+// pinnedProfileDir returns the ProfileDirEnv pin, if one is set.
+//
+// A relative pin resolves against whatever directory zotio starts in, so one
+// setting names different profiles from a shell and from an MCP host, and can
+// name a prefs.js someone else placed there. It is refused rather than
+// guessed: the pin decides where stored uploads may go, and which lock file
+// says Zotero is running.
+func pinnedProfileDir() (dir string, pinned bool, err error) {
+	override := strings.TrimSpace(os.Getenv(ProfileDirEnv))
+	if override == "" {
+		return "", false, nil
+	}
+	if !filepath.IsAbs(override) {
+		hint := ""
+		if override == "~" || strings.HasPrefix(override, "~/") {
+			// MCP host configs and service files pass env values verbatim;
+			// only an interactive shell expands "~".
+			hint = "; \"~\" is not expanded here, write the full home path"
+		}
+		return "", false, fmt.Errorf("%s must be an absolute path, got %q%s", ProfileDirEnv, override, hint)
+	}
+	return override, true, nil
+}
+
+// Profiles lists the Zotero desktop profile directories this machine
+// exposes, plus the one to prefer for reporting.
+//
+// A ProfileDirEnv pin wins and names exactly one profile; a pin at a
+// directory that does not exist is an error, because the operator asserted
+// it. Otherwise discovery runs across every platform root, as Load does. A
+// machine with no Zotero profile returns no directories and no error:
+// callers decide whether absence is fatal.
+func Profiles() (all []string, preferred string, err error) {
+	override, pinned, err := pinnedProfileDir()
+	if err != nil {
+		return nil, "", err
+	}
+	if pinned {
+		if !profileDirLooksUsable(override) {
+			return nil, "", fmt.Errorf("%s points at %s, which is not a directory", ProfileDirEnv, override)
+		}
+		return []string{override}, override, nil
+	}
+	return discoverProfiles()
+}
+
+// DataDir returns the Zotero data directory (the one holding zotero.sqlite)
+// that the profile at profileDir uses.
+//
+// It mirrors Zotero.DataDirectory.init: extensions.zotero.dataDir applies
+// only when extensions.zotero.useDataDir is true; otherwise Zotero uses its
+// default, a "Zotero" folder in the home directory of the Zotero process.
+// Snap and Flatpak packaging give that process a different home, so on
+// Linux the home is taken from the profile path when the profile sits under
+// a ".zotero/zotero" root. A profile with no prefs.js has never recorded a
+// choice, so it gets the default too.
+func DataDir(profileDir string) (string, error) {
+	values, _, err := readPrefs(profileDir)
+	if err != nil {
+		return "", err
+	}
+	if use, ok := values[prefUseDataDir].asBool(); ok && use {
+		if v, ok := values[prefDataDir]; ok && !v.undecodable {
+			dir := strings.TrimSpace(v.str)
+			// Zotero before 5.0 stored a platform "persistent descriptor"
+			// here and converts it to a path on its next start. Anything
+			// that is not an absolute path is not a location this package
+			// can name.
+			if !filepath.IsAbs(dir) {
+				return "", fmt.Errorf("Zotero pref %s in %s is not an absolute path", prefDataDir, profileDir)
+			}
+			return filepath.Clean(dir), nil
+		}
+	}
+	return defaultDataDir(profileDir)
+}
+
+// defaultDataDir is Zotero's default data directory for a profile that has
+// not chosen one: <home>/Zotero, where home is the Zotero process's home.
+func defaultDataDir(profileDir string) (string, error) {
+	switch goos {
+	case "darwin", "windows":
+	default:
+		// Native, Snap and Flatpak profiles all sit under <home>/.zotero/zotero
+		// for the home the Zotero process sees (see profileRoots).
+		sep := string(filepath.Separator)
+		marker := sep + filepath.Join(".zotero", "zotero") + sep
+		clean := filepath.Clean(profileDir)
+		if i := strings.LastIndex(clean+sep, marker); i > 0 {
+			return filepath.Join(clean[:i], "Zotero"), nil
+		}
+	}
+	home, err := cliutil.HomeDir()
+	if err != nil {
+		return "", fmt.Errorf("resolving home dir: %w", err)
+	}
+	return filepath.Join(home, "Zotero"), nil
 }
 
 // LoadAcrossForTest exposes multi-profile folding to tests in other
@@ -468,59 +567,9 @@ func riskRank(m StorageMode) int {
 
 // LoadProfile reads file-storage configuration from one profile directory.
 func LoadProfile(profileDir string) (FileStorage, error) {
-	path := filepath.Join(profileDir, "prefs.js")
-	// Only a regular file is read. os.Open on a FIFO blocks in open(2) until a
-	// writer appears, which no read limit can bound, and the guard is consulted
-	// on every mutating invocation — a hung zotio is worse than an unread
-	// profile. The residual stat/open race is benign: the worst case is the
-	// behaviour we would have had anyway.
-	// #nosec G703 -- same taint source and read-only use as the Open below.
-	info, err := os.Lstat(path)
-	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return FileStorage{}, nil
-		}
-		return FileStorage{}, fmt.Errorf("reading Zotero prefs %s: %w", path, err)
-	}
-	if !info.Mode().IsRegular() {
-		return FileStorage{}, fmt.Errorf("Zotero prefs %s is not a regular file (%s)", path, info.Mode().Type())
-	}
-	// #nosec G304,G703 -- profileDir comes from platform discovery or the
-	// operator's own ZOTERO_PROFILE_DIR, and this only opens it for reading.
-	f, err := os.Open(path)
-	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return FileStorage{}, nil
-		}
-		return FileStorage{}, fmt.Errorf("reading Zotero prefs %s: %w", path, err)
-	}
-	defer f.Close()
-
-	// Read one byte past the cap so truncation is detectable: silently parsing
-	// a prefix would turn a present preference into an absent one, and absent
-	// preferences fall back to Zotero's cloud defaults.
-	data, err := io.ReadAll(io.LimitReader(f, maxPrefsFileBytes+1))
-	if err != nil {
-		return FileStorage{}, fmt.Errorf("reading Zotero prefs %s: %w", path, err)
-	}
-	if len(data) > maxPrefsFileBytes {
-		return FileStorage{}, fmt.Errorf("Zotero prefs %s exceeds %d bytes; refusing to read a partial preference set", path, maxPrefsFileBytes)
-	}
-	// Zotero (a Firefox-based application) always writes prefs.js as UTF-8. A
-	// differently encoded file — most plausibly UTF-16, from a profile a
-	// stray tool has touched — makes every "user_pref(" prefix match fail,
-	// since that ASCII byte sequence never starts a UTF-16 line. Every
-	// preference would then read as absent, which resolves to Zotero's cloud
-	// defaults: a confident wrong answer built from a decode failure, not
-	// from evidence. Surfacing the encoding mismatch as an error instead lets
-	// the caller treat it as the evaluation failure it is.
-	if reason := notUTF8Reason(data); reason != "" {
-		return FileStorage{}, fmt.Errorf("Zotero prefs %s is not readable as UTF-8 (%s)", path, reason)
-	}
-
-	values, err := parsePrefs(bytes.NewReader(data))
-	if err != nil {
-		return FileStorage{}, fmt.Errorf("parsing Zotero prefs %s: %w", path, err)
+	values, found, err := readPrefs(profileDir)
+	if err != nil || !found {
+		return FileStorage{}, err
 	}
 
 	// Defaults come from Zotero's defaults/preferences/zotero.js: file syncing
@@ -592,6 +641,67 @@ func LoadProfile(profileDir string) (FileStorage, error) {
 		fs.hazards.personalModeUnknown = self
 	}
 	return fs, nil
+}
+
+// readPrefs reads and decodes one profile's prefs.js. A profile directory
+// with no prefs.js returns found == false and no error: Zotero has not
+// necessarily run there yet.
+func readPrefs(profileDir string) (values map[string]prefValue, found bool, err error) {
+	path := filepath.Join(profileDir, "prefs.js")
+	// Only a regular file is read. os.Open on a FIFO blocks in open(2) until a
+	// writer appears, which no read limit can bound, and the guard is consulted
+	// on every mutating invocation — a hung zotio is worse than an unread
+	// profile. The residual stat/open race is benign: the worst case is the
+	// behaviour we would have had anyway.
+	// #nosec G703 -- same taint source and read-only use as the Open below.
+	info, err := os.Lstat(path)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, false, nil
+		}
+		return nil, false, fmt.Errorf("reading Zotero prefs %s: %w", path, err)
+	}
+	if !info.Mode().IsRegular() {
+		return nil, false, fmt.Errorf("Zotero prefs %s is not a regular file (%s)", path, info.Mode().Type())
+	}
+	// #nosec G304,G703 -- profileDir comes from platform discovery or the
+	// operator's own ZOTERO_PROFILE_DIR, and this only opens it for reading.
+	f, err := os.Open(path)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, false, nil
+		}
+		return nil, false, fmt.Errorf("reading Zotero prefs %s: %w", path, err)
+	}
+	defer f.Close()
+
+	// Read one byte past the cap so truncation is detectable: silently parsing
+	// a prefix would turn a present preference into an absent one, and absent
+	// preferences fall back to Zotero's cloud defaults.
+	data, err := io.ReadAll(io.LimitReader(f, maxPrefsFileBytes+1))
+	if err != nil {
+		return nil, false, fmt.Errorf("reading Zotero prefs %s: %w", path, err)
+	}
+	if len(data) > maxPrefsFileBytes {
+		return nil, false, fmt.Errorf("Zotero prefs %s exceeds %d bytes; refusing to read a partial preference set", path, maxPrefsFileBytes)
+	}
+	// Zotero (a Firefox-based application) always writes prefs.js as UTF-8. A
+	// differently encoded file — most plausibly UTF-16, from a profile a
+	// stray tool has touched — makes every "user_pref(" prefix match fail,
+	// since that ASCII byte sequence never starts a UTF-16 line. Every
+	// preference would then read as absent, which resolves to Zotero's cloud
+	// defaults: a confident wrong answer built from a decode failure, not
+	// from evidence. Surfacing the encoding mismatch as an error instead lets
+	// the caller treat it as the evaluation failure it is.
+	if reason := notUTF8Reason(data); reason != "" {
+		return nil, false, fmt.Errorf("Zotero prefs %s is not readable as UTF-8 (%s)", path, reason)
+	}
+
+	values, err = parsePrefs(bytes.NewReader(data))
+	if err != nil {
+		return nil, false, fmt.Errorf("parsing Zotero prefs %s: %w", path, err)
+	}
+	return values, true, nil
 }
 
 // goos selects Zotero's per-platform profile layout. A package variable

@@ -87,6 +87,28 @@ of coverage now.
   created, leaving a childless item and no reason. A locally scanned PDF has no
   web source, so callers must fall back to the file's own `file://` URI;
   `connector.SaveAttachment` rejects an empty one up front so the failure is named.
+- **Zotero's process and its connector come up at different times.** Measured
+  2026-09-24 against Zotero 7 on macOS: the process takes an fcntl write lock on
+  `<profile>/.parentlock` (F_GETLK from another process names the Zotero PID)
+  about 3s after launch, creates `zotero.sqlite-wal`/`-shm` in the data directory
+  about 4s after launch, and `/connector/ping` answers 200 a few seconds later,
+  only while Zotero runs. Windows builds hold `parent.lock` open with share mode 0
+  and delete-on-close instead. Only the connector answering proves an import can
+  proceed; `desktop status` reports both signals and `desktop wait` sleeps on
+  filesystem events for the profile and data directories until the connector
+  answers (`internal/desktop`). Mozilla's lock open truncates `.parentlock`, so
+  its mtime is the lock time (measured: 3s after process start on a file created
+  years earlier); past a 2-minute startup window a silent connector is reported
+  as `busy` for one check, `unresponsive` only after 60s of silence across 3+
+  checks (seen live the same day, with the window's accessibility tree also
+  failing), or `connector_off` (refused). The connector runs on Zotero's main
+  thread, so a long sync can stall it for seconds without a hang.
+  The hung listener is also why refusal is weak evidence: Zotero listened on
+  127.0.0.1 only, `[::1]` refused, and Go reports the first address's error, so
+  a ping said "connection refused" for a held port; and 127.0.0.1 itself reset
+  or refused some back-to-back connects. `connector_off` therefore needs every
+  address to refuse repeated dials (`desktop.ListeningOn`), and in `wait` the
+  whole stall span.
 - **Schema/type endpoints are global**, served under `/api` directly, NOT under the
   `/users|groups/<id>` library prefix the configured base URL carries:
   `/api/itemTypes`, `/api/itemFields`, `/api/itemTypeFields`,
@@ -177,6 +199,10 @@ Run this when a new Zotero version ships, or periodically:
 
 ## Last reviewed
 
+- **2026-09-24** — against the running Zotero 7 desktop on macOS. Confirmed
+  that a read-only descriptor's F_GETLK on `.parentlock` reports the Zotero PID
+  while it runs, recorded the lock/WAL/connector start order under Invariants,
+  and added `desktop status` and `desktop wait` on those signals.
 - **2026-08-17** — against the live Zotero 7 desktop connector. Established that
   `POST /connector/saveAttachment` cannot target an existing library item
   (session-local ids only; `500` live, `400 SESSION_NOT_FOUND` otherwise) and that
