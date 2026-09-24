@@ -4,6 +4,8 @@ Notable changes to zotio. Format follows [Keep a Changelog](https://keepachangel
 
 ## [Unreleased]
 
+## [0.28.0] — 2026-09-24
+
 ### Added
 
 - **`zotio desktop status` reports whether Zotero desktop is running.** It
@@ -3077,7 +3079,8 @@ First tagged release: the trust-and-automation layer for Zotero.
 - **Onboarding** — `zotio init` guided setup (Zotero detection, local API, key, first sync, health check).
 - Release engineering: goreleaser builds for 6 platforms, cosign-signed checksums, SBOMs, Homebrew tap.
 
-[Unreleased]: https://github.com/OrgMentem/zotio/compare/v0.27.0...HEAD
+[Unreleased]: https://github.com/OrgMentem/zotio/compare/v0.28.0...HEAD
+[0.28.0]: https://github.com/OrgMentem/zotio/compare/v0.27.0...v0.28.0
 [0.27.0]: https://github.com/OrgMentem/zotio/compare/v0.26.0...v0.27.0
 [0.26.0]: https://github.com/OrgMentem/zotio/compare/v0.25.0...v0.26.0
 [0.25.0]: https://github.com/OrgMentem/zotio/compare/v0.24.0...v0.25.0
