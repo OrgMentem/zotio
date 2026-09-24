@@ -159,7 +159,7 @@ Exit codes and the JSON outcome field:
       is printed on stdout.
 
 --timeout replaces the global request timeout for this command; a connector
-ping is always bounded to 3s.`,
+ping is bounded to 3s, or 10s for the stall re-checks past the startup window.`,
 		Example: `  zotio desktop wait
   zotio desktop wait --agent --timeout 6h
   # Supervised: exit when the supervisor's pipe closes
@@ -268,7 +268,10 @@ func newDesktopProber(flags *rootFlags) (*desktop.Prober, error) {
 		prober.ConnectorErr = fmt.Errorf("the desktop connector is only available with a local Zotero base URL")
 		return prober, nil
 	}
-	conn := connector.New(base, desktop.DefaultPingTimeout)
+	// The client timeout is only a backstop: each probe sets its own context
+	// deadline (3s, or 10s for a stall re-check), so the client must allow
+	// the longest of them or it silently caps every stall ping at 3s.
+	conn := connector.New(base, max(desktop.DefaultPingTimeout, desktop.DefaultStallPingTimeout))
 	prober.ConnectorURL = base
 	prober.Ping = func(ctx context.Context) error { return connectorPing(ctx, conn) }
 	prober.Listening = func(ctx context.Context) bool { return desktop.ListeningOn(ctx, base) }

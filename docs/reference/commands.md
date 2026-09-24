@@ -854,7 +854,7 @@ Exit codes and the JSON outcome field:
       is printed on stdout.
 
 --timeout replaces the global request timeout for this command; a connector
-ping is always bounded to 3s.
+ping is bounded to 3s, or 10s for the stall re-checks past the startup window.
 
 ```
 zotio desktop wait [flags]

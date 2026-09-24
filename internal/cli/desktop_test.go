@@ -7,6 +7,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"slices"
@@ -268,5 +270,36 @@ func TestDesktopWaitStuckExits15WithTheState(t *testing.T) {
 				t.Fatalf("wait = %v, want outcome and state %s", got, state)
 			}
 		})
+	}
+}
+
+// A stall re-check allows the connector 10s to answer, because a sync can
+// hold Zotero's main thread past the 3s first-check bound. The prober's
+// connector must honour that longer deadline; a client capped at 3s would
+// count a Zotero that answers in 4s as silent and drive it toward exit 15.
+func TestDesktopProberHonoursTheStallPingDeadline(t *testing.T) {
+	flags, _ := desktopTestEnv(t, true, true)
+	delay := desktop.DefaultPingTimeout + 500*time.Millisecond
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case <-time.After(delay):
+		case <-r.Context().Done():
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+	connectorPing = func(ctx context.Context, c *connector.Client) error {
+		c.BaseURL = srv.URL + "/connector"
+		return c.Ping(ctx)
+	}
+	prober, err := newDesktopProber(flags)
+	if err != nil {
+		t.Fatalf("newDesktopProber: %v", err)
+	}
+	ctx, cancel := context.WithTimeout(t.Context(), desktop.DefaultStallPingTimeout)
+	defer cancel()
+	if err := prober.Ping(ctx); err != nil {
+		t.Fatalf("ping answering after %s under a %s deadline = %v, want nil", delay, desktop.DefaultStallPingTimeout, err)
 	}
 }
