@@ -12,21 +12,31 @@ Notable changes to zotio. Format follows [Keep a Changelog](https://keepachangel
   Windows) and sends one ping to the local connector. `running` means the
   process is up (lock held, or the connector answered); `connector_reachable`
   means the connector accepts requests now, which imports need. `state` is
-  `ready`, `starting` (process up, connector not answering: normal for a few
-  seconds after launch, and permanent if the connector is disabled) or
-  `stopped`. It exits 0 whatever it finds.
+  `ready`; `starting` (lock held, connector silent, lock younger than the
+  2-minute startup window); `unresponsive` (past the window, the connector
+  port accepts connections but does not answer: Zotero is open but hung);
+  `connector_off` (past the window, nothing listens on the connector port);
+  or `stopped`. The lock age is the lock file's modification time, which
+  Zotero resets when it takes the lock (`profiles[].lock_since`). It exits 0
+  whatever it finds.
 - **`zotio desktop wait` blocks until Zotero's connector accepts requests.**
   It returns at once if the connector already answers. While Zotero is closed
   it sleeps on filesystem notifications for the profile and data directories
-  instead of polling, and probes only after a change; once the lock is held it
-  re-checks the connector on a capped backoff for up to 2 minutes. `--timeout`
-  bounds the wait (exit 14, `outcome: "timeout"`); no discoverable profile
-  exits 9 (`outcome: "no_profile"`); `--watch-stdin` exits when a supervisor's
-  pipe closes. It is hidden from the MCP surface because it blocks. The
-  notifications come from the new dependency `github.com/fsnotify/fsnotify`
-  (BSD-3-Clause; inotify, kqueue, ReadDirectoryChangesW), whose only
-  dependency, `golang.org/x/sys`, was already linked.
+  instead of polling, and probes only after a change; while Zotero is starting
+  it re-checks the connector on a capped backoff. When Zotero is, or becomes,
+  `unresponsive` or `connector_off`, it returns at once with exit 15 and that
+  state as `outcome`, because nothing on disk announces a recovery.
+  `--timeout` bounds the wait (exit 14, `outcome: "timeout"`); no
+  discoverable profile exits 9 (`outcome: "no_profile"`); `--watch-stdin`
+  exits when a supervisor's pipe closes. It is hidden from the MCP surface
+  because it blocks. The notifications come from the new dependency
+  `github.com/fsnotify/fsnotify` (BSD-3-Clause; inotify, kqueue,
+  ReadDirectoryChangesW), whose only dependency, `golang.org/x/sys`, was
+  already linked.
 - **Exit code 14: a bounded wait timed out.** Nothing failed; wait again.
+- **Exit code 15: Zotero desktop is open but its connector cannot take
+  requests** (`desktop wait`: hung, or connector disabled). Tell the user;
+  waiting longer does not help until something changes.
 
 ## [0.27.0] — 2026-09-23
 

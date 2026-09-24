@@ -7,8 +7,10 @@ package desktop
 import (
 	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 	"syscall"
+	"time"
 )
 
 // lockFileName is the file Mozilla's nsProfileLock opens on Windows with
@@ -22,6 +24,13 @@ const errorSharingViolation syscall.Errno = 32
 
 func probeLock(profileDir string) LockProbe {
 	path := filepath.Join(profileDir, lockFileName)
+	// Attribute reads are not subject to share modes, so this works while
+	// Zotero holds the file. The file is created at each launch, so its
+	// mtime is the launch time.
+	var since time.Time
+	if info, err := os.Lstat(path); err == nil {
+		since = info.ModTime()
+	}
 	name, err := syscall.UTF16PtrFromString(path)
 	if err != nil {
 		return LockProbe{State: LockError, Err: err}
@@ -37,7 +46,7 @@ func probeLock(profileDir string) LockProbe {
 		case errors.Is(err, syscall.ERROR_FILE_NOT_FOUND), errors.Is(err, syscall.ERROR_PATH_NOT_FOUND):
 			return LockProbe{State: LockAbsent}
 		case errors.Is(err, errorSharingViolation):
-			return LockProbe{State: LockHeld}
+			return LockProbe{State: LockHeld, Since: since}
 		default:
 			return LockProbe{State: LockError, Err: fmt.Errorf("opening %s: %w", path, err)}
 		}

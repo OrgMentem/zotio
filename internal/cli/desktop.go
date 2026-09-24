@@ -49,16 +49,28 @@ const desktopRunningDefinition = `Two signals, reported separately:
                        profile lock (.parentlock via fcntl on macOS and Linux,
                        parent.lock opened exclusively on Windows), or the
                        connector answered.
-  connector_reachable  GET <connector>/ping answered 200 during this check.
-                       Imports and every other connector write need this.
+  connector_reachable  GET <connector>/ping answered 200 within 3s during this
+                       check. Imports and every other connector write need
+                       this.
 
-state is "ready" when the connector answers, "stopped" when neither signal
-holds, and "starting" when the process holds its lock but the connector does
-not answer. Zotero takes the lock about 3s after launch and its connector
-listens a few seconds later, so "starting" is normal briefly after a launch;
-it persists if the connector is disabled (Settings -> Advanced -> "Allow other
-applications to communicate with Zotero"), moved to another port, or Zotero
-is hung. evidence names the strongest signal: connector, profile_lock, none.`
+state:
+  ready          the connector answers.
+  starting       the lock is held, the connector does not answer yet, and the
+                 lock is younger than the 2-minute startup window. Zotero
+                 takes the lock about 3s after launch and its connector
+                 listens a few seconds later.
+  unresponsive   the lock is older than the startup window and the connector
+                 port accepts the connection but does not answer (or answers
+                 with an error): Zotero is open but not responding.
+  connector_off  the lock is older than the startup window and nothing
+                 listens on the connector port: the connector is disabled
+                 (Settings -> Advanced -> "Allow other applications to
+                 communicate with Zotero") or on another port.
+  stopped        neither signal holds.
+
+The lock age comes from the lock file's modification time, which Zotero
+resets when it takes the lock (profiles[].lock_since). evidence names the
+strongest signal: connector, profile_lock, none.`
 
 func newDesktopCmd(flags *rootFlags) *cobra.Command {
 	cmd := &cobra.Command{
@@ -114,16 +126,20 @@ status that proved it. If the connector already answers, it returns at once.
 
 While Zotero is closed nothing runs on a timer: the command sleeps on
 filesystem notifications for the Zotero profile and data directories and
-probes only after a change. Once the profile lock is seen held, the connector
-is re-checked on a capped backoff for up to 2 minutes, because it starts
-listening a few seconds after the lock and its start writes no file. If Zotero
-stays up with the connector silent after that, only filesystem changes cause
-further checks.
+probes only after a change. While Zotero is starting, the connector is
+re-checked on a capped backoff (250ms up to 2s), because it listens a few
+seconds after the lock and its start writes no file. When the startup window
+passes without an answer, or Zotero is already past it (unresponsive or
+connector_off), the command returns at once with exit 15 instead of waiting
+silently: nothing on disk announces a recovery, so the caller tells the user
+and decides when to wait again.
 
 ` + desktopRunningDefinition + `
 
 Exit codes and the JSON outcome field:
   0   outcome "ready": the connector answers.
+  15  outcome "unresponsive" or "connector_off" (the state): Zotero runs past
+      its startup window and its connector cannot take requests.
   14  outcome "timeout": --timeout passed first; wait again.
   9   outcome "no_profile" (no Zotero profile found and the connector does not
       answer) or "watch_failed" (the directories could not be watched).
@@ -178,7 +194,7 @@ ping is always bounded to 3s.`,
 			}
 
 			start := time.Now()
-			st, waitErr := desktop.Wait(ctx, desktop.WaitOptions{Prober: prober, WatchDirs: watchDirs})
+			st, waitErr := desktopWait(ctx, desktop.WaitOptions{Prober: prober, WatchDirs: watchDirs})
 			result := desktopWaitResult{Status: st, WaitedMS: time.Since(start).Milliseconds()}
 
 			var exitErr error
@@ -188,6 +204,9 @@ ping is always bounded to 3s.`,
 			case errors.Is(waitErr, errDesktopWaitTimeout):
 				result.Outcome = desktopOutcomeTimeout
 				exitErr = timeoutErr(fmt.Errorf("Zotero desktop's connector did not answer within %s (state %q)", timeout, st.State))
+			case errors.Is(waitErr, desktop.ErrStuck):
+				result.Outcome = string(st.State)
+				exitErr = stuckErr(desktopStuckError(st))
 			case errors.Is(waitErr, desktop.ErrNoProfile):
 				result.Outcome = desktopOutcomeNoProfile
 				exitErr = preconditionErr(desktopNoProfileError(st))
@@ -219,6 +238,10 @@ ping is always bounded to 3s.`,
 	return cmd
 }
 
+// desktopWait is desktop.Wait; tests replace it to pin how each way a wait
+// ends maps to an outcome and an exit code.
+var desktopWait = desktop.Wait
+
 // newDesktopProber discovers the installation and resolves the connector
 // from the configured base URL, the same resolution `import` uses. A base URL
 // that is not a local Zotero leaves no connector to ping; that is reported in
@@ -241,6 +264,13 @@ func newDesktopProber(flags *rootFlags) (*desktop.Prober, error) {
 	return prober, nil
 }
 
+func desktopStuckError(st desktop.Status) error {
+	if st.State == desktop.StateConnectorOff {
+		return errors.New("Zotero desktop is running but nothing listens on its connector port; enable Settings -> Advanced -> \"Allow other applications to communicate with Zotero\"")
+	}
+	return errors.New("Zotero desktop is running but not responding: its connector accepts connections and does not answer")
+}
+
 func desktopNoProfileError(st desktop.Status) error {
 	msg := "no Zotero desktop profile directory was found and the connector does not answer; install and start Zotero once, or set ZOTERO_PROFILE_DIR"
 	if st.DiscoveryError != "" {
@@ -255,6 +285,10 @@ func renderDesktopStatus(w io.Writer, st desktop.Status) {
 		fmt.Fprintf(w, "Zotero desktop: ready (the connector answers at %s)\n", st.ConnectorURL)
 	case desktop.StateStarting:
 		fmt.Fprintln(w, "Zotero desktop: starting (the process holds its profile lock; the connector does not answer yet)")
+	case desktop.StateUnresponsive:
+		fmt.Fprintln(w, "Zotero desktop: unresponsive (open, but its connector accepts connections and does not answer)")
+	case desktop.StateConnectorOff:
+		fmt.Fprintln(w, "Zotero desktop: connector off (open, but nothing listens on the connector port)")
 	default:
 		fmt.Fprintln(w, "Zotero desktop: stopped")
 	}
@@ -264,8 +298,14 @@ func renderDesktopStatus(w io.Writer, st desktop.Status) {
 	for _, p := range st.Profiles {
 		lock := string(p.Lock)
 		switch {
-		case p.Lock == desktop.LockHeld && p.LockPID > 0:
-			lock = fmt.Sprintf("held by pid %d", p.LockPID)
+		case p.Lock == desktop.LockHeld:
+			lock = "held"
+			if p.LockPID > 0 {
+				lock += fmt.Sprintf(" by pid %d", p.LockPID)
+			}
+			if p.LockSince != nil {
+				lock += " since " + p.LockSince.Local().Format(time.RFC3339)
+			}
 		case p.LockError != "":
 			lock = "error: " + p.LockError
 		}

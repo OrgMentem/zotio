@@ -55,5 +55,6 @@ func probeLock(profileDir string) LockProbe {
 	if lk.Type == syscall.F_UNLCK {
 		return LockProbe{State: LockFree}
 	}
-	return LockProbe{State: LockHeld, PID: int(lk.Pid)}
+	// The lock open truncates the file, so its mtime is the lock time.
+	return LockProbe{State: LockHeld, PID: int(lk.Pid), Since: info.ModTime()}
 }

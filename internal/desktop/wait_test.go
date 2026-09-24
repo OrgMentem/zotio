@@ -5,6 +5,8 @@ package desktop
 import (
 	"context"
 	"errors"
+	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"sync"
@@ -18,6 +20,8 @@ type fakeConnector struct {
 	mu    sync.Mutex
 	up    bool
 	calls int
+	// fail is the error while down; nil means a generic failure.
+	fail error
 }
 
 func (f *fakeConnector) ping(context.Context) error {
@@ -27,8 +31,15 @@ func (f *fakeConnector) ping(context.Context) error {
 	if f.up {
 		return nil
 	}
+	if f.fail != nil {
+		return f.fail
+	}
 	return errors.New("dial tcp 127.0.0.1:23119: connect: connection refused")
 }
+
+// errNoAnswer is how a ping to a connector that accepts the connection and
+// never answers fails.
+var errNoAnswer = fmt.Errorf("connector ping: %w", &url.Error{Op: "Get", URL: "http://127.0.0.1:23119/connector/ping", Err: context.DeadlineExceeded})
 
 func (f *fakeConnector) setUp() {
 	f.mu.Lock()
@@ -163,7 +174,7 @@ func TestWaitConfirmsTheConnectorAfterTheLockWithoutAFurtherEvent(t *testing.T) 
 	in := newInstall(t)
 	conn := &fakeConnector{}
 	done := startWait(t, t.Context(), in, conn, func(o *WaitOptions) {
-		o.ConfirmFirst, o.ConfirmMax, o.ConfirmWindow = 10*time.Millisecond, 40*time.Millisecond, 10*time.Second
+		o.ConfirmFirst, o.ConfirmMax = 10*time.Millisecond, 40*time.Millisecond
 	})
 
 	h := startLockHolder(t, in.profile) // Zotero takes its profile lock
@@ -183,42 +194,60 @@ func TestWaitConfirmsTheConnectorAfterTheLockWithoutAFurtherEvent(t *testing.T) 
 	h.release(t)
 }
 
-// Zotero running with its connector disabled keeps the lock held and never
-// answers. The confirm re-checks must stop when the window closes; after
-// that only a filesystem event may cause a probe.
-func TestWaitStopsReCheckingWhenTheConfirmWindowCloses(t *testing.T) {
+// The live case: Zotero starts, takes its lock, and hangs before its
+// connector answers. Once the startup window passes, Wait must return the
+// unresponsive status rather than wait silently; no filesystem change would
+// ever announce a recovery.
+func TestWaitReturnsStuckWhenTheStartupWindowPassesWithoutAnAnswer(t *testing.T) {
 	in := newInstall(t)
-	startLockHolder(t, in.profile)
-	conn := &fakeConnector{}
-	ctx, cancel := context.WithCancel(t.Context())
-	defer cancel()
-	done := startWait(t, ctx, in, conn, func(o *WaitOptions) {
-		o.ConfirmFirst, o.ConfirmMax, o.ConfirmWindow = 10*time.Millisecond, 20*time.Millisecond, 150*time.Millisecond
+	conn := &fakeConnector{fail: errNoAnswer}
+	done := startWait(t, t.Context(), in, conn, func(o *WaitOptions) {
+		o.ConfirmFirst, o.ConfirmMax = 10*time.Millisecond, 40*time.Millisecond
+		o.Prober.StartupWindow = 400 * time.Millisecond
 	})
 
-	time.Sleep(400 * time.Millisecond) // well past the window
-	settled := conn.count()
-	if settled < 3 {
-		t.Fatalf("pings during the confirm window = %d, want re-checks", settled)
+	locked := time.Now()
+	startLockHolder(t, in.profile)
+	r := awaitResult(t, done)
+	if !errors.Is(r.err, ErrStuck) || r.st.State != StateUnresponsive || !r.st.Running {
+		t.Fatalf("Wait = %+v, %v; want ErrStuck with the unresponsive status", r.st, r.err)
 	}
-	assertStillWaiting(t, done, 400*time.Millisecond)
-	if got := conn.count(); got != settled {
-		t.Fatalf("pings after the confirm window = %d, then %d; want no polling", settled, got)
+	// Not before the window: a slow start is still a start.
+	if elapsed := time.Since(locked); elapsed < 300*time.Millisecond {
+		t.Fatalf("Wait gave up %v after the lock, inside the 400ms startup window", elapsed)
 	}
+	if conn.count() < 3 {
+		t.Fatalf("pings = %d, want re-checks during the startup window", conn.count())
+	}
+}
 
-	if err := os.WriteFile(filepath.Join(in.data, "zotero.sqlite-wal"), []byte("wal"), 0o600); err != nil {
-		t.Fatal(err)
+// Zotero already hung (or running with its connector disabled) when the
+// wait begins: the answer is immediate, and names which of the two it is.
+func TestWaitReturnsStuckAtOnceWhenZoteroIsAlreadyPastItsStart(t *testing.T) {
+	cases := []struct {
+		name string
+		fail func(t *testing.T) error
+		want State
+	}{
+		{"hung", func(*testing.T) error { return errNoAnswer }, StateUnresponsive},
+		{"connector disabled", realRefusal, StateConnectorOff},
 	}
-	deadline := time.Now().Add(5 * time.Second)
-	for conn.count() == settled {
-		if time.Now().After(deadline) {
-			t.Fatal("a filesystem event after the window caused no probe")
-		}
-		time.Sleep(5 * time.Millisecond)
-	}
-	cancel()
-	if r := awaitResult(t, done); !errors.Is(r.err, context.Canceled) {
-		t.Fatalf("Wait after cancel = %+v, %v; want context.Canceled", r.st, r.err)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			in := newInstall(t)
+			startLockHolder(t, in.profile)
+			conn := &fakeConnector{fail: tc.fail(t)}
+			prober := &Prober{Install: Install{Profiles: []string{in.profile}, DataDir: in.data}, Ping: conn.ping, StartupWindow: time.Nanosecond}
+			ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+			defer cancel()
+			st, err := Wait(ctx, WaitOptions{Prober: prober, WatchDirs: []string{in.profile, in.data}})
+			if !errors.Is(err, ErrStuck) || st.State != tc.want {
+				t.Fatalf("Wait = %+v, %v; want ErrStuck in state %s", st, err, tc.want)
+			}
+			if conn.count() != 1 {
+				t.Fatalf("pings = %d, want 1: the first probe already decides", conn.count())
+			}
+		})
 	}
 }
 

@@ -246,6 +246,13 @@ func degradedErr(err error) error { return &cliError{code: 13, err: err} }
 // environment first.
 func timeoutErr(err error) error { return &cliError{code: 14, err: err} }
 
+// Zotero desktop is running past its startup window and its connector cannot
+// take requests (`desktop wait`: unresponsive or connector_off). Unlike a
+// timeout (14), waiting longer does not help until something changes, and
+// unlike a missing precondition (9) the app is not closed: the remedy is to
+// tell the user, whose Zotero is open but hung or has its connector off.
+func stuckErr(err error) error { return &cliError{code: 15, err: err} }
+
 // dryRunOK reports whether the command should short-circuit without doing any
 // real work because --dry-run was set. The verify pipeline probes hand-written
 // commands with --dry-run; commands that put validation in cobra's `Args:` or

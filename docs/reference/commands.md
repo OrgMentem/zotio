@@ -742,16 +742,28 @@ Two signals, reported separately:
                        profile lock (.parentlock via fcntl on macOS and Linux,
                        parent.lock opened exclusively on Windows), or the
                        connector answered.
-  connector_reachable  GET <connector>/ping answered 200 during this check.
-                       Imports and every other connector write need this.
+  connector_reachable  GET <connector>/ping answered 200 within 3s during this
+                       check. Imports and every other connector write need
+                       this.
 
-state is "ready" when the connector answers, "stopped" when neither signal
-holds, and "starting" when the process holds its lock but the connector does
-not answer. Zotero takes the lock about 3s after launch and its connector
-listens a few seconds later, so "starting" is normal briefly after a launch;
-it persists if the connector is disabled (Settings -> Advanced -> "Allow other
-applications to communicate with Zotero"), moved to another port, or Zotero
-is hung. evidence names the strongest signal: connector, profile_lock, none.
+state:
+  ready          the connector answers.
+  starting       the lock is held, the connector does not answer yet, and the
+                 lock is younger than the 2-minute startup window. Zotero
+                 takes the lock about 3s after launch and its connector
+                 listens a few seconds later.
+  unresponsive   the lock is older than the startup window and the connector
+                 port accepts the connection but does not answer (or answers
+                 with an error): Zotero is open but not responding.
+  connector_off  the lock is older than the startup window and nothing
+                 listens on the connector port: the connector is disabled
+                 (Settings -> Advanced -> "Allow other applications to
+                 communicate with Zotero") or on another port.
+  stopped        neither signal holds.
+
+The lock age comes from the lock file's modification time, which Zotero
+resets when it takes the lock (profiles[].lock_since). evidence names the
+strongest signal: connector, profile_lock, none.
 
 Profiles are discovered from profiles.ini in the platform's Zotero directory
 (ZOTERO_PROFILE_DIR pins one); data_dir comes from the profile's prefs.js.
@@ -776,11 +788,13 @@ status that proved it. If the connector already answers, it returns at once.
 
 While Zotero is closed nothing runs on a timer: the command sleeps on
 filesystem notifications for the Zotero profile and data directories and
-probes only after a change. Once the profile lock is seen held, the connector
-is re-checked on a capped backoff for up to 2 minutes, because it starts
-listening a few seconds after the lock and its start writes no file. If Zotero
-stays up with the connector silent after that, only filesystem changes cause
-further checks.
+probes only after a change. While Zotero is starting, the connector is
+re-checked on a capped backoff (250ms up to 2s), because it listens a few
+seconds after the lock and its start writes no file. When the startup window
+passes without an answer, or Zotero is already past it (unresponsive or
+connector_off), the command returns at once with exit 15 instead of waiting
+silently: nothing on disk announces a recovery, so the caller tells the user
+and decides when to wait again.
 
 Two signals, reported separately:
 
@@ -788,19 +802,33 @@ Two signals, reported separately:
                        profile lock (.parentlock via fcntl on macOS and Linux,
                        parent.lock opened exclusively on Windows), or the
                        connector answered.
-  connector_reachable  GET <connector>/ping answered 200 during this check.
-                       Imports and every other connector write need this.
+  connector_reachable  GET <connector>/ping answered 200 within 3s during this
+                       check. Imports and every other connector write need
+                       this.
 
-state is "ready" when the connector answers, "stopped" when neither signal
-holds, and "starting" when the process holds its lock but the connector does
-not answer. Zotero takes the lock about 3s after launch and its connector
-listens a few seconds later, so "starting" is normal briefly after a launch;
-it persists if the connector is disabled (Settings -> Advanced -> "Allow other
-applications to communicate with Zotero"), moved to another port, or Zotero
-is hung. evidence names the strongest signal: connector, profile_lock, none.
+state:
+  ready          the connector answers.
+  starting       the lock is held, the connector does not answer yet, and the
+                 lock is younger than the 2-minute startup window. Zotero
+                 takes the lock about 3s after launch and its connector
+                 listens a few seconds later.
+  unresponsive   the lock is older than the startup window and the connector
+                 port accepts the connection but does not answer (or answers
+                 with an error): Zotero is open but not responding.
+  connector_off  the lock is older than the startup window and nothing
+                 listens on the connector port: the connector is disabled
+                 (Settings -> Advanced -> "Allow other applications to
+                 communicate with Zotero") or on another port.
+  stopped        neither signal holds.
+
+The lock age comes from the lock file's modification time, which Zotero
+resets when it takes the lock (profiles[].lock_since). evidence names the
+strongest signal: connector, profile_lock, none.
 
 Exit codes and the JSON outcome field:
   0   outcome "ready": the connector answers.
+  15  outcome "unresponsive" or "connector_off" (the state): Zotero runs past
+      its startup window and its connector cannot take requests.
   14  outcome "timeout": --timeout passed first; wait again.
   9   outcome "no_profile" (no Zotero profile found and the connector does not
       answer) or "watch_failed" (the directories could not be watched).

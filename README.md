@@ -308,7 +308,7 @@ format = "obsidian"      # or "logseq"
 collection:KEY   tag:NAME   query:TEXT   item:KEY   saved-search:KEY (needs live desktop)
 ```
 
-**Exit codes:** `0` ok · `2` usage · `3` not-found · `4` auth · `5` API · `7` rate-limited · `9` precondition/setup (including *another writer holds the lock* — retry) · `10` config · `11` quality-gate failed · `12` freshness-gate failed · `13` degraded — incomplete: part of a read was unreadable, or part of a batched write was rejected after other elements succeeded. Output is not guaranteed; read the reported failures and reconcile before retrying. · `14` timed out — a bounded wait (`desktop wait --timeout`) ended before Zotero's connector answered; wait again.
+**Exit codes:** `0` ok · `2` usage · `3` not-found · `4` auth · `5` API · `7` rate-limited · `9` precondition/setup (including *another writer holds the lock* — retry) · `10` config · `11` quality-gate failed · `12` freshness-gate failed · `13` degraded — incomplete: part of a read was unreadable, or part of a batched write was rejected after other elements succeeded. Output is not guaranteed; read the reported failures and reconcile before retrying. · `14` timed out — a bounded wait (`desktop wait --timeout`) ended before Zotero's connector answered; wait again. · `15` Zotero open but stuck — `desktop wait` found Zotero running past its startup window with a connector that does not answer or is off; tell the user.
 
 ---
 

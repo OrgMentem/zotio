@@ -5,6 +5,11 @@ package desktop
 import (
 	"context"
 	"errors"
+	"fmt"
+	"net"
+	"net/http"
+	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -13,6 +18,7 @@ import (
 
 	"github.com/fsnotify/fsnotify"
 
+	"zotio/internal/connector"
 	"zotio/internal/zoteroprefs"
 )
 
@@ -83,6 +89,9 @@ func TestProbeLockRaisesNoFilesystemEvents(t *testing.T) {
 
 func TestProbeStatesFollowTheTwoSignals(t *testing.T) {
 	refused := func(context.Context) error { return errors.New("connection refused") }
+	noAnswer := func(context.Context) error {
+		return fmt.Errorf("connector ping: %w", &url.Error{Op: "Get", URL: "http://127.0.0.1:23119/connector/ping", Err: context.DeadlineExceeded})
+	}
 	answers := func(context.Context) error { return nil }
 
 	t.Run("stopped", func(t *testing.T) {
@@ -107,6 +116,49 @@ func TestProbeStatesFollowTheTwoSignals(t *testing.T) {
 		}
 		if len(st.Profiles) != 1 || st.Profiles[0].Lock != LockHeld {
 			t.Fatalf("profiles = %+v, want the one profile held", st.Profiles)
+		}
+		info, err := os.Stat(filepath.Join(dir, lockFileName))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := st.Profiles[0].LockSince; got == nil || !got.Equal(info.ModTime().UTC()) {
+			t.Fatalf("lock_since = %v, want the lock file mtime %v", got, info.ModTime().UTC())
+		}
+	})
+
+	// The live case, 2026-09-24: Zotero up for well over the startup window,
+	// its connector port accepting connections and never answering.
+	t.Run("unresponsive past the startup window", func(t *testing.T) {
+		dir := t.TempDir()
+		startLockHolder(t, dir)
+		for _, startup := range []time.Duration{time.Hour, time.Nanosecond} {
+			p := &Prober{Install: Install{Profiles: []string{dir}}, Ping: noAnswer, StartupWindow: startup}
+			st := p.Probe(t.Context())
+			want := StateUnresponsive
+			if startup == time.Hour {
+				want = StateStarting // the same silence inside the window is a start
+			}
+			if !st.Running || st.State != want || st.Evidence != EvidenceProfileLock {
+				t.Fatalf("startup window %v: status = %+v, want running, %s", startup, st, want)
+			}
+		}
+	})
+
+	t.Run("connector_off past the startup window", func(t *testing.T) {
+		dir := t.TempDir()
+		startLockHolder(t, dir)
+		refusedDial := func(context.Context) error { return realRefusal(t) }
+		p := &Prober{Install: Install{Profiles: []string{dir}}, Ping: refusedDial, StartupWindow: time.Nanosecond}
+		if st := p.Probe(t.Context()); !st.Running || st.State != StateConnectorOff {
+			t.Fatalf("status = %+v, want running, connector_off", st)
+		}
+	})
+
+	// A closed Zotero is stopped however old its lock file is.
+	t.Run("stopped ignores the window", func(t *testing.T) {
+		p := &Prober{Install: Install{Profiles: []string{t.TempDir()}}, Ping: noAnswer, StartupWindow: time.Nanosecond}
+		if st := p.Probe(t.Context()); st.Running || st.State != StateStopped {
+			t.Fatalf("status = %+v, want stopped", st)
 		}
 	})
 
@@ -174,5 +226,59 @@ func TestDiscoverReportsABadPinInsteadOfGuessing(t *testing.T) {
 	t.Setenv(zoteroprefs.ProfileDirEnv, filepath.Join(t.TempDir(), "missing"))
 	if in := Discover(); in.Err == nil || len(in.Profiles) != 0 {
 		t.Fatalf("Discover with a pin at a missing directory = %+v, want an error and no profiles", in)
+	}
+}
+
+// realRefusal dials a port nothing listens on, as a ping to a closed or
+// connector-disabled Zotero does.
+func realRefusal(t *testing.T) error {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	addr := ln.Addr().String()
+	_ = ln.Close()
+	conn := connector.New("http://"+addr+"/connector", time.Second)
+	err = conn.Ping(t.Context())
+	if err == nil {
+		t.Fatal("ping to a closed port succeeded")
+	}
+	return err
+}
+
+// The unresponsive/connector_off split rests on telling "nothing listens"
+// from "something holds the port and does not answer", so it is pinned
+// against the errors the real connector client returns.
+func TestConnectorRefusedClassifiesRealPingErrors(t *testing.T) {
+	if !connectorRefused(realRefusal(t)) {
+		t.Fatal("a refused dial did not classify as refused")
+	}
+
+	release := make(chan struct{})
+	hung := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		select { // accept the connection, never answer: a blocked main thread
+		case <-r.Context().Done():
+		case <-release:
+		}
+	}))
+	defer hung.Close()
+	defer close(release)
+	ctx, cancel := context.WithTimeout(t.Context(), 100*time.Millisecond)
+	defer cancel()
+	err := connector.New(hung.URL+"/connector", time.Minute).Ping(ctx)
+	if err == nil || connectorRefused(err) {
+		t.Fatalf("hung connector ping error = %v; want a failure that is not a refusal", err)
+	}
+	err = connector.New(hung.URL+"/connector", 100*time.Millisecond).Ping(t.Context())
+	if err == nil || connectorRefused(err) {
+		t.Fatalf("client-timeout ping error = %v; want a failure that is not a refusal", err)
+	}
+
+	wrong := httptest.NewServer(http.NotFoundHandler())
+	defer wrong.Close()
+	err = connector.New(wrong.URL+"/connector", time.Second).Ping(t.Context())
+	if err == nil || connectorRefused(err) {
+		t.Fatalf("404 ping error = %v; want a failure that is not a refusal", err)
 	}
 }

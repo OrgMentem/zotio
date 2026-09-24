@@ -96,7 +96,11 @@ of coverage now.
   and delete-on-close instead. Only the connector answering proves an import can
   proceed; `desktop status` reports both signals and `desktop wait` sleeps on
   filesystem events for the profile and data directories until the connector
-  answers (`internal/desktop`).
+  answers (`internal/desktop`). Mozilla's lock open truncates `.parentlock`, so
+  its mtime is the lock time (measured: 3s after process start on a file created
+  years earlier); past a 2-minute startup window a silent connector is reported
+  as `unresponsive` (port accepts, no answer: seen live the same day, with the
+  window's accessibility tree also failing) or `connector_off` (refused).
 - **Schema/type endpoints are global**, served under `/api` directly, NOT under the
   `/users|groups/<id>` library prefix the configured base URL carries:
   `/api/itemTypes`, `/api/itemFields`, `/api/itemTypeFields`,

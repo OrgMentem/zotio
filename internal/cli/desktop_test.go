@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"zotio/internal/connector"
+	"zotio/internal/desktop"
 	"zotio/internal/zoteroprefs"
 )
 
@@ -157,6 +158,27 @@ func TestDesktopWaitExitCodesAndOutcomes(t *testing.T) {
 		}
 	})
 
+	// Zotero open past its startup window with a connector that cannot take
+	// requests: the caller must learn that, not wait silently or be told to
+	// open Zotero.
+	for _, state := range []desktop.State{desktop.StateUnresponsive, desktop.StateConnectorOff} {
+		t.Run(string(state)+" exits 15", func(t *testing.T) {
+			flags, _ := desktopTestEnv(t, true, false)
+			old := desktopWait
+			t.Cleanup(func() { desktopWait = old })
+			desktopWait = func(context.Context, desktop.WaitOptions) (desktop.Status, error) {
+				return desktop.Status{Running: true, State: state, Evidence: desktop.EvidenceProfileLock, Profiles: []desktop.ProfileStatus{}}, desktop.ErrStuck
+			}
+			got, _, err := runDesktopCmd(t, flags, "", "wait", "--timeout", "1h")
+			if code := ExitCode(err); code != 15 {
+				t.Fatalf("exit code = %d (err %v), want 15", code, err)
+			}
+			if got["outcome"] != string(state) || got["state"] != string(state) || got["running"] != true {
+				t.Fatalf("wait = %v, want outcome and state %q with running true", got, state)
+			}
+		})
+	}
+
 	t.Run("no profile exits 9", func(t *testing.T) {
 		flags, _ := desktopTestEnv(t, false, false)
 		got, _, err := runDesktopCmd(t, flags, "", "wait", "--timeout", "5s")
@@ -223,5 +245,28 @@ func TestDesktopStatusHumanOutputNamesTheState(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(profile, ".parentlock")); err == nil {
 		t.Fatal("status created a lock file in the profile")
+	}
+}
+
+// A Zotero that is open but hung, or open with its connector off, must end
+// the wait with its own outcome and exit code, so a caller tells the user
+// "Zotero is open but not responding" instead of "open Zotero".
+func TestDesktopWaitStuckExits15WithTheState(t *testing.T) {
+	for _, state := range []desktop.State{desktop.StateUnresponsive, desktop.StateConnectorOff} {
+		t.Run(string(state), func(t *testing.T) {
+			flags, _ := desktopTestEnv(t, true, false)
+			old := desktopWait
+			t.Cleanup(func() { desktopWait = old })
+			desktopWait = func(context.Context, desktop.WaitOptions) (desktop.Status, error) {
+				return desktop.Status{Running: true, State: state, Evidence: desktop.EvidenceProfileLock, Profiles: []desktop.ProfileStatus{}}, desktop.ErrStuck
+			}
+			got, _, err := runDesktopCmd(t, flags, "", "wait", "--timeout", "1h")
+			if code := ExitCode(err); code != 15 {
+				t.Fatalf("exit code = %d (err %v), want 15", code, err)
+			}
+			if got["outcome"] != string(state) || got["state"] != string(state) || got["running"] != true {
+				t.Fatalf("wait = %v, want outcome and state %s", got, state)
+			}
+		})
 	}
 }
