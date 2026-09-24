@@ -285,7 +285,7 @@ Explicit flags always win over profile values; profile values win over defaults.
 | 7 | Rate limited (wait and retry) |
 | 9 | Precondition unmet, or a writer lock is held |
 | 10 | Config error |
-| 11 | Quality gate failed (`--fail-on`, `--fail-on-unknown`) |
+| 11 | Quality gate failed (`library health --fail-on`, `items bibcheck --fail-on`/`--fail-on-unknown`) |
 | 12 | Stale data |
 | 13 | Incomplete — part succeeded, part was rejected; reconcile before retrying |
 | 14 | Timed out — `desktop wait --timeout` ended before Zotero's connector answered; wait again |
