@@ -187,68 +187,54 @@ func TestSyncResourceDoesNotResumePartialFullPassAsIncremental(t *testing.T) {
 	}
 }
 
-func TestSyncFullFailureExitsNonZeroWithSuccessfulResource(t *testing.T) {
+func TestSyncFullIncompleteExitsNonZeroWithSuccessfulResource(t *testing.T) {
 	syncTestWithHumanFriendly(t, false)
-	fastRetryBackoff(t)
 
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		switch r.URL.Path {
-		case "/users/0/items":
-			_, _ = w.Write([]byte(`[{"key":"ITEM1","version":1,"data":{"key":"ITEM1","itemType":"book"}}]`))
-		case "/users/0/collections":
-			http.Error(w, "simulated full-sync failure", http.StatusInternalServerError)
-		default:
-			http.NotFound(w, r)
-		}
-	}))
-	defer srv.Close()
-
-	cmd := newSyncCmd(&rootFlags{
-		configPath: testConfigFile(t, srv.URL+"/users/0"),
-		timeout:    time.Second,
-	})
-	cmd.SilenceErrors = true
-	cmd.SilenceUsage = true
-	cmd.SetOut(&bytes.Buffer{})
-	cmd.SetErr(&bytes.Buffer{})
-	cmd.SetArgs([]string{"--full", "--resources", "items,collections", "--db", filepath.Join(t.TempDir(), "sync.db")})
-
-	err := cmd.Execute()
-	if err == nil || !strings.Contains(err.Error(), "incomplete during full sync") {
-		t.Fatalf("full sync error = %v, want non-zero incomplete result when one resource succeeds", err)
+	rows := []struct {
+		name              string
+		collectionsStatus int
+		collectionsBody   string
+		fastRetry         bool
+	}{
+		{name: "failure", collectionsStatus: http.StatusInternalServerError, collectionsBody: "simulated full-sync failure", fastRetry: true},
+		{name: "accessWarning", collectionsStatus: http.StatusForbidden, collectionsBody: "simulated access denial"},
 	}
-}
+	for _, row := range rows {
+		t.Run(row.name, func(t *testing.T) {
+			// Only the 5xx row retries with backoff; the 403 row warns
+			// without retrying and needs no shortened backoff.
+			if row.fastRetry {
+				fastRetryBackoff(t)
+			}
 
-func TestSyncFullAccessWarningExitsNonZeroWithSuccessfulResource(t *testing.T) {
-	syncTestWithHumanFriendly(t, false)
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				switch r.URL.Path {
+				case "/users/0/items":
+					_, _ = w.Write([]byte(`[{"key":"ITEM1","version":1,"data":{"key":"ITEM1","itemType":"book"}}]`))
+				case "/users/0/collections":
+					http.Error(w, row.collectionsBody, row.collectionsStatus)
+				default:
+					http.NotFound(w, r)
+				}
+			}))
+			defer srv.Close()
 
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		switch r.URL.Path {
-		case "/users/0/items":
-			_, _ = w.Write([]byte(`[{"key":"ITEM1","version":1,"data":{"key":"ITEM1","itemType":"book"}}]`))
-		case "/users/0/collections":
-			http.Error(w, "simulated access denial", http.StatusForbidden)
-		default:
-			http.NotFound(w, r)
-		}
-	}))
-	defer srv.Close()
+			cmd := newSyncCmd(&rootFlags{
+				configPath: testConfigFile(t, srv.URL+"/users/0"),
+				timeout:    time.Second,
+			})
+			cmd.SilenceErrors = true
+			cmd.SilenceUsage = true
+			cmd.SetOut(&bytes.Buffer{})
+			cmd.SetErr(&bytes.Buffer{})
+			cmd.SetArgs([]string{"--full", "--resources", "items,collections", "--db", filepath.Join(t.TempDir(), "sync.db")})
 
-	cmd := newSyncCmd(&rootFlags{
-		configPath: testConfigFile(t, srv.URL+"/users/0"),
-		timeout:    time.Second,
-	})
-	cmd.SilenceErrors = true
-	cmd.SilenceUsage = true
-	cmd.SetOut(&bytes.Buffer{})
-	cmd.SetErr(&bytes.Buffer{})
-	cmd.SetArgs([]string{"--full", "--resources", "items,collections", "--db", filepath.Join(t.TempDir(), "sync.db")})
-
-	err := cmd.Execute()
-	if err == nil || !strings.Contains(err.Error(), "incomplete during full sync") {
-		t.Fatalf("full sync error = %v, want non-zero incomplete result for an access warning", err)
+			err := cmd.Execute()
+			if err == nil || !strings.Contains(err.Error(), "incomplete during full sync") {
+				t.Fatalf("full sync error = %v, want non-zero incomplete result when one resource succeeds", err)
+			}
+		})
 	}
 }
 

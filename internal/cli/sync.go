@@ -332,15 +332,17 @@ Exit codes & warnings:
 			var fullIncompleteResources []string
 			var criticalErrCount int
 			var warnCount int
-			// keep structured per-resource
-			// failures in memory too, because MCP captures cmd output but legacy
-			// sync warnings/errors were written to process stdout/stderr.
+			// cleanSync marks the resources whose pass completed without error or
+			// access warning. The incremental reconciliation below only acts for
+			// those: it needs a successfully observed pass to build on.
+			cleanSync := map[string]bool{}
 			var failedResources []string
 			var criticalFailedResources []string
 			var warnedResources []string
 			var successCount int
 			var degradedResources []string
 			for res := range results {
+				cleanSync[res.Resource] = res.Err == nil && res.Warn == nil
 				if res.Err != nil {
 					detail := fmt.Sprintf("%s: %v", res.Resource, res.Err)
 					failedResources = append(failedResources, detail)
@@ -378,6 +380,15 @@ Exit codes & warnings:
 			}
 			if ctx.Err() != nil {
 				return ctx.Err()
+			}
+
+			// Incremental passes never sweep, so a collection deleted upstream,
+			// its member links, or a purged trash row would outlive the plane
+			// until --full. Reconcile those on incremental runs only (a full
+			// pass already swept everything); it warns and keeps the mirror
+			// on any problem, never failing the sync.
+			if !full {
+				reconcileIncrementalSync(ctx, c, db, resources, cleanSync)
 			}
 
 			// The full-text pass runs after the core resource sync. It keeps a

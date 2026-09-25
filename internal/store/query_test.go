@@ -529,7 +529,7 @@ func TestSearchFulltextResolvesParentItemContext(t *testing.T) {
 		t.Fatalf("bounded full-text snippet = bytes %d valid %v", len(bounded[0].Snippet), utf8.ValidString(bounded[0].Snippet))
 	}
 }
-func TestSearchByType(t *testing.T) {
+func TestSearchByTypeContext(t *testing.T) {
 	s := queryTestStore(t)
 
 	// Two resource types both containing the same FTS term. A missing
@@ -546,7 +546,7 @@ func TestSearchByType(t *testing.T) {
 	}
 
 	t.Run("type predicate narrows results", func(t *testing.T) {
-		gotItems, err := s.SearchByType(sharedTerm, "items", 10)
+		gotItems, err := s.SearchByTypeContext(context.Background(), sharedTerm, "items", 10)
 		if err != nil {
 			t.Fatalf("SearchByType items: %v", err)
 		}
@@ -562,7 +562,7 @@ func TestSearchByType(t *testing.T) {
 			}
 		}
 
-		gotColl, err := s.SearchByType(sharedTerm, "collections", 10)
+		gotColl, err := s.SearchByTypeContext(context.Background(), sharedTerm, "collections", 10)
 		if err != nil {
 			t.Fatalf("SearchByType collections: %v", err)
 		}
@@ -576,7 +576,7 @@ func TestSearchByType(t *testing.T) {
 		}
 
 		// A type with no match returns empty, not an error.
-		gotTags, err := s.SearchByType(sharedTerm, "tags", 10)
+		gotTags, err := s.SearchByTypeContext(context.Background(), sharedTerm, "tags", 10)
 		if err != nil {
 			t.Fatalf("SearchByType tags: %v", err)
 		}
@@ -594,7 +594,7 @@ func TestSearchByType(t *testing.T) {
 				t.Fatalf("seed clamp item %s: %v", k, err)
 			}
 		}
-		got, err := s.SearchByType(clampTerm, "items", 5)
+		got, err := s.SearchByTypeContext(context.Background(), clampTerm, "items", 5)
 		if err != nil {
 			t.Fatalf("SearchByType limit 5: %v", err)
 		}
@@ -602,7 +602,7 @@ func TestSearchByType(t *testing.T) {
 			t.Fatalf("SearchByType limit 5 len = %d, want 5", len(got))
 		}
 		// A limit of 0 applies the interactive default of 50.
-		got, err = s.SearchByType(clampTerm, "items", 0)
+		got, err = s.SearchByTypeContext(context.Background(), clampTerm, "items", 0)
 		if err != nil {
 			t.Fatalf("SearchByType limit 0: %v", err)
 		}
@@ -613,7 +613,7 @@ func TestSearchByType(t *testing.T) {
 		// cohort for one resource type. Clamping it to 50 here would silently
 		// truncate that enumeration and diverge from Search.
 		for _, lim := range []int{-1, -100} {
-			got, err := s.SearchByType(clampTerm, "items", lim)
+			got, err := s.SearchByTypeContext(context.Background(), clampTerm, "items", lim)
 			if err != nil {
 				t.Fatalf("SearchByType limit %d: %v", lim, err)
 			}
@@ -621,7 +621,7 @@ func TestSearchByType(t *testing.T) {
 				t.Fatalf("SearchByType limit %d len = %d, want all 60 (negative means no limit)", lim, len(got))
 			}
 		}
-		got, err = s.SearchByType(clampTerm, "items", 60)
+		got, err = s.SearchByTypeContext(context.Background(), clampTerm, "items", 60)
 		if err != nil {
 			t.Fatalf("SearchByType limit 60: %v", err)
 		}

@@ -206,6 +206,33 @@ outlives its object locally until a full pass. See the comment on
 `TestSweepMissingReapsAbsentRows`, which already states that a full pass is the
 only way zotio learns an object is gone.
 
+Amendment 2026-09-25 (finding `zotio-e647c89d4ad919eb`): the bound above is
+narrowed for collections and trash. An incremental `zotio sync` now fetches
+two complete key listings (`/collections` and `/items/trash` with
+`format=keys`, one small request each) and reaps mirrored rows absent from
+them with `SweepMissing` semantics, then refetches by key the mirrored items
+that listed a reaped collection — in `/items?itemKey=` batches of up to 50 —
+since an erase does not bump member versions and the items pass would never
+carry them. The listings are the documented text wire format
+(newline-separated keys, empty body when empty; both planes return the full
+set when `limit` is omitted, so one response is one consistent snapshot). A
+listing is swept only with a present, numeric `Total-Results` header equal
+to the parsed key count; a missing or mismatched header refuses the listing
+like a parse failure, so a 200 with a swallowed body can never read as an
+empty library. Deletion markers are respected throughout: the sweep
+confirms markers the complete listing stopped carrying, and refetched rows
+pass through `reconcilePendingWrites`.
+
+Trash is not erase, and the listing cannot tell them apart: the desktop
+omits trashed collections from `/collections` but keeps their member links
+(trash only records the collection for restore), while erase deletes the
+membership rows. An absent collection with mirrored live members is
+therefore probed — one member fetched, spared with all links intact when
+the plane still names the collection — so a trashed collection is never
+reaped and its restore needs no repair. Trash rows are never edited: the
+mirror reflects the plane's last observation. Item rows themselves, and
+every other resource, still need a full pass, as stated above.
+
 `items delete` therefore emits a one-line stderr notice when the mirror does not
 exist, naming what happened, what the user will see, and the remedy. That notice
 lives in `write_through.go`, which this slice does not own.

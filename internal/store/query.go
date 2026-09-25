@@ -226,6 +226,63 @@ func escapeTagLikeLiteral(value string) string {
 	return strings.ReplaceAll(value, `_`, `\_`)
 }
 
+// KeysWithCollections lists the ids of mirrored rows of resourceType whose
+// data.collections still names any of keys. It serves post-sync
+// reconciliation: after a collection reap, rows referencing the reaped key
+// need a refetch. An empty key set returns empty without scanning. Keys are
+// bound in batches to stay below SQLite's variable limit; ids are
+// deduplicated across batches so a row matching several batches returns once.
+func (s *Store) KeysWithCollections(ctx context.Context, resourceType string, keys []string) ([]string, error) {
+	if len(keys) == 0 {
+		return nil, nil
+	}
+	var out []string
+	seenIDs := map[string]bool{}
+	const batchSize = 500
+	for start := 0; start < len(keys); start += batchSize {
+		end := start + batchSize
+		if end > len(keys) {
+			end = len(keys)
+		}
+		batch := keys[start:end]
+		placeholders := make([]string, len(batch))
+		args := make([]any, 0, len(batch)+1)
+		args = append(args, resourceType)
+		for i, k := range batch {
+			placeholders[i] = "?"
+			args = append(args, k)
+		}
+		// #nosec G202 -- placeholder count is dynamic but values are bound args
+		rows, err := s.queryWithBusyRetryContext(ctx,
+			`SELECT r.id FROM resources r
+			 WHERE r.resource_type = ?
+			   AND EXISTS (SELECT 1 FROM json_each(r.data, '$.data.collections') ce WHERE ce.value IN (`+strings.Join(placeholders, ",")+`))`,
+			args...,
+		)
+		if err != nil {
+			return nil, err
+		}
+		for rows.Next() {
+			var id string
+			if err := rows.Scan(&id); err != nil {
+				rows.Close()
+				return nil, err
+			}
+			if seenIDs[id] {
+				continue
+			}
+			seenIDs[id] = true
+			out = append(out, id)
+		}
+		if err := rows.Err(); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		rows.Close()
+	}
+	return out, nil
+}
+
 // TrashQuery describes pagination for the Zotero trash item list.
 type TrashQuery struct {
 	Limit int // 0 = no limit
@@ -679,39 +736,6 @@ func isFTSSpace(b byte) bool {
 	default:
 		return false
 	}
-}
-
-// SearchByType runs an FTS search scoped to a single resource type. It mirrors
-// Search but adds a resource_type predicate so the search command's --type flag
-// genuinely narrows local results. The limit contract is Search's: 0 applies the
-// interactive default of 50, and a negative limit means no limit (SQLite
-// LIMIT -1) so a caller can enumerate the full match cohort for one type.
-func (s *Store) SearchByType(query, resourceType string, limit int) ([]json.RawMessage, error) {
-	if limit == 0 {
-		limit = 50
-	}
-	rows, err := s.queryWithBusyRetry(
-		`SELECT r.data FROM resources r
-		 JOIN resources_fts f ON r.id = f.id AND r.resource_type = f.resource_type
-		 WHERE resources_fts MATCH ? AND f.resource_type = ?
-		 ORDER BY rank
-		 LIMIT ?`,
-		ftsMatchQuery(query), resourceType, limit,
-	)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	results := make([]json.RawMessage, 0)
-	for rows.Next() {
-		var data string
-		if err := rows.Scan(&data); err != nil {
-			return nil, err
-		}
-		results = append(results, json.RawMessage(data))
-	}
-	return results, rows.Err()
 }
 
 // titleCandidateMaxTerms bounds the OR expression built from a title. A very

@@ -15,6 +15,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"zotio/internal/mcp/bound"
 	"zotio/internal/store"
@@ -129,6 +130,29 @@ func TestMCPReadContextResource(t *testing.T) {
 	}
 	if strings.Contains(tipText, "cursor-based") {
 		t.Errorf("context query_tips = %q, must not advertise cursor pagination", tipText)
+	}
+}
+
+// TestDomainContextToolCountMatchesFacade pins the advertised tool count to
+// the actual registered facade surface: domainContext must report exactly as
+// many tools as the default facade exposes, so capability discovery never
+// drifts behind command-surface registration again.
+func TestDomainContextToolCountMatchesFacade(t *testing.T) {
+	t.Setenv("ZOTIO_MCP_SURFACE", "")
+	s := server.NewMCPServer("Zotero", "test",
+		server.WithToolCapabilities(false),
+		server.WithResourceCapabilities(false, true),
+		server.WithPromptCapabilities(true),
+	)
+	RegisterTools(s)
+	tools := collectSurfaceTools(t, s)
+	assertFacadeSurface(t, tools)
+	got, ok := domainContext()["tool_count"].(int)
+	if !ok {
+		t.Fatalf("domainContext tool_count = %#v, want an int", domainContext()["tool_count"])
+	}
+	if got != len(tools) {
+		t.Fatalf("domainContext tool_count = %d, facade exposes %d tools (%v)", got, len(tools), surfaceToolNames(tools))
 	}
 }
 
@@ -504,6 +528,7 @@ func TestArchiveStatusStateReadsHonorCancelledContext(t *testing.T) {
 }
 
 func TestDiagnosticResourcesReadPartialSchemaButStrictReadsDoNot(t *testing.T) {
+	t.Cleanup(store.SetReadOnlyReadinessTimeoutForTest(10 * time.Millisecond))
 	t.Setenv("HOME", t.TempDir())
 	if err := os.MkdirAll(filepath.Dir(mustDBPath(t)), 0o755); err != nil {
 		t.Fatalf("mkdir: %v", err)
@@ -556,6 +581,7 @@ func TestDiagnosticResourcesReadPartialSchemaButStrictReadsDoNot(t *testing.T) {
 }
 
 func TestCollectionManifestPropagatesStorageError(t *testing.T) {
+	t.Cleanup(store.SetReadOnlyReadinessTimeoutForTest(10 * time.Millisecond))
 	t.Setenv("HOME", t.TempDir())
 	if err := os.MkdirAll(filepath.Dir(mustDBPath(t)), 0o755); err != nil {
 		t.Fatalf("mkdir: %v", err)
@@ -573,6 +599,9 @@ func TestCollectionManifestPropagatesStorageError(t *testing.T) {
 	_, err = collectionManifest(context.Background(), "FAKEKEY")
 	if err == nil {
 		t.Fatalf("collectionManifest should return error when storage fails, got nil")
+	}
+	if !strings.Contains(err.Error(), "run zotio sync") {
+		t.Fatalf("collectionManifest error = %q, want the storage-error remediation", err)
 	}
 }
 

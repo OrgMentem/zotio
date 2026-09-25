@@ -34,7 +34,7 @@ func domainContext() map[string]any {
 		"api":          "zotero",
 		"description":  "Zotero reference manager CLI — every library feature in the terminal, plus offline search, annotation export, and library analytics.",
 		"archetype":    "content",
-		"tool_count":   5,
+		"tool_count":   6,
 		"tool_surface": "MCP exposes framework tools (context, search, sql) plus the CLI command surface. By default command_search and command_run provide a compact facade; ZOTIO_MCP_SURFACE=mirror exposes one lean tool per CLI command.",
 		"auth": map[string]any{
 			"type": "api_key",
@@ -636,7 +636,7 @@ func collectionManifest(ctx context.Context, key string) (map[string]any, error)
 	defer db.Close()
 
 	manifest := map[string]any{"key": key}
-	col, gerr := db.Get("collections", key)
+	col, gerr := db.GetContext(ctx, "collections", key)
 	// A missing row is not an error here: the manifest still reports the item
 	// count for a collection that is empty or not yet synchronized.
 	if gerr != nil && !errors.Is(gerr, store.ErrNotFound) {
@@ -670,7 +670,7 @@ func itemBundle(ctx context.Context, key string) (map[string]any, error) {
 	defer db.Close()
 
 	bundle := map[string]any{"key": key}
-	item, gerr := db.Get("items", key)
+	item, gerr := db.GetContext(ctx, "items", key)
 	if errors.Is(gerr, store.ErrNotFound) {
 		return nil, fmt.Errorf("item %s not found locally; run sync", key)
 	}
@@ -678,7 +678,7 @@ func itemBundle(ctx context.Context, key string) (map[string]any, error) {
 		return nil, fmt.Errorf("reading item %s: %w", key, gerr)
 	}
 	bundle["item"] = json.RawMessage(item)
-	annotations, aerr := db.AnnotationsForItem(key)
+	annotations, aerr := db.AnnotationsForItemContext(ctx, key)
 	if aerr != nil {
 		return nil, aerr
 	}

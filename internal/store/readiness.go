@@ -8,14 +8,33 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync/atomic"
 	"time"
 )
 
-// readOnlyReadinessTimeout is deliberately much shorter than the writer's
-// migration-lock budget. Readers never migrate; they only bridge the small
-// interval in which a concurrent writer has an uncommitted first schema or
-// upgrade transaction.
-const readOnlyReadinessTimeout = time.Second
+// readOnlyReadinessTimeoutNanos backs readOnlyReadinessTimeout. Readers never
+// migrate; they only bridge the small interval in which a concurrent writer
+// has an uncommitted first schema or upgrade transaction, so the budget stays
+// deliberately much shorter than the writer's migration-lock budget.
+var readOnlyReadinessTimeoutNanos atomic.Int64
+
+func init() {
+	readOnlyReadinessTimeoutNanos.Store(int64(time.Second))
+}
+
+func readOnlyReadinessTimeout() time.Duration {
+	return time.Duration(readOnlyReadinessTimeoutNanos.Load())
+}
+
+// SetReadOnlyReadinessTimeoutForTest lets tests shorten the read-only
+// readiness wait without sleeping the production second. It mirrors
+// client.SetRetryBackoffBaseForTest: the returned restore func must be called
+// (typically via t.Cleanup) to reset the global for subsequent tests.
+func SetReadOnlyReadinessTimeoutForTest(d time.Duration) (restore func()) {
+	prev := readOnlyReadinessTimeoutNanos.Load()
+	readOnlyReadinessTimeoutNanos.Store(int64(d))
+	return func() { readOnlyReadinessTimeoutNanos.Store(prev) }
+}
 
 var errReadOnlySchemaNotReady = errors.New("local store schema is not ready")
 
@@ -71,7 +90,7 @@ func (s *Store) waitForReadOnlyReadiness(ctx, probeCtx context.Context, queryer 
 			return fmt.Errorf("waiting for local store readiness: %w", err)
 		}
 		if errors.Is(probeCtx.Err(), context.DeadlineExceeded) {
-			return fmt.Errorf("local store schema did not become ready within %s; run zotio sync to initialize or migrate it: %w", readOnlyReadinessTimeout, lastErr)
+			return fmt.Errorf("local store schema did not become ready within %s; run zotio sync to initialize or migrate it: %w", readOnlyReadinessTimeout(), lastErr)
 		}
 		if !isReadOnlySchemaTransition(lastErr) {
 			return fmt.Errorf("checking read-only store readiness: %w", lastErr)
@@ -91,7 +110,7 @@ func (s *Store) waitForReadOnlyReadiness(ctx, probeCtx context.Context, queryer 
 			if err := ctx.Err(); err != nil {
 				return fmt.Errorf("waiting for local store readiness: %w", err)
 			}
-			return fmt.Errorf("local store schema did not become ready within %s; run zotio sync to initialize or migrate it: %w", readOnlyReadinessTimeout, lastErr)
+			return fmt.Errorf("local store schema did not become ready within %s; run zotio sync to initialize or migrate it: %w", readOnlyReadinessTimeout(), lastErr)
 		case <-timer.C:
 		}
 		backoff = min(backoff*2, migrationLockBackoffMax)

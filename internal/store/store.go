@@ -76,7 +76,7 @@ func OpenReadOnlyContext(ctx context.Context, dbPath string) (*Store, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	probeCtx, cancel := context.WithTimeout(ctx, readOnlyReadinessTimeout)
+	probeCtx, cancel := context.WithTimeout(ctx, readOnlyReadinessTimeout())
 	defer cancel()
 
 	s, err := openReadOnlyStore(dbPath)
@@ -121,7 +121,7 @@ func readinessOpenError(ctx, probeCtx context.Context, err error) error {
 		return ctxErr
 	}
 	if errors.Is(probeCtx.Err(), context.DeadlineExceeded) {
-		return fmt.Errorf("local store schema did not become ready within %s; run zotio sync to initialize or migrate it: %w", readOnlyReadinessTimeout, err)
+		return fmt.Errorf("local store schema did not become ready within %s; run zotio sync to initialize or migrate it: %w", readOnlyReadinessTimeout(), err)
 	}
 	return fmt.Errorf("opening database (read-only): %w", err)
 }
@@ -161,9 +161,9 @@ func openReadOnlyStore(dbPath string) (*Store, error) {
 func readOnlyProbeBusyTimeout(ctx context.Context) time.Duration {
 	deadline, ok := ctx.Deadline()
 	if !ok {
-		return readOnlyReadinessTimeout
+		return readOnlyReadinessTimeout()
 	}
-	return min(time.Until(deadline), readOnlyReadinessTimeout)
+	return min(time.Until(deadline), readOnlyReadinessTimeout())
 }
 
 // OpenWithContext opens or creates the SQLite store at dbPath. The
@@ -1654,12 +1654,18 @@ func (s *Store) UpsertKeyedContext(ctx context.Context, resourceType string, ids
 }
 
 func (s *Store) Get(resourceType, id string) (json.RawMessage, error) {
+	return s.GetContext(context.Background(), resourceType, id)
+}
+
+// GetContext is Get bound to a request context, so a cancelled MCP or CLI
+// read stops the SQLite lookup instead of running it to completion.
+func (s *Store) GetContext(ctx context.Context, resourceType, id string) (json.RawMessage, error) {
 	var data string
-	err := s.db.QueryRow(
+	err := s.QueryRowContext(ctx,
 		`SELECT data FROM resources WHERE resource_type = ? AND id = ?`,
 		resourceType, id,
 	).Scan(&data)
-	if err == sql.ErrNoRows {
+	if errors.Is(err, sql.ErrNoRows) {
 		return nil, fmt.Errorf("%w: %s/%s", ErrNotFound, resourceType, id)
 	}
 	if err != nil {
@@ -1726,13 +1732,19 @@ func (s *Store) ZoteroSchemaVersion(resourceType string) (string, error) {
 }
 
 func (s *Store) List(resourceType string, limit int) ([]json.RawMessage, error) {
+	return s.ListContext(context.Background(), resourceType, limit)
+}
+
+// ListContext is List bound to a request context, so a cancelled generic
+// local list read stops scanning instead of dumping the whole collection.
+func (s *Store) ListContext(ctx context.Context, resourceType string, limit int) ([]json.RawMessage, error) {
 	query := `SELECT data FROM resources WHERE resource_type = ? ORDER BY updated_at DESC`
 	args := []any{resourceType}
 	if limit > 0 {
 		query += ` LIMIT ?`
 		args = append(args, limit)
 	}
-	rows, err := s.db.Query(
+	rows, err := s.queryWithBusyRetryContext(ctx,
 		// limit <= 0 means "all rows" for local list reads.
 		query,
 		args...,
@@ -1858,12 +1870,19 @@ func (s *Store) ItemsByType(itemType string, limit int) ([]json.RawMessage, erro
 // top-level item, so this joins annotation -> attachment -> top item.
 // backs local-first annotation export/timeline.
 func (s *Store) AnnotationsForItem(topItemKey string) ([]json.RawMessage, error) {
+	return s.AnnotationsForItemContext(context.Background(), topItemKey)
+}
+
+// AnnotationsForItemContext is AnnotationsForItem bound to a request context,
+// so a cancelled item-bundle read stops the annotation join instead of
+// running it to completion.
+func (s *Store) AnnotationsForItemContext(ctx context.Context, topItemKey string) ([]json.RawMessage, error) {
 	// Both aliases are pinned to resource_type 'items'. Ids are unique only
 	// WITHIN a resource_type (see the composite primary key), and
 	// mirrorTrashedItem deliberately leaves an attachment in both 'items' and
 	// 'items-trash' for the whole write-through window, so an unpinned join
 	// matches the attachment twice and emits every annotation twice.
-	rows, err := s.db.Query(
+	rows, err := s.queryWithBusyRetryContext(ctx,
 		`SELECT a.data FROM resources a
 		 JOIN resources att ON a.parent_key = att.id AND att.resource_type = 'items'
 		 WHERE a.resource_type = 'items' AND a.item_type = 'annotation' AND att.parent_key = ?`,
@@ -2709,8 +2728,14 @@ func (s *Store) queryWithBusyRetry(query string, args ...any) (*sql.Rows, error)
 }
 
 func (s *Store) Count(resourceType string) (int, error) {
+	return s.CountContext(context.Background(), resourceType)
+}
+
+// CountContext is Count bound to a request context, so a cancelled local
+// hydration check stops the SQLite count instead of running it to completion.
+func (s *Store) CountContext(ctx context.Context, resourceType string) (int, error) {
 	var count int
-	err := s.db.QueryRow(
+	err := s.QueryRowContext(ctx,
 		`SELECT COUNT(*) FROM resources WHERE resource_type = ?`,
 		resourceType,
 	).Scan(&count)
@@ -2923,8 +2948,9 @@ func (s *Store) ResourceIDs(resourceType string) (map[string]bool, error) {
 //
 // Only safe after a COMPLETE pass over the resource: an incremental sync sees
 // only what changed, so anything absent is unchanged rather than deleted. The
-// local desktop API implements no /deleted feed, so a full pass is the only way
-// zotio can learn that an object it mirrors is gone.
+// local desktop API implements no /deleted feed, so a full pass (or an
+// incremental key listing complete by construction, see sync_reap.go) is the
+// only way zotio can learn that an object it mirrors is gone.
 //
 // That same property makes this the ONLY thing that retires a deletion marker.
 // A marker suppresses re-insertion of a purged key while the read plane still

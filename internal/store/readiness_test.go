@@ -141,6 +141,7 @@ func TestOpenReadOnlyContext_OldSchemaHasMigrationRemediation(t *testing.T) {
 		t.Fatalf("close legacy db: %v", err)
 	}
 
+	t.Cleanup(SetReadOnlyReadinessTimeoutForTest(10 * time.Millisecond))
 	start := time.Now()
 	_, err = OpenReadOnlyContext(context.Background(), dbPath)
 	elapsed := time.Since(start)
@@ -206,6 +207,7 @@ func TestOpenReadOnlyContext_ReadinessDeadlineInterruptsExclusiveLock(t *testing
 		t.Fatalf("take exclusive lock: %v", err)
 	}
 	defer func() { _, _ = writer.Exec(`ROLLBACK`) }()
+	t.Cleanup(SetReadOnlyReadinessTimeoutForTest(10 * time.Millisecond))
 
 	start := time.Now()
 	_, err = OpenReadOnlyContext(context.Background(), dbPath)

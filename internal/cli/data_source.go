@@ -112,12 +112,20 @@ func openExistingStoreForWrite(ctx context.Context, cliName string) (*store.Stor
 
 // localProvenance builds a DataProvenance for local data reads.
 func localProvenance(db *store.Store, resourceType, reason string) DataProvenance {
+	return localProvenanceContext(context.Background(), db, resourceType, reason)
+}
+
+// localProvenanceContext is localProvenance bound to a request context, so a
+// cancelled generic local read stops the sync-state lookup instead of running
+// it to completion. The lookup stays best-effort: a sync-state error leaves
+// SyncedAt unset rather than failing the read.
+func localProvenanceContext(ctx context.Context, db *store.Store, resourceType, reason string) DataProvenance {
 	prov := DataProvenance{
 		Source:       "local",
 		Reason:       reason,
 		ResourceType: resourceType,
 	}
-	_, lastSynced, _, err := db.GetSyncState(resourceType)
+	_, lastSynced, _, err := db.GetSyncStateContext(ctx, resourceType)
 	if err == nil && !lastSynced.IsZero() {
 		prov.SyncedAt = &lastSynced
 	}
@@ -355,7 +363,7 @@ func resolveLocal(ctx context.Context, resourceType string, isList bool, path st
 	}
 	defer db.Close()
 
-	prov := localProvenance(db, resourceType, reason)
+	prov := localProvenanceContext(ctx, db, resourceType, reason)
 
 	// Zotero-aware local item query planner. For item-list reads
 	// (/items, /items/top, /collections/{key}/items[/top]) it applies the
@@ -367,7 +375,7 @@ func resolveLocal(ctx context.Context, resourceType string, isList bool, path st
 		if qErr != nil {
 			return nil, DataProvenance{}, qErr
 		}
-		itemProv := localProvenance(db, "items", reason)
+		itemProv := localProvenanceContext(ctx, db, "items", reason)
 		itemProv.Scoped = true
 		return data, itemProv, nil
 	}
@@ -376,7 +384,7 @@ func resolveLocal(ctx context.Context, resourceType string, isList bool, path st
 		if qErr != nil {
 			return nil, DataProvenance{}, qErr
 		}
-		tagProv := localProvenance(db, "tags", reason)
+		tagProv := localProvenanceContext(ctx, db, "tags", reason)
 		tagProv.Scoped = true
 		return data, tagProv, nil
 	}
@@ -385,7 +393,7 @@ func resolveLocal(ctx context.Context, resourceType string, isList bool, path st
 		if qErr != nil {
 			return nil, DataProvenance{}, qErr
 		}
-		tagProv := localProvenance(db, "tags", reason)
+		tagProv := localProvenanceContext(ctx, db, "tags", reason)
 		tagProv.Scoped = true
 		return data, tagProv, nil
 	}
@@ -394,7 +402,7 @@ func resolveLocal(ctx context.Context, resourceType string, isList bool, path st
 		if qErr != nil {
 			return nil, DataProvenance{}, qErr
 		}
-		childProv := localProvenance(db, "collections", reason)
+		childProv := localProvenanceContext(ctx, db, "collections", reason)
 		childProv.Scoped = true
 		return data, childProv, nil
 	}
@@ -404,14 +412,14 @@ func resolveLocal(ctx context.Context, resourceType string, isList bool, path st
 	if _, _, _, itemList := parseItemListPath(path); itemList {
 		resourceType = "items"
 		isList = true
-		prov = localProvenance(db, resourceType, reason)
+		prov = localProvenanceContext(ctx, db, resourceType, reason)
 	}
 
 	if data, handled, qErr := resolveLocalTrashList(ctx, db, resourceType, isList, path, params); handled {
 		if qErr != nil {
 			return nil, DataProvenance{}, qErr
 		}
-		trashProv := localProvenance(db, "items-trash", reason)
+		trashProv := localProvenanceContext(ctx, db, "items-trash", reason)
 		trashProv.Scoped = true
 		return data, trashProv, nil
 	}
@@ -435,7 +443,7 @@ func resolveLocal(ctx context.Context, resourceType string, isList bool, path st
 		if _, _, err := parseLocalPagination(params); err != nil {
 			return nil, DataProvenance{}, err
 		}
-		raw, err := db.List(resourceType, 0) // 0 = no limit, return all synced data
+		raw, err := db.ListContext(ctx, resourceType, 0) // 0 = no limit, return all synced data
 		if err != nil {
 			return nil, DataProvenance{}, fmt.Errorf("querying local store: %w", err)
 		}
@@ -450,7 +458,7 @@ func resolveLocal(ctx context.Context, resourceType string, isList bool, path st
 			items = append(items, r)
 		}
 		if len(items) == 0 {
-			_, lastSynced, _, err := db.GetSyncState(resourceType)
+			_, lastSynced, _, err := db.GetSyncStateContext(ctx, resourceType)
 			if err != nil {
 				return nil, DataProvenance{}, fmt.Errorf("querying local %q sync state: %w", resourceType, err)
 			}
@@ -482,7 +490,7 @@ func resolveLocal(ctx context.Context, resourceType string, isList bool, path st
 		return nil, DataProvenance{}, fmt.Errorf("unescaping local resource ID %q: %w", encodedID, err)
 	}
 
-	item, err := db.Get(resourceType, id)
+	item, err := db.GetContext(ctx, resourceType, id)
 	if errors.Is(err, store.ErrNotFound) {
 		return nil, DataProvenance{}, fmt.Errorf("resource %q with ID %q not found in local store. Run 'zotio sync' first", resourceType, id)
 	}
@@ -565,7 +573,7 @@ func resolveLocalTagList(ctx context.Context, db *store.Store, path string, para
 		return nil, false, nil
 	}
 	if collectionKey != "" {
-		if err := requireLocalResourceHydrated(db, "items"); err != nil {
+		if err := requireLocalResourceHydrated(ctx, db, "items"); err != nil {
 			return nil, true, fmt.Errorf("collection tag scope: %w", err)
 		}
 	}
@@ -591,7 +599,7 @@ func resolveLocalTagList(ctx context.Context, db *store.Store, path string, para
 		return nil, true, fmt.Errorf("local tag query: %w", err)
 	}
 	if len(rows) == 0 {
-		if err := requireLocalResourceHydrated(db, "tags"); err != nil {
+		if err := requireLocalResourceHydrated(ctx, db, "tags"); err != nil {
 			return nil, true, err
 		}
 		return json.RawMessage("[]"), true, nil
@@ -641,7 +649,7 @@ func resolveLocalTagGet(ctx context.Context, db *store.Store, path string) (json
 		return nil, true, fmt.Errorf("local tag query: %w", err)
 	}
 	if len(rows) == 0 {
-		if err := requireLocalResourceHydrated(db, "tags"); err != nil {
+		if err := requireLocalResourceHydrated(ctx, db, "tags"); err != nil {
 			return nil, true, err
 		}
 		return json.RawMessage("[]"), true, nil
@@ -696,7 +704,7 @@ ORDER BY name, id`, parentKey)
 		// A collection with no children is a valid answer, but an unsynced
 		// mirror is not: both look like zero rows, so the sync checkpoint
 		// decides which one this is.
-		if err := requireLocalResourceHydrated(db, "collections"); err != nil {
+		if err := requireLocalResourceHydrated(ctx, db, "collections"); err != nil {
 			return nil, true, err
 		}
 		return json.RawMessage("[]"), true, nil
@@ -727,15 +735,15 @@ func parseCollectionChildrenPath(path string) (parentKey string, isList bool, er
 	return key, true, nil
 }
 
-func requireLocalResourceHydrated(db *store.Store, resourceType string) error {
-	totalRows, err := db.Count(resourceType)
+func requireLocalResourceHydrated(ctx context.Context, db *store.Store, resourceType string) error {
+	totalRows, err := db.CountContext(ctx, resourceType)
 	if err != nil {
 		return fmt.Errorf("counting local %s: %w", resourceType, err)
 	}
 	if totalRows > 0 {
 		return nil
 	}
-	_, lastSynced, _, err := db.GetSyncState(resourceType)
+	_, lastSynced, _, err := db.GetSyncStateContext(ctx, resourceType)
 	if err != nil {
 		return fmt.Errorf("querying local %s sync state: %w", resourceType, err)
 	}
@@ -762,12 +770,12 @@ func resolveLocalTrashList(ctx context.Context, db *store.Store, resourceType st
 		return nil, true, fmt.Errorf("querying local trash: %w", err)
 	}
 	if len(rows) == 0 {
-		totalRows, countErr := db.Count("items-trash")
+		totalRows, countErr := db.CountContext(ctx, "items-trash")
 		if countErr != nil {
 			return nil, true, fmt.Errorf("counting local trash: %w", countErr)
 		}
 		if totalRows == 0 {
-			_, lastSynced, _, stateErr := db.GetSyncState("items-trash")
+			_, lastSynced, _, stateErr := db.GetSyncStateContext(ctx, "items-trash")
 			if stateErr != nil {
 				return nil, true, fmt.Errorf("querying local trash sync state: %w", stateErr)
 			}
