@@ -8,6 +8,8 @@ import (
 	"strings"
 
 	"github.com/spf13/cobra"
+
+	"zotio/internal/store"
 )
 
 func newAnnotationsSearchCmd(flags *rootFlags) *cobra.Command {
@@ -17,8 +19,15 @@ func newAnnotationsSearchCmd(flags *rootFlags) *cobra.Command {
 	var refresh bool
 
 	cmd := &cobra.Command{
-		Use:         "search <query>",
-		Short:       "Search annotations by text",
+		Use:   "search <query>",
+		Short: "Search annotations by text",
+		Long: `Search annotation text, comments and tags.
+
+With the local store (the default), matching uses the full-text index:
+word stems match ("trust" finds "trusted"), "quoted phrases" match
+exactly, and AND, OR, NOT and parentheses combine terms. Results are
+ranked by relevance and include the key and title of the item the
+annotation belongs to. --refresh searches live through the Zotero API.`,
 		Annotations: map[string]string{"mcp:read-only": "true"},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if len(args) == 0 {
@@ -44,23 +53,33 @@ func newAnnotationsSearchCmd(flags *rootFlags) *cobra.Command {
 					}
 				} else {
 					defer db.Close()
-					rows, lerr := db.ItemsByType("annotation", 0)
+					hits, lerr := db.SearchAnnotationsContext(cmd.Context(), store.AnnotationSearch{
+						Query:  query,
+						Colors: annotationColorSpellings(flagColor),
+						Limit:  flagLimit,
+					})
 					if lerr != nil {
 						if flags.dataSource == "local" {
 							return fmt.Errorf("querying local annotations: %w", lerr)
 						}
 					} else {
-						items := make([]map[string]any, 0, len(rows))
-						for _, raw := range rows {
+						results := make([]annotationSummary, 0, len(hits))
+						for _, hit := range hits {
 							var obj map[string]any
-							if json.Unmarshal(raw, &obj) == nil {
-								items = append(items, obj)
+							if json.Unmarshal(hit.Data, &obj) != nil {
+								continue
 							}
+							summaries := annotationSummariesFromItems([]map[string]any{obj})
+							if len(summaries) == 0 {
+								continue
+							}
+							summary := summaries[0]
+							summary.ItemKey = hit.ItemKey
+							summary.ItemTitle = hit.ItemTitle
+							results = append(results, summary)
 						}
-						annotations := annotationSummariesFromItems(items)
-						filtered := filterAnnotationSummaries(annotations, query, flagColor, flagLimit)
 						prov := localProvenance(db, "annotations", "local_only")
-						return printCommandJSONEnvelope(cmd.OutOrStdout(), filtered, flags, prov)
+						return printCommandJSONEnvelope(cmd.OutOrStdout(), results, flags, prov)
 					}
 				}
 			}
@@ -98,25 +117,17 @@ func newAnnotationsSearchCmd(flags *rootFlags) *cobra.Command {
 	return cmd
 }
 
-// filterAnnotationSummaries applies an in-memory text + color + limit filter,
-// used for local-store annotation search where the API `q` parameter is not
-// available. An empty query matches everything.
-func filterAnnotationSummaries(annotations []annotationSummary, query, color string, limit int) []annotationSummary {
-	q := strings.ToLower(strings.TrimSpace(query))
-	filtered := make([]annotationSummary, 0, len(annotations))
-	for _, a := range annotations {
-		if color != "" && !annotationColorMatches(a.Color, color) {
-			continue
-		}
-		if q != "" && !strings.Contains(strings.ToLower(a.Text), q) && !strings.Contains(strings.ToLower(a.Comment), q) {
-			continue
-		}
-		filtered = append(filtered, a)
-		if limit > 0 && len(filtered) >= limit {
-			break
-		}
+// annotationColorSpellings returns every stored spelling that one requested
+// color may take: Zotero stores hex, users type names or hex.
+func annotationColorSpellings(requested string) []string {
+	requested = strings.ToLower(strings.TrimSpace(requested))
+	if requested == "" {
+		return nil
 	}
-	return filtered
+	if hex := annotationColorHex(requested); hex != requested {
+		return []string{requested, hex}
+	}
+	return []string{requested}
 }
 
 func fetchLimitForAnnotationSearch(limit int, color string) int {

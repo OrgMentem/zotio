@@ -13,172 +13,6 @@ import (
 	"zotio/internal/store"
 )
 
-func TestFilterAnnotationSummaries(t *testing.T) {
-	base := []annotationSummary{
-		{Key: "A1", Text: "hello world", Comment: "", Color: "#ffd400"},
-		{Key: "A2", Text: "other", Comment: "Hello there", Color: "#ff6666"},
-		{Key: "A3", Text: "HELLO", Comment: "", Color: "#ffd400"},
-		{Key: "A4", Text: "bye", Comment: "", Color: "#5fb236"},
-		{Key: "A5", Text: "yellow thing", Comment: "", Color: "#2ea8e5"},
-	}
-
-	for _, tc := range []struct {
-		name        string
-		annotations []annotationSummary
-		query       string
-		color       string
-		limit       int
-		wantKeys    []string
-		wantNonNil  bool
-	}{
-		{
-			name:        "empty query matches everything",
-			annotations: base,
-			query:       "",
-			color:       "",
-			limit:       0,
-			wantKeys:    []string{"A1", "A2", "A3", "A4", "A5"},
-		},
-		{
-			name:        "empty query with spaces matches everything",
-			annotations: base,
-			query:       "   ",
-			color:       "",
-			limit:       0,
-			wantKeys:    []string{"A1", "A2", "A3", "A4", "A5"},
-		},
-		{
-			name:        "non-empty query filters on text case-insensitive",
-			annotations: base,
-			query:       "hello",
-			color:       "",
-			limit:       0,
-			wantKeys:    []string{"A1", "A2", "A3"},
-		},
-		{
-			name:        "query case-insensitive uppercase",
-			annotations: base,
-			query:       "HELLO",
-			color:       "",
-			limit:       0,
-			wantKeys:    []string{"A1", "A2", "A3"},
-		},
-		{
-			name:        "query matches comment not only text",
-			annotations: base,
-			query:       "there",
-			color:       "",
-			limit:       0,
-			wantKeys:    []string{"A2"},
-		},
-		{
-			name:        "colour filter by name resolves to hex yellow",
-			annotations: base,
-			query:       "",
-			color:       "yellow",
-			limit:       0,
-			wantKeys:    []string{"A1", "A3"},
-		},
-		{
-			name:        "colour filter case-insensitive name",
-			annotations: base,
-			query:       "",
-			color:       "YELLOW",
-			limit:       0,
-			wantKeys:    []string{"A1", "A3"},
-		},
-		{
-			name:        "colour filter by hex directly",
-			annotations: base,
-			query:       "",
-			color:       "#ffd400",
-			limit:       0,
-			wantKeys:    []string{"A1", "A3"},
-		},
-		{
-			name:        "unknown colour name matches nothing",
-			annotations: base,
-			query:       "",
-			color:       "mauve",
-			limit:       0,
-			wantKeys:    []string{},
-			wantNonNil:  true,
-		},
-		{
-			name:        "limit truncates keeps leading items in order",
-			annotations: base,
-			query:       "",
-			color:       "",
-			limit:       2,
-			wantKeys:    []string{"A1", "A2"},
-		},
-		{
-			name: "colour and limit combined limit after filter",
-			annotations: []annotationSummary{
-				{Key: "R1", Color: "#ff6666", Text: "a"},
-				{Key: "R2", Color: "#ff6666", Text: "b"},
-				{Key: "Y1", Color: "#ffd400", Text: "c"},
-				{Key: "Y2", Color: "#ffd400", Text: "d"},
-				{Key: "Y3", Color: "#ffd400", Text: "e"},
-			},
-			query:    "",
-			color:    "yellow",
-			limit:    1,
-			wantKeys: []string{"Y1"},
-		},
-		{
-			name: "colour and limit with text filter",
-			annotations: []annotationSummary{
-				{Key: "R1", Color: "#ff6666", Text: "hello"},
-				{Key: "Y1", Color: "#ffd400", Text: "hello"},
-				{Key: "Y2", Color: "#ffd400", Text: "hello"},
-				{Key: "Y3", Color: "#ffd400", Text: "other"},
-			},
-			query:    "hello",
-			color:    "yellow",
-			limit:    1,
-			wantKeys: []string{"Y1"},
-		},
-		{
-			name:        "filter matches nothing returns empty non-nil slice",
-			annotations: base,
-			query:       "zzz-no-match",
-			color:       "",
-			limit:       0,
-			wantKeys:    []string{},
-			wantNonNil:  true,
-		},
-		{
-			name:        "limit with no match still non-nil",
-			annotations: base,
-			query:       "zzz-no-match",
-			color:       "yellow",
-			limit:       5,
-			wantKeys:    []string{},
-			wantNonNil:  true,
-		},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			got := filterAnnotationSummaries(tc.annotations, tc.query, tc.color, tc.limit)
-			if tc.wantNonNil && got == nil {
-				t.Fatalf("filterAnnotationSummaries(%q,%q,%d) = nil, want non-nil empty slice", tc.query, tc.color, tc.limit)
-			}
-			if len(got) != len(tc.wantKeys) {
-				t.Fatalf("filterAnnotationSummaries(%q,%q,%d) keys = %v, want %v", tc.query, tc.color, tc.limit, keysOf(got), tc.wantKeys)
-			}
-			for i, want := range tc.wantKeys {
-				if got[i].Key != want {
-					t.Fatalf("filterAnnotationSummaries(%q,%q,%d) [%d] = %q, want %q (got keys %v)", tc.query, tc.color, tc.limit, i, got[i].Key, want, keysOf(got))
-				}
-			}
-			// Verify the source returns an empty non-nil slice, not nil, when nothing matches.
-			if len(tc.wantKeys) == 0 && got == nil {
-				t.Fatalf("filterAnnotationSummaries(%q,%q,%d) = nil, want empty non-nil slice", tc.query, tc.color, tc.limit)
-			}
-		})
-	}
-}
-
 func TestFetchLimitForAnnotationSearch(t *testing.T) {
 	for _, tc := range []struct {
 		name  string
@@ -308,6 +142,8 @@ func TestAnnotationColorMatches(t *testing.T) {
 
 func TestAnnotationsSearchReadsLocalStoreWithLocalProvenance(t *testing.T) {
 	seedAnnotationSearchStore(t, []json.RawMessage{
+		json.RawMessage(`{"key":"PAPER1","version":1,"data":{"key":"PAPER1","itemType":"journalArticle","title":"Needle Paper"}}`),
+		json.RawMessage(`{"key":"PDF1","version":1,"data":{"key":"PDF1","itemType":"attachment","parentItem":"PAPER1"}}`),
 		json.RawMessage(`{"key":"ANN1","version":1,"data":{"key":"ANN1","itemType":"annotation","parentItem":"PDF1","annotationText":"Local needle passage","annotationComment":"kept","annotationColor":"#ffd400"}}`),
 		json.RawMessage(`{"key":"ANN2","version":1,"data":{"key":"ANN2","itemType":"annotation","parentItem":"PDF2","annotationText":"Unrelated passage","annotationColor":"#ff6666"}}`),
 	})
@@ -330,7 +166,8 @@ func TestAnnotationsSearchReadsLocalStoreWithLocalProvenance(t *testing.T) {
 			if err := json.Unmarshal(out.Bytes(), &env); err != nil {
 				t.Fatalf("decode annotations search envelope: %v; output=%q", err, out.String())
 			}
-			if len(env.Results) != 1 || env.Results[0].Key != "ANN1" || env.Results[0].Text != "Local needle passage" {
+			if len(env.Results) != 1 || env.Results[0].Key != "ANN1" || env.Results[0].Text != "Local needle passage" ||
+				env.Results[0].ItemKey != "PAPER1" || env.Results[0].ItemTitle != "Needle Paper" {
 				t.Fatalf("results = %+v, want only local annotation ANN1", env.Results)
 			}
 			if env.Meta.Source != "local" || env.Meta.ResourceType != "annotations" {

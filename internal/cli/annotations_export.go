@@ -35,6 +35,10 @@ type annotationSummary struct {
 	Text       string `json:"text"`
 	Comment    string `json:"comment"`
 	Page       string `json:"page"`
+	// ItemKey and ItemTitle name the bibliographic item the annotation
+	// belongs to (the attachment's parent). Only local search fills them.
+	ItemKey   string `json:"item_key,omitempty"`
+	ItemTitle string `json:"item_title,omitempty"`
 }
 
 type zoteroGetter interface {

@@ -492,6 +492,111 @@ func truncateFulltextSnippet(snippet string) string {
 	return snippet[:cut] + suffix
 }
 
+// AnnotationSearch describes a local annotation search. Colors lists every
+// accepted spelling of one requested color (for example "yellow" and
+// "#ffd400"); empty means any color. Limit <= 0 returns every match.
+type AnnotationSearch struct {
+	Query  string
+	Colors []string
+	Limit  int
+}
+
+// AnnotationSearchResult is one matching annotation plus the bibliographic
+// item it belongs to. Zotero nests annotations under an attachment, so
+// ItemKey/ItemTitle come from the attachment's parent; both are empty when
+// that parent is not mirrored (a standalone PDF, or a partial mirror).
+type AnnotationSearchResult struct {
+	Data      json.RawMessage
+	ItemKey   string
+	ItemTitle string
+}
+
+// SearchAnnotationsContext runs annotation search inside SQLite: the FTS index
+// supplies matches (porter stemming, phrases, AND/OR/NOT, same grammar as
+// Search), bm25 orders them, and color and limit are applied in SQL rather
+// than after loading every annotation. Annotations that are in the trash, or
+// whose attachment or item is, are excluded, matching the live API default.
+// A blank query matches every annotation, newest first.
+func (s *Store) SearchAnnotationsContext(ctx context.Context, q AnnotationSearch) ([]AnnotationSearchResult, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	var sb strings.Builder
+	args := make([]any, 0, len(q.Colors)+2)
+	query := strings.TrimSpace(q.Query)
+	sb.WriteString(`
+SELECT
+	a.data,
+	COALESCE(item.id, ''),
+	COALESCE(json_extract(item.data, '$.data.title'), '')
+FROM resources a`)
+	if query != "" {
+		sb.WriteString(`
+JOIN resources_fts f
+	ON f.id = a.id
+	AND f.resource_type = 'items'`)
+	}
+	sb.WriteString(`
+LEFT JOIN resources att
+	ON att.resource_type = 'items'
+	AND att.id = a.parent_key
+LEFT JOIN resources item
+	ON item.resource_type = 'items'
+	AND item.id = att.parent_key
+	AND COALESCE(item.item_type, '') NOT IN ('attachment', 'note', 'annotation')
+WHERE a.resource_type = 'items'
+	AND a.item_type = 'annotation'
+	AND NOT EXISTS (
+		SELECT 1 FROM resources trashed
+		WHERE trashed.resource_type = 'items-trash'
+			-- A trashed row leaves resource_type 'items', so the parent
+			-- keys are checked, not the joined rows (which are then NULL).
+			AND trashed.id IN (a.id, COALESCE(a.parent_key, ''), COALESCE(att.parent_key, ''))
+	)`)
+	if query != "" {
+		sb.WriteString("\n\tAND resources_fts MATCH ?")
+		args = append(args, "content : ("+ftsMatchQuery(query)+")")
+	}
+	if len(q.Colors) > 0 {
+		sb.WriteString("\n\tAND lower(trim(COALESCE(json_extract(a.data, '$.data.annotationColor'), ''))) IN (")
+		for i, color := range q.Colors {
+			if i > 0 {
+				sb.WriteString(", ")
+			}
+			sb.WriteString("?")
+			args = append(args, strings.ToLower(strings.TrimSpace(color)))
+		}
+		sb.WriteString(")")
+	}
+	if query != "" {
+		sb.WriteString("\nORDER BY f.rank, a.id")
+	} else {
+		sb.WriteString("\nORDER BY json_extract(a.data, '$.data.dateAdded') DESC, a.id")
+	}
+	if q.Limit > 0 {
+		sb.WriteString("\nLIMIT ?")
+		args = append(args, q.Limit)
+	}
+
+	rows, err := s.queryWithBusyRetryContext(ctx, sb.String(), args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	results := make([]AnnotationSearchResult, 0)
+	for rows.Next() {
+		var data string
+		var result AnnotationSearchResult
+		if err := rows.Scan(&data, &result.ItemKey, &result.ItemTitle); err != nil {
+			return nil, err
+		}
+		result.Data = json.RawMessage(data)
+		results = append(results, result)
+	}
+	return results, rows.Err()
+}
+
 // itemOrderBy builds the ORDER BY clause for a sort field + direction, always
 // appending the item key as a deterministic tiebreaker so ordering is stable.
 func itemOrderBy(sortField, direction string) string {
@@ -674,10 +779,13 @@ func normalizeFTSQuery(tokens []ftsQueryToken) string {
 				expectOperand = true
 			}
 		case !tok.quote && op == "NOT":
-			if !expectOperand {
-				out = append(out, "AND")
+			// FTS5 NOT is binary ("a NOT b"); "a AND NOT b" is a syntax
+			// error, so a NOT that follows AND replaces it.
+			if n := len(out); n > 0 && out[n-1] == "AND" {
+				out[n-1] = "NOT"
+			} else {
+				out = append(out, "NOT")
 			}
-			out = append(out, "NOT")
 			expectOperand = true
 		default:
 			// Quoting is the user's explicit request for a literal term, so a

@@ -18,6 +18,8 @@ func TestFTSMatchQueryPreservesBooleanSyntax(t *testing.T) {
 		`OR`:                              `"OR"`,
 		`trust (automation)`:              `"trust" AND ( "automation" )`,
 		`"trust in automation" OR robots`: `"trust in automation" OR "robots"`,
+		`trust NOT robots`:                `"trust" NOT "robots"`,
+		`trust AND NOT robots`:            `"trust" NOT "robots"`,
 	}
 	for input, want := range cases {
 		if got := ftsMatchQuery(input); got != want {
@@ -42,7 +44,7 @@ func TestFTSMatchQueryQuotedKeywordsAreLiteralTerms(t *testing.T) {
 		// Unquoted operators: unchanged from today's behavior.
 		`foo AND bar`: `"foo" AND "bar"`,
 		`foo OR bar`:  `"foo" OR "bar"`,
-		`foo NOT bar`: `"foo" AND NOT "bar"`,
+		`foo NOT bar`: `"foo" NOT "bar"`,
 		// Unquoted operators are case-insensitive.
 		`foo and bar`: `"foo" AND "bar"`,
 		`foo Or bar`:  `"foo" OR "bar"`,

@@ -460,6 +460,95 @@ func TestVisitSimilarityFulltextDocumentsExcludesTrashedParents(t *testing.T) {
 	}
 }
 
+func TestSearchAnnotationsRanksFiltersAndResolvesItems(t *testing.T) {
+	s := queryTestStore(t)
+	ann := func(key, parent, text, comment, color, added string) json.RawMessage {
+		return json.RawMessage(fmt.Sprintf(
+			`{"key":%q,"data":{"key":%q,"itemType":"annotation","parentItem":%q,"annotationText":%q,"annotationComment":%q,"annotationColor":%q,"dateAdded":%q}}`,
+			key, key, parent, text, comment, color, added))
+	}
+	items := []json.RawMessage{
+		json.RawMessage(`{"key":"PAPER","data":{"key":"PAPER","itemType":"journalArticle","title":"Trust in Science"}}`),
+		json.RawMessage(`{"key":"GONE","data":{"key":"GONE","itemType":"journalArticle","title":"Trashed Paper"}}`),
+		json.RawMessage(`{"key":"PDF","data":{"key":"PDF","itemType":"attachment","parentItem":"PAPER"}}`),
+		json.RawMessage(`{"key":"PDFGONE","data":{"key":"PDFGONE","itemType":"attachment","parentItem":"GONE"}}`),
+		// Dense match: bm25 must rank it above the passing mention.
+		ann("DENSE", "PDF", "Trust builds trust; trusted sources earn trust", "", "#ffd400", "2024-01-01T00:00:00Z"),
+		ann("PASSING", "PDF", "A long passage about methods, sampling, and in passing trust", "", "#FFD400", "2024-01-03T00:00:00Z"),
+		ann("COMMENT", "PDF", "Unrelated highlight", "revisit trust argument", "#ff6666", "2024-01-02T00:00:00Z"),
+		ann("NOMATCH", "PDF", "Nothing relevant", "", "#ffd400", "2024-01-04T00:00:00Z"),
+		ann("ORPHAN", "MISSINGPDF", "trust without a mirrored parent", "", "#5fb236", "2023-12-01T00:00:00Z"),
+		ann("INTRASH", "PDF", "trust but trashed", "", "#ffd400", "2023-01-01T00:00:00Z"),
+		ann("UNDERGONE", "PDFGONE", "trust under a trashed paper", "", "#ffd400", "2023-01-01T00:00:00Z"),
+	}
+	if _, _, err := s.UpsertBatch("items", items); err != nil {
+		t.Fatalf("seed annotation items: %v", err)
+	}
+	if _, _, err := s.UpsertBatch("items-trash", []json.RawMessage{
+		json.RawMessage(`{"key":"INTRASH","data":{"key":"INTRASH","itemType":"annotation"}}`),
+		json.RawMessage(`{"key":"GONE","data":{"key":"GONE","itemType":"journalArticle"}}`),
+	}); err != nil {
+		t.Fatalf("seed trash: %v", err)
+	}
+
+	keys := func(q AnnotationSearch) []string {
+		t.Helper()
+		got, err := s.SearchAnnotationsContext(context.Background(), q)
+		if err != nil {
+			t.Fatalf("SearchAnnotationsContext(%+v): %v", q, err)
+		}
+		out := make([]string, 0, len(got))
+		for _, r := range got {
+			var obj struct {
+				Key string `json:"key"`
+			}
+			if err := json.Unmarshal(r.Data, &obj); err != nil {
+				t.Fatalf("decode hit: %v", err)
+			}
+			out = append(out, obj.Key)
+		}
+		return out
+	}
+
+	for _, tc := range []struct {
+		name string
+		q    AnnotationSearch
+		want []string
+	}{
+		// Stemming (trusted), comment matches, trash exclusion at all
+		// three levels, orphans kept, bm25 order.
+		{"ranked stemmed matches", AnnotationSearch{Query: "trust"}, []string{"DENSE", "COMMENT", "ORPHAN", "PASSING"}},
+		{"limit applies after ranking", AnnotationSearch{Query: "trust", Limit: 1}, []string{"DENSE"}},
+		{"color spellings are case-insensitive", AnnotationSearch{Query: "trust", Colors: []string{"yellow", "#ffd400"}}, []string{"DENSE", "PASSING"}},
+		{"color filter precedes limit", AnnotationSearch{Query: "trust", Colors: []string{"#ff6666"}, Limit: 1}, []string{"COMMENT"}},
+		{"phrase", AnnotationSearch{Query: `"revisit trust"`}, []string{"COMMENT"}},
+		{"boolean NOT", AnnotationSearch{Query: "trust NOT argument"}, []string{"DENSE", "ORPHAN", "PASSING"}},
+		{"blank query lists newest first", AnnotationSearch{Query: "  ", Colors: []string{"#ffd400"}}, []string{"NOMATCH", "PASSING", "DENSE"}},
+		{"no match is empty", AnnotationSearch{Query: "zzznomatch"}, []string{}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := keys(tc.q)
+			if strings.Join(got, ",") != strings.Join(tc.want, ",") {
+				t.Fatalf("keys = %v, want %v", got, tc.want)
+			}
+		})
+	}
+
+	got, err := s.SearchAnnotationsContext(context.Background(), AnnotationSearch{Query: "trust"})
+	if err != nil {
+		t.Fatalf("SearchAnnotationsContext: %v", err)
+	}
+	for _, r := range got {
+		orphan := strings.Contains(string(r.Data), `"ORPHAN"`)
+		if orphan && (r.ItemKey != "" || r.ItemTitle != "") {
+			t.Fatalf("orphan resolved to %q/%q, want empty", r.ItemKey, r.ItemTitle)
+		}
+		if !orphan && (r.ItemKey != "PAPER" || r.ItemTitle != "Trust in Science") {
+			t.Fatalf("hit %s resolved to %q/%q, want PAPER/Trust in Science", r.Data, r.ItemKey, r.ItemTitle)
+		}
+	}
+}
+
 func TestSearchFulltextResolvesParentItemContext(t *testing.T) {
 	s := queryTestStore(t)
 	items := []json.RawMessage{

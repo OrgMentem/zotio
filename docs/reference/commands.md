@@ -145,6 +145,14 @@ zotio annotations export [flags]
 
 Search annotations by text
 
+Search annotation text, comments and tags.
+
+With the local store (the default), matching uses the full-text index:
+word stems match ("trust" finds "trusted"), "quoted phrases" match
+exactly, and AND, OR, NOT and parentheses combine terms. Results are
+ranked by relevance and include the key and title of the item the
+annotation belongs to. --refresh searches live through the Zotero API.
+
 ```
 zotio annotations search <query> [flags]
 ```

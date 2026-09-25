@@ -701,6 +701,7 @@ func compactListFields(items []map[string]any) json.RawMessage {
 		"page": true, "tag": true, "collection_count": true, "library_count": true,
 		"collection_only": true, "queue_tag": true, "oldest": true, "items": true,
 		"author": true, "year": true, "arxiv_id": true, "doi": true,
+		"item_key": true, "item_title": true,
 	}
 
 	filtered := make([]map[string]any, 0, len(items))

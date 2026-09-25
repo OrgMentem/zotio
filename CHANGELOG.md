@@ -6,6 +6,19 @@ Notable changes to zotio. Format follows [Keep a Changelog](https://keepachangel
 
 ### Changed — breaking
 
+- **`annotations search` uses the full-text index on the local store.** It
+  matches words, not substrings: "trust" now finds "trusted" but no longer
+  finds "untrustworthy". "Quoted phrases", AND, OR, NOT and parentheses
+  work as in `search`. Results are ranked by relevance instead of storage
+  order, and `--color` and `--limit` apply in SQLite, so a search no longer
+  loads every annotation. Annotations in the trash, or under a trashed
+  attachment or item, are excluded, as they are in live results. Each result
+  adds `item_key` and `item_title`, which name the paper the annotation
+  belongs to; `--agent` output keeps both. `--refresh` is unchanged.
+- **`NOT` works in local full-text queries.** `a NOT b` and `a AND NOT b`
+  compiled to an FTS5 syntax error, so `search`, `items list --query` and
+  `annotations search` failed on them. A leading `NOT` is still unsupported.
+
 - **The capability registry types every mutating command.** Commands that
   declare `mcp:read-only=false` can no longer report `operation: "other"`;
   a new test fails the build if one does. `init`, `auth set-token`,
