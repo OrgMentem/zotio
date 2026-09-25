@@ -4,6 +4,72 @@ Notable changes to zotio. Format follows [Keep a Changelog](https://keepachangel
 
 ## [Unreleased]
 
+### Changed — breaking
+
+- **The capability registry types every mutating command.** Commands that
+  declare `mcp:read-only=false` can no longer report `operation: "other"`;
+  a new test fails the build if one does. `init`, `auth set-token`,
+  `auth logout`, `profile save` and `profile delete` now report `write` with
+  the new `write_target: "local_state"`. `creators rename` and generic `import`
+  report `write` to `web_api`. `creators rename` also requires `synced_store`,
+  so a preview without a mirror now fails at preflight with the sync
+  remediation. `workflow run` reports a destructive `write` with no single
+  target, because its steps decide the target. `workflow archive` reports
+  `sync`. `profile list/show/use` report `read`. Only `items open` stays
+  `other`: it hands a link to the OS and touches no data plane.
+  `command_search` reads the same registry. Commands newly typed `write`
+  follow the existing write rules, for example the `--group all` fan-out
+  refusal.
+- **`items delete` and `items restore` print the mutation envelope when a
+  write fails.** Under `--agent`/`--json` they used to return the error with
+  no output. The exit code is unchanged. This matches `items update` and
+  `items move`.
+- **`import discover` lists each work once per manifest.** When two
+  candidates resolve to the same DOI or title, the second one is now a `skip`
+  entry with the note `duplicate of another candidate in this manifest`.
+  It used to be a second `create`. `import monitor` already worked this way,
+  and both commands now share one implementation.
+- **An incremental `zotio sync` now removes rows that were deleted upstream.**
+  After a clean incremental pass, sync asks the plane for the key lists of
+  collections and trash. There is one `format=keys` request for each list.
+  Sync then reaps the mirrored rows that are missing from a list. Before, only
+  `sync --full` did this. A collection that is gone from the list is removed
+  only if one of its member items no longer names it: a trashed collection
+  keeps its links, so restoring it needs no repair. The member items of a
+  removed collection are fetched again in `/items?itemKey=` batches of up to
+  50 keys per request, so their `data.collections` matches the plane.
+  Deletion markers are respected (ADR-0007). A listing is swept only with a
+  present, numeric `Total-Results` header equal to the keys sent; a missing,
+  malformed, or mismatched listing only warns and reaps nothing. The exit
+  code does not change.
+
+### Fixed
+
+- **`agent-context` no longer says that `ZOTERO_API_KEY` is always required.**
+  It reports `required: false`, with the MCP domain context wording: local
+  reads need no key, and Web API operations need one.
+- **The MCP domain context reports 6 tools** (it said 5). A test checks the
+  number against the registered facade.
+- **`attachments add` reuses an identical stored file whatever the sibling
+  order.** An earlier sibling with the same filename but different content
+  used to hide a later MD5 match and force a conflict.
+- **A failed connector re-parent create never reports an unverified
+  `temp_parent_key`.** The create-error path used to fall back to an
+  unchecked key, which could be the real target item. Now only a key that
+  carries this run's nonce is reported. Otherwise recovery uses
+  `temp_parent_marker`.
+- **The provider cache no longer deletes a fresh entry during expiry
+  cleanup.** A read that found an expired file re-checks it before removal.
+  A value that another process stored in that window is returned, not
+  deleted.
+- **Local reads and the MCP item and collection resources honour
+  cancellation.** The store has context-aware `Get`, `List`, `Count` and
+  `AnnotationsForItem`, and the generic local list/get path uses them.
+- **Release: `publish_registry` waits for the MCPB assets.** It polls
+  `gh release download` for up to 60 minutes and needs all six `.mcpb`
+  files. GitHub's release-by-tag view can lag the upload. On v0.27.0 it
+  lagged for about 41 minutes, and the job failed on its first attempt.
+
 ## [0.28.0] — 2026-09-24
 
 ### Added
