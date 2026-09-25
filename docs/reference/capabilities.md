@@ -10,9 +10,9 @@ The machine-readable registry every command is classified against — read vs. w
 | `annotations search` | read |  |  |  |
 | `annotations timeline` | read |  |  |  |
 | `attachments add` | write | `web_api` |  | `web_api_key`, `zotero_file_storage` |
-| `auth logout` | other |  |  |  |
-| `auth set-token` | other |  |  |  |
-| `auth status` | other |  |  |  |
+| `auth logout` | write | `local_state` |  |  |
+| `auth set-token` | write | `local_state` |  |  |
+| `auth status` | read |  |  |  |
 | `collections bundle` | read |  |  |  |
 | `collections create` | write | `web_api` |  | `web_api_key` |
 | `collections delete` | write | `web_api` | yes | `web_api_key` |
@@ -29,19 +29,19 @@ The machine-readable registry every command is classified against — read vs. w
 | `collections update` | write | `web_api` |  | `web_api_key` |
 | `creators audit` | read |  |  | `synced_store` |
 | `creators audit fix` | write | `web_api` |  | `synced_store`, `web_api_key` |
-| `creators rename` | other |  |  |  |
+| `creators rename` | write | `web_api` |  | `synced_store`, `web_api_key` |
 | `demo` | read |  |  |  |
 | `desktop status` | read |  |  |  |
 | `desktop wait` | read |  |  |  |
 | `doctor` | introspect |  |  |  |
-| `export` | other |  |  |  |
+| `export` | read |  |  |  |
 | `export snapshot` | read |  |  |  |
 | `export snapshot verify` | read |  |  | `synced_store` |
-| `feedback` | other |  |  |  |
-| `feedback list` | other |  |  |  |
+| `feedback` | write | `local_state` |  |  |
+| `feedback list` | read |  |  |  |
 | `groups inspect` | read |  |  |  |
 | `groups list` | read |  |  |  |
-| `import` | other |  |  |  |
+| `import` | write | `web_api` |  | `web_api_key` |
 | `import apply` | write | `web_api` |  | `web_api_key` |
 | `import arxiv` | write | `web_api` |  | `web_api_key` |
 | `import discover` | read |  |  | `synced_store` |
@@ -56,7 +56,7 @@ The machine-readable registry every command is classified against — read vs. w
 | `import targets` | read |  |  | `desktop_connector` |
 | `import translators` | read |  |  | `desktop_connector` |
 | `import url` | write | `web_api` |  | `web_api_key` |
-| `init` | other |  |  |  |
+| `init` | write | `local_state` |  |  |
 | `items add-to-collection` | write | `web_api` |  | `web_api_key` |
 | `items annotations` | read |  |  |  |
 | `items audit` | read |  |  | `synced_store` |
@@ -107,11 +107,11 @@ The machine-readable registry every command is classified against — read vs. w
 | `library prisma` | read |  |  | `synced_store` |
 | `library stats` | read |  |  | `synced_store` |
 | `library wrapped` | read |  |  |  |
-| `profile delete` | other |  |  |  |
-| `profile list` | other |  |  |  |
-| `profile save` | other |  |  |  |
-| `profile show` | other |  |  |  |
-| `profile use` | other |  |  |  |
+| `profile delete` | write | `local_state` |  |  |
+| `profile list` | read |  |  |  |
+| `profile save` | write | `local_state` |  |  |
+| `profile show` | read |  |  |  |
+| `profile use` | read |  |  |  |
 | `reading-list` | read |  |  |  |
 | `reading-list add` | write | `web_api` |  | `web_api_key` |
 | `reading-list done` | write | `web_api` |  | `web_api_key` |
@@ -145,6 +145,6 @@ The machine-readable registry every command is classified against — read vs. w
 | `version` | introspect |  |  |  |
 | `watch` | sync |  |  |  |
 | `which` | introspect |  |  |  |
-| `workflow archive` | other |  |  |  |
-| `workflow run` | other |  |  |  |
+| `workflow archive` | sync |  |  |  |
+| `workflow run` | write |  | yes |  |
 | `workflow status` | read |  |  |  |

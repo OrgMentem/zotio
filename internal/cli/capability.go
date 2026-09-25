@@ -30,6 +30,13 @@ const (
 	preconditionZoteroFileStorage = "zotero_file_storage"
 )
 
+// localStateWriteTarget names the installation plane a command mutates:
+// stored credentials, named flag profiles, the local feedback log, and
+// first-run setup. It distinguishes local-state writes from library
+// writes (web_api), the local vault (local_vault), and desktop-connector
+// creates (desktop_connector).
+const localStateWriteTarget = "local_state"
+
 type capabilityEntry struct {
 	Path        string   `json:"path"`
 	Operation   string   `json:"operation"` // read | write | sync | introspect | other
@@ -231,6 +238,55 @@ var capabilityOverrides = map[string]capabilityEntry{
 	"vault pull":    {Operation: "write", WriteTarget: "local_vault", Requires: []string{preconditionWebAPIKey}},
 	"vault resolve": {Operation: "write", WriteTarget: "web_api", Requires: []string{preconditionWebAPIKey}},
 	"vault sync":    {Operation: "write", WriteTarget: "local_vault", Requires: []string{preconditionSyncedStore}},
+	// Local-state writers mutate the installation (credentials, named flag
+	// profiles, the local feedback log, first-run setup), not the Zotero
+	// library. They report operation write with the local_state target so
+	// agents can tell them apart from library writes without mistaking them
+	// for side-effect-free reads. None declares preconditions: every step
+	// that needs one (an API key, an existing store) is conditional or
+	// best-effort, and the command itself reports what it skipped.
+	"auth set-token": {Operation: "write", WriteTarget: localStateWriteTarget},
+	"auth logout":    {Operation: "write", WriteTarget: localStateWriteTarget},
+	"profile save":   {Operation: "write", WriteTarget: localStateWriteTarget},
+	"profile delete": {Operation: "write", WriteTarget: localStateWriteTarget},
+	"init":           {Operation: "write", WriteTarget: localStateWriteTarget},
+	"feedback":       {Operation: "write", WriteTarget: localStateWriteTarget},
+	// Library writes the annotation default cannot see: `creators rename`
+	// PATCHes items exactly like `creators audit fix` (same web_api contract
+	// and the same synced_store read for candidate resolution), and the
+	// generic `import` POSTs one record per input line through the same
+	// preview-first apply gate.
+	"creators rename": {Operation: "write", WriteTarget: "web_api", Requires: []string{preconditionSyncedStore, preconditionWebAPIKey}},
+	"import":          {Operation: "write", WriteTarget: "web_api", Requires: []string{preconditionWebAPIKey}},
+	// `workflow archive` is a sync under another name: it fetches every
+	// syncable resource into the local mirror and mutates nothing remotely.
+	"workflow archive": {Operation: "sync"},
+	// `workflow run` executes an arbitrary spec whose steps decide the real
+	// plane: any non-workflow command, from library writes to local_state
+	// writers (`profile delete`, `auth logout`). The schema's write_target
+	// is a scalar naming one plane (and the Routes experiment was rejected
+	// for exactly this conditional meaning), so naming web_api would
+	// mislead and inventing a union value would break the contract
+	// consumers parse. The target stays empty — a write with no single
+	// plane — with the step-dependence stated here. The run is destructive:
+	// an applied workflow can replay `items delete --permanent
+	// --allow-destructive` (the runner injects --yes into steps).
+	"workflow run": {Operation: "write", Destructive: true},
+	// `items open` prints a zotero:// deep link and, only with --launch,
+	// hands it to the OS desktop handler. That is a local UI action against
+	// no data plane, so neither read (not side-effect-free) nor write (no
+	// write target) is honest. The explicit other records that decision so
+	// the command counts as classified rather than unexamined.
+	"items open": {Operation: "other"},
+	// Local reads with no preconditions. `export` renders through the API by
+	// default but serves --data-source local from the mirror, so it claims
+	// neither plane unconditionally (same shape as `items fulltext`).
+	"auth status":   {Operation: "read"},
+	"profile list":  {Operation: "read"},
+	"profile show":  {Operation: "read"},
+	"profile use":   {Operation: "read"},
+	"feedback list": {Operation: "read"},
+	"export":        {Operation: "read"},
 	// Sync writes the local store (not a Zotero mutation).
 	"sync":  {Operation: "sync"},
 	"watch": {Operation: "sync"},
@@ -291,42 +347,84 @@ func dataSourcesForRequires(requires []string) []string {
 	}
 }
 
-// buildCapabilityRegistry walks the command tree and emits one entry per
-// runnable command, deriving operation from the mcp:read-only annotation and
-// merging the safety-critical overrides. Sorted by path for stable output.
-func buildCapabilityRegistry(rootCmd *cobra.Command) []capabilityEntry {
-	skip := map[string]bool{"help": true, "completion": true, "capabilities": true, "agent-context": true}
-	entries := make([]capabilityEntry, 0, 64)
+// registrySkip lists helper commands excluded from the registry: shell
+// completion, the help topic, and the two introspection emitters (which
+// would otherwise describe themselves).
+var registrySkip = map[string]bool{"help": true, "completion": true, "capabilities": true, "agent-context": true}
 
+// baseCapabilityOperation derives the default operation from the
+// mcp:read-only annotation. An explicit "false" marks a mutating command,
+// so it defaults to write: no explicitly mutating command may report as
+// "other" even when nobody has written an override for it yet. Overrides
+// replace this default with the precise operation, target, and
+// preconditions.
+func baseCapabilityOperation(readOnlyAnnotation string) string {
+	switch readOnlyAnnotation {
+	case "true":
+		return "read"
+	case "false":
+		return "write"
+	default:
+		return "other"
+	}
+}
+
+// walkRunnableCommands visits every runnable command in the tree in Cobra
+// order, skipping helpers and hidden commands exactly as the registry
+// builder does, so tests can assert over the same command set the
+// registry emits.
+func walkRunnableCommands(rootCmd *cobra.Command, visit func(path string, cmd *cobra.Command)) {
 	var walk func(c *cobra.Command)
 	walk = func(c *cobra.Command) {
 		for _, sub := range c.Commands() {
-			if sub.Hidden || skip[sub.Name()] {
+			if sub.Hidden || registrySkip[sub.Name()] {
 				continue
 			}
 			if sub.Runnable() {
-				path := strings.TrimPrefix(sub.CommandPath(), rootCmd.Name()+" ")
-				entry := capabilityEntry{Path: path, Operation: "other"}
-				if sub.Annotations["mcp:read-only"] == "true" {
-					entry.Operation = "read"
-				}
-				if ov, ok := capabilityOverrides[path]; ok {
-					if ov.Operation != "" {
-						entry.Operation = ov.Operation
-					}
-					entry.WriteTarget = ov.WriteTarget
-					entry.Destructive = ov.Destructive
-					entry.Requires = ov.Requires
-					entry.Routes = ov.Routes
-				}
-				entry.DataSources = dataSourcesForEntry(entry)
-				entries = append(entries, entry)
+				visit(strings.TrimPrefix(sub.CommandPath(), rootCmd.Name()+" "), sub)
 			}
 			walk(sub)
 		}
 	}
 	walk(rootCmd)
+}
 
+// CommandCapability returns the registry-canonical classification for one
+// command path: the annotation-derived base operation merged with the
+// override table, exactly as buildCapabilityRegistry computes it. The MCP
+// command-orchestration facade consumes this instead of re-deriving the
+// default so the two surfaces cannot drift apart.
+func CommandCapability(path string, readOnlyAnnotation string) (operation string, requires []string, destructive bool) {
+	operation = baseCapabilityOperation(readOnlyAnnotation)
+	if ov, ok := capabilityOverrides[path]; ok {
+		if ov.Operation != "" {
+			operation = ov.Operation
+		}
+		requires = ov.Requires
+		destructive = ov.Destructive
+	}
+	return operation, requires, destructive
+}
+
+// buildCapabilityRegistry walks the command tree and emits one entry per
+// runnable command, deriving operation from the mcp:read-only annotation and
+// merging the safety-critical overrides. Sorted by path for stable output.
+func buildCapabilityRegistry(rootCmd *cobra.Command) []capabilityEntry {
+	entries := make([]capabilityEntry, 0, 64)
+	walkRunnableCommands(rootCmd, func(path string, sub *cobra.Command) {
+		entry := capabilityEntry{Path: path, Operation: baseCapabilityOperation(sub.Annotations["mcp:read-only"])}
+		if ov, ok := capabilityOverrides[path]; ok {
+			if ov.Operation != "" {
+				entry.Operation = ov.Operation
+			}
+			entry.WriteTarget = ov.WriteTarget
+			entry.Destructive = ov.Destructive
+			entry.Requires = ov.Requires
+			entry.Routes = ov.Routes
+		}
+		entry.DataSources = dataSourcesForEntry(entry)
+		entries = append(entries, entry)
+	})
 	sort.Slice(entries, func(i, j int) bool { return entries[i].Path < entries[j].Path })
 	return entries
 }

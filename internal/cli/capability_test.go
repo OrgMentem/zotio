@@ -33,6 +33,156 @@ func TestCapabilityOverridesResolveToRealCommands(t *testing.T) {
 	}
 }
 
+// TestExplicitlyMutatingCommandsAreNeverOther is the fail-closed guarantee
+// behind the registry: a command annotated mcp:read-only=false declares
+// itself mutating, so reporting it as operation=other would let a consumer
+// that treats other as non-write invoke a state-changing command without
+// write metadata. The annotation default (baseCapabilityOperation) already
+// types such commands as write; this test pins the emitted registry, not
+// the helper, so a future builder rewrite cannot silently drop the floor.
+func TestExplicitlyMutatingCommandsAreNeverOther(t *testing.T) {
+	entries := buildCapabilityRegistry(RootCmd())
+	byPath := make(map[string]capabilityEntry, len(entries))
+	for _, e := range entries {
+		byPath[e.Path] = e
+	}
+	var falseWithoutEntry []string
+	walkRunnableCommands(RootCmd(), func(path string, cmd *cobra.Command) {
+		if cmd.Annotations["mcp:read-only"] != "false" {
+			return
+		}
+		entry, ok := byPath[path]
+		if !ok {
+			falseWithoutEntry = append(falseWithoutEntry, path)
+			return
+		}
+		if entry.Operation == "other" {
+			t.Errorf("capability %q is annotated mcp:read-only=false but reports operation=other; add a complete override or fix the annotation", path)
+		}
+	})
+	for _, path := range falseWithoutEntry {
+		t.Errorf("command %q is annotated mcp:read-only=false but missing from the capability registry", path)
+	}
+}
+
+// TestEveryNonReadOnlyCommandHasCapabilityOverride keeps new commands from
+// regressing into operation=other unexamined: any runnable command that is
+// not explicitly read-only must carry an override entry — even when the
+// honest classification stays "other" (see `items open`), so the registry
+// records a decision instead of a default.
+func TestEveryNonReadOnlyCommandHasCapabilityOverride(t *testing.T) {
+	var missing []string
+	walkRunnableCommands(RootCmd(), func(path string, cmd *cobra.Command) {
+		if cmd.Annotations["mcp:read-only"] == "true" {
+			return
+		}
+		if _, ok := capabilityOverrides[path]; !ok {
+			missing = append(missing, path)
+		}
+	})
+	for _, path := range missing {
+		t.Errorf("runnable non-read-only command %q has no capabilityOverrides entry; classify it (operation, write target, preconditions) so agents never see an unexamined operation=other", path)
+	}
+}
+
+// TestNewlyClassifiedMutatingCommandsReportWrites pins the honest
+// classifications the registry owed the previously-other commands: local
+// installation writes report write/local_state, library writes report
+// write/web_api, the archive alias reports sync, and `items open` keeps
+// its examined other (a local UI action against no data plane).
+// `workflow run` is the exception to the single-target rule: its steps can
+// write any plane, so it reports a targetless destructive write.
+func TestNewlyClassifiedMutatingCommandsReportWrites(t *testing.T) {
+	want := map[string]capabilityEntry{
+		"creators rename":  {Operation: "write", WriteTarget: "web_api", Requires: []string{preconditionSyncedStore, preconditionWebAPIKey}},
+		"init":             {Operation: "write", WriteTarget: localStateWriteTarget},
+		"auth set-token":   {Operation: "write", WriteTarget: localStateWriteTarget},
+		"auth logout":      {Operation: "write", WriteTarget: localStateWriteTarget},
+		"profile save":     {Operation: "write", WriteTarget: localStateWriteTarget},
+		"profile delete":   {Operation: "write", WriteTarget: localStateWriteTarget},
+		"workflow archive": {Operation: "sync"},
+		"workflow run":     {Operation: "write", Destructive: true},
+		"items open":       {Operation: "other"},
+		"import":           {Operation: "write", WriteTarget: "web_api", Requires: []string{preconditionWebAPIKey}},
+		"feedback":         {Operation: "write", WriteTarget: localStateWriteTarget},
+		"auth status":      {Operation: "read"},
+		"profile list":     {Operation: "read"},
+		"profile show":     {Operation: "read"},
+		"profile use":      {Operation: "read"},
+		"feedback list":    {Operation: "read"},
+		"export":           {Operation: "read"},
+	}
+	entries := buildCapabilityRegistry(RootCmd())
+	byPath := make(map[string]capabilityEntry, len(entries))
+	for _, e := range entries {
+		byPath[e.Path] = e
+	}
+	for path, expected := range want {
+		entry, ok := byPath[path]
+		if !ok {
+			t.Errorf("capability registry omitted %q", path)
+			continue
+		}
+		if entry.Operation != expected.Operation || entry.WriteTarget != expected.WriteTarget || entry.Destructive != expected.Destructive {
+			t.Errorf("capability %q = operation=%q write_target=%q destructive=%v, want operation=%q write_target=%q destructive=%v",
+				path, entry.Operation, entry.WriteTarget, entry.Destructive, expected.Operation, expected.WriteTarget, expected.Destructive)
+		}
+		if len(entry.Requires) != len(expected.Requires) {
+			t.Errorf("capability %q requires %q, want %q", path, entry.Requires, expected.Requires)
+			continue
+		}
+		for i := range entry.Requires {
+			if entry.Requires[i] != expected.Requires[i] {
+				t.Errorf("capability %q requires %q, want %q", path, entry.Requires, expected.Requires)
+				break
+			}
+		}
+		delete(want, path)
+	}
+	for path := range want {
+		t.Errorf("capability registry omitted %q", path)
+	}
+}
+
+// TestProfileUseLeavesTheStoreUntouched pins the read classification above:
+// `profile use` prints a profile's values and must not persist anything (no
+// active-profile pointer, no rewrite). The store file is byte-identical
+// before and after the run.
+func TestProfileUseLeavesTheStoreUntouched(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	if err := saveProfileStore(&profileStore{Profiles: map[string]Profile{
+		"demo": {Name: "demo", Values: map[string]string{"json": "true"}},
+	}}); err != nil {
+		t.Fatalf("seeding profile store: %v", err)
+	}
+	p, err := profileStorePath()
+	if err != nil {
+		t.Fatalf("profileStorePath: %v", err)
+	}
+	before, err := os.ReadFile(p)
+	if err != nil {
+		t.Fatalf("reading seeded store: %v", err)
+	}
+	cmd := newProfileUseCmd(&rootFlags{asJSON: true})
+	cmd.SilenceErrors, cmd.SilenceUsage = true, true
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetArgs([]string{"demo"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("profile use demo: %v", err)
+	}
+	if !strings.Contains(out.String(), "demo") {
+		t.Fatalf("profile use printed %q, want the profile values", out.String())
+	}
+	after, err := os.ReadFile(p)
+	if err != nil {
+		t.Fatalf("reading store after profile use: %v", err)
+	}
+	if !bytes.Equal(before, after) {
+		t.Fatal("profile use rewrote the profile store; it must be a pure read")
+	}
+}
+
 func TestMutableCapabilityOverridesHaveWriteMetadata(t *testing.T) {
 	want := map[string]struct {
 		target  string

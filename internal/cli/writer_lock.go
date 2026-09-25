@@ -193,10 +193,9 @@ var explicitInstallationWriterCommands = map[string]writerLockMode{
 	"workflow run":     writerLockOnApply,
 
 	// Every command that writes on the user's behalf routes through the shared
-	// --yes gate, so the capability registry's writerLockOnApply is the right
-	// mode. These are listed explicitly only because their capability is not
-	// typed "write": the vault trio and generic import are "other", and
-	// `vault resolve` is a vault publish.
+	// --yes gate, so writerLockOnApply is the right mode. The vault trio,
+	// `vault resolve` (a vault publish), and generic import are pinned here
+	// so their lock mode does not depend on capability-registry typing.
 	"vault push":    writerLockOnApply,
 	"vault pull":    writerLockOnApply,
 	"vault sync":    writerLockOnApply,

@@ -107,13 +107,19 @@ reading source. Schema is versioned via schema_version.`,
 }
 
 func buildAgentContext(rootCmd *cobra.Command) agentContext {
+	// The key is optional for local reads and required only for operations
+	// whose capability entry needs Web API access. This mirrors the MCP
+	// domain context (internal/mcp/resources.go domainContext), which
+	// advertises the same key as required:false: local desktop reads need
+	// no key. Marking it required here used to tell agents the CLI is
+	// unusable without one, which is wrong for the primary local path.
 	envVars := []agentContextAuthEnvVar{
 		{
 			Name:        "ZOTERO_API_KEY",
 			Kind:        "per_call",
-			Required:    true,
+			Required:    false,
 			Sensitive:   true,
-			Description: "Set to your API credential.",
+			Description: "Only for the Zotero web API (group libraries or while the desktop app is closed); local desktop at localhost:23119 needs no key.",
 		},
 	}
 	authMode := "api_key"

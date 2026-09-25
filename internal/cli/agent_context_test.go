@@ -73,12 +73,16 @@ func TestAgentContextCmdEmitsTheVersionedEnvelope(t *testing.T) {
 			// Pin the metadata, not just its presence: an agent that gets the wrong
 			// variable name or loses the sensitive flag has unusable credential
 			// guidance, and a length check accepts exactly that regression.
+			// The key is optional: local desktop reads need no key, and only
+			// operations whose capability entry requires web_api_key need one
+			// (same contract as the MCP domain context). Claiming required:true
+			// told agents the CLI is unusable without a key.
 			wantEnv := []agentContextAuthEnvVar{{
 				Name:        "ZOTERO_API_KEY",
 				Kind:        "per_call",
-				Required:    true,
+				Required:    false,
 				Sensitive:   true,
-				Description: "Set to your API credential.",
+				Description: "Only for the Zotero web API (group libraries or while the desktop app is closed); local desktop at localhost:23119 needs no key.",
 			}}
 			if got.Auth.Mode != "api_key" || !reflect.DeepEqual(got.Auth.EnvVars, wantEnv) {
 				t.Fatalf("auth = %+v, want api_key mode with %+v", got.Auth, wantEnv)

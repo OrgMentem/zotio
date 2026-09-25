@@ -189,24 +189,18 @@ func listMirrorableCommandsWithContext(ctx context.Context, rootFactory func() *
 	return out, nil
 }
 
-// orchestrationCapability derives the command's operation kind, declared
-// preconditions, and destructiveness the same way the capability registry does:
-// operation comes from the mcp:read-only annotation unless a registry override
-// names one explicitly; requires/destructive come from the override. Keeping
-// this in lockstep with cli.buildCapabilityRegistry keeps the facade honest.
+// orchestrationCapability returns the registry-canonical classification for
+// the command: operation, declared preconditions, and destructiveness. It
+// delegates to cli.CommandCapability — the same merge of the mcp:read-only
+// annotation default and the registry override table that
+// buildCapabilityRegistry emits — so the facade cannot drift from the
+// registry it describes.
 func orchestrationCapability(cmd *cobra.Command, path string) (operation string, requires []string, destructive bool) {
-	operation = "other"
-	if isMCPReadOnly(cmd) {
-		operation = "read"
+	annotation := ""
+	if cmd != nil {
+		annotation = cmd.Annotations["mcp:read-only"]
 	}
-	if ov, reqs, d, ok := cli.CommandOverrideCapability(path); ok {
-		if ov != "" {
-			operation = ov
-		}
-		requires = reqs
-		destructive = d
-	}
-	return operation, requires, destructive
+	return cli.CommandCapability(path, annotation)
 }
 
 func findMirrorableCommand(rootFactory func() *cobra.Command, name string) (*cobra.Command, []string, bool) {
