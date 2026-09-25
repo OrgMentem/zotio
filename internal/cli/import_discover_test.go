@@ -557,3 +557,47 @@ func writeCrossRefWork(t *testing.T, w http.ResponseWriter, doi, title string) {
 		t.Errorf("encode CrossRef response: %v", err)
 	}
 }
+
+// TestImportDiscoverWithinManifestTitleDedup pins the within-manifest
+// duplicate guard: two distinct DOI candidates that resolve to the same work
+// must not both become creates. The second one is a skip, so import apply
+// cannot write two items for one work.
+func TestImportDiscoverWithinManifestTitleDedup(t *testing.T) {
+	seedImportDiscoverStore(t, []json.RawMessage{
+		json.RawMessage(`{"key":"SRC1","version":1,"data":{"key":"SRC1","itemType":"journalArticle","title":"Scope One","DOI":"10.5000/source1","collections":["DUP"],"dateModified":"2026-01-03T00:00:00Z"}}`),
+		json.RawMessage(`{"key":"SRC2","version":1,"data":{"key":"SRC2","itemType":"journalArticle","title":"Scope Two","DOI":"10.5000/source2","collections":["DUP"],"dateModified":"2026-01-02T00:00:00Z"}}`),
+	})
+	withImportDiscoverProviderMocks(t,
+		map[string][]string{
+			"10.5000/source1": {"10.1000/dupa", "10.1000/dupb"},
+			"10.5000/source2": {"10.1000/dupa", "10.1000/dupb"},
+		},
+		map[string]string{
+			"10.1000/dupa": "Same Resolved Work",
+			"10.1000/dupb": "Same Resolved Work",
+		},
+	)
+
+	manifestPath := filepath.Join(t.TempDir(), "discover.json")
+	manifest, report := runImportDiscoverTestCmd(t, &rootFlags{asJSON: true, noCache: true, timeout: 5 * time.Second},
+		"--scope", "collection:DUP", "--out", manifestPath, "--limit", "10", "--min-count", "2")
+
+	if report.Summary.SkippedTitleDuplicate != 1 {
+		t.Fatalf("skip summary = %+v, want one within-manifest title skip", report.Summary)
+	}
+	if report.Summary.Entries != 2 {
+		t.Fatalf("entries = %d, want two (one create plus one skip)", report.Summary.Entries)
+	}
+	byDOI := importDiscoverEntriesByDOI(manifest.Entries)
+	first, ok := byDOI["10.1000/dupa"]
+	if !ok || first.Action != "create" || first.Status != "resolved" || first.Item == nil {
+		t.Fatalf("first entry = %+v, want a resolved create", first)
+	}
+	second, ok := byDOI["10.1000/dupb"]
+	if !ok {
+		t.Fatalf("missing entry for the duplicate in %+v", manifest.Entries)
+	}
+	if second.Action != "skip" || second.Item != nil || second.Note != "duplicate of another candidate in this manifest" {
+		t.Fatalf("duplicate entry = %+v, want a skip with note and no create item: import apply would write a duplicate", second)
+	}
+}

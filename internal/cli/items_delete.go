@@ -186,13 +186,16 @@ cannot be undone by 'items restore' and requires --allow-destructive.`,
 				},
 			}}
 			env, runErr := runMutation(cmd.Context(), flags, "items.delete", ops)
+			if renderErr := renderMutation(cmd, flags, env, nil); renderErr != nil {
+				return renderErr
+			}
 			if runErr != nil {
 				if applyErr != nil {
 					return classifyAPIError(applyErr, flags)
 				}
 				return runErr
 			}
-			return renderMutation(cmd, flags, env, nil)
+			return nil
 		},
 	}
 

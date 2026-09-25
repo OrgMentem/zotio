@@ -46,3 +46,37 @@ func TestStoreGetRespectsTTL(t *testing.T) {
 		t.Fatalf("expired cache entry still exists, stat error = %v", err)
 	}
 }
+
+// A Set that lands between Get's expiry check and its cleanup remove must
+// survive: Get observed an expired file, but the path now holds a fresh
+// publication from a concurrent request. Deleting it would turn one slow
+// reader into a lost refresh and an avoidable upstream refetch.
+func TestStoreGetKeepsConcurrentFreshWrite(t *testing.T) {
+	store := New(t.TempDir(), time.Minute)
+	key := "GET /items/K1"
+	if err := store.Set(key, json.RawMessage(`{"key":"stale"}`)); err != nil {
+		t.Fatalf("Set: %v", err)
+	}
+	expired := time.Now().Add(-2 * time.Minute)
+	if err := os.Chtimes(store.path(key), expired, expired); err != nil {
+		t.Fatalf("age cache file: %v", err)
+	}
+	fresh := json.RawMessage(`{"key":"fresh"}`)
+	old := expiredCleanupProbe
+	expiredCleanupProbe = func(string) {
+		if err := store.Set(key, fresh); err != nil {
+			t.Errorf("concurrent Set: %v", err)
+		}
+	}
+	t.Cleanup(func() { expiredCleanupProbe = old })
+	got, ok := store.Get(key)
+	if !ok {
+		t.Fatal("Get missed a fresh value published during expiry cleanup")
+	}
+	if string(got) != string(fresh) {
+		t.Fatalf("Get = %s, want %s", got, fresh)
+	}
+	if _, err := os.Stat(store.path(key)); err != nil {
+		t.Fatalf("fresh cache entry was deleted by expiry cleanup: %v", err)
+	}
+}

@@ -2194,3 +2194,60 @@ func TestAbandonToWinnerRefusesAnUnnamedWinner(t *testing.T) {
 		}
 	}
 }
+
+// TestTempParentKeyAfterCreateErrorNeverReportsAnUnverifiedKey pins the
+// create-error recovery: the create route's own key is title-based, and the
+// temporary parent borrows the target's title, so it can name the operator's
+// real destination item. Only a nonce-verified key may be reported; anything
+// else leaves the key empty so recovery aims at the marker search string,
+// never at the target paper.
+func TestTempParentKeyAfterCreateErrorNeverReportsAnUnverifiedKey(t *testing.T) {
+	const nonce = "0123456789abcdef"
+	const target = "TARGET01"
+
+	t.Run("target key from title recovery is dropped", func(t *testing.T) {
+		// No marker anywhere: the temporary parent never became visible.
+		fake := &reparentFake{}
+		srv := fake.server(t)
+		flags := reparentFlags(t, srv)
+		res := itemCreateResult{Via: "connector", Session: "sess", WebKey: target}
+
+		if got := tempParentKeyAfterCreateError(context.Background(), flags, res, nonce, target); got != "" {
+			t.Fatalf("TempParentKey = %q, want empty: %q is the target, not a throwaway", got, target)
+		}
+	})
+
+	t.Run("unrelated unverified key is dropped", func(t *testing.T) {
+		fake := &reparentFake{}
+		srv := fake.server(t)
+		flags := reparentFlags(t, srv)
+		res := itemCreateResult{Via: "connector", Session: "sess", WebKey: "OTHER001"}
+
+		if got := tempParentKeyAfterCreateError(context.Background(), flags, res, nonce, target); got != "" {
+			t.Fatalf("TempParentKey = %q, want empty: nothing proves it carries this run's nonce", got)
+		}
+	})
+
+	t.Run("nonce-verified key is kept", func(t *testing.T) {
+		fake := &reparentFake{tempParentKey: "TEMP0001", topItemsEmptyFor: 100}
+		fake.createdAbstract = connectorTempParentMarker(nonce, target)
+		srv := fake.server(t)
+		flags := reparentFlags(t, srv)
+		res := itemCreateResult{Via: "connector", Session: "sess", WebKey: "TEMP0001"}
+
+		if got := tempParentKeyAfterCreateError(context.Background(), flags, res, nonce, target); got != "TEMP0001" {
+			t.Fatalf("TempParentKey = %q, want TEMP0001: the key proves it carries this run's nonce", got)
+		}
+	})
+
+	t.Run("marker lookup hit is kept", func(t *testing.T) {
+		fake := &reparentFake{tempParentKey: "TEMP0001"}
+		fake.createdAbstract = connectorTempParentMarker(nonce, target)
+		srv := fake.server(t)
+		flags := reparentFlags(t, srv)
+
+		if got := tempParentKeyAfterCreateError(context.Background(), flags, itemCreateResult{}, nonce, target); got != "TEMP0001" {
+			t.Fatalf("TempParentKey = %q, want TEMP0001: the marker lookup names this run's parent", got)
+		}
+	})
+}

@@ -238,6 +238,12 @@ func buildImportDiscoverManifestWithDirection(ctx context.Context, flags *rootFl
 		},
 	}
 
+	// Within-manifest duplicates: distinct DOI candidates can resolve to one
+	// work (multi-source citation chasing, preprint/publisher DOI pairs), and
+	// without this two create entries would write two items for it. The same
+	// seen-set backs import monitor; only resolved creates are marked, so a
+	// skip keeps pointing at its more useful library reason.
+	seen := newImportManifestDedup()
 	for _, candidate := range agg.Candidates {
 		if candidate.Count < minCount {
 			continue
@@ -287,6 +293,13 @@ func buildImportDiscoverManifestWithDirection(ctx context.Context, flags *rootFl
 			entry.Item = nil
 			entry.Note = "title already exists in library"
 			report.Summary.SkippedTitleDuplicate++
+		} else if doi, title := normalizedGapDOI(candidate.DOI), normalizeExactTitle(entry.Title); seen.duplicate(doi, title) {
+			entry.Action = "skip"
+			entry.Item = nil
+			entry.Note = "duplicate of another candidate in this manifest"
+			report.Summary.SkippedTitleDuplicate++
+		} else {
+			seen.mark(doi, title)
 		}
 		manifest.Entries = append(manifest.Entries, entry)
 	}

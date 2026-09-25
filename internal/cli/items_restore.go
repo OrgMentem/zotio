@@ -79,13 +79,16 @@ func newItemsRestoreCmd(flags *rootFlags) *cobra.Command {
 			// journal run_id was previously discarded so a restore could not be
 			// traced even though the journal recorded it.
 			env, runErr := runMutation(cmd.Context(), flags, "items.restore", ops)
+			if renderErr := renderMutation(cmd, flags, env, nil); renderErr != nil {
+				return renderErr
+			}
 			if runErr != nil {
 				if applyErr != nil {
 					return classifyAPIError(applyErr, flags)
 				}
 				return runErr
 			}
-			return renderMutation(cmd, flags, env, nil)
+			return nil
 		},
 	}
 

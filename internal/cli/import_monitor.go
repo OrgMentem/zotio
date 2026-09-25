@@ -61,6 +61,42 @@ type monitorCandidate struct {
 	authors []string
 }
 
+// importManifestDedup tracks the works already emitted into one manifest, so
+// sibling producers agree that a second candidate naming the same work is a
+// duplicate. Both signals count: distinct DOI candidates can resolve to one
+// work (multi-source citation chasing, preprint/publisher DOI pairs), and the
+// normalized title is what catches that. Callers pass already-normalized DOI
+// (normalizedGapDOI) and title (normalizeExactTitle) values; empty values
+// never match, so unidentified candidates cannot shadow each other.
+type importManifestDedup struct {
+	dois   map[string]bool
+	titles map[string]bool
+}
+
+func newImportManifestDedup() *importManifestDedup {
+	return &importManifestDedup{dois: map[string]bool{}, titles: map[string]bool{}}
+}
+
+// duplicate reports whether doi or title names an already-emitted work.
+func (d *importManifestDedup) duplicate(doi, title string) bool {
+	if doi != "" && d.dois[doi] {
+		return true
+	}
+	return title != "" && d.titles[title]
+}
+
+// mark records doi and title as emitted. Callers mark only entries that
+// another candidate could duplicate: a skip names no work import apply would
+// write, so marking one would only mislabel the more useful library reason.
+func (d *importManifestDedup) mark(doi, title string) {
+	if doi != "" {
+		d.dois[doi] = true
+	}
+	if title != "" {
+		d.titles[title] = true
+	}
+}
+
 func newImportMonitorCmd(flags *rootFlags) *cobra.Command {
 	var authorInputs []string
 	var query, since, until, out string
@@ -274,8 +310,7 @@ func buildImportMonitorManifest(ctx context.Context, flags *rootFlags, authors [
 		return works[i].work.ID < works[j].work.ID
 	})
 	report.WorksSeen = len(works)
-	seenDOIs := map[string]bool{}
-	seenTitles := map[string]bool{}
+	seen := newImportManifestDedup()
 	for _, candidate := range works {
 		work := candidate.work
 		doi := normalizedGapDOI(work.DOI)
@@ -293,13 +328,10 @@ func buildImportMonitorManifest(ctx context.Context, flags *rootFlags, authors [
 			report.SkippedWithoutIdentifier++
 			continue
 		}
-		if seenDOIs[doi] || (title != "" && seenTitles[title]) {
+		if seen.duplicate(doi, title) {
 			continue
 		}
-		seenDOIs[doi] = true
-		if title != "" {
-			seenTitles[title] = true
-		}
+		seen.mark(doi, title)
 		if len(manifest.Entries) >= limit {
 			report.Truncated = true
 			report.TruncationReason = "--limit reached; more new works are available"

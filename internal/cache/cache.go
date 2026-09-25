@@ -29,6 +29,11 @@ func New(dir string, ttl time.Duration) *Store {
 	return &Store{Dir: dir, TTL: ttl}
 }
 
+// expiredCleanupProbe is a test seam invoked after Get observes an expired
+// entry and before it re-checks the file prior to removal. Tests use it to
+// publish a fresh value inside the Stat/Remove window deterministically.
+var expiredCleanupProbe func(path string)
+
 // Get retrieves a cached value. Returns nil if not found or expired.
 func (s *Store) Get(key string) (json.RawMessage, bool) {
 	path := s.path(key)
@@ -37,6 +42,25 @@ func (s *Store) Get(key string) (json.RawMessage, bool) {
 		return nil, false
 	}
 	if time.Since(info.ModTime()) > s.TTL {
+		if expiredCleanupProbe != nil {
+			expiredCleanupProbe(path)
+		}
+		// Set replaces the file with an atomic rename, so a fresh value
+		// published between the Stat above and the Remove below has a
+		// different identity. Re-check before removing: never delete a file
+		// that is no longer the expired one observed above.
+		if fresh, err := os.Stat(path); err == nil {
+			if time.Since(fresh.ModTime()) <= s.TTL {
+				data, err := os.ReadFile(path)
+				if err != nil {
+					return nil, false
+				}
+				return json.RawMessage(data), true
+			}
+			if !fresh.ModTime().Equal(info.ModTime()) || fresh.Size() != info.Size() {
+				return nil, false
+			}
+		}
 		_ = os.Remove(path)
 		return nil, false
 	}

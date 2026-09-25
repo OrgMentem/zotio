@@ -583,6 +583,39 @@ func TestAttachmentsAddConflictOnDifferentContentSameFilename(t *testing.T) {
 	}
 }
 
+// A same-filename sibling with different content must not block reuse when a
+// later sibling holds identical content: the MD5 match wins over the conflict
+// regardless of row order, so an idempotent retry no-ops instead of forcing a
+// manual cleanup.
+func TestAttachmentsAddStoredReuseWinsOverEarlierConflict(t *testing.T) {
+	pdf := []byte(uploadFixturePDF)
+	digest := md5.Sum(pdf) //nolint:gosec // Zotero identifies stored files by MD5.
+	md5hex := hex.EncodeToString(digest[:])
+	f := newFakeZoteroUpload(t, "PARENT1")
+	f.children = []fakeUploadChild{
+		{Key: "USER1", Filename: "paper.pdf", MD5: "feedfacefeedfacefeedfacefeedface"},
+		{Key: "ATT1", Filename: "paper.pdf", MD5: md5hex},
+	}
+	setUploadTestEnv(t, f)
+	path := writeUploadFixture(t, "paper.pdf", pdf)
+
+	env, stderr, err := runAttachmentsAdd(t, applyFlags(), []string{"add", "PARENT1", path})
+	if err != nil {
+		t.Fatalf("reuse despite earlier conflict: %v; stderr=%s", err, stderr)
+	}
+	if env.Result == nil || len(env.Result.Items) != 1 || env.Result.Items[0].Status != "no_op" {
+		t.Fatalf("result = %+v, want one no_op reuse", env.Result)
+	}
+	reason, _ := env.Result.Items[0].Reason.(map[string]any)
+	if reason["item_key"] != "ATT1" {
+		t.Fatalf("reason = %+v, want reuse of ATT1, not the USER1 conflict", reason)
+	}
+	creates, uploads, registers := f.snapshot()
+	if creates+uploads+registers != 0 {
+		t.Fatalf("reuse still wrote: creates=%d uploads=%d registers=%d", creates, uploads, registers)
+	}
+}
+
 func TestAttachmentsAddQuotaFailureIsActionable(t *testing.T) {
 	f := newFakeZoteroUpload(t, "PARENT1")
 	f.quotaOnAuth = true

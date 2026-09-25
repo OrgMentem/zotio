@@ -311,11 +311,7 @@ func runConnectorReparent(ctx context.Context, cmd *cobra.Command, flags *rootFl
 		// result, so the item may exist with nothing naming it. Look for the
 		// nonce before giving up, or the operator is told a create failed while
 		// a temporary parent sits in their library.
-		if key, _, findErr := findTemporaryParentByMarker(ctx, flags, nonce, req.ParentKey); findErr == nil && key != "" {
-			out.TempParentKey = key
-		} else if res.WebKey != "" {
-			out.TempParentKey = res.WebKey
-		}
+		out.TempParentKey = tempParentKeyAfterCreateError(ctx, flags, res, nonce, req.ParentKey)
 		if out.TempParentKey != "" || res.Session != "" {
 			return out, fmt.Errorf("temporary parent %q was created but the route could not continue: %w",
 				sanitizeForTerminal(out.TempTitle), createErr)
@@ -593,6 +589,26 @@ func attachmentIsLiveWithHash(c *client.Client, key, wantParent, md5hex string) 
 		return false, nil
 	}
 	return true, nil
+}
+
+// tempParentKeyAfterCreateError recovers the temporary parent's key after the
+// create route reports failure. Only a nonce-verified key may populate the
+// result: the create route's own recovery is title-based, and the temporary
+// parent borrows the target's title, so res.WebKey can name the operator's
+// real destination item. Reporting that as the temporary parent would aim
+// recovery guidance — and deletion — at the target paper instead of a
+// throwaway. When nothing verifies, the key stays empty and recovery points
+// at the marker search string the caller already reports.
+func tempParentKeyAfterCreateError(ctx context.Context, flags *rootFlags, res itemCreateResult, nonce, targetKey string) string {
+	if key, _, findErr := findTemporaryParentByMarker(ctx, flags, nonce, targetKey); findErr == nil && key != "" {
+		return key
+	}
+	if res.WebKey != "" && res.WebKey != targetKey {
+		if ok, err := itemCarriesNonce(ctx, flags, res.WebKey, targetKey, nonce); err == nil && ok {
+			return res.WebKey
+		}
+	}
+	return ""
 }
 
 // resolveTemporaryParent settles which key is this run's temporary parent.

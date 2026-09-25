@@ -13,6 +13,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/spf13/cobra"
+
 	"zotio/internal/mutation"
 	"zotio/internal/store"
 )
@@ -32,9 +34,10 @@ func runDeleteCmd(t *testing.T, cmd interface {
 	return cmd.Execute()
 }
 
-func deleteVersionServer(t *testing.T, version string) (*httptest.Server, *string) {
+func deleteVersionServer(t *testing.T, version string) (*httptest.Server, *string, *string) {
 	t.Helper()
 	sent := new(string)
+	method := new(string)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.Method {
 		case http.MethodGet:
@@ -42,12 +45,13 @@ func deleteVersionServer(t *testing.T, version string) (*httptest.Server, *strin
 			_, _ = w.Write([]byte(`{"key":"K","version":` + version + `,"data":{}}`))
 		case http.MethodDelete, http.MethodPatch:
 			*sent = r.Header.Get("If-Unmodified-Since-Version")
+			*method = r.Method
 			w.WriteHeader(http.StatusNoContent)
 		default:
 			http.Error(w, "unexpected", http.StatusMethodNotAllowed)
 		}
 	}))
-	return srv, sent
+	return srv, sent, method
 }
 
 // `items delete` documents a trash operation and `items restore` reverses one, so
@@ -109,7 +113,7 @@ func TestItemsDeletePermanentRequiresDestructiveGate(t *testing.T) {
 
 // With the gate, --permanent still does the hard delete and sends the precondition.
 func TestItemsDeletePermanentSendsVersionHeader(t *testing.T) {
-	srv, sent := deleteVersionServer(t, "42")
+	srv, sent, method := deleteVersionServer(t, "42")
 	defer srv.Close()
 	cmd := newItemsDeleteCmd(&rootFlags{asJSON: true, yes: true, allowDestructive: true, maxChanges: -1})
 	cmd.SilenceErrors, cmd.SilenceUsage = true, true
@@ -119,10 +123,13 @@ func TestItemsDeletePermanentSendsVersionHeader(t *testing.T) {
 	if *sent != "42" {
 		t.Errorf("If-Unmodified-Since-Version = %q, want 42", *sent)
 	}
+	if *method != http.MethodDelete {
+		t.Errorf("request method = %q, want DELETE: --permanent must destroy, not trash via PATCH", *method)
+	}
 }
 
 func TestCollectionsDeleteSendsVersionHeader(t *testing.T) {
-	srv, sent := deleteVersionServer(t, "7")
+	srv, sent, method := deleteVersionServer(t, "7")
 	defer srv.Close()
 	// collections delete is now a destructive gated mutation: applying it needs
 	// --allow-destructive as well as --yes, and an unset max-changes cap.
@@ -133,6 +140,57 @@ func TestCollectionsDeleteSendsVersionHeader(t *testing.T) {
 	}
 	if *sent != "7" {
 		t.Errorf("If-Unmodified-Since-Version = %q, want 7", *sent)
+	}
+	if *method != http.MethodDelete {
+		t.Errorf("request method = %q, want DELETE: collections delete is destructive, not a PATCH", *method)
+	}
+}
+
+// 7f6875: items delete and items restore returned before renderMutation on a
+// failed write, so --agent/--json callers received no envelope on errors
+// (412/428 conflicts, write rejections) while update and move rendered first.
+// Both must emit the failed envelope AND propagate the error/exit code.
+func TestItemMutationsRenderEnvelopeOnFailedWrite(t *testing.T) {
+	for _, tt := range []struct {
+		name string
+		new  func(*rootFlags) *cobra.Command
+		args []string
+	}{
+		{name: "delete", new: newItemsDeleteCmd, args: []string{"K"}},
+		{name: "restore", new: newItemsRestoreCmd, args: []string{"K"}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				switch r.Method {
+				case http.MethodGet:
+					w.Header().Set("Last-Modified-Version", "42")
+					_, _ = w.Write([]byte(`{"key":"K","version":42,"data":{"key":"K","version":42}}`))
+				case http.MethodPatch, http.MethodDelete:
+					http.Error(w, "stale version", http.StatusPreconditionFailed)
+				default:
+					http.Error(w, "unexpected", http.StatusMethodNotAllowed)
+				}
+			}))
+			defer srv.Close()
+
+			cmd := tt.new(&rootFlags{asJSON: true, agent: true, yes: true, maxChanges: -1})
+			cmd.SilenceErrors, cmd.SilenceUsage = true, true
+			// Fails the test when stdout is not the mutation envelope, which
+			// is exactly what the early return produced before the fix.
+			env, err := deletesTestRunJSON(t, cmd, srv.URL, tt.args...)
+			if err == nil {
+				t.Fatalf("%s with 412 = nil error, want failure", tt.name)
+			}
+			if ExitCode(err) != 5 {
+				t.Fatalf("ExitCode(%s error) = %d, want 5; err = %v", tt.name, ExitCode(err), err)
+			}
+			if env.Result == nil || len(env.Result.Items) != 1 {
+				t.Fatalf("result = %+v, want one item", env.Result)
+			}
+			if got := env.Result.Items[0].Status; got != "conflict" {
+				t.Fatalf("result status = %q, want %q (412 must map to conflict, not generic failed)", got, "conflict")
+			}
+		})
 	}
 }
 
@@ -398,6 +456,29 @@ func TestItemsDeletePermanentStillDestroysAnAlreadyTrashedItem(t *testing.T) {
 	}
 }
 
+// versionGet404Handler answers the write-plane version GET for key with a
+// 404 while rejecting anything else. The old fixtures 404'd every non-DELETE
+// request, so a wrong version-GET path or key still reached the same
+// classifier and the marker checks passed anyway. The /users/0 prefix comes
+// from the test harness base URL (srv.URL + "/users/0"), so it is pinned too.
+func versionGet404Handler(t *testing.T, key string, deleteIssued *bool) http.HandlerFunc {
+	t.Helper()
+	wantPath := "/users/0/items/" + key
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodDelete {
+			*deleteIssued = true
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		if r.Method != http.MethodGet || r.URL.Path != wantPath {
+			t.Errorf("version read = %s %s, want GET %s", r.Method, r.URL.Path, wantPath)
+			http.Error(w, "unexpected request", http.StatusBadRequest)
+			return
+		}
+		http.Error(w, "Item does not exist", http.StatusNotFound)
+	}
+}
+
 // ADR-0007: a deletion marker proves this installation already applied the
 // permanent delete. A write-plane 404 must therefore be an idempotent no-op,
 // not the same failure used for an unknown key.
@@ -430,14 +511,7 @@ func TestItemsDeletePermanent404UsesRealStoreDeletionMarker(t *testing.T) {
 	t.Cleanup(func() { mirrorWriteThrough = previousMirror })
 
 	deleteIssued := false
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method == http.MethodDelete {
-			deleteIssued = true
-			w.WriteHeader(http.StatusNoContent)
-			return
-		}
-		http.Error(w, "Item does not exist", http.StatusNotFound)
-	}))
+	srv := httptest.NewServer(versionGet404Handler(t, "PURGED404", &deleteIssued))
 	defer srv.Close()
 
 	cmd := newItemsDeleteCmd(&rootFlags{asJSON: true, yes: true, allowDestructive: true, maxChanges: -1})
@@ -495,14 +569,7 @@ func TestItemsDeletePermanent404ReportsRealStoreMirroredOnlyLag(t *testing.T) {
 	t.Cleanup(func() { mirrorWriteThrough = previousMirror })
 
 	deleteIssued := false
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method == http.MethodDelete {
-			deleteIssued = true
-			w.WriteHeader(http.StatusNoContent)
-			return
-		}
-		http.Error(w, "Item does not exist", http.StatusNotFound)
-	}))
+	srv := httptest.NewServer(versionGet404Handler(t, "MIRROR404", &deleteIssued))
 	defer srv.Close()
 
 	cmd := newItemsDeleteCmd(&rootFlags{asJSON: true, yes: true, allowDestructive: true, maxChanges: -1})

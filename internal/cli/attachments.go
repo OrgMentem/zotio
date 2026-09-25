@@ -446,16 +446,13 @@ func uploadStoredAttachment(ctx context.Context, c *client.Client, req storedUpl
 	if err != nil {
 		return storedUploadOutcome{}, err
 	}
+	if sibling.ExistingKey != "" {
+		return storedUploadOutcome{Key: sibling.ExistingKey, Status: storedUploadReused}, nil
+	}
 	if sibling.ConflictKey != "" {
 		return storedUploadOutcome{}, &storedConflictError{fmt.Sprintf(
 			"item %s already has stored attachment %q (key %s) with different content (md5 %s, ours %s); refusing to duplicate or overwrite — review manually",
 			req.ParentKey, req.Filename, sibling.ConflictKey, sibling.ConflictMD5, req.MD5)}
-	}
-	// This is a server-side MD5 match, so no local bytes are sent or
-	// registered on this idempotent path. A later local edit cannot alter the
-	// already-associated server content.
-	if sibling.ExistingKey != "" {
-		return storedUploadOutcome{Key: sibling.ExistingKey, Status: storedUploadReused}, nil
 	}
 
 	key := sibling.PendingKey
@@ -497,7 +494,11 @@ func findStoredSibling(c *client.Client, parentKey, filename, md5hex string) (st
 		}
 		switch row.Data.MD5 {
 		case md5hex:
+			// An identical-content match wins over any same-filename conflict
+			// seen earlier in the page: the caller reuses it, so stale
+			// conflict state must not survive it.
 			sibling.ExistingKey = row.Key
+			sibling.ConflictKey, sibling.ConflictMD5 = "", ""
 			return sibling, nil
 		case "":
 			if sibling.PendingKey == "" {
