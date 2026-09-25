@@ -240,6 +240,15 @@ so local uncommitted changes never enter a release.
   non-JSON and cosign dies with `invalid character 'u'`. Check status first.
 - **WinGet needs non-prerelease semver.** A `-rc`/`-beta` tag skips the WinGet
   publisher (GoReleaser `prerelease: auto`). Scoop/Homebrew still run.
+- **`publish_registry` sees "no assets to download" right after a release.**
+  GitHub's release-by-tag views (`gh release view/download`,
+  `/releases/tags/<tag>`) can lag the asset uploads while the release-ID assets
+  endpoint already lists them. On v0.27.0 the views flip-flopped between zero
+  and all 26 assets for ~41 minutes with no incident declared. The job now polls
+  for up to 60 minutes and requires all six `.mcpb` files; if it still fails,
+  confirm the assets exist with `gh api repos/OrgMentem/zotio/releases/<id>/assets`
+  and follow the recovery entry below. If the release-target count changes,
+  update `expected_mcpb` in `release.yml` in the same review.
 - **Recovery after GitHub succeeds but registry publication fails.** Do not
   recreate the tag, delete/recreate the GitHub release, or re-run GoReleaser.
   First use the commands in validation step 8 through the `sha256sum -c` line:

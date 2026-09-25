@@ -95,10 +95,36 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p dist/mcpb
-          gh release download "$RELEASE_TAG" \
-            --repo "$GITHUB_REPOSITORY" \
-            --pattern '*.mcpb' \
-            --dir dist/mcpb
+          # GitHub's release-by-tag view can lag asset uploads: on v0.27.0 the
+          # assets endpoint listed all files at once while `gh release download`
+          # flip-flopped between none and all for ~41 minutes, with no incident
+          # declared. Poll for up to 60 minutes instead of failing the first
+          # attempt, and accept only the full set: one .mcpb per release target
+          # (six), so a partial view cannot produce a partial server.json.
+          # --clobber lets a retry overwrite files a failed attempt left behind.
+          expected_mcpb=6
+          attempt=1
+          max_attempts=120
+          while :; do
+            if gh release download "$RELEASE_TAG" \
+              --repo "$GITHUB_REPOSITORY" \
+              --pattern '*.mcpb' \
+              --dir dist/mcpb \
+              --clobber; then
+              found=$(find dist/mcpb -maxdepth 1 -name '*.mcpb' | wc -l)
+              if [ "$found" -eq "$expected_mcpb" ]; then
+                break
+              fi
+              echo "found $found of $expected_mcpb MCPB assets for $RELEASE_TAG" >&2
+            fi
+            if [ "$attempt" -ge "$max_attempts" ]; then
+              echo "error: the $expected_mcpb MCPB assets for $RELEASE_TAG were still not downloadable after $max_attempts attempts (30s apart); check https://github.com/$GITHUB_REPOSITORY/releases/tag/$RELEASE_TAG, then use 'Re-run failed jobs' (dev/releasing.md, Footguns)" >&2
+              exit 1
+            fi
+            echo "MCPB assets for $RELEASE_TAG not yet visible (attempt $attempt/$max_attempts); waiting 30s..." >&2
+            attempt=$((attempt + 1))
+            sleep 30
+          done
       # Auth is OIDC (no stored token): this workflow's identity proves control
       # of OrgMentem/zotio and therefore the io.github.OrgMentem/* namespace.
       - name: Publish to MCP Registry
