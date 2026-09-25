@@ -372,43 +372,32 @@ func TestAdaptiveLimiter_WaitEnforcesPacing(t *testing.T) {
 	}
 }
 
-// The three cases below pin a fixed reference time via the retryAfterNow seam
+// The table below pins a fixed reference time via the retryAfterNow seam
 // so HTTP-date and epoch parsing is asserted exactly instead of with a loose
 // 5-8s tolerance range (which traded precision for wall-clock robustness).
-// Every clock-independent case lives in the table test below.
-func TestRetryAfterOrFallback_HTTPDate(t *testing.T) {
+// Every clock-independent case lives in the table test further below.
+func TestRetryAfterOrFallback_ParsesKnownFormats(t *testing.T) {
 	base := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
 	retryAfterNow = func() time.Time { return base }
 	defer func() { retryAfterNow = time.Now }()
-	resp := &http.Response{Header: http.Header{}}
-	resp.Header.Set("Retry-After", base.Add(7*time.Second).UTC().Format(http.TimeFormat))
-	wait, fallback := RetryAfterOrFallback(resp)
-	if wait != 7*time.Second || fallback {
-		t.Errorf("RetryAfterOrFallback(http-date 7s ahead) = %v, %v; want 7s, false", wait, fallback)
+	ahead := base.Add(7 * time.Second)
+	tests := []struct {
+		name   string
+		header string
+	}{
+		{"http_date", ahead.UTC().Format(http.TimeFormat)},
+		{"epoch_seconds", fmt.Sprint(ahead.Unix())},
+		{"epoch_milliseconds", fmt.Sprint(ahead.UnixMilli())},
 	}
-}
-
-func TestRetryAfterOrFallback_EpochSeconds(t *testing.T) {
-	base := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
-	retryAfterNow = func() time.Time { return base }
-	defer func() { retryAfterNow = time.Now }()
-	resp := &http.Response{Header: http.Header{}}
-	resp.Header.Set("Retry-After", fmt.Sprint(base.Add(7*time.Second).Unix()))
-	wait, fallback := RetryAfterOrFallback(resp)
-	if wait != 7*time.Second || fallback {
-		t.Errorf("RetryAfterOrFallback(epoch seconds 7s ahead) = %v, %v; want 7s, false", wait, fallback)
-	}
-}
-
-func TestRetryAfterOrFallback_EpochMilliseconds(t *testing.T) {
-	base := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
-	retryAfterNow = func() time.Time { return base }
-	defer func() { retryAfterNow = time.Now }()
-	resp := &http.Response{Header: http.Header{}}
-	resp.Header.Set("Retry-After", fmt.Sprint(base.Add(7*time.Second).UnixMilli()))
-	wait, fallback := RetryAfterOrFallback(resp)
-	if wait != 7*time.Second || fallback {
-		t.Errorf("RetryAfterOrFallback(epoch milliseconds 7s ahead) = %v, %v; want 7s, false", wait, fallback)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			resp := &http.Response{Header: http.Header{}}
+			resp.Header.Set("Retry-After", tt.header)
+			wait, fallback := RetryAfterOrFallback(resp)
+			if wait != 7*time.Second || fallback {
+				t.Errorf("RetryAfterOrFallback(%s %q) = %v, %v; want 7s, false", tt.name, tt.header, wait, fallback)
+			}
+		})
 	}
 }
 

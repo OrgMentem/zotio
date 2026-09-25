@@ -13,6 +13,8 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+
+	"zotio/internal/mutation"
 )
 
 func TestSearchesMaterializeRefresh(t *testing.T) {
@@ -201,6 +203,7 @@ func TestSearchesMaterializeSkipsChildrenAndUnfiledCollectionRows(t *testing.T) 
 }
 
 func TestSearchesMaterializeRefusesUnsafePruneAndUnreadableCollection(t *testing.T) {
+	fastRetryBackoff(t)
 	for _, tc := range []struct {
 		name, collection string
 		search           []string
@@ -284,7 +287,13 @@ func TestSearchesMaterializeCollectionPaginationAndChangeCap(t *testing.T) {
 		collection[i] = fmt.Sprintf("C%03d", i)
 	}
 	var starts []int
+	var patches int
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPatch {
+			patches++
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
 		switch r.URL.Path {
 		case "/users/0/searches/SK/items":
 			_, _ = fmt.Fprint(w, `[{"key":"A"}]`)
@@ -327,6 +336,19 @@ func TestSearchesMaterializeCollectionPaginationAndChangeCap(t *testing.T) {
 	cmd.SetArgs([]string{"SK", "--to", "TARGET", "--prune"})
 	if err := cmd.Execute(); err == nil || !strings.Contains(err.Error(), "max_changes_exceeded") {
 		t.Fatalf("expected combined change cap refusal, err=%v output=%q", err, out.String())
+	}
+	var refused mutation.Envelope
+	if err := json.Unmarshal(out.Bytes(), &refused); err != nil {
+		t.Fatalf("decode refused envelope %q: %v", out.String(), err)
+	}
+	if refused.OK || refused.Error == nil || refused.Error.Code != "max_changes_exceeded" {
+		t.Fatalf("refused envelope = %+v, want max_changes_exceeded", refused)
+	}
+	if refused.Plan.Summary.Planned != zoteroPageMax+2 || len(refused.Plan.Operations) != zoteroPageMax+2 {
+		t.Fatalf("refused plan = summary %+v len %d, want %d planned item writes", refused.Plan.Summary, len(refused.Plan.Operations), zoteroPageMax+2)
+	}
+	if patches != 0 {
+		t.Fatalf("refused apply made %d PATCH request(s), want 0", patches)
 	}
 }
 

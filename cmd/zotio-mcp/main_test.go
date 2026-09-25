@@ -44,41 +44,36 @@ func TestIsLoopbackHTTPAddr(t *testing.T) {
 	}
 }
 
-func TestValidateMCPHTTPRequestAllowsSameLoopbackOrigin(t *testing.T) {
-	req, err := http.NewRequest(http.MethodPost, "http://127.0.0.1:7777/mcp", strings.NewReader("{}"))
-	if err != nil {
-		t.Fatal(err)
+func TestValidateMCPHTTPRequestOriginCases(t *testing.T) {
+	tests := []struct {
+		name             string
+		host             string
+		origin           string
+		wantErrSubstring string
+	}{
+		{name: "same loopback origin", host: "localhost:7777", origin: "http://localhost:7777", wantErrSubstring: ""},
+		{name: "origin without matching explicit port", host: "127.0.0.1:7777", origin: "http://127.0.0.1", wantErrSubstring: "Origin"},
+		{name: "foreign origin", host: "127.0.0.1:7777", origin: "https://attacker.example", wantErrSubstring: "Origin"},
 	}
-	req.Host = "localhost:7777"
-	req.Header.Set("Origin", "http://localhost:7777")
-
-	if err := validateMCPHTTPRequest("127.0.0.1:7777", req); err != nil {
-		t.Fatalf("validateMCPHTTPRequest rejected same loopback host/origin: %v", err)
-	}
-}
-
-func TestValidateMCPHTTPRequestRejectsOriginWithoutMatchingExplicitPort(t *testing.T) {
-	req, err := http.NewRequest(http.MethodPost, "http://127.0.0.1:7777/mcp", strings.NewReader("{}"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	req.Host = "127.0.0.1:7777"
-	req.Header.Set("Origin", "http://127.0.0.1")
-
-	if err := validateMCPHTTPRequest("127.0.0.1:7777", req); err == nil || !strings.Contains(err.Error(), "Origin") {
-		t.Fatalf("origin without explicit matching port error = %v, want forbidden Origin", err)
-	}
-}
-
-func TestValidateMCPHTTPRequestRejectsForeignOrigin(t *testing.T) {
-	originReq, err := http.NewRequest(http.MethodPost, "http://127.0.0.1:7777/mcp", strings.NewReader("{}"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	originReq.Host = "127.0.0.1:7777"
-	originReq.Header.Set("Origin", "https://attacker.example")
-	if err := validateMCPHTTPRequest("127.0.0.1:7777", originReq); err == nil || !strings.Contains(err.Error(), "Origin") {
-		t.Fatalf("foreign Origin error = %v, want forbidden Origin", err)
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			req, err := http.NewRequest(http.MethodPost, "http://127.0.0.1:7777/mcp", strings.NewReader("{}"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			req.Host = tt.host
+			req.Header.Set("Origin", tt.origin)
+			err = validateMCPHTTPRequest("127.0.0.1:7777", req)
+			if tt.wantErrSubstring == "" {
+				if err != nil {
+					t.Fatalf("validateMCPHTTPRequest rejected same loopback host/origin: %v", err)
+				}
+			} else if err == nil || !strings.Contains(err.Error(), tt.wantErrSubstring) {
+				t.Fatalf("origin error = %v, want substring %q", err, tt.wantErrSubstring)
+			}
+		})
 	}
 }
 
@@ -326,7 +321,7 @@ func TestMCPHTTPServerKeepsStreamingPastItsReadAndIdleDeadlines(t *testing.T) {
 	t.Parallel()
 
 	const (
-		deadline = 200 * time.Millisecond
+		deadline = 25 * time.Millisecond
 		frames   = 6
 	)
 	listener, err := net.Listen("tcp", "127.0.0.1:0")

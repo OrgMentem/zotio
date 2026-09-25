@@ -1112,3 +1112,156 @@ func runImportApplyTestCmdWithFlags(t *testing.T, flags *rootFlags, args []strin
 	}
 	return env, errOut.String(), err
 }
+
+func stubConfirmStoredKeysServer(t *testing.T, top []any, children map[string][]any) *httptest.Server {
+	t.Helper()
+	mux := http.NewServeMux()
+	mux.HandleFunc("/users/0/items/top", func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode(top)
+	})
+	mux.HandleFunc("/users/0/items/", func(w http.ResponseWriter, r *http.Request) {
+		key := strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/users/0/items/"), "/children")
+		rows := children[key]
+		if rows == nil {
+			rows = []any{}
+		}
+		_ = json.NewEncoder(w).Encode(rows)
+	})
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+func confirmStoredKeysTestFlags(t *testing.T, srv *httptest.Server) *rootFlags {
+	t.Helper()
+	return &rootFlags{
+		asJSON:     true,
+		timeout:    5 * time.Second,
+		configPath: testConfigFile(t, srv.URL+"/users/0"),
+	}
+}
+
+// TestConfirmStoredConnectorKeysBindsMD5AndMarker pins the success arm's
+// predicate precision: only a child matching BOTH the file MD5 and this
+// write's URL marker binds the committed write to its keys. A same-filename
+// sibling with different content, and a marked URL on the wrong bytes, must
+// not count — Zotero renames stored files after the parent title, so neither
+// filename nor title can identify this write.
+func TestConfirmStoredConnectorKeysBindsMD5AndMarker(t *testing.T) {
+	const wantMD5 = "d41d8cd98f00b204e9800998ecf8427e"
+	const marker = "zotio-write-conn123"
+	added := time.Now().UTC().Format(time.RFC3339)
+	srv := stubConfirmStoredKeysServer(t,
+		[]any{
+			map[string]any{"key": "PARENT01", "title": "Marked Paper", "itemType": "journalArticle", "dateAdded": added},
+			map[string]any{"key": "STALE001", "title": "Marked Paper", "itemType": "journalArticle", "dateAdded": "2020-01-01T00:00:00Z"},
+		},
+		map[string][]any{
+			"PARENT01": {
+				map[string]any{"key": "DECOY001", "data": map[string]any{
+					"itemType": "attachment", "filename": "paper.pdf",
+					"md5": "feedfacefeedfacefeedfacefeedface",
+					"url": "https://example.org/other.pdf",
+				}},
+				map[string]any{"key": "DECOY002", "data": map[string]any{
+					"itemType": "attachment", "filename": "paper.pdf",
+					"md5": "feedfacefeedfacefeedfacefeedface",
+					"url": "https://example.org/paper.pdf#" + marker,
+				}},
+				map[string]any{"key": "ATTACH01", "data": map[string]any{
+					"itemType": "attachment", "filename": "paper.pdf",
+					"md5": strings.ToUpper(wantMD5),
+					"url": "https://example.org/paper.pdf#" + marker,
+				}},
+			},
+		},
+	)
+	flags := confirmStoredKeysTestFlags(t, srv)
+	item := map[string]any{"title": "Marked Paper", "itemType": "journalArticle"}
+
+	parentKey, attachmentKey, parentMatches, fileMatches, err := confirmStoredConnectorKeys(
+		context.Background(), flags, item, time.Now().Add(-time.Minute), marker, wantMD5)
+	if err != nil {
+		t.Fatalf("confirmStoredConnectorKeys: %v", err)
+	}
+	if parentKey != "PARENT01" || attachmentKey != "ATTACH01" {
+		t.Fatalf("keys = %q/%q, want PARENT01/ATTACH01", parentKey, attachmentKey)
+	}
+	if parentMatches != 1 || fileMatches != 1 {
+		t.Fatalf("matches = %d/%d, want 1/1: the stale title match and both decoys must not count", parentMatches, fileMatches)
+	}
+}
+
+// TestConfirmStoredConnectorKeysRefusesAmbiguousMatch pins the ambiguity arm
+// with counts: two parents holding the marked bytes is a committed conflict,
+// never a guess.
+func TestConfirmStoredConnectorKeysRefusesAmbiguousMatch(t *testing.T) {
+	const wantMD5 = "d41d8cd98f00b204e9800998ecf8427e"
+	const marker = "zotio-write-conn123"
+	added := time.Now().UTC().Format(time.RFC3339)
+	child := func(key string) any {
+		return map[string]any{"key": key, "data": map[string]any{
+			"itemType": "attachment", "md5": wantMD5,
+			"url": "https://example.org/paper.pdf#" + marker,
+		}}
+	}
+	srv := stubConfirmStoredKeysServer(t,
+		[]any{
+			map[string]any{"key": "PARENT01", "title": "Marked Paper", "itemType": "journalArticle", "dateAdded": added},
+			map[string]any{"key": "PARENT02", "title": "Marked Paper", "itemType": "journalArticle", "dateAdded": added},
+		},
+		map[string][]any{"PARENT01": {child("ATTACH01")}, "PARENT02": {child("ATTACH02")}},
+	)
+	flags := confirmStoredKeysTestFlags(t, srv)
+	item := map[string]any{"title": "Marked Paper", "itemType": "journalArticle"}
+
+	_, _, parentMatches, fileMatches, err := confirmStoredConnectorKeys(
+		context.Background(), flags, item, time.Now().Add(-time.Minute), marker, wantMD5)
+	if err == nil || !strings.Contains(err.Error(), "refusing to guess") {
+		t.Fatalf("err = %v, want the refusing-to-guess conflict", err)
+	}
+	if parentMatches != 2 || fileMatches != 2 {
+		t.Fatalf("matches = %d/%d, want 2/2", parentMatches, fileMatches)
+	}
+}
+
+// TestConfirmStoredConnectorKeysTimesOut pins the timeout arm: a parent that
+// never gains the marked bytes reports counts and a deadline error, not a
+// key and not a hang.
+func TestConfirmStoredConnectorKeysTimesOut(t *testing.T) {
+	oldTimeout := storedConnectorRecoveryTimeout
+	oldInterval := connectorReparentPollInterval
+	storedConnectorRecoveryTimeout = 0
+	connectorReparentPollInterval = time.Millisecond
+	t.Cleanup(func() {
+		storedConnectorRecoveryTimeout = oldTimeout
+		connectorReparentPollInterval = oldInterval
+	})
+	const wantMD5 = "d41d8cd98f00b204e9800998ecf8427e"
+	const marker = "zotio-write-conn123"
+	added := time.Now().UTC().Format(time.RFC3339)
+	srv := stubConfirmStoredKeysServer(t,
+		[]any{
+			map[string]any{"key": "PARENT01", "title": "Marked Paper", "itemType": "journalArticle", "dateAdded": added},
+		},
+		map[string][]any{
+			"PARENT01": {
+				map[string]any{"key": "DECOY001", "data": map[string]any{
+					"itemType": "attachment", "md5": wantMD5,
+					"url": "https://example.org/unmarked.pdf",
+				}},
+			},
+		},
+	)
+	flags := confirmStoredKeysTestFlags(t, srv)
+	item := map[string]any{"title": "Marked Paper", "itemType": "journalArticle"}
+
+	_, _, parentMatches, fileMatches, err := confirmStoredConnectorKeys(
+		context.Background(), flags, item, time.Now().Add(-time.Minute), marker, wantMD5)
+	if err == nil || !strings.Contains(err.Error(), "did not appear") {
+		t.Fatalf("err = %v, want the marked-PDF timeout", err)
+	}
+	if parentMatches != 1 || fileMatches != 0 {
+		t.Fatalf("matches = %d/%d, want 1/0", parentMatches, fileMatches)
+	}
+}

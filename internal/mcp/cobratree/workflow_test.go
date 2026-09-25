@@ -215,77 +215,66 @@ func TestWorkflowSubmitRejectsSubstitutedFlag(t *testing.T) {
 	}
 }
 
-func TestWorkflowSubmitExecutesPreviewAndCleansTemporaryFiles(t *testing.T) {
-	before, err := workflowSubmitTempFiles()
-	if err != nil {
-		t.Fatalf("list workflow temp files before run: %v", err)
+func TestWorkflowSubmitPreviewAndApply(t *testing.T) {
+	cases := []struct {
+		name      string
+		argsMap   map[string]any
+		wantMode  string
+		wantRunID bool
+	}{
+		{
+			name: "preview cleans temporary files",
+			argsMap: map[string]any{
+				"steps": []any{map[string]any{"command": "inspect"}},
+			},
+			wantMode:  "preview",
+			wantRunID: false,
+		},
+		{
+			name: "apply reports run id",
+			argsMap: map[string]any{
+				"yes":   true,
+				"steps": []any{map[string]any{"command": "inspect"}},
+			},
+			wantMode:  "apply",
+			wantRunID: true,
+		},
 	}
-
-	h := workflowSubmitHandler(workflowSubmitTestRoot)
-	res, err := h(context.Background(), workflowSubmitRequest(map[string]any{
-		"steps": []any{map[string]any{"command": "inspect"}},
-	}))
-	if err != nil {
-		t.Fatalf("handler returned protocol error: %v", err)
-	}
-	if res.IsError {
-		t.Fatalf("unexpected error result: %q", workflowSubmitResText(res))
-	}
-	var report struct {
-		Mode string `json:"mode"`
-	}
-	if err := json.Unmarshal([]byte(workflowSubmitResText(res)), &report); err != nil {
-		t.Fatalf("workflow result is not a JSON report: %v; text=%q", err, workflowSubmitResText(res))
-	}
-	if report.Mode != "preview" {
-		t.Fatalf("report mode = %q, want preview", report.Mode)
-	}
-
-	after, err := workflowSubmitTempFiles()
-	if err != nil {
-		t.Fatalf("list workflow temp files after run: %v", err)
-	}
-	if !sameWorkflowSubmitTempFiles(before, after) {
-		t.Fatalf("workflow temp files after run = %v, want %v", after, before)
-	}
-}
-
-func TestWorkflowSubmitAppliesWithRunID(t *testing.T) {
-	before, err := workflowSubmitTempFiles()
-	if err != nil {
-		t.Fatalf("list workflow temp files before run: %v", err)
-	}
-
-	h := workflowSubmitHandler(workflowSubmitTestRoot)
-	res, err := h(context.Background(), workflowSubmitRequest(map[string]any{
-		"yes":   true,
-		"steps": []any{map[string]any{"command": "inspect"}},
-	}))
-	if err != nil {
-		t.Fatalf("handler returned protocol error: %v", err)
-	}
-	if res.IsError {
-		t.Fatalf("unexpected error result: %q", workflowSubmitResText(res))
-	}
-	var report struct {
-		Mode  string `json:"mode"`
-		RunID string `json:"run_id"`
-	}
-	if err := json.Unmarshal([]byte(workflowSubmitResText(res)), &report); err != nil {
-		t.Fatalf("workflow result is not a JSON report: %v; text=%q", err, workflowSubmitResText(res))
-	}
-	if report.Mode != "apply" {
-		t.Fatalf("report mode = %q, want apply", report.Mode)
-	}
-	if report.RunID == "" {
-		t.Fatal("apply report run_id is empty")
-	}
-	after, err := workflowSubmitTempFiles()
-	if err != nil {
-		t.Fatalf("list workflow temp files after run: %v", err)
-	}
-	if !sameWorkflowSubmitTempFiles(before, after) {
-		t.Fatalf("workflow temp files after run = %v, want %v", after, before)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			before, err := workflowSubmitTempFiles()
+			if err != nil {
+				t.Fatalf("list workflow temp files before run: %v", err)
+			}
+			h := workflowSubmitHandler(workflowSubmitTestRoot)
+			res, err := h(context.Background(), workflowSubmitRequest(tc.argsMap))
+			if err != nil {
+				t.Fatalf("handler returned protocol error: %v", err)
+			}
+			if res.IsError {
+				t.Fatalf("unexpected error result: %q", workflowSubmitResText(res))
+			}
+			var report struct {
+				Mode  string `json:"mode"`
+				RunID string `json:"run_id"`
+			}
+			if err := json.Unmarshal([]byte(workflowSubmitResText(res)), &report); err != nil {
+				t.Fatalf("workflow result is not a JSON report: %v; text=%q", err, workflowSubmitResText(res))
+			}
+			if report.Mode != tc.wantMode {
+				t.Fatalf("report mode = %q, want %s", report.Mode, tc.wantMode)
+			}
+			if tc.wantRunID && report.RunID == "" {
+				t.Fatal("apply report run_id is empty")
+			}
+			after, err := workflowSubmitTempFiles()
+			if err != nil {
+				t.Fatalf("list workflow temp files after run: %v", err)
+			}
+			if !sameWorkflowSubmitTempFiles(before, after) {
+				t.Fatalf("workflow temp files after run = %v, want %v", after, before)
+			}
+		})
 	}
 }
 

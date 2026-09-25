@@ -215,31 +215,28 @@ func TestItemsTagsAddAutomaticTagType(t *testing.T) {
 	})
 }
 
-func TestItemsTagsAddAlreadyPresentIsNoOp(t *testing.T) {
-	srv := writePlaneTestNewItemServer(t, "tags", map[string]string{"K1": "42"}, map[string][]map[string]any{
-		"K1": {{"tag": "fresh", "type": float64(0)}},
-	})
+func TestItemsTagsNoOpWhenStateAlreadyHolds(t *testing.T) {
+	for _, tt := range []struct {
+		name     string
+		existing []map[string]any
+		args     []string
+	}{
+		{name: "add already present", existing: []map[string]any{{"tag": "fresh", "type": float64(0)}}, args: []string{"add", "--tag", "fresh", "K1"}},
+		{name: "remove absent", existing: []map[string]any{{"tag": "existing", "type": float64(0)}}, args: []string{"remove", "--tag", "missing", "K1"}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			srv := writePlaneTestNewItemServer(t, "tags", map[string]string{"K1": "42"}, map[string][]map[string]any{
+				"K1": tt.existing,
+			})
 
-	env, _ := runItemsTagsTestCmd(t, srv, &rootFlags{asJSON: true, yes: true, maxChanges: -1}, "add", "--tag", "fresh", "K1")
-	if !env.OK || env.Result == nil || env.Result.Summary.NoOp != 1 || env.Result.Items[0].Status != "no_op" {
-		t.Fatalf("env = %+v, want no_op", env)
-	}
-	if srv.patchCounts["K1"] != 0 {
-		t.Fatalf("PATCH count = %d, want 0", srv.patchCounts["K1"])
-	}
-}
-
-func TestItemsTagsRemoveAbsentIsNoOp(t *testing.T) {
-	srv := writePlaneTestNewItemServer(t, "tags", map[string]string{"K1": "42"}, map[string][]map[string]any{
-		"K1": {{"tag": "existing", "type": float64(0)}},
-	})
-
-	env, _ := runItemsTagsTestCmd(t, srv, &rootFlags{asJSON: true, yes: true, maxChanges: -1}, "remove", "--tag", "missing", "K1")
-	if !env.OK || env.Result == nil || env.Result.Summary.NoOp != 1 || env.Result.Items[0].Status != "no_op" {
-		t.Fatalf("env = %+v, want no_op", env)
-	}
-	if srv.patchCounts["K1"] != 0 {
-		t.Fatalf("PATCH count = %d, want 0", srv.patchCounts["K1"])
+			env, _ := runItemsTagsTestCmd(t, srv, &rootFlags{asJSON: true, yes: true, maxChanges: -1}, tt.args...)
+			if !env.OK || env.Result == nil || env.Result.Summary.NoOp != 1 || env.Result.Items[0].Status != "no_op" {
+				t.Fatalf("env = %+v, want no_op", env)
+			}
+			if srv.patchCounts["K1"] != 0 {
+				t.Fatalf("PATCH count = %d, want 0", srv.patchCounts["K1"])
+			}
+		})
 	}
 }
 

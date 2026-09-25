@@ -75,22 +75,9 @@ func newItemsPreprintCheckCmd(flags *rootFlags) *cobra.Command {
 				if i > 0 {
 					time.Sleep(200 * time.Millisecond)
 				}
-				arxivID := extractArxivID(item)
-				result := preprintCheckResult{
-					Key:     zoteroString(item, "key"),
-					Title:   zoteroString(item, "title"),
-					ArxivID: arxivID,
-					Status:  "preprint",
-				}
-				match, found, err := lookupCrossrefArxiv(cmd.Context(), httpClient, arxivID)
+				result, err := checkPreprintCandidate(cmd.Context(), item, httpClient)
 				if err != nil {
 					return err
-				}
-				if found {
-					result.Status = "published"
-					result.DOI = match.DOI
-					result.Venue = match.Venue
-					result.Year = match.Year
 				}
 				results = append(results, result)
 			}
@@ -102,6 +89,31 @@ func newItemsPreprintCheckCmd(flags *rootFlags) *cobra.Command {
 	cmd.AddCommand(newItemsPreprintCheckFixCmd(flags))
 
 	return cmd
+}
+
+// checkPreprintCandidate resolves one candidate through the arXiv/CrossRef
+// metadata providers. Extracted from the command loop so tests can drive the
+// published-to-Finding path with a stub transport; the inter-item sleep stays
+// in the command.
+func checkPreprintCandidate(ctx context.Context, item map[string]any, httpClient *http.Client) (preprintCheckResult, error) {
+	arxivID := extractArxivID(item)
+	result := preprintCheckResult{
+		Key:     zoteroString(item, "key"),
+		Title:   zoteroString(item, "title"),
+		ArxivID: arxivID,
+		Status:  "preprint",
+	}
+	match, found, err := lookupCrossrefArxiv(ctx, httpClient, arxivID)
+	if err != nil {
+		return preprintCheckResult{}, err
+	}
+	if found {
+		result.Status = "published"
+		result.DOI = match.DOI
+		result.Venue = match.Venue
+		result.Year = match.Year
+	}
+	return result, nil
 }
 
 func preprintCheckFindings(results []preprintCheckResult) []Finding {

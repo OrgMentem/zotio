@@ -8,7 +8,10 @@ import (
 	"encoding/json"
 	"errors"
 	"sort"
+	"strings"
 	"testing"
+	"time"
+	"zotio/internal/client"
 
 	"github.com/spf13/cobra"
 )
@@ -184,56 +187,58 @@ func TestCapabilityPreflightSyncedStoreCommandRunsWithHealthyFixture(t *testing.
 	}
 }
 
-func TestCapabilityPreflightBetterBibTeXPassesWithCitationKeyFieldOnlyItems(t *testing.T) {
-	root, _, _, _ := newPreflightTestRoot(t)
-	seedSyncedBibcheckItems(t, []json.RawMessage{
-		json.RawMessage(`{"key":"FIELD1","version":1,"data":{"key":"FIELD1","itemType":"journalArticle","title":"Field Key Only","citationKey":"fieldonly"}}`),
-	})
-
-	citekeys := mustFindPreflightCommand(t, root, "items", "citekey-conflicts")
-	runExecuted := false
-	citekeys.RunE = func(cmd *cobra.Command, args []string) error {
-		runExecuted = true
-		return nil
+func TestCapabilityPreflightBetterBibTeXPassesWithKeyedItems(t *testing.T) {
+	tests := []struct {
+		name           string
+		seededItemJSON string
+		executeErr     string
+		blockedErr     string
+	}{
+		{
+			name:           "citationKey field",
+			seededItemJSON: `{"key":"FIELD1","version":1,"data":{"key":"FIELD1","itemType":"journalArticle","title":"Field Key Only","citationKey":"fieldonly"}}`,
+			executeErr:     "Better BibTeX preflight rejected citationKey-field-only item: %v",
+			blockedErr:     "items citekey-conflicts RunE did not execute after citationKey-field-only preflight",
+		},
+		// A library whose keys Zotero pinned holds them colon-tight
+		// ("Citation Key:tight2023") and exposes no citationKey field at all.
+		// That is a fully keyed Better BibTeX library, so the gate must let it
+		// through: refusing it made `items bibcheck` and
+		// `items citekey-conflicts` unreachable for exactly the libraries whose
+		// keys the shared parser understands.
+		//
+		// The refusal itself is still load-bearing and is pinned by
+		// TestCapabilityPreflightBetterBibTeXFailsEnvelopeWhenNoCitationKeySourceExists,
+		// which seeds Extra text carrying no key at all.
+		{
+			name:           "colon-tight extra keys",
+			seededItemJSON: `{"key":"TIGHT1","version":1,"data":{"key":"TIGHT1","itemType":"journalArticle","title":"Tight Pinned Key","extra":"Citation Key:tight2023"}}`,
+			executeErr:     "Better BibTeX preflight rejected a library whose keys are all colon-tight: %v",
+			blockedErr:     "items citekey-conflicts RunE did not execute for a colon-tight-keyed library",
+		},
 	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			root, _, _, _ := newPreflightTestRoot(t)
+			seedSyncedBibcheckItems(t, []json.RawMessage{
+				json.RawMessage(tc.seededItemJSON),
+			})
 
-	root.SetArgs([]string{"--json", "items", "citekey-conflicts"})
-	if err := root.Execute(); err != nil {
-		t.Fatalf("Better BibTeX preflight rejected citationKey-field-only item: %v", err)
-	}
-	if !runExecuted {
-		t.Fatal("items citekey-conflicts RunE did not execute after citationKey-field-only preflight")
-	}
-}
+			citekeys := mustFindPreflightCommand(t, root, "items", "citekey-conflicts")
+			runExecuted := false
+			citekeys.RunE = func(cmd *cobra.Command, args []string) error {
+				runExecuted = true
+				return nil
+			}
 
-// A library whose keys Zotero pinned holds them colon-tight
-// ("Citation Key:tight2023") and exposes no citationKey field at all. That is
-// a fully keyed Better BibTeX library, so the gate must let it through:
-// refusing it made `items bibcheck` and `items citekey-conflicts` unreachable
-// for exactly the libraries whose keys the shared parser understands.
-//
-// The refusal itself is still load-bearing and is pinned by
-// TestCapabilityPreflightBetterBibTeXFailsEnvelopeWhenNoCitationKeySourceExists,
-// which seeds Extra text carrying no key at all.
-func TestCapabilityPreflightBetterBibTeXPassesWithColonTightExtraKeysOnly(t *testing.T) {
-	root, _, _, _ := newPreflightTestRoot(t)
-	seedSyncedBibcheckItems(t, []json.RawMessage{
-		json.RawMessage(`{"key":"TIGHT1","version":1,"data":{"key":"TIGHT1","itemType":"journalArticle","title":"Tight Pinned Key","extra":"Citation Key:tight2023"}}`),
-	})
-
-	citekeys := mustFindPreflightCommand(t, root, "items", "citekey-conflicts")
-	runExecuted := false
-	citekeys.RunE = func(cmd *cobra.Command, args []string) error {
-		runExecuted = true
-		return nil
-	}
-
-	root.SetArgs([]string{"--json", "items", "citekey-conflicts"})
-	if err := root.Execute(); err != nil {
-		t.Fatalf("Better BibTeX preflight rejected a library whose keys are all colon-tight: %v", err)
-	}
-	if !runExecuted {
-		t.Fatal("items citekey-conflicts RunE did not execute for a colon-tight-keyed library")
+			root.SetArgs([]string{"--json", "items", "citekey-conflicts"})
+			if err := root.Execute(); err != nil {
+				t.Fatalf(tc.executeErr, err)
+			}
+			if !runExecuted {
+				t.Fatal(tc.blockedErr)
+			}
+		})
 	}
 }
 
@@ -279,6 +284,124 @@ func TestCapabilityPreflightBetterBibTeXFailsEnvelopeWhenNoCitationKeySourceExis
 	if len(env.Remediation) == 0 {
 		t.Fatal("remediation is empty")
 	}
+}
+
+// The write-plane gates decide which API receives operator traffic, so their
+// branch tests call the checkers directly: a regressed checker either refuses
+// every legitimate run or silently routes traffic to the wrong plane, and the
+// envelope-level tests elsewhere exercise these paths only indirectly.
+func TestCheckWebAPIKeyPreconditionBranchesOnConfiguredKey(t *testing.T) {
+	tests := []struct {
+		name       string
+		apiKey     string
+		setKey     bool
+		wantOK     bool
+		wantDetail string
+	}{
+		{name: "missing key refused", setKey: false, wantOK: false, wantDetail: "no Zotero Web API key is configured"},
+		{name: "blank key refused", apiKey: "   ", setKey: true, wantOK: false, wantDetail: "no Zotero Web API key is configured"},
+		{name: "env key passes", apiKey: "test-key", setKey: true, wantOK: true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("ZOTIO_DEMO", "")
+			t.Setenv("HOME", t.TempDir())
+			t.Setenv("ZOTERO_BASE_URL", "")
+			if tc.setKey {
+				t.Setenv("ZOTERO_API_KEY", tc.apiKey)
+			} else {
+				t.Setenv("ZOTERO_API_KEY", "")
+			}
+			flags := &rootFlags{configPath: testConfigFile(t, "http://localhost:23119/api/users/0")}
+			ok, detail, err := checkWebAPIKeyPrecondition(context.Background(), flags, nil, capabilityEntry{})
+			if err != nil {
+				t.Fatalf("checkWebAPIKeyPrecondition: %v", err)
+			}
+			if ok != tc.wantOK {
+				t.Fatalf("ok = %v, want %v (detail %q)", ok, tc.wantOK, detail)
+			}
+			if tc.wantDetail != "" && !strings.Contains(detail, tc.wantDetail) {
+				t.Fatalf("detail = %q, want it to name %q", detail, tc.wantDetail)
+			}
+			if tc.wantOK && detail != "" {
+				t.Fatalf("detail = %q, want empty on pass", detail)
+			}
+		})
+	}
+}
+
+func TestCheckLiveLocalAPIPreconditionClassifiesTheAPIPlane(t *testing.T) {
+	t.Run("remote base refused", func(t *testing.T) {
+		t.Setenv("ZOTIO_DEMO", "")
+		t.Setenv("HOME", t.TempDir())
+		t.Setenv("ZOTERO_BASE_URL", "")
+		t.Setenv("ZOTERO_API_KEY", "")
+		const remoteBase = "https://api.zotero.org/users/123"
+		flags := &rootFlags{configPath: testConfigFile(t, remoteBase)}
+		ok, detail, err := checkLiveLocalAPIPrecondition(context.Background(), flags, nil, capabilityEntry{})
+		if err != nil {
+			t.Fatalf("checkLiveLocalAPIPrecondition: %v", err)
+		}
+		if ok {
+			t.Fatal("remote Web API base passed the live-local gate; traffic would route to the wrong plane")
+		}
+		if !strings.Contains(detail, remoteBase) || !strings.Contains(detail, "is not the Zotero desktop local API") {
+			t.Fatalf("detail = %q, want it to name the redacted base and the plane mismatch", detail)
+		}
+	})
+
+	t.Run("unreachable local refused", func(t *testing.T) {
+		// Deterministic refusal through the probe seam: no socket is bound,
+		// so neither a real Zotero nor another process can claim a port in
+		// a bind-then-close gap and flip the verdict.
+		oldProbe := liveLocalAPIProbe
+		liveLocalAPIProbe = func(*client.Client) bool { return false }
+		t.Cleanup(func() { liveLocalAPIProbe = oldProbe })
+		oldAllowPrivateOutbound := allowPrivateOutboundForTests.Load()
+		allowPrivateOutboundForTests.Store(true)
+		t.Cleanup(func() { allowPrivateOutboundForTests.Store(oldAllowPrivateOutbound) })
+
+		t.Setenv("ZOTIO_DEMO", "")
+		t.Setenv("HOME", t.TempDir())
+		t.Setenv("ZOTERO_BASE_URL", "")
+		t.Setenv("ZOTERO_API_KEY", "")
+		flags := &rootFlags{configPath: testConfigFile(t, "http://127.0.0.1:23119/api/users/0"), timeout: time.Second}
+		ok, detail, err := checkLiveLocalAPIPrecondition(context.Background(), flags, nil, capabilityEntry{})
+		if err != nil {
+			t.Fatalf("checkLiveLocalAPIPrecondition: %v", err)
+		}
+		if ok {
+			t.Fatal("refused local API probe passed the live-local gate")
+		}
+		if !strings.Contains(detail, "not reachable") {
+			t.Fatalf("detail = %q, want the unreachable desktop named", detail)
+		}
+	})
+
+	t.Run("reachable local passes", func(t *testing.T) {
+		// Deterministic success through the probe seam: the config URL still
+		// names the desktop port so the plane gate is exercised, but no
+		// listener is bound, so the test holds whether or not Zotero runs.
+		oldProbe := liveLocalAPIProbe
+		liveLocalAPIProbe = func(*client.Client) bool { return true }
+		t.Cleanup(func() { liveLocalAPIProbe = oldProbe })
+		oldAllowPrivateOutbound := allowPrivateOutboundForTests.Load()
+		allowPrivateOutboundForTests.Store(true)
+		t.Cleanup(func() { allowPrivateOutboundForTests.Store(oldAllowPrivateOutbound) })
+
+		t.Setenv("ZOTIO_DEMO", "")
+		t.Setenv("HOME", t.TempDir())
+		t.Setenv("ZOTERO_BASE_URL", "")
+		t.Setenv("ZOTERO_API_KEY", "")
+		flags := &rootFlags{configPath: testConfigFile(t, "http://127.0.0.1:23119/api/users/0"), timeout: time.Second}
+		ok, detail, err := checkLiveLocalAPIPrecondition(context.Background(), flags, nil, capabilityEntry{})
+		if err != nil {
+			t.Fatalf("checkLiveLocalAPIPrecondition: %v", err)
+		}
+		if !ok {
+			t.Fatalf("reachable local API refused: %q", detail)
+		}
+	})
 }
 
 func newPreflightTestRoot(t *testing.T) (*cobra.Command, *rootFlags, *bytes.Buffer, *bytes.Buffer) {

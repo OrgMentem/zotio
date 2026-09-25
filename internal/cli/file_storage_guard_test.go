@@ -403,44 +403,48 @@ func TestRefusalPinAgreesInNumber(t *testing.T) {
 }
 
 // linked-file never uploads bytes, so it must keep working unchanged on a
-// WebDAV-configured desktop.
-func TestAttachmentsAddLinkedFileUnaffectedByWebDAV(t *testing.T) {
-	stubZoteroFileStorage(t, "webdav", true)
-	root, _, _, _ := newPreflightTestRoot(t)
-
-	add := mustFindPreflightCommand(t, root, "attachments", "add")
-	runExecuted := false
-	add.RunE = func(cmd *cobra.Command, args []string) error {
-		runExecuted = true
-		return nil
+// WebDAV-configured desktop; --allow-zotero-cloud restores the stored-upload
+// path with an explicit operator override. Both allow-paths share one witness.
+func TestAttachmentsAddAllowedPathsUnaffectedByWebDAV(t *testing.T) {
+	tests := []struct {
+		name       string
+		args       []string
+		executeErr string
+		blockedErr string
+	}{
+		{
+			name:       "linked-file",
+			args:       []string{"--json", "attachments", "add", "PARENT1", "/tmp/x.pdf", "--mode", "linked-file"},
+			executeErr: "linked-file attach under WebDAV failed: %v",
+			blockedErr: "linked-file attach was blocked; it never uploads bytes",
+		},
+		{
+			name:       "stored with override",
+			args:       []string{"--json", "attachments", "add", "PARENT1", "/tmp/x.pdf", "--mode", "stored", "--allow-zotero-cloud"},
+			executeErr: "stored attach with --allow-zotero-cloud failed: %v",
+			blockedErr: "--allow-zotero-cloud did not restore the upload path",
+		},
 	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			stubZoteroFileStorage(t, "webdav", true)
+			root, _, _, _ := newPreflightTestRoot(t)
 
-	root.SetArgs([]string{"--json", "attachments", "add", "PARENT1", "/tmp/x.pdf", "--mode", "linked-file"})
-	if err := root.Execute(); err != nil {
-		t.Fatalf("linked-file attach under WebDAV failed: %v", err)
-	}
-	if !runExecuted {
-		t.Fatal("linked-file attach was blocked; it never uploads bytes")
-	}
-}
+			add := mustFindPreflightCommand(t, root, "attachments", "add")
+			runExecuted := false
+			add.RunE = func(cmd *cobra.Command, args []string) error {
+				runExecuted = true
+				return nil
+			}
 
-func TestAttachmentsAddStoredAllowedWithOverride(t *testing.T) {
-	stubZoteroFileStorage(t, "webdav", true)
-	root, _, _, _ := newPreflightTestRoot(t)
-
-	add := mustFindPreflightCommand(t, root, "attachments", "add")
-	runExecuted := false
-	add.RunE = func(cmd *cobra.Command, args []string) error {
-		runExecuted = true
-		return nil
-	}
-
-	root.SetArgs([]string{"--json", "attachments", "add", "PARENT1", "/tmp/x.pdf", "--mode", "stored", "--allow-zotero-cloud"})
-	if err := root.Execute(); err != nil {
-		t.Fatalf("stored attach with --allow-zotero-cloud failed: %v", err)
-	}
-	if !runExecuted {
-		t.Fatal("--allow-zotero-cloud did not restore the upload path")
+			root.SetArgs(tc.args)
+			if err := root.Execute(); err != nil {
+				t.Fatalf(tc.executeErr, err)
+			}
+			if !runExecuted {
+				t.Fatal(tc.blockedErr)
+			}
+		})
 	}
 }
 

@@ -12,6 +12,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/spf13/cobra"
 )
 
 func TestRewriteLibraryPrefix(t *testing.T) {
@@ -186,44 +188,51 @@ func TestGroupsInspect_JSONReadiness(t *testing.T) {
 	}
 }
 
-func TestGroupsList_RejectsGroupBaseURL(t *testing.T) {
-	t.Setenv("ZOTERO_BASE_URL", "http://localhost:23119/api/groups/12345")
-	cmd := newGroupsListCmd(&rootFlags{asJSON: true})
-	cmd.SetOut(&bytes.Buffer{})
-	cmd.SetArgs(nil)
-	cmd.SilenceErrors = true
-	cmd.SilenceUsage = true
-	err := cmd.Execute()
-	if err == nil {
-		t.Fatal("expected error when listing groups from a group base URL")
-	}
-	if code := ExitCode(err); code != 2 {
-		t.Fatalf("exit code = %d, want 2 (usage); err=%v", code, err)
-	}
-	if !strings.Contains(err.Error(), "to list groups") {
-		t.Errorf("error = %q, want the refusal to name the caller's purpose", err.Error())
-	}
-}
-
 // groups inspect enumerates through the same shared helper as groups list, so
 // it must refuse a group-scoped base URL the same way — with its own purpose
 // in the message, not the other command's.
-func TestGroupsInspect_RejectsGroupBaseURL(t *testing.T) {
-	t.Setenv("ZOTERO_BASE_URL", "http://localhost:23119/api/groups/12345")
-	cmd := newGroupsInspectCmd(&rootFlags{asJSON: true})
-	cmd.SetOut(&bytes.Buffer{})
-	cmd.SetArgs([]string{"12345"})
-	cmd.SilenceErrors = true
-	cmd.SilenceUsage = true
-	err := cmd.Execute()
-	if err == nil {
-		t.Fatal("expected error when inspecting groups from a group base URL")
+func TestGroupsRejectsGroupBaseURL(t *testing.T) {
+	tests := []struct {
+		name      string
+		newCmd    func(*rootFlags) *cobra.Command
+		args      []string
+		purpose   string
+		wantError string
+	}{
+		{
+			name:      "list",
+			newCmd:    newGroupsListCmd,
+			args:      nil,
+			purpose:   "to list groups",
+			wantError: "expected error when listing groups from a group base URL",
+		},
+		{
+			name:      "inspect",
+			newCmd:    newGroupsInspectCmd,
+			args:      []string{"12345"},
+			purpose:   "to inspect groups",
+			wantError: "expected error when inspecting groups from a group base URL",
+		},
 	}
-	if code := ExitCode(err); code != 2 {
-		t.Fatalf("exit code = %d, want 2 (usage); err=%v", code, err)
-	}
-	if !strings.Contains(err.Error(), "to inspect groups") {
-		t.Errorf("error = %q, want the refusal to name the caller's purpose", err.Error())
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("ZOTERO_BASE_URL", "http://localhost:23119/api/groups/12345")
+			cmd := tc.newCmd(&rootFlags{asJSON: true})
+			cmd.SetOut(&bytes.Buffer{})
+			cmd.SetArgs(tc.args)
+			cmd.SilenceErrors = true
+			cmd.SilenceUsage = true
+			err := cmd.Execute()
+			if err == nil {
+				t.Fatal(tc.wantError)
+			}
+			if code := ExitCode(err); code != 2 {
+				t.Fatalf("exit code = %d, want 2 (usage); err=%v", code, err)
+			}
+			if !strings.Contains(err.Error(), tc.purpose) {
+				t.Errorf("error = %q, want the refusal to name the caller's purpose", err.Error())
+			}
+		})
 	}
 }
 

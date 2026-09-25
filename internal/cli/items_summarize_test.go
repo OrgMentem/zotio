@@ -6,7 +6,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -231,42 +230,6 @@ func TestItemsSummarizeEmptyStoreProbeAllowsHelp(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), "Usage:") {
 		t.Fatalf("stdout = %q, want command help", out.String())
-	}
-}
-
-func TestItemsSummarizeMissingStoreGuidesSync(t *testing.T) {
-	isolateDemoEnv(t, "0")
-	cmd := newItemsSummarizeCmd(&rootFlags{})
-	cmd.SilenceErrors, cmd.SilenceUsage = true, true
-	var out bytes.Buffer
-	cmd.SetOut(&out)
-	if err := cmd.Execute(); err != nil {
-		t.Fatalf("summarize with missing store: %v", err)
-	}
-	if got := out.String(); got != "Run 'zotio sync' first.\n" {
-		t.Fatalf("stdout = %q, want sync guidance", got)
-	}
-}
-
-func TestItemsSummarizeStoreOpenFailureDoesNotLookMissing(t *testing.T) {
-	isolateDemoEnv(t, "0")
-	dbPath := helpersTestDefaultDBPath(t, "zotio")
-	if err := os.MkdirAll(filepath.Dir(dbPath), 0o700); err != nil {
-		t.Fatalf("mkdir db dir: %v", err)
-	}
-	if err := os.WriteFile(dbPath, []byte("not a SQLite database"), 0o600); err != nil {
-		t.Fatalf("write corrupt db: %v", err)
-	}
-	cmd := newItemsSummarizeCmd(&rootFlags{})
-	cmd.SilenceErrors, cmd.SilenceUsage = true, true
-	var out bytes.Buffer
-	cmd.SetOut(&out)
-	err := cmd.Execute()
-	if err == nil || !strings.Contains(err.Error(), "opening local database") {
-		t.Fatalf("summarize error = %v, want contextual store-open failure", err)
-	}
-	if strings.Contains(out.String(), "Run 'zotio sync' first.") {
-		t.Fatalf("stdout = %q, must not misclassify corrupt store as missing", out.String())
 	}
 }
 

@@ -372,12 +372,11 @@ func TestRunWorkflowRunFileApplyFailureReturnsReportAndKeepsCheckpoint(t *testin
 	}
 }
 
-func TestRunWorkflowRunFileResumeWithoutApprovalReturnsUsageError(t *testing.T) {
-	path := writeWorkflowRunTestSpec(t, workflowRunSpec{Steps: []workflowRunStepSpec{
-		{Args: []string{"version"}},
-	}})
-
-	_, err := runWorkflowRunFile(context.Background(), path, workflowRunInvocation{Resume: true})
+// assertWorkflowRunResumeRequiresYes pins the one --resume usage contract both
+// invocation harnesses must enforce: resuming in preview mode is a usage error
+// naming --yes, whatever entry point the operator used.
+func assertWorkflowRunResumeRequiresYes(t *testing.T, err error) {
+	t.Helper()
 	if err == nil {
 		t.Fatal("preview resume succeeded, want usage error")
 	}
@@ -386,17 +385,21 @@ func TestRunWorkflowRunFileResumeWithoutApprovalReturnsUsageError(t *testing.T) 
 	}
 }
 
+func TestRunWorkflowRunFileResumeWithoutApprovalReturnsUsageError(t *testing.T) {
+	path := writeWorkflowRunTestSpec(t, workflowRunSpec{Steps: []workflowRunStepSpec{
+		{Args: []string{"version"}},
+	}})
+
+	_, err := runWorkflowRunFile(context.Background(), path, workflowRunInvocation{Resume: true})
+	assertWorkflowRunResumeRequiresYes(t, err)
+}
+
 func TestWorkflowRunResumeRequiresApplyMode(t *testing.T) {
 	path := writeWorkflowRunTestSpec(t, workflowRunSpec{Steps: []workflowRunStepSpec{
 		{Args: []string{"version"}},
 	}})
 	_, _, err := runWorkflowRunTestCmdAtPath(t, path, false, true)
-	if err == nil {
-		t.Fatal("preview resume succeeded, want usage error")
-	}
-	if ExitCode(err) != 2 || !strings.Contains(err.Error(), "requires --yes") {
-		t.Fatalf("error = %v, want --resume usage error requiring --yes", err)
-	}
+	assertWorkflowRunResumeRequiresYes(t, err)
 }
 
 func TestWorkflowRunResumeRequiresCheckpoint(t *testing.T) {

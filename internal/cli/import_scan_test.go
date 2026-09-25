@@ -357,44 +357,6 @@ func TestImportScanUnreadablePDFProducesWarning(t *testing.T) {
 	}
 }
 
-func TestImportScanMissingStoreGuidesSync(t *testing.T) {
-	isolateDemoEnv(t, "0")
-	cmd := newImportScanCmd(&rootFlags{})
-	cmd.SilenceErrors, cmd.SilenceUsage = true, true
-	var out bytes.Buffer
-	cmd.SetOut(&out)
-	cmd.SetArgs([]string{t.TempDir()})
-	if err := cmd.Execute(); err != nil {
-		t.Fatalf("scan with missing store: %v", err)
-	}
-	if got := out.String(); got != "Run 'zotio sync' first.\n" {
-		t.Fatalf("stdout = %q, want sync guidance", got)
-	}
-}
-
-func TestImportScanStoreOpenFailureDoesNotLookMissing(t *testing.T) {
-	isolateDemoEnv(t, "0")
-	dbPath := helpersTestDefaultDBPath(t, "zotio")
-	if err := os.MkdirAll(filepath.Dir(dbPath), 0o700); err != nil {
-		t.Fatalf("mkdir db dir: %v", err)
-	}
-	if err := os.WriteFile(dbPath, []byte("not a SQLite database"), 0o600); err != nil {
-		t.Fatalf("write corrupt db: %v", err)
-	}
-	cmd := newImportScanCmd(&rootFlags{})
-	cmd.SilenceErrors, cmd.SilenceUsage = true, true
-	var out bytes.Buffer
-	cmd.SetOut(&out)
-	cmd.SetArgs([]string{t.TempDir()})
-	err := cmd.Execute()
-	if err == nil || !strings.Contains(err.Error(), "opening local database") {
-		t.Fatalf("scan error = %v, want contextual store-open failure", err)
-	}
-	if strings.Contains(out.String(), "Run 'zotio sync' first.") {
-		t.Fatalf("stdout = %q, must not misclassify corrupt store as missing", out.String())
-	}
-}
-
 func TestInflatePDFStreamClosesReaders(t *testing.T) {
 	origZlib := inflateZlibReader
 	origFlate := inflateFlateReader

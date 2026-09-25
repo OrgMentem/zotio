@@ -317,3 +317,22 @@ func TestImportDoiDryRun(t *testing.T) {
 		t.Errorf("doi dry-run item = %v", item)
 	}
 }
+
+// TestCreatorsFromMetaSemicolonSeparatedAuthors pins the single-element
+// citation_authors branch: publishers that ship one semicolon-separated tag
+// must import as two creators, not one creator named "A; B".
+func TestCreatorsFromMetaSemicolonSeparatedAuthors(t *testing.T) {
+	metas := map[string][]string{
+		"citation_authors": {"Vaswani, Ashish; Shazeer, Noam"},
+	}
+	creators := creatorsFromMeta(metas)
+	if len(creators) != 2 {
+		t.Fatalf("creators = %v, want 2", creators)
+	}
+	if creators[0]["lastName"] != "Vaswani" || creators[0]["firstName"] != "Ashish" {
+		t.Errorf("creator[0] = %v, want Vaswani, Ashish", creators[0])
+	}
+	if creators[1]["lastName"] != "Shazeer" || creators[1]["firstName"] != "Noam" {
+		t.Errorf("creator[1] = %v, want Shazeer, Noam", creators[1])
+	}
+}

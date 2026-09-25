@@ -785,84 +785,165 @@ func newEnrichWriteClient(t *testing.T, baseURL string) *client.Client {
 	return c
 }
 
-func TestApplyEnrichProposalLinkedFileAmbiguousFailureKeepsDownload(t *testing.T) {
-	fastRetryBackoff(t)
-	withPDFSafety(t, nil)
-	pdfSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("Content-Type", "application/pdf")
-		_, _ = w.Write([]byte("%PDF-1.7\nbody"))
-	}))
-	t.Cleanup(pdfSrv.Close)
-	zoteroSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch {
-		case r.Method == http.MethodGet && r.URL.Path == "/items/ABC/children":
-			_, _ = w.Write([]byte(`[]`))
-		case r.Method == http.MethodPost && r.URL.Path == "/items":
-			http.Error(w, `{"error":"temporary failure"}`, http.StatusInternalServerError)
-		default:
-			http.NotFound(w, r)
-		}
-	}))
-	t.Cleanup(zoteroSrv.Close)
+func TestApplyEnrichProposalLinkedFileCreateFailureBoundary(t *testing.T) {
+	cases := []struct {
+		name       string
+		postStatus int
+		postBody   string
+		wantFile   bool
+	}{
+		{
+			// Ambiguous: a 500 may have created the attachment before the
+			// response was lost, so the download is kept for retry.
+			name:       "ambiguous_failure_keeps_download",
+			postStatus: http.StatusInternalServerError,
+			postBody:   `{"error":"temporary failure"}`,
+			wantFile:   true,
+		},
+		{
+			// Confirmed: a 400 proves Zotero rejected the create before
+			// creating anything, so the download is removed.
+			name:       "confirmed_failure_removes_download",
+			postStatus: http.StatusBadRequest,
+			postBody:   `{"error":"invalid attachment"}`,
+			wantFile:   false,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			fastRetryBackoff(t)
+			withPDFSafety(t, nil)
+			pdfSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "application/pdf")
+				_, _ = w.Write([]byte("%PDF-1.7\nbody"))
+			}))
+			t.Cleanup(pdfSrv.Close)
+			zoteroSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				switch {
+				case r.Method == http.MethodGet && r.URL.Path == "/items/ABC/children":
+					_, _ = w.Write([]byte(`[]`))
+				case r.Method == http.MethodPost && r.URL.Path == "/items":
+					http.Error(w, tc.postBody, tc.postStatus)
+				default:
+					http.NotFound(w, r)
+				}
+			}))
+			t.Cleanup(zoteroSrv.Close)
 
-	dest := filepath.Join(t.TempDir(), "paper.pdf")
-	downloader := newEnrichPDFDownloader(pdfSrv.Client())
-	downloader.dialGuard = nil
-	p := enrichProposal{
-		Key:         "ABC",
-		Category:    "missing_pdf",
-		Action:      enrichActionAttach,
-		Source:      "Unpaywall",
-		AttachMode:  "linked-file",
-		DownloadURL: pdfSrv.URL + "/paper.pdf",
-		PDFPath:     dest,
-	}
-	status, _, err := applyEnrichProposalWithContext(context.Background(), downloader, newEnrichWriteClient(t, zoteroSrv.URL), &p, &rootFlags{})
-	if err == nil || status != "failed" {
-		t.Fatalf("apply = status %q err %v, want failed", status, err)
-	}
-	if _, statErr := os.Stat(dest); statErr != nil {
-		t.Fatalf("download missing after ambiguous attachment create failure: %v", statErr)
+			dest := filepath.Join(t.TempDir(), "paper.pdf")
+			downloader := newEnrichPDFDownloader(pdfSrv.Client())
+			downloader.dialGuard = nil
+			p := enrichProposal{
+				Key:         "ABC",
+				Category:    "missing_pdf",
+				Action:      enrichActionAttach,
+				Source:      "Unpaywall",
+				AttachMode:  "linked-file",
+				DownloadURL: pdfSrv.URL + "/paper.pdf",
+				PDFPath:     dest,
+			}
+			status, _, err := applyEnrichProposalWithContext(context.Background(), downloader, newEnrichWriteClient(t, zoteroSrv.URL), &p, &rootFlags{})
+			if err == nil || status != "failed" {
+				t.Fatalf("apply = status %q err %v, want failed", status, err)
+			}
+			_, statErr := os.Stat(dest)
+			if tc.wantFile && statErr != nil {
+				t.Fatalf("download missing after ambiguous attachment create failure: %v", statErr)
+			}
+			if !tc.wantFile && !os.IsNotExist(statErr) {
+				t.Fatalf("download remains after confirmed attachment create failure: %v", statErr)
+			}
+		})
 	}
 }
 
-func TestApplyEnrichProposalLinkedFileConfirmedFailureRemovesDownload(t *testing.T) {
+// TestEnrichPDFHasMagic pins the three rejection arms guarding retained-PDF
+// reuse: a retried enrich must not trust a corrupt or HTML error-page file
+// left by a prior proxy failure as a valid PDF.
+func TestEnrichPDFHasMagic(t *testing.T) {
+	dir := t.TempDir()
+	shortPath := filepath.Join(dir, "short.pdf")
+	if err := os.WriteFile(shortPath, []byte("ab"), 0o644); err != nil {
+		t.Fatalf("write short file: %v", err)
+	}
+	htmlPath := filepath.Join(dir, "error.pdf")
+	if err := os.WriteFile(htmlPath, []byte("<html><body>proxy error</body></html>"), 0o644); err != nil {
+		t.Fatalf("write HTML file: %v", err)
+	}
+	validPath := filepath.Join(dir, "paper.pdf")
+	if err := os.WriteFile(validPath, []byte("%PDF-1.7\nbody"), 0o644); err != nil {
+		t.Fatalf("write PDF file: %v", err)
+	}
+	cases := []struct {
+		name    string
+		path    string
+		wantErr string
+	}{
+		{name: "open_failure", path: filepath.Join(dir, "missing-dir", "paper.pdf"), wantErr: "reopening downloaded PDF"},
+		{name: "short_read", path: shortPath, wantErr: "reading"},
+		{name: "bad_magic", path: htmlPath, wantErr: "not a PDF"},
+		{name: "valid_header", path: validPath, wantErr: ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := enrichPDFHasMagic(tc.path)
+			if tc.wantErr == "" {
+				if err != nil {
+					t.Fatalf("enrichPDFHasMagic(%q) = %v, want nil", tc.path, err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("enrichPDFHasMagic(%q) = %v, want error containing %q", tc.path, err, tc.wantErr)
+			}
+		})
+	}
+}
+
+// TestApplyEnrichProposalLinkedFileRejectsCorruptRetainedPDF frames the magic
+// gate on the consumer: a retry finds an HTML error page where the prior
+// attempt's download should be and must fail without ever sending the create,
+// rather than attaching an untrusted file to the item.
+func TestApplyEnrichProposalLinkedFileRejectsCorruptRetainedPDF(t *testing.T) {
 	withPDFSafety(t, nil)
-	pdfSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("Content-Type", "application/pdf")
-		_, _ = w.Write([]byte("%PDF-1.7\nbody"))
-	}))
-	t.Cleanup(pdfSrv.Close)
+	dest := filepath.Join(t.TempDir(), "paper.pdf")
+	if err := os.WriteFile(dest, []byte("<html><body>proxy error</body></html>"), 0o644); err != nil {
+		t.Fatalf("write corrupt retained PDF: %v", err)
+	}
+	postCount := 0
 	zoteroSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case r.Method == http.MethodGet && r.URL.Path == "/items/ABC/children":
 			_, _ = w.Write([]byte(`[]`))
 		case r.Method == http.MethodPost && r.URL.Path == "/items":
-			http.Error(w, `{"error":"invalid attachment"}`, http.StatusBadRequest)
+			postCount++
+			_, _ = w.Write([]byte(`{"success":{"0":"CHILD1"}}`))
 		default:
 			http.NotFound(w, r)
 		}
 	}))
 	t.Cleanup(zoteroSrv.Close)
 
-	dest := filepath.Join(t.TempDir(), "paper.pdf")
-	downloader := newEnrichPDFDownloader(pdfSrv.Client())
+	downloader := newEnrichPDFDownloader(zoteroSrv.Client())
 	downloader.dialGuard = nil
 	p := enrichProposal{
 		Key:         "ABC",
 		Category:    "missing_pdf",
 		Action:      enrichActionAttach,
 		Source:      "Unpaywall",
+		DownloadURL: "http://example.invalid/paper.pdf",
 		AttachMode:  "linked-file",
-		DownloadURL: pdfSrv.URL + "/paper.pdf",
 		PDFPath:     dest,
 	}
 	status, _, err := applyEnrichProposalWithContext(context.Background(), downloader, newEnrichWriteClient(t, zoteroSrv.URL), &p, &rootFlags{})
 	if err == nil || status != "failed" {
-		t.Fatalf("apply = status %q err %v, want failed", status, err)
+		t.Fatalf("apply = status %q err %v, want failed for a corrupt retained PDF", status, err)
 	}
-	if _, statErr := os.Stat(dest); !os.IsNotExist(statErr) {
-		t.Fatalf("download remains after confirmed attachment create failure: %v", statErr)
+	if !strings.Contains(err.Error(), "not a PDF") {
+		t.Fatalf("apply error = %q, want the magic-gate rejection", err.Error())
+	}
+	if postCount != 0 {
+		t.Fatalf("attachment creates = %d, want 0: an untrusted file must never reach the library", postCount)
 	}
 }
 

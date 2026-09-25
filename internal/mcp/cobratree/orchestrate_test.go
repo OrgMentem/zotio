@@ -150,22 +150,60 @@ func TestOrchCommandSearchDetailsExposesOnlyLocalSafeFlags(t *testing.T) {
 	}
 }
 
-func TestOrchCommandRunExecutesWithLocalFlag(t *testing.T) {
-	h := commandRunHandler(orchNewRoot)
-	req := mcplib.CallToolRequest{}
-	req.Params.Arguments = map[string]any{
-		"name":  "items demo",
-		"flags": map[string]any{"title": "hi"},
+// Null positionals stay absent (matching workflow_submit), so an explicit
+// JSON null does not fail a call that would succeed without the key.
+func TestOrchCommandRunCases(t *testing.T) {
+	cases := []struct {
+		name          string
+		rootFactory   func() *cobra.Command
+		argsMap       map[string]any
+		wantSubstring string
+	}{
+		{
+			name:        "executes with local flag",
+			rootFactory: orchNewRoot,
+			argsMap: map[string]any{
+				"name":  "items demo",
+				"flags": map[string]any{"title": "hi"},
+			},
+			wantSubstring: "title=hi",
+		},
+		{
+			name:        "applies write gating flag on mutating",
+			rootFactory: orchNewRootWithGates,
+			argsMap: map[string]any{
+				"name":  "items enrich",
+				"flags": map[string]any{"yes": true},
+			},
+			wantSubstring: "applied=true",
+		},
+		{
+			name:        "treats null positional args as absent",
+			rootFactory: orchNewRoot,
+			argsMap: map[string]any{
+				"name":  "items demo",
+				"flags": map[string]any{"title": "hi"},
+				"args":  nil,
+			},
+			wantSubstring: "title=hi",
+		},
 	}
-	res, err := h(context.Background(), req)
-	if err != nil {
-		t.Fatalf("handler returned protocol error: %v", err)
-	}
-	if res.IsError {
-		t.Fatalf("unexpected error result: %q", orchResText(res))
-	}
-	if got := orchResText(res); !strings.Contains(got, "title=hi") {
-		t.Fatalf("run result = %q, want title=hi", got)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			h := commandRunHandler(tc.rootFactory)
+			req := mcplib.CallToolRequest{}
+			req.Params.Arguments = tc.argsMap
+			res, err := h(context.Background(), req)
+			if err != nil {
+				t.Fatalf("handler returned protocol error: %v", err)
+			}
+			if res.IsError {
+				t.Fatalf("unexpected error result: %q", orchResText(res))
+			}
+			if got := orchResText(res); !strings.Contains(got, tc.wantSubstring) {
+				t.Fatalf("run result = %q, want %s", got, tc.wantSubstring)
+			}
+		})
 	}
 }
 
@@ -251,25 +289,6 @@ func orchNewRootWithGates() *cobra.Command {
 	return root
 }
 
-func TestOrchCommandRunAppliesWriteGatingFlagOnMutating(t *testing.T) {
-	h := commandRunHandler(orchNewRootWithGates)
-	req := mcplib.CallToolRequest{}
-	req.Params.Arguments = map[string]any{
-		"name":  "items enrich",
-		"flags": map[string]any{"yes": true},
-	}
-	res, err := h(context.Background(), req)
-	if err != nil {
-		t.Fatalf("handler returned protocol error: %v", err)
-	}
-	if res.IsError {
-		t.Fatalf("unexpected error result: %q", orchResText(res))
-	}
-	if got := orchResText(res); !strings.Contains(got, "applied=true") {
-		t.Fatalf("run result = %q, want applied=true (--yes must propagate)", got)
-	}
-}
-
 func TestOrchCommandSearchDetailExposesWriteGatingForMutating(t *testing.T) {
 	h := commandSearchHandler(orchNewRootWithGates)
 	req := mcplib.CallToolRequest{}
@@ -341,28 +360,6 @@ func TestOrchCommandRunRefusesNonStringPositionalArgs(t *testing.T) {
 				t.Fatalf("error result = %q, want it to name the string contract", orchResText(res))
 			}
 		})
-	}
-}
-
-// Null positionals stay absent (matching workflow_submit), so an explicit
-// JSON null does not fail a call that would succeed without the key.
-func TestOrchCommandRunTreatsNullPositionalArgsAsAbsent(t *testing.T) {
-	h := commandRunHandler(orchNewRoot)
-	req := mcplib.CallToolRequest{}
-	req.Params.Arguments = map[string]any{
-		"name":  "items demo",
-		"flags": map[string]any{"title": "hi"},
-		"args":  nil,
-	}
-	res, err := h(context.Background(), req)
-	if err != nil {
-		t.Fatalf("handler returned protocol error: %v", err)
-	}
-	if res.IsError {
-		t.Fatalf("unexpected error result for null args: %q", orchResText(res))
-	}
-	if got := orchResText(res); !strings.Contains(got, "title=hi") {
-		t.Fatalf("run result = %q, want title=hi", got)
 	}
 }
 

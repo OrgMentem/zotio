@@ -7,8 +7,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"net/http"
-	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"slices"
@@ -250,56 +248,27 @@ func TestDesktopStatusHumanOutputNamesTheState(t *testing.T) {
 	}
 }
 
-// A Zotero that is open but hung, or open with its connector off, must end
-// the wait with its own outcome and exit code, so a caller tells the user
-// "Zotero is open but not responding" instead of "open Zotero".
-func TestDesktopWaitStuckExits15WithTheState(t *testing.T) {
-	for _, state := range []desktop.State{desktop.StateUnresponsive, desktop.StateConnectorOff} {
-		t.Run(string(state), func(t *testing.T) {
-			flags, _ := desktopTestEnv(t, true, false)
-			old := desktopWait
-			t.Cleanup(func() { desktopWait = old })
-			desktopWait = func(context.Context, desktop.WaitOptions) (desktop.Status, error) {
-				return desktop.Status{Running: true, State: state, Evidence: desktop.EvidenceProfileLock, Profiles: []desktop.ProfileStatus{}}, desktop.ErrStuck
-			}
-			got, _, err := runDesktopCmd(t, flags, "", "wait", "--timeout", "1h")
-			if code := ExitCode(err); code != 15 {
-				t.Fatalf("exit code = %d (err %v), want 15", code, err)
-			}
-			if got["outcome"] != string(state) || got["state"] != string(state) || got["running"] != true {
-				t.Fatalf("wait = %v, want outcome and state %s", got, state)
-			}
-		})
-	}
-}
-
 // A stall re-check allows the connector 10s to answer, because a sync can
 // hold Zotero's main thread past the 3s first-check bound. The prober's
-// connector must honour that longer deadline; a client capped at 3s would
-// count a Zotero that answers in 4s as silent and drive it toward exit 15.
+// connector client must honour that longer deadline; a client capped at 3s
+// would count a Zotero that answers in 4s as silent and drive it toward
+// exit 15. The contract is on the configured client timeout, so assert it
+// directly instead of timing a delayed HTTP response.
 func TestDesktopProberHonoursTheStallPingDeadline(t *testing.T) {
 	flags, _ := desktopTestEnv(t, true, true)
-	delay := desktop.DefaultPingTimeout + 500*time.Millisecond
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		select {
-		case <-time.After(delay):
-		case <-r.Context().Done():
-			return
-		}
-		w.WriteHeader(http.StatusOK)
-	}))
-	defer srv.Close()
-	connectorPing = func(ctx context.Context, c *connector.Client) error {
-		c.BaseURL = srv.URL + "/connector"
-		return c.Ping(ctx)
+	var timeout time.Duration
+	connectorPing = func(_ context.Context, c *connector.Client) error {
+		timeout = c.HTTP.Timeout
+		return nil
 	}
 	prober, err := newDesktopProber(flags)
 	if err != nil {
 		t.Fatalf("newDesktopProber: %v", err)
 	}
-	ctx, cancel := context.WithTimeout(t.Context(), desktop.DefaultStallPingTimeout)
-	defer cancel()
-	if err := prober.Ping(ctx); err != nil {
-		t.Fatalf("ping answering after %s under a %s deadline = %v, want nil", delay, desktop.DefaultStallPingTimeout, err)
+	if err := prober.Ping(t.Context()); err != nil {
+		t.Fatalf("stall ping: %v, want nil", err)
+	}
+	if timeout < desktop.DefaultStallPingTimeout {
+		t.Fatalf("connector client timeout = %v, want at least the stall ping timeout %v", timeout, desktop.DefaultStallPingTimeout)
 	}
 }

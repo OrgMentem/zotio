@@ -4,6 +4,7 @@ package bound
 
 import (
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 	"unicode/utf8"
@@ -274,8 +275,14 @@ func TestTextCapturePreviewPreservesUTF8RuneBoundaries(t *testing.T) {
 		if err := json.Unmarshal([]byte(got), &envelope); err != nil {
 			t.Fatalf("decode: %v", err)
 		}
+		raw, ok := envelope["preview"]
+		if !ok {
+			t.Fatalf("envelope missing preview field: %s", got)
+		}
 		var preview string
-		_ = json.Unmarshal(envelope["preview"], &preview)
+		if err := json.Unmarshal(raw, &preview); err != nil {
+			t.Fatalf("decode preview string: %v", err)
+		}
 		if !utf8.ValidString(preview) {
 			t.Fatalf("preview not valid UTF-8")
 		}
@@ -283,4 +290,81 @@ func TestTextCapturePreviewPreservesUTF8RuneBoundaries(t *testing.T) {
 			t.Fatalf("preview ends in U+FFFD")
 		}
 	})
+}
+
+func TestLibraryJSONOversizedObjectFallsBackToPreviewEnvelope(t *testing.T) {
+	obj := make(map[string]any, 10000)
+	for i := range 10000 {
+		obj[fmt.Sprintf("k%05d", i)] = i
+	}
+	got, err := LibraryJSON(obj)
+	if err != nil {
+		t.Fatalf("LibraryJSON: %v", err)
+	}
+	if !json.Valid([]byte(got)) {
+		t.Fatalf("preview envelope is not valid JSON: %q", got[:min(len(got), 200)])
+	}
+	if len(got) > MaxBytes {
+		t.Fatalf("preview envelope bytes = %d, want <= %d", len(got), MaxBytes)
+	}
+	var envelope map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(got), &envelope); err != nil {
+		t.Fatalf("decode envelope: %v", err)
+	}
+	rawProv, ok := envelope["_zotio_provenance"]
+	if !ok {
+		t.Fatalf("envelope missing _zotio_provenance: %s", got[:min(len(got), 500)])
+	}
+	var provenance map[string]string
+	if err := json.Unmarshal(rawProv, &provenance); err != nil {
+		t.Fatalf("decode provenance: %v", err)
+	}
+	if provenance["trust"] != "untrusted_data" {
+		t.Fatalf("provenance trust = %q, want %q", provenance["trust"], "untrusted_data")
+	}
+	if !strings.Contains(provenance["notice"], "not instructions") {
+		t.Fatalf("provenance notice missing %q: %q", "not instructions", provenance["notice"])
+	}
+	var truncated bool
+	if err := json.Unmarshal(envelope["truncated"], &truncated); err != nil || !truncated {
+		t.Fatalf("truncated = %v, err = %v, want true", truncated, err)
+	}
+	var resumable bool
+	if err := json.Unmarshal(envelope["resumable"], &resumable); err != nil || resumable {
+		t.Fatalf("resumable = %v, err = %v, want false", resumable, err)
+	}
+	var originalBytes int
+	if err := json.Unmarshal(envelope["original_bytes"], &originalBytes); err != nil {
+		t.Fatalf("decode original_bytes: %v", err)
+	}
+	if originalBytes <= MaxBytes {
+		t.Fatalf("original_bytes = %d, want > %d", originalBytes, MaxBytes)
+	}
+	var maxBytes int
+	if err := json.Unmarshal(envelope["max_bytes"], &maxBytes); err != nil {
+		t.Fatalf("decode max_bytes: %v", err)
+	}
+	if maxBytes != MaxBytes {
+		t.Fatalf("max_bytes = %d, want %d", maxBytes, MaxBytes)
+	}
+	var preview string
+	if err := json.Unmarshal(envelope["preview"], &preview); err != nil {
+		t.Fatalf("decode preview: %v", err)
+	}
+	if preview == "" {
+		t.Fatal("preview is empty, want non-empty string")
+	}
+	var note string
+	if err := json.Unmarshal(envelope["note"], &note); err != nil {
+		t.Fatalf("decode note: %v", err)
+	}
+	if note == "" {
+		t.Fatal("note is empty, want non-empty string")
+	}
+	if _, ok := envelope["k00000"]; ok {
+		t.Fatal("degraded envelope carries per-key object shape (k00000 present)")
+	}
+	if _, ok := envelope["_zotio_truncated"]; ok {
+		t.Fatal("degraded envelope carries _zotio_truncated from the truncating path")
+	}
 }

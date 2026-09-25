@@ -517,7 +517,7 @@ func TestResolveReadLocalCollectionsStartPastEndReturnsEmptyArray(t *testing.T) 
 	}
 }
 
-func TestResolveReadLocalCollectionsAppliesLimitPagination(t *testing.T) {
+func TestResolveReadLocalCollectionsAppliesPagination(t *testing.T) {
 	flags := seedLocalPaginationCollections(t, localPaginationCollections)
 
 	allData, _, err := resolveRead(context.Background(), nil, flags, "collections", false, "/collections", nil, nil)
@@ -529,32 +529,24 @@ func TestResolveReadLocalCollectionsAppliesLimitPagination(t *testing.T) {
 		t.Fatalf("unpaginated collection count = %d, want 4: %v", len(allKeys), allKeys)
 	}
 
-	data, _, err := resolveRead(context.Background(), nil, flags, "collections", false, "/collections", map[string]string{"limit": "2"}, nil)
-	if err != nil {
-		t.Fatalf("resolveRead limit=2: %v", err)
+	tests := []struct {
+		name   string
+		params map[string]string
+		want   []string
+	}{
+		{name: "limit", params: map[string]string{"limit": "2"}, want: allKeys[:2]},
+		{name: "start before limit", params: map[string]string{"start": "1", "limit": "2"}, want: allKeys[1:3]},
 	}
-	keys := collectionKeysFromRawList(t, data)
-	assertStringSlicesEqual(t, keys, allKeys[:2])
-}
-
-func TestResolveReadLocalCollectionsAppliesStartBeforeLimit(t *testing.T) {
-	flags := seedLocalPaginationCollections(t, localPaginationCollections)
-
-	allData, _, err := resolveRead(context.Background(), nil, flags, "collections", false, "/collections", nil, nil)
-	if err != nil {
-		t.Fatalf("resolveRead all collections: %v", err)
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			data, _, err := resolveRead(context.Background(), nil, flags, "collections", false, "/collections", tc.params, nil)
+			if err != nil {
+				t.Fatalf("resolveRead %v: %v", tc.params, err)
+			}
+			keys := collectionKeysFromRawList(t, data)
+			assertStringSlicesEqual(t, keys, tc.want)
+		})
 	}
-	allKeys := collectionKeysFromRawList(t, allData)
-	if len(allKeys) != 4 {
-		t.Fatalf("unpaginated collection count = %d, want 4: %v", len(allKeys), allKeys)
-	}
-
-	data, _, err := resolveRead(context.Background(), nil, flags, "collections", false, "/collections", map[string]string{"start": "1", "limit": "2"}, nil)
-	if err != nil {
-		t.Fatalf("resolveRead start=1 limit=2: %v", err)
-	}
-	keys := collectionKeysFromRawList(t, data)
-	assertStringSlicesEqual(t, keys, allKeys[1:3])
 }
 
 func TestResolveReadLocalCollectionsEmptyStoreStillErrors(t *testing.T) {

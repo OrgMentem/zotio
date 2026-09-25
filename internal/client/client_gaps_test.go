@@ -113,6 +113,8 @@ func TestDoClientErrorReturnsAPIErrorWithoutRetry(t *testing.T) {
 }
 
 func TestDoRetriesServerErrorThenSucceeds(t *testing.T) {
+	restore := SetRetryBackoffBaseForTest(time.Millisecond)
+	t.Cleanup(restore)
 	var hits int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if atomic.AddInt32(&hits, 1) == 1 {

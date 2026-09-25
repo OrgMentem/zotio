@@ -2,7 +2,11 @@
 
 package cli
 
-import "testing"
+import (
+	"strings"
+	"testing"
+	"time"
+)
 
 func sortFilteredAnnotations(annotations []annotationSummary) []annotationSummary {
 	return sortAnnotationsByInstantDesc(annotations)
@@ -59,4 +63,27 @@ func keysOf(anns []annotationSummary) []string {
 		out[i] = a.Key
 	}
 	return out
+}
+
+// The invalid arm must fail closed: if it ever returns (zero, false, nil), a
+// typo'd --since is silently treated as "no filter" and the timeline widens
+// to all annotations. These cases pin the usage error and the date-only arm.
+func TestParseAnnotationSinceValidation(t *testing.T) {
+	if _, ok, err := parseAnnotationSince("2026-13-45"); err == nil || !strings.Contains(err.Error(), "invalid --since value") {
+		t.Fatalf("invalid since err = %v, want it to mention \"invalid --since value\"", err)
+	} else if ok {
+		t.Fatal("invalid since ok = true, want false so the caller filters nothing silently")
+	}
+
+	got, ok, err := parseAnnotationSince("2026-01-02")
+	if err != nil || !ok {
+		t.Fatalf("date-only since = (%v, %v, %v), want (midnight UTC, true, nil)", got, ok, err)
+	}
+	if want := time.Date(2026, 1, 2, 0, 0, 0, 0, time.UTC); !got.Equal(want) {
+		t.Fatalf("date-only since = %v, want %v", got, want)
+	}
+
+	if _, ok, err := parseAnnotationSince(""); err != nil || ok {
+		t.Fatalf("empty since = (ok=%v, err=%v), want (false, nil)", ok, err)
+	}
 }

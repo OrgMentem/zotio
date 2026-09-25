@@ -12,11 +12,19 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/spf13/cobra"
+
 	"zotio/internal/mutation"
 	"zotio/internal/store"
 )
 
-func TestItemsUpdateAbortsWhenVersionReadFails(t *testing.T) {
+// assertWriteCommandAbortsWhenVersionReadFails drives a single-key write
+// command against a version service that 503s, proving the write aborts with
+// the API-error exit code and never issues its mutating call. Shared by the
+// update and restore abort tests, which differ only in constructor, flags,
+// and args.
+func assertWriteCommandAbortsWhenVersionReadFails(t *testing.T, name string, newCmd func(*rootFlags) *cobra.Command, flags *rootFlags, args ...string) {
+	t.Helper()
 	fastRetryBackoff(t)
 	patchIssued := false
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -33,18 +41,23 @@ func TestItemsUpdateAbortsWhenVersionReadFails(t *testing.T) {
 	defer srv.Close()
 
 	t.Setenv("ZOTERO_BASE_URL", srv.URL+"/users/0")
-	cmd := newItemsUpdateCmd(&rootFlags{asJSON: true, yes: true})
+	cmd := newCmd(flags)
 	cmd.SilenceErrors, cmd.SilenceUsage = true, true
 	cmd.SetOut(&bytes.Buffer{})
 	cmd.SetErr(&bytes.Buffer{})
-	cmd.SetArgs([]string{"K", "--title", "updated"})
+	cmd.SetArgs(args)
 	err := cmd.Execute()
 	if ExitCode(err) != 5 {
-		t.Fatalf("ExitCode(update error) = %d, want 5; err = %v", ExitCode(err), err)
+		t.Fatalf("ExitCode(%s error) = %d, want 5; err = %v", name, ExitCode(err), err)
 	}
 	if patchIssued {
-		t.Fatal("PATCH issued after failed version read")
+		t.Fatalf("PATCH issued after failed version read (%s)", name)
 	}
+}
+
+func TestItemsUpdateAbortsWhenVersionReadFails(t *testing.T) {
+	assertWriteCommandAbortsWhenVersionReadFails(t, "update", newItemsUpdateCmd,
+		&rootFlags{asJSON: true, yes: true}, "K", "--title", "updated")
 }
 
 // replacePathParam already percent-encodes the key; pre-escaping it here would
@@ -227,7 +240,10 @@ func TestItemsUpdateMapsPreconditionRequiredToConflict(t *testing.T) {
 	cmd.SetOut(&out)
 	cmd.SetErr(&bytes.Buffer{})
 	cmd.SetArgs([]string{"K", "--title", "updated"})
-	_ = cmd.Execute()
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatalf("items update with 428 = nil error, want failure")
+	}
 	var env mutation.Envelope
 	if err := json.Unmarshal(out.Bytes(), &env); err != nil {
 		t.Fatalf("decode envelope: %v", err)
@@ -273,88 +289,60 @@ func runItemsUpdateArgGuardCmd(t *testing.T, g *itemsUpdateArgGuardServer, cmd i
 
 // `items update K1 K2` updated K1 and dropped K2 with no mention of it: the
 // request path, the op id and the whole envelope are built from args[0] alone.
-// The refusal must come before any network call.
-func TestItemsUpdateRefusesMoreThanOneKey(t *testing.T) {
-	g := newItemsUpdateArgGuardServer(t)
+// `items restore K1 K2` had the same silent-partial-action shape. The refusal
+// must come before any network call, under the same guard and convention.
+func TestItemsUpdateAndRestoreRefuseMoreThanOneKey(t *testing.T) {
+	for _, tt := range []struct {
+		name       string
+		new        func(*rootFlags) *cobra.Command
+		refuseArgs []string
+		singleArgs []string
+	}{
+		{name: "update", new: newItemsUpdateCmd, refuseArgs: []string{"K1", "K2", "--title", "updated"}, singleArgs: []string{"K1", "--title", "updated"}},
+		{name: "restore", new: newItemsRestoreCmd, refuseArgs: []string{"K1", "K2"}, singleArgs: []string{"K1"}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			g := newItemsUpdateArgGuardServer(t)
 
-	cmd := newItemsUpdateCmd(&rootFlags{asJSON: true, yes: true, maxChanges: -1})
-	cmd.SilenceErrors, cmd.SilenceUsage = true, true
-	err := runItemsUpdateArgGuardCmd(t, g, cmd, "K1", "K2", "--title", "updated")
-	if err == nil {
-		t.Fatal("items update accepted two keys; it acts on the first and drops the rest without saying so")
-	}
-	if !strings.Contains(err.Error(), "accepts at most 1 arg(s)") {
-		t.Errorf("error = %q, want the arity bound the neighbouring commands report", err.Error())
-	}
-	// The sibling single-target commands surface this refusal as exit 1 (a
-	// standalone Cobra arity error, not a wrapped usage error); the update
-	// command must match that convention, not invent its own code.
-	if ExitCode(err) != 1 {
-		t.Errorf("ExitCode = %d, want 1 (the Cobra-arity convention siblings follow)", ExitCode(err))
-	}
-	if g.requests != 0 {
-		t.Errorf("requests = %d, want 0: a refused argument list must not reach the library", g.requests)
-	}
+			cmd := tt.new(&rootFlags{asJSON: true, yes: true, maxChanges: -1})
+			cmd.SilenceErrors, cmd.SilenceUsage = true, true
+			err := runItemsUpdateArgGuardCmd(t, g, cmd, tt.refuseArgs...)
+			if err == nil {
+				t.Fatalf("items %s accepted two keys; it acts on the first and drops the rest without saying so", tt.name)
+			}
+			if !strings.Contains(err.Error(), "accepts at most 1 arg(s)") {
+				t.Errorf("error = %q, want the arity bound the neighbouring commands report", err.Error())
+			}
+			// The sibling single-target commands surface this refusal as exit 1 (a
+			// standalone Cobra arity error, not a wrapped usage error); the command
+			// must match that convention, not invent its own code.
+			if ExitCode(err) != 1 {
+				t.Errorf("ExitCode = %d, want 1 (the Cobra-arity convention siblings follow)", ExitCode(err))
+			}
+			if g.requests != 0 {
+				t.Errorf("requests = %d, want 0: a refused argument list must not reach the library", g.requests)
+			}
 
-	// Zero args still renders help rather than erroring, which is why the
-	// bound is MaximumNArgs and not ExactArgs.
-	helpGuard := newItemsUpdateArgGuardServer(t)
-	help := newItemsUpdateCmd(&rootFlags{asJSON: true})
-	help.SilenceErrors, help.SilenceUsage = true, true
-	if err := runItemsUpdateArgGuardCmd(t, helpGuard, help); err != nil {
-		t.Errorf("items update with no key = %v, want the help output", err)
-	}
+			// Zero args still renders help rather than erroring, which is why the
+			// bound is MaximumNArgs and not ExactArgs.
+			helpGuard := newItemsUpdateArgGuardServer(t)
+			help := tt.new(&rootFlags{asJSON: true})
+			help.SilenceErrors, help.SilenceUsage = true, true
+			if err := runItemsUpdateArgGuardCmd(t, helpGuard, help); err != nil {
+				t.Errorf("items %s with no key = %v, want the help output", tt.name, err)
+			}
 
-	// The single-key path still previews unchanged: no error and no HTTP call.
-	singleGuard := newItemsUpdateArgGuardServer(t)
-	single := newItemsUpdateCmd(&rootFlags{asJSON: true, maxChanges: -1})
-	single.SilenceErrors, single.SilenceUsage = true, true
-	if err := runItemsUpdateArgGuardCmd(t, singleGuard, single, "K1", "--title", "updated"); err != nil {
-		t.Fatalf("items update with one key = %v, want the preview envelope", err)
-	}
-	if singleGuard.requests != 0 {
-		t.Errorf("requests = %d, want 0: the preview must not reach the library", singleGuard.requests)
-	}
-}
-
-// `items restore K1 K2` restored K1 and dropped K2 with no mention of it, the
-// same silent-partial-action shape as update. Same guard, same convention.
-func TestItemsRestoreRefusesMoreThanOneKey(t *testing.T) {
-	g := newItemsUpdateArgGuardServer(t)
-
-	cmd := newItemsRestoreCmd(&rootFlags{asJSON: true, yes: true, maxChanges: -1})
-	cmd.SilenceErrors, cmd.SilenceUsage = true, true
-	err := runItemsUpdateArgGuardCmd(t, g, cmd, "K1", "K2")
-	if err == nil {
-		t.Fatal("items restore accepted two keys; it acts on the first and drops the rest without saying so")
-	}
-	if !strings.Contains(err.Error(), "accepts at most 1 arg(s)") {
-		t.Errorf("error = %q, want the arity bound the neighbouring commands report", err.Error())
-	}
-	if ExitCode(err) != 1 {
-		t.Errorf("ExitCode = %d, want 1 (the Cobra-arity convention siblings follow)", ExitCode(err))
-	}
-	if g.requests != 0 {
-		t.Errorf("requests = %d, want 0: a refused argument list must not reach the library", g.requests)
-	}
-
-	// Zero args still renders help rather than erroring.
-	helpGuard := newItemsUpdateArgGuardServer(t)
-	help := newItemsRestoreCmd(&rootFlags{asJSON: true})
-	help.SilenceErrors, help.SilenceUsage = true, true
-	if err := runItemsUpdateArgGuardCmd(t, helpGuard, help); err != nil {
-		t.Errorf("items restore with no key = %v, want the help output", err)
-	}
-
-	// The single-key path still previews unchanged: no error and no HTTP call.
-	singleGuard := newItemsUpdateArgGuardServer(t)
-	single := newItemsRestoreCmd(&rootFlags{asJSON: true, maxChanges: -1})
-	single.SilenceErrors, single.SilenceUsage = true, true
-	if err := runItemsUpdateArgGuardCmd(t, singleGuard, single, "K1"); err != nil {
-		t.Fatalf("items restore with one key = %v, want the preview envelope", err)
-	}
-	if singleGuard.requests != 0 {
-		t.Errorf("requests = %d, want 0: the preview must not reach the library", singleGuard.requests)
+			// The single-key path still previews unchanged: no error and no HTTP call.
+			singleGuard := newItemsUpdateArgGuardServer(t)
+			single := tt.new(&rootFlags{asJSON: true, maxChanges: -1})
+			single.SilenceErrors, single.SilenceUsage = true, true
+			if err := runItemsUpdateArgGuardCmd(t, singleGuard, single, tt.singleArgs...); err != nil {
+				t.Fatalf("items %s with one key = %v, want the preview envelope", tt.name, err)
+			}
+			if singleGuard.requests != 0 {
+				t.Errorf("requests = %d, want 0: the preview must not reach the library", singleGuard.requests)
+			}
+		})
 	}
 }
 

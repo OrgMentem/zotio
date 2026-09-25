@@ -14,6 +14,7 @@ import (
 	"io"
 	"strings"
 
+	"zotio/internal/client"
 	"zotio/internal/config"
 
 	"github.com/spf13/cobra"
@@ -268,6 +269,12 @@ func checkWebAPIKeyPrecondition(_ context.Context, flags *rootFlags, _ *cobra.Co
 	return true, "", nil
 }
 
+// liveLocalAPIProbe is localAPIReachable in production. Tests override it to
+// report a deterministic refusal or success without binding the fixed desktop
+// port 23119: bind-then-close races a real Zotero claiming the port in the
+// gap, and binding the port at all fails when Zotero is already running.
+var liveLocalAPIProbe func(*client.Client) bool = localAPIReachable
+
 func checkLiveLocalAPIPrecondition(_ context.Context, flags *rootFlags, _ *cobra.Command, _ capabilityEntry) (bool, string, error) {
 	cfg, err := config.Load(flags.configPath)
 	if err != nil {
@@ -284,7 +291,7 @@ func checkLiveLocalAPIPrecondition(_ context.Context, flags *rootFlags, _ *cobra
 	if err != nil {
 		return false, "", err
 	}
-	if !localAPIReachable(c) {
+	if !liveLocalAPIProbe(c) {
 		return false, "Zotero desktop local API is not reachable", nil
 	}
 	return true, "", nil

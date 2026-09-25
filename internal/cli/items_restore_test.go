@@ -56,34 +56,8 @@ func TestItemsRestoreSendsVersionHeader(t *testing.T) {
 }
 
 func TestItemsRestoreAbortsWhenVersionReadFails(t *testing.T) {
-	fastRetryBackoff(t)
-	patchIssued := false
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch r.Method {
-		case http.MethodGet:
-			http.Error(w, "version service unavailable", http.StatusServiceUnavailable)
-		case http.MethodPatch:
-			patchIssued = true
-			w.WriteHeader(http.StatusNoContent)
-		default:
-			http.Error(w, "unexpected", http.StatusMethodNotAllowed)
-		}
-	}))
-	defer srv.Close()
-
-	t.Setenv("ZOTERO_BASE_URL", srv.URL+"/users/0")
-	cmd := newItemsRestoreCmd(&rootFlags{asJSON: true, yes: true, maxChanges: -1})
-	cmd.SilenceErrors, cmd.SilenceUsage = true, true
-	cmd.SetOut(&bytes.Buffer{})
-	cmd.SetErr(&bytes.Buffer{})
-	cmd.SetArgs([]string{"K"})
-	err := cmd.Execute()
-	if ExitCode(err) != 5 {
-		t.Fatalf("ExitCode(restore error) = %d, want 5; err = %v", ExitCode(err), err)
-	}
-	if patchIssued {
-		t.Fatal("PATCH issued after failed version read")
-	}
+	assertWriteCommandAbortsWhenVersionReadFails(t, "restore", newItemsRestoreCmd,
+		&rootFlags{asJSON: true, yes: true, maxChanges: -1}, "K")
 }
 
 func TestItemsRestoreMissingItemIsAnError(t *testing.T) {

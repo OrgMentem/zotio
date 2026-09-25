@@ -17,6 +17,8 @@ import (
 
 	"zotio/internal/client"
 	"zotio/internal/config"
+
+	"github.com/spf13/cobra"
 )
 
 func TestMarkdownToNoteHTMLVerbatim(t *testing.T) {
@@ -426,6 +428,63 @@ func TestVaultPushAllReadableNotesExitZero(t *testing.T) {
 	}
 }
 
+// runVaultPreviewWithoutWriting is the shared harness behind the vault
+// push/pull preview gates: it serves the given fixture response while
+// recording any non-GET request as a write violation, runs one vault
+// direction's command in preview, and asserts the shared safety invariant —
+// no Zotero write request, a dry_run report counting one countsKey note, the
+// vault file left byte-for-byte unchanged, and no conflict artifact written.
+func runVaultPreviewWithoutWriting(t *testing.T, direction, tcName string, flags rootFlags, newCmd func(*rootFlags) *cobra.Command, respBody []byte, writeFixture func(t *testing.T, outDir string) (notePath string, before []byte), countsKey string) {
+	t.Helper()
+	var violation string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			violation = r.Method + " " + r.URL.Path
+			http.Error(w, "unexpected write under preview", http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write(respBody)
+	}))
+	t.Cleanup(srv.Close)
+	t.Setenv("ZOTERO_BASE_URL", srv.URL+"/users/0")
+	t.Setenv("ZOTERO_CONFIG", filepath.Join(t.TempDir(), "missing.toml"))
+
+	outDir := t.TempDir()
+	notePath, before := writeFixture(t, outDir)
+
+	cmd := newCmd(&flags)
+	cmd.SetArgs([]string{"--out", outDir})
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&bytes.Buffer{})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("vault %s (%s): %v", direction, tcName, err)
+	}
+	if violation != "" {
+		t.Fatalf("%s: preview issued a Zotero write request: %s", tcName, violation)
+	}
+
+	var report vaultWriteReport
+	if err := json.Unmarshal(out.Bytes(), &report); err != nil {
+		t.Fatalf("decode report %q: %v", out.String(), err)
+	}
+	if !report.DryRun || report.Counts[countsKey] != 1 {
+		t.Errorf("%s report = %+v, want dry_run + 1 %q note", tcName, report, countsKey)
+	}
+
+	after, err := os.ReadFile(notePath)
+	if err != nil {
+		t.Fatalf("read note after preview: %v", err)
+	}
+	if !bytes.Equal(before, after) {
+		t.Fatalf("%s: preview modified the vault note", tcName)
+	}
+	if _, err := os.Stat(filepath.Join(outDir, vaultConflictsDir)); !os.IsNotExist(err) {
+		t.Fatalf("%s: preview wrote a conflict artifact", tcName)
+	}
+}
+
 // TestVaultPushPreviewsWithoutWriting proves push's default gate: neither a
 // bare invocation nor --agent applies a write. The fixture note has a local
 // edit since its last push (so pushOne's non-preview branch would call
@@ -441,69 +500,28 @@ func TestVaultPushPreviewsWithoutWriting(t *testing.T) {
 		{name: "agent", flags: rootFlags{asJSON: true, agent: true}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			var violation string
-			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				if r.Method != http.MethodGet {
-					violation = r.Method + " " + r.URL.Path
-					http.Error(w, "unexpected write under preview", http.StatusInternalServerError)
-					return
+			writeFixture := func(t *testing.T, outDir string) (string, []byte) {
+				t.Helper()
+				region := "updated local notes"
+				state := pushState{
+					Schema:      noteStateSchema,
+					NoteKey:     "NOTEKEY1",
+					NoteVersion: 5,
+					SourceHash:  sha256hex("original notes"),
+					RemoteHash:  sha256hex(markdownToNoteHTML("cite1", "original notes")),
+					Renderer:    vaultRenderer,
 				}
-				w.Header().Set("Content-Type", "application/json")
-				_, _ = w.Write([]byte(`{"NOTEKEY1":5}`))
-			}))
-			t.Cleanup(srv.Close)
-			t.Setenv("ZOTERO_BASE_URL", srv.URL+"/users/0")
-			t.Setenv("ZOTERO_CONFIG", filepath.Join(t.TempDir(), "missing.toml"))
-
-			outDir := t.TempDir()
-			region := "updated local notes"
-			state := pushState{
-				Schema:      noteStateSchema,
-				NoteKey:     "NOTEKEY1",
-				NoteVersion: 5,
-				SourceHash:  sha256hex("original notes"),
-				RemoteHash:  sha256hex(markdownToNoteHTML("cite1", "original notes")),
-				Renderer:    vaultRenderer,
+				notePath := filepath.Join(outDir, "note.md")
+				writeFile(t, notePath, "---\nzotero_key: K1\ncitekey: cite1\n---\n\n## Notes\n"+
+					vaultNotesBegin+"\n"+region+"\n"+vaultNotesEnd+"\n"+stateComment(state)+"\n")
+				before, err := os.ReadFile(notePath)
+				if err != nil {
+					t.Fatalf("read fixture: %v", err)
+				}
+				return notePath, before
 			}
-			notePath := filepath.Join(outDir, "note.md")
-			writeFile(t, notePath, "---\nzotero_key: K1\ncitekey: cite1\n---\n\n## Notes\n"+
-				vaultNotesBegin+"\n"+region+"\n"+vaultNotesEnd+"\n"+stateComment(state)+"\n")
-			before, err := os.ReadFile(notePath)
-			if err != nil {
-				t.Fatalf("read fixture: %v", err)
-			}
-
-			flags := tc.flags
-			cmd := newVaultPushCmd(&flags)
-			cmd.SetArgs([]string{"--out", outDir})
-			var out bytes.Buffer
-			cmd.SetOut(&out)
-			cmd.SetErr(&bytes.Buffer{})
-			if err := cmd.Execute(); err != nil {
-				t.Fatalf("vault push (%s): %v", tc.name, err)
-			}
-			if violation != "" {
-				t.Fatalf("%s: preview issued a Zotero write request: %s", tc.name, violation)
-			}
-
-			var report vaultWriteReport
-			if err := json.Unmarshal(out.Bytes(), &report); err != nil {
-				t.Fatalf("decode report %q: %v", out.String(), err)
-			}
-			if !report.DryRun || report.Counts["would update"] != 1 {
-				t.Errorf("%s report = %+v, want dry_run + 1 would-update note", tc.name, report)
-			}
-
-			after, err := os.ReadFile(notePath)
-			if err != nil {
-				t.Fatalf("read note after preview: %v", err)
-			}
-			if !bytes.Equal(before, after) {
-				t.Fatalf("%s: preview modified the vault note", tc.name)
-			}
-			if _, err := os.Stat(filepath.Join(outDir, vaultConflictsDir)); !os.IsNotExist(err) {
-				t.Fatalf("%s: preview wrote a conflict artifact", tc.name)
-			}
+			runVaultPreviewWithoutWriting(t, "push", tc.name, tc.flags, newVaultPushCmd,
+				[]byte(`{"NOTEKEY1":5}`), writeFixture, "would update")
 		})
 	}
 }

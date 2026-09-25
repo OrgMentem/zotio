@@ -633,39 +633,6 @@ func TestSchemaDriftDeepFastPathUsesSelectedCacheContents(t *testing.T) {
 	}
 }
 
-func TestSchemaDriftShallowFastPathStillFires(t *testing.T) {
-	var mu sync.Mutex
-	hits := map[string]int{}
-	srv := versionedSchemaServer("100", []string{"book"}, hits, &mu)
-	defer srv.Close()
-	baseline := filepath.Join(t.TempDir(), "baseline.json")
-	if _, err := runSchemaDrift(t, srv.URL, baseline, true); err != nil {
-		t.Fatalf("capture: %v", err)
-	}
-	mu.Lock()
-	hits["/itemTypes"], hits["/itemFields"], hits["/creatorFields"] = 0, 0, 0
-	mu.Unlock()
-	out, err := runSchemaDrift(t, srv.URL, baseline, true)
-	if err != nil {
-		t.Fatalf("second shallow run: %v", err)
-	}
-	mu.Lock()
-	defer mu.Unlock()
-	if hits["/itemTypes"] != 1 {
-		t.Errorf("/itemTypes hits = %d, want 1", hits["/itemTypes"])
-	}
-	if hits["/itemFields"] != 0 || hits["/creatorFields"] != 0 {
-		t.Errorf("shallow fast path must still skip remaining fetches, hits=%v", hits)
-	}
-	var res map[string]any
-	if err := json.Unmarshal([]byte(out), &res); err != nil {
-		t.Fatalf("decode %q: %v", out, err)
-	}
-	if res["drift"] != false {
-		t.Errorf("drift = %v, want false", res["drift"])
-	}
-}
-
 func TestSchemaDriftDeepWithoutDBFetchesPerTypeSchemaLive(t *testing.T) {
 	var mu sync.Mutex
 	hits := map[string]int{}

@@ -5,7 +5,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -209,28 +208,25 @@ func TestTagsAuditFixApplyRenamesEachAlias(t *testing.T) {
 	}
 }
 
-func largeTagAuditItems() []json.RawMessage {
-	items := make([]json.RawMessage, 0, 901)
-	for i := range 301 {
-		key := fmt.Sprintf("C%03d", i)
-		items = append(items, json.RawMessage(fmt.Sprintf(`{"key":%q,"version":1,"data":{"key":%q,"tags":[{"tag":"Data Science","type":0}]}}`, key, key)))
+// smallTagAuditItems is the smallest fixture that still proves the
+// max-changes cap boundary: two canonical items plus four alias spellings
+// plan four renames, so a cap of 3 refuses and a cap of 4 applies.
+func smallTagAuditItems() []json.RawMessage {
+	return []json.RawMessage{
+		json.RawMessage(`{"key":"C1","version":1,"data":{"key":"C1","tags":[{"tag":"Data Science","type":0}]}}`),
+		json.RawMessage(`{"key":"C2","version":2,"data":{"key":"C2","tags":[{"tag":"Data Science","type":0}]}}`),
+		json.RawMessage(`{"key":"A1","version":3,"data":{"key":"A1","tags":[{"tag":"data science","type":0}]}}`),
+		json.RawMessage(`{"key":"A2","version":4,"data":{"key":"A2","tags":[{"tag":"data science","type":0}]}}`),
+		json.RawMessage(`{"key":"B1","version":5,"data":{"key":"B1","tags":[{"tag":"Data  Science","type":0}]}}`),
+		json.RawMessage(`{"key":"B2","version":6,"data":{"key":"B2","tags":[{"tag":"Data  Science","type":0}]}}`),
 	}
-	for i := range 300 {
-		key := fmt.Sprintf("A%03d", i)
-		items = append(items, json.RawMessage(fmt.Sprintf(`{"key":%q,"version":2,"data":{"key":%q,"tags":[{"tag":"data science","type":0}]}}`, key, key)))
-	}
-	for i := range 300 {
-		key := fmt.Sprintf("B%03d", i)
-		items = append(items, json.RawMessage(fmt.Sprintf(`{"key":%q,"version":3,"data":{"key":%q,"tags":[{"tag":"Data  Science","type":0}]}}`, key, key)))
-	}
-	return items
 }
 
 func TestTagsAuditFixMaxChangesCountsItemWrites(t *testing.T) {
 	fastRetryBackoff(t)
-	seedTagsAuditFixStore(t, largeTagAuditItems())
+	items := smallTagAuditItems()
+	seedTagsAuditFixStore(t, items)
 	patches := 0
-	items := largeTagAuditItems()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if serveTagAuditFixItem(w, r, items) {
 			return
@@ -244,33 +240,33 @@ func TestTagsAuditFixMaxChangesCountsItemWrites(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	refused, refusedJSON, err := runTagsAuditFixCmd(t, &rootFlags{asJSON: true, yes: true, maxChanges: 500}, srv.URL)
+	refused, refusedJSON, err := runTagsAuditFixCmd(t, &rootFlags{asJSON: true, yes: true, maxChanges: 3}, srv.URL)
 	if err == nil {
 		t.Fatal("tags audit fix apply succeeded, want max_changes_exceeded error")
 	}
 	if refused.OK || refused.Error == nil || refused.Error.Code != "max_changes_exceeded" {
 		t.Fatalf("refused envelope = %+v, want max_changes_exceeded", refused)
 	}
-	if refused.Plan.Summary.Planned != 600 || len(refused.Plan.Operations) != 600 {
-		t.Fatalf("refused plan = summary %+v len %d, want 600 item writes", refused.Plan.Summary, len(refused.Plan.Operations))
+	if refused.Plan.Summary.Planned != 4 || len(refused.Plan.Operations) != 4 {
+		t.Fatalf("refused plan = summary %+v len %d, want 4 item writes", refused.Plan.Summary, len(refused.Plan.Operations))
 	}
-	if !bytes.Contains([]byte(refusedJSON), []byte(`"planned": 600`)) {
-		t.Fatalf("preview JSON %q does not include planned item-write count 600", refusedJSON)
+	if !bytes.Contains([]byte(refusedJSON), []byte(`"planned": 4`)) {
+		t.Fatalf("preview JSON %q does not include planned item-write count 4", refusedJSON)
 	}
 	if patches != 0 {
 		t.Fatalf("refused apply made %d PATCH request(s), want 0", patches)
 	}
 
-	seedTagsAuditFixStore(t, largeTagAuditItems())
-	applied, _, err := runTagsAuditFixCmd(t, &rootFlags{asJSON: true, yes: true, maxChanges: 600}, srv.URL)
+	seedTagsAuditFixStore(t, items)
+	applied, _, err := runTagsAuditFixCmd(t, &rootFlags{asJSON: true, yes: true, maxChanges: 4}, srv.URL)
 	if err != nil {
 		t.Fatalf("tags audit fix apply at cap: %v", err)
 	}
-	if !applied.OK || applied.Result == nil || applied.Plan.Summary.Planned != 600 || applied.Result.Summary.Applied != 600 {
-		t.Fatalf("applied envelope = %+v, want 600 planned/applied item writes", applied)
+	if !applied.OK || applied.Result == nil || applied.Plan.Summary.Planned != 4 || applied.Result.Summary.Applied != 4 {
+		t.Fatalf("applied envelope = %+v, want 4 planned/applied item writes", applied)
 	}
-	if patches != 600 {
-		t.Fatalf("PATCH requests after allowed apply = %d, want 600", patches)
+	if patches != 4 {
+		t.Fatalf("PATCH requests after allowed apply = %d, want 4", patches)
 	}
 }
 

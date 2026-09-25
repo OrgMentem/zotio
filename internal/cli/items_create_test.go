@@ -127,43 +127,10 @@ func TestItemsCreateReportsBatchWriteFailures(t *testing.T) {
 // did not reject were still created in the library -- so the run must still
 // be journaled, with an accurate applied/failed split.
 func TestItemsCreatePartialBatchIsJournaled(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
-	mutationJournalRecorder = recordMutationJournal
-	t.Cleanup(func() { mutationJournalRecorder = nil })
-
-	requestCount := 0
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		requestCount++
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"success":{"0":"K1","2":"K3"},"successful":{},"unchanged":{},"failed":{"1":{"code":400,"message":"itemType is required"}}}`))
-	}))
-	defer srv.Close()
-	t.Setenv("ZOTERO_BASE_URL", srv.URL+"/users/0")
-
-	cmd := newItemsCreateCmd(&rootFlags{asJSON: true, yes: true, maxChanges: -1})
-	cmd.SilenceErrors, cmd.SilenceUsage = true, true
-	cmd.SetErr(io.Discard)
-	var out bytes.Buffer
-	cmd.SetOut(&out)
-	cmd.SetArgs([]string{"--items", `[{"itemType":"journalArticle","title":"a"},{"title":"b"},{"itemType":"journalArticle","title":"c"}]`})
-	err := cmd.Execute()
-	if err == nil || ExitCode(err) != 13 {
-		t.Fatalf("items create error = %v, exit=%d; want degraded failure", err, ExitCode(err))
-	}
-	if requestCount != 1 {
-		t.Fatalf("requests = %d, want exactly 1 batched POST for a 3-item body", requestCount)
-	}
-
-	entries, listErr := mutation.ListEntries(helpersTestJournalDir(t))
-	if listErr != nil {
-		t.Fatalf("list journal entries: %v", listErr)
-	}
-	if len(entries) != 1 {
-		t.Fatalf("journal entries = %d, want 1 recorded run even though the batch partially failed", len(entries))
-	}
-	if entries[0].Summary.Applied != 2 || entries[0].Summary.Failed != 1 {
-		t.Fatalf("journaled summary = %+v, want 2 applied and 1 failed", entries[0].Summary)
-	}
+	runPartialBatchJournalingCase(t, "items create", newItemsCreateCmd,
+		[]string{"--items", `[{"itemType":"journalArticle","title":"a"},{"title":"b"},{"itemType":"journalArticle","title":"c"}]`},
+		"",
+		`{"success":{"0":"K1","2":"K3"},"successful":{},"unchanged":{},"failed":{"1":{"code":400,"message":"itemType is required"}}}`)
 }
 
 // TestItemsCreateReadsStdinFromCommandReader guards the MCP stdin-hijack fix:

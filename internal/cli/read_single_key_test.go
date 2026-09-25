@@ -50,73 +50,37 @@ func executeReadSingleKeyCmd(t *testing.T, ctr *readSingleKeyCounter, cmd *cobra
 // defaults a command with no subcommands to ArbitraryArgs, so `items get K1
 // K2` read K1 and dropped K2 with no mention of it: the request path is built
 // from args[0] alone, and the operator reads one result as two.
-func TestItemsGetRefusesMoreThanOneKey(t *testing.T) {
-	ctr := newReadSingleKeyCounter(t)
+func TestSingleKeyReadsRefuseMoreThanOneKey(t *testing.T) {
+	for _, tt := range []struct {
+		name     string
+		new      func(*rootFlags) *cobra.Command
+		refuse   []string
+		noun     string
+		helpNoun string
+	}{
+		{name: "items get", new: newItemsGetCmd, refuse: []string{"K1", "K2"}, noun: "keys", helpNoun: "key"},
+		{name: "collections get", new: newCollectionsGetCmd, refuse: []string{"K1", "K2"}, noun: "keys", helpNoun: "key"},
+		{name: "searches get", new: newSearchesGetCmd, refuse: []string{"K1", "K2"}, noun: "keys", helpNoun: "key"},
+		{name: "tags get", new: newTagsGetCmd, refuse: []string{"A", "B"}, noun: "names", helpNoun: "name"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			ctr := newReadSingleKeyCounter(t)
 
-	out, err := executeReadSingleKeyCmd(t, ctr, newItemsGetCmd(&rootFlags{asJSON: true, dataSource: "live", noCache: true}), "K1", "K2")
-	if err == nil {
-		t.Fatalf("items get accepted two keys (out=%q); it reads the first and drops the rest without saying so", out)
-	}
-	if ctr.requests != 0 {
-		t.Errorf("requests = %d, want 0: a refused argument list must not reach the library", ctr.requests)
-	}
+			out, err := executeReadSingleKeyCmd(t, ctr, tt.new(&rootFlags{asJSON: true, dataSource: "live", noCache: true}), tt.refuse...)
+			if err == nil {
+				t.Fatalf("%s accepted two %s (out=%q); it reads the first and drops the rest without saying so", tt.name, tt.noun, out)
+			}
+			if ctr.requests != 0 {
+				t.Errorf("requests = %d, want 0: a refused argument list must not reach the library", ctr.requests)
+			}
 
-	// Zero args still renders help rather than erroring, which is why the
-	// bound is MaximumNArgs and not ExactArgs.
-	helpCtr := newReadSingleKeyCounter(t)
-	if _, err := executeReadSingleKeyCmd(t, helpCtr, newItemsGetCmd(&rootFlags{asJSON: true, dataSource: "live", noCache: true})); err != nil {
-		t.Errorf("items get with no key = %v, want the help output", err)
-	}
-}
-
-func TestCollectionsGetRefusesMoreThanOneKey(t *testing.T) {
-	ctr := newReadSingleKeyCounter(t)
-
-	out, err := executeReadSingleKeyCmd(t, ctr, newCollectionsGetCmd(&rootFlags{asJSON: true, dataSource: "live", noCache: true}), "K1", "K2")
-	if err == nil {
-		t.Fatalf("collections get accepted two keys (out=%q); it reads the first and drops the rest without saying so", out)
-	}
-	if ctr.requests != 0 {
-		t.Errorf("requests = %d, want 0: a refused argument list must not reach the library", ctr.requests)
-	}
-
-	helpCtr := newReadSingleKeyCounter(t)
-	if _, err := executeReadSingleKeyCmd(t, helpCtr, newCollectionsGetCmd(&rootFlags{asJSON: true, dataSource: "live", noCache: true})); err != nil {
-		t.Errorf("collections get with no key = %v, want the help output", err)
-	}
-}
-
-func TestSearchesGetRefusesMoreThanOneKey(t *testing.T) {
-	ctr := newReadSingleKeyCounter(t)
-
-	out, err := executeReadSingleKeyCmd(t, ctr, newSearchesGetCmd(&rootFlags{asJSON: true, dataSource: "live", noCache: true}), "K1", "K2")
-	if err == nil {
-		t.Fatalf("searches get accepted two keys (out=%q); it reads the first and drops the rest without saying so", out)
-	}
-	if ctr.requests != 0 {
-		t.Errorf("requests = %d, want 0: a refused argument list must not reach the library", ctr.requests)
-	}
-
-	helpCtr := newReadSingleKeyCounter(t)
-	if _, err := executeReadSingleKeyCmd(t, helpCtr, newSearchesGetCmd(&rootFlags{asJSON: true, dataSource: "live", noCache: true})); err != nil {
-		t.Errorf("searches get with no key = %v, want the help output", err)
-	}
-}
-
-func TestTagsGetRefusesMoreThanOneKey(t *testing.T) {
-	ctr := newReadSingleKeyCounter(t)
-
-	out, err := executeReadSingleKeyCmd(t, ctr, newTagsGetCmd(&rootFlags{asJSON: true, dataSource: "live", noCache: true}), "A", "B")
-	if err == nil {
-		t.Fatalf("tags get accepted two names (out=%q); it reads the first and drops the rest without saying so", out)
-	}
-	if ctr.requests != 0 {
-		t.Errorf("requests = %d, want 0: a refused argument list must not reach the library", ctr.requests)
-	}
-
-	helpCtr := newReadSingleKeyCounter(t)
-	if _, err := executeReadSingleKeyCmd(t, helpCtr, newTagsGetCmd(&rootFlags{asJSON: true, dataSource: "live", noCache: true})); err != nil {
-		t.Errorf("tags get with no name = %v, want the help output", err)
+			// Zero args still renders help rather than erroring, which is why the
+			// bound is MaximumNArgs and not ExactArgs.
+			helpCtr := newReadSingleKeyCounter(t)
+			if _, err := executeReadSingleKeyCmd(t, helpCtr, tt.new(&rootFlags{asJSON: true, dataSource: "live", noCache: true})); err != nil {
+				t.Errorf("%s with no %s = %v, want the help output", tt.name, tt.helpNoun, err)
+			}
+		})
 	}
 }
 
