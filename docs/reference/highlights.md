@@ -99,9 +99,9 @@ Fill missing DOIs and abstracts from CrossRef, OpenAlex, or Semantic Scholar; fi
 
 ### `attachments add`
 
-Attach a local PDF (or any file) to an existing item as a synced stored attachment via the Zotero Web API upload protocol — preview-first and retry-safe (an identical retry no-ops instead of duplicating).
+Attach a local PDF (or any file) to an existing item as a synced stored attachment via the Zotero Web API upload protocol by default — preview-first and retry-safe (an identical retry no-ops instead of duplicating); --via connector selects the opt-in desktop route instead.
 
-> **Why it matters** — Close the missing-PDF loop: a file you already hold becomes a proper synced attachment without touching the desktop client.
+> **Why it matters** — Close the missing-PDF loop: a file you already hold becomes a proper synced attachment without touching the desktop client on the default route, while the opt-in connector route needs Zotero desktop running and trashes a temporary parent after the move.
 
 ### `items preprint-check`
 

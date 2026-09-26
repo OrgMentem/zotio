@@ -2974,7 +2974,7 @@ Examples:
   zotio sync
 
   # Sync specific resources only
-  zotio sync --resources channels,messages
+  zotio sync --resources collections,items
 
   # Cache per-item-type field validity (one request per cached item type)
   zotio sync --resources schema-item-type-fields
