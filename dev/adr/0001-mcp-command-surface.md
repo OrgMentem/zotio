@@ -43,9 +43,9 @@ Two coordinated changes, plus a runtime switch:
    `visitSafeMirrorFlags` (in `cobratree/walker.go`) emits **command-local (non-inherited) flags
    only**, and drives **both** schema exposure (`safeToolOptionsForFlags`) and the validation
    allowlist (`safeFlagNames`) so they can never diverge — preserving the argument-safety guard
-   (`validateMirrorArguments`). **Exception (see Amendment 2026-06-29):** for **mutating** commands
-   (`!mcp:read-only`) the enumerator also emits the six write-safety gate flags (`yes`, `dry-run`,
-   `allow-destructive`, `max-changes`, `continue-on-error`, `max-failures`) from the inherited set, so
+   (`validateMirrorArguments`). **Exception (see Amendment 2026-06-29, plus `allow-zotero-cloud` below):** for **mutating** commands
+   (`!mcp:read-only`) the enumerator also emits the seven write-safety gate flags (`yes`, `dry-run`,
+   `allow-destructive`, `allow-zotero-cloud`, `max-changes`, `continue-on-error`, `max-failures`) from the inherited set, so
    applies remain reachable over MCP. They cost zero standing tokens on the default facade surface
    (delivered only in on-demand `command_search` detail).
 
@@ -122,13 +122,13 @@ Two coordinated changes, plus a runtime switch:
   `tags audit fix`, `tags rename`, `reading-list add`, `library health --fix` — none of which have a
   typed-tool equivalent) could only **preview** over MCP, never apply. A functional regression vs. the
   pre-`4cb4fb9` surface.
-- **Fix:** `visitSafeMirrorFlags` now also emits the six gate flags (`yes`, `dry-run`,
-  `allow-destructive`, `max-changes`, `continue-on-error`, `max-failures`) for **mutating** commands
+- **Fix:** `visitSafeMirrorFlags` now also emits the seven gate flags (`yes`, `dry-run`,
+  `allow-destructive`, `allow-zotero-cloud`, `max-changes`, `continue-on-error`, `max-failures`) for **mutating** commands
   (`!isMCPReadOnly`). The single-enumerator invariant is preserved, so schema exposure, the validation
   allowlist, and `command_search` detail all gain them together — `command_run` accepts `{"yes": true}`
   for a mutating command and rejects it for a read-only one. Standing-token impact on the default
   `facade` surface is ~0 (gate flags appear only in on-demand detail); the `mirror` surface gains the
-  six flags on mutating tools only (≈ the write-gate estimate, not the full 22-flag bloat).
+  seven flags on mutating tools only (≈ the write-gate estimate, not the full 22-flag bloat).
 - **Tests:** `flagstrip_test.go` (accept on mutating / reject on read-only / formatting+hidden still
   rejected) and `orchestrate_test.go` (end-to-end: `--yes` propagates through `command_run` to a
   mutating command and applies; rejected on a read-only command; exposed in `command_search` detail).
@@ -147,3 +147,4 @@ Two coordinated changes, plus a runtime switch:
 - **2026-07-10:** ADR-0003 retired the 28 spec-derived typed MCP endpoint tools; the current MCP surface is framework tools plus the facade/mirror CLI command surface.
 - **2026-07-11:** `workflow run` became CLI-only via `mcp:hidden`. Its file format contains raw nested CLI argument vectors, so exposing it through `command_run` let those nested commands bypass the facade's per-command safe-flag allowlist. `workflow archive` and `workflow status` remain MCP-visible; any future agent-submittable workflow surface needs a dedicated validated schema rather than arbitrary CLI arguments.
 - **2026-07-15:** The dedicated agent-submittable workflow surface anticipated by the 2026-07-11 amendment shipped as the hand-written workflow_submit tool (internal/mcp/cobratree/workflow.go): inline steps name mirrorable commands and are validated per step with the same safeFlagNames/validateMirrorArguments guard as command_run, then executed through the CLI's transactional workflow runner. workflow run itself stays mcp:hidden.
+- **2026-08-17:** `allow-zotero-cloud` joined the write-safety gates as the seventh flag (commit `29dc229`): the stored-upload refusal names it in its remediation, so an agent that cannot pass it is told to do something the surface rejects. It rides the same single-enumerator invariant, for mutating commands only.

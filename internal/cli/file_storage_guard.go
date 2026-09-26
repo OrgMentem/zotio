@@ -7,13 +7,16 @@
 // desktop keeps attachment files on a personal WebDAV server: the bytes end up
 // in a plan they do not use, and never reach the server they configured.
 //
-// There is no local alternative for a file that must attach to an item which
-// already exists in the library. Zotero's desktop connector resolves
-// /connector/saveAttachment's parentItemID exclusively through the save
-// session that created it (SaveSession.getItemByConnectorKey, a lookup in an
-// in-memory per-session map), so a real library item key is not addressable:
-// it answers 500 for a live session and 400 SESSION_NOT_FOUND otherwise.
-// Verified against Zotero 7 on 2026-08-17.
+// Direct connector saves cannot address an item which already exists in the
+// library: Zotero's desktop connector resolves /connector/saveAttachment's
+// parentItemID exclusively through the save session that created it
+// (SaveSession.getItemByConnectorKey, a lookup in an in-memory per-session
+// map), so a real library item key is not addressable that way: it answers
+// 500 for a live session and 400 SESSION_NOT_FOUND otherwise. Verified
+// against Zotero 7 on 2026-08-17. The opt-in `attachments add --via
+// connector` route still reaches such an item by creating a temporary parent
+// plus the file in one connector session and re-parenting the attachment
+// onto the real item (see attachments_reparent.go).
 //
 // So the honest behaviour is a refusal that names the mismatch, not a silent
 // upload into the wrong store. `import apply --attach-mode stored --via
@@ -32,10 +35,13 @@
 // the evidence points at a misroute, including when several Zotero profiles
 // make the running configuration ambiguous.
 //
-// Absence of evidence is not treated as evidence: no Zotero installation, an
-// unreadable profile, or a preference that cannot be decoded all allow the
-// upload, because zotio is routinely run against the Web API on machines with
-// no desktop at all.
+// Genuine absence of evidence is not treated as evidence: with no Zotero
+// installation at all the upload is allowed, because zotio is routinely run
+// against the Web API on machines with no desktop. But a discovered profile
+// that cannot be evaluated is refused, not allowed: an unreadable profile, an
+// explicit pin that resolves to nothing, or a preference this package cannot
+// decode means the reader is outside its contract, and treating that as
+// consent re-opens the misroute.
 
 package cli
 

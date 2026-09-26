@@ -409,8 +409,8 @@ func TestReapMirroredItemRollsBackWhenTheDeletionMarkerCannotBeWritten(t *testin
 // the applied order inside the envelope is not the store's to choose. The
 // deletion marker must come out of that collision untouched: an overwritten
 // payload puts replayable changes behind a flag that says the key is gone, and
-// a refreshed written_at silently restarts the TTL clock that bounds how long
-// the suppression may last.
+// a refreshed written_at silently rewrites the diagnostic age that past-TTL
+// warnings report, even though no clock retires the suppression itself.
 func TestRecordPendingWriteNeverOverwritesADeletionMarker(t *testing.T) {
 	ctx := context.Background()
 	path := filepath.Join(t.TempDir(), "data.db")
@@ -448,7 +448,7 @@ func TestRecordPendingWriteNeverOverwritesADeletionMarker(t *testing.T) {
 		t.Errorf("deletion marker changes = %s, want []: field changes must not be parked behind a deletion flag", mark.Changes)
 	}
 	if time.Since(mark.WrittenAt) < 24*time.Hour {
-		t.Errorf("deletion marker written_at = %v, want the aged value: recording a field write must not restart the suppression TTL", mark.WrittenAt)
+		t.Errorf("deletion marker written_at = %v, want the aged value: recording a field write must not refresh the marker's diagnostic written_at", mark.WrittenAt)
 	}
 
 	// A key with no deletion marker still records normally.

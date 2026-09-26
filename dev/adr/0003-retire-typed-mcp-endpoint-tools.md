@@ -23,8 +23,9 @@ Delete the typed spec-endpoint MCP surface.
 
 `RegisterTools` now registers only:
 
-1. the three MCP framework tools — `context`, `search`, and `sql`; and
-2. the selected cobratree command surface: default `command_search` / `command_run` facade, or the per-command mirror when `ZOTIO_MCP_SURFACE=mirror`.
+1. the three MCP framework tools — `context`, `search`, and `sql`;
+2. the selected cobratree command surface: default `command_search` / `command_run` facade, or the per-command mirror when `ZOTIO_MCP_SURFACE=mirror`; and
+3. the hand-written `workflow_submit` agent surface (shipped 2026-07-15; inline steps name mirrorable commands and are validated per step with the same safe-flag guard as `command_run` — see ADR-0001).
 
 The CLI tree is the single MCP source of truth for endpoint-shaped work. Agents that need collection, item, schema, tag, or search workflows should use `command_search` to discover the CLI command, then `command_run` to execute it; hosts that need native one-tool-per-command schemas can switch to the mirror.
 

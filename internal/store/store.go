@@ -58,10 +58,10 @@ var ErrNotFound = errors.New("store: resource not found")
 type Store struct {
 	db *sql.DB
 	// writeMu serializes all DB writes. Read paths bypass the lock and run
-	// concurrently against WAL. Resource-level concurrency in sync.go.tmpl
-	// is 1 (one goroutine per resource via len(resources)-sized work channel)
-	// — read-then-write sequences (e.g., GetSyncState → SaveSyncState) are
-	// race-free by construction within a resource.
+	// concurrently against WAL. Resource-level concurrency in internal/cli/sync.go
+	// is one worker per resource (the len(resources)-sized work channel consumed
+	// by the newSyncCmd pool via runSyncWorker) — read-then-write sequences
+	// (e.g., GetSyncState → SaveSyncState) are race-free by construction within a resource.
 	writeMu sync.Mutex
 
 	upsertBatchHook func()

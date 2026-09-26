@@ -228,10 +228,13 @@ omits trashed collections from `/collections` but keeps their member links
 (trash only records the collection for restore), while erase deletes the
 membership rows. An absent collection with mirrored live members is
 therefore probed — one member fetched, spared with all links intact when
-the plane still names the collection — so a trashed collection is never
-reaped and its restore needs no repair. Trash rows are never edited: the
-mirror reflects the plane's last observation. Item rows themselves, and
-every other resource, still need a full pass, as stated above.
+the plane still names the collection — so a trashed collection with a usable
+live member witness is never reaped and its restore needs no repair. An absent
+collection with no usable witness (none, all locally deleted, or all gone on
+the plane) is still reaped, because an empty collection has no links to break,
+and a later versioned collections sync resurrects the row on restore. Trash
+rows are never edited: the mirror reflects the plane's last observation.
+Item rows themselves, and every other resource, still need a full pass, as stated above.
 
 `items delete` therefore emits a one-line stderr notice when the mirror does not
 exist, naming what happened, what the user will see, and the remedy. That notice
@@ -255,8 +258,8 @@ permanent delete had failed while the mirror had already purged the row and
 written its markers — the report and the mirror answering the same question
 differently.
 
-**Decision. A write-plane 404 on the delete path is classified against the
-mirror, and the report always agrees with the mirror state.**
+**Decision. Without `--ignore-missing`, a write-plane 404 on the delete path is
+classified against the mirror, and the report agrees with the mirror state.**
 
 1. **A deletion marker for the key means the 404 confirms a delete this
    installation already applied.** A marker is written only after the write
@@ -281,6 +284,12 @@ mirror, and the report always agrees with the mirror state.**
    where there is no mirror there is nothing to agree with. Every failure to
    read one answers "unknown": a permanent delete must not soften a 404 on a
    guess.
+
+`--ignore-missing` is the one explicit exception to this classification: with the
+flag set, a 404 reports a `no_op` (`code: already_deleted`) without consulting the
+mirror, so a connector-born item that is still alive locally reads as already done.
+That no-op is flag-driven risk acceptance for idempotent retries, not a
+marker-confirmed delete, and it must never be treated as mirror-verified.
 
 The reconciliation inside `deleteWithVersionGuard` is untouched and stays
 sound. It treats a 404 from its post-write read as "applied", which is correct

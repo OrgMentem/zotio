@@ -14,6 +14,7 @@ import (
 // commands. Formatting/ops globals and hidden globals stay stripped everywhere.
 var writeGatingGlobalFlagNames = []string{
 	"allow-destructive",
+	"allow-zotero-cloud",
 	"continue-on-error",
 	"dry-run",
 	"max-changes",

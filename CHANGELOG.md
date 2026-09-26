@@ -54,9 +54,9 @@ Notable changes to zotio. Format follows [Keep a Changelog](https://keepachangel
   After a clean incremental pass, sync asks the plane for the key lists of
   collections and trash. There is one `format=keys` request for each list.
   Sync then reaps the mirrored rows that are missing from a list. Before, only
-  `sync --full` did this. A collection that is gone from the list is removed
-  only if one of its member items no longer names it: a trashed collection
-  keeps its links, so restoring it needs no repair. The member items of a
+  `sync --full` did this. An absent collection stays in the mirror only when a
+  usable live member still names it; an empty or unwitnessed collection is
+  reaped and returns on a later versioned restore sync. The member items of a
   removed collection are fetched again in `/items?itemKey=` batches of up to
   50 keys per request, so their `data.collections` matches the plane.
   Deletion markers are respected (ADR-0007). A listing is swept only with a

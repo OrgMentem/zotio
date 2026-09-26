@@ -14,7 +14,7 @@ import (
 )
 
 // RegisterAll walks the user-facing Cobra commands and registers in-process
-// MCP tools for commands that are not already covered by typed endpoint tools.
+// MCP tools for each runnable command (hidden and framework commands excluded).
 // Takes a factory that builds a fresh command tree, so each tool invocation can
 // execute against its own single-use cobra.Command instead of shelling out to a
 // companion binary.
@@ -79,7 +79,9 @@ func descriptionFor(cmd *cobra.Command) string {
 
 // Command-mirror tools run inside an MCP host, so global
 // delivery/configuration escape hatches must not be exposed as tool parameters.
-// Hosts should configure those out-of-band or use typed MCP tools.
+// Hosts should configure those out-of-band (the MCP layer injects --agent; see
+// runMirroredInProcess) or invoke commands through the command_search/command_run
+// facade instead of raw flags.
 var unsafeMCPMirrorFlags = map[string]struct{}{
 	"config":  {},
 	"deliver": {},

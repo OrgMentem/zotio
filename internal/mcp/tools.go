@@ -64,7 +64,8 @@ func RegisterTools(s *server.MCPServer) {
 		handleContext,
 	)
 
-	// Command surface for the rest of the Cobra tree. ZOTIO_MCP_SURFACE selects
+	// Command surface for the rest of the Cobra tree, except commands marked
+	// mcp:hidden (currently workflow run). ZOTIO_MCP_SURFACE selects
 	// the shape. Default "facade" collapses the command tree behind a
 	// command_search + command_run pair (~93% fewer tokens at connect, all
 	// commands reachable on demand). "mirror" registers one lean MCP tool per
