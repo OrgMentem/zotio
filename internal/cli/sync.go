@@ -1533,6 +1533,12 @@ func syncResource(ctx context.Context, c syncHTTPClient, db *store.Store, resour
 				})
 			}
 		}
+		// Clear the resume cursor before advancing the version. If the version
+		// write then fails, the next run can safely repeat this pass; advancing
+		// it first could leave a stale cursor that skips rows on resume.
+		if serr := db.SaveSyncResumeStateContext(ctx, resource, "", "", totalCount); serr != nil {
+			return syncResult{Resource: resource, Count: totalCount, Err: fmt.Errorf("persisting sync checkpoint: %w", serr), Duration: time.Since(started)}
+		}
 		// Stamps converge with the pass they cover: the library-version
 		// checkpoint is what lets the next incremental pass skip this data, so
 		// it commits only once the sweep above has landed. Unconditional even
@@ -1545,9 +1551,6 @@ func syncResource(ctx context.Context, c syncHTTPClient, db *store.Store, resour
 		// stays 0 here; only the plane converges.
 		if serr := db.SaveLibraryVersionContext(ctx, resource, c.Plane(), libraryVersion); serr != nil {
 			return syncResult{Resource: resource, Count: totalCount, Err: fmt.Errorf("persisting library-version checkpoint: %w", serr), Duration: time.Since(started)}
-		}
-		if serr := db.SaveSyncResumeStateContext(ctx, resource, "", "", totalCount); serr != nil {
-			return syncResult{Resource: resource, Count: totalCount, Err: fmt.Errorf("persisting sync checkpoint: %w", serr), Duration: time.Since(started)}
 		}
 		if resource == "schema" && zoteroSchemaVersion != "" && observedEverything {
 			if serr := db.SaveZoteroSchemaVersionContext(ctx, resource, zoteroSchemaVersion); serr != nil {

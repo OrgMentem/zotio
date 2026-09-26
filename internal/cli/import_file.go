@@ -176,7 +176,7 @@ func (b *importFileBatch) apply(index int) (string, any, error) {
 		return "failed", nil, err
 	}
 	if err := b.ambiguous[index]; err != nil {
-		return "conflict", map[string]any{"message": err.Error()}, err
+		return "conflict", map[string]any{"committed": true, "message": err.Error()}, err
 	}
 	if err := b.envelope[index]; err != nil {
 		return "failed", err.Error(), err

@@ -1461,7 +1461,7 @@ func TestConnectorReparentEmitsAnExplicitAttachmentKey(t *testing.T) {
 	})
 }
 
-func TestConnectorReparentRetryTrashesEmptyMarkedParent(t *testing.T) {
+func TestConnectorReparentRetryLeavesEmptyMarkedParent(t *testing.T) {
 	req := reparentRequest(t, "TARGET01")
 	fake := &reparentFake{
 		tempParentKey:         "FOREIGN1",
@@ -1480,10 +1480,10 @@ func TestConnectorReparentRetryTrashesEmptyMarkedParent(t *testing.T) {
 	c, _ := flags.newWriteClient()
 	status, detail, err := applyConnectorReparentUpload(context.Background(), reparentCmd(t), flags, c, req)
 	if err != nil || status != "no_op" {
-		t.Fatalf("status=%q detail=%v err=%v, want no_op after cleanup", status, detail, err)
+		t.Fatalf("status=%q detail=%v err=%v, want no_op", status, detail, err)
 	}
-	if !slices.Contains(fake.sequence(), "web.trash:ORPHAN01") {
-		t.Fatalf("retry left marked empty parent live: %v", fake.sequence())
+	if slices.Contains(fake.sequence(), "web.trash:ORPHAN01") {
+		t.Fatalf("retry trashed a parent whose upload may still be in progress: %v", fake.sequence())
 	}
 	if slices.Contains(fake.sequence(), "web.trash:FOREIGN1") {
 		t.Fatalf("retry trashed an unmarked item: %v", fake.sequence())

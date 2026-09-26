@@ -228,6 +228,18 @@ func TestWatchHealthWebhookPostsDriftPayload(t *testing.T) {
 	if len(payload.New) != 1 || payload.New[0].Kind != "missing_citation" || payload.New[0].ItemKey != "K1" {
 		t.Fatalf("payload new findings = %+v, want missing_citation K1", payload.New)
 	}
+	if err := monitor.deliverWebhook(context.Background(), cmd, cycleAt, nil, 0, healthSummary{}); err != nil {
+		t.Fatalf("deliverWebhook without new findings: %v", err)
+	}
+	var emptyPayload struct {
+		New json.RawMessage `json:"new"`
+	}
+	if err := json.Unmarshal(received, &emptyPayload); err != nil {
+		t.Fatalf("decode empty webhook payload %q: %v", string(received), err)
+	}
+	if string(emptyPayload.New) != "[]" {
+		t.Fatalf("empty webhook new = %s, want []", emptyPayload.New)
+	}
 }
 
 // A failed webhook POST must not consume a new-finding alert: the

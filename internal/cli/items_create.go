@@ -257,7 +257,7 @@ func (b *itemsCreateBatch) attachWeb(flags *rootFlags, c itemPoster, path string
 				return "failed", nil, transport
 			}
 			if ambiguous != nil {
-				return "conflict", map[string]any{"message": ambiguous.Error()}, ambiguous
+				return "conflict", map[string]any{"committed": true, "message": ambiguous.Error()}, ambiguous
 			}
 			if envelope != nil {
 				return "failed", envelope.Error(), envelope

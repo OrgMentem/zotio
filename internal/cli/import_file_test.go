@@ -46,7 +46,8 @@ type importFileEnvelope struct {
 			Reason any    `json:"reason"`
 		} `json:"items"`
 	} `json:"result"`
-	Error *struct {
+	Journal map[string]any `json:"journal"`
+	Error   *struct {
 		Code    string `json:"code"`
 		Message string `json:"message"`
 	} `json:"error"`

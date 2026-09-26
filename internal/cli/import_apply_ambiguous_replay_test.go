@@ -19,6 +19,9 @@ import (
 // conflict, not a plain failed create: the first POST may already have
 // committed the item, and a second identical POST would duplicate it.
 func TestImportApplyLostCreateResponseReportsCommittedConflict(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	mutationJournalRecorder = recordMutationJournal
+	t.Cleanup(func() { mutationJournalRecorder = nil })
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/users/0/items" && r.Method == http.MethodPost {
 			if r.Header.Get("Zotero-Write-Token") == "" {
@@ -72,6 +75,12 @@ func TestImportApplyLostCreateResponseReportsCommittedConflict(t *testing.T) {
 	msg, _ := detail["message"].(string)
 	if !strings.Contains(msg, "refusing automatic retry") {
 		t.Fatalf("conflict reason = %v, want the refusal message", env.Result.Items[0].Reason)
+	}
+	if detail["committed"] != true {
+		t.Fatalf("conflict lost possible-write evidence: %v", detail)
+	}
+	if journal, ok := env.Journal.(map[string]any); !ok || journal["run_id"] == nil {
+		t.Fatalf("ambiguous create has no journal entry: %v", env.Journal)
 	}
 }
 
@@ -135,6 +144,9 @@ func TestImportApplyReplayedWriteTokenRefusesDuplicate(t *testing.T) {
 // An items create batch lost in transit must report a committed conflict with
 // the deterministic write token attached, not a plain transport failure.
 func TestItemsCreateLostBatchResponseReportsCommittedConflict(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	mutationJournalRecorder = recordMutationJournal
+	t.Cleanup(func() { mutationJournalRecorder = nil })
 	var gotToken atomic.Bool
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotToken.Store(r.Header.Get("Zotero-Write-Token") != "")
@@ -164,5 +176,14 @@ func TestItemsCreateLostBatchResponseReportsCommittedConflict(t *testing.T) {
 	}
 	if env.Result == nil || env.Result.Summary.Conflicts != 2 || env.Result.Summary.Applied != 0 {
 		t.Fatalf("result = %s, want 2 committed conflicts", out.String())
+	}
+	for _, item := range env.Result.Items {
+		detail, _ := item.Reason.(map[string]any)
+		if detail["committed"] != true {
+			t.Fatalf("conflict lost possible-write evidence: %v", detail)
+		}
+	}
+	if journal, ok := env.Journal.(map[string]any); !ok || journal["run_id"] == nil {
+		t.Fatalf("ambiguous batch has no journal entry: %v", env.Journal)
 	}
 }

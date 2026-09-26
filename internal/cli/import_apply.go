@@ -528,7 +528,7 @@ func importApplyOps(cmd *cobra.Command, flags *rootFlags, writeClient importAppl
 						// conflict below instead of inviting another replay.
 						if isCommittedCreateConflict(err) {
 							refusal := ambiguousCreateRefusal("import apply", fmt.Sprintf("manifest entry %d %q", entryNumber, entryTitle), err)
-							return "conflict", map[string]any{"title": entryTitle, "message": refusal.Error()}, refusal
+							return "conflict", map[string]any{"committed": true, "title": entryTitle, "message": refusal.Error()}, refusal
 						}
 						return "failed", nil, classifyAPIError(err, flags)
 					}

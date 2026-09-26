@@ -164,6 +164,9 @@ func (m *watchHealthMonitor) report(ctx context.Context) (healthReport, error) {
 // It reports delivery success to run so the acknowledged baseline advances
 // only on a 2xx: a failed POST retains the alert for the next cycle.
 func (m *watchHealthMonitor) deliverWebhook(ctx context.Context, cmd *cobra.Command, cycleAt time.Time, newFindings []Finding, resolvedCount int, totals healthSummary) error {
+	if newFindings == nil {
+		newFindings = []Finding{}
+	}
 	payload := watchHealthWebhookPayload{
 		CycleAt:       cycleAt,
 		Preset:        m.preset,

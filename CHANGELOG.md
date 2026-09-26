@@ -81,10 +81,15 @@ Notable changes to zotio. Format follows [Keep a Changelog](https://keepachangel
   code does not change.
 
 ### Fixed
-- **A connector attachment retry cleans up an empty temporary parent.** If
-  the attachment reached its target before a crash, the retry verifies the
-  marked parent has no children and trashes it. A parent with children stays
-  untouched.
+- **Ambiguous item creates keep their reconciliation evidence in the journal.**
+  A lost response or write-token conflict now marks the create as possibly
+  committed, so `journal undo` refuses to claim it reversed an unknown write.
+- **A connector attachment retry does not trash another upload's empty parent.**
+  The existing-attachment no-op leaves marked parents alone until the operator
+  can confirm that their uploads have finished.
+- **Sync clears a completed pass's resume cursor before advancing its version.**
+  If either checkpoint fails, the next run does not skip earlier page results.
+- **Watch health webhooks send `new: []` when no findings are new.**
 - **`auth logout` clears the inline key before removing the credential file.**
   A crash after file removal cannot bring the old inline key back.
 - **A torn journal tail no longer corrupts later entries.** The next write

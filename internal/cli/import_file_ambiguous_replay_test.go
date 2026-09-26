@@ -12,6 +12,9 @@ import (
 // conflict, not a plain failure: the first POST may already have committed
 // every record, and a second identical POST would duplicate them.
 func TestImportFileLostBatchResponseReportsCommittedConflict(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	mutationJournalRecorder = recordMutationJournal
+	t.Cleanup(func() { mutationJournalRecorder = nil })
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("Zotero-Write-Token") == "" {
 			t.Error("batch POST arrived without Zotero-Write-Token; the retry cannot replay the same token")
@@ -45,6 +48,9 @@ func TestImportFileLostBatchResponseReportsCommittedConflict(t *testing.T) {
 	msg, _ := reason["message"].(string)
 	if !strings.Contains(msg, "refusing automatic retry") {
 		t.Fatalf("conflict reason = %v, want the refusal message (%s)", env.Result.Items[0].Reason, raw)
+	}
+	if reason["committed"] != true || env.Journal["run_id"] == nil {
+		t.Fatalf("ambiguous batch lost journal evidence: reason=%v journal=%v", reason, env.Journal)
 	}
 }
 
