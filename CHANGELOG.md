@@ -6,6 +6,14 @@ Notable changes to zotio. Format follows [Keep a Changelog](https://keepachangel
 
 ### Changed — breaking
 
+- **Named health baselines, health reports, schema baselines, and wrapped SVG
+  cards now refuse a busy output path with exit 9.** Health locks both named
+  paths before reading a baseline. Schema captures and updates lock before
+  probing Zotero. Schema baselines and wrapped cards replace files atomically,
+  so a failed write leaves the prior file intact. Plain comparisons and
+  reports without named outputs remain lock-free. `feedback` now takes the
+  installation lock even without `--yes`; `feedback list` remains lock-free.
+
 - **`annotations search` uses the full-text index on the local store.** It
   matches words, not substrings: "trust" now finds "trusted" but no longer
   finds "untrustworthy". "Quoted phrases", AND, OR, NOT and parentheses

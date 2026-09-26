@@ -429,3 +429,80 @@ func assertNewBaselineFindingForKey(t *testing.T, report healthReport, key strin
 	}
 	t.Fatalf("baseline.new = %+v, want a finding for item %s", report.Baseline.New, key)
 }
+
+// A busy --write-baseline target must refuse before any baseline read and
+// leave the artifact untouched. The sentinel proves no publication happened.
+func TestLibraryHealthWriteBaselineBusyPreservesArtifact(t *testing.T) {
+	seedBaselineHealthCommandStore(t)
+	baseline := filepath.Join(t.TempDir(), "health-baseline.json")
+	const sentinel = `{"sentinel":true}` + "\n"
+	if err := os.WriteFile(baseline, []byte(sentinel), 0o600); err != nil {
+		t.Fatalf("seed baseline: %v", err)
+	}
+	holdOutputWriterLock(t, baseline)
+	_, err := runLibraryHealthBaselineCmd(t, &rootFlags{}, "--write-baseline", baseline)
+	assertBusyPrecondition(t, err, "library health --write-baseline")
+	got, err := os.ReadFile(baseline)
+	if err != nil {
+		t.Fatalf("read baseline: %v", err)
+	}
+	if string(got) != sentinel {
+		t.Fatalf("baseline = %q, want sentinel preserved %q", got, sentinel)
+	}
+	assertNoHealthBaselineTempFiles(t, baseline)
+}
+
+// A busy --report target must refuse even with no baseline flags: the
+// report-only path still names an output in the collision namespace.
+func TestLibraryHealthReportOnlyBusyPreservesArtifact(t *testing.T) {
+	seedBaselineHealthCommandStore(t)
+	reportPath := filepath.Join(t.TempDir(), "health-report.json")
+	const sentinel = `{"sentinel":true}` + "\n"
+	if err := os.WriteFile(reportPath, []byte(sentinel), 0o600); err != nil {
+		t.Fatalf("seed report: %v", err)
+	}
+	holdOutputWriterLock(t, reportPath)
+	_, err := runLibraryHealthBaselineCmd(t, &rootFlags{}, "--report", reportPath)
+	assertBusyPrecondition(t, err, "library health --report")
+	got, err := os.ReadFile(reportPath)
+	if err != nil {
+		t.Fatalf("read report: %v", err)
+	}
+	if string(got) != sentinel {
+		t.Fatalf("report = %q, want sentinel preserved %q", got, sentinel)
+	}
+}
+
+// Naming the same file for --write-baseline and --report must acquire one
+// lock, not deadlock on a double acquisition: a busy target refuses once,
+// and a free target publishes without self-contention.
+func TestLibraryHealthSameBaselineAndReportDedupesLock(t *testing.T) {
+	seedBaselineHealthCommandStore(t)
+	shared := filepath.Join(t.TempDir(), "shared.json")
+	holdOutputWriterLock(t, shared)
+	_, err := runLibraryHealthBaselineCmd(t, &rootFlags{}, "--write-baseline", shared, "--report", shared)
+	assertBusyPrecondition(t, err, "library health shared baseline/report")
+}
+
+func TestLibraryHealthSameBaselineAndReportSucceedsWhenFree(t *testing.T) {
+	seedBaselineHealthCommandStore(t)
+	shared := filepath.Join(t.TempDir(), "shared.json")
+	if _, err := runLibraryHealthBaselineCmd(t, &rootFlags{}, "--write-baseline", shared, "--report", shared); err != nil {
+		t.Fatalf("shared baseline/report: %v", err)
+	}
+	if _, err := os.Stat(shared); err != nil {
+		t.Fatalf("shared artifact: %v", err)
+	}
+	assertNoHealthBaselineTempFiles(t, shared)
+}
+
+// Read-only health runs name no sidecar and must stay lock-free while an
+// unrelated output lock is held.
+func TestLibraryHealthReadOnlyStaysLockFreeWhileOutputHeld(t *testing.T) {
+	seedBaselineHealthCommandStore(t)
+	unrelated := filepath.Join(t.TempDir(), "unrelated.json")
+	holdOutputWriterLock(t, unrelated)
+	if _, err := runLibraryHealthBaselineCmd(t, &rootFlags{}); err != nil {
+		t.Fatalf("read-only health while output held: %v", err)
+	}
+}

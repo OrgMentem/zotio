@@ -48,6 +48,7 @@ var readOnlyWriters = map[string]string{
 	"newExportSnapshotCmd":    "writes the user's snapshot plus its own adjacent lock and checkpoint artifacts",
 	"newImportDiscoverCmd":    "writes the discovery report to the path the user passes",
 	"newImportMonitorCmd":     "writes the monitor manifest to the path the user passes",
+	"newLibraryHealthCmd":     "writes the baseline and report to paths the user passes",
 	"newLibraryWrappedCmd":    "writes the wrapped card to the path the user passes",
 	"newTailCmd":              "builds and dispatches the command tree; the reachable sinks belong to the commands it runs, which carry their own annotations",
 
@@ -79,11 +80,11 @@ var osWriters = map[string]bool{
 
 var statefulPkgs = map[string]bool{
 	"store": true, "journal": true, "config": true, "cache": true,
-	"mutation": true, "vault": true, "state": true,
+	"mutation": true, "vault": true, "state": true, "cliutil": true,
 }
 
 var writeVerbs = []string{
-	"Write", "Save", "Set", "Put", "Delete", "Remove", "Apply",
+	"Write", "AtomicWrite", "Save", "Set", "Put", "Delete", "Remove", "Apply",
 	"Insert", "Update", "Commit", "Append", "Record", "Persist", "Flush",
 }
 

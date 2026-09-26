@@ -105,11 +105,6 @@ shared across libraries because the schema is global to the Zotero install.`,
 				defer schemaDB.Close()
 			}
 
-			itemTypes, schemaVersion, err := probeSchemaVersion(cmd.Context(), c)
-			if err != nil {
-				return classifyAPIError(err, flags)
-			}
-
 			path := baselinePath
 			if path == "" {
 				path, err = schemaBaselinePath()
@@ -117,68 +112,103 @@ shared across libraries because the schema is global to the Zotero install.`,
 					return err
 				}
 			}
-			base, ok, err := loadSchemaBaseline(path)
-			if err != nil {
-				return err
+			// Only baseline writers take the output lock; pure comparisons
+			// stay lock-free. A writer is an --update run or a first capture
+			// (no baseline file yet). The existence probe here decides lock
+			// eligibility only; the transactional baseline load below still
+			// happens inside the lock for writers.
+			wantsWrite := update
+			if !wantsWrite {
+				if _, statErr := os.Stat(path); errors.Is(statErr, os.ErrNotExist) {
+					wantsWrite = true
+				}
 			}
+			run := func() error {
+				itemTypes, schemaVersion, err := probeSchemaVersion(cmd.Context(), c)
+				if err != nil {
+					return classifyAPIError(err, flags)
+				}
 
-			// First run: capture a full baseline.
-			if !ok {
+				base, ok, err := loadSchemaBaseline(path)
+				if err != nil {
+					return err
+				}
+
+				// A baseline removed after the existence probe must not turn a
+				// lock-free comparison into an uncoordinated first capture.
+				if !ok && !wantsWrite {
+					return preconditionErr(fmt.Errorf("schema baseline %q disappeared during comparison; retry to capture it under the output lock", path))
+				}
+				// First run: capture a full baseline.
+				if !ok {
+					live, err := completeSnapshot(cmd.Context(), c, schemaDB, itemTypes, schemaVersion, deep)
+					if err != nil {
+						return classifySchemaSnapshotError(cmd, flags, err)
+					}
+					if err := saveSchemaBaseline(path, live); err != nil {
+						return err
+					}
+					return renderSchemaDrift(cmd, flags, true, nil, path, live)
+				}
+
+				// Fast path: the Zotero-Schema-Version header covers the live schema,
+				// so a matching version avoids the remaining live fetches. An explicitly
+				// selected deep cache is a separate snapshot source: its valid per-type
+				// values must still be read and compared with the baseline.
+				if !update && schemaVersion != "" && base.SchemaVersion == schemaVersion && (!deep || (base.TypeFields != nil && base.TypeCreators != nil)) {
+					if deep && schemaDB != nil {
+						fields, creators, available, cacheErr := cachedDeepSchema(schemaDB, itemTypes, schemaVersion)
+						if cacheErr != nil {
+							return classifySchemaSnapshotError(cmd, flags, cacheErr)
+						}
+						if !available {
+							// Older version-9 stores can lack schema_sync_versions.
+							// Treat that as no cache and retain the live path.
+							live, liveErr := completeSnapshot(cmd.Context(), c, nil, itemTypes, schemaVersion, true)
+							if liveErr != nil {
+								return classifySchemaSnapshotError(cmd, flags, liveErr)
+							}
+							return renderSchemaDrift(cmd, flags, false, diffSnapshots(base, live), path, live)
+						}
+						// The matching live version makes the baseline's global lists
+						// reusable, but --db selects the per-type snapshot for this run.
+						// Compare those selected values instead of returning the baseline's
+						// cached maps after merely validating the selected store.
+						live := base
+						live.SchemaVersion = schemaVersion
+						live.ItemTypes = itemTypes
+						live.TypeFields = fields
+						live.TypeCreators = creators
+						return renderSchemaDrift(cmd, flags, false, diffSnapshots(base, live), path, live)
+					}
+					base.SchemaVersion = schemaVersion
+					return renderSchemaDrift(cmd, flags, false, nil, path, base)
+				}
+
 				live, err := completeSnapshot(cmd.Context(), c, schemaDB, itemTypes, schemaVersion, deep)
 				if err != nil {
 					return classifySchemaSnapshotError(cmd, flags, err)
 				}
-				if err := saveSchemaBaseline(path, live); err != nil {
-					return err
-				}
-				return renderSchemaDrift(cmd, flags, true, nil, path, live)
-			}
-
-			// Fast path: the Zotero-Schema-Version header covers the live schema,
-			// so a matching version avoids the remaining live fetches. An explicitly
-			// selected deep cache is a separate snapshot source: its valid per-type
-			// values must still be read and compared with the baseline.
-			if !update && schemaVersion != "" && base.SchemaVersion == schemaVersion && (!deep || (base.TypeFields != nil && base.TypeCreators != nil)) {
-				if deep && schemaDB != nil {
-					fields, creators, available, cacheErr := cachedDeepSchema(schemaDB, itemTypes, schemaVersion)
-					if cacheErr != nil {
-						return classifySchemaSnapshotError(cmd, flags, cacheErr)
+				deltas := diffSnapshots(base, live)
+				if update {
+					if err := saveSchemaBaseline(path, live); err != nil {
+						return err
 					}
-					if !available {
-						// Older version-9 stores can lack schema_sync_versions.
-						// Treat that as no cache and retain the live path.
-						live, liveErr := completeSnapshot(cmd.Context(), c, nil, itemTypes, schemaVersion, true)
-						if liveErr != nil {
-							return classifySchemaSnapshotError(cmd, flags, liveErr)
-						}
-						return renderSchemaDrift(cmd, flags, false, diffSnapshots(base, live), path, live)
-					}
-					// The matching live version makes the baseline's global lists
-					// reusable, but --db selects the per-type snapshot for this run.
-					// Compare those selected values instead of returning the baseline's
-					// cached maps after merely validating the selected store.
-					live := base
-					live.SchemaVersion = schemaVersion
-					live.ItemTypes = itemTypes
-					live.TypeFields = fields
-					live.TypeCreators = creators
-					return renderSchemaDrift(cmd, flags, false, diffSnapshots(base, live), path, live)
 				}
-				base.SchemaVersion = schemaVersion
-				return renderSchemaDrift(cmd, flags, false, nil, path, base)
+				return renderSchemaDrift(cmd, flags, false, deltas, path, live)
 			}
-
-			live, err := completeSnapshot(cmd.Context(), c, schemaDB, itemTypes, schemaVersion, deep)
+			if !wantsWrite {
+				return run()
+			}
+			// The baseline is a named output in the collision namespace
+			// (ADR-0005): the canonical lock is acquired before the first
+			// source request and the baseline load, and held through the
+			// atomic publication.
+			lockPath, canonicalTarget, err := outputWriterLockPath(path)
 			if err != nil {
-				return classifySchemaSnapshotError(cmd, flags, err)
+				return fmt.Errorf("resolving output path: %w", err)
 			}
-			deltas := diffSnapshots(base, live)
-			if update {
-				if err := saveSchemaBaseline(path, live); err != nil {
-					return err
-				}
-			}
-			return renderSchemaDrift(cmd, flags, false, deltas, path, live)
+			return withPathWriterLock(cmd, lockPath, fmt.Sprintf("schema drift baseline to %q", canonicalTarget), run)
 		},
 	}
 	cmd.Flags().BoolVar(&deep, "deep", false, "Also diff per-item-type field and creator-type validity (live by default; use --db for an explicit cache)")
@@ -484,7 +514,7 @@ func stripLibraryPrefix(baseURL string) string {
 // newSchemaClient builds a client whose base URL has the /users|groups/<id> library
 // segment stripped, because Zotero's schema/type endpoints (itemTypes, itemFields,
 // itemTypeFields, itemTypeCreatorTypes, creatorFields, items/new) are global, served
-// under /api directly. The generated `schema *` commands 404 without this.
+// under /api directly.
 func newSchemaClient(flags *rootFlags) (*client.Client, error) {
 	c, err := flags.newClient()
 	if err != nil {
@@ -510,15 +540,16 @@ func loadSchemaBaseline(path string) (schemaSnapshot, bool, error) {
 }
 
 func saveSchemaBaseline(path string, snap schemaSnapshot) error {
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return fmt.Errorf("creating baseline directory: %w", err)
-	}
 	data, err := json.MarshalIndent(snap, "", "  ")
 	if err != nil {
 		return err
 	}
+	// The baseline is a named output in the collision namespace (ADR-0005):
+	// publish atomically so a crash or concurrent reader never observes a
+	// truncated file. Callers hold the canonical output lock across the
+	// load-to-publish transaction; the rename alone does not serialize them.
 	// #nosec G306 -- schema baselines are deterministic non-secret fixtures intended for review.
-	if err := os.WriteFile(path, data, 0o644); err != nil {
+	if err := cliutil.AtomicWriteFile(path, data, 0o644, 0o755); err != nil {
 		return fmt.Errorf("writing schema baseline: %w", err)
 	}
 	return nil

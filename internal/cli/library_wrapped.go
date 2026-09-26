@@ -78,40 +78,54 @@ func newLibraryWrappedCmd(flags *rootFlags) *cobra.Command {
 				return usageErr(fmt.Errorf("--card-style requires --card"))
 			}
 
-			rawDB, err := openStoreForRead(cmd.Context(), "zotio")
-			if err != nil {
-				return fmt.Errorf("opening local database: %w", err)
-			}
-			if rawDB == nil {
-				fmt.Fprintln(cmd.OutOrStdout(), "Run 'zotio sync' first.")
-				return nil
-			}
-			defer rawDB.Close()
-			db := localQueryStore{rawDB}
-
-			totalStored, err := queryLibraryWrappedStoredItemCount(db)
-			if err != nil {
-				return fmt.Errorf("checking local library: %w", err)
-			}
-			if totalStored == 0 {
-				fmt.Fprintln(cmd.OutOrStdout(), "Run 'zotio sync' first.")
-				return nil
-			}
-
-			report, err := queryLibraryWrappedReport(db, flagYear)
-			if err != nil {
-				return fmt.Errorf("querying wrapped report: %w", err)
-			}
-			if flagCard != "" {
-				if err := writeLibraryWrappedCard(flagCard, report, flagCardStyle); err != nil {
-					return err
+			run := func() error {
+				rawDB, err := openStoreForRead(cmd.Context(), "zotio")
+				if err != nil {
+					return fmt.Errorf("opening local database: %w", err)
 				}
-				report.CardPath = flagCard
+				if rawDB == nil {
+					fmt.Fprintln(cmd.OutOrStdout(), "Run 'zotio sync' first.")
+					return nil
+				}
+				defer rawDB.Close()
+				db := localQueryStore{rawDB}
+
+				totalStored, err := queryLibraryWrappedStoredItemCount(db)
+				if err != nil {
+					return fmt.Errorf("checking local library: %w", err)
+				}
+				if totalStored == 0 {
+					fmt.Fprintln(cmd.OutOrStdout(), "Run 'zotio sync' first.")
+					return nil
+				}
+
+				report, err := queryLibraryWrappedReport(db, flagYear)
+				if err != nil {
+					return fmt.Errorf("querying wrapped report: %w", err)
+				}
+				if flagCard != "" {
+					if err := writeLibraryWrappedCard(flagCard, report, flagCardStyle); err != nil {
+						return err
+					}
+					report.CardPath = flagCard
+				}
+				if flags.asJSON {
+					return printCommandJSON(cmd.OutOrStdout(), report, flags)
+				}
+				return printLibraryWrapped(cmd, report)
 			}
-			if flags.asJSON {
-				return printCommandJSON(cmd.OutOrStdout(), report, flags)
+			if strings.TrimSpace(flagCard) == "" {
+				return run()
 			}
-			return printLibraryWrapped(cmd, report)
+			// A card names an output path, so it joins the output collision
+			// namespace (ADR-0005): the canonical lock is acquired before the
+			// first store query and held through the atomic card publication.
+			// Runs without --card stay lock-free.
+			lockPath, canonicalTarget, err := outputWriterLockPath(flagCard)
+			if err != nil {
+				return fmt.Errorf("resolving output path: %w", err)
+			}
+			return withPathWriterLock(cmd, lockPath, fmt.Sprintf("library wrapped card to %q", canonicalTarget), run)
 		},
 	}
 	cmd.Flags().IntVar(&flagYear, "year", flagYear, "Year to summarize")
@@ -569,8 +583,13 @@ func writeLibraryWrappedCard(path string, report libraryWrappedReport, style str
 		}
 	}
 	svg := renderLibraryWrappedSVG(report, style)
-	// #nosec G306 -- the SVG card is a user-requested shareable artifact, not a secret.
-	if err := os.WriteFile(path, []byte(svg), 0o644); err != nil {
+	// The card is a user-named artifact in the output collision namespace
+	// (ADR-0005): it is published atomically so a failure leaves whatever
+	// card was already there instead of truncating it.
+	if err := withAtomicOutputFile(path, publishedOutputMode(path, 0o644), func(w io.Writer) error {
+		_, err := io.WriteString(w, svg)
+		return err
+	}); err != nil {
 		return fmt.Errorf("writing SVG card: %w", err)
 	}
 	return nil

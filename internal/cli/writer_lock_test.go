@@ -3,9 +3,11 @@
 package cli
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -828,5 +830,114 @@ func TestInstallationWrapperDoesNotReleaseForeignPathOwnership(t *testing.T) {
 	}
 	if err := finishWriterLockOwnership(cmd, ownership, nil); err != nil {
 		t.Fatalf("releasing output lock: %v", err)
+	}
+}
+
+// Feedback appends the installation ledger on every invocation without the
+// shared --yes gate, so it takes the installation lock unconditionally. While
+// the lock is held it must refuse with exit 9 and append nothing; `feedback
+// list` stays a lock-free read.
+func TestFeedbackTakesInstallationLockWithoutYes(t *testing.T) {
+	home := useWriterLockTestHome(t)
+	flags := &rootFlags{}
+	installationPath, err := installationWriterLockPath(flags)
+	if err != nil {
+		t.Fatalf("resolving installation lock path: %v", err)
+	}
+	holder, err := cliutil.AcquireWriterLock(installationPath, "test holder")
+	if err != nil {
+		t.Fatalf("holding installation lock: %v", err)
+	}
+	runFeedback := func(args ...string) error {
+		f := &rootFlags{}
+		root := newRootCmd(f)
+		root.SilenceErrors, root.SilenceUsage = true, true
+		root.SetOut(&bytes.Buffer{})
+		root.SetErr(&bytes.Buffer{})
+		root.SetArgs(append([]string{"feedback"}, args...))
+		return root.Execute()
+	}
+	if err := runFeedback("hello while busy"); ExitCode(err) != 9 {
+		t.Fatalf("feedback while installation held exit = %d, want 9: %v", ExitCode(err), err)
+	}
+	if _, err := os.Stat(filepath.Join(home, ".zotio", "feedback.jsonl")); !os.IsNotExist(err) {
+		t.Fatalf("busy feedback appended the ledger: stat err = %v", err)
+	}
+	// The list subcommand is a read and must stay available while held.
+	func() {
+		f := &rootFlags{}
+		root := newRootCmd(f)
+		root.SilenceErrors, root.SilenceUsage = true, true
+		root.SetOut(&bytes.Buffer{})
+		root.SetErr(&bytes.Buffer{})
+		root.SetArgs([]string{"feedback", "list"})
+		if err := root.Execute(); err != nil {
+			t.Fatalf("feedback list while installation held: %v", err)
+		}
+	}()
+	if err := holder.Release(); err != nil {
+		t.Fatalf("releasing installation lock: %v", err)
+	}
+	if err := runFeedback("hello after release"); err != nil {
+		t.Fatalf("feedback after release: %v", err)
+	}
+	got, err := os.ReadFile(filepath.Join(home, ".zotio", "feedback.jsonl"))
+	if err != nil {
+		t.Fatalf("read feedback ledger: %v", err)
+	}
+	if !strings.Contains(string(got), "hello after release") {
+		t.Fatalf("ledger = %q, want released entry", got)
+	}
+	if strings.Contains(string(got), "hello while busy") {
+		t.Fatalf("ledger contains refused busy entry: %q", got)
+	}
+}
+
+// The whole output lock set is deduplicated by canonical target and acquired
+// in sorted order. Different spellings of one target yield one lock path.
+func TestOutputLockSetForTargetsDedupesAndSorts(t *testing.T) {
+	dir := t.TempDir()
+	a := filepath.Join(dir, "b.json")
+	b := filepath.Join(dir, "a.json")
+	lockPaths, canonicalTargets, err := outputLockSetForTargets([]string{a, b, a, "  "})
+	if err != nil {
+		t.Fatalf("output lock set: %v", err)
+	}
+	if len(lockPaths) != 2 || len(canonicalTargets) != 2 {
+		t.Fatalf("lock set = %v / %v, want two deduped entries", lockPaths, canonicalTargets)
+	}
+	if canonicalTargets[0] >= canonicalTargets[1] {
+		t.Fatalf("canonical targets not sorted: %v", canonicalTargets)
+	}
+	for i, canonical := range canonicalTargets {
+		if lockPaths[i] != canonical+".lock" {
+			t.Fatalf("lockPaths[%d] = %q, want %q", i, lockPaths[i], canonical+".lock")
+		}
+	}
+}
+
+// A transaction holding two outputs refuses when either is busy and releases
+// the other: the second target must stay free after the refusal.
+func TestWithPathWriterLocksRefusesWhenAnyMemberBusy(t *testing.T) {
+	dir := t.TempDir()
+	first := filepath.Join(dir, "first.json")
+	second := filepath.Join(dir, "second.json")
+	lockPaths, _, err := outputLockSetForTargets([]string{first, second})
+	if err != nil {
+		t.Fatalf("output lock set: %v", err)
+	}
+	holdOutputWriterLock(t, second)
+	cmd := &cobra.Command{Use: "probe"}
+	ran := false
+	err = withPathWriterLocks(cmd, lockPaths, "test pair", func() error {
+		ran = true
+		return nil
+	})
+	if ran {
+		t.Fatal("paired transaction ran while the second target was busy")
+	}
+	assertBusyPrecondition(t, err, "paired output locks")
+	if _, err := os.Stat(first); !os.IsNotExist(err) {
+		t.Fatalf("refused pair touched first target: %v", err)
 	}
 }

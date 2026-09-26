@@ -505,22 +505,42 @@ its precondition is unmet, the command refuses loudly (exit 9) rather than passi
 			if err != nil {
 				return err
 			}
-			// apply baseline diff before any output mode or report sidecar is rendered.
+			// Named sidecars join the output collision namespace (ADR-0005):
+			// the whole deduplicated, canonically-sorted lock set is acquired
+			// before any baseline read and held through both publications, so
+			// concurrent baseline/report writers serialize instead of replacing
+			// each other's valid artifact. Read-only runs name no sidecar and
+			// stay lock-free.
 			report.baselineGate = failOnNew
-			if baselinePath != "" {
-				if err := applyHealthBaseline(&report, baselinePath); err != nil {
-					return err
-				}
+			lockPaths, _, lockErr := outputLockSetForTargets([]string{writeBaselinePath, reportPath})
+			if lockErr != nil {
+				return fmt.Errorf("resolving output path: %w", lockErr)
 			}
-			if writeBaselinePath != "" {
-				if err := writeHealthBaseline(writeBaselinePath, preset, healthCurrentFindings(report)); err != nil {
-					return err
+			baselineAndReport := func() error {
+				// apply baseline diff before any output mode or report sidecar is rendered.
+				if baselinePath != "" {
+					if err := applyHealthBaseline(&report, baselinePath); err != nil {
+						return err
+					}
 				}
+				if writeBaselinePath != "" {
+					if err := writeHealthBaseline(writeBaselinePath, preset, healthCurrentFindings(report)); err != nil {
+						return err
+					}
+				}
+				if reportPath != "" {
+					if err := writeHealthReportFile(reportPath, report); err != nil {
+						return err
+					}
+				}
+				return nil
 			}
-			if reportPath != "" {
-				if err := writeHealthReportFile(reportPath, report); err != nil {
+			if len(lockPaths) == 0 {
+				if err := baselineAndReport(); err != nil {
 					return err
 				}
+			} else if err := withPathWriterLocks(cmd, lockPaths, "library health baseline/report", baselineAndReport); err != nil {
+				return err
 			}
 
 			// badge mode renders only the shields endpoint payload; exit mapping below is unchanged.

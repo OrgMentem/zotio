@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"zotio/internal/cliutil"
@@ -83,6 +84,66 @@ func withPathWriterLock(cmd *cobra.Command, lockPath, operation string, fn func(
 	}()
 	err = fn()
 	return err
+}
+
+// withPathWriterLocks serializes a transaction holding the whole output lock
+// set. lockPaths are canonical output lock paths from outputWriterLockPath;
+// they are deduplicated and acquired in sorted order, released LIFO. An empty
+// set runs without acquiring so read-only paths stay lock-free. Reuse matches
+// withPathWriterLock: a path already held anywhere in the command context runs
+// inline and is never released by this transaction.
+func withPathWriterLocks(cmd *cobra.Command, lockPaths []string, operation string, fn func() error) error {
+	if fn == nil {
+		return fmt.Errorf("acquiring writer locks for %s: nil transaction", operation)
+	}
+	sorted := make([]string, 0, len(lockPaths))
+	seen := make(map[string]struct{}, len(lockPaths))
+	for _, p := range lockPaths {
+		if _, ok := seen[p]; ok {
+			continue
+		}
+		seen[p] = struct{}{}
+		sorted = append(sorted, p)
+	}
+	sort.Strings(sorted)
+	var run func(idx int) error
+	run = func(idx int) error {
+		if idx >= len(sorted) {
+			return fn()
+		}
+		return withPathWriterLock(cmd, sorted[idx], operation, func() error {
+			return run(idx + 1)
+		})
+	}
+	return run(0)
+}
+
+// outputLockSetForTargets derives the deduplicated, canonically-sorted output
+// lock set for user-named targets. Empty and whitespace-only targets are
+// skipped. Sorting by canonical target keeps acquisition order deterministic
+// across commands naming the same files in different flag order.
+func outputLockSetForTargets(targets []string) (lockPaths []string, canonicalTargets []string, err error) {
+	byCanonical := make(map[string]string)
+	for _, target := range targets {
+		if strings.TrimSpace(target) == "" {
+			continue
+		}
+		lockPath, canonicalTarget, err := outputWriterLockPath(target)
+		if err != nil {
+			return nil, nil, err
+		}
+		byCanonical[canonicalTarget] = lockPath
+	}
+	canonicalTargets = make([]string, 0, len(byCanonical))
+	for canonical := range byCanonical {
+		canonicalTargets = append(canonicalTargets, canonical)
+	}
+	sort.Strings(canonicalTargets)
+	lockPaths = make([]string, 0, len(canonicalTargets))
+	for _, canonical := range canonicalTargets {
+		lockPaths = append(lockPaths, byCanonical[canonical])
+	}
+	return lockPaths, canonicalTargets, nil
 }
 
 func acquireWriterLockOwnership(cmd *cobra.Command, lockPath, operation string) (*writerLockOwnership, error) {
@@ -191,6 +252,10 @@ var explicitInstallationWriterCommands = map[string]writerLockMode{
 	"tail":             writerLockAlways,
 	"workflow archive": writerLockAlways,
 	"workflow run":     writerLockOnApply,
+	// Feedback appends the installation feedback ledger on every invocation
+	// without the shared --yes gate, so writerLockOnApply would leave it
+	// unlocked. `feedback list` is a separate read path and stays lock-free.
+	"feedback": writerLockAlways,
 
 	// Every command that writes on the user's behalf routes through the shared
 	// --yes gate, so writerLockOnApply is the right mode. The vault trio,

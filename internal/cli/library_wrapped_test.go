@@ -120,6 +120,88 @@ func TestLibraryWrappedZeroItemYearPrintsMessage(t *testing.T) {
 	}
 }
 
+// A busy card target must refuse before any store work and leave an existing
+// card byte-identical.
+func TestLibraryWrappedCardBusyPreservesArtifact(t *testing.T) {
+	wrappedIsolatedHome(t)
+	seedWrappedStore(t)
+	cardPath := filepath.Join(t.TempDir(), "card.svg")
+	const sentinel = "<svg>sentinel</svg>"
+	if err := os.WriteFile(cardPath, []byte(sentinel), 0o644); err != nil {
+		t.Fatalf("seed card: %v", err)
+	}
+	holdOutputWriterLock(t, cardPath)
+	flags := &rootFlags{}
+	cmd := newLibraryCmd(flags)
+	cmd.SilenceErrors = true
+	cmd.SilenceUsage = true
+	cmd.SetArgs([]string{"wrapped", "--year", "2026", "--card", cardPath})
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetErr(&bytes.Buffer{})
+	assertBusyPrecondition(t, cmd.Execute(), "library wrapped --card")
+	got, err := os.ReadFile(cardPath)
+	if err != nil {
+		t.Fatalf("read card: %v", err)
+	}
+	if string(got) != sentinel {
+		t.Fatalf("card = %q, want sentinel preserved %q", got, sentinel)
+	}
+}
+
+// Runs without --card name no output and must stay lock-free while a card
+// lock for the same directory is held elsewhere.
+func TestLibraryWrappedWithoutCardStaysLockFreeWhileCardHeld(t *testing.T) {
+	wrappedIsolatedHome(t)
+	seedWrappedStore(t)
+	cardPath := filepath.Join(t.TempDir(), "card.svg")
+	holdOutputWriterLock(t, cardPath)
+	flags := &rootFlags{}
+	cmd := newLibraryCmd(flags)
+	cmd.SilenceErrors = true
+	cmd.SilenceUsage = true
+	cmd.SetArgs([]string{"wrapped", "--year", "2026"})
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetErr(&bytes.Buffer{})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("wrapped without card while card held: %v", err)
+	}
+	if _, err := os.Stat(cardPath); !os.IsNotExist(err) {
+		t.Fatalf("lock-free run touched card path: %v", err)
+	}
+}
+
+// Acquiring the card lock must never destroy a file already at <target>.lock:
+// the sibling lives in the user's output directory.
+func TestLibraryWrappedPreservesPreexistingLockSiblingContent(t *testing.T) {
+	home := wrappedIsolatedHome(t)
+	seedWrappedStore(t)
+	cardPath := filepath.Join(home, "wrapped", "card.svg")
+	const sentinel = "sentinel bytes"
+	if err := os.MkdirAll(filepath.Dir(cardPath), 0o755); err != nil {
+		t.Fatalf("seed card dir: %v", err)
+	}
+	if err := os.WriteFile(cardPath+".lock", []byte(sentinel), 0o600); err != nil {
+		t.Fatalf("seed lock sibling: %v", err)
+	}
+	flags := &rootFlags{}
+	cmd := newLibraryCmd(flags)
+	cmd.SilenceErrors = true
+	cmd.SilenceUsage = true
+	cmd.SetArgs([]string{"wrapped", "--year", "2026", "--card", cardPath})
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetErr(&bytes.Buffer{})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("wrapped card: %v", err)
+	}
+	got, err := os.ReadFile(cardPath + ".lock")
+	if err != nil {
+		t.Fatalf("read lock sibling: %v", err)
+	}
+	if string(got) != sentinel {
+		t.Fatalf("lock sibling = %q, want %q", got, sentinel)
+	}
+}
+
 func seedWrappedStore(t *testing.T) {
 	t.Helper()
 	db, err := store.OpenWithContext(context.Background(), helpersTestDefaultDBPath(t, "zotio"))

@@ -759,3 +759,59 @@ func TestSchemaDriftDeepMissingCheckpointTableFallsBackToLive(t *testing.T) {
 		t.Fatalf("missing checkpoint table did not fall back live: hits=%v", hits)
 	}
 }
+
+// An --update writer must refuse a busy baseline before its first source
+// request: with the API unreachable, exit 9 proves the lock came first and a
+// connection error would prove it came too late. The existing baseline stays
+// byte-identical.
+func TestSchemaDriftUpdateBusyRefusesBeforeSourceRequest(t *testing.T) {
+	srv := schemaServer(t, []string{"book"}, []string{"title"}, []string{"firstName"})
+	defer srv.Close()
+	baseline := filepath.Join(t.TempDir(), "baseline.json")
+	if _, err := runSchemaDrift(t, srv.URL, baseline, true); err != nil {
+		t.Fatalf("capture baseline: %v", err)
+	}
+	before, err := os.ReadFile(baseline)
+	if err != nil {
+		t.Fatalf("read baseline: %v", err)
+	}
+	holdOutputWriterLock(t, baseline)
+	// Unreachable API: any source request would fail with a connection error,
+	// not the busy precondition.
+	_, err = runSchemaDrift(t, "http://127.0.0.1:1/users/0", baseline, true, "--update")
+	assertBusyPrecondition(t, err, "schema drift --update")
+	after, err := os.ReadFile(baseline)
+	if err != nil {
+		t.Fatalf("read baseline after busy: %v", err)
+	}
+	if string(after) != string(before) {
+		t.Fatalf("baseline changed under busy lock:\nbefore %s\nafter %s", before, after)
+	}
+}
+
+// A first capture names a new baseline file, so it is also a writer: holding
+// its lock must refuse before any source request and create nothing.
+func TestSchemaDriftFirstCaptureBusyCreatesNothing(t *testing.T) {
+	baseline := filepath.Join(t.TempDir(), "baseline.json")
+	holdOutputWriterLock(t, baseline)
+	_, err := runSchemaDrift(t, "http://127.0.0.1:1/users/0", baseline, true)
+	assertBusyPrecondition(t, err, "schema drift first capture")
+	if _, err := os.Stat(baseline); !os.IsNotExist(err) {
+		t.Fatalf("busy first capture created baseline: %v", err)
+	}
+}
+
+// Pure comparisons name no write and must stay lock-free while the baseline
+// lock is held by another (hypothetical) writer.
+func TestSchemaDriftPureComparisonStaysLockFreeWhileBaselineHeld(t *testing.T) {
+	srv := schemaServer(t, []string{"book"}, []string{"title"}, []string{"firstName"})
+	defer srv.Close()
+	baseline := filepath.Join(t.TempDir(), "baseline.json")
+	if _, err := runSchemaDrift(t, srv.URL, baseline, true); err != nil {
+		t.Fatalf("capture baseline: %v", err)
+	}
+	holdOutputWriterLock(t, baseline)
+	if _, err := runSchemaDrift(t, srv.URL, baseline, true); err != nil {
+		t.Fatalf("pure comparison while baseline held: %v", err)
+	}
+}
