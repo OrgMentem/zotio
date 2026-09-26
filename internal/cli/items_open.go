@@ -95,7 +95,7 @@ command emits {uri, target_type, library_scope, launched}.`,
 			if !flags.asJSON {
 				fmt.Fprintf(cmd.ErrOrStderr(), "Opening %s in Zotero...\n", uri)
 			}
-			if err := launchURI(uri); err != nil {
+			if err := launchURI(cmd.Context(), uri); err != nil {
 				return fmt.Errorf("opening Zotero %s: %w", targetType, err)
 			}
 			if flags.asJSON {

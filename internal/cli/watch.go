@@ -45,7 +45,7 @@ until it is resumed or deleted with zotio workflow run <spec> --yes --resume.`,
 				}
 			}
 
-			healthMonitor, err := newWatchHealthMonitor(flags, health, healthFor, healthWebhook)
+			healthMonitor, err := newWatchHealthMonitorWithContext(cmd.Context(), flags, health, healthFor, healthWebhook)
 			if err != nil {
 				return err
 			}
@@ -61,23 +61,25 @@ until it is resumed or deleted with zotio workflow run <spec> --yes --resume.`,
 				syncCmd.SetArgs(watchSyncArgs(args))
 				syncCmd.SetOut(cmd.OutOrStdout())
 				syncCmd.SetErr(cmd.ErrOrStderr())
-
 				err := syncCmd.ExecuteContext(ctx)
 				now := time.Now().UTC()
 				if err != nil {
 					fmt.Fprintf(cmd.ErrOrStderr(), "[watch] %s cycle error: %v\n", now.Format(time.RFC3339), err)
 					return err
 				}
-				fmt.Fprintf(cmd.ErrOrStderr(), "[watch] %s cycle complete\n", now.Format(time.RFC3339))
 				healthMonitor.run(ctx, cmd, now)
 				if workflowPath != "" {
-					runTriggeredWorkflow(ctx, cmd, "watch", workflowPath, workflowRunInvocation{
+					if werr := runTriggeredWorkflowE(ctx, cmd, "watch", workflowPath, workflowRunInvocation{
 						Yes:     flags.yes,
 						DryRun:  flags.dryRun,
 						Agent:   flags.agent,
 						NoInput: flags.noInput,
-					})
+					}); werr != nil {
+						fmt.Fprintf(cmd.ErrOrStderr(), "[watch] %s cycle error: triggered workflow failed: %v\n", now.Format(time.RFC3339), werr)
+						return werr
+					}
 				}
+				fmt.Fprintf(cmd.ErrOrStderr(), "[watch] %s cycle complete\n", now.Format(time.RFC3339))
 				return nil
 			}
 
@@ -138,8 +140,9 @@ func watchSyncArgs(args []string) []string {
 	return []string{"--resources", strings.Join(args, ",")}
 }
 
-// runTriggeredWorkflow reports workflow failures without disrupting its caller.
-func runTriggeredWorkflow(ctx context.Context, cmd *cobra.Command, source, specPath string, inv workflowRunInvocation) {
+// runTriggeredWorkflowE runs a workflow and reports its outcome. The caller
+// decides whether a failed workflow stops its sync or tail cycle.
+func runTriggeredWorkflowE(ctx context.Context, cmd *cobra.Command, source, specPath string, inv workflowRunInvocation) error {
 	report, err := runWorkflowRunFile(ctx, specPath, inv)
 	mode := report.Mode
 	if mode == "" {
@@ -151,11 +154,12 @@ func runTriggeredWorkflow(ctx context.Context, cmd *cobra.Command, source, specP
 	now := time.Now().UTC().Format(time.RFC3339)
 	if err != nil {
 		fmt.Fprintf(cmd.ErrOrStderr(), "[%s] %s workflow %s failed: %v\n", source, now, mode, err)
-		return
+		return err
 	}
 	if report.RunID != "" {
 		fmt.Fprintf(cmd.ErrOrStderr(), "[%s] %s workflow %s ok run_id=%s\n", source, now, mode, report.RunID)
-		return
+		return nil
 	}
 	fmt.Fprintf(cmd.ErrOrStderr(), "[%s] %s workflow %s ok\n", source, now, mode)
+	return nil
 }

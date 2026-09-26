@@ -4,6 +4,7 @@ package cli
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -165,5 +166,84 @@ func TestTailFileFailureHoldsCursorAndReplaysBatch(t *testing.T) {
 	}
 	if got, _, err := db.StoredLibraryVersion("tail:items"); err != nil || got != 9 {
 		t.Fatalf("tail cursor = %d, %v; want 9 after the batch was delivered", got, err)
+	}
+}
+
+// TestEmitChangesWithHook_RunsTriggerBeforeCursorSave pins the crash-window
+// fix behind finding zotio-e0407c709ebe1b15: the post-delivery trigger must
+// run before the cursor advances. A kill before or during the trigger then
+// leaves the cursor behind, so the next poll refetches the same window and
+// fires the trigger again instead of losing it.
+func TestEmitChangesWithHook_RunsTriggerBeforeCursorSave(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/items", func(w http.ResponseWriter, r *http.Request) {
+		if got := r.URL.Query().Get("since"); got != "6" {
+			t.Errorf("since = %q, want 6", got)
+		}
+		w.Header().Set("Last-Modified-Version", "7")
+		_, _ = io.WriteString(w, `[{"key":"A","version":7}]`)
+	})
+	mux.HandleFunc("/deleted", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Last-Modified-Version", "7")
+		_, _ = io.WriteString(w, `{"items":[],"collections":[],"searches":[],"tags":[]}`)
+	})
+	api := httptest.NewServer(mux)
+	defer api.Close()
+
+	c := client.New(&config.Config{BaseURL: api.URL}, 5*time.Second, 0)
+	c.NoCache = true
+	db := tailTestStore(t)
+	if err := db.SaveLibraryVersion("tail:items", api.URL, 6); err != nil {
+		t.Fatalf("seeding cursor: %v", err)
+	}
+
+	var hookRuns int
+	var cursorAtHook int
+	var emittedAtHook int
+	hook := func(emitted int) error {
+		hookRuns++
+		emittedAtHook = emitted
+		v, _, err := db.StoredLibraryVersion("tail:items")
+		if err != nil {
+			return err
+		}
+		cursorAtHook = v
+		if hookRuns == 1 {
+			return fmt.Errorf("workflow failed")
+		}
+		return nil
+	}
+
+	var out bytes.Buffer
+	_, err := emitChangesWithHook(context.Background(), c, db, "items", "/items", DeliverSink{Scheme: "stdout"}, &out, hook)
+	if err == nil || !strings.Contains(err.Error(), "workflow failed") {
+		t.Fatalf("first trigger error = %v, want workflow failure", err)
+	}
+	if got, _, err := db.StoredLibraryVersion("tail:items"); err != nil || got != 6 {
+		t.Fatalf("tail cursor after failed trigger = %d, %v; want 6", got, err)
+	}
+	out.Reset()
+	n, err := emitChangesWithHook(context.Background(), c, db, "items", "/items", DeliverSink{Scheme: "stdout"}, &out, hook)
+	if err != nil {
+		t.Fatalf("emitChangesWithHook: %v", err)
+	}
+	if n != 1 {
+		t.Fatalf("emitted = %d, want 1", n)
+	}
+	if hookRuns != 2 {
+		t.Fatalf("hook ran %d times, want failed attempt and retry", hookRuns)
+	}
+	if emittedAtHook != 1 {
+		t.Errorf("hook saw %d emitted events, want 1", emittedAtHook)
+	}
+	if cursorAtHook != 6 {
+		t.Errorf("cursor during trigger = %d, want 6: the trigger must run before the cursor advances", cursorAtHook)
+	}
+	if got, _, err := db.StoredLibraryVersion("tail:items"); err != nil || got != 7 {
+		t.Fatalf("tail cursor = %d, %v; want 7 after the trigger returned", got, err)
+	}
+	events := ndjsonEvents(t, out.String())
+	if len(events) != 1 || events[0]["key"] != "A" {
+		t.Fatalf("stdout = %q, want the upsert A delivered before the trigger", out.String())
 	}
 }

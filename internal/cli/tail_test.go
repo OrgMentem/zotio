@@ -16,6 +16,7 @@ import (
 
 	"zotio/internal/client"
 	"zotio/internal/config"
+	"zotio/internal/store"
 )
 
 // malformed body must not advance cursor: the transient 2xx should be retried
@@ -436,5 +437,201 @@ func TestTailOneShotBannerDescribesASinglePoll(t *testing.T) {
 	// on Ctrl+C, so its banner still says both.
 	if got := tailStartBanner("items", 10*time.Second, true); got != "Tailing items every 10s (Ctrl+C to stop)" {
 		t.Fatalf("follow banner = %q, want the unchanged wording", got)
+	}
+}
+
+// An unreadable saved cursor must fail the poll before any fetch: without a
+// trustworthy cursor there is no safe `since`, and treating the failure as a
+// bootstrap at zero would skip deletions and checkpoint past them.
+func TestEmitChanges_CursorReadErrorFailsBeforeFetch(t *testing.T) {
+	var hits int
+	mux := http.NewServeMux()
+	mux.HandleFunc("/items", func(w http.ResponseWriter, r *http.Request) {
+		hits++
+		w.Header().Set("Last-Modified-Version", "7")
+		_, _ = io.WriteString(w, `[{"key":"A","version":7}]`)
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	dbPath := filepath.Join(t.TempDir(), "tail.db")
+	db, err := store.OpenWithContext(context.Background(), dbPath)
+	if err != nil {
+		t.Fatalf("opening store: %v", err)
+	}
+	if err := db.SaveLibraryVersion("tail:items", srv.URL, 6); err != nil {
+		t.Fatalf("seeding cursor: %v", err)
+	}
+	// Close the handle so the cursor SELECT fails while the seeded row stays
+	// on disk; reopening later proves the cursor was never advanced.
+	if err := db.Close(); err != nil {
+		t.Fatalf("closing store: %v", err)
+	}
+
+	c := client.New(&config.Config{BaseURL: srv.URL}, 5*time.Second, 0)
+	c.NoCache = true
+	var buf bytes.Buffer
+	_, err = emitChanges(context.Background(), c, db, "items", "/items", DeliverSink{Scheme: "stdout"}, &buf)
+	if err == nil {
+		t.Fatal("emitChanges with unreadable cursor: want error, got nil")
+	}
+	if !strings.Contains(err.Error(), "reading cursor") {
+		t.Errorf("error = %q, want it to name the cursor read", err.Error())
+	}
+	if hits != 0 {
+		t.Errorf("server saw %d requests, want 0: nothing may be fetched without a cursor", hits)
+	}
+	if buf.Len() != 0 {
+		t.Errorf("writer got %q, want empty when the cursor cannot be read", buf.String())
+	}
+
+	reopened, err := store.OpenWithContext(context.Background(), dbPath)
+	if err != nil {
+		t.Fatalf("reopening store: %v", err)
+	}
+	t.Cleanup(func() { _ = reopened.Close() })
+	if v, _, err := reopened.StoredLibraryVersion("tail:items"); err != nil || v != 6 {
+		t.Errorf("cursor after failed read = %d, %v; want unchanged 6", v, err)
+	}
+}
+
+// A page element that is not a well-formed identified object must fail the
+// poll before delivery and checkpointing, so the faulty window is retried
+// after the dependency is repaired instead of being skipped permanently.
+func TestEmitChanges_MalformedObjectHoldsCursorForRetry(t *testing.T) {
+	faulty := true
+	var sinces []string
+	mux := http.NewServeMux()
+	mux.HandleFunc("/items", func(w http.ResponseWriter, r *http.Request) {
+		sinces = append(sinces, r.URL.Query().Get("since"))
+		w.Header().Set("Last-Modified-Version", "7")
+		if faulty {
+			_, _ = io.WriteString(w, `[42,{"key":"A","version":7}]`)
+			return
+		}
+		_, _ = io.WriteString(w, `[{"key":"A","version":7},{"key":"B","version":7}]`)
+	})
+	mux.HandleFunc("/deleted", func(w http.ResponseWriter, r *http.Request) {
+		if faulty {
+			t.Error("/deleted should not be fetched when a change object is malformed")
+		}
+		w.Header().Set("Last-Modified-Version", "7")
+		_, _ = io.WriteString(w, `{"items":[],"collections":[],"searches":[],"tags":[]}`)
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	c := client.New(&config.Config{BaseURL: srv.URL}, 5*time.Second, 0)
+	c.NoCache = true
+	db := tailTestStore(t)
+	if err := db.SaveLibraryVersion("tail:items", srv.URL, 6); err != nil {
+		t.Fatalf("seeding cursor: %v", err)
+	}
+
+	var buf bytes.Buffer
+	_, err := emitChanges(context.Background(), c, db, "items", "/items", DeliverSink{Scheme: "stdout"}, &buf)
+	if err == nil {
+		t.Fatal("emitChanges with scalar page element: want error, got nil")
+	}
+	if !strings.Contains(err.Error(), "decoding change object 0") {
+		t.Errorf("error = %q, want it to name the malformed element", err.Error())
+	}
+	if buf.Len() != 0 {
+		t.Errorf("writer got %q, want empty: the valid sibling must not deliver ahead of the faulty window", buf.String())
+	}
+	if v, _, err := db.StoredLibraryVersion("tail:items"); err != nil || v != 6 {
+		t.Errorf("cursor after malformed object = %d, %v; want unchanged 6", v, err)
+	}
+
+	faulty = false
+	buf.Reset()
+	n, err := emitChanges(context.Background(), c, db, "items", "/items", DeliverSink{Scheme: "stdout"}, &buf)
+	if err != nil {
+		t.Fatalf("replay emitChanges: %v", err)
+	}
+	if n != 2 {
+		t.Fatalf("replay emitted = %d, want 2", n)
+	}
+	if len(sinces) != 2 || sinces[0] != "6" || sinces[1] != "6" {
+		t.Fatalf("poll since values = %q, want [6 6]: the faulty window was not retried", sinces)
+	}
+	events := ndjsonEvents(t, buf.String())
+	if len(events) != 2 {
+		t.Fatalf("replay delivered %d events, want 2", len(events))
+	}
+	if v, _, err := db.StoredLibraryVersion("tail:items"); err != nil || v != 7 {
+		t.Errorf("cursor after replay = %d, %v; want 7", v, err)
+	}
+}
+
+// An object without any resource identity must also fail the poll: emitting
+// it with a null key and advancing would skip a window that can never be
+// recovered.
+func TestEmitChanges_IdentitylessObjectHoldsCursor(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/items", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Last-Modified-Version", "7")
+		_, _ = io.WriteString(w, `[{"version":7}]`)
+	})
+	mux.HandleFunc("/deleted", func(w http.ResponseWriter, r *http.Request) {
+		t.Error("/deleted should not be fetched when a change object lacks identity")
+		w.Header().Set("Last-Modified-Version", "7")
+		_, _ = io.WriteString(w, `{"items":[]}`)
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	c := client.New(&config.Config{BaseURL: srv.URL}, 5*time.Second, 0)
+	c.NoCache = true
+	db := tailTestStore(t)
+	if err := db.SaveLibraryVersion("tail:items", srv.URL, 6); err != nil {
+		t.Fatalf("seeding cursor: %v", err)
+	}
+
+	var buf bytes.Buffer
+	_, err := emitChanges(context.Background(), c, db, "items", "/items", DeliverSink{Scheme: "stdout"}, &buf)
+	if err == nil {
+		t.Fatal("emitChanges with identityless object: want error, got nil")
+	}
+	if !strings.Contains(err.Error(), "missing resource identity") {
+		t.Errorf("error = %q, want it to name the missing identity", err.Error())
+	}
+	if v, _, err := db.StoredLibraryVersion("tail:items"); err != nil || v != 6 {
+		t.Errorf("cursor after identityless object = %d, %v; want unchanged 6", v, err)
+	}
+}
+
+// Tags identify by name rather than key, so the identity check must accept a
+// well-formed tag object instead of rejecting the whole tags feed.
+func TestEmitChanges_TagObjectDelivers(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/tags", func(w http.ResponseWriter, r *http.Request) {
+		if got := r.URL.Query().Get("since"); got != "" {
+			t.Errorf("since = %q, want empty on bootstrap", got)
+		}
+		w.Header().Set("Last-Modified-Version", "3")
+		_, _ = io.WriteString(w, `[{"tag":"research","version":3}]`)
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	c := client.New(&config.Config{BaseURL: srv.URL}, 5*time.Second, 0)
+	c.NoCache = true
+	db := tailTestStore(t)
+
+	var buf bytes.Buffer
+	n, err := emitChanges(context.Background(), c, db, "tags", "/tags", DeliverSink{Scheme: "stdout"}, &buf)
+	if err != nil {
+		t.Fatalf("tag page: %v", err)
+	}
+	if n != 1 {
+		t.Fatalf("tag page emitted = %d, want 1", n)
+	}
+	events := ndjsonEvents(t, buf.String())
+	if len(events) != 1 || events[0]["event"] != "upsert" {
+		t.Fatalf("tag events = %q, want one upsert", buf.String())
+	}
+	if v, _, err := db.StoredLibraryVersion("tail:tags"); err != nil || v != 3 {
+		t.Errorf("cursor after tag page = %d, %v; want 3", v, err)
 	}
 }

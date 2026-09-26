@@ -13,14 +13,20 @@ import (
 )
 
 // watchHealthMonitor tracks health findings across successful watch sync cycles.
+// previous drives stdout drift reporting and always advances. acked tracks the
+// finding set the webhook has acknowledged and advances only after a 2xx
+// delivery, so a failed POST cannot consume a new-finding alert.
 type watchHealthMonitor struct {
-	enabled  bool
-	preset   string
-	kinds    []string
-	webhook  string
-	flags    *rootFlags
-	previous map[string]Finding
-	baseline bool
+	enabled         bool
+	preset          string
+	kinds           []string
+	webhook         string
+	flags           *rootFlags
+	previous        map[string]Finding
+	baseline        bool
+	acked           map[string]Finding
+	ackedBaseline   bool
+	pendingBaseline map[string]Finding
 }
 
 // watchHealthWebhookPayload is the drift notification contract for --health-webhook.
@@ -32,8 +38,9 @@ type watchHealthWebhookPayload struct {
 	Totals        healthSummary `json:"totals"`
 }
 
-// newWatchHealthMonitor normalizes watch health flags against the library-health preset registry.
-func newWatchHealthMonitor(flags *rootFlags, enabled bool, presetRaw string, webhook string) (*watchHealthMonitor, error) {
+// newWatchHealthMonitorWithContext validates the webhook URL against the
+// caller's context so a stalled DNS lookup cannot block watch startup.
+func newWatchHealthMonitorWithContext(ctx context.Context, flags *rootFlags, enabled bool, presetRaw string, webhook string) (*watchHealthMonitor, error) {
 	preset := strings.ToLower(strings.TrimSpace(presetRaw))
 	if preset == "" {
 		preset = "quick"
@@ -44,7 +51,7 @@ func newWatchHealthMonitor(flags *rootFlags, enabled bool, presetRaw string, web
 	}
 	webhook = strings.TrimSpace(webhook)
 	if enabled && webhook != "" {
-		if err := validateExternalHTTPURL(webhook, false); err != nil {
+		if err := validateExternalHTTPURLWithContext(ctx, webhook, false); err != nil {
 			return nil, usageErr(fmt.Errorf("invalid --health-webhook: %w", err))
 		}
 	}
@@ -55,6 +62,7 @@ func newWatchHealthMonitor(flags *rootFlags, enabled bool, presetRaw string, web
 		webhook:  webhook,
 		flags:    flags,
 		previous: map[string]Finding{},
+		acked:    map[string]Finding{},
 	}, nil
 }
 
@@ -70,7 +78,7 @@ func (m *watchHealthMonitor) run(ctx context.Context, cmd *cobra.Command, cycleA
 	}
 
 	current := watchHealthFindingSet(report.Findings)
-	newFindings := make([]Finding, 0)
+	firstCycle := !m.baseline
 	resolvedCount := 0
 	if !m.baseline {
 		m.baseline = true
@@ -78,7 +86,6 @@ func (m *watchHealthMonitor) run(ctx context.Context, cmd *cobra.Command, cycleA
 	} else {
 		for _, f := range report.Findings {
 			if _, ok := m.previous[watchHealthFindingKey(f)]; !ok {
-				newFindings = append(newFindings, f)
 				fmt.Fprintf(cmd.OutOrStdout(), "[health] new %s %s %s %q\n", f.Severity, f.Kind, watchHealthFindingDisplayKey(f), watchHealthFindingTitle(f))
 			}
 		}
@@ -92,7 +99,39 @@ func (m *watchHealthMonitor) run(ctx context.Context, cmd *cobra.Command, cycleA
 	m.previous = current
 
 	if m.webhook != "" {
-		m.deliverWebhook(ctx, cmd, cycleAt, newFindings, resolvedCount, report.Summary)
+		if firstCycle {
+			// Keep the first observation as the baseline even if its POST
+			// fails. Later cycles can report changes relative to this snapshot
+			// without calling it acknowledged before a 2xx response.
+			m.pendingBaseline = current
+			if err := m.deliverWebhook(ctx, cmd, cycleAt, nil, 0, report.Summary); err == nil {
+				m.acked = current
+				m.ackedBaseline = true
+				m.pendingBaseline = nil
+			}
+			return
+		}
+		baseline := m.acked
+		if !m.ackedBaseline {
+			baseline = m.pendingBaseline
+		}
+		var webhookNew []Finding
+		webhookResolved := 0
+		for _, f := range report.Findings {
+			if _, ok := baseline[watchHealthFindingKey(f)]; !ok {
+				webhookNew = append(webhookNew, f)
+			}
+		}
+		for key := range baseline {
+			if _, ok := current[key]; !ok {
+				webhookResolved++
+			}
+		}
+		if err := m.deliverWebhook(ctx, cmd, cycleAt, webhookNew, webhookResolved, report.Summary); err == nil {
+			m.acked = current
+			m.ackedBaseline = true
+			m.pendingBaseline = nil
+		}
 	}
 }
 
@@ -122,7 +161,9 @@ func (m *watchHealthMonitor) report(ctx context.Context) (healthReport, error) {
 }
 
 // deliverWebhook posts the compact drift payload using the shared delivery webhook conventions.
-func (m *watchHealthMonitor) deliverWebhook(ctx context.Context, cmd *cobra.Command, cycleAt time.Time, newFindings []Finding, resolvedCount int, totals healthSummary) {
+// It reports delivery success to run so the acknowledged baseline advances
+// only on a 2xx: a failed POST retains the alert for the next cycle.
+func (m *watchHealthMonitor) deliverWebhook(ctx context.Context, cmd *cobra.Command, cycleAt time.Time, newFindings []Finding, resolvedCount int, totals healthSummary) error {
 	payload := watchHealthWebhookPayload{
 		CycleAt:       cycleAt,
 		Preset:        m.preset,
@@ -133,11 +174,13 @@ func (m *watchHealthMonitor) deliverWebhook(ctx context.Context, cmd *cobra.Comm
 	body, err := json.Marshal(payload)
 	if err != nil {
 		fmt.Fprintf(cmd.ErrOrStderr(), "[health] %s webhook payload error: %v\n", cycleAt.Format(time.RFC3339), err)
-		return
+		return err
 	}
 	if err := deliverWebhook(ctx, m.webhook, body, false); err != nil {
 		fmt.Fprintf(cmd.ErrOrStderr(), "[health] %s webhook delivery error: %v\n", cycleAt.Format(time.RFC3339), err)
+		return err
 	}
+	return nil
 }
 
 // watchHealthFindingSet indexes findings by the stable health taxonomy identity.

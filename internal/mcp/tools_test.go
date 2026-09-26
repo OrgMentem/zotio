@@ -314,7 +314,7 @@ func TestHandleSQLRecursiveCTEIsRowLimited(t *testing.T) {
 
 	req := mcplib.CallToolRequest{}
 	req.Params.Arguments = map[string]any{
-		"query": "WITH RECURSIVE cnt(x) AS (SELECT 1 UNION ALL SELECT x+1 FROM cnt LIMIT 100000) SELECT x FROM cnt",
+		"query": fmt.Sprintf("WITH RECURSIVE cnt(x) AS (SELECT 1 UNION ALL SELECT x+1 FROM cnt LIMIT %d) SELECT x FROM cnt", sqlRowLimit+1000),
 	}
 	res, err := handleSQL(context.Background(), req)
 	if err != nil {

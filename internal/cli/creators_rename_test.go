@@ -4,7 +4,9 @@ package cli
 import (
 	"bytes"
 	"encoding/json"
+	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 
 	"zotio/internal/mutation"
@@ -162,5 +164,33 @@ func TestCreatorsRenameRefusesWriteWithoutWritePlaneVersion(t *testing.T) {
 	}
 	if len(srv.patches) != 0 {
 		t.Fatalf("patches = %#v, want none sent without a precondition", srv.patches)
+	}
+}
+
+// A missing local mirror is a retryable precondition, not a success: returning
+// nil here exits 0 with no rename, and a workflow checkpoints that nil as a
+// completed step that --resume then skips even after a later sync. Exit 9 keeps
+// the step failed so resume retries it.
+func TestCreatorsRenameMissingMirrorIsPreconditionError(t *testing.T) {
+	savedGroup := activeGroupIDLocked()
+	setActiveGroupID("")
+	t.Cleanup(func() { setActiveGroupID(savedGroup) })
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("ZOTIO_DEMO", "")
+	t.Setenv("ZOTERO_HOME", "")
+	t.Setenv("ZOTERO_DATA_DIR", "")
+	t.Setenv("XDG_CONFIG_HOME", "")
+	t.Setenv("XDG_DATA_HOME", "")
+	t.Setenv("ZOTERO_CONFIG", filepath.Join(t.TempDir(), "missing.toml"))
+
+	_, err := runCreatorsRenameTestCmd(t, &rootFlags{asJSON: true, maxChanges: -1}, "http://127.0.0.1:1", "--from", "Adam J Rock", "--to", "Adam J. Rock")
+	if err == nil {
+		t.Fatal("creators rename with no mirror succeeded, want a precondition error so the workflow step stays retryable")
+	}
+	if code := ExitCode(err); code != 9 {
+		t.Fatalf("ExitCode(err) = %d (%v), want 9 (precondition)", code, err)
+	}
+	if !strings.Contains(err.Error(), "zotio sync") {
+		t.Fatalf("err = %v, want the sync remediation", err)
 	}
 }

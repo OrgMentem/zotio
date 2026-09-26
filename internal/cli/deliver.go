@@ -45,7 +45,19 @@ var (
 // Returns an error for unknown schemes with a message naming the
 // supported set, so agents see a structured refusal rather than a
 // silent misroute.
+// publicOutboundPreflightTimeout bounds DNS preflight for optional outbound
+// integrations. Dial-time resolution under the already-bounded HTTP request
+// stays authoritative; preflight only rejects private literals early.
+const publicOutboundPreflightTimeout = 5 * time.Second
+
 func ParseDeliverSink(spec string) (DeliverSink, error) {
+	return ParseDeliverSinkWithContext(context.Background(), spec)
+}
+
+// ParseDeliverSinkWithContext parses a --deliver value with the caller's
+// context so a stalled webhook DNS lookup cannot block the command before it
+// runs, even after cancellation or --timeout.
+func ParseDeliverSinkWithContext(ctx context.Context, spec string) (DeliverSink, error) {
 	if spec == "" || spec == "stdout" {
 		return DeliverSink{Scheme: "stdout"}, nil
 	}
@@ -63,7 +75,7 @@ func ParseDeliverSink(spec string) (DeliverSink, error) {
 	case "webhook":
 		// reject private/internal
 		// webhook targets before any command output can be POSTed to them.
-		if err := validateExternalHTTPURL(target, false); err != nil {
+		if err := validateExternalHTTPURLWithContext(ctx, target, false); err != nil {
 			return DeliverSink{}, fmt.Errorf("--deliver webhook:<url> rejected: %w", err)
 		}
 	default:
@@ -116,6 +128,15 @@ func Deliver(ctx context.Context, sink DeliverSink, spool *deliverSpool, compact
 // outbound integrations probe local/private networks. requireHTTPS is used for
 // background telemetry-style sends where plaintext HTTP is never needed.
 func validateExternalHTTPURL(raw string, requireHTTPS bool) error {
+	return validateExternalHTTPURLWithContext(context.Background(), raw, requireHTTPS)
+}
+
+// validateExternalHTTPURLWithContext is validateExternalHTTPURL with the
+// caller's context: preflight DNS inherits cancellation and is capped at
+// publicOutboundPreflightTimeout so a stalled lookup cannot outlive the
+// command. Dial-time resolution under the bounded HTTP request remains the
+// authoritative guard.
+func validateExternalHTTPURLWithContext(ctx context.Context, raw string, requireHTTPS bool) error {
 	u, err := neturl.Parse(strings.TrimSpace(raw))
 	if err != nil {
 		return fmt.Errorf("invalid URL %q: %w", raw, err)
@@ -136,15 +157,22 @@ func validateExternalHTTPURL(raw string, requireHTTPS bool) error {
 		if outboundHostIsPrivate(host) {
 			return fmt.Errorf("host %q is local or private", host)
 		}
-		if err := resolvePublicOutboundHost(host); err != nil {
+		if err := resolvePublicOutboundHostWithContext(ctx, host); err != nil {
 			return err
 		}
 	}
 	return nil
 }
-
-func resolvePublicOutboundHost(host string) error {
-	_, err := publicOutboundIPLookup(context.Background(), host)
+func resolvePublicOutboundHostWithContext(ctx context.Context, host string) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	lookupCtx, cancel := context.WithTimeout(ctx, publicOutboundPreflightTimeout)
+	defer cancel()
+	_, err := publicOutboundIPLookup(lookupCtx, host)
+	if lookupCtx.Err() != nil {
+		return lookupCtx.Err()
+	}
 	if err != nil && strings.HasPrefix(err.Error(), "resolving host ") {
 		// URL validation is also used for stored links that are not fetched
 		// immediately. DNS failures are allowed there; fetches are bound to a
@@ -198,8 +226,13 @@ func externalHTTPClient(base *http.Client, requireHTTPS bool) *http.Client {
 	client.CheckRedirect = func(req *http.Request, via []*http.Request) error {
 		// re-run the same public-host gate on each
 		// redirect target; a safe first URL must not bounce into loopback,
-		// RFC1918/link-local, or a disallowed scheme.
-		if err := validateExternalHTTPURL(req.URL.String(), requireHTTPS); err != nil {
+		// RFC1918/link-local, or a disallowed scheme. The request context
+		// bounds the preflight lookup so cancellation interrupts it.
+		ctx := context.Background()
+		if req != nil && req.Context() != nil {
+			ctx = req.Context()
+		}
+		if err := validateExternalHTTPURLWithContext(ctx, req.URL.String(), requireHTTPS); err != nil {
 			return err
 		}
 		return nil
@@ -235,7 +268,11 @@ func guardedExternalTransport(base *http.Transport) *http.Transport {
 func sameOriginExternalFetchHTTPClient(base *http.Client, requireHTTPS bool) *http.Client {
 	client := externalFetchHTTPClient(base, requireHTTPS)
 	client.CheckRedirect = func(req *http.Request, via []*http.Request) error {
-		if err := validateExternalHTTPURL(req.URL.String(), requireHTTPS); err != nil {
+		ctx := context.Background()
+		if req != nil && req.Context() != nil {
+			ctx = req.Context()
+		}
+		if err := validateExternalHTTPURLWithContext(ctx, req.URL.String(), requireHTTPS); err != nil {
 			return err
 		}
 		if len(via) >= 10 {
@@ -330,8 +367,10 @@ func postDeliverWebhook(ctx context.Context, url string, body io.ReadSeeker, len
 		ctx = context.Background()
 	}
 	// keep direct helper calls as
-	// constrained as the public --deliver parser.
-	if err := validateExternalHTTPURL(url, false); err != nil {
+	// constrained as the public --deliver parser. The request context bounds
+	// the preflight lookup so a stalled DNS cannot outlive cancellation; the
+	// 30s client below bounds the dial and POST that follow.
+	if err := validateExternalHTTPURLWithContext(ctx, url, false); err != nil {
 		return err
 	}
 	contentType := "application/json"

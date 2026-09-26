@@ -33,14 +33,29 @@ func launchCommand(goos, uri string) (name string, args []string) {
 	}
 }
 
+// launchURITimeout bounds a desktop URI launch when the caller has no
+// deadline of its own (items open). ensureLive supplies its own 15s overall
+// deadline, which still caps the launch via parent cancellation.
+const launchURITimeout = 15 * time.Second
+
 // provide one side-effect-gated URI launcher for desktop integrations.
-func launchURI(uri string) error {
+// The command context bounds the child: cancellation kills it instead of
+// hanging on a stalled OS URI handler.
+func launchURI(ctx context.Context, uri string) error {
 	if cliutil.IsVerifyEnv() {
 		fmt.Fprintf(os.Stdout, "would open: %s\n", uri)
 		return nil
 	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if _, ok := ctx.Deadline(); !ok {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, launchURITimeout)
+		defer cancel()
+	}
 	name, args := launchCommand(runtime.GOOS, uri)
-	if err := exec.Command(name, args...).Run(); err != nil {
+	if err := exec.CommandContext(ctx, name, args...).Run(); err != nil {
 		return fmt.Errorf("launching URI %q: %w", uri, err)
 	}
 	return nil
@@ -81,12 +96,20 @@ func ensureLive(cmd *cobra.Command, flags *rootFlags, launch bool) error {
 	if cliutil.IsVerifyEnv() {
 		return nil
 	}
-	if err := launchURI("zotero://select/library"); err != nil {
-		return preconditionErr(fmt.Errorf("launching Zotero: %w", err))
-	}
-
+	// Start the 15s overall deadline before invoking the OS launcher so a
+	// stalled open/xdg-open cannot hang forever: the launch child inherits
+	// this context and is killed on cancellation or deadline.
 	ctx, cancel := context.WithTimeout(cmd.Context(), 15*time.Second)
 	defer cancel()
+	if err := launchURI(ctx, "zotero://select/library"); err != nil {
+		if ctx.Err() != nil {
+			if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+				return preconditionErr(fmt.Errorf("launched Zotero but the local API did not become reachable within 15s; ensure Settings -> Advanced -> 'Allow other applications' is enabled"))
+			}
+			return ctx.Err()
+		}
+		return preconditionErr(fmt.Errorf("launching Zotero: %w", err))
+	}
 	ticker := time.NewTicker(500 * time.Millisecond)
 	defer ticker.Stop()
 	for {

@@ -11,8 +11,10 @@ import (
 	"net/http/httptest"
 	"os"
 	"reflect"
+	"runtime"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/spf13/cobra"
 
@@ -49,7 +51,7 @@ func TestLaunchCommand(t *testing.T) {
 func TestLaunchURIVerifyEnv(t *testing.T) {
 	t.Setenv(cliutil.VerifyEnvVar, "1")
 
-	if err := launchURI("zotero://select/library"); err != nil {
+	if err := launchURI(context.Background(), "zotero://select/library"); err != nil {
 		t.Fatalf("launchURI returned error under verify env: %v", err)
 	}
 }
@@ -237,4 +239,62 @@ func captureEnsureLiveStdout(t *testing.T, fn func()) string {
 		t.Fatalf("read stdout pipe: %v", err)
 	}
 	return string(stdout)
+}
+
+// A stalled OS URI handler must not hang the launch: the command context
+// bounds the child and kills it on cancellation.
+func TestLaunchURIHonorsContextCancellation(t *testing.T) {
+	name, _ := launchCommand(runtime.GOOS, "zotero://select/library")
+	dir := t.TempDir()
+	stub := "#!/bin/sh\nsleep 30\n"
+	path := dir + "/" + name
+	if err := os.WriteFile(path, []byte(stub), 0o755); err != nil {
+		t.Fatalf("write fake launcher: %v", err)
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+	start := time.Now()
+	err := launchURI(ctx, "zotero://select/library")
+	elapsed := time.Since(start)
+	if err == nil {
+		t.Fatal("launchURI with stalled handler returned nil, want cancellation error")
+	}
+	if elapsed > 10*time.Second {
+		t.Fatalf("launchURI blocked %v, want prompt cancellation", elapsed)
+	}
+}
+
+// ensureLive must start its 15s deadline before invoking the launcher so a
+// stalled handler cannot hang forever: a short command deadline returns
+// promptly without entering the readiness loop.
+func TestEnsureLiveLaunchHonorsCommandDeadline(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	name, _ := launchCommand(runtime.GOOS, "zotero://select/library")
+	dir := t.TempDir()
+	if err := os.WriteFile(dir+"/"+name, []byte("#!/bin/sh\nsleep 30\n"), 0o755); err != nil {
+		t.Fatalf("write fake launcher: %v", err)
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	baseURL := "http://127.0.0.1:0/users/0"
+	flags := &rootFlags{}
+	flags.configPath = testConfigFile(t, baseURL)
+	cmd := &cobra.Command{Use: "doctor"}
+	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	defer cancel()
+	cmd.SetContext(ctx)
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&out)
+	start := time.Now()
+	err := ensureLive(cmd, flags, true)
+	elapsed := time.Since(start)
+	if err == nil {
+		t.Fatal("ensureLive with stalled launcher returned nil, want deadline error")
+	}
+	if elapsed > 10*time.Second {
+		t.Fatalf("ensureLive blocked %v, want prompt deadline return", elapsed)
+	}
 }

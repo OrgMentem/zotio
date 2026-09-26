@@ -135,14 +135,14 @@ func TestWatchOnceWorkflowMissingSpecFailsFast(t *testing.T) {
 	}
 }
 
-func TestWatchOnceWorkflowFailureDoesNotFailCycle(t *testing.T) {
+func TestWatchOnceWorkflowFailureFailsCycle(t *testing.T) {
 	specPath := writeWorkflowRunTestSpec(t, workflowRunSpec{Steps: []workflowRunStepSpec{
 		{Args: []string{"definitely-not-a-command"}},
 	}})
 
 	stderr, err := runWatchOnceTest(t, specPath)
-	if err != nil {
-		t.Fatalf("watch --once failing workflow returned error: %v; stderr=%s", err, stderr)
+	if err == nil {
+		t.Fatalf("watch --once failing workflow returned nil, want workflow error; stderr=%s", stderr)
 	}
 	if !strings.Contains(stderr, "workflow preview failed:") {
 		t.Fatalf("stderr = %q, want workflow failure summary", stderr)
@@ -157,7 +157,9 @@ func TestTriggeredWorkflowDryRunWinsOverYes(t *testing.T) {
 	var stderr bytes.Buffer
 	cmd.SetErr(&stderr)
 
-	runTriggeredWorkflow(context.Background(), cmd, "watch", specPath, workflowRunInvocation{Yes: true, DryRun: true})
+	if err := runTriggeredWorkflowE(context.Background(), cmd, "watch", specPath, workflowRunInvocation{Yes: true, DryRun: true}); err != nil {
+		t.Fatalf("trigger preview: %v", err)
+	}
 
 	if !strings.Contains(stderr.String(), "workflow preview ok") {
 		t.Fatalf("trigger stderr = %q, want preview success", stderr.String())

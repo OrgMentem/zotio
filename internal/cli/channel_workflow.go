@@ -129,14 +129,30 @@ and full resync. After archiving, use 'search' for instant full-text search.`,
 						break
 					}
 
-					var items []json.RawMessage
-					if err := json.Unmarshal(data, &items); err != nil {
+					trimmed := bytes.TrimSpace(data)
+					if len(trimmed) == 0 || (trimmed[0] != '[' && trimmed[0] != '{') {
+						// A 200 with a null/scalar body (for example `null`) is not an
+						// empty page: unmarshalling it into a slice succeeds with
+						// length zero, which would clear the cursor and report the
+						// resource complete while later items remain unfetched.
+						// Retain the current cursor so the window is retryable.
+						resourceIncomplete = true
+						detail := fmt.Sprintf("%s: unexpected response shape %q", resource, string(trimmed))
+						failures = append(failures, detail)
+						fmt.Fprintf(cmd.ErrOrStderr(), "  error: %s\n", detail)
+						break
+					}
+					if trimmed[0] == '{' {
 						// Some schema endpoints return one object. A malformed
 						// response is an incomplete archive, not a singleton.
 						var singleton map[string]json.RawMessage
-						if err := json.Unmarshal(data, &singleton); err != nil {
+						if err := json.Unmarshal(data, &singleton); err != nil || singleton == nil {
 							resourceIncomplete = true
-							detail := fmt.Sprintf("%s: parsing response: %v", resource, err)
+							parseErr := err
+							if parseErr == nil {
+								parseErr = fmt.Errorf("unexpected null object")
+							}
+							detail := fmt.Sprintf("%s: parsing response: %v", resource, parseErr)
 							failures = append(failures, detail)
 							fmt.Fprintf(cmd.ErrOrStderr(), "  error: %s\n", detail)
 							break
@@ -156,6 +172,14 @@ and full resync. After archiving, use 'search' for instant full-text search.`,
 							failures = append(failures, detail)
 							fmt.Fprintf(cmd.ErrOrStderr(), "  error: %s\n", detail)
 						}
+						break
+					}
+					var items []json.RawMessage
+					if err := json.Unmarshal(data, &items); err != nil {
+						resourceIncomplete = true
+						detail := fmt.Sprintf("%s: parsing response: %v", resource, err)
+						failures = append(failures, detail)
+						fmt.Fprintf(cmd.ErrOrStderr(), "  error: %s\n", detail)
 						break
 					}
 					if len(items) == 0 {

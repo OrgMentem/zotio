@@ -559,3 +559,58 @@ func externalHTTPTestResponse(req *http.Request, status int, location, body stri
 		Request:    req,
 	}
 }
+
+// Preflight DNS must honor the caller's context: a stalled lookup cannot block
+// --deliver parsing or the webhook POST past cancellation or the preflight
+// deadline.
+func TestParseDeliverSinkWithContextHonorsCancellation(t *testing.T) {
+	oldLookup := publicOutboundIPLookup
+	publicOutboundIPLookup = func(ctx context.Context, host string) ([]string, error) {
+		select {
+		case <-ctx.Done():
+			return nil, fmt.Errorf("resolving host %q: %w", host, ctx.Err())
+		case <-time.After(30 * time.Second):
+			return []string{"93.184.216.34"}, nil
+		}
+	}
+	t.Cleanup(func() { publicOutboundIPLookup = oldLookup })
+
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	start := time.Now()
+	_, err := ParseDeliverSinkWithContext(ctx, "webhook:https://stall.example.test/hook")
+	elapsed := time.Since(start)
+	if err == nil {
+		t.Fatal("ParseDeliverSinkWithContext with stalled DNS returned nil, want cancellation error")
+	}
+	if elapsed > 10*time.Second {
+		t.Fatalf("ParseDeliverSinkWithContext blocked %v, want prompt cancellation", elapsed)
+	}
+}
+
+// The send-side webhook validation shares the same bound: postDeliverWebhook
+// must not hang on DNS before its 30s POST timeout starts.
+func TestPostDeliverWebhookPreflightHonorsCancellation(t *testing.T) {
+	oldLookup := publicOutboundIPLookup
+	publicOutboundIPLookup = func(ctx context.Context, host string) ([]string, error) {
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-time.After(30 * time.Second):
+			return []string{"93.184.216.34"}, nil
+		}
+	}
+	t.Cleanup(func() { publicOutboundIPLookup = oldLookup })
+
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	start := time.Now()
+	err := postDeliverWebhook(ctx, "https://stall.example.test/hook", strings.NewReader(`{}`), 2, false)
+	elapsed := time.Since(start)
+	if err == nil {
+		t.Fatal("postDeliverWebhook with stalled DNS returned nil, want cancellation error")
+	}
+	if elapsed > 10*time.Second {
+		t.Fatalf("postDeliverWebhook blocked %v, want prompt cancellation", elapsed)
+	}
+}

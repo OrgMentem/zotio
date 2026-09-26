@@ -430,7 +430,10 @@ See README.md or the bundled SKILL.md for recipes.`,
 			}
 		}
 		if flags.deliverSpec != "" {
-			sink, err := ParseDeliverSink(flags.deliverSpec)
+			// The command context carries Ctrl-C/MCP cancellation and the
+			// --timeout deadline into webhook DNS preflight: a stalled lookup
+			// must not block the command before it runs.
+			sink, err := ParseDeliverSinkWithContext(cmd.Context(), flags.deliverSpec)
 			if err != nil {
 				return err
 			}

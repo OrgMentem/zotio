@@ -11,6 +11,8 @@ import (
 	"net/http/httptest"
 	"path/filepath"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -207,7 +209,9 @@ func TestWatchHealthWebhookPostsDriftPayload(t *testing.T) {
 	var errOut bytes.Buffer
 	cmd.SetErr(&errOut)
 	cycleAt := time.Date(2026, 7, 6, 12, 30, 0, 0, time.UTC)
-	monitor.deliverWebhook(context.Background(), cmd, cycleAt, []Finding{{Kind: "missing_citation", Severity: sevHigh, ItemKey: "K1", Title: "Missing"}}, 2, healthSummary{High: 1, Total: 1})
+	if err := monitor.deliverWebhook(context.Background(), cmd, cycleAt, []Finding{{Kind: "missing_citation", Severity: sevHigh, ItemKey: "K1", Title: "Missing"}}, 2, healthSummary{High: 1, Total: 1}); err != nil {
+		t.Fatalf("deliverWebhook: %v", err)
+	}
 	if errOut.Len() != 0 {
 		t.Fatalf("webhook stderr = %q, want none", errOut.String())
 	}
@@ -223,5 +227,142 @@ func TestWatchHealthWebhookPostsDriftPayload(t *testing.T) {
 	}
 	if len(payload.New) != 1 || payload.New[0].Kind != "missing_citation" || payload.New[0].ItemKey != "K1" {
 		t.Fatalf("payload new findings = %+v, want missing_citation K1", payload.New)
+	}
+}
+
+// A failed webhook POST must not consume a new-finding alert: the
+// acknowledged baseline advances only on 2xx, so the next cycle retries the
+// same transition.
+func TestWatchHealthWebhookRetriesAfterFailure(t *testing.T) {
+	oldAllowPrivateOutbound := allowPrivateOutboundForTests.Load()
+	allowPrivateOutboundForTests.Store(true)
+	t.Cleanup(func() { allowPrivateOutboundForTests.Store(oldAllowPrivateOutbound) })
+
+	var mu struct {
+		sync.Mutex
+		payloads []watchHealthWebhookPayload
+	}
+	var calls atomic.Int32
+	hook := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		var payload watchHealthWebhookPayload
+		_ = json.Unmarshal(body, &payload)
+		mu.Lock()
+		mu.payloads = append(mu.payloads, payload)
+		mu.Unlock()
+		if calls.Add(1) == 2 {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	t.Cleanup(hook.Close)
+
+	seedWatchHealthDefaultStore(t, []json.RawMessage{
+		json.RawMessage(`{"key":"BASE","version":1,"data":{"key":"BASE","itemType":"journalArticle","title":"Base Complete","creators":[{"lastName":"Doe"}],"date":"2020","publicationTitle":"Journal","dateAdded":"2026-01-01T00:00:00Z"}}`),
+	})
+	monitor := &watchHealthMonitor{
+		enabled:  true,
+		preset:   "citation",
+		kinds:    []string{"missing_citation"},
+		flags:    &rootFlags{},
+		previous: map[string]Finding{},
+		acked:    map[string]Finding{},
+		webhook:  hook.URL,
+	}
+	newCycleCmd := func() (*cobra.Command, *bytes.Buffer, *bytes.Buffer) {
+		cmd := &cobra.Command{}
+		var out, errOut bytes.Buffer
+		cmd.SetOut(&out)
+		cmd.SetErr(&errOut)
+		return cmd, &out, &errOut
+	}
+
+	cmd, _, _ := newCycleCmd()
+	monitor.run(context.Background(), cmd, time.Date(2026, 7, 6, 12, 0, 0, 0, time.UTC))
+	if !monitor.ackedBaseline {
+		t.Fatal("baseline cycle did not establish the webhook baseline")
+	}
+
+	upsertWatchHealthDefaultStore(t, []json.RawMessage{
+		json.RawMessage(`{"key":"NEW","version":2,"data":{"key":"NEW","itemType":"journalArticle","title":"New Missing","dateAdded":"2026-01-02T00:00:00Z"}}`),
+	})
+	cmd, _, _ = newCycleCmd()
+	monitor.run(context.Background(), cmd, time.Date(2026, 7, 6, 12, 1, 0, 0, time.UTC))
+	ackedAfterFailure := len(monitor.acked)
+
+	cmd, _, _ = newCycleCmd()
+	monitor.run(context.Background(), cmd, time.Date(2026, 7, 6, 12, 2, 0, 0, time.UTC))
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(mu.payloads) != 3 {
+		t.Fatalf("webhook payloads = %d, want 3 (baseline, failed new, retried new)", len(mu.payloads))
+	}
+	if len(mu.payloads[1].New) != 1 || mu.payloads[1].New[0].ItemKey != "NEW" {
+		t.Fatalf("failed payload new = %+v, want NEW", mu.payloads[1].New)
+	}
+	if len(mu.payloads[2].New) != 1 || mu.payloads[2].New[0].ItemKey != "NEW" {
+		t.Fatalf("retried payload new = %+v, want NEW again after 503", mu.payloads[2].New)
+	}
+	if ackedAfterFailure != 0 {
+		t.Fatalf("acked size after failed POST = %d, want unchanged empty baseline", ackedAfterFailure)
+	}
+	if len(monitor.acked) != 1 {
+		t.Fatalf("acked size after recovered POST = %d, want NEW", len(monitor.acked))
+	}
+}
+
+func TestWatchHealthWebhookFailedBaselineKeepsNewFinding(t *testing.T) {
+	oldAllowPrivateOutbound := allowPrivateOutboundForTests.Load()
+	allowPrivateOutboundForTests.Store(true)
+	t.Cleanup(func() { allowPrivateOutboundForTests.Store(oldAllowPrivateOutbound) })
+
+	payloads := make(chan watchHealthWebhookPayload, 2)
+	var calls atomic.Int32
+	hook := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var payload watchHealthWebhookPayload
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Errorf("decoding webhook: %v", err)
+		}
+		payloads <- payload
+		if calls.Add(1) == 1 {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer hook.Close()
+
+	seedWatchHealthDefaultStore(t, []json.RawMessage{
+		json.RawMessage(`{"key":"BASE","version":1,"data":{"key":"BASE","itemType":"journalArticle","title":"Complete","creators":[{"lastName":"Doe"}],"date":"2020","publicationTitle":"Journal"}}`),
+	})
+	monitor := &watchHealthMonitor{
+		enabled: true, preset: "citation", kinds: []string{"missing_citation"},
+		flags: &rootFlags{}, webhook: hook.URL,
+	}
+	cmd := &cobra.Command{}
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetErr(&bytes.Buffer{})
+	monitor.run(context.Background(), cmd, time.Now())
+	if monitor.ackedBaseline {
+		t.Fatal("failed baseline POST was marked acknowledged")
+	}
+	upsertWatchHealthDefaultStore(t, []json.RawMessage{
+		json.RawMessage(`{"key":"NEW","version":2,"data":{"key":"NEW","itemType":"journalArticle","title":"Missing"}}`),
+	})
+	monitor.run(context.Background(), cmd, time.Now())
+	for i := range 2 {
+		select {
+		case payload := <-payloads:
+			if i == 1 && (len(payload.New) != 1 || payload.New[0].ItemKey != "NEW") {
+				t.Fatalf("recovered webhook new = %+v, want NEW", payload.New)
+			}
+		case <-time.After(time.Second):
+			t.Fatal("webhook did not receive both cycles")
+		}
+	}
+	if !monitor.ackedBaseline {
+		t.Fatal("successful drift POST did not acknowledge the baseline")
 	}
 }

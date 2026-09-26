@@ -300,3 +300,114 @@ func TestWorkflowArchive_UsesCanonicalResourceEndpoints(t *testing.T) {
 		}
 	}
 }
+
+// A 200 with a null body after a full page must not clear the cursor or
+// report complete: the resource stays incomplete at the failed window so a
+// repaired rerun resumes from that offset.
+func TestWorkflowArchive_NullPageRetainsCursorAndReportsIncomplete(t *testing.T) {
+	fastRetryBackoff(t)
+	var repaired atomic.Bool
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		resource := strings.TrimPrefix(r.URL.Path, "/users/0/")
+		if resource != "items" {
+			_, _ = w.Write([]byte("[]"))
+			return
+		}
+		switch r.URL.Query().Get("start") {
+		case "0", "":
+			items := make([]map[string]any, 0, 100)
+			for i := range 100 {
+				items = append(items, map[string]any{
+					"key":  fmt.Sprintf("NULL-%03d", i),
+					"data": map[string]any{"itemType": "book", "title": fmt.Sprintf("Null %d", i)},
+				})
+			}
+			_ = json.NewEncoder(w).Encode(items)
+		case "100":
+			if repaired.Load() {
+				_ = json.NewEncoder(w).Encode([]map[string]any{{
+					"key":  "NULL-100",
+					"data": map[string]any{"itemType": "book", "title": "Null 100"},
+				}})
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte("null"))
+		default:
+			http.Error(w, "unexpected pagination offset", http.StatusBadRequest)
+		}
+	}))
+	defer srv.Close()
+
+	dbPath := filepath.Join(t.TempDir(), "archive.db")
+	t.Setenv("ZOTERO_BASE_URL", srv.URL+"/users/0")
+	t.Setenv("ZOTERO_CONFIG", filepath.Join(t.TempDir(), "missing.toml"))
+	runArchive := func() (string, error) {
+		cmd := newWorkflowArchiveCmd(&rootFlags{asJSON: true, noCache: true})
+		cmd.SilenceErrors, cmd.SilenceUsage = true, true
+		var out, errOut bytes.Buffer
+		cmd.SetOut(&out)
+		cmd.SetErr(&errOut)
+		cmd.SetArgs([]string{"--db", dbPath})
+		err := cmd.Execute()
+		return out.String(), err
+	}
+
+	out, err := runArchive()
+	if err == nil || ExitCode(err) != 13 {
+		t.Fatalf("archive with null page error = %v, exit=%d; want degraded 13", err, ExitCode(err))
+	}
+	var result struct {
+		Status   string   `json:"status"`
+		Failures []string `json:"failures"`
+	}
+	if err := json.Unmarshal([]byte(out), &result); err != nil {
+		t.Fatalf("decode archive result %q: %v", out, err)
+	}
+	if result.Status != "incomplete" || len(result.Failures) == 0 {
+		t.Fatalf("archive result = %+v, want incomplete with failures", result)
+	}
+	if strings.Contains(out, "Archived ") {
+		t.Fatalf("archive reported success after null page: %s", out)
+	}
+
+	db, err := store.OpenWithContext(context.Background(), dbPath)
+	if err != nil {
+		t.Fatalf("reopen store: %v", err)
+	}
+	cursor, _, _, err := db.GetSyncState("items")
+	if err != nil {
+		_ = db.Close()
+		t.Fatalf("read items cursor: %v", err)
+	}
+	if cursor != "100" {
+		_ = db.Close()
+		t.Fatalf("items cursor = %q, want %q (start of null window)", cursor, "100")
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close store: %v", err)
+	}
+
+	repaired.Store(true)
+	out, err = runArchive()
+	if err != nil {
+		t.Fatalf("repaired archive: %v; out=%s", err, out)
+	}
+	var repairedResult struct {
+		Status string `json:"status"`
+	}
+	if err := json.Unmarshal([]byte(out), &repairedResult); err != nil {
+		t.Fatalf("decode repaired result %q: %v", out, err)
+	}
+	if repairedResult.Status != "complete" {
+		t.Fatalf("repaired archive status = %q, want complete", repairedResult.Status)
+	}
+	db, err = store.OpenWithContext(context.Background(), dbPath)
+	if err != nil {
+		t.Fatalf("reopen repaired store: %v", err)
+	}
+	defer db.Close()
+	if item, err := db.Get("items", "NULL-100"); err != nil || item == nil {
+		t.Fatalf("get repaired item: item=%s, err=%v", item, err)
+	}
+}

@@ -51,6 +51,8 @@ When --workflow <spec.json> is set, tail runs the workflow once after a poll
 cycle that emits events. It previews unless this tail invocation carries --yes.
 A failed applied run leaves its checkpoint: subsequent applied triggers refuse
 until it is resumed or deleted with zotio workflow run <spec> --yes --resume.
+The cursor advances only after the triggered invocation returns, so a crash
+before or during the trigger replays the same batch on the next poll.
 
 Deletions are reported only when the configured API serves /deleted. The Zotero
 desktop local API does not, so against the default local base this feed emits
@@ -142,16 +144,25 @@ native streaming instead of polling.`,
 
 			fmt.Fprintln(cmd.ErrOrStderr(), tailStartBanner(resource, interval, follow))
 
-			// Initial poll
-			if events, err := emitChanges(cmd.Context(), c, db, resource, path, sink, cmd.OutOrStdout()); err != nil {
-				return fmt.Errorf("initial tail poll: %w", err)
-			} else if events >= 1 && workflowPath != "" {
-				runTriggeredWorkflow(cmd.Context(), cmd, "tail", workflowPath, workflowRunInvocation{
+			// Run a trigger after delivery but before the cursor advances. A
+			// crash or workflow failure leaves this window retryable. A crash
+			// after a successful trigger can replay it, so workflows must be
+			// idempotent.
+			afterDelivery := func(events int) error {
+				if events == 0 || workflowPath == "" {
+					return nil
+				}
+				return runTriggeredWorkflowE(cmd.Context(), cmd, "tail", workflowPath, workflowRunInvocation{
 					Yes:     flags.yes,
 					DryRun:  flags.dryRun,
 					Agent:   flags.agent,
 					NoInput: flags.noInput,
 				})
+			}
+
+			// Initial poll
+			if _, err := emitChangesWithHook(cmd.Context(), c, db, resource, path, sink, cmd.OutOrStdout(), afterDelivery); err != nil {
+				return fmt.Errorf("initial tail poll: %w", err)
 			}
 
 			// Honor --follow=false as a single poll.
@@ -173,15 +184,8 @@ native streaming instead of polling.`,
 					fmt.Fprintln(os.Stderr, "\nShutting down gracefully...")
 					return nil
 				case <-ticker.C:
-					if events, err := emitChanges(cmd.Context(), c, db, resource, path, sink, cmd.OutOrStdout()); err != nil {
+					if _, err := emitChangesWithHook(cmd.Context(), c, db, resource, path, sink, cmd.OutOrStdout(), afterDelivery); err != nil {
 						return fmt.Errorf("tail poll: %w", err)
-					} else if events >= 1 && workflowPath != "" {
-						runTriggeredWorkflow(cmd.Context(), cmd, "tail", workflowPath, workflowRunInvocation{
-							Yes:     flags.yes,
-							DryRun:  flags.dryRun,
-							Agent:   flags.agent,
-							NoInput: flags.noInput,
-						})
 					}
 				}
 			}
@@ -232,8 +236,18 @@ func tailKnownResources() []string {
 // re-fetch each poll. The cursor is namespaced "tail:<resource>" in
 // sync_state so it never collides with sync's own checkpoint.
 func emitChanges(ctx context.Context, c *client.Client, db *store.Store, resource, path string, sink DeliverSink, w io.Writer) (int, error) {
+	return emitChangesWithHook(ctx, c, db, resource, path, sink, w, nil)
+}
+
+// emitChangesWithHook runs a triggered workflow after delivery and before
+// saving the cursor. A failure holds the cursor for retry. A crash after the
+// hook completes can replay it, so triggers have at-least-once semantics.
+func emitChangesWithHook(ctx context.Context, c *client.Client, db *store.Store, resource, path string, sink DeliverSink, w io.Writer, afterDelivery func(emitted int) error) (int, error) {
 	cursorKey := "tail:" + resource
-	cursor, _ := db.GetLibraryVersion(cursorKey, c.BaseURL)
+	cursor, err := db.GetLibraryVersion(cursorKey, c.BaseURL)
+	if err != nil {
+		return 0, fmt.Errorf("tail %s: reading cursor: %w", resource, err)
+	}
 
 	params := map[string]string{}
 	if cursor > 0 {
@@ -257,10 +271,21 @@ func emitChanges(ctx context.Context, c *client.Client, db *store.Store, resourc
 	if !isPage {
 		return 0, fmt.Errorf("tail %s: decoding change page: expected JSON array or object", resource)
 	}
-	for _, item := range items {
+	for i, item := range items {
 		var obj map[string]any
 		if err := json.Unmarshal(item, &obj); err != nil {
-			continue
+			return 0, fmt.Errorf("tail %s: decoding change object %d: %w", resource, i, err)
+		}
+		if obj == nil {
+			return 0, fmt.Errorf("tail %s: decoding change object %d: expected JSON object", resource, i)
+		}
+		// Identity uses the shared extractor so per-resource keys keep
+		// working (tags identify by name, everything else by key). An object
+		// without identity would otherwise emit a null-key event and advance
+		// the cursor past a window that can never be recovered, so fail the
+		// poll and hold the cursor instead.
+		if id := store.ExtractResourceID(resource, obj); id == "" {
+			return 0, fmt.Errorf("tail %s: decoding change object %d: missing resource identity", resource, i)
 		}
 		event := map[string]any{
 			"event":     "upsert",
@@ -333,20 +358,20 @@ func emitChanges(ctx context.Context, c *client.Client, db *store.Store, resourc
 	// Delivery is all-or-nothing per batch from the cursor's perspective.
 	// The cursor below advances only after the stdout write, every
 	// configured sink acknowledgment (a 2xx webhook response, a completed
-	// file write+close), and the cursor save itself all succeed. Any failure
-	// returns before the save, so the next poll re-fetches the same window
-	// via since and redelivers the whole batch: duplicates are possible
-	// (at-least-once; webhook receivers must be idempotent, and a file
-	// append that fails mid-write can leave a trailing partial batch ahead
-	// of the retried full one), but a batch is never half-acknowledged and
-	// events are never skipped. There is deliberately no per-event
-	// checkpoint and no durable pending-batch state: the held cursor IS the
-	// retry state. This per-cycle delivery bypasses the shared deliver_spool
-	// path on purpose (newTailCmd drops the spool so the post-run flush
-	// never fires), so a batch reaches its sink here and never again
-	// through root.go; postDeliverWebhook makes a single POST attempt with
-	// no application retry, so no hidden retry can deliver after the cursor
-	// has moved.
+	// file write+close), the post-delivery trigger (when set), and the
+	// cursor save itself all succeed. Any failure returns before the save,
+	// so the next poll re-fetches the same window via since and redelivers
+	// the whole batch: duplicates are possible (at-least-once; webhook
+	// receivers must be idempotent, and a file append that fails mid-write
+	// can leave a trailing partial batch ahead of the retried full one),
+	// but a batch is never half-acknowledged and events are never skipped.
+	// There is deliberately no per-event checkpoint and no durable
+	// pending-batch state: the held cursor IS the retry state. This
+	// per-cycle delivery bypasses the shared deliver_spool path on purpose
+	// (newTailCmd drops the spool so the post-run flush never fires), so a
+	// batch reaches its sink here and never again through root.go;
+	// postDeliverWebhook makes a single POST attempt with no application
+	// retry, so no hidden retry can deliver after the cursor has moved.
 	out := buf.Bytes()
 	if len(out) > 0 {
 		if _, err := w.Write(out); err != nil {
@@ -375,6 +400,12 @@ func emitChanges(ctx context.Context, c *client.Client, db *store.Store, resourc
 			if err := f.Close(); err != nil {
 				return emitted, fmt.Errorf("tail %s: closing delivery file: %w", resource, err)
 			}
+		}
+	}
+
+	if afterDelivery != nil {
+		if err := afterDelivery(emitted); err != nil {
+			return emitted, fmt.Errorf("tail %s: triggered workflow: %w", resource, err)
 		}
 	}
 

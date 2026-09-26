@@ -3126,6 +3126,8 @@ When --workflow <spec.json> is set, tail runs the workflow once after a poll
 cycle that emits events. It previews unless this tail invocation carries --yes.
 A failed applied run leaves its checkpoint: subsequent applied triggers refuse
 until it is resumed or deleted with zotio workflow run <spec> --yes --resume.
+The cursor advances only after the triggered invocation returns, so a crash
+before or during the trigger replays the same batch on the next poll.
 
 Deletions are reported only when the configured API serves /deleted. The Zotero
 desktop local API does not, so against the default local base this feed emits
