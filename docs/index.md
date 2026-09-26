@@ -6,7 +6,7 @@ template: home.html
 
 ## How it works
 
-Reads stay on your machine. Writes split by intent: **creating a new item** (with its attachments/PDFs) prefers the local desktop connector (`localhost:23119`, no key — the same channel the browser "Save to Zotero" button uses), while **everything else** — field edits, deletes, enrichment, tag ops, moves, and `collections` create/update — routes to the Zotero Web API and needs a configured key. Every write is preview-first, the version read happens locally, and the applied change is replayed into your local mirror so a follow-up read sees it.
+Reads stay on your machine. Writes split by intent: **creating a new item** (with its attachments/PDFs) prefers the local desktop connector (`localhost:23119`, no key — the same channel the browser "Save to Zotero" button uses), while **field edits, deletes, enrichment, tag ops, moves, and `collections` create/update** route to the Zotero Web API and need a configured key. `attachments add --via connector` is an opt-in desktop route for an existing item; it still needs a key to re-parent the attachment through the Web API. Writes are preview-first. Item updates read their version precondition from the Web API at apply time, and supported applied changes update an existing local mirror.
 
 <div class="zotio-diagram-wrap">
 --8<-- "docs/assets/architecture.svg"
@@ -18,7 +18,8 @@ Reads stay on your machine. Writes split by intent: **creating a new item** (wit
 | **Write — new item** | Local desktop connector when personal + desktop up; else Web API | No (connector path) |
 | **Write — everything else** | Zotero Web API (`api.zotero.org`) — edits, deletes, enrich, tags, moves | Yes — configured once |
 | **External** | CrossRef · OpenAlex · Semantic Scholar · Unpaywall · OpenCitations | No (feeds enrich/import) |
-| **Local-only** | Files, desktop launch, vault, introspection | No |
+| **Local-only** | Files, desktop launch, vault file sync, introspection | No |
+| **Vault push/pull/resolve** | Zotero Web API note write-back | Yes — configured once |
 
 Run [`zotio doctor`](reference/commands.md) any time to see connectivity, cache freshness, and a `writes:` line telling you whether write-back is available.
 

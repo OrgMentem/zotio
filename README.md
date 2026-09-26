@@ -111,7 +111,7 @@ It is the tool you reach for when the GUI gets too manual: **find the problems t
 
 ## How it works
 
-Reads stay on your machine. Writes split by intent: **creating a new item (with its attachments/PDFs) prefers the local desktop connector** (`localhost:23119`, no key — the same channel the browser "Save to Zotero" button uses), while **everything else — field edits, deletes, enrichment, tag ops, moves, and `collections` create/update — routes to the Zotero Web API** and needs a configured key. The connector path is a *preference, not a guarantee*: `--via auto` uses it only on a personal library with the desktop running, and falls back to the Web API otherwise (group libraries always go to the cloud). Either way it's preview-first, the version-read happens locally, and the applied change is replayed into your local mirror so a follow-up read sees it without another sync.
+Reads stay on your machine. Writes split by intent: **creating a new item (with its attachments/PDFs) prefers the local desktop connector** (`localhost:23119`, no key — the same channel the browser "Save to Zotero" button uses), while **field edits, deletes, enrichment, tag ops, moves, and `collections` create/update route to the Zotero Web API** and need a configured key. The connector path is a *preference, not a guarantee*: `--via auto` uses it only on a personal library with the desktop running, and falls back to the Web API otherwise (group libraries always go to the cloud). For `attachments add` on an existing item, `--via connector` is an explicit desktop route that still needs a Web API key to move the file to its target. Writes are preview-first; item update reads its version from the Web write target at apply time. Supported applied changes update an existing local mirror so a follow-up read can see them without another sync.
 
 ![zotio hybrid routing architecture](docs/assets/architecture.svg)
 
@@ -119,9 +119,9 @@ Reads stay on your machine. Writes split by intent: **creating a new item (with 
 |---|---|---|
 | **Read** | Local Zotero API (`localhost:23119`) + synced SQLite mirror | No |
 | **Write — new item** | Local desktop connector (`localhost:23119`) when personal + desktop up; else Web API. New items, attachments, PDFs. | No (connector path) |
-| **Write — everything else** | Zotero Web API (`api.zotero.org`) — edits, deletes, enrich, tags, moves, `collections` create/update | Yes — configured once |
+| **Write — other items and vault notes** | Zotero Web API (`api.zotero.org`) — edits, deletes, enrich, tags, moves, `collections` create/update, vault write-back | Yes — configured once |
 | **External** | CrossRef · OpenAlex · Semantic Scholar · Unpaywall · OpenCitations | No (feeds enrich/import) |
-| **Local-only** | Files, desktop launch, vault, introspection | No |
+| **Local-only** | Files, desktop launch, vault file sync, introspection | No |
 
 Run `zotio doctor` any time to see connectivity, cache freshness, and a `writes:` line telling you whether write-back is available or read-only.
 
@@ -188,15 +188,15 @@ See it running for real: zotio's own docs deploy publishes a [live badge](https:
 
 ## Safe by default: the write engine
 
-Every write command — `items enrich`, `tags audit fix`, `items duplicates resolve`, `items preprint-check fix`, `items create/update/move/delete`, `import apply`, `vault push` — flows through one mutation envelope with identical, predictable semantics.
+Mutation-envelope writes — `items enrich`, `tags audit fix`, `items duplicates resolve`, `items preprint-check fix`, `items create/update/move/delete`, and `import apply` — share one plan and result format.
 
 ![preview-first write lifecycle with journal and undo](docs/assets/write-safety.svg)
 
 - **Preview is the default.** You get a plan/result envelope with zero changes. `--yes` applies; `--dry-run` always wins.
 - **`--agent` does *not* auto-apply.** Agent mode sets JSON + non-interactive defaults, but a write still needs an explicit `--yes`.
 - **Gates cap the blast radius.** `--max-changes` defaults to 500 (50 under `--agent`); irreversible ops (merge, permanent delete, empty-trash) refuse to run without `--allow-destructive`.
-- **Read-your-writes.** An applied write is replayed into the local mirror immediately, and the post-write item state comes back in the envelope — a re-audit sees the fix with no follow-up `sync`.
-- **Journaled + reversible.** Every applied run is recorded append-only (`journal list` / `journal show`). `journal undo <run-id>` reverses the reversible ops (tag renames, collection membership, and creates — reversed by trashing the created item) and **loudly refuses** the rest (merges, deletions, field overwrites) rather than guessing.
+- **Read-your-writes.** Supported mutation-envelope writes update an existing local mirror when they apply; a follow-up mirror read can see the change without another `sync`.
+- **Journaled + reversible.** Each applied mutation-envelope run is recorded append-only (`journal list` / `journal show`). `journal undo <run-id>` reverses the reversible ops (tag renames, collection membership, and creates — reversed by trashing the created item) and **loudly refuses** the rest (merges, deletions, field overwrites) rather than guessing. Vault writes use the same `--yes` approval gate but have a separate per-note report and no journal entry.
 
 ---
 
@@ -283,7 +283,7 @@ format = "obsidian"      # or "logseq"
 
 - **`items bibliography`** — render a shared scope with a CSL style, or export it as CSL-JSON, BibTeX, BibLaTeX, or RIS. CSL-JSON uses unique Better BibTeX citation keys for Pandoc and Quarto.
 - **`collections export`** — a whole collection and its subcollections as one BibTeX, RIS, or CSL-JSON file, structure preserved in comments.
-- **`export snapshot`** — a reproducible, resumable, fully paginated JSONL export with a `<output>.lock.json` content lockfile (sorted key+version + sha256) for drift detection and clean review handoffs.
+- **`export snapshot`** — a reproducible, resumable, fully paginated JSONL export with a `<output>.manifest.json` content manifest (sorted key+version + sha256) for drift detection and clean review handoffs.
 
 ### Freshness & schema
 
@@ -330,8 +330,7 @@ This installs both `zotio` and the `zotio-mcp` MCP server; `brew upgrade` tracks
 are [GitHub release](https://github.com/OrgMentem/zotio/releases) assets. Install
 with `dpkg -i`, `rpm -i`, or `apk add --allow-untrusted`; the
 [install guide](https://orgmentem.github.io/zotio/guide/install/) has a snippet
-that resolves the latest version and your architecture. Homebrew works on Linux
-too — the tap ships formulae, not casks (`brew install orgmentem/tap/zotio`).
+that resolves the latest version and your architecture.
 
 **Windows (WinGet / Scoop):** `winget install OrgMentem.zotio`, or
 `scoop bucket add orgmentem https://github.com/OrgMentem/scoop-bucket && scoop install zotio`.
@@ -372,7 +371,7 @@ npx skills add OrgMentem/zotio -g       # install globally (all projects)
 
 ### 3. The MCP server — `zotio-mcp`
 
-`zotio-mcp` ships alongside the CLI — the Homebrew formula and every release archive include both binaries. Register it:
+`zotio-mcp` ships alongside the CLI — the macOS Homebrew cask and every release archive include both binaries. Register it:
 
 ```bash
 # Claude Code
@@ -407,7 +406,7 @@ The `ZOTERO_API_KEY` is optional for read-only local-desktop use (the local API 
 
 **Reads** go to your Zotero desktop app at `localhost:23119` — no API key required while Zotero is running. First enable the local API in Zotero: **Settings → Advanced → "Allow other applications to communicate with Zotero."**
 
-**Creating** items and saving attachments also works keyless — those go through the same local desktop connector.
+**Creating** a new personal-library item and saving its attachments together can work keyless through the local desktop connector. `attachments add` on an existing item needs a Web API key, even with `--via connector`: that route moves the new attachment to its target through the Web API.
 
 **Editing writes** (`items update`/`delete`/`move`, `items enrich`, `tags` mutations, `vault push`/`pull`/`resolve`, most of `import apply`) route to the Zotero Web API and need a key. Configure it once:
 
@@ -415,7 +414,7 @@ The `ZOTERO_API_KEY` is optional for read-only local-desktop use (the local API 
 printf %s "$ZOTERO_API_KEY" | zotio auth set-token --stdin     # or export ZOTERO_API_KEY=<key>
 ```
 
-Generate a key at <https://www.zotero.org/settings/keys>. The first Web API write prints a one-time stderr notice naming the target. A key is also needed to read **group libraries** or to read while the desktop app is **closed**. Run `zotio doctor` to see a `writes:` line reporting whether write-back is available.
+Generate a key at <https://www.zotero.org/settings/keys>. The first Web API write prints a one-time stderr notice naming the target. A key is also needed for remote Web API reads, including group libraries. Supported `--data-source local` reads use a synced mirror without the desktop app or a key. Run `zotio doctor` to see a `writes:` line reporting whether write-back is available.
 
 ---
 
@@ -439,8 +438,8 @@ zotio library health --for citation --fail-on high
 # 5. Search offline
 zotio search 'automation trust' --fulltext --data-source local --json
 
-# 6. Export a week of highlights for synthesis
-zotio annotations timeline --since 2026-05-01 --format markdown > this-week.md
+# 6. Export annotations since a date as JSON for synthesis
+zotio annotations timeline --since 2026-05-01 --json > since-may.json
 ```
 
 ### Use the skill in a coding agent

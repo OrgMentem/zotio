@@ -16,20 +16,20 @@ flowchart LR
 
 - **Reads** are served locally and are **keyless**. `zotio` also keeps a synced SQLite mirror so reads can run offline — see [Local read parity](local-read-parity.md).
 - **New items** (with attachments/PDFs) prefer the keyless local desktop connector.
-- **Everything else that writes** — field edits, deletes, enrichment, tag ops, collection changes, note write-back — routes to the Zotero **Web API** and needs a key. See [Authentication](../guide/authentication.md).
+- **Other writes** — field edits, deletes, enrichment, tag ops, collection changes, note write-back — use the Zotero **Web API** and need a key. `attachments add --via connector` saves bytes through the desktop, then uses the Web API to move the attachment to an existing item. See [Authentication](../guide/authentication.md).
 
 ## The local API is GET-only
 
 Zotero's local API currently serves reads only; writes are "coming" but not shipped. `zotio` handles this transparently:
 
 - With a Web API key configured, mutating commands **auto-route** their writes to `api.zotero.org` (reads stay local). A one-time notice on stderr names the target. Web API writes sync back down to your desktop.
-- With **no** key, a write hits the read-only local API and `zotio` prints read-only guidance instead of a misleading auth error.
+- With **no** key, a write whose route is the Web API cannot run and `zotio` prints read-only guidance instead of a misleading auth error. A new-item create that qualifies for the keyless desktop connector route above still applies locally.
 
 !!! tip "Check writability"
     `zotio doctor` reports a `writes:` line — whether write-back is available (key present) or read-only.
 
 !!! warning "Version conflicts"
-    Because reads are local and writes go to the cloud, a stale local version can lose a race and return `412`. `zotio` maps that to a clear "version conflict — run `sync`" hint. Run `zotio sync` and retry.
+    Update resolves the current version from the Web write plane at apply time, so the PATCH never carries a stale plan-time version. A `412` means an intervening write won the race or the request supplied an outdated explicit version, so review the current remote state and retry. `sync` refreshes the local mirror but does not clear the precondition by itself.
 
 ## Enable the local API
 

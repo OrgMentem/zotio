@@ -26,4 +26,4 @@ The reasoning, boundaries, and the rule for adding a new `--data-source local` s
 
 ## Freshness
 
-`zotio doctor` reports cache freshness, and the MCP server exposes `zotero://freshness`. When a local read might be stale, `auto` falls back to live so you don't silently read old data.
+`zotio doctor` reports cache freshness, and the MCP server exposes `zotero://freshness`. `auto` tries live first and falls back to the local mirror only on network errors, with no freshness threshold, so the fallback can serve arbitrarily old rows. Inspect provenance, or pass `--require-fresh` where supported, when a decision needs current data.
