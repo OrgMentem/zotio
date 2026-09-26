@@ -743,6 +743,36 @@ func TestSearchByTypeContext(t *testing.T) {
 	})
 }
 
+func TestQueryCollectionChildrenOrdersAndPaginates(t *testing.T) {
+	s := queryTestStore(t)
+	collections := []json.RawMessage{
+		json.RawMessage(`{"key":"Z","version":1,"data":{"name":"Beta","parentCollection":"P"}}`),
+		json.RawMessage(`{"key":"A","version":1,"data":{"name":"Alpha","parentCollection":"P"}}`),
+		json.RawMessage(`{"key":"B","version":1,"data":{"name":"Beta","parentCollection":"P"}}`),
+		json.RawMessage(`{"key":"X","version":1,"data":{"name":"Other","parentCollection":"Q"}}`),
+	}
+	if _, _, err := s.UpsertBatch("collections", collections); err != nil {
+		t.Fatalf("seed collections: %v", err)
+	}
+	for _, tc := range []struct {
+		q    CollectionQuery
+		want string
+	}{
+		{CollectionQuery{Parent: "P"}, "A,B,Z"},
+		{CollectionQuery{Parent: "P", Limit: 1, Start: 1}, "B"},
+		{CollectionQuery{Parent: "P", Start: 2}, "Z"},
+		{CollectionQuery{Parent: "P", Start: 4}, ""},
+	} {
+		got, err := s.QueryCollectionChildrenContext(context.Background(), tc.q)
+		if err != nil {
+			t.Fatalf("query %+v: %v", tc.q, err)
+		}
+		if keys := strings.Join(itemKeys(t, got), ","); keys != tc.want {
+			t.Errorf("query %+v: keys %q, want %q", tc.q, keys, tc.want)
+		}
+	}
+}
+
 func TestQueryTagsFiltersOrdersAndPaginates(t *testing.T) {
 	s := queryTestStore(t)
 	tags := []json.RawMessage{

@@ -120,6 +120,47 @@ func (s *Store) QueryItemsContext(ctx context.Context, q ItemQuery) ([]json.RawM
 	return results, rows.Err()
 }
 
+// CollectionQuery describes the children of a mirrored collection.
+type CollectionQuery struct {
+	Parent string
+	Limit  int // 0 = no limit
+	Start  int // pagination offset
+}
+
+// QueryCollectionChildrenContext returns direct child collections in name/key
+// order, matching the collection tree used by the MCP graph.
+func (s *Store) QueryCollectionChildrenContext(ctx context.Context, q CollectionQuery) ([]json.RawMessage, error) {
+	query := `SELECT data FROM resources
+WHERE resource_type = 'collections' AND json_extract(data, '$.data.parentCollection') = ?
+ORDER BY json_extract(data, '$.data.name'), id`
+	args := []any{q.Parent}
+	if q.Limit > 0 {
+		query += " LIMIT ?"
+		args = append(args, q.Limit)
+		if q.Start > 0 {
+			query += " OFFSET ?"
+			args = append(args, q.Start)
+		}
+	} else if q.Start > 0 {
+		query += " LIMIT -1 OFFSET ?"
+		args = append(args, q.Start)
+	}
+	rows, err := s.queryWithBusyRetryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var children []json.RawMessage
+	for rows.Next() {
+		var data string
+		if err := rows.Scan(&data); err != nil {
+			return nil, err
+		}
+		children = append(children, json.RawMessage(data))
+	}
+	return children, rows.Err()
+}
+
 // TagQuery describes a scoped local tag-resource query. Tags are separate
 // synced resources, while collection membership lives on item rows.
 type TagQuery struct {

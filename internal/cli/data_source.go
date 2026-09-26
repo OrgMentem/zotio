@@ -682,23 +682,13 @@ func resolveLocalCollectionChildren(ctx context.Context, db *store.Store, path s
 			return nil, true, fmt.Errorf("unsupported local subcollection parameter %q", key)
 		}
 	}
-	if _, _, err := parseLocalPagination(params); err != nil {
+	limit, start, err := parseLocalPagination(params)
+	if err != nil {
 		return nil, true, err
 	}
-	qs := localQueryStore{db}
-	rows, err := qs.QueryRawContext(ctx, `
-SELECT data, json_extract(data,'$.data.name') AS name
-FROM resources
-WHERE resource_type='collections' AND json_extract(data,'$.data.parentCollection')=?
-ORDER BY name, id`, parentKey)
+	children, err := db.QueryCollectionChildrenContext(ctx, store.CollectionQuery{Parent: parentKey, Limit: limit, Start: start})
 	if err != nil {
 		return nil, true, fmt.Errorf("local subcollection query: %w", err)
-	}
-	children := make([]json.RawMessage, 0, len(rows))
-	for _, row := range rows {
-		if raw := sqlStringValue(row["data"]); raw != "" {
-			children = append(children, json.RawMessage(raw))
-		}
 	}
 	if len(children) == 0 {
 		// A collection with no children is a valid answer, but an unsynced
@@ -707,10 +697,6 @@ ORDER BY name, id`, parentKey)
 		if err := requireLocalResourceHydrated(ctx, db, "collections"); err != nil {
 			return nil, true, err
 		}
-		return json.RawMessage("[]"), true, nil
-	}
-	children = paginateLocalRows(children, params)
-	if len(children) == 0 {
 		return json.RawMessage("[]"), true, nil
 	}
 	data, err := json.Marshal(children)
