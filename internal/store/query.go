@@ -528,7 +528,7 @@ func (s *Store) SearchAnnotationsContext(ctx context.Context, q AnnotationSearch
 SELECT
 	a.data,
 	COALESCE(item.id, ''),
-	COALESCE(json_extract(item.data, '$.data.title'), '')
+	COALESCE(json_extract(item.data, '$.data.title'), json_extract(item.data, '$.title'), '')
 FROM resources a`)
 	if query != "" {
 		sb.WriteString(`
@@ -558,7 +558,7 @@ WHERE a.resource_type = 'items'
 		args = append(args, "content : ("+ftsMatchQuery(query)+")")
 	}
 	if len(q.Colors) > 0 {
-		sb.WriteString("\n\tAND lower(trim(COALESCE(json_extract(a.data, '$.data.annotationColor'), ''))) IN (")
+		sb.WriteString("\n\tAND lower(trim(COALESCE(a.annotation_color, ''))) IN (")
 		for i, color := range q.Colors {
 			if i > 0 {
 				sb.WriteString(", ")
@@ -571,7 +571,7 @@ WHERE a.resource_type = 'items'
 	if query != "" {
 		sb.WriteString("\nORDER BY f.rank, a.id")
 	} else {
-		sb.WriteString("\nORDER BY json_extract(a.data, '$.data.dateAdded') DESC, a.id")
+		sb.WriteString("\nORDER BY COALESCE(json_extract(a.data, '$.data.dateAdded'), json_extract(a.data, '$.dateAdded')) DESC, a.id")
 	}
 	if q.Limit > 0 {
 		sb.WriteString("\nLIMIT ?")

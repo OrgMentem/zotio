@@ -549,6 +549,26 @@ func TestSearchAnnotationsRanksFiltersAndResolvesItems(t *testing.T) {
 	}
 }
 
+// Upsert accepts flat payloads (fields at the root, no "data" envelope), so
+// color filtering and the parent title must read that shape too.
+func TestSearchAnnotationsReadsFlatPayloads(t *testing.T) {
+	s := queryTestStore(t)
+	if _, _, err := s.UpsertBatch("items", []json.RawMessage{
+		json.RawMessage(`{"key":"FLATP","itemType":"book","title":"Flat Paper"}`),
+		json.RawMessage(`{"key":"FLATPDF","itemType":"attachment","parentItem":"FLATP"}`),
+		json.RawMessage(`{"key":"FLATA","itemType":"annotation","parentItem":"FLATPDF","annotationText":"flat needle","annotationColor":"#ffd400"}`),
+	}); err != nil {
+		t.Fatalf("seed flat items: %v", err)
+	}
+	got, err := s.SearchAnnotationsContext(context.Background(), AnnotationSearch{Query: "needle", Colors: []string{"yellow", "#ffd400"}})
+	if err != nil {
+		t.Fatalf("SearchAnnotationsContext: %v", err)
+	}
+	if len(got) != 1 || got[0].ItemKey != "FLATP" || got[0].ItemTitle != "Flat Paper" {
+		t.Fatalf("flat results = %+v, want FLATA under FLATP/Flat Paper", got)
+	}
+}
+
 func TestSearchFulltextResolvesParentItemContext(t *testing.T) {
 	s := queryTestStore(t)
 	items := []json.RawMessage{
