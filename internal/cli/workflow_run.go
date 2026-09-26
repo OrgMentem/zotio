@@ -687,7 +687,10 @@ func executeWorkflowRunSpecWithRootFactory(ctx context.Context, spec workflowRun
 	completedByIndex := make(map[int]workflowRunCheckpointStep, len(execution.Completed))
 	stepResults := make(map[string]workflowRunStepResult, len(execution.Completed))
 	for _, completed := range execution.Completed {
-		if completed.Status != "failed" {
+		// "blocked" is a failed run with confirmed applied sub-operations: the
+		// step must not replay automatically, so it behaves like "failed" for
+		// retry selection and halts a --resume with its checkpointed output.
+		if completed.Status != "failed" && completed.Status != "blocked" {
 			completedByIndex[completed.Index] = completed
 		}
 		if completed.Index < 1 || completed.Index > len(spec.Steps) {
@@ -719,6 +722,26 @@ func executeWorkflowRunSpecWithRootFactory(ctx context.Context, spec workflowRun
 			stepReport.Status = "skipped"
 			stepReport.Reason = "resume"
 			stepReport.Output = capWorkflowRunOutput(completed.Output)
+			report.Steps = append(report.Steps, stepReport)
+			continue
+		}
+		// A "blocked" step already applied part of its batch and refused an
+		// automatic replay: surface the checkpointed refusal instead of
+		// re-executing the step and duplicating the confirmed items.
+		for _, completed := range execution.Completed {
+			if completed.Index != stepReport.Index || completed.Status != "blocked" {
+				continue
+			}
+			stepReport.Status = "failed"
+			stepReport.Output = capWorkflowRunOutput(completed.Output)
+			stepReport.Error = fmt.Sprintf("refusing automatic resume of step %d: its checkpointed output already applied items; reconcile those items in Zotero and edit the step to create only the missing items before resuming (checkpoint %q)", stepReport.Index, execution.CheckpointPath)
+			report.OK = false
+			stopped = true
+			executionErr = fmt.Errorf("%s", stepReport.Error)
+			break
+		}
+		if stopped {
+			workflowRunRememberStepResult(stepResults, step.Name, stepReport.Status, stepReport.Output)
 			report.Steps = append(report.Steps, stepReport)
 			continue
 		}
@@ -817,7 +840,24 @@ func executeWorkflowRunSpecWithRootFactory(ctx context.Context, spec workflowRun
 			stepReport.Status = "failed"
 			stepReport.Error = workflowRunStepExecutionError(err, stderr)
 			report.OK = false
-			if checkpointErr := checkpointWorkflowRunStep(execution, stepReport.Index, stepReport.Name, stepReport.Status, output); checkpointErr != nil {
+			// A failed create step may still have committed part of its batch
+			// (items create, import file, import apply report per-index
+			// outcomes inside a non-zero run). Replaying the same step on
+			// --resume would post the confirmed successes a second time, so
+			// refuse an automatic replay and keep the original failure output
+			// for reconciliation instead of only the latest attempt.
+			if partial := workflowRunConfirmedCreateOutcomes(output); partial != "" {
+				refusal := fmt.Sprintf("refusing automatic resume of step %d: it already applied %s; reconcile those items in Zotero (keep them or delete them) and edit the step to create only the missing items before resuming", stepReport.Index, partial)
+				stepReport.Error = fmt.Sprintf("%s: %s", refusal, stepReport.Error)
+				if checkpointErr := checkpointWorkflowRunStep(execution, stepReport.Index, stepReport.Name, "blocked", output); checkpointErr != nil {
+					stepReport.Error = fmt.Sprintf("%s; %v", stepReport.Error, checkpointErr)
+					stopped = true
+					executionErr = checkpointErr
+				} else {
+					stopped = true
+					executionErr = fmt.Errorf("%s", refusal)
+				}
+			} else if checkpointErr := checkpointWorkflowRunStep(execution, stepReport.Index, stepReport.Name, stepReport.Status, output); checkpointErr != nil {
 				stepReport.Error = fmt.Sprintf("%s; %v", stepReport.Error, checkpointErr)
 				stopped = true
 				executionErr = checkpointErr
@@ -849,6 +889,39 @@ func executeWorkflowRunSpecWithRootFactory(ctx context.Context, spec workflowRun
 	}
 
 	return report, executionErr
+}
+
+// workflowRunConfirmedCreateOutcomes inspects a failed step's mutation output
+// for confirmed applied sub-operations: an items create / import file / import
+// apply run uses ContinueOnError, so a non-zero run can still carry per-index
+// successes that Zotero committed. A non-empty return names those successes
+// for the resume refusal; anything unparseable or without an applied count
+// returns "" and the step resumes as before.
+func workflowRunConfirmedCreateOutcomes(output string) string {
+	trimmed := strings.TrimSpace(output)
+	if trimmed == "" {
+		return ""
+	}
+	var env struct {
+		Operation string `json:"operation"`
+		Result    *struct {
+			Summary struct {
+				Applied int `json:"applied"`
+			} `json:"summary"`
+		} `json:"result"`
+	}
+	if err := json.Unmarshal([]byte(trimmed), &env); err != nil {
+		return ""
+	}
+	switch env.Operation {
+	case "items.create", "import.file", "import.apply":
+	default:
+		return ""
+	}
+	if env.Result == nil || env.Result.Summary.Applied <= 0 {
+		return ""
+	}
+	return fmt.Sprintf("%d %s item(s)", env.Result.Summary.Applied, env.Operation)
 }
 
 func checkpointWorkflowRunStep(execution workflowRunExecution, index int, name, status, output string) error {

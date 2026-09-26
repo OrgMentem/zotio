@@ -19,6 +19,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -91,6 +92,8 @@ type reparentFake struct {
 	strandedParentKey string
 	// strandedChildMD5 is the content held under that orphan.
 	strandedChildMD5 string
+	// strandedChildDetached models a crash after the move but before trash.
+	strandedChildDetached bool
 	// strandedParents adds further resumable parents keyed by their child MD5.
 	strandedParents map[string]string
 	// childrenStatus forces one parent's children read to fail.
@@ -323,6 +326,10 @@ func (f *reparentFake) server(t *testing.T) *httptest.Server {
 				}
 			}
 			if key == f.strandedParentKey && f.strandedParentKey != "" {
+				if f.strandedChildDetached {
+					_, _ = w.Write([]byte(`[]`))
+					return
+				}
 				_ = json.NewEncoder(w).Encode([]map[string]any{{
 					"key":     "STRANDED1",
 					"version": f.version,
@@ -1452,6 +1459,65 @@ func TestConnectorReparentEmitsAnExplicitAttachmentKey(t *testing.T) {
 			t.Errorf("attachment_key = %v, want EXISTING1 on the no-op too", m["attachment_key"])
 		}
 	})
+}
+
+func TestConnectorReparentRetryTrashesEmptyMarkedParent(t *testing.T) {
+	req := reparentRequest(t, "TARGET01")
+	fake := &reparentFake{
+		tempParentKey:         "FOREIGN1",
+		strandedParentKey:     "ORPHAN01",
+		strandedChildMD5:      req.MD5,
+		strandedChildDetached: true,
+		childrenOfTarget: []map[string]any{{
+			"key": "STRANDED1",
+			"data": map[string]any{
+				"key": "STRANDED1", "itemType": "attachment", "md5": req.MD5,
+			},
+		}},
+	}
+	srv := fake.server(t)
+	flags := reparentFlags(t, srv)
+	c, _ := flags.newWriteClient()
+	status, detail, err := applyConnectorReparentUpload(context.Background(), reparentCmd(t), flags, c, req)
+	if err != nil || status != "no_op" {
+		t.Fatalf("status=%q detail=%v err=%v, want no_op after cleanup", status, detail, err)
+	}
+	if !slices.Contains(fake.sequence(), "web.trash:ORPHAN01") {
+		t.Fatalf("retry left marked empty parent live: %v", fake.sequence())
+	}
+	if slices.Contains(fake.sequence(), "web.trash:FOREIGN1") {
+		t.Fatalf("retry trashed an unmarked item: %v", fake.sequence())
+	}
+	for _, call := range fake.sequence() {
+		if strings.HasPrefix(call, "connector.") || call == "web.reparent" {
+			t.Fatalf("retry created or moved a second attachment: %v", fake.sequence())
+		}
+	}
+}
+
+func TestConnectorReparentRetryLeavesNonemptyMarkedParent(t *testing.T) {
+	req := reparentRequest(t, "TARGET01")
+	fake := &reparentFake{
+		tempParentKey:     "FOREIGN1",
+		strandedParentKey: "ORPHAN01",
+		strandedChildMD5:  req.MD5,
+		childrenOfTarget: []map[string]any{{
+			"key": "EXISTING1",
+			"data": map[string]any{
+				"key": "EXISTING1", "itemType": "attachment", "md5": req.MD5,
+			},
+		}},
+	}
+	srv := fake.server(t)
+	flags := reparentFlags(t, srv)
+	c, _ := flags.newWriteClient()
+	status, _, err := applyConnectorReparentUpload(context.Background(), reparentCmd(t), flags, c, req)
+	if err != nil || status != "no_op" {
+		t.Fatalf("status=%q err=%v", status, err)
+	}
+	if slices.Contains(fake.sequence(), "web.trash:ORPHAN01") {
+		t.Fatalf("retry trashed nonempty parent: %v", fake.sequence())
+	}
 }
 
 // TestConnectorReparentResumesAnInterruptedRun covers the case papio asked the

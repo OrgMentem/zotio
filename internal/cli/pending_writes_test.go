@@ -52,7 +52,10 @@ func TestReconcilePendingWritesDropsRowsMarkedDeleted(t *testing.T) {
 		pendingWritesTestItem("KEEP2"),
 	}
 	stderr := captureStderr(t, func() {
-		merged, stillPending := reconcilePendingWrites(db, "items", page)
+		merged, stillPending, rerr := reconcilePendingWrites(db, "items", page)
+		if rerr != nil {
+			t.Fatalf("reconcile: %v", rerr)
+		}
 		got := pendingWritesTestKeys(t, merged)
 		if strings.Join(got, ",") != "KEEP1,KEEP2" {
 			t.Errorf("stored page = %v, want [KEEP1 KEEP2]: a purged key was re-inserted, or an unrelated row was dropped", got)
@@ -114,7 +117,10 @@ func TestPendingWriteAgeCheckKeepsAConfirmedDeletionMarkerPastItsTTL(t *testing.
 	}
 
 	// And the row stays suppressed, which is the whole reason not to retire it.
-	merged, stillPending := reconcilePendingWrites(db, "items", []json.RawMessage{pendingWritesTestItem("STUCK")})
+	merged, stillPending, rerr := reconcilePendingWrites(db, "items", []json.RawMessage{pendingWritesTestItem("STUCK")})
+	if rerr != nil {
+		t.Fatalf("reconcile: %v", rerr)
+	}
 	if got := pendingWritesTestKeys(t, merged); len(got) != 0 {
 		t.Fatalf("stored page = %v, want empty: a purged item must not be stored because a week passed", got)
 	}
@@ -196,7 +202,10 @@ func TestReconcilePendingWritesScopesDeletionMarkersToTheirResource(t *testing.T
 	}
 
 	page := []json.RawMessage{json.RawMessage(`{"key":"SHARED","version":1,"data":{"key":"SHARED","name":"A collection"}}`)}
-	merged, stillPending := reconcilePendingWrites(db, "collections", page)
+	merged, stillPending, rerr := reconcilePendingWrites(db, "collections", page)
+	if rerr != nil {
+		t.Fatalf("reconcile: %v", rerr)
+	}
 	if len(merged) != 1 {
 		t.Fatalf("stored collections page = %d rows, want 1: an items deletion marker suppressed a collection", len(merged))
 	}

@@ -7,12 +7,14 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"os"
 	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
 
+	"zotio/internal/client"
 	"zotio/internal/connector"
 	"zotio/internal/mutation"
 	"zotio/internal/store"
@@ -20,6 +22,43 @@ import (
 
 type itemPoster interface {
 	Post(path string, body any) (json.RawMessage, int, error)
+	PostWithHeaders(path string, body any, headers map[string]string) (json.RawMessage, int, error)
+}
+
+// isCommittedCreateConflict reports a create whose outcome cannot be safely
+// replayed. A lost response, a 5xx (which may follow a committed write), or
+// a rejected write-token replay leaves the created keys unknown. The caller
+// must report the conflict instead of encouraging a blind retry.
+func isCommittedCreateConflict(err error) bool {
+	if err == nil {
+		return false
+	}
+	status := apiStatus(err)
+	return status == http.StatusPreconditionFailed || status >= 500 ||
+		(client.IsAmbiguousWriteError(err) && status == 0)
+}
+
+// ambiguousCreateRefusal refuses an automatic retry of a create whose outcome
+// Zotero may have committed. Top-level items have no parent whose children
+// could prove the outcome, so unlike child creates this path cannot reconcile
+// and must not label the request safely retryable: a blind retry mints a
+// duplicate for every committed record.
+func ambiguousCreateRefusal(operation, what string, cause error) error {
+	return fmt.Errorf("%s: refusing automatic retry of %s: %w; the request may already be committed in Zotero, so retrying could create duplicates: find the item(s) by title in Zotero, then either keep them or delete them and re-run with only the missing item(s)", operation, what, cause)
+}
+
+// createBatchWriteToken derives a stable Zotero write token for one batch of
+// items. The token is a pure function of the operation and the exact payload,
+// so rerunning the same input replays the same token: Zotero answers 412
+// instead of committing a second copy, and the caller reconciles or refuses
+// instead of duplicating. The batch position disambiguates identical payloads
+// sent as separate batches of one larger input.
+func createBatchWriteToken(operation, batchPosition string, payload any) string {
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		raw = []byte(fmt.Sprintf("%v", payload))
+	}
+	return writeToken(operation, batchPosition, string(raw))
 }
 
 // connectorForCreate is the connector factory for the single-item route.

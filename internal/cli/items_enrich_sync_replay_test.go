@@ -71,7 +71,10 @@ func TestItemsEnrichAppliedExtraSurvivesNextSync(t *testing.T) {
 		},
 	})
 
-	merged, stillPending := reconcilePendingWrites(db.Store, "items", []json.RawMessage{authoritative})
+	merged, stillPending, rerr := reconcilePendingWrites(db.Store, "items", []json.RawMessage{authoritative})
+	if rerr != nil {
+		t.Fatalf("reconcile: %v", rerr)
+	}
 	if len(merged) != 1 {
 		t.Fatalf("merged rows = %d, want 1", len(merged))
 	}

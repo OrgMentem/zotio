@@ -209,6 +209,7 @@ func (b *itemsCreateBatch) attachWeb(flags *rootFlags, c itemPoster, path string
 	var (
 		executed  bool
 		transport error // set only when the POST itself failed, not on a per-element rejection
+		ambiguous error // set when the POST left an unknown outcome Zotero may have committed
 		envelope  error // set when the 2xx body is not the batch envelope: no outcome is proven
 		failed    map[string]batchWriteFailure
 		keys      map[string]string
@@ -218,8 +219,17 @@ func (b *itemsCreateBatch) attachWeb(flags *rootFlags, c itemPoster, path string
 			return
 		}
 		executed = true
-		data, _, postErr := c.Post(path, body)
+		data, _, postErr := c.PostWithHeaders(path, body, map[string]string{"Zotero-Write-Token": createBatchWriteToken("zotio.items.create", "", body)})
 		if postErr != nil {
+			// The token is a pure function of the request body, so resuming the
+			// same batch replays the same token: Zotero answers 412 instead of
+			// committing a second copy, and the batch reports the committed
+			// conflict below instead of inviting another replay.
+			if isCommittedCreateConflict(postErr) {
+				ambiguous = ambiguousCreateRefusal("items create", fmt.Sprintf("the %d item(s) in that request", len(ops)), postErr)
+				b.err = ambiguous
+				return
+			}
 			transport = classifyAPIError(postErr, flags)
 			b.err = transport
 			return
@@ -245,6 +255,9 @@ func (b *itemsCreateBatch) attachWeb(flags *rootFlags, c itemPoster, path string
 			post()
 			if transport != nil {
 				return "failed", nil, transport
+			}
+			if ambiguous != nil {
+				return "conflict", map[string]any{"message": ambiguous.Error()}, ambiguous
 			}
 			if envelope != nil {
 				return "failed", envelope.Error(), envelope

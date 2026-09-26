@@ -11,6 +11,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -23,6 +24,7 @@ import (
 // Keep preview tests independent from concrete HTTP clients.
 type importApplyPoster interface {
 	Post(path string, body any) (json.RawMessage, int, error)
+	PostWithHeaders(path string, body any, headers map[string]string) (json.RawMessage, int, error)
 }
 
 // Add reviewable manifest application with opt-in file attachment.
@@ -517,8 +519,17 @@ func importApplyOps(cmd *cobra.Command, flags *rootFlags, writeClient importAppl
 						return "failed", nil, err
 					}
 
-					data, _, err := writeClient.Post("/items", []map[string]any{item})
+					data, _, err := writeClient.PostWithHeaders("/items", []map[string]any{item}, map[string]string{"Zotero-Write-Token": createBatchWriteToken("zotio.import.apply", strconv.Itoa(entryNumber), item)})
 					if err != nil {
+						// The token is a pure function of the manifest entry, so
+						// applying the same manifest replays the same token: an
+						// entry Zotero already committed is answered 412 instead
+						// of duplicated, and the entry reports the committed
+						// conflict below instead of inviting another replay.
+						if isCommittedCreateConflict(err) {
+							refusal := ambiguousCreateRefusal("import apply", fmt.Sprintf("manifest entry %d %q", entryNumber, entryTitle), err)
+							return "conflict", map[string]any{"title": entryTitle, "message": refusal.Error()}, refusal
+						}
 						return "failed", nil, classifyAPIError(err, flags)
 					}
 					createdKey, ok := createdItemKey(data)

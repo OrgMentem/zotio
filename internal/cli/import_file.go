@@ -142,6 +142,12 @@ type importFileBatch struct {
 	executed map[int]bool
 	failed   map[int]batchWriteFailure
 	fatal    map[int]error
+	// ambiguous marks a batch window whose outcome Zotero may have committed:
+	// the response was lost after dispatch, or the server rejected the batch's
+	// replayed write token. Every Apply in that window reports the same
+	// committed conflict instead of "applied", and a rerun replays the same
+	// token so the server refuses rather than duplicating the records.
+	ambiguous map[int]error
 	// envelope marks a batch window whose 2xx body was not the batch envelope:
 	// no record in that window has a proven outcome, so every Apply there
 	// reports the same unknown-outcome error instead of "applied".
@@ -150,12 +156,13 @@ type importFileBatch struct {
 
 func newImportFileBatch(flags *rootFlags, items []map[string]any) *importFileBatch {
 	return &importFileBatch{
-		flags:    flags,
-		items:    items,
-		executed: make(map[int]bool),
-		failed:   make(map[int]batchWriteFailure),
-		fatal:    make(map[int]error),
-		envelope: make(map[int]error),
+		flags:     flags,
+		items:     items,
+		executed:  make(map[int]bool),
+		failed:    make(map[int]batchWriteFailure),
+		fatal:     make(map[int]error),
+		ambiguous: make(map[int]error),
+		envelope:  make(map[int]error),
 	}
 }
 
@@ -167,6 +174,9 @@ func (b *importFileBatch) apply(index int) (string, any, error) {
 	}
 	if err := b.fatal[index]; err != nil {
 		return "failed", nil, err
+	}
+	if err := b.ambiguous[index]; err != nil {
+		return "conflict", map[string]any{"message": err.Error()}, err
 	}
 	if err := b.envelope[index]; err != nil {
 		return "failed", err.Error(), err
@@ -187,8 +197,20 @@ func (b *importFileBatch) runBatch(start int) {
 		}
 		b.client = c
 	}
-	data, _, err := b.client.Post("/items", b.items[start:end])
+	// The token is a pure function of the batch payload, so rerunning the
+	// same file replays the same token: a batch Zotero already committed is
+	// answered 412 instead of duplicated, and the window below reports the
+	// committed conflict instead of inviting another replay.
+	token := createBatchWriteToken("zotio.import.file", strconv.Itoa(start), b.items[start:end])
+	data, _, err := b.client.PostWithHeaders("/items", b.items[start:end], map[string]string{"Zotero-Write-Token": token})
 	if err != nil {
+		if isCommittedCreateConflict(err) {
+			ambiguousErr := ambiguousCreateRefusal("import file", fmt.Sprintf("the %d record(s) starting at record %d", end-start, start+1), err)
+			for i := start; i < end; i++ {
+				b.ambiguous[i] = ambiguousErr
+			}
+			return
+		}
 		b.failRange(start, end, classifyAPIError(err, b.flags))
 		return
 	}

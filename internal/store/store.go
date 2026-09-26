@@ -2327,6 +2327,100 @@ func (s *Store) RecordPendingWrite(resourceType, id string, changes []byte) erro
 	return err
 }
 
+// UpsertMirroredWrite stores one mirrored row and its pending-write marker in
+// a single transaction, so a crash between the two cannot leave a confirmed
+// write in the mirror without its suppression (finding zotio-f570e9ac7c877d14).
+// The next sync would otherwise read the still-stale read plane over the
+// just-written row and roll the confirmed write back until Zotero syncs it
+// down. A marker failure rolls the row back with it; the write already
+// succeeded remotely, so the caller warns and the next sync reconciles.
+//
+// It mirrors the UpsertKeyed single-row contract (no lifecycle arbitration):
+// the only change from the former UpsertKeyed + RecordPendingWrite pair is
+// that both land or neither does.
+func (s *Store) UpsertMirroredWrite(resourceType, id string, data json.RawMessage, changes []byte) error {
+	ctx := context.Background()
+	release, err := s.acquireWrite(ctx)
+	if err != nil {
+		return err
+	}
+	defer release()
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	if _, err := s.upsertGenericResourceTx(ctx, tx, resourceType, id, data, nil); err != nil {
+		return fmt.Errorf("upserting %s/%s: %w", resourceType, id, err)
+	}
+	if len(changes) > 0 {
+		if _, err := tx.ExecContext(ctx,
+			`INSERT INTO pending_writes (resource_type, id, changes, written_at, deleted)
+			 VALUES (?, ?, ?, CURRENT_TIMESTAMP, 0)
+			 ON CONFLICT(resource_type, id) DO UPDATE SET changes = excluded.changes,
+			 written_at = CURRENT_TIMESTAMP
+			 WHERE pending_writes.deleted = 0`,
+			resourceType, id, string(changes),
+		); err != nil {
+			return fmt.Errorf("recording pending write for %s/%s: %w", resourceType, id, err)
+		}
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+// CreateMirroredItem writes the row for a just-created item and its
+// pending-write marker in a single transaction, retiring any deletion marker
+// the key still carries (finding zotio-f570e9ac7c877d14). A deletion marker
+// would make reconcilePendingWrites drop the row from every synced page, so a
+// create the write plane confirmed must retire it in the same commit that
+// publishes the row — otherwise a crash between the clear and the upsert
+// leaves either a suppressed object that never mirrors or a confirmed write
+// with no suppression. An empty changes payload skips the marker insert but
+// still clears and upserts atomically.
+func (s *Store) CreateMirroredItem(key string, data json.RawMessage, changes []byte) error {
+	ctx := context.Background()
+	release, err := s.acquireWrite(ctx)
+	if err != nil {
+		return err
+	}
+	defer release()
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	for _, resourceType := range []string{"items", "items-trash"} {
+		if _, err := tx.ExecContext(ctx,
+			`DELETE FROM pending_writes WHERE resource_type = ? AND id = ?`,
+			resourceType, key,
+		); err != nil {
+			return fmt.Errorf("clearing pending write for %s/%s: %w", resourceType, key, err)
+		}
+	}
+	if _, err := s.upsertGenericResourceTx(ctx, tx, "items", key, data, nil); err != nil {
+		return fmt.Errorf("upserting items/%s: %w", key, err)
+	}
+	if len(changes) > 0 {
+		if _, err := tx.ExecContext(ctx,
+			`INSERT INTO pending_writes (resource_type, id, changes, written_at, deleted)
+			 VALUES (?, ?, ?, CURRENT_TIMESTAMP, 0)
+			 ON CONFLICT(resource_type, id) DO UPDATE SET changes = excluded.changes,
+			 written_at = CURRENT_TIMESTAMP
+			 WHERE pending_writes.deleted = 0`,
+			"items", key, string(changes),
+		); err != nil {
+			return fmt.Errorf("recording pending write for items/%s: %w", key, err)
+		}
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
 // markPendingDeletionLocked replaces any marker for a row with a DELETION
 // marker inside the caller's transaction. The caller must hold writeMu.
 //

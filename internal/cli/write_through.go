@@ -208,14 +208,15 @@ func applyMirrorWriteThrough(env *mutation.Envelope) {
 			warnMirrorUpdateFailed(it.Key, err)
 			continue
 		}
-		if _, err := db.UpsertKeyed("items", []string{it.Key}, []json.RawMessage{raw}); err != nil {
+		// The read plane (local desktop API) does not know about this write until
+		// Zotero syncs it down from zotero.org. Without a marker the next `sync`
+		// re-applies the pre-write copy and rolls the mirror back. Row and marker
+		// commit in one transaction, so a crash between them cannot strand the
+		// confirmed write without its suppression (finding zotio-f570e9ac7c877d14).
+		if err := recordMirroredWrite(db, it.Key, raw, changesByOp[it.OpID]); err != nil {
 			warnMirrorUpdateFailed(it.Key, err)
 			continue
 		}
-		// The read plane (local desktop API) does not know about this write until
-		// Zotero syncs it down from zotero.org. Without a marker the next `sync`
-		// re-applies the pre-write copy and rolls the mirror back.
-		recordPendingWrite(db, it.Key, changesByOp[it.OpID])
 		// Read-your-writes: return the post-write state so a targeted write needs
 		// no follow-up read. Suppressed for a batch — a 53-group tag merge emitted
 		// the full item JSON per op, megabytes of payload the caller already has,
@@ -267,22 +268,50 @@ func mirrorCreatedItem(db *store.Store, key string, changes []mutation.Change) (
 	// does not reuse them, so no real create can land on a purged key; the two
 	// DELETEs are cheap and the failure they rule out — an item that silently
 	// never mirrors — is invisible to the user until it is chased down.
-	for _, resource := range []string{"items", "items-trash"} {
-		if err := db.ClearPendingWrite(resource, key); err != nil {
-			warnMirrorUpdateFailed(key, err)
+	//
+	// Marker retirement, row publication and the create's own pending-write
+	// marker commit in one transaction (finding zotio-f570e9ac7c877d14), so a
+	// crash between them cannot strand half of the three.
+	var encoded []byte
+	if len(changes) > 0 {
+		var merr error
+		encoded, merr = json.Marshal(changes)
+		if merr != nil {
+			warnMirrorUpdateFailed(key, fmt.Errorf("encoding pending write: %w", merr))
+			return nil, false
 		}
 	}
-	if _, err := db.UpsertKeyed("items", []string{key}, []json.RawMessage{raw}); err != nil {
+	if err := db.CreateMirroredItem(key, raw, encoded); err != nil {
 		warnMirrorUpdateFailed(key, err)
 		return nil, false
 	}
-	// The read plane does not list the item until Zotero syncs it down, so the
-	// create is an unconfirmed local write like any other: the marker makes it
-	// visible to doctor and retires itself on the first page that carries the
-	// key, because an "item" change is not replayable and reconcilePendingWrites
-	// then accepts the read plane's authoritative copy.
-	recordPendingWrite(db, key, changes)
 	return item, true
+}
+
+// recordMirroredWrite commits one replayed mirror row and its pending-write
+// marker in a single store transaction, so a crash between the row and the
+// marker cannot leave a confirmed write unsuppressed (finding
+// zotio-f570e9ac7c877d14). The next sync would otherwise read the still-stale
+// read plane over the just-written row and roll the confirmed write back
+// until Zotero syncs it down. A local-transaction failure warns without
+// failing the already-successful cloud write.
+func recordMirroredWrite(db *store.Store, key string, raw json.RawMessage, changes []mutation.Change) error {
+	if len(changes) == 0 {
+		_, err := db.UpsertKeyed("items", []string{key}, []json.RawMessage{raw})
+		return err
+	}
+	encoded, err := json.Marshal(changes)
+	if err != nil {
+		// Unreachable in practice — changes marshal by construction — but keep
+		// the prior degraded state (row lands, marker missing) rather than
+		// dropping a good row over bookkeeping.
+		if _, uerr := db.UpsertKeyed("items", []string{key}, []json.RawMessage{raw}); uerr != nil {
+			return uerr
+		}
+		fmt.Fprintf(os.Stderr, "warning: could not record pending write for %s: %v\n", key, err)
+		return nil
+	}
+	return db.UpsertMirroredWrite("items", key, raw, encoded)
 }
 
 // createdItemData copies the created item's body out of the op's changes. The

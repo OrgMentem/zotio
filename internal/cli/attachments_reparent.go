@@ -192,17 +192,21 @@ func applyConnectorReparentUpload(ctx context.Context, cmd *cobra.Command, flags
 		return "failed", nil, err
 	}
 	if existing != "" {
-		return "no_op", map[string]any{
-			// attachment_key names the child that holds the file, explicitly.
-			// item_key is kept for symmetry with the Web route, but a consumer
-			// should prefer attachment_key: it can never be mistaken for the
-			// target item, which would record an item as its own attachment.
+		cleaned, err := cleanupMovedConnectorParents(routeCtx, flags, webClient, req.ParentKey)
+		if err != nil {
+			return "failed", nil, fmt.Errorf("cleaning up temporary parents after attachment %s reached %s: %w", existing, req.ParentKey, err)
+		}
+		detail := map[string]any{
 			"attachment_key": existing,
 			"item_key":       existing,
 			"parent_key":     req.ParentKey,
 			"via":            "connector",
 			"note":           "an attachment with identical content is already on this item",
-		}, nil
+		}
+		if len(cleaned) > 0 {
+			detail["temp_parents_trashed"] = cleaned
+		}
+		return "no_op", detail, nil
 	}
 
 	out, err := runConnectorReparent(routeCtx, cmd, flags, webClient, req)
@@ -245,6 +249,36 @@ func applyConnectorReparentUpload(ctx context.Context, cmd *cobra.Command, flags
 		return "no_op", detail, nil
 	}
 	return "applied", detail, nil
+}
+
+// cleanupMovedConnectorParents only trashes marked parents for this target
+// whose children are all absent on the write plane. A parent with any child
+// may belong to an unfinished upload, so it is left alone.
+func cleanupMovedConnectorParents(ctx context.Context, flags *rootFlags, webClient *client.Client, targetKey string) ([]string, error) {
+	local, err := localClientForRoute(ctx, flags)
+	if err != nil {
+		return nil, err
+	}
+	local.NoCache = true
+	parents, err := markedTemporaryParents(local, targetKey)
+	if err != nil {
+		return nil, err
+	}
+	var cleaned []string
+	for _, key := range parents {
+		children, err := allChildRows(webClient, key)
+		if err != nil {
+			return cleaned, fmt.Errorf("reading temporary parent %s: %w", key, err)
+		}
+		if len(children) != 0 {
+			continue
+		}
+		if _, err := trashTemporaryParent(ctx, webClient, key, "", targetKey); err != nil {
+			return cleaned, fmt.Errorf("trashing empty temporary parent %s: %w", key, err)
+		}
+		cleaned = append(cleaned, key)
+	}
+	return cleaned, nil
 }
 
 func runConnectorReparent(ctx context.Context, cmd *cobra.Command, flags *rootFlags, webClient *client.Client, req storedUploadRequest) (connectorReparentResult, error) {

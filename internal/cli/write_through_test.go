@@ -485,7 +485,10 @@ func TestMirrorCreatedItemRetiresADeletionMarkerForTheSameKey(t *testing.T) {
 	}
 	defer db2.Close()
 	page := []json.RawMessage{json.RawMessage(`{"key":"GHOST001","version":9,"data":{"key":"GHOST001","itemType":"journalArticle","title":"Recreated"}}`)}
-	merged, _ := reconcilePendingWrites(db2, "items", page)
+	merged, _, rerr := reconcilePendingWrites(db2, "items", page)
+	if rerr != nil {
+		t.Fatalf("reconcile: %v", rerr)
+	}
 	if len(merged) != 1 {
 		t.Fatalf("reconciled page = %v, want the created row kept", merged)
 	}

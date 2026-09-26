@@ -37,8 +37,9 @@ type importFileEnvelope struct {
 	} `json:"plan"`
 	Result *struct {
 		Summary struct {
-			Applied int `json:"applied"`
-			Failed  int `json:"failed"`
+			Applied   int `json:"applied"`
+			Conflicts int `json:"conflicts"`
+			Failed    int `json:"failed"`
 		} `json:"summary"`
 		Items []struct {
 			Status string `json:"status"`
@@ -339,11 +340,9 @@ func TestImportFileNonEnvelopeBodyFailsClosed(t *testing.T) {
 	}
 }
 
-// TestImportFileWholeBatchPostRejectionReportsEveryRecordFatal covers the arm
-// at import_file.go:183: the batch POST itself is rejected, so every record in
-// the window is fatal. The existing tests only serve 200 responses carrying a
-// per-element failed map, which is a different report.
-func TestImportFileWholeBatchPostRejectionReportsEveryRecordFatal(t *testing.T) {
+// A 500 after a batch POST does not prove that Zotero rejected the write.
+// Every record in that batch must report an uncertain outcome.
+func TestImportFileWholeBatchServerErrorReportsEveryRecordAmbiguous(t *testing.T) {
 	fastRetryBackoff(t)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, `internal error`, http.StatusInternalServerError)
@@ -359,37 +358,33 @@ func TestImportFileWholeBatchPostRejectionReportsEveryRecordFatal(t *testing.T) 
 	filePath := writeImportFixture(t, content.String())
 
 	env, raw, err := runImportFile(t, &rootFlags{asJSON: true, yes: true, maxChanges: -1}, filePath)
-	if err == nil || ExitCode(err) != 13 {
-		t.Fatalf("import error = %v, exit=%d; want degraded failure (%s)", err, ExitCode(err), raw)
+	if err == nil {
+		t.Fatalf("import error = nil, want ambiguous outcome (%s)", raw)
 	}
 	if env.Result == nil {
-		t.Fatalf("result = nil, want batch-wide failure (%s)", raw)
+		t.Fatalf("result = nil, want batch-wide conflict (%s)", raw)
 	}
-	if env.Result.Summary.Failed != n || env.Result.Summary.Applied != 0 {
-		t.Fatalf("summary applied=%d failed=%d, want 0/%d (%s)", env.Result.Summary.Applied, env.Result.Summary.Failed, n, raw)
+	if env.Result.Summary.Conflicts != n || env.Result.Summary.Applied != 0 {
+		t.Fatalf("summary applied=%d conflicts=%d, want 0/%d (%s)", env.Result.Summary.Applied, env.Result.Summary.Conflicts, n, raw)
 	}
 	if len(env.Result.Items) != n {
 		t.Fatalf("items len = %d, want %d (%s)", len(env.Result.Items), n, raw)
 	}
 	for i, item := range env.Result.Items {
-		if item.Status != "failed" {
-			t.Fatalf("record %d status = %q, want failed (%s)", i, item.Status, raw)
+		if item.Status != "conflict" {
+			t.Fatalf("record %d status = %q, want conflict (%s)", i, item.Status, raw)
 		}
-		reason, _ := item.Reason.(string)
-		if !strings.Contains(reason, "500") {
-			t.Fatalf("record %d reason = %q, want to contain HTTP 500 (%s)", i, reason, raw)
-		}
-		if strings.Contains(reason, "code 400") || strings.Contains(reason, "title is required") {
-			t.Fatalf("record %d reason = %q, want batch-wide fatal not element rejection (%s)", i, reason, raw)
+		reason, _ := item.Reason.(map[string]any)
+		message, _ := reason["message"].(string)
+		if !strings.Contains(message, "500") || !strings.Contains(message, "refusing automatic retry") {
+			t.Fatalf("record %d reason = %v, want ambiguous HTTP 500 refusal (%s)", i, reason, raw)
 		}
 	}
 }
 
-// TestImportFileBatchWindowIsolationOnPostRejection pins the failed window's
-// bounds: only the rejected batch's index range is fatal, and the batch that
-// already landed stays applied. An off-by-one here tells the operator to
-// re-import records that were written, or to ignore records that were not.
-func TestImportFileBatchWindowIsolationOnPostRejection(t *testing.T) {
+// Only the second batch's index range is ambiguous. The first batch's
+// confirmed keys stay applied, so operators can reconcile the second range.
+func TestImportFileBatchWindowIsolationOnServerError(t *testing.T) {
 	fastRetryBackoff(t)
 	requests := 0
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -412,8 +407,8 @@ func TestImportFileBatchWindowIsolationOnPostRejection(t *testing.T) {
 	filePath := writeImportFixture(t, content.String())
 
 	env, raw, err := runImportFile(t, &rootFlags{asJSON: true, yes: true, maxChanges: -1}, filePath)
-	if err == nil || ExitCode(err) != 13 {
-		t.Fatalf("import error = %v, exit=%d; want degraded failure (%s)", err, ExitCode(err), raw)
+	if err == nil {
+		t.Fatalf("import error = nil, want ambiguous second batch (%s)", raw)
 	}
 	if requests < 2 {
 		t.Fatalf("requests = %d, want at least 2 batches (%s)", requests, raw)
@@ -421,8 +416,8 @@ func TestImportFileBatchWindowIsolationOnPostRejection(t *testing.T) {
 	if env.Result == nil {
 		t.Fatalf("result = nil (%s)", raw)
 	}
-	if env.Result.Summary.Applied != importFileBatchSize || env.Result.Summary.Failed != 3 {
-		t.Fatalf("summary applied=%d failed=%d, want %d/3 (%s)", env.Result.Summary.Applied, env.Result.Summary.Failed, importFileBatchSize, raw)
+	if env.Result.Summary.Applied != importFileBatchSize || env.Result.Summary.Conflicts != 3 {
+		t.Fatalf("summary applied=%d conflicts=%d, want %d/3 (%s)", env.Result.Summary.Applied, env.Result.Summary.Conflicts, importFileBatchSize, raw)
 	}
 	if len(env.Result.Items) != total {
 		t.Fatalf("items len = %d, want %d (%s)", len(env.Result.Items), total, raw)
@@ -433,12 +428,13 @@ func TestImportFileBatchWindowIsolationOnPostRejection(t *testing.T) {
 		}
 	}
 	for i := importFileBatchSize; i < total; i++ {
-		if got := env.Result.Items[i].Status; got != "failed" {
-			t.Fatalf("record %d status = %q, want failed (%s)", i, got, raw)
+		if got := env.Result.Items[i].Status; got != "conflict" {
+			t.Fatalf("record %d status = %q, want conflict (%s)", i, got, raw)
 		}
-		reason, _ := env.Result.Items[i].Reason.(string)
-		if !strings.Contains(reason, "500") {
-			t.Fatalf("record %d reason = %q, want to contain HTTP 500 (%s)", i, reason, raw)
+		reason, _ := env.Result.Items[i].Reason.(map[string]any)
+		message, _ := reason["message"].(string)
+		if !strings.Contains(message, "500") || !strings.Contains(message, "refusing automatic retry") {
+			t.Fatalf("record %d reason = %v, want ambiguous HTTP 500 refusal (%s)", i, reason, raw)
 		}
 	}
 }

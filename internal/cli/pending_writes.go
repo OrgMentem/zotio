@@ -38,23 +38,6 @@ import (
 	"zotio/internal/store"
 )
 
-// recordPendingWrite persists the changes just replayed onto the mirror so the
-// next sync does not roll them back. Best-effort: the cloud write already
-// succeeded, so a bookkeeping failure warns rather than failing the run.
-func recordPendingWrite(db *store.Store, key string, changes []mutation.Change) {
-	if len(changes) == 0 {
-		return
-	}
-	encoded, err := json.Marshal(changes)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "warning: could not record pending write for %s: %v\n", key, err)
-		return
-	}
-	if err := db.RecordPendingWrite("items", key, encoded); err != nil {
-		fmt.Fprintf(os.Stderr, "warning: could not record pending write for %s: %v\n", key, err)
-	}
-}
-
 // pendingWriteTTL bounds how long a FIELD-CHANGE marker can hold the mirror
 // against the read plane. The gap it covers is normally seconds to minutes —
 // however long Zotero takes to sync the write down. A field marker still
@@ -120,14 +103,20 @@ func checkPendingWriteAges(db *store.Store, resource string) {
 // pulled from the read plane, returning the rows to store and how many markers
 // are still outstanding after this page. A row whose key carries a deletion
 // marker is dropped from the returned page, so it is never stored.
-func reconcilePendingWrites(db *store.Store, resource string, items []json.RawMessage) ([]json.RawMessage, int) {
+//
+// A pending-marker lookup failure is fatal to the page (finding
+// zotio-331e9da9181eaed3). The markers are what stop a sync inside the
+// read-plane lag window from re-inserting a purged item or rolling back a
+// confirmed field write; accepting the raw read-plane page without checking
+// suppression stores a ghost the next passes never remove. Callers propagate
+// the error so the checkpoint stays retryable.
+func reconcilePendingWrites(db *store.Store, resource string, items []json.RawMessage) ([]json.RawMessage, int, error) {
 	pending, err := db.PendingWrites(resource)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "warning: could not read pending writes for %s: %v\n", resource, err)
-		return items, 0
+		return nil, 0, fmt.Errorf("reading pending writes for %s: %w", resource, err)
 	}
 	if len(pending) == 0 {
-		return items, 0
+		return items, 0, nil
 	}
 
 	stillPending := 0
@@ -195,7 +184,7 @@ func reconcilePendingWrites(db *store.Store, resource string, items []json.RawMe
 		}
 		merged = kept
 	}
-	return merged, stillPending
+	return merged, stillPending, nil
 }
 
 // replayPendingChanges re-applies recorded changes to a row from the read plane.

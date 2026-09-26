@@ -1452,26 +1452,16 @@ func syncResource(ctx context.Context, c syncHTTPClient, db *store.Store, resour
 		cursor = nextCursor
 	}
 
-	// Advance checkpoints only after natural pagination completion. Incremental
-	// defensive exits keep their scoped resume cursor. Full defensive exits keep
-	// no cursor because they also lack the earlier seen-key set.
+	// Checkpoints converge only after a completed pass fully lands. The sweep
+	// and the version/plane stamps below move together: the stamps are what let
+	// the next incremental pass skip this data, so persisting them around a
+	// failed sweep leaves stale rows and unconfirmed markers behind a cursor
+	// that never revisits them (finding zotio-a7e373e8cbd6a1aa). Incremental
+	// defensive exits keep their scoped resume cursor instead; full defensive
+	// exits keep no cursor because they also lack the earlier seen-key set.
 	if completedNaturally {
-		if serr := db.SaveSyncResumeStateContext(ctx, resource, "", "", totalCount); serr != nil {
-			return syncResult{Resource: resource, Count: totalCount, Err: fmt.Errorf("persisting sync checkpoint: %w", serr), Duration: time.Since(started)}
-		}
-		// Stamp the plane unconditionally, even when no page carried a usable
-		// Last-Modified-Version (the local API omits it for /items). Gating this
-		// on libraryVersion > 0 left cursor_source NULL forever for exactly that
-		// resource, so PlaneChanged stayed true and every sync re-wiped the stored
-		// row versions instead of doing it once — permanently voiding the
-		// version-monotonic guard and rewriting the whole table each run.
-		// library_version legitimately stays 0 here; only the plane converges.
-		if serr := db.SaveLibraryVersionContext(ctx, resource, c.Plane(), libraryVersion); serr != nil {
-			return syncResult{Resource: resource, Count: totalCount, Err: fmt.Errorf("persisting library-version checkpoint: %w", serr), Duration: time.Since(started)}
-		}
 		// Reap rows for objects that no longer exist upstream, and retire the
 		// deletion markers this pass confirmed (store.SweepMissing does both).
-		//
 		// The whole rule, in one predicate, because it is one rule: absence is
 		// evidence of deletion only when presence was possible, and that takes
 		// BOTH halves of a total observation.
@@ -1506,13 +1496,13 @@ func syncResource(ctx context.Context, c syncHTTPClient, db *store.Store, resour
 		if shouldSweep && observedEverything && canonicalStoreResource(resource) == resource {
 			// SweepMissing requires a complete pass over the swept resource
 			// type. A top-level alias fetches a strict subset, so the storage
-			// alias is correct for upserts but wrong for reaps.
+			// alias is correct for upserts but wrong for reaps. A sweep failure
+			// is a resource error, not a warning (finding zotio-a7e373e8cbd6a1aa):
+			// the stale rows and markers are still in the mirror, and reporting
+			// success would checkpoint past them.
 			storeResource := canonicalStoreResource(resource)
 			if reaped, rerr := db.SweepMissingContext(ctx, storeResource, seenKeys); rerr != nil {
-				if resource == "schema" {
-					return syncResult{Resource: resource, Count: totalCount, Err: fmt.Errorf("reaping stale schema rows: %w", rerr), Duration: time.Since(started)}
-				}
-				fmt.Fprintf(os.Stderr, "warning: reaping deleted %s rows: %v\n", storeResource, rerr)
+				return syncResult{Resource: resource, Count: totalCount, Err: fmt.Errorf("reaping deleted %s rows: %w", storeResource, rerr), Duration: time.Since(started)}
 			} else if reaped > 0 && humanFriendly {
 				fmt.Fprintf(os.Stderr, "  reaped %d %s row(s) for objects that no longer exist\n", reaped, storeResource)
 			}
@@ -1542,6 +1532,22 @@ func syncResource(ctx context.Context, c syncHTTPClient, db *store.Store, resour
 					Message:  "--full combined with a narrowing filter (--since): absent objects are unchanged, not deleted, so no rows were reaped and no deletion markers were confirmed",
 				})
 			}
+		}
+		// Stamps converge with the pass they cover: the library-version
+		// checkpoint is what lets the next incremental pass skip this data, so
+		// it commits only once the sweep above has landed. Unconditional even
+		// when no page carried a usable Last-Modified-Version (the local API
+		// omits it for /items). Gating this on libraryVersion > 0 left
+		// cursor_source NULL forever for exactly that resource, so PlaneChanged
+		// stayed true and every sync re-wiped the stored row versions instead
+		// of doing it once — permanently voiding the version-monotonic guard
+		// and rewriting the whole table each run. library_version legitimately
+		// stays 0 here; only the plane converges.
+		if serr := db.SaveLibraryVersionContext(ctx, resource, c.Plane(), libraryVersion); serr != nil {
+			return syncResult{Resource: resource, Count: totalCount, Err: fmt.Errorf("persisting library-version checkpoint: %w", serr), Duration: time.Since(started)}
+		}
+		if serr := db.SaveSyncResumeStateContext(ctx, resource, "", "", totalCount); serr != nil {
+			return syncResult{Resource: resource, Count: totalCount, Err: fmt.Errorf("persisting sync checkpoint: %w", serr), Duration: time.Since(started)}
 		}
 		if resource == "schema" && zoteroSchemaVersion != "" && observedEverything {
 			if serr := db.SaveZoteroSchemaVersionContext(ctx, resource, zoteroSchemaVersion); serr != nil {
@@ -1851,7 +1857,14 @@ func upsertResourceBatch(ctx context.Context, db *store.Store, resource string, 
 	storeResource := canonicalStoreResource(resource)
 	// Rows pulled from the read plane predate any write the read plane has not
 	// caught up with yet; merge those writes back in before they are stored.
-	items, _ = reconcilePendingWrites(db, storeResource, items)
+	// A marker lookup failure is fatal to the page (finding
+	// zotio-331e9da9181eaed3): storing the raw page without suppression would
+	// resurrect a purged item the later passes never remove.
+	reconciled, _, rerr := reconcilePendingWrites(db, storeResource, items)
+	if rerr != nil {
+		return 0, 0, rerr
+	}
+	items = reconciled
 	if err := ctx.Err(); err != nil {
 		return 0, 0, err
 	}
