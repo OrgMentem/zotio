@@ -42,6 +42,19 @@ Notable changes to zotio. Format follows [Keep a Changelog](https://keepachangel
   `command_search` reads the same registry. Commands newly typed `write`
   follow the existing write rules, for example the `--group all` fan-out
   refusal.
+- **Missing local data now fails dependent commands.** `creators rename`,
+  `vault sync`, and `collections bundle` return exit 9 with sync guidance
+  instead of reporting success without output. A failed workflow step stays
+  available for `--resume`.
+- **`watch --once` fails when its triggered workflow fails.** The command
+  returns the workflow error after a successful sync. `tail` also keeps its
+  cursor behind a failed triggered workflow so the event window stays
+  available for retry.
+- **Create retries use Zotero write tokens.** `import file`, `import apply`,
+  and `items create` report a conflict when a lost response, server error,
+  or replayed token leaves the result uncertain. A workflow with confirmed
+  partial creates blocks automatic `--resume`; reconcile its item keys
+  before changing and resuming the step.
 - **`items delete` and `items restore` print the mutation envelope when a
   write fails.** Under `--agent`/`--json` they used to return the error with
   no output. The exit code is unchanged. This matches `items update` and
@@ -68,6 +81,30 @@ Notable changes to zotio. Format follows [Keep a Changelog](https://keepachangel
   code does not change.
 
 ### Fixed
+- **A connector attachment retry cleans up an empty temporary parent.** If
+  the attachment reached its target before a crash, the retry verifies the
+  marked parent has no children and trashes it. A parent with children stays
+  untouched.
+- **`auth logout` clears the inline key before removing the credential file.**
+  A crash after file removal cannot bring the old inline key back.
+- **A torn journal tail no longer corrupts later entries.** The next write
+  saves the damaged bytes separately and keeps the valid entries readable.
+- **`export snapshot --resume` rejects a damaged checkpoint without changing
+  the export.** Checkpoint updates use a synced temporary file and rename.
+- **`workflow archive` rejects a null resource page.** It keeps the page
+  cursor and reports an incomplete archive instead of marking it complete.
+- **A failed vault note read stops `vault sync` before new notes appear.**
+  The error names the unreadable file.
+- **Watch health retries new findings after webhook failure.** Its webhook
+  baseline advances after a successful drift delivery.
+- **Webhook URL checks and desktop launches honor cancellation.**
+  DNS preflight and URI handlers have bounded deadlines.
+- **Tail rejects malformed change objects and failed cursor reads.**
+  Neither failure advances the event cursor.
+- **Sync fails a page when deletion markers cannot be read.** Full sync
+  also fails when its deletion sweep fails, without clearing the checkpoint.
+- **Mirror replay and its pending marker share one SQLite transaction.**
+  A crash cannot leave a new mirror row without its suppression marker.
 
 - **`agent-context` no longer says that `ZOTERO_API_KEY` is always required.**
   It reports `required: false`, with the MCP domain context wording: local

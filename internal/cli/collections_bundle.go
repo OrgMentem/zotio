@@ -62,8 +62,7 @@ func runCollectionsBundle(cmd *cobra.Command, flags *rootFlags, collectionKey, o
 		return err
 	}
 	if db == nil {
-		fmt.Fprintln(cmd.OutOrStdout(), "Run 'zotio sync' first.")
-		return nil
+		return preconditionErr(fmt.Errorf("no local data. Run 'zotio sync' first."))
 	}
 	defer db.Close()
 
@@ -72,8 +71,7 @@ func runCollectionsBundle(cmd *cobra.Command, flags *rootFlags, collectionKey, o
 		return fmt.Errorf("checking local item store: %w", err)
 	}
 	if itemCount == 0 {
-		fmt.Fprintln(cmd.OutOrStdout(), "Run 'zotio sync' first.")
-		return nil
+		return preconditionErr(fmt.Errorf("local store is empty. Run 'zotio sync' first."))
 	}
 
 	manifest, err := writeCollectionBundle(cmd.Context(), db, collectionKey, outDir)

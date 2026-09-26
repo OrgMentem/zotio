@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"net/url"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 
@@ -82,24 +83,70 @@ func exportCheckpointScope(source exportCheckpointSource, path string, params ma
 }
 
 func readExportCheckpoint(file string) (exportCheckpoint, bool) {
-	data, err := os.ReadFile(file)
-	if err != nil {
-		return exportCheckpoint{}, false
-	}
-	var cp exportCheckpoint
-	if err := json.Unmarshal(data, &cp); err != nil {
+	cp, exists, err := readExportCheckpointStatus(file)
+	if err != nil || !exists {
 		return exportCheckpoint{}, false
 	}
 	return cp, true
 }
 
+// readExportCheckpointStatus distinguishes an absent checkpoint (fresh start)
+// from a present-but-unreadable one (interrupted checkpoint write). Callers
+// resuming an export must refuse the latter without touching the data file:
+// collapsing both to "no checkpoint" silently truncates committed export data.
+func readExportCheckpointStatus(file string) (exportCheckpoint, bool, error) {
+	data, err := os.ReadFile(file)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return exportCheckpoint{}, false, nil
+		}
+		return exportCheckpoint{}, true, err
+	}
+	var cp exportCheckpoint
+	if err := json.Unmarshal(data, &cp); err != nil {
+		return exportCheckpoint{}, true, err
+	}
+	return cp, true, nil
+}
+
+// writeExportCheckpoint publishes the checkpoint via a synced temporary file
+// plus rename. Truncating the checkpoint in place leaves a torn file when the
+// process dies mid-write, and the data pages it describes are already on disk.
 func writeExportCheckpoint(file string, cp exportCheckpoint) error {
 	data, err := json.MarshalIndent(cp, "", "  ")
 	if err != nil {
 		return err
 	}
 	data = append(data, '\n')
-	return os.WriteFile(file, data, 0o600)
+	tmp, err := os.CreateTemp(filepath.Dir(file), ".zotio-checkpoint-*.tmp")
+	if err != nil {
+		return err
+	}
+	tmpPath := tmp.Name()
+	if _, err := tmp.Write(data); err != nil {
+		_ = tmp.Close()
+		_ = os.Remove(tmpPath)
+		return err
+	}
+	if err := tmp.Chmod(0o600); err != nil {
+		_ = tmp.Close()
+		_ = os.Remove(tmpPath)
+		return fmt.Errorf("setting permissions on temporary checkpoint: %w", err)
+	}
+	if err := tmp.Sync(); err != nil {
+		_ = tmp.Close()
+		_ = os.Remove(tmpPath)
+		return fmt.Errorf("syncing temporary checkpoint: %w", err)
+	}
+	if err := tmp.Close(); err != nil {
+		_ = os.Remove(tmpPath)
+		return fmt.Errorf("closing temporary checkpoint: %w", err)
+	}
+	if err := os.Rename(tmpPath, file); err != nil {
+		_ = os.Remove(tmpPath)
+		return fmt.Errorf("publishing export checkpoint: %w", err)
+	}
+	return nil
 }
 
 func resumablePaginatedFetch(ctx context.Context, c *client.Client, path string, params map[string]string, pageSize, limit int, checkpointFile, profile string, onPage func(page []json.RawMessage) error, format string, committedBytes func() (int64, error)) (fetched int, err error) {

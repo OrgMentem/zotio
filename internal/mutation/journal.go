@@ -165,6 +165,13 @@ func WriteEntry(dir string, e JournalEntry) error {
 		return fmt.Errorf("encoding journal entry: %w", err)
 	}
 	journalPath := filepath.Join(dir, JournalFileName)
+	// Repair a crash-torn final record before appending: without this the new
+	// JSON line joins the unterminated fragment on one line and the whole
+	// journal becomes unreadable. Callers hold the installation writer lock
+	// (ADR-0005), so no concurrent append can race this read-repair-write.
+	if err := quarantineTornJournalTail(journalPath); err != nil {
+		return err
+	}
 	f, err := os.OpenFile(journalPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
 	if err != nil {
 		return fmt.Errorf("opening journal: %w", err)
@@ -183,6 +190,96 @@ func WriteEntry(dir string, e JournalEntry) error {
 	}
 	if err := f.Close(); err != nil {
 		return fmt.Errorf("closing journal entry: %w", err)
+	}
+	return nil
+}
+
+// quarantineTornJournalTail inspects the journal before the next append and
+// repairs a crash-torn final record: bytes after the last newline that do not
+// decode as a journal entry are preserved in a sibling sidecar for diagnosis
+// and the journal is truncated back to its last complete record, so the valid
+// prefix and the next append stay newline-delimited and readable. A tail that
+// does decode (only its terminator was lost) is terminated in place instead,
+// preserving the recorded run. A newline-terminated journal needs no repair.
+func quarantineTornJournalTail(journalPath string) error {
+	f, err := os.OpenFile(journalPath, os.O_RDWR, 0)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return fmt.Errorf("inspecting journal: %w", err)
+	}
+	defer f.Close()
+	st, err := f.Stat()
+	if err != nil {
+		return fmt.Errorf("statting journal: %w", err)
+	}
+	size := st.Size()
+	if size == 0 {
+		return nil
+	}
+	var last [1]byte
+	if _, err := f.ReadAt(last[:], size-1); err != nil {
+		return fmt.Errorf("reading journal tail: %w", err)
+	}
+	if last[0] == '\n' {
+		return nil
+	}
+
+	// Find only the final line. The journal can contain many years of runs;
+	// reading it all for each append would make writes grow with its history.
+	var chunk [4096]byte
+	prefixLen := int64(0)
+	for end := size; end > 0; {
+		start := max(int64(0), end-int64(len(chunk)))
+		part := chunk[:end-start]
+		if _, err := f.ReadAt(part, start); err != nil {
+			return fmt.Errorf("reading journal tail: %w", err)
+		}
+		if i := bytes.LastIndexByte(part, '\n'); i >= 0 {
+			prefixLen = start + int64(i) + 1
+			break
+		}
+		end = start
+	}
+	torn := make([]byte, size-prefixLen)
+	if _, err := f.ReadAt(torn, prefixLen); err != nil {
+		return fmt.Errorf("reading journal tail: %w", err)
+	}
+	var probe JournalEntry
+	if json.Unmarshal(torn, &probe) == nil && probe.RunID != "" {
+		if _, err := f.WriteAt([]byte{'\n'}, size); err != nil {
+			return fmt.Errorf("terminating journal record: %w", err)
+		}
+		if err := f.Sync(); err != nil {
+			return fmt.Errorf("syncing journal record: %w", err)
+		}
+		return nil
+	}
+	sidecar, err := os.CreateTemp(filepath.Dir(journalPath), JournalFileName+".torn-*")
+	if err != nil {
+		return fmt.Errorf("quarantining torn journal record: %w", err)
+	}
+	if err := sidecar.Chmod(0o600); err != nil {
+		_ = sidecar.Close()
+		return fmt.Errorf("securing torn journal record: %w", err)
+	}
+	if _, err := sidecar.Write(torn); err != nil {
+		_ = sidecar.Close()
+		return fmt.Errorf("quarantining torn journal record: %w", err)
+	}
+	if err := sidecar.Sync(); err != nil {
+		_ = sidecar.Close()
+		return fmt.Errorf("syncing torn journal record: %w", err)
+	}
+	if err := sidecar.Close(); err != nil {
+		return fmt.Errorf("closing torn journal record: %w", err)
+	}
+	if err := f.Truncate(prefixLen); err != nil {
+		return fmt.Errorf("truncating torn journal record: %w", err)
+	}
+	if err := f.Sync(); err != nil {
+		return fmt.Errorf("syncing repaired journal: %w", err)
 	}
 	return nil
 }

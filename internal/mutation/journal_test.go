@@ -311,6 +311,109 @@ func TestListEntriesRejectsMalformedMiddleRecord(t *testing.T) {
 	}
 }
 
+// A kill during append leaves a torn final record. The next WriteEntry must
+// quarantine the fragment (preserving its bytes for diagnosis) instead of
+// appending behind it, which used to fuse both records onto one line and make
+// the whole journal unreadable.
+func TestWriteEntryQuarantinesTornTailAndPreservesPrefix(t *testing.T) {
+	dir := t.TempDir()
+	first, _ := BuildJournalEntry(appliedEnvelope(), time.Date(2026, 6, 28, 9, 0, 0, 0, time.UTC))
+	first.RunID = "run-1"
+	if err := WriteEntry(dir, first); err != nil {
+		t.Fatalf("write first entry: %v", err)
+	}
+	journalPath := filepath.Join(dir, JournalFileName)
+	torn := []byte(`{"run_id":`)
+	f, err := os.OpenFile(journalPath, os.O_APPEND|os.O_WRONLY, 0o600)
+	if err != nil {
+		t.Fatalf("open journal: %v", err)
+	}
+	if _, err := f.Write(torn); err != nil {
+		_ = f.Close()
+		t.Fatalf("write torn tail: %v", err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatalf("close journal: %v", err)
+	}
+
+	second, _ := BuildJournalEntry(appliedEnvelope(), time.Date(2026, 6, 28, 10, 0, 0, 0, time.UTC))
+	second.RunID = "run-2"
+	if err := WriteEntry(dir, second); err != nil {
+		t.Fatalf("write after torn tail: %v", err)
+	}
+
+	entries, err := ListEntries(dir)
+	if err != nil {
+		t.Fatalf("list after repair: %v", err)
+	}
+	if len(entries) != 2 || entries[0].RunID != "run-2" || entries[1].RunID != "run-1" {
+		t.Fatalf("entries = %+v, want newest-first [run-2, run-1]", entries)
+	}
+
+	matches, err := filepath.Glob(journalPath + ".torn-*")
+	if err != nil {
+		t.Fatalf("glob sidecars: %v", err)
+	}
+	if len(matches) != 1 {
+		t.Fatalf("torn sidecars = %v, want exactly one", matches)
+	}
+	preserved, err := os.ReadFile(matches[0])
+	if err != nil {
+		t.Fatalf("read sidecar: %v", err)
+	}
+	if string(preserved) != string(torn) {
+		t.Fatalf("sidecar = %q, want torn bytes %q", preserved, torn)
+	}
+	assertMode(t, matches[0], 0o600)
+}
+
+// A tail that decodes is a complete record whose terminator was lost, not a
+// torn fragment: the next append terminates it in place instead of discarding
+// the recorded run.
+func TestWriteEntryTerminatesCompleteUnterminatedTail(t *testing.T) {
+	dir := t.TempDir()
+	first, _ := BuildJournalEntry(appliedEnvelope(), time.Date(2026, 6, 28, 9, 0, 0, 0, time.UTC))
+	first.RunID = "run-1"
+	if err := WriteEntry(dir, first); err != nil {
+		t.Fatalf("write first entry: %v", err)
+	}
+	complete, _ := BuildJournalEntry(appliedEnvelope(), time.Date(2026, 6, 28, 10, 0, 0, 0, time.UTC))
+	complete.RunID = "run-2"
+	line, err := json.Marshal(complete)
+	if err != nil {
+		t.Fatalf("marshal second entry: %v", err)
+	}
+	journalPath := filepath.Join(dir, JournalFileName)
+	f, err := os.OpenFile(journalPath, os.O_APPEND|os.O_WRONLY, 0o600)
+	if err != nil {
+		t.Fatalf("open journal: %v", err)
+	}
+	if _, err := f.Write(line); err != nil {
+		_ = f.Close()
+		t.Fatalf("write unterminated record: %v", err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatalf("close journal: %v", err)
+	}
+
+	third, _ := BuildJournalEntry(appliedEnvelope(), time.Date(2026, 6, 28, 11, 0, 0, 0, time.UTC))
+	third.RunID = "run-3"
+	if err := WriteEntry(dir, third); err != nil {
+		t.Fatalf("write after unterminated record: %v", err)
+	}
+
+	entries, err := ListEntries(dir)
+	if err != nil {
+		t.Fatalf("list after repair: %v", err)
+	}
+	if len(entries) != 3 || entries[0].RunID != "run-3" || entries[1].RunID != "run-2" || entries[2].RunID != "run-1" {
+		t.Fatalf("entries = %+v, want newest-first [run-3, run-2, run-1]", entries)
+	}
+	if matches, _ := filepath.Glob(journalPath + ".torn-*"); len(matches) != 0 {
+		t.Fatalf("torn sidecars = %v, want none for a complete record", matches)
+	}
+}
+
 func assertMode(t *testing.T, path string, want os.FileMode) {
 	t.Helper()
 	info, err := os.Stat(path)

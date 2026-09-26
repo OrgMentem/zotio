@@ -251,3 +251,89 @@ func assertFileMode(t *testing.T, path string, want os.FileMode) {
 		t.Fatalf("%s mode = %o, want %o", path, got, want)
 	}
 }
+
+// Without a synced mirror the bundle command must fail as a precondition
+// (exit 9) instead of printing an instruction and exiting 0: scripts treat
+// exit 0 as a produced package.
+func TestCollectionsBundleRequiresSyncedStore(t *testing.T) {
+	restore := SnapshotGlobals()
+	defer restore()
+	setActiveGroupID("")
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("ZOTERO_CONFIG", filepath.Join(t.TempDir(), "missing.toml"))
+	t.Setenv("ZOTERO_HOME", "")
+	t.Setenv("ZOTERO_DATA_DIR", "")
+	t.Setenv("ZOTIO_DEMO", "")
+	outDir := filepath.Join(t.TempDir(), "bundle")
+	cmd := newCollectionsCmd(&rootFlags{})
+	cmd.SilenceErrors, cmd.SilenceUsage = true, true
+	cmd.SetArgs([]string{"bundle", "COL", "--out", outDir})
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetErr(&bytes.Buffer{})
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("bundle against an unsynced store = nil error, want a precondition error")
+	}
+	if got := ExitCode(err); got != 9 {
+		t.Fatalf("exit code = %d, want 9 (precondition); err=%v", got, err)
+	}
+	if !strings.Contains(err.Error(), "zotio sync") {
+		t.Fatalf("error = %q, want the sync remediation", err.Error())
+	}
+	if _, statErr := os.Stat(outDir); !os.IsNotExist(statErr) {
+		t.Fatalf("bundle output exists despite missing mirror: %v", statErr)
+	}
+}
+
+// An opened but empty mirror has never synced any items, so it is the same
+// missing prerequisite as no mirror at all.
+func TestCollectionsBundleEmptyStoreRequiresSync(t *testing.T) {
+	restore := SnapshotGlobals()
+	defer restore()
+	setActiveGroupID("")
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("ZOTERO_CONFIG", filepath.Join(t.TempDir(), "missing.toml"))
+	t.Setenv("ZOTERO_HOME", "")
+	t.Setenv("ZOTERO_DATA_DIR", "")
+	t.Setenv("ZOTIO_DEMO", "")
+	db, err := store.OpenWithContext(context.Background(), helpersTestDefaultDBPath(t, "zotio"))
+	if err != nil {
+		t.Fatalf("open empty store: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close store: %v", err)
+	}
+	outDir := filepath.Join(t.TempDir(), "bundle")
+	cmd := newCollectionsCmd(&rootFlags{})
+	cmd.SilenceErrors, cmd.SilenceUsage = true, true
+	cmd.SetArgs([]string{"bundle", "COL", "--out", outDir})
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetErr(&bytes.Buffer{})
+	err = cmd.Execute()
+	if err == nil {
+		t.Fatal("bundle against an empty store = nil error, want a precondition error")
+	}
+	if got := ExitCode(err); got != 9 {
+		t.Fatalf("exit code = %d, want 9 (precondition); err=%v", got, err)
+	}
+	if _, statErr := os.Stat(outDir); !os.IsNotExist(statErr) {
+		t.Fatalf("bundle output exists despite empty mirror: %v", statErr)
+	}
+}
+
+// A ready mirror with no items in the target collection is a valid empty
+// bundle, not a missing prerequisite: success is reserved for written output.
+func TestCollectionsBundleEmptyCollectionWritesEmptyBundle(t *testing.T) {
+	seedCollectionBundleStore(t)
+	outDir := filepath.Join(t.TempDir(), "bundle")
+	cmd := newCollectionsCmd(&rootFlags{})
+	cmd.SetArgs([]string{"bundle", "MISSING", "--out", outDir})
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetErr(&bytes.Buffer{})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("bundle empty collection: %v", err)
+	}
+	for _, name := range []string{"synthesis.md", "annotations.md", "bibliography.json"} {
+		assertFileMode(t, filepath.Join(outDir, name), 0o600)
+	}
+}

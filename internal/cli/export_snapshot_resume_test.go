@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"sync"
 	"testing"
 )
@@ -111,5 +112,47 @@ func TestExportSnapshotJSONLResumeDiscardsUncommittedPage(t *testing.T) {
 				t.Errorf("page starts = %s, want [0 2 2 4]", gotStarts)
 			}
 		})
+	}
+}
+
+// A kill during the checkpoint write leaves a torn checkpoint beside already
+// committed pages. Resuming must refuse with an explicit corruption error and
+// leave both the data file and the checkpoint untouched: the old code treated
+// the torn checkpoint as absent, truncated the export, and lost the
+// recoverable first page when the next fetch failed.
+func TestExportSnapshotResumeRefusesCorruptCheckpoint(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "boom", http.StatusInternalServerError)
+	}))
+	t.Cleanup(srv.Close)
+	t.Setenv("ZOTERO_BASE_URL", srv.URL+"/users/0")
+	t.Setenv("ZOTERO_CONFIG", filepath.Join(t.TempDir(), "missing.toml"))
+	output := filepath.Join(t.TempDir(), "library.jsonl")
+	committed := []byte("{\"key\":\"K000\",\"version\":1}\n{\"key\":\"K001\",\"version\":2}\n")
+	if err := os.WriteFile(output, committed, 0o600); err != nil {
+		t.Fatalf("seed output: %v", err)
+	}
+	checkpointPath := output + ".checkpoint.json"
+	torn := []byte(`{"path":"/items","next_start":`)
+	if err := os.WriteFile(checkpointPath, torn, 0o600); err != nil {
+		t.Fatalf("seed torn checkpoint: %v", err)
+	}
+	err := runSnapshotFormat(output, "jsonl", true)
+	if err == nil || !strings.Contains(err.Error(), "corrupt") {
+		t.Fatalf("resume error = %v, want checkpoint-corruption refusal", err)
+	}
+	got, err := os.ReadFile(output)
+	if err != nil {
+		t.Fatalf("read preserved output: %v", err)
+	}
+	if !bytes.Equal(got, committed) {
+		t.Fatalf("output changed on checkpoint refusal: got %q want %q", got, committed)
+	}
+	kept, err := os.ReadFile(checkpointPath)
+	if err != nil {
+		t.Fatalf("checkpoint removed on refusal: %v", err)
+	}
+	if !bytes.Equal(kept, torn) {
+		t.Fatalf("checkpoint changed on refusal: got %q want %q", kept, torn)
 	}
 }

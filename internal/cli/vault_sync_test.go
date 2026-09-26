@@ -778,3 +778,62 @@ func TestVaultSyncScopeAppliesLimitAfterCohortFilter(t *testing.T) {
 		t.Fatalf("limited cohort classified %v, want a COLV member", names)
 	}
 }
+
+// A missing local mirror is a precondition, not an empty vault: success (exit
+// 0 with an instruction string and no JSON report) lets automation treat a
+// first-run/scheduled sync as completed publication with no notes on disk.
+func TestVaultSyncMissingMirrorIsPreconditionError(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("ZOTERO_CONFIG", filepath.Join(t.TempDir(), "missing.toml"))
+	t.Setenv("ZOTIO_DEMO", "")
+	t.Setenv("ZOTERO_HOME", "")
+	t.Setenv("ZOTERO_DATA_DIR", "")
+	t.Setenv("XDG_CONFIG_HOME", "")
+	t.Setenv("XDG_DATA_HOME", "")
+	vault := filepath.Join(t.TempDir(), "vault")
+	cmd := newVaultSyncCmd(&rootFlags{asJSON: true, maxChanges: -1})
+	cmd.SilenceErrors, cmd.SilenceUsage = true, true
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&bytes.Buffer{})
+	cmd.SetArgs([]string{"--out", vault})
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("vault sync with no mirror succeeded, want a precondition error so automation cannot mistake it for publication")
+	}
+	if code := ExitCode(err); code != 9 {
+		t.Fatalf("ExitCode(err) = %d (%v), want 9 (precondition)", code, err)
+	}
+	if !strings.Contains(err.Error(), "zotio sync") {
+		t.Fatalf("err = %v, want the sync remediation", err)
+	}
+	if _, statErr := os.Stat(vault); !os.IsNotExist(statErr) {
+		t.Fatalf("vault dir exists after a missing-mirror run (stat err %v); no notes may be published without a store", statErr)
+	}
+}
+
+// An unreadable managed note must fail the sync, not vanish from the index: if
+// its citation key changed since it was named, the absent identity resolves to
+// the new filename and --yes publishes a duplicate, orphaning the unreadable
+// original and its user edits while reporting success.
+func TestScanVaultIndexUnreadableNoteSurfacesError(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, "target-dir")
+	if err := os.Mkdir(target, 0o755); err != nil {
+		t.Fatalf("mkdir target: %v", err)
+	}
+	// A .md symlink to a directory is listed as a file entry but always fails
+	// os.ReadFile, deterministically on every platform and user (unlike a
+	// chmod-based unreadable fixture, which root can still read).
+	link := filepath.Join(dir, "oldcite.md")
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatalf("symlink note: %v", err)
+	}
+	_, err := scanVaultIndex(dir)
+	if err == nil {
+		t.Fatal("scanVaultIndex skipped an unreadable note, want an error so no new note is published over it")
+	}
+	if !strings.Contains(err.Error(), "oldcite.md") {
+		t.Fatalf("err = %v, want it to name the unreadable note", err)
+	}
+}

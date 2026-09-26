@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -203,4 +204,49 @@ func TestReadExportCheckpointMissingFile(t *testing.T) {
 	if cp, ok := readExportCheckpoint(filepath.Join(t.TempDir(), "missing.json")); ok {
 		t.Fatalf("readExportCheckpoint returned ok=true with %+v for missing file", cp)
 	}
+}
+
+// A torn checkpoint (kill during the previous write) must read back as
+// present-but-unreadable, never as absent: resume callers that collapse both
+// to "no checkpoint" silently truncate the committed export data.
+func TestReadExportCheckpointStatusDistinguishesCorrupt(t *testing.T) {
+	dir := t.TempDir()
+	if _, exists, err := readExportCheckpointStatus(filepath.Join(dir, "missing.json")); err != nil || exists {
+		t.Fatalf("missing checkpoint status = (exists=%v, err=%v), want absent without error", exists, err)
+	}
+	corrupt := filepath.Join(dir, "corrupt.json")
+	if err := os.WriteFile(corrupt, []byte(`{"path":"/items","next_start":`), 0o600); err != nil {
+		t.Fatalf("seed corrupt checkpoint: %v", err)
+	}
+	if _, exists, err := readExportCheckpointStatus(corrupt); err == nil || !exists {
+		t.Fatalf("corrupt checkpoint status = (exists=%v, err=%v), want present with error", exists, err)
+	}
+	if _, ok := readExportCheckpoint(corrupt); ok {
+		t.Fatal("legacy reader reports a torn checkpoint as readable")
+	}
+}
+
+// Checkpoint publication must be atomic: a crash mid-write leaves the previous
+// checkpoint or nothing observable, never a torn file, and no temp files.
+func TestWriteExportCheckpointPublishesAtomically(t *testing.T) {
+	dir := t.TempDir()
+	file := filepath.Join(dir, "export.checkpoint.json")
+	want := exportCheckpoint{Path: "/items", NextStart: 5, Fetched: 5}
+	if err := writeExportCheckpoint(file, want); err != nil {
+		t.Fatalf("write checkpoint: %v", err)
+	}
+	got, ok := readExportCheckpoint(file)
+	if !ok || got.NextStart != 5 || got.Fetched != 5 {
+		t.Fatalf("checkpoint = %+v, readable=%v; want the published record", got, ok)
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatalf("read checkpoint dir: %v", err)
+	}
+	for _, entry := range entries {
+		if strings.HasSuffix(entry.Name(), ".tmp") {
+			t.Fatalf("temporary checkpoint left behind: %s", entry.Name())
+		}
+	}
+	assertFileMode(t, file, 0o600)
 }

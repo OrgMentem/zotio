@@ -101,7 +101,11 @@ func exportSnapshot(cmd *cobra.Command, flags *rootFlags, outputFile, path strin
 	resumable := false
 	var resumeCheckpoint exportCheckpoint
 	if resume {
-		if cp, ok := readExportCheckpoint(checkpointFile); ok && !cp.Done {
+		cp, exists, cpErr := readExportCheckpointStatus(checkpointFile)
+		if cpErr != nil {
+			return fmt.Errorf("export checkpoint %q is corrupt: %w; remove it or rerun without --resume (existing output left intact)", checkpointFile, cpErr)
+		}
+		if exists && !cp.Done {
 			if cp.Path != path || cp.Source != source || cp.Scope != expectedScope || checkpointFormat(cp) != format {
 				return fmt.Errorf("checkpoint scope does not match this export; remove the checkpoint or rerun without --resume")
 			}

@@ -137,3 +137,36 @@ func TestAuthLogoutUnderAgentcookieMarker(t *testing.T) {
 	}
 	assertAbsentUnderHome(t, home, logoutTestConfigKey, logoutTestCredsKey)
 }
+
+// Logout publishes the scrubbed config BEFORE removing the credentials file.
+// Load() reads config.toml first and only lets the credentials file override
+// it, so removing the file first leaves a crash window where a stale inline
+// api_key reloads with no credentials file to shadow it. This pins the order:
+// when removal fails, the config is already clean and the error is still
+// reported loudly instead of claiming success.
+func TestAuthLogoutScrubsConfigBeforeRemovingCredentials(t *testing.T) {
+	isolateAuthHome(t)
+	configPath := writeAuthTestConfigFile(t, "base_url = \""+authTestBaseURL+"\"\napi_key = \""+logoutTestConfigKey+"\"\n")
+	credPath, err := cliutil.CredentialsFilePath()
+	if err != nil {
+		t.Fatalf("CredentialsFilePath: %v", err)
+	}
+	if err := os.MkdirAll(credPath, 0o700); err != nil {
+		t.Fatalf("mkdir %s: %v", credPath, err)
+	}
+	if err := os.WriteFile(filepath.Join(credPath, "anchor"), []byte("x"), 0o600); err != nil {
+		t.Fatalf("write anchor: %v", err)
+	}
+
+	out, err := runAuthLogoutCmd(t, &rootFlags{})
+	if err == nil {
+		t.Fatalf("auth logout succeeded with an unremovable credentials dir (output %q)", out)
+	}
+	data, readErr := os.ReadFile(configPath)
+	if readErr != nil {
+		t.Fatalf("reading scrubbed config: %v", readErr)
+	}
+	if strings.Contains(string(data), logoutTestConfigKey) {
+		t.Fatalf("config still holds the inline key after a failed logout; the scrubbed config must be published before credentials removal")
+	}
+}

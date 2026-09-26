@@ -224,8 +224,7 @@ func executeVaultSync(cmd *cobra.Command, flags *rootFlags, outDir, format, coll
 		return fmt.Errorf("opening database: %w", err)
 	}
 	if rawDB == nil {
-		fmt.Fprintln(cmd.OutOrStdout(), "Run 'zotio sync' first.")
-		return nil
+		return preconditionErr(fmt.Errorf("no local data. Run 'zotio sync' first"))
 	}
 	defer rawDB.Close()
 
@@ -496,8 +495,7 @@ func scanVaultIndex(outDir string) (vaultIndex, error) {
 		}
 		data, err := os.ReadFile(filepath.Join(outDir, e.Name()))
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "warning: reading vault note %s: %v\n", filepath.Join(outDir, e.Name()), err)
-			continue
+			return idx, fmt.Errorf("reading vault note %s: %w", filepath.Join(outDir, e.Name()), err)
 		}
 		// Prefer the explicit identity key, but fall back to the item key embedded
 		// in the zotero:// select link so older managed notes are updated in place

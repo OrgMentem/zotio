@@ -435,6 +435,13 @@ func (c *Config) ClearTokens() error {
 	c.ZoteroApiKey = ""
 	delete(c.envOverrides, "ZoteroApiKey")
 	c.updateFileConfigField("ZoteroApiKey")
+	// Publish the scrubbed config BEFORE removing the credentials file. Load()
+	// reads config.toml first and only lets the credentials file override it,
+	// so a kill between the two publications must not leave a stale inline
+	// api_key behind with no credentials file to shadow it: that state
+	// resurrects the supposedly logged-out key on the next load. Publishing
+	// the scrubbed config first keeps the crash window on the credentials-file
+	// key (the one actually in use), which a retried logout then clears.
 	// Remove the credentials file on BOTH paths. saveCredentialsFirst() declines
 	// to WRITE it under an agentcookie-managed store, but a credentials.toml
 	// written by `auth set-token` before the marker appeared still holds a live
@@ -442,16 +449,19 @@ func (c *Config) ClearTokens() error {
 	// here left the secret on disk while `auth logout` reported success.
 	// RemoveCredentials tolerates a missing file, so this is safe when the store
 	// never had one.
-	if err := cliutil.RemoveCredentials(); err != nil {
-		return err
-	}
 	if c.AgentcookieManagedByExternalStore() {
 		c.markAgentcookieManaged()
 	}
 	// save() persists the full config (credential fields included) for
 	// agentcookie-managed stores, so the zeroed fields must be written back;
 	// skipping it would leave the secrets in config.toml.
-	return c.save()
+	if err := c.save(); err != nil {
+		return err
+	}
+	if err := cliutil.RemoveCredentials(); err != nil {
+		return err
+	}
+	return nil
 }
 
 // SaveUserID persists the resolved numeric Zotero user ID so write routing can
