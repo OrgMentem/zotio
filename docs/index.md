@@ -19,7 +19,8 @@ Reads stay on your machine. Writes split by intent: **creating a new item** (wit
 | **Write — everything else** | Zotero Web API (`api.zotero.org`) — edits, deletes, enrich, tags, moves | Yes — configured once |
 | **External** | CrossRef · OpenAlex · Semantic Scholar · Unpaywall · OpenCitations | No (feeds enrich/import) |
 | **Local-only** | Files, desktop launch, vault file sync, introspection | No |
-| **Vault push/pull/resolve** | Zotero Web API note write-back | Yes — configured once |
+| **Vault push / resolve --keep-vault** | Zotero Web API note write-back | Yes — configured once |
+| **Vault pull / resolve --keep-remote** | Local vault file writes; Web API note reads | Yes — configured once |
 
 Run [`zotio doctor`](reference/commands.md) any time to see connectivity, cache freshness, and a `writes:` line telling you whether write-back is available.
 

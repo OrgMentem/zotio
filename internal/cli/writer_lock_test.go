@@ -893,6 +893,41 @@ func TestFeedbackTakesInstallationLockWithoutYes(t *testing.T) {
 	}
 }
 
+type feedbackLockCheckingWriter struct {
+	t        *testing.T
+	lockPath string
+	observed bool
+}
+
+func (w *feedbackLockCheckingWriter) Write(p []byte) (int, error) {
+	w.observed = true
+	if !writerLockIsFree(w.t, w.lockPath) {
+		w.t.Error("feedback kept the installation lock after the ledger append")
+	}
+	return len(p), nil
+}
+
+func TestFeedbackReleasesLockBeforeReportingResult(t *testing.T) {
+	useWriterLockTestHome(t)
+	flags := &rootFlags{}
+	lockPath, err := installationWriterLockPath(flags)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := &feedbackLockCheckingWriter{t: t, lockPath: lockPath}
+	root := newRootCmd(flags)
+	root.SilenceErrors, root.SilenceUsage = true, true
+	root.SetOut(out)
+	root.SetErr(&bytes.Buffer{})
+	root.SetArgs([]string{"feedback", "hello"})
+	if err := root.Execute(); err != nil {
+		t.Fatalf("record feedback: %v", err)
+	}
+	if !out.observed {
+		t.Fatal("feedback did not report the result")
+	}
+}
+
 // The whole output lock set is deduplicated by canonical target and acquired
 // in sorted order. Different spellings of one target yield one lock path.
 func TestOutputLockSetForTargetsDedupesAndSorts(t *testing.T) {

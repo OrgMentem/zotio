@@ -815,3 +815,45 @@ func TestSchemaDriftPureComparisonStaysLockFreeWhileBaselineHeld(t *testing.T) {
 		t.Fatalf("pure comparison while baseline held: %v", err)
 	}
 }
+
+// Updating a baseline through a symlink must publish to its resolved target
+// without replacing the link or leaving the target stale.
+func TestSchemaDriftUpdatePreservesSymlinkedBaseline(t *testing.T) {
+	srv := schemaServer(t, []string{"book"}, []string{"title"}, []string{"firstName"})
+	defer srv.Close()
+	dir := t.TempDir()
+	target := filepath.Join(dir, "target.json")
+	link := filepath.Join(dir, "baseline.json")
+	if _, err := runSchemaDrift(t, srv.URL, target, true); err != nil {
+		t.Fatalf("capture baseline: %v", err)
+	}
+	before, err := os.ReadFile(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatal(err)
+	}
+	changed := schemaServer(t, []string{"book", "journalArticle"}, []string{"title"}, []string{"firstName"})
+	defer changed.Close()
+	if _, err := runSchemaDrift(t, changed.URL, link, true, "--update"); err != nil {
+		t.Fatalf("update symlinked baseline: %v", err)
+	}
+	info, err := os.Lstat(link)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode()&os.ModeSymlink == 0 {
+		t.Fatal("baseline symlink was replaced")
+	}
+	after, err := os.ReadFile(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Equal(before, after) {
+		t.Fatal("resolved baseline did not change")
+	}
+	if _, err := runSchemaDrift(t, changed.URL, link, true); err != nil {
+		t.Fatalf("compare updated baseline: %v", err)
+	}
+}

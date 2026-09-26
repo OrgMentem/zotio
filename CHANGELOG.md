@@ -11,8 +11,9 @@ Notable changes to zotio. Format follows [Keep a Changelog](https://keepachangel
   paths before reading a baseline. Schema captures and updates lock before
   probing Zotero. Schema baselines and wrapped cards replace files atomically,
   so a failed write leaves the prior file intact. Plain comparisons and
-  reports without named outputs remain lock-free. `feedback` now takes the
-  installation lock even without `--yes`; `feedback list` remains lock-free.
+  reports without named outputs remain lock-free. `feedback` now locks its
+  local ledger append even without `--yes`, then releases the lock before any
+  optional upstream POST; `feedback list` remains lock-free.
 
 - **`annotations search` uses the full-text index on the local store.** It
   matches words, not substrings: "trust" now finds "trusted" but no longer
@@ -54,10 +55,12 @@ Notable changes to zotio. Format follows [Keep a Changelog](https://keepachangel
   After a clean incremental pass, sync asks the plane for the key lists of
   collections and trash. There is one `format=keys` request for each list.
   Sync then reaps the mirrored rows that are missing from a list. Before, only
-  `sync --full` did this. An absent collection stays in the mirror only when a
-  usable live member still names it; an empty or unwitnessed collection is
-  reaped and returns on a later versioned restore sync. The member items of a
-  removed collection are fetched again in `/items?itemKey=` batches of up to
+  `sync --full` did this. An absent collection stays in the mirror when a
+  usable live member still names it or a member probe fails or returns no
+  usable collection data. An empty or unwitnessed collection with successful
+  usable probes is reaped and returns on a later versioned restore sync.
+  The member items of a removed collection
+  are fetched again in `/items?itemKey=` batches of up to
   50 keys per request, so their `data.collections` matches the plane.
   Deletion markers are respected (ADR-0007). A listing is swept only with a
   present, numeric `Total-Results` header equal to the keys sent; a missing,

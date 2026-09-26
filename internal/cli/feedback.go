@@ -154,7 +154,9 @@ maintainer sees it.`,
 				AgentID:   os.Getenv("AGENT_ID"),
 				Timestamp: time.Now().UTC(),
 			}
-			if err := appendFeedback(entry); err != nil {
+			if err := withInstallationWriterLock(cmd, flags, "feedback", func() error {
+				return appendFeedback(entry)
+			}); err != nil {
 				return err
 			}
 

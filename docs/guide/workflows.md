@@ -1,8 +1,8 @@
 # Workflows & triggers
 
-A **workflow** chains several `zotio` steps into one reviewed run: one preview, one approval, and one shared journal run ID — with data flowing between steps, conditionals, and resume. It is the automation counterpart to [safe-by-default writes](../concepts/write-safety.md): the same preview-first, one-`--yes` contract, stretched from a single command to a whole plan. Steps run in order with no rollback, so a later failure leaves earlier successful writes applied.
+A **workflow** chains several `zotio` steps into one reviewed run: one preview, one approval, and a shared run ID for journaled writes — with data flowing between steps, conditionals, and resume. It is the automation counterpart to [safe-by-default writes](../concepts/write-safety.md): the same preview-first, one-`--yes` contract, stretched from a single command to a whole plan. Steps run in order with no rollback, so a later failure leaves earlier successful writes applied.
 
-Without a workflow: run five commands, approve five times, and hope you didn't skip one. With: one preview, one `--yes`, and every mutation filed under one workflow run ID.
+Without a workflow: run five commands, approve five times, and hope you didn't skip one. With: one preview, one `--yes`, and journaled mutations filed under one workflow run ID. Vault steps use their own reports instead of journal entries.
 
 ## What you'd use it for
 

@@ -123,13 +123,16 @@ shared across libraries because the schema is global to the Zotero install.`,
 					wantsWrite = true
 				}
 			}
+			// Write through the resolved target, not a symlink at the named
+			// path: atomic rename over that link would leave its referent stale.
+			baselineFile := path
 			run := func() error {
 				itemTypes, schemaVersion, err := probeSchemaVersion(cmd.Context(), c)
 				if err != nil {
 					return classifyAPIError(err, flags)
 				}
 
-				base, ok, err := loadSchemaBaseline(path)
+				base, ok, err := loadSchemaBaseline(baselineFile)
 				if err != nil {
 					return err
 				}
@@ -145,7 +148,7 @@ shared across libraries because the schema is global to the Zotero install.`,
 					if err != nil {
 						return classifySchemaSnapshotError(cmd, flags, err)
 					}
-					if err := saveSchemaBaseline(path, live); err != nil {
+					if err := saveSchemaBaseline(baselineFile, live); err != nil {
 						return err
 					}
 					return renderSchemaDrift(cmd, flags, true, nil, path, live)
@@ -191,7 +194,7 @@ shared across libraries because the schema is global to the Zotero install.`,
 				}
 				deltas := diffSnapshots(base, live)
 				if update {
-					if err := saveSchemaBaseline(path, live); err != nil {
+					if err := saveSchemaBaseline(baselineFile, live); err != nil {
 						return err
 					}
 				}
@@ -208,6 +211,7 @@ shared across libraries because the schema is global to the Zotero install.`,
 			if err != nil {
 				return fmt.Errorf("resolving output path: %w", err)
 			}
+			baselineFile = canonicalTarget
 			return withPathWriterLock(cmd, lockPath, fmt.Sprintf("schema drift baseline to %q", canonicalTarget), run)
 		},
 	}

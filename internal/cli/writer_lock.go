@@ -252,11 +252,6 @@ var explicitInstallationWriterCommands = map[string]writerLockMode{
 	"tail":             writerLockAlways,
 	"workflow archive": writerLockAlways,
 	"workflow run":     writerLockOnApply,
-	// Feedback appends the installation feedback ledger on every invocation
-	// without the shared --yes gate, so writerLockOnApply would leave it
-	// unlocked. `feedback list` is a separate read path and stays lock-free.
-	"feedback": writerLockAlways,
-
 	// Every command that writes on the user's behalf routes through the shared
 	// --yes gate, so writerLockOnApply is the right mode. The vault trio,
 	// `vault resolve` (a vault publish), and generic import are pinned here
