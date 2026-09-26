@@ -73,17 +73,17 @@ The library gate catches bad references; `items bibcheck` catches the reverse �
 
 ## Gate on drift from a committed snapshot
 
-`export snapshot` writes your data plus a sidecar lockfile (`<output>.lock.json`) that pins each item by key and a normalized content hash. Commit that lockfile next to a curated reading list or systematic-review corpus, and CI can fail when the live library diverges from the pinned set:
+`export snapshot` writes your data plus a sidecar manifest (`<output>.manifest.json`) that pins each item by key and a normalized content hash. Commit that manifest next to a curated reading list or systematic-review corpus, and CI can fail when the live library diverges from the pinned set:
 
 ```bash
 zotio export snapshot collection:ABCD1234 --output corpus.jsonl      # regenerate and commit intentionally
-zotio export snapshot verify corpus.jsonl.lock.json --fail-on-drift  # exit 11 on added/removed/changed items
+zotio export snapshot verify corpus.jsonl.manifest.json --fail-on-drift  # exit 11 on added/removed/changed items
 ```
 
 Because `verify` compares content hashes rather than Zotero version integers, an item whose version bumped with no content change is reported as `touched` and never trips the gate — only genuine additions, removals, and content edits do.
 
 !!! tip "Systematic-review corpora"
-    For a screening corpus, `zotio library prisma <scope>` reports PRISMA 2020 identification-stage counts — records identified (broken down per source database), duplicate records removed, and records after deduplication — the numbers that drop straight into a flow diagram.
+    For a screening corpus, `zotio library prisma --scope collection:KEY` reports PRISMA 2020 identification-stage counts — records identified (broken down per source database), duplicate records removed, and records after deduplication — the numbers that drop straight into a flow diagram.
 
 ## Publish the badge
 

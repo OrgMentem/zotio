@@ -18,7 +18,7 @@ Beyond tools, the server serves live Zotero context as MCP **resources**:
 
 - `zotero://context` · `zotero://agent-context` — CLI + library introspection
 - `zotero://status` · `zotero://freshness` — connectivity and cache state
-- `zotero://schema` — Zotero item-type and field schema
+- `zotero://schema` — local SQLite cache DDL, for writing queries with the `sql` tool
 - `zotero://capabilities` — the read/write trust registry ([reference](../reference/capabilities.md))
 
 ## Authentication
@@ -31,7 +31,7 @@ claude mcp add zotero zotio-mcp -e ZOTERO_API_KEY=<your-key>
 
 ## Concurrent access
 
-Only one zotio writer may update an installation or independent output at a time. Installation writers use the host-user lock `~/.zotio/.writer.lock`: `--config`, `ZOTERO_CONFIG`, and `ZOTIO_DATA_DIR` do not make concurrent writer scopes because profiles remain shared at `~/.zotio/profiles.json`. A concurrent write fails immediately with exit code 9 and is safe to retry after the active writer finishes; read-only commands and dry-run previews remain available.
+Only one zotio writer may update an installation or independent output at a time. Installation writers use the host-user lock `~/.zotio/.writer.lock`: `--config`, `ZOTERO_CONFIG`, and `ZOTERO_DATA_DIR` do not make concurrent writer scopes because profiles remain shared at `~/.zotio/profiles.json`. A concurrent write fails immediately with exit code 9 and is safe to retry after the active writer finishes; read-only commands and dry-run previews remain available.
 
 ## Library content is data, never instruction
 

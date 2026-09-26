@@ -29,7 +29,7 @@ Materialize or refresh one Markdown note per item.
 ```bash
 zotio sync                    # refresh the local mirror first
 zotio vault sync --dry-run    # preview created / updated / unchanged
-zotio vault sync              # write notes (uses [vault] config)
+zotio vault sync --yes        # write notes (uses [vault] config)
 ```
 
 - **Identity from the citekey.** Filenames key off `data.citationKey` (native in Zotero 7+), falling back to the item key — lining up with your `[@citekey]` cites.
@@ -43,8 +43,8 @@ zotio vault sync              # write notes (uses [vault] config)
 
 ```bash
 zotio vault push --dry-run    # preview Obsidian → Zotero
-zotio vault push              # publish notes to a managed Zotero child note
-zotio vault pull              # fold edits made in the Zotero app back in
+zotio vault push --yes        # publish notes to a managed Zotero child note
+zotio vault pull --yes        # fold edits made in the Zotero app back in
 ```
 
 - **Reads local, writes cloud.** `push` auto-routes to `api.zotero.org` (needs a key — see [Authentication](authentication.md)). Personal library by default; `--group` prints a one-time visibility warning.
@@ -58,9 +58,9 @@ zotio vault pull              # fold edits made in the Zotero app back in
 
 ```bash
 zotio vault conflicts                       # list unresolved artifacts
-zotio vault resolve <citekey> --keep-vault  # republish vault copy over remote
-zotio vault resolve <citekey> --keep-remote # pull remote over the vault region
-zotio vault resolve <citekey> --recreate    # re-create a note deleted in Zotero
+zotio vault resolve <citekey> --keep-vault --yes  # republish vault copy over remote
+zotio vault resolve <citekey> --keep-remote --yes # pull remote over the vault region
+zotio vault resolve <citekey> --recreate --yes    # re-create a note deleted in Zotero
 ```
 
 ## Note format contract
@@ -76,13 +76,13 @@ zotio vault resolve <citekey> --recreate    # re-create a note deleted in Zotero
 
 ```bash
 zotio sync                                    # refresh the local mirror
-zotio vault sync                              # Zotero → vault
+zotio vault sync --yes                         # Zotero → vault
 # ... write under "## Notes" in Obsidian ...
 zotio vault push --dry-run                    # preview Obsidian → Zotero
-zotio vault push                              # publish
-zotio vault pull                              # fold app-side edits back in
+zotio vault push --yes                        # publish
+zotio vault pull --yes                        # fold app-side edits back in
 zotio vault conflicts                         # if anything conflicted
-zotio vault resolve <citekey> --keep-vault    # ...or --keep-remote
+zotio vault resolve <citekey> --keep-vault --yes    # ...or --keep-remote --yes
 ```
 
 !!! note "Mental model"
