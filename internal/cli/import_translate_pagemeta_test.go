@@ -186,6 +186,8 @@ func TestExtractDOIFromPageMeta_Forms(t *testing.T) {
 		{"jsonld sameAs list", nil, `{"@type":"ScholarlyArticle","sameAs":["https://example.org/x","https://doi.org/10.1234/sameas"]}`, "", "10.1234/sameas"},
 		{"jsonld @id non-doi ignored", nil, `{"@type":"ScholarlyArticle","@id":"https://example.org/article/1"}`, "", ""},
 		{"jsonld citation names another work", nil, `{"@type":"ScholarlyArticle","citation":["10.9999/other-work"]}`, "", ""},
+		{"jsonld full schema.org type URL", nil, `{"@type":"https://schema.org/ScholarlyArticle","identifier":"10.1234/typeurl"}`, "", "10.1234/typeurl"},
+		{"jsonld schema: prefixed type in a list", nil, `{"@type":["schema:WebPage","schema:ScholarlyArticle"],"identifier":"10.1234/prefixed"}`, "", "10.1234/prefixed"},
 		{"jsonld graph flattened", nil, `{"@graph":[{"@type":"WebPage","name":"x"},{"@type":"ScholarlyArticle","identifier":"10.1234/graphdoi"}]}`, "", "10.1234/graphdoi"},
 		{"unparseable jsonld skipped", nil, `not json at all`, "", ""},
 		// A nested related-work node sorts before the primary's own

@@ -840,14 +840,26 @@ func normalizePageURL(raw string) string {
 	return strings.TrimRight(s, "/")
 }
 
+// jsonldArticleType returns the node's article type name, lowercased and
+// without a schema.org prefix: `ScholarlyArticle`, `schema:ScholarlyArticle`
+// and `https://schema.org/ScholarlyArticle` are the same type.
 func jsonldArticleType(m map[string]any) string {
+	name := func(s string) string {
+		s = strings.ToLower(strings.TrimSpace(s))
+		for _, prefix := range []string{"https://schema.org/", "http://schema.org/", "schema:"} {
+			if rest, ok := strings.CutPrefix(s, prefix); ok {
+				return rest
+			}
+		}
+		return s
+	}
 	switch t := m["@type"].(type) {
 	case string:
-		return strings.ToLower(strings.TrimSpace(t))
+		return name(t)
 	case []any:
 		for _, e := range t {
-			if s, ok := e.(string); ok && jsonldArticleTypeNames[strings.ToLower(strings.TrimSpace(s))] {
-				return strings.ToLower(strings.TrimSpace(s))
+			if s, ok := e.(string); ok && jsonldArticleTypeNames[name(s)] {
+				return name(s)
 			}
 		}
 	}
