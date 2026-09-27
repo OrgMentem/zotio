@@ -296,7 +296,52 @@ func crossRefItemFromWork(work crossRefWork, fallbackDOI string) map[string]any 
 	if abstract := stripJATS(work.Abstract); abstract != "" {
 		item["abstractNote"] = abstract
 	}
+	// CrossRef volume, issue, and page are render-critical fields, and the
+	// work struct already carries them: emit what the Zotero item type
+	// defines so citations print completely. A record can still lack them
+	// (article-number journals legitimately have neither volume nor pages),
+	// in which case the caller backfills from page metadata where it can.
+	setCrossRefVolumeIssuePages(item, work)
 	return item
+}
+
+// itemTypeCitationFields reports which of volume, issue and pages the Zotero
+// schema defines for an item type, so no importer writes a field the type
+// rejects (a Web API create fails on an undefined field). Checked against
+// the global schema.json shipped in Zotero 7 (itemTypes[].fields):
+// journalArticle, magazineArticle, newspaperArticle and conferencePaper take
+// all three; bookSection takes volume and pages; book takes volume (its page
+// count is numPages, not pages); report takes pages; thesis, preprint,
+// document and webpage take none.
+func itemTypeCitationFields(itemType string) (volume, issue, pages bool) {
+	switch itemType {
+	case "journalArticle", "magazineArticle", "newspaperArticle", "conferencePaper":
+		return true, true, true
+	case "bookSection":
+		return true, false, true
+	case "book":
+		return true, false, false
+	case "report":
+		return false, false, true
+	default:
+		return false, false, false
+	}
+}
+
+// setCrossRefVolumeIssuePages emits the CrossRef volume, issue, and page
+// only onto fields the resolved item type defines.
+func setCrossRefVolumeIssuePages(item map[string]any, work crossRefWork) {
+	itemType, _ := item["itemType"].(string)
+	wantVolume, wantIssue, wantPages := itemTypeCitationFields(itemType)
+	if wantVolume && strings.TrimSpace(work.Volume) != "" {
+		item["volume"] = strings.TrimSpace(work.Volume)
+	}
+	if wantIssue && strings.TrimSpace(work.Issue) != "" {
+		item["issue"] = strings.TrimSpace(work.Issue)
+	}
+	if wantPages && strings.TrimSpace(work.Page) != "" {
+		item["pages"] = strings.TrimSpace(work.Page)
+	}
 }
 
 // setCrossRefContainerTitle places CrossRef's container title in the field

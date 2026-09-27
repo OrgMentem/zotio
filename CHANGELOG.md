@@ -4,6 +4,14 @@ Notable changes to zotio. Format follows [Keep a Changelog](https://keepachangel
 
 ## [Unreleased]
 
+### Added
+
+- **`import doi` and `import url` carry the CrossRef volume, issue, and
+  pages.** They land only on fields the Zotero schema defines for the item
+  type: journal, magazine, and newspaper articles and conference papers take
+  all three, book sections take volume and pages, books take volume, reports
+  take pages, and preprints, theses, and documents take none.
+
 ### Changed — breaking
 
 #### Keys and not-found

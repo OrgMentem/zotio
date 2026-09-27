@@ -100,6 +100,38 @@ func TestCrossRefItemFromWorkPlacesContainerInValidField(t *testing.T) {
 	}
 }
 
+// Volume, issue and pages land only on fields the Zotero schema defines for
+// the resolved type (Zotero 7 schema.json): a book keeps its volume but has
+// no pages field, a preprint has none of the three.
+func TestCrossRefItemFromWorkEmitsVolumeIssuePagesPerType(t *testing.T) {
+	cases := []struct {
+		crossRefType                     string
+		wantVolume, wantIssue, wantPages bool
+	}{
+		{"journal-article", true, true, true},
+		{"proceedings-article", true, true, true},
+		{"book-chapter", true, false, true},
+		{"book", true, false, false},
+		{"report", false, false, true},
+		{"posted-content", false, false, false},
+		{"dissertation", false, false, false},
+		{"dataset", false, false, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.crossRefType, func(t *testing.T) {
+			item := crossRefItemFromWork(crossRefWork{
+				Type: tc.crossRefType, Title: []string{"T"}, DOI: "10.1/x",
+				Volume: "12", Issue: "3", Page: "100-110",
+			}, "10.1/x")
+			for key, want := range map[string]bool{"volume": tc.wantVolume, "issue": tc.wantIssue, "pages": tc.wantPages} {
+				if _, got := item[key]; got != want {
+					t.Errorf("%s present = %v, want %v (item %v)", key, got, want, item)
+				}
+			}
+		})
+	}
+}
+
 func TestSetCrossRefContainerTitleUsesPublicationTitleForPeriodicals(t *testing.T) {
 	for _, itemType := range []string{"journalArticle", "magazineArticle", "newspaperArticle"} {
 		t.Run(itemType, func(t *testing.T) {
