@@ -6,11 +6,33 @@ Notable changes to zotio. Format follows [Keep a Changelog](https://keepachangel
 
 ### Added
 
+- **`import url` resolves a DOI found in page metadata through CrossRef.**
+  When the URL itself has no DOI, `citation_doi`, a DOI-shaped
+  `dc.identifier`, `prism.doi`, or the DOI that the page's own JSON-LD
+  article states (`identifier`, doi.org `@id`/`sameAs`) fetches the full
+  CrossRef record exactly as a URL DOI does; `citation_doi` wins over a
+  different JSON-LD DOI, and DOIs of cited or related works nested in the
+  JSON-LD are never used. Page metadata stays the fallback when CrossRef
+  misses. Volume, issue, pages, or abstract that the record leaves empty
+  fill from the page's citation tags, or from its JSON-LD article when that
+  article states the same DOI, never overwriting a provider value.
+  JSON-LD `ScholarlyArticle`/`Article`/`Book`/`Chapter` blocks now feed
+  title, authors, publication date, container, and page ranges, and
+  `citation_firstpage`/`lastpage` plus `prism.startingPage`/`endingPage`
+  fill `pages`.
 - **`import doi` and `import url` carry the CrossRef volume, issue, and
   pages.** They land only on fields the Zotero schema defines for the item
   type: journal, magazine, and newspaper articles and conference papers take
   all three, book sections take volume and pages, books take volume, reports
   take pages, and preprints, theses, and documents take none.
+- **`import url` refuses bot-challenge pages instead of importing their
+  placeholder title.** Cloudflare ("Just a moment", "Attention Required",
+  Turnstile/challenge-platform paired with challenge wording), Fastly client
+  challenge, AWS WAF (state blob, vendor text, 202, header action), Anubis,
+  PerimeterX/DataDome, and proof-of-work interstitials return an error naming
+  the vendor, also when the wall answers 403 or 503. Vendor scripts on normal
+  pages (comment widgets, injected detection scripts, an article that only
+  names the vendor) do not trigger it.
 
 ### Changed — breaking
 
@@ -816,6 +838,12 @@ Notable changes to zotio. Format follows [Keep a Changelog](https://keepachangel
 - **`items duplicates resolve` reports itself as destructive in agent
   context.** Its annotations now agree with the capability registry and the
   merge gate, which already required `--allow-destructive`.
+- **`import url` writes an embedded venue into the field the item type
+  defines.** A conference paper uses `proceedingsTitle`, a book section
+  `bookTitle`, a web page `websiteTitle`, and a preprint `repository`; a book
+  gets no venue field. Volume, issue, and pages from page metadata follow the
+  same per-type rule. The venue used to go into `publicationTitle` for every
+  type, which the Web API rejects for those types.
 - **Ambiguous item creates keep their reconciliation evidence in the journal.**
   A lost response or write-token conflict now marks the create as possibly
   committed, so `journal undo` refuses to claim it reversed an unknown write.

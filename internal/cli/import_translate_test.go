@@ -46,7 +46,7 @@ func TestParseHTMLMetaAndItem(t *testing.T) {
 		t.Errorf("expected 2 authors, got %v", metas["citation_author"])
 	}
 
-	item := itemFromEmbeddedMeta(metas, title, "https://x/article", "2026-06-16")
+	item := itemFromEmbeddedMeta(pageContent{metas: metas, title: title}, nil, "https://x/article", "2026-06-16")
 	if item == nil {
 		t.Fatal("expected an item")
 	}
@@ -75,7 +75,7 @@ func TestParseHTMLMetaAndItem(t *testing.T) {
 }
 
 func TestItemFromEmbeddedMeta_NoTitleReturnsNil(t *testing.T) {
-	if item := itemFromEmbeddedMeta(map[string][]string{"og:image": {"x"}}, "", "https://x", "2026-06-16"); item != nil {
+	if item := itemFromEmbeddedMeta(pageContent{metas: map[string][]string{"og:image": {"x"}}}, nil, "https://x", "2026-06-16"); item != nil {
 		t.Errorf("expected nil for no usable title, got %v", item)
 	}
 }
@@ -88,7 +88,10 @@ func TestBuildImportItemFromURL_DOIInURL(t *testing.T) {
 	withBase(t, &enrichCrossRefBase, crsrv.URL)
 
 	rawURL := "https://publisher.example/doi/10.1234/abc"
-	item, source := buildImportItemFromURL(context.Background(), http.DefaultClient, rawURL)
+	item, source, err := buildImportItemFromURL(context.Background(), http.DefaultClient, rawURL)
+	if err != nil {
+		t.Fatalf("buildImportItemFromURL: %v", err)
+	}
 	if source == "" || item["title"] != "Resolved Title" {
 		t.Fatalf("source=%q item=%v, want CrossRef title", source, item)
 	}
@@ -117,7 +120,10 @@ func TestBuildImportItemFromURL_EmptyCrossRefFallsBack(t *testing.T) {
 	if _, err := crossRefItemFromDOI(context.Background(), http.DefaultClient, "10.1234/abc"); err == nil || err.Error() != `invalid CrossRef response for DOI "10.1234/abc": missing message title` {
 		t.Fatalf("crossRefItemFromDOI error = %v, want missing-title error", err)
 	}
-	item, source := buildImportItemFromURL(context.Background(), http.DefaultClient, rawURL)
+	item, source, err := buildImportItemFromURL(context.Background(), http.DefaultClient, rawURL)
+	if err != nil {
+		t.Fatalf("buildImportItemFromURL: %v", err)
+	}
 	if source != "embedded metadata" {
 		t.Fatalf("source = %q, want embedded metadata", source)
 	}
@@ -133,7 +139,10 @@ func TestBuildImportItemFromURL_PrivateHostFallsBack(t *testing.T) {
 	}))
 	defer pagesrv.Close()
 
-	item, source := buildImportItemFromURL(context.Background(), http.DefaultClient, pagesrv.URL+"/article")
+	item, source, err := buildImportItemFromURL(context.Background(), http.DefaultClient, pagesrv.URL+"/article")
+	if err != nil {
+		t.Fatalf("buildImportItemFromURL: %v", err)
+	}
 	if source != "fallback (no metadata)" {
 		t.Fatalf("source = %q, want fallback for private test host", source)
 	}
@@ -179,7 +188,10 @@ func TestBuildImportItemFromURL_Fallback(t *testing.T) {
 	defer pdfsrv.Close()
 
 	rawURL := pdfsrv.URL + "/file.pdf"
-	item, source := buildImportItemFromURL(context.Background(), http.DefaultClient, rawURL)
+	item, source, err := buildImportItemFromURL(context.Background(), http.DefaultClient, rawURL)
+	if err != nil {
+		t.Fatalf("buildImportItemFromURL: %v", err)
+	}
 	if source != "fallback (no metadata)" {
 		t.Errorf("source = %q, want fallback", source)
 	}
@@ -325,7 +337,7 @@ func TestCreatorsFromMetaSemicolonSeparatedAuthors(t *testing.T) {
 	metas := map[string][]string{
 		"citation_authors": {"Vaswani, Ashish; Shazeer, Noam"},
 	}
-	creators := creatorsFromMeta(metas)
+	creators := creatorsFromMeta(metas, nil)
 	if len(creators) != 2 {
 		t.Fatalf("creators = %v, want 2", creators)
 	}

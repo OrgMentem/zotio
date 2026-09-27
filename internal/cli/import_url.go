@@ -23,7 +23,11 @@ func newImportUrlCmd(flags *rootFlags) *cobra.Command {
 		Long: `Import a URL, resolving real metadata where possible.
 
 If the URL embeds a DOI, full metadata is fetched from CrossRef. Otherwise the
-page's embedded metadata (citation_*, Open Graph, Dublin Core meta tags) is
+page is fetched: a bot-challenge page is refused with an error instead of
+importing its placeholder title, a DOI found in the page metadata
+(citation_doi, dc.identifier, prism.doi, JSON-LD identifier) resolves through
+CrossRef like a URL DOI, and otherwise the page's embedded metadata
+(citation_*, JSON-LD, Open Graph, Dublin Core meta tags, page numbers) is
 mapped into a typed item with title, creators, abstract, and publication venue.
 A bare webpage item is used only when no metadata is available.
 
@@ -47,7 +51,10 @@ wins over --yes.`,
 				return renderMutationResult(cmd, flags, env, runErr, nil)
 			}
 			httpClient := &http.Client{Timeout: enrichTimeout(flags.timeout)}
-			item, source := buildImportItemFromURL(cmd.Context(), httpClient, args[0])
+			item, source, err := buildImportItemFromURL(cmd.Context(), httpClient, args[0])
+			if err != nil {
+				return err
+			}
 			addImportCollection(item, flagCollection)
 
 			return runSingleItemCreate(cmd, flags, singleItemCreate{

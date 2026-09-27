@@ -1520,7 +1520,7 @@
   },
   {
     "name": "import_url",
-    "description": "Import a URL, resolving real metadata where possible.\n\nIf the URL embeds a DOI, full metadata is fetched from CrossRef. Otherwise the\npage's embedded metadata (citation_*, Open Graph, Dublin Core meta tags) is\nmapped into a typed item with title, creators, abstract, and publication venue.\nA bare webpage item is used only when no metadata is available.\n\nThe item previews by default and is created only under --yes; --dry-run always\nwins over --yes.",
+    "description": "Import a URL, resolving real metadata where possible.\n\nIf the URL embeds a DOI, full metadata is fetched from CrossRef. Otherwise the\npage is fetched: a bot-challenge page is refused with an error instead of\nimporting its placeholder title, a DOI found in the page metadata\n(citation_doi, dc.identifier, prism.doi, JSON-LD identifier) resolves through\nCrossRef like a URL DOI, and otherwise the page's embedded metadata\n(citation_*, JSON-LD, Open Graph, Dublin Core meta tags, page numbers) is\nmapped into a typed item with title, creators, abstract, and publication venue.\nA bare webpage item is used only when no metadata is available.\n\nThe item previews by default and is created only under --yes; --dry-run always\nwins over --yes.",
     "inputSchema": {
       "properties": {
         "allow-destructive": {
