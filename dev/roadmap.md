@@ -362,6 +362,12 @@ it expressive, expressive before wiring triggers. Triggered runs stay preview-on
 | **Decline** | Beacon recurring scheduler | `watch --interval` + OS schedulers/CI cover it; a resident daemon is a large operational surface against the composability thesis. |
 | **Park** | BYO-vector seam | The sanctioned form of the semantic-search cut, but build nothing until a host actually shows up with vectors. |
 | **Park** | P3 long tail (analytics, digests, ZotFile-style renaming, notes, collaboration) | Promote individual items only on user signal from the outreach channels. |
+| **Park** (2026-10-01) | Vault orphan-note archive (`zotio-a34bf505d2628ad7`) | `vault audit` stays read-only (Phase 5). An archive action needs a demand signal plus a reversible, byte-preserving move design and a fresh-sync precondition. |
+| **Park** (2026-10-01) | DOI-less OpenAlex works in `import monitor` (`zotio-808bcb0785554a66`) | Needs a new resolver with conservative OpenAlex→Zotero schema mapping. No demand signal; the monitor documents the omission. |
+| **Park** (2026-10-01) | PRISMA acquisition provenance (`zotio-5c87874d474d4523`) | `library prisma` groups by `libraryCatalog`. Provenance needs a home first: the import journal (per-machine, no metadata write) is the boring start; a tag or `extra` line pollutes user metadata. Build on demand. |
+| **Defer** (until 2027-01-01) | Scope intersection grammar (`zotio-a90bcce3da4d6c5b`) | Every scope adopter would need multi-arm resolution and precondition unions; no user asked. Roadmap thesis is one bounded grammar. |
+| **Closed, measured** (2026-10-01) | BibTeX key lock to `citationKey` (`zotio-2e9d0aaecd686079`) | Web API `format=bibtex` already emits the native `citationKey` field: 40/40 entries matched against `resolveCiteKey` on the live library, 0 items with `extra`-only keys. No gap. |
+| **Closed** (2026-10-01) | Indexed-date OpenAlex monitor (`zotio-73086396a45a3600`) | `from_created_date` needs an OpenAlex Premium key; the free filter is `from_publication_date`, which the monitor already uses. |
 
 ### Competitive scan — MCP-registry Zotero servers (2026-07-11)
 

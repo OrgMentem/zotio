@@ -79,6 +79,73 @@ Notable changes to zotio. Format follows [Keep a Changelog](https://keepachangel
   present, numeric `Total-Results` header equal to the keys sent; a missing,
   malformed, or mismatched listing only warns and reaps nothing. The exit
   code does not change.
+- **`saved-search:KEY` scopes execute when Zotero desktop is running.** The
+  shared scope resolver used to answer every `saved-search:` scope with a
+  `live_local_api` refusal, even with the desktop open. It now reads the
+  membership from the desktop local API (`/searches/<key>/items`, paged)
+  and returns the top-level item keys in Zotero's order. `library health`,
+  `library prisma`, `items audit`, `creators audit`, `creators audit fix`,
+  `creators rename`, `import discover`, the MCP `zotero://health/{scope}`
+  resource, and `items bibliography` (which refused the scope permanently)
+  all accept it. With the desktop closed or a Web API base, `library
+  health` and `library prisma` now print the shared `precondition_unmet`
+  envelope (exit 9, unchanged) instead of a plain error line; `creators
+  audit` and `import discover` print the remediation in their error text.
+- **`import apply --attach-mode stored --via connector` opens one connector
+  save session per invocation.** One session per manifest entry left Zotero
+  unresponsive after about 78 entries (measured 2026-08-22). Every stored
+  create now goes through one `saveItems` call and one `saveAttachment` per
+  entry; each entry keeps its own status, key, and error in the envelope
+  and the journal. Because the session commits as a batch, the connector
+  route now continues past a per-entry failure instead of stopping at the
+  first one, as `items create --via connector` already does. `--fetch-pdf`
+  creates still open one session per entry: the desktop resolver step is
+  bound to each item's own session.
+
+### Added
+
+- **`items bibcheck --follow-includes`.** A thesis whose chapters are pulled
+  in by `\input{}` or `\include{}` passed the manuscript gate while a chapter
+  cited an unknown key, because only the named files were read. With the
+  flag, the braced forms are followed from the root file's directory (TeX's
+  own rule), `.tex` is appended when the path has no extension, TeX comments
+  are skipped, and every citation keeps the file and line it was found in.
+  A missing include (`include_missing`) or a cycle (`include_cycle`) is a
+  high finding and exits 11. `\input PATH` without braces, `\subfile`, and
+  `\import` are not followed. `--json` lists the traversed files under
+  `includes`. Without the flag nothing changes.
+- **`watch --health-check-retractions`.** Runs the Crossref retraction
+  check after each successful sync, the same check as `library health
+  --check-retractions`. Each DOI is looked up at most once per 24 hours for
+  the life of the watch process, and only after a successful answer; a
+  failed lookup is a `retracted_item` skip with precondition
+  `external_crossref` in that cycle, the cycle still completes, and the DOI
+  is retried on the next one. Requires `--health`.
+- **`watch --health-scope`.** The health report after each cycle covers one
+  cohort in the shared scope grammar (`collection:KEY`, `tag:NAME`,
+  `item:KEY`, `query:TEXT`, `saved-search:KEY`) instead of the whole
+  library. The scope is resolved again every cycle against the freshly
+  synced store; a resolution failure prints `[health] ... scope error:`
+  and skips that cycle's report without moving the baseline or posting the
+  webhook. The webhook payload carries `scope`. Findings for items that
+  leave the cohort count as resolved. Requires `--health`.
+- **`annotations search --scope`.** Limits highlight search to the items in
+  a scope. The local path filters by the annotation's parent item inside
+  SQLite before `--limit`, so a small limit no longer hides in-scope hits
+  behind unrelated ones. `--refresh` fetches the live matches, looks up
+  their attachments' parents in chunks of 50, and filters before color and
+  limit; it needs a synced local store to resolve the cohort.
+- **Reviewed imports can be filed into a collection.** The manifest gains a
+  top-level `collection` (default destination) and a per-entry `collection`
+  override; `import discover --collection KEY` writes the default and
+  `import apply --collection KEY` overrides it for one run (an entry's own
+  value still wins). Created items carry the key in `collections` on the Web
+  route; on the connector route the shared session is filed to that target,
+  and a run whose entry override differs from the session target is refused
+  before any creation. A key that is not in the synced local store is
+  refused before the first write. Attach entries add a file to an existing
+  item and are not re-filed. Manifests without the field load and apply as
+  before.
 
 ### Fixed
 - **Ambiguous item creates keep their reconciliation evidence in the journal.**
