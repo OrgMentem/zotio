@@ -509,6 +509,134 @@ func TestBibcheckFollowIncludesResolvesFromRootAndSkipsComments(t *testing.T) {
 		t.Fatalf("deep file_line = %q, want %q", got, two+":1")
 	}
 }
+
+// TeX reads \input{/abs/path} from that absolute path. Joining it onto the
+// root directory read a file that does not exist and reported the include
+// missing, so the chapter's citations went unchecked.
+func TestBibcheckFollowIncludesReadsAbsoluteIncludePath(t *testing.T) {
+	chapter := filepath.Join(t.TempDir(), "chapter.tex")
+	writeTestFile(t, chapter, "\\cite{ghostkey}\n")
+	home := bibcheckIncludeFixture(t, map[string]string{
+		"root.tex": "\\cite{alpha}\n\\input{" + chapter + "}\n",
+	})
+	root := filepath.Join(home, "root.tex")
+	report, _, err := runBibcheckJSON(t, root, "--follow-includes")
+	if err != nil {
+		t.Fatalf("err=%v findings=%+v, want no include errors", err, report.Findings)
+	}
+	want := []bibcheckInclude{{File: chapter, IncludedFrom: root, Line: 2}}
+	if !reflect.DeepEqual(report.Includes, want) {
+		t.Fatalf("includes = %+v, want %+v", report.Includes, want)
+	}
+	undefined := bibcheckFindingByKind(t, report, "undefined_citekey")
+	if got := evidenceString(t, undefined, "file_line"); got != chapter+":1" {
+		t.Fatalf("undefined file_line = %q, want %q", got, chapter+":1")
+	}
+}
+
+// Includes resolve against each root's own directory, so one shared file
+// pulls in a different chapter under each root. A single traversal for all
+// roots skipped the shared file the second time and never read b/chapter.tex,
+// passing its unknown key. The shared file's own citation still counts once.
+func TestBibcheckFollowIncludesSharedFileResolvesPerRootDirectory(t *testing.T) {
+	home := bibcheckIncludeFixture(t, map[string]string{
+		"a/root.tex":    "\\input{../common}\n",
+		"b/root.tex":    "\\input{../common}\n",
+		"common.tex":    "\\cite{alpha}\n\\input{chapter}\n",
+		"a/chapter.tex": "Fine.\n",
+		"b/chapter.tex": "\\cite{ghostkey}\n",
+	})
+	rootA := filepath.Join(home, "a", "root.tex")
+	rootB := filepath.Join(home, "b", "root.tex")
+	report, _, err := runBibcheckJSON(t, rootA, rootB, "--follow-includes", "--fail-on-unknown")
+	if ExitCode(err) != 11 {
+		t.Fatalf("err=%v, want exit 11 for the unknown key in b/chapter.tex", err)
+	}
+	undefined := bibcheckFindingByKind(t, report, "undefined_citekey")
+	chapterB := filepath.Join(home, "b", "chapter.tex")
+	if got := evidenceString(t, undefined, "file_line"); got != chapterB+":1" {
+		t.Fatalf("undefined file_line = %q, want %q", got, chapterB+":1")
+	}
+	for _, key := range report.Keys {
+		if key.CiteKey == "alpha" && key.Occurrences != 1 {
+			t.Fatalf("alpha occurrences = %d, want 1: common.tex is one file however many roots reach it", key.Occurrences)
+		}
+	}
+	if report.Summary.Total != 2 {
+		t.Fatalf("summary = %+v, want 2 cited keys (alpha, ghostkey)", report.Summary)
+	}
+}
+
+// An \input inside a literal environment is example text, not an include:
+// it must not report a missing include or fail the run, and a real include
+// after the environments keeps its own line.
+func TestBibcheckFollowIncludesSkipsLiteralEnvironments(t *testing.T) {
+	home := bibcheckIncludeFixture(t, map[string]string{
+		"root.tex": "\\cite{alpha}\n" +
+			"\\begin{verbatim}\n\\input{v1}\n\\end{verbatim}\n" +
+			"\\begin{Verbatim}\n\\input{v2}\n\\end{Verbatim}\n" +
+			"\\begin{lstlisting}\\input{v3}\\end{lstlisting}\n" +
+			"\\begin{minted}{latex}\n100% \\input{v4}\n\\end{minted}\n" +
+			"\\begin{comment}\n\\input{v5}\n\\end{comment}\n" +
+			"\\input{real}\n",
+		"real.tex": "\\cite{alpha}\n",
+	})
+	root := filepath.Join(home, "root.tex")
+	report, _, err := runBibcheckJSON(t, root, "--follow-includes", "--fail-on", "none")
+	if err != nil {
+		t.Fatalf("err=%v findings=%+v, want no include errors from literal text", err, report.Findings)
+	}
+	want := []bibcheckInclude{{File: filepath.Join(home, "real.tex"), IncludedFrom: root, Line: 15}}
+	if !reflect.DeepEqual(report.Includes, want) {
+		t.Fatalf("includes = %+v, want %+v", report.Includes, want)
+	}
+}
+
+// TeX skips whitespace and comments between \input and its braced argument,
+// so a command split across lines is still an include, reported at the line
+// of the command.
+func TestBibcheckFollowIncludesFindsCommandSplitAcrossLines(t *testing.T) {
+	home := bibcheckIncludeFixture(t, map[string]string{
+		"root.tex": "\\input\n{one}\n\\input% note\n{two}\n",
+		"one.tex":  "\\cite{alpha}\n",
+		"two.tex":  "\\cite{alpha}\n",
+	})
+	root := filepath.Join(home, "root.tex")
+	report, _, err := runBibcheckJSON(t, root, "--follow-includes")
+	if err != nil {
+		t.Fatalf("err=%v findings=%+v, want no include errors", err, report.Findings)
+	}
+	want := []bibcheckInclude{
+		{File: filepath.Join(home, "one.tex"), IncludedFrom: root, Line: 1},
+		{File: filepath.Join(home, "two.tex"), IncludedFrom: root, Line: 3},
+	}
+	if !reflect.DeepEqual(report.Includes, want) {
+		t.Fatalf("includes = %+v, want %+v", report.Includes, want)
+	}
+}
+
+// A root that only pulls in a missing file has no citation keys, but still
+// exits 11: the default output must name the include error it exits for.
+func TestBibcheckHumanOutputShowsIncludeFindingWithoutKeys(t *testing.T) {
+	home := bibcheckIncludeFixture(t, map[string]string{
+		"root.tex": "\\input{missing}\n",
+	})
+	root := filepath.Join(home, "root.tex")
+	cmd := newItemsCmd(&rootFlags{})
+	cmd.SilenceErrors = true
+	cmd.SilenceUsage = true
+	cmd.SetArgs([]string{"bibcheck", root, "--follow-includes"})
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&bytes.Buffer{})
+	if err := cmd.Execute(); ExitCode(err) != 11 {
+		t.Fatalf("err=%v, want exit 11 for a missing include", err)
+	}
+	if text := out.String(); !strings.Contains(text, "include_missing high") || !strings.Contains(text, root+":1") {
+		t.Fatalf("output hides the include error it exits for:\n%s", text)
+	}
+}
+
 func TestBibcheckUnmatchedBacktickDoesNotDropTrailingCitations(t *testing.T) {
 	content := "Text `unclosed and @hidden should still count\nNext line @visible also counts."
 	got := citeKeysFromOccurrences(parsePandocMarkdownCitationOccurrences("", content))

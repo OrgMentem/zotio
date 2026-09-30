@@ -124,7 +124,11 @@ func newItemsBibcheckCmd(flags *rootFlags) *cobra.Command {
 			formats := make(map[string]string, len(args))
 			var tree *bibcheckIncludeWalker
 			if followIncludes {
-				tree = newBibcheckIncludeWalker()
+				walker, err := newBibcheckIncludeWalker(args)
+				if err != nil {
+					return err
+				}
+				tree = walker
 			}
 			for _, path := range args {
 				if tree != nil && strings.ToLower(filepath.Ext(path)) == ".tex" {
@@ -245,16 +249,53 @@ func parseLatexCitationOccurrences(path, content string) []bibcheckOccurrence {
 }
 
 // bibcheckIncludeWalker follows \input{}/\include{} across every named root.
-// Files are keyed by cleaned absolute path so a file named on the command
-// line and also reached through an include is read once.
+// TeX resolves an include against the compile directory, so the same file can
+// pull in different chapters under roots in different directories: each root
+// directory gets its own traversal, keyed by cleaned absolute path, and roots
+// that share a directory share it. A file reached from more than one
+// traversal contributes its citations once.
 type bibcheckIncludeWalker struct {
-	visited  map[string]bool
-	includes []bibcheckInclude
-	findings []Finding
+	// visited maps a root's absolute directory to the files already read
+	// in that directory's traversal.
+	visited map[string]map[string]bool
+	// named maps the absolute path of each .tex file named on the command
+	// line to the path as given, so a named file reached through an include
+	// still reports under its own per-file entry.
+	named map[string]string
+	// cited holds the absolute paths whose citations are already counted.
+	cited       map[string]bool
+	seenInclude map[bibcheckInclude]bool
+	seenFinding map[bibcheckSeenFinding]bool
+	includes    []bibcheckInclude
+	findings    []Finding
 }
 
-func newBibcheckIncludeWalker() *bibcheckIncludeWalker {
-	return &bibcheckIncludeWalker{visited: make(map[string]bool)}
+type bibcheckSeenFinding struct {
+	kind, file, target string
+	line               int
+}
+
+func newBibcheckIncludeWalker(paths []string) (*bibcheckIncludeWalker, error) {
+	w := &bibcheckIncludeWalker{
+		visited:     make(map[string]map[string]bool),
+		named:       make(map[string]string),
+		cited:       make(map[string]bool),
+		seenInclude: make(map[bibcheckInclude]bool),
+		seenFinding: make(map[bibcheckSeenFinding]bool),
+	}
+	for _, path := range paths {
+		if strings.ToLower(filepath.Ext(path)) != ".tex" {
+			continue
+		}
+		abs, err := filepath.Abs(path)
+		if err != nil {
+			return nil, fmt.Errorf("resolving manuscript %q: %w", path, err)
+		}
+		if _, ok := w.named[abs]; !ok {
+			w.named[abs] = path
+		}
+	}
+	return w, nil
 }
 
 func (w *bibcheckIncludeWalker) walkRoot(root string) ([]bibcheckOccurrence, error) {
@@ -262,53 +303,90 @@ func (w *bibcheckIncludeWalker) walkRoot(root string) ([]bibcheckOccurrence, err
 	if err != nil {
 		return nil, fmt.Errorf("resolving manuscript %q: %w", root, err)
 	}
-	if w.visited[abs] {
+	// TeX resolves \input paths against the compile directory, which is the
+	// root file's directory, not the directory of the including file.
+	rootDir := filepath.Dir(root)
+	rootAbsDir := filepath.Dir(abs)
+	visited := w.visited[rootAbsDir]
+	if visited == nil {
+		visited = make(map[string]bool)
+		w.visited[rootAbsDir] = visited
+	}
+	if visited[abs] {
 		return nil, nil
 	}
 	data, err := os.ReadFile(root)
 	if err != nil {
 		return nil, fmt.Errorf("reading manuscript %q: %w", root, err)
 	}
-	w.visited[abs] = true
-	// TeX resolves \input paths against the compile directory, which is the
-	// root file's directory, not the directory of the including file.
-	rootDir := filepath.Dir(root)
-	rootAbsDir := filepath.Dir(abs)
-	stack := map[string]string{abs: root}
-	return w.walk(root, string(data), rootDir, rootAbsDir, stack), nil
+	visited[abs] = true
+	label := w.label(abs, root)
+	stack := map[string]string{abs: label}
+	return w.walk(label, abs, string(data), rootDir, rootAbsDir, visited, stack), nil
 }
 
-func (w *bibcheckIncludeWalker) walk(path, content, rootDir, rootAbsDir string, stack map[string]string) []bibcheckOccurrence {
-	out := parseLatexCitationOccurrences(path, content)
+// label is the path a file reports under: the path as given on the command
+// line for a named file, else its path relative to the root.
+func (w *bibcheckIncludeWalker) label(abs, display string) string {
+	if name, ok := w.named[abs]; ok {
+		return name
+	}
+	return display
+}
+
+func (w *bibcheckIncludeWalker) walk(path, pathAbs, content, rootDir, rootAbsDir string, visited map[string]bool, stack map[string]string) []bibcheckOccurrence {
+	var out []bibcheckOccurrence
+	if !w.cited[pathAbs] {
+		w.cited[pathAbs] = true
+		out = parseLatexCitationOccurrences(path, content)
+	}
 	for _, inc := range latexIncludeTargets(content) {
 		target := strings.TrimSpace(inc.path)
 		if filepath.Ext(target) == "" {
 			target += ".tex"
 		}
-		display := filepath.Clean(filepath.Join(rootDir, target))
-		abs := filepath.Clean(filepath.Join(rootAbsDir, target))
-		if rel, err := filepath.Rel(rootAbsDir, abs); err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
-			display = abs
+		abs := filepath.Clean(target)
+		if !filepath.IsAbs(abs) {
+			abs = filepath.Join(rootAbsDir, target)
 		}
+		display := abs
+		if rel, err := filepath.Rel(rootAbsDir, abs); err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+			display = filepath.Join(rootDir, rel)
+		}
+		display = w.label(abs, display)
 		if from, onStack := stack[abs]; onStack {
-			w.findings = append(w.findings, bibcheckIncludeFinding("include_cycle", fmt.Sprintf("Include cycle %s -> %s", path, from), path, inc.line, from))
+			w.addFinding("include_cycle", fmt.Sprintf("Include cycle %s -> %s", path, from), path, inc.line, from)
 			continue
 		}
-		if w.visited[abs] {
+		if visited[abs] {
 			continue
 		}
 		data, err := os.ReadFile(abs)
 		if err != nil {
-			w.findings = append(w.findings, bibcheckIncludeFinding("include_missing", fmt.Sprintf("Missing include %s", display), path, inc.line, display))
+			w.addFinding("include_missing", fmt.Sprintf("Missing include %s", display), path, inc.line, display)
 			continue
 		}
-		w.visited[abs] = true
-		w.includes = append(w.includes, bibcheckInclude{File: display, IncludedFrom: path, Line: inc.line})
+		visited[abs] = true
+		if include := (bibcheckInclude{File: display, IncludedFrom: path, Line: inc.line}); !w.seenInclude[include] {
+			w.seenInclude[include] = true
+			w.includes = append(w.includes, include)
+		}
 		stack[abs] = display
-		out = append(out, w.walk(display, string(data), rootDir, rootAbsDir, stack)...)
+		out = append(out, w.walk(display, abs, string(data), rootDir, rootAbsDir, visited, stack)...)
 		delete(stack, abs)
 	}
 	return out
+}
+
+// addFinding records an include error once, however many root traversals
+// reach the same file and line.
+func (w *bibcheckIncludeWalker) addFinding(kind, title, file string, line int, target string) {
+	key := bibcheckSeenFinding{kind: kind, file: file, target: target, line: line}
+	if w.seenFinding[key] {
+		return
+	}
+	w.seenFinding[key] = true
+	w.findings = append(w.findings, bibcheckIncludeFinding(kind, title, file, line, target))
 }
 
 func bibcheckIncludeFinding(kind, title, file string, line int, target string) Finding {
@@ -331,17 +409,58 @@ type latexInclude struct {
 	line int
 }
 
+// Environments whose body TeX reads as literal text: an \input inside one is
+// an example, not an include.
+var latexLiteralBeginRE = regexp.MustCompile(`\\begin\s*\{(verbatim\*?|Verbatim\*?|lstlisting|minted|comment)\}`)
+
 // latexIncludeTargets finds braced \input/\include commands outside TeX
-// comments: text after an unescaped % on a line is dropped first.
+// comments and literal environments. It matches over the whole cleaned
+// content, so a command split from its braced argument by a newline or a
+// comment is still found, at the line of the command.
 func latexIncludeTargets(content string) []latexInclude {
+	text := latexIncludeSearchText(content)
+	lines := lineStartOffsets(text)
 	var out []latexInclude
-	for i, line := range strings.Split(content, "\n") {
-		line = stripTexComment(line)
-		for _, m := range latexIncludeRE.FindAllStringSubmatch(line, -1) {
-			out = append(out, latexInclude{path: m[1], line: i + 1})
-		}
+	for _, m := range latexIncludeRE.FindAllStringSubmatchIndex(text, -1) {
+		out = append(out, latexInclude{path: text[m[2]:m[3]], line: lineNumberForOffset(lines, m[0])})
 	}
 	return out
+}
+
+// latexIncludeSearchText drops comments and literal environment bodies from
+// content, keeping every newline so line numbers are unchanged.
+func latexIncludeSearchText(content string) string {
+	var b strings.Builder
+	b.Grow(len(content))
+	literalEnd := ""
+	for i, line := range strings.Split(content, "\n") {
+		if i > 0 {
+			b.WriteByte('\n')
+		}
+		for line != "" {
+			if literalEnd != "" {
+				end := strings.Index(line, literalEnd)
+				if end < 0 {
+					break
+				}
+				line = line[end+len(literalEnd):]
+				literalEnd = ""
+				continue
+			}
+			code := stripTexComment(line)
+			loc := latexLiteralBeginRE.FindStringSubmatchIndex(code)
+			if loc == nil {
+				b.WriteString(code)
+				break
+			}
+			b.WriteString(code[:loc[0]])
+			literalEnd = `\end{` + code[loc[2]:loc[3]] + `}`
+			// code is a prefix of line, so the offsets carry over; a % after
+			// the \begin is literal text, not a comment.
+			line = line[loc[1]:]
+		}
+	}
+	return b.String()
 }
 
 func stripTexComment(line string) string {
@@ -792,25 +911,26 @@ func printBibcheckReport(cmd *cobra.Command, flags *rootFlags, report bibcheckRe
 	if len(report.Files) > 0 {
 		fmt.Fprintln(out)
 	}
+	// An include finding can stand without any cited key, so "no keys" is
+	// not the end of the report.
 	if len(report.Keys) == 0 {
 		fmt.Fprintln(out, "No citation keys found.")
-		return nil
-	}
-
-	rows := make([][]string, 0, len(report.Keys))
-	for _, key := range report.Keys {
-		itemKey := key.ItemKey
-		title := key.Title
-		if key.Status == "ambiguous" {
-			itemKey, title = summarizeBibcheckMatches(key.Matches)
+	} else {
+		rows := make([][]string, 0, len(report.Keys))
+		for _, key := range report.Keys {
+			itemKey := key.ItemKey
+			title := key.Title
+			if key.Status == "ambiguous" {
+				itemKey, title = summarizeBibcheckMatches(key.Matches)
+			}
+			rows = append(rows, []string{key.CiteKey, key.Status, itemKey, title})
 		}
-		rows = append(rows, []string{key.CiteKey, key.Status, itemKey, title})
-	}
-	if err := flags.printTable(cmd, []string{"CITEKEY", "STATUS", "ITEM", "TITLE"}, rows); err != nil {
-		return err
-	}
-	if err := printBibcheckKeySuggestions(out, report.Keys); err != nil {
-		return err
+		if err := flags.printTable(cmd, []string{"CITEKEY", "STATUS", "ITEM", "TITLE"}, rows); err != nil {
+			return err
+		}
+		if err := printBibcheckKeySuggestions(out, report.Keys); err != nil {
+			return err
+		}
 	}
 	if len(report.Findings) == 0 {
 		return nil
