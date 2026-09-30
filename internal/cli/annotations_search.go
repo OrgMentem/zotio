@@ -189,8 +189,9 @@ annotation belongs to. --refresh searches live through the Zotero API.`,
 // request; the Zotero API caps itemKey at 50 keys.
 const annotationAttachmentChunk = 50
 
-// fetchAttachmentParents maps each annotation's attachment key to that
-// attachment's own parentItem, the bibliographic item a scope names.
+// fetchAttachmentParents maps each annotation's attachment key to the item
+// that owns it, the key a scope names: the attachment's parentItem, or the
+// attachment itself when it is a standalone file with no parent.
 func fetchAttachmentParents(c zoteroGetter, annotations []annotationSummary) (map[string]string, error) {
 	seen := make(map[string]bool, len(annotations))
 	keys := make([]string, 0, len(annotations))
@@ -217,7 +218,10 @@ func fetchAttachmentParents(c zoteroGetter, annotations []annotationSummary) (ma
 			}
 			key, _ := data["key"].(string)
 			parent, _ := data["parentItem"].(string)
-			if key != "" && parent != "" {
+			if parent == "" {
+				parent = key
+			}
+			if key != "" {
 				parents[key] = parent
 			}
 		}

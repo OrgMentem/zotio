@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"hash/fnv"
 	"path/filepath"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -585,6 +586,51 @@ func TestSearchAnnotationsParentKeysFilterPrecedesLimit(t *testing.T) {
 				_ = json.Unmarshal(r.Data, &obj)
 				out = append(out, obj.Key)
 			}
+			if strings.Join(out, ",") != strings.Join(tc.want, ",") {
+				t.Fatalf("keys = %v, want %v", out, tc.want)
+			}
+		})
+	}
+}
+
+// A standalone attachment (no parentItem) owns its annotations itself: a
+// scope that names the attachment, directly or as a collection member, must
+// return them.
+func TestSearchAnnotationsParentKeysMatchStandaloneAttachment(t *testing.T) {
+	s := queryTestStore(t)
+	if _, _, err := s.UpsertBatch("items", []json.RawMessage{
+		json.RawMessage(`{"key":"PAPER","data":{"key":"PAPER","itemType":"journalArticle","title":"Paper","collections":["COLL"]}}`),
+		json.RawMessage(`{"key":"PAPERPDF","data":{"key":"PAPERPDF","itemType":"attachment","parentItem":"PAPER"}}`),
+		json.RawMessage(`{"key":"SOLOPDF","data":{"key":"SOLOPDF","itemType":"attachment","collections":["COLL"]}}`),
+		json.RawMessage(`{"key":"PAPERA","data":{"key":"PAPERA","itemType":"annotation","parentItem":"PAPERPDF","annotationText":"trust in the paper"}}`),
+		json.RawMessage(`{"key":"SOLOA","data":{"key":"SOLOA","itemType":"annotation","parentItem":"SOLOPDF","annotationText":"trust in the standalone pdf"}}`),
+	}); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	for _, tc := range []struct {
+		name string
+		keys []string
+		want []string
+	}{
+		{"item scope names the attachment", []string{"SOLOPDF"}, []string{"SOLOA"}},
+		// The collection cohort is every member key: PAPER and SOLOPDF.
+		{"collection scope contains the attachment", []string{"PAPER", "SOLOPDF"}, []string{"PAPERA", "SOLOA"}},
+		{"child attachment key is not its own owner", []string{"PAPERPDF"}, []string{}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := s.SearchAnnotationsContext(context.Background(), AnnotationSearch{Query: "trust", ParentKeys: tc.keys})
+			if err != nil {
+				t.Fatalf("SearchAnnotationsContext: %v", err)
+			}
+			out := []string{}
+			for _, r := range got {
+				var obj struct {
+					Key string `json:"key"`
+				}
+				_ = json.Unmarshal(r.Data, &obj)
+				out = append(out, obj.Key)
+			}
+			sort.Strings(out)
 			if strings.Join(out, ",") != strings.Join(tc.want, ",") {
 				t.Fatalf("keys = %v, want %v", out, tc.want)
 			}

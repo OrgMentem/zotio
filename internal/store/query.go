@@ -537,9 +537,10 @@ func truncateFulltextSnippet(snippet string) string {
 // accepted spelling of one requested color (for example "yellow" and
 // "#ffd400"); empty means any color. Limit <= 0 returns every match.
 //
-// ParentKeys restricts results to annotations whose bibliographic item (the
-// attachment's parent) is one of the keys. nil means no filter; a non-nil
-// empty slice matches nothing, so an empty scope yields an empty result.
+// ParentKeys restricts results to annotations whose owning item is one of the
+// keys: the attachment's parent, or the attachment itself when it is a
+// standalone file with no parent. nil means no filter; a non-nil empty slice
+// matches nothing, so an empty scope yields an empty result.
 type AnnotationSearch struct {
 	Query      string
 	Colors     []string
@@ -622,7 +623,7 @@ WHERE a.resource_type = 'items'
 		if err != nil {
 			return nil, err
 		}
-		sb.WriteString("\n\tAND att.parent_key IN (SELECT value FROM json_each(?))")
+		sb.WriteString("\n\tAND COALESCE(NULLIF(att.parent_key, ''), att.id) IN (SELECT value FROM json_each(?))")
 		args = append(args, string(keys))
 	}
 	if query != "" {

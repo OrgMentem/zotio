@@ -335,6 +335,73 @@ func TestAnnotationsSearchLiveScopeFiltersByAttachmentParent(t *testing.T) {
 	}
 }
 
+// A standalone attachment has no parentItem, so it owns its annotations: a
+// scope naming it, directly or as a collection member, must keep them on
+// both the local and the live path.
+func TestAnnotationsSearchScopeKeepsStandaloneAttachmentAnnotations(t *testing.T) {
+	seedAnnotationSearchStore(t, []json.RawMessage{
+		json.RawMessage(`{"key":"SOLOPDF","version":1,"data":{"key":"SOLOPDF","itemType":"attachment","title":"Solo PDF","collections":["COLL"]}}`),
+		json.RawMessage(`{"key":"SOLOA","version":1,"data":{"key":"SOLOA","itemType":"annotation","parentItem":"SOLOPDF","annotationText":"needle in a standalone pdf"}}`),
+	})
+	var mu sync.Mutex
+	searches := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		q := r.URL.Query()
+		switch {
+		case r.URL.Path == "/users/0/items" && q.Get("itemType") == "annotation":
+			mu.Lock()
+			searches++
+			mu.Unlock()
+			_, _ = w.Write([]byte(`[{"key":"SOLOA","version":1,"data":{"key":"SOLOA","itemType":"annotation","parentItem":"SOLOPDF","annotationText":"needle in a standalone pdf"}}]`))
+		case r.URL.Path == "/users/0/items" && q.Get("itemKey") == "SOLOPDF":
+			// A standalone attachment carries no parentItem field.
+			_, _ = w.Write([]byte(`[{"key":"SOLOPDF","version":1,"data":{"key":"SOLOPDF","itemType":"attachment","title":"Solo PDF","collections":["COLL"]}}]`))
+		default:
+			t.Errorf("unexpected request %s", r.URL.String())
+			http.Error(w, "unexpected request", http.StatusNotFound)
+		}
+	}))
+	t.Cleanup(srv.Close)
+	t.Setenv("ZOTERO_BASE_URL", srv.URL+"/users/0")
+
+	for _, tc := range []struct {
+		source string
+		args   []string
+	}{
+		{"local", []string{"needle", "--scope", "item:SOLOPDF"}},
+		{"local", []string{"needle", "--scope", "collection:COLL"}},
+		{"live", []string{"needle", "--scope", "item:SOLOPDF"}},
+		{"live", []string{"needle", "--scope", "collection:COLL"}},
+	} {
+		cmd := newAnnotationsSearchCmd(&rootFlags{asJSON: true, dataSource: tc.source, noCache: true})
+		cmd.SetArgs(tc.args)
+		var out bytes.Buffer
+		cmd.SetOut(&out)
+		cmd.SetErr(&bytes.Buffer{})
+		if err := cmd.Execute(); err != nil {
+			t.Fatalf("%s %v: %v", tc.source, tc.args, err)
+		}
+		var env struct {
+			Results []annotationSummary `json:"results"`
+		}
+		if err := json.Unmarshal(out.Bytes(), &env); err != nil {
+			t.Fatalf("decode: %v; output=%q", err, out.String())
+		}
+		keys := make([]string, 0, len(env.Results))
+		for _, r := range env.Results {
+			keys = append(keys, r.Key)
+		}
+		if got := strings.Join(keys, ","); got != "SOLOA" {
+			t.Fatalf("%s %v: keys = %q, want SOLOA", tc.source, tc.args, got)
+		}
+	}
+	// The local cases must not reach the API.
+	if searches != 2 {
+		t.Fatalf("live annotation searches = %d, want 2", searches)
+	}
+}
+
 func TestAnnotationsSearchLiveScopeWithoutMirrorFails(t *testing.T) {
 	savedGroup := activeGroupIDLocked()
 	setActiveGroupID("")
