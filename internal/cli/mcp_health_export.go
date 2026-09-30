@@ -33,7 +33,8 @@ func HealthJSON(ctx context.Context, scopeExpr string) ([]byte, error) {
 			return nil, err
 		}
 		// No rootFlags reach an MCP resource: nil means the default config,
-		// the same one `zotio` would load without --config.
+		// the same one `zotio` would load without --config, bound to this
+		// request's ctx and the default --timeout.
 		scope, err = resolveScopeLive(ctx, nil, qs, spec)
 		if err != nil {
 			return nil, err

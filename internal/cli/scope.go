@@ -202,17 +202,23 @@ var savedSearchLiveClient = func(ctx context.Context, flags *rootFlags) (*client
 // resolveScopeLive is resolveScope plus live execution of saved-search:KEY.
 // A saved search is evaluated by Zotero, so its keys come from
 // /searches/KEY/items on the desktop local API. When that API is not the
-// configured base or does not answer, the result keeps Precondition set with
-// PreconditionDetail explaining why and a nil error; each adopter then
-// refuses in its own voice (see scopePreconditionErr). A 404 for the key is
-// an error naming the key, never an empty cohort.
+// configured base, does not answer, or refuses local access (HTTP 403), the
+// result keeps Precondition set with PreconditionDetail explaining why and a
+// nil error; each adopter then refuses in its own voice (see
+// scopePreconditionErr). A 404 for the key is an error naming the key, never
+// an empty cohort. With a mirror (db.Store != nil), a live key the mirror
+// does not hold is a freshness refusal (exit 12): every mirror-based adopter
+// would otherwise skip that item without saying so.
 func resolveScopeLive(ctx context.Context, flags *rootFlags, db localQueryStore, spec scopeSpec) (scopeResult, error) {
 	result, err := resolveScope(db, spec)
 	if err != nil || result.Precondition == "" || spec.Type != "saved-search" {
 		return result, err
 	}
 	if flags == nil {
-		flags = &rootFlags{}
+		// No rootFlags reach an MCP resource. It still needs the request
+		// context and the --timeout default: without them the probe and the
+		// paged read ignore cancellation and wait on a stalled desktop forever.
+		flags = &rootFlags{ctx: ctx, timeout: defaultRequestTimeout}
 	}
 	c, detail, err := savedSearchLiveClient(ctx, flags)
 	if err != nil {
@@ -222,11 +228,23 @@ func resolveScopeLive(ctx context.Context, flags *rootFlags, db localQueryStore,
 		result.PreconditionDetail = detail
 		return result, nil
 	}
+	// Membership changes whenever an item starts or stops matching, so a
+	// cached page (up to 5 minutes old) is a stale cohort that a write
+	// command would then plan against. Set here, not in the client seam, so
+	// no seam can drop it.
+	c.NoCache = true
 	path := "/searches/" + url.PathEscape(spec.Value) + "/items"
 	items, err := searchesMaterializeItems(c, path, "saved search "+spec.Value)
 	if err != nil {
 		if isAPIStatus(err, http.StatusNotFound) {
 			return scopeResult{}, fmt.Errorf("saved search %s not found on the Zotero desktop local API: %w", spec.Value, err)
+		}
+		if isAPIStatus(err, http.StatusForbidden) {
+			// Zotero answers 403 while local API access is switched off. The
+			// reachability probe counts any HTTP answer as reachable, so the
+			// refusal surfaces here.
+			result.PreconditionDetail = fmt.Sprintf("Zotero refused saved search %s with HTTP 403 because local API access is off; enable Settings → Advanced → \"Allow other applications on this computer to communicate with Zotero\"", spec.Value)
+			return result, nil
 		}
 		if isNetworkError(err) {
 			// Zotero went away between the probe and the read.
@@ -245,8 +263,48 @@ func resolveScopeLive(ctx context.Context, flags *rootFlags, db localQueryStore,
 			result.Keys = append(result.Keys, item.Key)
 		}
 	}
+	if db.Store != nil {
+		if err := savedSearchRequireMirrored(db, spec.Value, result.Keys); err != nil {
+			return scopeResult{}, err
+		}
+	}
 	result.Precondition = ""
 	return result, nil
+}
+
+// savedSearchRequireMirrored refuses (exit 12) when a live saved-search key
+// has no live row in the mirror. Mirror-based adopters read only
+// resource_type 'items', so such an item would be skipped silently, and
+// `library health` could report passed over items it never checked. An item
+// the mirror holds only in 'items-trash' counts as missing for the same
+// reason: no adopter would read it.
+func savedSearchRequireMirrored(db localQueryStore, searchKey string, keys []string) error {
+	if len(keys) == 0 {
+		return nil
+	}
+	encoded, err := json.Marshal(keys)
+	if err != nil {
+		return fmt.Errorf("encoding saved search %s keys: %w", searchKey, err)
+	}
+	rows, err := db.QueryRaw(`SELECT j.value AS key FROM json_each(?) j WHERE NOT EXISTS (SELECT 1 FROM resources r WHERE r.resource_type='items' AND r.id = j.value) ORDER BY j.key`, string(encoded))
+	if err != nil {
+		return fmt.Errorf("checking saved search %s against the local mirror: %w", searchKey, err)
+	}
+	if len(rows) == 0 {
+		return nil
+	}
+	shown := make([]string, 0, 5)
+	for _, row := range rows {
+		if len(shown) == cap(shown) {
+			break
+		}
+		shown = append(shown, sqlStringValue(row["key"]))
+	}
+	list := strings.Join(shown, ", ")
+	if len(rows) > len(shown) {
+		list += ", ..."
+	}
+	return freshnessErr(fmt.Errorf("saved search %s returns %d item(s) the local mirror does not have (%s); run 'zotio sync' and retry", searchKey, len(rows), list))
 }
 
 // scopePreconditionErr is the shared loud refusal for a scope whose live

@@ -17,6 +17,10 @@ import (
 	"github.com/spf13/cobra"
 )
 
+// defaultRequestTimeout is the --timeout default. Callers that have no
+// rootFlags (an MCP resource) use it too, so they never wait forever.
+const defaultRequestTimeout = 30 * time.Second
+
 type rootFlags struct {
 	asJSON           bool
 	compact          bool
@@ -380,7 +384,7 @@ See README.md or the bundled SKILL.md for recipes.`,
 	rootCmd.PersistentFlags().BoolVar(&flags.plain, "plain", false, "Output as plain tab-separated text")
 	rootCmd.PersistentFlags().BoolVar(&flags.quiet, "quiet", false, "Bare output, one value per line")
 	rootCmd.PersistentFlags().StringVar(&flags.configPath, "config", "", "Config file path")
-	rootCmd.PersistentFlags().DurationVar(&flags.timeout, "timeout", 30*time.Second, "Request timeout")
+	rootCmd.PersistentFlags().DurationVar(&flags.timeout, "timeout", defaultRequestTimeout, "Request timeout")
 	rootCmd.PersistentFlags().BoolVar(&flags.dryRun, "dry-run", false, "Show request without sending")
 	rootCmd.PersistentFlags().BoolVar(&flags.noCache, "no-cache", false, "Bypass response cache")
 	rootCmd.PersistentFlags().BoolVar(&flags.noInput, "no-input", false, "Disable all interactive prompts (for CI/agents)")

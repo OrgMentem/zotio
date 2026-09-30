@@ -7,10 +7,12 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -68,6 +70,24 @@ func seedScopeStore(t *testing.T) localQueryStore {
 	items := []json.RawMessage{
 		json.RawMessage(`{"key":"P1","version":1,"data":{"key":"P1","itemType":"journalArticle","title":"One","collections":["COLL1"],"tags":[{"tag":"AI"}]}}`),
 		json.RawMessage(`{"key":"P2","version":1,"data":{"key":"P2","itemType":"journalArticle","title":"Two"}}`),
+	}
+	if _, _, err := db.UpsertBatch("items", items); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	return localQueryStore{db}
+}
+
+// seedScopeKeysStore mirrors one bare journal article per key.
+func seedScopeKeysStore(t *testing.T, keys ...string) localQueryStore {
+	t.Helper()
+	db, err := store.OpenWithContext(context.Background(), filepath.Join(t.TempDir(), "data.db"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	items := make([]json.RawMessage, 0, len(keys))
+	for _, key := range keys {
+		items = append(items, json.RawMessage(fmt.Sprintf(`{"key":%q,"version":1,"data":{"key":%q,"itemType":"journalArticle","title":"T"}}`, key, key)))
 	}
 	if _, _, err := db.UpsertBatch("items", items); err != nil {
 		t.Fatalf("seed: %v", err)
@@ -147,11 +167,43 @@ func stubSavedSearchLocalAPI(t *testing.T, handler http.HandlerFunc) {
 	t.Cleanup(func() { allowPrivateOutboundForTests.Store(oldAllow) })
 	old := savedSearchLiveClient
 	savedSearchLiveClient = func(context.Context, *rootFlags) (*client.Client, string, error) {
-		c := client.New(&config.Config{BaseURL: ts.URL + "/api/users/0"}, time.Second, 0)
-		c.NoCache = true
-		return c, "", nil
+		return client.New(&config.Config{BaseURL: ts.URL + "/api/users/0"}, time.Second, 0), "", nil
 	}
 	t.Cleanup(func() { savedSearchLiveClient = old })
+}
+
+// routeLocalAPIToHandler runs the REAL saved-search client (plane gate,
+// reachability probe, response cache) against handler: the configured base is
+// the desktop local API and every dial to port 23119 lands on an httptest
+// server, so nothing binds the port a running Zotero owns. HOME is a fresh
+// temp dir, so the response cache is enabled and empty.
+func routeLocalAPIToHandler(t *testing.T, handler http.Handler) {
+	t.Helper()
+	ts := httptest.NewServer(handler)
+	t.Cleanup(ts.Close)
+	fixture := ts.Listener.Addr().String()
+	dialer := &net.Dialer{Timeout: time.Second}
+	transport := &http.Transport{
+		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+			switch addr {
+			case "localhost:23119", "127.0.0.1:23119", "[::1]:23119":
+				return dialer.DialContext(ctx, network, fixture)
+			default:
+				return nil, fmt.Errorf("scope test refused a dial to %s", addr)
+			}
+		},
+	}
+	oldTransport := http.DefaultTransport
+	http.DefaultTransport = transport
+	t.Cleanup(func() {
+		http.DefaultTransport = oldTransport
+		transport.CloseIdleConnections()
+	})
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("ZOTIO_DEMO", "0")
+	t.Setenv("ZOTERO_BASE_URL", "http://localhost:23119/api/users/0")
+	t.Setenv("ZOTERO_API_KEY", "")
+	t.Setenv("ZOTERO_CONFIG", filepath.Join(t.TempDir(), "missing.toml"))
 }
 
 // savedSearchPages serves /searches/S1/items: 100 parents then two more, one
@@ -189,17 +241,17 @@ func TestResolveScopeLiveSavedSearch(t *testing.T) {
 	t.Run("pages all keys in order", func(t *testing.T) {
 		t.Setenv("HOME", t.TempDir())
 		stubSavedSearchLocalAPI(t, savedSearchPages(t))
+		want := make([]string, 0, 102)
+		for i := range 102 {
+			want = append(want, fmt.Sprintf("K%03d", i))
+		}
 		flags := &rootFlags{}
-		r, err := resolveScopeLive(context.Background(), flags, db, spec)
+		r, err := resolveScopeLive(context.Background(), flags, seedScopeKeysStore(t, want...), spec)
 		if err != nil {
 			t.Fatalf("resolveScopeLive: %v", err)
 		}
 		if r.Precondition != "" || r.Expr != "saved-search:S1" || r.Type != "saved-search" {
 			t.Fatalf("result = %+v, want met precondition and saved-search:S1", r)
-		}
-		want := make([]string, 0, 102)
-		for i := range 102 {
-			want = append(want, fmt.Sprintf("K%03d", i))
 		}
 		if strings.Join(r.Keys, ",") != strings.Join(want, ",") {
 			t.Fatalf("keys = %v (%d), want K000..K101 without the child", r.Keys, len(r.Keys))
@@ -254,6 +306,126 @@ func TestResolveScopeLiveSavedSearch(t *testing.T) {
 			t.Fatalf("err = %v, want not-found naming NOPE", err)
 		}
 	})
+
+	// A live member the mirror lacks would be skipped by every mirror-based
+	// adopter; `library health` could then pass over items it never read.
+	t.Run("unsynced members refuse with exit 12", func(t *testing.T) {
+		t.Setenv("HOME", t.TempDir())
+		stubSavedSearchLocalAPI(t, func(w http.ResponseWriter, r *http.Request) {
+			_, _ = w.Write([]byte(`[{"key":"P1","data":{}},{"key":"MISS1","data":{}},{"key":"TR1","data":{}}]`))
+		})
+		// TR1 is mirrored only as trashed: no adopter reads items-trash, so
+		// it counts as missing.
+		if _, _, err := db.UpsertBatch("items-trash", []json.RawMessage{
+			json.RawMessage(`{"key":"TR1","version":2,"data":{"key":"TR1","itemType":"journalArticle","title":"Trashed","deleted":1}}`),
+		}); err != nil {
+			t.Fatalf("seed trash: %v", err)
+		}
+		r, err := resolveScopeLive(context.Background(), &rootFlags{}, db, spec)
+		if code := ExitCode(err); err == nil || code != 12 {
+			t.Fatalf("result = %+v, err = %v (exit %d), want freshness refusal exit 12", r, err, code)
+		}
+		if msg := err.Error(); !strings.Contains(msg, "returns 2 item(s)") || !strings.Contains(msg, "MISS1") || !strings.Contains(msg, "TR1") {
+			t.Fatalf("err = %q, want the 2 unsynced keys MISS1 and TR1", msg)
+		}
+	})
+
+	// items bibliography resolves with no mirror and renders live data, so
+	// the mirror check must not refuse it.
+	t.Run("no mirror resolves unsynced members", func(t *testing.T) {
+		t.Setenv("HOME", t.TempDir())
+		stubSavedSearchLocalAPI(t, func(w http.ResponseWriter, r *http.Request) {
+			_, _ = w.Write([]byte(`[{"key":"MISS1","data":{}}]`))
+		})
+		r, err := resolveScopeLive(context.Background(), &rootFlags{}, localQueryStore{}, spec)
+		if err != nil || strings.Join(r.Keys, ",") != "MISS1" {
+			t.Fatalf("result = %+v, err = %v, want MISS1 with no mirror", r, err)
+		}
+	})
+}
+
+// The membership read must bypass the response cache: a saved search changes
+// whenever an item starts or stops matching, and a cached page up to 5
+// minutes old let `creators rename` plan writes against a former cohort.
+func TestResolveScopeLiveSavedSearchMembershipIsNotCached(t *testing.T) {
+	var members atomic.Value
+	members.Store(`[{"key":"OLD1","data":{}}]`)
+	var reads atomic.Int32
+	routeLocalAPIToHandler(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/users/0/searches/S1/items" {
+			reads.Add(1)
+			_, _ = w.Write([]byte(members.Load().(string)))
+			return
+		}
+		_, _ = w.Write([]byte(`{}`)) // reachability probe
+	}))
+	spec := scopeSpec{Type: "saved-search", Value: "S1"}
+	flags := &rootFlags{timeout: 5 * time.Second}
+
+	first, err := resolveScopeLive(context.Background(), flags, localQueryStore{}, spec)
+	if err != nil || first.Precondition != "" || strings.Join(first.Keys, ",") != "OLD1" {
+		t.Fatalf("first resolve = %+v, err = %v, want OLD1", first, err)
+	}
+	members.Store(`[{"key":"NEW1","data":{}}]`)
+	second, err := resolveScopeLive(context.Background(), flags, localQueryStore{}, spec)
+	if err != nil || strings.Join(second.Keys, ",") != "NEW1" {
+		t.Fatalf("second resolve = %+v, err = %v (membership reads %d), want NEW1 from a fresh read", second, err, reads.Load())
+	}
+}
+
+// An MCP resource passes nil flags. The probe and the paged read must still
+// honor the request context: a canceled request against a stalled desktop
+// returns at once instead of hanging the MCP server.
+func TestResolveScopeLiveNilFlagsHonorsRequestContext(t *testing.T) {
+	release := make(chan struct{})
+	routeLocalAPIToHandler(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case <-r.Context().Done():
+		case <-release:
+		}
+	}))
+	// Registered after the server, so it runs first and unblocks handlers
+	// before ts.Close waits for them.
+	t.Cleanup(func() { close(release) })
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	type outcome struct {
+		r   scopeResult
+		err error
+	}
+	done := make(chan outcome, 1)
+	go func() {
+		r, err := resolveScopeLive(ctx, nil, localQueryStore{}, scopeSpec{Type: "saved-search", Value: "S1"})
+		done <- outcome{r, err}
+	}()
+	select {
+	case got := <-done:
+		if got.err != nil || got.r.Precondition != preconditionLiveLocalAPI {
+			t.Fatalf("result = %+v, err = %v, want unmet live_local_api", got.r, got.err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("resolveScopeLive with nil flags ignored the canceled request context")
+	}
+}
+
+// Zotero answers 403 while "Allow other applications" is off. That is the
+// live_local_api precondition (exit 9 with remediation), not a bare exit 1.
+func TestResolveScopeLiveSavedSearchForbiddenIsUnmetPrecondition(t *testing.T) {
+	routeLocalAPIToHandler(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "Local API is not enabled", http.StatusForbidden)
+	}))
+	flags := &rootFlags{timeout: 5 * time.Second}
+	r, err := resolveScopeLive(context.Background(), flags, localQueryStore{}, scopeSpec{Type: "saved-search", Value: "S1"})
+	if err != nil {
+		t.Fatalf("resolveScopeLive: %v (exit %d), want unmet precondition", err, ExitCode(err))
+	}
+	if r.Precondition != preconditionLiveLocalAPI || !strings.Contains(r.PreconditionDetail, `"Allow other applications on this computer to communicate with Zotero"`) {
+		t.Fatalf("result = %+v, want live_local_api naming the Allow other applications setting", r)
+	}
+	if code := ExitCode(scopePreconditionErr(context.Background(), nil, flags, "library health", r)); code != 9 {
+		t.Fatalf("refusal exit = %d, want 9", code)
+	}
 }
 
 func TestLibraryHealthScopeFiltersToCohort(t *testing.T) {
