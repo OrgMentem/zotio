@@ -536,10 +536,15 @@ func truncateFulltextSnippet(snippet string) string {
 // AnnotationSearch describes a local annotation search. Colors lists every
 // accepted spelling of one requested color (for example "yellow" and
 // "#ffd400"); empty means any color. Limit <= 0 returns every match.
+//
+// ParentKeys restricts results to annotations whose bibliographic item (the
+// attachment's parent) is one of the keys. nil means no filter; a non-nil
+// empty slice matches nothing, so an empty scope yields an empty result.
 type AnnotationSearch struct {
-	Query  string
-	Colors []string
-	Limit  int
+	Query      string
+	Colors     []string
+	Limit      int
+	ParentKeys []string
 }
 
 // AnnotationSearchResult is one matching annotation plus the bibliographic
@@ -608,6 +613,17 @@ WHERE a.resource_type = 'items'
 			args = append(args, strings.ToLower(strings.TrimSpace(color)))
 		}
 		sb.WriteString(")")
+	}
+	if q.ParentKeys != nil {
+		// One JSON-array parameter expanded by json_each keeps a large
+		// collection cohort under SQLite's bound-variable limit. The filter
+		// runs before LIMIT so in-scope hits are not dropped by global rank.
+		keys, err := json.Marshal(q.ParentKeys)
+		if err != nil {
+			return nil, err
+		}
+		sb.WriteString("\n\tAND att.parent_key IN (SELECT value FROM json_each(?))")
+		args = append(args, string(keys))
 	}
 	if query != "" {
 		sb.WriteString("\nORDER BY f.rank, a.id")

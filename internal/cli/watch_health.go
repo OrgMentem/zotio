@@ -5,6 +5,7 @@ package cli
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"slices"
@@ -32,6 +33,34 @@ type watchHealthMonitor struct {
 	// retractions is non-nil only with --health-check-retractions; it lives
 	// for the watch process so each DOI costs one CrossRef request per TTL.
 	retractions *watchRetractionCache
+	// scope is the --health-scope cohort, re-resolved every cycle against the
+	// freshly synced store so collection membership changes are picked up.
+	scope scopeSpec
+}
+
+// watchHealthScopeError marks a cohort resolution failure so run reports it
+// as a scope error rather than a check error.
+type watchHealthScopeError struct{ err error }
+
+func (e watchHealthScopeError) Error() string { return e.err.Error() }
+
+// setScope parses --health-scope once at startup; a bad expression is a
+// usage error before the first cycle.
+func (m *watchHealthMonitor) setScope(expr string) error {
+	spec, err := parseScopeSpec(expr)
+	if err != nil {
+		return usageErr(fmt.Errorf("invalid --health-scope: %w", err))
+	}
+	m.scope = spec
+	return nil
+}
+
+// scopeExpr is the cohort expression carried in the webhook payload.
+func (m *watchHealthMonitor) scopeExpr() string {
+	if m.scope.Type == "" || m.scope.Type == "library" {
+		return "library"
+	}
+	return m.scope.Type + ":" + m.scope.Value
 }
 
 // watchRetractionCacheTTL bounds how often watch re-asks CrossRef about one
@@ -75,6 +104,7 @@ func (m *watchHealthMonitor) enableRetractionCheck(on bool) {
 type watchHealthWebhookPayload struct {
 	CycleAt       time.Time     `json:"cycle_at"`
 	Preset        string        `json:"preset"`
+	Scope         string        `json:"scope"`
 	New           []Finding     `json:"new"`
 	ResolvedCount int           `json:"resolved_count"`
 	Totals        healthSummary `json:"totals"`
@@ -115,6 +145,11 @@ func (m *watchHealthMonitor) run(ctx context.Context, cmd *cobra.Command, cycleA
 	}
 	report, err := m.report(ctx)
 	if err != nil {
+		var serr watchHealthScopeError
+		if errors.As(err, &serr) {
+			fmt.Fprintf(cmd.ErrOrStderr(), "[health] %s scope error: %v\n", cycleAt.Format(time.RFC3339), serr.err)
+			return
+		}
 		fmt.Fprintf(cmd.ErrOrStderr(), "[health] %s check error: %v\n", cycleAt.Format(time.RFC3339), err)
 		return
 	}
@@ -199,14 +234,29 @@ func (m *watchHealthMonitor) report(ctx context.Context) (healthReport, error) {
 		preset: m.preset,
 		flags:  m.flags,
 	}
+	scope := scopeResult{All: true, Expr: "library"}
+	var scopeSet map[string]bool
+	if m.scope.Type != "" && m.scope.Type != "library" {
+		scope, err = resolveScopeLive(ctx, m.flags, db, m.scope)
+		if err != nil {
+			return healthReport{}, watchHealthScopeError{err: err}
+		}
+		if scope.Precondition != "" {
+			return healthReport{}, watchHealthScopeError{err: fmt.Errorf("%s: %s", scope.Expr, scope.PreconditionDetail)}
+		}
+		scopeSet = make(map[string]bool, len(scope.Keys))
+		for _, k := range scope.Keys {
+			scopeSet[k] = true
+		}
+	}
 	if m.retractions == nil {
-		return assembleHealthReport(db, healthCtx, m.preset, m.kinds, "", scopeResult{All: true, Expr: "library"})
+		return assembleHealthReport(db, healthCtx, m.preset, m.kinds, "", scope)
 	}
 	// retracted_item runs outside assembleHealthReport here: the one-shot
 	// runner drops every finding when any lookup fails, but a long-running
 	// watch must keep alerting on the DOIs that did resolve.
 	kinds := slices.DeleteFunc(slices.Clone(m.kinds), func(k string) bool { return k == "retracted_item" })
-	report, err := assembleHealthReport(db, healthCtx, m.preset, kinds, "", scopeResult{All: true, Expr: "library"})
+	report, err := assembleHealthReport(db, healthCtx, m.preset, kinds, "", scope)
 	if err != nil {
 		return report, err
 	}
@@ -215,7 +265,7 @@ func (m *watchHealthMonitor) report(ctx context.Context) (healthReport, error) {
 	if err != nil {
 		return report, fmt.Errorf("health check retracted_item: %w", err)
 	}
-	findings := retractionHealthFindings(check.Findings, healthCtx.src)
+	findings := filterFindingsByScope(retractionHealthFindings(check.Findings, healthCtx.src), scopeSet)
 	report.Checks = append(report.Checks, healthCheckRun{Kind: "retracted_item", Ran: true, Count: len(findings)})
 	report.Summary.add(sevCritical, len(findings))
 	report.Summary.Total = report.Summary.Critical + report.Summary.High + report.Summary.Info
@@ -251,6 +301,7 @@ func (m *watchHealthMonitor) deliverWebhook(ctx context.Context, cmd *cobra.Comm
 	payload := watchHealthWebhookPayload{
 		CycleAt:       cycleAt,
 		Preset:        m.preset,
+		Scope:         m.scopeExpr(),
 		New:           newFindings,
 		ResolvedCount: resolvedCount,
 		Totals:        totals,

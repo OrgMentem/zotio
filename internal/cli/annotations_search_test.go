@@ -6,8 +6,12 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 
 	"zotio/internal/store"
@@ -211,6 +215,140 @@ func TestAnnotationsSearchRejectsRefreshWithLocalSource(t *testing.T) {
 	}
 	if got := ExitCode(err); got != 2 {
 		t.Fatalf("conflict exit code = %d, want 2", got)
+	}
+}
+
+// A global LIMIT used to drop in-collection hits when a higher-ranked hit sat
+// outside the collection; the scope must filter before the limit.
+func TestAnnotationsSearchLocalScopeFiltersBeforeLimit(t *testing.T) {
+	seedAnnotationSearchStore(t, []json.RawMessage{
+		json.RawMessage(`{"key":"INP","version":1,"data":{"key":"INP","itemType":"journalArticle","title":"In","collections":["COLL"]}}`),
+		json.RawMessage(`{"key":"OUTP","version":1,"data":{"key":"OUTP","itemType":"journalArticle","title":"Out"}}`),
+		json.RawMessage(`{"key":"INPDF","version":1,"data":{"key":"INPDF","itemType":"attachment","parentItem":"INP"}}`),
+		json.RawMessage(`{"key":"OUTPDF","version":1,"data":{"key":"OUTPDF","itemType":"attachment","parentItem":"OUTP"}}`),
+		json.RawMessage(`{"key":"OUTA","version":1,"data":{"key":"OUTA","itemType":"annotation","parentItem":"OUTPDF","annotationText":"needle needle needle needle"}}`),
+		json.RawMessage(`{"key":"INA1","version":1,"data":{"key":"INA1","itemType":"annotation","parentItem":"INPDF","annotationText":"needle needle among a few words"}}`),
+		json.RawMessage(`{"key":"INA2","version":1,"data":{"key":"INA2","itemType":"annotation","parentItem":"INPDF","annotationText":"a long passage with one needle among many other words here"}}`),
+	})
+	for _, tc := range []struct {
+		args []string
+		want string
+	}{
+		{[]string{"needle", "--scope", "collection:COLL", "--limit", "1"}, "INA1"},
+		{[]string{"needle", "--scope", "collection:COLL"}, "INA1,INA2"},
+		{[]string{"needle", "--scope", "collection:EMPTY"}, ""},
+	} {
+		cmd := newAnnotationsSearchCmd(&rootFlags{asJSON: true, dataSource: "local"})
+		cmd.SetArgs(tc.args)
+		var out bytes.Buffer
+		cmd.SetOut(&out)
+		cmd.SetErr(&bytes.Buffer{})
+		if err := cmd.Execute(); err != nil {
+			t.Fatalf("%v: %v", tc.args, err)
+		}
+		var env struct {
+			Results []annotationSummary `json:"results"`
+		}
+		if err := json.Unmarshal(out.Bytes(), &env); err != nil {
+			t.Fatalf("decode: %v; output=%q", err, out.String())
+		}
+		keys := make([]string, 0, len(env.Results))
+		for _, r := range env.Results {
+			keys = append(keys, r.Key)
+		}
+		if got := strings.Join(keys, ","); got != tc.want {
+			t.Fatalf("%v: keys = %q, want %q", tc.args, got, tc.want)
+		}
+	}
+}
+
+// The live API cannot filter annotations by grand-parent, so the command
+// resolves attachment parents in itemKey batches of 50 and filters before
+// --limit.
+func TestAnnotationsSearchLiveScopeFiltersByAttachmentParent(t *testing.T) {
+	seedAnnotationSearchStore(t, []json.RawMessage{
+		json.RawMessage(`{"key":"INP","version":1,"data":{"key":"INP","itemType":"journalArticle","title":"In","collections":["COLL"]}}`),
+	})
+	const n = 60
+	anns := make([]string, 0, n)
+	for i := range n {
+		anns = append(anns, fmt.Sprintf(`{"key":"A%02d","version":1,"data":{"key":"A%02d","itemType":"annotation","parentItem":"PDF%02d","annotationText":"needle","annotationColor":"#ffd400"}}`, i, i, i))
+	}
+	var mu sync.Mutex
+	lookups := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		q := r.URL.Query()
+		switch {
+		case r.URL.Path == "/users/0/items" && q.Get("itemType") == "annotation":
+			_, _ = w.Write([]byte("[" + strings.Join(anns, ",") + "]"))
+		case r.URL.Path == "/users/0/items" && q.Get("itemKey") != "":
+			mu.Lock()
+			lookups++
+			mu.Unlock()
+			keys := strings.Split(q.Get("itemKey"), ",")
+			if len(keys) > 50 {
+				t.Errorf("itemKey batch of %d keys, want <= 50", len(keys))
+			}
+			atts := make([]string, 0, len(keys))
+			for _, key := range keys {
+				// Every tenth attachment belongs to the in-scope item.
+				parent := "OUTP"
+				var i int
+				if _, err := fmt.Sscanf(key, "PDF%d", &i); err == nil && i%10 == 0 {
+					parent = "INP"
+				}
+				atts = append(atts, fmt.Sprintf(`{"key":%q,"data":{"key":%q,"itemType":"attachment","parentItem":%q}}`, key, key, parent))
+			}
+			_, _ = w.Write([]byte("[" + strings.Join(atts, ",") + "]"))
+		default:
+			t.Errorf("unexpected request %s", r.URL.String())
+			http.Error(w, "unexpected request", http.StatusNotFound)
+		}
+	}))
+	t.Cleanup(srv.Close)
+	t.Setenv("ZOTERO_BASE_URL", srv.URL+"/users/0")
+
+	cmd := newAnnotationsSearchCmd(&rootFlags{asJSON: true, dataSource: "live", noCache: true})
+	cmd.SetArgs([]string{"needle", "--scope", "collection:COLL", "--limit", "5"})
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&bytes.Buffer{})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("live scoped search: %v", err)
+	}
+	var env struct {
+		Results []annotationSummary `json:"results"`
+	}
+	if err := json.Unmarshal(out.Bytes(), &env); err != nil {
+		t.Fatalf("decode: %v; output=%q", err, out.String())
+	}
+	keys := make([]string, 0, len(env.Results))
+	for _, r := range env.Results {
+		keys = append(keys, r.Key)
+	}
+	if got := strings.Join(keys, ","); got != "A00,A10,A20,A30,A40" {
+		t.Fatalf("keys = %q, want the first five in-scope annotations", got)
+	}
+	if lookups > (n+49)/50 {
+		t.Fatalf("attachment lookups = %d, want <= %d", lookups, (n+49)/50)
+	}
+}
+
+func TestAnnotationsSearchLiveScopeWithoutMirrorFails(t *testing.T) {
+	savedGroup := activeGroupIDLocked()
+	setActiveGroupID("")
+	t.Cleanup(func() { setActiveGroupID(savedGroup) })
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("ZOTERO_CONFIG", filepath.Join(t.TempDir(), "missing.toml"))
+
+	cmd := newAnnotationsSearchCmd(&rootFlags{dataSource: "auto"})
+	cmd.SetArgs([]string{"needle", "--refresh", "--scope", "collection:COLL"})
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetErr(&bytes.Buffer{})
+	err := cmd.Execute()
+	if err == nil || !strings.Contains(err.Error(), "zotio sync") {
+		t.Fatalf("scoped --refresh without a mirror: err = %v, want zotio sync guidance", err)
 	}
 }
 

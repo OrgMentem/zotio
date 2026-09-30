@@ -6,6 +6,7 @@ package cli
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/url"
@@ -20,6 +21,7 @@ import (
 	"zotio/internal/client"
 	"zotio/internal/connector"
 	"zotio/internal/mutation"
+	"zotio/internal/store"
 )
 
 // Keep preview tests independent from concrete HTTP clients.
@@ -32,6 +34,7 @@ type importApplyPoster interface {
 func newImportApplyCmd(flags *rootFlags) *cobra.Command {
 	var attachMode string
 	var fetchPDF bool
+	var flagCollection string
 
 	cmd := &cobra.Command{
 		Use:   "apply <manifest>",
@@ -62,7 +65,16 @@ file --via connector and items create do; an entry whose own collection needs a
 different save target still gets its own session. Because the batch commits
 together, a failed entry does not stop the entries after it. Prefer one
 invocation with many records. --rate-limit governs only Web API requests and
-does not pace connector calls; pace your own invocations.`,
+does not pace connector calls; pace your own invocations.
+
+--collection KEY files every created item into that collection. It overrides
+the manifest's "collection" default for this run; an entry's own "collection"
+still wins over both. The destination applies to created items only: attach
+entries add a file to an item that already exists and do not re-file it. The
+key must exist in the synced local store, or the run is refused before any
+write. A connector save session has one target, so on the connector route an
+entry whose own collection differs from the run's destination is refused
+before any item is created; apply it in a separate run.`,
 		Annotations: map[string]string{
 			"zotio:method": "POST",
 			"zotio:path":   "/items",
@@ -81,6 +93,18 @@ does not pace connector calls; pace your own invocations.`,
 			m, err := readImportManifest(args[0], cmd.InOrStdin())
 			if err != nil {
 				return err
+			}
+			defaultCollection := strings.TrimSpace(flagCollection)
+			if defaultCollection == "" {
+				defaultCollection = strings.TrimSpace(m.Collection)
+			}
+			if err := verifyImportApplyCollections(cmd.Context(), m, defaultCollection); err != nil {
+				return err
+			}
+			if fetchPDF || (attachMode == "stored" && flags.via == "connector") {
+				if err := refuseImportApplySplitSession(m, defaultCollection); err != nil {
+					return err
+				}
 			}
 			if attachMode == "stored" {
 				if err := validateStoredCreateTitles(m); err != nil {
@@ -134,6 +158,11 @@ does not pace connector calls; pace your own invocations.`,
 						return err
 					}
 					storedCreateVia = storedCreateRoute.via
+					if storedCreateVia == "connector" {
+						if err := refuseImportApplySplitSession(m, defaultCollection); err != nil {
+							return err
+						}
+					}
 				}
 				needsStoredWeb := attachMode == "stored" &&
 					(manifestHasAttachEntries(m) || storedCreateVia == "web")
@@ -168,7 +197,7 @@ does not pace connector calls; pace your own invocations.`,
 				}
 			}
 
-			ops := importApplyOps(cmd, flags, writeClient, storedClient, m, attachMode, fetchPDF)
+			ops := importApplyOps(cmd, flags, writeClient, storedClient, m, attachMode, fetchPDF, defaultCollection)
 			// A shared connector session commits every batch-mate in one
 			// SaveItems call, so stopping at the first failed entry would report
 			// items that already exist as not_attempted and invite a duplicating
@@ -189,8 +218,79 @@ does not pace connector calls; pace your own invocations.`,
 	}
 	cmd.Flags().StringVar(&attachMode, "attach-mode", "none", "Attachment handling: none, linked-file, or stored")
 	cmd.Flags().BoolVar(&fetchPDF, "fetch-pdf", false, "Attach an open-access PDF via Zotero's desktop resolver (requires --via connector)")
+	cmd.Flags().StringVar(&flagCollection, "collection", "", "Collection key to file created items into (overrides the manifest default; attach entries are not re-filed)")
 
 	return cmd
+}
+
+// importApplyEntryCollection is the destination for one create entry: the
+// entry's own key, else the run/manifest default.
+func importApplyEntryCollection(entry importManifestEntry, defaultCollection string) string {
+	if key := strings.TrimSpace(entry.Collection); key != "" {
+		return key
+	}
+	return defaultCollection
+}
+
+// importApplyCreates reports whether entry is a create that apply will run.
+func importApplyCreates(entry importManifestEntry) bool {
+	return entry.Action == "create" && entry.Status == "resolved" && entry.Item != nil
+}
+
+// verifyImportApplyCollections refuses the run before any write when a
+// destination key is not a collection in the synced local store.
+func verifyImportApplyCollections(ctx context.Context, m importManifest, defaultCollection string) error {
+	var keys []string
+	seen := map[string]bool{}
+	for _, entry := range m.Entries {
+		if !importApplyCreates(entry) {
+			continue
+		}
+		if key := importApplyEntryCollection(entry, defaultCollection); key != "" && !seen[key] {
+			seen[key] = true
+			keys = append(keys, key)
+		}
+	}
+	if len(keys) == 0 {
+		return nil
+	}
+	db, err := openStoreForRead(ctx, "zotio")
+	if err != nil {
+		return fmt.Errorf("opening local store: %w", err)
+	}
+	if db == nil {
+		return preconditionErr(fmt.Errorf("run 'zotio sync' first so destination collection %s can be verified", keys[0]))
+	}
+	defer db.Close()
+	for _, key := range keys {
+		if _, err := db.GetContext(ctx, "collections", key); err != nil {
+			if errors.Is(err, store.ErrNotFound) {
+				return usageErr(fmt.Errorf("destination collection %s is not in the local store; check the key or run 'zotio sync'", key))
+			}
+			return fmt.Errorf("looking up destination collection %s: %w", key, err)
+		}
+	}
+	return nil
+}
+
+// refuseImportApplySplitSession refuses a connector-bound run in which an
+// entry names a destination other than the run's: the shared save session has
+// one target, and a second session is what the shared session exists to avoid.
+func refuseImportApplySplitSession(m importManifest, defaultCollection string) error {
+	for i, entry := range m.Entries {
+		if !importApplyCreates(entry) {
+			continue
+		}
+		if key := importApplyEntryCollection(entry, defaultCollection); key != defaultCollection {
+			target := defaultCollection
+			if target == "" {
+				target = "(none)"
+			}
+			return usageErr(fmt.Errorf("manifest entry %d %q sets collection %s but the connector save session targets %s; one session has one target, so apply that entry in a separate run",
+				i+1, importApplyEntryTitle(entry, entry.Item), key, target))
+		}
+	}
+	return nil
 }
 
 func manifestHasRecognize(m importManifest) bool {
@@ -376,11 +476,11 @@ func storedConnectorCommittedDetail(res itemCreateResult, entryTitle, marker, me
 }
 
 // Build mutation ops without network or disk I/O.
-func importApplyOps(cmd *cobra.Command, flags *rootFlags, writeClient importApplyPoster, storedClient *client.Client, m importManifest, attachMode string, fetchPDF bool) []mutation.Op {
+func importApplyOps(cmd *cobra.Command, flags *rootFlags, writeClient importApplyPoster, storedClient *client.Client, m importManifest, attachMode string, fetchPDF bool, defaultCollection string) []mutation.Op {
 	ops := make([]mutation.Op, 0, len(m.Entries))
 	var session *importApplyConnectorSession
 	if attachMode == "stored" {
-		session = &importApplyConnectorSession{cmd: cmd, flags: flags}
+		session = &importApplyConnectorSession{cmd: cmd, flags: flags, collectionKey: defaultCollection}
 	}
 	for i := range m.Entries {
 		entry := m.Entries[i]
@@ -390,6 +490,8 @@ func importApplyOps(cmd *cobra.Command, flags *rootFlags, writeClient importAppl
 				continue
 			}
 			item := copyImportApplyItem(entry.Item)
+			destination := importApplyEntryCollection(entry, defaultCollection)
+			addImportCollection(item, destination)
 			entryTitle := importApplyEntryTitle(entry, item)
 			entryPath := entry.Path
 			entryNumber := i + 1
@@ -398,17 +500,23 @@ func importApplyOps(cmd *cobra.Command, flags *rootFlags, writeClient importAppl
 				number: entryNumber, title: entryTitle, path: entryPath,
 				sourceURL: importEntrySourceURL(entry, item), item: item,
 			}
-			// A connector save session has exactly one target, so an entry
-			// whose own collection needs resolving keeps its own session.
-			if session != nil && (connectorCollectionKeyFromItem(item) == "" || strings.TrimSpace(flags.connectorTarget) != "") {
+			// A connector save session has exactly one target (the run's
+			// destination), so an entry whose item names some other
+			// collection keeps its own session.
+			itemCollection := connectorCollectionKeyFromItem(item)
+			if session != nil && (itemCollection == "" || itemCollection == session.collectionKey || strings.TrimSpace(flags.connectorTarget) != "") {
 				session.entries = append(session.entries, storedEntry)
 			} else {
 				storedEntry = nil
 			}
+			changes := []mutation.Change{{Field: "item", Add: entryTitle}}
+			if destination != "" {
+				changes = append(changes, mutation.Change{Field: "collection", Add: destination})
+			}
 			ops = append(ops, mutation.Op{
 				ID:      fmt.Sprintf("import.apply:%03d:create", entryNumber),
 				Kind:    "import_create",
-				Changes: []mutation.Change{{Field: "item", Add: entryTitle}},
+				Changes: changes,
 				Apply: func() (string, any, error) {
 					itemType, _ := item["itemType"].(string)
 					itemType = strings.TrimSpace(itemType)
@@ -686,6 +794,9 @@ type importApplyConnectorSession struct {
 	cmd     *cobra.Command
 	flags   *rootFlags
 	entries []*importApplyStoredEntry
+	// collectionKey is the run's destination; it becomes the session target
+	// unless --connector-target already names one.
+	collectionKey string
 
 	done     bool
 	via      string
@@ -712,7 +823,7 @@ func (s *importApplyConnectorSession) run() {
 	ctx := s.cmd.Context()
 	flags := s.flags
 	target := strings.TrimSpace(flags.connectorTarget)
-	via, err := flags.resolveCreateVia(ctx, target != "")
+	via, err := flags.resolveCreateVia(ctx, target != "" || s.collectionKey != "")
 	if err != nil {
 		s.routeErr = err
 		return
@@ -759,6 +870,15 @@ func (s *importApplyConnectorSession) run() {
 	if err != nil {
 		failAll(err)
 		return
+	}
+	if target == "" && s.collectionKey != "" {
+		// Resolved before SaveItems so an unmappable destination fails the
+		// batch cleanly instead of leaving committed items unfiled.
+		target, err = resolveConnectorTarget(ctx, flags, conn, s.collectionKey)
+		if err != nil {
+			failAll(err)
+			return
+		}
 	}
 	sessionID, err := connector.NewID()
 	if err != nil {

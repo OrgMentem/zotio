@@ -20,6 +20,7 @@ import (
 
 	"zotio/internal/connector"
 	"zotio/internal/mutation"
+	"zotio/internal/store"
 )
 
 func connectorAttachmentURLFromRequest(r *http.Request) (string, error) {
@@ -913,6 +914,7 @@ type importApplySessionFake struct {
 	titleByConn map[string]string
 	urlByTitle  map[string]string
 	failTitle   string
+	targets     []string
 }
 
 // importApplySessionKeys are valid Zotero keys the fake assigns per title.
@@ -938,6 +940,27 @@ func startImportApplySessionFake(t *testing.T, failTitle string, md5ByTitle map[
 		switch {
 		case r.URL.Path == "/connector/ping":
 			w.WriteHeader(http.StatusOK)
+		case r.URL.Path == "/connector/getSelectedCollection":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"libraryID": 1, "editable": true, "filesEditable": true,
+				"targets": []any{
+					map[string]any{"id": "L1", "name": "My Library", "level": 0},
+					map[string]any{"id": "C7", "name": "Team Review", "level": 1},
+					map[string]any{"id": "C8", "name": "Other", "level": 1},
+				},
+			})
+		case r.URL.Path == "/connector/updateSession":
+			var body struct {
+				Target string `json:"target"`
+			}
+			_ = json.NewDecoder(r.Body).Decode(&body)
+			fake.targets = append(fake.targets, body.Target)
+			w.WriteHeader(http.StatusOK)
+		case r.URL.Path == "/api/users/0/collections":
+			_ = json.NewEncoder(w).Encode([]any{
+				map[string]any{"key": "C1", "data": map[string]any{"key": "C1", "name": "Team Review", "parentCollection": false}},
+				map[string]any{"key": "C2", "data": map[string]any{"key": "C2", "name": "Other", "parentCollection": false}},
+			})
 		case r.URL.Path == "/connector/saveItems":
 			var body struct {
 				SessionID string           `json:"sessionID"`
@@ -1460,5 +1483,223 @@ func TestConfirmStoredConnectorKeysTimesOut(t *testing.T) {
 	}
 	if parentMatches != 1 || fileMatches != 0 {
 		t.Fatalf("matches = %d/%d, want 1/0", parentMatches, fileMatches)
+	}
+}
+
+// seedImportApplyCollections points the default store at a fresh HOME and
+// records keys as synced collections, so destination verification can pass.
+func seedImportApplyCollections(t *testing.T, keys ...string) {
+	t.Helper()
+	restore := SnapshotGlobals()
+	t.Cleanup(restore)
+	setActiveGroupID("")
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("ZOTIO_DEMO", "")
+	dbPath, err := defaultDBPath("zotio")
+	if err != nil {
+		t.Fatalf("defaultDBPath: %v", err)
+	}
+	db, err := store.OpenWithContext(context.Background(), dbPath)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	for _, key := range keys {
+		if err := db.Upsert("collections", key, json.RawMessage(`{"key":"`+key+`","data":{"name":"`+key+`"}}`)); err != nil {
+			_ = db.Close()
+			t.Fatalf("seed collection %s: %v", key, err)
+		}
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close store: %v", err)
+	}
+}
+
+// importApplyCollectionWebFake is a Web API that records each created item's
+// collections and counts POSTs.
+type importApplyCollectionWebFake struct {
+	mu          sync.Mutex
+	posts       int
+	collections [][]string
+}
+
+func startImportApplyCollectionWebFake(t *testing.T) (*importApplyCollectionWebFake, *httptest.Server) {
+	t.Helper()
+	fake := &importApplyCollectionWebFake{}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fake.mu.Lock()
+		defer fake.mu.Unlock()
+		path := strings.TrimPrefix(r.URL.Path, "/users/0")
+		switch {
+		case r.Method == http.MethodGet && path == "/items/new":
+			_, _ = fmt.Fprint(w, `{"itemType":"journalArticle","title":"","creators":[]}`)
+		case r.Method == http.MethodPost && path == "/items":
+			var items []map[string]any
+			if err := json.NewDecoder(r.Body).Decode(&items); err != nil || len(items) != 1 {
+				http.Error(w, `{"error":"bad body"}`, http.StatusBadRequest)
+				return
+			}
+			fake.posts++
+			var got []string
+			if raw, ok := items[0]["collections"].([]any); ok {
+				for _, c := range raw {
+					s, _ := c.(string)
+					got = append(got, s)
+				}
+			}
+			fake.collections = append(fake.collections, got)
+			_, _ = fmt.Fprintf(w, `{"success":{"0":"NEWKEY%02d"}}`, fake.posts)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(srv.Close)
+	return fake, srv
+}
+
+// importApplyCollectionManifest has three creates under default C1; the
+// third entry overrides to override (empty = no override).
+func importApplyCollectionManifest(override string) importManifest {
+	entries := make([]importManifestEntry, 0, 3)
+	for _, title := range []string{"Paper A", "Paper B", "Paper C"} {
+		entries = append(entries, importManifestEntry{
+			Action: "create", Status: "resolved", Title: title,
+			Item: map[string]any{"itemType": "journalArticle", "title": title},
+		})
+	}
+	entries[2].Collection = override
+	return importManifest{SchemaVersion: importManifestSchemaVersion, Collection: "C1", Entries: entries}
+}
+
+func TestImportApplyWebCreatesFileIntoDestinationCollection(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		args []string
+		want [][]string
+	}{
+		{"manifest default with entry override", nil, [][]string{{"C1"}, {"C1"}, {"C2"}}},
+		{"run flag overrides default but not entry", []string{"--collection", "C3"}, [][]string{{"C3"}, {"C3"}, {"C2"}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			seedImportApplyCollections(t, "C1", "C2", "C3")
+			fake, srv := startImportApplyCollectionWebFake(t)
+			manifestPath := writeImportApplyTestManifest(t, importApplyCollectionManifest("C2"))
+			flags := &rootFlags{asJSON: true, yes: true, via: "web", maxChanges: -1, configPath: testConfigFile(t, srv.URL+"/users/0")}
+			env, stderr, err := runImportApplyTestCmdWithFlags(t, flags, append(tc.args, manifestPath))
+			if err != nil {
+				t.Fatalf("apply: %v; env=%+v stderr=%s", err, env, stderr)
+			}
+			if fmt.Sprint(fake.collections) != fmt.Sprint(tc.want) {
+				t.Fatalf("created collections = %v, want %v", fake.collections, tc.want)
+			}
+		})
+	}
+}
+
+func TestImportApplyPreviewShowsDestinationPerCreate(t *testing.T) {
+	seedImportApplyCollections(t, "C1", "C2")
+	m := importApplyCollectionManifest("C2")
+	m.Entries = append(m.Entries, importManifestEntry{Action: "attach", Status: "resolved", MatchedKey: "MATCH1", Path: "/tmp/a.pdf"})
+	env, _, err := runImportApplyTestCmd(t, []string{writeImportApplyTestManifest(t, m)})
+	if err != nil {
+		t.Fatalf("preview: %v", err)
+	}
+	want := []string{"C1", "C1", "C2", ""}
+	if len(env.Plan.Operations) != len(want) {
+		t.Fatalf("operations = %+v, want %d", env.Plan.Operations, len(want))
+	}
+	for i, item := range env.Plan.Operations {
+		got := ""
+		for _, change := range item.Changes {
+			if change.Field == "collection" {
+				got, _ = change.Add.(string)
+			}
+		}
+		if got != want[i] {
+			t.Fatalf("op %d destination = %q, want %q (attach entries are not re-filed); ops=%+v", i, got, want[i], env.Plan.Operations)
+		}
+	}
+}
+
+func TestImportApplyUnknownDestinationRefusedBeforeWrite(t *testing.T) {
+	seedImportApplyCollections(t, "C1")
+	fake, srv := startImportApplyCollectionWebFake(t)
+	manifestPath := writeImportApplyTestManifest(t, importApplyCollectionManifest("MISSING"))
+	flags := &rootFlags{asJSON: true, yes: true, via: "web", maxChanges: -1, configPath: testConfigFile(t, srv.URL+"/users/0")}
+	_, _, err := runImportApplyTestCmdWithFlags(t, flags, []string{manifestPath})
+	if err == nil || ExitCode(err) != 2 || !strings.Contains(err.Error(), "MISSING") {
+		t.Fatalf("err = %v (exit %d), want usage refusal naming MISSING", err, ExitCode(err))
+	}
+	if fake.posts != 0 {
+		t.Fatalf("posts = %d, want none before the refusal", fake.posts)
+	}
+}
+
+func TestImportApplyManifestWithoutCollectionCreatesUnfiled(t *testing.T) {
+	seedImportApplyCollections(t)
+	fake, srv := startImportApplyCollectionWebFake(t)
+	m := importApplyCollectionManifest("")
+	m.Collection = ""
+	manifestPath := writeImportApplyTestManifest(t, m)
+	flags := &rootFlags{asJSON: true, yes: true, via: "web", maxChanges: -1, configPath: testConfigFile(t, srv.URL+"/users/0")}
+	if _, _, err := runImportApplyTestCmdWithFlags(t, flags, []string{manifestPath}); err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+	if fake.posts != 3 || fmt.Sprint(fake.collections) != "[[] [] []]" {
+		t.Fatalf("posts=%d collections=%v, want three unfiled creates", fake.posts, fake.collections)
+	}
+}
+
+func runImportApplyConnectorCollectionManifest(t *testing.T, override string) (*importApplySessionFake, mutation.Envelope, error) {
+	t.Helper()
+	seedImportApplyCollections(t, "C1", "C2")
+	mutationJournalRecorder = recordMutationJournal
+	t.Cleanup(func() { mutationJournalRecorder = nil })
+	m := importApplyCollectionManifest(override)
+	md5ByTitle := map[string]string{}
+	for i := range m.Entries {
+		title := m.Entries[i].Title
+		pdf := writeUploadFixture(t, fmt.Sprintf("paper-%d.pdf", i), []byte("%PDF-1.4\n"+title+"\n%%EOF"))
+		sum, err := fileMD5(pdf)
+		if err != nil {
+			t.Fatal(err)
+		}
+		md5ByTitle[title] = sum
+		m.Entries[i].Path = pdf
+		m.Dir = filepath.Dir(pdf)
+	}
+	fake := startImportApplySessionFake(t, "", md5ByTitle)
+	flags := &rootFlags{
+		asJSON: true, yes: true, via: "connector", timeout: time.Second, maxChanges: -1,
+		configPath: testConfigFile(t, "http://127.0.0.1:23119/api/users/0"),
+	}
+	env, _, err := runImportApplyTestCmdWithFlags(t, flags, []string{"--attach-mode", "stored", writeImportApplyTestManifest(t, m)})
+	return fake, env, err
+}
+
+func TestImportApplyConnectorRefusesEntryWithOtherDestination(t *testing.T) {
+	fake, _, err := runImportApplyConnectorCollectionManifest(t, "C2")
+	if err == nil || ExitCode(err) != 2 {
+		t.Fatalf("err = %v, want usage refusal", err)
+	}
+	for _, want := range []string{"entry 3", "Paper C", "C2", "C1"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("err = %v, want it to name %q", err, want)
+		}
+	}
+	if fake.saveItems != 0 || len(fake.sessions) != 0 {
+		t.Fatalf("saveItems=%d sessions=%d, want no session before the refusal", fake.saveItems, len(fake.sessions))
+	}
+}
+
+func TestImportApplyConnectorSessionTargetsDestination(t *testing.T) {
+	fake, env, err := runImportApplyConnectorCollectionManifest(t, "")
+	if err != nil {
+		t.Fatalf("apply: %v env=%+v", err, env)
+	}
+	if len(fake.sessions) != 1 || fake.saveItems != 1 || fake.savedItems != 3 {
+		t.Fatalf("sessions=%d saveItems=%d items=%d, want one session saving 3 items", len(fake.sessions), fake.saveItems, fake.savedItems)
+	}
+	if fmt.Sprint(fake.targets) != "[C7]" {
+		t.Fatalf("updateSession targets = %v, want [C7] resolved from C1", fake.targets)
 	}
 }

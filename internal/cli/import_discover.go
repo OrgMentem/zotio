@@ -88,6 +88,7 @@ func newImportDiscoverCmd(flags *rootFlags) *cobra.Command {
 	var flagLimit int
 	var flagMinCount int
 	var flagDirection string
+	var flagCollection string
 
 	cmd := &cobra.Command{
 		Use:         "discover",
@@ -125,6 +126,7 @@ func newImportDiscoverCmd(flags *rootFlags) *cobra.Command {
 				if err != nil {
 					return err
 				}
+				manifest.Collection = strings.TrimSpace(flagCollection)
 				if err := withAtomicOutputFile(canonicalTarget, 0o600, func(w io.Writer) error {
 					return writeImportManifest(w, manifest)
 				}); err != nil {
@@ -151,6 +153,7 @@ func newImportDiscoverCmd(flags *rootFlags) *cobra.Command {
 	cmd.Flags().IntVar(&flagLimit, "limit", 25, "Maximum manifest entries to emit")
 	cmd.Flags().IntVar(&flagMinCount, "min-count", 2, "Minimum number of source items citing a DOI")
 	cmd.Flags().StringVar(&flagDirection, "direction", importDiscoverDirectionBackward, "Citation chase direction: backward, forward, or both")
+	cmd.Flags().StringVar(&flagCollection, "collection", "", "Default destination collection key recorded in the manifest for created items")
 	_ = cmd.MarkFlagRequired("scope")
 	_ = cmd.MarkFlagRequired("out")
 	return cmd

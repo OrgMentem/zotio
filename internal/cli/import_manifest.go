@@ -42,6 +42,9 @@ type importManifestEntry struct {
 	Status         string           `json:"status"`         // resolved|unresolved
 	Note           string           `json:"note,omitempty"`
 	Discovery      *importDiscovery `json:"discovery,omitempty"`
+	// Collection overrides the manifest's default destination for this entry;
+	// empty means the manifest (or `import apply --collection`) default.
+	Collection string `json:"collection,omitempty"`
 }
 
 // importManifest is the full reviewable plan.
@@ -49,6 +52,8 @@ type importManifest struct {
 	SchemaVersion int                   `json:"schema_version"`
 	Dir           string                `json:"dir,omitempty"`
 	Entries       []importManifestEntry `json:"entries"`
+	// Collection is the default destination collection key for created items.
+	Collection string `json:"collection,omitempty"`
 }
 
 // manifestActionForStatus maps a scan classification to its default action:

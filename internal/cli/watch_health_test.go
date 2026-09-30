@@ -17,6 +17,8 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
+
+	"zotio/internal/client"
 )
 
 func seedWatchHealthDefaultStore(t *testing.T, items []json.RawMessage) {
@@ -183,6 +185,101 @@ func TestWatchHealthRunLogsHealthErrorsWithoutAborting(t *testing.T) {
 	}
 	if !strings.Contains(errOut.String(), "[health]") || !strings.Contains(errOut.String(), "check error") {
 		t.Fatalf("stderr = %q, want logged non-fatal health check error", errOut.String())
+	}
+}
+
+func TestWatchHealthScopeReportsOnlyCohortFindings(t *testing.T) {
+	oldAllowPrivateOutbound := allowPrivateOutboundForTests.Load()
+	allowPrivateOutboundForTests.Store(true)
+	t.Cleanup(func() { allowPrivateOutboundForTests.Store(oldAllowPrivateOutbound) })
+	var mu sync.Mutex
+	var bodies [][]byte
+	hook := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		mu.Lock()
+		bodies = append(bodies, b)
+		mu.Unlock()
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	t.Cleanup(hook.Close)
+
+	seedWatchHealthDefaultStore(t, []json.RawMessage{
+		json.RawMessage(`{"key":"IN1","version":1,"data":{"key":"IN1","itemType":"journalArticle","title":"In Missing","collections":["C1"],"dateAdded":"2026-01-01T00:00:00Z"}}`),
+		json.RawMessage(`{"key":"OUT1","version":1,"data":{"key":"OUT1","itemType":"journalArticle","title":"Out Missing","collections":["C2"],"dateAdded":"2026-01-01T00:00:00Z"}}`),
+	})
+	monitor := &watchHealthMonitor{enabled: true, preset: "citation", kinds: []string{"missing_citation"}, webhook: hook.URL, flags: &rootFlags{}, previous: map[string]Finding{}, acked: map[string]Finding{}}
+	if err := monitor.setScope("collection:C1"); err != nil {
+		t.Fatalf("setScope: %v", err)
+	}
+	cmd := &cobra.Command{}
+	var out, errOut bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&errOut)
+
+	monitor.run(context.Background(), cmd, time.Date(2026, 7, 6, 12, 0, 0, 0, time.UTC))
+	if errOut.Len() != 0 {
+		t.Fatalf("baseline stderr = %q", errOut.String())
+	}
+	if got := out.String(); !strings.Contains(got, "[health] baseline citation total=1") {
+		t.Fatalf("baseline output = %q, want only the C1 finding", got)
+	}
+
+	upsertWatchHealthDefaultStore(t, []json.RawMessage{
+		json.RawMessage(`{"key":"IN2","version":2,"data":{"key":"IN2","itemType":"journalArticle","title":"In New","collections":["C1"],"dateAdded":"2026-01-02T00:00:00Z"}}`),
+		json.RawMessage(`{"key":"OUT2","version":2,"data":{"key":"OUT2","itemType":"journalArticle","title":"Out New","collections":["C2"],"dateAdded":"2026-01-02T00:00:00Z"}}`),
+	})
+	out.Reset()
+	monitor.run(context.Background(), cmd, time.Date(2026, 7, 6, 12, 1, 0, 0, time.UTC))
+	got := out.String()
+	if !strings.Contains(got, `[health] new high missing_citation IN2 "In New"`) || strings.Contains(got, "OUT") {
+		t.Fatalf("second cycle output = %q, want IN2 only", got)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(bodies) != 2 {
+		t.Fatalf("webhook posts = %d, want 2", len(bodies))
+	}
+	if !strings.Contains(string(bodies[1]), `"scope":"collection:C1"`) {
+		t.Fatalf("webhook payload = %s, want scope collection:C1", bodies[1])
+	}
+}
+
+func TestWatchHealthScopeErrorSkipsCycleAndKeepsBaseline(t *testing.T) {
+	oldAllowPrivateOutbound := allowPrivateOutboundForTests.Load()
+	allowPrivateOutboundForTests.Store(true)
+	t.Cleanup(func() { allowPrivateOutboundForTests.Store(oldAllowPrivateOutbound) })
+	var posts atomic.Int32
+	hook := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		posts.Add(1)
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	t.Cleanup(hook.Close)
+	oldLive := savedSearchLiveClient
+	savedSearchLiveClient = func(context.Context, *rootFlags) (*client.Client, string, error) {
+		return nil, "Zotero desktop local API is not reachable", nil
+	}
+	t.Cleanup(func() { savedSearchLiveClient = oldLive })
+
+	seedWatchHealthDefaultStore(t, []json.RawMessage{
+		json.RawMessage(`{"key":"A","version":1,"data":{"key":"A","itemType":"journalArticle","title":"A Missing","dateAdded":"2026-01-01T00:00:00Z"}}`),
+	})
+	if err := (&watchHealthMonitor{}).setScope("bogus"); err == nil {
+		t.Fatal("setScope(bogus) = nil, want usage error")
+	}
+	monitor := &watchHealthMonitor{enabled: true, preset: "citation", kinds: []string{"missing_citation"}, webhook: hook.URL, flags: &rootFlags{}, previous: map[string]Finding{}, acked: map[string]Finding{}}
+	if err := monitor.setScope("saved-search:X"); err != nil {
+		t.Fatalf("setScope: %v", err)
+	}
+	cmd := &cobra.Command{}
+	var out, errOut bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&errOut)
+	monitor.run(context.Background(), cmd, time.Date(2026, 7, 6, 12, 0, 0, 0, time.UTC))
+	if !strings.Contains(errOut.String(), "[health] 2026-07-06T12:00:00Z scope error: saved-search:X: Zotero desktop local API is not reachable") {
+		t.Fatalf("stderr = %q, want scope error line", errOut.String())
+	}
+	if out.Len() != 0 || posts.Load() != 0 || monitor.baseline || monitor.ackedBaseline {
+		t.Fatalf("scope error cycle reported %q, posted %d, baseline=%v acked=%v; want nothing", out.String(), posts.Load(), monitor.baseline, monitor.ackedBaseline)
 	}
 }
 

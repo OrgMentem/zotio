@@ -14,6 +14,7 @@ import (
 
 func newAnnotationsSearchCmd(flags *rootFlags) *cobra.Command {
 	var flagColor string
+	var flagScope string
 	var flagLimit int
 	// prefer the local store unless --refresh.
 	var refresh bool
@@ -38,6 +39,29 @@ annotation belongs to. --refresh searches live through the Zotero API.`,
 			if refresh && flags.dataSource == "local" {
 				return usageErr(fmt.Errorf("--refresh cannot be used with --data-source local"))
 			}
+			spec, err := parseScopeSpec(flagScope)
+			if err != nil {
+				return usageErr(err)
+			}
+			scoped := spec.Type != "library"
+			// resolveCohort maps --scope to parent item keys. nil means the
+			// whole library; an empty non-nil slice is an empty cohort.
+			resolveCohort := func(db *store.Store) ([]string, error) {
+				if !scoped {
+					return nil, nil
+				}
+				result, rerr := resolveScopeLive(cmd.Context(), flags, localQueryStore{Store: db}, spec)
+				if rerr != nil {
+					return nil, rerr
+				}
+				if result.Precondition != "" {
+					return nil, scopePreconditionErr(cmd.Context(), cmd.OutOrStdout(), flags, commandRegistryPath(cmd), result)
+				}
+				if result.Keys == nil {
+					return []string{}, nil
+				}
+				return result.Keys, nil
+			}
 
 			// Search the local annotation store only when local data was requested.
 			// A completed local store with no matches is a valid empty result.
@@ -53,10 +77,15 @@ annotation belongs to. --refresh searches live through the Zotero API.`,
 					}
 				} else {
 					defer db.Close()
+					parentKeys, serr := resolveCohort(db)
+					if serr != nil {
+						return serr
+					}
 					hits, lerr := db.SearchAnnotationsContext(cmd.Context(), store.AnnotationSearch{
-						Query:  query,
-						Colors: annotationColorSpellings(flagColor),
-						Limit:  flagLimit,
+						Query:      query,
+						Colors:     annotationColorSpellings(flagColor),
+						Limit:      flagLimit,
+						ParentKeys: parentKeys,
 					})
 					if lerr != nil {
 						if flags.dataSource == "local" {
@@ -84,20 +113,58 @@ annotation belongs to. --refresh searches live through the Zotero API.`,
 				}
 			}
 
+			// The live API has no grand-parent filter, so a scoped live search
+			// resolves the cohort from the mirror and filters client-side.
+			var cohort map[string]bool
+			if scoped {
+				db, oerr := openStoreForRead(cmd.Context(), "zotio")
+				if oerr != nil {
+					return fmt.Errorf("--scope %s needs the local store: %w\nRun 'zotio sync' first.", flagScope, oerr)
+				}
+				if db == nil {
+					return fmt.Errorf("--scope %s needs the local store. Run 'zotio sync' first", flagScope)
+				}
+				keys, serr := resolveCohort(db)
+				db.Close()
+				if serr != nil {
+					return serr
+				}
+				cohort = make(map[string]bool, len(keys))
+				for _, key := range keys {
+					cohort[key] = true
+				}
+			}
+
 			c, err := flags.newClient()
 			if err != nil {
 				return err
 			}
+			fetchLimit := fetchLimitForAnnotationSearch(flagLimit, flagColor)
+			if scoped {
+				// The limit applies after the scope filter, so fetch every
+				// match; a capped fetch would drop in-scope hits.
+				fetchLimit = 0
+			}
 			items, err := fetchZoteroItems(c, "/items", map[string]string{
 				"itemType": "annotation",
 				"q":        query,
-			}, fetchLimitForAnnotationSearch(flagLimit, flagColor))
+			}, fetchLimit)
 			if err != nil {
 				return classifyAPIError(err, flags)
 			}
 			annotations := annotationSummariesFromItems(items)
+			var attachmentParent map[string]string
+			if scoped {
+				attachmentParent, err = fetchAttachmentParents(c, annotations)
+				if err != nil {
+					return classifyAPIError(err, flags)
+				}
+			}
 			filtered := make([]annotationSummary, 0, len(annotations))
 			for _, annotation := range annotations {
+				if scoped && !cohort[attachmentParent[annotation.ParentItem]] {
+					continue
+				}
 				if flagColor != "" && !annotationColorMatches(annotation.Color, flagColor) {
 					continue
 				}
@@ -113,8 +180,49 @@ annotation belongs to. --refresh searches live through the Zotero API.`,
 	cmd.Flags().IntVar(&flagLimit, "limit", 50, "Maximum number of annotations to return")
 	// bypass the local store and fetch live.
 	cmd.Flags().BoolVar(&refresh, "refresh", false, "Fetch live from the API instead of the local store")
+	cmd.Flags().StringVar(&flagScope, "scope", scopeFlagDefaultLibrary, scopeFlagUsageDefaultLibrary)
 
 	return cmd
+}
+
+// annotationAttachmentChunk is how many attachment keys go into one itemKey
+// request; the Zotero API caps itemKey at 50 keys.
+const annotationAttachmentChunk = 50
+
+// fetchAttachmentParents maps each annotation's attachment key to that
+// attachment's own parentItem, the bibliographic item a scope names.
+func fetchAttachmentParents(c zoteroGetter, annotations []annotationSummary) (map[string]string, error) {
+	seen := make(map[string]bool, len(annotations))
+	keys := make([]string, 0, len(annotations))
+	for _, annotation := range annotations {
+		if annotation.ParentItem == "" || seen[annotation.ParentItem] {
+			continue
+		}
+		seen[annotation.ParentItem] = true
+		keys = append(keys, annotation.ParentItem)
+	}
+	parents := make(map[string]string, len(keys))
+	for start := 0; start < len(keys); start += annotationAttachmentChunk {
+		end := min(start+annotationAttachmentChunk, len(keys))
+		items, err := fetchZoteroItems(c, "/items", map[string]string{
+			"itemKey": strings.Join(keys[start:end], ","),
+		}, 0)
+		if err != nil {
+			return nil, err
+		}
+		for _, item := range items {
+			data, _ := item["data"].(map[string]any)
+			if data == nil {
+				data = item
+			}
+			key, _ := data["key"].(string)
+			parent, _ := data["parentItem"].(string)
+			if key != "" && parent != "" {
+				parents[key] = parent
+			}
+		}
+	}
+	return parents, nil
 }
 
 // annotationColorSpellings returns every stored spelling that one requested

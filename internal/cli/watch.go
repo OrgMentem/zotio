@@ -21,6 +21,7 @@ func newWatchCmd(flags *rootFlags) *cobra.Command {
 	var healthFor string
 	var healthWebhook string
 	var healthCheckRetractions bool
+	var healthScope string
 	var workflowPath string
 	cmd := &cobra.Command{
 		Use:         "watch [resource...]",
@@ -55,6 +56,12 @@ until it is resumed or deleted with zotio workflow run <spec> --yes --resume.`,
 			}
 			if !health && healthCheckRetractions {
 				return usageErr(fmt.Errorf("--health-check-retractions requires --health"))
+			}
+			if !health && cmd.Flags().Changed("health-scope") {
+				return usageErr(fmt.Errorf("--health-scope requires --health"))
+			}
+			if err := healthMonitor.setScope(healthScope); err != nil {
+				return err
 			}
 			healthMonitor.enableRetractionCheck(healthCheckRetractions)
 
@@ -134,6 +141,7 @@ until it is resumed or deleted with zotio workflow run <spec> --yes --resume.`,
 	cmd.Flags().StringVar(&healthFor, "health-for", "quick", "Health preset for --health: quick, citation, systematic-review, vault, all")
 	cmd.Flags().StringVar(&healthWebhook, "health-webhook", "", "POST health drift JSON to this webhook URL")
 	cmd.Flags().BoolVar(&healthCheckRetractions, "health-check-retractions", false, "With --health: also run the Crossref retraction check each cycle (same as library health --check-retractions); each DOI is re-checked at most once per 24h")
+	cmd.Flags().StringVar(&healthScope, "health-scope", "library", "Health cohort for --health: "+scopeFlagUsageDefaultLibrary+"; resolved each cycle, and findings for items leaving the cohort count as resolved")
 	cmd.Flags().StringVar(&workflowPath, "workflow", "", "Run this workflow after every successful sync; previews unless --yes, and failed applied runs require zotio workflow run <spec> --yes --resume")
 
 	return cmd

@@ -549,6 +549,49 @@ func TestSearchAnnotationsRanksFiltersAndResolvesItems(t *testing.T) {
 	}
 }
 
+// A parent filter must apply before LIMIT: otherwise a higher-ranked hit in
+// another item fills the limit and the in-scope hit is lost.
+func TestSearchAnnotationsParentKeysFilterPrecedesLimit(t *testing.T) {
+	s := queryTestStore(t)
+	if _, _, err := s.UpsertBatch("items", []json.RawMessage{
+		json.RawMessage(`{"key":"OUT","data":{"key":"OUT","itemType":"journalArticle","title":"Out"}}`),
+		json.RawMessage(`{"key":"IN","data":{"key":"IN","itemType":"journalArticle","title":"In"}}`),
+		json.RawMessage(`{"key":"OUTPDF","data":{"key":"OUTPDF","itemType":"attachment","parentItem":"OUT"}}`),
+		json.RawMessage(`{"key":"INPDF","data":{"key":"INPDF","itemType":"attachment","parentItem":"IN"}}`),
+		json.RawMessage(`{"key":"OUTA","data":{"key":"OUTA","itemType":"annotation","parentItem":"OUTPDF","annotationText":"trust trust trust trust"}}`),
+		json.RawMessage(`{"key":"INA","data":{"key":"INA","itemType":"annotation","parentItem":"INPDF","annotationText":"a long passage that mentions trust once among many other words"}}`),
+	}); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	for _, tc := range []struct {
+		name string
+		keys []string
+		want []string
+	}{
+		{"nil is unfiltered", nil, []string{"OUTA"}},
+		{"scope keeps in-scope hit under limit", []string{"IN"}, []string{"INA"}},
+		{"empty scope matches nothing", []string{}, []string{}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := s.SearchAnnotationsContext(context.Background(), AnnotationSearch{Query: "trust", Limit: 1, ParentKeys: tc.keys})
+			if err != nil {
+				t.Fatalf("SearchAnnotationsContext: %v", err)
+			}
+			out := []string{}
+			for _, r := range got {
+				var obj struct {
+					Key string `json:"key"`
+				}
+				_ = json.Unmarshal(r.Data, &obj)
+				out = append(out, obj.Key)
+			}
+			if strings.Join(out, ",") != strings.Join(tc.want, ",") {
+				t.Fatalf("keys = %v, want %v", out, tc.want)
+			}
+		})
+	}
+}
+
 // Upsert accepts flat payloads (fields at the root, no "data" envelope), so
 // color filtering and the parent title must read that shape too.
 func TestSearchAnnotationsReadsFlatPayloads(t *testing.T) {

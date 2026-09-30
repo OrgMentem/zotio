@@ -162,6 +162,7 @@ zotio annotations search <query> [flags]
 | `--color` | `string` |  | Filter by annotation color (yellow, red, green, blue, purple, orange) |
 | `--limit` | `int` | `50` | Maximum number of annotations to return |
 | `--refresh` | `bool` | `false` | Fetch live from the API instead of the local store |
+| `--scope` | `string` | `library` | Item cohort: library \| collection:KEY \| tag:NAME \| item:KEY \| query:TEXT \| saved-search:KEY (default: the whole library) |
 
 ### `zotio annotations timeline`
 
@@ -1140,6 +1141,15 @@ together, a failed entry does not stop the entries after it. Prefer one
 invocation with many records. --rate-limit governs only Web API requests and
 does not pace connector calls; pace your own invocations.
 
+--collection KEY files every created item into that collection. It overrides
+the manifest's "collection" default for this run; an entry's own "collection"
+still wins over both. The destination applies to created items only: attach
+entries add a file to an item that already exists and do not re-file it. The
+key must exist in the synced local store, or the run is refused before any
+write. A connector save session has one target, so on the connector route an
+entry whose own collection differs from the run's destination is refused
+before any item is created; apply it in a separate run.
+
 ```
 zotio import apply <manifest> [flags]
 ```
@@ -1147,6 +1157,7 @@ zotio import apply <manifest> [flags]
 | Flag | Type | Default | Description |
 | --- | --- | --- | --- |
 | `--attach-mode` | `string` | `none` | Attachment handling: none, linked-file, or stored |
+| `--collection` | `string` |  | Collection key to file created items into (overrides the manifest default; attach entries are not re-filed) |
 | `--fetch-pdf` | `bool` | `false` | Attach an open-access PDF via Zotero's desktop resolver (requires --via connector) |
 
 ### `zotio import arxiv`
@@ -1177,6 +1188,7 @@ zotio import discover [flags]
 
 | Flag | Type | Default | Description |
 | --- | --- | --- | --- |
+| `--collection` | `string` |  | Default destination collection key recorded in the manifest for created items |
 | `--direction` | `string` | `backward` | Citation chase direction: backward, forward, or both |
 | `--limit` | `int` | `25` | Maximum manifest entries to emit |
 | `--min-count` | `int` | `2` | Minimum number of source items citing a DOI |
@@ -3384,6 +3396,7 @@ zotio watch [resource...] [flags]
 | `--health` | `bool` | `false` | Run quick library health checks after each successful sync |
 | `--health-check-retractions` | `bool` | `false` | With --health: also run the Crossref retraction check each cycle (same as library health --check-retractions); each DOI is re-checked at most once per 24h |
 | `--health-for` | `string` | `quick` | Health preset for --health: quick, citation, systematic-review, vault, all |
+| `--health-scope` | `string` | `library` | Health cohort for --health: Item cohort: library \| collection:KEY \| tag:NAME \| item:KEY \| query:TEXT \| saved-search:KEY (default: the whole library); resolved each cycle, and findings for items leaving the cohort count as resolved |
 | `--health-webhook` | `string` |  | POST health drift JSON to this webhook URL |
 | `--interval` | `duration` | `5m0s` | Sync interval |
 | `--once` | `bool` | `false` | Run one sync cycle and exit |
