@@ -82,15 +82,22 @@ Notable changes to zotio. Format follows [Keep a Changelog](https://keepachangel
 - **`saved-search:KEY` scopes execute when Zotero desktop is running.** The
   shared scope resolver used to answer every `saved-search:` scope with a
   `live_local_api` refusal, even with the desktop open. It now reads the
-  membership from the desktop local API (`/searches/<key>/items`, paged)
-  and returns the top-level item keys in Zotero's order. `library health`,
-  `library prisma`, `items audit`, `creators audit`, `creators audit fix`,
-  `creators rename`, `import discover`, the MCP `zotero://health/{scope}`
-  resource, and `items bibliography` (which refused the scope permanently)
-  all accept it. With the desktop closed or a Web API base, `library
-  health` and `library prisma` now print the shared `precondition_unmet`
-  envelope (exit 9, unchanged) instead of a plain error line; `creators
-  audit` and `import discover` print the remediation in their error text.
+  membership from the desktop local API (`/searches/<key>/items`, paged,
+  never from the response cache) and returns the top-level item keys in
+  Zotero's order. `library health`, `library prisma`, `items audit`,
+  `creators audit`, `creators audit fix`, `creators rename`, `import
+  discover`, the MCP `zotero://health/{scope}` resource, and `items
+  bibliography` (which refused the scope permanently) all accept it. When
+  the search returns an item the local mirror does not have (including one
+  mirrored only as trashed), every command that reads the mirror refuses
+  with exit 12 and `run 'zotio sync' and retry` instead of silently checking
+  fewer items; `items bibliography` reads live data and is not affected.
+  With the desktop closed, a Web API base, or local API access switched off
+  (Zotero answers HTTP 403), `library health` and `library prisma` now print
+  the shared `precondition_unmet` envelope (exit 9) instead of a plain error
+  line, and the 403 case names the Settings → Advanced option to enable;
+  `creators audit` and `import discover` print the remediation in their
+  error text.
 - **`import apply --attach-mode stored --via connector` opens one connector
   save session per invocation.** One session per manifest entry left Zotero
   unresponsive after about 78 entries (measured 2026-08-22). Every stored
@@ -98,8 +105,12 @@ Notable changes to zotio. Format follows [Keep a Changelog](https://keepachangel
   entry; each entry keeps its own status, key, and error in the envelope
   and the journal. Because the session commits as a batch, the connector
   route now continues past a per-entry failure instead of stopping at the
-  first one, as `items create --via connector` already does. `--fetch-pdf`
-  creates still open one session per entry: the desktop resolver step is
+  first one, as `items create --via connector` already does, and it refuses
+  `--max-failures` and an explicit `--continue-on-error=false` (exit 2)
+  before any request. A canceled run still reports and journals the real
+  outcome of every entry the session already sent; only entries never sent
+  stay `not_attempted`. `--fetch-pdf` creates and `recognize` entries still
+  open one session per entry: the desktop resolver and recognizer steps are
   bound to each item's own session.
 
 ### Added
@@ -107,32 +118,46 @@ Notable changes to zotio. Format follows [Keep a Changelog](https://keepachangel
 - **`items bibcheck --follow-includes`.** A thesis whose chapters are pulled
   in by `\input{}` or `\include{}` passed the manuscript gate while a chapter
   cited an unknown key, because only the named files were read. With the
-  flag, the braced forms are followed from the root file's directory (TeX's
-  own rule), `.tex` is appended when the path has no extension, TeX comments
-  are skipped, and every citation keeps the file and line it was found in.
-  A missing include (`include_missing`) or a cycle (`include_cycle`) is a
-  high finding and exits 11. `\input PATH` without braces, `\subfile`, and
-  `\import` are not followed. `--json` lists the traversed files under
-  `includes`. Without the flag nothing changes.
+  flag, the braced forms are followed. Relative paths resolve from each root
+  file's directory (TeX's own rule), so a file shared by two roots is
+  checked against each root; absolute paths are read as given; `.tex` is
+  appended when the path has no extension. TeX comments and the bodies of
+  `verbatim`, `Verbatim`, `lstlisting`, `minted`, and `comment` environments
+  are skipped, and a command whose `{path}` sits on the next line is still
+  found. Every citation keeps the file and line it was found in and counts
+  once, even when two roots reach its file. A missing include
+  (`include_missing`) or a cycle (`include_cycle`) is a high finding and
+  exits 11; the text output lists it even when no citation keys were found.
+  `\input PATH` without braces, `\subfile`, and `\import` are not followed.
+  `--json` lists the traversed files under `includes`. Without the flag
+  nothing changes.
 - **`watch --health-check-retractions`.** Runs the Crossref retraction
   check after each successful sync, the same check as `library health
-  --check-retractions`. Each DOI is looked up at most once per 24 hours for
-  the life of the watch process, and only after a successful answer; a
-  failed lookup is a `retracted_item` skip with precondition
-  `external_crossref` in that cycle, the cycle still completes, and the DOI
-  is retried on the next one. Requires `--health`.
+  --check-retractions`. Each DOI (compared without case) is looked up at
+  most once per 24 hours for the life of the watch process. A failed lookup
+  keeps the DOI's last successful answer, so a known retraction is not
+  reported as resolved during a Crossref outage; the cycle reports a
+  `retracted_item` skip with precondition `external_crossref`, still
+  completes, and retries the DOI on the next one. Requires `--health`.
+- **`watch --health` reports skipped checks.** A `[health] <time> skipped
+  <kind> (<precondition>): <detail>` line goes to stderr when a check starts
+  being skipped or its reason changes, and `[health] <time> skip cleared
+  <kind>` when it runs again. An unchanged skip is printed once, not every
+  cycle. The webhook payload does not change.
 - **`watch --health-scope`.** The health report after each cycle covers one
   cohort in the shared scope grammar (`collection:KEY`, `tag:NAME`,
   `item:KEY`, `query:TEXT`, `saved-search:KEY`) instead of the whole
   library. The scope is resolved again every cycle against the freshly
-  synced store; a resolution failure prints `[health] ... scope error:`
-  and skips that cycle's report without moving the baseline or posting the
-  webhook. The webhook payload carries `scope`. Findings for items that
-  leave the cohort count as resolved. Requires `--health`.
+  synced store, and the retraction check looks up only the cohort's DOIs. A
+  resolution failure prints `[health] ... scope error:` and skips that
+  cycle's report without moving the baseline or posting the webhook. The
+  webhook payload carries `scope`. Findings for items that leave the cohort
+  count as resolved. Requires `--health`.
 - **`annotations search --scope`.** Limits highlight search to the items in
-  a scope. The local path filters by the annotation's parent item inside
-  SQLite before `--limit`, so a small limit no longer hides in-scope hits
-  behind unrelated ones. `--refresh` fetches the live matches, looks up
+  a scope. An annotation belongs to its attachment's parent item, or to the
+  attachment itself when it is a standalone file. The local path filters
+  inside SQLite before `--limit`, so a small limit no longer hides in-scope
+  hits behind unrelated ones. `--refresh` fetches the live matches, looks up
   their attachments' parents in chunks of 50, and filters before color and
   limit; it needs a synced local store to resolve the cohort.
 - **Reviewed imports can be filed into a collection.** The manifest gains a
@@ -140,12 +165,15 @@ Notable changes to zotio. Format follows [Keep a Changelog](https://keepachangel
   override; `import discover --collection KEY` writes the default and
   `import apply --collection KEY` overrides it for one run (an entry's own
   value still wins). Created items carry the key in `collections` on the Web
-  route; on the connector route the shared session is filed to that target,
-  and a run whose entry override differs from the session target is refused
-  before any creation. A key that is not in the synced local store is
-  refused before the first write. Attach entries add a file to an existing
-  item and are not re-filed. Manifests without the field load and apply as
-  before.
+  route. On the connector route the shared session is filed to that target,
+  and an entry whose override differs from it, or whose item already lists
+  another collection, is refused before any creation. `recognize` entries
+  are filed through their own session after Zotero recognizes the PDF. A key
+  that is not in the synced local store is refused before the first write.
+  Attach entries add a file to an existing item and are not re-filed. A
+  manifest that sets `collection` anywhere is written as `schema_version:
+  3`, which earlier releases refuse instead of creating unfiled items;
+  manifests without it stay at version 2 and load and apply as before.
 
 ### Fixed
 - **Ambiguous item creates keep their reconciliation evidence in the journal.**
