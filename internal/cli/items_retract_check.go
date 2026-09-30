@@ -110,9 +110,11 @@ func queryRetractionCheckItems(db localQueryStore, limit int, collection string)
 
 // retractionLookupCache lets long-lived callers (watch) skip CrossRef lookups
 // for DOIs they already resolved. Only successful lookups are stored, so a
-// failed DOI is retried on the next scan.
+// failed DOI is retried on the next scan. lastKnown answers from any earlier
+// successful lookup, expired or not, so a failed refresh keeps its findings.
 type retractionLookupCache interface {
 	lookup(doi string) (notices []crossrefUpdateNotice, registered bool, ok bool)
+	lastKnown(doi string) (notices []crossrefUpdateNotice, registered bool, ok bool)
 	store(doi string, notices []crossrefUpdateNotice, registered bool)
 }
 
@@ -176,9 +178,16 @@ func runRetractionCheckCached(ctx context.Context, db localQueryStore, httpClien
 			if err != nil {
 				report.Errors = append(report.Errors, retractionCheckError{ItemKey: key, DOI: doi, Error: err.Error()})
 				report.Summary.Errors = len(report.Errors)
-				continue
-			}
-			if cache != nil {
+				// A failed refresh must not read as "no longer retracted":
+				// fall back to the last successful answer when there is one.
+				var known bool
+				if cache != nil {
+					notices, registered, known = cache.lastKnown(doi)
+				}
+				if !known {
+					continue
+				}
+			} else if cache != nil {
 				cache.store(doi, notices, registered)
 			}
 		}

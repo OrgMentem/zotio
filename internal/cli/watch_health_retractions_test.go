@@ -83,8 +83,8 @@ func TestWatchHealthCheckRetractionsCachesDOIsAcrossCycles(t *testing.T) {
 	if crossref.total != 3 {
 		t.Fatalf("CrossRef lookups after two cycles = %d (%v), want 3 (cycle 2 served from cache)", crossref.total, crossref.hits)
 	}
-	if errOut.Len() != 0 {
-		t.Fatalf("stderr = %q, want none", errOut.String())
+	if got := errOut.String(); strings.Contains(got, "retracted_item") || strings.Contains(got, "error") {
+		t.Fatalf("stderr = %q, want no retraction skip or error", got)
 	}
 
 	upsertWatchHealthDefaultStore(t, []json.RawMessage{watchRetractionItem("D", "10.777/d", 2)})
@@ -183,6 +183,126 @@ func TestWatchHealthCheckRetractionsFailedDOISkipsAndRetries(t *testing.T) {
 	}
 	if crossref.hits["10.777/bad"] != 2 || crossref.hits["10.777/ret"] != 1 {
 		t.Fatalf("lookups = %v, want failed DOI retried and good DOI cached", crossref.hits)
+	}
+}
+
+// A failed refresh of an expired cache entry must not read as "the retraction
+// was withdrawn": the finding stays, nothing is counted resolved, the skip is
+// logged, and recovery does not re-announce the same retraction as new.
+func TestWatchHealthCheckRetractionsFailedRefreshKeepsLastKnownFinding(t *testing.T) {
+	oldAllowPrivateOutbound := allowPrivateOutboundForTests.Load()
+	allowPrivateOutboundForTests.Store(true)
+	t.Cleanup(func() { allowPrivateOutboundForTests.Store(oldAllowPrivateOutbound) })
+	var mu sync.Mutex
+	var payloads []watchHealthWebhookPayload
+	hook := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var payload watchHealthWebhookPayload
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Errorf("decoding webhook: %v", err)
+		}
+		mu.Lock()
+		payloads = append(payloads, payload)
+		mu.Unlock()
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	t.Cleanup(hook.Close)
+
+	seedWatchHealthDefaultStore(t, []json.RawMessage{watchRetractionItem("RET", "10.777/ret", 1)})
+	crossref := newFakeWatchCrossref(t)
+	monitor := newWatchRetractionMonitor("citation", []string{"missing_citation"}, true)
+	monitor.webhook = hook.URL
+	clock := time.Date(2026, 7, 6, 12, 0, 0, 0, time.UTC)
+	monitor.retractions.now = func() time.Time { return clock }
+	cmd := &cobra.Command{}
+	var out, errOut bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&errOut)
+	retKey := watchHealthFindingKey(Finding{Kind: "retracted_item", ItemKey: "RET"})
+
+	monitor.run(context.Background(), cmd, clock)
+	if _, ok := monitor.previous[retKey]; !ok {
+		t.Fatalf("cycle 1 findings = %v, want retracted_item RET", monitor.previous)
+	}
+
+	clock = clock.Add(watchRetractionCacheTTL + time.Minute)
+	crossref.mu.Lock()
+	crossref.fail["10.777/ret"] = true
+	crossref.mu.Unlock()
+	out.Reset()
+	errOut.Reset()
+	monitor.run(context.Background(), cmd, clock)
+	if crossref.hits["10.777/ret"] != 2 {
+		t.Fatalf("lookups = %v, want the expired entry re-requested", crossref.hits)
+	}
+	if _, ok := monitor.previous[retKey]; !ok {
+		t.Fatalf("cycle 2 findings = %v, want RET kept from the last successful lookup", monitor.previous)
+	}
+	if got := out.String(); !strings.Contains(got, "[health] resolved_count 0") || strings.Contains(got, "[health] new") {
+		t.Fatalf("cycle 2 stdout = %q, want resolved_count 0 and no new finding", got)
+	}
+	if got := errOut.String(); !strings.Contains(got, "[health] 2026-07-07T12:01:00Z skipped retracted_item (external_crossref): ") || !strings.Contains(got, "HTTP 500") {
+		t.Fatalf("cycle 2 stderr = %q, want the retracted_item lookup-error skip", got)
+	}
+
+	crossref.mu.Lock()
+	crossref.fail["10.777/ret"] = false
+	crossref.mu.Unlock()
+	out.Reset()
+	errOut.Reset()
+	monitor.run(context.Background(), cmd, clock.Add(time.Minute))
+	if got := out.String(); !strings.Contains(got, "[health] resolved_count 0") || strings.Contains(got, "[health] new") {
+		t.Fatalf("cycle 3 stdout = %q, want no new line for the recovered DOI", got)
+	}
+	if got := errOut.String(); got != "[health] 2026-07-07T12:02:00Z skip cleared retracted_item\n" {
+		t.Fatalf("cycle 3 stderr = %q, want only the skip cleared line", got)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(payloads) != 3 {
+		t.Fatalf("webhook payloads = %d, want 3", len(payloads))
+	}
+	for i, p := range payloads[1:] {
+		if p.ResolvedCount != 0 || len(p.New) != 0 {
+			t.Fatalf("cycle %d webhook = %+v, want resolved_count 0 and no new findings", i+2, p)
+		}
+	}
+}
+
+// A skip that persists unchanged is logged once, not every cycle.
+func TestWatchHealthLogsPersistentSkipOnce(t *testing.T) {
+	seedWatchHealthDefaultStore(t, []json.RawMessage{watchRetractionItem("A", "10.777/a", 1)})
+	crossref := newFakeWatchCrossref(t)
+	monitor := newWatchRetractionMonitor("citation", []string{"missing_citation", "retracted_item"}, false)
+	cmd := &cobra.Command{}
+	var errOut bytes.Buffer
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetErr(&errOut)
+
+	monitor.run(context.Background(), cmd, time.Date(2026, 7, 6, 12, 0, 0, 0, time.UTC))
+	if got := errOut.String(); !strings.HasPrefix(got, "[health] 2026-07-06T12:00:00Z skipped retracted_item (external_crossref): ") || strings.Count(got, "\n") != 1 {
+		t.Fatalf("cycle 1 stderr = %q, want one off-by-default retracted_item skip line", got)
+	}
+	errOut.Reset()
+	monitor.run(context.Background(), cmd, time.Date(2026, 7, 6, 12, 1, 0, 0, time.UTC))
+	if errOut.Len() != 0 || crossref.total != 0 {
+		t.Fatalf("cycle 2 stderr = %q, lookups = %d; want the unchanged skip not repeated", errOut.String(), crossref.total)
+	}
+}
+
+// DOIs are case-insensitive: case variants share one cache entry.
+func TestWatchHealthCheckRetractionsCaseVariantDOIsShareOneLookup(t *testing.T) {
+	seedWatchHealthDefaultStore(t, []json.RawMessage{
+		watchRetractionItem("UP", "10.555/Flagged", 1),
+		watchRetractionItem("LOW", "10.555/flagged", 1),
+	})
+	crossref := newFakeWatchCrossref(t)
+	monitor := newWatchRetractionMonitor("quick", healthPresets["quick"], true)
+	if _, err := monitor.report(context.Background()); err != nil {
+		t.Fatalf("report: %v", err)
+	}
+	if crossref.total != 1 {
+		t.Fatalf("CrossRef lookups = %d (%v), want 1 for two case-variant DOIs", crossref.total, crossref.hits)
 	}
 }
 

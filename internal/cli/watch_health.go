@@ -36,6 +36,9 @@ type watchHealthMonitor struct {
 	// scope is the --health-scope cohort, re-resolved every cycle against the
 	// freshly synced store so collection membership changes are picked up.
 	scope scopeSpec
+	// skips is the previous successful cycle's skip set by kind; run logs a
+	// skip only when it appears, changes, or clears.
+	skips map[string]healthSkip
 }
 
 // watchHealthScopeError marks a cohort resolution failure so run reports it
@@ -73,23 +76,33 @@ type watchRetractionCacheEntry struct {
 	checkedAt  time.Time
 }
 
-// watchRetractionCache stores successful CrossRef lookups by normalized DOI.
-// Failed lookups are never stored, so they are retried on the next cycle.
+// watchRetractionCache stores successful CrossRef lookups by lowercased
+// normalized DOI: DOIs are case-insensitive, so case variants share one
+// request. Failed lookups are never stored, so they are retried on the next
+// cycle; an expired entry still answers lastKnown until a refresh succeeds.
 type watchRetractionCache struct {
 	entries map[string]watchRetractionCacheEntry
 	now     func() time.Time
 }
 
 func (c *watchRetractionCache) lookup(doi string) ([]crossrefUpdateNotice, bool, bool) {
-	e, ok := c.entries[doi]
+	e, ok := c.entries[strings.ToLower(doi)]
 	if !ok || c.now().Sub(e.checkedAt) >= watchRetractionCacheTTL {
 		return nil, false, false
 	}
 	return e.notices, e.registered, true
 }
 
+func (c *watchRetractionCache) lastKnown(doi string) ([]crossrefUpdateNotice, bool, bool) {
+	e, ok := c.entries[strings.ToLower(doi)]
+	if !ok {
+		return nil, false, false
+	}
+	return e.notices, e.registered, true
+}
+
 func (c *watchRetractionCache) store(doi string, notices []crossrefUpdateNotice, registered bool) {
-	c.entries[doi] = watchRetractionCacheEntry{notices: notices, registered: registered, checkedAt: c.now()}
+	c.entries[strings.ToLower(doi)] = watchRetractionCacheEntry{notices: notices, registered: registered, checkedAt: c.now()}
 }
 
 // enableRetractionCheck turns on the per-cycle CrossRef retraction check.
@@ -174,6 +187,7 @@ func (m *watchHealthMonitor) run(ctx context.Context, cmd *cobra.Command, cycleA
 		fmt.Fprintf(cmd.OutOrStdout(), "[health] resolved_count %d\n", resolvedCount)
 	}
 	m.previous = current
+	m.reportSkipTransitions(cmd, cycleAt, report.Skipped)
 
 	if m.webhook != "" {
 		if firstCycle {
@@ -210,6 +224,33 @@ func (m *watchHealthMonitor) run(ctx context.Context, cmd *cobra.Command, cycleA
 			m.pendingBaseline = nil
 		}
 	}
+}
+
+// reportSkipTransitions logs a skip on stderr when its kind first appears or
+// its precondition/detail changes, and once when it clears. A skip that
+// persists unchanged (such as an off-by-default check) is not repeated, but a
+// lookup failure in a later cycle is never silent.
+func (m *watchHealthMonitor) reportSkipTransitions(cmd *cobra.Command, cycleAt time.Time, skipped []healthSkip) {
+	stamp := cycleAt.Format(time.RFC3339)
+	current := make(map[string]healthSkip, len(skipped))
+	for _, s := range skipped {
+		current[s.Kind] = s
+		if prev, ok := m.skips[s.Kind]; ok && prev.Precondition == s.Precondition && prev.Detail == s.Detail {
+			continue
+		}
+		fmt.Fprintf(cmd.ErrOrStderr(), "[health] %s skipped %s (%s): %s\n", stamp, s.Kind, s.Precondition, s.Detail)
+	}
+	var cleared []string
+	for kind := range m.skips {
+		if _, ok := current[kind]; !ok {
+			cleared = append(cleared, kind)
+		}
+	}
+	slices.Sort(cleared)
+	for _, kind := range cleared {
+		fmt.Fprintf(cmd.ErrOrStderr(), "[health] %s skip cleared %s\n", stamp, kind)
+	}
+	m.skips = current
 }
 
 // report reuses library-health internals over the local synced store.
@@ -282,7 +323,7 @@ func (m *watchHealthMonitor) report(ctx context.Context) (healthReport, error) {
 		report.Skipped = append(report.Skipped, healthSkip{
 			Kind:         "retracted_item",
 			Precondition: "external_crossref",
-			Detail:       fmt.Sprintf("CrossRef retraction checking encountered %d lookup error(s); failed DOIs are retried next cycle: %s", len(check.Errors), strings.Join(details, "; ")),
+			Detail:       fmt.Sprintf("CrossRef retraction checking encountered %d lookup error(s); failed DOIs keep their last known result and are retried next cycle: %s", len(check.Errors), strings.Join(details, "; ")),
 			Remediation: []healthRemediation{
 				{Action: "retry_check_retractions", Command: "zotio library health --for " + m.preset + " --check-retractions"},
 			},
