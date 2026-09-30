@@ -399,7 +399,7 @@ func TestImportPDFOpBackwardCompatibleForImportApplyRecognize(t *testing.T) {
 	dir := t.TempDir()
 	path := writeImportPDFFixture(t, dir, "some-paper.pdf")
 	cmd := testApplyCmd()
-	op := importPDFOp(cmd, f.flags(t), f.conn(), path, filepath.Base(path), 1)
+	op := importPDFOp(cmd, f.flags(t), f.conn(), path, filepath.Base(path), 1, "")
 	if op.Kind != "import_pdf" || len(op.Changes) != 1 {
 		t.Fatalf("op = %+v, want a bare import_pdf op with one change", op)
 	}

@@ -61,20 +61,24 @@ endpoint that closes or completes a save session. Observed 2026-08-22: roughly
 78 consecutive one-per-item invocations left Zotero unresponsive with progress
 windows accumulating; no proven mechanism has been established. One invocation
 therefore saves every connector-bound stored create in one session, as import
-file --via connector and items create do; an entry whose own collection needs a
-different save target still gets its own session. Because the batch commits
-together, a failed entry does not stop the entries after it. Prefer one
+file --via connector and items create do; in a run with no destination, an
+entry whose item names its own collection still gets its own session. Because
+the batch commits together, a failed entry does not stop the entries after it,
+a canceled run still reports every entry the session already saved, and
+--max-failures or an explicit --continue-on-error=false is refused. Prefer one
 invocation with many records. --rate-limit governs only Web API requests and
 does not pace connector calls; pace your own invocations.
 
 --collection KEY files every created item into that collection. It overrides
 the manifest's "collection" default for this run; an entry's own "collection"
-still wins over both. The destination applies to created items only: attach
-entries add a file to an item that already exists and do not re-file it. The
-key must exist in the synced local store, or the run is refused before any
-write. A connector save session has one target, so on the connector route an
-entry whose own collection differs from the run's destination is refused
-before any item is created; apply it in a separate run.`,
+still wins over both. The destination applies to created items, including the
+item Zotero's recognizer makes from a "recognize" entry, which its own save
+session files once recognition finishes. Attach entries add a file to an item
+that already exists and do not re-file it. The key must exist in the synced
+local store, or the run is refused before any write. A connector save session
+has one target, so on the connector route an entry whose own collection differs
+from the run's destination, or whose item already lists another collection, is
+refused before any item is created; apply it in a separate run.`,
 		Annotations: map[string]string{
 			"zotio:method": "POST",
 			"zotio:path":   "/items",
@@ -103,6 +107,16 @@ before any item is created; apply it in a separate run.`,
 			}
 			if fetchPDF || (attachMode == "stored" && flags.via == "connector") {
 				if err := refuseImportApplySplitSession(m, defaultCollection); err != nil {
+					return err
+				}
+			}
+			// Checked before the preview branch so a preview cannot succeed for
+			// a flag set the apply refuses.
+			if attachMode == "stored" && flags.via == "connector" && manifestHasResolvedCreate(m) {
+				if err := refuseImportApplySharedSessionMaxFailures(flags); err != nil {
+					return err
+				}
+				if err := refuseImportApplySharedSessionFailFast(cmd, flags); err != nil {
 					return err
 				}
 			}
@@ -162,6 +176,12 @@ before any item is created; apply it in a separate run.`,
 						if err := refuseImportApplySplitSession(m, defaultCollection); err != nil {
 							return err
 						}
+						if err := refuseImportApplySharedSessionMaxFailures(flags); err != nil {
+							return err
+						}
+						if err := refuseImportApplySharedSessionFailFast(cmd, flags); err != nil {
+							return err
+						}
 					}
 				}
 				needsStoredWeb := attachMode == "stored" &&
@@ -201,7 +221,9 @@ before any item is created; apply it in a separate run.`,
 			// A shared connector session commits every batch-mate in one
 			// SaveItems call, so stopping at the first failed entry would report
 			// items that already exist as not_attempted and invite a duplicating
-			// re-run. Every entry reports its own outcome, as in items create.
+			// re-run. Every entry reports its own outcome, as in items create;
+			// --max-failures and --continue-on-error=false were refused above
+			// for the same reason.
 			var runOptions []func(*mutation.Options)
 			if storedCreateVia == "connector" {
 				runOptions = append(runOptions, func(o *mutation.Options) { o.ContinueOnError = true })
@@ -237,13 +259,20 @@ func importApplyCreates(entry importManifestEntry) bool {
 	return entry.Action == "create" && entry.Status == "resolved" && entry.Item != nil
 }
 
+// importApplyFiles reports whether apply creates an item for entry and files
+// it into the entry's destination: a resolved create, or a PDF handed to
+// Zotero's recognizer.
+func importApplyFiles(entry importManifestEntry) bool {
+	return importApplyCreates(entry) || (entry.Action == "recognize" && entry.Path != "")
+}
+
 // verifyImportApplyCollections refuses the run before any write when a
 // destination key is not a collection in the synced local store.
 func verifyImportApplyCollections(ctx context.Context, m importManifest, defaultCollection string) error {
 	var keys []string
 	seen := map[string]bool{}
 	for _, entry := range m.Entries {
-		if !importApplyCreates(entry) {
+		if !importApplyFiles(entry) {
 			continue
 		}
 		if key := importApplyEntryCollection(entry, defaultCollection); key != "" && !seen[key] {
@@ -274,14 +303,18 @@ func verifyImportApplyCollections(ctx context.Context, m importManifest, default
 }
 
 // refuseImportApplySplitSession refuses a connector-bound run in which an
-// entry names a destination other than the run's: the shared save session has
-// one target, and a second session is what the shared session exists to avoid.
+// entry names a destination other than the run's, or in which an entry's item
+// already lists a collection other than its destination: the shared save
+// session has one target, and a second session is what the shared session
+// exists to avoid. Without a destination an item's own collection still picks
+// its session target, as before.
 func refuseImportApplySplitSession(m importManifest, defaultCollection string) error {
 	for i, entry := range m.Entries {
 		if !importApplyCreates(entry) {
 			continue
 		}
-		if key := importApplyEntryCollection(entry, defaultCollection); key != defaultCollection {
+		key := importApplyEntryCollection(entry, defaultCollection)
+		if key != defaultCollection {
 			target := defaultCollection
 			if target == "" {
 				target = "(none)"
@@ -289,6 +322,58 @@ func refuseImportApplySplitSession(m importManifest, defaultCollection string) e
 			return usageErr(fmt.Errorf("manifest entry %d %q sets collection %s but the connector save session targets %s; one session has one target, so apply that entry in a separate run",
 				i+1, importApplyEntryTitle(entry, entry.Item), key, target))
 		}
+		if key == "" {
+			continue
+		}
+		for _, own := range importItemCollectionKeys(entry.Item) {
+			if own != key {
+				return usageErr(fmt.Errorf("manifest entry %d %q item lists collection %s but this run files it into %s; a connector save session files into one target, so remove the item's own collections or apply that entry in a run without a destination",
+					i+1, importApplyEntryTitle(entry, entry.Item), own, key))
+			}
+		}
+	}
+	return nil
+}
+
+// importItemCollectionKeys lists every collection key a manifest item names.
+func importItemCollectionKeys(item map[string]any) []string {
+	var keys []string
+	switch collections := item["collections"].(type) {
+	case []string:
+		for _, key := range collections {
+			if key = strings.TrimSpace(key); key != "" {
+				keys = append(keys, key)
+			}
+		}
+	case []any:
+		for _, raw := range collections {
+			if key, ok := raw.(string); ok && strings.TrimSpace(key) != "" {
+				keys = append(keys, strings.TrimSpace(key))
+			}
+		}
+	}
+	return keys
+}
+
+// refuseImportApplySharedSessionMaxFailures refuses --max-failures when the
+// run's stored creates share one connector session. SaveItems commits every
+// batch-mate inside the first entry's apply, so a failure limit cannot stop
+// entries that are already saved; it would only report them not_attempted
+// and drop the evidence a retry needs (ADR-0008).
+func refuseImportApplySharedSessionMaxFailures(flags *rootFlags) error {
+	if flags.maxFailures > 0 {
+		return usageErr(fmt.Errorf("--max-failures cannot be honoured with --attach-mode stored on the connector route: every stored create is saved in one connector session, so a failure cannot stop the entries saved alongside it; drop --max-failures"))
+	}
+	return nil
+}
+
+// refuseImportApplySharedSessionFailFast refuses an explicit
+// --continue-on-error=false for the same reason. The shared session cannot
+// stop before the entries it already saved, and overriding the flag silently
+// would hide that (ADR-0008).
+func refuseImportApplySharedSessionFailFast(cmd *cobra.Command, flags *rootFlags) error {
+	if cmd.Flags().Changed("continue-on-error") && !flags.continueOnError {
+		return usageErr(fmt.Errorf("--continue-on-error=false cannot be honoured with --attach-mode stored on the connector route: every stored create is saved in one connector session, so the run cannot stop before the entries saved alongside it; drop --continue-on-error=false"))
 	}
 	return nil
 }
@@ -500,11 +585,16 @@ func importApplyOps(cmd *cobra.Command, flags *rootFlags, writeClient importAppl
 				number: entryNumber, title: entryTitle, path: entryPath,
 				sourceURL: importEntrySourceURL(entry, item), item: item,
 			}
-			// A connector save session has exactly one target (the run's
-			// destination), so an entry whose item names some other
-			// collection keeps its own session.
-			itemCollection := connectorCollectionKeyFromItem(item)
-			if session != nil && (itemCollection == "" || itemCollection == session.collectionKey || strings.TrimSpace(flags.connectorTarget) != "") {
+			// A connector save session has exactly one target: the run's
+			// destination. An entry with a destination joins it (the connector
+			// route refuses an item that lists any other collection); without
+			// one, an entry whose item names its own collection keeps its own
+			// session.
+			sessionCollection := destination
+			if sessionCollection == "" {
+				sessionCollection = connectorCollectionKeyFromItem(item)
+			}
+			if session != nil && (sessionCollection == "" || sessionCollection == session.collectionKey || strings.TrimSpace(flags.connectorTarget) != "") {
 				session.entries = append(session.entries, storedEntry)
 			} else {
 				storedEntry = nil
@@ -528,14 +618,18 @@ func importApplyOps(cmd *cobra.Command, flags *rootFlags, writeClient importAppl
 					// Web route creates the parent, then delegates the child bytes
 					// to the same exactly-once uploader as `attachments add`.
 					if attachMode == "stored" {
-						attachmentReq, err := prepareStoredCreate(entryNumber, entryPath)
-						if err != nil {
-							return "failed", nil, err
-						}
+						// A batch-mate's outcome was settled when the shared
+						// session ran. Its file may be gone by now, which
+						// changes nothing that was committed, so the outcome is
+						// read before the file preflight the fallback needs.
 						if storedEntry != nil {
 							if status, detail, err, shared := session.apply(storedEntry); shared {
 								return status, detail, err
 							}
+						}
+						attachmentReq, err := prepareStoredCreate(entryNumber, entryPath)
+						if err != nil {
+							return "failed", nil, err
 						}
 						collectionRequested := connectorCollectionKeyFromItem(item) != "" || strings.TrimSpace(flags.connectorTarget) != ""
 						via, err := flags.resolveCreateVia(cmd.Context(), collectionRequested)
@@ -672,6 +766,12 @@ func importApplyOps(cmd *cobra.Command, flags *rootFlags, writeClient importAppl
 					return "applied", detail, nil
 				},
 			})
+			if storedEntry != nil {
+				// The shared SaveItems carries this entry as soon as the first
+				// batch-mate applies, so a run canceled before this entry's own
+				// turn must still report what the session did with it.
+				ops[len(ops)-1].Dispatched = storedEntry.sent
+			}
 			if fetchPDF {
 				ops = append(ops, mutation.Op{
 					ID:   fmt.Sprintf("import.apply:%03d:resolver-pdf", entryNumber),
@@ -696,8 +796,10 @@ func importApplyOps(cmd *cobra.Command, flags *rootFlags, writeClient importAppl
 			}
 			entryPath := entry.Path
 			entryNumber := i + 1
-			// Recognize unidentified PDFs through Zotero's desktop Connector API.
-			ops = append(ops, importPDFOp(cmd, flags, nil, entryPath, filepath.Base(entryPath), entryNumber))
+			// Recognize unidentified PDFs through Zotero's desktop Connector
+			// API; the recognition's own save session files the new item.
+			ops = append(ops, importPDFOp(cmd, flags, nil, entryPath, filepath.Base(entryPath), entryNumber,
+				importApplyEntryCollection(entry, defaultCollection)))
 		case "attach":
 			if entry.MatchedKey == "" {
 				continue
@@ -774,6 +876,14 @@ type importApplyStoredEntry struct {
 	status string
 	detail any
 	err    error
+	// dispatched marks an entry that the shared SaveItems carried.
+	dispatched bool
+}
+
+// sent reports whether the shared SaveItems carried this entry, so its
+// outcome exists whatever happens to the run afterwards.
+func (e *importApplyStoredEntry) sent() bool {
+	return e.dispatched
 }
 
 func (e *importApplyStoredEntry) record(status string, detail map[string]any, err error) {
@@ -903,6 +1013,15 @@ func (s *importApplyConnectorSession) run() {
 	createdAfter := time.Now().UTC().Add(-recentItemClockSkew)
 	for i := range results {
 		results[i].CreatedAfter = createdAfter
+	}
+	// A run canceled before this point has written nothing, so its entries
+	// fail cleanly and the engine reports the rest as not attempted.
+	if err := ctx.Err(); err != nil {
+		failAll(err)
+		return
+	}
+	for _, entry := range batch {
+		entry.dispatched = true
 	}
 	if saveErr := conn.SaveItems(ctx, sessionID, "", payload); saveErr != nil {
 		// The connector can report an error after committing the items, so

@@ -93,8 +93,10 @@ endpoint that closes or completes a save session. Observed 2026-08-22: roughly
 78 consecutive one-per-item invocations left Zotero unresponsive with progress
 windows accumulating; no proven mechanism has been established. Prefer one
 invocation with many PDFs: import file --via connector and items create share
-one session (import apply opens one per manifest entry). --rate-limit
-governs only Web API requests and does not pace connector calls.`,
+one session, and import apply saves all of its stored creates in one session
+per invocation; its recognize and --fetch-pdf entries, like each PDF here,
+still use one session each. --rate-limit governs only Web API requests and
+does not pace connector calls.`,
 		Args: cobra.MinimumNArgs(1),
 		Annotations: map[string]string{
 			"zotio:method": "POST",
@@ -151,14 +153,21 @@ governs only Web API requests and does not pace connector calls.`,
 	return cmd
 }
 
-// importPDFOptions configures behavior beyond bare recognition that only the
-// standalone `import pdf` command exercises. import apply's manifest-driven
-// "recognize" step reuses importPDFOp with the zero value: no collection
-// filing, no duplicate handling — the manifest's own review step already
-// decided what to do with each file.
+// importPDFOptions configures behavior beyond bare recognition. The standalone
+// `import pdf` command uses Collection and the duplicate handling; import
+// apply's manifest-driven "recognize" step uses only SessionCollection — the
+// manifest's own review step already decided what to do with each file.
 type importPDFOptions struct {
 	// Collection is the --collection value (key or name); empty disables filing.
 	Collection string
+	// SessionCollection is a verified collection key that the recognition's
+	// own connector save session files the new item into (updateSession),
+	// the way a stored create's session is filed. It is mapped to a desktop
+	// target before the PDF is sent, so an unmappable key writes nothing, and
+	// it needs no Web API write. Zotero moves the recognized parent, not the
+	// PDF that became its child (saveSession.js _updateItems). Empty files
+	// nothing.
+	SessionCollection string
 	// OnDuplicate is skip|attach|create; only consulted when Duplicate.Status
 	// is "duplicate".
 	OnDuplicate string
@@ -167,10 +176,11 @@ type importPDFOptions struct {
 	Duplicate scanResult
 }
 
-// importPDFOp builds a bare recognition op with none of the standalone
-// command's extras. import apply's "recognize" manifest entries call this.
-func importPDFOp(cmd *cobra.Command, flags *rootFlags, conn *connector.Client, path, label string, index int) mutation.Op {
-	return importPDFOpWithOptions(cmd, flags, conn, path, label, index, importPDFOptions{OnDuplicate: "create"})
+// importPDFOp builds a recognition op with none of the standalone command's
+// extras. import apply's "recognize" manifest entries call this; destination
+// is the entry's collection key, empty for none.
+func importPDFOp(cmd *cobra.Command, flags *rootFlags, conn *connector.Client, path, label string, index int, destination string) mutation.Op {
+	return importPDFOpWithOptions(cmd, flags, conn, path, label, index, importPDFOptions{OnDuplicate: "create", SessionCollection: destination})
 }
 
 func importPDFOpWithOptions(cmd *cobra.Command, flags *rootFlags, conn *connector.Client, path, label string, index int, opts importPDFOptions) mutation.Op {
@@ -191,6 +201,9 @@ func importPDFOpWithOptions(cmd *cobra.Command, flags *rootFlags, conn *connecto
 	}
 	if opts.Collection != "" {
 		changes = append(changes, mutation.Change{Field: "collection", Add: opts.Collection})
+	}
+	if opts.SessionCollection != "" {
+		changes = append(changes, mutation.Change{Field: "collection", Add: opts.SessionCollection})
 	}
 	return mutation.Op{
 		ID:      fmt.Sprintf("import.pdf.%03d", index),
@@ -244,6 +257,18 @@ func importPDFOpWithOptions(cmd *cobra.Command, flags *rootFlags, conn *connecto
 					return "failed", nil, err
 				}
 			}
+			// The destination is mapped to a desktop target before the PDF is
+			// sent, so a key the desktop cannot address writes nothing.
+			sessionTarget := ""
+			if opts.SessionCollection != "" {
+				sessionTarget = strings.TrimSpace(flags.connectorTarget)
+				if sessionTarget == "" {
+					sessionTarget, err = resolveConnectorTarget(cmd.Context(), flags, activeConn, opts.SessionCollection)
+					if err != nil {
+						return "failed", nil, err
+					}
+				}
+			}
 			// Anchor key resolution to a wall-clock floor captured BEFORE the
 			// item exists. Zotero sets dateAdded at import time, so anything
 			// older than this cannot be what this op created.
@@ -271,7 +296,25 @@ func importPDFOpWithOptions(cmd *cobra.Command, flags *rootFlags, conn *connecto
 				result.DuplicateOf = opts.Duplicate.ItemKey
 				result.DuplicateNote = fmt.Sprintf("DOI %s matched existing item %s; created a new item because --on-duplicate create was requested", opts.Duplicate.DOI, opts.Duplicate.ItemKey)
 			}
+			// Filed only after getRecognizedItem, which waits for recognition:
+			// updating the session earlier would file the PDF, not the parent
+			// that recognition is about to create around it.
+			var filingErr error
+			if sessionTarget != "" {
+				if filingErr = activeConn.UpdateSession(cmd.Context(), sessionID, sessionTarget, nil, ""); filingErr != nil {
+					result.CollectionNote = "not filed: " + filingErr.Error()
+				} else {
+					result.CollectionKey = opts.SessionCollection
+					result.CollectionNote = "filed into collection " + opts.SessionCollection
+				}
+			}
 			resolveImportPDFKeys(flags, &result, filepath.Base(path), importedAfter)
+			if filingErr != nil {
+				// The item exists but sits wherever the desktop pointed, so
+				// this is a committed conflict, never a clean failure that
+				// invites a second import.
+				return "conflict", result, filingErr
+			}
 
 			if opts.Collection == "" {
 				return "applied", result, nil

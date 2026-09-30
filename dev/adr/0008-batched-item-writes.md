@@ -100,3 +100,12 @@ dishonest.
   against object arrays, not tags, so enrich can adopt it later.
 - If a future caller needs fail-fast over large key sets, the answer is
   smaller chunks or the default path, not a partial batch abort.
+- `import apply --attach-mode stored --via connector` (2026-10-01) is a
+  second batched write under the same rules, although it has no `--batch`
+  flag: its one connector save session commits every stored create in one
+  `saveItems` call. It therefore forces `ContinueOnError` and refuses
+  `--max-failures` and an explicit `--continue-on-error=false` before any
+  request. On cancellation the session already holds each sent entry's
+  outcome, so the opt-in `mutation.Op.Dispatched` hook lets the engine
+  collect that real outcome instead of reporting `not_attempted`; entries
+  never sent stay `not_attempted`.

@@ -1135,20 +1135,24 @@ endpoint that closes or completes a save session. Observed 2026-08-22: roughly
 78 consecutive one-per-item invocations left Zotero unresponsive with progress
 windows accumulating; no proven mechanism has been established. One invocation
 therefore saves every connector-bound stored create in one session, as import
-file --via connector and items create do; an entry whose own collection needs a
-different save target still gets its own session. Because the batch commits
-together, a failed entry does not stop the entries after it. Prefer one
+file --via connector and items create do; in a run with no destination, an
+entry whose item names its own collection still gets its own session. Because
+the batch commits together, a failed entry does not stop the entries after it,
+a canceled run still reports every entry the session already saved, and
+--max-failures or an explicit --continue-on-error=false is refused. Prefer one
 invocation with many records. --rate-limit governs only Web API requests and
 does not pace connector calls; pace your own invocations.
 
 --collection KEY files every created item into that collection. It overrides
 the manifest's "collection" default for this run; an entry's own "collection"
-still wins over both. The destination applies to created items only: attach
-entries add a file to an item that already exists and do not re-file it. The
-key must exist in the synced local store, or the run is refused before any
-write. A connector save session has one target, so on the connector route an
-entry whose own collection differs from the run's destination is refused
-before any item is created; apply it in a separate run.
+still wins over both. The destination applies to created items, including the
+item Zotero's recognizer makes from a "recognize" entry, which its own save
+session files once recognition finishes. Attach entries add a file to an item
+that already exists and do not re-file it. The key must exist in the synced
+local store, or the run is refused before any write. A connector save session
+has one target, so on the connector route an entry whose own collection differs
+from the run's destination, or whose item already lists another collection, is
+refused before any item is created; apply it in a separate run.
 
 ```
 zotio import apply <manifest> [flags]
@@ -1320,8 +1324,10 @@ endpoint that closes or completes a save session. Observed 2026-08-22: roughly
 78 consecutive one-per-item invocations left Zotero unresponsive with progress
 windows accumulating; no proven mechanism has been established. Prefer one
 invocation with many PDFs: import file --via connector and items create share
-one session (import apply opens one per manifest entry). --rate-limit
-governs only Web API requests and does not pace connector calls.
+one session, and import apply saves all of its stored creates in one session
+per invocation; its recognize and --fetch-pdf entries, like each PDF here,
+still use one session each. --rate-limit governs only Web API requests and
+does not pace connector calls.
 
 ```
 zotio import pdf <path...> [flags]

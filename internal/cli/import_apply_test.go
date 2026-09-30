@@ -908,6 +908,7 @@ func TestImportApplyStoredConnectorCreateReportsOrphanedParentOnAttachFailure(t 
 // how many save sessions a run opens and which parents received files.
 type importApplySessionFake struct {
 	mu          sync.Mutex
+	requests    int
 	sessions    map[string]bool
 	saveItems   int
 	savedItems  int
@@ -915,6 +916,12 @@ type importApplySessionFake struct {
 	urlByTitle  map[string]string
 	failTitle   string
 	targets     []string
+	// onAttach runs inside saveAttachment for the named parent title.
+	onAttach func(title string)
+	// standalone lists the sessions saveStandaloneAttachment opened; calls
+	// orders recognition and filing requests as "<endpoint> <session>".
+	standalone []string
+	calls      []string
 }
 
 // importApplySessionKeys are valid Zotero keys the fake assigns per title.
@@ -937,6 +944,7 @@ func startImportApplySessionFake(t *testing.T, failTitle string, md5ByTitle map[
 	server := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		fake.mu.Lock()
 		defer fake.mu.Unlock()
+		fake.requests++
 		switch {
 		case r.URL.Path == "/connector/ping":
 			w.WriteHeader(http.StatusOK)
@@ -951,11 +959,31 @@ func startImportApplySessionFake(t *testing.T, failTitle string, md5ByTitle map[
 			})
 		case r.URL.Path == "/connector/updateSession":
 			var body struct {
-				Target string `json:"target"`
+				SessionID string `json:"sessionID"`
+				Target    string `json:"target"`
 			}
 			_ = json.NewDecoder(r.Body).Decode(&body)
 			fake.targets = append(fake.targets, body.Target)
+			fake.calls = append(fake.calls, "updateSession "+body.SessionID)
 			w.WriteHeader(http.StatusOK)
+		case r.URL.Path == "/connector/saveStandaloneAttachment":
+			var metadata struct {
+				SessionID string `json:"sessionID"`
+			}
+			if err := json.Unmarshal([]byte(r.Header.Get("X-Metadata")), &metadata); err != nil {
+				t.Errorf("decode standalone metadata: %v", err)
+			}
+			fake.sessions[metadata.SessionID] = true
+			fake.standalone = append(fake.standalone, metadata.SessionID)
+			w.WriteHeader(http.StatusCreated)
+			_, _ = w.Write([]byte(`{"canRecognize":true}`))
+		case r.URL.Path == "/connector/getRecognizedItem":
+			var body struct {
+				SessionID string `json:"sessionID"`
+			}
+			_ = json.NewDecoder(r.Body).Decode(&body)
+			fake.calls = append(fake.calls, "getRecognizedItem "+body.SessionID)
+			_ = json.NewEncoder(w).Encode(map[string]string{"title": "Recognized Paper", "itemType": "journalArticle"})
 		case r.URL.Path == "/api/users/0/collections":
 			_ = json.NewEncoder(w).Encode([]any{
 				map[string]any{"key": "C1", "data": map[string]any{"key": "C1", "name": "Team Review", "parentCollection": false}},
@@ -989,6 +1017,9 @@ func startImportApplySessionFake(t *testing.T, failTitle string, md5ByTitle map[
 			}
 			fake.sessions[metadata.SessionID] = true
 			title := fake.titleByConn[metadata.ParentItemID]
+			if fake.onAttach != nil {
+				fake.onAttach(title)
+			}
 			if title == fake.failTitle {
 				http.Error(w, "simulated attachment failure for "+title, http.StatusInternalServerError)
 				return
@@ -1316,6 +1347,11 @@ func runImportApplyTestCmd(t *testing.T, args []string) (mutation.Envelope, stri
 
 func runImportApplyTestCmdWithFlags(t *testing.T, flags *rootFlags, args []string) (mutation.Envelope, string, error) {
 	t.Helper()
+	return runImportApplyTestCmdContext(t, context.Background(), flags, args)
+}
+
+func runImportApplyTestCmdContext(t *testing.T, ctx context.Context, flags *rootFlags, args []string) (mutation.Envelope, string, error) {
+	t.Helper()
 	cmd := newImportApplyCmd(flags)
 	cmd.SilenceErrors, cmd.SilenceUsage = true, true
 	var out bytes.Buffer
@@ -1323,7 +1359,7 @@ func runImportApplyTestCmdWithFlags(t *testing.T, flags *rootFlags, args []strin
 	cmd.SetOut(&out)
 	cmd.SetErr(&errOut)
 	cmd.SetArgs(args)
-	err := cmd.Execute()
+	err := cmd.ExecuteContext(ctx)
 	var env mutation.Envelope
 	if out.Len() > 0 {
 		if decodeErr := json.Unmarshal(out.Bytes(), &env); decodeErr != nil {
@@ -1701,5 +1737,256 @@ func TestImportApplyConnectorSessionTargetsDestination(t *testing.T) {
 	}
 	if fmt.Sprint(fake.targets) != "[C7]" {
 		t.Fatalf("updateSession targets = %v, want [C7] resolved from C1", fake.targets)
+	}
+}
+
+func importApplyConnectorTestFlags(t *testing.T) *rootFlags {
+	t.Helper()
+	return &rootFlags{
+		asJSON: true, yes: true, via: "connector", timeout: time.Second, maxChanges: -1,
+		configPath: testConfigFile(t, "http://127.0.0.1:23119/api/users/0"),
+	}
+}
+
+// runImportApplyConnectorRun gives every entry of m its own PDF, starts the
+// session fake with collections C1 and C2 synced, lets prepare adjust the fake
+// (paths maps each entry title to its PDF), and applies m through the
+// connector under ctx. A nil flags uses importApplyConnectorTestFlags.
+func runImportApplyConnectorRun(t *testing.T, ctx context.Context, m importManifest, flags *rootFlags, prepare func(fake *importApplySessionFake, paths map[string]string), args ...string) (*importApplySessionFake, mutation.Envelope, error) {
+	t.Helper()
+	seedImportApplyCollections(t, "C1", "C2")
+	mutationJournalRecorder = recordMutationJournal
+	t.Cleanup(func() { mutationJournalRecorder = nil })
+	md5ByTitle := map[string]string{}
+	paths := map[string]string{}
+	for i := range m.Entries {
+		title := m.Entries[i].Title
+		pdf := writeUploadFixture(t, fmt.Sprintf("paper-%d.pdf", i), []byte("%PDF-1.4\n"+title+"\n%%EOF"))
+		sum, err := fileMD5(pdf)
+		if err != nil {
+			t.Fatal(err)
+		}
+		md5ByTitle[title] = sum
+		paths[title] = pdf
+		m.Entries[i].Path = pdf
+		m.Dir = filepath.Dir(pdf)
+	}
+	fake := startImportApplySessionFake(t, "", md5ByTitle)
+	if prepare != nil {
+		prepare(fake, paths)
+	}
+	if flags == nil {
+		flags = importApplyConnectorTestFlags(t)
+	}
+	env, _, err := runImportApplyTestCmdContext(t, ctx, flags, append(args, writeImportApplyTestManifest(t, m)))
+	return fake, env, err
+}
+
+// A connector session files into one target. An item that already lists
+// another collection would otherwise leave the shared session and be filed
+// into that collection while the preview and journal name the destination.
+func TestImportApplyConnectorRefusesItemListingOtherCollection(t *testing.T) {
+	m := importApplyCollectionManifest("")
+	m.Entries[1].Item["collections"] = []any{"C2"}
+	fake, _, err := runImportApplyConnectorRun(t, context.Background(), m, nil, nil, "--attach-mode", "stored")
+	if err == nil || ExitCode(err) != 2 {
+		t.Fatalf("err = %v (exit %d), want usage refusal", err, ExitCode(err))
+	}
+	for _, want := range []string{"entry 2", "Paper B", "C2", "C1"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("err = %v, want it to name %q", err, want)
+		}
+	}
+	if fake.saveItems != 0 || len(fake.sessions) != 0 {
+		t.Fatalf("saveItems=%d sessions=%d, want no connector save before the refusal", fake.saveItems, len(fake.sessions))
+	}
+}
+
+func importApplyRecognizeManifest() importManifest {
+	return importManifest{SchemaVersion: importManifestSchemaVersion, Entries: []importManifestEntry{{
+		Classification: "unidentified", Action: "recognize", Status: "unresolved", Title: "Scan",
+	}}}
+}
+
+// A recognize entry creates an item too, so the run's destination must file
+// it: through the recognition's own save session, after recognition settles,
+// so Zotero moves the recognized parent rather than the PDF.
+func TestImportApplyRecognizeFilesIntoDestination(t *testing.T) {
+	fake, env, err := runImportApplyConnectorRun(t, context.Background(), importApplyRecognizeManifest(), nil, nil, "--collection", "C1")
+	if err != nil {
+		t.Fatalf("apply: %v env=%+v", err, env)
+	}
+	if len(fake.standalone) != 1 || fmt.Sprint(fake.targets) != "[C7]" {
+		t.Fatalf("standalone sessions=%v targets=%v, want one recognition session filed into C7 (C1)", fake.standalone, fake.targets)
+	}
+	session := fake.standalone[0]
+	if want := []string{"getRecognizedItem " + session, "updateSession " + session}; fmt.Sprint(fake.calls) != fmt.Sprint(want) {
+		t.Fatalf("connector calls = %v, want %v", fake.calls, want)
+	}
+	item := env.Result.Items[0]
+	reason, _ := item.Reason.(map[string]any)
+	if item.Status != "applied" || reason["collection_key"] != "C1" {
+		t.Fatalf("result = %+v, want applied and filed into C1", item)
+	}
+}
+
+func TestImportApplyRecognizeUnknownDestinationRefusedBeforeWrite(t *testing.T) {
+	fake, _, err := runImportApplyConnectorRun(t, context.Background(), importApplyRecognizeManifest(), nil, nil, "--collection", "MISSING")
+	if err == nil || ExitCode(err) != 2 || !strings.Contains(err.Error(), "MISSING") {
+		t.Fatalf("err = %v (exit %d), want usage refusal naming MISSING", err, ExitCode(err))
+	}
+	if fake.requests != 0 {
+		t.Fatalf("connector requests = %d, want none before the refusal", fake.requests)
+	}
+}
+
+// SaveItems commits every batch-mate inside the first entry's apply, so a
+// failure limit could only relabel saved entries not_attempted.
+func TestImportApplyConnectorRefusesMaxFailures(t *testing.T) {
+	flags := importApplyConnectorTestFlags(t)
+	flags.maxFailures = 1
+	m := importApplyCollectionManifest("")
+	m.Collection = ""
+	fake, env, err := runImportApplyConnectorRun(t, context.Background(), m, flags, nil, "--attach-mode", "stored")
+	if err == nil || ExitCode(err) != 2 || !strings.Contains(err.Error(), "--max-failures") {
+		t.Fatalf("err = %v (exit %d), want usage refusal naming --max-failures", err, ExitCode(err))
+	}
+	if fake.requests != 0 || env.Result != nil {
+		t.Fatalf("connector requests=%d result=%+v, want no request and no result", fake.requests, env.Result)
+	}
+}
+
+// An explicit fail-fast cannot hold either once SaveItems has carried every
+// batch-mate, so it is refused instead of silently overridden. The whole root
+// runs because --continue-on-error is a persistent root flag and the refusal
+// reads whether the caller set it.
+func TestImportApplyConnectorRefusesExplicitFailFast(t *testing.T) {
+	seedImportApplyCollections(t)
+	pdf := writeUploadFixture(t, "fail-fast.pdf", []byte("%PDF-1.4\nfail fast\n%%EOF"))
+	manifestPath := writeImportApplyTestManifest(t, importManifest{
+		SchemaVersion: importManifestSchemaVersion, Dir: filepath.Dir(pdf),
+		Entries: []importManifestEntry{{
+			Path: pdf, Action: "create", Status: "resolved", Title: "Paper A",
+			Item: map[string]any{"itemType": "journalArticle", "title": "Paper A"},
+		}},
+	})
+	fake := startImportApplySessionFake(t, "", nil)
+	t.Setenv("ZOTERO_BASE_URL", "http://127.0.0.1:23119/api/users/0")
+	t.Setenv("ZOTERO_CONFIG", filepath.Join(t.TempDir(), "missing.toml"))
+	root := newRootCmd(&rootFlags{})
+	root.SilenceErrors, root.SilenceUsage = true, true
+	root.SetOut(&bytes.Buffer{})
+	root.SetErr(&bytes.Buffer{})
+	root.SetArgs([]string{"import", "apply", "--attach-mode", "stored", "--via", "connector",
+		"--continue-on-error=false", "--yes", "--json", manifestPath})
+	err := root.Execute()
+	if err == nil || ExitCode(err) != 2 || !strings.Contains(err.Error(), "--continue-on-error=false") {
+		t.Fatalf("err = %v (exit %d), want usage refusal naming --continue-on-error=false", err, ExitCode(err))
+	}
+	if fake.requests != 0 {
+		t.Fatalf("connector requests = %d, want none before the refusal", fake.requests)
+	}
+}
+
+// Cancelling after SaveItems cannot unsave anything. Every entry the session
+// carried must report what happened to it, and be journaled, instead of
+// not_attempted, which would hide a committed item from undo and invite a
+// duplicating retry.
+func TestImportApplyCancelAfterSaveItemsReportsDispatchedEntries(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	m := importApplyCollectionManifest("")
+	m.Collection = ""
+	fake, env, err := runImportApplyConnectorRun(t, ctx, m, nil, func(fake *importApplySessionFake, _ map[string]string) {
+		fake.onAttach = func(title string) {
+			if title == "Paper C" {
+				cancel()
+			}
+		}
+	}, "--attach-mode", "stored")
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("err = %v, want cancellation", err)
+	}
+	if fake.saveItems != 1 || env.Result == nil || len(env.Result.Items) != 3 {
+		t.Fatalf("saveItems=%d env=%+v, want one SaveItems and three results", fake.saveItems, env)
+	}
+	first, second, third := env.Result.Items[0], env.Result.Items[1], env.Result.Items[2]
+	if first.Status != "applied" || first.Key != "PARENTAA" || second.Status != "applied" || second.Key != "PARENTAB" {
+		t.Fatalf("items = %+v / %+v, want entries 1 and 2 applied with their keys", first, second)
+	}
+	reason, _ := third.Reason.(map[string]any)
+	if third.Status != "conflict" || reason["committed"] != true || reason["session"] == "" || reason["connector_key"] == "" {
+		t.Fatalf("entry 3 = %+v, want a committed conflict carrying session and connector key", third)
+	}
+	if env.Result.Summary.NotAttempted != 0 {
+		t.Fatalf("summary = %+v, want no entry reported not_attempted", env.Result.Summary)
+	}
+	journal, listErr := mutation.ListEntries(helpersTestJournalDir(t))
+	if listErr != nil || len(journal) != 1 || len(journal[0].Ops) != 3 {
+		t.Fatalf("journal = %+v err=%v, want one entry with three ops", journal, listErr)
+	}
+	ops := journal[0].Ops
+	journaled, _ := ops[2].Reason.(map[string]any)
+	if ops[1].Status != "applied" || ops[1].Key != "PARENTAB" || ops[2].Status != "conflict" || journaled["committed"] != true {
+		t.Fatalf("journal ops = %+v, want entry 2 applied as PARENTAB and entry 3 a committed conflict", ops)
+	}
+}
+
+// The shared session settles every batch-mate before their own ops run; a
+// file that disappears afterwards changes nothing that was committed.
+func TestImportApplySharedEntryKeepsOutcomeWhenFileLaterMissing(t *testing.T) {
+	m := importApplyCollectionManifest("")
+	m.Collection = ""
+	_, env, err := runImportApplyConnectorRun(t, context.Background(), m, nil, func(fake *importApplySessionFake, paths map[string]string) {
+		fake.onAttach = func(title string) {
+			if title == "Paper C" {
+				_ = os.Remove(paths["Paper B"])
+			}
+		}
+	}, "--attach-mode", "stored")
+	if err != nil {
+		t.Fatalf("apply: %v env=%+v", err, env)
+	}
+	if second := env.Result.Items[1]; second.Status != "applied" || second.Key != "PARENTAB" {
+		t.Fatalf("entry 2 = %+v, want its committed outcome applied as PARENTAB", second)
+	}
+}
+
+// A reader that predates destinations accepts versions 1 and 2 only, so a
+// manifest naming a collection must carry 3 to be refused there instead of
+// applied unfiled; one without keeps 2 so those readers still apply it.
+func TestImportManifestWithDestinationIsVersion3(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		edit  func(*importManifest)
+		wantV float64
+	}{
+		{"no destination", func(*importManifest) {}, 2},
+		{"manifest default", func(m *importManifest) { m.Collection = "C1" }, 3},
+		{"entry override only", func(m *importManifest) { m.Entries[0].Collection = "C2" }, 3},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			m := importApplyCollectionManifest("")
+			m.Collection = ""
+			tc.edit(&m)
+			var buf bytes.Buffer
+			if err := writeImportManifest(&buf, m); err != nil {
+				t.Fatalf("write: %v", err)
+			}
+			var raw map[string]any
+			if err := json.Unmarshal(buf.Bytes(), &raw); err != nil {
+				t.Fatalf("decode: %v", err)
+			}
+			if raw["schema_version"] != tc.wantV {
+				t.Fatalf("schema_version = %v, want %v", raw["schema_version"], tc.wantV)
+			}
+			got, err := readImportManifest("-", bytes.NewReader(buf.Bytes()))
+			if err != nil {
+				t.Fatalf("read back: %v", err)
+			}
+			if got.Collection != m.Collection || got.Entries[0].Collection != m.Entries[0].Collection {
+				t.Fatalf("read back %+v, want the destinations preserved", got)
+			}
+		})
 	}
 }

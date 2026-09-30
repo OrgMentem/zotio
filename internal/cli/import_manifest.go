@@ -10,9 +10,17 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strings"
 )
 
 const importManifestSchemaVersion = 2
+
+// importManifestCollectionSchemaVersion marks a manifest that names a
+// destination collection. Readers before it accept only 1 and 2 and would drop
+// "collection" silently, creating unfiled items; stamping 3 makes them refuse
+// the manifest instead. A manifest without a destination keeps version 2, so
+// those readers still apply it.
+const importManifestCollectionSchemaVersion = 3
 
 type importDiscovery struct {
 	Direction       string   `json:"direction,omitempty"`
@@ -98,15 +106,34 @@ func readImportManifest(path string, stdin io.Reader) (importManifest, error) {
 	if err := json.Unmarshal(data, &m); err != nil {
 		return importManifest{}, fmt.Errorf("parsing manifest: %w", err)
 	}
-	if m.SchemaVersion != 1 && m.SchemaVersion != importManifestSchemaVersion {
-		return importManifest{}, fmt.Errorf("unsupported manifest schema_version %d (want 1 or %d)", m.SchemaVersion, importManifestSchemaVersion)
+	if m.SchemaVersion != 1 && m.SchemaVersion != importManifestSchemaVersion && m.SchemaVersion != importManifestCollectionSchemaVersion {
+		return importManifest{}, fmt.Errorf("unsupported manifest schema_version %d (want 1, %d, or %d)", m.SchemaVersion, importManifestSchemaVersion, importManifestCollectionSchemaVersion)
 	}
 	return m, nil
 }
 
-// writeImportManifest writes the manifest as indented JSON.
+// writeImportManifest writes the manifest as indented JSON. A manifest that
+// names a destination collection is stamped with the version older readers
+// refuse.
 func writeImportManifest(w io.Writer, m importManifest) error {
+	if manifestNamesCollection(m) {
+		m.SchemaVersion = importManifestCollectionSchemaVersion
+	}
 	enc := json.NewEncoder(w)
 	enc.SetIndent("", "  ")
 	return enc.Encode(m)
+}
+
+// manifestNamesCollection reports whether the manifest or any entry sets a
+// destination collection.
+func manifestNamesCollection(m importManifest) bool {
+	if strings.TrimSpace(m.Collection) != "" {
+		return true
+	}
+	for _, entry := range m.Entries {
+		if strings.TrimSpace(entry.Collection) != "" {
+			return true
+		}
+	}
+	return false
 }

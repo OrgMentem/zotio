@@ -39,6 +39,13 @@ type Op struct {
 	Destructive     bool                                          `json:"destructive,omitempty"`
 	Apply           func() (status string, reason any, err error) `json:"-"`
 	NoOpReason      any                                           `json:"-"`
+	// Dispatched, when set, reports whether this op's write already left the
+	// process inside an earlier op's Apply (a shared save session or batch
+	// request). After the run stops, for cancellation or a failure limit, such
+	// an op still reports its real outcome through Apply: not_attempted would
+	// hide a committed write and invite a duplicating retry. Ops without it
+	// keep the plain not_attempted verdict.
+	Dispatched func() bool `json:"-"`
 }
 
 // PlanSummary counts the planned operations before apply.
@@ -213,6 +220,7 @@ func Run(o Options, operation string, ops []Op) (Envelope, error) {
 	failures := 0
 	stop := false
 	canceled := false
+	collected := 0
 	for _, op := range ops {
 		// Cancellation is checked between operations. The op already running when
 		// the context is cancelled is aborted by its own transport; this keeps the
@@ -222,9 +230,12 @@ func Run(o Options, operation string, ops []Op) (Envelope, error) {
 			canceled = true
 		}
 		if stop {
-			result.Items = append(result.Items, ResultItem{OpID: op.ID, Key: op.Key, Status: "not_attempted"})
-			result.Summary.NotAttempted++
-			continue
+			if op.Dispatched == nil || !op.Dispatched() {
+				result.Items = append(result.Items, ResultItem{OpID: op.ID, Key: op.Key, Status: "not_attempted"})
+				result.Summary.NotAttempted++
+				continue
+			}
+			collected++
 		}
 		item := ResultItem{OpID: op.ID, Key: op.Key}
 		if op.Kind == "item_create" {
@@ -298,7 +309,11 @@ func Run(o Options, operation string, ops []Op) (Envelope, error) {
 		}
 	}
 	if canceled {
-		env.Warnings = append(env.Warnings, fmt.Sprintf("run canceled: %v; remaining operations were not attempted", o.Context.Err()))
+		warning := fmt.Sprintf("run canceled: %v; remaining operations were not attempted", o.Context.Err())
+		if collected > 0 {
+			warning = fmt.Sprintf("run canceled: %v; %d operation(s) already dispatched report their own outcome, %d were not attempted", o.Context.Err(), collected, result.Summary.NotAttempted)
+		}
+		env.Warnings = append(env.Warnings, warning)
 	}
 	env.Result = &result
 	env.OK = result.Summary.Conflicts == 0 && result.Summary.Failed == 0 && result.Summary.NotAttempted == 0 && env.Plan.Summary.Invalid == 0

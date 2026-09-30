@@ -210,6 +210,41 @@ func TestRunApplyStopsOnCanceledContext(t *testing.T) {
 	}
 }
 
+// An op whose write left with an earlier op's request already has an outcome.
+// Cancelling must collect it, with its key, while an op that was never sent
+// stays not_attempted.
+func TestRunApplyCollectsDispatchedOutcomeAfterCancel(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	sent := false
+	ops := []Op{
+		{ID: "op1", Kind: "test", Changes: []Change{{Field: "title", Add: "A"}}, Apply: func() (string, any, error) {
+			sent = true
+			cancel()
+			return "applied", map[string]any{"key": "KEY1"}, nil
+		}},
+		{ID: "op2", Kind: "test", Changes: []Change{{Field: "title", Add: "B"}},
+			Dispatched: func() bool { return sent },
+			Apply:      func() (string, any, error) { return "applied", map[string]any{"key": "KEY2"}, nil }},
+		{ID: "op3", Kind: "test", Changes: []Change{{Field: "title", Add: "C"}},
+			Dispatched: func() bool { return false },
+			Apply: func() (string, any, error) {
+				t.Error("an op that was never dispatched ran after cancellation")
+				return "applied", nil, nil
+			}},
+	}
+	env, err := Run(Options{Yes: true, MaxChanges: -1, ContinueOnError: true, Context: ctx}, "test", ops)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("err = %v, want cancellation", err)
+	}
+	items := env.Result.Items
+	if items[1].Status != "applied" || items[1].Key != "KEY2" || items[2].Status != "not_attempted" {
+		t.Fatalf("items = %+v, want the dispatched op applied with its key and the unsent op not_attempted", items)
+	}
+	if env.Result.Summary.Applied != 2 || env.Result.Summary.NotAttempted != 1 {
+		t.Fatalf("summary = %+v, want 2 applied and 1 not attempted", env.Result.Summary)
+	}
+}
+
 // A nil Context must never cancel: most callers do not set one.
 func TestRunApplyNilContextNeverCancels(t *testing.T) {
 	ops := []Op{
