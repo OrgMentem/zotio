@@ -492,12 +492,12 @@ its precondition is unmet, the command refuses loudly (exit 9) rather than passi
 				if perr != nil {
 					return usageErr(perr)
 				}
-				scope, err = resolveScope(db, spec)
+				scope, err = resolveScopeLive(cmd.Context(), flags, db, spec)
 				if err != nil {
 					return err
 				}
 				if scope.Precondition != "" {
-					return preconditionErr(fmt.Errorf("scope %q needs the %s precondition (Zotero desktop / local API); open Zotero and enable Settings -> Advanced -> 'Allow other applications', then re-run", scope.Expr, scope.Precondition))
+					return scopePreconditionErr(cmd.Context(), cmd.OutOrStdout(), flags, commandRegistryPath(cmd), scope)
 				}
 			}
 
@@ -1145,8 +1145,14 @@ func runRetractedItem(db localQueryStore, ctx *healthContext) ([]Finding, *healt
 		}, nil
 	}
 
-	findings := make([]Finding, 0, len(report.Findings))
-	for _, f := range report.Findings {
+	return retractionHealthFindings(report.Findings, ctx.src), nil, nil
+}
+
+// retractionHealthFindings maps retract-check rows onto health findings;
+// corrections are informational and never gate.
+func retractionHealthFindings(rows []retractionCheckFinding, src FindingSource) []Finding {
+	findings := make([]Finding, 0, len(rows))
+	for _, f := range rows {
 		if f.Status == "correction" {
 			continue
 		}
@@ -1164,11 +1170,11 @@ func runRetractedItem(db localQueryStore, ctx *healthContext) ([]Finding, *healt
 				"source":      f.Source,
 				"label":       f.Label,
 			},
-			Source:            ctx.src,
+			Source:            src,
 			RecommendedAction: &RecommendedAction{Command: "zotio items retract-check --json"},
 		})
 	}
-	return findings, nil, nil
+	return findings
 }
 
 // libraryTopLevelItemsPredicate is the one definition of "an item in the

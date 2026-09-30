@@ -297,6 +297,47 @@ func TestItemsBibliographyItemScopeFetchesCiteKeyMetadata(t *testing.T) {
 	}
 }
 
+// saved-search:KEY used to be refused outright. Zotero evaluates it on the
+// desktop local API; the resolved keys then render through the Web API.
+func TestItemsBibliographySavedSearchScopeRendersResolvedKeys(t *testing.T) {
+	isolateCSLTestEnv(t)
+	t.Setenv("ZOTERO_API_KEY", "testkey")
+	stubSavedSearchLocalAPI(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/users/0/searches/S1/items" {
+			http.NotFound(w, r)
+			return
+		}
+		_, _ = w.Write([]byte(`[{"key":"K2","data":{}},{"key":"K1","data":{}}]`))
+	})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.URL.Query().Get("itemKey"); got != "K2,K1" {
+			t.Errorf("itemKey = %q, want K2,K1", got)
+		}
+		switch r.URL.Query().Get("format") {
+		case "json":
+			_, _ = w.Write([]byte(`[{"key":"K1","data":{"key":"K1","extra":"Citation Key: one"}},{"key":"K2","data":{"key":"K2","extra":"Citation Key: two"}}]`))
+		case "csljson":
+			_, _ = w.Write([]byte(`{"items":[{"id":"123/K1","title":"One"},{"id":"123/K2","title":"Two"}]}`))
+		default:
+			http.Error(w, "unexpected format", http.StatusBadRequest)
+		}
+	}))
+	defer srv.Close()
+	t.Setenv("ZOTERO_BASE_URL", srv.URL+"/users/0")
+
+	out, err := runCSLItemsCommand(t, &rootFlags{asJSON: true, noCache: true}, []string{"bibliography", "--scope", "saved-search:S1", "--format", "csljson"})
+	if err != nil {
+		t.Fatalf("saved-search CSL-JSON: %v (exit %d)", err, ExitCode(err))
+	}
+	var entries []map[string]any
+	if err := json.Unmarshal(out.Bytes(), &entries); err != nil {
+		t.Fatalf("decode output %q: %v", out.String(), err)
+	}
+	if len(entries) != 2 || entries[0]["id"] != "two" || entries[1]["id"] != "one" {
+		t.Fatalf("entries = %#v, want two then one in search order", entries)
+	}
+}
+
 func TestItemsBibliographyCSLJSONRejectsMissingAndDuplicateCiteKeys(t *testing.T) {
 	tests := []struct {
 		name string

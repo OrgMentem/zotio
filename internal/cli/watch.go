@@ -20,6 +20,7 @@ func newWatchCmd(flags *rootFlags) *cobra.Command {
 	var health bool
 	var healthFor string
 	var healthWebhook string
+	var healthCheckRetractions bool
 	var workflowPath string
 	cmd := &cobra.Command{
 		Use:         "watch [resource...]",
@@ -52,6 +53,10 @@ until it is resumed or deleted with zotio workflow run <spec> --yes --resume.`,
 			if !health && (cmd.Flags().Changed("health-for") || cmd.Flags().Changed("health-webhook")) {
 				return usageErr(fmt.Errorf("--health-for and --health-webhook require --health"))
 			}
+			if !health && healthCheckRetractions {
+				return usageErr(fmt.Errorf("--health-check-retractions requires --health"))
+			}
+			healthMonitor.enableRetractionCheck(healthCheckRetractions)
 
 			// Isolate each watch tick by constructing a fresh sync command, matching
 			// the one-shot CLI path while keeping watch-mode cancellation and logging
@@ -128,6 +133,7 @@ until it is resumed or deleted with zotio workflow run <spec> --yes --resume.`,
 	cmd.Flags().BoolVar(&health, "health", false, "Run quick library health checks after each successful sync")
 	cmd.Flags().StringVar(&healthFor, "health-for", "quick", "Health preset for --health: quick, citation, systematic-review, vault, all")
 	cmd.Flags().StringVar(&healthWebhook, "health-webhook", "", "POST health drift JSON to this webhook URL")
+	cmd.Flags().BoolVar(&healthCheckRetractions, "health-check-retractions", false, "With --health: also run the Crossref retraction check each cycle (same as library health --check-retractions); each DOI is re-checked at most once per 24h")
 	cmd.Flags().StringVar(&workflowPath, "workflow", "", "Run this workflow after every successful sync; previews unless --yes, and failed applied runs require zotio workflow run <spec> --yes --resume")
 
 	return cmd

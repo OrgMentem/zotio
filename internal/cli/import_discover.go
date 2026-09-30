@@ -198,12 +198,12 @@ func buildImportDiscoverManifestWithDirection(ctx context.Context, flags *rootFl
 	defer rawDB.Close()
 
 	db := localQueryStore{rawDB}
-	resolved, err := resolveScope(db, spec)
+	resolved, err := resolveScopeLive(ctx, flags, db, spec)
 	if err != nil {
 		return importManifest{}, importDiscoverReport{}, fmt.Errorf("resolving scope: %w", err)
 	}
 	if resolved.Precondition != "" {
-		return importManifest{}, importDiscoverReport{}, preconditionErr(fmt.Errorf("scope %q requires %s", resolved.Expr, resolved.Precondition))
+		return importManifest{}, importDiscoverReport{}, scopePreconditionErr(ctx, nil, flags, "import discover", resolved)
 	}
 
 	sourceItems, err := queryImportDiscoverItems(db, resolved)

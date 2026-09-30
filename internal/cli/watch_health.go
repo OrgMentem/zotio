@@ -6,6 +6,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/http"
+	"slices"
 	"strings"
 	"time"
 
@@ -27,6 +29,46 @@ type watchHealthMonitor struct {
 	acked           map[string]Finding
 	ackedBaseline   bool
 	pendingBaseline map[string]Finding
+	// retractions is non-nil only with --health-check-retractions; it lives
+	// for the watch process so each DOI costs one CrossRef request per TTL.
+	retractions *watchRetractionCache
+}
+
+// watchRetractionCacheTTL bounds how often watch re-asks CrossRef about one
+// DOI; retraction notices change on a scale of days, not sync intervals.
+const watchRetractionCacheTTL = 24 * time.Hour
+
+type watchRetractionCacheEntry struct {
+	notices    []crossrefUpdateNotice
+	registered bool
+	checkedAt  time.Time
+}
+
+// watchRetractionCache stores successful CrossRef lookups by normalized DOI.
+// Failed lookups are never stored, so they are retried on the next cycle.
+type watchRetractionCache struct {
+	entries map[string]watchRetractionCacheEntry
+	now     func() time.Time
+}
+
+func (c *watchRetractionCache) lookup(doi string) ([]crossrefUpdateNotice, bool, bool) {
+	e, ok := c.entries[doi]
+	if !ok || c.now().Sub(e.checkedAt) >= watchRetractionCacheTTL {
+		return nil, false, false
+	}
+	return e.notices, e.registered, true
+}
+
+func (c *watchRetractionCache) store(doi string, notices []crossrefUpdateNotice, registered bool) {
+	c.entries[doi] = watchRetractionCacheEntry{notices: notices, registered: registered, checkedAt: c.now()}
+}
+
+// enableRetractionCheck turns on the per-cycle CrossRef retraction check.
+func (m *watchHealthMonitor) enableRetractionCheck(on bool) {
+	if m == nil || !on {
+		return
+	}
+	m.retractions = &watchRetractionCache{entries: map[string]watchRetractionCacheEntry{}, now: time.Now}
 }
 
 // watchHealthWebhookPayload is the drift notification contract for --health-webhook.
@@ -157,7 +199,46 @@ func (m *watchHealthMonitor) report(ctx context.Context) (healthReport, error) {
 		preset: m.preset,
 		flags:  m.flags,
 	}
-	return assembleHealthReport(db, healthCtx, m.preset, m.kinds, "", scopeResult{All: true, Expr: "library"})
+	if m.retractions == nil {
+		return assembleHealthReport(db, healthCtx, m.preset, m.kinds, "", scopeResult{All: true, Expr: "library"})
+	}
+	// retracted_item runs outside assembleHealthReport here: the one-shot
+	// runner drops every finding when any lookup fails, but a long-running
+	// watch must keep alerting on the DOIs that did resolve.
+	kinds := slices.DeleteFunc(slices.Clone(m.kinds), func(k string) bool { return k == "retracted_item" })
+	report, err := assembleHealthReport(db, healthCtx, m.preset, kinds, "", scopeResult{All: true, Expr: "library"})
+	if err != nil {
+		return report, err
+	}
+	httpClient := &http.Client{Timeout: enrichTimeout(m.flags.timeout)}
+	check, err := runRetractionCheckCached(ctx, db, httpClient, 0, "", m.retractions)
+	if err != nil {
+		return report, fmt.Errorf("health check retracted_item: %w", err)
+	}
+	findings := retractionHealthFindings(check.Findings, healthCtx.src)
+	report.Checks = append(report.Checks, healthCheckRun{Kind: "retracted_item", Ran: true, Count: len(findings)})
+	report.Summary.add(sevCritical, len(findings))
+	report.Summary.Total = report.Summary.Critical + report.Summary.High + report.Summary.Info
+	report.allFindings = append(report.allFindings, findings...)
+	report.Findings = append(report.Findings, findings...)
+	sortHealthFindings(report.allFindings)
+	sortHealthFindings(report.Findings)
+	report.RemediationPlan = buildHealthRemediationPlan(report.Findings)
+	if len(check.Errors) > 0 {
+		details := make([]string, 0, len(check.Errors))
+		for _, e := range check.Errors {
+			details = append(details, e.Error)
+		}
+		report.Skipped = append(report.Skipped, healthSkip{
+			Kind:         "retracted_item",
+			Precondition: "external_crossref",
+			Detail:       fmt.Sprintf("CrossRef retraction checking encountered %d lookup error(s); failed DOIs are retried next cycle: %s", len(check.Errors), strings.Join(details, "; ")),
+			Remediation: []healthRemediation{
+				{Action: "retry_check_retractions", Command: "zotio library health --for " + m.preset + " --check-retractions"},
+			},
+		})
+	}
+	return report, nil
 }
 
 // deliverWebhook posts the compact drift payload using the shared delivery webhook conventions.

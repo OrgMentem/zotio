@@ -68,12 +68,12 @@ field.`,
 			if err != nil {
 				return usageErr(err)
 			}
-			scope, err := resolveScope(db, spec)
+			scope, err := resolveScopeLive(cmd.Context(), flags, db, spec)
 			if err != nil {
 				return err
 			}
 			if scope.Precondition != "" {
-				return preconditionErr(fmt.Errorf("%s required for scope %s", scope.Precondition, scope.Expr))
+				return scopePreconditionErr(cmd.Context(), cmd.OutOrStdout(), flags, commandRegistryPath(cmd), scope)
 			}
 
 			itemKeys, err := creatorRenameCandidateItems(db, scope, flagFrom)

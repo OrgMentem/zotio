@@ -32,7 +32,9 @@ func HealthJSON(ctx context.Context, scopeExpr string) ([]byte, error) {
 		if err != nil {
 			return nil, err
 		}
-		scope, err = resolveScope(qs, spec)
+		// No rootFlags reach an MCP resource: nil means the default config,
+		// the same one `zotio` would load without --config.
+		scope, err = resolveScopeLive(ctx, nil, qs, spec)
 		if err != nil {
 			return nil, err
 		}
@@ -40,7 +42,8 @@ func HealthJSON(ctx context.Context, scopeExpr string) ([]byte, error) {
 			return json.MarshalIndent(map[string]any{
 				"scope":        scope.Expr,
 				"precondition": scope.Precondition,
-				"note":         "scope requires a live precondition; cannot run from the local store",
+				"detail":       scope.PreconditionDetail,
+				"note":         "scope requires the Zotero desktop local API, which is not available; open Zotero and retry",
 			}, "", "  ")
 		}
 	}

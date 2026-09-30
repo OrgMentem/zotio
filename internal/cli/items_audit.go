@@ -61,10 +61,10 @@ func (s scopeSelection) queryLimit(limit int) int {
 // four commands. An empty expr means no --scope and yields an unrestricted
 // selection.
 //
-// saved-search:KEY carries scope.go's live_local_api precondition because a
-// saved search is evaluated by Zotero and has no local mirror. It therefore
-// refuses through the shared precondition_unmet emitter rather than operating on
-// the empty cohort resolveScope hands back.
+// saved-search:KEY is evaluated by Zotero and has no local mirror, so it is
+// executed through the desktop local API. When that API is unavailable it
+// refuses through the shared precondition_unmet emitter rather than operating
+// on an empty cohort.
 func resolveScopeSelection(cmd *cobra.Command, flags *rootFlags, capability string, db localQueryStore, expr string) (scopeSelection, error) {
 	expr = strings.TrimSpace(expr)
 	if expr == "" {
@@ -74,23 +74,12 @@ func resolveScopeSelection(cmd *cobra.Command, flags *rootFlags, capability stri
 	if err != nil {
 		return scopeSelection{}, usageErr(err)
 	}
-	result, err := resolveScope(db, spec)
+	result, err := resolveScopeLive(cmd.Context(), flags, db, spec)
 	if err != nil {
 		return scopeSelection{}, err
 	}
 	if result.Precondition != "" {
-		out := cmd.OutOrStdout()
-		if flags != nil && flags.quiet {
-			out = nil
-		}
-		return scopeSelection{}, emitPreconditionUnmetWithRemediation(
-			out,
-			flags,
-			capability,
-			result.Precondition,
-			fmt.Sprintf("scope %q is evaluated by Zotero and has no local mirror, so it resolves no items while the desktop local API is unreachable", result.Expr),
-			remediationFor(cmd.Context(), flags, result.Precondition),
-		)
+		return scopeSelection{}, scopePreconditionErr(cmd.Context(), cmd.OutOrStdout(), flags, capability, result)
 	}
 	sel := scopeSelection{Expr: result.Expr, Type: result.Type, Value: spec.Value}
 	if !result.All {

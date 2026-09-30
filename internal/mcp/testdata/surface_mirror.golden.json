@@ -895,7 +895,7 @@
   },
   {
     "name": "import_apply",
-    "description": "Apply a reviewed import manifest, optionally attaching each entry's file.\n\n--attach-mode stored routes two different ways. For an entry that CREATES its\nitem, --via connector hands the item and its file to Zotero desktop in one\nsession, so Zotero files the bytes wherever it is configured to — including a\npersonal WebDAV server. Every other stored case (attaching to an item that\nalready exists, or a create that resolves to the Web route) uploads through the\nZotero Web API, which always lands in Zotero's own cloud storage; that upload is\nrefused when the desktop keeps files elsewhere, unless --allow-zotero-cloud.\n\nAn entry with no DOI or source URL records the file's own file:// URI as the\nattachment's provenance, so the local path becomes item metadata and syncs.\n\nBy default this previews the planned changes; apply with --yes.\n\n--via connector hands work to the running Zotero desktop, which surfaces its\nown progress UI; zotio cannot dismiss it and the connector protocol exposes no\nendpoint that closes or completes a save session. Observed 2026-08-22: roughly\n78 consecutive one-per-item invocations left Zotero unresponsive with progress\nwindows accumulating; no proven mechanism has been established. Prefer one\ninvocation with many records: import file --via connector and items create\nshare one session, while import apply currently opens one per manifest entry.\n--rate-limit governs only Web API requests and does not pace connector calls;\npace your own invocations.",
+    "description": "Apply a reviewed import manifest, optionally attaching each entry's file.\n\n--attach-mode stored routes two different ways. For an entry that CREATES its\nitem, --via connector hands the item and its file to Zotero desktop in one\nsession, so Zotero files the bytes wherever it is configured to — including a\npersonal WebDAV server. Every other stored case (attaching to an item that\nalready exists, or a create that resolves to the Web route) uploads through the\nZotero Web API, which always lands in Zotero's own cloud storage; that upload is\nrefused when the desktop keeps files elsewhere, unless --allow-zotero-cloud.\n\nAn entry with no DOI or source URL records the file's own file:// URI as the\nattachment's provenance, so the local path becomes item metadata and syncs.\n\nBy default this previews the planned changes; apply with --yes.\n\n--via connector hands work to the running Zotero desktop, which surfaces its\nown progress UI; zotio cannot dismiss it and the connector protocol exposes no\nendpoint that closes or completes a save session. Observed 2026-08-22: roughly\n78 consecutive one-per-item invocations left Zotero unresponsive with progress\nwindows accumulating; no proven mechanism has been established. One invocation\ntherefore saves every connector-bound stored create in one session, as import\nfile --via connector and items create do; an entry whose own collection needs a\ndifferent save target still gets its own session. Because the batch commits\ntogether, a failed entry does not stop the entries after it. Prefer one\ninvocation with many records. --rate-limit governs only Web API requests and\ndoes not pace connector calls; pace your own invocations.",
     "inputSchema": {
       "properties": {
         "allow-destructive": {
@@ -1672,6 +1672,10 @@
         "fail-on-unknown": {
           "description": "Exit 11 when any cited key is unknown or ambiguous (default: false)",
           "type": "boolean"
+        },
+        "follow-includes": {
+          "description": "Also check .tex files pulled in by \\input{PATH} and \\include{PATH}, resolved from the named file's directory; a missing include or a cycle exits 11. Only the braced forms are followed: not \\input PATH, \\subfile, or \\import (default: false)",
+          "type": "boolean"
         }
       },
       "required": [],
@@ -1688,7 +1692,7 @@
           "type": "string"
         },
         "scope": {
-          "description": "Item cohort: library | collection:KEY | tag:NAME | item:KEY | query:TEXT | saved-search:KEY (saved-search is not renderable here: export goes through the Web API) (default: library)",
+          "description": "Item cohort: library | collection:KEY | tag:NAME | item:KEY | query:TEXT | saved-search:KEY (default: library)",
           "type": "string"
         },
         "style": {

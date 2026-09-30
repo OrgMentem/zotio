@@ -62,10 +62,10 @@ With the default cache enabled, that recipe is quiet when nothing changed and lo
 
 ## Gate the manuscript too
 
-The library gate catches bad references; `items bibcheck` catches the reverse — citekeys a manuscript cites that the library can't back (unknown or ambiguous keys), plus cited items missing citation-core fields. Pass one or more LaTeX or Pandoc files:
+The library gate catches bad references; `items bibcheck` catches the reverse — citekeys a manuscript cites that the library can't back (unknown or ambiguous keys), plus cited items missing citation-core fields. Pass one or more LaTeX or Pandoc files. For a thesis whose chapters are pulled in with `\input{…}` or `\include{…}`, add `--follow-includes` so the chapters are checked too; a missing or cyclic include then fails the run:
 
 ```yaml
-      - run: zotio items bibcheck thesis.tex chapters/*.md --fail-on-unknown   # exit 11 on unknown/ambiguous citekeys
+      - run: zotio items bibcheck thesis.tex chapters/*.md --follow-includes --fail-on-unknown   # exit 11 on unknown/ambiguous citekeys or a broken include
       # --fail-on high gates on finding severity instead, and also flags incomplete citations
 ```
 

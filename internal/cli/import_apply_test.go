@@ -903,6 +903,203 @@ func TestImportApplyStoredConnectorCreateReportsOrphanedParentOnAttachFailure(t 
 	}
 }
 
+// importApplySessionFake is a desktop connector plus local API that records
+// how many save sessions a run opens and which parents received files.
+type importApplySessionFake struct {
+	mu          sync.Mutex
+	sessions    map[string]bool
+	saveItems   int
+	savedItems  int
+	titleByConn map[string]string
+	urlByTitle  map[string]string
+	failTitle   string
+}
+
+// importApplySessionKeys are valid Zotero keys the fake assigns per title.
+var importApplySessionKeys = map[string][2]string{
+	"Paper A": {"PARENTAA", "ATTACHAA"},
+	"Paper B": {"PARENTAB", "ATTACHAB"},
+	"Paper C": {"PARENTAC", "ATTACHAC"},
+}
+
+func startImportApplySessionFake(t *testing.T, failTitle string, md5ByTitle map[string]string) *importApplySessionFake {
+	t.Helper()
+	listener, err := net.Listen("tcp", "127.0.0.1:23119")
+	if err != nil {
+		t.Skipf("port 23119 is unavailable: %v", err)
+	}
+	fake := &importApplySessionFake{
+		sessions: map[string]bool{}, titleByConn: map[string]string{},
+		urlByTitle: map[string]string{}, failTitle: failTitle,
+	}
+	server := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fake.mu.Lock()
+		defer fake.mu.Unlock()
+		switch {
+		case r.URL.Path == "/connector/ping":
+			w.WriteHeader(http.StatusOK)
+		case r.URL.Path == "/connector/saveItems":
+			var body struct {
+				SessionID string           `json:"sessionID"`
+				Items     []map[string]any `json:"items"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Errorf("decode saveItems: %v", err)
+			}
+			fake.saveItems++
+			fake.sessions[body.SessionID] = true
+			for _, item := range body.Items {
+				id, _ := item["id"].(string)
+				title, _ := item["title"].(string)
+				fake.titleByConn[id] = title
+				fake.savedItems++
+			}
+			w.WriteHeader(http.StatusCreated)
+		case r.URL.Path == "/connector/saveAttachment":
+			var metadata struct {
+				SessionID    string `json:"sessionID"`
+				ParentItemID string `json:"parentItemID"`
+				URL          string `json:"url"`
+			}
+			if err := json.Unmarshal([]byte(r.Header.Get("X-Metadata")), &metadata); err != nil {
+				t.Errorf("decode attachment metadata: %v", err)
+			}
+			fake.sessions[metadata.SessionID] = true
+			title := fake.titleByConn[metadata.ParentItemID]
+			if title == fake.failTitle {
+				http.Error(w, "simulated attachment failure for "+title, http.StatusInternalServerError)
+				return
+			}
+			fake.urlByTitle[title] = metadata.URL
+			w.WriteHeader(http.StatusCreated)
+		case r.URL.Path == "/api/users/0/items":
+			w.Header().Set("Last-Modified-Version", "1")
+			_ = json.NewEncoder(w).Encode([]any{})
+		case r.URL.Path == "/api/users/0/items/top":
+			added := time.Now().UTC().Format(time.RFC3339)
+			top := []any{}
+			for title := range fake.urlByTitle {
+				top = append(top, map[string]any{
+					"key": importApplySessionKeys[title][0], "title": title,
+					"itemType": "journalArticle", "dateAdded": added,
+				})
+			}
+			_ = json.NewEncoder(w).Encode(top)
+		case strings.HasSuffix(r.URL.Path, "/children"):
+			children := []any{}
+			for title, url := range fake.urlByTitle {
+				keys := importApplySessionKeys[title]
+				if r.URL.Path == "/api/users/0/items/"+keys[0]+"/children" {
+					children = append(children, map[string]any{"key": keys[1], "data": map[string]any{
+						"itemType": "attachment", "md5": md5ByTitle[title], "url": url,
+					}})
+				}
+			}
+			_ = json.NewEncoder(w).Encode(children)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	server.Listener = listener
+	server.Start()
+	t.Cleanup(server.Close)
+	return fake
+}
+
+func runImportApplySessionManifest(t *testing.T, failTitle string) (*importApplySessionFake, mutation.Envelope, error) {
+	t.Helper()
+	t.Setenv("HOME", t.TempDir())
+	mutationJournalRecorder = recordMutationJournal
+	t.Cleanup(func() { mutationJournalRecorder = nil })
+	titles := []string{"Paper A", "Paper B", "Paper C"}
+	md5ByTitle := map[string]string{}
+	var entries []importManifestEntry
+	dir := ""
+	for i, title := range titles {
+		pdf := writeUploadFixture(t, fmt.Sprintf("paper-%d.pdf", i), []byte("%PDF-1.4\n"+title+"\n%%EOF"))
+		sum, err := fileMD5(pdf)
+		if err != nil {
+			t.Fatal(err)
+		}
+		md5ByTitle[title] = sum
+		dir = filepath.Dir(pdf)
+		entries = append(entries, importManifestEntry{
+			Path: pdf, Action: "create", Status: "resolved", Title: title,
+			Item: map[string]any{"itemType": "journalArticle", "title": title},
+		})
+	}
+	fake := startImportApplySessionFake(t, failTitle, md5ByTitle)
+	manifestPath := writeImportApplyTestManifest(t, importManifest{
+		SchemaVersion: importManifestSchemaVersion, Dir: dir, Entries: entries,
+	})
+	flags := &rootFlags{
+		asJSON: true, yes: true, via: "connector", timeout: time.Second, maxChanges: -1,
+		configPath: testConfigFile(t, "http://127.0.0.1:23119/api/users/0"),
+	}
+	env, _, err := runImportApplyTestCmdWithFlags(t, flags, []string{"--attach-mode", "stored", manifestPath})
+	return fake, env, err
+}
+
+// Zotero opens a progress window per connector save session and nothing
+// closes one; 78 one-item sessions left the desktop unresponsive. One apply
+// must therefore create all of its connector-bound entries in one session.
+func TestImportApplyStoredConnectorCreatesShareOneSession(t *testing.T) {
+	fake, env, err := runImportApplySessionManifest(t, "")
+	if err != nil {
+		t.Fatalf("apply failed: %v env=%+v", err, env)
+	}
+	if len(fake.sessions) != 1 || fake.saveItems != 1 || fake.savedItems != 3 {
+		t.Fatalf("sessions=%d saveItems=%d items=%d, want 1 session saving 3 items",
+			len(fake.sessions), fake.saveItems, fake.savedItems)
+	}
+	if env.Result == nil || env.Result.Summary.Applied != 3 {
+		t.Fatalf("env = %+v, want 3 applied entries", env)
+	}
+	for i, title := range []string{"Paper A", "Paper B", "Paper C"} {
+		item := env.Result.Items[i]
+		if item.Status != "applied" || item.Key != importApplySessionKeys[title][0] {
+			t.Fatalf("item %d = %+v, want applied with key %s", i, item, importApplySessionKeys[title][0])
+		}
+	}
+}
+
+// Batch-mates share one SaveItems, so a failure on entry 2 must neither stop
+// entry 3 (already committed) nor blur which entry failed.
+func TestImportApplyStoredConnectorSessionReportsPerEntryOutcome(t *testing.T) {
+	fake, env, err := runImportApplySessionManifest(t, "Paper B")
+	if err == nil {
+		t.Fatalf("apply with a failed entry succeeded: %+v", env)
+	}
+	if len(fake.sessions) != 1 || fake.saveItems != 1 {
+		t.Fatalf("sessions=%d saveItems=%d, want one shared session", len(fake.sessions), fake.saveItems)
+	}
+	if env.Result == nil || len(env.Result.Items) != 3 {
+		t.Fatalf("env = %+v, want three per-entry results", env)
+	}
+	first, second, third := env.Result.Items[0], env.Result.Items[1], env.Result.Items[2]
+	if first.Status != "applied" || first.Key != "PARENTAA" || third.Status != "applied" || third.Key != "PARENTAC" {
+		t.Fatalf("items = %+v / %+v, want entries 1 and 3 applied with keys", first, third)
+	}
+	// The parent was committed before its file failed, so the entry is a
+	// committed conflict (never a clean failure that invites a re-create).
+	reason, _ := second.Reason.(map[string]any)
+	message, _ := reason["message"].(string)
+	if second.Status != "conflict" || reason["committed"] != true || reason["title"] != "Paper B" ||
+		!strings.Contains(message, "simulated attachment failure for Paper B") {
+		t.Fatalf("entry 2 = %+v, want committed conflict carrying the error text", second)
+	}
+	journal, listErr := mutation.ListEntries(helpersTestJournalDir(t))
+	if listErr != nil || len(journal) != 1 || len(journal[0].Ops) != 3 {
+		t.Fatalf("journal = %+v err=%v, want one entry with three ops", journal, listErr)
+	}
+	want := []struct{ status, key string }{{"applied", "PARENTAA"}, {"conflict", ""}, {"applied", "PARENTAC"}}
+	for i, op := range journal[0].Ops {
+		if op.Status != want[i].status || (want[i].key != "" && op.Key != want[i].key) {
+			t.Fatalf("journal op %d = %+v, want %s %s", i, op, want[i].status, want[i].key)
+		}
+	}
+}
+
 func TestMarkedConnectorAttachmentURL(t *testing.T) {
 	marked, marker, err := markedConnectorAttachmentURL(
 		"https://doi.org/10.1234/example#page=2",

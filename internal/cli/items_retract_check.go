@@ -108,8 +108,22 @@ func queryRetractionCheckItems(db localQueryStore, limit int, collection string)
 	return queryEnrichValidationItems(db, limit, collection)
 }
 
+// retractionLookupCache lets long-lived callers (watch) skip CrossRef lookups
+// for DOIs they already resolved. Only successful lookups are stored, so a
+// failed DOI is retried on the next scan.
+type retractionLookupCache interface {
+	lookup(doi string) (notices []crossrefUpdateNotice, registered bool, ok bool)
+	store(doi string, notices []crossrefUpdateNotice, registered bool)
+}
+
 // runRetractionCheck scans DOI-bearing rows while preserving the report-only exit contract.
 func runRetractionCheck(ctx context.Context, db localQueryStore, httpClient *http.Client, limit int, collection string) (retractionCheckReport, error) {
+	return runRetractionCheckCached(ctx, db, httpClient, limit, collection, nil)
+}
+
+// runRetractionCheckCached is runRetractionCheck with an optional per-DOI
+// cache; cache hits skip both the request and the pacing sleep.
+func runRetractionCheckCached(ctx context.Context, db localQueryStore, httpClient *http.Client, limit int, collection string, cache retractionLookupCache) (retractionCheckReport, error) {
 	report := retractionCheckReport{Findings: []retractionCheckFinding{}}
 	rows, err := queryRetractionCheckItems(db, limit, collection)
 	if err != nil {
@@ -124,19 +138,31 @@ func runRetractionCheck(ctx context.Context, db localQueryStore, httpClient *htt
 		if doi == "" {
 			continue
 		}
-		if calls > 0 {
-			if err := sleepWithContext(ctx, 200*time.Millisecond); err != nil {
-				return report, err
-			}
+		var notices []crossrefUpdateNotice
+		var registered, cached bool
+		if cache != nil {
+			notices, registered, cached = cache.lookup(doi)
 		}
-		calls++
+		if !cached {
+			if calls > 0 {
+				if err := sleepWithContext(ctx, 200*time.Millisecond); err != nil {
+					return report, err
+				}
+			}
+			calls++
+		}
 		report.Summary.Checked++
 
-		notices, registered, err := lookupCrossrefRetractionNotices(ctx, httpClient, doi)
-		if err != nil {
-			report.Errors = append(report.Errors, retractionCheckError{ItemKey: key, DOI: doi, Error: err.Error()})
-			report.Summary.Errors = len(report.Errors)
-			continue
+		if !cached {
+			notices, registered, err = lookupCrossrefRetractionNotices(ctx, httpClient, doi)
+			if err != nil {
+				report.Errors = append(report.Errors, retractionCheckError{ItemKey: key, DOI: doi, Error: err.Error()})
+				report.Summary.Errors = len(report.Errors)
+				continue
+			}
+			if cache != nil {
+				cache.store(doi, notices, registered)
+			}
 		}
 		if !registered {
 			report.Summary.Unregistered++

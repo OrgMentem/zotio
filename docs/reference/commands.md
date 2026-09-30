@@ -1132,11 +1132,13 @@ By default this previews the planned changes; apply with --yes.
 own progress UI; zotio cannot dismiss it and the connector protocol exposes no
 endpoint that closes or completes a save session. Observed 2026-08-22: roughly
 78 consecutive one-per-item invocations left Zotero unresponsive with progress
-windows accumulating; no proven mechanism has been established. Prefer one
-invocation with many records: import file --via connector and items create
-share one session, while import apply currently opens one per manifest entry.
---rate-limit governs only Web API requests and does not pace connector calls;
-pace your own invocations.
+windows accumulating; no proven mechanism has been established. One invocation
+therefore saves every connector-bound stored create in one session, as import
+file --via connector and items create do; an entry whose own collection needs a
+different save target still gets its own session. Because the batch commits
+together, a failed entry does not stop the entries after it. Prefer one
+invocation with many records. --rate-limit governs only Web API requests and
+does not pace connector calls; pace your own invocations.
 
 ```
 zotio import apply <manifest> [flags]
@@ -1551,6 +1553,7 @@ zotio items bibcheck paper.tex
 | --- | --- | --- | --- |
 | `--fail-on` | `string` |  | Exit 11 when findings reach this severity: high, any, or none |
 | `--fail-on-unknown` | `bool` | `false` | Exit 11 when any cited key is unknown or ambiguous |
+| `--follow-includes` | `bool` | `false` | Also check .tex files pulled in by \input{PATH} and \include{PATH}, resolved from the named file's directory; a missing include or a cycle exits 11. Only the braced forms are followed: not \input PATH, \subfile, or \import |
 
 ### `zotio items bibliography`
 
@@ -1583,7 +1586,7 @@ zotio items bibliography --scope collection:ABCD1234 --style apa
 | Flag | Type | Default | Description |
 | --- | --- | --- | --- |
 | `--format` | `string` | `bib` | Output format: bib, csljson, bibtex, biblatex, or ris |
-| `--scope` | `string` | `library` | Item cohort: library \| collection:KEY \| tag:NAME \| item:KEY \| query:TEXT \| saved-search:KEY (saved-search is not renderable here: export goes through the Web API) |
+| `--scope` | `string` | `library` | Item cohort: library \| collection:KEY \| tag:NAME \| item:KEY \| query:TEXT \| saved-search:KEY |
 | `--style` | `string` |  | CSL style ID for --format bib (default uses Zotero's default bibliography style) |
 
 ### `zotio items children`
@@ -3379,6 +3382,7 @@ zotio watch [resource...] [flags]
 | Flag | Type | Default | Description |
 | --- | --- | --- | --- |
 | `--health` | `bool` | `false` | Run quick library health checks after each successful sync |
+| `--health-check-retractions` | `bool` | `false` | With --health: also run the Crossref retraction check each cycle (same as library health --check-retractions); each DOI is re-checked at most once per 24h |
 | `--health-for` | `string` | `quick` | Health preset for --health: quick, citation, systematic-review, vault, all |
 | `--health-webhook` | `string` |  | POST health drift JSON to this webhook URL |
 | `--interval` | `duration` | `5m0s` | Sync interval |

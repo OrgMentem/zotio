@@ -3,16 +3,22 @@
 package cli
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
 
+	"zotio/internal/client"
+	"zotio/internal/config"
 	"zotio/internal/store"
 )
 
@@ -112,6 +118,8 @@ func TestResolveScope(t *testing.T) {
 		}
 	})
 
+	// resolveScope alone is the local layer: it only marks saved-search as
+	// needing the live API. resolveScopeLive executes it (see below).
 	t.Run("saved-search-precondition", func(t *testing.T) {
 		r, err := resolveScope(db, scopeSpec{Type: "saved-search", Value: "S1"})
 		if err != nil {
@@ -122,6 +130,128 @@ func TestResolveScope(t *testing.T) {
 		}
 		if len(r.Keys) != 0 {
 			t.Errorf("saved-search should resolve no local keys, got %v", r.Keys)
+		}
+	})
+}
+
+// stubSavedSearchLocalAPI stands in for a reachable desktop local API: the
+// saved-search read client targets an httptest server serving handler under
+// /api/users/0. The plane gate itself is covered by the non-local case below
+// and by TestCheckLiveLocalAPIPreconditionClassifiesTheAPIPlane.
+func stubSavedSearchLocalAPI(t *testing.T, handler http.HandlerFunc) {
+	t.Helper()
+	ts := httptest.NewServer(handler)
+	t.Cleanup(ts.Close)
+	oldAllow := allowPrivateOutboundForTests.Load()
+	allowPrivateOutboundForTests.Store(true)
+	t.Cleanup(func() { allowPrivateOutboundForTests.Store(oldAllow) })
+	old := savedSearchLiveClient
+	savedSearchLiveClient = func(context.Context, *rootFlags) (*client.Client, string, error) {
+		c := client.New(&config.Config{BaseURL: ts.URL + "/api/users/0"}, time.Second, 0)
+		c.NoCache = true
+		return c, "", nil
+	}
+	t.Cleanup(func() { savedSearchLiveClient = old })
+}
+
+// savedSearchPages serves /searches/S1/items: 100 parents then two more, one
+// child attachment mixed in on the second page.
+func savedSearchPages(t *testing.T) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/users/0/searches/S1/items" {
+			http.Error(w, "not found", http.StatusNotFound)
+			return
+		}
+		if got := r.URL.Query().Get("limit"); got != "100" {
+			t.Errorf("limit = %q, want 100", got)
+		}
+		rows := []map[string]any{}
+		switch r.URL.Query().Get("start") {
+		case "0":
+			for i := range 100 {
+				rows = append(rows, map[string]any{"key": fmt.Sprintf("K%03d", i), "data": map[string]any{}})
+			}
+		case "100":
+			rows = append(rows,
+				map[string]any{"key": "K100", "data": map[string]any{}},
+				map[string]any{"key": "CHILD", "data": map[string]any{"parentItem": "K100"}},
+				map[string]any{"key": "K101", "data": map[string]any{}},
+			)
+		}
+		_ = json.NewEncoder(w).Encode(rows)
+	}
+}
+
+func TestResolveScopeLiveSavedSearch(t *testing.T) {
+	db := seedScopeStore(t)
+	spec := scopeSpec{Type: "saved-search", Value: "S1"}
+
+	t.Run("pages all keys in order", func(t *testing.T) {
+		t.Setenv("HOME", t.TempDir())
+		stubSavedSearchLocalAPI(t, savedSearchPages(t))
+		flags := &rootFlags{}
+		r, err := resolveScopeLive(context.Background(), flags, db, spec)
+		if err != nil {
+			t.Fatalf("resolveScopeLive: %v", err)
+		}
+		if r.Precondition != "" || r.Expr != "saved-search:S1" || r.Type != "saved-search" {
+			t.Fatalf("result = %+v, want met precondition and saved-search:S1", r)
+		}
+		want := make([]string, 0, 102)
+		for i := range 102 {
+			want = append(want, fmt.Sprintf("K%03d", i))
+		}
+		if strings.Join(r.Keys, ",") != strings.Join(want, ",") {
+			t.Fatalf("keys = %v (%d), want K000..K101 without the child", r.Keys, len(r.Keys))
+		}
+	})
+
+	t.Run("non-local base refuses with envelope", func(t *testing.T) {
+		t.Setenv("HOME", t.TempDir())
+		t.Setenv("ZOTIO_DEMO", "")
+		t.Setenv("ZOTERO_BASE_URL", "")
+		flags := &rootFlags{configPath: testConfigFile(t, "https://api.zotero.org/users/123"), asJSON: true}
+		r, err := resolveScopeLive(context.Background(), flags, db, spec)
+		if err != nil {
+			t.Fatalf("resolveScopeLive: %v", err)
+		}
+		if r.Precondition != preconditionLiveLocalAPI {
+			t.Fatalf("precondition = %q, want live_local_api", r.Precondition)
+		}
+		var out bytes.Buffer
+		refusal := scopePreconditionErr(context.Background(), &out, flags, "library health", r)
+		if code := ExitCode(refusal); code != 9 {
+			t.Fatalf("exit code = %d (%v), want 9", code, refusal)
+		}
+		var env preconditionUnmetEnvelope
+		if err := json.Unmarshal(out.Bytes(), &env); err != nil {
+			t.Fatalf("envelope: %v\n%s", err, out.String())
+		}
+		if env.Kind != "precondition_unmet" || env.Precondition != preconditionLiveLocalAPI || !strings.Contains(env.Detail, "not the Zotero desktop local API") {
+			t.Fatalf("envelope = %+v", env)
+		}
+	})
+
+	t.Run("cross-page duplicate key errors", func(t *testing.T) {
+		t.Setenv("HOME", t.TempDir())
+		stubSavedSearchLocalAPI(t, func(w http.ResponseWriter, r *http.Request) {
+			rows := make([]map[string]any, 0, 100)
+			for i := range 100 {
+				rows = append(rows, map[string]any{"key": fmt.Sprintf("K%03d", i)})
+			}
+			_ = json.NewEncoder(w).Encode(rows) // every start returns page one
+		})
+		if _, err := resolveScopeLive(context.Background(), &rootFlags{}, db, spec); err == nil || !strings.Contains(err.Error(), "duplicate key") {
+			t.Fatalf("err = %v, want duplicate key refusal", err)
+		}
+	})
+
+	t.Run("unknown search key names the key", func(t *testing.T) {
+		t.Setenv("HOME", t.TempDir())
+		stubSavedSearchLocalAPI(t, savedSearchPages(t))
+		_, err := resolveScopeLive(context.Background(), &rootFlags{}, db, scopeSpec{Type: "saved-search", Value: "NOPE"})
+		if err == nil || !strings.Contains(err.Error(), "saved search NOPE not found") {
+			t.Fatalf("err = %v, want not-found naming NOPE", err)
 		}
 	})
 }

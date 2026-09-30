@@ -176,12 +176,12 @@ func runCreatorsAuditWithOptions(ctx context.Context, flags *rootFlags, scopeExp
 	if err != nil {
 		return creatorsAuditReport{}, false, usageErr(err)
 	}
-	scope, err := resolveScope(db, spec)
+	scope, err := resolveScopeLive(ctx, flags, db, spec)
 	if err != nil {
 		return creatorsAuditReport{}, false, err
 	}
 	if scope.Precondition != "" {
-		return creatorsAuditReport{}, false, preconditionErr(fmt.Errorf("%s required for scope %s", scope.Precondition, scope.Expr))
+		return creatorsAuditReport{}, false, scopePreconditionErr(ctx, nil, flags, "creators audit", scope)
 	}
 
 	occurrences, err := queryCreatorAuditOccurrences(db, scope)

@@ -339,6 +339,51 @@ func TestLibraryHealthCheckRetractionsInjectsIntoQuickPresetAndRunsProbe(t *test
 	}
 }
 
+// saved-search:KEY used to exit 9 even with Zotero running. With the desktop
+// local API answering, the report must cover exactly the search's items.
+func TestLibraryHealthSavedSearchScopeResolvesLive(t *testing.T) {
+	seedRetractionDefaultStore(t, []json.RawMessage{
+		json.RawMessage(`{"key":"IN1","version":1,"data":{"key":"IN1","itemType":"journalArticle","title":"In Search"}}`),
+		json.RawMessage(`{"key":"OUT1","version":1,"data":{"key":"OUT1","itemType":"journalArticle","title":"Outside Search"}}`),
+	})
+	stubSavedSearchLocalAPI(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/users/0/searches/S1/items" {
+			http.NotFound(w, r)
+			return
+		}
+		_, _ = w.Write([]byte(`[{"key":"IN1","data":{}}]`))
+	})
+
+	cmd := newLibraryHealthCmd(&rootFlags{asJSON: true, timeout: time.Second})
+	cmd.SilenceErrors, cmd.SilenceUsage = true, true
+	cmd.SetArgs([]string{"--for", "all", "--scope", "saved-search:S1"})
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&bytes.Buffer{})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("library health --scope saved-search:S1: %v (exit %d)", err, ExitCode(err))
+	}
+	var report healthReport
+	if err := json.Unmarshal(bytes.TrimSpace(out.Bytes()), &report); err != nil {
+		t.Fatalf("decode health report %q: %v", out.String(), err)
+	}
+	if report.Scope.Expr != "saved-search:S1" {
+		t.Fatalf("scope expr = %q, want saved-search:S1", report.Scope.Expr)
+	}
+	var sawIn bool
+	for _, f := range report.Findings {
+		switch f.ItemKey {
+		case "IN1":
+			sawIn = true
+		case "OUT1":
+			t.Fatalf("finding %s for OUT1 leaked outside the saved search", f.Kind)
+		}
+	}
+	if !sawIn {
+		t.Fatalf("findings = %+v, want at least one for IN1", report.Findings)
+	}
+}
+
 func TestGateCrossed(t *testing.T) {
 	cases := []struct {
 		name    string

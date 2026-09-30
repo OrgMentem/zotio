@@ -18,6 +18,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"zotio/internal/client"
+	"zotio/internal/connector"
 	"zotio/internal/mutation"
 )
 
@@ -55,11 +56,13 @@ By default this previews the planned changes; apply with --yes.
 own progress UI; zotio cannot dismiss it and the connector protocol exposes no
 endpoint that closes or completes a save session. Observed 2026-08-22: roughly
 78 consecutive one-per-item invocations left Zotero unresponsive with progress
-windows accumulating; no proven mechanism has been established. Prefer one
-invocation with many records: import file --via connector and items create
-share one session, while import apply currently opens one per manifest entry.
---rate-limit governs only Web API requests and does not pace connector calls;
-pace your own invocations.`,
+windows accumulating; no proven mechanism has been established. One invocation
+therefore saves every connector-bound stored create in one session, as import
+file --via connector and items create do; an entry whose own collection needs a
+different save target still gets its own session. Because the batch commits
+together, a failed entry does not stop the entries after it. Prefer one
+invocation with many records. --rate-limit governs only Web API requests and
+does not pace connector calls; pace your own invocations.`,
 		Annotations: map[string]string{
 			"zotio:method": "POST",
 			"zotio:path":   "/items",
@@ -122,8 +125,8 @@ pace your own invocations.`,
 
 			var writeClient importApplyPoster
 			var storedClient *client.Client
+			storedCreateVia := ""
 			if resolveMutationMode(flags).Apply {
-				storedCreateVia := ""
 				var storedCreateRoute createRoute
 				if attachMode == "stored" && manifestHasResolvedCreate(m) {
 					storedCreateRoute, err = flags.resolveCreateRoute(cmd.Context(), false)
@@ -166,7 +169,15 @@ pace your own invocations.`,
 			}
 
 			ops := importApplyOps(cmd, flags, writeClient, storedClient, m, attachMode, fetchPDF)
-			env, runErr := runMutation(cmd.Context(), flags, "import.apply", ops)
+			// A shared connector session commits every batch-mate in one
+			// SaveItems call, so stopping at the first failed entry would report
+			// items that already exist as not_attempted and invite a duplicating
+			// re-run. Every entry reports its own outcome, as in items create.
+			var runOptions []func(*mutation.Options)
+			if storedCreateVia == "connector" {
+				runOptions = append(runOptions, func(o *mutation.Options) { o.ContinueOnError = true })
+			}
+			env, runErr := runMutation(cmd.Context(), flags, "import.apply", ops, runOptions...)
 			if renderErr := renderMutation(cmd, flags, env, nil); renderErr != nil {
 				return renderErr
 			}
@@ -367,6 +378,10 @@ func storedConnectorCommittedDetail(res itemCreateResult, entryTitle, marker, me
 // Build mutation ops without network or disk I/O.
 func importApplyOps(cmd *cobra.Command, flags *rootFlags, writeClient importApplyPoster, storedClient *client.Client, m importManifest, attachMode string, fetchPDF bool) []mutation.Op {
 	ops := make([]mutation.Op, 0, len(m.Entries))
+	var session *importApplyConnectorSession
+	if attachMode == "stored" {
+		session = &importApplyConnectorSession{cmd: cmd, flags: flags}
+	}
 	for i := range m.Entries {
 		entry := m.Entries[i]
 		switch entry.Action {
@@ -379,6 +394,17 @@ func importApplyOps(cmd *cobra.Command, flags *rootFlags, writeClient importAppl
 			entryPath := entry.Path
 			entryNumber := i + 1
 			var resolverCreate itemCreateResult
+			storedEntry := &importApplyStoredEntry{
+				number: entryNumber, title: entryTitle, path: entryPath,
+				sourceURL: importEntrySourceURL(entry, item), item: item,
+			}
+			// A connector save session has exactly one target, so an entry
+			// whose own collection needs resolving keeps its own session.
+			if session != nil && (connectorCollectionKeyFromItem(item) == "" || strings.TrimSpace(flags.connectorTarget) != "") {
+				session.entries = append(session.entries, storedEntry)
+			} else {
+				storedEntry = nil
+			}
 			ops = append(ops, mutation.Op{
 				ID:      fmt.Sprintf("import.apply:%03d:create", entryNumber),
 				Kind:    "import_create",
@@ -394,15 +420,14 @@ func importApplyOps(cmd *cobra.Command, flags *rootFlags, writeClient importAppl
 					// Web route creates the parent, then delegates the child bytes
 					// to the same exactly-once uploader as `attachments add`.
 					if attachMode == "stored" {
-						if entryPath == "" {
-							return "failed", nil, fmt.Errorf("manifest entry %d attachment path is empty", entryNumber)
-						}
-						if err := validateImportStoredAttachment(entryPath); err != nil {
-							return "failed", nil, err
-						}
-						attachmentReq, err := newStoredUploadRequest("", entryPath, "")
+						attachmentReq, err := prepareStoredCreate(entryNumber, entryPath)
 						if err != nil {
 							return "failed", nil, err
+						}
+						if storedEntry != nil {
+							if status, detail, err, shared := session.apply(storedEntry); shared {
+								return status, detail, err
+							}
 						}
 						collectionRequested := connectorCollectionKeyFromItem(item) != "" || strings.TrimSpace(flags.connectorTarget) != ""
 						via, err := flags.resolveCreateVia(cmd.Context(), collectionRequested)
@@ -440,29 +465,10 @@ func importApplyOps(cmd *cobra.Command, flags *rootFlags, writeClient importAppl
 							if err != nil {
 								return "conflict", orphanedConnectorParentDetail(res, entryTitle, err), err
 							}
-							attachmentMD5 := attachmentReq.MD5
-							// Zotero's importFromNetworkStream hard-rejects an
-							// empty url ("'url' not provided"), which the
-							// connector surfaces as an opaque HTTP 500 AFTER the
-							// parent item was already created. A locally scanned
-							// PDF has no DOI or web source, so fall back to the
-							// file's own URI.
-							attachmentURL := importEntrySourceURL(entry, item)
-							if strings.TrimSpace(attachmentURL) == "" {
-								attachmentURL = localFileURL(entryPath)
-							}
-							markedURL, marker, err := markedConnectorAttachmentURL(attachmentURL, res.ConnKey)
-							if err != nil {
-								return "conflict", orphanedConnectorParentDetail(res, entryTitle, err), err
-							}
-							if err := conn.SaveAttachment(cmd.Context(), res.Session, res.ConnKey, "Full Text PDF", markedURL, "application/pdf", connectorSource, attachmentReq.Size); err != nil {
-								cause := orphanedParentError(entryTitle, err)
-								detail := storedConnectorCommittedDetail(res, entryTitle, marker,
-									fmt.Sprintf("%s Connector evidence: session %s, connector key %s, attachment marker %s.",
-										cause.Error(), res.Session, res.ConnKey, marker))
-								return "conflict", detail, err
-							}
-							return storedConnectorCreateResult(cmd.Context(), flags, item, res, entryTitle, marker, attachmentMD5)
+							return saveStoredConnectorAttachment(cmd.Context(), flags, conn, res, &importApplyStoredEntry{
+								number: entryNumber, title: entryTitle, path: entryPath,
+								sourceURL: importEntrySourceURL(entry, item), item: item,
+							}, attachmentReq, connectorSource)
 						case "web":
 							req := attachmentReq
 							bindStoredUploadParent(&req, res.WebKey)
@@ -634,6 +640,205 @@ func importApplyOps(cmd *cobra.Command, flags *rootFlags, writeClient importAppl
 		}
 	}
 	return ops
+}
+
+// prepareStoredCreate checks a stored create's file before any parent exists,
+// so an unreadable file never leaves an orphaned item behind.
+func prepareStoredCreate(entryNumber int, entryPath string) (storedUploadRequest, error) {
+	if entryPath == "" {
+		return storedUploadRequest{}, fmt.Errorf("manifest entry %d attachment path is empty", entryNumber)
+	}
+	if err := validateImportStoredAttachment(entryPath); err != nil {
+		return storedUploadRequest{}, err
+	}
+	return newStoredUploadRequest("", entryPath, "")
+}
+
+// importApplyStoredEntry is one stored create manifest entry and, once the
+// shared connector session has run, that entry's own outcome.
+type importApplyStoredEntry struct {
+	number    int
+	title     string
+	path      string
+	sourceURL string
+	item      map[string]any
+
+	status string
+	detail any
+	err    error
+}
+
+func (e *importApplyStoredEntry) record(status string, detail map[string]any, err error) {
+	e.status, e.err = status, err
+	// A nil map stored in an interface is not a nil reason; the engine would
+	// then drop the error text it otherwise renders.
+	if detail != nil {
+		e.detail = detail
+	}
+}
+
+// importApplyConnectorSession saves every connector-bound stored create of one
+// invocation in a single desktop save session. Zotero opens its own progress UI
+// per session and no connector endpoint closes one; the 2026-08-22 run of 78
+// one-item sessions left Zotero unresponsive. The first applied entry runs the
+// session and every entry then reports its own recorded outcome.
+type importApplyConnectorSession struct {
+	cmd     *cobra.Command
+	flags   *rootFlags
+	entries []*importApplyStoredEntry
+
+	done     bool
+	via      string
+	routeErr error
+}
+
+// apply reports entry's outcome from the shared session. shared is false when
+// the route resolved to the Web API, so the caller keeps its per-entry path.
+func (s *importApplyConnectorSession) apply(entry *importApplyStoredEntry) (status string, detail any, err error, shared bool) {
+	if !s.done {
+		s.done = true
+		s.run()
+	}
+	if s.routeErr != nil {
+		return "failed", nil, s.routeErr, true
+	}
+	if s.via != "connector" {
+		return "", nil, nil, false
+	}
+	return entry.status, entry.detail, entry.err, true
+}
+
+func (s *importApplyConnectorSession) run() {
+	ctx := s.cmd.Context()
+	flags := s.flags
+	target := strings.TrimSpace(flags.connectorTarget)
+	via, err := flags.resolveCreateVia(ctx, target != "")
+	if err != nil {
+		s.routeErr = err
+		return
+	}
+	s.via = via
+	if via != "connector" {
+		return
+	}
+
+	// Entries that cannot load their file are left out of the session, so
+	// they fail cleanly instead of committing a parent without its file.
+	batch := make([]*importApplyStoredEntry, 0, len(s.entries))
+	requests := make([]storedUploadRequest, 0, len(s.entries))
+	for _, entry := range s.entries {
+		if itemType, _ := entry.item["itemType"].(string); strings.TrimSpace(itemType) == "" {
+			entry.record("failed", nil, fmt.Errorf("manifest entry %d item missing itemType", entry.number))
+			continue
+		}
+		req, err := prepareStoredCreate(entry.number, entry.path)
+		if err != nil {
+			entry.record("failed", nil, err)
+			continue
+		}
+		// Opened again right before SaveAttachment: holding one descriptor per
+		// entry for the whole session would exhaust the limit on large batches.
+		source, err := openVerifiedAttachmentSource(req)
+		if err != nil {
+			entry.record("failed", nil, fmt.Errorf("opening connector attachment before creating its parent: %w", err))
+			continue
+		}
+		_ = source.Close()
+		batch = append(batch, entry)
+		requests = append(requests, req)
+	}
+	if len(batch) == 0 {
+		return
+	}
+	failAll := func(err error) {
+		for _, entry := range batch {
+			entry.record("failed", nil, err)
+		}
+	}
+	conn, err := connectorForCreate(flags)
+	if err != nil {
+		failAll(err)
+		return
+	}
+	sessionID, err := connector.NewID()
+	if err != nil {
+		failAll(err)
+		return
+	}
+	// The connector-local "id" travels on a copy so the recorded change and
+	// the key read-back see the manifest item unchanged.
+	results := make([]itemCreateResult, len(batch))
+	payload := make([]map[string]any, len(batch))
+	for i, entry := range batch {
+		connectorKey, err := connector.NewID()
+		if err != nil {
+			failAll(err)
+			return
+		}
+		copied := copyImportApplyItem(entry.item)
+		copied["id"] = connectorKey
+		payload[i] = copied
+		results[i] = itemCreateResult{Via: "connector", Session: sessionID, ConnKey: connectorKey}
+	}
+	createdAfter := time.Now().UTC().Add(-recentItemClockSkew)
+	for i := range results {
+		results[i].CreatedAfter = createdAfter
+	}
+	if saveErr := conn.SaveItems(ctx, sessionID, "", payload); saveErr != nil {
+		// The connector can report an error after committing the items, so
+		// no entry may report a clean failure that invites a re-create.
+		cause := fmt.Errorf("connector save outcome is unresolved; refusing an automatic retry: %w", saveErr)
+		for i, entry := range batch {
+			results[i].ConnectorError = saveErr.Error()
+			entry.record("conflict", orphanedParentDetail(results[i], entry.title, cause), cause)
+		}
+		return
+	}
+	if target != "" {
+		if err := conn.UpdateSession(ctx, sessionID, target, nil, ""); err != nil {
+			for i, entry := range batch {
+				results[i].FilingFailed = true
+				entry.record("conflict", orphanedParentDetail(results[i], entry.title, err), err)
+			}
+			return
+		}
+	}
+	for i, entry := range batch {
+		source, err := openVerifiedAttachmentSource(requests[i])
+		if err != nil {
+			entry.record("conflict", orphanedConnectorParentDetail(results[i], entry.title, err), err)
+			continue
+		}
+		status, detail, err := saveStoredConnectorAttachment(ctx, flags, conn, results[i], entry, requests[i], source)
+		_ = source.Close()
+		entry.record(status, detail, err)
+	}
+}
+
+// saveStoredConnectorAttachment attaches the manifest file to a parent the
+// connector already committed in res.Session, then resolves both permanent
+// keys against the file's MD5 and the marked source URL.
+func saveStoredConnectorAttachment(ctx context.Context, flags *rootFlags, conn *connector.Client, res itemCreateResult, entry *importApplyStoredEntry, req storedUploadRequest, source io.ReadCloser) (string, map[string]any, error) {
+	// Zotero's importFromNetworkStream hard-rejects an empty url ("'url' not
+	// provided"), which the connector surfaces as an opaque HTTP 500 AFTER the
+	// parent item was already created. A locally scanned PDF has no DOI or web
+	// source, so fall back to the file's own URI.
+	attachmentURL := entry.sourceURL
+	if strings.TrimSpace(attachmentURL) == "" {
+		attachmentURL = localFileURL(entry.path)
+	}
+	markedURL, marker, err := markedConnectorAttachmentURL(attachmentURL, res.ConnKey)
+	if err != nil {
+		return "conflict", orphanedConnectorParentDetail(res, entry.title, err), err
+	}
+	if err := conn.SaveAttachment(ctx, res.Session, res.ConnKey, "Full Text PDF", markedURL, "application/pdf", source, req.Size); err != nil {
+		cause := orphanedParentError(entry.title, err)
+		detail := storedConnectorCommittedDetail(res, entry.title, marker,
+			fmt.Sprintf("%s Connector evidence: session %s, connector key %s, attachment marker %s.",
+				cause.Error(), res.Session, res.ConnKey, marker))
+		return "conflict", detail, err
+	}
+	return storedConnectorCreateResult(ctx, flags, entry.item, res, entry.title, marker, req.MD5)
 }
 
 // validateImportStoredAttachment checks that a stored upload can load the

@@ -105,9 +105,24 @@ The Web API limits itemKey batches, so large scopes are fetched in stable
 			if err != nil {
 				return usageErr(err)
 			}
-			selection, err := bibliographyScopeSelection(wc, spec, flags)
-			if err != nil {
-				return err
+			var selection bibliographySelection
+			if spec.Type == "saved-search" {
+				// Zotero evaluates the search on the desktop local API; the
+				// resolved keys then render through the Web API like item:KEY.
+				// The saved-search arm never reads the store, so none is opened.
+				resolved, err := resolveScopeLive(cmd.Context(), flags, localQueryStore{}, spec)
+				if err != nil {
+					return err
+				}
+				if resolved.Precondition != "" {
+					return scopePreconditionErr(cmd.Context(), cmd.OutOrStdout(), flags, "items bibliography", resolved)
+				}
+				selection = bibliographySelection{Keys: resolved.Keys}
+			} else {
+				selection, err = bibliographyScopeSelection(wc, spec, flags)
+				if err != nil {
+					return err
+				}
 			}
 
 			renderKeys := selection.Keys
@@ -164,11 +179,7 @@ The Web API limits itemKey batches, so large scopes are fetched in stable
 			return printRawTextOutput(cmd, flags, text)
 		},
 	}
-	// A saved search is materialized by Zotero and this command renders through
-	// the Web API, so the limitation is permanent rather than environmental (see
-	// bibliographyScopeSelection). That is command-specific truth the shared
-	// string cannot carry, so it is appended rather than folded in.
-	cmd.Flags().StringVar(&flagScope, "scope", scopeFlagDefaultLibrary, scopeFlagUsage+" (saved-search is not renderable here: export goes through the Web API)")
+	cmd.Flags().StringVar(&flagScope, "scope", scopeFlagDefaultLibrary, scopeFlagUsage)
 	cmd.Flags().StringVar(&flagStyle, "style", "", "CSL style ID for --format bib (default uses Zotero's default bibliography style)")
 	cmd.Flags().StringVar(&flagFormat, "format", "bib", "Output format: bib, csljson, bibtex, biblatex, or ris")
 
@@ -234,8 +245,6 @@ func bibliographyScopeSelection(c bibliographyGetter, spec scopeSpec, flags *roo
 	switch spec.Type {
 	case "item":
 		return bibliographySelection{Keys: []string{spec.Value}}, nil
-	case "saved-search":
-		return bibliographySelection{}, preconditionErr(fmt.Errorf("scope %q needs the %s precondition; items bibliography renders through the Web API and cannot materialize saved searches", "saved-search:"+spec.Value, preconditionLiveLocalAPI))
 	}
 
 	path, params, err := bibliographyScopePath(spec)

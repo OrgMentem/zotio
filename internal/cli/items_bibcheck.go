@@ -77,12 +77,25 @@ type bibcheckReport struct {
 	Summary    bibcheckSummary      `json:"summary"`
 	Keys       []bibcheckKeyResult  `json:"keys"`
 	Files      []bibcheckFileReport `json:"files,omitempty"`
+	Includes   []bibcheckInclude    `json:"includes,omitempty"`
 	Findings   []Finding            `json:"findings"`
 }
+
+// bibcheckInclude is one file traversed through \input{} or \include{}
+// under --follow-includes, with the file and line that pulled it in.
+type bibcheckInclude struct {
+	File         string `json:"file"`
+	IncludedFrom string `json:"included_from"`
+	Line         int    `json:"line"`
+}
+
+// TeX include commands followed by --follow-includes: only the braced forms.
+var latexIncludeRE = regexp.MustCompile(`\\(?:input|include)\s*\{([^}\n]*)\}`)
 
 func newItemsBibcheckCmd(flags *rootFlags) *cobra.Command {
 	var failOnUnknown bool
 	var failOn string
+	var followIncludes bool
 
 	cmd := &cobra.Command{
 		Use:   "bibcheck <manuscript...>",
@@ -109,7 +122,20 @@ func newItemsBibcheckCmd(flags *rootFlags) *cobra.Command {
 
 			occurrences := make([]bibcheckOccurrence, 0)
 			formats := make(map[string]string, len(args))
+			var tree *bibcheckIncludeWalker
+			if followIncludes {
+				tree = newBibcheckIncludeWalker()
+			}
 			for _, path := range args {
+				if tree != nil && strings.ToLower(filepath.Ext(path)) == ".tex" {
+					parsed, err := tree.walkRoot(path)
+					if err != nil {
+						return err
+					}
+					formats[path] = "tex"
+					occurrences = append(occurrences, parsed...)
+					continue
+				}
 				parsed, format, err := parseManuscriptCitationOccurrences(path)
 				if err != nil {
 					return err
@@ -146,8 +172,18 @@ func newItemsBibcheckCmd(flags *rootFlags) *cobra.Command {
 			}
 
 			report := buildBibcheckReportFromOccurrences(args, formats, occurrences, items, incompleteRows, source)
+			if tree != nil {
+				report.Includes = tree.includes
+				for i := range tree.findings {
+					tree.findings[i].Source = source
+				}
+				report.Findings = append(report.Findings, tree.findings...)
+			}
 			if err := printBibcheckReport(cmd, flags, report); err != nil {
 				return err
+			}
+			if tree != nil && len(tree.findings) > 0 {
+				return gateErr(fmt.Errorf("bibcheck found %d include error(s)", len(tree.findings)))
 			}
 			if failOnUnknown && (report.Summary.Unknown > 0 || report.Summary.Ambiguous > 0) {
 				return gateErr(fmt.Errorf("bibcheck found %d unknown and %d ambiguous citation key(s)", report.Summary.Unknown, report.Summary.Ambiguous))
@@ -160,6 +196,7 @@ func newItemsBibcheckCmd(flags *rootFlags) *cobra.Command {
 	}
 	cmd.Flags().BoolVar(&failOnUnknown, "fail-on-unknown", false, "Exit 11 when any cited key is unknown or ambiguous")
 	cmd.Flags().StringVar(&failOn, "fail-on", "", "Exit 11 when findings reach this severity: high, any, or none")
+	cmd.Flags().BoolVar(&followIncludes, "follow-includes", false, "Also check .tex files pulled in by \\input{PATH} and \\include{PATH}, resolved from the named file's directory; a missing include or a cycle exits 11. Only the braced forms are followed: not \\input PATH, \\subfile, or \\import")
 
 	return cmd
 }
@@ -205,6 +242,122 @@ func parseLatexCitationOccurrences(path, content string) []bibcheckOccurrence {
 		}
 	}
 	return out
+}
+
+// bibcheckIncludeWalker follows \input{}/\include{} across every named root.
+// Files are keyed by cleaned absolute path so a file named on the command
+// line and also reached through an include is read once.
+type bibcheckIncludeWalker struct {
+	visited  map[string]bool
+	includes []bibcheckInclude
+	findings []Finding
+}
+
+func newBibcheckIncludeWalker() *bibcheckIncludeWalker {
+	return &bibcheckIncludeWalker{visited: make(map[string]bool)}
+}
+
+func (w *bibcheckIncludeWalker) walkRoot(root string) ([]bibcheckOccurrence, error) {
+	abs, err := filepath.Abs(root)
+	if err != nil {
+		return nil, fmt.Errorf("resolving manuscript %q: %w", root, err)
+	}
+	if w.visited[abs] {
+		return nil, nil
+	}
+	data, err := os.ReadFile(root)
+	if err != nil {
+		return nil, fmt.Errorf("reading manuscript %q: %w", root, err)
+	}
+	w.visited[abs] = true
+	// TeX resolves \input paths against the compile directory, which is the
+	// root file's directory, not the directory of the including file.
+	rootDir := filepath.Dir(root)
+	rootAbsDir := filepath.Dir(abs)
+	stack := map[string]string{abs: root}
+	return w.walk(root, string(data), rootDir, rootAbsDir, stack), nil
+}
+
+func (w *bibcheckIncludeWalker) walk(path, content, rootDir, rootAbsDir string, stack map[string]string) []bibcheckOccurrence {
+	out := parseLatexCitationOccurrences(path, content)
+	for _, inc := range latexIncludeTargets(content) {
+		target := strings.TrimSpace(inc.path)
+		if filepath.Ext(target) == "" {
+			target += ".tex"
+		}
+		display := filepath.Clean(filepath.Join(rootDir, target))
+		abs := filepath.Clean(filepath.Join(rootAbsDir, target))
+		if rel, err := filepath.Rel(rootAbsDir, abs); err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+			display = abs
+		}
+		if from, onStack := stack[abs]; onStack {
+			w.findings = append(w.findings, bibcheckIncludeFinding("include_cycle", fmt.Sprintf("Include cycle %s -> %s", path, from), path, inc.line, from))
+			continue
+		}
+		if w.visited[abs] {
+			continue
+		}
+		data, err := os.ReadFile(abs)
+		if err != nil {
+			w.findings = append(w.findings, bibcheckIncludeFinding("include_missing", fmt.Sprintf("Missing include %s", display), path, inc.line, display))
+			continue
+		}
+		w.visited[abs] = true
+		w.includes = append(w.includes, bibcheckInclude{File: display, IncludedFrom: path, Line: inc.line})
+		stack[abs] = display
+		out = append(out, w.walk(display, string(data), rootDir, rootAbsDir, stack)...)
+		delete(stack, abs)
+	}
+	return out
+}
+
+func bibcheckIncludeFinding(kind, title, file string, line int, target string) Finding {
+	return Finding{
+		Kind:     kind,
+		Severity: sevHigh,
+		Title:    title,
+		Evidence: map[string]any{
+			"file":      file,
+			"line":      line,
+			"file_line": bibcheckLocationString(bibcheckLocation{File: file, Line: line}),
+			"include":   target,
+		},
+		RecommendedAction: &RecommendedAction{Text: "Fix the \\input/\\include path in the manuscript"},
+	}
+}
+
+type latexInclude struct {
+	path string
+	line int
+}
+
+// latexIncludeTargets finds braced \input/\include commands outside TeX
+// comments: text after an unescaped % on a line is dropped first.
+func latexIncludeTargets(content string) []latexInclude {
+	var out []latexInclude
+	for i, line := range strings.Split(content, "\n") {
+		line = stripTexComment(line)
+		for _, m := range latexIncludeRE.FindAllStringSubmatch(line, -1) {
+			out = append(out, latexInclude{path: m[1], line: i + 1})
+		}
+	}
+	return out
+}
+
+func stripTexComment(line string) string {
+	for i := range len(line) {
+		if line[i] != '%' {
+			continue
+		}
+		backslashes := 0
+		for j := i - 1; j >= 0 && line[j] == '\\'; j-- {
+			backslashes++
+		}
+		if backslashes%2 == 0 {
+			return line[:i]
+		}
+	}
+	return line
 }
 
 func parsePandocMarkdownCitationOccurrences(path, content string) []bibcheckOccurrence {
@@ -679,6 +832,9 @@ func printBibcheckReport(cmd *cobra.Command, flags *rootFlags, report bibcheckRe
 		switch finding.Kind {
 		case "undefined_citekey":
 			fmt.Fprintf(out, "  undefined_citekey high %s — %s\n", citeKey, locationText)
+		case "include_missing", "include_cycle":
+			fileLine, _ := finding.Evidence["file_line"].(string)
+			fmt.Fprintf(out, "  %s high %s — %s\n", finding.Kind, sanitizeForTerminal(finding.Title), sanitizeForTerminal(fileLine))
 		case "incomplete_citation":
 			missing, _ := finding.Evidence["missing"].(string)
 			if missing != "" {

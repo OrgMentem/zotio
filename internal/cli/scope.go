@@ -4,9 +4,15 @@
 package cli
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
+	"io"
+	"net/http"
+	"net/url"
 	"strings"
+
+	"zotio/internal/client"
 )
 
 // --- the one --scope flag registration ---
@@ -21,11 +27,11 @@ import (
 // named here is an arm parseScopeSpec accepts.
 //
 // Runtime preconditions are deliberately absent from this string.
-// saved-search:KEY has no local mirror, so resolveScope reports
-// live_local_api and each adopter refuses with exit 9 plus a remediation
-// envelope — louder and more precise than a caveat in a flag description. A
-// command whose limitation is permanent rather than environmental appends it
-// (see items_bibliography.go, which can never render a saved search).
+// saved-search:KEY has no local mirror, so resolveScopeLive executes it
+// through the Zotero desktop local API; when that API is not the configured
+// base or is not reachable, each adopter refuses with exit 9 plus a
+// remediation envelope — louder and more precise than a caveat in a flag
+// description.
 const scopeFlagUsage = "Item cohort: library | collection:KEY | tag:NAME | item:KEY | query:TEXT | saved-search:KEY"
 
 // scopeFlagUsageDefaultLibrary is for the adopters whose flag defaults to the
@@ -92,6 +98,9 @@ type scopeResult struct {
 	Keys         []string
 	All          bool
 	Precondition string
+	// PreconditionDetail says why Precondition is still unmet after a live
+	// attempt (wrong plane, desktop unreachable). Empty from resolveScope.
+	PreconditionDetail string
 }
 
 // resolves the shared scope grammar against the synced local store.
@@ -174,4 +183,83 @@ func resolveScope(db localQueryStore, spec scopeSpec) (scopeResult, error) {
 	default:
 		return scopeResult{}, fmt.Errorf("unknown scope type %q", spec.Type)
 	}
+}
+
+// savedSearchLiveClient returns the desktop local API read client, or an
+// unmet-precondition detail when the configured base is not that API or it
+// does not answer. It applies the same gate as the live_local_api preflight.
+// Tests replace it: the gate requires the fixed desktop port 23119, which a
+// test cannot bind.
+var savedSearchLiveClient = func(ctx context.Context, flags *rootFlags) (*client.Client, string, error) {
+	ok, detail, err := checkLiveLocalAPIPrecondition(ctx, flags, nil, capabilityEntry{})
+	if err != nil || !ok {
+		return nil, detail, err
+	}
+	c, err := flags.newClient()
+	return c, "", err
+}
+
+// resolveScopeLive is resolveScope plus live execution of saved-search:KEY.
+// A saved search is evaluated by Zotero, so its keys come from
+// /searches/KEY/items on the desktop local API. When that API is not the
+// configured base or does not answer, the result keeps Precondition set with
+// PreconditionDetail explaining why and a nil error; each adopter then
+// refuses in its own voice (see scopePreconditionErr). A 404 for the key is
+// an error naming the key, never an empty cohort.
+func resolveScopeLive(ctx context.Context, flags *rootFlags, db localQueryStore, spec scopeSpec) (scopeResult, error) {
+	result, err := resolveScope(db, spec)
+	if err != nil || result.Precondition == "" || spec.Type != "saved-search" {
+		return result, err
+	}
+	if flags == nil {
+		flags = &rootFlags{}
+	}
+	c, detail, err := savedSearchLiveClient(ctx, flags)
+	if err != nil {
+		return scopeResult{}, err
+	}
+	if c == nil {
+		result.PreconditionDetail = detail
+		return result, nil
+	}
+	path := "/searches/" + url.PathEscape(spec.Value) + "/items"
+	items, err := searchesMaterializeItems(c, path, "saved search "+spec.Value)
+	if err != nil {
+		if isAPIStatus(err, http.StatusNotFound) {
+			return scopeResult{}, fmt.Errorf("saved search %s not found on the Zotero desktop local API: %w", spec.Value, err)
+		}
+		if isNetworkError(err) {
+			// Zotero went away between the probe and the read.
+			result.PreconditionDetail = fmt.Sprintf("Zotero desktop local API stopped answering while executing saved search %s: %v", spec.Value, err)
+			return result, nil
+		}
+		return scopeResult{}, err
+	}
+	// Child attachments and notes are skipped: the collection: arm matches on
+	// data.collections, which Zotero leaves empty for child items, so a
+	// collection cohort holds top-level items only. A saved search can return
+	// children (searches materialize observes this), and they are dropped
+	// here so both arms name the same kind of cohort.
+	for _, item := range items {
+		if item.Data.ParentItem == "" && item.Key != "" {
+			result.Keys = append(result.Keys, item.Key)
+		}
+	}
+	result.Precondition = ""
+	return result, nil
+}
+
+// scopePreconditionErr is the shared loud refusal for a scope whose live
+// precondition resolveScopeLive could not meet: a precondition_unmet
+// envelope (exit 9) with the remediation for live_local_api. A nil out skips
+// the machine envelope and puts the remediation in the error text instead.
+func scopePreconditionErr(ctx context.Context, out io.Writer, flags *rootFlags, capability string, result scopeResult) error {
+	if flags != nil && flags.quiet {
+		out = nil
+	}
+	detail := fmt.Sprintf("scope %q is evaluated by Zotero and has no local mirror, so it resolves no items while the desktop local API is unreachable", result.Expr)
+	if result.PreconditionDetail != "" {
+		detail += " (" + result.PreconditionDetail + ")"
+	}
+	return emitPreconditionUnmetWithRemediation(out, flags, capability, result.Precondition, detail, remediationFor(ctx, flags, result.Precondition))
 }

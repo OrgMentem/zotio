@@ -80,12 +80,12 @@ before exporting the certified corpus.`,
 				if perr != nil {
 					return usageErr(perr)
 				}
-				scope, err = resolveScope(db, spec)
+				scope, err = resolveScopeLive(cmd.Context(), flags, db, spec)
 				if err != nil {
 					return err
 				}
 				if scope.Precondition != "" {
-					return preconditionErr(fmt.Errorf("scope %q needs the %s precondition (Zotero desktop / local API); open Zotero and enable Settings -> Advanced -> 'Allow other applications', then re-run", scope.Expr, scope.Precondition))
+					return scopePreconditionErr(cmd.Context(), cmd.OutOrStdout(), flags, commandRegistryPath(cmd), scope)
 				}
 			}
 

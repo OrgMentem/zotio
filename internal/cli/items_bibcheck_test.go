@@ -397,6 +397,118 @@ func writeTestFile(t *testing.T, path, content string) {
 		t.Fatalf("write %s: %v", path, err)
 	}
 }
+
+func bibcheckIncludeFixture(t *testing.T, files map[string]string) string {
+	t.Helper()
+	home := bibcheckIsolatedHome(t)
+	seedBibcheckItems(t, []json.RawMessage{
+		json.RawMessage(`{"key":"OK1","version":1,"data":{"key":"OK1","itemType":"journalArticle","title":"Known Alpha","creators":[{"lastName":"Doe"}],"date":"2024","publicationTitle":"Journal A","extra":"Citation Key: alpha"}}`),
+	})
+	for name, content := range files {
+		path := filepath.Join(home, name)
+		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+			t.Fatalf("mkdir %s: %v", path, err)
+		}
+		writeTestFile(t, path, content)
+	}
+	return home
+}
+
+func TestBibcheckFollowIncludesReportsChapterKeyAtChapterLine(t *testing.T) {
+	home := bibcheckIncludeFixture(t, map[string]string{
+		"root.tex":    "\\cite{alpha}\n\\include{chapter}\n",
+		"chapter.tex": "Text.\nSee \\cite{ghostkey}.\n",
+	})
+	root := filepath.Join(home, "root.tex")
+	chapter := filepath.Join(home, "chapter.tex")
+
+	off, _, err := runBibcheckJSON(t, root, "--fail-on-unknown")
+	if err != nil || off.Summary.Unknown != 0 {
+		t.Fatalf("flag off: err=%v summary=%+v, want pass with no unknown keys", err, off.Summary)
+	}
+
+	report, _, err := runBibcheckJSON(t, root, "--follow-includes", "--fail-on-unknown")
+	if ExitCode(err) != 11 {
+		t.Fatalf("flag on: err=%v, want exit 11", err)
+	}
+	undefined := bibcheckFindingByKind(t, report, "undefined_citekey")
+	if got := evidenceString(t, undefined, "file_line"); got != chapter+":2" {
+		t.Fatalf("undefined file_line = %q, want %q", got, chapter+":2")
+	}
+	want := []bibcheckInclude{{File: chapter, IncludedFrom: root, Line: 2}}
+	if !reflect.DeepEqual(report.Includes, want) {
+		t.Fatalf("includes = %+v, want %+v", report.Includes, want)
+	}
+}
+
+func TestBibcheckFollowIncludesMissingIncludeFails(t *testing.T) {
+	home := bibcheckIncludeFixture(t, map[string]string{
+		"root.tex": "\\cite{alpha}\n\n\\input{absent}\n",
+	})
+	root := filepath.Join(home, "root.tex")
+	report, _, err := runBibcheckJSON(t, root, "--follow-includes")
+	if ExitCode(err) != 11 {
+		t.Fatalf("err=%v, want exit 11 for a missing include", err)
+	}
+	missing := bibcheckFindingByKind(t, report, "include_missing")
+	if got := evidenceString(t, missing, "file_line"); got != root+":3" {
+		t.Fatalf("include_missing file_line = %q, want %q", got, root+":3")
+	}
+	if got := evidenceString(t, missing, "include"); got != filepath.Join(home, "absent.tex") {
+		t.Fatalf("include_missing include = %q, want absent.tex", got)
+	}
+}
+
+func TestBibcheckFollowIncludesCycleReportedOnce(t *testing.T) {
+	home := bibcheckIncludeFixture(t, map[string]string{
+		"a.tex": "\\cite{alpha}\n\\input{b}\n",
+		"b.tex": "\\cite{fromb}\n\\input{a}\n",
+	})
+	report, _, err := runBibcheckJSON(t, filepath.Join(home, "a.tex"), "--follow-includes")
+	if ExitCode(err) != 11 {
+		t.Fatalf("err=%v, want exit 11 for an include cycle", err)
+	}
+	cycles := 0
+	for _, f := range report.Findings {
+		if f.Kind == "include_cycle" {
+			cycles++
+			if evidenceString(t, f, "file") != filepath.Join(home, "b.tex") || evidenceString(t, f, "include") != filepath.Join(home, "a.tex") {
+				t.Fatalf("include_cycle evidence = %+v, want b.tex -> a.tex", f.Evidence)
+			}
+		}
+	}
+	if cycles != 1 {
+		t.Fatalf("include_cycle findings = %d, want 1", cycles)
+	}
+	if got := bibcheckCiteKeyOrder(report.Keys); !reflect.DeepEqual(got, []string{"alpha", "fromb"}) {
+		t.Fatalf("keys = %#v, want alpha and fromb", got)
+	}
+}
+
+func TestBibcheckFollowIncludesResolvesFromRootAndSkipsComments(t *testing.T) {
+	home := bibcheckIncludeFixture(t, map[string]string{
+		"root.tex":   "% \\input{ghost}\n100\\% done \\input{ch/one}\n",
+		"ch/one.tex": "\\input{ch/two}\n",
+		"ch/two.tex": "\\cite{deep}\n",
+	})
+	root := filepath.Join(home, "root.tex")
+	report, _, err := runBibcheckJSON(t, root, "--follow-includes")
+	if err != nil {
+		t.Fatalf("err=%v findings=%+v, want no include errors", err, report.Findings)
+	}
+	two := filepath.Join(home, "ch", "two.tex")
+	want := []bibcheckInclude{
+		{File: filepath.Join(home, "ch", "one.tex"), IncludedFrom: root, Line: 2},
+		{File: two, IncludedFrom: filepath.Join(home, "ch", "one.tex"), Line: 1},
+	}
+	if !reflect.DeepEqual(report.Includes, want) {
+		t.Fatalf("includes = %+v, want %+v", report.Includes, want)
+	}
+	undefined := bibcheckFindingByKind(t, report, "undefined_citekey")
+	if got := evidenceString(t, undefined, "file_line"); got != two+":1" {
+		t.Fatalf("deep file_line = %q, want %q", got, two+":1")
+	}
+}
 func TestBibcheckUnmatchedBacktickDoesNotDropTrailingCitations(t *testing.T) {
 	content := "Text `unclosed and @hidden should still count\nNext line @visible also counts."
 	got := citeKeysFromOccurrences(parsePandocMarkdownCitationOccurrences("", content))
