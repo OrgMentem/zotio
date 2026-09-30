@@ -8,7 +8,7 @@ condition:
 scope:
   - "tool:edit(release.yml)"
   - "tool:write(release.yml)"
-interruptMode: never
+question: "Does this edit change publisher_version without publisher_sha256 (or the reverse), use latest, pipe the publisher download into tar, or run anything before the checksum passes?"
 ---
 
 `publisher_version` and `publisher_sha256` in `.github/workflows/release.yml` are a **pair**. A version bump without its digest either fails the `sha256sum -c` gate or, worse, verifies the wrong bytes.

@@ -2,15 +2,14 @@
 name: go-inert-test-fixture
 description: "A fixture built then discarded, or a test that ends in t.Skip, reports success while proving nothing"
 condition:
-  - '(?m)^\s*\b(\w+)\s*:?=\s*httptest\.NewServer[\s\S]{0,3000}?^\s*_ = \1\s*$'
-  - '(?s)httptest\.NewServer[\s\S]{0,3000}?\bt\.Skip\('
-  - '(?s)\bt\.Skip\([^)]*\b(informational|documents|records that|cannot be exercised|for reference)'
+  - 'httptest\.NewServer'
+  - '\bt\.Skip(f|Now)?\('
 globs:
   - "*_test.go"
 scope:
   - "tool:edit"
   - "tool:write"
-interruptMode: always
+question: "Does this test build a fixture it never uses (for example, an httptest server whose URL no production call receives), or end in t.Skip for a reason other than a checked missing precondition?"
 ---
 
 **A test that cannot fail is worse than no test: it reads as coverage.** Two

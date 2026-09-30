@@ -7,7 +7,7 @@ condition:
 scope:
   - "tool:edit(.goreleaser.yaml)"
   - "tool:write(.goreleaser.yaml)"
-interruptMode: always
+question: "Does this edit set skip_upload or skip_publish to true without a comment beside it that states the condition for removing it?"
 ---
 
 **A publisher with `skip_upload` set silently publishes nothing, and the release job still reports success.**

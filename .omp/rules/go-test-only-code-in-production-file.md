@@ -45,4 +45,6 @@ That command must print nothing.
 **Scope of this guard.** It gates on the filename, because the content of a
 misnamed helper is identical to a correct one. A production file whose name
 carries no hint of testing — `helpers.go` holding a `*testing.T` parameter —
-does not match, so the `grep` above stays the real check before a commit.
+does not match here; `go-testing-in-production-file-judged` asks the judge
+about every other `.go` file. The `grep` above stays the real check before a
+commit.

@@ -1,14 +1,14 @@
 ---
 name: go-no-t-fatal-off-test-goroutine
-description: "t.Fatal inside an httptest handler runs on the server goroutine, where it cannot stop the test and may be swallowed"
+description: "t.Fatal, t.FailNow, or t.Skip off the test goroutine (an httptest handler or a go func) cannot stop the test and may be swallowed"
 condition:
-  - '(?s)func\s*\(\s*\w+\s+http\.ResponseWriter\s*,\s*\w+\s+\*http\.Request\s*\)[^\n]*\{(?:(?!\}\))(?!\n\t\}).)*?\bt\.Fatalf?\('
+  - '\bt\.(Fatal|Fatalf|FailNow|Skip|Skipf|SkipNow)\('
 globs:
   - "*_test.go"
 scope:
   - "tool:edit"
   - "tool:write"
-interruptMode: always
+question: "Does this edit call t.Fatal, t.Fatalf, t.FailNow, or t.Skip inside code that runs on a goroutine other than the test's, such as an HTTP handler or a go func?"
 ---
 
 **`t.Fatal` must run on the goroutine that runs the test.** `net/http/httptest`
