@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -336,6 +337,46 @@ func TestLibraryHealthCheckRetractionsInjectsIntoQuickPresetAndRunsProbe(t *test
 	}
 	if !sawFinding {
 		t.Fatalf("findings = %+v, want retracted_item finding", report.Findings)
+	}
+}
+
+func TestLibraryHealthCheckRetractionsScopeLimitsCrossrefRequests(t *testing.T) {
+	items := []json.RawMessage{}
+	for i, coll := range []string{"C1", "C1", "C2", "C2", "C2"} {
+		key := fmt.Sprintf("K%d", i)
+		items = append(items, json.RawMessage(fmt.Sprintf(`{"key":%q,"version":1,"data":{"key":%q,"itemType":"journalArticle","title":"Work","creators":[{"lastName":"Author"}],"date":"2020","publicationTitle":"Journal","DOI":"10.777/%s","collections":[%q]}}`, key, key, strings.ToLower(key), coll)))
+	}
+	for _, tc := range []struct {
+		scope string
+		want  int
+	}{{"collection:C1", 2}, {"library", 5}} {
+		t.Run(tc.scope, func(t *testing.T) {
+			seedRetractionDefaultStore(t, items)
+			var mu sync.Mutex
+			works := 0
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if strings.HasPrefix(r.URL.Path, "/works/") {
+					mu.Lock()
+					works++
+					mu.Unlock()
+				}
+				_, _ = w.Write([]byte(`{"message":{}}`))
+			}))
+			t.Cleanup(srv.Close)
+			withBase(t, &crossrefRetractionBaseURL, srv.URL)
+
+			cmd := newLibraryHealthCmd(&rootFlags{asJSON: true, timeout: 5 * time.Second})
+			cmd.SilenceErrors, cmd.SilenceUsage = true, true
+			cmd.SetArgs([]string{"--for", "quick", "--scope", tc.scope, "--check-retractions"})
+			cmd.SetOut(&bytes.Buffer{})
+			cmd.SetErr(&bytes.Buffer{})
+			if err := cmd.Execute(); err != nil {
+				t.Fatalf("library health: %v", err)
+			}
+			if works != tc.want {
+				t.Fatalf("CrossRef work lookups = %d, want %d", works, tc.want)
+			}
+		})
 	}
 }
 

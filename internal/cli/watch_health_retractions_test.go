@@ -115,6 +115,37 @@ func TestWatchHealthCheckRetractionsCachesDOIsAcrossCycles(t *testing.T) {
 	}
 }
 
+func watchRetractionItemIn(key, doi, collection string) json.RawMessage {
+	return json.RawMessage(fmt.Sprintf(`{"key":%q,"version":1,"data":{"key":%q,"itemType":"journalArticle","title":"Work %s","creators":[{"lastName":"Author"}],"date":"2020","publicationTitle":"Journal","DOI":%q,"collections":[%q]}}`, key, key, key, doi, collection))
+}
+
+func TestWatchHealthCheckRetractionsScopedCohortSkipsOutOfScopeDOIs(t *testing.T) {
+	seedWatchHealthDefaultStore(t, []json.RawMessage{
+		watchRetractionItemIn("IN1", "10.777/in1", "C1"),
+		watchRetractionItemIn("IN2", "10.777/in2", "C1"),
+		watchRetractionItemIn("OUT1", "10.777/out1", "C2"),
+		watchRetractionItemIn("OUT2", "10.777/out2", "C2"),
+		watchRetractionItemIn("OUT3", "10.777/out3", "C2"),
+	})
+	crossref := newFakeWatchCrossref(t)
+	monitor := newWatchRetractionMonitor("quick", healthPresets["quick"], true)
+	if err := monitor.setScope("collection:C1"); err != nil {
+		t.Fatalf("setScope: %v", err)
+	}
+	if _, err := monitor.report(context.Background()); err != nil {
+		t.Fatalf("cycle 1: %v", err)
+	}
+	if crossref.total != 2 || crossref.hits["10.777/in1"] != 1 || crossref.hits["10.777/in2"] != 1 {
+		t.Fatalf("cycle 1 CrossRef lookups = %d (%v), want only the 2 in-scope DOIs", crossref.total, crossref.hits)
+	}
+	if _, err := monitor.report(context.Background()); err != nil {
+		t.Fatalf("cycle 2: %v", err)
+	}
+	if crossref.total != 2 {
+		t.Fatalf("cycle 2 CrossRef lookups = %d (%v), want 0 new (cache)", crossref.total, crossref.hits)
+	}
+}
+
 func TestWatchHealthCheckRetractionsFailedDOISkipsAndRetries(t *testing.T) {
 	seedWatchHealthDefaultStore(t, []json.RawMessage{
 		watchRetractionItem("RET", "10.777/ret", 1),

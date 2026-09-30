@@ -262,6 +262,9 @@ type healthContext struct {
 	// so Ctrl-C / MCP deadlines propagate to CrossRef probes instead of being
 	// lost via context.Background().
 	cmdCtx context.Context
+	// scopeKeys is the health run's cohort (nil = whole library); network
+	// checks use it to skip out-of-scope items before any request.
+	scopeKeys map[string]bool
 }
 
 type healthCheckRunner func(db localQueryStore, ctx *healthContext) ([]Finding, *healthSkip, error)
@@ -607,6 +610,7 @@ func assembleHealthReport(db localQueryStore, ctx *healthContext, preset string,
 			scopeSet[k] = true
 		}
 	}
+	ctx.scopeKeys = scopeSet
 
 	gateBlockedBySkip := false
 	for _, chk := range selectHealthChecks(kinds) {
@@ -1130,7 +1134,7 @@ func runRetractedItem(db localQueryStore, ctx *healthContext) ([]Finding, *healt
 		}, nil
 	}
 
-	report, err := runRetractionCheck(retractCtx, db, httpClient, ctx.limit, "")
+	report, err := runRetractionCheckCached(retractCtx, db, httpClient, ctx.limit, "", nil, ctx.scopeKeys)
 	if err != nil {
 		return nil, nil, err
 	}

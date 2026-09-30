@@ -261,7 +261,7 @@ func (m *watchHealthMonitor) report(ctx context.Context) (healthReport, error) {
 		return report, err
 	}
 	httpClient := &http.Client{Timeout: enrichTimeout(m.flags.timeout)}
-	check, err := runRetractionCheckCached(ctx, db, httpClient, 0, "", m.retractions)
+	check, err := runRetractionCheckCached(ctx, db, httpClient, 0, "", m.retractions, scopeSet)
 	if err != nil {
 		return report, fmt.Errorf("health check retracted_item: %w", err)
 	}

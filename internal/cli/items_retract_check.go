@@ -118,16 +118,34 @@ type retractionLookupCache interface {
 
 // runRetractionCheck scans DOI-bearing rows while preserving the report-only exit contract.
 func runRetractionCheck(ctx context.Context, db localQueryStore, httpClient *http.Client, limit int, collection string) (retractionCheckReport, error) {
-	return runRetractionCheckCached(ctx, db, httpClient, limit, collection, nil)
+	return runRetractionCheckCached(ctx, db, httpClient, limit, collection, nil, nil)
 }
 
 // runRetractionCheckCached is runRetractionCheck with an optional per-DOI
-// cache; cache hits skip both the request and the pacing sleep.
-func runRetractionCheckCached(ctx context.Context, db localQueryStore, httpClient *http.Client, limit int, collection string, cache retractionLookupCache) (retractionCheckReport, error) {
+// cache; cache hits skip both the request and the pacing sleep. A non-nil
+// keys set restricts the lookup to that cohort before any network request;
+// nil means the whole library.
+func runRetractionCheckCached(ctx context.Context, db localQueryStore, httpClient *http.Client, limit int, collection string, cache retractionLookupCache, keys map[string]bool) (retractionCheckReport, error) {
 	report := retractionCheckReport{Findings: []retractionCheckFinding{}}
-	rows, err := queryRetractionCheckItems(db, limit, collection)
+	queryLimit := limit
+	if keys != nil {
+		queryLimit = 0
+	}
+	rows, err := queryRetractionCheckItems(db, queryLimit, collection)
 	if err != nil {
 		return report, fmt.Errorf("querying DOI-bearing items: %w", err)
+	}
+	if keys != nil {
+		kept := rows[:0]
+		for _, row := range rows {
+			if keys[sqlStringValue(row["key"])] {
+				kept = append(kept, row)
+			}
+		}
+		rows = kept
+		if limit > 0 && len(rows) > limit {
+			rows = rows[:limit]
+		}
 	}
 
 	calls := 0
